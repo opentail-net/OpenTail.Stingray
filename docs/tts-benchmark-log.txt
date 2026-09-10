@@ -733,3 +733,15 @@
 [StableAudio3-SmallMusic] prompt="upbeat acoustic guitar melody" steps=8 audio=6.00s samples=264600
 [StableAudio3-SmallMusic] runs(s)=[162.129, 163.362, 131.063] mean=152.185s RTF=25.364 (lower=faster; 1.0=realtime; 8-step CFG, not the full recommended step count)
 
+[XTTS-v2] prompt="Hello, I will make some lunch, darling!" audio=3.16s samples=75776
+[XTTS-v2] runs(s)=[11.996, 9.532, 8.953] mean=10.161s RTF=3.218 (lower=faster; 1.0=realtime)
+
+[MusicGen-small] prompt="acoustic guitar melody" audio=3.00s samples=96000
+[MusicGen-small] runs(s)=[15.754, 15.851, 15.793] mean=15.800s RTF=5.267 (lower=faster; 1.0=realtime; non-degeneracy checked only, no numeric golden reference exists for this port yet)
+
+[AudioGen-medium] prompt="dog barking" audio=3.00s samples=48000
+[AudioGen-medium] runs(s)=[96.117, 96.743, 87.592] mean=93.484s RTF=31.161 (lower=faster; 1.0=realtime; non-degeneracy checked only, no numeric golden reference exists for this port yet)
+
+[VibeVoice-ASR] audio=14.07s text="Some call me Nature. Others call me Mother Nature. I've been here for over 4.5 billion years. 22,500 times longer than you."
+[VibeVoice-ASR] runs(s)=[155.760, 152.245, 145.561] mean=151.189s RTF=10.744 (lower=faster; 1.0=realtime)
+

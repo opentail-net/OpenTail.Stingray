@@ -106,6 +106,8 @@
 | Qwen3-8B Q4_K_M | decode (short ctx, original) | CPU | 6.8 t/s | — | — | 2026-08 | cpu-speculative-decoding-findings.md |
 | Qwen3-8B Q4_K_M | prefill (493 tok) | CPU | 48.3 t/s | 47.28 t/s | **1.02x** | 2026-09-10 | stingray CLI + llama-bench, best-of-3 (backfill) |
 | Qwen3-8B Q4_K_M | decode (493 tok prompt, 24 tok gen) | CPU | 6.3 t/s | 7.67 t/s | **0.82x** | 2026-09-10 | stingray CLI + llama-bench, best-of-3 (backfill) |
+| Qwen3-8B Q4_K_M | prefill (493 tok) | Vulkan iGPU | 19.7 t/s | — | — | 2026-09-10 | new coverage; no llama.cpp Vulkan ref. Notably *worse* than this same model's CPU prefill (19.7 vs 48.3 t/s) — this iGPU trails CPU on prefill here, consistent with `docs/done/vulkan-backend-evidence.md` |
+| Qwen3-8B Q4_K_M | decode (493 tok prompt, 24 tok gen) | Vulkan iGPU | 5.9 t/s | — | — | 2026-09-10 | new coverage; close to CPU decode (5.9 vs 6.3 t/s) — decode is the one path where this iGPU is competitive with CPU |
 | Qwen3-Coder 30B-A3B Q4_K_M | prefill | CUDA (†) | 102.6 t/s | — | — | 2026-06-16 | README history 0c171ed |
 | Qwen3-Coder 30B-A3B Q4_K_M | decode | CUDA (†) | 28.0 t/s | — | — | 2026-06-16 | README history 0c171ed |
 | Qwen3-Coder 30B-A3B Q4_K_M | decode (original) | CPU | 22.4 t/s | — | — | 2026-06-16 | README history 0c171ed |
@@ -141,6 +143,8 @@
 | OLMoE-1B-7B Q4_K_M | decode (original, ~7 tok, early EOS) | CPU | 28.2 t/s | — | — | 2026-08-07 | cpu-performance-baseline.md |
 | OLMoE-1B-7B-0924-Instruct Q4_K_M | prefill (515 tok) | CPU | 124.8 t/s | 180.82 t/s | **0.69x** | 2026-09-10 | stingray CLI + llama-bench, best-of-3 (backfill) |
 | OLMoE-1B-7B-0924-Instruct Q4_K_M | decode (515 tok prompt, 24 tok gen, no early EOS) | CPU | 25.3 t/s | 50.58 t/s | **0.50x** | 2026-09-10 | stingray CLI + llama-bench, best-of-3 (backfill; full 24-token run, not early-EOS-truncated like the row above) |
+| OLMoE-1B-7B-0924-Instruct Q4_K_M | prefill (515 tok) | Vulkan iGPU | 25.0 t/s | — | — | 2026-09-10 | new coverage; no llama.cpp Vulkan ref. Much worse than CPU prefill (25.0 vs 124.8 t/s) — same iGPU-trails-CPU-on-prefill pattern as Qwen3-8B and Gemma-4 |
+| OLMoE-1B-7B-0924-Instruct Q4_K_M | decode (515 tok prompt, 24 tok gen) | Vulkan iGPU | 21.1 t/s | — | — | 2026-09-10 | new coverage; close to CPU decode (21.1 vs 25.3 t/s) |
 
 > Original decode measured over ~7 tokens (early EOS); treat as approximate. The re-measured row above forced a full 24-token generation and is the reliable one going forward.
 
@@ -154,6 +158,8 @@
 | Gemma-4-12B Q4_0 | decode (original) | CPU | 3.7 t/s | — | — | 2026-08-07 | cpu-performance-baseline.md |
 | Gemma-4-12B-it Q4_K_M | prefill (501 tok) | CPU | 3.5 t/s | 27.81 t/s | **0.13x** | 2026-09-10 | stingray CLI + llama-bench (quant differs from original Q4_0 row: Q4_K_M unsloth GGUF, not the QAT Q4_0 build; prefill:decode still ~1.0x, same batched-prefill-missing signature as the original row) |
 | Gemma-4-12B-it Q4_K_M | decode (501 tok prompt, 24 tok gen) | CPU | 4.2 t/s | 5.69 t/s | **0.74x** | 2026-09-10 | stingray CLI + llama-bench |
+| Gemma-4-12B-it Q4_K_M | prefill (501 tok) | Vulkan iGPU | 3.4 t/s | — | — | 2026-09-10 | new coverage; no llama.cpp Vulkan ref. **Real finding: prefill≈decode (3.4 vs 3.6 t/s) — the same missing-batched-prefill signature as CPU, confirming this bug is not CPU-specific.** |
+| Gemma-4-12B-it Q4_K_M | decode (501 tok prompt, 24 tok gen) | Vulkan iGPU | 3.6 t/s | — | — | 2026-09-10 | new coverage; see prefill row — Vulkan decode is actually *slower* than CPU decode (3.6 vs 4.2 t/s) on this iGPU, consistent with `docs/done/vulkan-backend-evidence.md`'s finding that this iGPU trails CPU |
 | Gemma4 E4B QAT Q4_0 | prefill | CUDA (†) | 3666 t/s | — | — | 2026-06-16 | README history 0c171ed |
 | Gemma4 E4B QAT Q4_0 | decode | CUDA (†) | 100.4 t/s | — | — | 2026-06-16 | README history 0c171ed |
 | Gemma4 E4B QAT Q4_0 | prefill | Vulkan (†) | 35 t/s | — | — | 2026-06-22 | README history 0c171ed |
@@ -215,6 +221,7 @@
 | F5-TTS Base (Paragraph) | text → 14.5s audio | CPU | 10.20s | **0.70×** | — | — | — | 2026-09-09 | 2026-08-28 👂 |
 | CosyVoice2-0.5B | text → 8.00s audio | CPU | 23.20s | **2.90×** | — (no `cosyvoice2` family in `examples/audio.cpp`'s registry — only `cosyvoice3`'s `llm_job` path is implemented there) | — | — | 2026-09-10 | new coverage; `CosyVoice2PerfBaselineDebugTest.cs` (temporary) |
 | XTTS-v2 | text → 3.16s audio | CPU | 10.16s | **3.22×** | — (`examples/xtts_inference.cpp` is source-only, never built to an `.exe`) | — | — | 2026-09-10 | new coverage; `XttsPerfBaselineDebugTest.cs` (temporary, uses `b.wav` — the existing `Baseline_Xtts` test's named reference wav isn't present on this machine) |
+| MOSS-TTS-Nano (100M) | text → 3.04s audio, 40 frames | CPU | 3.46s | **1.14×** | — (not attempted this pass) | — | — | 2026-09-10 | new coverage; existing `MossTtsGenerateWavDebugTest.cs` already had built-in perf metrics, just run as-is. Near-real-time — the smallest, fastest TTS checkpoint tested this pass. |
 | MusicGen-small (T5 + delayed-pattern + EnCodec) | text → 3.00s audio | CPU | 15.80s | **5.27×** | — (not attempted this pass) | — | — | 2026-09-10 | new coverage; `MusicGenPerfBaselineDebugTest.cs` (temporary). Non-degeneracy checked only — no numeric golden reference exists for this port yet, so treat as "real audio energy produced," not "musically/numerically correct." |
 | AudioGen-medium (T5-large + delayed-pattern + EnCodec) | text → 3.00s audio | CPU | 93.48s (mean of 3) | **31.16×** | — (not attempted this pass) | — | — | 2026-09-10 | new coverage; `AudioGenPerfBaselineDebugTest.cs` (temporary). Non-degeneracy checked only, same caveat as MusicGen. |
 | Stable Audio 3 Small Music (DiT + `taae_v2` VAE) | text → 6.00s audio, 8-step CFG | CPU | 152.19s (mean of 3) | **25.36×** | — (not attempted this pass) | — | — | 2026-09-10 | new coverage; `StableAudio3SmallMusicPerfBaselineDebugTest.cs` (temporary). 8 steps is a deliberately short smoke-test step count, not the model's recommended full schedule (per `docs/00-current-work.md`'s SA3 entries, real generations use 15-25+ steps) — this RTF would be meaningfully worse at a realistic step count, not better. |
@@ -290,6 +297,7 @@
 | Whisper Large-v3 (1.5B) | 14.1s audio transcribe | CPU | 11.32s | **0.943x** | 12.69s | 0.900x | **0.95x** | 2026-09-09 | scripts/bench-cpp.ps1 |
 | Voxtral-Mini-4B-Realtime | 14.1s audio transcribe | CPU | 1203.1s (mean of 3) | **85.5x** | 24.05s | 1.71x | <span style="color:#dc2626">**0.02x**</span> | 2026-09-10 | new coverage; raw building-block harness (`VoxtralAudioEncoder`/`VoxtralTextDecoder`, no CLI pipeline exists yet), `examples/audio.cpp/build/bin/audiocpp_cli.exe --family voxtral_realtime` |
 | Qwen3-ASR 0.6B (safetensors) | 14.1s audio transcribe | CPU | 3.16s (mean of 3) | **0.225x** | — (no C++ reference attempted this pass) | — | — | 2026-09-10 | new coverage; `QwenAsrPerfBaselineDebugTest.cs` (temporary). **Caveat:** transcript is degenerate ("aspects" only, not the real reference text) — fast but likely a real correctness bug in this pipeline/request path, not a working transcription. Timing is real; do not read this row as "Qwen3-ASR works." |
+| VibeVoice-ASR (7B-class LLM + acoustic/semantic tokenizers) | 14.1s audio transcribe | CPU | 151.19s (mean of 3) | **10.74x** | — (not attempted this pass) | — | — | 2026-09-10 | new coverage; `VibeVoiceAsrPerfBaselineDebugTest.cs` (temporary). Correct transcript (matches reference text). Slow — real, large (9 GiB) LLM-based ASR, not yet CLI-wired. |
 
 > RTF < 1.0x = faster than real-time. Whisper Base runs at **14.3x real-time** speed on CPU; Small at **5.0x real-time**; Medium at **1.79x real-time**; Large-v3 at **1.06x real-time** (faster than real-time on CPU).
 > **Voxtral-Mini-4B is 50x slower than its C++ reference** — the worst ratio anywhere in this doc. Transcript is correct (matches the reference text, modulo the model's own real streaming control markers), so this is a genuine performance gap, not a correctness bug: the 4B dense text decoder currently only has raw building blocks (`VoxtralTextDecoder.Step`/`PrefillWithCache`) wired up for testing, no CLI, and almost certainly no batched/optimized decode path — unlike Whisper, which is a mature, tuned pipeline. Worth a dedicated look given the ratio.
@@ -319,6 +327,23 @@
 | VisionOps.Attention / AttentionGqa | 1024-tok / 16-head ViT-L | CPU | >1.2× over scalar | — | — | 2026-08-20 | perf-loop-project-review-progress.md |
 
 > Scalar reference kept in `VisionOpsBenchmarkTests.cs` as a permanent regression baseline.
+
+---
+
+## Image Diffusion (CPU) — out of core scope, tried once anyway
+
+Different domain from this doc's LLM/TTS/ASR focus (a different pipeline, `OpenTail.Stingray.Diffusion`,
+not benchmarked here systematically) — included as a single real data point since the checkpoint
+was on hand and untested.
+
+| Model | Scenario | Backend | C# Wall | Performance Check | Source |
+|---|---|---|---:|---|---|
+| Z-Image-Turbo (S3-DiT + Qwen3-4B text encoder) | 512×512 image, default steps | CPU | 871.8s (14m32s) | 2026-09-10 | new coverage; `stingray image` CLI, real non-trivial 733KB PNG output saved to `docs/diffusion-samples/z-image-turbo-perfleague-check.png` |
+
+> No C++ reference attempted (no vendored image-diffusion C++ CLI in this repo). Not pursued
+> further this pass — video diffusion checkpoints (`hunyuanvideo`, `ltx-t5`, `wan2.1`) are almost
+> certainly much slower still and were not attempted given this single image already took ~14.5
+> minutes on CPU.
 
 ---
 
