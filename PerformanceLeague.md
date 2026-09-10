@@ -380,6 +380,8 @@ separately.
 | Granite-4.0-3B-Vision Q4_K_M (Granite backbone) | decode (494 tok prompt, 24 tok gen) | CPU | 8.7 t/s | 18.09 t/s | **0.48x** | 2026-09-10 | new coverage; stingray CLI + llama-bench, best-of-3, text-only |
 | Granite-Vision-3.2-2B Q3_K_S (Granite backbone) | prefill (573 tok) | CPU | 27.0 t/s | 66.50 t/s | **0.41x** | 2026-09-10 | new coverage; stingray CLI + llama-bench, best-of-3, text-only |
 | Granite-Vision-3.2-2B Q3_K_S (Granite backbone) | decode (573 tok prompt, 24 tok gen) | CPU | 17.1 t/s | 35.65 t/s | **0.48x** | 2026-09-10 | new coverage; stingray CLI + llama-bench, best-of-3, text-only |
+| dots.ocr Q8_0 (Qwen2-1.5B backbone) | prefill (477 tok) | CPU | 96.3 t/s | 135.37 t/s | **0.71x** | 2026-09-10 | new coverage; stingray CLI + llama-bench, best-of-3, text-only |
+| dots.ocr Q8_0 (Qwen2-1.5B backbone) | decode (477 tok prompt, 24 tok gen) | CPU | 20.5 t/s | 25.97 t/s | **0.79x** | 2026-09-10 | new coverage; stingray CLI + llama-bench, best-of-3, text-only |
 
 ---
 
