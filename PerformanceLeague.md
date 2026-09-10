@@ -192,6 +192,10 @@
 |---|---|---|---:|---:|---:|---|---|
 | Llama-4 Scout 17B-16E Q4_K_M | decode | CPU (†, smoke) | 4.3 t/s | — | — | 2026-06-16 | README history 0c171ed; smoke run only |
 | Llama-4 Scout 17B-16E Q4_K_M | decode | CUDA (†, smoke) | 2.6 t/s | — | — | 2026-06-16 | README history 0c171ed; smoke run, model dwarfs 12 GB card |
+| Mistral-7B-Instruct-v0.3 Q4_K_M | prefill (571 tok) | CPU | 46.4 t/s | 46.27 t/s | <span style="color:#16a34a">**1.00x**</span> | 2026-09-10 | new coverage; stingray CLI + llama-bench, best-of-3. **Real parity — a second dense 7-8B-class model hitting ~1.0x prefill, alongside Qwen3-8B's 1.02x.** |
+| Mistral-7B-Instruct-v0.3 Q4_K_M | decode (571 tok prompt, 24 tok gen) | CPU | 6.5 t/s | 9.37 t/s | **0.69x** | 2026-09-10 | new coverage; stingray CLI + llama-bench, best-of-3 |
+| Ministral-8B-Instruct-2410 Q4_K_M | prefill (488 tok) | CPU | 45.2 t/s | 45.79 t/s | <span style="color:#16a34a">**0.99x**</span> | 2026-09-10 | new coverage; stingray CLI + llama-bench, best-of-3. **Third dense 7-8B model at ~1.0x prefill parity** (with Qwen3-8B 1.02x and Mistral-7B 1.00x) — a consistent, real pattern at this size class. |
+| Ministral-8B-Instruct-2410 Q4_K_M | decode (488 tok prompt, 24 tok gen) | CPU | 6.1 t/s | 8.61 t/s | **0.71x** | 2026-09-10 | new coverage; stingray CLI + llama-bench, best-of-3 |
 
 ---
 
@@ -419,7 +423,7 @@ Rows where the Ratio column is blank and a C++ comparison would be actionable:
 This section reads across the ratios above; it doesn't replace them.
 
 **Where OT is genuinely strong:**
-- **Qwen3-8B prefill: 1.02x** — real parity with llama.cpp, the single best CPU LLM prefill ratio measured in this doc. Notably this is the *opposite* of the SmolLM2 story: a dense 8B model prefills at parity while a dense 1.7B model prefills at 0.24-0.27x. The `block_q4_Kx8` GEMM gap that hurts SmolLM2 apparently doesn't dominate at this size/shape.
+- **Dense 7-8B models hit real prefill parity, consistently, across three independent architectures**: Qwen3-8B (1.02x), Mistral-7B-Instruct-v0.3 (1.00x), Ministral-8B-Instruct-2410 (0.99x). This is a real, repeatable pattern, not a fluke on one checkpoint — and it's the *opposite* of the SmolLM2 story: a dense 1.7B model prefills at only 0.24-0.27x. Whatever GEMM-shape gap hurts SmolLM2 apparently doesn't dominate at the 7-8B size/shape, on any of the three architectures tried.
 - **Whisper family (0.83-0.95x across all four sizes)** and **Qwen3 Forced Aligner (1.01x)** remain the most consistently near-parity subsystem in the whole doc.
 - **Short-context decode is close to parity** across most dense LLMs (SmolLM2 0.88-0.89x, Qwen3-0.6B 0.65-0.80x depending on measurement) — the bandwidth-bound decode path is fundamentally sound.
 
