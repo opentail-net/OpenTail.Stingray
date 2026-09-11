@@ -15,6 +15,17 @@ public sealed class SdxlUNet2DConditionModel : IDisposable
     private readonly IComputeBackend? _backend;
     private readonly Dictionary<string, CoreTensor>? _gpuWeights;
 
+    // Perf (2026-09-11): label_emb's [2816]->[1280] projection of `addEmbeds` (SDXL's
+    // micro-conditioning vector: pooled text + width/height/crop Fourier embeddings) is INVARIANT
+    // across an entire denoising loop -- SdxlPipeline builds condAddEmbeds/uncondAddEmbeds once,
+    // before the loop, and passes the same array reference to every step's Forward() call. Only
+    // the timestep-embedding half of ComputeTimeAndAddEmbedding actually varies per step. Without
+    // this cache, every step recomputed the exact same two GPU Lin() round-trips for no reason.
+    // Keyed by array reference (float[] has no Equals/GetHashCode override, so this Dictionary
+    // already does reference-identity lookup) -- a cache hit requires the caller to keep passing
+    // the SAME addEmbeds instance, which SdxlPipeline already does by construction.
+    private readonly Dictionary<float[], float[]> _addEmbCache = new();
+
     private const int ModelChannels = 320;
     private const int TimeEmbedDim = 1280;
     private const int ContextDim = 2048;
@@ -197,11 +208,11 @@ public sealed class SdxlUNet2DConditionModel : IDisposable
 
         if (bF is not null)
         {
+            // Perf: vectorized (SIMD) per-row bias add instead of a scalar inner loop.
             Parallel.For(0, n, i =>
             {
-                int off = i * outDim;
-                for (int o = 0; o < outDim; o++)
-                    result[off + o] += bF[o];
+                var row = result.AsSpan(i * outDim, outDim);
+                TensorPrimitives.Add(row, bF, row);
             });
         }
 
@@ -229,15 +240,19 @@ public sealed class SdxlUNet2DConditionModel : IDisposable
         DiffusionOps.SiluInPlace(tEmb);
         tEmb = Lin("time_embed.2", tEmb, 1, TimeEmbedDim, TimeEmbedDim);
 
-        // 2. Addition embedding (label_emb): [2816] -> [1280]
+        // 2. Addition embedding (label_emb): [2816] -> [1280] -- invariant across the whole
+        // denoising loop for a fixed addEmbeds instance (see the class-level _addEmbCache comment).
         if (addEmbeds.Length == AdmInChannels)
         {
-            var addEmb = Lin("label_emb.0.0", addEmbeds, 1, AdmInChannels, TimeEmbedDim);
-            DiffusionOps.SiluInPlace(addEmb);
-            addEmb = Lin("label_emb.0.2", addEmb, 1, TimeEmbedDim, TimeEmbedDim);
+            if (!_addEmbCache.TryGetValue(addEmbeds, out var addEmb))
+            {
+                addEmb = Lin("label_emb.0.0", addEmbeds, 1, AdmInChannels, TimeEmbedDim);
+                DiffusionOps.SiluInPlace(addEmb);
+                addEmb = Lin("label_emb.0.2", addEmb, 1, TimeEmbedDim, TimeEmbedDim);
+                _addEmbCache[addEmbeds] = addEmb;
+            }
 
-            for (int i = 0; i < TimeEmbedDim; i++)
-                tEmb[i] += addEmb[i];
+            TensorPrimitives.Add(tEmb, addEmb, tEmb);
         }
 
         return tEmb;
@@ -257,13 +272,12 @@ public sealed class SdxlUNet2DConditionModel : IDisposable
         DiffusionOps.SiluInPlace(tEmbAct);
         var tProj = Lin($"{prefix}.emb_layers.1", tEmbAct, 1, TimeEmbedDim, outC);
 
+        // Perf: vectorized (SIMD) scalar-broadcast add per channel instead of a scalar loop.
         int spatial = h * w;
         for (int c = 0; c < outC; c++)
         {
-            float bias = tProj[c];
-            int cOff = c * spatial;
-            for (int s = 0; s < spatial; s++)
-                hOut[cOff + s] += bias;
+            var slice = hOut.AsSpan(c * spatial, spatial);
+            TensorPrimitives.Add(slice, tProj[c], slice);
         }
 
         var gn2W = GetWeight($"{prefix}.out_layers.0.weight");
@@ -287,8 +301,8 @@ public sealed class SdxlUNet2DConditionModel : IDisposable
             xRes = x;
         }
 
-        for (int i = 0; i < hOut.Length; i++)
-            hOut[i] += xRes[i];
+        // Perf: vectorized (SIMD) elementwise add instead of a scalar loop -- same math.
+        TensorPrimitives.Add(hOut, xRes, hOut);
 
         return hOut;
     }
@@ -332,7 +346,7 @@ public sealed class SdxlUNet2DConditionModel : IDisposable
             var saAttnOut = MultiHeadAttention(saQ, saK, saV, hw, hw, c, nHeads, HeadDim);
             var saProjOut = Lin($"{tb}.attn1.to_out.0", saAttnOut, hw, c, c);
 
-            for (int i = 0; i < xSeq.Length; i++) xSeq[i] += saProjOut[i];
+            TensorPrimitives.Add(xSeq, saProjOut, xSeq);
 
             // 2. Cross-Attention to [77, 2048] text context
             var caNormW = GetWeight($"{tb}.norm2.weight");
@@ -347,7 +361,7 @@ public sealed class SdxlUNet2DConditionModel : IDisposable
             var caAttnOut = MultiHeadAttention(caQ, caK, caV, hw, 77, c, nHeads, HeadDim);
             var caProjOut = Lin($"{tb}.attn2.to_out.0", caAttnOut, hw, c, c);
 
-            for (int i = 0; i < xSeq.Length; i++) xSeq[i] += caProjOut[i];
+            TensorPrimitives.Add(xSeq, caProjOut, xSeq);
 
             // 3. GEGLU FeedForward
             var ffNormW = GetWeight($"{tb}.norm3.weight");
@@ -372,7 +386,7 @@ public sealed class SdxlUNet2DConditionModel : IDisposable
             });
 
             var ffOut = Lin($"{tb}.ff.net.2", ffGated, hw, mlpDim, c);
-            for (int i = 0; i < xSeq.Length; i++) xSeq[i] += ffOut[i];
+            TensorPrimitives.Add(xSeq, ffOut, xSeq);
         }
 
         xSeq = Lin($"{prefix}.proj_out", xSeq, hw, c, c);
@@ -386,8 +400,7 @@ public sealed class SdxlUNet2DConditionModel : IDisposable
                 xSpatial[chOff + s] = xSeq[s * c + ch];
         }
 
-        for (int i = 0; i < x.Length; i++)
-            xSpatial[i] += x[i];
+        TensorPrimitives.Add(xSpatial, x, xSpatial);
 
         return xSpatial;
     }

@@ -170,11 +170,11 @@ public sealed class UNet2DConditionModel : IDisposable
 
         if (bF is not null)
         {
+            // Perf: vectorized (SIMD) per-row bias add instead of a scalar inner loop.
             Parallel.For(0, n, i =>
             {
-                int off = i * outDim;
-                for (int o = 0; o < outDim; o++)
-                    result[off + o] += bF[o];
+                var row = result.AsSpan(i * outDim, outDim);
+                TensorPrimitives.Add(row, bF, row);
             });
         }
 
@@ -224,13 +224,12 @@ public sealed class UNet2DConditionModel : IDisposable
         DiffusionOps.SiluInPlace(tEmbAct);
         var tProj = Lin($"{prefix}.emb_layers.1", tEmbAct, 1, TimeEmbedDim, outC);
 
+        // Perf: vectorized (SIMD) scalar-broadcast add per channel instead of a scalar loop.
         int spatial = h * w;
         for (int c = 0; c < outC; c++)
         {
-            float bias = tProj[c];
-            int cOff = c * spatial;
-            for (int s = 0; s < spatial; s++)
-                hOut[cOff + s] += bias;
+            var slice = hOut.AsSpan(c * spatial, spatial);
+            TensorPrimitives.Add(slice, tProj[c], slice);
         }
 
         // 3. out_layers: GroupNorm(32, outC) + SiLU + Conv2D(outC -> outC, 3x3)
@@ -256,9 +255,8 @@ public sealed class UNet2DConditionModel : IDisposable
             xRes = x;
         }
 
-        // Residual add
-        for (int i = 0; i < hOut.Length; i++)
-            hOut[i] += xRes[i];
+        // Residual add (vectorized)
+        TensorPrimitives.Add(hOut, xRes, hOut);
 
         return hOut;
     }
@@ -303,8 +301,7 @@ public sealed class UNet2DConditionModel : IDisposable
         var saAttnOut = MultiHeadAttention(saQ, saK, saV, hw, hw, c, NumHeads);
         var saProjOut = Lin($"{tb}.attn1.to_out.0", saAttnOut, hw, c, c);
 
-        for (int i = 0; i < xSeq.Length; i++)
-            xSeq[i] += saProjOut[i];
+        TensorPrimitives.Add(xSeq, saProjOut, xSeq);
 
         // B. Cross-Attention (to CLIP text context: 77 tokens, 768 dim):
         var caNormW = GetWeight($"{tb}.norm2.weight");
@@ -319,8 +316,7 @@ public sealed class UNet2DConditionModel : IDisposable
         var caAttnOut = MultiHeadAttention(caQ, caK, caV, hw, 77, c, NumHeads);
         var caProjOut = Lin($"{tb}.attn2.to_out.0", caAttnOut, hw, c, c);
 
-        for (int i = 0; i < xSeq.Length; i++)
-            xSeq[i] += caProjOut[i];
+        TensorPrimitives.Add(xSeq, caProjOut, xSeq);
 
         // C. Feed-Forward with GEGLU:
         var ffNormW = GetWeight($"{tb}.norm3.weight");
@@ -346,8 +342,7 @@ public sealed class UNet2DConditionModel : IDisposable
 
         var ffOut = Lin($"{tb}.ff.net.2", ffGated, hw, mlpDim, c);
 
-        for (int i = 0; i < xSeq.Length; i++)
-            xSeq[i] += ffOut[i];
+        TensorPrimitives.Add(xSeq, ffOut, xSeq);
 
         // Permute [H*W, C] back to [1, C, H, W]
         var xSpatial = new float[hw * c];
@@ -361,8 +356,7 @@ public sealed class UNet2DConditionModel : IDisposable
         // proj_out (Conv2D 1x1) + residual with input x
         var projOut = Conv($"{prefix}.proj_out", xSpatial, c, h, w, c, 1, stride: 1, padding: 0);
 
-        for (int i = 0; i < x.Length; i++)
-            projOut[i] += x[i];
+        TensorPrimitives.Add(projOut, x, projOut);
 
         return projOut;
     }

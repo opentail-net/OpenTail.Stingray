@@ -66,9 +66,10 @@ public sealed class VaeDecoder : IDisposable, IVaeDecoder
         float scale = scaleOverride ?? (latentCh == 4 ? (1f / 0.18215f) : (1f / 0.3611f));
         float shift = shiftOverride ?? (latentCh == 4 ? 0f : VaeShift);
 
+        // Perf: vectorized (SIMD) scale+shift instead of a scalar loop.
         var z = new float[latent.Length];
-        for (int i = 0; i < z.Length; i++)
-            z[i] = latent[i] * scale + shift;
+        TensorPrimitives.Multiply(latent, scale, z);
+        TensorPrimitives.Add(z, shift, z);
 
         // post_quant_conv: Conv2D(C→C, 1×1)
         string pqKey = Resolve("post_quant_conv");
@@ -122,9 +123,10 @@ public sealed class VaeDecoder : IDisposable, IVaeDecoder
         string convOutKey = Resolve("decoder.conv_out");
         z = ConvBlock(convOutKey, z, 1, ch, h, w, 3, 3);
 
-        // Clamp to [0, 1]
-        for (int i = 0; i < z.Length; i++)
-            z[i] = Math.Clamp((z[i] + 1f) * 0.5f, 0f, 1f);
+        // Clamp to [0, 1] (vectorized -- this runs over the full-resolution RGB output)
+        TensorPrimitives.Add(z, 1f, z);
+        TensorPrimitives.Multiply(z, 0.5f, z);
+        TensorPrimitives.Clamp(z, 0f, 1f, z);
 
         return z;
     }
