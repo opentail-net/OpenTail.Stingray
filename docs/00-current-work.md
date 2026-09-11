@@ -1603,20 +1603,30 @@ severity.
   unavailable (CPU backend not loaded)` — confirmed with real `--voice-ref`/`--reference-text`
   arguments, not a config error. This is the audio.cpp side, not the OT C# port (OT's own F5-TTS
   already has real CPU numbers in `PerformanceLeague.md`).
-- **Chatterbox Turbo's streaming path is blocked on a missing tokenizer asset — root-caused,
-  not yet fixed.** Real `--mode streaming` run against `chatterbox_turbo`'s model spec fails
-  looking for `models/chatterbox_turbo_vocab.json`. Investigation (2026-09-11, subagent):
-  `examples/audio.cpp/model_specs/chatterbox_turbo.json` expects **three** separate sidecar
-  files next to the GGUF (`chatterbox_turbo_vocab.json`, `chatterbox_turbo_merges.txt`,
-  `chatterbox_turbo_special_tokens.json`, classic split GPT2-BPE format) — none exist anywhere
-  on this machine as standalone files. However, the real, complete tokenizer already exists in
-  two other forms: (a) embedded as standard `tokenizer.ggml.tokens`/`tokenizer.ggml.merges` GGUF
-  metadata inside `models/chatterbox-turbo-t3-q4_k.gguf` itself (50276 tokens, 49992 merges,
-  confirmed via `stingray list-metadata`), and (b) as a combined single-file HF `tokenizers`-format
-  `tokenizer.json` at `examples/Chatterbox-turbo-cpp/assets/tokenizer.json` (3.8MB, includes the
-  emotion `added_tokens` like `[angry]`). Neither is a drop-in copy/rename — both need a small
-  format-splitting/materializing step into the three-file shape the audio.cpp loader expects.
-  This is audio.cpp's (C++ reference) streaming path specifically, not OT's own Chatterbox port.
+- **Chatterbox Turbo's tokenizer-asset bug — FIXED and verified 2026-09-11, but "streaming" was
+  never actually the real blocker (a separate, deliberate design limit).** Root-caused by a
+  subagent: `examples/audio.cpp/model_specs/chatterbox_turbo.json` expects three sidecar files
+  (`chatterbox_turbo_vocab.json`/`chatterbox_turbo_merges.txt`/`chatterbox_turbo_special_tokens.json`,
+  classic split GPT2-BPE format) next to the GGUF, none of which existed as standalone files. Fix:
+  wrote a small scratch C# tool (referencing `OpenTail.Stingray.Core`'s `GgufModel` reader) to
+  extract the real `tokenizer.ggml.tokens`/`tokenizer.ggml.merges` GGUF metadata already embedded
+  in the checkpoint into `vocab.json` ({token: id} object) and `merges.txt` (plain "a b" lines per
+  `llama_bpe.cpp`'s real loader), and cross-referenced `examples/Chatterbox-turbo-cpp/assets/
+  tokenizer.json`'s 20 real emotion `added_tokens` (`[angry]`, `[whispering]`, etc.) into
+  `special_tokens.json`, GGUF ids taking precedence on any mismatch. **Verified end-to-end**: model
+  now loads cleanly against the correct combined `examples/audio.cpp/models/Chatterbox-Turbo-GGUF/
+  chatterbox-turbo-q8_0.gguf` (the earlier `models/_models/chatterbox-turbo-t3-q4_k.gguf` used for
+  the initial repro turned out to be a T3-only split checkpoint incompatible with this model
+  spec's combined `t3`/`conds`/`s3gen` tensor namespacing — a separate, unrelated non-issue once
+  the correct bundled GGUF was used), and a real `--mode offline` run produced a genuine 126KB WAV
+  (`docs/audio-samples/chatterbox-turbo-audiocpp-vocab-fix-verify.wav`). **The real finding**:
+  `--help` on the fixed model reports only `--task tts --mode offline` as supported — Chatterbox
+  Turbo genuinely has no streaming mode in this build at all (confirmed: `--mode streaming`
+  fails with `"Chatterbox Turbo only supports offline mode"`), the same deliberate offline-only
+  design limit already documented for QwenTTS/CosyVoice3 — not a bug, and not something the vocab
+  fix could have unblocked regardless. The vocab files are derived data placed next to the GGUF in
+  the gitignored `examples/` tree (not committed, matches convention); the extraction tool is a
+  one-off scratch script, not added to the repo.
 - **Granite-4.0-3B-Vision's real vision-encode path produces degenerate, non-image-grounded
   output.** Real `--image`/`--mmproj` run against `granite-4.0-3b-vision-Q4_K_M.gguf` +
   `mmproj-granite-4.0-3b-vision-f16.gguf` (2026-09-11, 3 runs, consistent): the vision encoder

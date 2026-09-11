@@ -120,8 +120,12 @@ phase as opportunistic, not a commitment — each of these could be a multi-hour
       anyway (0.92x near-parity decode). Added to PerformanceLeague.md's new "DeepSeek family" section.
 - [ ] **F5-TTS's blocked CPU backend in `audio.cpp`** — real, scoped, from the original backfill
       pass. Not attempted yet this session.
-- [ ] **Chatterbox Turbo's missing streaming tokenizer asset** — real, scoped, from the original
-      backfill pass. Likely a quick locate-or-regenerate fix.
+- [x] **Chatterbox Turbo's missing tokenizer asset** — FIXED 2026-09-11. Extracted the real GGUF
+      tokenizer metadata into the 3 sidecar files the loader needs, verified end-to-end with a
+      real WAV output. Turns out "streaming" was never the real blocker — this build has no
+      streaming mode for Chatterbox Turbo at all (deliberate offline-only design limit, same as
+      QwenTTS/CosyVoice3), so the vocab fix alone doesn't unlock a TTFA comparison — that would
+      need real streaming support added to `audio.cpp` itself, out of scope here.
 - [ ] **`stingray embed`'s missing real tokenizer** for the ONNX path (char-per-token placeholder,
       not real WordPiece/BPE) — fixed this session to fail gracefully, but the underlying issue (no
       real tokenizer wired) is still open. Lower priority than the other bugs — the graceful
