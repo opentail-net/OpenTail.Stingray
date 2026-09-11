@@ -1847,6 +1847,31 @@ severity.
   — so probably not the cause, but not ruled out. Needs real numerical debugging (comparing
   per-block intermediate tensors against a captured reference trace) to find the remaining bug,
   not attempted yet. A real, meaningful step forward, not a complete fix.
+  **Update 2026-09-11, same day — second real bug found and fixed.** A second subagent
+  independently re-checked all 4 remaining candidates from the eps/index-math/concat-order/
+  downsample-branch list above: eps (traced fully, two separate eps values correctly split —
+  `_eps` for the top-level norm, `QformerEps=1e-12f` for post-norm/self-attn/cross-attn/FFN norms,
+  matching `granite4-vision.cpp` exactly — clean), window/unwindow/spatial index construction
+  (re-derived term-by-term against `clip.cpp:5144-5183` — clean), out_linear/token-concat order
+  (clean), interp_down-vs-spatial_idx branch selection (clean). **Found the real bug elsewhere**:
+  `Granite4ImagePreprocessor.cs` hardcoded OpenAI CLIP's ImageNet mean/std
+  (`BaseVisionPreprocessor.ClipMean`/`ClipStd`) regardless of checkpoint, but Granite 4 Vision's
+  tower is SigLIP, not CLIP — confirmed via `stingray list-metadata` that the real checkpoint's
+  `clip.vision.image_mean`/`image_std` is `[0.5,0.5,0.5]`/`[0.5,0.5,0.5]`, numerically quite
+  different from CLIP's constants (0.481/0.457/0.408 mean, 0.268/0.261/0.276 std). Three other
+  encoders in this codebase (Gemma3/Gemma4V/Llama4) already correctly read these two keys from
+  GGUF — Granite4 was the outlier. This silently mis-normalized every pixel fed to the patch-embed
+  conv, no crash/NaN, just smooth-but-wrong input propagating through all 8 QFormer blocks.
+  **Fixed**: added `Granite4VisionModel.ImageMean`/`ImageStd` (real GGUF read, SigLIP-convention
+  fallback), threaded through the preprocessor and adapter. **Verified real behavioral change**:
+  output shifted from generic non-image-related text ("the problem you've provided...") to
+  confident, specific scene/landmark descriptions ("a serene landscape... lush green trees",
+  "the Eiffel Tower in Paris") — a real, measurable step forward, but **still not correctly
+  grounded** to the actual image content (the real test images are a wooden table and an abstract
+  color pattern, neither matches these descriptions). `OpenTail.Stingray.Tests.Vision` re-run
+  clean, 150/150. Real, meaningful progress across two real bug fixes now, correctness still not
+  fully achieved — next step would be numeric golden-parity against `llama-mtmd-cli.exe`'s real
+  intermediate tensors, not attempted yet.
 - **dots.ocr's real vision-encode path emits a 1-token degenerate output.** Real `--image`/
   `--mmproj` run (2026-09-11) against `dots.ocr-Q8_0.gguf` + `mmproj-dots.ocr-Q8_0.gguf`: vision
   encoder runs correctly (81 soft tokens/1536-dim), but decode immediately emits

@@ -299,6 +299,41 @@ patchify/unpatchify boundary handling issue, since the artifact's repeating-tile
 suggestive of a spatial-patch-grid problem specifically) rather than continuing to assume it's the
 same root cause as before.
 
+## Round 8 (2026-09-11, same day): patchify/RoPE-position/VAE-tiling ruled out clean; one real, unrelated bug found and fixed
+
+A second subagent, briefed on exactly this remaining artifact, did a genuinely thorough,
+line-by-line check against the real `examples/diffusers` source for the three candidates Round 7
+flagged: **patchify/unpatchify** (`EulerFlowScheduler.PackLatent`/`UnpackLatent` vs diffusers'
+`_pack_latents`/`_unpack_latents`), **image RoPE position-id construction** (`Flux2DRoPE.
+ImagePatchIds` vs `_prepare_latent_image_ids`), and **VAE decoder tiling** (`VaeDecoder.cs`'s
+chunked convolution — confirmed the row-chunking is a memory-management split reading from the
+full un-chunked source array, not an independent-tile convolution, so no seam is possible there).
+Also checked RoPE-table sharing between double-/single-stream blocks (structurally different from
+the reference's single shared table, but proven numerically equivalent since txt-token rotation
+angles are zero/identity either way). **All four check out clean** — confirmed correct against
+the real reference, not just re-asserted.
+
+**One real, separate bug found along the way** (not spatially-patterned, so not believed to be
+this artifact's cause, but real and fixed regardless): `TimestepEmbedding` (`FluxDiT.cs`) divided
+its frequency exponent by `halfDim - 1`; real diffusers' `get_timestep_embedding` as FLUX actually
+configures it (`downscale_freq_shift=0`) divides by `halfDim - downscale_freq_shift = halfDim`.
+This perturbs every element of the timestep/guidance sinusoidal embedding uniformly on every
+denoising step — a real conditioning-vector error, but uniform across all tokens/positions, not
+consistent with the artifact's specific "small coherent fragments repeating across the background"
+visual signature. Fixed since it's real, cheap, and low-risk regardless of whether it's the cause
+of the open artifact.
+
+**The remaining tiling artifact is still NOT root-caused.** Patchify, RoPE position-indexing, RoPE
+table sharing, and VAE tiling are now all confirmed clean — the four most obviously-suspect areas
+given the artifact's spatial-repeat character have been exhausted without finding it. **Next step,
+per this round's own recommendation and matching item 4 from the original priority list**: a real
+numeric golden-parity pass against real diffusers, block by block (img_in → first double block →
+first single block → final_layer) — a structural/line-by-line read-through has now been tried
+twice (Round 6, Round 7/8) without success; a numeric diff is the next thing that can actually
+localize a subtler bug (e.g. a specific weight's GGUF tensor-shape/transpose convention, or an
+exact scale/epsilon convention in a projection this pass didn't examine) that reading code alone
+keeps missing.
+
 ## House rules for whoever picks this up (from this project's `CLAUDE.md`)
 
 - **No subagents** — do all work directly in the main session for this project.
