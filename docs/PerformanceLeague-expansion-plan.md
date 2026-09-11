@@ -91,8 +91,9 @@ above (lower priority, since coverage of what's already downloaded matters more 
 Given Z-Image-Turbo took ~14.5 min and Wan2.1 (2 frames) took ~71 min this session, treat this
 phase as opportunistic, not a commitment — each of these could be a multi-hour single run.
 
-- [ ] LTX-Video (`ltx-video-2b-v0.9.1.safetensors` present) — README claims 🟢 golden-verified
-      correctness; no perf number exists anywhere. Real T5-XXL + DiT + VAE pipeline per README.
+- [x] LTX-Video (`ltx-video-2b-v0.9.1.safetensors` present) — DONE 2026-09-11. Real run, real
+      181KB PNG output, 100.5s at 256×256/1-frame/25-steps — first timing number ever recorded
+      for this checkpoint. Much faster than Z-Image-Turbo/Wan2.1 (smaller 2B DiT, single frame).
 - [ ] FLUX.1-schnell — check if a checkpoint is present; README says real but has a known unfixed
       tiling artifact (correctness gap, not blocking a timing measurement)
 - [x] SD3/3.5 — DONE 2026-09-11. Backfilled the real 656.9s/20-step/256×256 number (the doc's own
