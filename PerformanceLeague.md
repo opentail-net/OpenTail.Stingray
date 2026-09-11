@@ -498,6 +498,18 @@ repo asset, no new download needed). Prompt: `"Describe this image in one senten
 | InternVL3-2B Q4_K_M + mmproj-q8_0 | prefill (294 tok = 256 image + 38 text) | stingray CLI (OT) | 28.1 t/s avg (28.4/28.1/27.8 across 3 runs) | 2026-09-11 | new coverage; real vision-encode path, `--image`/`--mmproj`, best-of-3 |
 | InternVL3-2B Q4_K_M + mmproj-q8_0 | decode (23-30 tok gen) | stingray CLI (OT) | 27.4 t/s avg (27.2/27.3/27.6 across 3 runs) | 2026-09-11 | new coverage; combined prefill+decode t/s reported by OT's own `Prefill:`/`Decode:` output lines |
 | InternVL3-2B Q4_K_M + mmproj-q8_0 | vision-encoder portion only | `llama-mtmd-cli.exe` (C++ reference) | 2488–3226ms (3 runs: 2904, 2488, 3226ms) | 2026-09-11 | **not directly comparable to the OT numbers above** — see caveat below |
+| Granite-4.0-3B-Vision Q4_K_M + mmproj-f16 | prefill (614 tok = 576 image + 38 text) | stingray CLI (OT) | 13.5 t/s avg (13.6/13.6/13.5 across 3 runs) | 2026-09-11 | new coverage; real vision-encode path runs and produces real timing, but see correctness caveat below |
+| Granite-4.0-3B-Vision Q4_K_M + mmproj-f16 | decode (10 tok gen) | stingray CLI (OT) | 12.1 t/s avg (10.0/13.2/13.1 across 3 runs) | 2026-09-11 | same caveat |
+
+**Correctness caveat for Granite-4.0-3B-Vision:** all 3 runs produced the same degenerate,
+non-image-grounded output — `"This image is a description of the provided text."` — instead of an
+actual description of the picture's content (unlike InternVL3-2B above, which correctly described
+the real colors/shapes in the same image). The vision encoder does run (576 soft tokens/2560-dim
+reported, real non-trivial prefill/decode timing, consistent across 3 runs) but the generated text
+suggests the image embeddings aren't being attended to correctly by this checkpoint's backbone, or
+its prompt-template wiring for the image placeholder differs from InternVL3's. Logged as a real,
+reproducible bug in `docs/00-current-work.md` rather than silently reported as a working
+measurement — the timing is real, the correctness is not verified.
 
 **Methodology caveat (same discipline as the earlier Kokoro/Piper cold-CLI-vs-warm-benchmark
 note):** `llama-mtmd-cli.exe`'s only timing output is `mtmd batch encoding done in N ms`, which

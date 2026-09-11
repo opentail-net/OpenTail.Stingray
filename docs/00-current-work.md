@@ -1610,6 +1610,16 @@ severity.
   emotion `added_tokens` like `[angry]`). Neither is a drop-in copy/rename — both need a small
   format-splitting/materializing step into the three-file shape the audio.cpp loader expects.
   This is audio.cpp's (C++ reference) streaming path specifically, not OT's own Chatterbox port.
+- **Granite-4.0-3B-Vision's real vision-encode path produces degenerate, non-image-grounded
+  output.** Real `--image`/`--mmproj` run against `granite-4.0-3b-vision-Q4_K_M.gguf` +
+  `mmproj-granite-4.0-3b-vision-f16.gguf` (2026-09-11, 3 runs, consistent): the vision encoder
+  genuinely runs (576 soft tokens, 2560-dim, real non-trivial prefill/decode timing — 13.5 t/s
+  prefill, ~12 t/s decode), but the generated text is always `"This image is a description of the
+  provided text."` regardless of the actual image content, instead of a real description like
+  InternVL3-2B correctly produces on the same image. Not yet root-caused — candidates: image
+  embeddings not actually being attended to by the backbone, or a prompt-template/placeholder
+  mismatch specific to this checkpoint's chat format. See PerformanceLeague.md's "Vision-Language
+  Model Real Image Encoding" section for the measured numbers with this caveat attached.
 - **Qwen3.8-27B's chat template has 3 real Jinja rendering gaps**, logged as runtime warnings, not
   crashes: unsupported string-concatenation-inside-conditional/`in` expressions (e.g.
   `sysns.text + ('\n' if sysns.text else '') + sys_content`) get passed through unevaluated instead

@@ -34,8 +34,9 @@ Checkpoints + mmproj already present in `models/_models/` (checked 2026-09-11):
       measured on both OT and llama-mtmd-cli (C++); numbers are not directly comparable (OT gives
       combined prefill+decode t/s, llama-mtmd-cli only prints vision-encoder-only ms) — caveat
       written up in PerformanceLeague.md's new "Vision-Language Model Real Image Encoding" section.
-- [ ] Granite-4.0-3B-Vision + `mmproj-granite-4.0-3b-vision-f16.gguf` — the Vulkan correctness bug
-      (Phase 4) is now FIXED and verified — safe to test on both CPU and Vulkan
+- [x] Granite-4.0-3B-Vision + `mmproj-granite-4.0-3b-vision-f16.gguf` — DONE 2026-09-11 (CPU only).
+      Real timing measured but found a NEW bug: degenerate non-image-grounded output (see
+      current-work.md). Logged, not blocking further phase 1 work — moving on.
 - [ ] Granite-Vision-3.2-2B + `mmproj-granite-vision-3.2-2b-f16.gguf` — same, fix verified
 - [ ] dots.ocr + `mmproj-dots.ocr-Q8_0.gguf`
 - [ ] Gemma-3-4B-it + `mmproj-gemma-3-4b-it-f16.gguf`
