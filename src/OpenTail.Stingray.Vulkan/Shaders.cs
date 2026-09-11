@@ -6547,6 +6547,40 @@ internal static class Shaders
         """;
 
     /// <summary>
+    /// In-place per-channel scalar broadcast-add: x[c,h,w] += bias[c] for every spatial position.
+    /// Added 2026-09-12 for the SDXL UNet GPU-residency rewrite (docs/067) -- ResBlock's timestep-
+    /// embedding injection (`emb_layers.1`'s projected [outC] vector added identically across every
+    /// spatial position of the [outC,H,W] conv output) has no existing GPU primitive to reuse: it
+    /// isn't a same-shape elementwise add (`AddInPlace` needs matching shapes), and it isn't
+    /// GroupNorm/SiLU. A genuinely new, minimal op, not a premature fusion -- there is nothing to
+    /// fuse into.
+    /// input/output [C, H, W] (in-place), bias [C].
+    /// Push constants: { c, hw }.
+    /// Bindings: 0=data (in/out), 1=bias.
+    /// Dispatch: (ceil(c*hw/256), 1, 1) with local_size=(256,1,1).
+    /// </summary>
+    internal const string AddChannelBroadcast = """
+        #version 450
+        layout(local_size_x = 256) in;
+
+        layout(push_constant) uniform Params {
+            uint c;
+            uint hw;
+        };
+
+        layout(binding = 0) buffer Data { float data[]; };
+        layout(binding = 1) readonly buffer Bias { float bias[]; };
+
+        void main() {
+            uint idx = gl_GlobalInvocationID.x;
+            uint total = c * hw;
+            if (idx >= total) return;
+            uint ch = idx / hw;
+            data[idx] += bias[ch];
+        }
+        """;
+
+    /// <summary>
     /// Multi-head scaled-dot-product attention (bidirectional, no causal mask, no KV cache) for
     /// vision-transformer-shaped self/cross attention -- added 2026-09-11 for SdxlUNet2D
     /// ConditionModel's SpatialTransformer, whose Q/K/V come from a diffusion UNet's spatial

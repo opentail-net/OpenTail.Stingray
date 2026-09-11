@@ -38,6 +38,13 @@ public interface IImageOpsBackend : IComputeBackend
     Tensor GroupNormSilu(Tensor x, Tensor weight, Tensor bias, int c, int hw, int groups = 32, float eps = 1e-5f);
 
     /// <summary>
+    /// In-place per-channel scalar broadcast-add: x[c,h,w] += bias[c] for every spatial position.
+    /// Added for the SDXL UNet GPU-residency rewrite (docs/067) -- ResBlock's timestep-embedding
+    /// injection needs this and no existing op covers it (not same-shape, not GroupNorm/SiLU).
+    /// </summary>
+    void AddChannelBroadcastInPlace(Tensor x, Tensor perChannelBias, int c, int hw);
+
+    /// <summary>
     /// Multi-head scaled-dot-product attention (bidirectional, no causal mask, no KV cache) for
     /// vision-transformer-shaped self/cross attention. Q [qSeq, numHeads*headDim], K/V
     /// [kvSeq, numHeads*headDim] -> output [qSeq, numHeads*headDim]. Math matches
