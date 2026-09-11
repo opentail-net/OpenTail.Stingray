@@ -421,20 +421,21 @@ separately.
 
 ---
 
-## Image Diffusion (CPU) — out of core scope, tried once anyway
+## Image & Video Diffusion (CPU) — out of core scope, tried anyway
 
 Different domain from this doc's LLM/TTS/ASR focus (a different pipeline, `OpenTail.Stingray.Diffusion`,
-not benchmarked here systematically) — included as a single real data point since the checkpoint
-was on hand and untested.
+not benchmarked here systematically) — included as real data points since the checkpoints were on
+hand and untested.
 
 | Model | Scenario | Backend | C# Wall | Performance Check | Source |
 |---|---|---|---:|---|---|
 | Z-Image-Turbo (S3-DiT + Qwen3-4B text encoder) | 512×512 image, default steps | CPU | 871.8s (14m32s) | 2026-09-10 | new coverage; `stingray image` CLI, real non-trivial 733KB PNG output saved to `docs/diffusion-samples/z-image-turbo-perfleague-check.png` |
+| Wan2.1-T2V-1.3B (DiT + UMT5-XXL text encoder + VAE) | 512×512, 2 video frames, 20 denoising steps | CPU | 4238.7s (70.6 min) | 2026-09-11 | new coverage; `stingray image --video-frames 2` CLI (video generation is routed through the same `image` command). Real, non-trivial 692KB PNG output saved to `docs/diffusion-samples/wan2.1-t2v-1.3b-perfleague-check.png`. **~4.9x slower than Z-Image-Turbo's single image** despite only 2 frames — real cost of the larger UMT5-XXL text encoder plus video-specific DiT attention, not just "more frames." |
 
-> No C++ reference attempted (no vendored image-diffusion C++ CLI in this repo). Not pursued
-> further this pass — video diffusion checkpoints (`hunyuanvideo`, `ltx-t5`, `wan2.1`) are almost
-> certainly much slower still and were not attempted given this single image already took ~14.5
-> minutes on CPU.
+> No C++ reference attempted for either (no vendored image/video-diffusion C++ CLI in this repo).
+> `hunyuanvideo` and `ltx-t5` were not attempted — no wired end-to-end CLI/test path was found for
+> either, and given Wan2.1's real ~71-minute cost for just 2 frames, both would likely take
+> considerably longer still.
 
 ---
 
