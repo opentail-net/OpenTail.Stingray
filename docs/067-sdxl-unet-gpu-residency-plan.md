@@ -1,161 +1,189 @@
 # SDXL UNet whole-graph GPU residency — implementation plan
 
-**Status**: plan only, not yet implemented. Written 2026-09-12 for external review before starting.
+**Status**: approved for implementation 2026-09-12, after external review. Revision 2 (folds in
+review corrections + a code-verified finding about `FullSeqAttention`).
 
 ## Why
 
-A real, measured profiling pass (`STINGRAY_PROFILE_GPU_SPLIT=1`, see `PerformanceLeague.md`'s
-"Real GPU-split profiling" row and `docs/00-current-work.md`'s 2026-09-12 entry) found that in a
-137.4s SDXL-Turbo Vulkan run (512×512, 4 steps):
+A real, measured profiling pass found that in a 137.4s SDXL-Turbo Vulkan run (512×512, 4 steps):
+GPU submit+execution+fence-wait is only **2.7s (~2%)**; CPU-side staging-buffer Map/memcpy is
+**43.6s (~32%)**, across **6511** separate dispatch/upload/download round-trips; the rest is
+CPU-side work outside Vulkan.
 
-- GPU submit + execution + fence-wait: **2.7s (~2%)**
-- CPU-side staging-buffer `Map()`/memcpy (upload/download): **43.6s (~32%)**, across **6511**
-  separate dispatch/upload/download round-trips
-- Everything else (CPU-side im2col, dequant, orchestration): ~65%
+Precise framing (softened per review — the stronger claim isn't fully supported by the
+measurement): **GPU execution/submit time is currently a small fraction of total runtime;
+CPU-side staging and orchestration dominate the measured Vulkan path.** The GPU could still be
+doing inefficient work internally; it simply isn't where the measured wall time goes today. The
+architecture treats the GPU as a synchronous RPC coprocessor: `Lin()`/`Conv()` each do
+`Upload(x) → Sgemm/Conv-shader → Download(result) → Free()`, individually, per call.
+`SpatialTransformer()` chains ~100 of these per call at the deepest blocks. Two attempts to fix
+this by improving the GPU attention kernel both regressed — the kernel was fighting a cost one
+level above it.
 
-The GPU itself is not the bottleneck. The current architecture treats the GPU as a synchronous
-RPC coprocessor: `SdxlUNet2DConditionModel`'s `Lin()`/`Conv()` each do
-`Upload(x) → Sgemm/Conv-shader → Download(result) → Free(x, result)`, individually, per call.
-`SpatialTransformer()` at the deepest blocks (depth=10) chains on the order of 100 such calls.
-Two independent attempts to fix this by improving the GPU attention kernel (a naive shader, then
-a properly tiled flash-attention shader) both **regressed** real timing — because the kernel was
-being asked to overcome a cost that exists one level above it. Neither attempt changed the
-surrounding Upload/Download pattern.
+## Existing precedent, and two things verified against the actual current tree before starting
 
-## Existing precedent already in this codebase
-
-This is not a new architecture from scratch — a smaller-scoped version of it already exists and
-is verified working:
-
-- `VaeDecoder.ResBlockGpu` (`src/OpenTail.Stingray.Diffusion/VaeDecoder.cs`): one `ResBlock`
-  (`norm1→silu→conv1→norm2→silu→conv2→+skip`) runs as a single GPU-resident `Tensor`-in/
-  `Tensor`-out chain — one `Upload` of the block's input, every intermediate stays a GPU `Tensor`,
-  one `Download` of the result. Real, measured win: ~22.5% faster VAE decode.
-- `VulkanBackend` already has the batching primitives this needs: `BeginRecord()`/
-  `EndRecordAndSubmit()` (record N dispatches, submit once), `BeginBatch()`/`EndBatch()` (same,
-  plus deferred `Free()`s), `RecordBarrier()` (compute→compute dependency barrier within a
-  recording session). These are already used elsewhere (e.g. RRDBNet's batched conv path).
-- `GroupNormSilu` (fused GPU shader), `Conv2dImplicitGemm` (tiled-GEMM native conv shader),
-  `LinMulti` (dedup shared-input uploads across sibling projections) are all real, already-shipped
-  GPU-resident or upload-reducing primitives that the new work should reuse, not replace.
-
-**What's missing**: this pattern has only been applied to one block type (`ResBlock`, and only in
-`VaeDecoder`, not yet in `SdxlUNet2DConditionModel`), not to `SpatialTransformer` (attention +
-FFN), and not chained *across* blocks — every `ResBlock`/`SpatialTransformer` call in the UNet's
-`Forward()` still crosses back to a CPU `float[]` between blocks today.
+- `VaeDecoder.ResBlockGpu`: one ResBlock already runs as a GPU-resident Tensor-in/Tensor-out
+  chain (one Upload, everything stays a GPU Tensor, one Download). Real ~22.5% win. Note: `VAE`'s
+  *other* conv path (`ConvGpu`) still uploads/downloads per chunk — the residency pattern exists
+  in one place, it is not yet the VAE's universal behavior.
+- `VulkanBackend` has `BeginRecord()`/`EndRecordAndSubmit()`, `BeginBatch()`/`EndBatch()`,
+  `RecordBarrier()` — used elsewhere (RRDBNet's batched conv path).
+- `IComputeBackend.AddInPlace(Tensor dst, Tensor src)` is a real, existing elementwise GPU op —
+  usable directly for residual/bias adds without writing a new shader.
+- **Verified 2026-09-12, corrects an earlier assumption**: `IComputeBackend.FullSeqAttention`
+  exists and is implemented on Vulkan/CPU/CUDA, but `VulkanBackend.FullSeqAttention`'s actual body
+  (`VulkanBackend.cs:3529`) downloads Q/K/V to host, computes the attention math in plain CPU
+  code, and only its signature looks GPU-resident — it is not a real GPU kernel today. It also
+  takes a single `nTok` (assumes qLen == kvLen), so it doesn't cover SDXL's cross-attention shape
+  (qLen = hw tokens, kvLen = 77 context tokens) without changes either. **Do not treat this as an
+  existing usable GPU attention primitive** — `MultiHeadAttentionTiled` (confirmed still present,
+  `IImageOpsBackend.cs:57`, numerically verified but currently unused after regressing in a
+  non-resident context) remains the real candidate to re-test in Stage 4.
 
 ## Target end state
 
-`SdxlUNet2DConditionModel.Forward()` uploads its real inputs (latent, timestep embedding, cross-
-attention context) ONCE, keeps every intermediate activation as a GPU `Tensor` for the entire
-down→mid→up pass (including skip-connection tensors held across the up-path), and downloads only
-the final output. Ideally the whole forward pass for one denoising step is recorded into a single
-`BeginRecord()`/`EndRecordAndSubmit()` session (one `vkQueueSubmit`, one fence wait) instead of
-~6511 of them.
+`Forward()` uploads real inputs once, keeps every intermediate as a GPU Tensor for the whole
+down→mid→up pass (including skip connections held across the up-path), downloads only the final
+output.
 
-## Constraint that must be resolved first
+**Success metric, corrected per review — NOT simply "1 submit"**: minimize the necessary
+transfer/submit boundaries, and *measure*, don't target a single arbitrary number:
+- number of queue submits
+- number of command buffers
+- host↔device transfer bytes
+- staging copies
+- fence waits
+- dispatch count
 
-`VulkanBackend.Upload()`/`Download()` currently do their own **immediate** `CopyBuffer` +
-`SubmitAndWait()` — they do not check `_recording` and are not currently appendable into an
-in-progress `BeginRecord()` session. `BeginRecord`/`BeginBatch` today only batch *compute
-dispatches* (`Sgemm`, shader calls), not upload/download staging copies.
+A design with 2-3 submits per step for a real, legitimate reason (e.g. a temporary CPU attention
+island in Stage 3a) is a valid intermediate state, not a failure — as long as each stage's numbers
+move in the right direction versus the previous stage, measured for real.
 
-Two ways to resolve this, either is viable and should be decided as part of implementation, not
-guessed here:
+## CPU-island discipline (new rule, per review)
 
-1. **Preferred / simpler**: restructure so mid-graph `Upload`/`Download` calls simply don't
-   happen at all — every op between the single initial upload and the single final download
-   consumes and produces GPU `Tensor` handles directly (this is what `ResBlockGpu` already does
-   for one block; extend the same idea to the whole graph). Then a single `BeginRecord()` at the
-   top of `Forward()` and `EndRecordAndSubmit()` at the bottom naturally covers every dispatch
-   in between, with no upload/download in the middle to worry about.
-2. **Fallback if (1) hits a real blocker**: extend `Upload`/`Download` (or add new
-   `RecordUpload`/`RecordDownloadToStaging`-style variants — `RecordDownloadToStaging` already
-   exists for a different caller) to be recordable into `_transferCmd` when `_recording` is true,
-   deferring the actual host-visible copy until after the session's `EndRecordAndSubmit()`.
+After residency work begins, any CPU-side operation remaining in `Forward()` must be explicitly
+labeled as one of: **unavoidable model logic**, **temporary diagnostic fallback** (e.g. Stage 3a's
+CPU attention), **known implementation gap**, or **performance bug**. Undocumented CPU work
+creeping back in between GPU ops is exactly the failure mode this whole effort is trying to remove
+— don't let it happen silently.
 
-## Staged implementation plan (each stage independently shippable and verifiable)
+## Stage 0 — recording/residency proof-of-concept (new, per review)
 
-Every stage ends with: (a) a real end-to-end SDXL-Turbo run at a fixed seed, (b) pixel-diff
-against the current known-good baseline image (must be identical or explain any real, expected
-numerical drift), (c) real before/after timing, (d) the `STINGRAY_PROFILE_GPU_SPLIT=1` profile
-re-run to confirm dispatch count is actually dropping. A stage that doesn't measurably help or
-regresses gets reverted and documented as a negative result, same discipline as the rest of this
-session's perf work.
+Before writing any SDXL-specific code: write a small, throwaway Vulkan-only test that proves the
+actual mechanism works. Create two GPU tensors via `Upload`, `BeginRecord()`, run at least two
+dependent dispatches (e.g. two `Sgemm` calls, second consuming the first's output tensor) with a
+`RecordBarrier()` between them and NO `Upload`/`Download` calls in between, `EndRecordAndSubmit()`,
+then one `Download()` of the final result, and verify the numeric result matches the same
+computation done via today's per-op immediate path. This directly answers review point #1: can a
+GPU tensor be created/consumed across dispatches inside one recording session, with transfers only
+at the true start/end? If this doesn't work cleanly, everything below needs to be re-planned
+around whichever fallback (recordable Upload/Download, i.e. option 2 from the original draft)
+turns out to be necessary — decide from this real result, not in the abstract.
 
-**Stage 1 — GPU-resident `Lin`/`Conv` primitives in `SdxlUNet2DConditionModel`.**
-Add `Tensor`-in/`Tensor`-out variants of `Lin()`/`Conv()` (analogous to `VaeDecoder`'s
-`ConvNativeTensor`/`GroupNormSiluTensor`) that take and return `CoreTensor` handles instead of
-`float[]`, reusing the exact same `Sgemm`/`Conv2dImplicitGemm` dispatches already in use — no new
-shader math. Bias-add (currently a CPU `TensorPrimitives.Add` loop after `Download`) needs a
-GPU-side equivalent (either a small fused bias-add shader, or folding bias into the existing
-GEMM/conv shader's epilogue if that's a smaller change). No behavior change yet — these are just
-new entry points, not wired into `Forward()`.
+## Stage 1 — SDXL Tensor primitive layer (broadened per review)
 
-**Stage 2 — `ResBlock` residency in the UNet (not just `VaeDecoder`).**
-Port the exact `VaeDecoder.ResBlockGpu` pattern into `SdxlUNet2DConditionModel.ResBlock`, using
-Stage 1's primitives plus the existing `GroupNormSilu` shader. Verify real timing + pixel-identical
-output before moving on — this block type's residency is already proven safe in `VaeDecoder`, so
-this stage is mostly plumbing, not new risk.
+Not just `Lin`/`Conv`. Build the minimum Tensor-in/Tensor-out primitive set SDXL's `ResBlock`/
+`SpatialTransformer` actually need:
+- `Lin` / `Conv` (Tensor-in/Tensor-out, reusing existing `Sgemm`/`Conv2dImplicitGemm` — no new
+  shader math)
+- bias-add and residual-add: use the existing `AddInPlace` directly. **Do not write a new fused
+  bias shader yet** (per review point #4) — keep bias as a real GPU tensor, add it with the
+  existing elementwise op, benchmark, and only consider fusing into the GEMM epilogue later if
+  profiling actually shows it matters.
+- `SiLU`, `GroupNorm`/`GroupNormSilu` (already exists), `LayerNorm` — Tensor-in/Tensor-out wrappers
+  around what's already real and shipped.
+- **GPU layout/reshape operations** (new, per review point #7): SDXL's `SpatialTransformer`
+  currently does `[C,H,W] → [HW,C]` and back on the CPU (`xSeq`/`xSpatial` arrays). Once resident,
+  this must become either a real GPU transpose kernel or a documented view/stride — not a silent
+  CPU round-trip reintroduced under a new name. Decide and implement this explicitly as part of
+  Stage 1, not as an afterthought inside Stage 3.
 
-**Stage 3 — `SpatialTransformer` residency.**
-Chain `GroupNorm→proj_in→(self-attn: norm→Q/K/V proj→attention→out proj→+residual)→
-(cross-attn: norm→Q proj→K/V proj→attention→out proj→+residual)→(FFN: norm→GEGLU→proj→+residual)→
-proj_out→+residual` as GPU `Tensor` ops throughout, using `LinMulti`'s existing shared-upload-dedup
-idea generalized to the Tensor-in/Tensor-out form. Attention itself is the one open question:
-- Initially, the safest option is one Download/re-Upload just around the attention math itself
-  (real Q/K/V download → existing CPU `DiffusionOps.MultiHeadAttention` → re-upload the result),
-  keeping everything else in this block GPU-resident. This alone should remove the majority of
-  this block's ~100 Upload/Download round-trips (every Linear projection was one; now only the
-  attention math crosses).
-- Once that's shipped and measured, it's worth **re-attempting the existing tiled GPU attention
-  shader** (`MultiHeadAttentionTiled`, already implemented and numerically verified, currently
-  unused after regressing in isolation) inside this now-resident context — both prior regressions
-  were measured with the *surrounding* per-op Upload/Download tax still present, which this
-  profiling data suggests may have been the dominant cost the attention kernel was fighting, not
-  its own math. Re-measure; do not assume it will win without a real run.
+No behavior change in `Forward()` yet — these are new entry points only, verified against the
+existing CPU-reference math for each primitive individually before anything is wired in.
 
-**Stage 4 — chain across blocks.**
-Remove the CPU `float[]` crossing between successive `ResBlock`/`SpatialTransformer`/
-`Downsample`/`Upsample` calls in `Forward()`'s down→mid→up sequence. Skip-connection tensors
-(concatenated back in on the up-path) need to stay as GPU `Tensor`s held across the whole down
-pass, not `float[]` as today — check real GPU memory headroom for holding several of these
-simultaneously against this iGPU's ~16GB placement budget (see `PrintDeviceInfo`'s reported
-values), since this is a real new constraint the current per-block-round-trip design never had to
-consider.
+## Stage 2 — ResBlock residency in the UNet
 
-**Stage 5 — one recording session per denoising step.**
-Wrap the whole `Forward()` call (or as much of it as Stages 1-4 made resident) in a single
-`BeginRecord()`/`EndRecordAndSubmit()`, replacing whatever per-block `EndBatch()` granularity
-Stages 2-4 may have used as an intermediate stepping stone. This is the stage that should collapse
-the measured 6511-dispatch/6511-round-trip count down to close to 1 real submit per step (a
-handful more for the label-embedding/time-embedding setup and the final download).
+Reuse the *design pattern* already established by `VaeDecoder.ResBlockGpu` (per review point #5 —
+don't assume its exact internals port verbatim, since `VaeDecoder`'s other conv path is still
+non-resident). Implement `SdxlUNet2DConditionModel.ResBlock` against Stage 1's new primitives.
+Verify: real timing + pixel-identical output vs. the current baseline.
 
-**Stage 6 — re-measure and report.**
-Re-run the exact `STINGRAY_PROFILE_GPU_SPLIT=1` SDXL-Turbo benchmark from the original
-measurement and report the new dispatch count, `submitWait`, `stagingCopy`, and total wall time
-next to the original 6511/2.7s/43.6s/137.4s baseline in `PerformanceLeague.md`.
+## Stage 3a — SpatialTransformer residency, CPU attention fallback (renamed/split per review)
+
+Chain GroupNorm→proj_in→norm→Q/K/V-projection→(**CPU attention, explicitly labeled a temporary
+diagnostic fallback**: download Q/K/V → existing CPU `DiffusionOps.MultiHeadAttention` →
+re-upload)→output-proj→+residual→(cross-attn, same CPU-attention-island approach)→(FFN: norm→
+GEGLU→proj)→proj_out→+residual, with everything except the attention math itself staying
+GPU-resident. This isolates a real, clean measurement: how much of the current cost is projection/
+layout traffic versus attention math itself. Measure and record before moving to 3b.
+
+## Stage 3b — SpatialTransformer GPU attention (renamed per review)
+
+Only after 3a is measured: re-attempt `MultiHeadAttentionTiled` (the existing, numerically-verified,
+currently-unused tiled shader) inside this now-resident context. Both prior regressions were
+measured with the surrounding per-op Upload/Download tax still present — this is a genuinely new
+experiment, not a repeat. Re-measure; do not assume it wins. `FullSeqAttention` is NOT a shortcut
+here (see the verified finding above) — it would need a real GPU rewrite plus qLen≠kvLen support
+to be usable, which is out of scope for this stage unless `MultiHeadAttentionTiled` itself proves
+inadequate in the new context.
+
+## Stage 4 — Cross-block residency (renumbered)
+
+Remove the CPU `float[]` crossing between successive `ResBlock`/`SpatialTransformer`/`Downsample`/
+`Upsample` calls in `Forward()`'s down→mid→up sequence. Skip-connection tensors must stay as GPU
+`Tensor`s held across the whole down pass.
+
+**Real measurement gate, not just "check headroom" (per review point #8)**: instrument and record,
+before making the whole UNet resident:
+- allocated device-local bytes
+- live `Tensor` bytes at each point in the forward pass
+- peak live bytes across one full forward call
+- number of simultaneously-live skip tensors
+
+1280-channel tensors at the deepest resolutions are a real, non-trivial size on this iGPU's shared
+UMA memory. Prefer explicitly freeing each skip tensor immediately after its corresponding
+concatenation consumes it, rather than holding all of them for the whole pass.
+
+## Stage 5 — One recording session per denoising step (renumbered)
+
+Wrap as much of the resident forward pass as Stages 1-4 achieved into one `BeginRecord()`/
+`EndRecordAndSubmit()` session, per the corrected success metric above (minimize necessary
+boundaries, don't force exactly 1).
+
+**New risk, first-class per review point #9**: a whole SDXL forward pass means potentially
+hundreds to thousands of dispatches referencing many distinct tensors in one recording session —
+qualitatively different scale from RRDB-style batching this mechanism was built for. Before
+attempting the full-scale version, run a dedicated stress test: can `ComputePipeline`'s
+per-recording descriptor-set epoch mechanism safely recycle descriptor resources only after the
+referencing submission has actually completed, at this scale? Verify this doesn't corrupt or
+alias descriptors under real UNet-scale dispatch counts before trusting a full run's output.
+
+## Stage 6 — Profiling + regression report (renumbered)
+
+Re-run the exact `STINGRAY_PROFILE_GPU_SPLIT=1` SDXL-Turbo benchmark and report the new dispatch
+count, submits, transfer bytes, `submitWait`, `stagingCopy`, and total wall time directly against
+the original baseline (6511 dispatches / 2.7s submitWait / 43.6s stagingCopy / 137.4s wall) in
+`PerformanceLeague.md`.
 
 ## Explicit non-goals for this pass
 
-Deferred, per the already-agreed phase order (measure → residency → fusion → reusable command
-graphs → INT8 → attention-kernel-sophistication, attention last):
-- Fusing GEGLU's two GEMMs into one kernel, or fusing norm+activation+projection into one shader
-  beyond what `GroupNormSilu` already does — worth doing, but after residency proves out, not
-  before.
-- Reusable/persistent command buffers replayed across denoising steps with only push-constants
-  changed (Stage 5 gets one submit *per step*; making that same recorded graph replayable across
-  *all* steps without re-recording is a separate, later piece of work).
-- INT8/quantized GPU GEMM.
-- Any further attention-kernel algorithm changes beyond re-measuring the existing tiled shader in
-  its new (residency) context per Stage 3.
+GEGLU/norm fusion beyond `GroupNormSilu`, reusable/persistent command buffers replayed across
+denoising steps, INT8/quantized GPU GEMM, any attention-kernel algorithm work beyond re-measuring
+`MultiHeadAttentionTiled` in Stage 3b.
 
-## Open risks to flag for review
+## Open risks
 
-- GPU memory pressure from holding multiple skip-connection tensors resident simultaneously
-  (Stage 4) — not yet measured against this iGPU's real placement budget.
-- Whether `ComputePipeline`'s per-recording descriptor-set epoch mechanism (built for smaller
-  batches like RRDBNet's conv batching) holds up correctly at UNet-forward-pass scale (potentially
-  hundreds of dispatches in one recording session) — needs verification, not assumed.
-- The Upload/Download-recordability constraint above (resolved via option 1 or 2) is a real open
-  design decision, not a settled detail.
+- Stage 0's outcome may force a different Upload/Download design than assumed (recordable
+  transfers rather than "no mid-graph transfers at all") — plan accordingly once that result is in.
+- Stage 4's memory-pressure numbers are unmeasured until that stage's gate runs.
+- Stage 5's descriptor-recycling behavior at full UNet scale is unverified until its stress test
+  runs.
+- `MultiHeadAttentionTiled`'s Stage 3b re-test could still regress even in a resident context —
+  treat as a real open question, not a foregone conclusion.
+
+## Verification discipline (unchanged)
+
+Every stage ends with: (a) a real end-to-end SDXL-Turbo run at a fixed seed, (b) pixel-diff against
+the current known-good baseline image, (c) real before/after timing, (d) the
+`STINGRAY_PROFILE_GPU_SPLIT=1` profile re-run. A stage that doesn't measurably help or regresses
+gets reverted and documented as a negative result, matching this session's existing discipline.
