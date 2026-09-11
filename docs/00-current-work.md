@@ -1760,10 +1760,17 @@ severity.
   (see the SDXL-Turbo entry above), since LTX-Video uses its own independent
   `RectifiedFlowScheduler`, confirmed by reading `LtxVideoPipeline.cs`. Real timing stayed
   consistent across all runs (~100-115s), so this is specifically an output-correctness gap, not a
-  performance regression. Not yet disambiguated whether this is genuine seed-sensitivity (some
-  random seeds producing bad output for this checkpoint) or a separate, real bug that happened not
-  to trigger on the first run's particular seed — needs a controlled `--seed <fixed>` sweep to
-  tell apart, not attempted yet.
+  performance regression. **Update, same day, `--seed 42` sweep**: two runs at the same explicit
+  `--seed 42` both produced visually-identical garbled noise (different PNG byte hashes, but
+  pixel-identical to the eye — almost certainly benign PNG metadata/timestamp variance, not a real
+  non-determinism bug) — this rules out "bad luck on one random seed" and confirms this checkpoint
+  genuinely fails to converge for at least seeds -1 (2 of 2 default runs bad after the first good
+  one) and 42, not just an unlucky single draw. Given the pipeline's own timing stays real and
+  consistent and the very first default-seed run WAS coherent, the honest current read is: this
+  checkpoint's real convergence rate is seed-dependent and worse than initially assumed (only 1
+  of 6 total runs now confirmed coherent) — not yet root-caused (candidates: RoPE/positional
+  embedding edge case, VAE decode instability, or a genuine seed-quality issue in the base model
+  itself) and not disambiguated further this session.
 - **`RealESRGAN_x4plus.safetensors` (the `--upscaler` RRDBNet path) is untested independent of the
   LTX-Video noise finding above** — the one real attempt to use it was confounded by the
   seed-instability bug, so no clean measurement of the upscaler itself exists yet. Worth a
