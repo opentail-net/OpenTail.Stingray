@@ -167,6 +167,17 @@ public sealed class ZImagePipeline : IDisposable, IDiffusionPipeline
         // Z-Image-Turbo uses shift=3 (from scheduler_config.json)
         var scheduler = EulerFlowScheduler.Linear(steps, shift: 3.0f);
 
+        // sign: +1, NOT the scheduler's default -1 (2026-09-12 regression fix). EulerFlowScheduler
+        // is shared with FLUX.1 (ImagePipeline.cs), whose Euler-integration sign was corrected in
+        // commit 0c52407 (verified against real diffusers sampling.py) -- but that fix silently
+        // flipped the SAME shared method's behavior for every other caller too, and Z-Image's
+        // S3-DiT returns its velocity prediction in the OPPOSITE convention from FLUX's DiT.
+        // Root-caused by dumping the pre-VAE latent (std ballooned from a healthy ~1.3 to ~2.2,
+        // range ±10 instead of ±4 -- diverging away from a clean image, not converging) and
+        // confirming empirically: sign=+1 restores both a healthy latent distribution and a real,
+        // correct, coherent output image (see docs/00-current-work.md's 2026-09-12 entry for the
+        // before/after latent stats and image). Do not "fix" this back to -1 to match FLUX --
+        // the two DiTs are architecturally independent and were verified to need opposite signs.
         var resultPacked = scheduler.Denoise(noisePacked, (patches, t) =>
         {
             return _dit.Forward(patches, imgPosIds, txtEmbeds, txtPosIds, t);
@@ -174,7 +185,7 @@ public sealed class ZImagePipeline : IDisposable, IDiffusionPipeline
         {
             progress?.Invoke(step + 1, steps + 2);
             statusCallback?.Invoke($"Denoising step {step + 1}/{total}…");
-        });
+        }, sign: 1);
 
         // ── 5. Unpack and decode through VAE ──────────────────────────────
         progress?.Invoke(steps + 1, steps + 2);
@@ -183,6 +194,20 @@ public sealed class ZImagePipeline : IDisposable, IDiffusionPipeline
         // VaeDecoder.Decode() applies the FLUX VAE scaling internally:
         //   z = latent / 0.3611 + 0.1159
         // so we pass the raw scheduler output directly.
+        if (Environment.GetEnvironmentVariable("STINGRAY_ZIMAGE_DUMP_LATENT") == "1")
+        {
+            float min = float.MaxValue, max = float.MinValue, sum = 0, sumSq = 0;
+            foreach (var v in latent)
+            {
+                if (v < min) min = v;
+                if (v > max) max = v;
+                sum += v;
+                sumSq += v * v;
+            }
+            float mean = sum / latent.Length;
+            float variance = sumSq / latent.Length - mean * mean;
+            Console.Error.WriteLine($"[ZImage] pre-VAE latent stats: min={min:F4} max={max:F4} mean={mean:F4} std={MathF.Sqrt(MathF.Max(variance, 0)):F4} n={latent.Length}");
+        }
         float[] rgb = _vae.Decode(latent, latH, latW);
 
         // ── 6. Write PNG ──────────────────────────────────────────────────

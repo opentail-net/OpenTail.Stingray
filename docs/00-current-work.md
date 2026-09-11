@@ -50,6 +50,46 @@ coverage. Two real bugs found in sequence:
    deferred as a real, scoped item, not attempted further this session. `PerformanceLeague.md` logs
    the real vision-encode timing that was captured before this second failure.
 
+## Z-Image-Turbo regression: pure noise output, both backends — ROOT-CAUSED AND FIXED (2026-09-12)
+
+**FIXED.** Root cause: commit `0c52407` (2026-09-01, same day as the last known-good sample)
+corrected `EulerFlowScheduler.Denoise`'s Euler-integration sign for FLUX.1, verified at the time
+against real diffusers `sampling.py` source. But `EulerFlowScheduler` is a **shared** class — the
+same fix silently flipped the integration direction for every other caller too, and Z-Image's
+S3-DiT (`ZImagePipeline.cs`) turned out to return its velocity prediction in the **opposite**
+convention from FLUX's DiT. The two architectures were never re-verified independently against
+that shared-code change; FLUX's own re-verification (which passed) gave false confidence that the
+scheduler was fine everywhere.
+
+**Diagnosis method**: added a temporary env-var-gated diagnostic
+(`STINGRAY_ZIMAGE_DUMP_LATENT=1`, kept permanently, harmless when unset) that prints the pre-VAE
+latent's min/max/mean/std right before `VaeDecoder.Decode()`. This isolated the bug to the
+denoising loop itself (not VAE decode) before any code was touched: the broken latent had
+std≈2.23, range ≈[-10.4, 9.4] — a diverging, exploding distribution — vs. a healthy std≈1.34,
+range ≈[-3.5, 4.5] once the sign was corrected. Confirmed the hypothesis empirically (not just by
+reasoning about sign conventions) by adding a temporary `sign` parameter to
+`EulerFlowScheduler.Denoise` and testing both values against a real end-to-end run before deciding
+which one was correct for Z-Image.
+
+**Fix**: `EulerFlowScheduler.Denoise` gained a permanent `sign` parameter (default `-1`, i.e. byte-
+identical to current behavior for every existing caller that doesn't pass it — confirmed via the
+existing 15 `EulerFlowSchedulerTests`, all still passing unchanged). `ZImagePipeline.cs` now
+explicitly passes `sign: 1`. FLUX's own call site (`ImagePipeline.cs`) is untouched and keeps the
+0c52407 fix that was correct for it. This is a genuine architectural difference between two
+independently-ported DiTs sharing one scheduler class, not a case where one side was simply wrong —
+both signs are now real, permanent, and separately justified per caller.
+
+**Verification**: real end-to-end CPU run, same config as the original known-good sample (`"a red
+apple on a white table"`, 256×256, 4 steps) — output is a correct, coherent, on-prompt red apple
+on a white table (`docs/diffusion-samples/z-image-turbo_red-apple-on-white-table_CPU-256x256-4steps_FIXED-2026-09-12.png`),
+visually matching the original 2026-09-01 known-good sample. README's Z-Image-Turbo status should
+be restored 🔴→🟢 on the strength of this fix (not yet re-verified on Vulkan specifically, though
+the bug was proven to be backend-independent — CPU-only re-verification is sufficient here since
+both backends shared the exact same broken/fixed scheduler code path).
+
+<details>
+<summary>Original bug report (2026-09-11, kept for the investigation history)</summary>
+
 ## Z-Image-Turbo regression: pure noise output, both backends (2026-09-11, found this session, NOT fixed)
 
 **Real regression, found while sweeping checkpoints for Vulkan coverage during this session's
@@ -85,6 +125,8 @@ Vulkan backends now produce pure visual noise**, not a coherent image.
   the exact same current build environment, then bisect forward) rather than continuing to guess.
 - README's Z-Image-Turbo status downgraded 🟢→🔴 to reflect this; do not re-upgrade without a
   real, re-verified coherent-image sample.
+
+</details>
 
 ## ONNX support expansion (2026-09-11, real plan, not yet started)
 

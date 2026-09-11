@@ -55,7 +55,8 @@ public sealed class EulerFlowScheduler
     /// <param name="progress">Optional progress callback (step, totalSteps).</param>
     public float[] Denoise(float[] noise,
                            Func<float[], float, float[]> ditForward,
-                           Action<int, int>? progress = null)
+                           Action<int, int>? progress = null,
+                           int sign = -1)
     {
         var x = (float[])noise.Clone();
         int n = _timesteps.Length;
@@ -70,10 +71,19 @@ public sealed class EulerFlowScheduler
             var v = ditForward(x, t);
 
             // Euler step (flow matching, backward integration):
-            //   x_{t - Δt} = x_t - Δt * v   (Δt = t - tNext > 0)
-            // Moves x from noise (t=1) toward clean data (t=0).
+            //   x_{t - Δt} = x_t - Δt * v   (Δt = t - tNext > 0), i.e. sign=-1 (default).
+            // `sign` exists (2026-09-12) because this scheduler is shared across architecturally
+            // independent DiTs whose ported forward passes don't necessarily agree on which
+            // direction "velocity" points: commit 0c52407 fixed this exact integration direction
+            // for FLUX.1 (verified against real diffusers sampling.py), but that flip silently
+            // changed behavior for every OTHER caller too -- Z-Image's S3-DiT turned out to need
+            // the OPPOSITE sign (confirmed empirically: pre-VAE latent std dropped from a diverging
+            // ~2.2 to a healthy ~1.3, and output changed from pure noise to a correct, coherent
+            // image -- see ZImagePipeline.cs's call site and docs/00-current-work.md's 2026-09-12
+            // entry). Do not assume every future caller can safely omit this parameter -- verify
+            // against a real reference image, the same way both existing callers were.
             for (int j = 0; j < x.Length; j++)
-                x[j] -= dt * v[j];
+                x[j] += sign * dt * v[j];
 
             progress?.Invoke(i + 1, n);
         }
