@@ -83,7 +83,8 @@ public sealed class SdxlPipeline : IDiffusionPipeline
         float upscaleBlend = 1.0f,
         float[]? initImageRgb = null,
         float strength = 0.75f,
-        TimestepSpacing timestepSpacing = TimestepSpacing.Linspace)
+        TimestepSpacing timestepSpacing = TimestepSpacing.Linspace,
+        Action<string>? log = null)
     {
         if (width % 8 != 0 || height % 8 != 0)
             throw new ArgumentException($"Width and height must be divisible by 8 (got {width}x{height})");
@@ -91,6 +92,22 @@ public sealed class SdxlPipeline : IDiffusionPipeline
         int latH = height / 8;
         int latW = width / 8;
         int latC = 4;
+
+        // Perf visibility (2026-09-11): stage-level timing wired to the CLI's -v flag, added
+        // while chasing SDXL-Turbo's fixed-overhead-vs-per-step cost split. On the first call
+        // against a given checkpoint, CachedWeightReader lazily reads+caches each tensor from disk
+        // on FIRST access -- so whichever stage touches a given weight first (usually text
+        // encoding, then the first UNet step) absorbs a real, one-time disk/dequant cost that
+        // later steps don't pay. Splitting stages out makes that visible instead of guessed from
+        // a linear steps-vs-wall-time extrapolation (which conflates cold-cache cost with real
+        // per-step compute).
+        var stageSw = log is not null ? System.Diagnostics.Stopwatch.StartNew() : null;
+        void LogStage(string name)
+        {
+            if (stageSw is null) return;
+            log!($"[SDXL] {name}: {stageSw.Elapsed.TotalSeconds:F2}s");
+            stageSw.Restart();
+        }
 
         // 1. Dual text conditioning (CLIP-L [77, 768] + OpenCLIP-bigG [77, 1280] -> [77, 2048])
         var condTokens = _clipTokenizer.Tokenize(prompt);
@@ -106,6 +123,7 @@ public sealed class SdxlPipeline : IDiffusionPipeline
         // 2. Micro-conditioning addition embeddings [2816]
         var condAddEmbeds = BuildAddEmbeddings(condPooledG, height, width, 0, 0, height, width);
         var uncondAddEmbeds = BuildAddEmbeddings(uncondPooledG, height, width, 0, 0, height, width);
+        LogStage("Text encode (CLIP-L + CLIP-G, cond + uncond)");
 
         // 3. Scheduler & Noise
         var scheduler = new EulerDiscreteScheduler(steps, schedulerType: schedulerType, timestepSpacing: timestepSpacing);
@@ -126,6 +144,16 @@ public sealed class SdxlPipeline : IDiffusionPipeline
         }
 
         // 4. Denoising loop
+        stageSw?.Restart();
+        Action<int, int>? wrappedProgress = progress;
+        if (stageSw is not null)
+        {
+            wrappedProgress = (step, total) =>
+            {
+                LogStage($"Denoise step {step}/{total}");
+                progress?.Invoke(step, total);
+            };
+        }
         var denoised = scheduler.Denoise(latent, (scaledLatent, timestep) =>
         {
             // Perf (2026-09-11): see StableDiffusionPipeline.Generate's identical comment --
@@ -140,10 +168,12 @@ public sealed class SdxlPipeline : IDiffusionPipeline
             var condPred = _unet.Forward(scaledLatent, timestep, condContext, condAddEmbeds, latH, latW);
             var uncondPred = _unet.Forward(scaledLatent, timestep, uncondContext, uncondAddEmbeds, latH, latW);
             return scheduler.CombineGuidance(condPred, uncondPred, guidance);
-        }, progress, startStep: startStep);
+        }, wrappedProgress, startStep: startStep);
 
         // 5. VAE Decode
+        stageSw?.Restart();
         var pixels = _vae.Decode(denoised, latH, latW);
+        LogStage("VAE decode");
 
         // 6. Optional Upscaler
         int outWidth = width, outHeight = height;

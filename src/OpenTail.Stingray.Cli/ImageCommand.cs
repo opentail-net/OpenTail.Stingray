@@ -1268,7 +1268,8 @@ public sealed class ImageCommand : Command<ImageCommand.Settings>
                         upscaleBlend: s.UpscaleBlend,
                         initImageRgb: initImage,
                         strength: s.Strength,
-                        timestepSpacing: timestepSpacing);
+                        timestepSpacing: timestepSpacing,
+                        log: s.Verbose ? msg => AnsiConsole.MarkupLine($"[dim]{Markup.Escape(msg)}[/]") : null);
                 });
 
             sw.Stop();
