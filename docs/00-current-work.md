@@ -1767,12 +1767,28 @@ severity.
   tensor names — the subagent's assessment is that the 08-20 doc's "real coherent output" claim was
   very likely an overclaim (fluent-sounding generic text mistaken for real image grounding, without
   a rigorous check against actual image content) rather than a later regression; not independently
-  re-verified, a documentation-trust question rather than a code one. **Fix required, not attempted
-  this session**: a real, substantial port of `granite4-vision.cpp`'s `build_block`/`build()` —
-  per-block feature-layer selection, window gather/scatter, the self-attn+cross-attn QFormer
-  sub-layer with learned query/image-position tensors, per-block `out_linear`, block concatenation,
-  and the correct GGUF tensor names. Not a quick fix — a genuine architecture-port task on the
-  scale of admitting a new vision encoder from scratch, not a one-line naming/dimension fix.
+  re-verified, a documentation-trust question rather than a code one. **Update 2026-09-11, same
+  day — real, substantial rewrite landed (subagent-written, I verified with real weights),
+  PARTIALLY fixes this.** Ported the actual `granite4-vision.cpp` architecture: 8 real QFormer
+  blocks, each reading a different intermediate SigLIP layer, real window gather/scatter (found
+  the previously-unresolved index-construction math at `clip.cpp:5128-5203`'s
+  `make_win_idx`/`make_unwin_idx`/`make_spatial_idx` and ported it verbatim), real self+cross
+  attention with learned query/image-position embeddings, real per-block output projection,
+  concatenated along the token axis. **Verified real progress**: no more crash, soft-token count
+  is now architecturally correct (1152 = 8×144, matching the real metadata) instead of the old
+  576-token single-linear-layer fallback. `OpenTail.Stingray.Tests.Vision` re-run clean, 150/150,
+  no regression from the shared `VisionOps.cs` additions. **NOT yet fully fixed**: two more real
+  `--image` runs (greedy and sampled decoding, two different real images — the abstract test
+  pattern and a real photographic wooden-table image) both still produced non-image-grounded
+  output, different generic text each time but never actually describing the picture. Two concrete
+  open leads, neither confirmed as the cause yet: (a) the per-block LayerNorm `eps` value wasn't
+  independently traced back through hparams wiring in the C++ reference, just assumed to match the
+  SigLIP tower's own `eps`; (b) `image_newline`/`add_newline` handling is unimplemented, though
+  checking `clip.cpp:4048`'s `img->add_newline` gate suggests this is per-image (only relevant for
+  multi-tile AnyRes images), and our single ~384px test images are very unlikely to trigger tiling
+  — so probably not the cause, but not ruled out. Needs real numerical debugging (comparing
+  per-block intermediate tensors against a captured reference trace) to find the remaining bug,
+  not attempted yet. A real, meaningful step forward, not a complete fix.
 - **dots.ocr's real vision-encode path emits a 1-token degenerate output.** Real `--image`/
   `--mmproj` run (2026-09-11) against `dots.ocr-Q8_0.gguf` + `mmproj-dots.ocr-Q8_0.gguf`: vision
   encoder runs correctly (81 soft tokens/1536-dim), but decode immediately emits
