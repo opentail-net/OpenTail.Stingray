@@ -109,6 +109,21 @@ archaeology-first pattern this doc's other sections already use:**
 paths — those already have real, working native C# ports and redoing them via generic ONNX
 execution would be a regression in the "avoid runtime dependencies" direction, not progress.
 
+## Self-correction: FLUX.2/FLUX3/QwenImage overclaim, found and fixed same session (2026-09-11)
+
+Earlier this session I edited README.md to say FLUX.2/FLUX 3/Qwen Image & Edit had "zero code
+behind them," based on a grep that only checked top-level files in `src/OpenTail.Stingray.Diffusion/`
+and missed subdirectories. Real, substantial code exists for all three
+(`src/OpenTail.Stingray.Diffusion/Flux2/`, `/Flux3/`, `/QwenImage/`, each with real DiT/RoPE/
+pipeline classes) — caught and corrected in the same session after building/running their real
+conformance test classes (`Flux2ConformanceTests`/`Flux3ConformanceTests`/`QwenImageTests`, 11
+tests, all pass, real but structural/synthetic-weight checks — RoPE orthogonality, shape
+validation, not real-weight generation). Real, accurate status: same "structurally complete alpha,
+never run against a real checkpoint" class as this doc's DeepSeek-V3.2/V4 entries, not "zero
+implementation." README corrected to reflect this. Recorded here as an example of exactly the kind
+of overclaim this session has been hunting elsewhere — caught by my own later verification pass,
+not by the user, which is the discipline this project's CLAUDE.md rule 12 is trying to instill.
+
 ## User-requested checkpoint targets (2026-09-03, not yet scoped)
 
 The user has asked for these specific checkpoints to be supported, in addition to whatever this

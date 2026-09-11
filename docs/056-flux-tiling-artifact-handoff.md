@@ -252,6 +252,53 @@ output character, suggesting the pipeline may be closer to correct than Rounds 3
 remaining gap could be one or two more bugs of similar scope rather than something fundamental.
 Checkpoints deleted after this pass per project convention, as always.
 
+## Round 7 (2026-09-11): real bug found in `SingleBlock`'s `linear2` input layout — major, verified improvement, one artifact remains
+
+**Note on the "no subagents" house rule below**: the user explicitly overrode this project's
+no-subagents rule for the rest of this specific session (see `docs/00-current-work.md`'s session
+notes) — this round's investigation was done by a subagent (read-only code investigation, no
+inference run), with the fix applied and verified by the main session directly, same discipline as
+every other fix in this handoff (real reference checked, real re-run to confirm).
+
+Picked up item 3 from the "Where to look next" list (QKV/reshape wiring). A fresh, independent
+re-check of QKV chunk order, head-split element ordering, QK-RMSNorm placement/shape, the 2D RoPE
+rotation formula, and `[txt,img]` token-concat order all re-confirmed CLEAN against the real
+`examples/diffusers/src/diffusers/models/transformers/transformer_flux.py` source, line-by-line —
+none of these were the bug (Round 6's earlier pass on this area holds up).
+
+**The real bug, one stage downstream of the QKV wiring**: `FluxDiT.cs`'s `SingleBlock` computes
+self-attention output into `ws.Combined[0, nSeq*d)` (a whole-sequence block, one entry per token,
+contiguous) and the GELU'd MLP hidden state into `ws.Combined[nSeq*d, nSeq*5d)` (a SEPARATE
+whole-sequence block) — two blocks back to back. `linear2` was then reading this same buffer as
+`[nSeq, 5d]` rows, i.e. row `i = Combined[i*5d : i*5d+5d]`. For any `i > 0` this range straddles
+the two blocks arbitrarily and does NOT correspond to `[attn_token_i(d) ++ mlp_token_i(4d)]`. The
+real reference (`FluxSingleTransformerBlock.forward`, `transformer_flux.py`:
+`torch.cat([attn_output, mlp_hidden_states], dim=2)`) does a genuine per-token FEATURE-axis
+concat — row `i` is exactly `[attn_i, mlp_i]`, which is what `linear2`'s weight
+(`single_blocks.N.linear2.weight`) was trained against. The whole-block layout corrupted
+`linear2`'s input on **every one of the 38 single blocks, every token past the first few, every
+forward call** — a severe, pervasive, structural bug fully capable of explaining the persistent
+tiling/seam character across every previous round.
+
+**Fix** (`FluxDiT.cs`, `SingleBlock`): added a per-token re-interleave step after the GELU, copying
+`Combined`'s two whole-blocks into the correctly-laid-out `[nSeq, 5d]` shape (reusing `ws.Lin1`,
+already stale at this point, as scratch space — no new allocation) before `linear2` reads it.
+
+**Verified with a real end-to-end run** (`flux1-schnell-Q4_K_S.gguf`, real CLIP-L + T5-XXL + VAE,
+512×512, 4 steps, seed 42, same repro command as below): **1024.4s, and for the first time ever, a
+genuinely recognizable red apple and wooden table render correctly** in the right/lower portion of
+the image — a real, major, structural improvement from every prior round's pure noise or
+fully-tiled-with-no-recognizable-subject output. `docs/diffusion-samples/flux-schnell-fix-verify.png`.
+
+**Not fully fixed**: a repeating tiled pattern (small illustration/booklet-like fragments) still
+dominates the upper-left/background portion of the same image — a second, real, still-open
+artifact, but now clearly separable from (and much less severe than) the original bug, since the
+actual prompt subject (apple, table) now renders correctly in the foreground. Worth a fresh look
+with this confound removed — the remaining tiling could be a genuinely separate cause (e.g. a
+patchify/unpatchify boundary handling issue, since the artifact's repeating-tile character is
+suggestive of a spatial-patch-grid problem specifically) rather than continuing to assume it's the
+same root cause as before.
+
 ## House rules for whoever picks this up (from this project's `CLAUDE.md`)
 
 - **No subagents** — do all work directly in the main session for this project.
