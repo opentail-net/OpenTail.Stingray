@@ -73,13 +73,15 @@ public sealed class UNet2DConditionModel : IDisposable
                 int chunkHW = chunkH * outW;
                 int colSize = chunkHW * kPts;
 
-                // Build im2col for this chunk
-                int idx = 0;
-                for (int oh = rowStart; oh < rowEnd; oh++)
+                // Build im2col for this chunk (row-parallel -- see the identical fix + rationale
+                // in VaeDecoder.Im2ColChunk / SdxlUNet2DConditionModel.Conv).
+                Parallel.For(rowStart, rowEnd, oh =>
                 {
+                    int rowBase = (oh - rowStart) * outW * kPts;
                     int ih0 = oh * stride - padding;
                     for (int ow = 0; ow < outW; ow++)
                     {
+                        int idx = rowBase + ow * kPts;
                         int iw0 = ow * stride - padding;
                         for (int ic = 0; ic < inC; ic++)
                         {
@@ -104,7 +106,7 @@ public sealed class UNet2DConditionModel : IDisposable
                             }
                         }
                     }
-                }
+                });
 
                 // GPU SGEMM
                 var colGpu = _backend.Upload(colBuf.AsSpan(0, colSize), TensorShape.D1(colSize));

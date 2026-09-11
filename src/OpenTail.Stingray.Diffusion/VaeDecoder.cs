@@ -83,6 +83,20 @@ public sealed class VaeDecoder : IDisposable, IVaeDecoder
 
         bool isCompVis = _st.Contains(Resolve("decoder.mid.block_1.conv1.weight"));
 
+        // TEMPORARY diagnostic instrumentation (2026-09-11), gated behind STINGRAY_PROFILE_VAE=1,
+        // added while chasing VAE decode's real internal cost breakdown (found to be the single
+        // largest stage in SDXL-Turbo's pipeline -- see PerformanceLeague.md). Remove once the
+        // real bottleneck substage is found and fixed, matching the same disposable-diagnostic
+        // convention as HybridGdnForwardPass's ProfCat instrumentation.
+        bool profVae = Environment.GetEnvironmentVariable("STINGRAY_PROFILE_VAE") == "1";
+        var vaeSw = profVae ? System.Diagnostics.Stopwatch.StartNew() : null;
+        void LogVae(string name)
+        {
+            if (vaeSw is null) return;
+            Console.Error.WriteLine($"[VAE] {name}: {vaeSw.Elapsed.TotalSeconds:F2}s");
+            vaeSw.Restart();
+        }
+
         if (isCompVis)
         {
             // CompVis SD1.5 schema
@@ -90,12 +104,17 @@ public sealed class VaeDecoder : IDisposable, IVaeDecoder
             z = ResBlock($"{dec}.mid.block_1", z, 1, ch, h, w);
             z = MidAttnCompVis($"{dec}.mid.attn_1", z, 1, ch, h, w);
             z = ResBlock($"{dec}.mid.block_2", z, 1, ch, h, w);
+            LogVae("mid_block (64x64)");
 
             // Up blocks: up.3 (512, upsample), up.2 (512, upsample), up.1 (256, upsample), up.0 (128, no upsample)
             (z, ch, h, w) = UpBlockCompVis(z, 1, ch, h, w, $"{dec}.up.3", outCh: 512, upsample: true);
+            LogVae("up.3 (64->128, 512ch)");
             (z, ch, h, w) = UpBlockCompVis(z, 1, ch, h, w, $"{dec}.up.2", outCh: 512, upsample: true);
+            LogVae("up.2 (128->256, 512ch)");
             (z, ch, h, w) = UpBlockCompVis(z, 1, ch, h, w, $"{dec}.up.1", outCh: 256, upsample: true);
+            LogVae("up.1 (256->512, 256ch)");
             (z, ch, h, w) = UpBlockCompVis(z, 1, ch, h, w, $"{dec}.up.0", outCh: 128, upsample: false);
+            LogVae("up.0 (512, 128ch, no upsample)");
         }
         else
         {
@@ -104,11 +123,16 @@ public sealed class VaeDecoder : IDisposable, IVaeDecoder
             z = ResBlock($"{dec}.mid_block.resnets.0", z, 1, ch, h, w);
             z = MidAttnDiffusers($"{dec}.mid_block.attentions.0", z, 1, ch, h, w);
             z = ResBlock($"{dec}.mid_block.resnets.1", z, 1, ch, h, w);
+            LogVae("mid_block (64x64)");
 
             (z, ch, h, w) = UpBlockDiffusers(z, 1, ch, h, w, $"{dec}.up_blocks.0", outCh: 512, upsample: true);
+            LogVae("up_blocks.0 (64->128, 512ch)");
             (z, ch, h, w) = UpBlockDiffusers(z, 1, ch, h, w, $"{dec}.up_blocks.1", outCh: 512, upsample: true);
+            LogVae("up_blocks.1 (128->256, 512ch)");
             (z, ch, h, w) = UpBlockDiffusers(z, 1, ch, h, w, $"{dec}.up_blocks.2", outCh: 256, upsample: true);
+            LogVae("up_blocks.2 (256->512, 256ch)");
             (z, ch, h, w) = UpBlockDiffusers(z, 1, ch, h, w, $"{dec}.up_blocks.3", outCh: 128, upsample: false);
+            LogVae("up_blocks.3 (512, 128ch, no upsample)");
         }
 
         // norm_out
@@ -122,6 +146,7 @@ public sealed class VaeDecoder : IDisposable, IVaeDecoder
         // conv_out: Conv2D(128→3)
         string convOutKey = Resolve("decoder.conv_out");
         z = ConvBlock(convOutKey, z, 1, ch, h, w, 3, 3);
+        LogVae("norm_out + conv_out");
 
         // Clamp to [0, 1] (vectorized -- this runs over the full-resolution RGB output)
         TensorPrimitives.Add(z, 1f, z);
@@ -395,21 +420,30 @@ public sealed class VaeDecoder : IDisposable, IVaeDecoder
                                     int rowStart, int rowEnd, float[] col)
     {
         int outW = w;
-        int idx  = 0;
-        for (int oh = rowStart; oh < rowEnd; oh++)
-        for (int ow = 0; ow < outW; ow++)
+        int kPts = inCh * ksize * ksize;
+        // Perf: this gather was single-threaded scalar code -- at VAE decode's largest resolution
+        // stages (e.g. 512x512, 128+ channels) it does hundreds of millions of boundary-checked
+        // gathers per conv layer while the GPU sits idle waiting for it. Each output row's gather
+        // writes a disjoint, directly-computable range of `col` (row r occupies
+        // [r*outW*kPts, (r+1)*outW*kPts)), so rows parallelize cleanly -- no shared mutable index.
+        Parallel.For(rowStart, rowEnd, oh =>
         {
-            for (int ic = 0; ic < inCh; ic++)
-            for (int kh = 0; kh < ksize; kh++)
-            for (int kw = 0; kw < ksize; kw++)
+            int rowBase = (oh - rowStart) * outW * kPts;
+            for (int ow = 0; ow < outW; ow++)
             {
-                int ih = oh + kh - padding;
-                int iw = ow + kw - padding;
-                col[idx++] = ((uint)ih < (uint)h && (uint)iw < (uint)w)
-                    ? x[ic * h * w + ih * w + iw]
-                    : 0f;
+                int idx = rowBase + ow * kPts;
+                for (int ic = 0; ic < inCh; ic++)
+                for (int kh = 0; kh < ksize; kh++)
+                for (int kw = 0; kw < ksize; kw++)
+                {
+                    int ih = oh + kh - padding;
+                    int iw = ow + kw - padding;
+                    col[idx++] = ((uint)ih < (uint)h && (uint)iw < (uint)w)
+                        ? x[ic * h * w + ih * w + iw]
+                        : 0f;
+                }
             }
-        }
+        });
     }
 
     private float[] Wt(string name)

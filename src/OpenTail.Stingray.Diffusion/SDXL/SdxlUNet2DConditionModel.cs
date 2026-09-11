@@ -106,12 +106,19 @@ public sealed class SdxlUNet2DConditionModel : IDisposable
                 int chunkHW = chunkH * outW;
                 int colSize = chunkHW * kPts;
 
-                int idx = 0;
-                for (int oh = rowStart; oh < rowEnd; oh++)
+                // Perf: this gather was single-threaded scalar code -- at the largest UNet
+                // resolutions it does hundreds of millions of boundary-checked gathers per conv
+                // while the GPU sits idle waiting for it. Each output row writes a disjoint,
+                // directly-computable range of colBuf (row oh occupies
+                // [(oh-rowStart)*outW*kPts, (oh-rowStart+1)*outW*kPts)), so rows parallelize
+                // cleanly -- no shared mutable index (see the identical fix in VaeDecoder.Im2ColChunk).
+                Parallel.For(rowStart, rowEnd, oh =>
                 {
+                    int rowBase = (oh - rowStart) * outW * kPts;
                     int ih0 = oh * stride - padding;
                     for (int ow = 0; ow < outW; ow++)
                     {
+                        int idx = rowBase + ow * kPts;
                         int iw0 = ow * stride - padding;
                         for (int ic = 0; ic < inC; ic++)
                         {
@@ -136,7 +143,7 @@ public sealed class SdxlUNet2DConditionModel : IDisposable
                             }
                         }
                     }
-                }
+                });
 
                 var colGpu = _backend.Upload(colBuf.AsSpan(0, colSize), TensorShape.D1(colSize));
                 var cGpu = _backend.Allocate(TensorShape.D1(chunkHW * outC));
