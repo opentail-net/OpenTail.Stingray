@@ -1665,6 +1665,43 @@ severity.
   checked against the real image content — the same class of overconfidence this session already
   caught itself making once with a false embedding measurement). Not disambiguated further —
   pivoting to other work per this project's "switch to another item when one stalls" discipline.
+  **ROOT CAUSE FOUND 2026-09-11 (subagent investigation, read-only, code-only — not re-run/
+  re-verified against real weights by that agent per this session's serial-benchmarking rule).**
+  `Granite4VisionEncoder.cs`'s projector is architecturally wrong, not just a naming/dimension
+  bug. Confirmed against the real reference (`examples/llama.cpp/llama.cpp/tools/mtmd/models/
+  granite4-vision.cpp:34-339`): the real Granite 4 Vision projector is a multi-block
+  "WindowQFormer" — several `qf_proj_blocks`, each drawing from a **different intermediate SigLIP
+  layer** (not just the final post-LN output), each doing window gather/scatter, a full
+  self-attention + cross-attention sub-layer with its own learned query embeddings and
+  image-position embeddings, an "unwin" scatter back to raster order, then its own `out_linear`;
+  block outputs are concatenated, with optional newline-row tokens appended. **None of this exists
+  in the C# port** — `Granite4VisionEncoder.cs:182-202` instead runs the whole SigLIP tower once,
+  applies post-LN, then a single optional linear layer — structurally a completely different,
+  much simpler computation than what the checkpoint's weights were trained against. **And that one
+  linear layer isn't even wired to real weights**: the C# loader looks for generic llava-style
+  tensor names (`mm.proj_norm.weight`/`mm.0.weight`, `mm.proj.weight`/`mm.1.weight`,
+  `Granite4VisionEncoder.cs:72-75`), but the real GGUF tensor names (per `clip-impl.h:313-317`)
+  are `mm.proj_blk.<bid>.linear.weight`/`.norm.<w|b>`/`.post_norm.<w|b>`/`.query`,
+  `v.proj_blk.<bid>.img_pos` — none of which match. `VisionOps.GetTensor` silently returns an
+  invalid/null `VisionTensorRef` when no candidate name matches (no exception, no log), `MatVecAny`
+  silently no-ops on an invalid weight, and `Granite4VisionEncoder.Forward`'s fallback `else`
+  branch kicks in: raw, untrained, post-LayerNorm SigLIP hidden states get truncated/copied
+  **verbatim** into the "soft token" buffer fed to the LLM — never projected through any learned
+  mapping into the LLM's embedding space at all. This fully explains the symptom: real,
+  non-trivial encoder computation happens (real timing, real soft-token count), but the LLM
+  receives vectors from a completely different distribution than anything it was trained to
+  interpret as image content — generic, non-image-grounded output regardless of prompt/temperature/
+  image content, exactly as observed. **On the 08-20 "verified working" doc claim**: this
+  projector code predates the `bd923ea` pointer-removal refactor and was never wired to real
+  tensor names — the subagent's assessment is that the 08-20 doc's "real coherent output" claim was
+  very likely an overclaim (fluent-sounding generic text mistaken for real image grounding, without
+  a rigorous check against actual image content) rather than a later regression; not independently
+  re-verified, a documentation-trust question rather than a code one. **Fix required, not attempted
+  this session**: a real, substantial port of `granite4-vision.cpp`'s `build_block`/`build()` —
+  per-block feature-layer selection, window gather/scatter, the self-attn+cross-attn QFormer
+  sub-layer with learned query/image-position tensors, per-block `out_linear`, block concatenation,
+  and the correct GGUF tensor names. Not a quick fix — a genuine architecture-port task on the
+  scale of admitting a new vision encoder from scratch, not a one-line naming/dimension fix.
 - **dots.ocr's real vision-encode path emits a 1-token degenerate output.** Real `--image`/
   `--mmproj` run (2026-09-11) against `dots.ocr-Q8_0.gguf` + `mmproj-dots.ocr-Q8_0.gguf`: vision
   encoder runs correctly (81 soft tokens/1536-dim), but decode immediately emits

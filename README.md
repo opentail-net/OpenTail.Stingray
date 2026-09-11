@@ -96,7 +96,15 @@ Runs GGUF and SafeTensors models on CPU (AVX2/AVX-512 SIMD) and GPU (Vulkan comp
   - Baidu / Dots PaddleOCR-VL & Dots-OCR
   - Moonshot AI Kimi K2.5 / Kimi-VL
   - LG Exaone 4.5-VL
-  - IBM Granite Vision 3.2 / Granite 4.0 Vision
+  - IBM Granite Vision 3.2 / Granite 4.0 Vision — **Granite 4.0 Vision's real end-to-end generation
+    is confirmed broken as of 2026-09-11**: its projector (`Granite4VisionEncoder.cs`) implements a
+    simplified single-linear-layer approximation of the real reference's multi-block windowed
+    QFormer (`examples/llama.cpp/llama.cpp/tools/mtmd/models/granite4-vision.cpp`), and even that
+    approximation isn't wired to the real GGUF tensor names — so real inference silently falls back
+    to feeding raw, untrained SigLIP hidden states to the LLM as "image tokens," producing fluent
+    but entirely non-image-grounded text regardless of prompt or image content. A real fix needs a
+    substantial projector rewrite, not a quick patch — see `docs/00-current-work.md`'s 2026-09-11
+    Granite-vision entry for the full root cause
   - Tencent Hunyuan-VL & Tencent Youtu-VL
   - Xiaomi MiMo-VL
   - StepFun Step3-VL
