@@ -204,15 +204,18 @@ internal static unsafe class DiffusionOps
                 int g = idx % groups;
                 int bOff = b * c * spatialSize;
 
-                // Compute mean and variance over this group
+                // Compute mean and variance over this group (vectorized -- same
+                // subtract-then-dot approach LayerNorm above already uses and has measured wins for).
                 int gOff = bOff + g * groupElements;
-                var groupSpan = new ReadOnlySpan<float>(pxLocal + gOff, groupElements);
-                float mean = TensorPrimitives.Sum(groupSpan) / groupElements;
+                var groupSpan = new Span<float>(pxLocal + gOff, groupElements);
+                float mean = TensorPrimitives.Sum((ReadOnlySpan<float>)groupSpan) / groupElements;
 
-                float var = 0f;
-                for (int i = 0; i < groupElements; i++)
-                { float d = pxLocal[gOff + i] - mean; var += d * d; }
-                float invStd = 1f / MathF.Sqrt(var / groupElements + eps);
+                var devArr = ArrayPool<float>.Shared.Rent(groupElements);
+                var dev = devArr.AsSpan(0, groupElements);
+                TensorPrimitives.Subtract((ReadOnlySpan<float>)groupSpan, mean, dev);
+                float var = TensorPrimitives.Dot<float>(dev, dev) / groupElements;
+                float invStd = 1f / MathF.Sqrt(var + eps);
+                ArrayPool<float>.Shared.Return(devArr);
 
                 for (int gc = 0; gc < chansPerGroup; gc++)
                 {
@@ -220,11 +223,10 @@ internal static unsafe class DiffusionOps
                     int cOff  = bOff + c_abs * spatialSize;
                     float chWeight = pwLocal[c_abs];
                     float chBias = pbLocal[c_abs];
-                    for (int s = 0; s < spatialSize; s++)
-                    {
-                        float v = (pxLocal[cOff + s] - mean) * invStd;
-                        pxLocal[cOff + s] = v * chWeight + chBias;
-                    }
+                    var chSpan = new Span<float>(pxLocal + cOff, spatialSize);
+                    TensorPrimitives.Subtract((ReadOnlySpan<float>)chSpan, mean, chSpan);
+                    TensorPrimitives.Multiply((ReadOnlySpan<float>)chSpan, invStd * chWeight, chSpan);
+                    TensorPrimitives.Add((ReadOnlySpan<float>)chSpan, chBias, chSpan);
                 }
             });
         }
