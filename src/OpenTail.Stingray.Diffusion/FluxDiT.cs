@@ -287,8 +287,26 @@ public sealed class FluxDiT : IDisposable
         // GELU on the MLP portion of ws.Combined [nSeq*d .. nSeq*5d]
         DiffusionOps.GeluInPlace(ws.Combined.AsSpan(nSeq * d, nSeq * d * 4));
 
-        // linear2 directly from ws.Combined [nSeq, 5d] into ws.AttnOut [nSeq, d]
-        MatQ(ws.Combined.AsSpan(0, nSeq * d * 5), nSeq, d * 5, $"{p}.linear2.weight", d, null, ws.AttnOut.AsSpan(0, nSeq * d));
+        // Real bug found 2026-09-11 (FLUX tiling-artifact investigation, docs/056): ws.Combined at
+        // this point holds two WHOLE-SEQUENCE blocks back to back -- attn output for every token at
+        // [0, nSeq*d), then the GELU'd MLP hidden state for every token at [nSeq*d, nSeq*5d). But
+        // the real reference (`FluxSingleTransformerBlock.forward`, `transformer_flux.py`:
+        // `torch.cat([attn_output, mlp_hidden_states], dim=2)`, a per-token FEATURE-axis concat)
+        // expects `linear2`'s input row i to be `[attn_token_i(d) ++ mlp_token_i(4d)]` -- a genuinely
+        // interleaved-per-token layout, not two separate blocks. Reading the whole-block buffer as
+        // `[nSeq, 5d]` rows (as the old code did directly) pulls in other tokens' attention output
+        // and a misaligned slice of MLP output for every row past the first, corrupting `linear2`'s
+        // input on every single block, every token, every forward call. Fixed by re-interleaving
+        // into `ws.Lin1` (already stale at this point -- its data was fully consumed by
+        // UnpackSingleLin1 above -- reused here as scratch, no new allocation) before `linear2`.
+        Parallel.For(0, nSeq, i =>
+        {
+            ws.Combined.AsSpan(i * d, d).CopyTo(ws.Lin1.AsSpan(i * d * 5, d));
+            ws.Combined.AsSpan(nSeq * d + i * d * 4, d * 4).CopyTo(ws.Lin1.AsSpan(i * d * 5 + d, d * 4));
+        });
+
+        // linear2 from the correctly per-token-interleaved [nSeq, 5d] buffer into ws.AttnOut [nSeq, d]
+        MatQ(ws.Lin1.AsSpan(0, nSeq * d * 5), nSeq, d * 5, $"{p}.linear2.weight", d, null, ws.AttnOut.AsSpan(0, nSeq * d));
 
         // Gate and residual
         ScaleGateAdd(x, ws.AttnOut, mod, nSeq, d, gateIdx: 2);
