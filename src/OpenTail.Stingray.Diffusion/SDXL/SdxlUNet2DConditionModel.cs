@@ -113,8 +113,15 @@ public sealed class SdxlUNet2DConditionModel : IDisposable
                 var cGpu = _backend.Allocate(TensorShape.D1(chunkHW * outC));
                 try
                 {
+                    // Perf (2026-09-11): Sgemm's underlying Dispatch() already submits and
+                    // fence-waits for THIS dispatch before returning (see VulkanBackend.Dispatch /
+                    // ComputePipeline.Dispatch), and Download's own CopyBuffer does its own
+                    // separate submit-and-wait for the transfer -- so this explicit Synchronize()
+                    // (a full vkDeviceWaitIdle() across the ENTIRE device, not just this queue's
+                    // work) was pure redundant overhead on every single conv call, every UNet
+                    // block, every denoising step. Removing it changes no ordering guarantee: the
+                    // Sgemm dispatch has already completed by the time this line is reached.
                     _backend.Sgemm(cGpu, colGpu, wGpu, chunkHW, kPts, outC);
-                    _backend.Synchronize();
                     _backend.Download(cGpu, resBuf.AsSpan(0, chunkHW * outC));
                 }
                 finally
@@ -158,8 +165,10 @@ public sealed class SdxlUNet2DConditionModel : IDisposable
 
         try
         {
+            // Perf: see the identical comment in Conv() above -- Sgemm's Dispatch() already
+            // fence-waits for this specific dispatch; the explicit Synchronize() here was a
+            // redundant full-device idle wait.
             _backend.Sgemm(cGpu, xGpu, wGpu, n, inDim, outDim);
-            _backend.Synchronize();
             _backend.Download(cGpu, result);
         }
         finally

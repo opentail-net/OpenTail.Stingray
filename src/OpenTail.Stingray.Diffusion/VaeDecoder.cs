@@ -346,8 +346,11 @@ public sealed class VaeDecoder : IDisposable, IVaeDecoder
                 var cGpu   = _backend.Allocate(TensorShape.D1(chunkHW * outCh));
                 try
                 {
+                    // Perf: Sgemm's Dispatch() already fence-waits for this specific dispatch
+                    // before returning, and Download's own CopyBuffer does its own submit-and-wait
+                    // for the transfer -- this explicit Synchronize() (a full vkDeviceWaitIdle())
+                    // was pure redundant overhead (see the same finding in SdxlUNet2DConditionModel).
                     _backend.Sgemm(cGpu, colGpu, wGpu, chunkHW, kPts, outCh);
-                    _backend.Synchronize();
                     _backend.Download(cGpu, resultBuf.AsSpan(0, chunkHW * outCh));
                 }
                 finally

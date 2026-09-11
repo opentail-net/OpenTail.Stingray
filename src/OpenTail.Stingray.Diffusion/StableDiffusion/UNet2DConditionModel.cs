@@ -111,8 +111,10 @@ public sealed class UNet2DConditionModel : IDisposable
                 var cGpu = _backend.Allocate(TensorShape.D1(chunkHW * outC));
                 try
                 {
+                    // Perf: Sgemm's Dispatch() already fence-waits for this specific dispatch
+                    // before returning; the explicit Synchronize() (full vkDeviceWaitIdle()) was
+                    // pure redundant overhead (see the same finding in SdxlUNet2DConditionModel).
                     _backend.Sgemm(cGpu, colGpu, wGpu, chunkHW, kPts, outC);
-                    _backend.Synchronize();
                     _backend.Download(cGpu, resBuf.AsSpan(0, chunkHW * outC));
                 }
                 finally
@@ -156,8 +158,8 @@ public sealed class UNet2DConditionModel : IDisposable
 
         try
         {
+            // Perf: see the identical comment in Conv() above.
             _backend.Sgemm(cGpu, xGpu, wGpu, n, inDim, outDim);
-            _backend.Synchronize();
             _backend.Download(cGpu, result);
         }
         finally
