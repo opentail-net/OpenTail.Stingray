@@ -17,6 +17,64 @@ Two consequences worth stating plainly, because they cut against the previous ro
 - DSpark speculative decoding and SafeTensors Phases 4-6 are **parked**, not scheduled. Both are
   implemented far enough to be useful and neither moves the goal.
 
+## Vulkan iGPU real profiling: the per-op sync tax is dominated by staging-buffer copy, not queue-submit/fence-wait (2026-09-12)
+
+**Context**: after two failed GPU-attention-kernel attempts (naive shader, then a properly tiled
+flash-attention shader — both regressed real timing, see PerformanceLeague.md's SpatialTransformer
+rows), an external design review (ChatGPT, given this codebase's real structure) concluded the real
+architectural bottleneck isn't the attention kernel itself — it's that `SdxlUNet2DConditionModel`'s
+`Lin()`/`Conv()` treat the GPU as a synchronous RPC coprocessor (Upload → Sgemm → Synchronize →
+Download → Free, per call) rather than keeping the whole UNet forward pass GPU-resident for one
+denoising step. The review's own recommended first step, before attempting any fix: **real
+profiling of the actual time split, not another guess.**
+
+**Implemented**: real, permanent, env-var-gated timing (`STINGRAY_PROFILE_GPU_SPLIT=1`) added at
+the single real choke point every Vulkan dispatch/upload/download passes through
+(`VulkanBackend.SubmitAndWait`, plus the staging-buffer `Map()`/memcpy in `Upload`/`Download`).
+Splits into two real numbers: `submitWait` (vkQueueSubmit + actual GPU execution + fence wait,
+combined — Vulkan gives no cheaper way to separate "GPU busy" from "waiting" without a timestamp-
+query extension not wired up here) and `stagingCopy` (the CPU-side `Map`/memcpy into the
+upload/download staging buffers). Wired into the SDXL CLI path (`ImageCommand.cs`) so a real run
+prints a real summary.
+
+**Real measurement** (SDXL-Turbo, 512×512, 4 steps, guidance=0, Vulkan iGPU, real weights):
+
+```
+[GPU-split:SDXL full run] dispatches=6511 submitWait=2712.5ms stagingCopy=43587.0ms
+```
+
+Total wall time: 137.4s. So of that:
+- **GPU submit+execution+fence-wait: 2.7s (~2% of total)** — the GPU itself, and the raw act of
+  submitting work to it and waiting, is NOT the bottleneck. This is a real, measured refutation of
+  the naive "GPU is just slow on this iGPU" framing.
+- **CPU-side staging-buffer copy: 43.6s (~32% of total)** — this is the real, dominant, measured
+  cost directly attributable to the current per-op Upload/Download architecture. 6511 dispatches
+  in one 4-step run means 6511 separate `SubmitAndWait` round-trips, most of them upload/download
+  staging copies (Map/memcpy pairs), averaging ~6.7ms each — surprisingly expensive for what should
+  be a fast memcpy, suggesting real driver-level `vkMapMemory`/cache-coherency overhead per call,
+  not raw bandwidth.
+- **The remaining ~65% (~91s)** is CPU-side work outside Vulkan entirely (im2col/dequant/weight
+  prep, the rest of the pipeline) — a separate, already-partially-optimized area (parallel im2col,
+  vectorized GroupNorm, fp16 weight uploads all landed earlier this session).
+
+**Conclusion, confirming the external review's hypothesis with a real number rather than
+reasoning alone**: the fix is not "improve the attention kernel" (already tried twice, both
+regressed) and not primarily "reduce GPU wait time" (already tiny) — it's **collapsing 6511 small,
+separately-synchronized Upload/Dispatch/Download round-trips into far fewer, larger ones**, most
+directly by keeping intermediate UNet tensors GPU-resident across a whole denoising step instead of
+crossing back to CPU after every `Lin()`/`Conv()` call. This directly explains why the tiled
+attention kernel regressed: it was asked to overcome a architectural cost that exists one level
+above the kernel itself, and no amount of shader cleverness fixes a per-call staging-buffer-copy
+tax that fires regardless of how good the shader's own math is.
+
+**Not yet implemented** (real, scoped next step, matching the review's own phase ordering — fusion/
+reusable-command-graphs/INT8/attention all explicitly deferred behind this): a whole-UNet-forward-
+pass GPU-residency rewrite of `SdxlUNet2DConditionModel`, recording the entire chain (conv → norm →
+silu → attention → FFN → ... across all blocks) into one command buffer per denoising step via the
+`VulkanBackend` batching primitives already used elsewhere in this codebase (`BeginRecord`/
+`EndRecordAndSubmit`, `BeginBatch`/`EndBatch`, deferred frees) rather than building new
+infrastructure from scratch.
+
 ## LLaVA-1.5-7B: mmproj misrouted to InternVL (FIXED), then a second, unfixed gap (classic LLaVA has no real placeholder token) (2026-09-12)
 
 Downloaded LLaVA-1.5-7B (`mys/ggml_llava-v1.5-7b`, Q4_K text + f16 mmproj) as new Phase-1 VLM

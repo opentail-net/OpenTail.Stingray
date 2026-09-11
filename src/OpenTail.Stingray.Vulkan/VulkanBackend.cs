@@ -231,6 +231,7 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
     /// <summary>Submit the transfer command buffer and wait for completion via fence.</summary>
     private void SubmitAndWait()
     {
+        var sw = s_profGpuSplit ? System.Diagnostics.Stopwatch.StartNew() : null;
         VkCommandBuffer cmd = _transferCmd;
         VkSubmitInfo submit = new() { commandBufferCount = 1, pCommandBuffers = &cmd };
         var fence = _fence;
@@ -241,6 +242,11 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
         }
         _vkd.vkWaitForFences(1, &fence, true, ulong.MaxValue).CheckResult();
         FlushPendingScratchFrees();
+        if (sw is not null)
+        {
+            s_profSubmitWaitMs += sw.Elapsed.TotalMilliseconds;
+            Interlocked.Increment(ref s_profDispatchCount);
+        }
     }
 
     /// <summary>Submit the async command buffer (background thread) and wait via its fence.</summary>
@@ -1026,6 +1032,37 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
     private GpuBuffer? _uploadStaging;
     private ulong _uploadStagingSize;
 
+    // Real per-dispatch timing split (2026-09-12), gated behind STINGRAY_PROFILE_GPU_SPLIT=1 --
+    // added to answer "is Vulkan slow because of GPU arithmetic, or because of the CPU<->GPU
+    // synchronization tax around every operation" (see docs/00-current-work.md's iGPU
+    // architecture-analysis entry) with a real measurement instead of continuing to guess.
+    // SubmitAndWaitMs covers vkQueueSubmit + the actual GPU execution + the fence wait combined
+    // (Vulkan gives no cheaper way to separate "GPU busy" from "waiting for GPU" without a
+    // timestamp-query extension not wired up here); StagingCopyMs covers the CPU-side Map/memcpy
+    // into the upload/download staging buffers. DispatchCount is the number of SubmitAndWait calls
+    // -- each one is a full synchronous round-trip when not inside a BeginBatch()/EndBatch() or
+    // BeginRecord()/EndRecordAndSubmit() session.
+    private static bool s_profGpuSplit = Environment.GetEnvironmentVariable("STINGRAY_PROFILE_GPU_SPLIT") == "1";
+    private static double s_profSubmitWaitMs;
+    private static double s_profStagingCopyMs;
+    private static long s_profDispatchCount;
+
+    /// <summary>Resets the real GPU-split profiling counters (see <see cref="s_profGpuSplit"/>'s
+    /// doc comment) -- call before timing one denoising run to isolate its own numbers.</summary>
+    public static void ResetGpuProfile()
+    {
+        s_profSubmitWaitMs = 0;
+        s_profStagingCopyMs = 0;
+        s_profDispatchCount = 0;
+    }
+
+    /// <summary>Prints the accumulated real GPU-split profile since the last <see cref="ResetGpuProfile"/>, if <c>STINGRAY_PROFILE_GPU_SPLIT=1</c> is set; a no-op otherwise.</summary>
+    public static void PrintGpuProfile(string label)
+    {
+        if (!s_profGpuSplit) return;
+        Console.Error.WriteLine($"[GPU-split:{label}] dispatches={s_profDispatchCount} submitWait={s_profSubmitWaitMs:F1}ms stagingCopy={s_profStagingCopyMs:F1}ms (submit+GPU-exec+fence-wait vs CPU-side staging memcpy)");
+    }
+
     public Tensor Upload(ReadOnlySpan<float> data, TensorShape shape, bool exact = false)
     {
         _ = exact;
@@ -1045,9 +1082,11 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
         }
 
         // Map staging, copy data
+        var stagingSw = s_profGpuSplit ? System.Diagnostics.Stopwatch.StartNew() : null;
         float* mapped = (float*)_uploadStaging.Map();
         data.CopyTo(new Span<float>(mapped, data.Length));
         _uploadStaging.Unmap();
+        if (stagingSw is not null) s_profStagingCopyMs += stagingSw.Elapsed.TotalMilliseconds;
 
         // Record and submit copy command
         CopyBuffer(_uploadStaging, gpuBuf, byteSize);
@@ -1178,9 +1217,11 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
 
         CopyBuffer(gpuBuf, _downloadStaging, byteSize);
 
+        var stagingSw = s_profGpuSplit ? System.Diagnostics.Stopwatch.StartNew() : null;
         float* mapped = (float*)_downloadStaging.Map();
         new Span<float>(mapped, dst.Length).CopyTo(dst);
         _downloadStaging.Unmap();
+        if (stagingSw is not null) s_profStagingCopyMs += stagingSw.Elapsed.TotalMilliseconds;
     }
 
     public unsafe Tensor UploadHalf(ReadOnlySpan<Half> data, TensorShape shape)

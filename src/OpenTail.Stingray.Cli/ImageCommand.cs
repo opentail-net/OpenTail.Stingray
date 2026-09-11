@@ -1248,6 +1248,7 @@ public sealed class ImageCommand : Command<ImageCommand.Settings>
             using var pipeline = SdxlPipeline.Load(modelPath, s.ClipTokenizerPath, gpu);
 
             string target = gpu is not null ? gpu.Name : "CPU";
+            if (gpu is VulkanBackend) VulkanBackend.ResetGpuProfile();
             AnsiConsole.Status()
                 .Spinner(Spinner.Known.Dots)
                 .SpinnerStyle(Style.Parse("blue"))
@@ -1271,6 +1272,7 @@ public sealed class ImageCommand : Command<ImageCommand.Settings>
                         timestepSpacing: timestepSpacing,
                         log: s.Verbose ? msg => AnsiConsole.MarkupLine($"[dim]{Markup.Escape(msg)}[/]") : null);
                 });
+            if (gpu is VulkanBackend) VulkanBackend.PrintGpuProfile("SDXL full run");
 
             sw.Stop();
             AnsiConsole.MarkupLine($"[green]✓[/] Image saved: [cyan]{Markup.Escape(Path.GetFullPath(output))}[/] in [yellow]{sw.Elapsed.TotalSeconds:F1}s[/]");
