@@ -675,7 +675,6 @@ public sealed class RRDBNet : IDisposable
                 try
                 {
                     _backend.Sgemm(cGpu, colGpu, wGpu, chunkHW, kPts, outCh);
-                    _backend.Synchronize();
                     _backend.Download(cGpu, resultBuf.AsSpan(0, chunkHW * outCh));
                 }
                 finally

@@ -578,7 +578,6 @@ public sealed class FluxDiT : IDisposable
                         try
                         {
                             _backend.Sgemm(cGpu, xGpu, wGpu, n, cols, rows);
-                            _backend.Synchronize();
                             _backend.DownloadBf16(cGpu, cBf16Buf.AsSpan(0, n * rows));
                             int cCount = n * rows;
                             for (int i = 0; i < cCount; i++)
@@ -649,7 +648,6 @@ public sealed class FluxDiT : IDisposable
                         try
                         {
                             _backend.Sgemm(cGpu, xGpu, wGpu, n, cols, rows);
-                            _backend.Synchronize();
                             _backend.DownloadBf16(cGpu, cBf16.AsSpan(0, n * rows));
                         }
                         finally
@@ -688,7 +686,6 @@ public sealed class FluxDiT : IDisposable
                         try
                         {
                             _backend.Sgemm(cGpu, xGpu, wGpu, n, cols, rows);
-                            _backend.Synchronize();
                             _backend.Download(cGpu, result);
                         }
                         finally
@@ -719,7 +716,6 @@ public sealed class FluxDiT : IDisposable
                         try
                         {
                             _backend.Sgemm(cGpu, xGpu, wGpu, n, cols, rows);
-                            _backend.Synchronize();
                             _backend.Download(cGpu, result);
                         }
                         finally

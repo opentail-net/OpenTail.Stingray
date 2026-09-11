@@ -253,7 +253,6 @@ public sealed class MMDiTModel : IDisposable
         try
         {
             _backend.Sgemm(cGpu, xGpu, wGpu, n, inDim, outDim);
-            _backend.Synchronize();
             _backend.Download(cGpu, dst.Slice(0, n * outDim));
         }
         finally

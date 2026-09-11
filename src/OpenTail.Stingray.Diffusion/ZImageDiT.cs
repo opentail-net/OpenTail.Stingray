@@ -472,7 +472,6 @@ public sealed class ZImageDiT : IDisposable
                         try
                         {
                             _backend.Sgemm(cGpu, xGpu, wGpu, n, cols, rows);
-                            _backend.Synchronize();
                             _backend.DownloadBf16(cGpu, cBf16Buf.AsSpan(0, n * rows));
                             int cCount = n * rows;
                             for (int i = 0; i < cCount; i++)
@@ -549,7 +548,6 @@ public sealed class ZImageDiT : IDisposable
                         try
                         {
                             _backend.Sgemm(cGpu, xGpu, wGpu, n, cols, rows);
-                            _backend.Synchronize();
                             _backend.DownloadBf16(cGpu, cBf16.AsSpan(0, n * rows));
                         }
                         finally
@@ -605,7 +603,6 @@ public sealed class ZImageDiT : IDisposable
                         try
                         {
                             _backend.Sgemm(cGpu, xGpu, wGpu, n, cols, rows);
-                            _backend.Synchronize();
                             _backend.Download(cGpu, result.AsSpan());
                         }
                         finally
@@ -659,7 +656,6 @@ public sealed class ZImageDiT : IDisposable
                     try
                     {
                         _backend.Sgemm(cGpu16, xGpu16, wGpu, n, cols, rows);
-                        _backend.Synchronize();
                         _backend.Download(cGpu16, result.AsSpan());
                     }
                     finally
@@ -686,7 +682,6 @@ public sealed class ZImageDiT : IDisposable
                         try
                         {
                             _backend.Sgemm(cGpu, xGpu, wGpu, n, cols, rows);
-                            _backend.Synchronize();
                             _backend.Download(cGpu, result.AsSpan());
                         }
                         finally

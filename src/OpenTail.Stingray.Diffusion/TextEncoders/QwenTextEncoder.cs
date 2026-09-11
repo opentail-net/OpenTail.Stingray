@@ -304,7 +304,6 @@ public sealed class QwenTextEncoder : IDisposable
                 try
                 {
                     _backend.Sgemm(cGpu, xGpu, wGpu, n, cols, rows);
-                    _backend.Synchronize();
                     var cBf16 = ArrayPool<ushort>.Shared.Rent(n * rows);
                     try
                     {

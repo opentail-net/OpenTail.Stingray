@@ -658,7 +658,6 @@ public static class MiniMaxMusic3Transformer
             try
             {
                 backend.Sgemm(cGpu, xGpu, gpuWeight, batchSize, cols, rows);
-                backend.Synchronize();
                 backend.Download(cGpu, new Span<float>(output, outCount));
                 return;
             }
@@ -689,15 +688,12 @@ public static class MiniMaxMusic3Transformer
             try
             {
                 backend.Sgemm(cGpu, xGpu, wQGpu, batchSize, dim, dim);
-                backend.Synchronize();
                 backend.Download(cGpu, new Span<float>(qOut, count));
 
                 backend.Sgemm(cGpu, xGpu, wKGpu, batchSize, dim, dim);
-                backend.Synchronize();
                 backend.Download(cGpu, new Span<float>(kOut, count));
 
                 backend.Sgemm(cGpu, xGpu, wVGpu, batchSize, dim, dim);
-                backend.Synchronize();
                 backend.Download(cGpu, new Span<float>(vOut, count));
                 return;
             }
