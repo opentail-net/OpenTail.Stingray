@@ -286,6 +286,68 @@ public sealed class SdxlUNet2DConditionModel : IDisposable
         return result;
     }
 
+    /// <summary>
+    /// Runs several Lin() projections against the SAME input in one GPU-resident pass: uploads `x`
+    /// once (instead of once per projection) and reuses that upload across all of them. Added
+    /// 2026-09-11 for SpatialTransformer's Q/K/V projections, which all read the same normed input
+    /// (self-attention) or the same `context` (cross-attention's K and V) -- found while chasing
+    /// the UNet denoise step's ~7.7x gap vs a real stable-diffusion.cpp reference, where
+    /// SpatialTransformer's per-Lin() Upload/Download round-trips (up to ~100 per call at the
+    /// deepest, depth=10 blocks) are the dominant remaining cost. This only removes the redundant
+    /// upload/allocation, not a full attention-residency rewrite (which would need a new GPU
+    /// softmax/attention kernel this codebase doesn't have yet for this non-causal, non-KV-cached
+    /// shape) -- a smaller, safer, real win rather than a rushed bigger one.
+    /// </summary>
+    private float[][] LinMulti(string[] names, float[] x, int n, int inDim, int[] outDims)
+    {
+        if (_backend is null)
+        {
+            var cpuResults = new float[names.Length][];
+            for (int i = 0; i < names.Length; i++)
+                cpuResults[i] = Lin(names[i], x, n, inDim, outDims[i]);
+            return cpuResults;
+        }
+
+        var xGpu = _backend.Upload(x.AsSpan(0, n * inDim), TensorShape.D1(n * inDim));
+        var results = new float[names.Length][];
+        try
+        {
+            for (int idx = 0; idx < names.Length; idx++)
+            {
+                var wF = GetWeight($"{names[idx]}.weight");
+                var bF = TryGetWeight($"{names[idx]}.bias");
+                var wGpu = GetGpuWeight($"{names[idx]}.weight", wF);
+                int outDim = outDims[idx];
+                var cGpu = _backend.Allocate(TensorShape.D1(n * outDim));
+                var result = new float[n * outDim];
+                try
+                {
+                    _backend.Sgemm(cGpu, xGpu, wGpu, n, inDim, outDim);
+                    _backend.Download(cGpu, result);
+                }
+                finally
+                {
+                    _backend.Free(cGpu);
+                }
+
+                if (bF is not null)
+                {
+                    Parallel.For(0, n, i =>
+                    {
+                        var row = result.AsSpan(i * outDim, outDim);
+                        TensorPrimitives.Add(row, bF, row);
+                    });
+                }
+                results[idx] = result;
+            }
+        }
+        finally
+        {
+            _backend.Free(xGpu);
+        }
+        return results;
+    }
+
     public float[] ComputeTimeAndAddEmbedding(float timestep, float[] addEmbeds)
     {
         // 1. Timestep embedding: [320] -> [1280]
@@ -406,9 +468,11 @@ public sealed class SdxlUNet2DConditionModel : IDisposable
             var saNorm = (float[])xSeq.Clone();
             DiffusionOps.LayerNorm(saNorm, saNormW, saNormB, c);
 
-            var saQ = Lin($"{tb}.attn1.to_q", saNorm, hw, c, c);
-            var saK = Lin($"{tb}.attn1.to_k", saNorm, hw, c, c);
-            var saV = Lin($"{tb}.attn1.to_v", saNorm, hw, c, c);
+            // Perf: Q/K/V all read the same `saNorm` input -- upload it once instead of 3 times.
+            var saQkv = LinMulti(
+                [$"{tb}.attn1.to_q", $"{tb}.attn1.to_k", $"{tb}.attn1.to_v"],
+                saNorm, hw, c, [c, c, c]);
+            var saQ = saQkv[0]; var saK = saQkv[1]; var saV = saQkv[2];
 
             var saAttnOut = MultiHeadAttention(saQ, saK, saV, hw, hw, c, nHeads, HeadDim);
             var saProjOut = Lin($"{tb}.attn1.to_out.0", saAttnOut, hw, c, c);
@@ -422,8 +486,11 @@ public sealed class SdxlUNet2DConditionModel : IDisposable
             DiffusionOps.LayerNorm(caNorm, caNormW, caNormB, c);
 
             var caQ = Lin($"{tb}.attn2.to_q", caNorm, hw, c, c);
-            var caK = Lin($"{tb}.attn2.to_k", context, 77, ContextDim, c);
-            var caV = Lin($"{tb}.attn2.to_v", context, 77, ContextDim, c);
+            // Perf: K and V both read the same `context` input -- upload it once instead of twice.
+            var caKv = LinMulti(
+                [$"{tb}.attn2.to_k", $"{tb}.attn2.to_v"],
+                context, 77, ContextDim, [c, c]);
+            var caK = caKv[0]; var caV = caKv[1];
 
             var caAttnOut = MultiHeadAttention(caQ, caK, caV, hw, 77, c, nHeads, HeadDim);
             var caProjOut = Lin($"{tb}.attn2.to_out.0", caAttnOut, hw, c, c);
