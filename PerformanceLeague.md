@@ -126,6 +126,8 @@
 | Qwen3.6-35B-A3B Q4_K_M | decode (original) | CPU | 9.3 t/s | — | — | 2026-06-16 | README history 0c171ed |
 | Qwen3.6-35B-A3B Q6_K (hybrid GDN) | prefill (480 tok) | CPU | 2.9 t/s | 58.60 t/s | **0.05x** | 2026-09-10 | stingray CLI + llama-bench, best-of-3 (backfill; unsloth Q6_K GGUF, different quant/build from the original † row's; same hybrid-GDN architecture as Qwen3.6-27B-MTP) |
 | Qwen3.6-35B-A3B Q6_K (hybrid GDN) | decode (480 tok prompt, 24 tok gen) | CPU | 1.8 t/s | 10.59 t/s | **0.17x** | 2026-09-10 | stingray CLI + llama-bench, best-of-3 (backfill) |
+| Qwen3.6-35B-A3B Q6_K (hybrid GDN) | prefill (480 tok) | Vulkan iGPU | 2.1 t/s | — | — | 2026-09-10 | new coverage; no llama.cpp Vulkan ref. MoE routed experts run on CPU (mmap) with shared expert on GPU — a split workload. Slightly worse than CPU (2.1 vs 2.9 t/s), unlike the 27B hybrid-GDN case where Vulkan was much worse — this 35B MoE variant's split isn't as costly. |
+| Qwen3.6-35B-A3B Q6_K (hybrid GDN) | decode (480 tok prompt, 24 tok gen) | Vulkan iGPU | 2.0 t/s | — | — | 2026-09-10 | new coverage; actually beats CPU decode (2.0 vs 1.8 t/s) — unlike Qwen3.6-27B-MTP where Vulkan lost on both metrics |
 | Qwen3.6-35B-A3B-MTP Q4_K_M | prefill | CUDA (†) | 480.2 t/s | — | — | 2026-06-16 | README history 0c171ed |
 | Qwen3.6-35B-A3B-MTP Q4_K_M | decode (`--no-thinking`) | CUDA (†) | 33.3 t/s | ~41 t/s (est.) | **~0.81x** | 2026-06-16 | README: "~80% of llama.cpp tg128" |
 | Qwen3.6-27B-MTP Q4_K_M | prefill | CUDA (†) | 22.0 t/s | — | — | 2026-06-16 | README history 0c171ed |
@@ -376,12 +378,18 @@ separately.
 |---|---|---|---|---:|---:|---|---|
 | InternVL3-2B Q4_K_M (Qwen2-1.5B backbone) | prefill (503 tok) | CPU | 131.8 t/s | 168.90 t/s | **0.78x** | 2026-09-10 | new coverage; stingray CLI + llama-bench, best-of-3, text-only |
 | InternVL3-2B Q4_K_M (Qwen2-1.5B backbone) | decode (503 tok prompt, 24 tok gen) | CPU | 18.3 t/s | 37.94 t/s | **0.48x** | 2026-09-10 | new coverage; stingray CLI + llama-bench, best-of-3, text-only |
+| InternVL3-2B Q4_K_M (Qwen2-1.5B backbone) | prefill (503 tok) | Vulkan iGPU | 23.2 t/s | — | — | 2026-09-10 | new coverage; no llama.cpp Vulkan ref, text-only. Worse than CPU (23.2 vs 131.8 t/s) — small model, dispatch-overhead-dominated, the usual pattern |
+| InternVL3-2B Q4_K_M (Qwen2-1.5B backbone) | decode (503 tok prompt, 24 tok gen) | Vulkan iGPU | 21.8 t/s | — | — | 2026-09-10 | new coverage; beats CPU decode (21.8 vs 18.3 t/s) |
 | Granite-4.0-3B-Vision Q4_K_M (Granite backbone) | prefill (494 tok) | CPU | 58.4 t/s | 69.82 t/s | **0.84x** | 2026-09-10 | new coverage; stingray CLI + llama-bench, best-of-3, text-only |
 | Granite-4.0-3B-Vision Q4_K_M (Granite backbone) | decode (494 tok prompt, 24 tok gen) | CPU | 8.7 t/s | 18.09 t/s | **0.48x** | 2026-09-10 | new coverage; stingray CLI + llama-bench, best-of-3, text-only |
+| Granite-4.0-3B-Vision Q4_K_M (Granite backbone) | prefill (494 tok) | Vulkan iGPU | 41.2 t/s | — | — | 2026-09-10 | new coverage; no llama.cpp Vulkan ref, text-only. **Correctness caveat, not just perf:** output is garbled multilingual gibberish (`** here ال= �**@ - (** = that ** a 중{{, } 대р for лиIRม`) — CPU gave coherent English text on the identical prompt. Worse than CPU prefill too (41.2 vs 58.4 t/s), but the real finding here is the Vulkan-specific correctness divergence, not the speed. |
+| Granite-4.0-3B-Vision Q4_K_M (Granite backbone) | decode (494 tok prompt, 24 tok gen) | Vulkan iGPU | 10.1 t/s | — | — | 2026-09-10 | new coverage; beats CPU decode (10.1 vs 8.7 t/s) on garbled output — see prefill row's correctness caveat |
 | Granite-Vision-3.2-2B Q3_K_S (Granite backbone) | prefill (573 tok) | CPU | 27.0 t/s | 66.50 t/s | **0.41x** | 2026-09-10 | new coverage; stingray CLI + llama-bench, best-of-3, text-only |
 | Granite-Vision-3.2-2B Q3_K_S (Granite backbone) | decode (573 tok prompt, 24 tok gen) | CPU | 17.1 t/s | 35.65 t/s | **0.48x** | 2026-09-10 | new coverage; stingray CLI + llama-bench, best-of-3, text-only |
 | dots.ocr Q8_0 (Qwen2-1.5B backbone) | prefill (477 tok) | CPU | 96.3 t/s | 135.37 t/s | **0.71x** | 2026-09-10 | new coverage; stingray CLI + llama-bench, best-of-3, text-only |
 | dots.ocr Q8_0 (Qwen2-1.5B backbone) | decode (477 tok prompt, 24 tok gen) | CPU | 20.5 t/s | 25.97 t/s | **0.79x** | 2026-09-10 | new coverage; stingray CLI + llama-bench, best-of-3, text-only |
+| dots.ocr Q8_0 (Qwen2-1.5B backbone) | prefill (477 tok) | Vulkan iGPU | 13.8 t/s | — | — | 2026-09-10 | new coverage; no llama.cpp Vulkan ref, text-only. Worse than CPU (13.8 vs 96.3 t/s) |
+| dots.ocr Q8_0 (Qwen2-1.5B backbone) | decode (477 tok prompt, 24 tok gen) | Vulkan iGPU | 12.9 t/s | — | — | 2026-09-10 | new coverage; also worse than CPU (12.9 vs 20.5 t/s) — unlike InternVL3-2B, this one loses on both metrics on Vulkan |
 
 ---
 
