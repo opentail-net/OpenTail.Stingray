@@ -16,7 +16,8 @@ public sealed class Granite4VisionTests
             rgb[i + 2] = 100;
         }
 
-        var pre = Granite4ImagePreprocessor.Preprocess(rgb, w, h, imageSize: 384, patchSize: 14);
+        var pre = Granite4ImagePreprocessor.Preprocess(rgb, w, h, imageSize: 384, patchSize: 14,
+            imageMean: [0.5f, 0.5f, 0.5f], imageStd: [0.5f, 0.5f, 0.5f]);
         Assert.NotNull(pre);
         Assert.Equal(384, pre.TargetWidth);
         Assert.Equal(384, pre.TargetHeight);

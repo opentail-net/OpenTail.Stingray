@@ -1039,7 +1039,7 @@ public static class UnifiedVisionPipeline
 
         public float[] EmbedImage(ReadOnlySpan<byte> rgb, int width, int height, out int tokenCount)
         {
-            var pre = Granite4ImagePreprocessor.Preprocess(rgb, width, height, _model.ImageSize, _model.PatchSize);
+            var pre = Granite4ImagePreprocessor.Preprocess(rgb, width, height, _model.ImageSize, _model.PatchSize, _model.ImageMean, _model.ImageStd);
             return _encoder.Forward(pre.Chw, pre.TargetWidth, pre.TargetHeight, pre.PatchesX, pre.PatchesY, out tokenCount);
         }
 

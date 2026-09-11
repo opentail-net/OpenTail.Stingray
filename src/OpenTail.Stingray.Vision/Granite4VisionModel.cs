@@ -19,6 +19,24 @@ public sealed class Granite4VisionModel : IDisposable
     public float Eps { get; }
 
     /// <summary>
+    /// Real bug found 2026-09-11: <c>Granite4ImagePreprocessor</c> previously hardcoded OpenAI
+    /// CLIP's ImageNet-derived mean/std regardless of checkpoint -- but Granite 4 Vision's tower
+    /// is SigLIP, not CLIP, and the real checkpoint's own <c>clip.vision.image_mean</c>/
+    /// <c>image_std</c> GGUF metadata is <c>[0.5,0.5,0.5]</c>/<c>[0.5,0.5,0.5]</c> (confirmed via
+    /// `stingray list-metadata`), numerically quite different from CLIP's constants. This silently
+    /// mis-normalized every pixel fed to the patch-embed conv -- no crash, no NaN, just smooth but
+    /// wrong input, producing fluent-but-non-image-grounded output downstream. Three other
+    /// encoders in this codebase (Gemma3VisionModel, Gemma4VVisionModel, Llama4VisionModel)
+    /// already correctly read these two keys instead of hardcoding a constant; this class now
+    /// does the same, per the real reference (`clip.cpp`'s real per-checkpoint mean/std read,
+    /// `clip-impl.h`'s `KEY_IMAGE_MEAN`/`KEY_IMAGE_STD`).
+    /// </summary>
+    public float[] ImageMean { get; }
+
+    /// <summary>See <see cref="ImageMean"/>.</summary>
+    public float[] ImageStd { get; }
+
+    /// <summary>
     /// Per-WindowQFormer-block index into the SigLIP tower's saved intermediate layer outputs
     /// (clip.vision.feature_layer, e.g. [26,20,14,8,26,26,26,26] for the real 3B checkpoint).
     /// Length is the number of projector blocks K.
@@ -54,7 +72,9 @@ public sealed class Granite4VisionModel : IDisposable
         int[] featureLayers,
         int[] projSpatialOffsets,
         int windowSide,
-        int querySide)
+        int querySide,
+        float[] imageMean,
+        float[] imageStd)
     {
         Gguf = gguf;
         ProjectorType = projectorType;
@@ -70,6 +90,8 @@ public sealed class Granite4VisionModel : IDisposable
         ProjSpatialOffsets = projSpatialOffsets;
         WindowSide = windowSide;
         QuerySide = querySide;
+        ImageMean = imageMean;
+        ImageStd = imageStd;
     }
 
     public static Granite4VisionModel Open(string path)
@@ -109,6 +131,9 @@ public sealed class Granite4VisionModel : IDisposable
             projSpatialOffsets = fill;
         }
 
+        float[] imageMean = GetFloatArray(gguf, "clip.vision.image_mean", [0.5f, 0.5f, 0.5f]);
+        float[] imageStd = GetFloatArray(gguf, "clip.vision.image_std", [0.5f, 0.5f, 0.5f]);
+
         return new Granite4VisionModel(
             gguf,
             projType,
@@ -123,7 +148,20 @@ public sealed class Granite4VisionModel : IDisposable
             featureLayers,
             projSpatialOffsets,
             windowSide,
-            querySide);
+            querySide,
+            imageMean,
+            imageStd);
+    }
+
+    private static float[] GetFloatArray(GgufModel g, string key, float[] fallback)
+    {
+        if (g.Metadata.TryGetValue(key, out var val) && val is object[] arr && arr.Length == 3)
+        {
+            var result = new float[3];
+            for (int i = 0; i < 3; i++) result[i] = Convert.ToSingle(arr[i]);
+            return result;
+        }
+        return fallback;
     }
 
     private static int[] GetIntArray(GgufModel g, string key, int[] fallback)
