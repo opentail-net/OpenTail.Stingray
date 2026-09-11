@@ -128,15 +128,18 @@ public sealed class StableDiffusionPipeline : IDiffusionPipeline
                 (downRes, midRes) = controlNet.Forward(scaledLatent, timestep, condContext, controlHintRgb, latH, latW, conditioningScale: controlStrength);
             }
 
-            // Perf (2026-09-11): CombineGuidance computes `uncond + guidance*(cond-uncond)`, which
-            // algebraically reduces to just `uncond` at guidance==0 or just `cond` at guidance==1
-            // -- both real, non-hypothetical cases (SD-Turbo's real recommended guidance_scale=0.0;
-            // FLUX-schnell/any explicitly-CFG-disabled request uses 1.0 elsewhere in this codebase).
-            // Running both UNet passes in that case burns exactly 2x the real diffusion compute for
-            // a result that's thrown away -- skip the unneeded pass instead of unconditionally
-            // computing and discarding it.
+            // CORRECTNESS FIX (2026-09-11): see the identical, more detailed comment in
+            // SdxlPipeline.Generate -- this guidance<=0 branch previously returned the UNCOND
+            // (negative/empty-prompt) pass, silently discarding the real prompt for SD-Turbo's own
+            // actual recommended usage (guidance_scale=0.0). Verified against real diffusers
+            // source: when CFG is off, the pipeline runs a single forward pass with the real COND
+            // embedding, never the negative one -- `guidance==0` does not algebraically reduce to
+            // "use uncond" in the real pipeline; CFG being off means no cond/uncond blend happens
+            // at all, it directly runs cond. Running both passes at guidance==0/1 was still real,
+            // avoidable waste (that part of the original perf reasoning was correct) -- only the
+            // choice of WHICH single pass to keep was backwards.
             if (guidance <= 0f)
-                return _unet.Forward(scaledLatent, timestep, uncondContext, latH, latW, downRes, midRes);
+                return _unet.Forward(scaledLatent, timestep, condContext, latH, latW, downRes, midRes);
             if (guidance == 1f)
                 return _unet.Forward(scaledLatent, timestep, condContext, latH, latW, downRes, midRes);
 

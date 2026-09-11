@@ -156,12 +156,22 @@ public sealed class SdxlPipeline : IDiffusionPipeline
         }
         var denoised = scheduler.Denoise(latent, (scaledLatent, timestep) =>
         {
-            // Perf (2026-09-11): see StableDiffusionPipeline.Generate's identical comment --
-            // `uncond + guidance*(cond-uncond)` reduces to a single UNet pass at guidance==0
-            // (SDXL-Turbo's own real recommended usage) or guidance==1, so skip the wasted pass
-            // instead of computing and discarding it.
+            // CORRECTNESS FIX (2026-09-11, found by comparing against a real built
+            // stable-diffusion.cpp reference run -- our output was a generic, prompt-ignoring
+            // scene while sd.cpp's was correctly "a red apple on a wooden table" for the exact
+            // same prompt/seed/config): this branch previously returned the UNCOND (negative/
+            // empty-prompt) pass at guidance<=0, silently discarding the user's real prompt for
+            // SDXL-Turbo's own actual recommended usage (guidance_scale=0.0). Verified against
+            // real diffusers source (pipeline_stable_diffusion_xl.py:1148-1149,1202-1225):
+            // `do_classifier_free_guidance` is False for guidance_scale<=1, and in that case the
+            // pipeline runs a SINGLE forward pass with `prompt_embeds` -- which is the real COND
+            // embedding, never concatenated with the negative one when CFG is off. The uncond
+            // branch is never used at all when CFG is disabled; `negative_prompt` has no effect.
+            // `uncond + guidance*(cond-uncond)` is the right algebraic reduction AT guidance==1
+            // (below), but guidance==0 doesn't reduce to "use uncond" in the real pipeline -- CFG
+            // being off means the whole cond/uncond blend doesn't happen; it directly runs cond.
             if (guidance <= 0f)
-                return _unet.Forward(scaledLatent, timestep, uncondContext, uncondAddEmbeds, latH, latW);
+                return _unet.Forward(scaledLatent, timestep, condContext, condAddEmbeds, latH, latW);
             if (guidance == 1f)
                 return _unet.Forward(scaledLatent, timestep, condContext, condAddEmbeds, latH, latW);
 
