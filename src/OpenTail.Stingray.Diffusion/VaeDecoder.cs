@@ -230,6 +230,17 @@ public sealed class VaeDecoder : IDisposable, IVaeDecoder
         return (z, ch, h, w);
     }
 
+    // Perf note (2026-09-11): tried routing this ResBlock's convs (and the up-block upsampler
+    // convs) through the native GPU Conv2d shader too, the same way as Decode()'s 3 standalone
+    // convs. Measured real weights/timing across 3 runs: a consistent, real ~20% VAE-decode
+    // REGRESSION (32.20s baseline -> ~38.3s mean), not an improvement -- despite eliminating the
+    // same CPU-side im2col/transpose overhead that helped for the standalone convs. Likely cause:
+    // the native shader's naive one-thread-per-output-pixel scalar accumulation doesn't scale to
+    // these convs' larger channel counts (256-512, vs RRDBNet's <=192 and this class's own
+    // standalone convs' smaller/1x1 shapes) the way the fp16 Sgemm GEMM path does -- CPU-side
+    // overhead wasn't the bottleneck here, raw GPU compute throughput was, and Sgemm wins that.
+    // Reverted to ConvBlock (im2col+Sgemm); keeping this note so the same swap isn't retried
+    // without re-measuring.
     private float[] ResBlock(string prefix, float[] x, int n, int inCh, int h, int w, int outCh = -1)
     {
         if (outCh < 0) outCh = inCh;
