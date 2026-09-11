@@ -45,7 +45,20 @@ public sealed class UNet2DConditionModel : IDisposable
         string fullName = _weightReader.Prefix + name;
         if (_gpuWeights!.TryGetValue(fullName, out var wGpu)) return wGpu;
 
-        wGpu = _backend!.Upload(cpuWeight.AsSpan(), TensorShape.D1(cpuWeight.Length));
+        // Perf (2026-09-11): same fix as SdxlUNet2DConditionModel.GetGpuWeight -- upload weights
+        // as Half when the backend prefers fp16 Sgemm, instead of always forcing the slowest
+        // full-fp32 path. This SD1.5 UNet had gotten the later implicit-GEMM Conv() fix but had
+        // been missed for this earlier one; applying it now for consistency and the same real win.
+        if (_backend!.BestSgemmPrecision == SgemmPrecision.Fp16)
+        {
+            var half = new Half[cpuWeight.Length];
+            TensorPrimitives.ConvertToHalf(cpuWeight, half);
+            wGpu = _backend.UploadHalf(half, TensorShape.D1(cpuWeight.Length));
+        }
+        else
+        {
+            wGpu = _backend.Upload(cpuWeight.AsSpan(), TensorShape.D1(cpuWeight.Length));
+        }
         _gpuWeights[fullName] = wGpu;
         return wGpu;
     }
