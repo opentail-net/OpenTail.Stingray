@@ -103,7 +103,6 @@ Sourced from [`docs/audio-review-progress.md`](docs/audio-review-progress.md), [
 | Vision: NVIDIA Nemotron-Nano-12B-v2-VL | 🔴 | ⚪ | — | Vision encoder migrated and builds clean (register-token ViT + 2x2 patch merge), but the text backbone (`nemotron_h`, a Mamba/SSM hybrid) isn't in the supported-architecture list at all, so it's rejected before vision code ever runs — confirmed again 2026-09-11 (`HybridGdnForwardPass dense FFN requires hp.IntermediateDim > 0`). A much bigger undertaking than a vision-encoder fix |
 | Vision: Llama 4 (vision path) | 🔴 | ⚪ | — | Text checkpoint explicitly not downloaded (93GB across 2 shards vs. this machine's 64GB RAM) — mmproj-only download not attempted; genuinely untested on this machine |
 | Vision: MobileNetV5 | 🔴 | ⚪ | — | Encoder migrated, builds clean — but no real checkpoint on Hugging Face actually declares the `mobilenetv5`/`mobilenet_v5` projector type this adapter targets; the obvious candidate (gemma-3n) routes to `Gemma3Adapter` instead. Blocked on checkpoint availability, not a code gap |
-| Vision: PaddleOCR-VL & Dots-OCR text backbones (Qwen2-based) | 🟢 | 🔬 | CPU / Vulkan | Text-only backbone benchmarked (no image input) — see PerformanceLeague.md's VLM Text Backbones section |
 
 Runs GGUF and SafeTensors models on CPU (AVX2/AVX-512 SIMD) and GPU (Vulkan compute shaders or CUDA cuBLAS), with:
 - **OpenAI- and Anthropic-compatible API server** (/v1/chat/completions, /v1/audio/speech, /v1/audio/transcriptions), native dynamic Multi-LoRA serving,
