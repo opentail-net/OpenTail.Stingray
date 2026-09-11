@@ -1730,6 +1730,25 @@ severity.
   `ParakeetTokenizer.cs`/`ParakeetWeights.cs`/`ParakeetPipeline.cs` round out the directory — none
   TDT-specific). Only the CTC decode path is real; the TDT half of the README's claim is not
   implemented.
+- **`EulerDiscreteScheduler`'s `numInferenceSteps == 1` divide-by-zero — FIXED and verified
+  2026-09-11.** Found benchmarking SDXL-Turbo (a genuinely new, previously-untested checkpoint,
+  `models/_models/sd_xl_turbo_1.0_fp16.safetensors`): `stepRatio = (trainSteps-1) /
+  (numInferenceSteps-1)` divides by zero at `--steps 1`, producing Infinity then NaN
+  timesteps/sigmas that silently propagate through the whole denoising loop and render as a solid
+  black 843-byte PNG — confirmed on both CPU and Vulkan (not backend-specific). Verified the
+  scheduler's existing formula already matches diffusers' real `scheduling_euler_discrete.py`
+  "linspace" spacing term-by-term for `numInferenceSteps > 1`, so the fix (a `numInferenceSteps
+  == 1` special case resolving to timestep 0, matching numpy's own documented
+  `linspace(start, stop, num=1) == [start]` behavior) closes the one edge case rather than
+  inventing a new convention. Verified: 1-step CPU run now produces a real 235KB non-degenerate
+  PNG instead of 843-byte black. **Separate, deeper, NOT fixed gap surfaced by this same
+  investigation**: even with the crash/NaN fixed, 1-step output quality is still poor (textured
+  noise, not a coherent image) — real turbo/few-step models need "trailing" timestep spacing
+  (sampling near maximum noise) for good few-step results, and this scheduler only implements
+  "linspace". At `--steps 4` the same checkpoint produces a real, coherent image (a genuine
+  apples-on-a-table result), confirming the pipeline itself works — this is specifically a
+  1-2-step quality gap, not a broken pipeline. `OpenTail.Stingray.Tests.Diffusion.SchedulerTests`
+  re-run clean (4/4) after the fix.
 - **A systemic silent-no-op pattern in `*RealWeightsTests.cs` files, worse than previously
   documented.** `CLAUDE.md` rule 12 already names this pattern (a green, sub-second "pass" that
   never actually touched real weights) for LLM/vision/some-audio tests. Three *more* instances were
