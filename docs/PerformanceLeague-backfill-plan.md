@@ -117,6 +117,34 @@ isn't built here and building+validating it is a separate project, not a bench r
       parity (1.02x) as the headline strength, Gemma prefill collapse confirmed on two sizes as the
       headline weakness, decode-degrades-with-context as a newly-measured trend.
 
+## Final status, 2026-09-11: sweep essentially complete
+
+By the end of this pass:
+- **Every LLM checkpoint with CPU coverage also has a Vulkan iGPU row** (or a documented, explicit
+  reason it can't — e.g. Qwen3.8-27B's embedding-table-exceeds-2GB-buffer limitation): SmolLM2,
+  Qwen3-0.6B/4B/8B/Coder-30B, OLMoE, Gemma-4-12B/E4B, Qwen3.6-27B/35B, Qwen3.8-27B, Ornith-9B,
+  Mistral-7B, Ministral-8B, InternVL3-2B, Granite-4.0-3B-Vision, Granite-Vision-3.2-2B, dots.ocr.
+- **Every TTS/ASR/VAD pipeline subdirectory in `src/OpenTail.Stingray.Audio` (all 30) has at least
+  one real measurement**: AudioGen, Chatterbox, Citrinet, CosyVoice, F5TTS, FishSpeech, FunASR,
+  HiggsAudio, Kokoro, MarbleNet, MeloTTS, MmsTts, MossTts, MusicGen, NemotronAsr, NeuTts, OmniVoice,
+  Orpheus, Parakeet, Parler, PersonaPlex, Piper, QwenASR, QwenTTS, Vad (Silero), VibeVoice, VoxCpm2,
+  VoxtralRealtime, Whisper, Xtts.
+- **Five real bugs found and documented**, independent of the perf backfill's original goal:
+  1. `stingray embed`'s GGUF path is a hash-based stub that never loads real weights (silent,
+     serious — retracted a false measurement because of it).
+  2. `stingray embed`'s ONNX path is real but crashes on a real BERT checkpoint (missing
+     `token_type_ids`).
+  3. Vulkan-specific Granite architecture correctness bug (coherent CPU output, garbled/degenerate
+     Vulkan output on the identical prompt) — confirmed on two independent checkpoints.
+  4. Two independent degenerate-ASR-output cases (Qwen3-ASR, FunASR-Nano) — fast but wrong,
+     flagged as more urgent than any perf gap.
+  5. Three tests found silently no-op'ing (Parakeet-CTC, Orpheus, and the general pattern flagged
+     as likely affecting others) due to a `models/`-only search helper missing `models/_models/`
+     checkpoints — fixed via symlinks matching the existing convention.
+- **Remaining, explicitly out of scope this pass**: video/image diffusion beyond one Z-Image-Turbo
+  attempt (hunyuanvideo, ltx-t5, wan2.1 have no wired end-to-end test found; likely far slower than
+  anything measured so far on CPU) and Carnice APEX (unlocatable checkpoint).
+
 ## Extended sweep, 2026-09-10 (session continued, per "test every remaining model" instruction)
 
 Went beyond the original plan's scope to sweep every untested checkpoint under `models/`/

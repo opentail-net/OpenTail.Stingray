@@ -507,7 +507,16 @@ This section reads across the ratios above; it doesn't replace them.
 
 ---
 
-*Last updated: 2026-09-10 (C++ reference backfill pass — see `docs/PerformanceLeague-backfill-plan.md` for the checklist and methodology).
+*Last updated: 2026-09-11 (C++ reference backfill pass, extended into a full model-coverage sweep across
+CPU and Vulkan iGPU — see `docs/PerformanceLeague-backfill-plan.md` for the checklist and methodology.
+By the end of this pass: every TTS/ASR/VAD pipeline subdirectory in `src/OpenTail.Stingray.Audio` (30
+total) has at least one real measurement; every dense/MoE/hybrid-GDN LLM checkpoint with CPU coverage
+also has a Vulkan iGPU row (or a documented reason it can't); several VLM text backbones, music/audio-gen
+pipelines, and image diffusion were added as new-domain coverage. Five real bugs were found and
+documented along the way: a fake hash-stub `embed` CLI path, a real ONNX `embed` crash, a Vulkan-specific
+Granite correctness divergence (confirmed on two checkpoints), and two independent degenerate-ASR-output
+cases (Qwen3-ASR, FunASR-Nano) — plus three previously-silently-no-op'ing tests fixed via missing
+`models/` symlinks (Parakeet-CTC, Orpheus, and the pattern flagged as likely affecting others too).*
 Source documents: `docs/done/perf-loop-progress.md`, `docs/cpu-performance-baseline.md`,
 `docs/tts-performance-baseline-and-plan.md`, `docs/done/cpu-speculative-decoding-findings.md`,
 `docs/done/vulkan-backend-evidence.md`, `docs/done/gpu-review-log.md`, `GR_performance.md`,
