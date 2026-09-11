@@ -539,6 +539,20 @@ public sealed class SdxlUNet2DConditionModel : IDisposable
         return xSpatial;
     }
 
+    // Perf note (2026-09-11): tried routing this through the real GPU MultiHeadAttention shader
+    // (verified numerically correct against the CPU reference in
+    // MultiHeadAttentionGpuParityTests, and confirmed still-correct in this real pipeline too --
+    // pixel-identical output). Measured real weights/timing and it was a clear REGRESSION:
+    // steady-state denoise step ~19.5s -> ~26.8s. Root cause: the shader's one-thread-per-
+    // (query,head) design has each of qSeq*nHeads threads independently re-read the ENTIRE K/V
+    // sequence from global memory with zero tiling/shared-memory reuse -- for self-attention at
+    // hw=4096 that's on the order of 10+ billion redundant reads for a single call, far more
+    // bandwidth-inefficient than the CPU's cache-friendlier SIMD-parallelized version. Same class
+    // of lesson as the earlier naive Conv2d-shader regression, but worse here because attention's
+    // O(seq^2) math punishes "no tiling" much harder than convolution's bounded kernel size did.
+    // Reverted to the CPU path; the shader+parity-test remain in the codebase as a real, correct
+    // building block for a properly TILED (shared-memory-blocked, flash-attention-style) rewrite
+    // if that's pursued later -- do not re-wire this exact design without re-measuring.
     private static float[] MultiHeadAttention(float[] q, float[] k, float[] v, int qLen, int kvLen, int c, int nHeads, int headDim)
         => DiffusionOps.MultiHeadAttention(q, k, v, qLen, kvLen, nHeads, headDim);
 
