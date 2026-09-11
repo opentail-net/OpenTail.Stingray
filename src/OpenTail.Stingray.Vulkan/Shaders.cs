@@ -6547,6 +6547,94 @@ internal static class Shaders
         """;
 
     /// <summary>
+    /// Multi-head scaled-dot-product attention (bidirectional, no causal mask, no KV cache) for
+    /// vision-transformer-shaped self/cross attention -- added 2026-09-11 for SdxlUNet2D
+    /// ConditionModel's SpatialTransformer, whose Q/K/V come from a diffusion UNet's spatial
+    /// tokens (self-attn, up to hw=4096 query/key positions) or a fixed 77-token text context
+    /// (cross-attn), NOT the causal/KV-cached shape this codebase's existing `Attention`/
+    /// `AttentionBatched` LLM-decode shaders assume -- those don't apply here.
+    ///
+    /// One thread per (query position, head) pair; each thread runs the WHOLE attention row
+    /// on its own via online (numerically-stable, single-pass) softmax -- the standard
+    /// flash-attention-style running max/sum/accumulator rescaling trick, not a two-pass
+    /// materialize-then-normalize approach. No shared memory, no barriers: correctness is easier
+    /// to verify in isolation than a tiled/blocked kernel, at some bandwidth cost (each thread
+    /// re-reads K/V from global memory independently rather than caching tiles) -- deliberately
+    /// the simpler, lower-risk design for a first real GPU attention kernel in this codebase.
+    ///
+    /// Math matches DiffusionOps.MultiHeadAttention exactly: scale = 1/sqrt(headDim), numerically
+    /// stable softmax (running max), no additive bias, no mask.
+    ///
+    /// input layout: Q [qSeq, numHeads*headDim], K/V [kvSeq, numHeads*headDim] (heads interleaved
+    /// contiguously within each token's row -- token i head h dim d is at
+    /// row*numHeads*headDim + h*headDim + d). Output same layout as Q.
+    ///
+    /// headDim is capped at 128 by the shader's fixed-size local accumulator array (GLSL has no
+    /// dynamically-sized local arrays) -- every real caller in this codebase uses headDim=64.
+    ///
+    /// Push constants: { qSeq, kvSeq, numHeads, headDim }.
+    /// Bindings: 0=Q, 1=K, 2=V, 3=Output.
+    /// Dispatch: (ceil(qSeq*numHeads/256), 1, 1) with local_size=(256,1,1).
+    /// </summary>
+    internal const string MultiHeadAttention = """
+        #version 450
+        layout(local_size_x = 256) in;
+
+        layout(push_constant) uniform Params {
+            uint qSeq;
+            uint kvSeq;
+            uint numHeads;
+            uint headDim;
+        };
+
+        layout(binding = 0) readonly  buffer QBuf { float q_data[]; };
+        layout(binding = 1) readonly  buffer KBuf { float k_data[]; };
+        layout(binding = 2) readonly  buffer VBuf { float v_data[]; };
+        layout(binding = 3) writeonly buffer OBuf { float o_data[]; };
+
+        void main() {
+            uint idx = gl_GlobalInvocationID.x;
+            uint totalWork = qSeq * numHeads;
+            if (idx >= totalWork) return;
+
+            uint i = idx / numHeads;
+            uint h = idx % numHeads;
+            uint dim = numHeads * headDim;
+
+            float scale = inversesqrt(float(headDim));
+            uint qBase = i * dim + h * headDim;
+
+            float m = -3.402823e38;
+            float l = 0.0;
+            float acc[128];
+            for (uint d = 0u; d < headDim; d++) acc[d] = 0.0;
+
+            for (uint j = 0u; j < kvSeq; j++) {
+                uint kBase = j * dim + h * headDim;
+                float dot = 0.0;
+                for (uint d = 0u; d < headDim; d++)
+                    dot += q_data[qBase + d] * k_data[kBase + d];
+                float score = dot * scale;
+
+                float mNew = max(m, score);
+                float correction = exp(m - mNew);
+                float p = exp(score - mNew);
+                l = l * correction + p;
+
+                uint vBase = j * dim + h * headDim;
+                for (uint d = 0u; d < headDim; d++)
+                    acc[d] = acc[d] * correction + p * v_data[vBase + d];
+
+                m = mNew;
+            }
+
+            uint oBase = i * dim + h * headDim;
+            for (uint d = 0u; d < headDim; d++)
+                o_data[oBase + d] = acc[d] / l;
+        }
+        """;
+
+    /// <summary>
     /// LeakyReLU in-place: data[i] = data[i] >= 0 ? data[i] : negSlope * data[i]
     /// Push constants: { n, negSlope }.
     /// Bindings: 0=data (in/out).

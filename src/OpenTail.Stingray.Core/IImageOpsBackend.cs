@@ -37,6 +37,15 @@ public interface IImageOpsBackend : IComputeBackend
     /// </summary>
     Tensor GroupNormSilu(Tensor x, Tensor weight, Tensor bias, int c, int hw, int groups = 32, float eps = 1e-5f);
 
+    /// <summary>
+    /// Multi-head scaled-dot-product attention (bidirectional, no causal mask, no KV cache) for
+    /// vision-transformer-shaped self/cross attention. Q [qSeq, numHeads*headDim], K/V
+    /// [kvSeq, numHeads*headDim] -> output [qSeq, numHeads*headDim]. Math matches
+    /// DiffusionOps.MultiHeadAttention exactly (scale=1/sqrt(headDim), stable softmax, no mask).
+    /// headDim must be &lt;=128 (fixed-size shader accumulator; every real caller uses 64).
+    /// </summary>
+    Tensor MultiHeadAttention(Tensor q, Tensor k, Tensor v, int qSeq, int kvSeq, int numHeads, int headDim);
+
     /// <summary>LeakyReLU in-place: x[i] = x[i] >= 0 ? x[i] : negSlope * x[i]</summary>
     void LeakyReluInPlace(Tensor x, float negSlope);
 
