@@ -94,6 +94,23 @@
 
 ---
 
+## SmolLM2 small variants (135M / 360M)
+
+| Model | Scenario | Backend | C# (OT, t/s) | C++ (llama.cpp, t/s) | Ratio | Performance Check | Source |
+|---|---|---|---:|---:|---:|---|---|
+| SmolLM2-135M-Instruct Q4_K_M | prefill (554 tok) | CPU | 1000.4 t/s | 1212.10 t/s | **0.83x** | 2026-09-11 | new coverage; stingray CLI + llama-bench, best-of-3 |
+| SmolLM2-135M-Instruct Q4_K_M | decode (554 tok prompt, 24 tok gen) | CPU | 39.6 t/s | 316.65 t/s | **0.125x** | 2026-09-11 | new coverage; stingray CLI + llama-bench, best-of-3. Extremely low — the smallest dense model tested anywhere in this doc, confirming the small-model-decode-weakness pattern first seen in the Qwen2.5 family. |
+| SmolLM2-360M-Instruct Q4_K_M | prefill (554 tok) | CPU | 369.5 t/s | 379.78 t/s | **0.97x** | 2026-09-11 | new coverage; stingray CLI + llama-bench, best-of-3. Near-parity prefill at this size. |
+| SmolLM2-360M-Instruct Q4_K_M | decode (554 tok prompt, 24 tok gen) | CPU | 26.0 t/s | 135.04 t/s | **0.19x** | 2026-09-11 | new coverage; stingray CLI + llama-bench, best-of-3. Also low, same pattern. |
+
+> **Small-model-decode-weakness pattern, now confirmed across two independent architecture
+> families** (Qwen2.5 and SmolLM2/Llama): decode ratio at the smallest sizes (0.125-0.31x at
+> 135M-500M) is dramatically worse than at 1.5-3B (0.58-0.79x), which is itself worse than the
+> 7-8B dense-parity band (0.99-1.08x) found elsewhere in this doc. Three size tiers, three
+> distinct decode-ratio bands — a real, size-dependent trend, not noise on one model.
+
+---
+
 ## Qwen2.5 family
 
 | Model | Scenario | Backend | C# (OT, t/s) | C++ (llama.cpp, t/s) | Ratio | Performance Check | Source |
