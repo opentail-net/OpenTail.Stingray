@@ -1673,6 +1673,27 @@ severity.
   support"). Not treated as bugs to fix; these architectures are simply unverified, exactly as
   labeled. Timing recorded in PerformanceLeague.md for completeness but explicitly not presented
   as evidence of correctness.
+- **FunASR Paraformer's GGUF checkpoint is confirmed broken — real, reproducible, not a fluke.**
+  2026-09-11: ran `FunAsrRealWeightsTests.Paraformer_GgufRealModelFile_LoadsAndTranscribes`
+  directly (not silent no-op — real 1.06s run, real failure): `System.IO.InvalidDataException:
+  Paraformer GGUF missing 'pf.vocab' metadata` at `FunAsrWeights.cs:89`. `models/_models/
+  paraformer-q8.gguf` genuinely lacks the `pf.vocab` GGUF metadata this loader requires — a bad/
+  incomplete GGUF conversion for this specific file, confirmed via direct test execution, not
+  guessed. Needs either a fresh correct GGUF conversion or a differently-converted checkpoint;
+  not a quick fix from this machine. (This is separate from the FunASR-Nano ONNX-path degenerate-
+  output bug already logged above — same family name, different code path, different failure.)
+- **SenseVoice is not a real wired pipeline — README overstates coverage.** 2026-09-11 grep of
+  `src/OpenTail.Stingray.Audio`: SenseVoice appears only in one doc-comment line on
+  `FunAsrPipeline.cs` ("Native C# Alibaba FunASR (Fun-ASR-Nano / SenseVoice / Paraformer)"), with
+  no dedicated model spec, config, or code path — it's asserted by that comment, not implemented.
+  README's feature-list prose names SenseVoice alongside real, working ASR engines; it is not a
+  real, distinct, testable pipeline on this codebase as of this date.
+- **Parakeet is CTC-only; README's "FastConformer CTC/TDT" phrasing overstates coverage.**
+  2026-09-11: `src/OpenTail.Stingray.Audio/Parakeet/` contains `ParakeetCtcDecoder.cs` and no TDT
+  decoder file of any kind (`ParakeetConformerEncoder.cs`/`ParakeetMelExtractor.cs`/
+  `ParakeetTokenizer.cs`/`ParakeetWeights.cs`/`ParakeetPipeline.cs` round out the directory — none
+  TDT-specific). Only the CTC decode path is real; the TDT half of the README's claim is not
+  implemented.
 - **A systemic silent-no-op pattern in `*RealWeightsTests.cs` files, worse than previously
   documented.** `CLAUDE.md` rule 12 already names this pattern (a green, sub-second "pass" that
   never actually touched real weights) for LLM/vision/some-audio tests. Three *more* instances were

@@ -76,18 +76,15 @@ above (lower priority, since coverage of what's already downloaded matters more 
 
 ## Phase 2 — ASR gaps
 
-- [ ] **FunASR Paraformer** — checkpoint (`paraformer-q8.gguf`) is confirmed broken (missing
-      `pf.vocab` GGUF metadata) per earlier finding. Check if a fresh re-download or a different
-      quant fixes this before giving up on it — README claims it as 🟢 working.
-- [ ] **SenseVoice** — `sensevoice-small.int8.onnx` present, no wired C# pipeline found in an
-      earlier sweep of `src/OpenTail.Stingray.Audio`. Re-confirm this (grep again) — README doesn't
-      actually list SenseVoice with a status badge in the matrix (only in the feature-list prose),
-      so it may be more aspirational than the matrix's other 🟢 entries. If genuinely unwired, log
-      as a real gap rather than force it.
-- [ ] **Parakeet TDT** (as opposed to the CTC variant already benchmarked) — README's feature list
-      says "Parakeet FastConformer CTC/TDT" — check if a TDT-specific decode path exists in
-      `src/OpenTail.Stingray.Audio/Parakeet/` or if only CTC is actually implemented despite the
-      README wording.
+- [x] **FunASR Paraformer** — DONE 2026-09-11. Confirmed broken via direct real test execution
+      (not guessed): `paraformer-q8.gguf` genuinely lacks `pf.vocab` GGUF metadata. Not a quick
+      fix (needs a fresh correct GGUF conversion) — logged as a real gap in current-work.md.
+- [x] **SenseVoice** — DONE 2026-09-11. Confirmed genuinely unwired: only a doc-comment mention
+      in `FunAsrPipeline.cs`, no dedicated model spec/config/code path. README's prose overstates
+      this; logged as a real gap.
+- [x] **Parakeet TDT** — DONE 2026-09-11. Confirmed CTC-only: `Parakeet/` directory has no
+      TDT-specific decoder file. README's "CTC/TDT" phrasing overstates coverage; logged as a
+      real gap.
 
 ## Phase 3 — Diffusion / video (large, low-priority given per-run cost)
 
