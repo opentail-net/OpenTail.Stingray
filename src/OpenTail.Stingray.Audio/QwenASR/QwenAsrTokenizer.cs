@@ -50,25 +50,44 @@ public sealed class QwenAsrTokenizer
     }
 
     /// <summary>
-    /// Formats the ChatML multimodal prompt: system + user turn with
-    /// <c>&lt;|audio_start|&gt;&lt;|audio_pad|&gt;...&lt;|audio_pad|&gt;&lt;|audio_end|&gt;</c>
-    /// (one <c>audio_pad</c> token per AuT-encoder output frame -- the LLM's embedding for each
-    /// of those positions gets replaced by the encoder's projected audio features before decode,
-    /// per the plan doc's "Phase 13: Multimodal Audio Injection", not yet wired up) + task text.
+    /// Formats the ChatML multimodal prompt, matching the REAL reference template found in the
+    /// vendored `examples/audio.cpp/src/models/qwen3_asr/tokenizer_text.cpp`'s
+    /// `default_chat_prompt`/`build_prompt` (2026-09-12 fix -- the previous version here was a
+    /// plausible-looking but unverified invention, per this method's own prior doc comment
+    /// admitting the task-text placement was never checked against a real reference).
+    ///
+    /// The real template is structurally different from what you might guess from a generic
+    /// ChatML/VLM convention:
+    /// - System turn's content ("context") is EMPTY by default in the real pipeline (only
+    ///   populated from an optional user-supplied hint/hotword string, `taskInstruction` here) --
+    ///   NOT a fixed "You are a helpful..." system prompt.
+    /// - The user turn contains ONLY the audio block
+    ///   (<c>&lt;|audio_start|&gt;&lt;|audio_pad|&gt;...&lt;|audio_end|&gt;</c>) with NO
+    ///   trailing instruction text at all -- unlike a typical VLM prompt, the real reference
+    ///   never appends "Transcribe the audio..." inside the user turn.
+    /// - <c>language</c>, when set, is NOT prose ("Language: en") appended before the user
+    ///   turn's &lt;|im_end|&gt; -- it's the literal string "language {lang}&lt;asr_text&gt;"
+    ///   seeded as a forced PREFIX of the assistant's own turn (appended directly after
+    ///   &lt;|im_start|&gt;assistant\n, with no &lt;|im_end|&gt; in between), i.e. part of
+    ///   the PROMPT tokens fed into prefill, not something the model generates. &lt;asr_text&gt;
+    ///   is a real special token in this checkpoint's own vocab (confirmed via
+    ///   `tokenizer_config.json`) that appears to act as a trigger telling the model "now emit
+    ///   the actual transcript" -- omitting it left the model with no signal for when its real
+    ///   completion should start, producing a short generic non-transcript reply then immediate
+    ///   EOS (confirmed real bug, see docs/00-current-work.md's 2026-09-12 entry: exactly one
+    ///   token generated then EOS, regardless of real 14s speech input).
     /// </summary>
     public string FormatPrompt(int numAudioTokens, string? language = null, string? taskInstruction = null)
     {
         var sb = new StringBuilder();
-        sb.Append("<|im_start|>system\nYou are a helpful speech-to-text assistant.<|im_end|>\n");
+        sb.Append("<|im_start|>system\n").Append(taskInstruction ?? "").Append("<|im_end|>\n");
         sb.Append("<|im_start|>user\n<|audio_start|>");
         for (int i = 0; i < numAudioTokens; i++) sb.Append("<|audio_pad|>");
-        sb.Append("<|audio_end|>\n");
+        sb.Append("<|audio_end|><|im_end|>\n<|im_start|>assistant\n");
 
-        if (!string.IsNullOrEmpty(language))
-            sb.Append($"Language: {language}\n");
+        if (!string.IsNullOrEmpty(language) && !string.Equals(language, "Auto", StringComparison.OrdinalIgnoreCase))
+            sb.Append($"language {language}<asr_text>");
 
-        sb.Append(taskInstruction ?? "Transcribe the audio speech into text.");
-        sb.Append("<|im_end|>\n<|im_start|>assistant\n");
         return sb.ToString();
     }
 

@@ -200,6 +200,25 @@ public sealed unsafe class QwenAsrLlmSafetensorsTensorSource : IModelTensorSourc
         _byName["token_embd.weight"] = new GgufTensorInfo("token_embd.weight", 2, [hiddenDim, combinedVocab], DType.Float32, DataOffset: 0);
 
         AudioTokenIdOffset = textVocab;
+
+        if (Environment.GetEnvironmentVariable("STINGRAY_QWENASR_DIAG") == "1")
+        {
+            // Compare a real text-embedding row's magnitude against the audio embeddings just
+            // written, to check for a scale mismatch between the AuT encoder's projected output
+            // and what this LLM's embedding table actually expects.
+            float* textRow = (float*)textEmbedPtr + (long)1000 * hiddenDim; // arbitrary real token id
+            float tMin = float.MaxValue, tMax = float.MinValue, tSum = 0, tSumSq = 0;
+            for (int d = 0; d < hiddenDim; d++)
+            {
+                float v = textRow[d];
+                if (v < tMin) tMin = v;
+                if (v > tMax) tMax = v;
+                tSum += v; tSumSq += v * v;
+            }
+            float tMean = tSum / hiddenDim;
+            float tVar = tSumSq / hiddenDim - tMean * tMean;
+            Console.Error.WriteLine($"[QwenASR-diag] real text embedding row[1000]: min={tMin:F4} max={tMax:F4} mean={tMean:F4} std={MathF.Sqrt(MathF.Max(tVar,0)):F4}");
+        }
     }
 
     /// <summary>Detaches the synthetic audio embeddings buffer and restores the base text embeddings table.</summary>

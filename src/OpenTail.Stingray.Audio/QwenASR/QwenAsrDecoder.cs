@@ -144,12 +144,28 @@ public sealed class QwenAsrDecoder : IDisposable
         var sampleParams = new SamplingParams { Temperature = temperature };
         var rng = new Random();
 
+        bool diag = Environment.GetEnvironmentVariable("STINGRAY_QWENASR_DIAG") == "1";
+        if (diag)
+        {
+            float min = float.MaxValue, max = float.MinValue, sum = 0, sumSq = 0;
+            foreach (var v in audioSoftTokens)
+            {
+                if (v < min) min = v;
+                if (v > max) max = v;
+                sum += v; sumSq += v * v;
+            }
+            float mean = sum / audioSoftTokens.Length;
+            float variance = sumSq / audioSoftTokens.Length - mean * mean;
+            Console.Error.WriteLine($"[QwenASR-diag] promptLen={prompt.Length} numAudioTokens={numAudioTokens} audioPadFramesReplaced={frame} audioEmb: min={min:F4} max={max:F4} mean={mean:F4} std={MathF.Sqrt(MathF.Max(variance,0)):F4}");
+        }
+
         var logits = fwd.Prefill(prompt);
         var emittedTokens = new List<int>(Math.Min(maxNewTokens, 64));
         int position = prompt.Length;
         for (int step = 0; step < maxNewTokens; step++)
         {
             int nextToken = Sampler.Sample(logits, sampleParams, rng);
+            if (diag) Console.Error.WriteLine($"[QwenASR-diag] step={step} token={nextToken}{(nextToken == Config.EosTokenId ? " (EOS)" : "")}");
             if (nextToken == Config.EosTokenId) break;
             emittedTokens.Add(nextToken);
             logits = fwd.Forward(nextToken, position);

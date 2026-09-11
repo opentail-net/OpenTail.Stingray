@@ -31,7 +31,12 @@ public sealed class QwenAsrTokenizerTests : HeavyTestBase
         using var weights = new QwenAsrWeights(path!);
         var tokenizer = new QwenAsrTokenizer(weights);
 
-        string prompt = tokenizer.FormatPrompt(numAudioTokens: 5, language: "en", taskInstruction: "Transcribe the audio speech into text.");
+        // Real template, matching examples/audio.cpp's Qwen3ASRTextTokenizer::build_prompt (fixed
+        // 2026-09-12 -- the previous version of this test asserted the OLD, unverified invented
+        // template, which turned out to be the real cause of a severe correctness bug: see
+        // docs/00-current-work.md's 2026-09-12 entry. `language` seeds "language {lang}<asr_text>"
+        // as a forced assistant-turn prefix, not prose inside the user turn.
+        string prompt = tokenizer.FormatPrompt(numAudioTokens: 5, language: "en");
         int[] tokens = tokenizer.Encode(prompt);
 
         Assert.NotEmpty(tokens);
@@ -46,8 +51,12 @@ public sealed class QwenAsrTokenizerTests : HeavyTestBase
         foreach (var t in tokens) if (t == weights.AudioPadTokenId) padCount++;
         Assert.Equal(5, padCount);
 
+        // <asr_text> must also collapse to a single real token, not get BPE-shredded (the exact
+        // regression found and fixed this session -- see QwenAsrWeights.BuildTokenizer's doc
+        // comment).
         string decoded = tokenizer.Decode(tokens);
-        Assert.Contains("Transcribe", decoded);
+        Assert.Contains("language en", decoded);
+        Assert.Contains("<asr_text>", decoded);
     }
 
     [Fact]

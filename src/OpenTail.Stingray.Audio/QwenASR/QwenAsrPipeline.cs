@@ -142,10 +142,15 @@ public sealed class QwenAsrPipeline : ISpeechToTextPipeline
         var (audioSoftTokens, numAudioTokens) = _encoder.Forward(mel, inMelFrames);
 
         // 3. Format ChatML Multimodal Prompt
+        // taskInstruction (the system turn's content) is left null/empty here to match the real
+        // reference's default (examples/audio.cpp's Qwen3ASRRequest.context defaults to empty --
+        // only ever populated from an optional user-supplied hint string, never a fixed "You are
+        // a helpful..." or "Translate..." instruction). That reference also has no distinct
+        // translate-mode prompt at all for this family -- SpeechTask.Translate isn't given any
+        // special handling here either, matching that real absence rather than inventing one.
         string promptStr = _tokenizer.FormatPrompt(
             numAudioTokens: numAudioTokens,
-            language: request.Language,
-            taskInstruction: (request.Task == SpeechTask.Translate) ? "Translate the speech into English." : "Transcribe the audio speech into text.");
+            language: request.Language);
         int[] promptTokens = _tokenizer.Encode(promptStr);
 
         // 4. Qwen3 LLM Transformer Decoder Forward Pass

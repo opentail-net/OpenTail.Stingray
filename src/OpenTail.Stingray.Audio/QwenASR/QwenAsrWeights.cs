@@ -302,7 +302,7 @@ public sealed class QwenAsrWeights : IDisposable
     /// </summary>
     private static GgufTokenizer BuildTokenizerFromHfFiles(string checkpointDir, int audioStart, int audioEnd, int audioPad, int eos, int pad)
     {
-        var (loadedTokens, merges, _) = Primitives.HfBpeTokenizerLoader.Load(checkpointDir);
+        var (loadedTokens, merges, addedByContent) = Primitives.HfBpeTokenizerLoader.Load(checkpointDir);
         var tokens = Primitives.HfBpeTokenizerLoader.EnsureCovers(loadedTokens, audioStart, audioEnd, audioPad, pad);
 
         var additionalSpecial = new System.Collections.Generic.Dictionary<string, int>(StringComparer.Ordinal)
@@ -314,6 +314,17 @@ public sealed class QwenAsrWeights : IDisposable
             [tokens[audioPad]] = audioPad,
             [tokens[pad]] = pad,
         };
+        // <asr_text> (2026-09-12 fix): the real reference (examples/audio.cpp's
+        // Qwen3ASRTextTokenizer::build_prompt) seeds "language {lang}<asr_text>" as a forced
+        // prefix of the assistant's own turn -- confirmed a real special token in this
+        // checkpoint's tokenizer_config.json (id 151704) that acts as the actual trigger for the
+        // model to begin emitting a transcript. Without registering it here, it silently fell
+        // through to BPE character-merging instead of being encoded as one real token id -- the
+        // exact same failure class this method's own doc comment already found and fixed once for
+        // audio_start/end/pad (a real bug, not a hypothetical one: encoding it unregistered was
+        // the direct cause of a real regression to EMPTY output/immediate EOS when first tried).
+        if (addedByContent.TryGetValue("<asr_text>", out int asrTextId))
+            additionalSpecial["<asr_text>"] = asrTextId;
 
         var source = new TokenizerSource
         {
@@ -410,6 +421,12 @@ public sealed class QwenAsrWeights : IDisposable
             [tokens[audioPad]] = audioPad,
             [tokens[pad]] = pad,
         };
+        // <asr_text> (2026-09-12 fix): same gap as BuildTokenizerFromHfFiles below -- see that
+        // method's doc comment for the real-reference justification. This GGUF checkpoint's own
+        // token_type-less vocab has the same "unregistered specials get BPE-shredded" failure
+        // mode this method's own doc comment already describes for audio_start/end/pad.
+        int asrTextIdGguf = Array.IndexOf(tokens, "<asr_text>");
+        if (asrTextIdGguf >= 0) additionalSpecial["<asr_text>"] = asrTextIdGguf;
 
         var source = new TokenizerSource
         {

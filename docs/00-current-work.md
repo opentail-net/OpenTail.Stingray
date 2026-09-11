@@ -1809,19 +1809,64 @@ severity.
   re-runs on both previously-broken checkpoints: both now produce coherent output on Vulkan
   matching CPU exactly, no measurable perf regression. Full solution rebuilds clean. See
   `PerformanceLeague.md`'s Gemma/Granite rows for the before/after measurements.
-- **Two independent ASR pipelines produce degenerate output — disambiguated 2026-09-11, likely
-  NOT a shared root cause.** Qwen3-ASR 0.6B transcribes the standard 14.1s **real speech**
-  reference clip as just "aspects" (should be a full sentence) — a genuine decode/correctness bug
-  since real speech was used and still produced garbage. FunASR-Nano (via `paraformer-q8.gguf`)
-  produces repetitive word-salad ("to to to... a a a at at at") but — confirmed by reading
-  `FunAsrNanoEndToEndTests.cs:106` — its test harness feeds a `new Random(0)`-generated synthetic
-  tone, not real recorded speech, unlike Qwen3-ASR's real-clip test. A real speech encoder given
-  non-speech tone input producing meaningless/repetitive output is expected behavior, not
-  necessarily a code defect — this downgrades FunASR-Nano's finding from "confirmed bug" to
-  "inconclusive, needs a real-speech re-test" (no CLI/test path currently accepts an arbitrary
-  real `.wav` for either pipeline — would need a small harness change to feed one of the real TTS-
-  generated speech samples in `docs/audio-samples/`, e.g. `kokoro-perf-turn2.wav`, and re-run).
-  Qwen3-ASR's bug stands as confirmed real; FunASR-Nano's does not, pending that re-test.
+- **Two independent ASR pipelines produce degenerate output — disambiguated 2026-09-11. Qwen3-ASR's
+  half ROOT-CAUSED AND FIXED 2026-09-12, per user's explicit mini-plan priority (fixed right after
+  Z-Image-Turbo).** Qwen3-ASR 0.6B transcribed the standard 14.1s **real speech** reference clip
+  as just "aspects" (should be a full sentence) — a genuine decode/correctness bug since real
+  speech was used and still produced garbage.
+
+  **Root cause**: `QwenAsrTokenizer.FormatPrompt`'s ChatML template was an entirely invented,
+  never-verified guess (its own prior doc comment admitted this). Diagnosed via a real, permanent
+  diagnostic (`STINGRAY_QWENASR_DIAG=1` in `QwenAsrDecoder.cs`/`QwenAsrLlmSafetensorsTensorSource.cs`)
+  that printed the exact generated token sequence and audio-embedding stats: the decoder emitted
+  exactly ONE real token then immediate EOS regardless of real 14s speech input; audio-embedding
+  magnitude was confirmed NOT the cause (std=0.0197 vs. a real text-embedding row's std=0.0307,
+  same order of magnitude). Checked the real reference vendored in this repo,
+  `examples/audio.cpp/src/models/qwen3_asr/tokenizer_text.cpp`'s `default_chat_prompt`/
+  `build_prompt`, and found the real template is structurally different: (1) system turn content
+  is EMPTY by default, not "You are a helpful speech-to-text assistant."; (2) the user turn
+  contains ONLY the audio block, no trailing instruction text at all (the "Transcribe the audio
+  speech into text."/"Translate the speech into English." strings were both invented — the real
+  reference has no distinct translate-mode prompt for this family either); (3) `language`, when
+  set, is the literal string `"language {lang}<asr_text>"` seeded as a forced PREFIX of the
+  assistant's own turn (part of the prefill prompt tokens, not generated) — `<asr_text>` (real
+  special token id 151704, confirmed via the checkpoint's own `tokenizer_config.json`) appears to
+  be the actual trigger telling the model to begin emitting a transcript.
+
+  **Second, compounding bug found while implementing the fix**: `<asr_text>` wasn't registered in
+  either tokenizer-building path's `AdditionalSpecialTokens` dict (`QwenAsrWeights.BuildTokenizer`
+  for GGUF, `BuildTokenizerFromHfFiles` for Safetensors) — so encoding it fell through to BPE
+  character-shredding instead of the single real token id, the exact same failure class already
+  found and fixed once for the audio start/end/pad tokens, just never extended to this one since
+  nothing had used it before. First attempt at the template fix alone (without this second fix)
+  actually regressed further, to completely empty output/immediate EOS at step 0 — confirming
+  both bugs were real and needed fixing together.
+
+  **Result**: transcript went from "aspects" (one wrong word) to a real, recognizable, mostly-
+  correct transcript of the actual content: `"!合理。Some call me涅，ature； others call me mother
+  nature. Iveelve been here for over four although billion years, although twenty two! thousand
+  five hundred times longer than you."` — unmistakably the same sentence as the real reference
+  (`"some call me nature others call me mother nature i've been here for over four point five
+  billion years twenty two thousand five hundred times longer than you"`), with some remaining
+  character-level noise (stray Chinese characters, "although" for "point five") left as a real,
+  separate, smaller-magnitude gap — not investigated further this pass, plausibly this 0.6B
+  checkpoint's own real quality/quantization ceiling rather than a further pipeline bug, since the
+  template fix alone recovered essentially the whole sentence structure. `QwenAsrTokenizerTests`
+  updated to assert the new real template's shape instead of the old invented one;
+  `QwenAsrPipelineSafetensorsTests`'s end-to-end test swapped its synthetic sine-tone input for
+  the same real `b.wav` speech clip other working ASR pipelines in this doc use (a real ASR model
+  correctly producing empty output on pure tones — which is what started happening once the
+  template was fixed — isn't a bug; testing with tone input was never actually validating
+  transcription). Full 13-test QwenASR suite re-verified passing. See `PerformanceLeague.md` for
+  the timing/full transcript comparison.
+
+  FunASR-Nano (via `paraformer-q8.gguf`) produces repetitive word-salad ("to to to... a a a at at
+  at") but — confirmed by reading `FunAsrNanoEndToEndTests.cs:106` — its test harness feeds a
+  `new Random(0)`-generated synthetic tone, not real recorded speech, unlike Qwen3-ASR's real-clip
+  test. A real speech encoder given non-speech tone input producing meaningless/repetitive output
+  is expected behavior, not necessarily a code defect — this remains "inconclusive, needs a
+  real-speech re-test" (no CLI/test path currently accepts an arbitrary real `.wav` for this
+  pipeline — would need a small harness change), not yet revisited this pass.
 - **F5-TTS's blocked `audio.cpp` CPU backend — FIXED for real, 2026-09-11, two real bugs.**
   `examples/audio.cpp/src/community_models/f5_tts/cpu_graph_compute.h`'s
   `ggml_graph_compute_with_ctx` resolution only had GCC/Linux code paths (weak-symbol check, then
