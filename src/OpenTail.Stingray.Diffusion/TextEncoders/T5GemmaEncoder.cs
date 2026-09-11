@@ -40,6 +40,18 @@ public sealed class T5GemmaEncoder : IDisposable
     private readonly IWeightLoader _st;
     private readonly bool _ownsLoader;
 
+    // Perf (2026-09-11): same fix as ClipLEncoder/OpenClipGEncoder/T5Encoder/UMT5Encoder --
+    // _st.ReadF32 does a real file.Seek+ReadExactly disk read under a lock on EVERY call, no
+    // caching.
+    private readonly Dictionary<string, float[]> _weightCache = new(StringComparer.Ordinal);
+    private float[] Wt(string name)
+    {
+        if (_weightCache.TryGetValue(name, out var w)) return w;
+        w = _st.ReadF32(name);
+        _weightCache[name] = w;
+        return w;
+    }
+
     public T5GemmaEncoder(string path)
     {
         _st = SafetensorsLoader.Open(path);
@@ -64,7 +76,7 @@ public sealed class T5GemmaEncoder : IDisposable
         int seq = tokens.Length;
         attentionMask ??= CreateAllTrue(seq);
 
-        var tokEmb = _st.ReadF32("model.encoder.embed_tokens.weight");
+        var tokEmb = Wt("model.encoder.embed_tokens.weight");
         var x = new float[seq * Dim];
         for (int t = 0; t < seq; t++)
         {
@@ -82,7 +94,7 @@ public sealed class T5GemmaEncoder : IDisposable
             x = EncoderLayer(x, seq, layer, cos, sin, attentionMask);
         }
 
-        var finalNormW = _st.ReadF32("model.encoder.norm.weight");
+        var finalNormW = Wt("model.encoder.norm.weight");
         GemmaRmsNorm(x, finalNormW, Dim);
         return x;
     }
@@ -98,24 +110,24 @@ public sealed class T5GemmaEncoder : IDisposable
     {
         string p = $"model.encoder.layers.{layerIdx}";
 
-        var preAttnW = _st.ReadF32($"{p}.pre_self_attn_layernorm.weight");
+        var preAttnW = Wt($"{p}.pre_self_attn_layernorm.weight");
         var xNorm = x.ToArray();
         GemmaRmsNorm(xNorm, preAttnW, Dim);
 
         var attn = SelfAttention(xNorm, seq, p, cos, sin, attentionMask);
 
-        var postAttnW = _st.ReadF32($"{p}.post_self_attn_layernorm.weight");
+        var postAttnW = Wt($"{p}.post_self_attn_layernorm.weight");
         GemmaRmsNorm(attn, postAttnW, Dim);
 
         for (int i = 0; i < x.Length; i++) x[i] += attn[i];
 
-        var preFfW = _st.ReadF32($"{p}.pre_feedforward_layernorm.weight");
+        var preFfW = Wt($"{p}.pre_feedforward_layernorm.weight");
         var xNorm2 = x.ToArray();
         GemmaRmsNorm(xNorm2, preFfW, Dim);
 
         var ff = FeedForward(xNorm2, seq, p);
 
-        var postFfW = _st.ReadF32($"{p}.post_feedforward_layernorm.weight");
+        var postFfW = Wt($"{p}.post_feedforward_layernorm.weight");
         GemmaRmsNorm(ff, postFfW, Dim);
 
         for (int i = 0; i < x.Length; i++) x[i] += ff[i];
@@ -125,10 +137,10 @@ public sealed class T5GemmaEncoder : IDisposable
 
     private float[] SelfAttention(float[] x, int seq, string p, float[] cos, float[] sin, bool[] attentionMask)
     {
-        var qW = _st.ReadF32($"{p}.self_attn.q_proj.weight");
-        var kW = _st.ReadF32($"{p}.self_attn.k_proj.weight");
-        var vW = _st.ReadF32($"{p}.self_attn.v_proj.weight");
-        var oW = _st.ReadF32($"{p}.self_attn.o_proj.weight");
+        var qW = Wt($"{p}.self_attn.q_proj.weight");
+        var kW = Wt($"{p}.self_attn.k_proj.weight");
+        var vW = Wt($"{p}.self_attn.v_proj.weight");
+        var oW = Wt($"{p}.self_attn.o_proj.weight");
 
         var q = DiffusionOps.Linear(x, qW, null, seq, Dim, Dim);
         var k = DiffusionOps.Linear(x, kW, null, seq, Dim, Dim);
@@ -181,9 +193,9 @@ public sealed class T5GemmaEncoder : IDisposable
 
     private float[] FeedForward(float[] x, int seq, string p)
     {
-        var gateW = _st.ReadF32($"{p}.mlp.gate_proj.weight");
-        var upW = _st.ReadF32($"{p}.mlp.up_proj.weight");
-        var downW = _st.ReadF32($"{p}.mlp.down_proj.weight");
+        var gateW = Wt($"{p}.mlp.gate_proj.weight");
+        var upW = Wt($"{p}.mlp.up_proj.weight");
+        var downW = Wt($"{p}.mlp.down_proj.weight");
 
         var gate = DiffusionOps.Linear(x, gateW, null, seq, Dim, FfDim);
         var up = DiffusionOps.Linear(x, upW, null, seq, Dim, FfDim);

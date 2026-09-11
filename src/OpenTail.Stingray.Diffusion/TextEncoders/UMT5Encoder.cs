@@ -41,13 +41,24 @@ public sealed class UMT5Encoder : IDisposable
 
     private readonly SafetensorsLoader _st;
 
+    // Perf (2026-09-11): same fix as ClipLEncoder/OpenClipGEncoder/T5Encoder -- _st.ReadF32 does a
+    // real file.Seek+ReadExactly disk read under a lock on EVERY call, no caching.
+    private readonly Dictionary<string, float[]> _weightCache = new(StringComparer.Ordinal);
+    private float[] Wt(string name)
+    {
+        if (_weightCache.TryGetValue(name, out var w)) return w;
+        w = _st.ReadF32(name);
+        _weightCache[name] = w;
+        return w;
+    }
+
     public UMT5Encoder(string path) => _st = SafetensorsLoader.Open(path);
 
     /// <summary>Encode token ids -> context embeddings [seq, 4096].</summary>
     public float[] Encode(int[] tokens)
     {
         int seq = tokens.Length;
-        var tokEmb = _st.ReadF32("token_embedding.weight");
+        var tokEmb = Wt("token_embedding.weight");
 
         var x = new float[seq * Dim];
         for (int t = 0; t < seq; t++)
@@ -59,7 +70,7 @@ public sealed class UMT5Encoder : IDisposable
         for (int i = 0; i < Layers; i++)
             x = EncoderBlock(x, seq, i);
 
-        var fnW = _st.ReadF32("norm.weight");
+        var fnW = Wt("norm.weight");
         DiffusionOps.RmsNorm(x, fnW, Dim);
         return x;
     }
@@ -69,16 +80,16 @@ public sealed class UMT5Encoder : IDisposable
         string p = $"blocks.{blockIdx}";
 
         // Real Wan UMT5: every block has its own relative position bias.
-        var rpW = _st.ReadF32($"{p}.pos_embedding.embedding.weight");
+        var rpW = Wt($"{p}.pos_embedding.embedding.weight");
         var relPosBias = ComputeRelPosBias(rpW, seq, Heads);
 
-        var lnW0 = _st.ReadF32($"{p}.norm1.weight");
+        var lnW0 = Wt($"{p}.norm1.weight");
         var xNorm = x.ToArray();
         DiffusionOps.RmsNorm(xNorm, lnW0, Dim);
         var attn = SelfAttention(xNorm, relPosBias, seq, $"{p}.attn");
         for (int i = 0; i < x.Length; i++) x[i] += attn[i];
 
-        var lnW1 = _st.ReadF32($"{p}.norm2.weight");
+        var lnW1 = Wt($"{p}.norm2.weight");
         var xNorm2 = x.ToArray();
         DiffusionOps.RmsNorm(xNorm2, lnW1, Dim);
         var ff = FeedForward(xNorm2, seq, $"{p}.ffn");
@@ -89,10 +100,10 @@ public sealed class UMT5Encoder : IDisposable
 
     private float[] SelfAttention(float[] x, float[] relBias, int seq, string p)
     {
-        var qW = _st.ReadF32($"{p}.q.weight");
-        var kW = _st.ReadF32($"{p}.k.weight");
-        var vW = _st.ReadF32($"{p}.v.weight");
-        var oW = _st.ReadF32($"{p}.o.weight");
+        var qW = Wt($"{p}.q.weight");
+        var kW = Wt($"{p}.k.weight");
+        var vW = Wt($"{p}.v.weight");
+        var oW = Wt($"{p}.o.weight");
 
         var q = DiffusionOps.Linear(x, qW, null, seq, Dim, Dim);
         var k = DiffusionOps.Linear(x, kW, null, seq, Dim, Dim);
@@ -137,9 +148,9 @@ public sealed class UMT5Encoder : IDisposable
     {
         // Real gated-gelu FFN. Wan's own naming: ffn.gate.0 = the GELU-activated branch (wi_0 in
         // HF naming), ffn.fc1 = the linear/value branch (wi_1), ffn.fc2 = output projection (wo).
-        var gateW = _st.ReadF32($"{p}.gate.0.weight");
-        var fc1W  = _st.ReadF32($"{p}.fc1.weight");
-        var fc2W  = _st.ReadF32($"{p}.fc2.weight");
+        var gateW = Wt($"{p}.gate.0.weight");
+        var fc1W  = Wt($"{p}.fc1.weight");
+        var fc2W  = Wt($"{p}.fc2.weight");
 
         var gate = DiffusionOps.Linear(x, gateW, null, seq, Dim, FfDim);
         var val  = DiffusionOps.Linear(x, fc1W, null, seq, Dim, FfDim);
