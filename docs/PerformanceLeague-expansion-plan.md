@@ -49,10 +49,14 @@ Checkpoints + mmproj already present in `models/_models/` (checked 2026-09-11):
       gap for this checkpoint (logged, didn't affect this measurement).
 - [x] Kimi-VL-A3B-thinking + `mmproj-kimi-vl-a3b-thinking-Q8_0.gguf` — DONE 2026-09-11. Crashes:
       `Missing tensor: blk.0.attn_q.weight` (deepseek2 MLA-tensor gap, logged).
-- [x] MiMo-VL-7B-sft + `mmproj-mimo-vl-7b-sft-Q8_0.gguf` — DONE 2026-09-11. Crashes in
-      `RunImagePrompt:2574` — same exact crash site as Step3-VL-10B below, real shared bug logged.
-- [x] Step3-VL-10B + `mmproj-step3-vl-10b-F16.gguf` — DONE 2026-09-11. Crashes at the identical
-      `RunImagePrompt:2574` site as MiMo-VL-7B-sft — confirms a shared bug, logged.
+- [x] MiMo-VL-7B-sft + `mmproj-mimo-vl-7b-sft-Q8_0.gguf` — DONE 2026-09-11, crash FIXED (turned
+      into a clean error). Root cause: a genuine 3584-vs-4096-dim mmproj/text-backbone mismatch,
+      an upstream conversion defect not fixable here — but `RunImagePrompt` no longer crashes on
+      it, reporting the exact mismatch instead.
+- [x] Step3-VL-10B + `mmproj-step3-vl-10b-F16.gguf` — DONE 2026-09-11, crash FIXED for real. Root
+      cause: `Step3VlVisionEncoder` looked up the wrong GGUF tensor name for the final projector
+      (`mm.model_proj.weight` vs the real `mm.model.fc.weight`). Fixed and verified — now runs to
+      completion with real timing (10.0/9.9 t/s prefill/decode).
 - [x] YouTu-VL-4B + `mmproj-youtu-vl-4b-BF16.gguf` — DONE 2026-09-11. Same
       `Missing tensor: blk.0.attn_q.weight` crash as Kimi-VL-A3B-thinking.
 - [x] Nemotron-Nano-12B-v2-VL + `mmproj-nemotron-nano-12b-v2-vl-bf16.gguf` — DONE 2026-09-11.

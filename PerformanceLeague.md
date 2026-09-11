@@ -554,16 +554,19 @@ measurement to chase further right now:
 | Checkpoint | Architecture | Result |
 |---|---|---|
 | Kimi-VL-A3B-thinking Q2_K | `deepseek2` | **Crash**: `Missing tensor: blk.0.attn_q.weight` (also hit by YouTu-VL-4B below — same arch, same missing-tensor class, likely MLA-compressed-KV tensors not resolved for this quant/arch combo) |
-| MiMo-VL-7B-sft Q2_K | `qwen2vl` | **Crash**: `ArgumentOutOfRangeException` in `RunCommand.RunImagePrompt` (line 2574) — loads fine, vision encoder runs (81 soft tokens), crashes formatting the response |
+| MiMo-VL-7B-sft Q2_K | `qwen2vl` | ~~**Crash**: `ArgumentOutOfRangeException`~~ **FIXED 2026-09-11 — now a clean error, not a crash.** Root cause: `RunImagePrompt` used the text backbone's `hp.EmbeddingDim` (4096) as the per-token stride into the vision buffer instead of the vision embedder's own reported width. This checkpoint's mmproj genuinely projects to 3584-dim, not 4096 — a real GGUF-conversion mismatch, not something fixable from this codebase. Now reported as `Error: vision projector (qwen2.5vl_merger) outputs 3584-dim embeddings but the text backbone expects 4096-dim input` instead of crashing |
 | Nemotron-Nano-12B-v2-VL Q2_K | `nemotron_h` | **Crash**: `HybridGdnForwardPass dense FFN requires hp.IntermediateDim > 0` — a hyperparameter this architecture needs isn't populated for this checkpoint |
 | DeepSeek-OCR-2 Q4_K_M | `deepseek2-ocr` | **Runs**, real timing (41.9 t/s prefill / 30.9 t/s decode, 4096 image + 7 text tokens) but fully garbled mixed-language output — per the flag's own warning, not usable as a real measurement |
 | PaddleOCR-VL-1.6 | `paddleocr` | **Runs**, real timing (51.5 t/s prefill / 39.2 t/s decode) but output is 4 repeated newline-byte tokens — degenerate |
 | YouTu-VL-4B Q8_0 | `deepseek2` | **Crash**: `Missing tensor: blk.0.attn_q.weight` — same class as Kimi-VL-A3B-thinking above |
-| Step3-VL-10B Q2_K | (admitted arch, no warning) | **Crash**: identical `ArgumentOutOfRangeException` at the exact same `RunImagePrompt:2574` as MiMo-VL-7B-sft above, despite being a different architecture entirely — this is a **shared bug in the image-prompt response path itself**, not two unrelated architecture issues |
+| Step3-VL-10B Q2_K | (admitted arch, no warning) | ~~**Crash**: identical `ArgumentOutOfRangeException`~~ **FIXED 2026-09-11 — real bug, real fix.** Root cause (distinct from MiMo-VL's, despite the identical crash symptom): `Step3VlVisionEncoder` looked up the final projector tensor under a made-up name (`mm.model_proj.weight`), which never matched this checkpoint's real GGUF tensor (`mm.model.fc.weight`, confirmed against `examples/llama.cpp`'s real `clip.cpp`/`clip-impl.h` reference). The wrong name meant the tensor was never found, silently narrowing the returned buffer while the reported width stayed wide — the exact same width-mismatch failure mode as MiMo-VL's bug, but from a genuine tensor-name typo. Fixed the name; now runs to completion: 10.0/9.9 t/s prefill/decode (3 runs), garbled output as expected for a Q2_K quant on an unverified architecture, but the crash itself is gone |
 
-The MiMo-VL/Step3-VL crash sharing the exact same line across two unrelated architectures is the
-most actionable finding here — a real, fixable bug in `RunCommand.RunImagePrompt`, independent of
-any specific architecture's forward-pass correctness.
+**Both fixed 2026-09-11.** The identical crash symptom across two unrelated architectures had two
+DIFFERENT real root causes — one a genuine upstream checkpoint-conversion defect (MiMo-VL, not
+fixable here), one a real bug in this codebase (Step3-VL's tensor-name typo, now fixed). The
+underlying design flaw both symptoms shared — `RunImagePrompt` trusting `hp.EmbeddingDim` instead
+of validating against the vision embedder's own reported width — is fixed for all architectures
+going forward, not just these two.
 
 ---
 
@@ -638,7 +641,7 @@ Rows where the Ratio column is blank and a C++ comparison would be actionable:
 | SenseVoice | any | any | Confirmed 2026-09-11: not a real wired pipeline — only a doc-comment mention in `FunAsrPipeline.cs`, no model spec/config/code path. README's feature-list prose overstates coverage here | Would need a real, dedicated pipeline implementation, not a bug fix |
 | Parakeet TDT | any | any | Confirmed 2026-09-11: only `ParakeetCtcDecoder.cs` exists, no TDT-specific decoder anywhere in `Parakeet/`. README's "CTC/TDT" phrasing overstates coverage — only CTC is real | Would need a real TDT decode-head implementation, not a bug fix |
 | Granite-4.0-3B-Vision / Granite-Vision-3.2-2B (real image input) | vision-encode correctness | CPU | Confirmed 2026-09-11: both produce the same class of degenerate, non-image-grounded output on real `--image` runs despite the Vulkan correctness bug fix and real, non-trivial vision-encoder timing — a separate, still-open Granite-family vision-integration bug | Root-cause the image-embedding injection point in the Granite chat template/forward path |
-| MiMo-VL-7B-sft / Step3-VL-10B (real image input) | any | CPU | Confirmed 2026-09-11: both crash at the identical `RunCommand.RunImagePrompt:2574` despite unrelated architectures — a real, shared bug in the image-prompt response path | Root-cause and fix `RunImagePrompt`'s handling at that call site |
+| ~~MiMo-VL-7B-sft / Step3-VL-10B (real image input)~~ | any | CPU | **FIXED 2026-09-11.** Both crashed identically but for two different real reasons: MiMo-VL's mmproj has a genuine 3584-vs-4096-dim conversion mismatch (now a clean error, not fixable here); Step3-VL's encoder used a wrong tensor name (`mm.model_proj.weight` vs the real `mm.model.fc.weight`), now fixed and running to completion. `RunImagePrompt` also now validates vision/text dim agreement explicitly for every architecture, not just these two. | Closed |
 
 ---
 

@@ -1663,15 +1663,34 @@ severity.
   `sysns.text + ('\n' if sysns.text else '') + sys_content`) get passed through unevaluated instead
   of rendered, so this checkpoint's actual chat-formatted prompt may be subtly wrong. Fix: extend
   this project's Jinja subset to handle string-concat inside conditional expressions.
-- **`RunCommand.RunImagePrompt` has a shared crash bug across unrelated architectures.**
-  2026-09-11, real `--image`/`--mmproj --allow-unverified-arch` runs: MiMo-VL-7B-sft (`qwen2vl`)
-  and Step3-VL-10B (`step3vl`, an already-admitted architecture, no unverified-arch warning) both
-  crash with an identical `System.ArgumentOutOfRangeException` at the exact same call site,
-  `RunCommand.cs:2574` inside `RunImagePrompt`. Both load the model and run the vision encoder
-  successfully (soft tokens produced, real prefill numbers reachable) before crashing — this is a
-  real, fixable bug in the shared image-prompt response-formatting path itself, independent of
-  either architecture's own forward-pass correctness. Worth root-causing directly since it blocks
-  measurement of any checkpoint that hits this exact code path.
+- **`RunCommand.RunImagePrompt`'s shared crash bug — FIXED 2026-09-11, two distinct real root
+  causes behind one identical symptom.** MiMo-VL-7B-sft (`qwen2vl`) and Step3-VL-10B (`step3vl`)
+  both crashed with an identical `ArgumentOutOfRangeException` at the same call site
+  (`soft.AsSpan(t * embd, embd)` in `RunImagePrompt`), because `embd` was read from `hp.EmbeddingDim`
+  (the TEXT backbone's hidden size) instead of the vision embedder's own reported output width —
+  correct only when they happen to match, which most working checkpoints do, but not guaranteed.
+  **Root cause 1 (MiMo-VL, NOT fixable in this codebase):** this checkpoint's mmproj genuinely
+  projects to 3584-dim while the text backbone expects 4096-dim — a real upstream GGUF-conversion
+  mismatch. **Root cause 2 (Step3-VL, a real bug, fixed):** `Step3VlVisionEncoder` looked up the
+  final projector tensor under a made-up name, `mm.model_proj.weight`, which never matched this
+  checkpoint's real GGUF tensor — confirmed against the real reference
+  (`examples/llama.cpp/llama.cpp/tools/mtmd/clip.cpp`'s `PROJECTOR_TYPE_STEP3VL` case and
+  `clip-impl.h`'s `TN_MM_PROJECTOR = "mm.model.fc.%s"`) to be `mm.model.fc.weight`, no bias. The
+  wrong name meant the tensor was silently never found, so `Forward` fell back to returning a
+  narrower buffer while the reported projection width stayed at the wrong wider metadata/fallback
+  value — same failure mode as MiMo-VL's mismatch, but self-inflicted rather than upstream. **The
+  fix**: (a) `RunImagePrompt` now reads `vision.EmbeddingDim` for the stride and explicitly
+  validates it against `hp.EmbeddingDim` up front with a clear, actionable error message instead of
+  crashing on a bounds violation deep in the loop — this protects every architecture, not just
+  these two; (b) `Step3VlVisionModel.cs`/`Step3VlVisionEncoder.cs`'s tensor lookups corrected to
+  `mm.model.fc.weight`/`.bias`, and `Step3VlVisionEncoder.ProjectionDim` made defensively
+  width-safe (falls back to the real returned width whenever the final-projector tensor is
+  genuinely absent, not just for this specific bug). **Verified**: MiMo-VL now fails with a clean
+  `Error: vision projector (qwen2.5vl_merger) outputs 3584-dim embeddings but the text backbone
+  expects 4096-dim input` instead of crashing. Step3-VL now runs to completion — real, reproducible
+  10.0/9.9 t/s prefill/decode across 3 runs (garbled output, expected for a Q2_K quant on an
+  unverified architecture, but the crash is gone). Full `OpenTail.Stingray.Tests.Vision` suite
+  re-run clean: 150 passed, 0 failed, 9 skipped (missing fixtures, unrelated to this change).
 - **Two `deepseek2`-architecture VLM checkpoints (Kimi-VL-A3B-thinking, YouTu-VL-4B) crash with
   `Missing tensor: blk.0.attn_q.weight`** when run with `--allow-unverified-arch` — same
   architecture tag, same missing-tensor error, at `ForwardPass.Helpers.cs:178`'s `ResolveTensor`.
