@@ -19,6 +19,13 @@ public sealed class VaeDecoder : IDisposable, IVaeDecoder
     private readonly Dictionary<string, float[]> _cpuWeights = new(StringComparer.Ordinal);
     private readonly Dictionary<string, CoreTensor>? _gpuWeights;
 
+    // Separate cache for the native Conv2d-shader path (see ConvNative below). Its weight buffer
+    // must be plain Float32 (the shader reads `float weight_data[]` directly, no dtype dispatch),
+    // unlike _gpuWeights above which stores Half-converted tensors for the Sgemm mixed-precision
+    // path -- reusing that cache here would misinterpret 2-byte Half values as 4-byte floats.
+    private readonly Dictionary<string, CoreTensor>? _gpuWeightsNative;
+    private readonly IImageOpsBackend? _imageOps;
+
     private const float VaeShift = 0.1159f;
     // Perf note (2026-09-11): tried bumping this 4x (32M -> 128M) to cut GPU dispatch count on the
     // theory that fewer, larger chunks would help -- measured real weights/timing and it was a
@@ -37,7 +44,11 @@ public sealed class VaeDecoder : IDisposable, IVaeDecoder
         _st      = st;
         _backend = backend;
         if (backend is not null)
+        {
             _gpuWeights = new Dictionary<string, CoreTensor>(StringComparer.Ordinal);
+            _gpuWeightsNative = new Dictionary<string, CoreTensor>(StringComparer.Ordinal);
+            _imageOps = backend as IImageOpsBackend;
+        }
     }
 
     private string Resolve(string name)
@@ -78,13 +89,24 @@ public sealed class VaeDecoder : IDisposable, IVaeDecoder
         TensorPrimitives.Add(z, shift, z);
 
         // post_quant_conv: Conv2D(C→C, 1×1)
+        // conv_in: Conv2D(C→512, 3×3)
+        // Perf (2026-09-11, first step of the "port VAE to the native GPU Conv2d shader" plan):
+        // these two standalone convs go through ConvNative (one direct GPU dispatch, zero CPU-side
+        // im2col/transpose) instead of ConvBlock's im2col+Sgemm path when the backend supports it.
+        // Not yet extended to ResBlock/mid-block/up-block convs -- proving the integration on the
+        // simplest case first, per this session's incremental-verification discipline.
         string pqKey = Resolve("post_quant_conv");
         if (_st.Contains($"{pqKey}.weight"))
-            z = ConvBlock(pqKey, z, 1, latentCh, latH, latW, latentCh, 1, padding: 0);
+        {
+            z = _imageOps is not null
+                ? ConvNative(_imageOps, pqKey, z, latentCh, latH, latW, latentCh, 1, padding: 0)
+                : ConvBlock(pqKey, z, 1, latentCh, latH, latW, latentCh, 1, padding: 0);
+        }
 
-        // conv_in: Conv2D(C→512, 3×3)
         string convInKey = Resolve("decoder.conv_in");
-        z = ConvBlock(convInKey, z, 1, latentCh, latH, latW, 512, 3);
+        z = _imageOps is not null
+            ? ConvNative(_imageOps, convInKey, z, latentCh, latH, latW, 512, 3)
+            : ConvBlock(convInKey, z, 1, latentCh, latH, latW, 512, 3);
         int ch = 512, h = latH, w = latW;
 
         bool isCompVis = _st.Contains(Resolve("decoder.mid.block_1.conv1.weight"));
@@ -151,7 +173,9 @@ public sealed class VaeDecoder : IDisposable, IVaeDecoder
 
         // conv_out: Conv2D(128→3)
         string convOutKey = Resolve("decoder.conv_out");
-        z = ConvBlock(convOutKey, z, 1, ch, h, w, 3, 3);
+        z = _imageOps is not null
+            ? ConvNative(_imageOps, convOutKey, z, ch, h, w, 3, 3)
+            : ConvBlock(convOutKey, z, 1, ch, h, w, 3, 3);
         LogVae("norm_out + conv_out");
 
         // Clamp to [0, 1] (vectorized -- this runs over the full-resolution RGB output)
@@ -475,12 +499,59 @@ public sealed class VaeDecoder : IDisposable, IVaeDecoder
         return w;
     }
 
+    /// <summary>
+    /// Conv2D via the native GPU Conv2d compute shader (see Shaders.Conv2d) instead of the
+    /// im2col+Sgemm path above -- one direct dispatch, zero CPU-side gather/transpose. Only used
+    /// when the backend implements <see cref="IImageOpsBackend"/> (Vulkan; CUDA/CPU fall back to
+    /// <see cref="ConvBlock"/>). Requires stride=1, which every VAE conv already uses.
+    /// </summary>
+    private float[] ConvNative(IImageOpsBackend imageOps, string name, float[] x, int inCh, int h, int w, int outCh, int k, int padding = -1)
+    {
+        string wKey = $"{name}.weight";
+        if (!_gpuWeightsNative!.TryGetValue(wKey, out var wGpu))
+        {
+            var wf = Wt(wKey);
+            wGpu = imageOps.Upload(wf.AsSpan(), TensorShape.D1(wf.Length));
+            _gpuWeightsNative[wKey] = wGpu;
+        }
+
+        string bKey = $"{name}.bias";
+        if (!_gpuWeightsNative.TryGetValue(bKey, out var bGpu))
+        {
+            // The native shader always reads a bias buffer (acc = bias_data[oc], no null-bias
+            // branch) -- upload zeros when this conv has none, matching the im2col path's
+            // `biasArr?[oc] ?? 0f` fallback.
+            var bf = _st.Contains(bKey) ? Wt(bKey) : new float[outCh];
+            bGpu = imageOps.Upload(bf.AsSpan(), TensorShape.D1(bf.Length));
+            _gpuWeightsNative[bKey] = bGpu;
+        }
+
+        var xGpu = imageOps.Upload(x.AsSpan(0, inCh * h * w), TensorShape.D1(inCh * h * w));
+        var yGpu = imageOps.Conv2d(xGpu, wGpu, bGpu, inCh, outCh, h, w, k, padding);
+        var result = new float[outCh * h * w];
+        try
+        {
+            imageOps.Download(yGpu, result);
+        }
+        finally
+        {
+            imageOps.Free(xGpu);
+            imageOps.Free(yGpu);
+        }
+        return result;
+    }
+
     public void Dispose()
     {
         if (_gpuWeights is not null)
         {
             foreach (var t in _gpuWeights.Values) _backend!.Free(t);
             _gpuWeights.Clear();
+        }
+        if (_gpuWeightsNative is not null)
+        {
+            foreach (var t in _gpuWeightsNative.Values) _backend!.Free(t);
+            _gpuWeightsNative.Clear();
         }
         _cpuWeights.Clear();
         _st.Dispose();
