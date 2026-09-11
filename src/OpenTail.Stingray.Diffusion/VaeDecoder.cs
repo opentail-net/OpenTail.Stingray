@@ -374,6 +374,17 @@ public sealed class VaeDecoder : IDisposable, IVaeDecoder
         int chunkRows = kPts > 0 ? Math.Max(1, Math.Min(outH, MaxColChunkFloats / (outW * kPts))) : outH;
         var output = new float[outCh * hw];
 
+        // Perf note (2026-09-11): tried double-buffering colBuf + a background Task to build the
+        // NEXT chunk's im2col while the CURRENT chunk's Sgemm/Download GPU fence-wait was in
+        // flight (a distinct idea from the chunk-SIZE change also tried/reverted above -- this one
+        // targeted dispatch-count/latency overlap, not raw transfer size). Measured real
+        // weights/timing across two runs: no real improvement (31.01s baseline vs 32.23s/32.90s
+        // piped, i.e. flat-to-slightly-worse, not the hoped-for overlap win). Most likely cause:
+        // Im2ColChunk's own Parallel.For already saturates the thread pool, so a Task.Run'd "next
+        // chunk" competes with it for the same worker threads instead of cleanly overlapping with
+        // otherwise-idle time. Reverted -- keeping this note so the same idea isn't retried without
+        // re-measuring (e.g. a dedicated single background thread instead of Task.Run might behave
+        // differently, but that's unverified, not assumed to work).
         var colBuf    = ArrayPool<float>.Shared.Rent(chunkRows * outW * kPts);
         var resultBuf = ArrayPool<float>.Shared.Rent(chunkRows * outW * outCh);
         try
