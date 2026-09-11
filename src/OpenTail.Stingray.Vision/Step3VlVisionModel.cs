@@ -56,7 +56,9 @@ public sealed class Step3VlVisionModel : IDisposable
 
         if (projectionDim <= 0)
         {
-            var t = gguf.FindTensor("mm.model_proj.weight");
+            // Real tensor name confirmed against clip.cpp's PROJECTOR_TYPE_STEP3VL case /
+            // TN_MM_PROJECTOR ("mm.model.fc.%s") -- see Step3VlVisionEncoder.cs's matching fix.
+            var t = gguf.FindTensor("mm.model.fc.weight");
             projectionDim = t.HasValue ? (int)t.Value.Dimensions[1] : 4096;
         }
 

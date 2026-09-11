@@ -2456,7 +2456,28 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         using var __ = vision; // matches this method's existing risk tolerance: other early
                                 // returns below (e.g. the EmbedImageFile catch) also don't dispose
                                 // vision explicitly; process exit reclaims it for a CLI invocation.
-        int embd = hp.EmbeddingDim;
+        // Real bug (found 2026-09-11, benchmarking MiMo-VL-7B-sft/Step3-VL-10B): this used to read
+        // hp.EmbeddingDim (the TEXT backbone's hidden size) as the per-token stride into the vision
+        // projector's soft-token buffer. That's only correct when the projector's real output width
+        // happens to equal the text hidden size — true for most working checkpoints, but not
+        // guaranteed, and false for at least these two, where the projector genuinely outputs a
+        // narrower vector. Using the wrong (larger) stride then slices `soft.AsSpan(t * embd, embd)`
+        // past the end of the real, shorter buffer once `t` is large enough — an
+        // ArgumentOutOfRangeException from the Span slice itself, not a meaningful error. Use the
+        // vision embedder's own reported width instead, and fail with a clear, actionable message
+        // up front if it can't actually feed the text backbone (ForwardEmbedding requires an exact
+        // length match against hp.EmbeddingDim; a size mismatch here is a real architecture-adapter
+        // bug, not something a caller can work around).
+        int embd = vision.EmbeddingDim;
+        if (embd != hp.EmbeddingDim)
+        {
+            AnsiConsole.MarkupLine(
+                $"[red]Error:[/] vision projector ({vision.ProjectorType}) outputs {embd}-dim " +
+                $"embeddings but the text backbone expects {hp.EmbeddingDim}-dim input — this " +
+                $"checkpoint's vision adapter has a real dimension mismatch and cannot be used " +
+                $"for image input as converted.");
+            return 1;
+        }
 
         // Reconcile the number of <image> markers in the prompt with the number of --image
         // files. No markers → prepend one placeholder per image (in --image order). Otherwise

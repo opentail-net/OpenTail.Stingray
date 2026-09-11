@@ -41,7 +41,18 @@ public sealed unsafe class Step3VlVisionEncoder
         public int FfnIntermediate;
     }
 
-    public int ProjectionDim => _projDim;
+    // Real bug (found + fixed 2026-09-11 benchmarking Step3-VL-10B): the final projector tensor
+    // was looked up under a made-up name, "mm.model_proj.weight" -- confirmed against the real
+    // reference (`examples/llama.cpp/llama.cpp/tools/mtmd/clip.cpp`'s PROJECTOR_TYPE_STEP3VL case
+    // and `clip-impl.h`'s `TN_MM_PROJECTOR = "mm.model.fc.%s"`) that the real GGUF key is
+    // "mm.model.fc.weight", with NO bias tensor for this projector type. The wrong name meant this
+    // tensor was never found, silently falling back to returning `mm1Out` (width `_mm1OutDim`)
+    // from `Forward` while `_projDim` (used for this property, and for the CLI's per-token stride)
+    // still reported the metadata/hardcoded-fallback width -- a real width mismatch that sliced
+    // past the end of the actual, narrower buffer (ArgumentOutOfRangeException, no useful
+    // diagnostic). Fixed the tensor name below; this property is kept width-safe regardless (falls
+    // back to the real returned width whenever the tensor genuinely isn't present).
+    public int ProjectionDim => _mmModelProjW != null ? _projDim : _mm1OutDim;
 
     public Step3VlVisionEncoder(Step3VlVisionModel model)
     {
@@ -64,8 +75,8 @@ public sealed unsafe class Step3VlVisionEncoder
         _mm0B         = VisionOps.GetTensorArray(gguf, "mm.0.bias");
         _mm1W         = VisionOps.LoadTensorF32(gguf, "mm.1.weight");
         _mm1B         = VisionOps.GetTensorArray(gguf, "mm.1.bias");
-        _mmModelProjW = VisionOps.LoadTensorF32(gguf, "mm.model_proj.weight");
-        _mmModelProjB = VisionOps.GetTensorArray(gguf, "mm.model_proj.bias");
+        _mmModelProjW = VisionOps.LoadTensorF32(gguf, "mm.model.fc.weight");
+        _mmModelProjB = VisionOps.GetTensorArray(gguf, "mm.model.fc.bias");
 
         var mm0T = gguf.FindTensor("mm.0.weight");
         _mm0OutDim = mm0T.HasValue ? (int)mm0T.Value.Dimensions[1] : _embd * 2;
