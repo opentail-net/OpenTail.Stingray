@@ -183,6 +183,8 @@
 | Gemma4 E4B QAT Q4_0 | decode | Vulkan (†) | 39.5 t/s | — | — | 2026-06-22 | README history 0c171ed |
 | Gemma4-E4B-it Q4_K_M | prefill (497 tok) | CPU | 9.8 t/s | 80.50 t/s | **0.12x** | 2026-09-10 | stingray CLI + llama-bench (new CPU coverage, quant differs from QAT Q4_0 rows above) |
 | Gemma4-E4B-it Q4_K_M | decode (497 tok prompt, 24 tok gen) | CPU | 9.7 t/s | 13.07 t/s | **0.74x** | 2026-09-10 | stingray CLI + llama-bench (new CPU coverage) |
+| Gemma4-E4B-it Q4_K_M | prefill (497 tok) | Vulkan iGPU | 9.1 t/s | — | — | 2026-09-10 | new coverage; no llama.cpp Vulkan ref. **Missing-batched-prefill signature reproduces a third time** (prefill≈decode: 9.1 vs 8.2 t/s) — now confirmed on Gemma-4-12B (CPU+Vulkan) and Gemma4-E4B (CPU+Vulkan), fully architecture-wide across both sizes and both backends. Output is coherent this time (unlike the separate Granite/Vulkan bug). |
+| Gemma4-E4B-it Q4_K_M | decode (497 tok prompt, 24 tok gen) | Vulkan iGPU | 8.2 t/s | — | — | 2026-09-10 | new coverage; close to CPU decode (8.2 vs 9.7 t/s) |
 | Gemma4 12B QAT Q4_0 | prefill | CUDA (†) | 1714 t/s | — | — | 2026-06-16 | README history 0c171ed |
 | Gemma4 12B QAT Q4_0 | decode | CUDA (†) | 54.1 t/s | 57 t/s | **0.95x** | 2026-06-16 | README history 0c171ed |
 | Gemma4 12B QAT Q4_0 | prefill | Vulkan (†) | 17.0 t/s | — | — | 2026-06-16 | README history 0c171ed |
