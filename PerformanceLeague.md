@@ -276,6 +276,7 @@ the correctness caveat" approach used elsewhere in this doc (e.g. Ornith-1.0-9B,
 |---|---|---|---:|---:|---:|---|---|
 | DeepSeek-V2-Lite-Chat Q8_0 | prefill (502 tok) | CPU | 28.0 t/s | 56.90 t/s | **0.49x** | 2026-09-11 | new coverage; stingray CLI (`--allow-unverified-arch`) + llama-bench, best-of-3 |
 | DeepSeek-V2-Lite-Chat Q8_0 | decode (502 tok prompt, 24 tok gen) | CPU | 13.6 t/s | 14.83 t/s | <span style="color:#16a34a">**0.92x**</span> | 2026-09-11 | new coverage; stingray CLI (`--allow-unverified-arch`) + llama-bench, best-of-3. **Near-parity decode despite the known correctness gap** — the throughput cost of this architecture's MoE dispatch is small even though the routing itself produces wrong tokens. |
+| DeepSeek-V2-Lite-Chat Q8_0 | any | Vulkan iGPU | **hard crash**, no number possible | — | — | 2026-09-12 | `GpuForwardPass` throws `Missing tensor: blk.0.attn_k.weight` while uploading layer 1 — `deepseek2`'s MLA attention uses different tensor names (`attn_kv_a`/`attn_k_b`-style split projections) than the standard `attn_k.weight` the Vulkan upload path expects. Same tensor-mapping gap class already logged for Kimi-VL/YouTu-VL's vision-adjacent MLA layers elsewhere in this doc — a real, architecture-level gap, not a quick fix. CPU path already works (rows above) since `ForwardPass`'s CPU implementation has real MLA support; only the Vulkan GPU path is missing it |
 
 ---
 
