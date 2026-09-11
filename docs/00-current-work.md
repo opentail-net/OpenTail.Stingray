@@ -1771,11 +1771,12 @@ severity.
   of 6 total runs now confirmed coherent) — not yet root-caused (candidates: RoPE/positional
   embedding edge case, VAE decode instability, or a genuine seed-quality issue in the base model
   itself) and not disambiguated further this session.
-- **`RealESRGAN_x4plus.safetensors` (the `--upscaler` RRDBNet path) is untested independent of the
-  LTX-Video noise finding above** — the one real attempt to use it was confounded by the
-  seed-instability bug, so no clean measurement of the upscaler itself exists yet. Worth a
-  dedicated retry with a `--seed <fixed>` LTX-Video (or SDXL/SD1.5) base image once the noise
-  issue above is understood, so the upscaler's own contribution can be isolated.
+- **`RealESRGAN_x4plus.safetensors` (the `--upscaler` RRDBNet path) — CONFIRMED WORKING 2026-09-11.**
+  Paired with SD1.5's known-good base output (`--upscaler` + real SD1.5 generation), produced a
+  real, genuinely sharp 512×512 → 2048×2048 (4x) upscale — visually confirmed coherent wood-grain
+  detail, not degenerate. This isolates and rules out `--upscaler` itself as the cause of the
+  earlier LTX-Video noise (which is real and separate — see the LTX-Video entry above). Real timing
+  breakdown available (RRDB body 106.4s, upsample/HR/download 18.1s of a 781.3s total run).
 - **A systemic silent-no-op pattern in `*RealWeightsTests.cs` files, worse than previously
   documented.** `CLAUDE.md` rule 12 already names this pattern (a green, sub-second "pass" that
   never actually touched real weights) for LLM/vision/some-audio tests. Three *more* instances were
