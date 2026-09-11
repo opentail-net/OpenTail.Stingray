@@ -449,7 +449,15 @@ public sealed class FluxDiT : IDisposable
         float logMax = MathF.Log(10000f);
         for (int i = 0; i < halfDim; i++)
         {
-            float freq = MathF.Exp(-logMax * i / (halfDim - 1));
+            // Real bug found 2026-09-11 (FLUX tiling-artifact investigation, docs/056 Round 7):
+            // real diffusers' get_timestep_embedding (embeddings.py), as FLUX actually configures
+            // it (Timesteps(num_channels=256, downscale_freq_shift=0)), divides by `half_dim`
+            // (i.e. `half_dim - downscale_freq_shift` with shift=0), not `half_dim - 1`. This
+            // perturbs every element of the timestep/guidance sinusoidal embedding uniformly on
+            // every denoising step -- real, but a uniform conditioning-vector error, not a
+            // spatially-patterned one, so it does not explain the separate remaining tiling
+            // artifact (still open, see docs/056).
+            float freq = MathF.Exp(-logMax * i / halfDim);
             float v = t * 1000f * freq;   // scale t to [0, 1000]
             emb[i]           = MathF.Cos(v);
             emb[i + halfDim] = MathF.Sin(v);
