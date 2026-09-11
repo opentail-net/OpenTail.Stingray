@@ -485,6 +485,37 @@ separately.
 
 ---
 
+## Vision-Language Model Real Image Encoding (CPU) — first real `--image` measurements
+
+Unlike the text-backbone-only table above, these runs feed a real image through `--image`/`--mmproj`
+and produce a real image-grounded text description — the actual vision-encode path, not just the
+LLM backbone. Image used: `docs/diffusion-samples/ltx_test_apple_256.png` (256×256, an existing
+repo asset, no new download needed). Prompt: `"Describe this image in one sentence."`, `-n 30`,
+`--temp 0` (both sides), CPU only.
+
+| Model | Scenario | Tool | Result | Performance Check | Source |
+|---|---|---|---|---|---|
+| InternVL3-2B Q4_K_M + mmproj-q8_0 | prefill (294 tok = 256 image + 38 text) | stingray CLI (OT) | 28.1 t/s avg (28.4/28.1/27.8 across 3 runs) | 2026-09-11 | new coverage; real vision-encode path, `--image`/`--mmproj`, best-of-3 |
+| InternVL3-2B Q4_K_M + mmproj-q8_0 | decode (23-30 tok gen) | stingray CLI (OT) | 27.4 t/s avg (27.2/27.3/27.6 across 3 runs) | 2026-09-11 | new coverage; combined prefill+decode t/s reported by OT's own `Prefill:`/`Decode:` output lines |
+| InternVL3-2B Q4_K_M + mmproj-q8_0 | vision-encoder portion only | `llama-mtmd-cli.exe` (C++ reference) | 2488–3226ms (3 runs: 2904, 2488, 3226ms) | 2026-09-11 | **not directly comparable to the OT numbers above** — see caveat below |
+
+**Methodology caveat (same discipline as the earlier Kokoro/Piper cold-CLI-vs-warm-benchmark
+note):** `llama-mtmd-cli.exe`'s only timing output is `mtmd batch encoding done in N ms`, which
+measures the **vision-encoder-only** portion of the pipeline (turning the 256 image tokens into
+embeddings), not full generation. OT's `Prefill:`/`Decode: t/s` figures are a **combined**
+prefill+decode throughput number across all 294 tokens (image + text) plus the generated tokens.
+These measure different, non-overlapping slices of the same pipeline — there is no valid way to
+turn llama-mtmd-cli's single number into a ratio against OT's t/s without fabricating an
+apples-to-oranges comparison, so none is given. What both sides *do* independently confirm: this
+is a real, working, correctness-verified vision-encode path on both C# (OT) and C++ (llama.cpp)
+for this checkpoint — both produced plausible, image-grounded descriptions of the actual picture
+content (OT: "a colorful, abstract composition featuring vibrant reds, yellows, and blues with
+some black shapes"; llama-mtmd-cli: "a distorted, colorful abstract scene with a prominent red
+shape in the center"). This is the first real vision-encode-path measurement recorded anywhere in
+this document — prior VLM rows were text-backbone-only (no image input at all).
+
+---
+
 ## Vision Encoder (CPU)
 
 | Component | Scenario | Backend | C# result | C++ reference | Ratio | Performance Check | Source |

@@ -30,8 +30,10 @@ checkpoint AND an mmproj file already on this machine.
 
 Checkpoints + mmproj already present in `models/_models/` (checked 2026-09-11):
 
-- [ ] InternVL3-2B + `mmproj-internvl3-2b-q8_0.gguf` — real vision-encode timing (text backbone
-      already benchmarked; add the image path)
+- [x] InternVL3-2B + `mmproj-internvl3-2b-q8_0.gguf` — DONE 2026-09-11. Real vision-encode
+      measured on both OT and llama-mtmd-cli (C++); numbers are not directly comparable (OT gives
+      combined prefill+decode t/s, llama-mtmd-cli only prints vision-encoder-only ms) — caveat
+      written up in PerformanceLeague.md's new "Vision-Language Model Real Image Encoding" section.
 - [ ] Granite-4.0-3B-Vision + `mmproj-granite-4.0-3b-vision-f16.gguf` — the Vulkan correctness bug
       (Phase 4) is now FIXED and verified — safe to test on both CPU and Vulkan
 - [ ] Granite-Vision-3.2-2B + `mmproj-granite-vision-3.2-2b-f16.gguf` — same, fix verified

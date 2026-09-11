@@ -1596,10 +1596,20 @@ severity.
   unavailable (CPU backend not loaded)` — confirmed with real `--voice-ref`/`--reference-text`
   arguments, not a config error. This is the audio.cpp side, not the OT C# port (OT's own F5-TTS
   already has real CPU numbers in `PerformanceLeague.md`).
-- **Chatterbox Turbo's streaming path is blocked on a missing tokenizer asset.** Real
-  `--mode streaming` run against `chatterbox_turbo`'s model spec fails looking for
-  `models/chatterbox_turbo_vocab.json`, which isn't present alongside the GGUF on this machine.
-  Likely just needs locating/regenerating that one file.
+- **Chatterbox Turbo's streaming path is blocked on a missing tokenizer asset — root-caused,
+  not yet fixed.** Real `--mode streaming` run against `chatterbox_turbo`'s model spec fails
+  looking for `models/chatterbox_turbo_vocab.json`. Investigation (2026-09-11, subagent):
+  `examples/audio.cpp/model_specs/chatterbox_turbo.json` expects **three** separate sidecar
+  files next to the GGUF (`chatterbox_turbo_vocab.json`, `chatterbox_turbo_merges.txt`,
+  `chatterbox_turbo_special_tokens.json`, classic split GPT2-BPE format) — none exist anywhere
+  on this machine as standalone files. However, the real, complete tokenizer already exists in
+  two other forms: (a) embedded as standard `tokenizer.ggml.tokens`/`tokenizer.ggml.merges` GGUF
+  metadata inside `models/chatterbox-turbo-t3-q4_k.gguf` itself (50276 tokens, 49992 merges,
+  confirmed via `stingray list-metadata`), and (b) as a combined single-file HF `tokenizers`-format
+  `tokenizer.json` at `examples/Chatterbox-turbo-cpp/assets/tokenizer.json` (3.8MB, includes the
+  emotion `added_tokens` like `[angry]`). Neither is a drop-in copy/rename — both need a small
+  format-splitting/materializing step into the three-file shape the audio.cpp loader expects.
+  This is audio.cpp's (C++ reference) streaming path specifically, not OT's own Chatterbox port.
 - **Qwen3.8-27B's chat template has 3 real Jinja rendering gaps**, logged as runtime warnings, not
   crashes: unsupported string-concatenation-inside-conditional/`in` expressions (e.g.
   `sysns.text + ('\n' if sysns.text else '') + sys_content`) get passed through unevaluated instead
