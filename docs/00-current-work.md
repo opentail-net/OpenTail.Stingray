@@ -1571,11 +1571,20 @@ severity.
   itself is still open** — this only makes it fail gracefully, real embeddings from this path are
   not semantically meaningful for inputs longer than a few words until a real tokenizer is wired.
   See `PerformanceLeague.md`'s Embeddings section for real post-fix measurements.
-- **Granite architecture has a real, Vulkan-specific correctness bug**, confirmed on two independent
-  checkpoints. Identical prompt/seed gives coherent English on CPU but broken output on Vulkan:
-  garbled multilingual gibberish on `Granite-4.0-3B-Vision`, a single degenerate token then
-  immediate stop on `Granite-Vision-3.2-2B`. Not root-caused. Needs a numeric CPU-vs-Vulkan parity
-  check specifically for the Granite architecture's Vulkan kernel/dtype-selection path.
+- ~~**Granite architecture has a real, Vulkan-specific correctness bug**~~ **FIXED 2026-09-11.**
+  Was: identical prompt/seed gave coherent English on CPU but broken output on Vulkan (garbled
+  multilingual gibberish on `Granite-4.0-3B-Vision`, a single degenerate token then immediate stop
+  on `Granite-Vision-3.2-2B`). Root cause: `GpuForwardPass.cs`'s `RunStandardLayers`/
+  `RecordBatchedTrunk` never threaded `AttentionScaleOverride`, `ResidualScale`, or `LogitScale`
+  into the Vulkan dispatch path, while the CPU path (`ForwardPass.Decode.cs`/`PrefillCore.cs`/
+  `Attention.cs`) applied all three — Granite's real, non-1.0 scaling hyperparameters. Fix: the
+  same Q-prescale-to-cancel-the-shader's-hardcoded-scale trick already used for Gemma 4's
+  `AttentionScaleOverride`, generalized, plus `ScaleInPlace` calls for `ResidualScale`/`LogitScale`
+  at 9 call sites (single-token decode, batched prefill/verify, and every logit-output path),
+  each gated on a non-default value so no other architecture is affected. Verified with real
+  re-runs on both previously-broken checkpoints: both now produce coherent output on Vulkan
+  matching CPU exactly, no measurable perf regression. Full solution rebuilds clean. See
+  `PerformanceLeague.md`'s Gemma/Granite rows for the before/after measurements.
 - **Two independent ASR pipelines produce degenerate output on real speech audio**, despite running
   to completion and (for one of them) at a fast RTF: Qwen3-ASR 0.6B transcribes the standard
   14.1s reference clip as just "aspects" (should be a full sentence); FunASR-Nano (via

@@ -32,10 +32,9 @@ Checkpoints + mmproj already present in `models/_models/` (checked 2026-09-11):
 
 - [ ] InternVL3-2B + `mmproj-internvl3-2b-q8_0.gguf` — real vision-encode timing (text backbone
       already benchmarked; add the image path)
-- [ ] Granite-4.0-3B-Vision + `mmproj-granite-4.0-3b-vision-f16.gguf` — same, plus this is the
-      checkpoint with the confirmed Vulkan correctness bug (Phase 4) — test CPU only until that's
-      fixed, to avoid reporting a broken-output timing as if it were valid
-- [ ] Granite-Vision-3.2-2B + `mmproj-granite-vision-3.2-2b-f16.gguf` — same caveat as above
+- [ ] Granite-4.0-3B-Vision + `mmproj-granite-4.0-3b-vision-f16.gguf` — the Vulkan correctness bug
+      (Phase 4) is now FIXED and verified — safe to test on both CPU and Vulkan
+- [ ] Granite-Vision-3.2-2B + `mmproj-granite-vision-3.2-2b-f16.gguf` — same, fix verified
 - [ ] dots.ocr + `mmproj-dots.ocr-Q8_0.gguf`
 - [ ] Gemma-3-4B-it + `mmproj-gemma-3-4b-it-f16.gguf`
 - [ ] Kimi-VL-A3B-thinking + `mmproj-kimi-vl-a3b-thinking-Q8_0.gguf` — text backbone rejected as
@@ -98,17 +97,16 @@ phase as opportunistic, not a commitment — each of these could be a multi-hour
 
 ## Phase 4 — Bug fixes (parallelizable via subagents, NOT benchmarking)
 
-- [ ] **Granite Vulkan correctness bug** — root cause found this session (subagent investigation):
+- [x] **Granite Vulkan correctness bug — FIXED 2026-09-11** — root cause found this session (subagent investigation):
       `GpuForwardPass.cs`'s `RunStandardLayers` never threads `AttentionScaleOverride`,
       `ResidualScale`, or `LogitScale` into the Vulkan dispatch path, while the CPU path
       (`ForwardPass.Decode.cs`/`PrefillCore.cs`/`Attention.cs`) applies all three. Exact file/line
       references already gathered. Next: implement the fix (a subagent can do this — reading+
       writing code, not running timed inference), then verify via a real CPU-vs-Vulkan comparison
       run (that verification run itself must be serial, done directly, not by a subagent).
-- [ ] **DeepSeek-V2-Lite unsupported-architecture rejection** — confirmed this session that running
-      without `--allow-unverified-arch` gives a clean rejection. README says this family works
-      (accepted as "final" with a known routing-flatness caveat, run via that exact flag). Retry
-      with the flag and get a real number if it produces coherent-enough output to be worth timing.
+- [x] **DeepSeek-V2-Lite** — DONE 2026-09-11. Ran with `--allow-unverified-arch`, confirmed the
+      documented garbled output matches README's own finding exactly, got real throughput numbers
+      anyway (0.92x near-parity decode). Added to PerformanceLeague.md's new "DeepSeek family" section.
 - [ ] **F5-TTS's blocked CPU backend in `audio.cpp`** — real, scoped, from the original backfill
       pass. Not attempted yet this session.
 - [ ] **Chatterbox Turbo's missing streaming tokenizer asset** — real, scoped, from the original

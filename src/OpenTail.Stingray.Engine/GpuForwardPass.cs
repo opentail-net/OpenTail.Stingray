@@ -1377,6 +1377,14 @@ public sealed unsafe class GpuForwardPass : IForwardPass
         _gpu.RecordBarrier();
         GpuMatMul(_logits, _wOutput, _hidden);
 
+        // Granite/MiniCPM final-logit scale (already carries llama.cpp's 1/f_logit_scale
+        // reciprocal — see ModelHyperparams.LogitScale). Mirrors CPU ForwardPass.Decode.cs.
+        if (_hp.LogitScale != 1f)
+        {
+            _gpu.RecordBarrier();
+            _gpu.ScaleInPlace(_logits, _hp.LogitScale);
+        }
+
         // Fold the logits download into the main submit: no second command buffer needed.
         _gpu.RecordComputeToTransferBarrier();
         _gpu.RecordDownloadToStaging(_logits, _logitsBuf.Length);
@@ -1473,6 +1481,19 @@ public sealed unsafe class GpuForwardPass : IForwardPass
                 long dstOffsetElems = ((long)layer * _snapKvQCaptureW + _snapKvCaptureSlot) * qDim;
                 _gpu.RecordComputeCopyRegion(capBuf, dstOffsetElems * sizeof(float),
                                              _q, 0, (long)qDim * sizeof(float));
+                _gpu.RecordBarrier();
+            }
+
+            // AttentionScaleOverride (Granite, etc.): the attention shaders below hardcode
+            // score /= sqrt(head_dim). CPU (ForwardPass.Attention.cs) reads
+            // _hp.AttentionScaleOverride in place of 1/sqrt(head_dim) when it's set (e.g. Granite
+            // 3.3-2B's 1/64 instead of the generic 1/sqrt(64)=0.125). There's no separate override
+            // knob on the GPU dispatches, so — same trick as the Gemma 4 attn_scale=1.0 case below
+            // (RunGemma4Layers) — pre-scale Q by (AttentionScaleOverride * sqrt(head_dim)) so the
+            // shader's own 1/sqrt(head_dim) cancels down to exactly AttentionScaleOverride.
+            if (_hp.AttentionScaleOverride != 0f)
+            {
+                _gpu.ScaleInPlace(_q, _hp.AttentionScaleOverride * MathF.Sqrt(_headDim));
                 _gpu.RecordBarrier();
             }
             // KV append reads K/V (with or without RoPE)
@@ -1612,6 +1633,14 @@ public sealed unsafe class GpuForwardPass : IForwardPass
                 _gpu.RecordBarrier();
             }
 
+            // Granite/MiniCPM: scale the sublayer output before it joins the residual stream.
+            // Mirrors CPU ForwardPass.Decode.cs exactly.
+            if (_hp.ResidualScale != 1f)
+            {
+                _gpu.ScaleInPlace(_hidden, _hp.ResidualScale);
+                _gpu.RecordBarrier();
+            }
+
             _gpu.AddInPlace(_hidden, _residual);
             _gpu.RecordBarrier(); // hidden done → FFN copy reads it
 
@@ -1631,6 +1660,13 @@ public sealed unsafe class GpuForwardPass : IForwardPass
             if (_wPostFfwNorm is not null)
             {
                 _gpu.RmsNorm(_hidden, _hidden, _wPostFfwNorm[layer], _hp.RmsNormEps);
+                _gpu.RecordBarrier();
+            }
+
+            // Granite/MiniCPM: scale the sublayer output before it joins the residual stream.
+            if (_hp.ResidualScale != 1f)
+            {
+                _gpu.ScaleInPlace(_hidden, _hp.ResidualScale);
                 _gpu.RecordBarrier();
             }
 
@@ -1723,6 +1759,11 @@ public sealed unsafe class GpuForwardPass : IForwardPass
         _gpu.RmsNorm(_hidden, _hidden, _wOutputNorm, _hp.RmsNormEps);
         _gpu.RecordBarrier();
         GpuMatMul(_logits, _wOutput, _hidden);
+        if (_hp.LogitScale != 1f)
+        {
+            _gpu.RecordBarrier();
+            _gpu.ScaleInPlace(_logits, _hp.LogitScale);
+        }
         if (_hp.FinalLogitSoftcap > 0f)
         {
             _gpu.RecordBarrier();
@@ -1776,6 +1817,11 @@ public sealed unsafe class GpuForwardPass : IForwardPass
             _gpu.RmsNorm(_hidden, _hidden, _wOutputNorm, _hp.RmsNormEps);
             _gpu.RecordBarrier();
             GpuMatMul(_logits, _wOutput, _hidden);
+            if (_hp.LogitScale != 1f)
+            {
+                _gpu.RecordBarrier();
+                _gpu.ScaleInPlace(_logits, _hp.LogitScale);
+            }
             if (_hp.FinalLogitSoftcap > 0f)
             {
                 _gpu.RecordBarrier();
@@ -1802,6 +1848,11 @@ public sealed unsafe class GpuForwardPass : IForwardPass
             _gpu.RmsNorm(_hidden, _hidden, _wOutputNorm, _hp.RmsNormEps);
             _gpu.RecordBarrier();
             GpuMatMul(_logits, _wOutput, _hidden);
+            if (_hp.LogitScale != 1f)
+            {
+                _gpu.RecordBarrier();
+                _gpu.ScaleInPlace(_logits, _hp.LogitScale);
+            }
 
             _gpu.RecordComputeToTransferBarrier();
             _gpu.RecordDownloadToStaging(_logits, _logitsBuf.Length);
@@ -2319,6 +2370,11 @@ public sealed unsafe class GpuForwardPass : IForwardPass
         _gpu.RmsNormBatched(_hiddenK, _hiddenK, _wOutputNorm, embDim, k, _hp.RmsNormEps);
         _gpu.RecordBarrier();
         _gpu.MatMulBatched(_logitsK, _wOutput, _hiddenK, k, WeightDType(_wOutput));
+        if (_hp.LogitScale != 1f)
+        {
+            _gpu.RecordBarrier();
+            _gpu.ScaleInPlace(_logitsK, _hp.LogitScale);
+        }
 
         _gpu.RecordComputeToTransferBarrier();
         _gpu.RecordDownloadToStaging(_logitsK, _logitsKBuf!.Length);
@@ -2485,6 +2541,19 @@ public sealed unsafe class GpuForwardPass : IForwardPass
                 _gpu.RecordBarrier();
             }
 
+            // AttentionScaleOverride (Granite, etc.): same Q-prescale trick as the single-token
+            // RunStandardLayers path above and as Gemma 4's attn_scale=1.0 case (RunGemma4Layers),
+            // generalized. The batched attention shaders below hardcode score /= sqrt(head_dim);
+            // pre-scale every row of _qK by (AttentionScaleOverride * sqrt(head_dim)) so that
+            // cancels down to exactly AttentionScaleOverride. Applies uniformly to all k rows —
+            // the batched buffer is one flat [k * qDim] array, so a whole-buffer scalar multiply
+            // is correct.
+            if (_hp.AttentionScaleOverride != 0f)
+            {
+                _gpu.ScaleInPlace(_qK, _hp.AttentionScaleOverride * MathF.Sqrt(_headDim));
+                _gpu.RecordBarrier();
+            }
+
             // KvAppend + Attention over the k tokens so token i attends to [0, startPos+i] (causal
             // among the k tokens; seqLen = startPos+i+1) — bit-identical to k sequential Forwards.
             // When the whole causal range fits the 4096 shared-score fast path (startPos+k ≤ 4096):
@@ -2595,6 +2664,14 @@ public sealed unsafe class GpuForwardPass : IForwardPass
                 _gpu.RecordBarrier();
             }
 
+            // Granite/MiniCPM: scale the sublayer output before it joins the residual stream.
+            // Mirrors CPU ForwardPass.PrefillCore.cs / RunStandardLayers exactly.
+            if (_hp.ResidualScale != 1f)
+            {
+                _gpu.ScaleInPlace(_hiddenK, _hp.ResidualScale);
+                _gpu.RecordBarrier();
+            }
+
             // + residual (whole buffer), then residualK = hiddenK for the FFN.
             _gpu.AddInPlace(_hiddenK, _residualK);
             _gpu.RecordBarrier();
@@ -2619,6 +2696,13 @@ public sealed unsafe class GpuForwardPass : IForwardPass
             if (_wPostFfwNorm is not null)
             {
                 _gpu.RmsNormBatched(_hiddenK, _hiddenK, _wPostFfwNorm[layer], embDim, k, _hp.RmsNormEps);
+                _gpu.RecordBarrier();
+            }
+
+            // Granite/MiniCPM: scale the sublayer output before it joins the residual stream.
+            if (_hp.ResidualScale != 1f)
+            {
+                _gpu.ScaleInPlace(_hiddenK, _hp.ResidualScale);
                 _gpu.RecordBarrier();
             }
 
@@ -2673,6 +2757,11 @@ public sealed unsafe class GpuForwardPass : IForwardPass
         _gpu.RmsNorm(_hidden, _hidden, _wOutputNorm, _hp.RmsNormEps);
         _gpu.RecordBarrier();
         GpuMatMul(_logits, _wOutput, _hidden);
+        if (_hp.LogitScale != 1f)
+        {
+            _gpu.RecordBarrier();
+            _gpu.ScaleInPlace(_logits, _hp.LogitScale);
+        }
 
         _gpu.RecordComputeToTransferBarrier();
         _gpu.RecordDownloadToStaging(_logits, _logitsBuf.Length);
