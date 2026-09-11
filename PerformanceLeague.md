@@ -543,6 +543,28 @@ some black shapes"; llama-mtmd-cli: "a distorted, colorful abstract scene with a
 shape in the center"). This is the first real vision-encode-path measurement recorded anywhere in
 this document — prior VLM rows were text-backbone-only (no image input at all).
 
+### Unsupported-architecture vision attempts (`--allow-unverified-arch`), no usable timing
+
+The remaining Phase 1 checkpoints all previously had their text backbone rejected as an unverified
+architecture. Retried here with `--allow-unverified-arch` + `--image`/`--mmproj` per the expansion
+plan — all either crashed or produced unusable garbled output, so **no valid t/s numbers exist for
+these**; each is a real, reproducible gap logged in `docs/00-current-work.md`, not a missing
+measurement to chase further right now:
+
+| Checkpoint | Architecture | Result |
+|---|---|---|
+| Kimi-VL-A3B-thinking Q2_K | `deepseek2` | **Crash**: `Missing tensor: blk.0.attn_q.weight` (also hit by YouTu-VL-4B below — same arch, same missing-tensor class, likely MLA-compressed-KV tensors not resolved for this quant/arch combo) |
+| MiMo-VL-7B-sft Q2_K | `qwen2vl` | **Crash**: `ArgumentOutOfRangeException` in `RunCommand.RunImagePrompt` (line 2574) — loads fine, vision encoder runs (81 soft tokens), crashes formatting the response |
+| Nemotron-Nano-12B-v2-VL Q2_K | `nemotron_h` | **Crash**: `HybridGdnForwardPass dense FFN requires hp.IntermediateDim > 0` — a hyperparameter this architecture needs isn't populated for this checkpoint |
+| DeepSeek-OCR-2 Q4_K_M | `deepseek2-ocr` | **Runs**, real timing (41.9 t/s prefill / 30.9 t/s decode, 4096 image + 7 text tokens) but fully garbled mixed-language output — per the flag's own warning, not usable as a real measurement |
+| PaddleOCR-VL-1.6 | `paddleocr` | **Runs**, real timing (51.5 t/s prefill / 39.2 t/s decode) but output is 4 repeated newline-byte tokens — degenerate |
+| YouTu-VL-4B Q8_0 | `deepseek2` | **Crash**: `Missing tensor: blk.0.attn_q.weight` — same class as Kimi-VL-A3B-thinking above |
+| Step3-VL-10B Q2_K | (admitted arch, no warning) | **Crash**: identical `ArgumentOutOfRangeException` at the exact same `RunImagePrompt:2574` as MiMo-VL-7B-sft above, despite being a different architecture entirely — this is a **shared bug in the image-prompt response path itself**, not two unrelated architecture issues |
+
+The MiMo-VL/Step3-VL crash sharing the exact same line across two unrelated architectures is the
+most actionable finding here — a real, fixable bug in `RunCommand.RunImagePrompt`, independent of
+any specific architecture's forward-pass correctness.
+
 ---
 
 ## Vision Encoder (CPU)

@@ -47,18 +47,20 @@ Checkpoints + mmproj already present in `models/_models/` (checked 2026-09-11):
       (2nd confirmed-working checkpoint alongside InternVL3-2B) — genuinely describes the image
       content correctly across all 3 best-of-3 runs. Also found an unrelated Jinja chat-template
       gap for this checkpoint (logged, didn't affect this measurement).
-- [ ] Kimi-VL-A3B-thinking + `mmproj-kimi-vl-a3b-thinking-Q8_0.gguf` — text backbone rejected as
-      unsupported architecture (`deepseek2`) earlier this session; check if `--allow-unverified-arch`
-      makes it run (README claims DeepSeek2 family works via that flag) before writing this off
-- [ ] MiMo-VL-7B-sft + `mmproj-mimo-vl-7b-sft-Q8_0.gguf` — text backbone rejected as unsupported
-      (`qwen2vl`); same check as above
-- [ ] Step3-VL-10B + `mmproj-step3-vl-10b-F16.gguf` — untested so far, check architecture support
-- [ ] YouTu-VL-4B + `mmproj-youtu-vl-4b-BF16.gguf` — text backbone already confirmed unsupported
-      architecture; check if the flag helps
-- [ ] Nemotron-Nano-12B-v2-VL + `mmproj-nemotron-nano-12b-v2-vl-bf16.gguf` — untested so far
-- [ ] DeepSeek-OCR-2 + `mmproj-deepseek-ocr-2-q8_0.gguf` — untested so far
-- [ ] PaddleOCR-VL-1.6 + `mmproj-paddleocr-vl-1.6.gguf` — text backbone confirmed unsupported
-      architecture (`paddleocr`); check the flag, else log as a real gap
+- [x] Kimi-VL-A3B-thinking + `mmproj-kimi-vl-a3b-thinking-Q8_0.gguf` — DONE 2026-09-11. Crashes:
+      `Missing tensor: blk.0.attn_q.weight` (deepseek2 MLA-tensor gap, logged).
+- [x] MiMo-VL-7B-sft + `mmproj-mimo-vl-7b-sft-Q8_0.gguf` — DONE 2026-09-11. Crashes in
+      `RunImagePrompt:2574` — same exact crash site as Step3-VL-10B below, real shared bug logged.
+- [x] Step3-VL-10B + `mmproj-step3-vl-10b-F16.gguf` — DONE 2026-09-11. Crashes at the identical
+      `RunImagePrompt:2574` site as MiMo-VL-7B-sft — confirms a shared bug, logged.
+- [x] YouTu-VL-4B + `mmproj-youtu-vl-4b-BF16.gguf` — DONE 2026-09-11. Same
+      `Missing tensor: blk.0.attn_q.weight` crash as Kimi-VL-A3B-thinking.
+- [x] Nemotron-Nano-12B-v2-VL + `mmproj-nemotron-nano-12b-v2-vl-bf16.gguf` — DONE 2026-09-11.
+      Crashes: `HybridGdnForwardPass dense FFN requires hp.IntermediateDim > 0`, logged.
+- [x] DeepSeek-OCR-2 + `mmproj-deepseek-ocr-2-q8_0.gguf` — DONE 2026-09-11. Runs, real timing
+      (41.9/30.9 t/s), garbled output as expected for unverified arch.
+- [x] PaddleOCR-VL-1.6 + `mmproj-paddleocr-vl-1.6.gguf` — DONE 2026-09-11. Runs, real timing
+      (51.5/39.2 t/s), degenerate output as expected for unverified arch.
 
 Need a real image to feed `--image` — use an existing repo asset (check `docs/diffusion-samples/`
 for something real and non-sensitive, e.g. the Z-Image-Turbo or Wan2.1 sample PNGs already

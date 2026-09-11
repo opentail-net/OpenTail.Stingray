@@ -1646,6 +1646,33 @@ severity.
   `sysns.text + ('\n' if sysns.text else '') + sys_content`) get passed through unevaluated instead
   of rendered, so this checkpoint's actual chat-formatted prompt may be subtly wrong. Fix: extend
   this project's Jinja subset to handle string-concat inside conditional expressions.
+- **`RunCommand.RunImagePrompt` has a shared crash bug across unrelated architectures.**
+  2026-09-11, real `--image`/`--mmproj --allow-unverified-arch` runs: MiMo-VL-7B-sft (`qwen2vl`)
+  and Step3-VL-10B (`step3vl`, an already-admitted architecture, no unverified-arch warning) both
+  crash with an identical `System.ArgumentOutOfRangeException` at the exact same call site,
+  `RunCommand.cs:2574` inside `RunImagePrompt`. Both load the model and run the vision encoder
+  successfully (soft tokens produced, real prefill numbers reachable) before crashing — this is a
+  real, fixable bug in the shared image-prompt response-formatting path itself, independent of
+  either architecture's own forward-pass correctness. Worth root-causing directly since it blocks
+  measurement of any checkpoint that hits this exact code path.
+- **Two `deepseek2`-architecture VLM checkpoints (Kimi-VL-A3B-thinking, YouTu-VL-4B) crash with
+  `Missing tensor: blk.0.attn_q.weight`** when run with `--allow-unverified-arch` — same
+  architecture tag, same missing-tensor error, at `ForwardPass.Helpers.cs:178`'s `ResolveTensor`.
+  Likely these GGUF conversions use DeepSeek's MLA-compressed KV projection tensor naming
+  (`attn_kv_b.weight` etc.) that this project's `deepseek2` handling doesn't resolve for whatever
+  quant/export variant produced these specific files — a real architecture-support gap, not a
+  fluke. (A third `deepseek2` checkpoint, DeepSeek-V2-Lite, was already confirmed working earlier
+  this session — so this is specific to these two VLM export variants, not `deepseek2` broadly.)
+- **Nemotron-Nano-12B-v2-VL (`nemotron_h` architecture) crashes**: `HybridGdnForwardPass dense FFN
+  requires hp.IntermediateDim > 0` — a required hyperparameter isn't populated from this
+  checkpoint's GGUF metadata for the hybrid-GDN dense-FFN path. Real, unattempted-until-now
+  architecture-support gap.
+- **DeepSeek-OCR-2 (`deepseek2-ocr`) and PaddleOCR-VL-1.6 (`paddleocr`) run to completion under
+  `--allow-unverified-arch` with real timing but fully garbled/degenerate output** — expected per
+  the flag's own explicit warning ("output may be wrong... do not use this run as evidence of
+  support"). Not treated as bugs to fix; these architectures are simply unverified, exactly as
+  labeled. Timing recorded in PerformanceLeague.md for completeness but explicitly not presented
+  as evidence of correctness.
 - **A systemic silent-no-op pattern in `*RealWeightsTests.cs` files, worse than previously
   documented.** `CLAUDE.md` rule 12 already names this pattern (a green, sub-second "pass" that
   never actually touched real weights) for LLM/vision/some-audio tests. Three *more* instances were
