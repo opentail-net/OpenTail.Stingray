@@ -67,19 +67,41 @@ public sealed class EulerDiscreteScheduler
         Timesteps = new float[numInferenceSteps];
         Sigmas = new float[numInferenceSteps + 1];
 
-        float stepRatio = (float)(trainSteps - 1) / (numInferenceSteps - 1);
-        for (int i = 0; i < numInferenceSteps; i++)
+        // Real bug (found 2026-09-11 benchmarking SDXL-Turbo at steps=1): this formula matches
+        // diffusers' real `np.linspace(0, num_train_timesteps - 1, num_inference_steps)[::-1]`
+        // (scheduling_euler_discrete.py's "linspace" timestep_spacing, the scheduler's default)
+        // for numInferenceSteps > 1 -- verified term-by-term: our `stepRatio = (trainSteps-1) /
+        // (numInferenceSteps-1)` and `t = (numInferenceSteps-1-i) * stepRatio` is algebraically the
+        // same value as linspace's reversed i-th term. But numInferenceSteps == 1 divides by zero,
+        // producing an Infinity `stepRatio` and then `0 * Infinity = NaN` for `t` -- a NaN sigma
+        // silently propagates through the whole denoising loop and renders as a solid black image
+        // (confirmed: SDXL-Turbo at --steps 1 produced an 843-byte solid-black PNG on both CPU and
+        // Vulkan; --steps 4 with the same prompt/model produced a real, coherent image). numpy's own
+        // documented behavior for `linspace(start, stop, num=1)` is to return `[start]` (here,
+        // `[0]`) rather than raising or extrapolating a ratio -- so numInferenceSteps == 1 should
+        // resolve to timestep 0, matching the real reference exactly rather than guessing a
+        // different single-step convention.
+        if (numInferenceSteps == 1)
         {
-            float t = (numInferenceSteps - 1 - i) * stepRatio;
-            Timesteps[i] = t;
+            Timesteps[0] = 0f;
+            Sigmas[0] = allSigmas[0];
+        }
+        else
+        {
+            float stepRatio = (float)(trainSteps - 1) / (numInferenceSteps - 1);
+            for (int i = 0; i < numInferenceSteps; i++)
+            {
+                float t = (numInferenceSteps - 1 - i) * stepRatio;
+                Timesteps[i] = t;
 
-            int low = (int)MathF.Floor(t);
-            int high = (int)MathF.Ceiling(t);
-            float weight = t - low;
+                int low = (int)MathF.Floor(t);
+                int high = (int)MathF.Ceiling(t);
+                float weight = t - low;
 
-            float sigmaLow = allSigmas[Math.Clamp(low, 0, trainSteps - 1)];
-            float sigmaHigh = allSigmas[Math.Clamp(high, 0, trainSteps - 1)];
-            Sigmas[i] = sigmaLow + weight * (sigmaHigh - sigmaLow);
+                float sigmaLow = allSigmas[Math.Clamp(low, 0, trainSteps - 1)];
+                float sigmaHigh = allSigmas[Math.Clamp(high, 0, trainSteps - 1)];
+                Sigmas[i] = sigmaLow + weight * (sigmaHigh - sigmaLow);
+            }
         }
         Sigmas[numInferenceSteps] = 0f;
 

@@ -279,6 +279,24 @@ the correctness caveat" approach used elsewhere in this doc (e.g. Ornith-1.0-9B,
 
 ---
 
+## gpt-oss-20B (`gpt-oss`, run with `--allow-unverified-arch`) — genuinely new coverage, not previously benchmarked
+
+Not in `ModelCompatibility`'s supported-architecture allowlist at all (clean rejection without the
+flag, listing every currently-supported profile). With `--allow-unverified-arch` it loads and runs,
+but produces fully garbled output — expected exactly per the flag's own warning; this is a genuinely
+unimplemented architecture, not a bug to chase. (Also surfaced an unrelated real Jinja gap: a
+string-concat-inside-conditional expression for `tool_call.content_type`, same class already logged
+for Qwen3.8-27B/Gemma-3-4B-it above.) `-MXFP4.gguf` is an exotic 4-bit microscaling quant format;
+part of the garbling may also be an unimplemented/incorrect MXFP4 dequant path rather than purely
+the unverified architecture, not disambiguated.
+
+| Model | Scenario | Backend | C# (OT, t/s) | Performance Check | Source |
+|---|---|---|---:|---|---|
+| gpt-oss-20B MXFP4 | prefill (72 tok) | CPU | 12.6 t/s avg (12.6/12.7/12.6 across 3 runs) | 2026-09-11 | new coverage; stingray CLI (`--allow-unverified-arch`), best-of-3. First timing ever recorded for this checkpoint |
+| gpt-oss-20B MXFP4 | decode (60 tok gen) | CPU | 14.0 t/s avg (13.8/14.1/14.1 across 3 runs) | 2026-09-11 | same run; garbled output as expected for an unimplemented architecture, not usable as a correctness measurement |
+
+---
+
 ## Speculative Decoding (CPU)
 
 | Target | Draft | Scenario | C# (OT, t/s) | C++ (ref, t/s) | Ratio | Acceptance rate | Performance Check | Source |
