@@ -95,12 +95,12 @@ phase as opportunistic, not a commitment — each of these could be a multi-hour
       correctness; no perf number exists anywhere. Real T5-XXL + DiT + VAE pipeline per README.
 - [ ] FLUX.1-schnell — check if a checkpoint is present; README says real but has a known unfixed
       tiling artifact (correctness gap, not blocking a timing measurement)
-- [ ] SD3/3.5 — `docs/057-sd35-performance-handoff.md` already has a real number (215s/4-steps at
-      256x256, cited in this doc's earlier session) — check if that's already been backfilled into
-      PerformanceLeague.md as a citation (like Stable Audio 3 Medium was) and do so if not
-- [ ] MiniMax-Music3 — real, working, user-confirmed per README, with an existing measured number
-      (582.9s for a 200-frame/~8s generation) in `docs/066-minimax-music3-future-plan.md` — backfill
-      this as a citation, same pattern as Stable Audio 3 Medium, no new run needed
+- [x] SD3/3.5 — DONE 2026-09-11. Backfilled the real 656.9s/20-step/256×256 number (the doc's own
+      most-recent same-config measurement) with an explicit caveat that it predates 4 real
+      correctness bugs fixed 2026-09-05 and no fresh post-fix timing exists.
+- [x] MiniMax-Music3 — DONE 2026-09-11. Backfilled the real 3352.9s (~56min)/200-frame number
+      from current-work.md/docs/066 (corrected from this plan's earlier "582.9s" — the real
+      sourced number is 3352.9s, post-fix for a frame-index off-by-one bug).
 - [ ] HunyuanVideo — README explicitly says 🔴, blocked on a missing VAE decoder — do not attempt,
       this isn't a "run it and see" gap, it's a known incomplete port
 
