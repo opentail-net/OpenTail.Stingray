@@ -1669,11 +1669,33 @@ severity.
   real `.wav` for either pipeline — would need a small harness change to feed one of the real TTS-
   generated speech samples in `docs/audio-samples/`, e.g. `kokoro-perf-turn2.wav`, and re-run).
   Qwen3-ASR's bug stands as confirmed real; FunASR-Nano's does not, pending that re-test.
-- **F5-TTS's CPU compute backend isn't wired in `audio.cpp`.** A real run against the `f5_tts`
-  family (which does load its model spec correctly) fails with `ggml_graph_compute_with_ctx
-  unavailable (CPU backend not loaded)` — confirmed with real `--voice-ref`/`--reference-text`
-  arguments, not a config error. This is the audio.cpp side, not the OT C# port (OT's own F5-TTS
-  already has real CPU numbers in `PerformanceLeague.md`).
+- **F5-TTS's blocked `audio.cpp` CPU backend — FIXED for real, 2026-09-11, two real bugs.**
+  `examples/audio.cpp/src/community_models/f5_tts/cpu_graph_compute.h`'s
+  `ggml_graph_compute_with_ctx` resolution only had GCC/Linux code paths (weak-symbol check, then
+  a `dlopen`-based fallback for `GGML_BACKEND_DL` module builds) — this vendored build is compiled
+  with MSVC (`__GNUC__` undefined, confirmed via `build/CMakeCache.txt`'s `CMAKE_CXX_COMPILER`
+  pointing at `cl.exe`), so neither path applied and it unconditionally threw, regardless of
+  whether the CPU backend was actually available. Checked the real build config: this is a plain
+  static link (`GGML_BACKEND_DL=OFF`, `BUILD_SHARED_LIBS=OFF` in `CMakeCache.txt`) — the whole
+  weak-symbol/dlopen dance was solving a problem that doesn't apply to this build at all.
+  `ggml-cpu.h` already declares the function as a normal exported symbol (`GGML_BACKEND_API`);
+  for a static link it resolves at ordinary link time. Added a `#if !defined(__GNUC__)` branch
+  that just calls it directly — confirmed via a real incremental rebuild (`cmake --build . --target
+  audiocpp_cli`), 0 link errors. **Second real bug found once past that**: `ggml_new_object: not
+  enough space in the context's memory pool` — `runtime.cpp`'s two `ctx_bytes` sizing formulas
+  (`CfgGraph`/`DiTGraph` graph caches) were consistently a few MB short of what ggml actually
+  needed for real workloads (real errors: `needed 1613595248, available 1610612736` at the
+  1536MB floor; `needed 12893969376, available 12884901888` at the 12288MB cap) — ggml's real
+  per-tensor object-header overhead wasn't accounted for in the plain `max(floor, N*bytes)`
+  estimate. Fixed with a flat +64MB safety margin on both formulas, plus raised the hard cap from
+  12288MB to 16384MB since it was also genuinely too low for longer reference-audio clips (this
+  machine has 64GB RAM, real headroom to spare). **Verified end-to-end with real audio output**:
+  a short reference clip (`test_s2.wav`) produced a real 65KB WAV; a longer one (`VibeVoiceRef.wav`,
+  the one that previously hit the 12288MB cap) produced a real 768KB WAV. Real timing: 43.2s/
+  43.1s/43.2s across 3 runs (same prompt as the original bug repro, `"Hello, I will make some
+  lunch, darling!"`) — this is the **first-ever real C++ comparison point for F5-TTS**, added to
+  `PerformanceLeague.md`: OT's own C# port (27.25s) is actually 1.59x *faster* than this C++
+  reference, unlike most other TTS rows in this doc where C++ wins.
 - **Chatterbox Turbo's tokenizer-asset bug — FIXED and verified 2026-09-11, but "streaming" was
   never actually the real blocker (a separate, deliberate design limit).** Root-caused by a
   subagent: `examples/audio.cpp/model_specs/chatterbox_turbo.json` expects three sidecar files

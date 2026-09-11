@@ -122,8 +122,11 @@ phase as opportunistic, not a commitment — each of these could be a multi-hour
 - [x] **DeepSeek-V2-Lite** — DONE 2026-09-11. Ran with `--allow-unverified-arch`, confirmed the
       documented garbled output matches README's own finding exactly, got real throughput numbers
       anyway (0.92x near-parity decode). Added to PerformanceLeague.md's new "DeepSeek family" section.
-- [ ] **F5-TTS's blocked CPU backend in `audio.cpp`** — real, scoped, from the original backfill
-      pass. Not attempted yet this session.
+- [x] **F5-TTS's blocked CPU backend in `audio.cpp`** — FIXED 2026-09-11, two real bugs (an
+      MSVC-incompatible symbol-resolution path that never applied to this build's actual static-link
+      config, plus a ggml memory-pool sizing formula that was consistently a few MB short). Verified
+      end-to-end with real WAV output on two different reference clips. First-ever real C++ timing
+      comparison for F5-TTS added to PerformanceLeague.md.
 - [x] **Chatterbox Turbo's missing tokenizer asset** — FIXED 2026-09-11. Extracted the real GGUF
       tokenizer metadata into the 3 sidecar files the loader needs, verified end-to-end with a
       real WAV output. Turns out "streaming" was never the real blocker — this build has no
