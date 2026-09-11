@@ -98,9 +98,11 @@ phase as opportunistic, not a commitment — each of these could be a multi-hour
 - [x] LTX-Video (`ltx-video-2b-v0.9.1.safetensors` present) — DONE 2026-09-11. Real run, real
       181KB PNG output, 100.5s at 256×256/1-frame/25-steps — first timing number ever recorded
       for this checkpoint. Much faster than Z-Image-Turbo/Wan2.1 (smaller 2B DiT, single frame).
-- [ ] FLUX.1-schnell — checked 2026-09-11: no checkpoint present in `models/_models/`. Would need
-      a fresh download; deferred (disk-space-at-a-time discipline, lower priority than closing
-      gaps on what's already local).
+- [x] FLUX.1-schnell — DONE 2026-09-11 (downloaded fresh: Q4_K_S DiT + real CLIP-L/T5-XXL/VAE,
+      ~13GB total). Found and fixed a major real bug (`SingleBlock`'s attn+MLP layout feeding
+      `linear2`) — real end-to-end run now shows a genuinely recognizable apple+table for the
+      first time ever. A separate background tiling artifact remains, still open — see
+      `docs/056-flux-tiling-artifact-handoff.md`'s Round 7/8.
 - [x] SD3/3.5 — DONE 2026-09-11. Backfilled the real 656.9s/20-step/256×256 number (the doc's own
       most-recent same-config measurement) with an explicit caveat that it predates 4 real
       correctness bugs fixed 2026-09-05 and no fresh post-fix timing exists.
