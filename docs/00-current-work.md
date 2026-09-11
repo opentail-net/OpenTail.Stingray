@@ -1749,6 +1749,26 @@ severity.
   apples-on-a-table result), confirming the pipeline itself works — this is specifically a
   1-2-step quality gap, not a broken pipeline. `OpenTail.Stingray.Tests.Diffusion.SchedulerTests`
   re-run clean (4/4) after the fix.
+- **LTX-Video-2B v0.9.1's output correctness appears seed-dependent/unstable — not root-caused.**
+  2026-09-11: the first real `stingray image` run against this checkpoint (256×256, 1 frame,
+  25 steps, CFG 3.0) produced a real, coherent, image-grounded picture, visually confirmed.
+  Two follow-up default-seed (`seed=-1`, random) runs with otherwise-identical parameters — one
+  testing `--upscaler` (a genuinely untested flag/checkpoint, `RealESRGAN_x4plus.safetensors`,
+  investigated for this reason), one a plain re-run without it — both produced pure visual noise
+  instead of a coherent image. Ruled out: (a) `--upscaler` as the cause, since the plain re-run
+  without it also produced noise; (b) the `EulerDiscreteScheduler` fix made in this same session
+  (see the SDXL-Turbo entry above), since LTX-Video uses its own independent
+  `RectifiedFlowScheduler`, confirmed by reading `LtxVideoPipeline.cs`. Real timing stayed
+  consistent across all runs (~100-115s), so this is specifically an output-correctness gap, not a
+  performance regression. Not yet disambiguated whether this is genuine seed-sensitivity (some
+  random seeds producing bad output for this checkpoint) or a separate, real bug that happened not
+  to trigger on the first run's particular seed — needs a controlled `--seed <fixed>` sweep to
+  tell apart, not attempted yet.
+- **`RealESRGAN_x4plus.safetensors` (the `--upscaler` RRDBNet path) is untested independent of the
+  LTX-Video noise finding above** — the one real attempt to use it was confounded by the
+  seed-instability bug, so no clean measurement of the upscaler itself exists yet. Worth a
+  dedicated retry with a `--seed <fixed>` LTX-Video (or SDXL/SD1.5) base image once the noise
+  issue above is understood, so the upscaler's own contribution can be isolated.
 - **A systemic silent-no-op pattern in `*RealWeightsTests.cs` files, worse than previously
   documented.** `CLAUDE.md` rule 12 already names this pattern (a green, sub-second "pass" that
   never actually touched real weights) for LLM/vision/some-audio tests. Three *more* instances were
