@@ -67,18 +67,24 @@ CPU attention), **known implementation gap**, or **performance bug**. Undocument
 creeping back in between GPU ops is exactly the failure mode this whole effort is trying to remove
 — don't let it happen silently.
 
-## Stage 0 — recording/residency proof-of-concept (new, per review)
+## Stage 0 — recording/residency proof-of-concept — DONE 2026-09-12
 
-Before writing any SDXL-specific code: write a small, throwaway Vulkan-only test that proves the
-actual mechanism works. Create two GPU tensors via `Upload`, `BeginRecord()`, run at least two
-dependent dispatches (e.g. two `Sgemm` calls, second consuming the first's output tensor) with a
-`RecordBarrier()` between them and NO `Upload`/`Download` calls in between, `EndRecordAndSubmit()`,
-then one `Download()` of the final result, and verify the numeric result matches the same
-computation done via today's per-op immediate path. This directly answers review point #1: can a
-GPU tensor be created/consumed across dispatches inside one recording session, with transfers only
-at the true start/end? If this doesn't work cleanly, everything below needs to be re-planned
-around whichever fallback (recordable Upload/Download, i.e. option 2 from the original draft)
-turns out to be necessary — decide from this real result, not in the abstract.
+**Result: option 1 confirmed viable, no fallback needed.** Wrote
+`tests/OpenTail.Stingray.Tests.Diffusion/GpuResidencyStage0PocTests.cs`: two GPU tensors uploaded
+once, then two dependent `Sgemm` dispatches (second consumes the first's output tensor directly)
+recorded into one `BeginRecord()`/`EndRecordAndSubmit()` session with only a `RecordBarrier()`
+between them — no `Upload`/`Download` at any point for the intermediate tensor. Result matched a
+real CPU reference computation to <1e-3 max abs diff. Passed on the first real run.
+
+**Why this worked with no new Vulkan-backend code**: `Sgemm` already routes through
+`DispatchOrRecord`, which already checks `_recording` and records into `_transferCmd` instead of
+dispatching+waiting immediately — this mechanism already existed at the compute-dispatch level
+(used elsewhere for batched recording, e.g. RRDBNet). The actual, narrower gap the original plan
+draft was uncertain about is confirmed to be exactly what it looked like: `Upload`/`Download`
+themselves always do an immediate `SubmitAndWait`, never checking `_recording` — but as long as no
+stage needs to Upload/Download a tensor *mid-graph* (the whole point of residency), this is a
+non-issue. **Decision: proceed with option 1** (no mid-graph CPU transfers at all) for every
+subsequent stage; option 2 (making Upload/Download themselves recordable) is not needed.
 
 ## Stage 1 — SDXL Tensor primitive layer (broadened per review)
 
