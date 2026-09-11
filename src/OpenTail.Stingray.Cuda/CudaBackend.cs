@@ -7716,6 +7716,13 @@ public sealed unsafe class CudaBackend : IComputeBackend, IImageOpsBackend, IVis
         _im2colBufSize = newSize;
     }
 
+    /// <summary>CUDA's Conv2d already runs a real im2col+cuBLAS GEMM (see below) -- there's no
+    /// naive-accumulation implementation here to improve on the way Vulkan's Conv2d shader had, so
+    /// this just delegates to it rather than duplicating the same logic under a second name.</summary>
+    public Tensor Conv2dImplicitGemm(Tensor input, Tensor weight, Tensor bias,
+                                     int inCh, int outCh, int h, int w, int ksize, int padding = -1)
+        => Conv2d(input, weight, bias, inCh, outCh, h, w, ksize, padding);
+
     /// <inheritdoc/>
     public Tensor Conv2d(Tensor input, Tensor weight, Tensor bias,
                          int inCh, int outCh, int h, int w, int ksize, int padding = -1)

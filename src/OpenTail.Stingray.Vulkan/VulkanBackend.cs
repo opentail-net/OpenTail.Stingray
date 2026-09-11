@@ -1469,6 +1469,7 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
 
     // Image ops pipelines (IImageOpsBackend)
     private ComputePipeline? _conv2dPipeline;
+    private ComputePipeline? _conv2dImplicitGemmPipeline;
     private ComputePipeline? _leakyReluPipeline;
     private ComputePipeline? _clampPipeline;
     private ComputePipeline? _catChannelsPipeline;
@@ -3588,6 +3589,21 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
         return output;
     }
 
+    public Tensor Conv2dImplicitGemm(Tensor input, Tensor weight, Tensor bias,
+                                     int inCh, int outCh, int h, int w, int ksize, int padding = -1)
+    {
+        if (padding < 0) padding = ksize / 2;
+        var output = Allocate(TensorShape.D1(outCh * h * w));
+        _conv2dImplicitGemmPipeline ??= new ComputePipeline(this, Shaders.Conv2dImplicitGemm, 4, pushConstantSize: sizeof(Conv2dParams));
+        var p = new Conv2dParams { inCh = (uint)inCh, outCh = (uint)outCh, height = (uint)h, width = (uint)w, ksize = (uint)ksize, padding = (uint)padding };
+        // 16x16-tiled GEMM dispatch: X=ceil(H*W/16) (output-pixel tiles), Y=ceil(outCh/16)
+        // (output-channel tiles) -- matches SgemmF32's convention exactly.
+        uint groupX = ((uint)(h * w) + 15u) / 16u;
+        uint groupY = ((uint)outCh + 15u) / 16u;
+        DispatchOrRecord(_conv2dImplicitGemmPipeline, [GetBuffer(input), GetBuffer(weight), GetBuffer(bias), GetBuffer(output)], groupX, &p, groupY);
+        return output;
+    }
+
     public void LeakyReluInPlace(Tensor x, float negSlope)
     {
         _leakyReluPipeline ??= new ComputePipeline(this, Shaders.LeakyRelu, 1, pushConstantSize: sizeof(LeakyReluParams));
@@ -3963,6 +3979,7 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
         _splitQgBatchedPipeline?.Dispose();
         _sigmoidMulInPlacePipeline?.Dispose();
         _conv2dPipeline?.Dispose();
+        _conv2dImplicitGemmPipeline?.Dispose();
         _leakyReluPipeline?.Dispose();
         _clampPipeline?.Dispose();
         _catChannelsPipeline?.Dispose();

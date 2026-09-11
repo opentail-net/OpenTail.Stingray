@@ -6366,6 +6366,101 @@ internal static class Shaders
         """;
 
     /// <summary>
+    /// "Implicit GEMM" 2D convolution: same tiled 16x16 shared-memory GEMM structure as
+    /// <see cref="SgemmF32"/>, but the A operand (the im2col matrix) is computed on the fly from
+    /// the real input tensor inside the kernel instead of read from a pre-materialized buffer.
+    ///
+    /// Added 2026-09-11 after two prior attempts both proved wrong in isolation for SDXL/SD VAE
+    /// decode's larger convs (measured, not assumed -- see PerformanceLeague.md):
+    /// - CPU im2col + Sgemm (the existing VaeDecoder/SdxlUNet Conv path): real GEMM efficiency,
+    ///   but a real CPU-side gather/transpose cost, and a materialized-buffer Upload/Download
+    ///   round-trip per chunk.
+    /// - The naive Conv2d shader above (one thread per output pixel, scalar accumulation): zero
+    ///   CPU-side work or extra round-trip, but a ~20% REGRESSION vs Sgemm on ResBlock's 256-512
+    ///   channel convs -- a naive accumulation loop doesn't scale the way a tiled/blocked GEMM does.
+    /// This combines both wins: GEMM-style tiled computation (same shared-memory blocking pattern
+    /// that makes Sgemm fast) with zero CPU-side im2col/transpose and zero extra buffer round-trip
+    /// (reads the real [inCh,H,W] input tensor directly, writes bias-fused NCHW output directly).
+    ///
+    /// input [inCh, H, W], weight [outCh, inCh*ksize*ksize] (flat [outC,inC,kH,kW] layout, same
+    /// convention as every other conv weight in this codebase), bias [outCh]
+    /// → output [outCh, H, W]. stride=1, configurable padding (default same).
+    ///
+    /// Push constants: { inCh, outCh, height, width, ksize, padding }.
+    /// Bindings: 0=input, 1=weight, 2=bias, 3=output.
+    /// Dispatch: (ceil(H*W/16), ceil(outCh/16), 1) with local_size=(16,16,1).
+    /// </summary>
+    internal const string Conv2dImplicitGemm = """
+        #version 450
+        layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+        layout(push_constant) uniform Params {
+            uint inCh;
+            uint outCh;
+            uint height;
+            uint width;
+            uint ksize;
+            uint padding;
+        };
+
+        layout(binding = 0) readonly  buffer Input  { float input_data[];  };
+        layout(binding = 1) readonly  buffer Weight { float weight_data[]; };
+        layout(binding = 2) readonly  buffer Bias   { float bias_data[];   };
+        layout(binding = 3) writeonly buffer Output { float output_data[]; };
+
+        shared float tileA[16][17]; // im2col tile, computed on the fly -- +1 col avoids bank conflicts
+        shared float tileB[16][17]; // weight tile
+
+        void main() {
+            uint hw = height * width;
+            uint M  = hw;             // rows = output pixels
+            uint N  = outCh;          // cols = output channels
+            uint kk = ksize * ksize;
+            uint K  = inCh * kk;
+
+            uint row = gl_WorkGroupID.x * 16u + gl_LocalInvocationID.x;  // pixel index
+            uint col = gl_WorkGroupID.y * 16u + gl_LocalInvocationID.y;  // output channel
+
+            uint oh = row / width;
+            uint ow = row % width;
+
+            float acc = 0.0;
+            uint numTiles = (K + 15u) / 16u;
+
+            for (uint t = 0u; t < numTiles; t++) {
+                uint aCol = t * 16u + gl_LocalInvocationID.y;   // k-index this thread loads into tileA
+                uint bCol = t * 16u + gl_LocalInvocationID.x;   // k-index this thread loads into tileB
+
+                float aVal = 0.0;
+                if (row < M && aCol < K) {
+                    uint ic   = aCol / kk;
+                    uint kOff = aCol % kk;
+                    uint kh   = kOff / ksize;
+                    uint kw   = kOff % ksize;
+                    int ih = int(oh + kh) - int(padding);
+                    int iw = int(ow + kw) - int(padding);
+                    if (uint(ih) < height && uint(iw) < width)
+                        aVal = input_data[ic * hw + uint(ih) * width + uint(iw)];
+                }
+                tileA[gl_LocalInvocationID.x][gl_LocalInvocationID.y] = aVal;
+
+                tileB[gl_LocalInvocationID.y][gl_LocalInvocationID.x] =
+                    (col < N && bCol < K) ? weight_data[col * K + bCol] : 0.0;
+
+                barrier();
+
+                for (uint k = 0u; k < 16u; k++)
+                    acc += tileA[gl_LocalInvocationID.x][k] * tileB[gl_LocalInvocationID.y][k];
+
+                barrier();
+            }
+
+            if (row < M && col < N)
+                output_data[col * hw + row] = acc + bias_data[col];
+        }
+        """;
+
+    /// <summary>
     /// LeakyReLU in-place: data[i] = data[i] >= 0 ? data[i] : negSlope * data[i]
     /// Push constants: { n, negSlope }.
     /// Bindings: 0=data (in/out).

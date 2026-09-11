@@ -20,6 +20,15 @@ public interface IImageOpsBackend : IComputeBackend
     Tensor Conv2d(Tensor input, Tensor weight, Tensor bias,
                   int inCh, int outCh, int h, int w, int ksize, int padding = -1);
 
+    /// <summary>
+    /// 2D convolution via a tiled "implicit GEMM" kernel (im2col computed on the fly inside the
+    /// kernel, GEMM-style shared-memory blocking) instead of <see cref="Conv2d"/>'s naive
+    /// one-thread-per-pixel accumulation. Same input/weight/bias/output layout and semantics as
+    /// <see cref="Conv2d"/> -- combines GEMM-style compute efficiency with zero CPU-side im2col.
+    /// </summary>
+    Tensor Conv2dImplicitGemm(Tensor input, Tensor weight, Tensor bias,
+                              int inCh, int outCh, int h, int w, int ksize, int padding = -1);
+
     /// <summary>LeakyReLU in-place: x[i] = x[i] >= 0 ? x[i] : negSlope * x[i]</summary>
     void LeakyReluInPlace(Tensor x, float negSlope);
 

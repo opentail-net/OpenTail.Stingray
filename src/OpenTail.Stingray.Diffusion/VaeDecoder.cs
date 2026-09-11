@@ -204,7 +204,7 @@ public sealed class VaeDecoder : IDisposable, IVaeDecoder
             z = DiffusionOps.Upsample2x(z, n, ch, h, w);
             h *= 2; w *= 2;
             string convKey = $"{prefix}.upsamplers.0.conv";
-            z = ConvBlock(convKey, z, n, ch, h, w, ch, 3);
+            z = ConvAuto(convKey, z, ch, h, w, ch, 3);
         }
         return (z, ch, h, w);
     }
@@ -225,22 +225,24 @@ public sealed class VaeDecoder : IDisposable, IVaeDecoder
             z = DiffusionOps.Upsample2x(z, n, ch, h, w);
             h *= 2; w *= 2;
             string convKey = $"{prefix}.upsample.conv";
-            z = ConvBlock(convKey, z, n, ch, h, w, ch, 3);
+            z = ConvAuto(convKey, z, ch, h, w, ch, 3);
         }
         return (z, ch, h, w);
     }
 
-    // Perf note (2026-09-11): tried routing this ResBlock's convs (and the up-block upsampler
-    // convs) through the native GPU Conv2d shader too, the same way as Decode()'s 3 standalone
-    // convs. Measured real weights/timing across 3 runs: a consistent, real ~20% VAE-decode
-    // REGRESSION (32.20s baseline -> ~38.3s mean), not an improvement -- despite eliminating the
-    // same CPU-side im2col/transpose overhead that helped for the standalone convs. Likely cause:
-    // the native shader's naive one-thread-per-output-pixel scalar accumulation doesn't scale to
-    // these convs' larger channel counts (256-512, vs RRDBNet's <=192 and this class's own
-    // standalone convs' smaller/1x1 shapes) the way the fp16 Sgemm GEMM path does -- CPU-side
-    // overhead wasn't the bottleneck here, raw GPU compute throughput was, and Sgemm wins that.
-    // Reverted to ConvBlock (im2col+Sgemm); keeping this note so the same swap isn't retried
-    // without re-measuring.
+    /// <summary>Dispatches to <see cref="ConvNative"/> (implicit-GEMM native GPU shader) when
+    /// available, else falls back to <see cref="ConvBlock"/>'s im2col+Sgemm path. Assumes batch=1,
+    /// matching every real caller in this class. See the ResBlock comment above for the perf
+    /// history that led here: the FIRST native-shader attempt (naive scalar accumulation) was a
+    /// real, measured regression for these larger convs; ConvNative was switched to a tiled
+    /// implicit-GEMM kernel afterward specifically to fix that, at which point this dispatch was
+    /// re-added -- verify with a real timing run before trusting this comment's premise stays true
+    /// if ConvNative's implementation changes again.</summary>
+    private float[] ConvAuto(string name, float[] x, int inCh, int h, int w, int outCh, int k, int padding = -1)
+        => _imageOps is not null
+            ? ConvNative(_imageOps, name, x, inCh, h, w, outCh, k, padding)
+            : ConvBlock(name, x, 1, inCh, h, w, outCh, k, padding);
+
     private float[] ResBlock(string prefix, float[] x, int n, int inCh, int h, int w, int outCh = -1)
     {
         if (outCh < 0) outCh = inCh;
@@ -251,21 +253,21 @@ public sealed class VaeDecoder : IDisposable, IVaeDecoder
         var h1 = (float[])x.Clone();
         DiffusionOps.GroupNorm(h1, gnW1, gnB1, n, inCh, h, w, groups: 32);
         DiffusionOps.SiluInPlace(h1);
-        h1 = ConvBlock($"{prefix}.conv1", h1, n, inCh, h, w, outCh, 3);
+        h1 = ConvAuto($"{prefix}.conv1", h1, inCh, h, w, outCh, 3);
 
         // norm2 + silu + conv2
         var gnW2 = Wt($"{prefix}.norm2.weight");
         var gnB2 = Wt($"{prefix}.norm2.bias");
         DiffusionOps.GroupNorm(h1, gnW2, gnB2, n, outCh, h, w, groups: 32);
         DiffusionOps.SiluInPlace(h1);
-        h1 = ConvBlock($"{prefix}.conv2", h1, n, outCh, h, w, outCh, 3);
+        h1 = ConvAuto($"{prefix}.conv2", h1, outCh, h, w, outCh, 3);
 
         // Skip connection: project input if channels differ
         float[] skip = x;
         if (inCh != outCh)
         {
             string shortcutKey = _st.Contains($"{prefix}.nin_shortcut.weight") ? $"{prefix}.nin_shortcut" : $"{prefix}.conv_shortcut";
-            skip = ConvBlock(shortcutKey, x, n, inCh, h, w, outCh, 1, padding: 0);
+            skip = ConvAuto(shortcutKey, x, inCh, h, w, outCh, 1, padding: 0);
         }
 
         TensorPrimitives.Add(h1.AsSpan(), skip.AsSpan(), h1.AsSpan());
@@ -538,7 +540,7 @@ public sealed class VaeDecoder : IDisposable, IVaeDecoder
         }
 
         var xGpu = imageOps.Upload(x.AsSpan(0, inCh * h * w), TensorShape.D1(inCh * h * w));
-        var yGpu = imageOps.Conv2d(xGpu, wGpu, bGpu, inCh, outCh, h, w, k, padding);
+        var yGpu = imageOps.Conv2dImplicitGemm(xGpu, wGpu, bGpu, inCh, outCh, h, w, k, padding);
         var result = new float[outCh * h * w];
         try
         {
