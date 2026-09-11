@@ -22,6 +22,19 @@ public sealed class ClipLEncoder : IDisposable
     private const int VocabSize = 49408;
 
     private readonly IWeightLoader _st;
+    // Perf (2026-09-11): _st.ReadF32 does a real file.Seek+ReadExactly disk read under a lock on
+    // EVERY call, no caching -- found while chasing the ~6.2x text-encode gap vs a real
+    // stable-diffusion.cpp reference (SdxlPipeline calls Encode() twice per generation, cond+
+    // uncond, re-reading the exact same ~120 weight tensors from disk both times with zero reuse).
+    // Same pattern as CachedWeightReader used elsewhere in this codebase.
+    private readonly Dictionary<string, float[]> _weightCache = new(StringComparer.Ordinal);
+    private float[] Wt(string name)
+    {
+        if (_weightCache.TryGetValue(name, out var w)) return w;
+        w = _st.ReadF32(name);
+        _weightCache[name] = w;
+        return w;
+    }
 
     public ClipLEncoder(string path) => _st = SafetensorsLoader.Open(path);
     public ClipLEncoder(IWeightLoader st) => _st = st;
@@ -39,8 +52,8 @@ public sealed class ClipLEncoder : IDisposable
         Array.Copy(tokens, ids, copy);
 
         // Token + position embeddings
-        var tokEmb = _st.ReadF32("text_model.embeddings.token_embedding.weight");
-        var posEmb = _st.ReadF32("text_model.embeddings.position_embedding.weight");
+        var tokEmb = Wt("text_model.embeddings.token_embedding.weight");
+        var posEmb = Wt("text_model.embeddings.position_embedding.weight");
 
         var x = new float[seq * Dim];
         for (int t = 0; t < seq; t++)
@@ -60,8 +73,8 @@ public sealed class ClipLEncoder : IDisposable
             x = EncoderLayer(x, mask, seq, i);
 
         // Final layer norm
-        var lnW = _st.ReadF32("text_model.final_layer_norm.weight");
-        var lnB = _st.ReadF32("text_model.final_layer_norm.bias");
+        var lnW = Wt("text_model.final_layer_norm.weight");
+        var lnB = Wt("text_model.final_layer_norm.bias");
         DiffusionOps.LayerNorm(x, lnW, lnB, Dim);
 
         // Pooled = EOS token (last non-pad token, or last position)
@@ -79,8 +92,8 @@ public sealed class ClipLEncoder : IDisposable
         string p = $"text_model.encoder.layers.{layerIdx}";
 
         // Self-attention with residual
-        var lnW1 = _st.ReadF32($"{p}.layer_norm1.weight");
-        var lnB1 = _st.ReadF32($"{p}.layer_norm1.bias");
+        var lnW1 = Wt($"{p}.layer_norm1.weight");
+        var lnB1 = Wt($"{p}.layer_norm1.bias");
         var xNorm = x.ToArray();
         DiffusionOps.LayerNorm(xNorm, lnW1, lnB1, Dim);
 
@@ -88,8 +101,8 @@ public sealed class ClipLEncoder : IDisposable
         for (int i = 0; i < x.Length; i++) x[i] += attn[i];
 
         // MLP with residual
-        var lnW2 = _st.ReadF32($"{p}.layer_norm2.weight");
-        var lnB2 = _st.ReadF32($"{p}.layer_norm2.bias");
+        var lnW2 = Wt($"{p}.layer_norm2.weight");
+        var lnB2 = Wt($"{p}.layer_norm2.bias");
         var xNorm2 = x.ToArray();
         DiffusionOps.LayerNorm(xNorm2, lnW2, lnB2, Dim);
 
@@ -101,14 +114,14 @@ public sealed class ClipLEncoder : IDisposable
 
     private float[] SelfAttention(float[] x, float[] mask, int seq, string p)
     {
-        var qW = _st.ReadF32($"{p}.self_attn.q_proj.weight");
-        var kW = _st.ReadF32($"{p}.self_attn.k_proj.weight");
-        var vW = _st.ReadF32($"{p}.self_attn.v_proj.weight");
-        var qB = _st.ReadF32($"{p}.self_attn.q_proj.bias");
-        var kB = _st.ReadF32($"{p}.self_attn.k_proj.bias");
-        var vB = _st.ReadF32($"{p}.self_attn.v_proj.bias");
-        var oW = _st.ReadF32($"{p}.self_attn.out_proj.weight");
-        var oB = _st.ReadF32($"{p}.self_attn.out_proj.bias");
+        var qW = Wt($"{p}.self_attn.q_proj.weight");
+        var kW = Wt($"{p}.self_attn.k_proj.weight");
+        var vW = Wt($"{p}.self_attn.v_proj.weight");
+        var qB = Wt($"{p}.self_attn.q_proj.bias");
+        var kB = Wt($"{p}.self_attn.k_proj.bias");
+        var vB = Wt($"{p}.self_attn.v_proj.bias");
+        var oW = Wt($"{p}.self_attn.out_proj.weight");
+        var oB = Wt($"{p}.self_attn.out_proj.bias");
 
         var q = DiffusionOps.Linear(x, qW, qB, seq, Dim, Dim);  // [seq, Dim]
         var k = DiffusionOps.Linear(x, kW, kB, seq, Dim, Dim);
@@ -150,10 +163,10 @@ public sealed class ClipLEncoder : IDisposable
 
     private float[] Mlp(float[] x, int seq, string p)
     {
-        var fc1W = _st.ReadF32($"{p}.mlp.fc1.weight");
-        var fc1B = _st.ReadF32($"{p}.mlp.fc1.bias");
-        var fc2W = _st.ReadF32($"{p}.mlp.fc2.weight");
-        var fc2B = _st.ReadF32($"{p}.mlp.fc2.bias");
+        var fc1W = Wt($"{p}.mlp.fc1.weight");
+        var fc1B = Wt($"{p}.mlp.fc1.bias");
+        var fc2W = Wt($"{p}.mlp.fc2.weight");
+        var fc2B = Wt($"{p}.mlp.fc2.bias");
 
         var h = DiffusionOps.Linear(x, fc1W, fc1B, seq, Dim, MlpDim);
         // QuickGELU activation: x * sigmoid(1.702 * x)
