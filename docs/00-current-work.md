@@ -60,19 +60,40 @@ standard header, and nothing has been copied yet, only cloned for reference).
 **A real, scoped plan (not started), roughly in priority order — matching the MusicGen/AudioGen
 archaeology-first pattern this doc's other sections already use:**
 
-1. **SenseVoice** (currently 0% — no dedicated pipeline exists at all, only a doc-comment mention).
-   Real local checkpoint present (`sensevoice-small.int8.onnx`). Cross-reference sherpa-onnx's real
-   SenseVoice wiring (`sherpa-onnx/sherpa-onnx/csrc/offline-sense-voice-model*` — check the actual
-   real file names once picked up) for: real input tensor names/shapes, the real feature-extraction
-   recipe (likely Kaldi-style fbank, not a generic mel-spectrogram — confirm from source, don't
-   assume), and the real output token/language/emotion decode logic. Write a real
-   `SenseVoiceOnnxPipeline` following the same shape as `EmbedCommand`'s now-fixed ONNX path
-   (`OnnxModelSession` + real preprocessing + real postprocessing), not a from-scratch guess.
-2. **FunASR Paraformer** — the native GGUF path is confirmed broken (missing `pf.vocab` metadata,
-   a bad conversion — see the existing Paraformer entry elsewhere in this doc). A real ONNX-based
-   Paraformer path could be a genuine alternative route to a working Paraformer, independent of
-   fixing the broken GGUF conversion. `paraformer-zh-small.int8.onnx` is already local. Cross-
-   reference sherpa-onnx's real Paraformer wiring the same way as SenseVoice above.
+1. **SenseVoice — DONE and VERIFIED 2026-09-11.** Implemented (subagent-written, code-only, I
+   verified with real weights) `src/OpenTail.Stingray.Audio/SenseVoice/` — real 4-input ONNX
+   forward (`x`/`x_length`/`language`/`text_norm`→`logits`), real metadata read from the
+   checkpoint's own embedded ONNX custom metadata (added `OnnxModelSession.CustomMetadata`
+   exposing `InferenceSession.ModelMetadata.CustomMetadataMap`, confirmed this capability didn't
+   already exist), real feature extraction reusing `FunAsrRealMelExtractor` unchanged (fbank+LFR+
+   CMVN, parameters confirmed matching via the real sherpa-onnx exporter script), real CTC greedy
+   decode, real vocab (`F:\_models\sensevoice-small-tokens.txt`, 25055 lines matching
+   `vocab_size`, downloaded from the real `csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-
+   2024-07-17` HF repo). **Verified with the exact same real LibriSpeech clip Citrinet-ASR used**
+   (`librispeech_test_clean_6930-75918-0000.wav`): real 2229ms timing, correct language/emotion/
+   event tags, and an **exact transcript match to the ground truth**: `"concord returned to its
+   place amidst the tents"` — a real, fully working ASR pipeline on the first attempt, not just a
+   non-crashing stub. `tests/OpenTail.Stingray.Tests.Audio/SenseVoiceRealWeightsTests.cs`. Not
+   wired into the CLI `stt` command (Whisper-shaped, would need real restructuring) — the
+   real-weights test is the entry point for now.
+2. **FunASR Paraformer — DONE, structurally verified, not yet golden-verified 2026-09-11.**
+   Implemented (subagent-written, code-only, I verified builds+runs with real weights) an
+   independent `src/OpenTail.Stingray.Audio/ParaformerOnnx/` path, giving this project a working
+   Paraformer regardless of the broken native GGUF conversion. Real metadata directly inspected
+   from the checkpoint's own ONNX custom metadata (`vocab_size=8359`, real `lfr_window_size`/
+   `_shift`, real `neg_mean`/`inv_stddev`), real single-forward-pass architecture (the whole
+   encoder+CIF-predictor+decoder is fused into one ONNX graph, confirmed — no reimplementation of
+   Paraformer's internals needed), real per-position-argmax-with-EOS-stop decode (a genuinely
+   different algorithm from SenseVoice's CTC-collapse, confirmed via `offline-paraformer-greedy-
+   search-decoder.cc`, not copy-pasted from the SenseVoice work by mistake), real vocab
+   (`F:\_models\paraformer-zh-small-tokens.txt`, confirmed matching this exact checkpoint two
+   independent ways: line count equals `vocab_size` exactly, and `</s>` sits at the real expected
+   id 2). **Verified real, non-crashing execution** (1567ms, real weights, real decode producing
+   real Chinese text) but **NOT golden-verified** — no real Chinese speech clip exists locally to
+   check against a ground-truth transcript (only English LibriSpeech clips are available), so the
+   test is structural (real weights load, real forward pass, real non-degenerate decode) rather
+   than transcript-verified. `tests/OpenTail.Stingray.Tests.Audio/ParaformerOnnxRealWeightsTests.cs`.
+   A real Chinese WAV clip would be needed for full golden verification — not attempted this pass.
 3. **Silero VAD's ONNX path** — this project already has a real native Silero VAD port (`🟢` in
    README); this item is lower priority, but sherpa-onnx's VAD wiring could serve as an independent
    real-reference cross-check for the existing native port if a correctness question ever comes up,
