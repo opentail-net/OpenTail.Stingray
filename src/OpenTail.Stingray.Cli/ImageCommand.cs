@@ -127,7 +127,7 @@ public sealed class ImageCommand : Command<ImageCommand.Settings>
 
         [CommandOption("--cfg-scale")]
         [Description("Guidance scale — not used for Z-Image (distilled), 1.0 for FLUX schnell (default: auto)")]
-        [DefaultValue(0f)]
+        [DefaultValue(-1f)]
         public float CfgScale { get; init; }
 
         [CommandOption("-s|--seed")]
@@ -420,7 +420,7 @@ public sealed class ImageCommand : Command<ImageCommand.Settings>
 
         string output = s.OutputPath ?? "output.png";
         int steps     = s.Steps > 0 ? s.Steps : IsDistilled(modelPath) ? 4 : 20;
-        float cfg     = s.CfgScale > 0f ? s.CfgScale : 1.0f;
+        float cfg     = s.CfgScale >= 0f ? s.CfgScale : 1.0f;
 
         AnsiConsole.MarkupLine("[bold]FLUX.1[/] (MM-DiT + CLIP-L + T5-XXL)");
         AnsiConsole.MarkupLine($"[dim]DiT:[/]     {Markup.Escape(modelPath)}");
@@ -568,7 +568,7 @@ public sealed class ImageCommand : Command<ImageCommand.Settings>
 
         string output = s.OutputPath ?? "output.png";
         int steps     = s.Steps > 0 ? s.Steps : IsDistilled(modelPath) ? 4 : 20;
-        float cfg     = s.CfgScale > 0f ? s.CfgScale : IsFlowMatching(modelPath) ? 1.0f : 3.5f;
+        float cfg     = s.CfgScale >= 0f ? s.CfgScale : IsFlowMatching(modelPath) ? 1.0f : 3.5f;
 
         var args = BuildSdCppArgs(modelPath, output, steps, cfg, s);
 
@@ -686,7 +686,7 @@ public sealed class ImageCommand : Command<ImageCommand.Settings>
     {
         string output = s.OutputPath ?? "output.png";
         int steps = s.Steps > 0 ? s.Steps : 20;
-        float guidance = s.CfgScale > 0f ? s.CfgScale : 7.5f;
+        float guidance = s.CfgScale >= 0f ? s.CfgScale : 7.5f;
 
         string backendChoice = (s.Backend ?? "auto").ToLowerInvariant();
         if (deviceNone && (backendChoice is "cuda" or "vulkan"))
@@ -725,6 +725,9 @@ public sealed class ImageCommand : Command<ImageCommand.Settings>
 
         var schedulerType = ParseScheduler(s.Sampler);
         float[]? initImage = LoadInitImage(s.InitImagePath);
+        // SD-Turbo's own scheduler_config.json sets timestep_spacing="trailing" too (same real
+        // diffusers config as SDXL-Turbo) -- reuse the existing turbo/schnell/lcm heuristic.
+        var timestepSpacing = IsDistilled(modelPath) ? TimestepSpacing.Trailing : TimestepSpacing.Linspace;
 
         AnsiConsole.MarkupLine("[bold]Stable Diffusion 1.5[/]");
         AnsiConsole.MarkupLine($"[dim]Model:[/]    {Markup.Escape(modelPath)}");
@@ -765,7 +768,8 @@ public sealed class ImageCommand : Command<ImageCommand.Settings>
                         upscaler: upscaler,
                         upscaleBlend: s.UpscaleBlend,
                         initImageRgb: initImage,
-                        strength: s.Strength);
+                        strength: s.Strength,
+                        timestepSpacing: timestepSpacing);
                 });
 
             sw.Stop();
@@ -795,7 +799,7 @@ public sealed class ImageCommand : Command<ImageCommand.Settings>
     {
         string output = s.OutputPath ?? "output.png";
         int steps = s.Steps > 0 ? s.Steps : 20;
-        float guidance = s.CfgScale > 0 ? s.CfgScale : 6.0f;
+        float guidance = s.CfgScale >= 0 ? s.CfgScale : 6.0f;
         int frames = s.VideoFrames > 0 ? s.VideoFrames : 1;
         float[]? initImage = LoadInitImage(s.InitImagePath);
 
@@ -873,7 +877,7 @@ public sealed class ImageCommand : Command<ImageCommand.Settings>
     {
         string output = s.OutputPath ?? "output.png";
         int steps = s.Steps > 0 ? s.Steps : 20;
-        float guidance = s.CfgScale > 0 ? s.CfgScale : 6.0f;
+        float guidance = s.CfgScale >= 0 ? s.CfgScale : 6.0f;
         int frames = s.VideoFrames > 0 ? s.VideoFrames : 1;
 
         string? modelDir = Path.GetDirectoryName(Path.GetFullPath(modelPath));
@@ -992,7 +996,7 @@ public sealed class ImageCommand : Command<ImageCommand.Settings>
     {
         string output = s.OutputPath ?? "output.png";
         int steps = s.Steps > 0 ? s.Steps : 20;
-        float guidance = s.CfgScale > 0 ? s.CfgScale : 2.5f;
+        float guidance = s.CfgScale >= 0 ? s.CfgScale : 2.5f;
 
         IComputeBackend? gpu = null;
         if (!deviceNone && deviceIndex >= 0)
@@ -1064,7 +1068,7 @@ public sealed class ImageCommand : Command<ImageCommand.Settings>
     {
         string output = s.OutputPath ?? "output.png";
         int steps = s.Steps > 0 ? s.Steps : 20;
-        float guidance = s.CfgScale > 0f ? s.CfgScale : 4.5f;
+        float guidance = s.CfgScale >= 0f ? s.CfgScale : 4.5f;
 
         string backendChoice = (s.Backend ?? "auto").ToLowerInvariant();
         if (deviceNone && (backendChoice is "cuda" or "vulkan"))
@@ -1183,7 +1187,7 @@ public sealed class ImageCommand : Command<ImageCommand.Settings>
     {
         string output = s.OutputPath ?? "output.png";
         int steps = s.Steps > 0 ? s.Steps : 20;
-        float guidance = s.CfgScale > 0f ? s.CfgScale : 7.5f;
+        float guidance = s.CfgScale >= 0f ? s.CfgScale : 7.5f;
 
         string backendChoice = (s.Backend ?? "auto").ToLowerInvariant();
         if (deviceNone && (backendChoice is "cuda" or "vulkan"))
@@ -1235,6 +1239,11 @@ public sealed class ImageCommand : Command<ImageCommand.Settings>
 
             var schedulerType = ParseScheduler(s.Sampler);
             float[]? initImage = LoadInitImage(s.InitImagePath);
+            // SDXL-Turbo's own scheduler_config.json sets timestep_spacing="trailing" (confirmed
+            // 2026-09-11 against real diffusers source) -- base SDXL/SD1.5 use "linspace". Reuse
+            // the existing turbo/schnell/lcm filename heuristic (IsDistilled) rather than adding a
+            // second, redundant detector.
+            var timestepSpacing = IsDistilled(modelPath) ? TimestepSpacing.Trailing : TimestepSpacing.Linspace;
 
             using var pipeline = SdxlPipeline.Load(modelPath, s.ClipTokenizerPath, gpu);
 
@@ -1258,7 +1267,8 @@ public sealed class ImageCommand : Command<ImageCommand.Settings>
                         upscaler: upscaler,
                         upscaleBlend: s.UpscaleBlend,
                         initImageRgb: initImage,
-                        strength: s.Strength);
+                        strength: s.Strength,
+                        timestepSpacing: timestepSpacing);
                 });
 
             sw.Stop();
@@ -1287,7 +1297,7 @@ public sealed class ImageCommand : Command<ImageCommand.Settings>
         int width = s.Width > 0 ? s.Width : 768;
         int height = s.Height > 0 ? s.Height : 512;
         int steps = s.Steps > 0 ? s.Steps : 25;
-        float cfgScale = s.CfgScale > 0 ? s.CfgScale : 3.0f;
+        float cfgScale = s.CfgScale >= 0 ? s.CfgScale : 3.0f;
         int videoFrames = s.VideoFrames > 0 ? s.VideoFrames : 25;
 
         AnsiConsole.MarkupLine("[bold]LTX-Video[/] (Lightricks Video DiT)");

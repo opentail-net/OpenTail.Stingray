@@ -81,7 +81,8 @@ public sealed class StableDiffusionPipeline : IDiffusionPipeline
         float strength = 0.75f,
         ControlNetModel? controlNet = null,
         float[]? controlHintRgb = null,
-        float controlStrength = 1.0f)
+        float controlStrength = 1.0f,
+        TimestepSpacing timestepSpacing = TimestepSpacing.Linspace)
     {
         if (width % 8 != 0 || height % 8 != 0)
             throw new ArgumentException($"Width and height must be divisible by 8 (got {width}x{height})");
@@ -99,7 +100,7 @@ public sealed class StableDiffusionPipeline : IDiffusionPipeline
         var (uncondContext, _) = _textEncoder.Encode(uncondTokens);
 
         // 3. Scheduler & Initial Noise / Latent Setup:
-        var scheduler = new EulerDiscreteScheduler(steps, schedulerType: schedulerType);
+        var scheduler = new EulerDiscreteScheduler(steps, schedulerType: schedulerType, timestepSpacing: timestepSpacing);
         int startStep = 0;
         float[] latent;
 

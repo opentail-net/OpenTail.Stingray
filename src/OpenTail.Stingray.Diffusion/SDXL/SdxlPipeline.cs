@@ -82,7 +82,8 @@ public sealed class SdxlPipeline : IDiffusionPipeline
         RRDBNet? upscaler = null,
         float upscaleBlend = 1.0f,
         float[]? initImageRgb = null,
-        float strength = 0.75f)
+        float strength = 0.75f,
+        TimestepSpacing timestepSpacing = TimestepSpacing.Linspace)
     {
         if (width % 8 != 0 || height % 8 != 0)
             throw new ArgumentException($"Width and height must be divisible by 8 (got {width}x{height})");
@@ -107,7 +108,7 @@ public sealed class SdxlPipeline : IDiffusionPipeline
         var uncondAddEmbeds = BuildAddEmbeddings(uncondPooledG, height, width, 0, 0, height, width);
 
         // 3. Scheduler & Noise
-        var scheduler = new EulerDiscreteScheduler(steps, schedulerType: schedulerType);
+        var scheduler = new EulerDiscreteScheduler(steps, schedulerType: schedulerType, timestepSpacing: timestepSpacing);
         int startStep = 0;
         float[] latent;
 

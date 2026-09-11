@@ -12,6 +12,21 @@ public enum DiffusionSchedulerType
 }
 
 /// <summary>
+/// Matches diffusers' <c>EulerDiscreteScheduler.config.timestep_spacing</c> (Table 2 of
+/// https://huggingface.co/papers/2305.08891). SDXL-Turbo's own <c>scheduler_config.json</c>
+/// sets this to "trailing" (confirmed 2026-09-11 against the real
+/// examples/diffusers/src/diffusers/schedulers/scheduling_euler_discrete.py source) -- the base
+/// SDXL/SD1.5 default is "linspace", which is what this scheduler previously always used
+/// regardless of checkpoint.
+/// </summary>
+public enum TimestepSpacing
+{
+    Linspace,
+    Leading,
+    Trailing
+}
+
+/// <summary>
 /// Universal Discrete Scheduler supporting:
 ///   - Euler Discrete
 ///   - Euler Ancestral (stochastic)
@@ -30,7 +45,7 @@ public sealed class EulerDiscreteScheduler
 
     private readonly DiffusionSchedulerType _schedulerType;
 
-    public EulerDiscreteScheduler(int numInferenceSteps = 20, DiffusionSchedulerType schedulerType = DiffusionSchedulerType.Euler, float betaStart = 0.00085f, float betaEnd = 0.012f, int trainSteps = 1000)
+    public EulerDiscreteScheduler(int numInferenceSteps = 20, DiffusionSchedulerType schedulerType = DiffusionSchedulerType.Euler, float betaStart = 0.00085f, float betaEnd = 0.012f, int trainSteps = 1000, TimestepSpacing timestepSpacing = TimestepSpacing.Linspace)
     {
         NumSteps = numInferenceSteps;
         _schedulerType = schedulerType;
@@ -67,22 +82,47 @@ public sealed class EulerDiscreteScheduler
         Timesteps = new float[numInferenceSteps];
         Sigmas = new float[numInferenceSteps + 1];
 
-        // Real bug (found 2026-09-11 benchmarking SDXL-Turbo at steps=1): this formula matches
-        // diffusers' real `np.linspace(0, num_train_timesteps - 1, num_inference_steps)[::-1]`
-        // (scheduling_euler_discrete.py's "linspace" timestep_spacing, the scheduler's default)
-        // for numInferenceSteps > 1 -- verified term-by-term: our `stepRatio = (trainSteps-1) /
-        // (numInferenceSteps-1)` and `t = (numInferenceSteps-1-i) * stepRatio` is algebraically the
-        // same value as linspace's reversed i-th term. But numInferenceSteps == 1 divides by zero,
-        // producing an Infinity `stepRatio` and then `0 * Infinity = NaN` for `t` -- a NaN sigma
-        // silently propagates through the whole denoising loop and renders as a solid black image
-        // (confirmed: SDXL-Turbo at --steps 1 produced an 843-byte solid-black PNG on both CPU and
-        // Vulkan; --steps 4 with the same prompt/model produced a real, coherent image). numpy's own
-        // documented behavior for `linspace(start, stop, num=1)` is to return `[start]` (here,
-        // `[0]`) rather than raising or extrapolating a ratio -- so numInferenceSteps == 1 should
-        // resolve to timestep 0, matching the real reference exactly rather than guessing a
-        // different single-step convention.
-        if (numInferenceSteps == 1)
+        // Real bug (found 2026-09-11 benchmarking SDXL-Turbo at steps=1): the "linspace" formula
+        // below matches diffusers' real `np.linspace(0, num_train_timesteps - 1,
+        // num_inference_steps)[::-1]` (scheduling_euler_discrete.py's "linspace" timestep_spacing,
+        // the base SD1.5/SDXL default) for numInferenceSteps > 1 -- verified term-by-term: our
+        // `stepRatio = (trainSteps-1) / (numInferenceSteps-1)` and `t = (numInferenceSteps-1-i) *
+        // stepRatio` is algebraically the same value as linspace's reversed i-th term. But
+        // numInferenceSteps == 1 divides by zero, producing an Infinity `stepRatio` and then
+        // `0 * Infinity = NaN` for `t` -- a NaN sigma silently propagates through the whole
+        // denoising loop and renders as a solid black image (confirmed: SDXL-Turbo at --steps 1
+        // produced an 843-byte solid-black PNG on both CPU and Vulkan). numpy's own documented
+        // behavior for `linspace(start, stop, num=1)` is to return `[start]` (here, `[0]`) rather
+        // than raising or extrapolating a ratio -- so numInferenceSteps == 1 under "linspace"
+        // resolves to timestep 0.
+        //
+        // Second real bug (found 2026-09-11, same investigation): SDXL-Turbo's own
+        // scheduler_config.json sets timestep_spacing="trailing", not "linspace" -- confirmed
+        // against the real diffusers source (scheduling_euler_discrete.py:423-430). Under
+        // "trailing" the correct low-step-count timesteps land near the HIGH-noise end of the
+        // schedule (t≈999 at steps=1), the opposite of what "linspace" (which this scheduler
+        // always used before this fix, regardless of checkpoint) produces at low step counts --
+        // this is the real root cause of SDXL-Turbo's 1-2 step "textured noise" output surviving
+        // the earlier divide-by-zero fix. "trailing" naturally has no divide-by-zero at steps=1
+        // (its ratio divides by numInferenceSteps, not numInferenceSteps-1).
+        if (timestepSpacing == TimestepSpacing.Trailing)
         {
+            // diffusers: step_ratio = num_train_timesteps / num_inference_steps (float division);
+            // timesteps = round(arange(num_train_timesteps, 0, -step_ratio)) - 1
+            float stepRatio = (float)trainSteps / numInferenceSteps;
+            for (int i = 0; i < numInferenceSteps; i++)
+            {
+                float raw = MathF.Round(trainSteps - i * stepRatio) - 1f;
+                float t = MathF.Max(raw, 0f);
+                Timesteps[i] = t;
+                InterpolateSigma(t, allSigmas, trainSteps, out Sigmas[i]);
+            }
+        }
+        else if (numInferenceSteps == 1)
+        {
+            // "linspace"/"leading" both degenerate to timestep 0 at a single step (see comment
+            // above) -- "leading" itself isn't separately implemented yet, only "linspace" and
+            // "trailing", since no checkpoint encountered so far needs "leading".
             Timesteps[0] = 0f;
             Sigmas[0] = allSigmas[0];
         }
@@ -93,14 +133,7 @@ public sealed class EulerDiscreteScheduler
             {
                 float t = (numInferenceSteps - 1 - i) * stepRatio;
                 Timesteps[i] = t;
-
-                int low = (int)MathF.Floor(t);
-                int high = (int)MathF.Ceiling(t);
-                float weight = t - low;
-
-                float sigmaLow = allSigmas[Math.Clamp(low, 0, trainSteps - 1)];
-                float sigmaHigh = allSigmas[Math.Clamp(high, 0, trainSteps - 1)];
-                Sigmas[i] = sigmaLow + weight * (sigmaHigh - sigmaLow);
+                InterpolateSigma(t, allSigmas, trainSteps, out Sigmas[i]);
             }
         }
         Sigmas[numInferenceSteps] = 0f;
@@ -110,6 +143,17 @@ public sealed class EulerDiscreteScheduler
         {
             Sigmas = BuildKarrasSigmas(numInferenceSteps, Sigmas[0], Sigmas[^2]);
         }
+    }
+
+    private static void InterpolateSigma(float t, float[] allSigmas, int trainSteps, out float sigma)
+    {
+        int low = (int)MathF.Floor(t);
+        int high = (int)MathF.Ceiling(t);
+        float weight = t - low;
+
+        float sigmaLow = allSigmas[Math.Clamp(low, 0, trainSteps - 1)];
+        float sigmaHigh = allSigmas[Math.Clamp(high, 0, trainSteps - 1)];
+        sigma = sigmaLow + weight * (sigmaHigh - sigmaLow);
     }
 
     private static float[] BuildKarrasSigmas(int numSteps, float sigmaMax, float sigmaMin, float rho = 7.0f)
