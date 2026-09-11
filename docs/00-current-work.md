@@ -17,6 +17,42 @@ Two consequences worth stating plainly, because they cut against the previous ro
 - DSpark speculative decoding and SafeTensors Phases 4-6 are **parked**, not scheduled. Both are
   implemented far enough to be useful and neither moves the goal.
 
+## Z-Image-Turbo regression: pure noise output, both backends (2026-09-11, found this session, NOT fixed)
+
+**Real regression, found while sweeping checkpoints for Vulkan coverage during this session's
+perf-tuning arc.** Z-Image-Turbo was previously verified working (2026-09-01, a real BF16-
+corruption fix, confirmed sample at
+`docs/diffusion-samples/z-image-turbo_red-apple-on-white-table_CPU-256x256-4steps_GOOD.png`).
+Re-testing the exact same config plus a 512×512/default-steps variant today: **both CPU and
+Vulkan backends now produce pure visual noise**, not a coherent image.
+
+**Ruled out directly, with real tests, not assumed:**
+- **Not resolution-specific**: noise at both 256×256 (the known-good config) and 512×512.
+- **Not Vulkan-specific**: CPU produces visually near-identical noise to Vulkan for the same
+  seed. This specifically rules out this session's own `Synchronize()`-removal changes to
+  `ZImageDiT.cs`/`QwenTextEncoder.cs` (see "Perf: remove the same redundant vkDeviceWaitIdle()..."
+  commit) as the cause — briefly reverted those two files to test this theory directly, confirmed
+  CPU output was unaffected by keeping vs removing `Synchronize()` (CPU doesn't touch that code
+  path at all), so restored the committed (Synchronize()-removed) version, which is unrelated and
+  should NOT be reverted for this bug.
+- **Not text-encoder-checkpoint-specific**: `Qwen3-4B-Q4_K_M.gguf` and the documented-default
+  `Z-Image-AbliteratedV1.Q5_K_M.gguf` both produce near-identical noise patterns for the same seed
+  — if the bug were in text conditioning (e.g. a corrupted embedding), different encoder
+  checkpoints would very likely produce visibly different garbage, not near-identical noise.
+
+**Not yet investigated / real next steps for whoever picks this up:**
+- Whether the bug is in `ZImageDiT`'s own forward pass (the S3-DiT transformer body) vs. the VAE
+  decode step specifically — could isolate by dumping/inspecting the latent before VAE decode.
+- Whether something in the initial noise/scheduler setup for this checkpoint's flow-matching
+  formulation regressed (Z-Image uses its own scheduler, not `EulerDiscreteScheduler`).
+- Whether a shared dependency this session touched more broadly (e.g. `DiffusionOps` vectorization
+  changes, `GroupNorm` vectorization) could be the real cause — CPU-side code IS shared between
+  pipelines, unlike the ruled-out Vulkan-specific work. Worth a targeted bisect (checkout the
+  2026-09-01 commit that produced the GOOD sample, confirm it still produces a coherent image on
+  the exact same current build environment, then bisect forward) rather than continuing to guess.
+- README's Z-Image-Turbo status downgraded 🟢→🔴 to reflect this; do not re-upgrade without a
+  real, re-verified coherent-image sample.
+
 ## ONNX support expansion (2026-09-11, real plan, not yet started)
 
 **User want, stated explicitly:** "I would love for us to have great onnx support." Parked behind
