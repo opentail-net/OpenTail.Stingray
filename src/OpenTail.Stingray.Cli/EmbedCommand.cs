@@ -84,16 +84,44 @@ public sealed class EmbedCommand : Command<EmbedCommand.Settings>
 
             foreach (var text in texts)
             {
+                // NOTE: this is NOT real WordPiece/BPE tokenization -- it maps each raw character
+                // to its char code as a placeholder "token id". No tokenizer.json/vocab.txt ships
+                // alongside these ONNX embedding checkpoints on this machine, so a real tokenizer
+                // isn't wired here yet. The model will run and produce a real vector, but it will
+                // not be a semantically meaningful embedding of the input text. See
+                // PerformanceLeague.md / docs/00-current-work.md for the open item to fix this.
                 long[] inputIds = text.Select(c => (long)c).ToArray();
                 if (inputIds.Length == 0) inputIds = [0];
+                // Most BERT-family encoders cap position embeddings at 512; the char-per-token
+                // scheme above inflates length ~4x vs. real subword tokenization, so truncate
+                // defensively instead of letting ONNX Runtime fail with an opaque broadcast error
+                // deep in the graph. Real tokenization would make this truncation unnecessary for
+                // reasonably-sized inputs.
+                const int maxPositions = 512;
+                if (inputIds.Length > maxPositions)
+                {
+                    Console.Error.WriteLine($"Warning: input truncated from {inputIds.Length} to {maxPositions} placeholder tokens (no real tokenizer wired for this model's char-per-token fallback).");
+                    inputIds = inputIds[..maxPositions];
+                }
                 totalTokens += inputIds.Length;
                 long[] attentionMask = new long[inputIds.Length];
                 Array.Fill(attentionMask, 1L);
+                long[] tokenTypeIds = new long[inputIds.Length]; // all-zero: single-segment input
 
-                var outputs = onnxSession.Run(
-                    ("input_ids", inputIds, [1, inputIds.Length]),
-                    ("attention_mask", attentionMask, [1, inputIds.Length])
-                );
+                Dictionary<string, float[]> outputs;
+                try
+                {
+                    outputs = onnxSession.Run(
+                        ("input_ids", inputIds, [1, inputIds.Length]),
+                        ("attention_mask", attentionMask, [1, inputIds.Length]),
+                        ("token_type_ids", tokenTypeIds, [1, inputIds.Length])
+                    );
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine($"Error: ONNX inference failed for input \"{text}\": {ex.Message}");
+                    return 1;
+                }
 
                 if (outputs.Values.FirstOrDefault() is { } outTensor && outTensor.Length > 0)
                 {
@@ -123,7 +151,7 @@ public sealed class EmbedCommand : Command<EmbedCommand.Settings>
 
             if (!string.IsNullOrEmpty(s.OutputPath))
             {
-                File.WriteAllText(s.OutputPath, JsonSerializer.Serialize(vectors));
+                File.WriteAllText(s.OutputPath, SerializeVectors(vectors));
                 Console.WriteLine($"Saved embeddings to: {Path.GetFullPath(s.OutputPath)}");
             }
             return 0;
@@ -167,10 +195,32 @@ public sealed class EmbedCommand : Command<EmbedCommand.Settings>
         if (!string.IsNullOrEmpty(s.OutputPath))
         {
             var vectors = result.Data.Select(d => d.Vector).ToList();
-            File.WriteAllText(s.OutputPath, JsonSerializer.Serialize(vectors));
+            File.WriteAllText(s.OutputPath, SerializeVectors(vectors));
             Console.WriteLine($"Saved embeddings to: {Path.GetFullPath(s.OutputPath)}");
         }
 
         return 0;
+    }
+
+    // Hand-rolled JSON serialization for a simple List<float[]> shape, avoiding reflection-based
+    // JsonSerializer.Serialize (disabled for this NativeAOT-trimmed app -- see CLAUDE.md rule 4).
+    private static string SerializeVectors(List<float[]> vectors)
+    {
+        var sb = new System.Text.StringBuilder();
+        sb.Append('[');
+        for (int i = 0; i < vectors.Count; i++)
+        {
+            if (i > 0) sb.Append(',');
+            sb.Append('[');
+            var vec = vectors[i];
+            for (int j = 0; j < vec.Length; j++)
+            {
+                if (j > 0) sb.Append(',');
+                sb.Append(vec[j].ToString("R", System.Globalization.CultureInfo.InvariantCulture));
+            }
+            sb.Append(']');
+        }
+        sb.Append(']');
+        return sb.ToString();
     }
 }

@@ -745,3 +745,6 @@
 [VibeVoice-ASR] audio=14.07s text="Some call me Nature. Others call me Mother Nature. I've been here for over 4.5 billion years. 22,500 times longer than you."
 [VibeVoice-ASR] runs(s)=[155.760, 152.245, 145.561] mean=151.189s RTF=10.744 (lower=faster; 1.0=realtime)
 
+[Parakeet-CTC] audio=14.07s text="some call me nature others call me mother nature i've been here for over four point five billion years twenty two thousand five hundred times longer than you"
+[Parakeet-CTC] runs(s)=[3.541, 3.536, 3.596] mean=3.557s RTF=0.253 (lower=faster; 1.0=realtime)
+

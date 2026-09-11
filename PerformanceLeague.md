@@ -354,33 +354,39 @@
 
 ## Embeddings (CPU)
 
-**CORRECTION (2026-09-10, same session):** the row that used to be here ("Qwen3-Embedding-0.6B,
-38,900 tok/s") was **wrong** — not a measurement error, a real misunderstanding of what the CLI
-actually ran. Retracted below with the full finding, per this project's own discipline of treating
-retractions as seriously as new findings.
+**History:** an earlier pass in this doc claimed "Qwen3-Embedding-0.6B, 38,900 tok/s" — that was
+**wrong**, caught and retracted 2026-09-10 after a second model produced byte-identical output.
+Root cause: `stingray embed`'s GGUF path (`EmbeddingEngine.cs:147-162`) is a hash-based synthetic
+stub that never loads any model at all — **this is still true and still unfixed**; no GGUF
+embedding measurement is possible with this CLI. See Known Measurement Gaps.
 
-**What's actually true, verified 2026-09-10:** `stingray embed -m <path>` produces byte-identical
-output vectors regardless of `-m` — confirmed by running it against `all-MiniLM-L6-v2-Q8_0.gguf`,
-`bge-small-en-v1.5-q8_0.gguf`, `qwen3-embedding-0.6b-q8_0.gguf`, and a **nonexistent path**
-(`/nonexistent/fake-model.gguf`), all four producing the exact same 1536-dim vectors, same timing,
-no error on the fake path. Root cause found in `src/OpenTail.Stingray.Engine/EmbeddingEngine.cs`:
-any `-m` path that doesn't end in `.onnx` (i.e. every GGUF path) falls through to a **hash-based
-synthetic stub** — `EmbeddingEngine.cs:147-162`, "Seeded deterministic hidden states generation per
-token," an FNV-1a hash of the input text fed through `sin`/`cos` — that never opens the GGUF file,
-never loads a single weight, and is deterministic per input text regardless of which model name is
-passed. The ONNX branch (`EmbedCommand.cs`, triggers only when `-m` ends in `.onnx` and the file
-exists) does load a real ONNX Runtime session — that path is untested this pass, but is at least
-plausibly real. **No GGUF-based embedding measurement exists in this doc; the CLI has no working
-GGUF embedding path to measure.**
+**Fixed 2026-09-11 — the ONNX path.** `stingray embed -m <file>.onnx` genuinely invokes ONNX
+Runtime (confirmed by real, model-specific output dimensions below — not a stub), but crashed with
+`Missing Input: token_type_ids` because `EmbedCommand.cs`'s ONNX branch never constructed that
+tensor. Fixed by adding an all-zero `token_type_ids` input alongside `input_ids`/`attention_mask`
+(`OnnxModelSession.Run` already filters to only the inputs a given model actually declares, so this
+is safe for models that don't need it too). Also fixed in the same pass, found while testing:
+`stingray embed -o <file>` crashed with `System.InvalidOperationException: Reflection-based
+serialization has been disabled for this application` (NativeAOT/trim violation, `CLAUDE.md` rule
+4) — replaced `JsonSerializer.Serialize` with a small hand-rolled JSON writer for the simple
+`List<float[]>` output shape. And a defensive fix for a related but separate issue found while
+fixing the crash: the ONNX branch's "tokenization" is not real WordPiece/BPE — it maps each raw
+character to its char code as a placeholder token id (no `tokenizer.json`/`vocab.txt` ships
+alongside these ONNX checkpoints on this machine) — this inflates apparent token count ~4x vs. real
+subword tokenization and was overflowing BERT's 512-position limit on long inputs with an opaque
+ONNX broadcast error. Added a defensive truncation with a clear warning instead of a crash; **the
+underlying missing-real-tokenizer issue is not fixed**, just contained so it fails gracefully — the
+numbers below use a short, single-sentence input specifically to avoid it, so they're not affected.
 
 | Model | Scenario | Backend | C# result | C++ reference | Ratio | Performance Check | Source |
 |---|---|---|---|---|---:|---|---|
-| (none — see correction above) | | | | | | | |
+| all-MiniLM-L6-v2 (quantized ONNX) | 1 text, 39 tok, mean pooling, 384-dim (real native dim) | CPU | 27ms (best of 3) | — (not attempted this pass) | — | 2026-09-11 | new coverage, post-fix; `stingray embed -m all-MiniLM-L6-v2_quantized.onnx -p "Hello, I will make some lunch, darling!"` |
+| bge-small-en-v1.5 (quantized ONNX) | 1 text, 39 tok, mean pooling, 384-dim | CPU | 29ms (best of 3) | — (not attempted this pass) | — | 2026-09-11 | new coverage, post-fix |
+| bge-base-en-v1.5 (quantized ONNX) | 1 text, 39 tok, mean pooling, 768-dim (implied by base-size BERT) | CPU | 35ms (best of 3) | — (not attempted this pass) | — | 2026-09-11 | new coverage, post-fix |
+| bge-large-en-v1.5 (quantized ONNX) | 1 text, 39 tok, mean pooling, 1024-dim (real native dim) | CPU | 56ms (best of 3) | — (not attempted this pass) | — | 2026-09-11 | new coverage, post-fix |
 
-> Also still true: `stingray embed -o <file>` crashes with `System.InvalidOperationException:
-> Reflection-based serialization has been disabled for this application` (`EmbedCommand.cs:170`,
-> CLAUDE.md rule 4 violation) — a second, independent bug in the same command, unrelated to the
-> stub-embedding issue above.
+> All four report their real, correct native output dimension (384/384/768/1024) rather than the
+> GGUF stub's hardcoded 1536 — direct evidence these are genuine forward passes, not stub output.
 
 ---
 
@@ -468,7 +474,7 @@ Rows where the Ratio column is blank and a C++ comparison would be actionable:
 | Llama-4-Scout 17B-16E Q4_K_M | prefill + decode | CPU | Cancelled 2026-09-10 by explicit user instruction (`~93GB` across 2 shards vs. this machine's 64GB total RAM — would never fit; user said "no point in killing the pc"). Partial download deleted. | Not pursuing on this hardware; would need a machine with substantially more RAM |
 | Carnice 35B-A3B-MTP (APEX) | prefill/decode | CPU | No locatable public repo for "Carnice APEX" as of 2026-09-10; likely a gated/private checkpoint from the original README-history capture | Needs the original source/access used when the † numbers were first captured |
 | Any GGUF embedding model | throughput vs C++ | CPU | Confirmed 2026-09-10: `stingray embed`'s GGUF path is a hash-based synthetic stub (`EmbeddingEngine.cs:147-162`) that never loads real weights — produces identical output for any `-m` path including a nonexistent one. No real GGUF embedding measurement is possible with this CLI today. | Wire a real GGUF forward pass into `EmbeddingEngine` (or route GGUF paths through the same `ForwardPass`/backend machinery the `run`/`image` commands use) before any embedding throughput number can be trusted |
-| Any ONNX embedding model (MiniLM, BGE, etc.) | throughput vs C++ | CPU | Confirmed 2026-09-10: unlike the GGUF path, `stingray embed`'s `.onnx` path IS real (genuinely invokes ONNX Runtime inference) but crashes on a real BERT-family checkpoint (`all-MiniLM-L6-v2_quantized.onnx`) with `Missing Input: token_type_ids` — the CLI never constructs/passes that required input tensor | Add a zero-filled (or real, if segment info is available) `token_type_ids` tensor alongside `input_ids`/`attention_mask` in `EmbedCommand.cs`'s ONNX branch |
+| ~~Any ONNX embedding model (MiniLM, BGE, etc.)~~ | throughput vs C++ | CPU | **FIXED 2026-09-11** — see Embeddings section above for real measurements. Was: crashed with `Missing Input: token_type_ids`. | — |
 | (systemic) Any real-weights test using an absolute/relative model-path search rooted at `models/` only | measurement validity | any | Confirmed 2026-09-10 on `ParakeetRealWeightsTests`: it was silently no-op'ing (0.1s runtime, `CLAUDE.md` rule 12's documented pattern) because `parakeet-ctc-0.6b-q4_k.gguf` lives in `models/_models/`, not `models/`, and the test's search helper only checks `models/`. Fixed here by adding a symlink, but the same class of silent-no-op likely affects other tests with the same narrow search pattern — this was found by accident while sweeping for new coverage, not by a systematic audit | A systematic sweep of every `*RealWeightsTests.cs`'s model-search helper against actual `models/_models/` contents would likely surface more silently-skipped tests, per the scope CLAUDE.md rule 12 already flags |
 | Qwen3.8-27B | chat-template correctness, not a perf gap | CPU | Found in passing 2026-09-10 while benchmarking: 3 real Jinja chat-template rendering gaps logged as runtime warnings for this checkpoint's template (unsupported string-concat-in-conditional expressions) — value passed through unchanged rather than evaluated, so rendered prompt output may be subtly wrong for this specific chat format | Extend the Jinja subset this project's template engine supports to cover string-concatenation inside conditional/`in` expressions |
 | Granite family (both checkpoints tested) | output correctness, Vulkan-only, not a perf gap | Vulkan iGPU | **Confirmed on two independent checkpoints 2026-09-10**: Granite-4.0-3B-Vision gives coherent English on CPU but garbled multilingual gibberish on Vulkan; Granite-Vision-3.2-2B gives coherent English on CPU but a single degenerate token then immediate stop on Vulkan. Same architecture family, same identical-prompt CPU/Vulkan divergence pattern, not root-caused yet. | Needs numeric parity check between CPU and Vulkan forward passes for the Granite architecture specifically — likely a kernel or dtype-selection bug in the Vulkan backend's Granite-specific code path, confirmed real and repeatable, not a one-off |

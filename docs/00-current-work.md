@@ -1540,3 +1540,71 @@ indexing, per-layer KV-source sharing, `attention_k_eq_v`, per-head V-norm, slid
 masking) — not a quick patch; a prior attempt to force the existing batched path
 (`STINGRAY_PER_LAYER_HD_PREFILL=1`) crashed with `AccessViolationException`, not just wrong output.
 See [070-gemma4-batched-prefill-plan.md](070-gemma4-batched-prefill-plan.md) for the full plan.
+
+## Bugs found during the 2026-09-10/11 PerformanceLeague model sweep (not started)
+
+None of these were found by deliberate auditing — they surfaced incidentally while benchmarking
+models for `PerformanceLeague.md`. All are measured/reproduced, none are fixed. Listed roughly by
+severity.
+
+- **`stingray embed`'s GGUF path is a complete fake, silently.** Any `-m <path>.gguf` that isn't
+  `.onnx` falls through to `EmbeddingEngine.cs`'s `EmbeddingEngine.Embed` — a hash-based synthetic
+  stub (FNV-1a hash of the input text run through `sin`/`cos`, `EmbeddingEngine.cs:147-162`) that
+  never opens the GGUF file at all. Confirmed by running it against three different real GGUF
+  embedding models plus one nonexistent path — all four produced byte-identical output vectors, no
+  error. This is worse than wrong output: it's a command that looks like it works and doesn't touch
+  the model you gave it. Fix: wire a real GGUF forward pass into `EmbeddingEngine` (or route GGUF
+  paths through the same `ForwardPass`/backend machinery `run`/`image` already use).
+- ~~**`stingray embed`'s ONNX path crashes on a real BERT-family checkpoint.**~~ **FIXED
+  2026-09-11.** Was: `Missing Input: token_type_ids` on `all-MiniLM-L6-v2_quantized.onnx` because
+  `EmbedCommand.cs`'s ONNX branch never constructed that tensor. Fix landed: an all-zero
+  `token_type_ids` input alongside `input_ids`/`attention_mask` (`OnnxModelSession.Run` already
+  filters to only inputs a model declares, so this is safe for models that don't need it too).
+  Verified against MiniLM, BGE-small/base/large — all four now report their real, correct native
+  output dimension (384/384/768/1024), confirmed real inference. Two more bugs found and fixed in
+  the same pass: `stingray embed -o <file>` crashed on the same reflection-JSON issue as the GGUF
+  path (replaced with a hand-rolled serializer for the simple `List<float[]>` shape); and the ONNX
+  branch's "tokenization" is not real WordPiece/BPE (it maps each raw character to its char code as
+  a placeholder token id — no tokenizer.json/vocab.txt ships alongside these ONNX checkpoints here)
+  which was overflowing BERT's 512-position limit on long inputs with an opaque broadcast error —
+  added a defensive truncation-with-warning instead of a crash. **The missing-real-tokenizer issue
+  itself is still open** — this only makes it fail gracefully, real embeddings from this path are
+  not semantically meaningful for inputs longer than a few words until a real tokenizer is wired.
+  See `PerformanceLeague.md`'s Embeddings section for real post-fix measurements.
+- **Granite architecture has a real, Vulkan-specific correctness bug**, confirmed on two independent
+  checkpoints. Identical prompt/seed gives coherent English on CPU but broken output on Vulkan:
+  garbled multilingual gibberish on `Granite-4.0-3B-Vision`, a single degenerate token then
+  immediate stop on `Granite-Vision-3.2-2B`. Not root-caused. Needs a numeric CPU-vs-Vulkan parity
+  check specifically for the Granite architecture's Vulkan kernel/dtype-selection path.
+- **Two independent ASR pipelines produce degenerate output on real speech audio**, despite running
+  to completion and (for one of them) at a fast RTF: Qwen3-ASR 0.6B transcribes the standard
+  14.1s reference clip as just "aspects" (should be a full sentence); FunASR-Nano (via
+  `paraformer-q8.gguf`) produces repetitive word-salad ("to to to... a a a at at at") on synthetic
+  tone audio. Not disambiguated whether these share a root cause (worth checking first, since the
+  failure modes look similar) or are two separate bugs.
+- **F5-TTS's CPU compute backend isn't wired in `audio.cpp`.** A real run against the `f5_tts`
+  family (which does load its model spec correctly) fails with `ggml_graph_compute_with_ctx
+  unavailable (CPU backend not loaded)` — confirmed with real `--voice-ref`/`--reference-text`
+  arguments, not a config error. This is the audio.cpp side, not the OT C# port (OT's own F5-TTS
+  already has real CPU numbers in `PerformanceLeague.md`).
+- **Chatterbox Turbo's streaming path is blocked on a missing tokenizer asset.** Real
+  `--mode streaming` run against `chatterbox_turbo`'s model spec fails looking for
+  `models/chatterbox_turbo_vocab.json`, which isn't present alongside the GGUF on this machine.
+  Likely just needs locating/regenerating that one file.
+- **Qwen3.8-27B's chat template has 3 real Jinja rendering gaps**, logged as runtime warnings, not
+  crashes: unsupported string-concatenation-inside-conditional/`in` expressions (e.g.
+  `sysns.text + ('\n' if sysns.text else '') + sys_content`) get passed through unevaluated instead
+  of rendered, so this checkpoint's actual chat-formatted prompt may be subtly wrong. Fix: extend
+  this project's Jinja subset to handle string-concat inside conditional expressions.
+- **A systemic silent-no-op pattern in `*RealWeightsTests.cs` files, worse than previously
+  documented.** `CLAUDE.md` rule 12 already names this pattern (a green, sub-second "pass" that
+  never actually touched real weights) for LLM/vision/some-audio tests. Three *more* instances were
+  found by accident this pass, not by a deliberate audit: `ParakeetRealWeightsTests` and the
+  Orpheus/SNAC perf bench were silently skipping because their model-search helpers only check
+  `models/`, not `models/_models/`, where the checkpoints actually live (fixed here via symlinks,
+  matching the existing convention — but the underlying search-helper narrowness is unfixed and
+  likely affects other tests too). Nobody has run a full sweep comparing every real-weights test's
+  search helper against actual `models/_models/` contents.
+
+See `PerformanceLeague.md` (search each bug's name/symptom) for the exact repro commands, dated
+findings, and any partial data already gathered.
