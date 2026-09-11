@@ -1926,13 +1926,25 @@ severity.
   unverified architecture, but the crash is gone). Full `OpenTail.Stingray.Tests.Vision` suite
   re-run clean: 150 passed, 0 failed, 9 skipped (missing fixtures, unrelated to this change).
 - **Two `deepseek2`-architecture VLM checkpoints (Kimi-VL-A3B-thinking, YouTu-VL-4B) crash with
-  `Missing tensor: blk.0.attn_q.weight`** when run with `--allow-unverified-arch` — same
+  `Missing tensor: blk.0.attn_kv_b.weight`** when run with `--allow-unverified-arch` — same
   architecture tag, same missing-tensor error, at `ForwardPass.Helpers.cs:178`'s `ResolveTensor`.
-  Likely these GGUF conversions use DeepSeek's MLA-compressed KV projection tensor naming
-  (`attn_kv_b.weight` etc.) that this project's `deepseek2` handling doesn't resolve for whatever
-  quant/export variant produced these specific files — a real architecture-support gap, not a
-  fluke. (A third `deepseek2` checkpoint, DeepSeek-V2-Lite, was already confirmed working earlier
-  this session — so this is specific to these two VLM export variants, not `deepseek2` broadly.)
+  **Corrected 2026-09-11** (an earlier note here misstated the missing tensor as `attn_q.weight` —
+  re-verified directly against the real error text and `list-tensors` output, this was wrong):
+  `blk.0.attn_q.weight` genuinely EXISTS in both checkpoints — these are the "Lite"
+  `q_lora_rank==0` MLA variant (a plain per-head Q projection, already supported), not full-size
+  MLA. The real, narrower gap is specifically the split `attn_k_b`/`attn_v_b`/`attn_kv_a_mqa`
+  "absorption" K/V layout (confirmed present via `list-tensors`: `attn_k_b.weight [128,512,16]`,
+  `attn_v_b.weight [512,128,16]`) — `MlaComputeQkv`'s own doc comment
+  (`ForwardPass.Decode.cs`) already documents this exact gap: "only the legacy unsplit `wkv_b`
+  tensor layout is handled... the split `wk_b`/`wv_b` absorption layout some newer checkpoints use
+  is not implemented." Real, scoped fix would need: loading `_wKB`/`_wVB` per-layer (their real
+  3D per-head tensor shape, different from the existing 2D `FusedMatVec` pattern), and doing two
+  separate per-head decompressions instead of the current one combined matvec — a genuine,
+  moderate feature addition (new tensor-loading + per-head batched matvec math, needs correctness
+  verification against a real reference), not a one-line fix, but smaller in scope than "implement
+  full `q_lora_rank>0`" as earlier notes here implied. (A third `deepseek2` checkpoint,
+  DeepSeek-V2-Lite, was already confirmed working earlier this session — so this is specific to
+  checkpoints using the split absorption layout, not `deepseek2` broadly.)
 - **Nemotron-Nano-12B-v2-VL (`nemotron_h` architecture) crashes**: `HybridGdnForwardPass dense FFN
   requires hp.IntermediateDim > 0` — a required hyperparameter isn't populated from this
   checkpoint's GGUF metadata for the hybrid-GDN dense-FFN path. Real, unattempted-until-now
