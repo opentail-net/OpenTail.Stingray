@@ -20,6 +20,12 @@ public sealed class VaeDecoder : IDisposable, IVaeDecoder
     private readonly Dictionary<string, CoreTensor>? _gpuWeights;
 
     private const float VaeShift = 0.1159f;
+    // Perf note (2026-09-11): tried bumping this 4x (32M -> 128M) to cut GPU dispatch count on the
+    // theory that fewer, larger chunks would help -- measured real weights/timing and it was a
+    // clear REGRESSION (VAE decode 31.01s -> 34.59s, total run 77.0s -> 93.5s), not an improvement.
+    // Larger single transfers apparently cost more than they save in reduced dispatch overhead on
+    // this iGPU (no overlap between a large Upload/Download and compute). Reverted -- keeping this
+    // note so the same idea isn't retried without re-measuring.
     private const int MaxColChunkFloats = 32 * 1024 * 1024;
 
     public VaeDecoder(string path) => _st = SafetensorsLoader.Open(path);
