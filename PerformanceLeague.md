@@ -511,6 +511,19 @@ its prompt-template wiring for the image placeholder differs from InternVL3's. L
 reproducible bug in `docs/00-current-work.md` rather than silently reported as a working
 measurement — the timing is real, the correctness is not verified.
 
+| Granite-Vision-3.2-2B Q3_K_S + mmproj-f16 | prefill (785 tok = 729 image + 56 text) | stingray CLI (OT) | 18.3 t/s avg (19.2/17.6/18.1 across 3 runs) | 2026-09-11 | new coverage; real vision path runs, same correctness caveat family as Granite-4.0-3B-Vision above |
+| Granite-Vision-3.2-2B Q3_K_S + mmproj-f16 | decode (26 tok gen) | stingray CLI (OT) | 16.1 t/s avg (17.6/15.3/15.4 across 3 runs) | 2026-09-11 | same caveat |
+
+**Correctness caveat for Granite-Vision-3.2-2B:** same failure family as Granite-4.0-3B-Vision —
+all 3 runs produced the identical degenerate output (`"The image contains a series of words and
+phrases, including 'color,' 'story,' 'identity,' and various combinations thereof."`), completely
+unrelated to the actual image content, and identical byte-for-byte across all 3 runs (deterministic
+given `--temp 0`, but wrong). Both Granite-family VLMs failing the same way (real timing, wrong/
+generic output) while InternVL3-2B works correctly on the identical image/prompt suggests a
+**Granite-family-specific** vision-integration bug (e.g. image placeholder token handling or
+embedding injection point in the Granite chat template/forward path), not two unrelated one-off
+issues. Worth root-causing as a single Granite-vision bug rather than two separate ones.
+
 **Methodology caveat (same discipline as the earlier Kokoro/Piper cold-CLI-vs-warm-benchmark
 note):** `llama-mtmd-cli.exe`'s only timing output is `mtmd batch encoding done in N ms`, which
 measures the **vision-encoder-only** portion of the pipeline (turning the 256 image tokens into

@@ -37,7 +37,9 @@ Checkpoints + mmproj already present in `models/_models/` (checked 2026-09-11):
 - [x] Granite-4.0-3B-Vision + `mmproj-granite-4.0-3b-vision-f16.gguf` — DONE 2026-09-11 (CPU only).
       Real timing measured but found a NEW bug: degenerate non-image-grounded output (see
       current-work.md). Logged, not blocking further phase 1 work — moving on.
-- [ ] Granite-Vision-3.2-2B + `mmproj-granite-vision-3.2-2b-f16.gguf` — same, fix verified
+- [x] Granite-Vision-3.2-2B + `mmproj-granite-vision-3.2-2b-f16.gguf` — DONE 2026-09-11. Same
+      degenerate-output bug as Granite-4.0-3B-Vision — strengthens the "shared Granite-family
+      vision bug" hypothesis in current-work.md. Moving on.
 - [ ] dots.ocr + `mmproj-dots.ocr-Q8_0.gguf`
 - [ ] Gemma-3-4B-it + `mmproj-gemma-3-4b-it-f16.gguf`
 - [ ] Kimi-VL-A3B-thinking + `mmproj-kimi-vl-a3b-thinking-Q8_0.gguf` — text backbone rejected as

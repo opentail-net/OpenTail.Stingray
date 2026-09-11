@@ -1620,6 +1620,13 @@ severity.
   embeddings not actually being attended to by the backbone, or a prompt-template/placeholder
   mismatch specific to this checkpoint's chat format. See PerformanceLeague.md's "Vision-Language
   Model Real Image Encoding" section for the measured numbers with this caveat attached.
+  **Update 2026-09-11:** Granite-Vision-3.2-2B (`mmproj-granite-vision-3.2-2b-f16.gguf`) shows the
+  exact same failure pattern — real vision-encoder run, real timing (~18 t/s prefill, ~16 t/s
+  decode, 3 runs), but always the same wrong, non-image-grounded output regardless of image
+  content. Two independent Granite-family VLM checkpoints failing identically, while InternVL3-2B
+  (different family) works correctly on the same image/prompt — strongly suggests one shared
+  Granite-family vision-integration bug (image placeholder/embedding injection point) rather than
+  two separate issues. Worth root-causing as a single Granite-vision bug.
 - **Qwen3.8-27B's chat template has 3 real Jinja rendering gaps**, logged as runtime warnings, not
   crashes: unsupported string-concatenation-inside-conditional/`in` expressions (e.g.
   `sysns.text + ('\n' if sysns.text else '') + sys_content`) get passed through unevaluated instead
