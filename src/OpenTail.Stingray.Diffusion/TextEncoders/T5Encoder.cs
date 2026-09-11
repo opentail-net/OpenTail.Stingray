@@ -32,6 +32,18 @@ public sealed class T5Encoder : IDisposable
     private readonly bool _ownsLoader;
     private float[]? _relPosBias; // lazy cached
 
+    // Perf (2026-09-11): same fix as ClipLEncoder/OpenClipGEncoder -- _st.ReadF32 does a real
+    // file.Seek+ReadExactly disk read under a lock on EVERY call, no caching. T5-XXL is a much
+    // bigger model (24 layers, 4096-dim) than CLIP, so this is likely even more significant here.
+    private readonly Dictionary<string, float[]> _weightCache = new(StringComparer.Ordinal);
+    private float[] Wt(string name)
+    {
+        if (_weightCache.TryGetValue(name, out var w)) return w;
+        w = _st.ReadF32(name);
+        _weightCache[name] = w;
+        return w;
+    }
+
     public T5Encoder(string path)
     {
         _st = SafetensorsLoader.Open(path);
@@ -56,7 +68,7 @@ public sealed class T5Encoder : IDisposable
     public float[] Encode(int[] tokens)
     {
         int seq = tokens.Length;
-        var tokEmb = _st.ReadF32("shared.weight");
+        var tokEmb = Wt("shared.weight");
 
         var x = new float[seq * Dim];
         for (int t = 0; t < seq; t++)
@@ -69,14 +81,14 @@ public sealed class T5Encoder : IDisposable
         // Precompute relative position bias from first block (shared across all blocks)
         if (_relPosBias is null)
         {
-            var rpW = _st.ReadF32("encoder.block.0.layer.0.SelfAttention.relative_attention_bias.weight");
+            var rpW = Wt("encoder.block.0.layer.0.SelfAttention.relative_attention_bias.weight");
             // rpW: [num_buckets, num_heads] = [32, 64]
             _relPosBias = ComputeRelPosBias(rpW, seq, Heads);
         }
         else if (_relPosBias.Length != seq * seq * Heads)
         {
             // Recompute if sequence length changed
-            var rpW = _st.ReadF32("encoder.block.0.layer.0.SelfAttention.relative_attention_bias.weight");
+            var rpW = Wt("encoder.block.0.layer.0.SelfAttention.relative_attention_bias.weight");
             _relPosBias = ComputeRelPosBias(rpW, seq, Heads);
         }
 
@@ -84,7 +96,7 @@ public sealed class T5Encoder : IDisposable
             x = EncoderBlock(x, _relPosBias, seq, i);
 
         // Final layer norm
-        var fnW = _st.ReadF32("encoder.final_layer_norm.weight");
+        var fnW = Wt("encoder.final_layer_norm.weight");
         DiffusionOps.RmsNorm(x, fnW, Dim);
         return x;  // [seq, 4096]
     }
@@ -94,14 +106,14 @@ public sealed class T5Encoder : IDisposable
         string p = $"encoder.block.{blockIdx}.layer";
 
         // Self-attention sub-layer
-        var lnW0 = _st.ReadF32($"{p}.0.layer_norm.weight");
+        var lnW0 = Wt($"{p}.0.layer_norm.weight");
         var xNorm = x.ToArray();
         DiffusionOps.RmsNorm(xNorm, lnW0, Dim);
         var attn = SelfAttention(xNorm, relPosBias, seq, $"{p}.0.SelfAttention", blockIdx);
         for (int i = 0; i < x.Length; i++) x[i] += attn[i];
 
         // Feed-forward sub-layer
-        var lnW1 = _st.ReadF32($"{p}.1.layer_norm.weight");
+        var lnW1 = Wt($"{p}.1.layer_norm.weight");
         var xNorm2 = x.ToArray();
         DiffusionOps.RmsNorm(xNorm2, lnW1, Dim);
         var ff = FeedForward(xNorm2, seq, $"{p}.1.DenseReluDense");
@@ -112,10 +124,10 @@ public sealed class T5Encoder : IDisposable
 
     private float[] SelfAttention(float[] x, float[] relBias, int seq, string p, int blockIdx)
     {
-        var qW = _st.ReadF32($"{p}.q.weight");
-        var kW = _st.ReadF32($"{p}.k.weight");
-        var vW = _st.ReadF32($"{p}.v.weight");
-        var oW = _st.ReadF32($"{p}.o.weight");
+        var qW = Wt($"{p}.q.weight");
+        var kW = Wt($"{p}.k.weight");
+        var vW = Wt($"{p}.v.weight");
+        var oW = Wt($"{p}.o.weight");
 
         var q = DiffusionOps.Linear(x, qW, null, seq, Dim, Dim);
         var k = DiffusionOps.Linear(x, kW, null, seq, Dim, Dim);
@@ -162,9 +174,9 @@ public sealed class T5Encoder : IDisposable
     private float[] FeedForward(float[] x, int seq, string p)
     {
         // Flan-T5 gated SiLU FFN: h = silu(wi_0 * x) * (wi_1 * x); out = wo * h
-        var wi0W = _st.ReadF32($"{p}.wi_0.weight");  // [FfDim, Dim]
-        var wi1W = _st.ReadF32($"{p}.wi_1.weight");  // [FfDim, Dim]
-        var woW  = _st.ReadF32($"{p}.wo.weight");    // [Dim, FfDim]
+        var wi0W = Wt($"{p}.wi_0.weight");  // [FfDim, Dim]
+        var wi1W = Wt($"{p}.wi_1.weight");  // [FfDim, Dim]
+        var woW  = Wt($"{p}.wo.weight");    // [Dim, FfDim]
 
         var gate = DiffusionOps.Linear(x, wi0W, null, seq, Dim, FfDim);
         var val  = DiffusionOps.Linear(x, wi1W, null, seq, Dim, FfDim);
