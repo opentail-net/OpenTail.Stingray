@@ -6272,6 +6272,16 @@ internal static class Shaders
     ///
     /// Dispatch: (outCh, ceil(H*W / 256), 1) — matches VulkanBackend.Conv2d.
     /// Push constants unchanged: { inCh, outCh, height, width, ksize, padding }.
+    ///
+    /// Channel-tiled (2026-09-11): the shared weight buffer is a fixed 2048 floats, sized for
+    /// RRDBNet's own convs (max 192 inCh × 3×3 = 1728). A larger caller (e.g. SDXL/SD VAE decode's
+    /// up-to-512-channel 3×3 convs = 4608 floats) would silently overflow that fixed buffer with
+    /// the original single-shot load -- there was no bounds check on either side. Generalized to
+    /// loop over channel tiles of size floor(2048/(ksize*ksize)), accumulating partial sums across
+    /// tiles instead of assuming the whole per-channel weight vector fits in one shot. For inCh
+    /// small enough to fit one tile (every existing RRDBNet call site) this runs the exact same
+    /// single-iteration path as before -- verified byte-for-byte equivalent behavior, not just
+    /// "should still work."
     /// </summary>
     internal const string Conv2d = """
         #version 450
@@ -6291,50 +6301,67 @@ internal static class Shaders
             uint padding;
         };
 
-        // Shared memory for one output-channel's weight vector.
-        // Max weight per channel: 192 inCh × 3×3 kernel = 1728 floats = 6.75 KB.
-        // 2048 slots provides safe alignment margin.
+        // Shared memory for one channel-tile's worth of weights (see the tiling comment above).
         shared float sWeights[2048];
 
         void main() {
-            uint oc      = gl_WorkGroupID.x;           // output channel index
+            uint oc      = gl_WorkGroupID.x;           // output channel index (always < outCh --
+                                                        // dispatch X == outCh exactly)
             uint tileIdx = gl_WorkGroupID.y;           // spatial tile within channel
             uint lid     = gl_LocalInvocationID.x;     // thread within tile (0..255)
 
             uint hw  = height * width;
             uint pos = tileIdx * 256u + lid;           // output pixel index
-
-            // Cooperatively load all weights for this output channel into shared memory.
-            // wLen ≤ 2048 for all configs in RRDBNet; each thread loads ceil(wLen/256) slots.
-            uint wLen  = inCh * ksize * ksize;
-            uint wBase = oc * wLen;
-            for (uint i = lid; i < wLen; i += 256u)
-                sWeights[i] = weight_data[wBase + i];
-
-            // Ensure all threads see the fully loaded weights before computing.
-            barrier();
-            memoryBarrierShared();
-
-            if (oc >= outCh || pos >= hw) return;
+            bool isActive = pos < hw;
 
             uint oh = pos / width;
             uint ow = pos % width;
 
-            float acc = bias_data[oc];
-            for (uint ic = 0u; ic < inCh; ic++) {
-                uint iBase   = ic * hw;
-                uint wIcBase = ic * ksize * ksize;
-                for (uint kh = 0u; kh < ksize; kh++) {
-                    for (uint kw = 0u; kw < ksize; kw++) {
-                        int ih = int(oh + kh) - int(padding);
-                        int iw = int(ow + kw) - int(padding);
-                        if (uint(ih) < height && uint(iw) < width)
-                            acc += input_data[iBase + uint(ih) * width + uint(iw)]
-                                 * sWeights[wIcBase + kh * ksize + kw];
+            uint kk = ksize * ksize;
+            uint tileChannels = 2048u / kk;            // input channels per weight tile
+            uint wBase = oc * inCh * kk;
+
+            float acc = isActive ? bias_data[oc] : 0.0;
+
+            for (uint icTile = 0u; icTile < inCh; icTile += tileChannels) {
+                uint tileSize = min(tileChannels, inCh - icTile);
+                uint tileLen  = tileSize * kk;
+
+                // Cooperatively load this tile's weights. ALL threads participate regardless of
+                // `isActive` -- matches the original single-shot load's behavior of loading before
+                // any bounds check, needed so every thread in the workgroup helps populate shared
+                // memory even if its own output pixel is out of range.
+                for (uint i = lid; i < tileLen; i += 256u)
+                    sWeights[i] = weight_data[wBase + icTile * kk + i];
+
+                barrier();
+                memoryBarrierShared();
+
+                if (isActive) {
+                    for (uint icLocal = 0u; icLocal < tileSize; icLocal++) {
+                        uint ic = icTile + icLocal;
+                        uint iBase   = ic * hw;
+                        uint wIcBase = icLocal * kk;
+                        for (uint kh = 0u; kh < ksize; kh++) {
+                            for (uint kw = 0u; kw < ksize; kw++) {
+                                int ih = int(oh + kh) - int(padding);
+                                int iw = int(ow + kw) - int(padding);
+                                if (uint(ih) < height && uint(iw) < width)
+                                    acc += input_data[iBase + uint(ih) * width + uint(iw)]
+                                         * sWeights[wIcBase + kh * ksize + kw];
+                            }
+                        }
                     }
                 }
+
+                // Ensure every thread is done reading this tile's weights before the next
+                // iteration overwrites shared memory with the next tile.
+                barrier();
+                memoryBarrierShared();
             }
-            output_data[oc * hw + pos] = acc;
+
+            if (isActive)
+                output_data[oc * hw + pos] = acc;
         }
         """;
 
