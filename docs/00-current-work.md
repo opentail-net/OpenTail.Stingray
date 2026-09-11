@@ -1644,6 +1644,27 @@ severity.
   (different family) works correctly on the same image/prompt — strongly suggests one shared
   Granite-family vision-integration bug (image placeholder/embedding injection point) rather than
   two separate issues. Worth root-causing as a single Granite-vision bug.
+  **Update 2026-09-11 — investigation, not resolved.** Found that `docs/vl-migration-plan-2026-08-20.md`
+  itself documents a real, verified-working end-to-end Granite4 generation on 2026-08-20
+  ("Describe this image.A large, diverse group of animals living in a certain area...") —
+  seemingly contradicting this session's finding. Checked for a code regression: `git log
+  4f2606c..HEAD` (the commit range since that doc's "image_pad changes" fix, which is when the
+  verified-working state was recorded) touching `Granite4VisionEncoder.cs`/`Granite4VisionModel.cs`/
+  `UnifiedVisionPipeline.cs`/`RunCommand.cs` shows only unrelated commits (Gemma 3, HunyuanVL,
+  global-usings, this session's own `RunImagePrompt` fix, `deepseek2` MLA work) — no Granite4-
+  specific change since the verified-working commit. Re-tested directly with two more real runs:
+  (a) same abstract test image, default (non-greedy) sampling instead of `--temp 0` — still not
+  image-grounded ("a Python script to generate an image of a random astronomical object..."); (b)
+  a genuinely different, real photographic image (SD1.5's own coherent wooden-table generation,
+  `sd15-perfleague-check.png`) — still not image-grounded ("a brief description of the image.
+  There is no text in this problem."). Rules out both "greedy-decoding artifact" and "this specific
+  test image confuses it" as explanations. **Real, unresolved question**: either (a) a genuine
+  regression exists somewhere not caught by this commit-range check (possibly in shared
+  `VisionOps`/`ForwardPass` code outside the files checked), or (b) the doc's 08-20 "verified
+  working" claim was itself an unverified pattern-match (plausible-sounding but not actually
+  checked against the real image content — the same class of overconfidence this session already
+  caught itself making once with a false embedding measurement). Not disambiguated further —
+  pivoting to other work per this project's "switch to another item when one stalls" discipline.
 - **dots.ocr's real vision-encode path emits a 1-token degenerate output.** Real `--image`/
   `--mmproj` run (2026-09-11) against `dots.ocr-Q8_0.gguf` + `mmproj-dots.ocr-Q8_0.gguf`: vision
   encoder runs correctly (81 soft tokens/1536-dim), but decode immediately emits
