@@ -19,6 +19,18 @@ public sealed class OnnxModelSession : IDisposable
     public IReadOnlyCollection<string> InputNames => _inputNames;
     public IReadOnlyCollection<string> OutputNames => _outputNames;
 
+    /// <summary>
+    /// The ONNX model's own embedded custom metadata map (`Ort::ModelMetadata::CustomMetadataMap`
+    /// in the C++ API, `InferenceSession.ModelMetadata.CustomMetadataMap` in .NET's ONNX Runtime
+    /// binding -- a standard, long-stable API). Many checkpoints (e.g. sherpa-onnx's SenseVoice
+    /// export) embed real config values here (vocab size, LFR window params, CMVN stats, language
+    /// id maps) that must be read at runtime rather than hardcoded. Empty if unavailable.
+    /// </summary>
+    public IReadOnlyDictionary<string, string> CustomMetadata =>
+        _session?.ModelMetadata.CustomMetadataMap ?? EmptyMetadata;
+
+    private static readonly Dictionary<string, string> EmptyMetadata = new(StringComparer.Ordinal);
+
     public OnnxModelSession(string modelPath, SessionOptions? options = null)
     {
         _modelPath = modelPath;
