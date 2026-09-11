@@ -125,13 +125,15 @@ public sealed class UNet2DConditionModel : IDisposable
                     _backend.Free(cGpu);
                 }
 
+                // Perf: same class of fix as the im2col gather above -- parallelize this
+                // transpose+bias-add write-back across `pos` (disjoint output locations per pos).
                 int basePos = rowStart * outW;
-                for (int pos = 0; pos < chunkHW; pos++)
+                Parallel.For(0, chunkHW, pos =>
                 {
                     int absPos = basePos + pos;
                     for (int oc = 0; oc < outC; oc++)
                         output[oc * hw + absPos] = resBuf[pos * outC + oc] + (bF is not null ? bF[oc] : 0f);
-                }
+                });
             }
         }
         finally

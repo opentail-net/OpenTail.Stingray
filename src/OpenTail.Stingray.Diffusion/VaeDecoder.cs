@@ -398,13 +398,17 @@ public sealed class VaeDecoder : IDisposable, IVaeDecoder
                     _backend.Free(cGpu);
                 }
 
+                // Perf: same class of fix as Im2ColChunk -- this transpose+bias-add write-back was
+                // single-threaded scalar code at the same scale (chunkHW*outCh writes). Each `pos`
+                // writes to disjoint locations across all `oc` (output[oc*hw + absPos]), so rows
+                // parallelize cleanly.
                 int basePos = rowStart * outW;
-                for (int pos = 0; pos < chunkHW; pos++)
+                Parallel.For(0, chunkHW, pos =>
                 {
                     int absPos = basePos + pos;
                     for (int oc = 0; oc < outCh; oc++)
                         output[oc * hw + absPos] = resultBuf[pos * outCh + oc] + (biasArr?[oc] ?? 0f);
-                }
+                });
             }
         }
         finally
