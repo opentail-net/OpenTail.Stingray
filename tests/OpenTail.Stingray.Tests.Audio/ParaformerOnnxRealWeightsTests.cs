@@ -78,21 +78,21 @@ public sealed class ParaformerOnnxRealWeightsTests
         using var pipeline = ParaformerOnnxPipeline.Load(modelPath!);
         Assert.Equal("FunASR-Paraformer-ONNX", pipeline.Architecture);
 
-        // No bundled real Chinese speech clip was found under examples/sherpa-onnx in this repo
-        // clone (source-only checkout, no test-data wavs). This is a structural smoke test (real
-        // weights, real forward pass, real decode -- not a golden-transcript check): a pure tone
-        // is not real speech, so Paraformer's real greedy decoder legitimately may emit only
-        // special/near-EOS tokens for it, same caveat as `FunAsrRealWeightsTests`'s sine-tone
-        // tests. Swap in a real Chinese WAV clip (16kHz mono) for a real golden-transcript
-        // assertion when one is available.
-        float[] audio = new float[16000 * 2];
-        for (int i = 0; i < audio.Length; i++)
-            audio[i] = MathF.Sin(2.0f * MathF.PI * 440.0f * i / 16000.0f) * 0.5f;
+        // Real Chinese speech clip, 2026-09-11: downloaded from the same real HF repo this
+        // checkpoint's vocab came from (csukuangfj/sherpa-onnx-paraformer-zh-small-2024-03-09's
+        // own test_wavs/0.wav) -- a real spoken-Mandarin clip, not synthetic tone, so this is now
+        // a real content check (no exact ground-truth transcript string was available to assert
+        // against, but the output can be judged for plausibility -- real Chinese characters,
+        // not degenerate/garbage output).
+        string wavPath = @"C:\Git-Public\OpenTail.Stingray\docs\audio-samples\paraformer-zh-test-0.wav";
+        Assert.SkipUnless(File.Exists(wavPath), "paraformer-zh-test-0.wav not found");
+        var (audio, sampleRate, _) = OpenTail.Stingray.Audio.WavReader.ReadWav(wavPath);
+        Assert.Equal(16000, sampleRate);
 
         var res = pipeline.Transcribe(new SpeechToTextRequest
         {
             AudioSamples = audio,
-            SampleRate = 16000,
+            SampleRate = sampleRate,
             Language = "zh",
         });
         sw.Stop();

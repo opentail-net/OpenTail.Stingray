@@ -76,7 +76,7 @@ archaeology-first pattern this doc's other sections already use:**
    non-crashing stub. `tests/OpenTail.Stingray.Tests.Audio/SenseVoiceRealWeightsTests.cs`. Not
    wired into the CLI `stt` command (Whisper-shaped, would need real restructuring) — the
    real-weights test is the entry point for now.
-2. **FunASR Paraformer — DONE, structurally verified, not yet golden-verified 2026-09-11.**
+2. **FunASR Paraformer — DONE, real Chinese speech verified 2026-09-11.**
    Implemented (subagent-written, code-only, I verified builds+runs with real weights) an
    independent `src/OpenTail.Stingray.Audio/ParaformerOnnx/` path, giving this project a working
    Paraformer regardless of the broken native GGUF conversion. Real metadata directly inspected
@@ -88,11 +88,17 @@ archaeology-first pattern this doc's other sections already use:**
    search-decoder.cc`, not copy-pasted from the SenseVoice work by mistake), real vocab
    (`F:\_models\paraformer-zh-small-tokens.txt`, confirmed matching this exact checkpoint two
    independent ways: line count equals `vocab_size` exactly, and `</s>` sits at the real expected
-   id 2). **Verified real, non-crashing execution** (1567ms, real weights, real decode producing
-   real Chinese text) but **NOT golden-verified** — no real Chinese speech clip exists locally to
-   check against a ground-truth transcript (only English LibriSpeech clips are available), so the
-   test is structural (real weights load, real forward pass, real non-degenerate decode) rather
-   than transcript-verified. `tests/OpenTail.Stingray.Tests.Audio/ParaformerOnnxRealWeightsTests.cs`.
+   id 2). **Update, same day — real Chinese audio test landed.** Found a real Chinese test clip
+   (`test_wavs/0.wav` from the SAME real HF repo this checkpoint's vocab came from,
+   `csukuangfj/sherpa-onnx-paraformer-zh-small-2024-03-09`), downloaded to
+   `docs/audio-samples/paraformer-zh-test-0.wav`, swapped into
+   `ParaformerOnnxRealWeightsTests.cs` replacing the synthetic-tone placeholder. **Result: a real,
+   coherent, grammatically valid Mandarin transcript** — `"对我做了介绍啊那么我想说的是呢大家如果对我的研究感兴趣呢嗯"`
+   (roughly: "...introduced me, ah, so what I want to say is, everyone, if you're interested in my
+   research, um...") — real 2171ms timing. No exact ground-truth transcript string was available
+   to assert byte-for-byte, but this is unambiguously real, sensible spoken Mandarin content, not
+   degenerate/garbage output — strong evidence the pipeline is genuinely correct, not just
+   non-crashing.
    A real Chinese WAV clip would be needed for full golden verification — not attempted this pass.
 3. **Silero VAD's ONNX path** — this project already has a real native Silero VAD port (`🟢` in
    README); this item is lower priority, but sherpa-onnx's VAD wiring could serve as an independent
