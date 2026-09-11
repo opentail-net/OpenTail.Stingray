@@ -1946,9 +1946,17 @@ severity.
   DeepSeek-V2-Lite, was already confirmed working earlier this session — so this is specific to
   checkpoints using the split absorption layout, not `deepseek2` broadly.)
 - **Nemotron-Nano-12B-v2-VL (`nemotron_h` architecture) crashes**: `HybridGdnForwardPass dense FFN
-  requires hp.IntermediateDim > 0` — a required hyperparameter isn't populated from this
-  checkpoint's GGUF metadata for the hybrid-GDN dense-FFN path. Real, unattempted-until-now
-  architecture-support gap.
+  requires hp.IntermediateDim > 0`. **Root-caused 2026-09-11** (quick check, not yet fixed): the
+  real key `nemotron_h.feed_forward_length` DOES exist in this checkpoint's GGUF metadata
+  (confirmed via `list-metadata`), but it's a **per-layer array** (`[0, 20480, 0, 20480, ...]`,
+  62 entries — nemotron_h is a hybrid Mamba/SSM+attention architecture, and `0` marks a pure
+  Mamba/SSM layer with no dense FFN at all), not the single scalar `ModelHyperparams.IntermediateDim`
+  the code assumes. `GetIntArray` (a generic per-layer-array reader) already exists in
+  `ModelGraph.cs`, but there is no `IntermediateDimPerLayer`-style property anywhere in this
+  codebase yet to route it through, and `HybridGdnForwardPass`'s dense-FFN dispatch would need to
+  both read a per-layer value AND skip the dense FFN entirely for `0`-valued (pure-Mamba) layers.
+  A real, moderate feature addition (new hyperparameter property + per-layer dispatch logic),
+  more precisely scoped than before but still not a one-line fix.
 - **DeepSeek-OCR-2 (`deepseek2-ocr`) and PaddleOCR-VL-1.6 (`paddleocr`) run to completion under
   `--allow-unverified-arch` with real timing but fully garbled/degenerate output** — expected per
   the flag's own explicit warning ("output may be wrong... do not use this run as evidence of
