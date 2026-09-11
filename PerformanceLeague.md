@@ -94,6 +94,30 @@
 
 ---
 
+## Qwen2.5 family
+
+| Model | Scenario | Backend | C# (OT, t/s) | C++ (llama.cpp, t/s) | Ratio | Performance Check | Source |
+|---|---|---|---:|---:|---:|---|---|
+| Qwen2.5-0.5B-Instruct Q4_K_M | prefill (503 tok) | CPU | 327.1 t/s | 457.08 t/s | **0.72x** | 2026-09-11 | new coverage; stingray CLI + llama-bench, best-of-3 |
+| Qwen2.5-0.5B-Instruct Q4_K_M | decode (503 tok prompt, 24 tok gen) | CPU | 25.8 t/s | 100.05 t/s | **0.26x** | 2026-09-11 | new coverage; stingray CLI + llama-bench, best-of-3. Notably low — the smallest dense model tested at this quant, decode ratio is much worse than its larger siblings below. |
+| Qwen2.5-1.5B-Instruct Q4_K_M | prefill (503 tok) | CPU | 181.9 t/s | 242.26 t/s | **0.75x** | 2026-09-11 | new coverage; stingray CLI + llama-bench, best-of-3 |
+| Qwen2.5-1.5B-Instruct Q4_K_M | decode (503 tok prompt, 24 tok gen) | CPU | 27.5 t/s | 41.55 t/s | **0.66x** | 2026-09-11 | new coverage; stingray CLI + llama-bench, best-of-3 |
+| Qwen2.5-3B-Instruct Q4_K_M | prefill (503 tok) | CPU | 83.0 t/s | 111.96 t/s | **0.74x** | 2026-09-11 | new coverage; stingray CLI + llama-bench, best-of-3 |
+| Qwen2.5-3B-Instruct Q4_K_M | decode (503 tok prompt, 24 tok gen) | CPU | 14.7 t/s | 20.76 t/s | **0.71x** | 2026-09-11 | new coverage; stingray CLI + llama-bench, best-of-3 |
+| Qwen2.5-Coder-0.5B-Instruct Q4_K_M | prefill (503 tok) | CPU | 334.3 t/s | 307.70 t/s | <span style="color:#16a34a">**1.09x**</span> | 2026-09-11 | new coverage; stingray CLI + llama-bench, best-of-3. **Beats llama.cpp on prefill.** |
+| Qwen2.5-Coder-0.5B-Instruct Q4_K_M | decode (503 tok prompt, 24 tok gen) | CPU | 25.3 t/s | 82.87 t/s | **0.31x** | 2026-09-11 | new coverage; stingray CLI + llama-bench, best-of-3 |
+| Qwen2.5-Coder-1.5B-Instruct Q4_K_M | prefill (503 tok) | CPU | 170.7 t/s | 242.26 t/s | **0.70x** | 2026-09-11 | new coverage; stingray CLI + llama-bench, best-of-3 |
+| Qwen2.5-Coder-1.5B-Instruct Q4_K_M | decode (503 tok prompt, 24 tok gen) | CPU | 24.2 t/s | 41.55 t/s | **0.58x** | 2026-09-11 | new coverage; stingray CLI + llama-bench, best-of-3 |
+| Qwen2.5-Coder-3B-Instruct Q4_K_M | prefill (503 tok) | CPU | 87.1 t/s | 109.50 t/s | **0.80x** | 2026-09-11 | new coverage; stingray CLI + llama-bench, best-of-3 |
+| Qwen2.5-Coder-3B-Instruct Q4_K_M | decode (503 tok prompt, 24 tok gen) | CPU | 14.7 t/s | 21.48 t/s | **0.68x** | 2026-09-11 | new coverage; stingray CLI + llama-bench, best-of-3 |
+
+> **Pattern**: decode ratio scales up with model size within this family (0.26-0.31x at 0.5B →
+> 0.58-0.71x at 1.5-3B) — the smallest models lose proportionally more on decode, the opposite
+> of the dense-7-8B-parity pattern found elsewhere in this doc. Prefill stays in a tighter
+> 0.70-0.80x band except the 0.5B-Coder outlier, which beats llama.cpp outright.
+
+---
+
 ## Qwen3 family
 
 | Model | Scenario | Backend | C# (OT, t/s) | C++ (llama.cpp, t/s) | Ratio | Performance Check | Source |
