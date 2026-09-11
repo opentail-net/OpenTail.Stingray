@@ -128,6 +128,18 @@ public sealed class StableDiffusionPipeline : IDiffusionPipeline
                 (downRes, midRes) = controlNet.Forward(scaledLatent, timestep, condContext, controlHintRgb, latH, latW, conditioningScale: controlStrength);
             }
 
+            // Perf (2026-09-11): CombineGuidance computes `uncond + guidance*(cond-uncond)`, which
+            // algebraically reduces to just `uncond` at guidance==0 or just `cond` at guidance==1
+            // -- both real, non-hypothetical cases (SD-Turbo's real recommended guidance_scale=0.0;
+            // FLUX-schnell/any explicitly-CFG-disabled request uses 1.0 elsewhere in this codebase).
+            // Running both UNet passes in that case burns exactly 2x the real diffusion compute for
+            // a result that's thrown away -- skip the unneeded pass instead of unconditionally
+            // computing and discarding it.
+            if (guidance <= 0f)
+                return _unet.Forward(scaledLatent, timestep, uncondContext, latH, latW, downRes, midRes);
+            if (guidance == 1f)
+                return _unet.Forward(scaledLatent, timestep, condContext, latH, latW, downRes, midRes);
+
             var condPred = _unet.Forward(scaledLatent, timestep, condContext, latH, latW, downRes, midRes);
             var uncondPred = _unet.Forward(scaledLatent, timestep, uncondContext, latH, latW, downRes, midRes);
             return scheduler.CombineGuidance(condPred, uncondPred, guidance);

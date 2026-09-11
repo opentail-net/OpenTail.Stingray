@@ -128,6 +128,15 @@ public sealed class SdxlPipeline : IDiffusionPipeline
         // 4. Denoising loop
         var denoised = scheduler.Denoise(latent, (scaledLatent, timestep) =>
         {
+            // Perf (2026-09-11): see StableDiffusionPipeline.Generate's identical comment --
+            // `uncond + guidance*(cond-uncond)` reduces to a single UNet pass at guidance==0
+            // (SDXL-Turbo's own real recommended usage) or guidance==1, so skip the wasted pass
+            // instead of computing and discarding it.
+            if (guidance <= 0f)
+                return _unet.Forward(scaledLatent, timestep, uncondContext, uncondAddEmbeds, latH, latW);
+            if (guidance == 1f)
+                return _unet.Forward(scaledLatent, timestep, condContext, condAddEmbeds, latH, latW);
+
             var condPred = _unet.Forward(scaledLatent, timestep, condContext, condAddEmbeds, latH, latW);
             var uncondPred = _unet.Forward(scaledLatent, timestep, uncondContext, uncondAddEmbeds, latH, latW);
             return scheduler.CombineGuidance(condPred, uncondPred, guidance);
