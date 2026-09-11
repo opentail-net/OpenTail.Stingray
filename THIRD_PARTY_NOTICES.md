@@ -334,6 +334,35 @@ warranty or additional liability.
 
 END OF TERMS AND CONDITIONS
 
+## sherpa-onnx — Apache License 2.0
+
+OpenTail.Stingray's ONNX support expansion (see `docs/00-current-work.md`'s 2026-09-11 "ONNX
+support expansion" plan) references sherpa-onnx as a real-reference oracle for the correct input
+tensor construction and output decoding of several ONNX checkpoints already present in this
+project (Silero VAD, FunASR Paraformer, SenseVoice, CosyVoice's speech tokenizer, Kokoro). No
+sherpa-onnx source files or binaries are included in OpenTail.Stingray as of this notice: the
+project is cloned into the gitignored `examples/sherpa-onnx` directory for reference only, the same
+role `examples/llama.cpp` and `examples/audio.cpp` already play elsewhere in this repo. This notice
+is added proactively, ahead of any actual code being ported, so that if/when real preprocessing or
+postprocessing logic is ported from sherpa-onnx into shipped OpenTail.Stingray source, the
+Apache-2.0 attribution requirement is already satisfied rather than retrofitted later.
+
+- Project: sherpa-onnx
+- Upstream: <https://github.com/k2-fsa/sherpa-onnx>
+- Copyright (c) k2-fsa and sherpa-onnx Contributors
+- License: Apache License, Version 2.0
+
+Apache License
+
+Version 2.0, January 2004
+
+<http://www.apache.org/licenses/>
+
+TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
+
+(Full license text reproduced once under the vLLM entry above — same license, same terms; not
+duplicated a second time here to keep this file navigable.)
+
 ## Runtime NuGet dependencies — MIT
 
 The following packages are runtime dependencies of one or more distributable
