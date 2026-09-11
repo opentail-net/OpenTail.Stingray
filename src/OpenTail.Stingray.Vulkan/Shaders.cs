@@ -6461,6 +6461,92 @@ internal static class Shaders
         """;
 
     /// <summary>
+    /// Fused GroupNorm + SiLU for [C,H,W] tensors (32 groups by convention -- matches this
+    /// codebase's VAE/UNet usage everywhere). One workgroup per group; two passes over that
+    /// group's `chansPerGroup*H*W` elements (grid-stride reduction for mean/variance, then a
+    /// normalize+affine+SiLU pass), with a standard shared-memory tree reduction in between.
+    ///
+    /// Added 2026-09-11 as part of the "full GPU residency" ResBlock rewrite: GroupNorm/SiLU
+    /// previously ran on the CPU float[] already in hand from the prior conv's Download() --
+    /// adding a GPU version with its OWN Upload/Download would have been a pure regression (two
+    /// new round-trips replacing zero). This shader only pays off chained with GPU-resident
+    /// conv outputs (Conv2dImplicitGemm's output Tensor feeds directly into this, whose output
+    /// Tensor feeds directly into the next conv), never downloading to CPU until a real block
+    /// boundary is reached.
+    ///
+    /// input [C, H, W], weight [C], bias [C] → output [C, H, W] (SiLU-activated).
+    /// Push constants: { c, hw, groups, eps }.
+    /// Bindings: 0=input, 1=weight, 2=bias, 3=output.
+    /// Dispatch: (groups, 1, 1) with local_size=(256,1,1).
+    /// </summary>
+    internal const string GroupNormSilu = """
+        #version 450
+        layout(local_size_x = 256) in;
+
+        layout(push_constant) uniform Params {
+            uint c;
+            uint hw;
+            uint groups;
+            float eps;
+        };
+
+        layout(binding = 0) readonly  buffer Input  { float x[];      };
+        layout(binding = 1) readonly  buffer Weight { float weight[]; };
+        layout(binding = 2) readonly  buffer Bias   { float bias[];   };
+        layout(binding = 3) writeonly buffer Output { float y[];      };
+
+        shared float sSum[256];
+        shared float sSumSq[256];
+        shared float sMean;
+        shared float sInvStd;
+
+        void main() {
+            uint g   = gl_WorkGroupID.x;
+            uint tid = gl_LocalInvocationID.x;
+            uint chansPerGroup = c / groups;
+            uint groupElems = chansPerGroup * hw;
+            uint groupBase  = g * groupElems; // channels are outermost in [C,H,W] -- a group's
+                                               // channels are contiguous in the flat array.
+
+            // Pass 1: grid-stride reduction for sum and sum-of-squares.
+            float sum = 0.0, sumSq = 0.0;
+            for (uint i = tid; i < groupElems; i += 256u) {
+                float v = x[groupBase + i];
+                sum   += v;
+                sumSq += v * v;
+            }
+            sSum[tid]   = sum;
+            sSumSq[tid] = sumSq;
+            barrier();
+            for (uint stride = 128u; stride > 0u; stride >>= 1u) {
+                if (tid < stride) {
+                    sSum[tid]   += sSum[tid + stride];
+                    sSumSq[tid] += sSumSq[tid + stride];
+                }
+                barrier();
+            }
+            if (tid == 0u) {
+                float mean = sSum[0] / float(groupElems);
+                float var  = sSumSq[0] / float(groupElems) - mean * mean;
+                sMean   = mean;
+                sInvStd = 1.0 / sqrt(max(var, 0.0) + eps);
+            }
+            barrier();
+
+            float mean   = sMean;
+            float invStd = sInvStd;
+
+            // Pass 2: normalize + affine + SiLU.
+            for (uint i = tid; i < groupElems; i += 256u) {
+                uint chLocal = i / hw;
+                uint ch = g * chansPerGroup + chLocal;
+                float v = (x[groupBase + i] - mean) * invStd * weight[ch] + bias[ch];
+                y[groupBase + i] = v / (1.0 + exp(-v));
+            }
+        }
+        """;
+
+    /// <summary>
     /// LeakyReLU in-place: data[i] = data[i] >= 0 ? data[i] : negSlope * data[i]
     /// Push constants: { n, negSlope }.
     /// Bindings: 0=data (in/out).

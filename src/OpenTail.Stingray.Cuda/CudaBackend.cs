@@ -7723,6 +7723,14 @@ public sealed unsafe class CudaBackend : IComputeBackend, IImageOpsBackend, IVis
                                      int inCh, int outCh, int h, int w, int ksize, int padding = -1)
         => Conv2d(input, weight, bias, inCh, outCh, h, w, ksize, padding);
 
+    /// <summary>Not implemented on CUDA yet -- added 2026-09-11 alongside the Vulkan shader for the
+    /// full-GPU-residency ResBlock rewrite (see VaeDecoder.ResBlockGpu), which was only built and
+    /// verified against this project's Vulkan iGPU. Callers must check for a Vulkan-capable
+    /// backend before taking that residency path; this throws rather than silently falling back
+    /// to a slower/wrong path.</summary>
+    public Tensor GroupNormSilu(Tensor x, Tensor weight, Tensor bias, int c, int hw, int groups = 32, float eps = 1e-5f)
+        => throw new NotSupportedException("GroupNormSilu is not implemented on the CUDA backend yet -- the full-GPU-residency ResBlock path is Vulkan-only for now.");
+
     /// <inheritdoc/>
     public Tensor Conv2d(Tensor input, Tensor weight, Tensor bias,
                          int inCh, int outCh, int h, int w, int ksize, int padding = -1)

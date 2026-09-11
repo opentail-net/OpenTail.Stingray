@@ -247,6 +247,46 @@ public sealed class VaeDecoder : IDisposable, IVaeDecoder
     {
         if (outCh < 0) outCh = inCh;
 
+        // Perf (2026-09-11): try the fully GPU-resident path first -- one Upload of x, the whole
+        // norm1->silu->conv1->norm2->silu->conv2->(+skip) chain stays on GPU, one Download of the
+        // result. Replaces what was up to 3 separate Upload/Download round-trips (2 convs' worth,
+        // via ConvAuto/ConvNative, plus the CPU-side GroupNorm/SiluInPlace calls that already had
+        // the array in hand) with exactly 2. Falls back to the proven CPU-orchestrated path below
+        // if this backend doesn't implement GroupNormSilu (probed once, cached in
+        // _residencySupported so later calls don't pay the exception cost again).
+        if (_imageOps is not null && _residencySupported != false)
+        {
+            try
+            {
+                var xGpu = _imageOps.Upload(x.AsSpan(0, inCh * h * w), TensorShape.D1(inCh * h * w));
+                CoreTensor resultGpu;
+                try
+                {
+                    resultGpu = ResBlockGpu(_imageOps, prefix, xGpu, inCh, h, w, outCh);
+                }
+                finally
+                {
+                    _imageOps.Free(xGpu);
+                }
+                var result = new float[outCh * h * w];
+                try
+                {
+                    _imageOps.Download(resultGpu, result);
+                }
+                finally
+                {
+                    _imageOps.Free(resultGpu);
+                }
+                _residencySupported = true;
+                return result;
+            }
+            catch (NotSupportedException)
+            {
+                _residencySupported = false;
+                // fall through to the CPU-orchestrated path below for this and all future calls.
+            }
+        }
+
         // norm1 + silu + conv1
         var gnW1 = Wt($"{prefix}.norm1.weight");
         var gnB1 = Wt($"{prefix}.norm1.bias");
@@ -518,7 +558,10 @@ public sealed class VaeDecoder : IDisposable, IVaeDecoder
     /// when the backend implements <see cref="IImageOpsBackend"/> (Vulkan; CUDA/CPU fall back to
     /// <see cref="ConvBlock"/>). Requires stride=1, which every VAE conv already uses.
     /// </summary>
-    private float[] ConvNative(IImageOpsBackend imageOps, string name, float[] x, int inCh, int h, int w, int outCh, int k, int padding = -1)
+    /// <summary>Uploads (once, cached) and returns the Float32 weight+bias GPU tensors for a
+    /// native-shader conv, shared by both the per-call ConvNative (float[] in/out) and the
+    /// GPU-resident ConvNativeTensor (Tensor in/out) below.</summary>
+    private (CoreTensor w, CoreTensor b) GetNativeConvWeights(IImageOpsBackend imageOps, string name, int outCh)
     {
         string wKey = $"{name}.weight";
         if (!_gpuWeightsNative!.TryGetValue(wKey, out var wGpu))
@@ -538,6 +581,12 @@ public sealed class VaeDecoder : IDisposable, IVaeDecoder
             bGpu = imageOps.Upload(bf.AsSpan(), TensorShape.D1(bf.Length));
             _gpuWeightsNative[bKey] = bGpu;
         }
+        return (wGpu, bGpu);
+    }
+
+    private float[] ConvNative(IImageOpsBackend imageOps, string name, float[] x, int inCh, int h, int w, int outCh, int k, int padding = -1)
+    {
+        var (wGpu, bGpu) = GetNativeConvWeights(imageOps, name, outCh);
 
         var xGpu = imageOps.Upload(x.AsSpan(0, inCh * h * w), TensorShape.D1(inCh * h * w));
         var yGpu = imageOps.Conv2dImplicitGemm(xGpu, wGpu, bGpu, inCh, outCh, h, w, k, padding);
@@ -552,6 +601,69 @@ public sealed class VaeDecoder : IDisposable, IVaeDecoder
             imageOps.Free(yGpu);
         }
         return result;
+    }
+
+    // Perf (2026-09-11, "full GPU residency" ResBlock rewrite): GroupNorm/SiLU previously ran on
+    // the CPU float[] already in hand from the prior conv's Download() -- a standalone GPU
+    // GroupNorm+SiLU with its own Upload/Download would have been a pure regression (two NEW
+    // round-trips replacing zero). This only pays off chained with GPU-resident conv
+    // input/output: ConvNativeTensor's output Tensor feeds GroupNormSiluTensor directly, whose
+    // output feeds the next conv, with float[] round-trips only at the true ResBlock boundary
+    // (upload the block's input once, download its output once). Not all backends implement
+    // GroupNormSilu (CUDA throws NotSupportedException -- this residency path was only built and
+    // verified against this project's Vulkan iGPU) -- probed once and cached so later ResBlocks
+    // don't pay the exception cost again after the first miss.
+    private bool? _residencySupported;
+
+    private CoreTensor ConvNativeTensor(IImageOpsBackend imageOps, string name, CoreTensor x, int inCh, int h, int w, int outCh, int k, int padding = -1)
+    {
+        var (wGpu, bGpu) = GetNativeConvWeights(imageOps, name, outCh);
+        return imageOps.Conv2dImplicitGemm(x, wGpu, bGpu, inCh, outCh, h, w, k, padding);
+    }
+
+    private CoreTensor GroupNormSiluTensor(IImageOpsBackend imageOps, string prefix, CoreTensor x, int c, int hw)
+    {
+        var gnW = imageOps.Upload(Wt($"{prefix}.weight").AsSpan(), TensorShape.D1(c));
+        var gnB = imageOps.Upload(Wt($"{prefix}.bias").AsSpan(), TensorShape.D1(c));
+        try
+        {
+            return imageOps.GroupNormSilu(x, gnW, gnB, c, hw, groups: 32);
+        }
+        finally
+        {
+            imageOps.Free(gnW);
+            imageOps.Free(gnB);
+        }
+    }
+
+    /// <summary>Fully GPU-resident ResBlock: norm1→silu→conv1→norm2→silu→conv2→(+skip), every
+    /// intermediate stays a GPU Tensor -- only the block's input/output cross the CPU boundary
+    /// (both already do, via the caller's Upload/Download). Falls back to the CPU-orchestrated
+    /// <see cref="ResBlock"/> (one Upload/Download round-trip per op) if <see
+    /// cref="_residencySupported"/> is false for this backend.</summary>
+    private CoreTensor ResBlockGpu(IImageOpsBackend imageOps, string prefix, CoreTensor x, int inCh, int h, int w, int outCh)
+    {
+        int hw = h * w;
+        var t1 = GroupNormSiluTensor(imageOps, $"{prefix}.norm1", x, inCh, hw);
+        var t2 = ConvNativeTensor(imageOps, $"{prefix}.conv1", t1, inCh, h, w, outCh, 3);
+        imageOps.Free(t1);
+        var t3 = GroupNormSiluTensor(imageOps, $"{prefix}.norm2", t2, outCh, hw);
+        imageOps.Free(t2);
+        var t4 = ConvNativeTensor(imageOps, $"{prefix}.conv2", t3, outCh, h, w, outCh, 3);
+        imageOps.Free(t3);
+
+        CoreTensor skip = x;
+        bool freeSkip = false;
+        if (inCh != outCh)
+        {
+            string shortcutKey = _st.Contains($"{prefix}.nin_shortcut.weight") ? $"{prefix}.nin_shortcut" : $"{prefix}.conv_shortcut";
+            skip = ConvNativeTensor(imageOps, shortcutKey, x, inCh, h, w, outCh, 1, padding: 0);
+            freeSkip = true;
+        }
+
+        imageOps.AddInPlace(t4, skip);
+        if (freeSkip) imageOps.Free(skip);
+        return t4;
     }
 
     public void Dispose()

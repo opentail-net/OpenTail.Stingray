@@ -29,6 +29,14 @@ public interface IImageOpsBackend : IComputeBackend
     Tensor Conv2dImplicitGemm(Tensor input, Tensor weight, Tensor bias,
                               int inCh, int outCh, int h, int w, int ksize, int padding = -1);
 
+    /// <summary>
+    /// Fused GroupNorm + SiLU for a GPU-resident [C,H,W] tensor -- input/weight/bias/output all
+    /// stay on-device, no CPU round-trip. Exists specifically so a ResBlock's conv→norm→silu→conv
+    /// chain can run entirely GPU-resident (see VaeDecoder's ResBlockGpu) instead of downloading
+    /// to CPU between every op purely to run GroupNorm/SiLU there.
+    /// </summary>
+    Tensor GroupNormSilu(Tensor x, Tensor weight, Tensor bias, int c, int hw, int groups = 32, float eps = 1e-5f);
+
     /// <summary>LeakyReLU in-place: x[i] = x[i] >= 0 ? x[i] : negSlope * x[i]</summary>
     void LeakyReluInPlace(Tensor x, float negSlope);
 

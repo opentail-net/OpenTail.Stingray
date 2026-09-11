@@ -1470,6 +1470,7 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
     // Image ops pipelines (IImageOpsBackend)
     private ComputePipeline? _conv2dPipeline;
     private ComputePipeline? _conv2dImplicitGemmPipeline;
+    private ComputePipeline? _groupNormSiluPipeline;
     private ComputePipeline? _leakyReluPipeline;
     private ComputePipeline? _clampPipeline;
     private ComputePipeline? _catChannelsPipeline;
@@ -1560,6 +1561,7 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
 
     // Image ops push constant structs
     private struct Conv2dParams   { public uint inCh; public uint outCh; public uint height; public uint width; public uint ksize; public uint padding; }
+    private struct GroupNormSiluParams { public uint c; public uint hw; public uint groups; public float eps; }
     private struct LeakyReluParams { public uint n; public float negSlope; }
     private struct ClampParams    { public uint n; public float minVal; public float maxVal; }
     private struct CatChannelsParams { public uint aCh; public uint bCh; public uint hw; }
@@ -3604,6 +3606,15 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
         return output;
     }
 
+    public Tensor GroupNormSilu(Tensor x, Tensor weight, Tensor bias, int c, int hw, int groups = 32, float eps = 1e-5f)
+    {
+        var output = Allocate(TensorShape.D1(c * hw));
+        _groupNormSiluPipeline ??= new ComputePipeline(this, Shaders.GroupNormSilu, 4, pushConstantSize: sizeof(GroupNormSiluParams));
+        var p = new GroupNormSiluParams { c = (uint)c, hw = (uint)hw, groups = (uint)groups, eps = eps };
+        DispatchOrRecord(_groupNormSiluPipeline, [GetBuffer(x), GetBuffer(weight), GetBuffer(bias), GetBuffer(output)], (uint)groups, &p);
+        return output;
+    }
+
     public void LeakyReluInPlace(Tensor x, float negSlope)
     {
         _leakyReluPipeline ??= new ComputePipeline(this, Shaders.LeakyRelu, 1, pushConstantSize: sizeof(LeakyReluParams));
@@ -3980,6 +3991,7 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
         _sigmoidMulInPlacePipeline?.Dispose();
         _conv2dPipeline?.Dispose();
         _conv2dImplicitGemmPipeline?.Dispose();
+        _groupNormSiluPipeline?.Dispose();
         _leakyReluPipeline?.Dispose();
         _clampPipeline?.Dispose();
         _catChannelsPipeline?.Dispose();
