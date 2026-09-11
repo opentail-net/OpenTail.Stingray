@@ -550,6 +550,22 @@ generic output) while InternVL3-2B works correctly on the identical image/prompt
 embedding injection point in the Granite chat template/forward path), not two unrelated one-off
 issues. Worth root-causing as a single Granite-vision bug rather than two separate ones.
 
+| Gemma-4-12B-it Q4_K_M + mmproj-qat-q4_0 | prefill (70 tok = 49 image + 21 text) | stingray CLI (OT) | 4.5 t/s | 2026-09-12 | new coverage; real `gemma4uv` encoder-free vision path (49 soft tokens, 3840-dim), runs correctly end-to-end on Vulkan iGPU |
+| Gemma-4-12B-it Q4_K_M + mmproj-qat-q4_0 | decode (22 tok gen) | stingray CLI (OT) | 4.4 t/s | 2026-09-12 | same run |
+
+**Correctness note for Gemma-4-12B-it:** output was a coherent, well-formed sentence ("A close-up
+shot shows a person's hand holding a small, white ceramic cup filled with coffee.") but does not
+match the actual test image's content — however this specific shared test asset
+(`docs/diffusion-samples/ltx_test_apple_256.png`) is itself a known-unreliable LTX-Video sample
+(see this doc's LTX-Video row: only 1 of 6 total generation runs against that checkpoint ever
+produced a genuinely coherent, non-noise image). Unlike the Granite-family's clearly *degenerate*
+output pattern (generic, template-like, identical across runs regardless of image), this is a
+plausible, specific, non-generic description — consistent with either a real image-grounding bug
+or simply a bad description of a genuinely garbled/ambiguous source image. Not conclusive either
+way; flagged rather than claimed as a pass or a fail.
+
+| LLaVA-1.5-7B Q4_K + mmproj-f16 | vision encode | stingray CLI (OT) | 576 soft tokens (4096-dim), consistent across 3 runs | 2026-09-12 | new coverage; found and fixed a real mmproj mis-routing bug first (see `docs/00-current-work.md`'s 2026-09-12 entry) — this checkpoint's mmproj carries no `projector_type` string metadata, so it fell through to structural inference where InternVL's generic CLS-token check (`v.class_embd`, present on any CLIP-based tower) wrongly matched before LLaVA's own, more specific `mm.0.weight` check. Fixed via an authoritative `clip.has_llava_projector` metadata check plus reordering the structural fallback. **No end-to-end timing possible**: a second, unrelated, NOT-fixed gap blocks it — classic LLaVA-1.5 has no real tokenizable `<image>` placeholder in its 32000-token vanilla LLaMA vocab (confirmed via `list-metadata`); this codebase's image-splicing path assumes every architecture has one. Real architectural gap (direct-splice-without-placeholder support needed), not a quick fix — logged, not attempted further |
+
 | dots.ocr Q8_0 + mmproj-Q8_0 | prefill (93 tok = 81 image + 12 text) | stingray CLI (OT) | 21.2 t/s | 2026-09-11 | new coverage; vision encoder runs (81 soft tokens) but decode emits `<\|endofassistant\|>` immediately — 1-token degenerate output, likely a chat-template/stop-condition issue specific to this OCR-focused checkpoint's prompt formatting rather than the vision path itself |
 | Gemma-3-4B-it Q4_K_M + mmproj-f16 | prefill (274 tok = 256 image + 18 text) | stingray CLI (OT) | 11.6 t/s avg (11.2/12.4/11.2 across 3 runs) | 2026-09-11 | new coverage; real, working vision-encode — genuinely describes the image ("a distorted, vibrant portrait of a person with a red face and dark hair, rendered in an intensely pixelated style") |
 | Gemma-3-4B-it Q4_K_M + mmproj-f16 | decode (27 tok gen) | stingray CLI (OT) | 11.1 t/s avg (12.5/10.4/~10.8 across 3 runs) | 2026-09-11 | same run; a real, second confirmed-working vision-encode checkpoint alongside InternVL3-2B. (Unrelated note: a Jinja chat-template gap was logged for this checkpoint's `<start_of_turn>` role-concat expression — passed through unevaluated, doesn't affect this measurement's validity since output was still correct.) |

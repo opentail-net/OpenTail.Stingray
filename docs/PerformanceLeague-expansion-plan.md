@@ -72,11 +72,25 @@ generated this session) rather than downloading anything new for this.
 
 Checkpoints claimed in README but **not present locally** — download only if time allows after the
 above (lower priority, since coverage of what's already downloaded matters more than breadth):
-- [ ] Pixtral 12B, LLaVA-1.5/NeXT/OneVision, MiniCPM-V 2.6, GLM-4V/4.5V/OCR, Exaone 4.5-VL,
+- [x] LLaVA-1.5-7B — DONE 2026-09-12 (downloaded `mys/ggml_llava-v1.5-7b`, Q4_K text + f16 mmproj).
+      Found and FIXED a real mmproj mis-routing bug (`clip.has_llava_projector` not checked before
+      structural inference, so InternVL's generic CLS-token check won by accident). Vision encoder
+      now runs correctly (576 soft tokens/4096-dim). Found a SECOND, unfixed gap blocking full
+      end-to-end timing: classic LLaVA-1.5 has no real tokenizable image placeholder in its vocab
+      (the reference implementation splices embeddings directly, no vocab token involved) — this
+      codebase's generic image-splicing path assumes every architecture has one. Real architectural
+      gap, logged in current-work.md, not attempted further. See PerformanceLeague.md's VLM section.
+- [ ] Pixtral 12B, LLaVA-NeXT/OneVision, MiniCPM-V 2.6, GLM-4V/4.5V/OCR, Exaone 4.5-VL,
   Hunyuan-VL, Llama 4 Scout's vision path (mmproj already present:
   `mmproj-llama-4-scout-17b-16e-instruct-f16.gguf`, but the *text* checkpoint was explicitly
   cancelled this session — 93GB, doesn't fit in 64GB RAM; the vision-only mmproj path might still
-  be small enough to try independently, check its size first)
+  be small enough to try independently, check its size first). mmproj files for Pixtral 12B,
+  MiniCPM-V 2.6, and Exaone 4.5 are already present locally (`/f/_models`), only their matching
+  text checkpoints need downloading.
+- [x] Gemma-4-12B-it vision (`gemma4uv` encoder-free path, mmproj-qat-q4_0) — DONE 2026-09-12. Text
+      checkpoint was already local. Real timing captured (4.5/4.4 t/s prefill/decode), runs
+      correctly end-to-end, but correctness vs. the shared test image is inconclusive (that image
+      is itself a known-unreliable LTX-Video sample) — see PerformanceLeague.md for the full caveat.
 
 ## Phase 2 — ASR gaps
 

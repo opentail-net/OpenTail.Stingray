@@ -27,6 +27,25 @@ public static class UnifiedVisionPipeline
         else if (gguf.Metadata.TryGetValue("clip.projector_type", out var ptObj2) && ptObj2 is string ptStr2)
             projType = ptStr2.Trim().ToLowerInvariant();
 
+        // Bug found 2026-09-12 testing LLaVA-1.5-7B: legacy llava.cpp-era mmprojs (this one
+        // included) carry no `projector_type` string at all -- only the boolean
+        // `clip.has_llava_projector` flag llama.cpp's own clip.cpp treats as authoritative for
+        // "this is a real LLaVA MLP projector". Without checking it first, such a checkpoint fell
+        // through to the generic structural-inference section below, where InternVL's detector
+        // (`v.class_embd` present) fires first and wrongly wins -- `v.class_embd` is just the
+        // standard CLIP ViT class token, present on ANY CLIP-based vision tower including LLaVA's,
+        // not something InternVL-specific. Real, measured symptom before this fix: LLaVA-1.5-7B's
+        // real mmproj routed to InternVlVisionModel, which then threw a hard dimension-mismatch
+        // error (InternVL's 768-dim projector output vs LLaVA's 4096-dim expected input) instead
+        // of ever reaching LlavaVisionModel, whose own structural check (`mm.0.weight` present)
+        // would have correctly matched if only it ran first.
+        if (projType is null && gguf.Metadata.TryGetValue("clip.has_llava_projector", out var llavaFlagObj)
+            && llavaFlagObj is bool llavaFlag && llavaFlag)
+        {
+            var model = LlavaVisionModel.Open(mmprojPath);
+            return new LlavaAdapter(model);
+        }
+
         if (projType != null && (projType.Contains("nemotron") || projType.Contains("nemotron_v2_vl") || projType.Contains("nemotron-v2-vl")))
         {
             var model = NemotronVisionModel.Open(mmprojPath);
@@ -197,6 +216,17 @@ public static class UnifiedVisionPipeline
             return new Glm4Adapter(model);
         }
 
+        // LLaVA's `mm.0.weight` (2-layer MLP projector) checked BEFORE InternVL's `v.class_embd`
+        // below -- a bare CLS token is generic to any CLIP-based vision tower (LLaVA's included),
+        // not InternVL-specific, so it must not win when a more specific LLaVA signal is present
+        // too. See the `clip.has_llava_projector` fix above this method for the real-world case
+        // this defends (belt-and-suspenders for an mmproj lacking that flag too).
+        if (gguf.Tensors.Any(t => t.Name == "mm.0.weight" && t.Name != "mm.0.bias"))
+        {
+            var model = LlavaVisionModel.Open(mmprojPath);
+            return new LlavaAdapter(model);
+        }
+
         if (gguf.Tensors.Any(t => t.Name.Contains("v.class_embd") || t.Name.Contains("v.cls_embd")))
         {
             var model = InternVlVisionModel.Open(mmprojPath);
@@ -237,12 +267,6 @@ public static class UnifiedVisionPipeline
         {
             var model = Gemma4VVisionModel.Open(mmprojPath);
             return new Gemma4VAdapter(model);
-        }
-
-        if (gguf.Tensors.Any(t => t.Name == "mm.0.weight" && t.Name != "mm.0.bias"))
-        {
-            var model = LlavaVisionModel.Open(mmprojPath);
-            return new LlavaAdapter(model);
         }
 
         throw new NotSupportedException(

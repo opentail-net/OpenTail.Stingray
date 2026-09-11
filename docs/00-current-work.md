@@ -17,6 +17,39 @@ Two consequences worth stating plainly, because they cut against the previous ro
 - DSpark speculative decoding and SafeTensors Phases 4-6 are **parked**, not scheduled. Both are
   implemented far enough to be useful and neither moves the goal.
 
+## LLaVA-1.5-7B: mmproj misrouted to InternVL (FIXED), then a second, unfixed gap (classic LLaVA has no real placeholder token) (2026-09-12)
+
+Downloaded LLaVA-1.5-7B (`mys/ggml_llava-v1.5-7b`, Q4_K text + f16 mmproj) as new Phase-1 VLM
+coverage. Two real bugs found in sequence:
+
+1. **FIXED**: `UnifiedVisionPipeline.Open` misrouted this mmproj to `InternVlVisionModel` instead
+   of `LlavaVisionModel`. Root cause: this is a legacy llava.cpp-era mmproj with no
+   `clip.vision.projector_type`/`clip.projector_type` string metadata at all (only the boolean
+   `clip.has_llava_projector=true`), so it fell through to the generic structural-inference
+   section, where InternVL's detector (`v.class_embd` tensor present) matched first — but a CLS
+   embedding tensor is generic to any CLIP-based vision tower (LLaVA's included), not
+   InternVL-specific, so this was a false positive that always wins over LLaVA's own, more
+   specific `mm.0.weight` structural check further down the same method. Symptom before the fix: a
+   hard crash ("vision projector (internvl) outputs 768-dim embeddings but the text backbone
+   expects 4096-dim input"). Fixed by (a) checking `clip.has_llava_projector` as an authoritative
+   signal before any structural inference runs, and (b) reordering the structural fallback so
+   LLaVA's `mm.0.weight` check runs before InternVL's `v.class_embd` check as defense-in-depth for
+   an mmproj lacking that flag too. Verified: the vision encoder now runs and reports the correct
+   `llava -> 576 soft tokens (4096-dim)`.
+2. **NOT FIXED, real architectural gap**: once vision-encoding succeeds, image splicing fails —
+   `"expected 1 image placeholder token(s) (<image>, 258880) after templating but found 0"`.
+   Root cause: this checkpoint's tokenizer is the plain, unmodified 32000-token LLaMA vocab (no
+   `<image>`/`<|image|>`/any image-related special token registered at all — confirmed via
+   `list-metadata`). This codebase's `RunCommand.cs` image-splicing path assumes every
+   architecture has some real, tokenizable placeholder string that maps to a real vocab id, which
+   it substitutes for a synthesized `<image>` marker and then re-finds in the encoded token
+   stream. Classic LLaVA-1.5 doesn't work that way: the reference `llava-cli`/`clip.cpp`
+   implementation splices the image embedding sequence directly into a fixed prompt position (no
+   vocab token involved at all) — there is no real placeholder id to find. This is a genuine
+   missing-feature gap (a direct-splice-without-placeholder code path), not a quick metadata fix —
+   deferred as a real, scoped item, not attempted further this session. `PerformanceLeague.md` logs
+   the real vision-encode timing that was captured before this second failure.
+
 ## Z-Image-Turbo regression: pure noise output, both backends (2026-09-11, found this session, NOT fixed)
 
 **Real regression, found while sweeping checkpoints for Vulkan coverage during this session's
