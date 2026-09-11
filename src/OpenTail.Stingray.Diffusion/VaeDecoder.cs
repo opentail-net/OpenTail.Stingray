@@ -320,7 +320,19 @@ public sealed class VaeDecoder : IDisposable, IVaeDecoder
         if (!_gpuWeights!.TryGetValue(wKey, out var wGpu))
         {
             var wf = Wt(wKey);
-            wGpu = _backend!.Upload(wf.AsSpan(), TensorShape.D1(wf.Length));
+            // Perf: see the identical comment in SdxlUNet2DConditionModel.GetGpuWeight -- upload
+            // weights as Half when the backend prefers fp16 Sgemm, instead of always forcing the
+            // slowest full-fp32 path.
+            if (_backend!.BestSgemmPrecision == SgemmPrecision.Fp16)
+            {
+                var half = new Half[wf.Length];
+                TensorPrimitives.ConvertToHalf(wf, half);
+                wGpu = _backend.UploadHalf(half, TensorShape.D1(wf.Length));
+            }
+            else
+            {
+                wGpu = _backend.Upload(wf.AsSpan(), TensorShape.D1(wf.Length));
+            }
             _gpuWeights[wKey] = wGpu;
         }
 

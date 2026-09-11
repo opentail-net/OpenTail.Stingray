@@ -39,7 +39,25 @@ public sealed class SdxlUNet2DConditionModel : IDisposable
         string fullName = _weightReader.Prefix + name;
         if (_gpuWeights!.TryGetValue(fullName, out var wGpu)) return wGpu;
 
-        wGpu = _backend!.Upload(cpuWeight.AsSpan(), TensorShape.D1(cpuWeight.Length));
+        // Perf (2026-09-11): Sgemm's mixed-precision path (activation Float32 x weight Float16)
+        // is only reachable when the WEIGHT tensor's DType is Float16 -- uploading every weight as
+        // Float32 (the previous behavior here) silently forced every SDXL UNet matmul onto the
+        // slowest full-fp32 shader even on backends that report BestSgemmPrecision==Fp16 (this
+        // iGPU does). sd_xl_turbo_1.0_fp16.safetensors is fp16 on disk already, so converting the
+        // already-upconverted CachedWeightReader float[] back to Half here is not a new precision
+        // loss for that checkpoint (round-trips losslessly); for a genuinely fp32 checkpoint this
+        // matches the same fp32-activation/fp16-weight tradeoff FluxDiT/ZImageDiT's own fp16
+        // upload branch already makes elsewhere in this codebase.
+        if (_backend!.BestSgemmPrecision == SgemmPrecision.Fp16)
+        {
+            var half = new Half[cpuWeight.Length];
+            TensorPrimitives.ConvertToHalf(cpuWeight, half);
+            wGpu = _backend.UploadHalf(half, TensorShape.D1(cpuWeight.Length));
+        }
+        else
+        {
+            wGpu = _backend.Upload(cpuWeight.AsSpan(), TensorShape.D1(cpuWeight.Length));
+        }
         _gpuWeights[fullName] = wGpu;
         return wGpu;
     }
