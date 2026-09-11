@@ -1585,12 +1585,19 @@ severity.
   re-runs on both previously-broken checkpoints: both now produce coherent output on Vulkan
   matching CPU exactly, no measurable perf regression. Full solution rebuilds clean. See
   `PerformanceLeague.md`'s Gemma/Granite rows for the before/after measurements.
-- **Two independent ASR pipelines produce degenerate output on real speech audio**, despite running
-  to completion and (for one of them) at a fast RTF: Qwen3-ASR 0.6B transcribes the standard
-  14.1s reference clip as just "aspects" (should be a full sentence); FunASR-Nano (via
-  `paraformer-q8.gguf`) produces repetitive word-salad ("to to to... a a a at at at") on synthetic
-  tone audio. Not disambiguated whether these share a root cause (worth checking first, since the
-  failure modes look similar) or are two separate bugs.
+- **Two independent ASR pipelines produce degenerate output — disambiguated 2026-09-11, likely
+  NOT a shared root cause.** Qwen3-ASR 0.6B transcribes the standard 14.1s **real speech**
+  reference clip as just "aspects" (should be a full sentence) — a genuine decode/correctness bug
+  since real speech was used and still produced garbage. FunASR-Nano (via `paraformer-q8.gguf`)
+  produces repetitive word-salad ("to to to... a a a at at at") but — confirmed by reading
+  `FunAsrNanoEndToEndTests.cs:106` — its test harness feeds a `new Random(0)`-generated synthetic
+  tone, not real recorded speech, unlike Qwen3-ASR's real-clip test. A real speech encoder given
+  non-speech tone input producing meaningless/repetitive output is expected behavior, not
+  necessarily a code defect — this downgrades FunASR-Nano's finding from "confirmed bug" to
+  "inconclusive, needs a real-speech re-test" (no CLI/test path currently accepts an arbitrary
+  real `.wav` for either pipeline — would need a small harness change to feed one of the real TTS-
+  generated speech samples in `docs/audio-samples/`, e.g. `kokoro-perf-turn2.wav`, and re-run).
+  Qwen3-ASR's bug stands as confirmed real; FunASR-Nano's does not, pending that re-test.
 - **F5-TTS's CPU compute backend isn't wired in `audio.cpp`.** A real run against the `f5_tts`
   family (which does load its model spec correctly) fails with `ggml_graph_compute_with_ctx
   unavailable (CPU backend not loaded)` — confirmed with real `--voice-ref`/`--reference-text`
