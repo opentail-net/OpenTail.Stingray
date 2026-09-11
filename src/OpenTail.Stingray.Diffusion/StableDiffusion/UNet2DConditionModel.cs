@@ -12,6 +12,12 @@ public sealed class UNet2DConditionModel : IDisposable
     private readonly IComputeBackend? _backend;
     private readonly Dictionary<string, CoreTensor>? _gpuWeights;
 
+    // Separate cache for the native implicit-GEMM Conv2d shader path (see ConvNative below) --
+    // its weight buffer must be plain Float32, unlike _gpuWeights above. Same rationale as the
+    // identical fields in SdxlUNet2DConditionModel/VaeDecoder.
+    private readonly Dictionary<string, CoreTensor>? _gpuWeightsNative;
+    private readonly IImageOpsBackend? _imageOps;
+
     private const int ModelChannels = 320;
     private const int TimeEmbedDim = 1280;
     private const int ContextDim = 768;
@@ -23,7 +29,11 @@ public sealed class UNet2DConditionModel : IDisposable
         _weightReader = new CachedWeightReader(weights, prefix);
         _backend = backend;
         if (_backend is not null)
+        {
             _gpuWeights = new Dictionary<string, CoreTensor>(StringComparer.Ordinal);
+            _gpuWeightsNative = new Dictionary<string, CoreTensor>(StringComparer.Ordinal);
+            _imageOps = backend as IImageOpsBackend;
+        }
     }
 
     private float[] GetWeight(string name) => _weightReader.Get(name);
@@ -40,6 +50,40 @@ public sealed class UNet2DConditionModel : IDisposable
         return wGpu;
     }
 
+    /// <summary>Conv2D via the native GPU implicit-GEMM shader -- see the identical method in
+    /// SdxlUNet2DConditionModel for the full rationale. Requires stride=1 (guarded by caller).</summary>
+    private float[] ConvNative(IImageOpsBackend imageOps, string name, float[] wF, float[]? bF, float[] x, int inCh, int h, int w, int outCh, int k, int padding = -1)
+    {
+        string wKey = $"{name}.weight";
+        if (!_gpuWeightsNative!.TryGetValue(wKey, out var wGpu))
+        {
+            wGpu = imageOps.Upload(wF.AsSpan(), TensorShape.D1(wF.Length));
+            _gpuWeightsNative[wKey] = wGpu;
+        }
+
+        string bKey = $"{name}.bias";
+        if (!_gpuWeightsNative.TryGetValue(bKey, out var bGpu))
+        {
+            var bf = bF ?? new float[outCh];
+            bGpu = imageOps.Upload(bf.AsSpan(), TensorShape.D1(bf.Length));
+            _gpuWeightsNative[bKey] = bGpu;
+        }
+
+        var xGpu = imageOps.Upload(x.AsSpan(0, inCh * h * w), TensorShape.D1(inCh * h * w));
+        var yGpu = imageOps.Conv2dImplicitGemm(xGpu, wGpu, bGpu, inCh, outCh, h, w, k, padding);
+        var result = new float[outCh * h * w];
+        try
+        {
+            imageOps.Download(yGpu, result);
+        }
+        finally
+        {
+            imageOps.Free(xGpu);
+            imageOps.Free(yGpu);
+        }
+        return result;
+    }
+
     public float[] Conv(string name, float[] x, int inC, int h, int w, int outC, int ksize, int stride = 1, int padding = -1)
     {
         var wF = GetWeight($"{name}.weight");
@@ -49,6 +93,12 @@ public sealed class UNet2DConditionModel : IDisposable
         {
             return DiffusionOps.Conv2D(x, wF, bF, 1, inC, h, w, outC, ksize, ksize, stride, padding);
         }
+
+        // Perf: see the identical comment in SdxlUNet2DConditionModel.Conv -- the implicit-GEMM
+        // shader only supports stride=1; this UNet's 3 downsample convs (input_blocks.{3,6,9}.0.op)
+        // fall through to the CPU-im2col+Sgemm path below unchanged.
+        if (stride == 1 && _imageOps is not null)
+            return ConvNative(_imageOps, name, wF, bF, x, inC, h, w, outC, ksize, padding);
 
         if (padding < 0) padding = (ksize - 1) / 2;
         int outH = (h + 2 * padding - ksize) / stride + 1;
@@ -537,6 +587,11 @@ public sealed class UNet2DConditionModel : IDisposable
         {
             foreach (var t in _gpuWeights.Values) _backend!.Free(t);
             _gpuWeights.Clear();
+        }
+        if (_gpuWeightsNative is not null)
+        {
+            foreach (var t in _gpuWeightsNative.Values) _backend!.Free(t);
+            _gpuWeightsNative.Clear();
         }
         _weightReader.Clear();
     }
