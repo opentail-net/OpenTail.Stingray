@@ -413,12 +413,16 @@ public sealed class RRDBNet : IDisposable
         return result;
     }
 
-    /// <summary>GPU conv2d: uploads weights once (cached), returns a new VRAM tensor.</summary>
+    /// <summary>GPU conv2d: uploads weights once (cached), returns a new VRAM tensor.
+    /// Uses the implicit-GEMM shader (real GEMM-tiled compute) rather than the naive
+    /// one-thread-per-pixel Conv2d shader -- measured faster for SDXL/SD VAE decode's larger
+    /// convs (see PerformanceLeague.md), verified below for RRDBNet's own real-weight upscale
+    /// path specifically rather than assumed to carry over.</summary>
     private CoreTensor ConvBlockGpu(string key, CoreTensor input, int inCh, int h, int w, int outCh, int k)
     {
         var wGpu = GetGpuWeight($"{key}.weight", inCh * outCh * k * k);
         var bGpu = GetGpuWeight($"{key}.bias",   outCh);
-        return _imageOps!.Conv2d(input, wGpu, bGpu, inCh, outCh, h, w, k);
+        return _imageOps!.Conv2dImplicitGemm(input, wGpu, bGpu, inCh, outCh, h, w, k);
     }
 
     /// <summary>Upload a weight to VRAM and cache it for reuse across tiles and blocks.</summary>
