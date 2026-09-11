@@ -84,7 +84,20 @@ above (lower priority, since coverage of what's already downloaded matters more 
       `resampler`-projector vision path runs correctly (64 soft tokens/3584-dim), consistent
       timing across 3 runs (7.5/7.4 t/s prefill/decode). Output plausible but unconfirmed against
       the shared unreliable test image (same caveat as Gemma-4-12B).
-- [ ] Pixtral 12B, LLaVA-NeXT/OneVision, GLM-4V/4.5V/OCR, Exaone 4.5-VL,
+- [ ] Pixtral 12B — BLOCKED 2026-09-12, not a quick skip: every GGUF mirror tried
+      (`bartowski/Pixtral-12B-2409-GGUF`, `second-state/...`, `prithivMLmods/...`,
+      `MaziyarPanahi/...`, `unsloth/...`) returns 401 Unauthorized without an HF token — Pixtral's
+      upstream Mistral license is itself gated, and every downstream GGUF conversion inherits that.
+      Would need a real `HF_TOKEN` with the license accepted; not pursued further this pass.
+- [ ] GLM-4.6V — BLOCKED 2026-09-12: local mmproj identifies as "Huihui GLM 4.6V Abliterated"
+      (`huihui-ai/Huihui-GLM-4.6V-abliterated`); every GGUF repo tried for the matching text
+      checkpoint (`huihui-ai/...`, `bartowski/...`, `mradermacher/...`) returns 401 Unauthorized.
+      Also likely a very large MoE checkpoint (GLM-4.5V-class) that may not fit in 64GB RAM even if
+      found — not pursued further.
+- [x] EXAONE 4.5-VL — download in progress 2026-09-12 (`LGAI-EXAONE/EXAONE-4.5-33B-GGUF` Q4_K_M,
+      exact match for the local mmproj's `general.name`="EXAONE 4.5 33B"). ~20GB, largest VL
+      checkpoint attempted this pass — see PerformanceLeague.md once tested.
+- [ ] LLaVA-NeXT/OneVision, GLM-4V/OCR,
   Hunyuan-VL, Llama 4 Scout's vision path (mmproj already present:
   `mmproj-llama-4-scout-17b-16e-instruct-f16.gguf`, but the *text* checkpoint was explicitly
   cancelled this session — 93GB, doesn't fit in 64GB RAM; the vision-only mmproj path might still
@@ -160,9 +173,27 @@ phase as opportunistic, not a commitment — each of these could be a multi-hour
       `EmbedCommand` with automatic vocab-file discovery. Verified with a real semantic-correctness
       check, not just "doesn't crash": two paraphrased sentences scored 0.72 cosine similarity,
       an unrelated sentence scored 0.15 — the embeddings are now genuinely meaningful.
-- [ ] **`stingray embed`'s fake GGUF stub** — the big one, requires wiring a real forward pass into
-      `EmbeddingEngine`. Scoped as a real, larger task, not attempted this session beyond
-      documentation.
+- [ ] **`stingray embed`'s fake GGUF stub** — investigated further 2026-09-12, found it's worse
+      than previously scoped: TWO fake layers exist, not one. `EmbeddingEngine.ComputeEmbeddingVector`
+      (the one actually wired into `EmbedCommand`/`RerankCommand`/the OpenAI-compatible server
+      endpoints for any non-`.onnx` model path) synthesizes hidden states purely from a text hash
+      via sin/cos, never touching a GGUF file at all. A SECOND, entirely separate class,
+      `Core/Embeddings/BertGgufEmbeddingPipeline.cs`, does real `GgufModel.Open()` + tensor
+      inspection (hidden dim, layer count) to look plausible, but its `Forward()` method's
+      "self-attention"/"feed-forward" are also synthetic sin/cos/tanh math — the loaded GGUF
+      tensors are read for shape metadata only and their actual weight VALUES are never used in a
+      single matmul. Confirmed via grep: this second class is **dead code**, never constructed
+      anywhere outside its own file — not wired into any command or endpoint. A real fix needs:
+      (1) reuse the already-real `BertWordPieceTokenizer` (built for the ONNX path) instead of
+      `TokenizeSimple`'s word-hash placeholder, (2) a real BERT encoder forward pass (embedding +
+      N self-attention/FFN/LayerNorm blocks using the GGUF tensors' actual values, analogous to
+      how `ForwardPass.cs` does it for decoder-only LLMs) reading `blk.N.attn_q/k/v/output.weight`
+      etc., (3) wiring whichever of the two classes survives into `EmbedCommand`'s non-ONNX branch.
+      This is real, substantial correctness-critical implementation work (a wrong self-attention
+      implementation would be silently plausible — same failure class flagged elsewhere in this
+      doc), not something to rush without dedicated time to write and verify it against a real
+      semantic-similarity check (the same bar the ONNX-path fix cleared). Not attempted this pass
+      beyond this precise scoping — deferred as a real, larger follow-up.
 
 ---
 
