@@ -524,6 +524,10 @@ generic output) while InternVL3-2B works correctly on the identical image/prompt
 embedding injection point in the Granite chat template/forward path), not two unrelated one-off
 issues. Worth root-causing as a single Granite-vision bug rather than two separate ones.
 
+| dots.ocr Q8_0 + mmproj-Q8_0 | prefill (93 tok = 81 image + 12 text) | stingray CLI (OT) | 21.2 t/s | 2026-09-11 | new coverage; vision encoder runs (81 soft tokens) but decode emits `<\|endofassistant\|>` immediately — 1-token degenerate output, likely a chat-template/stop-condition issue specific to this OCR-focused checkpoint's prompt formatting rather than the vision path itself |
+| Gemma-3-4B-it Q4_K_M + mmproj-f16 | prefill (274 tok = 256 image + 18 text) | stingray CLI (OT) | 11.6 t/s avg (11.2/12.4/11.2 across 3 runs) | 2026-09-11 | new coverage; real, working vision-encode — genuinely describes the image ("a distorted, vibrant portrait of a person with a red face and dark hair, rendered in an intensely pixelated style") |
+| Gemma-3-4B-it Q4_K_M + mmproj-f16 | decode (27 tok gen) | stingray CLI (OT) | 11.1 t/s avg (12.5/10.4/~10.8 across 3 runs) | 2026-09-11 | same run; a real, second confirmed-working vision-encode checkpoint alongside InternVL3-2B. (Unrelated note: a Jinja chat-template gap was logged for this checkpoint's `<start_of_turn>` role-concat expression — passed through unevaluated, doesn't affect this measurement's validity since output was still correct.) |
+
 **Methodology caveat (same discipline as the earlier Kokoro/Piper cold-CLI-vs-warm-benchmark
 note):** `llama-mtmd-cli.exe`'s only timing output is `mtmd batch encoding done in N ms`, which
 measures the **vision-encoder-only** portion of the pipeline (turning the 256 image tokens into

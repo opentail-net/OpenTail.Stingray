@@ -40,8 +40,13 @@ Checkpoints + mmproj already present in `models/_models/` (checked 2026-09-11):
 - [x] Granite-Vision-3.2-2B + `mmproj-granite-vision-3.2-2b-f16.gguf` — DONE 2026-09-11. Same
       degenerate-output bug as Granite-4.0-3B-Vision — strengthens the "shared Granite-family
       vision bug" hypothesis in current-work.md. Moving on.
-- [ ] dots.ocr + `mmproj-dots.ocr-Q8_0.gguf`
-- [ ] Gemma-3-4B-it + `mmproj-gemma-3-4b-it-f16.gguf`
+- [x] dots.ocr + `mmproj-dots.ocr-Q8_0.gguf` — DONE 2026-09-11. Vision encoder runs but decode
+      emits 1-token degenerate `<|endofassistant|>` output — logged as a real gap, likely
+      prompt-format mismatch for this OCR-specialized checkpoint rather than the Granite bug class.
+- [x] Gemma-3-4B-it + `mmproj-gemma-3-4b-it-f16.gguf` — DONE 2026-09-11. Real, WORKING vision-encode
+      (2nd confirmed-working checkpoint alongside InternVL3-2B) — genuinely describes the image
+      content correctly across all 3 best-of-3 runs. Also found an unrelated Jinja chat-template
+      gap for this checkpoint (logged, didn't affect this measurement).
 - [ ] Kimi-VL-A3B-thinking + `mmproj-kimi-vl-a3b-thinking-Q8_0.gguf` — text backbone rejected as
       unsupported architecture (`deepseek2`) earlier this session; check if `--allow-unverified-arch`
       makes it run (README claims DeepSeek2 family works via that flag) before writing this off

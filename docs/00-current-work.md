@@ -1627,6 +1627,20 @@ severity.
   (different family) works correctly on the same image/prompt — strongly suggests one shared
   Granite-family vision-integration bug (image placeholder/embedding injection point) rather than
   two separate issues. Worth root-causing as a single Granite-vision bug.
+- **dots.ocr's real vision-encode path emits a 1-token degenerate output.** Real `--image`/
+  `--mmproj` run (2026-09-11) against `dots.ocr-Q8_0.gguf` + `mmproj-dots.ocr-Q8_0.gguf`: vision
+  encoder runs correctly (81 soft tokens/1536-dim), but decode immediately emits
+  `<|endofassistant|>` with 0 real generated tokens. Likely a chat-template/stop-token handling
+  gap specific to this OCR-focused checkpoint's prompt format (dots.ocr is tuned for structured
+  document extraction, not open-ended description — the test prompt may not match its expected
+  format), not necessarily the same class of bug as the Granite-family one above. Not root-caused.
+- **Gemma-3-4B-it has a real Jinja chat-template rendering gap** (same class as the Qwen3.8-27B
+  one below, different checkpoint): `'<start_of_turn>' + role + '\n' + (first_user_prefix if
+  loop.first else "")` — string-concat combined with a conditional — is passed through
+  unevaluated. Did not affect this session's vision-encode measurement (output was still correct/
+  coherent), but the actual rendered chat prompt may differ from spec until fixed. Worth fixing
+  together with the Qwen3.8-27B gap below by extending the Jinja subset's string-concat-inside-
+  conditional support.
 - **Qwen3.8-27B's chat template has 3 real Jinja rendering gaps**, logged as runtime warnings, not
   crashes: unsupported string-concatenation-inside-conditional/`in` expressions (e.g.
   `sysns.text + ('\n' if sysns.text else '') + sys_content`) get passed through unevaluated instead
