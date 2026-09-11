@@ -6581,6 +6581,40 @@ internal static class Shaders
         """;
 
     /// <summary>
+    /// In-place row broadcast-add: x[row,d] += bias[d] for every row -- the standard Linear-layer
+    /// bias, added 2026-09-12 for the SDXL UNet GPU-residency rewrite (docs/067). Distinct from
+    /// <see cref="AddChannelBroadcast"/> above: that one repeats a per-CHANNEL scalar across a
+    /// contiguous spatial block ([C,H,W] layout); this one repeats a full [D]-length vector
+    /// identically across N rows ([N,D] layout, the shape every `Lin()`/GEMM output actually has).
+    /// The two are transposed with respect to which axis is broadcast and which varies fastest --
+    /// not interchangeable.
+    /// input/output [N, D] (in-place), bias [D].
+    /// Push constants: { n, d }.
+    /// Bindings: 0=data (in/out), 1=bias.
+    /// Dispatch: (ceil(n*d/256), 1, 1) with local_size=(256,1,1).
+    /// </summary>
+    internal const string AddRowBroadcast = """
+        #version 450
+        layout(local_size_x = 256) in;
+
+        layout(push_constant) uniform Params {
+            uint n;
+            uint d;
+        };
+
+        layout(binding = 0) buffer Data { float data[]; };
+        layout(binding = 1) readonly buffer Bias { float bias[]; };
+
+        void main() {
+            uint idx = gl_GlobalInvocationID.x;
+            uint total = n * d;
+            if (idx >= total) return;
+            uint col = idx % d;
+            data[idx] += bias[col];
+        }
+        """;
+
+    /// <summary>
     /// Multi-head scaled-dot-product attention (bidirectional, no causal mask, no KV cache) for
     /// vision-transformer-shaped self/cross attention -- added 2026-09-11 for SdxlUNet2D
     /// ConditionModel's SpatialTransformer, whose Q/K/V come from a diffusion UNet's spatial

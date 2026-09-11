@@ -1513,6 +1513,7 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
     private ComputePipeline? _conv2dImplicitGemmPipeline;
     private ComputePipeline? _groupNormSiluPipeline;
     private ComputePipeline? _addChannelBroadcastPipeline;
+    private ComputePipeline? _addRowBroadcastPipeline;
     private ComputePipeline? _multiHeadAttentionPipeline;
     private ComputePipeline? _multiHeadAttentionTiledPipeline;
     private ComputePipeline? _leakyReluPipeline;
@@ -1607,6 +1608,7 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
     private struct Conv2dParams   { public uint inCh; public uint outCh; public uint height; public uint width; public uint ksize; public uint padding; }
     private struct GroupNormSiluParams { public uint c; public uint hw; public uint groups; public float eps; }
     private struct AddChannelBroadcastParams { public uint c; public uint hw; }
+    private struct AddRowBroadcastParams { public uint n; public uint d; }
     private struct MultiHeadAttentionParams { public uint qSeq; public uint kvSeq; public uint numHeads; public uint headDim; }
     private struct MultiHeadAttentionTiledParams { public uint qSeq; public uint kvSeq; public uint numHeads; public float scale; }
     private struct LeakyReluParams { public uint n; public float negSlope; }
@@ -3671,6 +3673,15 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
         DispatchOrRecord(_addChannelBroadcastPipeline, [GetBuffer(x), GetBuffer(perChannelBias)], groupsX, &p);
     }
 
+    public void AddRowBroadcastInPlace(Tensor x, Tensor rowBias, int n, int d)
+    {
+        _addRowBroadcastPipeline ??= new ComputePipeline(this, Shaders.AddRowBroadcast, 2, pushConstantSize: sizeof(AddRowBroadcastParams));
+        var p = new AddRowBroadcastParams { n = (uint)n, d = (uint)d };
+        uint total = (uint)(n * d);
+        uint groupsX = (total + 255u) / 256u;
+        DispatchOrRecord(_addRowBroadcastPipeline, [GetBuffer(x), GetBuffer(rowBias)], groupsX, &p);
+    }
+
     public Tensor MultiHeadAttention(Tensor q, Tensor k, Tensor v, int qSeq, int kvSeq, int numHeads, int headDim)
     {
         if (headDim > 128)
@@ -4074,6 +4085,7 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
         _conv2dImplicitGemmPipeline?.Dispose();
         _groupNormSiluPipeline?.Dispose();
         _addChannelBroadcastPipeline?.Dispose();
+        _addRowBroadcastPipeline?.Dispose();
         _multiHeadAttentionPipeline?.Dispose();
         _multiHeadAttentionTiledPipeline?.Dispose();
         _leakyReluPipeline?.Dispose();

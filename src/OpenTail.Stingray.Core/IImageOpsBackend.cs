@@ -45,6 +45,14 @@ public interface IImageOpsBackend : IComputeBackend
     void AddChannelBroadcastInPlace(Tensor x, Tensor perChannelBias, int c, int hw);
 
     /// <summary>
+    /// In-place row broadcast-add: x[row,d] += bias[d] for every row -- the standard Linear-layer
+    /// bias for a GPU-resident [N,D] Lin()/GEMM output. Distinct from
+    /// <see cref="AddChannelBroadcastInPlace"/> (transposed broadcast axis, see that shader's doc
+    /// comment) -- not interchangeable.
+    /// </summary>
+    void AddRowBroadcastInPlace(Tensor x, Tensor rowBias, int n, int d);
+
+    /// <summary>
     /// Multi-head scaled-dot-product attention (bidirectional, no causal mask, no KV cache) for
     /// vision-transformer-shaped self/cross attention. Q [qSeq, numHeads*headDim], K/V
     /// [kvSeq, numHeads*headDim] -> output [qSeq, numHeads*headDim]. Math matches

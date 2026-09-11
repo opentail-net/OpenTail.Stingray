@@ -7734,6 +7734,9 @@ public sealed unsafe class CudaBackend : IComputeBackend, IImageOpsBackend, IVis
     public void AddChannelBroadcastInPlace(Tensor x, Tensor perChannelBias, int c, int hw)
         => throw new NotSupportedException("AddChannelBroadcastInPlace is not implemented on the CUDA backend yet -- Vulkan-only for now.");
 
+    public void AddRowBroadcastInPlace(Tensor x, Tensor rowBias, int n, int d)
+        => throw new NotSupportedException("AddRowBroadcastInPlace is not implemented on the CUDA backend yet -- Vulkan-only for now.");
+
     /// <summary>Not implemented on CUDA yet -- same Vulkan-only status as GroupNormSilu above.</summary>
     public Tensor MultiHeadAttention(Tensor q, Tensor k, Tensor v, int qSeq, int kvSeq, int numHeads, int headDim)
         => throw new NotSupportedException("MultiHeadAttention is not implemented on the CUDA backend yet -- Vulkan-only for now.");
