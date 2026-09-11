@@ -17,6 +17,77 @@ Two consequences worth stating plainly, because they cut against the previous ro
 - DSpark speculative decoding and SafeTensors Phases 4-6 are **parked**, not scheduled. Both are
   implemented far enough to be useful and neither moves the goal.
 
+## ONNX support expansion (2026-09-11, real plan, not yet started)
+
+**User want, stated explicitly:** "I would love for us to have great onnx support." Parked behind
+the current bug-fixing focus, but recorded here as a real, scoped initiative rather than a vague
+aspiration, so it doesn't get lost.
+
+**Where this stands today:** `OnnxModelSession` (`src/OpenTail.Stingray.Core/OnnxModelSession.cs`)
+is a genuinely generic ONNX Runtime wrapper — real `InferenceSession`, arbitrary named
+inputs/outputs, works against any `.onnx` graph mechanically. The gap has never been the runtime;
+it's that only `EmbedCommand` wires up real, correct input construction and output interpretation
+for one model class (BERT-family text embedding, fixed for real 2026-09-11 — see the
+`BertWordPieceTokenizer` entry below). Every other `.onnx` file sitting in `models/_models/`
+(`silero_vad.onnx`, `kokoro-v1.0.onnx`, `campplus.onnx`, `cosyvoice_speech_tokenizer.onnx`/`_v2.onnx`,
+`sensevoice-small.int8.onnx`, `paraformer-zh-small.int8.onnx`, `melotts-zh_en.onnx`,
+`en_US-lessac-medium.onnx`) is either served by a real native C# reimplementation instead (this
+project's actual design preference — avoid runtime dependencies where a native port is feasible)
+or, for the two confirmed-broken ASR checkpoints (SenseVoice unwired entirely, FunASR Paraformer's
+GGUF broken — see the ASR gap entries elsewhere in this doc), not served by anything at all yet.
+
+**Reference material pulled in 2026-09-11** (`examples/`, gitignored per the existing
+`examples/llama.cpp`/`examples/audio.cpp` reference-oracle convention — not committed, not
+counted against repo size):
+- `examples/sherpa-onnx` (Apache 2.0) — **the highest-value one**: a real, actively-maintained
+  project that wires ONNX Runtime up with correct pre/post-processing for dozens of speech models,
+  covering several of the *exact same checkpoints already sitting unwired in this repo* — Silero
+  VAD, Paraformer, SenseVoice, CosyVoice's speech tokenizer, Kokoro. Its C++ source is a real oracle
+  for feature-extraction parameters (mel filterbank config, frame/hop sizes, normalization), real
+  input tensor names/shapes, and real output-decode logic per model — same role
+  `examples/audio.cpp`/`llama.cpp` already play elsewhere in this project.
+- `examples/onnxruntime-extensions` (MIT) — Microsoft's official library for fusing
+  tokenization/audio/image pre/post-processing directly into the ONNX graph as custom ops. Lower
+  priority; more relevant as a potential future dependency than as example code to port from.
+- `examples/onnxruntime-inference-examples` (MIT) — official per-model-class sample pre/post-
+  processing, thinner coverage than sherpa-onnx for the audio models this project actually needs.
+
+Licenses checked 2026-09-11: Apache 2.0 and MIT are both compatible with this project's own MIT
+license for reading/porting logic (Apache 2.0 code copied verbatim would need its attribution
+notice preserved on that specific code — no `NOTICE` file exists to carry forward beyond the
+standard header, and nothing has been copied yet, only cloned for reference).
+
+**A real, scoped plan (not started), roughly in priority order — matching the MusicGen/AudioGen
+archaeology-first pattern this doc's other sections already use:**
+
+1. **SenseVoice** (currently 0% — no dedicated pipeline exists at all, only a doc-comment mention).
+   Real local checkpoint present (`sensevoice-small.int8.onnx`). Cross-reference sherpa-onnx's real
+   SenseVoice wiring (`sherpa-onnx/sherpa-onnx/csrc/offline-sense-voice-model*` — check the actual
+   real file names once picked up) for: real input tensor names/shapes, the real feature-extraction
+   recipe (likely Kaldi-style fbank, not a generic mel-spectrogram — confirm from source, don't
+   assume), and the real output token/language/emotion decode logic. Write a real
+   `SenseVoiceOnnxPipeline` following the same shape as `EmbedCommand`'s now-fixed ONNX path
+   (`OnnxModelSession` + real preprocessing + real postprocessing), not a from-scratch guess.
+2. **FunASR Paraformer** — the native GGUF path is confirmed broken (missing `pf.vocab` metadata,
+   a bad conversion — see the existing Paraformer entry elsewhere in this doc). A real ONNX-based
+   Paraformer path could be a genuine alternative route to a working Paraformer, independent of
+   fixing the broken GGUF conversion. `paraformer-zh-small.int8.onnx` is already local. Cross-
+   reference sherpa-onnx's real Paraformer wiring the same way as SenseVoice above.
+3. **Silero VAD's ONNX path** — this project already has a real native Silero VAD port (`🟢` in
+   README); this item is lower priority, but sherpa-onnx's VAD wiring could serve as an independent
+   real-reference cross-check for the existing native port if a correctness question ever comes up,
+   not a new capability to build.
+4. **Generalize `EmbedCommand`'s pattern into a reusable shape** once 1-2 real pipelines exist
+   beyond text embedding — e.g. a shared `IOnnxPipeline`-style interface if the real preprocessing/
+   postprocessing code for SenseVoice and Paraformer turns out to share meaningful structure. Don't
+   build this abstraction speculatively before there are at least 2 real, working call sites to
+   generalize from (matches this project's own "don't design for hypothetical future requirements"
+   discipline).
+
+**Explicitly not in scope for this plan**: re-implementing Kokoro/CosyVoice/MeloTTS/Piper's ONNX
+paths — those already have real, working native C# ports and redoing them via generic ONNX
+execution would be a regression in the "avoid runtime dependencies" direction, not progress.
+
 ## User-requested checkpoint targets (2026-09-03, not yet scoped)
 
 The user has asked for these specific checkpoints to be supported, in addition to whatever this
