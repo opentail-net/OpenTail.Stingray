@@ -18,6 +18,26 @@ public sealed class Granite4VisionModel : IDisposable
     public int HeadDim { get; }
     public float Eps { get; }
 
+    /// <summary>
+    /// Per-WindowQFormer-block index into the SigLIP tower's saved intermediate layer outputs
+    /// (clip.vision.feature_layer, e.g. [26,20,14,8,26,26,26,26] for the real 3B checkpoint).
+    /// Length is the number of projector blocks K.
+    /// </summary>
+    public int[] FeatureLayers { get; }
+
+    /// <summary>
+    /// Per-block downsampling mode selector (clip.vision.projector.spatial_offsets):
+    /// -1 selects average-pool downsampling (interp_down), >=0 selects the indexed
+    /// 2x2-checkerboard-phase gather (spatial_idx) with that phase offset.
+    /// </summary>
+    public int[] ProjSpatialOffsets { get; }
+
+    /// <summary>Window side for the raster-to-window gather (clip.vision.projector.window_side).</summary>
+    public int WindowSide { get; }
+
+    /// <summary>Query-window side for the QFormer's learned query grid (clip.vision.projector.query_side).</summary>
+    public int QuerySide { get; }
+
     private bool _disposed;
 
     private Granite4VisionModel(
@@ -30,7 +50,11 @@ public sealed class Granite4VisionModel : IDisposable
         int layerCount,
         int headCount,
         int headDim,
-        float eps)
+        float eps,
+        int[] featureLayers,
+        int[] projSpatialOffsets,
+        int windowSide,
+        int querySide)
     {
         Gguf = gguf;
         ProjectorType = projectorType;
@@ -42,6 +66,10 @@ public sealed class Granite4VisionModel : IDisposable
         HeadCount = headCount;
         HeadDim = headDim;
         Eps = eps;
+        FeatureLayers = featureLayers;
+        ProjSpatialOffsets = projSpatialOffsets;
+        WindowSide = windowSide;
+        QuerySide = querySide;
     }
 
     public static Granite4VisionModel Open(string path)
@@ -65,6 +93,22 @@ public sealed class Granite4VisionModel : IDisposable
         int headDim = headCount > 0 ? embeddingDim / headCount : 72;
         float eps = GetFloat(gguf, "clip.vision.attention.layer_norm_epsilon", 1e-6f);
 
+        // clip.vision.feature_layer: which SigLIP intermediate layer each WindowQFormer block
+        // reads from (KEY_FEATURE_LAYERS = "clip.%s.feature_layer" with prefix "vision", see
+        // examples/llama.cpp/llama.cpp/tools/mtmd/clip-impl.h line 47). Length is K, the number
+        // of projector blocks. Falls back to a single block reading the final layer if absent
+        // (keeps this constructible against non-standard/older exports rather than throwing).
+        int[] featureLayers = GetIntArray(gguf, "clip.vision.feature_layer", [layerCount - 1]);
+        int[] projSpatialOffsets = GetIntArray(gguf, "clip.vision.projector.spatial_offsets", new int[featureLayers.Length]);
+        int windowSide = GetInt(gguf, "clip.vision.projector.window_side", 8);
+        int querySide = GetInt(gguf, "clip.vision.projector.query_side", 4);
+        if (projSpatialOffsets.Length != featureLayers.Length)
+        {
+            var fill = new int[featureLayers.Length];
+            Array.Fill(fill, -1);
+            projSpatialOffsets = fill;
+        }
+
         return new Granite4VisionModel(
             gguf,
             projType,
@@ -75,7 +119,22 @@ public sealed class Granite4VisionModel : IDisposable
             layerCount,
             headCount,
             headDim,
-            eps);
+            eps,
+            featureLayers,
+            projSpatialOffsets,
+            windowSide,
+            querySide);
+    }
+
+    private static int[] GetIntArray(GgufModel g, string key, int[] fallback)
+    {
+        if (g.Metadata.TryGetValue(key, out var val) && val is object[] arr)
+        {
+            var result = new int[arr.Length];
+            for (int i = 0; i < arr.Length; i++) result[i] = Convert.ToInt32(arr[i]);
+            return result;
+        }
+        return fallback;
     }
 
     private static int GetInt(GgufModel g, string key, int fallback)

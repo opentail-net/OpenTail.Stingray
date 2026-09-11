@@ -481,6 +481,143 @@ public static unsafe class VisionOps
     }
 
     /// <summary>
+    /// Batched scaled dot-product attention where the token set is partitioned into independent
+    /// windows: query token <c>w*qLen+i</c> may only attend to key/value tokens
+    /// <c>w*kvLen+0..kvLen-1</c> of the SAME window <c>w</c> -- i.e. <paramref name="nWindows"/>
+    /// fully independent attention groups batched into one call, rather than one dense
+    /// [nTok,nTok] softmax. Covers both self-attention (pass the same buffer as q/k/v with
+    /// qLen == kvLen) and cross-attention (q from one stream, k/v from another, qLen != kvLen
+    /// allowed) -- used by Granite 4 Vision's WindowQFormer projector blocks, whose real
+    /// reference (examples/llama.cpp/llama.cpp/tools/mtmd/models/granite4-vision.cpp,
+    /// build_block()) reshapes Q/K/V to a 4th "window" ne[3] dimension and runs ggml's batched
+    /// attention op per-window; looping windows directly here is mathematically identical and
+    /// avoids materializing the reshape.
+    /// Layout: q is [nWindows*qLen, heads*headDim] (window-major, i.e. row w*qLen+i); k/v are
+    /// [nWindows*kvLen, heads*headDim] (row w*kvLen+j); output matches q's shape.
+    /// </summary>
+    public static void WindowedAttention(
+        float[] q,
+        float[] k,
+        float[] v,
+        int nWindows,
+        int qLen,
+        int kvLen,
+        int heads,
+        int headDim,
+        float[] output)
+    {
+        float scale = 1.0f / MathF.Sqrt(headDim);
+        int embd = heads * headDim;
+
+        Parallel.For(0, nWindows * heads, wh =>
+        {
+            int w = wh / heads;
+            int h = wh % heads;
+            int headOff = h * headDim;
+            int qBase = w * qLen;
+            int kvBase = w * kvLen;
+
+            var scores = new float[kvLen];
+
+            for (int i = 0; i < qLen; i++)
+            {
+                int qOff = (qBase + i) * embd + headOff;
+                var qi = new ReadOnlySpan<float>(q, qOff, headDim);
+
+                float maxScore = float.NegativeInfinity;
+                for (int j = 0; j < kvLen; j++)
+                {
+                    int kOff = (kvBase + j) * embd + headOff;
+                    var kj = new ReadOnlySpan<float>(k, kOff, headDim);
+                    float s = TensorPrimitives.Dot(qi, kj) * scale;
+                    scores[j] = s;
+                    if (s > maxScore) maxScore = s;
+                }
+
+                float expSum = 0f;
+                for (int j = 0; j < kvLen; j++)
+                {
+                    float exp = MathF.Exp(scores[j] - maxScore);
+                    scores[j] = exp;
+                    expSum += exp;
+                }
+                float invSum = expSum > 0f ? 1.0f / expSum : 0f;
+                var scoresSpan = new Span<float>(scores);
+                TensorPrimitives.Multiply(scoresSpan, invSum, scoresSpan);
+
+                int outOff = (qBase + i) * embd + headOff;
+                var outSpan = new Span<float>(output, outOff, headDim);
+                outSpan.Clear();
+                for (int j = 0; j < kvLen; j++)
+                {
+                    int vOff = (kvBase + j) * embd + headOff;
+                    var vj = new ReadOnlySpan<float>(v, vOff, headDim);
+                    TensorPrimitives.MultiplyAdd(vj, scores[j], outSpan, outSpan);
+                }
+            }
+        });
+    }
+
+    /// <summary>
+    /// 2D average-pool spatial downsampling from a (side x side) raster grid of tokens to a
+    /// (newSide x newSide) grid, kernel = side/newSide, matching the real reference's
+    /// <c>interp_down()</c> (examples/llama.cpp/llama.cpp/tools/mtmd/models/granite4-vision.cpp
+    /// lines 34-45: reshape to (embd,side,side,1) -> permute channel-last -> ggml_pool_2d AVG
+    /// with kernel=stride=side/newSide -> permute back). Row-major token layout: input row
+    /// y*side+x, output row oy*newSide+ox, matching this project's "gather" index convention
+    /// (<c>make_win_idx</c> in clip.cpp uses the same y*side+x addressing) elsewhere in the same
+    /// projector.
+    /// </summary>
+    public static void AvgPoolDownsample2D(
+        float[] src,
+        int side,
+        int newSide,
+        int dim,
+        float[] dst)
+    {
+        int kernel = side / newSide;
+        float inv = 1.0f / (kernel * kernel);
+
+        Parallel.For(0, newSide * newSide, oIdx =>
+        {
+            int oy = oIdx / newSide;
+            int ox = oIdx % newSide;
+            var acc = new float[dim];
+
+            for (int ky = 0; ky < kernel; ky++)
+            {
+                int y = oy * kernel + ky;
+                for (int kx = 0; kx < kernel; kx++)
+                {
+                    int x = ox * kernel + kx;
+                    int srcOff = (y * side + x) * dim;
+                    TensorPrimitives.Add(new ReadOnlySpan<float>(acc), new ReadOnlySpan<float>(src, srcOff, dim), acc);
+                }
+            }
+
+            int dstOff = oIdx * dim;
+            var dstSpan = new Span<float>(dst, dstOff, dim);
+            TensorPrimitives.Multiply(new ReadOnlySpan<float>(acc), inv, dstSpan);
+        });
+    }
+
+    /// <summary>
+    /// Gathers whole rows: <c>dst[i,:] = src[idx[i],:]</c> for each of <paramref name="idx"/>'s
+    /// entries, matching <c>ggml_get_rows</c> as used throughout Granite 4 Vision's WindowQFormer
+    /// projector for its window/unwindow/spatial-checkerboard permutations (all precomputed index
+    /// arrays, not learned -- see the real reference's <c>gather()</c> helper in
+    /// tools/mtmd/models/granite4-vision.cpp lines 24-32, and the actual index-construction math
+    /// in tools/mtmd/clip.cpp lines 5144-5183, which this project's own index builders mirror).
+    /// </summary>
+    public static void GatherRows(float[] src, int[] idx, int dim, float[] dst)
+    {
+        Parallel.For(0, idx.Length, i =>
+        {
+            Array.Copy(src, (long)idx[i] * dim, dst, (long)i * dim, dim);
+        });
+    }
+
+    /// <summary>
     /// Applies Gaussian Error Linear Unit (GELU) with Tanh approximation: 0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3))).
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
