@@ -443,30 +443,31 @@ Root cause: `stingray embed`'s GGUF path (`EmbeddingEngine.cs:147-162`) is a has
 stub that never loads any model at all — **this is still true and still unfixed**; no GGUF
 embedding measurement is possible with this CLI. See Known Measurement Gaps.
 
-**Fixed 2026-09-11 — the ONNX path.** `stingray embed -m <file>.onnx` genuinely invokes ONNX
-Runtime (confirmed by real, model-specific output dimensions below — not a stub), but crashed with
-`Missing Input: token_type_ids` because `EmbedCommand.cs`'s ONNX branch never constructed that
-tensor. Fixed by adding an all-zero `token_type_ids` input alongside `input_ids`/`attention_mask`
-(`OnnxModelSession.Run` already filters to only the inputs a given model actually declares, so this
-is safe for models that don't need it too). Also fixed in the same pass, found while testing:
-`stingray embed -o <file>` crashed with `System.InvalidOperationException: Reflection-based
-serialization has been disabled for this application` (NativeAOT/trim violation, `CLAUDE.md` rule
-4) — replaced `JsonSerializer.Serialize` with a small hand-rolled JSON writer for the simple
-`List<float[]>` output shape. And a defensive fix for a related but separate issue found while
-fixing the crash: the ONNX branch's "tokenization" is not real WordPiece/BPE — it maps each raw
-character to its char code as a placeholder token id (no `tokenizer.json`/`vocab.txt` ships
-alongside these ONNX checkpoints on this machine) — this inflates apparent token count ~4x vs. real
-subword tokenization and was overflowing BERT's 512-position limit on long inputs with an opaque
-ONNX broadcast error. Added a defensive truncation with a clear warning instead of a crash; **the
-underlying missing-real-tokenizer issue is not fixed**, just contained so it fails gracefully — the
-numbers below use a short, single-sentence input specifically to avoid it, so they're not affected.
+**Fixed 2026-09-11 — the ONNX path, in two passes.** `stingray embed -m <file>.onnx` genuinely
+invokes ONNX Runtime (confirmed by real, model-specific output dimensions below — not a stub), but
+crashed with `Missing Input: token_type_ids` because `EmbedCommand.cs`'s ONNX branch never
+constructed that tensor. Fixed by adding an all-zero `token_type_ids` input alongside
+`input_ids`/`attention_mask`. Also fixed in the same pass: `stingray embed -o <file>` crashed with
+`System.InvalidOperationException: Reflection-based serialization has been disabled` (NativeAOT/
+trim violation, `CLAUDE.md` rule 4) — replaced `JsonSerializer.Serialize` with a hand-rolled JSON
+writer. **The tokenizer itself was fixed for real later the same day**, per explicit user request
+("fix the fake ONNX tokenizer for real. I want it to work properly"): the ONNX branch's
+"tokenization" had been mapping each raw character to its char code as a placeholder token id, not
+real WordPiece. Wrote `BertWordPieceTokenizer.cs` (a faithful port of HuggingFace's real
+`BasicTokenizer`+`WordpieceTokenizer` algorithm, confirmed against each checkpoint's own real
+`tokenizer_config.json`), downloaded the real `vocab.txt` (30522 tokens) for all 4 local
+checkpoints from their real HuggingFace repos, and wired it in with automatic vocab-file discovery.
+**Verified with a real semantic-correctness check**: two paraphrased sentences scored 0.72 cosine
+similarity; an unrelated sentence scored only 0.15 against the same reference — the embeddings are
+now genuinely semantically meaningful, not just non-crashing. Token counts below reflect the real
+tokenizer (12 tokens for the benchmark sentence, vs. the old fake tokenizer's inflated 39).
 
 | Model | Scenario | Backend | C# result | C++ reference | Ratio | Performance Check | Source |
 |---|---|---|---|---|---:|---|---|
-| all-MiniLM-L6-v2 (quantized ONNX) | 1 text, 39 tok, mean pooling, 384-dim (real native dim) | CPU | 27ms (best of 3) | — (not attempted this pass) | — | 2026-09-11 | new coverage, post-fix; `stingray embed -m all-MiniLM-L6-v2_quantized.onnx -p "Hello, I will make some lunch, darling!"` |
-| bge-small-en-v1.5 (quantized ONNX) | 1 text, 39 tok, mean pooling, 384-dim | CPU | 29ms (best of 3) | — (not attempted this pass) | — | 2026-09-11 | new coverage, post-fix |
-| bge-base-en-v1.5 (quantized ONNX) | 1 text, 39 tok, mean pooling, 768-dim (implied by base-size BERT) | CPU | 35ms (best of 3) | — (not attempted this pass) | — | 2026-09-11 | new coverage, post-fix |
-| bge-large-en-v1.5 (quantized ONNX) | 1 text, 39 tok, mean pooling, 1024-dim (real native dim) | CPU | 56ms (best of 3) | — (not attempted this pass) | — | 2026-09-11 | new coverage, post-fix |
+| all-MiniLM-L6-v2 (quantized ONNX) | 1 text, 12 real tokens (WordPiece), mean pooling, 384-dim (real native dim) | CPU | 26ms (best of 3) | — (not attempted this pass) | — | 2026-09-11 | real WordPiece tokenizer, post-fix; `stingray embed -m all-MiniLM-L6-v2_quantized.onnx -p "Hello, I will make some lunch, darling!"` |
+| bge-small-en-v1.5 (quantized ONNX) | 1 text, 12 real tokens, mean pooling, 384-dim | CPU | 28ms (best of 3) | — (not attempted this pass) | — | 2026-09-11 | real WordPiece tokenizer, post-fix |
+| bge-base-en-v1.5 (quantized ONNX) | 1 text, 12 real tokens, mean pooling, 768-dim (implied by base-size BERT) | CPU | 30ms (best of 3) | — (not attempted this pass) | — | 2026-09-11 | real WordPiece tokenizer, post-fix |
+| bge-large-en-v1.5 (quantized ONNX) | 1 text, 12 real tokens, mean pooling, 1024-dim (real native dim) | CPU | 41ms (best of 3) | — (not attempted this pass) | — | 2026-09-11 | real WordPiece tokenizer, post-fix |
 
 > All four report their real, correct native output dimension (384/384/768/1024) rather than the
 > GGUF stub's hardcoded 1536 — direct evidence these are genuine forward passes, not stub output.

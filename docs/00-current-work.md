@@ -1860,6 +1860,34 @@ severity.
   detail, not degenerate. This isolates and rules out `--upscaler` itself as the cause of the
   earlier LTX-Video noise (which is real and separate — see the LTX-Video entry above). Real timing
   breakdown available (RRDB body 106.4s, upsample/HR/download 18.1s of a 781.3s total run).
+- **`stingray embed`'s ONNX path had a fake char-per-token tokenizer — FIXED FOR REAL 2026-09-11,
+  per explicit user request ("fix the fake ONNX tokenizer for real. I want it to work properly").**
+  Wrote `src/OpenTail.Stingray.Core/BertWordPieceTokenizer.cs`, a faithful port of HuggingFace
+  `transformers`' real `BasicTokenizer`+`WordpieceTokenizer` algorithm (control-char cleaning,
+  optional CJK character spacing, lowercase+accent-stripping gated on `do_lower_case`, punctuation
+  splitting, greedy longest-match-first WordPiece subword segmentation with `##` continuation
+  prefixes) — every local ONNX embedding checkpoint's own real `tokenizer_config.json` declares
+  `"tokenizer_class": "BertTokenizer"`, confirmed by fetching and reading them directly (not
+  guessed). Downloaded the real `vocab.txt` (30522 tokens, standard BERT vocab size) for all 4
+  local BERT-family ONNX checkpoints — `all-MiniLM-L6-v2`, `bge-small/base/large-en-v1.5` — from
+  their real HuggingFace repos, saved as `F:\_models\<name>-vocab.txt`. Wired into `EmbedCommand`
+  via `TryLoadWordPieceTokenizer` (automatic vocab-file discovery next to the `.onnx` checkpoint,
+  falling back to the old char-per-token placeholder only for checkpoints with no downloaded vocab).
+  **Verified with a real semantic-correctness check, not just "doesn't crash":** two paraphrased
+  sentences ("The quick brown fox jumps over the lazy dog." / "A fast auburn fox leaps above a
+  sleepy canine.") scored 0.72 cosine similarity; an unrelated sentence ("The stock market crashed
+  heavily today.") scored only 0.15 against the same reference — exactly the separation a
+  correctly-tokenized real sentence-embedding model should produce, proving the fix is genuinely
+  semantically meaningful, not merely non-crashing. Also fixed a token-count sanity check: "The
+  quick brown fox jumps over the lazy dog." tokenizes to exactly 12 ids (9 words + 1 punctuation +
+  [CLS]/[SEP]), matching manual WordPiece counting exactly. Confirmed via code review that
+  `OnnxModelSession` (`src/OpenTail.Stingray.Core/OnnxModelSession.cs`) is a genuinely generic
+  ONNX Runtime wrapper (real `InferenceSession`, arbitrary named inputs/outputs) — the mechanical
+  execution path already worked for any `.onnx` graph; `EmbedCommand` was the only caller missing
+  correct input construction. Full solution rebuild clean (0 warnings, `TreatWarningsAsErrors`).
+  The downloaded vocab files live in `F:\_models\` (not tracked in the repo, matching this
+  project's models/_models convention) — a future session on a different machine would need to
+  re-download them (small text files, ~230-900KB each).
 - **A systemic silent-no-op pattern in `*RealWeightsTests.cs` files, worse than previously
   documented.** `CLAUDE.md` rule 12 already names this pattern (a green, sub-second "pass" that
   never actually touched real weights) for LLM/vision/some-audio tests. Three *more* instances were

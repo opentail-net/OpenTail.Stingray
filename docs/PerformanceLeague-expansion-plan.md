@@ -130,10 +130,13 @@ phase as opportunistic, not a commitment — each of these could be a multi-hour
       streaming mode for Chatterbox Turbo at all (deliberate offline-only design limit, same as
       QwenTTS/CosyVoice3), so the vocab fix alone doesn't unlock a TTFA comparison — that would
       need real streaming support added to `audio.cpp` itself, out of scope here.
-- [ ] **`stingray embed`'s missing real tokenizer** for the ONNX path (char-per-token placeholder,
-      not real WordPiece/BPE) — fixed this session to fail gracefully, but the underlying issue (no
-      real tokenizer wired) is still open. Lower priority than the other bugs — the graceful
-      degradation already makes this safe to use for short inputs.
+- [x] **`stingray embed`'s missing real tokenizer** for the ONNX path — FIXED FOR REAL 2026-09-11.
+      Implemented a real `BertWordPieceTokenizer` (faithful port of HuggingFace's real
+      `BasicTokenizer`+`WordpieceTokenizer` algorithm), downloaded the real `vocab.txt` for all 4
+      local BERT-family ONNX checkpoints (MiniLM, BGE small/base/large), and wired it into
+      `EmbedCommand` with automatic vocab-file discovery. Verified with a real semantic-correctness
+      check, not just "doesn't crash": two paraphrased sentences scored 0.72 cosine similarity,
+      an unrelated sentence scored 0.15 — the embeddings are now genuinely meaningful.
 - [ ] **`stingray embed`'s fake GGUF stub** — the big one, requires wiring a real forward pass into
       `EmbeddingEngine`. Scoped as a real, larger task, not attempted this session beyond
       documentation.

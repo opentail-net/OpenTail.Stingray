@@ -72,10 +72,13 @@ public sealed class EmbedCommand : Command<EmbedCommand.Settings>
                 return 1;
             }
 
+            var wordPieceTokenizer = TryLoadWordPieceTokenizer(s.Model);
+
             Console.WriteLine($"Dense Text Embedding Generation ({Path.GetFileName(s.Model)})");
             Console.WriteLine($"Input Count:  {texts.Count}");
             Console.WriteLine($"Pooling Mode: {pooling}");
             Console.WriteLine($"L2 Normalize: {!s.NoNorm}");
+            Console.WriteLine($"Tokenizer:    {(wordPieceTokenizer is not null ? "real WordPiece (vocab.txt)" : "char-per-token placeholder (no vocab.txt found -- see EmbedCommand.TryLoadWordPieceTokenizer)")}");
             Console.WriteLine();
 
             var swOnnx = Stopwatch.StartNew();
@@ -84,23 +87,31 @@ public sealed class EmbedCommand : Command<EmbedCommand.Settings>
 
             foreach (var text in texts)
             {
-                // NOTE: this is NOT real WordPiece/BPE tokenization -- it maps each raw character
-                // to its char code as a placeholder "token id". No tokenizer.json/vocab.txt ships
-                // alongside these ONNX embedding checkpoints on this machine, so a real tokenizer
-                // isn't wired here yet. The model will run and produce a real vector, but it will
-                // not be a semantically meaningful embedding of the input text. See
-                // PerformanceLeague.md / docs/00-current-work.md for the open item to fix this.
-                long[] inputIds = text.Select(c => (long)c).ToArray();
-                if (inputIds.Length == 0) inputIds = [0];
-                // Most BERT-family encoders cap position embeddings at 512; the char-per-token
-                // scheme above inflates length ~4x vs. real subword tokenization, so truncate
-                // defensively instead of letting ONNX Runtime fail with an opaque broadcast error
-                // deep in the graph. Real tokenization would make this truncation unnecessary for
-                // reasonably-sized inputs.
+                long[] inputIds;
+                if (wordPieceTokenizer is not null)
+                {
+                    // Real WordPiece tokenization (BasicTokenizer + WordpieceTokenizer, a faithful
+                    // port of HuggingFace transformers' real BertTokenizer algorithm) against this
+                    // checkpoint's own real vocab.txt -- see BertWordPieceTokenizer.cs.
+                    inputIds = wordPieceTokenizer.Encode(text);
+                }
+                else
+                {
+                    // Fallback for checkpoints with no locally-available vocab.txt: NOT real
+                    // WordPiece/BPE tokenization -- maps each raw character to its char code as a
+                    // placeholder "token id". The model will run and produce a real vector, but it
+                    // will not be a semantically meaningful embedding of the input text.
+                    inputIds = text.Select(c => (long)c).ToArray();
+                    if (inputIds.Length == 0) inputIds = [0];
+                }
+                // Most BERT-family encoders cap position embeddings at 512; truncate defensively
+                // instead of letting ONNX Runtime fail with an opaque broadcast error deep in the
+                // graph (real WordPiece tokenization rarely exceeds this for reasonably-sized
+                // inputs, but the char-per-token fallback inflates length ~4x and hits it often).
                 const int maxPositions = 512;
                 if (inputIds.Length > maxPositions)
                 {
-                    Console.Error.WriteLine($"Warning: input truncated from {inputIds.Length} to {maxPositions} placeholder tokens (no real tokenizer wired for this model's char-per-token fallback).");
+                    Console.Error.WriteLine($"Warning: input truncated from {inputIds.Length} to {maxPositions} tokens.");
                     inputIds = inputIds[..maxPositions];
                 }
                 totalTokens += inputIds.Length;
@@ -200,6 +211,53 @@ public sealed class EmbedCommand : Command<EmbedCommand.Settings>
         }
 
         return 0;
+    }
+
+    // Looks for a real vocab.txt next to the ONNX checkpoint. Tries, in order: (1) the exact
+    // sibling name "<model-basename>-vocab.txt" (the convention used for the vocab files fetched
+    // for all-MiniLM-L6-v2/BGE small/base/large -- see docs/00-current-work.md's 2026-09-11 entry
+    // for provenance); (2) the same name with a trailing "_quantized"/"_qint8"/"_int8" suffix
+    // stripped first, so a quantized checkpoint's own basename still resolves to its base model's
+    // vocab; (3) a plain "vocab.txt" in the same directory (the standard HF convention, for any
+    // future checkpoint that ships one directly alongside the .onnx file). Returns null (not an
+    // error) when none exist -- callers fall back to the char-per-token placeholder rather than
+    // failing outright, since not every ONNX checkpoint on this machine has a downloaded vocab yet.
+    private static BertWordPieceTokenizer? TryLoadWordPieceTokenizer(string onnxModelPath)
+    {
+        string? dir = Path.GetDirectoryName(onnxModelPath);
+        if (string.IsNullOrEmpty(dir)) dir = ".";
+        string baseName = Path.GetFileNameWithoutExtension(onnxModelPath);
+
+        var candidates = new List<string> { Path.Combine(dir, baseName + "-vocab.txt") };
+
+        string[] stripSuffixes = ["_quantized", "_qint8", "_int8", "-quantized"];
+        foreach (var suffix in stripSuffixes)
+        {
+            if (baseName.EndsWith(suffix, StringComparison.OrdinalIgnoreCase))
+            {
+                string stripped = baseName[..^suffix.Length];
+                candidates.Add(Path.Combine(dir, stripped + "-vocab.txt"));
+            }
+        }
+
+        candidates.Add(Path.Combine(dir, "vocab.txt"));
+
+        foreach (var candidate in candidates)
+        {
+            if (File.Exists(candidate))
+            {
+                try
+                {
+                    return BertWordPieceTokenizer.LoadVocabFile(candidate);
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine($"Warning: found vocab file {candidate} but failed to load it: {ex.Message}. Falling back to char-per-token placeholder.");
+                    return null;
+                }
+            }
+        }
+        return null;
     }
 
     // Hand-rolled JSON serialization for a simple List<float[]> shape, avoiding reflection-based
