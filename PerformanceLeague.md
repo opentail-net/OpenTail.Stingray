@@ -259,6 +259,26 @@
 
 ---
 
+## DeepSeek family (`deepseek2`, run with `--allow-unverified-arch`)
+
+**Correctness caveat, not a perf gap:** this architecture is explicitly documented in `README.md`
+as producing "numerically wrong greedy output" — a real, closed investigation (see
+`docs/done/032-deepseek2-mla-yarn-moe-routing-investigation.md`) found and fixed 8+ real bugs but
+root-caused the remaining gap as this specific checkpoint's inherent MoE routing-landscape
+flatness, not a discoverable code defect — formally accepted, not left open. Confirmed 2026-09-11:
+running without `--allow-unverified-arch` gives a clean rejection (not in the supported-architecture
+allowlist); with the flag it runs and produces garbled output, matching README's own documented
+finding exactly (repro: `Infjs<garbled>icer\nHello\n的多` for a simple "Hello" prompt). The
+throughput numbers below are still real and meaningful — this is the same "measure it anyway, note
+the correctness caveat" approach used elsewhere in this doc (e.g. Ornith-1.0-9B, Qwen3-ASR).
+
+| Model | Scenario | Backend | C# (OT, t/s) | C++ (llama.cpp, t/s) | Ratio | Performance Check | Source |
+|---|---|---|---:|---:|---:|---|---|
+| DeepSeek-V2-Lite-Chat Q8_0 | prefill (502 tok) | CPU | 28.0 t/s | 56.90 t/s | **0.49x** | 2026-09-11 | new coverage; stingray CLI (`--allow-unverified-arch`) + llama-bench, best-of-3 |
+| DeepSeek-V2-Lite-Chat Q8_0 | decode (502 tok prompt, 24 tok gen) | CPU | 13.6 t/s | 14.83 t/s | <span style="color:#16a34a">**0.92x**</span> | 2026-09-11 | new coverage; stingray CLI (`--allow-unverified-arch`) + llama-bench, best-of-3. **Near-parity decode despite the known correctness gap** — the throughput cost of this architecture's MoE dispatch is small even though the routing itself produces wrong tokens. |
+
+---
+
 ## Speculative Decoding (CPU)
 
 | Target | Draft | Scenario | C# (OT, t/s) | C++ (ref, t/s) | Ratio | Acceptance rate | Performance Check | Source |
