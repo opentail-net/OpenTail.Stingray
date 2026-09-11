@@ -80,7 +80,11 @@ above (lower priority, since coverage of what's already downloaded matters more 
       (the reference implementation splices embeddings directly, no vocab token involved) — this
       codebase's generic image-splicing path assumes every architecture has one. Real architectural
       gap, logged in current-work.md, not attempted further. See PerformanceLeague.md's VLM section.
-- [ ] Pixtral 12B, LLaVA-NeXT/OneVision, MiniCPM-V 2.6, GLM-4V/4.5V/OCR, Exaone 4.5-VL,
+- [x] MiniCPM-V-2.6 — DONE 2026-09-12 (downloaded `openbmb/MiniCPM-V-2_6-gguf` Q4_K_M). Real
+      `resampler`-projector vision path runs correctly (64 soft tokens/3584-dim), consistent
+      timing across 3 runs (7.5/7.4 t/s prefill/decode). Output plausible but unconfirmed against
+      the shared unreliable test image (same caveat as Gemma-4-12B).
+- [ ] Pixtral 12B, LLaVA-NeXT/OneVision, GLM-4V/4.5V/OCR, Exaone 4.5-VL,
   Hunyuan-VL, Llama 4 Scout's vision path (mmproj already present:
   `mmproj-llama-4-scout-17b-16e-instruct-f16.gguf`, but the *text* checkpoint was explicitly
   cancelled this session — 93GB, doesn't fit in 64GB RAM; the vision-only mmproj path might still
