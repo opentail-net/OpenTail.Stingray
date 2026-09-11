@@ -1472,6 +1472,7 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
     private ComputePipeline? _conv2dImplicitGemmPipeline;
     private ComputePipeline? _groupNormSiluPipeline;
     private ComputePipeline? _multiHeadAttentionPipeline;
+    private ComputePipeline? _multiHeadAttentionTiledPipeline;
     private ComputePipeline? _leakyReluPipeline;
     private ComputePipeline? _clampPipeline;
     private ComputePipeline? _catChannelsPipeline;
@@ -1564,6 +1565,7 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
     private struct Conv2dParams   { public uint inCh; public uint outCh; public uint height; public uint width; public uint ksize; public uint padding; }
     private struct GroupNormSiluParams { public uint c; public uint hw; public uint groups; public float eps; }
     private struct MultiHeadAttentionParams { public uint qSeq; public uint kvSeq; public uint numHeads; public uint headDim; }
+    private struct MultiHeadAttentionTiledParams { public uint qSeq; public uint kvSeq; public uint numHeads; public float scale; }
     private struct LeakyReluParams { public uint n; public float negSlope; }
     private struct ClampParams    { public uint n; public float minVal; public float maxVal; }
     private struct CatChannelsParams { public uint aCh; public uint bCh; public uint hw; }
@@ -3630,6 +3632,18 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
         return output;
     }
 
+    public Tensor MultiHeadAttentionTiled(Tensor q, Tensor k, Tensor v, int qSeq, int kvSeq, int numHeads, int headDim)
+    {
+        if (headDim != 64)
+            throw new ArgumentOutOfRangeException(nameof(headDim), "MultiHeadAttentionTiled shader is fixed for headDim=64 (this codebase's only real usage).");
+        var output = Allocate(TensorShape.D1(qSeq * numHeads * headDim));
+        _multiHeadAttentionTiledPipeline ??= new ComputePipeline(this, Shaders.MultiHeadAttentionTiled, 4, pushConstantSize: sizeof(MultiHeadAttentionTiledParams));
+        var p = new MultiHeadAttentionTiledParams { qSeq = (uint)qSeq, kvSeq = (uint)kvSeq, numHeads = (uint)numHeads, scale = 1f / MathF.Sqrt(headDim) };
+        uint groupsX = (uint)((qSeq + 15) / 16);
+        DispatchOrRecord(_multiHeadAttentionTiledPipeline, [GetBuffer(q), GetBuffer(k), GetBuffer(v), GetBuffer(output)], groupsX, &p, 1u, (uint)numHeads);
+        return output;
+    }
+
     public void LeakyReluInPlace(Tensor x, float negSlope)
     {
         _leakyReluPipeline ??= new ComputePipeline(this, Shaders.LeakyRelu, 1, pushConstantSize: sizeof(LeakyReluParams));
@@ -4008,6 +4022,7 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
         _conv2dImplicitGemmPipeline?.Dispose();
         _groupNormSiluPipeline?.Dispose();
         _multiHeadAttentionPipeline?.Dispose();
+        _multiHeadAttentionTiledPipeline?.Dispose();
         _leakyReluPipeline?.Dispose();
         _clampPipeline?.Dispose();
         _catChannelsPipeline?.Dispose();

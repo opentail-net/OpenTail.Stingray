@@ -6635,6 +6635,227 @@ internal static class Shaders
         """;
 
     /// <summary>
+    /// Tiled ("flash-attention"-style) multi-head attention -- replaces the naive
+    /// <see cref="MultiHeadAttention"/> above, which regressed performance (see
+    /// PerformanceLeague.md's "naive GPU attention shader" negative-result entry): every thread
+    /// there independently re-read the ENTIRE K/V sequence from global memory with zero reuse,
+    /// ~10+ billion redundant reads for one hw=4096 self-attention call.
+    ///
+    /// Design (row-tile Br x column-tile Bc, shared-memory staging, online softmax carried across
+    /// column tiles) reviewed against llama.cpp/ggml's real production Vulkan flash-attention
+    /// shader (examples/stable-diffusion.cpp/ggml/src/ggml-vulkan/vulkan-shaders/flash_attn*.{comp,
+    /// glsl}) for the core technique, then simplified for this codebase's actual, narrower needs
+    /// (fp32 only, no mask, no quantized K/V, no cooperative-matrix/split-K machinery, fixed
+    /// headDim=64) and REWRITTEN for this codebase's actual Q/K/V buffer layout: ggml's shader
+    /// treats "head" as a separate leading array dimension (per-head base offset via a stride
+    /// parameter); every real caller in THIS codebase instead interleaves all heads' 64-dim slices
+    /// within each token's own row ([seq, numHeads*headDim], matching
+    /// DiffusionOps.MultiHeadAttention and the naive shader above) -- the indexing below is
+    /// adapted for that layout, not a verbatim port.
+    ///
+    /// Tile sizes (Br=16, Bc=32, 256 threads/workgroup, 16 threads per query row each owning 4 of
+    /// the 64 head dimensions, reduced via 16-lane XOR-shuffle partitions) were chosen for this
+    /// project's real target hardware: an AMD Vega-class iGPU (Ryzen 5700G) with 64-wide
+    /// wavefronts and a 32KB LDS/shared-memory budget per workgroup -- Bc=64 would need ~40KB
+    /// (exceeds budget); Br=32 fits (~28KB) but leaves little headroom. This shader's shared-memory
+    /// footprint is ~22.2KB. The 16-lane reduction partitions are subgroup-size-agnostic (correct
+    /// on wave32 or wave64 hardware) since XOR-shuffle offsets (8,4,2,1) never cross a 16-lane
+    /// boundary.
+    ///
+    /// Numerically close to (not necessarily bit-identical to) the naive shader / CPU reference:
+    /// tile-local reduction changes floating-point accumulation order (the 64-to-16-lane QK
+    /// reduction, the tile-wise online-softmax accumulation) versus a strictly sequential sum.
+    ///
+    /// input layout: Q [qSeq, numHeads*headDim], K/V [kvSeq, numHeads*headDim] (heads interleaved
+    /// per token, matching MultiHeadAttention above). Output same layout as Q.
+    ///
+    /// Push constants: { qSeq, kvSeq, numHeads, scale }.
+    /// Bindings: 0=Q, 1=K, 2=V, 3=Output.
+    /// Dispatch: (ceil(qSeq/16), 1, numHeads) with local_size=(256,1,1).
+    /// </summary>
+    internal const string MultiHeadAttentionTiled = """
+        #version 450
+        #extension GL_KHR_shader_subgroup_basic  : require
+        #extension GL_KHR_shader_subgroup_shuffle : require
+
+        #define HEAD_DIM   64
+        #define BR         16
+        #define BC         32
+        #define WG_SIZE    256
+        #define D_SPLIT    16
+        #define D_PER_LANE 4
+
+        const float NEG_INF = -3.402823466e+38;
+
+        layout(std430, binding = 0) readonly  buffer QBuffer { float q_data[]; };
+        layout(std430, binding = 1) readonly  buffer KBuffer { float k_data[]; };
+        layout(std430, binding = 2) readonly  buffer VBuffer { float v_data[]; };
+        layout(std430, binding = 3) writeonly buffer OBuffer { float o_data[]; };
+
+        layout(push_constant) uniform Params {
+            uint qSeq;
+            uint kvSeq;
+            uint numHeads;
+            float scale;
+        } p;
+
+        shared float q_tile[BR * HEAD_DIM];
+        shared float k_tile[BC * HEAD_DIM];
+        shared float v_tile[BC * HEAD_DIM];
+        shared float score_tile[BR * BC];
+        shared float row_m[BR];
+        shared float row_l[BR];
+        shared float row_alpha[BR];
+
+        layout(local_size_x = WG_SIZE, local_size_y = 1, local_size_z = 1) in;
+
+        void main() {
+            const uint tid = gl_LocalInvocationIndex;
+            const uint row_in_tile = tid / D_SPLIT;
+            const uint lane_in_row = tid % D_SPLIT;
+            const uint q_row = gl_WorkGroupID.x * BR + row_in_tile;
+
+            // Head index (this codebase's Z dispatch dimension -- no separate "batch", always 1).
+            const uint h = gl_WorkGroupID.z;
+            // Row stride: heads are interleaved within each token's row, not a separate array dim.
+            const uint dim = p.numHeads * HEAD_DIM;
+            const uint headOff = h * HEAD_DIM;
+
+            // Stage Q tile into LDS: BR*HEAD_DIM = 1024 floats, 256 threads -> 4 each.
+            for (uint i = tid; i < BR * HEAD_DIM; i += WG_SIZE) {
+                uint r = i / HEAD_DIM;
+                uint d = i % HEAD_DIM;
+                uint globalQRow = gl_WorkGroupID.x * BR + r;
+                q_tile[i] = (globalQRow < p.qSeq) ? q_data[globalQRow * dim + headOff + d] : 0.0;
+            }
+
+            if (lane_in_row == 0u) {
+                row_m[row_in_tile] = NEG_INF;
+                row_l[row_in_tile] = 0.0;
+                row_alpha[row_in_tile] = 0.0;
+            }
+            barrier();
+
+            float accum0 = 0.0, accum1 = 0.0, accum2 = 0.0, accum3 = 0.0;
+            bool q_valid = (q_row < p.qSeq);
+
+            for (uint tile_base = 0u; tile_base < p.kvSeq; tile_base += BC) {
+                // Stage K/V tile: BC*HEAD_DIM = 2048 floats each, 256 threads -> 8 each.
+                for (uint i = tid; i < BC * HEAD_DIM; i += WG_SIZE) {
+                    uint krow = i / HEAD_DIM;
+                    uint d = i % HEAD_DIM;
+                    uint globalK = tile_base + krow;
+                    if (globalK < p.kvSeq) {
+                        k_tile[i] = k_data[globalK * dim + headOff + d];
+                        v_tile[i] = v_data[globalK * dim + headOff + d];
+                    } else {
+                        k_tile[i] = 0.0;
+                        v_tile[i] = 0.0;
+                    }
+                }
+                barrier();
+
+                if (q_valid) {
+                    uint qBaseLocal = row_in_tile * HEAD_DIM;
+                    uint d0 = lane_in_row * D_PER_LANE;
+                    uint d1 = d0 + 1u, d2 = d0 + 2u, d3 = d0 + 3u;
+
+                    for (uint k = 0u; k < BC; ++k) {
+                        uint globalK = tile_base + k;
+                        float partial = q_tile[qBaseLocal + d0] * k_tile[k * HEAD_DIM + d0]
+                                       + q_tile[qBaseLocal + d1] * k_tile[k * HEAD_DIM + d1]
+                                       + q_tile[qBaseLocal + d2] * k_tile[k * HEAD_DIM + d2]
+                                       + q_tile[qBaseLocal + d3] * k_tile[k * HEAD_DIM + d3];
+
+                        partial += subgroupShuffleXor(partial, 8u);
+                        partial += subgroupShuffleXor(partial, 4u);
+                        partial += subgroupShuffleXor(partial, 2u);
+                        partial += subgroupShuffleXor(partial, 1u);
+
+                        float score = partial * p.scale;
+                        if (globalK >= p.kvSeq) score = NEG_INF;
+                        if (lane_in_row == 0u) score_tile[row_in_tile * BC + k] = score;
+                    }
+                }
+                barrier();
+
+                if (lane_in_row == 0u && q_valid) {
+                    float m_old = row_m[row_in_tile];
+                    float l_old = row_l[row_in_tile];
+
+                    float tile_max = NEG_INF;
+                    for (uint k = 0u; k < BC; ++k) {
+                        uint globalK = tile_base + k;
+                        if (globalK < p.kvSeq)
+                            tile_max = max(tile_max, score_tile[row_in_tile * BC + k]);
+                    }
+
+                    float m_new = max(m_old, tile_max);
+                    float alpha = exp(m_old - m_new);
+                    row_alpha[row_in_tile] = alpha;
+
+                    float tile_sum = 0.0;
+                    for (uint k = 0u; k < BC; ++k) {
+                        uint globalK = tile_base + k;
+                        float prob = 0.0;
+                        if (globalK < p.kvSeq) {
+                            float score = score_tile[row_in_tile * BC + k];
+                            prob = exp(score - m_new);
+                            tile_sum += prob;
+                        }
+                        score_tile[row_in_tile * BC + k] = prob;
+                    }
+
+                    row_l[row_in_tile] = l_old * alpha + tile_sum;
+                    row_m[row_in_tile] = m_new;
+                }
+                barrier();
+
+                if (q_valid) {
+                    uint d0 = lane_in_row * D_PER_LANE;
+                    uint d1 = d0 + 1u, d2 = d0 + 2u, d3 = d0 + 3u;
+                    float alpha = row_alpha[row_in_tile];
+
+                    accum0 *= alpha; accum1 *= alpha; accum2 *= alpha; accum3 *= alpha;
+
+                    for (uint k = 0u; k < BC; ++k) {
+                        uint globalK = tile_base + k;
+                        if (globalK < p.kvSeq) {
+                            float prob = score_tile[row_in_tile * BC + k];
+                            uint vbase = k * HEAD_DIM;
+                            accum0 += prob * v_tile[vbase + d0];
+                            accum1 += prob * v_tile[vbase + d1];
+                            accum2 += prob * v_tile[vbase + d2];
+                            accum3 += prob * v_tile[vbase + d3];
+                        }
+                    }
+                }
+                barrier();
+            }
+
+            if (q_valid) {
+                float l = row_l[row_in_tile];
+                uint outBase = q_row * dim + headOff;
+                uint d0 = lane_in_row * D_PER_LANE;
+                uint d1 = d0 + 1u, d2 = d0 + 2u, d3 = d0 + 3u;
+
+                if (p.kvSeq > 0u && l > 0.0) {
+                    float invL = 1.0 / l;
+                    o_data[outBase + d0] = accum0 * invL;
+                    o_data[outBase + d1] = accum1 * invL;
+                    o_data[outBase + d2] = accum2 * invL;
+                    o_data[outBase + d3] = accum3 * invL;
+                } else {
+                    o_data[outBase + d0] = 0.0;
+                    o_data[outBase + d1] = 0.0;
+                    o_data[outBase + d2] = 0.0;
+                    o_data[outBase + d3] = 0.0;
+                }
+            }
+        }
+        """;
+
+    /// <summary>
     /// LeakyReLU in-place: data[i] = data[i] >= 0 ? data[i] : negSlope * data[i]
     /// Push constants: { n, negSlope }.
     /// Bindings: 0=data (in/out).

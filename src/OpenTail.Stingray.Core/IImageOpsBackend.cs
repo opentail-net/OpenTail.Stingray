@@ -46,6 +46,16 @@ public interface IImageOpsBackend : IComputeBackend
     /// </summary>
     Tensor MultiHeadAttention(Tensor q, Tensor k, Tensor v, int qSeq, int kvSeq, int numHeads, int headDim);
 
+    /// <summary>
+    /// Tiled ("flash-attention"-style) variant of <see cref="MultiHeadAttention"/> -- same math,
+    /// same input/output layout, replaces the naive shader's one-thread-per-(query,head) design
+    /// (which regressed performance, see PerformanceLeague.md) with row/column tiling and shared
+    /// memory reuse of K/V. Fixed headDim=64 only (this codebase's only real usage). Not
+    /// necessarily bit-exact with the CPU reference (tiled floating-point accumulation order) --
+    /// verify against a tolerance, not exact equality.
+    /// </summary>
+    Tensor MultiHeadAttentionTiled(Tensor q, Tensor k, Tensor v, int qSeq, int kvSeq, int numHeads, int headDim);
+
     /// <summary>LeakyReLU in-place: x[i] = x[i] >= 0 ? x[i] : negSlope * x[i]</summary>
     void LeakyReluInPlace(Tensor x, float negSlope);
 

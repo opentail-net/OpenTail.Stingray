@@ -539,7 +539,7 @@ public sealed class SdxlUNet2DConditionModel : IDisposable
         return xSpatial;
     }
 
-    // Perf note (2026-09-11): tried routing this through the real GPU MultiHeadAttention shader
+    // Perf note (2026-09-11): tried routing this through the NAIVE GPU MultiHeadAttention shader
     // (verified numerically correct against the CPU reference in
     // MultiHeadAttentionGpuParityTests, and confirmed still-correct in this real pipeline too --
     // pixel-identical output). Measured real weights/timing and it was a clear REGRESSION:
@@ -550,9 +550,28 @@ public sealed class SdxlUNet2DConditionModel : IDisposable
     // bandwidth-inefficient than the CPU's cache-friendlier SIMD-parallelized version. Same class
     // of lesson as the earlier naive Conv2d-shader regression, but worse here because attention's
     // O(seq^2) math punishes "no tiling" much harder than convolution's bounded kernel size did.
-    // Reverted to the CPU path; the shader+parity-test remain in the codebase as a real, correct
-    // building block for a properly TILED (shared-memory-blocked, flash-attention-style) rewrite
-    // if that's pursued later -- do not re-wire this exact design without re-measuring.
+    // The naive shader+parity-test remain in the codebase as a reference building block.
+    //
+    // Follow-up (2026-09-11): implemented a properly TILED (shared-memory-blocked, flash-
+    // attention-style) shader, MultiHeadAttentionTiled, following the row/column-tile + online-
+    // softmax technique from ggml-vulkan's real flash_attn.comp (reviewed, not copied -- rewritten
+    // for this codebase's [seq, numHeads*headDim] interleaved-head layout instead of ggml's
+    // per-head-buffer layout). Verified correct in isolation against the CPU reference within a
+    // 5e-3 tolerance (tiled accumulation reorders float rounding vs. the CPU's sequential sum)
+    // across 6 shapes including multi-tile qSeq=4096 and 1024x1024 cases -- see
+    // MultiHeadAttentionTiledGpuParityTests, which still passes.
+    //
+    // Wired in here (same probe-once/cache/fallback pattern as VaeDecoder.ResBlockGpu) and
+    // measured against real weights: an even WORSE regression than the naive shader. Steady-state
+    // denoise step ~19.5s (CPU baseline) -> 52-72s per step, and VAE decode (which has no
+    // attention at all -- unrelated to this change, so this is either GPU memory/scheduler
+    // contention from the many small tiled-attention dispatches queued ahead of it, or noise from
+    // running on a shared iGPU under load) blew up to 361s from a ~19.6s baseline. Reverted back
+    // to the CPU path -- do not re-wire without first fixing the tiled kernel's per-call overhead
+    // (16 threads/query-row x 256 threads/workgroup means small dispatches are dominated by
+    // per-dispatch fixed cost on this iGPU, not by the O(seq^2) math the tiling was meant to fix)
+    // and re-measuring on hardware with real dedicated VRAM bandwidth. Shader + parity test remain
+    // as a correct-but-not-yet-fast building block.
     private static float[] MultiHeadAttention(float[] q, float[] k, float[] v, int qLen, int kvLen, int c, int nHeads, int headDim)
         => DiffusionOps.MultiHeadAttention(q, k, v, qLen, kvLen, nHeads, headDim);
 

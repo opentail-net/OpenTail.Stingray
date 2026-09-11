@@ -7735,6 +7735,10 @@ public sealed unsafe class CudaBackend : IComputeBackend, IImageOpsBackend, IVis
     public Tensor MultiHeadAttention(Tensor q, Tensor k, Tensor v, int qSeq, int kvSeq, int numHeads, int headDim)
         => throw new NotSupportedException("MultiHeadAttention is not implemented on the CUDA backend yet -- Vulkan-only for now.");
 
+    /// <summary>Not implemented on CUDA yet -- same Vulkan-only status as MultiHeadAttention above.</summary>
+    public Tensor MultiHeadAttentionTiled(Tensor q, Tensor k, Tensor v, int qSeq, int kvSeq, int numHeads, int headDim)
+        => throw new NotSupportedException("MultiHeadAttentionTiled is not implemented on the CUDA backend yet -- Vulkan-only for now.");
+
     /// <inheritdoc/>
     public Tensor Conv2d(Tensor input, Tensor weight, Tensor bias,
                          int inCh, int outCh, int h, int w, int ksize, int padding = -1)
