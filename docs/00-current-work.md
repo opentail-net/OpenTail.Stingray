@@ -1771,6 +1771,31 @@ severity.
   of 6 total runs now confirmed coherent) — not yet root-caused (candidates: RoPE/positional
   embedding edge case, VAE decode instability, or a genuine seed-quality issue in the base model
   itself) and not disambiguated further this session.
+  **Update, same day — investigation, not resolved:** ran the golden-parity suite
+  (`LtxVideoGoldenParityTests`/`LtxVaeDecoderGoldenParityTests`/`LtxT5EncoderGoldenParityTests`/
+  `LtxVideoTrajectoryGoldenTests`/`LtxVideoRealScaleGoldenTests`/`LtxVaeDecoderMultiFrameGoldenTests`)
+  — all 7 pass, real (16.7s total, not a silent no-op), so RoPE/VAE decode/T5 encoding/single-step
+  trajectory are individually golden-verified against real reference data; the bug is not in these
+  isolated components. Also found and fixed a real silent-no-op in `LtxVideoRealWeightsTests.cs`
+  (searched `models/` only, not `models/_models/` where the real checkpoint lives — added a
+  symlink, same class of bug as `CLAUDE.md` rule 12) but those 2 tests only check config/metadata,
+  not full generation quality. Checked two concrete hypotheses directly against the real
+  checkpoint and ruled both out: (a) the VAE's per-channel un-normalization statistics tensors
+  (`vae.per_channel_statistics.{std-of-means,mean-of-means}`) DO exist in this checkpoint and the
+  pipeline's `_weights?.Contains(...)` gate correctly finds them — not silently skipped; (b) the
+  VAE decoder's `injectNoise` StyleGAN-style noise is real, intentional per-checkpoint behavior
+  per this port's own doc comment ("real inference should leave this true"), not a bug. One
+  real, unresolved lead: at the 256×256 test resolution, `_spatialScale=32` gives only an 8×8=64
+  spatial-token latent grid, and `GetNormalShift`'s resolution-dependent timestep-shift formula
+  (calibrated for 1024-4096 tokens) extrapolates unclamped below that range — computed shift≈0.606
+  at 64 tokens, not obviously pathological (no NaN/blowup) but genuinely far outside the formula's
+  calibrated range and untested by the golden suite (which likely uses in-range token counts).
+  **Tested directly: ruled out.** Ran the same prompt/seed at 512×512 (256 spatial tokens, still
+  below the 1024 calibration floor but closer) — still pure noise, visually indistinguishable from
+  the 256×256 failures. Resolution/token-count is not the differentiator. Genuinely unresolved —
+  switching to other queue items per this project's own "switch to another item when one stalls"
+  discipline (`CLAUDE.md`'s "Stopping is for wimps" directive) rather than continuing to sink time
+  into one trace without a new concrete lead.
 - **`RealESRGAN_x4plus.safetensors` (the `--upscaler` RRDBNet path) — CONFIRMED WORKING 2026-09-11.**
   Paired with SD1.5's known-good base output (`--upscaler` + real SD1.5 generation), produced a
   real, genuinely sharp 512×512 → 2048×2048 (4x) upscale — visually confirmed coherent wood-grain
