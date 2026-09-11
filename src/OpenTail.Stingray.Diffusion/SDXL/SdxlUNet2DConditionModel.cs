@@ -123,6 +123,133 @@ public sealed class SdxlUNet2DConditionModel : IDisposable
         return result;
     }
 
+    // ── GPU-resident (Tensor-in/Tensor-out) primitive layer -- docs/067 Stage 1 ──────────────
+    // These mirror ConvNative/Conv above and Lin below exactly in math, but take and return
+    // CoreTensor handles instead of float[] -- no Upload/Download for intermediate results, so a
+    // chain of these (Stage 2's ResBlockGpu, Stage 3's SpatialTransformer residency) can run with
+    // CPU crossings only at the true block boundary. Reuses the exact same cached GPU weights
+    // (_gpuWeightsNative/_gpuWeights) and dispatches (Conv2dImplicitGemm/Sgemm) the non-resident
+    // path already uses -- no new shader math beyond the two new broadcast-add ops.
+    private readonly Dictionary<string, CoreTensor> _gpuBiasCache = new(StringComparer.Ordinal);
+
+    private CoreTensor GetGpuBias(IComputeBackend backend, string name, float[] bF)
+    {
+        string fullName = _weightReader.Prefix + name;
+        if (_gpuBiasCache.TryGetValue(fullName, out var bGpu)) return bGpu;
+        bGpu = backend.Upload(bF.AsSpan(), TensorShape.D1(bF.Length));
+        _gpuBiasCache[fullName] = bGpu;
+        return bGpu;
+    }
+
+    /// <summary>Tensor-in/Tensor-out counterpart of <see cref="ConvNative"/> -- stride=1 only.</summary>
+    private CoreTensor ConvGpuTensor(IImageOpsBackend imageOps, string name, CoreTensor xGpu, int inCh, int h, int w, int outCh, int k, int padding = -1)
+    {
+        var wF = GetWeight($"{name}.weight");
+        var bF = TryGetWeight($"{name}.bias");
+
+        string wKey = $"{name}.weight";
+        if (!_gpuWeightsNative!.TryGetValue(wKey, out var wGpu))
+        {
+            wGpu = imageOps.Upload(wF.AsSpan(), TensorShape.D1(wF.Length));
+            _gpuWeightsNative[wKey] = wGpu;
+        }
+        string bKey = $"{name}.bias";
+        if (!_gpuWeightsNative.TryGetValue(bKey, out var bGpu))
+        {
+            var bf = bF ?? new float[outCh];
+            bGpu = imageOps.Upload(bf.AsSpan(), TensorShape.D1(bf.Length));
+            _gpuWeightsNative[bKey] = bGpu;
+        }
+
+        return imageOps.Conv2dImplicitGemm(xGpu, wGpu, bGpu, inCh, outCh, h, w, k, padding);
+    }
+
+    /// <summary>Tensor-in/Tensor-out counterpart of <see cref="Lin"/> -- Sgemm + row-broadcast bias.</summary>
+    private CoreTensor LinGpuTensor(string name, CoreTensor xGpu, int n, int inDim, int outDim)
+    {
+        var wF = GetWeight($"{name}.weight");
+        var bF = TryGetWeight($"{name}.bias");
+        var wGpu = GetGpuWeight($"{name}.weight", wF);
+        var cGpu = _backend!.Allocate(TensorShape.D1(n * outDim));
+        _backend.Sgemm(cGpu, xGpu, wGpu, n, inDim, outDim);
+        if (bF is not null)
+        {
+            var bGpu = GetGpuBias(_backend, $"{name}.bias", bF);
+            ((IImageOpsBackend)_backend).AddRowBroadcastInPlace(cGpu, bGpu, n, outDim);
+        }
+        return cGpu;
+    }
+
+    /// <summary>Tensor-in/Tensor-out GroupNorm+SiLU. Caches the (invariant, small) weight/bias
+    /// tensors instead of re-uploading them every call -- a real cost the CPU-only GroupNorm path
+    /// never had at all (pure float[] math, no GPU involvement), so uncached uploads here were
+    /// silently offsetting part of ResBlockGpu's own win. Measured: caching these turned a ~8%
+    /// whole-run improvement into the real win recorded in PerformanceLeague.md's Stage 2 row.</summary>
+    private CoreTensor GroupNormSiluGpuTensor(IImageOpsBackend imageOps, string prefix, CoreTensor xGpu, int c, int hw)
+    {
+        var gnW = GetGpuBias(imageOps, $"{prefix}.weight", GetWeight($"{prefix}.weight"));
+        var gnB = GetGpuBias(imageOps, $"{prefix}.bias", GetWeight($"{prefix}.bias"));
+        return imageOps.GroupNormSilu(xGpu, gnW, gnB, c, hw, groups: 32);
+    }
+
+    // Perf (2026-09-12, docs/067 Stage 2): full GPU residency for the UNet's own ResBlock (the
+    // same pattern VaeDecoder.ResBlockGpu already proved out for the VAE decoder's ResBlock).
+    // Probed once per backend and cached, same convention as VaeDecoder's _residencySupported.
+    private bool? _unetResidencySupported;
+
+    /// <summary>
+    /// Fully GPU-resident UNet ResBlock: norm1→silu→conv1→(+tEmb broadcast)→norm2→silu→conv2→
+    /// (+skip). Every intermediate stays a GPU Tensor; only the block's input/output cross the
+    /// CPU boundary (both already do, via the caller's Upload/Download in <see cref="ResBlock"/>).
+    /// </summary>
+    private CoreTensor ResBlockGpu(IImageOpsBackend imageOps, string prefix, CoreTensor xGpu, float[] tEmb, int inCh, int h, int w, int outCh)
+    {
+        int hw = h * w;
+        var t1 = GroupNormSiluGpuTensor(imageOps, $"{prefix}.in_layers.0", xGpu, inCh, hw);
+        var t2 = ConvGpuTensor(imageOps, $"{prefix}.in_layers.2", t1, inCh, h, w, outCh, 3);
+        imageOps.Free(t1);
+
+        // Timestep-embedding injection: SiLU(tEmb) -> Lin -> broadcast-add across every spatial
+        // position of t2. tEmb is a single row [1, TimeEmbedDim]; uploaded fresh per ResBlock call
+        // (not yet cached across blocks within one step -- a real, later perf opportunity, not a
+        // correctness concern for this stage).
+        var tEmbAct = (float[])tEmb.Clone();
+        DiffusionOps.SiluInPlace(tEmbAct);
+        var tEmbGpu = imageOps.Upload(tEmbAct.AsSpan(), TensorShape.D1(tEmbAct.Length));
+        CoreTensor tProjGpu;
+        try
+        {
+            tProjGpu = LinGpuTensor($"{prefix}.emb_layers.1", tEmbGpu, 1, TimeEmbedDim, outCh);
+        }
+        finally
+        {
+            imageOps.Free(tEmbGpu);
+        }
+        imageOps.AddChannelBroadcastInPlace(t2, tProjGpu, outCh, hw);
+        imageOps.Free(tProjGpu);
+
+        var t3 = GroupNormSiluGpuTensor(imageOps, $"{prefix}.out_layers.0", t2, outCh, hw);
+        imageOps.Free(t2);
+        var t4 = ConvGpuTensor(imageOps, $"{prefix}.out_layers.3", t3, outCh, h, w, outCh, 3);
+        imageOps.Free(t3);
+
+        CoreTensor skip = xGpu;
+        bool freeSkip = false;
+        if (TryGetWeight($"{prefix}.skip_connection.weight") is not null)
+        {
+            skip = ConvGpuTensor(imageOps, $"{prefix}.skip_connection", xGpu, inCh, h, w, outCh, 1, padding: 0);
+            freeSkip = true;
+        }
+        else if (inCh != outCh)
+        {
+            throw new InvalidOperationException($"ResBlock {prefix} has inC ({inCh}) != outC ({outCh}) without skip_connection.");
+        }
+
+        imageOps.AddInPlace(t4, skip);
+        if (freeSkip) imageOps.Free(skip);
+        return t4;
+    }
+
     public float[] Conv(string name, float[] x, int inC, int h, int w, int outC, int ksize, int stride = 1, int padding = -1)
     {
         var wF = GetWeight($"{name}.weight");
@@ -389,6 +516,42 @@ public sealed class SdxlUNet2DConditionModel : IDisposable
 
     public float[] ResBlock(string prefix, float[] x, float[] tEmb, int inC, int outC, int h, int w)
     {
+        // docs/067 Stage 2: try the fully GPU-resident path first (upload x once, every
+        // intermediate stays a GPU Tensor, download once) -- probed once and cached, same
+        // fallback discipline as VaeDecoder.ResBlockGpu.
+        if (_imageOps is not null && _unetResidencySupported != false)
+        {
+            try
+            {
+                var xGpu = _imageOps.Upload(x.AsSpan(0, inC * h * w), TensorShape.D1(inC * h * w));
+                CoreTensor resultGpu;
+                try
+                {
+                    resultGpu = ResBlockGpu(_imageOps, prefix, xGpu, tEmb, inC, h, w, outC);
+                }
+                finally
+                {
+                    _imageOps.Free(xGpu);
+                }
+                var result = new float[outC * h * w];
+                try
+                {
+                    _imageOps.Download(resultGpu, result);
+                }
+                finally
+                {
+                    _imageOps.Free(resultGpu);
+                }
+                _unetResidencySupported = true;
+                return result;
+            }
+            catch (NotSupportedException)
+            {
+                _unetResidencySupported = false;
+                // fall through to the CPU-orchestrated path below for this and all future calls.
+            }
+        }
+
         var gn1W = GetWeight($"{prefix}.in_layers.0.weight");
         var gn1B = GetWeight($"{prefix}.in_layers.0.bias");
         var hNorm = (float[])x.Clone();

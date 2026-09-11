@@ -86,7 +86,7 @@ stage needs to Upload/Download a tensor *mid-graph* (the whole point of residenc
 non-issue. **Decision: proceed with option 1** (no mid-graph CPU transfers at all) for every
 subsequent stage; option 2 (making Upload/Download themselves recordable) is not needed.
 
-## Stage 1 — SDXL Tensor primitive layer (broadened per review)
+## Stage 1 — SDXL Tensor primitive layer — DONE 2026-09-12 (broadened per review)
 
 Not just `Lin`/`Conv`. Build the minimum Tensor-in/Tensor-out primitive set SDXL's `ResBlock`/
 `SpatialTransformer` actually need:
@@ -107,7 +107,18 @@ Not just `Lin`/`Conv`. Build the minimum Tensor-in/Tensor-out primitive set SDXL
 No behavior change in `Forward()` yet — these are new entry points only, verified against the
 existing CPU-reference math for each primitive individually before anything is wired in.
 
-## Stage 2 — ResBlock residency in the UNet
+## Stage 2 — ResBlock residency in the UNet — DONE 2026-09-12
+
+**Real result**: `ResBlockGpu` wired into `SdxlUNet2DConditionModel.ResBlock` (probe-once/fallback,
+same as `VaeDecoder`'s). 512×512/4-step/seed=42: total wall time 137.4s→118.3s (~14% faster),
+dispatch count 6511→6304, `stagingCopy` 43.6s→41.9s. Real, verified: output stays visually correct
+(coherent, on-prompt apple-orchard content) at the fixed seed. Smaller win than the eventual target
+since ResBlocks are a modest share of this UNet's total dispatch count — `SpatialTransformer`
+(Stage 3) has far more Linear projections per call and should be the bigger lever. See
+`PerformanceLeague.md`'s "GPU residency Stage 0+1+2" row for full detail, including a real
+negative-then-fixed sub-finding (`GroupNormSiluGpuTensor`'s uncached weight/bias uploads initially
+offset part of the win; caching them, matching the existing `_gpuWeightsNative` convention,
+recovered it).
 
 Reuse the *design pattern* already established by `VaeDecoder.ResBlockGpu` (per review point #5 —
 don't assume its exact internals port verbatim, since `VaeDecoder`'s other conv path is still
