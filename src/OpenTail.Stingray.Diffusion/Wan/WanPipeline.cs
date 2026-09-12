@@ -115,6 +115,20 @@ public sealed class WanPipeline : IDiffusionPipeline
             timesteps[i] = (flowShift * linearT) / (1.0f + (flowShift - 1.0f) * linearT);
         }
 
+        int patchH = latH / 2;
+        int patchW = latW / 2;
+        int numTokens = numFrames * patchH * patchW;
+
+        var condWs = new WanWorkspace(numTokens, _transformer.Dim, _transformer.FfnDim, _transformer.NumLayers);
+        _transformer.PrecomputeCrossKvCache(condContext, condWs);
+
+        WanWorkspace? uncondWs = null;
+        if (guidance > 1.0f)
+        {
+            uncondWs = new WanWorkspace(numTokens, _transformer.Dim, _transformer.FfnDim, _transformer.NumLayers);
+            _transformer.PrecomputeCrossKvCache(uncondContext, uncondWs);
+        }
+
         // 4. Euler Flow trajectory loop with optional Dual-Model Low/High Noise switching
         for (int step = 0; step < steps; step++)
         {
@@ -126,12 +140,12 @@ public sealed class WanPipeline : IDiffusionPipeline
                 ? highNoiseTransformer
                 : _transformer;
 
-            var condVelocity = activeModel.Forward(latent, t * 1000.0f, condContext, numFrames, latH, latW);
+            var condVelocity = activeModel.Forward(latent, t * 1000.0f, condContext, numFrames, latH, latW, condWs);
             float[] velocity;
 
             if (guidance > 1.0f)
             {
-                var uncondVelocity = activeModel.Forward(latent, t * 1000.0f, uncondContext, numFrames, latH, latW);
+                var uncondVelocity = activeModel.Forward(latent, t * 1000.0f, uncondContext, numFrames, latH, latW, uncondWs);
                 velocity = new float[condVelocity.Length];
                 for (int i = 0; i < velocity.Length; i++)
                     velocity[i] = uncondVelocity[i] + guidance * (condVelocity[i] - uncondVelocity[i]);

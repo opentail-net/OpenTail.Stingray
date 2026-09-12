@@ -63,23 +63,24 @@ internal static unsafe class DiffusionOps
     public static void LayerNorm(Span<float> x, ReadOnlySpan<float> weight, ReadOnlySpan<float> bias,
                                  int dim, float eps = 1e-5f)
     {
-        // NOT parallelized: measured (CLAUDE.md rule 7) -- Parallel.For across rows gave no
-        // consistent improvement over the sequential TensorPrimitives version at realistic DiT
-        // sizes (nTokens=4096, dim=3072: ~19-20ms/call either way, occasionally slightly worse
-        // parallelized), unlike AdaLNModulate/GroupNorm below which both showed solid, repeatable
-        // gains from the same treatment. Left sequential rather than parallelized-but-unproven.
-        int n = x.Length / dim;
+        LayerNorm((ReadOnlySpan<float>)x, x, weight, bias, dim, eps);
+    }
+
+    public static void LayerNorm(ReadOnlySpan<float> input, Span<float> output, ReadOnlySpan<float> weight, ReadOnlySpan<float> bias,
+                                 int dim, float eps = 1e-5f)
+    {
+        int n = input.Length / dim;
         for (int row = 0; row < n; row++)
         {
-            var row_ = x.Slice(row * dim, dim);
-            float mean = TensorPrimitives.Sum(row_) / dim;
-            // Shift so we can compute variance as dot(shifted, shifted)
-            TensorPrimitives.Subtract(row_, mean, row_);
-            float var  = TensorPrimitives.Dot<float>(row_, row_) / dim;
+            var inRow = input.Slice(row * dim, dim);
+            var outRow = output.Slice(row * dim, dim);
+            float mean = TensorPrimitives.Sum(inRow) / dim;
+            TensorPrimitives.Subtract(inRow, mean, outRow);
+            float var = TensorPrimitives.Dot<float>(outRow, outRow) / dim;
             float scale = 1f / MathF.Sqrt(var + eps);
-            TensorPrimitives.Multiply(row_, scale, row_);
-            TensorPrimitives.Multiply(row_, weight, row_);
-            TensorPrimitives.Add(row_, bias, row_);
+            TensorPrimitives.Multiply(outRow, scale, outRow);
+            TensorPrimitives.Multiply(outRow, weight, outRow);
+            TensorPrimitives.Add(outRow, bias, outRow);
         }
     }
 
@@ -828,6 +829,21 @@ internal static unsafe class DiffusionOps
         });
     }
 
+    public static void LayerNormNoAffine(ReadOnlySpan<float> input, Span<float> output, int dim, float eps = 1e-6f)
+    {
+        int n = input.Length / dim;
+        for (int row = 0; row < n; row++)
+        {
+            var inRow = input.Slice(row * dim, dim);
+            var outRow = output.Slice(row * dim, dim);
+            float mean = TensorPrimitives.Sum(inRow) / dim;
+            TensorPrimitives.Subtract(inRow, mean, outRow);
+            float sumSq = TensorPrimitives.SumOfSquares(outRow);
+            float scale = 1f / MathF.Sqrt(sumSq / dim + eps);
+            TensorPrimitives.Multiply(outRow, scale, outRow);
+        }
+    }
+
     /// <summary>
     /// AdaLN-Zero modulate over row-major `[seqLen, dim]` data: `y = x * (1+scale) + shift`, `scale`
     /// and `shift` shared across all rows (broadcast per-channel). Extracted from byte-identical
@@ -836,13 +852,18 @@ internal static unsafe class DiffusionOps
     public static float[] ModulateRows(float[] x, int seqLen, int dim, ReadOnlySpan<float> shift, ReadOnlySpan<float> scale)
     {
         var outF = new float[seqLen * dim];
+        ModulateRows(x.AsSpan(0, seqLen * dim), outF.AsSpan(), seqLen, dim, shift, scale);
+        return outF;
+    }
+
+    public static void ModulateRows(ReadOnlySpan<float> input, Span<float> output, int seqLen, int dim, ReadOnlySpan<float> shift, ReadOnlySpan<float> scale)
+    {
         for (int i = 0; i < seqLen; i++)
         {
             int off = i * dim;
             for (int d = 0; d < dim; d++)
-                outF[off + d] = x[off + d] * (1.0f + scale[d]) + shift[d];
+                output[off + d] = input[off + d] * (1.0f + scale[d]) + shift[d];
         }
-        return outF;
     }
 
     /// <summary>
@@ -850,6 +871,11 @@ internal static unsafe class DiffusionOps
     /// `gate` shared across all rows. Extracted from byte-identical copies in Wan and HunyuanVideo.
     /// </summary>
     public static void ApplyGatedResidualRows(float[] x, float[] branch, int seqLen, int dim, ReadOnlySpan<float> gate)
+    {
+        ApplyGatedResidualRows(x.AsSpan(0, seqLen * dim), branch.AsSpan(0, seqLen * dim), seqLen, dim, gate);
+    }
+
+    public static void ApplyGatedResidualRows(Span<float> x, ReadOnlySpan<float> branch, int seqLen, int dim, ReadOnlySpan<float> gate)
     {
         for (int i = 0; i < seqLen; i++)
         {

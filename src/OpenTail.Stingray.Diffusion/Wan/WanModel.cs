@@ -27,6 +27,17 @@ public sealed class WanModel : IDisposable
     public int NumLayers => _numLayers;
     public int Dim => _dim;
     public int NumHeads => _numHeads;
+    public int HeadDim => _headDim;
+    public int FfnDim => _ffnDim;
+    public IComputeBackend? Backend => _backend;
+
+    private WanGpuWeights? _gpuWeightsResident;
+
+    public WanGpuWeights GetOrCreateGpuWeights()
+    {
+        if (_backend is null) throw new InvalidOperationException("No compute backend configured for WanModel GPU residency.");
+        return _gpuWeightsResident ??= new WanGpuWeights(_backend, _weights, _prefix, _numLayers, _dim, _ffnDim);
+    }
 
     public WanModel(IWeightLoader weights, string prefix = "", int numLayers = 30, int dim = 1536, int numHeads = 12, IComputeBackend? backend = null)
     {
@@ -98,6 +109,31 @@ public sealed class WanModel : IDisposable
     }
 
     /// <summary>
+    /// Precomputes and caches cross-attention K and V projections for all transformer blocks for a given text context.
+    /// Invariant across timesteps and CFG branches.
+    /// </summary>
+    public void PrecomputeCrossKvCache(float[] textContext, WanWorkspace ws)
+    {
+        var txtProj = ComputeTextEmbedding(textContext);
+        int numTxtTokens = textContext.Length / TextDim;
+
+        for (int b = 0; b < _numLayers; b++)
+        {
+            string p = $"blocks.{b}";
+            var k = new float[numTxtTokens * _dim];
+            var v = new float[numTxtTokens * _dim];
+
+            Linear($"{p}.cross_attn.k", txtProj, k.AsSpan(), _dim, _dim);
+            Linear($"{p}.cross_attn.v", txtProj, v.AsSpan(), _dim, _dim);
+
+            var normK = TryGetWeight($"{p}.cross_attn.norm_k.weight");
+            if (normK is not null) RmsNormHeads(k, numTxtTokens, _numHeads, _headDim, normK);
+
+            ws.CrossKvCache[b] = (k, v);
+        }
+    }
+
+    /// <summary>
     /// Executes the forward pass of the Wan DiT model.
     /// </summary>
     public float[] Forward(
@@ -106,29 +142,28 @@ public sealed class WanModel : IDisposable
         float[] textContext,
         int numFrames,
         int latH,
-        int latW)
+        int latW,
+        WanWorkspace? ws = null)
     {
         int patchH = latH / 2;
         int patchW = latW / 2;
         int numTokens = numFrames * patchH * patchW;
         int numTxtTokens = textContext.Length / TextDim;
 
+        ws ??= new WanWorkspace(numTokens, _dim, _ffnDim, _numLayers);
+        if (ws.CrossKvCache == null || ws.CrossKvCache.Length < _numLayers || ws.CrossKvCache[0].K == null)
+        {
+            PrecomputeCrossKvCache(textContext, ws);
+        }
+
         // 1. Pack 16-channel video latent into 64-channel patches [numTokens, 64]
         var packed = PackLatents(latent, numFrames, latH, latW);
 
-        // 2. Patch & Text input projections
+        // 2. Patch input projection
         var x = Linear("patch_embedding", packed, InChannels, _dim);
-        var txtProj = ComputeTextEmbedding(textContext);
 
         // 3. Timestep embedding (sinusoidal 256 -> linear dim -> silu -> linear dim)
         var tEmb = ComputeTimestepEmbedding(timestep);
-
-        // Real Wan DiT: a SHARED "time_projection" linear (dim -> 6*dim, applied once, not
-        // per-block) whose output is then ADDITIVELY combined with each block's own per-block
-        // "modulation" parameter (`scale_shift_table`, a learned constant -- NOT a Linear weight;
-        // confirmed against `WanTimeTextImageEmbedding`/`WanTransformerBlock.forward` in
-        // transformer_wan.py, and against the real GGUF's `time_projection.1.weight`
-        // [dim,6*dim] + per-block `blocks.{i}.modulation` [dim,6,1] tensor shapes).
         var timeProjSilu = (float[])tEmb.Clone();
         DiffusionOps.SiluInPlace(timeProjSilu);
         var timestepProj = Linear("time_projection.1", timeProjSilu, _dim, _dim * 6);
@@ -140,123 +175,96 @@ public sealed class WanModel : IDisposable
         for (int b = 0; b < _numLayers; b++)
         {
             string p = $"blocks.{b}";
-            x = TransformerBlock(p, x, timestepProj, cos, sin, txtProj, numTokens, numTxtTokens);
+            TransformerBlock(b, p, x, timestepProj, cos, sin, numTokens, numTxtTokens, ws);
         }
 
         // 6. Final Layer (AdaLN + Linear dim -> 64)
-        // Real: `shift, scale = (self.scale_shift_table + temb.unsqueeze(1)).chunk(2, dim=1)` --
-        // additive broadcast of the RAW (unprojected) temb against the head's own 2*dim constant,
-        // not a Linear (see WanTransformer3DModel.forward's final-layer block).
         var headModParam = GetWeight("head.modulation");
-        var headShift = new float[_dim];
-        var headScale = new float[_dim];
         for (int d = 0; d < _dim; d++)
         {
-            headShift[d] = headModParam[d] + tEmb[d];
-            headScale[d] = headModParam[_dim + d] + tEmb[d];
+            ws.HeadShift[d] = headModParam[d] + tEmb[d];
+            ws.HeadScale[d] = headModParam[_dim + d] + tEmb[d];
         }
 
-        var normed = (float[])x.Clone();
-        DiffusionOps.LayerNormNoAffine(normed, _dim);
-        normed = Modulate(normed, numTokens, headShift, headScale);
+        DiffusionOps.LayerNormNoAffine(x.AsSpan(0, numTokens * _dim), ws.Norm1.AsSpan(0, numTokens * _dim), _dim);
+        DiffusionOps.ModulateRows(ws.Norm1.AsSpan(0, numTokens * _dim), ws.Normed1.AsSpan(0, numTokens * _dim), numTokens, _dim, ws.HeadShift, ws.HeadScale);
 
-        var outPacked = Linear("head.head", normed, _dim, InChannels);
+        var outPacked = Linear("head.head", ws.Normed1, _dim, InChannels);
 
         // 7. Unpack patches [numTokens, 64] -> [16, numFrames, latH, latW]
         return UnpackLatents(outPacked, numFrames, latH, latW);
     }
 
-    private float[] TransformerBlock(
+    private void TransformerBlock(
+        int layerIdx,
         string prefix,
         float[] x,
         float[] timestepProj,
         float[] cos,
         float[] sin,
-        float[] txtContext,
         int numTokens,
-        int numTxt)
+        int numTxt,
+        WanWorkspace ws)
     {
-        // Real: per-block additive AdaLN modulation = this block's own learned constant
-        // (`scale_shift_table`, GGUF `{prefix}.modulation`) + the SHARED `timestepProj` computed
-        // once in Forward -- NOT a per-block Linear (confirmed against `WanTransformerBlock.
-        // forward`'s `self.scale_shift_table + temb` in transformer_wan.py, and the real GGUF's
-        // bare (bias-less, non-`.weight`-suffixed) `blocks.{i}.modulation` [dim,6,1] tensor).
         var modParam = GetWeight($"{prefix}.modulation");
-        var mod = new float[_dim * 6];
-        for (int i = 0; i < mod.Length; i++) mod[i] = modParam[i] + timestepProj[i];
-        var s1 = mod.AsSpan(0 * _dim, _dim);
-        var sc1 = mod.AsSpan(1 * _dim, _dim);
-        var g1 = mod.AsSpan(2 * _dim, _dim);
-        var s2 = mod.AsSpan(3 * _dim, _dim);
-        var sc2 = mod.AsSpan(4 * _dim, _dim);
-        var g2 = mod.AsSpan(5 * _dim, _dim);
+        for (int i = 0; i < ws.Mod.Length; i++) ws.Mod[i] = modParam[i] + timestepProj[i];
+        var s1 = ws.Mod.AsSpan(0 * _dim, _dim);
+        var sc1 = ws.Mod.AsSpan(1 * _dim, _dim);
+        var g1 = ws.Mod.AsSpan(2 * _dim, _dim);
+        var s2 = ws.Mod.AsSpan(3 * _dim, _dim);
+        var sc2 = ws.Mod.AsSpan(4 * _dim, _dim);
+        var g2 = ws.Mod.AsSpan(5 * _dim, _dim);
 
-        // 1. Self-attention: affine-free LayerNorm (real `norm1`, `elementwise_affine=False`,
-        // no learned weight/bias tensor in the checkpoint) -> AdaLN modulate -> self-attn (3D-RoPE)
-        // -> gated residual.
-        var norm1 = (float[])x.Clone();
-        DiffusionOps.LayerNormNoAffine(norm1, _dim);
-        var normed1 = Modulate(norm1, numTokens, s1, sc1);
-        var selfAttn = SelfAttention($"{prefix}.self_attn", normed1, cos, sin, numTokens);
-        ApplyGatedResidual(x, selfAttn, numTokens, g1);
+        // 1. Self-attention: affine-free LayerNorm -> AdaLN modulate -> self-attn (3D-RoPE) -> gated residual.
+        DiffusionOps.LayerNormNoAffine(x.AsSpan(0, numTokens * _dim), ws.Norm1.AsSpan(0, numTokens * _dim), _dim);
+        DiffusionOps.ModulateRows(ws.Norm1.AsSpan(0, numTokens * _dim), ws.Normed1.AsSpan(0, numTokens * _dim), numTokens, _dim, s1, sc1);
+        SelfAttention($"{prefix}.self_attn", ws.Normed1, ws, cos, sin, numTokens);
+        DiffusionOps.ApplyGatedResidualRows(x.AsSpan(0, numTokens * _dim), ws.CrossAttnOut.AsSpan(0, numTokens * _dim), numTokens, _dim, g1);
 
-        // 2. Cross-Attention with T5/UMT5 text tokens: real per-block AFFINE LayerNorm (the
-        // checkpoint's own `{prefix}.norm3.weight`/`.bias` -- the only per-block LayerNorm with
-        // real learned params; `cross_attn_norm=True` in the real config) -> cross-attn -> plain
-        // (UNGATED) residual add. Previously this ran cross-attention on raw, un-normalized `x`.
+        // 2. Cross-Attention with T5/UMT5 text tokens (using precomputed K/V cache)
         var norm3W = GetWeight($"{prefix}.norm3.weight");
         var norm3B = GetWeight($"{prefix}.norm3.bias");
-        var normedCross = (float[])x.Clone();
-        DiffusionOps.LayerNorm(normedCross, norm3W, norm3B, _dim);
-        var crossAttn = CrossAttention($"{prefix}.cross_attn", normedCross, txtContext, numTokens, numTxt);
-        for (int i = 0; i < x.Length; i++)
-            x[i] += crossAttn[i];
+        DiffusionOps.LayerNorm(x.AsSpan(0, numTokens * _dim), ws.NormedCross.AsSpan(0, numTokens * _dim), norm3W, norm3B, _dim);
+        CrossAttention(layerIdx, $"{prefix}.cross_attn", ws.NormedCross, ws, numTokens, numTxt);
+        TensorPrimitives.Add(x.AsSpan(0, numTokens * _dim), ws.AttnOut.AsSpan(0, numTokens * _dim), x.AsSpan(0, numTokens * _dim));
 
-        // 3. Modulated FeedForward (GELU approx tanh): affine-free LayerNorm (real `norm3` in
-        // diffusers' own naming, i.e. the FFN pre-norm; also `elementwise_affine=False`) -> AdaLN
-        // modulate -> FFN -> gated residual.
-        var norm2 = (float[])x.Clone();
-        DiffusionOps.LayerNormNoAffine(norm2, _dim);
-        var normed2 = Modulate(norm2, numTokens, s2, sc2);
-        var ffn = FeedForward($"{prefix}.ffn", normed2, numTokens);
-        ApplyGatedResidual(x, ffn, numTokens, g2);
-
-        return x;
+        // 3. Modulated FeedForward (GELU approx tanh): affine-free LayerNorm -> AdaLN modulate -> FFN -> gated residual.
+        DiffusionOps.LayerNormNoAffine(x.AsSpan(0, numTokens * _dim), ws.Norm2.AsSpan(0, numTokens * _dim), _dim);
+        DiffusionOps.ModulateRows(ws.Norm2.AsSpan(0, numTokens * _dim), ws.Normed2.AsSpan(0, numTokens * _dim), numTokens, _dim, s2, sc2);
+        FeedForward($"{prefix}.ffn", ws.Normed2, ws, numTokens);
+        DiffusionOps.ApplyGatedResidualRows(x.AsSpan(0, numTokens * _dim), ws.FfnOut.AsSpan(0, numTokens * _dim), numTokens, _dim, g2);
     }
 
-    private float[] SelfAttention(string prefix, float[] x, float[] cos, float[] sin, int seqLen)
+    private void SelfAttention(string prefix, float[] x, WanWorkspace ws, float[] cos, float[] sin, int seqLen)
     {
-        var q = Linear($"{prefix}.q", x, _dim, _dim);
-        var k = Linear($"{prefix}.k", x, _dim, _dim);
-        var v = Linear($"{prefix}.v", x, _dim, _dim);
+        Linear($"{prefix}.q", x, ws.Q.AsSpan(0, seqLen * _dim), _dim, _dim);
+        Linear($"{prefix}.k", x, ws.K.AsSpan(0, seqLen * _dim), _dim, _dim);
+        Linear($"{prefix}.v", x, ws.V.AsSpan(0, seqLen * _dim), _dim, _dim);
 
         // RMSNorm on Q and K per head
         var normQ = TryGetWeight($"{prefix}.norm_q.weight");
-        if (normQ is not null) RmsNormHeads(q, seqLen, _numHeads, _headDim, normQ);
+        if (normQ is not null) RmsNormHeads(ws.Q, seqLen, _numHeads, _headDim, normQ);
         var normK = TryGetWeight($"{prefix}.norm_k.weight");
-        if (normK is not null) RmsNormHeads(k, seqLen, _numHeads, _headDim, normK);
+        if (normK is not null) RmsNormHeads(ws.K, seqLen, _numHeads, _headDim, normK);
 
         // Apply 3D-RoPE
-        WanRoPE.ApplyRoPE(q, cos, sin, seqLen, _numHeads, _headDim);
-        WanRoPE.ApplyRoPE(k, cos, sin, seqLen, _numHeads, _headDim);
+        WanRoPE.ApplyRoPE(ws.Q, cos, sin, seqLen, _numHeads, _headDim);
+        WanRoPE.ApplyRoPE(ws.K, cos, sin, seqLen, _numHeads, _headDim);
 
-        var attn = DiffusionOps.MultiHeadAttention(q, k, v, seqLen, seqLen, _numHeads, _headDim);
-        return Linear($"{prefix}.o", attn, _dim, _dim);
+        WanAttention.TiledMultiHeadAttention(ws.Q, ws.K, ws.V, ws.AttnOut.AsSpan(0, seqLen * _dim), seqLen, seqLen, _numHeads, _headDim);
+        Linear($"{prefix}.o", ws.AttnOut, ws.CrossAttnOut.AsSpan(0, seqLen * _dim), _dim, _dim);
     }
 
-    private float[] CrossAttention(string prefix, float[] x, float[] context, int seqLen, int ctxLen)
+    private void CrossAttention(int layerIdx, string prefix, float[] x, WanWorkspace ws, int seqLen, int ctxLen)
     {
-        var q = Linear($"{prefix}.q", x, _dim, _dim);
-        var k = Linear($"{prefix}.k", context, _dim, _dim);
-        var v = Linear($"{prefix}.v", context, _dim, _dim);
+        Linear($"{prefix}.q", x, ws.CrossQ.AsSpan(0, seqLen * _dim), _dim, _dim);
 
         var normQ = TryGetWeight($"{prefix}.norm_q.weight");
-        if (normQ is not null) RmsNormHeads(q, seqLen, _numHeads, _headDim, normQ);
-        var normK = TryGetWeight($"{prefix}.norm_k.weight");
-        if (normK is not null) RmsNormHeads(k, ctxLen, _numHeads, _headDim, normK);
+        if (normQ is not null) RmsNormHeads(ws.CrossQ, seqLen, _numHeads, _headDim, normQ);
 
-        var attn = DiffusionOps.MultiHeadAttention(q, k, v, seqLen, ctxLen, _numHeads, _headDim);
-        return Linear($"{prefix}.o", attn, _dim, _dim);
+        var (cachedK, cachedV) = ws.CrossKvCache[layerIdx];
+        WanAttention.TiledMultiHeadAttention(ws.CrossQ, cachedK, cachedV, ws.CrossAttnOut.AsSpan(0, seqLen * _dim), seqLen, ctxLen, _numHeads, _headDim);
+        Linear($"{prefix}.o", ws.CrossAttnOut, ws.AttnOut.AsSpan(0, seqLen * _dim), _dim, _dim);
     }
 
     /// <summary>Real Wan QK-norm: `torch.nn.RMSNorm(dim_head * heads, ...)` -- ONE RMS statistic
@@ -284,11 +292,11 @@ public sealed class WanModel : IDisposable
         });
     }
 
-    private float[] FeedForward(string prefix, float[] x, int seqLen)
+    private void FeedForward(string prefix, float[] x, WanWorkspace ws, int seqLen)
     {
-        var h1 = Linear($"{prefix}.0", x, _dim, _ffnDim);
-        DiffusionOps.GeluInPlace(h1);
-        return Linear($"{prefix}.2", h1, _ffnDim, _dim);
+        Linear($"{prefix}.0", x, ws.Ffn1.AsSpan(0, seqLen * _ffnDim), _dim, _ffnDim);
+        DiffusionOps.GeluInPlace(ws.Ffn1.AsSpan(0, seqLen * _ffnDim));
+        Linear($"{prefix}.2", ws.Ffn1, ws.FfnOut.AsSpan(0, seqLen * _dim), _ffnDim, _dim);
     }
 
     private float[] Modulate(float[] x, int seqLen, ReadOnlySpan<float> shift, ReadOnlySpan<float> scale)
@@ -323,23 +331,33 @@ public sealed class WanModel : IDisposable
         return res;
     }
 
-    private float[] Linear(string name, float[] x, int inDim, int outDim)
+    private unsafe void Linear(string name, float[] x, Span<float> output, int inDim, int outDim)
     {
         var w = GetWeight($"{name}.weight");
         var b = TryGetWeight($"{name}.bias");
         int rows = x.Length / inDim;
-        var outF = new float[rows * outDim];
 
-        Parallel.For(0, outDim, o =>
+        fixed (float* pOut = output, pIn = x, pW = w)
         {
-            float bVal = b is not null ? b[o] : 0f;
-            var wRow = w.AsSpan(o * inDim, inDim);
-            for (int r = 0; r < rows; r++)
+            if (b is not null)
             {
-                var xRow = x.AsSpan(r * inDim, inDim);
-                outF[r * outDim + o] = bVal + TensorPrimitives.Dot(xRow, wRow);
+                fixed (float* pB = b)
+                {
+                    SimdKernels.MatMulBatchedF32(pOut, pW, pIn, rows, outDim, inDim, pB);
+                }
             }
-        });
+            else
+            {
+                SimdKernels.MatMulBatchedF32(pOut, pW, pIn, rows, outDim, inDim, null);
+            }
+        }
+    }
+
+    private float[] Linear(string name, float[] x, int inDim, int outDim)
+    {
+        int rows = x.Length / inDim;
+        var outF = new float[rows * outDim];
+        Linear(name, x, outF.AsSpan(), inDim, outDim);
         return outF;
     }
 
@@ -420,6 +438,14 @@ public sealed class WanModel : IDisposable
         if (!_disposed)
         {
             _disposed = true;
+            _gpuWeightsResident?.Dispose();
+            _gpuWeightsResident = null;
+            if (_gpuWeights is not null)
+            {
+                foreach (var tensor in _gpuWeights.Values)
+                    _backend?.Free(tensor);
+                _gpuWeights.Clear();
+            }
             _weights.Dispose();
         }
     }
