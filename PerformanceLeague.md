@@ -275,15 +275,15 @@
 
 ---
 
-## Newly-downloaded architecture coverage (2026-09-13): Phi-3, Falcon3, StarCoder2, GPT-2, StableLM
+## Newly-downloaded architecture coverage (2026-09-13): Phi-3, Falcon3, StarCoder2, GPT-2, StableLM, ERNIE-4.5, GPT-NeoX, CodeShell
 
 Found via cross-referencing `ModelCompatibility.cs`'s claimed-supported architecture allowlist
-(`phi3`, `falcon`, `starcoder2`, `gpt2`, `stablelm`, among 17 total with zero downloaded checkpoint)
-against what was actually downloaded — none of these had ANY checkpoint on disk before this pass,
-so zero real benchmark coverage existed despite the architecture being claimed-supported. Downloaded
-real, small, quantized GGUFs via `stingray pull` and got real, working end-to-end runs for all five
-(no `--allow-unverified-arch` needed — these architectures load through the normal supported path,
-confirming the allowlist claim is accurate).
+(`phi3`, `falcon`, `starcoder2`, `gpt2`, `stablelm`, `ernie4_5`, `gptneox`, `codeshell`, among 17
+total with zero downloaded checkpoint) against what was actually downloaded — none of these had ANY
+checkpoint on disk before this pass, so zero real benchmark coverage existed despite the
+architecture being claimed-supported. Downloaded real, small, quantized GGUFs via `stingray pull`
+and got real, working end-to-end runs for all eight (no `--allow-unverified-arch` needed — these
+architectures load through the normal supported path, confirming the allowlist claim is accurate).
 
 | Model | Scenario | Backend | C# (OT, t/s) | Performance Check | Source |
 |---|---|---|---:|---|---|
@@ -295,6 +295,12 @@ confirming the allowlist claim is accurate).
 | GPT-2 (124M) Q8_0 | raw completion (4 tok prompt, 24 tok gen) | CPU | 62.9 t/s decode, 44.5 t/s prefill | 2026-09-13 | new coverage; first timing ever recorded for this architecture, the oldest/smallest one in `ModelCompatibility`'s allowlist. Run with the same identity `--chat-template` as StarCoder2-3B (GPT-2 is also a raw completion model, no chat template of its own) — real, plausible completion ("The quick brown foxes are a great way to get some of the best looking fox in town...") |
 | StableLM-Zephyr-3B Q4_K_M | prefill (516 tok) | CPU | 86.9 t/s | 2026-09-13 | new coverage; first timing ever recorded for this architecture. Real, coherent chat-templated output |
 | StableLM-Zephyr-3B Q4_K_M | decode (24 tok gen) | CPU | 13.2 t/s | 2026-09-13 | same run |
+| ERNIE-4.5-0.3B Q8_0 | prefill (525 tok) | CPU | 390.1 t/s | 2026-09-13 | new coverage; first timing ever recorded for this architecture. Real, coherent chat-templated output |
+| ERNIE-4.5-0.3B Q8_0 | decode (24 tok gen) | CPU | 63.7 t/s | 2026-09-13 | same run |
+| CodeShell-7B Q4_K_M | code completion (8 tok prompt, 24 tok gen) | CPU | 4.2 t/s decode, 6.4 t/s prefill | 2026-09-13 | new coverage; first timing ever recorded for this architecture. Same raw-completion methodology as StarCoder2-3B/GPT-2 (identity `--chat-template`) — real, correct code completion (`return 1 / elif n == 1: return 2 / else`) |
+| ~~Pythia-410M (`gptneox`) Q4_K_M~~ | raw completion | CPU | **Complete gibberish output** (`isygpectrapeuturecribeuvuginetpiring seqseqpectFigurescribeanticuguringuroufuginFiguresrapeutFigurefunded`) | 2026-09-13 | **Investigated as a possible real bug, ruled out — bad third-party checkpoint, not a codebase defect.** First download was from an obscure, unvetted uploader (`joeshmoethefunnyone/pythia-410m-Q4_K_M-GGUF`). Before assuming a pipeline bug, checked the RoPE dispatch logic in `ModelGraph.cs` (partial-rotation `rope.dimension_count=16` of `headDim=64`, NEOX-style pairing — `gptneox` is correctly listed in the NEOX-rotation architecture set) and found it structurally correct. Downloaded a reputable, actively-maintained conversion instead (`mradermacher/pythia-160m-GGUF`, Q8_0) and got real, coherent output ("The capital of France is located in the city of Paris...") — confirming `gptneox` architecture support is genuinely correct in this codebase. The bad checkpoint (and an even-older, genuinely unusable GGUF-v1-format file from `klosax/pythia-deduped-gguf`, `Unsupported GGUF version: 1`) were deleted to reclaim disk space |
+| Pythia-160M (`gptneox`) Q8_0, reputable conversion | prefill (503 tok) | CPU | 1103.7 t/s | 2026-09-13 | new, CORRECT coverage for `gptneox`, superseding the bad-checkpoint row above. First real, valid timing for this architecture |
+| Pythia-160M (`gptneox`) Q8_0, reputable conversion | decode (24 tok gen) | CPU | 107.0 t/s | 2026-09-13 | same run |
 
 ---
 
