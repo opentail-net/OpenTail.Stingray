@@ -89,7 +89,31 @@ gives real throughput numbers (time/GB, time/million floats) that reveal whether
 storage bandwidth, dequant CPU cost, allocation overhead, or many-tiny-reads — each implies a
 different fix, and guessing wrong wastes the rest of the plan on the wrong track.
 
-### A2 — Instrument VAE's real breakdown
+### A2 — DONE 2026-09-12 (real data already existed, just needed running)
+
+An existing `STINGRAY_PROFILE_VAE=1` diagnostic (added earlier this session) already gives a real
+per-substage breakdown — ran it rather than building new instrumentation. Real result (post-A1
+dequant fix, 512×512/4-steps/seed=42):
+
+```
+mid_block (64x64, includes the ONE attention call): 0.95s
+up.3 (64->128, 512ch):   1.22s
+up.2 (128->256, 512ch):  4.80s
+up.1 (256->512, 256ch):  7.47s  <- largest
+up.0 (512, 128ch, no upsample): 5.60s
+norm_out + conv_out:     0.30s
+Total (sums to):        20.34s ≈ VAE decode's own 20.42s (fully accounted for)
+```
+
+**Real, decisive finding for Stage B5**: the mid-block (which contains the VAE's *only* attention
+call, plus 2 ResBlocks) is 0.95s of 20.42s — under 5%, and that's the whole mid-block, not
+attention alone. This directly confirms the review's prediction: **VAE attention is not worth
+pursuing at all here** — B1-B4 (the up-blocks' conv/residency path, which is 90%+ of the real cost)
+is where the real win is. Skipping B5 entirely rather than spending time proving a foregone
+conclusion. `up.1`/`up.0`/`up.2` (the three highest-resolution up-blocks) account for ~17.9s of
+the 20.4s total — the real target for B1-B4.
+
+### A2 (original wording, superseded by the above) — Instrument VAE's real breakdown
 Time `VaeDecoder.Decode()`'s existing pieces separately: per-`ResBlock` (GPU-resident vs CPU
 fallback), `Upsample2x`, `MidAttnCompVis`, any remaining CPU `GroupNorm`/`SiluInPlace` calls not
 already covered by `ResBlockGpu`, and every CPU↔GPU boundary crossing (this is new, per review:
