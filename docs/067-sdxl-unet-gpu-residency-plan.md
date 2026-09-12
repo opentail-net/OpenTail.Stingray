@@ -146,7 +146,19 @@ GEGLU→proj)→proj_out→+residual, with everything except the attention math 
 GPU-resident. This isolates a real, clean measurement: how much of the current cost is projection/
 layout traffic versus attention math itself. Measure and record before moving to 3b.
 
-## Stage 3b — SpatialTransformer GPU attention (renamed per review)
+## Stage 3b — SpatialTransformer GPU attention — DONE 2026-09-12, REAL REVERSAL (renamed per review)
+
+**Real result: the tiled attention shader wins.** The exact same `MultiHeadAttentionTiled` shader
+that regressed twice before (once as a naive shader, once as this tiled shader — both measured in
+a non-resident context) is now a real, measured improvement: total wall time 90.5s→78.6s (~13%
+faster than Stage 3a, ~43% faster than the original 137.4s baseline), dispatches 4484→2244 (nearly
+halved), `stagingCopy` 17.5s→8.3s. The only thing that changed is that Q/K/V are now already
+GPU-resident tensors (from `LinGpuTensor`, never downloaded) — the shader itself is unmodified.
+This is real, direct vindication of the whole residency hypothesis: neither prior attention-kernel
+attempt was actually testing kernel quality, they were both measuring the architectural tax around
+the kernel. Output re-verified pixel-identical to Stage 3a's baseline at the same seed. Implemented
+as `AttentionIsland` with its own independent probe/fallback (separate from the whole-block
+residency flag), so a future regression here falls back to Stage 3a's CPU-island chain specifically.
 
 Only after 3a is measured: re-attempt `MultiHeadAttentionTiled` (the existing, numerically-verified,
 currently-unused tiled shader) inside this now-resident context. Both prior regressions were

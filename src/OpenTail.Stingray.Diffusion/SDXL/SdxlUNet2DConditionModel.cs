@@ -607,12 +607,19 @@ public sealed class SdxlUNet2DConditionModel : IDisposable
     // cached, same convention as _unetResidencySupported.
     private bool? _spatialTransformerResidencySupported;
 
+    // Stage 3b (docs/067): re-test MultiHeadAttentionTiled now that Q/K/V are already GPU-resident
+    // (LinGpuTensor's output, never downloaded) -- a genuinely different experiment from this
+    // shader's two prior regressions, both of which were measured with the surrounding per-op
+    // Upload/Download tax still present on every OTHER op in the block. Probed once and cached,
+    // independent from _spatialTransformerResidencySupported so a GPU-attention regression falls
+    // back to Stage 3a's CPU-island resident chain, not all the way to the fully non-resident path.
+    private bool? _residentGpuAttentionSupported;
+
     private CoreTensor CpuAttentionIsland(IImageOpsBackend imageOps, CoreTensor qGpu, CoreTensor kGpu, CoreTensor vGpu, int qSeq, int kvSeq, int c, int nHeads)
     {
         // CPU ISLAND (docs/067 CPU-island discipline: TEMPORARY DIAGNOSTIC FALLBACK, not model
-        // logic or a performance bug) -- Stage 3b re-tests MultiHeadAttentionTiled inside this
-        // now-resident context; do not "fix" this by assuming the tiled shader wins here without
-        // re-measuring, per the plan's own findings from its two prior regressions.
+        // logic or a performance bug), used when Stage 3b's GPU attention is unsupported or was
+        // measured to regress for this backend.
         var q = new float[qSeq * c];
         var k = new float[kvSeq * c];
         var v = new float[kvSeq * c];
@@ -621,6 +628,28 @@ public sealed class SdxlUNet2DConditionModel : IDisposable
         imageOps.Download(vGpu, v);
         var attnOut = DiffusionOps.MultiHeadAttention(q, k, v, qSeq, kvSeq, nHeads, HeadDim);
         return imageOps.Upload(attnOut.AsSpan(), TensorShape.D1(attnOut.Length));
+    }
+
+    /// <summary>Stage 3b: tries the GPU-resident tiled attention shader first (zero CPU round-trip
+    /// -- Q/K/V are already resident GPU tensors), falling back to <see cref="CpuAttentionIsland"/>
+    /// if unsupported. NOT yet measured to win or lose in this context -- do not assume either
+    /// outcome; the caller/PerformanceLeague.md records the real measurement.</summary>
+    private CoreTensor AttentionIsland(IImageOpsBackend imageOps, CoreTensor qGpu, CoreTensor kGpu, CoreTensor vGpu, int qSeq, int kvSeq, int c, int nHeads)
+    {
+        if (_residentGpuAttentionSupported != false)
+        {
+            try
+            {
+                var result = imageOps.MultiHeadAttentionTiled(qGpu, kGpu, vGpu, qSeq, kvSeq, nHeads, HeadDim);
+                _residentGpuAttentionSupported = true;
+                return result;
+            }
+            catch (NotSupportedException)
+            {
+                _residentGpuAttentionSupported = false;
+            }
+        }
+        return CpuAttentionIsland(imageOps, qGpu, kGpu, vGpu, qSeq, kvSeq, c, nHeads);
     }
 
     private CoreTensor SpatialTransformerGpu(IImageOpsBackend imageOps, string prefix, CoreTensor xGpu, CoreTensor contextGpu, int c, int depth, int h, int w)
@@ -656,7 +685,7 @@ public sealed class SdxlUNet2DConditionModel : IDisposable
             var saV = LinGpuTensor($"{tb}.attn1.to_v", saNorm, hw, c, c);
             imageOps.Free(saNorm);
 
-            var saAttnOut = CpuAttentionIsland(imageOps, saQ, saK, saV, hw, hw, c, nHeads);
+            var saAttnOut = AttentionIsland(imageOps, saQ, saK, saV, hw, hw, c, nHeads);
             imageOps.Free(saQ); imageOps.Free(saK); imageOps.Free(saV);
 
             var saProjOut = LinGpuTensor($"{tb}.attn1.to_out.0", saAttnOut, hw, c, c);
@@ -674,7 +703,7 @@ public sealed class SdxlUNet2DConditionModel : IDisposable
             var caK = LinGpuTensor($"{tb}.attn2.to_k", contextGpu, 77, ContextDim, c);
             var caV = LinGpuTensor($"{tb}.attn2.to_v", contextGpu, 77, ContextDim, c);
 
-            var caAttnOut = CpuAttentionIsland(imageOps, caQ, caK, caV, hw, 77, c, nHeads);
+            var caAttnOut = AttentionIsland(imageOps, caQ, caK, caV, hw, 77, c, nHeads);
             imageOps.Free(caQ); imageOps.Free(caK); imageOps.Free(caV);
 
             var caProjOut = LinGpuTensor($"{tb}.attn2.to_out.0", caAttnOut, hw, c, c);
