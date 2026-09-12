@@ -275,7 +275,7 @@
 
 ---
 
-## Newly-downloaded architecture coverage (2026-09-13): Phi-3, Falcon3, StarCoder2, GPT-2, StableLM, ERNIE-4.5, GPT-NeoX, CodeShell, SmolLM3, Phi-2
+## Newly-downloaded architecture coverage (2026-09-13): Phi-3, Falcon3, StarCoder2, GPT-2, StableLM, ERNIE-4.5, GPT-NeoX, CodeShell, SmolLM3, Phi-2, Apertus, XVERSE
 
 Found via cross-referencing `ModelCompatibility.cs`'s claimed-supported architecture allowlist
 (`phi3`, `falcon`, `starcoder2`, `gpt2`, `stablelm`, `ernie4_5`, `gptneox`, `codeshell`, `smollm3`,
@@ -306,6 +306,10 @@ accurate).
 | SmolLM3-3B Q4_K_M | decode (24 tok gen, all thinking tokens) | CPU | 10.6 t/s | 2026-09-13 | same run |
 | Phi-2 (2.7B) Q4_K_M | prefill (572 tok) | CPU | 36.0 t/s | 2026-09-13 | new coverage; first timing ever recorded for this architecture (`phi2`, distinct from `phi3`/`phimoe` already covered above). Real, coherent output |
 | Phi-2 (2.7B) Q4_K_M | decode (24 tok gen) | CPU | 9.4 t/s | 2026-09-13 | same run |
+| Apertus-8B-Instruct-2509 Q4_K_M | prefill (536 tok) | CPU | 32.4 t/s | 2026-09-13 | new coverage; first timing ever recorded for this architecture. Real, coherent chat-templated output |
+| Apertus-8B-Instruct-2509 Q4_K_M | decode (24 tok gen) | CPU | 4.7 t/s | 2026-09-13 | same run |
+| XVERSE-7B-Chat Q4_K_M | prefill (836 tok) | CPU | 44.9 t/s | 2026-09-13 | new coverage; first timing ever recorded for this architecture. Real, coherent chat-templated output |
+| XVERSE-7B-Chat Q4_K_M | decode (24 tok gen) | CPU | 5.6 t/s | 2026-09-13 | same run |
 
 ---
 
