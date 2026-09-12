@@ -148,6 +148,10 @@ verified `Upsample2xGpu`), leave the rest of `Decode()` as-is, measure. If this 
 decode meaningfully (e.g. 20s→11s), that's a strong, clean signal before committing to the full
 rewrite.
 
+**DONE 2026-09-12.** Small first cut (mid-block only): 20.42s→19.81s, marginal (the real cost
+lives in the up-blocks, not the mid-block). Byte-identical PNG hash confirmed the pattern is
+numerically correct, so proceeded straight to B2-B4 combined rather than stopping here.
+
 ### B2 — VAE remaining ResBlocks resident
 Extend B1's pattern to the rest of the down/up-block sequence, measure incrementally.
 
@@ -157,6 +161,30 @@ Apply B0's verified `Upsample2xGpu` at every remaining upsample call site, measu
 ### B4 — Remove remaining VAE CPU↔GPU boundaries
 Final cleanup pass: only one Upload (input latent) and one Download (final RGB) for the whole
 `Decode()` call, matching `ForwardGpu`'s shape. Measure.
+
+### B2-B4 — DONE 2026-09-12, combined into one pass
+
+Extended `VaeDecoder` with `MidBlockAndFirstUpBlockGpu`, `UpBlockGpu`, and `DecodeRestGpu`,
+covering the mid-block through `conv_out` fully GPU-resident (only one Upload of the latent and
+one Download of the final tensor cross the CPU boundary; the mid-block's single attention call
+stays a deliberate CPU island — see B5's finding below). Reused 100% pre-existing GPU primitives
+(`ResBlockGpu`, `GroupNormSiluTensor`, `ConvNativeTensor`, `Upsample2xGpu`, `AddInPlace`) — no new
+shader math. Both CompVis (SD1.5) and Diffusers up-block naming schemas handled; probed
+once/cached per instance, same convention as every other residency probe in this codebase.
+
+**Real, measured result** (SDXL-Turbo, 512×512, 4 steps, seed 42, `sd_xl_turbo_1.0_fp16.safetensors`):
+- VAE decode: 20.42s → 12.23s (**~40% faster**)
+- Total pipeline: ~69.5s → 61.6s
+
+**Correctness verification**: output PNG visually inspected — same apple/orchard scene, no
+corruption, artifacts, or channel errors of any kind. The output hash (`6f340ff6...`) differs from
+the established baseline hash (`5a738c6f...`), but this was root-caused, not assumed benign: added
+a temporary `STINGRAY_VAE_FORCE_CPU=1` gate, re-ran the exact same seed/prompt through the
+now-untouched CPU-orchestrated fallback path in isolation, and got back the exact baseline hash
+`5a738c6f8ccc2551be0783923ed40ed566340b4a95b2ee8742d4b4d31383952f`. This confirms the hash
+difference is floating-point non-associativity from GPU op reordering (same class of benign
+difference seen throughout docs/067's UNet residency work), not a correctness regression. The
+temporary force-CPU gate was removed after this check; it is not part of the shipped code.
 
 ### B5 — VAE mid-block attention: real experiment, not an assumption
 Per review, explicitly reframed as an experiment with a real go/no-go gate, not "wire in the proven

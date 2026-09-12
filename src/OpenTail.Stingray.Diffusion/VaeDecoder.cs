@@ -125,58 +125,98 @@ public sealed class VaeDecoder : IDisposable, IVaeDecoder
             vaeSw.Restart();
         }
 
-        if (isCompVis)
+        // docs/068 Stage B1-B4: the whole mid-block through conv_out runs fully GPU-resident when
+        // supported (only this Upload and the Download below cross the CPU boundary), falling
+        // back to the original CPU-orchestrated per-block path otherwise. Probed once and cached,
+        // same convention as every other residency probe in this codebase.
+        bool didResident = false;
+        if (_imageOps is not null && _vaeB1ResidencySupported != false)
         {
-            // CompVis SD1.5 schema
-            string dec = Resolve("decoder");
-            z = ResBlock($"{dec}.mid.block_1", z, 1, ch, h, w);
-            z = MidAttnCompVis($"{dec}.mid.attn_1", z, 1, ch, h, w);
-            z = ResBlock($"{dec}.mid.block_2", z, 1, ch, h, w);
-            LogVae("mid_block (64x64)");
-
-            // Up blocks: up.3 (512, upsample), up.2 (512, upsample), up.1 (256, upsample), up.0 (128, no upsample)
-            (z, ch, h, w) = UpBlockCompVis(z, 1, ch, h, w, $"{dec}.up.3", outCh: 512, upsample: true);
-            LogVae("up.3 (64->128, 512ch)");
-            (z, ch, h, w) = UpBlockCompVis(z, 1, ch, h, w, $"{dec}.up.2", outCh: 512, upsample: true);
-            LogVae("up.2 (128->256, 512ch)");
-            (z, ch, h, w) = UpBlockCompVis(z, 1, ch, h, w, $"{dec}.up.1", outCh: 256, upsample: true);
-            LogVae("up.1 (256->512, 256ch)");
-            (z, ch, h, w) = UpBlockCompVis(z, 1, ch, h, w, $"{dec}.up.0", outCh: 128, upsample: false);
-            LogVae("up.0 (512, 128ch, no upsample)");
+            try
+            {
+                var zGpu = _imageOps.Upload(z.AsSpan(0, ch * h * w), TensorShape.D1(ch * h * w));
+                CoreTensor resultGpu;
+                try
+                {
+                    resultGpu = DecodeRestGpu(_imageOps, zGpu, ch, h, w, isCompVis, out ch, out h, out w);
+                }
+                finally
+                {
+                    _imageOps.Free(zGpu);
+                }
+                z = new float[ch * h * w];
+                try
+                {
+                    _imageOps.Download(resultGpu, z);
+                }
+                finally
+                {
+                    _imageOps.Free(resultGpu);
+                }
+                _vaeB1ResidencySupported = true;
+                didResident = true;
+            }
+            catch (NotSupportedException)
+            {
+                _vaeB1ResidencySupported = false;
+            }
         }
-        else
+        LogVae("mid_block through conv_out (resident)");
+
+        if (!didResident)
         {
-            // Diffusers / FLUX schema
-            string dec = Resolve("decoder");
-            z = ResBlock($"{dec}.mid_block.resnets.0", z, 1, ch, h, w);
-            z = MidAttnDiffusers($"{dec}.mid_block.attentions.0", z, 1, ch, h, w);
-            z = ResBlock($"{dec}.mid_block.resnets.1", z, 1, ch, h, w);
-            LogVae("mid_block (64x64)");
+            if (isCompVis)
+            {
+                // CompVis SD1.5 schema
+                string dec = Resolve("decoder");
+                z = ResBlock($"{dec}.mid.block_1", z, 1, ch, h, w);
+                z = MidAttnCompVis($"{dec}.mid.attn_1", z, 1, ch, h, w);
+                z = ResBlock($"{dec}.mid.block_2", z, 1, ch, h, w);
+                LogVae("mid_block (64x64)");
 
-            (z, ch, h, w) = UpBlockDiffusers(z, 1, ch, h, w, $"{dec}.up_blocks.0", outCh: 512, upsample: true);
-            LogVae("up_blocks.0 (64->128, 512ch)");
-            (z, ch, h, w) = UpBlockDiffusers(z, 1, ch, h, w, $"{dec}.up_blocks.1", outCh: 512, upsample: true);
-            LogVae("up_blocks.1 (128->256, 512ch)");
-            (z, ch, h, w) = UpBlockDiffusers(z, 1, ch, h, w, $"{dec}.up_blocks.2", outCh: 256, upsample: true);
-            LogVae("up_blocks.2 (256->512, 256ch)");
-            (z, ch, h, w) = UpBlockDiffusers(z, 1, ch, h, w, $"{dec}.up_blocks.3", outCh: 128, upsample: false);
-            LogVae("up_blocks.3 (512, 128ch, no upsample)");
+                (z, ch, h, w) = UpBlockCompVis(z, 1, ch, h, w, $"{dec}.up.3", outCh: 512, upsample: true);
+                LogVae("up.3 (64->128, 512ch)");
+                (z, ch, h, w) = UpBlockCompVis(z, 1, ch, h, w, $"{dec}.up.2", outCh: 512, upsample: true);
+                LogVae("up.2 (128->256, 512ch)");
+                (z, ch, h, w) = UpBlockCompVis(z, 1, ch, h, w, $"{dec}.up.1", outCh: 256, upsample: true);
+                LogVae("up.1 (256->512, 256ch)");
+                (z, ch, h, w) = UpBlockCompVis(z, 1, ch, h, w, $"{dec}.up.0", outCh: 128, upsample: false);
+                LogVae("up.0 (512, 128ch, no upsample)");
+            }
+            else
+            {
+                // Diffusers / FLUX schema
+                string dec = Resolve("decoder");
+                z = ResBlock($"{dec}.mid_block.resnets.0", z, 1, ch, h, w);
+                z = MidAttnDiffusers($"{dec}.mid_block.attentions.0", z, 1, ch, h, w);
+                z = ResBlock($"{dec}.mid_block.resnets.1", z, 1, ch, h, w);
+                LogVae("mid_block (64x64)");
+
+                (z, ch, h, w) = UpBlockDiffusers(z, 1, ch, h, w, $"{dec}.up_blocks.0", outCh: 512, upsample: true);
+                LogVae("up_blocks.0 (64->128, 512ch)");
+                (z, ch, h, w) = UpBlockDiffusers(z, 1, ch, h, w, $"{dec}.up_blocks.1", outCh: 512, upsample: true);
+                LogVae("up_blocks.1 (128->256, 512ch)");
+                (z, ch, h, w) = UpBlockDiffusers(z, 1, ch, h, w, $"{dec}.up_blocks.2", outCh: 256, upsample: true);
+                LogVae("up_blocks.2 (256->512, 256ch)");
+                (z, ch, h, w) = UpBlockDiffusers(z, 1, ch, h, w, $"{dec}.up_blocks.3", outCh: 128, upsample: false);
+                LogVae("up_blocks.3 (512, 128ch, no upsample)");
+            }
+
+            // norm_out
+            string normName = _st.Contains(Resolve("decoder.conv_norm_out.weight")) ? Resolve("decoder.conv_norm_out")
+                                                                                    : Resolve("decoder.norm_out");
+            var gnW = Wt($"{normName}.weight");
+            var gnB = Wt($"{normName}.bias");
+            DiffusionOps.GroupNorm(z, gnW, gnB, 1, ch, h, w, groups: 32);
+            DiffusionOps.SiluInPlace(z);
+
+            // conv_out: Conv2D(128→3)
+            string convOutKey = Resolve("decoder.conv_out");
+            z = _imageOps is not null
+                ? ConvNative(_imageOps, convOutKey, z, ch, h, w, 3, 3)
+                : ConvBlock(convOutKey, z, 1, ch, h, w, 3, 3);
+            LogVae("norm_out + conv_out");
         }
-
-        // norm_out
-        string normName = _st.Contains(Resolve("decoder.conv_norm_out.weight")) ? Resolve("decoder.conv_norm_out")
-                                                                                : Resolve("decoder.norm_out");
-        var gnW = Wt($"{normName}.weight");
-        var gnB = Wt($"{normName}.bias");
-        DiffusionOps.GroupNorm(z, gnW, gnB, 1, ch, h, w, groups: 32);
-        DiffusionOps.SiluInPlace(z);
-
-        // conv_out: Conv2D(128→3)
-        string convOutKey = Resolve("decoder.conv_out");
-        z = _imageOps is not null
-            ? ConvNative(_imageOps, convOutKey, z, ch, h, w, 3, 3)
-            : ConvBlock(convOutKey, z, 1, ch, h, w, 3, 3);
-        LogVae("norm_out + conv_out");
 
         // Clamp to [0, 1] (vectorized -- this runs over the full-resolution RGB output)
         TensorPrimitives.Add(z, 1f, z);
@@ -614,6 +654,7 @@ public sealed class VaeDecoder : IDisposable, IVaeDecoder
     // verified against this project's Vulkan iGPU) -- probed once and cached so later ResBlocks
     // don't pay the exception cost again after the first miss.
     private bool? _residencySupported;
+    private bool? _vaeB1ResidencySupported;
 
     private CoreTensor ConvNativeTensor(IImageOpsBackend imageOps, string name, CoreTensor x, int inCh, int h, int w, int outCh, int k, int padding = -1)
     {
@@ -664,6 +705,118 @@ public sealed class VaeDecoder : IDisposable, IVaeDecoder
         imageOps.AddInPlace(t4, skip);
         if (freeSkip) imageOps.Free(skip);
         return t4;
+    }
+
+    // Perf (2026-09-12, docs/068 Stage B1): GPU-resident mid-block + first up-block, chaining
+    // ResBlockGpu calls (already Tensor-in/Tensor-out) without a CPU round-trip between them. The
+    // mid-block's one attention call is a deliberate CPU island (real profiling in docs/068's
+    // Stage A2 found the WHOLE mid-block, attention included, is under 5% of VAE decode's total
+    // cost -- porting attention to GPU was explicitly skipped as confirmed low-value; only the
+    // ResBlocks around it are worth making resident).
+    private CoreTensor MidBlockAndFirstUpBlockGpu(IImageOpsBackend imageOps, CoreTensor zGpu, int ch, int h, int w,
+        bool isCompVis, out int outCh, out int outH, out int outW)
+    {
+        string dec = Resolve("decoder");
+        string mid1 = isCompVis ? $"{dec}.mid.block_1" : $"{dec}.mid_block.resnets.0";
+        string mid2 = isCompVis ? $"{dec}.mid.block_2" : $"{dec}.mid_block.resnets.1";
+        string attnPrefix = isCompVis ? $"{dec}.mid.attn_1" : $"{dec}.mid_block.attentions.0";
+
+        var t1 = ResBlockGpu(imageOps, mid1, zGpu, ch, h, w, ch);
+
+        // CPU island: the mid-block's one attention call (see the method's own doc comment).
+        var attnIn = new float[ch * h * w];
+        imageOps.Download(t1, attnIn);
+        imageOps.Free(t1);
+        var attnOut = isCompVis ? MidAttnCompVis(attnPrefix, attnIn, 1, ch, h, w) : MidAttnDiffusers(attnPrefix, attnIn, 1, ch, h, w);
+        var t2 = imageOps.Upload(attnOut.AsSpan(), TensorShape.D1(attnOut.Length));
+
+        var t3 = ResBlockGpu(imageOps, mid2, t2, ch, h, w, ch);
+        imageOps.Free(t2);
+
+        // First up-block: 3 ResBlocks (SDXL/SD1.5 VAE up-blocks always keep channel count fixed
+        // at this stage's outCh -- the mid-block's own ch is already this up-block's real inCh
+        // since VAE decoders never change channels mid-mid-block), then Upsample2xGpu + conv.
+        string prefix0 = isCompVis ? $"{dec}.up.3" : $"{dec}.up_blocks.0";
+        var cur = t3;
+        for (int r = 0; r < 3; r++)
+        {
+            string resPrefix = isCompVis ? $"{prefix0}.block.{r}" : $"{prefix0}.resnets.{r}";
+            var next = ResBlockGpu(imageOps, resPrefix, cur, ch, h, w, ch);
+            imageOps.Free(cur);
+            cur = next;
+        }
+
+        var upsampled = imageOps.Upsample2xGpu(cur, ch, h, w);
+        imageOps.Free(cur);
+        int h2 = h * 2, w2 = w * 2;
+        string convKey = isCompVis ? $"{prefix0}.upsample.conv" : $"{prefix0}.upsamplers.0.conv";
+        var result = ConvNativeTensor(imageOps, convKey, upsampled, ch, h2, w2, ch, 3);
+        imageOps.Free(upsampled);
+
+        outCh = ch; outH = h2; outW = w2;
+        return result;
+    }
+
+    /// <summary>Tensor-in/Tensor-out counterpart of `UpBlockCompVis`/`UpBlockDiffusers` (docs/068
+    /// Stage B2-B4): N ResBlocks (first takes inCh, rest take outCh, matching the original) then
+    /// an optional Upsample2xGpu + follow-up conv.</summary>
+    private CoreTensor UpBlockGpu(IImageOpsBackend imageOps, CoreTensor x, int inCh, int h, int w,
+        string prefix, int outCh, bool upsample, bool isCompVis, out int newCh, out int newH, out int newW)
+    {
+        var cur = x;
+        for (int r = 0; r < 3; r++)
+        {
+            string resPrefix = isCompVis ? $"{prefix}.block.{r}" : $"{prefix}.resnets.{r}";
+            var next = ResBlockGpu(imageOps, resPrefix, cur, r == 0 ? inCh : outCh, h, w, outCh);
+            if (cur.Handle != x.Handle) imageOps.Free(cur);
+            cur = next;
+        }
+        newCh = outCh; newH = h; newW = w;
+
+        if (upsample)
+        {
+            var upsampled = imageOps.Upsample2xGpu(cur, outCh, h, w);
+            imageOps.Free(cur);
+            newH = h * 2; newW = w * 2;
+            string convKey = isCompVis ? $"{prefix}.upsample.conv" : $"{prefix}.upsamplers.0.conv";
+            cur = ConvNativeTensor(imageOps, convKey, upsampled, outCh, newH, newW, outCh, 3);
+            imageOps.Free(upsampled);
+        }
+        return cur;
+    }
+
+    /// <summary>Fully GPU-resident VAE decode from the mid-block through conv_out (docs/068 Stage
+    /// B1-B4) -- extends <see cref="MidBlockAndFirstUpBlockGpu"/> through the rest of the up-block
+    /// sequence and the final norm_out/SiLU/conv_out, so only the caller's Upload (post_quant_conv/
+    /// conv_in output) and Download (final RGB) cross the CPU boundary.</summary>
+    private CoreTensor DecodeRestGpu(IImageOpsBackend imageOps, CoreTensor zGpu, int ch, int h, int w, bool isCompVis, out int outCh, out int outH, out int outW)
+    {
+        var cur = MidBlockAndFirstUpBlockGpu(imageOps, zGpu, ch, h, w, isCompVis, out ch, out h, out w);
+
+        string dec = Resolve("decoder");
+        (string p2, int c2, bool u2) = isCompVis ? ($"{dec}.up.2", 512, true) : ($"{dec}.up_blocks.1", 512, true);
+        var next2 = UpBlockGpu(imageOps, cur, ch, h, w, p2, c2, u2, isCompVis, out ch, out h, out w);
+        imageOps.Free(cur); cur = next2;
+
+        (string p3, int c3, bool u3) = isCompVis ? ($"{dec}.up.1", 256, true) : ($"{dec}.up_blocks.2", 256, true);
+        var next3 = UpBlockGpu(imageOps, cur, ch, h, w, p3, c3, u3, isCompVis, out ch, out h, out w);
+        imageOps.Free(cur); cur = next3;
+
+        (string p4, int c4, bool u4) = isCompVis ? ($"{dec}.up.0", 128, false) : ($"{dec}.up_blocks.3", 128, false);
+        var next4 = UpBlockGpu(imageOps, cur, ch, h, w, p4, c4, u4, isCompVis, out ch, out h, out w);
+        imageOps.Free(cur); cur = next4;
+
+        string normName = _st.Contains(Resolve("decoder.conv_norm_out.weight")) ? Resolve("decoder.conv_norm_out")
+                                                                                 : Resolve("decoder.norm_out");
+        var normed = GroupNormSiluTensor(imageOps, normName, cur, ch, h * w);
+        imageOps.Free(cur);
+
+        string convOutKey = Resolve("decoder.conv_out");
+        var final = ConvNativeTensor(imageOps, convOutKey, normed, ch, h, w, 3, 3);
+        imageOps.Free(normed);
+
+        outCh = 3; outH = h; outW = w;
+        return final;
     }
 
     public void Dispose()
