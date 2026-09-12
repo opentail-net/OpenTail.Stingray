@@ -575,6 +575,24 @@ working correctly for this checkpoint.
   directly, and it uses `audio_config`, not `encoder_config`, at all. `audio.cpp`'s model spec
   expects a config schema the actual published checkpoint doesn't have. Not fixable from this side;
   documented rather than forced.
+- **`voxtral_realtime`**: already covered (see the "Voxtral-Mini-4B-Realtime" row above, ratio
+  0.02x). Re-ran anyway as a cross-check with the real `mistralai/Voxtral-Mini-4B-Realtime-2602`
+  config bundle (needed `generation_config.json`/`processor_config.json`, both fetched from the
+  real repo) — correct, byte-for-content-identical transcript (`Some call me nature. Others call
+  me Mother Nature. I've been here for over 4.5 billion years. 22,500 times longer than you.`),
+  64.6s single run (different from the existing 24.05s figure, likely a different weight-type
+  default between the two invocations — not investigated further since a real comparison for this
+  checkpoint already existed).
+- **`vibevoice_asr`**: real, independently-confirmed CORRUPT checkpoint, not a codebase or
+  audio.cpp bug. `audio.cpp` failed with `GGUF tensor data range is out of bounds`; this project's
+  OWN GGUF parser (`stingray list-tensors`) independently rejected the exact same file with
+  `Tensor 'model.language_model.layers.22.mlp.down_proj.weight' data ... exceeds shard 0 file size`
+  — the file is truncated by ~7.6MB relative to what its own tensor table declares. This is the
+  original download from the 11-checkpoint discovery (2026-09-06), never re-verified since. Not
+  re-downloaded (6.3GB) since this architecture also has zero wiring on the C# side (see
+  `docs/00-current-work.md`'s 11-checkpoint entry) — a re-download would only enable a one-sided
+  C++-only check with no C# comparison possible anyway, not worth the bandwidth/disk cost this
+  pass.
 
 ---
 
