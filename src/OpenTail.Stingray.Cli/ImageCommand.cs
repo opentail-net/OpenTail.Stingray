@@ -1277,6 +1277,7 @@ public sealed class ImageCommand : Command<ImageCommand.Settings>
                 VulkanBackend.PrintGpuProfile("SDXL full run");
                 VulkanBackend.PrintGpuMemoryProfile("SDXL full run");
             }
+            SafetensorsLoader.PrintWeightReadProfile("SDXL full run");
 
             sw.Stop();
             AnsiConsole.MarkupLine($"[green]✓[/] Image saved: [cyan]{Markup.Escape(Path.GetFullPath(output))}[/] in [yellow]{sw.Elapsed.TotalSeconds:F1}s[/]");

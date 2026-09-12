@@ -1,5 +1,6 @@
 using System.IO.MemoryMappedFiles;
 using System.Buffers.Binary;
+using System.Numerics.Tensors;
 
 namespace OpenTail.Stingray.Core;
 
@@ -251,20 +252,48 @@ public sealed class SafetensorsLoader : IWeightLoader
     }
 
     /// <summary>Read a tensor as float32. Handles F32, F16, BF16, F8_E4M3, F8_E5M2.</summary>
+    // Real, permanent, env-var-gated profiling (2026-09-12, docs/068 Stage A1) -- splits ReadF32
+    // into its 3 real phases instead of treating "cold weight read" as one opaque cost. Answers
+    // the real question the CPU-side overhead plan needs before choosing a fix: is the SDXL-Turbo
+    // cold-cache cost (measured ~14-16s on denoise step 1) dominated by disk I/O, dequant compute,
+    // or allocation -- each implies a different real fix, and guessing wrong wastes the rest of
+    // that plan on the wrong track.
+    private static bool s_profWeightRead = Environment.GetEnvironmentVariable("STINGRAY_PROFILE_WEIGHT_READ") == "1";
+    private static double s_profLookupMs, s_profDiskMs, s_profConvertMs;
+    private static long s_profReadCount, s_profBytesRead, s_profFloatsProduced;
+
+    /// <summary>Prints the accumulated real weight-read profile (metadata lookup / disk I/O /
+    /// dtype conversion, each timed separately) if <c>STINGRAY_PROFILE_WEIGHT_READ=1</c> is set;
+    /// a no-op otherwise. Static and cumulative across every <see cref="SafetensorsLoader"/>
+    /// instance in the process (matches this codebase's other <c>STINGRAY_PROFILE_*</c> counters).</summary>
+    public static void PrintWeightReadProfile(string label)
+    {
+        if (!s_profWeightRead) return;
+        double totalMs = s_profLookupMs + s_profDiskMs + s_profConvertMs;
+        double gb = s_profBytesRead / (1024.0 * 1024.0 * 1024.0);
+        Console.Error.WriteLine(
+            $"[WeightRead:{label}] reads={s_profReadCount} bytes={gb:F3}GB floats={s_profFloatsProduced:N0} " +
+            $"lookup={s_profLookupMs:F1}ms disk={s_profDiskMs:F1}ms convert={s_profConvertMs:F1}ms total={totalMs:F1}ms " +
+            $"({(totalMs > 0 ? gb / (totalMs / 1000.0) : 0):F2}GB/s disk-equiv, {(totalMs > 0 ? s_profFloatsProduced / (totalMs / 1000.0) / 1e6 : 0):F1}M floats/s)");
+    }
+
     public float[] ReadF32(string name)
     {
+        var swLookup = s_profWeightRead ? System.Diagnostics.Stopwatch.StartNew() : null;
         if (!_tensors.TryGetValue(name, out var info))
             throw new KeyNotFoundException($"Safetensors tensor not found: '{name}'");
 
         long byteLen = info.End - info.Start;
         var raw = new byte[checked((int)byteLen)];
         var (file, dataOffset) = _shards[info.ShardIndex];
+        if (swLookup is not null) { s_profLookupMs += swLookup.Elapsed.TotalMilliseconds; swLookup.Restart(); }
 
         lock (file)
         {
             file.Seek(dataOffset + info.Start, SeekOrigin.Begin);
             file.ReadExactly(raw);
         }
+        if (swLookup is not null) { s_profDiskMs += swLookup.Elapsed.TotalMilliseconds; swLookup.Restart(); }
 
         int count  = checked((int)info.ElementCount);
         var result = new float[count];
@@ -275,8 +304,17 @@ public sealed class SafetensorsLoader : IWeightLoader
                 MemoryMarshal.Cast<byte, float>(raw).CopyTo(result);
                 break;
             case "F16":
+                // Real fix (2026-09-12, docs/068 Stage A1): this scalar per-element loop was
+                // confirmed (not assumed) to be the dominant cost in SDXL-Turbo's cold-weight-read
+                // path -- STINGRAY_PROFILE_WEIGHT_READ=1 measured 11.4s of a 13.4s total weight-read
+                // cost as F16->F32 "convert" (dequant), 6.4x more than the 1.8s disk read itself,
+                // for a real checkpoint's worth of weights (6.4GB, ~3.4B floats @ 256.5M floats/s
+                // scalar). TensorPrimitives.ConvertToSingle is real, vectorized (SIMD-widening)
+                // .NET, the direct mirror of TensorPrimitives.ConvertToHalf already used elsewhere
+                // in this codebase for the opposite direction -- same real win pattern, not a new
+                // technique.
                 var f16 = MemoryMarshal.Cast<byte, Half>(raw);
-                for (int i = 0; i < count; i++) result[i] = (float)f16[i];
+                TensorPrimitives.ConvertToSingle(f16, result);
                 break;
             case "BF16":
                 var bf16 = MemoryMarshal.Cast<byte, ushort>(raw);
@@ -297,6 +335,13 @@ public sealed class SafetensorsLoader : IWeightLoader
                 throw new NotSupportedException($"Safetensors dtype '{info.Dtype}' not supported.");
         }
 
+        if (swLookup is not null)
+        {
+            s_profConvertMs += swLookup.Elapsed.TotalMilliseconds;
+            Interlocked.Increment(ref s_profReadCount);
+            Interlocked.Add(ref s_profBytesRead, byteLen);
+            Interlocked.Add(ref s_profFloatsProduced, count);
+        }
         return result;
     }
 

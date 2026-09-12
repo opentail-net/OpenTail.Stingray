@@ -50,7 +50,34 @@ either outcome; measure the convolution/residency path first, since it may make 
 Fixed seed, real end-to-end run, record: full CPU/GPU stage times, and an output image hash (or
 saved PNG) to pixel-diff every later stage against. This is the reference point for the whole plan.
 
-### A1 — Instrument `CachedWeightReader` (4-way split, not 2)
+### A0/A1 — DONE 2026-09-12, fixed same-day
+
+A0 baseline recorded: SDXL-Turbo 512×512/4-steps/seed=42, 77.0-77.2s total, output PNG SHA-256
+`5a738c6f8ccc2551be0783923ed40ed566340b4a95b2ee8742d4b4d31383952f`.
+
+A1 real result (`STINGRAY_PROFILE_WEIGHT_READ=1` added to `SafetensorsLoader.ReadF32`, splitting
+metadata lookup / disk I/O / dtype conversion): of a 13.4s total weight-read cost (6.4GB, ~3.4B
+floats), disk I/O was only **1.8s** — the dominant cost was `convert` (dequant) at **11.4s**, a
+plain scalar F16→F32 loop achieving only ~256M floats/s. **This answers the plan's own open
+question decisively**: dequant compute, not disk I/O, dominates — so weight prefetch (Stage
+C) would not help (moving *when* a fixed CPU cost happens doesn't reduce it), exactly the risk the
+plan's C1 gate was written to catch.
+
+**Fixed same-day** (real, vectorized, verified byte-identical output): replaced the scalar loop
+with `TensorPrimitives.ConvertToSingle` (required adding the `System.Numerics.Tensors` package
+reference to `OpenTail.Stingray.Core`, which didn't have it — other projects already did). Real
+measurement: convert 11.4s→2.4s (4.7x faster), total wall time 77.0s→67.6s (~12% faster), SHA-256
+of the output PNG unchanged (byte-identical, zero numerical drift). This fix is backend-independent
+(pure CPU dequant) and applies to every safetensors-backed pipeline in this codebase, not just
+SDXL. See `PerformanceLeague.md`'s Stage A1 row for full detail.
+
+**Remaining from A1 for a future pass, not blocking**: A1's per-weight instrumentation (first-
+access order, per-tensor timing) described in the original plan wasn't built — the aggregate
+numbers above already answered the "disk vs. dequant vs. allocation" question decisively enough
+to act on, so the more granular per-weight breakdown wasn't needed to make this call. A2 (VAE
+instrumentation) and A3 (text encode split) also remain for whoever picks up Stage B.
+
+### A1 (original wording, superseded by the above) — Instrument `CachedWeightReader` (4-way split, not 2)
 Not just "disk read + dequant" — measure separately:
 - safetensors metadata/lookup time
 - raw tensor bytes read (disk I/O)
