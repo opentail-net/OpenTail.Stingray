@@ -102,6 +102,10 @@
 | SmolLM2-135M-Instruct Q4_K_M | decode (554 tok prompt, 24 tok gen) | CPU | 39.6 t/s | 316.65 t/s | **0.125x** | 2026-09-11 | new coverage; stingray CLI + llama-bench, best-of-3. Extremely low — the smallest dense model tested anywhere in this doc, confirming the small-model-decode-weakness pattern first seen in the Qwen2.5 family. |
 | SmolLM2-360M-Instruct Q4_K_M | prefill (554 tok) | CPU | 369.5 t/s | 379.78 t/s | **0.97x** | 2026-09-11 | new coverage; stingray CLI + llama-bench, best-of-3. Near-parity prefill at this size. |
 | SmolLM2-360M-Instruct Q4_K_M | decode (554 tok prompt, 24 tok gen) | CPU | 26.0 t/s | 135.04 t/s | **0.19x** | 2026-09-11 | new coverage; stingray CLI + llama-bench, best-of-3. Also low, same pattern. |
+| SmolLM2-135M-Instruct Q4_K_M | prefill (554 tok) | Vulkan iGPU | 59.1 t/s | — | — | 2026-09-13 | new coverage; no llama.cpp Vulkan ref. Worse than CPU (59.1 vs 1000.4 t/s) — smallest model tested on Vulkan, dispatch overhead dominates completely at this size |
+| SmolLM2-135M-Instruct Q4_K_M | decode (554 tok prompt, 24 tok gen) | Vulkan iGPU | 52.9 t/s | — | — | 2026-09-13 | new coverage; also worse than CPU (52.9 vs 39.6 t/s is actually higher here — decode is the one Vulkan wins at this size, unlike prefill) |
+| SmolLM2-360M-Instruct Q4_K_M | prefill (554 tok) | Vulkan iGPU | 28.3 t/s | — | — | 2026-09-13 | new coverage; no llama.cpp Vulkan ref. Worse than CPU (28.3 vs 369.5 t/s) |
+| SmolLM2-360M-Instruct Q4_K_M | decode (554 tok prompt, 24 tok gen) | Vulkan iGPU | 26.4 t/s | — | — | 2026-09-13 | new coverage; close to/slightly above CPU decode (26.4 vs 26.0 t/s) |
 
 > **Small-model-decode-weakness pattern, now confirmed across two independent architecture
 > families** (Qwen2.5 and SmolLM2/Llama): decode ratio at the smallest sizes (0.125-0.31x at
