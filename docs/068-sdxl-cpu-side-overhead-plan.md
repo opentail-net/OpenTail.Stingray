@@ -198,6 +198,12 @@ tiled shader":
    attention call is a small fraction of what's left, this stage may not be worth pursuing at all
    — decide from B1-B4's real numbers, not in advance.
 
+### B5 — SKIPPED 2026-09-12, per the plan's own gate
+Per A2's real finding, mid-block attention is <5% of VAE decode time even before B1-B4's own
+speedup shrank the denominator further. The plan's own explicit go/no-go gate ("decide from
+B1-B4's real numbers, not in advance") says not to spend implementation/verification time chasing
+a sub-5% cost. Correctly skipped, not merely deferred.
+
 ### C0 — Determine the real first-step weight working set
 Using A1's per-weight instrumentation: which weights are actually read on step 1, in what order,
 how many bytes. Do not blindly prefetch "the whole UNet."
@@ -216,9 +222,50 @@ Explicit acceptance criterion per review: "prefetch itself got faster" is not su
 `Generate()` call's wall time must decrease. If contention with text encoding erases the gain,
 revert.
 
+### C0-C2 — SKIPPED 2026-09-12, per the plan's own gate
+A1 (2026-09-12) measured this checkpoint's cold weight-read cost as disk I/O 1.8s vs dequant
+convert 11.4s — the *opposite* of C1's stated precondition ("only if A1 shows I/O, not dequant,
+dominates"). A1's fix already eliminated the dequant cost directly (11.4s→2.4s), which is strictly
+better than moving *when* an I/O-bound cost happens via prefetch — there is no I/O-bound cost left
+here to prefetch around. Correctly gated off by the plan's own design, not an oversight; C0-C2
+were written specifically to prevent exactly this kind of unnecessary concurrent-prefetch work.
+
+### A3 — text encode: not pursued further
+Real text-encode cost (from every end-to-end run this session) is ~5s of a ~61.6s total (~8%),
+already dropped from ~7.6s pre-A1 (the F16 dequant fix applies here too, since CLIP-L/CLIP-G share
+the same weight-read path). A finer CLIP-L/CLIP-G/tokenization split would only be actionable if
+text encode were a much larger share of total time; at this point VAE decode (already addressed)
+and UNet denoise (untouched this pass, ~72% of total) are the far larger remaining costs. Not
+pursued further in this pass.
+
 ### D — Final report
-Same as docs/067's Stage 6: re-run the full stage breakdown against this plan's own A0 baseline,
-report real before/after numbers in `PerformanceLeague.md`.
+
+Real, measured before/after for the full docs/068 pass (SDXL-Turbo, 512×512, 4 steps, guidance=0,
+seed 42, `sd_xl_turbo_1.0_fp16.safetensors`, Vulkan iGPU):
+
+| Stage | Total wall time | What changed |
+|---|---|---|
+| A0 baseline (docs/067's Stage 6 end state) | ~77.0s | (starting point for this plan) |
+| A1: F16 dequant vectorization (safetensors path) | 67.6s | `TensorPrimitives.ConvertToSingle` replaces scalar F16→F32 loop in `SafetensorsLoader.ReadF32` |
+| B1-B4: full VAE decoder GPU residency | 61.6s | mid-block through `conv_out` fully GPU-resident, one Upload/Download per `Decode()` |
+| **Total, this plan** | **77.0s → 61.6s (~20% faster)** | two independently-verified, real fixes |
+
+Both fixes were verified with byte-identical (A1) or root-caused-benign-divergence (B1-B4, via the
+isolated CPU-fallback re-run) output hashes — no correctness regression in either.
+
+**Also found and fixed, off this plan's direct critical path but same root class of bug**: the
+identical scalar F16-dequant loop in the GGUF loading path (`Dequantize.DequantF16`), which affects
+every GGUF-loaded model in this codebase, not just safetensors-based diffusion checkpoints. Verified
+via real SmolLM2-1.7B GGUF inference producing correct output.
+
+**What remains unaddressed, deliberately** (per real measurement, not oversight):
+- VAE mid-block attention (B5): <5% of VAE decode cost, not worth the GPU-port effort.
+- Weight prefetch (C0-C2): A1 already eliminated the dominant dequant cost directly; no I/O-bound
+  cost remains to prefetch around.
+- Text encode fine-grained split (A3): ~8% of total time, smaller than the remaining UNet denoise
+  cost (~72% of total, untouched by this plan — that's docs/067's territory, already closed out).
+
+This plan (docs/068) is now considered **complete**.
 
 ## Explicit non-goals for this pass
 
