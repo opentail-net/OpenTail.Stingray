@@ -1,19 +1,19 @@
 # SDXL CPU-side (non-Vulkan) overhead — implementation plan
 
-**Status**: plan only, not yet implemented. Written 2026-09-12, follow-on to
-`docs/067-sdxl-unet-gpu-residency-plan.md` (now complete — see its Stage 6 final report).
+**Status**: approved for implementation 2026-09-12, after external review. Revision 2 (folds in
+review corrections). **Reframed per review**: this isn't really a "CPU optimization" plan — it's
+"finish eliminating CPU orchestration from the VAE" (a GPU-residency track, same family as
+docs/067) plus a separate "investigate first-use weight materialization" track (a CPU/I/O overlap
+question). Kept as two explicitly separate tracks so measurements stay attributable.
 
 ## Why
 
-The GPU residency plan took SDXL-Turbo's real 512×512/4-step Vulkan run from 137.4s to ~77-79s
-(~42-44% faster) by removing per-op CPU↔GPU round-trips, with zero shader math changes. Once that
-was done, re-running the same `STINGRAY_PROFILE_GPU_SPLIT=1` breakdown showed something new:
-`stagingCopy` (~6.8s) + `submitWait` (~1s) is now only **~10%** of the ~77s total. **Over 85% of
-the remaining wall time is CPU-side work that never touches Vulkan at all.** That's a real,
-different bottleneck than anything the residency plan addressed, and it needs its own investigation
-rather than assuming the same fixes apply.
+The GPU residency plan (docs/067) took SDXL-Turbo's real 512×512/4-step Vulkan run from 137.4s to
+~77-79s (~42-44% faster) by removing per-op CPU↔GPU round-trips, zero shader math changes. Once
+done, `STINGRAY_PROFILE_GPU_SPLIT=1` showed `stagingCopy`+`submitWait` are now only ~10% of the
+~77s total. **Over 85% of the remaining wall time never touches Vulkan at all.**
 
-## What the ~77s actually breaks down into (from existing stage-level `-v` logging, real measured)
+Real, measured stage breakdown (existing `-v` logging, real, not estimated):
 
 ```
 Text encode (CLIP-L + CLIP-G, cond+uncond):  ~7.5s
@@ -26,104 +26,135 @@ VAE decode:                                  ~19-20s
 Total:                                       ~77-79s
 ```
 
-Two things stand out immediately, both real and concrete, not guesses:
+Two real, concrete findings, not guesses:
+1. Step 1 costs ~14-16s more than steady-state — `CachedWeightReader.Get()`'s lazy first-access
+   read+cache (confirmed by reading the actual implementation).
+2. VAE decode (~19-20s, ~25% of the run) has NOT had the residency treatment
+   `SdxlUNet2DConditionModel` just got. `VaeDecoder` already has a per-block `ResBlockGpu` (the
+   actual precedent the whole UNet plan was modeled on) but no cross-block residency,
+   `DiffusionOps.Upsample2x` between blocks is still pure CPU (the UNet's analogous
+   `Upsample2xGpu` already exists and is proven), and the VAE's one mid-block attention call
+   (`MidAttnCompVis`) is CPU-only with no GPU path at all.
 
-1. **Step 1 costs ~14-16s more than steady-state (steps 2-4).** This gap is not attention or conv
-   compute — Stage 3b/4 already made those GPU-resident and fast. It's `CachedWeightReader.Get()`
-   (`src/OpenTail.Stingray.Diffusion/CachedWeightReader.cs`): every weight is read from the
-   safetensors file and cached **lazily, on first access** — the first denoising step is the first
-   time almost every UNet weight is ever touched in the process, so it eats a real, one-time
-   disk-read + dequant cost that every subsequent step skips.
-2. **VAE decode is ~19-20s, roughly a quarter of the whole run — and it has NOT been through the
-   residency treatment `SdxlUNet2DConditionModel` just got.** `VaeDecoder.Decode()`
-   (`src/OpenTail.Stingray.Diffusion/VaeDecoder.cs`) already has a per-block `ResBlockGpu` (built
-   earlier this session, the direct precedent the whole UNet residency plan was modeled on), but:
-   - `Decode()` still calls the public `ResBlock()` wrapper once per block, each one doing its own
-     Upload-at-entry/Download-at-exit — there is no cross-block residency (VaeDecoder is exactly
-     where the UNet was before Stage 4).
-   - `DiffusionOps.Upsample2x` between blocks is **pure CPU** (unlike the UNet's `Upsample2xGpu`,
-     added during Stage 4) — a real, silent CPU round-trip between every up-block.
-   - The VAE's mid-block attention (`MidAttnCompVis`, `VaeDecoder.cs`) is **CPU-only** — no GPU
-     path exists for it at all, unlike `SpatialTransformer`'s now-resident GPU attention.
+**Per review**: don't assume the composition of either number. "14-16s cold-start" could be disk
+I/O, dequant compute, allocation, or locking in very different proportions, and each implies a
+different fix. "VAE residency will help" is high-confidence for the conv/norm path (proven
+machinery) but NOT for the attention block, which has a real prior warning sign: the SDXL UNet's
+own attention-kernel work regressed twice (once by ~5x) before a *different* architectural context
+made it a win. VAE's attention shape is different (single call, 64×64 resolution) — don't assume
+either outcome; measure the convolution/residency path first, since it may make attention moot.
 
-Both are concrete, bounded, already-precedented fixes — not new architecture.
+## Revised roadmap (per review, gated by real measurement at every step)
 
-## Staged plan
+### A0 — Establish a clean baseline
+Fixed seed, real end-to-end run, record: full CPU/GPU stage times, and an output image hash (or
+saved PNG) to pixel-diff every later stage against. This is the reference point for the whole plan.
 
-### Stage A — Real profiling of the non-Vulkan CPU time (measure first, same discipline as docs/067)
+### A1 — Instrument `CachedWeightReader` (4-way split, not 2)
+Not just "disk read + dequant" — measure separately:
+- safetensors metadata/lookup time
+- raw tensor bytes read (disk I/O)
+- F16/quantized → F32 conversion (dequant compute)
+- cache insertion / array allocation
 
-Before assuming the two items above account for all 85%, get a real breakdown. Add lightweight,
-gated timing (same `STINGRAY_PROFILE_*` convention used throughout this codebase) around:
-- `CachedWeightReader.Get()`'s cold-miss path specifically (disk read + dequant time, separated
-  from cache-hit time) — confirm it explains most of step 1's ~14-16s excess.
-- `VaeDecoder.Decode()`'s CPU-only pieces (`Upsample2x`, `MidAttnCompVis`, any remaining
-  `DiffusionOps.GroupNorm`/`SiluInPlace` calls not already covered by `ResBlockGpu`).
-- The final PNG encode step in the CLI (`ImageCommand.cs`) — cheap to check, not yet measured at
-  all; rule it in or out rather than assuming it's negligible.
-- Text encode's own internal split (CLIP-L vs CLIP-G, tokenization vs. forward pass) — lower
-  priority than the two big items above, but real and unmeasured.
+Also record, per cold miss: weight name, first-access order, byte count, output float count. This
+gives real throughput numbers (time/GB, time/million floats) that reveal whether the bottleneck is
+storage bandwidth, dequant CPU cost, allocation overhead, or many-tiny-reads — each implies a
+different fix, and guessing wrong wastes the rest of the plan on the wrong track.
 
-Do not proceed to Stage B/C's specific fixes until this confirms where the time actually is —
-matching the exact lesson the GPU residency plan itself just relearned (the "GPU is slow" framing
-was wrong; don't repeat that mistake here in a new "CPU is just slow" framing without a real
-breakdown).
+### A2 — Instrument VAE's real breakdown
+Time `VaeDecoder.Decode()`'s existing pieces separately: per-`ResBlock` (GPU-resident vs CPU
+fallback), `Upsample2x`, `MidAttnCompVis`, any remaining CPU `GroupNorm`/`SiluInPlace` calls not
+already covered by `ResBlockGpu`, and every CPU↔GPU boundary crossing (this is new, per review:
+`VaeDecoder` is architected around `float[]`, so also count/time `float[]` allocations, `.Clone()`
+calls, and Tensor↔float[] upload/download conversions — even if not dominant, this is the real
+baseline to compare the residency rewrite against).
 
-### Stage B — VAE decoder residency (apply the proven Stage 2-4 methodology)
+### A3 — Instrument text encode
+CLIP-L vs CLIP-G split, tokenization vs. forward pass. Lower priority than A1/A2, real and
+currently unmeasured.
 
-This is the highest-confidence lever: `VaeDecoder` needs exactly what `SdxlUNet2DConditionModel`
-already got, using primitives that already exist from the UNet work (no new shader math required
-except the mid-block attention item below):
+**Gate**: do not proceed past A-stages until real numbers are in. This is the same discipline the
+GPU residency plan used (measure before attempting a fix) — reapplied here rather than assumed
+already satisfied just because it worked once.
 
-1. **Cross-block residency**: rewrite `VaeDecoder.Decode()`'s block sequence to keep `z` as a GPU
-   `Tensor` throughout (mirroring `SdxlUNet2DConditionModel.ForwardGpu`), uploading the input latent
-   once and downloading the final RGB output once, instead of round-tripping at every `ResBlock()`
-   call.
-2. **GPU upsample**: swap `DiffusionOps.Upsample2x` for the UNet's existing `Upsample2xGpu`
-   (`IImageOpsBackend`, already implemented and used) — this primitive already exists, this is
-   pure wiring, not new work.
-3. **Mid-block attention residency**: `MidAttnCompVis` is a single self-attention call (VAE has
-   exactly one, at the bottleneck resolution, unlike the UNet's many `SpatialTransformer` calls) —
-   port it to use the existing `MultiHeadAttentionTiled` GPU primitive (proven to win in a resident
-   context per docs/067 Stage 3b) plus `LayerNormGpu`/`LinGpuTensor` for its surrounding norm/QKV
-   projections, following the exact `AttentionIsland` pattern already built for the UNet.
+### B0 — Isolated parity test: `Upsample2x` vs `Upsample2xGpu`
+Per review: the primitive exists, but do not call swapping it "pure wiring" without verifying
+numerical semantics first (coordinate mapping, channel layout, edge behavior, output ordering) via
+a real tensor-level parity test — the same rigor every other GPU primitive in docs/067 got before
+being wired into the real pipeline.
 
-Verification: same discipline as docs/067 — real end-to-end run at a fixed seed, pixel-diff against
-the current baseline image, real before/after timing via the existing `-v` stage logging, commit
-each real sub-step separately.
+### B1 — VAE mid-block + one up-block residency (small, isolated, measured)
+Per review: do NOT rewrite the whole VAE in one shot. Make the mid-block and the first up-block
+GPU-resident (chaining `ResBlockGpu` calls without a CPU round-trip between them, using B0's
+verified `Upsample2xGpu`), leave the rest of `Decode()` as-is, measure. If this alone cuts VAE
+decode meaningfully (e.g. 20s→11s), that's a strong, clean signal before committing to the full
+rewrite.
 
-### Stage C — Overlap weight loading with text encoding
+### B2 — VAE remaining ResBlocks resident
+Extend B1's pattern to the rest of the down/up-block sequence, measure incrementally.
 
-Text encode (~7.5s) and the UNet/VAE's first weight touch are currently strictly sequential
-(`SdxlPipeline.Generate`'s stage order: encode text, *then* start denoising, which is when
-`CachedWeightReader` first reads UNet weights). These are independent — text encoding never touches
-UNet/VAE weights. If Stage A's profiling confirms the cold-cache cost is real disk I/O + dequant
-(not, say, GPU pipeline compilation), a background prefetch (`Task.Run` reading+caching the UNet's
-weight tensors while CLIP-L/CLIP-G encode the prompt) could hide some or all of that ~14-16s behind
-work that's happening anyway. Real risk to check: whether `CachedWeightReader`/`IWeightLoader` are
-thread-safe for concurrent reads from a background prefetch thread while the main thread is still
-using the object for text encoding (they're different weight prefixes/objects today, likely safe,
-but verify rather than assume before wiring up background reads).
+### B3 — GPU upsample wired throughout
+Apply B0's verified `Upsample2xGpu` at every remaining upsample call site, measure.
 
-### Stage D — Re-profile and report
+### B4 — Remove remaining VAE CPU↔GPU boundaries
+Final cleanup pass: only one Upload (input latent) and one Download (final RGB) for the whole
+`Decode()` call, matching `ForwardGpu`'s shape. Measure.
 
-Same as docs/067's Stage 6: re-run `-v` stage timing (and Stage A's new CPU breakdown) against the
-~77-79s baseline this plan starts from, report real before/after numbers in `PerformanceLeague.md`.
+### B5 — VAE mid-block attention: real experiment, not an assumption
+Per review, explicitly reframed as an experiment with a real go/no-go gate, not "wire in the proven
+tiled shader":
+1. Measure the CPU `MidAttnCompVis` call's real cost in isolation (from A2).
+2. Implement a GPU version (norm/QKV via existing `LayerNormGpu`/`LinGpuTensor`, attention via
+   `MultiHeadAttentionTiled`, following the UNet's `AttentionIsland` pattern).
+3. Verify via an isolated numerical parity test first.
+4. Measure real end-to-end VAE timing with it wired in.
+5. **Keep only if faster.** If B1-B4 already reduced VAE decode enough that this single 64×64
+   attention call is a small fraction of what's left, this stage may not be worth pursuing at all
+   — decide from B1-B4's real numbers, not in advance.
+
+### C0 — Determine the real first-step weight working set
+Using A1's per-weight instrumentation: which weights are actually read on step 1, in what order,
+how many bytes. Do not blindly prefetch "the whole UNet."
+
+### C1 — Prototype background weight prefetch (only if A1 shows I/O, not dequant, dominates)
+Per review, this is now explicitly gated behind A1's finding, not attempted regardless. Also
+resolve, before writing any concurrent code: is `CachedWeightReader`'s `lock (_cache)` (which wraps
+both the dictionary lookup AND the `ReadF32` call) going to serialize a background prefetch against
+the main thread's own reads? Is the underlying `IWeightLoader`/file reader safe for concurrent
+reads at all? Does CLIP-L/CLIP-G's own text encoding already saturate available CPU cores, such
+that background dequant work would slow text encoding down more than it saves — a real risk on
+this Ryzen 7 5700G, not hypothetical.
+
+### C2 — Only retain if TOTAL pipeline wall time improves
+Explicit acceptance criterion per review: "prefetch itself got faster" is not sufficient; the whole
+`Generate()` call's wall time must decrease. If contention with text encoding erases the gain,
+revert.
+
+### D — Final report
+Same as docs/067's Stage 6: re-run the full stage breakdown against this plan's own A0 baseline,
+report real before/after numbers in `PerformanceLeague.md`.
 
 ## Explicit non-goals for this pass
 
-- Rewriting `CachedWeightReader`'s dequantization itself to be faster (e.g. SIMD dequant paths) —
-  only pursue if Stage A's profiling shows dequant compute (not disk I/O) dominates the cold-cache
-  cost; don't assume which one it is.
-- PNG/image encoding optimization — only pursue if Stage A's profiling shows it's non-negligible.
-- Any further Vulkan/GPU-residency work — that plan (docs/067) is complete; this plan is
-  specifically about the newly-exposed non-Vulkan CPU time.
-- Multi-request/server-side weight-cache sharing across generations — out of scope; this plan is
-  about one `Generate()` call's own internal overlap opportunities, not cross-request caching
-  (which is a different, larger architectural question for `SdxlPipeline`'s lifetime management).
+- **Do not pursue further denoise-step optimization** (steps 2-4 are already ~9s steady-state,
+  proof the residency work succeeded) unless A-stage profiling shows real, material CPU-side cost
+  remains there specifically — otherwise this plan drifts back into re-litigating docs/067's
+  already-closed work.
+- Rewriting `CachedWeightReader`'s dequantization to be faster (SIMD dequant paths etc.) — only if
+  A1 shows dequant compute, not disk I/O, dominates the cold-cache cost.
+- PNG/image encoding optimization — only if A-stage profiling shows it's non-negligible (not
+  assumed either way yet).
+- Any further Vulkan/GPU-residency work on the UNet itself — docs/067 is complete.
+- Multi-request/server-side weight-cache sharing across separate generations — a different,
+  larger architectural question for `SdxlPipeline`'s lifetime management, out of scope here.
+- VAE attention GPU port is explicitly NOT assumed to be a win (see B5) — treat as a real
+  experiment with a keep/revert gate, following the UNet attention work's own history of two
+  regressions before one context made it a genuine win.
 
-## Verification discipline (same as docs/067)
+## Verification discipline (unchanged from docs/067)
 
-Every stage: real end-to-end run at a fixed seed, pixel-diff against the current baseline image,
-real before/after timing, commit separately with the required attribution footer. A stage that
-doesn't measurably help or regresses gets reverted and documented as a negative result, not
-silently absorbed into the next stage.
+Every stage: real end-to-end run at a fixed seed, pixel-diff against A0's baseline image, real
+before/after timing, commit separately with the required attribution footer. A stage that doesn't
+measurably help or regresses gets reverted and documented as a negative result, not silently
+absorbed into the next stage.
