@@ -314,16 +314,30 @@ gaps requiring non-trivial work, not quick fixes):
    math (norm applied after attn/ffn, before the residual add) inside `HybridForwardPass`, not just
    renaming a tensor lookup — real architectural work, out of scope for this pass. Worked around for
    benchmarking via `-g 0` (forces CPU-only, bypasses `HybridForwardPass` entirely).
-2. **Real chat template (from the GGUF's own `tokenizer.chat_template`) fails to render**: a
-   dict-literal role-mapping expression (`{'user': '<|user|>\n', 'assistant': ..., ...}`) is not
-   supported by `JinjaChatTemplate`'s expression evaluator, so it passes through unchanged, and the
-   template then throws `Unknown role: user`. Worked around for benchmarking via a minimal
-   `--chat-template` override (not a fix — the real official template still doesn't render).
+2. ~~**Real chat template (from the GGUF's own `tokenizer.chat_template`) fails to render**~~ —
+   **FIXED 2026-09-12, same day.** Root cause: `JinjaChatTemplate` had no dict-literal parsing at
+   all (EXAONE's template builds a `{'user': '<|user|>\n', ...}` role-indicator map), AND `x in
+   dict` always evaluated `false` regardless of content (`ContainsOp` had no `Dictionary` case) —
+   so `role not in role_indicators` was always true and every role always raised `Unknown role`.
+   Added `DictExpr` parsing (mirrors the existing `ListExpr`) and dict-key membership to
+   `ContainsOp`. Verified: the REAL official template now renders correctly end-to-end with no
+   override needed, and all 58 pre-existing `JinjaChatTemplateTests` still pass (no regression).
 
 | Model | Scenario | Backend | C# (OT, t/s) | Performance Check | Source |
 |---|---|---|---:|---|---|
-| EXAONE-4.5-33B Q4_K_M | prefill (9 tok) | CPU (`-g 0`, forced) | 1.5 t/s | 2026-09-12 | new coverage; first timing ever recorded for this checkpoint. Real, coherent output ("Okay, the user asked for the capital of France. That's a straightforward question—Paris is the answer...") via a `--chat-template` override working around bug 2 above |
+| EXAONE-4.5-33B Q4_K_M | prefill (15 tok) | CPU (`-g 0`, forced) | 1.6 t/s | 2026-09-12 | new coverage; first timing ever recorded for this checkpoint. Real, coherent output using the REAL official chat template (post-fix, no override): "Okay, the user is asking what the capital of France is. That seems straightforward—Paris is the obvious answer here..." |
 | EXAONE-4.5-33B Q4_K_M | decode (40 tok gen) | CPU (`-g 0`, forced) | 1.7 t/s | 2026-09-12 | same run; slow but expected for a 33B Q4_K_M model on this CPU with no GPU offload — `HybridForwardPass`'s bug (above) is what's blocking the much faster GPU-layer-split path from being measured at all |
+
+**Vision path, root-caused, not fixed this pass**: the EXAONE-4.5 image projector itself works
+correctly (324 soft tokens, 5120-dim, matches the text backbone's embedding dim exactly — no
+dimension mismatch), but the real (now-rendering) template expects OpenAI-style structured
+multi-part message content (`content: [{'type':'image'}, {'type':'text', ...}]`, checked via
+`content.type == 'image'`) to emit its `<vision><|image_pad|></vision>` marker — this CLI's
+`--image` flag only supports flat-string content with a text-substituted marker
+(`RunCommand.cs`'s `userMsg` construction), which never matches `content.type` since content is a
+plain string, not a list of typed parts. A real, separate CLI-level feature gap (structured
+multi-part message content), not a vision-encoder or template-engine bug — both now confirmed
+working correctly for this checkpoint.
 
 ---
 

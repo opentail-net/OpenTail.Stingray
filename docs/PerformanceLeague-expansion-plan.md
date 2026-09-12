@@ -94,17 +94,23 @@ above (lower priority, since coverage of what's already downloaded matters more 
       checkpoint (`huihui-ai/...`, `bartowski/...`, `mradermacher/...`) returns 401 Unauthorized.
       Also likely a very large MoE checkpoint (GLM-4.5V-class) that may not fit in 64GB RAM even if
       found — not pursued further.
-- [x] EXAONE 4.5-VL — TESTED 2026-09-12. Text-only CPU path works (real coherent output, see
-      PerformanceLeague.md's new "EXAONE-4.5-33B" section) after working around two real bugs
-      (`HybridForwardPass`'s missing post-norm support, forced off via `-g 0`; the official chat
-      template's unsupported dict-literal role map, worked around with `--chat-template`). The
-      vision/image path was also tried: the projector itself works correctly (324 soft tokens,
-      5120-dim, matches the text backbone's embedding dim exactly — no dimension-mismatch error),
-      but full end-to-end image generation is still blocked because the same chat-template gap
-      also breaks the `<image>`-placeholder token count check even with a custom template override
-      (rendered output doesn't preserve the placeholder marker correctly through the override path).
-      Real conclusion: the vision encoder itself is verified working; what's missing is a genuine
-      `JinjaChatTemplate` fix for EXAONE's dict-literal template syntax, not a vision-side bug.
+- [x] EXAONE 4.5-VL — TESTED 2026-09-12. Text-only CPU path now works with the REAL official
+      template end to end (real coherent output, see PerformanceLeague.md's "EXAONE-4.5-33B"
+      section) after two real fixes landed this pass in `JinjaChatTemplate` (dict literals, and
+      dict-key `in` membership — see the commit; EXAONE's template used both and neither was
+      supported at all, so every role always looked "unknown"). `HybridForwardPass`'s missing
+      post-norm support is still open (worked around via `-g 0` for CPU-only timing).
+      **Vision/image path, fully root-caused, not fixed this pass**: the projector itself works
+      correctly (324 soft tokens, 5120-dim, matches the text backbone's embedding dim exactly), but
+      the real template expects OpenAI-style STRUCTURED multi-part message content
+      (`content: [{'type': 'image'}, {'type': 'text', 'text': ...}]`, checked via
+      `content.type == 'image'` to emit `<vision><|image_pad|></vision>`) — this CLI's `--image`
+      flag only supports flat-string content with a marker text substitution (`RunCommand.cs`'s
+      `userMsg` construction), which never matches `content.type` at all (content is a string, not
+      a list of typed parts), so the image branch of the template never fires and 0 placeholders
+      are found. This is a real, separate, CLI-level feature gap (structured multi-part message
+      content), not a vision-encoder or chat-template-engine bug — both of those are now confirmed
+      working correctly for this checkpoint. Not attempted further this pass.
 - [ ] LLaVA-NeXT/OneVision, GLM-4V/OCR,
   Hunyuan-VL, Llama 4 Scout's vision path (mmproj already present:
   `mmproj-llama-4-scout-17b-16e-instruct-f16.gguf`, but the *text* checkpoint was explicitly
