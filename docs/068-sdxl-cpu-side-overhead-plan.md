@@ -129,7 +129,13 @@ currently unmeasured.
 GPU residency plan used (measure before attempting a fix) — reapplied here rather than assumed
 already satisfied just because it worked once.
 
-### B0 — Isolated parity test: `Upsample2x` vs `Upsample2xGpu`
+### B0 — DONE 2026-09-12: `Upsample2x` vs `Upsample2xGpu` parity confirmed
+
+Wrote `Upsample2xGpuParityTests` (3 shapes including real VAE mid-block and up.0
+resolution/channel counts). All pass, max abs diff 0 (exact match) -- confirmed identical
+coordinate mapping, channel layout, and edge behavior. Safe to treat as pure wiring in B1+.
+
+### B0 (original wording, superseded by the above) — Isolated parity test: `Upsample2x` vs `Upsample2xGpu`
 Per review: the primitive exists, but do not call swapping it "pure wiring" without verifying
 numerical semantics first (coordinate mapping, channel layout, edge behavior, output ordering) via
 a real tensor-level parity test — the same rigor every other GPU primitive in docs/067 got before
