@@ -94,9 +94,17 @@ above (lower priority, since coverage of what's already downloaded matters more 
       checkpoint (`huihui-ai/...`, `bartowski/...`, `mradermacher/...`) returns 401 Unauthorized.
       Also likely a very large MoE checkpoint (GLM-4.5V-class) that may not fit in 64GB RAM even if
       found — not pursued further.
-- [x] EXAONE 4.5-VL — download in progress 2026-09-12 (`LGAI-EXAONE/EXAONE-4.5-33B-GGUF` Q4_K_M,
-      exact match for the local mmproj's `general.name`="EXAONE 4.5 33B"). ~20GB, largest VL
-      checkpoint attempted this pass — see PerformanceLeague.md once tested.
+- [x] EXAONE 4.5-VL — TESTED 2026-09-12. Text-only CPU path works (real coherent output, see
+      PerformanceLeague.md's new "EXAONE-4.5-33B" section) after working around two real bugs
+      (`HybridForwardPass`'s missing post-norm support, forced off via `-g 0`; the official chat
+      template's unsupported dict-literal role map, worked around with `--chat-template`). The
+      vision/image path was also tried: the projector itself works correctly (324 soft tokens,
+      5120-dim, matches the text backbone's embedding dim exactly — no dimension-mismatch error),
+      but full end-to-end image generation is still blocked because the same chat-template gap
+      also breaks the `<image>`-placeholder token count check even with a custom template override
+      (rendered output doesn't preserve the placeholder marker correctly through the override path).
+      Real conclusion: the vision encoder itself is verified working; what's missing is a genuine
+      `JinjaChatTemplate` fix for EXAONE's dict-literal template syntax, not a vision-side bug.
 - [ ] LLaVA-NeXT/OneVision, GLM-4V/OCR,
   Hunyuan-VL, Llama 4 Scout's vision path (mmproj already present:
   `mmproj-llama-4-scout-17b-16e-instruct-f16.gguf`, but the *text* checkpoint was explicitly
