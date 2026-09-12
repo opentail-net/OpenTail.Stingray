@@ -761,55 +761,12 @@ internal static unsafe class DiffusionOps
 
     public static void MultiHeadAttention(float[] q, float[] k, float[] v, Span<float> output, int qSeq, int kvSeq, int numHeads, int headDim)
     {
-        float scale = 1.0f / MathF.Sqrt(headDim);
+        Wan.WanAttention.TiledMultiHeadAttention(q, k, v, output, qSeq, kvSeq, numHeads, headDim);
+    }
 
-        fixed (float* pQ = q, pK = k, pV = v, pOut = output)
-        {
-            float* pQLocal = pQ;
-            float* pKLocal = pK;
-            float* pVLocal = pV;
-            float* pOutLocal = pOut;
-
-            Parallel.For(0, numHeads, h =>
-            {
-                var scores = new float[kvSeq];
-                for (int i = 0; i < qSeq; i++)
-                {
-                    int qRow = (i * numHeads + h) * headDim;
-                    var qSpan = new ReadOnlySpan<float>(pQLocal + qRow, headDim);
-                    float maxScore = float.NegativeInfinity;
-
-                    for (int j = 0; j < kvSeq; j++)
-                    {
-                        int kRow = (j * numHeads + h) * headDim;
-                        var kSpan = new ReadOnlySpan<float>(pKLocal + kRow, headDim);
-                        float dot = TensorPrimitives.Dot(qSpan, kSpan) * scale;
-                        scores[j] = dot;
-                        if (dot > maxScore) maxScore = dot;
-                    }
-
-                    float sumExp = 0f;
-                    for (int j = 0; j < kvSeq; j++)
-                    {
-                        scores[j] = MathF.Exp(scores[j] - maxScore);
-                        sumExp += scores[j];
-                    }
-                    float invSum = 1f / sumExp;
-
-                    int outRow = (i * numHeads + h) * headDim;
-                    var outSpan = new Span<float>(pOutLocal + outRow, headDim);
-                    outSpan.Clear();
-                    for (int j = 0; j < kvSeq; j++)
-                    {
-                        float s = scores[j] * invSum;
-                        if (s == 0f) continue;
-                        int vRow = (j * numHeads + h) * headDim;
-                        var vSpan = new ReadOnlySpan<float>(pVLocal + vRow, headDim);
-                        TensorPrimitives.MultiplyAdd(vSpan, s, outSpan, outSpan);
-                    }
-                }
-            });
-        }
+    public static void MultiHeadAttention(ReadOnlySpan<float> q, ReadOnlySpan<float> k, ReadOnlySpan<float> v, Span<float> output, int qSeq, int kvSeq, int numHeads, int headDim)
+    {
+        Wan.WanAttention.TiledMultiHeadAttention(q, k, v, output, qSeq, kvSeq, numHeads, headDim);
     }
 
     /// <summary>

@@ -396,49 +396,7 @@ public sealed class HunyuanVideoModel : IDisposable
     {
         int dim = numHeads * headDim;
         var outF = new float[seqLen * dim];
-        float scale = 1.0f / MathF.Sqrt(headDim);
-        var scores = new float[seqLen];
-
-        for (int h = 0; h < numHeads; h++)
-        {
-            for (int i = 0; i < seqLen; i++)
-            {
-                int qOff = (i * numHeads + h) * headDim;
-                float maxScore = float.NegativeInfinity;
-
-                for (int j = 0; j < seqLen; j++)
-                {
-                    int kOff = (j * numHeads + h) * headDim;
-                    float dot = 0f;
-                    for (int d = 0; d < headDim; d++)
-                        dot += q[qOff + d] * k[kOff + d];
-                    dot *= scale;
-                    scores[j] = dot;
-                    if (dot > maxScore) maxScore = dot;
-                }
-
-                float sumExp = 0f;
-                for (int j = 0; j < seqLen; j++)
-                {
-                    float exp = MathF.Exp(scores[j] - maxScore);
-                    scores[j] = exp;
-                    sumExp += exp;
-                }
-                float invSum = 1.0f / (sumExp + 1e-8f);
-
-                int outOff = (i * numHeads + h) * headDim;
-                for (int d = 0; d < headDim; d++)
-                {
-                    float val = 0f;
-                    for (int j = 0; j < seqLen; j++)
-                    {
-                        int vOff = (j * numHeads + h) * headDim;
-                        val += scores[j] * invSum * v[vOff + d];
-                    }
-                    outF[outOff + d] = val;
-                }
-            }
-        }
+        Wan.WanAttention.TiledMultiHeadAttention(q, k, v, outF.AsSpan(), seqLen, seqLen, numHeads, headDim);
         return outF;
     }
 

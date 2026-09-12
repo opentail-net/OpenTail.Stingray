@@ -40,6 +40,10 @@ public sealed class ZImageDiT : IDisposable
     private float[]? _cachedTxtFreqs;
     private float[]? _cachedCombinedFreqs;
 
+    // ── Text Context cache (invariant across denoising steps for a given prompt) ──
+    private float[]? _cachedTxtEmbeds;
+    private float[]? _cachedRefinedTxtHid;
+
     // Cached unit-scale / unit-gate arrays (unmodulated blocks use scale=1, gate=1)
     private float[]? _onesCache;
 
@@ -87,7 +91,6 @@ public sealed class ZImageDiT : IDisposable
 
         // ── 1. Embed ──────────────────────────────────────────────────────
         var imgHid = MatQ(imgPatches, nImg, _p.PatchDim, "x_embedder.weight", "x_embedder.bias", dim);
-        var txtHid = EmbedCap(txtEmbeds, nTxt);
         var adaln  = TimestepEmbed(t);           // [256]
 
         // ── 2. Build per-group RoPE freqs (cached: pos IDs are constant across steps) ──
@@ -104,10 +107,21 @@ public sealed class ZImageDiT : IDisposable
         var imgFreqs = _cachedImgFreqs!;
         var txtFreqs = _cachedTxtFreqs!;
 
-        // ── 3. Refine separately ──────────────────────────────────────────
-        // Context refiner: 2 unmodulated blocks on text tokens with text RoPE
-        for (int r = 0; r < _p.NRefinerLayers; r++)
-            ApplyBlock($"context_refiner.{r}", txtHid, nTxt, txtFreqs, null, false);
+        // ── 3. Refine text context (cached across steps) ────────────────────
+        float[] txtHid;
+        if (ReferenceEquals(txtEmbeds, _cachedTxtEmbeds) && _cachedRefinedTxtHid is not null)
+        {
+            txtHid = _cachedRefinedTxtHid;
+        }
+        else
+        {
+            txtHid = EmbedCap(txtEmbeds, nTxt);
+            for (int r = 0; r < _p.NRefinerLayers; r++)
+                ApplyBlock($"context_refiner.{r}", txtHid, nTxt, txtFreqs, null, false);
+
+            _cachedTxtEmbeds = txtEmbeds;
+            _cachedRefinedTxtHid = (float[])txtHid.Clone();
+        }
 
         // Noise refiner: 2 modulated blocks on image tokens with image RoPE
         for (int r = 0; r < _p.NRefinerLayers; r++)
@@ -294,57 +308,8 @@ public sealed class ZImageDiT : IDisposable
             _rope.Apply(k, nTok, nHeads, freqs);
         }
 
-        float scale      = 1f / MathF.Sqrt(headDim);
-        var   attn       = new float[nTok * dim];
-        int   scoreCount = nHeads * nTok * nTok;
-        var   scoresBuf  = ArrayPool<float>.Shared.Rent(scoreCount);
-
-        try
-        {
-            // Parallelise over heads — Span locals inside the lambda are fine
-            Parallel.For(0, nHeads, h =>
-            {
-                int sBase = h * nTok * nTok;
-
-                // QK scores using SIMD dot products
-                for (int i = 0; i < nTok; i++)
-                {
-                    var qi   = q.AsSpan((i * nHeads + h) * headDim, headDim);
-                    int sRow = sBase + i * nTok;
-                    for (int j = 0; j < nTok; j++)
-                    {
-                        var kj = k.AsSpan((j * nHeads + h) * headDim, headDim);
-                        scoresBuf[sRow + j] = TensorPrimitives.Dot<float>(qi, kj) * scale;
-                    }
-                    DiffusionOps.Softmax(scoresBuf, sRow, nTok);
-                }
-
-                // Extract contiguous per-head V for vectorized value aggregation
-                var vhBuf = ArrayPool<float>.Shared.Rent(nTok * headDim);
-                try
-                {
-                    for (int j = 0; j < nTok; j++)
-                        v.AsSpan((j * nHeads + h) * headDim, headDim)
-                         .CopyTo(vhBuf.AsSpan(j * headDim));
-
-                    for (int i = 0; i < nTok; i++)
-                    {
-                        int    sRow  = sBase + i * nTok;
-                        var    outSl = attn.AsSpan((i * nHeads + h) * headDim, headDim);
-                        outSl.Clear();
-                        for (int j = 0; j < nTok; j++)
-                        {
-                            TensorPrimitives.MultiplyAdd<float>(
-                                vhBuf.AsSpan(j * headDim, headDim),
-                                scoresBuf[sRow + j],
-                                outSl, outSl);
-                        }
-                    }
-                }
-                finally { ArrayPool<float>.Shared.Return(vhBuf); }
-            });
-        }
-        finally { ArrayPool<float>.Shared.Return(scoresBuf); }
+        var attn = new float[nTok * dim];
+        Wan.WanAttention.TiledMultiHeadAttention(q, k, v, attn.AsSpan(), nTok, nTok, nHeads, headDim);
 
         return MatQ(attn, nTok, dim, $"{prefix}.attention.out.weight", dim);
     }

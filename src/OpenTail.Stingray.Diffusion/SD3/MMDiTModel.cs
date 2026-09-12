@@ -600,64 +600,11 @@ public sealed class MMDiTModel : IDisposable
         }
     }
 
-    private static unsafe void JointMultiHeadAttention(
+    private static void JointMultiHeadAttention(
         ReadOnlySpan<float> q, ReadOnlySpan<float> k, ReadOnlySpan<float> v, Span<float> output,
         float[] threadScores, int totalTokens, int dim, int nHeads, int headDim)
     {
-        float scale = 1f / MathF.Sqrt(headDim);
-
-        fixed (float* pQ = q, pK = k, pV = v, pOut = output, pScores = threadScores)
-        {
-            float* pQLocal = pQ;
-            float* pKLocal = pK;
-            float* pVLocal = pV;
-            float* pOutLocal = pOut;
-            float* pScoresLocal = pScores;
-
-            Parallel.For(0, nHeads, h =>
-            {
-                int headOffset = h * headDim;
-                float* scores = pScoresLocal + h * totalTokens;
-
-                for (int qi = 0; qi < totalTokens; qi++)
-                {
-                    int qBase = qi * dim + headOffset;
-                    var qSpan = new ReadOnlySpan<float>(pQLocal + qBase, headDim);
-                    float maxScore = float.NegativeInfinity;
-
-                    for (int kj = 0; kj < totalTokens; kj++)
-                    {
-                        int kBase = kj * dim + headOffset;
-                        var kSpan = new ReadOnlySpan<float>(pKLocal + kBase, headDim);
-                        float dot = TensorPrimitives.Dot(qSpan, kSpan) * scale;
-                        scores[kj] = dot;
-                        if (dot > maxScore) maxScore = dot;
-                    }
-
-                    float sumExp = 0f;
-                    for (int kj = 0; kj < totalTokens; kj++)
-                    {
-                        float exp = MathF.Exp(scores[kj] - maxScore);
-                        scores[kj] = exp;
-                        sumExp += exp;
-                    }
-                    float invSum = 1f / sumExp;
-
-                    int outBase = qi * dim + headOffset;
-                    var outSpan = new Span<float>(pOutLocal + outBase, headDim);
-                    outSpan.Clear();
-
-                    for (int kj = 0; kj < totalTokens; kj++)
-                    {
-                        float s = scores[kj] * invSum;
-                        if (s == 0f) continue;
-                        int vBase = kj * dim + headOffset;
-                        var vSpan = new ReadOnlySpan<float>(pVLocal + vBase, headDim);
-                        TensorPrimitives.MultiplyAdd(vSpan, s, outSpan, outSpan);
-                    }
-                }
-            });
-        }
+        DiffusionOps.MultiHeadAttention(q, k, v, output, totalTokens, totalTokens, nHeads, headDim);
     }
 
     public void Dispose()
