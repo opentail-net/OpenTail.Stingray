@@ -260,7 +260,50 @@ per-recording descriptor-set epoch mechanism safely recycle descriptor resources
 referencing submission has actually completed, at this scale? Verify this doesn't corrupt or
 alias descriptors under real UNet-scale dispatch counts before trusting a full run's output.
 
-## Stage 6 — Profiling + regression report (renumbered)
+## Stage 6 — Profiling + regression report — DONE 2026-09-12
+
+**Final real numbers, SDXL-Turbo 512×512/4-steps/seed=42, Vulkan iGPU, shipped state (Stages 0-4 +
+the tEmbGpu cleanup; Stage 5 reverted as a real negative result)**:
+
+| Stage | Total wall | Dispatches | submitWait | stagingCopy |
+|---|---|---|---|---|
+| Original baseline | 137.4s | 6511 | 2.7s | 43.6s |
+| Stage 2 (ResBlock residency) | 118.3s | 6304 | — | 41.9s |
+| Stage 3a (SpatialTransformer residency, CPU attention) | 90.5s | 4484 | — | 17.5s |
+| Stage 3b (GPU attention, resident) | 78.6s | 2244 | 1.07s | 8.3s |
+| Stage 4 (cross-block residency) | 77.1s | 1974 | 0.96s | 6.7s |
+| Stage 5 (batching) — reverted, real regression | 79.1s | 1919 | 23.9s | — |
+| **Final shipped (Stage 4 + tEmbGpu cleanup)** | **~77-79.5s** | **1910** | **~1s** | **~6.8s** |
+
+**Overall: ~137.4s → ~77-79s, a real, verified ~42-44% total wall-time reduction**, achieved
+entirely through architectural changes (GPU residency) with ZERO changes to any shader's actual
+math — the attention shader that regressed twice in a non-resident context is completely unchanged
+code, and won once the surrounding per-op tax was removed. This is the core finding this whole plan
+set out to test, confirmed with real numbers at every stage rather than assumed.
+
+**What's left un-pursued, deliberately** (per the plan's own explicit non-goals, and Stage 5's real
+negative result narrowing what's worth trying next):
+- GEGLU/norm fusion beyond `GroupNormSilu` — not attempted; the dispatch-count reduction from
+  Stages 2-4 was large enough that further fusion's marginal value is unclear without re-profiling.
+- Reusable/persistent command buffers replayed across denoising steps — explicitly deferred, and
+  Stage 5's finding (large batched submissions cost more, not less, on this hardware) is a real
+  reason to be skeptical this would help either, though it's a different mechanism (replay vs.
+  batch-then-submit) and wasn't directly tested.
+- INT8/quantized GPU GEMM — not attempted, per the original phase ordering (behind residency).
+- Further attention-kernel algorithm work — `MultiHeadAttentionTiled` already wins in its resident
+  context (Stage 3b); no further kernel work is indicated without a fresh profile showing attention
+  itself (not surrounding overhead) as the new bottleneck.
+
+**Real open question for a future pass**: with per-op overhead now largely removed, is remaining
+time dominated by actual GPU compute, or by something else (CPU-side orchestration between ops,
+weight-dequant costs, etc.)? Re-running `STINGRAY_PROFILE_GPU_SPLIT=1`'s breakdown shows
+`stagingCopy` (~6.8s) + `submitWait` (~1s) is now only ~10% of the ~77s total — meaning **over 85%
+of the remaining wall time is CPU-side work outside Vulkan entirely** (weight dequantization,
+`CachedWeightReader` disk I/O on a cold cache, VAE decode's own separate cost, PNG encode, etc.),
+not GPU-attributable at all anymore. This is the real next lever if further speedup is wanted, and
+it's a fundamentally different investigation than anything in this plan.
+
+## Stage 6 — Profiling + regression report (original stage description, superseded by the above)
 
 Re-run the exact `STINGRAY_PROFILE_GPU_SPLIT=1` SDXL-Turbo benchmark and report the new dispatch
 count, submits, transfer bytes, `submitWait`, `stagingCopy`, and total wall time directly against
