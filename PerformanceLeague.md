@@ -275,6 +275,25 @@
 
 ---
 
+## Newly-downloaded architecture coverage (2026-09-13): Phi-3, Falcon3, StarCoder2
+
+Found via cross-referencing `ModelCompatibility.cs`'s claimed-supported architecture allowlist
+(`phi3`, `falcon`, `starcoder2`, among 17 total) against what was actually downloaded — none of
+these had ANY checkpoint on disk before this pass, so zero real benchmark coverage existed despite
+the architecture being claimed-supported. Downloaded real, small, quantized GGUFs via `stingray pull`
+and got real, working end-to-end runs for all three (no `--allow-unverified-arch` needed — these
+architectures load through the normal supported path, confirming the allowlist claim is accurate).
+
+| Model | Scenario | Backend | C# (OT, t/s) | Performance Check | Source |
+|---|---|---|---:|---|---|
+| Phi-3-mini-4k-instruct Q4_K_M | prefill (582 tok) | CPU | 40.1 t/s | 2026-09-13 | new coverage; first timing ever recorded for this architecture. Real, coherent chat-templated output (correct summary of the benchmark prompt) |
+| Phi-3-mini-4k-instruct Q4_K_M | decode (24 tok gen) | CPU | 9.8 t/s | 2026-09-13 | same run |
+| Falcon3-3B-Instruct Q4_K_M | prefill (500 tok) | CPU | 102.4 t/s | 2026-09-13 | new coverage; first timing ever recorded for this architecture. Real, coherent chat-templated output |
+| Falcon3-3B-Instruct Q4_K_M | decode (24 tok gen) | CPU | 14.8 t/s | 2026-09-13 | same run |
+| StarCoder2-3B Q4_K_M | code completion (6 tok prompt, 40 tok gen) | CPU | 12.2 t/s | 2026-09-13 | new coverage; first timing ever recorded for this architecture. **Methodology note**: this is a raw code-completion base model, not chat-tuned — running it through the CLI's default chat-template wrapping (as every other row in this doc does) produced degenerate looping output (`def fibonacci(n):def fibonacci(n):<\|im_end\|>...`), which looked like a bug at first but was confirmed to be a usage mismatch, not a real defect: re-run with `--chat-template "{{ messages[0].content }}"` (identity, no wrapping) produced a real, correct-looking code completion (`def fibonacci(n):\n    if n == 0:\n        return 1\n    elif n == 1:\n        return  2\n    else :\n        return fibonacci(n-2) + fibonacci(n-`) — a genuine (if imperfect, off-by-one on n==1) fibonacci implementation, confirming the pipeline itself works correctly for this architecture once invoked the way the model actually expects |
+
+---
+
 ## DeepSeek family (`deepseek2`, run with `--allow-unverified-arch`)
 
 **Correctness caveat, not a perf gap:** this architecture is explicitly documented in `README.md`
