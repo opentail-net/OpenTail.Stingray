@@ -275,14 +275,15 @@
 
 ---
 
-## Newly-downloaded architecture coverage (2026-09-13): Phi-3, Falcon3, StarCoder2
+## Newly-downloaded architecture coverage (2026-09-13): Phi-3, Falcon3, StarCoder2, GPT-2, StableLM
 
 Found via cross-referencing `ModelCompatibility.cs`'s claimed-supported architecture allowlist
-(`phi3`, `falcon`, `starcoder2`, among 17 total) against what was actually downloaded — none of
-these had ANY checkpoint on disk before this pass, so zero real benchmark coverage existed despite
-the architecture being claimed-supported. Downloaded real, small, quantized GGUFs via `stingray pull`
-and got real, working end-to-end runs for all three (no `--allow-unverified-arch` needed — these
-architectures load through the normal supported path, confirming the allowlist claim is accurate).
+(`phi3`, `falcon`, `starcoder2`, `gpt2`, `stablelm`, among 17 total with zero downloaded checkpoint)
+against what was actually downloaded — none of these had ANY checkpoint on disk before this pass,
+so zero real benchmark coverage existed despite the architecture being claimed-supported. Downloaded
+real, small, quantized GGUFs via `stingray pull` and got real, working end-to-end runs for all five
+(no `--allow-unverified-arch` needed — these architectures load through the normal supported path,
+confirming the allowlist claim is accurate).
 
 | Model | Scenario | Backend | C# (OT, t/s) | Performance Check | Source |
 |---|---|---|---:|---|---|
@@ -291,6 +292,9 @@ architectures load through the normal supported path, confirming the allowlist c
 | Falcon3-3B-Instruct Q4_K_M | prefill (500 tok) | CPU | 102.4 t/s | 2026-09-13 | new coverage; first timing ever recorded for this architecture. Real, coherent chat-templated output |
 | Falcon3-3B-Instruct Q4_K_M | decode (24 tok gen) | CPU | 14.8 t/s | 2026-09-13 | same run |
 | StarCoder2-3B Q4_K_M | code completion (6 tok prompt, 40 tok gen) | CPU | 12.2 t/s | 2026-09-13 | new coverage; first timing ever recorded for this architecture. **Methodology note**: this is a raw code-completion base model, not chat-tuned — running it through the CLI's default chat-template wrapping (as every other row in this doc does) produced degenerate looping output (`def fibonacci(n):def fibonacci(n):<\|im_end\|>...`), which looked like a bug at first but was confirmed to be a usage mismatch, not a real defect: re-run with `--chat-template "{{ messages[0].content }}"` (identity, no wrapping) produced a real, correct-looking code completion (`def fibonacci(n):\n    if n == 0:\n        return 1\n    elif n == 1:\n        return  2\n    else :\n        return fibonacci(n-2) + fibonacci(n-`) — a genuine (if imperfect, off-by-one on n==1) fibonacci implementation, confirming the pipeline itself works correctly for this architecture once invoked the way the model actually expects |
+| GPT-2 (124M) Q8_0 | raw completion (4 tok prompt, 24 tok gen) | CPU | 62.9 t/s decode, 44.5 t/s prefill | 2026-09-13 | new coverage; first timing ever recorded for this architecture, the oldest/smallest one in `ModelCompatibility`'s allowlist. Run with the same identity `--chat-template` as StarCoder2-3B (GPT-2 is also a raw completion model, no chat template of its own) — real, plausible completion ("The quick brown foxes are a great way to get some of the best looking fox in town...") |
+| StableLM-Zephyr-3B Q4_K_M | prefill (516 tok) | CPU | 86.9 t/s | 2026-09-13 | new coverage; first timing ever recorded for this architecture. Real, coherent chat-templated output |
+| StableLM-Zephyr-3B Q4_K_M | decode (24 tok gen) | CPU | 13.2 t/s | 2026-09-13 | same run |
 
 ---
 
