@@ -275,7 +275,7 @@
 
 ---
 
-## Newly-downloaded architecture coverage (2026-09-13): Phi-3, Falcon3, StarCoder2, GPT-2, StableLM, ERNIE-4.5, GPT-NeoX, CodeShell, SmolLM3, Phi-2, Apertus, XVERSE
+## Newly-downloaded architecture coverage (2026-09-13): Phi-3, Falcon3, StarCoder2, GPT-2, StableLM, ERNIE-4.5, GPT-NeoX, CodeShell, SmolLM3, Phi-2, Apertus, XVERSE, Orion (13 of 17; jais2 gated, not closed)
 
 Found via cross-referencing `ModelCompatibility.cs`'s claimed-supported architecture allowlist
 (`phi3`, `falcon`, `starcoder2`, `gpt2`, `stablelm`, `ernie4_5`, `gptneox`, `codeshell`, `smollm3`,
@@ -310,6 +310,9 @@ accurate).
 | Apertus-8B-Instruct-2509 Q4_K_M | decode (24 tok gen) | CPU | 4.7 t/s | 2026-09-13 | same run |
 | XVERSE-7B-Chat Q4_K_M | prefill (836 tok) | CPU | 44.9 t/s | 2026-09-13 | new coverage; first timing ever recorded for this architecture. Real, coherent chat-templated output |
 | XVERSE-7B-Chat Q4_K_M | decode (24 tok gen) | CPU | 5.6 t/s | 2026-09-13 | same run |
+| Orion-14B-Chat Q4_K_M | prefill (577 tok) | CPU | 23.6 t/s | 2026-09-13 | new coverage; first timing ever recorded for this architecture. Real, coherent chat-templated output |
+| Orion-14B-Chat Q4_K_M | decode (24 tok gen) | CPU | 3.1 t/s | 2026-09-13 | same run |
+| ~~Jais (v1, `jais-family-590m-chat`)~~ | n/a | n/a | **Correctly rejected**: `GGUF architecture 'jais' is not supported for text generation` — the allowlist only claims `jais2` (a distinct, newer architecture string), not plain `jais`. This is accurate, expected behavior, not a bug — confirmed by reading the exception's own printed supported-profile list | 2026-09-13 | Attempted a genuine `jais2`-labeled checkpoint (`inception42/Jais-2-8B-Chat-GGUF`) instead, but the individual file download is gated (401 Unauthorized) even though the repo listing itself is public — no other `jais2`-architecture GGUF mirror found on HF. Not pursued further; would need a real `HF_TOKEN` with the license accepted |
 
 ---
 
