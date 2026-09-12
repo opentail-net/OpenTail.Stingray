@@ -2330,3 +2330,23 @@ findings, and any partial data already gathered.
   `fun-asr-nano`, `omnivoice`) rather than this project's usual GGUF-first convention, which may
   need a different loading path than the existing `GgufWeightLoader`/`SafetensorsLoader` pair
   already supports for LLM/diffusion checkpoints.
+
+- **`phimoe` (Phi-3.5-MoE) genuinely broken: missing LongRoPE support (2026-09-13).** Found while
+  closing `ModelCompatibility.cs`'s claimed-but-untested architecture gaps. Real, coherent-checkpoint
+  test (`bartowski/Phi-3.5-MoE-instruct-GGUF`, Q2_K AND Q3_K_M, two different quant levels from the
+  same reputable converter) both produce complete gibberish output — ruled out "bad quant" as the
+  explanation (a real quality difference between Q2_K and Q3_K_M should have shown SOME
+  improvement, and didn't). Root cause, confirmed by reading the real reference
+  (`examples/llama.cpp/llama.cpp/src/models/phimoe.cpp:43-44`): this checkpoint's GGUF carries
+  `rope_factors_long.weight`/`rope_factors_short.weight` (Phi's LongRoPE per-dimension
+  frequency-scaling tensors, a distinct context-extension mechanism), but this codebase's
+  `ModelGraph.cs`/`ForwardPass.cs` never load or apply either tensor for text generation — the only
+  two hits for these tensor names anywhere in the codebase are in an unrelated audio model
+  (`VoxCpm2LlmTensorSource.cs`/`VoxCpm2LocalEncoder.cs`). `SimdKernels.BuildRopeTable` already
+  accepts a `freqFactors` parameter (used today only for Gemma-4's much simpler single static
+  `rope_freqs.weight` array), so the low-level plumbing exists, but real LongRoPE needs a
+  genuinely new mechanism on top: two separate factor arrays with RUNTIME selection (short vs.
+  long) based on current context length vs. the checkpoint's `original_max_position_embeddings` —
+  scoped as real new-architecture-support work, not a quick tensor-name fix. Not attempted this
+  pass; see `PerformanceLeague.md`'s "Newly-downloaded architecture coverage" section for the full
+  before/after evidence.
