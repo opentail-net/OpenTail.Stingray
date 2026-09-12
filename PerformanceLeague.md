@@ -275,7 +275,7 @@
 
 ---
 
-## Newly-downloaded architecture coverage (2026-09-13): Phi-3, Falcon3, StarCoder2, GPT-2, StableLM, ERNIE-4.5, GPT-NeoX, CodeShell, SmolLM3
+## Newly-downloaded architecture coverage (2026-09-13): Phi-3, Falcon3, StarCoder2, GPT-2, StableLM, ERNIE-4.5, GPT-NeoX, CodeShell, SmolLM3, Phi-2
 
 Found via cross-referencing `ModelCompatibility.cs`'s claimed-supported architecture allowlist
 (`phi3`, `falcon`, `starcoder2`, `gpt2`, `stablelm`, `ernie4_5`, `gptneox`, `codeshell`, `smollm3`,
@@ -304,6 +304,8 @@ accurate).
 | Pythia-160M (`gptneox`) Q8_0, reputable conversion | decode (24 tok gen) | CPU | 107.0 t/s | 2026-09-13 | same run |
 | SmolLM3-3B Q4_K_M | prefill (705 tok) | CPU | 77.3 t/s | 2026-09-13 | new coverage; first timing ever recorded for this architecture. Real, coherent output — this checkpoint defaults to reasoning mode, so decode output was a real thinking trace ("Okay, let's tackle this summary. The user wants a three-sentence summary...") rather than a final answer within the 24-token budget, expected behavior for a reasoning model at this generation length, not a bug |
 | SmolLM3-3B Q4_K_M | decode (24 tok gen, all thinking tokens) | CPU | 10.6 t/s | 2026-09-13 | same run |
+| Phi-2 (2.7B) Q4_K_M | prefill (572 tok) | CPU | 36.0 t/s | 2026-09-13 | new coverage; first timing ever recorded for this architecture (`phi2`, distinct from `phi3`/`phimoe` already covered above). Real, coherent output |
+| Phi-2 (2.7B) Q4_K_M | decode (24 tok gen) | CPU | 9.4 t/s | 2026-09-13 | same run |
 
 ---
 
