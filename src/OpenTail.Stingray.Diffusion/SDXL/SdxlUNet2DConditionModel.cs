@@ -910,9 +910,164 @@ public sealed class SdxlUNet2DConditionModel : IDisposable
     private static float[] MultiHeadAttention(float[] q, float[] k, float[] v, int qLen, int kvLen, int c, int nHeads, int headDim)
         => DiffusionOps.MultiHeadAttention(q, k, v, qLen, kvLen, nHeads, headDim);
 
+    // docs/067 Stage 4: cross-block residency. Only 2 real CPU islands remain in the whole
+    // forward pass: the two stride=2 downsample convs (Conv2dImplicitGemm/ConvGpuTensor only
+    // support stride=1 -- a real, bounded implementation gap, not a performance bug, per the plan's
+    // CPU-island discipline). Everything else (every ResBlock, every SpatialTransformer, both
+    // Upsample2x + their follow-up convs, both channel concats, the final GroupNorm+SiLU+Conv)
+    // stays GPU-resident from the single input Upload to the single final Download.
+    private bool? _unetForwardResidencySupported;
+
+    private CoreTensor StridedConvCpuIsland(IImageOpsBackend imageOps, string name, CoreTensor xGpu, int inCh, int h, int w, int outCh, int ksize, int stride)
+    {
+        // CPU ISLAND (docs/067 CPU-island discipline: KNOWN IMPLEMENTATION GAP, not model logic or
+        // a performance bug) -- neither Conv2dImplicitGemm nor ConvGpuTensor support stride>1.
+        // Only 2 calls total per Forward() (the UNet's two downsample convs).
+        var x = new float[inCh * h * w];
+        imageOps.Download(xGpu, x);
+        var result = Conv(name, x, inCh, h, w, outCh, ksize, stride: stride);
+        return imageOps.Upload(result.AsSpan(), TensorShape.D1(result.Length));
+    }
+
+    private CoreTensor ForwardGpu(IImageOpsBackend imageOps, float[] x, float[] tEmb, float[] context, int latH, int latW)
+    {
+        var contextGpu = imageOps.Upload(context.AsSpan(0, 77 * ContextDim), TensorShape.D1(77 * ContextDim));
+        var savedInputs = new List<CoreTensor>(9);
+        try
+        {
+            int h = latH, w = latW;
+            var xGpu = imageOps.Upload(x.AsSpan(0, 4 * h * w), TensorShape.D1(4 * h * w));
+            var cur = ConvGpuTensor(imageOps, "input_blocks.0.0", xGpu, 4, h, w, 320, 3);
+            imageOps.Free(xGpu);
+            savedInputs.Add(cur);
+
+            cur = ResBlockGpu(imageOps, "input_blocks.1.0", cur, tEmb, 320, h, w, 320);
+            savedInputs.Add(cur);
+
+            cur = ResBlockGpu(imageOps, "input_blocks.2.0", cur, tEmb, 320, h, w, 320);
+            savedInputs.Add(cur);
+
+            cur = StridedConvCpuIsland(imageOps, "input_blocks.3.0.op", cur, 320, h, w, 320, 3, stride: 2);
+            h /= 2; w /= 2;
+            savedInputs.Add(cur);
+
+            cur = ResBlockGpu(imageOps, "input_blocks.4.0", cur, tEmb, 320, h, w, 640);
+            cur = SpatialTransformerGpu(imageOps, "input_blocks.4.1", cur, contextGpu, 640, depth: 2, h, w);
+            savedInputs.Add(cur);
+
+            cur = ResBlockGpu(imageOps, "input_blocks.5.0", cur, tEmb, 640, h, w, 640);
+            cur = SpatialTransformerGpu(imageOps, "input_blocks.5.1", cur, contextGpu, 640, depth: 2, h, w);
+            savedInputs.Add(cur);
+
+            cur = StridedConvCpuIsland(imageOps, "input_blocks.6.0.op", cur, 640, h, w, 640, 3, stride: 2);
+            h /= 2; w /= 2;
+            savedInputs.Add(cur);
+
+            cur = ResBlockGpu(imageOps, "input_blocks.7.0", cur, tEmb, 640, h, w, 1280);
+            cur = SpatialTransformerGpu(imageOps, "input_blocks.7.1", cur, contextGpu, 1280, depth: 10, h, w);
+            savedInputs.Add(cur);
+
+            cur = ResBlockGpu(imageOps, "input_blocks.8.0", cur, tEmb, 1280, h, w, 1280);
+            cur = SpatialTransformerGpu(imageOps, "input_blocks.8.1", cur, contextGpu, 1280, depth: 10, h, w);
+            savedInputs.Add(cur);
+
+            cur = ResBlockGpu(imageOps, "middle_block.0", cur, tEmb, 1280, h, w, 1280);
+            cur = SpatialTransformerGpu(imageOps, "middle_block.1", cur, contextGpu, 1280, depth: 10, h, w);
+            cur = ResBlockGpu(imageOps, "middle_block.2", cur, tEmb, 1280, h, w, 1280);
+
+            // Each skip is freed immediately after its concat consumes it (docs/067 Stage 4 memory
+            // discipline) rather than holding all 9 resident for the whole pass.
+            CoreTensor CatAndFreeSkip(CoreTensor current, int idx, int curC, int skipC)
+            {
+                var skip = savedInputs[idx];
+                var result = imageOps.CatChannels(current, curC, skip, skipC, h * w);
+                imageOps.Free(current);
+                imageOps.Free(skip);
+                return result;
+            }
+
+            cur = CatAndFreeSkip(cur, 8, 1280, 1280);
+            cur = ResBlockGpu(imageOps, "output_blocks.0.0", cur, tEmb, 2560, h, w, 1280);
+            cur = SpatialTransformerGpu(imageOps, "output_blocks.0.1", cur, contextGpu, 1280, depth: 10, h, w);
+
+            cur = CatAndFreeSkip(cur, 7, 1280, 1280);
+            cur = ResBlockGpu(imageOps, "output_blocks.1.0", cur, tEmb, 2560, h, w, 1280);
+            cur = SpatialTransformerGpu(imageOps, "output_blocks.1.1", cur, contextGpu, 1280, depth: 10, h, w);
+
+            cur = CatAndFreeSkip(cur, 6, 1280, 640);
+            cur = ResBlockGpu(imageOps, "output_blocks.2.0", cur, tEmb, 1920, h, w, 1280);
+            cur = SpatialTransformerGpu(imageOps, "output_blocks.2.1", cur, contextGpu, 1280, depth: 10, h, w);
+            var upsampled2 = imageOps.Upsample2xGpu(cur, 1280, h, w);
+            imageOps.Free(cur);
+            h *= 2; w *= 2;
+            cur = ConvGpuTensor(imageOps, "output_blocks.2.2.conv", upsampled2, 1280, h, w, 1280, 3);
+            imageOps.Free(upsampled2);
+
+            cur = CatAndFreeSkip(cur, 5, 1280, 640);
+            cur = ResBlockGpu(imageOps, "output_blocks.3.0", cur, tEmb, 1920, h, w, 640);
+            cur = SpatialTransformerGpu(imageOps, "output_blocks.3.1", cur, contextGpu, 640, depth: 2, h, w);
+
+            cur = CatAndFreeSkip(cur, 4, 640, 640);
+            cur = ResBlockGpu(imageOps, "output_blocks.4.0", cur, tEmb, 1280, h, w, 640);
+            cur = SpatialTransformerGpu(imageOps, "output_blocks.4.1", cur, contextGpu, 640, depth: 2, h, w);
+
+            cur = CatAndFreeSkip(cur, 3, 640, 320);
+            cur = ResBlockGpu(imageOps, "output_blocks.5.0", cur, tEmb, 960, h, w, 640);
+            cur = SpatialTransformerGpu(imageOps, "output_blocks.5.1", cur, contextGpu, 640, depth: 2, h, w);
+            var upsampled5 = imageOps.Upsample2xGpu(cur, 640, h, w);
+            imageOps.Free(cur);
+            h *= 2; w *= 2;
+            cur = ConvGpuTensor(imageOps, "output_blocks.5.2.conv", upsampled5, 640, h, w, 640, 3);
+            imageOps.Free(upsampled5);
+
+            cur = CatAndFreeSkip(cur, 2, 640, 320);
+            cur = ResBlockGpu(imageOps, "output_blocks.6.0", cur, tEmb, 960, h, w, 320);
+
+            cur = CatAndFreeSkip(cur, 1, 320, 320);
+            cur = ResBlockGpu(imageOps, "output_blocks.7.0", cur, tEmb, 640, h, w, 320);
+
+            cur = CatAndFreeSkip(cur, 0, 320, 320);
+            cur = ResBlockGpu(imageOps, "output_blocks.8.0", cur, tEmb, 640, h, w, 320);
+
+            var finalNorm = GroupNormSiluGpuTensor(imageOps, "out.0", cur, 320, h * w);
+            imageOps.Free(cur);
+            var finalOut = ConvGpuTensor(imageOps, "out.2", finalNorm, 320, h, w, 4, 3);
+            imageOps.Free(finalNorm);
+            return finalOut;
+        }
+        finally
+        {
+            imageOps.Free(contextGpu);
+        }
+    }
+
     public float[] Forward(float[] x, float timestep, float[] context, float[] addEmbeds, int latH, int latW)
     {
         var tEmb = ComputeTimeAndAddEmbedding(timestep, addEmbeds);
+
+        if (_imageOps is not null && _unetForwardResidencySupported != false)
+        {
+            try
+            {
+                var resultGpu = ForwardGpu(_imageOps, x, tEmb, context, latH, latW);
+                var result = new float[4 * latH * latW];
+                try
+                {
+                    _imageOps.Download(resultGpu, result);
+                }
+                finally
+                {
+                    _imageOps.Free(resultGpu);
+                }
+                _unetForwardResidencySupported = true;
+                return result;
+            }
+            catch (NotSupportedException)
+            {
+                _unetForwardResidencySupported = false;
+            }
+        }
+
         var savedInputs = new List<float[]>(9);
 
         // ── Input Blocks ────────────────────────────────────────────────────────

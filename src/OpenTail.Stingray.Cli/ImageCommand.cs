@@ -1272,7 +1272,11 @@ public sealed class ImageCommand : Command<ImageCommand.Settings>
                         timestepSpacing: timestepSpacing,
                         log: s.Verbose ? msg => AnsiConsole.MarkupLine($"[dim]{Markup.Escape(msg)}[/]") : null);
                 });
-            if (gpu is VulkanBackend) VulkanBackend.PrintGpuProfile("SDXL full run");
+            if (gpu is VulkanBackend)
+            {
+                VulkanBackend.PrintGpuProfile("SDXL full run");
+                VulkanBackend.PrintGpuMemoryProfile("SDXL full run");
+            }
 
             sw.Stop();
             AnsiConsole.MarkupLine($"[green]✓[/] Image saved: [cyan]{Markup.Escape(Path.GetFullPath(output))}[/] in [yellow]{sw.Elapsed.TotalSeconds:F1}s[/]");

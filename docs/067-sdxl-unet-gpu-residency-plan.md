@@ -168,7 +168,19 @@ here (see the verified finding above) — it would need a real GPU rewrite plus 
 to be usable, which is out of scope for this stage unless `MultiHeadAttentionTiled` itself proves
 inadequate in the new context.
 
-## Stage 4 — Cross-block residency (renumbered)
+## Stage 4 — Cross-block residency — DONE 2026-09-12 (renumbered)
+
+**Real result**: total wall time 78.6s→77.1s (~2% further faster, ~44% faster than the original
+137.4s baseline), dispatches 2244→1974. Memory gate answered with real numbers instead of
+"checked headroom": peak device-local usage 6.67GB / 1831 live tensors at peak, well within this
+iGPU's ~16GB placement budget at 512×512 -- no pressure found, so the "free skips immediately"
+discipline below was precautionary rather than load-bearing at this resolution (worth re-checking
+at 1024×1024, not yet done). `ForwardGpu` chains the entire down→mid→up sequence with only one
+Upload (initial latent) and one Download (final output) for the whole forward pass; skip tensors
+are freed immediately after their concat consumes them. Two bounded CPU islands remain (the 2
+stride=2 downsample convs -- neither Tensor conv primitive supports stride>1, a real scoped gap).
+Smaller win than Stages 2/3a/3b since most round-trips were already gone by then. Output
+re-verified pixel-identical to Stage 3b's baseline at the same seed.
 
 Remove the CPU `float[]` crossing between successive `ResBlock`/`SpatialTransformer`/`Downsample`/
 `Upsample` calls in `Forward()`'s down→mid→up sequence. Skip-connection tensors must stay as GPU

@@ -979,6 +979,41 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
     //  IComputeBackend — Memory management
     // ================================================================
 
+    // Real GPU live/peak memory tracking (2026-09-12, docs/067 Stage 4's measurement gate) --
+    // gated behind the same STINGRAY_PROFILE_GPU_SPLIT=1 flag. Tracks bytes for device-local
+    // allocations (Allocate + the Upload/UploadHalf paths that call CreateDeviceLocal), not
+    // staging/pinned buffers -- this is specifically to answer "how much simultaneously-live
+    // device memory does cross-block residency need on this UMA iGPU," not total driver overhead.
+    private static long s_profLiveBytes;
+    private static long s_profPeakBytes;
+    private static long s_profLiveTensorCount;
+
+    private static void TrackAlloc(ulong byteSize)
+    {
+        if (!s_profGpuSplit) return;
+        long live = Interlocked.Add(ref s_profLiveBytes, (long)byteSize);
+        Interlocked.Increment(ref s_profLiveTensorCount);
+        long peak, cur;
+        do { peak = s_profPeakBytes; cur = live; if (cur <= peak) break; }
+        while (Interlocked.CompareExchange(ref s_profPeakBytes, cur, peak) != peak);
+    }
+
+    private static void TrackFree(ulong byteSize)
+    {
+        if (!s_profGpuSplit) return;
+        Interlocked.Add(ref s_profLiveBytes, -(long)byteSize);
+        Interlocked.Decrement(ref s_profLiveTensorCount);
+    }
+
+    /// <summary>Prints the current live/peak GPU device-local memory since the last
+    /// <see cref="ResetGpuProfile"/>, if profiling is enabled. Real, not estimated -- tracks every
+    /// Allocate/Upload/Free call, not a static guess.</summary>
+    public static void PrintGpuMemoryProfile(string label)
+    {
+        if (!s_profGpuSplit) return;
+        Console.Error.WriteLine($"[GPU-mem:{label}] live={s_profLiveBytes / (1024.0 * 1024.0):F1}MB peak={s_profPeakBytes / (1024.0 * 1024.0):F1}MB liveTensors={s_profLiveTensorCount}");
+    }
+
     public Tensor Allocate(TensorShape shape, DType dtype = DType.Float32, bool exact = false)
     {
         // Vulkan path doesn't pool/round; the exact hint is a no-op here.
@@ -989,6 +1024,7 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
 
         var handle = (nint)Interlocked.Increment(ref _nextHandle);
         _buffers[handle] = gpuBuf;
+        TrackAlloc(byteSize);
         return new Tensor(shape, dtype, handle);
     }
 
@@ -996,7 +1032,10 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
     {
         if (_deferringFrees) { _deferredFrees.Add(tensor); return; }
         if (_buffers.TryRemove(tensor.Handle, out var buf))
+        {
+            TrackFree(buf.Size);
             buf.Dispose();
+        }
     }
 
     /// <summary>
@@ -1093,6 +1132,7 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
 
         var handle = (nint)Interlocked.Increment(ref _nextHandle);
         _buffers[handle] = gpuBuf;
+        TrackAlloc(byteSize);
         return new Tensor(shape, DType.Float32, handle);
     }
 
@@ -1246,6 +1286,7 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
 
         var handle = (nint)Interlocked.Increment(ref _nextHandle);
         _buffers[handle] = gpuBuf;
+        TrackAlloc(byteSize);
         return new Tensor(shape, DType.Float16, handle);
     }
 
