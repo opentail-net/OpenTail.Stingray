@@ -54,19 +54,23 @@ public sealed class ZZ_ScratchMiniMaxMusic3PipelineSmokeTests
         Assert.SkipUnless(langDir != null && depthPath != null && condPath != null && transformerDir != null && vocoderPath != null && tokenizerDir != null,
             "one or more models/minimax-music3/* real weight/tokenizer files not found");
 
-        using var langLoader = SafetensorsLoader.OpenDirectory(langDir!);
-        using var globalModel = new MiniMaxMusic3GlobalModel(langLoader);
+        Music3Representation representation;
+        {
+            using var langLoader = SafetensorsLoader.OpenDirectory(langDir!);
+            using var globalModel = new MiniMaxMusic3GlobalModel(langLoader);
+            using var depthLoader = SafetensorsLoader.Open(depthPath!);
+            var depthWeights = MiniMaxMusic3RvqDepthDecoderWeights.Load(depthLoader);
 
-        using var depthLoader = SafetensorsLoader.Open(depthPath!);
-        var depthWeights = MiniMaxMusic3RvqDepthDecoderWeights.Load(depthLoader);
-
-        var promptEncoder = MiniMaxMusic3PromptEncoder.Load(tokenizerDir!);
-        int[] promptTokens = promptEncoder.BuildConditionalPrompt(
-            "Intimate acoustic folk, male vocal, fingerpicked guitar",
-            "[Verse]\nWalking through the morning rain");
-        var random = new Random(42);
-        var representation = MiniMaxMusic3AutoregressiveGenerator.Generate(globalModel, depthWeights, promptTokens, maxFrames: 20, random);
-        Assert.True(representation.FrameCount >= 1, "AR generator produced zero frames");
+            var promptEncoder = MiniMaxMusic3PromptEncoder.Load(tokenizerDir!);
+            int[] promptTokens = promptEncoder.BuildConditionalPrompt(
+                "Intimate acoustic folk, male vocal, fingerpicked guitar",
+                "[Verse]\nWalking through the morning rain");
+            var random = new Random(42);
+            representation = MiniMaxMusic3AutoregressiveGenerator.Generate(globalModel, depthWeights, promptTokens, maxFrames: 20, random);
+            Assert.True(representation.FrameCount >= 1, "AR generator produced zero frames");
+        }
+        GC.Collect();
+        GC.WaitForPendingFinalizers();
 
         using var condLoader = SafetensorsLoader.Open(condPath!);
         var conditionWeights = MiniMaxMusic3ConditionEncoderWeights.Load(condLoader);

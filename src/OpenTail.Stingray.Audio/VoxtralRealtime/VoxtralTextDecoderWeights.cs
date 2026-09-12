@@ -13,6 +13,14 @@ namespace OpenTail.Stingray.Audio.VoxtralRealtime;
 /// the decoder needed zero new code). Tied embeddings (`config.json`'s
 /// `text_config.tie_word_embeddings=true`, confirmed by the real tensor list having no separate
 /// `lm_head.weight`).
+///
+/// <para><b>Perf-sweep Phase 1.2</b> (docs/perf-sweep-plan.md): every matvec weight matrix is
+/// quantized to Q8_0 at load time (verified converter, see
+/// `ConvertF32ToQ8_0VerificationTests`) so <see cref="VoxtralTextDecoder"/>'s linear layers hit
+/// <c>SimdKernels.MatVecQ8_0</c> instead of a full-F32 matvec -- 4x less weight-matrix memory
+/// traffic per call. <see cref="EmbedTokensWeight"/> keeps its original F32 form too (needed for
+/// per-token embedding-row lookup, which is a direct index, not a matvec) alongside a separate
+/// quantized copy for its tied-lm_head use.</para>
 /// </summary>
 public sealed class VoxtralTextDecoderWeights
 {
@@ -27,46 +35,62 @@ public sealed class VoxtralTextDecoderWeights
     public const int VocabSize = 131072;
     public const int AdaHiddenDim = 32;
 
-    public float[] EmbedTokensWeight { get; } // [131072, 3072] -- also used as the tied lm_head
+    public float[] EmbedTokensWeight { get; } // [131072, 3072] -- raw F32, for embedding-row lookup
+    public byte[] EmbedTokensWeightQ8_0 { get; } // same tensor, Q8_0-quantized, for the tied lm_head matvec
     public VoxtralTextLayerWeights[] Layers { get; } = new VoxtralTextLayerWeights[NumLayers];
     public float[] NormWeight { get; }
 
     public VoxtralTextDecoderWeights(SafetensorsLoader loader)
     {
         EmbedTokensWeight = loader.ReadF32("language_model.model.embed_tokens.weight");
+        EmbedTokensWeightQ8_0 = QuantizeQ8_0(EmbedTokensWeight, HiddenSize);
         for (int i = 0; i < NumLayers; i++)
         {
             string p = $"language_model.model.layers.{i}";
             Layers[i] = new VoxtralTextLayerWeights
             {
                 InputNorm = loader.ReadF32($"{p}.input_layernorm.weight"),
-                QWeight = loader.ReadF32($"{p}.self_attn.q_proj.weight"),
-                KWeight = loader.ReadF32($"{p}.self_attn.k_proj.weight"),
-                VWeight = loader.ReadF32($"{p}.self_attn.v_proj.weight"),
-                OWeight = loader.ReadF32($"{p}.self_attn.o_proj.weight"),
+                QWeight = QuantizeQ8_0(loader.ReadF32($"{p}.self_attn.q_proj.weight"), HiddenSize),
+                KWeight = QuantizeQ8_0(loader.ReadF32($"{p}.self_attn.k_proj.weight"), HiddenSize),
+                VWeight = QuantizeQ8_0(loader.ReadF32($"{p}.self_attn.v_proj.weight"), HiddenSize),
+                OWeight = QuantizeQ8_0(loader.ReadF32($"{p}.self_attn.o_proj.weight"), NumHeads * HeadDim),
                 PostNorm = loader.ReadF32($"{p}.post_attention_layernorm.weight"),
-                GateWeight = loader.ReadF32($"{p}.mlp.gate_proj.weight"),
-                UpWeight = loader.ReadF32($"{p}.mlp.up_proj.weight"),
-                DownWeight = loader.ReadF32($"{p}.mlp.down_proj.weight"),
-                Ada1Weight = loader.ReadF32($"{p}.ada_rms_norm.linear1.weight"),
-                Ada2Weight = loader.ReadF32($"{p}.ada_rms_norm.linear2.weight"),
+                GateWeight = QuantizeQ8_0(loader.ReadF32($"{p}.mlp.gate_proj.weight"), HiddenSize),
+                UpWeight = QuantizeQ8_0(loader.ReadF32($"{p}.mlp.up_proj.weight"), HiddenSize),
+                DownWeight = QuantizeQ8_0(loader.ReadF32($"{p}.mlp.down_proj.weight"), IntermediateSize),
+                Ada1Weight = QuantizeQ8_0(loader.ReadF32($"{p}.ada_rms_norm.linear1.weight"), HiddenSize),
+                Ada2Weight = QuantizeQ8_0(loader.ReadF32($"{p}.ada_rms_norm.linear2.weight"), AdaHiddenDim),
             };
         }
         NormWeight = loader.ReadF32("language_model.model.norm.weight");
+    }
+
+    /// <summary>Quantizes a row-major <c>[rows, cols]</c> F32 matrix to Q8_0 (34 bytes/32-element
+    /// block per row), using the perf-sweep-verified <see
+    /// cref="OpenTail.Stingray.Core.FastVectorTypeConverter.ConvertF32ToQ8_0"/>.</summary>
+    internal static byte[] QuantizeQ8_0(float[] src, int cols)
+    {
+        int rows = src.Length / cols;
+        int bytesPerRow = (cols / 32) * 34;
+        var dst = new byte[rows * bytesPerRow];
+        for (int r = 0; r < rows; r++)
+            OpenTail.Stingray.Core.FastVectorTypeConverter.ConvertF32ToQ8_0(
+                src.AsSpan(r * cols, cols), dst.AsSpan(r * bytesPerRow, bytesPerRow));
+        return dst;
     }
 }
 
 public sealed class VoxtralTextLayerWeights
 {
     public float[] InputNorm { get; set; } = [];
-    public float[] QWeight { get; set; } = [];
-    public float[] KWeight { get; set; } = [];
-    public float[] VWeight { get; set; } = [];
-    public float[] OWeight { get; set; } = [];
+    public byte[] QWeight { get; set; } = [];
+    public byte[] KWeight { get; set; } = [];
+    public byte[] VWeight { get; set; } = [];
+    public byte[] OWeight { get; set; } = [];
     public float[] PostNorm { get; set; } = [];
-    public float[] GateWeight { get; set; } = [];
-    public float[] UpWeight { get; set; } = [];
-    public float[] DownWeight { get; set; } = [];
-    public float[] Ada1Weight { get; set; } = []; // [32, 3072], no bias
-    public float[] Ada2Weight { get; set; } = []; // [3072, 32], no bias
+    public byte[] GateWeight { get; set; } = [];
+    public byte[] UpWeight { get; set; } = [];
+    public byte[] DownWeight { get; set; } = [];
+    public byte[] Ada1Weight { get; set; } = []; // [32, 3072], no bias
+    public byte[] Ada2Weight { get; set; } = []; // [3072, 32], no bias
 }

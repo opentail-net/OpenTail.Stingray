@@ -120,6 +120,10 @@ public static class MiniMaxMusic3RvqDepthDecoder
     /// Incremental forward for a single depth step: adds pos_embedding for stepIndex, evaluates each layer with KV caching,
     /// appends K and V to cache, and returns the single output hidden state [hidden].
     /// </summary>
+    /// <summary>
+    /// Incremental forward for a single depth step: adds pos_embedding for stepIndex, evaluates each layer with KV caching,
+    /// appends K and V to cache, and returns the single output hidden state [hidden].
+    /// </summary>
     public static unsafe float[] ForwardStep(
         MiniMaxMusic3RvqDepthDecoderWeights w,
         float[] inputEmbed,
@@ -132,7 +136,9 @@ public static class MiniMaxMusic3RvqDepthDecoder
             x[i] = inputEmbed[i] + w.PosEmbeddingWeight[stepIndex * hidden + i];
 
         for (int li = 0; li < w.Layers.Length; li++)
-            x = LayerIncremental(w.Layers[li], x, stepIndex, cache.Keys[li], cache.Values[li]);
+            x = LayerIncremental(w.Layers[li], x, stepIndex, li, cache);
+
+        cache.Length = stepIndex + 1;
 
         var output = new float[hidden];
         RmsNorm(x, w.NormWeight, output, 1e-6f);
@@ -140,188 +146,118 @@ public static class MiniMaxMusic3RvqDepthDecoder
     }
 
     /// <summary>Incremental forward for BOTH CFG branches (conditional + unconditional) of a single
-    /// depth step in one call. Real, measured motivation: each of the 6 major per-layer matmuls
-    /// (Q/K/V/O/gate/up[+down]) reads a full weight matrix (up to 64MB for the 4096x4096 attention
-    /// projections -- far larger than this machine's L3 cache) off RAM; calling <see cref="ForwardStep"/>
-    /// twice (once per branch) re-streams every one of those matrices from RAM a second time for no
-    /// reason, since both branches read the identical weights. This calls
-    /// <see cref="CfmLinearWeight.MatMulPairRowMajor"/> instead, which streams each weight row ONCE
-    /// and applies it to both branches' inputs -- halving both the RAM traffic and the number of
-    /// `Parallel.For` dispatches per step (a real, separate cost at this call frequency: 7 steps x 4
-    /// layers x 200 frames). Attention is still computed per-branch (KV caches are branch-specific),
-    /// but batched into one `Parallel.For` dispatch over both branches' heads together, mirroring
-    /// <see cref="MiniMaxMusic3Transformer.ForwardPair"/>'s existing CFG-batching pattern for the
-    /// Flow DiT. Numerically identical to two separate <see cref="ForwardStep"/> calls -- see
-    /// `MiniMaxMusic3RvqDepthDecoderGoldenParityTests.ForwardStepPair_MatchesForwardStep_BitForBit`.
-    /// </summary>
+    /// depth step in one call. Fully allocation-free when passing a reusable <paramref name="ws"/>.</summary>
     public static unsafe (float[] Cond, float[] Uncond) ForwardStepPair(
         MiniMaxMusic3RvqDepthDecoderWeights w,
         float[] condInputEmbed,
         float[] uncondInputEmbed,
         int stepIndex,
         MiniMaxMusic3RvqDepthKvCache condCache,
-        MiniMaxMusic3RvqDepthKvCache uncondCache)
-    {
-        int hidden = MiniMaxMusic3Config.RvqDepthDecoderHiddenSize;
-        var xCond = new float[hidden];
-        var xUncond = new float[hidden];
-        for (int i = 0; i < hidden; i++)
-        {
-            float pos = w.PosEmbeddingWeight[stepIndex * hidden + i];
-            xCond[i] = condInputEmbed[i] + pos;
-            xUncond[i] = uncondInputEmbed[i] + pos;
-        }
-
-        for (int li = 0; li < w.Layers.Length; li++)
-        {
-            (xCond, xUncond) = LayerIncrementalPair(
-                w.Layers[li], xCond, xUncond, stepIndex,
-                condCache.Keys[li], condCache.Values[li],
-                uncondCache.Keys[li], uncondCache.Values[li]);
-        }
-
-        var outCond = new float[hidden];
-        var outUncond = new float[hidden];
-        RmsNorm(xCond, w.NormWeight, outCond, 1e-6f);
-        RmsNorm(xUncond, w.NormWeight, outUncond, 1e-6f);
-        return (outCond, outUncond);
-    }
-
-    private static unsafe (float[] Cond, float[] Uncond) LayerIncrementalPair(
-        DepthDecoderLayerWeights lw,
-        float[] xCond, float[] xUncond,
-        int stepIndex,
-        List<float[]> condKeyCache, List<float[]> condValCache,
-        List<float[]> uncondKeyCache, List<float[]> uncondValCache)
-    {
-        int hidden = MiniMaxMusic3Config.RvqDepthDecoderHiddenSize;
-
-        var normed1Cond = new float[hidden];
-        var normed1Uncond = new float[hidden];
-        RmsNorm(xCond, lw.InputLayerNormWeight, normed1Cond, 1e-6f);
-        RmsNorm(xUncond, lw.InputLayerNormWeight, normed1Uncond, 1e-6f);
-
-        var (attnCond, attnUncond) = SelfAttentionIncrementalPair(
-            lw, normed1Cond, normed1Uncond, stepIndex, condKeyCache, condValCache, uncondKeyCache, uncondValCache);
-
-        var afterAttnCond = new float[hidden];
-        var afterAttnUncond = new float[hidden];
-        for (int i = 0; i < hidden; i++)
-        {
-            afterAttnCond[i] = xCond[i] + attnCond[i];
-            afterAttnUncond[i] = xUncond[i] + attnUncond[i];
-        }
-
-        var normed2Cond = new float[hidden];
-        var normed2Uncond = new float[hidden];
-        RmsNorm(afterAttnCond, lw.PostAttnLayerNormWeight, normed2Cond, 1e-6f);
-        RmsNorm(afterAttnUncond, lw.PostAttnLayerNormWeight, normed2Uncond, 1e-6f);
-
-        var (mlpCond, mlpUncond) = MlpStepPair(lw, normed2Cond, normed2Uncond);
-
-        var outCond = new float[hidden];
-        var outUncond = new float[hidden];
-        for (int i = 0; i < hidden; i++)
-        {
-            outCond[i] = afterAttnCond[i] + mlpCond[i];
-            outUncond[i] = afterAttnUncond[i] + mlpUncond[i];
-        }
-        return (outCond, outUncond);
-    }
-
-    private static unsafe (float[] Cond, float[] Uncond) SelfAttentionIncrementalPair(
-        DepthDecoderLayerWeights lw,
-        float[] normedCond, float[] normedUncond,
-        int stepIndex,
-        List<float[]> condKeyCache, List<float[]> condValCache,
-        List<float[]> uncondKeyCache, List<float[]> uncondValCache)
+        MiniMaxMusic3RvqDepthKvCache uncondCache,
+        MiniMaxMusic3RvqDepthWorkspace? ws = null)
     {
         int hidden = MiniMaxMusic3Config.RvqDepthDecoderHiddenSize;
         int numHeads = MiniMaxMusic3Config.RvqDepthDecoderNumHeads;
         int headDim = hidden / numHeads;
         float scale = MathF.Pow(headDim, -0.5f);
+        int totalLen = stepIndex + 1;
 
-        var qCond = new float[hidden]; var qUncond = new float[hidden];
-        var kCond = new float[hidden]; var kUncond = new float[hidden];
-        var vCond = new float[hidden]; var vUncond = new float[hidden];
-        fixed (float* npc = normedCond, npu = normedUncond,
-                      qpc = qCond, qpu = qUncond, kpc = kCond, kpu = kUncond, vpc = vCond, vpu = vUncond)
+        ws ??= new MiniMaxMusic3RvqDepthWorkspace();
+
+        for (int i = 0; i < hidden; i++)
         {
-            lw.QWeight.MatMulPairRowMajor(npc, npu, qpc, qpu);
-            lw.KWeight.MatMulPairRowMajor(npc, npu, kpc, kpu);
-            lw.VWeight.MatMulPairRowMajor(npc, npu, vpc, vpu);
+            float pos = w.PosEmbeddingWeight[stepIndex * hidden + i];
+            ws.XCond[i] = condInputEmbed[i] + pos;
+            ws.XUncond[i] = uncondInputEmbed[i] + pos;
         }
 
-        condKeyCache.Add(kCond); condValCache.Add(vCond);
-        uncondKeyCache.Add(kUncond); uncondValCache.Add(vUncond);
-
-        int totalLen = condKeyCache.Count; // same length as uncondKeyCache -- both branches step together
-        var contextCond = new float[hidden];
-        var contextUncond = new float[hidden];
-
-        Parallel.For(0, 2 * numHeads, bh =>
+        for (int li = 0; li < w.Layers.Length; li++)
         {
-            bool cond = bh < numHeads;
-            int h = cond ? bh : bh - numHeads;
-            int off = h * headDim;
-            var keyCache = cond ? condKeyCache : uncondKeyCache;
-            var valCache = cond ? condValCache : uncondValCache;
-            var q = cond ? qCond : qUncond;
-            var context = cond ? contextCond : contextUncond;
+            var lw = w.Layers[li];
 
-            var scores = new float[totalLen];
-            var qSpan = q.AsSpan(off, headDim);
-            for (int j = 0; j < totalLen; j++)
+            RmsNorm(ws.XCond, lw.InputLayerNormWeight, ws.Normed1Cond, 1e-6f);
+            RmsNorm(ws.XUncond, lw.InputLayerNormWeight, ws.Normed1Uncond, 1e-6f);
+
+            fixed (float* npc = ws.Normed1Cond, npu = ws.Normed1Uncond,
+                          qpc = ws.QCond, qpu = ws.QUncond,
+                          kpc = ws.KCond, kpu = ws.KUncond,
+                          vpc = ws.VCond, vpu = ws.VUncond)
             {
-                var kSpan = keyCache[j].AsSpan(off, headDim);
-                scores[j] = TensorPrimitives.Dot(qSpan, kSpan) * scale;
+                CfmLinearWeight.MatMulQkvPairRowMajor(lw.QWeight, lw.KWeight, lw.VWeight,
+                    npc, npu, qpc, qpu, kpc, kpu, vpc, vpu);
             }
-            SoftmaxRange(scores, 0, totalLen);
 
-            var ctxSpan = context.AsSpan(off, headDim);
-            for (int j = 0; j < totalLen; j++)
+            condCache.Append(li, ws.KCond, ws.VCond);
+            uncondCache.Append(li, ws.KUncond, ws.VUncond);
+
+            for (int branch = 0; branch < 2; branch++)
             {
-                float s = scores[j];
-                var vSpan = valCache[j].AsSpan(off, headDim);
-                TensorPrimitives.MultiplyAdd(vSpan, s, ctxSpan, ctxSpan);
+                bool isCond = branch == 0;
+                var cache = isCond ? condCache : uncondCache;
+                var q = isCond ? ws.QCond : ws.QUncond;
+                var context = isCond ? ws.ContextCond : ws.ContextUncond;
+
+                for (int h = 0; h < numHeads; h++)
+                {
+                    int off = h * headDim;
+                    var qSpan = new ReadOnlySpan<float>(q, off, headDim);
+
+                    for (int j = 0; j < totalLen; j++)
+                    {
+                        var kSpan = cache.GetKeySpan(li, j).Slice(off, headDim);
+                        ws.Scores[j] = TensorPrimitives.Dot(qSpan, kSpan) * scale;
+                    }
+                    SoftmaxRange(ws.Scores.AsSpan(0, totalLen), 0, totalLen);
+
+                    var ctxSpan = new Span<float>(context, off, headDim);
+                    ctxSpan.Clear();
+                    for (int j = 0; j < totalLen; j++)
+                    {
+                        float s = ws.Scores[j];
+                        var vSpan = cache.GetValSpan(li, j).Slice(off, headDim);
+                        TensorPrimitives.MultiplyAdd(vSpan, s, ctxSpan, ctxSpan);
+                    }
+                }
             }
-        });
 
-        var outCond = new float[hidden];
-        var outUncond = new float[hidden];
-        fixed (float* cpc = contextCond, cpu = contextUncond, opc = outCond, opu = outUncond)
-        {
-            lw.OWeight.MatMulPairRowMajor(cpc, cpu, opc, opu);
-        }
-        return (outCond, outUncond);
-    }
+            fixed (float* cpc = ws.ContextCond, cpu = ws.ContextUncond, opc = ws.OutCond, opu = ws.OutUncond)
+            {
+                lw.OWeight.MatMulPairRowMajor(cpc, cpu, opc, opu);
+            }
 
-    private static unsafe (float[] Cond, float[] Uncond) MlpStepPair(DepthDecoderLayerWeights lw, float[] normedCond, float[] normedUncond)
-    {
-        int hidden = MiniMaxMusic3Config.RvqDepthDecoderHiddenSize;
-        int ffn = MiniMaxMusic3Config.RvqDepthDecoderIntermediateSize;
+            for (int i = 0; i < hidden; i++)
+            {
+                ws.AfterAttnCond[i] = ws.XCond[i] + ws.OutCond[i];
+                ws.AfterAttnUncond[i] = ws.XUncond[i] + ws.OutUncond[i];
+            }
 
-        var gateCond = new float[ffn]; var gateUncond = new float[ffn];
-        var upCond = new float[ffn]; var upUncond = new float[ffn];
-        fixed (float* npc = normedCond, npu = normedUncond,
-                      gpc = gateCond, gpu = gateUncond, upc = upCond, upu = upUncond)
-        {
-            lw.GateWeight.MatMulPairRowMajor(npc, npu, gpc, gpu);
-            lw.UpWeight.MatMulPairRowMajor(npc, npu, upc, upu);
-        }
-        for (int i = 0; i < ffn; i++)
-        {
-            gateCond[i] = Silu(gateCond[i]) * upCond[i];
-            gateUncond[i] = Silu(gateUncond[i]) * upUncond[i];
+            RmsNorm(ws.AfterAttnCond, lw.PostAttnLayerNormWeight, ws.Normed2Cond, 1e-6f);
+            RmsNorm(ws.AfterAttnUncond, lw.PostAttnLayerNormWeight, ws.Normed2Uncond, 1e-6f);
+
+            fixed (float* npc = ws.Normed2Cond, npu = ws.Normed2Uncond,
+                          gpc = ws.GateCond, gpu = ws.GateUncond)
+            {
+                CfmLinearWeight.MatMulGateUpSiluPairRowMajor(lw.GateWeight, lw.UpWeight, npc, npu, gpc, gpu);
+            }
+
+            fixed (float* gpc = ws.GateCond, gpu = ws.GateUncond, mpc = ws.MlpCond, mpu = ws.MlpUncond)
+            {
+                lw.DownWeight.MatMulPairRowMajor(gpc, gpu, mpc, mpu);
+            }
+
+            for (int i = 0; i < hidden; i++)
+            {
+                ws.XCond[i] = ws.AfterAttnCond[i] + ws.MlpCond[i];
+                ws.XUncond[i] = ws.AfterAttnUncond[i] + ws.MlpUncond[i];
+            }
         }
 
-        var outCond = new float[hidden];
-        var outUncond = new float[hidden];
-        fixed (float* gpc = gateCond, gpu = gateUncond, opc = outCond, opu = outUncond)
-        {
-            lw.DownWeight.MatMulPairRowMajor(gpc, gpu, opc, opu);
-        }
-        return (outCond, outUncond);
+        condCache.Length = stepIndex + 1;
+        uncondCache.Length = stepIndex + 1;
+
+        RmsNorm(ws.XCond, w.NormWeight, ws.OutCond, 1e-6f);
+        RmsNorm(ws.XUncond, w.NormWeight, ws.OutUncond, 1e-6f);
+        return (ws.OutCond, ws.OutUncond);
     }
 
     /// <summary>Embeds a real residual code (real codebook index `codebookIdx` in `[0,6]`, real code value in `[0,audioVocabSize)`) via the real `audio_embeddings` table, real row offset `codebookIdx*audioVocabSize + code` (confirmed from the real embedding table's shape `[audioVocabSize*(numCodebooks-1), hidden]`).</summary>
@@ -334,14 +270,27 @@ public static class MiniMaxMusic3RvqDepthDecoder
         return row;
     }
 
+    /// <summary>In-place projection: output = projection(x), no bias.</summary>
+    public static unsafe void Project(MiniMaxMusic3RvqDepthDecoderWeights w, float[] x, float[] output)
+    {
+        fixed (float* xp = x, op = output)
+            w.ProjectionWeight.MatMul(xp, 1, op);
+    }
+
     /// <summary>Real per-step projection applied before feeding an embedded step into the depth decoder: `projection(x)`, no bias.</summary>
     public static unsafe float[] Project(MiniMaxMusic3RvqDepthDecoderWeights w, float[] x)
     {
         int hidden = MiniMaxMusic3Config.RvqDepthDecoderHiddenSize;
         var output = new float[hidden];
-        fixed (float* xp = x, op = output)
-            w.ProjectionWeight.MatMul(xp, 1, op);
+        Project(w, x, output);
         return output;
+    }
+
+    /// <summary>In-place logits for residual codebook `codebookIdx` (`[0,6]`) from the depth decoder's LAST step hidden state.</summary>
+    public static unsafe void CodebookLogits(MiniMaxMusic3RvqDepthDecoderWeights w, float[] lastStepHidden, int codebookIdx, float[] logits)
+    {
+        fixed (float* xp = lastStepHidden, op = logits)
+            w.AudioHeads[codebookIdx].MatMul(xp, 1, op);
     }
 
     /// <summary>Real logits for residual codebook `codebookIdx` (`[0,6]`) from the depth decoder's LAST step hidden state.</summary>
@@ -349,8 +298,7 @@ public static class MiniMaxMusic3RvqDepthDecoder
     {
         int vocabSize = MiniMaxMusic3Config.RvqDepthDecoderAudioVocabSize;
         var logits = new float[vocabSize];
-        fixed (float* xp = lastStepHidden, op = logits)
-            w.AudioHeads[codebookIdx].MatMul(xp, 1, op);
+        CodebookLogits(w, lastStepHidden, codebookIdx, logits);
         return logits;
     }
 
@@ -415,7 +363,7 @@ public static class MiniMaxMusic3RvqDepthDecoder
                     var kSpan = k.AsSpan(j * hidden + off, headDim);
                     scores[j] = TensorPrimitives.Dot(qSpan, kSpan) * scale;
                 }
-                SoftmaxRange(scores, 0, i + 1);
+                SoftmaxRange(scores.AsSpan(0, i + 1), 0, i + 1);
 
                 var ctxSpan = context.AsSpan(i * hidden + off, headDim);
                 for (int j = 0; j <= i; j++)
@@ -440,15 +388,15 @@ public static class MiniMaxMusic3RvqDepthDecoder
         DepthDecoderLayerWeights lw,
         float[] x,
         int stepIndex,
-        List<float[]> keyCache,
-        List<float[]> valCache)
+        int layerIndex,
+        MiniMaxMusic3RvqDepthKvCache cache)
     {
         int hidden = MiniMaxMusic3Config.RvqDepthDecoderHiddenSize;
 
         var normed1 = new float[hidden];
         RmsNorm(x, lw.InputLayerNormWeight, normed1, 1e-6f);
 
-        var attnOut = SelfAttentionIncremental(lw, normed1, stepIndex, keyCache, valCache);
+        var attnOut = SelfAttentionIncremental(lw, normed1, stepIndex, layerIndex, cache);
         var afterAttn = new float[hidden];
         for (int i = 0; i < hidden; i++) afterAttn[i] = x[i] + attnOut[i];
 
@@ -465,8 +413,8 @@ public static class MiniMaxMusic3RvqDepthDecoder
         DepthDecoderLayerWeights lw,
         float[] normed,
         int stepIndex,
-        List<float[]> keyCache,
-        List<float[]> valCache)
+        int layerIndex,
+        MiniMaxMusic3RvqDepthKvCache cache)
     {
         int hidden = MiniMaxMusic3Config.RvqDepthDecoderHiddenSize;
         int numHeads = MiniMaxMusic3Config.RvqDepthDecoderNumHeads;
@@ -483,21 +431,20 @@ public static class MiniMaxMusic3RvqDepthDecoder
             lw.VWeight.MatMul(np, 1, vp);
         }
 
-        keyCache.Add(k);
-        valCache.Add(v);
+        cache.Append(layerIndex, k, v);
 
-        int totalLen = keyCache.Count;
+        int totalLen = stepIndex + 1;
         var context = new float[hidden];
+        Span<float> scores = stackalloc float[totalLen];
 
-        Parallel.For(0, numHeads, h =>
+        for (int h = 0; h < numHeads; h++)
         {
             int off = h * headDim;
-            var scores = new float[totalLen];
             var qSpan = q.AsSpan(off, headDim);
 
             for (int j = 0; j < totalLen; j++)
             {
-                var kSpan = keyCache[j].AsSpan(off, headDim);
+                var kSpan = cache.GetKeySpan(layerIndex, j).Slice(off, headDim);
                 scores[j] = TensorPrimitives.Dot(qSpan, kSpan) * scale;
             }
             SoftmaxRange(scores, 0, totalLen);
@@ -506,10 +453,10 @@ public static class MiniMaxMusic3RvqDepthDecoder
             for (int j = 0; j < totalLen; j++)
             {
                 float s = scores[j];
-                var vSpan = valCache[j].AsSpan(off, headDim);
+                var vSpan = cache.GetValSpan(layerIndex, j).Slice(off, headDim);
                 TensorPrimitives.MultiplyAdd(vSpan, s, ctxSpan, ctxSpan);
             }
-        });
+        }
 
         var output = new float[hidden];
         fixed (float* cp = context, op = output)
@@ -568,13 +515,12 @@ public static class MiniMaxMusic3RvqDepthDecoder
     private static void RmsNorm(ReadOnlySpan<float> x, float[] weight, Span<float> output, float eps)
     {
         int n = x.Length;
-        float sumSq = 0f;
-        for (int i = 0; i < n; i++) sumSq += x[i] * x[i];
+        float sumSq = TensorPrimitives.SumOfSquares(x);
         float invRms = 1f / MathF.Sqrt(sumSq / n + eps);
         for (int i = 0; i < n; i++) output[i] = x[i] * invRms * weight[i];
     }
 
-    private static void SoftmaxRange(float[] scores, int start, int end)
+    private static void SoftmaxRange(Span<float> scores, int start, int end)
     {
         float max = float.NegativeInfinity;
         for (int i = start; i < end; i++) if (scores[i] > max) max = scores[i];

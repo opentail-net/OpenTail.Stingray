@@ -72,39 +72,49 @@ public sealed class ZZ_ScratchMiniMaxMusic3GenerateSampleTests
         var swTotal = Stopwatch.StartNew();
         var sw = Stopwatch.StartNew();
 
-        using var langLoader = SafetensorsLoader.OpenDirectory(langDir!);
-        using var globalModel = new MiniMaxMusic3GlobalModel(langLoader);
+        Music3Representation representation;
+        {
+            using var langLoader = SafetensorsLoader.OpenDirectory(langDir!);
+            using var globalModel = new MiniMaxMusic3GlobalModel(langLoader);
+            using var depthLoader = SafetensorsLoader.Open(depthPath!);
+            var depthWeights = MiniMaxMusic3RvqDepthDecoderWeights.Load(depthLoader);
 
-        using var depthLoader = SafetensorsLoader.Open(depthPath!);
-        var depthWeights = MiniMaxMusic3RvqDepthDecoderWeights.Load(depthLoader);
+            var promptEncoder = MiniMaxMusic3PromptEncoder.Load(tokenizerDir!);
+            int[] promptTokens = promptEncoder.BuildConditionalPrompt(
+                "Intimate acoustic folk, male vocal, fingerpicked guitar",
+                "[Verse]\nWalking through the morning rain");
+            Console.WriteLine($"[timing] LM+depth load, tokenizer, prompt build: {sw.Elapsed.TotalSeconds:F1}s");
+            sw.Restart();
 
-        var promptEncoder = MiniMaxMusic3PromptEncoder.Load(tokenizerDir!);
-        int[] promptTokens = promptEncoder.BuildConditionalPrompt(
-            "Intimate acoustic folk, male vocal, fingerpicked guitar",
-            "[Verse]\nWalking through the morning rain");
-        Console.WriteLine($"[timing] LM+depth load, tokenizer, prompt build: {sw.Elapsed.TotalSeconds:F1}s");
-        sw.Restart();
-
-        var random = new Random(42);
-        var representation = MiniMaxMusic3AutoregressiveGenerator.Generate(globalModel, depthWeights, promptTokens, maxFrames: 200, random);
-        Assert.True(representation.FrameCount >= 1, "AR generator produced zero frames");
-        Console.WriteLine($"[timing] AR loop (LM prefill+{representation.FrameCount} frames, depth decoder): {sw.Elapsed.TotalSeconds:F1}s");
-        sw.Restart();
+            var random = new Random(42);
+            representation = MiniMaxMusic3AutoregressiveGenerator.Generate(globalModel, depthWeights, promptTokens, maxFrames: 200, random);
+            Assert.True(representation.FrameCount >= 1, "AR generator produced zero frames");
+            Console.WriteLine($"[timing] AR loop (LM prefill+{representation.FrameCount} frames, depth decoder): {sw.Elapsed.TotalSeconds:F1}s");
+            sw.Restart();
+        }
+        GC.Collect();
+        GC.WaitForPendingFinalizers();
 
         using var condLoader = SafetensorsLoader.Open(condPath!);
         var conditionWeights = MiniMaxMusic3ConditionEncoderWeights.Load(condLoader);
 
-        using var transformerLoader = SafetensorsLoader.OpenDirectory(transformerDir!);
-        var transformerWeights = MiniMaxMusic3TransformerWeights.Load(transformerLoader);
+        MiniMaxMusic3QuantizedTransformerWeights q8TransformerWeights;
+        {
+            using var transformerLoader = SafetensorsLoader.OpenDirectory(transformerDir!);
+            var fp32TransformerWeights = MiniMaxMusic3TransformerWeights.Load(transformerLoader);
+            q8TransformerWeights = MiniMaxMusic3QuantizedTransformerWeights.QuantizeFrom(fp32TransformerWeights);
+        }
+        GC.Collect();
+        GC.WaitForPendingFinalizers();
 
         using var vocoderLoader = SafetensorsLoader.Open(vocoderPath!);
         var vocoderWeights = MiniMaxMusic3VocoderWeights.Load(vocoderLoader);
-        Console.WriteLine($"[timing] Cond+DiT+VAE weight load: {sw.Elapsed.TotalSeconds:F1}s");
+        Console.WriteLine($"[timing] Cond+DiT(Q8)+VAE weight load: {sw.Elapsed.TotalSeconds:F1}s");
         sw.Restart();
 
-        var pcm = MiniMaxMusic3Pipeline.Synthesize(conditionWeights, transformerWeights, vocoderWeights, representation, numFlowSteps: 8, seed: 7);
+        var pcm = MiniMaxMusic3Pipeline.Synthesize(conditionWeights, q8TransformerWeights, vocoderWeights, representation, numFlowSteps: 8, seed: 7);
         Assert.True(pcm.Length > 0, "vocoder produced zero samples");
-        Console.WriteLine($"[timing] Condition encode + Flow DiT (8 steps) + VAE decode: {sw.Elapsed.TotalSeconds:F1}s");
+        Console.WriteLine($"[timing] Condition encode + Flow DiT Q8 (8 steps) + VAE decode: {sw.Elapsed.TotalSeconds:F1}s");
         sw.Restart();
 
         // Real vocoder output is channel-planar ([L...][R...]), WavWriter needs interleaved.

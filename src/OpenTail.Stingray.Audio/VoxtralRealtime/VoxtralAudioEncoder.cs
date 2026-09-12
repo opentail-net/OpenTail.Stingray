@@ -218,29 +218,20 @@ public static class VoxtralAudioEncoder
         return sign * y;
     }
 
-    private static float[] LinearNoBias(float[] input, float[] weight, int inDim, int outDim)
+    private static unsafe float[] LinearNoBias(float[] input, byte[] weightQ8_0, int inDim, int outDim)
     {
         var output = new float[outDim];
-        for (int o = 0; o < outDim; o++)
-        {
-            float sum = 0f;
-            int wBase = o * inDim;
-            for (int i = 0; i < inDim; i++) sum += input[i] * weight[wBase + i];
-            output[o] = sum;
-        }
+        fixed (float* pOut = output, pIn = input)
+        fixed (byte* pW = weightQ8_0)
+            OpenTail.Stingray.Cpu.SimdKernels.MatVecQ8_0(pOut, pW, pIn, outDim, inDim);
         return output;
     }
 
-    private static float[] LinearBias(float[] input, float[] weight, float[] bias, int inDim, int outDim)
+    private static unsafe float[] LinearBias(float[] input, byte[] weightQ8_0, float[] bias, int inDim, int outDim)
     {
-        var output = new float[outDim];
-        for (int o = 0; o < outDim; o++)
-        {
-            float sum = bias[o];
-            int wBase = o * inDim;
-            for (int i = 0; i < inDim; i++) sum += input[i] * weight[wBase + i];
-            output[o] = sum;
-        }
+        // MatVecQ8_0 has no fused-bias overload -- quantized weight dot, then add bias separately.
+        var output = LinearNoBias(input, weightQ8_0, inDim, outDim);
+        for (int i = 0; i < outDim; i++) output[i] += bias[i];
         return output;
     }
 

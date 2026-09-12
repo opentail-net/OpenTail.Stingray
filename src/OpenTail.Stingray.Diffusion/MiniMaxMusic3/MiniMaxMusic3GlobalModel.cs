@@ -162,6 +162,18 @@ public sealed unsafe class MiniMaxMusic3GlobalModel : IDisposable
     /// Shares the mmap weight streaming and BF16->F32 dequantization across both branches for all 36 layers,
     /// halving memory bandwidth and dequantization overhead during autoregressive generation.
     /// </summary>
+    private ushort* GetMappedBf16(string name)
+    {
+        if (!_loader.TryGetMappedPointer(name, out byte* ptr, out _, out string dtype))
+            throw new KeyNotFoundException(name);
+        if (dtype != "BF16") throw new NotSupportedException($"{name}: expected BF16, got {dtype}");
+        return (ushort*)ptr;
+    }
+
+    /// <summary>
+    /// Dual incremental forward step for conditional and unconditional branches simultaneously (batch=2).
+    /// Uses specialized AVX2 BF16 2-row streaming matmul kernels and fused QKV / GateUp projections.
+    /// </summary>
     public (float[] condHidden, float[] uncondHidden, float[] condLastLogits, float[] uncondLastLogits) ForwardIncrementalStepPair(
         float[] condEmbedding,
         float[] uncondEmbedding,
@@ -178,92 +190,150 @@ public sealed unsafe class MiniMaxMusic3GlobalModel : IDisposable
         float ropeTheta = MiniMaxMusic3Config.LanguageModelRopeTheta;
         int startPos = condCache.Length;
 
-        // Flatten pair into [2 * hidden]: row 0 = cond, row 1 = uncond
-        var h = new float[2 * hidden];
-        Array.Copy(condEmbedding, 0, h, 0, hidden);
-        Array.Copy(uncondEmbedding, 0, h, hidden, hidden);
-
-        var (cos, sin) = BuildRopeTable(1, headDim, ropeTheta, startPos);
-
         int qRowDim = nHeads * headDim;
         int kvRowDim = nKvHeads * headDim;
+
+        var hCond = (float[])condEmbedding.Clone();
+        var hUncond = (float[])uncondEmbedding.Clone();
+
+        var normed1Cond = new float[hidden];
+        var normed1Uncond = new float[hidden];
+
+        var qCond = new float[qRowDim];
+        var qUncond = new float[qRowDim];
+        var kCond = new float[kvRowDim];
+        var kUncond = new float[kvRowDim];
+        var vCond = new float[kvRowDim];
+        var vUncond = new float[kvRowDim];
+
+        var attnProjCond = new float[hidden];
+        var attnProjUncond = new float[hidden];
+
+        var normed2Cond = new float[hidden];
+        var normed2Uncond = new float[hidden];
+
+        var gateCond = new float[interm];
+        var gateUncond = new float[interm];
+
+        var downCond = new float[hidden];
+        var downUncond = new float[hidden];
+
+        var (cos, sin) = BuildRopeTable(1, headDim, ropeTheta, startPos);
 
         for (int l = 0; l < nLayers; l++)
         {
             string blk = $"model.layers.{l}";
 
-            var normed = RmsNormRows(h, 2, hidden, Small($"{blk}.input_layernorm.weight", hidden), rmsEps);
+            var inputNormW = Small($"{blk}.input_layernorm.weight", hidden);
+            RmsNorm(hCond, inputNormW, normed1Cond, rmsEps);
+            RmsNorm(hUncond, inputNormW, normed1Uncond, rmsEps);
 
-            var q = MmapLinear(normed, 2, hidden, $"{blk}.self_attn.q_proj.weight", qRowDim);
-            var k = MmapLinear(normed, 2, hidden, $"{blk}.self_attn.k_proj.weight", kvRowDim);
-            var v = MmapLinear(normed, 2, hidden, $"{blk}.self_attn.v_proj.weight", kvRowDim);
+            ushort* qW = GetMappedBf16($"{blk}.self_attn.q_proj.weight");
+            ushort* kW = GetMappedBf16($"{blk}.self_attn.k_proj.weight");
+            ushort* vW = GetMappedBf16($"{blk}.self_attn.v_proj.weight");
 
-            ApplyPerHeadRmsNorm(q, 2, nHeads, headDim, Small($"{blk}.self_attn.q_norm.weight", headDim), rmsEps);
-            ApplyPerHeadRmsNorm(k, 2, nKvHeads, headDim, Small($"{blk}.self_attn.k_norm.weight", headDim), rmsEps);
+            fixed (float* n1c = normed1Cond, n1u = normed1Uncond,
+                          qc = qCond, qu = qUncond,
+                          kc = kCond, ku = kUncond,
+                          vc = vCond, vu = vUncond)
+            {
+                Cpu.SimdKernels.MatMulQkvPairBF16(qc, qu, kc, ku, vc, vu, qW, kW, vW, n1c, n1u, qRowDim, kvRowDim, hidden);
+            }
 
-            ApplyRope(q.AsSpan(0, qRowDim), 1, nHeads, headDim, cos, sin);
-            ApplyRope(q.AsSpan(qRowDim, qRowDim), 1, nHeads, headDim, cos, sin);
-            ApplyRope(k.AsSpan(0, kvRowDim), 1, nKvHeads, headDim, cos, sin);
-            ApplyRope(k.AsSpan(kvRowDim, kvRowDim), 1, nKvHeads, headDim, cos, sin);
+            var qNormW = Small($"{blk}.self_attn.q_norm.weight", headDim);
+            var kNormW = Small($"{blk}.self_attn.k_norm.weight", headDim);
+            ApplyPerHeadRmsNorm(qCond, 1, nHeads, headDim, qNormW, rmsEps);
+            ApplyPerHeadRmsNorm(qUncond, 1, nHeads, headDim, qNormW, rmsEps);
+            ApplyPerHeadRmsNorm(kCond, 1, nKvHeads, headDim, kNormW, rmsEps);
+            ApplyPerHeadRmsNorm(kUncond, 1, nKvHeads, headDim, kNormW, rmsEps);
 
-            var kCond = new float[kvRowDim];
-            var vCond = new float[kvRowDim];
-            Array.Copy(k, 0, kCond, 0, kvRowDim);
-            Array.Copy(v, 0, vCond, 0, kvRowDim);
-            condCache.Keys[l].Add(kCond);
-            condCache.Values[l].Add(vCond);
+            ApplyRope(qCond.AsSpan(), 1, nHeads, headDim, cos, sin);
+            ApplyRope(qUncond.AsSpan(), 1, nHeads, headDim, cos, sin);
+            ApplyRope(kCond.AsSpan(), 1, nKvHeads, headDim, cos, sin);
+            ApplyRope(kUncond.AsSpan(), 1, nKvHeads, headDim, cos, sin);
 
-            var kUncond = new float[kvRowDim];
-            var vUncond = new float[kvRowDim];
-            Array.Copy(k, kvRowDim, kUncond, 0, kvRowDim);
-            Array.Copy(v, kvRowDim, vUncond, 0, kvRowDim);
-            uncondCache.Keys[l].Add(kUncond);
-            uncondCache.Values[l].Add(vUncond);
+            var kCondStored = new float[kvRowDim];
+            var vCondStored = new float[kvRowDim];
+            Array.Copy(kCond, kCondStored, kvRowDim);
+            Array.Copy(vCond, vCondStored, kvRowDim);
+            condCache.Keys[l].Add(kCondStored);
+            condCache.Values[l].Add(vCondStored);
 
-            var qCond = new float[qRowDim];
-            var qUncond = new float[qRowDim];
-            Array.Copy(q, 0, qCond, 0, qRowDim);
-            Array.Copy(q, qRowDim, qUncond, 0, qRowDim);
+            var kUncondStored = new float[kvRowDim];
+            var vUncondStored = new float[kvRowDim];
+            Array.Copy(kUncond, kUncondStored, kvRowDim);
+            Array.Copy(vUncond, vUncondStored, kvRowDim);
+            uncondCache.Keys[l].Add(kUncondStored);
+            uncondCache.Values[l].Add(vUncondStored);
 
             var attnCond = CausalGqaAttentionCached(qCond, condCache.Keys[l], condCache.Values[l], 1, startPos, nHeads, nKvHeads, headDim);
             var attnUncond = CausalGqaAttentionCached(qUncond, uncondCache.Keys[l], uncondCache.Values[l], 1, startPos, nHeads, nKvHeads, headDim);
 
-            var attnCombined = new float[2 * qRowDim];
-            Array.Copy(attnCond, 0, attnCombined, 0, qRowDim);
-            Array.Copy(attnUncond, 0, attnCombined, qRowDim, qRowDim);
+            ushort* oW = GetMappedBf16($"{blk}.self_attn.o_proj.weight");
+            fixed (float* ac = attnCond, au = attnUncond, apc = attnProjCond, apu = attnProjUncond)
+            {
+                Cpu.SimdKernels.MatMulPairBF16(apc, apu, oW, ac, au, hidden, qRowDim);
+            }
 
-            var attnProj = MmapLinear(attnCombined, 2, qRowDim, $"{blk}.self_attn.o_proj.weight", hidden);
+            for (int i = 0; i < hidden; i++)
+            {
+                hCond[i] += attnProjCond[i];
+                hUncond[i] += attnProjUncond[i];
+            }
 
-            for (int i = 0; i < 2 * hidden; i++) h[i] += attnProj[i];
+            var postNormW = Small($"{blk}.post_attention_layernorm.weight", hidden);
+            RmsNorm(hCond, postNormW, normed2Cond, rmsEps);
+            RmsNorm(hUncond, postNormW, normed2Uncond, rmsEps);
 
-            var normed2 = RmsNormRows(h, 2, hidden, Small($"{blk}.post_attention_layernorm.weight", hidden), rmsEps);
-            var gate = MmapLinear(normed2, 2, hidden, $"{blk}.mlp.gate_proj.weight", interm);
-            var up = MmapLinear(normed2, 2, hidden, $"{blk}.mlp.up_proj.weight", interm);
-            for (int i = 0; i < 2 * interm; i++) gate[i] = Silu(gate[i]) * up[i];
-            var down = MmapLinear(gate, 2, interm, $"{blk}.mlp.down_proj.weight", hidden);
+            ushort* gateW = GetMappedBf16($"{blk}.mlp.gate_proj.weight");
+            ushort* upW = GetMappedBf16($"{blk}.mlp.up_proj.weight");
+            fixed (float* n2c = normed2Cond, n2u = normed2Uncond, gc = gateCond, gu = gateUncond)
+            {
+                Cpu.SimdKernels.MatMulGateUpSiluPairBF16(gc, gu, gateW, upW, n2c, n2u, interm, hidden);
+            }
 
-            for (int i = 0; i < 2 * hidden; i++) h[i] += down[i];
+            ushort* downW = GetMappedBf16($"{blk}.mlp.down_proj.weight");
+            fixed (float* gc = gateCond, gu = gateUncond, dc = downCond, du = downUncond)
+            {
+                Cpu.SimdKernels.MatMulPairBF16(dc, du, downW, gc, gu, hidden, interm);
+            }
+
+            for (int i = 0; i < hidden; i++)
+            {
+                hCond[i] += downCond[i];
+                hUncond[i] += downUncond[i];
+            }
         }
 
         condCache.Length += 1;
         uncondCache.Length += 1;
 
-        var finalNorm = RmsNormRows(h, 2, hidden, Small("model.norm.weight", hidden), rmsEps);
+        var finalNormW = Small("model.norm.weight", hidden);
+        var finalCond = new float[hidden];
+        var finalUncond = new float[hidden];
+        RmsNorm(hCond, finalNormW, finalCond, rmsEps);
+        RmsNorm(hUncond, finalNormW, finalUncond, rmsEps);
 
         int vocab = MiniMaxMusic3Config.LanguageModelVocabSize;
-        var lastLogits = MmapLinear(finalNorm, 2, hidden, "lm_head.weight", vocab);
-
-        var condHidden = new float[hidden];
-        var uncondHidden = new float[hidden];
-        Array.Copy(finalNorm, 0, condHidden, 0, hidden);
-        Array.Copy(finalNorm, hidden, uncondHidden, 0, hidden);
-
         var condLogits = new float[vocab];
         var uncondLogits = new float[vocab];
-        Array.Copy(lastLogits, 0, condLogits, 0, vocab);
-        Array.Copy(lastLogits, vocab, uncondLogits, 0, vocab);
 
-        return (condHidden, uncondHidden, condLogits, uncondLogits);
+        int audioStart = MiniMaxMusic3Config.AudioEndTokenId;
+        int audioCount = (MiniMaxMusic3Config.AudioCodeOffset + MiniMaxMusic3Config.SemanticVocabSize) - audioStart;
+        ushort* lmHeadW = GetMappedBf16("lm_head.weight");
+        fixed (float* fc = finalCond, fu = finalUncond, cl = condLogits, ul = uncondLogits)
+        {
+            Cpu.SimdKernels.MatMulPairBF16(
+                cl + audioStart,
+                ul + audioStart,
+                lmHeadW + (long)audioStart * hidden,
+                fc,
+                fu,
+                audioCount,
+                hidden);
+        }
+
+        return (finalCond, finalUncond, condLogits, uncondLogits);
     }
 
     /// <summary>Real language-model token embedding lookup (`model.embed_tokens.weight` row
@@ -413,6 +483,15 @@ public sealed unsafe class MiniMaxMusic3GlobalModel : IDisposable
     }
 
     // ── Plain-float math (small tensors / activations only) ────────────────
+
+    private static void RmsNorm(ReadOnlySpan<float> x, ReadOnlySpan<float> weight, Span<float> output, float eps)
+    {
+        double sumSq = 0;
+        int dim = x.Length;
+        for (int i = 0; i < dim; i++) sumSq += (double)x[i] * x[i];
+        float invRms = (float)(1.0 / Math.Sqrt(sumSq / dim + eps));
+        for (int i = 0; i < dim; i++) output[i] = x[i] * invRms * weight[i];
+    }
 
     private static float[] RmsNormRows(float[] x, int seqLen, int dim, float[] weight, float eps)
     {

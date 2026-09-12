@@ -123,6 +123,7 @@ public sealed class ZZ_ScratchArLoopStepCostBenchTests
         // Paired (CFG-batched, single-weight-stream) variant -- same real work, new code path.
         var condDepthCacheB = new MiniMaxMusic3RvqDepthKvCache();
         var uncondDepthCacheB = new MiniMaxMusic3RvqDepthKvCache();
+        var depthWs = new MiniMaxMusic3RvqDepthWorkspace();
 
         void RunOneDepthFramePaired()
         {
@@ -131,12 +132,12 @@ public sealed class ZZ_ScratchArLoopStepCostBenchTests
             MiniMaxMusic3RvqDepthDecoder.ForwardStepPair(depthWeights,
                 MiniMaxMusic3RvqDepthDecoder.Project(depthWeights, condLastHidden),
                 MiniMaxMusic3RvqDepthDecoder.Project(depthWeights, uncondLastHidden),
-                0, condDepthCacheB, uncondDepthCacheB);
-            MiniMaxMusic3RvqDepthDecoder.ForwardStepPair(depthWeights, projectedSemantic, projectedSemantic, 1, condDepthCacheB, uncondDepthCacheB);
+                0, condDepthCacheB, uncondDepthCacheB, depthWs);
+            MiniMaxMusic3RvqDepthDecoder.ForwardStepPair(depthWeights, projectedSemantic, projectedSemantic, 1, condDepthCacheB, uncondDepthCacheB, depthWs);
             for (int ci = 0; ci < 6; ci++)
             {
                 var embedded = MiniMaxMusic3RvqDepthDecoder.Project(depthWeights, MiniMaxMusic3RvqDepthDecoder.EmbedResidualCode(depthWeights, ci, 0));
-                MiniMaxMusic3RvqDepthDecoder.ForwardStepPair(depthWeights, embedded, embedded, ci + 2, condDepthCacheB, uncondDepthCacheB);
+                MiniMaxMusic3RvqDepthDecoder.ForwardStepPair(depthWeights, embedded, embedded, ci + 2, condDepthCacheB, uncondDepthCacheB, depthWs);
             }
         }
 
@@ -146,11 +147,16 @@ public sealed class ZZ_ScratchArLoopStepCostBenchTests
         swDepthPaired.Stop();
         double depthPairedMsPerFrame = swDepthPaired.Elapsed.TotalMilliseconds / depthFrames;
 
-        Console.WriteLine($"[bench] Global LM ForwardIncrementalStepPair: {lmMsPerStep:F1} ms/step");
-        Console.WriteLine($"[bench] Depth decoder per-frame (7 separate CFG steps, BEFORE): {depthMsPerFrame:F1} ms/frame");
-        Console.WriteLine($"[bench] Depth decoder per-frame (7 CFG-batched ForwardStepPair steps, AFTER): {depthPairedMsPerFrame:F1} ms/frame");
-        Console.WriteLine($"[bench] Depth decoder speedup: {(depthMsPerFrame / depthPairedMsPerFrame):F2}x");
-        Console.WriteLine($"[bench] Combined AR per-frame estimate: {(lmMsPerStep + depthMsPerFrame):F1} ms/frame -> {(lmMsPerStep + depthMsPerFrame) * 200 / 1000.0:F1} s for 200 frames");
-        Console.WriteLine($"[bench] Real minimaxmusic.cpp reference: 841.3 ms/frame -> 168.3 s for 200 frames");
+        var report = $"""
+[bench] Global LM ForwardIncrementalStepPair: {lmMsPerStep:F1} ms/step
+[bench] Depth decoder per-frame (BEFORE, separate): {depthMsPerFrame:F1} ms/frame
+[bench] Depth decoder per-frame (AFTER, fused pair): {depthPairedMsPerFrame:F1} ms/frame
+[bench] Depth decoder speedup: {(depthMsPerFrame / depthPairedMsPerFrame):F2}x
+[bench] Combined AR per-frame (BEFORE): {(lmMsPerStep + depthMsPerFrame):F1} ms/frame -> {(lmMsPerStep + depthMsPerFrame) * 200 / 1000.0:F1} s for 200 frames
+[bench] Combined AR per-frame (AFTER):  {(lmMsPerStep + depthPairedMsPerFrame):F1} ms/frame -> {(lmMsPerStep + depthPairedMsPerFrame) * 200 / 1000.0:F1} s for 200 frames
+[bench] Real minimaxmusic.cpp reference: 841.3 ms/frame -> 168.3 s for 200 frames
+""";
+        Console.Error.WriteLine(report);
+        File.WriteAllText("bench_ar_results.txt", report);
     }
 }

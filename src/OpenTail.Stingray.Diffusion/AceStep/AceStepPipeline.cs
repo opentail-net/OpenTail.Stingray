@@ -28,6 +28,14 @@ public sealed class AceStepPipeline
 {
     private readonly AceStepModel _model;
 
+    // TEMPORARY diagnostic instrumentation (perf-sweep Phase 9.1b, docs/perf-sweep-plan.md) for
+    // the ACE-Step Turbo CPU perf investigation (114.14x RTF, worst in PerformanceLeague.md) --
+    // no STINGRAY_PROFILE_DECODE-equivalent exists for diffusion pipelines, so this mirrors
+    // HybridGdnForwardPass's own STINGRAY_PROFILE_DECODE-gated temporary profiler pattern. Remove
+    // once the real bottleneck is found and fixed.
+    private static readonly bool s_profEnabled =
+        Environment.GetEnvironmentVariable("STINGRAY_PROFILE_DECODE") == "1";
+
     public AceStepPipeline(AceStepModel model)
     {
         _model = model;
@@ -35,6 +43,8 @@ public sealed class AceStepPipeline
 
     public StereoAudioBuffer Generate(AceStepGenerationParams parameters)
     {
+        var swTotal = s_profEnabled ? System.Diagnostics.Stopwatch.StartNew() : null;
+        var sw = s_profEnabled ? System.Diagnostics.Stopwatch.StartNew() : null;
         // Real SFT_GEN_PROMPT template, transcribed from the real diffusers ACE-Step pipeline --
         // see docs/064-acestep-implementation-plan.md's "Corrections and confirmations".
         string prompt =
@@ -43,6 +53,7 @@ public sealed class AceStepPipeline
             $"# Metas\n- bpm: N/A\n- timesignature: N/A\n- keyscale: N/A\n- duration: {parameters.DurationSeconds:0} seconds\n<|endoftext|>\n";
 
         var textHidden = _model.TextEncoder.Encode(prompt);
+        double msTextEncode = sw?.Elapsed.TotalMilliseconds ?? 0; sw?.Restart();
 
         int[] lyricTokenIds = parameters.Instrumental || string.IsNullOrWhiteSpace(parameters.Lyrics)
             ? []
@@ -56,6 +67,7 @@ public sealed class AceStepPipeline
         const int timbreFixFrames = 750; // real `timbre_fix_frame = ceil(30 * 25Hz)`
         int silenceFrames = Math.Max(timbreFixFrames, latentFrames);
         var silenceRows = ComputeSilenceLatent(silenceFrames);
+        double msSilenceVaeEncode = sw?.Elapsed.TotalMilliseconds ?? 0; sw?.Restart();
 
         var timbreInput = new float[Math.Min(timbreFixFrames, silenceFrames)][];
         Array.Copy(silenceRows, timbreInput, timbreInput.Length);
@@ -66,9 +78,11 @@ public sealed class AceStepPipeline
 
         var condition = AceStepConditionEncoder.Forward(
             _model.ConditionEncoder, textHidden, lyricTokenIds, _model.TextEncoder.TokenEmbeddingTable, timbreRow);
+        double msTimbreAndCondition = sw?.Elapsed.TotalMilliseconds ?? 0; sw?.Restart();
 
         var latentRows = AceStepFlowScheduler.Generate(
             _model.Transformer, condition, latentFrames, parameters.Shift, parameters.Seed, srcLatents);
+        double msDiT = sw?.Elapsed.TotalMilliseconds ?? 0; sw?.Restart();
 
         // AceStepFlowScheduler returns [t][acousticDim] (time-major); AceStepOobleckDecoder.Decode
         // wants [acousticDim, t] flat channel-major -- transpose.
@@ -79,6 +93,19 @@ public sealed class AceStepPipeline
                 latentFlat[c * latentFrames + t] = latentRows[t][c];
 
         var pcm = AceStepOobleckDecoder.Decode(_model.Vae, latentFlat, latentFrames);
+        double msVaeDecode = sw?.Elapsed.TotalMilliseconds ?? 0;
+
+        if (s_profEnabled)
+        {
+            double msTotal = swTotal!.Elapsed.TotalMilliseconds;
+            Console.Error.WriteLine("[AceStepProfile] Stage split (TEMPORARY diagnostic, see docs/perf-sweep-plan.md Phase 9):");
+            Console.Error.WriteLine($"  Text encoder (Qwen3)     {msTextEncode,10:F2}ms  {100.0 * msTextEncode / msTotal,6:F2}%");
+            Console.Error.WriteLine($"  Silence VAE encode       {msSilenceVaeEncode,10:F2}ms  {100.0 * msSilenceVaeEncode / msTotal,6:F2}%");
+            Console.Error.WriteLine($"  Timbre + condition enc.  {msTimbreAndCondition,10:F2}ms  {100.0 * msTimbreAndCondition / msTotal,6:F2}%");
+            Console.Error.WriteLine($"  DiT flow scheduler       {msDiT,10:F2}ms  {100.0 * msDiT / msTotal,6:F2}%");
+            Console.Error.WriteLine($"  VAE decode               {msVaeDecode,10:F2}ms  {100.0 * msVaeDecode / msTotal,6:F2}%");
+            Console.Error.WriteLine($"  Total                    {msTotal,10:F2}ms");
+        }
 
         int samplesPerChannel = pcm.Length / AceStepConfig.VaeAudioChannels;
         var left = new float[samplesPerChannel];
@@ -94,9 +121,20 @@ public sealed class AceStepPipeline
         };
     }
 
+    // perf-sweep Phase 9 (docs/perf-sweep-plan.md): real profiling found this stage alone was
+    // 83-85% of total Generate() wall-clock (175-186s of a ~214s mean run) -- vastly more than
+    // the actual DiT diffusion transformer (~10%). The input is ALWAYS the same all-zero silence
+    // PCM for a given `frames` count (a pure function of duration alone, independent of prompt/
+    // lyrics/seed/timbre) -- there is nothing to recompute across calls with the same duration.
+    // Memoized per pipeline instance (correct: `_model.VaeEncoder` weights are fixed for the
+    // instance's lifetime, so this is a true idempotent cache, not a correctness risk).
+    private readonly Dictionary<int, float[][]> _silenceLatentCache = new();
+
     /// <summary>Encodes real true digital silence (all-zero stereo PCM) through the real VAE encoder to derive `frames` real latent rows -- see <see cref="AceStepOobleckEncoder"/>'s doc comment.</summary>
     private float[][] ComputeSilenceLatent(int frames)
     {
+        if (_silenceLatentCache.TryGetValue(frames, out var cached)) return cached;
+
         int hopLength = AceStepConfig.VaeDownsamplingRatios.Aggregate(1, (a, b) => a * b);
         int sampleCount = frames * hopLength;
         var zeroPcm = new float[AceStepConfig.VaeAudioChannels * sampleCount]; // real true silence
@@ -111,6 +149,7 @@ public sealed class AceStepPipeline
             for (int c = 0; c < latentDim; c++) row[c] = flat[c * frames + t];
             rows[t] = row;
         }
+        _silenceLatentCache[frames] = rows;
         return rows;
     }
 }

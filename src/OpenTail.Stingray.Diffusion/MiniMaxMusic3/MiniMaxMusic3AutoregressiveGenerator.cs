@@ -42,6 +42,14 @@ public static class MiniMaxMusic3AutoregressiveGenerator
         var uncondCache = new MiniMaxMusic3GlobalKvCache(numLayers);
         var condDepthCache = new MiniMaxMusic3RvqDepthKvCache();
         var uncondDepthCache = new MiniMaxMusic3RvqDepthKvCache();
+        var depthWs = new MiniMaxMusic3RvqDepthWorkspace();
+
+        var projectedCond = new float[depthHidden];
+        var projectedUncond = new float[depthHidden];
+        var projectedSemantic = new float[depthHidden];
+        var projectedResidual = new float[depthHidden];
+        var condLogitsC = new float[MiniMaxMusic3Config.RvqDepthDecoderAudioVocabSize];
+        var uncondLogitsC = new float[MiniMaxMusic3Config.RvqDepthDecoderAudioVocabSize];
 
         // Real: frame_index 0 only advances state past <|audio_start|> (the prompt's last token),
         // does not emit a frame -- the prefill IS that step.
@@ -71,15 +79,17 @@ public static class MiniMaxMusic3AutoregressiveGenerator
             uncondDepthCache.Reset();
 
             var semanticEmbed = globalModel.EmbedToken(MiniMaxMusic3Config.AudioCodeOffset + semanticCode);
-            var projectedSemantic = MiniMaxMusic3RvqDepthDecoder.Project(depthWeights, semanticEmbed);
+            MiniMaxMusic3RvqDepthDecoder.Project(depthWeights, semanticEmbed, projectedSemantic);
+            MiniMaxMusic3RvqDepthDecoder.Project(depthWeights, condLastHidden, projectedCond);
+            MiniMaxMusic3RvqDepthDecoder.Project(depthWeights, uncondLastHidden, projectedUncond);
 
             MiniMaxMusic3RvqDepthDecoder.ForwardStepPair(depthWeights,
-                MiniMaxMusic3RvqDepthDecoder.Project(depthWeights, condLastHidden),
-                MiniMaxMusic3RvqDepthDecoder.Project(depthWeights, uncondLastHidden),
-                0, condDepthCache, uncondDepthCache);
+                projectedCond,
+                projectedUncond,
+                0, condDepthCache, uncondDepthCache, depthWs);
 
             var (condDepthLast, uncondDepthLast) = MiniMaxMusic3RvqDepthDecoder.ForwardStepPair(
-                depthWeights, projectedSemantic, projectedSemantic, 1, condDepthCache, uncondDepthCache);
+                depthWeights, projectedSemantic, projectedSemantic, 1, condDepthCache, uncondDepthCache, depthWs);
 
             var residualCodes = new int[numResidualCodebooks];
             var localHiddenConcat = new float[numResidualCodebooks * depthHidden];
@@ -88,17 +98,17 @@ public static class MiniMaxMusic3AutoregressiveGenerator
             {
                 Array.Copy(condDepthLast, 0, localHiddenConcat, ci * depthHidden, depthHidden);
 
-                var condLogitsC = MiniMaxMusic3RvqDepthDecoder.CodebookLogits(depthWeights, condDepthLast, ci);
-                var uncondLogitsC = MiniMaxMusic3RvqDepthDecoder.CodebookLogits(depthWeights, uncondDepthLast, ci);
+                MiniMaxMusic3RvqDepthDecoder.CodebookLogits(depthWeights, condDepthLast, ci, condLogitsC);
+                MiniMaxMusic3RvqDepthDecoder.CodebookLogits(depthWeights, uncondDepthLast, ci, uncondLogitsC);
 
                 int code = SampleWithCfgTopK(condLogitsC, uncondLogitsC, random);
                 residualCodes[ci] = code;
 
                 if (ci + 1 < numResidualCodebooks)
                 {
-                    var embedded = MiniMaxMusic3RvqDepthDecoder.Project(depthWeights, MiniMaxMusic3RvqDepthDecoder.EmbedResidualCode(depthWeights, ci, code));
+                    MiniMaxMusic3RvqDepthDecoder.Project(depthWeights, MiniMaxMusic3RvqDepthDecoder.EmbedResidualCode(depthWeights, ci, code), projectedResidual);
                     (condDepthLast, uncondDepthLast) = MiniMaxMusic3RvqDepthDecoder.ForwardStepPair(
-                        depthWeights, embedded, embedded, ci + 2, condDepthCache, uncondDepthCache);
+                        depthWeights, projectedResidual, projectedResidual, ci + 2, condDepthCache, uncondDepthCache, depthWs);
                 }
             }
 
@@ -227,10 +237,51 @@ public static class MiniMaxMusic3AutoregressiveGenerator
 
     private static int[] TopKIndices(float[] values, int k)
     {
-        var indices = new int[values.Length];
-        for (int i = 0; i < indices.Length; i++) indices[i] = i;
-        Array.Sort(indices, (a, b) => values[b].CompareTo(values[a]));
-        return indices[..k];
+        if (values.Length <= k)
+        {
+            var all = new int[values.Length];
+            for (int i = 0; i < all.Length; i++) all[i] = i;
+            Array.Sort(all, (a, b) => values[b].CompareTo(values[a]));
+            return all;
+        }
+
+        Span<int> topIndices = stackalloc int[k];
+        Span<float> topValues = stackalloc float[k];
+        int count = 0;
+
+        for (int i = 0; i < values.Length; i++)
+        {
+            float v = values[i];
+            if (count < k)
+            {
+                int pos = count;
+                while (pos > 0 && topValues[pos - 1] < v)
+                {
+                    topValues[pos] = topValues[pos - 1];
+                    topIndices[pos] = topIndices[pos - 1];
+                    pos--;
+                }
+                topValues[pos] = v;
+                topIndices[pos] = i;
+                count++;
+            }
+            else if (v > topValues[k - 1])
+            {
+                int pos = k - 1;
+                while (pos > 0 && topValues[pos - 1] < v)
+                {
+                    topValues[pos] = topValues[pos - 1];
+                    topIndices[pos] = topIndices[pos - 1];
+                    pos--;
+                }
+                topValues[pos] = v;
+                topIndices[pos] = i;
+            }
+        }
+
+        var result = new int[k];
+        topIndices.CopyTo(result);
+        return result;
     }
 
     private static int MultinomialSample(float[] logits, Random random)

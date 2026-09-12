@@ -53,7 +53,7 @@ public static class VoxtralTextDecoder
 
         var logits = new float[n][];
         for (int t = 0; t < n; t++)
-            logits[t] = LinearNoBias(x[t], w.EmbedTokensWeight, hidden, VoxtralTextDecoderWeights.VocabSize);
+            logits[t] = LinearNoBias(x[t], w.EmbedTokensWeightQ8_0, hidden, VoxtralTextDecoderWeights.VocabSize);
         return logits;
     }
 
@@ -221,16 +221,12 @@ public static class VoxtralTextDecoder
         return sign * y;
     }
 
-    private static float[] LinearNoBias(float[] input, float[] weight, int inDim, int outDim)
+    private static unsafe float[] LinearNoBias(float[] input, byte[] weightQ8_0, int inDim, int outDim)
     {
         var output = new float[outDim];
-        for (int o = 0; o < outDim; o++)
-        {
-            float sum = 0f;
-            int wBase = o * inDim;
-            for (int i = 0; i < inDim; i++) sum += input[i] * weight[wBase + i];
-            output[o] = sum;
-        }
+        fixed (float* pOut = output, pIn = input)
+        fixed (byte* pW = weightQ8_0)
+            OpenTail.Stingray.Cpu.SimdKernels.MatVecQ8_0(pOut, pW, pIn, outDim, inDim);
         return output;
     }
 
@@ -241,6 +237,27 @@ public static class VoxtralTextDecoder
     {
         public required List<float[]>[] K { get; init; } // [layer][position] -> kvHeads*headDim
         public required List<float[]>[] V { get; init; }
+
+        /// <summary>Per-layer AdaLN-Zero gate, cached because <c>numDelayTokens</c> (and hence
+        /// <see cref="TimeEmbedding"/> and every layer's <see cref="AdaGate"/> output) is constant
+        /// for an entire generation -- recomputing it from scratch on every decoded token was pure
+        /// waste (perf-sweep Phase 1.3, see docs/perf-sweep-plan.md).</summary>
+        internal float[][]? CachedAdaScale { get; set; }
+        internal int CachedNumDelayTokens { get; set; }
+    }
+
+    private static float[][] AdaScalePerLayer(VoxtralTextDecoderWeights w, KvCache cache, int numDelayTokens)
+    {
+        if (cache.CachedAdaScale is null || cache.CachedNumDelayTokens != numDelayTokens)
+        {
+            int hidden = VoxtralTextDecoderWeights.HiddenSize;
+            var tCond = TimeEmbedding(numDelayTokens, hidden);
+            var scales = new float[w.Layers.Length][];
+            for (int li = 0; li < w.Layers.Length; li++) scales[li] = AdaGate(tCond, w.Layers[li]);
+            cache.CachedAdaScale = scales;
+            cache.CachedNumDelayTokens = numDelayTokens;
+        }
+        return cache.CachedAdaScale;
     }
 
     /// <summary>Runs prefill exactly like <see cref="Forward"/> but also populates a
@@ -265,7 +282,6 @@ public static class VoxtralTextDecoder
             x[t] = row;
         }
 
-        var tCond = TimeEmbedding(numDelayTokens, hidden);
         int numLayers = w.Layers.Length;
         var cache = new KvCache
         {
@@ -273,6 +289,8 @@ public static class VoxtralTextDecoder
             V = new List<float[]>[numLayers],
         };
         for (int l = 0; l < numLayers; l++) { cache.K[l] = new List<float[]>(n + 128); cache.V[l] = new List<float[]>(n + 128); }
+
+        var adaScales = AdaScalePerLayer(w, cache, numDelayTokens);
 
         for (int li = 0; li < numLayers; li++)
         {
@@ -282,7 +300,7 @@ public static class VoxtralTextDecoder
             AddRows(x, attn);
 
             var mlpIn = RmsNormRows(x, hidden, layer.PostNorm);
-            var scale = AdaGate(tCond, layer);
+            var scale = adaScales[li];
             for (int t = 0; t < n; t++)
                 for (int d = 0; d < hidden; d++)
                     mlpIn[t][d] *= scale[d];
@@ -293,7 +311,7 @@ public static class VoxtralTextDecoder
         var normed = RmsNormRows(x, hidden, w.NormWeight);
         var logits = new float[n][];
         for (int t = 0; t < n; t++)
-            logits[t] = LinearNoBias(normed[t], w.EmbedTokensWeight, hidden, VoxtralTextDecoderWeights.VocabSize);
+            logits[t] = LinearNoBias(normed[t], w.EmbedTokensWeightQ8_0, hidden, VoxtralTextDecoderWeights.VocabSize);
         return (logits, cache);
     }
 
@@ -310,7 +328,7 @@ public static class VoxtralTextDecoder
         if (audioEmbedding is not null)
             for (int d = 0; d < hidden; d++) x[d] += audioEmbedding[d];
 
-        var tCond = TimeEmbedding(numDelayTokens, hidden);
+        var adaScales = AdaScalePerLayer(w, cache, numDelayTokens);
 
         for (int li = 0; li < w.Layers.Length; li++)
         {
@@ -320,14 +338,14 @@ public static class VoxtralTextDecoder
             for (int d = 0; d < hidden; d++) x[d] += attn[d];
 
             var mlpIn = RmsNormRow(x, hidden, layer.PostNorm);
-            var scale = AdaGate(tCond, layer);
+            var scale = adaScales[li];
             for (int d = 0; d < hidden; d++) mlpIn[d] *= scale[d];
             var mlp = MlpRow(mlpIn, hidden, layer);
             for (int d = 0; d < hidden; d++) x[d] += mlp[d];
         }
 
         var normed = RmsNormRow(x, hidden, w.NormWeight);
-        return LinearNoBias(normed, w.EmbedTokensWeight, hidden, VoxtralTextDecoderWeights.VocabSize);
+        return LinearNoBias(normed, w.EmbedTokensWeightQ8_0, hidden, VoxtralTextDecoderWeights.VocabSize);
     }
 
     private static float[] SelfAttentionCaching(float[][] xRows, int hidden, VoxtralTextLayerWeights l, List<float[]> kCache, List<float[]> vCache)

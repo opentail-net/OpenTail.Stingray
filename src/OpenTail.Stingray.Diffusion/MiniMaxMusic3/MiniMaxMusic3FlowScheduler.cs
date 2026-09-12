@@ -80,6 +80,53 @@ public static class MiniMaxMusic3FlowScheduler
         return latent;
     }
 
+    /// <summary>Real single-chunk Euler denoise loop using Q8_0 quantized DiT weights on CPU.</summary>
+    public static float[][] Denoise(
+        MiniMaxMusic3QuantizedTransformerWeights quantizedWeights,
+        float[][] condition,
+        int numSteps,
+        int? seed)
+    {
+        int latentLength = condition.Length;
+        int inChannels = MiniMaxMusic3Config.TransformerInChannels;
+        int condDim = MiniMaxMusic3Config.TransformerConditionDim;
+
+        var random = seed is int s ? new Random(s) : new Random();
+        var latent = new float[latentLength][];
+        for (int t = 0; t < latentLength; t++)
+        {
+            var row = new float[inChannels];
+            for (int c = 0; c < inChannels; c++) row[c] = SampleStandardNormal(random);
+            latent[t] = row;
+        }
+
+        var zeroCondition = new float[latentLength][];
+        for (int t = 0; t < latentLength; t++) zeroCondition[t] = new float[condDim];
+
+        var sigmas = BuildSigmaSchedule(numSteps);
+
+        for (int step = 0; step < numSteps; step++)
+        {
+            float sigma = sigmas[step];
+            float sigmaNext = sigmas[step + 1];
+
+            var (vCond, vUncond) = MiniMaxMusic3Transformer.ForwardPair(
+                quantizedWeights, latent, condition, zeroCondition, sigma);
+
+            float dt = sigmaNext - sigma;
+            for (int t = 0; t < latentLength; t++)
+            {
+                for (int c = 0; c < inChannels; c++)
+                {
+                    float guided = vUncond[t][c] + (vCond[t][c] - vUncond[t][c]) * RealGuidanceScale;
+                    latent[t][c] += dt * guided;
+                }
+            }
+        }
+
+        return latent;
+    }
+
     /// <summary>Real ASCENDING schedule, transcribed exactly from the `minimaxmusic.cpp` reference
     /// (`src/pipeline.cpp`'s `sig[i] = 1 - lin[i]` where `lin = linspace(1.0, 1/steps, steps)`), with
     /// an appended terminal `1.0` (clean), length `steps+1`. `sigmas[0] == 0.0` (pure noise).</summary>

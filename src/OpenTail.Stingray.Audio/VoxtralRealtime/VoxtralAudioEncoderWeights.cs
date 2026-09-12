@@ -37,8 +37,8 @@ public sealed class VoxtralAudioEncoderWeights
     public float[] Conv2Bias { get; }
     public VoxtralAudioLayerWeights[] Layers { get; } = new VoxtralAudioLayerWeights[NumLayers];
     public float[] NormWeight { get; } // final RMSNorm
-    public float[] Projector1Weight { get; } // [TextHiddenSize, HiddenSize*DownsampleFactor], no bias
-    public float[] Projector2Weight { get; } // [TextHiddenSize, TextHiddenSize], no bias
+    public byte[] Projector1Weight { get; } // [TextHiddenSize, HiddenSize*DownsampleFactor], no bias, Q8_0 (perf-sweep Phase 1.2e)
+    public byte[] Projector2Weight { get; } // [TextHiddenSize, TextHiddenSize], no bias, Q8_0
 
     public VoxtralAudioEncoderWeights(SafetensorsLoader loader)
     {
@@ -53,24 +53,24 @@ public sealed class VoxtralAudioEncoderWeights
             Layers[i] = new VoxtralAudioLayerWeights
             {
                 AttnNorm = loader.ReadF32($"{p}.self_attn_layer_norm.weight"),
-                QWeight = loader.ReadF32($"{p}.self_attn.q_proj.weight"),
+                QWeight = VoxtralTextDecoderWeights.QuantizeQ8_0(loader.ReadF32($"{p}.self_attn.q_proj.weight"), HiddenSize),
                 QBias = loader.ReadF32($"{p}.self_attn.q_proj.bias"),
-                KWeight = loader.ReadF32($"{p}.self_attn.k_proj.weight"), // no bias -- real checkpoint has none
-                VWeight = loader.ReadF32($"{p}.self_attn.v_proj.weight"),
+                KWeight = VoxtralTextDecoderWeights.QuantizeQ8_0(loader.ReadF32($"{p}.self_attn.k_proj.weight"), HiddenSize), // no bias -- real checkpoint has none
+                VWeight = VoxtralTextDecoderWeights.QuantizeQ8_0(loader.ReadF32($"{p}.self_attn.v_proj.weight"), HiddenSize),
                 VBias = loader.ReadF32($"{p}.self_attn.v_proj.bias"),
-                OWeight = loader.ReadF32($"{p}.self_attn.o_proj.weight"),
+                OWeight = VoxtralTextDecoderWeights.QuantizeQ8_0(loader.ReadF32($"{p}.self_attn.o_proj.weight"), NumHeads * HeadDim),
                 OBias = loader.ReadF32($"{p}.self_attn.o_proj.bias"),
                 FinalNorm = loader.ReadF32($"{p}.final_layer_norm.weight"),
-                GateWeight = loader.ReadF32($"{p}.mlp.gate_proj.weight"),
-                UpWeight = loader.ReadF32($"{p}.mlp.up_proj.weight"),
-                DownWeight = loader.ReadF32($"{p}.mlp.down_proj.weight"),
+                GateWeight = VoxtralTextDecoderWeights.QuantizeQ8_0(loader.ReadF32($"{p}.mlp.gate_proj.weight"), HiddenSize),
+                UpWeight = VoxtralTextDecoderWeights.QuantizeQ8_0(loader.ReadF32($"{p}.mlp.up_proj.weight"), HiddenSize),
+                DownWeight = VoxtralTextDecoderWeights.QuantizeQ8_0(loader.ReadF32($"{p}.mlp.down_proj.weight"), IntermediateSize),
                 DownBias = loader.ReadF32($"{p}.mlp.down_proj.bias"),
             };
         }
 
         NormWeight = loader.ReadF32("audio_tower.norm.weight");
-        Projector1Weight = loader.ReadF32("multi_modal_projector.linear_1.weight");
-        Projector2Weight = loader.ReadF32("multi_modal_projector.linear_2.weight");
+        Projector1Weight = VoxtralTextDecoderWeights.QuantizeQ8_0(loader.ReadF32("multi_modal_projector.linear_1.weight"), HiddenSize * DownsampleFactor);
+        Projector2Weight = VoxtralTextDecoderWeights.QuantizeQ8_0(loader.ReadF32("multi_modal_projector.linear_2.weight"), TextHiddenSize);
     }
 
     private VoxtralAudioEncoderWeights(Func<int, float[]> rand)
@@ -84,23 +84,23 @@ public sealed class VoxtralAudioEncoderWeights
             Layers[i] = new VoxtralAudioLayerWeights
             {
                 AttnNorm = rand(HiddenSize),
-                QWeight = rand(NumHeads * HeadDim * HiddenSize),
+                QWeight = VoxtralTextDecoderWeights.QuantizeQ8_0(rand(NumHeads * HeadDim * HiddenSize), HiddenSize),
                 QBias = rand(NumHeads * HeadDim),
-                KWeight = rand(NumKvHeads * HeadDim * HiddenSize),
-                VWeight = rand(NumKvHeads * HeadDim * HiddenSize),
+                KWeight = VoxtralTextDecoderWeights.QuantizeQ8_0(rand(NumKvHeads * HeadDim * HiddenSize), HiddenSize),
+                VWeight = VoxtralTextDecoderWeights.QuantizeQ8_0(rand(NumKvHeads * HeadDim * HiddenSize), HiddenSize),
                 VBias = rand(NumKvHeads * HeadDim),
-                OWeight = rand(HiddenSize * NumHeads * HeadDim),
+                OWeight = VoxtralTextDecoderWeights.QuantizeQ8_0(rand(HiddenSize * NumHeads * HeadDim), NumHeads * HeadDim),
                 OBias = rand(HiddenSize),
                 FinalNorm = rand(HiddenSize),
-                GateWeight = rand(IntermediateSize * HiddenSize),
-                UpWeight = rand(IntermediateSize * HiddenSize),
-                DownWeight = rand(HiddenSize * IntermediateSize),
+                GateWeight = VoxtralTextDecoderWeights.QuantizeQ8_0(rand(IntermediateSize * HiddenSize), HiddenSize),
+                UpWeight = VoxtralTextDecoderWeights.QuantizeQ8_0(rand(IntermediateSize * HiddenSize), HiddenSize),
+                DownWeight = VoxtralTextDecoderWeights.QuantizeQ8_0(rand(HiddenSize * IntermediateSize), IntermediateSize),
                 DownBias = rand(HiddenSize),
             };
         }
         NormWeight = rand(HiddenSize);
-        Projector1Weight = rand(TextHiddenSize * HiddenSize * DownsampleFactor);
-        Projector2Weight = rand(TextHiddenSize * TextHiddenSize);
+        Projector1Weight = VoxtralTextDecoderWeights.QuantizeQ8_0(rand(TextHiddenSize * HiddenSize * DownsampleFactor), HiddenSize * DownsampleFactor);
+        Projector2Weight = VoxtralTextDecoderWeights.QuantizeQ8_0(rand(TextHiddenSize * TextHiddenSize), TextHiddenSize);
     }
 
     /// <summary>Test-only: builds weights from a caller-supplied random generator, for structural
@@ -111,16 +111,16 @@ public sealed class VoxtralAudioEncoderWeights
 public sealed class VoxtralAudioLayerWeights
 {
     public float[] AttnNorm { get; set; } = [];
-    public float[] QWeight { get; set; } = [];
+    public byte[] QWeight { get; set; } = [];
     public float[] QBias { get; set; } = [];
-    public float[] KWeight { get; set; } = [];
-    public float[] VWeight { get; set; } = [];
+    public byte[] KWeight { get; set; } = [];
+    public byte[] VWeight { get; set; } = [];
     public float[] VBias { get; set; } = [];
-    public float[] OWeight { get; set; } = [];
+    public byte[] OWeight { get; set; } = [];
     public float[] OBias { get; set; } = [];
     public float[] FinalNorm { get; set; } = [];
-    public float[] GateWeight { get; set; } = [];
-    public float[] UpWeight { get; set; } = [];
-    public float[] DownWeight { get; set; } = [];
+    public byte[] GateWeight { get; set; } = [];
+    public byte[] UpWeight { get; set; } = [];
+    public byte[] DownWeight { get; set; } = [];
     public float[] DownBias { get; set; } = [];
 }

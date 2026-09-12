@@ -93,16 +93,11 @@ public static class MimiCodecEncoder
         return best;
     }
 
-    private static float[] Linear(float[] input, float[] weight, float[]? bias, int inDim, int outDim)
-    {
-        var output = new float[outDim];
-        for (int o = 0; o < outDim; o++)
-        {
-            float sum = bias?[o] ?? 0f;
-            int wBase = o * inDim;
-            for (int i = 0; i < inDim; i++) sum += weight[wBase + i] * input[i];
-            output[o] = sum;
-        }
-        return output;
-    }
+    // Perf-sweep horizontal pass (docs/perf-sweep-plan.md): was a naive O(outDim*inDim) scalar
+    // loop, same anti-pattern found and fixed in Voxtral -- delegates to the shared SIMD/parallel
+    // helper instead (OpenTail.Stingray.Audio.Primitives.DenseKernels, already the documented
+    // single source of truth for this exact function across this codebase's Conformer/Transformer
+    // pipelines).
+    private static float[] Linear(float[] input, float[] weight, float[]? bias, int inDim, int outDim) =>
+        OpenTail.Stingray.Audio.Primitives.DenseKernels.Linear(input, weight, bias, inDim, outDim);
 }

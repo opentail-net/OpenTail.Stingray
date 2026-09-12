@@ -223,18 +223,11 @@ public static class QwenTtsSpeakerEncoder
                 x[ti][c] = MathF.Max(0f, x[ti][c]);
     }
 
-    private static float[] Linear1x1(float[] input, float[] weight, float[] bias, int inDim, int outDim)
-    {
-        var output = new float[outDim];
-        for (int o = 0; o < outDim; o++)
-        {
-            float sum = bias[o];
-            int wBase = o * inDim;
-            for (int i = 0; i < inDim; i++) sum += input[i] * weight[wBase + i];
-            output[o] = sum;
-        }
-        return output;
-    }
+    // Perf-sweep horizontal pass (docs/perf-sweep-plan.md): was a naive O(outDim*inDim) scalar
+    // loop, same anti-pattern found and fixed in Voxtral -- delegates to the shared SIMD/parallel
+    // helper (OpenTail.Stingray.Audio.Primitives.DenseKernels).
+    private static float[] Linear1x1(float[] input, float[] weight, float[] bias, int inDim, int outDim) =>
+        OpenTail.Stingray.Audio.Primitives.DenseKernels.Linear(input, weight, bias, inDim, outDim);
 
     /// <summary>Real "same" padding with reflect mode: effective_kernel=(kernel-1)*dilation+1, total pad=effective_kernel-1 split as floor/ceil across left/right, reflecting off the sequence edges (no boundary-sample duplication).</summary>
     private static float[][] ReflectPadConv1d(float[][] input, float[] weight, float[] bias, int inCh, int outCh, int kernel, int dilation)

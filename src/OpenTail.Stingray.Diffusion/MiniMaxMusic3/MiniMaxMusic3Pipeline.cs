@@ -37,6 +37,29 @@ public static class MiniMaxMusic3Pipeline
         return MiniMaxMusic3Vocoder.Decode(vocoderWeights, channelMajor, latentLen);
     }
 
+    public static float[] Synthesize(
+        MiniMaxMusic3ConditionEncoderWeights conditionWeights,
+        MiniMaxMusic3QuantizedTransformerWeights quantizedTransformerWeights,
+        MiniMaxMusic3VocoderWeights vocoderWeights,
+        Music3Representation representation,
+        int numFlowSteps,
+        int? seed)
+    {
+        var conditionInput = ToConditionLayers(representation);
+        var condition = MiniMaxMusic3ConditionEncoder.Forward(conditionWeights, conditionInput);
+
+        var latent = MiniMaxMusic3FlowScheduler.Denoise(quantizedTransformerWeights, condition, numFlowSteps, seed);
+
+        int latentLen = latent.Length;
+        int inChannels = MiniMaxMusic3Config.TransformerInChannels;
+        var channelMajor = new float[inChannels * latentLen];
+        for (int t = 0; t < latentLen; t++)
+            for (int c = 0; c < inChannels; c++)
+                channelMajor[c * latentLen + t] = latent[t][c];
+
+        return MiniMaxMusic3Vocoder.Decode(vocoderWeights, channelMajor, latentLen);
+    }
+
     /// <summary>Real condition-encoder input shape: `[frame][8 layers][condHiddenDim]` -- layer 0 is
     /// the Global hidden state, layers 1..7 are the 7 residual-codebook depth-decoder hiddens in
     /// real c1..c7 order (already concatenated this way in <see cref="Music3Representation.LocalHiddenStates"/>).</summary>

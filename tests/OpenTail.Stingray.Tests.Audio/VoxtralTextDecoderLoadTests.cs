@@ -36,9 +36,9 @@ public sealed class VoxtralTextDecoderLoadTests : HeavyTestBase
         for (int i = 0; i < OpenTail.Stingray.Audio.VoxtralRealtime.VoxtralTextDecoderWeights.NumLayers; i++)
         {
             var l = w.Layers[i];
-            AssertFinite(l.QWeight, $"Layers[{i}].QWeight");
-            AssertFinite(l.Ada1Weight, $"Layers[{i}].Ada1Weight");
-            AssertFinite(l.Ada2Weight, $"Layers[{i}].Ada2Weight");
+            AssertNonEmpty(l.QWeight, $"Layers[{i}].QWeight");
+            AssertNonEmpty(l.Ada1Weight, $"Layers[{i}].Ada1Weight");
+            AssertNonEmpty(l.Ada2Weight, $"Layers[{i}].Ada2Weight");
         }
 
         // Small synthetic prompt: BOS(1) + a few pad tokens, no real audio splice length check --
@@ -68,4 +68,11 @@ public sealed class VoxtralTextDecoderLoadTests : HeavyTestBase
         foreach (var v in values)
             Assert.True(float.IsFinite(v), $"{label} contains a non-finite value");
     }
+
+    /// <summary>Q8_0-quantized weight buffers (perf-sweep Phase 1.2) are opaque bytes, not
+    /// individually finite-checkable floats -- non-emptiness is the load-succeeded check here;
+    /// correctness is covered by <c>ConvertF32ToQ8_0VerificationTests</c> and this file's own
+    /// finite-logits assertion below, which would surface a garbage quantization immediately.</summary>
+    private static void AssertNonEmpty(byte[] values, string label) =>
+        Assert.True(values.Length > 0, $"{label} is empty");
 }

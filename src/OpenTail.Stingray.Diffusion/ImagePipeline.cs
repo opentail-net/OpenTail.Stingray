@@ -103,13 +103,23 @@ public sealed class ImagePipeline : IDisposable, IDiffusionPipeline
         int latW = width  / _params.VaeScaleFactor;
         int latC = _params.LatentChannels;  // 16
 
+        // TEMPORARY diagnostic instrumentation (perf-sweep Phase 12, docs/perf-sweep-plan.md) for
+        // FLUX.1-schnell's unexplained ~3% Vulkan speedup vs CPU -- no STINGRAY_PROFILE_DECODE-
+        // equivalent exists for diffusion pipelines, so this reuses the same env var and mirrors
+        // AceStepPipeline's own gated Stopwatch pattern. Remove once the real bottleneck is found.
+        bool profEnabled = Environment.GetEnvironmentVariable("STINGRAY_PROFILE_DECODE") == "1";
+        var swTotal = profEnabled ? System.Diagnostics.Stopwatch.StartNew() : null;
+        var sw = profEnabled ? System.Diagnostics.Stopwatch.StartNew() : null;
+
         // ── 1. Encode text ────────────────────────────────────────────────
         var clipTokens = _clipTok.Tokenize(prompt);
         var (_, pooledEmbed) = _clip.Encode(clipTokens);   // [768]
+        double msClip = sw?.Elapsed.TotalMilliseconds ?? 0; sw?.Restart();
 
         var t5Tokens   = _t5Tok.Tokenize(prompt);
         var txtEmbeds  = _t5.Encode(t5Tokens);             // [seq, 4096]
         int nTxt = t5Tokens.Length;
+        double msT5 = sw?.Elapsed.TotalMilliseconds ?? 0; sw?.Restart();
 
         // ── 2. Build position ids ─────────────────────────────────────────
         int pH = latH / _params.PatchSize;
@@ -129,14 +139,30 @@ public sealed class ImagePipeline : IDisposable, IDiffusionPipeline
         float timeShift = _params.HasGuidanceIn ? 3.0f : 1.0f; // dev vs schnell
         var scheduler = EulerFlowScheduler.Linear(steps, timeShift);
 
+        double msSetup = sw?.Elapsed.TotalMilliseconds ?? 0; sw?.Restart();
+
         var denoised = scheduler.Denoise(
             noisePacked,
             (x, t) => _dit.Forward(x, imgIds, txtEmbeds, txtIds, pooledEmbed, t, guidance),
             progress);
+        double msDiT = sw?.Elapsed.TotalMilliseconds ?? 0; sw?.Restart();
 
         // ── 5. Unpack and decode ──────────────────────────────────────────
         var latent  = EulerFlowScheduler.UnpackLatent(denoised, latC, latH, latW, _params.PatchSize);
         var pixels  = _vae.Decode(latent, latH, latW);    // [3, H, W] in [0,1]
+        double msVae = sw?.Elapsed.TotalMilliseconds ?? 0;
+
+        if (profEnabled)
+        {
+            double msTotal = swTotal!.Elapsed.TotalMilliseconds;
+            Console.Error.WriteLine("[FluxProfile] Stage split (TEMPORARY diagnostic, see docs/perf-sweep-plan.md Phase 12):");
+            Console.Error.WriteLine($"  CLIP-L encode        {msClip,10:F2}ms  {100.0 * msClip / msTotal,6:F2}%");
+            Console.Error.WriteLine($"  T5-XXL encode        {msT5,10:F2}ms  {100.0 * msT5 / msTotal,6:F2}%");
+            Console.Error.WriteLine($"  Noise/pos-id setup   {msSetup,10:F2}ms  {100.0 * msSetup / msTotal,6:F2}%");
+            Console.Error.WriteLine($"  DiT denoise loop     {msDiT,10:F2}ms  {100.0 * msDiT / msTotal,6:F2}%");
+            Console.Error.WriteLine($"  VAE decode           {msVae,10:F2}ms  {100.0 * msVae / msTotal,6:F2}%");
+            Console.Error.WriteLine($"  Total                {msTotal,10:F2}ms");
+        }
 
         // ── 6. Write PNG ──────────────────────────────────────────────────
         int outWidth = width, outHeight = height;

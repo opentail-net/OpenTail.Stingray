@@ -748,3 +748,84 @@
 [Parakeet-CTC] audio=14.07s text="some call me nature others call me mother nature i've been here for over four point five billion years twenty two thousand five hundred times longer than you"
 [Parakeet-CTC] runs(s)=[3.541, 3.536, 3.596] mean=3.557s RTF=0.253 (lower=faster; 1.0=realtime)
 
+[Kokoro-82M-Stream] prompt="Hello, I will make some lunch, darling!" audio=2.93s samples=70220 chunks=1
+[Kokoro-82M-Stream] Time-To-First-Audio (TTFA)=3.062s TotalTime=3.065s
+
+[QwenTTS] prompt="Hello, I will make some lunch, darling!" audio=2.16s samples=51840
+[QwenTTS] runs(s)=[6.236, 6.036, 5.836] mean=6.036s RTF=2.794 (lower=faster; 1.0=realtime)
+
+[CosyVoice3] prompt="Hello, I will make some lunch, darling!" audio=3.00s samples=72000
+[CosyVoice3] runs(s)=[18.393, 18.775, 18.224] mean=18.464s RTF=6.155 (lower=faster; 1.0=realtime)
+
+[F5-TTS-Stream] prompt="Hello, I will make some lunch, darling!" audio=2.77s samples=66560 chunks=1
+[F5-TTS-Stream] Time-To-First-Audio (TTFA)=29.566s TotalTime=29.566s
+
+[FishSpeech] prompt="Hello, I will make some lunch, darling!" audio=3.44s samples=151552
+[FishSpeech] runs(s)=[31.572, 32.882, 33.634] mean=32.696s RTF=9.514 (lower=faster; 1.0=realtime)
+
+[MeloTTS] prompt="Hello, I will make some lunch, darling!" audio=2.75s samples=121344
+[MeloTTS] runs(s)=[3.678, 3.648, 3.708] mean=3.678s RTF=1.337 (lower=faster; 1.0=realtime)
+
+[Chatterbox-Stream] prompt="Hello, I will make some lunch, darling!" audio=2.36s samples=56640 chunks=1
+[Chatterbox-Stream] Time-To-First-Audio (TTFA)=15.127s TotalTime=15.128s
+
+[Piper-lessac-medium] prompt="Hello, I will make some lunch, darling!" audio=2.24s samples=49408
+[Piper-lessac-medium] runs(s)=[0.357, 0.353, 0.345] mean=0.351s RTF=0.157 (lower=faster; 1.0=realtime)
+
+[F5-TTS-Paragraph-FP32] prompt="Antigravity is a modern high-performance..." audio=16.84s samples=404224
+[F5-TTS-Paragraph-FP32] time=286.441s RTF=17.007 (lower=faster; 1.0=realtime)
+
+[Parler-TTS-Stream-Frame16] prompt="Hello, I will make some lunch, darling!" audio=2.81s samples=123904 chunks=15
+[Parler-TTS-Stream-Frame16] Time-To-First-Audio (TTFA)=1.714s TotalTime=21.933s
+
+[F5-TTS] prompt="Hello, I will make some lunch, darling!" audio=2.77s samples=66560
+[F5-TTS] runs(s)=[31.208, 31.053, 31.372] mean=31.211s RTF=11.254 (lower=faster; 1.0=realtime)
+
+[MMS-TTS-eng] prompt="Hello, I will make some lunch, darling!" audio=3.68s samples=58880
+[MMS-TTS-eng] runs(s)=[1.502, 1.522, 1.559] mean=1.527s RTF=0.415 (lower=faster; 1.0=realtime)
+
+[MeloTTS-Stream] prompt="Hello, I will make some lunch, darling!" audio=2.75s samples=121344 chunks=1
+[MeloTTS-Stream] Time-To-First-Audio (TTFA)=3.372s TotalTime=3.373s
+
+[Kokoro-82M] prompt="Hello, I will make some lunch, darling!" audio=2.93s samples=70220
+[Kokoro-82M] runs(s)=[3.224, 3.186, 3.175] mean=3.195s RTF=1.092 (lower=faster; 1.0=realtime)
+
+[Parler-TTS] prompt="Hello, I will make some lunch, darling!" audio=2.81s samples=123904
+[Parler-TTS] runs(s)=[22.029, 22.135, 21.013] mean=21.726s RTF=7.733 (lower=faster; 1.0=realtime)
+
+[FishSpeech-Stream-Frame1] prompt="Hello, I will make some lunch, darling!" audio=3.44s samples=151552 chunks=74
+[FishSpeech-Stream-Frame1] Time-To-First-Audio (TTFA)=0.826s TotalTime=90.019s
+
+[QwenTTS-Stream-Frame1] prompt="Hello, I will make some lunch, darling!" audio=2.32s samples=55680 chunks=29
+[QwenTTS-Stream-Frame1] Time-To-First-Audio (TTFA)=1.138s TotalTime=32.559s
+
+[Chatterbox] prompt="Hello, I will make some lunch, darling!" audio=2.48s samples=59520
+[Chatterbox] runs(s)=[15.035, 14.776, 15.116] mean=14.976s RTF=6.039 (lower=faster; 1.0=realtime)
+
+[Piper-Stream-Frame16] prompt="Hello, I will make some lunch, darling!" audio=2.40s samples=52992 chunks=13
+[Piper-Stream-Frame16] Time-To-First-Audio (TTFA)=0.210s TotalTime=1.478s
+
+[MMS-TTS-Stream-Frame16] prompt="Hello, I will make some lunch, darling!" audio=2.96s samples=47360 chunks=12
+[MMS-TTS-Stream-Frame16] Time-To-First-Audio (TTFA)=0.280s TotalTime=7.692s
+
+[Qwen3-ASR] audio=14.07s text="aspects"
+[Qwen3-ASR] runs(s)=[4.339, 4.308, 3.670] mean=4.105s RTF=0.292 (lower=faster; 1.0=realtime)
+
+[Parakeet-CTC] audio=14.07s text="some call me nature others call me mother nature i've been here for over four point five billion years twenty two thousand five hundred times longer than you"
+[Parakeet-CTC] runs(s)=[4.249, 3.693, 3.851] mean=3.931s RTF=0.279 (lower=faster; 1.0=realtime)
+
+[Qwen3-ASR] audio=14.07s text="aspects"
+[Qwen3-ASR] runs(s)=[2.831, 3.048, 2.922] mean=2.934s RTF=0.208 (lower=faster; 1.0=realtime)
+
+[Qwen3-ASR] audio=14.07s text="aspects"
+[Qwen3-ASR] runs(s)=[2.712, 2.809, 2.923] mean=2.814s RTF=0.200 (lower=faster; 1.0=realtime)
+
+[Qwen3-ASR] audio=14.07s text=""
+[Qwen3-ASR] runs(s)=[3.279, 3.141, 3.337] mean=3.252s RTF=0.231 (lower=faster; 1.0=realtime)
+
+[Qwen3-ASR] audio=14.07s text="!合理。Some call me涅，ature； others call me mother nature. Iveelve been here for over four although billion years, although twenty two! thousand five hundred times longer than you."
+[Qwen3-ASR] runs(s)=[5.065, 4.928, 4.960] mean=4.984s RTF=0.354 (lower=faster; 1.0=realtime)
+
+[Qwen3-ASR] audio=14.07s text="!合理。Some call me涅，ature； others call me mother nature. Iveelve been here for over four although billion years, although twenty two! thousand five hundred times longer than you."
+[Qwen3-ASR] runs(s)=[5.075, 5.120, 5.283] mean=5.159s RTF=0.367 (lower=faster; 1.0=realtime)
+

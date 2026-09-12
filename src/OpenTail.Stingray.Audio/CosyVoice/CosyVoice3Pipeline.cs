@@ -49,6 +49,14 @@ public sealed class CosyVoice3Pipeline : ITextToSpeechPipeline
     private readonly string? _speechTokenizerOnnxPath;
     private readonly Core.IComputeBackend? _backend;
 
+    // Perf-sweep Horizontal Pass C (docs/perf-sweep-plan.md): ExtractSpeakerEmbedding/
+    // ExtractReferenceMel/ExtractPromptTokens are pure functions of referenceAudioPath alone (same
+    // file content in, same result out) -- caching them per pipeline instance avoids re-running
+    // two real ONNX graphs (CamPlus x-vector, CosyVoice speech tokenizer) on every single Generate
+    // call when a caller synthesizes multiple sentences with the same voice reference, the same
+    // bug class ACE-Step's silence-latent had. Mirrors XttsPipeline's own `_refCache` pattern.
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, (float[] SpeakerEmbedding, float[] RefMel, int[] PromptTokens)> _refCache = new();
+
     private CosyVoice3Pipeline(GgufModel rawModel, CosyVoice3LlmTensorSource llmSource, CosyVoice3FlowEncoderWeights flowWeights, CosyVoice3DiTWeights ditWeights, CosyVoice3HiftWeights hiftWeights, string? campplusOnnxPath, string? speechTokenizerOnnxPath, Core.IComputeBackend? backend = null)
     {
         _rawModel = rawModel;
@@ -118,9 +126,23 @@ public sealed class CosyVoice3Pipeline : ITextToSpeechPipeline
     /// </summary>
     public float[] Generate(string text, int maxNewSpeechTokens = 200, int odeSteps = 10, int? seed = null, string? referenceAudioPath = null, float cfgRate = 0.7f, string? referenceText = null, string? instruction = null, float temperature = 0.8f, float[]? explicitSpeakerEmbedding = null, float pitchScale = 1.0f, bool useFrameHoldSineGenExperiment = false)
     {
-        float[] speakerEmbedding = explicitSpeakerEmbedding ?? ExtractSpeakerEmbedding(referenceAudioPath);
-        float[] refMel = ExtractReferenceMel(referenceAudioPath);
-        int[] promptTokens = ExtractPromptTokens(referenceAudioPath);
+        float[] speakerEmbedding;
+        float[] refMel;
+        int[] promptTokens;
+        if (!string.IsNullOrEmpty(referenceAudioPath))
+        {
+            var cached = _refCache.GetOrAdd(referenceAudioPath, path =>
+                (ExtractSpeakerEmbedding(path), ExtractReferenceMel(path), ExtractPromptTokens(path)));
+            speakerEmbedding = explicitSpeakerEmbedding ?? cached.SpeakerEmbedding;
+            refMel = cached.RefMel;
+            promptTokens = cached.PromptTokens;
+        }
+        else
+        {
+            speakerEmbedding = explicitSpeakerEmbedding ?? ExtractSpeakerEmbedding(referenceAudioPath);
+            refMel = ExtractReferenceMel(referenceAudioPath);
+            promptTokens = ExtractPromptTokens(referenceAudioPath);
+        }
 
         // refMel (from ExtractReferenceMel's own independent hop/padding) and promptTokens (from
         // the separate ONNX speech tokenizer) are NOT guaranteed to land on exactly matching

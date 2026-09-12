@@ -3717,18 +3717,29 @@ public static unsafe class SimdKernels
 
     private static float DotBF16_Avx2(ushort* a, float* b, int n)
     {
-        var acc = Vector256<float>.Zero;
+        var acc0 = Vector256<float>.Zero;
+        var acc1 = Vector256<float>.Zero;
         int i = 0;
+        for (; i + 16 <= n; i += 16)
+        {
+            var bits16_0 = Sse2.LoadVector128(a + i);
+            var w0 = Avx2.ShiftLeftLogical(Avx2.ConvertToVector256Int32(bits16_0).AsUInt32(), 16).AsSingle();
+            var bv0 = Avx.LoadVector256(b + i);
+            acc0 = Fma.MultiplyAdd(w0, bv0, acc0);
+
+            var bits16_1 = Sse2.LoadVector128(a + i + 8);
+            var w1 = Avx2.ShiftLeftLogical(Avx2.ConvertToVector256Int32(bits16_1).AsUInt32(), 16).AsSingle();
+            var bv1 = Avx.LoadVector256(b + i + 8);
+            acc1 = Fma.MultiplyAdd(w1, bv1, acc1);
+        }
         for (; i + 8 <= n; i += 8)
         {
             var bits16 = Sse2.LoadVector128(a + i);
-            var widened = Avx2.ConvertToVector256Int32(bits16).AsUInt32();
-            var shifted = Avx2.ShiftLeftLogical(widened, 16);
-            var asFloat = shifted.AsSingle();
+            var w = Avx2.ShiftLeftLogical(Avx2.ConvertToVector256Int32(bits16).AsUInt32(), 16).AsSingle();
             var bv = Avx.LoadVector256(b + i);
-            acc = Fma.MultiplyAdd(asFloat, bv, acc);
+            acc0 = Fma.MultiplyAdd(w, bv, acc0);
         }
-        float sum = HSum256(acc);
+        float sum = HSum256(Avx.Add(acc0, acc1));
         for (; i < n; i++)
             sum += BitConverter.Int32BitsToSingle(a[i] << 16) * b[i];
         return sum;
@@ -3741,6 +3752,226 @@ public static unsafe class SimdKernels
         for (int i = 0; i < n; i++)
             sum += BitConverter.Int32BitsToSingle(a[i] << 16) * b[i];
         return sum;
+    }
+
+    public static void DotBF16_2In(ushort* a, float* b0, float* b1, int n, out float sum0, out float sum1)
+    {
+        if (Avx2.IsSupported && Fma.IsSupported && n >= 8)
+        {
+            DotBF16_2In_Avx2(a, b0, b1, n, out sum0, out sum1);
+            return;
+        }
+        DotBF16_2In_Scalar(a, b0, b1, n, out sum0, out sum1);
+    }
+
+    private static void DotBF16_2In_Avx2(ushort* a, float* b0, float* b1, int n, out float sum0, out float sum1)
+    {
+        var acc0_0 = Vector256<float>.Zero;
+        var acc0_1 = Vector256<float>.Zero;
+        var acc1_0 = Vector256<float>.Zero;
+        var acc1_1 = Vector256<float>.Zero;
+        int i = 0;
+        for (; i + 16 <= n; i += 16)
+        {
+            var bits16_0 = Sse2.LoadVector128(a + i);
+            var w0 = Avx2.ShiftLeftLogical(Avx2.ConvertToVector256Int32(bits16_0).AsUInt32(), 16).AsSingle();
+            var bv0_0 = Avx.LoadVector256(b0 + i);
+            var bv1_0 = Avx.LoadVector256(b1 + i);
+            acc0_0 = Fma.MultiplyAdd(w0, bv0_0, acc0_0);
+            acc1_0 = Fma.MultiplyAdd(w0, bv1_0, acc1_0);
+
+            var bits16_1 = Sse2.LoadVector128(a + i + 8);
+            var w1 = Avx2.ShiftLeftLogical(Avx2.ConvertToVector256Int32(bits16_1).AsUInt32(), 16).AsSingle();
+            var bv0_1 = Avx.LoadVector256(b0 + i + 8);
+            var bv1_1 = Avx.LoadVector256(b1 + i + 8);
+            acc0_1 = Fma.MultiplyAdd(w1, bv0_1, acc0_1);
+            acc1_1 = Fma.MultiplyAdd(w1, bv1_1, acc1_1);
+        }
+        for (; i + 8 <= n; i += 8)
+        {
+            var bits16 = Sse2.LoadVector128(a + i);
+            var w = Avx2.ShiftLeftLogical(Avx2.ConvertToVector256Int32(bits16).AsUInt32(), 16).AsSingle();
+            var bv0 = Avx.LoadVector256(b0 + i);
+            var bv1 = Avx.LoadVector256(b1 + i);
+            acc0_0 = Fma.MultiplyAdd(w, bv0, acc0_0);
+            acc1_0 = Fma.MultiplyAdd(w, bv1, acc1_0);
+        }
+        float s0 = HSum256(Avx.Add(acc0_0, acc0_1));
+        float s1 = HSum256(Avx.Add(acc1_0, acc1_1));
+        for (; i < n; i++)
+        {
+            float w = BitConverter.Int32BitsToSingle(a[i] << 16);
+            s0 += w * b0[i];
+            s1 += w * b1[i];
+        }
+        sum0 = s0;
+        sum1 = s1;
+    }
+
+    internal static void DotBF16_2In_Scalar(ushort* a, float* b0, float* b1, int n, out float sum0, out float sum1)
+    {
+        float s0 = 0f, s1 = 0f;
+        for (int i = 0; i < n; i++)
+        {
+            float w = BitConverter.Int32BitsToSingle(a[i] << 16);
+            s0 += w * b0[i];
+            s1 += w * b1[i];
+        }
+        sum0 = s0;
+        sum1 = s1;
+    }
+
+    public static void MatMulPairBF16(float* out0, float* out1, ushort* weights, float* in0, float* in1, int rows, int cols)
+    {
+        int numThreads = Math.Min(CpuThreads, (rows + 63) / 64);
+        if (numThreads <= 1)
+        {
+            for (int r = 0; r < rows; r++)
+            {
+                DotBF16_2In(weights + (long)r * cols, in0, in1, cols, out float v0, out float v1);
+                out0[r] = v0;
+                out1[r] = v1;
+            }
+            return;
+        }
+
+        int chunkSize = (rows + numThreads - 1) / numThreads;
+        nint wAddr = (nint)weights, o0Addr = (nint)out0, o1Addr = (nint)out1, i0Addr = (nint)in0, i1Addr = (nint)in1;
+
+        Parallel.For(0, numThreads, t =>
+        {
+            int start = t * chunkSize;
+            int end = Math.Min(rows, start + chunkSize);
+            ushort* w = (ushort*)wAddr;
+            float* i0 = (float*)i0Addr;
+            float* i1 = (float*)i1Addr;
+            float* o0 = (float*)o0Addr;
+            float* o1 = (float*)o1Addr;
+            for (int r = start; r < end; r++)
+            {
+                DotBF16_2In(w + (long)r * cols, i0, i1, cols, out float v0, out float v1);
+                o0[r] = v0;
+                o1[r] = v1;
+            }
+        });
+    }
+
+    public static void MatMulGateUpSiluPairBF16(float* out0, float* out1, ushort* gateWeights, ushort* upWeights, float* in0, float* in1, int rows, int cols)
+    {
+        int numThreads = Math.Min(CpuThreads, (rows + 63) / 64);
+        if (numThreads <= 1)
+        {
+            for (int r = 0; r < rows; r++)
+            {
+                DotBF16_2In(gateWeights + (long)r * cols, in0, in1, cols, out float g0, out float g1);
+                DotBF16_2In(upWeights + (long)r * cols, in0, in1, cols, out float u0, out float u1);
+                out0[r] = (g0 / (1f + MathF.Exp(-g0))) * u0;
+                out1[r] = (g1 / (1f + MathF.Exp(-g1))) * u1;
+            }
+            return;
+        }
+
+        int chunkSize = (rows + numThreads - 1) / numThreads;
+        nint gwAddr = (nint)gateWeights, uwAddr = (nint)upWeights;
+        nint o0Addr = (nint)out0, o1Addr = (nint)out1, i0Addr = (nint)in0, i1Addr = (nint)in1;
+
+        Parallel.For(0, numThreads, t =>
+        {
+            int start = t * chunkSize;
+            int end = Math.Min(rows, start + chunkSize);
+            ushort* gw = (ushort*)gwAddr;
+            ushort* uw = (ushort*)uwAddr;
+            float* i0 = (float*)i0Addr;
+            float* i1 = (float*)i1Addr;
+            float* o0 = (float*)o0Addr;
+            float* o1 = (float*)o1Addr;
+            for (int r = start; r < end; r++)
+            {
+                DotBF16_2In(gw + (long)r * cols, i0, i1, cols, out float g0, out float g1);
+                DotBF16_2In(uw + (long)r * cols, i0, i1, cols, out float u0, out float u1);
+                out0[r] = (g0 / (1f + MathF.Exp(-g0))) * u0;
+                out1[r] = (g1 / (1f + MathF.Exp(-g1))) * u1;
+            }
+        });
+    }
+
+    public static void MatMulQkvPairBF16(
+        float* q0, float* q1,
+        float* k0, float* k1,
+        float* v0, float* v1,
+        ushort* qWeights, ushort* kWeights, ushort* vWeights,
+        float* in0, float* in1,
+        int qRows, int kvRows, int cols)
+    {
+        int totalRows = qRows + 2 * kvRows;
+        int numThreads = Math.Min(CpuThreads, (totalRows + 63) / 64);
+        if (numThreads <= 1)
+        {
+            for (int r = 0; r < qRows; r++)
+            {
+                DotBF16_2In(qWeights + (long)r * cols, in0, in1, cols, out float qv0, out float qv1);
+                q0[r] = qv0;
+                q1[r] = qv1;
+            }
+            for (int r = 0; r < kvRows; r++)
+            {
+                DotBF16_2In(kWeights + (long)r * cols, in0, in1, cols, out float kv0, out float kv1);
+                k0[r] = kv0;
+                k1[r] = kv1;
+                DotBF16_2In(vWeights + (long)r * cols, in0, in1, cols, out float vv0, out float vv1);
+                v0[r] = vv0;
+                v1[r] = vv1;
+            }
+            return;
+        }
+
+        int chunkSize = (totalRows + numThreads - 1) / numThreads;
+        nint qwAddr = (nint)qWeights, kwAddr = (nint)kWeights, vwAddr = (nint)vWeights;
+        nint q0Addr = (nint)q0, q1Addr = (nint)q1;
+        nint k0Addr = (nint)k0, k1Addr = (nint)k1;
+        nint v0Addr = (nint)v0, v1Addr = (nint)v1;
+        nint i0Addr = (nint)in0, i1Addr = (nint)in1;
+
+        Parallel.For(0, numThreads, t =>
+        {
+            int start = t * chunkSize;
+            int end = Math.Min(totalRows, start + chunkSize);
+            ushort* qw = (ushort*)qwAddr;
+            ushort* kw = (ushort*)kwAddr;
+            ushort* vw = (ushort*)vwAddr;
+            float* i0 = (float*)i0Addr;
+            float* i1 = (float*)i1Addr;
+            float* qo0 = (float*)q0Addr;
+            float* qo1 = (float*)q1Addr;
+            float* ko0 = (float*)k0Addr;
+            float* ko1 = (float*)k1Addr;
+            float* vo0 = (float*)v0Addr;
+            float* vo1 = (float*)v1Addr;
+
+            for (int idx = start; idx < end; idx++)
+            {
+                if (idx < qRows)
+                {
+                    DotBF16_2In(qw + (long)idx * cols, i0, i1, cols, out float qv0, out float qv1);
+                    qo0[idx] = qv0;
+                    qo1[idx] = qv1;
+                }
+                else if (idx < qRows + kvRows)
+                {
+                    int r = idx - qRows;
+                    DotBF16_2In(kw + (long)r * cols, i0, i1, cols, out float kv0, out float kv1);
+                    ko0[r] = kv0;
+                    ko1[r] = kv1;
+                }
+                else
+                {
+                    int r = idx - (qRows + kvRows);
+                    DotBF16_2In(vw + (long)r * cols, i0, i1, cols, out float vv0, out float vv1);
+                    vo0[r] = vv0;
+                    vo1[r] = vv1;
+                }
+            }
+        });
     }
 
     /// <summary>

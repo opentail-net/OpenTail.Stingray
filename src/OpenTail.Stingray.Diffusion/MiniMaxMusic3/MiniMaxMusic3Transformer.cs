@@ -192,6 +192,8 @@ public static class MiniMaxMusic3Transformer
         var q = new float[seqLen * inner];
         var k = new float[seqLen * inner];
         var v = new float[seqLen * inner];
+        var kTrans = new float[seqLen * inner];
+        var vTrans = new float[seqLen * inner];
         var context = new float[seqLen * inner];
         var attnOut = new float[seqLen * inner];
         var normed2 = new float[seqLen * inner];
@@ -227,18 +229,24 @@ public static class MiniMaxMusic3Transformer
                 ApplyPartialRope(q, seqLen, heads, headDim, cos, sin);
                 ApplyPartialRope(k, seqLen, heads, headDim, cos, sin);
 
-                // 4. Attention
+                TransposeToHeadContiguous(k, kTrans, 1, seqLen, heads, headDim);
+                TransposeToHeadContiguous(v, vTrans, 1, seqLen, heads, headDim);
+
+                // 4. Attention (contiguous L2-cache friendly memory traversal)
                 float scale = 1f / MathF.Sqrt(headDim);
                 Parallel.For(0, heads, h =>
                 {
                     int off = h * headDim;
+                    int headBase = h * (seqLen * headDim);
+                    var kHead = kTrans.AsSpan(headBase, seqLen * headDim);
+                    var vHead = vTrans.AsSpan(headBase, seqLen * headDim);
                     Span<float> scores = stackalloc float[seqLen];
                     for (int i = 0; i < seqLen; i++)
                     {
                         var qSpan = q.AsSpan(i * inner + off, headDim);
                         for (int j = 0; j < seqLen; j++)
                         {
-                            var kSpan = k.AsSpan(j * inner + off, headDim);
+                            var kSpan = kHead.Slice(j * headDim, headDim);
                             scores[j] = TensorPrimitives.Dot(qSpan, kSpan) * scale;
                         }
                         SoftmaxRange(scores, 0, seqLen);
@@ -247,7 +255,7 @@ public static class MiniMaxMusic3Transformer
                         ctxSpan.Clear();
                         for (int j = 0; j < seqLen; j++)
                         {
-                            var vSpan = v.AsSpan(j * inner + off, headDim);
+                            var vSpan = vHead.Slice(j * headDim, headDim);
                             TensorPrimitives.MultiplyAdd(vSpan, scores[j], ctxSpan, ctxSpan);
                         }
                     }
@@ -384,6 +392,8 @@ public static class MiniMaxMusic3Transformer
         var q = new float[totalTokens * inner];
         var k = new float[totalTokens * inner];
         var v = new float[totalTokens * inner];
+        var kTrans = new float[totalTokens * inner];
+        var vTrans = new float[totalTokens * inner];
         var context = new float[totalTokens * inner];
         var attnOut = new float[totalTokens * inner];
         var normed2 = new float[totalTokens * inner];
@@ -421,7 +431,10 @@ public static class MiniMaxMusic3Transformer
                 ApplyPartialRope(k.AsSpan(0, seqLen * inner), seqLen, heads, headDim, cos, sin);
                 ApplyPartialRope(k.AsSpan(seq1Base, seqLen * inner), seqLen, heads, headDim, cos, sin);
 
-                // 4. Attention (per sequence across all heads in parallel)
+                TransposeToHeadContiguous(k, kTrans, 2, seqLen, heads, headDim);
+                TransposeToHeadContiguous(v, vTrans, 2, seqLen, heads, headDim);
+
+                // 4. Attention (per sequence across all heads in parallel, contiguous L2-cache friendly)
                 float scale = 1f / MathF.Sqrt(headDim);
                 Parallel.For(0, 2 * heads, bh =>
                 {
@@ -429,13 +442,16 @@ public static class MiniMaxMusic3Transformer
                     int h = bh % heads;
                     int bOffset = b * seq1Base;
                     int headOff = h * headDim;
+                    int headBase = (b * heads + h) * (seqLen * headDim);
+                    var kHead = kTrans.AsSpan(headBase, seqLen * headDim);
+                    var vHead = vTrans.AsSpan(headBase, seqLen * headDim);
                     Span<float> scores = stackalloc float[seqLen];
                     for (int i = 0; i < seqLen; i++)
                     {
                         var qSpan = q.AsSpan(bOffset + i * inner + headOff, headDim);
                         for (int j = 0; j < seqLen; j++)
                         {
-                            var kSpan = k.AsSpan(bOffset + j * inner + headOff, headDim);
+                            var kSpan = kHead.Slice(j * headDim, headDim);
                             scores[j] = TensorPrimitives.Dot(qSpan, kSpan) * scale;
                         }
                         SoftmaxRange(scores, 0, seqLen);
@@ -444,7 +460,7 @@ public static class MiniMaxMusic3Transformer
                         ctxSpan.Clear();
                         for (int j = 0; j < seqLen; j++)
                         {
-                            var vSpan = v.AsSpan(bOffset + j * inner + headOff, headDim);
+                            var vSpan = vHead.Slice(j * headDim, headDim);
                             TensorPrimitives.MultiplyAdd(vSpan, scores[j], ctxSpan, ctxSpan);
                         }
                     }
@@ -624,6 +640,27 @@ public static class MiniMaxMusic3Transformer
         }
     }
 
+    private static void TransposeToHeadContiguous(float[] src, float[] dst, int batch, int seqLen, int heads, int headDim)
+    {
+        int inner = heads * headDim;
+        int headSeqFloats = seqLen * headDim;
+        for (int b = 0; b < batch; b++)
+        {
+            int bSrcOff = b * seqLen * inner;
+            int bDstOff = b * heads * headSeqFloats;
+            for (int t = 0; t < seqLen; t++)
+            {
+                int tSrcOff = bSrcOff + t * inner;
+                for (int h = 0; h < heads; h++)
+                {
+                    int srcIdx = tSrcOff + h * headDim;
+                    int dstIdx = bDstOff + (h * seqLen + t) * headDim;
+                    Array.Copy(src, srcIdx, dst, dstIdx, headDim);
+                }
+            }
+        }
+    }
+
     private static void SoftmaxRange(Span<float> scores, int start, int end)
     {
         float max = float.NegativeInfinity;
@@ -712,80 +749,7 @@ public static class MiniMaxMusic3Transformer
     private static unsafe void MatMulRowMajor(float* output, float* weights, float* input,
         int batchSize, int rows, int cols)
     {
-        if (batchSize <= 1)
-        {
-            if (batchSize == 1) SimdKernels.MatVecF32(output, weights, input, rows, cols);
-            return;
-        }
-
-        int numThreads = Math.Min(Environment.ProcessorCount, (rows + 63) / 64);
-        if (numThreads <= 1)
-        {
-            int r = 0;
-            for (; r + 4 <= rows; r += 4)
-            {
-                float* m0 = weights + (long)r * cols;
-                float* m1 = weights + (long)(r + 1) * cols;
-                float* m2 = weights + (long)(r + 2) * cols;
-                float* m3 = weights + (long)(r + 3) * cols;
-                for (int n = 0; n < batchSize; n++)
-                {
-                    float* x = input + (long)n * cols;
-                    SimdKernels.MatVecF32_4Row(m0, m1, m2, m3, x, cols, out float r0, out float r1, out float r2, out float r3);
-                    long baseIdx = (long)n * rows + r;
-                    output[baseIdx] = r0;
-                    output[baseIdx + 1] = r1;
-                    output[baseIdx + 2] = r2;
-                    output[baseIdx + 3] = r3;
-                }
-            }
-            for (; r < rows; r++)
-            {
-                float* wRow = weights + (long)r * cols;
-                for (int n = 0; n < batchSize; n++)
-                    output[(long)n * rows + r] = SimdKernels.DotF32(wRow, input + (long)n * cols, cols);
-            }
-            return;
-        }
-
-        int chunkSize = ((rows + numThreads - 1) / numThreads + 3) & ~3;
-        nint outAddr = (nint)output;
-        nint wAddr = (nint)weights;
-        nint inAddr = (nint)input;
-
-        Parallel.For(0, numThreads, t =>
-        {
-            float* outp = (float*)outAddr;
-            float* wp = (float*)wAddr;
-            float* inp = (float*)inAddr;
-
-            int start = t * chunkSize;
-            int end = Math.Min(rows, start + chunkSize);
-            int r = start;
-            for (; r + 4 <= end; r += 4)
-            {
-                float* m0 = wp + (long)r * cols;
-                float* m1 = wp + (long)(r + 1) * cols;
-                float* m2 = wp + (long)(r + 2) * cols;
-                float* m3 = wp + (long)(r + 3) * cols;
-                for (int n = 0; n < batchSize; n++)
-                {
-                    float* x = inp + (long)n * cols;
-                    SimdKernels.MatVecF32_4Row(m0, m1, m2, m3, x, cols, out float r0, out float r1, out float r2, out float r3);
-                    long baseIdx = (long)n * rows + r;
-                    outp[baseIdx] = r0;
-                    outp[baseIdx + 1] = r1;
-                    outp[baseIdx + 2] = r2;
-                    outp[baseIdx + 3] = r3;
-                }
-            }
-            for (; r < end; r++)
-            {
-                float* wRow = wp + (long)r * cols;
-                for (int n = 0; n < batchSize; n++)
-                    outp[(long)n * rows + r] = SimdKernels.DotF32(wRow, inp + (long)n * cols, cols);
-            }
-        });
+        SimdKernels.MatMulBatchedF32(output, weights, input, batchSize, rows, cols);
     }
 
     private static unsafe void MatMulRowMajorQ8(
@@ -799,28 +763,35 @@ public static class MiniMaxMusic3Transformer
         int bytesPerRow = (cols / 32) * 34;
         int scratchBytesPerToken = SimdKernels.Q8_0ScratchBytes(cols);
         int totalScratch = scratchBytesPerToken * batchSize;
-        byte* scratch = stackalloc byte[totalScratch];
+        byte* scratch = (byte*)System.Runtime.InteropServices.NativeMemory.Alloc((nuint)totalScratch);
 
-        for (int n = 0; n < batchSize; n++)
+        try
         {
-            SimdKernels.QuantizeRowToQ8_0(input + (long)n * cols, cols, scratch + (long)n * scratchBytesPerToken);
-        }
-
-        nint outAddr = (nint)output;
-        nint wAddr = (nint)weightsQ8;
-        nint sAddr = (nint)scratch;
-
-        Parallel.For(0, rows, r =>
-        {
-            byte* rowW = (byte*)wAddr + (long)r * bytesPerRow;
-            float* outp = (float*)outAddr;
-            byte* sc = (byte*)sAddr;
-
             for (int n = 0; n < batchSize; n++)
             {
-                outp[(long)n * rows + r] = SimdKernels.DotQ8_0_Q8_0(rowW, sc + (long)n * scratchBytesPerToken, cols);
+                SimdKernels.QuantizeRowToQ8_0(input + (long)n * cols, cols, scratch + (long)n * scratchBytesPerToken);
             }
-        });
+
+            nint outAddr = (nint)output;
+            nint wAddr = (nint)weightsQ8;
+            nint sAddr = (nint)scratch;
+
+            Parallel.For(0, rows, r =>
+            {
+                byte* rowW = (byte*)wAddr + (long)r * bytesPerRow;
+                float* outp = (float*)outAddr;
+                byte* sc = (byte*)sAddr;
+
+                for (int n = 0; n < batchSize; n++)
+                {
+                    outp[(long)n * rows + r] = SimdKernels.DotQ8_0_Q8_0(rowW, sc + (long)n * scratchBytesPerToken, cols);
+                }
+            });
+        }
+        finally
+        {
+            System.Runtime.InteropServices.NativeMemory.Free(scratch);
+        }
     }
 
     private static unsafe void MatMulQkvQ8(

@@ -178,6 +178,140 @@ public sealed class CfmLinearWeight
         }
     }
 
+    /// <summary>Batch-of-2 fused QKV projection: projects input0 and input1 through Q, K, and V weight matrices simultaneously.
+    /// Reduces thread pool dispatches from 3 to 1 and keeps the input vectors hot in cache across all 3 projections.</summary>
+    public static unsafe void MatMulQkvPairRowMajor(
+        CfmLinearWeight qWeight, CfmLinearWeight kWeight, CfmLinearWeight vWeight,
+        float* input0, float* input1,
+        float* qOut0, float* qOut1,
+        float* kOut0, float* kOut1,
+        float* vOut0, float* vOut1)
+    {
+        if (qWeight._f32 is not { } qw || kWeight._f32 is not { } kw || vWeight._f32 is not { } vw)
+            throw new NotSupportedException("MatMulQkvPairRowMajor requires F32-backed weights.");
+
+        int inDim = qWeight._inDim;
+        int outDim = qWeight._outDim;
+        if (kWeight._inDim != inDim || kWeight._outDim != outDim || vWeight._inDim != inDim || vWeight._outDim != outDim)
+            throw new ArgumentException("Q, K, V dimensions must match.");
+
+        fixed (float* qwp = qw, kwp = kw, vwp = vw)
+        {
+            int numThreads = Math.Min(Environment.ProcessorCount, (outDim + 63) / 64);
+            if (numThreads <= 1)
+            {
+                RunRowsThreadLocal(qwp, kwp, vwp, input0, input1, qOut0, qOut1, kOut0, kOut1, vOut0, vOut1, inDim, 0, outDim);
+                return;
+            }
+
+            int chunkSize = (outDim + numThreads - 1) / numThreads;
+            nint qwAddr = (nint)qwp, kwAddr = (nint)kwp, vwAddr = (nint)vwp;
+            nint i0Addr = (nint)input0, i1Addr = (nint)input1;
+            nint qo0Addr = (nint)qOut0, qo1Addr = (nint)qOut1;
+            nint ko0Addr = (nint)kOut0, ko1Addr = (nint)kOut1;
+            nint vo0Addr = (nint)vOut0, vo1Addr = (nint)vOut1;
+
+            System.Threading.Tasks.Parallel.For(0, numThreads, t =>
+            {
+                int start = t * chunkSize;
+                int end = Math.Min(outDim, start + chunkSize);
+                RunRowsThreadLocal((float*)qwAddr, (float*)kwAddr, (float*)vwAddr,
+                                   (float*)i0Addr, (float*)i1Addr,
+                                   (float*)qo0Addr, (float*)qo1Addr,
+                                   (float*)ko0Addr, (float*)ko1Addr,
+                                   (float*)vo0Addr, (float*)vo1Addr,
+                                   inDim, start, end);
+            });
+
+            static void RunRowsThreadLocal(
+                float* qWeights, float* kWeights, float* vWeights,
+                float* in0, float* in1,
+                float* qo0, float* qo1,
+                float* ko0, float* ko1,
+                float* vo0, float* vo1,
+                int inDim, int start, int end)
+            {
+                for (int r = start; r < end; r++)
+                {
+                    float* qRow = qWeights + (long)r * inDim;
+                    Cpu.SimdKernels.DotF32_2In(in0, in1, qRow, inDim, out float qv0, out float qv1);
+                    qo0[r] = qv0;
+                    qo1[r] = qv1;
+
+                    float* kRow = kWeights + (long)r * inDim;
+                    Cpu.SimdKernels.DotF32_2In(in0, in1, kRow, inDim, out float kv0, out float kv1);
+                    ko0[r] = kv0;
+                    ko1[r] = kv1;
+
+                    float* vRow = vWeights + (long)r * inDim;
+                    Cpu.SimdKernels.DotF32_2In(in0, in1, vRow, inDim, out float vv0, out float vv1);
+                    vo0[r] = vv0;
+                    vo1[r] = vv1;
+                }
+            }
+        }
+    }
+
+    /// <summary>Batch-of-2 fused Gate + Up + SiLU projection for SwiGLU MLP: computes gate and up projections
+    /// simultaneously and writes `Silu(gate) * up` directly to output0 and output1 in a single pass.</summary>
+    public static unsafe void MatMulGateUpSiluPairRowMajor(
+        CfmLinearWeight gateWeight, CfmLinearWeight upWeight,
+        float* input0, float* input1,
+        float* output0, float* output1)
+    {
+        if (gateWeight._f32 is not { } gw || upWeight._f32 is not { } uw)
+            throw new NotSupportedException("MatMulGateUpSiluPairRowMajor requires F32-backed weights.");
+
+        int inDim = gateWeight._inDim;
+        int outDim = gateWeight._outDim;
+        if (upWeight._inDim != inDim || upWeight._outDim != outDim)
+            throw new ArgumentException("Gate and Up dimensions must match.");
+
+        fixed (float* gwp = gw, uwp = uw)
+        {
+            int numThreads = Math.Min(Environment.ProcessorCount, (outDim + 63) / 64);
+            if (numThreads <= 1)
+            {
+                RunRowsThreadLocal(gwp, uwp, input0, input1, output0, output1, inDim, 0, outDim);
+                return;
+            }
+
+            int chunkSize = (outDim + numThreads - 1) / numThreads;
+            nint gwAddr = (nint)gwp, uwAddr = (nint)uwp;
+            nint i0Addr = (nint)input0, i1Addr = (nint)input1;
+            nint o0Addr = (nint)output0, o1Addr = (nint)output1;
+
+            System.Threading.Tasks.Parallel.For(0, numThreads, t =>
+            {
+                int start = t * chunkSize;
+                int end = Math.Min(outDim, start + chunkSize);
+                RunRowsThreadLocal((float*)gwAddr, (float*)uwAddr,
+                                   (float*)i0Addr, (float*)i1Addr,
+                                   (float*)o0Addr, (float*)o1Addr,
+                                   inDim, start, end);
+            });
+
+            static void RunRowsThreadLocal(
+                float* gWeights, float* uWeights,
+                float* in0, float* in1,
+                float* out0, float* out1,
+                int inDim, int start, int end)
+            {
+                for (int r = start; r < end; r++)
+                {
+                    float* gRow = gWeights + (long)r * inDim;
+                    Cpu.SimdKernels.DotF32_2In(in0, in1, gRow, inDim, out float g0, out float g1);
+
+                    float* uRow = uWeights + (long)r * inDim;
+                    Cpu.SimdKernels.DotF32_2In(in0, in1, uRow, inDim, out float u0, out float u1);
+
+                    out0[r] = (g0 / (1f + MathF.Exp(-g0))) * u0;
+                    out1[r] = (g1 / (1f + MathF.Exp(-g1))) * u1;
+                }
+            }
+        }
+    }
+
     /// <summary>Batch linear layer across T rows: outputMatrix[T, outDim] = inputMatrix[T, inDim] * weight^T + bias.</summary>
     public unsafe void MatMul(float* inputMatrix, int t, float* outputMatrix, float* bias = null)
     {
