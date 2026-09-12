@@ -131,6 +131,18 @@
 | Qwen2.5-Coder-1.5B-Instruct Q4_K_M | decode (503 tok prompt, 24 tok gen) | CPU | 24.2 t/s | 41.55 t/s | **0.58x** | 2026-09-11 | new coverage; stingray CLI + llama-bench, best-of-3 |
 | Qwen2.5-Coder-3B-Instruct Q4_K_M | prefill (503 tok) | CPU | 87.1 t/s | 109.50 t/s | **0.80x** | 2026-09-11 | new coverage; stingray CLI + llama-bench, best-of-3 |
 | Qwen2.5-Coder-3B-Instruct Q4_K_M | decode (503 tok prompt, 24 tok gen) | CPU | 14.7 t/s | 21.48 t/s | **0.68x** | 2026-09-11 | new coverage; stingray CLI + llama-bench, best-of-3 |
+| Qwen2.5-0.5B-Instruct Q4_K_M | prefill (503 tok) | Vulkan iGPU | 25.9 t/s | — | — | 2026-09-13 | new coverage; no llama.cpp Vulkan ref. Much worse than CPU (25.9 vs 327.1 t/s) — small model, dispatch overhead dominates |
+| Qwen2.5-0.5B-Instruct Q4_K_M | decode (503 tok prompt, 24 tok gen) | Vulkan iGPU | 24.8 t/s | — | — | 2026-09-13 | new coverage; close to CPU decode (24.8 vs 25.8 t/s) |
+| Qwen2.5-1.5B-Instruct Q4_K_M | prefill (503 tok) | Vulkan iGPU | 27.1 t/s | — | — | 2026-09-13 | new coverage; no llama.cpp Vulkan ref. Worse than CPU (27.1 vs 181.9 t/s) |
+| Qwen2.5-1.5B-Instruct Q4_K_M | decode (503 tok prompt, 24 tok gen) | Vulkan iGPU | 25.2 t/s | — | — | 2026-09-13 | new coverage; slightly worse than CPU decode (25.2 vs 27.5 t/s) |
+| Qwen2.5-3B-Instruct Q4_K_M | prefill (503 tok) | Vulkan iGPU | 15.1 t/s | — | — | 2026-09-13 | new coverage; no llama.cpp Vulkan ref. Much worse than CPU (15.1 vs 83.0 t/s) |
+| Qwen2.5-3B-Instruct Q4_K_M | decode (503 tok prompt, 24 tok gen) | Vulkan iGPU | 14.2 t/s | — | — | 2026-09-13 | new coverage; close to CPU decode (14.2 vs 14.7 t/s) |
+| Qwen2.5-Coder-0.5B-Instruct Q4_K_M | prefill (503 tok) | Vulkan iGPU | 26.7 t/s | — | — | 2026-09-13 | new coverage; no llama.cpp Vulkan ref. Much worse than CPU (26.7 vs 334.3 t/s) |
+| Qwen2.5-Coder-0.5B-Instruct Q4_K_M | decode (503 tok prompt, 24 tok gen) | Vulkan iGPU | 25.1 t/s | — | — | 2026-09-13 | new coverage; close to CPU decode (25.1 vs 25.3 t/s) |
+| Qwen2.5-Coder-1.5B-Instruct Q4_K_M | prefill (503 tok) | Vulkan iGPU | 27.0 t/s | — | — | 2026-09-13 | new coverage; no llama.cpp Vulkan ref. Worse than CPU (27.0 vs 170.7 t/s) |
+| Qwen2.5-Coder-1.5B-Instruct Q4_K_M | decode (503 tok prompt, 24 tok gen) | Vulkan iGPU | 24.8 t/s | — | — | 2026-09-13 | new coverage; close to CPU decode (24.8 vs 24.2 t/s) |
+| Qwen2.5-Coder-3B-Instruct Q4_K_M | prefill (503 tok) | Vulkan iGPU | 15.3 t/s | — | — | 2026-09-13 | new coverage; no llama.cpp Vulkan ref. Much worse than CPU (15.3 vs 87.1 t/s) |
+| Qwen2.5-Coder-3B-Instruct Q4_K_M | decode (503 tok prompt, 24 tok gen) | Vulkan iGPU | 14.3 t/s | — | — | 2026-09-13 | new coverage; close to CPU decode (14.3 vs 14.7 t/s) |
 
 > **Pattern**: decode ratio scales up with model size within this family (0.26-0.31x at 0.5B →
 > 0.58-0.71x at 1.5-3B) — the smallest models lose proportionally more on decode, the opposite
