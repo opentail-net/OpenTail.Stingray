@@ -476,7 +476,7 @@ working correctly for this checkpoint.
 
 | Model | Scenario | Backend | C# Wall | C# RTF | C++ Wall | C++ RTF | Ratio | Performance Check | Source |
 |---|---|---|---:|---:|---:|---:|---:|---|---|
-| Whisper Tiny (39M, HF safetensors) | 14.1s audio transcribe | CPU | 1.36s (mean of 3) | **0.097x** | — (only a 575KB CI-stub `.bin` exists in `examples/whisper.cpp/models`, not the real checkpoint) | — | — | 2026-09-10 | new coverage; `WhisperTinyPerfBaselineDebugTest.cs` (temporary). Correct transcript (matches reference text), 10.3x real-time. |
+| Whisper Tiny (39M, HF safetensors) | 14.1s audio transcribe | CPU | 1.36s (mean of 3) | **0.097x** | 0.630s (mean of 3: 0.610/0.592/0.687s) | 0.045x | **0.46x** | 2026-09-13 | Real C++ reference obtained: the earlier "only a CI-stub `.bin` exists" finding was checked again and a REAL 74MB `ggml-tiny.bin` was already sitting in `/f/_models/ggml-tiny.bin` (not yet copied into `examples/whisper.cpp/models/`) — copied it in and ran the real `whisper-cli.exe` against it. Correct transcript, matches C# output content ("Some call me nature. Others call me Mother Nature. I've been here for over 4.5 billion years. 22,500 times longer than you.") |
 | Whisper Base (39M) | 14.1s audio transcribe | CPU | 0.84s | **0.070x** | 0.82s | 0.058x | **0.83x** | 2026-09-09 | scripts/bench-cpp.ps1 |
 | Whisper Small (244M) | 14.1s audio transcribe | CPU | 2.42s | **0.202x** | 2.36s | 0.168x | **0.83x** | 2026-09-09 | scripts/bench-cpp.ps1 |
 | Whisper Medium (769M) | 14.1s audio transcribe | CPU | 6.71s | **0.560x** | 6.93s | 0.492x | **0.88x** | 2026-09-09 | scripts/bench-cpp.ps1 |
