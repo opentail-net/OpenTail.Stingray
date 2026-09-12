@@ -9,6 +9,10 @@
   </ItemGroup>
 
   <ItemGroup>
+    <PackageReference Include="System.Numerics.Tensors" Version="10.0.5" />
+  </ItemGroup>
+
+  <ItemGroup>
     <!-- Prebuilt native AVX2/F16C shim (native/f16c_shim.c, rebuild via native/build.bat):
          real hardware F16 weight decode for Whisper, see native/f16c_shim.c's doc comment and
          docs/audio-review-progress.md. Windows x64 only for now; F16CNative probes availability
