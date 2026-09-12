@@ -275,15 +275,16 @@
 
 ---
 
-## Newly-downloaded architecture coverage (2026-09-13): Phi-3, Falcon3, StarCoder2, GPT-2, StableLM, ERNIE-4.5, GPT-NeoX, CodeShell
+## Newly-downloaded architecture coverage (2026-09-13): Phi-3, Falcon3, StarCoder2, GPT-2, StableLM, ERNIE-4.5, GPT-NeoX, CodeShell, SmolLM3
 
 Found via cross-referencing `ModelCompatibility.cs`'s claimed-supported architecture allowlist
-(`phi3`, `falcon`, `starcoder2`, `gpt2`, `stablelm`, `ernie4_5`, `gptneox`, `codeshell`, among 17
-total with zero downloaded checkpoint) against what was actually downloaded — none of these had ANY
-checkpoint on disk before this pass, so zero real benchmark coverage existed despite the
-architecture being claimed-supported. Downloaded real, small, quantized GGUFs via `stingray pull`
-and got real, working end-to-end runs for all eight (no `--allow-unverified-arch` needed — these
-architectures load through the normal supported path, confirming the allowlist claim is accurate).
+(`phi3`, `falcon`, `starcoder2`, `gpt2`, `stablelm`, `ernie4_5`, `gptneox`, `codeshell`, `smollm3`,
+among 17 total with zero downloaded checkpoint) against what was actually downloaded — none of
+these had ANY checkpoint on disk before this pass, so zero real benchmark coverage existed despite
+the architecture being claimed-supported. Downloaded real, small, quantized GGUFs via `stingray
+pull` and got real, working end-to-end runs for all nine (no `--allow-unverified-arch` needed —
+these architectures load through the normal supported path, confirming the allowlist claim is
+accurate).
 
 | Model | Scenario | Backend | C# (OT, t/s) | Performance Check | Source |
 |---|---|---|---:|---|---|
@@ -301,6 +302,8 @@ architectures load through the normal supported path, confirming the allowlist c
 | ~~Pythia-410M (`gptneox`) Q4_K_M~~ | raw completion | CPU | **Complete gibberish output** (`isygpectrapeuturecribeuvuginetpiring seqseqpectFigurescribeanticuguringuroufuginFiguresrapeutFigurefunded`) | 2026-09-13 | **Investigated as a possible real bug, ruled out — bad third-party checkpoint, not a codebase defect.** First download was from an obscure, unvetted uploader (`joeshmoethefunnyone/pythia-410m-Q4_K_M-GGUF`). Before assuming a pipeline bug, checked the RoPE dispatch logic in `ModelGraph.cs` (partial-rotation `rope.dimension_count=16` of `headDim=64`, NEOX-style pairing — `gptneox` is correctly listed in the NEOX-rotation architecture set) and found it structurally correct. Downloaded a reputable, actively-maintained conversion instead (`mradermacher/pythia-160m-GGUF`, Q8_0) and got real, coherent output ("The capital of France is located in the city of Paris...") — confirming `gptneox` architecture support is genuinely correct in this codebase. The bad checkpoint (and an even-older, genuinely unusable GGUF-v1-format file from `klosax/pythia-deduped-gguf`, `Unsupported GGUF version: 1`) were deleted to reclaim disk space |
 | Pythia-160M (`gptneox`) Q8_0, reputable conversion | prefill (503 tok) | CPU | 1103.7 t/s | 2026-09-13 | new, CORRECT coverage for `gptneox`, superseding the bad-checkpoint row above. First real, valid timing for this architecture |
 | Pythia-160M (`gptneox`) Q8_0, reputable conversion | decode (24 tok gen) | CPU | 107.0 t/s | 2026-09-13 | same run |
+| SmolLM3-3B Q4_K_M | prefill (705 tok) | CPU | 77.3 t/s | 2026-09-13 | new coverage; first timing ever recorded for this architecture. Real, coherent output — this checkpoint defaults to reasoning mode, so decode output was a real thinking trace ("Okay, let's tackle this summary. The user wants a three-sentence summary...") rather than a final answer within the 24-token budget, expected behavior for a reasoning model at this generation length, not a bug |
+| SmolLM3-3B Q4_K_M | decode (24 tok gen, all thinking tokens) | CPU | 10.6 t/s | 2026-09-13 | same run |
 
 ---
 
