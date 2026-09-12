@@ -329,13 +329,18 @@ public static class WanAttention
     public static unsafe void TransposeToHeadContiguous(float* src, float* dst, int seq, int heads, int headDim)
     {
         int dim = heads * headDim;
+        nint srcAddr = (nint)src;
+        nint dstAddr = (nint)dst;
         Parallel.For(0, heads, h =>
         {
+            float* pSrc = (float*)srcAddr;
+            float* pDst = (float*)dstAddr;
             for (int t = 0; t < seq; t++)
             {
-                float* srcToken = src + (long)t * dim + (long)h * headDim;
-                float* dstHead = dst + ((long)h * seq + t) * headDim;
-                new ReadOnlySpan<float>(srcToken, headDim).CopyTo(new Span<float>(dstHead, headDim));
+                float* srcToken = pSrc + (long)t * dim + (long)h * headDim;
+                float* dstHead = pDst + ((long)h * seq + t) * headDim;
+                for (int d = 0; d < headDim; d++)
+                    dstHead[d] = srcToken[d];
             }
         });
     }
@@ -343,13 +348,18 @@ public static class WanAttention
     public static unsafe void TransposeFromHeadContiguous(float* src, float* dst, int seq, int heads, int headDim)
     {
         int dim = heads * headDim;
+        nint srcAddr = (nint)src;
+        nint dstAddr = (nint)dst;
         Parallel.For(0, heads, h =>
         {
+            float* pSrc = (float*)srcAddr;
+            float* pDst = (float*)dstAddr;
             for (int t = 0; t < seq; t++)
             {
-                float* srcHead = src + ((long)h * seq + t) * headDim;
-                float* dstToken = dst + (long)t * dim + (long)h * headDim;
-                new ReadOnlySpan<float>(srcHead, headDim).CopyTo(new Span<float>(dstToken, headDim));
+                float* srcHead = pSrc + ((long)h * seq + t) * headDim;
+                float* dstToken = pDst + (long)t * dim + (long)h * headDim;
+                for (int d = 0; d < headDim; d++)
+                    dstToken[d] = srcHead[d];
             }
         });
     }

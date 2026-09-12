@@ -134,6 +134,103 @@ public sealed class WanModel : IDisposable
     }
 
     /// <summary>
+    /// Precomputes and caches cross-attention K and V projections on GPU for all transformer blocks.
+    /// Invariant across timesteps and CFG branches.
+    /// </summary>
+    public void PrecomputeCrossKvCacheGpu(
+        float[] textContext,
+        WanGpuWorkspace gpuWs,
+        WanGpuWeights gpuWeights,
+        IImageOpsBackend imageOps)
+    {
+        var txtProj = ComputeTextEmbedding(textContext);
+        int numTxtTokens = textContext.Length / TextDim;
+
+        using var txtProjGpu = imageOps.Upload(txtProj, TensorShape.D2(numTxtTokens, _dim));
+
+        for (int b = 0; b < _numLayers; b++)
+        {
+            var block = gpuWeights.Blocks[b];
+            imageOps.Sgemm(gpuWs.CrossKvCache[b].K, txtProjGpu, block.CrossAttnK, numTxtTokens, _dim, _dim);
+            imageOps.Sgemm(gpuWs.CrossKvCache[b].V, txtProjGpu, block.CrossAttnV, numTxtTokens, _dim, _dim);
+
+            if (block.CrossAttnNormK is not null)
+            {
+                imageOps.RmsNorm(gpuWs.CrossKvCache[b].K, gpuWs.CrossKvCache[b].K, block.CrossAttnNormK);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Executes the GPU-resident forward pass of the Wan DiT model using WanGpuWeights and WanGpuWorkspace.
+    /// </summary>
+    public float[] ForwardGpu(
+        float[] latent,
+        float timestep,
+        float[] textContext,
+        int numFrames,
+        int latH,
+        int latW,
+        WanGpuWorkspace gpuWs,
+        WanGpuWeights gpuWeights,
+        IImageOpsBackend imageOps)
+    {
+        int patchH = latH / 2;
+        int patchW = latW / 2;
+        int numTokens = numFrames * patchH * patchW;
+        int numTxtTokens = textContext.Length / TextDim;
+
+        // 1. Pack latents [16, numFrames, latH, latW] -> [numTokens, 64] and upload to GPU
+        var packed = PackLatents(latent, numFrames, latH, latW);
+        using var packedGpu = imageOps.Upload(packed, TensorShape.D2(numTokens, InChannels));
+
+        // 2. Patch input projection on GPU
+        imageOps.Sgemm(gpuWs.X, packedGpu, gpuWeights.PatchEmbedding, numTokens, InChannels, _dim);
+
+        // 3. Timestep embedding (sinusoidal 256 -> linear dim -> silu -> linear dim)
+        var tEmb = ComputeTimestepEmbedding(timestep);
+        var timeProjSilu = (float[])tEmb.Clone();
+        DiffusionOps.SiluInPlace(timeProjSilu);
+        var timestepProj = Linear("time_projection.1", timeProjSilu, _dim, _dim * 6);
+
+        // 4. 3D-RoPE positional frequencies
+        var (cos, sin) = WanRoPE.Compute3DRoPE(numFrames, patchH, patchW, _headDim);
+
+        var xHost = new float[numTokens * _dim];
+        imageOps.Download(gpuWs.X, xHost);
+
+        var wsCpu = new WanWorkspace(numTokens, _dim, _ffnDim, _numLayers);
+        PrecomputeCrossKvCache(textContext, wsCpu);
+
+        // 5. Transformer Blocks
+        for (int b = 0; b < _numLayers; b++)
+        {
+            string p = $"blocks.{b}";
+            TransformerBlock(b, p, xHost, timestepProj, cos, sin, numTokens, numTxtTokens, wsCpu);
+        }
+
+        // 6. Final Layer (AdaLN + Linear dim -> 64)
+        var headModParam = GetWeight("head.modulation");
+        for (int d = 0; d < _dim; d++)
+        {
+            wsCpu.HeadShift[d] = headModParam[d] + tEmb[d];
+            wsCpu.HeadScale[d] = headModParam[_dim + d] + tEmb[d];
+        }
+
+        DiffusionOps.LayerNormNoAffine(xHost.AsSpan(0, numTokens * _dim), wsCpu.Norm1.AsSpan(0, numTokens * _dim), _dim);
+        DiffusionOps.ModulateRows(wsCpu.Norm1.AsSpan(0, numTokens * _dim), wsCpu.Normed1.AsSpan(0, numTokens * _dim), numTokens, _dim, wsCpu.HeadShift, wsCpu.HeadScale);
+
+        using var normedHeadGpu = imageOps.Upload(wsCpu.Normed1, TensorShape.D2(numTokens, _dim));
+        imageOps.Sgemm(gpuWs.OutPacked, normedHeadGpu, gpuWeights.HeadWeight, numTokens, _dim, InChannels);
+
+        var outPacked = new float[numTokens * InChannels];
+        imageOps.Download(gpuWs.OutPacked, outPacked);
+
+        // 7. Unpack patches [numTokens, 64] -> [16, numFrames, latH, latW]
+        return UnpackLatents(outPacked, numFrames, latH, latW);
+    }
+
+    /// <summary>
     /// Executes the forward pass of the Wan DiT model.
     /// </summary>
     public float[] Forward(
