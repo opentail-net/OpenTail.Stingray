@@ -7737,6 +7737,18 @@ public sealed unsafe class CudaBackend : IComputeBackend, IImageOpsBackend, IVis
     public void AddRowBroadcastInPlace(Tensor x, Tensor rowBias, int n, int d)
         => throw new NotSupportedException("AddRowBroadcastInPlace is not implemented on the CUDA backend yet -- Vulkan-only for now.");
 
+    public Tensor LayerNormGpu(Tensor x, Tensor weight, Tensor bias, int n, int c, float eps = 1e-5f)
+        => throw new NotSupportedException("LayerNormGpu is not implemented on the CUDA backend yet -- Vulkan-only for now.");
+
+    public Tensor GeGlu(Tensor x, int n, int d)
+        => throw new NotSupportedException("GeGlu is not implemented on the CUDA backend yet -- Vulkan-only for now.");
+
+    public Tensor PermuteChwToHwc(Tensor x, int c, int hw)
+        => throw new NotSupportedException("PermuteChwToHwc is not implemented on the CUDA backend yet -- Vulkan-only for now.");
+
+    public Tensor PermuteHwcToChw(Tensor x, int c, int hw)
+        => throw new NotSupportedException("PermuteHwcToChw is not implemented on the CUDA backend yet -- Vulkan-only for now.");
+
     /// <summary>Not implemented on CUDA yet -- same Vulkan-only status as GroupNormSilu above.</summary>
     public Tensor MultiHeadAttention(Tensor q, Tensor k, Tensor v, int qSeq, int kvSeq, int numHeads, int headDim)
         => throw new NotSupportedException("MultiHeadAttention is not implemented on the CUDA backend yet -- Vulkan-only for now.");

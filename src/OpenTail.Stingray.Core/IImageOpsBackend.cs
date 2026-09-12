@@ -52,6 +52,18 @@ public interface IImageOpsBackend : IComputeBackend
     /// </summary>
     void AddRowBroadcastInPlace(Tensor x, Tensor rowBias, int n, int d);
 
+    /// <summary>GPU-resident LayerNorm over the last axis: input/output [N,C], weight/bias [C].</summary>
+    Tensor LayerNormGpu(Tensor x, Tensor weight, Tensor bias, int n, int c, float eps = 1e-5f);
+
+    /// <summary>GEGLU gate: input [N,2*D] (val half, gate half) -> output [N,D] = val * gelu(gate).</summary>
+    Tensor GeGlu(Tensor x, int n, int d);
+
+    /// <summary>Permute [C,H*W] -> [H*W,C] (channels-first to sequence-first).</summary>
+    Tensor PermuteChwToHwc(Tensor x, int c, int hw);
+
+    /// <summary>Inverse of <see cref="PermuteChwToHwc"/>: [H*W,C] -> [C,H*W].</summary>
+    Tensor PermuteHwcToChw(Tensor x, int c, int hw);
+
     /// <summary>
     /// Multi-head scaled-dot-product attention (bidirectional, no causal mask, no KV cache) for
     /// vision-transformer-shaped self/cross attention. Q [qSeq, numHeads*headDim], K/V

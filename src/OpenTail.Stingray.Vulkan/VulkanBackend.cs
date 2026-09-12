@@ -1514,6 +1514,10 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
     private ComputePipeline? _groupNormSiluPipeline;
     private ComputePipeline? _addChannelBroadcastPipeline;
     private ComputePipeline? _addRowBroadcastPipeline;
+    private ComputePipeline? _layerNormGpuPipeline;
+    private ComputePipeline? _geGluPipeline;
+    private ComputePipeline? _permuteChwToHwcPipeline;
+    private ComputePipeline? _permuteHwcToChwPipeline;
     private ComputePipeline? _multiHeadAttentionPipeline;
     private ComputePipeline? _multiHeadAttentionTiledPipeline;
     private ComputePipeline? _leakyReluPipeline;
@@ -1609,6 +1613,9 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
     private struct GroupNormSiluParams { public uint c; public uint hw; public uint groups; public float eps; }
     private struct AddChannelBroadcastParams { public uint c; public uint hw; }
     private struct AddRowBroadcastParams { public uint n; public uint d; }
+    private struct LayerNormGpuParams { public uint n; public uint c; public float eps; }
+    private struct GeGluParams { public uint n; public uint d; }
+    private struct PermuteParams { public uint c; public uint hw; }
     private struct MultiHeadAttentionParams { public uint qSeq; public uint kvSeq; public uint numHeads; public uint headDim; }
     private struct MultiHeadAttentionTiledParams { public uint qSeq; public uint kvSeq; public uint numHeads; public float scale; }
     private struct LeakyReluParams { public uint n; public float negSlope; }
@@ -3682,6 +3689,45 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
         DispatchOrRecord(_addRowBroadcastPipeline, [GetBuffer(x), GetBuffer(rowBias)], groupsX, &p);
     }
 
+    public Tensor LayerNormGpu(Tensor x, Tensor weight, Tensor bias, int n, int c, float eps = 1e-5f)
+    {
+        var output = Allocate(TensorShape.D1(n * c));
+        _layerNormGpuPipeline ??= new ComputePipeline(this, Shaders.LayerNormGpu, 4, pushConstantSize: sizeof(LayerNormGpuParams));
+        var p = new LayerNormGpuParams { n = (uint)n, c = (uint)c, eps = eps };
+        DispatchOrRecord(_layerNormGpuPipeline, [GetBuffer(x), GetBuffer(weight), GetBuffer(bias), GetBuffer(output)], (uint)n, &p);
+        return output;
+    }
+
+    public Tensor GeGlu(Tensor x, int n, int d)
+    {
+        var output = Allocate(TensorShape.D1(n * d));
+        _geGluPipeline ??= new ComputePipeline(this, Shaders.GeGlu, 2, pushConstantSize: sizeof(GeGluParams));
+        var p = new GeGluParams { n = (uint)n, d = (uint)d };
+        uint groupsX = ((uint)(n * d) + 255u) / 256u;
+        DispatchOrRecord(_geGluPipeline, [GetBuffer(x), GetBuffer(output)], groupsX, &p);
+        return output;
+    }
+
+    public Tensor PermuteChwToHwc(Tensor x, int c, int hw)
+    {
+        var output = Allocate(TensorShape.D1(c * hw));
+        _permuteChwToHwcPipeline ??= new ComputePipeline(this, Shaders.PermuteChwToHwc, 2, pushConstantSize: sizeof(PermuteParams));
+        var p = new PermuteParams { c = (uint)c, hw = (uint)hw };
+        uint groupsX = ((uint)(c * hw) + 255u) / 256u;
+        DispatchOrRecord(_permuteChwToHwcPipeline, [GetBuffer(x), GetBuffer(output)], groupsX, &p);
+        return output;
+    }
+
+    public Tensor PermuteHwcToChw(Tensor x, int c, int hw)
+    {
+        var output = Allocate(TensorShape.D1(c * hw));
+        _permuteHwcToChwPipeline ??= new ComputePipeline(this, Shaders.PermuteHwcToChw, 2, pushConstantSize: sizeof(PermuteParams));
+        var p = new PermuteParams { c = (uint)c, hw = (uint)hw };
+        uint groupsX = ((uint)(c * hw) + 255u) / 256u;
+        DispatchOrRecord(_permuteHwcToChwPipeline, [GetBuffer(x), GetBuffer(output)], groupsX, &p);
+        return output;
+    }
+
     public Tensor MultiHeadAttention(Tensor q, Tensor k, Tensor v, int qSeq, int kvSeq, int numHeads, int headDim)
     {
         if (headDim > 128)
@@ -4086,6 +4132,10 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
         _groupNormSiluPipeline?.Dispose();
         _addChannelBroadcastPipeline?.Dispose();
         _addRowBroadcastPipeline?.Dispose();
+        _layerNormGpuPipeline?.Dispose();
+        _geGluPipeline?.Dispose();
+        _permuteChwToHwcPipeline?.Dispose();
+        _permuteHwcToChwPipeline?.Dispose();
         _multiHeadAttentionPipeline?.Dispose();
         _multiHeadAttentionTiledPipeline?.Dispose();
         _leakyReluPipeline?.Dispose();

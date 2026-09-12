@@ -6615,6 +6615,167 @@ internal static class Shaders
         """;
 
     /// <summary>
+    /// LayerNorm over the last axis of a [N, C] tensor (one workgroup per row), with per-channel
+    /// affine weight/bias -- added 2026-09-12 (docs/067 Stage 3a) so SpatialTransformer's
+    /// per-block pre-attention/pre-FFN norms can run GPU-resident instead of downloading to CPU
+    /// for `DiffusionOps.LayerNorm`. Same reduction structure as `GroupNormSilu` above, one row
+    /// instead of one GroupNorm group, no activation fused in (norm output feeds a Linear
+    /// projection next, not an activation).
+    /// input [N, C], weight [C], bias [C] -> output [N, C].
+    /// Push constants: { n, c, eps }.
+    /// Bindings: 0=input, 1=weight, 2=bias, 3=output.
+    /// Dispatch: (n, 1, 1) with local_size=(256,1,1).
+    /// </summary>
+    internal const string LayerNormGpu = """
+        #version 450
+        layout(local_size_x = 256) in;
+
+        layout(push_constant) uniform Params {
+            uint n;
+            uint c;
+            float eps;
+        };
+
+        layout(binding = 0) readonly  buffer Input  { float x[];      };
+        layout(binding = 1) readonly  buffer Weight { float weight[]; };
+        layout(binding = 2) readonly  buffer Bias   { float bias[];   };
+        layout(binding = 3) writeonly buffer Output { float y[];      };
+
+        shared float sSum[256];
+        shared float sSumSq[256];
+        shared float sMean;
+        shared float sInvStd;
+
+        void main() {
+            uint row = gl_WorkGroupID.x;
+            uint tid = gl_LocalInvocationID.x;
+            uint rowBase = row * c;
+
+            float sum = 0.0, sumSq = 0.0;
+            for (uint i = tid; i < c; i += 256u) {
+                float v = x[rowBase + i];
+                sum   += v;
+                sumSq += v * v;
+            }
+            sSum[tid]   = sum;
+            sSumSq[tid] = sumSq;
+            barrier();
+            for (uint stride = 128u; stride > 0u; stride >>= 1u) {
+                if (tid < stride) {
+                    sSum[tid]   += sSum[tid + stride];
+                    sSumSq[tid] += sSumSq[tid + stride];
+                }
+                barrier();
+            }
+            if (tid == 0u) {
+                float mean = sSum[0] / float(c);
+                float var  = sSumSq[0] / float(c) - mean * mean;
+                sMean   = mean;
+                sInvStd = 1.0 / sqrt(max(var, 0.0) + eps);
+            }
+            barrier();
+
+            float mean   = sMean;
+            float invStd = sInvStd;
+            for (uint i = tid; i < c; i += 256u) {
+                y[rowBase + i] = (x[rowBase + i] - mean) * invStd * weight[i] + bias[i];
+            }
+        }
+        """;
+
+    /// <summary>
+    /// GEGLU gate: input [N, 2*D] (val half followed by gate half, matching this codebase's
+    /// `ff.net.0.proj` weight layout) -> output [N, D] = val * gelu_tanh(gate). Added 2026-09-12
+    /// (docs/067 Stage 3a) as the GPU-resident counterpart of `SpatialTransformer`'s CPU
+    /// `Parallel.For` GEGLU gating loop -- same tanh-approximate GELU formula.
+    /// Push constants: { n, d }.
+    /// Bindings: 0=input [N,2D], 1=output [N,D].
+    /// Dispatch: (ceil(n*d/256), 1, 1) with local_size=(256,1,1).
+    /// </summary>
+    internal const string GeGlu = """
+        #version 450
+        layout(local_size_x = 256) in;
+
+        layout(push_constant) uniform Params {
+            uint n;
+            uint d;
+        };
+
+        layout(binding = 0) readonly  buffer Input  { float x[]; };
+        layout(binding = 1) writeonly buffer Output { float y[]; };
+
+        void main() {
+            uint idx = gl_GlobalInvocationID.x;
+            uint total = n * d;
+            if (idx >= total) return;
+            uint row = idx / d;
+            uint col = idx % d;
+            uint base2 = row * (2u * d);
+            float val  = x[base2 + col];
+            float gate = x[base2 + d + col];
+            float geluGate = 0.5 * gate * (1.0 + tanh(0.79788456 * (gate + 0.044715 * gate * gate * gate)));
+            y[idx] = val * geluGate;
+        }
+        """;
+
+    /// <summary>
+    /// Permute [C, H, W] -> [H*W, C] (channels-first to sequence-first), the layout conversion
+    /// SpatialTransformer needs before its Linear projections operate on per-token rows. Added
+    /// 2026-09-12 (docs/067 Stage 1/3a) as a genuine GPU kernel instead of silently reintroducing
+    /// this as a CPU round-trip once the surrounding chain is resident -- see docs/067's "GPU
+    /// layout/reshape operations are part of residency, not an optimisation afterthought" note.
+    /// Push constants: { c, hw }.
+    /// Bindings: 0=input [C,HW], 1=output [HW,C].
+    /// Dispatch: (ceil(c*hw/256), 1, 1) with local_size=(256,1,1).
+    /// </summary>
+    internal const string PermuteChwToHwc = """
+        #version 450
+        layout(local_size_x = 256) in;
+
+        layout(push_constant) uniform Params {
+            uint c;
+            uint hw;
+        };
+
+        layout(binding = 0) readonly  buffer Input  { float x[]; };
+        layout(binding = 1) writeonly buffer Output { float y[]; };
+
+        void main() {
+            uint idx = gl_GlobalInvocationID.x;
+            uint total = c * hw;
+            if (idx >= total) return;
+            uint ch = idx / hw;
+            uint s  = idx % hw;
+            y[s * c + ch] = x[idx];
+        }
+        """;
+
+    /// <summary>Inverse of <see cref="PermuteChwToHwc"/>: [H*W, C] -> [C, H, W].
+    /// Push constants: { c, hw }. Bindings: 0=input [HW,C], 1=output [C,HW].
+    /// Dispatch: (ceil(c*hw/256), 1, 1) with local_size=(256,1,1).</summary>
+    internal const string PermuteHwcToChw = """
+        #version 450
+        layout(local_size_x = 256) in;
+
+        layout(push_constant) uniform Params {
+            uint c;
+            uint hw;
+        };
+
+        layout(binding = 0) readonly  buffer Input  { float x[]; };
+        layout(binding = 1) writeonly buffer Output { float y[]; };
+
+        void main() {
+            uint idx = gl_GlobalInvocationID.x;
+            uint total = c * hw;
+            if (idx >= total) return;
+            uint ch = idx / hw;
+            uint s  = idx % hw;
+            y[idx] = x[s * c + ch];
+        }
+        """;
+
+    /// <summary>
     /// Multi-head scaled-dot-product attention (bidirectional, no causal mask, no KV cache) for
     /// vision-transformer-shaped self/cross attention -- added 2026-09-11 for SdxlUNet2D
     /// ConditionModel's SpatialTransformer, whose Q/K/V come from a diffusion UNet's spatial
