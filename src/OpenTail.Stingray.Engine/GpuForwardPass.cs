@@ -914,7 +914,12 @@ public sealed unsafe class GpuForwardPass : IForwardPass
                     _wv[i] = UploadWeight($"blk.{i}.attn_v.weight");
             }
             _wo[i] = UploadWeight($"blk.{i}.attn_output.weight");
-            _wFfnNorm[i] = UploadWeight($"blk.{i}.ffn_norm.weight");
+            // Falcon-7B (and gpt-oss's real GGUF export) have no ffn_norm tensor at all — reuse
+            // the block's attn_norm, mirroring ForwardPass.cs's identical CPU-path fallback
+            // (ForwardPass.cs:652) rather than hard-crashing on a genuinely absent tensor.
+            _wFfnNorm[i] = model.FindTensor($"blk.{i}.ffn_norm.weight") is not null
+                ? UploadWeight($"blk.{i}.ffn_norm.weight")
+                : _wAttnNorm[i];
 
             if (_hasPle)
             {
@@ -3433,7 +3438,10 @@ public sealed unsafe class GpuForwardPass : IForwardPass
             // those array slots are null. Guard the frees (_gpu.Free dereferences the Tensor).
             bool kvShared = _hp.KvSourceLayer is { } ksl && ksl[i] >= 0;
 
-            _gpu.Free(_wAttnNorm[i]); _gpu.Free(_wFfnNorm[i]);
+            _gpu.Free(_wAttnNorm[i]);
+            // Falcon/gpt-oss fallback (see UploadWeight above) can alias _wFfnNorm[i] to the
+            // same handle as _wAttnNorm[i] — only free it once.
+            if (_wFfnNorm[i].Handle != _wAttnNorm[i].Handle) _gpu.Free(_wFfnNorm[i]);
             _gpu.Free(_wq[i]);
             if (_wk[i] is not null) _gpu.Free(_wk[i]);
             // Gemma 4 k_eq_v global layers have no attn_v (V reuses raw K) — _wv[i] is null.

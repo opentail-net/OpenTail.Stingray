@@ -306,7 +306,12 @@ public sealed unsafe class HybridForwardPass : IForwardPass
             _gpuWk[i] = UploadWeight($"blk.{i}.attn_k.weight");
             _gpuWv[i] = UploadWeight($"blk.{i}.attn_v.weight");
             _gpuWo[i] = UploadWeight($"blk.{i}.attn_output.weight");
-            _gpuFfnNorm[i] = UploadWeight($"blk.{i}.ffn_norm.weight");
+            // Falcon-7B (and gpt-oss's real GGUF export) have no ffn_norm tensor at all — reuse
+            // the block's attn_norm, mirroring ForwardPass.cs's identical CPU-path fallback
+            // (ForwardPass.cs:652) and GpuForwardPass's own copy of this same fallback.
+            _gpuFfnNorm[i] = _model.FindTensor($"blk.{i}.ffn_norm.weight") is not null
+                ? UploadWeight($"blk.{i}.ffn_norm.weight")
+                : _gpuAttnNorm[i];
             if (_isMoE)
             {
                 _gpuWGateInp![i] = UploadWeight($"blk.{i}.ffn_gate_inp.weight");
@@ -425,7 +430,10 @@ public sealed unsafe class HybridForwardPass : IForwardPass
             _cpuWk[ci] = ResolveCpuWeight($"blk.{li}.attn_k.weight");
             _cpuWv[ci] = ResolveCpuWeight($"blk.{li}.attn_v.weight");
             _cpuWo[ci] = ResolveCpuWeight($"blk.{li}.attn_output.weight");
-            _cpuFfnNorm[ci] = ResolveCpuWeight($"blk.{li}.ffn_norm.weight");
+            // Same Falcon/gpt-oss no-ffn_norm fallback as the GPU-layer upload loop above.
+            _cpuFfnNorm[ci] = _model.FindTensor($"blk.{li}.ffn_norm.weight") is not null
+                ? ResolveCpuWeight($"blk.{li}.ffn_norm.weight")
+                : _cpuAttnNorm[ci];
             if (_isMoE)
             {
                 _cpuWGateInp![ci] = ResolveCpuWeight($"blk.{li}.ffn_gate_inp.weight");
@@ -1708,7 +1716,10 @@ public sealed unsafe class HybridForwardPass : IForwardPass
 
         for (int i = 0; i < _nGpuLayers; i++)
         {
-            _gpu.Free(_gpuAttnNorm[i]); _gpu.Free(_gpuFfnNorm[i]);
+            _gpu.Free(_gpuAttnNorm[i]);
+            // Falcon/gpt-oss fallback (see UploadWeight above) can alias _gpuFfnNorm[i] to the
+            // same handle as _gpuAttnNorm[i] — only free it once.
+            if (_gpuFfnNorm[i].Handle != _gpuAttnNorm[i].Handle) _gpu.Free(_gpuFfnNorm[i]);
             _gpu.Free(_gpuWq[i]); _gpu.Free(_gpuWk[i]); _gpu.Free(_gpuWv[i]); _gpu.Free(_gpuWo[i]);
             if (_isMoE)
             {
