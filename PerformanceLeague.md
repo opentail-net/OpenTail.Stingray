@@ -298,6 +298,35 @@ the unverified architecture, not disambiguated.
 
 ---
 
+## EXAONE-4.5-33B (`exaone4`) — new coverage, real architecture gap found in `HybridForwardPass`
+
+Real, coherent output on plain CPU `ForwardPass` (which already handles this architecture's
+post-norm-only layout — `blk.N.post_attention_norm.weight`/`post_ffw_norm.weight`, no separate
+pre-attention `attn_norm.weight` at all, confirmed against the real reference
+`examples/llama.cpp/llama.cpp/src/models/exaone4.cpp:152,166` per CLAUDE.md rule 8 before assuming
+anything was broken). Two real, separate bugs found and NOT fixed this pass (both real architecture
+gaps requiring non-trivial work, not quick fixes):
+1. **`HybridForwardPass` (CPU+GPU layer split) crashes**: `UploadWeight` hardcodes
+   `blk.{i}.attn_norm.weight`/`ffn_norm.weight` unconditionally (`HybridForwardPass.cs:304,309,423,428`)
+   with no fallback to the post-norm tensor names, unlike plain `ForwardPass.cs` (which already has
+   the OLMo2-style `FindTensor(...) is not null` fallback at line 640 and reads
+   `post_attention_norm.weight` at line 854). Fixing this needs mirroring the whole post-norm forward
+   math (norm applied after attn/ffn, before the residual add) inside `HybridForwardPass`, not just
+   renaming a tensor lookup — real architectural work, out of scope for this pass. Worked around for
+   benchmarking via `-g 0` (forces CPU-only, bypasses `HybridForwardPass` entirely).
+2. **Real chat template (from the GGUF's own `tokenizer.chat_template`) fails to render**: a
+   dict-literal role-mapping expression (`{'user': '<|user|>\n', 'assistant': ..., ...}`) is not
+   supported by `JinjaChatTemplate`'s expression evaluator, so it passes through unchanged, and the
+   template then throws `Unknown role: user`. Worked around for benchmarking via a minimal
+   `--chat-template` override (not a fix — the real official template still doesn't render).
+
+| Model | Scenario | Backend | C# (OT, t/s) | Performance Check | Source |
+|---|---|---|---:|---|---|
+| EXAONE-4.5-33B Q4_K_M | prefill (9 tok) | CPU (`-g 0`, forced) | 1.5 t/s | 2026-09-12 | new coverage; first timing ever recorded for this checkpoint. Real, coherent output ("Okay, the user asked for the capital of France. That's a straightforward question—Paris is the answer...") via a `--chat-template` override working around bug 2 above |
+| EXAONE-4.5-33B Q4_K_M | decode (40 tok gen) | CPU (`-g 0`, forced) | 1.7 t/s | 2026-09-12 | same run; slow but expected for a 33B Q4_K_M model on this CPU with no GPU offload — `HybridForwardPass`'s bug (above) is what's blocking the much faster GPU-layer-split path from being measured at all |
+
+---
+
 ## Speculative Decoding (CPU)
 
 | Target | Draft | Scenario | C# (OT, t/s) | C++ (ref, t/s) | Ratio | Acceptance rate | Performance Check | Source |
@@ -723,7 +752,7 @@ Rows where the Ratio column is blank and a C++ comparison would be actionable:
 | CPU KV cache | bf16/q8 dtype | CPU | `PagedKvCache` hard-wired fp32 | Vulkan showed +57% decode at no quality cost |
 | Llama-4-Scout 17B-16E Q4_K_M | prefill + decode | CPU | Cancelled 2026-09-10 by explicit user instruction (`~93GB` across 2 shards vs. this machine's 64GB total RAM — would never fit; user said "no point in killing the pc"). Partial download deleted. | Not pursuing on this hardware; would need a machine with substantially more RAM |
 | Wan2.1-T2V-1.3B | video generation | Vulkan iGPU | Confirmed 2026-09-12: `image --help`'s `--backend` flag is explicitly scoped `(Z-Image)` only — Wan's video DiT/UMT5 path has no Vulkan wiring in this codebase at all, always runs "on CPU" regardless of device detection. Re-running would only reproduce the already-recorded CPU number (see row above) | Would need a real Vulkan-resident Wan DiT/UMT5 port, not attempted this pass — same class of work as docs/067's SDXL UNet residency, but for a different, larger architecture |
-| **EXAONE-4.5-33B (text LLM, GGUF `EXAONE-4.5-33B-Q4_K_M.gguf`)** | prefill + decode | Vulkan/Hybrid (CPU+GPU layer split) | **Real crash, not yet fixed**: `HybridForwardPass.UploadWeight` throws `Missing tensor: blk.0.attn_norm.weight`. Checked this checkpoint's real tensor names via `list-tensors`: it has `post_attention_norm.weight`/`post_ffw_norm.weight` per block, no `attn_norm.weight` at all — a real architectural difference (post-norm/sandwich-norm placement) that `HybridForwardPass`'s hardcoded tensor-name lookup doesn't yet account for. Model loads and pre-faults weights fine (18.35 GiB in 63.2s); crash is specifically in the GPU-layer-upload path. Not a quick fix — needs understanding EXAONE-4.5's real norm placement (pre-norm entirely absent, or a differently-named pre-norm tensor?) before `HybridForwardPass` can be taught this layout | Real architecture-support gap; same class of work as this project's other from-scratch architecture admissions (see `stingray admit-arch`) — not attempted further this pass |
+| EXAONE-4.5-33B Q4_K_M | prefill + decode | Vulkan/Hybrid (CPU+GPU layer split) | Root-caused fully (see the new "EXAONE-4.5-33B" section above) — real post-norm architecture that `HybridForwardPass` doesn't yet support; confirmed against the real `exaone4.cpp` reference. Worked around via `-g 0` for CPU-only timing | Real architecture-support gap in `HybridForwardPass`'s hardcoded pre-norm tensor lookup — not attempted further this pass |
 | Carnice 35B-A3B-MTP (APEX) | prefill/decode | CPU | No locatable public repo for "Carnice APEX" as of 2026-09-10; likely a gated/private checkpoint from the original README-history capture | Needs the original source/access used when the † numbers were first captured |
 | Any GGUF embedding model | throughput vs C++ | CPU | Confirmed 2026-09-10: `stingray embed`'s GGUF path is a hash-based synthetic stub (`EmbeddingEngine.cs:147-162`) that never loads real weights — produces identical output for any `-m` path including a nonexistent one. No real GGUF embedding measurement is possible with this CLI today. | Wire a real GGUF forward pass into `EmbeddingEngine` (or route GGUF paths through the same `ForwardPass`/backend machinery the `run`/`image` commands use) before any embedding throughput number can be trusted |
 | ~~Any ONNX embedding model (MiniLM, BGE, etc.)~~ | throughput vs C++ | CPU | **FIXED 2026-09-11** — see Embeddings section above for real measurements. Was: crashed with `Missing Input: token_type_ids`. | — |
