@@ -6547,6 +6547,78 @@ internal static class Shaders
         """;
 
     /// <summary>
+    /// Plain GroupNorm (NO activation fused in) for [C,H,W] tensors, 32 groups -- added
+    /// 2026-09-12 (docs/067 Stage 3a) for `SpatialTransformer`'s pre-`proj_in` norm, which the
+    /// real model applies with no SiLU (unlike ResBlock's norms, where `GroupNormSilu` above is
+    /// correct). Identical reduction structure to `GroupNormSilu`, just without the sigmoid pass.
+    /// input [C, H, W], weight [C], bias [C] -> output [C, H, W].
+    /// Push constants: { c, hw, groups, eps }.
+    /// Bindings: 0=input, 1=weight, 2=bias, 3=output.
+    /// Dispatch: (groups, 1, 1) with local_size=(256,1,1).
+    /// </summary>
+    internal const string GroupNormGpu = """
+        #version 450
+        layout(local_size_x = 256) in;
+
+        layout(push_constant) uniform Params {
+            uint c;
+            uint hw;
+            uint groups;
+            float eps;
+        };
+
+        layout(binding = 0) readonly  buffer Input  { float x[];      };
+        layout(binding = 1) readonly  buffer Weight { float weight[]; };
+        layout(binding = 2) readonly  buffer Bias   { float bias[];   };
+        layout(binding = 3) writeonly buffer Output { float y[];      };
+
+        shared float sSum[256];
+        shared float sSumSq[256];
+        shared float sMean;
+        shared float sInvStd;
+
+        void main() {
+            uint g   = gl_WorkGroupID.x;
+            uint tid = gl_LocalInvocationID.x;
+            uint chansPerGroup = c / groups;
+            uint groupElems = chansPerGroup * hw;
+            uint groupBase  = g * groupElems;
+
+            float sum = 0.0, sumSq = 0.0;
+            for (uint i = tid; i < groupElems; i += 256u) {
+                float v = x[groupBase + i];
+                sum   += v;
+                sumSq += v * v;
+            }
+            sSum[tid]   = sum;
+            sSumSq[tid] = sumSq;
+            barrier();
+            for (uint stride = 128u; stride > 0u; stride >>= 1u) {
+                if (tid < stride) {
+                    sSum[tid]   += sSum[tid + stride];
+                    sSumSq[tid] += sSumSq[tid + stride];
+                }
+                barrier();
+            }
+            if (tid == 0u) {
+                float mean = sSum[0] / float(groupElems);
+                float var  = sSumSq[0] / float(groupElems) - mean * mean;
+                sMean   = mean;
+                sInvStd = 1.0 / sqrt(max(var, 0.0) + eps);
+            }
+            barrier();
+
+            float mean   = sMean;
+            float invStd = sInvStd;
+            for (uint i = tid; i < groupElems; i += 256u) {
+                uint chLocal = i / hw;
+                uint ch = g * chansPerGroup + chLocal;
+                y[groupBase + i] = (x[groupBase + i] - mean) * invStd * weight[ch] + bias[ch];
+            }
+        }
+        """;
+
+    /// <summary>
     /// In-place per-channel scalar broadcast-add: x[c,h,w] += bias[c] for every spatial position.
     /// Added 2026-09-12 for the SDXL UNet GPU-residency rewrite (docs/067) -- ResBlock's timestep-
     /// embedding injection (`emb_layers.1`'s projected [outC] vector added identically across every

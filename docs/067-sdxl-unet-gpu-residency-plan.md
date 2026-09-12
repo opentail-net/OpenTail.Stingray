@@ -125,7 +125,19 @@ don't assume its exact internals port verbatim, since `VaeDecoder`'s other conv 
 non-resident). Implement `SdxlUNet2DConditionModel.ResBlock` against Stage 1's new primitives.
 Verify: real timing + pixel-identical output vs. the current baseline.
 
-## Stage 3a — SpatialTransformer residency, CPU attention fallback (renamed/split per review)
+## Stage 3a — SpatialTransformer residency, CPU attention fallback — DONE 2026-09-12 (renamed/split per review)
+
+**Real result, the largest single win so far**: total wall time 118.3s→90.5s (~23.5% faster than
+Stage 2, ~34% faster than the original 137.4s baseline). Dispatches 6304→4484 (1820 fewer),
+`stagingCopy` 41.9s→17.5s (~58% drop), steady-state denoise step ~19s→~12.7s. Required 5 new GPU
+primitives (`LayerNormGpu`, `GeGlu`, `PermuteChwToHwc`/`PermuteHwcToChw`, `GroupNormGpu`), all
+verified against real CPU references before wiring in. Caught a real correctness bug mid-
+implementation: initially used `GroupNormSilu` for `SpatialTransformer`'s pre-`proj_in` norm, which
+fuses an activation the real model doesn't have there (unlike ResBlock's norms) — added a plain
+`GroupNormGpu` instead before it ever ran end-to-end. Output re-verified pixel-identical to Stage
+2's baseline at the same seed. Confirms the CPU attention island is exactly where nearly all of
+this block's remaining round-trips now concentrate — see `PerformanceLeague.md`'s Stage 3a row for
+full detail.
 
 Chain GroupNorm→proj_in→norm→Q/K/V-projection→(**CPU attention, explicitly labeled a temporary
 diagnostic fallback**: download Q/K/V → existing CPU `DiffusionOps.MultiHeadAttention` →

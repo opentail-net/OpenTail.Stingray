@@ -37,6 +37,11 @@ public interface IImageOpsBackend : IComputeBackend
     /// </summary>
     Tensor GroupNormSilu(Tensor x, Tensor weight, Tensor bias, int c, int hw, int groups = 32, float eps = 1e-5f);
 
+    /// <summary>Plain GPU-resident GroupNorm, no activation fused in -- for blocks (like
+    /// SpatialTransformer's pre-proj_in norm) whose real model has no SiLU here, unlike ResBlock's
+    /// norms where <see cref="GroupNormSilu"/> is correct.</summary>
+    Tensor GroupNormGpu(Tensor x, Tensor weight, Tensor bias, int c, int hw, int groups = 32, float eps = 1e-5f);
+
     /// <summary>
     /// In-place per-channel scalar broadcast-add: x[c,h,w] += bias[c] for every spatial position.
     /// Added for the SDXL UNet GPU-residency rewrite (docs/067) -- ResBlock's timestep-embedding

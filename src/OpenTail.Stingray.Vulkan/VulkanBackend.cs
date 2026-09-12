@@ -1512,6 +1512,7 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
     private ComputePipeline? _conv2dPipeline;
     private ComputePipeline? _conv2dImplicitGemmPipeline;
     private ComputePipeline? _groupNormSiluPipeline;
+    private ComputePipeline? _groupNormGpuPipeline;
     private ComputePipeline? _addChannelBroadcastPipeline;
     private ComputePipeline? _addRowBroadcastPipeline;
     private ComputePipeline? _layerNormGpuPipeline;
@@ -1611,6 +1612,7 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
     // Image ops push constant structs
     private struct Conv2dParams   { public uint inCh; public uint outCh; public uint height; public uint width; public uint ksize; public uint padding; }
     private struct GroupNormSiluParams { public uint c; public uint hw; public uint groups; public float eps; }
+    private struct GroupNormGpuParams { public uint c; public uint hw; public uint groups; public float eps; }
     private struct AddChannelBroadcastParams { public uint c; public uint hw; }
     private struct AddRowBroadcastParams { public uint n; public uint d; }
     private struct LayerNormGpuParams { public uint n; public uint c; public float eps; }
@@ -3671,6 +3673,15 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
         return output;
     }
 
+    public Tensor GroupNormGpu(Tensor x, Tensor weight, Tensor bias, int c, int hw, int groups = 32, float eps = 1e-5f)
+    {
+        var output = Allocate(TensorShape.D1(c * hw));
+        _groupNormGpuPipeline ??= new ComputePipeline(this, Shaders.GroupNormGpu, 4, pushConstantSize: sizeof(GroupNormGpuParams));
+        var p = new GroupNormGpuParams { c = (uint)c, hw = (uint)hw, groups = (uint)groups, eps = eps };
+        DispatchOrRecord(_groupNormGpuPipeline, [GetBuffer(x), GetBuffer(weight), GetBuffer(bias), GetBuffer(output)], (uint)groups, &p);
+        return output;
+    }
+
     public void AddChannelBroadcastInPlace(Tensor x, Tensor perChannelBias, int c, int hw)
     {
         _addChannelBroadcastPipeline ??= new ComputePipeline(this, Shaders.AddChannelBroadcast, 2, pushConstantSize: sizeof(AddChannelBroadcastParams));
@@ -4130,6 +4141,7 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
         _conv2dPipeline?.Dispose();
         _conv2dImplicitGemmPipeline?.Dispose();
         _groupNormSiluPipeline?.Dispose();
+        _groupNormGpuPipeline?.Dispose();
         _addChannelBroadcastPipeline?.Dispose();
         _addRowBroadcastPipeline?.Dispose();
         _layerNormGpuPipeline?.Dispose();

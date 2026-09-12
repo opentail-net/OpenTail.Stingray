@@ -599,8 +599,151 @@ public sealed class SdxlUNet2DConditionModel : IDisposable
         return hOut;
     }
 
+    // Perf (2026-09-12, docs/067 Stage 3a): full GPU residency for SpatialTransformer, EXCEPT the
+    // attention math itself, which remains a deliberate, explicitly-labeled CPU island (download
+    // Q/K/V -> DiffusionOps.MultiHeadAttention -> re-upload). This isolates a real measurement:
+    // how much of this block's cost is the ~100 Linear-projection Upload/Download round-trips per
+    // call at the deepest (depth=10) blocks, versus the attention math itself. Probed once and
+    // cached, same convention as _unetResidencySupported.
+    private bool? _spatialTransformerResidencySupported;
+
+    private CoreTensor CpuAttentionIsland(IImageOpsBackend imageOps, CoreTensor qGpu, CoreTensor kGpu, CoreTensor vGpu, int qSeq, int kvSeq, int c, int nHeads)
+    {
+        // CPU ISLAND (docs/067 CPU-island discipline: TEMPORARY DIAGNOSTIC FALLBACK, not model
+        // logic or a performance bug) -- Stage 3b re-tests MultiHeadAttentionTiled inside this
+        // now-resident context; do not "fix" this by assuming the tiled shader wins here without
+        // re-measuring, per the plan's own findings from its two prior regressions.
+        var q = new float[qSeq * c];
+        var k = new float[kvSeq * c];
+        var v = new float[kvSeq * c];
+        imageOps.Download(qGpu, q);
+        imageOps.Download(kGpu, k);
+        imageOps.Download(vGpu, v);
+        var attnOut = DiffusionOps.MultiHeadAttention(q, k, v, qSeq, kvSeq, nHeads, HeadDim);
+        return imageOps.Upload(attnOut.AsSpan(), TensorShape.D1(attnOut.Length));
+    }
+
+    private CoreTensor SpatialTransformerGpu(IImageOpsBackend imageOps, string prefix, CoreTensor xGpu, CoreTensor contextGpu, int c, int depth, int h, int w)
+    {
+        int hw = h * w;
+        int nHeads = c / HeadDim;
+
+        var normW = GetGpuBias(imageOps, $"{prefix}.norm.weight", GetWeight($"{prefix}.norm.weight"));
+        var normB = GetGpuBias(imageOps, $"{prefix}.norm.bias", GetWeight($"{prefix}.norm.bias"));
+        // Plain GroupNorm, NO SiLU -- matches the CPU path's DiffusionOps.GroupNorm exactly.
+        // GroupNormSilu (used by ResBlock) is NOT usable here: it fuses an activation this block's
+        // pre-proj_in norm doesn't have in the real model.
+        var xNorm = imageOps.GroupNormGpu(xGpu, normW, normB, c, hw);
+
+        var xSeq = imageOps.PermuteChwToHwc(xNorm, c, hw);
+        imageOps.Free(xNorm);
+
+        var projIn = LinGpuTensor($"{prefix}.proj_in", xSeq, hw, c, c);
+        imageOps.Free(xSeq);
+        xSeq = projIn;
+
+        for (int d = 0; d < depth; d++)
+        {
+            string tb = $"{prefix}.transformer_blocks.{d}";
+
+            // 1. Self-attention
+            var saNormW = GetGpuBias(imageOps, $"{tb}.norm1.weight", GetWeight($"{tb}.norm1.weight"));
+            var saNormB = GetGpuBias(imageOps, $"{tb}.norm1.bias", GetWeight($"{tb}.norm1.bias"));
+            var saNorm = imageOps.LayerNormGpu(xSeq, saNormW, saNormB, hw, c);
+
+            var saQ = LinGpuTensor($"{tb}.attn1.to_q", saNorm, hw, c, c);
+            var saK = LinGpuTensor($"{tb}.attn1.to_k", saNorm, hw, c, c);
+            var saV = LinGpuTensor($"{tb}.attn1.to_v", saNorm, hw, c, c);
+            imageOps.Free(saNorm);
+
+            var saAttnOut = CpuAttentionIsland(imageOps, saQ, saK, saV, hw, hw, c, nHeads);
+            imageOps.Free(saQ); imageOps.Free(saK); imageOps.Free(saV);
+
+            var saProjOut = LinGpuTensor($"{tb}.attn1.to_out.0", saAttnOut, hw, c, c);
+            imageOps.Free(saAttnOut);
+            imageOps.AddInPlace(xSeq, saProjOut);
+            imageOps.Free(saProjOut);
+
+            // 2. Cross-attention to text context
+            var caNormW = GetGpuBias(imageOps, $"{tb}.norm2.weight", GetWeight($"{tb}.norm2.weight"));
+            var caNormB = GetGpuBias(imageOps, $"{tb}.norm2.bias", GetWeight($"{tb}.norm2.bias"));
+            var caNorm = imageOps.LayerNormGpu(xSeq, caNormW, caNormB, hw, c);
+
+            var caQ = LinGpuTensor($"{tb}.attn2.to_q", caNorm, hw, c, c);
+            imageOps.Free(caNorm);
+            var caK = LinGpuTensor($"{tb}.attn2.to_k", contextGpu, 77, ContextDim, c);
+            var caV = LinGpuTensor($"{tb}.attn2.to_v", contextGpu, 77, ContextDim, c);
+
+            var caAttnOut = CpuAttentionIsland(imageOps, caQ, caK, caV, hw, 77, c, nHeads);
+            imageOps.Free(caQ); imageOps.Free(caK); imageOps.Free(caV);
+
+            var caProjOut = LinGpuTensor($"{tb}.attn2.to_out.0", caAttnOut, hw, c, c);
+            imageOps.Free(caAttnOut);
+            imageOps.AddInPlace(xSeq, caProjOut);
+            imageOps.Free(caProjOut);
+
+            // 3. GEGLU FeedForward
+            var ffNormW = GetGpuBias(imageOps, $"{tb}.norm3.weight", GetWeight($"{tb}.norm3.weight"));
+            var ffNormB = GetGpuBias(imageOps, $"{tb}.norm3.bias", GetWeight($"{tb}.norm3.bias"));
+            var ffNorm = imageOps.LayerNormGpu(xSeq, ffNormW, ffNormB, hw, c);
+
+            int mlpDim = c * 4;
+            var ffH = LinGpuTensor($"{tb}.ff.net.0.proj", ffNorm, hw, c, mlpDim * 2);
+            imageOps.Free(ffNorm);
+            var ffGated = imageOps.GeGlu(ffH, hw, mlpDim);
+            imageOps.Free(ffH);
+
+            var ffOut = LinGpuTensor($"{tb}.ff.net.2", ffGated, hw, mlpDim, c);
+            imageOps.Free(ffGated);
+            imageOps.AddInPlace(xSeq, ffOut);
+            imageOps.Free(ffOut);
+        }
+
+        var projOut = LinGpuTensor($"{prefix}.proj_out", xSeq, hw, c, c);
+        imageOps.Free(xSeq);
+
+        var xSpatial = imageOps.PermuteHwcToChw(projOut, c, hw);
+        imageOps.Free(projOut);
+        imageOps.AddInPlace(xSpatial, xGpu);
+        return xSpatial;
+    }
+
     public float[] SpatialTransformer(string prefix, float[] x, float[] context, int c, int depth, int h, int w)
     {
+        if (_imageOps is not null && _spatialTransformerResidencySupported != false)
+        {
+            try
+            {
+                int hw0 = h * w;
+                var xGpu = _imageOps.Upload(x.AsSpan(0, c * hw0), TensorShape.D1(c * hw0));
+                var contextGpu = _imageOps.Upload(context.AsSpan(0, 77 * ContextDim), TensorShape.D1(77 * ContextDim));
+                CoreTensor resultGpu;
+                try
+                {
+                    resultGpu = SpatialTransformerGpu(_imageOps, prefix, xGpu, contextGpu, c, depth, h, w);
+                }
+                finally
+                {
+                    _imageOps.Free(xGpu);
+                    _imageOps.Free(contextGpu);
+                }
+                var result = new float[c * hw0];
+                try
+                {
+                    _imageOps.Download(resultGpu, result);
+                }
+                finally
+                {
+                    _imageOps.Free(resultGpu);
+                }
+                _spatialTransformerResidencySupported = true;
+                return result;
+            }
+            catch (NotSupportedException)
+            {
+                _spatialTransformerResidencySupported = false;
+            }
+        }
         int hw = h * w;
         int nHeads = c / HeadDim;
 
