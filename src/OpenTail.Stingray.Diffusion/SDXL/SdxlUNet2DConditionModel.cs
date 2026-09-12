@@ -202,29 +202,31 @@ public sealed class SdxlUNet2DConditionModel : IDisposable
     /// (+skip). Every intermediate stays a GPU Tensor; only the block's input/output cross the
     /// CPU boundary (both already do, via the caller's Upload/Download in <see cref="ResBlock"/>).
     /// </summary>
-    private CoreTensor ResBlockGpu(IImageOpsBackend imageOps, string prefix, CoreTensor xGpu, float[] tEmb, int inCh, int h, int w, int outCh)
+    /// <summary>Uploads and SiLU-activates the shared timestep embedding once, for reuse across
+    /// every ResBlockGpu call in one Forward() pass -- fixes a real crash (see docs/067's Stage 5
+    /// entry in PerformanceLeague.md): the previous per-call Upload() inside ResBlockGpu was an
+    /// unavoidable, un-cacheable per-call upload (unlike weight/bias caches), so it always ran
+    /// mid-batch and always crashed once Stage 5 batching was enabled. Uploading once per Forward()
+    /// call, outside any batch, removes both the crash AND ~17 redundant CPU SiLU computations +
+    /// GPU uploads per denoising step.</summary>
+    private CoreTensor UploadSiluTEmb(IImageOpsBackend imageOps, float[] tEmb)
+    {
+        var tEmbAct = (float[])tEmb.Clone();
+        DiffusionOps.SiluInPlace(tEmbAct);
+        return imageOps.Upload(tEmbAct.AsSpan(), TensorShape.D1(tEmbAct.Length));
+    }
+
+    private CoreTensor ResBlockGpu(IImageOpsBackend imageOps, string prefix, CoreTensor xGpu, CoreTensor tEmbGpu, int inCh, int h, int w, int outCh)
     {
         int hw = h * w;
         var t1 = GroupNormSiluGpuTensor(imageOps, $"{prefix}.in_layers.0", xGpu, inCh, hw);
         var t2 = ConvGpuTensor(imageOps, $"{prefix}.in_layers.2", t1, inCh, h, w, outCh, 3);
         imageOps.Free(t1);
 
-        // Timestep-embedding injection: SiLU(tEmb) -> Lin -> broadcast-add across every spatial
-        // position of t2. tEmb is a single row [1, TimeEmbedDim]; uploaded fresh per ResBlock call
-        // (not yet cached across blocks within one step -- a real, later perf opportunity, not a
-        // correctness concern for this stage).
-        var tEmbAct = (float[])tEmb.Clone();
-        DiffusionOps.SiluInPlace(tEmbAct);
-        var tEmbGpu = imageOps.Upload(tEmbAct.AsSpan(), TensorShape.D1(tEmbAct.Length));
-        CoreTensor tProjGpu;
-        try
-        {
-            tProjGpu = LinGpuTensor($"{prefix}.emb_layers.1", tEmbGpu, 1, TimeEmbedDim, outCh);
-        }
-        finally
-        {
-            imageOps.Free(tEmbGpu);
-        }
+        // Timestep-embedding injection: Lin(already-SiLU'd tEmbGpu) -> broadcast-add across every
+        // spatial position of t2. tEmbGpu is uploaded once per Forward() call by the caller (see
+        // UploadSiluTEmb), not re-uploaded here.
+        var tProjGpu = LinGpuTensor($"{prefix}.emb_layers.1", tEmbGpu, 1, TimeEmbedDim, outCh);
         imageOps.AddChannelBroadcastInPlace(t2, tProjGpu, outCh, hw);
         imageOps.Free(tProjGpu);
 
@@ -524,14 +526,16 @@ public sealed class SdxlUNet2DConditionModel : IDisposable
             try
             {
                 var xGpu = _imageOps.Upload(x.AsSpan(0, inC * h * w), TensorShape.D1(inC * h * w));
+                var tEmbGpu = UploadSiluTEmb(_imageOps, tEmb);
                 CoreTensor resultGpu;
                 try
                 {
-                    resultGpu = ResBlockGpu(_imageOps, prefix, xGpu, tEmb, inC, h, w, outC);
+                    resultGpu = ResBlockGpu(_imageOps, prefix, xGpu, tEmbGpu, inC, h, w, outC);
                 }
                 finally
                 {
                     _imageOps.Free(xGpu);
+                    _imageOps.Free(tEmbGpu);
                 }
                 var result = new float[outC * h * w];
                 try
@@ -932,6 +936,7 @@ public sealed class SdxlUNet2DConditionModel : IDisposable
     private CoreTensor ForwardGpu(IImageOpsBackend imageOps, float[] x, float[] tEmb, float[] context, int latH, int latW)
     {
         var contextGpu = imageOps.Upload(context.AsSpan(0, 77 * ContextDim), TensorShape.D1(77 * ContextDim));
+        var tEmbGpu = UploadSiluTEmb(imageOps, tEmb);
         var savedInputs = new List<CoreTensor>(9);
         try
         {
@@ -941,21 +946,21 @@ public sealed class SdxlUNet2DConditionModel : IDisposable
             imageOps.Free(xGpu);
             savedInputs.Add(cur);
 
-            cur = ResBlockGpu(imageOps, "input_blocks.1.0", cur, tEmb, 320, h, w, 320);
+            cur = ResBlockGpu(imageOps, "input_blocks.1.0", cur, tEmbGpu, 320, h, w, 320);
             savedInputs.Add(cur);
 
-            cur = ResBlockGpu(imageOps, "input_blocks.2.0", cur, tEmb, 320, h, w, 320);
+            cur = ResBlockGpu(imageOps, "input_blocks.2.0", cur, tEmbGpu, 320, h, w, 320);
             savedInputs.Add(cur);
 
             cur = StridedConvCpuIsland(imageOps, "input_blocks.3.0.op", cur, 320, h, w, 320, 3, stride: 2);
             h /= 2; w /= 2;
             savedInputs.Add(cur);
 
-            cur = ResBlockGpu(imageOps, "input_blocks.4.0", cur, tEmb, 320, h, w, 640);
+            cur = ResBlockGpu(imageOps, "input_blocks.4.0", cur, tEmbGpu, 320, h, w, 640);
             cur = SpatialTransformerGpu(imageOps, "input_blocks.4.1", cur, contextGpu, 640, depth: 2, h, w);
             savedInputs.Add(cur);
 
-            cur = ResBlockGpu(imageOps, "input_blocks.5.0", cur, tEmb, 640, h, w, 640);
+            cur = ResBlockGpu(imageOps, "input_blocks.5.0", cur, tEmbGpu, 640, h, w, 640);
             cur = SpatialTransformerGpu(imageOps, "input_blocks.5.1", cur, contextGpu, 640, depth: 2, h, w);
             savedInputs.Add(cur);
 
@@ -963,17 +968,17 @@ public sealed class SdxlUNet2DConditionModel : IDisposable
             h /= 2; w /= 2;
             savedInputs.Add(cur);
 
-            cur = ResBlockGpu(imageOps, "input_blocks.7.0", cur, tEmb, 640, h, w, 1280);
+            cur = ResBlockGpu(imageOps, "input_blocks.7.0", cur, tEmbGpu, 640, h, w, 1280);
             cur = SpatialTransformerGpu(imageOps, "input_blocks.7.1", cur, contextGpu, 1280, depth: 10, h, w);
             savedInputs.Add(cur);
 
-            cur = ResBlockGpu(imageOps, "input_blocks.8.0", cur, tEmb, 1280, h, w, 1280);
+            cur = ResBlockGpu(imageOps, "input_blocks.8.0", cur, tEmbGpu, 1280, h, w, 1280);
             cur = SpatialTransformerGpu(imageOps, "input_blocks.8.1", cur, contextGpu, 1280, depth: 10, h, w);
             savedInputs.Add(cur);
 
-            cur = ResBlockGpu(imageOps, "middle_block.0", cur, tEmb, 1280, h, w, 1280);
+            cur = ResBlockGpu(imageOps, "middle_block.0", cur, tEmbGpu, 1280, h, w, 1280);
             cur = SpatialTransformerGpu(imageOps, "middle_block.1", cur, contextGpu, 1280, depth: 10, h, w);
-            cur = ResBlockGpu(imageOps, "middle_block.2", cur, tEmb, 1280, h, w, 1280);
+            cur = ResBlockGpu(imageOps, "middle_block.2", cur, tEmbGpu, 1280, h, w, 1280);
 
             // Each skip is freed immediately after its concat consumes it (docs/067 Stage 4 memory
             // discipline) rather than holding all 9 resident for the whole pass.
@@ -987,15 +992,15 @@ public sealed class SdxlUNet2DConditionModel : IDisposable
             }
 
             cur = CatAndFreeSkip(cur, 8, 1280, 1280);
-            cur = ResBlockGpu(imageOps, "output_blocks.0.0", cur, tEmb, 2560, h, w, 1280);
+            cur = ResBlockGpu(imageOps, "output_blocks.0.0", cur, tEmbGpu, 2560, h, w, 1280);
             cur = SpatialTransformerGpu(imageOps, "output_blocks.0.1", cur, contextGpu, 1280, depth: 10, h, w);
 
             cur = CatAndFreeSkip(cur, 7, 1280, 1280);
-            cur = ResBlockGpu(imageOps, "output_blocks.1.0", cur, tEmb, 2560, h, w, 1280);
+            cur = ResBlockGpu(imageOps, "output_blocks.1.0", cur, tEmbGpu, 2560, h, w, 1280);
             cur = SpatialTransformerGpu(imageOps, "output_blocks.1.1", cur, contextGpu, 1280, depth: 10, h, w);
 
             cur = CatAndFreeSkip(cur, 6, 1280, 640);
-            cur = ResBlockGpu(imageOps, "output_blocks.2.0", cur, tEmb, 1920, h, w, 1280);
+            cur = ResBlockGpu(imageOps, "output_blocks.2.0", cur, tEmbGpu, 1920, h, w, 1280);
             cur = SpatialTransformerGpu(imageOps, "output_blocks.2.1", cur, contextGpu, 1280, depth: 10, h, w);
             var upsampled2 = imageOps.Upsample2xGpu(cur, 1280, h, w);
             imageOps.Free(cur);
@@ -1004,15 +1009,15 @@ public sealed class SdxlUNet2DConditionModel : IDisposable
             imageOps.Free(upsampled2);
 
             cur = CatAndFreeSkip(cur, 5, 1280, 640);
-            cur = ResBlockGpu(imageOps, "output_blocks.3.0", cur, tEmb, 1920, h, w, 640);
+            cur = ResBlockGpu(imageOps, "output_blocks.3.0", cur, tEmbGpu, 1920, h, w, 640);
             cur = SpatialTransformerGpu(imageOps, "output_blocks.3.1", cur, contextGpu, 640, depth: 2, h, w);
 
             cur = CatAndFreeSkip(cur, 4, 640, 640);
-            cur = ResBlockGpu(imageOps, "output_blocks.4.0", cur, tEmb, 1280, h, w, 640);
+            cur = ResBlockGpu(imageOps, "output_blocks.4.0", cur, tEmbGpu, 1280, h, w, 640);
             cur = SpatialTransformerGpu(imageOps, "output_blocks.4.1", cur, contextGpu, 640, depth: 2, h, w);
 
             cur = CatAndFreeSkip(cur, 3, 640, 320);
-            cur = ResBlockGpu(imageOps, "output_blocks.5.0", cur, tEmb, 960, h, w, 640);
+            cur = ResBlockGpu(imageOps, "output_blocks.5.0", cur, tEmbGpu, 960, h, w, 640);
             cur = SpatialTransformerGpu(imageOps, "output_blocks.5.1", cur, contextGpu, 640, depth: 2, h, w);
             var upsampled5 = imageOps.Upsample2xGpu(cur, 640, h, w);
             imageOps.Free(cur);
@@ -1021,13 +1026,13 @@ public sealed class SdxlUNet2DConditionModel : IDisposable
             imageOps.Free(upsampled5);
 
             cur = CatAndFreeSkip(cur, 2, 640, 320);
-            cur = ResBlockGpu(imageOps, "output_blocks.6.0", cur, tEmb, 960, h, w, 320);
+            cur = ResBlockGpu(imageOps, "output_blocks.6.0", cur, tEmbGpu, 960, h, w, 320);
 
             cur = CatAndFreeSkip(cur, 1, 320, 320);
-            cur = ResBlockGpu(imageOps, "output_blocks.7.0", cur, tEmb, 640, h, w, 320);
+            cur = ResBlockGpu(imageOps, "output_blocks.7.0", cur, tEmbGpu, 640, h, w, 320);
 
             cur = CatAndFreeSkip(cur, 0, 320, 320);
-            cur = ResBlockGpu(imageOps, "output_blocks.8.0", cur, tEmb, 640, h, w, 320);
+            cur = ResBlockGpu(imageOps, "output_blocks.8.0", cur, tEmbGpu, 640, h, w, 320);
 
             var finalNorm = GroupNormSiluGpuTensor(imageOps, "out.0", cur, 320, h * w);
             imageOps.Free(cur);
@@ -1038,6 +1043,7 @@ public sealed class SdxlUNet2DConditionModel : IDisposable
         finally
         {
             imageOps.Free(contextGpu);
+            imageOps.Free(tEmbGpu);
         }
     }
 

@@ -221,16 +221,30 @@ buffer that hasn't been ended — and the driver correctly errors out.
 the next stage): `SdxlUNet2DConditionModel.cs` restored via `git checkout` to Stage 4's committed
 state, rebuilt and re-confirmed working before moving on.
 
-**Real fix path, not yet attempted**: pre-warm every GPU weight/bias tensor this checkpoint's
-`ForwardGpu` will need (walk every `Lin`/`Conv`/norm call site's weight name once, outside any
-`BeginBatch` session) before the *first* batched segment ever starts, so every cache lookup inside
-a batch is guaranteed a hit. This could be a dedicated warm-up pass at model-construction time, or
-(simpler) letting the first real `Forward()` call run entirely through Stage 4's already-working
-per-op-immediate path (no batching) to populate every cache as a side effect, then switching to
-Stage 5's batched path from the second `Forward()` call onward within the same process (SDXL-Turbo
-always calls `Forward()` multiple times per generation, so this only costs one unbatched pass, not
-one per run). Not implemented this pass — flagged as the next concrete step if Stage 5 is
-revisited, rather than left as a vague "handle caching better."
+**Follow-up attempt, same day — fixed the crash, found a DIFFERENT real regression.** The
+"warm cache" theory above was incomplete: the actual unconditional-per-call `Upload()` causing the
+crash was `ResBlockGpu`'s timestep-embedding upload (`tEmb` is real per-step activation data, not
+a cacheable weight — it was being re-uploaded fresh on every one of the ~17 `ResBlockGpu` calls,
+every single time, forever, not just on a cold cache). Fixed properly: `UploadSiluTEmb` now
+uploads and SiLU-activates the shared `tEmb` ONCE per `ForwardGpu` call (outside any batch), and
+`ResBlockGpu` takes the already-resident `Tensor` instead of re-uploading raw `float[]` each call.
+This genuinely fixed the crash — batching then ran to completion.
+
+**But real measurement then showed batching itself is a regression, not a win, on this iGPU**:
+`submitWait` ballooned from ~1s to **23.9s** (an ~25x increase), peak GPU memory rose from 6.67GB
+to 8.35GB (deferred frees hold far more simultaneously-live tensors per large batched segment than
+the per-op-immediate path ever did), and total wall time was slightly *worse* than Stage 4
+(79.1s vs 77.1s) despite dispatch count dropping (1974→1919). **Reverted the batching entirely**
+(kept the real, correct `tEmbGpu`-once-per-call fix, which is a genuine simplification worth
+keeping on its own — verified pixel-identical, dispatch count 1974→1910 from removing 16 redundant
+uploads — but measured within run-to-run noise for wall time, not a clear win by itself either).
+
+**Conclusion**: Stage 5, as designed (segment-level `BeginBatch`/`EndBatch`), is a confirmed real
+negative result on this hardware, not just an implementation bug — large batched command-buffer
+submissions appear to cost more in submit/wait latency and memory pressure than they save in
+per-dispatch overhead, on this specific iGPU. This does not necessarily generalize to a discrete
+GPU. Not pursued further this pass; `_unetForwardResidencySupported`'s Stage 4 (per-op-immediate,
+fully cross-block-resident) path remains the shipped state.
 
 ## Stage 5 — One recording session per denoising step (original stage description, not yet re-attempted)
 
