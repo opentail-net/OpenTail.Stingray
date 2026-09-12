@@ -2310,3 +2310,23 @@ severity.
 
 See `PerformanceLeague.md` (search each bug's name/symptom) for the exact repro commands, dated
 findings, and any partial data already gathered.
+
+- **11 downloaded TTS/ASR checkpoints found with ZERO wiring in this codebase (2026-09-12).**
+  While sweeping `/f/_models` for anything new to benchmark, found a batch of checkpoints
+  (timestamped 2026-09-06 through 2026-09-08, from an earlier download pass that was apparently
+  never followed up on) with no corresponding architecture support anywhere in
+  `src/OpenTail.Stingray.Audio/`: `VibeVoice-ASR-GGUF`, `VibeVoice-1.5B-GGUF` +
+  `vibevoice-7b-q8_0.gguf`, `Higgs-Audio-v3-TTS-4B-GGUF`, `MOSS-TTS-Nano-100M-GGUF`,
+  `PersonaPlex-GGUF`, `VoxCPM2-GGUF`, `Citrinet-ASR-GGUF`, `NeuTTS-2E-GGUF`,
+  `nemotron-3.5-asr-streaming-0.6b.q8_0.gguf`, `voxtral-mini-realtime/model.safetensors`
+  (~8.9GB), `fun-asr-nano/model.safetensors` (~1.7GB, HF-format, plus a separate
+  `fun-asr-nano-hf-tokenizer/` directory), `omnivoice/model.safetensors` (~2.4GB, HF-format).
+  Confirmed via `grep -rli` across every family name/spelling variant against
+  `src/OpenTail.Stingray.Audio/*.cs` — 0 matches for all 11. This is real, new-architecture
+  porting work (tokenizer + model + forward pass per architecture, the same scope as any other
+  from-scratch model admission in this project), not a quick fix or a benchmarking task — not
+  attempted this pass. Worth scoping as an explicit future porting task if the user wants this
+  backlog picked up; several of these are HF safetensors format (`voxtral-mini-realtime`,
+  `fun-asr-nano`, `omnivoice`) rather than this project's usual GGUF-first convention, which may
+  need a different loading path than the existing `GgufWeightLoader`/`SafetensorsLoader` pair
+  already supports for LLM/diffusion checkpoints.
