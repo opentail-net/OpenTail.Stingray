@@ -560,6 +560,22 @@ working correctly for this checkpoint.
 > **Voxtral-Mini-4B is 50x slower than its C++ reference** — the worst ratio anywhere in this doc. Transcript is correct (matches the reference text, modulo the model's own real streaming control markers), so this is a genuine performance gap, not a correctness bug: the 4B dense text decoder currently only has raw building blocks (`VoxtralTextDecoder.Step`/`PrefillWithCache`) wired up for testing, no CLI, and almost certainly no batched/optimized decode path — unlike Whisper, which is a mature, tuned pipeline. Worth a dedicated look given the ratio.
 > Harness: `scripts/bench-audio.ps1` (`tests/OpenTail.Stingray.Tests.Audio/WhisperFullPipelinePerfBenchTests.cs`); Voxtral timing via a new temporary `VoxtralPerfBaselineDebugTest.cs`.
 
+**2026-09-13: two more real C++-comparison attempts, both genuinely blocked (not forced):**
+- **`parakeet_tdt` vs. this project's `NVIDIA NeMo Parakeet-CTC 0.6B` row above**: NOT the same
+  model. `examples/audio.cpp`'s `parakeet_tdt` family requires a `processor_config.json` that
+  simply doesn't exist in the real upstream `nvidia/parakeet-ctc-0.6b` repo (confirmed by fetching
+  it directly — 404) — TDT (token-and-duration transducer) and CTC are genuinely different decoder
+  heads on the Parakeet encoder, not interchangeable checkpoints. No real comparison possible for
+  our CTC checkpoint via this family.
+- **`fun_asr_nano`**: real schema incompatibility. This project already has the full HF checkpoint
+  downloaded (`/f/_models/fun-asr-nano/`, part of the earlier 11-checkpoint discovery), and after
+  fetching the two files it was still missing (`processor_config.json`/`tokenizer.json`, both from
+  the real `FunAudioLLM/Fun-ASR-Nano-2512-hf` repo), `audio.cpp`'s loader then failed with
+  `missing required json key: encoder_config` — checked the real upstream repo's own `config.json`
+  directly, and it uses `audio_config`, not `encoder_config`, at all. `audio.cpp`'s model spec
+  expects a config schema the actual published checkpoint doesn't have. Not fixable from this side;
+  documented rather than forced.
+
 ---
 
 ## Embeddings (CPU)
