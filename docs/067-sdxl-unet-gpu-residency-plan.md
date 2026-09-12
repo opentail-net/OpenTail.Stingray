@@ -197,7 +197,42 @@ before making the whole UNet resident:
 UMA memory. Prefer explicitly freeing each skip tensor immediately after its corresponding
 concatenation consumes it, rather than holding all of them for the whole pass.
 
-## Stage 5 — One recording session per denoising step (renumbered)
+## Stage 5 — One recording session per denoising step — ATTEMPTED 2026-09-12, REVERTED (real negative result)
+
+**Real failure, not yet solved.** First attempt: wrapped each CPU-island-bounded segment of
+`ForwardGpu` in `imageOps.BeginBatch()`/`EndBatch()` (3 segments, split at the 2 stride=2
+downsample-conv CPU islands) — `DispatchOrRecord` already auto-inserts a barrier after every
+dispatch when batching (`_deferringFrees`), so no manual `BatchBarrier()` calls were needed for the
+compute-dispatch chaining itself.
+
+**Real crash on the very first real run**: `Error: [-13] ErrorUnknown - Vulkan error occured`,
+right at the start of the first denoise step. Root cause (not yet fixed): `GetGpuWeight`/
+`GetGpuBias`/`GetNativeConvWeights` cache GPU weight/bias tensors, but **upload them lazily on
+first use** — a real, foreseen risk flagged before implementing (see the code comment removed with
+this revert): on a cold cache (every real generation's first denoising step, since a fresh process
+has never uploaded any of this checkpoint's weights yet), the FIRST call to essentially every
+`Lin`/`Conv`/norm helper inside the batched region hits a cache miss and calls `Upload()` — which
+internally does its own immediate `vkQueueSubmit`+fence-wait via `SubmitAndWait`. Calling that
+while `_transferCmd` is still mid-recording (between `BeginBatch()`'s `vkBeginCommandBuffer` and
+the matching `EndBatch()`'s `vkEndCommandBuffer`) is invalid Vulkan usage — submitting a command
+buffer that hasn't been ended — and the driver correctly errors out.
+
+**Reverted immediately, per this plan's own discipline** (do not silently absorb a failure into
+the next stage): `SdxlUNet2DConditionModel.cs` restored via `git checkout` to Stage 4's committed
+state, rebuilt and re-confirmed working before moving on.
+
+**Real fix path, not yet attempted**: pre-warm every GPU weight/bias tensor this checkpoint's
+`ForwardGpu` will need (walk every `Lin`/`Conv`/norm call site's weight name once, outside any
+`BeginBatch` session) before the *first* batched segment ever starts, so every cache lookup inside
+a batch is guaranteed a hit. This could be a dedicated warm-up pass at model-construction time, or
+(simpler) letting the first real `Forward()` call run entirely through Stage 4's already-working
+per-op-immediate path (no batching) to populate every cache as a side effect, then switching to
+Stage 5's batched path from the second `Forward()` call onward within the same process (SDXL-Turbo
+always calls `Forward()` multiple times per generation, so this only costs one unbatched pass, not
+one per run). Not implemented this pass — flagged as the next concrete step if Stage 5 is
+revisited, rather than left as a vague "handle caching better."
+
+## Stage 5 — One recording session per denoising step (original stage description, not yet re-attempted)
 
 Wrap as much of the resident forward pass as Stages 1-4 achieved into one `BeginRecord()`/
 `EndRecordAndSubmit()` session, per the corrected success metric above (minimize necessary
