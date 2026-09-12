@@ -99,6 +99,8 @@ public sealed class JinjaChatTemplate
     private sealed record IndexExpr(IExpr Obj, IExpr Idx) : IExpr;
     private sealed record SliceExpr(IExpr Obj, IExpr? Start, IExpr? Stop, IExpr? Step) : IExpr;
     private sealed record ListExpr(List<IExpr> Items) : IExpr;
+
+    private sealed record DictExpr(List<(IExpr Key, IExpr Value)> Entries) : IExpr;
     private sealed record BinExpr(string Op, IExpr L, IExpr R) : IExpr;
     private sealed record TernaryExpr(IExpr Cond, IExpr Then, IExpr Otherwise) : IExpr;
     private sealed record UnaryExpr(string Op, IExpr Operand) : IExpr;
@@ -809,6 +811,16 @@ public sealed class JinjaChatTemplate
                 return new ListExpr(ParseArgList(']'));
             }
 
+            // Dict display: {key: value, ...}. Only in PRIMARY position — this project has no
+            // set-literal/block-statement use of a bare '{' in an expression position, so no
+            // ambiguity with the surrounding {{ }}/{% %} template delimiters (those are stripped
+            // by the tokenizer before ParseExpr ever sees this string).
+            if (c == '{')
+            {
+                Pos++;
+                return new DictExpr(ParseDictEntries());
+            }
+
             if (c is '\'' or '"')
                 return new LiteralExpr(ReadString());
 
@@ -922,6 +934,37 @@ public sealed class JinjaChatTemplate
             }
             ExpectChar(close);
             return args;
+        }
+
+        /// <summary>
+        /// Dict-literal entries: <c>key: value, key2: value2, ...</c> up to the closing '}'.
+        /// Keys are usually string/bareword literals (EXAONE's role-map template: <c>{'user': ...}</c>)
+        /// but any expression is accepted before the ':' since Jinja allows arbitrary key exprs.
+        /// Same no-progress guard as <see cref="ParseArgList"/>.
+        /// </summary>
+        private List<(IExpr, IExpr)> ParseDictEntries()
+        {
+            var entries = new List<(IExpr, IExpr)>();
+            Skip();
+            while (Pos < _s.Length && _s[Pos] != '}')
+            {
+                int iterStart = Pos;
+                var key = ParseOr();
+                Skip();
+                ExpectChar(':');
+                var value = ParseOr();
+                entries.Add((key, value));
+                Skip();
+                if (Pos < _s.Length && _s[Pos] == ',') { Pos++; Skip(); }
+
+                if (Pos == iterStart)
+                    throw new FormatException(
+                        $"Jinja dict literal parser made no progress at position {Pos} " +
+                        $"(near \"{_s[Pos..Math.Min(_s.Length, Pos + 30)]}\") — malformed or " +
+                        "unsupported syntax, refusing to loop forever.");
+            }
+            ExpectChar('}');
+            return entries;
         }
 
         // ── Helpers ───────────────────────────────────────────────────────
@@ -1098,6 +1141,14 @@ public sealed class JinjaChatTemplate
                 var items = new List<object?>(le.Items.Count);
                 foreach (var it in le.Items) items.Add(Eval(it, ctx));
                 return items;
+            }
+            // Same fresh-materialisation reasoning as ListExpr above.
+            case DictExpr de:
+            {
+                var dict = new Dictionary<string, object?>(de.Entries.Count);
+                foreach (var (dk, dv) in de.Entries)
+                    dict[Stringify(Eval(dk, ctx))] = Eval(dv, ctx);
+                return dict;
             }
             case NameExpr n:    return ctx.TryGetValue(n.Name, out var v) ? v : null;
             case AttrExpr a:    return GetAttr(Eval(a.Obj, ctx), a.Attr);
@@ -1637,6 +1688,10 @@ public sealed class JinjaChatTemplate
     {
         string h          => h.Contains(Stringify(needle), StringComparison.Ordinal),
         List<object?> lst => lst.Any(item => EqValues(item, needle)),
+        // Python/Jinja `x in dict` tests dict KEYS, not values — needed by EXAONE-4.5's real
+        // template (`role not in role_indicators`, a dict literal keyed by role name).
+        Dictionary<string, object?> d           => needle is string nk && d.ContainsKey(nk),
+        IReadOnlyDictionary<string, object?> rd  => needle is string nk2 && rd.ContainsKey(nk2),
         _                 => false
     };
 
