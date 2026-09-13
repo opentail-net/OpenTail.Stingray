@@ -130,6 +130,21 @@ public static class ShaderCompiler
             if (File.Exists(candidate)) return candidate;
         }
 
+        if (Directory.Exists(@"C:\VulkanSDK"))
+        {
+            try
+            {
+                foreach (var verDir in Directory.GetDirectories(@"C:\VulkanSDK"))
+                {
+                    var candidate = Path.Combine(verDir, "Bin", "glslc.exe");
+                    if (File.Exists(candidate)) return candidate;
+                    candidate = Path.Combine(verDir, "glslc.exe");
+                    if (File.Exists(candidate)) return candidate;
+                }
+            }
+            catch { }
+        }
+
         // Check relative in-repo fallback binary — walk up to the filesystem root, not a
         // fixed depth, since the test binary's output directory can be arbitrarily nested.
         var searchRoots = new[] { AppDomain.CurrentDomain.BaseDirectory, Directory.GetCurrentDirectory() };

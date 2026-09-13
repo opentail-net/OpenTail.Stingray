@@ -27,11 +27,21 @@ public sealed unsafe class GpuBuffer : IDisposable
     /// <summary>
     /// Create a device-local buffer (VRAM, not host-visible).
     /// Used for weight storage and compute scratch buffers.
+    /// Falls back to host-visible / host-coherent memory on unified-memory GPUs (APUs/iGPUs)
+    /// or when dedicated VRAM is exhausted.
     /// </summary>
     public static GpuBuffer CreateDeviceLocal(VulkanBackend backend, ulong size, VkBufferUsageFlags usage)
     {
-        return Create(backend, size, usage | VkBufferUsageFlags.TransferDst,
-            VkMemoryPropertyFlags.DeviceLocal);
+        try
+        {
+            return Create(backend, size, usage | VkBufferUsageFlags.TransferDst,
+                VkMemoryPropertyFlags.DeviceLocal);
+        }
+        catch
+        {
+            return Create(backend, size, usage | VkBufferUsageFlags.TransferDst,
+                VkMemoryPropertyFlags.HostVisible | VkMemoryPropertyFlags.HostCoherent);
+        }
     }
 
     /// <summary>
@@ -118,10 +128,21 @@ public sealed unsafe class GpuBuffer : IDisposable
             memoryTypeIndex = backend.FindMemoryType(memReqs.memoryTypeBits, memoryFlags),
         };
         VkDeviceMemory memory;
-        vkd.vkAllocateMemory(&allocInfo, null, &memory).CheckResult();
+        var allocRes = vkd.vkAllocateMemory(&allocInfo, null, &memory);
+        if (allocRes != VkResult.Success)
+        {
+            vkd.vkDestroyBuffer(buffer, null);
+            allocRes.CheckResult();
+        }
 
         // Bind buffer to memory
-        vkd.vkBindBufferMemory(buffer, memory, 0).CheckResult();
+        var bindRes = vkd.vkBindBufferMemory(buffer, memory, 0);
+        if (bindRes != VkResult.Success)
+        {
+            vkd.vkDestroyBuffer(buffer, null);
+            vkd.vkFreeMemory(memory, null);
+            bindRes.CheckResult();
+        }
 
         bool hostVisible = (memoryFlags & VkMemoryPropertyFlags.HostVisible) != 0;
         return new GpuBuffer(vkd, buffer, memory, size, hostVisible);

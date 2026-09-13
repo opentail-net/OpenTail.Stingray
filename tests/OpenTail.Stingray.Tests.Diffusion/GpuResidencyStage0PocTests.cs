@@ -88,4 +88,54 @@ public sealed class GpuResidencyStage0PocTests
             backend.Free(zGpu);
         }
     }
+
+    [Fact]
+    public void SgemmF16_MatchesCpuReference()
+    {
+        const int M = 1, K = 128, N = 64;
+        var rng = new Random(777);
+        float[] x = new float[M * K];
+        float[] w = new float[N * K];
+        Half[] wHalf = new Half[N * K];
+        for (int i = 0; i < x.Length; i++) x[i] = (float)(rng.NextDouble() * 2 - 1);
+        for (int i = 0; i < w.Length; i++)
+        {
+            w[i] = (float)(rng.NextDouble() * 2 - 1);
+            wHalf[i] = (Half)w[i];
+        }
+
+        float[] cRef = new float[M * N];
+        for (int m = 0; m < M; m++)
+            for (int n = 0; n < N; n++)
+            {
+                float acc = 0f;
+                for (int k = 0; k < K; k++) acc += x[m * K + k] * (float)wHalf[n * K + k];
+                cRef[m * N + n] = acc;
+            }
+
+        using var backend = new VulkanBackend();
+        var xGpu = backend.Upload(x, TensorShape.D2(M, K));
+        var wGpu = backend.UploadHalf(wHalf, TensorShape.D2(N, K));
+        var cGpu = backend.Allocate(TensorShape.D2(M, N));
+
+        try
+        {
+            backend.Sgemm(cGpu, xGpu, wGpu, M, K, N);
+
+            var cResult = new float[M * N];
+            backend.Download(cGpu, cResult);
+
+            for (int i = 0; i < cResult.Length; i++)
+            {
+                Assert.True(Math.Abs(cResult[i] - cRef[i]) < 1e-2f,
+                    $"Mismatch at {i}: ref={cRef[i]}, gpu={cResult[i]}");
+            }
+        }
+        finally
+        {
+            backend.Free(xGpu);
+            backend.Free(wGpu);
+            backend.Free(cGpu);
+        }
+    }
 }

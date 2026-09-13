@@ -412,28 +412,56 @@ public sealed class ImageCommand : Command<ImageCommand.Settings>
 
     private static int RunFlux(Settings s, string modelPath, int deviceIndex, bool deviceNone)
     {
-        if (!RequireFile(s.VaePath,           "--vae",            "ae.safetensors"))        return 1;
-        if (!RequireFile(s.ClipLPath,         "--clip-l",         "clip_l.safetensors"))     return 1;
-        if (!RequireFile(s.ClipTokenizerPath, "--clip-tokenizer", "tokenizer_clip.json"))    return 1;
-        if (!RequireFile(s.T5XXLPath,         "--t5xxl",          "t5xxl_fp16.safetensors")) return 1;
-        if (!RequireFile(s.T5TokenizerPath,   "--t5-tokenizer",   "tokenizer_t5.json"))      return 1;
+        string? vaePath           = s.VaePath           ?? ResolveFluxVae();
+        string? clipLPath         = s.ClipLPath         ?? ResolveFluxClipL();
+        string? clipTokenizerPath = s.ClipTokenizerPath ?? ResolveFluxClipTokenizer();
+        string? t5XXLPath         = s.T5XXLPath         ?? ResolveFluxT5XXL();
+        string? t5TokenizerPath   = s.T5TokenizerPath   ?? ResolveFluxT5Tokenizer();
+
+        if (!RequireFile(vaePath,           "--vae",            "models/flux1-schnell/ae.safetensors"))        return 1;
+        if (!RequireFile(clipLPath,         "--clip-l",         "models/flux1-schnell/clip_l.safetensors"))     return 1;
+        if (!RequireFile(clipTokenizerPath, "--clip-tokenizer", "models/flux1-schnell/tokenizer_clip/tokenizer.json")) return 1;
+        if (!RequireFile(t5XXLPath,         "--t5xxl",          "models/flux1-schnell/t5xxl_fp8_e4m3fn.safetensors")) return 1;
+        if (!RequireFile(t5TokenizerPath,   "--t5-tokenizer",   "models/flux1-schnell/tokenizer_t5/tokenizer.json")) return 1;
 
         string output = s.OutputPath ?? "output.png";
         int steps     = s.Steps > 0 ? s.Steps : IsDistilled(modelPath) ? 4 : 20;
         float cfg     = s.CfgScale >= 0f ? s.CfgScale : 1.0f;
 
+        string backendChoice = (s.Backend ?? "auto").ToLowerInvariant();
+        if (deviceNone && (backendChoice is "cuda" or "vulkan"))
+            AnsiConsole.MarkupLine("[yellow]Note:[/] --device none overrides --backend; running on CPU.");
+        bool forceCpu    = s.NGpuLayers == 0 || backendChoice == "cpu" || deviceNone;
+        bool forceCuda   = backendChoice == "cuda";
+        bool forceVulkan = backendChoice == "vulkan";
+
         IComputeBackend? gpu = null;
-        if (!deviceNone && deviceIndex >= 0)
+        if (!forceCpu)
         {
-            try { gpu = new VulkanBackend(deviceIndex); }
-            catch (Exception ex) { AnsiConsole.MarkupLine($"[yellow]Note:[/] Vulkan GPU init failed ({Markup.Escape(ex.Message)}); falling back to CPU."); }
+            if (forceCuda || (!forceVulkan && CudaBackend.IsAvailable()))
+            {
+                gpu = CudaBackend.Create();
+            }
+            else
+            {
+                try
+                {
+                    var vulkan = new VulkanBackend(deviceIndex);
+                    gpu = vulkan;
+                    vulkan.PrintDeviceInfo();
+                }
+                catch when (deviceIndex < 0)
+                {
+                    gpu = null;
+                }
+            }
         }
 
         AnsiConsole.MarkupLine("[bold]FLUX.1[/] (MM-DiT + CLIP-L + T5-XXL)");
         AnsiConsole.MarkupLine($"[dim]DiT:[/]     {Markup.Escape(modelPath)}");
-        AnsiConsole.MarkupLine($"[dim]VAE:[/]     {Markup.Escape(s.VaePath!)}");
-        AnsiConsole.MarkupLine($"[dim]CLIP-L:[/]  {Markup.Escape(s.ClipLPath!)}");
-        AnsiConsole.MarkupLine($"[dim]T5-XXL:[/]  {Markup.Escape(s.T5XXLPath!)}");
+        AnsiConsole.MarkupLine($"[dim]VAE:[/]     {Markup.Escape(vaePath!)}");
+        AnsiConsole.MarkupLine($"[dim]CLIP-L:[/]  {Markup.Escape(clipLPath!)}");
+        AnsiConsole.MarkupLine($"[dim]T5-XXL:[/]  {Markup.Escape(t5XXLPath!)}");
         AnsiConsole.MarkupLine($"[dim]Backend:[/] {(gpu is not null ? $"GPU ({gpu.GetType().Name})" : "CPU")}");
         AnsiConsole.MarkupLine($"[dim]Size:[/]    {s.Width}×{s.Height}  steps={steps}  cfg={cfg:F1}  seed={s.Seed}");
         if (s.UpscalerPath is not null)
@@ -456,9 +484,9 @@ public sealed class ImageCommand : Command<ImageCommand.Settings>
                         ctx.Status("Loading DiT + VAE + CLIP-L + T5-XXL…");
                         var pipeline = ImagePipeline.Load(
                             modelPath,
-                            s.VaePath!,
-                            s.ClipLPath!,   s.ClipTokenizerPath!,
-                            s.T5XXLPath!,   s.T5TokenizerPath!,
+                            vaePath!,
+                            clipLPath!,   clipTokenizerPath!,
+                            t5XXLPath!,   t5TokenizerPath!,
                             gpu);
 
                         if (s.UpscalerPath is not null)
@@ -522,6 +550,7 @@ public sealed class ImageCommand : Command<ImageCommand.Settings>
                             AnsiConsole.MarkupLine($"[dim]Upscaler:[/] RRDBNet ×{upscaler.Scale} loaded");
                         }
 
+                        if (gpu is VulkanBackend) VulkanBackend.ResetGpuProfile();
                         using (pipeline)
                         {
                             ctx.Status($"Generating {s.Width}×{s.Height} image…");
@@ -536,6 +565,7 @@ public sealed class ImageCommand : Command<ImageCommand.Settings>
                                 upscaler: upscaler,
                                 upscaleBlend: s.UpscaleBlend);
                         }
+                        if (gpu is VulkanBackend) VulkanBackend.PrintGpuProfile("FLUX full run");
 
                         AnsiConsole.MarkupLine($"[green]✓[/] Done in [cyan]{sw.Elapsed.TotalSeconds:F1}s[/]");
                         AnsiConsole.MarkupLine($"[green]✓[/] Image saved: [cyan]{Markup.Escape(Path.GetFullPath(output))}[/]");
@@ -643,6 +673,8 @@ public sealed class ImageCommand : Command<ImageCommand.Settings>
         if (given is not null) return (File.Exists(given) || Directory.Exists(given)) ? given : null;
         foreach (var c in new[] {
             "models/z_image_turbo-Q5_K_M.gguf", "models/z_image_turbo-Q4_K_M.gguf", "models/z_image_turbo-Q8_0.gguf",
+            "models/flux1-schnell/flux1-schnell-Q4_K_S.gguf",
+            "models/flux1-schnell/flux1-schnell-q4_k.gguf",
             "models/flux1-schnell-q4_k.gguf",   "models/flux1-dev-q4_k.gguf" })
             if (File.Exists(c)) return c;
         return null;
@@ -674,6 +706,53 @@ public sealed class ImageCommand : Command<ImageCommand.Settings>
         foreach (var c in new[] {
             "models/z-image-turbo/tokenizer/tokenizer.json",
             "models/tokenizer.json" })
+            if (File.Exists(c)) return c;
+        return null;
+    }
+
+    private static string? ResolveFluxVae()
+    {
+        foreach (var c in new[] {
+            "models/flux1-schnell/ae.safetensors",
+            "models/ae.safetensors" })
+            if (File.Exists(c)) return c;
+        return null;
+    }
+
+    private static string? ResolveFluxClipL()
+    {
+        foreach (var c in new[] {
+            "models/flux1-schnell/clip_l.safetensors",
+            "models/clip_l.safetensors" })
+            if (File.Exists(c)) return c;
+        return null;
+    }
+
+    private static string? ResolveFluxClipTokenizer()
+    {
+        foreach (var c in new[] {
+            "models/flux1-schnell/tokenizer_clip/tokenizer.json",
+            "models/flux1-schnell/tokenizer_2/tokenizer.json",
+            "models/tokenizer_clip.json" })
+            if (File.Exists(c)) return c;
+        return null;
+    }
+
+    private static string? ResolveFluxT5XXL()
+    {
+        foreach (var c in new[] {
+            "models/flux1-schnell/t5xxl_fp8_e4m3fn.safetensors",
+            "models/flux1-schnell/t5xxl_fp16.safetensors",
+            "models/t5xxl_fp16.safetensors" })
+            if (File.Exists(c)) return c;
+        return null;
+    }
+
+    private static string? ResolveFluxT5Tokenizer()
+    {
+        foreach (var c in new[] {
+            "models/flux1-schnell/tokenizer_t5/tokenizer.json",
+            "models/tokenizer_t5.json" })
             if (File.Exists(c)) return c;
         return null;
     }

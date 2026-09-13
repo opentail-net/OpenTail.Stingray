@@ -835,3 +835,9 @@
 [StableAudio3-SmallMusic] prompt="upbeat acoustic guitar melody" steps=8 audio=6.00s samples=264600
 [StableAudio3-SmallMusic] runs(s)=[618.077, 592.882, 275.906] mean=495.622s RTF=82.604 (lower=faster; 1.0=realtime; 8-step CFG, not the full recommended step count)
 
+[StableAudio3-SmallSfx] prompt="a glass bottle shattering on a hard floor" steps=8 audio=6.00s samples=264600
+[StableAudio3-SmallSfx] runs(s)=[803.359, 497.522, 682.610] mean=661.163s RTF=110.194 (lower=faster; 1.0=realtime; 8-step CFG, not the full recommended step count)
+
+[StableAudio3-SmallMusic] prompt="upbeat acoustic guitar melody" steps=8 audio=6.00s samples=264600
+[StableAudio3-SmallMusic] runs(s)=[690.756, 591.401, 773.592] mean=685.250s RTF=114.208 (lower=faster; 1.0=realtime; 8-step CFG, not the full recommended step count)
+

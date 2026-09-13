@@ -18,6 +18,7 @@ public sealed class EulerFlowScheduler
     private readonly float[] _timesteps;
 
     public int NumSteps => _timesteps.Length;
+    public ReadOnlySpan<float> Timesteps => _timesteps;
 
     private EulerFlowScheduler(float[] timesteps) => _timesteps = timesteps;
 

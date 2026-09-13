@@ -51,10 +51,23 @@ public interface IVisionOpsBackend : IComputeBackend
     void AdaLNModulate(Tensor output, Tensor input, Tensor shift, Tensor scale, int nTokens, int dim, bool isRmsNorm = true, float eps = 1e-5f);
 
     /// <summary>
+    /// Fused AdaLN-Zero Modulation taking a combined modulation tensor with slice offsets.
+    /// </summary>
+    void AdaLNModulate(Tensor output, Tensor input, Tensor mod, int nTokens, int dim, int shiftOffset = 0, int scaleOffset = -1, bool isRmsNorm = true, float eps = 1e-5f)
+        => throw new NotSupportedException();
+
+    /// <summary>
     /// Modulated residual addition:
     /// x = x + proj * gate
     /// </summary>
     void ScaleGateAdd(Tensor x, Tensor proj, Tensor gate, int nTokens, int dim);
+
+    /// <summary>
+    /// Modulated residual addition taking a combined modulation tensor with gate offset:
+    /// x = x + proj * mod[gateOffset ..]
+    /// </summary>
+    void ScaleGateAdd(Tensor x, Tensor proj, Tensor mod, int nTokens, int dim, int gateOffset)
+        => throw new NotSupportedException();
 
     /// <summary>
     /// Per-head QK Normalization in VRAM:
@@ -63,8 +76,58 @@ public interface IVisionOpsBackend : IComputeBackend
     void QKNorm(Tensor q, Tensor k, Tensor qScale, Tensor kScale, int nTokens, int numHeads, int headDim, float eps = 1e-5f);
 
     /// <summary>
+    /// Per-head QK Normalization in VRAM with startToken offset.
+    /// </summary>
+    void QKNorm(Tensor q, Tensor k, Tensor qScale, Tensor kScale, int nTokens, int numHeads, int headDim, float eps, int startToken)
+        => throw new NotSupportedException();
+
+    /// <summary>
     /// 3D Spatio-Temporal Rotary Position Embedding for video DiTs (e.g. Wan2.1, HunyuanVideo).
     /// Rotates Q and K across (temporal, height, width) sub-bands.
     /// </summary>
     void RoPE3D(Tensor q, Tensor k, int numTokens, int numHeads, int headDim, int tDim, int hDim, int wDim, float theta = 10000.0f);
+
+    /// <summary>
+    /// FLUX 2D Rotary Position Embedding (GPT-NeoX interleaved pair rotation).
+    /// Rotates Q and K in-place using precomputed cos/sin frequency tables.
+    /// </summary>
+    void Flux2DRoPE(Tensor q, Tensor k, Tensor cos, Tensor sin, int startToken, int tokenCount, int numHeads, int headDim)
+        => throw new NotSupportedException();
+
+    /// <summary>
+    /// Unpack fused QKV [nTokens, 3*dim] into separate Q, K, V buffers [nSeq, dim] at dstTokenOffset.
+    /// </summary>
+    void FluxUnpackQkv(Tensor qkv, Tensor q, Tensor k, Tensor v, int nTokens, int dim, int dstTokenOffset)
+        => throw new NotSupportedException();
+
+    /// <summary>
+    /// Unpack fused Linear1 [nSeq, 7*dim] into Q, K, V [nSeq, dim] and MLP [nSeq, 4*dim].
+    /// </summary>
+    void FluxUnpackSingleLin1(Tensor lin1, Tensor q, Tensor k, Tensor v, Tensor mlp, int nSeq, int dim)
+        => throw new NotSupportedException();
+
+    /// <summary>
+    /// Interleaves Attention output [nSeq, dim] and MLP output [nSeq, 4*dim] per token into Combined [nSeq, 5*dim].
+    /// </summary>
+    void FluxConcatAttnMlp(Tensor attnOut, Tensor mlp, Tensor combined, int nSeq, int dim)
+        => throw new NotSupportedException();
+
+    /// <summary>
+    /// Concatenates text [nTxt, dim] and image [nImg, dim] token sequences into x [nSeq, dim].
+    /// </summary>
+    void FluxConcatTxtImg(Tensor txt, Tensor img, Tensor x, int nTxt, int nImg, int dim)
+        => throw new NotSupportedException();
+
+    /// <summary>
+    /// Slices out the image portion [nImg, dim] from combined sequence x [nSeq, dim] (skipping nTxt tokens).
+    /// </summary>
+    void FluxSliceImg(Tensor x, Tensor img, int nTxt, int nImg, int dim)
+        => throw new NotSupportedException();
+
+    /// <summary>
+    /// In-place Euler flow matching step on GPU: x[i] += signDt * v[i].
+    /// </summary>
+    void FluxEulerStep(Tensor x, Tensor v, float signDt, int count)
+        => throw new NotSupportedException();
 }
+

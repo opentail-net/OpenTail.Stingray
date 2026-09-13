@@ -1067,6 +1067,24 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
         buf.Unmap();
     }
 
+    /// <summary>Write float data directly into a host-visible / pinned tensor without command buffer transfers.</summary>
+    public unsafe void WritePinned(Tensor tensor, ReadOnlySpan<float> data)
+    {
+        var buf = GetBuffer(tensor);
+        if (buf.IsHostVisible)
+        {
+            float* mapped = (float*)buf.Map();
+            data.CopyTo(new Span<float>(mapped, data.Length));
+            buf.Unmap();
+        }
+        else
+        {
+            var temp = Upload(data, tensor.Shape);
+            CopyBuffer(GetBuffer(temp), buf, (ulong)(data.Length * sizeof(float)));
+            Free(temp);
+        }
+    }
+
     // Cached staging buffer for uploads (avoids per-call alloc/free)
     private GpuBuffer? _uploadStaging;
     private ulong _uploadStagingSize;
@@ -1562,6 +1580,7 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
     private ComputePipeline? _permuteHwcToChwPipeline;
     private ComputePipeline? _multiHeadAttentionPipeline;
     private ComputePipeline? _multiHeadAttentionTiledPipeline;
+    private ComputePipeline? _multiHeadAttentionTiled128Pipeline;
     private ComputePipeline? _leakyReluPipeline;
     private ComputePipeline? _clampPipeline;
     private ComputePipeline? _catChannelsPipeline;
@@ -1581,6 +1600,13 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
     private ComputePipeline? _scaleGateAddPipeline;
     private ComputePipeline? _qkNormPipeline;
     private ComputePipeline? _rope3dPipeline;
+    private ComputePipeline? _flux2DRoPEPipeline;
+    private ComputePipeline? _fluxUnpackQkvPipeline;
+    private ComputePipeline? _fluxUnpackSingleLin1Pipeline;
+    private ComputePipeline? _fluxConcatAttnMlpPipeline;
+    private ComputePipeline? _fluxConcatTxtImgPipeline;
+    private ComputePipeline? _fluxSliceImgPipeline;
+    private ComputePipeline? _fluxEulerStepPipeline;
 
     private struct RmsNormParams{ public uint n; public float eps; }
     private struct RmsNormBatchedParams { public uint n; public float eps; public uint numTokens; }
@@ -1673,10 +1699,17 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
     private struct VisionContinuous2DRoPEParams { public uint patchesX; public uint patchesY; public uint heads; public uint headDim; public float theta; }
     private struct VisionLayerNormParams { public uint nTokens; public uint embd; public float eps; public uint hasBias; }
     private struct VisionActParams { public uint n; }
-    private struct AdaLNModulateParams { public uint nTokens; public uint dim; public uint isRmsNorm; public float eps; }
-    private struct ScaleGateAddParams { public uint nTokens; public uint dim; }
-    private struct QKNormParams { public uint nTokens; public uint numHeads; public uint headDim; public float eps; }
+    private struct AdaLNModulateParams { public uint nTokens; public uint dim; public uint isRmsNorm; public float eps; public uint shiftOffset; public uint scaleOffset; }
+    private struct ScaleGateAddParams { public uint nTokens; public uint dim; public uint gateOffset; }
+    private struct QKNormParams { public uint nTokens; public uint numHeads; public uint headDim; public float eps; public uint startToken; }
     private struct RoPE3DParams { public uint numTokens; public uint numHeads; public uint headDim; public uint tDim; public uint hDim; public uint wDim; public float theta; }
+    private struct Flux2DRoPEParams { public uint startToken; public uint tokenCount; public uint numHeads; public uint headDim; }
+    private struct FluxUnpackQkvParams { public uint nTokens; public uint dim; public uint dstTokenOffset; }
+    private struct FluxUnpackSingleLin1Params { public uint nSeq; public uint dim; }
+    private struct FluxConcatAttnMlpParams { public uint nSeq; public uint dim; }
+    private struct FluxConcatTxtImgParams { public uint nTxt; public uint nImg; public uint dim; }
+    private struct FluxSliceImgParams { public uint nTxt; public uint nImg; public uint dim; }
+    private struct FluxEulerStepParams { public uint count; public float signDt; }
 
     private void DispatchOrRecord(ComputePipeline pipe, ReadOnlySpan<GpuBuffer> buffers,
         uint groupX, void* push, uint groupY = 1, uint groupZ = 1)
@@ -3526,15 +3559,19 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
 
         if (A.DType == DType.Float32 && B.DType == DType.Float16 && HasShaderFloat16Int8 && Has16BitStorage)
         {
+            uint gx64 = ((uint)M + 63u) / 64u;
+            uint gy128 = ((uint)N + 127u) / 128u;
             _sgemmF16Pipeline ??= new ComputePipeline(this, Shaders.SgemmF16, 3,
                 pushConstantSize: sizeof(SgemmParams));
-            DispatchOrRecord(_sgemmF16Pipeline, [GetBuffer(A), GetBuffer(B), GetBuffer(C)], gx, &p, gy);
+            DispatchOrRecord(_sgemmF16Pipeline, [GetBuffer(A), GetBuffer(B), GetBuffer(C)], gx64, &p, gy128);
             return;
         }
 
+        uint gxF32 = ((uint)M + 31u) / 32u;
+        uint gyF32 = ((uint)N + 31u) / 32u;
         _sgemmF32Pipeline ??= new ComputePipeline(this, Shaders.SgemmF32, 3,
             pushConstantSize: sizeof(SgemmParams));
-        DispatchOrRecord(_sgemmF32Pipeline, [GetBuffer(A), GetBuffer(B), GetBuffer(C)], gx, &p, gy);
+        DispatchOrRecord(_sgemmF32Pipeline, [GetBuffer(A), GetBuffer(B), GetBuffer(C)], gxF32, &p, gyF32);
     }
 
     /// <summary>GPU-side dequantize Q5_K raw bytes → fp16 output.</summary>
@@ -3782,27 +3819,49 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
 
     public Tensor MultiHeadAttention(Tensor q, Tensor k, Tensor v, int qSeq, int kvSeq, int numHeads, int headDim)
     {
+        var output = Allocate(TensorShape.D1(qSeq * numHeads * headDim));
+        MultiHeadAttention(output, q, k, v, qSeq, kvSeq, numHeads, headDim);
+        return output;
+    }
+
+    public void MultiHeadAttention(Tensor output, Tensor q, Tensor k, Tensor v, int qSeq, int kvSeq, int numHeads, int headDim)
+    {
         if (headDim > 128)
             throw new ArgumentOutOfRangeException(nameof(headDim), "MultiHeadAttention shader's fixed-size accumulator supports headDim<=128.");
-        var output = Allocate(TensorShape.D1(qSeq * numHeads * headDim));
         _multiHeadAttentionPipeline ??= new ComputePipeline(this, Shaders.MultiHeadAttention, 4, pushConstantSize: sizeof(MultiHeadAttentionParams));
         var p = new MultiHeadAttentionParams { qSeq = (uint)qSeq, kvSeq = (uint)kvSeq, numHeads = (uint)numHeads, headDim = (uint)headDim };
         uint totalWork = (uint)(qSeq * numHeads);
         uint groups = (totalWork + 255u) / 256u;
         DispatchOrRecord(_multiHeadAttentionPipeline, [GetBuffer(q), GetBuffer(k), GetBuffer(v), GetBuffer(output)], groups, &p);
-        return output;
     }
 
     public Tensor MultiHeadAttentionTiled(Tensor q, Tensor k, Tensor v, int qSeq, int kvSeq, int numHeads, int headDim)
     {
-        if (headDim != 64)
-            throw new ArgumentOutOfRangeException(nameof(headDim), "MultiHeadAttentionTiled shader is fixed for headDim=64 (this codebase's only real usage).");
         var output = Allocate(TensorShape.D1(qSeq * numHeads * headDim));
-        _multiHeadAttentionTiledPipeline ??= new ComputePipeline(this, Shaders.MultiHeadAttentionTiled, 4, pushConstantSize: sizeof(MultiHeadAttentionTiledParams));
-        var p = new MultiHeadAttentionTiledParams { qSeq = (uint)qSeq, kvSeq = (uint)kvSeq, numHeads = (uint)numHeads, scale = 1f / MathF.Sqrt(headDim) };
-        uint groupsX = (uint)((qSeq + 15) / 16);
-        DispatchOrRecord(_multiHeadAttentionTiledPipeline, [GetBuffer(q), GetBuffer(k), GetBuffer(v), GetBuffer(output)], groupsX, &p, 1u, (uint)numHeads);
+        MultiHeadAttentionTiled(output, q, k, v, qSeq, kvSeq, numHeads, headDim);
         return output;
+    }
+
+    public void MultiHeadAttentionTiled(Tensor output, Tensor q, Tensor k, Tensor v, int qSeq, int kvSeq, int numHeads, int headDim)
+    {
+        if (headDim == 64)
+        {
+            _multiHeadAttentionTiledPipeline ??= new ComputePipeline(this, Shaders.MultiHeadAttentionTiled, 4, pushConstantSize: sizeof(MultiHeadAttentionTiledParams));
+            var p = new MultiHeadAttentionTiledParams { qSeq = (uint)qSeq, kvSeq = (uint)kvSeq, numHeads = (uint)numHeads, scale = 1f / MathF.Sqrt(headDim) };
+            uint groupsX = (uint)((qSeq + 15) / 16);
+            DispatchOrRecord(_multiHeadAttentionTiledPipeline, [GetBuffer(q), GetBuffer(k), GetBuffer(v), GetBuffer(output)], groupsX, &p, 1u, (uint)numHeads);
+        }
+        else if (headDim == 128)
+        {
+            _multiHeadAttentionTiled128Pipeline ??= new ComputePipeline(this, Shaders.MultiHeadAttentionTiled128, 4, pushConstantSize: sizeof(MultiHeadAttentionTiledParams));
+            var p = new MultiHeadAttentionTiledParams { qSeq = (uint)qSeq, kvSeq = (uint)kvSeq, numHeads = (uint)numHeads, scale = 1f / MathF.Sqrt(headDim) };
+            uint groupsX = (uint)((qSeq + 31) / 32);
+            DispatchOrRecord(_multiHeadAttentionTiled128Pipeline, [GetBuffer(q), GetBuffer(k), GetBuffer(v), GetBuffer(output)], groupsX, &p, 1u, (uint)numHeads);
+        }
+        else
+        {
+            MultiHeadAttention(output, q, k, v, qSeq, kvSeq, numHeads, headDim);
+        }
     }
 
     public void LeakyReluInPlace(Tensor x, float negSlope)
@@ -3962,6 +4021,12 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
     }
 
     public void AdaLNModulate(Tensor output, Tensor input, Tensor shift, Tensor scale, int nTokens, int dim, bool isRmsNorm = true, float eps = 1e-5f)
+        => AdaLNModulate(output, input, shift, scale, nTokens, dim, shiftOffset: 0, scaleOffset: 0, isRmsNorm, eps);
+
+    public void AdaLNModulate(Tensor output, Tensor input, Tensor mod, int nTokens, int dim, int shiftOffset = 0, int scaleOffset = -1, bool isRmsNorm = true, float eps = 1e-5f)
+        => AdaLNModulate(output, input, mod, mod, nTokens, dim, (uint)shiftOffset, (uint)(scaleOffset < 0 ? shiftOffset + dim : scaleOffset), isRmsNorm, eps);
+
+    private void AdaLNModulate(Tensor output, Tensor input, Tensor shift, Tensor scale, int nTokens, int dim, uint shiftOffset, uint scaleOffset, bool isRmsNorm, float eps)
     {
         _adalnModulatePipeline ??= new ComputePipeline(this, Shaders.AdaLNModulate, 4, pushConstantSize: sizeof(AdaLNModulateParams));
         var p = new AdaLNModulateParams
@@ -3969,21 +4034,29 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
             nTokens = (uint)nTokens,
             dim = (uint)dim,
             isRmsNorm = isRmsNorm ? 1u : 0u,
-            eps = eps
+            eps = eps,
+            shiftOffset = shiftOffset,
+            scaleOffset = scaleOffset
         };
         uint groups = ((uint)nTokens + 255u) / 256u;
         DispatchOrRecord(_adalnModulatePipeline, [GetBuffer(input), GetBuffer(shift), GetBuffer(scale), GetBuffer(output)], groups, &p);
     }
 
     public void ScaleGateAdd(Tensor x, Tensor proj, Tensor gate, int nTokens, int dim)
+        => ScaleGateAdd(x, proj, gate, nTokens, dim, 0);
+
+    public void ScaleGateAdd(Tensor x, Tensor proj, Tensor gate, int nTokens, int dim, int gateOffset)
     {
         _scaleGateAddPipeline ??= new ComputePipeline(this, Shaders.ScaleGateAdd, 3, pushConstantSize: sizeof(ScaleGateAddParams));
-        var p = new ScaleGateAddParams { nTokens = (uint)nTokens, dim = (uint)dim };
+        var p = new ScaleGateAddParams { nTokens = (uint)nTokens, dim = (uint)dim, gateOffset = (uint)gateOffset };
         uint groups = ((uint)nTokens + 255u) / 256u;
         DispatchOrRecord(_scaleGateAddPipeline, [GetBuffer(x), GetBuffer(proj), GetBuffer(gate)], groups, &p);
     }
 
     public void QKNorm(Tensor q, Tensor k, Tensor qScale, Tensor kScale, int nTokens, int numHeads, int headDim, float eps = 1e-5f)
+        => QKNorm(q, k, qScale, kScale, nTokens, numHeads, headDim, eps, 0);
+
+    public void QKNorm(Tensor q, Tensor k, Tensor qScale, Tensor kScale, int nTokens, int numHeads, int headDim, float eps, int startToken)
     {
         _qkNormPipeline ??= new ComputePipeline(this, Shaders.QKNorm, 4, pushConstantSize: sizeof(QKNormParams));
         var p = new QKNormParams
@@ -3991,7 +4064,8 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
             nTokens = (uint)nTokens,
             numHeads = (uint)numHeads,
             headDim = (uint)headDim,
-            eps = eps
+            eps = eps,
+            startToken = (uint)startToken
         };
         uint groups = ((uint)(nTokens * numHeads) + 255u) / 256u;
         DispatchOrRecord(_qkNormPipeline, [GetBuffer(q), GetBuffer(k), GetBuffer(qScale), GetBuffer(kScale)], groups, &p);
@@ -4012,6 +4086,101 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
         };
         uint groups = ((uint)numTokens + 255u) / 256u;
         DispatchOrRecord(_rope3dPipeline, [GetBuffer(q), GetBuffer(k)], groups, &p);
+    }
+
+    public void Flux2DRoPE(Tensor q, Tensor k, Tensor cos, Tensor sin, int startToken, int tokenCount, int numHeads, int headDim)
+    {
+        _flux2DRoPEPipeline ??= new ComputePipeline(this, Shaders.Flux2DRoPE, 4, pushConstantSize: sizeof(Flux2DRoPEParams));
+        var p = new Flux2DRoPEParams
+        {
+            startToken = (uint)startToken,
+            tokenCount = (uint)tokenCount,
+            numHeads = (uint)numHeads,
+            headDim = (uint)headDim
+        };
+        uint total = (uint)(tokenCount * numHeads);
+        uint groups = (total + 255u) / 256u;
+        DispatchOrRecord(_flux2DRoPEPipeline, [GetBuffer(q), GetBuffer(k), GetBuffer(cos), GetBuffer(sin)], groups, &p);
+    }
+
+    public void FluxUnpackQkv(Tensor qkv, Tensor q, Tensor k, Tensor v, int nTokens, int dim, int dstTokenOffset)
+    {
+        _fluxUnpackQkvPipeline ??= new ComputePipeline(this, Shaders.FluxUnpackQkv, 4, pushConstantSize: sizeof(FluxUnpackQkvParams));
+        var p = new FluxUnpackQkvParams
+        {
+            nTokens = (uint)nTokens,
+            dim = (uint)dim,
+            dstTokenOffset = (uint)dstTokenOffset
+        };
+        uint total = (uint)(nTokens * dim);
+        uint groups = (total + 255u) / 256u;
+        DispatchOrRecord(_fluxUnpackQkvPipeline, [GetBuffer(qkv), GetBuffer(q), GetBuffer(k), GetBuffer(v)], groups, &p);
+    }
+
+    public void FluxUnpackSingleLin1(Tensor lin1, Tensor q, Tensor k, Tensor v, Tensor mlp, int nSeq, int dim)
+    {
+        _fluxUnpackSingleLin1Pipeline ??= new ComputePipeline(this, Shaders.FluxUnpackSingleLin1, 5, pushConstantSize: sizeof(FluxUnpackSingleLin1Params));
+        var p = new FluxUnpackSingleLin1Params
+        {
+            nSeq = (uint)nSeq,
+            dim = (uint)dim
+        };
+        uint total = (uint)(nSeq * dim);
+        uint groups = (total + 255u) / 256u;
+        DispatchOrRecord(_fluxUnpackSingleLin1Pipeline, [GetBuffer(lin1), GetBuffer(q), GetBuffer(k), GetBuffer(v), GetBuffer(mlp)], groups, &p);
+    }
+
+    public void FluxConcatAttnMlp(Tensor attnOut, Tensor mlp, Tensor combined, int nSeq, int dim)
+    {
+        _fluxConcatAttnMlpPipeline ??= new ComputePipeline(this, Shaders.FluxConcatAttnMlp, 3, pushConstantSize: sizeof(FluxConcatAttnMlpParams));
+        var p = new FluxConcatAttnMlpParams
+        {
+            nSeq = (uint)nSeq,
+            dim = (uint)dim
+        };
+        uint total = (uint)(nSeq * dim);
+        uint groups = (total + 255u) / 256u;
+        DispatchOrRecord(_fluxConcatAttnMlpPipeline, [GetBuffer(attnOut), GetBuffer(mlp), GetBuffer(combined)], groups, &p);
+    }
+
+    public void FluxConcatTxtImg(Tensor txt, Tensor img, Tensor x, int nTxt, int nImg, int dim)
+    {
+        _fluxConcatTxtImgPipeline ??= new ComputePipeline(this, Shaders.FluxConcatTxtImg, 3, pushConstantSize: sizeof(FluxConcatTxtImgParams));
+        var p = new FluxConcatTxtImgParams
+        {
+            nTxt = (uint)nTxt,
+            nImg = (uint)nImg,
+            dim = (uint)dim
+        };
+        uint total = (uint)((nTxt + nImg) * dim);
+        uint groups = (total + 255u) / 256u;
+        DispatchOrRecord(_fluxConcatTxtImgPipeline, [GetBuffer(txt), GetBuffer(img), GetBuffer(x)], groups, &p);
+    }
+
+    public void FluxSliceImg(Tensor x, Tensor img, int nTxt, int nImg, int dim)
+    {
+        _fluxSliceImgPipeline ??= new ComputePipeline(this, Shaders.FluxSliceImg, 2, pushConstantSize: sizeof(FluxSliceImgParams));
+        var p = new FluxSliceImgParams
+        {
+            nTxt = (uint)nTxt,
+            nImg = (uint)nImg,
+            dim = (uint)dim
+        };
+        uint total = (uint)(nImg * dim);
+        uint groups = (total + 255u) / 256u;
+        DispatchOrRecord(_fluxSliceImgPipeline, [GetBuffer(x), GetBuffer(img)], groups, &p);
+    }
+
+    public void FluxEulerStep(Tensor x, Tensor v, float signDt, int count)
+    {
+        _fluxEulerStepPipeline ??= new ComputePipeline(this, Shaders.FluxEulerStep, 2, pushConstantSize: sizeof(FluxEulerStepParams));
+        var p = new FluxEulerStepParams
+        {
+            count = (uint)count,
+            signDt = signDt
+        };
+        uint groups = ((uint)count + 255u) / 256u;
+        DispatchOrRecord(_fluxEulerStepPipeline, [GetBuffer(x), GetBuffer(v)], groups, &p);
     }
 
     // ================================================================
@@ -4208,6 +4377,13 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
         _scaleGateAddPipeline?.Dispose();
         _qkNormPipeline?.Dispose();
         _rope3dPipeline?.Dispose();
+        _flux2DRoPEPipeline?.Dispose();
+        _fluxUnpackQkvPipeline?.Dispose();
+        _fluxUnpackSingleLin1Pipeline?.Dispose();
+        _fluxConcatAttnMlpPipeline?.Dispose();
+        _fluxConcatTxtImgPipeline?.Dispose();
+        _fluxSliceImgPipeline?.Dispose();
+        _fluxEulerStepPipeline?.Dispose();
 
         _downloadStaging?.Dispose();
         _uploadStaging?.Dispose();

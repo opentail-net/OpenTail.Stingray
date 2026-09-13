@@ -1,3 +1,4 @@
+using System.Diagnostics;
 
 namespace OpenTail.Stingray.Diffusion;
 
@@ -62,11 +63,11 @@ public sealed class ImagePipeline : IDisposable, IDiffusionPipeline
         bool ownsBackend = backend is null;
         var compBackend = backend ?? new CpuBackend();
         var dit         = new FluxDiT(model, p, compBackend);
-        var vae         = new VaeDecoder(vaePath);
+        var vae         = new VaeDecoder(SafetensorsLoader.Open(vaePath), compBackend);
         var clip        = new ClipLEncoder(clipPath);
         var t5          = new T5Encoder(t5Path);
         var clipTok     = ClipTokenizer.FromFile(clipTokenizerPath);
-        var t5Tok       = T5Tokenizer.FromFile(t5TokenizerPath);
+        var t5Tok       = T5Tokenizer.FromFile(t5TokenizerPath, maxLen: 256); // FLUX's real T5 sequence length (see Generate())
         return new ImagePipeline(dit, vae, clip, t5, clipTok, t5Tok, p, compBackend, ownsBackend);
     }
 
@@ -120,7 +121,20 @@ public sealed class ImagePipeline : IDisposable, IDiffusionPipeline
         var (_, pooledEmbed) = _clip.Encode(clipTokens);   // [768]
         double msClip = sw?.Elapsed.TotalMilliseconds ?? 0; sw?.Restart();
 
-        var t5Tokens   = _t5Tok.Tokenize(prompt);
+        // Real FLUX (both the vendored diffusers `_get_t5_prompt_embeds` — `padding="max_length"`,
+        // `max_length=max_sequence_length` — and the real C++ reference `stable-diffusion.cpp`'s
+        // `FluxCLIPEmbedder` — `chunk_len = 256`) always pads the T5 sequence to a FIXED length
+        // before encoding, feeding the padding-token embeddings into the DiT's attention UNMASKED
+        // (neither reference applies an attention mask for the base FLUX pipeline). This project's
+        // implementation previously encoded only the real (short, ~7-9 token) prompt length —
+        // found 2026-09-13 while chasing the long-standing "repeating tiled background" artifact
+        // (docs/056-flux-tiling-artifact-handoff.md) as a genuine, previously-unexamined structural
+        // divergence from both references.
+        const int T5MaxSequenceLength = 256; // matches stable-diffusion.cpp's FluxCLIPEmbedder::chunk_len
+        var t5TokensRaw = _t5Tok.Tokenize(prompt);
+        var t5Tokens = new int[T5MaxSequenceLength];
+        Array.Copy(t5TokensRaw, t5Tokens, Math.Min(t5TokensRaw.Length, T5MaxSequenceLength));
+        // Remaining entries stay 0 (T5's <pad> token id), matching real T5 padding.
         var txtEmbeds  = _t5.Encode(t5Tokens);             // [seq, 4096]
         int nTxt = t5Tokens.Length;
         double msT5 = sw?.Elapsed.TotalMilliseconds ?? 0; sw?.Restart();
@@ -145,10 +159,78 @@ public sealed class ImagePipeline : IDisposable, IDiffusionPipeline
 
         double msSetup = sw?.Elapsed.TotalMilliseconds ?? 0; sw?.Restart();
 
-        var denoised = scheduler.Denoise(
-            noisePacked,
-            (x, t) => _dit.Forward(x, imgIds, txtEmbeds, txtIds, pooledEmbed, t, guidance),
-            progress);
+        float[] denoised;
+        if (_backend is not CpuBackend && _backend is IVisionOpsBackend visionOps && _backend is IImageOpsBackend imageOps)
+        {
+            int d = _params.HiddenSize;
+            int nSeq = nTxt + nImg;
+            var allIds = new int[nSeq * 2];
+            imgIds.CopyTo(allIds, nTxt * 2);
+            var (ropeC, ropeS) = Flux2DRoPE.BuildFreqs(allIds, nSeq, _params.HeadDim);
+            var (imgRopeC, imgRopeS) = Flux2DRoPE.BuildFreqs(imgIds, nImg, _params.HeadDim);
+
+            using var ws = new FluxGpuWorkspace(_backend, nSeq, nImg, nTxt, d, imgRopeC, imgRopeS, ropeC, ropeS);
+            var weights = _dit.GetOrCreateGpuWeights();
+
+            // Upload initial noise to ws.Latent
+            using var initNoiseGpu = _backend.Upload(noisePacked, TensorShape.D2(nImg, _params.InChannels), exact: true);
+            imageOps.ScaleInPlace(ws.Latent, 0f);
+            _backend.AddInPlace(ws.Latent, initNoiseGpu);
+
+            // Precompute text projections on GPU once (invariant across steps)
+            _dit.PrecomputeTxtGpu(txtEmbeds, ws, weights, visionOps);
+
+            var timesteps = scheduler.Timesteps;
+            int nSteps = timesteps.Length;
+            var stepStopwatch = Stopwatch.StartNew();
+            for (int i = 0; i < nSteps; i++)
+            {
+                stepStopwatch.Restart();
+                float t = timesteps[i];
+                float tNext = (i + 1 < nSteps) ? timesteps[i + 1] : 0f;
+                float dt = t - tNext;
+                const float sign = -1f;
+
+                // NOTE: batching is done per-block INSIDE ForwardGpu (see FluxDiT.cs), not as one
+                // BeginBatch/EndBatch spanning the whole step. A single step-wide command buffer
+                // (~160s of uninterrupted GPU compute, one unbounded vkWaitForFences) was found to
+                // freeze the desktop UI on this shared iGPU (the same engine DWM composites with)
+                // for the run's entire duration — see PerformanceLeague.md's 2026-09-13 entry.
+                var velGpu = _dit.ForwardGpu(ws.Latent, txtEmbeds, pooledEmbed, t, guidance, ws, weights, visionOps);
+                imageOps.BeginBatch();
+                visionOps.FluxEulerStep(ws.Latent, velGpu, sign * dt, nImg * _params.InChannels);
+                imageOps.EndBatch();
+
+                if (profEnabled)
+                {
+                    Console.Error.WriteLine($"[FluxProfile] Step {i + 1}/{nSteps} (t={t:F3} -> {tNext:F3}): {stepStopwatch.Elapsed.TotalMilliseconds:F1}ms");
+                }
+
+                progress?.Invoke(i + 1, nSteps);
+            }
+
+            denoised = new float[nImg * _params.InChannels];
+            _backend.Download(ws.Latent, denoised);
+        }
+        else
+        {
+            int stepCounter = 0;
+            var stepStopwatch = Stopwatch.StartNew();
+            denoised = scheduler.Denoise(
+                noisePacked,
+                (x, t) =>
+                {
+                    stepStopwatch.Restart();
+                    var vel = _dit.Forward(x, imgIds, txtEmbeds, txtIds, pooledEmbed, t, guidance);
+                    stepCounter++;
+                    if (profEnabled)
+                    {
+                        Console.Error.WriteLine($"[FluxProfile] Step {stepCounter}/{steps} (t={t:F3}): {stepStopwatch.Elapsed.TotalMilliseconds:F1}ms");
+                    }
+                    return vel;
+                },
+                progress);
+        }
         double msDiT = sw?.Elapsed.TotalMilliseconds ?? 0; sw?.Restart();
 
         // ── 5. Unpack and decode ──────────────────────────────────────────
@@ -159,13 +241,13 @@ public sealed class ImagePipeline : IDisposable, IDiffusionPipeline
         if (profEnabled)
         {
             double msTotal = swTotal!.Elapsed.TotalMilliseconds;
-            Console.Error.WriteLine("[FluxProfile] Stage split (TEMPORARY diagnostic, see docs/perf-sweep-plan.md Phase 12):");
-            Console.Error.WriteLine($"  CLIP-L encode        {msClip,10:F2}ms  {100.0 * msClip / msTotal,6:F2}%");
+            Console.Error.WriteLine("[FluxProfile] Stage split summary (vs C++ sd-cli):");
+            Console.Error.WriteLine($"  CLIP-L encode        {msClip,10:F2}ms  {100.0 * msClip / msTotal,6:F2}% (C++ clip+t5: ~11.29s)");
             Console.Error.WriteLine($"  T5-XXL encode        {msT5,10:F2}ms  {100.0 * msT5 / msTotal,6:F2}%");
             Console.Error.WriteLine($"  Noise/pos-id setup   {msSetup,10:F2}ms  {100.0 * msSetup / msTotal,6:F2}%");
-            Console.Error.WriteLine($"  DiT denoise loop     {msDiT,10:F2}ms  {100.0 * msDiT / msTotal,6:F2}%");
-            Console.Error.WriteLine($"  VAE decode           {msVae,10:F2}ms  {100.0 * msVae / msTotal,6:F2}%");
-            Console.Error.WriteLine($"  Total                {msTotal,10:F2}ms");
+            Console.Error.WriteLine($"  DiT denoise loop     {msDiT,10:F2}ms  {100.0 * msDiT / msTotal,6:F2}% (C++ sampling 4 steps: ~165.6s, ~41.4s/step)");
+            Console.Error.WriteLine($"  VAE decode           {msVae,10:F2}ms  {100.0 * msVae / msTotal,6:F2}% (C++ VAE decode: ~14.79s)");
+            Console.Error.WriteLine($"  Total                {msTotal,10:F2}ms (C++ wall: ~191.7s)");
         }
 
         // ── 6. Write PNG ──────────────────────────────────────────────────

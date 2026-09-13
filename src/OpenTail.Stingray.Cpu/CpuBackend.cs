@@ -32,6 +32,11 @@ public sealed unsafe class CpuBackend : IComputeBackend
             NativeMemory.Free((void*)tensor.Handle);
     }
 
+    public void WritePinned(Tensor tensor, ReadOnlySpan<float> data)
+    {
+        data.CopyTo(new Span<float>((void*)tensor.Handle, data.Length));
+    }
+
     public Tensor Upload(ReadOnlySpan<float> data, TensorShape shape, bool exact = false)
     {
         _ = exact;

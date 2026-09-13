@@ -5859,8 +5859,9 @@ internal static class Shaders
     /// </summary>
     internal const string SgemmF32 = """
         #version 450
+        #extension GL_EXT_control_flow_attributes : enable
 
-        layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+        layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
         layout(push_constant) uniform PC {
             uint M;
@@ -5872,36 +5873,77 @@ internal static class Shaders
         layout(binding = 1) readonly  buffer BufB { float b_data[]; };   // [N, K] weights
         layout(binding = 2) writeonly buffer BufC { float c_data[]; };   // [M, N] output
 
-        shared float tileA[16][17]; // +1 column to avoid bank conflicts
-        shared float tileB[16][17];
+        shared float tileA[32][17]; // 32x16 tile with +1 padding
+        shared float tileB[32][17];
 
         void main() {
-            uint row = gl_WorkGroupID.x * 16u + gl_LocalInvocationID.x;
-            uint col = gl_WorkGroupID.y * 16u + gl_LocalInvocationID.y;
+            uint tx = gl_LocalInvocationID.x;
+            uint ty = gl_LocalInvocationID.y;
+            uint tid = ty * 8u + tx;
 
-            float acc = 0.0;
+            uint row_base = gl_WorkGroupID.x * 32u;
+            uint col_base = gl_WorkGroupID.y * 32u;
+
+            float acc[4][4];
+            [[unroll]] for (uint i = 0u; i < 4u; i++)
+                [[unroll]] for (uint j = 0u; j < 4u; j++)
+                    acc[i][j] = 0.0;
+
             uint numTiles = (pc.K + 15u) / 16u;
 
             for (uint t = 0u; t < numTiles; t++) {
-                uint aCol = t * 16u + gl_LocalInvocationID.y;
-                uint bCol = t * 16u + gl_LocalInvocationID.x;
+                uint k_base = t * 16u;
 
-                tileA[gl_LocalInvocationID.x][gl_LocalInvocationID.y] =
-                    (row < pc.M && aCol < pc.K) ? a_data[row * pc.K + aCol] : 0.0;
+                // Load tileA [32, 16] using 64 threads (8 elements per thread)
+                [[unroll]] for (uint p = 0u; p < 8u; p++) {
+                    uint idx = tid * 8u + p;
+                    uint r = idx >> 4;
+                    uint c = idx & 15u;
+                    uint gm = row_base + r;
+                    uint gk = k_base + c;
+                    tileA[r][c] = (gm < pc.M && gk < pc.K) ? a_data[gm * pc.K + gk] : 0.0;
+                }
 
-                tileB[gl_LocalInvocationID.y][gl_LocalInvocationID.x] =
-                    (col < pc.N && bCol < pc.K) ? b_data[col * pc.K + bCol] : 0.0;
+                // Load tileB [32, 16] using 64 threads (8 elements per thread)
+                [[unroll]] for (uint p = 0u; p < 8u; p++) {
+                    uint idx = tid * 8u + p;
+                    uint r = idx >> 4;
+                    uint c = idx & 15u;
+                    uint gn = col_base + r;
+                    uint gk = k_base + c;
+                    tileB[r][c] = (gn < pc.N && gk < pc.K) ? b_data[gn * pc.K + gk] : 0.0;
+                }
 
                 barrier();
 
-                for (uint k = 0u; k < 16u; k++)
-                    acc += tileA[gl_LocalInvocationID.x][k] * tileB[gl_LocalInvocationID.y][k];
+                [[unroll]] for (uint k = 0u; k < 16u; k++) {
+                    float a0 = tileA[tx * 4u + 0u][k];
+                    float a1 = tileA[tx * 4u + 1u][k];
+                    float a2 = tileA[tx * 4u + 2u][k];
+                    float a3 = tileA[tx * 4u + 3u][k];
+
+                    float b0 = tileB[ty * 4u + 0u][k];
+                    float b1 = tileB[ty * 4u + 1u][k];
+                    float b2 = tileB[ty * 4u + 2u][k];
+                    float b3 = tileB[ty * 4u + 3u][k];
+
+                    acc[0][0] += a0 * b0;  acc[0][1] += a0 * b1;  acc[0][2] += a0 * b2;  acc[0][3] += a0 * b3;
+                    acc[1][0] += a1 * b0;  acc[1][1] += a1 * b1;  acc[1][2] += a1 * b2;  acc[1][3] += a1 * b3;
+                    acc[2][0] += a2 * b0;  acc[2][1] += a2 * b1;  acc[2][2] += a2 * b2;  acc[2][3] += a2 * b3;
+                    acc[3][0] += a3 * b0;  acc[3][1] += a3 * b1;  acc[3][2] += a3 * b2;  acc[3][3] += a3 * b3;
+                }
 
                 barrier();
             }
 
-            if (row < pc.M && col < pc.N)
-                c_data[row * pc.N + col] = acc;
+            [[unroll]] for (uint i = 0u; i < 4u; i++) {
+                [[unroll]] for (uint j = 0u; j < 4u; j++) {
+                    uint out_r = row_base + tx * 4u + i;
+                    uint out_c = col_base + ty * 4u + j;
+                    if (out_r < pc.M && out_c < pc.N)
+                        c_data[out_r * pc.N + out_c] = acc[i][j];
+                }
+            }
         }
         """;
 
@@ -5911,18 +5953,23 @@ internal static class Shaders
     /// B (weights) is fp16 — bandwidth savings on large weight matrices.
     /// Accumulation and output C are fp32 — full range, no overflow.
     ///
+    /// 64×128 output tile per workgroup, 128 threads (local_size=(16,8,1), 2 wavefronts on AMD Wave64).
+    /// Uses 128-bit vector memory loads (vec4 / f16vec4) and transposed LDS storage (tileA_T[32][65],
+    /// tileB_T[32][129]) to eliminate bank conflicts and uncoalesced memory traffic.
+    ///
     /// Requires: VK_KHR_shader_float16_int8 + VK_KHR_16bit_storage
     ///
     /// Push constants: { uint M, uint N, uint K }.
     /// Bindings: 0=A (readonly fp32 activations), 1=B (readonly fp16 weights), 2=C (writeonly fp32).
-    /// Dispatch: (ceil(M/16), ceil(N/16), 1) with local_size=(16,16,1).
+    /// Dispatch: (ceil(M/64), ceil(N/128), 1) with local_size=(16,8,1), 4x16 per thread.
     /// </summary>
     internal const string SgemmF16 = """
         #version 450
         #extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
         #extension GL_EXT_shader_16bit_storage : require
+        #extension GL_EXT_control_flow_attributes : enable
 
-        layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+        layout(local_size_x = 16, local_size_y = 8, local_size_z = 1) in;
 
         layout(push_constant) uniform PC {
             uint M;
@@ -5934,37 +5981,135 @@ internal static class Shaders
         layout(binding = 1) readonly  buffer BufB { float16_t b_data[]; };
         layout(binding = 2) writeonly buffer BufC { float    c_data[]; };
 
-        // fp32 shared tiles. A reads fp32, B reads fp16 (converted on load).
-        shared float tileA[16][17];
-        shared float tileB[16][17];
+        layout(binding = 0) readonly  buffer BufAVec { vec4     a_vec4[]; };
+        layout(binding = 1) readonly  buffer BufBVec { f16vec4  b_vec4[]; };
+
+        shared float tileA_T[32][65];
+        shared float tileB_T[32][129];
 
         void main() {
-            uint row = gl_WorkGroupID.x * 16u + gl_LocalInvocationID.x;
-            uint col = gl_WorkGroupID.y * 16u + gl_LocalInvocationID.y;
+            uint tx = gl_LocalInvocationID.x; // 0..15 (4 rows each -> 64 rows)
+            uint ty = gl_LocalInvocationID.y; // 0..7  (16 cols each -> 128 cols)
+            uint tid = ty * 16u + tx;         // 0..127 (128 threads)
 
-            float acc = 0.0;
-            uint numTiles = (pc.K + 15u) / 16u;
+            uint row_base = gl_WorkGroupID.x * 64u;
+            uint col_base = gl_WorkGroupID.y * 128u;
+
+            float acc[4][16];
+            [[unroll]] for (uint i = 0u; i < 4u; i++)
+                [[unroll]] for (uint j = 0u; j < 16u; j++)
+                    acc[i][j] = 0.0;
+
+            uint numTiles = (pc.K + 31u) / 32u;
+            bool k_is_vec4_aligned = ((pc.K & 3u) == 0u);
 
             for (uint t = 0u; t < numTiles; t++) {
-                uint aCol = t * 16u + gl_LocalInvocationID.y;
-                uint bCol = t * 16u + gl_LocalInvocationID.x;
+                uint k_base = t * 32u;
 
-                tileA[gl_LocalInvocationID.x][gl_LocalInvocationID.y] =
-                    (row < pc.M && aCol < pc.K) ? a_data[row * pc.K + aCol] : 0.0;
+                // Load tileA [64, 32] = 512 vec4s (4 vec4s / thread)
+                [[unroll]] for (uint p = 0u; p < 4u; p++) {
+                    uint idx = tid + p * 128u;
+                    uint r = idx >> 3;       // 0..63
+                    uint c4 = (idx & 7u) << 2; // 0, 4, 8, ...
+                    uint gm = row_base + r;
+                    uint gk = k_base + c4;
+                    if (gm < pc.M && gk + 3u < pc.K && k_is_vec4_aligned) {
+                        uint g_vec = (gm * pc.K + gk) >> 2;
+                        vec4 v = a_vec4[g_vec];
+                        tileA_T[c4 + 0u][r] = v.x;
+                        tileA_T[c4 + 1u][r] = v.y;
+                        tileA_T[c4 + 2u][r] = v.z;
+                        tileA_T[c4 + 3u][r] = v.w;
+                    } else {
+                        tileA_T[c4 + 0u][r] = (gm < pc.M && gk + 0u < pc.K) ? a_data[gm * pc.K + gk + 0u] : 0.0;
+                        tileA_T[c4 + 1u][r] = (gm < pc.M && gk + 1u < pc.K) ? a_data[gm * pc.K + gk + 1u] : 0.0;
+                        tileA_T[c4 + 2u][r] = (gm < pc.M && gk + 2u < pc.K) ? a_data[gm * pc.K + gk + 2u] : 0.0;
+                        tileA_T[c4 + 3u][r] = (gm < pc.M && gk + 3u < pc.K) ? a_data[gm * pc.K + gk + 3u] : 0.0;
+                    }
+                }
 
-                tileB[gl_LocalInvocationID.y][gl_LocalInvocationID.x] =
-                    (col < pc.N && bCol < pc.K) ? float(b_data[col * pc.K + bCol]) : 0.0;
+                // Load tileB [128, 32] = 1024 f16vec4s (8 f16vec4s / thread)
+                [[unroll]] for (uint p = 0u; p < 8u; p++) {
+                    uint idx = tid + p * 128u;
+                    uint r = idx >> 3;       // 0..127
+                    uint c4 = (idx & 7u) << 2;
+                    uint gn = col_base + r;
+                    uint gk = k_base + c4;
+                    if (gn < pc.N && gk + 3u < pc.K && k_is_vec4_aligned) {
+                        uint g_vec = (gn * pc.K + gk) >> 2;
+                        f16vec4 v = b_vec4[g_vec];
+                        tileB_T[c4 + 0u][r] = float(v.x);
+                        tileB_T[c4 + 1u][r] = float(v.y);
+                        tileB_T[c4 + 2u][r] = float(v.z);
+                        tileB_T[c4 + 3u][r] = float(v.w);
+                    } else {
+                        tileB_T[c4 + 0u][r] = (gn < pc.N && gk + 0u < pc.K) ? float(b_data[gn * pc.K + gk + 0u]) : 0.0;
+                        tileB_T[c4 + 1u][r] = (gn < pc.N && gk + 1u < pc.K) ? float(b_data[gn * pc.K + gk + 1u]) : 0.0;
+                        tileB_T[c4 + 2u][r] = (gn < pc.N && gk + 2u < pc.K) ? float(b_data[gn * pc.K + gk + 2u]) : 0.0;
+                        tileB_T[c4 + 3u][r] = (gn < pc.N && gk + 3u < pc.K) ? float(b_data[gn * pc.K + gk + 3u]) : 0.0;
+                    }
+                }
 
                 barrier();
 
-                for (uint k = 0u; k < 16u; k++)
-                    acc += tileA[gl_LocalInvocationID.x][k] * tileB[gl_LocalInvocationID.y][k];
+                uint a_offset0 = tx * 4u;
+                uint b_offset0 = ty * 16u;
+
+                [[unroll]] for (uint k = 0u; k < 32u; k++) {
+                    float a0 = tileA_T[k][a_offset0 + 0u];
+                    float a1 = tileA_T[k][a_offset0 + 1u];
+                    float a2 = tileA_T[k][a_offset0 + 2u];
+                    float a3 = tileA_T[k][a_offset0 + 3u];
+
+                    float b0 = tileB_T[k][b_offset0 + 0u];
+                    float b1 = tileB_T[k][b_offset0 + 1u];
+                    float b2 = tileB_T[k][b_offset0 + 2u];
+                    float b3 = tileB_T[k][b_offset0 + 3u];
+                    float b4 = tileB_T[k][b_offset0 + 4u];
+                    float b5 = tileB_T[k][b_offset0 + 5u];
+                    float b6 = tileB_T[k][b_offset0 + 6u];
+                    float b7 = tileB_T[k][b_offset0 + 7u];
+                    float b8 = tileB_T[k][b_offset0 + 8u];
+                    float b9 = tileB_T[k][b_offset0 + 9u];
+                    float b10 = tileB_T[k][b_offset0 + 10u];
+                    float b11 = tileB_T[k][b_offset0 + 11u];
+                    float b12 = tileB_T[k][b_offset0 + 12u];
+                    float b13 = tileB_T[k][b_offset0 + 13u];
+                    float b14 = tileB_T[k][b_offset0 + 14u];
+                    float b15 = tileB_T[k][b_offset0 + 15u];
+
+                    acc[0][0] += a0 * b0; acc[0][1] += a0 * b1; acc[0][2] += a0 * b2; acc[0][3] += a0 * b3;
+                    acc[0][4] += a0 * b4; acc[0][5] += a0 * b5; acc[0][6] += a0 * b6; acc[0][7] += a0 * b7;
+                    acc[0][8] += a0 * b8; acc[0][9] += a0 * b9; acc[0][10] += a0 * b10; acc[0][11] += a0 * b11;
+                    acc[0][12] += a0 * b12; acc[0][13] += a0 * b13; acc[0][14] += a0 * b14; acc[0][15] += a0 * b15;
+
+                    acc[1][0] += a1 * b0; acc[1][1] += a1 * b1; acc[1][2] += a1 * b2; acc[1][3] += a1 * b3;
+                    acc[1][4] += a1 * b4; acc[1][5] += a1 * b5; acc[1][6] += a1 * b6; acc[1][7] += a1 * b7;
+                    acc[1][8] += a1 * b8; acc[1][9] += a1 * b9; acc[1][10] += a1 * b10; acc[1][11] += a1 * b11;
+                    acc[1][12] += a1 * b12; acc[1][13] += a1 * b13; acc[1][14] += a1 * b14; acc[1][15] += a1 * b15;
+
+                    acc[2][0] += a2 * b0; acc[2][1] += a2 * b1; acc[2][2] += a2 * b2; acc[2][3] += a2 * b3;
+                    acc[2][4] += a2 * b4; acc[2][5] += a2 * b5; acc[2][6] += a2 * b6; acc[2][7] += a2 * b7;
+                    acc[2][8] += a2 * b8; acc[2][9] += a2 * b9; acc[2][10] += a2 * b10; acc[2][11] += a2 * b11;
+                    acc[2][12] += a2 * b12; acc[2][13] += a2 * b13; acc[2][14] += a2 * b14; acc[2][15] += a2 * b15;
+
+                    acc[3][0] += a3 * b0; acc[3][1] += a3 * b1; acc[3][2] += a3 * b2; acc[3][3] += a3 * b3;
+                    acc[3][4] += a3 * b4; acc[3][5] += a3 * b5; acc[3][6] += a3 * b6; acc[3][7] += a3 * b7;
+                    acc[3][8] += a3 * b8; acc[3][9] += a3 * b9; acc[3][10] += a3 * b10; acc[3][11] += a3 * b11;
+                    acc[3][12] += a3 * b12; acc[3][13] += a3 * b13; acc[3][14] += a3 * b14; acc[3][15] += a3 * b15;
+                }
 
                 barrier();
             }
 
-            if (row < pc.M && col < pc.N)
-                c_data[row * pc.N + col] = acc;
+            [[unroll]] for (uint i = 0u; i < 4u; i++) {
+                [[unroll]] for (uint j = 0u; j < 16u; j++) {
+                    uint out_r = row_base + tx * 4u + i;
+                    uint out_c = col_base + ty * 16u + j;
+                    if (out_r < pc.M && out_c < pc.N)
+                        c_data[out_r * pc.N + out_c] = acc[i][j];
+                }
+            }
         }
         """;
 
@@ -7157,6 +7302,186 @@ internal static class Shaders
         """;
 
     /// <summary>
+    /// Tiled ("flash-attention"-style) variant of MultiHeadAttention for HEAD_DIM=128 (FLUX.1).
+    /// Uses workgroup LDS tiling over Q (BR=32), K/V (BC=16) with 128 threads (2 wavefronts).
+    /// Vectorized vec4 128-bit loads, direct in-register dot products, and coalesced LDS accesses.
+    /// </summary>
+    internal const string MultiHeadAttentionTiled128 = """
+        #version 450
+        #extension GL_EXT_control_flow_attributes : enable
+
+        #define HEAD_DIM   128
+        #define BR         32
+        #define BC         16
+        #define WG_SIZE    128
+
+        const float NEG_INF = -3.402823466e+38;
+
+        layout(std430, binding = 0) readonly  buffer QVec { vec4 q_vec[]; };
+        layout(std430, binding = 1) readonly  buffer KVec { vec4 k_vec[]; };
+        layout(std430, binding = 2) readonly  buffer VVec { vec4 v_vec[]; };
+        layout(std430, binding = 3) writeonly buffer OVec { vec4 o_vec[]; };
+
+        layout(push_constant) uniform Params {
+            uint qSeq;
+            uint kvSeq;
+            uint numHeads;
+            float scale;
+        } p;
+
+        shared vec4 q_tile[BR * 32];
+        shared vec4 k_tile[BC * 32];
+        shared vec4 v_tile[BC * 32];
+        shared float score_tile[BR * BC];
+        shared float row_m[BR];
+        shared float row_l[BR];
+        shared float row_alpha[BR];
+
+        layout(local_size_x = 128, local_size_y = 1, local_size_z = 1) in;
+
+        void main() {
+            const uint tid = gl_LocalInvocationIndex; // 0..127
+            const uint qr = tid >> 2;                 // 0..31 (32 query rows, 4 threads per row)
+            const uint sub = tid & 3u;                // 0..3
+            const uint kc = sub * 4u;                 // 0, 4, 8, 12 (4 keys per thread)
+            const uint q_row = gl_WorkGroupID.x * BR + qr;
+
+            const uint h = gl_WorkGroupID.z;
+            const uint headVecOff = (h * HEAD_DIM) >> 2;
+            const uint dimVec = (p.numHeads * HEAD_DIM) >> 2;
+
+            // Load Q tile [32, 32 vec4s] = 1024 vec4s across 128 threads (8 vec4s / thread)
+            [[unroll]] for (uint p_load = 0u; p_load < 8u; ++p_load) {
+                uint idx = tid + p_load * 128u;
+                uint r = idx >> 5;
+                uint d = idx & 31u;
+                uint globalQ = gl_WorkGroupID.x * BR + r;
+                if (globalQ < p.qSeq) {
+                    q_tile[idx] = q_vec[globalQ * dimVec + headVecOff + d];
+                } else {
+                    q_tile[idx] = vec4(0.0);
+                }
+            }
+
+            if (tid < BR) {
+                row_m[tid] = NEG_INF;
+                row_l[tid] = 0.0;
+                row_alpha[tid] = 0.0;
+            }
+            barrier();
+
+            vec4 acc0 = vec4(0.0), acc1 = vec4(0.0), acc2 = vec4(0.0), acc3 = vec4(0.0);
+            vec4 acc4 = vec4(0.0), acc5 = vec4(0.0), acc6 = vec4(0.0), acc7 = vec4(0.0);
+            bool q_valid = (q_row < p.qSeq);
+
+            for (uint tile_base = 0u; tile_base < p.kvSeq; tile_base += BC) {
+                // Load K and V tiles [16, 32 vec4s] = 512 vec4s across 128 threads (4 vec4s / thread)
+                [[unroll]] for (uint p_load = 0u; p_load < 4u; ++p_load) {
+                    uint idx = tid + p_load * 128u;
+                    uint r = idx >> 5;
+                    uint d = idx & 31u;
+                    uint globalK = tile_base + r;
+                    if (globalK < p.kvSeq) {
+                        k_tile[idx] = k_vec[globalK * dimVec + headVecOff + d];
+                        v_tile[idx] = v_vec[globalK * dimVec + headVecOff + d];
+                    } else {
+                        k_tile[idx] = vec4(0.0);
+                        v_tile[idx] = vec4(0.0);
+                    }
+                }
+                barrier();
+
+                // 1. Compute Q * K dot products: thread computes 4 keys
+                if (q_valid) {
+                    uint q_base = qr * 32u;
+                    float s0 = 0.0, s1 = 0.0, s2 = 0.0, s3 = 0.0;
+                    [[unroll]] for (uint d = 0u; d < 32u; ++d) {
+                        vec4 q_val = q_tile[q_base + d];
+                        s0 += dot(q_val, k_tile[(kc + 0u) * 32u + d]);
+                        s1 += dot(q_val, k_tile[(kc + 1u) * 32u + d]);
+                        s2 += dot(q_val, k_tile[(kc + 2u) * 32u + d]);
+                        s3 += dot(q_val, k_tile[(kc + 3u) * 32u + d]);
+                    }
+
+                    s0 = (tile_base + kc + 0u < p.kvSeq) ? s0 * p.scale : NEG_INF;
+                    s1 = (tile_base + kc + 1u < p.kvSeq) ? s1 * p.scale : NEG_INF;
+                    s2 = (tile_base + kc + 2u < p.kvSeq) ? s2 * p.scale : NEG_INF;
+                    s3 = (tile_base + kc + 3u < p.kvSeq) ? s3 * p.scale : NEG_INF;
+
+                    score_tile[qr * BC + kc + 0u] = s0;
+                    score_tile[qr * BC + kc + 1u] = s1;
+                    score_tile[qr * BC + kc + 2u] = s2;
+                    score_tile[qr * BC + kc + 3u] = s3;
+                }
+                barrier();
+
+                // 2. Softmax update: 32 threads (tid 0..31) each handle 1 query row
+                if (tid < BR && (gl_WorkGroupID.x * BR + tid < p.qSeq)) {
+                    float m_old = row_m[tid];
+                    float l_old = row_l[tid];
+
+                    float tile_max = NEG_INF;
+                    [[unroll]] for (uint k = 0u; k < BC; ++k) {
+                        tile_max = max(tile_max, score_tile[tid * BC + k]);
+                    }
+
+                    float m_new = max(m_old, tile_max);
+                    float alpha = exp(m_old - m_new);
+                    row_alpha[tid] = alpha;
+
+                    float tile_sum = 0.0;
+                    [[unroll]] for (uint k = 0u; k < BC; ++k) {
+                        float prob = (score_tile[tid * BC + k] > NEG_INF * 0.5) ? exp(score_tile[tid * BC + k] - m_new) : 0.0;
+                        score_tile[tid * BC + k] = prob;
+                        tile_sum += prob;
+                    }
+
+                    row_l[tid] = l_old * alpha + tile_sum;
+                    row_m[tid] = m_new;
+                }
+                barrier();
+
+                // 3. Accumulate P * V: each thread (qr, sub) accumulates 8 vec4s
+                if (q_valid) {
+                    float alpha = row_alpha[qr];
+                    acc0 *= alpha; acc1 *= alpha; acc2 *= alpha; acc3 *= alpha;
+                    acc4 *= alpha; acc5 *= alpha; acc6 *= alpha; acc7 *= alpha;
+
+                    uint d_chunk = sub * 8u; // 0, 8, 16, 24
+                    [[unroll]] for (uint k = 0u; k < BC; ++k) {
+                        float prob = score_tile[qr * BC + k];
+                        uint v_base = k * 32u + d_chunk;
+                        acc0 += prob * v_tile[v_base + 0u];
+                        acc1 += prob * v_tile[v_base + 1u];
+                        acc2 += prob * v_tile[v_base + 2u];
+                        acc3 += prob * v_tile[v_base + 3u];
+                        acc4 += prob * v_tile[v_base + 4u];
+                        acc5 += prob * v_tile[v_base + 5u];
+                        acc6 += prob * v_tile[v_base + 6u];
+                        acc7 += prob * v_tile[v_base + 7u];
+                    }
+                }
+                barrier();
+            }
+
+            // Write output
+            if (q_valid) {
+                float l = row_l[qr];
+                float invL = (l > 0.0) ? (1.0 / l) : 0.0;
+                uint outBase = q_row * dimVec + headVecOff + sub * 8u;
+                o_vec[outBase + 0u] = acc0 * invL;
+                o_vec[outBase + 1u] = acc1 * invL;
+                o_vec[outBase + 2u] = acc2 * invL;
+                o_vec[outBase + 3u] = acc3 * invL;
+                o_vec[outBase + 4u] = acc4 * invL;
+                o_vec[outBase + 5u] = acc5 * invL;
+                o_vec[outBase + 6u] = acc6 * invL;
+                o_vec[outBase + 7u] = acc7 * invL;
+            }
+        }
+        """;
+
+    /// <summary>
     /// LeakyReLU in-place: data[i] = data[i] >= 0 ? data[i] : negSlope * data[i]
     /// Push constants: { n, negSlope }.
     /// Bindings: 0=data (in/out).
@@ -8105,7 +8430,14 @@ internal static class Shaders
             uint idx = gl_GlobalInvocationID.x;
             if (idx >= n) return;
             float v = data[idx];
-            data[idx] = 0.5 * v * (1.0 + tanh(0.79788456 * (v + 0.044715 * v * v * v)));
+            // Clamp before tanh: for |inner| > ~44 some Vulkan/driver tanh implementations
+            // (exp(2x)-based) overflow exp(2x) to Inf and return Inf/Inf = NaN instead of
+            // saturating to +-1 (found 2026-09-13 via FLUX MLP activations reaching |v|~17,
+            // well past this vision-tuned shader's previously-exercised input range). tanh
+            // is already numerically saturated to +-1 by |inner|=20, so this clamp is a
+            // mathematical no-op everywhere except the driver's broken tail.
+            float inner = clamp(0.79788456 * (v + 0.044715 * v * v * v), -20.0, 20.0);
+            data[idx] = 0.5 * v * (1.0 + tanh(inner));
         }
         """;
 
@@ -8160,6 +8492,8 @@ internal static class Shaders
             uint dim;
             uint isRmsNorm;
             float eps;
+            uint shiftOffset;
+            uint scaleOffset;
         };
 
         void main() {
@@ -8176,8 +8510,8 @@ internal static class Shaders
                 float invStd = inversesqrt(sumSq / float(dim) + eps);
                 for (uint i = 0u; i < dim; i++) {
                     float norm = inData[off + i] * invStd;
-                    float s = scaleData[i];
-                    float sh = shiftData[i];
+                    float s = scaleData[scaleOffset + i];
+                    float sh = shiftData[shiftOffset + i];
                     outData[off + i] = norm * (1.0 + s) + sh;
                 }
             } else {
@@ -8192,8 +8526,8 @@ internal static class Shaders
                 float invStd = inversesqrt(sumSq / float(dim) + eps);
                 for (uint i = 0u; i < dim; i++) {
                     float norm = (inData[off + i] - mean) * invStd;
-                    float s = scaleData[i];
-                    float sh = shiftData[i];
+                    float s = scaleData[scaleOffset + i];
+                    float sh = shiftData[shiftOffset + i];
                     outData[off + i] = norm * (1.0 + s) + sh;
                 }
             }
@@ -8211,6 +8545,7 @@ internal static class Shaders
         layout(push_constant) uniform Params {
             uint nTokens;
             uint dim;
+            uint gateOffset;
         };
 
         void main() {
@@ -8219,7 +8554,7 @@ internal static class Shaders
 
             uint off = t * dim;
             for (uint i = 0u; i < dim; i++) {
-                xData[off + i] += projData[off + i] * gateData[i];
+                xData[off + i] += projData[off + i] * gateData[gateOffset + i];
             }
         }
         """;
@@ -8238,6 +8573,7 @@ internal static class Shaders
             uint numHeads;
             uint headDim;
             float eps;
+            uint startToken;
         };
 
         void main() {
@@ -8245,7 +8581,10 @@ internal static class Shaders
             uint totalHeads = nTokens * numHeads;
             if (idx >= totalHeads) return;
 
-            uint off = idx * headDim;
+            uint t = idx / numHeads;
+            uint h = idx % numHeads;
+            uint globalToken = startToken + t;
+            uint off = (globalToken * numHeads + h) * headDim;
 
             // RMSNorm Q
             float sumSqQ = 0.0;
@@ -8356,4 +8695,244 @@ internal static class Shaders
             }
         }
         """;
+
+    /// <summary>
+    /// FLUX 2D Rotary Position Embedding (GPT-NeoX interleaved pair rotation).
+    /// Rotates Q and K adjacent pairs (x[2i], x[2i+1]) in-place using precomputed cos/sin tables.
+    /// </summary>
+    internal const string Flux2DRoPE = """
+        #version 450
+        layout(local_size_x = 256) in;
+
+        layout(binding = 0) buffer QBuf { float qData[]; };
+        layout(binding = 1) buffer KBuf { float kData[]; };
+        layout(binding = 2) readonly buffer CosBuf { float cosData[]; };
+        layout(binding = 3) readonly buffer SinBuf { float sinData[]; };
+
+        layout(push_constant) uniform Params {
+            uint startToken;
+            uint tokenCount;
+            uint numHeads;
+            uint headDim;
+        };
+
+        void main() {
+            uint idx = gl_GlobalInvocationID.x;
+            uint total = tokenCount * numHeads;
+            if (idx >= total) return;
+
+            uint t = idx / numHeads;
+            uint h = idx % numHeads;
+            uint globalToken = startToken + t;
+            uint xOff = (globalToken * numHeads + h) * headDim;
+            uint nPairs = headDim / 2u;
+            uint freqOff = t * nPairs;
+
+            for (uint i = 0u; i < nPairs; i++) {
+                uint j = xOff + i * 2u;
+                float q0 = qData[j];
+                float q1 = qData[j + 1u];
+                float k0 = kData[j];
+                float k1 = kData[j + 1u];
+                float c = cosData[freqOff + i];
+                float s = sinData[freqOff + i];
+
+                qData[j]        = q0 * c - q1 * s;
+                qData[j + 1u]   = q0 * s + q1 * c;
+                kData[j]        = k0 * c - k1 * s;
+                kData[j + 1u]   = k0 * s + k1 * c;
+            }
+        }
+        """;
+
+    /// <summary>
+    /// Unpack fused QKV [nTokens, 3*dim] into separate Q, K, V buffers [nSeq, dim] at dstTokenOffset.
+    /// </summary>
+    internal const string FluxUnpackQkv = """
+        #version 450
+        layout(local_size_x = 256) in;
+
+        layout(binding = 0) readonly buffer QkvBuf { float qkvData[]; };
+        layout(binding = 1) writeonly buffer QBuf   { float qData[]; };
+        layout(binding = 2) writeonly buffer KBuf   { float kData[]; };
+        layout(binding = 3) writeonly buffer VBuf   { float vData[]; };
+
+        layout(push_constant) uniform Params {
+            uint nTokens;
+            uint dim;
+            uint dstTokenOffset;
+        };
+
+        void main() {
+            uint idx = gl_GlobalInvocationID.x;
+            uint total = nTokens * dim;
+            if (idx >= total) return;
+
+            uint t = idx / dim;
+            uint d = idx % dim;
+
+            uint srcOff = t * (dim * 3u) + d;
+            uint dstOff = (dstTokenOffset + t) * dim + d;
+
+            qData[dstOff] = qkvData[srcOff];
+            kData[dstOff] = qkvData[srcOff + dim];
+            vData[dstOff] = qkvData[srcOff + dim * 2u];
+        }
+        """;
+
+    /// <summary>
+    /// Unpack fused Linear1 [nSeq, 7*dim] into Q, K, V [nSeq, dim] and MLP [nSeq, 4*dim].
+    /// </summary>
+    internal const string FluxUnpackSingleLin1 = """
+        #version 450
+        layout(local_size_x = 256) in;
+
+        layout(binding = 0) readonly buffer Lin1Buf { float lin1Data[]; };
+        layout(binding = 1) writeonly buffer QBuf   { float qData[]; };
+        layout(binding = 2) writeonly buffer KBuf   { float kData[]; };
+        layout(binding = 3) writeonly buffer VBuf   { float vData[]; };
+        layout(binding = 4) writeonly buffer MlpBuf { float mlpData[]; };
+
+        layout(push_constant) uniform Params {
+            uint nSeq;
+            uint dim;
+        };
+
+        void main() {
+            uint idx = gl_GlobalInvocationID.x;
+            uint total = nSeq * dim;
+            if (idx >= total) return;
+
+            uint t = idx / dim;
+            uint d = idx % dim;
+
+            uint srcOff = t * (dim * 7u) + d;
+            uint dstDOff = t * dim + d;
+
+            qData[dstDOff] = lin1Data[srcOff];
+            kData[dstDOff] = lin1Data[srcOff + dim];
+            vData[dstDOff] = lin1Data[srcOff + dim * 2u];
+
+            uint mlpSrc = t * (dim * 7u) + dim * 3u;
+            uint mlpDst = t * (dim * 4u);
+            for (uint m = 0u; m < 4u; m++) {
+                mlpData[mlpDst + m * dim + d] = lin1Data[mlpSrc + m * dim + d];
+            }
+        }
+        """;
+
+    /// <summary>
+    /// Interleaves Attention output [nSeq, dim] and MLP output [nSeq, 4*dim] per token into Combined [nSeq, 5*dim].
+    /// </summary>
+    internal const string FluxConcatAttnMlp = """
+        #version 450
+        layout(local_size_x = 256) in;
+
+        layout(binding = 0) readonly buffer AttnBuf { float attnData[]; };
+        layout(binding = 1) readonly buffer MlpBuf  { float mlpData[]; };
+        layout(binding = 2) writeonly buffer OutBuf { float outData[]; };
+
+        layout(push_constant) uniform Params {
+            uint nSeq;
+            uint dim;
+        };
+
+        void main() {
+            uint idx = gl_GlobalInvocationID.x;
+            uint total = nSeq * dim;
+            if (idx >= total) return;
+
+            uint t = idx / dim;
+            uint d = idx % dim;
+
+            uint dstBase = t * (dim * 5u);
+            outData[dstBase + d] = attnData[t * dim + d];
+
+            uint mlpSrc = t * (dim * 4u);
+            for (uint m = 0u; m < 4u; m++) {
+                outData[dstBase + dim + m * dim + d] = mlpData[mlpSrc + m * dim + d];
+            }
+        }
+        """;
+
+    /// <summary>
+    /// Concatenates text [nTxt, dim] and image [nImg, dim] token sequences into x [nSeq, dim].
+    /// </summary>
+    internal const string FluxConcatTxtImg = """
+        #version 450
+        layout(local_size_x = 256) in;
+
+        layout(binding = 0) readonly buffer TxtBuf { float txtData[]; };
+        layout(binding = 1) readonly buffer ImgBuf { float imgData[]; };
+        layout(binding = 2) writeonly buffer XBuf  { float xData[]; };
+
+        layout(push_constant) uniform Params {
+            uint nTxt;
+            uint nImg;
+            uint dim;
+        };
+
+        void main() {
+            uint idx = gl_GlobalInvocationID.x;
+            uint txtTotal = nTxt * dim;
+            uint imgTotal = nImg * dim;
+            uint total = txtTotal + imgTotal;
+            if (idx >= total) return;
+
+            if (idx < txtTotal) {
+                xData[idx] = txtData[idx];
+            } else {
+                xData[idx] = imgData[idx - txtTotal];
+            }
+        }
+        """;
+
+    /// <summary>
+    /// Slices out the image portion [nImg, dim] from combined sequence x [nSeq, dim] (skipping nTxt tokens).
+    /// </summary>
+    internal const string FluxSliceImg = """
+        #version 450
+        layout(local_size_x = 256) in;
+
+        layout(binding = 0) readonly buffer XBuf   { float xData[]; };
+        layout(binding = 1) writeonly buffer ImgBuf { float imgData[]; };
+
+        layout(push_constant) uniform Params {
+            uint nTxt;
+            uint nImg;
+            uint dim;
+        };
+
+        void main() {
+            uint idx = gl_GlobalInvocationID.x;
+            uint total = nImg * dim;
+            if (idx >= total) return;
+
+            uint srcIdx = nTxt * dim + idx;
+            imgData[idx] = xData[srcIdx];
+        }
+        """;
+
+    /// <summary>
+    /// In-place Euler flow matching step on GPU: x[i] += signDt * v[i].
+    /// </summary>
+    internal const string FluxEulerStep = """
+        #version 450
+        layout(local_size_x = 256) in;
+
+        layout(binding = 0) buffer XBuf { float xData[]; };
+        layout(binding = 1) readonly buffer VBuf { float vData[]; };
+
+        layout(push_constant) uniform Params {
+            uint count;
+            float signDt;
+        };
+
+        void main() {
+            uint idx = gl_GlobalInvocationID.x;
+            if (idx >= count) return;
+            xData[idx] += signDt * vData[idx];
+        }
+        """;
 }
+

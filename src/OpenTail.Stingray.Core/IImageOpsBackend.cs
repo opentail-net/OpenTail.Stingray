@@ -79,14 +79,25 @@ public interface IImageOpsBackend : IComputeBackend
     Tensor MultiHeadAttention(Tensor q, Tensor k, Tensor v, int qSeq, int kvSeq, int numHeads, int headDim);
 
     /// <summary>
+    /// In-place output variant of <see cref="MultiHeadAttention"/> to avoid allocations.
+    /// </summary>
+    void MultiHeadAttention(Tensor output, Tensor q, Tensor k, Tensor v, int qSeq, int kvSeq, int numHeads, int headDim)
+        => throw new NotSupportedException();
+
+    /// <summary>
     /// Tiled ("flash-attention"-style) variant of <see cref="MultiHeadAttention"/> -- same math,
     /// same input/output layout, replaces the naive shader's one-thread-per-(query,head) design
-    /// (which regressed performance, see PerformanceLeague.md) with row/column tiling and shared
-    /// memory reuse of K/V. Fixed headDim=64 only (this codebase's only real usage). Not
-    /// necessarily bit-exact with the CPU reference (tiled floating-point accumulation order) --
-    /// verify against a tolerance, not exact equality.
+    /// with row/column tiling and shared memory reuse of K/V. Supports headDim=64 and headDim=128.
     /// </summary>
-    Tensor MultiHeadAttentionTiled(Tensor q, Tensor k, Tensor v, int qSeq, int kvSeq, int numHeads, int headDim);
+    Tensor MultiHeadAttentionTiled(Tensor q, Tensor k, Tensor v, int qSeq, int kvSeq, int numHeads, int headDim)
+        => throw new NotSupportedException();
+
+    /// <summary>
+    /// Tiled ("flash-attention"-style) multi-head attention writing into preallocated output tensor.
+    /// Supports headDim=64 and headDim=128.
+    /// </summary>
+    void MultiHeadAttentionTiled(Tensor output, Tensor q, Tensor k, Tensor v, int qSeq, int kvSeq, int numHeads, int headDim)
+        => throw new NotSupportedException();
 
     /// <summary>LeakyReLU in-place: x[i] = x[i] >= 0 ? x[i] : negSlope * x[i]</summary>
     void LeakyReluInPlace(Tensor x, float negSlope);

@@ -334,6 +334,57 @@ localize a subtler bug (e.g. a specific weight's GGUF tensor-shape/transpose con
 exact scale/epsilon convention in a projection this pass didn't examine) that reading code alone
 keeps missing.
 
+## Round 9 (2026-09-13): ROOT-CAUSED AND FIXED — missing T5 sequence padding, artifact fully gone
+
+Picked up per this handoff's own Round 8 recommendation to look beyond structural read-throughs,
+but via a different angle than the suggested numeric golden-parity pass: a direct comparison of
+this project's T5 conditioning setup against **two independent real references simultaneously** —
+the vendored `examples/diffusers/src/diffusers/pipelines/flux/pipeline_flux.py`
+(`_get_t5_prompt_embeds`) and the real, working `examples/stable-diffusion.cpp` (which this same
+session had just built and confirmed produces a clean, artifact-free image for this exact
+checkpoint/prompt — see `docs/00-current-work.md`'s 2026-09-13 GPU-residency session notes for the
+sd.cpp build/run details).
+
+**The real bug**: both references pad the T5 text sequence to a **fixed length before encoding**
+(diffusers: `padding="max_length"`, default `max_sequence_length=512`; sd.cpp's
+`FluxCLIPEmbedder` struct, `src/conditioning/conditioner.hpp`: `chunk_len = 256`, confirmed via
+direct grep of the real vendored source, not assumed), and feed **all** padded positions —
+including the encoded `<pad>`-token embeddings — into the DiT's joint attention **unmasked**
+(neither reference applies an attention mask in the base FLUX pipeline path). This project's
+`ImagePipeline.cs` instead encoded only the real prompt's actual token count (~7-9 tokens for the
+repro prompt) and used that as the T5 sequence length directly — a real, previously-unexamined
+structural divergence from both references. Every one of Rounds 1-8 checked patchify, RoPE,
+attention wiring, AdaLN timing, VAE tiling, and timestep embeddings — none touched the T5
+conditioning *sequence length* convention, which turned out to be the actual cause: FLUX's joint
+attention softmax was never trained to normalize over a `1024 img + ~8 txt` key/value sequence, and
+this severe, out-of-distribution KV-length shift destabilized the network specifically in the
+regions with the weakest direct prompt-token correlation (background) while the strongly-named
+subject (apple, table) still rendered correctly — exactly the artifact's observed character across
+every prior round.
+
+**Fix** (`ImagePipeline.cs`): `T5Tokenizer.FromFile` now passes `maxLen: 256` explicitly (matching
+sd.cpp's confirmed `chunk_len`; the prior default of 77 was itself a separate, real bug — CLIP's
+sequence length, not T5's, evidently copy-pasted). After tokenizing, the real token array is
+copied into a fixed 256-length buffer, zero-padded (T5's real `<pad>` token id is 0, confirmed in
+`T5Tokenizer.cs`), and `nTxt` is now always 256 regardless of the actual prompt length.
+
+**Verified with a real end-to-end run** (`flux1-schnell-Q4_K_S.gguf`, real CLIP-L + T5-XXL + VAE,
+Vulkan GPU-resident path, 512×512, 4 steps, seed 42, same repro prompt as every prior round):
+**the repeating-tile/watermark background artifact is completely gone.** The output is now a
+clean, coherent, photorealistic red apple on a wooden table against a plain blurred kitchen-tile
+backsplash — matching the real C++ reference's output in character and quality, with no repeating
+icons, no textile/chevron pattern, no confetti noise of any kind. Saved for reference at
+`C:\Users\Dmitri\AppData\Local\Temp\claude\...\scratchpad\flux-bench\flux-t5pad-fix-run.png` this
+session (local temp path, not committed — regenerate via the repro command below to reproduce).
+Real cost: 894s total (884.7s generation) on this run's GPU-resident path, vs 649-683s pre-fix on
+the same path — a real, expected ~1.3x slowdown from processing 256 T5 tokens instead of ~8 (T5
+encoder compute cost scales with sequence length, plus the DiT's own joint-attention sequence
+length grows from ~1032 to 1280 tokens); a real cost of correctness, not a regression to chase away.
+
+**This closes the artifact investigation Rounds 1-9 opened.** The remaining open item for
+`FluxDiT.cs`/the FLUX pipeline is now purely a performance question (closing the gap to the real
+C++ reference's ~99.8s Vulkan time), tracked in `PerformanceLeague.md`, not a correctness one.
+
 ## House rules for whoever picks this up (from this project's `CLAUDE.md`)
 
 - **No subagents** — do all work directly in the main session for this project.

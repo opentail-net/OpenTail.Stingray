@@ -67,6 +67,23 @@ public sealed class FluxDiT : IDisposable
             _gpuWeightsFp32 = new Dictionary<string, CoreTensor>(StringComparer.Ordinal);
     }
 
+    private FluxGpuWeights? _gpuWeightsResident;
+    private CoreTensor? _cachedTxtGpu;
+
+    /// <summary>
+    /// Diagnostic-only hook for bisecting the GPU-resident forward pass: invoked with (stageName,
+    /// tensor, elementCount) at key checkpoints inside <see cref="ForwardGpu"/> when non-null. Zero
+    /// overhead / zero behavior change when unset (the default). Not for production use.
+    /// </summary>
+    internal static Action<string, CoreTensor, int>? DebugHook;
+
+    public FluxGpuWeights GetOrCreateGpuWeights()
+    {
+        if (_backend is null || _backend is CpuBackend)
+            throw new InvalidOperationException("No GPU compute backend configured for FluxDiT GPU residency.");
+        return _gpuWeightsResident ??= new FluxGpuWeights(_backend, GetWeightUncached, OptGetWeightUncached, _p);
+    }
+
     // ── Entry point ───────────────────────────────────────────────────────
 
     /// <summary>
@@ -125,6 +142,253 @@ public sealed class FluxDiT : IDisposable
         // Extract image portion (tokens after nTxt)
         imgHidden = x.AsSpan(nTxt * d, nImg * d).ToArray();
         return FinalLayer(imgHidden, vec, nImg, ws);
+    }
+
+    /// <summary>
+    /// Executes the full GPU-resident forward pass of the FLUX.1 MM-DiT model using <see cref="FluxGpuWeights"/>
+    /// and <see cref="FluxGpuWorkspace"/> without CPU-GPU intermediate transfers.
+    /// </summary>
+    public void PrecomputeTxtGpu(
+        float[] txtEmbeds,
+        FluxGpuWorkspace ws,
+        FluxGpuWeights weights,
+        IVisionOpsBackend visionOps)
+    {
+        var imageOps = (IImageOpsBackend)visionOps;
+        int nTxt = ws.NumTxt;
+        int d = ws.Dim;
+
+        if (_cachedTxtGpu is not null) visionOps.Free(_cachedTxtGpu);
+        using var txtGpu = visionOps.Upload(txtEmbeds, TensorShape.D2(nTxt, _p.ContextDim), exact: true);
+        _cachedTxtGpu = visionOps.Allocate(TensorShape.D2(nTxt, d));
+        visionOps.Sgemm(_cachedTxtGpu, txtGpu, weights.TxtInWeight, nTxt, _p.ContextDim, d);
+        imageOps.AddRowBroadcastInPlace(_cachedTxtGpu, weights.TxtInBias, nTxt, d);
+        _cachedTxtEmbeds = txtEmbeds;
+    }
+
+    public CoreTensor ForwardGpu(
+        CoreTensor imgLatentGpu,
+        float[] txtEmbeds,
+        float[] pooledEmbed,
+        float timestep,
+        float guidance,
+        FluxGpuWorkspace ws,
+        FluxGpuWeights weights,
+        IVisionOpsBackend visionOps)
+    {
+        var imageOps = (IImageOpsBackend)visionOps;
+        int nImg = ws.NumImg;
+        int nTxt = ws.NumTxt;
+        int d = ws.Dim;
+
+        // 1. Encode conditioning vector vec on host, apply SiLU, and write directly to pinned ws.VecGpu [d]
+        float[] vec = ComputeVec(timestep, pooledEmbed, guidance);
+        DiffusionOps.SiluInPlace(vec);
+        _backend.WritePinned(ws.VecGpu, vec);
+        var vecGpu = ws.VecGpu;
+
+        // 2. Input projections on GPU
+        // Image patch input projection: imgLatent [nImg, 64] -> imgHidden [nImg, d]
+        visionOps.Sgemm(ws.ImgHidden, imgLatentGpu, weights.ImgInWeight, nImg, _p.InChannels, d);
+        imageOps.AddRowBroadcastInPlace(ws.ImgHidden, weights.ImgInBias, nImg, d);
+        DebugHook?.Invoke("ImgHidden_afterImgIn", ws.ImgHidden, nImg * d);
+
+        // Text projection (ensured cached)
+        if (_cachedTxtGpu is null || !ReferenceEquals(_cachedTxtEmbeds, txtEmbeds))
+        {
+            PrecomputeTxtGpu(txtEmbeds, ws, weights, visionOps);
+        }
+        DebugHook?.Invoke("CachedTxtGpu_afterPrecompute", _cachedTxtGpu!, nTxt * d);
+        imageOps.ScaleInPlace(ws.TxtHidden, 0f);
+        visionOps.AddInPlace(ws.TxtHidden, _cachedTxtGpu!);
+        DebugHook?.Invoke("TxtHidden_afterCopy", ws.TxtHidden, nTxt * d);
+
+        // 3. Double stream blocks (0..18). Each block is its own BeginBatch/EndBatch (one Vulkan
+        // command buffer + one fence wait per block) rather than one command buffer for the whole
+        // step: a single ~160s-per-step monolithic submission was found to starve the OS GPU
+        // scheduler's ability to interleave the desktop compositor on this shared iGPU, freezing
+        // the UI for the run's duration (see PerformanceLeague.md's 2026-09-13 entry). Per-block
+        // batching still eliminates the original per-matmul host round-trips (the actual
+        // perf-killer) while giving the OS a submission point roughly every ~2-3s instead of ~160s.
+        for (int i = 0; i < _p.DoubleBlocks; i++)
+        {
+            imageOps.BeginBatch();
+            DoubleBlockGpu(i, ws, weights.DoubleBlocks[i], vecGpu, visionOps, imageOps);
+            imageOps.EndBatch();
+            if (DebugHook is not null && (i == 0 || i == _p.DoubleBlocks - 1))
+            {
+                DebugHook.Invoke($"ImgHidden_afterDouble{i}", ws.ImgHidden, nImg * d);
+                DebugHook.Invoke($"TxtHidden_afterDouble{i}", ws.TxtHidden, nTxt * d);
+            }
+        }
+
+        // 4. Concatenate txt + img -> X [nSeq, d]
+        visionOps.FluxConcatTxtImg(ws.TxtHidden, ws.ImgHidden, ws.X, nTxt, nImg, d);
+        DebugHook?.Invoke("X_afterConcat", ws.X, (nTxt + nImg) * d);
+
+        // 5. Single stream blocks (0..37) -- same per-block batching rationale as above.
+        for (int i = 0; i < _p.SingleBlocks; i++)
+        {
+            imageOps.BeginBatch();
+            SingleBlockGpu(i, ws, weights.SingleBlocks[i], vecGpu, visionOps, imageOps);
+            imageOps.EndBatch();
+            if (DebugHook is not null && (i == 0 || i == _p.SingleBlocks - 1))
+                DebugHook.Invoke($"X_afterSingle{i}", ws.X, (nTxt + nImg) * d);
+        }
+
+        // 6. Slice img portion from X
+        visionOps.FluxSliceImg(ws.X, ws.ImgHidden, nTxt, nImg, d);
+        DebugHook?.Invoke("ImgHidden_afterSlice", ws.ImgHidden, nImg * d);
+
+        // 7. Final layer
+        visionOps.Sgemm(ws.FinalMod, vecGpu, weights.FinalModWeight, 1, d, d * 2);
+        imageOps.AddRowBroadcastInPlace(ws.FinalMod, weights.FinalModBias, 1, d * 2);
+
+        visionOps.AdaLNModulate(ws.NormedImg, ws.ImgHidden, ws.FinalMod, nImg, d, shiftOffset: 0, scaleOffset: d, isRmsNorm: true, eps: 1e-6f);
+        DebugHook?.Invoke("NormedImg_final", ws.NormedImg, nImg * d);
+
+        visionOps.Sgemm(ws.FinalOut, ws.NormedImg, weights.FinalLinearWeight, nImg, d, _p.OutChannels);
+        imageOps.AddRowBroadcastInPlace(ws.FinalOut, weights.FinalLinearBias, nImg, _p.OutChannels);
+
+        return ws.FinalOut;
+    }
+
+    internal void DoubleBlockGpu(
+        int idx,
+        FluxGpuWorkspace ws,
+        FluxGpuWeights.DoubleBlockGpuWeights bw,
+        CoreTensor vecGpu,
+        IVisionOpsBackend visionOps,
+        IImageOpsBackend imageOps)
+    {
+        int d = ws.Dim;
+        int nImg = ws.NumImg;
+        int nTxt = ws.NumTxt;
+        int nSeq = ws.NumSeq;
+        int nh = _p.NumHeads;
+        int hd = _p.HeadDim;
+
+        bool dbg = DebugHook is not null && idx == 0;
+
+        // adaLN modulations: Linear(d, 6d)
+        visionOps.Sgemm(ws.ImgMod, vecGpu, bw.ImgModWeight, 1, d, d * 6);
+        imageOps.AddRowBroadcastInPlace(ws.ImgMod, bw.ImgModBias, 1, d * 6);
+
+        visionOps.Sgemm(ws.TxtMod, vecGpu, bw.TxtModWeight, 1, d, d * 6);
+        imageOps.AddRowBroadcastInPlace(ws.TxtMod, bw.TxtModBias, 1, d * 6);
+        if (dbg) DebugHook!.Invoke("d0_TxtMod", ws.TxtMod, d * 6);
+
+        // Normalize txt & img
+        visionOps.AdaLNModulate(ws.NormedTxt, ws.TxtHidden, ws.TxtMod, nTxt, d, shiftOffset: 0, scaleOffset: d, isRmsNorm: true, eps: 1e-6f);
+        if (dbg) DebugHook!.Invoke("d0_NormedTxt", ws.NormedTxt, nTxt * d);
+        visionOps.AdaLNModulate(ws.NormedImg, ws.ImgHidden, ws.ImgMod, nImg, d, shiftOffset: 0, scaleOffset: d, isRmsNorm: true, eps: 1e-6f);
+
+        // QKV projections
+        visionOps.Sgemm(ws.QkvTxt, ws.NormedTxt, bw.TxtAttnQkv, nTxt, d, d * 3);
+        if (dbg) DebugHook!.Invoke("d0_QkvTxt", ws.QkvTxt, nTxt * d * 3);
+        visionOps.FluxUnpackQkv(ws.QkvTxt, ws.Q, ws.K, ws.V, nTxt, d, dstTokenOffset: 0);
+        if (dbg) DebugHook!.Invoke("d0_Q_afterTxtUnpack", ws.Q, nSeq * d);
+        visionOps.QKNorm(ws.Q, ws.K, bw.TxtQkNormQScale, bw.TxtQkNormKScale, nTxt, nh, hd, eps: _p.QkNormEps, startToken: 0);
+        if (dbg) DebugHook!.Invoke("d0_Q_afterTxtQKNorm", ws.Q, nSeq * d);
+
+        visionOps.Sgemm(ws.QkvImg, ws.NormedImg, bw.ImgAttnQkv, nImg, d, d * 3);
+        visionOps.FluxUnpackQkv(ws.QkvImg, ws.Q, ws.K, ws.V, nImg, d, dstTokenOffset: nTxt);
+        visionOps.QKNorm(ws.Q, ws.K, bw.ImgQkNormQScale, bw.ImgQkNormKScale, nImg, nh, hd, eps: _p.QkNormEps, startToken: nTxt);
+
+        // 2D RoPE on img tokens
+        visionOps.Flux2DRoPE(ws.Q, ws.K, ws.ImgRopeCos, ws.ImgRopeSin, startToken: nTxt, tokenCount: nImg, nh, hd);
+        if (dbg) DebugHook!.Invoke("d0_Q_afterRoPE", ws.Q, nSeq * d);
+
+        // Joint multi-head attention (tiled flash-attention for headDim=128)
+        imageOps.MultiHeadAttentionTiled(ws.AttnOut, ws.Q, ws.K, ws.V, nSeq, nSeq, nh, hd);
+        if (dbg) DebugHook!.Invoke("d0_AttnOut", ws.AttnOut, nSeq * d);
+
+        // Txt proj + residual
+        visionOps.Sgemm(ws.OutTxt, ws.AttnOut, bw.TxtAttnProjWeight, nTxt, d, d);
+        if (dbg) DebugHook!.Invoke("d0_OutTxt_afterProj", ws.OutTxt, nTxt * d);
+        imageOps.AddRowBroadcastInPlace(ws.OutTxt, bw.TxtAttnProjBias, nTxt, d);
+        if (dbg) DebugHook!.Invoke("d0_OutTxt_afterBias", ws.OutTxt, nTxt * d);
+        visionOps.ScaleGateAdd(ws.TxtHidden, ws.OutTxt, ws.TxtMod, nTxt, d, gateOffset: 2 * d);
+        if (dbg) DebugHook!.Invoke("d0_TxtHidden_afterAttnResidual", ws.TxtHidden, nTxt * d);
+
+        // Txt MLP
+        visionOps.AdaLNModulate(ws.NormedTxt, ws.TxtHidden, ws.TxtMod, nTxt, d, shiftOffset: 3 * d, scaleOffset: 4 * d, isRmsNorm: true, eps: 1e-6f);
+        if (dbg) DebugHook!.Invoke("d0_NormedTxt_mlp", ws.NormedTxt, nTxt * d);
+        visionOps.Sgemm(ws.MlpBuf, ws.NormedTxt, bw.TxtMlp0Weight, nTxt, d, d * 4);
+        if (dbg) DebugHook!.Invoke("d0_MlpBuf_afterSgemm0", ws.MlpBuf, nTxt * d * 4);
+        imageOps.AddRowBroadcastInPlace(ws.MlpBuf, bw.TxtMlp0Bias, nTxt, d * 4);
+        if (dbg) DebugHook!.Invoke("d0_MlpBuf_afterBias0", ws.MlpBuf, nTxt * d * 4);
+        visionOps.VisionGeluInPlace(ws.MlpBuf);
+        if (dbg) DebugHook!.Invoke("d0_MlpBuf_afterGelu", ws.MlpBuf, nTxt * d * 4);
+        visionOps.Sgemm(ws.OutTxt, ws.MlpBuf, bw.TxtMlp2Weight, nTxt, d * 4, d);
+        if (dbg) DebugHook!.Invoke("d0_OutTxt_afterMlp2", ws.OutTxt, nTxt * d);
+        imageOps.AddRowBroadcastInPlace(ws.OutTxt, bw.TxtMlp2Bias, nTxt, d);
+        if (dbg) DebugHook!.Invoke("d0_OutTxt_afterMlp2Bias", ws.OutTxt, nTxt * d);
+        visionOps.ScaleGateAdd(ws.TxtHidden, ws.OutTxt, ws.TxtMod, nTxt, d, gateOffset: 5 * d);
+        if (dbg) DebugHook!.Invoke("d0_TxtHidden_afterMlpResidual", ws.TxtHidden, nTxt * d);
+
+        // Img proj + residual
+        visionOps.FluxSliceImg(ws.AttnOut, ws.NormedImg, nTxt, nImg, d);
+        visionOps.Sgemm(ws.OutImg, ws.NormedImg, bw.ImgAttnProjWeight, nImg, d, d);
+        imageOps.AddRowBroadcastInPlace(ws.OutImg, bw.ImgAttnProjBias, nImg, d);
+        visionOps.ScaleGateAdd(ws.ImgHidden, ws.OutImg, ws.ImgMod, nImg, d, gateOffset: 2 * d);
+
+        // Img MLP
+        visionOps.AdaLNModulate(ws.NormedImg, ws.ImgHidden, ws.ImgMod, nImg, d, shiftOffset: 3 * d, scaleOffset: 4 * d, isRmsNorm: true, eps: 1e-6f);
+        visionOps.Sgemm(ws.MlpBuf, ws.NormedImg, bw.ImgMlp0Weight, nImg, d, d * 4);
+        imageOps.AddRowBroadcastInPlace(ws.MlpBuf, bw.ImgMlp0Bias, nImg, d * 4);
+        visionOps.VisionGeluInPlace(ws.MlpBuf);
+        visionOps.Sgemm(ws.OutImg, ws.MlpBuf, bw.ImgMlp2Weight, nImg, d * 4, d);
+        imageOps.AddRowBroadcastInPlace(ws.OutImg, bw.ImgMlp2Bias, nImg, d);
+        visionOps.ScaleGateAdd(ws.ImgHidden, ws.OutImg, ws.ImgMod, nImg, d, gateOffset: 5 * d);
+    }
+
+    internal void SingleBlockGpu(
+        int idx,
+        FluxGpuWorkspace ws,
+        FluxGpuWeights.SingleBlockGpuWeights bw,
+        CoreTensor vecGpu,
+        IVisionOpsBackend visionOps,
+        IImageOpsBackend imageOps)
+    {
+        int d = ws.Dim;
+        int nSeq = ws.NumSeq;
+        int nh = _p.NumHeads;
+        int hd = _p.HeadDim;
+
+        // adaLN modulation: Linear(d, 3d)
+        visionOps.Sgemm(ws.SingleMod, vecGpu, bw.ModWeight, 1, d, d * 3);
+        imageOps.AddRowBroadcastInPlace(ws.SingleMod, bw.ModBias, 1, d * 3);
+
+        // Modulate x into ws.NormedSeq
+        visionOps.AdaLNModulate(ws.NormedSeq, ws.X, ws.SingleMod, nSeq, d, shiftOffset: 0, scaleOffset: d, isRmsNorm: true, eps: 1e-6f);
+
+        // Fused linear1 into ws.Lin1 [nSeq, 7d]
+        visionOps.Sgemm(ws.Lin1, ws.NormedSeq, bw.Linear1Weight, nSeq, d, d * 7);
+
+        // Unpack lin1 into Q, K, V and MLP
+        visionOps.FluxUnpackSingleLin1(ws.Lin1, ws.Q, ws.K, ws.V, ws.MlpBuf, nSeq, d);
+
+        // QK norm
+        visionOps.QKNorm(ws.Q, ws.K, bw.QkNormQScale, bw.QkNormKScale, nSeq, nh, hd, eps: _p.QkNormEps, startToken: 0);
+
+        // 2D RoPE on full sequence
+        visionOps.Flux2DRoPE(ws.Q, ws.K, ws.AllRopeCos, ws.AllRopeSin, startToken: 0, tokenCount: nSeq, nh, hd);
+
+        // Self-attention into ws.AttnOut [nSeq, d] (tiled flash-attention for headDim=128)
+        imageOps.MultiHeadAttentionTiled(ws.AttnOut, ws.Q, ws.K, ws.V, nSeq, nSeq, nh, hd);
+
+        // GELU on MLP portion
+        visionOps.VisionGeluInPlace(ws.MlpBuf);
+
+        // Concat AttnOut [nSeq, d] and Mlp [nSeq, 4d] per-token into ws.Combined [nSeq, 5d]
+        visionOps.FluxConcatAttnMlp(ws.AttnOut, ws.MlpBuf, ws.Combined, nSeq, d);
+
+        // linear2: ws.Combined [nSeq, 5d] -> ws.AttnOut [nSeq, d]
+        visionOps.Sgemm(ws.AttnOut, ws.Combined, bw.Linear2Weight, nSeq, d * 5, d);
+
+        // Gate and residual
+        visionOps.ScaleGateAdd(ws.X, ws.AttnOut, ws.SingleMod, nSeq, d, gateOffset: 2 * d);
     }
 
     // ── Workspace for zero-copy memory reuse ───────────────────────────────
@@ -570,6 +834,19 @@ public sealed class FluxDiT : IDisposable
             : null;
     }
 
+    private float[] GetWeightUncached(string name)
+    {
+        var info = FindTensor(name) ?? throw new KeyNotFoundException($"DiT weight not found: {name}");
+        return DequantGguf(info);
+    }
+
+    private float[]? OptGetWeightUncached(string name)
+    {
+        var info = FindTensor(name);
+        if (info is null) return null;
+        return DequantGguf(info.Value);
+    }
+
     private float[] W(string name)
     {
         if (_weightCache.TryGetValue(name, out var cached)) return cached;
@@ -899,6 +1176,16 @@ public sealed class FluxDiT : IDisposable
             {
                 foreach (var t in _gpuWeightsFp32.Values) _backend.Free(t);
                 _gpuWeightsFp32.Clear();
+            }
+            if (_gpuWeightsResident is not null)
+            {
+                _gpuWeightsResident.Dispose();
+                _gpuWeightsResident = null;
+            }
+            if (_cachedTxtGpu is not null)
+            {
+                _backend.Free(_cachedTxtGpu);
+                _cachedTxtGpu = null;
             }
             _cachedPooledEmbed = null;
             _cachedVProj = null;

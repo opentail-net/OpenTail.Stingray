@@ -28,6 +28,12 @@ public interface IComputeBackend : IDisposable
     /// rounding/pooling — intended for permanent (session-lifetime) weight uploads.</summary>
     Tensor Allocate(TensorShape shape, DType dtype = DType.Float32, bool exact = false);
 
+    /// <summary>Allocate a pinned host-visible buffer accessible from both CPU and GPU.</summary>
+    Tensor AllocatePinned(TensorShape shape, DType dtype = DType.Float32) => Allocate(shape, dtype);
+
+    /// <summary>Write float data directly into a host-visible / pinned tensor without command buffer transfers.</summary>
+    void WritePinned(Tensor tensor, ReadOnlySpan<float> data) => throw new NotSupportedException();
+
     /// <summary>Free a tensor's backing memory.</summary>
     void Free(Tensor tensor);
 
