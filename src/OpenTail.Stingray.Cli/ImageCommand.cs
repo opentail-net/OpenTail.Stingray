@@ -1006,10 +1006,18 @@ public sealed class ImageCommand : Command<ImageCommand.Settings>
             if (umt5EncoderPath is not null && umt5TokenizerPath is not null)
             {
                 AnsiConsole.MarkupLine("[dim]Encoding prompt with real UMT5-XXL…[/]");
-                var tokenizer = OpenTail.Stingray.Diffusion.TextEncoders.T5Tokenizer.FromFile(umt5TokenizerPath, maxLen: 226);
+                var tokenizer = OpenTail.Stingray.Diffusion.TextEncoders.T5Tokenizer.FromFile(umt5TokenizerPath, maxLen: 512);
                 using var umt5 = new OpenTail.Stingray.Diffusion.TextEncoders.UMT5Encoder(umt5EncoderPath);
-                condContext = umt5.Encode(tokenizer.Tokenize(s.Prompt!));
-                uncondContext = umt5.Encode(tokenizer.Tokenize(s.NegativePrompt ?? ""));
+                if (gpu is IVisionOpsBackend vBackend)
+                {
+                    condContext = umt5.EncodeGpu(tokenizer.Tokenize(s.Prompt!), vBackend);
+                    uncondContext = umt5.EncodeGpu(tokenizer.Tokenize(s.NegativePrompt ?? ""), vBackend);
+                }
+                else
+                {
+                    condContext = umt5.Encode(tokenizer.Tokenize(s.Prompt!));
+                    uncondContext = umt5.Encode(tokenizer.Tokenize(s.NegativePrompt ?? ""));
+                }
             }
 
             using var pipeline = OpenTail.Stingray.Diffusion.Wan.WanPipeline.Load(modelPath, vaePath, gpu);
