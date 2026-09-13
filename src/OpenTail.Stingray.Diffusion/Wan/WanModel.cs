@@ -197,24 +197,31 @@ public sealed class WanModel : IDisposable
 
         // 4. Transformer Blocks -- fully GPU-resident (see TransformerBlockGpu): no per-block
         // host round-trips. gpuWs.RopeCos/RopeSin were uploaded once at WanGpuWorkspace
+        // 4. Transformer Blocks -- fully GPU-resident (see TransformerBlockGpu): no per-block
+        // host round-trips. gpuWs.RopeCos/RopeSin were uploaded once at WanGpuWorkspace
         // construction (see WanRoPE.Compute3DRoPECompact).
         var hostMod = new float[_dim * 6];
+
+        // Pre-write all layer modulations upfront
         for (int b = 0; b < _numLayers; b++)
         {
             var bw = gpuWeights.Blocks[b];
             var modParam = bw.HostModulation;
             for (int i = 0; i < hostMod.Length; i++) hostMod[i] = modParam[i] + timestepProj[i];
-            imageOps.WritePinned(gpuWs.Mod, hostMod);
+            imageOps.WritePinned(gpuWs.LayerMods[b], hostMod);
+        }
 
-            // One Vulkan command buffer + one fence-wait per block (not per individual op) --
-            // without this, each of the ~15 dispatches inside TransformerBlockGpu pays its own
-            // full submit+fence-wait cost, which is exactly the pathology FLUX's GPU-resident
-            // path had before its own per-block batching fix (see docs/069). Per-block (not
-            // per-step) granularity also avoids the OTHER extreme -- a single command buffer
-            // spanning an entire step was found to starve the OS GPU scheduler and freeze the
-            // desktop UI on this shared iGPU.
+        // Multi-block batching: record 5 blocks per command buffer to eliminate 80% of driver fence waits
+        const int batchBlocks = 5;
+        for (int chunkStart = 0; chunkStart < _numLayers; chunkStart += batchBlocks)
+        {
+            int chunkEnd = Math.Min(_numLayers, chunkStart + batchBlocks);
             imageOps.BeginBatch();
-            TransformerBlockGpu(b, bw, gpuWs, numTokens, imageOps, visionOps);
+            for (int b = chunkStart; b < chunkEnd; b++)
+            {
+                var bw = gpuWeights.Blocks[b];
+                TransformerBlockGpu(b, bw, gpuWs, gpuWs.LayerMods[b], numTokens, imageOps, visionOps);
+            }
             imageOps.EndBatch();
         }
 
@@ -241,13 +248,14 @@ public sealed class WanModel : IDisposable
     /// <summary>
     /// GPU-resident equivalent of <see cref="TransformerBlock"/> -- same math, every op dispatched
     /// on <paramref name="imageOps"/>/<paramref name="visionOps"/> against <paramref name="ws"/>'s
-    /// preallocated device buffers, zero host round-trips. <paramref name="ws"/>.Mod must already
-    /// hold this layer's `modulation + timestepProj` (written by the caller via WritePinned).
+    /// preallocated device buffers, zero host round-trips. <paramref name="modTensor"/> holds this layer's
+    /// `modulation + timestepProj`.
     /// </summary>
     private void TransformerBlockGpu(
         int layerIdx,
         WanGpuWeights.BlockWeights bw,
         WanGpuWorkspace ws,
+        CoreTensor modTensor,
         int numTokens,
         IImageOpsBackend imageOps,
         IVisionOpsBackend visionOps)
@@ -255,7 +263,7 @@ public sealed class WanModel : IDisposable
         int d = _dim;
 
         // 1. Self-attention: affine-free LayerNorm -> AdaLN modulate -> fused QKV GEMM -> fused Norm+RoPE -> self-attn -> gated residual.
-        visionOps.AdaLNModulate(ws.Normed1, ws.X, ws.Mod, numTokens, d, shiftOffset: 0, scaleOffset: d, isRmsNorm: false, eps: 1e-6f);
+        visionOps.AdaLNModulate(ws.Normed1, ws.X, modTensor, numTokens, d, shiftOffset: 0, scaleOffset: d, isRmsNorm: false, eps: 1e-6f);
 
         // Fused QKV GEMM [numTokens, d] x [d, d*3] -> [numTokens, d*3]
         imageOps.Sgemm(ws.Qkv, ws.Normed1, bw.SelfAttnQkv, numTokens, d, d * 3);
@@ -266,7 +274,7 @@ public sealed class WanModel : IDisposable
 
         imageOps.MultiHeadAttentionTiled(ws.AttnOut, ws.Q, ws.K, ws.V, numTokens, numTokens, _numHeads, _headDim);
         imageOps.Sgemm(ws.CrossAttnOut, ws.AttnOut, bw.SelfAttnO, numTokens, d, d);
-        visionOps.ScaleGateAdd(ws.X, ws.CrossAttnOut, ws.Mod, numTokens, d, gateOffset: 2 * d);
+        visionOps.ScaleGateAdd(ws.X, ws.CrossAttnOut, modTensor, numTokens, d, gateOffset: 2 * d);
 
         // 2. Cross-Attention with T5/UMT5 text tokens (using precomputed K/V cache).
         imageOps.LayerNormGpu(ws.NormedCross, ws.X, bw.Norm3Weight, bw.Norm3Bias, numTokens, d);
@@ -280,11 +288,11 @@ public sealed class WanModel : IDisposable
         imageOps.AddInPlace(ws.X, ws.AttnOut);
 
         // 3. Modulated FeedForward (GELU approx tanh): affine-free LayerNorm -> AdaLN modulate -> FFN -> gated residual.
-        visionOps.AdaLNModulate(ws.Normed2, ws.X, ws.Mod, numTokens, d, shiftOffset: 3 * d, scaleOffset: 4 * d, isRmsNorm: false, eps: 1e-6f);
+        visionOps.AdaLNModulate(ws.Normed2, ws.X, modTensor, numTokens, d, shiftOffset: 3 * d, scaleOffset: 4 * d, isRmsNorm: false, eps: 1e-6f);
         imageOps.Sgemm(ws.Ffn1, ws.Normed2, bw.Ffn0, numTokens, d, _ffnDim);
         visionOps.VisionGeluInPlace(ws.Ffn1);
         imageOps.Sgemm(ws.FfnOut, ws.Ffn1, bw.Ffn2, numTokens, _ffnDim, d);
-        visionOps.ScaleGateAdd(ws.X, ws.FfnOut, ws.Mod, numTokens, d, gateOffset: 5 * d);
+        visionOps.ScaleGateAdd(ws.X, ws.FfnOut, modTensor, numTokens, d, gateOffset: 5 * d);
     }
 
     /// <summary>

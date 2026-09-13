@@ -1,3 +1,4 @@
+using OpenTail.Stingray.Core;
 
 namespace OpenTail.Stingray.Diffusion.TextEncoders;
 
@@ -31,15 +32,20 @@ namespace OpenTail.Stingray.Diffusion.TextEncoders;
 /// </summary>
 public sealed class UMT5Encoder : IDisposable
 {
-    private const int Layers      = 24;
-    private const int Dim         = 4096;
-    private const int Heads       = 64;
-    private const int HeadDim     = 64;
-    private const int FfDim       = 10240;
+    private const int Layers        = 24;
+    private const int Dim           = 4096;
+    private const int Heads         = 64;
+    private const int HeadDim       = 64;
+    private const int FfDim         = 10240;
     private const int RelPosBuckets = 32;
-    private const int MaxRelPos   = 128;
+    private const int MaxRelPos     = 128;
 
-    private readonly SafetensorsLoader _st;
+    private readonly IWeightLoader _st;
+    private readonly bool _ownsLoader;
+
+    private UMT5GpuWeights? _gpuWeights;
+    private UMT5GpuWorkspace? _gpuWorkspace;
+    private float[][]? _relPosBiases;
 
     // Perf (2026-09-11): same fix as ClipLEncoder/OpenClipGEncoder/T5Encoder -- _st.ReadF32 does a
     // real file.Seek+ReadExactly disk read under a lock on EVERY call, no caching.
@@ -52,9 +58,107 @@ public sealed class UMT5Encoder : IDisposable
         return w;
     }
 
-    public UMT5Encoder(string path) => _st = SafetensorsLoader.Open(path);
+    public UMT5Encoder(string path)
+    {
+        _st = SafetensorsLoader.Open(path);
+        _ownsLoader = true;
+    }
 
-    /// <summary>Encode token ids -> context embeddings [seq, 4096].</summary>
+    public UMT5Encoder(IWeightLoader loader, bool ownsLoader = false)
+    {
+        _st = loader;
+        _ownsLoader = ownsLoader;
+    }
+
+    public static UMT5Encoder FromLoader(IWeightLoader loader) => new(loader, ownsLoader: false);
+
+    /// <summary>
+    /// Pre-allocates GPU weights and execution workspace for fast GPU encoding.
+    /// </summary>
+    public void InitGpu(IVisionOpsBackend backend, int maxSeqLen = 256)
+    {
+        if (_gpuWeights is null)
+        {
+            _gpuWeights = new UMT5GpuWeights(backend, Wt, Layers, Dim, FfDim);
+        }
+
+        if (_gpuWorkspace is null || _gpuWorkspace.SeqLen != maxSeqLen)
+        {
+            _gpuWorkspace?.Dispose();
+            _relPosBiases = new float[Layers][];
+            for (int i = 0; i < Layers; i++)
+            {
+                var rpW = Wt($"blocks.{i}.pos_embedding.embedding.weight");
+                _relPosBiases[i] = ComputeRelPosBias(rpW, maxSeqLen, Heads);
+            }
+            _gpuWorkspace = new UMT5GpuWorkspace(backend, maxSeqLen, _relPosBiases, Dim, Heads, HeadDim, FfDim);
+        }
+    }
+
+    /// <summary>
+    /// Encodes token ids -> context embeddings [seq, 4096] directly on GPU with zero round trips per layer.
+    /// </summary>
+    public float[] EncodeGpu(int[] tokens, IVisionOpsBackend backend)
+    {
+        int seq = tokens.Length;
+        InitGpu(backend, seq);
+
+        var ws = _gpuWorkspace!;
+        var weights = _gpuWeights!;
+
+        // 1. Host token embedding lookup & upload to ws.X
+        var tokEmb = Wt("token_embedding.weight");
+        var xHost = new float[seq * Dim];
+        for (int t = 0; t < seq; t++)
+        {
+            int off = tokens[t] * Dim;
+            tokEmb.AsSpan(off, Dim).CopyTo(xHost.AsSpan(t * Dim, Dim));
+        }
+        using (var xInit = backend.Upload(xHost, TensorShape.D2(seq, Dim), exact: true))
+        {
+            ((IImageOpsBackend)backend).ScaleInPlace(ws.X, 0f);
+            backend.AddInPlace(ws.X, xInit);
+        }
+
+        // 2. 24 Transformer Blocks entirely on GPU
+        for (int i = 0; i < Layers; i++)
+        {
+            var lw = weights.Layers[i];
+
+            // -- Self-Attention Sub-layer --
+            backend.RmsNormBatched(ws.XNorm, ws.X, lw.LayerNorm0Weight, Dim, seq, eps: 1e-6f);
+
+            backend.Sgemm(ws.Q, ws.XNorm, lw.QWeight, seq, Dim, Dim);
+            backend.Sgemm(ws.K, ws.XNorm, lw.KWeight, seq, Dim, Dim);
+            backend.Sgemm(ws.V, ws.XNorm, lw.VWeight, seq, Dim, Dim);
+
+            backend.T5MultiHeadAttentionRelBias(ws.AttnOut, ws.Q, ws.K, ws.V, ws.RelPosBias[i], seq, seq, Heads, HeadDim);
+
+            backend.Sgemm(ws.XNorm, ws.AttnOut, lw.OWeight, seq, Dim, Dim);
+            backend.AddInPlace(ws.X, ws.XNorm);
+
+            // -- Feed-Forward Sub-layer --
+            backend.RmsNormBatched(ws.XNorm, ws.X, lw.LayerNorm1Weight, Dim, seq, eps: 1e-6f);
+
+            backend.Sgemm(ws.Gate, ws.XNorm, lw.Wi0Weight, seq, Dim, FfDim);
+            backend.Sgemm(ws.Val, ws.XNorm, lw.Wi1Weight, seq, Dim, FfDim);
+
+            backend.GeluTanhMul(ws.Gate, ws.Val);
+
+            backend.Sgemm(ws.FfOut, ws.Gate, lw.WoWeight, seq, FfDim, Dim);
+            backend.AddInPlace(ws.X, ws.FfOut);
+        }
+
+        // 3. Final RMSNorm
+        backend.RmsNormBatched(ws.X, ws.X, weights.FinalLayerNormWeight, Dim, seq, eps: 1e-6f);
+
+        // 4. Download result
+        var result = new float[seq * Dim];
+        backend.Download(ws.X, result);
+        return result;
+    }
+
+    /// <summary>Encode token ids -> context embeddings [seq, 4096] on CPU.</summary>
     public float[] Encode(int[] tokens)
     {
         int seq = tokens.Length;
@@ -109,8 +213,6 @@ public sealed class UMT5Encoder : IDisposable
         var k = DiffusionOps.Linear(x, kW, null, seq, Dim, Dim);
         var v = DiffusionOps.Linear(x, vW, null, seq, Dim, Dim);
 
-        // Real T5-family attention: raw matmul, NO 1/sqrt(head_dim) scaling (see T5Encoder's
-        // matching fix/doc comment -- confirmed against the real T5Attention.forward source).
         var attnOut = new float[seq * Dim];
 
         for (int h = 0; h < Heads; h++)
@@ -146,8 +248,6 @@ public sealed class UMT5Encoder : IDisposable
 
     private float[] FeedForward(float[] x, int seq, string p)
     {
-        // Real gated-gelu FFN. Wan's own naming: ffn.gate.0 = the GELU-activated branch (wi_0 in
-        // HF naming), ffn.fc1 = the linear/value branch (wi_1), ffn.fc2 = output projection (wo).
         var gateW = Wt($"{p}.gate.0.weight");
         var fc1W  = Wt($"{p}.fc1.weight");
         var fc2W  = Wt($"{p}.fc2.weight");
@@ -198,5 +298,10 @@ public sealed class UMT5Encoder : IDisposable
         return relPos > 0 ? numBuckets + bucket : bucket;
     }
 
-    public void Dispose() => _st.Dispose();
+    public void Dispose()
+    {
+        if (_ownsLoader) _st.Dispose();
+        _gpuWorkspace?.Dispose();
+        _gpuWeights?.Dispose();
+    }
 }

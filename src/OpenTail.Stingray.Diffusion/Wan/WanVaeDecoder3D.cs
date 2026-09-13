@@ -187,36 +187,82 @@ public sealed class WanVaeDecoder3D : IDisposable
         int padW = kw / 2;
         int spatial = h * w;
 
+        // 1x1 Pointwise fast path (GEMM / inner product)
+        if (kt == 1 && kh == 1 && kw == 1)
+        {
+            Parallel.For(0, outCh, oc =>
+            {
+                float b = bias[oc];
+                int wBase = oc * inCh;
+
+                for (int ti = 0; ti < t; ti++)
+                {
+                    int outOffset = (oc * t + ti) * spatial;
+                    var outSpan = output.AsSpan(outOffset, spatial);
+                    outSpan.Fill(b);
+
+                    for (int ic = 0; ic < inCh; ic++)
+                    {
+                        float wVal = weight[wBase + ic];
+                        if (wVal == 0f) continue;
+                        int inOffset = (ic * t + ti) * spatial;
+                        var inSpan = x.AsSpan(inOffset, spatial);
+
+                        for (int s = 0; s < spatial; s++)
+                        {
+                            outSpan[s] += inSpan[s] * wVal;
+                        }
+                    }
+                }
+            });
+            return output;
+        }
+
         Parallel.For(0, outCh, oc =>
         {
             float b = bias[oc];
             for (int outT = 0; outT < t; outT++)
             {
                 int outOffset = (oc * t + outT) * spatial;
+                var outSpan = output.AsSpan(outOffset, spatial);
+                outSpan.Fill(b);
 
-                for (int oh = 0; oh < h; oh++)
-                for (int ow = 0; ow < w; ow++)
+                for (int ic = 0; ic < inCh; ic++)
+                for (int dt = 0; dt < kt; dt++)
                 {
-                    float sum = b;
-                    for (int ic = 0; ic < inCh; ic++)
-                    for (int dt = 0; dt < kt; dt++)
+                    int inT = outT - padT + dt;
+                    if (inT < 0 || inT >= t) continue;
+
+                    int inFrameOff = (ic * t + inT) * spatial;
+                    int weightSliceOff = (((oc * inCh + ic) * kt + dt) * kh) * kw;
+
+                    for (int dh = 0; dh < kh; dh++)
+                    for (int dw = 0; dw < kw; dw++)
                     {
-                        int inT = outT - padT + dt;
-                        if (inT < 0 || inT >= t) continue;
+                        float wVal = weight[weightSliceOff + dh * kw + dw];
+                        if (wVal == 0f) continue;
 
-                        int inFrameOff = (ic * t + inT) * spatial;
-                        int weightSliceOff = (((oc * inCh + ic) * kt + dt) * kh) * kw;
+                        int hShift = dh - padH;
+                        int wShift = dw - padW;
 
-                        for (int dh = 0; dh < kh; dh++)
-                        for (int dw = 0; dw < kw; dw++)
+                        int ohStart = Math.Max(0, -hShift);
+                        int ohEnd = Math.Min(h, h - hShift);
+                        int owStart = Math.Max(0, -wShift);
+                        int owEnd = Math.Min(w, w - wShift);
+
+                        for (int oh = ohStart; oh < ohEnd; oh++)
                         {
-                            int inH = oh - padH + dh;
-                            int inW = ow - padW + dw;
-                            if (inH >= 0 && inH < h && inW >= 0 && inW < w)
-                                sum += x[inFrameOff + inH * w + inW] * weight[weightSliceOff + dh * kw + dw];
+                            int inH = oh + hShift;
+                            int inRowOff = inFrameOff + inH * w;
+                            int outRowOff = oh * w;
+
+                            for (int ow = owStart; ow < owEnd; ow++)
+                            {
+                                int inW = ow + wShift;
+                                outSpan[outRowOff + ow] += x[inRowOff + inW] * wVal;
+                            }
                         }
                     }
-                    output[outOffset + oh * w + ow] = sum;
                 }
             }
         });
@@ -267,12 +313,16 @@ public sealed class WanVaeDecoder3D : IDisposable
                 float b = qkvB[oc];
                 int wOff = oc * ch;
                 int outOff = oc * spatial;
-                for (int s = 0; s < spatial; s++)
+                var outSpan = qkv.AsSpan(outOff, spatial);
+                outSpan.Fill(b);
+
+                for (int ic = 0; ic < ch; ic++)
                 {
-                    float sum = b;
-                    for (int ic = 0; ic < ch; ic++)
-                        sum += qkvW[wOff + ic] * normX[(ic * t + ti) * spatial + s];
-                    qkv[outOff + s] = sum;
+                    float wVal = qkvW[wOff + ic];
+                    if (wVal == 0f) continue;
+                    int inOff = (ic * t + ti) * spatial;
+                    var inSpan = normX.AsSpan(inOff, spatial);
+                    for (int s = 0; s < spatial; s++) outSpan[s] += inSpan[s] * wVal;
                 }
             });
 
@@ -307,12 +357,16 @@ public sealed class WanVaeDecoder3D : IDisposable
                 float b = projB[oc];
                 int wOff = oc * ch;
                 int outOff = (oc * t + ti) * spatial;
-                for (int s = 0; s < spatial; s++)
+                var outSpan = output.AsSpan(outOff, spatial);
+                outSpan.Fill(b);
+
+                for (int ic = 0; ic < ch; ic++)
                 {
-                    float sum = b;
-                    for (int ic = 0; ic < ch; ic++)
-                        sum += projW[wOff + ic] * attnOut[ic * spatial + s];
-                    output[outOff + s] = sum;
+                    float wVal = projW[wOff + ic];
+                    if (wVal == 0f) continue;
+                    int inOff = ic * spatial;
+                    var inSpan = attnOut.AsSpan(inOff, spatial);
+                    for (int s = 0; s < spatial; s++) outSpan[s] += inSpan[s] * wVal;
                 }
             });
         }
@@ -322,7 +376,7 @@ public sealed class WanVaeDecoder3D : IDisposable
     }
 
     /// <summary>Real `WanResample`'s spatial half (always runs): nearest 2x spatial upsample +
-    /// Conv2d(dim -&gt; dim/2, kernel 3, pad 1), applied per-frame. The temporal doubling half is
+    /// Conv2d(dim -> dim/2, kernel 3, pad 1), applied per-frame. The temporal doubling half is
     /// gated behind a previous frame's causal-conv cache and never fires for a first/only frame
     /// -- see class doc comment.</summary>
     private (float[] output, int outC, int outH, int outW) ResampleSpatial(float[] x, string prefix, int c, int t, int h, int w)
@@ -341,31 +395,41 @@ public sealed class WanVaeDecoder3D : IDisposable
             for (int ti = 0; ti < t; ti++)
             {
                 int outOff = (oc * t + ti) * spatialOut;
-                for (int oh = 0; oh < outH; oh++)
-                for (int ow = 0; ow < outW; ow++)
+                var outSpan = output.AsSpan(outOff, spatialOut);
+                outSpan.Fill(b);
+
+                for (int ic = 0; ic < c; ic++)
                 {
-                    float sum = b;
-                    for (int ic = 0; ic < c; ic++)
+                    int inFrameOff = (ic * t + ti) * (h * w);
+                    int weightOff = (oc * c + ic) * 9;
+
+                    for (int dh = 0; dh < 3; dh++)
+                    for (int dw = 0; dw < 3; dw++)
                     {
-                        int inFrameOff = (ic * t + ti) * (h * w);
-                        int weightOff = (oc * c + ic) * 9;
-                        for (int dh = 0; dh < 3; dh++)
-                        for (int dw = 0; dw < 3; dw++)
+                        float wVal = weight[weightOff + dh * 3 + dw];
+                        if (wVal == 0f) continue;
+
+                        int hShift = dh - 1;
+                        int wShift = dw - 1;
+
+                        int ohStart = Math.Max(0, -hShift);
+                        int ohEnd = Math.Min(outH, outH - hShift);
+                        int owStart = Math.Max(0, -wShift);
+                        int owEnd = Math.Min(outW, outW - wShift);
+
+                        for (int oh = ohStart; oh < ohEnd; oh++)
                         {
-                            // Nearest 2x upsample composed with the pad-1 3x3 conv: the 3x3 kernel
-                            // centered at upsampled position (oh, ow) samples at (upH, upW).
-                            // In the pre-upsampled source tensor, that corresponds to (upH / 2, upW / 2).
-                            int upH = oh - 1 + dh;
-                            int upW = ow - 1 + dw;
-                            if (upH >= 0 && upH < outH && upW >= 0 && upW < outW)
+                            int inH = (oh + hShift) / 2;
+                            int inRowOff = inFrameOff + inH * w;
+                            int outRowOff = oh * outW;
+
+                            for (int ow = owStart; ow < owEnd; ow++)
                             {
-                                int inH = upH / 2;
-                                int inW = upW / 2;
-                                sum += x[inFrameOff + inH * w + inW] * weight[weightOff + dh * 3 + dw];
+                                int inW = (ow + wShift) / 2;
+                                outSpan[outRowOff + ow] += x[inRowOff + inW] * wVal;
                             }
                         }
                     }
-                    output[outOff + oh * outW + ow] = sum;
                 }
             }
         });

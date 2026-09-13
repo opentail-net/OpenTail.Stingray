@@ -55,6 +55,11 @@ public sealed class WanGpuWorkspace : IDisposable
         FfnOut = backend.Allocate(TensorShape.D2(numTokens, dim));
         OutPacked = backend.Allocate(TensorShape.D2(numTokens, WanModel.InChannels));
         Mod = backend.AllocatePinned(TensorShape.D1(dim * 6));
+        LayerMods = new CoreTensor[numLayers];
+        for (int i = 0; i < numLayers; i++)
+        {
+            LayerMods[i] = backend.AllocatePinned(TensorShape.D1(dim * 6));
+        }
 
         if (!ropeCos.IsEmpty)
         {
@@ -83,6 +88,8 @@ public sealed class WanGpuWorkspace : IDisposable
         }
     }
 
+    public CoreTensor[] LayerMods { get; }
+
     public void Dispose()
     {
         if (_disposed) return;
@@ -105,6 +112,7 @@ public sealed class WanGpuWorkspace : IDisposable
         _backend.Free(Ones);
         _backend.Free(Zeros);
         _backend.Free(Mod);
+        foreach (var lm in LayerMods) _backend.Free(lm);
         _backend.Free(RopeCos);
         _backend.Free(RopeSin);
 
