@@ -1,4 +1,6 @@
 
+using System.Numerics.Tensors;
+
 namespace OpenTail.Stingray.Diffusion.Wan;
 
 /// <summary>
@@ -106,19 +108,18 @@ public sealed class WanVaeDecoder3D : IDisposable
         // temporal context needed, safe to run on the whole volume at once).
         var x = CausalConv3D(z, "conv2", c, c, t, latH, latW, kt: 1, kh: 1, kw: 1);
 
-        // 3. Decode each latent frame independently through the full decoder stack (see class
-        // doc comment: bit-exact for t==1, a documented simplification for t>1).
-        var frames = new List<float[]>(t);
-        for (int fi = 0; fi < t; fi++)
+        // 3. Decode each latent frame independently through the full decoder stack (parallelized across CPU threads).
+        var frameResults = new float[t][];
+        Parallel.For(0, t, fi =>
         {
             var frameLatent = new float[c * spatial];
             for (int ch = 0; ch < c; ch++)
                 Array.Copy(x, (ch * t + fi) * spatial, frameLatent, ch * spatial, spatial);
 
-            frames.Add(DecodeSingleFrame(frameLatent, latH, latW));
-        }
+            frameResults[fi] = DecodeSingleFrame(frameLatent, latH, latW);
+        });
 
-        return frames;
+        return new List<float[]>(frameResults);
     }
 
     private float[] DecodeSingleFrame(float[] z, int latH, int latW)
@@ -208,10 +209,7 @@ public sealed class WanVaeDecoder3D : IDisposable
                         int inOffset = (ic * t + ti) * spatial;
                         var inSpan = x.AsSpan(inOffset, spatial);
 
-                        for (int s = 0; s < spatial; s++)
-                        {
-                            outSpan[s] += inSpan[s] * wVal;
-                        }
+                        TensorPrimitives.MultiplyAdd(inSpan, wVal, outSpan, outSpan);
                     }
                 }
             });
@@ -249,18 +247,18 @@ public sealed class WanVaeDecoder3D : IDisposable
                         int ohEnd = Math.Min(h, h - hShift);
                         int owStart = Math.Max(0, -wShift);
                         int owEnd = Math.Min(w, w - wShift);
+                        int width = owEnd - owStart;
+                        if (width <= 0) continue;
 
                         for (int oh = ohStart; oh < ohEnd; oh++)
                         {
                             int inH = oh + hShift;
-                            int inRowOff = inFrameOff + inH * w;
-                            int outRowOff = oh * w;
+                            int inRowOff = inFrameOff + inH * w + owStart + wShift;
+                            int outRowOff = oh * w + owStart;
 
-                            for (int ow = owStart; ow < owEnd; ow++)
-                            {
-                                int inW = ow + wShift;
-                                outSpan[outRowOff + ow] += x[inRowOff + inW] * wVal;
-                            }
+                            var inSlice = x.AsSpan(inRowOff, width);
+                            var outSlice = outSpan.Slice(outRowOff, width);
+                            TensorPrimitives.MultiplyAdd(inSlice, wVal, outSlice, outSlice);
                         }
                     }
                 }
@@ -322,7 +320,7 @@ public sealed class WanVaeDecoder3D : IDisposable
                     if (wVal == 0f) continue;
                     int inOff = (ic * t + ti) * spatial;
                     var inSpan = normX.AsSpan(inOff, spatial);
-                    for (int s = 0; s < spatial; s++) outSpan[s] += inSpan[s] * wVal;
+                    TensorPrimitives.MultiplyAdd(inSpan, wVal, outSpan, outSpan);
                 }
             });
 
@@ -366,7 +364,7 @@ public sealed class WanVaeDecoder3D : IDisposable
                     if (wVal == 0f) continue;
                     int inOff = ic * spatial;
                     var inSpan = attnOut.AsSpan(inOff, spatial);
-                    for (int s = 0; s < spatial; s++) outSpan[s] += inSpan[s] * wVal;
+                    TensorPrimitives.MultiplyAdd(inSpan, wVal, outSpan, outSpan);
                 }
             });
         }

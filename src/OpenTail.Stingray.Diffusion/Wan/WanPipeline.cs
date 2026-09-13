@@ -119,46 +119,113 @@ public sealed class WanPipeline : IDiffusionPipeline
         int patchW = latW / 2;
         int numTokens = numFrames * patchH * patchW;
 
-        var condWs = new WanWorkspace(numTokens, _transformer.Dim, _transformer.FfnDim, _transformer.NumLayers);
-        _transformer.PrecomputeCrossKvCache(condContext, condWs);
+        // GPU-resident path: only for the common single-model case (no dual-model Low/High Noise
+        // switching, which would need its own GPU weights/workspace pair -- not built yet, fall
+        // back to CPU there rather than silently doing the wrong thing).
+        bool useGpu = highNoiseTransformer is null && _transformer.Backend is not null
+            && _transformer.Backend is IImageOpsBackend;
 
-        WanWorkspace? uncondWs = null;
-        if (guidance > 1.0f)
+        if (useGpu)
         {
-            uncondWs = new WanWorkspace(numTokens, _transformer.Dim, _transformer.FfnDim, _transformer.NumLayers);
-            _transformer.PrecomputeCrossKvCache(uncondContext, uncondWs);
-        }
+            var imageOps = (IImageOpsBackend)_transformer.Backend!;
+            var gpuWeights = _transformer.GetOrCreateGpuWeights();
+            var (ropeCos, ropeSin) = WanRoPE.Compute3DRoPECompact(numFrames, patchH, patchW, headDim: _transformer.HeadDim);
 
-        // 4. Euler Flow trajectory loop with optional Dual-Model Low/High Noise switching
-        for (int step = 0; step < steps; step++)
-        {
-            float t = timesteps[step];
-            float tNext = timesteps[step + 1];
-            float dt = t - tNext;
+            // Size the cross-KV cache from the REAL text context length, not the local `seqLen`
+            // default (only used for the all-zero fallback context) -- the real UMT5 encoder used
+            // by the CLI (ImageCommand.RunWan) tokenizes at maxLen=226, not 512; sizing the GPU
+            // workspace from the wrong constant would either waste VRAM (harmless here, since
+            // 226 < 512) or, for a longer real context, silently overflow the preallocated
+            // cross-KV buffers -- always derive it from the actual array.
+            int condTxtTokens = condContext.Length / WanModel.TextDim;
+            using var condGpuWs = new WanGpuWorkspace(_transformer.Backend!, numTokens, _transformer.Dim, _transformer.FfnDim, _transformer.NumLayers, condTxtTokens, ropeCos, ropeSin, headDim: _transformer.HeadDim);
+            _transformer.PrecomputeCrossKvCacheGpu(condContext, condGpuWs, gpuWeights, imageOps);
 
-            var activeModel = (highNoiseTransformer is not null && t >= highNoiseBoundary)
-                ? highNoiseTransformer
-                : _transformer;
-
-            var condVelocity = activeModel.Forward(latent, t * 1000.0f, condContext, numFrames, latH, latW, condWs);
-            float[] velocity;
-
+            WanGpuWorkspace? uncondGpuWs = null;
             if (guidance > 1.0f)
             {
-                var uncondVelocity = activeModel.Forward(latent, t * 1000.0f, uncondContext, numFrames, latH, latW, uncondWs);
-                velocity = new float[condVelocity.Length];
-                for (int i = 0; i < velocity.Length; i++)
-                    velocity[i] = uncondVelocity[i] + guidance * (condVelocity[i] - uncondVelocity[i]);
+                int uncondTxtTokens = uncondContext.Length / WanModel.TextDim;
+                uncondGpuWs = new WanGpuWorkspace(_transformer.Backend!, numTokens, _transformer.Dim, _transformer.FfnDim, _transformer.NumLayers, uncondTxtTokens, ropeCos, ropeSin, headDim: _transformer.HeadDim);
+                _transformer.PrecomputeCrossKvCacheGpu(uncondContext, uncondGpuWs, gpuWeights, imageOps);
             }
-            else
+
+            try
             {
-                velocity = condVelocity;
+                for (int step = 0; step < steps; step++)
+                {
+                    float t = timesteps[step];
+                    float tNext = timesteps[step + 1];
+                    float dt = t - tNext;
+
+                    var condVelocity = _transformer.ForwardGpu(latent, t * 1000.0f, condContext, numFrames, latH, latW, condGpuWs, gpuWeights, imageOps);
+                    float[] velocity;
+
+                    if (guidance > 1.0f)
+                    {
+                        var uncondVelocity = _transformer.ForwardGpu(latent, t * 1000.0f, uncondContext, numFrames, latH, latW, uncondGpuWs!, gpuWeights, imageOps);
+                        velocity = new float[condVelocity.Length];
+                        for (int i = 0; i < velocity.Length; i++)
+                            velocity[i] = uncondVelocity[i] + guidance * (condVelocity[i] - uncondVelocity[i]);
+                    }
+                    else
+                    {
+                        velocity = condVelocity;
+                    }
+
+                    for (int i = 0; i < latent.Length; i++)
+                        latent[i] -= dt * velocity[i];
+
+                    progress?.Invoke(step + 1, steps);
+                }
+            }
+            finally
+            {
+                uncondGpuWs?.Dispose();
+            }
+        }
+        else
+        {
+            var condWs = new WanWorkspace(numTokens, _transformer.Dim, _transformer.FfnDim, _transformer.NumLayers);
+            _transformer.PrecomputeCrossKvCache(condContext, condWs);
+
+            WanWorkspace? uncondWs = null;
+            if (guidance > 1.0f)
+            {
+                uncondWs = new WanWorkspace(numTokens, _transformer.Dim, _transformer.FfnDim, _transformer.NumLayers);
+                _transformer.PrecomputeCrossKvCache(uncondContext, uncondWs);
             }
 
-            for (int i = 0; i < latent.Length; i++)
-                latent[i] -= dt * velocity[i];
+            // 4. Euler Flow trajectory loop with optional Dual-Model Low/High Noise switching
+            for (int step = 0; step < steps; step++)
+            {
+                float t = timesteps[step];
+                float tNext = timesteps[step + 1];
+                float dt = t - tNext;
 
-            progress?.Invoke(step + 1, steps);
+                var activeModel = (highNoiseTransformer is not null && t >= highNoiseBoundary)
+                    ? highNoiseTransformer
+                    : _transformer;
+
+                var condVelocity = activeModel.Forward(latent, t * 1000.0f, condContext, numFrames, latH, latW, condWs);
+                float[] velocity;
+
+                if (guidance > 1.0f)
+                {
+                    var uncondVelocity = activeModel.Forward(latent, t * 1000.0f, uncondContext, numFrames, latH, latW, uncondWs);
+                    velocity = new float[condVelocity.Length];
+                    for (int i = 0; i < velocity.Length; i++)
+                        velocity[i] = uncondVelocity[i] + guidance * (condVelocity[i] - uncondVelocity[i]);
+                }
+                else
+                {
+                    velocity = condVelocity;
+                }
+
+                for (int i = 0; i < latent.Length; i++)
+                    latent[i] -= dt * velocity[i];
+
+                progress?.Invoke(step + 1, steps);
+            }
         }
 
         // 5. Decode 3D latents to full RGB video frames via the real 3D causal VAE (same decoder

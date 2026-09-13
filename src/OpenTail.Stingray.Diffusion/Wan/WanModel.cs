@@ -211,8 +211,8 @@ public sealed class WanModel : IDisposable
             imageOps.WritePinned(gpuWs.LayerMods[b], hostMod);
         }
 
-        // Multi-block batching: record 5 blocks per command buffer to eliminate 80% of driver fence waits
-        const int batchBlocks = 5;
+        // Full-graph batching: record all 30 blocks per command buffer submission to eliminate driver fence bubbles
+        const int batchBlocks = 30;
         for (int chunkStart = 0; chunkStart < _numLayers; chunkStart += batchBlocks)
         {
             int chunkEnd = Math.Min(_numLayers, chunkStart + batchBlocks);

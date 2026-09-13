@@ -48,12 +48,24 @@ a genuinely *dead, unused* field — check for real, not just grep-and-assume):
 | VoxCpm2 | 0/15 | **Confirmed 100% CPU** |
 | Xtts | 0/21 | **Confirmed 100% CPU** |
 
-**Not yet audited by this pass** (present in `src/OpenTail.Stingray.Audio/` but not checked):
-Citrinet, FunASR, MarbleNet, MmsTts, NemotronAsr, ParaformerOnnx, Parakeet, QwenASR, SenseVoice,
-Vad, VoxtralRealtime, Whisper — several of these are ASR (recognition, not generation) models,
-which may have a different cost-benefit profile (typically much smaller/faster than TTS
-generation models — check whether GPU residency is even worth it before investing, per the
-prioritization note below).
+**Update, same day: the remaining 12 models have now been audited too** (same grep). All 12 are
+**confirmed 100% CPU** as well — Citrinet (0/4), FunASR (0/12), MarbleNet (0/3), MmsTts (0/8),
+NemotronAsr (0/5), ParaformerOnnx (0/4), Parakeet (0/6), QwenASR (0/11), SenseVoice (0/4), Vad
+(0/4), VoxtralRealtime (0/6), Whisper (0/10). **Correction to this doc's own earlier speculation**:
+`ParaformerOnnx` is NOT ONNX-Runtime-backed despite the name — confirmed by checking its actual
+source (`ParaformerOnnxModel.cs`/`ParaformerOnnxDecoder.cs`/`ParaformerOnnxPipeline.cs`): no
+`OnnxRuntime`/`InferenceSession` references anywhere, it's a native port like everything else in
+this codebase, "Onnx" in the name refers only to the original weight-export format it was
+converted from. So it's a normal candidate for this playbook like any other entry here, not a
+special case to skip.
+
+So: **all 30 audited models in `src/OpenTail.Stingray.Audio/` are either 100% CPU (26 of them) or
+have some partial GPU code worth auditing first (4: F5TTS, Chatterbox, CosyVoice, Parler)** — no
+model in this stack has confirmed real GPU residency yet. Several of the ASR models (Whisper,
+Parakeet, SenseVoice, FunASR, NemotronAsr, ParaformerOnnx, QwenASR, MarbleNet, Citrinet, MmsTts,
+VoxtralRealtime) are recognition models, typically smaller/faster than TTS generation models —
+check real size/RTF before assuming GPU residency is worth the effort there (see prioritization
+note below); Vad (Silero VAD) in particular is almost certainly too tiny to be worth it at all.
 
 **Important caveat on `PersonaPlex`**: `PerformanceLeague.md` already documents a **real GPU win**
 for this model (`PersonaPlex, PERF-SWEPT (Horizontal Pass A)`: 1099s → 135.140s, 8.1×) — but that
@@ -118,21 +130,28 @@ assumption):
       encoder, vocoder FiLM projection) plus its own earlier `XttsResNetEncoder` GPU-SIMD-wiring
       win (2.774× RTF, per `PerformanceLeague.md`) — this one already has real perf-pass history,
       check it before assuming a from-scratch story.
-- [ ] **Citrinet** *(not yet audited for `IComputeBackend` presence)*
-- [ ] **FunASR** *(not yet audited)*
-- [ ] **MarbleNet** *(not yet audited)*
-- [ ] **MmsTts** *(not yet audited)*
-- [ ] **NemotronAsr** *(not yet audited)*
-- [ ] **ParaformerOnnx** *(not yet audited — likely ONNX-Runtime-backed, may not even apply to this
-      project's own Vulkan/CUDA backend abstraction the same way; check before assuming)*
-- [ ] **Parakeet** *(not yet audited)*
-- [ ] **QwenASR** *(not yet audited)*
-- [ ] **SenseVoice** *(not yet audited)*
-- [ ] **Vad** *(not yet audited — Silero VAD is typically tiny; likely not worth GPU residency at
-      all, check size before spending effort)*
-- [ ] **VoxtralRealtime** *(not yet audited)*
-- [ ] **Whisper** *(not yet audited — this project's own ASR reference point elsewhere in
-      `PerformanceLeague.md`, likely worth checking given its prominence)*
+- [ ] **Citrinet** — confirmed 100% CPU. ASR model, check real size/RTF before prioritizing.
+- [ ] **FunASR** — confirmed 100% CPU. ASR model, check real size/RTF before prioritizing.
+- [ ] **MarbleNet** — confirmed 100% CPU. ASR (VAD-adjacent) model, likely small — check size first.
+- [ ] **MmsTts** — confirmed 100% CPU. A TTS model despite living near the ASR cluster in this
+      list — check real size/RTF like the other TTS candidates above.
+- [ ] **NemotronAsr** — confirmed 100% CPU. ASR model, check real size/RTF before prioritizing.
+- [ ] **ParaformerOnnx** — confirmed 100% CPU, and confirmed NOT ONNX-Runtime-backed (checked the
+      real source directly — no `OnnxRuntime`/`InferenceSession` references anywhere; "Onnx" in
+      the name is just the original weight-export format, this is a normal native port like every
+      other model here, not a special case).
+- [ ] **Parakeet** — confirmed 100% CPU. ASR model, check real size/RTF before prioritizing.
+- [ ] **QwenASR** — confirmed 100% CPU. ASR model, check real size/RTF before prioritizing.
+- [ ] **SenseVoice** — confirmed 100% CPU. ASR model, check real size/RTF before prioritizing.
+- [ ] **Vad** — confirmed 100% CPU. Silero VAD is typically tiny; likely not worth GPU residency
+      at all — check real size before spending any effort here.
+- [ ] **VoxtralRealtime** — confirmed 100% CPU. Check real size/RTF and current correctness status
+      before prioritizing — this project's own memory notes flag a prior "vibevoice_asr corruption
+      finding" cross-reference worth checking isn't related before assuming this one is solid.
+- [ ] **Whisper** — confirmed 100% CPU. This project's own most-cited ASR reference point in
+      `PerformanceLeague.md` (base/small/medium/large-v3 RTF rows already exist) — likely worth
+      checking first among the ASR candidates given how much real baseline data already exists to
+      compare against.
 
 ## Practical constraints (same as every prior handoff this session)
 
