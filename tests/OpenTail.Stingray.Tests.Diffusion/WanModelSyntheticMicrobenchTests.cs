@@ -105,7 +105,95 @@ public sealed class WanModelSyntheticMicrobenchTests
         double projectedFullDiTSeconds = (msPerBlock * 30.0 * 40.0) / 1000.0;
         double projectedFullDiTMinutes = projectedFullDiTSeconds / 60.0;
 
-        Console.Error.WriteLine($"[Wan Benchmark] 1-block forward ({numTokens} visual tokens, D={dim}, H={numHeads}): {msPerBlock:F1} ms");
-        Console.Error.WriteLine($"[Wan Benchmark] Projected 30-layer x 40-forward full DiT CPU runtime: {projectedFullDiTSeconds:F1}s ({projectedFullDiTMinutes:F1} min)");
+        Console.Error.WriteLine($"[Wan CPU Benchmark] 1-block forward ({numTokens} visual tokens, D={dim}, H={numHeads}): {msPerBlock:F1} ms");
+        Console.Error.WriteLine($"[Wan CPU Benchmark] Projected 30-layer x 40-forward full DiT CPU runtime: {projectedFullDiTSeconds:F1}s ({projectedFullDiTMinutes:F1} min)");
+    }
+
+    [Fact]
+    public void WanModel_SingleBlock_RunsCleanly_WithWanGpuWorkspace()
+    {
+        Vulkan.VulkanBackend? vulkan = null;
+        try { vulkan = new Vulkan.VulkanBackend(); }
+        catch { return; }
+        using (vulkan)
+        {
+            const int numLayers = 1;
+            const int dim = 1536;
+            const int numHeads = 12;
+            const int ffnDim = 8960;
+            const int numTokens = 2048;
+            const int numTxt = 512;
+
+            var loader = new SyntheticWeightLoader();
+            var random = new Random(42);
+
+            void AddWeight(string name, int size)
+            {
+                var arr = new float[size];
+                for (int i = 0; i < size; i++) arr[i] = (float)(random.NextDouble() * 0.02 - 0.01);
+                loader.Add(name, arr);
+            }
+
+            AddWeight("patch_embedding.weight", dim * WanModel.InChannels);
+            AddWeight("time_embedding.0.weight", dim * 256);
+            AddWeight("time_embedding.2.weight", dim * dim);
+            AddWeight("time_projection.1.weight", dim * 6 * dim);
+            AddWeight("text_embedding.0.weight", dim * WanModel.TextDim);
+            AddWeight("text_embedding.2.weight", dim * dim);
+
+            AddWeight("blocks.0.modulation", dim * 6);
+            AddWeight("blocks.0.norm3.weight", dim);
+            AddWeight("blocks.0.norm3.bias", dim);
+            AddWeight("blocks.0.self_attn.q.weight", dim * dim);
+            AddWeight("blocks.0.self_attn.k.weight", dim * dim);
+            AddWeight("blocks.0.self_attn.v.weight", dim * dim);
+            AddWeight("blocks.0.self_attn.o.weight", dim * dim);
+            AddWeight("blocks.0.self_attn.norm_q.weight", dim);
+            AddWeight("blocks.0.self_attn.norm_k.weight", dim);
+
+            AddWeight("blocks.0.cross_attn.q.weight", dim * dim);
+            AddWeight("blocks.0.cross_attn.k.weight", dim * dim);
+            AddWeight("blocks.0.cross_attn.v.weight", dim * dim);
+            AddWeight("blocks.0.cross_attn.o.weight", dim * dim);
+            AddWeight("blocks.0.cross_attn.norm_q.weight", dim);
+            AddWeight("blocks.0.cross_attn.norm_k.weight", dim);
+
+            AddWeight("blocks.0.ffn.0.weight", ffnDim * dim);
+            AddWeight("blocks.0.ffn.2.weight", dim * ffnDim);
+
+            AddWeight("head.modulation", dim * 2);
+            AddWeight("head.head.weight", WanModel.InChannels * dim);
+
+            using var model = new WanModel(loader, "", numLayers: numLayers, dim: dim, numHeads: numHeads, backend: vulkan);
+            using var gpuWeights = model.GetOrCreateGpuWeights();
+            using var gpuWs = new WanGpuWorkspace(vulkan, numTokens, dim, ffnDim, numLayers, numTxt);
+
+            var latent = new float[16 * 2 * 64 * 64];
+            var textCtx = new float[numTxt * WanModel.TextDim];
+
+            // Warmup & precompute text KV cache on GPU
+            model.PrecomputeCrossKvCacheGpu(textCtx, gpuWs, gpuWeights, vulkan);
+
+            // Warmup runs
+            for (int i = 0; i < 2; i++)
+            {
+                model.ForwardGpu(latent, 500f, textCtx, numFrames: 2, latH: 64, latW: 64, gpuWs, gpuWeights, vulkan);
+            }
+
+            const int iterations = 5;
+            var sw = Stopwatch.StartNew();
+            for (int i = 0; i < iterations; i++)
+            {
+                model.ForwardGpu(latent, 500f, textCtx, numFrames: 2, latH: 64, latW: 64, gpuWs, gpuWeights, vulkan);
+            }
+            sw.Stop();
+
+            double msPerBlock = sw.Elapsed.TotalMilliseconds / iterations;
+            double projectedFullDiTSeconds = (msPerBlock * 30.0 * 40.0) / 1000.0;
+            double projectedFullDiTMinutes = projectedFullDiTSeconds / 60.0;
+
+            Console.Error.WriteLine($"[Wan Vulkan GPU Benchmark] 1-block forward ({numTokens} visual tokens, D={dim}, H={numHeads}): {msPerBlock:F1} ms");
+            Console.Error.WriteLine($"[Wan Vulkan GPU Benchmark] Projected 30-layer x 40-forward full DiT Vulkan runtime: {projectedFullDiTSeconds:F1}s ({projectedFullDiTMinutes:F1} min)");
+        }
     }
 }
