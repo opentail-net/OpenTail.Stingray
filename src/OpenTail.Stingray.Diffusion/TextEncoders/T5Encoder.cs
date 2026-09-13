@@ -1,6 +1,7 @@
 
 using System.Buffers;
 using System.Numerics.Tensors;
+using OpenTail.Stingray.Core;
 
 namespace OpenTail.Stingray.Diffusion.TextEncoders;
 
@@ -35,6 +36,9 @@ public sealed class T5Encoder : IDisposable
     private readonly bool _ownsLoader;
     private float[]? _relPosBias; // lazy cached
 
+    private T5GpuWeights? _gpuWeights;
+    private T5GpuWorkspace? _gpuWorkspace;
+
     // Perf (2026-09-11): same fix as ClipLEncoder/OpenClipGEncoder -- _st.ReadF32 does a real
     // file.Seek+ReadExactly disk read under a lock on EVERY call, no caching. T5-XXL is a much
     // bigger model (24 layers, 4096-dim) than CLIP, so this is likely even more significant here.
@@ -64,6 +68,100 @@ public sealed class T5Encoder : IDisposable
     /// caller retains ownership and must dispose it themselves; this instance's own
     /// <see cref="Dispose"/> is then a no-op.</summary>
     public static T5Encoder FromLoader(IWeightLoader loader) => new(loader, ownsLoader: false);
+
+    /// <summary>
+    /// Pre-allocates GPU weights and execution workspace for fast GPU encoding.
+    /// </summary>
+    public void InitGpu(IVisionOpsBackend backend, int maxSeqLen = 256)
+    {
+        if (_gpuWeights is null)
+        {
+            _gpuWeights = new T5GpuWeights(backend, Wt, Layers, Dim, FfDim);
+        }
+
+        if (_gpuWorkspace is null || _gpuWorkspace.SeqLen != maxSeqLen)
+        {
+            _gpuWorkspace?.Dispose();
+            var rpW = Wt("encoder.block.0.layer.0.SelfAttention.relative_attention_bias.weight");
+            _relPosBias = ComputeRelPosBias(rpW, maxSeqLen, Heads);
+            _gpuWorkspace = new T5GpuWorkspace(backend, maxSeqLen, _relPosBias, Dim, Heads, HeadDim, FfDim);
+        }
+    }
+
+    /// <summary>
+    /// Encodes token ids → context embeddings [seq, 4096] directly on GPU with zero round trips per layer.
+    /// </summary>
+    public float[] EncodeGpu(int[] tokens, IVisionOpsBackend backend)
+    {
+        int seq = tokens.Length;
+        InitGpu(backend, seq);
+
+        var ws = _gpuWorkspace!;
+        var weights = _gpuWeights!;
+
+        // 1. Host token embedding lookup & upload to ws.X
+        var tokEmb = Wt("shared.weight");
+        var xHost = new float[seq * Dim];
+        for (int t = 0; t < seq; t++)
+        {
+            int off = tokens[t] * Dim;
+            tokEmb.AsSpan(off, Dim).CopyTo(xHost.AsSpan(t * Dim, Dim));
+        }
+        using (var xInit = backend.Upload(xHost, TensorShape.D2(seq, Dim), exact: true))
+        {
+            ((IImageOpsBackend)backend).ScaleInPlace(ws.X, 0f);
+            backend.AddInPlace(ws.X, xInit);
+        }
+
+        // 2. 24 Transformer Blocks entirely on GPU
+        for (int i = 0; i < Layers; i++)
+        {
+            var lw = weights.Layers[i];
+
+            // ── Self-Attention Sub-layer ──
+            // Pre-norm: xNorm = RmsNorm(x, ln0, eps=1e-6)
+            backend.RmsNormBatched(ws.XNorm, ws.X, lw.LayerNorm0Weight, Dim, seq, eps: 1e-6f);
+
+            // Q, K, V projections via 64x128 tiled SgemmF16
+            backend.Sgemm(ws.Q, ws.XNorm, lw.QWeight, seq, Dim, Dim);
+            backend.Sgemm(ws.K, ws.XNorm, lw.KWeight, seq, Dim, Dim);
+            backend.Sgemm(ws.V, ws.XNorm, lw.VWeight, seq, Dim, Dim);
+
+            // Multi-head attention with relative position bias
+            backend.T5MultiHeadAttentionRelBias(ws.AttnOut, ws.Q, ws.K, ws.V, ws.RelPosBias, seq, seq, Heads, HeadDim);
+
+            // O projection: xNorm = Sgemm(AttnOut, O)
+            backend.Sgemm(ws.XNorm, ws.AttnOut, lw.OWeight, seq, Dim, Dim);
+
+            // Residual add: X += XNorm
+            backend.AddInPlace(ws.X, ws.XNorm);
+
+            // ── Feed-Forward Sub-layer ──
+            // Pre-norm: xNorm = RmsNorm(x, ln1, eps=1e-6)
+            backend.RmsNormBatched(ws.XNorm, ws.X, lw.LayerNorm1Weight, Dim, seq, eps: 1e-6f);
+
+            // wi_0, wi_1 up-projections: [seq, Dim] -> [seq, FfDim]
+            backend.Sgemm(ws.Gate, ws.XNorm, lw.Wi0Weight, seq, Dim, FfDim);
+            backend.Sgemm(ws.Val, ws.XNorm, lw.Wi1Weight, seq, Dim, FfDim);
+
+            // Gated GELU: gate = gelu_new(gate) * val
+            backend.GeluTanhMul(ws.Gate, ws.Val);
+
+            // Down-projection: FfOut = Sgemm(Gate, wo)
+            backend.Sgemm(ws.FfOut, ws.Gate, lw.WoWight, seq, FfDim, Dim);
+
+            // Residual add: X += FfOut
+            backend.AddInPlace(ws.X, ws.FfOut);
+        }
+
+        // 3. Final LayerNorm
+        backend.RmsNormBatched(ws.X, ws.X, weights.FinalLayerNormWeight, Dim, seq, eps: 1e-6f);
+
+        // 4. Download result to host
+        var output = new float[seq * Dim];
+        backend.Download(ws.X, output);
+        return output;
+    }
 
     /// <summary>
     /// Encode token ids → context embeddings [seq, 4096].
@@ -244,6 +342,8 @@ public sealed class T5Encoder : IDisposable
 
     public void Dispose()
     {
+        _gpuWorkspace?.Dispose();
+        _gpuWeights?.Dispose();
         if (_ownsLoader) _st.Dispose();
     }
 }

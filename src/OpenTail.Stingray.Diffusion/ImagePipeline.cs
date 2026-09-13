@@ -135,7 +135,9 @@ public sealed class ImagePipeline : IDisposable, IDiffusionPipeline
         var t5Tokens = new int[T5MaxSequenceLength];
         Array.Copy(t5TokensRaw, t5Tokens, Math.Min(t5TokensRaw.Length, T5MaxSequenceLength));
         // Remaining entries stay 0 (T5's <pad> token id), matching real T5 padding.
-        var txtEmbeds  = _t5.Encode(t5Tokens);             // [seq, 4096]
+        var txtEmbeds = (_backend is not CpuBackend && _backend is IVisionOpsBackend t5GpuOps)
+            ? _t5.EncodeGpu(t5Tokens, t5GpuOps)
+            : _t5.Encode(t5Tokens);             // [seq, 4096]
         int nTxt = t5Tokens.Length;
         double msT5 = sw?.Elapsed.TotalMilliseconds ?? 0; sw?.Restart();
 

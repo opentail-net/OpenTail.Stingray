@@ -7482,6 +7482,181 @@ internal static class Shaders
         """;
 
     /// <summary>
+    /// T5-XXL multi-head self-attention with additive relative position bias (HEAD_DIM=64).
+    /// scores[h, i, j] = dot(q, k) * scale + rel_bias[h, i, j]
+    /// Q, K, V are [seq, numHeads * 64] (row-major per token).
+    /// RelBias is [numHeads, qSeq, kvSeq].
+    /// Push constants: { qSeq, kvSeq, numHeads, scale }.
+    /// Bindings: 0=Q, 1=K, 2=V, 3=RelBias, 4=Output.
+    /// </summary>
+    internal const string T5MultiHeadAttentionRelBias = """
+        #version 450
+        #extension GL_EXT_control_flow_attributes : enable
+
+        #define HEAD_DIM   64
+        #define BR         16
+        #define BC         16
+        #define WG_SIZE    64
+
+        const float NEG_INF = -3.402823466e+38;
+
+        layout(std430, binding = 0) readonly  buffer QVec { vec4 q_vec[]; };
+        layout(std430, binding = 1) readonly  buffer KVec { vec4 k_vec[]; };
+        layout(std430, binding = 2) readonly  buffer VVec { vec4 v_vec[]; };
+        layout(std430, binding = 3) readonly  buffer BiasBuffer { float rel_bias[]; };
+        layout(std430, binding = 4) writeonly buffer OVec { vec4 o_vec[]; };
+
+        layout(push_constant) uniform Params {
+            uint qSeq;
+            uint kvSeq;
+            uint numHeads;
+            float scale;
+        } p;
+
+        shared vec4 q_tile[BR * 16];
+        shared vec4 k_tile[BC * 16];
+        shared vec4 v_tile[BC * 16];
+        shared float score_tile[BR * BC];
+        shared float row_m[BR];
+        shared float row_l[BR];
+        shared float row_alpha[BR];
+
+        layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+        void main() {
+            const uint tid = gl_LocalInvocationIndex; // 0..63
+            const uint qr = tid >> 2;                 // 0..15 (16 query rows, 4 threads per row)
+            const uint sub = tid & 3u;                // 0..3
+            const uint kc = sub * 4u;                 // 0, 4, 8, 12 (4 keys per thread)
+            const uint q_row = gl_WorkGroupID.x * BR + qr;
+
+            const uint h = gl_WorkGroupID.z;
+            const uint headVecOff = (h * HEAD_DIM) >> 2;
+            const uint dimVec = (p.numHeads * HEAD_DIM) >> 2;
+
+            // Load Q tile [16, 16 vec4s] = 256 vec4s across 64 threads (4 vec4s / thread)
+            [[unroll]] for (uint p_load = 0u; p_load < 4u; ++p_load) {
+                uint idx = tid + p_load * 64u;
+                uint r = idx >> 4;
+                uint d = idx & 15u;
+                uint globalQ = gl_WorkGroupID.x * BR + r;
+                if (globalQ < p.qSeq) {
+                    q_tile[idx] = q_vec[globalQ * dimVec + headVecOff + d];
+                } else {
+                    q_tile[idx] = vec4(0.0);
+                }
+            }
+
+            if (tid < BR) {
+                row_m[tid] = NEG_INF;
+                row_l[tid] = 0.0;
+                row_alpha[tid] = 0.0;
+            }
+            barrier();
+
+            vec4 acc0 = vec4(0.0), acc1 = vec4(0.0), acc2 = vec4(0.0), acc3 = vec4(0.0);
+            bool q_valid = (q_row < p.qSeq);
+
+            for (uint tile_base = 0u; tile_base < p.kvSeq; tile_base += BC) {
+                // Load K and V tiles [16, 16 vec4s] = 256 vec4s across 64 threads (4 vec4s / thread)
+                [[unroll]] for (uint p_load = 0u; p_load < 4u; ++p_load) {
+                    uint idx = tid + p_load * 64u;
+                    uint r = idx >> 4;
+                    uint d = idx & 15u;
+                    uint globalK = tile_base + r;
+                    if (globalK < p.kvSeq) {
+                        k_tile[idx] = k_vec[globalK * dimVec + headVecOff + d];
+                        v_tile[idx] = v_vec[globalK * dimVec + headVecOff + d];
+                    } else {
+                        k_tile[idx] = vec4(0.0);
+                        v_tile[idx] = vec4(0.0);
+                    }
+                }
+                barrier();
+
+                // 1. Compute Q * K dot products + Add relative position bias
+                if (q_valid) {
+                    uint q_base = qr * 16u;
+                    float s0 = 0.0, s1 = 0.0, s2 = 0.0, s3 = 0.0;
+                    [[unroll]] for (uint d = 0u; d < 16u; ++d) {
+                        vec4 q_val = q_tile[q_base + d];
+                        s0 += dot(q_val, k_tile[(kc + 0u) * 16u + d]);
+                        s1 += dot(q_val, k_tile[(kc + 1u) * 16u + d]);
+                        s2 += dot(q_val, k_tile[(kc + 2u) * 16u + d]);
+                        s3 += dot(q_val, k_tile[(kc + 3u) * 16u + d]);
+                    }
+
+                    uint bias_base = (h * p.qSeq + q_row) * p.kvSeq + tile_base + kc;
+                    s0 = (tile_base + kc + 0u < p.kvSeq) ? (s0 * p.scale + rel_bias[bias_base + 0u]) : NEG_INF;
+                    s1 = (tile_base + kc + 1u < p.kvSeq) ? (s1 * p.scale + rel_bias[bias_base + 1u]) : NEG_INF;
+                    s2 = (tile_base + kc + 2u < p.kvSeq) ? (s2 * p.scale + rel_bias[bias_base + 2u]) : NEG_INF;
+                    s3 = (tile_base + kc + 3u < p.kvSeq) ? (s3 * p.scale + rel_bias[bias_base + 3u]) : NEG_INF;
+
+                    score_tile[qr * BC + kc + 0u] = s0;
+                    score_tile[qr * BC + kc + 1u] = s1;
+                    score_tile[qr * BC + kc + 2u] = s2;
+                    score_tile[qr * BC + kc + 3u] = s3;
+                }
+                barrier();
+
+                // 2. Softmax update: 16 threads (tid 0..15) each handle 1 query row
+                if (tid < BR && (gl_WorkGroupID.x * BR + tid < p.qSeq)) {
+                    float m_old = row_m[tid];
+                    float l_old = row_l[tid];
+
+                    float tile_max = NEG_INF;
+                    [[unroll]] for (uint k = 0u; k < BC; ++k) {
+                        tile_max = max(tile_max, score_tile[tid * BC + k]);
+                    }
+
+                    float m_new = max(m_old, tile_max);
+                    float alpha = exp(m_old - m_new);
+                    row_alpha[tid] = alpha;
+
+                    float tile_sum = 0.0;
+                    [[unroll]] for (uint k = 0u; k < BC; ++k) {
+                        float prob = (score_tile[tid * BC + k] > NEG_INF * 0.5) ? exp(score_tile[tid * BC + k] - m_new) : 0.0;
+                        score_tile[tid * BC + k] = prob;
+                        tile_sum += prob;
+                    }
+
+                    row_l[tid] = l_old * alpha + tile_sum;
+                    row_m[tid] = m_new;
+                }
+                barrier();
+
+                // 3. Accumulate P * V: each thread (qr, sub) accumulates 4 vec4s (16 floats)
+                if (q_valid) {
+                    float alpha = row_alpha[qr];
+                    acc0 *= alpha; acc1 *= alpha; acc2 *= alpha; acc3 *= alpha;
+
+                    uint d_chunk = sub * 4u; // 0, 4, 8, 12
+                    [[unroll]] for (uint k = 0u; k < BC; ++k) {
+                        float prob = score_tile[qr * BC + k];
+                        uint v_base = k * 16u + d_chunk;
+                        acc0 += prob * v_tile[v_base + 0u];
+                        acc1 += prob * v_tile[v_base + 1u];
+                        acc2 += prob * v_tile[v_base + 2u];
+                        acc3 += prob * v_tile[v_base + 3u];
+                    }
+                }
+                barrier();
+            }
+
+            // Write output
+            if (q_valid) {
+                float l = row_l[qr];
+                float invL = (l > 0.0) ? (1.0 / l) : 0.0;
+                uint outBase = q_row * dimVec + headVecOff + sub * 4u;
+                o_vec[outBase + 0u] = acc0 * invL;
+                o_vec[outBase + 1u] = acc1 * invL;
+                o_vec[outBase + 2u] = acc2 * invL;
+                o_vec[outBase + 3u] = acc3 * invL;
+            }
+        }
+        """;
+
+    /// <summary>
     /// LeakyReLU in-place: data[i] = data[i] >= 0 ? data[i] : negSlope * data[i]
     /// Push constants: { n, negSlope }.
     /// Bindings: 0=data (in/out).

@@ -87,7 +87,8 @@ public sealed class WanGpuParityTests
 
         using var model = new WanModel(loader, "", numLayers: numLayers, dim: dim, numHeads: numHeads, backend: vulkan);
         using var gpuWeights = model.GetOrCreateGpuWeights();
-        using var gpuWs = new WanGpuWorkspace(vulkan, numTokens, dim, ffnDim, numLayers, numTxt);
+        var (ropeCos, ropeSin) = WanRoPE.Compute3DRoPECompact(numFrames: 2, patchH: 4, patchW: 4, headDim: dim / numHeads);
+        using var gpuWs = new WanGpuWorkspace(vulkan, numTokens, dim, ffnDim, numLayers, numTxt, ropeCos, ropeSin, headDim: dim / numHeads);
         var cpuWs = new WanWorkspace(numTokens, dim, ffnDim, numLayers);
 
         var latent = new float[16 * 2 * 8 * 8]; // patchH=4, patchW=4 -> 2*4*4 = 32 tokens

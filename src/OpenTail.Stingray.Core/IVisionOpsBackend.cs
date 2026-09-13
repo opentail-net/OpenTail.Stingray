@@ -129,5 +129,21 @@ public interface IVisionOpsBackend : IComputeBackend
     /// </summary>
     void FluxEulerStep(Tensor x, Tensor v, float signDt, int count)
         => throw new NotSupportedException();
+
+    /// <summary>
+    /// T5 multi-head self-attention with relative position bias:
+    /// scores[h, i, j] = dot(q, k) * (1/sqrt(headDim)) + relBias[h, i, j], output = softmax(scores) * v.
+    /// Q, K, V are [seq, numHeads * headDim] (row-major per token).
+    /// RelBias is [numHeads, qSeq, kvSeq].
+    /// </summary>
+    void T5MultiHeadAttentionRelBias(Tensor output, Tensor q, Tensor k, Tensor v, Tensor relBias, int qSeq, int kvSeq, int numHeads, int headDim)
+        => throw new NotSupportedException();
+
+    /// <summary>
+    /// Batched RMSNorm over numTokens rows of dimension rowDim:
+    /// output[t, :] = RMSNorm(x[t, :], weight, eps).
+    /// </summary>
+    void RmsNormBatched(Tensor output, Tensor x, Tensor weight, int rowDim, int numTokens, float eps = 1e-5f)
+        => throw new NotSupportedException();
 }
 

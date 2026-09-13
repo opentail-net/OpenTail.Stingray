@@ -63,6 +63,69 @@ public static class WanRoPE
         return (cos, sin);
     }
 
+    /// <summary>
+    /// Same real frequencies as <see cref="Compute3DRoPE"/> (44/42/42 temporal/height/width axis
+    /// split, theta=10000), but in the COMPACT one-value-per-pair layout
+    /// <c>[totalTokens, headDim/2]</c> that the existing GPU <c>Flux2DRoPE</c> compute shader
+    /// expects (<see cref="Core.IVisionOpsBackend.Flux2DRoPE"/>) -- vs <see cref="Compute3DRoPE"/>'s
+    /// own CPU-only <c>[totalTokens, headDim]</c> layout, which duplicates each pair's cos/sin value
+    /// at both `2i` and `2i+1`. The actual per-pair interleaved rotation math
+    /// (`out[2i] = x[2i]*c - x[2i+1]*s; out[2i+1] = x[2i]*s + x[2i+1]*c`) is IDENTICAL between Wan
+    /// and FLUX -- only the frequency TABLE construction differs (FLUX: 16/56/56 split with a
+    /// leading always-identity axis; Wan: 44/42/42, no identity axis) -- so this lets Wan reuse
+    /// FLUX's already-optimized GPU RoPE dispatch verbatim instead of needing a new shader. Do not
+    /// reuse the OTHER existing GPU kernel named `RoPE3D` for Wan -- that one uses split-half
+    /// (NEOX-style) pairing with an equal `headDim/6` axis split, which is NOT Wan's real
+    /// convention (see this file's own class doc comment for the interleaved-vs-split-half history)
+    /// and would silently reintroduce the exact bug already found and fixed here on 2026-08-31.
+    /// </summary>
+    public static (float[] cos, float[] sin) Compute3DRoPECompact(
+        int numFrames,
+        int patchH,
+        int patchW,
+        int headDim = 128,
+        float theta = 10000.0f)
+    {
+        int dimT = 44;
+        int dimH = 42;
+        int dimW = 42;
+        int nPairs = headDim / 2; // 64 = 22 (t) + 21 (h) + 21 (w)
+
+        int totalTokens = numFrames * patchH * patchW;
+        var cos = new float[totalTokens * nPairs];
+        var sin = new float[totalTokens * nPairs];
+
+        for (int t = 0; t < numFrames; t++)
+        {
+            for (int y = 0; y < patchH; y++)
+            {
+                for (int x = 0; x < patchW; x++)
+                {
+                    int tokenIdx = (t * patchH + y) * patchW + x;
+                    int baseOff = tokenIdx * nPairs;
+
+                    FillFrequenciesCompact(cos, sin, baseOff, pos: t, dim: dimT, theta: theta);
+                    FillFrequenciesCompact(cos, sin, baseOff + dimT / 2, pos: y, dim: dimH, theta: theta);
+                    FillFrequenciesCompact(cos, sin, baseOff + dimT / 2 + dimH / 2, pos: x, dim: dimW, theta: theta);
+                }
+            }
+        }
+
+        return (cos, sin);
+    }
+
+    private static void FillFrequenciesCompact(float[] cos, float[] sin, int offset, float pos, int dim, float theta)
+    {
+        int half = dim / 2;
+        for (int i = 0; i < half; i++)
+        {
+            float freq = MathF.Pow(theta, -2.0f * i / dim);
+            float angle = pos * freq;
+            cos[offset + i] = MathF.Cos(angle);
+            sin[offset + i] = MathF.Sin(angle);
+        }
+    }
+
     /// <summary>Real Wan RoPE frequency layout: for pair index i (0..dim/2), angle = pos * theta^(-2i/dim),
     /// written at BOTH consecutive positions 2i and 2i+1 (repeat-interleaved, matching the real
     /// `repeat_interleave_real=True` reference) -- NOT the split-half [0,half)/[half,dim) layout.</summary>

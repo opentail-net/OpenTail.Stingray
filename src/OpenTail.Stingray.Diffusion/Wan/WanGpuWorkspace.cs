@@ -28,10 +28,14 @@ public sealed class WanGpuWorkspace : IDisposable
     public CoreTensor OutPacked { get; }
     public CoreTensor Ones { get; }
     public CoreTensor Zeros { get; }
+    public CoreTensor Mod { get; }
+    public CoreTensor RopeCos { get; }
+    public CoreTensor RopeSin { get; }
 
     public (CoreTensor K, CoreTensor V)[] CrossKvCache { get; }
 
-    public WanGpuWorkspace(IComputeBackend backend, int numTokens, int dim, int ffnDim, int numLayers, int numTxtTokens)
+    public WanGpuWorkspace(IComputeBackend backend, int numTokens, int dim, int ffnDim, int numLayers, int numTxtTokens,
+        ReadOnlySpan<float> ropeCos = default, ReadOnlySpan<float> ropeSin = default, int headDim = 128)
     {
         _backend = backend;
 
@@ -48,6 +52,18 @@ public sealed class WanGpuWorkspace : IDisposable
         Ffn1 = backend.Allocate(TensorShape.D2(numTokens, ffnDim));
         FfnOut = backend.Allocate(TensorShape.D2(numTokens, dim));
         OutPacked = backend.Allocate(TensorShape.D2(numTokens, WanModel.InChannels));
+        Mod = backend.AllocatePinned(TensorShape.D1(dim * 6));
+
+        if (!ropeCos.IsEmpty)
+        {
+            RopeCos = backend.Upload(ropeCos, TensorShape.D2(numTokens, headDim / 2), exact: true);
+            RopeSin = backend.Upload(ropeSin, TensorShape.D2(numTokens, headDim / 2), exact: true);
+        }
+        else
+        {
+            RopeCos = backend.Allocate(TensorShape.D2(numTokens, headDim / 2));
+            RopeSin = backend.Allocate(TensorShape.D2(numTokens, headDim / 2));
+        }
 
         var onesData = new float[dim];
         Array.Fill(onesData, 1.0f);
@@ -85,6 +101,9 @@ public sealed class WanGpuWorkspace : IDisposable
         _backend.Free(OutPacked);
         _backend.Free(Ones);
         _backend.Free(Zeros);
+        _backend.Free(Mod);
+        _backend.Free(RopeCos);
+        _backend.Free(RopeSin);
 
         for (int i = 0; i < CrossKvCache.Length; i++)
         {

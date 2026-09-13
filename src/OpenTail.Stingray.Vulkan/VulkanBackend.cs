@@ -1607,6 +1607,7 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
     private ComputePipeline? _fluxConcatTxtImgPipeline;
     private ComputePipeline? _fluxSliceImgPipeline;
     private ComputePipeline? _fluxEulerStepPipeline;
+    private ComputePipeline? _t5MultiHeadAttentionRelBiasPipeline;
 
     private struct RmsNormParams{ public uint n; public float eps; }
     private struct RmsNormBatchedParams { public uint n; public float eps; public uint numTokens; }
@@ -1710,6 +1711,7 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
     private struct FluxConcatTxtImgParams { public uint nTxt; public uint nImg; public uint dim; }
     private struct FluxSliceImgParams { public uint nTxt; public uint nImg; public uint dim; }
     private struct FluxEulerStepParams { public uint count; public float signDt; }
+    private struct T5MultiHeadAttentionRelBiasParams { public uint qSeq; public uint kvSeq; public uint numHeads; public float scale; }
 
     private void DispatchOrRecord(ComputePipeline pipe, ReadOnlySpan<GpuBuffer> buffers,
         uint groupX, void* push, uint groupY = 1, uint groupZ = 1)
@@ -4183,6 +4185,23 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
         DispatchOrRecord(_fluxEulerStepPipeline, [GetBuffer(x), GetBuffer(v)], groups, &p);
     }
 
+    public void T5MultiHeadAttentionRelBias(Tensor output, Tensor q, Tensor k, Tensor v, Tensor relBias, int qSeq, int kvSeq, int numHeads, int headDim)
+    {
+        if (headDim != 64)
+            throw new ArgumentOutOfRangeException(nameof(headDim), "T5MultiHeadAttentionRelBias shader supports headDim=64.");
+
+        _t5MultiHeadAttentionRelBiasPipeline ??= new ComputePipeline(this, Shaders.T5MultiHeadAttentionRelBias, 5, pushConstantSize: sizeof(T5MultiHeadAttentionRelBiasParams));
+        var p = new T5MultiHeadAttentionRelBiasParams
+        {
+            qSeq = (uint)qSeq,
+            kvSeq = (uint)kvSeq,
+            numHeads = (uint)numHeads,
+            scale = 1f / MathF.Sqrt(headDim)
+        };
+        uint groupsX = (uint)((qSeq + 15) / 16);
+        DispatchOrRecord(_t5MultiHeadAttentionRelBiasPipeline, [GetBuffer(q), GetBuffer(k), GetBuffer(v), GetBuffer(relBias), GetBuffer(output)], groupsX, &p, 1u, (uint)numHeads);
+    }
+
     // ================================================================
     //  Disposal
     // ================================================================
@@ -4384,6 +4403,7 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
         _fluxConcatTxtImgPipeline?.Dispose();
         _fluxSliceImgPipeline?.Dispose();
         _fluxEulerStepPipeline?.Dispose();
+        _t5MultiHeadAttentionRelBiasPipeline?.Dispose();
 
         _downloadStaging?.Dispose();
         _uploadStaging?.Dispose();

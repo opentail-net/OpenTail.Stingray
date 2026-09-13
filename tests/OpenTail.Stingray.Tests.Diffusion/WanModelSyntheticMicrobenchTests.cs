@@ -166,7 +166,8 @@ public sealed class WanModelSyntheticMicrobenchTests
 
             using var model = new WanModel(loader, "", numLayers: numLayers, dim: dim, numHeads: numHeads, backend: vulkan);
             using var gpuWeights = model.GetOrCreateGpuWeights();
-            using var gpuWs = new WanGpuWorkspace(vulkan, numTokens, dim, ffnDim, numLayers, numTxt);
+            var (ropeCos, ropeSin) = OpenTail.Stingray.Diffusion.Wan.WanRoPE.Compute3DRoPECompact(numFrames: 2, patchH: 32, patchW: 32, headDim: dim / numHeads);
+            using var gpuWs = new WanGpuWorkspace(vulkan, numTokens, dim, ffnDim, numLayers, numTxt, ropeCos, ropeSin, headDim: dim / numHeads);
 
             var latent = new float[16 * 2 * 64 * 64];
             var textCtx = new float[numTxt * WanModel.TextDim];
