@@ -1,4 +1,7 @@
 
+using System.Buffers;
+using System.Numerics.Tensors;
+
 namespace OpenTail.Stingray.Diffusion.TextEncoders;
 
 /// <summary>
@@ -107,17 +110,17 @@ public sealed class T5Encoder : IDisposable
 
         // Self-attention sub-layer
         var lnW0 = Wt($"{p}.0.layer_norm.weight");
-        var xNorm = x.ToArray();
+        var xNorm = (float[])x.Clone();
         DiffusionOps.RmsNorm(xNorm, lnW0, Dim);
         var attn = SelfAttention(xNorm, relPosBias, seq, $"{p}.0.SelfAttention", blockIdx);
-        for (int i = 0; i < x.Length; i++) x[i] += attn[i];
+        TensorPrimitives.Add(x, attn, x);
 
         // Feed-forward sub-layer
         var lnW1 = Wt($"{p}.1.layer_norm.weight");
-        var xNorm2 = x.ToArray();
-        DiffusionOps.RmsNorm(xNorm2, lnW1, Dim);
-        var ff = FeedForward(xNorm2, seq, $"{p}.1.DenseReluDense");
-        for (int i = 0; i < x.Length; i++) x[i] += ff[i];
+        x.CopyTo(xNorm.AsSpan());
+        DiffusionOps.RmsNorm(xNorm, lnW1, Dim);
+        var ff = FeedForward(xNorm, seq, $"{p}.1.DenseReluDense");
+        TensorPrimitives.Add(x, ff, x);
 
         return x;
     }
@@ -135,38 +138,44 @@ public sealed class T5Encoder : IDisposable
 
         var attnOut = new float[seq * Dim];
 
-        for (int h = 0; h < Heads; h++)
+        Parallel.For(0, Heads, h =>
         {
-            var scores = new float[seq * seq];
-            for (int i = 0; i < seq; i++)
+            var scoresArr = ArrayPool<float>.Shared.Rent(seq * seq);
+            var scores = scoresArr.AsSpan(0, seq * seq);
+            try
             {
-                for (int j = 0; j < seq; j++)
+                for (int i = 0; i < seq; i++)
                 {
-                    float dot = 0f;
                     int qOff = i * Dim + h * HeadDim;
-                    int kOff = j * Dim + h * HeadDim;
-                    for (int d = 0; d < HeadDim; d++) dot += q[qOff + d] * k[kOff + d];
-                    // Real T5Attention.forward: `scores = torch.matmul(query, key.T)` -- a RAW
-                    // matmul with NO 1/sqrt(head_dim) scaling (confirmed against the real source;
-                    // T5 folds this into its own initialization instead of the forward pass, unlike
-                    // standard scaled-dot-product attention). The relative position bias is the
-                    // only additive term. Was incorrectly scaled here.
-                    scores[i * seq + j] = dot + relBias[(h * seq + i) * seq + j];
-                }
-            }
-            DiffusionOps.Softmax(scores, seq);
+                    var qSpan = q.AsSpan(qOff, HeadDim);
+                    int relRowOff = (h * seq + i) * seq;
 
-            for (int i = 0; i < seq; i++)
-            {
-                int outOff = i * Dim + h * HeadDim;
-                for (int j = 0; j < seq; j++)
+                    for (int j = 0; j < seq; j++)
+                    {
+                        int kOff = j * Dim + h * HeadDim;
+                        float dot = TensorPrimitives.Dot(qSpan, k.AsSpan(kOff, HeadDim));
+                        scores[i * seq + j] = dot + relBias[relRowOff + j];
+                    }
+                }
+                DiffusionOps.Softmax(scores, seq);
+
+                for (int i = 0; i < seq; i++)
                 {
-                    float w = scores[i * seq + j];
-                    int vOff = j * Dim + h * HeadDim;
-                    for (int d = 0; d < HeadDim; d++) attnOut[outOff + d] += w * v[vOff + d];
+                    int outOff = i * Dim + h * HeadDim;
+                    for (int j = 0; j < seq; j++)
+                    {
+                        float w = scores[i * seq + j];
+                        int vOff = j * Dim + h * HeadDim;
+                        for (int d = 0; d < HeadDim; d++)
+                            attnOut[outOff + d] += w * v[vOff + d];
+                    }
                 }
             }
-        }
+            finally
+            {
+                ArrayPool<float>.Shared.Return(scoresArr);
+            }
+        });
 
         return DiffusionOps.Linear(attnOut, oW, null, seq, Dim, Dim);
     }
@@ -183,8 +192,8 @@ public sealed class T5Encoder : IDisposable
 
         // h = gelu_new(gate) * val -- real T5v1.1/UMT5 "gated-gelu" FFN (verified against the
         // real google/t5-v1_1-xxl and google/umt5-xxl configs: dense_act_fn="gelu_new").
-        for (int i = 0; i < gate.Length; i++)
-            gate[i] = DiffusionOps.Gelu(gate[i]) * val[i];
+        DiffusionOps.GeluInPlace(gate);
+        TensorPrimitives.Multiply(gate, val, gate);
 
         return DiffusionOps.Linear(gate, woW, null, seq, FfDim, Dim);
     }

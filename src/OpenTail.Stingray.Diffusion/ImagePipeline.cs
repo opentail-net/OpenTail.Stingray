@@ -25,21 +25,23 @@ public sealed class ImagePipeline : IDisposable, IDiffusionPipeline
     private readonly ClipTokenizer _clipTok;
     private readonly T5Tokenizer _t5Tok;
     private readonly FluxParams _params;
-    private readonly CpuBackend _backend;
+    private readonly IComputeBackend _backend;
+    private readonly bool _ownsBackend;
     private bool _disposed;
 
     private ImagePipeline(FluxDiT dit, VaeDecoder vae, ClipLEncoder clip, T5Encoder t5,
                            ClipTokenizer clipTok, T5Tokenizer t5Tok,
-                           FluxParams p, CpuBackend backend)
+                           FluxParams p, IComputeBackend backend, bool ownsBackend)
     {
-        _dit     = dit;
-        _vae     = vae;
-        _clip    = clip;
-        _t5      = t5;
-        _clipTok = clipTok;
-        _t5Tok   = t5Tok;
-        _params  = p;
-        _backend = backend;
+        _dit         = dit;
+        _vae         = vae;
+        _clip        = clip;
+        _t5          = t5;
+        _clipTok     = clipTok;
+        _t5Tok       = t5Tok;
+        _params      = p;
+        _backend     = backend;
+        _ownsBackend = ownsBackend;
     }
 
     /// <summary>
@@ -51,19 +53,21 @@ public sealed class ImagePipeline : IDisposable, IDiffusionPipeline
         string clipPath,
         string clipTokenizerPath,
         string t5Path,
-        string t5TokenizerPath)
+        string t5TokenizerPath,
+        IComputeBackend? backend = null)
     {
-        var model   = GgufModel.Open(ditPath);
-        var meta    = model.Metadata;
-        var p       = FluxParams.FromMetadata(meta);
-        var backend = new CpuBackend();
-        var dit     = new FluxDiT(model, p, backend);
-        var vae     = new VaeDecoder(vaePath);
-        var clip    = new ClipLEncoder(clipPath);
-        var t5      = new T5Encoder(t5Path);
-        var clipTok = ClipTokenizer.FromFile(clipTokenizerPath);
-        var t5Tok   = T5Tokenizer.FromFile(t5TokenizerPath);
-        return new ImagePipeline(dit, vae, clip, t5, clipTok, t5Tok, p, backend);
+        var model       = GgufModel.Open(ditPath);
+        var meta        = model.Metadata;
+        var p           = FluxParams.FromMetadata(meta);
+        bool ownsBackend = backend is null;
+        var compBackend = backend ?? new CpuBackend();
+        var dit         = new FluxDiT(model, p, compBackend);
+        var vae         = new VaeDecoder(vaePath);
+        var clip        = new ClipLEncoder(clipPath);
+        var t5          = new T5Encoder(t5Path);
+        var clipTok     = ClipTokenizer.FromFile(clipTokenizerPath);
+        var t5Tok       = T5Tokenizer.FromFile(t5TokenizerPath);
+        return new ImagePipeline(dit, vae, clip, t5, clipTok, t5Tok, p, compBackend, ownsBackend);
     }
 
     /// <summary>
@@ -196,7 +200,8 @@ public sealed class ImagePipeline : IDisposable, IDiffusionPipeline
             _vae.Dispose();
             _clip.Dispose();
             _t5.Dispose();
-            _backend.Dispose();
+            if (_ownsBackend)
+                _backend.Dispose();
         }
     }
 }

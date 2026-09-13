@@ -197,13 +197,6 @@ public static class HiggsCodecDecoder
         return output;
     }
 
-    private static float[] Linear(ReadOnlySpan<float> input, float[] weight, float[] bias, int inDim, int outDim)
-    {
-        var output = new float[outDim];
-        for (int o = 0; o < outDim; o++)
-        {
-            output[o] = bias[o] + TensorPrimitives.Dot(weight.AsSpan(o * inDim, inDim), input);
-        }
-        return output;
-    }
+    private static float[] Linear(float[] input, float[] weight, float[] bias, int inDim, int outDim) =>
+        OpenTail.Stingray.Audio.Primitives.DenseKernels.Linear(input, weight, bias, inDim, outDim);
 }

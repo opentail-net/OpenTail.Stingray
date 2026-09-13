@@ -34,12 +34,12 @@ public static class VibeVoiceConvNeXtBlock
         var frameMajor = Transpose(ffnNormed, channels, frames);
         var hidden = new float[frames][];
         int ffnDim = w.FfnLinear1Weight.Length / channels;
-        for (int t = 0; t < frames; t++)
+        Parallel.For(0, frames, t =>
         {
             var h = LinearRow(frameMajor[t], w.FfnLinear1Weight, w.FfnLinear1Bias, channels, ffnDim);
             for (int c = 0; c < ffnDim; c++) h[c] = GeluErf(h[c]);
             hidden[t] = LinearRow(h, w.FfnLinear2Weight, w.FfnLinear2Bias, ffnDim, channels);
-        }
+        });
         var ffnOut = Transpose(hidden, frames, channels); // back to channels-major
         ScaleChannelsInPlace(ffnOut, w.FfnGamma);
         return AddChannelsMajor(afterMixer, ffnOut);

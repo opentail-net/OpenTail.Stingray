@@ -99,19 +99,8 @@ public static class XttsVocoder
         return curX;
     }
 
-    private static float[] LinearVec(float[] x, float[] weight, float[] bias, int outDim)
-    {
-        int inDim = x.Length;
-        var output = new float[outDim];
-        for (int o = 0; o < outDim; o++)
-        {
-            float sum = bias[o];
-            int wBase = o * inDim;
-            sum += TensorPrimitives.Dot(weight.AsSpan(wBase, inDim), x.AsSpan());
-            output[o] = sum;
-        }
-        return output;
-    }
+    private static float[] LinearVec(float[] x, float[] weight, float[] bias, int outDim) =>
+        DenseKernels.Linear(x, weight, bias, x.Length, outDim);
 
     private static void AddBroadcastInPlace(float[] x, int ch, int t, float[] addPerChannel)
     {

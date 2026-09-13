@@ -214,19 +214,18 @@ public static class XttsConditioningEncoder
     private static float[] LinearTokenMajor(float[] input, int numTokens, int inDim, float[] weight, float[]? bias, int outDim)
     {
         var output = new float[numTokens * outDim];
-        for (int ti = 0; ti < numTokens; ti++)
+        Parallel.For(0, numTokens, ti =>
         {
             int inBase = ti * inDim;
             int outBase = ti * outDim;
+            var inputSpan = input.AsSpan(inBase, inDim);
             for (int o = 0; o < outDim; o++)
             {
                 float sum = bias?[o] ?? 0f;
-                int wBase = o * inDim;
-                for (int i = 0; i < inDim; i++)
-                    sum += weight[wBase + i] * input[inBase + i];
+                sum += System.Numerics.Tensors.TensorPrimitives.Dot(inputSpan, weight.AsSpan(o * inDim, inDim));
                 output[outBase + o] = sum;
             }
-        }
+        });
         return output;
     }
 

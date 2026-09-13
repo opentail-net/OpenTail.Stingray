@@ -65,12 +65,12 @@ public static class MeloRelativeEncoder
     public static float[] LinearVec(float[] input, float[] weight, float[] bias, int outDim, int inDim)
     {
         var output = new float[outDim];
-        for (int o = 0; o < outDim; o++)
+        Parallel.For(0, outDim, o =>
         {
             float sum = bias[o];
             for (int i = 0; i < inDim; i++) sum += weight[i * outDim + o] * input[i];
             output[o] = sum;
-        }
+        });
         return output;
     }
 }

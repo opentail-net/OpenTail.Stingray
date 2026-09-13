@@ -31,8 +31,24 @@ public sealed class FluxDiT : IDisposable
     private const int MinGpuBatch = 16;
     /// <summary>bf16 weights cached on GPU — uploaded once on first denoising step, reused every step.</summary>
     private readonly Dictionary<string, CoreTensor>? _gpuWeightsBf16;
+    /// <summary>fp16 weights cached on GPU — uploaded once on first denoising step, reused every step.</summary>
+    private readonly Dictionary<string, CoreTensor>? _gpuWeightsFp16;
     /// <summary>fp8 E4M3 weights cached on GPU — uploaded once on first step (sm_89+, 2× smaller than bf16).</summary>
     private readonly Dictionary<string, CoreTensor>? _gpuWeightsFp8;
+    /// <summary>fp32 weights cached on GPU — uploaded once on first step.</summary>
+    private readonly Dictionary<string, CoreTensor>? _gpuWeightsFp32;
+
+    // Invariant prompt and RoPE caches across denoising steps
+    private float[]? _cachedPooledEmbed;
+    private float[]? _cachedVProj;
+    private float? _cachedGuidance;
+    private float[]? _cachedGProj;
+    private float[]? _cachedTxtEmbeds;
+    private float[]? _cachedTxtHidden;
+    private int[]? _cachedAllIds;
+    private (float[] C, float[] S)? _cachedAllRope;
+    private int[]? _cachedImgIds;
+    private (float[] C, float[] S)? _cachedImgRope;
 
     public FluxParams Params => _p;
 
@@ -43,8 +59,12 @@ public sealed class FluxDiT : IDisposable
         _backend = backend;
         if (backend?.BestSgemmPrecision == SgemmPrecision.Bf16)
             _gpuWeightsBf16 = new Dictionary<string, CoreTensor>(StringComparer.Ordinal);
+        if (backend?.BestSgemmPrecision == SgemmPrecision.Fp16)
+            _gpuWeightsFp16 = new Dictionary<string, CoreTensor>(StringComparer.Ordinal);
         if (backend?.BestSgemmPrecision == SgemmPrecision.Fp8E4M3)
             _gpuWeightsFp8 = new Dictionary<string, CoreTensor>(StringComparer.Ordinal);
+        if (backend != null && backend is not CpuBackend && backend.BestSgemmPrecision == SgemmPrecision.Fp32)
+            _gpuWeightsFp32 = new Dictionary<string, CoreTensor>(StringComparer.Ordinal);
     }
 
     // ── Entry point ───────────────────────────────────────────────────────
@@ -75,7 +95,7 @@ public sealed class FluxDiT : IDisposable
 
         // ── Encode conditioning ───────────────────────────────────────────
         float[] vec = ComputeVec(timestep, pooledEmbed, guidance);     // [d]
-        float[] txtHidden = ProjectTxt(txtEmbeds, nTxt);               // [nTxt, d]
+        float[] txtHidden = GetProjectedTxt(txtEmbeds, nTxt);          // [nTxt, d]
         float[] imgHidden = ProjectImg(imgLatent, nImg);               // [nImg, d]
 
         // ── Build RoPE freqs ──────────────────────────────────────────────
@@ -83,10 +103,10 @@ public sealed class FluxDiT : IDisposable
         var allIds = new int[nSeq * 2];
         // text positions [0, nTxt*2) are all zeros (already zero from array init)
         imgIds.CopyTo(allIds, nTxt * 2);
-        var (ropeC, ropeS) = Flux2DRoPE.BuildFreqs(allIds, nSeq, _p.HeadDim);
+        var (ropeC, ropeS) = GetAllRope(allIds, nSeq);
 
         // Also build per-image RoPE for double stream blocks
-        var (imgRopeC, imgRopeS) = Flux2DRoPE.BuildFreqs(imgIds, nImg, _p.HeadDim);
+        var (imgRopeC, imgRopeS) = GetImgRope(imgIds, nImg);
 
         // ── Double stream blocks ──────────────────────────────────────────
         for (int i = 0; i < _p.DoubleBlocks; i++)
@@ -172,15 +192,35 @@ public sealed class FluxDiT : IDisposable
         float[] tProj = MlpProj("model.diffusion_model.time_in", tEmb, 256, d);
 
         // CLIP pooled embedding → MLP → [d]
-        float[] vProj = MlpProj("model.diffusion_model.vector_in", pooled, _p.VecDim, d);
+        float[] vProj;
+        if (_cachedPooledEmbed != null && ReferenceEquals(_cachedPooledEmbed, pooled) && _cachedVProj != null)
+        {
+            vProj = _cachedVProj;
+        }
+        else
+        {
+            vProj = MlpProj("model.diffusion_model.vector_in", pooled, _p.VecDim, d);
+            _cachedPooledEmbed = pooled;
+            _cachedVProj = vProj;
+        }
 
         var vec = new float[d];
         for (int i = 0; i < d; i++) vec[i] = tProj[i] + vProj[i];
 
         if (_p.HasGuidanceIn)
         {
-            float[] gEmb  = TimestepEmbedding(guidance, 256);
-            float[] gProj = MlpProj("model.diffusion_model.guidance_in", gEmb, 256, d);
+            float[] gProj;
+            if (_cachedGuidance.HasValue && _cachedGuidance.Value == guidance && _cachedGProj != null)
+            {
+                gProj = _cachedGProj;
+            }
+            else
+            {
+                float[] gEmb  = TimestepEmbedding(guidance, 256);
+                gProj = MlpProj("model.diffusion_model.guidance_in", gEmb, 256, d);
+                _cachedGuidance = guidance;
+                _cachedGProj = gProj;
+            }
             for (int i = 0; i < d; i++) vec[i] += gProj[i];
         }
         return vec;
@@ -193,6 +233,52 @@ public sealed class FluxDiT : IDisposable
     private float[] ProjectTxt(float[] txtEmb, int nTxt) =>
         MatQ(txtEmb, nTxt, _p.ContextDim, "model.diffusion_model.txt_in.weight", _p.HiddenSize,
              W("model.diffusion_model.txt_in.bias"));
+
+    private float[] GetProjectedTxt(float[] txtEmb, int nTxt)
+    {
+        if (_cachedTxtEmbeds != null && ReferenceEquals(_cachedTxtEmbeds, txtEmb) && _cachedTxtHidden != null)
+        {
+            return (float[])_cachedTxtHidden.Clone();
+        }
+        float[] projected = ProjectTxt(txtEmb, nTxt);
+        _cachedTxtEmbeds = txtEmb;
+        _cachedTxtHidden = (float[])projected.Clone();
+        return (float[])projected.Clone();
+    }
+
+    private (float[] C, float[] S) GetAllRope(int[] allIds, int nSeq)
+    {
+        if (_cachedAllIds != null && _cachedAllIds.Length == allIds.Length && _cachedAllRope.HasValue)
+        {
+            bool match = true;
+            for (int i = 0; i < allIds.Length; i++)
+            {
+                if (_cachedAllIds[i] != allIds[i]) { match = false; break; }
+            }
+            if (match) return _cachedAllRope.Value;
+        }
+        var rope = Flux2DRoPE.BuildFreqs(allIds, nSeq, _p.HeadDim);
+        _cachedAllIds = (int[])allIds.Clone();
+        _cachedAllRope = rope;
+        return rope;
+    }
+
+    private (float[] C, float[] S) GetImgRope(int[] imgIds, int nImg)
+    {
+        if (_cachedImgIds != null && _cachedImgIds.Length == imgIds.Length && _cachedImgRope.HasValue)
+        {
+            bool match = true;
+            for (int i = 0; i < imgIds.Length; i++)
+            {
+                if (_cachedImgIds[i] != imgIds[i]) { match = false; break; }
+            }
+            if (match) return _cachedImgRope.Value;
+        }
+        var rope = Flux2DRoPE.BuildFreqs(imgIds, nImg, _p.HeadDim);
+        _cachedImgIds = (int[])imgIds.Clone();
+        _cachedImgRope = rope;
+        return rope;
+    }
 
     // ── Double stream block ───────────────────────────────────────────────
 
@@ -673,32 +759,46 @@ public sealed class FluxDiT : IDisposable
                 {
                     int wCount = rows * cols;
                     int xCount = n * cols;
-                    float[] wBuf32 = ArrayPool<float>.Shared.Rent(wCount);
-                    Half[]  wHalf  = ArrayPool<Half>.Shared.Rent(wCount);
-                    try
-                    {
-                        Dequantize.ToFloat32(rawBytes, wBuf32.AsSpan(0, wCount), ti.DType, wCount);
-                        for (int i = 0; i < wCount; i++) wHalf[i] = (Half)wBuf32[i];
 
-                        var xGpu = _backend.Upload(x.Slice(0, xCount), TensorShape.D1(xCount));
-                        var wGpu = _backend.UploadHalf(wHalf.AsSpan(0, wCount), TensorShape.D1(wCount));
-                        var cGpu = _backend.Allocate(TensorShape.D1(n * rows), DType.Float32);
+                    CoreTensor wGpu;
+                    bool ownW;
+                    if (_gpuWeightsFp16 != null && _gpuWeightsFp16.TryGetValue(wName, out var cachedW))
+                    {
+                        wGpu = cachedW;
+                        ownW = false;
+                    }
+                    else
+                    {
+                        float[] wBuf32 = ArrayPool<float>.Shared.Rent(wCount);
+                        Half[]  wHalf  = ArrayPool<Half>.Shared.Rent(wCount);
                         try
                         {
-                            _backend.Sgemm(cGpu, xGpu, wGpu, n, cols, rows);
-                            _backend.Download(cGpu, result);
+                            Dequantize.ToFloat32(rawBytes, wBuf32.AsSpan(0, wCount), ti.DType, wCount);
+                            for (int i = 0; i < wCount; i++) wHalf[i] = (Half)wBuf32[i];
+                            wGpu = _backend.UploadHalf(wHalf.AsSpan(0, wCount), TensorShape.D1(wCount));
                         }
                         finally
                         {
-                            _backend.Free(xGpu);
-                            _backend.Free(wGpu);
-                            _backend.Free(cGpu);
+                            ArrayPool<float>.Shared.Return(wBuf32);
+                            ArrayPool<Half>.Shared.Return(wHalf);
                         }
+                        if (_gpuWeightsFp16 != null)
+                            _gpuWeightsFp16[wName] = wGpu;
+                        ownW = _gpuWeightsFp16 == null;
+                    }
+
+                    var xGpu = _backend.Upload(x.Slice(0, xCount), TensorShape.D1(xCount));
+                    var cGpu = _backend.Allocate(TensorShape.D1(n * rows), DType.Float32);
+                    try
+                    {
+                        _backend.Sgemm(cGpu, xGpu, wGpu, n, cols, rows);
+                        _backend.Download(cGpu, result);
                     }
                     finally
                     {
-                        ArrayPool<float>.Shared.Return(wBuf32);
-                        ArrayPool<Half>.Shared.Return(wHalf);
+                        _backend.Free(xGpu);
+                        if (ownW) _backend.Free(wGpu);
+                        _backend.Free(cGpu);
                     }
                 }
                 else
@@ -706,26 +806,41 @@ public sealed class FluxDiT : IDisposable
                     // fp32 GPU path
                     int wCount = rows * cols;
                     int xCount = n * cols;
-                    float[] wBuf = ArrayPool<float>.Shared.Rent(wCount);
-                    try
+
+                    CoreTensor wGpu;
+                    bool ownW;
+                    if (_gpuWeightsFp32 != null && _gpuWeightsFp32.TryGetValue(wName, out var cachedW))
                     {
-                        Dequantize.ToFloat32(rawBytes, wBuf.AsSpan(0, wCount), ti.DType, wCount);
-                        var xGpu = _backend.Upload(x.Slice(0, xCount), TensorShape.D1(xCount));
-                        var wGpu = _backend.Upload(wBuf.AsSpan(0, wCount), TensorShape.D1(wCount));
-                        var cGpu = _backend.Allocate(TensorShape.D1(n * rows));
+                        wGpu = cachedW;
+                        ownW = false;
+                    }
+                    else
+                    {
+                        float[] wBuf = ArrayPool<float>.Shared.Rent(wCount);
                         try
                         {
-                            _backend.Sgemm(cGpu, xGpu, wGpu, n, cols, rows);
-                            _backend.Download(cGpu, result);
+                            Dequantize.ToFloat32(rawBytes, wBuf.AsSpan(0, wCount), ti.DType, wCount);
+                            wGpu = _backend.Upload(wBuf.AsSpan(0, wCount), TensorShape.D1(wCount));
                         }
-                        finally
-                        {
-                            _backend.Free(xGpu);
-                            _backend.Free(wGpu);
-                            _backend.Free(cGpu);
-                        }
+                        finally { ArrayPool<float>.Shared.Return(wBuf); }
+                        if (_gpuWeightsFp32 != null)
+                            _gpuWeightsFp32[wName] = wGpu;
+                        ownW = _gpuWeightsFp32 == null;
                     }
-                    finally { ArrayPool<float>.Shared.Return(wBuf); }
+
+                    var xGpu = _backend.Upload(x.Slice(0, xCount), TensorShape.D1(xCount));
+                    var cGpu = _backend.Allocate(TensorShape.D1(n * rows));
+                    try
+                    {
+                        _backend.Sgemm(cGpu, xGpu, wGpu, n, cols, rows);
+                        _backend.Download(cGpu, result);
+                    }
+                    finally
+                    {
+                        _backend.Free(xGpu);
+                        if (ownW) _backend.Free(wGpu);
+                        _backend.Free(cGpu);
+                    }
                 }
             }
             else
@@ -770,11 +885,31 @@ public sealed class FluxDiT : IDisposable
                 foreach (var t in _gpuWeightsBf16.Values) _backend.Free(t);
                 _gpuWeightsBf16.Clear();
             }
+            if (_gpuWeightsFp16 != null)
+            {
+                foreach (var t in _gpuWeightsFp16.Values) _backend.Free(t);
+                _gpuWeightsFp16.Clear();
+            }
             if (_gpuWeightsFp8 != null)
             {
                 foreach (var t in _gpuWeightsFp8.Values) _backend.Free(t);
                 _gpuWeightsFp8.Clear();
             }
+            if (_gpuWeightsFp32 != null)
+            {
+                foreach (var t in _gpuWeightsFp32.Values) _backend.Free(t);
+                _gpuWeightsFp32.Clear();
+            }
+            _cachedPooledEmbed = null;
+            _cachedVProj = null;
+            _cachedGuidance = null;
+            _cachedGProj = null;
+            _cachedTxtEmbeds = null;
+            _cachedTxtHidden = null;
+            _cachedAllIds = null;
+            _cachedAllRope = null;
+            _cachedImgIds = null;
+            _cachedImgRope = null;
             _model.Dispose();
         }
     }

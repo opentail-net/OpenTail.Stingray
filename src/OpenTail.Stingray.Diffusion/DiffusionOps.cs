@@ -37,8 +37,32 @@ internal static unsafe class DiffusionOps
 
     public static void GeluInPlace(Span<float> x)
     {
-        for (int i = 0; i < x.Length; i++)
-            x[i] = Gelu(x[i]);
+        if (x.Length >= 4096)
+        {
+            unsafe
+            {
+                fixed (float* ptr = x)
+                {
+                    nint rawPtr = (nint)ptr;
+                    int len = x.Length;
+                    int chunkSize = Math.Max(2048, len / Environment.ProcessorCount);
+                    int numChunks = (len + chunkSize - 1) / chunkSize;
+                    Parallel.For(0, numChunks, c =>
+                    {
+                        float* p = (float*)rawPtr;
+                        int start = c * chunkSize;
+                        int end = Math.Min(start + chunkSize, len);
+                        for (int i = start; i < end; i++)
+                            p[i] = Gelu(p[i]);
+                    });
+                }
+            }
+        }
+        else
+        {
+            for (int i = 0; i < x.Length; i++)
+                x[i] = Gelu(x[i]);
+        }
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

@@ -829,3 +829,9 @@
 [Qwen3-ASR] audio=14.07s text="!合理。Some call me涅，ature； others call me mother nature. Iveelve been here for over four although billion years, although twenty two! thousand five hundred times longer than you."
 [Qwen3-ASR] runs(s)=[5.075, 5.120, 5.283] mean=5.159s RTF=0.367 (lower=faster; 1.0=realtime)
 
+[StableAudio3-SmallSfx] prompt="a glass bottle shattering on a hard floor" steps=8 audio=6.00s samples=264600
+[StableAudio3-SmallSfx] runs(s)=[646.307, 583.707, 378.894] mean=536.303s RTF=89.384 (lower=faster; 1.0=realtime; 8-step CFG, not the full recommended step count)
+
+[StableAudio3-SmallMusic] prompt="upbeat acoustic guitar melody" steps=8 audio=6.00s samples=264600
+[StableAudio3-SmallMusic] runs(s)=[618.077, 592.882, 275.906] mean=495.622s RTF=82.604 (lower=faster; 1.0=realtime; 8-step CFG, not the full recommended step count)
+

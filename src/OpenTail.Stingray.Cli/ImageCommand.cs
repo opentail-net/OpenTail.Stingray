@@ -422,11 +422,19 @@ public sealed class ImageCommand : Command<ImageCommand.Settings>
         int steps     = s.Steps > 0 ? s.Steps : IsDistilled(modelPath) ? 4 : 20;
         float cfg     = s.CfgScale >= 0f ? s.CfgScale : 1.0f;
 
+        IComputeBackend? gpu = null;
+        if (!deviceNone && deviceIndex >= 0)
+        {
+            try { gpu = new VulkanBackend(deviceIndex); }
+            catch (Exception ex) { AnsiConsole.MarkupLine($"[yellow]Note:[/] Vulkan GPU init failed ({Markup.Escape(ex.Message)}); falling back to CPU."); }
+        }
+
         AnsiConsole.MarkupLine("[bold]FLUX.1[/] (MM-DiT + CLIP-L + T5-XXL)");
         AnsiConsole.MarkupLine($"[dim]DiT:[/]     {Markup.Escape(modelPath)}");
         AnsiConsole.MarkupLine($"[dim]VAE:[/]     {Markup.Escape(s.VaePath!)}");
         AnsiConsole.MarkupLine($"[dim]CLIP-L:[/]  {Markup.Escape(s.ClipLPath!)}");
         AnsiConsole.MarkupLine($"[dim]T5-XXL:[/]  {Markup.Escape(s.T5XXLPath!)}");
+        AnsiConsole.MarkupLine($"[dim]Backend:[/] {(gpu is not null ? $"GPU ({gpu.GetType().Name})" : "CPU")}");
         AnsiConsole.MarkupLine($"[dim]Size:[/]    {s.Width}×{s.Height}  steps={steps}  cfg={cfg:F1}  seed={s.Seed}");
         if (s.UpscalerPath is not null)
             AnsiConsole.MarkupLine($"[dim]Upscaler:[/] {Markup.Escape(s.UpscalerPath)}");
@@ -450,7 +458,8 @@ public sealed class ImageCommand : Command<ImageCommand.Settings>
                             modelPath,
                             s.VaePath!,
                             s.ClipLPath!,   s.ClipTokenizerPath!,
-                            s.T5XXLPath!,   s.T5TokenizerPath!);
+                            s.T5XXLPath!,   s.T5TokenizerPath!,
+                            gpu);
 
                         if (s.UpscalerPath is not null)
                         {
@@ -509,7 +518,7 @@ public sealed class ImageCommand : Command<ImageCommand.Settings>
                                 }
                             }
                             ctx.Status("Loading RRDBNet upscaler…");
-                            upscaler = RRDBNet.Load(s.UpscalerPath, upscalerGpu);
+                            upscaler = RRDBNet.Load(s.UpscalerPath, upscalerGpu ?? gpu);
                             AnsiConsole.MarkupLine($"[dim]Upscaler:[/] RRDBNet ×{upscaler.Scale} loaded");
                         }
 
@@ -534,7 +543,8 @@ public sealed class ImageCommand : Command<ImageCommand.Settings>
                     finally
                     {
                         upscaler?.Dispose();
-                        if (upscalerGpu is IDisposable dg) dg.Dispose();
+                        if (upscalerGpu is IDisposable dg && !ReferenceEquals(dg, gpu)) dg.Dispose();
+                        if (gpu is IDisposable dGpu) dGpu.Dispose();
                     }
                 });
         }
