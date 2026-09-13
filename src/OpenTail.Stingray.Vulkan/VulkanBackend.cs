@@ -1608,6 +1608,7 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
     private ComputePipeline? _fluxSliceImgPipeline;
     private ComputePipeline? _fluxEulerStepPipeline;
     private ComputePipeline? _t5MultiHeadAttentionRelBiasPipeline;
+    private ComputePipeline? _wanQkvSplitNormRoPEPipeline;
 
     private struct RmsNormParams{ public uint n; public float eps; }
     private struct RmsNormBatchedParams { public uint n; public float eps; public uint numTokens; }
@@ -1712,6 +1713,7 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
     private struct FluxSliceImgParams { public uint nTxt; public uint nImg; public uint dim; }
     private struct FluxEulerStepParams { public uint count; public float signDt; }
     private struct T5MultiHeadAttentionRelBiasParams { public uint qSeq; public uint kvSeq; public uint numHeads; public float scale; }
+    private struct WanQkvSplitNormRoPEParams { public uint numTokens; public uint numHeads; public uint headDim; public uint dim; public uint hasNormQ; public uint hasNormK; public float eps; }
 
     private void DispatchOrRecord(ComputePipeline pipe, ReadOnlySpan<GpuBuffer> buffers,
         uint groupX, void* push, uint groupY = 1, uint groupZ = 1)
@@ -3783,10 +3785,15 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
     public Tensor LayerNormGpu(Tensor x, Tensor weight, Tensor bias, int n, int c, float eps = 1e-5f)
     {
         var output = Allocate(TensorShape.D1(n * c));
+        LayerNormGpu(output, x, weight, bias, n, c, eps);
+        return output;
+    }
+
+    public void LayerNormGpu(Tensor output, Tensor x, Tensor weight, Tensor bias, int n, int c, float eps = 1e-5f)
+    {
         _layerNormGpuPipeline ??= new ComputePipeline(this, Shaders.LayerNormGpu, 4, pushConstantSize: sizeof(LayerNormGpuParams));
         var p = new LayerNormGpuParams { n = (uint)n, c = (uint)c, eps = eps };
         DispatchOrRecord(_layerNormGpuPipeline, [GetBuffer(x), GetBuffer(weight), GetBuffer(bias), GetBuffer(output)], (uint)n, &p);
-        return output;
     }
 
     public Tensor GeGlu(Tensor x, int n, int d)
@@ -4105,6 +4112,28 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
         DispatchOrRecord(_flux2DRoPEPipeline, [GetBuffer(q), GetBuffer(k), GetBuffer(cos), GetBuffer(sin)], groups, &p);
     }
 
+    public void WanQkvSplitNormRoPE(Tensor qkv, Tensor q, Tensor k, Tensor v, Tensor cos, Tensor sin,
+                                     Tensor? normQ, Tensor? normK, int numTokens, int numHeads, int headDim, float eps = 1e-6f)
+    {
+        _wanQkvSplitNormRoPEPipeline ??= new ComputePipeline(this, Shaders.WanQkvSplitNormRoPE, 8, pushConstantSize: sizeof(WanQkvSplitNormRoPEParams));
+        var p = new WanQkvSplitNormRoPEParams
+        {
+            numTokens = (uint)numTokens,
+            numHeads = (uint)numHeads,
+            headDim = (uint)headDim,
+            dim = (uint)(numHeads * headDim),
+            hasNormQ = normQ is not null ? 1u : 0u,
+            hasNormK = normK is not null ? 1u : 0u,
+            eps = eps
+        };
+        var normQBuf = normQ is not null ? GetBuffer(normQ) : GetBuffer(q);
+        var normKBuf = normK is not null ? GetBuffer(normK) : GetBuffer(k);
+        uint totalWorkgroups = (uint)(numTokens * numHeads);
+        DispatchOrRecord(_wanQkvSplitNormRoPEPipeline,
+            [GetBuffer(qkv), GetBuffer(q), GetBuffer(k), GetBuffer(v), GetBuffer(cos), GetBuffer(sin), normQBuf, normKBuf],
+            totalWorkgroups, &p);
+    }
+
     public void FluxUnpackQkv(Tensor qkv, Tensor q, Tensor k, Tensor v, int nTokens, int dim, int dstTokenOffset)
     {
         _fluxUnpackQkvPipeline ??= new ComputePipeline(this, Shaders.FluxUnpackQkv, 4, pushConstantSize: sizeof(FluxUnpackQkvParams));
@@ -4404,6 +4433,7 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
         _fluxSliceImgPipeline?.Dispose();
         _fluxEulerStepPipeline?.Dispose();
         _t5MultiHeadAttentionRelBiasPipeline?.Dispose();
+        _wanQkvSplitNormRoPEPipeline?.Dispose();
 
         _downloadStaging?.Dispose();
         _uploadStaging?.Dispose();

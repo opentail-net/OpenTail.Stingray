@@ -198,12 +198,13 @@ public sealed class WanModel : IDisposable
         // 4. Transformer Blocks -- fully GPU-resident (see TransformerBlockGpu): no per-block
         // host round-trips. gpuWs.RopeCos/RopeSin were uploaded once at WanGpuWorkspace
         // construction (see WanRoPE.Compute3DRoPECompact).
+        var hostMod = new float[_dim * 6];
         for (int b = 0; b < _numLayers; b++)
         {
-            var mod = new float[_dim * 6];
-            var modParam = GetWeight($"blocks.{b}.modulation");
-            for (int i = 0; i < mod.Length; i++) mod[i] = modParam[i] + timestepProj[i];
-            imageOps.WritePinned(gpuWs.Mod, mod);
+            var bw = gpuWeights.Blocks[b];
+            var modParam = bw.HostModulation;
+            for (int i = 0; i < hostMod.Length; i++) hostMod[i] = modParam[i] + timestepProj[i];
+            imageOps.WritePinned(gpuWs.Mod, hostMod);
 
             // One Vulkan command buffer + one fence-wait per block (not per individual op) --
             // without this, each of the ~15 dispatches inside TransformerBlockGpu pays its own
@@ -213,12 +214,12 @@ public sealed class WanModel : IDisposable
             // spanning an entire step was found to starve the OS GPU scheduler and freeze the
             // desktop UI on this shared iGPU.
             imageOps.BeginBatch();
-            TransformerBlockGpu(b, gpuWeights.Blocks[b], gpuWs, numTokens, imageOps, visionOps);
+            TransformerBlockGpu(b, bw, gpuWs, numTokens, imageOps, visionOps);
             imageOps.EndBatch();
         }
 
         // 5. Final Layer (AdaLN + Linear dim -> 64)
-        var headModParam = GetWeight("head.modulation");
+        var headModParam = gpuWeights.HostHeadModulation;
         var headMod = new float[_dim * 2];
         for (int d = 0; d < _dim; d++)
         {
@@ -253,31 +254,23 @@ public sealed class WanModel : IDisposable
     {
         int d = _dim;
 
-        // 1. Self-attention: affine-free LayerNorm -> AdaLN modulate -> self-attn (3D-RoPE) -> gated residual.
+        // 1. Self-attention: affine-free LayerNorm -> AdaLN modulate -> fused QKV GEMM -> fused Norm+RoPE -> self-attn -> gated residual.
         visionOps.AdaLNModulate(ws.Normed1, ws.X, ws.Mod, numTokens, d, shiftOffset: 0, scaleOffset: d, isRmsNorm: false, eps: 1e-6f);
 
-        imageOps.Sgemm(ws.Q, ws.Normed1, bw.SelfAttnQ, numTokens, d, d);
-        imageOps.Sgemm(ws.K, ws.Normed1, bw.SelfAttnK, numTokens, d, d);
-        imageOps.Sgemm(ws.V, ws.Normed1, bw.SelfAttnV, numTokens, d, d);
+        // Fused QKV GEMM [numTokens, d] x [d, d*3] -> [numTokens, d*3]
+        imageOps.Sgemm(ws.Qkv, ws.Normed1, bw.SelfAttnQkv, numTokens, d, d * 3);
 
-        if (bw.SelfAttnNormQ is not null) visionOps.RmsNormBatched(ws.Q, ws.Q, bw.SelfAttnNormQ, d, numTokens);
-        if (bw.SelfAttnNormK is not null) visionOps.RmsNormBatched(ws.K, ws.K, bw.SelfAttnNormK, d, numTokens);
-
-        // Real Wan 3D-RoPE reuses FLUX's interleaved-pair GPU kernel verbatim -- see
-        // WanRoPE.Compute3DRoPECompact's doc comment for why this is a safe, exact reuse (same
-        // rotation math, only the frequency-table construction differs) and why the OTHER
-        // existing GPU kernel (RoPE3D) must NOT be used here (wrong convention for Wan).
-        visionOps.Flux2DRoPE(ws.Q, ws.K, ws.RopeCos, ws.RopeSin, startToken: 0, tokenCount: numTokens, _numHeads, _headDim);
+        // Fused QKV Split + per-head RMSNorm + 3D RoPE (GPT-NeoX adjacent pair rotation)
+        visionOps.WanQkvSplitNormRoPE(ws.Qkv, ws.Q, ws.K, ws.V, ws.RopeCos, ws.RopeSin,
+            bw.SelfAttnNormQ, bw.SelfAttnNormK, numTokens, _numHeads, _headDim, eps: 1e-6f);
 
         imageOps.MultiHeadAttentionTiled(ws.AttnOut, ws.Q, ws.K, ws.V, numTokens, numTokens, _numHeads, _headDim);
         imageOps.Sgemm(ws.CrossAttnOut, ws.AttnOut, bw.SelfAttnO, numTokens, d, d);
         visionOps.ScaleGateAdd(ws.X, ws.CrossAttnOut, ws.Mod, numTokens, d, gateOffset: 2 * d);
 
         // 2. Cross-Attention with T5/UMT5 text tokens (using precomputed K/V cache).
-        using (var normedCrossTmp = imageOps.LayerNormGpu(ws.X, bw.Norm3Weight, bw.Norm3Bias, numTokens, d))
-        {
-            imageOps.Sgemm(ws.CrossQ, normedCrossTmp, bw.CrossAttnQ, numTokens, d, d);
-        }
+        imageOps.LayerNormGpu(ws.NormedCross, ws.X, bw.Norm3Weight, bw.Norm3Bias, numTokens, d);
+        imageOps.Sgemm(ws.CrossQ, ws.NormedCross, bw.CrossAttnQ, numTokens, d, d);
         if (bw.CrossAttnNormQ is not null) visionOps.RmsNormBatched(ws.CrossQ, ws.CrossQ, bw.CrossAttnNormQ, d, numTokens);
 
         var (cachedK, cachedV) = ws.CrossKvCache[layerIdx];

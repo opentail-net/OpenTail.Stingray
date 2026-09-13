@@ -9109,5 +9109,107 @@ internal static class Shaders
             xData[idx] += signDt * vData[idx];
         }
         """;
+
+    /// <summary>
+    /// Fused QKV split + per-head RMSNorm + 3D RoPE for Wan 2.1 self-attention.
+    /// Workgroup size: 128 (one workgroup per head per token).
+    /// </summary>
+    internal const string WanQkvSplitNormRoPE = """
+        #version 450
+
+        layout(local_size_x = 128) in;
+
+        layout(binding = 0) readonly buffer QkvBuf  { float qkvData[]; };
+        layout(binding = 1) writeonly buffer QBuf   { float qData[]; };
+        layout(binding = 2) writeonly buffer KBuf   { float kData[]; };
+        layout(binding = 3) writeonly buffer VBuf   { float vData[]; };
+        layout(binding = 4) readonly buffer CosBuf  { float cosData[]; };
+        layout(binding = 5) readonly buffer SinBuf  { float sinData[]; };
+        layout(binding = 6) readonly buffer NormQBuf { float normQData[]; };
+        layout(binding = 7) readonly buffer NormKBuf { float normKData[]; };
+
+        layout(push_constant) uniform Params {
+            uint numTokens;
+            uint numHeads;
+            uint headDim;
+            uint dim;
+            uint hasNormQ;
+            uint hasNormK;
+            float eps;
+        };
+
+        shared float s_q[128];
+        shared float s_k[128];
+        shared float s_sq_q[128];
+        shared float s_sq_k[128];
+
+        void main() {
+            uint headIdx = gl_WorkGroupID.x;
+            uint totalWorkgroups = numTokens * numHeads;
+            if (headIdx >= totalWorkgroups) return;
+
+            uint t = headIdx / numHeads;
+            uint h = headIdx % numHeads;
+            uint tid = gl_LocalInvocationID.x;
+
+            uint d = h * headDim + tid;
+            uint srcOffQ = t * (dim * 3u) + d;
+            uint srcOffK = t * (dim * 3u) + dim + d;
+            uint srcOffV = t * (dim * 3u) + dim * 2u + d;
+            uint dstOff = t * dim + d;
+
+            // 1. Copy V directly
+            vData[dstOff] = qkvData[srcOffV];
+
+            // 2. Load Q and K
+            float q = qkvData[srcOffQ];
+            float k = qkvData[srcOffK];
+            s_q[tid] = q;
+            s_k[tid] = k;
+            s_sq_q[tid] = q * q;
+            s_sq_k[tid] = k * k;
+            barrier();
+
+            // 3. Parallel reduction for RMSNorm
+            for (uint stride = 64u; stride > 0u; stride >>= 1u) {
+                if (tid < stride) {
+                    s_sq_q[tid] += s_sq_q[tid + stride];
+                    s_sq_k[tid] += s_sq_k[tid + stride];
+                }
+                barrier();
+            }
+
+            float rmsQ = inversesqrt(s_sq_q[0] / float(headDim) + eps);
+            float rmsK = inversesqrt(s_sq_k[0] / float(headDim) + eps);
+
+            // 4. Apply RMSNorm scaling
+            float q_norm = s_q[tid] * (hasNormQ != 0u ? rmsQ * normQData[d] : rmsQ);
+            float k_norm = s_k[tid] * (hasNormK != 0u ? rmsK * normKData[d] : rmsK);
+
+            s_q[tid] = q_norm;
+            s_k[tid] = k_norm;
+            barrier();
+
+            // 5. Apply 3D-RoPE (GPT-NeoX adjacent pair rotation)
+            if (tid < 64u) {
+                uint pairIdx = tid;
+                uint j = pairIdx * 2u;
+                float q0 = s_q[j];
+                float q1 = s_q[j + 1u];
+                float k0 = s_k[j];
+                float k1 = s_k[j + 1u];
+
+                uint freqOff = t * 64u + pairIdx;
+                float c = cosData[freqOff];
+                float s = sinData[freqOff];
+
+                uint outBase = t * dim + h * headDim + j;
+                qData[outBase]      = q0 * c - q1 * s;
+                qData[outBase + 1u] = q0 * s + q1 * c;
+                kData[outBase]      = k0 * c - k1 * s;
+                kData[outBase + 1u] = k0 * s + k1 * c;
+            }
+        }
+        """;
 }
 

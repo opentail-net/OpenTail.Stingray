@@ -60,6 +60,10 @@ public interface IImageOpsBackend : IComputeBackend
     /// <summary>GPU-resident LayerNorm over the last axis: input/output [N,C], weight/bias [C].</summary>
     Tensor LayerNormGpu(Tensor x, Tensor weight, Tensor bias, int n, int c, float eps = 1e-5f);
 
+    /// <summary>GPU-resident LayerNorm writing directly to preallocated output tensor.</summary>
+    void LayerNormGpu(Tensor output, Tensor x, Tensor weight, Tensor bias, int n, int c, float eps = 1e-5f)
+        => throw new NotSupportedException();
+
     /// <summary>GEGLU gate: input [N,2*D] (val half, gate half) -> output [N,D] = val * gelu(gate).</summary>
     Tensor GeGlu(Tensor x, int n, int d);
 

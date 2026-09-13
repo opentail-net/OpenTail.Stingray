@@ -95,6 +95,15 @@ public interface IVisionOpsBackend : IComputeBackend
         => throw new NotSupportedException();
 
     /// <summary>
+    /// Fused QKV split + per-head RMSNorm + 3D RoPE for Wan 2.1 self-attention.
+    /// Unpacks Q, K, V from fused Qkv [numTokens, 3*dim], applies RMSNorm on Q and K,
+    /// rotates Q and K with 3D RoPE tables, and writes out Q, K, V ready for attention.
+    /// </summary>
+    void WanQkvSplitNormRoPE(Tensor qkv, Tensor q, Tensor k, Tensor v, Tensor cos, Tensor sin,
+                             Tensor? normQ, Tensor? normK, int numTokens, int numHeads, int headDim, float eps = 1e-6f)
+        => throw new NotSupportedException();
+
+    /// <summary>
     /// Unpack fused QKV [nTokens, 3*dim] into separate Q, K, V buffers [nSeq, dim] at dstTokenOffset.
     /// </summary>
     void FluxUnpackQkv(Tensor qkv, Tensor q, Tensor k, Tensor v, int nTokens, int dim, int dstTokenOffset)

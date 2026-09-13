@@ -20,13 +20,36 @@ public sealed class WanGpuWeights : IDisposable
     public CoreTensor TextEmbed0 { get; }
     public CoreTensor TextEmbed2 { get; }
 
+    private static CoreTensor UploadWeight(IComputeBackend backend, float[] f32Data, TensorShape shape)
+    {
+        if (backend.BestSgemmPrecision == SgemmPrecision.Fp16)
+        {
+            var half = new Half[f32Data.Length];
+            for (int i = 0; i < f32Data.Length; i++) half[i] = (Half)f32Data[i];
+            return backend.UploadHalf(half, shape);
+        }
+        if (backend.BestSgemmPrecision == SgemmPrecision.Bf16)
+        {
+            var bf16 = new ushort[f32Data.Length];
+            for (int i = 0; i < f32Data.Length; i++)
+            {
+                uint bits = BitConverter.SingleToUInt32Bits(f32Data[i]);
+                bf16[i] = (ushort)(bits >> 16);
+            }
+            return backend.UploadBf16(bf16, shape);
+        }
+        return backend.Upload(f32Data, shape, exact: true);
+    }
+
     public sealed class BlockWeights : IDisposable
     {
         private readonly IComputeBackend _backend;
 
+        public float[] HostModulation { get; }
         public CoreTensor Modulation { get; }
         public CoreTensor Norm3Weight { get; }
         public CoreTensor Norm3Bias { get; }
+        public CoreTensor SelfAttnQkv { get; }
         public CoreTensor SelfAttnQ { get; }
         public CoreTensor SelfAttnK { get; }
         public CoreTensor SelfAttnV { get; }
@@ -46,14 +69,24 @@ public sealed class WanGpuWeights : IDisposable
         {
             _backend = backend;
 
-            Modulation = backend.Upload(weights.ReadF32($"{prefix}.modulation"), TensorShape.D1(dim * 6), exact: true);
+            HostModulation = weights.ReadF32($"{prefix}.modulation");
+            Modulation = backend.Upload(HostModulation, TensorShape.D1(dim * 6), exact: true);
             Norm3Weight = backend.Upload(weights.ReadF32($"{prefix}.norm3.weight"), TensorShape.D1(dim), exact: true);
             Norm3Bias = backend.Upload(weights.ReadF32($"{prefix}.norm3.bias"), TensorShape.D1(dim), exact: true);
 
-            SelfAttnQ = backend.Upload(weights.ReadF32($"{prefix}.self_attn.q.weight"), TensorShape.D2(dim, dim), exact: true);
-            SelfAttnK = backend.Upload(weights.ReadF32($"{prefix}.self_attn.k.weight"), TensorShape.D2(dim, dim), exact: true);
-            SelfAttnV = backend.Upload(weights.ReadF32($"{prefix}.self_attn.v.weight"), TensorShape.D2(dim, dim), exact: true);
-            SelfAttnO = backend.Upload(weights.ReadF32($"{prefix}.self_attn.o.weight"), TensorShape.D2(dim, dim), exact: true);
+            var qW = weights.ReadF32($"{prefix}.self_attn.q.weight");
+            var kW = weights.ReadF32($"{prefix}.self_attn.k.weight");
+            var vW = weights.ReadF32($"{prefix}.self_attn.v.weight");
+            var qkvW = new float[dim * 3 * dim];
+            qW.CopyTo(qkvW.AsSpan(0, dim * dim));
+            kW.CopyTo(qkvW.AsSpan(dim * dim, dim * dim));
+            vW.CopyTo(qkvW.AsSpan(dim * dim * 2, dim * dim));
+            SelfAttnQkv = UploadWeight(backend, qkvW, TensorShape.D2(dim * 3, dim));
+
+            SelfAttnQ = UploadWeight(backend, qW, TensorShape.D2(dim, dim));
+            SelfAttnK = UploadWeight(backend, kW, TensorShape.D2(dim, dim));
+            SelfAttnV = UploadWeight(backend, vW, TensorShape.D2(dim, dim));
+            SelfAttnO = UploadWeight(backend, weights.ReadF32($"{prefix}.self_attn.o.weight"), TensorShape.D2(dim, dim));
 
             string normQKey = $"{prefix}.self_attn.norm_q.weight";
             if (weights.Contains(normQKey))
@@ -63,10 +96,10 @@ public sealed class WanGpuWeights : IDisposable
             if (weights.Contains(normKKey))
                 SelfAttnNormK = backend.Upload(weights.ReadF32(normKKey), TensorShape.D1(dim), exact: true);
 
-            CrossAttnQ = backend.Upload(weights.ReadF32($"{prefix}.cross_attn.q.weight"), TensorShape.D2(dim, dim), exact: true);
-            CrossAttnK = backend.Upload(weights.ReadF32($"{prefix}.cross_attn.k.weight"), TensorShape.D2(dim, dim), exact: true);
-            CrossAttnV = backend.Upload(weights.ReadF32($"{prefix}.cross_attn.v.weight"), TensorShape.D2(dim, dim), exact: true);
-            CrossAttnO = backend.Upload(weights.ReadF32($"{prefix}.cross_attn.o.weight"), TensorShape.D2(dim, dim), exact: true);
+            CrossAttnQ = UploadWeight(backend, weights.ReadF32($"{prefix}.cross_attn.q.weight"), TensorShape.D2(dim, dim));
+            CrossAttnK = UploadWeight(backend, weights.ReadF32($"{prefix}.cross_attn.k.weight"), TensorShape.D2(dim, dim));
+            CrossAttnV = UploadWeight(backend, weights.ReadF32($"{prefix}.cross_attn.v.weight"), TensorShape.D2(dim, dim));
+            CrossAttnO = UploadWeight(backend, weights.ReadF32($"{prefix}.cross_attn.o.weight"), TensorShape.D2(dim, dim));
 
             string crossNormQKey = $"{prefix}.cross_attn.norm_q.weight";
             if (weights.Contains(crossNormQKey))
@@ -76,8 +109,8 @@ public sealed class WanGpuWeights : IDisposable
             if (weights.Contains(crossNormKKey))
                 CrossAttnNormK = backend.Upload(weights.ReadF32(crossNormKKey), TensorShape.D1(dim), exact: true);
 
-            Ffn0 = backend.Upload(weights.ReadF32($"{prefix}.ffn.0.weight"), TensorShape.D2(ffnDim, dim), exact: true);
-            Ffn2 = backend.Upload(weights.ReadF32($"{prefix}.ffn.2.weight"), TensorShape.D2(dim, ffnDim), exact: true);
+            Ffn0 = UploadWeight(backend, weights.ReadF32($"{prefix}.ffn.0.weight"), TensorShape.D2(ffnDim, dim));
+            Ffn2 = UploadWeight(backend, weights.ReadF32($"{prefix}.ffn.2.weight"), TensorShape.D2(dim, ffnDim));
         }
 
         public void Dispose()
@@ -85,6 +118,7 @@ public sealed class WanGpuWeights : IDisposable
             _backend.Free(Modulation);
             _backend.Free(Norm3Weight);
             _backend.Free(Norm3Bias);
+            _backend.Free(SelfAttnQkv);
             _backend.Free(SelfAttnQ);
             _backend.Free(SelfAttnK);
             _backend.Free(SelfAttnV);
@@ -103,6 +137,7 @@ public sealed class WanGpuWeights : IDisposable
     }
 
     public BlockWeights[] Blocks { get; }
+    public float[] HostHeadModulation { get; }
     public CoreTensor HeadModulation { get; }
     public CoreTensor HeadWeight { get; }
 
@@ -110,12 +145,12 @@ public sealed class WanGpuWeights : IDisposable
     {
         _backend = backend;
 
-        PatchEmbedding = backend.Upload(weights.ReadF32($"{prefix}patch_embedding.weight"), TensorShape.D2(dim, WanModel.InChannels), exact: true);
-        TimeEmbed0 = backend.Upload(weights.ReadF32($"{prefix}time_embedding.0.weight"), TensorShape.D2(dim, 256), exact: true);
-        TimeEmbed2 = backend.Upload(weights.ReadF32($"{prefix}time_embedding.2.weight"), TensorShape.D2(dim, dim), exact: true);
-        TimeProj1 = backend.Upload(weights.ReadF32($"{prefix}time_projection.1.weight"), TensorShape.D2(dim * 6, dim), exact: true);
-        TextEmbed0 = backend.Upload(weights.ReadF32($"{prefix}text_embedding.0.weight"), TensorShape.D2(dim, WanModel.TextDim), exact: true);
-        TextEmbed2 = backend.Upload(weights.ReadF32($"{prefix}text_embedding.2.weight"), TensorShape.D2(dim, dim), exact: true);
+        PatchEmbedding = UploadWeight(backend, weights.ReadF32($"{prefix}patch_embedding.weight"), TensorShape.D2(dim, WanModel.InChannels));
+        TimeEmbed0 = UploadWeight(backend, weights.ReadF32($"{prefix}time_embedding.0.weight"), TensorShape.D2(dim, 256));
+        TimeEmbed2 = UploadWeight(backend, weights.ReadF32($"{prefix}time_embedding.2.weight"), TensorShape.D2(dim, dim));
+        TimeProj1 = UploadWeight(backend, weights.ReadF32($"{prefix}time_projection.1.weight"), TensorShape.D2(dim * 6, dim));
+        TextEmbed0 = UploadWeight(backend, weights.ReadF32($"{prefix}text_embedding.0.weight"), TensorShape.D2(dim, WanModel.TextDim));
+        TextEmbed2 = UploadWeight(backend, weights.ReadF32($"{prefix}text_embedding.2.weight"), TensorShape.D2(dim, dim));
 
         Blocks = new BlockWeights[numLayers];
         for (int i = 0; i < numLayers; i++)
@@ -123,8 +158,9 @@ public sealed class WanGpuWeights : IDisposable
             Blocks[i] = new BlockWeights(backend, weights, $"{prefix}blocks.{i}", dim, ffnDim);
         }
 
-        HeadModulation = backend.Upload(weights.ReadF32($"{prefix}head.modulation"), TensorShape.D1(dim * 2), exact: true);
-        HeadWeight = backend.Upload(weights.ReadF32($"{prefix}head.head.weight"), TensorShape.D2(WanModel.InChannels, dim), exact: true);
+        HostHeadModulation = weights.ReadF32($"{prefix}head.modulation");
+        HeadModulation = backend.Upload(HostHeadModulation, TensorShape.D1(dim * 2), exact: true);
+        HeadWeight = UploadWeight(backend, weights.ReadF32($"{prefix}head.head.weight"), TensorShape.D2(WanModel.InChannels, dim));
     }
 
     public void Dispose()

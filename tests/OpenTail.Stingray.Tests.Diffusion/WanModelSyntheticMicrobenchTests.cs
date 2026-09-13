@@ -7,6 +7,13 @@ namespace OpenTail.Stingray.Tests.Diffusion;
 
 public sealed class WanModelSyntheticMicrobenchTests
 {
+    private readonly ITestOutputHelper _output;
+
+    public WanModelSyntheticMicrobenchTests(ITestOutputHelper output)
+    {
+        _output = output;
+    }
+
     private sealed class SyntheticWeightLoader : IWeightLoader
     {
         private readonly Dictionary<string, float[]> _weights = new(StringComparer.Ordinal);
@@ -105,6 +112,8 @@ public sealed class WanModelSyntheticMicrobenchTests
         double projectedFullDiTSeconds = (msPerBlock * 30.0 * 40.0) / 1000.0;
         double projectedFullDiTMinutes = projectedFullDiTSeconds / 60.0;
 
+        _output.WriteLine($"[Wan CPU Benchmark] 1-block forward ({numTokens} visual tokens, D={dim}, H={numHeads}): {msPerBlock:F1} ms");
+        _output.WriteLine($"[Wan CPU Benchmark] Projected 30-layer x 40-forward full DiT CPU runtime: {projectedFullDiTSeconds:F1}s ({projectedFullDiTMinutes:F1} min)");
         Console.Error.WriteLine($"[Wan CPU Benchmark] 1-block forward ({numTokens} visual tokens, D={dim}, H={numHeads}): {msPerBlock:F1} ms");
         Console.Error.WriteLine($"[Wan CPU Benchmark] Projected 30-layer x 40-forward full DiT CPU runtime: {projectedFullDiTSeconds:F1}s ({projectedFullDiTMinutes:F1} min)");
     }
@@ -193,6 +202,8 @@ public sealed class WanModelSyntheticMicrobenchTests
             double projectedFullDiTSeconds = (msPerBlock * 30.0 * 40.0) / 1000.0;
             double projectedFullDiTMinutes = projectedFullDiTSeconds / 60.0;
 
+            _output.WriteLine($"[Wan Vulkan GPU Benchmark] 1-block forward ({numTokens} visual tokens, D={dim}, H={numHeads}): {msPerBlock:F1} ms");
+            _output.WriteLine($"[Wan Vulkan GPU Benchmark] Projected 30-layer x 40-forward full DiT Vulkan runtime: {projectedFullDiTSeconds:F1}s ({projectedFullDiTMinutes:F1} min)");
             Console.Error.WriteLine($"[Wan Vulkan GPU Benchmark] 1-block forward ({numTokens} visual tokens, D={dim}, H={numHeads}): {msPerBlock:F1} ms");
             Console.Error.WriteLine($"[Wan Vulkan GPU Benchmark] Projected 30-layer x 40-forward full DiT Vulkan runtime: {projectedFullDiTSeconds:F1}s ({projectedFullDiTMinutes:F1} min)");
         }

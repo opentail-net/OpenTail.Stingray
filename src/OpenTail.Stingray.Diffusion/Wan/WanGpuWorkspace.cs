@@ -15,6 +15,7 @@ public sealed class WanGpuWorkspace : IDisposable
 
     public CoreTensor X { get; }
     public CoreTensor Normed1 { get; }
+    public CoreTensor Qkv { get; }
     public CoreTensor Q { get; }
     public CoreTensor K { get; }
     public CoreTensor V { get; }
@@ -41,6 +42,7 @@ public sealed class WanGpuWorkspace : IDisposable
 
         X = backend.Allocate(TensorShape.D2(numTokens, dim));
         Normed1 = backend.Allocate(TensorShape.D2(numTokens, dim));
+        Qkv = backend.Allocate(TensorShape.D2(numTokens, dim * 3));
         Q = backend.Allocate(TensorShape.D2(numTokens, dim));
         K = backend.Allocate(TensorShape.D2(numTokens, dim));
         V = backend.Allocate(TensorShape.D2(numTokens, dim));
@@ -88,6 +90,7 @@ public sealed class WanGpuWorkspace : IDisposable
 
         _backend.Free(X);
         _backend.Free(Normed1);
+        _backend.Free(Qkv);
         _backend.Free(Q);
         _backend.Free(K);
         _backend.Free(V);
