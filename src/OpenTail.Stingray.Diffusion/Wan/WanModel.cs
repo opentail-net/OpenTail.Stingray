@@ -574,18 +574,17 @@ public sealed class WanModel : IDisposable
                     int tokenIdx = (f * patchH + ph) * patchW + pw;
                     int tokenOff = tokenIdx * InChannels;
 
-                    for (int dy = 0; dy < 2; dy++)
+                    for (int c = 0; c < OutChannels; c++)
                     {
-                        for (int dx = 0; dx < 2; dx++)
+                        for (int dy = 0; dy < 2; dy++)
                         {
-                            int y = ph * 2 + dy;
-                            int x = pw * 2 + dx;
-                            int spatialSubOff = (dy * 2 + dx) * OutChannels;
-
-                            for (int c = 0; c < OutChannels; c++)
+                            for (int dx = 0; dx < 2; dx++)
                             {
+                                int y = ph * 2 + dy;
+                                int x = pw * 2 + dx;
+                                int offset = c * 4 + (dy * 2 + dx);
                                 int dstIdx = ((c * numFrames + f) * latH + y) * latW + x;
-                                unpacked[dstIdx] = packed[tokenOff + spatialSubOff + c];
+                                unpacked[dstIdx] = packed[tokenOff + offset];
                             }
                         }
                     }

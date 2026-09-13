@@ -51,11 +51,11 @@ public sealed class WanTests
         int totalTokens = numFrames * (latH / 2) * (latW / 2);
 
         var packed = new float[totalTokens * 64];
-        // Token (0, 0): dy=1, dx=0, c=3 -> spatialSubOff = (1 * 2 + 0) * 16 = 32 + 3 = 35
-        packed[35] = 99.0f;
+        // Token (0, 0): c=3, dy=1, dx=0 -> offset = 3 * 4 + (1 * 2 + 0) = 14
+        packed[14] = 99.0f;
 
         var unpacked = WanModel.UnpackLatents(packed, numFrames, latH, latW);
-        // Expected dst: c=3, y=1, x=0 -> (3 * 1 + 0) * 16 + 1 * 4 + 0 = 3 * 16 + 4 = 52
+        // Expected dst: c=3, y=1, x=0 -> ((3 * 1 + 0) * 4 + 1) * 4 + 0 = 3 * 16 + 4 = 52
         Assert.Equal(99.0f, unpacked[52]);
     }
 
