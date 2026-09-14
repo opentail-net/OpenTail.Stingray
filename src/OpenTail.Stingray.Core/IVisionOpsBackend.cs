@@ -148,6 +148,12 @@ public interface IVisionOpsBackend : IComputeBackend
     void T5MultiHeadAttentionRelBias(Tensor output, Tensor q, Tensor k, Tensor v, Tensor relBias, int qSeq, int kvSeq, int numHeads, int headDim)
         => throw new NotSupportedException();
 
+    /// <summary>Rotates only the first <paramref name="numRopeHeads"/> attention heads of Q and K
+    /// in place (interleaved-pair convention), leaving the rest unrotated -- F5-TTS's/CosyVoice3's
+    /// real `pe_attn_head` config quirk.</summary>
+    void PartialHeadRoPE(Tensor q, Tensor k, Tensor cos, Tensor sin, int numTokens, int dim, int headDim, int numRopeHeads)
+        => throw new NotSupportedException();
+
     /// <summary>
     /// Batched RMSNorm over numTokens rows of dimension rowDim:
     /// output[t, :] = RMSNorm(x[t, :], weight, eps).

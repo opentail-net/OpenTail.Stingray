@@ -208,3 +208,37 @@ The remaining wall time is overwhelmingly dominated by the DiT loop (86% / 255.2
    - Currently, each DiT layer records and submits dispatches with multiple pipeline barriers. Fusing barriers across non-dependent projections or pre-recording the entire static 57-block iteration graph can eliminate C# runtime CPU-GPU synchronization bubbles.
 3. **GEMM Wave-Level Tuning for M=256/M=4096**:
    - Tailor wavefront block sizes (e.g. 32×64 or 64×64) specifically for sequence lengths `M=256` (T5 sequence length) and `M=4096` (FLUX image latent tokens) to maximize wave occupancy on Cezanne Vega 8 compute units.
+
+## 2026-09-14 addendum — real bug found in the shared attention kernel, fixed, kept
+
+While porting Parler-TTS's own (unrelated) T5 encoder to GPU residency (docs/080), a real
+single-layer parity test found `VulkanBackend.T5MultiHeadAttentionRelBias` was applying
+`scale = 1/sqrt(headDim)` to attention scores — but real T5 attention is unscaled (confirmed in
+this file's own reference source and independently in `UMT5Encoder.cs`'s/`Parler/T5Encoder.cs`'s
+doc comments). Fixed to `scale = 1.0`. **This bug affects every caller of this shared kernel**,
+including this doc's own `T5Encoder.EncodeGpu` above — the "296.6s, confirmed visually coherent"
+result cited above was measured WITH this bug present. The fact that the FLUX end-to-end output
+still looked visually coherent despite it suggests FLUX's much larger DiT (57 blocks vs Wan's 30,
+or Parler's tiny attention-isolation test) is more forgiving of a somewhat-miscalibrated text
+conditioning signal than a smaller model would be — worth a real re-verification (re-run the same
+command above, real visual/numeric comparison against the pre-fix output) to see whether this
+fix measurably improves FLUX's own output quality now that it's corrected, not assumed either way.
+Not re-verified in this pass — flagging as a concrete, cheap follow-up for whoever picks this up
+next. See `docs/081`'s own 2026-09-14 update #13 for the full investigation (this bug was actually
+found via Wan's own accuracy investigation reaching into this shared kernel, not from FLUX work).
+
+**Re-verified, same day**: ran the exact command above with the fix in place — `299.6s` (matches
+the pre-fix `296.6s` baseline, no regression) and saved `flux_t5_scale_fix_verify.png`. Real,
+directly-viewed result: a clean, coherent, high-quality photorealistic red apple on a wooden
+table, no artifacts. Attempted to visually diff against the OLD baseline
+(`docs/diffusion-samples/flux-schnell-fix-verify.png`) to isolate this specific fix's contribution
+— that comparison turned out to be invalid: the old sample predates the separate, already-fixed
+T5-padding bug (docs/056/`ImagePipeline.cs`'s 256-token padding fix) and shows that bug's own
+repeating-tile artifact, not a clean "before only the scale fix" baseline, so no apples-to-apples
+before/after is available for this fix specifically. **What IS confirmed, directly, by looking at
+the actual output**: FLUX's current GPU pipeline, with this fix in place, produces genuinely
+excellent output — nothing regressed, and there's no reason to suspect the scale fix hurt
+anything (it moved a demonstrably-wrong scale factor to the demonstrably-correct one). Whether it
+was ALSO responsible for some smaller, harder-to-see quality improvement on top of the
+already-correct padding fix is not distinguishable from this test alone, and isn't worth
+chasing further given how good the current real output already looks.

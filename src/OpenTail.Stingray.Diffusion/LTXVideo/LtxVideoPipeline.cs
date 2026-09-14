@@ -195,6 +195,62 @@ public sealed class LtxVideoPipeline : IDiffusionPipeline
         }
         shiftedTimesteps[steps] = 0f;
 
+        // Debug-only per-step structural-coherence bisection (docs/077, 2026-09-14): env-gated,
+        // zero cost when unset. Decodes the CURRENT latents through the real VAE after every step
+        // and saves a preview PNG, directly showing exactly when the output visually stops
+        // converging and starts degrading -- complementing the latMean/latStd/maxAbs statistics
+        // dump above (which shows unbounded magnitude growth but not structural/visual coherence
+        // directly) with real per-step images. Local closure so it can reuse the un-normalize +
+        // decode + frame-assembly logic already written for the final result below.
+        bool debugStepFrames = Environment.GetEnvironmentVariable("STINGRAY_LTX_DEBUG_STEPFRAMES") == "1";
+        int spatialSizeForDebug = patchH * patchW;
+        void DecodeAndSaveStepFrame(int stepIndex)
+        {
+            if (_vae is null) return;
+            var stdOfMeansDbg = _weights?.Contains("vae.per_channel_statistics.std-of-means") == true
+                ? _weights.ReadF32("vae.per_channel_statistics.std-of-means") : null;
+            var meanOfMeansDbg = _weights?.Contains("vae.per_channel_statistics.mean-of-means") == true
+                ? _weights.ReadF32("vae.per_channel_statistics.mean-of-means") : null;
+
+            var chFirstDbg = new float[inChannels * numLatentFrames * spatialSizeForDebug];
+            for (int f = 0; f < numLatentFrames; f++)
+            {
+                int tokenBase = f * spatialSizeForDebug;
+                for (int p = 0; p < spatialSizeForDebug; p++)
+                {
+                    int srcOff = (tokenBase + p) * inChannels;
+                    for (int c = 0; c < inChannels; c++)
+                    {
+                        float v = latents[srcOff + c];
+                        if (stdOfMeansDbg is not null && meanOfMeansDbg is not null)
+                            v = v * stdOfMeansDbg[c] + meanOfMeansDbg[c];
+                        chFirstDbg[(c * numLatentFrames + f) * spatialSizeForDebug + p] = v;
+                    }
+                }
+            }
+
+            var videoDbg = _vae.Decode(chFirstDbg, decodeTimestep: 0f, numLatentFrames, patchH, patchW);
+            int outHDbg = patchH * LtxVaeDecoder.SpatialScale;
+            int outWDbg = patchW * LtxVaeDecoder.SpatialScale;
+            int outSpatialDbg = outHDbg * outWDbg;
+
+            var frameDbg = new float[3 * outSpatialDbg];
+            for (int c = 0; c < 3; c++)
+            {
+                int srcBase = c * outSpatialDbg; // f=0
+                int dstBase = c * outSpatialDbg;
+                for (int p = 0; p < outSpatialDbg; p++)
+                    frameDbg[dstBase + p] = Math.Clamp((videoDbg[srcBase + p] + 1.0f) * 0.5f, 0.0f, 1.0f);
+            }
+
+            string dir = Environment.GetEnvironmentVariable("STINGRAY_LTX_DEBUG_STEPFRAMES_DIR")
+                ?? "docs/diffusion-samples";
+            Directory.CreateDirectory(dir);
+            string path = Path.Combine(dir, $"ltx_stepframe_{stepIndex:D2}.png");
+            PngWriter.Write(path, frameDbg, outWDbg, outHDbg);
+            Console.Error.WriteLine($"[LTX stepframe] wrote {path}");
+        }
+
         for (int step = 0; step < steps; step++)
         {
             float tShifted = shiftedTimesteps[step];
@@ -215,6 +271,43 @@ public sealed class LtxVideoPipeline : IDiffusionPipeline
             for (int i = 0; i < totalLatentElements; i++)
             {
                 latents[i] -= dt * vPred[i];
+            }
+
+            if (debugStepFrames)
+                DecodeAndSaveStepFrame(step);
+
+            // Debug-only per-step latent/vPred statistics dump (docs/077, 2026-09-14): env-gated,
+            // zero cost when unset. Added while bisecting a real bug where output quality gets
+            // WORSE with more denoising steps (2 steps: plausible colors, 8 steps: recognizable
+            // apple, 20 steps: destroyed into banding) -- narrowed to the iterative loop itself
+            // (VAE, un-normalization, scheduler formula, and CFG combination already ruled out with
+            // separate isolation tests). This dump looks for exactly which step the latent
+            // statistics (mean/std/max-abs) first go anomalous, to distinguish a sudden
+            // discontinuity (a specific step's math is wrong) from gradual drift (compounding
+            // small error).
+            if (Environment.GetEnvironmentVariable("STINGRAY_LTX_DEBUG_STEPSTATS") == "1")
+            {
+                double sum = 0, sumSq = 0;
+                float maxAbs = 0f, vMaxAbs = 0f;
+                for (int i = 0; i < totalLatentElements; i++)
+                {
+                    float v = latents[i];
+                    sum += v;
+                    sumSq += (double)v * v;
+                    float a = MathF.Abs(v);
+                    if (a > maxAbs) maxAbs = a;
+                }
+                for (int i = 0; i < vPred.Length; i++)
+                {
+                    float a = MathF.Abs(vPred[i]);
+                    if (a > vMaxAbs) vMaxAbs = a;
+                }
+                double mean = sum / totalLatentElements;
+                double variance = sumSq / totalLatentElements - mean * mean;
+                double std = Math.Sqrt(Math.Max(0, variance));
+                Console.Error.WriteLine(
+                    $"[LTX stepstats] step={step,3} t={tShifted:F6} dt={dt:F6} " +
+                    $"latMean={mean:F6} latStd={std:F6} latMaxAbs={maxAbs:F6} vPredMaxAbs={vMaxAbs:F6}");
             }
 
             progress?.Invoke(step + 1, steps);

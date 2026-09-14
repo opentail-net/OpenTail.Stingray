@@ -135,6 +135,15 @@ public interface IComputeBackend : IDisposable
         throw new NotSupportedException($"{nameof(GeluTanhMul)} is not supported by this backend.");
 
     /// <summary>
+    /// Fused SiLU(gate) * up, in place into <paramref name="gate"/>: real implementation already
+    /// exists on <c>VulkanBackend</c> but was never exposed on this interface until Z-Image-
+    /// Turbo's own GPU-residency work needed it (docs/075) -- SwiGLU-style FFN activation:
+    /// <c>gate[i] = g / (1 + exp(-g)) * up[i]</c>.
+    /// </summary>
+    void SiLuMul(Tensor gate, Tensor up) =>
+        throw new NotSupportedException($"{nameof(SiLuMul)} is not supported by this backend.");
+
+    /// <summary>
     /// In-place final-logit softcap: <c>x[i] = tanh(x[i] / cap) * cap</c>.
     /// Used by Gemma 4 to clip extreme logits before sampling.
     /// </summary>

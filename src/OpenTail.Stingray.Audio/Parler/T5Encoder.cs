@@ -61,6 +61,101 @@ public static class T5Encoder
         return output;
     }
 
+    /// <summary>
+    /// GPU-resident forward pass, mirroring FLUX's own `T5GpuWeights`/`T5GpuWorkspace`/encode-loop
+    /// structure exactly (duplicated as <see cref="ParlerT5GpuWeights"/>/
+    /// <see cref="ParlerT5GpuWorkspace"/> due to a circular-project-reference constraint -- see
+    /// those classes' own doc comments) -- Parler's text encoder is a real, standard T5 encoder
+    /// using the exact same tensor names/math conventions (unscaled attention + additive
+    /// relative-position bias, RMSNorm, gated-GELU FFN) as FLUX's own T5-XXL, whose GPU residency
+    /// is already done and proven (docs/071); only the dims differ (T5-Large:
+    /// dim=1024/heads=16/headDim=64/ffDim=2816 vs T5-XXL's 4096/64/64/10240).
+    /// <paramref name="gpuWeights"/> must be built with a `getWeight` delegate reading
+    /// `text_encoder.{name}` from the same real loader `T5EncoderWeights` was constructed from
+    /// (see docs/080's Parler entry for the exact call-site pattern), and
+    /// <paramref name="gpuWorkspace"/> with this call's own flat relative-position-bias array
+    /// (<see cref="ComputeRelativePositionBiasFlat"/>).
+    /// </summary>
+    public static float[] EncodeGpu(T5EncoderWeights w, int[] tokenIds, ParlerT5GpuWeights gpuWeights, ParlerT5GpuWorkspace gpuWorkspace, IVisionOpsBackend backend)
+    {
+        int t = tokenIds.Length;
+        int dim = T5EncoderWeights.DModel;
+        int ffDim = T5EncoderWeights.DFf;
+
+        var xHost = new float[t * dim];
+        for (int i = 0; i < t; i++)
+            Array.Copy(w.SharedEmbedding, (long)tokenIds[i] * dim, xHost, (long)i * dim, dim);
+
+        var imageOps = (IImageOpsBackend)backend;
+        using (var xInit = backend.Upload(xHost, TensorShape.D2(t, dim), exact: true))
+        {
+            imageOps.ScaleInPlace(gpuWorkspace.X, 0f);
+            imageOps.AddInPlace(gpuWorkspace.X, xInit);
+        }
+
+        for (int i = 0; i < T5EncoderWeights.NumLayers; i++)
+        {
+            var lw = gpuWeights.Layers[i];
+            backend.RmsNormBatched(gpuWorkspace.XNorm, gpuWorkspace.X, lw.LayerNorm0Weight, dim, t, eps: 1e-6f);
+
+            imageOps.Sgemm(gpuWorkspace.Q, gpuWorkspace.XNorm, lw.QWeight, t, dim, dim);
+            imageOps.Sgemm(gpuWorkspace.K, gpuWorkspace.XNorm, lw.KWeight, t, dim, dim);
+            imageOps.Sgemm(gpuWorkspace.V, gpuWorkspace.XNorm, lw.VWeight, t, dim, dim);
+
+            backend.T5MultiHeadAttentionRelBias(gpuWorkspace.AttnOut, gpuWorkspace.Q, gpuWorkspace.K, gpuWorkspace.V, gpuWorkspace.RelPosBias, t, t, T5EncoderWeights.NumHeads, T5EncoderWeights.DKv);
+
+            imageOps.Sgemm(gpuWorkspace.XNorm, gpuWorkspace.AttnOut, lw.OWeight, t, dim, dim);
+            imageOps.AddInPlace(gpuWorkspace.X, gpuWorkspace.XNorm);
+
+            backend.RmsNormBatched(gpuWorkspace.XNorm, gpuWorkspace.X, lw.LayerNorm1Weight, dim, t, eps: 1e-6f);
+            imageOps.Sgemm(gpuWorkspace.Gate, gpuWorkspace.XNorm, lw.Wi0Weight, t, dim, ffDim);
+            imageOps.Sgemm(gpuWorkspace.Val, gpuWorkspace.XNorm, lw.Wi1Weight, t, dim, ffDim);
+            imageOps.GeluTanhMul(gpuWorkspace.Gate, gpuWorkspace.Val);
+            imageOps.Sgemm(gpuWorkspace.FfOut, gpuWorkspace.Gate, lw.WoWight, t, ffDim, dim);
+            imageOps.AddInPlace(gpuWorkspace.X, gpuWorkspace.FfOut);
+        }
+
+        backend.RmsNormBatched(gpuWorkspace.X, gpuWorkspace.X, gpuWeights.FinalLayerNormWeight, dim, t, eps: 1e-6f);
+
+        var result = new float[t * dim];
+        backend.Download(gpuWorkspace.X, result);
+        return result;
+    }
+
+    /// <summary>Same real relative-position-bucket formula as <see cref="ComputeRelativePositionBias"/>
+    /// (reused unchanged, not re-derived), flattened to the `[heads, seq, seq]` layout
+    /// <see cref="Diffusion.T5GpuWorkspace"/> expects instead of that method's own per-head jagged
+    /// `float[][,]` shape.</summary>
+    public static float[] ComputeRelativePositionBiasFlat(T5EncoderWeights w, int t)
+    {
+        var jagged = ComputeRelativePositionBias(w, t);
+        var flat = new float[T5EncoderWeights.NumHeads * t * t];
+        for (int h = 0; h < T5EncoderWeights.NumHeads; h++)
+            for (int i = 0; i < t; i++)
+                for (int j = 0; j < t; j++)
+                    flat[(h * t + i) * t + j] = jagged[h][i, j];
+        return flat;
+    }
+
+    /// <summary>Test-only entry point exposing one CPU layer's output directly, for isolating
+    /// GPU-vs-CPU discrepancies to a single layer instead of the full 24-layer stack (mirrors
+    /// F5TTS's own single-block debugging pattern, see docs/080's Parler entry).</summary>
+    public static float[] RunSingleLayerForTest(float[] x, T5LayerWeights lw, int t, float[][,] positionBias) =>
+        T5Layer(x, lw, t, positionBias, backend: null);
+
+    /// <summary>Test-only: replays just T5Layer's attention sub-layer (norm -> self-attn -> residual),
+    /// stopping before the FFN sub-layer, to isolate a GPU-vs-CPU discrepancy to attention vs FFN.</summary>
+    public static float[] RunAttentionOnlyForTest(float[] x, T5LayerWeights lw, int t, float[][,] positionBias)
+    {
+        int dim = T5EncoderWeights.DModel;
+        var normed1 = new float[t * dim];
+        Parallel.For(0, t, i => T5LayerNorm(x.AsSpan(i * dim, dim), lw.SelfAttnLayerNormWeight, normed1.AsSpan(i * dim, dim)));
+        var attnOut = SelfAttention(normed1, lw, t, positionBias, backend: null);
+        var afterAttn = new float[t * dim];
+        TensorPrimitives.Add(x, attnOut, afterAttn);
+        return afterAttn;
+    }
+
     private static float[] T5Layer(float[] x, T5LayerWeights lw, int t, float[][,] positionBias, IComputeBackend? backend = null)
     {
         int dim = T5EncoderWeights.DModel;

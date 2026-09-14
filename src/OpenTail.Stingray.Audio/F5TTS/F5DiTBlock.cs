@@ -131,6 +131,66 @@ public static class F5DiTBlock
         return output;
     }
 
+    /// <summary>
+    /// GPU-resident equivalent of <see cref="Forward"/> -- same math, every Sgemm/bias/modulate/
+    /// rope/attention/gate op dispatched on <paramref name="imageOps"/> against
+    /// <paramref name="ws"/>'s preallocated device buffers and <paramref name="bw"/>'s persistent
+    /// VRAM-resident weights, fully GPU-resident with zero host round-trips per block (the
+    /// `pe_attn_head=1` partial-head RoPE quirk now runs via <see cref="Core.IVisionOpsBackend.
+    /// PartialHeadRoPE"/> instead of the CPU download/ApplyRotary/re-upload round-trip an earlier
+    /// version of this method needed -- see docs/080's 2026-09-14 entry for why that was the real
+    /// bottleneck keeping the first version of this port at CPU parity). Caller wraps this in
+    /// <c>imageOps.BeginBatch()</c>/<c>EndBatch()</c> per block, mirroring <c>WanModel.
+    /// TransformerBlockGpu</c>'s own batching granularity choice.
+    /// </summary>
+    public static void ForwardGpu(
+        F5GpuWeights.BlockWeights bw, F5GpuWorkspace ws, int t,
+        Core.Tensor siluTGpu,
+        Core.IImageOpsBackend imageOps)
+    {
+        var visionOps = (Core.IVisionOpsBackend)imageOps;
+        int dim = F5TtsWeights.HiddenDim;
+        int heads = F5TtsWeights.NumHeads;
+        int headDim = F5TtsWeights.HeadDim;
+
+        // 0. Per-block AdaLN modulation is a REAL Linear (unlike Wan's cheap host-side
+        // param+timestepProj add) -- attn_norm.linear(silu(tEmb)) -> dim*6. siluTGpu (1 row,
+        // dim cols) is shared/precomputed once per denoising step outside the block loop.
+        imageOps.Sgemm(ws.Modulation, siluTGpu, bw.AttnNormLinearW, 1, dim, dim * 6);
+        imageOps.AddRowBroadcastInPlace(ws.Modulation, bw.AttnNormLinearB, 1, dim * 6);
+
+        // 1. AdaLN-Zero modulate (norm1, affine-free LayerNorm eps=1e-6) -> self-attention.
+        // Chunk order [shift1,scale1,gate1,shift2,scale2,gate2] -- confirmed identical to Wan/FLUX
+        // by re-deriving Forward's own ApplyAffineModulationSlice/ApplyGatedResidualSlice offsets.
+        visionOps.AdaLNModulate(ws.Normed, ws.X, ws.Modulation, t, dim, shiftOffset: 0, scaleOffset: dim, isRmsNorm: false, eps: 1e-6f);
+
+        imageOps.Sgemm(ws.Q, ws.Normed, bw.ToQW, t, dim, dim);
+        imageOps.AddRowBroadcastInPlace(ws.Q, bw.ToQB, t, dim);
+        imageOps.Sgemm(ws.K, ws.Normed, bw.ToKW, t, dim, dim);
+        imageOps.AddRowBroadcastInPlace(ws.K, bw.ToKB, t, dim);
+        imageOps.Sgemm(ws.V, ws.Normed, bw.ToVW, t, dim, dim);
+        imageOps.AddRowBroadcastInPlace(ws.V, bw.ToVB, t, dim);
+
+        // Real F5TTS_Base.yaml: pe_attn_head=1 -- RoPE applies to only head 0, not all 16 (see
+        // this file's own class doc comment). Fully GPU-resident now via PartialHeadRoPE.
+        visionOps.PartialHeadRoPE(ws.Q, ws.K, ws.RopeCos, ws.RopeSin, t, dim, headDim, numRopeHeads: 1);
+
+        imageOps.MultiHeadAttentionTiled(ws.AttnOut, ws.Q, ws.K, ws.V, t, t, heads, headDim);
+        imageOps.Sgemm(ws.AttnProj, ws.AttnOut, bw.ToOutW, t, dim, dim);
+        imageOps.AddRowBroadcastInPlace(ws.AttnProj, bw.ToOutB, t, dim);
+        visionOps.ScaleGateAdd(ws.X, ws.AttnProj, ws.Modulation, t, dim, gateOffset: 2 * dim);
+
+        // 2. Modulated FeedForward (tanh-approx GELU): affine-free LayerNorm -> AdaLN modulate ->
+        // FFN -> gated residual.
+        visionOps.AdaLNModulate(ws.Normed, ws.X, ws.Modulation, t, dim, shiftOffset: 3 * dim, scaleOffset: 4 * dim, isRmsNorm: false, eps: 1e-6f);
+        imageOps.Sgemm(ws.FfnMid, ws.Normed, bw.FfInW, t, dim, F5TtsWeights.FfnDim);
+        imageOps.AddRowBroadcastInPlace(ws.FfnMid, bw.FfInB, t, F5TtsWeights.FfnDim);
+        visionOps.VisionGeluInPlace(ws.FfnMid);
+        imageOps.Sgemm(ws.FfnOut, ws.FfnMid, bw.FfOutW, t, F5TtsWeights.FfnDim, dim);
+        imageOps.AddRowBroadcastInPlace(ws.FfnOut, bw.FfOutB, t, dim);
+        visionOps.ScaleGateAdd(ws.X, ws.FfnOut, ws.Modulation, t, dim, gateOffset: 5 * dim);
+    }
+
     private static float[] FeedForward(F5DiTBlockWeights bw, float[] x, int t, Core.IComputeBackend? backend = null)
     {
         int dim = F5TtsWeights.HiddenDim;

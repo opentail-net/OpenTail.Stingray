@@ -375,11 +375,20 @@ public sealed class LtxVideoModel : IDisposable
         return Linear($"{prefix}.net.2", h1, ffnDim, d);
     }
 
-    /// <summary>Real `TimestepEmbedder`: sinusoidal(256) -> Linear(256,hidden) -> SiLU -> Linear(hidden,hidden).</summary>
+    /// <summary>Real `TimestepEmbedder`: sinusoidal(256) -> Linear(256,hidden) -> SiLU -> Linear(hidden,hidden).
+    /// Sinusoidal embedding uses `flip_sin_to_cos=true` (2026-09-14 fix, found via a golden-parity
+    /// diagnostic: the shared `timestep_embedding` helper this model's real C++ reference calls
+    /// (`examples/stable-diffusion.cpp/src/core/ggml_extend.hpp`) defaults `flip_sin_to_cos=true`
+    /// -- [cos,sin] order, not [sin,cos] -- the same real convention already confirmed and fixed for
+    /// Wan's own timestep embedding this session; this call site had been left at this project's
+    /// own default (false/[sin,cos]), which measured cosine-sim 0.79 against the real dumped
+    /// `embedded_timestep` golden fixture before this fix (see docs/077's 2026-09-14 update) and is
+    /// very likely the root cause of the block0/full-output golden-parity failure, since AdaLN
+    /// modulation derives from this value in every block.</summary>
     private float[] TimestepEmbedder(float timestep)
     {
         const int freqEmbedSize = 256;
-        var emb = DiffusionOps.SinusoidalTimestepEmbedding(timestep, freqEmbedSize);
+        var emb = DiffusionOps.SinusoidalTimestepEmbedding(timestep, freqEmbedSize, flipSinToCos: true);
         var h1 = Linear("adaln_single.emb.timestep_embedder.linear_1", emb, freqEmbedSize, HiddenSize);
         DiffusionOps.SiluInPlace(h1);
         return Linear("adaln_single.emb.timestep_embedder.linear_2", h1, HiddenSize, HiddenSize);

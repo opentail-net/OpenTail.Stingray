@@ -38,8 +38,9 @@ public sealed class WanTests
         original[(1 * numFrames + 0) * latH * latW + 0 * latW + 0] = 42.0f;
 
         var packed = WanModel.PackLatents(original, numFrames, latH, latW);
-        // Token (0, 0): channel 1, dy=0, dx=0 corresponds to channel offset (1 * 2 + 0) * 2 + 0 = 4
-        Assert.Equal(42.0f, packed[4]);
+        // Pixel-major layout: slot = (dy*2+dx)*OutChannels + c
+        // channel 1, dy=0, dx=0 -> slot = (0*2+0)*16 + 1 = 1
+        Assert.Equal(42.0f, packed[1]);
     }
 
     [Fact]
@@ -51,12 +52,45 @@ public sealed class WanTests
         int totalTokens = numFrames * (latH / 2) * (latW / 2);
 
         var packed = new float[totalTokens * 64];
-        // Token (0, 0): c=3, dy=1, dx=0 -> offset = 3 * 4 + (1 * 2 + 0) = 14
-        packed[14] = 99.0f;
+        // Pixel-major layout: slot = (dy*2+dx)*OutChannels + c
+        // Token (0, 0): c=3, dy=1, dx=0 -> slot = (1*2+0)*16 + 3 = 35
+        packed[35] = 99.0f;
 
         var unpacked = WanModel.UnpackLatents(packed, numFrames, latH, latW);
         // Expected dst: c=3, y=1, x=0 -> ((3 * 1 + 0) * 4 + 1) * 4 + 0 = 3 * 16 + 4 = 52
         Assert.Equal(99.0f, unpacked[52]);
+    }
+
+    [Theory]
+    [InlineData(1, 4, 4)]
+    [InlineData(1, 16, 16)]
+    [InlineData(3, 8, 8)]
+    public void Wan_PackAndUnpackLatents_IsLosslessIdentity(int numFrames, int latH, int latW)
+    {
+        int channels = 16;
+        int totalElements = channels * numFrames * latH * latW;
+
+        var original = new float[totalElements];
+        for (int i = 0; i < original.Length; i++)
+            original[i] = i * 0.01f - 5.0f;
+
+        var packed = WanModel.PackLatents(original, numFrames, latH, latW);
+        int patchH = latH / 2;
+        int patchW = latW / 2;
+        int expectedTokens = numFrames * patchH * patchW;
+        int expectedChannels = WanModel.InChannels; // 64
+        Assert.Equal(expectedTokens * expectedChannels, packed.Length);
+
+        var unpacked = WanModel.UnpackLatents(packed, numFrames, latH, latW);
+        Assert.Equal(original.Length, unpacked.Length);
+
+        for (int i = 0; i < original.Length; i++)
+            Assert.Equal(original[i], unpacked[i], tolerance: 1e-6f);
+
+        var repacked = WanModel.PackLatents(unpacked, numFrames, latH, latW);
+        Assert.Equal(packed.Length, repacked.Length);
+        for (int i = 0; i < packed.Length; i++)
+            Assert.Equal(packed[i], repacked[i], tolerance: 1e-6f);
     }
 
     [Fact]

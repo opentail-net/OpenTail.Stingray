@@ -358,6 +358,20 @@ public sealed class CfmLinearWeight
         }
     }
 
+    /// <summary>Returns this weight's data as a plain float32 array, reconstructing from F16 bits
+    /// if that's how it was stored (read-only, additive accessor -- does not change this
+    /// instance's own CPU dispatch path or precision, only exposes the value for a caller that
+    /// needs raw float32, e.g. uploading to a GPU-resident tensor via <c>backend.Upload</c>).</summary>
+    public float[] ToF32Array()
+    {
+        if (_f32 is { } f32) return f32;
+        var f16 = _f16Bits!;
+        var result = new float[f16.Length];
+        for (int i = 0; i < f16.Length; i++)
+            result[i] = (float)BitConverter.UInt16BitsToHalf(unchecked((ushort)f16[i]));
+        return result;
+    }
+
     /// <summary>Single-row linear layer: output[outDim] = weight[outDim, inDim] . input[inDim] (no bias -- callers add bias separately, matching CfmUNetKernels' existing convention).</summary>
     public unsafe float[] MatVec(float[] input)
     {

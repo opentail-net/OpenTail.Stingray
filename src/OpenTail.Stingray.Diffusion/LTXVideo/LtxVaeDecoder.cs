@@ -365,10 +365,14 @@ public sealed class LtxVaeDecoder : IDisposable
     /// directly as the per-stage/final shared timestep embedding.</summary>
     private float[] TimestepEmbedMlp(string prefix, float scaledTimestep, int dim)
     {
-        // flip_sin_to_cos=True: [cos, sin] order (real `get_timestep_embedding`), matching
-        // DiffusionOps.SinusoidalTimestepEmbedding's own [cos,sin] layout.
+        // flip_sin_to_cos=True: [cos, sin] order (real `get_timestep_embedding`). 2026-09-14 fix:
+        // this comment's claim that the call already matched was wrong -- DiffusionOps.
+        // SinusoidalTimestepEmbedding defaults to [sin,cos] (flipSinToCos=false), so the flag must
+        // be passed explicitly (found alongside the identical bug in LtxVideoModel.TimestepEmbedder,
+        // see docs/077's 2026-09-14 update -- 0.79 cosine-sim against the real golden
+        // embedded_timestep dump before the fix).
         const int freqEmbedSize = 256;
-        var emb = DiffusionOps.SinusoidalTimestepEmbedding(scaledTimestep, freqEmbedSize);
+        var emb = DiffusionOps.SinusoidalTimestepEmbedding(scaledTimestep, freqEmbedSize, flipSinToCos: true);
         var h1 = Linear($"{prefix}.linear_1", emb, freqEmbedSize, dim);
         DiffusionOps.SiluInPlace(h1);
         return Linear($"{prefix}.linear_2", h1, dim, dim);

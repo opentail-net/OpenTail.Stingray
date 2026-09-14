@@ -114,4 +114,30 @@ public sealed class WanGpuParityTests
                 $"Mismatch at index {i}: expected {expected[i]:F6}, actual {actual[i]:F6}, diff {MathF.Abs(expected[i] - actual[i]):E4}");
         }
     }
+
+    private readonly ITestOutputHelper _output;
+
+    public WanGpuParityTests(ITestOutputHelper output)
+    {
+        _output = output;
+    }
+
+    [Fact]
+    public void Wan_RealWeights_InspectTensorNamesAndShapes()
+    {
+        string ditPath = Path.Combine("models", "wan2.1", "wan2.1-t2v-1.3b-dit.safetensors");
+        if (!File.Exists(ditPath)) return;
+
+        using var st = SafetensorsLoader.Open(ditPath);
+        _output.WriteLine($"Total tensors: {st.TensorCount}");
+        foreach (var name in st.TensorNames)
+        {
+            if (name.StartsWith("blocks.0.") || !name.StartsWith("blocks."))
+            {
+                var shape = st.GetShape(name);
+                _output.WriteLine($"[Wan Tensor] {name}: [{string.Join(", ", shape)}]");
+                Console.WriteLine($"[Wan Tensor] {name}: [{string.Join(", ", shape)}]");
+            }
+        }
+    }
 }

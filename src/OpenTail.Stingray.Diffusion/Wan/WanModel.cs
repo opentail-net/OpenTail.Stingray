@@ -334,10 +334,26 @@ public sealed class WanModel : IDisposable
         var (cos, sin) = WanRoPE.Compute3DRoPE(numFrames, patchH, patchW, _headDim);
 
         // 5. Transformer Blocks
+        bool debugPerBlock = Environment.GetEnvironmentVariable("STINGRAY_WAN_DEBUG_PERBLOCK") == "1";
         for (int b = 0; b < _numLayers; b++)
         {
             string p = $"blocks.{b}";
             TransformerBlock(b, p, x, timestepProj, cos, sin, numTokens, numTxtTokens, ws);
+
+            if (debugPerBlock)
+            {
+                float mean = 0, sumSq = 0, maxAbs = 0;
+                for (int i = 0; i < x.Length; i++)
+                {
+                    mean += x[i]; sumSq += x[i] * x[i];
+                    float a = MathF.Abs(x[i]);
+                    if (a > maxAbs) maxAbs = a;
+                }
+                mean /= x.Length;
+                float std = MathF.Sqrt(Math.Max(0, sumSq / x.Length - mean * mean));
+                bool bad = float.IsNaN(mean) || float.IsInfinity(mean) || maxAbs > 1e6f;
+                Console.WriteLine($"[WanDebug][PerBlock] block={b} mean={mean:F6} std={std:F6} maxAbs={maxAbs:F4}{(bad ? " <<< PATHOLOGICAL" : "")}");
+            }
         }
 
         // 6. Final Layer (AdaLN + Linear dim -> 64)
@@ -469,7 +485,16 @@ public sealed class WanModel : IDisposable
 
     private float[] ComputeTimestepEmbedding(float timestep)
     {
-        var emb = DiffusionOps.SinusoidalTimestepEmbedding(timestep);
+        // flipSinToCos: true -- the real reference (ggml_compute_forward_timestep_embedding_f32,
+        // examples/stable-diffusion.cpp/ggml/src/ggml-cpu/ops.cpp:8302-8303) writes
+        // embed_data[j]=cos(arg) for the FIRST half and embed_data[j+half]=sin(arg) for the
+        // second half -- i.e. [cos, sin] order. The default (flipSinToCos: false) produces the
+        // opposite [sin, cos] order, which silently swaps which half of the input `time_embedding.0`
+        // linear layer's trained weights sees cos vs sin -- found 2026-09-14 during the Priority-0
+        // Wan accuracy investigation (docs/081): the "half-sinusoid" columns each end up multiplied
+        // by the wrong learned coefficient (same class of bug as the PackLatents column-permutation
+        // fix earlier in this file), corrupting the model's actual sense of the current noise level.
+        var emb = DiffusionOps.SinusoidalTimestepEmbedding(timestep, flipSinToCos: true);
         var t0 = Linear("time_embedding.0", emb, 256, _dim);
         DiffusionOps.SiluInPlace(t0);
         return Linear("time_embedding.2", t0, _dim, _dim);
@@ -482,7 +507,14 @@ public sealed class WanModel : IDisposable
     private float[] ComputeTextEmbedding(float[] textContext)
     {
         var t0 = Linear("text_embedding.0", textContext, TextDim, _dim);
-        for (int i = 0; i < t0.Length; i++) t0[i] = DiffusionOps.Gelu(t0[i]);
+        // 2026-09-14: two "reference" sources disagree here -- diffusers' transformer_wan.py uses
+        // `PixArtAlphaTextProjection(..., act_fn="gelu_tanh")` (tanh-approx, the default below),
+        // but wan.hpp's own comment says plain `nn.GELU()` (exact, no args = exact in PyTorch).
+        // STINGRAY_WAN_DEBUG_EXACT_GELU=1 switches to the exact/erf-based variant to test which
+        // one is real empirically rather than trusting either doc comment blindly (docs/081).
+        bool exactGelu = Environment.GetEnvironmentVariable("STINGRAY_WAN_DEBUG_EXACT_GELU") == "1";
+        for (int i = 0; i < t0.Length; i++)
+            t0[i] = exactGelu ? DiffusionOps.GeluExact(t0[i]) : DiffusionOps.Gelu(t0[i]);
         return Linear("text_embedding.2", t0, _dim, _dim);
     }
 
@@ -538,18 +570,28 @@ public sealed class WanModel : IDisposable
                 {
                     int tokenIdx = (f * patchH + ph) * patchW + pw;
                     int tokenOff = tokenIdx * InChannels;
-                    int chanOffset = 0;
-
-                    for (int c = 0; c < OutChannels; c++)
+                    // patch_embedding is a real Conv3d(in_dim=16, kernel=patch_size=(1,2,2)) in the
+                    // reference (wan.hpp:537), NOT a hand-rolled pixel-major pack -- reinterpreting
+                    // its [out_dim, in_dim, kt, kh, kw] weight as a flat Linear matrix means the
+                    // packed input vector's element order MUST match the weight's own trailing-dim
+                    // flatten order: in_channel OUTER, spatial (dy, dx) INNER (slot = c*4 + dy*2 + dx).
+                    // The previous (dy*2+dx)*OutChannels+c ordering was a column permutation of the
+                    // patch-embedding matrix relative to what the checkpoint was trained with --
+                    // self-consistent with UnpackLatents but wrong against the real weight layout,
+                    // which explains plausible-magnitude-but-fully-scrambled DiT output (see
+                    // docs/081, 2026-09-14 update: VAE isolation test proved the VAE decodes
+                    // structured input faithfully, ruling it out and pointing back at this packing).
+                    for (int dy = 0; dy < 2; dy++)
                     {
-                        for (int dy = 0; dy < 2; dy++)
+                        for (int dx = 0; dx < 2; dx++)
                         {
-                            for (int dx = 0; dx < 2; dx++)
+                            for (int c = 0; c < OutChannels; c++)
                             {
                                 int y = ph * 2 + dy;
                                 int x = pw * 2 + dx;
                                 int srcIdx = ((c * numFrames + f) * latH + y) * latW + x;
-                                packed[tokenOff + chanOffset++] = latents[srcIdx];
+                                int slot = c * 4 + dy * 2 + dx;
+                                packed[tokenOff + slot] = latents[srcIdx];
                             }
                         }
                     }
@@ -574,6 +616,19 @@ public sealed class WanModel : IDisposable
                     int tokenIdx = (f * patchH + ph) * patchW + pw;
                     int tokenOff = tokenIdx * InChannels;
 
+                    // 2026-09-14 correction: head.head is a plain Linear (NOT a Conv3d like
+                    // patch_embedding), and the reference's own `unpatchify` (wan.hpp:610-625)
+                    // reshapes its 64-length output as ggml `(C, pw*ph*pt)` -- ggml's ne[0] is the
+                    // FASTEST/most-contiguous axis (per this repo's own AGENTS.md tensor-layout
+                    // note), so C is the INNERMOST component there, spatial offset (dy,dx) OUTER.
+                    // This is the OPPOSITE convention from patch_embedding's real Conv3d weight
+                    // (whose raw PyTorch storage makes in_channel the outer, slower-varying axis
+                    // of its flattened kernel taps) -- an initial fix here wrongly assumed
+                    // PackLatents and UnpackLatents must share one convention; they don't, because
+                    // the encode (Conv3d) and decode (Linear + separately-coded unpatchify) sides
+                    // are independent design choices in the original model. Keep PackLatents at
+                    // channel-outer (c*4+dy*2+dx) but UnpackLatents at spatial-outer
+                    // ((dy*2+dx)*OutChannels+c), matching each side's own real reference.
                     for (int c = 0; c < OutChannels; c++)
                     {
                         for (int dy = 0; dy < 2; dy++)
@@ -582,7 +637,7 @@ public sealed class WanModel : IDisposable
                             {
                                 int y = ph * 2 + dy;
                                 int x = pw * 2 + dx;
-                                int offset = c * 4 + (dy * 2 + dx);
+                                int offset = (dy * 2 + dx) * OutChannels + c;
                                 int dstIdx = ((c * numFrames + f) * latH + y) * latW + x;
                                 unpacked[dstIdx] = packed[tokenOff + offset];
                             }

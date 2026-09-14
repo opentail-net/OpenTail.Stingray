@@ -1609,6 +1609,7 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
     private ComputePipeline? _fluxEulerStepPipeline;
     private ComputePipeline? _t5MultiHeadAttentionRelBiasPipeline;
     private ComputePipeline? _wanQkvSplitNormRoPEPipeline;
+    private ComputePipeline? _partialHeadRoPEPipeline;
 
     private struct RmsNormParams{ public uint n; public float eps; }
     private struct RmsNormBatchedParams { public uint n; public float eps; public uint numTokens; }
@@ -1714,6 +1715,7 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
     private struct FluxEulerStepParams { public uint count; public float signDt; }
     private struct T5MultiHeadAttentionRelBiasParams { public uint qSeq; public uint kvSeq; public uint numHeads; public float scale; }
     private struct WanQkvSplitNormRoPEParams { public uint numTokens; public uint numHeads; public uint headDim; public uint dim; public uint hasNormQ; public uint hasNormK; public float eps; }
+    private struct PartialHeadRoPEParams { public uint numTokens; public uint dim; public uint headDim; public uint numRopeHeads; }
 
     private void DispatchOrRecord(ComputePipeline pipe, ReadOnlySpan<GpuBuffer> buffers,
         uint groupX, void* push, uint groupY = 1, uint groupZ = 1)
@@ -4128,10 +4130,32 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
         };
         var normQBuf = normQ is not null ? GetBuffer(normQ) : GetBuffer(q);
         var normKBuf = normK is not null ? GetBuffer(normK) : GetBuffer(k);
-        uint totalWorkgroups = (uint)(numTokens * numHeads);
+        // One workgroup per TOKEN (not per token*head) -- the shader loops each of its `headDim`
+        // threads across all `numHeads` heads so the RMSNorm reduction covers the full dim-length
+        // row, matching the CPU's RmsNormHeads scope. See the shader's own 2026-09-14 note.
+        uint totalWorkgroups = (uint)numTokens;
         DispatchOrRecord(_wanQkvSplitNormRoPEPipeline,
             [GetBuffer(qkv), GetBuffer(q), GetBuffer(k), GetBuffer(v), GetBuffer(cos), GetBuffer(sin), normQBuf, normKBuf],
             totalWorkgroups, &p);
+    }
+
+    /// <summary>F5-TTS's/CosyVoice3's real `pe_attn_head` RoPE quirk: rotate only the first
+    /// `numRopeHeads` attention heads of Q and K in place, leaving the rest unrotated. See the
+    /// shader's own 2026-09-14 doc comment for why this exists (eliminates a 22-round-trip-per-
+    /// forward-pass CPU fallback in F5DiTBlock.ForwardGpu).</summary>
+    public void PartialHeadRoPE(Tensor q, Tensor k, Tensor cos, Tensor sin, int numTokens, int dim, int headDim, int numRopeHeads)
+    {
+        _partialHeadRoPEPipeline ??= new ComputePipeline(this, Shaders.PartialHeadRoPE, 4, pushConstantSize: sizeof(PartialHeadRoPEParams));
+        var p = new PartialHeadRoPEParams
+        {
+            numTokens = (uint)numTokens,
+            dim = (uint)dim,
+            headDim = (uint)headDim,
+            numRopeHeads = (uint)numRopeHeads
+        };
+        uint total = (uint)(numTokens * numRopeHeads * (headDim / 2));
+        uint groups = (total + 255u) / 256u;
+        DispatchOrRecord(_partialHeadRoPEPipeline, [GetBuffer(q), GetBuffer(k), GetBuffer(cos), GetBuffer(sin)], groups, &p);
     }
 
     public void FluxUnpackQkv(Tensor qkv, Tensor q, Tensor k, Tensor v, int nTokens, int dim, int dstTokenOffset)
@@ -4225,7 +4249,21 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
             qSeq = (uint)qSeq,
             kvSeq = (uint)kvSeq,
             numHeads = (uint)numHeads,
-            scale = 1f / MathF.Sqrt(headDim)
+            // Real T5 attention is UNSCALED -- T5 omits the standard 1/sqrt(headDim) factor
+            // entirely (confirmed directly in the real `transformers` T5Attention source: no
+            // division anywhere in `scores = torch.matmul(query_states, key_states.transpose(3,
+            // 2))`; see both `Parler/T5Encoder.cs`'s and `Diffusion/TextEncoders/T5Encoder.cs`'s
+            // own doc comments, and `Diffusion/TextEncoders/UMT5Encoder.cs` -- Wan's own text
+            // encoder). Found 2026-09-14 via a real single-layer GPU-vs-CPU parity test on
+            // Parler's T5 encoder (a fresh GPU-residency port, not a pre-existing "proven" path):
+            // this dispatch was applying `1/sqrt(headDim)` regardless, silently corrupting every
+            // model that calls this shared kernel on the GPU path -- including Wan's own UMT5
+            // encoder (`UMT5Encoder.EncodeGpu`, used throughout this session's entire Wan
+            // Priority-0 accuracy investigation, docs/081) and FLUX's own T5-XXL GPU residency
+            // (docs/071). This bug predates this session's own Wan work and was never caught
+            // because no prior GPU-vs-CPU parity test for either T5-XXL or UMT5 checked attention
+            // in isolation against the CPU reference at the value level, only end-to-end.
+            scale = 1f
         };
         uint groupsX = (uint)((qSeq + 15) / 16);
         DispatchOrRecord(_t5MultiHeadAttentionRelBiasPipeline, [GetBuffer(q), GetBuffer(k), GetBuffer(v), GetBuffer(relBias), GetBuffer(output)], groupsX, &p, 1u, (uint)numHeads);

@@ -295,6 +295,56 @@ public static class CosyVoice3DiTModel
         return Lin(backend, normOut, numFrames, dim, w.ProjOutWeight, w.ProjOutBias, CosyVoice3DiTWeights.MelDim);
     }
 
+    /// <summary>
+    /// GPU-resident backbone: real per-block VRAM-resident weights (<see cref="CosyVoice3GpuWeights"/>)
+    /// + preallocated workspace + <see cref="F5DiTBlock.ForwardGpu"/> reused directly per block
+    /// (CosyVoice3's DiT is tensor-for-tensor identical to F5-TTS's own, see this class's own doc
+    /// comment) -- no new block-level GPU code needed, just CosyVoice3-specific weight upload and
+    /// input embedding (still CPU-side, one-shot per ODE step, same as F5's own approach).
+    /// <paramref name="ws"/> must be an <see cref="F5GpuWorkspace"/> constructed with this call's
+    /// real <paramref name="rotaryCos"/>/<paramref name="rotarySin"/> tables (dims match F5's own
+    /// HiddenDim/FfnDim/HeadDim exactly, confirmed via <see cref="CosyVoice3DiTWeights"/>'s own
+    /// constants, so the same workspace class applies unchanged).
+    /// </summary>
+    public static float[] RunBackboneGpu(CosyVoice3GpuWeights gpuWeights, F5GpuWorkspace ws, CosyVoice3DiTWeights w, float[] h, float timestep, int numFrames, IImageOpsBackend imageOps)
+    {
+        int dim = CosyVoice3DiTWeights.HiddenDim;
+
+        var tEmb = TimestepEmbedding(w, timestep, null);
+        var siluT = new float[dim];
+        for (int d = 0; d < dim; d++) siluT[d] = F5Kernels.SiLU(tEmb[d]);
+
+        using var hGpu = imageOps.Upload(h, TensorShape.D2(numFrames, dim), exact: true);
+        imageOps.ScaleInPlace(ws.X, 0f);
+        imageOps.AddInPlace(ws.X, hGpu);
+        using var siluTGpu = imageOps.Upload(siluT, TensorShape.D2(1, dim), exact: true);
+
+        // One BeginBatch()/EndBatch() per block, NOT around the whole loop -- see F5DiTModel.
+        // ForwardVelocityGpu's own doc comment for why (avoids FLUX's real UI-freeze bug class).
+        for (int layer = 0; layer < w.NumLayers; layer++)
+        {
+            imageOps.BeginBatch();
+            F5DiTBlock.ForwardGpu(gpuWeights.Blocks[layer], ws, numFrames, siluTGpu, imageOps);
+            imageOps.EndBatch();
+        }
+
+        var visionOps = (IVisionOpsBackend)imageOps;
+        using var normOutModGpu = imageOps.Allocate(TensorShape.D2(1, dim * 2));
+        imageOps.Sgemm(normOutModGpu, siluTGpu, gpuWeights.NormOutLinearW, 1, dim, dim * 2);
+        imageOps.AddRowBroadcastInPlace(normOutModGpu, gpuWeights.NormOutLinearB, 1, dim * 2);
+
+        using var normOutGpu = imageOps.Allocate(TensorShape.D2(numFrames, dim));
+        visionOps.AdaLNModulate(normOutGpu, ws.X, normOutModGpu, numFrames, dim, shiftOffset: dim, scaleOffset: 0, isRmsNorm: false, eps: 1e-6f);
+
+        using var outGpu = imageOps.Allocate(TensorShape.D2(numFrames, CosyVoice3DiTWeights.MelDim));
+        imageOps.Sgemm(outGpu, normOutGpu, gpuWeights.ProjOutW, numFrames, dim, CosyVoice3DiTWeights.MelDim);
+        imageOps.AddRowBroadcastInPlace(outGpu, gpuWeights.ProjOutB, numFrames, CosyVoice3DiTWeights.MelDim);
+
+        var result = new float[numFrames * CosyVoice3DiTWeights.MelDim];
+        imageOps.Download(outGpu, result);
+        return result;
+    }
+
     public static float[] RunBackbone(CosyVoice3DiTWeights w, float[] h, float timestep, int numFrames)
     {
         var (rotaryCos, rotarySin) = F5RotaryEmbedding.Precompute(RotaryInvFreq(), numFrames);
@@ -395,7 +445,7 @@ public static class CosyVoice3DiTModel
     /// `[cscs...]` for the first `n_dims` elements, matching this file's/F5Kernels.ApplyRotary's
     /// convention exactly) -- all match. See Attention's numRopeHeads:1 call site for the one real
     /// discrepancy this cross-check found (RoPE applied only to head 0, not all 16 heads).</summary>
-    private static float[] RotaryInvFreq()
+    public static float[] RotaryInvFreq()
     {
         int halfHead = CosyVoice3DiTWeights.HeadDim / 2;
         var invFreq = new float[halfHead];

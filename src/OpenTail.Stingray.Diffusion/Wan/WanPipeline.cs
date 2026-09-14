@@ -166,14 +166,51 @@ public sealed class WanPipeline : IDiffusionPipeline
                         velocity = new float[condVelocity.Length];
                         for (int i = 0; i < velocity.Length; i++)
                             velocity[i] = uncondVelocity[i] + guidance * (condVelocity[i] - uncondVelocity[i]);
+
+                        if (Environment.GetEnvironmentVariable("STINGRAY_WAN_DEBUG_VELOCITY") == "1")
+                        {
+                            float uMean = 0, uSumSq = 0, dot = 0, cSq = 0, uSq = 0;
+                            for (int i = 0; i < uncondVelocity.Length; i++) { uMean += uncondVelocity[i]; uSumSq += uncondVelocity[i] * uncondVelocity[i]; dot += condVelocity[i] * uncondVelocity[i]; cSq += condVelocity[i] * condVelocity[i]; uSq += uncondVelocity[i] * uncondVelocity[i]; }
+                            uMean /= uncondVelocity.Length;
+                            float uStd = MathF.Sqrt(Math.Max(0, uSumSq / uncondVelocity.Length - uMean * uMean));
+                            float cos = dot / (MathF.Sqrt(cSq) * MathF.Sqrt(uSq) + 1e-8f);
+                            Console.WriteLine($"[WanDebug]   uncondVelocity mean={uMean:F6} std={uStd:F6} cos(cond,uncond)={cos:F6}");
+                        }
                     }
                     else
                     {
                         velocity = condVelocity;
                     }
 
+                    int sign = int.TryParse(Environment.GetEnvironmentVariable("STINGRAY_WAN_SIGN"), out var sVal) ? sVal : -1;
                     for (int i = 0; i < latent.Length; i++)
-                        latent[i] -= dt * velocity[i];
+                        latent[i] += sign * dt * velocity[i];
+
+                    if (Environment.GetEnvironmentVariable("STINGRAY_WAN_DEBUG_VELOCITY") == "1")
+                    {
+                        float vMean = 0, vSumSq = 0, cMean = 0, cSumSq = 0;
+                        for (int i = 0; i < velocity.Length; i++) { vMean += velocity[i]; vSumSq += velocity[i] * velocity[i]; }
+                        for (int i = 0; i < condVelocity.Length; i++) { cMean += condVelocity[i]; cSumSq += condVelocity[i] * condVelocity[i]; }
+                        vMean /= velocity.Length; cMean /= condVelocity.Length;
+                        float vStd = MathF.Sqrt(Math.Max(0, vSumSq / velocity.Length - vMean * vMean));
+                        float cStd = MathF.Sqrt(Math.Max(0, cSumSq / condVelocity.Length - cMean * cMean));
+                        // Latent-magnitude divergence check (docs/081, 2026-09-14): mirrors the
+                        // per-step latent std tracking that root-caused LTX-Video's own "more steps
+                        // = worse output" bug (docs/077) -- unbounded latent std growth across the
+                        // denoising loop, invisible to any single-forward golden check. Added here to
+                        // directly check whether Wan's remaining accuracy bug is the SAME class.
+                        double lMean = 0, lSumSq = 0;
+                        float lMaxAbs = 0f;
+                        for (int i = 0; i < latent.Length; i++)
+                        {
+                            lMean += latent[i]; lSumSq += (double)latent[i] * latent[i];
+                            float a = MathF.Abs(latent[i]);
+                            if (a > lMaxAbs) lMaxAbs = a;
+                        }
+                        lMean /= latent.Length;
+                        double lStd = Math.Sqrt(Math.Max(0, lSumSq / latent.Length - lMean * lMean));
+                        Console.WriteLine($"[WanDebug] step={step} t={t:F4} dt={dt:F4} velocity(guided) mean={vMean:F6} std={vStd:F6} condVelocity mean={cMean:F6} std={cStd:F6} latent mean={lMean:F6} std={lStd:F6} maxAbs={lMaxAbs:F6}");
+                    }
 
                     progress?.Invoke(step + 1, steps);
                 }
@@ -224,13 +261,32 @@ public sealed class WanPipeline : IDiffusionPipeline
                 for (int i = 0; i < latent.Length; i++)
                     latent[i] -= dt * velocity[i];
 
+                if (Environment.GetEnvironmentVariable("STINGRAY_WAN_DEBUG_VELOCITY") == "1")
+                {
+                    double lMean = 0, lSumSq = 0;
+                    float lMaxAbs = 0f;
+                    for (int i = 0; i < latent.Length; i++)
+                    {
+                        lMean += latent[i]; lSumSq += (double)latent[i] * latent[i];
+                        float a = MathF.Abs(latent[i]);
+                        if (a > lMaxAbs) lMaxAbs = a;
+                    }
+                    lMean /= latent.Length;
+                    double lStd = Math.Sqrt(Math.Max(0, lSumSq / latent.Length - lMean * lMean));
+                    Console.WriteLine($"[WanDebug] step={step} t={t:F4} dt={dt:F4} latent mean={lMean:F6} std={lStd:F6} maxAbs={lMaxAbs:F6}");
+                }
+
                 progress?.Invoke(step + 1, steps);
             }
         }
 
-        // 5. Decode 3D latents to full RGB video frames via the real 3D causal VAE (same decoder
-        // for numFrames==1 and numFrames>1 -- see the _vae field's doc comment for why these were
-        // previously two different, inconsistently-wired code paths).
+        float latMean = 0, latSumSq = 0;
+        for (int i = 0; i < latent.Length; i++) { latMean += latent[i]; latSumSq += latent[i] * latent[i]; }
+        latMean /= latent.Length;
+        float latStd = MathF.Sqrt(latSumSq / latent.Length - latMean * latMean);
+        Console.WriteLine($"[Wan Denoise Done] latent mean={latMean:F4}, std={latStd:F4}");
+
+        // 5. Decode 3D latents to full RGB video frames via the real 3D causal VAE
         List<float[]> allFrames = _vae.Decode(latent, numFrames, latH, latW);
 
         // Optional super-resolution upscaling per frame

@@ -48,10 +48,10 @@ public static class LtxVideoRoPE
         int padHalf = headDim / 2 - freqCount * 3;
 
         // real: rope_interpolation_scale = (vae_temporal_ratio / frame_rate, vae_spatial, vae_spatial)
-        float scaleT = temporalScale / frameRate;
-        float coordScaleT = scaleT * patchSizeT / baseNumFrames;
-        float coordScaleH = (float)spatialScaleH * patchSizeS / baseHeight;
-        float coordScaleW = (float)spatialScaleW * patchSizeS / baseWidth;
+        double scaleT = (double)temporalScale / frameRate;
+        double coordScaleT = scaleT * patchSizeT / baseNumFrames;
+        double coordScaleH = (double)spatialScaleH * patchSizeS / baseHeight;
+        double coordScaleW = (double)spatialScaleW * patchSizeS / baseWidth;
 
         int totalTokens = numFrames * patchH * patchW;
         var cos = new float[totalTokens * headDim];
@@ -60,27 +60,27 @@ public static class LtxVideoRoPE
         int token = 0;
         for (int t = 0; t < numFrames; t++)
         {
-            float coordT = t * coordScaleT;
+            double coordT = t * coordScaleT;
             for (int h = 0; h < patchH; h++)
             {
-                float coordH = h * coordScaleH;
+                double coordH = h * coordScaleH;
                 for (int w = 0; w < patchW; w++)
                 {
-                    float coordW = w * coordScaleW;
+                    double coordW = w * coordScaleW;
                     int baseOff = token * headDim;
                     int outIdx = padHalf;
 
                     for (int p = 0; p < padHalf; p++)
                     {
-                        WriteAngle(cos, sin, baseOff, p, 0f);
+                        WriteAngle(cos, sin, baseOff, p, 0.0);
                     }
 
                     for (int f = 0; f < freqCount; f++)
                     {
-                        float idxVal = indices[f];
-                        WriteAngle(cos, sin, baseOff, outIdx++, idxVal * (coordT * 2f - 1f));
-                        WriteAngle(cos, sin, baseOff, outIdx++, idxVal * (coordH * 2f - 1f));
-                        WriteAngle(cos, sin, baseOff, outIdx++, idxVal * (coordW * 2f - 1f));
+                        double idxVal = indices[f];
+                        WriteAngle(cos, sin, baseOff, outIdx++, idxVal * (coordT * 2.0 - 1.0));
+                        WriteAngle(cos, sin, baseOff, outIdx++, idxVal * (coordH * 2.0 - 1.0));
+                        WriteAngle(cos, sin, baseOff, outIdx++, idxVal * (coordW * 2.0 - 1.0));
                     }
 
                     token++;
@@ -92,11 +92,21 @@ public static class LtxVideoRoPE
     }
 
     /// <summary>Writes one rotation angle at half-dim index <paramref name="halfIdx"/>, duplicated
-    /// (`repeat_interleave(2)`) into the full-dim array at `[2*halfIdx, 2*halfIdx+1]`.</summary>
-    private static void WriteAngle(float[] cos, float[] sin, int baseOff, int halfIdx, float angle)
+    /// (`repeat_interleave(2)`) into the full-dim array at `[2*halfIdx, 2*halfIdx+1]`. Computed in
+    /// double precision (2026-09-14 fix): at the highest frequency index the raw angle reaches
+    /// ~15708 rad, where float32 argument-reduction inside <see cref="MathF"/>'s cos/sin genuinely
+    /// diverges from torch's own (effectively float64-internal) reduction by up to ~0.02 -- see
+    /// LtxVideoGoldenParityTests' own documented RoPE max-abs-diff tolerance. That per-channel phase
+    /// error is small in a flat cosine-similarity check of the whole table, but compounds through
+    /// attention's softmax (which is sensitive to exactly the high-frequency/fine-grained phase
+    /// terms) -- a leading real candidate for the block0 golden-parity shortfall (cosine-sim
+    /// 0.9894 vs required 0.9999) investigated in docs/077. Reduced in double precision here so the
+    /// angle is accurate before the final float32 cos/sin, closing that gap at the source rather
+    /// than downstream.</summary>
+    private static void WriteAngle(float[] cos, float[] sin, int baseOff, int halfIdx, double angle)
     {
-        float c = MathF.Cos(angle);
-        float s = MathF.Sin(angle);
+        float c = (float)Math.Cos(angle);
+        float s = (float)Math.Sin(angle);
         int i = baseOff + 2 * halfIdx;
         cos[i] = c;
         cos[i + 1] = c;
@@ -104,22 +114,23 @@ public static class LtxVideoRoPE
         sin[i + 1] = s;
     }
 
-    /// <summary>Real `theta ** linspace(0, 1, dim//6) * pi/2`.</summary>
-    private static float[] BuildFreqGrid(float theta, int freqCount)
+    /// <summary>Real `theta ** linspace(0, 1, dim//6) * pi/2`, computed in double precision (see
+    /// <see cref="WriteAngle"/>'s doc comment for why).</summary>
+    private static double[] BuildFreqGrid(float theta, int freqCount)
     {
-        var outArr = new float[freqCount];
+        var outArr = new double[freqCount];
         if (freqCount <= 0) return outArr;
-        float halfPi = MathF.PI / 2f;
+        double halfPi = Math.PI / 2.0;
         if (freqCount == 1)
         {
             outArr[0] = halfPi; // theta^0 * pi/2
             return outArr;
         }
-        float logTheta = MathF.Log(theta);
+        double logTheta = Math.Log(theta);
         for (int i = 0; i < freqCount; i++)
         {
-            float ratio = (float)i / (freqCount - 1);
-            outArr[i] = MathF.Exp(logTheta * ratio) * halfPi;
+            double ratio = (double)i / (freqCount - 1);
+            outArr[i] = Math.Exp(logTheta * ratio) * halfPi;
         }
         return outArr;
     }

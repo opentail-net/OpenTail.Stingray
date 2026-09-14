@@ -35,6 +35,25 @@ internal static unsafe class DiffusionOps
         return 0.5f * x * (1.0f + MathF.Tanh(v));
     }
 
+    /// <summary>Exact (erf-based) GELU: 0.5*x*(1+erf(x/sqrt(2))) -- PyTorch's plain `nn.GELU()`
+    /// (no `approximate='tanh'`), distinct from <see cref="Gelu"/>'s tanh approximation. Used by
+    /// `Wan.text_embedding.1` per the real reference (`wan.hpp`: "text_embedding.1 is nn.GELU()",
+    /// only the FFN's own GELU is `approximate='tanh'`). Erf via the Abramowitz &amp; Stegun 7.1.26
+    /// polynomial approximation (max error ~1.5e-7, effectively exact at float32 precision) since
+    /// neither <see cref="MathF"/> nor <see cref="Math"/> expose a built-in erf.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static float GeluExact(float x)
+    {
+        float z = x * 0.7071067811865476f; // x / sqrt(2)
+        float sign = z < 0 ? -1f : 1f;
+        float az = MathF.Abs(z);
+        const float a1 = 0.254829592f, a2 = -0.284496736f, a3 = 1.421413741f, a4 = -1.453152027f, a5 = 1.061405429f, p = 0.3275911f;
+        float t = 1f / (1f + p * az);
+        float poly = ((((a5 * t + a4) * t + a3) * t + a2) * t + a1) * t;
+        float erf = sign * (1f - poly * MathF.Exp(-az * az));
+        return 0.5f * x * (1f + erf);
+    }
+
     public static void GeluInPlace(Span<float> x)
     {
         if (x.Length >= 4096)
@@ -872,7 +891,7 @@ internal static unsafe class DiffusionOps
     /// the surrounding Linear/SiLU/Linear MLP tensor names differed) across Wan, HunyuanVideo,
     /// QwenImage, LTX-Video's transformer AND VAE decoder, and Z-Image before this extraction.
     /// </summary>
-    public static float[] SinusoidalTimestepEmbedding(float timestep, int dim = 256, float theta = 10000f)
+    public static float[] SinusoidalTimestepEmbedding(float timestep, int dim = 256, float theta = 10000f, bool flipSinToCos = false)
     {
         var emb = new float[dim];
         int half = dim / 2;
@@ -880,8 +899,16 @@ internal static unsafe class DiffusionOps
         {
             float freq = MathF.Exp(-MathF.Log(theta) * i / half);
             float angle = timestep * freq;
-            emb[i] = MathF.Cos(angle);
-            emb[half + i] = MathF.Sin(angle);
+            if (flipSinToCos)
+            {
+                emb[i] = MathF.Cos(angle);
+                emb[half + i] = MathF.Sin(angle);
+            }
+            else
+            {
+                emb[i] = MathF.Sin(angle);
+                emb[half + i] = MathF.Cos(angle);
+            }
         }
         return emb;
     }

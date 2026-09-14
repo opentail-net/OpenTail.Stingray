@@ -57,9 +57,14 @@ public sealed class T5GpuParityTests
         for (int i = 0; i < vHost.Length; i++) vHost[i] = (float)(rng.NextDouble() * 2.0 - 1.0) * 0.1f;
         for (int i = 0; i < biasHost.Length; i++) biasHost[i] = (float)(rng.NextDouble() * 2.0 - 1.0) * 0.5f;
 
-        // CPU Reference Implementation
+        // CPU Reference Implementation. Real T5 attention is UNSCALED -- this test's own
+        // reference previously baked in an incorrect `1/sqrt(headDim)` scale (copied from a
+        // generic-attention assumption, not the real T5 formula), which the GPU kernel also had
+        // until 2026-09-14 (see VulkanBackend.T5MultiHeadAttentionRelBias's own doc comment for
+        // the full story) -- so this test was previously validating GPU-matches-wrong-reference
+        // self-consistency, not real correctness. Fixed the reference to match, not the kernel.
         var refOut = new float[seq * dim];
-        float scale = 1f / MathF.Sqrt(headDim);
+        const float scale = 1f;
 
         for (int h = 0; h < numHeads; h++)
         {

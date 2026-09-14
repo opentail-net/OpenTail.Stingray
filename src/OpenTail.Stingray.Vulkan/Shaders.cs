@@ -9114,6 +9114,18 @@ internal static class Shaders
     /// Fused QKV split + per-head RMSNorm + 3D RoPE for Wan 2.1 self-attention.
     /// Workgroup size: 128 (one workgroup per head per token).
     /// </summary>
+    // NOTE (2026-09-14): the RMSNorm scope here MUST match the CPU's `WanModel.RmsNormHeads` --
+    // ONE RMS statistic over the FULL projected `dim`-length row (ALL heads concatenated), per the
+    // real `torch.nn.RMSNorm(dim_head * heads, ...)` applied BEFORE the head split (confirmed
+    // against `WanAttention.forward`, see the doc comment on `RmsNormHeads` in WanModel.cs --
+    // CPU was already fixed to this scope on 2026-08-31 after a per-head-RMS-with-truncated-gamma
+    // bug was found to corrupt every attention call; this GPU shader was NOT updated at the same
+    // time and was still doing the old, disproven per-head reduction (one workgroup per (token,
+    // head), reducing over only `headDim`=128 elements) -- a real, separate GPU-only bug from the
+    // Priority-0 Wan accuracy investigation in docs/081. Fixed here by dispatching one workgroup
+    // per TOKEN (not per token*head) and looping each of the `headDim` threads across all
+    // `numHeads` heads, so the parallel reduction covers the full `dim`-length row exactly like
+    // the CPU path.
     internal const string WanQkvSplitNormRoPE = """
         #version 450
 
@@ -9138,39 +9150,34 @@ internal static class Shaders
             float eps;
         };
 
-        shared float s_q[128];
-        shared float s_k[128];
         shared float s_sq_q[128];
         shared float s_sq_k[128];
 
         void main() {
-            uint headIdx = gl_WorkGroupID.x;
-            uint totalWorkgroups = numTokens * numHeads;
-            if (headIdx >= totalWorkgroups) return;
+            uint t = gl_WorkGroupID.x;
+            if (t >= numTokens) return;
+            uint tid = gl_LocalInvocationID.x; // 0..headDim-1
 
-            uint t = headIdx / numHeads;
-            uint h = headIdx % numHeads;
-            uint tid = gl_LocalInvocationID.x;
-
-            uint d = h * headDim + tid;
-            uint srcOffQ = t * (dim * 3u) + d;
-            uint srcOffK = t * (dim * 3u) + dim + d;
-            uint srcOffV = t * (dim * 3u) + dim * 2u + d;
-            uint dstOff = t * dim + d;
-
-            // 1. Copy V directly
-            vData[dstOff] = qkvData[srcOffV];
-
-            // 2. Load Q and K
-            float q = qkvData[srcOffQ];
-            float k = qkvData[srcOffK];
-            s_q[tid] = q;
-            s_k[tid] = k;
-            s_sq_q[tid] = q * q;
-            s_sq_k[tid] = k * k;
+            // 1. Copy V directly and accumulate this thread's column sum-of-squares across ALL
+            // heads (thread `tid` owns column `tid` of every head, e.g. head0[tid], head1[tid], ...).
+            float sqQ = 0.0;
+            float sqK = 0.0;
+            for (uint h = 0u; h < numHeads; h++) {
+                uint d = h * headDim + tid;
+                uint srcOffQ = t * (dim * 3u) + d;
+                uint srcOffK = t * (dim * 3u) + dim + d;
+                uint srcOffV = t * (dim * 3u) + dim * 2u + d;
+                float q = qkvData[srcOffQ];
+                float k = qkvData[srcOffK];
+                sqQ += q * q;
+                sqK += k * k;
+                vData[t * dim + d] = qkvData[srcOffV];
+            }
+            s_sq_q[tid] = sqQ;
+            s_sq_k[tid] = sqK;
             barrier();
 
-            // 3. Parallel reduction for RMSNorm
+            // 2. Parallel reduction over all 128 threads -> full dim-wide sum-of-squares.
             for (uint stride = 64u; stride > 0u; stride >>= 1u) {
                 if (tid < stride) {
                     s_sq_q[tid] += s_sq_q[tid + stride];
@@ -9179,36 +9186,99 @@ internal static class Shaders
                 barrier();
             }
 
-            float rmsQ = inversesqrt(s_sq_q[0] / float(headDim) + eps);
-            float rmsK = inversesqrt(s_sq_k[0] / float(headDim) + eps);
+            float rmsQ = inversesqrt(s_sq_q[0] / float(dim) + eps);
+            float rmsK = inversesqrt(s_sq_k[0] / float(dim) + eps);
 
-            // 4. Apply RMSNorm scaling
-            float q_norm = s_q[tid] * (hasNormQ != 0u ? rmsQ * normQData[d] : rmsQ);
-            float k_norm = s_k[tid] * (hasNormK != 0u ? rmsK * normKData[d] : rmsK);
-
-            s_q[tid] = q_norm;
-            s_k[tid] = k_norm;
-            barrier();
-
-            // 5. Apply 3D-RoPE (GPT-NeoX adjacent pair rotation)
+            // 3. Normalize + apply 3D-RoPE (GPT-NeoX adjacent pair rotation) per head. Only the
+            // first `headDim/2` threads do this (one thread per within-head pair), looping across
+            // all heads just like the sum-of-squares pass above.
             if (tid < 64u) {
                 uint pairIdx = tid;
-                uint j = pairIdx * 2u;
-                float q0 = s_q[j];
-                float q1 = s_q[j + 1u];
-                float k0 = s_k[j];
-                float k1 = s_k[j + 1u];
-
-                uint freqOff = t * 64u + pairIdx;
+                uint j = pairIdx * 2u; // within-head element offset
+                uint freqOff = t * 64u + pairIdx; // compact per-token freq table [tokens, headDim/2]
                 float c = cosData[freqOff];
                 float s = sinData[freqOff];
 
-                uint outBase = t * dim + h * headDim + j;
-                qData[outBase]      = q0 * c - q1 * s;
-                qData[outBase + 1u] = q0 * s + q1 * c;
-                kData[outBase]      = k0 * c - k1 * s;
-                kData[outBase + 1u] = k0 * s + k1 * c;
+                for (uint h = 0u; h < numHeads; h++) {
+                    uint dBase = h * headDim + j;
+                    uint srcOffQ0 = t * (dim * 3u) + dBase;
+                    uint srcOffK0 = t * (dim * 3u) + dim + dBase;
+
+                    float q0 = qkvData[srcOffQ0];
+                    float q1 = qkvData[srcOffQ0 + 1u];
+                    float k0 = qkvData[srcOffK0];
+                    float k1 = qkvData[srcOffK0 + 1u];
+
+                    float gq0 = hasNormQ != 0u ? normQData[dBase]      : 1.0;
+                    float gq1 = hasNormQ != 0u ? normQData[dBase + 1u] : 1.0;
+                    float gk0 = hasNormK != 0u ? normKData[dBase]      : 1.0;
+                    float gk1 = hasNormK != 0u ? normKData[dBase + 1u] : 1.0;
+
+                    float q0n = q0 * rmsQ * gq0;
+                    float q1n = q1 * rmsQ * gq1;
+                    float k0n = k0 * rmsK * gk0;
+                    float k1n = k1 * rmsK * gk1;
+
+                    uint outBase = t * dim + dBase;
+                    qData[outBase]      = q0n * c - q1n * s;
+                    qData[outBase + 1u] = q0n * s + q1n * c;
+                    kData[outBase]      = k0n * c - k1n * s;
+                    kData[outBase + 1u] = k0n * s + k1n * c;
+                }
             }
+        }
+        """;
+
+    // Added 2026-09-14 for F5-TTS's own GPU-residency work (docs/080): the real
+    // `pe_attn_head` config (F5TTS_Base's checkpoint sets it to 1) rotates only the FIRST
+    // `numRopeHeads` attention heads, leaving the rest of Q/K unrotated -- confirmed via
+    // F5Kernels.ApplyRotary's own doc comment (also shared, tensor-for-tensor identical, by
+    // CosyVoice3's DiT). In-place, interleaved-pair rotation (matching FLUX/Wan/F5's shared
+    // convention), applied to Q and K in one dispatch. Eliminates the CPU download/ApplyRotary/
+    // re-upload round-trip F5DiTBlock.ForwardGpu previously needed for this one step (22 stall
+    // points per forward pass, the real bottleneck keeping that port at CPU parity rather than a
+    // win -- see docs/080's own "2026-09-14" entry).
+    internal const string PartialHeadRoPE = """
+        #version 450
+        layout(local_size_x = 256) in;
+
+        layout(binding = 0) buffer QBuf { float qData[]; };
+        layout(binding = 1) buffer KBuf { float kData[]; };
+        layout(binding = 2) readonly buffer CosBuf { float cosData[]; };
+        layout(binding = 3) readonly buffer SinBuf { float sinData[]; };
+
+        layout(push_constant) uniform Params {
+            uint numTokens;
+            uint dim;
+            uint headDim;
+            uint numRopeHeads;
+        };
+
+        void main() {
+            uint halfHead = headDim / 2u;
+            uint pairsPerToken = numRopeHeads * halfHead;
+            uint total = numTokens * pairsPerToken;
+            uint idx = gl_GlobalInvocationID.x;
+            if (idx >= total) return;
+
+            uint t = idx / pairsPerToken;
+            uint rem = idx % pairsPerToken;
+            uint h = rem / halfHead;
+            uint p = rem % halfHead;
+
+            uint base = t * dim + h * headDim + p * 2u;
+            float c = cosData[t * halfHead + p];
+            float s = sinData[t * halfHead + p];
+
+            float q0 = qData[base];
+            float q1 = qData[base + 1u];
+            qData[base]      = q0 * c - q1 * s;
+            qData[base + 1u] = q0 * s + q1 * c;
+
+            float k0 = kData[base];
+            float k1 = kData[base + 1u];
+            kData[base]      = k0 * c - k1 * s;
+            kData[base + 1u] = k0 * s + k1 * c;
         }
         """;
 }

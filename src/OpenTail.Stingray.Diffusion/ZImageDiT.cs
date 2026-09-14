@@ -187,6 +187,11 @@ public sealed class ZImageDiT : IDisposable
 
     // ── Block implementation ───────────────────────────────────────────────
 
+    /// <summary>Test-only entry point exposing one CPU block's in-place output directly, for a
+    /// real GPU-vs-CPU parity check (mirrors F5TTS's/Parler's own "ForTest" accessor pattern).</summary>
+    public void ApplyBlockForTest(string prefix, float[] x, int nTok, float[]? freqs, float[]? adaln, bool modulated) =>
+        ApplyBlock(prefix, x, nTok, freqs, adaln, modulated);
+
     private void ApplyBlock(string prefix, float[] x, int nTok,
                             float[]? freqs, float[]? adaln, bool modulated)
     {
@@ -272,6 +277,92 @@ public sealed class ZImageDiT : IDisposable
             TensorPrimitives.MultiplyAdd<float>(ffnOut.AsSpan(off, dim), gateMlp,
                                                 x.AsSpan(off, dim), x.AsSpan(off, dim));
         });
+    }
+
+    /// <summary>
+    /// GPU-resident equivalent of <see cref="ApplyBlock"/> for the `modulated=true` case only
+    /// (the 30 main `layers.N` blocks — the dominant cost; `context_refiner`/`noise_refiner` are
+    /// a real, separate follow-up, see docs/075's own scoping note). Every op dispatched on
+    /// <paramref name="imageOps"/> against <paramref name="ws"/>'s preallocated device buffers and
+    /// <paramref name="bw"/>'s persistent VRAM-resident weights. This is a real "sandwich norm"
+    /// structure (RMSNorm both before AND after each sub-block, unlike FLUX/Wan/F5's pre-norm-only
+    /// convention) — see this method's own step comments for exactly how each piece is composed
+    /// from existing, already-proven GPU kernels (no new shaders needed except `SiLuMul`, already
+    /// existed on `VulkanBackend` but was newly exposed on the interface for this work).
+    /// Caller wraps this in <c>imageOps.BeginBatch()</c>/<c>EndBatch()</c> per block.
+    /// </summary>
+    public void ApplyBlockGpu(ZImageGpuWeights.BlockWeights bw, ZImageGpuWorkspace ws, int nTok, Core.Tensor adalnGpu, Core.IImageOpsBackend imageOps)
+    {
+        var visionOps = (Core.IVisionOpsBackend)imageOps;
+        int dim = _p.Dim;
+        int nHeads = _p.NHeads;
+        int headDim = _p.HeadDim;
+        int ffnHidden = _p.FfnHidden;
+
+        // 0. Real per-block modulation: adaLN_modulation.0(adaln) -> [4*dim] -> chunk into
+        // scaleMsa/gateMsa/scaleMlp/gateMlp, tanh(gate), 1+scale. No existing GPU op does tanh,
+        // so this one small (4*dim-float) piece round-trips through the CPU once per block --
+        // same accepted tradeoff F5's own ForwardGpu made for its own per-block modulation.
+        using var modGpu = imageOps.Allocate(Core.TensorShape.D2(1, 4 * dim));
+        imageOps.Sgemm(modGpu, adalnGpu, bw.AdaLnModW, 1, 256, 4 * dim);
+        imageOps.AddRowBroadcastInPlace(modGpu, bw.AdaLnModB, 1, 4 * dim);
+        var modHost = new float[4 * dim];
+        imageOps.Download(modGpu, modHost);
+
+        var scaleMsa = new float[dim];
+        var gateMsa = new float[dim];
+        var scaleMlp = new float[dim];
+        var gateMlp = new float[dim];
+        for (int i = 0; i < dim; i++)
+        {
+            scaleMsa[i] = modHost[i] + 1f;
+            gateMsa[i] = MathF.Tanh(modHost[dim + i]);
+            scaleMlp[i] = modHost[2 * dim + i] + 1f;
+            gateMlp[i] = MathF.Tanh(modHost[3 * dim + i]);
+        }
+        using var scaleMsaGpu = imageOps.Upload(scaleMsa, Core.TensorShape.D1(dim), exact: true);
+        using var gateMsaGpu = imageOps.Upload(gateMsa, Core.TensorShape.D1(dim), exact: true);
+        using var scaleMlpGpu = imageOps.Upload(scaleMlp, Core.TensorShape.D1(dim), exact: true);
+        using var gateMlpGpu = imageOps.Upload(gateMlp, Core.TensorShape.D1(dim), exact: true);
+
+        // 1. Attention sub-block: pre-norm+scale (RMSNorm, zero shift -- Z-Image has none) ->
+        // fused QKV -> per-HEAD QK-norm (reusing RmsNormBatched by reinterpreting the [t,dim]
+        // buffer as [t*nHeads,headDim] rows -- Z-Image's real QK-norm scope is per-head, NOT
+        // Wan's full-row convention, confirmed via ApplyPerHeadRmsNorm's own CPU implementation)
+        // -> RoPE (Flux2DRoPE, applies to ALL heads uniformly, matching Z-Image's own convention,
+        // no partial-head quirk like F5) -> attention -> O-proj -> POST-norm (RMSNorm on the raw
+        // branch output) -> gated residual.
+        visionOps.AdaLNModulate(ws.Normed, ws.X, ws.Zeros, scaleMsaGpu, nTok, dim, isRmsNorm: true, eps: _p.NormEps);
+        imageOps.Sgemm(ws.Qkv, ws.Normed, bw.QkvW, nTok, dim, 3 * dim);
+
+        // Split fused QKV into separate Q/K/V buffers -- reuse FLUX's own existing kernel
+        // (real, already-proven op, exactly this shape: [nTok,3*dim] -> three [nTok,dim]).
+        visionOps.FluxUnpackQkv(ws.Qkv, ws.Q, ws.K, ws.V, nTok, dim, dstTokenOffset: 0);
+
+        // Per-head QK-norm: reinterpret [nTok,dim] as [nTok*nHeads,headDim] rows -- the SAME
+        // real gamma[headDim] is shared across all heads/tokens (matches ApplyPerHeadRmsNorm's
+        // own single [headDim]-wide weight, not a per-head-distinct one).
+        visionOps.RmsNormBatched(ws.Q, ws.Q, bw.QNormW, headDim, nTok * nHeads, eps: _p.NormEps);
+        visionOps.RmsNormBatched(ws.K, ws.K, bw.KNormW, headDim, nTok * nHeads, eps: _p.NormEps);
+
+        visionOps.Flux2DRoPE(ws.Q, ws.K, ws.RopeCos, ws.RopeSin, startToken: 0, tokenCount: nTok, numHeads: nHeads, headDim: headDim);
+
+        imageOps.MultiHeadAttentionTiled(ws.AttnOut, ws.Q, ws.K, ws.V, nTok, nTok, nHeads, headDim);
+        imageOps.Sgemm(ws.AttnProj, ws.AttnOut, bw.OutW, nTok, dim, dim);
+
+        visionOps.RmsNormBatched(ws.AttnProj, ws.AttnProj, bw.AttnNorm2W, dim, nTok, eps: _p.NormEps);
+        visionOps.ScaleGateAdd(ws.X, ws.AttnProj, gateMsaGpu, nTok, dim);
+
+        // 2. FFN sub-block: same sandwich pattern. w2(silu(w1(x)) * w3(x)) -- SiLU-gated, NOT
+        // GELU-gated (F5/CosyVoice3's own convention does not apply here).
+        visionOps.AdaLNModulate(ws.Normed, ws.X, ws.Zeros, scaleMlpGpu, nTok, dim, isRmsNorm: true, eps: _p.NormEps);
+        imageOps.Sgemm(ws.FfnGate, ws.Normed, bw.W1, nTok, dim, ffnHidden);
+        imageOps.Sgemm(ws.FfnUp, ws.Normed, bw.W3, nTok, dim, ffnHidden);
+        imageOps.SiLuMul(ws.FfnGate, ws.FfnUp);
+        imageOps.Sgemm(ws.FfnOut, ws.FfnGate, bw.W2, nTok, ffnHidden, dim);
+
+        visionOps.RmsNormBatched(ws.FfnOut, ws.FfnOut, bw.FfnNorm2W, dim, nTok, eps: _p.NormEps);
+        visionOps.ScaleGateAdd(ws.X, ws.FfnOut, gateMlpGpu, nTok, dim);
     }
 
     // ── Self-attention ────────────────────────────────────────────────────

@@ -1008,15 +1008,34 @@ public sealed class ImageCommand : Command<ImageCommand.Settings>
                 AnsiConsole.MarkupLine("[dim]Encoding prompt with real UMT5-XXL…[/]");
                 var tokenizer = OpenTail.Stingray.Diffusion.TextEncoders.T5Tokenizer.FromFile(umt5TokenizerPath, maxLen: 512);
                 using var umt5 = new OpenTail.Stingray.Diffusion.TextEncoders.UMT5Encoder(umt5EncoderPath);
+
+                // Real diffusers WanPipeline._get_t5_prompt_embeds: encode the REAL (unpadded)
+                // tokens, then zero-pad the EMBEDDINGS (not the token ids) up to a fixed
+                // max_sequence_length=226 for cross-attention -- this is ZERO padding of the
+                // embedding, NOT running the encoder on pad_token_id=0 (which would produce real,
+                // nonzero "pad" embeddings that don't match the reference). Found 2026-09-14 during
+                // the Priority-0 Wan accuracy investigation (docs/081) -- this pipeline previously
+                // fed cross-attention only the raw ~N-token context with no fixed-length padding at
+                // all, a real, confirmed mismatch vs. the reference (measurably changes denoising
+                // convergence: final latent std dropped from ~1.0-2.0 to ~0.4-0.7 with this fix).
+                const int fixedTxtLen = 226;
+                const int txtDim = 4096;
+                static float[] ZeroPadEmbedding(float[] raw)
+                {
+                    var padded = new float[fixedTxtLen * txtDim];
+                    Array.Copy(raw, padded, Math.Min(raw.Length, fixedTxtLen * txtDim));
+                    return padded;
+                }
+
                 if (gpu is IVisionOpsBackend vBackend)
                 {
-                    condContext = umt5.EncodeGpu(tokenizer.Tokenize(s.Prompt!), vBackend);
-                    uncondContext = umt5.EncodeGpu(tokenizer.Tokenize(s.NegativePrompt ?? ""), vBackend);
+                    condContext = ZeroPadEmbedding(umt5.EncodeGpu(tokenizer.Tokenize(s.Prompt!), vBackend));
+                    uncondContext = ZeroPadEmbedding(umt5.EncodeGpu(tokenizer.Tokenize(s.NegativePrompt ?? ""), vBackend));
                 }
                 else
                 {
-                    condContext = umt5.Encode(tokenizer.Tokenize(s.Prompt!));
-                    uncondContext = umt5.Encode(tokenizer.Tokenize(s.NegativePrompt ?? ""));
+                    condContext = ZeroPadEmbedding(umt5.Encode(tokenizer.Tokenize(s.Prompt!)));
+                    uncondContext = ZeroPadEmbedding(umt5.Encode(tokenizer.Tokenize(s.NegativePrompt ?? "")));
                 }
             }
 

@@ -62,6 +62,72 @@ public static class F5DiTModel
     }
 
     /// <summary>
+    /// GPU-resident forward pass: real per-block VRAM-resident weights (<see cref="F5GpuWeights"/>)
+    /// + preallocated workspace (<see cref="F5GpuWorkspace"/>) + a real <see cref="F5DiTBlock.
+    /// ForwardGpu"/> per block, batched one <c>BeginBatch()</c>/<c>EndBatch()</c> per block
+    /// (mirroring <c>WanModel.ForwardGpu</c>'s own batching granularity) -- eliminates the ~10
+    /// synchronous round-trips per block the existing <see cref="ForwardVelocity"/>'s
+    /// <see cref="F5Kernels.LinearGpuQ8_0"/> per-op path pays (weights were already GPU-resident
+    /// there via its own cache, but every single op forced a `Synchronize()`+`Download()`).
+    /// <paramref name="x"/>/<paramref name="cond"/> are packed once by the caller exactly like
+    /// <see cref="ForwardVelocity"/>'s own `input_embed` step (kept CPU-side deliberately -- it
+    /// runs once per ODE step, not per-block, so its relative cost is small).
+    /// </summary>
+    public static float[] ForwardVelocityGpu(
+        F5TtsWeights w,
+        F5GpuWeights gpuWeights,
+        F5GpuWorkspace ws,
+        float[] x,
+        float[] cond,
+        float[] textEmbed,
+        float timestep,
+        int numFrames,
+        Core.IImageOpsBackend imageOps)
+    {
+        int dim = F5TtsWeights.HiddenDim;
+        var h = F5InputEmbedding.Forward(w, x, cond, textEmbed, numFrames, null);
+        var tEmb = F5TimestepEmbedding.Forward(w, timestep, null);
+        var siluT = new float[dim];
+        for (int d = 0; d < dim; d++) siluT[d] = F5Kernels.SiLU(tEmb[d]);
+
+        using var xGpu = imageOps.Upload(h, Core.TensorShape.D2(numFrames, dim), exact: true);
+        // ws.X is a persistent (Allocate'd, not zero-initialized) workspace buffer reused across
+        // ODE steps -- clear then add, the same "ScaleInPlace(0)+AddInPlace" pattern UMT5Encoder.
+        // EncodeGpu already established for writing a fresh value into a reused device buffer.
+        imageOps.ScaleInPlace(ws.X, 0f);
+        imageOps.AddInPlace(ws.X, xGpu);
+        using var siluTGpu = imageOps.Upload(siluT, Core.TensorShape.D2(1, dim), exact: true);
+
+        // Fully GPU-resident now (RoPE included, see F5DiTBlock.ForwardGpu's own 2026-09-14
+        // update) -- one BeginBatch()/EndBatch() per block, NOT around the whole 22-block loop:
+        // FLUX's own real UI-freeze bug (docs/069) came from exactly that "one giant command
+        // buffer" mistake on this shared iGPU, so per-block stays the safe granularity here too.
+        for (int layer = 0; layer < F5TtsWeights.NumLayers; layer++)
+        {
+            imageOps.BeginBatch();
+            F5DiTBlock.ForwardGpu(gpuWeights.Blocks[layer], ws, numFrames, siluTGpu, imageOps);
+            imageOps.EndBatch();
+        }
+
+        // norm_out: AdaLayerNorm_Final -- emb = linear(silu(t)) -> chunk2(scale,shift); x = LN_noaffine(x)*(1+scale)+shift.
+        var visionOps = (Core.IVisionOpsBackend)imageOps;
+        using var normOutModGpu = imageOps.Allocate(Core.TensorShape.D2(1, dim * 2));
+        imageOps.Sgemm(normOutModGpu, siluTGpu, gpuWeights.NormOutLinearW, 1, dim, dim * 2);
+        imageOps.AddRowBroadcastInPlace(normOutModGpu, gpuWeights.NormOutLinearB, 1, dim * 2);
+
+        using var normOutGpu = imageOps.Allocate(Core.TensorShape.D2(numFrames, dim));
+        visionOps.AdaLNModulate(normOutGpu, ws.X, normOutModGpu, numFrames, dim, shiftOffset: dim, scaleOffset: 0, isRmsNorm: false, eps: 1e-6f);
+
+        using var outGpu = imageOps.Allocate(Core.TensorShape.D2(numFrames, F5TtsWeights.MelDim));
+        imageOps.Sgemm(outGpu, normOutGpu, gpuWeights.ProjOutW, numFrames, dim, F5TtsWeights.MelDim);
+        imageOps.AddRowBroadcastInPlace(outGpu, gpuWeights.ProjOutB, numFrames, F5TtsWeights.MelDim);
+
+        var result = new float[numFrames * F5TtsWeights.MelDim];
+        imageOps.Download(outGpu, result);
+        return result;
+    }
+
+    /// <summary>
     /// Dual-stream CFG forward pass (batch=2: cond + uncond).
     /// Concatenates cond and uncond tokens and evaluates all 22 layers in a single pass, streaming
     /// weights from memory/VRAM once per block rather than twice.

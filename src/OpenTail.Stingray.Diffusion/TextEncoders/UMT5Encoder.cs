@@ -96,34 +96,48 @@ public sealed class UMT5Encoder : IDisposable
     }
 
     /// <summary>
-    /// Encodes token ids -> context embeddings [seq, 4096] directly on GPU with zero round trips per layer.
+    /// Encodes token ids -> context embeddings [seq, 4096] directly on GPU with layer streaming (VRAM-safe).
     /// </summary>
     public float[] EncodeGpu(int[] tokens, IVisionOpsBackend backend)
     {
         int seq = tokens.Length;
-        InitGpu(backend, seq);
 
-        var ws = _gpuWorkspace!;
-        var weights = _gpuWeights!;
+        _relPosBiases = new float[Layers][];
+        for (int i = 0; i < Layers; i++)
+        {
+            var rpW = Wt($"blocks.{i}.pos_embedding.embedding.weight");
+            _relPosBiases[i] = ComputeRelPosBias(rpW, seq, Heads);
+        }
 
-        // 1. Host token embedding lookup & upload to ws.X
-        var tokEmb = Wt("token_embedding.weight");
+        using var ws = new UMT5GpuWorkspace(backend, seq, _relPosBiases, Dim, Heads, HeadDim, FfDim);
+
+        // 1. Host token embedding lookup & upload to ws.X.
+        // IMPORTANT: token_embedding.weight is [256384, 4096] ≈ 4 GB in FP32 -- read it directly
+        // (uncached) so it can be GC-collected immediately after the lookup loop.
+        var tokEmb = _st.ReadF32("token_embedding.weight");
         var xHost = new float[seq * Dim];
         for (int t = 0; t < seq; t++)
         {
             int off = tokens[t] * Dim;
             tokEmb.AsSpan(off, Dim).CopyTo(xHost.AsSpan(t * Dim, Dim));
         }
+        tokEmb = null!; // Allow immediate GC of the ~4 GB array
+        GC.Collect(2, GCCollectionMode.Aggressive, blocking: true);
+
         using (var xInit = backend.Upload(xHost, TensorShape.D2(seq, Dim), exact: true))
         {
             ((IImageOpsBackend)backend).ScaleInPlace(ws.X, 0f);
             backend.AddInPlace(ws.X, xInit);
         }
 
-        // 2. 24 Transformer Blocks entirely on GPU
+        // 2. 24 Transformer Blocks with layer-by-layer weight streaming.
+        // IMPORTANT: Use _st.ReadF32 (uncached) here, NOT Wt(), to avoid accumulating all 24
+        // layers of large float32 weight arrays in _weightCache simultaneously. Each layer's
+        // attention and FFN matrices (~750 MB/layer) are read, uploaded to GPU, and GC-collected.
+        // Small weights (pos_embedding, norm) remain Wt()-cached as they're tiny and may be reused.
         for (int i = 0; i < Layers; i++)
         {
-            var lw = weights.Layers[i];
+            using var lw = new UMT5GpuWeights.UMT5LayerGpuWeights(backend, _st.ReadF32, i, Dim, FfDim);
 
             // -- Self-Attention Sub-layer --
             backend.RmsNormBatched(ws.XNorm, ws.X, lw.LayerNorm0Weight, Dim, seq, eps: 1e-6f);
@@ -150,7 +164,8 @@ public sealed class UMT5Encoder : IDisposable
         }
 
         // 3. Final RMSNorm
-        backend.RmsNormBatched(ws.X, ws.X, weights.FinalLayerNormWeight, Dim, seq, eps: 1e-6f);
+        using var finalNorm = backend.Upload(Wt("norm.weight"), TensorShape.D1(Dim), exact: true);
+        backend.RmsNormBatched(ws.X, ws.X, finalNorm, Dim, seq, eps: 1e-6f);
 
         // 4. Download result
         var result = new float[seq * Dim];

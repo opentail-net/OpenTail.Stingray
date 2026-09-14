@@ -45,6 +45,50 @@ Diffusion/SD3/MMDiTModel.cs` is confirmed (by grep) to still be in the "before" 
   only **one** `JointBlockGpu`-style method with a `contextPreOnly` boolean, simpler than FLUX's
   two-method split.
 
+  **2026-09-14 correction — real complexity is higher than this section implies.** Directly read
+  the full per-block loop (`MMDiTModel.cs` lines ~380-498, not just the summary) before starting
+  any implementation: this is NOT a simple `contextPreOnly`-branch-only structure.
+  - **`dualAttn` is a SECOND, separate, per-model config bit** (detected via whether
+    `{blk}.x_block.attn2.qkv.weight` exists), independent of `contextPreOnly`, changing the image
+    modulation chunk count from 6 to 9 and adding a whole SECOND image-only (non-joint)
+    self-attention pass (`attn2`, own qkv/proj/ln_q/ln_k weights, own gate at chunk offset 8) that
+    runs AFTER the joint attention's residual and BEFORE the MLP. A GPU port needs to handle FOUR
+    real combinations (`contextPreOnly` × `dualAttn`), not just two.
+  - **Joint attention runs over ONE combined `[totalTokens, HiddenSize]` Q/K/V spanning BOTH
+    streams concatenated** (`UnpackQkv` writes image tokens at offset 0 and text tokens at offset
+    `numImgTokens` into the SAME `ws.Q`/`ws.K`/`ws.V` buffers, then one
+    `JointMultiHeadAttention` call covers all `totalTokens`) — NOT two separate per-stream
+    attention calls joined afterward. A GPU port's workspace needs one shared, `totalTokens`-sized
+    Q/K/V buffer (not separate per-stream ones), and the existing `MultiHeadAttentionTiled`
+    (headDim=64) kernel needs to run over this combined layout correctly.
+  - **The dual-attention block's SECOND norm (`NormedImg2`, chunks 6/7) must be computed from the
+    block's ORIGINAL pre-attention `x`, cached BEFORE the first attention's residual mutates `x`**
+    (see the file's own extensive comment at lines 410-419 — this was a real, previously-fixed bug
+    in the CPU port itself; a GPU port must preserve this exact ordering, not recompute it lazily
+    after the joint-attention residual like it would be tempting to structure it).
+  - **Per-head QK-RMSNorm is real and required** (`ln_q`/`ln_k`, `[headDim]`, applied per-head,
+    no bias) — for BOTH `attn` and `attn2` (when `dualAttn`), on both img and txt streams for the
+    joint `attn`. Four separate RMSNorm applications per block minimum, more with `dualAttn`.
+  - **Net assessment**: this port is genuinely MORE complex than F5TTS's own GPU-residency work
+    (docs/080, landed 2026-09-14) — more real branches, more weight tensors per block, a
+    combined-buffer attention layout rather than two independent streams, and a real
+    already-fixed-once CPU bug (the NormedImg2-timing one) whose fix must be preserved exactly
+    under a differently-structured GPU dispatch. Budget for this accordingly — do not assume it is
+    the "simple, most direct FLUX reuse" this doc originally characterized it as; scope a real
+    GpuWeights class covering `attn`+`attn2`+both streams' weights, a workspace with a genuinely
+    shared (not per-stream) Q/K/V buffer, and expect the four-combination branch logic to need its
+    own careful parity testing per combination, not just one generic test.
+
+  **2026-09-14, same check — also currently BLOCKED by disk space**: no SD3.5-medium checkpoint
+  (`.safetensors`/`.gguf`) exists anywhere under `models/` on this machine right now (checked via a
+  broad filename search). The real 656.9s CPU baseline cited below must have been measured when
+  the checkpoint was previously present and since rotated out (per this project's own disk-space-
+  constraint convention, `models/` holds a curated working set, not everything). The C: drive is
+  at ~453MB free (see `docs/081` update #8's same finding for the Wan/sd-cli investigation) — not
+  enough to download this checkpoint back right now. **This work is genuinely blocked until either
+  disk space is freed or the checkpoint becomes available again** — not attempted further this
+  session for that reason, not lack of scoping.
+
 ## Recommended approach
 
 1. **`MMDiTGpuWeights` class** (new file): mirror `FluxGpuWeights.cs`/`WanGpuWeights.cs` — upload
