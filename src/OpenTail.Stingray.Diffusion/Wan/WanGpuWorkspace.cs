@@ -27,9 +27,11 @@ public sealed class WanGpuWorkspace : IDisposable
     public CoreTensor Ffn1 { get; }
     public CoreTensor FfnOut { get; }
     public CoreTensor OutPacked { get; }
+    public CoreTensor InPacked { get; }
     public CoreTensor Ones { get; }
     public CoreTensor Zeros { get; }
     public CoreTensor Mod { get; }
+    public CoreTensor HeadMod { get; }
     public CoreTensor RopeCos { get; }
     public CoreTensor RopeSin { get; }
 
@@ -54,7 +56,9 @@ public sealed class WanGpuWorkspace : IDisposable
         Ffn1 = backend.Allocate(TensorShape.D2(numTokens, ffnDim));
         FfnOut = backend.Allocate(TensorShape.D2(numTokens, dim));
         OutPacked = backend.Allocate(TensorShape.D2(numTokens, WanModel.InChannels));
+        InPacked = backend.AllocatePinned(TensorShape.D2(numTokens, WanModel.InChannels));
         Mod = backend.AllocatePinned(TensorShape.D1(dim * 6));
+        HeadMod = backend.AllocatePinned(TensorShape.D1(dim * 2));
         LayerMods = new CoreTensor[numLayers];
         for (int i = 0; i < numLayers; i++)
         {
@@ -109,9 +113,11 @@ public sealed class WanGpuWorkspace : IDisposable
         _backend.Free(Ffn1);
         _backend.Free(FfnOut);
         _backend.Free(OutPacked);
+        _backend.Free(InPacked);
         _backend.Free(Ones);
         _backend.Free(Zeros);
         _backend.Free(Mod);
+        _backend.Free(HeadMod);
         foreach (var lm in LayerMods) _backend.Free(lm);
         _backend.Free(RopeCos);
         _backend.Free(RopeSin);

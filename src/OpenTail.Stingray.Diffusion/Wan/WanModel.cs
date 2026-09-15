@@ -43,6 +43,7 @@ public sealed class WanModel : IDisposable
     public Action<string, float[]>? OnStageGpu { get; set; }
     public Action<int, float[]>? OnBlockOutputCpu { get; set; }
     public Action<int, float[]>? OnBlockOutputGpu { get; set; }
+    public Action<string>? OnProfileLog { get; set; }
 
     public WanModel(IWeightLoader weights, string prefix = "", int numLayers = 30, int dim = 1536, int numHeads = 12, IComputeBackend? backend = null)
     {
@@ -249,34 +250,117 @@ public sealed class WanModel : IDisposable
             }
         }
 
-        // 1. Pack latents [16, numFrames, latH, latW] -> [numTokens, 64] and upload to GPU
+        bool profile = Environment.GetEnvironmentVariable("STINGRAY_WAN_PROFILE") == "1";
+        var sw = (profile || OnProfileLog != null) ? System.Diagnostics.Stopwatch.StartNew() : null;
+
+        // 1. Pack latents [16, numFrames, latH, latW] -> [numTokens, 64] and write pinned
         var packed = PackLatents(latent, numFrames, latH, latW);
-        using var packedGpu = imageOps.Upload(packed, TensorShape.D2(numTokens, InChannels));
+        imageOps.WritePinned(gpuWs.InPacked, packed);
+        long tPack = sw?.ElapsedMilliseconds ?? 0;
 
-        // 2. Patch input projection on GPU
-        imageOps.Sgemm(gpuWs.X, packedGpu, gpuWeights.PatchEmbedding, numTokens, InChannels, _dim);
-        if (gpuWeights.PatchEmbeddingBias is not null)
+        // 2. Prepare timestep modulations
+        PrepareStepModulations(timestep, gpuWs, gpuWeights, imageOps);
+        long tModWrite = sw?.ElapsedMilliseconds ?? 0;
+
+        // Cross-reference debug dump (2026-09-14, docs/081): env-gated (STINGRAY_WAN_DEBUG_CROSSREF=1)
+        bool debugCrossRefGpu = Environment.GetEnvironmentVariable("STINGRAY_WAN_DEBUG_CROSSREF") == "1";
+        string debugCrossRefGpuDir = Environment.GetEnvironmentVariable("STINGRAY_WAN_DEBUG_CROSSREF_DIR") ?? "examples/stable-diffusion.cpp";
+        var visionOps = (IVisionOpsBackend)imageOps;
+
+        if (debugCrossRefGpu || OnStageGpu != null || OnBlockOutputGpu != null)
         {
-            imageOps.AddRowBroadcastInPlace(gpuWs.X, gpuWeights.PatchEmbeddingBias, numTokens, _dim);
-        }
+            imageOps.Sgemm(gpuWs.X, gpuWs.InPacked, gpuWeights.PatchEmbedding, numTokens, InChannels, _dim);
+            if (gpuWeights.PatchEmbeddingBias is not null)
+                imageOps.AddRowBroadcastInPlace(gpuWs.X, gpuWeights.PatchEmbeddingBias, numTokens, _dim);
 
-        // 3. Timestep embedding (sinusoidal 256 -> linear dim -> silu -> linear dim) -- tiny
-        // (dim-sized) vectors, computed on host; not worth a GPU round-trip.
+            if (debugCrossRefGpu || OnStageGpu != null)
+            {
+                var xHost = new float[numTokens * _dim];
+                imageOps.Download(gpuWs.X, xHost);
+                if (debugCrossRefGpu) WriteCrossRefBin(debugCrossRefGpuDir, "wandbg_patchembed_gpu", xHost);
+                OnStageGpu?.Invoke("patchembed", xHost);
+            }
+
+            int batchBlocks = (debugCrossRefGpu || OnBlockOutputGpu != null || OnStageGpu != null) ? 1 : 30;
+            for (int chunkStart = 0; chunkStart < _numLayers; chunkStart += batchBlocks)
+            {
+                int chunkEnd = Math.Min(_numLayers, chunkStart + batchBlocks);
+                imageOps.BeginBatch();
+                for (int b = chunkStart; b < chunkEnd; b++)
+                {
+                    var bw = gpuWeights.Blocks[b];
+                    TransformerBlockGpu(b, bw, gpuWs, gpuWs.LayerMods[b], numTokens, imageOps, visionOps);
+                }
+                imageOps.EndBatch();
+
+                if (OnBlockOutputGpu != null)
+                {
+                    var blockHost = new float[numTokens * _dim];
+                    imageOps.Download(gpuWs.X, blockHost);
+                    OnBlockOutputGpu(chunkStart, blockHost);
+                }
+
+                if (debugCrossRefGpu && chunkStart == 0)
+                {
+                    var block0Host = new float[numTokens * _dim];
+                    imageOps.Download(gpuWs.X, block0Host);
+                    WriteCrossRefBin(debugCrossRefGpuDir, "wandbg_block0_gpu", block0Host);
+                }
+                if (debugCrossRefGpu && chunkEnd == _numLayers)
+                {
+                    var blockLastHost = new float[numTokens * _dim];
+                    imageOps.Download(gpuWs.X, blockLastHost);
+                    WriteCrossRefBin(debugCrossRefGpuDir, "wandbg_blocklast_gpu", blockLastHost);
+                }
+            }
+
+            visionOps.AdaLNModulate(gpuWs.Normed1, gpuWs.X, gpuWs.HeadMod, numTokens, _dim, shiftOffset: 0, scaleOffset: _dim, isRmsNorm: false, eps: 1e-6f);
+            imageOps.Sgemm(gpuWs.OutPacked, gpuWs.Normed1, gpuWeights.HeadWeight, numTokens, _dim, InChannels);
+            if (gpuWeights.HeadBias is not null)
+                imageOps.AddRowBroadcastInPlace(gpuWs.OutPacked, gpuWeights.HeadBias, numTokens, InChannels);
+        }
+        else
+        {
+            // Production path: ONE command buffer submission for the entire 30-layer network!
+            imageOps.BeginBatch();
+            ForwardGpuCore(gpuWs.InPacked, gpuWs, gpuWeights, imageOps);
+            imageOps.EndBatch();
+        }
+        long tBlocks = sw?.ElapsedMilliseconds ?? 0;
+
+        var outPacked = new float[numTokens * InChannels];
+        imageOps.Download(gpuWs.OutPacked, outPacked);
+        long tHead = sw?.ElapsedMilliseconds ?? 0;
+
+        // 6. Unpack patches [numTokens, 64] -> [16, numFrames, latH, latW]
+        var res = UnpackLatents(outPacked, numFrames, latH, latW);
+        long tTotal = sw?.ElapsedMilliseconds ?? 0;
+
+        if (profile || OnProfileLog != null)
+        {
+            string pMsg = $"[WanProfile] total={tTotal}ms | pack={tPack}ms modWrite={tModWrite - tPack}ms core={tBlocks - tModWrite}ms download={tHead - tBlocks}ms unpack={tTotal - tHead}ms";
+            OnProfileLog?.Invoke(pMsg);
+            Console.Error.WriteLine(pMsg);
+        }
+        return res;
+    }
+
+    /// <summary>
+    /// Computes timestep embeddings and writes pinned layer and head modulations.
+    /// Fully non-blocking host write, zero command buffer submissions.
+    /// </summary>
+    public void PrepareStepModulations(
+        float timestep,
+        WanGpuWorkspace gpuWs,
+        WanGpuWeights gpuWeights,
+        IImageOpsBackend imageOps)
+    {
         var tEmb = ComputeTimestepEmbedding(timestep);
         var timeProjSilu = (float[])tEmb.Clone();
         DiffusionOps.SiluInPlace(timeProjSilu);
         var timestepProj = Linear("time_projection.1", timeProjSilu, _dim, _dim * 6);
 
-        var visionOps = (IVisionOpsBackend)imageOps;
-
-        // 4. Transformer Blocks -- fully GPU-resident (see TransformerBlockGpu): no per-block
-        // host round-trips. gpuWs.RopeCos/RopeSin were uploaded once at WanGpuWorkspace
-        // 4. Transformer Blocks -- fully GPU-resident (see TransformerBlockGpu): no per-block
-        // host round-trips. gpuWs.RopeCos/RopeSin were uploaded once at WanGpuWorkspace
-        // construction (see WanRoPE.Compute3DRoPECompact).
         var hostMod = new float[_dim * 6];
-
-        // Pre-write all layer modulations upfront
         for (int b = 0; b < _numLayers; b++)
         {
             var bw = gpuWeights.Blocks[b];
@@ -285,57 +369,6 @@ public sealed class WanModel : IDisposable
             imageOps.WritePinned(gpuWs.LayerMods[b], hostMod);
         }
 
-        // Cross-reference debug dump (2026-09-14, docs/081): env-gated (STINGRAY_WAN_DEBUG_CROSSREF=1),
-        // zero cost when unset. Forces batchBlocks=1 (one BeginBatch/EndBatch per block instead of
-        // all 30 in one submission) so mid-block Download() calls inside TransformerBlockGpu are
-        // safe (a batched command buffer isn't submitted until EndBatch(); downloading mid-batch
-        // throws -- see this file's own earlier per-block CPU-round-trip precedent). Real timing
-        // cost only when this env var is set; the real (non-debug) path is unaffected.
-        bool debugCrossRefGpu = Environment.GetEnvironmentVariable("STINGRAY_WAN_DEBUG_CROSSREF") == "1";
-        string debugCrossRefGpuDir = Environment.GetEnvironmentVariable("STINGRAY_WAN_DEBUG_CROSSREF_DIR") ?? "examples/stable-diffusion.cpp";
-        if (debugCrossRefGpu || OnStageGpu != null)
-        {
-            var xHost = new float[numTokens * _dim];
-            imageOps.Download(gpuWs.X, xHost);
-            if (debugCrossRefGpu) WriteCrossRefBin(debugCrossRefGpuDir, "wandbg_patchembed_gpu", xHost);
-            OnStageGpu?.Invoke("patchembed", xHost);
-        }
-
-        // Full-graph batching: record all 30 blocks per command buffer submission to eliminate driver fence bubbles
-        int batchBlocks = (debugCrossRefGpu || OnBlockOutputGpu != null || OnStageGpu != null) ? 1 : 30;
-        for (int chunkStart = 0; chunkStart < _numLayers; chunkStart += batchBlocks)
-        {
-            int chunkEnd = Math.Min(_numLayers, chunkStart + batchBlocks);
-            imageOps.BeginBatch();
-            for (int b = chunkStart; b < chunkEnd; b++)
-            {
-                var bw = gpuWeights.Blocks[b];
-                TransformerBlockGpu(b, bw, gpuWs, gpuWs.LayerMods[b], numTokens, imageOps, visionOps);
-            }
-            imageOps.EndBatch();
-
-            if (OnBlockOutputGpu != null)
-            {
-                var blockHost = new float[numTokens * _dim];
-                imageOps.Download(gpuWs.X, blockHost);
-                OnBlockOutputGpu(chunkStart, blockHost);
-            }
-
-            if (debugCrossRefGpu && chunkStart == 0)
-            {
-                var block0Host = new float[numTokens * _dim];
-                imageOps.Download(gpuWs.X, block0Host);
-                WriteCrossRefBin(debugCrossRefGpuDir, "wandbg_block0_gpu", block0Host);
-            }
-            if (debugCrossRefGpu && chunkEnd == _numLayers)
-            {
-                var blockLastHost = new float[numTokens * _dim];
-                imageOps.Download(gpuWs.X, blockLastHost);
-                WriteCrossRefBin(debugCrossRefGpuDir, "wandbg_blocklast_gpu", blockLastHost);
-            }
-        }
-
-        // 5. Final Layer (AdaLN + Linear dim -> 64)
         var headModParam = gpuWeights.HostHeadModulation;
         var headMod = new float[_dim * 2];
         for (int d = 0; d < _dim; d++)
@@ -343,18 +376,39 @@ public sealed class WanModel : IDisposable
             headMod[d] = headModParam[d] + tEmb[d];
             headMod[_dim + d] = headModParam[_dim + d] + tEmb[d];
         }
-        using var headModGpu = imageOps.Upload(headMod, TensorShape.D1(_dim * 2), exact: true);
-        visionOps.AdaLNModulate(gpuWs.Normed1, gpuWs.X, headModGpu, numTokens, _dim, shiftOffset: 0, scaleOffset: _dim, isRmsNorm: false, eps: 1e-6f);
+        imageOps.WritePinned(gpuWs.HeadMod, headMod);
+    }
 
+    /// <summary>
+    /// Executes PatchEmbedding, all 30 TransformerBlocks, and Head layer directly on GPU
+    /// without host round-trips. Assumes an open command buffer batch (<see cref="IImageOpsBackend.BeginBatch"/>).
+    /// </summary>
+    public void ForwardGpuCore(
+        CoreTensor inPacked,
+        WanGpuWorkspace gpuWs,
+        WanGpuWeights gpuWeights,
+        IImageOpsBackend imageOps)
+    {
+        int numTokens = (int)inPacked.Shape.Dims[0];
+        var visionOps = (IVisionOpsBackend)imageOps;
+
+        // 1. Patch input projection
+        imageOps.Sgemm(gpuWs.X, inPacked, gpuWeights.PatchEmbedding, numTokens, InChannels, _dim);
+        if (gpuWeights.PatchEmbeddingBias is not null)
+            imageOps.AddRowBroadcastInPlace(gpuWs.X, gpuWeights.PatchEmbeddingBias, numTokens, _dim);
+
+        // 2. Transformer blocks
+        for (int b = 0; b < _numLayers; b++)
+        {
+            var bw = gpuWeights.Blocks[b];
+            TransformerBlockGpu(b, bw, gpuWs, gpuWs.LayerMods[b], numTokens, imageOps, visionOps);
+        }
+
+        // 3. Final Head Layer
+        visionOps.AdaLNModulate(gpuWs.Normed1, gpuWs.X, gpuWs.HeadMod, numTokens, _dim, shiftOffset: 0, scaleOffset: _dim, isRmsNorm: false, eps: 1e-6f);
         imageOps.Sgemm(gpuWs.OutPacked, gpuWs.Normed1, gpuWeights.HeadWeight, numTokens, _dim, InChannels);
         if (gpuWeights.HeadBias is not null)
             imageOps.AddRowBroadcastInPlace(gpuWs.OutPacked, gpuWeights.HeadBias, numTokens, InChannels);
-
-        var outPacked = new float[numTokens * InChannels];
-        imageOps.Download(gpuWs.OutPacked, outPacked);
-
-        // 6. Unpack patches [numTokens, 64] -> [16, numFrames, latH, latW]
-        return UnpackLatents(outPacked, numFrames, latH, latW);
     }
 
     /// <summary>

@@ -253,6 +253,15 @@ public sealed class WanGpuParityTests
 
         var (fCos, fMd, fNa, fNb) = Compare(cpuOut, gpuOut);
         Log($"[WanRealParity] 30-layer Forward CPU vs GPU: cosine={fCos:F9} cpuNorm={fNa:F6} gpuNorm={fNb:F6} maxDiff={fMd:F6}");
+
+        // Profile real production fused batch (batchBlocks = 30)
+        model.OnStageGpu = null;
+        model.OnBlockOutputGpu = null;
+        model.OnProfileLog = Log;
+        Log("[WanRealParity] Running production fused forward pass (batchBlocks=30):");
+        var gpuOutProd = model.ForwardGpu(latent, 500f, textCtx, numFrames, latH, latW, gpuWs, gpuWeights, vulkan);
+        var (pCos, pMd, _, _) = Compare(cpuOut, gpuOutProd);
+        Log($"[WanRealParity] Production fused pass parity vs CPU: cosine={pCos:F9} maxDiff={pMd:F6}");
     }
 }
 

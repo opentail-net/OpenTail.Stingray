@@ -46,8 +46,10 @@ public sealed class WanApple20StepsTest
         }
 
         using var vulkan = new VulkanBackend();
+        var swTotal = System.Diagnostics.Stopwatch.StartNew();
 
         // 1. Text conditioning
+        var swText = System.Diagnostics.Stopwatch.StartNew();
         var tokenizer = T5Tokenizer.FromFile(tokPath, maxLen: 512);
         string prompt = "a red apple on a wooden table, photorealistic, high quality";
         var tokens = tokenizer.Tokenize(prompt);
@@ -56,6 +58,8 @@ public sealed class WanApple20StepsTest
         using var umt5 = new UMT5Encoder(encPath);
         var rawCond = umt5.EncodeGpu(tokens, vulkan);
         var rawUncond = umt5.EncodeGpu(uncondTokens, vulkan);
+        swText.Stop();
+        Console.WriteLine($"[TestProfile] Text encoding (cond + uncond) took {swText.ElapsedMilliseconds} ms");
 
         // Real diffusers WanPipeline._get_t5_prompt_embeds: zero-pad the ENCODED embeddings (not
         // the token ids) up to a fixed max_sequence_length=226 for cross-attention -- see
@@ -68,11 +72,15 @@ public sealed class WanApple20StepsTest
         Array.Copy(rawUncond, uncondContext, Math.Min(rawUncond.Length, fixedLen * txtDim));
 
         // 2. Load Pipeline
+        var swLoad = System.Diagnostics.Stopwatch.StartNew();
         using var pipeline = WanPipeline.Load(ditPath, vaePath, vulkan);
+        swLoad.Stop();
+        Console.WriteLine($"[TestProfile] Pipeline load took {swLoad.ElapsedMilliseconds} ms");
 
         string outputPath = Path.Combine(@"c:\Git-Public\OpenTail.Stingray", "wan_apple_20steps.png");
 
         // 3. Generate 20 steps
+        var swGen = System.Diagnostics.Stopwatch.StartNew();
         pipeline.Generate(
             prompt: prompt,
             negativePrompt: "",
@@ -86,6 +94,10 @@ public sealed class WanApple20StepsTest
             outputPath: outputPath,
             textContext: condContext,
             negativeTextContext: uncondContext);
+        swGen.Stop();
+        swTotal.Stop();
+        Console.WriteLine($"[TestProfile] pipeline.Generate total took {swGen.ElapsedMilliseconds} ms");
+        Console.WriteLine($"[TestProfile] Full test total took {swTotal.ElapsedMilliseconds} ms");
 
         Assert.True(File.Exists(outputPath), "Output image was not generated.");
     }
