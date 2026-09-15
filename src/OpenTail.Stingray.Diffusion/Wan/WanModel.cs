@@ -117,6 +117,25 @@ public sealed class WanModel : IDisposable
         var txtProj = ComputeTextEmbedding(textContext);
         int numTxtTokens = textContext.Length / TextDim;
 
+        // Cross-reference debug override (2026-09-14, docs/081): when STINGRAY_WAN_DEBUG_CROSSREF=1,
+        // substitute the C++ reference's own dumped POST-projection context (wandbg_context.bin --
+        // i.e. the exact equivalent of this method's own `txtProj`) in place of this port's UMT5
+        // output, so cross-attention's own math can be isolated from any difference between the two
+        // UMT5 encoder files (C++ used a Q8_0 GGUF, this port its own bf16 safetensors -- a real
+        // confound otherwise). Self-attention was already independently verified byte-identical
+        // (cosine 0.9999999) without this override; this closes the same gap for cross-attention.
+        if (Environment.GetEnvironmentVariable("STINGRAY_WAN_DEBUG_CROSSREF") == "1")
+        {
+            string dir = Environment.GetEnvironmentVariable("STINGRAY_WAN_DEBUG_CROSSREF_DIR") ?? "examples/stable-diffusion.cpp";
+            string path = Path.Combine(dir, "wan_cpp_dump_wandbg_context.bin");
+            if (File.Exists(path))
+            {
+                txtProj = ReadCrossRefBin(path);
+                numTxtTokens = txtProj.Length / _dim;
+                Console.Error.WriteLine($"[WanCrossRef] loaded context (post-projection) from {path}, numTxtTokens={numTxtTokens}");
+            }
+        }
+
         for (int b = 0; b < _numLayers; b++)
         {
             string p = $"blocks.{b}";
@@ -145,6 +164,22 @@ public sealed class WanModel : IDisposable
     {
         var txtProj = ComputeTextEmbedding(textContext);
         int numTxtTokens = textContext.Length / TextDim;
+
+        // Cross-reference debug override (2026-09-14, docs/081): mirrors the CPU path's own
+        // identical override in PrecomputeCrossKvCache -- see that method's doc comment for the
+        // full rationale (substitutes the C++ reference's own dumped post-projection context to
+        // eliminate the UMT5-encoder-format confound between the two implementations).
+        if (Environment.GetEnvironmentVariable("STINGRAY_WAN_DEBUG_CROSSREF") == "1")
+        {
+            string dir = Environment.GetEnvironmentVariable("STINGRAY_WAN_DEBUG_CROSSREF_DIR") ?? "examples/stable-diffusion.cpp";
+            string path = Path.Combine(dir, "wan_cpp_dump_wandbg_context.bin");
+            if (File.Exists(path))
+            {
+                txtProj = ReadCrossRefBin(path);
+                numTxtTokens = txtProj.Length / _dim;
+                Console.Error.WriteLine($"[WanCrossRef][GPU] loaded context (post-projection) from {path}, numTxtTokens={numTxtTokens}");
+            }
+        }
 
         using var txtProjGpu = imageOps.Upload(txtProj, TensorShape.D2(numTxtTokens, _dim));
 
@@ -179,6 +214,30 @@ public sealed class WanModel : IDisposable
         int patchW = latW / 2;
         int numTokens = numFrames * patchH * patchW;
 
+        // Cross-reference debug override (2026-09-14, docs/081): mirrors the CPU Forward()'s own
+        // identical override -- loads the C++ reference's own dumped input latent/timestep in place
+        // of this call's own, for a truly controlled, apples-to-apples comparison.
+        if (Environment.GetEnvironmentVariable("STINGRAY_WAN_DEBUG_CROSSREF") == "1")
+        {
+            string dir = Environment.GetEnvironmentVariable("STINGRAY_WAN_DEBUG_CROSSREF_DIR") ?? "examples/stable-diffusion.cpp";
+            string latentPath = Path.Combine(dir, "wan_cpp_dump_wandbg_input_latent.bin");
+            if (File.Exists(latentPath))
+            {
+                latent = ReadCrossRefBin(latentPath);
+                Console.Error.WriteLine($"[WanCrossRef][GPU] loaded input latent from {latentPath} ({latent.Length} floats)");
+            }
+            string timestepPath = Path.Combine(dir, "wan_cpp_dump_wandbg_timestep.bin");
+            if (File.Exists(timestepPath))
+            {
+                var tArr = ReadCrossRefBin(timestepPath);
+                if (tArr.Length > 0)
+                {
+                    timestep = tArr[0];
+                    Console.Error.WriteLine($"[WanCrossRef][GPU] loaded timestep from {timestepPath} = {timestep}");
+                }
+            }
+        }
+
         // 1. Pack latents [16, numFrames, latH, latW] -> [numTokens, 64] and upload to GPU
         var packed = PackLatents(latent, numFrames, latH, latW);
         using var packedGpu = imageOps.Upload(packed, TensorShape.D2(numTokens, InChannels));
@@ -211,8 +270,23 @@ public sealed class WanModel : IDisposable
             imageOps.WritePinned(gpuWs.LayerMods[b], hostMod);
         }
 
+        // Cross-reference debug dump (2026-09-14, docs/081): env-gated (STINGRAY_WAN_DEBUG_CROSSREF=1),
+        // zero cost when unset. Forces batchBlocks=1 (one BeginBatch/EndBatch per block instead of
+        // all 30 in one submission) so mid-block Download() calls inside TransformerBlockGpu are
+        // safe (a batched command buffer isn't submitted until EndBatch(); downloading mid-batch
+        // throws -- see this file's own earlier per-block CPU-round-trip precedent). Real timing
+        // cost only when this env var is set; the real (non-debug) path is unaffected.
+        bool debugCrossRefGpu = Environment.GetEnvironmentVariable("STINGRAY_WAN_DEBUG_CROSSREF") == "1";
+        string debugCrossRefGpuDir = Environment.GetEnvironmentVariable("STINGRAY_WAN_DEBUG_CROSSREF_DIR") ?? "examples/stable-diffusion.cpp";
+        if (debugCrossRefGpu)
+        {
+            var xHost = new float[numTokens * _dim];
+            imageOps.Download(gpuWs.X, xHost);
+            WriteCrossRefBin(debugCrossRefGpuDir, "wandbg_patchembed_gpu", xHost);
+        }
+
         // Full-graph batching: record all 30 blocks per command buffer submission to eliminate driver fence bubbles
-        const int batchBlocks = 30;
+        int batchBlocks = debugCrossRefGpu ? 1 : 30;
         for (int chunkStart = 0; chunkStart < _numLayers; chunkStart += batchBlocks)
         {
             int chunkEnd = Math.Min(_numLayers, chunkStart + batchBlocks);
@@ -223,6 +297,19 @@ public sealed class WanModel : IDisposable
                 TransformerBlockGpu(b, bw, gpuWs, gpuWs.LayerMods[b], numTokens, imageOps, visionOps);
             }
             imageOps.EndBatch();
+
+            if (debugCrossRefGpu && chunkStart == 0)
+            {
+                var block0Host = new float[numTokens * _dim];
+                imageOps.Download(gpuWs.X, block0Host);
+                WriteCrossRefBin(debugCrossRefGpuDir, "wandbg_block0_gpu", block0Host);
+            }
+            if (debugCrossRefGpu && chunkEnd == _numLayers)
+            {
+                var blockLastHost = new float[numTokens * _dim];
+                imageOps.Download(gpuWs.X, blockLastHost);
+                WriteCrossRefBin(debugCrossRefGpuDir, "wandbg_blocklast_gpu", blockLastHost);
+            }
         }
 
         // 5. Final Layer (AdaLN + Linear dim -> 64)
@@ -276,6 +363,17 @@ public sealed class WanModel : IDisposable
         imageOps.Sgemm(ws.CrossAttnOut, ws.AttnOut, bw.SelfAttnO, numTokens, d, d);
         visionOps.ScaleGateAdd(ws.X, ws.CrossAttnOut, modTensor, numTokens, d, gateOffset: 2 * d);
 
+        bool debugBlock0Gpu = layerIdx == 0 && Environment.GetEnvironmentVariable("STINGRAY_WAN_DEBUG_CROSSREF") == "1";
+        string debugBlock0GpuDir = Environment.GetEnvironmentVariable("STINGRAY_WAN_DEBUG_CROSSREF_DIR") ?? "examples/stable-diffusion.cpp";
+        if (debugBlock0Gpu)
+        {
+            imageOps.EndBatch();
+            var selfAttnHost = new float[numTokens * d];
+            imageOps.Download(ws.X, selfAttnHost);
+            WriteCrossRefBin(debugBlock0GpuDir, "wandbg_block0_selfattn_gpu", selfAttnHost);
+            imageOps.BeginBatch();
+        }
+
         // 2. Cross-Attention with T5/UMT5 text tokens (using precomputed K/V cache).
         imageOps.LayerNormGpu(ws.NormedCross, ws.X, bw.Norm3Weight, bw.Norm3Bias, numTokens, d);
         imageOps.Sgemm(ws.CrossQ, ws.NormedCross, bw.CrossAttnQ, numTokens, d, d);
@@ -284,6 +382,20 @@ public sealed class WanModel : IDisposable
         var (cachedK, cachedV) = ws.CrossKvCache[layerIdx];
         int ctxLen = (int)cachedK.Shape.Dims[0];
         imageOps.MultiHeadAttentionTiled(ws.CrossAttnOut, ws.CrossQ, cachedK, cachedV, numTokens, ctxLen, _numHeads, _headDim);
+        if (debugBlock0Gpu)
+        {
+            imageOps.EndBatch();
+            var crossAttnRawHost = new float[numTokens * d];
+            imageOps.Download(ws.CrossAttnOut, crossAttnRawHost);
+            WriteCrossRefBin(debugBlock0GpuDir, "wandbg_block0_crossattn_raw_gpu", crossAttnRawHost);
+            var qHost = new float[numTokens * d];
+            imageOps.Download(ws.CrossQ, qHost);
+            WriteCrossRefBin(debugBlock0GpuDir, "wandbg_block0_crossq_gpu", qHost);
+            var kHost = new float[ctxLen * d];
+            imageOps.Download(cachedK, kHost);
+            WriteCrossRefBin(debugBlock0GpuDir, "wandbg_block0_crossk_gpu", kHost);
+            imageOps.BeginBatch();
+        }
         imageOps.Sgemm(ws.AttnOut, ws.CrossAttnOut, bw.CrossAttnO, numTokens, d, d);
         imageOps.AddInPlace(ws.X, ws.AttnOut);
 
@@ -312,6 +424,38 @@ public sealed class WanModel : IDisposable
         int numTokens = numFrames * patchH * patchW;
         int numTxtTokens = textContext.Length / TextDim;
 
+        // Cross-reference debug dump (2026-09-14, docs/081): env-gated (STINGRAY_WAN_DEBUG_CROSSREF=1),
+        // zero cost when unset. Mirrors the real C++ reference's own equivalent instrumentation
+        // (examples/stable-diffusion.cpp's wan.hpp WanDebugDump + ggml_extend.hpp capture_tensor
+        // dump) so intermediate tensors from both implementations, given the EXACT SAME input, can
+        // be diffed byte-for-byte -- closing the "only reference formulas, never reference values"
+        // gap this whole investigation was blocked on. When enabled, overrides `latent`/`timestep`
+        // with the C++ reference's own dumped input (bypassing this port's own RNG, which won't
+        // reproduce identical values from the same --seed as the C++ binary's RNG) so the comparison
+        // starts from a truly controlled, apples-to-apples state.
+        bool debugCrossRef = Environment.GetEnvironmentVariable("STINGRAY_WAN_DEBUG_CROSSREF") == "1";
+        string crossRefDir = Environment.GetEnvironmentVariable("STINGRAY_WAN_DEBUG_CROSSREF_DIR")
+            ?? "examples/stable-diffusion.cpp";
+        if (debugCrossRef)
+        {
+            string latentPath = Path.Combine(crossRefDir, "wan_cpp_dump_wandbg_input_latent.bin");
+            if (File.Exists(latentPath))
+            {
+                latent = ReadCrossRefBin(latentPath);
+                Console.Error.WriteLine($"[WanCrossRef] loaded input latent from {latentPath} ({latent.Length} floats)");
+            }
+            string timestepPath = Path.Combine(crossRefDir, "wan_cpp_dump_wandbg_timestep.bin");
+            if (File.Exists(timestepPath))
+            {
+                var tArr = ReadCrossRefBin(timestepPath);
+                if (tArr.Length > 0)
+                {
+                    timestep = tArr[0];
+                    Console.Error.WriteLine($"[WanCrossRef] loaded timestep from {timestepPath} = {timestep}");
+                }
+            }
+        }
+
         ws ??= new WanWorkspace(numTokens, _dim, _ffnDim, _numLayers);
         if (ws.CrossKvCache == null || ws.CrossKvCache.Length < _numLayers || ws.CrossKvCache[0].K == null)
         {
@@ -323,6 +467,7 @@ public sealed class WanModel : IDisposable
 
         // 2. Patch input projection
         var x = Linear("patch_embedding", packed, InChannels, _dim);
+        if (debugCrossRef) WriteCrossRefBin(crossRefDir, "wandbg_patchembed", x);
 
         // 3. Timestep embedding (sinusoidal 256 -> linear dim -> silu -> linear dim)
         var tEmb = ComputeTimestepEmbedding(timestep);
@@ -339,6 +484,9 @@ public sealed class WanModel : IDisposable
         {
             string p = $"blocks.{b}";
             TransformerBlock(b, p, x, timestepProj, cos, sin, numTokens, numTxtTokens, ws);
+
+            if (debugCrossRef && b == 0) WriteCrossRefBin(crossRefDir, "wandbg_block0", x);
+            if (debugCrossRef && b == _numLayers - 1) WriteCrossRefBin(crossRefDir, "wandbg_blocklast", x);
 
             if (debugPerBlock)
             {
@@ -368,9 +516,28 @@ public sealed class WanModel : IDisposable
         DiffusionOps.ModulateRows(ws.Norm1.AsSpan(0, numTokens * _dim), ws.Normed1.AsSpan(0, numTokens * _dim), numTokens, _dim, ws.HeadShift, ws.HeadScale);
 
         var outPacked = Linear("head.head", ws.Normed1, _dim, InChannels);
+        if (debugCrossRef) WriteCrossRefBin(crossRefDir, "wandbg_head", outPacked);
 
         // 7. Unpack patches [numTokens, 64] -> [16, numFrames, latH, latW]
         return UnpackLatents(outPacked, numFrames, latH, latW);
+    }
+
+    private static float[] ReadCrossRefBin(string path)
+    {
+        var bytes = File.ReadAllBytes(path);
+        var arr = new float[bytes.Length / 4];
+        Buffer.BlockCopy(bytes, 0, arr, 0, bytes.Length);
+        return arr;
+    }
+
+    private static void WriteCrossRefBin(string dir, string name, float[] data)
+    {
+        Directory.CreateDirectory(dir);
+        string path = Path.Combine(dir, $"wan_cs_dump_{name}.bin");
+        var bytes = new byte[data.Length * 4];
+        Buffer.BlockCopy(data, 0, bytes, 0, bytes.Length);
+        File.WriteAllBytes(path, bytes);
+        Console.Error.WriteLine($"[WanCrossRef] wrote {path} ({data.Length} floats)");
     }
 
     private void TransformerBlock(
@@ -398,6 +565,12 @@ public sealed class WanModel : IDisposable
         DiffusionOps.ModulateRows(ws.Norm1.AsSpan(0, numTokens * _dim), ws.Normed1.AsSpan(0, numTokens * _dim), numTokens, _dim, s1, sc1);
         SelfAttention($"{prefix}.self_attn", ws.Normed1, ws, cos, sin, numTokens);
         DiffusionOps.ApplyGatedResidualRows(x.AsSpan(0, numTokens * _dim), ws.CrossAttnOut.AsSpan(0, numTokens * _dim), numTokens, _dim, g1);
+        if (layerIdx == 0 && Environment.GetEnvironmentVariable("STINGRAY_WAN_DEBUG_CROSSREF") == "1")
+        {
+            WriteCrossRefBin(
+                Environment.GetEnvironmentVariable("STINGRAY_WAN_DEBUG_CROSSREF_DIR") ?? "examples/stable-diffusion.cpp",
+                "wandbg_block0_selfattn", x.AsSpan(0, numTokens * _dim).ToArray());
+        }
 
         // 2. Cross-Attention with T5/UMT5 text tokens (using precomputed K/V cache)
         var norm3W = GetWeight($"{prefix}.norm3.weight");
@@ -405,11 +578,20 @@ public sealed class WanModel : IDisposable
         DiffusionOps.LayerNorm(x.AsSpan(0, numTokens * _dim), ws.NormedCross.AsSpan(0, numTokens * _dim), norm3W, norm3B, _dim);
         CrossAttention(layerIdx, $"{prefix}.cross_attn", ws.NormedCross, ws, numTokens, numTxt);
         TensorPrimitives.Add(x.AsSpan(0, numTokens * _dim), ws.AttnOut.AsSpan(0, numTokens * _dim), x.AsSpan(0, numTokens * _dim));
+        if (layerIdx == 0 && Environment.GetEnvironmentVariable("STINGRAY_WAN_DEBUG_CROSSREF") == "1")
+        {
+            WriteCrossRefBin(
+                Environment.GetEnvironmentVariable("STINGRAY_WAN_DEBUG_CROSSREF_DIR") ?? "examples/stable-diffusion.cpp",
+                "wandbg_block0_crossattn", x.AsSpan(0, numTokens * _dim).ToArray());
+        }
 
         // 3. Modulated FeedForward (GELU approx tanh): affine-free LayerNorm -> AdaLN modulate -> FFN -> gated residual.
         DiffusionOps.LayerNormNoAffine(x.AsSpan(0, numTokens * _dim), ws.Norm2.AsSpan(0, numTokens * _dim), _dim);
         DiffusionOps.ModulateRows(ws.Norm2.AsSpan(0, numTokens * _dim), ws.Normed2.AsSpan(0, numTokens * _dim), numTokens, _dim, s2, sc2);
-        FeedForward($"{prefix}.ffn", ws.Normed2, ws, numTokens);
+        bool debugFfn0 = layerIdx == 0 && Environment.GetEnvironmentVariable("STINGRAY_WAN_DEBUG_CROSSREF") == "1";
+        string debugFfnDir = Environment.GetEnvironmentVariable("STINGRAY_WAN_DEBUG_CROSSREF_DIR") ?? "examples/stable-diffusion.cpp";
+        if (debugFfn0) WriteCrossRefBin(debugFfnDir, "wandbg_block0_ffnin", ws.Normed2.AsSpan(0, numTokens * _dim).ToArray());
+        FeedForward($"{prefix}.ffn", ws.Normed2, ws, numTokens, debugFfn0 ? debugFfnDir : null);
         DiffusionOps.ApplyGatedResidualRows(x.AsSpan(0, numTokens * _dim), ws.FfnOut.AsSpan(0, numTokens * _dim), numTokens, _dim, g2);
     }
 
@@ -429,6 +611,11 @@ public sealed class WanModel : IDisposable
         WanRoPE.ApplyRoPE(ws.Q, cos, sin, seqLen, _numHeads, _headDim);
         WanRoPE.ApplyRoPE(ws.K, cos, sin, seqLen, _numHeads, _headDim);
 
+        if (Environment.GetEnvironmentVariable("STINGRAY_WAN_DEBUG_ATTNMAP") == "1")
+        {
+            InspectSelfAttentionMap(prefix, ws.Q, ws.K, seqLen);
+        }
+
         WanAttention.TiledMultiHeadAttention(ws.Q, ws.K, ws.V, ws.AttnOut.AsSpan(0, seqLen * _dim), seqLen, seqLen, _numHeads, _headDim);
         Linear($"{prefix}.o", ws.AttnOut, ws.CrossAttnOut.AsSpan(0, seqLen * _dim), _dim, _dim);
     }
@@ -441,8 +628,166 @@ public sealed class WanModel : IDisposable
         if (normQ is not null) RmsNormHeads(ws.CrossQ, seqLen, _numHeads, _headDim, normQ);
 
         var (cachedK, cachedV) = ws.CrossKvCache[layerIdx];
+        // 2026-09-14 fix (docs/081): derive the real context length from the precomputed K cache's
+        // own actual size rather than trusting the separately-threaded `ctxLen` parameter (computed
+        // once, early, in Forward() from the ORIGINAL textContext length) -- found via a real
+        // cross-reference bisection against the C++ reference where a debug-only context-override
+        // path updated PrecomputeCrossKvCache's own local token count without updating Forward()'s
+        // separate copy, silently mismatching `ctxLen` against the cache's true size and causing
+        // TiledMultiHeadAttention to attend over the wrong number of context tokens. Matches the GPU
+        // path's own already-correct pattern (`WanModel.cs` GPU TransformerBlock: `int ctxLen =
+        // (int)cachedK.Shape.Dims[0]`), which was never vulnerable to this because it derives ctxLen
+        // from the cache directly instead of accepting it as a caller-tracked parameter.
+        ctxLen = cachedK.Length / _dim;
+
+        bool debugCross0 = layerIdx == 0 && Environment.GetEnvironmentVariable("STINGRAY_WAN_DEBUG_CROSSREF") == "1";
+        string debugCrossDir = Environment.GetEnvironmentVariable("STINGRAY_WAN_DEBUG_CROSSREF_DIR") ?? "examples/stable-diffusion.cpp";
+        if (debugCross0)
+        {
+            WriteCrossRefBin(debugCrossDir, "wandbg_block0_crossq", ws.CrossQ.AsSpan(0, seqLen * _dim).ToArray());
+            WriteCrossRefBin(debugCrossDir, "wandbg_block0_crossk", cachedK);
+            WriteCrossRefBin(debugCrossDir, "wandbg_block0_crossv", cachedV);
+        }
+
         WanAttention.TiledMultiHeadAttention(ws.CrossQ, cachedK, cachedV, ws.CrossAttnOut.AsSpan(0, seqLen * _dim), seqLen, ctxLen, _numHeads, _headDim);
+        if (debugCross0) WriteCrossRefBin(debugCrossDir, "wandbg_block0_crossattn_raw", ws.CrossAttnOut.AsSpan(0, seqLen * _dim).ToArray());
         Linear($"{prefix}.o", ws.CrossAttnOut, ws.AttnOut.AsSpan(0, seqLen * _dim), _dim, _dim);
+    }
+
+    private void InspectSelfAttentionMap(string prefix, float[] qArr, float[] kArr, int seqLen)
+    {
+        // Only inspect representative blocks (0, 15, 29) to keep output concise and fast
+        if (prefix != "blocks.0.self_attn" && prefix != "blocks.15.self_attn" && prefix != "blocks.29.self_attn")
+            return;
+
+        int gridW = (int)Math.Round(Math.Sqrt(seqLen));
+        int gridH = seqLen / gridW;
+        if (gridW * gridH != seqLen)
+        {
+            gridW = 16;
+            gridH = Math.Max(1, seqLen / 16);
+        }
+
+        var queryTokens = new (string Name, int Y, int X)[]
+        {
+            ("Corner (0,0)", 0, 0),
+            ("Edge (0,W/2)", 0, gridW / 2),
+            ("Center (H/2,W/2)", gridH / 2, gridW / 2),
+            ("Corner (H-1,W-1)", gridH - 1, gridW - 1)
+        };
+
+        float scale = 1.0f / MathF.Sqrt(_headDim);
+        float uniformWeight = 1.0f / seqLen;
+        int h = 0; // head 0
+
+        Console.WriteLine($"\n==========================================================================");
+        Console.WriteLine($"[WanAttentionMap] {prefix} (Head {h}, seqLen={seqLen}, grid={gridH}x{gridW}, uniform={uniformWeight * 100:F3}%)");
+        Console.WriteLine($"==========================================================================");
+
+        var scores = new float[seqLen];
+        var weights = new float[seqLen];
+
+        foreach (var (name, qy, qx) in queryTokens)
+        {
+            int qIdx = qy * gridW + qx;
+            if (qIdx >= seqLen) continue;
+
+            int qOff = (qIdx * _numHeads + h) * _headDim;
+
+            // 1. Raw Dot Products & Logits
+            float maxScore = float.NegativeInfinity;
+            float minScore = float.PositiveInfinity;
+            for (int k = 0; k < seqLen; k++)
+            {
+                int kOff = (k * _numHeads + h) * _headDim;
+                float dot = 0f;
+                for (int d = 0; d < _headDim; d++)
+                {
+                    dot += qArr[qOff + d] * kArr[kOff + d];
+                }
+                float s = dot * scale;
+                scores[k] = s;
+                if (s > maxScore) maxScore = s;
+                if (s < minScore) minScore = s;
+            }
+
+            // 2. Softmax
+            float sumExp = 0f;
+            for (int k = 0; k < seqLen; k++)
+            {
+                weights[k] = MathF.Exp(scores[k] - maxScore);
+                sumExp += weights[k];
+            }
+            float invSum = 1.0f / sumExp;
+            for (int k = 0; k < seqLen; k++)
+            {
+                weights[k] *= invSum;
+            }
+
+            // 3. Statistics
+            float maxW = 0f;
+            int maxK = 0;
+            int count2x = 0;
+            int count5x = 0;
+            float entropy = 0f;
+
+            for (int k = 0; k < seqLen; k++)
+            {
+                float w = weights[k];
+                if (w > maxW) { maxW = w; maxK = k; }
+                if (w > 2.0f * uniformWeight) count2x++;
+                if (w > 5.0f * uniformWeight) count5x++;
+                if (w > 1e-12f) entropy -= w * MathF.Log(w);
+            }
+
+            // Spatially nearest (Manhattan dist == 1)
+            float nearWeightSum = 0f;
+            int nearCount = 0;
+            // Spatially far (Manhattan dist >= maxDist - 1)
+            int maxDist = (gridH - 1) + (gridW - 1);
+            float farWeightSum = 0f;
+            int farCount = 0;
+
+            for (int k = 0; k < seqLen; k++)
+            {
+                int ky = k / gridW;
+                int kx = k % gridW;
+                int dist = Math.Abs(ky - qy) + Math.Abs(kx - qx);
+                if (dist == 1)
+                {
+                    nearWeightSum += weights[k];
+                    nearCount++;
+                }
+                else if (dist >= maxDist - 1)
+                {
+                    farWeightSum += weights[k];
+                    farCount++;
+                }
+            }
+
+            float selfWeight = weights[qIdx];
+            float nearAvg = nearCount > 0 ? (nearWeightSum / nearCount) : 0f;
+            float farAvg = farCount > 0 ? (farWeightSum / farCount) : 0f;
+            int oppY = gridH - 1 - qy;
+            int oppX = gridW - 1 - qx;
+            int oppIdx = Math.Min(seqLen - 1, oppY * gridW + oppX);
+            float oppCornerWeight = weights[oppIdx];
+
+            int maxKy = maxK / gridW;
+            int maxKx = maxK % gridW;
+
+            Console.WriteLine($"--- Query: {name} (idx={qIdx}, pos=[{qy},{qx}]) ---");
+            Console.WriteLine($"  Logit Range: [{minScore:F3} .. {maxScore:F3}] (span={maxScore - minScore:F3})");
+            Console.WriteLine($"  Max Weight:  {maxW * 100:F2}% (token {maxK} at [{maxKy},{maxKx}], dist={Math.Abs(maxKy - qy) + Math.Abs(maxKx - qx)})");
+            Console.WriteLine($"  Self Weight: {selfWeight * 100:F2}% ({selfWeight / uniformWeight:F2}x uniform)");
+            Console.WriteLine($"  Concentrated Tokens: >2x uniform: {count2x}/{seqLen} ({(float)count2x / seqLen * 100:F1}%), >5x: {count5x}/{seqLen}");
+            Console.WriteLine($"  Near Neighbors (dist=1, n={nearCount}): avg={nearAvg * 100:F3}% ({nearAvg / uniformWeight:F2}x uniform), total={nearWeightSum * 100:F2}%");
+            Console.WriteLine($"  Far Tokens (dist>={maxDist - 1}, n={farCount}): avg={farAvg * 100:F3}% ({farAvg / uniformWeight:F2}x uniform)");
+            Console.WriteLine($"  Opposite Corner [{oppY},{oppX}]: {oppCornerWeight * 100:F3}% ({oppCornerWeight / uniformWeight:F2}x uniform)");
+            Console.WriteLine($"  Near/Far Ratio: {(farAvg > 1e-8f ? (nearAvg / farAvg).ToString("F2") : "inf")}x");
+            Console.WriteLine($"  Entropy: {entropy:F3} nats (uniform = {MathF.Log(seqLen):F3} nats)");
+        }
+        Console.WriteLine($"==========================================================================\n");
     }
 
     /// <summary>Real Wan QK-norm: `torch.nn.RMSNorm(dim_head * heads, ...)` -- ONE RMS statistic
@@ -470,11 +815,14 @@ public sealed class WanModel : IDisposable
         });
     }
 
-    private void FeedForward(string prefix, float[] x, WanWorkspace ws, int seqLen)
+    private void FeedForward(string prefix, float[] x, WanWorkspace ws, int seqLen, string? debugDumpDir = null)
     {
         Linear($"{prefix}.0", x, ws.Ffn1.AsSpan(0, seqLen * _ffnDim), _dim, _ffnDim);
+        if (debugDumpDir is not null) WriteCrossRefBin(debugDumpDir, "wandbg_block0_ffn0", ws.Ffn1.AsSpan(0, seqLen * _ffnDim).ToArray());
         DiffusionOps.GeluInPlace(ws.Ffn1.AsSpan(0, seqLen * _ffnDim));
+        if (debugDumpDir is not null) WriteCrossRefBin(debugDumpDir, "wandbg_block0_gelu", ws.Ffn1.AsSpan(0, seqLen * _ffnDim).ToArray());
         Linear($"{prefix}.2", ws.Ffn1, ws.FfnOut.AsSpan(0, seqLen * _dim), _ffnDim, _dim);
+        if (debugDumpDir is not null) WriteCrossRefBin(debugDumpDir, "wandbg_block0_ffn2", ws.FfnOut.AsSpan(0, seqLen * _dim).ToArray());
     }
 
     private float[] Modulate(float[] x, int seqLen, ReadOnlySpan<float> shift, ReadOnlySpan<float> scale)

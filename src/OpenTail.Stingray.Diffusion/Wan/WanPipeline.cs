@@ -123,7 +123,8 @@ public sealed class WanPipeline : IDiffusionPipeline
         // switching, which would need its own GPU weights/workspace pair -- not built yet, fall
         // back to CPU there rather than silently doing the wrong thing).
         bool useGpu = highNoiseTransformer is null && _transformer.Backend is not null
-            && _transformer.Backend is IImageOpsBackend;
+            && _transformer.Backend is IImageOpsBackend
+            && Environment.GetEnvironmentVariable("STINGRAY_WAN_DEBUG_ATTNMAP") != "1";
 
         if (useGpu)
         {

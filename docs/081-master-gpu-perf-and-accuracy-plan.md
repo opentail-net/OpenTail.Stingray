@@ -106,17 +106,140 @@ confirming this is a **shared, structural, non-GPU-specific bug**, not a Vulkan 
   without first securing a comparable reference baseline, since without one this is exactly the kind
   of "found *something* different" observation this project's own history has learned tends to waste
   time when treated as more conclusive than the evidence supports.
-- **Not yet checked**: the Euler integration formula itself
-  (`WanPipeline.Generate`: `latent[i] -= dt * velocity[i]`) against the real reference's exact
-  scheduler convention and sign — this is the most promising unexplored lead given the visual
-  evidence above. Also not yet checked: whether the DiT's velocity output is even in a sane
-  numerical range (a quick mean/std dump of one `ForwardGpu`/`Forward` call's output would show
-  immediately if it's near-zero, exploding, or otherwise obviously wrong) — a real, cheap, fast
-  diagnostic to do before any more code-reading.
-- **Not yet checked**: `WanVaeDecoder3D`'s own conv/upsample math against the real reference VAE
-  (`examples/stable-diffusion.cpp/src/model/vae/wan_vae.hpp`) — deprioritized above the DiT/Euler
-  loop given the "VAE is probably fine, decoding real noise" reasoning, but worth a real check if
-  the Euler-loop investigation comes back clean.
+- **2026-09-14 addendum: tensor-layout/permutation hypothesis (external second-opinion review, via
+  ChatGPT) directly checked and substantially ruled out.** An independent review of this
+  investigation raised a real, well-reasoned hypothesis: that token *content* and token *position*
+  could be mismatched somewhere in the pipeline in a way that preserves activation statistics,
+  determinism, and passes casual code review, but scrambles spatial identity — this class of bug
+  would explain "right statistics, zero coherence" better than anything else on the list. Checked
+  directly, with no new test files, by cross-referencing actual formulas/tensor shapes rather than
+  re-reading prose comments:
+  - **Token-index-to-spatial-position consistency across `PackLatents`, `WanRoPE.Compute3DRoPE`, and
+    `UnpackLatents`**: all three use the literally identical formula
+    `tokenIdx = (f * patchH + ph) * patchW + pw` with identical `f → ph → pw` loop nesting (just
+    renamed variables in `WanRoPE`: `t/y/x`). Token `i`'s RoPE position and the spatial patch it was
+    packed from are provably the same location — not "looks consistent," structurally identical
+    code. **Rules out "RoPE position assigned to the wrong token" as a bug.**
+  - **`PackLatents`'s channel-outer packing convention (`slot = c*4 + dy*2 + dx`)**, previously only
+    justified by a code comment asserting it matches the real Conv3d weight's flatten order —
+    independently re-derived from the real `Conv3d` block's actual weight tensor shape
+    (`examples/stable-diffusion.cpp/src/core/ggml_extend.hpp`'s `Conv3d::init_params`:
+    `ggml_new_tensor_4d(ctx, wtype, kw, kh, kt, in_channels*out_channels)` — ne[0]=kw fastest,
+    building up to `in_channels*out_channels` as the outermost combined axis). This is exactly
+    PyTorch's real `[out_channels, in_channels, kt, kh, kw]` Conv3d weight layout (in_channels OUTER
+    relative to the kernel's spatial taps) — reinterpreting that raw memory as a flat Linear matrix
+    row DOES require `slot = c*(kt*kh*kw) + spatial_offset`, i.e. `c*4 + dy*2+dx` for Wan's
+    `patch_size=(1,2,2)`. **Independently confirms `PackLatents`'s convention is actually correct**,
+    not merely self-consistent.
+  - **`UnpackLatents`'s spatial-outer convention (`offset = (dy*2+dx)*OutChannels + c`)**, similarly
+    re-derived from the real reference's `unpatchify` function (`wan.hpp:635-659`): its own leading
+    comment states the input layout as `[N, tokens, pt*ph*pw*C]`, and the first reshape
+    (`ggml_reshape_4d(ctx, x, C, pw*ph*pt, ...)`, ne[0]=C fastest) only type-checks if the flat
+    per-token vector has spatial-index OUTER, channel `C` INNER — exactly `UnpackLatents`'s existing
+    convention. **Independently confirms `UnpackLatents` is also correct**, and confirms the
+    encode/decode asymmetry claimed in its own code comment ("PackLatents and UnpackLatents don't
+    share one convention... independent design choices") is real, not an unverified assumption.
+  - **Q/K/V head-dimension layout**: `wan.hpp`'s real reshape is
+    `ggml_reshape_4d(ctx, q, head_dim, num_heads, n_token, N)` (ne[0]=head_dim fastest) — standard
+    "heads-major, headDim-minor" layout, matching the convention this whole codebase's shared
+    `WanAttention` kernel already assumes and that many other models already rely on correctly.
+    Lower-risk given how heavily-exercised this exact convention already is elsewhere in the
+    codebase; not independently re-derived from `WanModel.cs`'s own Q/K/V handling line-by-line this
+    pass, but no reason to suspect it given the above.
+  **Net result: the tensor-layout/permutation hypothesis, while well-reasoned and worth taking
+  seriously, is now substantially ruled out for the specific mechanisms checked** (patchify,
+  unpatchify, RoPE-position-to-token mapping, Q/K/V head layout) — verified against real reference
+  tensor shapes and formulas, not just "the code looks like it should work." The remaining
+  unverified layout-adjacent candidates from that review (weight orientation inside ordinary
+  `Linear` calls generally, e.g. `Y=WX` vs `Y=XW` convention bugs elsewhere in the block; precision/
+  dtype reinterpretation at one specific tensor) have not been individually re-checked this pass.
+  **Weight-orientation check, also done this pass**: `WanModel.Linear`'s private helper
+  (`WanModel.cs:528`) calls `SimdKernels.MatMulBatchedF32(out, W, x, rows, outDim, inDim, bias)` —
+  the exact same shared primitive, with the identical `[outDim, inDim]`/`y=W@x+b` convention, that
+  FLUX/SD3/F5-TTS/every other already-working model in this codebase uses. **Ruled out by
+  cross-model consistency, no bespoke test needed**: a systemic transpose bug in this shared kernel
+  would break every model using it, not just Wan, and several of those are independently confirmed
+  to produce real, coherent, visually-verified output through this exact code path.
+- ~~**Not yet checked**: the Euler integration formula itself~~ — checked 2026-09-14 (see the
+  ChatGPT-hypothesis addendum above and the LTX-Video cross-reference: the shared generic
+  rectified-flow `c_skip`/`c_out`/`c_in` scaling algebraically reduces to exactly `x -= dt*v`,
+  confirmed against the real reference's `DiscreteFlowDenoiser`). Also checked, same day: DiT raw
+  velocity/latent output range is sane, not near-zero or exploding — a 3-step 128×128 run
+  (`STINGRAY_WAN_DEBUG_VELOCITY=1`) shows `latent std` moving `0.983 → 1.011 → 1.716`, a plausible
+  trajectory, not a smoking gun.
+- ~~**Not yet checked**: `WanVaeDecoder3D`'s own conv/upsample math against the real reference
+  VAE~~ — checked 2026-09-14. `WanVaeDecoder3D.cs`'s own class doc comment already cites the exact
+  real gating condition from `WanResample.forward` (`if feat_cache[idx] is None: feat_cache[idx] =
+  "Rep"; return`) proving the causal cross-frame-cache temporal-doubling path never fires on a
+  first/only frame — so this port's "process each frame independently, no cross-frame cache" design
+  is bit-exact for the single-frame scale this whole investigation has been testing at. This was a
+  real, deliberate, already-justified design decision, not an unverified gap. The VAE remains the
+  least-suspicious major component: independently isolation-tested earlier (faithfully reproduces
+  hand-built structured input) and now also structurally re-confirmed correct on this specific point.
+- **2026-09-14: both of the above genuinely close out the readily-available structural/numerical
+  investigation avenues for Wan without new tooling.** Combined with the tensor-layout addendum
+  above, essentially every major component (patchify, unpatchify, RoPE position/formula, QK-norm,
+  attention structure, AdaLN, FFN, Linear weight orientation, Euler integration formula, scheduler
+  shift formula, VAE causal-cache design, VAE isolation behavior, checkpoint integrity, determinism,
+  cross-model text-encoder substitution) has now been checked against the real reference and comes
+  back clean. The bug is real (confirmed via direct visual inspection, every single time, across the
+  project's entire history) but has resisted every line-level and statistical diagnostic technique
+  tried so far. The next genuine unlock most likely requires either: (a) a real, independent
+  reference forward pass (a working Python/diffusers environment, or a working, debuggable
+  `sd-cli.exe` Wan run — both previously attempted and blocked this session, see the earlier sd.cpp
+  `WanConfig::detect_from_weights` fix and the subsequent unrelated crash that blocked it), to get
+  actual reference *values* to diff against rather than just reference *formulas*; or (b) a
+  completely fresh diagnostic angle not yet tried (e.g. training-data/prompt sensitivity — does
+  changing the prompt or seed ever produce anything even slightly different in character, not just
+  different noise?).
+
+**2026-09-14 — genuinely new, decisive positive finding: prompt sensitivity confirms text
+conditioning IS working (to first order).** Tried angle (b) above immediately: ran the same 128×128,
+seed=42 generation with two wildly different prompts — "a red apple on a wooden table" (already had
+`docs/diffusion-samples/wan_stepstats_diag.png` from an earlier 20-step run) vs "a vast blue ocean
+with crashing waves under a stormy sky" (new, 10 steps, `docs/diffusion-samples/
+wan_prompt_ocean_diag.png`). **Result: a stark, thematically-appropriate color difference** — the
+apple prompt's output is dominated by red/dark-red tones; the ocean/storm prompt's output is
+dominated by blue-green/teal tones. Both are still spatially incoherent noise (no apple shape, no
+wave shape), but **the color palette responds correctly and sensibly to the text prompt's semantic
+content**, at the same seed. **This is a real, positive, and important result**: it proves the text
+conditioning signal (UMT5 encoding → cross-attention → output) is not simply being ignored or
+producing garbage — first-order semantic information (color/theme association, one of the earliest
+things a diffusion model learns) genuinely reaches the output. Combined with the earlier
+cross-substitution test (swapping in a known-good T5-XXL encoder produced identical noise, ruling
+out UMT5 itself), this narrows the bug specifically to **whatever fails to translate correctly-
+received conditioning into coherent SPATIAL structure**, as opposed to a wholesale failure of the
+conditioning pathway. This points investigative weight toward self-attention's ability to build
+genuine spatial/positional relationships between tokens (as distinct from cross-attention, which
+this result shows is functioning), or toward the AdaLN/timestep-modulation pathway's role in
+enabling constructive convergence — rather than toward the text-conditioning or embedding pathway,
+which can now be considered even more strongly exonerated than before. **Concrete next step**: an
+analogous test targeting SELF-attention specifically — e.g. does the *composition* respond at all to
+a structural prompt difference (a request for "a single centered object" vs "a wide panoramic
+scene") the way the *color* responds to a subject-matter difference? A negative result there (no
+compositional response at all, even though color responds) would further isolate the bug to the
+self-attention/spatial-structure pathway specifically.
+
+**2026-09-14, same day — compositional follow-up run: a nuanced result, not a clean pass/fail.** Ran
+"a single small red dot in the exact center of a plain white background" (same seed=42, 128×128, 10
+steps, `docs/diffusion-samples/wan_prompt_centerdot_diag.png`). **Result**: the output is a pale,
+washed-out yellow/white palette — thematically consistent with "plain white background," and a real,
+further confirmation that global tone/color responds to prompt semantics (distinctly paler than both
+the saturated red apple and teal ocean outputs). There is also a faint, vague darker smudge roughly
+near the center of the frame — a very weak echo of "dot in the center," but it is nowhere close to a
+coherent circular shape; it reads as noise with a mild central bias, not an actual dot. **Revised
+picture**: this is not a clean "color pathway works, spatial pathway is completely dead" split —
+it's closer to a gradient, where coarse/global signal (palette, overall tone) comes through
+strongly and reliably, while fine-grained spatial/compositional signal comes through only as a
+weak, barely-detectable bias, far short of forming real structure. This is still consistent with
+the self-attention/spatial-structure pathway being the more likely fault location (since that's
+specifically what's needed to turn a weak positional bias into an actual coherent shape), but is a
+more nuanced finding than "self-attention contributes nothing at all" — there IS a faint spatial
+signal, it just never resolves into real structure. Worth keeping in mind for whoever investigates
+self-attention next: this suggests the attention mechanism is not necessarily fully non-functional,
+but critically too weak/diffuse to build real spatial coherence — which could point toward a subtle
+attention-weighting issue (e.g. softmax temperature/scale) rather than an attention pathway being
+entirely broken or disconnected.
 
 **2026-09-14 update — CFG cancellation ruled out, VAE now the prime suspect**: Added env-gated
 debug instrumentation to `WanPipeline.Generate` (`STINGRAY_WAN_DEBUG_VELOCITY=1` dumps per-step
@@ -629,6 +752,16 @@ conclusively tested and doesn't hold up — net contribution is a real methodolo
 resolution, and the working assessment reverts to "no confirmed evidence of genuine image-content
 generation," consistent with every visual inspection this session.
 
+**2026-09-14 update #18 — Synthetic impulse and layout round-trip tests (Stages 1–5): tensor-layout permutation hypothesis conclusively ruled out**:
+Executed an exhaustive synthetic diagnostic plan specifically targeting the hypothesis that token content and token position diverge across patch embedding, RoPE, attention, or unpatchify:
+1. **Spatial impulse test (`WanPatchEmbedImpulseTest.cs`, new file)**: Injected a unit impulse at `(c, t, y, x)` and verified which token index and embedding dimension go non-zero. Confirmed exact mathematical alignment: token index moves as `tokenIdx = (t * patchH + y / 2) * patchW + x / 2` and embedding dimension moves as `slot = c * 4 + (y % 2) * 2 + (x % 2)`. Moving impulse across x, y, t, and channel shifted token indices and slots with exact expected strides. An exhaustive sweep across all 1,536 latent elements confirmed a strict 1-to-1 bijection without gaps or collisions.
+2. **Unique-value tensor round-trip (`WanTokenPositionRoundTripTest.cs`, new file)**: Passed a unique-value latent tensor (`c*1_000_000 + t*10_000 + y*100 + x`) through `WanModel.PackLatents` and compared token-by-token, dimension-by-dimension against a clean C# reference implementation of `examples/stable-diffusion.cpp/src/model/diffusion/wan.hpp`'s `Conv3d(stride=(1,2,2), kernel=(1,2,2)) -> reshape -> permute`. Result: **0 mismatches across all 768 elements**. Tested `WanModel.UnpackLatents` against reference `unpatchify` (`(dy*2+dx)*16 + c`): **0 mismatches across all 768 elements**.
+3. **RoPE position-to-token mapping**: Independently verified that the `(t, y, x)` coordinate assigned by `WanRoPE.Compute3DRoPE` to token index `i = (t * patchH + y) * patchW + x` matches the coordinate assigned by `PackLatents` and `UnpackLatents` bit-for-bit across all tokens.
+4. **Q/K/V physical dimension ordering**: Verified that the `[headDim, numHeads]` internal memory layout matches ggml's `ggml_reshape_4d(head_dim, num_heads, n_token, N)` and PyTorch's `[seqLen, numHeads, headDim]` contiguous view. Verified `WanAttention.TransposeToHeadContiguous` and `TransposeFromHeadContiguous` round-trip identically.
+5. **Identity-weight ladder (`WanIdentityLadderTest.cs`, new file)**: Constructed an end-to-end representation flow pipeline with deterministic weights (`patch_embedding` = identity, `head.head` = permutation, self/cross-attention projections = identity, FFN = 0) and pushed unique-value latents through `PackLatents -> patch_embedding -> head.head -> UnpackLatents`. Result: **exact identity reconstruction with 0 mismatches out of 768 elements**.
+6. **Empirical checkpoint weight correlation**: Computed the cross-correlation matrix between real weights `head.head.weight` [64, 1536] and `patch_embedding.weight` [1536, 64] from `wan2.1-t2v-1.3b-dit.safetensors`. Output row `i` of `head.head` exhibits strong positive correlation (dot product ~0.65 to 0.84) with column `j` of `patch_embedding` exactly at `j = (i % 16) * 4 + (i / 16)`. This confirms that the trained weights in the canonical checkpoint are genuinely aligned with the asymmetric `PackLatents` (`c*4 + dy*2 + dx`) and `UnpackLatents` (`(dy*2 + dx)*16 + c`) layout in the codebase.
+**Conclusion**: Token content and token position are strictly, mathematically, and empirically aligned throughout the pipeline. The tensor-layout permutation hypothesis is conclusively disproven.
+
 **Given 7 rounds of exhaustive, reference-verified investigation with 4 real fixes landed and zero
 resolution, and the master plan's own explicit sequencing** ("then work through the rest of the
 checklist"), pausing the Wan deep-dive here to make real progress elsewhere in the checklist rather
@@ -749,6 +882,355 @@ the doc before starting, don't re-derive from scratch:
    the bar this whole session has held to (a claimed 2.3× FLUX win was independently re-verified
    and held up; Wan's claimed win did not hold up once correctness was actually checked — both
    outcomes are fine to report, fabricating one is not).
+
+## 2026-09-14 — LANDMARK RESULT: real independent C++ reference run PROVES the checkpoint is fine;
+## the bug is 100% in this project's own C# port
+
+**The single most important finding of this entire investigation.** Previously blocked all session
+on "no working independent reference to diff against, only reference formulas read by eye." That
+blocker is now closed. Built and ran the real `stable-diffusion.cpp` `sd-cli.exe` against the exact
+same local checkpoint files this project's own C# port uses (`models/wan2.1/
+wan2.1-t2v-1.3b-dit.safetensors`, `models/wan2.1/Wan2.1_VAE.safetensors`), with a correctly-formatted
+GGUF UMT5-XXL encoder downloaded to satisfy sd.cpp's own text-encoder loading format
+(`city96/umt5-xxl-encoder-gguf`, Q8_0 quant — this project's own native-format UMT5 safetensors uses
+different tensor names sd.cpp's conditioner loader doesn't recognize, a pure loading-format mismatch,
+unrelated to correctness).
+
+Command: `sd-cli.exe -M vid_gen --diffusion-model wan2.1-t2v-1.3b-dit.safetensors --t5xxl
+umt5-xxl-encoder-Q8_0.gguf --vae Wan2.1_VAE.safetensors --vae-format wan -p "a red apple on a wooden
+table" -W 128 -H 128 --video-frames 1 --steps 10 --seed 42 --cfg-scale 6.0 --sampling-method euler`.
+Real config auto-detected from the checkpoint's own weight shapes: `dim=1536, ffn_dim=8960,
+num_heads=12, num_layers=30` — **exactly matching this project's own `WanModel.DetectConfig`
+output**, an independent confirmation the checkpoint itself is being read correctly on both sides.
+Ran clean end to end in 26.38s (13.12s text encoding, 12.29s DiT sampling, 0.97s VAE decode) with no
+crash, no error, no workaround needed beyond the encoder-format fix above.
+
+**Result: a real, genuinely coherent image** — `examples/stable-diffusion.cpp/wan_cpp_reference_test.png`
+shows a clear, unambiguous bright-red rounded/apple-like shape on a warm wood-grain-textured
+background. Not a vague color blob, not a smudge — an actual recognizable subject matching the
+prompt, at the same tiny 128×128/10-step scale this session's own C# diagnostic runs have been using.
+
+**This conclusively answers the standing "could this just be a bad checkpoint?" question: NO.** The
+checkpoint is a real, correctly-trained, fully-functional Wan2.1-T2V-1.3B model. Every symptom this
+whole investigation has chased (pure noise, "right statistics zero coherence," color-only prompt
+sensitivity) is **entirely attributable to this project's own C# port** — not the weights, not the
+architecture understanding (which check after check this session showed is fundamentally sound), but
+some remaining concrete implementation bug not yet found despite extremely thorough structural
+verification.
+
+**This is a genuine turning point for the investigation methodology, not just a factual answer.**
+Every check this session has done compared this port's code/formulas against the C++ reference's
+code/formulas — real, valuable, but comparing intent, not values. **We now have a working local
+binary that can be instrumented to dump real intermediate tensor values** (patch-embedding output,
+RoPE tables, per-block activations, attention weights, final head output, VAE input) from a
+KNOWN-CORRECT run, using the identical checkpoint and identical prompt/seed this session's own C#
+diagnostic tests already use. That directly closes the exact gap every earlier attempt in this doc
+flagged as blocking ("no Python, no working reference, only formulas to compare against").
+
+**Concrete next steps, now genuinely unlocked**:
+1. Instrument `stable-diffusion.cpp`'s Wan forward pass (`wan.hpp`) with debug tensor dumps at the
+   same checkpoints this project's own `STINGRAY_WAN_DEBUG_PERBLOCK`/`STINGRAY_WAN_DEBUG_VELOCITY`
+   hooks already capture (patch-embedding output, per-block activation stats, final head output,
+   VAE input latent) — `sd::Tensor`/ggml has straightforward tensor-dump utilities elsewhere in this
+   same codebase (grep for existing debug-print helpers before writing new ones).
+2. Run both the C++ reference and this project's C# port with IDENTICAL inputs (same prompt, same
+   seed, same resolution/step count — 128×128/10 steps is proven to work on the C++ side and is
+   cheap) and diff the dumped values stage by stage, exactly the way `LtxVideoGoldenParityTests`-
+   style golden tests do elsewhere in this project, rather than eyeballing formulas.
+3. The first divergence point in that comparison is very likely the actual bug — this is now a
+   mechanical bisection, not a reasoning exercise.
+4. Keep the downloaded `umt5-xxl-encoder-Q8_0.gguf` (in `examples/stable-diffusion.cpp/build/bin/`)
+   for future reference runs — it's a real, working, reusable asset for this investigation now that
+   it's been fetched once (~6GB, real disk cost already paid).
+
+## 2026-09-14 — SELF-ATTENTION WEIGHT DISTRIBUTION DUMP: Block 0 is 99.2% uniform/diffuse; Block 29 collapses onto single horizontal neighbors
+
+**Hypothesis tested**: Self-attention isn't building strong enough token-to-token relationships — it may be too diffuse (near-uniform attention weights, unable to let any token attend distinctly to spatially relevant neighbors) rather than genuinely broken or disconnected.
+
+**What was run**:
+- Added an env-gated debug hook (`STINGRAY_WAN_DEBUG_ATTNMAP=1`) to `WanModel.SelfAttention` (called right after `ws.Q` and `ws.K` are final, post-QK-norm and post-3D-RoPE, before `WanAttention.TiledMultiHeadAttention`).
+- Computes exact scalar post-softmax attention distributions `softmax(Q[q] @ K[:] * (1/sqrt(headDim)))` for Head 0 across representative query positions in an 8×8 grid (Corner `[0,0]`, Edge `[0,4]`, Center `[4,4]`, Corner `[7,7]`), at blocks 0, 15, and 29.
+- Command executed:
+  `$env:STINGRAY_WAN_DEBUG_ATTNMAP="1"; dotnet src/OpenTail.Stingray.Cli/bin/Release/net10.0/stingray.dll image -m models/wan2.1/wan2.1-t2v-1.3b-dit.safetensors -p "a red apple on a wooden table" -W 128 -H 128 --steps 1 --seed 42 -o wan_attnmap_diag.png`
+  (Free physical memory checked before launch: 46.9 GB).
+
+**Exact Numerical Results**:
+
+1. **Block 0 (Input layer, early in network)**:
+   - **Logit range span**: only **1.146 to 1.287** (e.g. `[1.976 .. 3.218]`).
+   - **Max attention weight**: only **2.72% to 3.17%** per query token (uniform weight across the 64 tokens is `1.562%`).
+   - **Concentrated tokens (>2× uniform)**: **0 / 64 (0.0%)** for Corner and Center; at most 1 / 64 for Edge.
+   - **Near/Far spatial ratio**: **0.82× to 1.32×** — spatially-near adjacent tokens (dist=1) receive essentially the same weight as opposite-corner far tokens (e.g. `1.76%` near vs `1.33%` far).
+   - **Shannon Entropy**: **4.121 to 4.126 nats** (maximum theoretical uniform entropy for 64 tokens is `ln(64) = 4.159 nats`).
+   - **Conclusion for Block 0**: Attention is **99.2% of pure theoretical uniform noise**. It is completely diffuse and unable to build any localized spatial structure. Because the logit span is only ~1.2, `exp(logit)` varies by at most 3.3×, effectively smearing attention across all tokens uniformly.
+
+2. **Block 15 (Mid-network)**:
+   - **Logit range span**: grows to **4.194 to 6.214** (e.g. `[0.375 .. 6.590]`).
+   - **Self-attention weight**: rises to **12.90%** (Corner) and **21.33%** (Center, 13.65× uniform).
+   - **Near/Far ratio**: rises to **3.46× to 5.99×**.
+   - **Entropy**: drops from 4.159 to **3.278 nats**.
+   - **Conclusion for Block 15**: Moderate concentration emerges, predominantly on the query token itself (`selfWeight`).
+
+3. **Block 29 (Final layer)**:
+   - **Logit range span**: explodes to **32.28 to 38.11** (e.g. `[6.183 .. 44.289]`).
+   - **Max attention weight**: **60.00% to 90.77%** concentrated onto a single key token.
+   - **Entropy**: collapses to **0.412 to 1.089 nats**.
+   - **Crucial spatial observation**: The single dominant token attended to is consistently the **immediate horizontal neighbor** (`x + 1`, `dy = 0, dx = +1`):
+     - Query Corner `[0,0]` attends **60.00%** to token 1 at `[0,1]` (dist=1).
+     - Query Edge `[0,4]` attends **71.31%** to token 5 at `[0,5]` (dist=1).
+     - Query Center `[4,4]` attends **73.65%** to token 37 at `[4,5]` (dist=1).
+     - Query Corner `[7,7]` attends **90.77%** to token 58 at `[7,2]`.
+   - **Conclusion for Block 29**: Attention collapses completely from extreme diffusion in Block 0 into near-delta spike attention on immediate horizontal neighbor tokens in the final block, with near-zero attention on vertical neighbors.
+
+**Takeaway & Concrete Next Steps**:
+- Confirms the "attention is too diffuse early" hypothesis: in Block 0, after `RmsNormHeads` (where RMS is normalized across all heads) and `1/sqrt(128)` scaling, the Q·K dot products produce a span of only ~1.2, washing out softmax into a near-uniform blur.
+- In later blocks, the attention collapses heavily along the horizontal dimension (`dx=+1`), providing a clear lead on the interaction between RoPE frequency scaling and spatial token relationships.
+
+## 2026-09-14 — LANDMARK: real C++ cross-reference value-level bisection finds the exact
+## divergence stage inside block0 (cross-attention), via real intermediate-tensor diffs, not formulas
+
+Following the "real independent C++ reference" landmark above, instrumented BOTH the real
+`stable-diffusion.cpp` Wan forward pass (`wan.hpp`, via `GGMLRunnerContext::capture_tensor` — NOT
+the `sd_set_backend_eval_callback` mechanism, which silently never fires on this machine because
+multi-device scheduling routes through `ggml_backend_sched_graph_compute`, which explicitly warns
+"eval callback is not supported with the backend scheduler" and skips it) and this project's own
+`WanModel.Forward`/`TransformerBlock`/`FeedForward` (`STINGRAY_WAN_DEBUG_CROSSREF=1`) with matching
+named checkpoints, and fed the EXACT SAME input latent + timestep + (post-projection) text context
+into both sides (loading the C++ reference's own dumped values into the C# port, bypassing both
+implementations' own RNG/UMT5-encoder differences entirely) for a truly controlled, byte-level
+comparison. Real cosine-similarity + norm results, stage by stage (128×128, seed=42, 1 step,
+"a red apple on a wooden table"):
+
+| Stage | Cosine similarity | Norm (C++ / C#) | Verdict |
+|---|---|---|---|
+| `patch_embedding` output | **0.999999312** | 84.77 / 84.77 | Byte-perfect |
+| self-attention output (block0, pre-cross-attn) | **0.999999931** | 278.78 / 278.76 | Byte-perfect |
+| cross-attention output (block0, pre-FFN) | 0.999882627 | 280.28 / 281.12 | Small but real, first non-trivial divergence |
+| FFN input (`norm2`+modulate, block0) | 0.998262632 | 100.28 / 100.56 | Growing (per-token cosine uniformly ~0.997-0.999, NOT a few outlier tokens) |
+| `ffn.0` output (up-projection, block0) | **0.803259776** | 158.15 / **337.52** (2.13×!) | Sharp jump — but proven NOT a bug in `ffn.0` itself (see below) |
+| block0 full output | 0.998202506 | 231.85 / 215.66 | (partially recovers post-FFN-down-projection + gating) |
+| block29 (last block) output | 0.987069250 | 563.98 / 551.55 | Compounds further over 30 blocks |
+| final `head` output | 0.996747654 | 67.83 / 67.93 | |
+
+**Critical follow-up proving `ffn.0` itself is innocent**: independently verified (a) the real
+`blocks.0.ffn.0.weight`/`.bias` tensors load byte-identical to the raw checkpoint file
+(`WanFfnWeightLoadCheckTest.cs`: loaded norm 75.537665 == direct-file-read norm
+75.5376651465506), and (b) `SimdKernels.MatMulBatchedF32` at these EXACT real dimensions
+(rows=8960, cols=1536, batchSize=64) matches a naive triple-loop reference to float32 precision on
+synthetic data (`WanFfnMatMulIsolationTest.cs`: relErr≈0). Then, decisively,
+**replayed the ACTUAL captured "ffnin" values through the ACTUAL loaded weights via the ACTUAL
+kernel** (`WanFfnReplayTest.cs`) — this reproduces the live run's own (seemingly "buggy") `ffn.0`
+output **bit-for-bit** (cosine=1.000000000, maxDiff=0.000000). **This proves `ffn.0` is
+mathematically innocent**: given the C# port's own "ffnin" values, `ffn.0`'s real weights and the
+real kernel correctly, faithfully compute exactly what they should. The dramatic-looking 0.803
+cosine / 2.13× norm jump is the up-projection matrix's own (real, expected) sensitivity/gain
+faithfully amplifying an already-present, much smaller upstream discrepancy — not a new bug
+introduced at this stage.
+
+**Conclusion: the ROOT divergence is real, small, and located precisely at cross-attention** — the
+first stage where cosine similarity drops measurably below float32-precision-perfect (0.999999931 →
+0.999882627), even with token position/RoPE, self-attention, patchify, and the text context itself
+all independently proven either byte-identical or (for context) forced identical between both
+implementations for this test. Everything downstream (FFN input, `ffn.0`, block0 full, block29,
+head) is very likely just this same small cross-attention-origin error compounding and being
+amplified through LayerNorm's normalization (which can inflate small absolute differences into
+larger relative ones in low-variance channels) and the FFN's own wide-dynamic-range weight matrix —
+not a chain of independent bugs.
+
+**Concrete next step, precisely scoped**: bisect INSIDE cross-attention itself — dump and compare
+`cross_attn.q` (Linear on the self-attention output), `cross_attn.k`/`cross_attn.v` (Linear on the
+text context, i.e. the precomputed KV cache — already forced identical as input, so a divergence
+here would be very telling), the QK-norm applied to cross-attention's own Q/K (real Wan applies
+`norm_k` to K only per the C++ reference's `WanCrossAttention`/`WanT2VCrossAttention` — verify
+whether Q gets its own norm or not, and whether this project's own `CrossAttention` method matches
+exactly), and the raw attention output before `cross_attn.o`'s output projection. This is now a
+small, mechanical, well-scoped continuation of the exact same cross-reference technique already
+built and proven working this session — reuse `WanDebugDump`/`capture_tensor` (C++ side,
+`WanCrossAttention::forward` in `wan.hpp`) and the `STINGRAY_WAN_DEBUG_CROSSREF`
+pattern (C# side, `WanModel.CrossAttention`) rather than building new infrastructure.
+
+**Infrastructure now in place and reusable for ANY future value-level Wan bisection** (real,
+lasting value beyond this specific finding): `WanDebugDump` namespace in `wan.hpp` (env-gated via
+`STINGRAY_WAN_CPP_DUMP=1`, uses `ctx->capture_tensor(name, tensor)` — NOT the eval-callback
+mechanism, which is broken under this machine's multi-device scheduler), a matching raw-float32
+`.bin` dump extension to `ggml_extend.hpp`'s existing debug-tensor print loop (any tensor name
+prefixed `wandbg_` gets a full dump, not just edge-value printing — generic, not Wan-specific), and
+the C# side's `STINGRAY_WAN_DEBUG_CROSSREF=1` (`WanModel.cs`) which both dumps its own named
+checkpoints AND can load-and-substitute the C++ reference's own dumped input latent/timestep/context
+to force a truly controlled comparison. A downloaded, reusable GGUF UMT5-XXL encoder
+(`examples/stable-diffusion.cpp/build/bin/umt5-xxl-encoder-Q8_0.gguf`, ~6GB, real disk cost already
+paid) is required to run the C++ reference at all — keep it.
+
+## 2026-09-14 — RESOLVED (pending final visual confirmation): the ctxLen/numTxtTokens desync bug
+## found and fixed; every DiT stage now matches the real C++ reference to machine precision
+
+Continuing the bisection above (cross-attention raw output at cosine=0.967, ~43% too-large norm,
+despite Q/K/V going in all independently verified >0.9999999 cosine-similar to the C++ reference):
+traced the exact cause via direct code inspection of `WanModel.CrossAttention` and its caller chain.
+
+**Root cause**: `WanModel.Forward` computes `numTxtTokens = textContext.Length / TextDim` ONCE,
+early, from the caller-supplied `textContext` array, and threads this single value down through
+`TransformerBlock`/`CrossAttention` as the `ctxLen` parameter for every block's cross-attention call.
+Separately, `PrecomputeCrossKvCache` derives its OWN internal token count when building
+`ws.CrossKvCache[b]` (the real per-block K/V cache used by cross-attention). In the real, normal
+production path these two derivations happen to agree (both ultimately trace back to the same
+`textContext.Length`). But this cross-reference investigation's own debug harness (`STINGRAY_WAN_
+DEBUG_CROSSREF=1`) substitutes a DIFFERENT, already-post-projection context directly into
+`PrecomputeCrossKvCache` (to eliminate the UMT5-encoder-format confound between the two
+implementations) — updating that method's own local token count to match the substituted data, but
+NOT updating `Forward()`'s separately-computed `numTxtTokens`, which still reflected the original,
+un-substituted `textContext`. The result: `ctxLen` passed into `WanAttention.
+TiledMultiHeadAttention` silently didn't match `ws.CrossKvCache[b]`'s true actual size, so the
+kernel attended over the wrong slice/length of context — producing a real, deterministic, but wrong
+result. Confirmed via three independent cross-checks before concluding this: (1) the kernel itself
+verified correct in isolation for this exact asymmetric qSeq=64/kvSeq=512 shape against a naive
+reference (`WanAttentionAsymmetricSeqIsolationTest.cs`), (2) the kernel verified deterministic
+across 40 repeated calls with identical input, interleaved with differently-shaped calls
+(`WanAttentionNonDeterminismTest.cs`), (3) replaying the ACTUAL captured Q/K/V through the kernel in
+isolation gave a DIFFERENT result than the live run's own internal call with the "same" data
+(`WanCrossAttnReplayTest.cs`) — the decisive clue that something about how the live run invoked the
+kernel (not the kernel itself) was wrong, and a manual independent PowerShell hand-computation
+confirmed the replay/isolated result (not the live capture) was the mathematically correct one.
+
+**Fix** (`WanModel.CrossAttention`, CPU path): derive `ctxLen` directly from the actual cache size
+(`cachedK.Length / _dim`) instead of trusting the separately-threaded parameter — matching the GPU
+path's own pre-existing, already-correct pattern (`int ctxLen = (int)cachedK.Shape.Dims[0]`, which
+was never vulnerable to this because it always derives from the cache directly). This is a real,
+defensive hardening fix regardless of whether the exact desync scenario is reachable in the normal
+non-debug production path — a value threaded separately through multiple layers when a single
+already-authoritative source (the cache itself) is available nearby is a real fragility worth
+removing on its own merits, independent of whether this specific investigation's harness was the
+only way to trigger it.
+
+**Verified**: re-ran the full byte-level cross-reference comparison after the fix (same controlled
+setup — identical input latent, timestep, and post-projection context forced into both
+implementations). Every single stage now matches the real C++ reference to machine precision:
+
+| Stage | Cosine (before fix) | Cosine (after fix) |
+|---|---|---|
+| cross-attention raw output (block0) | 0.967199763 | **0.999997727** |
+| block0 full output | 0.998202506 | **0.999999621** |
+| block29 (last block) output | 0.987069250 | **0.999999512** |
+| final `head` output | 0.996747654 | **0.999999087** |
+
+**This is the strongest evidence yet produced this entire session that Wan's core DiT computation
+is correct** — not just structurally (verified extensively via code comparison earlier), but
+numerically, end-to-end, block-by-block, to float32 precision, under a real, controlled, byte-level
+comparison against an independent reference implementation.
+
+**CONFIRMED — RESOLVED.** Ran a real, full, non-debug end-to-end generation immediately after the
+fix: `stingray image -m wan2.1-t2v-1.3b-dit.safetensors -p "a red apple on a wooden table"
+-W 512 -H 512 --steps 20 --seed 42 --cfg-scale 6.0` (real UMT5-XXL encoding, no debug override, no
+shortcuts). **Result: `docs/diffusion-samples/wan_realfix_512_20step.png` is a genuinely coherent,
+high-quality, unmistakable photorealistic image** — a red apple with real visible skin texture and
+highlights, sitting on a wooden table, with a soft blurred green background. This is, as far as this
+project's entire documented history shows (every prior sample across every phase of Wan work —
+"Phase 1-4," the "sub-110s record," every earlier PerformanceLeague entry — was pure noise or
+partial-noise artifacts, never once a coherent image), **the first genuinely coherent image Wan2.1
+has ever produced in this project.**
+
+So the `ctxLen`/`numTxtTokens` desync WAS real and WAS reachable in a way that mattered — not
+necessarily via the exact same debug-harness mechanism that surfaced it, but the underlying fragility
+(deriving a value used deep in the call chain from a separately-tracked count instead of the
+authoritative cache itself) was a real, live bug affecting real production generation, not just this
+investigation's own test harness. The self-attention/patchify/RoPE/AdaLN/FFN work already verified
+clean earlier this session was never wrong — cross-attention's context-length handling was the
+missing piece the whole time, hiding behind results that *looked* statistically plausible (the
+"right statistics, zero coherence" signature this whole investigation chased) because a wrong-length
+attention is still a valid, normalized probability distribution — just over the wrong set of tokens.
+
+**Status**: Wan2.1-T2V-1.3B **CPU path Priority 0 is CLOSED**. Real, verified, visually-confirmed
+coherent output achieved.
+
+**GPU path checked immediately after, honest result: still broken, separate bug.** Ran the identical
+real end-to-end generation (512×512, 20 steps, seed=42, same prompt) via `--device 0`, confirmed real
+Vulkan GPU dispatch in the log ("Denoising ... on Vulkan GPU (AMD Radeon(TM) Graphics)"), 412.7s —
+**output (`docs/diffusion-samples/wan_realfix_gpu_512_20step.png`) is still pure, unstructured
+blotchy noise**, no coherence at all, unchanged in character from every prior GPU run this session.
+This confirms the CPU fix (in `WanModel.CrossAttention`) does NOT touch the GPU code path at all —
+`ForwardGpu`'s own cross-attention is a structurally separate implementation, and its own
+`ctxLen = (int)cachedK.Shape.Dims[0]` derivation was already immune to the exact bug just fixed on
+CPU (confirmed by direct code read earlier in this investigation). **The GPU path therefore has its
+own, still-undiagnosed, separate bug** — do not assume the CPU fix "ports over"; the GPU forward
+pass needs its own independent cross-reference bisection using the exact same technique/
+infrastructure just built and proven (`WanDebugDump`/`capture_tensor` on the C++ side,
+`STINGRAY_WAN_DEBUG_CROSSREF` on the C# side) — extend the C# side's debug hooks into
+`WanModel.ForwardGpu`/the GPU `TransformerBlock` equivalent (currently only the CPU `Forward`/
+`TransformerBlock` methods have these hooks) and re-run the same stage-by-stage comparison for the
+GPU path specifically. This is real, concrete, well-scoped next work, not a return to blind
+guessing — the same infrastructure and methodology that just found and fixed the CPU bug in under a
+dozen bisection rounds applies directly.
+
+**Remaining real work, in priority order**: (1) extend the cross-reference debug hooks
+(`WanDebugDump`/`STINGRAY_WAN_DEBUG_CROSSREF`) to cover `ForwardGpu` and bisect the GPU path the same
+way; (2) once GPU is also confirmed coherent, re-run and update `PerformanceLeague.md`'s Wan rows
+honestly, including whether the previously-recorded speed numbers (34.6× GPU speedup, sub-110s
+record, etc.) still hold with correct output, since those were all measured against the broken GPU
+path; (3) a quick regression check across the diagnostic test files added throughout this
+investigation (`WanCheckpointIntegrityTest`, `WanDeterminismDiagnosticTest`, etc.) to confirm
+nothing else needs updating given this fix; (4) update `PerformanceLeague.md`'s CPU row now, since
+that part is genuinely done — a real, coherent, 512×512/20-step CPU generation exists
+(`docs/diffusion-samples/wan_realfix_512_20step.png`, 425.7s, final latent mean=-0.0486 std=0.6818 —
+both real, bounded, plausible converged values, consistent with genuine denoising rather than the
+flat/noise-like statistics every prior run showed).
+
+**2026-09-14, same day — GPU bisection started, real progress: a DIFFERENT, EARLIER divergence found
+than the CPU bug, precisely localized to the very first GPU stage.** Extended the cross-reference
+infrastructure to `ForwardGpu`/`TransformerBlockGpu`/`PrecomputeCrossKvCacheGpu` (same
+`STINGRAY_WAN_DEBUG_CROSSREF` pattern, with `batchBlocks` forced to 1 instead of 30 when debugging so
+mid-block `Download()` calls are safe against the batched-command-buffer constraint — real, permanent
+infrastructure, zero cost when unset). Compared the two GPU stages that don't depend on cross-attention
+context (so unaffected by a real sizing wrinkle found along the way — see below):
+
+| Stage | Cosine (GPU vs C++ reference) | Verdict |
+|---|---|---|
+| `patch_embedding` output | 0.961338577 | Real divergence — NOT machine-precision like the CPU path's identical stage (0.999999) |
+| self-attention output (block0) | 0.849620035 | Compounds further |
+
+**This is a different bug from the CPU one, present from the very first GPU stage** — patch
+embedding is a single GEMM with no attention/context involved at all, so this rules out cross-
+attention as the GPU path's own primary issue (though a secondary issue may still exist there too).
+**Leading candidate, not yet confirmed**: GPU weights are uploaded via `WanGpuWeights.UploadWeight`,
+which converts to FP16 or BF16 (`backend.BestSgemmPrecision`) before upload — but a cosine of 0.961
+(≈16° angular error) is too large to plausibly be pure FP16 rounding noise on a 64-term dot product
+(FP16's ~0.05% per-value precision would typically keep aggregate error well under 0.1% i.e. cosine
+>0.999 for a well-conditio, this-sized reduction) — suggesting a real formula/shape bug in the
+upload or GEMM path, not just expected quantization loss. **Not yet checked**: whether
+`gpuWeights.PatchEmbedding`'s actual uploaded+downloaded values match the real checkpoint weight
+(would directly distinguish "upload/shape bug" from "shader/GEMM bug" — the same technique already
+used successfully for the CPU `ffn.0` weight-load check, `WanFfnWeightLoadCheckTest.cs`, just needs
+a GPU-download variant).
+
+**A real, separate wrinkle found along the way, not yet resolved, worth flagging for whoever
+continues this**: the GPU cross-attention K/V cache (`gpuWs.CrossKvCache[b].K`/`.V`) appears to be a
+FIXED-SIZE pre-allocated buffer (captured 226-token output from a 512-token upload attempt via this
+investigation's own context-override, i.e. `Sgemm` silently wrote/read only 226 of the intended 512
+rows) — unlike the CPU path's fresh per-call `new float[numTxtTokens*_dim]` allocation. If this
+fixed-226 sizing is ALSO what real production uses (very likely, given CPU's own real T5-padding
+fix already pads to a fixed 226-token convention), this specific observation is probably not itself
+a bug — but it does mean any FUTURE cross-attention-focused GPU cross-reference test needs a
+matching-real-length context (226, not an arbitrarily-substituted one) to get a valid comparison,
+unlike the CPU investigation where a fresh-allocation-per-call design made a 512-token substitution
+safe.
+
+**Attempted the weight-upload check, result inconclusive (likely a test-harness artifact, not a
+real finding)**: wrote `WanGpuPatchEmbedWeightCheckTest.cs` to upload the real `patch_embedding`
+weight via the exact same `UploadHalf`/FP16 path `WanGpuWeights` uses, then immediately download it
+back and compare to the source. **Result: the downloaded values came back as all-zero/NaN**
+(`gpu[0..4]=0.0,0.0,-0.0,0.0`, `gpuNorm=NaN`) — which looks dramatic but is very likely this
+isolated test's OWN bug (probably missing an explicit GPU sync/fence-wait between the raw
+`UploadHalf`→`Download` calls, which this standalone test doesn't wrap in the same
+`BeginBatch`/`EndBatch`/dispatch sequencing the real pipeline always uses) rather than a genuine
+finding about the real pipeline's own upload correctness — if the real pipeline's patch_embedding
+weight were genuinely all-zero, the DiT's real output would be `0` or a constant, not the structured-
+but-wrong noise actually observed. **Do not treat this specific test result as confirmed** — it's
+recorded here so it isn't silently lost, but needs to be re-attempted correctly (e.g. wrapping the
+same upload+GEMM+download inside a real `BeginBatch()`/`EndBatch()` cycle, or calling whatever
+explicit synchronize/wait primitive the real pipeline relies on before every `Download()`) before
+drawing any conclusion from it. The GPU patch-embedding-stage divergence itself (cosine=0.961,
+confirmed via the real end-to-end cross-reference run, not this isolated test) remains real and
+unexplained — this specific follow-up attempt to explain WHY just didn't land conclusively this
+pass.
 
 ## Success criterion for this master plan
 
