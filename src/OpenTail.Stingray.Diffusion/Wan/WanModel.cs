@@ -347,6 +347,8 @@ public sealed class WanModel : IDisposable
         visionOps.AdaLNModulate(gpuWs.Normed1, gpuWs.X, headModGpu, numTokens, _dim, shiftOffset: 0, scaleOffset: _dim, isRmsNorm: false, eps: 1e-6f);
 
         imageOps.Sgemm(gpuWs.OutPacked, gpuWs.Normed1, gpuWeights.HeadWeight, numTokens, _dim, InChannels);
+        if (gpuWeights.HeadBias is not null)
+            imageOps.AddRowBroadcastInPlace(gpuWs.OutPacked, gpuWeights.HeadBias, numTokens, InChannels);
 
         var outPacked = new float[numTokens * InChannels];
         imageOps.Download(gpuWs.OutPacked, outPacked);
