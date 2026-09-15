@@ -107,4 +107,70 @@ public class IqQuantTests
                 $"Element {i} = {output[i]} exceeded magnitude bound {bound} for {dtype} -- likely an index/shift decode error");
         }
     }
+
+    /// <summary>
+    /// docs/084-vulkan-large-tensor-sharding-plan.md: IQ3_S/IQ4_XS's dequant loop was refactored
+    /// to dispatch per-block work via <c>Parallel.For</c> once a tensor has enough blocks
+    /// (currently ≥64), instead of always running one thread sequentially — a real-world 27B
+    /// checkpoint's FFN tensors have tens of millions of elements (hundreds of thousands of
+    /// blocks) of exactly these two dtypes, and the sequential scalar decode was slow enough to
+    /// make uploading many layers to the GPU impractical.
+    ///
+    /// Each block's decode depends only on its own input bytes (no cross-block state, no
+    /// reduction), so replicating one block's bytes N times and dequantizing all N together must
+    /// produce the SAME 256 values for every replica, bit-for-bit, regardless of whether that
+    /// replica landed in the sequential path (small N) or was picked up by some worker thread in
+    /// the parallel path (large N). This directly catches the two failure modes a broken
+    /// block-index computation would produce: a thread reading/writing the wrong block's slice
+    /// (would corrupt some replicas but not others) or a race on shared state (would produce
+    /// nondeterministic output across repeated runs).
+    /// </summary>
+    [Theory]
+    [InlineData(DType.IQ3_S, 110)]
+    [InlineData(DType.IQ4_XS, 136)]
+    public void Dequantize_IQFormats_ParallelBlocksMatchSequentialBlock(DType dtype, int bytesPerBlock)
+    {
+        const int elementsPerBlock = 256;
+
+        // One reference block, cosine-seeded (same recipe as the magnitude-bound test above) so
+        // every index/shift/mask path gets non-degenerate values.
+        byte[] block = new byte[bytesPerBlock];
+        block[0] = 0x00;
+        block[1] = 0x3C; // d = 1.0f
+        for (int i = 2; i < bytesPerBlock; i++)
+        {
+            double cosineValue = 0.1 + 2.0 * System.Math.Cos(i + 0.0);
+            block[i] = unchecked((byte)(int)System.Math.Round((cosineValue + 2.1) / 4.2 * 255.0));
+        }
+
+        // Below Dequantize's parallel threshold (64 blocks) -- exercises the sequential path.
+        const int sequentialBlocks = 4;
+        var sequentialInput = new byte[sequentialBlocks * bytesPerBlock];
+        for (int b = 0; b < sequentialBlocks; b++)
+            block.CopyTo(sequentialInput, b * bytesPerBlock);
+        var sequentialOutput = new float[sequentialBlocks * elementsPerBlock];
+        Dequantize.ToFloat32(sequentialInput, sequentialOutput, dtype, sequentialOutput.Length);
+
+        // Well above the parallel threshold -- exercises Parallel.For's dispatch.
+        const int parallelBlocks = 400;
+        var parallelInput = new byte[parallelBlocks * bytesPerBlock];
+        for (int b = 0; b < parallelBlocks; b++)
+            block.CopyTo(parallelInput, b * bytesPerBlock);
+        var parallelOutput = new float[parallelBlocks * elementsPerBlock];
+        Dequantize.ToFloat32(parallelInput, parallelOutput, dtype, parallelOutput.Length);
+
+        // Every replica in both runs decoded the identical input block, so every replica's
+        // 256-float output must be bit-identical to every other replica's, in both runs.
+        var reference = new ReadOnlySpan<float>(sequentialOutput, 0, elementsPerBlock);
+        for (int b = 0; b < sequentialBlocks; b++)
+        {
+            var replica = new ReadOnlySpan<float>(sequentialOutput, b * elementsPerBlock, elementsPerBlock);
+            Assert.True(reference.SequenceEqual(replica), $"{dtype} sequential-path replica {b} diverged");
+        }
+        for (int b = 0; b < parallelBlocks; b++)
+        {
+            var replica = new ReadOnlySpan<float>(parallelOutput, b * elementsPerBlock, elementsPerBlock);
+            Assert.True(reference.SequenceEqual(replica), $"{dtype} parallel-path replica {b} diverged");
+        }
+    }
 }

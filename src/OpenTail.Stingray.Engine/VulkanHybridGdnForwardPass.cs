@@ -1,4 +1,3 @@
-
 namespace OpenTail.Stingray.Engine;
 
 /// <summary>
@@ -2834,12 +2833,36 @@ public sealed unsafe class VulkanHybridGdnForwardPass : IForwardPass
             // size, but a real, measured win — see docs/084-vulkan-large-tensor-sharding-plan.md
             // §"memory accounting" for the per-dtype breakdown that motivated this). A native
             // raw Vulkan kernel per dtype would be the further win but isn't implemented here.
+            bool profile = Environment.GetEnvironmentVariable("STINGRAY_PROFILE_VULKAN_UPLOADS") == "1";
+            long t0 = profile ? Stopwatch.GetTimestamp() : 0;
+
             int count = (int)info.ElementCount;
             var f32 = new float[count];
             Dequantize.ToFloat32(data, f32, info.DType, count);
+
+            long t1 = profile ? Stopwatch.GetTimestamp() : 0;
+
+            // TensorPrimitives.ConvertToHalf is (Half)source[i] element-for-element, but
+            // vectorized (Vector128/256/512 float->half narrowing) instead of the scalar cast
+            // loop this replaced — a measured, low-risk win (docs/084-...: the scalar cast loop
+            // was one of two suspected bottlenecks when uploading many large IQ-quant FFN
+            // tensors; this is the safe half of that fix — see that doc for the other half
+            // (block-parallel IQ4_XS/IQ3_S dequant) and why they were done in this order.
             var f16 = new Half[count];
-            for (int i = 0; i < count; i++) f16[i] = (Half)f32[i];
+            System.Numerics.Tensors.TensorPrimitives.ConvertToHalf(f32, f16);
+
+            long t2 = profile ? Stopwatch.GetTimestamp() : 0;
             result = _gpu.UploadHalf(f16, TensorShape.D1(count));
+            long t3 = profile ? Stopwatch.GetTimestamp() : 0;
+
+            if (profile)
+            {
+                static double Ms(long a, long b) => (b - a) * 1000.0 / Stopwatch.Frequency;
+                Console.Error.WriteLine(
+                    $"[VulkanUpload] {name} [{info.DType}, {count:N0} elems]: " +
+                    $"dequant={Ms(t0, t1):F1}ms f32->f16={Ms(t1, t2):F1}ms upload={Ms(t2, t3):F1}ms");
+            }
+
             _gpuWeightDTypes[result.Handle] = DType.Float16;
             _uploadedVramBytes += (long)count * sizeof(ushort);
         }

@@ -174,6 +174,88 @@ throughout, 0 pages/sec (no swapping) at the default fraction, both before and a
   numbers) has still not been done for the Vulkan qwen35 path as a whole — everything measured in
   this session was memory footprint and pass/fail correctness, not tokens/sec.
 
+## Follow-up 2: fixed the slow F32→F16 conversion (2026-09-15, same day, after external review)
+
+Got a second opinion (external LLM, given the codebase context above) on the "still open" slow
+`STINGRAY_VULKAN_UMA_FRACTION=0.7` run. Its diagnosis, confirmed correct by implementing and
+measuring: two separate scalar bottlenecks, not one — (1) the naive `for (int i...) f16[i] =
+(Half)f32[i]` cast loop, and (2) the underlying `Dequantize.DequantIq4Xs`/`DequantIq3S` scalar
+per-block decoders themselves (IQ4_XS/IQ3_S are the two highest-volume dtypes in this checkpoint's
+FFN tensors, 89M elements each, up to 64 layers × 3 tensors), with the dequant step expected to
+dominate since it does bit-unpacking + codebook lookups per element versus the cast's single
+narrow-and-store. Both fixed, cheapest/lowest-risk first:
+
+1. **F32→Half cast**: replaced the scalar loop with `System.Numerics.Tensors.TensorPrimitives
+   .ConvertToHalf(f32, f16)` (`VulkanHybridGdnForwardPass.cs`'s `UploadWeight`) — the BCL's own
+   vectorized (Vector128/256/512) float→half narrowing, already correct by construction (it's the
+   framework's own `(Half)x` semantics, just vectorized) — no new test needed beyond the existing
+   `MatVecF16MatchesCpu`, which exercises real Half values end-to-end.
+2. **IQ4_XS/IQ3_S dequant**: refactored `Dequantize.DequantIq4Xs`/`DequantIq3S`
+   (`src/OpenTail.Stingray.Cpu/Dequantize.cs`) from "loop over blocks on one thread" to "extract
+   each block's already-self-contained body into `DecodeIq4XsBlock`/`DecodeIq3SBlock`, dispatch
+   over blocks with `Parallel.For` once a tensor has ≥64 blocks" (`MinBlocksForParallelDequant`),
+   using `SimdKernels.CpuThreads` for the degree of parallelism to stay consistent with the
+   project's existing CPU-thread-count knob rather than introducing a second one. The arithmetic
+   is byte-for-byte unchanged — each block already only read its own input bytes and wrote its own
+   output slice (no cross-block state, no reduction), so this was a pure dispatch change, not a
+   numerical one. Followed the reviewer's explicit recommendation to do this rather than
+   hand-writing AVX2/gather-based vectorized IQ dequant kernels, given the codebook/bit-packed
+   nature of these formats makes that meaningfully higher-risk for a correctness-critical path.
+3. **New tests** (all ran and passed):
+   - `Dequantize_IQFormats_ParallelBlocksMatchSequentialBlock` (`tests/OpenTail.Stingray.Tests.Core
+     /IqQuantTests.cs`, `IQ3_S`/`IQ4_XS`) — replicates one cosine-seeded reference block many times
+     (4× for the sequential path, 400× for the parallel path) and asserts every replica's 256-float
+     output is bit-identical to the reference — directly catches a wrong-block-index or data-race
+     bug, since each block's output depends only on its own bytes. **11/11 tests passed** in
+     `OpenTail.Stingray.Tests.Core.IqQuantTests` (9 pre-existing + 2 new).
+   - Re-ran `MatVecF16MatchesCpu` and `EmbedLookupQ3K*` — still clean (no regression from the
+     `TensorPrimitives.ConvertToHalf` swap).
+
+**Measured result**: re-ran the same `STINGRAY_VULKAN_UMA_FRACTION=0.7` scenario that previously
+hung past a 150-second timeout while stuck inside `Dense FFN-on-GPU` upload. This time it
+**finished quickly** (well under the 150s budget) and got through 59/64 FFN layers before hitting
+a real, clean, **catchable** exception:
+```
+[VulkanHybridGdnForwardPass] FFN-on-GPU upload aborted at layer 59: [-1] ErrorOutOfHostMemory
+[VulkanHybridGdnForwardPass] Dense FFN-on-GPU: uploaded 59/64 layers (4975 MiB); 5 stay on CPU.
+Unhandled exception. Vortice.Vulkan.VkException: [-1] ErrorOutOfHostMemory
+  ... at VulkanHybridGdnForwardPass.LoadMtpHead(VulkanBackend gpu) ...
+```
+Confirmed via `Get-Counter '\Memory\Available MBytes'`/`'\Memory\Pages/sec'` that this was a real,
+clean allocation failure, not another swap episode: pages/sec spiked briefly (~9,340) right at the
+crash (OS reclaiming the failed process) then settled to double digits within ~6 seconds; available
+RAM recovered to 54 GB. **This is a much better failure mode than before** — a catchable exception
+with a clear message beats an unresponsive, swapping machine — but it does confirm a **second real
+bug**, separate from everything above: `TryUploadDenseFfnLayers`'s budget check
+(`VulkanHybridGdnForwardPass.cs`) only accounts for `_uploadedVramBytes` at the time it runs, but
+`LoadMtpHead` uploads more GPU-resident weights (the MTP/NEXTN speculative-decode head) **after**
+the dense-FFN budget loop finishes, with no headroom reserved for it. At `0.7`, the FFN loop's
+budget check let it fill nearly the entire remaining space (59 of 64 layers), leaving nothing for
+the MTP head that was always going to load next.
+
+**Left the system at**: default settings (`STINGRAY_VULKAN_UMA_FRACTION` unset/0.5) after this —
+that combination is fully verified safe and working end-to-end from the first follow-up. `0.7` is
+close to correct but needs the MTP-head budgeting bug fixed first, or it can OOM (cleanly, not
+silently) depending on how many FFN layers happen to fit before the head's turn.
+
+**Now still open (updated list):**
+- Fix `TryUploadDenseFfnLayers`'s budget to reserve headroom for whatever `LoadMtpHead` (and any
+  other post-loop mandatory GPU upload) needs, computed or estimated *before* deciding how many
+  FFN layers to admit — not just implicitly hoping there's slack left. Alternative: compute the
+  dense-FFN budget as `available - core - mtpHeadEstimate - margin` instead of `available - core -
+  margin`.
+- The pre-flight memory-availability check for the *mandatory* core GPU upload (embedding/output/
+  per-layer attention+GDN) still doesn't exist (see Follow-up 1) — unrelated to the bug just found,
+  still real, still open.
+- Once the MTP-head budgeting bug is fixed, re-attempt `STINGRAY_VULKAN_UMA_FRACTION=0.7` (or
+  similar) end-to-end and confirm it now completes cleanly with most/all FFN layers on GPU, then do
+  the still-outstanding tokens/sec performance pass (CLAUDE.md rule 7) comparing default (1 FFN
+  layer on GPU) vs a fixed higher fraction (many/all FFN layers on GPU).
+- The IQ dequant parallelization only covers `IQ4_XS`/`IQ3_S` (the two highest-volume dtypes in
+  this checkpoint). `IQ3_XXS`, `IQ2_S`, `IQ2_XS`, `IQ2_XXS`, `Q3_K`, `Q2_K`, `IQ4_NL` still dequant
+  sequentially — lower volume here, but worth the same treatment if a future checkpoint leans on
+  them more heavily.
+
 ---
 
 ## Original plan below (status: superseded for this checkpoint, kept for reference)

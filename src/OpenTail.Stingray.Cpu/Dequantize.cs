@@ -894,55 +894,92 @@ public static class Dequantize
     }
 
     /// <summary>
+    /// Below this many blocks, a plain sequential loop runs the decoder — <c>Parallel.For</c>'s
+    /// scheduling overhead isn't worth it for small tensors (norms, biases, small per-layer
+    /// weights), matching <see cref="SimdKernels"/>'s own small-input threshold convention.
+    /// </summary>
+    private const int MinBlocksForParallelDequant = 64;
+
+    /// <summary>
     /// IQ3_S scalar dequantization decoder (256 elements / 110 bytes per block), matching
     /// ggml's dequantize_row_iq3_s: grid indices carry a 9th bit from the qh side-channel byte
     /// (one per 32-element sub-group pair), each 4-byte grid lookup negated per-element by an
     /// explicit sign byte (not the packed 7-bit field the XXS variants use), and per-32-element
     /// scales taken directly from a 4-bit nibble (linear, not the 0.5-offset quarter-scale the
     /// XXS variants use). See DequantIq2Xxs's remarks.
+    ///
+    /// Each block reads only its own <c>bytesPerBlock</c> input slice and writes only its own
+    /// 256-element output slice — no cross-block state — so <see cref="DecodeIq3SBlock"/> below
+    /// is dispatched over blocks via <c>Parallel.For</c> for large tensors (docs/084-vulkan-
+    /// large-tensor-sharding-plan.md: this and IQ4_XS are the two highest-volume dtypes lacking
+    /// a raw Vulkan matvec kernel, so their CPU dequant is the dominant cost when uploading many
+    /// large per-layer weights through the F32→F16 dequant-and-upload fallback path). The
+    /// arithmetic is byte-for-byte identical to the previous sequential version; only the
+    /// dispatch changed.
     /// </summary>
-    private static void DequantIq3S(ReadOnlySpan<byte> src, Span<float> dst, long elementCount)
+    private static unsafe void DequantIq3S(ReadOnlySpan<byte> src, Span<float> dst, long elementCount)
     {
         const int kK = 256;
-        const int bytesPerBlock = 110;
         int numBlocks = (int)(elementCount / kK);
+
+        fixed (byte* srcBase = src)
+        fixed (float* dstBase = dst)
+        {
+            nint srcPtr = (nint)srcBase;
+            nint dstPtr = (nint)dstBase;
+
+            if (numBlocks < MinBlocksForParallelDequant)
+            {
+                for (int b = 0; b < numBlocks; b++)
+                    DecodeIq3SBlock(srcPtr, dstPtr, b);
+                return;
+            }
+
+            var options = new ParallelOptions { MaxDegreeOfParallelism = SimdKernels.CpuThreads };
+            Parallel.For(0, numBlocks, options, b => DecodeIq3SBlock(srcPtr, dstPtr, b));
+        }
+    }
+
+    /// <summary>Decodes one 256-element IQ3_S block. See <see cref="DequantIq3S"/> remarks.</summary>
+    private static unsafe void DecodeIq3SBlock(nint srcPtr, nint dstPtr, int b)
+    {
+        const int bytesPerBlock = 110;
         var grid = IqCodebooks.Iq3SGrid;
         var kmask = IqCodebooks.KMaskIq2Xs;
 
-        for (int b = 0; b < numBlocks; b++)
-        {
-            var block = src.Slice(b * bytesPerBlock, bytesPerBlock);
-            float d = HalfToFloat(block[0], block[1]);
-            var qs = block.Slice(2, 64);
-            var qh = block.Slice(2 + 64, 8);
-            var signs = block.Slice(2 + 64 + 8, 32);
-            var scales = block.Slice(2 + 64 + 8 + 32, 4);
-            int y = b * kK;
-            int qsOff = 0, signsOff = 0;
+        var block = new ReadOnlySpan<byte>((byte*)srcPtr + (long)b * bytesPerBlock, bytesPerBlock);
+        float* dstBlock = (float*)dstPtr + (long)b * 256;
 
-            for (int ib32 = 0; ib32 < 8; ib32 += 2)
+        float d = HalfToFloat(block[0], block[1]);
+        var qs = block.Slice(2, 64);
+        var qh = block.Slice(2 + 64, 8);
+        var signs = block.Slice(2 + 64 + 8, 32);
+        var scales = block.Slice(2 + 64 + 8 + 32, 4);
+        int y = 0;
+        int qsOff = 0, signsOff = 0;
+
+        for (int ib32 = 0; ib32 < 8; ib32 += 2)
+        {
+            float db1 = d * (1 + 2 * (scales[ib32 / 2] & 0xF));
+            float db2 = d * (1 + 2 * (scales[ib32 / 2] >> 4));
+            for (int half = 0; half < 2; half++)
             {
-                float db1 = d * (1 + 2 * (scales[ib32 / 2] & 0xF));
-                float db2 = d * (1 + 2 * (scales[ib32 / 2] >> 4));
-                for (int half = 0; half < 2; half++)
+                float db = half == 0 ? db1 : db2;
+                byte qhByte = qh[ib32 + half];
+                for (int l = 0; l < 4; l++)
                 {
-                    float db = half == 0 ? db1 : db2;
-                    byte qhByte = qh[ib32 + half];
-                    for (int l = 0; l < 4; l++)
+                    uint grid1 = grid[qs[qsOff + 2 * l] | ((uint)(qhByte << (8 - 2 * l)) & 256)];
+                    uint grid2 = grid[qs[qsOff + 2 * l + 1] | ((uint)(qhByte << (7 - 2 * l)) & 256)];
+                    byte s = signs[signsOff + l];
+                    for (int j = 0; j < 4; j++)
                     {
-                        uint grid1 = grid[qs[qsOff + 2 * l] | ((uint)(qhByte << (8 - 2 * l)) & 256)];
-                        uint grid2 = grid[qs[qsOff + 2 * l + 1] | ((uint)(qhByte << (7 - 2 * l)) & 256)];
-                        byte s = signs[signsOff + l];
-                        for (int j = 0; j < 4; j++)
-                        {
-                            dst[y + j] = db * (byte)(grid1 >> (8 * j)) * ((s & kmask[j]) != 0 ? -1f : 1f);
-                            dst[y + j + 4] = db * (byte)(grid2 >> (8 * j)) * ((s & kmask[j + 4]) != 0 ? -1f : 1f);
-                        }
-                        y += 8;
+                        dstBlock[y + j] = db * (byte)(grid1 >> (8 * j)) * ((s & kmask[j]) != 0 ? -1f : 1f);
+                        dstBlock[y + j + 4] = db * (byte)(grid2 >> (8 * j)) * ((s & kmask[j + 4]) != 0 ? -1f : 1f);
                     }
-                    qsOff += 8;
-                    signsOff += 4;
+                    y += 8;
                 }
+                qsOff += 8;
+                signsOff += 4;
             }
         }
     }
@@ -955,36 +992,58 @@ public static class Dequantize
     /// 32-element sub-groups each with its own 6-bit scale (4 bits from scales_l, 2 from
     /// scales_h). The previous version fabricated an unrelated 256-entry ±1 "grid" for this
     /// format; see docs/bugstofix.md's IqCodebooks.cs entry.
+    ///
+    /// Block-parallel for the same reason as <see cref="DequantIq3S"/> — see its remarks.
     /// </summary>
-    private static void DequantIq4Xs(ReadOnlySpan<byte> src, Span<float> dst, long elementCount)
+    private static unsafe void DequantIq4Xs(ReadOnlySpan<byte> src, Span<float> dst, long elementCount)
     {
         const int kK = 256;
-        const int bytesPerBlock = 136;
         int numBlocks = (int)(elementCount / kK);
+
+        fixed (byte* srcBase = src)
+        fixed (float* dstBase = dst)
+        {
+            nint srcPtr = (nint)srcBase;
+            nint dstPtr = (nint)dstBase;
+
+            if (numBlocks < MinBlocksForParallelDequant)
+            {
+                for (int b = 0; b < numBlocks; b++)
+                    DecodeIq4XsBlock(srcPtr, dstPtr, b);
+                return;
+            }
+
+            var options = new ParallelOptions { MaxDegreeOfParallelism = SimdKernels.CpuThreads };
+            Parallel.For(0, numBlocks, options, b => DecodeIq4XsBlock(srcPtr, dstPtr, b));
+        }
+    }
+
+    /// <summary>Decodes one 256-element IQ4_XS block. See <see cref="DequantIq4Xs"/> remarks.</summary>
+    private static unsafe void DecodeIq4XsBlock(nint srcPtr, nint dstPtr, int b)
+    {
+        const int bytesPerBlock = 136;
         var cb = IqCodebooks.Iq4NlCodebook;
 
-        for (int b = 0; b < numBlocks; b++)
-        {
-            var block = src.Slice(b * bytesPerBlock, bytesPerBlock);
-            float d = HalfToFloat(block[0], block[1]);
-            int scalesH = block[2] | (block[3] << 8);
-            var scalesL = block.Slice(4, 4);
-            var qs = block.Slice(8, 128);
-            int y = b * kK;
-            int qsOff = 0;
+        var block = new ReadOnlySpan<byte>((byte*)srcPtr + (long)b * bytesPerBlock, bytesPerBlock);
+        float* dstBlock = (float*)dstPtr + (long)b * 256;
 
-            for (int ib = 0; ib < 8; ib++)
+        float d = HalfToFloat(block[0], block[1]);
+        int scalesH = block[2] | (block[3] << 8);
+        var scalesL = block.Slice(4, 4);
+        var qs = block.Slice(8, 128);
+        int qsOff = 0;
+
+        for (int ib = 0; ib < 8; ib++)
+        {
+            int ls = ((scalesL[ib / 2] >> (4 * (ib % 2))) & 0xF) | (((scalesH >> (2 * ib)) & 3) << 4);
+            float dl = d * (ls - 32);
+            int y = ib * 32;
+            for (int j = 0; j < 16; j++)
             {
-                int ls = ((scalesL[ib / 2] >> (4 * (ib % 2))) & 0xF) | (((scalesH >> (2 * ib)) & 3) << 4);
-                float dl = d * (ls - 32);
-                for (int j = 0; j < 16; j++)
-                {
-                    dst[y + j] = dl * cb[qs[qsOff + j] & 0xF];
-                    dst[y + j + 16] = dl * cb[qs[qsOff + j] >> 4];
-                }
-                y += 32;
-                qsOff += 16;
+                dstBlock[y + j] = dl * cb[qs[qsOff + j] & 0xF];
+                dstBlock[y + j + 16] = dl * cb[qs[qsOff + j] >> 4];
             }
+            qsOff += 16;
         }
     }
 
