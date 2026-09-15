@@ -14,6 +14,7 @@ public sealed class WanGpuWeights : IDisposable
     private bool _disposed;
 
     public CoreTensor PatchEmbedding { get; }
+    public CoreTensor? PatchEmbeddingBias { get; }
     public CoreTensor TimeEmbed0 { get; }
     public CoreTensor TimeEmbed2 { get; }
     public CoreTensor TimeProj1 { get; }
@@ -50,20 +51,28 @@ public sealed class WanGpuWeights : IDisposable
         public CoreTensor Norm3Weight { get; }
         public CoreTensor Norm3Bias { get; }
         public CoreTensor SelfAttnQkv { get; }
+        public CoreTensor? SelfAttnQkvBias { get; }
         public CoreTensor SelfAttnQ { get; }
         public CoreTensor SelfAttnK { get; }
         public CoreTensor SelfAttnV { get; }
         public CoreTensor SelfAttnO { get; }
+        public CoreTensor? SelfAttnOBias { get; }
         public CoreTensor? SelfAttnNormQ { get; }
         public CoreTensor? SelfAttnNormK { get; }
         public CoreTensor CrossAttnQ { get; }
+        public CoreTensor? CrossAttnQBias { get; }
         public CoreTensor CrossAttnK { get; }
+        public CoreTensor? CrossAttnKBias { get; }
         public CoreTensor CrossAttnV { get; }
+        public CoreTensor? CrossAttnVBias { get; }
         public CoreTensor CrossAttnO { get; }
+        public CoreTensor? CrossAttnOBias { get; }
         public CoreTensor? CrossAttnNormQ { get; }
         public CoreTensor? CrossAttnNormK { get; }
         public CoreTensor Ffn0 { get; }
+        public CoreTensor? Ffn0Bias { get; }
         public CoreTensor Ffn2 { get; }
+        public CoreTensor? Ffn2Bias { get; }
 
         public BlockWeights(IComputeBackend backend, IWeightLoader weights, string prefix, int dim, int ffnDim)
         {
@@ -83,10 +92,29 @@ public sealed class WanGpuWeights : IDisposable
             vW.CopyTo(qkvW.AsSpan(dim * dim * 2, dim * dim));
             SelfAttnQkv = UploadWeight(backend, qkvW, TensorShape.D2(dim * 3, dim));
 
+            string qBKey = $"{prefix}.self_attn.q.bias";
+            string kBKey = $"{prefix}.self_attn.k.bias";
+            string vBKey = $"{prefix}.self_attn.v.bias";
+            if (weights.Contains(qBKey) && weights.Contains(kBKey) && weights.Contains(vBKey))
+            {
+                var qB = weights.ReadF32(qBKey);
+                var kB = weights.ReadF32(kBKey);
+                var vB = weights.ReadF32(vBKey);
+                var qkvB = new float[dim * 3];
+                qB.CopyTo(qkvB.AsSpan(0, dim));
+                kB.CopyTo(qkvB.AsSpan(dim, dim));
+                vB.CopyTo(qkvB.AsSpan(dim * 2, dim));
+                SelfAttnQkvBias = backend.Upload(qkvB, TensorShape.D1(dim * 3), exact: true);
+            }
+
             SelfAttnQ = UploadWeight(backend, qW, TensorShape.D2(dim, dim));
             SelfAttnK = UploadWeight(backend, kW, TensorShape.D2(dim, dim));
             SelfAttnV = UploadWeight(backend, vW, TensorShape.D2(dim, dim));
             SelfAttnO = UploadWeight(backend, weights.ReadF32($"{prefix}.self_attn.o.weight"), TensorShape.D2(dim, dim));
+
+            string selfOBKey = $"{prefix}.self_attn.o.bias";
+            if (weights.Contains(selfOBKey))
+                SelfAttnOBias = backend.Upload(weights.ReadF32(selfOBKey), TensorShape.D1(dim), exact: true);
 
             string normQKey = $"{prefix}.self_attn.norm_q.weight";
             if (weights.Contains(normQKey))
@@ -97,9 +125,24 @@ public sealed class WanGpuWeights : IDisposable
                 SelfAttnNormK = backend.Upload(weights.ReadF32(normKKey), TensorShape.D1(dim), exact: true);
 
             CrossAttnQ = UploadWeight(backend, weights.ReadF32($"{prefix}.cross_attn.q.weight"), TensorShape.D2(dim, dim));
+            string crossQBKey = $"{prefix}.cross_attn.q.bias";
+            if (weights.Contains(crossQBKey))
+                CrossAttnQBias = backend.Upload(weights.ReadF32(crossQBKey), TensorShape.D1(dim), exact: true);
+
             CrossAttnK = UploadWeight(backend, weights.ReadF32($"{prefix}.cross_attn.k.weight"), TensorShape.D2(dim, dim));
+            string crossKBKey = $"{prefix}.cross_attn.k.bias";
+            if (weights.Contains(crossKBKey))
+                CrossAttnKBias = backend.Upload(weights.ReadF32(crossKBKey), TensorShape.D1(dim), exact: true);
+
             CrossAttnV = UploadWeight(backend, weights.ReadF32($"{prefix}.cross_attn.v.weight"), TensorShape.D2(dim, dim));
+            string crossVBKey = $"{prefix}.cross_attn.v.bias";
+            if (weights.Contains(crossVBKey))
+                CrossAttnVBias = backend.Upload(weights.ReadF32(crossVBKey), TensorShape.D1(dim), exact: true);
+
             CrossAttnO = UploadWeight(backend, weights.ReadF32($"{prefix}.cross_attn.o.weight"), TensorShape.D2(dim, dim));
+            string crossOBKey = $"{prefix}.cross_attn.o.bias";
+            if (weights.Contains(crossOBKey))
+                CrossAttnOBias = backend.Upload(weights.ReadF32(crossOBKey), TensorShape.D1(dim), exact: true);
 
             string crossNormQKey = $"{prefix}.cross_attn.norm_q.weight";
             if (weights.Contains(crossNormQKey))
@@ -110,7 +153,14 @@ public sealed class WanGpuWeights : IDisposable
                 CrossAttnNormK = backend.Upload(weights.ReadF32(crossNormKKey), TensorShape.D1(dim), exact: true);
 
             Ffn0 = UploadWeight(backend, weights.ReadF32($"{prefix}.ffn.0.weight"), TensorShape.D2(ffnDim, dim));
+            string ffn0BKey = $"{prefix}.ffn.0.bias";
+            if (weights.Contains(ffn0BKey))
+                Ffn0Bias = backend.Upload(weights.ReadF32(ffn0BKey), TensorShape.D1(ffnDim), exact: true);
+
             Ffn2 = UploadWeight(backend, weights.ReadF32($"{prefix}.ffn.2.weight"), TensorShape.D2(dim, ffnDim));
+            string ffn2BKey = $"{prefix}.ffn.2.bias";
+            if (weights.Contains(ffn2BKey))
+                Ffn2Bias = backend.Upload(weights.ReadF32(ffn2BKey), TensorShape.D1(dim), exact: true);
         }
 
         public void Dispose()
@@ -119,20 +169,28 @@ public sealed class WanGpuWeights : IDisposable
             _backend.Free(Norm3Weight);
             _backend.Free(Norm3Bias);
             _backend.Free(SelfAttnQkv);
+            if (SelfAttnQkvBias is not null) _backend.Free(SelfAttnQkvBias);
             _backend.Free(SelfAttnQ);
             _backend.Free(SelfAttnK);
             _backend.Free(SelfAttnV);
             _backend.Free(SelfAttnO);
+            if (SelfAttnOBias is not null) _backend.Free(SelfAttnOBias);
             if (SelfAttnNormQ is not null) _backend.Free(SelfAttnNormQ);
             if (SelfAttnNormK is not null) _backend.Free(SelfAttnNormK);
             _backend.Free(CrossAttnQ);
+            if (CrossAttnQBias is not null) _backend.Free(CrossAttnQBias);
             _backend.Free(CrossAttnK);
+            if (CrossAttnKBias is not null) _backend.Free(CrossAttnKBias);
             _backend.Free(CrossAttnV);
+            if (CrossAttnVBias is not null) _backend.Free(CrossAttnVBias);
             _backend.Free(CrossAttnO);
+            if (CrossAttnOBias is not null) _backend.Free(CrossAttnOBias);
             if (CrossAttnNormQ is not null) _backend.Free(CrossAttnNormQ);
             if (CrossAttnNormK is not null) _backend.Free(CrossAttnNormK);
             _backend.Free(Ffn0);
+            if (Ffn0Bias is not null) _backend.Free(Ffn0Bias);
             _backend.Free(Ffn2);
+            if (Ffn2Bias is not null) _backend.Free(Ffn2Bias);
         }
     }
 
@@ -146,6 +204,10 @@ public sealed class WanGpuWeights : IDisposable
         _backend = backend;
 
         PatchEmbedding = UploadWeight(backend, weights.ReadF32($"{prefix}patch_embedding.weight"), TensorShape.D2(dim, WanModel.InChannels));
+        string patchBiasKey = $"{prefix}patch_embedding.bias";
+        if (weights.Contains(patchBiasKey))
+            PatchEmbeddingBias = backend.Upload(weights.ReadF32(patchBiasKey), TensorShape.D1(dim), exact: true);
+
         TimeEmbed0 = UploadWeight(backend, weights.ReadF32($"{prefix}time_embedding.0.weight"), TensorShape.D2(dim, 256));
         TimeEmbed2 = UploadWeight(backend, weights.ReadF32($"{prefix}time_embedding.2.weight"), TensorShape.D2(dim, dim));
         TimeProj1 = UploadWeight(backend, weights.ReadF32($"{prefix}time_projection.1.weight"), TensorShape.D2(dim * 6, dim));
@@ -169,6 +231,7 @@ public sealed class WanGpuWeights : IDisposable
         _disposed = true;
 
         _backend.Free(PatchEmbedding);
+        if (PatchEmbeddingBias is not null) _backend.Free(PatchEmbeddingBias);
         _backend.Free(TimeEmbed0);
         _backend.Free(TimeEmbed2);
         _backend.Free(TimeProj1);

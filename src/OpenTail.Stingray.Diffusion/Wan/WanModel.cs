@@ -39,6 +39,11 @@ public sealed class WanModel : IDisposable
         return _gpuWeightsResident ??= new WanGpuWeights(_backend, _weights, _prefix, _numLayers, _dim, _ffnDim);
     }
 
+    public Action<string, float[]>? OnStageCpu { get; set; }
+    public Action<string, float[]>? OnStageGpu { get; set; }
+    public Action<int, float[]>? OnBlockOutputCpu { get; set; }
+    public Action<int, float[]>? OnBlockOutputGpu { get; set; }
+
     public WanModel(IWeightLoader weights, string prefix = "", int numLayers = 30, int dim = 1536, int numHeads = 12, IComputeBackend? backend = null)
     {
         _weights = weights;
@@ -182,6 +187,7 @@ public sealed class WanModel : IDisposable
         }
 
         using var txtProjGpu = imageOps.Upload(txtProj, TensorShape.D2(numTxtTokens, _dim));
+        var visionOps = (IVisionOpsBackend)imageOps;
 
         for (int b = 0; b < _numLayers; b++)
         {
@@ -191,7 +197,7 @@ public sealed class WanModel : IDisposable
 
             if (block.CrossAttnNormK is not null)
             {
-                imageOps.RmsNorm(gpuWs.CrossKvCache[b].K, gpuWs.CrossKvCache[b].K, block.CrossAttnNormK);
+                visionOps.RmsNormBatched(gpuWs.CrossKvCache[b].K, gpuWs.CrossKvCache[b].K, block.CrossAttnNormK, _dim, numTxtTokens, eps: 1e-6f);
             }
         }
     }
@@ -244,6 +250,10 @@ public sealed class WanModel : IDisposable
 
         // 2. Patch input projection on GPU
         imageOps.Sgemm(gpuWs.X, packedGpu, gpuWeights.PatchEmbedding, numTokens, InChannels, _dim);
+        if (gpuWeights.PatchEmbeddingBias is not null)
+        {
+            imageOps.AddRowBroadcastInPlace(gpuWs.X, gpuWeights.PatchEmbeddingBias, numTokens, _dim);
+        }
 
         // 3. Timestep embedding (sinusoidal 256 -> linear dim -> silu -> linear dim) -- tiny
         // (dim-sized) vectors, computed on host; not worth a GPU round-trip.
@@ -278,15 +288,16 @@ public sealed class WanModel : IDisposable
         // cost only when this env var is set; the real (non-debug) path is unaffected.
         bool debugCrossRefGpu = Environment.GetEnvironmentVariable("STINGRAY_WAN_DEBUG_CROSSREF") == "1";
         string debugCrossRefGpuDir = Environment.GetEnvironmentVariable("STINGRAY_WAN_DEBUG_CROSSREF_DIR") ?? "examples/stable-diffusion.cpp";
-        if (debugCrossRefGpu)
+        if (debugCrossRefGpu || OnStageGpu != null)
         {
             var xHost = new float[numTokens * _dim];
             imageOps.Download(gpuWs.X, xHost);
-            WriteCrossRefBin(debugCrossRefGpuDir, "wandbg_patchembed_gpu", xHost);
+            if (debugCrossRefGpu) WriteCrossRefBin(debugCrossRefGpuDir, "wandbg_patchembed_gpu", xHost);
+            OnStageGpu?.Invoke("patchembed", xHost);
         }
 
         // Full-graph batching: record all 30 blocks per command buffer submission to eliminate driver fence bubbles
-        int batchBlocks = debugCrossRefGpu ? 1 : 30;
+        int batchBlocks = (debugCrossRefGpu || OnBlockOutputGpu != null || OnStageGpu != null) ? 1 : 30;
         for (int chunkStart = 0; chunkStart < _numLayers; chunkStart += batchBlocks)
         {
             int chunkEnd = Math.Min(_numLayers, chunkStart + batchBlocks);
@@ -297,6 +308,13 @@ public sealed class WanModel : IDisposable
                 TransformerBlockGpu(b, bw, gpuWs, gpuWs.LayerMods[b], numTokens, imageOps, visionOps);
             }
             imageOps.EndBatch();
+
+            if (OnBlockOutputGpu != null)
+            {
+                var blockHost = new float[numTokens * _dim];
+                imageOps.Download(gpuWs.X, blockHost);
+                OnBlockOutputGpu(chunkStart, blockHost);
+            }
 
             if (debugCrossRefGpu && chunkStart == 0)
             {
@@ -363,21 +381,23 @@ public sealed class WanModel : IDisposable
         imageOps.Sgemm(ws.CrossAttnOut, ws.AttnOut, bw.SelfAttnO, numTokens, d, d);
         visionOps.ScaleGateAdd(ws.X, ws.CrossAttnOut, modTensor, numTokens, d, gateOffset: 2 * d);
 
-        bool debugBlock0Gpu = layerIdx == 0 && Environment.GetEnvironmentVariable("STINGRAY_WAN_DEBUG_CROSSREF") == "1";
+        bool debugBlock0Gpu = layerIdx == 0 && (Environment.GetEnvironmentVariable("STINGRAY_WAN_DEBUG_CROSSREF") == "1" || OnStageGpu != null);
         string debugBlock0GpuDir = Environment.GetEnvironmentVariable("STINGRAY_WAN_DEBUG_CROSSREF_DIR") ?? "examples/stable-diffusion.cpp";
         if (debugBlock0Gpu)
         {
             imageOps.EndBatch();
             var selfAttnHost = new float[numTokens * d];
             imageOps.Download(ws.X, selfAttnHost);
-            WriteCrossRefBin(debugBlock0GpuDir, "wandbg_block0_selfattn_gpu", selfAttnHost);
+            if (Environment.GetEnvironmentVariable("STINGRAY_WAN_DEBUG_CROSSREF") == "1")
+                WriteCrossRefBin(debugBlock0GpuDir, "wandbg_block0_selfattn_gpu", selfAttnHost);
+            OnStageGpu?.Invoke("block0_selfattn", selfAttnHost);
             imageOps.BeginBatch();
         }
 
         // 2. Cross-Attention with T5/UMT5 text tokens (using precomputed K/V cache).
         imageOps.LayerNormGpu(ws.NormedCross, ws.X, bw.Norm3Weight, bw.Norm3Bias, numTokens, d);
         imageOps.Sgemm(ws.CrossQ, ws.NormedCross, bw.CrossAttnQ, numTokens, d, d);
-        if (bw.CrossAttnNormQ is not null) visionOps.RmsNormBatched(ws.CrossQ, ws.CrossQ, bw.CrossAttnNormQ, d, numTokens);
+        if (bw.CrossAttnNormQ is not null) visionOps.RmsNormBatched(ws.CrossQ, ws.CrossQ, bw.CrossAttnNormQ, d, numTokens, eps: 1e-6f);
 
         var (cachedK, cachedV) = ws.CrossKvCache[layerIdx];
         int ctxLen = (int)cachedK.Shape.Dims[0];
@@ -387,17 +407,30 @@ public sealed class WanModel : IDisposable
             imageOps.EndBatch();
             var crossAttnRawHost = new float[numTokens * d];
             imageOps.Download(ws.CrossAttnOut, crossAttnRawHost);
-            WriteCrossRefBin(debugBlock0GpuDir, "wandbg_block0_crossattn_raw_gpu", crossAttnRawHost);
             var qHost = new float[numTokens * d];
             imageOps.Download(ws.CrossQ, qHost);
-            WriteCrossRefBin(debugBlock0GpuDir, "wandbg_block0_crossq_gpu", qHost);
             var kHost = new float[ctxLen * d];
             imageOps.Download(cachedK, kHost);
-            WriteCrossRefBin(debugBlock0GpuDir, "wandbg_block0_crossk_gpu", kHost);
+            if (Environment.GetEnvironmentVariable("STINGRAY_WAN_DEBUG_CROSSREF") == "1")
+            {
+                WriteCrossRefBin(debugBlock0GpuDir, "wandbg_block0_crossattn_raw_gpu", crossAttnRawHost);
+                WriteCrossRefBin(debugBlock0GpuDir, "wandbg_block0_crossq_gpu", qHost);
+                WriteCrossRefBin(debugBlock0GpuDir, "wandbg_block0_crossk_gpu", kHost);
+            }
+            OnStageGpu?.Invoke("block0_crossq", qHost);
+            OnStageGpu?.Invoke("block0_crossattn_raw", crossAttnRawHost);
             imageOps.BeginBatch();
         }
         imageOps.Sgemm(ws.AttnOut, ws.CrossAttnOut, bw.CrossAttnO, numTokens, d, d);
         imageOps.AddInPlace(ws.X, ws.AttnOut);
+        if (debugBlock0Gpu)
+        {
+            imageOps.EndBatch();
+            var crossAttnHost = new float[numTokens * d];
+            imageOps.Download(ws.X, crossAttnHost);
+            OnStageGpu?.Invoke("block0_crossattn", crossAttnHost);
+            imageOps.BeginBatch();
+        }
 
         // 3. Modulated FeedForward (GELU approx tanh): affine-free LayerNorm -> AdaLN modulate -> FFN -> gated residual.
         visionOps.AdaLNModulate(ws.Normed2, ws.X, modTensor, numTokens, d, shiftOffset: 3 * d, scaleOffset: 4 * d, isRmsNorm: false, eps: 1e-6f);
@@ -405,6 +438,14 @@ public sealed class WanModel : IDisposable
         visionOps.VisionGeluInPlace(ws.Ffn1);
         imageOps.Sgemm(ws.FfnOut, ws.Ffn1, bw.Ffn2, numTokens, _ffnDim, d);
         visionOps.ScaleGateAdd(ws.X, ws.FfnOut, modTensor, numTokens, d, gateOffset: 5 * d);
+        if (debugBlock0Gpu)
+        {
+            imageOps.EndBatch();
+            var ffnHost = new float[numTokens * d];
+            imageOps.Download(ws.X, ffnHost);
+            OnStageGpu?.Invoke("block0_ffn", ffnHost);
+            imageOps.BeginBatch();
+        }
     }
 
     /// <summary>
@@ -468,6 +509,7 @@ public sealed class WanModel : IDisposable
         // 2. Patch input projection
         var x = Linear("patch_embedding", packed, InChannels, _dim);
         if (debugCrossRef) WriteCrossRefBin(crossRefDir, "wandbg_patchembed", x);
+        OnStageCpu?.Invoke("patchembed", (float[])x.Clone());
 
         // 3. Timestep embedding (sinusoidal 256 -> linear dim -> silu -> linear dim)
         var tEmb = ComputeTimestepEmbedding(timestep);
@@ -484,6 +526,7 @@ public sealed class WanModel : IDisposable
         {
             string p = $"blocks.{b}";
             TransformerBlock(b, p, x, timestepProj, cos, sin, numTokens, numTxtTokens, ws);
+            OnBlockOutputCpu?.Invoke(b, (float[])x.Clone());
 
             if (debugCrossRef && b == 0) WriteCrossRefBin(crossRefDir, "wandbg_block0", x);
             if (debugCrossRef && b == _numLayers - 1) WriteCrossRefBin(crossRefDir, "wandbg_blocklast", x);
@@ -565,6 +608,7 @@ public sealed class WanModel : IDisposable
         DiffusionOps.ModulateRows(ws.Norm1.AsSpan(0, numTokens * _dim), ws.Normed1.AsSpan(0, numTokens * _dim), numTokens, _dim, s1, sc1);
         SelfAttention($"{prefix}.self_attn", ws.Normed1, ws, cos, sin, numTokens);
         DiffusionOps.ApplyGatedResidualRows(x.AsSpan(0, numTokens * _dim), ws.CrossAttnOut.AsSpan(0, numTokens * _dim), numTokens, _dim, g1);
+        if (layerIdx == 0) OnStageCpu?.Invoke("block0_selfattn", (float[])x.Clone());
         if (layerIdx == 0 && Environment.GetEnvironmentVariable("STINGRAY_WAN_DEBUG_CROSSREF") == "1")
         {
             WriteCrossRefBin(
@@ -578,6 +622,7 @@ public sealed class WanModel : IDisposable
         DiffusionOps.LayerNorm(x.AsSpan(0, numTokens * _dim), ws.NormedCross.AsSpan(0, numTokens * _dim), norm3W, norm3B, _dim);
         CrossAttention(layerIdx, $"{prefix}.cross_attn", ws.NormedCross, ws, numTokens, numTxt);
         TensorPrimitives.Add(x.AsSpan(0, numTokens * _dim), ws.AttnOut.AsSpan(0, numTokens * _dim), x.AsSpan(0, numTokens * _dim));
+        if (layerIdx == 0) OnStageCpu?.Invoke("block0_crossattn", (float[])x.Clone());
         if (layerIdx == 0 && Environment.GetEnvironmentVariable("STINGRAY_WAN_DEBUG_CROSSREF") == "1")
         {
             WriteCrossRefBin(
@@ -593,6 +638,7 @@ public sealed class WanModel : IDisposable
         if (debugFfn0) WriteCrossRefBin(debugFfnDir, "wandbg_block0_ffnin", ws.Normed2.AsSpan(0, numTokens * _dim).ToArray());
         FeedForward($"{prefix}.ffn", ws.Normed2, ws, numTokens, debugFfn0 ? debugFfnDir : null);
         DiffusionOps.ApplyGatedResidualRows(x.AsSpan(0, numTokens * _dim), ws.FfnOut.AsSpan(0, numTokens * _dim), numTokens, _dim, g2);
+        if (layerIdx == 0) OnStageCpu?.Invoke("block0_ffn", (float[])x.Clone());
     }
 
     private void SelfAttention(string prefix, float[] x, WanWorkspace ws, float[] cos, float[] sin, int seqLen)
@@ -649,7 +695,9 @@ public sealed class WanModel : IDisposable
             WriteCrossRefBin(debugCrossDir, "wandbg_block0_crossv", cachedV);
         }
 
+        if (layerIdx == 0) OnStageCpu?.Invoke("block0_crossq", ws.CrossQ.AsSpan(0, seqLen * _dim).ToArray());
         WanAttention.TiledMultiHeadAttention(ws.CrossQ, cachedK, cachedV, ws.CrossAttnOut.AsSpan(0, seqLen * _dim), seqLen, ctxLen, _numHeads, _headDim);
+        if (layerIdx == 0) OnStageCpu?.Invoke("block0_crossattn_raw", ws.CrossAttnOut.AsSpan(0, seqLen * _dim).ToArray());
         if (debugCross0) WriteCrossRefBin(debugCrossDir, "wandbg_block0_crossattn_raw", ws.CrossAttnOut.AsSpan(0, seqLen * _dim).ToArray());
         Linear($"{prefix}.o", ws.CrossAttnOut, ws.AttnOut.AsSpan(0, seqLen * _dim), _dim, _dim);
     }

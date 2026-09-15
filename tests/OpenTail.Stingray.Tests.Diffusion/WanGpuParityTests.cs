@@ -125,19 +125,134 @@ public sealed class WanGpuParityTests
     [Fact]
     public void Wan_RealWeights_InspectTensorNamesAndShapes()
     {
-        string ditPath = Path.Combine("models", "wan2.1", "wan2.1-t2v-1.3b-dit.safetensors");
+        string ditPath = @"C:\Git-Public\OpenTail.Stingray\models\wan2.1\wan2.1-t2v-1.3b-dit.safetensors";
         if (!File.Exists(ditPath)) return;
 
         using var st = SafetensorsLoader.Open(ditPath);
         _output.WriteLine($"Total tensors: {st.TensorCount}");
         foreach (var name in st.TensorNames)
         {
-            if (name.StartsWith("blocks.0.") || !name.StartsWith("blocks."))
+            if ((name.StartsWith("blocks.0.") || !name.StartsWith("blocks.")) && name.EndsWith(".bias"))
             {
-                var shape = st.GetShape(name);
-                _output.WriteLine($"[Wan Tensor] {name}: [{string.Join(", ", shape)}]");
-                Console.WriteLine($"[Wan Tensor] {name}: [{string.Join(", ", shape)}]");
+                var data = st.ReadF32(name);
+                float maxAbs = 0, sumSq = 0;
+                for (int i = 0; i < data.Length; i++)
+                {
+                    float a = MathF.Abs(data[i]);
+                    if (a > maxAbs) maxAbs = a;
+                    sumSq += data[i] * data[i];
+                }
+                float norm = MathF.Sqrt(sumSq);
+                Console.WriteLine($"[Wan Bias] {name,-32}: len={data.Length,5} maxAbs={maxAbs:F6} norm={norm:F4}");
             }
         }
     }
+
+    [Fact]
+    public void WanModel_ForwardGpu_MatchesForwardCpu_RealWeights()
+    {
+        string ditPath = @"C:\Git-Public\OpenTail.Stingray\models\wan2.1\wan2.1-t2v-1.3b-dit.safetensors";
+        if (!File.Exists(ditPath)) return;
+
+        using var vulkan = TryCreateVulkan();
+        if (vulkan is null) return;
+
+        using var loader = SafetensorsLoader.Open(ditPath);
+
+        using var model = new WanModel(loader, "", backend: vulkan);
+        int numLayers = model.NumLayers;
+        int dim = model.Dim;
+        int numHeads = model.NumHeads;
+        int ffnDim = model.FfnDim;
+        const int numFrames = 1, latH = 16, latW = 16;
+        int patchH = latH / 2, patchW = latW / 2;
+        int numTokens = numFrames * patchH * patchW; // 64
+        const int numTxt = 226;
+
+        using var gpuWeights = model.GetOrCreateGpuWeights();
+        var (ropeCos, ropeSin) = WanRoPE.Compute3DRoPECompact(numFrames, patchH, patchW, headDim: dim / numHeads);
+        using var gpuWs = new WanGpuWorkspace(vulkan, numTokens, dim, ffnDim, numLayers, numTxt, ropeCos, ropeSin, headDim: dim / numHeads);
+        var cpuWs = new WanWorkspace(numTokens, dim, ffnDim, numLayers);
+
+        var random = new Random(42);
+        var latent = new float[16 * numFrames * latH * latW];
+        for (int i = 0; i < latent.Length; i++) latent[i] = (float)(random.NextDouble() * 2.0 - 1.0);
+
+        var textCtx = new float[numTxt * WanModel.TextDim];
+        for (int i = 0; i < textCtx.Length; i++) textCtx[i] = (float)(random.NextDouble() * 2.0 - 1.0);
+
+        model.PrecomputeCrossKvCache(textCtx, cpuWs);
+        model.PrecomputeCrossKvCacheGpu(textCtx, gpuWs, gpuWeights, vulkan);
+
+        // Compare KV cache between CPU and GPU
+        double kDot = 0, kNa = 0, kNb = 0, kMaxDiff = 0;
+        var kGpu = new float[numTxt * dim];
+        vulkan.Download(gpuWs.CrossKvCache[0].K, kGpu);
+        for (int i = 0; i < kGpu.Length; i++)
+        {
+            float expectedK = cpuWs.CrossKvCache[0].K[i];
+            kDot += (double)expectedK * kGpu[i];
+            kNa += (double)expectedK * expectedK;
+            kNb += (double)kGpu[i] * kGpu[i];
+            double d = Math.Abs(expectedK - kGpu[i]);
+            if (d > kMaxDiff) kMaxDiff = d;
+        }
+        double kCos = kDot / (Math.Sqrt(kNa) * Math.Sqrt(kNb) + 1e-12);
+        void Log(string msg) { _output.WriteLine(msg); Console.WriteLine(msg); }
+
+        static (double cos, double maxDiff, double normA, double normB) Compare(float[] a, float[] b)
+        {
+            double dot = 0, na = 0, nb = 0, maxDiff = 0;
+            for (int i = 0; i < a.Length; i++)
+            {
+                dot += (double)a[i] * b[i];
+                na += (double)a[i] * a[i];
+                nb += (double)b[i] * b[i];
+                double d = Math.Abs(a[i] - b[i]);
+                if (d > maxDiff) maxDiff = d;
+            }
+            double cos = dot / (Math.Sqrt(na) * Math.Sqrt(nb) + 1e-12);
+            return (cos, maxDiff, Math.Sqrt(na), Math.Sqrt(nb));
+        }
+
+        var cpuStages = new Dictionary<string, float[]>();
+        var gpuStages = new Dictionary<string, float[]>();
+        var cpuBlocks = new Dictionary<int, float[]>();
+        var gpuBlocks = new Dictionary<int, float[]>();
+
+        model.OnStageCpu = (name, data) => cpuStages[name] = data;
+        model.OnStageGpu = (name, data) => gpuStages[name] = data;
+        model.OnBlockOutputCpu = (b, data) => cpuBlocks[b] = data;
+        model.OnBlockOutputGpu = (b, data) => gpuBlocks[b] = data;
+
+        // Run CPU Forward
+        var cpuOut = model.Forward(latent, 500f, textCtx, numFrames, latH, latW, cpuWs);
+
+        // Run GPU Forward
+        var gpuOut = model.ForwardGpu(latent, 500f, textCtx, numFrames, latH, latW, gpuWs, gpuWeights, vulkan);
+
+        // Stage-by-stage comparison
+        foreach (var (k, cpuArr) in cpuStages)
+        {
+            if (gpuStages.TryGetValue(k, out var gpuArr))
+            {
+                var (c, md, na, nb) = Compare(cpuArr, gpuArr);
+                Log($"[WanRealParity][Stage] {k,-20}: cosine={c:F9} maxDiff={md:F6} cpuNorm={na:F4} gpuNorm={nb:F4}");
+            }
+        }
+
+        // Per-block comparison
+        for (int b = 0; b < numLayers; b++)
+        {
+            if (cpuBlocks.TryGetValue(b, out var cpuB) && gpuBlocks.TryGetValue(b, out var gpuB))
+            {
+                var (c, md, na, nb) = Compare(cpuB, gpuB);
+                Log($"[WanRealParity][Block {b,2}]: cosine={c:F9} maxDiff={md:F6} cpuNorm={na:F4} gpuNorm={nb:F4}");
+            }
+        }
+
+        var (fCos, fMd, fNa, fNb) = Compare(cpuOut, gpuOut);
+        Log($"[WanRealParity] 30-layer Forward CPU vs GPU: cosine={fCos:F9} cpuNorm={fNa:F6} gpuNorm={fNb:F6} maxDiff={fMd:F6}");
+    }
 }
+
