@@ -379,6 +379,8 @@ public sealed class WanModel : IDisposable
 
         // Fused QKV GEMM [numTokens, d] x [d, d*3] -> [numTokens, d*3]
         imageOps.Sgemm(ws.Qkv, ws.Normed1, bw.SelfAttnQkv, numTokens, d, d * 3);
+        if (bw.SelfAttnQkvBias is not null)
+            imageOps.AddRowBroadcastInPlace(ws.Qkv, bw.SelfAttnQkvBias, numTokens, d * 3);
 
         // Fused QKV Split + per-head RMSNorm + 3D RoPE (GPT-NeoX adjacent pair rotation)
         visionOps.WanQkvSplitNormRoPE(ws.Qkv, ws.Q, ws.K, ws.V, ws.RopeCos, ws.RopeSin,
@@ -386,6 +388,8 @@ public sealed class WanModel : IDisposable
 
         imageOps.MultiHeadAttentionTiled(ws.AttnOut, ws.Q, ws.K, ws.V, numTokens, numTokens, _numHeads, _headDim);
         imageOps.Sgemm(ws.CrossAttnOut, ws.AttnOut, bw.SelfAttnO, numTokens, d, d);
+        if (bw.SelfAttnOBias is not null)
+            imageOps.AddRowBroadcastInPlace(ws.CrossAttnOut, bw.SelfAttnOBias, numTokens, d);
         visionOps.ScaleGateAdd(ws.X, ws.CrossAttnOut, modTensor, numTokens, d, gateOffset: 2 * d);
 
         bool debugBlock0Gpu = layerIdx == 0 && (Environment.GetEnvironmentVariable("STINGRAY_WAN_DEBUG_CROSSREF") == "1" || OnStageGpu != null);
@@ -404,6 +408,8 @@ public sealed class WanModel : IDisposable
         // 2. Cross-Attention with T5/UMT5 text tokens (using precomputed K/V cache).
         imageOps.LayerNormGpu(ws.NormedCross, ws.X, bw.Norm3Weight, bw.Norm3Bias, numTokens, d);
         imageOps.Sgemm(ws.CrossQ, ws.NormedCross, bw.CrossAttnQ, numTokens, d, d);
+        if (bw.CrossAttnQBias is not null)
+            imageOps.AddRowBroadcastInPlace(ws.CrossQ, bw.CrossAttnQBias, numTokens, d);
         if (bw.CrossAttnNormQ is not null) visionOps.RmsNormBatched(ws.CrossQ, ws.CrossQ, bw.CrossAttnNormQ, d, numTokens, eps: 1e-6f);
 
         var (cachedK, cachedV) = ws.CrossKvCache[layerIdx];
@@ -429,6 +435,8 @@ public sealed class WanModel : IDisposable
             imageOps.BeginBatch();
         }
         imageOps.Sgemm(ws.AttnOut, ws.CrossAttnOut, bw.CrossAttnO, numTokens, d, d);
+        if (bw.CrossAttnOBias is not null)
+            imageOps.AddRowBroadcastInPlace(ws.AttnOut, bw.CrossAttnOBias, numTokens, d);
         imageOps.AddInPlace(ws.X, ws.AttnOut);
         if (debugBlock0Gpu)
         {
@@ -442,8 +450,12 @@ public sealed class WanModel : IDisposable
         // 3. Modulated FeedForward (GELU approx tanh): affine-free LayerNorm -> AdaLN modulate -> FFN -> gated residual.
         visionOps.AdaLNModulate(ws.Normed2, ws.X, modTensor, numTokens, d, shiftOffset: 3 * d, scaleOffset: 4 * d, isRmsNorm: false, eps: 1e-6f);
         imageOps.Sgemm(ws.Ffn1, ws.Normed2, bw.Ffn0, numTokens, d, _ffnDim);
+        if (bw.Ffn0Bias is not null)
+            imageOps.AddRowBroadcastInPlace(ws.Ffn1, bw.Ffn0Bias, numTokens, _ffnDim);
         visionOps.VisionGeluInPlace(ws.Ffn1);
         imageOps.Sgemm(ws.FfnOut, ws.Ffn1, bw.Ffn2, numTokens, _ffnDim, d);
+        if (bw.Ffn2Bias is not null)
+            imageOps.AddRowBroadcastInPlace(ws.FfnOut, bw.Ffn2Bias, numTokens, d);
         visionOps.ScaleGateAdd(ws.X, ws.FfnOut, modTensor, numTokens, d, gateOffset: 5 * d);
         if (debugBlock0Gpu)
         {
