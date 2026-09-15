@@ -2648,7 +2648,18 @@ public sealed unsafe class VulkanHybridGdnForwardPass : IForwardPass
         if (gateInfo is null || upInfo is null || downInfo is null)
             return;
 
-        long perLayerBytes = gateInfo.Value.ByteSize + upInfo.Value.ByteSize + downInfo.Value.ByteSize;
+        // Use the ACTUAL post-upload GPU footprint (raw for the raw-kept dtype set, F16-expanded
+        // otherwise — mirror UploadWeight), not the on-disk GGUF byte size. For a "UD"/dynamic-
+        // quant checkpoint whose dense FFN tensors are IQ2_XS/IQ2_S/IQ3_XXS (no raw Vulkan matvec
+        // kernel), the raw on-disk size is ~6x smaller than what actually lands in VRAM after the
+        // F16 dequant fallback — using it here silently admitted far more layers than actually fit
+        // and was the dominant cause of a mid-load Vulkan ErrorOutOfHostMemory at
+        // STINGRAY_VULKAN_UMA_FRACTION=0.7 (docs/084-vulkan-large-tensor-sharding-plan.md,
+        // "Follow-up 3"). Still an approximation (layer 0's dtypes stand in for every layer's,
+        // and a "UD" quant can vary dtype per layer), but far closer than the raw byte size.
+        long perLayerBytes = EstimateWeightGpuBytes(gateInfo.Value)
+                            + EstimateWeightGpuBytes(upInfo.Value)
+                            + EstimateWeightGpuBytes(downInfo.Value);
 
         // Reserve headroom for the KV cache, GDN state, scratch, and allocator overhead.
         // Default 1 GiB; override with STINGRAY_DENSE_FFN_GPU_MARGIN_MB (set 0 to push to the wall).
@@ -2657,13 +2668,23 @@ public sealed unsafe class VulkanHybridGdnForwardPass : IForwardPass
         if (marginOverride is not null && int.TryParse(marginOverride, out int marginMb) && marginMb >= 0)
             safetyMarginBytes = (long)marginMb * 1024 * 1024;
 
-        long budget = (long)gpu.VramBytes - _uploadedVramBytes - safetyMarginBytes;
+        // Reserve headroom for the MTP/NEXTN head's mandatory GPU upload too — LoadMtpHead runs
+        // AFTER this method (it depends on scratch buffers this method may allocate) and its
+        // upload is not optional, so admitting FFN layers based on _uploadedVramBytes alone (with
+        // no idea LoadMtpHead needs more space right after) is exactly the bug that produced a
+        // mid-load Vulkan ErrorOutOfHostMemory at STINGRAY_VULKAN_UMA_FRACTION=0.7 — the FFN loop
+        // filled 59/64 layers, leaving nothing for the head that was always going to load next.
+        // See docs/084-vulkan-large-tensor-sharding-plan.md, "Follow-up 2" for the full incident.
+        long mtpHeadReserveBytes = EstimateMtpHeadGpuBytes();
+
+        long budget = (long)gpu.VramBytes - _uploadedVramBytes - mtpHeadReserveBytes - safetyMarginBytes;
         if (budget < perLayerBytes)
         {
             Console.Error.WriteLine(
                 $"[VulkanHybridGdnForwardPass] Dense FFN-on-GPU: budget {budget / (1024 * 1024)} MiB < per-layer " +
                 $"{perLayerBytes / (1024 * 1024)} MiB (VRAM {gpu.VramBytes / (1024 * 1024)} MiB − uploaded " +
-                $"{_uploadedVramBytes / (1024 * 1024)} MiB − margin {safetyMarginBytes / (1024 * 1024)} MiB). All FFN stays on CPU.");
+                $"{_uploadedVramBytes / (1024 * 1024)} MiB − MTP head reserve {mtpHeadReserveBytes / (1024 * 1024)} " +
+                $"MiB − margin {safetyMarginBytes / (1024 * 1024)} MiB). All FFN stays on CPU.");
             return;
         }
         int canUpload = (int)Math.Min(L, budget / perLayerBytes);
@@ -2965,6 +2986,71 @@ public sealed unsafe class VulkanHybridGdnForwardPass : IForwardPass
         if (tensor.DType is DType.Q4_K or DType.Q6_K or DType.Q5_K or DType.Q8_0 or DType.Q4_0)
             return tensor.ByteSize;
         return (long)tensor.ElementCount * sizeof(ushort);
+    }
+
+    /// <summary>
+    /// Estimates the mandatory GPU bytes <see cref="LoadMtpHead"/> will allocate, WITHOUT doing
+    /// any dequant/upload work, so <see cref="TryUploadDenseFfnLayers"/> can reserve headroom for
+    /// it before deciding how many (optional) FFN layers to admit — see the reservation's call
+    /// site for why this ordering matters. Mirrors LoadMtpHead's upload list exactly; a tensor
+    /// this misses would under-reserve (same failure mode as before this fix, just smaller), so
+    /// keep this in sync if LoadMtpHead's upload list changes.
+    /// </summary>
+    private long EstimateMtpHeadGpuBytes()
+    {
+        if (!_hasMtp) return 0;
+        int mtpLayerIdx = _hp.NumLayers;
+        long total = 0;
+
+        void AddWeight(string name)
+        {
+            if (_model.FindTensor(name) is { } info) total += EstimateWeightGpuBytes(info);
+        }
+
+        AddWeight($"blk.{mtpLayerIdx}.attn_norm.weight");
+        AddWeight($"blk.{mtpLayerIdx}.attn_q.weight");
+        AddWeight($"blk.{mtpLayerIdx}.attn_k.weight");
+        AddWeight($"blk.{mtpLayerIdx}.attn_v.weight");
+        AddWeight($"blk.{mtpLayerIdx}.attn_output.weight");
+        AddWeight($"blk.{mtpLayerIdx}.attn_q_norm.weight");
+        AddWeight($"blk.{mtpLayerIdx}.attn_k_norm.weight");
+        AddWeight($"blk.{mtpLayerIdx}.post_attention_norm.weight");
+
+        bool mtpIsMoE = _model.FindTensor($"blk.{mtpLayerIdx}.ffn_gate_exps.weight") is not null;
+        if (mtpIsMoE)
+        {
+            // Routed experts + shexp-gate-inp stay CPU-resident for MoE-MTP (mirror LoadMtpHead)
+            // — only the shared-expert weights are GPU-resident.
+            AddWeight($"blk.{mtpLayerIdx}.ffn_gate_shexp.weight");
+            AddWeight($"blk.{mtpLayerIdx}.ffn_up_shexp.weight");
+            AddWeight($"blk.{mtpLayerIdx}.ffn_down_shexp.weight");
+        }
+        else
+        {
+            AddWeight($"blk.{mtpLayerIdx}.ffn_gate.weight");
+            AddWeight($"blk.{mtpLayerIdx}.ffn_up.weight");
+            AddWeight($"blk.{mtpLayerIdx}.ffn_down.weight");
+        }
+
+        AddWeight($"blk.{mtpLayerIdx}.nextn.enorm.weight");
+        AddWeight($"blk.{mtpLayerIdx}.nextn.hnorm.weight");
+        AddWeight($"blk.{mtpLayerIdx}.nextn.shared_head_norm.weight");
+        AddWeight($"blk.{mtpLayerIdx}.nextn.eh_proj.weight");
+
+        // Fixed-size F32 scratch/KV-cache buffers LoadMtpHead always allocates (small individually
+        // — embDim/kvDim-sized — but included so the reservation invariant stays honest rather
+        // than silently under-counting a real, if minor, allocation).
+        int mtpKvDim = _numKvHeads * _headDim;
+        total += 2L * _maxSeqLen * mtpKvDim * sizeof(float);      // K/V cache
+        total += 7L * _embDim * sizeof(float);                     // embed/enorm/hnorm/lastHidden/selfHidden/histDev/pinned
+        total += 2L * _embDim * sizeof(float);                     // concat buf (embDim*2)
+        // MTP dense FFN scratch: allocated here only if TryUploadDenseFfnLayers didn't already
+        // (i.e. it uploaded 0 trunk FFN layers) — reserve it unconditionally as a small, safe
+        // overestimate rather than replicating that layer's own admission decision here.
+        if (!_hp.IsMoE)
+            total += 2L * _intermDim * sizeof(float);
+
+        return total;
     }
 
     private static float* Alloc(int count) =>

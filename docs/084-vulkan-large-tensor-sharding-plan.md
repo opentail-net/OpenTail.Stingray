@@ -256,6 +256,79 @@ silently) depending on how many FFN layers happen to fit before the head's turn.
   sequentially — lower volume here, but worth the same treatment if a future checkpoint leans on
   them more heavily.
 
+## Follow-up 3: the MTP-head OOM's real cause was a second, bigger budgeting bug (2026-09-15, later)
+
+Got a second external review of Follow-up 2's remaining open item (the `0.7`-fraction OOM at the
+MTP head). Its top-priority recommendation — reserve the MTP head's footprint *before* deciding
+the FFN budget, instead of discovering the shortfall only when `LoadMtpHead` runs — was implemented
+first, exactly as it size-estimates every tensor `LoadMtpHead` will actually upload. It did **not**
+fix the OOM on its own, which led to finding the real, larger bug underneath it.
+
+**The real bug**: `TryUploadDenseFfnLayers`'s `perLayerBytes` was computed from
+`tensor.ByteSize` — the **raw on-disk GGUF byte size** — not the actual post-upload GPU footprint.
+For this checkpoint's dense FFN tensors (`IQ2_XS`/`IQ2_S`/`IQ3_XXS` — none in the raw-kept Vulkan
+matvec set), the real GPU footprint after the F16 dequant fallback is roughly **6x** the raw size
+(`~84 MiB/layer` raw vs. the true cost). The budget arithmetic was therefore admitting ~59 of 64
+layers when only ~12 actually fit at `STINGRAY_VULKAN_UMA_FRACTION=0.7` — each admitted layer's
+*actual* Vulkan allocation succeeded individually (F16 tensors aren't huge on their own), so
+nothing failed until the cumulative real usage finally exhausted the host-visible heap, which
+happened to land exactly at the MTP head's turn. The reviewer's MTP-reservation fix was real and
+correct, but couldn't matter much against a per-layer budget that was already wrong by ~6x.
+
+**Fix**: `perLayerBytes` now sums `EstimateWeightGpuBytes(gateInfo)/(upInfo)/(downInfo)` (the same
+raw-vs-F16 estimator already used for the MTP-head reservation and `ShouldKeepFixedWeightsOnGpu`)
+instead of `ByteSize`. Still an approximation — layer 0's dtypes stand in for every layer's, and a
+"UD"/dynamic-quant checkpoint can vary dtype per layer — but far closer than the raw byte size, and
+consistent with every other budget estimate in this file now.
+
+**Verification — measured across the full fraction range, all loads clean**:
+
+| `STINGRAY_VULKAN_UMA_FRACTION` | Placement budget | FFN layers admitted | Uploaded MiB | Model load time |
+|---|---|---|---|---|
+| 0.5 (default) | 16,076 MiB | 0/64 (budget −279 MiB) | — | 20.1s |
+| 0.6 | 19,291 MiB | 5/64 | 2,550 MiB | 22.8s |
+| 0.7 | 22,507 MiB | 12/64 | 6,120 MiB | 43.8s |
+| 0.8 | 25,722 MiB | 18/64 | 9,180 MiB | 42.5s |
+
+All four loaded and reached "Model loaded" successfully — **zero crashes, zero OOMs, zero swap
+episodes** across the whole range (confirmed via `Get-Counter '\Memory\Available MBytes'`/
+`'\Memory\Pages/sec'` before and after: available RAM stayed 48-53 GB throughout, pages/sec at
+idle levels both before and after each run). The scaling is monotonic and sane — more fraction →
+more FFN layers admitted → more MiB uploaded — which it was NOT before this fix (0.7 previously
+*looked* like it should admit the most, 59 layers, and was in fact the one that crashed).
+
+Each of the four runs above ran into the 150-second shell timeout **after** printing "Model
+loaded" — i.e. loading itself completed in 20-44s in every case, and the timeout killed a slow
+*decode* step afterward (a known, separate, expected characteristic: this reasoning-model
+checkpoint at `--temp 0` can loop on "thinking" tokens well past the 150s window even at a
+best-case handful of tokens/sec — see the `Warning: Greedy decoding` message this CLI already
+prints for exactly this scenario). Not a memory bug, not a regression — do not conflate the two
+when reading `EXIT=124` in a quick test script; check for "Model loaded" in the log before
+attributing a timeout to memory issues.
+
+**Now still open (updated list):**
+- No pre-flight memory-availability check exists before the mandatory core GPU upload begins
+  (Follow-up 1) — still real, still not implemented. Given how sensitive the `perLayerBytes` bug
+  above turned out to be, this remains the highest-value remaining correctness gap: a future
+  checkpoint whose *actual* core footprint doesn't fit available RAM would still only find out via
+  a Vulkan allocation failure or a swap episode, not a clear pre-flight diagnostic.
+- The tokens/sec performance pass (CLAUDE.md rule 7) comparing default (0 FFN layers on GPU) vs a
+  higher fraction (5-18 layers on GPU, per the table above) is now unblocked (loading is safe at
+  every fraction tested) but still not done — needs a non-reasoning-inducing prompt/temperature (or
+  patience) to get a clean decode-speed measurement instead of hitting a thinking-loop timeout.
+- Per the reviewer's other lower-priority notes: transient CPU allocation pressure during
+  dequant-and-upload (temporary `float[]`+`Half[]` per tensor, ~510 MiB peak for the largest FFN
+  tensors) and LOH/GC pressure across 12-18 large tensor uploads were flagged as "observe first,
+  don't optimize yet" — no evidence either is a problem was collected in this session (the runs
+  above completed without issue), so this stays a watch item, not a task.
+- General multi-VkBuffer tensor sharding (this document's original subject) remains correctly
+  identified as unnecessary for any checkpoint tested so far, now with three independent rounds of
+  evidence (Q3_K embedding, F16 dequant fallback, and the budget-accounting fixes above) that the
+  real problems in this class of failure are memory-accounting bugs, not tensors that are
+  fundamentally too large for one VkBuffer. Keep the general-sharding design below as reference
+  only; do not revive it without a checkpoint that actually exceeds the queried
+  `maxStorageBufferRange` after every raw/native-dtype and accounting fix above has been applied.
+
 ---
 
 ## Original plan below (status: superseded for this checkpoint, kept for reference)
