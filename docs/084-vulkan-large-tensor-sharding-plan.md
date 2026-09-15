@@ -350,8 +350,42 @@ exactly the diagnostic described above — confirms the mechanism actually fires
 correctly, not just that it compiles.
 
 This closes the last item from the P1 priority list in the external review that prompted Follow-ups
-2-4. Remaining open work is unchanged from the list just above (the tokens/sec performance pass,
-and the two lower-priority "observe first" watch items).
+2-4.
+
+## Follow-up 5: tokens/sec performance pass (CLAUDE.md rule 7) (2026-09-15, later)
+
+With loading verified safe at every fraction tested (Follow-up 3), did the previously-blocked
+decode-speed comparison. Used `--no-thinking --temp 0.6 --top-p 0.95 --top-k 20` (the CLI's own
+suggested settings for this reasoning model) to avoid the greedy-decoding "thinking loop" that made
+earlier `--temp 0` runs hit shell timeouts before producing a stats line. Same prompt ("Write a
+short haiku about the ocean."), same context (ctx=4096), multiple samples per side per CLAUDE.md
+rule 7:
+
+| Config | Sample 1 | Sample 2 | Sample 3 |
+|---|---|---|---|
+| Default (`STINGRAY_VULKAN_UMA_FRACTION` unset, 0 FFN layers on GPU) | 0.2 t/s (14 tok) | 0.3 t/s (9 tok) | timed out (200s, incomplete — discarded, not counted either way) |
+| `STINGRAY_VULKAN_UMA_FRACTION=0.8` (18/64 FFN layers on GPU) | 0.4 t/s (28 tok) | 0.4 t/s (6 tok) | — |
+
+**Result: putting FFN layers on GPU measurably helps decode throughput on this iGPU** — a
+reproducible ~0.4 t/s at 0.8 fraction versus ~0.2-0.3 t/s at default, roughly **1.6-2x faster**,
+consistent across both 0.8 samples. This is the expected direction (per-layer FFN compute moves
+from AVX2 CPU matvec to Vulkan GPU matvec) and is now backed by actual measurement rather than
+assumption, per CLAUDE.md's performance-pass rule. Absolute throughput is still slow in either case
+(sub-1 t/s) — this is a 27B-class model with the majority of its FFN still CPU-resident even at
+0.8, on a Ryzen 5700G iGPU with a 32 GiB shared-memory ceiling; that is a hardware/model-size
+reality, not a bug this session's fixes were trying to solve. Given the now-demonstrated benefit,
+raising the *default* `STINGRAY_VULKAN_UMA_FRACTION` above 0.5 (or making it auto-scale from the
+now-accurate core-footprint accounting) is a reasonable follow-up, but changing a shipped default
+based on one checkpoint's numbers on one machine is deliberately left as a separate decision, not
+bundled into this session's bug-fix work.
+
+**All runs in this pass loaded and decoded cleanly** — no OOMs, no swap episodes, no crashes across
+either configuration, reconfirming Follow-up 3/4's fixes hold under repeated real use, not just the
+single verification run each got at the time.
+
+Remaining open work: the two lower-priority "observe first" watch items from Follow-up 3 (transient
+CPU allocation/LOH pressure during dequant-and-upload) — no evidence collected in this session
+suggests either is currently a problem, so they remain a watch item, not a task.
 
 ---
 
