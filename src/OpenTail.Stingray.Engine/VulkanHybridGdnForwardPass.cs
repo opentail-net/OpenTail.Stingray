@@ -545,6 +545,7 @@ public sealed unsafe class VulkanHybridGdnForwardPass : IForwardPass
                 "CPU embedding fallback is not implemented in v1. Reduce ctx size or use " +
                 "HybridGdnForwardPass for CPU-only execution.");
         }
+        EnsureRamHeadroom("embedding/output upload");
 
         // ── Per-layer tensor arrays (mirror :1009-1045) ────────────────
         _gpuAttnNorm = new Tensor[L];
@@ -671,6 +672,7 @@ public sealed unsafe class VulkanHybridGdnForwardPass : IForwardPass
                 _gpuGdnScanState[i] = scan;
                 _gpuGdnConvState[i] = conv;
             }
+            EnsureRamHeadroom($"per-layer upload (layer {i}/{L})");
             if ((i % 4) == 3) Console.Error.Write(".");
         }
         Console.Error.WriteLine(" done.");
@@ -2986,6 +2988,49 @@ public sealed unsafe class VulkanHybridGdnForwardPass : IForwardPass
         if (tensor.DType is DType.Q4_K or DType.Q6_K or DType.Q5_K or DType.Q8_0 or DType.Q4_0)
             return tensor.ByteSize;
         return (long)tensor.ElementCount * sizeof(ushort);
+    }
+
+    /// <summary>
+    /// Aborts the mandatory GPU-resident core upload (embedding/output/per-layer attention+GDN)
+    /// early, with a clear diagnostic, if available system RAM has dropped dangerously low —
+    /// rather than continuing to allocate until Windows starts paging to disk
+    /// (docs/084-vulkan-large-tensor-sharding-plan.md, "pre-flight RAM check" gap).
+    ///
+    /// This upload has no per-user budget knob the way the optional dense-FFN-on-GPU path does
+    /// (<c>STINGRAY_VULKAN_UMA_FRACTION</c>) or the CPU-resident prefault path does
+    /// (<see cref="MmapPrefault"/>'s 80%-of-available-RAM gate) — it always uploads every one of
+    /// these tensors, so the only thing to do when it won't fit is fail fast and say so clearly,
+    /// not silently swap. Checked once after the embedding/output upload and once per layer in the
+    /// main upload loop (a syscall per layer is negligible next to the multi-MB uploads it
+    /// brackets) — this catches the shortfall close to where it happens, with a partial-progress
+    /// count in the message, rather than only after the whole core has already been attempted.
+    ///
+    /// Queries <em>current</em> available RAM rather than pre-estimating a total requirement: this
+    /// naturally accounts for whatever this upload has already committed (those pages are no
+    /// longer "available"), for any other process's memory use, and for GPU-resident bytes that
+    /// went through a path other than <see cref="UploadWeight"/> — a live signal is more robust
+    /// here than a static estimate that has to be kept in sync with every upload path by hand
+    /// (exactly the kind of estimate/reality drift that caused the per-layer-budget bug in
+    /// Follow-up 3 of the plan doc above).
+    /// </summary>
+    private static void EnsureRamHeadroom(string context)
+    {
+        long minFreeBytes = 2048L * 1024 * 1024; // 2 GiB floor
+        var overrideMb = Environment.GetEnvironmentVariable("STINGRAY_VULKAN_MIN_FREE_RAM_MB");
+        if (overrideMb is not null && long.TryParse(overrideMb, out long mb) && mb >= 0)
+            minFreeBytes = mb * 1024 * 1024;
+
+        long availableNow = (long)GC.GetGCMemoryInfo().TotalAvailableMemoryBytes;
+        if (availableNow < minFreeBytes)
+        {
+            throw new InvalidOperationException(
+                $"VulkanHybridGdnForwardPass: aborting mandatory GPU-resident upload at '{context}' " +
+                $"— only {availableNow / (1024 * 1024):N0} MiB RAM available (floor " +
+                $"{minFreeBytes / (1024 * 1024):N0} MiB; override with " +
+                "STINGRAY_VULKAN_MIN_FREE_RAM_MB). This upload is mandatory and has no partial-" +
+                "admission fallback — continuing would risk the OS paging to disk instead of a " +
+                "clean failure. Free RAM, reduce ctx size, or use a smaller quant/checkpoint.");
+        }
     }
 
     /// <summary>

@@ -307,11 +307,6 @@ when reading `EXIT=124` in a quick test script; check for "Model loaded" in the 
 attributing a timeout to memory issues.
 
 **Now still open (updated list):**
-- No pre-flight memory-availability check exists before the mandatory core GPU upload begins
-  (Follow-up 1) — still real, still not implemented. Given how sensitive the `perLayerBytes` bug
-  above turned out to be, this remains the highest-value remaining correctness gap: a future
-  checkpoint whose *actual* core footprint doesn't fit available RAM would still only find out via
-  a Vulkan allocation failure or a swap episode, not a clear pre-flight diagnostic.
 - The tokens/sec performance pass (CLAUDE.md rule 7) comparing default (0 FFN layers on GPU) vs a
   higher fraction (5-18 layers on GPU, per the table above) is now unblocked (loading is safe at
   every fraction tested) but still not done — needs a non-reasoning-inducing prompt/temperature (or
@@ -328,6 +323,35 @@ attributing a timeout to memory issues.
   fundamentally too large for one VkBuffer. Keep the general-sharding design below as reference
   only; do not revive it without a checkpoint that actually exceeds the queried
   `maxStorageBufferRange` after every raw/native-dtype and accounting fix above has been applied.
+
+## Follow-up 4: pre-flight RAM check for the mandatory core upload (2026-09-15, later)
+
+Implemented the one remaining item from Follow-up 3's list: `VulkanHybridGdnForwardPass` now has
+`EnsureRamHeadroom(string context)`, called once right after the embedding/output upload and once
+per layer inside the main per-layer upload loop. It queries **current** available system RAM
+(`GC.GetGCMemoryInfo().TotalAvailableMemoryBytes`) rather than pre-computing a total requirement —
+deliberately, since a live signal automatically accounts for everything already committed (by this
+upload or anything else on the machine) without needing a second estimate kept in sync by hand with
+every upload path (exactly the kind of estimate/reality drift that caused the `perLayerBytes` bug in
+Follow-up 3). If available RAM drops below a floor (default 2 GiB, override
+`STINGRAY_VULKAN_MIN_FREE_RAM_MB`), it throws `InvalidOperationException` immediately with the
+current available/floor values and how far progress got — failing fast instead of continuing to
+allocate until the OS starts paging. This mandatory upload (embedding/output/per-layer
+attention+GDN) has no per-user budget knob the way the optional dense-FFN path
+(`STINGRAY_VULKAN_UMA_FRACTION`) or the CPU prefault path (`MmapPrefault`'s 80%-of-available gate)
+do, so failing fast with a clear message is the only reasonable behavior when it won't fit — there's
+no partial-admission fallback to fall back to.
+
+**Verified**: (1) a normal default-settings load still completes in ~18s, confirming the check
+doesn't false-positive during a real load that fits comfortably (64.8 GiB available at check time
+on this machine); (2) forcing `STINGRAY_VULKAN_MIN_FREE_RAM_MB=999999` triggers a clean, immediate
+`InvalidOperationException` (fails within seconds, before any layer upload work is wasted) with
+exactly the diagnostic described above — confirms the mechanism actually fires and reports
+correctly, not just that it compiles.
+
+This closes the last item from the P1 priority list in the external review that prompted Follow-ups
+2-4. Remaining open work is unchanged from the list just above (the tokens/sec performance pass,
+and the two lower-priority "observe first" watch items).
 
 ---
 
