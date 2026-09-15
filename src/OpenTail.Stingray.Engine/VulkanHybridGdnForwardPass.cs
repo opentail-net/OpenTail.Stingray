@@ -516,26 +516,35 @@ public sealed unsafe class VulkanHybridGdnForwardPass : IForwardPass
         }
 
         // ── Embedding / output upload (mirror :933-951) ────────────────
-        // Q4_K/Q6_K kept raw (Vulkan EmbedLookupQ4K/Q6K exist); Q5_K/other dequant→F32
+        // Q4_K/Q6_K/Q3_K kept raw (Vulkan EmbedLookupQ4K/Q6K/Q3K exist); Q5_K/other dequant→F32
         // (no EmbedLookupQ5K on Vulkan).
-        if (ShouldKeepFixedWeightsOnGpu(
-                model.FindTensor("token_embd.weight")!.Value,
-                model.FindTensor("output.weight")))
+        var embeddingInfo = model.FindTensor("token_embd.weight")!.Value;
+        var outputInfo = model.FindTensor("output.weight");
+        if (ShouldKeepFixedWeightsOnGpu(embeddingInfo, outputInfo, gpu.MaxStorageBufferRange))
         {
             _gpuEmbedding = UploadEmbeddingWeight("token_embd.weight", out _embDType);
             _gpuOutputNorm = UploadWeight("output_norm.weight");
-            _gpuOutputWeight = model.FindTensor("output.weight") is not null
+            _gpuOutputWeight = outputInfo is not null
                 ? UploadWeight("output.weight")
                 : _gpuEmbedding;
         }
         else
         {
-            // Keep the throw (27B/35B Q4_K fit; the 2 GB single-storage-buffer limit is the
-            // only failure mode and CPU embedding fallback is out of scope for v1).
+            // No general large-tensor sharding mechanism exists yet (tracked separately —
+            // docs/084-vulkan-large-tensor-sharding-plan.md); until then this remains a hard
+            // failure rather than a silent CPU fallback. Report the actual queried device limit
+            // and estimated on-GPU sizes so the failure is diagnosable without re-deriving them.
+            long embBytes = EstimateEmbeddingGpuBytes(embeddingInfo);
+            long outBytes = outputInfo is { } oi ? EstimateWeightGpuBytes(oi) : 0;
+            long safeBytes = (long)(gpu.MaxStorageBufferRange * 0.90);
             throw new NotSupportedException(
                 "VulkanHybridGdnForwardPass: embedding/output do not fit in a single GPU storage " +
-                "buffer (2 GB limit); CPU embedding fallback is not implemented in v1. Reduce ctx " +
-                "size or use HybridGdnForwardPass for CPU-only execution.");
+                $"buffer. Device maxStorageBufferRange={gpu.MaxStorageBufferRange:N0} bytes " +
+                $"(90% safety margin={safeBytes:N0}); estimated on-GPU sizes: " +
+                $"token_embd.weight[{embeddingInfo.DType}]={embBytes:N0} bytes, " +
+                $"output.weight[{(outputInfo?.DType.ToString() ?? "tied")}]={outBytes:N0} bytes. " +
+                "CPU embedding fallback is not implemented in v1. Reduce ctx size or use " +
+                "HybridGdnForwardPass for CPU-only execution.");
         }
 
         // ── Per-layer tensor arrays (mirror :1009-1045) ────────────────
@@ -2709,6 +2718,9 @@ public sealed unsafe class VulkanHybridGdnForwardPass : IForwardPass
             case DType.Q6_K:
                 _gpu.EmbedLookupQ6K(_gpuEmbedding, dst, (uint)token, (uint)_embDim);
                 break;
+            case DType.Q3_K:
+                _gpu.EmbedLookupQ3K(_gpuEmbedding, dst, (uint)token, (uint)_embDim);
+                break;
             default:
                 _gpu.EmbedLookup(_gpuEmbedding, dst, (uint)token, (uint)_embDim);
                 break;
@@ -2815,13 +2827,21 @@ public sealed unsafe class VulkanHybridGdnForwardPass : IForwardPass
         }
         else
         {
-            // Other dtypes (e.g. Q3_K) — Vulkan matvec has no kernel; dequantize to F32.
+            // Other dtypes (IQ4_XS, IQ3_S, IQ3_XXS, Q3_K, Q2_K, IQ2_S, IQ2_XS, IQ4_NL, ...) —
+            // Vulkan has no raw matvec kernel for these (mostly the IQ codebook-quant family
+            // used by "UD"/dynamic-quant GGUFs). Dequantize to F16 rather than F32: halves the
+            // on-GPU footprint of this fallback path (still larger than the ideal raw-quant
+            // size, but a real, measured win — see docs/084-vulkan-large-tensor-sharding-plan.md
+            // §"memory accounting" for the per-dtype breakdown that motivated this). A native
+            // raw Vulkan kernel per dtype would be the further win but isn't implemented here.
             int count = (int)info.ElementCount;
             var f32 = new float[count];
             Dequantize.ToFloat32(data, f32, info.DType, count);
-            result = _gpu.Upload(f32, TensorShape.D1(count), exact: true);
-            _gpuWeightDTypes[result.Handle] = DType.Float32;
-            _uploadedVramBytes += (long)count * sizeof(float);
+            var f16 = new Half[count];
+            for (int i = 0; i < count; i++) f16[i] = (Half)f32[i];
+            result = _gpu.UploadHalf(f16, TensorShape.D1(count));
+            _gpuWeightDTypes[result.Handle] = DType.Float16;
+            _uploadedVramBytes += (long)count * sizeof(ushort);
         }
         return result;
     }
@@ -2832,9 +2852,9 @@ public sealed unsafe class VulkanHybridGdnForwardPass : IForwardPass
             ?? throw new InvalidOperationException($"Missing tensor: {name}");
         var data = _model.GetTensorData(info);
 
-        // Q4_K / Q6_K have direct-read embedding shaders — keep raw. Q5_K (no Vulkan
+        // Q4_K / Q6_K / Q3_K have direct-read embedding shaders — keep raw. Q5_K (no Vulkan
         // EmbedLookupQ5K) and everything else fall through to F32 expansion.
-        if (info.DType is DType.Q4_K or DType.Q6_K)
+        if (info.DType is DType.Q4_K or DType.Q6_K or DType.Q3_K)
         {
             var result = _gpu.UploadRaw(data, TensorShape.D1(data.Length), info.DType, exact: true);
             _gpuWeightDTypes[result.Handle] = info.DType;
@@ -2887,35 +2907,41 @@ public sealed unsafe class VulkanHybridGdnForwardPass : IForwardPass
     }
 
     /// <summary>
-    /// Whether the embedding + output weights fit in a single 2 GB GPU storage buffer
+    /// Whether the embedding + output weights fit in a single GPU storage buffer each
     /// (mirror ShouldKeepFixedWeightsOnCpu :5700-5708, inverted: true == GPU-resident OK).
+    /// <paramref name="maxStorageBufferRange"/> is the REAL queried
+    /// <c>VkPhysicalDeviceLimits.maxStorageBufferRange</c> for this device
+    /// (<see cref="VulkanBackend.MaxStorageBufferRange"/>) — this must not be a hard-coded
+    /// constant, since it varies by driver (some report 0xFFFFFFFF, others less).
     /// </summary>
-    private static bool ShouldKeepFixedWeightsOnGpu(GgufTensorInfo embedding, GgufTensorInfo? output)
+    private static bool ShouldKeepFixedWeightsOnGpu(
+        GgufTensorInfo embedding, GgufTensorInfo? output, uint maxStorageBufferRange)
     {
-        const long maxStorageBufferBytes = 2L * 1024 * 1024 * 1024 - 1;
+        // Leave a 10% safety margin below the device's reported ceiling.
+        long safeBytes = (long)(maxStorageBufferRange * 0.90);
         // The embedding and output have DIFFERENT on-GPU sizes because they take different
-        // upload paths: UploadEmbeddingWeight keeps only Q4_K/Q6_K raw (no EmbedLookupQ5K, so
-        // Q5_K and others F32-expand), whereas UploadWeight (output) keeps the full raw-quant
+        // upload paths: UploadEmbeddingWeight keeps only Q4_K/Q6_K/Q3_K raw (no EmbedLookupQ5K,
+        // so Q5_K and others F32-expand), whereas UploadWeight (output) keeps the full raw-quant
         // set. Estimate each with the size it will ACTUALLY occupy.
-        if (EstimateEmbeddingGpuBytes(embedding) > maxStorageBufferBytes) return false;
-        if (output is not null && EstimateWeightGpuBytes(output.Value) > maxStorageBufferBytes) return false;
+        if (EstimateEmbeddingGpuBytes(embedding) > safeBytes) return false;
+        if (output is not null && EstimateWeightGpuBytes(output.Value) > safeBytes) return false;
         return true;
     }
 
-    /// <summary>On-GPU size of the embedding table (mirror UploadEmbeddingWeight: Q4_K/Q6_K raw, else F32).</summary>
+    /// <summary>On-GPU size of the embedding table (mirror UploadEmbeddingWeight: Q4_K/Q6_K/Q3_K raw, else F32).</summary>
     private static long EstimateEmbeddingGpuBytes(GgufTensorInfo tensor)
     {
-        if (tensor.DType is DType.Q4_K or DType.Q6_K)
+        if (tensor.DType is DType.Q4_K or DType.Q6_K or DType.Q3_K)
             return tensor.ByteSize;
         return (long)tensor.ElementCount * sizeof(float);
     }
 
-    /// <summary>On-GPU size of a matvec weight (mirror UploadWeight: raw-quant set kept raw, else F32).</summary>
+    /// <summary>On-GPU size of a matvec weight (mirror UploadWeight: raw-quant set kept raw, else F16).</summary>
     private static long EstimateWeightGpuBytes(GgufTensorInfo tensor)
     {
         if (tensor.DType is DType.Q4_K or DType.Q6_K or DType.Q5_K or DType.Q8_0 or DType.Q4_0)
             return tensor.ByteSize;
-        return (long)tensor.ElementCount * sizeof(float);
+        return (long)tensor.ElementCount * sizeof(ushort);
     }
 
     private static float* Alloc(int count) =>

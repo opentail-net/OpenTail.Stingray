@@ -1,6 +1,182 @@
 # Vulkan large-tensor sharding — Qwen3.8-27B (qwen35 hybrid-GDN) GPU-only support
 
-**Status:** plan (not yet implemented)
+**Status:** root cause found to be narrower than assumed; the actual fix is implemented and
+**awaiting a real-weight test run** (blocked — see "What changed since the plan was written").
+General multi-VkBuffer sharding (the bulk of this document) turned out to be unnecessary for
+this specific checkpoint and remains undesigned/unimplemented; kept below for reference should a
+future checkpoint genuinely exceed the device's `maxStorageBufferRange`.
+
+## What changed since the plan was written (read this first)
+
+Phase 0 measurement (§1 below) found the actual failure was **not** a fundamentally-oversized
+tensor needing multi-buffer sharding — it was a missing raw-quant Vulkan embedding-lookup shader
+for one specific dtype, causing an unnecessary ~9x F32 blow-up:
+
+- `token_embd.weight` in `Qwen3.8-27B-UD-Q3_K_XL.gguf` is **Q3_K, [5120, 248320], 521.0 MiB raw**
+  (measured via `list-tensors`). Vulkan had `EmbedLookupQ4K`/`EmbedLookupQ6K` raw-read shaders but
+  none for Q3_K, so `UploadEmbeddingWeight` fell through to its generic F32-expand path:
+  248320 × 5120 × 4 bytes ≈ **4.66 GiB** — comfortably over the (previously hard-coded) 2 GiB
+  ceiling.
+- `output.weight` is **Q5_K, [5120, 248320], 833.6 MiB raw** — already in `UploadWeight`'s
+  raw-kept dtype set (`Q4_K/Q5_K/Q6_K/Q8_0/Q4_0`), so it was never the problem.
+- The 2 GiB ceiling in `ShouldKeepFixedWeightsOnGpu` was also a **hard-coded constant**, never
+  actually queried from `VkPhysicalDeviceLimits.maxStorageBufferRange` — a second, independent
+  bug (would have misfired on any device whose real limit differs from 2 GiB in either direction).
+
+**Fix implemented** (no sharding infrastructure needed):
+1. Added `EmbedLookupQ3K` — a new Vulkan compute shader that dequantizes Q3_K rows directly
+   (mirrors `Dequantize.DequantQ3K`'s bit-for-bit logic; ggml `dequantize_row_q3_K` layout).
+   `token_embd.weight` now stays raw at 521 MiB instead of expanding to 4.66 GiB.
+2. `VulkanBackend` now queries and logs the real `maxStorageBufferRange`/
+   `maxMemoryAllocationCount` at device init (`VulkanBackend.MaxStorageBufferRange` property) and
+   `ShouldKeepFixedWeightsOnGpu` uses it (× 0.90 safety margin) instead of the old hard-coded
+   2 GiB constant.
+3. The `NotSupportedException` message (for the case that's now believed unreachable for this
+   checkpoint) reports the actual queried limit and estimated tensor sizes instead of a fixed
+   "2 GB limit" string, so any future trip is diagnosable without re-deriving these numbers.
+4. Boundary-correctness tests added: `EmbedLookupQ3KMatchesCpu` (small synthetic table) and
+   `EmbedLookupQ3KBoundaryRowsMatchCpu` (first/middle/last rows of a 37-row table) in
+   `tests/OpenTail.Stingray.Tests.Vulkan/VulkanShaderTests.cs`, mirroring the existing
+   `EmbedLookupQ6KMatchesCpu` pattern — compares GPU shader output against
+   `Dequantize.ToFloat32(..., DType.Q3_K, ...)` byte-for-byte.
+
+**Verification status — 2026-09-15, confirmed working:**
+- `dotnet build` succeeds clean for `OpenTail.Stingray.Vulkan`, `.Engine`, `.Cli`, and
+  `tests/OpenTail.Stingray.Tests.Vulkan` (0 warnings, 0 errors).
+- `scripts/gen-spirv.ps1` ran successfully — `glslc` accepted `EmbedLookupQ3K`'s GLSL and it's in
+  the committed precompiled SPIR-V table (`Shaders.Precompiled.g.cs`).
+- **Boundary-correctness tests ran and passed** (`STINGRAY_RUN_HEAVY_TESTS=1`, invoked the built
+  `.exe` directly with `-method "*EmbedLookupQ3K*"` per CLAUDE.md's filter guidance):
+  ```
+  EmbedLookupQ3K: 0 mismatches over 2560 values
+  Total: 2, Errors: 0, Failed: 0, Skipped: 0, Not Run: 0
+  ```
+  This also confirmed, from a real run on this machine's driver, that
+  `maxStorageBufferRange = 4,294,967,295` (4 GiB − 1) — **double** the old hard-coded 2 GiB
+  assumption, exactly the kind of driver variance the device-limit-query fix was meant to catch.
+- **Full-model smoke test ran and passed**: `dotnet run --project src/OpenTail.Stingray.Cli -c
+  Release -- -m models/_models/Qwen3.8-27B-UD-Q3_K_XL.gguf -p "The capital of France is" --temp 0
+  -g 16 --backend vulkan` loads cleanly (no `NotSupportedException`), logs
+  `[VulkanBackend] Device limits: maxStorageBufferRange=4,294,967,295 bytes (4.00 GiB)`, uploads
+  all 64 layers, and begins generating real tokens (`Prefill: 57 tokens ... | Decode: ... t/s`).
+  Confirmed exit code 0 on a second, shorter run.
+- Decode throughput is very slow (~0.2 t/s) because the dense FFN doesn't fit this iGPU's ~16 GB
+  placement budget alongside a 27B model's other weights and stays CPU-resident (logged:
+  `Dense FFN-on-GPU: budget -11842 MiB < per-layer 84 MiB ... All FFN stays on CPU`). This is an
+  expected, separate hardware-budget characteristic of this integrated-GPU box (see CLAUDE.md
+  rule 13 — do not read this as a defect in the Q3_K fix; a real discrete-GPU run with more VRAM
+  would place more/all FFN layers on GPU and decode far faster). **No performance pass has been
+  done** on this path yet (CLAUDE.md rule 7) — that remains open, as does deciding whether the
+  FFN GPU/CPU placement heuristic is worth revisiting for this checkpoint specifically.
+
+**Conclusion: the Qwen3.8-27B (qwen35 hybrid-GDN) Vulkan GPU path now works end-to-end** — model
+loads, all weights upload, forward pass runs, tokens generate — without any CPU embedding/LM-head
+fallback and without the general sharding mechanism ChatGPT's original writeup called for. The
+one remaining gap is throughput on this specific low-VRAM iGPU, which is a placement/performance
+question, not a correctness one.
+
+## Follow-up: memory-overshoot root cause (2026-09-15, later same day)
+
+After the above was confirmed working, the user pointed out this exact checkpoint (13.15 GB on
+disk — confirmed via `ls`) is normally a model that "fits onto graphics cards," and asked why the
+Vulkan path was using dramatically more memory than that — enough that testing an aggressive
+placement-budget override (`STINGRAY_VULKAN_UMA_FRACTION=1.0`) visibly made the machine start
+swapping to disk. Investigated and fixed the actual cause (separate from the Q3_K embedding bug
+above):
+
+**Root cause**: `UploadWeight`'s raw-kept dtype set (`Q4_K/Q5_K/Q6_K/Q8_0/Q4_0`) covers only 5 of
+the 13 GGUF dtypes this "UD" (Unsloth Dynamic) quant actually mixes across tensors. A `list-tensors`
+dtype tally on this checkpoint found 339 of 866 tensors use a dtype with **no raw Vulkan matvec
+kernel at all** (`IQ4_XS`×156, `IQ3_S`×111, `IQ3_XXS`×34, `IQ2_S`×15, `Q3_K`×12, `IQ2_XS`×4,
+`Q2_K`×3, `IQ4_NL`×2, `IQ2_XXS`×2) — these silently fell through to a full **F32** dequant-and-
+upload, a 4-16x blow-up over their raw quantized size depending on the original bit-width. Summing
+just the 142 of these that are "core" mandatory GPU-resident tensors (attention/GDN per layer —
+excludes dense FFN, which stays CPU-resident by default, and the already-fixed embedding/output)
+found **+19.41 GiB of pure waste** versus their raw size, with `IQ4_XS` (+9.55 GiB) and `IQ3_S`
+(+6.45 GiB) the two dominant contributors. This, not any tensor being fundamentally too large for a
+single VkBuffer, is why the "core" GPU-resident footprint measured **26.9 GiB** for a checkpoint
+whose whole file is 13.15 GB — nearly all of the excess was avoidable F32 dequant waste on a
+handful of dtypes lacking raw kernels, not a real memory requirement.
+
+**Why this matters for "both CPU and GPU paths"** (the user's framing): the *mandatory* GPU-resident
+upload (embedding/output/all per-layer attention+GDN weights) has **zero memory-availability check**
+in `VulkanHybridGdnForwardPass`'s constructor — unlike the CPU-resident dense-FFN prefault path
+(`MmapPrefault.ShouldRun`, gated at 80% of currently-available RAM for `RamGate.FitsInRam` callers)
+or the optional Dense-FFN-on-GPU path (gated by `STINGRAY_VULKAN_UMA_FRACTION` × heap size). If the
+mandatory core doesn't comfortably fit in available physical RAM, Vulkan's host-visible allocation
+on this iGPU (shared system RAM, not dedicated VRAM) just keeps succeeding — Windows starts paging
+to disk with no early warning and no way to abort cleanly. The two purely CPU-only forward-pass
+paths (`ForwardPass.cs`, `HybridGdnForwardPass.cs`) have the same shape of gap in the other
+direction: they use `MmapPrefault.RamGate.Always`, deliberately bypassing the 80%-available-RAM
+gate entirely ("you chose CPU-only, prefaulting is the point") — reasonable when the model
+comfortably fits, but it means a model that doesn't fit gets force-faulted into RAM with no
+warning there either. **Not yet fixed**: neither of these gaps has a pre-flight check added in this
+session — the F16 mitigation below addressed the actual numbers enough that the GPU-path gap didn't
+need to be exercised further, but the *absence of a check* is still real and worth closing later
+(see "Still open" below).
+
+**Fix implemented**: rather than hand-writing native Vulkan kernels for the IQ-family codebook
+quantizations (`IQ4_XS`/`IQ3_S`/etc. use a lookup-table/grid-based dequant scheme, materially more
+complex and higher-risk to get right blind than the linear K-quant math already ported for Q3_K),
+the "no raw kernel" fallback in `UploadWeight` now dequantizes to **F16** instead of F32:
+- Added `MatVecF16` (`src/OpenTail.Stingray.Vulkan/Shaders.cs`) — a straightforward weight-stationary
+  GEMV reading packed FP16 (2 halves/uint32 via `unpackHalf2x16`, same convention as
+  `VulkanBackend.UploadHalf`), mirroring the existing `MatVecF32` shader's reduction pattern.
+  Wired into `VulkanBackend.MatMul`'s dtype switch as `case DType.Float16`.
+- `UploadWeight`'s fallback branch now dequantizes to `float[]` (unchanged, still needed as an
+  intermediate since `Dequantize.ToFloat32` is the only CPU reference implementation), casts
+  element-wise to `Half[]`, and calls `UploadHalf` instead of `Upload` — halving the footprint of
+  every affected tensor versus the old F32 path.
+- `EstimateWeightGpuBytes` updated to match (informational — for the `ShouldKeepFixedWeightsOnGpu`
+  budget check and the diagnostic error message; doesn't change this checkpoint's outcome since
+  `output.weight` is Q5_K, already raw-kept).
+- New test `MatVecF16MatchesCpu` (`tests/OpenTail.Stingray.Tests.Vulkan/VulkanShaderTests.cs`) —
+  synthetic (no model fixture needed), deliberately non-power-of-2/non-multiple-of-8 dimensions to
+  exercise the tail workgroup/lane paths, compares against a CPU reference computed on the
+  **F16-rounded** weights (not the original F32) so the assertion isn't just measuring expected
+  rounding noise. **Ran and passed**: `MatVecF16: 0/37 mismatches (>1% rel error)`.
+  `EmbedLookupQ3K`/`EmbedLookupQ3KBoundaryRowsMatchCpu` re-ran clean alongside it (no regression).
+
+**Measured result** (`STINGRAY_VULKAN_UMA_FRACTION` left at its default, unset/0.5 — no risky
+overrides): core GPU-resident footprint dropped from **26.9 GiB → ~14.9 GiB** (inferred from the
+`Dense FFN-on-GPU` budget line flipping from deeply negative, `-11842 MiB`, to positive enough for
+1 layer at the same 50%-heap/16076 MiB budget — bounds it to 14,884–14,968 MiB) for a checkpoint
+whose file is 13.15 GB. That's now within a plausible margin of the actual on-disk size (the
+remaining gap is norms kept F32, the still-larger-than-raw F16 fallback for IQ/Q3_K/Q2_K tensors,
+and scratch/KV-cache buffers) instead of more than double it. Verified via `Get-Counter
+'\Memory\Available MBytes'`/`'\Memory\Pages/sec'` before and after: available RAM stayed ~48-51 GB
+throughout, 0 pages/sec (no swapping) at the default fraction, both before and after this fix.
+
+**Still open / not attempted further this session:**
+- No pre-flight memory-availability check exists before the mandatory GPU-resident upload begins
+  (see "Why this matters" above) — a future checkpoint whose *actual* core footprint (even after
+  this F16 fix) doesn't fit available RAM would still silently start swapping rather than failing
+  fast with a clear message. Same gap exists on the `RamGate.Always` CPU-only paths.
+- Tested bumping `STINGRAY_VULKAN_UMA_FRACTION=0.7` (safe now that core is ~15 GiB, not 27 GiB —
+  22,507 MiB budget, comfortably above core+margin) to let more/all dense FFN layers onto GPU: **no
+  swapping observed** (confirmed via the same Available-MBytes/Pages-sec check, both before and
+  after), but the run didn't finish within a 150s timeout — it was still inside the
+  `Dense FFN-on-GPU` upload step when killed. Likely cause: the new element-wise `f32[i] → (Half)`
+  scalar conversion loop in `UploadWeight`, now also applied to the (much larger) dense FFN tensors
+  when more of them get GPU-budgeted, isn't vectorized — plausible but **not measured/confirmed**,
+  don't treat as fact. This is a genuine, separate performance question (slow, not unsafe) —
+  left at the safe default (`STINGRAY_VULKAN_UMA_FRACTION` unset) rather than chased further
+  live/unsupervised. A profiled follow-up (confirm the bottleneck, vectorize the F32→F16 cast e.g.
+  via `System.Numerics.Tensors`/SIMD, re-measure) is the natural next step.
+- A local Vulkan-enabled llama.cpp build was started (`examples/llama.cpp/llama.cpp`, `cmake -B
+  build -DGGML_VULKAN=ON` configured successfully) as an independent ground-truth reference for
+  this checkpoint's real GPU memory/token-rate profile, but the build failed on the bundled web UI
+  target (unrelated to `ggml`/core `llama-cli` compilation — the failure output was truncated in
+  this session before the real error line). Not pursued further given the direct measurements
+  above already answered the question; revisit with `-DLLAMA_BUILD_SERVER=OFF`-style flags to skip
+  the UI target if a ground-truth comparison is wanted later.
+- CLAUDE.md rule 7's mandatory performance pass (multiple samples, real weights, written-down
+  numbers) has still not been done for the Vulkan qwen35 path as a whole — everything measured in
+  this session was memory footprint and pass/fail correctness, not tokens/sec.
+
+---
+
+## Original plan below (status: superseded for this checkpoint, kept for reference)
 **Target:** `models/_models/Qwen3.8-27B-UD-Q3_K_XL.gguf` (hybrid-GDN, `qwen35` arch) — checkpoint
 already present locally, no download needed.
 **Backend:** `OpenTail.Stingray.Vulkan` / `VulkanHybridGdnForwardPass`

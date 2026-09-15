@@ -426,6 +426,71 @@ public sealed unsafe class VulkanShaderTests : HeavyTestBase
         backend.Free(gpuOutput);
     }
 
+    // docs/084-vulkan-large-tensor-sharding-plan.md: dtypes with no raw Vulkan matvec kernel
+    // (IQ4_XS, IQ3_S, IQ3_XXS, Q3_K, Q2_K, IQ2_S, IQ4_NL, ...) now dequantize to F16 instead of
+    // F32 in VulkanHybridGdnForwardPass.UploadWeight, halving their on-GPU footprint. This test
+    // is synthetic (no model fixture needed) — it just verifies the new MatVecF16 shader's packed
+    // fp16-via-uint32 dot product against a plain CPU reference.
+    [Fact]
+    public void MatVecF16MatchesCpu()
+    {
+        using var backend = CreateBackendOrSkip();
+
+        const int matRows = 37;   // deliberately not a multiple of N_ROWS (8) to hit the tail workgroup
+        const int matCols = 130;  // even (required), not a power of 2, to hit the tail of THREADS_PER_ROW
+
+        var rng = new Random(1601);
+        var f32Weights = new float[matRows * matCols];
+        for (int i = 0; i < f32Weights.Length; i++)
+            f32Weights[i] = (float)(rng.NextDouble() * 2 - 1);
+
+        var input = new float[matCols];
+        for (int i = 0; i < matCols; i++) input[i] = (float)(rng.NextDouble() * 2 - 1);
+
+        // CPU reference computed against the F16-ROUNDED weights (matching what the GPU actually
+        // sees after VulkanHybridGdnForwardPass's (Half) cast), not the original F32 values —
+        // otherwise every mismatch would just be expected F16 rounding noise, not a real bug.
+        var f16Weights = new Half[f32Weights.Length];
+        for (int i = 0; i < f32Weights.Length; i++) f16Weights[i] = (Half)f32Weights[i];
+
+        var cpuOutput = new float[matRows];
+        for (int r = 0; r < matRows; r++)
+        {
+            float sum = 0;
+            for (int c = 0; c < matCols; c++)
+                sum += (float)f16Weights[r * matCols + c] * input[c];
+            cpuOutput[r] = sum;
+        }
+
+        var gpuWeights = backend.UploadHalf(f16Weights, TensorShape.D1(f16Weights.Length));
+        var gpuInput = backend.Upload(input, TensorShape.D1(matCols));
+        var gpuOutput = backend.Allocate(TensorShape.D1(matRows));
+
+        backend.MatMul(gpuOutput, gpuWeights, gpuInput, DType.Float16);
+
+        var gpuResult = new float[matRows];
+        backend.Download(gpuOutput, gpuResult);
+
+        int mismatches = 0;
+        for (int i = 0; i < matRows; i++)
+        {
+            float diff = MathF.Abs(gpuResult[i] - cpuOutput[i]);
+            float relDiff = diff / (MathF.Abs(cpuOutput[i]) + 1e-6f);
+            if (relDiff > 0.01f)
+            {
+                if (mismatches < 5)
+                    Console.WriteLine($"  [{i}]: gpu={gpuResult[i]:F4} cpu={cpuOutput[i]:F4} rel={relDiff:P1}");
+                mismatches++;
+            }
+        }
+        Console.WriteLine($"MatVecF16: {mismatches}/{matRows} mismatches (>1% rel error)");
+        Assert.Equal(0, mismatches);
+
+        backend.Free(gpuWeights);
+        backend.Free(gpuInput);
+        backend.Free(gpuOutput);
+    }
+
     [Fact]
     public void MatVecQ6KMatchesCpu()
     {
@@ -1280,6 +1345,129 @@ public sealed unsafe class VulkanShaderTests : HeavyTestBase
             }
         }
         Console.WriteLine($"EmbedLookupQ6K: {totalMismatches} mismatches over {vocab * embDim} values");
+        Assert.Equal(0, totalMismatches);
+
+        backend.Free(gpuEmb);
+        backend.Free(gpuOut);
+    }
+
+    // Q3_K: 110 bytes/block over 256 elements. Layout matches DequantQ3K:
+    //   [0:32] hmask (1 high bit per element), [32:96] qs (2 low bits per element, 4/byte),
+    //   [96:108] 12 bytes packed 6-bit scales, [108:110] FP16 d (super-block scale).
+    // Any byte values are valid for hmask/qs/scales (the bit-unpack just reads them).
+    // cols must be a multiple of 256.
+    private static byte[] BuildQ3_K(int rows, int cols, int seed)
+    {
+        const int qk = 256, blockBytes = 110;
+        int blocksPerRow = cols / qk;
+        var bytes = new byte[rows * blocksPerRow * blockBytes];
+        var rng = new Random(seed);
+        int off = 0;
+        for (int b = 0; b < rows * blocksPerRow; b++)
+        {
+            for (int j = 0; j < 108; j++)                                         // hmask + qs + scales
+                bytes[off + j] = (byte)rng.Next(0, 256);
+            PutHalf(bytes, off + 108, (float)(rng.NextDouble() * 0.045 + 0.005)); // d
+            off += blockBytes;
+        }
+        return bytes;
+    }
+
+    [Fact]
+    public void EmbedLookupQ3KMatchesCpu()
+    {
+        using var backend = CreateBackendOrSkip();
+
+        // Synthetic Q3_K embedding: a few rows, embDim a multiple of 256.
+        const int vocab = 5;
+        const int embDim = 512;          // 2 Q3_K blocks per row
+        const int blockBytes = 110;
+        int blocksPerRow = embDim / 256;
+        var embBytes = BuildQ3_K(vocab, embDim, seed: 3033);
+
+        // Upload raw Q3_K bytes reinterpreted as floats (round up to 4 bytes), exactly
+        // as VulkanHybridGdnForwardPass keeps a Q3_K embedding table raw in VRAM.
+        int floatCount = (embBytes.Length + 3) / 4;
+        var rawAsFloats = new float[floatCount];
+        embBytes.CopyTo(System.Runtime.InteropServices.MemoryMarshal.AsBytes(rawAsFloats.AsSpan()));
+        var gpuEmb = backend.Upload(rawAsFloats, TensorShape.D1(floatCount));
+        var gpuOut = backend.Allocate(TensorShape.D1(embDim));
+
+        int totalMismatches = 0;
+        for (uint token = 0; token < vocab; token++)
+        {
+            backend.EmbedLookupQ3K(gpuEmb, gpuOut, token, embDim);
+            var gpuRow = new float[embDim];
+            backend.Download(gpuOut, gpuRow);
+
+            // CPU reference: dequantize the SAME bytes for this row. Both sides decode
+            // identical bytes via the same (dAll * (scale-32) * q) recipe, so they must match.
+            var cpuRow = new float[embDim];
+            int rowOff = (int)token * blocksPerRow * blockBytes;
+            OpenTail.Stingray.Cpu.Dequantize.ToFloat32(
+                embBytes.AsSpan(rowOff, blocksPerRow * blockBytes), cpuRow, DType.Q3_K, embDim);
+
+            for (int i = 0; i < embDim; i++)
+            {
+                float diff = MathF.Abs(gpuRow[i] - cpuRow[i]);
+                if (diff > 1e-2f)
+                {
+                    if (totalMismatches < 5)
+                        Console.WriteLine($"  tok={token} [{i}]: gpu={gpuRow[i]:F4} cpu={cpuRow[i]:F4} abs={diff:E2}");
+                    totalMismatches++;
+                }
+            }
+        }
+        Console.WriteLine($"EmbedLookupQ3K: {totalMismatches} mismatches over {vocab * embDim} values");
+        Assert.Equal(0, totalMismatches);
+
+        backend.Free(gpuEmb);
+        backend.Free(gpuOut);
+    }
+
+    // Boundary check (docs/084-vulkan-large-tensor-sharding-plan.md Phase 4): tokens at the
+    // first row, a middle row, and the last row of a larger synthetic table, to catch an
+    // off-by-one in the per-thread (n_iter/j/half/l) index decomposition that a small vocab
+    // (like the 5-row test above) wouldn't exercise across enough distinct rows/bytes.
+    [Fact]
+    public void EmbedLookupQ3KBoundaryRowsMatchCpu()
+    {
+        using var backend = CreateBackendOrSkip();
+
+        const int vocab = 37;
+        const int embDim = 256;          // 1 Q3_K block per row
+        const int blockBytes = 110;
+        var embBytes = BuildQ3_K(vocab, embDim, seed: 30337);
+
+        int floatCount = (embBytes.Length + 3) / 4;
+        var rawAsFloats = new float[floatCount];
+        embBytes.CopyTo(System.Runtime.InteropServices.MemoryMarshal.AsBytes(rawAsFloats.AsSpan()));
+        var gpuEmb = backend.Upload(rawAsFloats, TensorShape.D1(floatCount));
+        var gpuOut = backend.Allocate(TensorShape.D1(embDim));
+
+        int totalMismatches = 0;
+        foreach (uint token in new uint[] { 0, 1, (uint)(vocab / 2), (uint)(vocab - 2), (uint)(vocab - 1) })
+        {
+            backend.EmbedLookupQ3K(gpuEmb, gpuOut, token, embDim);
+            var gpuRow = new float[embDim];
+            backend.Download(gpuOut, gpuRow);
+
+            var cpuRow = new float[embDim];
+            int rowOff = (int)token * blockBytes;
+            OpenTail.Stingray.Cpu.Dequantize.ToFloat32(
+                embBytes.AsSpan(rowOff, blockBytes), cpuRow, DType.Q3_K, embDim);
+
+            for (int i = 0; i < embDim; i++)
+            {
+                float diff = MathF.Abs(gpuRow[i] - cpuRow[i]);
+                if (diff > 1e-2f)
+                {
+                    if (totalMismatches < 5)
+                        Console.WriteLine($"  tok={token} [{i}]: gpu={gpuRow[i]:F4} cpu={cpuRow[i]:F4} abs={diff:E2}");
+                    totalMismatches++;
+                }
+            }
+        }
         Assert.Equal(0, totalMismatches);
 
         backend.Free(gpuEmb);

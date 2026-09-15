@@ -2069,6 +2069,101 @@ internal static class Shaders
         """;
 
     /// <summary>
+    /// Embedding lookup from a Q3_K quantized table: dequantize one row to F32 output.
+    /// Mirrors the CPU <c>DequantQ3K</c> (Dequantize.cs) bit-for-bit — added so a large Q3_K
+    /// tied/untied embedding (e.g. qwen35 hybrid-GDN's [5120, 248320] token_embd.weight, 521 MiB
+    /// raw) doesn't fall through to the generic F32-expand path, which would balloon it to
+    /// ~4.7 GiB and exceed a single VkBuffer's storage-buffer range.
+    ///
+    /// Q3_K block (110 bytes per 256 elements):
+    ///   [0:32]    hmask — 1 high bit per element
+    ///   [32:96]   qs — 2 low bits per element, 4 per byte
+    ///   [96:108]  12 bytes packed 6-bit scales (16 scales, ggml aux[] encoding)
+    ///   [108:110] FP16 d (super-block scale)
+    ///
+    /// 256 threads cooperate: each processes one block (256 elements) sequentially, thread
+    /// <c>tid</c> emitting element <c>tid</c> of each 256-element super-block. Per-thread index
+    /// decomposition (n_iter/j/half/l) mirrors the CPU's nested n/j/l loop order exactly so the
+    /// scale index, hmask bit, and qs byte/shift line up with ggml's dequantize_row_q3_K.
+    ///
+    /// Push constants: { uint token_id, uint emb_dim }.
+    /// Bindings: 0=quantized_table (uint8 via uint32[]), 1=output[emb_dim].
+    /// Dispatch: 1 workgroup.
+    /// </summary>
+    internal const string EmbedLookupQ3K = """
+        #version 450
+        layout(local_size_x = 256) in;
+
+        layout(binding = 0) readonly buffer EmbTable { uint emb_data[]; };
+        layout(binding = 1) writeonly buffer Output  { float output_data[]; };
+
+        layout(push_constant) uniform Params {
+            uint token_id;
+            uint emb_dim;
+        };
+
+        uint gByte(uint b) { return (emb_data[b >> 2] >> ((b & 3) * 8)) & 0xFFu; }
+
+        void main() {
+            uint tid = gl_LocalInvocationID.x; // 0..255: one output element per block
+            uint num_blocks = emb_dim >> 8;    // emb_dim / 256
+
+            const uint kmask1 = 0x03030303u;
+            const uint kmask2 = 0x0f0f0f0fu;
+
+            uint bytes_per_row = num_blocks * 110u;
+            uint row_byte_base = token_id * bytes_per_row;
+
+            // Decompose tid into the same (n_iter, j, half, l) indices the CPU's nested
+            // "for n in {0,128}; for j in 0..3; for half in {0,1}; for l in 0..15" loop visits,
+            // in the same visitation order (so tid == the CPU loop's flat output index).
+            uint n_iter = tid >> 7;   // 0 or 1  (n = 0 or 128)
+            uint k = tid & 127u;
+            uint j = k >> 5;         // 0..3
+            uint kk = k & 31u;
+            uint half_ = kk >> 4;    // 0 or 1
+            uint l = kk & 15u;
+
+            uint hmaskByteIdx = l + half_ * 16u;
+            uint qsByteIdx    = 32u + n_iter * 32u + l + half_ * 16u;
+            uint bitIndex     = n_iter * 4u + j;
+            uint shift        = j * 2u;
+            uint scaleIdx     = n_iter * 8u + j * 2u + half_;
+            uint m            = 1u << bitIndex;
+
+            for (uint block = 0; block < num_blocks; block++) {
+                uint b0 = row_byte_base + block * 110u;
+
+                // Unpack 16 six-bit scales from the 12-byte packed region (bytes 96..107),
+                // exactly mirroring ggml's aux[] manipulation.
+                uint w0 = gByte(b0+96)  | (gByte(b0+97)  << 8) | (gByte(b0+98)  << 16) | (gByte(b0+99)  << 24);
+                uint w1 = gByte(b0+100) | (gByte(b0+101) << 8) | (gByte(b0+102) << 16) | (gByte(b0+103) << 24);
+                uint w2 = gByte(b0+104) | (gByte(b0+105) << 8) | (gByte(b0+106) << 16) | (gByte(b0+107) << 24);
+
+                uint aux0 = (w0 & kmask2)        | (((w2 >> 0) & kmask1) << 4);
+                uint aux1 = (w1 & kmask2)        | (((w2 >> 2) & kmask1) << 4);
+                uint aux2 = ((w0 >> 4) & kmask2) | (((w2 >> 4) & kmask1) << 4);
+                uint aux3 = ((w1 >> 4) & kmask2) | (((w2 >> 6) & kmask1) << 4);
+
+                uint scByte;
+                if (scaleIdx < 4u)       scByte = (aux0 >> (scaleIdx * 8u)) & 0xFFu;
+                else if (scaleIdx < 8u)  scByte = (aux1 >> ((scaleIdx - 4u) * 8u)) & 0xFFu;
+                else if (scaleIdx < 12u) scByte = (aux2 >> ((scaleIdx - 8u) * 8u)) & 0xFFu;
+                else                     scByte = (aux3 >> ((scaleIdx - 12u) * 8u)) & 0xFFu;
+
+                float dAll = unpackHalf2x16(gByte(b0 + 108) | (gByte(b0 + 109) << 8)).x;
+                float dl = dAll * (float(scByte) - 32.0);
+
+                uint hbit = gByte(b0 + hmaskByteIdx) & m;
+                uint qbyte = gByte(b0 + qsByteIdx);
+                int q = int((qbyte >> shift) & 3u) - (hbit != 0u ? 0 : 4);
+
+                output_data[block * 256u + tid] = dl * float(q);
+            }
+        }
+        """;
+
+    /// <summary>
     /// Copy K and V vectors into the KV cache at the given position.
     /// Push constants: { uint kv_dim, uint position, uint max_seq_len }.
     /// Bindings: 0=k_input[kv_dim], 1=v_input[kv_dim], 2=k_cache[max_seq_len*kv_dim], 3=v_cache[max_seq_len*kv_dim].
@@ -3744,6 +3839,64 @@ internal static class Shaders
             uint base_off = row * cols;
             for (uint i = lane; i < cols; i += THREADS_PER_ROW)
                 acc += weights_data[base_off + i] * input_data[i];
+
+            sdata[tid] = acc;
+            barrier();
+            [[unroll]] for (uint s = 16; s > 0; s >>= 1) {
+                if (lane < s) sdata[tid] += sdata[tid + s];
+                barrier();
+            }
+            if (lane == 0)
+                output_data[row] = sdata[tid];
+        }
+        """;
+
+    /// <summary>
+    /// F16 matrix-vector multiply: weight matrix stored as packed FP16 (2 halves per uint32,
+    /// read via <c>unpackHalf2x16</c> — same packing as <see cref="VulkanBackend.UploadHalf"/>).
+    /// Used for GGUF dtypes with no raw Vulkan matvec kernel (e.g. IQ4_XS, IQ3_S, IQ3_XXS, Q3_K,
+    /// Q2_K, IQ2_S, IQ4_NL): dequantizing those to F16 instead of F32 halves the on-GPU footprint
+    /// of the CPU-side dequant-and-upload fallback. <paramref name="cols"/> must be even (true
+    /// for every model dimension in this codebase).
+    /// Push constants: { uint rows, uint cols }.
+    /// Bindings: 0=weights (packed fp16 via uint32[]), 1=input[cols], 2=output[rows].
+    /// </summary>
+    internal const string MatVecF16 = """
+        #version 450
+        #extension GL_EXT_control_flow_attributes : enable
+
+        // 8 rows per workgroup, 32 threads per row = 256 threads.
+        #define N_ROWS 8
+        #define THREADS_PER_ROW 32
+
+        layout(local_size_x = 256) in;
+
+        layout(binding = 0) readonly buffer Weights { uint weights_data[]; }; // 2x fp16/uint32
+        layout(binding = 1) readonly buffer Input   { float input_data[]; };
+        layout(binding = 2) writeonly buffer Output  { float output_data[]; };
+
+        layout(push_constant) uniform Params {
+            uint rows;
+            uint cols;
+        };
+
+        shared float sdata[256];
+
+        void main() {
+            uint tid = gl_LocalInvocationID.x;
+            uint row_in_wg = tid / THREADS_PER_ROW;
+            uint lane = tid % THREADS_PER_ROW;
+            uint row = gl_WorkGroupID.x * N_ROWS + row_in_wg;
+            if (row >= rows) return;
+
+            uint half_pairs = cols >> 1;
+            uint base_off = row * half_pairs;
+
+            float acc = 0.0;
+            for (uint i = lane; i < half_pairs; i += THREADS_PER_ROW) {
+                vec2 w2 = unpackHalf2x16(weights_data[base_off + i]);
+                acc += w2.x * input_data[2u * i] + w2.y * input_data[2u * i + 1u];
+            }
 
             sdata[tid] = acc;
             barrier();

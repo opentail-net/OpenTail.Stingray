@@ -342,6 +342,18 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
         fixed (byte* namePtr = _deviceProperties.deviceName)
             Name = $"Vulkan GPU ({new string((sbyte*)namePtr)})";
 
+        // Real device ceiling for a single VkBuffer/descriptor binding (issue: oversized
+        // embedding/output tensors on large-vocab models, e.g. qwen35 hybrid-GDN). Callers
+        // that need to decide whether a tensor must be sharded across multiple VkBuffers
+        // MUST read this instead of assuming a fixed 2 GiB limit — drivers vary (some report
+        // 0xFFFFFFFF / 4 GiB-1, others less).
+        MaxStorageBufferRange = _deviceProperties.limits.maxStorageBufferRange;
+        MaxMemoryAllocationCount = _deviceProperties.limits.maxMemoryAllocationCount;
+        Console.Error.WriteLine(
+            $"[VulkanBackend] Device limits: maxStorageBufferRange={MaxStorageBufferRange:N0} bytes " +
+            $"({MaxStorageBufferRange / (1024.0 * 1024 * 1024):F2} GiB), " +
+            $"maxMemoryAllocationCount={MaxMemoryAllocationCount:N0}.");
+
         // 4. Find best compute queue family (prefer dedicated compute over shared graphics+compute)
         _computeQueueFamily = FindComputeQueueFamily();
 
@@ -589,6 +601,19 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
     // 0 when the extension is absent (subgroup-size pinning then stays disabled).
     public uint MinSubgroupSize { get; private set; }
     public uint MaxSubgroupSize { get; private set; }
+
+    /// <summary>
+    /// Real <c>VkPhysicalDeviceLimits.maxStorageBufferRange</c> for this device — the true
+    /// ceiling on a single VkBuffer/storage-buffer-descriptor binding. Callers deciding whether
+    /// an oversized tensor (e.g. a large-vocab embedding/output-projection matrix) needs to be
+    /// split across multiple VkBuffers must use this instead of a hard-coded constant, since it
+    /// varies by driver (RADV/AMDVLK commonly report 0xFFFFFFFF; others report less).
+    /// </summary>
+    public uint MaxStorageBufferRange { get; private set; }
+
+    /// <summary><c>VkPhysicalDeviceLimits.maxMemoryAllocationCount</c> — informational, logged
+    /// at init so a shard count that would blow this budget is visible during triage.</summary>
+    public uint MaxMemoryAllocationCount { get; private set; }
 
     private bool? _dp4aIntrinsicUsable;
 
@@ -1507,6 +1532,7 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
     private ComputePipeline? _matVecQ8_0Pipeline;
     private ComputePipeline? _matVecQ4_0Pipeline;
     private ComputePipeline? _matVecF32Pipeline;
+    private ComputePipeline? _matVecF16Pipeline;
     private ComputePipeline? _kvAppendPipeline;
     private ComputePipeline? _attentionPipeline;
     private ComputePipeline? _kvAppendBatchedPipeline;
@@ -1530,6 +1556,7 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
     private ComputePipeline? _embedLookupPipeline;
     private ComputePipeline? _embedLookupQ4KPipeline;
     private ComputePipeline? _embedLookupQ6KPipeline;
+    private ComputePipeline? _embedLookupQ3KPipeline;
     private ComputePipeline? _tqRotateQueryPipeline;
     private ComputePipeline? _tqKvAppendPipeline;
     private ComputePipeline? _tqAttentionPipeline;
@@ -2563,6 +2590,10 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
                 _matVecF32Pipeline ??= new ComputePipeline(this, Shaders.MatVecF32, 3, pushConstantSize: sizeof(MatVecParams));
                 DispatchOrRecord(_matVecF32Pipeline, bufs, (totalRows + 7) / 8, &p);
                 break;
+            case DType.Float16:
+                _matVecF16Pipeline ??= new ComputePipeline(this, Shaders.MatVecF16, 3, pushConstantSize: sizeof(MatVecParams));
+                DispatchOrRecord(_matVecF16Pipeline, bufs, (totalRows + 7) / 8, &p);
+                break;
             case DType.Q6_K:
                 _matVecQ6KPipeline ??= new ComputePipeline(this, Shaders.MatVecQ6K, 3, pushConstantSize: sizeof(MatVecParams));
                 DispatchOrRecord(_matVecQ6KPipeline, bufs, (totalRows + 7) / 8, &p);
@@ -2948,6 +2979,20 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
         _embedLookupQ6KPipeline ??= new ComputePipeline(this, Shaders.EmbedLookupQ6K, 2, pushConstantSize: sizeof(EmbedParams));
         var p = new EmbedParams { tokenId = tokenId, embDim = embDim };
         DispatchOrRecord(_embedLookupQ6KPipeline, [GetBuffer(embTable), GetBuffer(output)], 1, &p);
+    }
+
+    /// <summary>
+    /// Dequantize one row from a Q3_K-packed embedding table directly into
+    /// <paramref name="output"/>. Keeps a large Q3_K table (e.g. qwen35 hybrid-GDN's
+    /// [5120, 248320] token_embd.weight, 521 MiB raw) off the generic F32 dequant path, which
+    /// would balloon it to ~4.7 GiB and exceed a single VkBuffer's storage-buffer range on most
+    /// devices. <paramref name="embDim"/> must be a multiple of 256 (Q3_K block size).
+    /// </summary>
+    public void EmbedLookupQ3K(Tensor embTable, Tensor output, uint tokenId, uint embDim)
+    {
+        _embedLookupQ3KPipeline ??= new ComputePipeline(this, Shaders.EmbedLookupQ3K, 2, pushConstantSize: sizeof(EmbedParams));
+        var p = new EmbedParams { tokenId = tokenId, embDim = embDim };
+        DispatchOrRecord(_embedLookupQ3KPipeline, [GetBuffer(embTable), GetBuffer(output)], 1, &p);
     }
 
     public void KvAppend(Tensor kInput, Tensor vInput, Tensor kCache, Tensor vCache,
@@ -4422,6 +4467,7 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
         _matVecQ8_0Pipeline?.Dispose();
         _matVecQ4_0Pipeline?.Dispose();
         _matVecF32Pipeline?.Dispose();
+        _matVecF16Pipeline?.Dispose();
         _kvAppendPipeline?.Dispose();
         _attentionPipeline?.Dispose();
         _kvAppendBatchedPipeline?.Dispose();
@@ -4448,6 +4494,7 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
         _embedLookupPipeline?.Dispose();
         _embedLookupQ4KPipeline?.Dispose();
         _embedLookupQ6KPipeline?.Dispose();
+        _embedLookupQ3KPipeline?.Dispose();
         _bufCopyPipeline?.Dispose();
         _sgemmF32Pipeline?.Dispose();
         _sgemmF16Pipeline?.Dispose();
