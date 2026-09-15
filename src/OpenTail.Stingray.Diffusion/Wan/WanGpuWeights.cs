@@ -198,6 +198,7 @@ public sealed class WanGpuWeights : IDisposable
     public float[] HostHeadModulation { get; }
     public CoreTensor HeadModulation { get; }
     public CoreTensor HeadWeight { get; }
+    public CoreTensor? HeadBias { get; }
 
     public WanGpuWeights(IComputeBackend backend, IWeightLoader weights, string prefix, int numLayers, int dim, int ffnDim)
     {
@@ -223,6 +224,9 @@ public sealed class WanGpuWeights : IDisposable
         HostHeadModulation = weights.ReadF32($"{prefix}head.modulation");
         HeadModulation = backend.Upload(HostHeadModulation, TensorShape.D1(dim * 2), exact: true);
         HeadWeight = UploadWeight(backend, weights.ReadF32($"{prefix}head.head.weight"), TensorShape.D2(WanModel.InChannels, dim));
+        string headBKey = $"{prefix}head.head.bias";
+        if (weights.Contains(headBKey))
+            HeadBias = backend.Upload(weights.ReadF32(headBKey), TensorShape.D1(WanModel.InChannels), exact: true);
     }
 
     public void Dispose()
@@ -245,5 +249,6 @@ public sealed class WanGpuWeights : IDisposable
 
         _backend.Free(HeadModulation);
         _backend.Free(HeadWeight);
+        if (HeadBias is not null) _backend.Free(HeadBias);
     }
 }

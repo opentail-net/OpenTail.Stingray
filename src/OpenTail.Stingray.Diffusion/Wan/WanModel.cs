@@ -193,7 +193,12 @@ public sealed class WanModel : IDisposable
         {
             var block = gpuWeights.Blocks[b];
             imageOps.Sgemm(gpuWs.CrossKvCache[b].K, txtProjGpu, block.CrossAttnK, numTxtTokens, _dim, _dim);
+            if (block.CrossAttnKBias is not null)
+                imageOps.AddRowBroadcastInPlace(gpuWs.CrossKvCache[b].K, block.CrossAttnKBias, numTxtTokens, _dim);
+
             imageOps.Sgemm(gpuWs.CrossKvCache[b].V, txtProjGpu, block.CrossAttnV, numTxtTokens, _dim, _dim);
+            if (block.CrossAttnVBias is not null)
+                imageOps.AddRowBroadcastInPlace(gpuWs.CrossKvCache[b].V, block.CrossAttnVBias, numTxtTokens, _dim);
 
             if (block.CrossAttnNormK is not null)
             {
