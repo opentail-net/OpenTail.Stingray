@@ -1,4 +1,5 @@
 using OpenTail.Stingray.Diffusion.ControlNet;
+using CoreTensor = OpenTail.Stingray.Core.Tensor;
 
 namespace OpenTail.Stingray.Diffusion.StableDiffusion;
 
@@ -118,34 +119,59 @@ public sealed class StableDiffusionPipeline : IDiffusionPipeline
         }
 
         // 4. Denoising loop with 2-pass CFG + ControlNet guidance:
+        var imageOps = _unet.ImageOps;
         var denoised = scheduler.Denoise(latent, (scaledLatent, timestep) =>
         {
             List<float[]>? downRes = null;
             float[]? midRes = null;
+            List<CoreTensor>? downResGpu = null;
+            CoreTensor? midResGpu = null;
 
-            if (controlNet is not null && controlHintRgb is not null)
+            try
             {
-                (downRes, midRes) = controlNet.Forward(scaledLatent, timestep, condContext, controlHintRgb, latH, latW, conditioningScale: controlStrength);
+                if (controlNet is not null && controlHintRgb is not null)
+                {
+                    if (imageOps is not null)
+                    {
+                        (downResGpu, midResGpu) = controlNet.ForwardGpuTensors(
+                            scaledLatent, timestep, condContext, controlHintRgb, latH, latW, conditioningScale: controlStrength);
+                    }
+                    else
+                    {
+                        (downRes, midRes) = controlNet.Forward(
+                            scaledLatent, timestep, condContext, controlHintRgb, latH, latW, conditioningScale: controlStrength);
+                    }
+                }
+
+                // CORRECTNESS FIX (2026-09-11): see the identical, more detailed comment in
+                // SdxlPipeline.Generate -- this guidance<=0 branch previously returned the UNCOND
+                // (negative/empty-prompt) pass, silently discarding the real prompt for SD-Turbo's own
+                // actual recommended usage (guidance_scale=0.0). Verified against real diffusers
+                // source: when CFG is off, the pipeline runs a single forward pass with the real COND
+                // embedding, never the negative one -- `guidance==0` does not algebraically reduce to
+                // "use uncond" in the real pipeline; CFG being off means no cond/uncond blend happens
+                // at all, it directly runs cond. Running both passes at guidance==0/1 was still real,
+                // avoidable waste (that part of the original perf reasoning was correct) -- only the
+                // choice of WHICH single pass to keep was backwards.
+                if (guidance <= 1f)
+                    return _unet.Forward(scaledLatent, timestep, condContext, latH, latW, downRes, midRes, downResGpu, midResGpu);
+
+                var condPred = _unet.Forward(scaledLatent, timestep, condContext, latH, latW, downRes, midRes, downResGpu, midResGpu);
+                var uncondPred = _unet.Forward(scaledLatent, timestep, uncondContext, latH, latW, downRes, midRes, downResGpu, midResGpu);
+                return scheduler.CombineGuidance(condPred, uncondPred, guidance);
             }
-
-            // CORRECTNESS FIX (2026-09-11): see the identical, more detailed comment in
-            // SdxlPipeline.Generate -- this guidance<=0 branch previously returned the UNCOND
-            // (negative/empty-prompt) pass, silently discarding the real prompt for SD-Turbo's own
-            // actual recommended usage (guidance_scale=0.0). Verified against real diffusers
-            // source: when CFG is off, the pipeline runs a single forward pass with the real COND
-            // embedding, never the negative one -- `guidance==0` does not algebraically reduce to
-            // "use uncond" in the real pipeline; CFG being off means no cond/uncond blend happens
-            // at all, it directly runs cond. Running both passes at guidance==0/1 was still real,
-            // avoidable waste (that part of the original perf reasoning was correct) -- only the
-            // choice of WHICH single pass to keep was backwards.
-            if (guidance <= 0f)
-                return _unet.Forward(scaledLatent, timestep, condContext, latH, latW, downRes, midRes);
-            if (guidance == 1f)
-                return _unet.Forward(scaledLatent, timestep, condContext, latH, latW, downRes, midRes);
-
-            var condPred = _unet.Forward(scaledLatent, timestep, condContext, latH, latW, downRes, midRes);
-            var uncondPred = _unet.Forward(scaledLatent, timestep, uncondContext, latH, latW, downRes, midRes);
-            return scheduler.CombineGuidance(condPred, uncondPred, guidance);
+            finally
+            {
+                if (downResGpu is not null && imageOps is not null)
+                {
+                    for (int i = 0; i < downResGpu.Count; i++)
+                        imageOps.Free(downResGpu[i]);
+                }
+                if (midResGpu is not null && imageOps is not null)
+                {
+                    imageOps.Free(midResGpu);
+                }
+            }
         }, progress, startStep: startStep);
 
         // 5. Decode latent to RGB pixels via VAE:

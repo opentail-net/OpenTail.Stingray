@@ -8,8 +8,9 @@ namespace OpenTail.Stingray.Diffusion.HunyuanVideo;
 public sealed class HunyuanVideoPipeline : IDiffusionPipeline
 {
     private readonly IWeightLoader _weights;
+    private readonly IWeightLoader? _vaeWeights;
     private readonly HunyuanVideoModel _transformer;
-    private readonly VaeDecoder _vae;
+    private readonly HunyuanVaeDecoder3D _vae;
     private bool _disposed;
 
     public string Architecture => "HunyuanVideo";
@@ -17,13 +18,22 @@ public sealed class HunyuanVideoPipeline : IDiffusionPipeline
     public HunyuanVideoPipeline(
         IWeightLoader weights,
         HunyuanVideoModel transformer,
-        VaeDecoder vae)
+        HunyuanVaeDecoder3D vae,
+        IWeightLoader? vaeWeights = null)
     {
         _weights = weights;
         _transformer = transformer;
         _vae = vae;
+        _vaeWeights = vaeWeights;
     }
 
+    /// <summary>
+    /// Loads a HunyuanVideo pipeline. <paramref name="vaePath"/> must point to a real HunyuanVideo
+    /// VAE checkpoint (e.g. a community `hunyuan_video_vae_*.safetensors` repack) -- the main DiT
+    /// checkpoint bundles zero VAE tensors (confirmed by direct safetensors header inspection), so
+    /// omitting it means <see cref="Generate"/> will throw when it reaches the decode stage rather
+    /// than silently producing wrong pixels.
+    /// </summary>
     public static HunyuanVideoPipeline Load(string modelPath, string? vaePath = null, IComputeBackend? backend = null)
     {
         IWeightLoader weights = modelPath.EndsWith(".gguf", StringComparison.OrdinalIgnoreCase)
@@ -32,17 +42,22 @@ public sealed class HunyuanVideoPipeline : IDiffusionPipeline
 
         var transformer = new HunyuanVideoModel(weights, prefix: "", backend: backend);
 
-        IWeightLoader vaeLoader = weights;
+        IWeightLoader? vaeLoader = null;
         if (!string.IsNullOrWhiteSpace(vaePath) && File.Exists(vaePath))
         {
             vaeLoader = vaePath.EndsWith(".gguf", StringComparison.OrdinalIgnoreCase)
                 ? GgufWeightLoader.Open(vaePath)
                 : SafetensorsLoader.Open(vaePath);
         }
+        else if (weights.Contains("decoder.conv_in.conv.weight") || weights.Contains("vae.decoder.conv_in.conv.weight"))
+        {
+            // Rare but possible: a repack that bundles VAE tensors into the main checkpoint.
+            vaeLoader = weights;
+        }
 
-        var vae = new VaeDecoder(vaeLoader, backend: backend);
+        var vae = new HunyuanVaeDecoder3D(vaeLoader);
 
-        return new HunyuanVideoPipeline(weights, transformer, vae);
+        return new HunyuanVideoPipeline(weights, transformer, vae, vaeLoader == weights ? null : vaeLoader);
     }
 
     /// <summary>
@@ -126,21 +141,16 @@ public sealed class HunyuanVideoPipeline : IDiffusionPipeline
             progress?.Invoke(step + 1, steps);
         }
 
-        // 5. Decode all video frame latents to RGB pixels via 16-channel VAE
-        int singleFrameLen = latC * latH * latW;
-        var allFrames = new List<float[]>(numFrames);
+        // 5. Decode the full video latent [16, numFrames, latH, latW] to RGB pixels via the real
+        // causal 3D VAE in one call -- unlike per-frame decoding, this reproduces the real
+        // temporal upsampling/causal-conv context between neighboring latent frames (see
+        // HunyuanVaeDecoder3D's class doc comment).
+        var decodedFrames = _vae.Decode(latent, numFrames, latH, latW);
+        var allFrames = new List<float[]>(decodedFrames.Count);
 
-        for (int f = 0; f < numFrames; f++)
+        foreach (var framePixels0 in decodedFrames)
         {
-            var singleFrameLatent = new float[singleFrameLen];
-            for (int c = 0; c < latC; c++)
-            {
-                int srcOff = ((c * numFrames) + f) * (latH * latW);
-                int dstOff = c * (latH * latW);
-                Array.Copy(latent, srcOff, singleFrameLatent, dstOff, latH * latW);
-            }
-
-            var framePixels = _vae.Decode(singleFrameLatent, latH, latW);
+            var framePixels = framePixels0;
 
             // Optional super-resolution upscaling
             if (upscaler is not null)
@@ -157,6 +167,7 @@ public sealed class HunyuanVideoPipeline : IDiffusionPipeline
 
             allFrames.Add(framePixels);
         }
+        numFrames = allFrames.Count;
 
         // 6. Save primary anchor frame
         PngWriter.Write(outputPath, allFrames[0], width, height);
@@ -228,6 +239,7 @@ public sealed class HunyuanVideoPipeline : IDiffusionPipeline
         {
             _disposed = true;
             _weights.Dispose();
+            _vaeWeights?.Dispose();
             _transformer.Dispose();
             _vae.Dispose();
         }

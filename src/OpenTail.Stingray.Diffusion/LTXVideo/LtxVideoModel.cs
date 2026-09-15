@@ -22,7 +22,11 @@ public sealed class LtxVideoModel : IDisposable
 {
     private readonly IWeightLoader _weights;
     private readonly string _prefix;
+    private readonly IComputeBackend? _backend;
     private readonly Dictionary<string, float[]> _weightCache = new(StringComparer.Ordinal);
+    private LtxVideoGpuWeights? _gpuWeights;
+    private LtxVideoGpuWorkspace? _gpuWorkspace;
+    private readonly object _gpuLock = new();
     private bool _disposed;
 
     public int InChannels { get; }
@@ -43,7 +47,7 @@ public sealed class LtxVideoModel : IDisposable
 
     // Intermediate-tensor capture for golden/numeric-parity tests (LtxVideoGoldenParityTests) --
     // NOT used by the real inference path, populated unconditionally on each Forward() call since
-    // the cost is negligible next to the transformer itself.
+    // they cost negligible extra RAM for the test harness and save needing separate test-only accessors.
     internal float[]? LastProjInOut { get; private set; }
     internal float[]? LastCaptionProjOut { get; private set; }
     internal float[]? LastEmbeddedTimestep { get; private set; }
@@ -52,10 +56,11 @@ public sealed class LtxVideoModel : IDisposable
     internal float[]? LastRopeSin { get; private set; }
     internal float[]? LastBlock0Out { get; private set; }
 
-    public LtxVideoModel(IWeightLoader weights, string prefix = "model.diffusion_model")
+    public LtxVideoModel(IWeightLoader weights, string prefix = "model.diffusion_model", IComputeBackend? backend = null)
     {
         _weights = weights;
         _prefix = prefix.Length > 0 && !prefix.EndsWith('.') ? prefix + "." : prefix;
+        _backend = backend;
 
         (InChannels, HiddenSize, NumHeads, HeadDim, OutChannels, CrossAttentionDim, CaptionChannels,
             NumLayers, CrossAttentionAdaln, SelfAttentionGated, CrossAttentionGated) = DetectConfig(_weights, _prefix);
@@ -195,6 +200,21 @@ public sealed class LtxVideoModel : IDisposable
         int patchH,
         int patchW)
     {
+        if (_backend is not null && _backend is IVisionOpsBackend visionOps && _backend is IImageOpsBackend imageOps)
+        {
+            try
+            {
+                lock (_gpuLock)
+                {
+                    return ForwardGpu(visionOps, imageOps, latents, timestep, captionEmbeds, numFrames, patchH, patchW);
+                }
+            }
+            catch (Exception ex) when (ex is not OutOfMemoryException)
+            {
+                Console.WriteLine($"[LtxVideo GPU Exception] {ex}");
+            }
+        }
+
         int numTokens = numFrames * patchH * patchW;
         int d = HiddenSize;
         int numTxt = CaptionChannels > 0 ? captionEmbeds.Length / CaptionChannels : 0;
@@ -439,12 +459,194 @@ public sealed class LtxVideoModel : IDisposable
         return DiffusionOps.Linear(xArr, w, b, rows, inDim, outDim);
     }
 
+    private void EnsureGpuResident(IVisionOpsBackend visionOps, IImageOpsBackend imageOps, int numTokens, int numTxt)
+    {
+        if (_gpuWeights is null && _backend is not null)
+        {
+            _gpuWeights = new LtxVideoGpuWeights(_backend, GetWeight, TryGetWeight, InChannels, HiddenSize, CaptionChannels, NumLayers);
+        }
+        if (_gpuWorkspace is null || _gpuWorkspace.NumTokens != numTokens || _gpuWorkspace.NumTxt != numTxt)
+        {
+            _gpuWorkspace?.Dispose();
+            _gpuWorkspace = new LtxVideoGpuWorkspace(_backend!, numTokens, numTxt, HiddenSize, InChannels);
+        }
+    }
+
+    private float[] ForwardGpu(
+        IVisionOpsBackend visionOps,
+        IImageOpsBackend imageOps,
+        ReadOnlySpan<float> latents,
+        float timestep,
+        ReadOnlySpan<float> captionEmbeds,
+        int numFrames,
+        int patchH,
+        int patchW)
+    {
+        int numTokens = numFrames * patchH * patchW;
+        int d = HiddenSize;
+        int numTxt = CaptionChannels > 0 ? captionEmbeds.Length / CaptionChannels : 0;
+
+        EnsureGpuResident(visionOps, imageOps, numTokens, numTxt);
+        var gw = _gpuWeights!;
+        var ws = _gpuWorkspace!;
+
+        // 1. patchify_proj: latents [numTokens, InChannels] -> x [numTokens, d]
+        var latentsGpu = imageOps.Upload(latents.ToArray(), TensorShape.D2(numTokens, InChannels), exact: true);
+        imageOps.Sgemm(ws.X, latentsGpu, gw.PatchifyProjWeight, numTokens, InChannels, d);
+        if (gw.PatchifyProjBias is not null)
+            imageOps.AddRowBroadcastInPlace(ws.X, gw.PatchifyProjBias, numTokens, d);
+        _backend!.Free(latentsGpu);
+
+        // 2. caption_projection: PixArtAlphaTextProjection(4096 -> 2048 -> 2048, GELU between)
+        if (numTxt > 0)
+        {
+            var capGpu = imageOps.Upload(captionEmbeds.ToArray(), TensorShape.D2(numTxt, CaptionChannels), exact: true);
+            imageOps.Sgemm(ws.CapIntermediate, capGpu, gw.CapProj1Weight, numTxt, CaptionChannels, d);
+            if (gw.CapProj1Bias is not null)
+                imageOps.AddRowBroadcastInPlace(ws.CapIntermediate, gw.CapProj1Bias, numTxt, d);
+            visionOps.VisionGeluInPlace(ws.CapIntermediate);
+            imageOps.Sgemm(ws.CaptionProj, ws.CapIntermediate, gw.CapProj2Weight, numTxt, d, d);
+            if (gw.CapProj2Bias is not null)
+                imageOps.AddRowBroadcastInPlace(ws.CaptionProj, gw.CapProj2Bias, numTxt, d);
+            _backend.Free(capGpu);
+        }
+
+        // 3. AdaLayerNormSingle
+        const int freqEmbedSize = 256;
+        var emb = DiffusionOps.SinusoidalTimestepEmbedding(timestep, freqEmbedSize, flipSinToCos: true);
+        var embGpu = imageOps.Upload(emb, TensorShape.D1(freqEmbedSize), exact: true);
+        imageOps.Sgemm(ws.EmbeddedTimestep, embGpu, gw.TimeEmb1Weight, 1, freqEmbedSize, d);
+        if (gw.TimeEmb1Bias is not null)
+            imageOps.AddRowBroadcastInPlace(ws.EmbeddedTimestep, gw.TimeEmb1Bias, 1, d);
+        imageOps.SiLU(ws.EmbeddedTimestep);
+
+        imageOps.Sgemm(ws.Normed, ws.EmbeddedTimestep, gw.TimeEmb2Weight, 1, d, d);
+        if (gw.TimeEmb2Bias is not null)
+            imageOps.AddRowBroadcastInPlace(ws.Normed, gw.TimeEmb2Bias, 1, d);
+        imageOps.ScaleInPlace(ws.EmbeddedTimestep, 0f);
+        imageOps.AddInPlace(ws.EmbeddedTimestep, ws.Normed); // ws.EmbeddedTimestep is now hidden
+
+        // silu(embedded_timestep) -> adaln_single.linear
+        imageOps.ScaleInPlace(ws.Normed, 0f);
+        imageOps.AddInPlace(ws.Normed, ws.EmbeddedTimestep);
+        imageOps.SiLU(ws.Normed);
+        imageOps.Sgemm(ws.TimestepProj, ws.Normed, gw.TimeProjWeight, 1, d, 6 * d);
+        if (gw.TimeProjBias is not null)
+            imageOps.AddRowBroadcastInPlace(ws.TimestepProj, gw.TimeProjBias, 1, 6 * d);
+        _backend.Free(embGpu);
+
+        // 4. RoPE
+        var (compactCos, compactSin) = LtxVideoRoPE.ComputeContinuous3DRoPECompact(numFrames, patchH, patchW, d, RopeTheta);
+        var ropeCosGpu = imageOps.Upload(compactCos, TensorShape.D2(numTokens, d / 2), exact: true);
+        var ropeSinGpu = imageOps.Upload(compactSin, TensorShape.D2(numTokens, d / 2), exact: true);
+
+        // 5. 28 Transformer Blocks (100% GPU Resident)
+        for (int l = 0; l < NumLayers; l++)
+        {
+            var bw = gw.Blocks[l];
+
+            // BlockMod = ScaleShiftTable + TimestepProj (both [1, 6*d])
+            imageOps.ScaleInPlace(ws.BlockMod, 0f);
+            imageOps.AddInPlace(ws.BlockMod, bw.ScaleShiftTable);
+            imageOps.AddInPlace(ws.BlockMod, ws.TimestepProj);
+
+            // 5.1 Self-attention: RMSNorm -> AdaLN modulate -> Q/K/V -> QK-norm -> RoPE -> Attn -> OutProj -> GatedResidual
+            visionOps.AdaLNModulate(ws.Normed, ws.X, ws.BlockMod, numTokens, d, shiftOffset: 0, scaleOffset: d, isRmsNorm: true, eps: NormEps);
+
+            imageOps.Sgemm(ws.Q, ws.Normed, bw.Attn1QWeight, numTokens, d, d);
+            if (bw.Attn1QBias is not null) imageOps.AddRowBroadcastInPlace(ws.Q, bw.Attn1QBias, numTokens, d);
+
+            imageOps.Sgemm(ws.K, ws.Normed, bw.Attn1KWeight, numTokens, d, d);
+            if (bw.Attn1KBias is not null) imageOps.AddRowBroadcastInPlace(ws.K, bw.Attn1KBias, numTokens, d);
+
+            imageOps.Sgemm(ws.V, ws.Normed, bw.Attn1VWeight, numTokens, d, d);
+            if (bw.Attn1VBias is not null) imageOps.AddRowBroadcastInPlace(ws.V, bw.Attn1VBias, numTokens, d);
+
+            imageOps.RmsNorm(ws.Q, ws.Q, bw.Attn1QNorm, QkNormEps);
+            imageOps.RmsNorm(ws.K, ws.K, bw.Attn1KNorm, QkNormEps);
+
+            visionOps.Flux2DRoPE(ws.Q, ws.K, ropeCosGpu, ropeSinGpu, 0, numTokens, 1, d);
+
+            imageOps.MultiHeadAttentionTiled(ws.AttnOut, ws.Q, ws.K, ws.V, numTokens, numTokens, NumHeads, HeadDim);
+
+            imageOps.Sgemm(ws.Normed, ws.AttnOut, bw.Attn1OutWeight, numTokens, d, d);
+            if (bw.Attn1OutBias is not null) imageOps.AddRowBroadcastInPlace(ws.Normed, bw.Attn1OutBias, numTokens, d);
+
+            visionOps.ScaleGateAdd(ws.X, ws.Normed, ws.BlockMod, numTokens, d, gateOffset: 2 * d);
+
+            // 5.2 Cross-attention
+            if (numTxt > 0)
+            {
+                imageOps.Sgemm(ws.CrossQ, ws.X, bw.Attn2QWeight, numTokens, d, d);
+                if (bw.Attn2QBias is not null) imageOps.AddRowBroadcastInPlace(ws.CrossQ, bw.Attn2QBias, numTokens, d);
+
+                imageOps.Sgemm(ws.CrossK, ws.CaptionProj, bw.Attn2KWeight, numTxt, d, d);
+                if (bw.Attn2KBias is not null) imageOps.AddRowBroadcastInPlace(ws.CrossK, bw.Attn2KBias, numTxt, d);
+
+                imageOps.Sgemm(ws.CrossV, ws.CaptionProj, bw.Attn2VWeight, numTxt, d, d);
+                if (bw.Attn2VBias is not null) imageOps.AddRowBroadcastInPlace(ws.CrossV, bw.Attn2VBias, numTxt, d);
+
+                imageOps.RmsNorm(ws.CrossQ, ws.CrossQ, bw.Attn2QNorm, QkNormEps);
+                imageOps.RmsNorm(ws.CrossK, ws.CrossK, bw.Attn2KNorm, QkNormEps);
+
+                imageOps.MultiHeadAttentionTiled(ws.CrossAttnOut, ws.CrossQ, ws.CrossK, ws.CrossV, numTokens, numTxt, NumHeads, HeadDim);
+
+                imageOps.Sgemm(ws.Normed, ws.CrossAttnOut, bw.Attn2OutWeight, numTokens, d, d);
+                if (bw.Attn2OutBias is not null) imageOps.AddRowBroadcastInPlace(ws.Normed, bw.Attn2OutBias, numTokens, d);
+
+                imageOps.AddInPlace(ws.X, ws.Normed);
+            }
+
+            // 5.3 FFN
+            visionOps.AdaLNModulate(ws.Normed, ws.X, ws.BlockMod, numTokens, d, shiftOffset: 3 * d, scaleOffset: 4 * d, isRmsNorm: true, eps: NormEps);
+
+            imageOps.Sgemm(ws.Ffn1, ws.Normed, bw.Ffn0Weight, numTokens, d, d * 4);
+            if (bw.Ffn0Bias is not null) imageOps.AddRowBroadcastInPlace(ws.Ffn1, bw.Ffn0Bias, numTokens, d * 4);
+
+            visionOps.VisionGeluInPlace(ws.Ffn1);
+
+            imageOps.Sgemm(ws.FfnOut, ws.Ffn1, bw.Ffn2Weight, numTokens, d * 4, d);
+            if (bw.Ffn2Bias is not null) imageOps.AddRowBroadcastInPlace(ws.FfnOut, bw.Ffn2Bias, numTokens, d);
+
+            visionOps.ScaleGateAdd(ws.X, ws.FfnOut, ws.BlockMod, numTokens, d, gateOffset: 5 * d);
+        }
+
+        _backend.Free(ropeCosGpu);
+        _backend.Free(ropeSinGpu);
+
+        // 6. Final Layer: LayerNormNoAffine -> AdaLN modulate with TopScaleShiftTable + EmbeddedTimestep -> ProjOut
+        var embHost = new float[d];
+        imageOps.Download(ws.EmbeddedTimestep, embHost);
+        var topTable = GetWeight("scale_shift_table");
+        var finalMod = new float[2 * d];
+        for (int i = 0; i < d; i++)
+        {
+            finalMod[i] = topTable[i] + embHost[i];
+            finalMod[d + i] = topTable[d + i] + embHost[i];
+        }
+        var finalModGpu = imageOps.Upload(finalMod, TensorShape.D1(2 * d), exact: true);
+
+        visionOps.AdaLNModulate(ws.Normed, ws.X, finalModGpu, numTokens, d, shiftOffset: 0, scaleOffset: d, isRmsNorm: false, eps: NormEps);
+        _backend.Free(finalModGpu);
+
+        imageOps.Sgemm(ws.ProjOut, ws.Normed, gw.ProjOutWeight, numTokens, d, OutChannels);
+        if (gw.ProjOutBias is not null)
+            imageOps.AddRowBroadcastInPlace(ws.ProjOut, gw.ProjOutBias, numTokens, OutChannels);
+
+        var result = new float[numTokens * OutChannels];
+        imageOps.Download(ws.ProjOut, result);
+        return result;
+    }
+
     public void Dispose()
     {
         if (!_disposed)
         {
             _disposed = true;
+            _gpuWorkspace?.Dispose();
+            _gpuWeights?.Dispose();
             _weights.Dispose();
         }
     }
 }
+

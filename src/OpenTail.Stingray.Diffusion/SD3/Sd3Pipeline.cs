@@ -33,6 +33,8 @@ public sealed class Sd3Pipeline : IDisposable, IDiffusionPipeline
         _vae = vae;
     }
 
+    public MMDiTModel MMDiT => _mmdit;
+
     public static Sd3Pipeline Load(string modelPath, string? tokenizerPath = null, IComputeBackend? backend = null)
     {
         IWeightLoader weights = modelPath.EndsWith(".gguf", StringComparison.OrdinalIgnoreCase) ? GgufWeightLoader.Open(modelPath) : SafetensorsLoader.Open(modelPath);

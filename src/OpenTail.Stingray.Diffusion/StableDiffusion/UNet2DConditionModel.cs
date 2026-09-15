@@ -36,6 +36,8 @@ public sealed class UNet2DConditionModel : IDisposable
         }
     }
 
+    public IImageOpsBackend? ImageOps => _imageOps;
+
     private float[] GetWeight(string name) => _weightReader.Get(name);
 
     private float[]? TryGetWeight(string name) => _weightReader.TryGet(name);
@@ -95,6 +97,607 @@ public sealed class UNet2DConditionModel : IDisposable
             imageOps.Free(yGpu);
         }
         return result;
+    }
+
+    private readonly Dictionary<string, CoreTensor> _gpuBiasCache = new(StringComparer.Ordinal);
+    private bool? _unetForwardResidencySupported;
+    private bool? _residentGpuAttentionSupported;
+    private bool _gpuWeightsWarm;
+
+    /// <summary>
+    /// Pre-uploads all UNet conv weights, linear weights, groupnorm/layernorm biases, and conv biases
+    /// to GPU device memory so that forward passes can be recorded into a single Vulkan command buffer.
+    /// </summary>
+    public void EnsureGpuResident()
+    {
+        if (_imageOps is null || _gpuWeightsWarm) return;
+        EnsureGpuResidentCore(_imageOps);
+        _gpuWeightsWarm = true;
+    }
+
+    private void EnsureConvGpuResident(IImageOpsBackend imageOps, string name, int outCh)
+    {
+        var wF = GetWeight($"{name}.weight");
+        var bF = TryGetWeight($"{name}.bias");
+
+        string wKey = $"{name}.weight";
+        if (!_gpuWeightsNative!.ContainsKey(wKey))
+        {
+            var wGpu = imageOps.Upload(wF.AsSpan(), TensorShape.D1(wF.Length));
+            _gpuWeightsNative[wKey] = wGpu;
+        }
+
+        string bKey = $"{name}.bias";
+        if (!_gpuWeightsNative.ContainsKey(bKey))
+        {
+            var bf = bF ?? new float[outCh];
+            var bGpu = imageOps.Upload(bf.AsSpan(), TensorShape.D1(bf.Length));
+            _gpuWeightsNative[bKey] = bGpu;
+        }
+    }
+
+    private void EnsureLinGpuResident(string name)
+    {
+        var wF = GetWeight($"{name}.weight");
+        var bF = TryGetWeight($"{name}.bias");
+        GetGpuWeight($"{name}.weight", wF);
+        if (bF is not null)
+        {
+            GetGpuBias(_backend!, $"{name}.bias", bF);
+        }
+    }
+
+    private void EnsureGroupNormGpuResident(IImageOpsBackend imageOps, string prefix)
+    {
+        GetGpuBias(imageOps, $"{prefix}.weight", GetWeight($"{prefix}.weight"));
+        GetGpuBias(imageOps, $"{prefix}.bias", GetWeight($"{prefix}.bias"));
+    }
+
+    private void EnsureResBlockGpuResident(IImageOpsBackend imageOps, string prefix, int outCh)
+    {
+        EnsureGroupNormGpuResident(imageOps, $"{prefix}.in_layers.0");
+        EnsureConvGpuResident(imageOps, $"{prefix}.in_layers.2", outCh);
+        EnsureLinGpuResident($"{prefix}.emb_layers.1");
+        EnsureGroupNormGpuResident(imageOps, $"{prefix}.out_layers.0");
+        EnsureConvGpuResident(imageOps, $"{prefix}.out_layers.3", outCh);
+        if (TryGetWeight($"{prefix}.skip_connection.weight") is not null)
+        {
+            EnsureConvGpuResident(imageOps, $"{prefix}.skip_connection", outCh);
+        }
+    }
+
+    private void EnsureSpatialTransformerGpuResident(IImageOpsBackend imageOps, string prefix, int c)
+    {
+        EnsureGroupNormGpuResident(imageOps, $"{prefix}.norm");
+        EnsureLinGpuResident($"{prefix}.proj_in");
+
+        string tb = $"{prefix}.transformer_blocks.0";
+        EnsureGroupNormGpuResident(imageOps, $"{tb}.norm1");
+        EnsureLinGpuResident($"{tb}.attn1.to_q");
+        EnsureLinGpuResident($"{tb}.attn1.to_k");
+        EnsureLinGpuResident($"{tb}.attn1.to_v");
+        EnsureLinGpuResident($"{tb}.attn1.to_out.0");
+
+        EnsureGroupNormGpuResident(imageOps, $"{tb}.norm2");
+        EnsureLinGpuResident($"{tb}.attn2.to_q");
+        EnsureLinGpuResident($"{tb}.attn2.to_k");
+        EnsureLinGpuResident($"{tb}.attn2.to_v");
+        EnsureLinGpuResident($"{tb}.attn2.to_out.0");
+
+        EnsureGroupNormGpuResident(imageOps, $"{tb}.norm3");
+        EnsureLinGpuResident($"{tb}.ff.net.0.proj");
+        EnsureLinGpuResident($"{tb}.ff.net.2");
+
+        EnsureLinGpuResident($"{prefix}.proj_out");
+    }
+
+    private void EnsureGpuResidentCore(IImageOpsBackend imageOps)
+    {
+        // Input blocks
+        EnsureConvGpuResident(imageOps, "input_blocks.0.0", 320);
+        EnsureResBlockGpuResident(imageOps, "input_blocks.1.0", 320);
+        EnsureSpatialTransformerGpuResident(imageOps, "input_blocks.1.1", 320);
+        EnsureResBlockGpuResident(imageOps, "input_blocks.2.0", 320);
+        EnsureSpatialTransformerGpuResident(imageOps, "input_blocks.2.1", 320);
+        EnsureConvGpuResident(imageOps, "input_blocks.3.0.op", 320);
+        EnsureResBlockGpuResident(imageOps, "input_blocks.4.0", 640);
+        EnsureSpatialTransformerGpuResident(imageOps, "input_blocks.4.1", 640);
+        EnsureResBlockGpuResident(imageOps, "input_blocks.5.0", 640);
+        EnsureSpatialTransformerGpuResident(imageOps, "input_blocks.5.1", 640);
+        EnsureConvGpuResident(imageOps, "input_blocks.6.0.op", 640);
+        EnsureResBlockGpuResident(imageOps, "input_blocks.7.0", 1280);
+        EnsureSpatialTransformerGpuResident(imageOps, "input_blocks.7.1", 1280);
+        EnsureResBlockGpuResident(imageOps, "input_blocks.8.0", 1280);
+        EnsureSpatialTransformerGpuResident(imageOps, "input_blocks.8.1", 1280);
+        EnsureConvGpuResident(imageOps, "input_blocks.9.0.op", 1280);
+        EnsureResBlockGpuResident(imageOps, "input_blocks.10.0", 1280);
+        EnsureResBlockGpuResident(imageOps, "input_blocks.11.0", 1280);
+
+        // Middle block
+        EnsureResBlockGpuResident(imageOps, "middle_block.0", 1280);
+        EnsureSpatialTransformerGpuResident(imageOps, "middle_block.1", 1280);
+        EnsureResBlockGpuResident(imageOps, "middle_block.2", 1280);
+
+        // Output blocks
+        EnsureResBlockGpuResident(imageOps, "output_blocks.0.0", 1280);
+        EnsureResBlockGpuResident(imageOps, "output_blocks.1.0", 1280);
+        EnsureResBlockGpuResident(imageOps, "output_blocks.2.0", 1280);
+        EnsureConvGpuResident(imageOps, "output_blocks.2.1.conv", 1280);
+        EnsureResBlockGpuResident(imageOps, "output_blocks.3.0", 1280);
+        EnsureSpatialTransformerGpuResident(imageOps, "output_blocks.3.1", 1280);
+        EnsureResBlockGpuResident(imageOps, "output_blocks.4.0", 1280);
+        EnsureSpatialTransformerGpuResident(imageOps, "output_blocks.4.1", 1280);
+        EnsureResBlockGpuResident(imageOps, "output_blocks.5.0", 1280);
+        EnsureSpatialTransformerGpuResident(imageOps, "output_blocks.5.1", 1280);
+        EnsureConvGpuResident(imageOps, "output_blocks.5.2.conv", 1280);
+        EnsureResBlockGpuResident(imageOps, "output_blocks.6.0", 640);
+        EnsureSpatialTransformerGpuResident(imageOps, "output_blocks.6.1", 640);
+        EnsureResBlockGpuResident(imageOps, "output_blocks.7.0", 640);
+        EnsureSpatialTransformerGpuResident(imageOps, "output_blocks.7.1", 640);
+        EnsureResBlockGpuResident(imageOps, "output_blocks.8.0", 640);
+        EnsureSpatialTransformerGpuResident(imageOps, "output_blocks.8.1", 640);
+        EnsureConvGpuResident(imageOps, "output_blocks.8.2.conv", 640);
+        EnsureResBlockGpuResident(imageOps, "output_blocks.9.0", 320);
+        EnsureSpatialTransformerGpuResident(imageOps, "output_blocks.9.1", 320);
+        EnsureResBlockGpuResident(imageOps, "output_blocks.10.0", 320);
+        EnsureSpatialTransformerGpuResident(imageOps, "output_blocks.10.1", 320);
+        EnsureResBlockGpuResident(imageOps, "output_blocks.11.0", 320);
+        EnsureSpatialTransformerGpuResident(imageOps, "output_blocks.11.1", 320);
+
+        // Final out
+        EnsureGroupNormGpuResident(imageOps, "out.0");
+        EnsureConvGpuResident(imageOps, "out.2", 4);
+    }
+
+    private CoreTensor GetGpuBias(IComputeBackend backend, string name, float[] bF)
+    {
+        string fullName = _weightReader.Prefix + name;
+        if (_gpuBiasCache.TryGetValue(fullName, out var bGpu)) return bGpu;
+        bGpu = backend.Upload(bF.AsSpan(), TensorShape.D1(bF.Length));
+        _gpuBiasCache[fullName] = bGpu;
+        return bGpu;
+    }
+
+    /// <summary>Tensor-in/Tensor-out counterpart of <see cref="ConvNative"/>.</summary>
+    private CoreTensor ConvGpuTensor(IImageOpsBackend imageOps, string name, CoreTensor xGpu, int inCh, int h, int w, int outCh, int k, int padding = -1, int stride = 1)
+    {
+        var wF = GetWeight($"{name}.weight");
+        var bF = TryGetWeight($"{name}.bias");
+
+        string wKey = $"{name}.weight";
+        if (!_gpuWeightsNative!.TryGetValue(wKey, out var wGpu))
+        {
+            wGpu = imageOps.Upload(wF.AsSpan(), TensorShape.D1(wF.Length));
+            _gpuWeightsNative[wKey] = wGpu;
+        }
+        string bKey = $"{name}.bias";
+        if (!_gpuWeightsNative.TryGetValue(bKey, out var bGpu))
+        {
+            var bf = bF ?? new float[outCh];
+            bGpu = imageOps.Upload(bf.AsSpan(), TensorShape.D1(bf.Length));
+            _gpuWeightsNative[bKey] = bGpu;
+        }
+
+        return imageOps.Conv2dImplicitGemm(xGpu, wGpu, bGpu, inCh, outCh, h, w, k, padding, stride);
+    }
+
+    /// <summary>Tensor-in/Tensor-out counterpart of <see cref="Lin"/> -- Sgemm + row-broadcast bias.</summary>
+    private CoreTensor LinGpuTensor(string name, CoreTensor xGpu, int n, int inDim, int outDim)
+    {
+        var wF = GetWeight($"{name}.weight");
+        var bF = TryGetWeight($"{name}.bias");
+        var wGpu = GetGpuWeight($"{name}.weight", wF);
+        var cGpu = _backend!.Allocate(TensorShape.D1(n * outDim));
+        _backend.Sgemm(cGpu, xGpu, wGpu, n, inDim, outDim);
+        if (bF is not null)
+        {
+            var bGpu = GetGpuBias(_backend, $"{name}.bias", bF);
+            ((IImageOpsBackend)_backend).AddRowBroadcastInPlace(cGpu, bGpu, n, outDim);
+        }
+        return cGpu;
+    }
+
+    /// <summary>Tensor-in/Tensor-out GroupNorm+SiLU with cached weights.</summary>
+    private CoreTensor GroupNormSiluGpuTensor(IImageOpsBackend imageOps, string prefix, CoreTensor xGpu, int c, int hw)
+    {
+        var gnW = GetGpuBias(imageOps, $"{prefix}.weight", GetWeight($"{prefix}.weight"));
+        var gnB = GetGpuBias(imageOps, $"{prefix}.bias", GetWeight($"{prefix}.bias"));
+        return imageOps.GroupNormSilu(xGpu, gnW, gnB, c, hw, groups: 32);
+    }
+
+    private CoreTensor UploadSiluTEmb(IImageOpsBackend imageOps, float[] tEmb)
+    {
+        var tEmbAct = (float[])tEmb.Clone();
+        DiffusionOps.SiluInPlace(tEmbAct);
+        return imageOps.Upload(tEmbAct.AsSpan(), TensorShape.D1(tEmbAct.Length));
+    }
+
+    private CoreTensor ResBlockGpu(IImageOpsBackend imageOps, string prefix, CoreTensor xGpu, CoreTensor tEmbGpu, int inCh, int h, int w, int outCh)
+    {
+        int hw = h * w;
+        var t1 = GroupNormSiluGpuTensor(imageOps, $"{prefix}.in_layers.0", xGpu, inCh, hw);
+        var t2 = ConvGpuTensor(imageOps, $"{prefix}.in_layers.2", t1, inCh, h, w, outCh, 3);
+        imageOps.Free(t1);
+
+        var tProjGpu = LinGpuTensor($"{prefix}.emb_layers.1", tEmbGpu, 1, TimeEmbedDim, outCh);
+        imageOps.AddChannelBroadcastInPlace(t2, tProjGpu, outCh, hw);
+        imageOps.Free(tProjGpu);
+
+        var t3 = GroupNormSiluGpuTensor(imageOps, $"{prefix}.out_layers.0", t2, outCh, hw);
+        imageOps.Free(t2);
+        var t4 = ConvGpuTensor(imageOps, $"{prefix}.out_layers.3", t3, outCh, h, w, outCh, 3);
+        imageOps.Free(t3);
+
+        CoreTensor skip = xGpu;
+        bool freeSkip = false;
+        if (TryGetWeight($"{prefix}.skip_connection.weight") is not null)
+        {
+            skip = ConvGpuTensor(imageOps, $"{prefix}.skip_connection", xGpu, inCh, h, w, outCh, 1, padding: 0);
+            freeSkip = true;
+        }
+        else if (inCh != outCh)
+        {
+            throw new InvalidOperationException($"ResBlock {prefix} has inC ({inCh}) != outC ({outCh}) without skip_connection.");
+        }
+
+        imageOps.AddInPlace(t4, skip);
+        if (freeSkip) imageOps.Free(skip);
+        return t4;
+    }
+
+    private CoreTensor CpuAttentionIsland(IImageOpsBackend imageOps, CoreTensor qGpu, CoreTensor kGpu, CoreTensor vGpu, int qSeq, int kvSeq, int c, int nHeads, int headDim)
+    {
+        var q = new float[qSeq * c];
+        var k = new float[kvSeq * c];
+        var v = new float[kvSeq * c];
+        imageOps.Download(qGpu, q);
+        imageOps.Download(kGpu, k);
+        imageOps.Download(vGpu, v);
+        var attnOut = DiffusionOps.MultiHeadAttention(q, k, v, qSeq, kvSeq, nHeads, headDim);
+        return imageOps.Upload(attnOut.AsSpan(), TensorShape.D1(attnOut.Length));
+    }
+
+    private CoreTensor AttentionIsland(IImageOpsBackend imageOps, CoreTensor qGpu, CoreTensor kGpu, CoreTensor vGpu, int qSeq, int kvSeq, int c, int nHeads)
+    {
+        int headDim = c / nHeads;
+        if (headDim <= 256 && _residentGpuAttentionSupported != false)
+        {
+            try
+            {
+                var result = imageOps.MultiHeadAttentionTiled(qGpu, kGpu, vGpu, qSeq, kvSeq, nHeads, headDim);
+                _residentGpuAttentionSupported = true;
+                return result;
+            }
+            catch (NotSupportedException)
+            {
+                _residentGpuAttentionSupported = false;
+            }
+        }
+        return CpuAttentionIsland(imageOps, qGpu, kGpu, vGpu, qSeq, kvSeq, c, nHeads, headDim);
+    }
+
+    private CoreTensor SpatialTransformerGpu(IImageOpsBackend imageOps, string prefix, CoreTensor xGpu, CoreTensor contextGpu, int c, int h, int w)
+    {
+        int hw = h * w;
+
+        var normW = GetGpuBias(imageOps, $"{prefix}.norm.weight", GetWeight($"{prefix}.norm.weight"));
+        var normB = GetGpuBias(imageOps, $"{prefix}.norm.bias", GetWeight($"{prefix}.norm.bias"));
+        var xNorm = imageOps.GroupNormGpu(xGpu, normW, normB, c, hw);
+
+        // Perf: 1x1 conv is a pure linear projection. Permuting [C, HW] -> [HW, C] first allows
+        // running proj_in via SgemmF16 (128-bit vector loads, fp16 weights) instead of the scalar Conv2dImplicitGemm.
+        var xNormSeq = imageOps.PermuteChwToHwc(xNorm, c, hw);
+        imageOps.Free(xNorm);
+
+        var xSeq = LinGpuTensor($"{prefix}.proj_in", xNormSeq, hw, c, c);
+        imageOps.Free(xNormSeq);
+
+        string tb = $"{prefix}.transformer_blocks.0";
+
+        // 1. Self-attention
+        var saNormW = GetGpuBias(imageOps, $"{tb}.norm1.weight", GetWeight($"{tb}.norm1.weight"));
+        var saNormB = GetGpuBias(imageOps, $"{tb}.norm1.bias", GetWeight($"{tb}.norm1.bias"));
+        var saNorm = imageOps.LayerNormGpu(xSeq, saNormW, saNormB, hw, c);
+
+        var saQ = LinGpuTensor($"{tb}.attn1.to_q", saNorm, hw, c, c);
+        var saK = LinGpuTensor($"{tb}.attn1.to_k", saNorm, hw, c, c);
+        var saV = LinGpuTensor($"{tb}.attn1.to_v", saNorm, hw, c, c);
+        imageOps.Free(saNorm);
+
+        var saAttnOut = AttentionIsland(imageOps, saQ, saK, saV, hw, hw, c, NumHeads);
+        imageOps.Free(saQ); imageOps.Free(saK); imageOps.Free(saV);
+
+        var saProjOut = LinGpuTensor($"{tb}.attn1.to_out.0", saAttnOut, hw, c, c);
+        imageOps.Free(saAttnOut);
+        imageOps.AddInPlace(xSeq, saProjOut);
+        imageOps.Free(saProjOut);
+
+        // 2. Cross-attention
+        var caNormW = GetGpuBias(imageOps, $"{tb}.norm2.weight", GetWeight($"{tb}.norm2.weight"));
+        var caNormB = GetGpuBias(imageOps, $"{tb}.norm2.bias", GetWeight($"{tb}.norm2.bias"));
+        var caNorm = imageOps.LayerNormGpu(xSeq, caNormW, caNormB, hw, c);
+
+        var caQ = LinGpuTensor($"{tb}.attn2.to_q", caNorm, hw, c, c);
+        imageOps.Free(caNorm);
+        var caK = LinGpuTensor($"{tb}.attn2.to_k", contextGpu, 77, ContextDim, c);
+        var caV = LinGpuTensor($"{tb}.attn2.to_v", contextGpu, 77, ContextDim, c);
+
+        var caAttnOut = AttentionIsland(imageOps, caQ, caK, caV, hw, 77, c, NumHeads);
+        imageOps.Free(caQ); imageOps.Free(caK); imageOps.Free(caV);
+
+        var caProjOut = LinGpuTensor($"{tb}.attn2.to_out.0", caAttnOut, hw, c, c);
+        imageOps.Free(caAttnOut);
+        imageOps.AddInPlace(xSeq, caProjOut);
+        imageOps.Free(caProjOut);
+
+        // 3. GEGLU FeedForward
+        var ffNormW = GetGpuBias(imageOps, $"{tb}.norm3.weight", GetWeight($"{tb}.norm3.weight"));
+        var ffNormB = GetGpuBias(imageOps, $"{tb}.norm3.bias", GetWeight($"{tb}.norm3.bias"));
+        var ffNorm = imageOps.LayerNormGpu(xSeq, ffNormW, ffNormB, hw, c);
+
+        int mlpDim = c * 4;
+        var ffH = LinGpuTensor($"{tb}.ff.net.0.proj", ffNorm, hw, c, mlpDim * 2);
+        imageOps.Free(ffNorm);
+        var ffGated = imageOps.GeGlu(ffH, hw, mlpDim);
+        imageOps.Free(ffH);
+
+        var ffOut = LinGpuTensor($"{tb}.ff.net.2", ffGated, hw, mlpDim, c);
+        imageOps.Free(ffGated);
+        imageOps.AddInPlace(xSeq, ffOut);
+        imageOps.Free(ffOut);
+
+        // Perf: run proj_out directly on xSeq [HW, C] via SgemmF16 before permuting back to [C, HW]
+        var projOutSeq = LinGpuTensor($"{prefix}.proj_out", xSeq, hw, c, c);
+        imageOps.Free(xSeq);
+
+        var projOut = imageOps.PermuteHwcToChw(projOutSeq, c, hw);
+        imageOps.Free(projOutSeq);
+
+        imageOps.AddInPlace(projOut, xGpu);
+        return projOut;
+    }
+
+
+    private CoreTensor ForwardGpu(
+        IImageOpsBackend imageOps,
+        float[] x,
+        float[] tEmb,
+        float[] context,
+        int latH,
+        int latW,
+        IReadOnlyList<float[]>? controlDownResiduals = null,
+        float[]? controlMidResidual = null,
+        IReadOnlyList<CoreTensor>? controlDownGpuParam = null,
+        CoreTensor? controlMidGpuParam = null)
+    {
+        EnsureGpuResident();
+
+        int h = latH, w = latW;
+
+        // Pre-upload all host inputs and residuals BEFORE BeginBatch() so that no transfer commands interrupt recording
+        var contextGpu = imageOps.Upload(context.AsSpan(0, 77 * ContextDim), TensorShape.D1(77 * ContextDim));
+        var tEmbGpu = UploadSiluTEmb(imageOps, tEmb);
+        var xGpu = imageOps.Upload(x.AsSpan(0, 4 * h * w), TensorShape.D1(4 * h * w));
+
+        bool ownsControlTensors = false;
+        IReadOnlyList<CoreTensor>? controlDownGpu = controlDownGpuParam;
+        if (controlDownGpu is null && controlDownResiduals is not null)
+        {
+            var uploadedDown = new CoreTensor[controlDownResiduals.Count];
+            for (int i = 0; i < controlDownResiduals.Count; i++)
+            {
+                var res = controlDownResiduals[i];
+                if (res is not null && res.Length > 0)
+                    uploadedDown[i] = imageOps.Upload(res.AsSpan(), TensorShape.D1(res.Length));
+            }
+            controlDownGpu = uploadedDown;
+            ownsControlTensors = true;
+        }
+
+        CoreTensor? controlMidGpu = controlMidGpuParam;
+        if (controlMidGpu is null && controlMidResidual is not null && controlMidResidual.Length > 0)
+        {
+            controlMidGpu = imageOps.Upload(controlMidResidual.AsSpan(), TensorShape.D1(controlMidResidual.Length));
+            ownsControlTensors = true;
+        }
+
+        var swRecord = System.Diagnostics.Stopwatch.StartNew();
+        imageOps.BeginBatch();
+        bool batchSuccess = false;
+        try
+        {
+            var savedInputs = new List<CoreTensor>(12);
+
+            var cur = ConvGpuTensor(imageOps, "input_blocks.0.0", xGpu, 4, h, w, 320, 3);
+            imageOps.Free(xGpu);
+            savedInputs.Add(cur);
+
+            cur = ResBlockGpu(imageOps, "input_blocks.1.0", cur, tEmbGpu, 320, h, w, 320);
+            cur = SpatialTransformerGpu(imageOps, "input_blocks.1.1", cur, contextGpu, 320, h, w);
+            savedInputs.Add(cur);
+
+            cur = ResBlockGpu(imageOps, "input_blocks.2.0", cur, tEmbGpu, 320, h, w, 320);
+            cur = SpatialTransformerGpu(imageOps, "input_blocks.2.1", cur, contextGpu, 320, h, w);
+            savedInputs.Add(cur);
+
+            // Block 3: Downsample (320 -> 320, stride 2)
+            cur = ConvGpuTensor(imageOps, "input_blocks.3.0.op", cur, 320, h, w, 320, 3, padding: 1, stride: 2);
+            h /= 2; w /= 2;
+            savedInputs.Add(cur);
+
+            cur = ResBlockGpu(imageOps, "input_blocks.4.0", cur, tEmbGpu, 320, h, w, 640);
+            cur = SpatialTransformerGpu(imageOps, "input_blocks.4.1", cur, contextGpu, 640, h, w);
+            savedInputs.Add(cur);
+
+            cur = ResBlockGpu(imageOps, "input_blocks.5.0", cur, tEmbGpu, 640, h, w, 640);
+            cur = SpatialTransformerGpu(imageOps, "input_blocks.5.1", cur, contextGpu, 640, h, w);
+            savedInputs.Add(cur);
+
+            // Block 6: Downsample (640 -> 640, stride 2)
+            cur = ConvGpuTensor(imageOps, "input_blocks.6.0.op", cur, 640, h, w, 640, 3, padding: 1, stride: 2);
+            h /= 2; w /= 2;
+            savedInputs.Add(cur);
+
+            cur = ResBlockGpu(imageOps, "input_blocks.7.0", cur, tEmbGpu, 640, h, w, 1280);
+            cur = SpatialTransformerGpu(imageOps, "input_blocks.7.1", cur, contextGpu, 1280, h, w);
+            savedInputs.Add(cur);
+
+            cur = ResBlockGpu(imageOps, "input_blocks.8.0", cur, tEmbGpu, 1280, h, w, 1280);
+            cur = SpatialTransformerGpu(imageOps, "input_blocks.8.1", cur, contextGpu, 1280, h, w);
+            savedInputs.Add(cur);
+
+            // Block 9: Downsample (1280 -> 1280, stride 2)
+            cur = ConvGpuTensor(imageOps, "input_blocks.9.0.op", cur, 1280, h, w, 1280, 3, padding: 1, stride: 2);
+            h /= 2; w /= 2;
+            savedInputs.Add(cur);
+
+            cur = ResBlockGpu(imageOps, "input_blocks.10.0", cur, tEmbGpu, 1280, h, w, 1280);
+            savedInputs.Add(cur);
+
+            cur = ResBlockGpu(imageOps, "input_blocks.11.0", cur, tEmbGpu, 1280, h, w, 1280);
+            savedInputs.Add(cur);
+
+            // Apply ControlNet down residuals
+            if (controlDownGpu is not null)
+            {
+                for (int i = 0; i < Math.Min(savedInputs.Count, controlDownGpu.Count); i++)
+                {
+                    if (controlDownGpu[i] is not null)
+                    {
+                        imageOps.AddInPlace(savedInputs[i], controlDownGpu[i]);
+                        if (ownsControlTensors)
+                            imageOps.Free(controlDownGpu[i]);
+                    }
+                }
+            }
+
+            // ── Middle Block ────────────────────────────────────────────────────────
+            cur = ResBlockGpu(imageOps, "middle_block.0", cur, tEmbGpu, 1280, h, w, 1280);
+            cur = SpatialTransformerGpu(imageOps, "middle_block.1", cur, contextGpu, 1280, h, w);
+            cur = ResBlockGpu(imageOps, "middle_block.2", cur, tEmbGpu, 1280, h, w, 1280);
+
+            if (controlMidGpu is not null)
+            {
+                imageOps.AddInPlace(cur, controlMidGpu);
+                if (ownsControlTensors)
+                    imageOps.Free(controlMidGpu);
+            }
+
+            // ── Output Blocks ───────────────────────────────────────────────────────
+            CoreTensor CatAndFreeSkip(CoreTensor current, int idx, int curC, int skipC)
+            {
+                var skip = savedInputs[idx];
+                var result = imageOps.CatChannels(current, curC, skip, skipC, h * w);
+                imageOps.Free(current);
+                imageOps.Free(skip);
+                return result;
+            }
+
+            // Block 0: ResBlock(1280 + 1280 -> 1280)
+            cur = CatAndFreeSkip(cur, 11, 1280, 1280);
+            cur = ResBlockGpu(imageOps, "output_blocks.0.0", cur, tEmbGpu, 2560, h, w, 1280);
+
+            // Block 1: ResBlock(1280 + 1280 -> 1280)
+            cur = CatAndFreeSkip(cur, 10, 1280, 1280);
+            cur = ResBlockGpu(imageOps, "output_blocks.1.0", cur, tEmbGpu, 2560, h, w, 1280);
+
+            // Block 2: ResBlock(1280 + 1280 -> 1280) + Upsample(1280 -> 1280) + Conv
+            cur = CatAndFreeSkip(cur, 9, 1280, 1280);
+            cur = ResBlockGpu(imageOps, "output_blocks.2.0", cur, tEmbGpu, 2560, h, w, 1280);
+            var upsampled2 = imageOps.Upsample2xGpu(cur, 1280, h, w);
+            imageOps.Free(cur);
+            h *= 2; w *= 2;
+            cur = ConvGpuTensor(imageOps, "output_blocks.2.1.conv", upsampled2, 1280, h, w, 1280, 3);
+            imageOps.Free(upsampled2);
+
+            // Block 3: ResBlock(1280 + 1280 -> 1280) + SpatialTransformer(1280)
+            cur = CatAndFreeSkip(cur, 8, 1280, 1280);
+            cur = ResBlockGpu(imageOps, "output_blocks.3.0", cur, tEmbGpu, 2560, h, w, 1280);
+            cur = SpatialTransformerGpu(imageOps, "output_blocks.3.1", cur, contextGpu, 1280, h, w);
+
+            // Block 4: ResBlock(1280 + 1280 -> 1280) + SpatialTransformer(1280)
+            cur = CatAndFreeSkip(cur, 7, 1280, 1280);
+            cur = ResBlockGpu(imageOps, "output_blocks.4.0", cur, tEmbGpu, 2560, h, w, 1280);
+            cur = SpatialTransformerGpu(imageOps, "output_blocks.4.1", cur, contextGpu, 1280, h, w);
+
+            // Block 5: ResBlock(1280 + 640 -> 1280) + SpatialTransformer(1280) + Upsample + Conv
+            cur = CatAndFreeSkip(cur, 6, 1280, 640);
+            cur = ResBlockGpu(imageOps, "output_blocks.5.0", cur, tEmbGpu, 1920, h, w, 1280);
+            cur = SpatialTransformerGpu(imageOps, "output_blocks.5.1", cur, contextGpu, 1280, h, w);
+            var upsampled5 = imageOps.Upsample2xGpu(cur, 1280, h, w);
+            imageOps.Free(cur);
+            h *= 2; w *= 2;
+            cur = ConvGpuTensor(imageOps, "output_blocks.5.2.conv", upsampled5, 1280, h, w, 1280, 3);
+            imageOps.Free(upsampled5);
+
+            // Block 6: ResBlock(1280 + 640 -> 640) + SpatialTransformer(640)
+            cur = CatAndFreeSkip(cur, 5, 1280, 640);
+            cur = ResBlockGpu(imageOps, "output_blocks.6.0", cur, tEmbGpu, 1920, h, w, 640);
+            cur = SpatialTransformerGpu(imageOps, "output_blocks.6.1", cur, contextGpu, 640, h, w);
+
+            // Block 7: ResBlock(640 + 640 -> 640) + SpatialTransformer(640)
+            cur = CatAndFreeSkip(cur, 4, 640, 640);
+            cur = ResBlockGpu(imageOps, "output_blocks.7.0", cur, tEmbGpu, 1280, h, w, 640);
+            cur = SpatialTransformerGpu(imageOps, "output_blocks.7.1", cur, contextGpu, 640, h, w);
+
+            // Block 8: ResBlock(640 + 320 -> 640) + SpatialTransformer(640) + Upsample + Conv
+            cur = CatAndFreeSkip(cur, 3, 640, 320);
+            cur = ResBlockGpu(imageOps, "output_blocks.8.0", cur, tEmbGpu, 960, h, w, 640);
+            cur = SpatialTransformerGpu(imageOps, "output_blocks.8.1", cur, contextGpu, 640, h, w);
+            var upsampled8 = imageOps.Upsample2xGpu(cur, 640, h, w);
+            imageOps.Free(cur);
+            h *= 2; w *= 2;
+            cur = ConvGpuTensor(imageOps, "output_blocks.8.2.conv", upsampled8, 640, h, w, 640, 3);
+            imageOps.Free(upsampled8);
+
+            // Block 9: ResBlock(640 + 320 -> 320) + SpatialTransformer(320)
+            cur = CatAndFreeSkip(cur, 2, 640, 320);
+            cur = ResBlockGpu(imageOps, "output_blocks.9.0", cur, tEmbGpu, 960, h, w, 320);
+            cur = SpatialTransformerGpu(imageOps, "output_blocks.9.1", cur, contextGpu, 320, h, w);
+
+            // Block 10: ResBlock(320 + 320 -> 320) + SpatialTransformer(320)
+            cur = CatAndFreeSkip(cur, 1, 320, 320);
+            cur = ResBlockGpu(imageOps, "output_blocks.10.0", cur, tEmbGpu, 640, h, w, 320);
+            cur = SpatialTransformerGpu(imageOps, "output_blocks.10.1", cur, contextGpu, 320, h, w);
+
+            // Block 11: ResBlock(320 + 320 -> 320) + SpatialTransformer(320)
+            cur = CatAndFreeSkip(cur, 0, 320, 320);
+            cur = ResBlockGpu(imageOps, "output_blocks.11.0", cur, tEmbGpu, 640, h, w, 320);
+            cur = SpatialTransformerGpu(imageOps, "output_blocks.11.1", cur, contextGpu, 320, h, w);
+
+            // ── Final Output ────────────────────────────────────────────────────────
+            var finalNorm = GroupNormSiluGpuTensor(imageOps, "out.0", cur, 320, h * w);
+            imageOps.Free(cur);
+            var finalOut = ConvGpuTensor(imageOps, "out.2", finalNorm, 320, h, w, 4, 3);
+            imageOps.Free(finalNorm);
+
+            imageOps.Free(contextGpu);
+            imageOps.Free(tEmbGpu);
+
+            var recordMs = swRecord.ElapsedMilliseconds;
+            var swSubmit = System.Diagnostics.Stopwatch.StartNew();
+            imageOps.EndBatch();
+            var submitMs = swSubmit.ElapsedMilliseconds;
+            Console.WriteLine($"[UNet.ForwardGpu] record={recordMs}ms, submitWait={submitMs}ms");
+            batchSuccess = true;
+            return finalOut;
+        }
+        finally
+        {
+            if (!batchSuccess)
+            {
+                try { imageOps.EndBatch(); } catch { }
+                imageOps.Free(xGpu);
+                imageOps.Free(contextGpu);
+                imageOps.Free(tEmbGpu);
+                if (controlDownGpu is not null)
+                {
+                    foreach (var ct in controlDownGpu)
+                        if (ct is not null) imageOps.Free(ct);
+                }
+                if (controlMidGpu is not null) imageOps.Free(controlMidGpu);
+            }
+        }
     }
 
     public float[] Conv(string name, float[] x, int inC, int h, int w, int outC, int ksize, int stride = 1, int padding = -1)
@@ -250,6 +853,7 @@ public sealed class UNet2DConditionModel : IDisposable
 
     /// <summary>
     /// Computes sinusoidal timestep embedding and passes through 2-layer MLP.
+    /// Evaluated on CPU with AVX2/AVX-512 SIMD to eliminate host-GPU round-trips for the 320-element vector.
     /// </summary>
     public float[] ComputeTimeEmbedding(float timestep)
     {
@@ -267,9 +871,14 @@ public sealed class UNet2DConditionModel : IDisposable
             sinEmb[half + i] = MathF.Sin(arg);
         }
 
-        var emb = Lin("time_embed.0", sinEmb, 1, dim, TimeEmbedDim);
+        var w0 = GetWeight("time_embed.0.weight");
+        var b0 = TryGetWeight("time_embed.0.bias");
+        var emb = DiffusionOps.Linear(sinEmb, w0, b0, 1, dim, TimeEmbedDim);
         DiffusionOps.SiluInPlace(emb);
-        return Lin("time_embed.2", emb, 1, TimeEmbedDim, TimeEmbedDim);
+
+        var w2 = GetWeight("time_embed.2.weight");
+        var b2 = TryGetWeight("time_embed.2.bias");
+        return DiffusionOps.Linear(emb, w2, b2, 1, TimeEmbedDim, TimeEmbedDim);
     }
 
     /// <summary>
@@ -431,9 +1040,63 @@ public sealed class UNet2DConditionModel : IDisposable
     private static float[] MultiHeadAttention(float[] q, float[] k, float[] v, int qLen, int kvLen, int c, int nHeads)
         => DiffusionOps.MultiHeadAttention(q, k, v, qLen, kvLen, nHeads, c / nHeads);
 
-    public float[] Forward(float[] x, float timestep, float[] context, int latH, int latW, IReadOnlyList<float[]>? controlDownResiduals = null, float[]? controlMidResidual = null)
+    public float[] Forward(
+        float[] x,
+        float timestep,
+        float[] context,
+        int latH,
+        int latW,
+        IReadOnlyList<float[]>? controlDownResiduals = null,
+        float[]? controlMidResidual = null,
+        IReadOnlyList<CoreTensor>? controlDownGpu = null,
+        CoreTensor? controlMidGpu = null)
     {
         var tEmb = ComputeTimeEmbedding(timestep);
+
+        if (_imageOps is not null && _unetForwardResidencySupported != false)
+        {
+            try
+            {
+                var resultGpu = ForwardGpu(_imageOps, x, tEmb, context, latH, latW,
+                    controlDownResiduals, controlMidResidual, controlDownGpu, controlMidGpu);
+                var result = new float[4 * latH * latW];
+                try
+                {
+                    _imageOps.Download(resultGpu, result);
+                }
+                finally
+                {
+                    _imageOps.Free(resultGpu);
+                }
+                _unetForwardResidencySupported = true;
+                return result;
+            }
+            catch (NotSupportedException)
+            {
+                _unetForwardResidencySupported = false;
+            }
+        }
+
+        if (controlDownResiduals is null && controlDownGpu is not null && _imageOps is not null)
+        {
+            var downloadedDown = new List<float[]>(controlDownGpu.Count);
+            for (int i = 0; i < controlDownGpu.Count; i++)
+            {
+                var g = controlDownGpu[i];
+                var buf = new float[(int)g.ElementCount];
+                _imageOps.Download(g, buf);
+                downloadedDown.Add(buf);
+            }
+            controlDownResiduals = downloadedDown;
+        }
+
+        if (controlMidResidual is null && controlMidGpu is not null && _imageOps is not null)
+        {
+            var buf = new float[(int)controlMidGpu.ElementCount];
+            _imageOps.Download(controlMidGpu, buf);
+            controlMidResidual = buf;
+        }
+
         var savedInputs = new List<float[]>(12);
 
         // ── Input Blocks ────────────────────────────────────────────────────────
@@ -605,6 +1268,11 @@ public sealed class UNet2DConditionModel : IDisposable
         {
             foreach (var t in _gpuWeightsNative.Values) _backend!.Free(t);
             _gpuWeightsNative.Clear();
+        }
+        if (_backend is not null)
+        {
+            foreach (var t in _gpuBiasCache.Values) _backend.Free(t);
+            _gpuBiasCache.Clear();
         }
         _weightReader.Clear();
     }

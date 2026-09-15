@@ -169,7 +169,7 @@ public sealed class HunyuanVideoModel : IDisposable
 
         // 2. Input projections
         var imgTokens = Linear("img_in.proj", packed, InChannels, _dim);
-        var txtTokens = Linear("txt_in.input_embedder", textContext, TextDim, _dim);
+        var txtTokens = TokenRefiner(textContext, timestep, numTxtTokens);
 
         // 3. Timestep embedding (sinusoidal 256 -> linear dim -> silu -> linear dim)
         var tEmb = ComputeTimestepEmbedding(timestep);
@@ -428,6 +428,96 @@ public sealed class HunyuanVideoModel : IDisposable
         var t0 = Linear("time_in.in_layer", emb, 256, _dim);
         DiffusionOps.SiluInPlace(t0);
         return Linear("time_in.out_layer", t0, _dim, _dim);
+    }
+
+    private int? _refinerDepth;
+
+    /// <summary>
+    /// Real `HunyuanVideoTokenRefiner`: pools the raw text hidden states, combines with a
+    /// timestep embedding to form a per-block AdaLN gate signal, projects the raw text tokens into
+    /// model dim, then refines them through `HunyuanVideoIndividualTokenRefiner`'s self-attention +
+    /// FFN blocks (gated, no shift/scale modulation on the norms themselves -- only the residual
+    /// gates are conditioned). Reference: `examples/diffusers/.../transformer_hunyuan_video.py`
+    /// `HunyuanVideoTokenRefiner`/`HunyuanVideoIndividualTokenRefinerBlock`. Real checkpoint keys
+    /// (`txt_in.t_embedder`/`txt_in.c_embedder`/`txt_in.input_embedder`/
+    /// `txt_in.individual_token_refiner.blocks.N.*`) confirmed directly against the real
+    /// safetensors header -- 2 refiner blocks present in this checkpoint.
+    /// </summary>
+    private float[] TokenRefiner(float[] textContext, float timestep, int seqLen)
+    {
+        // Pooled projection: mean over sequence of the RAW (pre-projection) text hidden states.
+        var pooled = new float[TextDim];
+        for (int s = 0; s < seqLen; s++)
+            for (int d = 0; d < TextDim; d++)
+                pooled[d] += textContext[s * TextDim + d];
+        for (int d = 0; d < TextDim; d++) pooled[d] /= seqLen;
+
+        var tEmb = DiffusionOps.SinusoidalTimestepEmbedding(timestep);
+        var t0 = Linear("txt_in.t_embedder.mlp.0", tEmb, 256, _dim);
+        DiffusionOps.SiluInPlace(t0);
+        var tOut = Linear("txt_in.t_embedder.mlp.2", t0, _dim, _dim);
+
+        var c0 = Linear("txt_in.c_embedder.linear_1", pooled, TextDim, _dim);
+        DiffusionOps.SiluInPlace(c0);
+        var cOut = Linear("txt_in.c_embedder.linear_2", c0, _dim, _dim);
+
+        var temb = new float[_dim];
+        for (int d = 0; d < _dim; d++) temb[d] = tOut[d] + cOut[d];
+
+        var x = Linear("txt_in.input_embedder", textContext, TextDim, _dim);
+
+        _refinerDepth ??= DetectRefinerDepth();
+        for (int b = 0; b < _refinerDepth; b++)
+            x = TokenRefinerBlock($"txt_in.individual_token_refiner.blocks.{b}", x, temb, seqLen);
+
+        return x;
+    }
+
+    private int DetectRefinerDepth()
+    {
+        for (int i = 30; i >= 0; i--)
+        {
+            if (_weights.Contains(Resolve($"txt_in.individual_token_refiner.blocks.{i}.self_attn_qkv.weight")))
+                return i + 1;
+        }
+        return 0;
+    }
+
+    private float[] TokenRefinerBlock(string prefix, float[] x, float[] temb, int seqLen)
+    {
+        var normed1 = (float[])x.Clone();
+        var norm1W = GetWeight($"{prefix}.norm1.weight");
+        var norm1B = GetWeight($"{prefix}.norm1.bias");
+        DiffusionOps.LayerNorm(normed1, norm1W, norm1B, _dim, eps: 1e-6f);
+
+        var qkv = Linear($"{prefix}.self_attn_qkv", normed1, _dim, _dim * 3);
+        var (q, k, v) = SplitQkv(qkv, seqLen, _dim);
+        var attnOut = MultiHeadAttention(q, k, v, seqLen, _numHeads, _headDim);
+        attnOut = Linear($"{prefix}.self_attn_proj", attnOut, _dim, _dim);
+
+        var gate = Linear($"{prefix}.adaLN_modulation.1", DiffusionOpsSilu(temb), _dim, _dim * 2);
+        var gateMsa = gate.AsSpan(0, _dim);
+        var gateMlp = gate.AsSpan(_dim, _dim);
+
+        for (int s = 0; s < seqLen; s++)
+            for (int d = 0; d < _dim; d++)
+                x[s * _dim + d] += attnOut[s * _dim + d] * gateMsa[d];
+
+        var normed2 = (float[])x.Clone();
+        var norm2W = GetWeight($"{prefix}.norm2.weight");
+        var norm2B = GetWeight($"{prefix}.norm2.bias");
+        DiffusionOps.LayerNorm(normed2, norm2W, norm2B, _dim, eps: 1e-6f);
+
+        int mlpHidden = _dim * 4;
+        var fc1 = Linear($"{prefix}.mlp.fc1", normed2, _dim, mlpHidden);
+        DiffusionOps.SiluInPlace(fc1);
+        var fc2 = Linear($"{prefix}.mlp.fc2", fc1, mlpHidden, _dim);
+
+        for (int s = 0; s < seqLen; s++)
+            for (int d = 0; d < _dim; d++)
+                x[s * _dim + d] += fc2[s * _dim + d] * gateMlp[d];
+
+        return x;
     }
 
     private static float[] DiffusionOpsSilu(float[] x)

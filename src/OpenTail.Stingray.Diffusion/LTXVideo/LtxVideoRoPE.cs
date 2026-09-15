@@ -91,6 +91,79 @@ public static class LtxVideoRoPE
         return (cos, sin);
     }
 
+    /// <summary>
+    /// Builds compact per-token cos/sin tables of length headDim/2 each for GPU Flux2DRoPE kernel.
+    /// </summary>
+    public static (float[] cos, float[] sin) ComputeContinuous3DRoPECompact(
+        int numFrames,
+        int patchH,
+        int patchW,
+        int headDim = 2048,
+        float theta = 10000.0f,
+        float frameRate = 25.0f,
+        int temporalScale = 8,
+        int spatialScaleH = 32,
+        int spatialScaleW = 32,
+        int baseNumFrames = 20,
+        int baseHeight = 2048,
+        int baseWidth = 2048,
+        int patchSizeT = 1,
+        int patchSizeS = 1)
+    {
+        int freqCount = headDim / 6;
+        var indices = BuildFreqGrid(theta, freqCount);
+        int padHalf = headDim / 2 - freqCount * 3;
+        int nPairs = headDim / 2;
+
+        double scaleT = (double)temporalScale / frameRate;
+        double coordScaleT = scaleT * patchSizeT / baseNumFrames;
+        double coordScaleH = (double)spatialScaleH * patchSizeS / baseHeight;
+        double coordScaleW = (double)spatialScaleW * patchSizeS / baseWidth;
+
+        int totalTokens = numFrames * patchH * patchW;
+        var cos = new float[totalTokens * nPairs];
+        var sin = new float[totalTokens * nPairs];
+
+        int token = 0;
+        for (int t = 0; t < numFrames; t++)
+        {
+            double coordT = t * coordScaleT;
+            for (int h = 0; h < patchH; h++)
+            {
+                double coordH = h * coordScaleH;
+                for (int w = 0; w < patchW; w++)
+                {
+                    double coordW = w * coordScaleW;
+                    int baseOff = token * nPairs;
+                    int outIdx = padHalf;
+
+                    for (int p = 0; p < padHalf; p++)
+                    {
+                        cos[baseOff + p] = 1.0f;
+                        sin[baseOff + p] = 0.0f;
+                    }
+
+                    for (int f = 0; f < freqCount; f++)
+                    {
+                        double idxVal = indices[f];
+                        double aT = idxVal * (coordT * 2.0 - 1.0);
+                        double aH = idxVal * (coordH * 2.0 - 1.0);
+                        double aW = idxVal * (coordW * 2.0 - 1.0);
+
+                        cos[baseOff + outIdx] = (float)Math.Cos(aT); sin[baseOff + outIdx++] = (float)Math.Sin(aT);
+                        cos[baseOff + outIdx] = (float)Math.Cos(aH); sin[baseOff + outIdx++] = (float)Math.Sin(aH);
+                        cos[baseOff + outIdx] = (float)Math.Cos(aW); sin[baseOff + outIdx++] = (float)Math.Sin(aW);
+                    }
+
+                    token++;
+                }
+            }
+        }
+
+        return (cos, sin);
+    }
+
+
     /// <summary>Writes one rotation angle at half-dim index <paramref name="halfIdx"/>, duplicated
     /// (`repeat_interleave(2)`) into the full-dim array at `[2*halfIdx, 2*halfIdx+1]`. Computed in
     /// double precision (2026-09-14 fix): at the highest frequency index the raw angle reaches

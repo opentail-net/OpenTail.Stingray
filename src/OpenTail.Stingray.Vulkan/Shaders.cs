@@ -6531,21 +6531,29 @@ internal static class Shaders
     /// convention as every other conv weight in this codebase), bias [outCh]
     /// → output [outCh, H, W]. stride=1, configurable padding (default same).
     ///
-    /// Push constants: { inCh, outCh, height, width, ksize, padding }.
+    /// 32x32 tiled GEMM with 64 threads (8x8) computing 4x4 outputs per thread.
+    /// Cooperative loading of tileA[32][17] (im2col on the fly) and tileB[32][17] (weights).
+    ///
+    /// Push constants: { inCh, outCh, inHeight, inWidth, ksize, padding, stride, outHeight, outWidth }.
     /// Bindings: 0=input, 1=weight, 2=bias, 3=output.
-    /// Dispatch: (ceil(H*W/16), ceil(outCh/16), 1) with local_size=(16,16,1).
+    /// Dispatch: (ceil(outHeight*outWidth/32), ceil(outCh/32), 1) with local_size=(8,8,1).
     /// </summary>
     internal const string Conv2dImplicitGemm = """
         #version 450
-        layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+        #extension GL_EXT_control_flow_attributes : enable
+
+        layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
         layout(push_constant) uniform Params {
             uint inCh;
             uint outCh;
-            uint height;
-            uint width;
+            uint inHeight;
+            uint inWidth;
             uint ksize;
             uint padding;
+            uint stride;
+            uint outHeight;
+            uint outWidth;
         };
 
         layout(binding = 0) readonly  buffer Input  { float input_data[];  };
@@ -6553,55 +6561,118 @@ internal static class Shaders
         layout(binding = 2) readonly  buffer Bias   { float bias_data[];   };
         layout(binding = 3) writeonly buffer Output { float output_data[]; };
 
-        shared float tileA[16][17]; // im2col tile, computed on the fly -- +1 col avoids bank conflicts
-        shared float tileB[16][17]; // weight tile
+        shared float tileA[32][17]; // 32 pixels x 16 K, +1 col avoids bank conflicts
+        shared float tileB[32][17]; // 32 channels x 16 K, +1 col avoids bank conflicts
 
         void main() {
-            uint hw = height * width;
-            uint M  = hw;             // rows = output pixels
+            uint in_hw  = inHeight * inWidth;
+            uint out_hw = outHeight * outWidth;
+            uint M  = out_hw;         // rows = output pixels
             uint N  = outCh;          // cols = output channels
             uint kk = ksize * ksize;
             uint K  = inCh * kk;
 
-            uint row = gl_WorkGroupID.x * 16u + gl_LocalInvocationID.x;  // pixel index
-            uint col = gl_WorkGroupID.y * 16u + gl_LocalInvocationID.y;  // output channel
+            uint tx = gl_LocalInvocationID.x;
+            uint ty = gl_LocalInvocationID.y;
+            uint tid = ty * 8u + tx;
 
-            uint oh = row / width;
-            uint ow = row % width;
+            uint row_base = gl_WorkGroupID.x * 32u;
+            uint col_base = gl_WorkGroupID.y * 32u;
 
-            float acc = 0.0;
+            uint r = tid >> 1;             // row in tile (0..31)
+            uint c_base = (tid & 1u) * 8u; // col in tile: 0 or 8
+
+            uint gm = row_base + r;
+            uint gn = col_base + r;
+
+            uint oh = gm / outWidth;
+            uint ow = gm % outWidth;
+
+            bool valid_row = gm < M;
+            bool valid_col = gn < N;
+
+            float acc[4][4];
+            [[unroll]] for (uint i = 0u; i < 4u; i++)
+                [[unroll]] for (uint j = 0u; j < 4u; j++)
+                    acc[i][j] = 0.0;
+
             uint numTiles = (K + 15u) / 16u;
 
             for (uint t = 0u; t < numTiles; t++) {
-                uint aCol = t * 16u + gl_LocalInvocationID.y;   // k-index this thread loads into tileA
-                uint bCol = t * 16u + gl_LocalInvocationID.x;   // k-index this thread loads into tileB
+                uint k_base = t * 16u;
 
-                float aVal = 0.0;
-                if (row < M && aCol < K) {
-                    uint ic   = aCol / kk;
-                    uint kOff = aCol % kk;
-                    uint kh   = kOff / ksize;
-                    uint kw   = kOff % ksize;
-                    int ih = int(oh + kh) - int(padding);
-                    int iw = int(ow + kw) - int(padding);
-                    if (uint(ih) < height && uint(iw) < width)
-                        aVal = input_data[ic * hw + uint(ih) * width + uint(iw)];
+                // Load tileA [32, 16] - im2col on the fly
+                [[unroll]] for (uint p = 0u; p < 8u; p++) {
+                    uint c = c_base + p;
+                    uint gk = k_base + c;
+                    float aVal = 0.0;
+                    if (valid_row && gk < K) {
+                        if (ksize == 1u && stride == 1u && padding == 0u) {
+                            aVal = input_data[gk * in_hw + gm];
+                        } else if (ksize == 3u && stride == 1u && padding == 1u) {
+                            uint ic   = gk / 9u;
+                            uint kOff = gk % 9u;
+                            uint kh   = kOff / 3u;
+                            uint kw   = kOff % 3u;
+                            int ih = int(oh + kh) - 1;
+                            int iw = int(ow + kw) - 1;
+                            if (uint(ih) < inHeight && uint(iw) < inWidth)
+                                aVal = input_data[ic * in_hw + uint(ih) * inWidth + uint(iw)];
+                        } else {
+                            uint ic   = gk / kk;
+                            uint kOff = gk % kk;
+                            uint kh   = kOff / ksize;
+                            uint kw   = kOff % ksize;
+                            int ih = int(oh * stride + kh) - int(padding);
+                            int iw = int(ow * stride + kw) - int(padding);
+                            if (uint(ih) < inHeight && uint(iw) < inWidth)
+                                aVal = input_data[ic * in_hw + uint(ih) * inWidth + uint(iw)];
+                        }
+                    }
+                    tileA[r][c] = aVal;
                 }
-                tileA[gl_LocalInvocationID.x][gl_LocalInvocationID.y] = aVal;
 
-                tileB[gl_LocalInvocationID.y][gl_LocalInvocationID.x] =
-                    (col < N && bCol < K) ? weight_data[col * K + bCol] : 0.0;
+                // Load tileB [32, 16] - weights
+                [[unroll]] for (uint p = 0u; p < 8u; p++) {
+                    uint c = c_base + p;
+                    uint gk = k_base + c;
+                    tileB[r][c] = (valid_col && gk < K) ? weight_data[gn * K + gk] : 0.0;
+                }
 
                 barrier();
 
-                for (uint k = 0u; k < 16u; k++)
-                    acc += tileA[gl_LocalInvocationID.x][k] * tileB[gl_LocalInvocationID.y][k];
+                [[unroll]] for (uint k = 0u; k < 16u; k++) {
+                    float a0 = tileA[tx * 4u + 0u][k];
+                    float a1 = tileA[tx * 4u + 1u][k];
+                    float a2 = tileA[tx * 4u + 2u][k];
+                    float a3 = tileA[tx * 4u + 3u][k];
+
+                    float b0 = tileB[ty * 4u + 0u][k];
+                    float b1 = tileB[ty * 4u + 1u][k];
+                    float b2 = tileB[ty * 4u + 2u][k];
+                    float b3 = tileB[ty * 4u + 3u][k];
+
+                    acc[0][0] += a0 * b0;  acc[0][1] += a0 * b1;  acc[0][2] += a0 * b2;  acc[0][3] += a0 * b3;
+                    acc[1][0] += a1 * b0;  acc[1][1] += a1 * b1;  acc[1][2] += a1 * b2;  acc[1][3] += a1 * b3;
+                    acc[2][0] += a2 * b0;  acc[2][1] += a2 * b1;  acc[2][2] += a2 * b2;  acc[2][3] += a2 * b3;
+                    acc[3][0] += a3 * b0;  acc[3][1] += a3 * b1;  acc[3][2] += a3 * b2;  acc[3][3] += a3 * b3;
+                }
 
                 barrier();
             }
 
-            if (row < M && col < N)
-                output_data[col * hw + row] = acc + bias_data[col];
+            [[unroll]] for (uint j = 0u; j < 4u; j++) {
+                uint out_c = col_base + ty * 4u + j;
+                if (out_c < N) {
+                    float bVal = bias_data[out_c];
+                    [[unroll]] for (uint i = 0u; i < 4u; i++) {
+                        uint out_r = row_base + tx * 4u + i;
+                        if (out_r < M) {
+                            output_data[out_c * out_hw + out_r] = acc[i][j] + bVal;
+                        }
+                    }
+                }
+            }
         }
         """;
 
@@ -6930,7 +7001,9 @@ internal static class Shaders
             uint base2 = row * (2u * d);
             float val  = x[base2 + col];
             float gate = x[base2 + d + col];
-            float geluGate = 0.5 * gate * (1.0 + tanh(0.79788456 * (gate + 0.044715 * gate * gate * gate)));
+            float arg  = 0.79788456 * (gate + 0.044715 * gate * gate * gate);
+            float th   = (arg > 10.0) ? 1.0 : ((arg < -10.0) ? -1.0 : tanh(arg));
+            float geluGate = 0.5 * gate * (1.0 + th);
             y[idx] = val * geluGate;
         }
         """;
@@ -7052,7 +7125,7 @@ internal static class Shaders
 
             float m = -3.402823e38;
             float l = 0.0;
-            float acc[128];
+            float acc[256];
             for (uint d = 0u; d < headDim; d++) acc[d] = 0.0;
 
             for (uint j = 0u; j < kvSeq; j++) {
@@ -7477,6 +7550,567 @@ internal static class Shaders
                 o_vec[outBase + 5u] = acc5 * invL;
                 o_vec[outBase + 6u] = acc6 * invL;
                 o_vec[outBase + 7u] = acc7 * invL;
+            }
+        }
+        """;
+
+    /// <summary>
+    /// Tiled ("flash-attention"-style) variant of MultiHeadAttention for HEAD_DIM=40 (SD 1.5 Level 0).
+    /// </summary>
+    internal const string MultiHeadAttentionTiled40 = """
+        #version 450
+        #extension GL_KHR_shader_subgroup_basic   : require
+        #extension GL_KHR_shader_subgroup_shuffle : require
+
+        #define HEAD_DIM   40
+        #define BR         16
+        #define BC         32
+        #define WG_SIZE    128
+        #define D_SPLIT    8
+        #define D_PER_LANE 5
+
+        const float NEG_INF = -3.402823466e+38;
+
+        layout(std430, binding = 0) readonly  buffer QBuffer { float q_data[]; };
+        layout(std430, binding = 1) readonly  buffer KBuffer { float k_data[]; };
+        layout(std430, binding = 2) readonly  buffer VBuffer { float v_data[]; };
+        layout(std430, binding = 3) writeonly buffer OBuffer { float o_data[]; };
+
+        layout(push_constant) uniform Params {
+            uint qSeq;
+            uint kvSeq;
+            uint numHeads;
+            float scale;
+        } p;
+
+        shared float q_tile[BR * HEAD_DIM];
+        shared float k_tile[BC * HEAD_DIM];
+        shared float v_tile[BC * HEAD_DIM];
+        shared float score_tile[BR * BC];
+        shared float row_m[BR];
+        shared float row_l[BR];
+        shared float row_alpha[BR];
+
+        layout(local_size_x = WG_SIZE, local_size_y = 1, local_size_z = 1) in;
+
+        void main() {
+            const uint tid = gl_LocalInvocationIndex;
+            const uint row_in_tile = tid / D_SPLIT;
+            const uint lane_in_row = tid % D_SPLIT;
+            const uint q_row = gl_WorkGroupID.x * BR + row_in_tile;
+
+            const uint h = gl_WorkGroupID.z;
+            const uint dim = p.numHeads * HEAD_DIM;
+            const uint headOff = h * HEAD_DIM;
+
+            // Stage Q tile into LDS: BR*HEAD_DIM = 640 floats, 128 threads -> 5 each.
+            for (uint i = tid; i < BR * HEAD_DIM; i += WG_SIZE) {
+                uint r = i / HEAD_DIM;
+                uint d = i % HEAD_DIM;
+                uint globalQRow = gl_WorkGroupID.x * BR + r;
+                q_tile[i] = (globalQRow < p.qSeq) ? q_data[globalQRow * dim + headOff + d] : 0.0;
+            }
+
+            if (lane_in_row == 0u) {
+                row_m[row_in_tile] = NEG_INF;
+                row_l[row_in_tile] = 0.0;
+                row_alpha[row_in_tile] = 0.0;
+            }
+            barrier();
+
+            float accum0 = 0.0, accum1 = 0.0, accum2 = 0.0, accum3 = 0.0, accum4 = 0.0;
+            bool q_valid = (q_row < p.qSeq);
+
+            for (uint tile_base = 0u; tile_base < p.kvSeq; tile_base += BC) {
+                // Stage K/V tile: BC*HEAD_DIM = 1280 floats each, 128 threads -> 10 each.
+                for (uint i = tid; i < BC * HEAD_DIM; i += WG_SIZE) {
+                    uint krow = i / HEAD_DIM;
+                    uint d = i % HEAD_DIM;
+                    uint globalK = tile_base + krow;
+                    if (globalK < p.kvSeq) {
+                        k_tile[i] = k_data[globalK * dim + headOff + d];
+                        v_tile[i] = v_data[globalK * dim + headOff + d];
+                    } else {
+                        k_tile[i] = 0.0;
+                        v_tile[i] = 0.0;
+                    }
+                }
+                barrier();
+
+                if (q_valid) {
+                    uint qBaseLocal = row_in_tile * HEAD_DIM;
+                    uint d0 = lane_in_row * D_PER_LANE;
+                    uint d1 = d0 + 1u, d2 = d0 + 2u, d3 = d0 + 3u, d4 = d0 + 4u;
+
+                    for (uint k = 0u; k < BC; ++k) {
+                        uint globalK = tile_base + k;
+                        float partial = q_tile[qBaseLocal + d0] * k_tile[k * HEAD_DIM + d0]
+                                       + q_tile[qBaseLocal + d1] * k_tile[k * HEAD_DIM + d1]
+                                       + q_tile[qBaseLocal + d2] * k_tile[k * HEAD_DIM + d2]
+                                       + q_tile[qBaseLocal + d3] * k_tile[k * HEAD_DIM + d3]
+                                       + q_tile[qBaseLocal + d4] * k_tile[k * HEAD_DIM + d4];
+
+                        partial += subgroupShuffleXor(partial, 4u);
+                        partial += subgroupShuffleXor(partial, 2u);
+                        partial += subgroupShuffleXor(partial, 1u);
+
+                        float score = partial * p.scale;
+                        if (globalK >= p.kvSeq) score = NEG_INF;
+                        if (lane_in_row == 0u) score_tile[row_in_tile * BC + k] = score;
+                    }
+                }
+                barrier();
+
+                if (lane_in_row == 0u && q_valid) {
+                    float m_old = row_m[row_in_tile];
+                    float l_old = row_l[row_in_tile];
+
+                    float tile_max = NEG_INF;
+                    for (uint k = 0u; k < BC; ++k) {
+                        uint globalK = tile_base + k;
+                        if (globalK < p.kvSeq)
+                            tile_max = max(tile_max, score_tile[row_in_tile * BC + k]);
+                    }
+
+                    float m_new = max(m_old, tile_max);
+                    float alpha = exp(m_old - m_new);
+                    row_alpha[row_in_tile] = alpha;
+
+                    float tile_sum = 0.0;
+                    for (uint k = 0u; k < BC; ++k) {
+                        uint globalK = tile_base + k;
+                        float prob = 0.0;
+                        if (globalK < p.kvSeq) {
+                            float score = score_tile[row_in_tile * BC + k];
+                            prob = exp(score - m_new);
+                            tile_sum += prob;
+                        }
+                        score_tile[row_in_tile * BC + k] = prob;
+                    }
+
+                    row_l[row_in_tile] = l_old * alpha + tile_sum;
+                    row_m[row_in_tile] = m_new;
+                }
+                barrier();
+
+                if (q_valid) {
+                    uint d0 = lane_in_row * D_PER_LANE;
+                    uint d1 = d0 + 1u, d2 = d0 + 2u, d3 = d0 + 3u, d4 = d0 + 4u;
+                    float alpha = row_alpha[row_in_tile];
+
+                    accum0 *= alpha; accum1 *= alpha; accum2 *= alpha; accum3 *= alpha; accum4 *= alpha;
+
+                    for (uint k = 0u; k < BC; ++k) {
+                        uint globalK = tile_base + k;
+                        if (globalK < p.kvSeq) {
+                            float prob = score_tile[row_in_tile * BC + k];
+                            uint vbase = k * HEAD_DIM;
+                            accum0 += prob * v_tile[vbase + d0];
+                            accum1 += prob * v_tile[vbase + d1];
+                            accum2 += prob * v_tile[vbase + d2];
+                            accum3 += prob * v_tile[vbase + d3];
+                            accum4 += prob * v_tile[vbase + d4];
+                        }
+                    }
+                }
+                barrier();
+            }
+
+            if (q_valid) {
+                float l = row_l[row_in_tile];
+                uint outBase = q_row * dim + headOff;
+                uint d0 = lane_in_row * D_PER_LANE;
+                uint d1 = d0 + 1u, d2 = d0 + 2u, d3 = d0 + 3u, d4 = d0 + 4u;
+
+                if (p.kvSeq > 0u && l > 0.0) {
+                    float invL = 1.0 / l;
+                    o_data[outBase + d0] = accum0 * invL;
+                    o_data[outBase + d1] = accum1 * invL;
+                    o_data[outBase + d2] = accum2 * invL;
+                    o_data[outBase + d3] = accum3 * invL;
+                    o_data[outBase + d4] = accum4 * invL;
+                } else {
+                    o_data[outBase + d0] = 0.0;
+                    o_data[outBase + d1] = 0.0;
+                    o_data[outBase + d2] = 0.0;
+                    o_data[outBase + d3] = 0.0;
+                    o_data[outBase + d4] = 0.0;
+                }
+            }
+        }
+        """;
+
+    /// <summary>
+    /// Tiled ("flash-attention"-style) variant of MultiHeadAttention for HEAD_DIM=80 (SD 1.5 Level 1).
+    /// </summary>
+    internal const string MultiHeadAttentionTiled80 = """
+        #version 450
+        #extension GL_KHR_shader_subgroup_basic   : require
+        #extension GL_KHR_shader_subgroup_shuffle : require
+
+        #define HEAD_DIM   80
+        #define BR         16
+        #define BC         16
+        #define WG_SIZE    256
+        #define D_SPLIT    16
+        #define D_PER_LANE 5
+
+        const float NEG_INF = -3.402823466e+38;
+
+        layout(std430, binding = 0) readonly  buffer QBuffer { float q_data[]; };
+        layout(std430, binding = 1) readonly  buffer KBuffer { float k_data[]; };
+        layout(std430, binding = 2) readonly  buffer VBuffer { float v_data[]; };
+        layout(std430, binding = 3) writeonly buffer OBuffer { float o_data[]; };
+
+        layout(push_constant) uniform Params {
+            uint qSeq;
+            uint kvSeq;
+            uint numHeads;
+            float scale;
+        } p;
+
+        shared float q_tile[BR * HEAD_DIM];
+        shared float k_tile[BC * HEAD_DIM];
+        shared float v_tile[BC * HEAD_DIM];
+        shared float score_tile[BR * BC];
+        shared float row_m[BR];
+        shared float row_l[BR];
+        shared float row_alpha[BR];
+
+        layout(local_size_x = WG_SIZE, local_size_y = 1, local_size_z = 1) in;
+
+        void main() {
+            const uint tid = gl_LocalInvocationIndex;
+            const uint row_in_tile = tid / D_SPLIT;
+            const uint lane_in_row = tid % D_SPLIT;
+            const uint q_row = gl_WorkGroupID.x * BR + row_in_tile;
+
+            const uint h = gl_WorkGroupID.z;
+            const uint dim = p.numHeads * HEAD_DIM;
+            const uint headOff = h * HEAD_DIM;
+
+            // Stage Q tile into LDS: BR*HEAD_DIM = 1280 floats, 256 threads -> 5 each.
+            for (uint i = tid; i < BR * HEAD_DIM; i += WG_SIZE) {
+                uint r = i / HEAD_DIM;
+                uint d = i % HEAD_DIM;
+                uint globalQRow = gl_WorkGroupID.x * BR + r;
+                q_tile[i] = (globalQRow < p.qSeq) ? q_data[globalQRow * dim + headOff + d] : 0.0;
+            }
+
+            if (lane_in_row == 0u) {
+                row_m[row_in_tile] = NEG_INF;
+                row_l[row_in_tile] = 0.0;
+                row_alpha[row_in_tile] = 0.0;
+            }
+            barrier();
+
+            float accum0 = 0.0, accum1 = 0.0, accum2 = 0.0, accum3 = 0.0, accum4 = 0.0;
+            bool q_valid = (q_row < p.qSeq);
+
+            for (uint tile_base = 0u; tile_base < p.kvSeq; tile_base += BC) {
+                // Stage K/V tile: BC*HEAD_DIM = 1280 floats each, 256 threads -> 5 each.
+                for (uint i = tid; i < BC * HEAD_DIM; i += WG_SIZE) {
+                    uint krow = i / HEAD_DIM;
+                    uint d = i % HEAD_DIM;
+                    uint globalK = tile_base + krow;
+                    if (globalK < p.kvSeq) {
+                        k_tile[i] = k_data[globalK * dim + headOff + d];
+                        v_tile[i] = v_data[globalK * dim + headOff + d];
+                    } else {
+                        k_tile[i] = 0.0;
+                        v_tile[i] = 0.0;
+                    }
+                }
+                barrier();
+
+                if (q_valid) {
+                    uint qBaseLocal = row_in_tile * HEAD_DIM;
+                    uint d0 = lane_in_row * D_PER_LANE;
+                    uint d1 = d0 + 1u, d2 = d0 + 2u, d3 = d0 + 3u, d4 = d0 + 4u;
+
+                    for (uint k = 0u; k < BC; ++k) {
+                        uint globalK = tile_base + k;
+                        float partial = q_tile[qBaseLocal + d0] * k_tile[k * HEAD_DIM + d0]
+                                       + q_tile[qBaseLocal + d1] * k_tile[k * HEAD_DIM + d1]
+                                       + q_tile[qBaseLocal + d2] * k_tile[k * HEAD_DIM + d2]
+                                       + q_tile[qBaseLocal + d3] * k_tile[k * HEAD_DIM + d3]
+                                       + q_tile[qBaseLocal + d4] * k_tile[k * HEAD_DIM + d4];
+
+                        partial += subgroupShuffleXor(partial, 8u);
+                        partial += subgroupShuffleXor(partial, 4u);
+                        partial += subgroupShuffleXor(partial, 2u);
+                        partial += subgroupShuffleXor(partial, 1u);
+
+                        float score = partial * p.scale;
+                        if (globalK >= p.kvSeq) score = NEG_INF;
+                        if (lane_in_row == 0u) score_tile[row_in_tile * BC + k] = score;
+                    }
+                }
+                barrier();
+
+                if (lane_in_row == 0u && q_valid) {
+                    float m_old = row_m[row_in_tile];
+                    float l_old = row_l[row_in_tile];
+
+                    float tile_max = NEG_INF;
+                    for (uint k = 0u; k < BC; ++k) {
+                        uint globalK = tile_base + k;
+                        if (globalK < p.kvSeq)
+                            tile_max = max(tile_max, score_tile[row_in_tile * BC + k]);
+                    }
+
+                    float m_new = max(m_old, tile_max);
+                    float alpha = exp(m_old - m_new);
+                    row_alpha[row_in_tile] = alpha;
+
+                    float tile_sum = 0.0;
+                    for (uint k = 0u; k < BC; ++k) {
+                        uint globalK = tile_base + k;
+                        float prob = 0.0;
+                        if (globalK < p.kvSeq) {
+                            float score = score_tile[row_in_tile * BC + k];
+                            prob = exp(score - m_new);
+                            tile_sum += prob;
+                        }
+                        score_tile[row_in_tile * BC + k] = prob;
+                    }
+
+                    row_l[row_in_tile] = l_old * alpha + tile_sum;
+                    row_m[row_in_tile] = m_new;
+                }
+                barrier();
+
+                if (q_valid) {
+                    uint d0 = lane_in_row * D_PER_LANE;
+                    uint d1 = d0 + 1u, d2 = d0 + 2u, d3 = d0 + 3u, d4 = d0 + 4u;
+                    float alpha = row_alpha[row_in_tile];
+
+                    accum0 *= alpha; accum1 *= alpha; accum2 *= alpha; accum3 *= alpha; accum4 *= alpha;
+
+                    for (uint k = 0u; k < BC; ++k) {
+                        uint globalK = tile_base + k;
+                        if (globalK < p.kvSeq) {
+                            float prob = score_tile[row_in_tile * BC + k];
+                            uint vbase = k * HEAD_DIM;
+                            accum0 += prob * v_tile[vbase + d0];
+                            accum1 += prob * v_tile[vbase + d1];
+                            accum2 += prob * v_tile[vbase + d2];
+                            accum3 += prob * v_tile[vbase + d3];
+                            accum4 += prob * v_tile[vbase + d4];
+                        }
+                    }
+                }
+                barrier();
+            }
+
+            if (q_valid) {
+                float l = row_l[row_in_tile];
+                uint outBase = q_row * dim + headOff;
+                uint d0 = lane_in_row * D_PER_LANE;
+                uint d1 = d0 + 1u, d2 = d0 + 2u, d3 = d0 + 3u, d4 = d0 + 4u;
+
+                if (p.kvSeq > 0u && l > 0.0) {
+                    float invL = 1.0 / l;
+                    o_data[outBase + d0] = accum0 * invL;
+                    o_data[outBase + d1] = accum1 * invL;
+                    o_data[outBase + d2] = accum2 * invL;
+                    o_data[outBase + d3] = accum3 * invL;
+                    o_data[outBase + d4] = accum4 * invL;
+                } else {
+                    o_data[outBase + d0] = 0.0;
+                    o_data[outBase + d1] = 0.0;
+                    o_data[outBase + d2] = 0.0;
+                    o_data[outBase + d3] = 0.0;
+                    o_data[outBase + d4] = 0.0;
+                }
+            }
+        }
+        """;
+
+    /// <summary>
+    /// Tiled ("flash-attention"-style) variant of MultiHeadAttention for HEAD_DIM=160 (SD 1.5 Level 2 &amp; Mid).
+    /// </summary>
+    internal const string MultiHeadAttentionTiled160 = """
+        #version 450
+        #extension GL_KHR_shader_subgroup_basic   : require
+        #extension GL_KHR_shader_subgroup_shuffle : require
+
+        #define HEAD_DIM   160
+        #define BR         8
+        #define BC         16
+        #define WG_SIZE    256
+        #define D_SPLIT    32
+        #define D_PER_LANE 5
+
+        const float NEG_INF = -3.402823466e+38;
+
+        layout(std430, binding = 0) readonly  buffer QBuffer { float q_data[]; };
+        layout(std430, binding = 1) readonly  buffer KBuffer { float k_data[]; };
+        layout(std430, binding = 2) readonly  buffer VBuffer { float v_data[]; };
+        layout(std430, binding = 3) writeonly buffer OBuffer { float o_data[]; };
+
+        layout(push_constant) uniform Params {
+            uint qSeq;
+            uint kvSeq;
+            uint numHeads;
+            float scale;
+        } p;
+
+        shared float q_tile[BR * HEAD_DIM];
+        shared float k_tile[BC * HEAD_DIM];
+        shared float v_tile[BC * HEAD_DIM];
+        shared float score_tile[BR * BC];
+        shared float row_m[BR];
+        shared float row_l[BR];
+        shared float row_alpha[BR];
+
+        layout(local_size_x = WG_SIZE, local_size_y = 1, local_size_z = 1) in;
+
+        void main() {
+            const uint tid = gl_LocalInvocationIndex;
+            const uint row_in_tile = tid / D_SPLIT;
+            const uint lane_in_row = tid % D_SPLIT;
+            const uint q_row = gl_WorkGroupID.x * BR + row_in_tile;
+
+            const uint h = gl_WorkGroupID.z;
+            const uint dim = p.numHeads * HEAD_DIM;
+            const uint headOff = h * HEAD_DIM;
+
+            // Stage Q tile into LDS: BR*HEAD_DIM = 1280 floats, 256 threads -> 5 each.
+            for (uint i = tid; i < BR * HEAD_DIM; i += WG_SIZE) {
+                uint r = i / HEAD_DIM;
+                uint d = i % HEAD_DIM;
+                uint globalQRow = gl_WorkGroupID.x * BR + r;
+                q_tile[i] = (globalQRow < p.qSeq) ? q_data[globalQRow * dim + headOff + d] : 0.0;
+            }
+
+            if (lane_in_row == 0u) {
+                row_m[row_in_tile] = NEG_INF;
+                row_l[row_in_tile] = 0.0;
+                row_alpha[row_in_tile] = 0.0;
+            }
+            barrier();
+
+            float accum0 = 0.0, accum1 = 0.0, accum2 = 0.0, accum3 = 0.0, accum4 = 0.0;
+            bool q_valid = (q_row < p.qSeq);
+
+            for (uint tile_base = 0u; tile_base < p.kvSeq; tile_base += BC) {
+                // Stage K/V tile: BC*HEAD_DIM = 2560 floats each, 256 threads -> 10 each.
+                for (uint i = tid; i < BC * HEAD_DIM; i += WG_SIZE) {
+                    uint krow = i / HEAD_DIM;
+                    uint d = i % HEAD_DIM;
+                    uint globalK = tile_base + krow;
+                    if (globalK < p.kvSeq) {
+                        k_tile[i] = k_data[globalK * dim + headOff + d];
+                        v_tile[i] = v_data[globalK * dim + headOff + d];
+                    } else {
+                        k_tile[i] = 0.0;
+                        v_tile[i] = 0.0;
+                    }
+                }
+                barrier();
+
+                if (q_valid) {
+                    uint qBaseLocal = row_in_tile * HEAD_DIM;
+                    uint d0 = lane_in_row * D_PER_LANE;
+                    uint d1 = d0 + 1u, d2 = d0 + 2u, d3 = d0 + 3u, d4 = d0 + 4u;
+
+                    for (uint k = 0u; k < BC; ++k) {
+                        uint globalK = tile_base + k;
+                        float partial = q_tile[qBaseLocal + d0] * k_tile[k * HEAD_DIM + d0]
+                                       + q_tile[qBaseLocal + d1] * k_tile[k * HEAD_DIM + d1]
+                                       + q_tile[qBaseLocal + d2] * k_tile[k * HEAD_DIM + d2]
+                                       + q_tile[qBaseLocal + d3] * k_tile[k * HEAD_DIM + d3]
+                                       + q_tile[qBaseLocal + d4] * k_tile[k * HEAD_DIM + d4];
+
+                        partial += subgroupShuffleXor(partial, 16u);
+                        partial += subgroupShuffleXor(partial, 8u);
+                        partial += subgroupShuffleXor(partial, 4u);
+                        partial += subgroupShuffleXor(partial, 2u);
+                        partial += subgroupShuffleXor(partial, 1u);
+
+                        float score = partial * p.scale;
+                        if (globalK >= p.kvSeq) score = NEG_INF;
+                        if (lane_in_row == 0u) score_tile[row_in_tile * BC + k] = score;
+                    }
+                }
+                barrier();
+
+                if (lane_in_row == 0u && q_valid) {
+                    float m_old = row_m[row_in_tile];
+                    float l_old = row_l[row_in_tile];
+
+                    float tile_max = NEG_INF;
+                    for (uint k = 0u; k < BC; ++k) {
+                        uint globalK = tile_base + k;
+                        if (globalK < p.kvSeq)
+                            tile_max = max(tile_max, score_tile[row_in_tile * BC + k]);
+                    }
+
+                    float m_new = max(m_old, tile_max);
+                    float alpha = exp(m_old - m_new);
+                    row_alpha[row_in_tile] = alpha;
+
+                    float tile_sum = 0.0;
+                    for (uint k = 0u; k < BC; ++k) {
+                        uint globalK = tile_base + k;
+                        float prob = 0.0;
+                        if (globalK < p.kvSeq) {
+                            float score = score_tile[row_in_tile * BC + k];
+                            prob = exp(score - m_new);
+                            tile_sum += prob;
+                        }
+                        score_tile[row_in_tile * BC + k] = prob;
+                    }
+
+                    row_l[row_in_tile] = l_old * alpha + tile_sum;
+                    row_m[row_in_tile] = m_new;
+                }
+                barrier();
+
+                if (q_valid) {
+                    uint d0 = lane_in_row * D_PER_LANE;
+                    uint d1 = d0 + 1u, d2 = d0 + 2u, d3 = d0 + 3u, d4 = d0 + 4u;
+                    float alpha = row_alpha[row_in_tile];
+
+                    accum0 *= alpha; accum1 *= alpha; accum2 *= alpha; accum3 *= alpha; accum4 *= alpha;
+
+                    for (uint k = 0u; k < BC; ++k) {
+                        uint globalK = tile_base + k;
+                        if (globalK < p.kvSeq) {
+                            float prob = score_tile[row_in_tile * BC + k];
+                            uint vbase = k * HEAD_DIM;
+                            accum0 += prob * v_tile[vbase + d0];
+                            accum1 += prob * v_tile[vbase + d1];
+                            accum2 += prob * v_tile[vbase + d2];
+                            accum3 += prob * v_tile[vbase + d3];
+                            accum4 += prob * v_tile[vbase + d4];
+                        }
+                    }
+                }
+                barrier();
+            }
+
+            if (q_valid) {
+                float l = row_l[row_in_tile];
+                uint outBase = q_row * dim + headOff;
+                uint d0 = lane_in_row * D_PER_LANE;
+                uint d1 = d0 + 1u, d2 = d0 + 2u, d3 = d0 + 3u, d4 = d0 + 4u;
+
+                if (p.kvSeq > 0u && l > 0.0) {
+                    float invL = 1.0 / l;
+                    o_data[outBase + d0] = accum0 * invL;
+                    o_data[outBase + d1] = accum1 * invL;
+                    o_data[outBase + d2] = accum2 * invL;
+                    o_data[outBase + d3] = accum3 * invL;
+                    o_data[outBase + d4] = accum4 * invL;
+                } else {
+                    o_data[outBase + d0] = 0.0;
+                    o_data[outBase + d1] = 0.0;
+                    o_data[outBase + d2] = 0.0;
+                    o_data[outBase + d3] = 0.0;
+                    o_data[outBase + d4] = 0.0;
+                }
             }
         }
         """;

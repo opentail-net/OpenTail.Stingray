@@ -1580,7 +1580,10 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
     private ComputePipeline? _permuteHwcToChwPipeline;
     private ComputePipeline? _multiHeadAttentionPipeline;
     private ComputePipeline? _multiHeadAttentionTiledPipeline;
+    private ComputePipeline? _multiHeadAttentionTiled40Pipeline;
+    private ComputePipeline? _multiHeadAttentionTiled80Pipeline;
     private ComputePipeline? _multiHeadAttentionTiled128Pipeline;
+    private ComputePipeline? _multiHeadAttentionTiled160Pipeline;
     private ComputePipeline? _leakyReluPipeline;
     private ComputePipeline? _clampPipeline;
     private ComputePipeline? _catChannelsPipeline;
@@ -1681,6 +1684,7 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
 
     // Image ops push constant structs
     private struct Conv2dParams   { public uint inCh; public uint outCh; public uint height; public uint width; public uint ksize; public uint padding; }
+    private struct Conv2dImplicitGemmParams { public uint inCh; public uint outCh; public uint inHeight; public uint inWidth; public uint ksize; public uint padding; public uint stride; public uint outHeight; public uint outWidth; }
     private struct GroupNormSiluParams { public uint c; public uint hw; public uint groups; public float eps; }
     private struct GroupNormGpuParams { public uint c; public uint hw; public uint groups; public float eps; }
     private struct AddChannelBroadcastParams { public uint c; public uint hw; }
@@ -3734,16 +3738,28 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
     }
 
     public Tensor Conv2dImplicitGemm(Tensor input, Tensor weight, Tensor bias,
-                                     int inCh, int outCh, int h, int w, int ksize, int padding = -1)
+                                     int inCh, int outCh, int h, int w, int ksize, int padding = -1, int stride = 1)
     {
         if (padding < 0) padding = ksize / 2;
-        var output = Allocate(TensorShape.D1(outCh * h * w));
-        _conv2dImplicitGemmPipeline ??= new ComputePipeline(this, Shaders.Conv2dImplicitGemm, 4, pushConstantSize: sizeof(Conv2dParams));
-        var p = new Conv2dParams { inCh = (uint)inCh, outCh = (uint)outCh, height = (uint)h, width = (uint)w, ksize = (uint)ksize, padding = (uint)padding };
-        // 16x16-tiled GEMM dispatch: X=ceil(H*W/16) (output-pixel tiles), Y=ceil(outCh/16)
-        // (output-channel tiles) -- matches SgemmF32's convention exactly.
-        uint groupX = ((uint)(h * w) + 15u) / 16u;
-        uint groupY = ((uint)outCh + 15u) / 16u;
+        int outH = (h + 2 * padding - ksize) / stride + 1;
+        int outW = (w + 2 * padding - ksize) / stride + 1;
+        var output = Allocate(TensorShape.D1(outCh * outH * outW));
+        _conv2dImplicitGemmPipeline ??= new ComputePipeline(this, Shaders.Conv2dImplicitGemm, 4, pushConstantSize: sizeof(Conv2dImplicitGemmParams));
+        var p = new Conv2dImplicitGemmParams
+        {
+            inCh = (uint)inCh,
+            outCh = (uint)outCh,
+            inHeight = (uint)h,
+            inWidth = (uint)w,
+            ksize = (uint)ksize,
+            padding = (uint)padding,
+            stride = (uint)stride,
+            outHeight = (uint)outH,
+            outWidth = (uint)outW
+        };
+        // 32x32-tiled GEMM dispatch: X=ceil(outPixels/32), Y=ceil(outCh/32)
+        uint groupX = ((uint)(outH * outW) + 31u) / 32u;
+        uint groupY = ((uint)outCh + 31u) / 32u;
         DispatchOrRecord(_conv2dImplicitGemmPipeline, [GetBuffer(input), GetBuffer(weight), GetBuffer(bias), GetBuffer(output)], groupX, &p, groupY);
         return output;
     }
@@ -3837,8 +3853,8 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
 
     public void MultiHeadAttention(Tensor output, Tensor q, Tensor k, Tensor v, int qSeq, int kvSeq, int numHeads, int headDim)
     {
-        if (headDim > 128)
-            throw new ArgumentOutOfRangeException(nameof(headDim), "MultiHeadAttention shader's fixed-size accumulator supports headDim<=128.");
+        if (headDim > 256)
+            throw new ArgumentOutOfRangeException(nameof(headDim), "MultiHeadAttention shader's fixed-size accumulator supports headDim<=256.");
         _multiHeadAttentionPipeline ??= new ComputePipeline(this, Shaders.MultiHeadAttention, 4, pushConstantSize: sizeof(MultiHeadAttentionParams));
         var p = new MultiHeadAttentionParams { qSeq = (uint)qSeq, kvSeq = (uint)kvSeq, numHeads = (uint)numHeads, headDim = (uint)headDim };
         uint totalWork = (uint)(qSeq * numHeads);
@@ -3855,12 +3871,26 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
 
     public void MultiHeadAttentionTiled(Tensor output, Tensor q, Tensor k, Tensor v, int qSeq, int kvSeq, int numHeads, int headDim)
     {
-        if (headDim == 64)
+        if (headDim == 40)
+        {
+            _multiHeadAttentionTiled40Pipeline ??= new ComputePipeline(this, Shaders.MultiHeadAttentionTiled40, 4, pushConstantSize: sizeof(MultiHeadAttentionTiledParams));
+            var p = new MultiHeadAttentionTiledParams { qSeq = (uint)qSeq, kvSeq = (uint)kvSeq, numHeads = (uint)numHeads, scale = 1f / MathF.Sqrt(headDim) };
+            uint groupsX = (uint)((qSeq + 15) / 16);
+            DispatchOrRecord(_multiHeadAttentionTiled40Pipeline, [GetBuffer(q), GetBuffer(k), GetBuffer(v), GetBuffer(output)], groupsX, &p, 1u, (uint)numHeads);
+        }
+        else if (headDim == 64)
         {
             _multiHeadAttentionTiledPipeline ??= new ComputePipeline(this, Shaders.MultiHeadAttentionTiled, 4, pushConstantSize: sizeof(MultiHeadAttentionTiledParams));
             var p = new MultiHeadAttentionTiledParams { qSeq = (uint)qSeq, kvSeq = (uint)kvSeq, numHeads = (uint)numHeads, scale = 1f / MathF.Sqrt(headDim) };
             uint groupsX = (uint)((qSeq + 15) / 16);
             DispatchOrRecord(_multiHeadAttentionTiledPipeline, [GetBuffer(q), GetBuffer(k), GetBuffer(v), GetBuffer(output)], groupsX, &p, 1u, (uint)numHeads);
+        }
+        else if (headDim == 80)
+        {
+            _multiHeadAttentionTiled80Pipeline ??= new ComputePipeline(this, Shaders.MultiHeadAttentionTiled80, 4, pushConstantSize: sizeof(MultiHeadAttentionTiledParams));
+            var p = new MultiHeadAttentionTiledParams { qSeq = (uint)qSeq, kvSeq = (uint)kvSeq, numHeads = (uint)numHeads, scale = 1f / MathF.Sqrt(headDim) };
+            uint groupsX = (uint)((qSeq + 15) / 16);
+            DispatchOrRecord(_multiHeadAttentionTiled80Pipeline, [GetBuffer(q), GetBuffer(k), GetBuffer(v), GetBuffer(output)], groupsX, &p, 1u, (uint)numHeads);
         }
         else if (headDim == 128)
         {
@@ -3868,6 +3898,13 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
             var p = new MultiHeadAttentionTiledParams { qSeq = (uint)qSeq, kvSeq = (uint)kvSeq, numHeads = (uint)numHeads, scale = 1f / MathF.Sqrt(headDim) };
             uint groupsX = (uint)((qSeq + 31) / 32);
             DispatchOrRecord(_multiHeadAttentionTiled128Pipeline, [GetBuffer(q), GetBuffer(k), GetBuffer(v), GetBuffer(output)], groupsX, &p, 1u, (uint)numHeads);
+        }
+        else if (headDim == 160)
+        {
+            _multiHeadAttentionTiled160Pipeline ??= new ComputePipeline(this, Shaders.MultiHeadAttentionTiled160, 4, pushConstantSize: sizeof(MultiHeadAttentionTiledParams));
+            var p = new MultiHeadAttentionTiledParams { qSeq = (uint)qSeq, kvSeq = (uint)kvSeq, numHeads = (uint)numHeads, scale = 1f / MathF.Sqrt(headDim) };
+            uint groupsX = (uint)((qSeq + 7) / 8);
+            DispatchOrRecord(_multiHeadAttentionTiled160Pipeline, [GetBuffer(q), GetBuffer(k), GetBuffer(v), GetBuffer(output)], groupsX, &p, 1u, (uint)numHeads);
         }
         else
         {
@@ -4446,6 +4483,10 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
         _permuteHwcToChwPipeline?.Dispose();
         _multiHeadAttentionPipeline?.Dispose();
         _multiHeadAttentionTiledPipeline?.Dispose();
+        _multiHeadAttentionTiled40Pipeline?.Dispose();
+        _multiHeadAttentionTiled80Pipeline?.Dispose();
+        _multiHeadAttentionTiled128Pipeline?.Dispose();
+        _multiHeadAttentionTiled160Pipeline?.Dispose();
         _leakyReluPipeline?.Dispose();
         _clampPipeline?.Dispose();
         _catChannelsPipeline?.Dispose();

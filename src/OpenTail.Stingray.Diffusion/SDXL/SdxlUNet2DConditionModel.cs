@@ -142,7 +142,7 @@ public sealed class SdxlUNet2DConditionModel : IDisposable
     }
 
     /// <summary>Tensor-in/Tensor-out counterpart of <see cref="ConvNative"/> -- stride=1 only.</summary>
-    private CoreTensor ConvGpuTensor(IImageOpsBackend imageOps, string name, CoreTensor xGpu, int inCh, int h, int w, int outCh, int k, int padding = -1)
+    private CoreTensor ConvGpuTensor(IImageOpsBackend imageOps, string name, CoreTensor xGpu, int inCh, int h, int w, int outCh, int k, int padding = -1, int stride = 1)
     {
         var wF = GetWeight($"{name}.weight");
         var bF = TryGetWeight($"{name}.bias");
@@ -161,7 +161,7 @@ public sealed class SdxlUNet2DConditionModel : IDisposable
             _gpuWeightsNative[bKey] = bGpu;
         }
 
-        return imageOps.Conv2dImplicitGemm(xGpu, wGpu, bGpu, inCh, outCh, h, w, k, padding);
+        return imageOps.Conv2dImplicitGemm(xGpu, wGpu, bGpu, inCh, outCh, h, w, k, padding, stride);
     }
 
     /// <summary>Tensor-in/Tensor-out counterpart of <see cref="Lin"/> -- Sgemm + row-broadcast bias.</summary>
@@ -922,16 +922,7 @@ public sealed class SdxlUNet2DConditionModel : IDisposable
     // stays GPU-resident from the single input Upload to the single final Download.
     private bool? _unetForwardResidencySupported;
 
-    private CoreTensor StridedConvCpuIsland(IImageOpsBackend imageOps, string name, CoreTensor xGpu, int inCh, int h, int w, int outCh, int ksize, int stride)
-    {
-        // CPU ISLAND (docs/067 CPU-island discipline: KNOWN IMPLEMENTATION GAP, not model logic or
-        // a performance bug) -- neither Conv2dImplicitGemm nor ConvGpuTensor support stride>1.
-        // Only 2 calls total per Forward() (the UNet's two downsample convs).
-        var x = new float[inCh * h * w];
-        imageOps.Download(xGpu, x);
-        var result = Conv(name, x, inCh, h, w, outCh, ksize, stride: stride);
-        return imageOps.Upload(result.AsSpan(), TensorShape.D1(result.Length));
-    }
+
 
     private CoreTensor ForwardGpu(IImageOpsBackend imageOps, float[] x, float[] tEmb, float[] context, int latH, int latW)
     {
@@ -952,7 +943,7 @@ public sealed class SdxlUNet2DConditionModel : IDisposable
             cur = ResBlockGpu(imageOps, "input_blocks.2.0", cur, tEmbGpu, 320, h, w, 320);
             savedInputs.Add(cur);
 
-            cur = StridedConvCpuIsland(imageOps, "input_blocks.3.0.op", cur, 320, h, w, 320, 3, stride: 2);
+            cur = ConvGpuTensor(imageOps, "input_blocks.3.0.op", cur, 320, h, w, 320, 3, padding: 1, stride: 2);
             h /= 2; w /= 2;
             savedInputs.Add(cur);
 
@@ -964,7 +955,7 @@ public sealed class SdxlUNet2DConditionModel : IDisposable
             cur = SpatialTransformerGpu(imageOps, "input_blocks.5.1", cur, contextGpu, 640, depth: 2, h, w);
             savedInputs.Add(cur);
 
-            cur = StridedConvCpuIsland(imageOps, "input_blocks.6.0.op", cur, 640, h, w, 640, 3, stride: 2);
+            cur = ConvGpuTensor(imageOps, "input_blocks.6.0.op", cur, 640, h, w, 640, 3, padding: 1, stride: 2);
             h /= 2; w /= 2;
             savedInputs.Add(cur);
 

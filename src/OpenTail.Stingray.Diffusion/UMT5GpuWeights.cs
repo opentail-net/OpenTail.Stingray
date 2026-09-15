@@ -78,7 +78,7 @@ public sealed class UMT5GpuWeights : IDisposable
         if (backend.BestSgemmPrecision == SgemmPrecision.Fp16)
         {
             var half = new Half[f32Data.Length];
-            for (int i = 0; i < f32Data.Length; i++) half[i] = (Half)f32Data[i];
+            System.Numerics.Tensors.TensorPrimitives.ConvertToHalf(f32Data, half);
             return backend.UploadHalf(half, shape);
         }
         if (backend.BestSgemmPrecision == SgemmPrecision.Bf16)

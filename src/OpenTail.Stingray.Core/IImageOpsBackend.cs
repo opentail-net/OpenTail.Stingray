@@ -27,7 +27,7 @@ public interface IImageOpsBackend : IComputeBackend
     /// <see cref="Conv2d"/> -- combines GEMM-style compute efficiency with zero CPU-side im2col.
     /// </summary>
     Tensor Conv2dImplicitGemm(Tensor input, Tensor weight, Tensor bias,
-                              int inCh, int outCh, int h, int w, int ksize, int padding = -1);
+                              int inCh, int outCh, int h, int w, int ksize, int padding = -1, int stride = 1);
 
     /// <summary>
     /// Fused GroupNorm + SiLU for a GPU-resident [C,H,W] tensor -- input/weight/bias/output all

@@ -59,7 +59,7 @@ public sealed class LtxVideoPipeline : IDiffusionPipeline
             ? GgufWeightLoader.Open(modelPath)
             : SafetensorsLoader.Open(modelPath);
 
-        var transformer = new LtxVideoModel(weights);
+        var transformer = new LtxVideoModel(weights, backend: backend);
 
         // Real LTX-Video single-file checkpoints (like `ltx-video-2b-v0.9.1.safetensors`) bundle
         // the VAE decoder's own `vae.decoder.*` tensors in the SAME file as the transformer -- no
@@ -151,12 +151,20 @@ public sealed class LtxVideoPipeline : IDiffusionPipeline
             // Real T5-v1.1-XXL text conditioning (numerically verified against HuggingFace
             // `transformers`' real T5EncoderModel, >0.999 cosine similarity -- see
             // LtxT5EncoderGoldenParityTests). Feeds caption_projection's 4096-dim input directly.
-            var tokenIds = _t5Tokenizer.Tokenize(prompt);
+            // Both prompt and negative prompt must be padded to a fixed sequence length (matching
+            // diffusers `max_sequence_length=128`), ensuring identical cross-attention normalization
+            // scales between conditional and unconditional passes in CFG.
+            const int T5SeqLen = 128;
+            var tokenIdsRaw = _t5Tokenizer.Tokenize(prompt);
+            var tokenIds = new int[T5SeqLen];
+            Array.Copy(tokenIdsRaw, tokenIds, Math.Min(tokenIdsRaw.Length, T5SeqLen));
             textContext = _t5.Encode(tokenIds);
 
             if (guidance > 1.0f)
             {
-                var negativeIds = _t5Tokenizer.Tokenize(string.Empty);
+                var negativeIdsRaw = _t5Tokenizer.Tokenize(string.Empty);
+                var negativeIds = new int[T5SeqLen];
+                Array.Copy(negativeIdsRaw, negativeIds, Math.Min(negativeIdsRaw.Length, T5SeqLen));
                 negativeTextContext = _t5.Encode(negativeIds);
             }
         }

@@ -515,10 +515,32 @@ that is more elegant but lower-visibility.
    not yet understood). Do not let this block a demand-driven item above.
 
 **P2:**
-7. **HunyuanVideo completion** — DiT already runs clean through every layer against real weights;
-   blocked on a real VAE decoder (own class, same shape of work as `WanVaeDecoder3D`) and real dual
-   CLIP+LLM text conditioning. Real demand (a popular community Diffusers repack sees tens of
-   thousands of downloads/month) but well below Wan/LTX/Z-Image.
+7. **HunyuanVideo completion** — DiT already runs clean through every layer against real weights.
+   **2026-09-15: both previously-blocking gaps closed, NOT YET numerically verified (GPU work was
+   active on this machine at the time, so no build/test was run against real weights this pass —
+   that verification is the real next step, not optional).**
+   - **`HunyuanVaeDecoder3D.cs`** (new): real causal 3D VAE decoder ported directly against
+     `examples/diffusers/.../autoencoder_kl_hunyuan_video.py` (`HunyuanVideoDecoder3D`/
+     `ResnetBlockCausal3D`/`MidBlock3D`/`UpBlock3D`/`UpsampleCausal3D`) — GroupNorm(32)-based,
+     REPLICATE causal padding (not zero, unlike `WanVaeDecoder3D`), nearest+conv upsample (not
+     Wan-style pixel-shuffle). Confirmed by direct safetensors header inspection that the main DiT
+     checkpoint (`hunyuan_video_720_cfgdistill_fp8_e4m3fn.safetensors`) bundles ZERO VAE tensors —
+     `examples/stable-diffusion.cpp/src/model/vae/hunyuan_vae.hpp`'s RMSNorm/pixel-shuffle VAE is
+     for a DIFFERENT (newer) Hunyuan variant and would have been the WRONG reference to port here.
+     Real VAE checkpoint downloaded: `models/hunyuanvideo/hunyuan_video_vae_bf16.safetensors`
+     (Comfy-Org/HunyuanVideo_repackaged, 493MB, real scaling_factor=0.476986).
+   - **Real `IndividualTokenRefiner` wired into `HunyuanVideoModel.TokenRefiner`**: the previous
+     code silently skipped the checkpoint's own `txt_in.individual_token_refiner.blocks.{0,1}.*`
+     weights (self-attn + gated FFN refinement of the raw text tokens) and did a bare Linear
+     projection instead — a real, silent correctness gap since those weights were present and
+     unused. Now runs the real pooled-projection + timestep-conditioned gated refiner blocks per
+     `transformer_hunyuan_video.py`'s `HunyuanVideoTokenRefiner`/`IndividualTokenRefinerBlock`.
+   - **Still deferred, same shape as LTX-Video's T5 deferral**: no in-repo LLaMA-3/Qwen2.5-VL text
+     encoder — `Generate`'s `textContext` parameter still expects externally-supplied embeddings.
+     This is an accepted, documented scope limit elsewhere in this codebase, not a new gap.
+   - **Next step, real and required before calling this "done"**: build, run a real small-scale
+     forward pass against real weights, and visually confirm a coherent frame — none of that has
+     happened yet this pass.
 8. **`xverse` tokenizer fix** — **root-caused and fixed, 2026-09-02.** The old framing ("absent
    scores") was imprecise: the real defect was architectural, not a missing-data edge case — this
    engine's SPM path (`tokenizer.ggml.model=llama`) used a merges-RANK-TABLE algorithm (built from

@@ -14,6 +14,8 @@ public sealed class MMDiTModel : IDisposable
     private readonly CachedWeightReader _weightReader;
     private readonly IComputeBackend? _backend;
     private readonly Dictionary<string, CoreTensor>? _gpuWeights;
+    private MMDiTGpuWeights? _residentGpuWeights;
+    private MMDiTGpuWorkspace? _residentGpuWorkspace;
 
     public int HiddenSize { get; }
     public int NumHeads { get; }
@@ -315,8 +317,264 @@ public sealed class MMDiTModel : IDisposable
         return tEmb;
     }
 
+    private void EnsureGpuResident(int numImgTokens, int numTextTokens)
+    {
+        if (_backend is null) return;
+        if (_residentGpuWeights is null)
+        {
+            _residentGpuWeights = new MMDiTGpuWeights(
+                _backend,
+                GetWeight,
+                TryGetWeight,
+                HiddenSize,
+                Depth,
+                HeadDim,
+                InChannels,
+                OutChannels,
+                PatchSize,
+                ContextSize);
+        }
+
+        int outPatchDim = OutChannels * PatchSize * PatchSize;
+        if (_residentGpuWorkspace is null ||
+            _residentGpuWorkspace.NumImgTokens != numImgTokens ||
+            _residentGpuWorkspace.NumTextTokens != numTextTokens)
+        {
+            _residentGpuWorkspace?.Dispose();
+            _residentGpuWorkspace = new MMDiTGpuWorkspace(
+                _backend,
+                numImgTokens,
+                numTextTokens,
+                HiddenSize,
+                outPatchDim);
+        }
+    }
+
+    private unsafe float[] ForwardGpu(
+        IVisionOpsBackend visionOps,
+        IImageOpsBackend imageOps,
+        float[] latents, float timestep, float[] textContext, float[] pooledY,
+        int latH, int latW, int numTextTokens)
+    {
+        int p = PatchSize;
+        int imgH = latH / p;
+        int imgW = latW / p;
+        int numImgTokens = imgH * imgW;
+        int totalTokens = numImgTokens + numTextTokens;
+        int inPatchDim = InChannels * p * p;
+        int outPatchDim = OutChannels * p * p;
+
+        EnsureGpuResident(numImgTokens, numTextTokens);
+        var gw = _residentGpuWeights!;
+        var ws = _residentGpuWorkspace!;
+
+        // 1. Patchify latents on CPU
+        var imgTokens = new float[numImgTokens * inPatchDim];
+        for (int py = 0; py < imgH; py++)
+        for (int px = 0; px < imgW; px++)
+        {
+            int tokenIdx = py * imgW + px;
+            int dstBase = tokenIdx * inPatchDim;
+            int idx = 0;
+
+            for (int ic = 0; ic < InChannels; ic++)
+            for (int dy = 0; dy < p; dy++)
+            for (int dx = 0; dx < p; dx++)
+            {
+                int iy = py * p + dy;
+                int ix = px * p + dx;
+                imgTokens[dstBase + idx++] = latents[ic * latH * latW + iy * latW + ix];
+            }
+        }
+
+        // x_embedder: inPatchDim -> HiddenSize
+        var x = Lin("x_embedder.proj", imgTokens, numImgTokens, inPatchDim, HiddenSize);
+        AddCroppedPosEmbed(x, numImgTokens, imgH, imgW);
+
+        // Upload x to xGpu
+        var xGpu = _backend!.Upload(x.AsSpan(0, numImgTokens * HiddenSize), TensorShape.D2(numImgTokens, HiddenSize), exact: true);
+
+        // 2. Project text context & upload to cGpu
+        var c = Lin("context_embedder", textContext, numTextTokens, ContextSize, HiddenSize);
+        var cGpu = _backend.Upload(c.AsSpan(0, numTextTokens * HiddenSize), TensorShape.D2(numTextTokens, HiddenSize), exact: true);
+
+        // 3. Time + Pooled Embedding: upload tVecSilu
+        var tVec = ComputeTimeAndPooledEmbedding(timestep, pooledY);
+        var tVecSilu = (float[])tVec.Clone();
+        DiffusionOps.SiluInPlace(tVecSilu);
+        var tVecGpu = _backend.Upload(tVecSilu.AsSpan(0, HiddenSize), TensorShape.D1(HiddenSize), exact: true);
+
+        try
+        {
+            // 4. Joint MMDiT Transformer Blocks (100% GPU Resident)
+            for (int b = 0; b < Depth; b++)
+            {
+                var bw = gw.JointBlocks[b];
+                int imgModChunks = bw.ImgModChunks;
+                int txtModChunks = bw.TxtModChunks;
+
+                // Modulations
+                visionOps.Sgemm(ws.ImgMod, tVecGpu, bw.ImgModWeight, 1, HiddenSize, imgModChunks * HiddenSize);
+                imageOps.AddRowBroadcastInPlace(ws.ImgMod, bw.ImgModBias, 1, imgModChunks * HiddenSize);
+
+                visionOps.Sgemm(ws.TxtMod, tVecGpu, bw.TxtModWeight, 1, HiddenSize, txtModChunks * HiddenSize);
+                imageOps.AddRowBroadcastInPlace(ws.TxtMod, bw.TxtModBias, 1, txtModChunks * HiddenSize);
+
+                // ModulateNorm
+                visionOps.AdaLNModulate(ws.NormedImg, xGpu, ws.ImgMod, numImgTokens, HiddenSize, shiftOffset: 0, scaleOffset: HiddenSize, isRmsNorm: false, eps: 1e-6f);
+                visionOps.AdaLNModulate(ws.NormedTxt, cGpu, ws.TxtMod, numTextTokens, HiddenSize, shiftOffset: 0, scaleOffset: HiddenSize, isRmsNorm: false, eps: 1e-6f);
+
+                if (bw.DualAttn)
+                {
+                    visionOps.AdaLNModulate(ws.NormedImg2, xGpu, ws.ImgMod, numImgTokens, HiddenSize, shiftOffset: 6 * HiddenSize, scaleOffset: 7 * HiddenSize, isRmsNorm: false, eps: 1e-6f);
+                }
+
+                // QKV projections
+                visionOps.Sgemm(ws.QkvImg, ws.NormedImg, bw.ImgAttnQkvWeight, numImgTokens, HiddenSize, 3 * HiddenSize);
+                if (bw.ImgAttnQkvBias is not null)
+                    imageOps.AddRowBroadcastInPlace(ws.QkvImg, bw.ImgAttnQkvBias, numImgTokens, 3 * HiddenSize);
+
+                visionOps.Sgemm(ws.QkvTxt, ws.NormedTxt, bw.TxtAttnQkvWeight, numTextTokens, HiddenSize, 3 * HiddenSize);
+                if (bw.TxtAttnQkvBias is not null)
+                    imageOps.AddRowBroadcastInPlace(ws.QkvTxt, bw.TxtAttnQkvBias, numTextTokens, 3 * HiddenSize);
+
+                // Unpack QKV
+                visionOps.FluxUnpackQkv(ws.QkvImg, ws.Q, ws.K, ws.V, numImgTokens, HiddenSize, dstTokenOffset: 0);
+                visionOps.FluxUnpackQkv(ws.QkvTxt, ws.Q, ws.K, ws.V, numTextTokens, HiddenSize, dstTokenOffset: numImgTokens);
+
+                // QK-RMSNorm per-head
+                if (bw.ImgAttnLnQ is not null && bw.ImgAttnLnK is not null)
+                    visionOps.QKNorm(ws.Q, ws.K, bw.ImgAttnLnQ, bw.ImgAttnLnK, numImgTokens, NumHeads, HeadDim, eps: 1e-6f, startToken: 0);
+
+                if (bw.TxtAttnLnQ is not null && bw.TxtAttnLnK is not null)
+                    visionOps.QKNorm(ws.Q, ws.K, bw.TxtAttnLnQ, bw.TxtAttnLnK, numTextTokens, NumHeads, HeadDim, eps: 1e-6f, startToken: numImgTokens);
+
+                // Joint MultiHeadAttention
+                imageOps.MultiHeadAttentionTiled(ws.AttnOut, ws.Q, ws.K, ws.V, totalTokens, totalTokens, NumHeads, HeadDim);
+
+                // Img attention projection & gate-residual
+                visionOps.Sgemm(ws.OutImg, ws.AttnOut, bw.ImgAttnProjWeight, numImgTokens, HiddenSize, HiddenSize);
+                if (bw.ImgAttnProjBias is not null)
+                    imageOps.AddRowBroadcastInPlace(ws.OutImg, bw.ImgAttnProjBias, numImgTokens, HiddenSize);
+                visionOps.ScaleGateAdd(xGpu, ws.OutImg, ws.ImgMod, numImgTokens, HiddenSize, gateOffset: 2 * HiddenSize);
+
+                // Txt attention projection & gate-residual
+                if (!bw.ContextPreOnly && bw.TxtAttnProjWeight is not null)
+                {
+                    visionOps.FluxSliceImg(ws.AttnOut, ws.NormedTxt, nTxt: numImgTokens, nImg: numTextTokens, dim: HiddenSize);
+                    visionOps.Sgemm(ws.OutTxt, ws.NormedTxt, bw.TxtAttnProjWeight, numTextTokens, HiddenSize, HiddenSize);
+                    if (bw.TxtAttnProjBias is not null)
+                        imageOps.AddRowBroadcastInPlace(ws.OutTxt, bw.TxtAttnProjBias, numTextTokens, HiddenSize);
+                    visionOps.ScaleGateAdd(cGpu, ws.OutTxt, ws.TxtMod, numTextTokens, HiddenSize, gateOffset: 2 * HiddenSize);
+                }
+
+                // Dual-attention (blocks 0..12)
+                if (bw.DualAttn)
+                {
+                    visionOps.Sgemm(ws.QkvImg, ws.NormedImg2, bw.ImgAttn2QkvWeight!, numImgTokens, HiddenSize, 3 * HiddenSize);
+                    if (bw.ImgAttn2QkvBias is not null)
+                        imageOps.AddRowBroadcastInPlace(ws.QkvImg, bw.ImgAttn2QkvBias, numImgTokens, 3 * HiddenSize);
+
+                    visionOps.FluxUnpackQkv(ws.QkvImg, ws.Q, ws.K, ws.V, numImgTokens, HiddenSize, dstTokenOffset: 0);
+
+                    if (bw.ImgAttn2LnQ is not null && bw.ImgAttn2LnK is not null)
+                        visionOps.QKNorm(ws.Q, ws.K, bw.ImgAttn2LnQ, bw.ImgAttn2LnK, numImgTokens, NumHeads, HeadDim, eps: 1e-6f, startToken: 0);
+
+                    imageOps.MultiHeadAttentionTiled(ws.AttnOut, ws.Q, ws.K, ws.V, numImgTokens, numImgTokens, NumHeads, HeadDim);
+
+                    visionOps.Sgemm(ws.OutImg, ws.AttnOut, bw.ImgAttn2ProjWeight!, numImgTokens, HiddenSize, HiddenSize);
+                    if (bw.ImgAttn2ProjBias is not null)
+                        imageOps.AddRowBroadcastInPlace(ws.OutImg, bw.ImgAttn2ProjBias, numImgTokens, HiddenSize);
+                    visionOps.ScaleGateAdd(xGpu, ws.OutImg, ws.ImgMod, numImgTokens, HiddenSize, gateOffset: 8 * HiddenSize);
+                }
+
+                // FeedForward (MLP)
+                int mlpHidden = HiddenSize * 4;
+
+                // Img MLP
+                visionOps.AdaLNModulate(ws.NormedImg, xGpu, ws.ImgMod, numImgTokens, HiddenSize, shiftOffset: 3 * HiddenSize, scaleOffset: 4 * HiddenSize, isRmsNorm: false, eps: 1e-6f);
+                visionOps.Sgemm(ws.MlpBuf, ws.NormedImg, bw.ImgMlp0Weight, numImgTokens, HiddenSize, mlpHidden);
+                if (bw.ImgMlp0Bias is not null)
+                    imageOps.AddRowBroadcastInPlace(ws.MlpBuf, bw.ImgMlp0Bias, numImgTokens, mlpHidden);
+                visionOps.VisionGeluInPlace(ws.MlpBuf);
+                visionOps.Sgemm(ws.OutImg, ws.MlpBuf, bw.ImgMlp2Weight, numImgTokens, mlpHidden, HiddenSize);
+                if (bw.ImgMlp2Bias is not null)
+                    imageOps.AddRowBroadcastInPlace(ws.OutImg, bw.ImgMlp2Bias, numImgTokens, HiddenSize);
+                visionOps.ScaleGateAdd(xGpu, ws.OutImg, ws.ImgMod, numImgTokens, HiddenSize, gateOffset: 5 * HiddenSize);
+
+                // Txt MLP
+                if (!bw.ContextPreOnly && bw.TxtMlp0Weight is not null)
+                {
+                    visionOps.AdaLNModulate(ws.NormedTxt, cGpu, ws.TxtMod, numTextTokens, HiddenSize, shiftOffset: 3 * HiddenSize, scaleOffset: 4 * HiddenSize, isRmsNorm: false, eps: 1e-6f);
+                    visionOps.Sgemm(ws.MlpBuf, ws.NormedTxt, bw.TxtMlp0Weight, numTextTokens, HiddenSize, mlpHidden);
+                    if (bw.TxtMlp0Bias is not null)
+                        imageOps.AddRowBroadcastInPlace(ws.MlpBuf, bw.TxtMlp0Bias, numTextTokens, mlpHidden);
+                    visionOps.VisionGeluInPlace(ws.MlpBuf);
+                    visionOps.Sgemm(ws.OutTxt, ws.MlpBuf, bw.TxtMlp2Weight!, numTextTokens, mlpHidden, HiddenSize);
+                    if (bw.TxtMlp2Bias is not null)
+                        imageOps.AddRowBroadcastInPlace(ws.OutTxt, bw.TxtMlp2Bias, numTextTokens, HiddenSize);
+                    visionOps.ScaleGateAdd(cGpu, ws.OutTxt, ws.TxtMod, numTextTokens, HiddenSize, gateOffset: 5 * HiddenSize);
+                }
+            }
+
+            // 5. Final Layer
+            visionOps.Sgemm(ws.FinalMod, tVecGpu, gw.FinalModWeight, 1, HiddenSize, 2 * HiddenSize);
+            imageOps.AddRowBroadcastInPlace(ws.FinalMod, gw.FinalModBias, 1, 2 * HiddenSize);
+
+            visionOps.AdaLNModulate(ws.NormedImg, xGpu, ws.FinalMod, numImgTokens, HiddenSize, shiftOffset: 0, scaleOffset: HiddenSize, isRmsNorm: false, eps: 1e-6f);
+
+            visionOps.Sgemm(ws.Unpatchified, ws.NormedImg, gw.FinalLinearWeight, numImgTokens, HiddenSize, outPatchDim);
+            imageOps.AddRowBroadcastInPlace(ws.Unpatchified, gw.FinalLinearBias, numImgTokens, outPatchDim);
+
+            var unpatchified = new float[numImgTokens * outPatchDim];
+            _backend.Download(ws.Unpatchified, unpatchified);
+
+            // 6. Unpatchify back to [1, 16, latH, latW]
+            var outLatent = new float[OutChannels * latH * latW];
+            for (int py = 0; py < imgH; py++)
+            for (int px = 0; px < imgW; px++)
+            {
+                int tokenIdx = py * imgW + px;
+                int srcBase = tokenIdx * outPatchDim;
+                int idx = 0;
+
+                for (int dy = 0; dy < p; dy++)
+                for (int dx = 0; dx < p; dx++)
+                for (int ch = 0; ch < OutChannels; ch++)
+                {
+                    int y = py * p + dy;
+                    int xCoord = px * p + dx;
+                    outLatent[ch * latH * latW + y * latW + xCoord] = unpatchified[srcBase + idx++];
+                }
+            }
+
+            return outLatent;
+        }
+        finally
+        {
+            _backend.Free(xGpu);
+            _backend.Free(cGpu);
+            _backend.Free(tVecGpu);
+        }
+    }
+
     public float[] Forward(float[] latents, float timestep, float[] textContext, float[] pooledY, int latH, int latW, int numTextTokens)
     {
+        if (_backend is not null && _backend is IVisionOpsBackend visionOps && _backend is IImageOpsBackend imageOps)
+        {
+            try
+            {
+                lock (this)
+                {
+                    return ForwardGpu(visionOps, imageOps, latents, timestep, textContext, pooledY, latH, latW, numTextTokens);
+                }
+            }
+            catch (Exception ex) when (ex is not OutOfMemoryException)
+            {
+                Console.WriteLine($"[MMDiT GPU Exception] {ex}");
+                // Fall back to CPU if GPU encounters an unexpected issue
+            }
+        }
         int p = PatchSize;
         int imgH = latH / p;
         int imgW = latW / p;
@@ -609,6 +867,8 @@ public sealed class MMDiTModel : IDisposable
 
     public void Dispose()
     {
+        _residentGpuWeights?.Dispose();
+        _residentGpuWorkspace?.Dispose();
         if (_gpuWeights is not null)
         {
             lock (_gpuWeights)

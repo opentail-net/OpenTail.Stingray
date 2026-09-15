@@ -389,6 +389,20 @@ public sealed class WanModel : IDisposable
         WanGpuWeights gpuWeights,
         IImageOpsBackend imageOps)
     {
+        ForwardGpuCore(inPacked, gpuWs.HeadMod, gpuWs.LayerMods, gpuWs, gpuWeights, imageOps);
+    }
+
+    /// <summary>
+    /// Overload of <see cref="ForwardGpuCore"/> allowing shared modulations between conditional and unconditional workspaces.
+    /// </summary>
+    public void ForwardGpuCore(
+        CoreTensor inPacked,
+        CoreTensor headMod,
+        CoreTensor[] layerMods,
+        WanGpuWorkspace gpuWs,
+        WanGpuWeights gpuWeights,
+        IImageOpsBackend imageOps)
+    {
         int numTokens = (int)inPacked.Shape.Dims[0];
         var visionOps = (IVisionOpsBackend)imageOps;
 
@@ -401,14 +415,71 @@ public sealed class WanModel : IDisposable
         for (int b = 0; b < _numLayers; b++)
         {
             var bw = gpuWeights.Blocks[b];
-            TransformerBlockGpu(b, bw, gpuWs, gpuWs.LayerMods[b], numTokens, imageOps, visionOps);
+            TransformerBlockGpu(b, bw, gpuWs, layerMods[b], numTokens, imageOps, visionOps);
         }
 
         // 3. Final Head Layer
-        visionOps.AdaLNModulate(gpuWs.Normed1, gpuWs.X, gpuWs.HeadMod, numTokens, _dim, shiftOffset: 0, scaleOffset: _dim, isRmsNorm: false, eps: 1e-6f);
+        visionOps.AdaLNModulate(gpuWs.Normed1, gpuWs.X, headMod, numTokens, _dim, shiftOffset: 0, scaleOffset: _dim, isRmsNorm: false, eps: 1e-6f);
         imageOps.Sgemm(gpuWs.OutPacked, gpuWs.Normed1, gpuWeights.HeadWeight, numTokens, _dim, InChannels);
         if (gpuWeights.HeadBias is not null)
             imageOps.AddRowBroadcastInPlace(gpuWs.OutPacked, gpuWeights.HeadBias, numTokens, InChannels);
+    }
+
+    /// <summary>
+    /// Executes a single Euler denoising step on GPU, fusing both conditional and unconditional passes
+    /// into a single Vulkan command buffer submission and combining CFG guidance on-device.
+    /// </summary>
+    public float[] ForwardGpuStep(
+        float[] latent,
+        float timestep,
+        int numFrames,
+        int latH,
+        int latW,
+        WanGpuWorkspace condGpuWs,
+        WanGpuWorkspace? uncondGpuWs,
+        float guidance,
+        WanGpuWeights gpuWeights,
+        IImageOpsBackend imageOps)
+    {
+        int patchH = latH / 2;
+        int patchW = latW / 2;
+        int numTokens = numFrames * patchH * patchW;
+
+        // 1. Pack latents [16, numFrames, latH, latW] -> [numTokens, 64] and write pinned
+        var packed = PackLatents(latent, numFrames, latH, latW);
+        imageOps.WritePinned(condGpuWs.InPacked, packed);
+
+        // 2. Prepare timestep modulations once for both passes
+        PrepareStepModulations(timestep, condGpuWs, gpuWeights, imageOps);
+
+        if (guidance <= 1.0f || uncondGpuWs is null)
+        {
+            imageOps.BeginBatch();
+            ForwardGpuCore(condGpuWs.InPacked, condGpuWs, gpuWeights, imageOps);
+            imageOps.EndBatch();
+
+            var outPacked = new float[numTokens * InChannels];
+            imageOps.Download(condGpuWs.OutPacked, outPacked);
+            return UnpackLatents(outPacked, numFrames, latH, latW);
+        }
+
+        // 3. Pass 1: Conditional (30 layers, single batch)
+        imageOps.BeginBatch();
+        ForwardGpuCore(condGpuWs.InPacked, condGpuWs.HeadMod, condGpuWs.LayerMods, condGpuWs, gpuWeights, imageOps);
+        imageOps.EndBatch();
+
+        // 4. Pass 2: Unconditional (30 layers) + on-device CFG combination
+        imageOps.BeginBatch();
+        ForwardGpuCore(condGpuWs.InPacked, condGpuWs.HeadMod, condGpuWs.LayerMods, uncondGpuWs, gpuWeights, imageOps);
+        imageOps.ScaleInPlace(uncondGpuWs.OutPacked, 1.0f - guidance);
+        imageOps.ScaleInPlace(condGpuWs.OutPacked, guidance);
+        imageOps.AddInPlace(uncondGpuWs.OutPacked, condGpuWs.OutPacked);
+        imageOps.EndBatch();
+
+        // 5. Download only the final blended velocity
+        var combinedPacked = new float[numTokens * InChannels];
+        imageOps.Download(uncondGpuWs.OutPacked, combinedPacked);
+        return UnpackLatents(combinedPacked, numFrames, latH, latW);
     }
 
     /// <summary>

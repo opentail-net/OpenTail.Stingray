@@ -317,9 +317,7 @@ public sealed class SafetensorsLoader : IWeightLoader
                 TensorPrimitives.ConvertToSingle(f16, result);
                 break;
             case "BF16":
-                var bf16 = MemoryMarshal.Cast<byte, ushort>(raw);
-                for (int i = 0; i < count; i++)
-                    result[i] = BitConverter.Int32BitsToSingle((int)((uint)bf16[i] << 16));
+                FastVectorTypeConverter.ConvertBf16ToF32(raw.AsSpan(0, checked(count * 2)), result);
                 break;
             // The per-byte helpers these replaced were not merely slower, they were wrong: neither
             // decoded the formats' non-finite encodings. E4M3FN reserves S.1111.111 for NaN and tops

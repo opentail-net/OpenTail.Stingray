@@ -79,7 +79,7 @@ public sealed class UMT5Encoder : IDisposable
     {
         if (_gpuWeights is null)
         {
-            _gpuWeights = new UMT5GpuWeights(backend, Wt, Layers, Dim, FfDim);
+            _gpuWeights = new UMT5GpuWeights(backend, _st.ReadF32, Layers, Dim, FfDim);
         }
 
         if (_gpuWorkspace is null || _gpuWorkspace.SeqLen != maxSeqLen)
@@ -131,36 +131,18 @@ public sealed class UMT5Encoder : IDisposable
         }
 
         // 2. 24 Transformer Blocks with layer-by-layer weight streaming.
-        // IMPORTANT: Use _st.ReadF32 (uncached) here, NOT Wt(), to avoid accumulating all 24
-        // layers of large float32 weight arrays in _weightCache simultaneously. Each layer's
-        // attention and FFN matrices (~750 MB/layer) are read, uploaded to GPU, and GC-collected.
-        // Small weights (pos_embedding, norm) remain Wt()-cached as they're tiny and may be reused.
+        bool hasGpuWeights = _gpuWeights != null;
         for (int i = 0; i < Layers; i++)
         {
-            using var lw = new UMT5GpuWeights.UMT5LayerGpuWeights(backend, _st.ReadF32, i, Dim, FfDim);
-
-            // -- Self-Attention Sub-layer --
-            backend.RmsNormBatched(ws.XNorm, ws.X, lw.LayerNorm0Weight, Dim, seq, eps: 1e-6f);
-
-            backend.Sgemm(ws.Q, ws.XNorm, lw.QWeight, seq, Dim, Dim);
-            backend.Sgemm(ws.K, ws.XNorm, lw.KWeight, seq, Dim, Dim);
-            backend.Sgemm(ws.V, ws.XNorm, lw.VWeight, seq, Dim, Dim);
-
-            backend.T5MultiHeadAttentionRelBias(ws.AttnOut, ws.Q, ws.K, ws.V, ws.RelPosBias[i], seq, seq, Heads, HeadDim);
-
-            backend.Sgemm(ws.XNorm, ws.AttnOut, lw.OWeight, seq, Dim, Dim);
-            backend.AddInPlace(ws.X, ws.XNorm);
-
-            // -- Feed-Forward Sub-layer --
-            backend.RmsNormBatched(ws.XNorm, ws.X, lw.LayerNorm1Weight, Dim, seq, eps: 1e-6f);
-
-            backend.Sgemm(ws.Gate, ws.XNorm, lw.Wi0Weight, seq, Dim, FfDim);
-            backend.Sgemm(ws.Val, ws.XNorm, lw.Wi1Weight, seq, Dim, FfDim);
-
-            backend.GeluTanhMul(ws.Gate, ws.Val);
-
-            backend.Sgemm(ws.FfOut, ws.Gate, lw.WoWeight, seq, FfDim, Dim);
-            backend.AddInPlace(ws.X, ws.FfOut);
+            var lw = hasGpuWeights ? _gpuWeights!.Layers[i] : new UMT5GpuWeights.UMT5LayerGpuWeights(backend, _st.ReadF32, i, Dim, FfDim);
+            try
+            {
+                ExecuteLayerGpu(ws, lw, i, seq, backend);
+            }
+            finally
+            {
+                if (!hasGpuWeights) lw.Dispose();
+            }
         }
 
         // 3. Final RMSNorm
@@ -171,6 +153,116 @@ public sealed class UMT5Encoder : IDisposable
         var result = new float[seq * Dim];
         backend.Download(ws.X, result);
         return result;
+    }
+
+    /// <summary>
+    /// Encodes both conditional and unconditional token sequences in a single pass over the 24 layers,
+    /// halving disk reads and GC pauses.
+    /// </summary>
+    public (float[] Cond, float[] Uncond) EncodePairGpu(int[] condTokens, int[] uncondTokens, IVisionOpsBackend backend)
+    {
+        int seqCond = condTokens.Length;
+        int seqUncond = uncondTokens.Length;
+
+        // 1. RelPosBiases
+        var relPosCond = new float[Layers][];
+        var relPosUncond = (seqCond == seqUncond) ? relPosCond : new float[Layers][];
+        for (int i = 0; i < Layers; i++)
+        {
+            var rpW = Wt($"blocks.{i}.pos_embedding.embedding.weight");
+            relPosCond[i] = ComputeRelPosBias(rpW, seqCond, Heads);
+            if (seqCond != seqUncond)
+            {
+                relPosUncond[i] = ComputeRelPosBias(rpW, seqUncond, Heads);
+            }
+        }
+
+        using var wsCond = new UMT5GpuWorkspace(backend, seqCond, relPosCond, Dim, Heads, HeadDim, FfDim);
+        using var wsUncond = new UMT5GpuWorkspace(backend, seqUncond, relPosUncond, Dim, Heads, HeadDim, FfDim);
+
+        // 2. Token embedding lookup (read 4GB token_embedding.weight ONCE for both)
+        var tokEmb = _st.ReadF32("token_embedding.weight");
+        var xCondHost = new float[seqCond * Dim];
+        for (int t = 0; t < seqCond; t++)
+        {
+            int off = condTokens[t] * Dim;
+            tokEmb.AsSpan(off, Dim).CopyTo(xCondHost.AsSpan(t * Dim, Dim));
+        }
+
+        var xUncondHost = new float[seqUncond * Dim];
+        for (int t = 0; t < seqUncond; t++)
+        {
+            int off = uncondTokens[t] * Dim;
+            tokEmb.AsSpan(off, Dim).CopyTo(xUncondHost.AsSpan(t * Dim, Dim));
+        }
+        tokEmb = null!;
+        GC.Collect(2, GCCollectionMode.Aggressive, blocking: true);
+
+        using (var xInitCond = backend.Upload(xCondHost, TensorShape.D2(seqCond, Dim), exact: true))
+        {
+            ((IImageOpsBackend)backend).ScaleInPlace(wsCond.X, 0f);
+            backend.AddInPlace(wsCond.X, xInitCond);
+        }
+        using (var xInitUncond = backend.Upload(xUncondHost, TensorShape.D2(seqUncond, Dim), exact: true))
+        {
+            ((IImageOpsBackend)backend).ScaleInPlace(wsUncond.X, 0f);
+            backend.AddInPlace(wsUncond.X, xInitUncond);
+        }
+
+        // 3. 24 Transformer Blocks - stream each layer ONCE for both sequences
+        bool hasGpuWeights = _gpuWeights != null;
+        for (int i = 0; i < Layers; i++)
+        {
+            var lw = hasGpuWeights ? _gpuWeights!.Layers[i] : new UMT5GpuWeights.UMT5LayerGpuWeights(backend, _st.ReadF32, i, Dim, FfDim);
+            try
+            {
+                ExecuteLayerGpu(wsCond, lw, i, seqCond, backend);
+                ExecuteLayerGpu(wsUncond, lw, i, seqUncond, backend);
+            }
+            finally
+            {
+                if (!hasGpuWeights) lw.Dispose();
+            }
+        }
+
+        // 4. Final RMSNorm
+        using var finalNorm = backend.Upload(Wt("norm.weight"), TensorShape.D1(Dim), exact: true);
+        backend.RmsNormBatched(wsCond.X, wsCond.X, finalNorm, Dim, seqCond, eps: 1e-6f);
+        backend.RmsNormBatched(wsUncond.X, wsUncond.X, finalNorm, Dim, seqUncond, eps: 1e-6f);
+
+        // 5. Download results
+        var resultCond = new float[seqCond * Dim];
+        var resultUncond = new float[seqUncond * Dim];
+        backend.Download(wsCond.X, resultCond);
+        backend.Download(wsUncond.X, resultUncond);
+
+        return (resultCond, resultUncond);
+    }
+
+    private static void ExecuteLayerGpu(UMT5GpuWorkspace ws, UMT5GpuWeights.UMT5LayerGpuWeights lw, int i, int seq, IVisionOpsBackend backend)
+    {
+        // -- Self-Attention Sub-layer --
+        backend.RmsNormBatched(ws.XNorm, ws.X, lw.LayerNorm0Weight, Dim, seq, eps: 1e-6f);
+
+        backend.Sgemm(ws.Q, ws.XNorm, lw.QWeight, seq, Dim, Dim);
+        backend.Sgemm(ws.K, ws.XNorm, lw.KWeight, seq, Dim, Dim);
+        backend.Sgemm(ws.V, ws.XNorm, lw.VWeight, seq, Dim, Dim);
+
+        backend.T5MultiHeadAttentionRelBias(ws.AttnOut, ws.Q, ws.K, ws.V, ws.RelPosBias[i], seq, seq, Heads, HeadDim);
+
+        backend.Sgemm(ws.XNorm, ws.AttnOut, lw.OWeight, seq, Dim, Dim);
+        backend.AddInPlace(ws.X, ws.XNorm);
+
+        // -- Feed-Forward Sub-layer --
+        backend.RmsNormBatched(ws.XNorm, ws.X, lw.LayerNorm1Weight, Dim, seq, eps: 1e-6f);
+
+        backend.Sgemm(ws.Gate, ws.XNorm, lw.Wi0Weight, seq, Dim, FfDim);
+        backend.Sgemm(ws.Val, ws.XNorm, lw.Wi1Weight, seq, Dim, FfDim);
+
+        backend.GeluTanhMul(ws.Gate, ws.Val);
+
+        backend.Sgemm(ws.FfOut, ws.Gate, lw.WoWeight, seq, FfDim, Dim);
+        backend.AddInPlace(ws.X, ws.FfOut);
     }
 
     /// <summary>Encode token ids -> context embeddings [seq, 4096] on CPU.</summary>

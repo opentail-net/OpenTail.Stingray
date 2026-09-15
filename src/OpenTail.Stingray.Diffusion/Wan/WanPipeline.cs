@@ -163,20 +163,17 @@ public sealed class WanPipeline : IDiffusionPipeline
                     float tNext = timesteps[step + 1];
                     float dt = t - tNext;
 
-                    var condVelocity = _transformer.ForwardGpu(latent, t * 1000.0f, condContext, numFrames, latH, latW, condGpuWs, gpuWeights, imageOps);
-                    float[] velocity;
-
-                    if (guidance > 1.0f)
-                    {
-                        var uncondVelocity = _transformer.ForwardGpu(latent, t * 1000.0f, uncondContext, numFrames, latH, latW, uncondGpuWs!, gpuWeights, imageOps);
-                        velocity = new float[condVelocity.Length];
-                        for (int i = 0; i < velocity.Length; i++)
-                            velocity[i] = uncondVelocity[i] + guidance * (condVelocity[i] - uncondVelocity[i]);
-                    }
-                    else
-                    {
-                        velocity = condVelocity;
-                    }
+                    var velocity = _transformer.ForwardGpuStep(
+                        latent,
+                        t * 1000.0f,
+                        numFrames,
+                        latH,
+                        latW,
+                        condGpuWs,
+                        uncondGpuWs,
+                        guidance,
+                        gpuWeights,
+                        imageOps);
 
                     for (int i = 0; i < latent.Length; i++)
                         latent[i] += sign * dt * velocity[i];

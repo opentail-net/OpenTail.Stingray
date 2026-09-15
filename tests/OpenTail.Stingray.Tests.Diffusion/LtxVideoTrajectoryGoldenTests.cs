@@ -149,6 +149,9 @@ public sealed class LtxVideoTrajectoryGoldenTests
                 latents[i] -= dt * vPred[i];
 
             float cos = CosineSimilarity(latents, expectedTrajectory[step]);
+            double normOurs = Math.Sqrt(latents.Select(x => (double)x * x).Sum());
+            double normGold = Math.Sqrt(expectedTrajectory[step].Select(x => (double)x * x).Sum());
+            Console.WriteLine($"[Step {step}] Cos={cos:F6}, NormOurs={normOurs:F6}, NormGold={normGold:F6}, Ratio={normOurs / normGold:F6}");
             Assert.True(cos > 0.999f, $"step {step} latents cosine-sim too low: {cos}");
         }
     }

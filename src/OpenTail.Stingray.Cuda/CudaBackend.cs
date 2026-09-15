@@ -7720,8 +7720,12 @@ public sealed unsafe class CudaBackend : IComputeBackend, IImageOpsBackend, IVis
     /// naive-accumulation implementation here to improve on the way Vulkan's Conv2d shader had, so
     /// this just delegates to it rather than duplicating the same logic under a second name.</summary>
     public Tensor Conv2dImplicitGemm(Tensor input, Tensor weight, Tensor bias,
-                                     int inCh, int outCh, int h, int w, int ksize, int padding = -1)
-        => Conv2d(input, weight, bias, inCh, outCh, h, w, ksize, padding);
+                                     int inCh, int outCh, int h, int w, int ksize, int padding = -1, int stride = 1)
+    {
+        if (stride != 1)
+            throw new NotSupportedException("Strided Conv2dImplicitGemm is not implemented on CUDA yet.");
+        return Conv2d(input, weight, bias, inCh, outCh, h, w, ksize, padding);
+    }
 
     /// <summary>Not implemented on CUDA yet -- added 2026-09-11 alongside the Vulkan shader for the
     /// full-GPU-residency ResBlock rewrite (see VaeDecoder.ResBlockGpu), which was only built and
