@@ -508,14 +508,56 @@ half the model, is). All loads and generations in this table completed cleanly: 
 OOMs, no swap episodes (`Get-Counter '\Memory\Available MBytes'`/`'\Memory\Pages/sec'` checked
 before and after every run, available RAM held in the 44-45 GB range throughout).
 
-**Not done in this session**: `IQ3_XXS`/`IQ2_S`/`IQ2_XS`/`IQ2_XXS`/`IQ4_NL` remain on the F16
-fallback — lower volume in this checkpoint (per Follow-up 2's original accounting, these five
-combined are less than either IQ4_XS or IQ3_S alone), so extending native-kernel treatment to them
-follows the same "measure before extending" discipline as every other scope decision in this
-document. A full end-to-end tokens/sec sweep across the fraction range with the IQ3_S kernel in
-place (mirroring Follow-up 5's table) — and confirming the *default* fraction is now the better
-out-of-the-box choice given how much further it now reaches — is the natural next measurement if
-this work continues.
+**Not done in this session** (at time of writing, superseded by Follow-up 8 below): the remaining
+minor IQ dtypes and the full fraction sweep.
+
+## Follow-up 8: remaining-waste tally + full fraction sweep with both native kernels (2026-09-16)
+
+**Remaining F16-fallback waste tally**: re-ran Follow-up 2's per-dtype accounting excluding
+`IQ4_XS`/`IQ3_S` (now raw) from the "still F16-expanding" set. Result: only **23 tensors, +1.52
+GiB total** — down from the original 19.4 GiB — dominated by `IQ3_XXS` (14 tensors, +0.95 GiB),
+with `Q2_K`/`Q3_K`/`IQ2_S`/`IQ4_NL` contributing the small remainder. **Confirms diminishing
+returns**: building native kernels for the remaining five dtypes would target roughly 8% of the
+original waste, each in a structurally different (and, for the 1-2 bit IQ formats, likely harder)
+codebook format. Not pursued — matches this document's repeated "measure before extending"
+pattern.
+
+**Full fraction sweep, both native kernels in place** — every load and generation below checked
+clean via `Get-Counter` before and after (available RAM held 44-48 GB throughout every run in this
+table, 0 pages/sec at rest, one brief expected spike during the largest load):
+
+| `STINGRAY_VULKAN_UMA_FRACTION` | FFN layers | Uploaded MiB | Decode speed |
+|---|---|---|---|
+| 0.5 (default) | 14/64 | 7,140 MiB | 0.4 t/s |
+| 0.8 | 32/64 | 16,320 MiB | 0.5 t/s |
+| 0.9 | 39/64 | 19,890 MiB | 0.7 t/s |
+| 0.95 | 42/64 | 21,420 MiB | 0.7 t/s |
+| 1.0 (`STINGRAY_DENSE_FFN_GPU_MARGIN_MB=256`) | 47/64 | 23,970 MiB | **0.9 t/s** |
+
+**Speed kept climbing all the way to the top of the range — no plateau found this time**, unlike
+Follow-up 5's result (which plateaued at 0.4 t/s between 0.8 and 0.95 *before* the IQ3_S kernel
+existed). That plateau is now understood in hindsight: it wasn't a fundamental ceiling, it was an
+artifact of not enough FFN layers being GPU-resident yet at the memory cost the F16 fallback
+imposed — once the native kernels made more layers affordable per fraction step, speed kept
+scaling with layer count as expected. **0.9 t/s at 1.0 fraction is 3-4.5x the very first
+measurement in this document's history (0.2-0.3 t/s at 0/64 layers, before any of this session's
+fixes).**
+
+**This is the practical ceiling for the `STINGRAY_VULKAN_UMA_FRACTION` lever specifically**:
+`UmaHeapFraction` is deliberately clamped to `[0.05, 1.0]` (`VulkanBackend.cs`), and 1.0 already
+consumes the entire heap Vulkan reports (`Heap 1: 32153MB`) — confirmed by `Placement budget:
+32153MB (100%)` in the 1.0 run's log. The remaining 17 CPU-resident layers would need the
+driver/BIOS to expose more system RAM as GPU-mappable (there is real headroom in actual system RAM
+— 47+ GB stayed free even at this setting — but not in what this driver reports as the UMA-visible
+heap for this purpose). Removing or raising that clamp was deliberately not attempted: it exists
+specifically to prevent the kind of overcommit this whole document is about fixing, and bypassing
+a deliberate safety bound isn't something to do without an explicit ask.
+
+**Recommendation given this data**: `STINGRAY_VULKAN_UMA_FRACTION=1.0` with
+`STINGRAY_DENSE_FFN_GPU_MARGIN_MB=256` is now the best-measured setting for this checkpoint on
+this hardware — verified clean, verified fastest, verified safe. The *shipped default* remains
+0.5 for now (a product decision, not an engineering one — see Follow-up 5's original note); this
+sweep gives whoever makes that call real numbers to work from instead of a guess.
 
 ---
 
