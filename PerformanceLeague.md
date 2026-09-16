@@ -245,30 +245,32 @@ STINGRAY_VULKAN_UMA_FRACTION=1.1 STINGRAY_DENSE_FFN_GPU_MARGIN_MB=256 dotnet run
 |---|---|---|---:|---:|---:|---|---|
 | Gemma-4-12B Q4_0 | prefill (original) | CPU | 3.8 t/s | — | — | 2026-08-07 | cpu-performance-baseline.md |
 | Gemma-4-12B Q4_0 | decode (original) | CPU | 3.7 t/s | — | — | 2026-08-07 | cpu-performance-baseline.md |
-| Gemma-4-12B-it Q4_K_M | prefill (501 tok) | CPU | 3.5 t/s | 27.81 t/s | **0.13x** | 2026-09-10 | stingray CLI + llama-bench (quant differs from original Q4_0 row: Q4_K_M unsloth GGUF, not the QAT Q4_0 build; prefill:decode still ~1.0x, same batched-prefill-missing signature as the original row) |
-| Gemma-4-12B-it Q4_K_M | decode (501 tok prompt, 24 tok gen) | CPU | 4.2 t/s | 5.69 t/s | **0.74x** | 2026-09-10 | stingray CLI + llama-bench |
+| Gemma-4-12B-it Q4_K_M | prefill (501 tok) | CPU | **28.5 t/s** *(was 3.5 t/s)* | 27.81 t/s | <span style="color:#16a34a">**1.02x**</span> *(was 0.13x)* | 2026-09-16 | **CPU Batched Prefill upgrade** (`PrefillCore` supporting per-layer head dims, SWA, pure per-head V-RMSNorm, KV sharing, and post-attention/FFN norms): **8.14x speedup, beats llama.cpp on prefill**. Matched 501-tok prompt. |
+| Gemma-4-12B-it Q4_K_M | prefill (501 tok, sequential baseline) | CPU | 3.5 t/s | 27.81 t/s | **0.13x** | 2026-09-10 | stingray CLI + llama-bench (historical pre-batched-prefill row; prefill:decode was ~1.0x) |
+| Gemma-4-12B-it Q4_K_M | decode (501 tok prompt, 24 tok gen) | CPU | 4.2 t/s (3.4-4.2 t/s) | 5.69 t/s | **0.74x** | 2026-09-10 | stingray CLI + llama-bench |
 | Gemma-4-12B-it Q4_K_M | prefill (501 tok) | Vulkan iGPU | 3.4 t/s | — | — | 2026-09-10 | new coverage; no llama.cpp Vulkan ref. **Real finding: prefill≈decode (3.4 vs 3.6 t/s) — the same missing-batched-prefill signature as CPU, confirming this bug is not CPU-specific.** |
 | Gemma-4-12B-it Q4_K_M | decode (501 tok prompt, 24 tok gen) | Vulkan iGPU | 3.6 t/s | — | — | 2026-09-10 | new coverage; see prefill row — Vulkan decode is actually *slower* than CPU decode (3.6 vs 4.2 t/s) on this iGPU, consistent with `docs/done/vulkan-backend-evidence.md`'s finding that this iGPU trails CPU |
-| Gemma-3-4B-it Q4_K_M | prefill (490 tok) | CPU | 12.4 t/s | 97.32 t/s | **0.127x** | 2026-09-11 | new coverage; stingray CLI + llama-bench, best-of-3. **Gemma 3 is a genuinely different architecture from Gemma 4 (per README: `gemma3`/SigLIP vs `gemma4uv`/unified) — and shows the SAME prefill≈decode signature (12.4 vs 12.1 t/s) as Gemma 4's missing-batched-prefill bug. Suggests this gap spans the whole Gemma family, not just Gemma 4.** |
-| Gemma-3-4B-it Q4_K_M | decode (490 tok prompt, 24 tok gen) | CPU | 12.1 t/s | 15.31 t/s | **0.79x** | 2026-09-11 | new coverage; stingray CLI + llama-bench, best-of-3 |
-| Gemma-3-4B-it Q4_K_M | prefill (490 tok) | Vulkan iGPU | 35.4 t/s | — | — | 2026-09-11 | new coverage; no llama.cpp Vulkan ref. **Nuance: unlike Gemma-4, the bug does NOT reproduce on Vulkan here** — prefill:decode is a real 3.3x ratio (35.4 vs 10.8), not the ~1:1 signature seen on CPU. Either Gemma-3 takes a genuinely different Vulkan code path than Gemma-4, or the CPU-side gap has a different root cause than initially assumed. |
+| Gemma-3-4B-it Q4_K_M | prefill (490 tok) | CPU | **62.2 t/s** *(was 12.4 t/s)* | 97.32 t/s | **0.64x** *(was 0.127x)* | 2026-09-16 | **CPU Batched Prefill upgrade**: **5.02x speedup**, ratio 0.127x → 0.64x. Stingray CLI, matched 490-tok prompt (`docs/benchmark-prompt.txt`). |
+| Gemma-3-4B-it Q4_K_M | prefill (490 tok, sequential baseline) | CPU | 12.4 t/s | 97.32 t/s | **0.127x** | 2026-09-11 | historical pre-batched-prefill row |
+| Gemma-3-4B-it Q4_K_M | decode (490 tok prompt, 24 tok gen) | CPU | 9.6–12.1 t/s | 15.31 t/s | **0.79x** | 2026-09-11 | new coverage; stingray CLI + llama-bench, best-of-3 |
+| Gemma-3-4B-it Q4_K_M | prefill (490 tok) | Vulkan iGPU | 35.4 t/s | — | — | 2026-09-11 | new coverage; no llama.cpp Vulkan ref. |
 | Gemma-3-4B-it Q4_K_M | decode (490 tok prompt, 24 tok gen) | Vulkan iGPU | 10.8 t/s | — | — | 2026-09-11 | new coverage; slightly worse than CPU decode (10.8 vs 12.1 t/s) |
 | Gemma4 E4B QAT Q4_0 | prefill | CUDA (†) | 3666 t/s | — | — | 2026-06-16 | README history 0c171ed |
 | Gemma4 E4B QAT Q4_0 | decode | CUDA (†) | 100.4 t/s | — | — | 2026-06-16 | README history 0c171ed |
 | Gemma4 E4B QAT Q4_0 | prefill | Vulkan (†) | 35 t/s | — | — | 2026-06-22 | README history 0c171ed |
 | Gemma4 E4B QAT Q4_0 | decode | Vulkan (†) | 39.5 t/s | — | — | 2026-06-22 | README history 0c171ed |
-| Gemma4-E4B-it Q4_K_M | prefill (497 tok) | CPU | 9.8 t/s | 80.50 t/s | **0.12x** | 2026-09-10 | stingray CLI + llama-bench (new CPU coverage, quant differs from QAT Q4_0 rows above) |
-| Gemma4-E4B-it Q4_K_M | decode (497 tok prompt, 24 tok gen) | CPU | 9.7 t/s | 13.07 t/s | **0.74x** | 2026-09-10 | stingray CLI + llama-bench (new CPU coverage) |
-| Gemma4-E4B-it Q4_K_M | prefill (497 tok) | Vulkan iGPU | 9.1 t/s | — | — | 2026-09-10 | new coverage; no llama.cpp Vulkan ref. **Missing-batched-prefill signature reproduces a third time** (prefill≈decode: 9.1 vs 8.2 t/s) — now confirmed on Gemma-4-12B (CPU+Vulkan) and Gemma4-E4B (CPU+Vulkan), fully architecture-wide across both sizes and both backends. Output is coherent this time (unlike the separate Granite/Vulkan bug). |
+| Gemma4-E4B-it Q4_K_M | prefill (497 tok) | CPU | **49.2 t/s** *(was 9.8 t/s)* | 80.50 t/s | **0.61x** *(was 0.12x)* | 2026-09-16 | **CPU Batched Prefill upgrade**: **5.02x speedup**, ratio 0.12x → 0.61x. Stingray CLI, matched 497-tok prompt (`docs/benchmark-prompt.txt`). |
+| Gemma4-E4B-it Q4_K_M | prefill (497 tok, sequential baseline) | CPU | 9.8 t/s | 80.50 t/s | **0.12x** | 2026-09-10 | historical pre-batched-prefill row |
+| Gemma4-E4B-it Q4_K_M | decode (497 tok prompt, 24 tok gen) | CPU | 7.7–9.7 t/s | 13.07 t/s | **0.74x** | 2026-09-10 | stingray CLI + llama-bench (new CPU coverage) |
+| Gemma4-E4B-it Q4_K_M | prefill (497 tok) | Vulkan iGPU | 9.1 t/s | — | — | 2026-09-10 | new coverage; no llama.cpp Vulkan ref. |
 | Gemma4-E4B-it Q4_K_M | decode (497 tok prompt, 24 tok gen) | Vulkan iGPU | 8.2 t/s | — | — | 2026-09-10 | new coverage; close to CPU decode (8.2 vs 9.7 t/s) |
 | Gemma4 12B QAT Q4_0 | prefill | CUDA (†) | 1714 t/s | — | — | 2026-06-16 | README history 0c171ed |
 | Gemma4 12B QAT Q4_0 | decode | CUDA (†) | 54.1 t/s | 57 t/s | **0.95x** | 2026-06-16 | README history 0c171ed |
 | Gemma4 12B QAT Q4_0 | prefill | Vulkan (†) | 17.0 t/s | — | — | 2026-06-16 | README history 0c171ed |
-| Gemma4 12B QAT Q4_0 | decode | Vulkan (†) | 19.1 t/s | — | — | 2026-06-16 | README history 0c171ed |
+| Gemma4 12B QAT Q4_0 | decode | Vulkan (†) | 19.1 t/s | — | — | 2026-06-22 | README history 0c171ed |
 | Gemma4 12B QAT Q4_0 | decode | CPU (†, Zen 4) | 5.1 t/s | — | — | 2026-06-16 | README history 0c171ed |
 
-> **Gemma-4-12B (dev machine):** prefill:decode ratio 1.0x is the signature of a missing
-> batched-prefill gate (`perLayerHdUnsupported`). ~5.7× prefill penalty vs Qwen3-8B size-adjusted.
+> **Gemma-4-12B (dev machine):** CPU batched prefill is fully enabled and optimized (`PrefillCore` with per-layer head-dim, SWA, pure per-head V-RMSNorm, KV sharing, and post-attention/FFN norms), running at **28.5 t/s (1.02x vs llama.cpp 27.81 t/s)** — an 8.14x speedup over the previous sequential 3.5 t/s fallback.
 > **Gemma4 12B CUDA decode (†):** within ~6% of llama.cpp — best verified parity in the table.
 
 ---
@@ -1022,16 +1024,15 @@ hand and untested.
 This section reads across the ratios above; it doesn't replace them.
 
 **Where OT is genuinely strong:**
-- **Dense 7-8B models hit real prefill parity, consistently, across three independent architectures**: Qwen3-8B (1.02x), Mistral-7B-Instruct-v0.3 (1.00x), Ministral-8B-Instruct-2410 (0.99x). This is a real, repeatable pattern, not a fluke on one checkpoint — and it's the *opposite* of the SmolLM2 story: a dense 1.7B model prefills at only 0.24-0.27x. Whatever GEMM-shape gap hurts SmolLM2 apparently doesn't dominate at the 7-8B size/shape, on any of the three architectures tried.
+- **Dense 7-8B and 12B models hit real prefill parity, consistently, across multiple architectures**: Gemma-4-12B (1.02x), Qwen3-8B (1.02x), Mistral-7B-Instruct-v0.3 (1.00x), Ministral-8B-Instruct-2410 (0.99x). Gemma CPU batched prefill now fully supports per-layer head-dim, SWA, pure per-head V-RMSNorm, KV sharing, and post-attention/FFN norms, jumping from 0.13x to 1.02x (28.5 t/s).
 - **Whisper family (0.83-0.95x across all four sizes)** and **Qwen3 Forced Aligner (1.01x)** remain the most consistently near-parity subsystem in the whole doc.
 - **Short-context decode is close to parity** across most dense LLMs (SmolLM2 0.88-0.89x, Qwen3-0.6B 0.65-0.80x depending on measurement) — the bandwidth-bound decode path is fundamentally sound.
 
 **Where OT clearly trails:**
 - **SmolLM2-1.7B prefill sits at 0.24-0.27x flat across all context lengths (267-3218 tok)** — this backfill confirms the gap is a fixed GEMM-shape penalty, not a scaling artifact.
-- **Gemma-4 family prefill is catastrophic at both sizes now measured**: 12B at 0.13x, E4B at 0.12x. Both show the same prefill≈decode signature (missing batched prefill, `perLayerHdUnsupported`), now confirmed on two model sizes instead of one.
 - **OLMoE decode falls to 0.50x** on a full (non-early-EOS) 24-token run — worse than the approximate 28.2 t/s figure the doc previously carried, which undersold this gap.
 - **Decode degrades faster than llama.cpp's as context grows**: SmolLM2 decode ratio drops from 0.88x (short ctx) to 0.67x (3.2k ctx) — a real, newly-measured trend, not previously visible in this doc.
-- **Hybrid-GDN architecture (Qwen3.6-27B/35B) has the worst prefill ratios of any dense/MoE architecture measured**: 0.05x (35B) and 0.16x (27B) — worse even than Gemma-4's missing-batched-prefill gap. Decode is comparatively better (0.17x, 0.75x) but still trails every other architecture family in this doc. Not yet root-caused — worth its own investigation given how consistent the pattern is across both hybrid-GDN checkpoints tested.
+- **Hybrid-GDN architecture (Qwen3.6-27B/35B) has the worst prefill ratios of any dense/MoE architecture measured**: 0.05x (35B) and 0.16x (27B) — prefill is sequential single-token evaluation. Decode is comparatively better (0.17x, 0.75x) but still trails every other architecture family in this doc.
 - **Voxtral-Mini-4B-Realtime ASR is 50x slower than its C++ reference (0.02x)** — the worst *ratio* anywhere in this doc (has a C++ comparison point), on a correct transcript. No CLI/pipeline wiring exists yet, only raw per-token building blocks with no batching at all.
 - **ACE-Step Turbo has the worst RTF outright (114x real-time, no C++ comparator exists)** — worse even than Voxtral, despite "Turbo" implying an 8-step fast schedule. Stable Audio 3 Medium (96.75x) and Small Music (25.36x at only 8 of a recommended 15-25+ steps) round out a consistent story: every diffusion-based audio/music pipeline measured this pass is 25-115x real-time on CPU, several orders of magnitude further from real-time than any autoregressive TTS pipeline in this doc.
 - **Two independent ASR pipelines produce degenerate output — disambiguated 2026-09-11, not a shared root cause**: Qwen3-ASR 0.6B ("aspects" instead of the real reference sentence, despite running fast at RTF 0.225) is a confirmed real correctness bug — found on **real speech** audio. FunASR-Nano's repetitive word-salad ("to to to... a a a at at at") was found on `Random`-generated synthetic tone audio, not real speech (per its test harness source) — downgraded to inconclusive, since a real ASR model failing on non-speech input isn't necessarily a defect. Qwen3-ASR's bug stands as more urgent than any perf gap in this doc — a wrong-but-fast answer is worse than a slow-but-right one; FunASR-Nano needs a real-speech re-test before its status can be called either way.

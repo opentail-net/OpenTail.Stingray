@@ -29,6 +29,9 @@ names are treated as valid, `doctor` would not have flagged it either. The warni
 `STINGRAY_MAX_QUEUE` and the dead entry is out of the registry, so the mistake is now reported with
 a closest-match suggestion.
 
+**Reconciled again 2026-09-16 — `KnownEnvironmentVariables.All` now contains **203** names**
+(reconciled recent diffusion, audio, profiling, and Wan2.1 / LTX / CosyVoice3 / XTTS diagnostic environment variables into the source registry).
+
 **Reconciled again 2026-09-02 — `KnownEnvironmentVariables.All` now contains **173** names**
 (two true duplicate-alias pairs collapsed to their canonical name, per the session plan in
 `docs/00-current-work.md`: `STINGRAY_MICRO_GEMM`/`STINGRAY_Q4K_MICRO_GEMM` removed, keeping only

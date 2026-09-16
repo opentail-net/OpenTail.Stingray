@@ -549,4 +549,41 @@ public sealed class JinjaChatTemplateTests
         Assert.Equal("list_files",
             doc.RootElement[1].GetProperty("function").GetProperty("name").GetString());
     }
+
+    // ── Parenthesized ternary expressions (Gemma 3/4) ───────────────────────────
+
+    [Fact]
+    public void ParenthesizedTernary_EvaluatesTrueAndFalseBranches()
+    {
+        var ctxTrue = new Dictionary<string, object?> { ["cond"] = true };
+        var ctxFalse = new Dictionary<string, object?> { ["cond"] = false };
+
+        Assert.Equal("yes", Render("{{ ( 'yes' if cond else 'no' ) }}", ctxTrue));
+        Assert.Equal("no", Render("{{ ( 'yes' if cond else 'no' ) }}", ctxFalse));
+    }
+
+    [Fact]
+    public void ParenthesizedTernary_InsideStringConcatenation_RendersCorrectly()
+    {
+        // Exact construct found in Gemma templates:
+        // (first_user_prefix if loop.first else "") + message['content']
+        const string tmpl = """
+            {%- for message in messages -%}
+            {{ (first_user_prefix if loop.first else "") + message['content'] }}
+            {%- endfor -%}
+            """;
+
+        var ctx = new Dictionary<string, object?>
+        {
+            ["first_user_prefix"] = "[INTRO] ",
+            ["messages"] = new List<Dictionary<string, object?>>
+            {
+                new() { ["content"] = "Hello" },
+                new() { ["content"] = "World" },
+            },
+        };
+
+        Assert.Equal("[INTRO] HelloWorld", Render(tmpl, ctx));
+    }
 }
+

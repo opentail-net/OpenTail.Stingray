@@ -750,19 +750,19 @@ public sealed class JinjaChatTemplate
                 IExpr? stop = null, step = null;
                 Skip();
                 if (Pos < _s.Length && _s[Pos] is not ':' and not ']')
-                    stop = ParseOr();
+                    stop = ParseTernary();
                 Skip();
                 if (Pos < _s.Length && _s[Pos] == ':')
                 {
                     Pos++; Skip();
                     if (Pos < _s.Length && _s[Pos] != ']')
-                        step = ParseOr();
+                        step = ParseTernary();
                 }
                 ExpectChar(']');
                 return new SliceExpr(obj, null, stop, step);
             }
 
-            var idx = ParseOr();
+            var idx = ParseTernary();
             Skip();
             if (Pos < _s.Length && _s[Pos] == ':')
             {
@@ -771,13 +771,13 @@ public sealed class JinjaChatTemplate
                 IExpr? stop = null, step = null;
                 Skip();
                 if (Pos < _s.Length && _s[Pos] is not ':' and not ']')
-                    stop = ParseOr();
+                    stop = ParseTernary();
                 Skip();
                 if (Pos < _s.Length && _s[Pos] == ':')
                 {
                     Pos++; Skip();
                     if (Pos < _s.Length && _s[Pos] != ']')
-                        step = ParseOr();
+                        step = ParseTernary();
                 }
                 ExpectChar(']');
                 return new SliceExpr(obj, idx, stop, step);
@@ -796,7 +796,7 @@ public sealed class JinjaChatTemplate
             if (c == '(')
             {
                 Pos++;
-                var inner = ParseOr();
+                var inner = ParseTernary();
                 Skip(); ExpectChar(')');
                 return inner;
             }
@@ -847,12 +847,12 @@ public sealed class JinjaChatTemplate
                     if (Pos < _s.Length && _s[Pos] == '=' && (Pos + 1 >= _s.Length || _s[Pos + 1] != '='))
                     {
                         Pos++; Skip();
-                        kwargs.Add((kwName, ParseOr()));
+                        kwargs.Add((kwName, ParseTernary()));
                     }
                     else
                     {
                         Pos = saved;
-                        args.Add(ParseOr());
+                        args.Add(ParseTernary());
                     }
                     Skip();
                     if (Pos < _s.Length && _s[Pos] == ',') Pos++;
@@ -917,7 +917,7 @@ public sealed class JinjaChatTemplate
                     Pos = saved; // not a keyword arg — re-parse from the start as a value
                 }
 
-                args.Add(ParseOr());
+                args.Add(ParseTernary());
                 Skip();
                 if (Pos < _s.Length && _s[Pos] == ',') Pos++;
 
@@ -949,10 +949,10 @@ public sealed class JinjaChatTemplate
             while (Pos < _s.Length && _s[Pos] != '}')
             {
                 int iterStart = Pos;
-                var key = ParseOr();
+                var key = ParseTernary();
                 Skip();
                 ExpectChar(':');
-                var value = ParseOr();
+                var value = ParseTernary();
                 entries.Add((key, value));
                 Skip();
                 if (Pos < _s.Length && _s[Pos] == ',') { Pos++; Skip(); }

@@ -1156,11 +1156,7 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
         CpuBatchedPrefillCapability.Evaluate(
             turboQuantEnabled: _tqKvCache is not null,
             isMoe: _hp.IsMoE,
-            moeBatchedPrefillSupported: MoeBatchedPrefillSupported,
-            // STINGRAY_PER_LAYER_HD_PREFILL can deliberately force an experimental, known-wrong
-            // path for measurement. A production-facing receipt must report supported capability,
-            // not merely whether that escape hatch will execute code.
-            perLayerHeadDimUnsupported: _layerHeadDim is not null);
+            moeBatchedPrefillSupported: MoeBatchedPrefillSupported);
 
     /// <summary>
     /// Prefill: process all prompt tokens layer-by-layer.

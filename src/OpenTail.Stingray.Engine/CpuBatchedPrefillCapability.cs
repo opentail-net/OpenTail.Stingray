@@ -12,14 +12,10 @@ public sealed record CpuBatchedPrefillCapability(bool Available, string Detail)
     public static CpuBatchedPrefillCapability Evaluate(
         bool turboQuantEnabled,
         bool isMoe,
-        bool moeBatchedPrefillSupported,
-        bool perLayerHeadDimUnsupported)
+        bool moeBatchedPrefillSupported)
     {
         if (isMoe && !moeBatchedPrefillSupported)
             return new(false, "This MoE configuration uses sequential prefill because its batched trunk is unsupported.");
-        if (perLayerHeadDimUnsupported)
-            return new(false,
-                "This per-layer-head-dimension model uses sequential prefill because the CPU batched trunk lacks its required attention features.");
         if (turboQuantEnabled)
             return new(false, "TurboQuant uses its dedicated CPU prefill implementation, not the regular batched-prefill trunk.");
 
