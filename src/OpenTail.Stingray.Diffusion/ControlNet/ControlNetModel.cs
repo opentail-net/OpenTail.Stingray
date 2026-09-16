@@ -21,12 +21,25 @@ public sealed class ControlNetModel : IDisposable
     private readonly Dictionary<string, CoreTensor>? _gpuWeights;
     private readonly Dictionary<string, CoreTensor>? _gpuWeightsNative;
     private readonly Dictionary<string, CoreTensor> _gpuBiasCache = new(StringComparer.Ordinal);
+    private readonly Dictionary<float[], CoreTensor> _cachedContextGpu = new(ReferenceEqualityComparer.Instance);
     private float[]? _cachedHintRgb;
     private float[]? _cachedHintFeatures;
     private bool? _controlNetForwardResidencySupported;
     private bool? _residentGpuAttentionSupported;
     private bool _gpuWeightsWarm;
     private bool _disposed;
+
+    public void ClearContextCache()
+    {
+        lock (_cachedContextGpu)
+        {
+            if (_imageOps is not null)
+            {
+                foreach (var t in _cachedContextGpu.Values) _imageOps.Free(t);
+            }
+            _cachedContextGpu.Clear();
+        }
+    }
 
     public ControlNetModel(IWeightLoader weights, string prefix = "", IComputeBackend? backend = null)
     {
@@ -464,7 +477,15 @@ public sealed class ControlNetModel : IDisposable
         int h = latH, w = latW;
 
         // Pre-upload all host inputs before BeginBatch() so transfer commands do not interrupt batch recording
-        var contextGpu = imageOps.Upload(context.AsSpan(0, 77 * 768), TensorShape.D1(77 * 768));
+        CoreTensor contextGpu;
+        lock (_cachedContextGpu)
+        {
+            if (!_cachedContextGpu.TryGetValue(context, out contextGpu!))
+            {
+                contextGpu = imageOps.Upload(context.AsSpan(0, 77 * 768), TensorShape.D1(77 * 768));
+                _cachedContextGpu[context] = contextGpu;
+            }
+        }
         var tEmbGpu = UploadSiluTEmb(imageOps, tEmb);
         var hintGpu = imageOps.Upload(hint.AsSpan(0, 320 * h * w), TensorShape.D1(320 * h * w));
         var xGpu = imageOps.Upload(latent.AsSpan(0, 4 * h * w), TensorShape.D1(4 * h * w));
@@ -544,7 +565,6 @@ public sealed class ControlNetModel : IDisposable
             var midResidualGpu = ZeroConvGpu(imageOps, "middle_block_out.0", cur, 1280, h, w, conditioningScale);
             imageOps.Free(cur);
 
-            imageOps.Free(contextGpu);
             imageOps.Free(tEmbGpu);
 
             imageOps.EndBatch();
@@ -560,7 +580,6 @@ public sealed class ControlNetModel : IDisposable
                 foreach (var g in downResidualsGpu) imageOps.Free(g);
                 imageOps.Free(hintGpu);
                 imageOps.Free(tEmbGpu);
-                imageOps.Free(contextGpu);
                 imageOps.Free(xGpu);
             }
         }
@@ -1046,6 +1065,7 @@ public sealed class ControlNetModel : IDisposable
         {
             _disposed = true;
             _weights.Dispose();
+            ClearContextCache();
             if (_gpuWeights is not null && _backend is not null)
             {
                 foreach (var t in _gpuWeights.Values) _backend.Free(t);

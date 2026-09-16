@@ -113,45 +113,53 @@ public sealed class T5Encoder : IDisposable
             backend.AddInPlace(ws.X, xInit);
         }
 
-        // 2. 24 Transformer Blocks entirely on GPU
-        for (int i = 0; i < Layers; i++)
+        // 2. 24 Transformer Blocks entirely on GPU with chunked batch recording
+        var imageOps = backend as IImageOpsBackend;
+        const int chunkLayers = 4;
+        for (int i = 0; i < Layers; i += chunkLayers)
         {
-            var lw = weights.Layers[i];
+            imageOps?.BeginBatch();
+            int end = Math.Min(i + chunkLayers, Layers);
+            for (int l = i; l < end; l++)
+            {
+                var lw = weights.Layers[l];
 
-            // ── Self-Attention Sub-layer ──
-            // Pre-norm: xNorm = RmsNorm(x, ln0, eps=1e-6)
-            backend.RmsNormBatched(ws.XNorm, ws.X, lw.LayerNorm0Weight, Dim, seq, eps: 1e-6f);
+                // ── Self-Attention Sub-layer ──
+                // Pre-norm: xNorm = RmsNorm(x, ln0, eps=1e-6)
+                backend.RmsNormBatched(ws.XNorm, ws.X, lw.LayerNorm0Weight, Dim, seq, eps: 1e-6f);
 
-            // Q, K, V projections via 64x128 tiled SgemmF16
-            backend.Sgemm(ws.Q, ws.XNorm, lw.QWeight, seq, Dim, Dim);
-            backend.Sgemm(ws.K, ws.XNorm, lw.KWeight, seq, Dim, Dim);
-            backend.Sgemm(ws.V, ws.XNorm, lw.VWeight, seq, Dim, Dim);
+                // Q, K, V projections via 64x128 tiled SgemmF16
+                backend.Sgemm(ws.Q, ws.XNorm, lw.QWeight, seq, Dim, Dim);
+                backend.Sgemm(ws.K, ws.XNorm, lw.KWeight, seq, Dim, Dim);
+                backend.Sgemm(ws.V, ws.XNorm, lw.VWeight, seq, Dim, Dim);
 
-            // Multi-head attention with relative position bias
-            backend.T5MultiHeadAttentionRelBias(ws.AttnOut, ws.Q, ws.K, ws.V, ws.RelPosBias, seq, seq, Heads, HeadDim);
+                // Multi-head attention with relative position bias
+                backend.T5MultiHeadAttentionRelBias(ws.AttnOut, ws.Q, ws.K, ws.V, ws.RelPosBias, seq, seq, Heads, HeadDim);
 
-            // O projection: xNorm = Sgemm(AttnOut, O)
-            backend.Sgemm(ws.XNorm, ws.AttnOut, lw.OWeight, seq, Dim, Dim);
+                // O projection: xNorm = Sgemm(AttnOut, O)
+                backend.Sgemm(ws.XNorm, ws.AttnOut, lw.OWeight, seq, Dim, Dim);
 
-            // Residual add: X += XNorm
-            backend.AddInPlace(ws.X, ws.XNorm);
+                // Residual add: X += XNorm
+                backend.AddInPlace(ws.X, ws.XNorm);
 
-            // ── Feed-Forward Sub-layer ──
-            // Pre-norm: xNorm = RmsNorm(x, ln1, eps=1e-6)
-            backend.RmsNormBatched(ws.XNorm, ws.X, lw.LayerNorm1Weight, Dim, seq, eps: 1e-6f);
+                // ── Feed-Forward Sub-layer ──
+                // Pre-norm: xNorm = RmsNorm(x, ln1, eps=1e-6)
+                backend.RmsNormBatched(ws.XNorm, ws.X, lw.LayerNorm1Weight, Dim, seq, eps: 1e-6f);
 
-            // wi_0, wi_1 up-projections: [seq, Dim] -> [seq, FfDim]
-            backend.Sgemm(ws.Gate, ws.XNorm, lw.Wi0Weight, seq, Dim, FfDim);
-            backend.Sgemm(ws.Val, ws.XNorm, lw.Wi1Weight, seq, Dim, FfDim);
+                // wi_0, wi_1 up-projections: [seq, Dim] -> [seq, FfDim]
+                backend.Sgemm(ws.Gate, ws.XNorm, lw.Wi0Weight, seq, Dim, FfDim);
+                backend.Sgemm(ws.Val, ws.XNorm, lw.Wi1Weight, seq, Dim, FfDim);
 
-            // Gated GELU: gate = gelu_new(gate) * val
-            backend.GeluTanhMul(ws.Gate, ws.Val);
+                // Gated GELU: gate = gelu_new(gate) * val
+                backend.GeluTanhMul(ws.Gate, ws.Val);
 
-            // Down-projection: FfOut = Sgemm(Gate, wo)
-            backend.Sgemm(ws.FfOut, ws.Gate, lw.WoWight, seq, FfDim, Dim);
+                // Down-projection: FfOut = Sgemm(Gate, wo)
+                backend.Sgemm(ws.FfOut, ws.Gate, lw.WoWight, seq, FfDim, Dim);
 
-            // Residual add: X += FfOut
-            backend.AddInPlace(ws.X, ws.FfOut);
+                // Residual add: X += FfOut
+                backend.AddInPlace(ws.X, ws.FfOut);
+            }
+            imageOps?.EndBatch();
         }
 
         // 3. Final LayerNorm

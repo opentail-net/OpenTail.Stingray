@@ -130,18 +130,38 @@ public sealed class UMT5Encoder : IDisposable
             backend.AddInPlace(ws.X, xInit);
         }
 
-        // 2. 24 Transformer Blocks with layer-by-layer weight streaming.
+        // 2. 24 Transformer Blocks with layer-by-layer weight streaming / batching.
         bool hasGpuWeights = _gpuWeights != null;
-        for (int i = 0; i < Layers; i++)
+        var imageOps = backend as IImageOpsBackend;
+        if (hasGpuWeights)
         {
-            var lw = hasGpuWeights ? _gpuWeights!.Layers[i] : new UMT5GpuWeights.UMT5LayerGpuWeights(backend, _st.ReadF32, i, Dim, FfDim);
-            try
+            const int chunkLayers = 4;
+            for (int i = 0; i < Layers; i += chunkLayers)
             {
-                ExecuteLayerGpu(ws, lw, i, seq, backend);
+                imageOps?.BeginBatch();
+                int end = Math.Min(i + chunkLayers, Layers);
+                for (int l = i; l < end; l++)
+                {
+                    ExecuteLayerGpu(ws, _gpuWeights!.Layers[l], l, seq, backend);
+                }
+                imageOps?.EndBatch();
             }
-            finally
+        }
+        else
+        {
+            for (int i = 0; i < Layers; i++)
             {
-                if (!hasGpuWeights) lw.Dispose();
+                var lw = new UMT5GpuWeights.UMT5LayerGpuWeights(backend, _st.ReadF32, i, Dim, FfDim);
+                try
+                {
+                    imageOps?.BeginBatch();
+                    ExecuteLayerGpu(ws, lw, i, seq, backend);
+                    imageOps?.EndBatch();
+                }
+                finally
+                {
+                    lw.Dispose();
+                }
             }
         }
 
@@ -211,17 +231,39 @@ public sealed class UMT5Encoder : IDisposable
 
         // 3. 24 Transformer Blocks - stream each layer ONCE for both sequences
         bool hasGpuWeights = _gpuWeights != null;
-        for (int i = 0; i < Layers; i++)
+        var imageOps = backend as IImageOpsBackend;
+        if (hasGpuWeights)
         {
-            var lw = hasGpuWeights ? _gpuWeights!.Layers[i] : new UMT5GpuWeights.UMT5LayerGpuWeights(backend, _st.ReadF32, i, Dim, FfDim);
-            try
+            const int chunkLayers = 4;
+            for (int i = 0; i < Layers; i += chunkLayers)
             {
-                ExecuteLayerGpu(wsCond, lw, i, seqCond, backend);
-                ExecuteLayerGpu(wsUncond, lw, i, seqUncond, backend);
+                imageOps?.BeginBatch();
+                int end = Math.Min(i + chunkLayers, Layers);
+                for (int l = i; l < end; l++)
+                {
+                    var lw = _gpuWeights!.Layers[l];
+                    ExecuteLayerGpu(wsCond, lw, l, seqCond, backend);
+                    ExecuteLayerGpu(wsUncond, lw, l, seqUncond, backend);
+                }
+                imageOps?.EndBatch();
             }
-            finally
+        }
+        else
+        {
+            for (int i = 0; i < Layers; i++)
             {
-                if (!hasGpuWeights) lw.Dispose();
+                var lw = new UMT5GpuWeights.UMT5LayerGpuWeights(backend, _st.ReadF32, i, Dim, FfDim);
+                try
+                {
+                    imageOps?.BeginBatch();
+                    ExecuteLayerGpu(wsCond, lw, i, seqCond, backend);
+                    ExecuteLayerGpu(wsUncond, lw, i, seqUncond, backend);
+                    imageOps?.EndBatch();
+                }
+                finally
+                {
+                    lw.Dispose();
+                }
             }
         }
 

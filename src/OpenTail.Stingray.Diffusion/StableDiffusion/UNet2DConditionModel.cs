@@ -17,12 +17,25 @@ public sealed class UNet2DConditionModel : IDisposable
     // identical fields in SdxlUNet2DConditionModel/VaeDecoder.
     private readonly Dictionary<string, CoreTensor>? _gpuWeightsNative;
     private readonly IImageOpsBackend? _imageOps;
+    private readonly Dictionary<float[], CoreTensor> _cachedContextGpu = new(ReferenceEqualityComparer.Instance);
 
     private const int ModelChannels = 320;
     private const int TimeEmbedDim = 1280;
     private const int ContextDim = 768;
     private const int NumHeads = 8;
     private const int MaxColChunkFloats = 8 * 1024 * 1024; // 32MB im2col buffer chunk
+
+    public void ClearContextCache()
+    {
+        lock (_cachedContextGpu)
+        {
+            if (_imageOps is not null)
+            {
+                foreach (var t in _cachedContextGpu.Values) _imageOps.Free(t);
+            }
+            _cachedContextGpu.Clear();
+        }
+    }
 
     public UNet2DConditionModel(IWeightLoader weights, string prefix = "model.diffusion_model.", IComputeBackend? backend = null)
     {
@@ -475,7 +488,15 @@ public sealed class UNet2DConditionModel : IDisposable
         int h = latH, w = latW;
 
         // Pre-upload all host inputs and residuals BEFORE BeginBatch() so that no transfer commands interrupt recording
-        var contextGpu = imageOps.Upload(context.AsSpan(0, 77 * ContextDim), TensorShape.D1(77 * ContextDim));
+        CoreTensor contextGpu;
+        lock (_cachedContextGpu)
+        {
+            if (!_cachedContextGpu.TryGetValue(context, out contextGpu!))
+            {
+                contextGpu = imageOps.Upload(context.AsSpan(0, 77 * ContextDim), TensorShape.D1(77 * ContextDim));
+                _cachedContextGpu[context] = contextGpu;
+            }
+        }
         var tEmbGpu = UploadSiluTEmb(imageOps, tEmb);
         var xGpu = imageOps.Upload(x.AsSpan(0, 4 * h * w), TensorShape.D1(4 * h * w));
 
@@ -671,7 +692,6 @@ public sealed class UNet2DConditionModel : IDisposable
             var finalOut = ConvGpuTensor(imageOps, "out.2", finalNorm, 320, h, w, 4, 3);
             imageOps.Free(finalNorm);
 
-            imageOps.Free(contextGpu);
             imageOps.Free(tEmbGpu);
 
             var recordMs = swRecord.ElapsedMilliseconds;
@@ -688,7 +708,6 @@ public sealed class UNet2DConditionModel : IDisposable
             {
                 try { imageOps.EndBatch(); } catch { }
                 imageOps.Free(xGpu);
-                imageOps.Free(contextGpu);
                 imageOps.Free(tEmbGpu);
                 if (controlDownGpu is not null)
                 {
@@ -1259,6 +1278,7 @@ public sealed class UNet2DConditionModel : IDisposable
 
     public void Dispose()
     {
+        ClearContextCache();
         if (_gpuWeights is not null)
         {
             foreach (var t in _gpuWeights.Values) _backend!.Free(t);
