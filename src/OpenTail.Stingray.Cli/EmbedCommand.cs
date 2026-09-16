@@ -170,7 +170,7 @@ public sealed class EmbedCommand : Command<EmbedCommand.Settings>
 
         using var engine = new EmbeddingEngine(
             modelName: s.Model,
-            embeddingDimensions: s.Dimensions ?? 1536,
+            embeddingDimensions: s.Dimensions,
             defaultPooling: pooling);
 
         Console.WriteLine($"Dense Text Embedding Generation ({engine.ModelName})");

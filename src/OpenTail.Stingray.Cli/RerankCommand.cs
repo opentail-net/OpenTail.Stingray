@@ -12,7 +12,7 @@ public sealed class RerankCommand : Command<RerankCommand.Settings>
 
         [CommandOption("-d|--doc|--document <TEXT>")]
         [Description("Candidate document string (can be specified multiple times).")]
-        public string? Document { get; init; }
+        public string[]? Document { get; init; }
 
         [CommandOption("-f|--file <PATH>")]
         [Description("Optional file containing candidate documents (one per line).")]
@@ -41,9 +41,9 @@ public sealed class RerankCommand : Command<RerankCommand.Settings>
 
         List<string> docs = [];
 
-        if (!string.IsNullOrWhiteSpace(s.Document))
+        if (s.Document != null && s.Document.Length > 0)
         {
-            docs.Add(s.Document);
+            docs.AddRange(s.Document.Where(d => !string.IsNullOrWhiteSpace(d)));
         }
 
         if (!string.IsNullOrWhiteSpace(s.FilePath) && File.Exists(s.FilePath))

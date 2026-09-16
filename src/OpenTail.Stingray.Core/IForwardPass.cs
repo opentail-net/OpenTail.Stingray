@@ -75,6 +75,22 @@ public interface IForwardPass : IDisposable, IThreadAffineBackend
             "Check SupportsEmbeddingInput before calling.");
 
     /// <summary>
+    /// Whether this pass implements <see cref="ExtractHiddenStates"/> for dense embedding models.
+    /// Defaults to <c>false</c>.
+    /// </summary>
+    bool SupportsHiddenStateExtraction => false;
+
+    /// <summary>
+    /// Evaluates the transformer trunk over a sequence of prompt tokens and writes all per-token
+    /// post-final-norm hidden states (length = tokens.Count * EmbeddingDim) into destination.
+    /// Used for embedding generation, feature extraction, and representation learning.
+    /// </summary>
+    void ExtractHiddenStates(IReadOnlyList<int> tokens, Span<float> destination) =>
+        throw new NotSupportedException(
+            $"{GetType().Name} does not implement ExtractHiddenStates. " +
+            "Check SupportsHiddenStateExtraction before calling.");
+
+    /// <summary>
     /// Truncate the KV cache to the given length, discarding positions &gt;= length.
     /// Used by speculative decoding to rewind rejected draft tokens.
     /// <para>

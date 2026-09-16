@@ -1081,6 +1081,34 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
     /// </summary>
     public ReadOnlySpan<float> LastHidden => new(_hidden, _embDim);
 
+    /// <inheritdoc />
+    public bool SupportsHiddenStateExtraction => true;
+
+    /// <inheritdoc />
+    public void ExtractHiddenStates(IReadOnlyList<int> tokens, Span<float> destination)
+    {
+        int N = tokens.Count;
+        if (N == 0) return;
+        if (destination.Length < N * _embDim)
+            throw new ArgumentException($"Destination length ({destination.Length}) must be at least {N * _embDim} (tokens: {N}, embDim: {_embDim})", nameof(destination));
+
+        bool moeUnsupported = _hp.IsMoE && !MoeBatchedPrefillSupported;
+        bool unweightedNormUnsupported = _usesUnweightedNorm;
+        if (N == 1 || moeUnsupported || unweightedNormUnsupported || _tqKvCache != null)
+        {
+            for (int i = 0; i < N; i++)
+            {
+                _ = Forward(tokens[i], i);
+                LastHidden.CopyTo(destination.Slice(i * _embDim, _embDim));
+            }
+            ResetKvCache();
+            return;
+        }
+
+        PrefillCore(tokens, _kvCache, startPos: 0, outAllHiddenStates: destination[..(N * _embDim)]);
+        ResetKvCache();
+    }
+
     /// <summary>
     /// Truncate the KV cache to the given length, discarding positions >= length.
     /// Used by speculative decoding to rewind rejected draft tokens.

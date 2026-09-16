@@ -1,10 +1,13 @@
+using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Core.Embeddings;
+using OpenTail.Stingray.Cpu;
 
 namespace OpenTail.Stingray.Engine;
 
 /// <summary>
 /// High-performance native embedding generation and cross-encoder reranking engine.
 /// Supports Mean, CLS, LastToken pooling, Matryoshka representation learning, and L2 normalization.
+/// Automatically loads GGUF embedding models for real forward-pass execution.
 /// </summary>
 public sealed class EmbeddingEngine : IEmbeddingPipeline, IRerankerPipeline
 {
@@ -13,6 +16,9 @@ public sealed class EmbeddingEngine : IEmbeddingPipeline, IRerankerPipeline
     private readonly PoolingType _defaultPooling;
     private readonly ITokenizer? _tokenizer;
     private readonly IInferenceEngine? _engine;
+    private readonly IForwardPass? _forwardPass;
+    private readonly bool _addEosToken;
+    private readonly List<IDisposable> _ownedDisposables = [];
 
     public string ModelName => _modelName;
     public int EmbeddingDimensions => _embeddingDimensions;
@@ -20,16 +26,79 @@ public sealed class EmbeddingEngine : IEmbeddingPipeline, IRerankerPipeline
 
     public EmbeddingEngine(
         string modelName = "text-embedding-3-small",
-        int embeddingDimensions = 1536,
+        int? embeddingDimensions = null,
         PoolingType defaultPooling = PoolingType.Mean,
         ITokenizer? tokenizer = null,
-        IInferenceEngine? engine = null)
+        IInferenceEngine? engine = null,
+        IForwardPass? forwardPass = null)
     {
-        _modelName = modelName;
-        _embeddingDimensions = embeddingDimensions;
         _defaultPooling = defaultPooling;
-        _tokenizer = tokenizer;
         _engine = engine;
+
+        if (forwardPass != null)
+        {
+            _forwardPass = forwardPass;
+            _tokenizer = tokenizer;
+            _embeddingDimensions = embeddingDimensions ?? 1536;
+            _modelName = modelName;
+            return;
+        }
+
+        if (File.Exists(modelName))
+        {
+            try
+            {
+                var model = GgufModel.Open(modelName);
+                _ownedDisposables.Add(model);
+
+                var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+                _tokenizer = GgufTokenizer.FromGgufModel(model);
+
+                if (model.Metadata.TryGetValue("tokenizer.ggml.add_eos_token", out var addEosObj))
+                {
+                    _addEosToken = Convert.ToBoolean(addEosObj, System.Globalization.CultureInfo.InvariantCulture);
+                }
+
+                // Auto-detect pooling type from GGUF metadata if available
+                PoolingType resolvedPooling = defaultPooling;
+                foreach (var (k, v) in model.Metadata)
+                {
+                    if (k.EndsWith(".pooling_type", StringComparison.OrdinalIgnoreCase))
+                    {
+                        int pt = Convert.ToInt32(v, System.Globalization.CultureInfo.InvariantCulture);
+                        resolvedPooling = pt switch
+                        {
+                            1 => PoolingType.Mean,
+                            2 => PoolingType.Cls,
+                            3 => PoolingType.LastToken,
+                            _ => defaultPooling
+                        };
+                        break;
+                    }
+                }
+                _defaultPooling = resolvedPooling;
+
+                var cpuBackend = new CpuBackend();
+                _ownedDisposables.Add(cpuBackend);
+
+                var fwd = new ForwardPass(model, cpuBackend, hp);
+                _ownedDisposables.Add(fwd);
+                _forwardPass = fwd;
+
+                _embeddingDimensions = embeddingDimensions ?? hp.EmbeddingDim;
+                _modelName = Path.GetFileName(modelName);
+                return;
+            }
+            catch
+            {
+                Dispose();
+                throw;
+            }
+        }
+
+        _modelName = modelName;
+        _embeddingDimensions = embeddingDimensions ?? 1536;
+        _tokenizer = tokenizer;
     }
 
     /// <summary>
@@ -49,11 +118,42 @@ public sealed class EmbeddingEngine : IEmbeddingPipeline, IRerankerPipeline
         for (int i = 0; i < request.Inputs.Count; i++)
         {
             string text = request.Inputs[i];
-            int tokenCount = Math.Max(1, text.Length / 4);
-            totalTokens += tokenCount;
+            float[] vector;
+            int tokenCount;
 
-            // Generate deterministic embeddings from token sequence representations
-            float[] vector = ComputeEmbeddingVector(text, tokenCount, pooling);
+            if (_forwardPass != null && _tokenizer != null)
+            {
+                var tokenList = _tokenizer.Encode(text).ToList();
+                if (tokenList.Count == 0)
+                {
+                    int bos = _tokenizer.BosTokenId;
+                    tokenList = bos >= 0 ? [bos] : [0];
+                }
+                else
+                {
+                    if (_tokenizer.AddBosToken && _tokenizer.BosTokenId >= 0 && tokenList[0] != _tokenizer.BosTokenId)
+                    {
+                        tokenList.Insert(0, _tokenizer.BosTokenId);
+                    }
+                    if (_addEosToken && _tokenizer.EosTokenId >= 0 && tokenList[^1] != _tokenizer.EosTokenId)
+                    {
+                        tokenList.Add(_tokenizer.EosTokenId);
+                    }
+                }
+                tokenCount = tokenList.Count;
+                totalTokens += tokenCount;
+
+                float[] hiddenStates = new float[tokenCount * _embeddingDimensions];
+                _forwardPass.ExtractHiddenStates(tokenList, hiddenStates);
+
+                vector = EmbeddingNormalizer.ApplyPooling(hiddenStates, tokenCount, _embeddingDimensions, pooling);
+            }
+            else
+            {
+                tokenCount = Math.Max(1, text.Length / 4);
+                totalTokens += tokenCount;
+                vector = ComputeEmbeddingVector(text, tokenCount, pooling);
+            }
 
             // Matryoshka dimension truncation
             if (request.Dimensions.HasValue && request.Dimensions.Value > 0 && request.Dimensions.Value < vector.Length)
@@ -169,6 +269,12 @@ public sealed class EmbeddingEngine : IEmbeddingPipeline, IRerankerPipeline
 
     public void Dispose()
     {
+        for (int i = _ownedDisposables.Count - 1; i >= 0; i--)
+        {
+            try { _ownedDisposables[i].Dispose(); } catch { }
+        }
+        _ownedDisposables.Clear();
+
         if (_engine is IDisposable disposableEngine)
         {
             disposableEngine.Dispose();

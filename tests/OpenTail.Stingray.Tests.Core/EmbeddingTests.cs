@@ -134,4 +134,68 @@ public sealed class EmbeddingTests
         Assert.InRange(result.Results[0].RelevanceScore, 0.0f, 1.0f);
         Assert.NotNull(result.Results[0].Document);
     }
+
+    [Fact]
+    public void EmbeddingEngine_RealGgufModel_GeneratesSemanticEmbeddings()
+    {
+        string ggufPath = Path.Combine("models", "qwen3-embedding-0.6b", "qwen3-embedding-0.6b-q8_0.gguf");
+        if (!File.Exists(ggufPath))
+        {
+            // Skip when fixture is absent
+            return;
+        }
+
+        using var engine = new EmbeddingEngine(modelName: ggufPath);
+        Assert.Equal(1024, engine.EmbeddingDimensions);
+
+        var req = new EmbeddingRequest
+        {
+            Inputs =
+            [
+                "What is retrieval-augmented generation?",
+                "Vector database indexing and semantic search",
+                "How to bake chocolate chip cookies"
+            ],
+            Normalize = true
+        };
+
+        var result = engine.Embed(req);
+        Assert.Equal(3, result.Data.Count);
+
+        var v0 = result.Data[0].Vector;
+        var v1 = result.Data[1].Vector;
+        var v2 = result.Data[2].Vector;
+
+        // Semantic check: RAG query should be much closer to Vector DB query than to Cookie recipe
+        float simTech = EmbeddingNormalizer.CosineSimilarity(v0, v1);
+        float simCooking = EmbeddingNormalizer.CosineSimilarity(v0, v2);
+
+        Assert.True(simTech > simCooking, $"Expected simTech ({simTech:F4}) > simCooking ({simCooking:F4})");
+    }
+
+    [Fact]
+    public void EmbeddingEngine_RealGgufModel_SupportsMatryoshkaTruncation()
+    {
+        string ggufPath = Path.Combine("models", "qwen3-embedding-0.6b", "qwen3-embedding-0.6b-q8_0.gguf");
+        if (!File.Exists(ggufPath))
+        {
+            return;
+        }
+
+        using var engine = new EmbeddingEngine(modelName: ggufPath);
+
+        var req = new EmbeddingRequest
+        {
+            Inputs = ["High performance SIMD computing in .NET"],
+            Dimensions = 256,
+            Normalize = true
+        };
+
+        var result = engine.Embed(req);
+        Assert.Single(result.Data);
+        Assert.Equal(256, result.Data[0].Vector.Length);
+
+        float normSq = TensorPrimitives.Dot(result.Data[0].Vector, result.Data[0].Vector);
+        Assert.InRange(MathF.Sqrt(normSq), 0.999f, 1.001f);
+    }
 }

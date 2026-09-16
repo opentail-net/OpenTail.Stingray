@@ -7,7 +7,8 @@ namespace OpenTail.Stingray.Engine;
 public sealed unsafe partial class ForwardPass
 {
     private ReadOnlySpan<float> PrefillCore(IReadOnlyList<int> tokens, PagedKvCache cache, int startPos,
-        PositionLogitsCallback? onAllPositionLogits = null, Predicate<int>? positionFilter = null)
+        PositionLogitsCallback? onAllPositionLogits = null, Predicate<int>? positionFilter = null,
+        Span<float> outAllHiddenStates = default)
     {
         int N = tokens.Count;
 
@@ -633,6 +634,21 @@ public sealed unsafe partial class ForwardPass
                     SimdKernels.PureLayerNorm(dest, src, _embDim, _hp.RmsNormEps);
                 else
                     FastNorm(dest, src, outNormW, outNormB, _embDim, _hp.RmsNormEps);
+            }
+
+            if (!outAllHiddenStates.IsEmpty)
+            {
+                for (int n = 0; n < N; n++)
+                {
+                    float* hn = batchHidden + (long)n * _embDim;
+                    ApplyFinalNorm(hn, hn);
+                }
+                fixed (float* dst = outAllHiddenStates)
+                {
+                    Copy(dst, batchHidden, N * _embDim);
+                }
+                Copy(_hidden, batchHidden + (long)(N - 1) * _embDim, _embDim);
+                return ReadOnlySpan<float>.Empty;
             }
 
             if (onAllPositionLogits != null)
