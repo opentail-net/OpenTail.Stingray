@@ -4189,6 +4189,197 @@ internal static class Shaders
         """;
 
     /// <summary>
+    /// Matrix-vector multiply with raw IQ3_S dequantization (docs/084-vulkan-large-tensor-
+    /// sharding-plan.md, Follow-up 7 — the second-largest F16-fallback contributor after
+    /// IQ4_XS). Same proven 8-rows/32-threads-per-row/shared-memory-tree-reduction topology as
+    /// <see cref="MatVecQ4K"/>/<see cref="MatVecIQ4XS"/> (NOT subgroupAdd — see MatVecIQ4XS's
+    /// remarks for why on this fixed-64-lane-subgroup device).
+    ///
+    /// IQ3_S block (256 elements / 110 bytes), matching <c>Dequantize.DecodeIq3SBlock</c>
+    /// bit-for-bit:
+    ///   bytes 0:1     d (FP16, super-block scale)
+    ///   bytes 2:65    qs[64] (grid indices, low 8 bits; a 9th bit comes from qh)
+    ///   bytes 66:73   qh[8] (2 bits/index-pair, sign-extended into the grid index)
+    ///   bytes 74:105  signs[32] (8 sign bits per 8-element half-group)
+    ///   bytes 106:109 scales[4] (4-bit nibble per 32-element group, linear: 1+2*nibble)
+    ///
+    /// Each of the 32 lanes in a row owns one contiguous 8-element group (lane == the CPU
+    /// decoder's flat group-visitation index, 0..31); within a lane's group, elements 0..3 come
+    /// from one 512-entry grid lookup and elements 4..7 from a second, each grid entry packing 4
+    /// UNSIGNED magnitude bytes with sign applied separately via the sign-mask byte (mirrors the
+    /// CPU decoder's <c>(byte)(grid1 >> (8*j))</c> — deliberately not sign-extended).
+    /// <paramref name="cols"/> must be a multiple of 256.
+    ///
+    /// Push constants: { uint rows, uint cols }.
+    /// Bindings: 0=quantized weights (uint8 via uint32[]), 1=input[cols], 2=output[rows].
+    /// </summary>
+    internal const string MatVecIQ3S = """
+        #version 450
+        #extension GL_EXT_control_flow_attributes : enable
+
+        #define N_ROWS 8
+        #define THREADS_PER_ROW 32
+
+        layout(local_size_x = 256) in;
+
+        layout(binding = 0) readonly buffer Weights { uint weight_data[]; };
+        layout(binding = 1) readonly buffer Input   { float input_data[]; };
+        layout(binding = 2) writeonly buffer Output  { float output_data[]; };
+
+        layout(push_constant) uniform Params {
+            uint rows;
+            uint cols;
+        };
+
+        // ggml iq3s_grid (IqCodebooks.Iq3SGrid in C#) — 512 entries, 4 packed unsigned magnitude
+        // bytes each. Generated mechanically from the C# source (do not hand-edit; regenerate
+        // from IqCodebooks.Iq3SGrid if that table ever changes).
+        const uint IQ3S_GRID[512] = uint[](
+                0x01010101U, 0x01010103U, 0x01010105U, 0x0101010bU, 0x0101010fU, 0x01010301U, 0x01010303U, 0x01010305U,
+                0x01010309U, 0x0101030dU, 0x01010501U, 0x01010503U, 0x0101050bU, 0x01010707U, 0x01010901U, 0x01010905U,
+                0x0101090bU, 0x0101090fU, 0x01010b03U, 0x01010b07U, 0x01010d01U, 0x01010d05U, 0x01010f03U, 0x01010f09U,
+                0x01010f0fU, 0x01030101U, 0x01030103U, 0x01030105U, 0x01030109U, 0x01030301U, 0x01030303U, 0x0103030bU,
+                0x01030501U, 0x01030507U, 0x0103050fU, 0x01030703U, 0x0103070bU, 0x01030909U, 0x01030d03U, 0x01030d0bU,
+                0x01030f05U, 0x01050101U, 0x01050103U, 0x0105010bU, 0x0105010fU, 0x01050301U, 0x01050307U, 0x0105030dU,
+                0x01050503U, 0x0105050bU, 0x01050701U, 0x01050709U, 0x01050905U, 0x0105090bU, 0x0105090fU, 0x01050b03U,
+                0x01050b07U, 0x01050f01U, 0x01050f07U, 0x01070107U, 0x01070303U, 0x0107030bU, 0x01070501U, 0x01070505U,
+                0x01070703U, 0x01070707U, 0x0107070dU, 0x01070909U, 0x01070b01U, 0x01070b05U, 0x01070d0fU, 0x01070f03U,
+                0x01070f0bU, 0x01090101U, 0x01090307U, 0x0109030fU, 0x01090503U, 0x01090509U, 0x01090705U, 0x01090901U,
+                0x01090907U, 0x01090b03U, 0x01090f01U, 0x010b0105U, 0x010b0109U, 0x010b0501U, 0x010b0505U, 0x010b050dU,
+                0x010b0707U, 0x010b0903U, 0x010b090bU, 0x010b090fU, 0x010b0d0dU, 0x010b0f07U, 0x010d010dU, 0x010d0303U,
+                0x010d0307U, 0x010d0703U, 0x010d0b05U, 0x010d0f03U, 0x010f0101U, 0x010f0105U, 0x010f0109U, 0x010f0501U,
+                0x010f0505U, 0x010f050dU, 0x010f0707U, 0x010f0b01U, 0x010f0b09U, 0x03010101U, 0x03010103U, 0x03010105U,
+                0x03010109U, 0x03010301U, 0x03010303U, 0x03010307U, 0x0301030bU, 0x0301030fU, 0x03010501U, 0x03010505U,
+                0x03010703U, 0x03010709U, 0x0301070dU, 0x03010b09U, 0x03010b0dU, 0x03010d03U, 0x03010f05U, 0x03030101U,
+                0x03030103U, 0x03030107U, 0x0303010dU, 0x03030301U, 0x03030309U, 0x03030503U, 0x03030701U, 0x03030707U,
+                0x03030903U, 0x03030b01U, 0x03030b05U, 0x03030f01U, 0x03030f0dU, 0x03050101U, 0x03050305U, 0x0305030bU,
+                0x0305030fU, 0x03050501U, 0x03050509U, 0x03050705U, 0x03050901U, 0x03050907U, 0x03050b0bU, 0x03050d01U,
+                0x03050f05U, 0x03070103U, 0x03070109U, 0x0307010fU, 0x03070301U, 0x03070307U, 0x03070503U, 0x0307050fU,
+                0x03070701U, 0x03070709U, 0x03070903U, 0x03070d05U, 0x03070f01U, 0x03090107U, 0x0309010bU, 0x03090305U,
+                0x03090309U, 0x03090703U, 0x03090707U, 0x03090905U, 0x0309090dU, 0x03090b01U, 0x03090b09U, 0x030b0103U,
+                0x030b0301U, 0x030b0307U, 0x030b0503U, 0x030b0701U, 0x030b0705U, 0x030b0b03U, 0x030d0501U, 0x030d0509U,
+                0x030d050fU, 0x030d0909U, 0x030d090dU, 0x030f0103U, 0x030f0107U, 0x030f0301U, 0x030f0305U, 0x030f0503U,
+                0x030f070bU, 0x030f0903U, 0x030f0d05U, 0x030f0f01U, 0x05010101U, 0x05010103U, 0x05010107U, 0x0501010bU,
+                0x0501010fU, 0x05010301U, 0x05010305U, 0x05010309U, 0x0501030dU, 0x05010503U, 0x05010507U, 0x0501050fU,
+                0x05010701U, 0x05010705U, 0x05010903U, 0x05010907U, 0x0501090bU, 0x05010b01U, 0x05010b05U, 0x05010d0fU,
+                0x05010f01U, 0x05010f07U, 0x05010f0bU, 0x05030101U, 0x05030105U, 0x05030301U, 0x05030307U, 0x0503030fU,
+                0x05030505U, 0x0503050bU, 0x05030703U, 0x05030709U, 0x05030905U, 0x05030b03U, 0x05050103U, 0x05050109U,
+                0x0505010fU, 0x05050503U, 0x05050507U, 0x05050701U, 0x0505070fU, 0x05050903U, 0x05050b07U, 0x05050b0fU,
+                0x05050f03U, 0x05050f09U, 0x05070101U, 0x05070105U, 0x0507010bU, 0x05070303U, 0x05070505U, 0x05070509U,
+                0x05070703U, 0x05070707U, 0x05070905U, 0x05070b01U, 0x05070d0dU, 0x05090103U, 0x0509010fU, 0x05090501U,
+                0x05090507U, 0x05090705U, 0x0509070bU, 0x05090903U, 0x05090f05U, 0x05090f0bU, 0x050b0109U, 0x050b0303U,
+                0x050b0505U, 0x050b070fU, 0x050b0901U, 0x050b0b07U, 0x050b0f01U, 0x050d0101U, 0x050d0105U, 0x050d010fU,
+                0x050d0503U, 0x050d0b0bU, 0x050d0d03U, 0x050f010bU, 0x050f0303U, 0x050f050dU, 0x050f0701U, 0x050f0907U,
+                0x050f0b01U, 0x07010105U, 0x07010303U, 0x07010307U, 0x0701030bU, 0x0701030fU, 0x07010505U, 0x07010703U,
+                0x07010707U, 0x0701070bU, 0x07010905U, 0x07010909U, 0x0701090fU, 0x07010b03U, 0x07010d07U, 0x07010f03U,
+                0x07030103U, 0x07030107U, 0x0703010bU, 0x07030309U, 0x07030503U, 0x07030507U, 0x07030901U, 0x07030d01U,
+                0x07030f05U, 0x07030f0dU, 0x07050101U, 0x07050305U, 0x07050501U, 0x07050705U, 0x07050709U, 0x07050b01U,
+                0x07070103U, 0x07070301U, 0x07070309U, 0x07070503U, 0x07070507U, 0x0707050fU, 0x07070701U, 0x07070903U,
+                0x07070907U, 0x0707090fU, 0x07070b0bU, 0x07070f07U, 0x07090107U, 0x07090303U, 0x0709030dU, 0x07090505U,
+                0x07090703U, 0x07090b05U, 0x07090d01U, 0x07090d09U, 0x070b0103U, 0x070b0301U, 0x070b0305U, 0x070b050bU,
+                0x070b0705U, 0x070b0909U, 0x070b0b0dU, 0x070b0f07U, 0x070d030dU, 0x070d0903U, 0x070f0103U, 0x070f0107U,
+                0x070f0501U, 0x070f0505U, 0x070f070bU, 0x09010101U, 0x09010109U, 0x09010305U, 0x09010501U, 0x09010509U,
+                0x0901050fU, 0x09010705U, 0x09010903U, 0x09010b01U, 0x09010f01U, 0x09030105U, 0x0903010fU, 0x09030303U,
+                0x09030307U, 0x09030505U, 0x09030701U, 0x0903070bU, 0x09030907U, 0x09030b03U, 0x09030b0bU, 0x09050103U,
+                0x09050107U, 0x09050301U, 0x0905030bU, 0x09050503U, 0x09050707U, 0x09050901U, 0x09050b0fU, 0x09050d05U,
+                0x09050f01U, 0x09070109U, 0x09070303U, 0x09070307U, 0x09070501U, 0x09070505U, 0x09070703U, 0x0907070bU,
+                0x09090101U, 0x09090105U, 0x09090509U, 0x0909070fU, 0x09090901U, 0x09090f03U, 0x090b010bU, 0x090b010fU,
+                0x090b0503U, 0x090b0d05U, 0x090d0307U, 0x090d0709U, 0x090d0d01U, 0x090f0301U, 0x090f030bU, 0x090f0701U,
+                0x090f0907U, 0x090f0b03U, 0x0b010105U, 0x0b010301U, 0x0b010309U, 0x0b010505U, 0x0b010901U, 0x0b010909U,
+                0x0b01090fU, 0x0b010b05U, 0x0b010d0dU, 0x0b010f09U, 0x0b030103U, 0x0b030107U, 0x0b03010bU, 0x0b030305U,
+                0x0b030503U, 0x0b030705U, 0x0b030f05U, 0x0b050101U, 0x0b050303U, 0x0b050507U, 0x0b050701U, 0x0b05070dU,
+                0x0b050b07U, 0x0b070105U, 0x0b07010fU, 0x0b070301U, 0x0b07050fU, 0x0b070909U, 0x0b070b03U, 0x0b070d0bU,
+                0x0b070f07U, 0x0b090103U, 0x0b090109U, 0x0b090501U, 0x0b090705U, 0x0b09090dU, 0x0b0b0305U, 0x0b0b050dU,
+                0x0b0b0b03U, 0x0b0b0b07U, 0x0b0d0905U, 0x0b0f0105U, 0x0b0f0109U, 0x0b0f0505U, 0x0d010303U, 0x0d010307U,
+                0x0d01030bU, 0x0d010703U, 0x0d010707U, 0x0d010d01U, 0x0d030101U, 0x0d030501U, 0x0d03050fU, 0x0d030d09U,
+                0x0d050305U, 0x0d050709U, 0x0d050905U, 0x0d050b0bU, 0x0d050d05U, 0x0d050f01U, 0x0d070101U, 0x0d070309U,
+                0x0d070503U, 0x0d070901U, 0x0d09050bU, 0x0d090907U, 0x0d090d05U, 0x0d0b0101U, 0x0d0b0107U, 0x0d0b0709U,
+                0x0d0b0d01U, 0x0d0d010bU, 0x0d0d0901U, 0x0d0f0303U, 0x0d0f0307U, 0x0f010101U, 0x0f010109U, 0x0f01010fU,
+                0x0f010501U, 0x0f010505U, 0x0f01070dU, 0x0f010901U, 0x0f010b09U, 0x0f010d05U, 0x0f030105U, 0x0f030303U,
+                0x0f030509U, 0x0f030907U, 0x0f03090bU, 0x0f050103U, 0x0f050109U, 0x0f050301U, 0x0f05030dU, 0x0f050503U,
+                0x0f050701U, 0x0f050b03U, 0x0f070105U, 0x0f070705U, 0x0f07070bU, 0x0f070b07U, 0x0f090103U, 0x0f09010bU,
+                0x0f090307U, 0x0f090501U, 0x0f090b01U, 0x0f0b0505U, 0x0f0b0905U, 0x0f0d0105U, 0x0f0d0703U, 0x0f0f0101U
+        );
+
+        const uint KMASK_IQ2XS[8] = uint[](1u, 2u, 4u, 8u, 16u, 32u, 64u, 128u);
+
+        shared float sdata[256];
+
+        // Reads one byte at an absolute byte offset into the weight buffer (blocks aren't
+        // 4-byte aligned, so this can't be a plain word index) — same pattern as the
+        // EmbedLookupQ3K/Q6K shaders' gByte helper.
+        uint load_u8(uint byteOffset) {
+            uint word = weight_data[byteOffset >> 2u];
+            return (word >> ((byteOffset & 3u) * 8u)) & 0xFFu;
+        }
+
+        void main() {
+            uint tid = gl_LocalInvocationID.x;
+            uint row_in_wg = tid / THREADS_PER_ROW;
+            uint lane = tid % THREADS_PER_ROW;
+            uint row = gl_WorkGroupID.x * N_ROWS + row_in_wg;
+            if (row >= rows) return;
+
+            uint num_blocks = cols >> 8u;              // cols / 256
+            const uint bytes_per_block = 110u;
+            uint byte_row_base = row * num_blocks * bytes_per_block;
+
+            // lane IS the CPU decoder's flat (ib32, half, l) group index (0..31): each lane
+            // decodes one 8-element group per block, elements [lane*8, lane*8+8).
+            uint combinedIdx = lane >> 2u;      // (ib32/2)*2+half, 0..7
+            uint l = lane & 3u;                 // 0..3
+            uint ib32Idx = combinedIdx >> 1u;   // 0..3 (scales[] index)
+            uint halfSel = combinedIdx & 1u;    // 0 or 1 (low/high scale nibble)
+
+            float acc = 0.0;
+            for (uint b = 0; b < num_blocks; b++) {
+                uint blockByteBase = byte_row_base + b * bytes_per_block;
+                uint inputBase = b * 256u + lane * 8u;
+
+                uint dByte0 = load_u8(blockByteBase + 0u);
+                uint dByte1 = load_u8(blockByteBase + 1u);
+                float d = unpackHalf2x16(dByte0 | (dByte1 << 8u)).x;
+
+                uint scaleByte = load_u8(blockByteBase + 106u + ib32Idx);
+                uint scaleNibble = (halfSel == 0u) ? (scaleByte & 0xFu) : (scaleByte >> 4u);
+                float db = d * (1.0 + 2.0 * float(scaleNibble));
+
+                uint qhByte = load_u8(blockByteBase + 66u + combinedIdx);
+                uint qsBase = 2u + combinedIdx * 8u;
+                uint qs1 = load_u8(blockByteBase + qsBase + 2u * l);
+                uint qs2 = load_u8(blockByteBase + qsBase + 2u * l + 1u);
+
+                uint gridIdx1 = qs1 | ((qhByte << (8u - 2u * l)) & 256u);
+                uint gridIdx2 = qs2 | ((qhByte << (7u - 2u * l)) & 256u);
+
+                uint grid1 = IQ3S_GRID[gridIdx1];
+                uint grid2 = IQ3S_GRID[gridIdx2];
+
+                uint signByte = load_u8(blockByteBase + 74u + combinedIdx * 4u + l);
+
+                [[unroll]] for (uint j = 0; j < 4u; j++) {
+                    uint mag1 = (grid1 >> (8u * j)) & 0xFFu;
+                    float sign1 = ((signByte & KMASK_IQ2XS[j]) != 0u) ? -1.0 : 1.0;
+                    acc += db * float(mag1) * sign1 * input_data[inputBase + j];
+
+                    uint mag2 = (grid2 >> (8u * j)) & 0xFFu;
+                    float sign2 = ((signByte & KMASK_IQ2XS[j + 4u]) != 0u) ? -1.0 : 1.0;
+                    acc += db * float(mag2) * sign2 * input_data[inputBase + 4u + j];
+                }
+            }
+
+            sdata[tid] = acc;
+            barrier();
+            [[unroll]] for (uint s = 16; s > 0; s >>= 1) {
+                if (lane < s) sdata[tid] += sdata[tid + s];
+                barrier();
+            }
+            if (lane == 0)
+                output_data[row] = sdata[tid];
+        }
+        """;
+
+    /// <summary>
     /// Batched (weight-stationary) matrix-vector multiply with Q4_K dequantization —
     /// the core weight-amortization for Vulkan speculative decoding (issue #308).
     ///

@@ -1534,6 +1534,7 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
     private ComputePipeline? _matVecF32Pipeline;
     private ComputePipeline? _matVecF16Pipeline;
     private ComputePipeline? _matVecIQ4XSPipeline;
+    private ComputePipeline? _matVecIQ3SPipeline;
     private ComputePipeline? _kvAppendPipeline;
     private ComputePipeline? _attentionPipeline;
     private ComputePipeline? _kvAppendBatchedPipeline;
@@ -2598,6 +2599,10 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
             case DType.IQ4_XS:
                 _matVecIQ4XSPipeline ??= new ComputePipeline(this, Shaders.MatVecIQ4XS, 3, pushConstantSize: sizeof(MatVecParams));
                 DispatchOrRecord(_matVecIQ4XSPipeline, bufs, (totalRows + 7) / 8, &p);
+                break;
+            case DType.IQ3_S:
+                _matVecIQ3SPipeline ??= new ComputePipeline(this, Shaders.MatVecIQ3S, 3, pushConstantSize: sizeof(MatVecParams));
+                DispatchOrRecord(_matVecIQ3SPipeline, bufs, (totalRows + 7) / 8, &p);
                 break;
             case DType.Q6_K:
                 _matVecQ6KPipeline ??= new ComputePipeline(this, Shaders.MatVecQ6K, 3, pushConstantSize: sizeof(MatVecParams));
@@ -4474,6 +4479,7 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
         _matVecF32Pipeline?.Dispose();
         _matVecF16Pipeline?.Dispose();
         _matVecIQ4XSPipeline?.Dispose();
+        _matVecIQ3SPipeline?.Dispose();
         _kvAppendPipeline?.Dispose();
         _attentionPipeline?.Dispose();
         _kvAppendBatchedPipeline?.Dispose();

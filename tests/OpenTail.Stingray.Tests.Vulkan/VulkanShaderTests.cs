@@ -580,6 +580,154 @@ public sealed unsafe class VulkanShaderTests : HeavyTestBase
         backend.Free(gpuOutput);
     }
 
+    // IQ3_S: 110 bytes/block = FP16 d + qs[64] + qh[8] + signs[32] + scales[4].
+    // Layout matches Dequantize's DecodeIq3SBlock. Any byte values are valid for
+    // qs/qh/signs/scales (the bit-unpack just reads them; qh's high bit extends qs into the
+    // 512-entry grid range). cols must be a multiple of 256.
+    private static byte[] BuildIQ3_S(int rows, int cols, int seed)
+    {
+        const int qk = 256, blockBytes = 110;
+        int blocksPerRow = cols / qk;
+        var bytes = new byte[rows * blocksPerRow * blockBytes];
+        var rng = new Random(seed);
+        int off = 0;
+        for (int b = 0; b < rows * blocksPerRow; b++)
+        {
+            PutHalf(bytes, off, (float)(rng.NextDouble() * 0.045 + 0.005)); // d
+            for (int j = 2; j < blockBytes; j++)                            // qs+qh+signs+scales
+                bytes[off + j] = (byte)rng.Next(0, 256);
+            off += blockBytes;
+        }
+        return bytes;
+    }
+
+    /// <summary>
+    /// docs/084-vulkan-large-tensor-sharding-plan.md, Follow-up 7: IQ3_S now has a native raw
+    /// Vulkan matvec kernel (<c>MatVecIQ3S</c>) instead of the F16-dequant-and-upload fallback —
+    /// the second-largest source of avoidable GPU memory expansion after IQ4_XS. Same shape as
+    /// <see cref="MatVecIQ4XsMatchesCpu"/>: rows=37 (tail workgroup), cols=512 (multi-block),
+    /// full weight×vector dot product against a CPU reference built from the same bytes via the
+    /// already-tested <c>Dequantize.ToFloat32</c>.
+    /// </summary>
+    [Fact]
+    public void MatVecIQ3SMatchesCpu()
+    {
+        using var backend = CreateBackendOrSkip();
+
+        const int matRows = 37;
+        const int matCols = 512;
+        var rawData = BuildIQ3_S(matRows, matCols, seed: 3358);
+
+        int totalElements = matRows * matCols;
+        var f32Weights = new float[totalElements];
+        OpenTail.Stingray.Cpu.Dequantize.ToFloat32(rawData, f32Weights, DType.IQ3_S, totalElements);
+
+        var rng = new Random(3359);
+        var input = new float[matCols];
+        for (int i = 0; i < matCols; i++) input[i] = (float)(rng.NextDouble() * 2 - 1);
+
+        var cpuOutput = new float[matRows];
+        for (int r = 0; r < matRows; r++)
+        {
+            float sum = 0;
+            for (int c = 0; c < matCols; c++)
+                sum += f32Weights[r * matCols + c] * input[c];
+            cpuOutput[r] = sum;
+        }
+
+        // Upload raw IQ3_S bytes as floats (reinterpret), exactly as UploadWeight now keeps
+        // IQ3_S raw in VRAM.
+        int floatCount = rawData.Length / 4;
+        var rawAsFloats = new float[floatCount];
+        System.Runtime.InteropServices.MemoryMarshal.Cast<byte, float>(rawData).CopyTo(rawAsFloats);
+        var gpuWeights = backend.Upload(rawAsFloats, TensorShape.D1(floatCount));
+        var gpuInput = backend.Upload(input, TensorShape.D1(matCols));
+        var gpuOutput = backend.Allocate(TensorShape.D1(matRows));
+
+        backend.MatMul(gpuOutput, gpuWeights, gpuInput, DType.IQ3_S);
+
+        var gpuResult = new float[matRows];
+        backend.Download(gpuOutput, gpuResult);
+
+        int mismatches = 0;
+        for (int i = 0; i < matRows; i++)
+        {
+            float diff = MathF.Abs(gpuResult[i] - cpuOutput[i]);
+            float relDiff = diff / (MathF.Abs(cpuOutput[i]) + 1e-6f);
+            if (relDiff > 0.01f)
+            {
+                if (mismatches < 5)
+                    Console.WriteLine($"  [{i}]: gpu={gpuResult[i]:F4} cpu={cpuOutput[i]:F4} rel={relDiff:P1}");
+                mismatches++;
+            }
+        }
+        Console.WriteLine($"MatVecIQ3S: {mismatches}/{matRows} mismatches (>1% rel error)");
+        Assert.Equal(0, mismatches);
+
+        backend.Free(gpuWeights);
+        backend.Free(gpuInput);
+        backend.Free(gpuOutput);
+    }
+
+    // docs/084-vulkan-large-tensor-sharding-plan.md, Follow-up 7: boundary check mirroring
+    // EmbedLookupQ3KBoundaryRowsMatchCpu — rows near a shard/index boundary the small 37-row
+    // test above might not exercise, plus a single-block (cols=256) shape.
+    [Fact]
+    public void MatVecIQ3SBoundaryRowsMatchCpu()
+    {
+        using var backend = CreateBackendOrSkip();
+
+        const int matRows = 40; // multiple of N_ROWS=8, but test rows near both ends anyway
+        const int matCols = 256; // single block
+        var rawData = BuildIQ3_S(matRows, matCols, seed: 33581);
+
+        int totalElements = matRows * matCols;
+        var f32Weights = new float[totalElements];
+        OpenTail.Stingray.Cpu.Dequantize.ToFloat32(rawData, f32Weights, DType.IQ3_S, totalElements);
+
+        var rng = new Random(33582);
+        var input = new float[matCols];
+        for (int i = 0; i < matCols; i++) input[i] = (float)(rng.NextDouble() * 2 - 1);
+
+        var cpuOutput = new float[matRows];
+        for (int r = 0; r < matRows; r++)
+        {
+            float sum = 0;
+            for (int c = 0; c < matCols; c++)
+                sum += f32Weights[r * matCols + c] * input[c];
+            cpuOutput[r] = sum;
+        }
+
+        int floatCount = rawData.Length / 4;
+        var rawAsFloats = new float[floatCount];
+        System.Runtime.InteropServices.MemoryMarshal.Cast<byte, float>(rawData).CopyTo(rawAsFloats);
+        var gpuWeights = backend.Upload(rawAsFloats, TensorShape.D1(floatCount));
+        var gpuInput = backend.Upload(input, TensorShape.D1(matCols));
+        var gpuOutput = backend.Allocate(TensorShape.D1(matRows));
+
+        backend.MatMul(gpuOutput, gpuWeights, gpuInput, DType.IQ3_S);
+
+        var gpuResult = new float[matRows];
+        backend.Download(gpuOutput, gpuResult);
+
+        int mismatches = 0;
+        foreach (int i in new[] { 0, 1, matRows / 2, matRows - 2, matRows - 1 })
+        {
+            float diff = MathF.Abs(gpuResult[i] - cpuOutput[i]);
+            float relDiff = diff / (MathF.Abs(cpuOutput[i]) + 1e-6f);
+            if (relDiff > 0.01f)
+            {
+                Console.WriteLine($"  [{i}]: gpu={gpuResult[i]:F4} cpu={cpuOutput[i]:F4} rel={relDiff:P1}");
+                mismatches++;
+            }
+        }
+        Assert.Equal(0, mismatches);
+
+        backend.Free(gpuWeights);
+        backend.Free(gpuInput);
+        backend.Free(gpuOutput);
+    }
+
     [Fact]
     public void MatVecQ6KMatchesCpu()
     {

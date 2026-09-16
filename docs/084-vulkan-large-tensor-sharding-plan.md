@@ -451,13 +451,71 @@ falls back to a plain CPU-only backend, not Vulkan, which produced one throwaway
 measurement in this session's raw logs — discard any number in this document's history that
 doesn't show a `Backend: Vulkan hybrid GDN` line above it.)
 
-**Not done in this session**: `IQ3_S` (the second-largest contributor, +6.45 GiB) — the external
-review explicitly recommended implementing `IQ4_XS` first, proving parity and measuring, before
-attempting `IQ3_S` (a structurally harder codebook/grid format with more bit-packing edge cases).
-That sequencing was followed here; `IQ3_S` remains F16-fallback for now. The other IQ dtypes
-(`IQ3_XXS`, `IQ2_S`, `IQ2_XS`, `IQ2_XXS`, `IQ4_NL`) remain on the F16 fallback too — lower volume
-in this checkpoint, same "don't extend speculatively" reasoning as Follow-up 3's dequant
-parallelization scope decision.
+**`IQ3_S` (the second-largest contributor, +6.45 GiB) was implemented next, same session** — see
+Follow-up 7 below. The other IQ dtypes (`IQ3_XXS`, `IQ2_S`, `IQ2_XS`, `IQ2_XXS`, `IQ4_NL`) remain
+on the F16 fallback — lower volume in this checkpoint, same "don't extend speculatively" reasoning
+as Follow-up 3's dequant parallelization scope decision.
+
+## Follow-up 7: native IQ3_S Vulkan matvec kernel (2026-09-16, same day)
+
+Implemented `IQ3_S` immediately after `IQ4_XS`, per the external review's own sequencing advice
+("implement IQ4_XS first, prove parity, benchmark, then IQ3_S") — that sequencing was followed in
+Follow-up 6, and this is the "then IQ3_S" step, done the same session since IQ4_XS's correctness
+test passed cleanly on the first attempt.
+
+**Design**: same 8-rows/32-threads-per-row/shared-memory-tree-reduction topology as
+`MatVecIQ4XS`/`MatVecQ4K` (not `subgroupAdd` — see Follow-up 6 for why). The IQ3_S block-decode
+math was derived by re-indexing `Dequantize`'s already-tested `DecodeIq3SBlock` from its native
+nested-loop form (`ib32`/`half`/`l`/`j`) into a flat per-lane-group form: each of the 32 lanes in
+a row owns one contiguous 8-element group, where `lane` **is** the CPU decoder's flat group-
+visitation index (0-31) — derived algebraically (`combinedIdx = lane>>2`, `l = lane&3`,
+`ib32Idx = combinedIdx>>1`, `half = combinedIdx&1`) and re-verified against the CPU source line by
+line before writing any GLSL, the same discipline as Follow-up 6. One correction versus a first
+instinct: the CPU decoder's grid-lookup bytes (`(byte)(grid1 >> (8*j))`) are **unsigned
+magnitudes with sign applied separately** via the sign-mask byte, not sign-extended values — the
+shader must match that exactly (`mag * sign`, not `int8(mag)`).
+
+**The 512-entry `IqCodebooks.Iq3SGrid` table was generated mechanically from the C# source**
+(`awk`-extracted the hex literals, reformatted into a GLSL `const uint[512]` array), not
+hand-transcribed — eliminates an entire class of transcription-error risk for a table this size,
+and keeps the C# table as the single source of truth (regenerate if it ever changes; the shader
+comment says so explicitly).
+
+**Implemented**: `MatVecIQ3S` shader; wired into `VulkanBackend.MatMul` (`case DType.IQ3_S`,
+new `_matVecIQ3SPipeline`); `IQ3_S` added to `UploadWeight`'s raw-kept dtype set and
+`EstimateWeightGpuBytes`, same pattern as `IQ4_XS`.
+
+**Tests**: `MatVecIQ3SMatchesCpu` (same shape as the IQ4_XS test — rows=37 tail-workgroup,
+cols=512 multi-block) and `MatVecIQ3SBoundaryRowsMatchCpu` (boundary rows, single-block shape).
+**Both passed with 0 mismatches on the first run** — the line-by-line CPU-decoder re-derivation
+and the mechanically-generated grid table both paid off; no debugging round-trip was needed.
+Re-ran `MatVecIQ4XsMatchesCpu`/`MatVecF16MatchesCpu`/`EmbedLookupQ3K*` alongside — all 6 clean,
+no regressions.
+
+**Measured on the real checkpoint** — a third, larger jump in FFN-layers-admitted at every
+fraction tested, each verified with a clean load, a clean memory-counter check, and a real
+generation producing coherent output (not just a load):
+
+| `STINGRAY_VULKAN_UMA_FRACTION` | FFN layers (Follow-up 3 baseline) | + IQ4_XS (Follow-up 6) | + IQ3_S (this follow-up) | Decode speed (this follow-up) |
+|---|---|---|---|---|
+| 0.5 (default) | 0/64 | 8/64 | **14/64** | 0.4 t/s |
+| 0.8 | 18/64 | 27/64 | **32/64** (exactly half) | **0.5 t/s** — a new high, past the earlier 0.4 t/s plateau |
+
+The 0.5 t/s result at 0.8 fraction is the first measurement in this whole document's history to
+beat the plateau found in Follow-up 5 — consistent with the theory that the plateau was a function
+of *how many* FFN layers were GPU-resident (18-28 wasn't enough to move the needle further; ~32,
+half the model, is). All loads and generations in this table completed cleanly: no crashes, no
+OOMs, no swap episodes (`Get-Counter '\Memory\Available MBytes'`/`'\Memory\Pages/sec'` checked
+before and after every run, available RAM held in the 44-45 GB range throughout).
+
+**Not done in this session**: `IQ3_XXS`/`IQ2_S`/`IQ2_XS`/`IQ2_XXS`/`IQ4_NL` remain on the F16
+fallback — lower volume in this checkpoint (per Follow-up 2's original accounting, these five
+combined are less than either IQ4_XS or IQ3_S alone), so extending native-kernel treatment to them
+follows the same "measure before extending" discipline as every other scope decision in this
+document. A full end-to-end tokens/sec sweep across the fraction range with the IQ3_S kernel in
+place (mirroring Follow-up 5's table) — and confirming the *default* fraction is now the better
+out-of-the-box choice given how much further it now reaches — is the natural next measurement if
+this work continues.
 
 ---
 

@@ -2840,12 +2840,13 @@ public sealed unsafe class VulkanHybridGdnForwardPass : IForwardPass
             _gpuWeightDTypes[result.Handle] = DType.Float32;
             _uploadedVramBytes += (long)floats.Length * sizeof(float);
         }
-        else if (info.DType is DType.Q4_K or DType.Q5_K or DType.Q6_K or DType.Q8_0 or DType.Q4_0 or DType.IQ4_XS)
+        else if (info.DType is DType.Q4_K or DType.Q5_K or DType.Q6_K or DType.Q8_0 or DType.Q4_0
+                             or DType.IQ4_XS or DType.IQ3_S)
         {
-            // Vulkan MatMul dispatches on these quants directly — keep them raw. IQ4_XS added
-            // after MatVecIQ4XS (docs/084-vulkan-large-tensor-sharding-plan.md): it was the
-            // single largest source of avoidable GPU-memory expansion in "UD"/dynamic-quant
-            // checkpoints, previously F16-expanded via the else branch below.
+            // Vulkan MatMul dispatches on these quants directly — keep them raw. IQ4_XS/IQ3_S
+            // added after MatVecIQ4XS/MatVecIQ3S (docs/084-vulkan-large-tensor-sharding-plan.md):
+            // they were the two largest sources of avoidable GPU-memory expansion in
+            // "UD"/dynamic-quant checkpoints, previously F16-expanded via the else branch below.
             result = _gpu.UploadRaw(data, TensorShape.D1(data.Length), info.DType, exact: true);
             _gpuWeightDTypes[result.Handle] = info.DType;
             _uploadedVramBytes += data.Length;
@@ -2988,7 +2989,8 @@ public sealed unsafe class VulkanHybridGdnForwardPass : IForwardPass
     /// <summary>On-GPU size of a matvec weight (mirror UploadWeight: raw-quant set kept raw, else F16).</summary>
     private static long EstimateWeightGpuBytes(GgufTensorInfo tensor)
     {
-        if (tensor.DType is DType.Q4_K or DType.Q6_K or DType.Q5_K or DType.Q8_0 or DType.Q4_0 or DType.IQ4_XS)
+        if (tensor.DType is DType.Q4_K or DType.Q6_K or DType.Q5_K or DType.Q8_0 or DType.Q4_0
+                          or DType.IQ4_XS or DType.IQ3_S)
             return tensor.ByteSize;
         return (long)tensor.ElementCount * sizeof(ushort);
     }
