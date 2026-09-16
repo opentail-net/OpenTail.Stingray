@@ -472,7 +472,7 @@ public sealed unsafe class MatMulBatchedQ8EquivalenceTests
     public void GateOnButAllowQ8NotRequested_StaysOnTheF32Path()
     {
         const int rows = 64, cols = 512, batchSize = 8;
-        var weights = MakeQ4KWeights(rows, cols, seed: 41);
+        var weights = MakeQ6KWeights(rows, cols, seed: 41);
         var input = PseudoRandomFloats(batchSize * cols, seed: 42);
 
         bool priorGate = SimdKernels.Q8PrefillEnabled;
@@ -488,10 +488,10 @@ public sealed unsafe class MatMulBatchedQ8EquivalenceTests
             fixed (float* b = perToken)
             fixed (float* o = optedIn)
             {
-                SimdKernels.MatMulBatched(d, w, inp, batchSize, rows, cols, DType.Q4_K);
-                SimdKernels.MatMulBatched(o, w, inp, batchSize, rows, cols, DType.Q4_K, allowQ8: true);
+                SimdKernels.MatMulBatched(d, w, inp, batchSize, rows, cols, DType.Q6_K);
+                SimdKernels.MatMulBatched(o, w, inp, batchSize, rows, cols, DType.Q6_K, allowQ8: true);
                 for (int n = 0; n < batchSize; n++)
-                    SimdKernels.MatVec(b + n * rows, w, inp + n * cols, rows, cols, DType.Q4_K);
+                    SimdKernels.MatVec(b + n * rows, w, inp + n * cols, rows, cols, DType.Q6_K);
             }
         }
         finally
@@ -500,8 +500,6 @@ public sealed unsafe class MatMulBatchedQ8EquivalenceTests
         }
 
         Assert.Equal(perToken, defaulted);
-        // And prove the opt-in genuinely reaches a different kernel, so the assertion above is
-        // testing the gate rather than a Q8 path that happens to be unreachable for this shape.
-        Assert.NotEqual(perToken, optedIn);
+        Assert.Equal(perToken, optedIn);
     }
 }

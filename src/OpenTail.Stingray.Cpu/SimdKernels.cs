@@ -979,8 +979,7 @@ public static unsafe class SimdKernels
                             int end = Math.Min(rows, start + chunkSize);
                             for (int r = start; r < end; r++)
                             {
-                                o1[r] = DotQ4K_Q8KS(w1 + (long)r * bpr, s, c);
-                                o2[r] = DotQ4K_Q8KS(w2 + (long)r * bpr, s, c);
+                                DotQ4K_Q8KS_2Row(w1 + (long)r * bpr, w2 + (long)r * bpr, s, c, out o1[r], out o2[r]);
                             }
                         });
                     }
@@ -988,8 +987,7 @@ public static unsafe class SimdKernels
                     {
                         for (int r = 0; r < rows; r++)
                         {
-                            output1[r] = DotQ4K_Q8KS(weights1 + (long)r * bpr, scratch, cols);
-                            output2[r] = DotQ4K_Q8KS(weights2 + (long)r * bpr, scratch, cols);
+                            DotQ4K_Q8KS_2Row(weights1 + (long)r * bpr, weights2 + (long)r * bpr, scratch, cols, out output1[r], out output2[r]);
                         }
                     }
                     break;
@@ -1537,30 +1535,10 @@ public static unsafe class SimdKernels
             case DType.Float32:
             {
                 var m = (float*)weights;
-                if (rows >= MinRowsForParallel)
-                {
-                    var i0 = input0; var i1 = input1; var i2 = input2; var i3 = input3;
-                    var o0 = output0; var o1 = output1; var o2 = output2; var o3 = output3; int c = cols;
-                    Parallel.For(0, rows, s_parallelOpts, r =>
-                    {
-                        float* row = m + (long)r * c;
-                        o0[r] = DotF32(i0, row, c);
-                        o1[r] = DotF32(i1, row, c);
-                        o2[r] = DotF32(i2, row, c);
-                        o3[r] = DotF32(i3, row, c);
-                    });
-                }
-                else
-                {
-                    for (int r = 0; r < rows; r++)
-                    {
-                        float* row = m + (long)r * cols;
-                        output0[r] = DotF32(input0, row, cols);
-                        output1[r] = DotF32(input1, row, cols);
-                        output2[r] = DotF32(input2, row, cols);
-                        output3[r] = DotF32(input3, row, cols);
-                    }
-                }
+                MatVecF32(output0, m, input0, rows, cols);
+                MatVecF32(output1, m, input1, rows, cols);
+                MatVecF32(output2, m, input2, rows, cols);
+                MatVecF32(output3, m, input3, rows, cols);
                 break;
             }
             default:
@@ -7453,26 +7431,29 @@ public static unsafe class SimdKernels
 
             for (int sub = 0; sub < 8; sub++)
             {
+                float* subX = x + sub * 32;
+                sbyte* subQs = qs + sub * 32;
                 float max = 0f, amax = 0f;
                 for (int j = 0; j < 32; j++)
                 {
-                    float ax = MathF.Abs(x[sub * 32 + j]);
-                    if (ax > amax) { amax = ax; max = x[sub * 32 + j]; }
+                    float val = subX[j];
+                    float ax = MathF.Abs(val);
+                    if (ax > amax) { amax = ax; max = val; }
                 }
 
                 if (amax == 0f)
                 {
                     d[sub] = 0f;
-                    for (int j = 0; j < 32; j++) qs[sub * 32 + j] = 0;
+                    new Span<sbyte>(subQs, 32).Clear();
                 }
                 else
                 {
                     float iscale = -127.0f / max;
                     for (int j = 0; j < 32; j++)
                     {
-                        int v = (int)MathF.Round(iscale * x[sub * 32 + j], MidpointRounding.ToEven);
+                        int v = (int)MathF.Round(iscale * subX[j], MidpointRounding.ToEven);
                         if (v > 127) v = 127;
-                        qs[sub * 32 + j] = (sbyte)v;
+                        subQs[j] = (sbyte)v;
                     }
                     d[sub] = 1.0f / iscale;
                 }
@@ -7480,8 +7461,11 @@ public static unsafe class SimdKernels
 
             for (int g = 0; g < 16; g++)
             {
-                int sum = 0;
-                for (int ii = 0; ii < 16; ii++) sum += qs[g * 16 + ii];
+                sbyte* gqs = qs + g * 16;
+                int sum = (gqs[0] + gqs[1]) + (gqs[2] + gqs[3]) +
+                          (gqs[4] + gqs[5]) + (gqs[6] + gqs[7]) +
+                          (gqs[8] + gqs[9]) + (gqs[10] + gqs[11]) +
+                          (gqs[12] + gqs[13]) + (gqs[14] + gqs[15]);
                 bsums[g] = (short)sum;
             }
         }

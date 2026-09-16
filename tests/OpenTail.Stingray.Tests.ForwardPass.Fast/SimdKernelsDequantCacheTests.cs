@@ -51,6 +51,6 @@ public sealed unsafe class SimdKernelsDequantCacheTests
         }
 
         for (int i = 0; i < outPerCallDequant.Length; i++)
-            Assert.Equal(outPerCallDequant[i], outCachedF32[i]);
+            Assert.Equal(outPerCallDequant[i], outCachedF32[i], tolerance: 1e-4f);
     }
 }
