@@ -171,37 +171,31 @@ public sealed unsafe class Gemma4VVisionEncoder
         var yBase = _posSize * _embd;
         fixed (float* pPatches = patches, pHidden = hidden, pPos = _posTable)
         {
-            for (var p = 0; p < nPatches; p++)
-                SimdKernels.MatVec(pHidden + p * _embd, _patchEmbdW, pPatches + p * patchVec, _embd, patchVec, DType.Float32);
-            for (var p = 0; p < nPatches; p++)
+            nint patchesBase = (nint)pPatches, hiddenBase = (nint)pHidden, posBase = (nint)pPos;
+            var patchEmbdW = _patchEmbdW;
+            int embd = _embd, gridSize = _gridSize;
+            Parallel.For(0, nPatches, p =>
             {
-                var pr = p / _gridSize;
-                var pc = p % _gridSize;
-                var row = pHidden + p * _embd;
-                var xRow = pPos + pc * _embd;
-                var yRow = pPos + yBase + pr * _embd;
-                for (var c = 0; c < _embd; c++)
-                    row[c] += xRow[c] + yRow[c];
-            }
+                float* curP = (float*)patchesBase + (long)p * patchVec;
+                float* curH = (float*)hiddenBase + (long)p * embd;
+                SimdKernels.MatVec(curH, patchEmbdW, curP, embd, patchVec, DType.Float32);
+
+                int pr = p / gridSize;
+                int pc = p % gridSize;
+                float* xRow = (float*)posBase + (long)pc * embd;
+                float* yRow = (float*)posBase + (long)(yBase + pr * embd);
+                for (var c = 0; c < embd; c++)
+                    curH[c] += xRow[c] + yRow[c];
+            });
         }
 
         // 3. transformer blocks
-        var normed = new float[_embd];
         var q = new float[nPatches * _embd];
         var k = new float[nPatches * _embd];
         var v = new float[nPatches * _embd];
         var attnConcat = new float[nPatches * _embd];
-        var attnProj = new float[_embd];
-        var scores = new float[nPatches];
-        var ffnIn = new float[_embd];
-        var gate = new float[_ffLen];
-        var up = new float[_ffLen];
-        var ffnOut = new float[_embd];
-        var clampScratch = new float[Math.Max(_embd, _ffLen)];
 
-        fixed (float* pHidden = hidden, pNormed = normed, pQ = q, pK = k, pV = v,
-               pAttnConcat = attnConcat, pAttnProj = attnProj, pScores = scores,
-               pFfnIn = ffnIn, pGate = gate, pUp = up, pFfnOut = ffnOut, pScratch = clampScratch)
+        fixed (float* pHidden = hidden, pQ = q, pK = k, pV = v, pAttnConcat = attnConcat)
         {
             for (var layer = 0; layer < _blockCount; layer++)
             {
@@ -211,88 +205,126 @@ public sealed unsafe class Gemma4VVisionEncoder
                 {
                     // ln1 -> Q/K/V (each independently clamped) -> per-head QK-norm -> 2D RoPE on Q/K
                     // -> unweighted per-head V-norm.
-                    for (var p = 0; p < nPatches; p++)
                     {
-                        var hp = pHidden + p * _embd;
-                        SimdKernels.RmsNorm(pNormed, hp, ln1, _embd, _eps);
+                        nint hiddenBase = (nint)pHidden, qBase = (nint)pQ, kBase = (nint)pK, vBase = (nint)pV;
+                        nint ln1Base = (nint)ln1, qNormBase = (nint)qNorm, kNormBase = (nint)kNorm;
+                        int embd = _embd, gridSize = _gridSize, heads = _heads, headDim = _headDim;
+                        int quarterHeadDim = _quarterHeadDim, halfHeadDim = _halfHeadDim;
+                        float eps = _eps;
 
-                        var qp = pQ + p * _embd;
-                        var kp = pK + p * _embd;
-                        var vp = pV + p * _embd;
-                        ClampedMatVec(qp, blk.AttnQ, pNormed, _embd, _embd, blk.AttnQClamp, pScratch);
-                        ClampedMatVec(kp, blk.AttnK, pNormed, _embd, _embd, blk.AttnKClamp, pScratch);
-                        ClampedMatVec(vp, blk.AttnV, pNormed, _embd, _embd, blk.AttnVClamp, pScratch);
-
-                        var col = p % _gridSize;
-                        var row = p / _gridSize;
-                        for (var h = 0; h < _heads; h++)
+                        Parallel.For(0, nPatches, p =>
                         {
-                            var qh = qp + h * _headDim;
-                            var khh = kp + h * _headDim;
-                            var vh = vp + h * _headDim;
+                            float* hp = (float*)hiddenBase + (long)p * embd;
+                            float* qp = (float*)qBase + (long)p * embd;
+                            float* kp = (float*)kBase + (long)p * embd;
+                            float* vp = (float*)vBase + (long)p * embd;
+                            float* pNormed = stackalloc float[embd];
+                            float* pScratch = stackalloc float[embd];
 
-                            SimdKernels.RmsNorm(qh, qh, qNorm, _headDim, _eps);
-                            SimdKernels.RmsNorm(khh, khh, kNorm, _headDim, _eps);
+                            SimdKernels.RmsNorm(pNormed, hp, (float*)ln1Base, embd, eps);
 
-                            ApplyRope2DHalf(qh, _quarterHeadDim, col, Gemma4VVisionModel.RopeTheta);
-                            ApplyRope2DHalf(qh + _halfHeadDim, _quarterHeadDim, row, Gemma4VVisionModel.RopeTheta);
-                            ApplyRope2DHalf(khh, _quarterHeadDim, col, Gemma4VVisionModel.RopeTheta);
-                            ApplyRope2DHalf(khh + _halfHeadDim, _quarterHeadDim, row, Gemma4VVisionModel.RopeTheta);
+                            ClampedMatVec(qp, blk.AttnQ, pNormed, embd, embd, blk.AttnQClamp, pScratch);
+                            ClampedMatVec(kp, blk.AttnK, pNormed, embd, embd, blk.AttnKClamp, pScratch);
+                            ClampedMatVec(vp, blk.AttnV, pNormed, embd, embd, blk.AttnVClamp, pScratch);
 
-                            SimdKernels.PureRmsNorm(vh, vh, _headDim, _eps);
-                        }
+                            int col = p % gridSize;
+                            int row = p / gridSize;
+                            for (var h = 0; h < heads; h++)
+                            {
+                                float* qh = qp + (long)h * headDim;
+                                float* khh = kp + (long)h * headDim;
+                                float* vh = vp + (long)h * headDim;
+
+                                SimdKernels.RmsNorm(qh, qh, (float*)qNormBase, headDim, eps);
+                                SimdKernels.RmsNorm(khh, khh, (float*)kNormBase, headDim, eps);
+
+                                ApplyRope2DHalf(qh, quarterHeadDim, col, Gemma4VVisionModel.RopeTheta);
+                                ApplyRope2DHalf(qh + halfHeadDim, quarterHeadDim, row, Gemma4VVisionModel.RopeTheta);
+                                ApplyRope2DHalf(khh, quarterHeadDim, col, Gemma4VVisionModel.RopeTheta);
+                                ApplyRope2DHalf(khh + halfHeadDim, quarterHeadDim, row, Gemma4VVisionModel.RopeTheta);
+
+                                SimdKernels.PureRmsNorm(vh, vh, headDim, eps);
+                            }
+                        });
                     }
 
                     // Bidirectional multi-head attention, unscaled (kq_scale = 1.0 for gemma4v).
-                    for (var h = 0; h < _heads; h++)
                     {
-                        var off = h * _headDim;
-                        for (var i = 0; i < nPatches; i++)
+                        nint qBase = (nint)pQ, kBase = (nint)pK, vBase = (nint)pV, concatBase = (nint)pAttnConcat;
+                        int headDim = _headDim, embd = _embd;
+                        Parallel.For(0, _heads, h =>
                         {
-                            var qi = pQ + i * _embd + off;
-                            for (var j = 0; j < nPatches; j++)
-                            {
-                                var kj = pK + j * _embd + off;
-                                float dot = 0f;
-                                for (var d = 0; d < _headDim; d++) dot += qi[d] * kj[d];
-                                pScores[j] = dot;
-                            }
-                            SimdKernels.SoftmaxInPlace(pScores, nPatches);
+                            var off = (long)h * headDim;
+                            float* qL = (float*)qBase;
+                            float* kL = (float*)kBase;
+                            float* vL = (float*)vBase;
+                            float* concatL = (float*)concatBase;
+                            float* pScores = stackalloc float[nPatches];
 
-                            var outp = pAttnConcat + i * _embd + off;
-                            for (var d = 0; d < _headDim; d++) outp[d] = 0f;
-                            for (var j = 0; j < nPatches; j++)
+                            for (var i = 0; i < nPatches; i++)
                             {
-                                var vj = pV + j * _embd + off;
-                                var w = pScores[j];
-                                for (var d = 0; d < _headDim; d++) outp[d] += w * vj[d];
+                                var qi = new ReadOnlySpan<float>(qL + (long)i * embd + off, headDim);
+                                for (var j = 0; j < nPatches; j++)
+                                {
+                                    var kj = new ReadOnlySpan<float>(kL + (long)j * embd + off, headDim);
+                                    pScores[j] = TensorPrimitives.Dot(qi, kj);
+                                }
+                                SimdKernels.SoftmaxInPlace(pScores, nPatches);
+
+                                var outp = new Span<float>(concatL + (long)i * embd + off, headDim);
+                                outp.Clear();
+                                for (var j = 0; j < nPatches; j++)
+                                {
+                                    var vj = new ReadOnlySpan<float>(vL + (long)j * embd + off, headDim);
+                                    TensorPrimitives.MultiplyAdd(vj, pScores[j], outp, outp);
+                                }
                             }
-                        }
+                        });
                     }
 
                     // Output projection (clamped) -> attn_post_norm -> residual.
-                    for (var p = 0; p < nPatches; p++)
                     {
-                        ClampedMatVec(pAttnProj, blk.AttnOut, pAttnConcat + p * _embd, _embd, _embd, blk.AttnOutClamp, pScratch);
-                        SimdKernels.RmsNorm(pAttnProj, pAttnProj, attnPostNorm, _embd, _eps);
-                        var hp = pHidden + p * _embd;
-                        for (var c = 0; c < _embd; c++) hp[c] += pAttnProj[c];
+                        nint hiddenBase = (nint)pHidden, concatBase = (nint)pAttnConcat, postNormBase = (nint)attnPostNorm;
+                        int embd = _embd;
+                        float eps = _eps;
+                        Parallel.For(0, nPatches, p =>
+                        {
+                            float* hp = (float*)hiddenBase + (long)p * embd;
+                            float* pAttnProj = stackalloc float[embd];
+                            float* pScratch = stackalloc float[embd];
+
+                            ClampedMatVec(pAttnProj, blk.AttnOut, (float*)concatBase + (long)p * embd, embd, embd, blk.AttnOutClamp, pScratch);
+                            SimdKernels.RmsNorm(pAttnProj, pAttnProj, (float*)postNormBase, embd, eps);
+                            for (var c = 0; c < embd; c++) hp[c] += pAttnProj[c];
+                        });
                     }
 
                     // ln2 -> gated FFN (quick-GELU, clamped gate/up/down) -> ffn_post_norm -> residual.
-                    for (var p = 0; p < nPatches; p++)
                     {
-                        var hp = pHidden + p * _embd;
-                        SimdKernels.RmsNorm(pFfnIn, hp, ln2, _embd, _eps);
+                        nint hiddenBase = (nint)pHidden, ln2Base = (nint)ln2, ffnPostNormBase = (nint)ffnPostNorm;
+                        int embd = _embd, ffLen = _ffLen;
+                        int maxLen = Math.Max(embd, ffLen);
+                        float eps = _eps;
+                        Parallel.For(0, nPatches, p =>
+                        {
+                            float* hp = (float*)hiddenBase + (long)p * embd;
+                            float* pFfnIn = stackalloc float[embd];
+                            float* pGate = stackalloc float[ffLen];
+                            float* pUp = stackalloc float[ffLen];
+                            float* pFfnOut = stackalloc float[embd];
+                            float* pScratch = stackalloc float[maxLen];
 
-                        ClampedMatVec(pGate, blk.FfnGate, pFfnIn, _ffLen, _embd, blk.FfnGateClamp, pScratch);
-                        SimdKernels.GeluQuickInPlace(pGate, _ffLen);
-                        ClampedMatVec(pUp, blk.FfnUp, pFfnIn, _ffLen, _embd, blk.FfnUpClamp, pScratch);
-                        for (var i = 0; i < _ffLen; i++) pGate[i] *= pUp[i];
-                        ClampedMatVec(pFfnOut, blk.FfnDown, pGate, _embd, _ffLen, blk.FfnDownClamp, pScratch);
+                            SimdKernels.RmsNorm(pFfnIn, hp, (float*)ln2Base, embd, eps);
 
-                        SimdKernels.RmsNorm(pFfnOut, pFfnOut, ffnPostNorm, _embd, _eps);
-                        for (var c = 0; c < _embd; c++) hp[c] += pFfnOut[c];
+                            ClampedMatVec(pGate, blk.FfnGate, pFfnIn, ffLen, embd, blk.FfnGateClamp, pScratch);
+                            SimdKernels.GeluQuickInPlace(pGate, ffLen);
+                            ClampedMatVec(pUp, blk.FfnUp, pFfnIn, ffLen, embd, blk.FfnUpClamp, pScratch);
+                            for (var i = 0; i < ffLen; i++) pGate[i] *= pUp[i];
+                            ClampedMatVec(pFfnOut, blk.FfnDown, pGate, embd, ffLen, blk.FfnDownClamp, pScratch);
+
+                            SimdKernels.RmsNorm(pFfnOut, pFfnOut, (float*)ffnPostNormBase, embd, eps);
+                            for (var c = 0; c < embd; c++) hp[c] += pFfnOut[c];
+                        });
                     }
                 }
             }
@@ -307,7 +339,7 @@ public sealed unsafe class Gemma4VVisionEncoder
         var pooled = new float[nOut * _embd];
         var scale = MathF.Sqrt(_embd);
         var kernelArea = (float)(_nMerge * _nMerge);
-        for (var oy = 0; oy < outSide; oy++)
+        Parallel.For(0, outSide, oy =>
         {
             for (var ox = 0; ox < outSide; ox++)
             {
@@ -325,15 +357,22 @@ public sealed unsafe class Gemma4VVisionEncoder
                 for (var c = 0; c < _embd; c++)
                     pooled[dst + c] = pooled[dst + c] / kernelArea * scale;
             }
-        }
+        });
 
         var result = new float[nOut * _projDim];
         fixed (float* pPooled = pooled, pResult = result)
         {
-            for (var t = 0; t < nOut; t++)
-                SimdKernels.PureRmsNorm(pPooled + t * _embd, pPooled + t * _embd, _embd, _eps);
-            for (var t = 0; t < nOut; t++)
-                SimdKernels.MatVec(pResult + t * _projDim, _mmProjW, pPooled + t * _embd, _projDim, _embd, DType.BFloat16);
+            nint pooledBase = (nint)pPooled, resultBase = (nint)pResult;
+            var mmProjW = _mmProjW;
+            int embd = _embd, projDim = _projDim;
+            float eps = _eps;
+            Parallel.For(0, nOut, t =>
+            {
+                float* curP = (float*)pooledBase + (long)t * embd;
+                float* curR = (float*)resultBase + (long)t * projDim;
+                SimdKernels.PureRmsNorm(curP, curP, embd, eps);
+                SimdKernels.MatVec(curR, mmProjW, curP, projDim, embd, DType.BFloat16);
+            });
         }
         return result;
     }

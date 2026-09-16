@@ -92,22 +92,31 @@ public sealed class GemmaUvVisionEmbedder
 
         // 1. im2col: per patch a 6912 vector laid out [c*patch*patch + ky*patch + kx]
         var P = new float[nTokens * _patchVec];
-        for (int p = 0; p < nTokens; p++)
+        unsafe
         {
-            int pr = p / gx, pc = p % gx;
-            int baseY = pr * _patch, baseX = pc * _patch;
-            int dst = p * _patchVec;
-            for (int c = 0; c < 3; c++)
+            fixed (float* pChw = chw)
             {
-                int cPlane = c * hw;
-                int cOff = dst + c * _patch * _patch;
-                for (int ky = 0; ky < _patch; ky++)
+                nint chwBase = (nint)pChw;
+                int patch = _patch, patchVec = _patchVec;
+                Parallel.For(0, nTokens, p =>
                 {
-                    int srcRow = cPlane + (baseY + ky) * width + baseX;
-                    int dstRow = cOff + ky * _patch;
-                    for (int kx = 0; kx < _patch; kx++)
-                        P[dstRow + kx] = chw[srcRow + kx];
-                }
+                    float* curChw = (float*)chwBase;
+                    int pr = p / gx, pc = p % gx;
+                    int baseY = pr * patch, baseX = pc * patch;
+                    int dst = p * patchVec;
+                    for (int c = 0; c < 3; c++)
+                    {
+                        int cPlane = c * hw;
+                        int cOff = dst + c * patch * patch;
+                        for (int ky = 0; ky < patch; ky++)
+                        {
+                            int srcRow = cPlane + (baseY + ky) * width + baseX;
+                            int dstRow = cOff + ky * patch;
+                            for (int kx = 0; kx < patch; kx++)
+                                P[dstRow + kx] = curChw[srcRow + kx];
+                        }
+                    }
+                });
             }
         }
 
@@ -117,25 +126,33 @@ public sealed class GemmaUvVisionEmbedder
         unsafe
         {
             fixed (float* pP = P, pE = E)
-                for (int p = 0; p < nTokens; p++)
-                    SimdKernels.MatVec(pE + p * _embd, _peW, pP + p * _patchVec, _embd, _patchVec, DType.Float32);
-        }
-        for (int p = 0; p < nTokens; p++)
-        {
-            var row = E.AsSpan(p * _embd, _embd);
-            TensorPrimitives.Add(row, _peBias, row);
+            {
+                nint pBase = (nint)pP, eBase = (nint)pE;
+                var peW = _peW;
+                var peBias = _peBias;
+                int embd = _embd, patchVec = _patchVec;
+
+                Parallel.For(0, nTokens, p =>
+                {
+                    float* curP = (float*)pBase + (long)p * patchVec;
+                    float* curE = (float*)eBase + (long)p * embd;
+                    SimdKernels.MatVec(curE, peW, curP, embd, patchVec, DType.Float32);
+                    var row = new Span<float>(curE, embd);
+                    TensorPrimitives.Add(row, peBias, row);
+                });
+            }
         }
 
         // 3. patch_norm.2, then add learned 2D position embeddings, then patch_norm.3 (pos_norm)
         LayerNorm(E, _n2w, _n2b, _embd, _lnEps);
         int yBase = _posSize * _embd;   // y-table starts after the x-table
-        for (int p = 0; p < nTokens; p++)
+        Parallel.For(0, nTokens, p =>
         {
             int pr = p / gx, pc = p % gx;
             var row = E.AsSpan(p * _embd, _embd);
             TensorPrimitives.Add(row, _pos.AsSpan(pc * _embd, _embd), row);            // + pos_x[col]
             TensorPrimitives.Add(row, _pos.AsSpan(yBase + pr * _embd, _embd), row);    // + pos_y[row]
-        }
+        });
         LayerNorm(E, _n3w, _n3b, _embd, _lnEps);
 
         // 4. embedding_pre_projection_norm (RMSNorm, no weight), then mm.input_projection
@@ -144,10 +161,18 @@ public sealed class GemmaUvVisionEmbedder
         {
             fixed (float* pE = E, pO = outp)
             {
-                for (int p = 0; p < nTokens; p++)
-                    SimdKernels.PureRmsNorm(pE + p * _embd, pE + p * _embd, _embd, _rmsEps);
-                for (int p = 0; p < nTokens; p++)
-                    SimdKernels.MatVec(pO + p * _embd, _mmW, pE + p * _embd, _embd, _embd, DType.BFloat16);
+                nint eBase = (nint)pE, oBase = (nint)pO;
+                var mmW = _mmW;
+                int embd = _embd;
+                float rmsEps = _rmsEps;
+
+                Parallel.For(0, nTokens, p =>
+                {
+                    float* curE = (float*)eBase + (long)p * embd;
+                    float* curO = (float*)oBase + (long)p * embd;
+                    SimdKernels.PureRmsNorm(curE, curE, embd, rmsEps);
+                    SimdKernels.MatVec(curO, mmW, curE, embd, embd, DType.BFloat16);
+                });
             }
         }
         return outp;
@@ -157,12 +182,12 @@ public sealed class GemmaUvVisionEmbedder
     /// Per-row LayerNorm matching ggml_norm: (x-mean)/sqrt(var+eps) then *weight + bias,
     /// with population variance over the last <paramref name="dim"/> elements. In-place.
     /// </summary>
-    private static void LayerNorm(Span<float> x, ReadOnlySpan<float> weight, ReadOnlySpan<float> bias, int dim, float eps)
+    private static void LayerNorm(float[] x, float[] weight, float[] bias, int dim, float eps)
     {
         int n = x.Length / dim;
-        for (int row = 0; row < n; row++)
+        Parallel.For(0, n, row =>
         {
-            var r = x.Slice(row * dim, dim);
+            var r = x.AsSpan(row * dim, dim);
             float mean = TensorPrimitives.Sum<float>(r) / dim;
             TensorPrimitives.Subtract(r, mean, r);
             float var = TensorPrimitives.Dot<float>(r, r) / dim;
@@ -170,6 +195,6 @@ public sealed class GemmaUvVisionEmbedder
             TensorPrimitives.Multiply(r, scale, r);
             TensorPrimitives.Multiply(r, weight, r);
             TensorPrimitives.Add(r, bias, r);
-        }
+        });
     }
 }

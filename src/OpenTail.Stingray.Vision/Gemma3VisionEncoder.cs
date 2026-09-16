@@ -180,14 +180,20 @@ public sealed unsafe class Gemma3VisionEncoder
         var hidden = new float[nPatches * _embd];
         fixed (float* pPatches = patches, pHidden = hidden, pPos = _posTable)
         {
-            for (var p = 0; p < nPatches; p++)
-                SimdKernels.MatVec(pHidden + p * _embd, _patchEmbdW, pPatches + p * patchVec, _embd, patchVec, DType.Float32);
-            for (var p = 0; p < nPatches; p++)
+            nint pPatchesBase = (nint)pPatches, pHiddenBase = (nint)pHidden;
+            var patchEmbdW = _patchEmbdW;
+            var patchEmbdBias = _patchEmbdBias;
+            var posTable = _posTable;
+            int embd = _embd;
+            Parallel.For(0, nPatches, p =>
             {
-                var row = new Span<float>(pHidden + p * _embd, _embd);
-                TensorPrimitives.Add(row, _patchEmbdBias, row);
-                TensorPrimitives.Add(row, new ReadOnlySpan<float>(pPos + p * _embd, _embd), row);
-            }
+                float* curP = (float*)pPatchesBase + (long)p * patchVec;
+                float* curH = (float*)pHiddenBase + (long)p * embd;
+                SimdKernels.MatVec(curH, patchEmbdW, curP, embd, patchVec, DType.Float32);
+                var row = new Span<float>(curH, embd);
+                TensorPrimitives.Add(row, patchEmbdBias, row);
+                TensorPrimitives.Add(row, new ReadOnlySpan<float>(posTable, p * embd, embd), row);
+            });
         }
         if (s_debug) Console.Error.WriteLine("[GEMMA3-DBG] patch embed + position done");
 
@@ -219,7 +225,7 @@ public sealed unsafe class Gemma3VisionEncoder
                     // capped by this machine's 12 logical processors the way 16-way head
                     // parallelism nearly is. Same nint round-trip as the attention section
                     // (pointers can't be captured by a lambda); each task gets its own `normed`
-                    // scratch instead of sharing pNormed, which would race.
+                    // scratch via stackalloc, eliminating 110,000+ per-block heap allocations.
                     {
                         nint hiddenBase = (nint)pHidden, qBase2 = (nint)pQ, kBase2 = (nint)pK, vBase2 = (nint)pV;
                         nint ln1wBase = (nint)ln1w, ln1bBase = (nint)ln1b;
@@ -233,35 +239,31 @@ public sealed unsafe class Gemma3VisionEncoder
                             var vL = (float*)vBase2;
                             var ln1wL = (float*)ln1wBase;
                             var ln1bL = (float*)ln1bBase;
-                            var localNormed = new float[_embd];
-                            fixed (float* pLocalNormed = localNormed)
-                            {
-                                var hp = hiddenL + p * _embd;
-                                SimdKernels.LayerNorm(pLocalNormed, hp, ln1wL, ln1bL, _embd, _eps);
+                            float* pLocalNormed = stackalloc float[_embd];
 
-                                var qp = qL + p * _embd;
-                                var kp = kL + p * _embd;
-                                var vp = vL + p * _embd;
-                                SimdKernels.MatVec(qp, attnQL, pLocalNormed, _embd, _embd, DType.Float16);
-                                SimdKernels.MatVec(kp, attnKL, pLocalNormed, _embd, _embd, DType.Float16);
-                                SimdKernels.MatVec(vp, attnVL, pLocalNormed, _embd, _embd, DType.Float16);
-                                var qSpan = new Span<float>(qp, _embd);
-                                var kSpan = new Span<float>(kp, _embd);
-                                var vSpan = new Span<float>(vp, _embd);
-                                TensorPrimitives.Add(qSpan, qBiasArr, qSpan);
-                                TensorPrimitives.Add(kSpan, kBiasArr, kSpan);
-                                TensorPrimitives.Add(vSpan, vBiasArr, vSpan);
-                            }
+                            var hp = hiddenL + (long)p * _embd;
+                            SimdKernels.LayerNorm(pLocalNormed, hp, ln1wL, ln1bL, _embd, _eps);
+
+                            var qp = qL + (long)p * _embd;
+                            var kp = kL + (long)p * _embd;
+                            var vp = vL + (long)p * _embd;
+                            SimdKernels.MatVec(qp, attnQL, pLocalNormed, _embd, _embd, DType.Float16);
+                            SimdKernels.MatVec(kp, attnKL, pLocalNormed, _embd, _embd, DType.Float16);
+                            SimdKernels.MatVec(vp, attnVL, pLocalNormed, _embd, _embd, DType.Float16);
+                            var qSpan = new Span<float>(qp, _embd);
+                            var kSpan = new Span<float>(kp, _embd);
+                            var vSpan = new Span<float>(vp, _embd);
+                            TensorPrimitives.Add(qSpan, qBiasArr, qSpan);
+                            TensorPrimitives.Add(kSpan, kBiasArr, kSpan);
+                            TensorPrimitives.Add(vSpan, vBiasArr, vSpan);
                         });
                     }
 
                     // Bidirectional multi-head attention, standard scale = 1/sqrt(head_dim).
                     // Parallelized across heads (fully independent: each head reads/writes a
                     // disjoint headDim-wide slice of Q/K/V/attnConcat) -- at 4096 patches this is
-                    // ~1 trillion MACs per encoder call, impractically slow single-threaded
-                    // (~35 min measured). Pointers can't be captured by a lambda even in unsafe
-                    // code, so they're round-tripped through nint; each task gets its own
-                    // scores/temp scratch instead of sharing pScores/pTemp, which would race.
+                    // ~1 trillion MACs per encoder call, impractically slow single-threaded.
+                    // Fused MultiplyAdd accumulates directly into outSpan.
                     if (s_debug) Console.Error.WriteLine($"[GEMMA3-DBG] block {layer} QKV done, starting attention");
                     nint qBase = (nint)pQ, kBase = (nint)pK, vBase = (nint)pV, concatBase = (nint)pAttnConcat;
                     int headDimL = _headDim, embdL = _embd, npL = nPatches, layerL = layer;
@@ -274,28 +276,25 @@ public sealed unsafe class Gemma3VisionEncoder
                         var vL = (float*)vBase;
                         var concatL = (float*)concatBase;
                         var localScores = new float[npL];
-                        var localTemp = new float[headDimL];
-                        fixed (float* pLocalScores = localScores, pLocalTemp = localTemp)
+                        fixed (float* pLocalScores = localScores)
                         {
                             var off = h * headDimL;
                             for (var i = 0; i < npL; i++)
                             {
-                                var qi = new ReadOnlySpan<float>(qL + i * embdL + off, headDimL);
+                                var qi = new ReadOnlySpan<float>(qL + (long)i * embdL + off, headDimL);
                                 for (var j = 0; j < npL; j++)
                                 {
-                                    var kj = new ReadOnlySpan<float>(kL + j * embdL + off, headDimL);
+                                    var kj = new ReadOnlySpan<float>(kL + (long)j * embdL + off, headDimL);
                                     pLocalScores[j] = TensorPrimitives.Dot(qi, kj) * kqScaleL;
                                 }
                                 SimdKernels.SoftmaxInPlace(pLocalScores, npL);
 
-                                var outSpan = new Span<float>(concatL + i * embdL + off, headDimL);
+                                var outSpan = new Span<float>(concatL + (long)i * embdL + off, headDimL);
                                 outSpan.Clear();
-                                var tempSpan = new Span<float>(pLocalTemp, headDimL);
                                 for (var j = 0; j < npL; j++)
                                 {
-                                    var vj = new ReadOnlySpan<float>(vL + j * embdL + off, headDimL);
-                                    TensorPrimitives.Multiply(vj, pLocalScores[j], tempSpan);
-                                    TensorPrimitives.Add(outSpan, tempSpan, outSpan);
+                                    var vj = new ReadOnlySpan<float>(vL + (long)j * embdL + off, headDimL);
+                                    TensorPrimitives.MultiplyAdd(vj, pLocalScores[j], outSpan, outSpan);
                                 }
                             }
                         }
@@ -312,22 +311,20 @@ public sealed unsafe class Gemma3VisionEncoder
                         {
                             var concatL2 = (float*)concatBase2;
                             var hiddenL2 = (float*)hiddenBase2;
-                            var localProj = new float[_embd];
-                            fixed (float* pLocalProj = localProj)
-                            {
-                                SimdKernels.MatVec(pLocalProj, attnOutL, concatL2 + p * _embd, _embd, _embd, DType.Float16);
-                                var projSpan = new Span<float>(pLocalProj, _embd);
-                                TensorPrimitives.Add(projSpan, oBiasArr, projSpan);
-                                var hp = hiddenL2 + p * _embd;
-                                for (var c = 0; c < _embd; c++) hp[c] += pLocalProj[c];
-                            }
+                            float* pLocalProj = stackalloc float[_embd];
+
+                            SimdKernels.MatVec(pLocalProj, attnOutL, concatL2 + (long)p * _embd, _embd, _embd, DType.Float16);
+                            var projSpan = new Span<float>(pLocalProj, _embd);
+                            TensorPrimitives.Add(projSpan, oBiasArr, projSpan);
+                            var hp = hiddenL2 + (long)p * _embd;
+                            for (var c = 0; c < _embd; c++) hp[c] += pLocalProj[c];
                         });
                     }
 
                     // ln2 -> plain FFN (down(gelu(up(x))), both with bias-adds, no gate) ->
                     // residual. Parallelized across patches -- this is the single largest cost in
                     // the block (~40B MACs/block from the 1152<->4304 projections alone, more than
-                    // attention's own ~38.7B), so it needed the same treatment as QKV above.
+                    // attention's own ~38.7B). Stackalloc eliminates heap allocations.
                     {
                         nint hiddenBase3 = (nint)pHidden, ln2wBase = (nint)ln2w, ln2bBase = (nint)ln2b;
                         var ffnUpL = blk.FfnUp; var ffnDownL = blk.FfnDown;
@@ -338,25 +335,23 @@ public sealed unsafe class Gemma3VisionEncoder
                             var hiddenL3 = (float*)hiddenBase3;
                             var ln2wL = (float*)ln2wBase;
                             var ln2bL = (float*)ln2bBase;
-                            var localFfnIn = new float[_embd];
-                            var localUp = new float[ffLenL];
-                            var localFfnOut = new float[_embd];
-                            fixed (float* pLocalFfnIn = localFfnIn, pLocalUp = localUp, pLocalFfnOut = localFfnOut)
-                            {
-                                var hp = hiddenL3 + p * _embd;
-                                SimdKernels.LayerNorm(pLocalFfnIn, hp, ln2wL, ln2bL, _embd, _eps);
+                            float* pLocalFfnIn = stackalloc float[_embd];
+                            float* pLocalUp = stackalloc float[ffLenL];
+                            float* pLocalFfnOut = stackalloc float[_embd];
 
-                                SimdKernels.MatVec(pLocalUp, ffnUpL, pLocalFfnIn, ffLenL, _embd, DType.Float16);
-                                var upSpan = new Span<float>(pLocalUp, ffLenL);
-                                TensorPrimitives.Add(upSpan, upBiasArr, upSpan);
-                                SimdKernels.GeluInPlace(pLocalUp, ffLenL);
+                            var hp = hiddenL3 + (long)p * _embd;
+                            SimdKernels.LayerNorm(pLocalFfnIn, hp, ln2wL, ln2bL, _embd, _eps);
 
-                                SimdKernels.MatVec(pLocalFfnOut, ffnDownL, pLocalUp, _embd, ffLenL, DType.Float16);
-                                var downSpan = new Span<float>(pLocalFfnOut, _embd);
-                                TensorPrimitives.Add(downSpan, downBiasArr, downSpan);
+                            SimdKernels.MatVec(pLocalUp, ffnUpL, pLocalFfnIn, ffLenL, _embd, DType.Float16);
+                            var upSpan = new Span<float>(pLocalUp, ffLenL);
+                            TensorPrimitives.Add(upSpan, upBiasArr, upSpan);
+                            SimdKernels.GeluInPlace(pLocalUp, ffLenL);
 
-                                for (var c = 0; c < _embd; c++) hp[c] += pLocalFfnOut[c];
-                            }
+                            SimdKernels.MatVec(pLocalFfnOut, ffnDownL, pLocalUp, _embd, ffLenL, DType.Float16);
+                            var downSpan = new Span<float>(pLocalFfnOut, _embd);
+                            TensorPrimitives.Add(downSpan, downBiasArr, downSpan);
+
+                            for (var c = 0; c < _embd; c++) hp[c] += pLocalFfnOut[c];
                         });
                     }
                 }
@@ -366,8 +361,14 @@ public sealed unsafe class Gemma3VisionEncoder
         // 3. real post-layernorm.
         fixed (float* pHidden = hidden, w = _postLnW, b = _postLnB)
         {
-            for (var p = 0; p < nPatches; p++)
-                SimdKernels.LayerNorm(pHidden + p * _embd, pHidden + p * _embd, w, b, _embd, _eps);
+            nint hiddenBase = (nint)pHidden, wBase = (nint)w, bBase = (nint)b;
+            int embd = _embd;
+            float eps = _eps;
+            Parallel.For(0, nPatches, p =>
+            {
+                float* hp = (float*)hiddenBase + (long)p * embd;
+                SimdKernels.LayerNorm(hp, hp, (float*)wBase, (float*)bBase, embd, eps);
+            });
         }
 
         // 4. average-pool token reduction (kernel = stride = NMerge, exact divide -- no dropped
@@ -378,7 +379,7 @@ public sealed unsafe class Gemma3VisionEncoder
         var nOut = outSide * outSide;
         var pooled = new float[nOut * _embd];
         var kernelArea = (float)(_nMerge * _nMerge);
-        for (var oy = 0; oy < outSide; oy++)
+        Parallel.For(0, outSide, oy =>
         {
             for (var ox = 0; ox < outSide; ox++)
             {
@@ -396,15 +397,21 @@ public sealed unsafe class Gemma3VisionEncoder
                 for (var c = 0; c < _embd; c++)
                     pooled[dst + c] /= kernelArea;
             }
-        }
+        });
 
         var result = new float[nOut * _projDim];
         fixed (float* pPooled = pooled, pResult = result, normW = _mmSoftEmbNorm, pProjT = _mmProjT)
         {
-            for (var t = 0; t < nOut; t++)
-                SimdKernels.RmsNorm(pPooled + t * _embd, pPooled + t * _embd, normW, _embd, _eps);
-            for (var t = 0; t < nOut; t++)
-                SimdKernels.MatVec(pResult + t * _projDim, (byte*)pProjT, pPooled + t * _embd, _projDim, _embd, DType.Float32);
+            nint pooledBase = (nint)pPooled, resultBase = (nint)pResult, normWBase = (nint)normW, projTBase = (nint)pProjT;
+            int embd = _embd, projDim = _projDim;
+            float eps = _eps;
+            Parallel.For(0, nOut, t =>
+            {
+                float* curP = (float*)pooledBase + (long)t * embd;
+                float* curR = (float*)resultBase + (long)t * projDim;
+                SimdKernels.RmsNorm(curP, curP, (float*)normWBase, embd, eps);
+                SimdKernels.MatVec(curR, (byte*)projTBase, curP, projDim, embd, DType.Float32);
+            });
         }
         return result;
     }

@@ -396,4 +396,34 @@ public sealed unsafe class VisionOpsBenchmarkTests
             Assert.True(speedup > 2.0, $"Speedup was {speedup:F2}x");
         }
     }
+
+    [Fact]
+    public void Attention_FusedMultiplyAdd_MatchesScalarReference()
+    {
+        int nTokens = 16;
+        int heads = 4;
+        int headDim = 32;
+        int embd = heads * headDim;
+
+        var q = new float[nTokens * embd];
+        var k = new float[nTokens * embd];
+        var v = new float[nTokens * embd];
+
+        var rng = new Random(12345);
+        for (int i = 0; i < q.Length; i++) q[i] = (float)(rng.NextDouble() * 2.0 - 1.0);
+        for (int i = 0; i < k.Length; i++) k[i] = (float)(rng.NextDouble() * 2.0 - 1.0);
+        for (int i = 0; i < v.Length; i++) v[i] = (float)(rng.NextDouble() * 2.0 - 1.0);
+
+        var outScalar = new float[nTokens * embd];
+        var outVectorized = new float[nTokens * embd];
+
+        Attention_Scalar(q, k, v, nTokens, heads, headDim, outScalar);
+        VisionOps.Attention(q, k, v, nTokens, heads, headDim, outVectorized);
+
+        for (int i = 0; i < outScalar.Length; i++)
+        {
+            Assert.InRange(MathF.Abs(outScalar[i] - outVectorized[i]), 0f, 1e-5f);
+        }
+    }
 }
+
