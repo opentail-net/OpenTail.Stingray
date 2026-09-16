@@ -3640,11 +3640,26 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
 
         if (A.DType == DType.Float32 && B.DType == DType.Float16 && HasShaderFloat16Int8 && Has16BitStorage)
         {
+            if (M == 1 && (K % 2 == 0))
+            {
+                var mvp = new MatVecParams { rows = (uint)N, cols = (uint)K };
+                _matVecF16Pipeline ??= new ComputePipeline(this, Shaders.MatVecF16, 3, pushConstantSize: sizeof(MatVecParams));
+                DispatchOrRecord(_matVecF16Pipeline, [GetBuffer(B), GetBuffer(A), GetBuffer(C)], ((uint)N + 7u) / 8u, &mvp);
+                return;
+            }
             uint gx64 = ((uint)M + 63u) / 64u;
             uint gy128 = ((uint)N + 127u) / 128u;
             _sgemmF16Pipeline ??= new ComputePipeline(this, Shaders.SgemmF16, 3,
                 pushConstantSize: sizeof(SgemmParams));
             DispatchOrRecord(_sgemmF16Pipeline, [GetBuffer(A), GetBuffer(B), GetBuffer(C)], gx64, &p, gy128);
+            return;
+        }
+
+        if (M == 1 && A.DType == DType.Float32 && B.DType == DType.Float32)
+        {
+            var mvp = new MatVecParams { rows = (uint)N, cols = (uint)K };
+            _matVecF32Pipeline ??= new ComputePipeline(this, Shaders.MatVecF32, 3, pushConstantSize: sizeof(MatVecParams));
+            DispatchOrRecord(_matVecF32Pipeline, [GetBuffer(B), GetBuffer(A), GetBuffer(C)], ((uint)N + 7u) / 8u, &mvp);
             return;
         }
 

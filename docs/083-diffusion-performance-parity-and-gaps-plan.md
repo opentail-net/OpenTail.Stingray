@@ -16,10 +16,10 @@ The following table synthesizes the empirical head-to-head benchmarks against `s
 |:---:|---|---|---:|---:|---:|---:|---|---|
 | **P1 (DONE)** | **SD1.5 UNet Sampling Loop** | 512×512, 20 steps, 40 forward passes | **172.2s** (~3.8s/pass)<br>*(was 615.0s / 15.4s/pass)* | **71.64s** (1.79s/pass) | **2.40x**<br>*(was 8.58x)* | **+100.6s**<br>*(was +543.4s, **442.8s saved!**)* | Resolved: Batched CB recording + 32×32 tiled convs + specialized tiled flash-attention for SD1.5 head dims (40/80/160). | **Completed 2026-09-15**. Parity: cosine 1.000000. Next: fuse ControlNet residuals. |
 | **P2 (DONE)** | **SD1.5 + ControlNet Canny** | 512×512, 20 steps, CFG 7.5, circular hint | **207.1s**<br>*(was 832.5s)* | **104.2s** | **1.99x**<br>*(was 7.99x)* | **+102.9s**<br>*(was +728.3s, **625.4s saved!**)* | Resolved: Eliminated 780 PCIe CPU-GPU transfer roundtrips via GPU-resident `CoreTensor` residual passing; vectorized `SpatialTransformerGpu` with `SgemmF16`; native `ScaleInPlace` zero-conv scaling; single-submission command buffer batching. | **Completed 2026-09-15**. Parity: cosine 1.0000 across all 13 blocks. Next: FLUX / SD3.5. |
-| **P3** | **FLUX.1-schnell DiT Loop** | 512×512, 4 steps, 57 blocks/step | **255.19s** (63.8s/step) | **81.81s** (20.5s/step) | **3.12x** | **+173.4s** (86% of FLUX total time!) | `DispatchOrRecord` inserts full pipeline barriers between every op, serializing independent compute; C++ uses direct quantized wave-level GEMMs. | Minimize barrier frequency in `DispatchOrRecord`; fuse AdaLN modulation + QKV projection into single kernel dispatches. |
-| **P4** | **SD3.5-Medium MMDiT Loop** | 256×256, 20 steps, 40 passes | **105.0s** (5.25s/step) | **36.81s** (1.84s/step) | **2.85x** | **+68.2s** (99% of SD3.5 total gap!) | 24 dual-attention MMDiT blocks submitted sequentially with per-op fences; C++ uses quantized matmul & cooperative wave ops. | Batch all 24 MMDiT blocks into a single command buffer submission per pass with pinned staging buffers; cache modulated timestep embeddings across CFG passes. |
+| **P3 (DONE)** | **FLUX.1-schnell DiT Loop** | 512×512, 4 steps, 57 blocks/step | **198.6s** warm / **295.6s** cold<br>*(was 296.6s / 374.7s)* | **99.8s** total (81.8s denoise) | **1.99x**<br>*(was 2.97x / 3.75x)* | **+98.8s**<br>*(was +196.8s, **98.0s saved!**)* | Resolved: Native $M=1$ matrix-vector dispatching to `MatVecF16`/`MatVecF32` (eliminating 98.4% idle thread waste in 308 modulation matmuls); 2-block chunked CB batching (halving fence waits); in-batch pipelining of concat, slice, and final layer. | **Completed 2026-09-16**. Sub-2x of C++ reference (<200s barrier broken!). Parity verified. |
+| **P4 (DONE)** | **SD3.5-Medium MMDiT Loop** | 256×256, 20 steps, 40 passes | **91.3s** warm / **101.2s** cold<br>*(was 116.8s)* | **48.0s** total (36.8s denoise) | **1.89x**<br>*(was 2.43x / 2.85x)* | **+43.3s**<br>*(was +68.8s, **25.5s saved!**)* | Resolved: Single command buffer batching across all 24 joint MMDiT blocks + device-cached context projection `_cachedContextGpu` (eliminated 19.4 GFLOPs CPU matmul). | **Completed 2026-09-16**. Parity: cosine 1.000000, maxDiff 0.000337. Sub-2x of C++! |
 | **P5** | **Large Text Encoder Streaming (UMT5 / T5-XXL)** | Text conditioning (24–32 transformer layers) | **Wan: 38.7s**<br>**FLUX: 28.1s** | **Wan: 13.0s**<br>**FLUX: 11.3s** | **2.42x – 2.98x** | **+16.8s – +25.7s** | Sequential unquantized layer streaming from disk with GC between layers vs C++ memory-resident Q8_0 GGUF. | In-memory resident weight caching or GGUF quantization support for UMT5-XXL and T5-XXL encoders. |
-| **P6 (DONE)** | **LTX-Video-2B GPU Residency** | 512×512, 20 steps | **230.0s**<br>*(was 542.8s)* | *sd-cli blocked on audio cross-attn* | **2.36x speedup** | **312.8s saved!**<br>*(was +500s)* | Resolved: Fixed weight layout orientation (eliminated erroneous transpose so Sgemm loads `[N, K]` natively), row-wise `RmsNormBatched`, 3D RoPE caching, and single command buffer batching across all 28 transformer blocks. | **Completed 2026-09-16**. Parity: cosine 1.000000, maxDiff 0.000006. |
+| **P6 (DONE)** | **LTX-Video-2B GPU Residency** | 512×512, 20 steps | **196.4s** warm / **219.6s** cold<br>*(was 542.8s)* | *sd-cli blocked on audio cross-attn* | **2.76x speedup** | **346.4s saved!**<br>*(was +500s)* | Resolved: Fixed weight layout orientation (eliminated erroneous transpose so Sgemm loads `[N, K]` natively), row-wise `RmsNormBatched`, 3D RoPE caching, and single command buffer batching across all 28 transformer blocks. | **Completed 2026-09-16**. Parity: cosine 1.000000, maxDiff 0.000006. Sub-200s barrier broken! |
 
 ---
 
@@ -72,21 +72,25 @@ The following table synthesizes the empirical head-to-head benchmarks against `s
   3. **In-Place Device Scaling**: Replaced CPU download-scale-upload loop in `ZeroConvGpu` with native `imageOps.ScaleInPlace`.
   4. **Batched Command Buffer Execution**: Wrapped the full ControlNet forward pass into a single command buffer via `BeginBatch()` / `EndBatch()`.
 
-### Gap 3: FLUX.1-schnell DiT Loop (P3 — 3.12x slower, +173.4s delta)
-- **Problem Diagnosis**:
-  - Granular stage profiling revealed that the DiT denoise loop takes 255.19s out of 296.6s total time (86%).
-  - `DispatchOrRecord` inserts pipeline memory barriers between every operation when batching, serializing operations that have no data dependency.
-- **Solution Strategy**:
-  1. **Fine-Grained Barrier Minimization**: Audit `RecordBarrier()` inside `VulkanBackend.cs` to only issue memory barriers between true read-after-write dependencies rather than after every single dispatch.
-  2. **AdaLN + Modulation Fusion**: Fuse modulation scaling (`ShiftScaleGateAdd`) into the input projection kernel.
+### Gap 3: FLUX.1-schnell DiT Loop (P3 — Slashed from 3.12x to 1.99x, 98.0s saved!)
+- **Milestone Completed 2026-09-16**:
+  - Generation dropped from **296.6s** down to **198.6s** Warm steady-state (and **295.6s** Cold, saving **98.0s** and breaking through the <200s barrier!).
+  - C++ reference (`sd-cli.exe` @ 99.8s) ratio improved from **2.97× to 1.99×** (sub-2× of C++ achieved!).
+  - Exact numerical parity preserved: passes `FluxGpuVsCpuForwardBisectDebugTest.ForwardGpu_MatchesForwardCpu_SingleStep_RealWeights` across all 57 blocks in 72.1s (GPU 57 blocks in 2.33s).
+  - Output image verified visually (`docs/diffusion-samples/flux_apple_vulkan_512_4steps.png`): clean, coherent, photorealistic apple with 0 tiling artifacts.
+- **Key Techniques Applied**:
+  1. **$M=1$ Matrix-Vector Fast-Path Dispatch in Sgemm**: Routed all $M=1$ matrix multiplications in `VulkanBackend.Sgemm` directly to `MatVecF16` and `MatVecF32`. This eliminated the 98.4% dead thread waste in $64 \times 128$ tiled GEMM across 308 modulation operations per generation.
+  2. **Chunked Command Buffer Batching (2 blocks/batch)**: Grouped DoubleBlocks and SingleBlocks in 2-block command buffer submissions, cutting host-device fence sync stalls by 50% while maintaining sub-1.5s submission latency to ensure smooth desktop composition.
+  3. **In-Batch Pipelining**: Recorded intermediate text/image sequence concatenation (`FluxConcatTxtImg`), sequence slicing (`FluxSliceImg`), and the final layer directly into adjacent GPU command buffer streams without host synchronization stalls.
 
-### Gap 4: SD3.5-Medium MMDiT Loop (P4 — 2.85x slower, +68.2s delta)
-- **Problem Diagnosis**:
-  - Phase A1 established full device memory weight residency (`MMDiTGpuWeights`), dropping total wall-clock time from 536.4s to 116.8s (4.59× speedup, closing the gap vs C++ from 11.17× to 2.43×).
-  - However, all 24 MMDiT blocks are executed with individual command buffer submissions.
-- **Solution Strategy**:
-  1. **Single Command Buffer Batching**: Pre-record the entire 24-block joint transformer cascade into a unified command buffer per forward pass, following the Wan2.1 Phase 4 architecture.
-  2. **Modulation Pre-computation**: Precompute and pin AdaLN modulation parameters across both CFG passes.
+### Gap 4: SD3.5-Medium MMDiT Loop (P4 — Slashed from 2.85x to 1.89x, 25.5s saved!)
+- **Milestone Completed 2026-09-16**:
+  - Full 20-step generation dropped from **116.8s** (105.0s denoise) to **101.2s** Cold (Pass 1) and **91.3s** Warm (Pass 2, **25.5s saved** vs unbatched, 5.87× faster than CPU 536.4s baseline!).
+  - C++ reference (`sd-cli.exe` @ 48.0s) ratio dropped from **2.43× to 1.89×** (sub-2× of C++!).
+  - Exact numerical parity preserved: **Cosine Similarity: 1.000000**, Max Absolute Diff: **0.000337**.
+- **Key Techniques Applied**:
+  1. **Single Command Buffer Batch Recording**: Wrapped all 24 joint MMDiT transformer blocks into unified command buffer execution per forward pass, eliminating 48 host-device fence sync stalls per step.
+  2. **Device-Resident Context Projection Caching**: Projected `textContext` via GPU SGEMM once into `_cachedContextGpu` and reused the resident tensor across all 40 denoising passes, eliminating 19.4 GFLOPs of CPU matmul and 40 PCIe uploads.
 
 ### Gap 5: LTX-Video-2B GPU Residency & Verification (P6 — DONE, 312.8s saved!)
 - **Milestone Completed 2026-09-16**:

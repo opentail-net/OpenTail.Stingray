@@ -312,4 +312,62 @@ public sealed class FluxGpuParityTests
             backend.Free(cGpu);
         }
     }
+
+    [Fact]
+    public void SgemmF16_M1_MatchesCpuReference()
+    {
+        using var backend = TryCreateVulkan();
+        if (backend is null) return;
+
+        const int M = 1;
+        const int K = 3072;
+        const int N = 9216;
+        var rng = new Random(42);
+
+        var a = new float[M * K];
+        for (int i = 0; i < a.Length; i++) a[i] = (float)(rng.NextDouble() * 2 - 1);
+
+        var bF16 = new Half[N * K];
+        var bF32 = new float[N * K];
+        for (int i = 0; i < bF16.Length; i++)
+        {
+            float val = (float)(rng.NextDouble() * 2 - 1);
+            bF16[i] = (Half)val;
+            bF32[i] = (float)bF16[i];
+        }
+
+        var cpuOut = new float[M * N];
+        for (int n = 0; n < N; n++)
+        {
+            float sum = 0f;
+            for (int k = 0; k < K; k++)
+            {
+                sum += a[k] * bF32[n * K + k];
+            }
+            cpuOut[n] = sum;
+        }
+
+        var aGpu = backend.Upload(a, TensorShape.D2(M, K));
+        var bGpu = backend.UploadHalf(bF16, TensorShape.D2(N, K));
+        var cGpu = backend.Allocate(TensorShape.D2(M, N));
+
+        try
+        {
+            backend.Sgemm(cGpu, aGpu, bGpu, M, K, N);
+
+            var gpuOut = new float[M * N];
+            backend.Download(cGpu, gpuOut);
+
+            for (int i = 0; i < cpuOut.Length; i++)
+            {
+                Assert.True(MathF.Abs(cpuOut[i] - gpuOut[i]) < 1e-2f, $"Mismatch at {i}: cpu={cpuOut[i]}, gpu={gpuOut[i]}");
+            }
+        }
+        finally
+        {
+            backend.Free(aGpu);
+            backend.Free(bGpu);
+            backend.Free(cGpu);
+        }
+    }
 }

@@ -113,7 +113,10 @@ public sealed class FluxGpuVsCpuForwardBisectDebugTest
         vulkan.AddInPlace(ws.Latent, initNoiseGpu);
 
         gpuDit.PrecomputeTxtGpu(txtEmbeds, ws, weights, visionOps);
+        var swGpu = System.Diagnostics.Stopwatch.StartNew();
         var velGpuTensor = gpuDit.ForwardGpu(ws.Latent, txtEmbeds, pooledEmbed, timestep, guidance, ws, weights, visionOps);
+        swGpu.Stop();
+        Console.WriteLine($"[FluxParityTest] ForwardGpu (57 blocks) took {swGpu.ElapsedMilliseconds} ms ({swGpu.Elapsed.TotalSeconds:F2}s)");
 
         float[] velGpu = new float[nImg * p.OutChannels];
         vulkan.Download(velGpuTensor, velGpu);

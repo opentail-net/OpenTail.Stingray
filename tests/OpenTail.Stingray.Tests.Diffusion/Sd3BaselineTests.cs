@@ -183,12 +183,28 @@ public sealed class Sd3BaselineTests
         swGen.Stop();
         swTotal.Stop();
 
-        string msgGen = $"[Sd3Profile Vulkan] pipeline.Generate (20 steps 256x256) took {swGen.ElapsedMilliseconds} ms ({swGen.Elapsed.TotalSeconds:F1}s)";
-        string msgTot = $"[Sd3Profile Vulkan] Total execution took {swTotal.ElapsedMilliseconds} ms ({swTotal.Elapsed.TotalSeconds:F1}s)";
+        string msgGen = $"[Sd3Profile Vulkan Pass 1 (Cold)] pipeline.Generate (20 steps 256x256) took {swGen.ElapsedMilliseconds} ms ({swGen.Elapsed.TotalSeconds:F1}s)";
+        string msgTot = $"[Sd3Profile Vulkan Pass 1 (Cold)] Total execution took {swTotal.ElapsedMilliseconds} ms ({swTotal.Elapsed.TotalSeconds:F1}s)";
         _output.WriteLine(msgGen);
         _output.WriteLine(msgTot);
         Console.WriteLine(msgGen);
         Console.WriteLine(msgTot);
+
+        var swWarm = Stopwatch.StartNew();
+        pipeline.Generate(
+            prompt: "a red apple on a wooden table",
+            negativePrompt: "",
+            width: 256,
+            height: 256,
+            steps: 20,
+            guidance: 4.5f,
+            seed: 43,
+            outputPath: outputPath);
+        swWarm.Stop();
+
+        string msgWarm = $"[Sd3Profile Vulkan Pass 2 (Warm)] pipeline.Generate (20 steps 256x256) took {swWarm.ElapsedMilliseconds} ms ({swWarm.Elapsed.TotalSeconds:F1}s)";
+        _output.WriteLine(msgWarm);
+        Console.WriteLine(msgWarm);
 
         Assert.True(File.Exists(outputPath), $"Expected output file at {outputPath}");
     }
