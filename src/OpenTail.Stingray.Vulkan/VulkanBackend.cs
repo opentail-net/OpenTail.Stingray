@@ -839,8 +839,24 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
     /// Fraction of an integrated GPU's shared heap offered as a placement budget. The heap is
     /// physical system RAM the CPU is simultaneously using (weights are memory-mapped host-side,
     /// and the CPU fallback paths allocate from the same pool), so claiming all of it would
-    /// double-count. Override with <c>STINGRAY_VULKAN_UMA_FRACTION</c> (0.05–1.0) to push
+    /// double-count. Override with <c>STINGRAY_VULKAN_UMA_FRACTION</c> (0.05–2.0) to push
     /// harder on a box dedicated to inference.
+    ///
+    /// EXPERIMENTAL, &gt;1.0: this deliberately asks our OWN budgeting math for more bytes than
+    /// the device's reported heap size (<c>Heap.size</c> from
+    /// <c>vkGetPhysicalDeviceMemoryProperties</c>) — a number the AMD driver chose to advertise
+    /// for this UMA heap, not necessarily "all RAM actually available for GPU-mappable
+    /// allocations." Whether a value &gt;1.0 works depends on whether that reported size is a
+    /// hard ceiling the ICD enforces at <c>vkAllocateMemory</c> time, or just advisory metadata
+    /// the OS will honor allocations past (using real system RAM headroom the advertised number
+    /// doesn't account for) — this override exists specifically so that question can be
+    /// answered by trying it, not guessed at. See
+    /// docs/084-vulkan-large-tensor-sharding-plan.md's Follow-up 8/9 for the measured answer on
+    /// one specific device. The 2.0 ceiling here is a sanity bound against a typo (e.g. an
+    /// accidental extra digit), not a claim that 2.0 is safe on every machine — the dense-FFN
+    /// layer loop catches allocation failures cleanly, but later MANDATORY uploads (e.g. the MTP
+    /// head) are not wrapped, so a value pushed far enough past what the OS will actually back
+    /// can still surface as an unhandled crash rather than a graceful message.
     /// </summary>
     private static double UmaHeapFraction
     {
@@ -849,7 +865,7 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
             var raw = Environment.GetEnvironmentVariable("STINGRAY_VULKAN_UMA_FRACTION");
             return double.TryParse(raw, System.Globalization.NumberStyles.Float,
                        System.Globalization.CultureInfo.InvariantCulture, out var f)
-                   && f is >= 0.05 and <= 1.0
+                   && f is >= 0.05 and <= 2.0
                 ? f
                 : 0.5;
         }

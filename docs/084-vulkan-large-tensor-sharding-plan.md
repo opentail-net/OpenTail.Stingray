@@ -553,11 +553,55 @@ heap for this purpose). Removing or raising that clamp was deliberately not atte
 specifically to prevent the kind of overcommit this whole document is about fixing, and bypassing
 a deliberate safety bound isn't something to do without an explicit ask.
 
-**Recommendation given this data**: `STINGRAY_VULKAN_UMA_FRACTION=1.0` with
-`STINGRAY_DENSE_FFN_GPU_MARGIN_MB=256` is now the best-measured setting for this checkpoint on
-this hardware — verified clean, verified fastest, verified safe. The *shipped default* remains
-0.5 for now (a product decision, not an engineering one — see Follow-up 5's original note); this
-sweep gives whoever makes that call real numbers to work from instead of a guess.
+**Recommendation given this data (superseded by Follow-up 9 below)**: `1.0` was the best-measured
+setting at time of writing.
+
+## Follow-up 9: testing past the `UmaHeapFraction` clamp (2026-09-16, later)
+
+The user asked, explicitly, to understand the `≤1.0` clamp's theory by testing past it rather than
+reasoning about it in the abstract — a reasonable ask given this document's whole track record of
+"an advertised/assumed number turning out to be conservative" (the original hard-coded 2 GiB
+`maxStorageBufferRange` in Follow-up 0, now known to actually be 4 GiB on this device).
+
+**The theory**: `VramBytes = fraction × Heap.size`, where `Heap.size` comes from
+`vkGetPhysicalDeviceMemoryProperties` — a number the AMD driver chose to *advertise* for this UMA
+heap (`32,153 MiB` here), not necessarily "all RAM actually available for GPU-mappable
+allocations." The `≤1.0` clamp assumes that advertised number is a hard ceiling worth respecting.
+Whether it actually is one — enforced by the driver/ICD at `vkAllocateMemory` time — or just
+advisory metadata the OS will let allocations exceed (using real system RAM the advertised number
+doesn't account for) can only be answered by trying it, not by reading the spec, since Vulkan
+doesn't mandate either behavior for a given ICD.
+
+**Change**: widened the clamp from `[0.05, 1.0]` to `[0.05, 2.0]` in `VulkanBackend.cs`'s
+`UmaHeapFraction` — the new upper bound is a typo-guard (protects against an accidental extra
+digit turning into an absurd request), not a claim that `2.0` is safe on any given machine. Added
+an explicit code comment documenting the caveat found during this test: the dense-FFN layer loop
+catches allocation failures cleanly (already proven safe by Follow-up 3's incident), but later
+*mandatory* uploads (the MTP head) are not wrapped in a try/catch, so pushing far enough past what
+the OS will actually back could still surface as an unhandled crash rather than a graceful message.
+
+**Measured, at `STINGRAY_VULKAN_UMA_FRACTION=1.1`** (10% past the advertised heap;
+`STINGRAY_DENSE_FFN_GPU_MARGIN_MB=256`): loaded cleanly, **53/64 FFN layers** admitted (27,030
+MiB — more than the entire advertised 32,153 MiB heap on its own), decode reached **1.0-1.2 t/s**.
+Verified clean via `Get-Counter` before and after: 46.4-46.7 GB available RAM throughout, ~22
+pages/sec at rest (idle-level, not swapping). **Confirms the theory**: this specific AMD/RADV
+driver's reported UMA heap size is advisory, not enforced — the real ceiling is actual system RAM
+(63.3 GB total), several times larger than what the heap-size query alone would suggest.
+
+**Stopped at `1.1` deliberately, per the user's own judgment call mid-session** ("tbh, I wouldn't
+push it higher than this") — not because a further push was known to fail, but because the value
+of the experiment (learning the clamp's assumption doesn't hold on this hardware) was already
+captured, and further pushing trades a diminishing-returns speed gain against real risk given the
+unwrapped mandatory-upload caveat above. `1.2`+ was not attempted.
+
+**Updated recommendation**: `STINGRAY_VULKAN_UMA_FRACTION=1.1` with
+`STINGRAY_DENSE_FFN_GPU_MARGIN_MB=256` is the best-measured setting found in this document, on
+this specific hardware, verified clean and fastest (1.0-1.2 t/s — roughly 4-6x the very first
+measurement in this document's history). This does **not** mean `1.1` (or the `2.0` ceiling now
+available) is safe to assume on a different machine/driver/model — the whole point of this
+follow-up is that the advertised heap size's relationship to real usable memory is
+driver-specific and was only established here by testing, not derived from any general rule.
+Re-verify on any other hardware before trusting a value above `1.0` there.
 
 ---
 
