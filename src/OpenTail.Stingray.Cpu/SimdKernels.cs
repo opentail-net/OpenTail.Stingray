@@ -961,6 +961,40 @@ public static unsafe class SimdKernels
             case DType.Q4_K:
             {
                 int bpr = (cols / 256) * 144;
+                if (Avx2.IsSupported && Fma.IsSupported && cols >= 256 && !LegacyDotQ4K)
+                {
+                    int scratchBytes = Q8KSScratchBytes(cols);
+                    byte* scratch = stackalloc byte[scratchBytes];
+                    QuantizeRowToQ8KS(input, cols, scratch);
+
+                    int numThreads = Math.Min(s_parallelOpts.MaxDegreeOfParallelism, (rows + 63) / 64);
+                    if (rows >= MinRowsForParallel && numThreads > 1)
+                    {
+                        int chunkSize = (rows + numThreads - 1) / numThreads;
+                        var w1 = weights1; var w2 = weights2; var s = scratch;
+                        var o1 = output1; var o2 = output2; int c = cols;
+                        Parallel.For(0, numThreads, s_parallelOpts, t =>
+                        {
+                            int start = t * chunkSize;
+                            int end = Math.Min(rows, start + chunkSize);
+                            for (int r = start; r < end; r++)
+                            {
+                                o1[r] = DotQ4K_Q8KS(w1 + (long)r * bpr, s, c);
+                                o2[r] = DotQ4K_Q8KS(w2 + (long)r * bpr, s, c);
+                            }
+                        });
+                    }
+                    else
+                    {
+                        for (int r = 0; r < rows; r++)
+                        {
+                            output1[r] = DotQ4K_Q8KS(weights1 + (long)r * bpr, scratch, cols);
+                            output2[r] = DotQ4K_Q8KS(weights2 + (long)r * bpr, scratch, cols);
+                        }
+                    }
+                    break;
+                }
+
                 if (rows >= MinRowsForParallel)
                 {
                     var w1 = weights1; var w2 = weights2; var inp = input;
@@ -1176,15 +1210,24 @@ public static unsafe class SimdKernels
             case DType.Q4_K:
             {
                 int bpr = (cols / 256) * 144;
+                int scratchBytes = Q8KSScratchBytes(cols);
+                // Two Q8KS scratches (one per input); pre-quantize activation once,
+                // then use DotQ4K_Q8KS_2In for integer-domain dot products.
+                // This matches the DotQ4K_Q8KS path used by MatVecQ4K/MatVec.
+                byte* sc1 = stackalloc byte[scratchBytes];
+                byte* sc2 = stackalloc byte[scratchBytes];
+                QuantizeRowToQ8KS(input1, cols, sc1);
+                QuantizeRowToQ8KS(input2, cols, sc2);
+
                 if (rows >= MinRowsForParallel)
                 {
-                    var w = weights; var i1 = input1; var i2 = input2;
+                    var w = weights; var s1 = sc1; var s2 = sc2;
                     var o1 = output1; var o2 = output2; int c = cols;
                     Parallel.For(0, rows, s_parallelOpts, r =>
                     {
                         byte* row = w + (long)r * bpr;
-                        DotQ4K_2In(row, i1, i2, c, out float s1, out float s2);
-                        o1[r] = s1; o2[r] = s2;
+                        DotQ4K_Q8KS_2In(row, s1, s2, c, out float v1, out float v2);
+                        o1[r] = v1; o2[r] = v2;
                     });
                 }
                 else
@@ -1192,8 +1235,8 @@ public static unsafe class SimdKernels
                     for (int r = 0; r < rows; r++)
                     {
                         byte* row = weights + (long)r * bpr;
-                        DotQ4K_2In(row, input1, input2, cols, out float s1, out float s2);
-                        output1[r] = s1; output2[r] = s2;
+                        DotQ4K_Q8KS_2In(row, sc1, sc2, cols, out float v1, out float v2);
+                        output1[r] = v1; output2[r] = v2;
                     }
                 }
                 break;
@@ -1351,15 +1394,28 @@ public static unsafe class SimdKernels
             case DType.Q4_K:
             {
                 int bpr = (cols / 256) * 144;
+                int scratchBytes = Q8KSScratchBytes(cols);
+                // Four Q8KS scratches (one per input); same stack-alloc discipline as MatVec2In.
+                // Pre-quantize all four activations once, then use DotQ4K_Q8KS_4In.
+                // This matches the DotQ4K_Q8KS path used by MatVecQ4K/MatVec.
+                byte* sc0 = stackalloc byte[scratchBytes];
+                byte* sc1 = stackalloc byte[scratchBytes];
+                byte* sc2 = stackalloc byte[scratchBytes];
+                byte* sc3 = stackalloc byte[scratchBytes];
+                QuantizeRowToQ8KS(input0, cols, sc0);
+                QuantizeRowToQ8KS(input1, cols, sc1);
+                QuantizeRowToQ8KS(input2, cols, sc2);
+                QuantizeRowToQ8KS(input3, cols, sc3);
+
                 if (rows >= MinRowsForParallel)
                 {
-                    var w = weights; var i0 = input0; var i1 = input1; var i2 = input2; var i3 = input3;
+                    var w = weights; var s0 = sc0; var s1 = sc1; var s2 = sc2; var s3 = sc3;
                     var o0 = output0; var o1 = output1; var o2 = output2; var o3 = output3; int c = cols;
                     Parallel.For(0, rows, s_parallelOpts, r =>
                     {
                         byte* row = w + (long)r * bpr;
-                        DotQ4K_4In(row, i0, i1, i2, i3, c, out float s0, out float s1, out float s2, out float s3);
-                        o0[r] = s0; o1[r] = s1; o2[r] = s2; o3[r] = s3;
+                        DotQ4K_Q8KS_4In(row, s0, s1, s2, s3, c, out float v0, out float v1, out float v2, out float v3);
+                        o0[r] = v0; o1[r] = v1; o2[r] = v2; o3[r] = v3;
                     });
                 }
                 else
@@ -1367,8 +1423,8 @@ public static unsafe class SimdKernels
                     for (int r = 0; r < rows; r++)
                     {
                         byte* row = weights + (long)r * bpr;
-                        DotQ4K_4In(row, input0, input1, input2, input3, cols, out float s0, out float s1, out float s2, out float s3);
-                        output0[r] = s0; output1[r] = s1; output2[r] = s2; output3[r] = s3;
+                        DotQ4K_Q8KS_4In(row, sc0, sc1, sc2, sc3, cols, out float v0, out float v1, out float v2, out float v3);
+                        output0[r] = v0; output1[r] = v1; output2[r] = v2; output3[r] = v3;
                     }
                 }
                 break;
@@ -1865,6 +1921,8 @@ public static unsafe class SimdKernels
     // timings that couldn't be trusted. Not intended to stay -- remove once that A/B is settled.
     internal static readonly bool UseWide8 =
         Environment.GetEnvironmentVariable("STINGRAY_MATVEC_WIDE8") == "1";
+    internal static readonly bool LegacyDotQ4K =
+        Environment.GetEnvironmentVariable("STINGRAY_LEGACY_DOTQ4K") == "1";
 
     public static void MatVecQ4K(float* output, byte* weights, float* input, int rows, int cols) =>
         MatVecQ4K(output, weights, null, input, rows, cols);
@@ -1872,6 +1930,75 @@ public static unsafe class SimdKernels
     public static void MatVecQ4K(float* output, byte* weights, float* bias, float* input, int rows, int cols)
     {
         int bytesPerRow = (cols / 256) * 144;
+
+        if (Avx2.IsSupported && Fma.IsSupported && cols >= 256 && !LegacyDotQ4K)
+        {
+            int scratchBytes = Q8KSScratchBytes(cols);
+            byte* scratch = stackalloc byte[scratchBytes];
+            QuantizeRowToQ8KS(input, cols, scratch);
+
+            int numThreads = Math.Min(s_parallelOpts.MaxDegreeOfParallelism, (rows + 63) / 64);
+            if (rows >= MinRowsForParallel && numThreads > 1)
+            {
+                int chunkSize = (rows + numThreads - 1) / numThreads;
+                var w = weights; var s = scratch; var outp = output; var b = bias; int c = cols;
+                Parallel.For(0, numThreads, s_parallelOpts, t =>
+                {
+                    int start = t * chunkSize;
+                    int end = Math.Min(rows, start + chunkSize);
+                    int r = start;
+                    if (b != null)
+                    {
+                        for (; r + 2 <= end; r += 2)
+                        {
+                            DotQ4K_Q8KS_2Row(w + (long)r * bytesPerRow, w + (long)(r + 1) * bytesPerRow,
+                                             s, c, out float o0, out float o1);
+                            outp[r] = o0 + b[r]; outp[r + 1] = o1 + b[r + 1];
+                        }
+                        for (; r < end; r++)
+                            outp[r] = DotQ4K_Q8KS(w + (long)r * bytesPerRow, s, c) + b[r];
+                    }
+                    else
+                    {
+                        for (; r + 2 <= end; r += 2)
+                        {
+                            DotQ4K_Q8KS_2Row(w + (long)r * bytesPerRow, w + (long)(r + 1) * bytesPerRow,
+                                             s, c, out float o0, out float o1);
+                            outp[r] = o0; outp[r + 1] = o1;
+                        }
+                        for (; r < end; r++)
+                            outp[r] = DotQ4K_Q8KS(w + (long)r * bytesPerRow, s, c);
+                    }
+                });
+                return;
+            }
+
+            if (bias != null)
+            {
+                int r = 0;
+                for (; r + 2 <= rows; r += 2)
+                {
+                    DotQ4K_Q8KS_2Row(weights + (long)r * bytesPerRow, weights + (long)(r + 1) * bytesPerRow,
+                                     scratch, cols, out float o0, out float o1);
+                    output[r] = o0 + bias[r]; output[r + 1] = o1 + bias[r + 1];
+                }
+                for (; r < rows; r++)
+                    output[r] = DotQ4K_Q8KS(weights + (long)r * bytesPerRow, scratch, cols) + bias[r];
+            }
+            else
+            {
+                int r = 0;
+                for (; r + 2 <= rows; r += 2)
+                {
+                    DotQ4K_Q8KS_2Row(weights + (long)r * bytesPerRow, weights + (long)(r + 1) * bytesPerRow,
+                                     scratch, cols, out float o0, out float o1);
+                    output[r] = o0; output[r + 1] = o1;
+                }
+                for (; r < rows; r++)
+                    output[r] = DotQ4K_Q8KS(weights + (long)r * bytesPerRow, scratch, cols);
+            }
+            return;
+        }
 
         if (rows >= MinRowsForParallel)
         {
@@ -8293,7 +8420,112 @@ public static unsafe class SimdKernels
     }
 
     // ================================================================
-    //  Q4_K · Q8_KS Dot Product — two/four-input dequant-once (#112/#114)
+    //  Q4_K · Q8_KS Dot Product — two-row, one shared input (#SmolLM2-decode)
+    // ================================================================
+    // Loads the Q8_KS activation scratch ONCE per chunk and dots it against
+    // TWO independent Q4_K weight rows, halving activation memory traffic
+    // compared to two sequential DotQ4K_Q8KS calls.  Each row's accumulation
+    // is bit-identical to a standalone DotQ4K_Q8KS call (same sub-block order,
+    // same int MAdd / min-correction / FP FMA chain), so this is safe to use
+    // alongside the single-row fast path in the same dispatcher.
+    /// <summary>
+    /// Dots two adjacent Q4_K weight rows against a single pre-quantised Q8KS
+    /// activation scratch.  Accumulation is bit-identical to two separate
+    /// <see cref="DotQ4K_Q8KS(byte*,byte*,int)"/> calls.
+    /// </summary>
+    public static void DotQ4K_Q8KS_2Row(byte* row0, byte* row1, byte* scratch, int cols,
+                                        out float sum0, out float sum1)
+    {
+        int numBlocks = cols / 256;
+        if (Avx2.IsSupported && Fma.IsSupported)
+        {
+            DotQ4K_Q8KS_2Row_Avx2(row0, row1, scratch, numBlocks, out sum0, out sum1);
+            return;
+        }
+        sum0 = DotQ4K_Q8KS_Scalar(row0, scratch, numBlocks);
+        sum1 = DotQ4K_Q8KS_Scalar(row1, scratch, numBlocks);
+    }
+
+    private static void DotQ4K_Q8KS_2Row_Avx2(byte* row0, byte* row1, byte* scratch,
+                                               int numBlocks, out float sum0, out float sum1)
+    {
+        // Q8KS scratch layout: [numBlocks*8 floats dSub][numBlocks*256 sbytes q8][numBlocks*16 shorts bsums]
+        float* dArr   = (float*)scratch;
+        sbyte* qsArr  = (sbyte*)(scratch + numBlocks * 32);
+        short* bsums  = (short*)(scratch + numBlocks * 32 + numBlocks * 256);
+
+        var m0F   = Vector256.Create((byte)0x0F);
+        var one16 = Vector256.Create((short)1);
+        var facc0 = Vector256<float>.Zero; float min0 = 0f;
+        var facc1 = Vector256<float>.Zero; float min1 = 0f;
+
+        for (int b = 0; b < numBlocks; b++)
+        {
+            // ---- row 0 weight metadata ----
+            byte* x0  = row0 + b * 144;
+            float d0  = HalfToFloat(x0[0], x0[1]);
+            float dm0 = HalfToFloat(x0[2], x0[3]);
+            byte* sc0 = x0 + 4;
+            byte* qs0 = x0 + 16;
+
+            // ---- row 1 weight metadata ----
+            byte* x1  = row1 + b * 144;
+            float d1  = HalfToFloat(x1[0], x1[1]);
+            float dm1 = HalfToFloat(x1[2], x1[3]);
+            byte* sc1 = x1 + 4;
+            byte* qs1 = x1 + 16;
+
+            // ---- shared activation data ----
+            float* dSub  = dArr  + b * 8;
+            sbyte* q8    = qsArr + b * 256;
+            short* bsumsB = bsums + b * 16;
+
+            // min-correction terms use each row's own d/dmin but the shared bsums/dSub
+            min0 += MinCorrectionQ4K(bsumsB, dSub, LoadQ4KMins(sc0), dm0, one16);
+            min1 += MinCorrectionQ4K(bsumsB, dSub, LoadQ4KMins(sc1), dm1, one16);
+
+            for (int chunk = 0; chunk < 4; chunk++)
+            {
+                // Q8KS activation vectors — loaded ONCE, shared by both rows.
+                var qlo_act = Vector256.LoadUnsafe(ref *(q8 + chunk * 64)).AsSByte();
+                var qhi_act = Vector256.LoadUnsafe(ref *(q8 + chunk * 64 + 32)).AsSByte();
+
+                // ---- row 0: unpack nibbles and accumulate ----
+                {
+                    GetScaleMinK4(2 * chunk,     sc0, out byte s0lo, out _);
+                    GetScaleMinK4(2 * chunk + 1, sc0, out byte s0hi, out _);
+                    var qb0   = Vector256.LoadUnsafe(ref *(qs0 + chunk * 32));
+                    var lo0   = Avx2.And(qb0, m0F);
+                    var hi0   = Avx2.And(Avx2.ShiftRightLogical(qb0.AsInt16(), 4).AsByte(), m0F);
+                    var i0lo  = DotU8I8ToI32(lo0, qlo_act, one16);
+                    var i0hi  = DotU8I8ToI32(hi0, qhi_act, one16);
+                    facc0 = Fma.MultiplyAdd(Avx.ConvertToVector256Single(i0lo),
+                                            Vector256.Create(dSub[2 * chunk    ] * (d0 * s0lo)), facc0);
+                    facc0 = Fma.MultiplyAdd(Avx.ConvertToVector256Single(i0hi),
+                                            Vector256.Create(dSub[2 * chunk + 1] * (d0 * s0hi)), facc0);
+                }
+
+                // ---- row 1: unpack nibbles and accumulate ----
+                {
+                    GetScaleMinK4(2 * chunk,     sc1, out byte s1lo, out _);
+                    GetScaleMinK4(2 * chunk + 1, sc1, out byte s1hi, out _);
+                    var qb1   = Vector256.LoadUnsafe(ref *(qs1 + chunk * 32));
+                    var lo1   = Avx2.And(qb1, m0F);
+                    var hi1   = Avx2.And(Avx2.ShiftRightLogical(qb1.AsInt16(), 4).AsByte(), m0F);
+                    var i1lo  = DotU8I8ToI32(lo1, qlo_act, one16);
+                    var i1hi  = DotU8I8ToI32(hi1, qhi_act, one16);
+                    facc1 = Fma.MultiplyAdd(Avx.ConvertToVector256Single(i1lo),
+                                            Vector256.Create(dSub[2 * chunk    ] * (d1 * s1lo)), facc1);
+                    facc1 = Fma.MultiplyAdd(Avx.ConvertToVector256Single(i1hi),
+                                            Vector256.Create(dSub[2 * chunk + 1] * (d1 * s1hi)), facc1);
+                }
+            }
+        }
+        sum0 = Vector256.Sum(facc0) - min0;
+        sum1 = Vector256.Sum(facc1) - min1;
+    }
+
+
     // ================================================================
     // Decodes the Q4_K weight row ONCE (the nibble unpack + 6-bit scale/min
     // decode) and dots it against 2/4 Q8_KS-prepacked inputs. Each input's

@@ -91,10 +91,10 @@ public sealed unsafe partial class ForwardPass
     /// dot in the same order, softmax runs over the same row, and each output still accumulates
     /// over i ascending. Only the loop nesting changes, not the arithmetic order.</para>
     /// </summary>
-    private void PrefillCoreAttention(float* batchQ, PagedKvCache cache, int layer, int N, int startPos, float* batchAttnOut)
+    private void PrefillCoreAttention(float* batchQ, PagedKvCache cache, int layer, int N, int startPos, float* batchAttnOut, int windowSize = -1)
     {
         int numHeads = _numHeads;
-        int numKvHeads = _numKvHeads;
+        int numKvHeads = _hp.LayerKvHeads is { } lkv ? lkv[layer] : _numKvHeads;
         // Per-layer head dim (issue #351). The attn scale on the next line was already
         // gemma4-aware; the dimension itself was not.
         int headDim = _layerHeadDim?[layer] ?? _headDim;
@@ -107,6 +107,8 @@ public sealed unsafe partial class ForwardPass
         // owns the head offset and this is where it was being got wrong.)
         int cacheHeadStride = _layerHeadDim is not null ? _maxHeadDim : headDim;
         int hpkg = numHeads / numKvHeads;
+        int kvSrc = _layerKvSrc is not null ? _layerKvSrc[layer] : -1;
+        int readLayer = kvSrc >= 0 ? kvSrc : layer;
         // Kept consistent with the single-token Attention() override above — see its comment.
         float scale = _hp.AttentionScaleOverride != 0f ? _hp.AttentionScaleOverride
             : _layerHeadDim is not null ? 1.0f : 1.0f / MathF.Sqrt(headDim);
@@ -156,7 +158,7 @@ public sealed unsafe partial class ForwardPass
         // Full investigation (ruled-out hypotheses, the parity and perplexity measurements, the
         // superseded reasoning that preceded them): docs/reference/forwardpass-investigation-log.md
         // #flash-128256-wide-attention-heads--perplexity-investigation
-        if (enableFlash64 && startPos + N >= 256 && _layerHeadDim is null
+        if (enableFlash64 && startPos + N >= 256 && _layerHeadDim is null && windowSize <= 0
             && (headDim == 64 || (Flash64WideHeadDimsEnabled && headDim is 128 or 256)) &&
             Avx2.IsSupported && Fma.IsSupported)
         {
@@ -170,7 +172,7 @@ public sealed unsafe partial class ForwardPass
         if (cache.IsBf16Store)
         {
             PrefillCoreAttentionBf16(batchQ, cache, layer, N, startPos, batchAttnOut,
-                numHeads, numKvHeads, headDim, qDim, cacheHeadStride, hpkg, scale);
+                numHeads, numKvHeads, headDim, qDim, cacheHeadStride, hpkg, scale, readLayer, windowSize);
             return;
         }
 
@@ -212,7 +214,7 @@ public sealed unsafe partial class ForwardPass
             // a speed change.
             int stride = maxSeqLen;
             float* scores = (float*)NativeMemory.AllocZeroed((nuint)((long)TokenTile * stride * sizeof(float)));
-            bool registerValues = enableRegisterValues && Fma.IsSupported && headDim >= 8 && headDim % 8 == 0;
+            bool registerValues = enableRegisterValues && Fma.IsSupported && headDim >= 8 && headDim % 8 == 0 && windowSize <= 0;
             float** valueRows = registerValues
                 ? (float**)NativeMemory.Alloc((nuint)(Math.Min(maxSeqLen, cache.Length) * sizeof(nint)))
                 : null;
@@ -240,7 +242,7 @@ public sealed unsafe partial class ForwardPass
             {
                 if (valueRows is not null)
                     for (int i = 0; i < Math.Min(maxSeqLen, cache.Length); i++)
-                        valueRows[i] = cache.ValueAtHead(layer, i, kvHead);
+                        valueRows[i] = cache.ValueAtHead(readLayer, i, kvHead);
 
                 for (int nBase = 0; nBase < N; nBase += TokenTile)
                 {
@@ -260,11 +262,12 @@ public sealed unsafe partial class ForwardPass
                     // needs every token on one kernel, which the tile remainder prevents.
                     for (int i = 0; i < endSeqMax; i++)
                     {
-                        float* kVec = cache.KeyAt(layer, i) + kvHead * cacheHeadStride;
+                        float* kVec = cache.KeyAt(readLayer, i) + kvHead * cacheHeadStride;
                         for (int t = 0; t < tn; t++)
                         {
                             int endSeq = Math.Min(startPos + nBase + t + 1, cache.Length);
-                            if (i < endSeq)
+                            int startSeq = windowSize > 0 ? Math.Max(0, endSeq - windowSize) : 0;
+                            if (i >= startSeq && i < endSeq)
                                 scores[(long)t * stride + i] = SimdKernels.DotF32(
                                     batchQ + (long)(nBase + t) * qDim + h * headDim, kVec, headDim) * scale;
                         }
@@ -278,11 +281,14 @@ public sealed unsafe partial class ForwardPass
                             $"[MLA-TRACE] L{layer} kq(pre-softmax) h0 tokLast first3=[{rowPre[0]:F4},{rowPre[1]:F4},{rowPre[2]:F4}]");
                     }
 
-                    // ── Phase 2: per-token softmax over its own causal length ──
+                    // ── Phase 2: per-token softmax over its own causal length (or SWA window) ──
                     for (int t = 0; t < tn; t++)
                     {
                         int endSeq = Math.Min(startPos + nBase + t + 1, cache.Length);
-                        SimdKernels.SoftmaxInPlace(scores + (long)t * stride, endSeq);
+                        int startSeq = windowSize > 0 ? Math.Max(0, endSeq - windowSize) : 0;
+                        if (startSeq > 0)
+                            new Span<float>(scores + (long)t * stride, startSeq).Clear();
+                        SimdKernels.SoftmaxInPlace(scores + (long)t * stride + startSeq, endSeq - startSeq);
                     }
 
                     if (traceThisLayer && h == 0 && nBase == 0)
@@ -312,14 +318,15 @@ public sealed unsafe partial class ForwardPass
                             for (int d = 0; d < headDim; d++) outHead[d] = 0;
                         }
 
-                        // Scalar/non-AVX fallback retains the original loop shape.
+                        // Scalar/non-AVX fallback retains the original loop shape with window support.
                         for (int i = 0; i < endSeqMax; i++)
                         {
-                            float* vVec = cache.ValueAtHead(layer, i, kvHead);
+                            float* vVec = cache.ValueAtHead(readLayer, i, kvHead);
                             for (int t = 0; t < tn; t++)
                             {
                                 int endSeq = Math.Min(startPos + nBase + t + 1, cache.Length);
-                                if (i >= endSeq) continue;
+                                int startSeq = windowSize > 0 ? Math.Max(0, endSeq - windowSize) : 0;
+                                if (i < startSeq || i >= endSeq) continue;
                                 float* outHead = batchAttnOut + (long)(nBase + t) * qDim + h * headDim;
                                 float w = scores[(long)t * stride + i];
                                 if (Fma.IsSupported && headDim >= 8)
@@ -378,9 +385,11 @@ public sealed unsafe partial class ForwardPass
     /// </remarks>
     private void PrefillCoreAttentionBf16(
         float* batchQ, PagedKvCache cache, int layer, int N, int startPos, float* batchAttnOut,
-        int numHeads, int numKvHeads, int headDim, int qDim, int cacheHeadStride, int hpkg, float scale)
+        int numHeads, int numKvHeads, int headDim, int qDim, int cacheHeadStride, int hpkg, float scale,
+        int readLayer = -1, int windowSize = -1)
     {
         const int TokenTile = 64;
+        int targetLayer = readLayer >= 0 ? readLayer : layer;
 
         Parallel.For(0, numHeads, h =>
         {
@@ -399,21 +408,25 @@ public sealed unsafe partial class ForwardPass
                     // ── Phase 1: scores. Stream K once per tile. ──
                     for (int i = 0; i < endSeqMax; i++)
                     {
-                        ushort* kVec = cache.Bf16KeyAt(layer, i) + kvHead * cacheHeadStride;
+                        ushort* kVec = cache.Bf16KeyAt(targetLayer, i) + kvHead * cacheHeadStride;
                         for (int t = 0; t < tn; t++)
                         {
                             int endSeq = Math.Min(startPos + nBase + t + 1, cache.Length);
-                            if (i < endSeq)
+                            int startSeq = windowSize > 0 ? Math.Max(0, endSeq - windowSize) : 0;
+                            if (i >= startSeq && i < endSeq)
                                 scores[(long)t * stride + i] = SimdKernels.DotF32Bf16(
                                     batchQ + (long)(nBase + t) * qDim + h * headDim, kVec, headDim) * scale;
                         }
                     }
 
-                    // ── Phase 2: per-token softmax over its own causal length ──
+                    // ── Phase 2: per-token softmax over its own causal length (or SWA window) ──
                     for (int t = 0; t < tn; t++)
                     {
                         int endSeq = Math.Min(startPos + nBase + t + 1, cache.Length);
-                        SimdKernels.SoftmaxInPlace(scores + (long)t * stride, endSeq);
+                        int startSeq = windowSize > 0 ? Math.Max(0, endSeq - windowSize) : 0;
+                        if (startSeq > 0)
+                            new Span<float>(scores + (long)t * stride, startSeq).Clear();
+                        SimdKernels.SoftmaxInPlace(scores + (long)t * stride + startSeq, endSeq - startSeq);
                     }
 
                     // ── Phase 3: weighted V. Stream V once per tile, same i-ascending order. ──
@@ -425,11 +438,12 @@ public sealed unsafe partial class ForwardPass
 
                     for (int i = 0; i < endSeqMax; i++)
                     {
-                        ushort* vVec = cache.Bf16ValueAtHead(layer, i, kvHead);
+                        ushort* vVec = cache.Bf16ValueAtHead(targetLayer, i, kvHead);
                         for (int t = 0; t < tn; t++)
                         {
                             int endSeq = Math.Min(startPos + nBase + t + 1, cache.Length);
-                            if (i >= endSeq) continue;
+                            int startSeq = windowSize > 0 ? Math.Max(0, endSeq - windowSize) : 0;
+                            if (i < startSeq || i >= endSeq) continue;
                             SimdKernels.AccumulateScaledBf16(
                                 batchAttnOut + (long)(nBase + t) * qDim + h * headDim,
                                 vVec, scores[(long)t * stride + i], headDim);

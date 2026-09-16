@@ -1267,40 +1267,14 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
         //
         // Earlier framings of this routing decision (superseded, kept for the per-layer plumbing
         // history): docs/reference/forwardpass-investigation-log.md
-        // #gemma-4-per-layer-head-dim-batched-prefill--superseded-framings
-        if (s_perLayerHeadDimPrefillForced && _layerHeadDim is not null)
-        {
-            throw new NotSupportedException(
-                "STINGRAY_PER_LAYER_HD_PREFILL=1 cannot force batched prefill for a per-layer " +
-                "head_dim model (gemma4). The batched path indexes KV with the model-wide head dim, " +
-                "so on layers with a smaller head_dim it reads and writes past the buffer — measured " +
-                "as an AccessViolationException, not merely incorrect output. Unset the variable; " +
-                "the sequential route is correct. See docs/done/gemma4-12b-evidence.md.");
-        }
-        bool perLayerHdUnsupported = _layerHeadDim is not null;
         bool moeUnsupported = _hp.IsMoE && !MoeBatchedPrefillSupported;
-        // Post-attention/post-FFW norm (OLMo2, Gemma 4 dense — see MoeBatchedPrefillSupported's
-        // doc comment for the MoE case above) is applied only on the sequential RunTrunk path;
-        // PrefillCore's batched loop has no equivalent step. Gemma 4 never reaches here at all
-        // (perLayerHdUnsupported already routes it away), so this specifically covers OLMo2 and
-        // any future dense post-norm architecture.
-        bool postNormUnsupported = _postAttnNorm is not null || _postFfwNorm is not null;
-        // Sliding-window attention (Command-R/cohere2): PrefillCoreAttention has no windowSize
-        // parameter at all — it was never taught SWA masking, because Gemma 4 (the only prior
-        // SWA architecture) is always routed away by perLayerHdUnsupported above before reaching
-        // this check. cohere2 has SWA WITHOUT per-layer head dims, so it would otherwise slip
-        // through and silently attend to the full context on every layer instead of the intended
-        // window. Routing it to the sequential path reuses RunTrunk's Attention(), which already
-        // threads windowSize correctly (proven by every Gemma 4 receipt).
-        bool swaUnsupported = _isSwaLayer is not null && _layerHeadDim is null;
         // OLMo v1 (UsesUnweightedNorm): PrefillCore's batched norm steps only know how to skip a
         // null-DataPtr norm tensor entirely (OLMo2's convention) or apply a weighted one — never
         // taught the third case, "normalize anyway with no learned parameters at all". Routing to
         // the sequential path reuses RunTrunk's fix instead of teaching PrefillCore a third norm
         // mode for a single architecture.
         bool unweightedNormUnsupported = _usesUnweightedNorm;
-        if (moeUnsupported || perLayerHdUnsupported || postNormUnsupported || swaUnsupported
-            || unweightedNormUnsupported)
+        if (moeUnsupported || unweightedNormUnsupported)
         {
             ReadOnlySpan<float> logits = default;
             for (int i = 0; i < N; i++)

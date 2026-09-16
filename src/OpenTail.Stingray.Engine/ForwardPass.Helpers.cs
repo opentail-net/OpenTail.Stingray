@@ -19,7 +19,10 @@ public sealed unsafe partial class ForwardPass
     // Token-major layout: per_layer_token_embd shape (PleAll=10752, vocab=262144) stores
     // one row of length PleAll per token (GGUF dim[0] is row width). Gather + dequant
     // the row, then per-layer normalise + add projection + scale.
-    private void BuildPerLayerProjections(int token)
+    private void BuildPerLayerProjections(int token) =>
+        BuildPerLayerProjectionsBatched(token, _hidden, _projPerLayer);
+
+    private void BuildPerLayerProjectionsBatched(int token, float* tokenHidden, float* outProjPerLayer)
     {
         int stackedDim = _hp.NumLayers * _pleWidth;
 
@@ -42,33 +45,34 @@ public sealed unsafe partial class ForwardPass
         float pleScale = MathF.Sqrt(_pleWidth);
         SimdKernels.ScaleInPlace(_pleRowBuf, pleScale, stackedDim);
 
-        SimdKernels.MatVec(_projPerLayer, (byte*)_perLayerModelProj,
-            _hidden, stackedDim, _embDim, DType.Float32);
+        SimdKernels.MatVec(outProjPerLayer, (byte*)_perLayerModelProj,
+            tokenHidden, stackedDim, _embDim, DType.Float32);
 
         float embScale = 1.0f / MathF.Sqrt(_embDim);
-        SimdKernels.ScaleInPlace(_projPerLayer, embScale, stackedDim);
+        SimdKernels.ScaleInPlace(outProjPerLayer, embScale, stackedDim);
 
         float invSqrt2 = 1.0f / MathF.Sqrt(2.0f);
         var projNormW = GetNormWeight(_perLayerProjNormTensor);
         for (int L = 0; L < _hp.NumLayers; L++)
         {
-            float* slice = _projPerLayer + (long)L * _pleWidth;
+            float* slice = outProjPerLayer + (long)L * _pleWidth;
             FastRmsNorm(slice, slice, projNormW, _pleWidth, _hp.RmsNormEps);
             SimdKernels.AddInPlace(slice, _pleRowBuf + (long)L * _pleWidth, _pleWidth);
             SimdKernels.ScaleInPlace(slice, invSqrt2, _pleWidth);
         }
-
     }
 
-    private void ApplyPerLayerEmbedding(int layer)
+    private void ApplyPerLayerEmbedding(int layer) =>
+        ApplyPerLayerEmbeddingBatched(layer, _hidden, _projPerLayer + (long)layer * _pleWidth);
+
+    private void ApplyPerLayerEmbeddingBatched(int layer, float* hidden, float* pleSlice)
     {
-        float* slice = _projPerLayer + (long)layer * _pleWidth;
-        FusedMatVec(_pleX, _pleInpGate![layer], _hidden, _pleWidth, _embDim);
-        SimdKernels.GeluTanhMul(_pleX, slice, _pleX, _pleWidth);
+        FusedMatVec(_pleX, _pleInpGate![layer], hidden, _pleWidth, _embDim);
+        SimdKernels.GeluTanhMul(_pleX, pleSlice, _pleX, _pleWidth);
         FusedMatVec(_pleY, _plePostProj![layer], _pleX, _embDim, _pleWidth);
         var postW = GetNormWeight(_plePostNorm![layer]);
         FastRmsNorm(_pleY, _pleY, postW, _embDim, _hp.RmsNormEps);
-        SimdKernels.AddInPlace(_hidden, _pleY, _embDim);
+        SimdKernels.AddInPlace(hidden, _pleY, _embDim);
     }
 
     private void EmbedTokenInto(int token, float* dest, int position = -1)

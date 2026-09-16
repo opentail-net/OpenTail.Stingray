@@ -42,8 +42,10 @@ public sealed unsafe partial class ForwardPass
                     SimdKernels.ScaleInPlace(batchHidden + (long)n * _embDim, _hp.EmbeddingScale, _embDim);
 
             // Temp buffers for batched operations
+            // Temp buffers for batched operations
+            int maxKvHeads = _hp.LayerKvHeads is { } lkvs ? lkvs.Max() : _numKvHeads;
             int qDimMax = _numHeads * _maxHeadDim;
-            int kvDimMax = _numKvHeads * _maxHeadDim;
+            int kvDimMax = maxKvHeads * _maxHeadDim;
             var batchNorm = (float*)NativeMemory.AllocZeroed((nuint)((long)N * _embDim * sizeof(float)));
             var batchQ = (float*)NativeMemory.AllocZeroed((nuint)((long)N * qDimMax * sizeof(float)));
             var batchK = (float*)NativeMemory.AllocZeroed((nuint)((long)N * kvDimMax * sizeof(float)));
@@ -54,13 +56,13 @@ public sealed unsafe partial class ForwardPass
             // MoE needs a separate FFN output buffer: the dense path writes the down projection
             // straight back over batchNorm, but every expert re-reads batchNorm, so they cannot
             // share. Only allocated for MoE — dense keeps the in-place buffer it always had.
-            // Per-layer head dims only: one zeroed staging row each for K and V, widened from
-            // the layer's compact head packing to the cache's _maxHeadDim head stride. Zeroed
-            // once — the padding between heads is never re-dirtied, since every scatter writes
+            // Per-layer head dims / per-layer KV heads: one zeroed staging row each for K and V,
+            // widened from the layer's compact head packing to the cache's _maxHeadDim head stride.
+            // Zeroed once — the padding between heads is never re-dirtied, since every scatter writes
             // exactly the same head slots.
-            var kStage = _layerHeadDim is not null
+            var kStage = (_layerHeadDim is not null || _hp.LayerKvHeads is not null)
                 ? (float*)NativeMemory.AllocZeroed((nuint)(kvDimMax * sizeof(float))) : null;
-            var vStage = _layerHeadDim is not null
+            var vStage = (_layerHeadDim is not null || _hp.LayerKvHeads is not null)
                 ? (float*)NativeMemory.AllocZeroed((nuint)(kvDimMax * sizeof(float))) : null;
             bool batchedMoe = _hp.IsMoE;
             var batchMoeOut = batchedMoe
@@ -71,12 +73,22 @@ public sealed unsafe partial class ForwardPass
             var batchMlaAttnOutCompact = _isMla
                 ? (float*)NativeMemory.AllocZeroed((nuint)((long)N * _numHeads * _mlaVDim * sizeof(float)))
                 : null;
+            int stackedPleDim = _hp.HasPerLayerTokenEmbd ? _hp.NumLayers * _pleWidth : 0;
+            var batchPleProj = _hp.HasPerLayerTokenEmbd
+                ? (float*)NativeMemory.AllocZeroed((nuint)((long)N * stackedPleDim * sizeof(float)))
+                : null;
 
             try
             {
                 bool profPrefill = PrefillProfileTimers.Enabled;
                 if (profPrefill) PrefillProfileTimers.CountTokens(N);
                 long pStage;
+
+                if (_hp.HasPerLayerTokenEmbd)
+                {
+                    for (int n = 0; n < N; n++)
+                        BuildPerLayerProjectionsBatched(tokens[n], batchHidden + (long)n * _embDim, batchPleProj + (long)n * stackedPleDim);
+                }
 
                 // 2. Process layer-by-layer
                 for (int layer = 0; layer < _hp.NumLayers; layer++)
@@ -87,19 +99,16 @@ public sealed unsafe partial class ForwardPass
                     // qDim/kvDim are the per-token STRIDE into those buffers for this layer only.
                     // Mirrors GpuForwardPass.RunGemma4Layers, which cuts per-layer views the same way.
                     int layerHd = _layerHeadDim?[layer] ?? _headDim;
-                    // Quantity 2: the BUFFER / MATMUL shape, which is the weight's actual row
-                    // count — _wq[layer] has _numHeads * layerHd rows and no more, so asking a
-                    // narrow layer's projection for qDimMax rows reads past the tensor and faults
-                    // inside SimdKernels.DotF32. PrefillCoreAttention independently derives this
-                    // same compact value as its own qDim, so making the buffers compact is what
-                    // makes producer and consumer agree.
-                    //
-                    // Quantity 1 — the CACHE's stride — is deliberately NOT this. It stays
-                    // _maxHeadDim-wide, and K/V are widened to it at the single point that needs
-                    // it, the Append below. Using the compact width there is what handed WriteKv a
-                    // short span and threw at PagedKvCache.cs:455.
+                    int layerKv = _hp.LayerKvHeads is { } lkv ? lkv[layer] : _numKvHeads;
                     int qDim = _numHeads * layerHd;
-                    int kvDim = _numKvHeads * layerHd;
+                    int kvDim = layerKv * layerHd;
+                    int kvSrc = _layerKvSrc is not null ? _layerKvSrc[layer] : -1;
+                    bool kvShared = kvSrc >= 0;
+                    int effLayer = kvShared ? kvSrc : layer;
+                    bool isSwa = _isSwaLayer is not null && _isSwaLayer[layer];
+                    int windowSize = isSwa ? _hp.SlidingWindowSize : -1;
+                    bool kEqV = _hp.AttentionKEqV && !isSwa && _wv[layer].DataPtr is null;
+
                     long pLayerStart = profPrefill ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
                     long pNamedTicks = 0;
 
@@ -146,8 +155,20 @@ public sealed unsafe partial class ForwardPass
                     {
                         // Batched Q/K/V projections (single GEMM per weight matrix)
                         MatMulBatchedCached(batchQ, in _wq[layer], batchNorm, N, qDim, _embDim);
-                        MatMulBatchedCached(batchK, in _wk[layer], batchNorm, N, kvDim, _embDim);
-                        MatMulBatchedCached(batchV, in _wv[layer], batchNorm, N, kvDim, _embDim);
+                        if (!kvShared)
+                        {
+                            if (kEqV)
+                            {
+                                MatMulBatchedCached(batchK, in _wk[layer], batchNorm, N, kvDim, _embDim);
+                                for (int n = 0; n < N; n++)
+                                    Copy(batchV + (long)n * kvDim, batchK + (long)n * kvDim, kvDim);
+                            }
+                            else
+                            {
+                                MatMulBatchedCached(batchK, in _wk[layer], batchNorm, N, kvDim, _embDim);
+                                MatMulBatchedCached(batchV, in _wv[layer], batchNorm, N, kvDim, _embDim);
+                            }
+                        }
                     }
 
                     // Apply QKV biases per token (Qwen/GPT-NeoX models)
@@ -156,8 +177,11 @@ public sealed unsafe partial class ForwardPass
                         for (int n = 0; n < N; n++)
                         {
                             SimdKernels.AddInPlace(batchQ + (long)n * qDim, _bq[layer], qDim);
-                            SimdKernels.AddInPlace(batchK + (long)n * kvDim, _bk[layer], kvDim);
-                            SimdKernels.AddInPlace(batchV + (long)n * kvDim, _bv[layer], kvDim);
+                            if (!kvShared)
+                            {
+                                SimdKernels.AddInPlace(batchK + (long)n * kvDim, _bk[layer], kvDim);
+                                SimdKernels.AddInPlace(batchV + (long)n * kvDim, _bv[layer], kvDim);
+                            }
                         }
                     }
                     if (profPrefill)
@@ -170,6 +194,7 @@ public sealed unsafe partial class ForwardPass
                     // Per-head Q/K RMSNorm and RoPE — ordering and NoPE layers
                     bool useRoPE = _hp.NoRopeLayerStep == 0
                         || (layer + 1) % _hp.NoRopeLayerStep != 0;
+                    if (_hp.RopeOnlySwaLayers) useRoPE = useRoPE && isSwa;
 
                     long pRopeTicks = 0, pAttnTicks = 0;
                     pStage = profPrefill ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
@@ -182,47 +207,58 @@ public sealed unsafe partial class ForwardPass
                         // Qwen3 (weighted QK-norm): norm BEFORE RoPE
                         if (_hasQkNorm && !_hp.UseL2QkNorm && !_hp.QkNormAfterRope)
                         {
-                            ApplyQkNorm(qn, kn, layer);
+                            ApplyQkNormLayer(qn, kvShared ? null : kn, layer, layerHd, layerKv);
+                        }
+
+                        // Gemma 4: V is plain per-head RmsNorm (no learned weight) before cache.
+                        if (_layerHeadDim is not null && !kvShared)
+                        {
+                            PerHeadPureRmsNorm(vn, layerKv, layerHd, _hp.RmsNormEps);
                         }
 
                         if (useRoPE)
                         {
                             ApplyRopeLayer(qn, startPos + n, _numHeads, layer, layerHd);
-                            ApplyRopeLayer(kn, startPos + n, _numKvHeads, layer, layerHd);
+                            if (!kvShared)
+                                ApplyRopeLayer(kn, startPos + n, layerKv, layer, layerHd);
                         }
 
                         // Hunyuan-Dense (weighted QK-norm): norm AFTER RoPE
                         if (_hasQkNorm && !_hp.UseL2QkNorm && _hp.QkNormAfterRope)
                         {
-                            ApplyQkNorm(qn, kn, layer);
+                            ApplyQkNormLayer(qn, kvShared ? null : kn, layer, layerHd, layerKv);
                         }
 
                         // L2 QK-norm (Llama-4): norm AFTER RoPE, only on RoPE layers
                         if (_hasQkNorm && _hp.UseL2QkNorm && useRoPE)
                         {
                             PerHeadPureRmsNorm(qn, _numHeads, layerHd, _hp.RmsNormEps);
-                            PerHeadPureRmsNorm(kn, _numKvHeads, layerHd, _hp.RmsNormEps);
+                            if (!kvShared)
+                                PerHeadPureRmsNorm(kn, layerKv, layerHd, _hp.RmsNormEps);
                         }
 
-                        if (kStage is null)
+                        if (!kvShared)
                         {
-                            cache.Append(layer,
-                                new ReadOnlySpan<float>(kn, kvDim),
-                                new ReadOnlySpan<float>(vn, kvDim));
+                            if (kStage is null)
+                            {
+                                cache.Append(layer,
+                                    new ReadOnlySpan<float>(kn, kvDim),
+                                    new ReadOnlySpan<float>(vn, kvDim));
+                            }
+                            else
+                            {
+                                // Quantity 1. A flat copy into a kvDimMax-long span would have the
+                                // right LENGTH and therefore throw nothing, while placing every head
+                                // but the first at the wrong offset — the cache strides heads by
+                                // _maxHeadDim, so this is a per-head SCATTER, not a pad.
+                                ScatterToCacheStride(kStage, kn, layerKv, layerHd, _maxHeadDim);
+                                ScatterToCacheStride(vStage!, vn, layerKv, layerHd, _maxHeadDim);
+                                cache.Append(layer,
+                                    new ReadOnlySpan<float>(kStage, kvDimMax),
+                                    new ReadOnlySpan<float>(vStage, kvDimMax));
+                            }
+                            cache.IncrementPosition();
                         }
-                        else
-                        {
-                            // Quantity 1. A flat copy into a kvDimMax-long span would have the
-                            // right LENGTH and therefore throw nothing, while placing every head
-                            // but the first at the wrong offset — the cache strides heads by
-                            // _maxHeadDim, so this is a per-head SCATTER, not a pad.
-                            ScatterToCacheStride(kStage, kn, _numKvHeads, layerHd, _maxHeadDim);
-                            ScatterToCacheStride(vStage!, vn, _numKvHeads, layerHd, _maxHeadDim);
-                            cache.Append(layer,
-                                new ReadOnlySpan<float>(kStage, kvDimMax),
-                                new ReadOnlySpan<float>(vStage, kvDimMax));
-                        }
-                        cache.IncrementPosition();
                     }
                     if (profPrefill) pRopeTicks = System.Diagnostics.Stopwatch.GetTimestamp() - pStage;
 
@@ -246,7 +282,7 @@ public sealed unsafe partial class ForwardPass
                     }
 
                     pStage = profPrefill ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
-                    PrefillCoreAttention(batchQ, cache, layer, N, startPos, batchAttnOut);
+                    PrefillCoreAttention(batchQ, cache, layer, N, startPos, batchAttnOut, windowSize);
                     if (profPrefill) pAttnTicks = System.Diagnostics.Stopwatch.GetTimestamp() - pStage;
 
                     if (profPrefill)
@@ -314,24 +350,32 @@ public sealed unsafe partial class ForwardPass
                         pNamedTicks += d;
                     }
 
-                    if (!_hp.UseParallelResidual)
+                    // Gemma 4: post-attention RmsNorm before the residual add.
+                    if (_postAttnNorm is not null)
                     {
-                    // Add output projection + residual → batchHidden
-                    for (int n = 0; n < N; n++)
-                    {
-                        float* h = batchHidden + (long)n * _embDim;
-                        float* proj = batchNorm + (long)n * _embDim;
-                        float* r = batchResidual + (long)n * _embDim;
-                        Copy(h, proj, _embDim);
-                        // Granite/MiniCPM: scale the sublayer output before it joins the residual.
-                        if (_hp.ResidualScale != 1f)
-                            SimdKernels.ScaleInPlace(h, _hp.ResidualScale, _embDim);
-                        SimdKernels.AddInPlace(h, r, _embDim);
+                        var paNormW = GetNormWeight(_postAttnNorm[layer]);
+                        for (int n = 0; n < N; n++)
+                            FastRmsNorm(batchNorm + (long)n * _embDim, batchNorm + (long)n * _embDim, paNormW, _embDim, _hp.RmsNormEps);
                     }
 
-                    // Save residual for FFN (post-attn residual, sequential graph only).
-                    for (int n = 0; n < N; n++)
-                        Copy(batchResidual + (long)n * _embDim, batchHidden + (long)n * _embDim, _embDim);
+                    if (!_hp.UseParallelResidual)
+                    {
+                        // Add output projection + residual → batchHidden
+                        for (int n = 0; n < N; n++)
+                        {
+                            float* h = batchHidden + (long)n * _embDim;
+                            float* proj = batchNorm + (long)n * _embDim;
+                            float* r = batchResidual + (long)n * _embDim;
+                            Copy(h, proj, _embDim);
+                            // Granite/MiniCPM: scale the sublayer output before it joins the residual.
+                            if (_hp.ResidualScale != 1f)
+                                SimdKernels.ScaleInPlace(h, _hp.ResidualScale, _embDim);
+                            SimdKernels.AddInPlace(h, r, _embDim);
+                        }
+
+                        // Save residual for FFN (post-attn residual, sequential graph only).
+                        for (int n = 0; n < N; n++)
+                            Copy(batchResidual + (long)n * _embDim, batchHidden + (long)n * _embDim, _embDim);
                     }
                     // else (parallel residual): batchNorm already holds attn_out (from the
                     // output projection above) and batchResidual still holds inpL, untouched
@@ -439,10 +483,22 @@ public sealed unsafe partial class ForwardPass
                     {
                         MatMulBatchedDualCached(batchFfnGate, in _wGate[layer], batchFfnUp, in _wUp[layer], batchNorm, N, _intermDim, _embDim);
 
-                        // Per-token SiLU(gate) * up
-                        for (int n = 0; n < N; n++)
-                            SimdKernels.SiLuMul(batchFfnGate + (long)n * _intermDim,
-                                batchFfnUp + (long)n * _intermDim, _intermDim);
+                        if (_hp.FfnActivation == FfnActivation.GeluApprox)
+                        {
+                            for (int n = 0; n < N; n++)
+                            {
+                                float* g = batchFfnGate + (long)n * _intermDim;
+                                float* u = batchFfnUp + (long)n * _intermDim;
+                                SimdKernels.GeluTanhMul(g, u, g, _intermDim);
+                            }
+                        }
+                        else
+                        {
+                            // Per-token SiLU(gate) * up
+                            for (int n = 0; n < N; n++)
+                                SimdKernels.SiLuMul(batchFfnGate + (long)n * _intermDim,
+                                    batchFfnUp + (long)n * _intermDim, _intermDim);
+                        }
 
                         MatMulBatchedCached(batchNorm, in _wDown[layer], batchFfnGate, N, _embDim, _intermDim);
                     }
@@ -451,6 +507,14 @@ public sealed unsafe partial class ForwardPass
                         long d = System.Diagnostics.Stopwatch.GetTimestamp() - pStage;
                         PrefillProfileTimers.Add(PrefillProfileTimers.Category.Ffn, d);
                         pNamedTicks += d;
+                    }
+
+                    // Gemma 4: post-FFN RmsNorm before the residual add.
+                    if (_postFfwNorm is not null)
+                    {
+                        var pfNormW = GetNormWeight(_postFfwNorm[layer]);
+                        for (int n = 0; n < N; n++)
+                            FastRmsNorm(ffnOut + (long)n * _embDim, ffnOut + (long)n * _embDim, pfNormW, _embDim, _hp.RmsNormEps);
                     }
 
                     // Residual add
@@ -478,6 +542,21 @@ public sealed unsafe partial class ForwardPass
                                 SimdKernels.ScaleInPlace(h, _hp.ResidualScale, _embDim);
                             SimdKernels.AddInPlace(h, batchResidual + (long)n * _embDim, _embDim);
                         }
+                    }
+
+                    // Gemma 4: Per-layer embedding injection (PLE)
+                    if (_hp.HasPerLayerTokenEmbd)
+                    {
+                        for (int n = 0; n < N; n++)
+                            ApplyPerLayerEmbeddingBatched(layer, batchHidden + (long)n * _embDim, batchPleProj + (long)n * stackedPleDim + (long)layer * _pleWidth);
+                    }
+
+                    // Gemma 4: per-layer learned output scale applies AFTER the PLE injection
+                    if (_layerOutputScale is not null)
+                    {
+                        float scale = _layerOutputScale[layer];
+                        for (int n = 0; n < N; n++)
+                            SimdKernels.ScaleInPlace(batchHidden + (long)n * _embDim, scale, _embDim);
                     }
 
                     if (s_mlaTrace)
@@ -537,6 +616,7 @@ public sealed unsafe partial class ForwardPass
                 if (batchMlaAttnOutCompact != null) NativeMemory.Free(batchMlaAttnOutCompact);
                 if (kStage != null) NativeMemory.Free(kStage);
                 if (vStage != null) NativeMemory.Free(vStage);
+                if (batchPleProj != null) NativeMemory.Free(batchPleProj);
             }
 
             // 3. Final norm + output projection. Normally last token only; when
@@ -545,8 +625,15 @@ public sealed unsafe partial class ForwardPass
             // (the callback must consume it before the next iteration overwrites it) so this
             // stays a streaming O(vocab) buffer rather than an O(N*vocab) allocation.
             var outNormW = GetNormWeight(_outputNorm);
-
             var outNormB = _hasNormBias ? _bOutputNorm : null;
+
+            void ApplyFinalNorm(float* dest, float* src)
+            {
+                if (_usesUnweightedNorm)
+                    SimdKernels.PureLayerNorm(dest, src, _embDim, _hp.RmsNormEps);
+                else
+                    FastNorm(dest, src, outNormW, outNormB, _embDim, _hp.RmsNormEps);
+            }
 
             if (onAllPositionLogits != null)
             {
@@ -554,17 +641,25 @@ public sealed unsafe partial class ForwardPass
                 {
                     if (positionFilter != null && !positionFilter(n)) continue;
                     float* hn = batchHidden + (long)n * _embDim;
-                    FastNorm(hn, hn, outNormW, outNormB, _embDim, _hp.RmsNormEps);
+                    ApplyFinalNorm(hn, hn);
                     FusedMatVec(_logits, _outputWeight, hn, _hp.VocabSize, _embDim);
+                    if (_hp.LogitScale != 1f)
+                        SimdKernels.ScaleInPlace(_logits, _hp.LogitScale, _hp.VocabSize);
+                    if (_hp.FinalLogitSoftcap > 0f)
+                        SimdKernels.SoftcapInPlace(_logits, _hp.VocabSize, _hp.FinalLogitSoftcap);
                     onAllPositionLogits(n, new ReadOnlySpan<float>(_logits, _hp.VocabSize));
                 }
                 return new ReadOnlySpan<float>(_logits, _hp.VocabSize);
             }
 
             float* lastHidden = batchHidden + (long)(N - 1) * _embDim;
-            FastNorm(lastHidden, lastHidden, outNormW, outNormB, _embDim, _hp.RmsNormEps);
+            ApplyFinalNorm(lastHidden, lastHidden);
             Copy(_hidden, lastHidden, _embDim);
             FusedMatVec(_logits, _outputWeight, lastHidden, _hp.VocabSize, _embDim);
+            if (_hp.LogitScale != 1f)
+                SimdKernels.ScaleInPlace(_logits, _hp.LogitScale, _hp.VocabSize);
+            if (_hp.FinalLogitSoftcap > 0f)
+                SimdKernels.SoftcapInPlace(_logits, _hp.VocabSize, _hp.FinalLogitSoftcap);
 
             return new ReadOnlySpan<float>(_logits, _hp.VocabSize);
         }
