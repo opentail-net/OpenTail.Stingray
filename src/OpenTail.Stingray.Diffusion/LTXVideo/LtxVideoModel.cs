@@ -1,4 +1,5 @@
 using OpenTail.Stingray.Core;
+using CoreTensor = OpenTail.Stingray.Core.Tensor;
 
 namespace OpenTail.Stingray.Diffusion.LTXVideo;
 
@@ -27,6 +28,9 @@ public sealed class LtxVideoModel : IDisposable
     private LtxVideoGpuWeights? _gpuWeights;
     private LtxVideoGpuWorkspace? _gpuWorkspace;
     private readonly object _gpuLock = new();
+    private CoreTensor? _cachedRopeCosGpu;
+    private CoreTensor? _cachedRopeSinGpu;
+    private (int numFrames, int patchH, int patchW) _cachedRopeKey;
     private bool _disposed;
 
     public int InChannels { get; }
@@ -535,103 +539,114 @@ public sealed class LtxVideoModel : IDisposable
             imageOps.AddRowBroadcastInPlace(ws.TimestepProj, gw.TimeProjBias, 1, 6 * d);
         _backend.Free(embGpu);
 
-        // 4. RoPE
-        var (compactCos, compactSin) = LtxVideoRoPE.ComputeContinuous3DRoPECompact(numFrames, patchH, patchW, d, RopeTheta);
-        var ropeCosGpu = imageOps.Upload(compactCos, TensorShape.D2(numTokens, d / 2), exact: true);
-        var ropeSinGpu = imageOps.Upload(compactSin, TensorShape.D2(numTokens, d / 2), exact: true);
-
-        // 5. 28 Transformer Blocks (100% GPU Resident)
-        for (int l = 0; l < NumLayers; l++)
+        // 4. RoPE (cached across denoising steps)
+        if (_cachedRopeCosGpu is null || _cachedRopeSinGpu is null || _cachedRopeKey != (numFrames, patchH, patchW))
         {
-            var bw = gw.Blocks[l];
+            if (_cachedRopeCosGpu is not null) _backend.Free(_cachedRopeCosGpu);
+            if (_cachedRopeSinGpu is not null) _backend.Free(_cachedRopeSinGpu);
+            var (compactCos, compactSin) = LtxVideoRoPE.ComputeContinuous3DRoPECompact(numFrames, patchH, patchW, d, RopeTheta);
+            _cachedRopeCosGpu = imageOps.Upload(compactCos, TensorShape.D2(numTokens, d / 2), exact: true);
+            _cachedRopeSinGpu = imageOps.Upload(compactSin, TensorShape.D2(numTokens, d / 2), exact: true);
+            _cachedRopeKey = (numFrames, patchH, patchW);
+        }
 
-            // BlockMod = ScaleShiftTable + TimestepProj (both [1, 6*d])
-            imageOps.ScaleInPlace(ws.BlockMod, 0f);
-            imageOps.AddInPlace(ws.BlockMod, bw.ScaleShiftTable);
-            imageOps.AddInPlace(ws.BlockMod, ws.TimestepProj);
-
-            // 5.1 Self-attention: RMSNorm -> AdaLN modulate -> Q/K/V -> QK-norm -> RoPE -> Attn -> OutProj -> GatedResidual
-            visionOps.AdaLNModulate(ws.Normed, ws.X, ws.BlockMod, numTokens, d, shiftOffset: 0, scaleOffset: d, isRmsNorm: true, eps: NormEps);
-
-            imageOps.Sgemm(ws.Q, ws.Normed, bw.Attn1QWeight, numTokens, d, d);
-            if (bw.Attn1QBias is not null) imageOps.AddRowBroadcastInPlace(ws.Q, bw.Attn1QBias, numTokens, d);
-
-            imageOps.Sgemm(ws.K, ws.Normed, bw.Attn1KWeight, numTokens, d, d);
-            if (bw.Attn1KBias is not null) imageOps.AddRowBroadcastInPlace(ws.K, bw.Attn1KBias, numTokens, d);
-
-            imageOps.Sgemm(ws.V, ws.Normed, bw.Attn1VWeight, numTokens, d, d);
-            if (bw.Attn1VBias is not null) imageOps.AddRowBroadcastInPlace(ws.V, bw.Attn1VBias, numTokens, d);
-
-            imageOps.RmsNorm(ws.Q, ws.Q, bw.Attn1QNorm, QkNormEps);
-            imageOps.RmsNorm(ws.K, ws.K, bw.Attn1KNorm, QkNormEps);
-
-            visionOps.Flux2DRoPE(ws.Q, ws.K, ropeCosGpu, ropeSinGpu, 0, numTokens, 1, d);
-
-            imageOps.MultiHeadAttentionTiled(ws.AttnOut, ws.Q, ws.K, ws.V, numTokens, numTokens, NumHeads, HeadDim);
-
-            imageOps.Sgemm(ws.Normed, ws.AttnOut, bw.Attn1OutWeight, numTokens, d, d);
-            if (bw.Attn1OutBias is not null) imageOps.AddRowBroadcastInPlace(ws.Normed, bw.Attn1OutBias, numTokens, d);
-
-            visionOps.ScaleGateAdd(ws.X, ws.Normed, ws.BlockMod, numTokens, d, gateOffset: 2 * d);
-
-            // 5.2 Cross-attention
-            if (numTxt > 0)
+        // 5. 28 Transformer Blocks (100% GPU Resident, Batched Command Buffer)
+        imageOps.BeginBatch();
+        bool batchSuccess = false;
+        try
+        {
+            for (int l = 0; l < NumLayers; l++)
             {
-                imageOps.Sgemm(ws.CrossQ, ws.X, bw.Attn2QWeight, numTokens, d, d);
-                if (bw.Attn2QBias is not null) imageOps.AddRowBroadcastInPlace(ws.CrossQ, bw.Attn2QBias, numTokens, d);
+                var bw = gw.Blocks[l];
 
-                imageOps.Sgemm(ws.CrossK, ws.CaptionProj, bw.Attn2KWeight, numTxt, d, d);
-                if (bw.Attn2KBias is not null) imageOps.AddRowBroadcastInPlace(ws.CrossK, bw.Attn2KBias, numTxt, d);
+                // BlockMod = ScaleShiftTable + TimestepProj (both [1, 6*d])
+                imageOps.ScaleInPlace(ws.BlockMod, 0f);
+                imageOps.AddInPlace(ws.BlockMod, bw.ScaleShiftTable);
+                imageOps.AddInPlace(ws.BlockMod, ws.TimestepProj);
 
-                imageOps.Sgemm(ws.CrossV, ws.CaptionProj, bw.Attn2VWeight, numTxt, d, d);
-                if (bw.Attn2VBias is not null) imageOps.AddRowBroadcastInPlace(ws.CrossV, bw.Attn2VBias, numTxt, d);
+                // 5.1 Self-attention: RMSNorm -> AdaLN modulate -> Q/K/V -> QK-norm -> RoPE -> Attn -> OutProj -> GatedResidual
+                visionOps.AdaLNModulate(ws.Normed, ws.X, ws.BlockMod, numTokens, d, shiftOffset: 0, scaleOffset: d, isRmsNorm: true, eps: NormEps);
 
-                imageOps.RmsNorm(ws.CrossQ, ws.CrossQ, bw.Attn2QNorm, QkNormEps);
-                imageOps.RmsNorm(ws.CrossK, ws.CrossK, bw.Attn2KNorm, QkNormEps);
+                imageOps.Sgemm(ws.Q, ws.Normed, bw.Attn1QWeight, numTokens, d, d);
+                if (bw.Attn1QBias is not null) imageOps.AddRowBroadcastInPlace(ws.Q, bw.Attn1QBias, numTokens, d);
 
-                imageOps.MultiHeadAttentionTiled(ws.CrossAttnOut, ws.CrossQ, ws.CrossK, ws.CrossV, numTokens, numTxt, NumHeads, HeadDim);
+                imageOps.Sgemm(ws.K, ws.Normed, bw.Attn1KWeight, numTokens, d, d);
+                if (bw.Attn1KBias is not null) imageOps.AddRowBroadcastInPlace(ws.K, bw.Attn1KBias, numTokens, d);
 
-                imageOps.Sgemm(ws.Normed, ws.CrossAttnOut, bw.Attn2OutWeight, numTokens, d, d);
-                if (bw.Attn2OutBias is not null) imageOps.AddRowBroadcastInPlace(ws.Normed, bw.Attn2OutBias, numTokens, d);
+                imageOps.Sgemm(ws.V, ws.Normed, bw.Attn1VWeight, numTokens, d, d);
+                if (bw.Attn1VBias is not null) imageOps.AddRowBroadcastInPlace(ws.V, bw.Attn1VBias, numTokens, d);
 
-                imageOps.AddInPlace(ws.X, ws.Normed);
+                visionOps.RmsNormBatched(ws.Q, ws.Q, bw.Attn1QNorm, d, numTokens, QkNormEps);
+                visionOps.RmsNormBatched(ws.K, ws.K, bw.Attn1KNorm, d, numTokens, QkNormEps);
+
+                visionOps.Flux2DRoPE(ws.Q, ws.K, _cachedRopeCosGpu, _cachedRopeSinGpu, 0, numTokens, 1, d);
+
+                imageOps.MultiHeadAttentionTiled(ws.AttnOut, ws.Q, ws.K, ws.V, numTokens, numTokens, NumHeads, HeadDim);
+
+                imageOps.Sgemm(ws.Normed, ws.AttnOut, bw.Attn1OutWeight, numTokens, d, d);
+                if (bw.Attn1OutBias is not null) imageOps.AddRowBroadcastInPlace(ws.Normed, bw.Attn1OutBias, numTokens, d);
+
+                visionOps.ScaleGateAdd(ws.X, ws.Normed, ws.BlockMod, numTokens, d, gateOffset: 2 * d);
+
+                // 5.2 Cross-attention
+                if (numTxt > 0)
+                {
+                    imageOps.Sgemm(ws.CrossQ, ws.X, bw.Attn2QWeight, numTokens, d, d);
+                    if (bw.Attn2QBias is not null) imageOps.AddRowBroadcastInPlace(ws.CrossQ, bw.Attn2QBias, numTokens, d);
+
+                    imageOps.Sgemm(ws.CrossK, ws.CaptionProj, bw.Attn2KWeight, numTxt, d, d);
+                    if (bw.Attn2KBias is not null) imageOps.AddRowBroadcastInPlace(ws.CrossK, bw.Attn2KBias, numTxt, d);
+
+                    imageOps.Sgemm(ws.CrossV, ws.CaptionProj, bw.Attn2VWeight, numTxt, d, d);
+                    if (bw.Attn2VBias is not null) imageOps.AddRowBroadcastInPlace(ws.CrossV, bw.Attn2VBias, numTxt, d);
+
+                    visionOps.RmsNormBatched(ws.CrossQ, ws.CrossQ, bw.Attn2QNorm, d, numTokens, QkNormEps);
+                    visionOps.RmsNormBatched(ws.CrossK, ws.CrossK, bw.Attn2KNorm, d, numTxt, QkNormEps);
+
+                    imageOps.MultiHeadAttentionTiled(ws.CrossAttnOut, ws.CrossQ, ws.CrossK, ws.CrossV, numTokens, numTxt, NumHeads, HeadDim);
+
+                    imageOps.Sgemm(ws.Normed, ws.CrossAttnOut, bw.Attn2OutWeight, numTokens, d, d);
+                    if (bw.Attn2OutBias is not null) imageOps.AddRowBroadcastInPlace(ws.Normed, bw.Attn2OutBias, numTokens, d);
+
+                    imageOps.AddInPlace(ws.X, ws.Normed);
+                }
+
+                // 5.3 FFN
+                visionOps.AdaLNModulate(ws.Normed, ws.X, ws.BlockMod, numTokens, d, shiftOffset: 3 * d, scaleOffset: 4 * d, isRmsNorm: true, eps: NormEps);
+
+                imageOps.Sgemm(ws.Ffn1, ws.Normed, bw.Ffn0Weight, numTokens, d, d * 4);
+                if (bw.Ffn0Bias is not null) imageOps.AddRowBroadcastInPlace(ws.Ffn1, bw.Ffn0Bias, numTokens, d * 4);
+
+                visionOps.VisionGeluInPlace(ws.Ffn1);
+
+                imageOps.Sgemm(ws.FfnOut, ws.Ffn1, bw.Ffn2Weight, numTokens, d * 4, d);
+                if (bw.Ffn2Bias is not null) imageOps.AddRowBroadcastInPlace(ws.FfnOut, bw.Ffn2Bias, numTokens, d);
+
+                visionOps.ScaleGateAdd(ws.X, ws.FfnOut, ws.BlockMod, numTokens, d, gateOffset: 5 * d);
             }
 
-            // 5.3 FFN
-            visionOps.AdaLNModulate(ws.Normed, ws.X, ws.BlockMod, numTokens, d, shiftOffset: 3 * d, scaleOffset: 4 * d, isRmsNorm: true, eps: NormEps);
+            // 6. Final Layer (100% GPU resident inside the single-submission batch):
+            // FinalMod = TopScaleShiftTable + EmbeddedTimestep (broadcast over the 2 rows [shift, scale])
+            imageOps.ScaleInPlace(ws.FinalMod, 0f);
+            imageOps.AddInPlace(ws.FinalMod, gw.TopScaleShiftTable);
+            imageOps.AddRowBroadcastInPlace(ws.FinalMod, ws.EmbeddedTimestep, 2, d);
 
-            imageOps.Sgemm(ws.Ffn1, ws.Normed, bw.Ffn0Weight, numTokens, d, d * 4);
-            if (bw.Ffn0Bias is not null) imageOps.AddRowBroadcastInPlace(ws.Ffn1, bw.Ffn0Bias, numTokens, d * 4);
+            visionOps.AdaLNModulate(ws.Normed, ws.X, ws.FinalMod, numTokens, d, shiftOffset: 0, scaleOffset: d, isRmsNorm: false, eps: NormEps);
 
-            visionOps.VisionGeluInPlace(ws.Ffn1);
+            imageOps.Sgemm(ws.ProjOut, ws.Normed, gw.ProjOutWeight, numTokens, d, OutChannels);
+            if (gw.ProjOutBias is not null)
+                imageOps.AddRowBroadcastInPlace(ws.ProjOut, gw.ProjOutBias, numTokens, OutChannels);
 
-            imageOps.Sgemm(ws.FfnOut, ws.Ffn1, bw.Ffn2Weight, numTokens, d * 4, d);
-            if (bw.Ffn2Bias is not null) imageOps.AddRowBroadcastInPlace(ws.FfnOut, bw.Ffn2Bias, numTokens, d);
-
-            visionOps.ScaleGateAdd(ws.X, ws.FfnOut, ws.BlockMod, numTokens, d, gateOffset: 5 * d);
+            imageOps.EndBatch();
+            batchSuccess = true;
         }
-
-        _backend.Free(ropeCosGpu);
-        _backend.Free(ropeSinGpu);
-
-        // 6. Final Layer: LayerNormNoAffine -> AdaLN modulate with TopScaleShiftTable + EmbeddedTimestep -> ProjOut
-        var embHost = new float[d];
-        imageOps.Download(ws.EmbeddedTimestep, embHost);
-        var topTable = GetWeight("scale_shift_table");
-        var finalMod = new float[2 * d];
-        for (int i = 0; i < d; i++)
+        finally
         {
-            finalMod[i] = topTable[i] + embHost[i];
-            finalMod[d + i] = topTable[d + i] + embHost[i];
+            if (!batchSuccess)
+            {
+                try { imageOps.EndBatch(); } catch { }
+            }
         }
-        var finalModGpu = imageOps.Upload(finalMod, TensorShape.D1(2 * d), exact: true);
-
-        visionOps.AdaLNModulate(ws.Normed, ws.X, finalModGpu, numTokens, d, shiftOffset: 0, scaleOffset: d, isRmsNorm: false, eps: NormEps);
-        _backend.Free(finalModGpu);
-
-        imageOps.Sgemm(ws.ProjOut, ws.Normed, gw.ProjOutWeight, numTokens, d, OutChannels);
-        if (gw.ProjOutBias is not null)
-            imageOps.AddRowBroadcastInPlace(ws.ProjOut, gw.ProjOutBias, numTokens, OutChannels);
 
         var result = new float[numTokens * OutChannels];
         imageOps.Download(ws.ProjOut, result);
@@ -643,6 +658,8 @@ public sealed class LtxVideoModel : IDisposable
         if (!_disposed)
         {
             _disposed = true;
+            if (_cachedRopeCosGpu is not null) { _backend?.Free(_cachedRopeCosGpu); _cachedRopeCosGpu = null; }
+            if (_cachedRopeSinGpu is not null) { _backend?.Free(_cachedRopeSinGpu); _cachedRopeSinGpu = null; }
             _gpuWorkspace?.Dispose();
             _gpuWeights?.Dispose();
             _weights.Dispose();

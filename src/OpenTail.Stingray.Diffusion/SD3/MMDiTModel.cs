@@ -16,6 +16,7 @@ public sealed class MMDiTModel : IDisposable
     private readonly Dictionary<string, CoreTensor>? _gpuWeights;
     private MMDiTGpuWeights? _residentGpuWeights;
     private MMDiTGpuWorkspace? _residentGpuWorkspace;
+    private readonly Dictionary<float[], CoreTensor> _cachedContextGpu = new(ReferenceEqualityComparer.Instance);
 
     public int HiddenSize { get; }
     public int NumHeads { get; }
@@ -394,9 +395,21 @@ public sealed class MMDiTModel : IDisposable
         // Upload x to xGpu
         var xGpu = _backend!.Upload(x.AsSpan(0, numImgTokens * HiddenSize), TensorShape.D2(numImgTokens, HiddenSize), exact: true);
 
-        // 2. Project text context & upload to cGpu
-        var c = Lin("context_embedder", textContext, numTextTokens, ContextSize, HiddenSize);
-        var cGpu = _backend.Upload(c.AsSpan(0, numTextTokens * HiddenSize), TensorShape.D2(numTextTokens, HiddenSize), exact: true);
+        // 2. Project text context & upload to cGpu (cached across denoising steps)
+        CoreTensor cGpu;
+        lock (_cachedContextGpu)
+        {
+            if (!_cachedContextGpu.TryGetValue(textContext, out cGpu!))
+            {
+                var rawContextGpu = _backend.Upload(textContext.AsSpan(0, numTextTokens * ContextSize), TensorShape.D2(numTextTokens, ContextSize), exact: true);
+                cGpu = _backend.Allocate(TensorShape.D2(numTextTokens, HiddenSize));
+                visionOps.Sgemm(cGpu, rawContextGpu, gw.ContextEmbedderWeight, numTextTokens, ContextSize, HiddenSize);
+                if (gw.ContextEmbedderBias is not null)
+                    imageOps.AddRowBroadcastInPlace(cGpu, gw.ContextEmbedderBias, numTextTokens, HiddenSize);
+                _backend.Free(rawContextGpu);
+                _cachedContextGpu[textContext] = cGpu;
+            }
+        }
 
         // 3. Time + Pooled Embedding: upload tVecSilu
         var tVec = ComputeTimeAndPooledEmbedding(timestep, pooledY);
@@ -404,6 +417,8 @@ public sealed class MMDiTModel : IDisposable
         DiffusionOps.SiluInPlace(tVecSilu);
         var tVecGpu = _backend.Upload(tVecSilu.AsSpan(0, HiddenSize), TensorShape.D1(HiddenSize), exact: true);
 
+        imageOps.BeginBatch();
+        bool batchSuccess = false;
         try
         {
             // 4. Joint MMDiT Transformer Blocks (100% GPU Resident)
@@ -526,6 +541,9 @@ public sealed class MMDiTModel : IDisposable
             visionOps.Sgemm(ws.Unpatchified, ws.NormedImg, gw.FinalLinearWeight, numImgTokens, HiddenSize, outPatchDim);
             imageOps.AddRowBroadcastInPlace(ws.Unpatchified, gw.FinalLinearBias, numImgTokens, outPatchDim);
 
+            imageOps.EndBatch();
+            batchSuccess = true;
+
             var unpatchified = new float[numImgTokens * outPatchDim];
             _backend.Download(ws.Unpatchified, unpatchified);
 
@@ -552,8 +570,11 @@ public sealed class MMDiTModel : IDisposable
         }
         finally
         {
+            if (!batchSuccess)
+            {
+                try { imageOps.EndBatch(); } catch { }
+            }
             _backend.Free(xGpu);
-            _backend.Free(cGpu);
             _backend.Free(tVecGpu);
         }
     }
@@ -869,6 +890,11 @@ public sealed class MMDiTModel : IDisposable
     {
         _residentGpuWeights?.Dispose();
         _residentGpuWorkspace?.Dispose();
+        lock (_cachedContextGpu)
+        {
+            foreach (var t in _cachedContextGpu.Values) _backend?.Free(t);
+            _cachedContextGpu.Clear();
+        }
         if (_gpuWeights is not null)
         {
             lock (_gpuWeights)

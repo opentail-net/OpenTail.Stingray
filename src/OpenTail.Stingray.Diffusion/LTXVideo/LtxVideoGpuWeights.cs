@@ -215,38 +215,28 @@ public sealed class LtxVideoGpuWeights : IDisposable
     }
 
     /// <summary>
-    /// Transposes PyTorch Safetensors weight [outDim, inDim] to [inDim, outDim] and uploads to device VRAM.
-    /// In matrix multiplication x @ W^T with x [M, inDim], Sgemm(C, A, B, M, inDim, outDim) treats B as [inDim, outDim].
+    /// Uploads PyTorch Safetensors weight [outDim, inDim] directly to device VRAM.
+    /// In Vulkan matrix multiplication Sgemm(C, A, B, M, K, N), B is loaded as [N, K] = [outDim, inDim].
     /// </summary>
     public static CoreTensor UploadTransposedLinear(IComputeBackend backend, float[] rawWeight, int outDim, int inDim)
     {
-        var transposed = new float[inDim * outDim];
-        for (int o = 0; o < outDim; o++)
-        {
-            int srcRow = o * inDim;
-            for (int i = 0; i < inDim; i++)
-            {
-                transposed[i * outDim + o] = rawWeight[srcRow + i];
-            }
-        }
-
         if (backend.BestSgemmPrecision == SgemmPrecision.Fp16)
         {
-            var half = new Half[transposed.Length];
-            TensorPrimitives.ConvertToHalf(transposed, half);
-            return backend.UploadHalf(half, TensorShape.D2(inDim, outDim));
+            var half = new Half[rawWeight.Length];
+            TensorPrimitives.ConvertToHalf(rawWeight, half);
+            return backend.UploadHalf(half, TensorShape.D2(outDim, inDim));
         }
         if (backend.BestSgemmPrecision == SgemmPrecision.Bf16)
         {
-            var bf16 = new ushort[transposed.Length];
-            for (int i = 0; i < transposed.Length; i++)
+            var bf16 = new ushort[rawWeight.Length];
+            for (int i = 0; i < rawWeight.Length; i++)
             {
-                uint bits = BitConverter.SingleToUInt32Bits(transposed[i]);
+                uint bits = BitConverter.SingleToUInt32Bits(rawWeight[i]);
                 bf16[i] = (ushort)(bits >> 16);
             }
-            return backend.UploadBf16(bf16, TensorShape.D2(inDim, outDim));
+            return backend.UploadBf16(bf16, TensorShape.D2(outDim, inDim));
         }
-        return backend.Upload(transposed, TensorShape.D2(inDim, outDim), exact: true);
+        return backend.Upload(rawWeight, TensorShape.D2(outDim, inDim), exact: true);
     }
 
     public void Dispose()
