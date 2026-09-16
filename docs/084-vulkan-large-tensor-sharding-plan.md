@@ -387,6 +387,78 @@ Remaining open work: the two lower-priority "observe first" watch items from Fol
 CPU allocation/LOH pressure during dequant-and-upload) — no evidence collected in this session
 suggests either is currently a problem, so they remain a watch item, not a task.
 
+## Follow-up 6: native IQ4_XS Vulkan matvec kernel (2026-09-16)
+
+Follow-up 5's plateau finding (0.8 == 0.95 fraction, identical 0.4 t/s) and the user's own live
+Task Manager observation ("GPU is nowhere near its capacity" while "CPU compute is very very
+prominent") pointed at the same conclusion from two directions: FFN placement had stopped being
+the lever, and memory pressure was the real remaining concern. Got a third external review
+proposing the actual fix for both — a **native raw Vulkan matvec kernel for IQ4_XS** (the single
+largest source of avoidable GPU-memory expansion per Follow-up 2's accounting, +9.55 GiB of pure
+F32-then-F16 waste in this checkpoint) instead of the F16-dequant-and-upload fallback.
+
+**Caught and corrected one part of the external suggestion before implementing it**: it proposed a
+"4 rows/workgroup, 64 lanes/row, `subgroupAdd()`" topology. This device reports a **fixed 64-wide
+hardware subgroup** (`minSubgroupSize == maxSubgroupSize == 64`) — a plain `subgroupAdd` over a
+64-lane logical "row" would silently sum across two rows, which is *exactly* the bug
+`MatVecQ4K`'s own code comments already document hitting and fixing (reverted to shared-memory
+tree reduction after measuring that a `subgroupClusteredAdd` fix gave no speedup anyway). Used the
+proven **8 rows/workgroup, 32 threads/row, shared-memory tree reduction** topology instead — the
+same one every existing raw MatVec kernel in this codebase already uses — while keeping the
+actual IQ4_XS block-decode math from the external review, verified line-by-line against this
+session's own already-tested CPU decoder (`Dequantize`'s `DecodeIq4XsBlock`) before writing a
+single line of GLSL.
+
+**Implemented**:
+1. `MatVecIQ4XS` (`src/OpenTail.Stingray.Vulkan/Shaders.cs`) — decodes each IQ4_XS block directly
+   into the multiply-accumulate (no intermediate F32/F16 buffer at all, unlike the embedding-lookup
+   kernels which only had to solve upload footprint, not compute-time cost). 8 rows/workgroup, 32
+   threads/row, each thread owns 8 of a 256-element block's values, shared-memory tree reduction —
+   matching `MatVecQ4K`'s proven shape exactly.
+2. Wired into `VulkanBackend.MatMul`'s dtype switch as `case DType.IQ4_XS` (new
+   `_matVecIQ4XSPipeline` field, disposed alongside the others).
+3. `VulkanHybridGdnForwardPass.UploadWeight` now keeps `IQ4_XS` raw (added to the existing
+   raw-kept dtype set alongside `Q4_K/Q5_K/Q6_K/Q8_0/Q4_0`) instead of falling through to the F16
+   dequant-and-upload path. `EstimateWeightGpuBytes` updated to match, for consistency with every
+   other budget calculation in this file.
+4. New test `MatVecIQ4XsMatchesCpu` (`tests/OpenTail.Stingray.Tests.Vulkan/VulkanShaderTests.cs`)
+   — synthetic (no model fixture needed), `rows=37` (not a multiple of the 8-row workgroup, to
+   exercise the tail workgroup) × `cols=512` (2 blocks/row, to exercise the multi-block
+   accumulation loop), full weight×vector dot product compared against a CPU reference built from
+   the *same bytes* via the already-tested `Dequantize.ToFloat32` — not just a per-element decode
+   check. **Ran and passed on the first attempt, 0/37 mismatches** — the line-by-line verification
+   against the CPU decoder before writing the shader paid off. Re-ran `MatVecF16MatchesCpu`,
+   `EmbedLookupQ3K*` alongside it — no regression.
+5. `scripts/gen-spirv.ps1` ran successfully — `glslc` accepted the shader on the first pass.
+
+**Measured result on the real checkpoint**: at the **default** `STINGRAY_VULKAN_UMA_FRACTION`
+(unset, 0.5) — previously "budget −279 MiB, 0/64 FFN layers" per Follow-up 3's table — now
+**8/64 FFN layers fit** (4,080 MiB), with no other setting changed. This is a direct, measured
+consequence of the core footprint shrinking: IQ4_XS tensors that were F16-expanding to ~2x their
+raw size now upload at their true raw size, freeing real budget for the (still-optional,
+budget-gated) dense FFN placement. Model loads cleanly in 18.3-18.8s, no crashes, no OOMs.
+
+Decode speed at this new default-with-8-layers configuration: **0.3 t/s** (`-n 12 --temp 0`,
+"The capital of France is" prompt) — in the same 0.2-0.3 t/s band as the pre-fix default (0
+layers). Consistent with Follow-up 5's plateau finding: FFN-layer-count changes in this range
+don't move decode speed much on this iGPU. **The value of this fix is memory efficiency, not
+speed** — the same throughput now comes from a meaningfully smaller core footprint, achieved
+automatically at the *default* setting with no risky fraction tuning required. (Aside, unrelated
+to this fix: discovered mid-session that `-g` is this CLI's GPU-layer-placement flag, mirroring
+llama.cpp's `-ngl` — NOT a token-count limiter as several earlier ad-hoc measurements in this
+session assumed; the actual generation-length flag is `-n`/`--n-predict`. Omitting `-g` entirely
+falls back to a plain CPU-only backend, not Vulkan, which produced one throwaway CPU-backend
+measurement in this session's raw logs — discard any number in this document's history that
+doesn't show a `Backend: Vulkan hybrid GDN` line above it.)
+
+**Not done in this session**: `IQ3_S` (the second-largest contributor, +6.45 GiB) — the external
+review explicitly recommended implementing `IQ4_XS` first, proving parity and measuring, before
+attempting `IQ3_S` (a structurally harder codebook/grid format with more bit-packing edge cases).
+That sequencing was followed here; `IQ3_S` remains F16-fallback for now. The other IQ dtypes
+(`IQ3_XXS`, `IQ2_S`, `IQ2_XS`, `IQ2_XXS`, `IQ4_NL`) remain on the F16 fallback too — lower volume
+in this checkpoint, same "don't extend speculatively" reasoning as Follow-up 3's dequant
+parallelization scope decision.
+
 ---
 
 ## Original plan below (status: superseded for this checkpoint, kept for reference)

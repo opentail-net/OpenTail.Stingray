@@ -4072,6 +4072,123 @@ internal static class Shaders
         """;
 
     /// <summary>
+    /// Matrix-vector multiply with raw IQ4_XS dequantization (no F16-expand-then-upload
+    /// fallback needed — docs/084-vulkan-large-tensor-sharding-plan.md: IQ4_XS is the single
+    /// largest source of avoidable GPU-memory expansion in "UD"/dynamic-quant checkpoints like
+    /// qwen35, so a native kernel here is worth more than the other IQ dtypes combined).
+    ///
+    /// Same proven 8-rows/32-threads-per-row/shared-memory-tree-reduction topology as
+    /// <see cref="MatVecQ4K"/> — deliberately NOT <c>subgroupAdd</c> with 64-lane rows: this
+    /// device reports a fixed 64-wide hardware subgroup, so a plain <c>subgroupAdd</c> over a
+    /// 64-lane "row" would silently sum ACROSS two logical rows (see MatVecQ4K's own comment for
+    /// the exact prior incident this would reproduce).
+    ///
+    /// IQ4_XS block (256 elements / 136 bytes = 34 uint32 words), matching
+    /// <c>Dequantize.DecodeIq4XsBlock</c> bit-for-bit:
+    ///   bytes 0:1   d (FP16, super-block scale)
+    ///   bytes 2:3   scalesH (uint16, 2 bits × 8 groups)
+    ///   bytes 4:7   scalesL[4] (4 bits × 8 groups, packed 2/byte)
+    ///   bytes 8:135 qs[128] (4-bit codebook indices, 2 per byte)
+    /// 8 groups of 32 elements each; each group's 6-bit scale (4 bits low + 2 bits high) selects
+    /// a per-group multiplier, and each element's 4-bit nibble indexes IQ4_NL's 16-entry
+    /// non-linear codebook (shared with IQ4_NL, NOT a grid/vector codebook like the other IQ
+    /// formats). <paramref name="cols"/> must be a multiple of 256, true for every dimension in
+    /// this codebase's architectures.
+    ///
+    /// Push constants: { uint rows, uint cols }.
+    /// Bindings: 0=quantized weights (uint8 via uint32[]), 1=input[cols], 2=output[rows].
+    /// </summary>
+    internal const string MatVecIQ4XS = """
+        #version 450
+        #extension GL_EXT_control_flow_attributes : enable
+
+        #define N_ROWS 8
+        #define THREADS_PER_ROW 32
+
+        layout(local_size_x = 256) in;
+
+        layout(binding = 0) readonly buffer Weights { uint weight_data[]; };
+        layout(binding = 1) readonly buffer Input   { float input_data[]; };
+        layout(binding = 2) writeonly buffer Output  { float output_data[]; };
+
+        layout(push_constant) uniform Params {
+            uint rows;
+            uint cols;
+        };
+
+        // ggml kvalues_iq4nl — also used by IQ4_XS (IqCodebooks.Iq4NlCodebook in C#).
+        const float IQ4_NL[16] = float[](
+            -127.0, -104.0, -83.0, -65.0,
+             -49.0,  -35.0, -22.0, -10.0,
+               1.0,   13.0,  25.0,  38.0,
+              53.0,   69.0,  89.0, 113.0
+        );
+
+        shared float sdata[256];
+
+        uint load_u8(uint wordBase, uint byteOffset) {
+            uint word = weight_data[wordBase + (byteOffset >> 2u)];
+            return (word >> ((byteOffset & 3u) * 8u)) & 0xFFu;
+        }
+
+        // Decodes element `element` (0..255) of the IQ4_XS block starting at `blockWordBase`.
+        float decode_iq4xs(uint blockWordBase, uint element) {
+            uint dWord = weight_data[blockWordBase];
+            float d = unpackHalf2x16(dWord).x;      // bytes 0:1
+            uint scalesH = dWord >> 16u;             // bytes 2:3
+
+            uint group = element >> 5u;              // 0..7  (32 elements/group)
+            uint inGroup = element & 31u;             // 0..31
+
+            uint scalesLByte = load_u8(blockWordBase, 4u + (group >> 1u));
+            uint lsLow  = (scalesLByte >> ((group & 1u) * 4u)) & 0xFu;
+            uint lsHigh = (scalesH >> (2u * group)) & 0x3u;
+            uint ls = lsLow | (lsHigh << 4u);
+            float dl = d * float(int(ls) - 32);
+
+            uint qByte = load_u8(blockWordBase, 8u + group * 16u + (inGroup & 15u));
+            uint code = (inGroup < 16u) ? (qByte & 0xFu) : (qByte >> 4u);
+
+            return dl * IQ4_NL[code];
+        }
+
+        void main() {
+            uint tid = gl_LocalInvocationID.x;
+            uint row_in_wg = tid / THREADS_PER_ROW;
+            uint lane = tid % THREADS_PER_ROW;
+            uint row = gl_WorkGroupID.x * N_ROWS + row_in_wg;
+            if (row >= rows) return;
+
+            uint num_blocks = cols >> 8u;             // cols / 256
+            const uint words_per_block = 34u;         // 136 bytes / 4
+            uint word_row_base = row * num_blocks * words_per_block;
+
+            // This lane owns 8 of each block's 256 elements, strided by THREADS_PER_ROW — same
+            // "32 lanes cover a 256-element block" shape as MatVecQ4K's coalesced read, just
+            // without that kernel's extra register-precompute optimization (v1: correctness and
+            // measured footprint first, per docs/084-...; revisit if profiling calls for it).
+            float acc = 0.0;
+            for (uint b = 0; b < num_blocks; b++) {
+                uint blockWordBase = word_row_base + b * words_per_block;
+                uint inputBase = b * 256u;
+                [[unroll]] for (uint k = 0; k < 8u; k++) {
+                    uint element = lane + k * THREADS_PER_ROW;
+                    acc += decode_iq4xs(blockWordBase, element) * input_data[inputBase + element];
+                }
+            }
+
+            sdata[tid] = acc;
+            barrier();
+            [[unroll]] for (uint s = 16; s > 0; s >>= 1) {
+                if (lane < s) sdata[tid] += sdata[tid + s];
+                barrier();
+            }
+            if (lane == 0)
+                output_data[row] = sdata[tid];
+        }
+        """;
+
+    /// <summary>
     /// Batched (weight-stationary) matrix-vector multiply with Q4_K dequantization —
     /// the core weight-amortization for Vulkan speculative decoding (issue #308).
     ///

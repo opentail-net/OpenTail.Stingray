@@ -491,6 +491,95 @@ public sealed unsafe class VulkanShaderTests : HeavyTestBase
         backend.Free(gpuOutput);
     }
 
+    // IQ4_XS: 136 bytes/block = FP16 d + uint16 scalesH + 4 bytes scalesL + 128 bytes qs.
+    // Layout matches Dequantize's DecodeIq4XsBlock. Any byte values are valid for
+    // scalesH/scalesL/qs (the bit-unpack just reads them). cols must be a multiple of 256.
+    private static byte[] BuildIQ4_XS(int rows, int cols, int seed)
+    {
+        const int qk = 256, blockBytes = 136;
+        int blocksPerRow = cols / qk;
+        var bytes = new byte[rows * blocksPerRow * blockBytes];
+        var rng = new Random(seed);
+        int off = 0;
+        for (int b = 0; b < rows * blocksPerRow; b++)
+        {
+            PutHalf(bytes, off, (float)(rng.NextDouble() * 0.045 + 0.005)); // d
+            for (int j = 2; j < blockBytes; j++)                            // scalesH+scalesL+qs
+                bytes[off + j] = (byte)rng.Next(0, 256);
+            off += blockBytes;
+        }
+        return bytes;
+    }
+
+    /// <summary>
+    /// docs/084-vulkan-large-tensor-sharding-plan.md: IQ4_XS now has a native raw Vulkan matvec
+    /// kernel (<c>MatVecIQ4XS</c>) instead of the F16-dequant-and-upload fallback, since it was
+    /// the single largest source of avoidable GPU memory expansion. Verifies the GPU kernel's
+    /// full weight×vector dot product — not just the per-element decode — against a CPU
+    /// reference built from the SAME bytes via the already-tested <c>Dequantize.ToFloat32</c>.
+    /// rows=37 (not a multiple of N_ROWS=8) and cols=512 (2 blocks/row, not a single block)
+    /// deliberately exercise the tail workgroup and the multi-block accumulation loop.
+    /// </summary>
+    [Fact]
+    public void MatVecIQ4XsMatchesCpu()
+    {
+        using var backend = CreateBackendOrSkip();
+
+        const int matRows = 37;
+        const int matCols = 512;
+        var rawData = BuildIQ4_XS(matRows, matCols, seed: 4258);
+
+        int totalElements = matRows * matCols;
+        var f32Weights = new float[totalElements];
+        OpenTail.Stingray.Cpu.Dequantize.ToFloat32(rawData, f32Weights, DType.IQ4_XS, totalElements);
+
+        var rng = new Random(4259);
+        var input = new float[matCols];
+        for (int i = 0; i < matCols; i++) input[i] = (float)(rng.NextDouble() * 2 - 1);
+
+        var cpuOutput = new float[matRows];
+        for (int r = 0; r < matRows; r++)
+        {
+            float sum = 0;
+            for (int c = 0; c < matCols; c++)
+                sum += f32Weights[r * matCols + c] * input[c];
+            cpuOutput[r] = sum;
+        }
+
+        // Upload raw IQ4_XS bytes as floats (reinterpret), exactly as UploadWeight now keeps
+        // IQ4_XS raw in VRAM.
+        int floatCount = rawData.Length / 4;
+        var rawAsFloats = new float[floatCount];
+        System.Runtime.InteropServices.MemoryMarshal.Cast<byte, float>(rawData).CopyTo(rawAsFloats);
+        var gpuWeights = backend.Upload(rawAsFloats, TensorShape.D1(floatCount));
+        var gpuInput = backend.Upload(input, TensorShape.D1(matCols));
+        var gpuOutput = backend.Allocate(TensorShape.D1(matRows));
+
+        backend.MatMul(gpuOutput, gpuWeights, gpuInput, DType.IQ4_XS);
+
+        var gpuResult = new float[matRows];
+        backend.Download(gpuOutput, gpuResult);
+
+        int mismatches = 0;
+        for (int i = 0; i < matRows; i++)
+        {
+            float diff = MathF.Abs(gpuResult[i] - cpuOutput[i]);
+            float relDiff = diff / (MathF.Abs(cpuOutput[i]) + 1e-6f);
+            if (relDiff > 0.01f)
+            {
+                if (mismatches < 5)
+                    Console.WriteLine($"  [{i}]: gpu={gpuResult[i]:F4} cpu={cpuOutput[i]:F4} rel={relDiff:P1}");
+                mismatches++;
+            }
+        }
+        Console.WriteLine($"MatVecIQ4XS: {mismatches}/{matRows} mismatches (>1% rel error)");
+        Assert.Equal(0, mismatches);
+
+        backend.Free(gpuWeights);
+        backend.Free(gpuInput);
+        backend.Free(gpuOutput);
+    }
+
     [Fact]
     public void MatVecQ6KMatchesCpu()
     {
