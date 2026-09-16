@@ -223,8 +223,14 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
     private readonly TensorRef[]? _wGateExps, _wUpExps, _wDownExps;   // packed expert weights per layer
     private readonly float* _routerLogits;  // [numExperts] scratch
     private readonly float* _sharedOut;     // [embDim] shared expert output
-    private readonly float* _expertGate;    // [expertIntermDim] expert gate scratch
-    private readonly float* _expertUp;      // [expertIntermDim] expert up scratch
+    private readonly float* _expertGate;    // [expertIntermDim] single-expert gate scratch (shared-expert / sequential decode fallback)
+    private readonly float* _expertUp;      // [expertIntermDim] single-expert up scratch
+    // Folded-decode scratch: holds ALL numActive experts' gate/up results contiguously
+    // so the Phase-A gate+up Parallel.For and the Phase-B down Parallel.For can run
+    // across all k experts in 2 sweeps rather than k sequential per-expert passes.
+    // Sized [numActive × expertIntermDim]; see MoeFfnFolded in ForwardPass.Moe.cs.
+    private readonly float* _expertGateAll; // [numActive × expertIntermDim]
+    private readonly float* _expertUpAll;   // [numActive × expertIntermDim]
     // Per-expert down-projection scratch — sized embDim because that's the row count
     // of the down MatVec. Most MoE models have intermDim >= embDim so _ffnUp would
     // suffice, but OLMoE has embDim=2048 / intermDim=1024 and overflows it.
@@ -614,9 +620,11 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
             }
             _routerLogits = Alloc(hp.NumExperts);
             _sharedOut = Alloc(_embDim);
-            _expertGate = Alloc(hp.ExpertIntermediateDim);
-            _expertUp = Alloc(hp.ExpertIntermediateDim);
-            _moeDownTemp = Alloc(_embDim);
+            _expertGate    = Alloc(hp.ExpertIntermediateDim);
+            _expertUp      = Alloc(hp.ExpertIntermediateDim);
+            _expertGateAll = Alloc(hp.NumActiveExperts * hp.ExpertIntermediateDim);
+            _expertUpAll   = Alloc(hp.NumActiveExperts * hp.ExpertIntermediateDim);
+            _moeDownTemp   = Alloc(_embDim);
         }
 
         if (hp.HasPostAttnNorm) _postAttnNorm = new TensorRef[L];

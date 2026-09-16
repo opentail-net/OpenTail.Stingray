@@ -748,6 +748,8 @@ public sealed unsafe partial class ForwardPass
             NativeMemory.Free(_sharedOut);
             NativeMemory.Free(_expertGate);
             NativeMemory.Free(_expertUp);
+            NativeMemory.Free(_expertGateAll);
+            NativeMemory.Free(_expertUpAll);
             NativeMemory.Free(_moeDownTemp);
             FreeMoeBatchScratch();
         }

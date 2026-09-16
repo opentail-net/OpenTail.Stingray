@@ -1004,17 +1004,14 @@ public sealed unsafe partial class ForwardPass
         int N = tokens.Length;
         if (N == 0) return Array.Empty<float[]>();
 
-        if (N == 1 || _hp.IsMoE)
+        if (N == 1)
         {
-            // Single token or MoE: fall back to sequential Forward calls
-            var seq = new float[N][];
-            for (int i = 0; i < N; i++)
-            {
-                var logits = Forward(tokens[i], startPos + i);
-                seq[i] = new float[_hp.VocabSize];
-                logits.CopyTo(seq[i]);
-            }
-            return seq;
+            // Single token: forward-call is cheaper than standing up the batched machinery.
+            var single = Forward(tokens[0], startPos);
+            var r = new float[1][];
+            r[0] = new float[_hp.VocabSize];
+            single.CopyTo(r[0]);
+            return r;
         }
 
         var batchHidden = (float*)NativeMemory.AllocZeroed((nuint)((long)N * _embDim * sizeof(float)));
@@ -1136,17 +1133,37 @@ public sealed unsafe partial class ForwardPass
                             batchHidden + (long)n * _embDim, ffnNormW, _embDim, _hp.RmsNormEps);
                     }
 
-                    SimdKernels.MatMulBatched(batchFfnGate, _wGate[layer].DataPtr, batchNorm,
-                        N, _intermDim, _embDim, _wGate[layer].DType);
-                    SimdKernels.MatMulBatched(batchFfnUp, _wUp[layer].DataPtr, batchNorm,
-                        N, _intermDim, _embDim, _wUp[layer].DType);
+                    if (_hp.IsMoE)
+                    {
+                        // MoE: bucket tokens by selected expert, run one batch of GEMMs per expert.
+                        // batchNorm holds the FFN pre-norm input; moeOut receives the FFN output.
+                        // Scratch inside MoeFfnBatched is grown on demand and reused across layers.
+                        float* moeOut = (float*)NativeMemory.AllocZeroed(
+                            (nuint)((long)N * _embDim * sizeof(float)));
+                        try
+                        {
+                            MoeFfnBatched(layer, batchNorm, moeOut, N);
+                            // Copy result back into batchNorm so the residual add below is uniform.
+                            new ReadOnlySpan<float>(moeOut, N * _embDim)
+                                .CopyTo(new Span<float>(batchNorm, N * _embDim));
+                        }
+                        finally { NativeMemory.Free(moeOut); }
+                    }
 
-                    for (int n = 0; n < N; n++)
-                        SimdKernels.SiLuMul(batchFfnGate + (long)n * _intermDim,
-                            batchFfnUp + (long)n * _intermDim, _intermDim);
+                    else
+                    {
+                        SimdKernels.MatMulBatched(batchFfnGate, _wGate[layer].DataPtr, batchNorm,
+                            N, _intermDim, _embDim, _wGate[layer].DType);
+                        SimdKernels.MatMulBatched(batchFfnUp, _wUp[layer].DataPtr, batchNorm,
+                            N, _intermDim, _embDim, _wUp[layer].DType);
 
-                    SimdKernels.MatMulBatched(batchNorm, _wDown[layer].DataPtr, batchFfnGate,
-                        N, _embDim, _intermDim, _wDown[layer].DType);
+                        for (int n = 0; n < N; n++)
+                            SimdKernels.SiLuMul(batchFfnGate + (long)n * _intermDim,
+                                batchFfnUp + (long)n * _intermDim, _intermDim);
+
+                        SimdKernels.MatMulBatched(batchNorm, _wDown[layer].DataPtr, batchFfnGate,
+                            N, _embDim, _intermDim, _wDown[layer].DType);
+                    }
 
                     for (int n = 0; n < N; n++)
                     {

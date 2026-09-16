@@ -125,37 +125,165 @@ public sealed unsafe partial class ForwardPass
             FusedMatVec(_sharedOut, _wDownShexp![layer], _expertGate, _embDim, expertDim);
         }
 
-        // Step 3: Selected expert(s) — sparse execution
-        // Zero the output accumulator
-        new Span<float>(_hidden, _embDim).Clear();
-
-        for (int k = 0; k < numActive; k++)
-        {
-            int expertIdx = selectedExperts[k];
-            float weight = expertWeights[k];
-
-            // Expert weights are packed: all experts concatenated in one tensor.
-            // Each expert's gate/up is [expertDim, embDim], down is [embDim, expertDim].
-            // Expert slice offset in packed tensor: expertIdx * expertDim * (bytes per row)
-            ExpertMatVecDual(_expertGate, _wGateExps![layer], _expertUp, _wUpExps![layer],
-                expertIdx, expertDim, _embDim, _normBuf);
-
-            if (_hp.UseSigmoidGating)
-            {
-                // Llama-4: apply sigmoid weight before FFN (scale gate/up ≡ scaling input)
-                SimdKernels.ScaleInPlace(_expertGate, weight, expertDim);
-                SimdKernels.ScaleInPlace(_expertUp, weight, expertDim);
-                weight = 1.0f;
-            }
-
-            SimdKernels.SiLuMul(_expertGate, _expertUp, expertDim);
-            ExpertMatVecDown(_hidden, _wDownExps![layer], expertIdx, _embDim, expertDim, _expertGate, weight);
-        }
+        // Step 3: Selected expert(s) — 2-sweep folded execution
+        MoeFfnFolded(
+            _wGateExps![layer], _wUpExps![layer], _wDownExps![layer],
+            selectedExperts, expertWeights, numActive, expertDim,
+            _normBuf, _hidden);
 
         // Step 4: Add shared expert output
         if (_hp.HasSharedExpert)
             SimdKernels.AddInPlace(_hidden, _sharedOut, _embDim);
     }
+
+    /// <summary>
+    /// Folded 2-sweep decode for routed experts: Phase A runs gate+up for all
+    /// <paramref name="numActive"/> experts in a single <see cref="Parallel.For"/> sweep
+    /// across (numActive × expertDim) rows; Phase B runs the weighted down accumulate
+    /// across <see cref="_embDim"/> output rows with the inner k-loop inlined.
+    /// Mirrors <c>HybridGdnForwardPass.MoeFfnCore</c>'s routed-expert section.
+    /// </summary>
+    private void MoeFfnFolded(
+        in TensorRef gateExps, in TensorRef upExps, in TensorRef downExps,
+        Span<int> selectedExperts, Span<float> expertWeights,
+        int numActive, int expertDim,
+        float* normIn, float* hiddenOut)
+    {
+        int bprG = RowBytes(gateExps.DType, _embDim);
+        int bprU = RowBytes(upExps.DType,   _embDim);
+        int bprD = RowBytes(downExps.DType,  expertDim);
+
+        // Stash stack spans in native pointers so Parallel.For workers can read
+        // them without capturing the span. The stack frame stays live for the
+        // duration of both Parallel.For calls (both are synchronous).
+        int* sePtr = stackalloc int[numActive];
+        float* ewPtr = stackalloc float[numActive];
+        for (int i = 0; i < numActive; i++)
+        {
+            sePtr[i] = selectedExperts[i];
+            ewPtr[i] = expertWeights[i];
+        }
+
+        byte* gateP  = gateExps.DataPtr;
+        byte* upP    = upExps.DataPtr;
+        byte* downP  = downExps.DataPtr;
+        DType gateDt = gateExps.DType;
+        DType upDt   = upExps.DType;
+        DType downDt = downExps.DType;
+        float* gateAll   = _expertGateAll;
+        float* upAll     = _expertUpAll;
+        float* normBuf   = normIn;
+        int embDimL    = _embDim;
+        int expertDimL = expertDim;
+        int numActiveL = numActive;
+        int bprGL = bprG, bprUL = bprU, bprDL = bprD;
+        bool sigGating = _hp.UseSigmoidGating;
+
+        // Phase A: gate + up rows for all (k, r) pairs in one parallel sweep.
+        // Each worker computes row r of expert k's gate and up projection.
+        if (gateDt == DType.Q4_K && upDt == DType.Q4_K)
+        {
+            Parallel.For(0, numActiveL * expertDimL, s_moeParallelOpts, idx =>
+            {
+                int k = idx / expertDimL;
+                int r = idx % expertDimL;
+                int ei = sePtr[k];
+                long offG = (long)ei * expertDimL * bprGL + (long)r * bprGL;
+                long offU = (long)ei * expertDimL * bprUL + (long)r * bprUL;
+                gateAll[idx] = SimdKernels.DotQ4K(gateP + offG, normBuf, embDimL);
+                upAll[idx]   = SimdKernels.DotQ4K(upP   + offU, normBuf, embDimL);
+            });
+        }
+        else
+        {
+            Parallel.For(0, numActiveL * expertDimL, s_moeParallelOpts, idx =>
+            {
+                int k = idx / expertDimL;
+                int r = idx % expertDimL;
+                int ei = sePtr[k];
+                long offG = (long)ei * expertDimL * bprGL + (long)r * bprGL;
+                long offU = (long)ei * expertDimL * bprUL + (long)r * bprUL;
+                gateAll[idx] = DispatchDot(gateP + offG, normBuf, embDimL, gateDt);
+                upAll[idx]   = DispatchDot(upP   + offU, normBuf, embDimL, upDt);
+            });
+        }
+
+        // Llama-4 sigmoid weighting scales gate/up BEFORE SiLuMul (scales input),
+        // weight baked in; the down phase then uses weight = 1.
+        if (sigGating)
+        {
+            for (int k = 0; k < numActiveL; k++)
+            {
+                float w = ewPtr[k];
+                SimdKernels.ScaleInPlace(gateAll + (long)k * expertDimL, w, expertDimL);
+                SimdKernels.ScaleInPlace(upAll   + (long)k * expertDimL, w, expertDimL);
+            }
+        }
+
+        // Fused SiLuMul over all (numActive × expertDim) floats in one pass.
+        SimdKernels.SiLuMul(gateAll, upAll, numActiveL * expertDimL);
+
+        // Phase B: down × weight, accumulated across all k experts into hiddenOut.
+        // Reduction is in TOP-K SLOT ORDER (k=0, 1, …) matching MoeFfn's sequential
+        // loop, so the result is bit-identical to the per-expert sequential path
+        // when Q8 quantisation is off — same invariant as MoeFfnBatched phase 4.
+        new Span<float>(hiddenOut, embDimL).Clear();
+        if (downDt == DType.Q4_K)
+        {
+            Parallel.For(0, embDimL, s_moeParallelOpts, r =>
+            {
+                float sum = 0f;
+                for (int k = 0; k < numActiveL; k++)
+                {
+                    int ei = sePtr[k];
+                    float w = sigGating ? 1f : ewPtr[k];
+                    long offD = (long)ei * embDimL * bprDL + (long)r * bprDL;
+                    sum += w * SimdKernels.DotQ4K(downP + offD,
+                                                  gateAll + (long)k * expertDimL,
+                                                  expertDimL);
+                }
+                hiddenOut[r] = sum;
+            });
+        }
+        else
+        {
+            Parallel.For(0, embDimL, s_moeParallelOpts, r =>
+            {
+                float sum = 0f;
+                for (int k = 0; k < numActiveL; k++)
+                {
+                    int ei = sePtr[k];
+                    float w = sigGating ? 1f : ewPtr[k];
+                    long offD = (long)ei * embDimL * bprDL + (long)r * bprDL;
+                    sum += w * DispatchDot(downP + offD,
+                                          gateAll + (long)k * expertDimL,
+                                          expertDimL, downDt);
+                }
+                hiddenOut[r] = sum;
+            });
+        }
+    }
+
+    // ParallelOptions for the routed-MoE sweeps. Pinning to ProcessorCount avoids
+    // the ThreadPool oversubscription that would otherwise add workers when these
+    // short-but-heavy parallel loops fire back-to-back per layer.
+    private static readonly ParallelOptions s_moeParallelOpts = new()
+    {
+        MaxDegreeOfParallelism = Environment.ProcessorCount
+    };
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static float DispatchDot(byte* row, float* input, int cols, DType dtype) =>
+        dtype switch
+        {
+            DType.Q3_K    => SimdKernels.DotQ3K(row, input, cols),
+            DType.Q4_K    => SimdKernels.DotQ4K(row, input, cols),
+            DType.Q5_K    => SimdKernels.DotQ5K(row, input, cols),
+            DType.Q6_K    => SimdKernels.DotQ6K(row, input, cols),
+            DType.Q8_0    => SimdKernels.DotQ8_0(row, input, cols),
+            DType.Float32 => SimdKernels.DotF32((float*)row, input, cols),
+            _ => throw new NotSupportedException($"Routed expert dtype {dtype} not supported in folded decode path"),
+        };
 
     /// <summary>
     /// Master switch for the batched MoE prefill FFN. Set <c>STINGRAY_MOE_BATCHED_PREFILL=0</c>
