@@ -594,14 +594,64 @@ of the experiment (learning the clamp's assumption doesn't hold on this hardware
 captured, and further pushing trades a diminishing-returns speed gain against real risk given the
 unwrapped mandatory-upload caveat above. `1.2`+ was not attempted.
 
-**Updated recommendation**: `STINGRAY_VULKAN_UMA_FRACTION=1.1` with
-`STINGRAY_DENSE_FFN_GPU_MARGIN_MB=256` is the best-measured setting found in this document, on
-this specific hardware, verified clean and fastest (1.0-1.2 t/s — roughly 4-6x the very first
-measurement in this document's history). This does **not** mean `1.1` (or the `2.0` ceiling now
-available) is safe to assume on a different machine/driver/model — the whole point of this
-follow-up is that the advertised heap size's relationship to real usable memory is
-driver-specific and was only established here by testing, not derived from any general rule.
-Re-verify on any other hardware before trusting a value above `1.0` there.
+**Updated recommendation (superseded further by Follow-up 10 below)**: `1.1` with
+`STINGRAY_DENSE_FFN_GPU_MARGIN_MB=256` was the best-measured setting at time of writing. This does
+**not** mean `1.1` (or the `2.0` ceiling now available) is safe to assume on a different
+machine/driver/model — the whole point of this follow-up is that the advertised heap size's
+relationship to real usable memory is driver-specific and was only established here by testing,
+not derived from any general rule. Re-verify on any other hardware before trusting a value above
+`1.0` there.
+
+## Follow-up 10: three more levers tried — margin tuning, KV-cache compression, MTP (2026-09-16, later)
+
+With placement now well-understood, checked three more candidate levers, all at
+`STINGRAY_VULKAN_UMA_FRACTION=1.1` / `STINGRAY_DENSE_FFN_GPU_MARGIN_MB=256` for a stable baseline:
+
+**1. Lowering `STINGRAY_DENSE_FFN_GPU_MARGIN_MB` further (256 → 64)**: **no effect** — identical
+53/64 layers, identical 27,030 MiB uploaded, both runs. The margin isn't the binding constraint at
+this fraction (something else — likely per-layer granularity against the inflated `VramBytes`
+budget — decides the cutoff first). Not worth using a lower value than the already-tested 256.
+
+**2. `--tq` (TurboQuant KV-cache compression)**: **cleanly rejected at startup** —
+`"TurboQuant is not supported for hybrid GDN models (no KV cache on GDN layers)"`. Makes sense in
+hindsight: this architecture's GDN layers use recurrent state instead of a traditional KV cache
+(only the 16 attention layers have one at all), so there's nothing here for KV-cache compression
+to meaningfully compress. Confirmed not applicable, not a bug — no further action.
+
+**3. `--spec-type mtp` (MTP speculative decoding) vs `--spec-type none`**: **measurably,
+reproducibly slower with MTP enabled**, on this configuration. Same prompt ("Write a detailed
+paragraph explaining how photosynthesis works."), same `-n 40`, `--temp 0` (deterministic —
+results were bit-identical across repeated runs of the same config, confirming this isn't noise):
+
+| Config | Decode speed | MTP accept rate |
+|---|---|---|
+| `--spec-type none` (run 1) | 1.1 t/s | — |
+| `--spec-type none` (run 2) | 1.0 t/s | — |
+| `--spec-type mtp` (run 1) | 0.8 t/s | 80% (28/35) |
+| `--spec-type mtp` (run 2) | 0.8 t/s | 80% (28/35) |
+
+MTP is **~20-27% slower** than disabling speculative decoding entirely, despite a decent 80%
+draft-accept rate. The likely explanation: the batched-verify step's extra dispatch/computation
+overhead costs more than the accepted drafts save, consistent with this iGPU being
+dispatch-overhead-bound rather than compute-bound for small extra batched work (the same class of
+effect CLAUDE.md's standing finding on this exact machine describes for GPU work generally). This
+was NOT true by assumption — `--spec-type auto` (the CLI's default) silently enables MTP whenever
+a checkpoint supports it, meaning **the very numbers reported throughout this whole document's
+performance-pass sections (Follow-ups 5, 8, 9) were measured with MTP silently active**, since none
+of those runs passed an explicit `--spec-type` override. This doesn't invalidate those
+measurements (both "before" and "after" states of each comparison had the same auto-MTP behavior,
+so the *relative* deltas reported there are still valid), but it does mean an even better absolute
+number than any of those tables is available today: **the same runs, with `--spec-type none`, on
+top of the already-measured best placement settings**. All four runs in this table verified clean
+via `Get-Counter` — 47-48 GB RAM free throughout, no swap.
+
+**Updated recommendation**: `STINGRAY_VULKAN_UMA_FRACTION=1.1`,
+`STINGRAY_DENSE_FFN_GPU_MARGIN_MB=256`, **`--spec-type none`** is now the best-measured
+configuration in this document (~1.0-1.1 t/s, and combined with placement this is roughly 4-5.5x
+the very first measurement in this whole session). Do not assume `--spec-type mtp`/`auto`'s default
+behavior helps on this architecture/hardware combination — it measurably doesn't here; this is
+exactly the kind of "plausible-sounding optimization that isn't actually faster" CLAUDE.md's
+performance-pass rule warns against trusting without measuring.
 
 ---
 
