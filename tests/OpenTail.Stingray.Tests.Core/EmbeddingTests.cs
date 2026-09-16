@@ -198,4 +198,37 @@ public sealed class EmbeddingTests
         float normSq = TensorPrimitives.Dot(result.Data[0].Vector, result.Data[0].Vector);
         Assert.InRange(MathF.Sqrt(normSq), 0.999f, 1.001f);
     }
+
+    [Fact]
+    public void EmbeddingEngine_RealGgufModel_BatchParityWithSingle_ProducesIdenticalEmbeddings()
+    {
+        string ggufPath = Path.Combine("models", "qwen3-embedding-0.6b", "qwen3-embedding-0.6b-q8_0.gguf");
+        if (!File.Exists(ggufPath))
+        {
+            return;
+        }
+
+        using var engine = new EmbeddingEngine(modelName: ggufPath);
+
+        string doc0 = "What is retrieval-augmented generation?";
+        string doc1 = "Vector database indexing and semantic search";
+        string doc2 = "How to bake chocolate chip cookies";
+
+        var res0 = engine.Embed(new EmbeddingRequest { Inputs = [doc0], Normalize = true });
+        var res1 = engine.Embed(new EmbeddingRequest { Inputs = [doc1], Normalize = true });
+        var res2 = engine.Embed(new EmbeddingRequest { Inputs = [doc2], Normalize = true });
+
+        var resBatch = engine.Embed(new EmbeddingRequest { Inputs = [doc0, doc1, doc2], Normalize = true });
+
+        Assert.Equal(3, resBatch.Data.Count);
+
+        float sim0 = EmbeddingNormalizer.CosineSimilarity(res0.Data[0].Vector, resBatch.Data[0].Vector);
+        float sim1 = EmbeddingNormalizer.CosineSimilarity(res1.Data[0].Vector, resBatch.Data[1].Vector);
+        float sim2 = EmbeddingNormalizer.CosineSimilarity(res2.Data[0].Vector, resBatch.Data[2].Vector);
+
+        Assert.True(sim0 > 0.9999f, $"Doc 0 cosine similarity to single was {sim0:F6}");
+        Assert.True(sim1 > 0.9999f, $"Doc 1 cosine similarity to single was {sim1:F6}");
+        Assert.True(sim2 > 0.9999f, $"Doc 2 cosine similarity to single was {sim2:F6}");
+    }
 }
+

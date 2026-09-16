@@ -91,6 +91,21 @@ public interface IForwardPass : IDisposable, IThreadAffineBackend
             "Check SupportsHiddenStateExtraction before calling.");
 
     /// <summary>
+    /// Whether this pass implements <see cref="ExtractHiddenStatesBatch"/> for batched multi-sequence embedding generation.
+    /// Defaults to <c>false</c>.
+    /// </summary>
+    bool SupportsBatchedHiddenStateExtraction => false;
+
+    /// <summary>
+    /// Evaluates the transformer trunk over multiple independent sequences in a single packed prefill pass,
+    /// writing post-final-norm hidden states into destination.
+    /// </summary>
+    void ExtractHiddenStatesBatch(IReadOnlyList<IReadOnlyList<int>> sequences, Span<float> destination, ReadOnlySpan<int> destinationOffsets = default) =>
+        throw new NotSupportedException(
+            $"{GetType().Name} does not implement ExtractHiddenStatesBatch. " +
+            "Check SupportsBatchedHiddenStateExtraction before calling.");
+
+    /// <summary>
     /// Truncate the KV cache to the given length, discarding positions &gt;= length.
     /// Used by speculative decoding to rewind rejected draft tokens.
     /// <para>

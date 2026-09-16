@@ -111,9 +111,15 @@ public sealed class EmbeddingEngine : IEmbeddingPipeline, IRerankerPipeline
             return new EmbeddingResult(_modelName, [], 0, 0);
         }
 
+        var pooling = request.Pooling ?? _defaultPooling;
+
+        if (_forwardPass != null && _tokenizer != null && _forwardPass.SupportsBatchedHiddenStateExtraction && request.Inputs.Count > 1)
+        {
+            return EmbedBatched(request, pooling);
+        }
+
         var results = new List<EmbeddingData>(request.Inputs.Count);
         int totalTokens = 0;
-        var pooling = request.Pooling ?? _defaultPooling;
 
         for (int i = 0; i < request.Inputs.Count; i++)
         {
@@ -123,23 +129,7 @@ public sealed class EmbeddingEngine : IEmbeddingPipeline, IRerankerPipeline
 
             if (_forwardPass != null && _tokenizer != null)
             {
-                var tokenList = _tokenizer.Encode(text).ToList();
-                if (tokenList.Count == 0)
-                {
-                    int bos = _tokenizer.BosTokenId;
-                    tokenList = bos >= 0 ? [bos] : [0];
-                }
-                else
-                {
-                    if (_tokenizer.AddBosToken && _tokenizer.BosTokenId >= 0 && tokenList[0] != _tokenizer.BosTokenId)
-                    {
-                        tokenList.Insert(0, _tokenizer.BosTokenId);
-                    }
-                    if (_addEosToken && _tokenizer.EosTokenId >= 0 && tokenList[^1] != _tokenizer.EosTokenId)
-                    {
-                        tokenList.Add(_tokenizer.EosTokenId);
-                    }
-                }
+                var tokenList = TokenizeInput(text);
                 tokenCount = tokenList.Count;
                 totalTokens += tokenCount;
 
@@ -177,6 +167,77 @@ public sealed class EmbeddingEngine : IEmbeddingPipeline, IRerankerPipeline
             data: results,
             promptTokens: totalTokens,
             totalTokens: totalTokens);
+    }
+
+    private EmbeddingResult EmbedBatched(EmbeddingRequest request, PoolingType pooling)
+    {
+        int count = request.Inputs.Count;
+        var tokenizedSequences = new List<IReadOnlyList<int>>(count);
+        var offsets = new int[count];
+        int totalTokens = 0;
+
+        for (int i = 0; i < count; i++)
+        {
+            offsets[i] = totalTokens;
+            var tokens = TokenizeInput(request.Inputs[i]);
+            tokenizedSequences.Add(tokens);
+            totalTokens += tokens.Count;
+        }
+
+        float[] allHiddenStates = new float[totalTokens * _embeddingDimensions];
+        _forwardPass!.ExtractHiddenStatesBatch(tokenizedSequences, allHiddenStates, offsets);
+
+        var results = new List<EmbeddingData>(count);
+        for (int i = 0; i < count; i++)
+        {
+            int tokenCount = tokenizedSequences[i].Count;
+            int offset = offsets[i] * _embeddingDimensions;
+            var seqHiddenStates = allHiddenStates.AsSpan(offset, tokenCount * _embeddingDimensions);
+
+            float[] vector = EmbeddingNormalizer.ApplyPooling(seqHiddenStates, tokenCount, _embeddingDimensions, pooling);
+
+            // Matryoshka dimension truncation
+            if (request.Dimensions.HasValue && request.Dimensions.Value > 0 && request.Dimensions.Value < vector.Length)
+            {
+                vector = EmbeddingNormalizer.TruncateAndNormalize(vector, request.Dimensions.Value);
+            }
+            else if (request.Normalize)
+            {
+                EmbeddingNormalizer.NormalizeL2(vector);
+            }
+
+            results.Add(new EmbeddingData
+            {
+                Index = i,
+                Vector = vector
+            });
+        }
+
+        return new EmbeddingResult(
+            model: _modelName,
+            data: results,
+            promptTokens: totalTokens,
+            totalTokens: totalTokens);
+    }
+
+    private List<int> TokenizeInput(string text)
+    {
+        var tokenList = _tokenizer!.Encode(text).ToList();
+        if (tokenList.Count == 0)
+        {
+            int bos = _tokenizer.BosTokenId;
+            return bos >= 0 ? [bos] : [0];
+        }
+
+        if (_tokenizer.AddBosToken && _tokenizer.BosTokenId >= 0 && tokenList[0] != _tokenizer.BosTokenId)
+        {
+            tokenList.Insert(0, _tokenizer.BosTokenId);
+        }
+        if (_addEosToken && _tokenizer.EosTokenId >= 0 && tokenList[^1] != _tokenizer.EosTokenId)
+        {
+            tokenList.Add(_tokenizer.EosTokenId);
+        }
+        return tokenList;
     }
 
     /// <summary>
