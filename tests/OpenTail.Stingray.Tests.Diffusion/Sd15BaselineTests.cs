@@ -88,7 +88,7 @@ public sealed class Sd15BaselineTests
         var swTotal = Stopwatch.StartNew();
         using var pipeline = StableDiffusionPipeline.Load(modelPath, tokPath, backend: vulkan);
 
-        string outputPath = Path.Combine(@"c:\Git-Public\OpenTail.Stingray", "docs", "diffusion-samples", "sd15_apple_vulkan_512_20steps.png");
+        string outputPath = Path.Combine(@"c:\Git-Public\OpenTail.Stingray", "docs", "diffusion-samples", "sd15_apple_vulkan_context_cached_proof_20260916.png");
 
         var swGen = Stopwatch.StartNew();
         pipeline.Generate(
@@ -207,7 +207,7 @@ public sealed class Sd15BaselineTests
             }
         }
 
-        string outputPath = Path.Combine(@"c:\Git-Public\OpenTail.Stingray", "docs", "diffusion-samples", "sd15_controlnet_apple_vulkan_512_20steps.png");
+        string outputPath = Path.Combine(@"c:\Git-Public\OpenTail.Stingray", "docs", "diffusion-samples", "sd15_controlnet_canny_proof_20260916.png");
 
         var swGen = Stopwatch.StartNew();
         pipeline.Generate(

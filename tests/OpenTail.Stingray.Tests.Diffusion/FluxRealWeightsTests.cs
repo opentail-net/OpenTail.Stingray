@@ -47,7 +47,7 @@ public sealed class FluxRealWeightsTests
         swLoad.Stop();
         Console.WriteLine($"[FluxProfile Vulkan] Pipeline load took {swLoad.ElapsedMilliseconds} ms");
 
-        string outputPath = Path.Combine(@"C:\Git-Public\OpenTail.Stingray", "docs", "diffusion-samples", "flux_apple_vulkan_512_4steps.png");
+        string outputPath = Path.Combine(@"C:\Git-Public\OpenTail.Stingray", "docs", "diffusion-samples", "flux_schnell_apple_t5_batched_proof_20260916.png");
 
         // Pass 1 (Cold)
         var swCold = Stopwatch.StartNew();

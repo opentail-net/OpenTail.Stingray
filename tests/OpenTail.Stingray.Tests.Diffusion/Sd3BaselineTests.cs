@@ -168,7 +168,7 @@ public sealed class Sd3BaselineTests
         _output.WriteLine(msgLoad);
         Console.WriteLine(msgLoad);
 
-        string outputPath = Path.Combine(@"c:\Git-Public\OpenTail.Stingray", "docs", "diffusion-samples", "sd35_medium_apple_vulkan_256_20steps.png");
+        string outputPath = Path.Combine(@"c:\Git-Public\OpenTail.Stingray", "docs", "diffusion-samples", "sd35_medium_apple_proof_20260916.png");
 
         var swGen = Stopwatch.StartNew();
         pipeline.Generate(
