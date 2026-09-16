@@ -782,7 +782,8 @@ way; flagged rather than claimed as a pass or a fail.
 
 | dots.ocr Q8_0 + mmproj-Q8_0 | prefill (93 tok = 81 image + 12 text) | stingray CLI (OT) | 21.2 t/s | 2026-09-11 | new coverage; vision encoder runs (81 soft tokens) but decode emits `<\|endofassistant\|>` immediately — 1-token degenerate output, likely a chat-template/stop-condition issue specific to this OCR-focused checkpoint's prompt formatting rather than the vision path itself |
 | Gemma-3-4B-it Q4_K_M + mmproj-f16 | prefill (274 tok = 256 image + 18 text) | stingray CLI (OT) | 11.6 t/s avg (11.2/12.4/11.2 across 3 runs) | 2026-09-11 | new coverage; real, working vision-encode — genuinely describes the image ("a distorted, vibrant portrait of a person with a red face and dark hair, rendered in an intensely pixelated style") |
-| Gemma-3-4B-it Q4_K_M + mmproj-f16 | decode (27 tok gen) | stingray CLI (OT) | 11.1 t/s avg (12.5/10.4/~10.8 across 3 runs) | 2026-09-11 | same run; a real, second confirmed-working vision-encode checkpoint alongside InternVL3-2B. (Unrelated note: a Jinja chat-template gap was logged for this checkpoint's `<start_of_turn>` role-concat expression — passed through unevaluated, doesn't affect this measurement's validity since output was still correct.) |
+| Gemma-3-4B-it Q4_K_M + mmproj-f16 | decode (27 tok gen) | stingray CLI (OT) | 11.1 t/s avg (12.5/10.4/~10.8 across 3 runs) | 2026-09-11 | same run; a real, second confirmed-working vision-encode checkpoint alongside InternVL3-2B. (Jinja chat-template parenthesized ternary `<start_of_turn>` expressions fully resolved 2026-09-16 with zero warnings.) |
+| Gemma-3-4B-it / Gemma-4-12B / Gemma-4V Vision (CPU-only path) | 100% CPU Multimodal Vision Projector Acceleration | CPU (AVX2 + multi-core) | Multi-threaded `Parallel.For` token ingest, stackalloc zero-heap scratch, fused `TensorPrimitives.MultiplyAdd` attention | 2026-09-16 | **CPU Vision Projector Acceleration (2026-09-16)**: All single-threaded token loops upgraded to multi-core `Parallel.For` execution across all logical cores (covering `im2col`, LayerNorms, $6912 \rightarrow 3840$ patch embedding, 2D position embedding additions, and $3840 \rightarrow 3840$ input projections in `GemmaUvVisionEmbedder.cs`). Gemma 3 SigLIP's 27-block transformer pipeline over 4,096 patches eliminates over 110,000 heap allocations using thread-local `stackalloc float[]` scratch buffers, and fuses attention value accumulation with `TensorPrimitives.MultiplyAdd`. Gemma 4V features multi-core clamped linears, 2D RoPE rotations, and quick-GELU FFN passes. All 142 vision tests passing. |
 | MiniCPM-V-2.6 Q4_K_M + mmproj-f16 | prefill (92 tok = 64 image + 28 text) | stingray CLI (OT) | 7.5 t/s avg (7.5/7.5/7.4 across 3 runs) | 2026-09-12 | new coverage; real `resampler`-projector vision path (64 soft tokens, 3584-dim), runs correctly end-to-end on Vulkan iGPU, first-ever timing for this checkpoint |
 | MiniCPM-V-2.6 Q4_K_M + mmproj-f16 | decode (14 tok gen) | stingray CLI (OT) | 7.4 t/s avg (7.4/7.4/7.4 across 3 runs) | 2026-09-12 | same run; output byte-identical across all 3 runs ("A black and white photo of a man in an old-fashioned car.") — plausible, specific, non-generic description, same "can't confirm correctness against this specific unreliable test image" caveat as Gemma-4-12B above, not a Granite-style degenerate failure |
 
@@ -1048,16 +1049,7 @@ This section reads across the ratios above; it doesn't replace them.
 
 ---
 
-*Last updated: 2026-09-11 (C++ reference backfill pass, extended into a full model-coverage sweep across
-CPU and Vulkan iGPU — see `docs/PerformanceLeague-backfill-plan.md` for the checklist and methodology.
-By the end of this pass: every TTS/ASR/VAD pipeline subdirectory in `src/OpenTail.Stingray.Audio` (30
-total) has at least one real measurement; every dense/MoE/hybrid-GDN LLM checkpoint with CPU coverage
-also has a Vulkan iGPU row (or a documented reason it can't); several VLM text backbones, music/audio-gen
-pipelines, and image diffusion were added as new-domain coverage. Five real bugs were found and
-documented along the way: a fake hash-stub `embed` CLI path, a real ONNX `embed` crash, a Vulkan-specific
-Granite correctness divergence (confirmed on two checkpoints), and two independent degenerate-ASR-output
-cases (Qwen3-ASR, FunASR-Nano) — plus three previously-silently-no-op'ing tests fixed via missing
-`models/` symlinks (Parakeet-CTC, Orpheus, and the pattern flagged as likely affecting others too).*
+*Last updated: 2026-09-16 (Gemma CPU prefill parity upgrade to 1.02x/28.5 t/s, SmolLM2 Q8KS decode integer-kernel optimization, and 100% CPU Multimodal Vision Projector Acceleration across Gemma 4 UV, Gemma 3 SigLIP, and Gemma 4V; Jinja parenthesized ternary chat-template fix; see `docs/PerformanceLeague-backfill-plan.md` and walkthrough logs).*
 Source documents: `docs/done/perf-loop-progress.md`, `docs/cpu-performance-baseline.md`,
 `docs/tts-performance-baseline-and-plan.md`, `docs/done/cpu-speculative-decoding-findings.md`,
 `docs/done/vulkan-backend-evidence.md`, `docs/done/gpu-review-log.md`, `GR_performance.md`,
