@@ -279,6 +279,84 @@ public sealed class EmbeddingTests(ITestOutputHelper? output = null)
         Assert.True(batchMs < seqMs, $"Expected batched ({batchMs}ms) to be faster than sequential ({seqMs}ms)");
     }
 
+    [Fact]
+    public void Bench_Qwen3_Embedding_LlamaBench_Comparison()
+    {
+        var ggufPath = FindModelPath("models/qwen3-embedding-0.6b/qwen3-embedding-0.6b-q8_0.gguf");
+        if (ggufPath is null) return;
+
+        using var engine = new EmbeddingEngine(modelName: ggufPath);
+
+        string baseSentence = "Natural language processing and high dimensional vector embeddings provide dense semantic search capabilities for neural retrieval systems. ";
+        
+        string MakeText(int targetTokens)
+        {
+            var sb = new System.Text.StringBuilder();
+            while (true)
+            {
+                sb.Append(baseSentence);
+                var testRes = engine.Embed(new EmbeddingRequest { Inputs = [sb.ToString()] });
+                if (testRes.TotalTokens >= targetTokens) return sb.ToString();
+            }
+        }
+
+        string text64 = MakeText(64);
+        string text128 = MakeText(128);
+        string text512 = MakeText(512);
+
+        // Warmup
+        engine.Embed(new EmbeddingRequest { Inputs = [text64] });
+        engine.Embed(new EmbeddingRequest { Inputs = [text128] });
+        engine.Embed(new EmbeddingRequest { Inputs = [text512] });
+
+        const int Runs = 5;
+        double BenchPrompt(string text, string label)
+        {
+            var times = new double[Runs];
+            int tokens = 0;
+            for (int r = 0; r < Runs; r++)
+            {
+                var sw = Stopwatch.StartNew();
+                var res = engine.Embed(new EmbeddingRequest { Inputs = [text], Normalize = true });
+                sw.Stop();
+                times[r] = sw.Elapsed.TotalSeconds;
+                tokens = res.TotalTokens;
+            }
+            double meanSec = times.Average();
+            double tps = tokens / meanSec;
+            Console.Error.WriteLine($"[Embed Bench] {label} ({tokens} tokens): mean={meanSec * 1000:F1}ms -> {tps:F1} t/s");
+            return tps;
+        }
+
+        double BenchBatch(string[] texts, string label)
+        {
+            var times = new double[Runs];
+            int tokens = 0;
+            for (int r = 0; r < Runs; r++)
+            {
+                var sw = Stopwatch.StartNew();
+                var res = engine.Embed(new EmbeddingRequest { Inputs = texts, Normalize = true });
+                sw.Stop();
+                times[r] = sw.Elapsed.TotalSeconds;
+                tokens = res.TotalTokens;
+            }
+            double meanSec = times.Average();
+            double tps = tokens / meanSec;
+            Console.Error.WriteLine($"[Embed Bench] {label} ({texts.Length} seqs, {tokens} tokens): mean={meanSec * 1000:F1}ms -> {tps:F1} t/s");
+            return tps;
+        }
+
+        double tps64 = BenchPrompt(text64, "pp64 (single)");
+        double tps128 = BenchPrompt(text128, "pp128 (single)");
+        double tps512 = BenchPrompt(text512, "pp512 (single)");
+
+        var batch4 = Enumerable.Repeat(text128, 4).ToArray();
+        double tpsBatch4_128 = BenchBatch(batch4, "batch4 (4x128)");
+
+        var batch8 = Enumerable.Repeat(text64, 8).ToArray();
+        double tpsBatch8_64 = BenchBatch(batch8, "batch8 (8x64)");
+    }
+
     private static string? FindModelPath(string relativePath)
     {
         var dir = Directory.GetCurrentDirectory();
