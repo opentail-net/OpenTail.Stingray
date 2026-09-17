@@ -1,4 +1,5 @@
 using OpenTail.Stingray.Diffusion.StableAudio;
+using OpenTail.Stingray.Vulkan;
 
 namespace OpenTail.Stingray.Tests.Diffusion;
 
@@ -94,5 +95,34 @@ public sealed class StableAudioDiTGoldenParityTests
         Assert.Equal(goldenVelocity.Length, velocity.Length);
         float cos = CosineSimilarity(velocity, goldenVelocity);
         Assert.True(cos > 0.99f, $"StableAudioDiT cosine-sim too low: {cos}");
+    }
+
+    [Fact]
+    public void StableAudioDiT_MatchesRealReference_OnVulkanGpu()
+    {
+        string? ditDir = FindRepoFile(DitDirRelative);
+        string? goldenDir = FindGoldenDir();
+        if (ditDir is null || goldenDir is null) return;
+
+        VulkanBackend? vk = null;
+        try { vk = new VulkanBackend(); } catch { return; }
+        if (vk is null) return;
+
+        using (vk)
+        using (var st = SafetensorsLoader.OpenDirectory(ditDir))
+        using (var dit = StableAudioDiT.FromLoader(st))
+        {
+            var latent = ReadFloats(Path.Combine(goldenDir, "latent.bin"));
+            var condTokens = ReadFloats(Path.Combine(goldenDir, "cond_tokens.bin"));
+            var secondsTotalRaw = ReadFloats(Path.Combine(goldenDir, "seconds_total_raw.bin"));
+            var goldenVelocity = ReadFloats(Path.Combine(goldenDir, "velocity.bin"));
+
+            var velocity = dit.ForwardGpu(latent, SeqLen, condTokens, NCond, secondsTotalRaw, timestep: 0.5f, vk);
+
+            Assert.Equal(goldenVelocity.Length, velocity.Length);
+            float cos = CosineSimilarity(velocity, goldenVelocity);
+            Console.Error.WriteLine($"[GPU Test] StableAudioDiT Vulkan GPU cosine similarity = {cos:F6}");
+            Assert.True(cos > 0.98f, $"StableAudioDiT GPU cosine-sim too low: {cos}");
+        }
     }
 }

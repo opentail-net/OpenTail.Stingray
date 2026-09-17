@@ -856,3 +856,6 @@
 [StableAudio3-SmallMusic] prompt="upbeat acoustic guitar melody" steps=8 audio=6.00s samples=264600
 [StableAudio3-SmallMusic] runs(s)=[130.165, 115.725, 124.649] mean=123.513s RTF=20.586 (lower=faster; 1.0=realtime; 8-step CFG, not the full recommended step count)
 
+[StableAudio3-SmallMusic] prompt="upbeat acoustic guitar melody" steps=8 audio=6.00s samples=264600
+[StableAudio3-SmallMusic] runs(s)=[20.992, 20.892, 20.915] mean=20.933s RTF=3.489 (lower=faster; 1.0=realtime; 8-step CFG, not the full recommended step count)
+

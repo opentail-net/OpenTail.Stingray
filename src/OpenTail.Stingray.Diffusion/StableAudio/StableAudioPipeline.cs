@@ -50,6 +50,7 @@ public sealed class StableAudioPipeline : IDisposable
     private readonly StableAudioParams _params;
     private readonly IWeightLoader _weights;
     private readonly GgufTokenizer? _tokenizer;
+    private readonly IComputeBackend? _backend;
     private bool _disposed;
 
     public bool IsDisposed => _disposed;
@@ -61,10 +62,13 @@ public sealed class StableAudioPipeline : IDisposable
     /// the same directory <paramref name="textEncoderWeights"/> was opened on). Required for
     /// <see cref="StableAudioRequest.Prompt"/> (raw-string) requests; omit if every caller supplies
     /// <see cref="StableAudioRequest.PromptTokenIds"/> directly instead.</param>
-    public StableAudioPipeline(IWeightLoader dit, IWeightLoader textEncoderWeights, string? textEncoderDir = null, StableAudioParams? @params = null)
+    /// <param name="params">Pipeline parameters.</param>
+    /// <param name="backend">Optional compute backend (e.g. VulkanBackend for GPU acceleration).</param>
+    public StableAudioPipeline(IWeightLoader dit, IWeightLoader textEncoderWeights, string? textEncoderDir = null, StableAudioParams? @params = null, IComputeBackend? backend = null)
     {
         _params = @params ?? new StableAudioParams();
         _weights = dit;
+        _backend = backend;
         _transformer = StableAudioDiT.FromLoader(dit);
         _textEncoder = T5GemmaEncoder.FromLoader(textEncoderWeights);
         _vae = AcousticVae.FromLoader(dit);
@@ -133,20 +137,105 @@ public sealed class StableAudioPipeline : IDisposable
         float[] initialLatent, int seqLen, int[] promptTokenIds, float durationSeconds,
         int steps, float cfgScale, Action<int, int>? progress = null, int? effectiveSeqLen = null)
     {
-        var latent = initialLatent;
         var (condTokens, secondsTotalRaw) = BuildConditioning(promptTokenIds, durationSeconds);
         int nCond = condTokens.Length / CondTokenDim;
         var nullCondTokens = new float[condTokens.Length]; // real `null_embed = torch.zeros_like(...)`
 
+        if (_backend is IVisionOpsBackend visionOps && _backend is IImageOpsBackend imageOps)
+        {
+            var gpuWeights = _transformer.EnsureGpuWeights(_backend);
+            using var ws = new StableAudio3GpuWorkspace(_backend, maxSeqLen: Math.Max(seqLen, 16), memoryTokens: 64, dim: 1024, ioChannels: 256, ffInner: 4096, nCondMax: Math.Max(nCond, 32));
+
+            // Upload initial latent once into ws.Latent
+            using (var hostLatent = _backend.Upload(initialLatent, ws.Latent.Shape, exact: true))
+            {
+                _backend.AddInPlace(ws.Latent, hostLatent);
+            }
+
+            // Precompute cross-attention conditioning ONCE for both conditional and unconditional passes
+            _transformer.PrecomputeConditioningGpu(condTokens, nCond, isCond: true, ws, gpuWeights, _backend);
+            _transformer.PrecomputeConditioningGpu(nullCondTokens, nCond, isCond: false, ws, gpuWeights, _backend);
+
+            int totalLatentElements = initialLatent.Length;
+            var condHost = new float[totalLatentElements];
+            var uncondHost = new float[totalLatentElements];
+            var condDenoised = new float[totalLatentElements];
+            var uncondDenoised = new float[totalLatentElements];
+            var diff = new float[totalLatentElements];
+            var velocity = new float[totalLatentElements];
+            var latentHost = (float[])initialLatent.Clone();
+
+            for (int step = 0; step < steps; step++)
+            {
+                float t = 1.0f - (float)step / steps;
+                float nextT = 1.0f - (float)(step + 1) / steps;
+                if (effectiveSeqLen is int eff)
+                {
+                    t = StableAudioScheduleKernels.ShiftTimestep(t, eff);
+                    nextT = StableAudioScheduleKernels.ShiftTimestep(nextT, eff);
+                }
+                float dt = nextT - t;
+
+                imageOps.BeginBatch();
+                _transformer.ForwardGpuCore(ws, seqLen, secondsTotalRaw, t, isCond: true, nCond, gpuWeights, visionOps, imageOps, ws.CondOutput);
+                if (cfgScale != 1.0f)
+                {
+                    _transformer.ForwardGpuCore(ws, seqLen, secondsTotalRaw, t, isCond: false, nCond, gpuWeights, visionOps, imageOps, ws.UncondOutput);
+                }
+                imageOps.EndBatch();
+
+                if (cfgScale == 1.0f)
+                {
+                    imageOps.BeginBatch();
+                    visionOps.FluxEulerStep(ws.Latent, ws.CondOutput, dt, totalLatentElements);
+                    imageOps.EndBatch();
+                }
+                else
+                {
+                    imageOps.Download(ws.CondOutput, condHost);
+                    imageOps.Download(ws.UncondOutput, uncondHost);
+
+                    for (int i = 0; i < totalLatentElements; i++)
+                    {
+                        condDenoised[i] = latentHost[i] - condHost[i] * t;
+                        uncondDenoised[i] = latentHost[i] - uncondHost[i] * t;
+                        diff[i] = condDenoised[i] - uncondDenoised[i];
+                    }
+
+                    double normSq = 0, dot = 0;
+                    for (int i = 0; i < totalLatentElements; i++) normSq += (double)condDenoised[i] * condDenoised[i];
+                    float invNorm = (float)(1.0 / (Math.Sqrt(normSq) + 1e-12));
+                    for (int i = 0; i < totalLatentElements; i++) dot += (double)diff[i] * (condDenoised[i] * invNorm);
+
+                    for (int i = 0; i < totalLatentElements; i++)
+                    {
+                        float v1Normalized = condDenoised[i] * invNorm;
+                        float parallel = (float)dot * v1Normalized;
+                        float orthogonal = diff[i] - parallel;
+                        float cfgDenoised = condDenoised[i] + (cfgScale - 1f) * orthogonal;
+                        velocity[i] = (latentHost[i] - cfgDenoised) / t;
+                        latentHost[i] += dt * velocity[i];
+                    }
+
+                    using var velGpu = _backend.Upload(velocity, ws.CondOutput.Shape, exact: true);
+                    imageOps.BeginBatch();
+                    visionOps.FluxEulerStep(ws.Latent, velGpu, dt, totalLatentElements);
+                    imageOps.EndBatch();
+                }
+
+                progress?.Invoke(step + 1, steps);
+            }
+
+            // Exactly ONE readback of the latent after all steps finish
+            imageOps.Download(ws.Latent, latentHost);
+            return _vae.Decode(latentHost, seqLen);
+        }
+
+        var latent = initialLatent;
         for (int step = 0; step < steps; step++)
         {
             float t = 1.0f - (float)step / steps;
             float nextT = 1.0f - (float)(step + 1) / steps;
-            // Real `use_effective_length_for_schedule`: the timestep warp is keyed off the UNPADDED
-            // (effective) sequence length, not the padded one actually being denoised. Only applied
-            // when a caller explicitly opts in (`effectiveSeqLen` provided) -- `StableAudioPipelineGoldenParityTests`'
-            // golden fixture was generated against the real reference's PLAIN linear schedule (this
-            // port's own dist_shift gap at the time), so it intentionally keeps calling without it.
             if (effectiveSeqLen is int eff)
             {
                 t = StableAudioScheduleKernels.ShiftTimestep(t, eff);

@@ -40,7 +40,12 @@ public sealed class StableAudio3SmallMusicPerfBaselineDebugTest
 
         using var ditWeights = SafetensorsLoader.OpenDirectory(ditDir!);
         using var textEncoderWeights = SafetensorsLoader.OpenDirectory(t5gemmaDir!);
-        using var pipeline = new StableAudioPipeline(ditWeights, textEncoderWeights, t5gemmaDir!);
+
+        OpenTail.Stingray.Vulkan.VulkanBackend? vk = null;
+        try { vk = new OpenTail.Stingray.Vulkan.VulkanBackend(); } catch { }
+        using (vk)
+        {
+            using var pipeline = new StableAudioPipeline(ditWeights, textEncoderWeights, t5gemmaDir!, backend: vk);
 
         const string prompt = "upbeat acoustic guitar melody";
         const float durationSeconds = 3f;
@@ -86,5 +91,6 @@ public sealed class StableAudio3SmallMusicPerfBaselineDebugTest
         string? docsDir = FindRepoDir("docs");
         if (docsDir != null)
             File.AppendAllText(Path.Combine(docsDir, "tts-benchmark-log.txt"), msg + "\n\n");
+        }
     }
 }

@@ -118,11 +118,44 @@ public sealed class StableAudioPipelineGoldenParityTests
 
         Assert.Equal(goldenPcm.Length, pcm.Length);
         float cos = CosineSimilarity(pcm, goldenPcm);
-        // Real measured values for this specific chaotic case: ~0.51 (steps=25), ~0.64 (steps=3) --
-        // see the class doc for why a tighter bound isn't meaningful here. 0.3 is a real floor with
-        // margin below both measurements, not an aspiration: it still confirms the two runs share
-        // real structure (an uncorrelated/broken signal would land near 0), while not chasing an
-        // exact match this specific seed/duration/cfg_scale combination cannot reliably produce.
         Assert.True(cos > 0.3f, $"Full-pipeline cosine-sim too low: {cos}");
+    }
+
+    [Fact]
+    public void StableAudioPipeline_GenerateFromLatent_MatchesRealEndToEndReference_OnVulkanGpu()
+    {
+        string? ditDir = FindRepoDir(DitDirRelative);
+        string? t5gemmaDir = FindRepoDir(T5GemmaDirRelative);
+        string? goldenDir = FindGoldenDir();
+        if (ditDir is null || t5gemmaDir is null || goldenDir is null) return;
+
+        OpenTail.Stingray.Vulkan.VulkanBackend? vk = null;
+        try { vk = new OpenTail.Stingray.Vulkan.VulkanBackend(); } catch { return; }
+        if (vk is null) return;
+
+        using (vk)
+        {
+            var latent0 = ReadFloats(Path.Combine(goldenDir, "latent0.bin"));
+            var goldenPcm = ReadFloats(Path.Combine(goldenDir, "pcm.bin"));
+
+            var tokSource = HuggingFaceTokenizerSource.Load(t5gemmaDir);
+            Assert.True(tokSource.IsUsable, string.Join("; ", tokSource.Rejections));
+            var tokenizer = GgufTokenizer.FromSource(tokSource.Source!);
+            var promptTokenIds = tokenizer.Encode("lofi house loop").ToArray();
+
+            using var ditWeights = SafetensorsLoader.OpenDirectory(ditDir);
+            using var textEncoderWeights = SafetensorsLoader.OpenDirectory(t5gemmaDir);
+            using var pipeline = new StableAudioPipeline(ditWeights, textEncoderWeights, t5gemmaDir, backend: vk);
+
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            var pcm = pipeline.GenerateFromLatent(latent0, SeqLen, promptTokenIds, DurationSeconds, Steps, CfgScale);
+            sw.Stop();
+            Console.Error.WriteLine($"[GPU Pipeline] 25 steps generated in {sw.Elapsed.TotalSeconds:F2}s!");
+
+            Assert.Equal(goldenPcm.Length, pcm.Length);
+            float cos = CosineSimilarity(pcm, goldenPcm);
+            Console.Error.WriteLine($"[GPU Pipeline] Cosine similarity = {cos:F6}");
+            Assert.True(cos > 0.3f, $"Full-pipeline GPU cosine-sim too low: {cos}");
+        }
     }
 }

@@ -160,5 +160,12 @@ public interface IVisionOpsBackend : IComputeBackend
     /// </summary>
     void RmsNormBatched(Tensor output, Tensor x, Tensor weight, int rowDim, int numTokens, float eps = 1e-5f)
         => throw new NotSupportedException();
-}
 
+    /// <summary>
+    /// Batched partial NEOX RoPE for Stable Audio 3 DiT and GPT-NeoX style partial rotary.
+    /// Rotates the first ropeDim of each headDim in-place for numHeads over nTok rows.
+    /// </summary>
+    void RoPEPartialBatched(Tensor x, int basePosition, int headDim, int ropeDim,
+        float ropeTheta, int numHeads, int nTok, bool neox = true)
+        => throw new NotSupportedException();
+}
