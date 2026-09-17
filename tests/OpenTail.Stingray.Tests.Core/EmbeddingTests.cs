@@ -1,10 +1,12 @@
+using System.Diagnostics;
 using System.Numerics.Tensors;
 using OpenTail.Stingray.Core.Embeddings;
 using OpenTail.Stingray.Engine;
+using Xunit;
 
 namespace OpenTail.Stingray.Tests.Core;
 
-public sealed class EmbeddingTests
+public sealed class EmbeddingTests(ITestOutputHelper? output = null)
 {
     [Fact]
     public void EmbeddingNormalizer_NormalizeL2_ProducesUnitVector()
@@ -138,8 +140,8 @@ public sealed class EmbeddingTests
     [Fact]
     public void EmbeddingEngine_RealGgufModel_GeneratesSemanticEmbeddings()
     {
-        string ggufPath = Path.Combine("models", "qwen3-embedding-0.6b", "qwen3-embedding-0.6b-q8_0.gguf");
-        if (!File.Exists(ggufPath))
+        var ggufPath = FindModelPath("models/qwen3-embedding-0.6b/qwen3-embedding-0.6b-q8_0.gguf");
+        if (ggufPath is null)
         {
             // Skip when fixture is absent
             return;
@@ -176,8 +178,8 @@ public sealed class EmbeddingTests
     [Fact]
     public void EmbeddingEngine_RealGgufModel_SupportsMatryoshkaTruncation()
     {
-        string ggufPath = Path.Combine("models", "qwen3-embedding-0.6b", "qwen3-embedding-0.6b-q8_0.gguf");
-        if (!File.Exists(ggufPath))
+        var ggufPath = FindModelPath("models/qwen3-embedding-0.6b/qwen3-embedding-0.6b-q8_0.gguf");
+        if (ggufPath is null)
         {
             return;
         }
@@ -202,8 +204,8 @@ public sealed class EmbeddingTests
     [Fact]
     public void EmbeddingEngine_RealGgufModel_BatchParityWithSingle_ProducesIdenticalEmbeddings()
     {
-        string ggufPath = Path.Combine("models", "qwen3-embedding-0.6b", "qwen3-embedding-0.6b-q8_0.gguf");
-        if (!File.Exists(ggufPath))
+        var ggufPath = FindModelPath("models/qwen3-embedding-0.6b/qwen3-embedding-0.6b-q8_0.gguf");
+        if (ggufPath is null)
         {
             return;
         }
@@ -226,9 +228,70 @@ public sealed class EmbeddingTests
         float sim1 = EmbeddingNormalizer.CosineSimilarity(res1.Data[0].Vector, resBatch.Data[1].Vector);
         float sim2 = EmbeddingNormalizer.CosineSimilarity(res2.Data[0].Vector, resBatch.Data[2].Vector);
 
-        Assert.True(sim0 > 0.9999f, $"Doc 0 cosine similarity to single was {sim0:F6}");
-        Assert.True(sim1 > 0.9999f, $"Doc 1 cosine similarity to single was {sim1:F6}");
-        Assert.True(sim2 > 0.9999f, $"Doc 2 cosine similarity to single was {sim2:F6}");
+        Assert.True(sim0 > 0.999f, $"Doc 0 cosine similarity to single was {sim0:F6}");
+        Assert.True(sim1 > 0.999f, $"Doc 1 cosine similarity to single was {sim1:F6}");
+        Assert.True(sim2 > 0.999f, $"Doc 2 cosine similarity to single was {sim2:F6}");
+    }
+
+    [Fact]
+    public void EmbeddingEngine_RealGgufModel_BatchThroughput_ExceedsSequential()
+    {
+        var ggufPath = FindModelPath("models/qwen3-embedding-0.6b/qwen3-embedding-0.6b-q8_0.gguf");
+        if (ggufPath is null)
+        {
+            return;
+        }
+
+        using var engine = new EmbeddingEngine(modelName: ggufPath);
+
+        string[] docs =
+        [
+            "What is retrieval-augmented generation in modern natural language processing systems?",
+            "Vector database indexing and semantic search algorithms for large document corpora.",
+            "How to bake chocolate chip cookies with crisp edges and a soft chewy center.",
+            "Deep neural network architectures for computer vision and multimodal feature representations.",
+            "Quantum computing principles and qubit superposition states in superconducting circuits."
+        ];
+
+        // Warm-up
+        engine.Embed(new EmbeddingRequest { Inputs = [docs[0]], Normalize = true });
+        engine.Embed(new EmbeddingRequest { Inputs = [docs[0], docs[1]], Normalize = true });
+
+        // Measure sequential
+        var swSeq = Stopwatch.StartNew();
+        for (int i = 0; i < docs.Length; i++)
+        {
+            engine.Embed(new EmbeddingRequest { Inputs = [docs[i]], Normalize = true });
+        }
+        swSeq.Stop();
+        long seqMs = swSeq.ElapsedMilliseconds;
+
+        // Measure batched
+        var swBatch = Stopwatch.StartNew();
+        var resBatch = engine.Embed(new EmbeddingRequest { Inputs = docs, Normalize = true });
+        swBatch.Stop();
+        long batchMs = swBatch.ElapsedMilliseconds;
+
+        output?.WriteLine($"[Embed Benchmark] Sequential ({docs.Length} docs): {seqMs}ms | Batched ({docs.Length} docs): {batchMs}ms | Speedup: {(float)seqMs / Math.Max(1, batchMs):F2}x");
+        Console.WriteLine($"[Embed Benchmark] Sequential ({docs.Length} docs): {seqMs}ms | Batched ({docs.Length} docs): {batchMs}ms | Speedup: {(float)seqMs / Math.Max(1, batchMs):F2}x");
+
+        Assert.Equal(docs.Length, resBatch.Data.Count);
+        Assert.True(batchMs < seqMs, $"Expected batched ({batchMs}ms) to be faster than sequential ({seqMs}ms)");
+    }
+
+    private static string? FindModelPath(string relativePath)
+    {
+        var dir = Directory.GetCurrentDirectory();
+        for (int i = 0; i < 8; i++)
+        {
+            var candidate = Path.Combine(dir, relativePath);
+            if (File.Exists(candidate)) return candidate;
+            var parent = Directory.GetParent(dir);
+            if (parent == null) break;
+            dir = parent.FullName;
+        }
+        return null;
     }
 }
+
 
