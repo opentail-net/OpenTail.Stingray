@@ -1252,6 +1252,30 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
     // recorded dispatches that reference them have been submitted + the GPU is idle).
     private readonly List<ComputePipeline> _pendingPipelineFrees = new();
 
+    // Scratch buffers for MultiHeadAttentionTiled64_FP16 when Q, K, V are Float32.
+    // Avoids per-attention-call vkAllocateMemory/vkFreeMemory churn in diffusion UNet/DiT loops.
+    private Tensor? _mhaScratchQ;
+    private long _mhaScratchQBytes;
+    private Tensor? _mhaScratchK;
+    private long _mhaScratchKBytes;
+    private Tensor? _mhaScratchV;
+    private long _mhaScratchVBytes;
+
+    private Tensor EnsureMhaScratch(ref Tensor? tensor, ref long currentBytes, long elementCount)
+    {
+        long needed = elementCount * sizeof(Half);
+        if (tensor is not null && currentBytes >= needed)
+            return tensor;
+        if (tensor is not null)
+        {
+            if (_recording) _pendingScratchFrees.Add(tensor);
+            else Free(tensor);
+        }
+        tensor = Allocate(TensorShape.D1(elementCount), DType.Float16);
+        currentBytes = needed;
+        return tensor;
+    }
+
     /// <summary>
     /// Ensure <see cref="_q81BatchBuf"/> is at least nTok·(cols/32)·36 bytes. Grows (re-allocates)
     /// on demand; the buffer is reused across calls and freed in Dispose. Growing during a recording
@@ -1625,6 +1649,8 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
     private ComputePipeline? _permuteHwcToChwPipeline;
     private ComputePipeline? _multiHeadAttentionPipeline;
     private ComputePipeline? _multiHeadAttentionTiledPipeline;
+    private ComputePipeline? _multiHeadAttentionTiled64FP16Pipeline;
+    private ComputePipeline? _castF32ToF16Pipeline;
     private ComputePipeline? _multiHeadAttentionTiled40Pipeline;
     private ComputePipeline? _multiHeadAttentionTiled80Pipeline;
     private ComputePipeline? _multiHeadAttentionTiled128Pipeline;
@@ -1744,6 +1770,7 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
     private struct CatChannelsParams { public uint aCh; public uint bCh; public uint hw; }
     private struct PixelShuffleParams { public uint inCh; public uint h; public uint w; public uint factor; }
     private struct SpatialParams  { public uint ch; public uint h; public uint w; }
+    private struct CastParams     { public uint count; }
 
     // Vision & DiT ops push constant structs (IVisionOpsBackend)
     private struct VisionPixelShuffleParams { public uint gridY; public uint gridX; public uint inDim; }
@@ -3966,10 +3993,29 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
         }
         else if (headDim == 64)
         {
-            _multiHeadAttentionTiledPipeline ??= new ComputePipeline(this, Shaders.MultiHeadAttentionTiled, 4, pushConstantSize: sizeof(MultiHeadAttentionTiledParams));
             var p = new MultiHeadAttentionTiledParams { qSeq = (uint)qSeq, kvSeq = (uint)kvSeq, numHeads = (uint)numHeads, scale = 1f / MathF.Sqrt(headDim) };
-            uint groupsX = (uint)((qSeq + 15) / 16);
-            DispatchOrRecord(_multiHeadAttentionTiledPipeline, [GetBuffer(q), GetBuffer(k), GetBuffer(v), GetBuffer(output)], groupsX, &p, 1u, (uint)numHeads);
+            uint groupsX = (uint)((qSeq + 31) / 32);
+
+            if (HasShaderFloat16Int8 && Has16BitStorage)
+            {
+                _multiHeadAttentionTiled64FP16Pipeline ??= new ComputePipeline(this, Shaders.MultiHeadAttentionTiled64_FP16, 4, pushConstantSize: sizeof(MultiHeadAttentionTiledParams));
+
+                Tensor qF16 = (q.DType == DType.Float16) ? q : EnsureMhaScratch(ref _mhaScratchQ, ref _mhaScratchQBytes, q.ElementCount);
+                if (q.DType != DType.Float16) CastF32ToF16(q, qF16);
+
+                Tensor kF16 = (k.DType == DType.Float16) ? k : EnsureMhaScratch(ref _mhaScratchK, ref _mhaScratchKBytes, k.ElementCount);
+                if (k.DType != DType.Float16) CastF32ToF16(k, kF16);
+
+                Tensor vF16 = (v.DType == DType.Float16) ? v : EnsureMhaScratch(ref _mhaScratchV, ref _mhaScratchVBytes, v.ElementCount);
+                if (v.DType != DType.Float16) CastF32ToF16(v, vF16);
+
+                DispatchOrRecord(_multiHeadAttentionTiled64FP16Pipeline, [GetBuffer(qF16), GetBuffer(kF16), GetBuffer(vF16), GetBuffer(output)], groupsX, &p, 1u, (uint)numHeads);
+            }
+            else
+            {
+                _multiHeadAttentionTiledPipeline ??= new ComputePipeline(this, Shaders.MultiHeadAttentionTiled, 4, pushConstantSize: sizeof(MultiHeadAttentionTiledParams));
+                DispatchOrRecord(_multiHeadAttentionTiledPipeline, [GetBuffer(q), GetBuffer(k), GetBuffer(v), GetBuffer(output)], groupsX, &p, 1u, (uint)numHeads);
+            }
         }
         else if (headDim == 80)
         {
@@ -3996,6 +4042,16 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
         {
             MultiHeadAttention(output, q, k, v, qSeq, kvSeq, numHeads, headDim);
         }
+    }
+
+    public unsafe void CastF32ToF16(Tensor src, Tensor dst)
+    {
+        _castF32ToF16Pipeline ??= new ComputePipeline(this, Shaders.CastF32ToF16, 2, pushConstantSize: sizeof(CastParams));
+        uint totalFloats = (uint)src.ElementCount;
+        uint vec4Count = (totalFloats + 3u) / 4u;
+        var p = new CastParams { count = vec4Count };
+        uint groups = (vec4Count + 255u) / 256u;
+        DispatchOrRecord(_castF32ToF16Pipeline, [GetBuffer(src), GetBuffer(dst)], groups, &p);
     }
 
     public void LeakyReluInPlace(Tensor x, float negSlope)
@@ -4573,6 +4629,8 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
         _permuteHwcToChwPipeline?.Dispose();
         _multiHeadAttentionPipeline?.Dispose();
         _multiHeadAttentionTiledPipeline?.Dispose();
+        _multiHeadAttentionTiled64FP16Pipeline?.Dispose();
+        _castF32ToF16Pipeline?.Dispose();
         _multiHeadAttentionTiled40Pipeline?.Dispose();
         _multiHeadAttentionTiled80Pipeline?.Dispose();
         _multiHeadAttentionTiled128Pipeline?.Dispose();
