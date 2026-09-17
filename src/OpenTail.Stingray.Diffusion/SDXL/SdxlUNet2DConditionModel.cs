@@ -33,6 +33,8 @@ public sealed class SdxlUNet2DConditionModel : IDisposable
     // already does reference-identity lookup) -- a cache hit requires the caller to keep passing
     // the SAME addEmbeds instance, which SdxlPipeline already does by construction.
     private readonly Dictionary<float[], float[]> _addEmbCache = new();
+    private bool _gpuWeightsWarm;
+    private readonly Dictionary<float[], CoreTensor> _cachedContextGpu = new(ReferenceEqualityComparer.Instance);
 
     private const int ModelChannels = 320;
     private const int TimeEmbedDim = 1280;
@@ -924,15 +926,189 @@ public sealed class SdxlUNet2DConditionModel : IDisposable
 
 
 
+    /// <summary>
+    /// Pre-uploads all UNet conv weights, linear weights, groupnorm/layernorm biases, and conv biases
+    /// to GPU device memory so that forward passes can be recorded into Vulkan command buffers.
+    /// </summary>
+    public void EnsureGpuResident()
+    {
+        if (_imageOps is null || _gpuWeightsWarm) return;
+        EnsureGpuResidentCore(_imageOps);
+        _gpuWeightsWarm = true;
+    }
+
+    private void EnsureConvGpuResident(IImageOpsBackend imageOps, string name, int outCh)
+    {
+        var wF = TryGetWeight($"{name}.weight");
+        if (wF is null) return;
+        var bF = TryGetWeight($"{name}.bias");
+
+        string wKey = $"{name}.weight";
+        if (!_gpuWeightsNative!.ContainsKey(wKey))
+        {
+            var wGpu = imageOps.Upload(wF.AsSpan(), TensorShape.D1(wF.Length));
+            _gpuWeightsNative[wKey] = wGpu;
+        }
+
+        string bKey = $"{name}.bias";
+        if (!_gpuWeightsNative.ContainsKey(bKey))
+        {
+            var bf = bF ?? new float[outCh];
+            var bGpu = imageOps.Upload(bf.AsSpan(), TensorShape.D1(bf.Length));
+            _gpuWeightsNative[bKey] = bGpu;
+        }
+    }
+
+    private void EnsureLinGpuResident(string name)
+    {
+        var wF = TryGetWeight($"{name}.weight");
+        if (wF is null) return;
+        var bF = TryGetWeight($"{name}.bias");
+        GetGpuWeight($"{name}.weight", wF);
+        if (bF is not null)
+        {
+            GetGpuBias(_backend!, $"{name}.bias", bF);
+        }
+    }
+
+    private void EnsureGroupNormGpuResident(IImageOpsBackend imageOps, string prefix)
+    {
+        var wF = TryGetWeight($"{prefix}.weight");
+        if (wF is not null) GetGpuBias(imageOps, $"{prefix}.weight", wF);
+        var bF = TryGetWeight($"{prefix}.bias");
+        if (bF is not null) GetGpuBias(imageOps, $"{prefix}.bias", bF);
+    }
+
+    private void EnsureResBlockGpuResident(IImageOpsBackend imageOps, string prefix, int outCh)
+    {
+        EnsureGroupNormGpuResident(imageOps, $"{prefix}.in_layers.0");
+        EnsureConvGpuResident(imageOps, $"{prefix}.in_layers.2", outCh);
+        EnsureLinGpuResident($"{prefix}.emb_layers.1");
+        EnsureGroupNormGpuResident(imageOps, $"{prefix}.out_layers.0");
+        EnsureConvGpuResident(imageOps, $"{prefix}.out_layers.3", outCh);
+        if (TryGetWeight($"{prefix}.skip_connection.weight") is not null)
+        {
+            EnsureConvGpuResident(imageOps, $"{prefix}.skip_connection", outCh);
+        }
+    }
+
+    private void EnsureSpatialTransformerGpuResident(IImageOpsBackend imageOps, string prefix, int depth)
+    {
+        EnsureGroupNormGpuResident(imageOps, $"{prefix}.norm");
+        EnsureLinGpuResident($"{prefix}.proj_in");
+
+        for (int d = 0; d < depth; d++)
+        {
+            string tb = $"{prefix}.transformer_blocks.{d}";
+            EnsureGroupNormGpuResident(imageOps, $"{tb}.norm1");
+            EnsureLinGpuResident($"{tb}.attn1.to_q");
+            EnsureLinGpuResident($"{tb}.attn1.to_k");
+            EnsureLinGpuResident($"{tb}.attn1.to_v");
+            EnsureLinGpuResident($"{tb}.attn1.to_out.0");
+
+            EnsureGroupNormGpuResident(imageOps, $"{tb}.norm2");
+            EnsureLinGpuResident($"{tb}.attn2.to_q");
+            EnsureLinGpuResident($"{tb}.attn2.to_k");
+            EnsureLinGpuResident($"{tb}.attn2.to_v");
+            EnsureLinGpuResident($"{tb}.attn2.to_out.0");
+
+            EnsureGroupNormGpuResident(imageOps, $"{tb}.norm3");
+            EnsureLinGpuResident($"{tb}.ff.net.0.proj");
+            EnsureLinGpuResident($"{tb}.ff.net.2");
+        }
+
+        EnsureLinGpuResident($"{prefix}.proj_out");
+    }
+
+    private void EnsureGpuResidentCore(IImageOpsBackend imageOps)
+    {
+        // Timestep & addition embeddings
+        EnsureLinGpuResident("time_embed.0");
+        EnsureLinGpuResident("time_embed.2");
+        EnsureLinGpuResident("label_emb.0.0");
+        EnsureLinGpuResident("label_emb.0.2");
+
+        // 1. Input Blocks
+        EnsureConvGpuResident(imageOps, "input_blocks.0.0", 320);
+        EnsureResBlockGpuResident(imageOps, "input_blocks.1.0", 320);
+        EnsureResBlockGpuResident(imageOps, "input_blocks.2.0", 320);
+        EnsureConvGpuResident(imageOps, "input_blocks.3.0.op", 320);
+
+        EnsureResBlockGpuResident(imageOps, "input_blocks.4.0", 640);
+        EnsureSpatialTransformerGpuResident(imageOps, "input_blocks.4.1", 2);
+
+        EnsureResBlockGpuResident(imageOps, "input_blocks.5.0", 640);
+        EnsureSpatialTransformerGpuResident(imageOps, "input_blocks.5.1", 2);
+
+        EnsureConvGpuResident(imageOps, "input_blocks.6.0.op", 640);
+
+        EnsureResBlockGpuResident(imageOps, "input_blocks.7.0", 1280);
+        EnsureSpatialTransformerGpuResident(imageOps, "input_blocks.7.1", 10);
+
+        EnsureResBlockGpuResident(imageOps, "input_blocks.8.0", 1280);
+        EnsureSpatialTransformerGpuResident(imageOps, "input_blocks.8.1", 10);
+
+        // 2. Middle Block
+        EnsureResBlockGpuResident(imageOps, "middle_block.0", 1280);
+        EnsureSpatialTransformerGpuResident(imageOps, "middle_block.1", 10);
+        EnsureResBlockGpuResident(imageOps, "middle_block.2", 1280);
+
+        // 3. Output Blocks
+        EnsureResBlockGpuResident(imageOps, "output_blocks.0.0", 1280);
+        EnsureSpatialTransformerGpuResident(imageOps, "output_blocks.0.1", 10);
+
+        EnsureResBlockGpuResident(imageOps, "output_blocks.1.0", 1280);
+        EnsureSpatialTransformerGpuResident(imageOps, "output_blocks.1.1", 10);
+
+        EnsureResBlockGpuResident(imageOps, "output_blocks.2.0", 1280);
+        EnsureSpatialTransformerGpuResident(imageOps, "output_blocks.2.1", 10);
+        EnsureConvGpuResident(imageOps, "output_blocks.2.2.conv", 1280);
+
+        EnsureResBlockGpuResident(imageOps, "output_blocks.3.0", 640);
+        EnsureSpatialTransformerGpuResident(imageOps, "output_blocks.3.1", 2);
+
+        EnsureResBlockGpuResident(imageOps, "output_blocks.4.0", 640);
+        EnsureSpatialTransformerGpuResident(imageOps, "output_blocks.4.1", 2);
+
+        EnsureResBlockGpuResident(imageOps, "output_blocks.5.0", 640);
+        EnsureSpatialTransformerGpuResident(imageOps, "output_blocks.5.1", 2);
+        EnsureConvGpuResident(imageOps, "output_blocks.5.2.conv", 640);
+
+        EnsureResBlockGpuResident(imageOps, "output_blocks.6.0", 320);
+        EnsureResBlockGpuResident(imageOps, "output_blocks.7.0", 320);
+        EnsureResBlockGpuResident(imageOps, "output_blocks.8.0", 320);
+
+        // 4. Final Output
+        EnsureGroupNormGpuResident(imageOps, "out.0");
+        EnsureConvGpuResident(imageOps, "out.2", 4);
+    }
+
     private CoreTensor ForwardGpu(IImageOpsBackend imageOps, float[] x, float[] tEmb, float[] context, int latH, int latW)
     {
-        var contextGpu = imageOps.Upload(context.AsSpan(0, 77 * ContextDim), TensorShape.D1(77 * ContextDim));
+        EnsureGpuResident();
+
+        CoreTensor contextGpu;
+        lock (_cachedContextGpu)
+        {
+            if (!_cachedContextGpu.TryGetValue(context, out contextGpu!))
+            {
+                contextGpu = imageOps.Upload(context.AsSpan(0, 77 * ContextDim), TensorShape.D1(77 * ContextDim));
+                _cachedContextGpu[context] = contextGpu;
+            }
+        }
         var tEmbGpu = UploadSiluTEmb(imageOps, tEmb);
+        int h = latH, w = latW;
+        var xGpu = imageOps.Upload(x.AsSpan(0, 4 * h * w), TensorShape.D1(4 * h * w));
+
         var savedInputs = new List<CoreTensor>(9);
+        bool batchActive = false;
+
         try
         {
-            int h = latH, w = latW;
-            var xGpu = imageOps.Upload(x.AsSpan(0, 4 * h * w), TensorShape.D1(4 * h * w));
+            // ── CHUNK 1: Input Blocks ──────────────────────────────────
+            imageOps.BeginBatch();
+            batchActive = true;
+
             var cur = ConvGpuTensor(imageOps, "input_blocks.0.0", xGpu, 4, h, w, 320, 3);
             imageOps.Free(xGpu);
             savedInputs.Add(cur);
@@ -967,12 +1143,24 @@ public sealed class SdxlUNet2DConditionModel : IDisposable
             cur = SpatialTransformerGpu(imageOps, "input_blocks.8.1", cur, contextGpu, 1280, depth: 10, h, w);
             savedInputs.Add(cur);
 
+            imageOps.EndBatch();
+            batchActive = false;
+
+            // ── CHUNK 2: Middle Block ──────────────────────────────────
+            imageOps.BeginBatch();
+            batchActive = true;
+
             cur = ResBlockGpu(imageOps, "middle_block.0", cur, tEmbGpu, 1280, h, w, 1280);
             cur = SpatialTransformerGpu(imageOps, "middle_block.1", cur, contextGpu, 1280, depth: 10, h, w);
             cur = ResBlockGpu(imageOps, "middle_block.2", cur, tEmbGpu, 1280, h, w, 1280);
 
-            // Each skip is freed immediately after its concat consumes it (docs/067 Stage 4 memory
-            // discipline) rather than holding all 9 resident for the whole pass.
+            imageOps.EndBatch();
+            batchActive = false;
+
+            // ── CHUNK 3: Output Blocks ─────────────────────────────────
+            imageOps.BeginBatch();
+            batchActive = true;
+
             CoreTensor CatAndFreeSkip(CoreTensor current, int idx, int curC, int skipC)
             {
                 var skip = savedInputs[idx];
@@ -1029,11 +1217,22 @@ public sealed class SdxlUNet2DConditionModel : IDisposable
             imageOps.Free(cur);
             var finalOut = ConvGpuTensor(imageOps, "out.2", finalNorm, 320, h, w, 4, 3);
             imageOps.Free(finalNorm);
+
+            imageOps.EndBatch();
+            batchActive = false;
+
             return finalOut;
+        }
+        catch
+        {
+            if (batchActive)
+            {
+                try { imageOps.EndBatch(); } catch { }
+            }
+            throw;
         }
         finally
         {
-            imageOps.Free(contextGpu);
             imageOps.Free(tEmbGpu);
         }
     }
@@ -1187,6 +1386,16 @@ public sealed class SdxlUNet2DConditionModel : IDisposable
         {
             foreach (var t in _gpuWeightsNative.Values) _backend!.Free(t);
             _gpuWeightsNative.Clear();
+        }
+        if (_backend is not null)
+        {
+            foreach (var t in _gpuBiasCache.Values) _backend.Free(t);
+            _gpuBiasCache.Clear();
+            lock (_cachedContextGpu)
+            {
+                foreach (var t in _cachedContextGpu.Values) _backend.Free(t);
+                _cachedContextGpu.Clear();
+            }
         }
         _weightReader.Clear();
     }
