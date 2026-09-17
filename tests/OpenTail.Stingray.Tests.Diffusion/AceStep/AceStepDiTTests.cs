@@ -96,4 +96,63 @@ public sealed class AceStepDiTTests
                 diff += Math.Abs(ditOut[i][d] - ditOut2[i][d]);
         Assert.True(diff > 1e-3, "DiT output identical across different timesteps -- timestep conditioning likely broken");
     }
+
+    [Fact]
+    public void ForwardGpu_RealWeights_MatchesCpuParity()
+    {
+        string? turboPath = FindRepoFile("models/acestep-v15/turbo.safetensors");
+        Assert.SkipUnless(turboPath != null, "models/acestep-v15/turbo.safetensors not found");
+
+        OpenTail.Stingray.Vulkan.VulkanBackend? vk = null;
+        try { vk = new OpenTail.Stingray.Vulkan.VulkanBackend(); } catch { return; }
+        if (vk is null) return;
+
+        using (vk)
+        using (var loader = SafetensorsLoader.Open(turboPath!))
+        {
+            var weights = AceStepDiTWeights.Load(loader);
+
+            int frames = 20;
+            var rng = new Random(0);
+            float[][] RandomRows(int n, int dim, float scale)
+            {
+                var rows = new float[n][];
+                for (int i = 0; i < n; i++)
+                {
+                    rows[i] = new float[dim];
+                    for (int d = 0; d < dim; d++) rows[i][d] = (float)(rng.NextDouble() * 2 - 1) * scale;
+                }
+                return rows;
+            }
+
+            var noisyLatent = RandomRows(frames, AceStepConfig.AudioAcousticHiddenDim, 1.0f);
+            var contextLatents = RandomRows(frames, 2 * AceStepConfig.AudioAcousticHiddenDim, 0.5f);
+            var condition = RandomRows(30, AceStepConfig.HiddenSize, 0.3f);
+
+            var (patches, originalSeqLen) = AceStepDiT.ProjIn(weights, contextLatents, noisyLatent);
+            var ctx = AceStepDiT.PrepareCrossAttention(weights, condition, patches.Length);
+            var ditOutCpu = AceStepDiT.Forward(weights, patches, timestep: 1.0f, timestepR: 1.0f, ctx);
+            var cpuVelocity = AceStepDiT.ProjOut(weights, ditOutCpu, originalSeqLen);
+
+            var gpuVelocity = AceStepDiT.ForwardGpu(weights, contextLatents, noisyLatent, condition, timestep: 1.0f, timestepR: 1.0f, vk);
+
+            Assert.Equal(cpuVelocity.Length, gpuVelocity.Length);
+
+            double dot = 0, normCpu = 0, normGpu = 0;
+            for (int t = 0; t < frames; t++)
+            {
+                for (int d = 0; d < AceStepConfig.AudioAcousticHiddenDim; d++)
+                {
+                    float c = cpuVelocity[t][d];
+                    float g = gpuVelocity[t][d];
+                    dot += c * g;
+                    normCpu += c * c;
+                    normGpu += g * g;
+                }
+            }
+            float cosSim = (float)(dot / (Math.Sqrt(normCpu) * Math.Sqrt(normGpu)));
+            Console.Error.WriteLine($"[AceStep DiT GPU] Cosine similarity vs CPU = {cosSim:F6}");
+            Assert.True(cosSim > 0.98f, $"DiT GPU vs CPU cosine similarity too low: {cosSim}");
+        }
+    }
 }

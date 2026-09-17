@@ -1,3 +1,4 @@
+using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Diffusion.AceStep.Conditioning;
 using OpenTail.Stingray.Diffusion.AceStep.Transformer;
 using OpenTail.Stingray.Diffusion.AceStep.Vae;
@@ -27,6 +28,7 @@ namespace OpenTail.Stingray.Diffusion.AceStep;
 public sealed class AceStepPipeline
 {
     private readonly AceStepModel _model;
+    private readonly IComputeBackend? _backend;
 
     // TEMPORARY diagnostic instrumentation (perf-sweep Phase 9.1b, docs/perf-sweep-plan.md) for
     // the ACE-Step Turbo CPU perf investigation (114.14x RTF, worst in PerformanceLeague.md) --
@@ -36,9 +38,10 @@ public sealed class AceStepPipeline
     private static readonly bool s_profEnabled =
         Environment.GetEnvironmentVariable("STINGRAY_PROFILE_DECODE") == "1";
 
-    public AceStepPipeline(AceStepModel model)
+    public AceStepPipeline(AceStepModel model, IComputeBackend? backend = null)
     {
         _model = model;
+        _backend = backend;
     }
 
     public StereoAudioBuffer Generate(AceStepGenerationParams parameters)
@@ -81,7 +84,7 @@ public sealed class AceStepPipeline
         double msTimbreAndCondition = sw?.Elapsed.TotalMilliseconds ?? 0; sw?.Restart();
 
         var latentRows = AceStepFlowScheduler.Generate(
-            _model.Transformer, condition, latentFrames, parameters.Shift, parameters.Seed, srcLatents);
+            _model.Transformer, condition, latentFrames, parameters.Shift, parameters.Seed, srcLatents, _backend);
         double msDiT = sw?.Elapsed.TotalMilliseconds ?? 0; sw?.Restart();
 
         // AceStepFlowScheduler returns [t][acousticDim] (time-major); AceStepOobleckDecoder.Decode

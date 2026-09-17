@@ -75,4 +75,52 @@ public sealed class AceStepFlowSchedulerTests
                 diff += Math.Abs(result[t][d] - result2[t][d]);
         Assert.True(diff > 1e-2, "different seeds produced (near-)identical final latents -- likely a wiring bug");
     }
+
+    [Fact]
+    public void Generate_VulkanGpu_ProducesFiniteNonDegenerateLatent()
+    {
+        string? turboPath = FindRepoFile("models/acestep-v15/turbo.safetensors");
+        Assert.SkipUnless(turboPath != null, "models/acestep-v15/turbo.safetensors not found");
+
+        OpenTail.Stingray.Vulkan.VulkanBackend? vk = null;
+        try { vk = new OpenTail.Stingray.Vulkan.VulkanBackend(); } catch { return; }
+        if (vk is null) return;
+
+        using (vk)
+        using (var loader = SafetensorsLoader.Open(turboPath!))
+        {
+            var weights = AceStepDiTWeights.Load(loader);
+
+            int condLen = 32;
+            var rng = new Random(0);
+            var condition = new float[condLen][];
+            for (int i = 0; i < condLen; i++)
+            {
+                var row = new float[AceStepConfig.HiddenSize];
+                for (int d = 0; d < row.Length; d++) row[d] = (float)(rng.NextDouble() * 0.2 - 0.1);
+                condition[i] = row;
+            }
+
+            int latentFrames = 50; // 2 real seconds @ 25Hz
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            var result = AceStepFlowScheduler.Generate(weights, condition, latentFrames, shift: 3.0f, seed: 1234, backend: vk);
+            sw.Stop();
+            Console.Error.WriteLine($"[AceStep Vulkan GPU] 8-step flow schedule (50 frames / 2.0s audio): {sw.Elapsed.TotalMilliseconds:F1}ms");
+
+            Assert.Equal(latentFrames, result.Length);
+            foreach (var row in result)
+            {
+                Assert.Equal(AceStepConfig.AudioAcousticHiddenDim, row.Length);
+                foreach (var v in row)
+                    Assert.True(float.IsFinite(v), "flow scheduler GPU output contains NaN/Inf -- degenerate");
+            }
+
+            double sumSq = 0;
+            int count = 0;
+            foreach (var row in result)
+                foreach (var v in row) { sumSq += (double)v * v; count++; }
+            double rms = Math.Sqrt(sumSq / count);
+            Assert.True(rms > 1e-4, $"flow scheduler GPU output RMS ({rms}) is near-zero -- likely a wiring bug");
+        }
+    }
 }

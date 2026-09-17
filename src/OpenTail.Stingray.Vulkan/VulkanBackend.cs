@@ -1685,6 +1685,8 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
     private ComputePipeline? _t5MultiHeadAttentionRelBiasPipeline;
     private ComputePipeline? _wanQkvSplitNormRoPEPipeline;
     private ComputePipeline? _partialHeadRoPEPipeline;
+    private ComputePipeline? _repeatInterleaveHeadsPipeline;
+    private ComputePipeline? _packProjInWindowPipeline;
 
     private struct RmsNormParams{ public uint n; public float eps; }
     private struct RmsNormBatchedParams { public uint n; public float eps; public uint numTokens; }
@@ -1790,6 +1792,8 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
     private struct FluxConcatTxtImgParams { public uint nTxt; public uint nImg; public uint dim; }
     private struct FluxSliceImgParams { public uint nTxt; public uint nImg; public uint dim; }
     private struct FluxEulerStepParams { public uint count; public float signDt; }
+    private struct RepeatInterleaveHeadsParams { public uint numKvHeads; public uint groups; public uint headDim; public uint nTok; }
+    private struct PackProjInWindowParams { public uint t; public uint outLen; public uint inCh; public uint ctxCh; public uint noisyCh; public uint patchSize; }
     private struct T5MultiHeadAttentionRelBiasParams { public uint qSeq; public uint kvSeq; public uint numHeads; public float scale; }
     private struct WanQkvSplitNormRoPEParams { public uint numTokens; public uint numHeads; public uint headDim; public uint dim; public uint hasNormQ; public uint hasNormK; public float eps; }
     private struct PartialHeadRoPEParams { public uint numTokens; public uint dim; public uint headDim; public uint numRopeHeads; }
@@ -4348,6 +4352,38 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
         DispatchOrRecord(_partialHeadRoPEPipeline, [GetBuffer(q), GetBuffer(k), GetBuffer(cos), GetBuffer(sin)], groups, &p);
     }
 
+    public void RepeatInterleaveHeads(Tensor dst, Tensor src, int nTok, int numKvHeads, int groups, int headDim)
+    {
+        _repeatInterleaveHeadsPipeline ??= new ComputePipeline(this, Shaders.RepeatInterleaveHeads, 2, pushConstantSize: sizeof(RepeatInterleaveHeadsParams));
+        var p = new RepeatInterleaveHeadsParams
+        {
+            numKvHeads = (uint)numKvHeads,
+            groups = (uint)groups,
+            headDim = (uint)headDim,
+            nTok = (uint)nTok
+        };
+        uint totalElements = (uint)(nTok * numKvHeads * groups * headDim);
+        uint groupsX = (totalElements + 255u) / 256u;
+        DispatchOrRecord(_repeatInterleaveHeadsPipeline, [GetBuffer(src), GetBuffer(dst)], groupsX, &p);
+    }
+
+    public void PackProjInWindow(Tensor window, Tensor context, Tensor noisy, int t, int outLen, int inCh, int ctxCh, int noisyCh, int patch = 2)
+    {
+        _packProjInWindowPipeline ??= new ComputePipeline(this, Shaders.PackProjInWindow, 3, pushConstantSize: sizeof(PackProjInWindowParams));
+        var p = new PackProjInWindowParams
+        {
+            t = (uint)t,
+            outLen = (uint)outLen,
+            inCh = (uint)inCh,
+            ctxCh = (uint)ctxCh,
+            noisyCh = (uint)noisyCh,
+            patchSize = (uint)patch
+        };
+        uint totalElements = (uint)(outLen * patch * inCh);
+        uint groupsX = (totalElements + 255u) / 256u;
+        DispatchOrRecord(_packProjInWindowPipeline, [GetBuffer(context), GetBuffer(noisy), GetBuffer(window)], groupsX, &p);
+    }
+
     public void FluxUnpackQkv(Tensor qkv, Tensor q, Tensor k, Tensor v, int nTokens, int dim, int dstTokenOffset)
     {
         _fluxUnpackQkvPipeline ??= new ComputePipeline(this, Shaders.FluxUnpackQkv, 4, pushConstantSize: sizeof(FluxUnpackQkvParams));
@@ -4673,6 +4709,9 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
         _fluxEulerStepPipeline?.Dispose();
         _t5MultiHeadAttentionRelBiasPipeline?.Dispose();
         _wanQkvSplitNormRoPEPipeline?.Dispose();
+        _partialHeadRoPEPipeline?.Dispose();
+        _repeatInterleaveHeadsPipeline?.Dispose();
+        _packProjInWindowPipeline?.Dispose();
 
         _downloadStaging?.Dispose();
         _uploadStaging?.Dispose();

@@ -88,6 +88,18 @@ public interface IVisionOpsBackend : IComputeBackend
     void RoPE3D(Tensor q, Tensor k, int numTokens, int numHeads, int headDim, int tDim, int hDim, int wDim, float theta = 10000.0f);
 
     /// <summary>
+    /// Repeats and interleaves heads (GQA broadcast) from <paramref name="numKvHeads"/> to <paramref name="numKvHeads"/> * <paramref name="groups"/>.
+    /// </summary>
+    void RepeatInterleaveHeads(Tensor dst, Tensor src, int nTok, int numKvHeads, int groups, int headDim)
+        => throw new NotSupportedException();
+
+    /// <summary>
+    /// Packs concatenated context latents and noisy latent window for non-overlapping Conv1d patch projection.
+    /// </summary>
+    void PackProjInWindow(Tensor window, Tensor context, Tensor noisy, int t, int outLen, int inCh, int ctxCh, int noisyCh, int patch = 2)
+        => throw new NotSupportedException();
+
+    /// <summary>
     /// FLUX 2D Rotary Position Embedding (GPT-NeoX interleaved pair rotation).
     /// Rotates Q and K in-place using precomputed cos/sin frequency tables.
     /// </summary>

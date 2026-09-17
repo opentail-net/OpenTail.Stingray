@@ -8,8 +8,21 @@ namespace OpenTail.Stingray.Diffusion.AceStep.Transformer;
 /// confirmed against the real checkpoint's own safetensors header, not assumed from the reference
 /// source alone -- see docs/064-acestep-implementation-plan.md.
 /// </summary>
-public sealed class AceStepDiTWeights
+public sealed class AceStepDiTWeights : IDisposable
 {
+    private AceStepGpuWeights? _gpuWeights;
+
+    public AceStepGpuWeights EnsureGpuWeights(IComputeBackend backend)
+    {
+        return _gpuWeights ??= new AceStepGpuWeights(backend, this);
+    }
+
+    public void Dispose()
+    {
+        _gpuWeights?.Dispose();
+        _gpuWeights = null;
+    }
+
     public required float[] ProjInWeight { get; init; } // Conv1d [hidden(2048), inChannels(192), patchSize(2)]
     public required float[] ProjInBias { get; init; }
     public required float[] ProjOutWeight { get; init; } // ConvTranspose1d [hidden(2048), acousticDim(64), patchSize(2)]

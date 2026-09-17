@@ -33,6 +33,7 @@ public sealed class CfmLinearWeight
 
     public int OutDim => _outDim;
     public int InDim => _inDim;
+    public float[]? F32 => _f32;
 
     // Lazily-uploaded, persistent GPU copy of this weight (--backend vulkan path). Uploaded once
     // on first GPU use and reused for every subsequent call (weights are static across the whole

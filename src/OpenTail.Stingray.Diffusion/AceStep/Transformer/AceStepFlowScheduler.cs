@@ -1,3 +1,5 @@
+using OpenTail.Stingray.Core;
+
 namespace OpenTail.Stingray.Diffusion.AceStep.Transformer;
 
 /// <summary>
@@ -39,7 +41,8 @@ public static class AceStepFlowScheduler
         int latentFrames,
         float shift,
         int? seed,
-        float[][]? srcLatents = null)
+        float[][]? srcLatents = null,
+        IComputeBackend? backend = null)
     {
         if (!AceStepConfig.ShiftTimestepSchedules.TryGetValue(shift, out var schedule))
         {
@@ -72,10 +75,63 @@ public static class AceStepFlowScheduler
             xt[t] = row;
         }
 
+        int numSteps = schedule.Length;
+
+        if (backend is IVisionOpsBackend visionOps && backend is IImageOpsBackend imageOps)
+        {
+            var gpuWeights = w.EnsureGpuWeights(backend);
+            using var ws = new AceStepDiTGpuWorkspace(backend, maxFrames: latentFrames, condLen: conditionSequence.Length);
+
+            var flatCtx = new float[latentFrames * 2 * acousticDim];
+            for (int t = 0; t < latentFrames; t++)
+                Array.Copy(contextLatents[t], 0, flatCtx, t * 2 * acousticDim, 2 * acousticDim);
+            backend.WritePinned(ws.ContextLatents, flatCtx);
+
+            var flatNoisy = new float[latentFrames * acousticDim];
+            for (int t = 0; t < latentFrames; t++)
+                Array.Copy(xt[t], 0, flatNoisy, t * acousticDim, acousticDim);
+            backend.WritePinned(ws.Latent, flatNoisy);
+
+            AceStepDiT.PrecomputeConditioningGpu(conditionSequence, ws, gpuWeights, backend);
+
+            for (int step = 0; step < numSteps; step++)
+            {
+                float currentT = schedule[step];
+
+                if (step == numSteps - 1)
+                {
+                    // Real `get_x0_from_noise`: x0 = xt - vt * t.
+                    imageOps.BeginBatch();
+                    AceStepDiT.ForwardGpuCore(ws, latentFrames, currentT, currentT, conditionSequence.Length, gpuWeights, visionOps, imageOps, ws.Velocity);
+                    visionOps.FluxEulerStep(ws.Latent, ws.Velocity, -currentT, latentFrames * acousticDim);
+                    imageOps.EndBatch();
+                    break;
+                }
+
+                float nextT = schedule[step + 1];
+                float dt = currentT - nextT;
+
+                imageOps.BeginBatch();
+                AceStepDiT.ForwardGpuCore(ws, latentFrames, currentT, currentT, conditionSequence.Length, gpuWeights, visionOps, imageOps, ws.Velocity);
+                visionOps.FluxEulerStep(ws.Latent, ws.Velocity, -dt, latentFrames * acousticDim);
+                imageOps.EndBatch();
+            }
+
+            var flatClean = new float[latentFrames * acousticDim];
+            backend.Download(ws.Latent, flatClean);
+            var cleanRows = new float[latentFrames][];
+            for (int t = 0; t < latentFrames; t++)
+            {
+                cleanRows[t] = new float[acousticDim];
+                Array.Copy(flatClean, t * acousticDim, cleanRows[t], 0, acousticDim);
+            }
+            return cleanRows;
+        }
+
+        // CPU reference path
         var (initialPatches, originalSeqLen) = AceStepDiT.ProjIn(w, contextLatents, xt);
         var ctx = AceStepDiT.PrepareCrossAttention(w, conditionSequence, initialPatches.Length);
 
-        int numSteps = schedule.Length;
         for (int step = 0; step < numSteps; step++)
         {
             float currentT = schedule[step];

@@ -1,5 +1,8 @@
 using OpenTail.Stingray.Audio.Primitives;
+using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Diffusion.AceStep.Primitives;
+using OpenTail.Stingray.Vulkan;
+using CoreTensor = OpenTail.Stingray.Core.Tensor;
 using static OpenTail.Stingray.Diffusion.AceStep.Primitives.AceStepAttentionKernels;
 
 namespace OpenTail.Stingray.Diffusion.AceStep.Transformer;
@@ -477,4 +480,233 @@ public static class AceStepDiT
         Array.Copy(full, cropped, originalSeqLen);
         return cropped;
     }
+
+    /// <summary>
+    /// Precomputes cross-attention K/V projections on GPU once for the entire 8-step diffusion loop.
+    /// Broadcasts KV heads from 8 to 16 heads directly into VRAM caches for MultiHeadAttentionTiled128.
+    /// </summary>
+    public static void PrecomputeConditioningGpu(
+        float[][] encoderHiddenStatesRaw,
+        AceStepDiTGpuWorkspace ws,
+        AceStepGpuWeights weights,
+        IComputeBackend backend)
+    {
+        if (backend is not (IVisionOpsBackend visionOps and IImageOpsBackend imageOps))
+            throw new NotSupportedException("Backend must implement IVisionOpsBackend and IImageOpsBackend.");
+
+        int hidden = AceStepConfig.HiddenSize;
+        int condLen = encoderHiddenStatesRaw.Length;
+
+        var rawFlat = new float[condLen * hidden];
+        for (int i = 0; i < condLen; i++)
+            Array.Copy(encoderHiddenStatesRaw[i], 0, rawFlat, i * hidden, hidden);
+
+        var flat = new float[condLen * hidden];
+        unsafe
+        {
+            fixed (float* rp = rawFlat, fp = flat, bp = weights.CpuWeights.ConditionEmbedderBias)
+                weights.CpuWeights.ConditionEmbedderWeight.MatMul(rp, condLen, fp, bp);
+        }
+
+        backend.WritePinned(ws.CondFlat, flat);
+
+        for (int l = 0; l < weights.Layers.Length; l++)
+        {
+            var bw = weights.Layers[l];
+            // K: [condLen, 2048] x [1024, 2048]^T -> [condLen, 1024]
+            backend.Sgemm(ws.CondK8, ws.CondFlat, bw.CrossAttnKW, condLen, hidden, 1024);
+            // V: [condLen, 2048] x [1024, 2048]^T -> [condLen, 1024]
+            backend.Sgemm(ws.CondV8, ws.CondFlat, bw.CrossAttnVW, condLen, hidden, 1024);
+
+            // Per-head RMSNorm on K8
+            visionOps.RmsNormBatched(ws.CondK8, ws.CondK8, bw.CrossAttnKNormW, rowDim: 128, numTokens: condLen * 8, eps: 1e-6f);
+
+            // Repeat/Interleave from 8 heads to 16 heads directly into CondLayerK/V
+            visionOps.RepeatInterleaveHeads(ws.CondLayerK[l], ws.CondK8, condLen, numKvHeads: 8, groups: 2, headDim: 128);
+            visionOps.RepeatInterleaveHeads(ws.CondLayerV[l], ws.CondV8, condLen, numKvHeads: 8, groups: 2, headDim: 128);
+        }
+    }
+
+    /// <summary>
+    /// Executes one full 24-layer DiT forward pass entirely on GPU:
+    /// ProjIn -> 24 Layers (SelfAttn with GQA+RoPE, CrossAttn with precomputed KV, SwiGLU MLP) -> Final Norm -> ProjOut.
+    /// Velocity is written directly into <paramref name="velocityOut"/>.
+    /// </summary>
+    public static void ForwardGpuCore(
+        AceStepDiTGpuWorkspace ws,
+        int latentFrames,
+        float timestep,
+        float timestepR,
+        int condLen,
+        AceStepGpuWeights gpuWeights,
+        IVisionOpsBackend visionOps,
+        IImageOpsBackend imageOps,
+        CoreTensor velocityOut)
+    {
+        int hidden = AceStepConfig.HiddenSize;
+        int outLen = (latentFrames + AceStepConfig.PatchSize - 1) / AceStepConfig.PatchSize;
+
+        // Timestep embeddings on CPU
+        var (tembT, timestepProjT) = TimestepEmbed(gpuWeights.CpuWeights.TimeEmbed, timestep);
+        var (tembR, timestepProjR) = TimestepEmbed(gpuWeights.CpuWeights.TimeEmbedR, timestep - timestepR);
+        var temb = new float[hidden];
+        var timestepProj = new float[6 * hidden];
+        for (int i = 0; i < hidden; i++) temb[i] = tembT[i] + tembR[i];
+        for (int i = 0; i < timestepProj.Length; i++) timestepProj[i] = timestepProjT[i] + timestepProjR[i];
+
+        // Populate pinned host memory for modulations
+        var hostMods = new float[gpuWeights.Layers.Length * 6 * hidden];
+        for (int l = 0; l < gpuWeights.Layers.Length; l++)
+        {
+            var lw = gpuWeights.Layers[l];
+            int lOffset = l * 6 * hidden;
+            for (int i = 0; i < hidden; i++)
+            {
+                float shiftMsa = lw.ScaleShiftTable[i] + timestepProj[i];
+                float scaleMsa = lw.ScaleShiftTable[hidden + i] + timestepProj[hidden + i];
+                float gateMsa  = lw.ScaleShiftTable[2 * hidden + i] + timestepProj[2 * hidden + i];
+
+                float cShiftMsa = lw.ScaleShiftTable[3 * hidden + i] + timestepProj[3 * hidden + i];
+                float cScaleMsa = lw.ScaleShiftTable[4 * hidden + i] + timestepProj[4 * hidden + i];
+                float cGateMsa  = lw.ScaleShiftTable[5 * hidden + i] + timestepProj[5 * hidden + i];
+
+                float gammaSelf = gpuWeights.CpuWeights.Layers[l].SelfAttnNormWeight[i];
+                hostMods[lOffset + i] = shiftMsa;
+                hostMods[lOffset + hidden + i] = gammaSelf * (1f + scaleMsa) - 1f;
+                hostMods[lOffset + 2 * hidden + i] = gateMsa;
+
+                float gammaMlp = gpuWeights.CpuWeights.Layers[l].MlpNormWeight[i];
+                hostMods[lOffset + 3 * hidden + i] = cShiftMsa;
+                hostMods[lOffset + 4 * hidden + i] = gammaMlp * (1f + cScaleMsa) - 1f;
+                hostMods[lOffset + 5 * hidden + i] = cGateMsa;
+            }
+        }
+        WritePinned(imageOps, ws.LayerMods, hostMods);
+
+        var hostFinalMod = new float[2 * hidden];
+        for (int i = 0; i < hidden; i++)
+        {
+            float shiftFinal = gpuWeights.FinalScaleShiftTable[i] + temb[i];
+            float scaleFinal = gpuWeights.FinalScaleShiftTable[hidden + i] + temb[i];
+            float gammaFinal = gpuWeights.CpuWeights.NormOutWeight[i];
+
+            hostFinalMod[i] = shiftFinal;
+            hostFinalMod[hidden + i] = gammaFinal * (1f + scaleFinal) - 1f;
+        }
+        WritePinned(imageOps, ws.FinalMod, hostFinalMod);
+
+        // ProjIn: Pack window then GEMM
+        visionOps.PackProjInWindow(ws.ProjInWindow, ws.ContextLatents, ws.Latent, latentFrames, outLen, inCh: 192, ctxCh: 128, noisyCh: 64, patch: 2);
+        imageOps.Sgemm(ws.XFull, ws.ProjInWindow, gpuWeights.ProjInW, outLen, 384, hidden);
+        imageOps.AddRowBroadcastInPlace(ws.XFull, gpuWeights.ProjInB, outLen, hidden);
+
+        for (int l = 0; l < gpuWeights.Layers.Length; l++)
+        {
+            var lw = gpuWeights.Layers[l];
+            int lOffset = l * 6 * hidden;
+
+            // 1. Self-Attention with AdaLN
+            visionOps.AdaLNModulate(ws.Normed1, ws.XFull, ws.LayerMods, outLen, hidden, shiftOffset: lOffset, scaleOffset: lOffset + hidden, isRmsNorm: true, eps: 1e-6f);
+
+            imageOps.Sgemm(ws.Q, ws.Normed1, lw.SelfAttnQW, outLen, hidden, 2048);
+            imageOps.Sgemm(ws.K8, ws.Normed1, lw.SelfAttnKW, outLen, hidden, 1024);
+            imageOps.Sgemm(ws.V8, ws.Normed1, lw.SelfAttnVW, outLen, hidden, 1024);
+
+            visionOps.RmsNormBatched(ws.Q, ws.Q, lw.SelfAttnQNormW, rowDim: 128, numTokens: outLen * 16, eps: 1e-6f);
+            visionOps.RmsNormBatched(ws.K8, ws.K8, lw.SelfAttnKNormW, rowDim: 128, numTokens: outLen * 8, eps: 1e-6f);
+
+            visionOps.RoPEPartialBatched(ws.Q, basePosition: 0, headDim: 128, ropeDim: 128, ropeTheta: 1_000_000f, numHeads: 16, nTok: outLen, neox: true);
+            visionOps.RoPEPartialBatched(ws.K8, basePosition: 0, headDim: 128, ropeDim: 128, ropeTheta: 1_000_000f, numHeads: 8, nTok: outLen, neox: true);
+
+            visionOps.RepeatInterleaveHeads(ws.K16, ws.K8, outLen, numKvHeads: 8, groups: 2, headDim: 128);
+            visionOps.RepeatInterleaveHeads(ws.V16, ws.V8, outLen, numKvHeads: 8, groups: 2, headDim: 128);
+
+            imageOps.MultiHeadAttentionTiled(ws.AttnOut, ws.Q, ws.K16, ws.V16, outLen, outLen, 16, 128);
+            imageOps.Sgemm(ws.AttnProj, ws.AttnOut, lw.SelfAttnOW, outLen, 2048, hidden);
+
+            visionOps.ScaleGateAdd(ws.XFull, ws.AttnProj, ws.LayerMods, outLen, hidden, gateOffset: lOffset + 2 * hidden);
+
+            // 2. Cross-Attention
+            visionOps.RmsNormBatched(ws.Normed2, ws.XFull, lw.CrossAttnNormW, rowDim: hidden, numTokens: outLen, eps: 1e-6f);
+
+            imageOps.Sgemm(ws.CrossQ, ws.Normed2, lw.CrossAttnQW, outLen, hidden, 2048);
+            visionOps.RmsNormBatched(ws.CrossQ, ws.CrossQ, lw.CrossAttnQNormW, rowDim: 128, numTokens: outLen * 16, eps: 1e-6f);
+
+            imageOps.MultiHeadAttentionTiled(ws.CrossAttnOut, ws.CrossQ, ws.CondLayerK[l], ws.CondLayerV[l], outLen, condLen, 16, 128);
+            imageOps.Sgemm(ws.CrossAttnProj, ws.CrossAttnOut, lw.CrossAttnOW, outLen, 2048, hidden);
+
+            imageOps.AddInPlace(ws.XFull, ws.CrossAttnProj);
+
+            // 3. MLP with SwiGLU
+            visionOps.AdaLNModulate(ws.Normed3, ws.XFull, ws.LayerMods, outLen, hidden, shiftOffset: lOffset + 3 * hidden, scaleOffset: lOffset + 4 * hidden, isRmsNorm: true, eps: 1e-6f);
+
+            imageOps.Sgemm(ws.MlpGate, ws.Normed3, lw.MlpGateW, outLen, hidden, 6144);
+            imageOps.Sgemm(ws.MlpUp, ws.Normed3, lw.MlpUpW, outLen, hidden, 6144);
+            imageOps.SiLuMul(ws.MlpGate, ws.MlpUp);
+            imageOps.Sgemm(ws.MlpOut, ws.MlpGate, lw.MlpDownW, outLen, 6144, hidden);
+
+            visionOps.ScaleGateAdd(ws.XFull, ws.MlpOut, ws.LayerMods, outLen, hidden, gateOffset: lOffset + 5 * hidden);
+        }
+
+        // Final Norm + AdaLN
+        visionOps.AdaLNModulate(ws.XFull, ws.XFull, ws.FinalMod, outLen, hidden, shiftOffset: 0, scaleOffset: hidden, isRmsNorm: true, eps: 1e-6f);
+
+        // ProjOut: output is outLen x 128 (contiguous latentFrames x 64)
+        imageOps.Sgemm(velocityOut, ws.XFull, gpuWeights.ProjOutW, outLen, hidden, 128);
+        imageOps.AddRowBroadcastInPlace(velocityOut, gpuWeights.ProjOutB, outLen, 128);
+    }
+
+    /// <summary>
+    /// Standalone GPU forward pass helper for testing and evaluation.
+    /// </summary>
+    public static float[][] ForwardGpu(
+        AceStepDiTWeights weights,
+        float[][] contextLatents,
+        float[][] noisyLatent,
+        float[][] condition,
+        float timestep,
+        float timestepR,
+        IComputeBackend backend)
+    {
+        if (backend is not (IVisionOpsBackend visionOps and IImageOpsBackend imageOps))
+            throw new NotSupportedException("Backend must implement IVisionOpsBackend and IImageOpsBackend.");
+
+        int latentFrames = noisyLatent.Length;
+        int acousticDim = AceStepConfig.AudioAcousticHiddenDim;
+        var gpuWeights = weights.EnsureGpuWeights(backend);
+        using var ws = new AceStepDiTGpuWorkspace(backend, maxFrames: latentFrames, condLen: condition.Length);
+
+        var flatCtx = new float[latentFrames * 2 * acousticDim];
+        for (int t = 0; t < latentFrames; t++)
+            Array.Copy(contextLatents[t], 0, flatCtx, t * 2 * acousticDim, 2 * acousticDim);
+        backend.WritePinned(ws.ContextLatents, flatCtx);
+
+        var flatNoisy = new float[latentFrames * acousticDim];
+        for (int t = 0; t < latentFrames; t++)
+            Array.Copy(noisyLatent[t], 0, flatNoisy, t * acousticDim, acousticDim);
+        backend.WritePinned(ws.Latent, flatNoisy);
+
+        PrecomputeConditioningGpu(condition, ws, gpuWeights, backend);
+
+        imageOps.BeginBatch();
+        ForwardGpuCore(ws, latentFrames, timestep, timestepR, condition.Length, gpuWeights, visionOps, imageOps, ws.Velocity);
+        imageOps.EndBatch();
+
+        var flatVel = new float[latentFrames * acousticDim];
+        backend.Download(ws.Velocity, flatVel);
+
+        var rows = new float[latentFrames][];
+        for (int t = 0; t < latentFrames; t++)
+        {
+            rows[t] = new float[acousticDim];
+            Array.Copy(flatVel, t * acousticDim, rows[t], 0, acousticDim);
+        }
+        return rows;
+    }
+
+    private static void WritePinned(IImageOpsBackend imageOps, CoreTensor tensor, ReadOnlySpan<float> data)
+    {
+        imageOps.WritePinned(tensor, data);
+    }
 }
+

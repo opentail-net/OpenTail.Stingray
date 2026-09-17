@@ -10697,5 +10697,73 @@ internal static class Shaders
             kData[base + 1u] = k0 * s + k1 * c;
         }
         """;
+
+    internal const string RepeatInterleaveHeads = """
+        #version 450
+        layout(local_size_x = 256) in;
+
+        layout(binding = 0) readonly  buffer Src { float srcData[]; };
+        layout(binding = 1) writeonly buffer Dst { float dstData[]; };
+
+        layout(push_constant) uniform Params {
+            uint numKvHeads;
+            uint groups;
+            uint headDim;
+            uint nTok;
+        };
+
+        void main() {
+            uint idx = gl_GlobalInvocationID.x;
+            uint totalElements = nTok * numKvHeads * groups * headDim;
+            if (idx >= totalElements) return;
+
+            uint d = idx % headDim;
+            uint rem = idx / headDim;
+            uint hDst = rem % (numKvHeads * groups);
+            uint t = rem / (numKvHeads * groups);
+
+            uint hSrc = hDst / groups;
+            uint srcOff = (t * numKvHeads + hSrc) * headDim + d;
+            dstData[idx] = srcData[srcOff];
+        }
+        """;
+
+    internal const string PackProjInWindow = """
+        #version 450
+        layout(local_size_x = 256) in;
+
+        layout(binding = 0) readonly  buffer CtxBuf { float contextData[]; };
+        layout(binding = 1) readonly  buffer NoisyBuf { float noisyData[]; };
+        layout(binding = 2) writeonly buffer WinBuf { float windowData[]; };
+
+        layout(push_constant) uniform Params {
+            uint t;
+            uint outLen;
+            uint inCh;
+            uint ctxCh;
+            uint noisyCh;
+            uint patchSize;
+        };
+
+        void main() {
+            uint idx = gl_GlobalInvocationID.x;
+            uint totalElements = outLen * patchSize * inCh;
+            if (idx >= totalElements) return;
+
+            uint p = idx / (patchSize * inCh);
+            uint rem = idx % (patchSize * inCh);
+            uint k = rem / inCh;
+            uint c = rem % inCh;
+
+            uint ti = p * patchSize + k;
+            if (ti >= t) {
+                windowData[idx] = 0.0;
+            } else if (c < ctxCh) {
+                windowData[idx] = contextData[ti * ctxCh + c];
+            } else {
+                windowData[idx] = noisyData[ti * noisyCh + (c - ctxCh)];
+            }
+        }
+        """;
 }
 

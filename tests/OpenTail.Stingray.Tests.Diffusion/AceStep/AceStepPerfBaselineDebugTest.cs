@@ -97,4 +97,79 @@ public sealed class AceStepPerfBaselineDebugTest
         if (docsDir != null)
             File.AppendAllText(Path.Combine(docsDir, "tts-benchmark-log.txt"), msg + "\n\n");
     }
+
+    [Fact]
+    public void Bench_Generate_2sAudio_VulkanGpu()
+    {
+        string? turboPath = FindRepoFile("models/acestep-v15/turbo.safetensors");
+        string? vaePath = FindRepoFile("models/acestep-v15/vae.safetensors");
+        string? ggufPath = FindRepoFile("models/qwen3-embedding-0.6b/qwen3-embedding-0.6b-q8_0.gguf");
+        Assert.SkipUnless(turboPath != null && vaePath != null && ggufPath != null,
+            "models/acestep-v15 or models/qwen3-embedding-0.6b weights not found");
+
+        OpenTail.Stingray.Vulkan.VulkanBackend? vk = null;
+        try { vk = new OpenTail.Stingray.Vulkan.VulkanBackend(); } catch { return; }
+        if (vk is null) return;
+
+        using (vk)
+        using (var turboLoader = SafetensorsLoader.Open(turboPath!))
+        {
+            var ditWeights = AceStepDiTWeights.Load(turboLoader);
+            var conditionWeights = AceStepConditionEncoderWeights.Load(turboLoader);
+            var timbreWeights = AceStepTimbreEncoderWeights.Load(turboLoader);
+
+            using var vaeLoader = SafetensorsLoader.Open(vaePath!);
+            var vaeWeights = AceStepOobleckDecoderWeights.Load(vaeLoader);
+            var vaeEncoderWeights = AceStepOobleckEncoderWeights.Load(vaeLoader);
+
+            using var textEncoder = new AceStepQwen3TextEncoder(ggufPath!);
+
+            var model = new AceStepModel
+            {
+                Transformer = ditWeights,
+                Vae = vaeWeights,
+                VaeEncoder = vaeEncoderWeights,
+                TextEncoder = textEncoder,
+                ConditionEncoder = conditionWeights,
+                TimbreEncoder = timbreWeights,
+            };
+            var pipeline = new AceStepPipeline(model, vk);
+
+            var genParams = new AceStepGenerationParams
+            {
+                Prompt = "A cinematic orchestral soundtrack with deep drums",
+                Lyrics = "",
+                Instrumental = true,
+                DurationSeconds = 2f,
+                Seed = 1234,
+            };
+
+            var warm = pipeline.Generate(genParams);
+            Assert.True(warm.SampleCount > 0, "generated zero samples on warmup");
+
+            double[] elapsedSec = new double[Runs];
+            int sampleCount = 0;
+            int sr = AceStepConfig.VaeSampleRate;
+            for (int i = 0; i < Runs; i++)
+            {
+                var sw = System.Diagnostics.Stopwatch.StartNew();
+                var result = pipeline.Generate(genParams);
+                sw.Stop();
+                elapsedSec[i] = sw.Elapsed.TotalSeconds;
+                sampleCount = result.SampleCount;
+                sr = result.SampleRate;
+            }
+
+            double audioSec = sampleCount / (double)sr;
+            double meanSec = elapsedSec.Average();
+            double rtf = meanSec / audioSec;
+            string msg = $"[ACE-Step-Turbo-Vulkan] prompt=\"A cinematic orchestral soundtrack with deep drums\" audio={audioSec:F2}s samples={sampleCount}\n" +
+                         $"[ACE-Step-Turbo-Vulkan] runs(s)=[{string.Join(", ", elapsedSec.Select(x => x.ToString("F3")))}] mean={meanSec:F3}s RTF={rtf:F3} (lower=faster; 1.0=realtime; 8-step Turbo Vulkan GPU resident)";
+            Console.Error.WriteLine(msg);
+            string? docsDir = FindRepoFile("docs");
+            if (docsDir != null)
+                File.AppendAllText(Path.Combine(docsDir, "tts-benchmark-log.txt"), msg + "\n\n");
+        }
+    }
 }
+
