@@ -30,12 +30,12 @@ public static class VoxtralAudioEncoder
 
         // Transpose channel-major [hidden, steps] -> frame-major [steps][hidden].
         var x = new float[steps][];
-        for (int t = 0; t < steps; t++)
+        Parallel.For(0, steps, t =>
         {
             var row = new float[hidden];
             for (int c = 0; c < hidden; c++) row[c] = stage2[c * steps + t];
             x[t] = row;
-        }
+        });
 
         for (int layer = 0; layer < VoxtralAudioEncoderWeights.NumLayers; layer++)
         {
@@ -55,21 +55,24 @@ public static class VoxtralAudioEncoder
         int tokens = steps / factor;
         int textHidden = VoxtralAudioEncoderWeights.TextHiddenSize;
         var downsampled = new float[tokens][];
-        for (int t = 0; t < tokens; t++)
+        Parallel.For(0, tokens, t =>
         {
             var row = new float[hidden * factor];
             for (int f = 0; f < factor; f++)
                 Array.Copy(x[t * factor + f], 0, row, f * hidden, hidden);
             downsampled[t] = row;
-        }
+        });
 
         var output = new float[tokens][];
-        for (int t = 0; t < tokens; t++)
+        Parallel.For(0, tokens, t =>
         {
-            var proj1 = LinearNoBias(downsampled[t], w.Projector1Weight, hidden * factor, textHidden);
+            var proj1 = new float[textHidden];
+            LinearNoBiasDirect(downsampled[t], w.Projector1Weight, proj1, hidden * factor, textHidden);
             GeluErfInPlace(proj1);
-            output[t] = LinearNoBias(proj1, w.Projector2Weight, textHidden, textHidden);
-        }
+            var proj2 = new float[textHidden];
+            LinearNoBiasDirect(proj1, w.Projector2Weight, proj2, textHidden, textHidden);
+            output[t] = proj2;
+        });
         return output;
     }
 
@@ -80,26 +83,32 @@ public static class VoxtralAudioEncoder
         int headDim = VoxtralAudioEncoderWeights.HeadDim;
         int window = VoxtralAudioEncoderWeights.SlidingWindow;
         float invSqrtD = 1f / MathF.Sqrt(headDim);
+        int qkvDim = heads * headDim;
 
         var q = new float[frames][];
         var k = new float[frames][];
         var v = new float[frames][];
-        for (int t = 0; t < frames; t++)
+
+        Parallel.For(0, frames, t =>
         {
-            q[t] = LinearBias(xRows[t], w.QWeight, w.QBias, hidden, heads * headDim);
-            k[t] = LinearNoBias(xRows[t], w.KWeight, hidden, heads * headDim);
-            v[t] = LinearBias(xRows[t], w.VWeight, w.VBias, hidden, heads * headDim);
-            RopeNeoxInPlace(q[t], heads, headDim, t);
-            RopeNeoxInPlace(k[t], heads, headDim, t);
-        }
+            var qt = new float[qkvDim];
+            var kt = new float[qkvDim];
+            var vt = new float[qkvDim];
+            LinearQKV(xRows[t], w.QWeight, w.QBias, w.KWeight, w.VWeight, w.VBias, qt, kt, vt, hidden, qkvDim);
+            RopeNeoxInPlace(qt, heads, headDim, t);
+            RopeNeoxInPlace(kt, heads, headDim, t);
+            q[t] = qt;
+            k[t] = kt;
+            v[t] = vt;
+        });
 
         var contextFlat = new float[frames][];
         for (int t = 0; t < frames; t++) contextFlat[t] = new float[heads * headDim];
 
-        var scores = new float[frames];
-        for (int h = 0; h < heads; h++)
+        Parallel.For(0, heads, h =>
         {
             int chBase = h * headDim;
+            var scores = new float[frames];
             for (int i = 0; i < frames; i++)
             {
                 int begin = Math.Max(0, i - window + 1);
@@ -122,14 +131,66 @@ public static class VoxtralAudioEncoder
                     contextFlat[i][chBase + d] = acc;
                 }
             }
-        }
-
-        var output = new float[frames][];
-        for (int t = 0; t < frames; t++) output[t] = LinearBias(contextFlat[t], w.OWeight, w.OBias, heads * headDim, hidden);
+        });
 
         var flatOut = new float[frames * hidden];
-        for (int t = 0; t < frames; t++) Array.Copy(output[t], 0, flatOut, t * hidden, hidden);
+        Parallel.For(0, frames, t =>
+        {
+            unsafe
+            {
+                fixed (float* pDst = &flatOut[t * hidden])
+                    LinearDirect(contextFlat[t], w.OWeight, w.OBias, pDst, heads * headDim, hidden);
+            }
+        });
         return flatOut;
+    }
+
+    private static unsafe void LinearQKV(float[] input, byte[] wQ, float[] qBias, byte[] wK, byte[] wV, float[] vBias,
+        float[] outQ, float[] outK, float[] outV, int inDim, int outDim)
+    {
+        int bytesPerRow = (inDim / 32) * 34;
+        int scratchBytes = OpenTail.Stingray.Cpu.SimdKernels.Q8_0ScratchBytes(inDim);
+        byte* scratch = stackalloc byte[scratchBytes];
+        fixed (float* pIn = input)
+            OpenTail.Stingray.Cpu.SimdKernels.QuantizeRowToQ8_0(pIn, inDim, scratch);
+
+        fixed (byte* pQ = wQ, pK = wK, pV = wV)
+        fixed (float* pQB = qBias, pVB = vBias)
+        fixed (float* pq = outQ, pk = outK, pv = outV)
+        {
+            for (int i = 0; i < outDim; i++)
+            {
+                long offset = (long)i * bytesPerRow;
+                pq[i] = OpenTail.Stingray.Cpu.SimdKernels.DotQ8_0_Q8_0(pQ + offset, scratch, inDim) + (pQB != null ? pQB[i] : 0f);
+                pk[i] = OpenTail.Stingray.Cpu.SimdKernels.DotQ8_0_Q8_0(pK + offset, scratch, inDim);
+                pv[i] = OpenTail.Stingray.Cpu.SimdKernels.DotQ8_0_Q8_0(pV + offset, scratch, inDim) + (pVB != null ? pVB[i] : 0f);
+            }
+        }
+    }
+
+    private static unsafe void LinearNoBiasDirect(float[] input, byte[] weightQ8_0, float[] output, int inDim, int outDim)
+    {
+        fixed (float* pOut = output)
+            LinearDirect(input, weightQ8_0, null, pOut, inDim, outDim);
+    }
+
+    private static unsafe void LinearDirect(float[] input, byte[] weightQ8_0, float[]? bias, float* output, int inDim, int outDim)
+    {
+        int bytesPerRow = (inDim / 32) * 34;
+        int scratchBytes = OpenTail.Stingray.Cpu.SimdKernels.Q8_0ScratchBytes(inDim);
+        byte* scratch = stackalloc byte[scratchBytes];
+        fixed (float* pIn = input)
+            OpenTail.Stingray.Cpu.SimdKernels.QuantizeRowToQ8_0(pIn, inDim, scratch);
+
+        fixed (byte* pW = weightQ8_0)
+        fixed (float* pB = bias)
+        {
+            for (int i = 0; i < outDim; i++)
+            {
+                output[i] = OpenTail.Stingray.Cpu.SimdKernels.DotQ8_0_Q8_0(pW + (long)i * bytesPerRow, scratch, inDim) +
+                    (pB != null ? pB[i] : 0f);
+            }
+        }
     }
 
     /// <summary>Real GGML `GGML_ROPE_TYPE_NEOX` convention: rotates pairs `(i, i+headDim/2)`
@@ -160,29 +221,65 @@ public static class VoxtralAudioEncoder
         int frames = xRows.Length;
         int inter = VoxtralAudioEncoderWeights.IntermediateSize;
         var flatOut = new float[frames * hidden];
-        for (int t = 0; t < frames; t++)
+
+        Parallel.For(0, frames, t =>
         {
-            var gate = LinearNoBias(xRows[t], w.GateWeight, hidden, inter);
-            var up = LinearNoBias(xRows[t], w.UpWeight, hidden, inter);
-            for (int i = 0; i < inter; i++) gate[i] = Silu(gate[i]) * up[i];
-            var down = LinearBias(gate, w.DownWeight, w.DownBias, inter, hidden);
-            Array.Copy(down, 0, flatOut, t * hidden, hidden);
-        }
+            unsafe
+            {
+                int inScratchBytes = OpenTail.Stingray.Cpu.SimdKernels.Q8_0ScratchBytes(hidden);
+                byte* inScratch = stackalloc byte[inScratchBytes];
+                fixed (float* pIn = xRows[t])
+                    OpenTail.Stingray.Cpu.SimdKernels.QuantizeRowToQ8_0(pIn, hidden, inScratch);
+
+                float* gate = stackalloc float[inter];
+                int inBytesPerRow = (hidden / 32) * 34;
+                fixed (byte* pGW = w.GateWeight, pUW = w.UpWeight)
+                {
+                    for (int i = 0; i < inter; i++)
+                    {
+                        long off = (long)i * inBytesPerRow;
+                        float g = OpenTail.Stingray.Cpu.SimdKernels.DotQ8_0_Q8_0(pGW + off, inScratch, hidden);
+                        float u = OpenTail.Stingray.Cpu.SimdKernels.DotQ8_0_Q8_0(pUW + off, inScratch, hidden);
+                        gate[i] = Silu(g) * u;
+                    }
+                }
+
+                int interScratchBytes = OpenTail.Stingray.Cpu.SimdKernels.Q8_0ScratchBytes(inter);
+                byte* interScratch = stackalloc byte[interScratchBytes];
+                OpenTail.Stingray.Cpu.SimdKernels.QuantizeRowToQ8_0(gate, inter, interScratch);
+
+                int downBytesPerRow = (inter / 32) * 34;
+                fixed (byte* pDW = w.DownWeight)
+                fixed (float* pDB = w.DownBias)
+                fixed (float* pOut = &flatOut[t * hidden])
+                {
+                    for (int i = 0; i < hidden; i++)
+                    {
+                        pOut[i] = OpenTail.Stingray.Cpu.SimdKernels.DotQ8_0_Q8_0(pDW + (long)i * downBytesPerRow, interScratch, inter) +
+                            (pDB != null ? pDB[i] : 0f);
+                    }
+                }
+            }
+        });
         return flatOut;
     }
 
     private static void AddRows(float[][] x, float[] flatDelta)
     {
         int hidden = x[0].Length;
-        for (int t = 0; t < x.Length; t++)
+        Parallel.For(0, x.Length, t =>
+        {
+            int baseIdx = t * hidden;
+            var row = x[t];
             for (int c = 0; c < hidden; c++)
-                x[t][c] += flatDelta[t * hidden + c];
+                row[c] += flatDelta[baseIdx + c];
+        });
     }
 
     private static float[][] RmsNormRows(float[][] xRows, int hidden, float[] weight)
     {
         var output = new float[xRows.Length][];
-        for (int t = 0; t < xRows.Length; t++)
+        Parallel.For(0, xRows.Length, t =>
         {
             var row = xRows[t];
             double sumSq = 0;
@@ -191,7 +288,7 @@ public static class VoxtralAudioEncoder
             var outRow = new float[hidden];
             for (int c = 0; c < hidden; c++) outRow[c] = row[c] * invRms * weight[c];
             output[t] = outRow;
-        }
+        });
         return output;
     }
 
@@ -218,23 +315,6 @@ public static class VoxtralAudioEncoder
         return sign * y;
     }
 
-    private static unsafe float[] LinearNoBias(float[] input, byte[] weightQ8_0, int inDim, int outDim)
-    {
-        var output = new float[outDim];
-        fixed (float* pOut = output, pIn = input)
-        fixed (byte* pW = weightQ8_0)
-            OpenTail.Stingray.Cpu.SimdKernels.MatVecQ8_0(pOut, pW, pIn, outDim, inDim);
-        return output;
-    }
-
-    private static unsafe float[] LinearBias(float[] input, byte[] weightQ8_0, float[] bias, int inDim, int outDim)
-    {
-        // MatVecQ8_0 has no fused-bias overload -- quantized weight dot, then add bias separately.
-        var output = LinearNoBias(input, weightQ8_0, inDim, outDim);
-        for (int i = 0; i < outDim; i++) output[i] += bias[i];
-        return output;
-    }
-
     /// <summary>Real "same"-padding Conv1d over a [C][T] channel-major tensor with support for
     /// stride (used for the stem's stride-2 second conv). Weight real PyTorch layout
     /// [outCh, inCh, kernel].</summary>
@@ -243,7 +323,7 @@ public static class VoxtralAudioEncoder
         int pad = (kernel - 1) / 2;
         int outFrames = (frames + 2 * pad - kernel) / stride + 1;
         var output = new float[outCh * outFrames];
-        for (int oc = 0; oc < outCh; oc++)
+        Parallel.For(0, outCh, oc =>
         {
             float b = bias[oc];
             int wBase = oc * inCh * kernel;
@@ -263,7 +343,7 @@ public static class VoxtralAudioEncoder
                 }
                 output[oc * outFrames + ot] = sum;
             }
-        }
+        });
         return output;
     }
 }

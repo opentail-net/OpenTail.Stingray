@@ -230,6 +230,53 @@ public static class VoxtralTextDecoder
         return output;
     }
 
+    private static unsafe void LinearQKV_GQA(float[] input, byte[] wQ, byte[] wK, byte[] wV,
+        float[] outQ, float[] outK, float[] outV, int hidden, int qDim, int kvDim)
+    {
+        int bytesPerRow = (hidden / 32) * 34;
+        int scratchBytes = OpenTail.Stingray.Cpu.SimdKernels.Q8_0ScratchBytes(hidden);
+        byte* scratch = stackalloc byte[scratchBytes];
+        fixed (float* pIn = input)
+            OpenTail.Stingray.Cpu.SimdKernels.QuantizeRowToQ8_0(pIn, hidden, scratch);
+
+        fixed (byte* pQ = wQ, pK = wK, pV = wV)
+        fixed (float* pq = outQ, pk = outK, pv = outV)
+        {
+            byte* localQ = pQ, localK = pK, localV = pV;
+            float* localOutQ = pq, localOutK = pk, localOutV = pv;
+            byte* localScratch = scratch;
+            if (qDim >= 64)
+            {
+                Parallel.For(0, qDim, i =>
+                {
+                    localOutQ[i] = OpenTail.Stingray.Cpu.SimdKernels.DotQ8_0_Q8_0(localQ + (long)i * bytesPerRow, localScratch, hidden);
+                });
+            }
+            else
+            {
+                for (int i = 0; i < qDim; i++)
+                    pq[i] = OpenTail.Stingray.Cpu.SimdKernels.DotQ8_0_Q8_0(pQ + (long)i * bytesPerRow, scratch, hidden);
+            }
+
+            if (kvDim >= 64)
+            {
+                Parallel.For(0, kvDim, i =>
+                {
+                    localOutK[i] = OpenTail.Stingray.Cpu.SimdKernels.DotQ8_0_Q8_0(localK + (long)i * bytesPerRow, localScratch, hidden);
+                    localOutV[i] = OpenTail.Stingray.Cpu.SimdKernels.DotQ8_0_Q8_0(localV + (long)i * bytesPerRow, localScratch, hidden);
+                });
+            }
+            else
+            {
+                for (int i = 0; i < kvDim; i++)
+                {
+                    pk[i] = OpenTail.Stingray.Cpu.SimdKernels.DotQ8_0_Q8_0(pK + (long)i * bytesPerRow, scratch, hidden);
+                    pv[i] = OpenTail.Stingray.Cpu.SimdKernels.DotQ8_0_Q8_0(pV + (long)i * bytesPerRow, scratch, hidden);
+                }
+            }
+        }
+    }
+
     /// <summary>Per-layer KV cache for incremental (one-token-at-a-time) decoding -- real KV-cache
     /// reuse across autoregressive steps, matching the reference's <c>DecodeStepGraph</c> mechanism
     /// (same computation as <see cref="Forward"/>'s full self-attention, just incremental).</summary>
@@ -356,17 +403,21 @@ public static class VoxtralTextDecoder
         int headDim = VoxtralTextDecoderWeights.HeadDim;
         int kvRepeat = heads / kvHeads;
         float invSqrtD = 1f / MathF.Sqrt(headDim);
+        int qDim = heads * headDim;
+        int kvDim = kvHeads * headDim;
 
         var q = new float[frames][];
         for (int t = 0; t < frames; t++)
         {
-            q[t] = LinearNoBias(xRows[t], l.QWeight, hidden, heads * headDim);
-            var k = LinearNoBias(xRows[t], l.KWeight, hidden, kvHeads * headDim);
-            var v = LinearNoBias(xRows[t], l.VWeight, hidden, kvHeads * headDim);
-            RopeNeoxInPlace(q[t], heads, headDim, t);
-            RopeNeoxInPlace(k, kvHeads, headDim, t);
-            kCache.Add(k);
-            vCache.Add(v);
+            var qt = new float[qDim];
+            var kt = new float[kvDim];
+            var vt = new float[kvDim];
+            LinearQKV_GQA(xRows[t], l.QWeight, l.KWeight, l.VWeight, qt, kt, vt, hidden, qDim, kvDim);
+            RopeNeoxInPlace(qt, heads, headDim, t);
+            RopeNeoxInPlace(kt, kvHeads, headDim, t);
+            q[t] = qt;
+            kCache.Add(kt);
+            vCache.Add(vt);
         }
 
         var contextFlat = new float[frames][];
@@ -380,22 +431,22 @@ public static class VoxtralTextDecoder
             for (int i = 0; i < frames; i++)
             {
                 float maxScore = float.NegativeInfinity;
+                var qiSpan = q[i].AsSpan(qBase, headDim);
                 for (int j = 0; j <= i; j++)
                 {
-                    float dot = 0f;
-                    for (int d = 0; d < headDim; d++) dot += q[i][qBase + d] * kCache[j][kvBase + d];
-                    dot *= invSqrtD;
+                    float dot = System.Numerics.Tensors.TensorPrimitives.Dot(qiSpan, kCache[j].AsSpan(kvBase, headDim)) * invSqrtD;
                     scores[j] = dot;
                     if (dot > maxScore) maxScore = dot;
                 }
                 float sum = 0f;
                 for (int j = 0; j <= i; j++) { scores[j] = MathF.Exp(scores[j] - maxScore); sum += scores[j]; }
                 float invSum = 1f / sum;
-                for (int d = 0; d < headDim; d++)
+                var ctxSpan = contextFlat[i].AsSpan(qBase, headDim);
+                for (int j = 0; j <= i; j++)
                 {
-                    float acc = 0f;
-                    for (int j = 0; j <= i; j++) acc += scores[j] * invSum * vCache[j][kvBase + d];
-                    contextFlat[i][qBase + d] = acc;
+                    float s = scores[j] * invSum;
+                    System.Numerics.Tensors.TensorPrimitives.MultiplyAdd(
+                        vCache[j].AsSpan(kvBase, headDim), s, ctxSpan, ctxSpan);
                 }
             }
         }
@@ -414,10 +465,14 @@ public static class VoxtralTextDecoder
         int headDim = VoxtralTextDecoderWeights.HeadDim;
         int kvRepeat = heads / kvHeads;
         float invSqrtD = 1f / MathF.Sqrt(headDim);
+        int qDim = heads * headDim;
+        int kvDim = kvHeads * headDim;
 
-        var q = LinearNoBias(xRow, l.QWeight, hidden, heads * headDim);
-        var k = LinearNoBias(xRow, l.KWeight, hidden, kvHeads * headDim);
-        var v = LinearNoBias(xRow, l.VWeight, hidden, kvHeads * headDim);
+        var q = new float[qDim];
+        var k = new float[kvDim];
+        var v = new float[kvDim];
+        LinearQKV_GQA(xRow, l.QWeight, l.KWeight, l.VWeight, q, k, v, hidden, qDim, kvDim);
+
         RopeNeoxInPlace(q, heads, headDim, position);
         RopeNeoxInPlace(k, kvHeads, headDim, position);
         kCache.Add(k);
@@ -431,44 +486,63 @@ public static class VoxtralTextDecoder
             int qBase = h * headDim;
             int kvBase = (h / kvRepeat) * headDim;
             float maxScore = float.NegativeInfinity;
+            var qSpan = q.AsSpan(qBase, headDim);
             for (int j = 0; j < total; j++)
             {
-                float dot = 0f;
-                for (int d = 0; d < headDim; d++) dot += q[qBase + d] * kCache[j][kvBase + d];
-                dot *= invSqrtD;
+                float dot = System.Numerics.Tensors.TensorPrimitives.Dot(qSpan, kCache[j].AsSpan(kvBase, headDim)) * invSqrtD;
                 scores[j] = dot;
                 if (dot > maxScore) maxScore = dot;
             }
             float sum = 0f;
             for (int j = 0; j < total; j++) { scores[j] = MathF.Exp(scores[j] - maxScore); sum += scores[j]; }
             float invSum = 1f / sum;
-            for (int d = 0; d < headDim; d++)
+            var ctxSpan = context.AsSpan(qBase, headDim);
+            for (int j = 0; j < total; j++)
             {
-                float acc = 0f;
-                for (int j = 0; j < total; j++) acc += scores[j] * invSum * vCache[j][kvBase + d];
-                context[qBase + d] = acc;
+                float s = scores[j] * invSum;
+                System.Numerics.Tensors.TensorPrimitives.MultiplyAdd(
+                    vCache[j].AsSpan(kvBase, headDim), s, ctxSpan, ctxSpan);
             }
         }
 
         return LinearNoBias(context, l.OWeight, heads * headDim, hidden);
     }
 
-    private static float[] MlpRow(float[] xRow, int hidden, VoxtralTextLayerWeights l)
+    private static unsafe float[] MlpRow(float[] xRow, int hidden, VoxtralTextLayerWeights l)
     {
         int inter = VoxtralTextDecoderWeights.IntermediateSize;
-        var gate = LinearNoBias(xRow, l.GateWeight, hidden, inter);
-        var up = LinearNoBias(xRow, l.UpWeight, hidden, inter);
-        for (int i = 0; i < inter; i++) gate[i] = Silu(gate[i]) * up[i];
+        int inScratchBytes = OpenTail.Stingray.Cpu.SimdKernels.Q8_0ScratchBytes(hidden);
+        byte* inScratch = stackalloc byte[inScratchBytes];
+        fixed (float* pIn = xRow)
+            OpenTail.Stingray.Cpu.SimdKernels.QuantizeRowToQ8_0(pIn, hidden, inScratch);
+
+        var gate = new float[inter];
+        int inBytesPerRow = (hidden / 32) * 34;
+        fixed (byte* pGW = l.GateWeight, pUW = l.UpWeight)
+        fixed (float* pGate = gate)
+        {
+            byte* localGW = pGW, localUW = pUW;
+            float* localGate = pGate;
+            byte* localScratch = inScratch;
+            Parallel.For(0, inter, i =>
+            {
+                long off = (long)i * inBytesPerRow;
+                float g = OpenTail.Stingray.Cpu.SimdKernels.DotQ8_0_Q8_0(localGW + off, localScratch, hidden);
+                float u = OpenTail.Stingray.Cpu.SimdKernels.DotQ8_0_Q8_0(localUW + off, localScratch, hidden);
+                localGate[i] = Silu(g) * u;
+            });
+        }
+
         return LinearNoBias(gate, l.DownWeight, inter, hidden);
     }
 
     private static float[] RmsNormRow(float[] row, int hidden, float[] weight)
     {
-        double sumSq = 0;
-        for (int c = 0; c < hidden; c++) sumSq += (double)row[c] * row[c];
-        float invRms = (float)(1.0 / Math.Sqrt(sumSq / hidden + VoxtralTextDecoderWeights.RmsNormEps));
+        float sumSq = System.Numerics.Tensors.TensorPrimitives.SumOfSquares(row.AsSpan(0, hidden));
+        float invRms = (float)(1.0 / Math.Sqrt((double)sumSq / hidden + VoxtralTextDecoderWeights.RmsNormEps));
         var outRow = new float[hidden];
-        for (int c = 0; c < hidden; c++) outRow[c] = row[c] * invRms * weight[c];
+        System.Numerics.Tensors.TensorPrimitives.Multiply(row.AsSpan(0, hidden), weight.AsSpan(0, hidden), outRow);
+        System.Numerics.Tensors.TensorPrimitives.Multiply(outRow, invRms, outRow);
         return outRow;
     }
 }

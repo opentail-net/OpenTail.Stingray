@@ -73,9 +73,11 @@ public sealed class VoxtralTextDecoderWeights
         int rows = src.Length / cols;
         int bytesPerRow = (cols / 32) * 34;
         var dst = new byte[rows * bytesPerRow];
-        for (int r = 0; r < rows; r++)
+        Parallel.For(0, rows, r =>
+        {
             OpenTail.Stingray.Core.FastVectorTypeConverter.ConvertF32ToQ8_0(
                 src.AsSpan(r * cols, cols), dst.AsSpan(r * bytesPerRow, bytesPerRow));
+        });
         return dst;
     }
 }

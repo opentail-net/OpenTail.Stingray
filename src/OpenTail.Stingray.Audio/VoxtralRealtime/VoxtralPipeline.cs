@@ -68,6 +68,8 @@ public sealed class VoxtralPipeline : ISpeechToTextPipeline
     public SpeechToTextResult Transcribe(SpeechToTextRequest request)
     {
         float[] samples = request.AudioSamples;
+        if (request.SampleRate != SampleRate)
+            samples = AudioResampler.Resample(samples, request.SampleRate, SampleRate);
         var durationSeconds = samples.Length / (double)SampleRate;
 
         // Real left/right padding scheme, matching VoxtralGenerationLoopTests exactly (derived

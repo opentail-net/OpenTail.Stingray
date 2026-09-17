@@ -1,5 +1,6 @@
 using OpenTail.Stingray.Audio;
 using OpenTail.Stingray.Audio.Whisper;
+using OpenTail.Stingray.Audio.VoxtralRealtime;
 
 namespace OpenTail.Stingray.Cli;
 
@@ -20,11 +21,11 @@ public sealed class SttCommand : Command<SttCommand.Settings>
         public string Task { get; init; } = "transcribe";
 
         [CommandOption("-m|--model <VARIANT>")]
-        [Description("Whisper model architecture preset: tiny (default), base, small, medium, large-v3, or turbo.")]
+        [Description("Whisper model architecture preset: tiny (default), base, small, medium, large-v3, or turbo; or voxtral.")]
         public string Model { get; init; } = "tiny";
 
         [CommandOption("--model-file <PATH>")]
-        [Description("Path to a whisper.cpp GGML .bin checkpoint with real weights. If omitted, a file matching --model's preset name is searched for under ./models (e.g. ggml-tiny.bin); if none is found, the pipeline runs with untrained placeholder weights and a warning is printed.")]
+        [Description("Path to a whisper.cpp GGML .bin checkpoint with real weights, or a voxtral model directory. If omitted, searched for under ./models.")]
         public string? ModelFile { get; init; }
 
         [CommandOption("--no-timestamps")]
@@ -63,39 +64,57 @@ public sealed class SttCommand : Command<SttCommand.Settings>
             : SpeechTask.Transcribe;
 
         string variant = s.Model.ToLowerInvariant();
-        WhisperConfig fallbackConfig = variant switch
+        ISpeechToTextPipeline pipeline;
+        string modelTitle;
+        if (variant.Contains("voxtral"))
         {
-            "base" => WhisperConfig.Base,
-            "small" => WhisperConfig.Small,
-            "medium" => WhisperConfig.Medium,
-            "large" or "large-v3" => WhisperConfig.LargeV3,
-            "turbo" or "large-v3-turbo" => WhisperConfig.LargeV3Turbo,
-            "distil" or "distil-large-v3" or "distil-whisper" => WhisperConfig.DistilLargeV3,
-            _ => WhisperConfig.Tiny
-        };
-
-        string? modelFile = s.ModelFile ?? FindDefaultGgmlFile(variant);
-
-        WhisperPipeline pipeline;
-        WhisperConfig config;
-        if (modelFile is not null)
-        {
-            pipeline = WhisperPipeline.Load(modelFile);
-            config = pipeline.Config;
+            string? checkpointDir = ResolveVoxtralDir(s.ModelFile);
+            if (checkpointDir is null || !File.Exists(Path.Combine(checkpointDir, "model.safetensors")))
+            {
+                Console.Error.WriteLine(
+                    "Error: Voxtral checkpoint not found. Looked in models/_models/voxtral-mini-realtime and models/voxtral-mini-realtime. " +
+                    "Pass --model-file <path-to-voxtral-dir-or-model.safetensors>.");
+                return 1;
+            }
+            pipeline = VoxtralPipeline.Load(checkpointDir);
+            modelTitle = "Voxtral-Mini-4B-Realtime Native Speech-to-Text";
         }
         else
         {
-            Console.Error.WriteLine(
-                $"Warning: no GGML weights file found for model '{s.Model}' (looked for ggml-{variant}.bin under ./models). " +
-                "Running with untrained placeholder weights -- output will not be meaningful transcription. " +
-                "Pass --model-file <path-to-ggml-*.bin> to use a real checkpoint.");
-            config = fallbackConfig;
-            pipeline = new WhisperPipeline(config);
+            WhisperConfig fallbackConfig = variant switch
+            {
+                "base" => WhisperConfig.Base,
+                "small" => WhisperConfig.Small,
+                "medium" => WhisperConfig.Medium,
+                "large" or "large-v3" => WhisperConfig.LargeV3,
+                "turbo" or "large-v3-turbo" => WhisperConfig.LargeV3Turbo,
+                "distil" or "distil-large-v3" or "distil-whisper" => WhisperConfig.DistilLargeV3,
+                _ => WhisperConfig.Tiny
+            };
+
+            string? modelFile = s.ModelFile ?? FindDefaultGgmlFile(variant);
+            WhisperConfig config;
+            if (modelFile is not null)
+            {
+                var wp = WhisperPipeline.Load(modelFile);
+                config = wp.Config;
+                pipeline = wp;
+            }
+            else
+            {
+                Console.Error.WriteLine(
+                    $"Warning: no GGML weights file found for model '{s.Model}' (looked for ggml-{variant}.bin under ./models). " +
+                    "Running with untrained placeholder weights -- output will not be meaningful transcription. " +
+                    "Pass --model-file <path-to-ggml-*.bin> to use a real checkpoint.");
+                config = fallbackConfig;
+                pipeline = new WhisperPipeline(config);
+            }
+            modelTitle = $"OpenAI Whisper Native Speech-to-Text ({config.AudioState}d / {config.AudioLayer}L)";
         }
 
         using (pipeline)
         {
-        Console.WriteLine($"OpenAI Whisper Native Speech-to-Text ({config.AudioState}d / {config.AudioLayer}L)");
+        Console.WriteLine(modelTitle);
         Console.WriteLine($"Input Audio: {Path.GetFullPath(s.InputPath)}");
         Console.WriteLine($"Task:        {task}");
         Console.WriteLine($"Language:    {(string.IsNullOrEmpty(s.Language) ? "auto (en)" : s.Language)}");
@@ -117,7 +136,7 @@ public sealed class SttCommand : Command<SttCommand.Settings>
             Temperature = s.Temperature,
             Progress = (done, total) =>
             {
-                Console.Write($"\rProcessing audio chunk {done}/{total}...");
+                Console.Write($"\rTranscribing: token {done} (max {total})...");
             }
         };
 
@@ -175,6 +194,31 @@ public sealed class SttCommand : Command<SttCommand.Settings>
         {
             string candidate = Path.Combine(dir.FullName, "models", fileName);
             if (File.Exists(candidate)) return candidate;
+            dir = dir.Parent;
+        }
+
+        return null;
+    }
+
+    private static string? ResolveVoxtralDir(string? modelFile)
+    {
+        if (!string.IsNullOrWhiteSpace(modelFile))
+        {
+            if (File.Exists(modelFile))
+                return Path.GetDirectoryName(Path.GetFullPath(modelFile));
+            if (Directory.Exists(modelFile))
+                return Path.GetFullPath(modelFile);
+        }
+
+        var dir = new DirectoryInfo(Directory.GetCurrentDirectory());
+        for (int i = 0; i < 8 && dir is not null; i++)
+        {
+            string candidate1 = Path.Combine(dir.FullName, "models", "_models", "voxtral-mini-realtime");
+            if (Directory.Exists(candidate1) && File.Exists(Path.Combine(candidate1, "model.safetensors")))
+                return candidate1;
+            string candidate2 = Path.Combine(dir.FullName, "models", "voxtral-mini-realtime");
+            if (Directory.Exists(candidate2) && File.Exists(Path.Combine(candidate2, "model.safetensors")))
+                return candidate2;
             dir = dir.Parent;
         }
 
