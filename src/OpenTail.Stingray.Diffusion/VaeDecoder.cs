@@ -612,7 +612,16 @@ public sealed class VaeDecoder : IDisposable, IVaeDecoder
         if (!_gpuWeightsNative!.TryGetValue(wKey, out var wGpu))
         {
             var wf = Wt(wKey);
-            wGpu = imageOps.Upload(wf.AsSpan(), TensorShape.D1(wf.Length));
+            if (_backend?.BestSgemmPrecision == SgemmPrecision.Fp16)
+            {
+                var half = new Half[wf.Length];
+                TensorPrimitives.ConvertToHalf(wf, half);
+                wGpu = _backend.UploadHalf(half, TensorShape.D1(wf.Length));
+            }
+            else
+            {
+                wGpu = imageOps.Upload(wf.AsSpan(), TensorShape.D1(wf.Length));
+            }
             _gpuWeightsNative[wKey] = wGpu;
         }
 

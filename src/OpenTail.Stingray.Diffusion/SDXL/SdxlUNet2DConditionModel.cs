@@ -92,12 +92,23 @@ public sealed class SdxlUNet2DConditionModel : IDisposable
     /// instead of the CPU-im2col+Sgemm path -- real GEMM-tiled compute efficiency with zero
     /// CPU-side gather/transpose. Requires stride=1 (guarded by the caller).
     /// </summary>
+    private CoreTensor UploadConvWeight(IImageOpsBackend imageOps, float[] wF)
+    {
+        if (_backend?.BestSgemmPrecision == SgemmPrecision.Fp16)
+        {
+            var half = new Half[wF.Length];
+            TensorPrimitives.ConvertToHalf(wF, half);
+            return _backend.UploadHalf(half, TensorShape.D1(wF.Length));
+        }
+        return imageOps.Upload(wF.AsSpan(), TensorShape.D1(wF.Length));
+    }
+
     private float[] ConvNative(IImageOpsBackend imageOps, string name, float[] wF, float[]? bF, float[] x, int inCh, int h, int w, int outCh, int k, int padding = -1)
     {
         string wKey = $"{name}.weight";
         if (!_gpuWeightsNative!.TryGetValue(wKey, out var wGpu))
         {
-            wGpu = imageOps.Upload(wF.AsSpan(), TensorShape.D1(wF.Length));
+            wGpu = UploadConvWeight(imageOps, wF);
             _gpuWeightsNative[wKey] = wGpu;
         }
 
@@ -152,7 +163,7 @@ public sealed class SdxlUNet2DConditionModel : IDisposable
         string wKey = $"{name}.weight";
         if (!_gpuWeightsNative!.TryGetValue(wKey, out var wGpu))
         {
-            wGpu = imageOps.Upload(wF.AsSpan(), TensorShape.D1(wF.Length));
+            wGpu = UploadConvWeight(imageOps, wF);
             _gpuWeightsNative[wKey] = wGpu;
         }
         string bKey = $"{name}.bias";
@@ -946,7 +957,7 @@ public sealed class SdxlUNet2DConditionModel : IDisposable
         string wKey = $"{name}.weight";
         if (!_gpuWeightsNative!.ContainsKey(wKey))
         {
-            var wGpu = imageOps.Upload(wF.AsSpan(), TensorShape.D1(wF.Length));
+            var wGpu = UploadConvWeight(imageOps, wF);
             _gpuWeightsNative[wKey] = wGpu;
         }
 

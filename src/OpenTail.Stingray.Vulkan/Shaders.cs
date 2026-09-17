@@ -7140,6 +7140,175 @@ internal static class Shaders
                 }
             }
         }
+    """;
+
+    /// <summary>
+    /// 2D convolution via tiled implicit-GEMM with Float16 weights and vectorized f16vec4 loads.
+    /// Input: [inCh, H, W] (Float32).
+    /// Weight: [outCh, inCh, ksize, ksize] (Float16).
+    /// Bias: [outCh] (Float32).
+    /// Output: [outCh, outH, outW] (Float32).
+    /// Dispatch: (ceil(outHeight*outWidth/32), ceil(outCh/32), 1) with local_size=(8,8,1).
+    /// </summary>
+    internal const string Conv2dImplicitGemmF16 = """
+        #version 450
+        #extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+        #extension GL_EXT_shader_16bit_storage : require
+        #extension GL_EXT_control_flow_attributes : enable
+
+        layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+        layout(push_constant) uniform Params {
+            uint inCh;
+            uint outCh;
+            uint inHeight;
+            uint inWidth;
+            uint ksize;
+            uint padding;
+            uint stride;
+            uint outHeight;
+            uint outWidth;
+        };
+
+        layout(binding = 0) readonly  buffer Input    { float     input_data[];  };
+        layout(binding = 1) readonly  buffer Weight   { float16_t weight_data[]; };
+        layout(binding = 1) readonly  buffer WeightV4 { f16vec4   weight_vec4[]; };
+        layout(binding = 2) readonly  buffer Bias     { float     bias_data[];   };
+        layout(binding = 3) writeonly buffer Output   { float     output_data[]; };
+
+        shared float tileA[32][17]; // 32 pixels x 16 K, +1 col avoids bank conflicts
+        shared float tileB[32][17]; // 32 channels x 16 K, +1 col avoids bank conflicts
+
+        void main() {
+            uint in_hw  = inHeight * inWidth;
+            uint out_hw = outHeight * outWidth;
+            uint M  = out_hw;         // rows = output pixels
+            uint N  = outCh;          // cols = output channels
+            uint kk = ksize * ksize;
+            uint K  = inCh * kk;
+
+            uint tx = gl_LocalInvocationID.x;
+            uint ty = gl_LocalInvocationID.y;
+            uint tid = ty * 8u + tx;
+
+            uint row_base = gl_WorkGroupID.x * 32u;
+            uint col_base = gl_WorkGroupID.y * 32u;
+
+            uint r = tid >> 1;             // row in tile (0..31)
+            uint c_base = (tid & 1u) * 8u; // col in tile: 0 or 8
+
+            uint gm = row_base + r;
+            uint gn = col_base + r;
+
+            uint oh = gm / outWidth;
+            uint ow = gm % outWidth;
+
+            bool valid_row = gm < M;
+            bool valid_col = gn < N;
+
+            float acc[4][4];
+            [[unroll]] for (uint i = 0u; i < 4u; i++)
+                [[unroll]] for (uint j = 0u; j < 4u; j++)
+                    acc[i][j] = 0.0;
+
+            uint numTiles = (K + 15u) / 16u;
+            bool k_is_vec4_aligned = ((K & 3u) == 0u);
+
+            for (uint t = 0u; t < numTiles; t++) {
+                uint k_base = t * 16u;
+
+                uint gk0 = k_base + c_base;
+                uint ic0 = (ksize == 3u && stride == 1u && padding == 1u) ? (gk0 / 9u) : 0u;
+                uint kOff0 = (ksize == 3u && stride == 1u && padding == 1u) ? (gk0 - ic0 * 9u) : 0u;
+
+                // Load tileA [32, 16] - im2col on the fly
+                [[unroll]] for (uint p = 0u; p < 8u; p++) {
+                    uint c = c_base + p;
+                    uint gk = gk0 + p;
+                    float aVal = 0.0;
+                    if (valid_row && gk < K) {
+                        if (ksize == 1u && stride == 1u && padding == 0u) {
+                            aVal = input_data[gk * in_hw + gm];
+                        } else if (ksize == 3u && stride == 1u && padding == 1u) {
+                            uint kOff = kOff0 + p;
+                            uint ic = ic0;
+                            if (kOff >= 9u) { kOff -= 9u; ic++; }
+                            uint kh = (kOff >= 6u) ? 2u : ((kOff >= 3u) ? 1u : 0u);
+                            uint kw = kOff - kh * 3u;
+                            int ih = int(oh + kh) - 1;
+                            int iw = int(ow + kw) - 1;
+                            if (uint(ih) < inHeight && uint(iw) < inWidth)
+                                aVal = input_data[ic * in_hw + uint(ih) * inWidth + uint(iw)];
+                        } else {
+                            uint ic   = gk / kk;
+                            uint kOff = gk % kk;
+                            uint kh   = kOff / ksize;
+                            uint kw   = kOff % ksize;
+                            int ih = int(oh * stride + kh) - int(padding);
+                            int iw = int(ow * stride + kw) - int(padding);
+                            if (uint(ih) < inHeight && uint(iw) < inWidth)
+                                aVal = input_data[ic * in_hw + uint(ih) * inWidth + uint(iw)];
+                        }
+                    }
+                    tileA[r][c] = aVal;
+                }
+
+                // Load tileB [32, 16] - weights (Float16, vectorized f16vec4 loads)
+                if (valid_col && (k_base + c_base + 7u < K) && k_is_vec4_aligned) {
+                    uint base_vec = (gn * K + k_base + c_base) >> 2;
+                    f16vec4 v0 = weight_vec4[base_vec];
+                    f16vec4 v1 = weight_vec4[base_vec + 1u];
+                    tileB[r][c_base + 0u] = float(v0.x);
+                    tileB[r][c_base + 1u] = float(v0.y);
+                    tileB[r][c_base + 2u] = float(v0.z);
+                    tileB[r][c_base + 3u] = float(v0.w);
+                    tileB[r][c_base + 4u] = float(v1.x);
+                    tileB[r][c_base + 5u] = float(v1.y);
+                    tileB[r][c_base + 6u] = float(v1.z);
+                    tileB[r][c_base + 7u] = float(v1.w);
+                } else {
+                    [[unroll]] for (uint p = 0u; p < 8u; p++) {
+                        uint c = c_base + p;
+                        uint gk = k_base + c;
+                        tileB[r][c] = (valid_col && gk < K) ? float(weight_data[gn * K + gk]) : 0.0;
+                    }
+                }
+
+                barrier();
+
+                [[unroll]] for (uint k = 0u; k < 16u; k++) {
+                    float a0 = tileA[tx * 4u + 0u][k];
+                    float a1 = tileA[tx * 4u + 1u][k];
+                    float a2 = tileA[tx * 4u + 2u][k];
+                    float a3 = tileA[tx * 4u + 3u][k];
+
+                    float b0 = tileB[ty * 4u + 0u][k];
+                    float b1 = tileB[ty * 4u + 1u][k];
+                    float b2 = tileB[ty * 4u + 2u][k];
+                    float b3 = tileB[ty * 4u + 3u][k];
+
+                    acc[0][0] += a0 * b0;  acc[0][1] += a0 * b1;  acc[0][2] += a0 * b2;  acc[0][3] += a0 * b3;
+                    acc[1][0] += a1 * b0;  acc[1][1] += a1 * b1;  acc[1][2] += a1 * b2;  acc[1][3] += a1 * b3;
+                    acc[2][0] += a2 * b0;  acc[2][1] += a2 * b1;  acc[2][2] += a2 * b2;  acc[2][3] += a2 * b3;
+                    acc[3][0] += a3 * b0;  acc[3][1] += a3 * b1;  acc[3][2] += a3 * b2;  acc[3][3] += a3 * b3;
+                }
+
+                barrier();
+            }
+
+            [[unroll]] for (uint j = 0u; j < 4u; j++) {
+                uint out_c = col_base + ty * 4u + j;
+                if (out_c < N) {
+                    float bVal = bias_data[out_c];
+                    [[unroll]] for (uint i = 0u; i < 4u; i++) {
+                        uint out_r = row_base + tx * 4u + i;
+                        if (out_r < M) {
+                            output_data[out_c * out_hw + out_r] = acc[i][j] + bVal;
+                        }
+                    }
+                }
+            }
+        }
         """;
 
     /// <summary>

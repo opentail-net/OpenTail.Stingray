@@ -1639,6 +1639,7 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
     // Image ops pipelines (IImageOpsBackend)
     private ComputePipeline? _conv2dPipeline;
     private ComputePipeline? _conv2dImplicitGemmPipeline;
+    private ComputePipeline? _conv2dImplicitGemmF16Pipeline;
     private ComputePipeline? _groupNormSiluPipeline;
     private ComputePipeline? _groupNormGpuPipeline;
     private ComputePipeline? _addChannelBroadcastPipeline;
@@ -3857,7 +3858,17 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
         int outH = (h + 2 * padding - ksize) / stride + 1;
         int outW = (w + 2 * padding - ksize) / stride + 1;
         var output = Allocate(TensorShape.D1(outCh * outH * outW));
-        _conv2dImplicitGemmPipeline ??= new ComputePipeline(this, Shaders.Conv2dImplicitGemm, 4, pushConstantSize: sizeof(Conv2dImplicitGemmParams));
+        ComputePipeline pipeline;
+        if (weight.DType == DType.Float16)
+        {
+            _conv2dImplicitGemmF16Pipeline ??= new ComputePipeline(this, Shaders.Conv2dImplicitGemmF16, 4, pushConstantSize: sizeof(Conv2dImplicitGemmParams));
+            pipeline = _conv2dImplicitGemmF16Pipeline;
+        }
+        else
+        {
+            _conv2dImplicitGemmPipeline ??= new ComputePipeline(this, Shaders.Conv2dImplicitGemm, 4, pushConstantSize: sizeof(Conv2dImplicitGemmParams));
+            pipeline = _conv2dImplicitGemmPipeline;
+        }
         var p = new Conv2dImplicitGemmParams
         {
             inCh = (uint)inCh,
@@ -3873,7 +3884,7 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
         // 32x32-tiled GEMM dispatch: X=ceil(outPixels/32), Y=ceil(outCh/32)
         uint groupX = ((uint)(outH * outW) + 31u) / 32u;
         uint groupY = ((uint)outCh + 31u) / 32u;
-        DispatchOrRecord(_conv2dImplicitGemmPipeline, [GetBuffer(input), GetBuffer(weight), GetBuffer(bias), GetBuffer(output)], groupX, &p, groupY);
+        DispatchOrRecord(pipeline, [GetBuffer(input), GetBuffer(weight), GetBuffer(bias), GetBuffer(output)], groupX, &p, groupY);
         return output;
     }
 
@@ -4619,6 +4630,7 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
         _sigmoidMulInPlacePipeline?.Dispose();
         _conv2dPipeline?.Dispose();
         _conv2dImplicitGemmPipeline?.Dispose();
+        _conv2dImplicitGemmF16Pipeline?.Dispose();
         _groupNormSiluPipeline?.Dispose();
         _groupNormGpuPipeline?.Dispose();
         _addChannelBroadcastPipeline?.Dispose();
