@@ -40,12 +40,14 @@ public sealed class AcousticVae : IDisposable
     private const float RopeTheta = 10000f;
 
     private readonly IWeightLoader _st;
+    private readonly CachedWeightReader _reader;
     private readonly bool _ownsLoader;
     private readonly (float[] cos, float[] sin) _windowRope;
 
     public AcousticVae(string path)
     {
         _st = SafetensorsLoader.Open(path);
+        _reader = new CachedWeightReader(_st, "");
         _ownsLoader = true;
         _windowRope = BuildPartialRope(EffectiveChunkSize);
     }
@@ -53,9 +55,12 @@ public sealed class AcousticVae : IDisposable
     private AcousticVae(IWeightLoader loader, bool ownsLoader)
     {
         _st = loader;
+        _reader = new CachedWeightReader(_st, "");
         _ownsLoader = ownsLoader;
         _windowRope = BuildPartialRope(EffectiveChunkSize);
     }
+
+    private float[] ReadWeight(string name) => _reader.Get(name);
 
     public static AcousticVae FromLoader(IWeightLoader loader) => new(loader, ownsLoader: false);
 
@@ -65,8 +70,8 @@ public sealed class AcousticVae : IDisposable
     {
         var x = BottleneckDecode(latents, latentSeqLen);
 
-        var w = _st.ReadF32("pretransform.model.decoder.layers.1.weight");
-        var b = _st.ReadF32("pretransform.model.decoder.layers.1.bias");
+        var w = ReadWeight("pretransform.model.decoder.layers.1.weight");
+        var b = ReadWeight("pretransform.model.decoder.layers.1.bias");
         var y = DiffusionOps.Linear(x, w, b, latentSeqLen, LatentDim, EmbedDim);
 
         int n = PadToMultiple(latentSeqLen, ChunkSize / Stride);
@@ -106,8 +111,8 @@ public sealed class AcousticVae : IDisposable
         int n = paddedLen / Stride;
         var downsampled = RunResamplingBlock(mapped, n, "pretransform.model.encoder.layers.0", isEncoder: true);
 
-        var w = _st.ReadF32("pretransform.model.encoder.layers.2.weight");
-        var b = _st.ReadF32("pretransform.model.encoder.layers.2.bias");
+        var w = ReadWeight("pretransform.model.encoder.layers.2.weight");
+        var b = ReadWeight("pretransform.model.encoder.layers.2.bias");
         var latents = DiffusionOps.Linear(downsampled, w, b, n, EmbedDim, LatentDim);
 
         return BottleneckEncode(latents, n);
@@ -155,7 +160,7 @@ public sealed class AcousticVae : IDisposable
 
     private float[] BottleneckDecode(float[] latents, int n)
     {
-        var runningStd = _st.ReadF32("pretransform.model.bottleneck.running_std")[0];
+        var runningStd = ReadWeight("pretransform.model.bottleneck.running_std")[0];
         var outp = new float[n * LatentDim];
         for (int t = 0; t < n; t++)
         {
@@ -169,9 +174,9 @@ public sealed class AcousticVae : IDisposable
 
     private float[] BottleneckEncode(float[] x, int n)
     {
-        var scale = _st.ReadF32("pretransform.model.bottleneck.scaling_factor"); // [1,256,1] -> 256
-        var bias = _st.ReadF32("pretransform.model.bottleneck.bias"); // [1,256,1] -> 256
-        var runningStd = _st.ReadF32("pretransform.model.bottleneck.running_std")[0];
+        var scale = ReadWeight("pretransform.model.bottleneck.scaling_factor"); // [1,256,1] -> 256
+        var bias = ReadWeight("pretransform.model.bottleneck.bias"); // [1,256,1] -> 256
+        var runningStd = ReadWeight("pretransform.model.bottleneck.running_std")[0];
         var outp = new float[n * LatentDim];
         for (int t = 0; t < n; t++)
         {
@@ -187,9 +192,9 @@ public sealed class AcousticVae : IDisposable
 
     private float[] MappingConv(float[] x, int seqLen, int inC, int outC, string wgKey, string wvKey, string biasKey, int kernel)
     {
-        var wg = _st.ReadF32(wgKey); // [outC,1,1] -> outC
-        var wv = _st.ReadF32(wvKey); // [outC,inC,kernel]
-        var bias = _st.ReadF32(biasKey); // [outC]
+        var wg = ReadWeight(wgKey); // [outC,1,1] -> outC
+        var wv = ReadWeight(wvKey); // [outC,inC,kernel]
+        var bias = ReadWeight(biasKey); // [outC]
 
         var weight = new float[outC * inC * kernel];
         for (int oc = 0; oc < outC; oc++)
@@ -233,7 +238,7 @@ public sealed class AcousticVae : IDisposable
         // n: number of stride-wide micro-groups (real `n` in the reference) -- for the encoder
         // direction this is `paddedPatchedLen / Stride`; for the decoder it is simply the (padded)
         // latent token count, since decoder micro-groups are single input tokens.
-        var newToken = _st.ReadF32($"{prefix}.new_tokens"); // [1,1,768] -- broadcast to however many are needed
+        var newToken = ReadWeight($"{prefix}.new_tokens"); // [1,1,768] -- broadcast to however many are needed
 
         // Build the folded (n * SubChunkSize)-long sequence: encoder = [16 real, 1 new] per group;
         // decoder = [1 real, 16 new] per group (real cat() order, see class doc derivation).
@@ -301,9 +306,9 @@ public sealed class AcousticVae : IDisposable
     /// `x = x + self_attn(pre_norm(x)); x = x + ff(ff_norm(x))`, both norms `DynamicTanh`.</summary>
     private void TransformerBlockForward(Span<float> chunk, string p)
     {
-        var preAlpha = _st.ReadF32($"{p}.pre_norm.alpha")[0];
-        var preGamma = _st.ReadF32($"{p}.pre_norm.gamma");
-        var preBeta = _st.ReadF32($"{p}.pre_norm.beta");
+        var preAlpha = ReadWeight($"{p}.pre_norm.alpha")[0];
+        var preGamma = ReadWeight($"{p}.pre_norm.gamma");
+        var preBeta = ReadWeight($"{p}.pre_norm.beta");
 
         var normed = chunk.ToArray();
         DynamicTanh(normed, preAlpha, preGamma, preBeta, EmbedDim);
@@ -311,9 +316,9 @@ public sealed class AcousticVae : IDisposable
         var attn = SelfAttentionDifferential(normed, EffectiveChunkSize, p);
         for (int i = 0; i < chunk.Length; i++) chunk[i] += attn[i];
 
-        var ffAlpha = _st.ReadF32($"{p}.ff_norm.alpha")[0];
-        var ffGamma = _st.ReadF32($"{p}.ff_norm.gamma");
-        var ffBeta = _st.ReadF32($"{p}.ff_norm.beta");
+        var ffAlpha = ReadWeight($"{p}.ff_norm.alpha")[0];
+        var ffGamma = ReadWeight($"{p}.ff_norm.gamma");
+        var ffBeta = ReadWeight($"{p}.ff_norm.beta");
 
         var ffNormed = chunk.ToArray();
         DynamicTanh(ffNormed, ffAlpha, ffGamma, ffBeta, EmbedDim);
@@ -339,14 +344,14 @@ public sealed class AcousticVae : IDisposable
     /// learned lambda).</summary>
     private float[] SelfAttentionDifferential(float[] x, int seq, string p)
     {
-        var qkvW = _st.ReadF32($"{p}.self_attn.to_qkv.weight"); // [3840,768] = 5*768
-        var qNormAlpha = _st.ReadF32($"{p}.self_attn.q_norm.alpha")[0];
-        var qNormGamma = _st.ReadF32($"{p}.self_attn.q_norm.gamma");
-        var qNormBeta = _st.ReadF32($"{p}.self_attn.q_norm.beta");
-        var kNormAlpha = _st.ReadF32($"{p}.self_attn.k_norm.alpha")[0];
-        var kNormGamma = _st.ReadF32($"{p}.self_attn.k_norm.gamma");
-        var kNormBeta = _st.ReadF32($"{p}.self_attn.k_norm.beta");
-        var outW = _st.ReadF32($"{p}.self_attn.to_out.weight");
+        var qkvW = ReadWeight($"{p}.self_attn.to_qkv.weight"); // [3840,768] = 5*768
+        var qNormAlpha = ReadWeight($"{p}.self_attn.q_norm.alpha")[0];
+        var qNormGamma = ReadWeight($"{p}.self_attn.q_norm.gamma");
+        var qNormBeta = ReadWeight($"{p}.self_attn.q_norm.beta");
+        var kNormAlpha = ReadWeight($"{p}.self_attn.k_norm.alpha")[0];
+        var kNormGamma = ReadWeight($"{p}.self_attn.k_norm.gamma");
+        var kNormBeta = ReadWeight($"{p}.self_attn.k_norm.beta");
+        var outW = ReadWeight($"{p}.self_attn.to_out.weight");
 
         var qkv = DiffusionOps.Linear(x, qkvW, null, seq, EmbedDim, 5 * EmbedDim);
         var q = new float[seq * EmbedDim];
@@ -430,10 +435,10 @@ public sealed class AcousticVae : IDisposable
 
     private float[] FeedForward(float[] x, int seq, string p)
     {
-        var w0 = _st.ReadF32($"{p}.ff.ff.0.proj.weight");
-        var b0 = _st.ReadF32($"{p}.ff.ff.0.proj.bias");
-        var w2 = _st.ReadF32($"{p}.ff.ff.2.weight");
-        var b2 = _st.ReadF32($"{p}.ff.ff.2.bias");
+        var w0 = ReadWeight($"{p}.ff.ff.0.proj.weight");
+        var b0 = ReadWeight($"{p}.ff.ff.0.proj.bias");
+        var w2 = ReadWeight($"{p}.ff.ff.2.weight");
+        var b2 = ReadWeight($"{p}.ff.ff.2.bias");
 
         var proj = DiffusionOps.Linear(x, w0, b0, seq, EmbedDim, 2 * FfInner);
         var h = new float[seq * FfInner];

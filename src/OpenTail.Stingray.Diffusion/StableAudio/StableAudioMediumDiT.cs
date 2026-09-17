@@ -43,19 +43,26 @@ public sealed class StableAudioMediumDiT : IDisposable
     private const float ExpoMaxFreq = 10000f;
 
     private readonly IWeightLoader _st;
+    private readonly CachedWeightReader _reader;
     private readonly bool _ownsLoader;
+    private readonly Dictionary<float[], float[]> _condEmbedCache = new(ReferenceEqualityComparer.Instance);
+    private readonly Dictionary<float[], float[]> _globalEmbedCache = new(ReferenceEqualityComparer.Instance);
 
     public StableAudioMediumDiT(string path)
     {
         _st = SafetensorsLoader.Open(path);
+        _reader = new CachedWeightReader(_st, "");
         _ownsLoader = true;
     }
 
     private StableAudioMediumDiT(IWeightLoader loader, bool ownsLoader)
     {
         _st = loader;
+        _reader = new CachedWeightReader(_st, "");
         _ownsLoader = ownsLoader;
     }
+
+    private float[] ReadWeight(string name) => _reader.Get(name);
 
     /// <summary>Wraps an already-open loader -- caller retains ownership.</summary>
     public static StableAudioMediumDiT FromLoader(IWeightLoader loader) => new(loader, ownsLoader: false);
@@ -69,20 +76,31 @@ public sealed class StableAudioMediumDiT : IDisposable
         float[] secondsTotalRaw,
         float timestep)
     {
-        var condEmbed = ToCondEmbed(condTokens, nCond);
+        if (!_condEmbedCache.TryGetValue(condTokens, out var condEmbed))
+        {
+            condEmbed = ToCondEmbed(condTokens, nCond);
+            _condEmbedCache[condTokens] = condEmbed;
+        }
 
-        var globalEmbed = ToGlobalEmbed(secondsTotalRaw);
+        if (!_globalEmbedCache.TryGetValue(secondsTotalRaw, out var globalEmbedBase))
+        {
+            globalEmbedBase = ToGlobalEmbed(secondsTotalRaw);
+            _globalEmbedCache[secondsTotalRaw] = globalEmbedBase;
+        }
+
+        var globalEmbed = new float[Dim];
+        globalEmbedBase.AsSpan().CopyTo(globalEmbed);
         var timestepEmbed = ToTimestepEmbed(timestep);
         for (int i = 0; i < Dim; i++) globalEmbed[i] += timestepEmbed[i];
 
         var latentPre = Conv1x1Residual(latent, seqLen, IoChannels, "model.model.preprocess_conv.weight");
 
-        var projInW = _st.ReadF32("model.model.transformer.project_in.weight");
+        var projInW = ReadWeight("model.model.transformer.project_in.weight");
         var x = DiffusionOps.Linear(latentPre, projInW, null, seqLen, IoChannels, Dim);
 
         int totalSeq = MemoryTokens + seqLen;
         var xFull = new float[totalSeq * Dim];
-        var memTokens = _st.ReadF32("model.model.transformer.memory_tokens");
+        var memTokens = ReadWeight("model.model.transformer.memory_tokens");
         memTokens.AsSpan().CopyTo(xFull.AsSpan(0, MemoryTokens * Dim));
         x.AsSpan().CopyTo(xFull.AsSpan(MemoryTokens * Dim, seqLen * Dim));
 
@@ -98,7 +116,7 @@ public sealed class StableAudioMediumDiT : IDisposable
         var stripped = new float[seqLen * Dim];
         xFull.AsSpan(MemoryTokens * Dim, seqLen * Dim).CopyTo(stripped);
 
-        var projOutW = _st.ReadF32("model.model.transformer.project_out.weight");
+        var projOutW = ReadWeight("model.model.transformer.project_out.weight");
         var outLow = DiffusionOps.Linear(stripped, projOutW, null, seqLen, Dim, IoChannels);
 
         return Conv1x1Residual(outLow, seqLen, IoChannels, "model.model.postprocess_conv.weight");
@@ -106,7 +124,7 @@ public sealed class StableAudioMediumDiT : IDisposable
 
     private float[] Conv1x1Residual(float[] x, int seqLen, int channels, string weightKey)
     {
-        var w = _st.ReadF32(weightKey);
+        var w = ReadWeight(weightKey);
         var y = DiffusionOps.Linear(x, w, null, seqLen, channels, channels);
         for (int i = 0; i < y.Length; i++) y[i] += x[i];
         return y;
@@ -114,8 +132,8 @@ public sealed class StableAudioMediumDiT : IDisposable
 
     private float[] ToCondEmbed(float[] condTokens, int nCond)
     {
-        var w0 = _st.ReadF32("model.model.to_cond_embed.0.weight");
-        var w2 = _st.ReadF32("model.model.to_cond_embed.2.weight");
+        var w0 = ReadWeight("model.model.to_cond_embed.0.weight");
+        var w2 = ReadWeight("model.model.to_cond_embed.2.weight");
         var h = DiffusionOps.Linear(condTokens, w0, null, nCond, CondTokenDimRaw, Dim);
         DiffusionOps.SiluInPlace(h);
         return DiffusionOps.Linear(h, w2, null, nCond, Dim, Dim);
@@ -123,8 +141,8 @@ public sealed class StableAudioMediumDiT : IDisposable
 
     private float[] ToGlobalEmbed(float[] secondsTotalRaw)
     {
-        var w0 = _st.ReadF32("model.model.to_global_embed.0.weight");
-        var w2 = _st.ReadF32("model.model.to_global_embed.2.weight");
+        var w0 = ReadWeight("model.model.to_global_embed.0.weight");
+        var w2 = ReadWeight("model.model.to_global_embed.2.weight");
         var h = DiffusionOps.Linear(secondsTotalRaw, w0, null, 1, GlobalCondDimRaw, Dim);
         DiffusionOps.SiluInPlace(h);
         return DiffusionOps.Linear(h, w2, null, 1, Dim, Dim);
@@ -133,10 +151,10 @@ public sealed class StableAudioMediumDiT : IDisposable
     private float[] ToTimestepEmbed(float timestep)
     {
         var feats = StableAudioAttentionKernels.ExpoFourierFeatures(timestep, TimestepFeaturesDim);
-        var w0 = _st.ReadF32("model.model.to_timestep_embed.0.weight");
-        var b0 = _st.ReadF32("model.model.to_timestep_embed.0.bias");
-        var w2 = _st.ReadF32("model.model.to_timestep_embed.2.weight");
-        var b2 = _st.ReadF32("model.model.to_timestep_embed.2.bias");
+        var w0 = ReadWeight("model.model.to_timestep_embed.0.weight");
+        var b0 = ReadWeight("model.model.to_timestep_embed.0.bias");
+        var w2 = ReadWeight("model.model.to_timestep_embed.2.weight");
+        var b2 = ReadWeight("model.model.to_timestep_embed.2.bias");
         var h = DiffusionOps.Linear(feats, w0, b0, 1, TimestepFeaturesDim, Dim);
         DiffusionOps.SiluInPlace(h);
         return DiffusionOps.Linear(h, w2, b2, 1, Dim, Dim);
@@ -144,10 +162,10 @@ public sealed class StableAudioMediumDiT : IDisposable
 
     private float[] GlobalCondEmbedder(float[] globalEmbed)
     {
-        var w0 = _st.ReadF32("model.model.transformer.global_cond_embedder.0.weight");
-        var b0 = _st.ReadF32("model.model.transformer.global_cond_embedder.0.bias");
-        var w2 = _st.ReadF32("model.model.transformer.global_cond_embedder.2.weight");
-        var b2 = _st.ReadF32("model.model.transformer.global_cond_embedder.2.bias");
+        var w0 = ReadWeight("model.model.transformer.global_cond_embedder.0.weight");
+        var b0 = ReadWeight("model.model.transformer.global_cond_embedder.0.bias");
+        var w2 = ReadWeight("model.model.transformer.global_cond_embedder.2.weight");
+        var b2 = ReadWeight("model.model.transformer.global_cond_embedder.2.bias");
         var h = DiffusionOps.Linear(globalEmbed, w0, b0, 1, Dim, Dim);
         DiffusionOps.SiluInPlace(h);
         return DiffusionOps.Linear(h, w2, b2, 1, Dim, 6 * Dim);
@@ -160,7 +178,7 @@ public sealed class StableAudioMediumDiT : IDisposable
     {
         string p = $"model.model.transformer.layers.{layerIdx}";
 
-        var toScaleShiftGate = _st.ReadF32($"{p}.to_scale_shift_gate");
+        var toScaleShiftGate = ReadWeight($"{p}.to_scale_shift_gate");
         var gates = new float[6 * Dim];
         for (int i = 0; i < gates.Length; i++) gates[i] = toScaleShiftGate[i] + globalCond[i];
         var scaleSelf = gates.AsSpan(0, Dim);
@@ -170,7 +188,7 @@ public sealed class StableAudioMediumDiT : IDisposable
         var shiftFf = gates.AsSpan(4 * Dim, Dim);
         var gateFf = gates.AsSpan(5 * Dim, Dim);
 
-        var preNormW = _st.ReadF32($"{p}.pre_norm.gamma");
+        var preNormW = ReadWeight($"{p}.pre_norm.gamma");
         var xNorm = x.ToArray();
         DiffusionOps.RmsNorm(xNorm, preNormW, Dim, eps: 1e-5f);
         for (int t = 0; t < seq; t++)
@@ -187,13 +205,13 @@ public sealed class StableAudioMediumDiT : IDisposable
         }
         for (int i = 0; i < x.Length; i++) x[i] += attn[i];
 
-        var crossNormW = _st.ReadF32($"{p}.cross_attend_norm.gamma");
+        var crossNormW = ReadWeight($"{p}.cross_attend_norm.gamma");
         var xCrossNorm = x.ToArray();
         DiffusionOps.RmsNorm(xCrossNorm, crossNormW, Dim, eps: 1e-5f);
         var cross = CrossAttention(xCrossNorm, seq, condEmbed, nCond, p);
         for (int i = 0; i < x.Length; i++) x[i] += cross[i];
 
-        var ffNormW = _st.ReadF32($"{p}.ff_norm.gamma");
+        var ffNormW = ReadWeight($"{p}.ff_norm.gamma");
         var xFfNorm = x.ToArray();
         DiffusionOps.RmsNorm(xFfNorm, ffNormW, Dim, eps: 1e-5f);
         for (int t = 0; t < seq; t++)
@@ -219,10 +237,10 @@ public sealed class StableAudioMediumDiT : IDisposable
     /// output is `out_main - out_diff`, no learnable mixing.</summary>
     private float[] SelfAttention(float[] x, int seq, string p, float[] cos, float[] sin)
     {
-        var qkvW = _st.ReadF32($"{p}.self_attn.to_qkv.weight");
-        var qNormW = _st.ReadF32($"{p}.self_attn.q_norm.gamma");
-        var kNormW = _st.ReadF32($"{p}.self_attn.k_norm.gamma");
-        var outW = _st.ReadF32($"{p}.self_attn.to_out.weight");
+        var qkvW = ReadWeight($"{p}.self_attn.to_qkv.weight");
+        var qNormW = ReadWeight($"{p}.self_attn.q_norm.gamma");
+        var kNormW = ReadWeight($"{p}.self_attn.k_norm.gamma");
+        var outW = ReadWeight($"{p}.self_attn.to_out.weight");
 
         var qkv = DiffusionOps.Linear(x, qkvW, null, seq, Dim, 5 * Dim);
         var q = new float[seq * Dim];
@@ -265,11 +283,11 @@ public sealed class StableAudioMediumDiT : IDisposable
     /// comment for the real source citation.</summary>
     private float[] CrossAttention(float[] x, int seq, float[] condEmbed, int nCond, string p)
     {
-        var qW = _st.ReadF32($"{p}.cross_attn.to_q.weight");
-        var kvW = _st.ReadF32($"{p}.cross_attn.to_kv.weight");
-        var qNormW = _st.ReadF32($"{p}.cross_attn.q_norm.gamma");
-        var kNormW = _st.ReadF32($"{p}.cross_attn.k_norm.gamma");
-        var outW = _st.ReadF32($"{p}.cross_attn.to_out.weight");
+        var qW = ReadWeight($"{p}.cross_attn.to_q.weight");
+        var kvW = ReadWeight($"{p}.cross_attn.to_kv.weight");
+        var qNormW = ReadWeight($"{p}.cross_attn.q_norm.gamma");
+        var kNormW = ReadWeight($"{p}.cross_attn.k_norm.gamma");
+        var outW = ReadWeight($"{p}.cross_attn.to_out.weight");
 
         var qBoth = DiffusionOps.Linear(x, qW, null, seq, Dim, 2 * Dim);
         var q = new float[seq * Dim];
@@ -307,10 +325,10 @@ public sealed class StableAudioMediumDiT : IDisposable
 
     private float[] FeedForward(float[] x, int seq, string p)
     {
-        var w0 = _st.ReadF32($"{p}.ff.ff.0.proj.weight");
-        var b0 = _st.ReadF32($"{p}.ff.ff.0.proj.bias");
-        var w2 = _st.ReadF32($"{p}.ff.ff.2.weight");
-        var b2 = _st.ReadF32($"{p}.ff.ff.2.bias");
+        var w0 = ReadWeight($"{p}.ff.ff.0.proj.weight");
+        var b0 = ReadWeight($"{p}.ff.ff.0.proj.bias");
+        var w2 = ReadWeight($"{p}.ff.ff.2.weight");
+        var b2 = ReadWeight($"{p}.ff.ff.2.bias");
 
         var proj = DiffusionOps.Linear(x, w0, b0, seq, Dim, 2 * FfInner);
         var h = new float[seq * FfInner];

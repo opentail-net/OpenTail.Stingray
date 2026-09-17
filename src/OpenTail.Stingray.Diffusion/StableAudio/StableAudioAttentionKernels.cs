@@ -1,3 +1,5 @@
+using System.Numerics.Tensors;
+
 namespace OpenTail.Stingray.Diffusion.StableAudio;
 
 /// <summary>
@@ -41,13 +43,18 @@ internal static class StableAudioAttentionKernels
 
     public static void PerHeadRmsNorm(float[] qkOrV, int seq, int heads, int dim, float[] weight)
     {
-        for (int t = 0; t < seq; t++)
+        Parallel.For(0, seq, t =>
         {
+            int baseOff = t * dim;
             for (int h = 0; h < heads; h++)
             {
-                DiffusionOps.RmsNorm(qkOrV.AsSpan(t * dim + h * HeadDim, HeadDim), weight, HeadDim, eps: 1e-6f);
+                var slice = qkOrV.AsSpan(baseOff + h * HeadDim, HeadDim);
+                float ss = TensorPrimitives.Dot<float>(slice, slice);
+                float invRms = 1f / MathF.Sqrt(ss / HeadDim + 1e-6f);
+                TensorPrimitives.Multiply(slice, weight.AsSpan(), slice);
+                TensorPrimitives.Multiply(slice, invRms, slice);
             }
-        }
+        });
     }
 
     /// <summary>Real bidirectional (no causal mask) multi-head dot-product attention.</summary>
@@ -56,34 +63,43 @@ internal static class StableAudioAttentionKernels
         float scale = 1f / MathF.Sqrt(HeadDim);
         var outp = new float[seqQ * dim];
 
-        for (int h = 0; h < heads; h++)
+        Parallel.For(0, heads, h =>
         {
             var scores = new float[seqQ * seqKv];
             for (int i = 0; i < seqQ; i++)
             {
                 int qOff = i * dim + h * HeadDim;
+                var qSpan = new ReadOnlySpan<float>(q, qOff, HeadDim);
+                int scoreRowOff = i * seqKv;
                 for (int j = 0; j < seqKv; j++)
                 {
                     int kOff = j * dim + h * HeadDim;
-                    float dot = 0f;
-                    for (int d = 0; d < HeadDim; d++) dot += q[qOff + d] * k[kOff + d];
-                    scores[i * seqKv + j] = dot * scale;
+                    var kSpan = new ReadOnlySpan<float>(k, kOff, HeadDim);
+                    scores[scoreRowOff + j] = TensorPrimitives.Dot(qSpan, kSpan) * scale;
                 }
             }
+
             DiffusionOps.Softmax(scores, seqKv);
 
             for (int i = 0; i < seqQ; i++)
             {
                 int outOff = i * dim + h * HeadDim;
+                var outSpan = outp.AsSpan(outOff, HeadDim);
+                int scoreRowOff = i * seqKv;
                 for (int j = 0; j < seqKv; j++)
                 {
-                    float w = scores[i * seqKv + j];
+                    float w = scores[scoreRowOff + j];
                     if (w == 0f) continue;
                     int vOff = j * dim + h * HeadDim;
-                    for (int d = 0; d < HeadDim; d++) outp[outOff + d] += w * v[vOff + d];
+                    var vSpan = new ReadOnlySpan<float>(v, vOff, HeadDim);
+                    for (int d = 0; d < HeadDim; d++)
+                    {
+                        outSpan[d] += w * vSpan[d];
+                    }
                 }
             }
-        }
+        });
+
         return outp;
     }
 

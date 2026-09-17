@@ -457,18 +457,26 @@ internal static unsafe class DiffusionOps
 
             if (n > 1)
             {
-                Parallel.For(0, n, b =>
-                {
-                    float* xRow = pxLocal + (nuint)b * (nuint)inDim;
-                    var xSpan = new ReadOnlySpan<float>(xRow, inDim);
-                    float* prRow = prLocal + (nuint)b * (nuint)outDim;
+                int chunkSize = Math.Max(16, outDim / (Environment.ProcessorCount * 4));
+                int numChunks = (outDim + chunkSize - 1) / chunkSize;
 
-                    for (int o = 0; o < outDim; o++)
+                Parallel.For(0, numChunks, c =>
+                {
+                    int oStart = c * chunkSize;
+                    int oEnd = Math.Min(outDim, oStart + chunkSize);
+
+                    for (int o = oStart; o < oEnd; o++)
                     {
                         float b0 = pbLocal != null ? pbLocal[o] : 0f;
                         float* wRow = pwLocal + (nuint)o * (nuint)inDim;
                         var wSpan = new ReadOnlySpan<float>(wRow, inDim);
-                        prRow[o] = b0 + TensorPrimitives.Dot<float>(xSpan, wSpan);
+
+                        for (int b = 0; b < n; b++)
+                        {
+                            float* xRow = pxLocal + (nuint)b * (nuint)inDim;
+                            var xSpan = new ReadOnlySpan<float>(xRow, inDim);
+                            prLocal[(nuint)b * (nuint)outDim + (nuint)o] = b0 + TensorPrimitives.Dot<float>(xSpan, wSpan);
+                        }
                     }
                 });
             }

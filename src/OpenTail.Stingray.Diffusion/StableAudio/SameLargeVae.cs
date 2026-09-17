@@ -64,19 +64,24 @@ private const int SinusoidalBlocks = 8; // decoder-only real `sinusoidal_blocks:
     private const int SlidingWindowEachSide = SubChunkSize;
 
     private readonly IWeightLoader _st;
+    private readonly CachedWeightReader _reader;
     private readonly bool _ownsLoader;
 
     public SameLargeVae(string path)
     {
         _st = SafetensorsLoader.Open(path);
+        _reader = new CachedWeightReader(_st, "");
         _ownsLoader = true;
     }
 
     private SameLargeVae(IWeightLoader loader, bool ownsLoader)
     {
         _st = loader;
+        _reader = new CachedWeightReader(_st, "");
         _ownsLoader = ownsLoader;
     }
+
+    private float[] ReadWeight(string name) => _reader.Get(name);
 
     public static SameLargeVae FromLoader(IWeightLoader loader) => new(loader, ownsLoader: false);
 
@@ -85,8 +90,8 @@ private const int SinusoidalBlocks = 8; // decoder-only real `sinusoidal_blocks:
     {
         var x = BottleneckDecode(latents, latentSeqLen);
 
-        var w = _st.ReadF32("pretransform.model.decoder.layers.1.weight");
-        var b = _st.ReadF32("pretransform.model.decoder.layers.1.bias");
+        var w = ReadWeight("pretransform.model.decoder.layers.1.weight");
+        var b = ReadWeight("pretransform.model.decoder.layers.1.bias");
         var y = DiffusionOps.Linear(x, w, b, latentSeqLen, LatentDim, EmbedDim);
 
         // Real decoder padding when sliding_window is set: pad_modulo = input_seg_size = 1 (trivial, no-op).
@@ -127,8 +132,8 @@ private const int SinusoidalBlocks = 8; // decoder-only real `sinusoidal_blocks:
         int n = paddedLen / Stride;
         var downsampled = RunResamplingBlockWindowed(mapped, n, "pretransform.model.encoder.layers.0", isEncoder: true);
 
-        var w = _st.ReadF32("pretransform.model.encoder.layers.2.weight");
-        var b = _st.ReadF32("pretransform.model.encoder.layers.2.bias");
+        var w = ReadWeight("pretransform.model.encoder.layers.2.weight");
+        var b = ReadWeight("pretransform.model.encoder.layers.2.bias");
         var latents = DiffusionOps.Linear(downsampled, w, b, n, EmbedDim, LatentDim);
 
         return BottleneckEncode(latents, n);
@@ -172,7 +177,7 @@ private const int SinusoidalBlocks = 8; // decoder-only real `sinusoidal_blocks:
 
     private float[] BottleneckDecode(float[] latents, int n)
     {
-        var runningStd = _st.ReadF32("pretransform.model.bottleneck.running_std")[0];
+        var runningStd = ReadWeight("pretransform.model.bottleneck.running_std")[0];
         var outp = new float[n * LatentDim];
         for (int t = 0; t < n; t++)
             for (int c = 0; c < LatentDim; c++)
@@ -182,9 +187,9 @@ private const int SinusoidalBlocks = 8; // decoder-only real `sinusoidal_blocks:
 
     private float[] BottleneckEncode(float[] x, int n)
     {
-        var scale = _st.ReadF32("pretransform.model.bottleneck.scaling_factor");
-        var bias = _st.ReadF32("pretransform.model.bottleneck.bias");
-        var runningStd = _st.ReadF32("pretransform.model.bottleneck.running_std")[0];
+        var scale = ReadWeight("pretransform.model.bottleneck.scaling_factor");
+        var bias = ReadWeight("pretransform.model.bottleneck.bias");
+        var runningStd = ReadWeight("pretransform.model.bottleneck.running_std")[0];
         var outp = new float[n * LatentDim];
         for (int t = 0; t < n; t++)
             for (int c = 0; c < LatentDim; c++)
@@ -194,9 +199,9 @@ private const int SinusoidalBlocks = 8; // decoder-only real `sinusoidal_blocks:
 
     private float[] MappingConv(float[] x, int seqLen, int inC, int outC, string wgKey, string wvKey, string biasKey, int kernel)
     {
-        var wg = _st.ReadF32(wgKey);
-        var wv = _st.ReadF32(wvKey);
-        var bias = _st.ReadF32(biasKey);
+        var wg = ReadWeight(wgKey);
+        var wv = ReadWeight(wvKey);
+        var bias = ReadWeight(biasKey);
 
         var weight = new float[outC * inC * kernel];
         for (int oc = 0; oc < outC; oc++)
@@ -237,7 +242,7 @@ private const int SinusoidalBlocks = 8; // decoder-only real `sinusoidal_blocks:
     /// (confirmed real branch difference from Small's `sliding_window is None` path).</summary>
     private float[] RunResamplingBlockWindowed(float[] input, int n, string prefix, bool isEncoder)
     {
-        var newToken = _st.ReadF32($"{prefix}.new_tokens");
+        var newToken = ReadWeight($"{prefix}.new_tokens");
 
         var folded = new float[n * SubChunkSize * EmbedDim];
         for (int g = 0; g < n; g++)
@@ -280,9 +285,9 @@ private const int SinusoidalBlocks = 8; // decoder-only real `sinusoidal_blocks:
 
     private void TransformerBlockForward(float[] x, int seq, string p, float[] cos, float[] sin, bool sinusoidal)
     {
-        var preAlpha = _st.ReadF32($"{p}.pre_norm.alpha")[0];
-        var preGamma = _st.ReadF32($"{p}.pre_norm.gamma");
-        var preBeta = _st.ReadF32($"{p}.pre_norm.beta");
+        var preAlpha = ReadWeight($"{p}.pre_norm.alpha")[0];
+        var preGamma = ReadWeight($"{p}.pre_norm.gamma");
+        var preBeta = ReadWeight($"{p}.pre_norm.beta");
 
         var normed = x.ToArray();
         DynamicTanh(normed, preAlpha, preGamma, preBeta, EmbedDim);
@@ -290,9 +295,9 @@ private const int SinusoidalBlocks = 8; // decoder-only real `sinusoidal_blocks:
         var attn = SelfAttentionDifferentialWindowed(normed, seq, p, cos, sin);
         for (int i = 0; i < x.Length; i++) x[i] += attn[i];
 
-        var ffAlpha = _st.ReadF32($"{p}.ff_norm.alpha")[0];
-        var ffGamma = _st.ReadF32($"{p}.ff_norm.gamma");
-        var ffBeta = _st.ReadF32($"{p}.ff_norm.beta");
+        var ffAlpha = ReadWeight($"{p}.ff_norm.alpha")[0];
+        var ffGamma = ReadWeight($"{p}.ff_norm.gamma");
+        var ffBeta = ReadWeight($"{p}.ff_norm.beta");
 
         var ffNormed = x.ToArray();
         DynamicTanh(ffNormed, ffAlpha, ffGamma, ffBeta, EmbedDim);
@@ -316,14 +321,14 @@ private const int SinusoidalBlocks = 8; // decoder-only real `sinusoidal_blocks:
     /// (unmasked, within a fixed chunk) attention.</summary>
     private float[] SelfAttentionDifferentialWindowed(float[] x, int seq, string p, float[] cos, float[] sin)
     {
-        var qkvW = _st.ReadF32($"{p}.self_attn.to_qkv.weight");
-        var qNormAlpha = _st.ReadF32($"{p}.self_attn.q_norm.alpha")[0];
-        var qNormGamma = _st.ReadF32($"{p}.self_attn.q_norm.gamma");
-        var qNormBeta = _st.ReadF32($"{p}.self_attn.q_norm.beta");
-        var kNormAlpha = _st.ReadF32($"{p}.self_attn.k_norm.alpha")[0];
-        var kNormGamma = _st.ReadF32($"{p}.self_attn.k_norm.gamma");
-        var kNormBeta = _st.ReadF32($"{p}.self_attn.k_norm.beta");
-        var outW = _st.ReadF32($"{p}.self_attn.to_out.weight");
+        var qkvW = ReadWeight($"{p}.self_attn.to_qkv.weight");
+        var qNormAlpha = ReadWeight($"{p}.self_attn.q_norm.alpha")[0];
+        var qNormGamma = ReadWeight($"{p}.self_attn.q_norm.gamma");
+        var qNormBeta = ReadWeight($"{p}.self_attn.q_norm.beta");
+        var kNormAlpha = ReadWeight($"{p}.self_attn.k_norm.alpha")[0];
+        var kNormGamma = ReadWeight($"{p}.self_attn.k_norm.gamma");
+        var kNormBeta = ReadWeight($"{p}.self_attn.k_norm.beta");
+        var outW = ReadWeight($"{p}.self_attn.to_out.weight");
 
         var qkv = DiffusionOps.Linear(x, qkvW, null, seq, EmbedDim, 5 * EmbedDim);
         var q = new float[seq * EmbedDim];
@@ -410,10 +415,10 @@ private const int SinusoidalBlocks = 8; // decoder-only real `sinusoidal_blocks:
     /// doc comment for the exact real per-layer selection formula).</summary>
     private float[] FeedForward(float[] x, int seq, string p, bool sinusoidal)
     {
-        var w0 = _st.ReadF32($"{p}.ff.ff.0.proj.weight");
-        var b0 = _st.ReadF32($"{p}.ff.ff.0.proj.bias");
-        var w2 = _st.ReadF32($"{p}.ff.ff.2.weight");
-        var b2 = _st.ReadF32($"{p}.ff.ff.2.bias");
+        var w0 = ReadWeight($"{p}.ff.ff.0.proj.weight");
+        var b0 = ReadWeight($"{p}.ff.ff.0.proj.bias");
+        var w2 = ReadWeight($"{p}.ff.ff.2.weight");
+        var b2 = ReadWeight($"{p}.ff.ff.2.bias");
 
         var proj = DiffusionOps.Linear(x, w0, b0, seq, EmbedDim, 2 * FfInner);
         var h = new float[seq * FfInner];
