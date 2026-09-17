@@ -51,24 +51,25 @@ public sealed class StableAudioPipeline : IDisposable
     private readonly IWeightLoader _weights;
     private readonly GgufTokenizer? _tokenizer;
     private readonly IComputeBackend? _backend;
+    private readonly bool _ownsBackend;
     private bool _disposed;
 
     public bool IsDisposed => _disposed;
     public StableAudioParams Params => _params;
 
-    /// <param name="dit">Loader open on the real checkpoint (e.g. `small-music-base/model.safetensors`) -- holds both the DiT and VAE weights.</param>
+    /// <param name="dit">Loader open on the real `stable-audio-open-1.0/model.safetensors`.</param>
     /// <param name="textEncoderWeights">Loader open on the real T5Gemma encoder checkpoint (e.g. the bundled `t5gemma-b-b-ul2/` subfolder).</param>
     /// <param name="textEncoderDir">Directory holding the real T5Gemma `tokenizer.json` (typically
     /// the same directory <paramref name="textEncoderWeights"/> was opened on). Required for
     /// <see cref="StableAudioRequest.Prompt"/> (raw-string) requests; omit if every caller supplies
     /// <see cref="StableAudioRequest.PromptTokenIds"/> directly instead.</param>
     /// <param name="params">Pipeline parameters.</param>
-    /// <param name="backend">Optional compute backend (e.g. VulkanBackend for GPU acceleration).</param>
+    /// <param name="backend">Optional compute backend. When null, auto-probes Vulkan GPU (falls back to CPU).</param>
     public StableAudioPipeline(IWeightLoader dit, IWeightLoader textEncoderWeights, string? textEncoderDir = null, StableAudioParams? @params = null, IComputeBackend? backend = null)
     {
         _params = @params ?? new StableAudioParams();
         _weights = dit;
-        _backend = backend;
+        (_backend, _ownsBackend) = DiffusionBackendResolver.Resolve(backend);
         _transformer = StableAudioDiT.FromLoader(dit);
         _textEncoder = T5GemmaEncoder.FromLoader(textEncoderWeights);
         _vae = AcousticVae.FromLoader(dit);
@@ -410,6 +411,11 @@ public sealed class StableAudioPipeline : IDisposable
 
     public void Dispose()
     {
+        if (_disposed) return;
         _disposed = true;
+        if (_ownsBackend && _backend is IDisposable d)
+        {
+            d.Dispose();
+        }
     }
 }

@@ -25,10 +25,12 @@ namespace OpenTail.Stingray.Diffusion.AceStep;
 /// pipeline's own "no reference audio" path) -&gt; the real `AutoencoderOobleck` VAE decodes the
 /// resulting 25Hz latent to 48kHz stereo PCM.</para>
 /// </summary>
-public sealed class AceStepPipeline
+public sealed class AceStepPipeline : IDisposable
 {
     private readonly AceStepModel _model;
     private readonly IComputeBackend? _backend;
+    private readonly bool _ownsBackend;
+    private bool _disposed;
 
     // TEMPORARY diagnostic instrumentation (perf-sweep Phase 9.1b, docs/perf-sweep-plan.md) for
     // the ACE-Step Turbo CPU perf investigation (114.14x RTF, worst in PerformanceLeague.md) --
@@ -41,11 +43,12 @@ public sealed class AceStepPipeline
     public AceStepPipeline(AceStepModel model, IComputeBackend? backend = null)
     {
         _model = model;
-        _backend = backend;
+        (_backend, _ownsBackend) = DiffusionBackendResolver.Resolve(backend);
     }
 
     public StereoAudioBuffer Generate(AceStepGenerationParams parameters)
     {
+        ObjectDisposedException.ThrowIf(_disposed, this);
         var swTotal = s_profEnabled ? System.Diagnostics.Stopwatch.StartNew() : null;
         var sw = s_profEnabled ? System.Diagnostics.Stopwatch.StartNew() : null;
         // Real SFT_GEN_PROMPT template, transcribed from the real diffusers ACE-Step pipeline --
@@ -97,6 +100,7 @@ public sealed class AceStepPipeline
 
         var pcm = AceStepOobleckDecoder.Decode(_model.Vae, latentFlat, latentFrames);
         double msVaeDecode = sw?.Elapsed.TotalMilliseconds ?? 0;
+
 
         if (s_profEnabled)
         {
@@ -154,6 +158,16 @@ public sealed class AceStepPipeline
         }
         _silenceLatentCache[frames] = rows;
         return rows;
+    }
+
+    public void Dispose()
+    {
+        if (_disposed) return;
+        _disposed = true;
+        if (_ownsBackend && _backend is IDisposable d)
+        {
+            d.Dispose();
+        }
     }
 }
 

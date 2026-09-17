@@ -11489,6 +11489,7 @@ public static unsafe class SimdKernels
     private static Vector256<float> GgmlExpf256(Vector256<float> x)
     {
         x = Avx.Max(x, Vector256.Create(-87.0f));
+        x = Avx.Min(x, Vector256.Create(88.0f));
         var r = Vector256.Create(12582912.0f);              // 0x1.8p23f
         var log2e = Vector256.Create(1.4426950216293335f);  // 0x1.715476p+0f
         var z = Fma.MultiplyAdd(x, log2e, r);

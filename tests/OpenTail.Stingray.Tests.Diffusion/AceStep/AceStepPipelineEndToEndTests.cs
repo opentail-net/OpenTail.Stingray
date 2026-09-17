@@ -62,7 +62,7 @@ public sealed class AceStepPipelineEndToEndTests
             ConditionEncoder = conditionWeights,
             TimbreEncoder = timbreWeights,
         };
-        var pipeline = new AceStepPipeline(model);
+        using var pipeline = new AceStepPipeline(model);
 
         var result = pipeline.Generate(new AceStepGenerationParams
         {

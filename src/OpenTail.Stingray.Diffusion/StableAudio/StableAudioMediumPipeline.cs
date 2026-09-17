@@ -31,6 +31,8 @@ public sealed class StableAudioMediumPipeline : IDisposable
     private readonly StableAudioParams _params;
     private readonly IWeightLoader _weights;
     private readonly GgufTokenizer? _tokenizer;
+    private readonly IComputeBackend? _backend;
+    private readonly bool _ownsBackend;
     private bool _disposed;
 
     public bool IsDisposed => _disposed;
@@ -39,10 +41,13 @@ public sealed class StableAudioMediumPipeline : IDisposable
     /// <param name="dit">Loader open on the real `stable-audio-3-medium-base/model.safetensors` -- holds both the DiT and SAME-L VAE weights.</param>
     /// <param name="textEncoderWeights">Loader open on the real T5Gemma encoder checkpoint (identical file to Small's).</param>
     /// <param name="textEncoderDir">Directory holding the real T5Gemma `tokenizer.json`. Required for <see cref="StableAudioRequest.Prompt"/> (raw-string) requests.</param>
-    public StableAudioMediumPipeline(IWeightLoader dit, IWeightLoader textEncoderWeights, string? textEncoderDir = null, StableAudioParams? @params = null)
+    /// <param name="params">Pipeline parameters.</param>
+    /// <param name="backend">Optional compute backend. When null, auto-probes Vulkan GPU (falls back to CPU).</param>
+    public StableAudioMediumPipeline(IWeightLoader dit, IWeightLoader textEncoderWeights, string? textEncoderDir = null, StableAudioParams? @params = null, IComputeBackend? backend = null)
     {
         _params = @params ?? new StableAudioParams { HiddenSize = 1536, Depth = 24, NumHeads = 24 };
         _weights = dit;
+        (_backend, _ownsBackend) = DiffusionBackendResolver.Resolve(backend);
         _transformer = StableAudioMediumDiT.FromLoader(dit);
         _textEncoder = T5GemmaEncoder.FromLoader(textEncoderWeights);
         _vae = SameLargeVae.FromLoader(dit);
@@ -258,6 +263,11 @@ public sealed class StableAudioMediumPipeline : IDisposable
 
     public void Dispose()
     {
+        if (_disposed) return;
         _disposed = true;
+        if (_ownsBackend && _backend is IDisposable d)
+        {
+            d.Dispose();
+        }
     }
 }
