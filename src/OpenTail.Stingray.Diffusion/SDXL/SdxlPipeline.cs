@@ -114,16 +114,23 @@ public sealed class SdxlPipeline : IDiffusionPipeline
         var (condHiddenL, _) = _clipL.Encode(condTokens);
         var (condHiddenG, condPooledG) = _clipG.Encode(condTokens);
         var condContext = ConcatContext(condHiddenL, condHiddenG);
-
-        var uncondTokens = _clipTokenizer.Tokenize(negativePrompt ?? "");
-        var (uncondHiddenL, _) = _clipL.Encode(uncondTokens);
-        var (uncondHiddenG, uncondPooledG) = _clipG.Encode(uncondTokens);
-        var uncondContext = ConcatContext(uncondHiddenL, uncondHiddenG);
-
-        // 2. Micro-conditioning addition embeddings [2816]
         var condAddEmbeds = BuildAddEmbeddings(condPooledG, height, width, 0, 0, height, width);
-        var uncondAddEmbeds = BuildAddEmbeddings(uncondPooledG, height, width, 0, 0, height, width);
-        LogStage("Text encode (CLIP-L + CLIP-G, cond + uncond)");
+
+        float[]? uncondContext = null;
+        float[]? uncondAddEmbeds = null;
+        if (guidance > 1f)
+        {
+            var uncondTokens = _clipTokenizer.Tokenize(negativePrompt ?? "");
+            var (uncondHiddenL, _) = _clipL.Encode(uncondTokens);
+            var (uncondHiddenG, uncondPooledG) = _clipG.Encode(uncondTokens);
+            uncondContext = ConcatContext(uncondHiddenL, uncondHiddenG);
+            uncondAddEmbeds = BuildAddEmbeddings(uncondPooledG, height, width, 0, 0, height, width);
+            LogStage("Text encode (CLIP-L + CLIP-G, cond + uncond)");
+        }
+        else
+        {
+            LogStage("Text encode (CLIP-L + CLIP-G, cond only)");
+        }
 
         // 3. Scheduler & Noise
         var scheduler = new EulerDiscreteScheduler(steps, schedulerType: schedulerType, timestepSpacing: timestepSpacing);
@@ -176,7 +183,7 @@ public sealed class SdxlPipeline : IDiffusionPipeline
                 return _unet.Forward(scaledLatent, timestep, condContext, condAddEmbeds, latH, latW);
 
             var condPred = _unet.Forward(scaledLatent, timestep, condContext, condAddEmbeds, latH, latW);
-            var uncondPred = _unet.Forward(scaledLatent, timestep, uncondContext, uncondAddEmbeds, latH, latW);
+            var uncondPred = _unet.Forward(scaledLatent, timestep, uncondContext!, uncondAddEmbeds!, latH, latW);
             return scheduler.CombineGuidance(condPred, uncondPred, guidance);
         }, wrappedProgress, startStep: startStep);
 

@@ -7062,19 +7062,24 @@ internal static class Shaders
             for (uint t = 0u; t < numTiles; t++) {
                 uint k_base = t * 16u;
 
+                uint gk0 = k_base + c_base;
+                uint ic0 = (ksize == 3u && stride == 1u && padding == 1u) ? (gk0 / 9u) : 0u;
+                uint kOff0 = (ksize == 3u && stride == 1u && padding == 1u) ? (gk0 - ic0 * 9u) : 0u;
+
                 // Load tileA [32, 16] - im2col on the fly
                 [[unroll]] for (uint p = 0u; p < 8u; p++) {
                     uint c = c_base + p;
-                    uint gk = k_base + c;
+                    uint gk = gk0 + p;
                     float aVal = 0.0;
                     if (valid_row && gk < K) {
                         if (ksize == 1u && stride == 1u && padding == 0u) {
                             aVal = input_data[gk * in_hw + gm];
                         } else if (ksize == 3u && stride == 1u && padding == 1u) {
-                            uint ic   = gk / 9u;
-                            uint kOff = gk % 9u;
-                            uint kh   = kOff / 3u;
-                            uint kw   = kOff % 3u;
+                            uint kOff = kOff0 + p;
+                            uint ic = ic0;
+                            if (kOff >= 9u) { kOff -= 9u; ic++; }
+                            uint kh = (kOff >= 6u) ? 2u : ((kOff >= 3u) ? 1u : 0u);
+                            uint kw = kOff - kh * 3u;
                             int ih = int(oh + kh) - 1;
                             int iw = int(ow + kw) - 1;
                             if (uint(ih) < inHeight && uint(iw) < inWidth)
