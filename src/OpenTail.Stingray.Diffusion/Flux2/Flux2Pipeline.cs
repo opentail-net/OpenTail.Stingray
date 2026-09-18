@@ -189,12 +189,23 @@ public sealed class Flux2Pipeline : IDisposable
             float nextT = timesteps[step + 1];
             float dt = nextT - t;
 
+            // REAL BUG FOUND AND FIXED 2026-09-18 (docs/088's FLUX.2 investigation): the real
+            // reference's `timestep_embedding(t, dim, time_factor=1000.0)` (model.py line ~719)
+            // internally multiplies the raw [0,1] flow-matching t by 1000 before computing
+            // sinusoidal angles -- but this codebase's shared `DiffusionOps.SinusoidalTimestepEmbedding`
+            // helper does NOT do this scaling itself (by design -- every other caller, e.g.
+            // WanPipeline.cs/HunyuanVideoPipeline.cs, pre-scales with `t * 1000.0f` at the pipeline
+            // call site before invoking Forward). Flux2Pipeline was the only one in the codebase
+            // passing raw t (already in [0,1]) straight through -- angles were computed ~1000x too
+            // small across the ENTIRE denoising trajectory, making the timestep embedding nearly
+            // flat/degenerate and the DiT effectively timestep-blind at every step. This plausibly
+            // explains the "zero visible improvement from 2 to 20 steps" symptom exactly.
             var v = _transformer.Forward(
                 targetLatent, targetPositions,
                 refLatents, refPositions,
                 txtEmbeds, txtPositions,
                 pooledEmbed,
-                t, request.Guidance);
+                t * 1000.0f, request.Guidance);
 
             for (int i = 0; i < targetLatent.Length; i++)
             {

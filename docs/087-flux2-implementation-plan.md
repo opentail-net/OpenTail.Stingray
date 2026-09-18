@@ -427,6 +427,53 @@ itself is now complete and proven, not just its individual pieces.
    (all 3 components load and run together without crashing) is real and worth keeping, but image
    correctness is a confirmed open bug, not just an unconfirmed claim.
 
+   **MAJOR FINDING, 2026-09-18, same day, before attempting the blocked differential test:**
+   switched from "re-read the structure again" to "compare what every OTHER model's pipeline does
+   differently" -- and found it. The real reference's `timestep_embedding(t, dim,
+   time_factor=1000.0)` (`model.py` line ~719) internally multiplies the raw `[0,1]`
+   flow-matching `t` by 1000 before computing sinusoidal angles. This codebase's shared
+   `DiffusionOps.SinusoidalTimestepEmbedding` helper does NOT do this scaling itself by design --
+   every other caller pre-scales at the PIPELINE level (`WanPipeline.cs`'s
+   `activeModel.Forward(latent, t * 1000.0f, ...)`, `HunyuanVideoPipeline.cs`'s identical pattern).
+   **`Flux2Pipeline.Generate` was the only pipeline in the entire codebase passing raw `t` (already
+   in `[0,1]`) straight through unscaled to `Forward`.** Angles were computed ~1000x too small
+   across the ENTIRE denoising trajectory -- the timestep embedding was nearly flat/degenerate at
+   every step, making the DiT effectively timestep-blind. This is a complete, sufficient
+   explanation for the "zero visible improvement from 2 to 20 steps" symptom: a timestep-blind DiT
+   cannot distinguish where it is in the trajectory, so more steps can't help.
+
+   Fixed with one line in `Flux2Pipeline.cs` (`t * 1000.0f` at the `Forward` call site, matching
+   the established convention, plus an explanatory comment referencing this finding).
+
+   **Re-ran all 3 real end-to-end tests with the fix applied** (`Flux2EndToEndRealWeightsTests`,
+   all pass, real weights, 1553.3s total for the 3-test class): the output changed CHARACTER
+   dramatically. The 64×64/20-step convergence check
+   (`docs/diffusion-samples/flux2_20step_convergence_check_64_2026-09-18.png`) now shows a real,
+   structured, periodic pink/green block-grid pattern -- NOT random per-pixel noise. The
+   128×128/4-step quality check (`flux2_quality_check_128_4step_2026-09-18.png`) shows a regular
+   red dot-grid pattern, also clearly structured. **This is the exact same "structured, periodic,
+   not-yet-coherent tiling" failure signature this project has independently found and eventually
+   resolved for both Wan (`docs/056`) and FLUX.1's own multi-round tiling-artifact history** --
+   strong circumstantial evidence the timestep fix was the real, dominant bug behind the pure-noise
+   symptom, and what remains is a SEPARATE, narrower structural bug (most likely patchify/
+   token-ordering, matching the tiling failure shape), not another item on the noise-cause
+   candidate list.
+
+   Re-verified the VAE's `UnnormalizeAndUnshuffle` channel-index math
+   (`cIndex = c*4 + pi*2 + pj`) against real einops `rearrange(z, "(c pi pj) i j -> c (i pi) (j pj)")`
+   flat-index-unravel semantics one more time given the grid-pattern shape -- confirmed
+   mathematically correct, not the cause.
+
+   **Real next step**: the same patchify/token-ordering playbook already applied to Wan/FLUX.1/
+   Qwen Image/HunyuanVideo, focused on whether `Flux2Pipeline`'s `targetPositions` construction
+   (4-axis `t,h,w,l`, already spot-checked against `prc_img`/`prc_txt` in isolation and found
+   correct) actually matches the token ORDER `Flux2DiT`'s attention and eventual unpatchify path
+   assumes -- a mismatch between "correct position values" and "correct token order" is a
+   different, narrower bug than either being individually wrong, and hasn't been directly checked
+   yet. If that doesn't resolve it, the numeric differential test against an independent
+   Mistral/DiT reference (blocked on this machine's RAM, see above) remains the fallback, now a
+   much narrower search given the timestep-blindness explanation is closed.
+
 This is real, substantial implementation work (steps 2-5 each comparable in scope to one of this
 session's other single-model fixes) — scoped here so it can be picked up as a focused task rather
 than re-derived cold.

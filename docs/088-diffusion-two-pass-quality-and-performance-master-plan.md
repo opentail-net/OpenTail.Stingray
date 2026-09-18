@@ -360,14 +360,54 @@ worse than no status.
             this fix: STILL pure noise, visually unchanged** — the schedule bug was real and worth
             fixing, but not the dominant cause (or there are multiple compounding bugs). 5 real
             candidates now ruled out total without resolving the visual symptom.
+      - [x] **MAJOR REAL BUG FOUND AND FIXED, 2026-09-18: missing `t * 1000` timestep pre-scaling
+            -- the actual dominant cause of the noise, found by a systematic cross-model comparison
+            rather than another structural re-read.** Audited every candidate on the ruled-out list
+            once more against the real reference (modulation chunk order, gated-FFN split/gate
+            side, single-block `linear1` qkv+mlp split order, RoPE rotation convention and 4-axis
+            position-id construction, the `vec` timestep+guidance construction) -- all confirmed
+            byte-for-byte correct. Then checked the ONE piece not yet directly verified: the actual
+            numeric SCALE of the timestep value reaching `SinusoidalTimestepEmbedding`. The real
+            reference's `timestep_embedding(t, dim, time_factor=1000.0)` (`model.py` line ~719)
+            internally multiplies the raw `[0,1]` flow-matching `t` by 1000 before computing
+            sinusoidal angles. This codebase's shared `DiffusionOps.SinusoidalTimestepEmbedding`
+            helper does NOT do this scaling itself -- every OTHER caller in the codebase
+            (`WanPipeline.cs`, `HunyuanVideoPipeline.cs`) pre-scales with `t * 1000.0f` at the
+            pipeline call site before invoking `Forward`. **`Flux2Pipeline.Generate` was the only
+            pipeline in the entire codebase passing raw `t` (already in `[0,1]`) straight through
+            unscaled** -- angles were ~1000x too small across the ENTIRE denoising trajectory,
+            making the timestep embedding nearly flat/degenerate and the DiT effectively
+            timestep-blind at every single step. This exactly explains the previously-documented
+            "zero visible improvement from 2 to 20 steps" symptom -- a timestep-blind DiT behaves
+            identically regardless of step count, because it can't tell what point in the
+            trajectory it's at. Fixed (`Flux2Pipeline.cs`, one line + explanatory comment).
+            **Re-ran all 3 real end-to-end tests with the fix: the output changed CHARACTER
+            dramatically** -- from pure per-pixel random noise to a real, structured, periodic
+            tiling/grid pattern (`docs/diffusion-samples/flux2_20step_convergence_check_64_2026-09-
+            18.png`: a coherent pink/green block-grid pattern, NOT noise; `flux2_quality_check_128_
+            4step_2026-09-18.png`: a regular red dot-grid, also structured not noise). **This is
+            the same "structured but not yet coherent" tiling-artifact signature this project has
+            independently found and eventually resolved for Wan and FLUX.1** -- strong evidence the
+            timestep fix was the real, dominant bug, and what remains is a SECOND, separate
+            structural bug (most likely patchify/token-ordering or VAE-unshuffle-adjacent, matching
+            the exact grid/tile failure shape), not more noise-cause candidates to rule out. The
+            VAE's own `UnnormalizeAndUnshuffle` channel-index math (`cIndex = c*4 + pi*2 + pj`) was
+            re-verified against the real einops `rearrange(z, "(c pi pj) i j -> c (i pi) (j pj)")`
+            semantics and confirmed correct (matches real einops flat-index unraveling exactly) --
+            not the cause. Real next step: the same patchify/RoPE-position playbook already used
+            for Wan/FLUX.1/Qwen Image/HunyuanVideo, focused specifically on FLUX.2's own 4-axis
+            `(t,h,w,l)` position-to-token mapping at the pipeline level (already spot-checked
+            against `prc_img`/`prc_txt` today and found correct in isolation, but not yet checked
+            for a token-ORDER mismatch between how `Flux2Pipeline` builds `targetPositions` and how
+            `Flux2DiT`'s attention/unpatchify path assumes tokens are laid out).
       - [ ] Real next step: the standalone numeric differential test against an independent
-            Mistral/DiT reference (docs/087's own repeated recommendation) — structural re-reading
-            plus one real fix have both been tried without success, matching FLUX.1's own Round 6-8
-            pattern before its real fix was found by a numeric, not structural, check.
+            Mistral/DiT reference (docs/087's own repeated recommendation) remains available if the
+            structural token-ordering check above doesn't resolve it -- now a much narrower search
+            given the timestep-blindness explanation is closed.
       - [ ] **The real end-to-end run on Vulkan GPU explicitly** — per the user's stated
             requirement (every run so far has been CPU-only; `Flux2DiT` has zero GPU-residency
-            wiring yet, see Pass 2 below) — should wait until the correctness bug above is found,
-            per CLAUDE.md rule 7 (performance work only after correctness).
+            wiring yet, see Pass 2 below) — should wait until the remaining structural bug above is
+            found, per CLAUDE.md rule 7 (performance work only after correctness).
 - [x] **FLUX.3 — CLOSED, 2026-09-18: not a real target.** `Flux3Params.cs`/`Flux3DiT.cs`'s own doc
       comments describe "FLUX 3 multimodal foundation model... unified video, native synchronized
       audio, and text conditioning" — this does not match any real Black Forest Labs product.
