@@ -168,6 +168,18 @@ public sealed class EmbedCommand : Command<EmbedCommand.Settings>
             return 0;
         }
 
+        if (s.Model.EndsWith(".gguf", StringComparison.OrdinalIgnoreCase) && !File.Exists(s.Model))
+        {
+            // A GGUF path was explicitly requested but doesn't exist -- error out rather than
+            // silently falling through to EmbeddingEngine's synthetic hash-based placeholder
+            // vectors (real for named catalogue models like "text-embedding-3-small" that were
+            // never meant to resolve to real weights, but a real bug for an explicit .gguf path
+            // that's simply wrong -- see docs/00-current-work.md's "stingray embed's GGUF path is
+            // a complete fake" 2026-09-10/11 entry for the original, now-fixed version of this).
+            Console.Error.WriteLine($"Error: GGUF model file not found: {s.Model}");
+            return 1;
+        }
+
         using var engine = new EmbeddingEngine(
             modelName: s.Model,
             embeddingDimensions: s.Dimensions,
