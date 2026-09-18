@@ -223,15 +223,27 @@ only after the last one is the natural, minimal-diff way to do this). This signi
 FLUX.2's text-conditioning step (checkpoint ready, architecture already supported) but the
 multi-layer capture itself is real, un-built work, not just a wiring exercise.
 
+## 2026-09-18 UPDATE: steps 1-2 DONE -- first real-weight forward pass passes
+
+`Flux2RoPE.cs` rewritten for the real 4-axis scheme (step 1) and `Flux2DiT` now has real
+`IWeightLoader` wiring (step 2) — separate per-stream QKV with per-head RMSNorm, RoPE-after-norm,
+joint `[txt,img]` attention, SiLU-gated FFN, fused single-block `linear1`/`linear2`, and shared
+(not per-block) modulation, all implemented exactly per the confirmed recipe above, reusing
+`DiffusionOps`'s existing `Linear`/`RmsNorm`/`LayerNormNoAffine`/`ModulateRows`/`MultiHeadAttention`
+primitives (added additively — the old structural-only constructor is unchanged, conformance tests
+unaffected). **Real, memory-safety bug hit and fixed along the way**: an initial per-tensor weight
+cache got the test process OS-killed for low memory (the exact same bug class already found for
+Qwen Image this session) — fixed identically by removing the cache entirely (`GetWeight` reads
+fresh from `IWeightLoader` every call, matching `QwenImageModel.GetWeight`'s proven pattern).
+`Flux2RealWeightsTests.Flux2DiT_RealWeights_ForwardPassProducesFiniteOutput` now passes: real
+`flux2-dev-Q4_K_S.gguf` (18GB), 68s, finite non-NaN output — **the first successful real-weight
+FLUX.2 forward pass in this codebase's history.** Text conditioning in that smoke test is still
+synthetic (random floats, not real Mistral output) — not a coherence check yet, matches the same
+"structurally sound, not yet coherent" milestone HunyuanVideo/Qwen Image reached before their own
+text-conditioning wiring landed.
+
 ## Recommended next steps (implementation, NOT done this pass)
 
-1. Rewrite `Flux2RoPE.cs` for the real 4-axis `[t,h,w,l]`/theta=2000 scheme (finding 1 above) —
-   check `examples/flux2/src/flux2/model.py`'s `rope`/`apply_rope`/`EmbedND` functions directly,
-   they're now in-repo, no more guessing needed.
-2. Add `IWeightLoader` wiring to `Flux2DiT`, following the `Resolve()`/`TryGetWeight()`/`Linear()`
-   pattern already used by `HunyuanVideoModel`/`QwenImageModel` in this codebase — not a new
-   pattern, a proven one. Implement the fused single-stream QKV+gated-MLP linear and the shared
-   (not per-block) modulation exactly as described above, not as three separate Q/K/V projections.
 3. Wire a real Mistral-Small-24B forward pass (the checkpoint is downloaded: `models/_models/
    Mistral-Small-3.2-24B-Instruct-2506-Q4_K_S.gguf`) for the text-conditioning path, extracting and
    concatenating hidden-layer activations at the confirmed layer indices, with the confirmed system

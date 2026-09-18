@@ -193,17 +193,16 @@ worse than no status.
       Vulkan timing against the exact same `PerformanceLeague.md` methodology after any fix lands.
 
 ### 1d. Not yet real code at all — implementation, not verification
-- [ ] **FLUX.2** — per `docs/087`: `Flux2DiT` has zero weight-loading wiring, `Flux2Pipeline` is a
-      pure synthetic stub. `Flux2Params` corrected to real checkpoint values 2026-09-18; three
-      architectural questions (shared modulation, gated FFN, Mistral text-conditioning recipe)
-      answered by an external report, shape-corroborated but **NOT yet cross-checked against an
-      in-repo reference** (confirmed this session: `examples/flux` doesn't cover FLUX.2). Real next
-      steps, in order (see `docs/087` for full detail):
-      - [ ] Try once more to find an in-repo or freshly-fetchable FLUX.2 reference before trusting
-            the external report for numeric work (check if BFL or HF have published one since
-            `docs/087` was written).
-      - [ ] `IWeightLoader` wiring into `Flux2DiT` (real weight loading, fused single-stream
-            QKV+gated-MLP linear, shared-not-per-block modulation).
+- [ ] **FLUX.2 — MAJOR PROGRESS, 2026-09-18: real weight-loading DONE, first real forward pass
+      passes.** Every architectural question is now in-repo confirmed (the user added
+      `examples/flux2/`, BFL's real source) and `Flux2DiT` has real `IWeightLoader` wiring: separate
+      per-stream QKV with per-head RMSNorm, RoPE-after-norm, joint `[txt,img]` attention, SiLU-gated
+      FFN, fused single-block linear1/linear2, shared modulation -- all exactly per the confirmed
+      recipe. Hit and fixed the exact same unbounded-weight-cache OOM bug already found for Qwen
+      Image (removed the cache entirely, matching `QwenImageModel.GetWeight`'s pattern).
+      `Flux2RealWeightsTests` passes: real `flux2-dev-Q4_K_S.gguf` (18GB), 68s, finite output -- the
+      first successful real-weight FLUX.2 forward pass ever in this codebase. See `docs/087` for
+      full detail. Remaining real next steps, in order:
       - [ ] Real Mistral-Small-3.2-24B forward pass for text conditioning — **build the standalone
             differential test comparing extracted hidden-layer activations against an independent
             Mistral reference BEFORE wiring into FLUX.2**, per `docs/087`'s own warning (a wrong
