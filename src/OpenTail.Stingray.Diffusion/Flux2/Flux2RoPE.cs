@@ -2,57 +2,61 @@
 namespace OpenTail.Stingray.Diffusion.Flux2;
 
 /// <summary>
-/// 3D Contextual Rotary Position Embedding (RoPE) generator for FLUX.2 (Klein &amp; Kontext).
-/// Positions tokens in 3D space (image_index, y, x) to allow multi-reference image conditioning without coordinate collision.
-/// Reference: diffusers:src/diffusers/models/transformers/transformer_flux2.py
+/// 4D Contextual Rotary Position Embedding (RoPE) generator for FLUX.2.
+/// Positions tokens in 4D space (t, h, w, l) -- frame/time (for multi-reference-image temporal
+/// offsetting), row, column, and a sequence-local index (used by text tokens) -- to allow
+/// multi-reference image conditioning without coordinate collision.
+/// Reference: examples/flux2/src/flux2/model.py's real `rope`/`apply_rope`/`EmbedND` (confirmed
+/// in-repo 2026-09-18; axes_dim=[32,32,32,32], theta=2000 -- NOT FLUX.1's 3-axis/10000 scheme,
+/// see docs/087-flux2-implementation-plan.md for the full derivation). The rotation convention
+/// itself (interleaved adjacent pairs, `reshape(..., -1, 1, 2)` in `apply_rope`) matches FLUX.1's,
+/// so the existing <see cref="InterleavedRoPE"/> helper is reused unchanged -- only the axis count
+/// (3 -> 4) and per-axis theta differ.
 /// </summary>
 public static class Flux2RoPE
 {
     /// <summary>
-    /// Computes cosine and sine frequency matrices for 3D contextual tokens (image_index, y, x).
+    /// Computes cosine and sine frequency matrices for 4D contextual tokens (t, h, w, l).
     /// Shape: [nTokens * headDim].
     /// </summary>
-    /// <param name="positions">Array of (img_idx, y, x) integer triplets, length = nTokens * 3.</param>
+    /// <param name="positions">Array of (t, h, w, l) integer quadruplets, length = nTokens * 4.</param>
     /// <param name="nTokens">Number of patch/text tokens.</param>
-    /// <param name="axesDim">Axial split [dimImageIdx, dimY, dimX], e.g. [16, 56, 56] (sum must equal headDim).</param>
-    /// <param name="theta">Base frequency theta (default: 10000.0).</param>
+    /// <param name="axesDim">Axial split [dimT, dimH, dimW, dimL], real value [32, 32, 32, 32] (sum must equal headDim).</param>
+    /// <param name="theta">Base frequency theta, real value 2000.0 (NOT FLUX.1's 10000.0).</param>
     public static (float[] cos, float[] sin) BuildContextFreqs(
         ReadOnlySpan<int> positions,
         int nTokens,
         int[] axesDim,
-        float theta = 10000.0f)
+        float theta = 2000.0f)
     {
-        if (axesDim.Length != 3)
-            throw new ArgumentException("FLUX.2 axesDim must contain 3 elements: [dimImageIdx, dimY, dimX].", nameof(axesDim));
+        if (axesDim.Length != 4)
+            throw new ArgumentException("FLUX.2 axesDim must contain 4 elements: [dimT, dimH, dimW, dimL].", nameof(axesDim));
 
-        int dimImg = axesDim[0];
-        int dimY = axesDim[1];
-        int dimX = axesDim[2];
-        int headDim = dimImg + dimY + dimX;
+        int numAxes = axesDim.Length;
+        int headDim = 0;
+        for (int a = 0; a < numAxes; a++) headDim += axesDim[a];
 
         var cos = new float[nTokens * headDim];
         var sin = new float[nTokens * headDim];
 
-        float[] invFreqImg = InterleavedRoPE.ComputeInvFreqs(dimImg, theta);
-        float[] invFreqY = InterleavedRoPE.ComputeInvFreqs(dimY, theta);
-        float[] invFreqX = InterleavedRoPE.ComputeInvFreqs(dimX, theta);
+        var invFreqs = new float[numAxes][];
+        for (int a = 0; a < numAxes; a++)
+            invFreqs[a] = InterleavedRoPE.ComputeInvFreqs(axesDim[a], theta);
 
         for (int i = 0; i < nTokens; i++)
         {
-            int imgIdx = positions[i * 3 + 0];
-            int y = positions[i * 3 + 1];
-            int x = positions[i * 3 + 2];
-
             int outOffset = i * headDim;
-
-            // 1. Image Index Axis (Multi-Image ID)
-            InterleavedRoPE.FillAxisFreqs(cos.AsSpan(outOffset, dimImg), sin.AsSpan(outOffset, dimImg), imgIdx, invFreqImg);
-
-            // 2. Vertical Axis (Y)
-            InterleavedRoPE.FillAxisFreqs(cos.AsSpan(outOffset + dimImg, dimY), sin.AsSpan(outOffset + dimImg, dimY), y, invFreqY);
-
-            // 3. Horizontal Axis (X)
-            InterleavedRoPE.FillAxisFreqs(cos.AsSpan(outOffset + dimImg + dimY, dimX), sin.AsSpan(outOffset + dimImg + dimY, dimX), x, invFreqX);
+            int axisOffset = 0;
+            for (int a = 0; a < numAxes; a++)
+            {
+                int pos = positions[i * numAxes + a];
+                int dim = axesDim[a];
+                InterleavedRoPE.FillAxisFreqs(
+                    cos.AsSpan(outOffset + axisOffset, dim),
+                    sin.AsSpan(outOffset + axisOffset, dim),
+                    pos, invFreqs[a]);
+                axisOffset += dim;
+            }
         }
 
         return (cos, sin);

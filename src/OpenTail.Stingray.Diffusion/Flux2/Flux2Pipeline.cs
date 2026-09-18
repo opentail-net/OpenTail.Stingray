@@ -46,21 +46,25 @@ public sealed class Flux2Pipeline : IDisposable
         int nTargetTokens = patchW * patchH;
         int inChannels = _transformer.Params.InChannels;
 
-        // 1. Build Target 3D Position Grid (0, y, x)
-        var targetPositions = new int[nTargetTokens * 3];
+        // 1. Build Target 4D Position Grid (t, h, w, l), per the real BFL scheme
+        //    (examples/flux2/src/flux2/sampling.py's prc_img): t=image index (0 for the
+        //    target/generated image), h/w=patch row/col, l=0 (dummy -- l is only meaningful for
+        //    text tokens, see nTxt positions below).
+        var targetPositions = new int[nTargetTokens * 4];
         int idx = 0;
         for (int y = 0; y < patchH; y++)
         {
             for (int x = 0; x < patchW; x++)
             {
-                targetPositions[idx * 3 + 0] = 0; // Target image index = 0
-                targetPositions[idx * 3 + 1] = y;
-                targetPositions[idx * 3 + 2] = x;
+                targetPositions[idx * 4 + 0] = 0; // t: target image index = 0
+                targetPositions[idx * 4 + 1] = y; // h
+                targetPositions[idx * 4 + 2] = x; // w
+                targetPositions[idx * 4 + 3] = 0; // l: dummy for image tokens
                 idx++;
             }
         }
 
-        // 2. Build Reference Images Grids & Mock Latents (1..K, y, x)
+        // 2. Build Reference Images Grids & Mock Latents (t=r+1, h, w, l=0)
         List<float[]>? refLatents = null;
         List<int[]>? refPositions = null;
 
@@ -75,15 +79,16 @@ public sealed class Flux2Pipeline : IDisposable
                 Array.Fill(rLatent, 0.2f * (r + 1));
                 refLatents.Add(rLatent);
 
-                var rPos = new int[nTargetTokens * 3];
+                var rPos = new int[nTargetTokens * 4];
                 int rIdx = 0;
                 for (int y = 0; y < patchH; y++)
                 {
                     for (int x = 0; x < patchW; x++)
                     {
-                        rPos[rIdx * 3 + 0] = r + 1; // Reference image index
-                        rPos[rIdx * 3 + 1] = y;
-                        rPos[rIdx * 3 + 2] = x;
+                        rPos[rIdx * 4 + 0] = r + 1; // t: reference image index (temporal offset)
+                        rPos[rIdx * 4 + 1] = y;     // h
+                        rPos[rIdx * 4 + 2] = x;     // w
+                        rPos[rIdx * 4 + 3] = 0;     // l: dummy for image tokens
                         rIdx++;
                     }
                 }
@@ -95,11 +100,20 @@ public sealed class Flux2Pipeline : IDisposable
         var rng = request.Seed >= 0 ? new Random(request.Seed) : new Random();
         var targetLatent = SampleGaussian(nTargetTokens * inChannels, rng);
 
-        // 4. Mock / Initial Text Embeddings (T5 + CLIP)
+        // 4. Mock / Initial Text Embeddings (Mistral-Small-24B conditioning -- real wiring not
+        //    yet landed, see docs/087). Text token positions per the real scheme (prc_txt):
+        //    t=0/h=0/w=0 (dummy), l=sequential index -- the only axis that varies for text.
         int nTxt = 64;
         var txtEmbeds = new float[nTxt * _transformer.Params.ContextInDim];
-        var pooledEmbed = new float[_transformer.Params.VecInDim];
-        Array.Fill(pooledEmbed, 0.1f);
+        var txtPositions = new int[nTxt * 4];
+        for (int i = 0; i < nTxt; i++)
+        {
+            txtPositions[i * 4 + 0] = 0;
+            txtPositions[i * 4 + 1] = 0;
+            txtPositions[i * 4 + 2] = 0;
+            txtPositions[i * 4 + 3] = i; // l: sequential text position
+        }
+        var pooledEmbed = Array.Empty<float>(); // FLUX.2 has no CLIP pooled conditioning at all (VecInDim=0, see Flux2Params.cs)
 
         // 5. Flow-Matching Integration Loop
         int steps = Math.Max(1, request.Steps);
@@ -114,7 +128,8 @@ public sealed class Flux2Pipeline : IDisposable
             var v = _transformer.Forward(
                 targetLatent, targetPositions,
                 refLatents, refPositions,
-                txtEmbeds, pooledEmbed,
+                txtEmbeds, txtPositions,
+                pooledEmbed,
                 t, request.Guidance);
 
             for (int i = 0; i < targetLatent.Length; i++)
