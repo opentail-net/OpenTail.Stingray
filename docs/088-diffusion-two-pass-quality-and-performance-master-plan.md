@@ -209,12 +209,15 @@ worse than no status.
             non-zero 15360-dim output at every position. This capability turned out to already
             exist in the codebase (`IForwardPass.EnableHiddenTaps`, PR #413) -- an earlier claim
             this session that it needed new infra was wrong.
-      - [ ] Still needed: real ChatML template/`drop_idx` cropping convention wired into
-            `Flux2Pipeline`, and **build the standalone differential test comparing extracted
-            hidden-layer activations against an independent Mistral reference BEFORE trusting this
-            for real image generation**, per `docs/087`'s own warning (a wrong 15360-dim
-            conditioning vector would make a correct DiT look completely broken, exactly FLUX.1's
-            Round 1-8 experience).
+      - [x] Real text-conditioning extraction DONE, 2026-09-18 -- `Flux2TextConditioning.Encode`
+            (new file) wires real ChatML rendering (this project's existing Jinja chat-template
+            engine) + `EnableHiddenTaps` extraction; confirmed no `drop_idx` cropping applies for
+            FLUX.2 (unlike Qwen Image). Passes against real Mistral-24B weights: finite
+            15360-dim-per-token output. **Not yet wired into `Flux2Pipeline.Generate`** (still
+            zero-filled there) and **not yet numerically differential-tested against an
+            independent Mistral reference** — per `docs/087`'s own warning, a wrong conditioning
+            vector would make a correct DiT look completely broken, exactly FLUX.1's Round 1-8
+            experience. Both remain real next steps.
       - [ ] Real FLUX.2 VAE decoder (32-channel, checkpoint downloaded).
       - [ ] First real end-to-end run — **on Vulkan GPU explicitly**, per the user's stated
             requirement (a CPU-only run does not close this item).

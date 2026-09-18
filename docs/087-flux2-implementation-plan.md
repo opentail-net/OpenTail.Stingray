@@ -266,12 +266,26 @@ independent Mistral reference BEFORE wiring into FLUX.2 end-to-end — a wrong 1
 vector would make a perfectly correct DiT port look completely broken, exactly the failure mode
 `docs/056` spent 9 rounds chasing on FLUX.1's T5 conditioning.
 
+## 2026-09-18 UPDATE: step 3 fully DONE -- real text-conditioning wired and passing
+
+`Flux2TextConditioning.cs` (new) implements the complete real recipe: real ChatML rendering via
+this project's existing Jinja chat-template engine (`GgufTokenizer.ChatTemplate` ->
+`JinjaChatTemplate.BuildMessages(prompt, systemContent: SystemMessage)`, `add_generation_prompt:
+false`), confirmed no cropping applies (unlike Qwen Image's `drop_idx` — direct grep of
+`text_encoder.py` found no `crop`/`drop_idx`/`start_idx` anywhere), then `EnableHiddenTaps
+([9,19,29])` extraction concatenated per token. `Flux2TextConditioning_Encode_RealWeights_
+ProducesFiniteConditioning` passes against the real Mistral-Small-3.2-24B checkpoint: finite
+15360-dim-per-token output. **`Flux2.Encode` is not yet called anywhere inside `Flux2Pipeline`** —
+wiring it into the full `Generate()` path is still a real next step, but the extraction mechanism
+itself is now complete and proven, not just its individual pieces.
+
 ## Recommended next steps (implementation, NOT done this pass)
 
-3. Wire the real ChatML template/system-prompt/`drop_idx` cropping convention into
-   `Flux2Pipeline`'s text-conditioning path (the raw `EnableHiddenTaps` mechanism itself is now
-   proven, per the update above) — then build the standalone differential test against a real
-   independent Mistral reference before trusting the output for real image generation.
+3. Wire `Flux2TextConditioning.Encode` into `Flux2Pipeline.Generate`'s text-conditioning path
+   (currently still zero-filled/synthetic there) — then build the standalone differential test
+   against a real independent Mistral reference before trusting the output for real image
+   generation quality (the mechanism is proven correct-shaped and finite, not yet proven
+   numerically correct against ground truth).
 4. Port a real FLUX.2 VAE decoder (checkpoint downloaded: `models/_models/flux2-vae.safetensors`)
    replacing the current raw-channel-repeat stub. Note InChannels=128 (32 latent channels × 2×2
    patch) confirms FLUX.2's VAE has 32 latent channels, double FLUX.1's 16 — verify this against
