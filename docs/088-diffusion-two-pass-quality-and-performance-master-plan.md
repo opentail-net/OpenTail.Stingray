@@ -87,14 +87,15 @@ worse than no status.
       comparison) the same way LTX-Video's components were golden-verified. Upgrade to 🟢 only once
       that's real and passing.
 - [ ] **Qwen Image / Qwen Image Edit** — DiT+VAE verified, single named gap: real LLM text
-      conditioning. **2026-09-18 checkpoint-status check**: `Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf` is
-      NOT currently present in `models/_models/` (rotating curated disk set -- deleted after the
-      2026-09-18 DiT/VAE session per disk discipline). `qwen2` architecture (the plain text
-      backbone) is already in `ModelCompatibility`'s allowlist -- but this specific checkpoint's
-      real `general.architecture` string (`qwen2` vs `qwen2vl`, which may need M-RoPE handling even
-      for text-only use) is unconfirmed until redownloaded and inspected via `list-metadata`.
-      Needs a ~4-5GB redownload before this item can proceed -- not started this pass to avoid
-      contending with the SDXL-Turbo/FLUX.1 downloads/runs already in flight.
+      conditioning. **CORRECTION, 2026-09-18: the checkpoint was never actually missing.**
+      `Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf` (4.68GB, dated 2026-09-18 02:22) IS present at
+      `models/_models/` -- an earlier check this same session used `find models/_models -maxdepth 1
+      -iname "*.gguf"`, which silently failed to traverse `models/_models` because it's a symlink
+      to `F:\_models` and `find` doesn't follow symlinks by default. `ls models/_models/*.gguf`
+      (or any symlink-aware listing) shows it correctly. **This item is NOT blocked on a download
+      -- it's ready for real implementation now.** Next real step: confirm this checkpoint's real
+      `general.architecture` string (`qwen2` vs `qwen2vl`) via `list-metadata`, then wire its
+      forward pass into `QwenImagePipeline`'s conditioning path.
 - [ ] **HunyuanVideo** — same shape of gap as Qwen Image: DiT+VAE numerically sound, single named
       gap is real LLaMA-3/Qwen2.5-VL text conditioning (`HunyuanVideoPipeline.Generate` currently
       defaults to all-zero context). **2026-09-18 scoping**: confirmed against
