@@ -8,12 +8,50 @@ namespace OpenTail.Stingray.Diffusion.Flux2;
 public sealed class Flux2DiT
 {
     private readonly Flux2Params _p;
+    private readonly IWeightLoader? _weights;
+    private readonly string _prefix;
 
     public Flux2Params Params => _p;
 
+    /// <summary>Structural-only constructor (no real weights) -- used by conformance tests that
+    /// check RoPE orthogonality, shape flow, and data-flow order without real checkpoint math.
+    /// <see cref="Forward"/> in this mode only applies RoPE/norm as a structural stand-in.</summary>
     public Flux2DiT(Flux2Params @params)
     {
         _p = @params ?? throw new ArgumentNullException(nameof(@params));
+        _weights = null;
+        _prefix = "";
+    }
+
+    /// <summary>Real weight-loading constructor. Tensor names/shapes confirmed against the real
+    /// checkpoint and BFL source (docs/087) -- all linears are bias-free, modulation is SHARED
+    /// (not per-block) across all double/single blocks of a given type.</summary>
+    public Flux2DiT(IWeightLoader weights, Flux2Params @params, string prefix = "")
+    {
+        _weights = weights ?? throw new ArgumentNullException(nameof(weights));
+        _p = @params ?? throw new ArgumentNullException(nameof(@params));
+        _prefix = prefix;
+    }
+
+    private string Resolve(string name) => _prefix + name;
+
+    /// <summary>
+    /// Reads a tensor fresh from the loader every call -- deliberately NOT cached. A per-tensor
+    /// dictionary cache here would grow unbounded across FLUX.2's 8 double + 48 single blocks
+    /// (each with its own real weight set) and get the process OS-killed for low memory, the exact
+    /// same real bug already found and fixed for Qwen Image this session (cache grew past 53GB).
+    /// `QwenImageModel.GetWeight` uses this same no-cache pattern for the identical reason.
+    /// </summary>
+    private float[] GetWeight(string name) => _weights!.ReadF32(Resolve(name));
+
+    /// <summary>Bias-free linear projection -- confirmed empirically (docs/087): no `.bias` tensor
+    /// exists anywhere in the real FLUX.2 checkpoint for any linear layer.</summary>
+    private float[] LinearNoBias(string weightName, ReadOnlySpan<float> x, int n, int inDim, int outDim)
+    {
+        var w = GetWeight(weightName);
+        var result = new float[n * outDim];
+        DiffusionOps.Linear(x, w, ReadOnlySpan<float>.Empty, result, n, inDim, outDim);
+        return result;
     }
 
     /// <summary>
@@ -21,14 +59,6 @@ public sealed class Flux2DiT
     /// text and (for now) implemented only for the no-reference-image case -- matches BFL's real
     /// base <c>Flux2.forward()</c> (examples/flux2/src/flux2/model.py), NOT the reference-image
     /// KV-cache path (<c>forward_kv_extract</c>/<c>causal_attn_fn</c>'s token-isolation attention).
-    /// Real structural findings confirmed in-repo 2026-09-18 (see docs/087): single-stream
-    /// concatenation order is <c>[txt, img]</c> (txt FIRST, not img-first like this file's earlier
-    /// stub assumed), text tokens get their own RoPE from real 4D position ids (t=0,h=0,w=0,
-    /// l=sequential-index), and every block uses shared (not per-block) modulation. Real per-block
-    /// attention/FFN math (QKV projections, gated FFN) still needs real weights (IWeightLoader
-    /// wiring, docs/087's next step) -- this method's block bodies remain structural placeholders
-    /// pending that, but the DATA FLOW (concat order, RoPE-per-stream, position-id scheme) is now
-    /// real, not guessed.
     /// </summary>
     /// <exception cref="NotSupportedException">
     /// Thrown when reference images are supplied -- the real reference-token-isolation attention
@@ -57,38 +87,44 @@ public sealed class Flux2DiT
         int nTxt = textPositions.Length / 4;
         int d = _p.HiddenSize;
 
-        // 1. Compute Modulation Vector (shared across all blocks of a given type -- real finding,
-        //    not per-block; see Flux2Params.cs doc comments and docs/087).
         float[] vec = ComputeModulationVec(timestep, pooledEmbed, guidance);
 
-        // 2. Project Input Embeddings (img_in / txt_in)
-        float[] img = ProjectTokens(targetLatent, nTarget, _p.InChannels, d);
-        float[] txt = ProjectTokens(textEmbeds, nTxt, _p.ContextInDim, d);
+        float[] img = _weights != null
+            ? LinearNoBias("img_in.weight", targetLatent, nTarget, _p.InChannels, d)
+            : ProjectTokens(targetLatent, nTarget, _p.InChannels, d);
+        float[] txt = _weights != null
+            ? LinearNoBias("txt_in.weight", textEmbeds, nTxt, _p.ContextInDim, d)
+            : ProjectTokens(textEmbeds, nTxt, _p.ContextInDim, d);
 
-        // 3. Build 4D Context RoPE Frequencies -- SEPARATE per stream (pe_x for image, pe_ctx for
-        //    text), per the real forward()'s `pe_x = self.pe_embedder(x_ids)` /
-        //    `pe_ctx = self.pe_embedder(ctx_ids)`, not a single shared table.
         var (imgCos, imgSin) = Flux2RoPE.BuildContextFreqs(targetPositions, nTarget, _p.AxesDim, _p.Theta);
         var (txtCos, txtSin) = Flux2RoPE.BuildContextFreqs(textPositions, nTxt, _p.AxesDim, _p.Theta);
 
-        // 4. Double Stream Multimodal Blocks -- img/txt remain SEPARATE streams here (each with
-        //    its own norm/QKV/FFN weights), joined only inside attention via [txt,img] QKV concat.
-        for (int layer = 0; layer < _p.DepthDoubleBlocks; layer++)
+        // Shared modulation -- computed ONCE from vec, reused identically by every double/single
+        // block of that type (real finding, docs/087 -- NOT per-block AdaLN like FLUX.1).
+        float[][]? modImg = null, modTxt = null, modSingle = null;
+        if (_weights != null)
         {
-            ApplyDoubleBlock(layer, img, txt, vec, imgCos, imgSin, txtCos, txtSin, nTarget, nTxt);
+            modImg = ComputeModulation("double_stream_modulation_img.lin.weight", vec, d, 6);
+            modTxt = ComputeModulation("double_stream_modulation_txt.lin.weight", vec, d, 6);
+            modSingle = ComputeModulation("single_stream_modulation.lin.weight", vec, d, 3);
         }
 
-        // 5. Concatenate for Single Stream Global Attention -- real order is [txt, img] (txt
-        //    FIRST), per `img = torch.cat((txt, img), dim=1)` in the real forward(). RoPE tables
-        //    concatenate the same way: `pe = torch.cat((pe_ctx, pe_x), dim=2)`.
+        for (int layer = 0; layer < _p.DepthDoubleBlocks; layer++)
+        {
+            if (_weights != null)
+                ApplyDoubleBlockReal(layer, img, txt, modImg!, modTxt!, imgCos, imgSin, txtCos, txtSin, nTarget, nTxt);
+            else
+                ApplyDoubleBlock(layer, img, txt, vec, imgCos, imgSin, txtCos, txtSin, nTarget, nTxt);
+        }
+
         int nSeq = nTxt + nTarget;
         var unified = new float[nSeq * d];
         txt.AsSpan().CopyTo(unified.AsSpan(0, nTxt * d));
         img.AsSpan().CopyTo(unified.AsSpan(nTxt * d, nTarget * d));
 
-        var unifiedCos = new float[nSeq * (txtCos.Length / Math.Max(1, nTxt))];
-        var unifiedSin = new float[nSeq * (txtSin.Length / Math.Max(1, nTxt))];
         int headDim = _p.HeadDim;
+        var unifiedCos = new float[nSeq * headDim];
+        var unifiedSin = new float[nSeq * headDim];
         txtCos.AsSpan().CopyTo(unifiedCos.AsSpan(0, nTxt * headDim));
         txtSin.AsSpan().CopyTo(unifiedSin.AsSpan(0, nTxt * headDim));
         imgCos.AsSpan().CopyTo(unifiedCos.AsSpan(nTxt * headDim, nTarget * headDim));
@@ -96,37 +132,78 @@ public sealed class Flux2DiT
 
         for (int layer = 0; layer < _p.DepthSingleBlocks; layer++)
         {
-            ApplySingleBlock(layer, unified, vec, unifiedCos, unifiedSin, nSeq);
+            if (_weights != null)
+                ApplySingleBlockReal(layer, unified, modSingle!, unifiedCos, unifiedSin, nSeq);
+            else
+                ApplySingleBlock(layer, unified, vec, unifiedCos, unifiedSin, nSeq);
         }
 
-        // 6. Strip the txt prefix, project final target velocity -- real
-        //    `img = img[:, num_txt_tokens:, ...]` then `final_layer`.
         var velocity = new float[nTarget * _p.OutChannels];
-        ProjectOutput(unified.AsSpan(nTxt * d, nTarget * d), velocity, nTarget, d, _p.OutChannels);
+        if (_weights != null)
+        {
+            var finalOut = LinearNoBias("final_layer.linear.weight", unified.AsSpan(nTxt * d, nTarget * d), nTarget, d, _p.OutChannels);
+            finalOut.AsSpan().CopyTo(velocity);
+        }
+        else
+        {
+            ProjectOutput(unified.AsSpan(nTxt * d, nTarget * d), velocity, nTarget, d, _p.OutChannels);
+        }
 
         return velocity;
     }
 
+    /// <summary>Real timestep+guidance modulation vector -- confirmed against `model.py`'s
+    /// `forward()`: `vec = time_in(timestep_embedding(t,256)); if guidance: vec += guidance_in(...)`.
+    /// FLUX.2 has NO pooled CLIP conditioning (VecInDim=0) -- pooledEmbed is unused when real
+    /// weights are present.</summary>
     private float[] ComputeModulationVec(float timestep, float[] pooledEmbed, float guidance)
     {
         int d = _p.HiddenSize;
-        var vec = new float[d];
-
-        for (int i = 0; i < Math.Min(pooledEmbed.Length, d); i++)
+        if (_weights == null)
         {
-            vec[i] = pooledEmbed[i] + MathF.Sin(timestep * (i + 1)) * 0.1f;
+            var vecStub = new float[d];
+            for (int i = 0; i < Math.Min(pooledEmbed.Length, d); i++)
+                vecStub[i] = pooledEmbed[i] + MathF.Sin(timestep * (i + 1)) * 0.1f;
+            if (_p.GuidanceEmbed)
+            {
+                float gScale = (guidance - 1.0f) * 0.05f;
+                for (int i = 0; i < d; i++) vecStub[i] += gScale;
+            }
+            return vecStub;
         }
+
+        var tEmb = DiffusionOps.SinusoidalTimestepEmbedding(timestep, 256, 10000f, flipSinToCos: true);
+        var vec = MlpEmbedder("time_in", tEmb, d);
 
         if (_p.GuidanceEmbed)
         {
-            float gScale = (guidance - 1.0f) * 0.05f;
-            for (int i = 0; i < d; i++)
-            {
-                vec[i] += gScale;
-            }
+            var gEmb = DiffusionOps.SinusoidalTimestepEmbedding(guidance, 256, 10000f, flipSinToCos: true);
+            var gVec = MlpEmbedder("guidance_in", gEmb, d);
+            for (int i = 0; i < d; i++) vec[i] += gVec[i];
         }
 
         return vec;
+    }
+
+    /// <summary>Real `MLPEmbedder`: Linear(in,hidden) -> SiLU -> Linear(hidden,hidden), bias-free.</summary>
+    private float[] MlpEmbedder(string prefix, float[] x, int hidden)
+    {
+        var h = LinearNoBias($"{prefix}.in_layer.weight", x, 1, x.Length, hidden);
+        DiffusionOps.SiluInPlace(h);
+        return LinearNoBias($"{prefix}.out_layer.weight", h, 1, hidden, hidden);
+    }
+
+    /// <summary>Real `Modulation.forward`: SiLU(vec) -> Linear(dim, multiplier*dim) -> chunk into
+    /// `multiplier` pieces of width `dim` each.</summary>
+    private float[][] ComputeModulation(string weightName, float[] vec, int dim, int multiplier)
+    {
+        var silu = (float[])vec.Clone();
+        DiffusionOps.SiluInPlace(silu);
+        var full = LinearNoBias(weightName, silu, 1, dim, multiplier * dim);
+        var chunks = new float[multiplier][];
+        for (int i = 0; i < multiplier; i++)
+            chunks[i] = full.AsSpan(i * dim, dim).ToArray();
+        return chunks;
     }
 
     private static float[] ProjectTokens(float[] input, int nTokens, int inDim, int outDim)
@@ -144,15 +221,194 @@ public sealed class Flux2DiT
     }
 
     /// <summary>
-    /// Structural placeholder for one real DoubleStreamBlock (docs/087, `examples/flux2/src/flux2/
-    /// model.py`'s `DoubleStreamBlock`): affine-free LayerNorm + AdaLN-modulate each stream
-    /// separately, project separate img/txt QKV, RMSNorm Q/K, joint attention over the
-    /// concatenated [txt,img] sequence (shared RoPE table built from the two per-stream tables),
+    /// Real DoubleStreamBlock (`model.py`'s `_prepare_qkv`/`_apply_residuals`): affine-free
+    /// LayerNorm + AdaLN-modulate each stream separately, project SEPARATE img/txt QKV (own
+    /// weights per stream), per-head RMSNorm Q/K, joint attention over the concatenated [txt,img]
+    /// sequence (RoPE applied to Q/K AFTER the norm, per real `apply_rope(q,k,pe_full)` call order),
     /// split the attention output back per-stream, then a separate gated-residual + separate
-    /// gated-FFN per stream. The concat-for-attention/split-back shape is real; the actual
-    /// QKV/FFN weight matrices are NOT yet wired (IWeightLoader, docs/087's next step) so this
-    /// still only applies RoPE + norm as a structural stand-in, not real attention/FFN math.
+    /// gated-FFN (SiLU-gated, mlp_ratio=3.0) per stream.
     /// </summary>
+    private void ApplyDoubleBlockReal(
+        int layerIdx,
+        float[] img, float[] txt,
+        float[][] modImg, float[][] modTxt,
+        float[] imgCos, float[] imgSin,
+        float[] txtCos, float[] txtSin,
+        int nTarget, int nTxt)
+    {
+        int d = _p.HiddenSize;
+        int headDim = _p.HeadDim;
+        int numHeads = _p.NumHeads;
+        int mlpHidden = (int)(d * _p.MlpRatio);
+        string bp = $"double_blocks.{layerIdx}.";
+
+        var (imgShift1, imgScale1, imgGate1) = (modImg[0], modImg[1], modImg[2]);
+        var (imgShift2, imgScale2, imgGate2) = (modImg[3], modImg[4], modImg[5]);
+        var (txtShift1, txtScale1, txtGate1) = (modTxt[0], modTxt[1], modTxt[2]);
+        var (txtShift2, txtScale2, txtGate2) = (modTxt[3], modTxt[4], modTxt[5]);
+
+        var imgMod1 = ModulateCopy(img, nTarget, d, imgShift1, imgScale1);
+        var txtMod1 = ModulateCopy(txt, nTxt, d, txtShift1, txtScale1);
+
+        var imgQkv = LinearNoBias($"{bp}img_attn.qkv.weight", imgMod1, nTarget, d, 3 * d);
+        var txtQkv = LinearNoBias($"{bp}txt_attn.qkv.weight", txtMod1, nTxt, d, 3 * d);
+
+        var imgQ = imgQkv.AsSpan(0, nTarget * d).ToArray();
+        var imgK = imgQkv.AsSpan(nTarget * d, nTarget * d).ToArray();
+        var imgV = imgQkv.AsSpan(2 * nTarget * d, nTarget * d).ToArray();
+        var txtQ = txtQkv.AsSpan(0, nTxt * d).ToArray();
+        var txtK = txtQkv.AsSpan(nTxt * d, nTxt * d).ToArray();
+        var txtV = txtQkv.AsSpan(2 * nTxt * d, nTxt * d).ToArray();
+
+        var imgQNorm = GetWeight($"{bp}img_attn.norm.query_norm.scale");
+        var imgKNorm = GetWeight($"{bp}img_attn.norm.key_norm.scale");
+        var txtQNorm = GetWeight($"{bp}txt_attn.norm.query_norm.scale");
+        var txtKNorm = GetWeight($"{bp}txt_attn.norm.key_norm.scale");
+        DiffusionOps.RmsNorm(imgQ, imgQNorm, headDim);
+        DiffusionOps.RmsNorm(imgK, imgKNorm, headDim);
+        DiffusionOps.RmsNorm(txtQ, txtQNorm, headDim);
+        DiffusionOps.RmsNorm(txtK, txtKNorm, headDim);
+
+        int nSeq = nTxt + nTarget;
+        var q = new float[nSeq * d];
+        var k = new float[nSeq * d];
+        var v = new float[nSeq * d];
+        txtQ.AsSpan().CopyTo(q.AsSpan(0, nTxt * d));
+        imgQ.AsSpan().CopyTo(q.AsSpan(nTxt * d, nTarget * d));
+        txtK.AsSpan().CopyTo(k.AsSpan(0, nTxt * d));
+        imgK.AsSpan().CopyTo(k.AsSpan(nTxt * d, nTarget * d));
+        txtV.AsSpan().CopyTo(v.AsSpan(0, nTxt * d));
+        imgV.AsSpan().CopyTo(v.AsSpan(nTxt * d, nTarget * d));
+
+        var peCos = new float[nSeq * headDim];
+        var peSin = new float[nSeq * headDim];
+        txtCos.AsSpan().CopyTo(peCos.AsSpan(0, nTxt * headDim));
+        txtSin.AsSpan().CopyTo(peSin.AsSpan(0, nTxt * headDim));
+        imgCos.AsSpan().CopyTo(peCos.AsSpan(nTxt * headDim, nTarget * headDim));
+        imgSin.AsSpan().CopyTo(peSin.AsSpan(nTxt * headDim, nTarget * headDim));
+
+        Flux2RoPE.ApplyRoPE(q, peCos, peSin, nSeq, numHeads, headDim);
+        Flux2RoPE.ApplyRoPE(k, peCos, peSin, nSeq, numHeads, headDim);
+
+        var attn = DiffusionOps.MultiHeadAttention(q, k, v, nSeq, nSeq, numHeads, headDim);
+
+        var txtAttn = attn.AsSpan(0, nTxt * d).ToArray();
+        var imgAttn = attn.AsSpan(nTxt * d, nTarget * d).ToArray();
+
+        var imgAttnOut = LinearNoBias($"{bp}img_attn.proj.weight", imgAttn, nTarget, d, d);
+        var txtAttnOut = LinearNoBias($"{bp}txt_attn.proj.weight", txtAttn, nTxt, d, d);
+        for (int i = 0; i < nTarget; i++)
+            for (int c = 0; c < d; c++)
+                img[i * d + c] += imgGate1[c] * imgAttnOut[i * d + c];
+        for (int i = 0; i < nTxt; i++)
+            for (int c = 0; c < d; c++)
+                txt[i * d + c] += txtGate1[c] * txtAttnOut[i * d + c];
+
+        var imgMod2 = ModulateCopy(img, nTarget, d, imgShift2, imgScale2);
+        var txtMod2 = ModulateCopy(txt, nTxt, d, txtShift2, txtScale2);
+        var imgFfn = GatedFfn($"{bp}img_mlp", imgMod2, nTarget, d, mlpHidden);
+        var txtFfn = GatedFfn($"{bp}txt_mlp", txtMod2, nTxt, d, mlpHidden);
+        for (int i = 0; i < nTarget; i++)
+            for (int c = 0; c < d; c++)
+                img[i * d + c] += imgGate2[c] * imgFfn[i * d + c];
+        for (int i = 0; i < nTxt; i++)
+            for (int c = 0; c < d; c++)
+                txt[i * d + c] += txtGate2[c] * txtFfn[i * d + c];
+    }
+
+    /// <summary>
+    /// Real SingleStreamBlock (`model.py`'s `SingleStreamBlock`): fused QKV+gated-MLP-up
+    /// `linear1`, per-head RMSNorm Q/K, RoPE applied after norm, attention (real `causal_attn_fn`
+    /// with `num_ref_tokens=0` degenerates to plain joint attention over the whole sequence for
+    /// the no-ref case this method implements), `concat(attn, SiLU-gated-mlp)` through `linear2`,
+    /// gated residual.
+    /// </summary>
+    private void ApplySingleBlockReal(int layerIdx, float[] unified, float[][] mod, float[] cos, float[] sin, int nSeq)
+    {
+        int d = _p.HiddenSize;
+        int headDim = _p.HeadDim;
+        int numHeads = _p.NumHeads;
+        int mlpHidden = (int)(d * _p.MlpRatio);
+        string bp = $"single_blocks.{layerIdx}.";
+        var (shift, scale, gate) = (mod[0], mod[1], mod[2]);
+
+        var xMod = ModulateCopy(unified, nSeq, d, shift, scale);
+        var qkvMlp = LinearNoBias($"{bp}linear1.weight", xMod, nSeq, d, 3 * d + 2 * mlpHidden);
+
+        var q = new float[nSeq * d];
+        var k = new float[nSeq * d];
+        var v = new float[nSeq * d];
+        var mlp = new float[nSeq * 2 * mlpHidden];
+        int rowWidth = 3 * d + 2 * mlpHidden;
+        for (int i = 0; i < nSeq; i++)
+        {
+            qkvMlp.AsSpan(i * rowWidth, d).CopyTo(q.AsSpan(i * d, d));
+            qkvMlp.AsSpan(i * rowWidth + d, d).CopyTo(k.AsSpan(i * d, d));
+            qkvMlp.AsSpan(i * rowWidth + 2 * d, d).CopyTo(v.AsSpan(i * d, d));
+            qkvMlp.AsSpan(i * rowWidth + 3 * d, 2 * mlpHidden).CopyTo(mlp.AsSpan(i * 2 * mlpHidden, 2 * mlpHidden));
+        }
+
+        var qNorm = GetWeight($"{bp}norm.query_norm.scale");
+        var kNorm = GetWeight($"{bp}norm.key_norm.scale");
+        DiffusionOps.RmsNorm(q, qNorm, headDim);
+        DiffusionOps.RmsNorm(k, kNorm, headDim);
+
+        Flux2RoPE.ApplyRoPE(q, cos, sin, nSeq, numHeads, headDim);
+        Flux2RoPE.ApplyRoPE(k, cos, sin, nSeq, numHeads, headDim);
+
+        var attn = DiffusionOps.MultiHeadAttention(q, k, v, nSeq, nSeq, numHeads, headDim);
+
+        var mlpAct = new float[nSeq * mlpHidden];
+        for (int i = 0; i < nSeq; i++)
+        {
+            var u1 = mlp.AsSpan(i * 2 * mlpHidden, mlpHidden);
+            var u2 = mlp.AsSpan(i * 2 * mlpHidden + mlpHidden, mlpHidden);
+            for (int c = 0; c < mlpHidden; c++)
+                mlpAct[i * mlpHidden + c] = DiffusionOps.Silu(u1[c]) * u2[c];
+        }
+
+        var combined = new float[nSeq * (d + mlpHidden)];
+        for (int i = 0; i < nSeq; i++)
+        {
+            attn.AsSpan(i * d, d).CopyTo(combined.AsSpan(i * (d + mlpHidden), d));
+            mlpAct.AsSpan(i * mlpHidden, mlpHidden).CopyTo(combined.AsSpan(i * (d + mlpHidden) + d, mlpHidden));
+        }
+
+        var output = LinearNoBias($"{bp}linear2.weight", combined, nSeq, d + mlpHidden, d);
+        for (int i = 0; i < nSeq; i++)
+            for (int c = 0; c < d; c++)
+                unified[i * d + c] += gate[c] * output[i * d + c];
+    }
+
+    /// <summary>Real SiLU-gated FFN (`img_mlp`/`txt_mlp`): up-proj to 2*mlpHidden, split, gate,
+    /// down-proj. NOT a plain GELU MLP like FLUX.1.</summary>
+    private float[] GatedFfn(string prefix, float[] x, int n, int d, int mlpHidden)
+    {
+        var up = LinearNoBias($"{prefix}.0.weight", x, n, d, 2 * mlpHidden);
+        var gated = new float[n * mlpHidden];
+        for (int i = 0; i < n; i++)
+        {
+            var u1 = up.AsSpan(i * 2 * mlpHidden, mlpHidden);
+            var u2 = up.AsSpan(i * 2 * mlpHidden + mlpHidden, mlpHidden);
+            for (int c = 0; c < mlpHidden; c++)
+                gated[i * mlpHidden + c] = DiffusionOps.Silu(u1[c]) * u2[c];
+        }
+        return LinearNoBias($"{prefix}.2.weight", gated, n, mlpHidden, d);
+    }
+
+    /// <summary>Affine-free LayerNorm (eps=1e-6) then AdaLN-modulate: `(1+scale)*norm(x) + shift`,
+    /// returned as a new array (does not mutate <paramref name="x"/>).</summary>
+    private static float[] ModulateCopy(float[] x, int n, int d, float[] shift, float[] scale)
+    {
+        var normed = new float[n * d];
+        DiffusionOps.LayerNormNoAffine(x, normed, d);
+        var output = new float[n * d];
+        DiffusionOps.ModulateRows(normed, output, n, d, shift, scale);
+        return output;
+    }
+
+    // --- Structural (no-weights) placeholder path, unchanged for existing conformance tests ---
+
     private void ApplyDoubleBlock(
         int layerIdx,
         float[] img, float[] txt,
@@ -162,25 +418,12 @@ public sealed class Flux2DiT
         int nTarget, int nTxt)
     {
         int d = _p.HiddenSize;
-
-        // Affine-free LayerNorm (real: img_norm1/txt_norm1, eps=1e-6, elementwise_affine=False)
         RmsNorm(img, d);
         RmsNorm(txt, d);
-
-        // Apply each stream's own RoPE (pe_x for img, pe_ctx for txt) -- real per forward()'s
-        // separate pe_x/pe_ctx construction, applied before the joint [txt,img] attention.
         Flux2RoPE.ApplyRoPE(img, imgCos, imgSin, nTarget, _p.NumHeads, _p.HeadDim);
         Flux2RoPE.ApplyRoPE(txt, txtCos, txtSin, nTxt, _p.NumHeads, _p.HeadDim);
     }
 
-    /// <summary>
-    /// Structural placeholder for one real SingleStreamBlock (docs/087, `model.py`'s
-    /// `SingleStreamBlock`): fused QKV+gated-MLP-up linear1, RMSNorm Q/K, apply RoPE, attention
-    /// (real `causal_attn_fn` with `num_ref_tokens=0` degenerates to plain joint attention over
-    /// the whole sequence for the no-ref case this method implements), concat(attn, gated-mlp)
-    /// through linear2, gated residual. Real weight matrices not yet wired -- structural RoPE/norm
-    /// stand-in only, same caveat as ApplyDoubleBlock above.
-    /// </summary>
     private void ApplySingleBlock(int layerIdx, float[] unified, float[] vec, float[] cos, float[] sin, int nSeq)
     {
         int d = _p.HiddenSize;
