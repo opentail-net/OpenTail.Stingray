@@ -93,9 +93,14 @@ worse than no status.
       -iname "*.gguf"`, which silently failed to traverse `models/_models` because it's a symlink
       to `F:\_models` and `find` doesn't follow symlinks by default. `ls models/_models/*.gguf`
       (or any symlink-aware listing) shows it correctly. **This item is NOT blocked on a download
-      -- it's ready for real implementation now.** Next real step: confirm this checkpoint's real
-      `general.architecture` string (`qwen2` vs `qwen2vl`) via `list-metadata`, then wire its
-      forward pass into `QwenImagePipeline`'s conditioning path.
+      -- it's ready for real implementation now.** `list-metadata` confirms `general.architecture =
+      qwen2vl`, NOT plain `qwen2`, and `qwen2vl` is NOT currently in `ModelCompatibility`'s
+      allowlist at all -- a real, scoped gap: either extend the allowlist/forward-pass dispatch for
+      `qwen2vl`'s text-only path (check whether it's just `qwen2` plus M-RoPE that degenerates to
+      standard 1D RoPE for text-only input, or a genuine structural difference), or check whether
+      this codebase's existing `UnifiedVisionPipeline`/`QwenVlVisionModel` machinery (already used
+      for real Qwen2.5-VL vision tasks elsewhere in this project) already has a working text-decode
+      path that could be reused instead of re-deriving `qwen2vl` support from scratch.
 - [ ] **HunyuanVideo** — same shape of gap as Qwen Image: DiT+VAE numerically sound, single named
       gap is real LLaMA-3/Qwen2.5-VL text conditioning (`HunyuanVideoPipeline.Generate` currently
       defaults to all-zero context). **2026-09-18 scoping**: confirmed against

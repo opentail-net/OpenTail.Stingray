@@ -199,6 +199,21 @@ QkvBias false, InChannels/OutChannels 128, VecInDim 0/unused, AxesDim/Theta per 
    multi-reference conditioning is one of FLUX.2's headline real features (the class doc already
    says "Supports multi-image conditioning").
 
+## Checkpoint status confirmed, 2026-09-18: Mistral-Small-24B is ready, no new architecture work needed
+
+`models/_models/Mistral-Small-3.2-24B-Instruct-2506-Q4_K_S.gguf` IS present (13.5GB, an earlier
+session check this same day wrongly reported it missing due to a `find`-vs-symlink bug -- see
+`docs/088`). Checked its real metadata directly (`stingray list-metadata`): `general.architecture
+= llama`, `llama.block_count = 40`, `llama.embedding_length = 5120` -- confirms `docs/087`'s
+prediction exactly (`OUTPUT_LAYERS_MISTRAL=[10,20,30]` out of 40 layers, `15360 = 3×5120`). Plain
+`llama` architecture is already fully allowlisted and supported by this engine's generic forward
+pass -- **no new architecture code is needed to run Mistral-Small-24B itself**, only a way to
+extract and capture its hidden states at three specific layers instead of just the final logits
+(check whether `IForwardPass`'s existing `ExtractHiddenStates`/`ExtractHiddenStatesBatch` --
+already used by `EmbeddingEngine` for embedding models -- can be pointed at arbitrary intermediate
+layers, or whether that needs extending). This significantly de-risks FLUX.2's text-conditioning
+step versus initially assumed.
+
 ## Recommended next steps (implementation, NOT done this pass)
 
 1. Rewrite `Flux2RoPE.cs` for the real 4-axis `[t,h,w,l]`/theta=2000 scheme (finding 1 above) —
