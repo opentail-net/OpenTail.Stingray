@@ -87,12 +87,23 @@ confirms step 3 empirically: real Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf (4.36GB), r
 forward pass via `ForwardPass.ExtractHiddenStates`, finite non-zero hidden states -- the mechanism
 works end-to-end.
 
+## 2026-09-18 UPDATE: step 4 mechanism DONE -- QwenImageTextConditioning.Encode passes
+
+`QwenImageTextConditioning.cs` (new) implements the complete real recipe: the exact hand-built
+ChatML template (verbatim from `pipeline_qwenimage.py`'s `prompt_template_encode` -- confirmed NOT
+the tokenizer's own `apply_chat_template`, unlike FLUX.2's Mistral recipe), final-layer-only
+extraction via `ForwardPass.ExtractHiddenStates`, and the real `drop_idx=34` crop of the template's
+own wrapper tokens. `QwenImageTextConditioning_Encode_RealWeights_ProducesFiniteConditioning`
+passes against the real Qwen2.5-VL-7B checkpoint: finite `ContextDim=3584`-per-token output (no
+projection needed -- 3584 matches Qwen2.5-VL-7B's own real hidden size exactly). **Not yet wired
+into `QwenImagePipeline.Generate`** (still accepts a caller-supplied `textContext`, doesn't own
+text encoding itself) -- a real next step, matching FLUX.2's `Flux2Pipeline.Load` pattern.
+
 ## Recommended next steps (implementation, NOT done this pass)
 
-4. Implement the real ChatML template + `drop_idx=34` crop + dynamic re-pad recipe above in
-   `QwenImagePipeline`'s text-conditioning path (the smoke test above used the raw template
-   without the `drop_idx` crop or dynamic re-pad -- those still need wiring into the real
-   pipeline, matching `Flux2TextConditioning.Encode`'s pattern for FLUX.2).
+4. Wire `QwenImageTextConditioning.Encode` into `QwenImagePipeline` itself (a `Load`-style factory
+   owning the real Qwen2.5-VL weights + tokenizer, matching `Flux2Pipeline.Load`'s pattern) rather
+   than leaving text encoding to the caller.
 5. Re-run the existing 256×256/4-step repro (`docs/086`) with real conditioning instead of
    zero-vectors; confirm coherent (not just structurally non-degenerate) output, same bar
    HunyuanVideo/LTX-Video are held to.
