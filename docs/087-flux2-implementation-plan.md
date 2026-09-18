@@ -378,20 +378,25 @@ itself is now complete and proven, not just its individual pieces.
    in that order (`prc_img`'s `cartesian_prod(coords["t"], coords["h"], coords["w"], coords["l"])`),
    `EmbedND.forward` applies `axes_dim[i]` to `ids[...,i]` in that same order — this port's
    `Flux2Pipeline`'s position-array construction and `Flux2RoPE.BuildContextFreqs`'s per-axis loop
-   both use the identical `[t,h,w,l]` index order; (d) the VAE's per-channel BatchNorm
-   eps-inside-sqrt formula and the pixel-unshuffle index mapping were re-derived by hand from the
-   einops semantics (`(c pi pj) i j -> c (i pi) (j pj)` decomposes to `cIndex=c*4+pi*2+pj`,
-   `outRow=i*2+pi`, `outCol=j*2+pj`) and self-consistently match this port's implementation, but
-   have NOT been checked against a real numeric round-trip (encode-then-decode a known input and
-   confirm identity) — the one remaining candidate in this list not yet independently confirmed by
-   direct source comparison; (e) a latent-space scale mismatch between what the DiT actually
-   outputs and what the VAE's `post_quant_conv`/`conv_in` expect (FLUX.1's own fix history includes
-   exactly this class of bug) — also not yet checked.
-   **After re-checking (a)/(b)/(c) directly against the real source and finding all three exactly
-   correct, the remaining bug is most likely in (d) or (e), or somewhere not yet on this list at
-   all** (e.g. a subtlety in the fused single-block `linear1`/`linear2` output-concatenation order,
-   or the attention scale/masking within `DiffusionOps.MultiHeadAttention` as used here — both
-   spot-checked by re-reading, not by a numeric test). **Do not report FLUX.2 as visually verified
+   both use the identical `[t,h,w,l]` index order; (d) ~~the VAE's per-channel BatchNorm eps-inside-sqrt formula and the pixel-unshuffle index
+   mapping~~ **RE-CHECKED 2026-09-18 with a real numeric unit test, CONFIRMED CORRECT**:
+   `Flux2VaeUnshuffleUnitTests` (identity-BatchNorm known-pattern test + a separate per-channel-
+   affine test) confirms `"(c pi pj) i j -> c (i pi) (j pj)"` maps input channel `k=pi*2+pj` to
+   output `(row=pi, col=pj)` exactly as intended, and the affine step applies real per-channel
+   mean/var correctly — a genuine numeric check, not just re-reading the code; (e) a latent-space
+   scale mismatch between what the DiT actually outputs and what the VAE's `post_quant_conv`/
+   `conv_in` expect (FLUX.1's own fix history includes exactly this class of bug) — still not
+   checked.
+   **After re-checking (a)/(b)/(c)/(d) and finding all four exactly correct, the remaining bug is
+   most likely in (e), or somewhere not yet on this list at all** (e.g. a subtlety in the fused
+   single-block `linear1`/`linear2` output-concatenation order, or the attention scale/masking
+   within `DiffusionOps.MultiHeadAttention` as used here — both spot-checked by re-reading, not by
+   a numeric test). This narrowing is real, cumulative progress even without having found the bug
+   yet — a numeric differential test against a real independent Mistral/DiT reference remains the
+   single highest-leverage next step, since structural re-reading has now ruled out 4 real
+   candidates without finding the actual cause (the same pattern FLUX.1's own Round 6-8 experience
+   had before its real fix was found by a numeric, not structural, check). **Do not report FLUX.2
+   as visually verified
    until the bug is found and fixed and a re-run shows real structure** — the wiring milestone
    (all 3 components load and run together without crashing) is real and worth keeping, but image
    correctness is a confirmed open bug, not just an unconfirmed claim.
