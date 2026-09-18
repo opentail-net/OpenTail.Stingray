@@ -151,11 +151,14 @@ worse than no status.
       from that one value, so this plausibly explains a severe structured whole-image corruption
       exactly like the documented artifact. **That fix was never visually re-verified against this
       specific artifact until this session's re-run** -- same "real fix landed, never re-checked"
-      pattern already found twice this session (SDXL-Turbo, LTX-Video). Not fully closed: only 2
-      seeds checked at only 256×256, and both CLI runs denoised on CPU despite `--backend vulkan`
-      (worth checking whether the CLI's Wan path actually routes the denoise loop through Vulkan --
-      `docs/083`'s 2.20x-of-C++ GPU-residency figure needs re-confirming with this fix in place,
-      per the operator's explicit instruction not to regress that work). README updated. Below is
+      pattern already found twice this session (SDXL-Turbo, LTX-Video). **Performance re-confirmed
+      same day**: the first two runs mistakenly passed `--backend vulkan` (not a real flag) and
+      silently denoised on CPU; re-ran with the real `--device 0` flag, confirmed real Vulkan GPU
+      dispatch, clean output, and 122.1s total/81.5s DiT (4.08s/step) -- matches
+      `PerformanceLeague.md`'s documented 132.8s/79.4s within noise (actually faster), **no
+      regression**, satisfying the operator's explicit instruction. Not fully closed: only 2 seeds
+      checked, only at 256×256 (not production resolutions) -- but quality AND performance are now
+      both real, confirmed, and consistent. README/`PerformanceLeague.md` updated. Below is
       the now-superseded investigation trail kept for reference (T5-padding/masking hypotheses,
       both real and correctly ruled out, just not the actual cause) -- every individual
       hypothesis checked so far (RoPE axes, AdaLN modulation, flow-schedule/CFG formula, GELU,
@@ -255,9 +258,10 @@ rule 7 exists).
       is ever justified — `docs/083` already names the cause (C++ uses quantized matmul/cooperative
       wave ops vs. this port's FP16/FP32 tiled Sgemm).
 - [ ] **FLUX.1-schnell**: confirm 1.98x still holds (<200s barrier already broken).
-- [ ] **Wan2.1-T2V-1.3B**: confirm 2.20x still holds — **only after Pass 1's correctness fix lands
-      and is verified not to regress this number** (see 1c above — this is the operator's explicit
-      instruction).
+- [x] **Wan2.1-T2V-1.3B**: 2026-09-18 -- confirmed ~2.03x still holds (122.1s vs. the documented
+      132.8s/60.25s C++ ref, within noise) on the real Vulkan GPU path, verified in the same pass
+      as Pass 1's correctness re-check (see 1c above) -- no regression, operator's instruction
+      satisfied.
 - [ ] **LTX-Video**: no real C++ comparison possible yet (sd.cpp's own Wan-family path is blocked
       on audio cross-attention for this specific model) — 2.76x vs CPU baseline is the best
       available number; re-verify it still holds once Pass 1's convergence bug is fixed (a fixed
