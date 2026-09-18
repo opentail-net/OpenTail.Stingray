@@ -1,0 +1,85 @@
+# 089 — Qwen Image real text-conditioning implementation plan (2026-09-18)
+
+Follow-up to `docs/086`'s Qwen Image finding: DiT+VAE are real and verified against real weights,
+the single remaining gap is real LLM text conditioning (`QwenImagePipeline` currently feeds
+zero-vector context). This doc is the real recipe, checked directly against the vendored reference
+(`examples/diffusers/src/diffusers/pipelines/qwenimage/pipeline_qwenimage.py`) before any
+implementation, same discipline `docs/087` used for FLUX.2 — **do not guess the prompt
+template/extraction recipe**, every prior text-conditioning integration this session (FLUX.1,
+Wan, HunyuanVideo, FLUX.2) has had a real, non-obvious wrapping/cropping convention.
+
+## Checkpoint status (confirmed 2026-09-18, corrects an earlier false "missing" claim this session)
+
+`models/_models/Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf` (4.68GB) IS present. `stingray list-metadata`
+confirms `general.architecture = qwen2vl`, NOT plain `qwen2`. **`qwen2vl` is not currently in
+`ModelGraph.cs`'s architecture-support switch or `ModelCompatibility`'s allowlist** — this is the
+one real blocking code gap, not a missing checkpoint.
+
+## Real, precise text-conditioning recipe (confirmed against `pipeline_qwenimage.py`)
+
+```python
+tokenizer_max_length = 1024
+prompt_template_encode = (
+    "<|im_start|>system\nDescribe the image by detailing the color, shape, size, texture, "
+    "quantity, text, spatial relationships of the objects and background:<|im_end|>\n"
+    "<|im_start|>user\n{}<|im_end|>\n<|im_start|>assistant\n"
+)
+prompt_template_encode_start_idx = 34   # drop_idx
+```
+
+1. Wrap the user prompt in the ChatML template above (`{}`  = the raw user prompt text).
+2. Tokenize with `max_length = tokenizer_max_length + drop_idx = 1058`, `padding=True` (dynamic,
+   batch-max, NOT a fixed constant like FLUX.2's 512), `truncation=True`.
+3. Run the real Qwen2.5-VL text decoder with `output_hidden_states=True`; take
+   `hidden_states[-1]` — **the FINAL layer only**, not a multi-layer concat like FLUX.2's Mistral
+   scheme (`OUTPUT_LAYERS_MISTRAL=[10,20,30]` does NOT apply here — simpler for Qwen Image).
+4. Use the real attention mask to select only the non-padding real tokens per sequence
+   (`_extract_masked_hidden`).
+5. **Crop off the first 34 tokens** (`drop_idx`) from each sequence's hidden states — these
+   correspond to the template's own system+user-wrapper tokens, not the real prompt content. This
+   is the same "encode a template, crop the template's own tokens back off" convention already
+   confirmed for HunyuanVideo's `crop_start` (`docs/088`) — a real, recurring pattern across this
+   project's LLM-as-text-encoder integrations, not a one-off.
+6. Re-pad each (now-cropped) sequence to the BATCH's own max real length (dynamic per generation
+   call, not a fixed constant) with zeros, for the DiT's cross-attention input.
+
+## Real code gap: `qwen2vl` architecture support (the actual blocker, not the checkpoint)
+
+Real precedent already exists in this codebase for exactly this situation: Qwen3-ForcedAligner's
+text decoder declares real M-RoPE metadata (`rope_scaling.interleaved=true`/
+`mrope_interleaved=true`, a genuine Qwen2-VL/Qwen2.5-Omni-family mechanism this engine does not
+implement in general) — but for **text-only use** (no image/video tokens interleaved with text),
+M-RoPE's 3D section-splitting degenerates to plain 1D sequential position ids per the reference's
+own `qwen_position_ids` function, so the only real numerically-meaningful difference from standard
+NEOX rotation is the interleaved (adjacent-pair) RoPE pairing convention, not any 3D
+section-splitting (`ModelGraph.cs` around line 543, `{arch}.rope.is_neox` override mechanism
+already built for exactly this).
+
+**This same situation almost certainly applies to Qwen2.5-VL's text backbone used purely for text
+conditioning extraction (no image input into the LLM at all, per the real recipe above)** — but
+this needs the same real verification Qwen3-ForcedAligner got (checking `qwen2vl`'s own real
+`use_mrope`/position-id behavior for text-only sequences against a real reference,
+`examples/transformers`'s `Qwen2VLModel` or similar) before assuming it, not copy-pasted blind.
+
+## Recommended next steps (implementation, NOT done this pass)
+
+1. Verify Qwen2.5-VL's real text-only position-id behavior against a real reference (the same
+   verification Qwen3-ForcedAligner got) before adding `"qwen2vl"` to `ModelGraph.cs`'s
+   architecture-support switch — confirm plain 1D sequential position ids apply for text-only
+   input, and confirm the interleaved-vs-NEOX rotation convention.
+2. Add `"qwen2vl"` to `ModelGraph.cs`'s architecture list and `ModelCompatibility`'s allowlist
+   (scoped to this real, verified text-only behavior — same pattern as the Qwen3-ForcedAligner
+   per-checkpoint override, not a blind allowlist add).
+3. Extend `IForwardPass`'s hidden-state extraction (`ExtractHiddenStates`/
+   `ExtractHiddenStatesBatch`, already used by `EmbeddingEngine` for embedding models) to expose
+   the final-layer hidden state for this use case, or confirm it already does what's needed.
+4. Implement the real ChatML template + `drop_idx=34` crop + dynamic re-pad recipe above in
+   `QwenImagePipeline`'s text-conditioning path.
+5. Re-run the existing 256×256/4-step repro (`docs/086`) with real conditioning instead of
+   zero-vectors; confirm coherent (not just structurally non-degenerate) output, same bar
+   HunyuanVideo/LTX-Video are held to.
+
+This is comparable in scope to FLUX.2's Mistral wiring, though simpler (final-layer only, no
+gated-FFN/shared-modulation DiT complexity on this side) -- the `qwen2vl` architecture-support gap
+(step 1-2) is the real unknown-sized piece, everything else is a well-scoped, mechanical port of a
+precisely-confirmed recipe.

@@ -101,6 +101,11 @@ worse than no status.
       this codebase's existing `UnifiedVisionPipeline`/`QwenVlVisionModel` machinery (already used
       for real Qwen2.5-VL vision tasks elsewhere in this project) already has a working text-decode
       path that could be reused instead of re-deriving `qwen2vl` support from scratch.
+      **2026-09-18: full real recipe confirmed and written up in `docs/089-qwen-image-text-
+      conditioning-plan.md`** (ChatML template, `drop_idx=34` crop, final-layer-only extraction,
+      dynamic re-pad -- checked against the real `pipeline_qwenimage.py`), plus a concrete plan for
+      the `qwen2vl` architecture gap reusing the exact precedent already established for
+      Qwen3-ForcedAligner's M-RoPE-degenerates-to-1D-for-text-only case. Ready for implementation.
 - [ ] **HunyuanVideo** — same shape of gap as Qwen Image: DiT+VAE numerically sound, single named
       gap is real LLaMA-3/Qwen2.5-VL text conditioning (`HunyuanVideoPipeline.Generate` currently
       defaults to all-zero context). **2026-09-18 scoping**: confirmed against
