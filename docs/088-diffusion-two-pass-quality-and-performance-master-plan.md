@@ -83,11 +83,18 @@ worse than no status.
       question -- this only fixes a stale unit test's search path.
 
 ### 1b. 🟡 with a real, named, scoped gap — close these next
-- [ ] **SD3/SD3.5** — real coherent output exists but is **not yet numerically golden-verified**
-      against `examples/stable-diffusion.cpp`'s SD3.5 path or `examples/diffusers`' own
-      `pipeline_stable_diffusion_3.py`. Do a real per-stage numeric diff (not just visual
-      comparison) the same way LTX-Video's components were golden-verified. Upgrade to 🟢 only once
-      that's real and passing.
+- [x] **SD3/SD3.5 — re-verified 2026-09-18, status unchanged (still 🟡).** Ran the full real-weight
+      suite (`Sd3TimestepEmbedParityTests` + `Sd3BaselineTests`, 4 facts): all pass, real weights,
+      GPU/CPU timestep-embed parity cosine=1.000000. Timing: 77.1s warm/84.9s cold Vulkan, 193.6s
+      CPU (256×256/20-step) — matches/beats `PerformanceLeague.md`'s documented 91.3s/101.2s/536.4s
+      figures, no regression. **Output image re-confirmed matching the documented description
+      exactly**: real, coherent, asymmetric structure (distinct shapes/edges/shading), NOT noise,
+      but not yet a clean photorealistic match to the prompt either — no surprise fix here, unlike
+      Wan/LTX this session. Still **not numerically golden-verified** against
+      `examples/stable-diffusion.cpp`'s SD3.5 path or `examples/diffusers`' own
+      `pipeline_stable_diffusion_3.py` -- that real per-stage numeric diff (the actual remaining
+      gap to reach 🟢) was not attempted this pass, scoped as future work matching LTX-Video's own
+      golden-verification pattern.
 - [ ] **Qwen Image / Qwen Image Edit** — DiT+VAE verified, single named gap: real LLM text
       conditioning. **CORRECTION, 2026-09-18: the checkpoint was never actually missing.**
       `Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf` (4.68GB, dated 2026-09-18 02:22) IS present at
