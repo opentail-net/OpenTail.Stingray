@@ -169,14 +169,24 @@ public sealed class Flux2Pipeline : IDisposable
         }
         var pooledEmbed = Array.Empty<float>(); // FLUX.2 has no CLIP pooled conditioning at all (VecInDim=0, see Flux2Params.cs)
 
-        // 5. Flow-Matching Integration Loop
+        // 5. Flow-Matching Integration Loop -- real FLUX.2 schedule (docs/087, confirmed 2026-09-18
+        //    against examples/flux2/src/flux2/sampling.py's real get_schedule/compute_empirical_mu/
+        //    generalized_time_snr_shift). REAL BUG FOUND AND FIXED here: this previously built an
+        //    EulerFlowScheduler but never actually used it, instead stepping through a plain LINEAR
+        //    `t = 1 - step/steps` ramp -- FLUX.2 (like FLUX.1/SD3.5) is trained with a resolution-
+        //    and step-count-dependent SHIFTED schedule, not a linear one; feeding the DiT timestep
+        //    values it was never trained to see at each step plausibly explains the total failure
+        //    to converge found in this session's 2/4/20-step real-weight checks (all pure noise,
+        //    zero improvement with more steps -- consistent with a systematically wrong noise
+        //    schedule, not random per-block math errors).
         int steps = Math.Max(1, request.Steps);
-        var scheduler = EulerFlowScheduler.Linear(steps, shift: 3.0f);
+        int imageSeqLen = nTargetTokens;
+        var timesteps = Flux2Schedule.GetSchedule(steps, imageSeqLen);
 
         for (int step = 0; step < steps; step++)
         {
-            float t = 1.0f - (float)step / steps;
-            float nextT = 1.0f - (float)(step + 1) / steps;
+            float t = timesteps[step];
+            float nextT = timesteps[step + 1];
             float dt = nextT - t;
 
             var v = _transformer.Forward(
