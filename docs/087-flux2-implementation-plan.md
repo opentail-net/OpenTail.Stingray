@@ -286,10 +286,36 @@ itself is now complete and proven, not just its individual pieces.
    against a real independent Mistral reference before trusting the output for real image
    generation quality (the mechanism is proven correct-shaped and finite, not yet proven
    numerically correct against ground truth).
-4. Port a real FLUX.2 VAE decoder (checkpoint downloaded: `models/_models/flux2-vae.safetensors`)
-   replacing the current raw-channel-repeat stub. Note InChannels=128 (32 latent channels × 2×2
-   patch) confirms FLUX.2's VAE has 32 latent channels, double FLUX.1's 16 — verify this against
-   `flux2-vae.safetensors`'s own tensor shapes before assuming parity with FLUX.1's VAE structure.
+4. Port a real FLUX.2 VAE decoder (checkpoint downloaded: `models/_models/flux2-vae.safetensors`,
+   336MB, 251 tensors) replacing the current raw-channel-repeat stub.
+
+   **2026-09-18 real tensor inventory done, checked against `examples/flux2/src/flux2/
+   autoencoder.py` directly.** Real findings:
+   - Confirmed `z_channels=32` (matches `InChannels=128=32×2×2`), and the decoder block structure
+     (`decoder.conv_in`, `decoder.mid_block.resnets.0/1`+`attentions.0`, `decoder.up_blocks.0..3`
+     at 512/512/256/128 channels) is the **exact same real diffusers `AutoencoderKL` schema this
+     codebase's general-purpose `VaeDecoder.cs`** (already used for FLUX.1/SD1.5/SDXL/SD3) already
+     parses via its `UpBlockDiffusers`/`MidAttnDiffusers`/`ResBlock` helpers and `post_quant_conv`
+     auto-detection — **the decoder blocks themselves are directly reusable, zero new code**, same
+     shape as Qwen-Image's real VAE turning out to be Wan2.1's `WanVaeDecoder3D` verbatim.
+   - **Real, NEW architectural difference found that blocks a naive reuse**: FLUX.2's real
+     `AutoEncoder.decode()` does NOT use `VaeDecoder.cs`'s existing scalar
+     `scale`/`shift` convention (`(1/0.3611, VaeShift=0.1159)` for FLUX.1) at all. It uses a
+     **per-channel `BatchNorm2d(128, affine=False, track_running_stats=True)`** un-normalization
+     (confirmed via the checkpoint's own real `bn.running_mean [128]`/`bn.running_var [128]`
+     tensors) — `z = z * sqrt(running_var + 1e-4) + running_mean`, 128 independent per-channel
+     values, not one scalar pair — **followed by a 2×2 pixel-UNshuffle rearrange**
+     (`"(c pi pj) i j -> c (i pi) (j pj)"`, `pi=pj=2`) that converts the 128-channel latent back to
+     32 channels at 2× the spatial resolution, BEFORE `post_quant_conv`/`decoder.conv_in` ever see
+     it. `VaeDecoder.cs`'s existing `Decode(latent, h, w, scaleOverride, shiftOverride)` API cannot
+     express this (it only supports one global scalar scale/shift pair) — **a real, small, new
+     preprocessing step is needed** (apply the 128-value per-channel affine, then unshuffle) before
+     calling into the existing decoder-block machinery, not a parameter change.
+   - Real next step: add this per-channel-BN + 2×2-unshuffle preprocessing (either as a new
+     `VaeDecoder` overload/hook, or a small standalone function in `Flux2/` that produces a
+     32-channel raw latent `VaeDecoder.Decode` can then consume with `scaleOverride=1,
+     shiftOverride=0` since the real normalization already happened) — genuinely new but small
+     code, not a full VAE reimplementation.
 5. Only then attempt a real end-to-end run — per `docs/086`, on Vulkan GPU explicitly, per the
    user's stated requirement.
 
