@@ -93,8 +93,20 @@ worse than no status.
       contending with the SDXL-Turbo/FLUX.1 downloads/runs already in flight.
 - [ ] **HunyuanVideo** — same shape of gap as Qwen Image: DiT+VAE numerically sound, single named
       gap is real LLaMA-3/Qwen2.5-VL text conditioning (`HunyuanVideoPipeline.Generate` currently
-      defaults to all-zero context). Wire it, re-verify with a real small-scale run, confirm a
-      coherent (not just structurally-sound) frame.
+      defaults to all-zero context). **2026-09-18 scoping**: confirmed against
+      `examples/diffusers/.../pipeline_hunyuan_video.py`'s real `_get_llama_prompt_embeds` --
+      HunyuanVideo needs a real `LlamaModel` (specifically `xtuner/llava-llama-3-8b-v1_1-
+      transformers`, an 8B decoder LLM) as PRIMARY text encoder plus a secondary `CLIPTextModel`
+      (same secondary-CLIP-pooled-conditioning pattern as FLUX.1). Real subtlety confirmed in the
+      reference worth getting right on the first attempt (same discipline as FLUX.2's system-
+      message/layer-extraction recipe): a fixed `prompt_template` wraps the user prompt before
+      encoding, and `crop_start` (computed by tokenizing the template alone first) crops the
+      template's own tokens back OFF the final embeddings before they reach the DiT -- get this
+      crop-after-encode convention right or conditioning will be silently offset. Neither the
+      8B LLaMA checkpoint nor a CLIP-L is currently downloaded for this pipeline -- real,
+      substantial (~16GB+) download needed before this item can proceed; not started this pass to
+      avoid contending with the SDXL-Turbo download / Qwen Image's own pending redownload already
+      queued.
 - [ ] **LTX-Video** — every individual component golden-verified, but full end-to-end convergence
       is real-bug-blocked and seed-dependent (0/3 coherent as of the 2026-09-18 re-check). The
       `flipSinToCos` fix was real but insufficient. Next real step per `docs/086`: a step-by-step
