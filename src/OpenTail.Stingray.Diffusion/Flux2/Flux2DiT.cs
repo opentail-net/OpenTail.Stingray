@@ -36,13 +36,57 @@ public sealed class Flux2DiT
     private string Resolve(string name) => _prefix + name;
 
     /// <summary>
+    /// Perf instrumentation (docs/088's FLUX.2 speed investigation, 2026-09-19): opt-in via
+    /// <c>STINGRAY_FLUX2_PERF_TRACE=1</c>, zero overhead otherwise. Accumulates wall-clock time
+    /// spent dequantizing (GGUF Q4_K_S -> FP32) vs. spent in the actual matmul, to answer "is this
+    /// dequant-bound or compute-bound" before committing to a weight-residency or quantized-matmul
+    /// fix (ChatGPT-guided investigation, see docs/087's perf section).
+    /// </summary>
+    public static class PerfTrace
+    {
+        public static bool Enabled { get; } = Environment.GetEnvironmentVariable("STINGRAY_FLUX2_PERF_TRACE") == "1";
+        public static long DequantTicks;
+        public static long MatmulTicks;
+        public static long DequantBytes;
+        public static int DequantCalls;
+
+        public static void Reset()
+        {
+            DequantTicks = 0; MatmulTicks = 0; DequantBytes = 0; DequantCalls = 0;
+        }
+
+        public static void Report(string label)
+        {
+            if (!Enabled) return;
+            double dequantS = DequantTicks / (double)System.Diagnostics.Stopwatch.Frequency;
+            double matmulS = MatmulTicks / (double)System.Diagnostics.Stopwatch.Frequency;
+            double total = dequantS + matmulS;
+            Console.Error.WriteLine(
+                $"[Flux2PerfTrace] {label}: dequant={dequantS:F2}s ({(total > 0 ? 100 * dequantS / total : 0):F1}%), " +
+                $"matmul={matmulS:F2}s ({(total > 0 ? 100 * matmulS / total : 0):F1}%), " +
+                $"dequantCalls={DequantCalls}, dequantBytes={DequantBytes / 1024.0 / 1024.0:F1}MB");
+        }
+    }
+
+    /// <summary>
     /// Reads a tensor fresh from the loader every call -- deliberately NOT cached. A per-tensor
     /// dictionary cache here would grow unbounded across FLUX.2's 8 double + 48 single blocks
     /// (each with its own real weight set) and get the process OS-killed for low memory, the exact
     /// same real bug already found and fixed for Qwen Image this session (cache grew past 53GB).
     /// `QwenImageModel.GetWeight` uses this same no-cache pattern for the identical reason.
     /// </summary>
-    private float[] GetWeight(string name) => _weights!.ReadF32(Resolve(name));
+    private float[] GetWeight(string name)
+    {
+        if (!PerfTrace.Enabled) return _weights!.ReadF32(Resolve(name));
+
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var w = _weights!.ReadF32(Resolve(name));
+        sw.Stop();
+        PerfTrace.DequantTicks += sw.ElapsedTicks;
+        PerfTrace.DequantCalls++;
+        PerfTrace.DequantBytes += (long)w.Length * sizeof(float);
+        return w;
+    }
 
     /// <summary>Bias-free linear projection -- confirmed empirically (docs/087): no `.bias` tensor
     /// exists anywhere in the real FLUX.2 checkpoint for any linear layer.</summary>
@@ -50,7 +94,17 @@ public sealed class Flux2DiT
     {
         var w = GetWeight(weightName);
         var result = new float[n * outDim];
+
+        if (!PerfTrace.Enabled)
+        {
+            DiffusionOps.Linear(x, w, ReadOnlySpan<float>.Empty, result, n, inDim, outDim);
+            return result;
+        }
+
+        var sw = System.Diagnostics.Stopwatch.StartNew();
         DiffusionOps.Linear(x, w, ReadOnlySpan<float>.Empty, result, n, inDim, outDim);
+        sw.Stop();
+        PerfTrace.MatmulTicks += sw.ElapsedTicks;
         return result;
     }
 
