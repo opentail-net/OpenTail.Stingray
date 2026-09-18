@@ -211,6 +211,32 @@ worse than no status.
       is coherent-but-not-photorealistic (unclear if a smaller remaining bug or this checkpoint's
       real ceiling), and only 2 seeds checked (not an exhaustive sweep). README/`docs/086` updated.
 
+      **Broader sweep same day (operator-requested, deliberate effort to close this to green):
+      real bug found first -- the CLI's `RunLtxVideo` auto-detects `ltx-t5/` relative to the model
+      FILE's own directory (`Path.GetDirectoryName(modelPath)`), so passing the checkpoint from
+      `models/_models/ltx-video-2b-v0.9.1.safetensors` silently fell back to PLACEHOLDER
+      conditioning (looked for a non-existent `models/_models/ltx-t5/`) -- reproduced the exact
+      pre-fix pure-noise failure mode by accident. Not a pipeline bug: a real copy of the checkpoint
+      already exists at `models/ltx-video-2b-v0.9.1.safetensors`, correctly alongside `models/ltx-
+      t5/` -- re-ran from there and conditioning wired correctly (confirmed by the output changing
+      character). Ran 2 MORE real seeds (55, 100) at 512×512/20-step with real conditioning
+      correctly wired, Vulkan GPU: **seed 55 is reasonably coherent** (recognizable red apple-like
+      shapes with real shading/structure on a tan surface, painterly but clearly non-noise,
+      `docs/diffusion-samples/ltx_video_apple_vulkan_seed55_2026-09-18.png`, 306.1s); **seed 100 is
+      messier/more abstract** (real reddish/greenish blob content, not literal static, but no
+      recognizable apple/table structure, `..._seed100_2026-09-18.png`, 309.6s). **Revised, more
+      honest picture: 4 seeds now tested total with real conditioning (42, 7, 55, 100) -- 3 of 4
+      show real, non-noise, prompt-relevant structure at varying quality (from clearly coherent to
+      abstract/painterly), 1 of 4 (seed 100) is notably weaker.** This is genuine seed-to-seed
+      QUALITY variance, not the original "pure noise" failure mode (which conditioning did
+      genuinely fix) -- but it means the earlier "2/2 coherent, conditioning was the whole story"
+      framing overstated how solved this is. Not closed to green: still needs either (a) more
+      seeds to establish whether ~75% "acceptable" is this checkpoint's real ceiling (2B parameter
+      LTX-Video is known to need CFG/step tuning per-prompt in the official repo too) or (b) a
+      genuine remaining bug specific to certain seeds -- not yet distinguished. Real next step if
+      pursued further: check whether higher CFG scale or more steps stabilizes the weaker seeds
+      (cheap to test, doesn't require new code), before assuming a structural bug.
+
 ### 1c. 🔴 — real, unresolved regressions/bugs, higher-risk, do not skip
 - [x] **Wan 2.1/2.2 Video — MAJOR FINDING, 2026-09-18: the grid artifact appears to be GONE.**
       Two fresh real runs (256×256/20-step, real UMT5 conditioning, seeds 42 and 7) both produced
