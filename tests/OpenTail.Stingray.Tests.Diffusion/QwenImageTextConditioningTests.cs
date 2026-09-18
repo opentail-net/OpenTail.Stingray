@@ -54,4 +54,25 @@ public sealed class QwenImageTextConditioningTests
         }
         Assert.False(allZero, "Qwen2.5-VL hidden states are all-zero -- likely a wiring bug");
     }
+
+    [Fact]
+    public void QwenImageTextConditioning_Encode_RealWeights_ProducesFiniteConditioning()
+    {
+        string? modelPath = FindModelPath("Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf");
+        Assert.SkipUnless(modelPath != null, "Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf not found");
+
+        using var model = GgufModel.Open(modelPath!);
+        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var tokenizer = GgufTokenizer.FromGgufModel(model);
+        using var backend = new OpenTail.Stingray.Cpu.CpuBackend();
+        using var fwd = new Engine.ForwardPass(model, backend, hp);
+
+        var (embeds, nTokens) = OpenTail.Stingray.Diffusion.QwenImage.QwenImageTextConditioning.Encode(
+            fwd, tokenizer, "a red apple on a wooden table");
+
+        Assert.True(nTokens > 0);
+        Assert.Equal(nTokens * OpenTail.Stingray.Diffusion.QwenImage.QwenImageModel.ContextDim, embeds.Length);
+        foreach (var v in embeds)
+            Assert.True(float.IsFinite(v), "QwenImageTextConditioning.Encode output contains NaN/Inf");
+    }
 }
