@@ -367,20 +367,34 @@ itself is now complete and proven, not just its individual pieces.
      use). This port's `ComputeModulationVec` already does the distilled-guidance path — confirmed
      NOT the cause.
    **Real, not-yet-checked candidates for the next investigation round** (in likely-cost-to-check
-   order): (a) the shared-modulation split order/mapping (real `Modulation.forward` returns
-   `out.chunk(multiplier)` — confirmed the chunk COUNT and general shape earlier, but not
-   independently re-verified that shift/scale/gate map to chunks 0/1/2 in that exact order, not
-   e.g. gate/shift/scale); (b) the gated-FFN split order (`u1, u2 = x.chunk(2)`, confirmed which
-   half gates which, but worth a second look); (c) a genuine RoPE frequency/rotation bug specific
-   to the 4-axis scheme (the 3-axis→4-axis rewrite was structural, not independently numeric-
-   verified); (d) the VAE's per-channel BatchNorm eps/formula or the pixel-unshuffle index mapping
-   (`(c pi pj) i j -> c (i pi) (j pj)` — confirmed the einops semantics by reasoning, not by a
-   real numeric round-trip test); (e) a latent-space scale mismatch between what the DiT actually
-   outputs and what the VAE expects (FLUX.1's own fix history includes exactly this class of bug).
-   **Do not report FLUX.2 as visually verified until one of these is found and fixed and a
-   re-run shows real structure** — the wiring milestone (all 3 components load and run together
-   without crashing) is real and worth keeping, but image correctness is now a confirmed open
-   question, not just an unconfirmed one.
+   order): (a) ~~shared-modulation chunk order~~ **RE-CHECKED 2026-09-18, CONFIRMED CORRECT**:
+   `Modulation.forward`'s real `out.chunk(multiplier)` then `img_mod1_shift, img_mod1_scale,
+   img_mod1_gate = img_mod1` confirms chunk order is literally shift/scale/gate (chunks 0/1/2 for
+   mod1, 3/4/5 for mod2) — this port's `ComputeModulation`/`ApplyDoubleBlockReal`/
+   `ApplySingleBlockReal` unpack in the identical order; (b) ~~gated-FFN split order~~
+   **RE-CHECKED, CONFIRMED CORRECT**: real `u1, u2 = x.chunk(2); SiLU(u1)*u2` matches this port's
+   `u1`=first half gated by SiLU, `u2`=second half, exactly; (c) ~~RoPE 4-axis assignment~~
+   **RE-CHECKED, CONFIRMED CORRECT**: real position-id tensor's last axis is literally `[t,h,w,l]`
+   in that order (`prc_img`'s `cartesian_prod(coords["t"], coords["h"], coords["w"], coords["l"])`),
+   `EmbedND.forward` applies `axes_dim[i]` to `ids[...,i]` in that same order — this port's
+   `Flux2Pipeline`'s position-array construction and `Flux2RoPE.BuildContextFreqs`'s per-axis loop
+   both use the identical `[t,h,w,l]` index order; (d) the VAE's per-channel BatchNorm
+   eps-inside-sqrt formula and the pixel-unshuffle index mapping were re-derived by hand from the
+   einops semantics (`(c pi pj) i j -> c (i pi) (j pj)` decomposes to `cIndex=c*4+pi*2+pj`,
+   `outRow=i*2+pi`, `outCol=j*2+pj`) and self-consistently match this port's implementation, but
+   have NOT been checked against a real numeric round-trip (encode-then-decode a known input and
+   confirm identity) — the one remaining candidate in this list not yet independently confirmed by
+   direct source comparison; (e) a latent-space scale mismatch between what the DiT actually
+   outputs and what the VAE's `post_quant_conv`/`conv_in` expect (FLUX.1's own fix history includes
+   exactly this class of bug) — also not yet checked.
+   **After re-checking (a)/(b)/(c) directly against the real source and finding all three exactly
+   correct, the remaining bug is most likely in (d) or (e), or somewhere not yet on this list at
+   all** (e.g. a subtlety in the fused single-block `linear1`/`linear2` output-concatenation order,
+   or the attention scale/masking within `DiffusionOps.MultiHeadAttention` as used here — both
+   spot-checked by re-reading, not by a numeric test). **Do not report FLUX.2 as visually verified
+   until the bug is found and fixed and a re-run shows real structure** — the wiring milestone
+   (all 3 components load and run together without crashing) is real and worth keeping, but image
+   correctness is a confirmed open bug, not just an unconfirmed claim.
 
 This is real, substantial implementation work (steps 2-5 each comparable in scope to one of this
 session's other single-model fixes) — scoped here so it can be picked up as a focused task rather
