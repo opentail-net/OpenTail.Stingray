@@ -23,6 +23,7 @@ public sealed class AceStepDiTGpuWorkspace : IDisposable
     public CoreTensor XFull { get; }
 
     public CoreTensor Normed1 { get; }
+    public CoreTensor Qkv { get; }
     public CoreTensor Q { get; }
     public CoreTensor K8 { get; }
     public CoreTensor V8 { get; }
@@ -39,8 +40,8 @@ public sealed class AceStepDiTGpuWorkspace : IDisposable
     public CoreTensor AfterCross { get; }
 
     public CoreTensor Normed3 { get; }
+    public CoreTensor MlpGateUp { get; }
     public CoreTensor MlpGate { get; }
-    public CoreTensor MlpUp { get; }
     public CoreTensor MlpOut { get; }
 
     public CoreTensor Velocity { get; }
@@ -54,7 +55,7 @@ public sealed class AceStepDiTGpuWorkspace : IDisposable
     public CoreTensor LayerMods { get; }
     public CoreTensor FinalMod { get; }
 
-    public AceStepDiTGpuWorkspace(IComputeBackend backend, int maxFrames, int condLen, int numLayers = 24)
+    public AceStepDiTGpuWorkspace(IComputeBackend backend, int maxFrames, int condLen, int numLayers = 24, int maxSteps = 32)
     {
         _backend = backend;
         MaxFrames = maxFrames;
@@ -67,6 +68,7 @@ public sealed class AceStepDiTGpuWorkspace : IDisposable
         int patch = AceStepConfig.PatchSize; // 2
         int inDim = inCh * patch; // 384
         int outDim = acousticDim * patch; // 128
+        int qDim = AceStepConfig.NumAttentionHeads * AceStepConfig.HeadDim; // 2048
         int kvDim = AceStepConfig.NumKeyValueHeads * AceStepConfig.HeadDim; // 1024
         int ffn = AceStepConfig.IntermediateSize; // 6144
 
@@ -76,6 +78,7 @@ public sealed class AceStepDiTGpuWorkspace : IDisposable
         XFull = backend.Allocate(TensorShape.D2(MaxTokens, hidden));
 
         Normed1 = backend.Allocate(TensorShape.D2(MaxTokens, hidden));
+        Qkv = backend.Allocate(TensorShape.D2(MaxTokens, qDim + 2 * kvDim));
         Q = backend.Allocate(TensorShape.D2(MaxTokens, hidden));
         K8 = backend.Allocate(TensorShape.D2(MaxTokens, kvDim));
         V8 = backend.Allocate(TensorShape.D2(MaxTokens, kvDim));
@@ -92,8 +95,8 @@ public sealed class AceStepDiTGpuWorkspace : IDisposable
         AfterCross = backend.Allocate(TensorShape.D2(MaxTokens, hidden));
 
         Normed3 = backend.Allocate(TensorShape.D2(MaxTokens, hidden));
+        MlpGateUp = backend.Allocate(TensorShape.D2(MaxTokens, 2 * ffn));
         MlpGate = backend.Allocate(TensorShape.D2(MaxTokens, ffn));
-        MlpUp = backend.Allocate(TensorShape.D2(MaxTokens, ffn));
         MlpOut = backend.Allocate(TensorShape.D2(MaxTokens, hidden));
 
         Velocity = backend.Allocate(TensorShape.D2(MaxTokens, outDim));
@@ -110,8 +113,8 @@ public sealed class AceStepDiTGpuWorkspace : IDisposable
             CondLayerV[l] = backend.Allocate(TensorShape.D2(condLen, hidden));
         }
 
-        LayerMods = backend.AllocatePinned(TensorShape.D1(numLayers * 6 * hidden));
-        FinalMod = backend.AllocatePinned(TensorShape.D1(2 * hidden));
+        LayerMods = backend.AllocatePinned(TensorShape.D1(maxSteps * numLayers * 6 * hidden));
+        FinalMod = backend.AllocatePinned(TensorShape.D1(maxSteps * 2 * hidden));
     }
 
     public void Dispose()
@@ -125,6 +128,7 @@ public sealed class AceStepDiTGpuWorkspace : IDisposable
         _backend.Free(XFull);
 
         _backend.Free(Normed1);
+        _backend.Free(Qkv);
         _backend.Free(Q);
         _backend.Free(K8);
         _backend.Free(V8);
@@ -141,8 +145,8 @@ public sealed class AceStepDiTGpuWorkspace : IDisposable
         _backend.Free(AfterCross);
 
         _backend.Free(Normed3);
+        _backend.Free(MlpGateUp);
         _backend.Free(MlpGate);
-        _backend.Free(MlpUp);
         _backend.Free(MlpOut);
 
         _backend.Free(Velocity);

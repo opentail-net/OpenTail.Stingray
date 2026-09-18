@@ -10372,6 +10372,78 @@ internal static class Shaders
         """;
 
     /// <summary>
+    /// Unpack fused 5-way differential QKV [nTokens, 5*dim] into separate Q, K, V, QDiff, KDiff buffers [nSeq, dim].
+    /// </summary>
+    internal const string DiffUnpack5 = """
+        #version 450
+        layout(local_size_x = 256) in;
+
+        layout(binding = 0) readonly buffer SrcBuf   { float srcData[]; };
+        layout(binding = 1) writeonly buffer QBuf     { float qData[]; };
+        layout(binding = 2) writeonly buffer KBuf     { float kData[]; };
+        layout(binding = 3) writeonly buffer VBuf     { float vData[]; };
+        layout(binding = 4) writeonly buffer QDDiffBuf { float qdData[]; };
+        layout(binding = 5) writeonly buffer KDDiffBuf { float kdData[]; };
+
+        layout(push_constant) uniform Params {
+            uint nTokens;
+            uint dim;
+            uint dstTokenOffset;
+        };
+
+        void main() {
+            uint idx = gl_GlobalInvocationID.x;
+            uint total = nTokens * dim;
+            if (idx >= total) return;
+
+            uint t = idx / dim;
+            uint d = idx % dim;
+
+            uint srcOff = t * (dim * 5u) + d;
+            uint dstOff = (dstTokenOffset + t) * dim + d;
+
+            qData[dstOff] = srcData[srcOff];
+            kData[dstOff] = srcData[srcOff + dim];
+            vData[dstOff] = srcData[srcOff + dim * 2u];
+            qdData[dstOff] = srcData[srcOff + dim * 3u];
+            kdData[dstOff] = srcData[srcOff + dim * 4u];
+        }
+        """;
+
+    /// <summary>
+    /// Unpack fused 2-way differential Q [nTokens, 2*dim] into separate Q, QDiff buffers [nSeq, dim].
+    /// </summary>
+    internal const string DiffUnpack2 = """
+        #version 450
+        layout(local_size_x = 256) in;
+
+        layout(binding = 0) readonly buffer SrcBuf   { float srcData[]; };
+        layout(binding = 1) writeonly buffer QBuf     { float qData[]; };
+        layout(binding = 2) writeonly buffer QDDiffBuf { float qdData[]; };
+
+        layout(push_constant) uniform Params {
+            uint nTokens;
+            uint dim;
+            uint dstTokenOffset;
+        };
+
+        void main() {
+            uint idx = gl_GlobalInvocationID.x;
+            uint total = nTokens * dim;
+            if (idx >= total) return;
+
+            uint t = idx / dim;
+            uint d = idx % dim;
+
+            uint srcOff = t * (dim * 2u) + d;
+            uint dstOff = (dstTokenOffset + t) * dim + d;
+
+            qData[dstOff] = srcData[srcOff];
+            qdData[dstOff] = srcData[srcOff + dim];
+        }
+        """;
+
+    /// <summary>
     /// Unpack fused Linear1 [nSeq, 7*dim] into Q, K, V [nSeq, dim] and MLP [nSeq, 4*dim].
     /// </summary>
     internal const string FluxUnpackSingleLin1 = """
@@ -10443,6 +10515,75 @@ internal static class Shaders
             for (uint m = 0u; m < 4u; m++) {
                 outData[dstBase + dim + m * dim + d] = mlpData[mlpSrc + m * dim + d];
             }
+        }
+        """;
+
+    /// <summary>
+    /// Unpack fused QKV [nTokens, qDim + 2*kvDim] into Q [nTokens, qDim], K [nTokens, kvDim], and V [nTokens, kvDim].
+    /// </summary>
+    internal const string UnpackQkvGqa = """
+        #version 450
+        layout(local_size_x = 256) in;
+
+        layout(binding = 0) readonly buffer QkvBuf { float qkvData[]; };
+        layout(binding = 1) writeonly buffer QBuf   { float qData[]; };
+        layout(binding = 2) writeonly buffer KBuf   { float kData[]; };
+        layout(binding = 3) writeonly buffer VBuf   { float vData[]; };
+
+        layout(push_constant) uniform Params {
+            uint nTokens;
+            uint qDim;
+            uint kvDim;
+        };
+
+        void main() {
+            uint idx = gl_GlobalInvocationID.x;
+            uint rowStride = qDim + 2u * kvDim;
+            uint total = nTokens * rowStride;
+            if (idx >= total) return;
+
+            uint t = idx / rowStride;
+            uint c = idx % rowStride;
+
+            if (c < qDim) {
+                qData[t * qDim + c] = qkvData[idx];
+            } else if (c < qDim + kvDim) {
+                kData[t * kvDim + (c - qDim)] = qkvData[idx];
+            } else {
+                vData[t * kvDim + (c - qDim - kvDim)] = qkvData[idx];
+            }
+        }
+        """;
+
+    /// <summary>
+    /// Fused SwiGLU activation on [nTokens, 2*ffnDim]:
+    /// out[t, i] = silu(gateup[t, i]) * gateup[t, ffnDim + i]
+    /// where out is [nTokens, ffnDim].
+    /// </summary>
+    internal const string SwiGluSplit = """
+        #version 450
+        layout(local_size_x = 256) in;
+
+        layout(binding = 0) readonly buffer InBuf  { float gateUpData[]; };
+        layout(binding = 1) writeonly buffer OutBuf { float outData[]; };
+
+        layout(push_constant) uniform Params {
+            uint nTokens;
+            uint ffnDim;
+        };
+
+        void main() {
+            uint idx = gl_GlobalInvocationID.x;
+            uint total = nTokens * ffnDim;
+            if (idx >= total) return;
+
+            uint t = idx / ffnDim;
+            uint i = idx % ffnDim;
+
+            uint inBase = t * (2u * ffnDim);
+            float g = gateUpData[inBase + i];
+            float u = gateUpData[inBase + ffnDim + i];
+            outData[idx] = (g / (1.0 + exp(-g))) * u;
         }
         """;
 

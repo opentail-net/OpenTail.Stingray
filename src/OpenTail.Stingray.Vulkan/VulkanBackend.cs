@@ -1677,6 +1677,8 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
     private ComputePipeline? _rope3dPipeline;
     private ComputePipeline? _flux2DRoPEPipeline;
     private ComputePipeline? _fluxUnpackQkvPipeline;
+    private ComputePipeline? _diffUnpack5Pipeline;
+    private ComputePipeline? _diffUnpack2Pipeline;
     private ComputePipeline? _fluxUnpackSingleLin1Pipeline;
     private ComputePipeline? _fluxConcatAttnMlpPipeline;
     private ComputePipeline? _fluxConcatTxtImgPipeline;
@@ -1687,6 +1689,8 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
     private ComputePipeline? _partialHeadRoPEPipeline;
     private ComputePipeline? _repeatInterleaveHeadsPipeline;
     private ComputePipeline? _packProjInWindowPipeline;
+    private ComputePipeline? _unpackQkvGqaPipeline;
+    private ComputePipeline? _swiGluSplitPipeline;
 
     private struct RmsNormParams{ public uint n; public float eps; }
     private struct RmsNormBatchedParams { public uint n; public float eps; public uint numTokens; }
@@ -1797,6 +1801,8 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
     private struct T5MultiHeadAttentionRelBiasParams { public uint qSeq; public uint kvSeq; public uint numHeads; public float scale; }
     private struct WanQkvSplitNormRoPEParams { public uint numTokens; public uint numHeads; public uint headDim; public uint dim; public uint hasNormQ; public uint hasNormK; public float eps; }
     private struct PartialHeadRoPEParams { public uint numTokens; public uint dim; public uint headDim; public uint numRopeHeads; }
+    private struct UnpackQkvGqaParams { public uint nTokens; public uint qDim; public uint kvDim; }
+    private struct SwiGluSplitParams { public uint nTokens; public uint ffnDim; }
 
     private void DispatchOrRecord(ComputePipeline pipe, ReadOnlySpan<GpuBuffer> buffers,
         uint groupX, void* push, uint groupY = 1, uint groupZ = 1)
@@ -4384,6 +4390,33 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
         DispatchOrRecord(_packProjInWindowPipeline, [GetBuffer(context), GetBuffer(noisy), GetBuffer(window)], groupsX, &p);
     }
 
+    public void UnpackQkvGqa(Tensor qkv, Tensor q, Tensor k, Tensor v, int nTokens, int qDim, int kvDim)
+    {
+        _unpackQkvGqaPipeline ??= new ComputePipeline(this, Shaders.UnpackQkvGqa, 4, pushConstantSize: sizeof(UnpackQkvGqaParams));
+        var p = new UnpackQkvGqaParams
+        {
+            nTokens = (uint)nTokens,
+            qDim = (uint)qDim,
+            kvDim = (uint)kvDim
+        };
+        uint total = (uint)(nTokens * (qDim + 2 * kvDim));
+        uint groups = (total + 255u) / 256u;
+        DispatchOrRecord(_unpackQkvGqaPipeline, [GetBuffer(qkv), GetBuffer(q), GetBuffer(k), GetBuffer(v)], groups, &p);
+    }
+
+    public void SwiGluSplit(Tensor output, Tensor gateUp, int nTokens, int ffnDim)
+    {
+        _swiGluSplitPipeline ??= new ComputePipeline(this, Shaders.SwiGluSplit, 2, pushConstantSize: sizeof(SwiGluSplitParams));
+        var p = new SwiGluSplitParams
+        {
+            nTokens = (uint)nTokens,
+            ffnDim = (uint)ffnDim
+        };
+        uint total = (uint)(nTokens * ffnDim);
+        uint groups = (total + 255u) / 256u;
+        DispatchOrRecord(_swiGluSplitPipeline, [GetBuffer(gateUp), GetBuffer(output)], groups, &p);
+    }
+
     public void FluxUnpackQkv(Tensor qkv, Tensor q, Tensor k, Tensor v, int nTokens, int dim, int dstTokenOffset)
     {
         _fluxUnpackQkvPipeline ??= new ComputePipeline(this, Shaders.FluxUnpackQkv, 4, pushConstantSize: sizeof(FluxUnpackQkvParams));
@@ -4396,6 +4429,34 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
         uint total = (uint)(nTokens * dim);
         uint groups = (total + 255u) / 256u;
         DispatchOrRecord(_fluxUnpackQkvPipeline, [GetBuffer(qkv), GetBuffer(q), GetBuffer(k), GetBuffer(v)], groups, &p);
+    }
+
+    public void DiffUnpack5(Tensor src, Tensor q, Tensor k, Tensor v, Tensor qDiff, Tensor kDiff, int nTokens, int dim, int dstTokenOffset = 0)
+    {
+        _diffUnpack5Pipeline ??= new ComputePipeline(this, Shaders.DiffUnpack5, 6, pushConstantSize: sizeof(FluxUnpackQkvParams));
+        var p = new FluxUnpackQkvParams
+        {
+            nTokens = (uint)nTokens,
+            dim = (uint)dim,
+            dstTokenOffset = (uint)dstTokenOffset
+        };
+        uint total = (uint)(nTokens * dim);
+        uint groups = (total + 255u) / 256u;
+        DispatchOrRecord(_diffUnpack5Pipeline, [GetBuffer(src), GetBuffer(q), GetBuffer(k), GetBuffer(v), GetBuffer(qDiff), GetBuffer(kDiff)], groups, &p);
+    }
+
+    public void DiffUnpack2(Tensor src, Tensor q, Tensor qDiff, int nTokens, int dim, int dstTokenOffset = 0)
+    {
+        _diffUnpack2Pipeline ??= new ComputePipeline(this, Shaders.DiffUnpack2, 3, pushConstantSize: sizeof(FluxUnpackQkvParams));
+        var p = new FluxUnpackQkvParams
+        {
+            nTokens = (uint)nTokens,
+            dim = (uint)dim,
+            dstTokenOffset = (uint)dstTokenOffset
+        };
+        uint total = (uint)(nTokens * dim);
+        uint groups = (total + 255u) / 256u;
+        DispatchOrRecord(_diffUnpack2Pipeline, [GetBuffer(src), GetBuffer(q), GetBuffer(qDiff)], groups, &p);
     }
 
     public void FluxUnpackSingleLin1(Tensor lin1, Tensor q, Tensor k, Tensor v, Tensor mlp, int nSeq, int dim)
@@ -4702,6 +4763,8 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
         _rope3dPipeline?.Dispose();
         _flux2DRoPEPipeline?.Dispose();
         _fluxUnpackQkvPipeline?.Dispose();
+        _diffUnpack5Pipeline?.Dispose();
+        _diffUnpack2Pipeline?.Dispose();
         _fluxUnpackSingleLin1Pipeline?.Dispose();
         _fluxConcatAttnMlpPipeline?.Dispose();
         _fluxConcatTxtImgPipeline?.Dispose();
@@ -4712,6 +4775,8 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
         _partialHeadRoPEPipeline?.Dispose();
         _repeatInterleaveHeadsPipeline?.Dispose();
         _packProjInWindowPipeline?.Dispose();
+        _unpackQkvGqaPipeline?.Dispose();
+        _swiGluSplitPipeline?.Dispose();
 
         _downloadStaging?.Dispose();
         _uploadStaging?.Dispose();

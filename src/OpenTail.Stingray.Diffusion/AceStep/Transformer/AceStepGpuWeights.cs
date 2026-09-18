@@ -20,9 +20,7 @@ public sealed class AceStepGpuWeights : IDisposable
 
         public float[] ScaleShiftTable { get; }
         public CoreTensor SelfAttnNormW { get; }
-        public CoreTensor SelfAttnQW { get; }
-        public CoreTensor SelfAttnKW { get; }
-        public CoreTensor SelfAttnVW { get; }
+        public CoreTensor SelfAttnQkvW { get; }
         public CoreTensor SelfAttnOW { get; }
         public CoreTensor SelfAttnQNormW { get; }
         public CoreTensor SelfAttnKNormW { get; }
@@ -36,8 +34,7 @@ public sealed class AceStepGpuWeights : IDisposable
         public CoreTensor CrossAttnKNormW { get; }
 
         public CoreTensor MlpNormW { get; }
-        public CoreTensor MlpGateW { get; }
-        public CoreTensor MlpUpW { get; }
+        public CoreTensor MlpGateUpW { get; }
         public CoreTensor MlpDownW { get; }
 
         public BlockWeights(IComputeBackend backend, AceStepDiTLayerWeights lw, int hidden, int qDim, int kvDim, int ffn, int headDim)
@@ -46,9 +43,14 @@ public sealed class AceStepGpuWeights : IDisposable
             ScaleShiftTable = lw.ScaleShiftTable;
 
             SelfAttnNormW = backend.Upload(lw.SelfAttnNormWeight, TensorShape.D1(hidden), exact: true);
-            SelfAttnQW = UploadWeight(backend, lw.SelfAttn.QWeight.F32!, TensorShape.D2(qDim, hidden));
-            SelfAttnKW = UploadWeight(backend, lw.SelfAttn.KWeight.F32!, TensorShape.D2(kvDim, hidden));
-            SelfAttnVW = UploadWeight(backend, lw.SelfAttn.VWeight.F32!, TensorShape.D2(kvDim, hidden));
+            // Fuse SelfAttn Q, K, V: [4096, hidden]
+            int qkvRows = qDim + 2 * kvDim;
+            var qkvData = new float[qkvRows * hidden];
+            Array.Copy(lw.SelfAttn.QWeight.F32!, 0, qkvData, 0, qDim * hidden);
+            Array.Copy(lw.SelfAttn.KWeight.F32!, 0, qkvData, qDim * hidden, kvDim * hidden);
+            Array.Copy(lw.SelfAttn.VWeight.F32!, 0, qkvData, (qDim + kvDim) * hidden, kvDim * hidden);
+            SelfAttnQkvW = UploadWeight(backend, qkvData, TensorShape.D2(qkvRows, hidden));
+
             SelfAttnOW = UploadWeight(backend, lw.SelfAttn.OWeight.F32!, TensorShape.D2(hidden, qDim));
             SelfAttnQNormW = backend.Upload(lw.SelfAttn.QNormWeight, TensorShape.D1(headDim), exact: true);
             SelfAttnKNormW = backend.Upload(lw.SelfAttn.KNormWeight, TensorShape.D1(headDim), exact: true);
@@ -62,17 +64,19 @@ public sealed class AceStepGpuWeights : IDisposable
             CrossAttnKNormW = backend.Upload(lw.CrossAttn.KNormWeight, TensorShape.D1(headDim), exact: true);
 
             MlpNormW = backend.Upload(lw.MlpNormWeight, TensorShape.D1(hidden), exact: true);
-            MlpGateW = UploadWeight(backend, lw.MlpGateWeight.F32!, TensorShape.D2(ffn, hidden));
-            MlpUpW = UploadWeight(backend, lw.MlpUpWeight.F32!, TensorShape.D2(ffn, hidden));
+            // Fuse MLP Gate and Up: [12288, hidden]
+            var gateUpData = new float[2 * ffn * hidden];
+            Array.Copy(lw.MlpGateWeight.F32!, 0, gateUpData, 0, ffn * hidden);
+            Array.Copy(lw.MlpUpWeight.F32!, 0, gateUpData, ffn * hidden, ffn * hidden);
+            MlpGateUpW = UploadWeight(backend, gateUpData, TensorShape.D2(2 * ffn, hidden));
+
             MlpDownW = UploadWeight(backend, lw.MlpDownWeight.F32!, TensorShape.D2(hidden, ffn));
         }
 
         public void Dispose()
         {
             _backend.Free(SelfAttnNormW);
-            _backend.Free(SelfAttnQW);
-            _backend.Free(SelfAttnKW);
-            _backend.Free(SelfAttnVW);
+            _backend.Free(SelfAttnQkvW);
             _backend.Free(SelfAttnOW);
             _backend.Free(SelfAttnQNormW);
             _backend.Free(SelfAttnKNormW);
@@ -86,8 +90,7 @@ public sealed class AceStepGpuWeights : IDisposable
             _backend.Free(CrossAttnKNormW);
 
             _backend.Free(MlpNormW);
-            _backend.Free(MlpGateW);
-            _backend.Free(MlpUpW);
+            _backend.Free(MlpGateUpW);
             _backend.Free(MlpDownW);
         }
     }

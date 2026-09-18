@@ -1,3 +1,6 @@
+using OpenTail.Stingray.Core;
+using CoreTensor = OpenTail.Stingray.Core.Tensor;
+
 namespace OpenTail.Stingray.Diffusion.StableAudio;
 
 /// <summary>
@@ -47,6 +50,7 @@ public sealed class StableAudioMediumDiT : IDisposable
     private readonly bool _ownsLoader;
     private readonly Dictionary<float[], float[]> _condEmbedCache = new(ReferenceEqualityComparer.Instance);
     private readonly Dictionary<float[], float[]> _globalEmbedCache = new(ReferenceEqualityComparer.Instance);
+    private StableAudioMediumGpuWeights? _gpuWeights;
 
     public StableAudioMediumDiT(string path)
     {
@@ -343,8 +347,212 @@ public sealed class StableAudioMediumDiT : IDisposable
         return DiffusionOps.Linear(h, w2, b2, seq, FfInner, Dim);
     }
 
+    public StableAudioMediumGpuWeights EnsureGpuWeights(IComputeBackend backend)
+    {
+        return _gpuWeights ??= new StableAudioMediumGpuWeights(backend, ReadWeight, Depth, Dim, IoChannels, HeadDim, FfInner, MemoryTokens);
+    }
+
+    /// <summary>
+    /// Precomputes and caches differential cross-attention K, KDiff, and V projections on GPU for all 24 layers.
+    /// Since prompt and duration text conditioning is constant across all diffusion steps,
+    /// this runs once before step 0, eliminating redundant GEMM and QK-norm dispatches.
+    /// </summary>
+    public void PrecomputeConditioningGpu(
+        float[] condTokens, int nCond, bool isCond,
+        StableAudioMediumGpuWorkspace ws, StableAudioMediumGpuWeights gpuWeights, IComputeBackend backend)
+    {
+        if (!_condEmbedCache.TryGetValue(condTokens, out var condEmbed))
+        {
+            condEmbed = ToCondEmbed(condTokens, nCond);
+            _condEmbedCache[condTokens] = condEmbed;
+        }
+
+        var targetK = isCond ? ws.CondLayerK : ws.UncondLayerK;
+        var targetKDiff = isCond ? ws.CondLayerKDiff : ws.UncondLayerKDiff;
+        var targetV = isCond ? ws.CondLayerV : ws.UncondLayerV;
+
+        for (int layer = 0; layer < Depth; layer++)
+        {
+            string p = $"model.model.transformer.layers.{layer}";
+            var kvW = ReadWeight($"{p}.cross_attn.to_kv.weight");
+            var kNormW = ReadWeight($"{p}.cross_attn.k_norm.gamma");
+
+            var kv = DiffusionOps.Linear(condEmbed, kvW, null, nCond, Dim, 3 * Dim);
+            var k = new float[nCond * Dim];
+            var kDiff = new float[nCond * Dim];
+            var v = new float[nCond * Dim];
+            for (int t = 0; t < nCond; t++)
+            {
+                int b = t * 3 * Dim;
+                kv.AsSpan(b, Dim).CopyTo(k.AsSpan(t * Dim, Dim));
+                kv.AsSpan(b + Dim, Dim).CopyTo(kDiff.AsSpan(t * Dim, Dim));
+                kv.AsSpan(b + 2 * Dim, Dim).CopyTo(v.AsSpan(t * Dim, Dim));
+            }
+
+            StableAudioAttentionKernels.PerHeadRmsNorm(k, nCond, Heads, Dim, kNormW);
+            StableAudioAttentionKernels.PerHeadRmsNorm(kDiff, nCond, Heads, Dim, kNormW);
+
+            backend.WritePinned(targetK[layer], k);
+            backend.WritePinned(targetKDiff[layer], kDiff);
+            backend.WritePinned(targetV[layer], v);
+        }
+    }
+
+    /// <summary>
+    /// Executes one full 24-layer differential DiT forward pass entirely on the GPU.
+    /// In integrated GPU residency mode, the input latent in <paramref name="ws"/>.Latent
+    /// is transformed into <paramref name="outputVelocity"/> with zero CPU synchronizations.
+    /// </summary>
+    public void ForwardGpuCore(
+        StableAudioMediumGpuWorkspace ws,
+        int seqLen,
+        float[] secondsTotalRaw,
+        float timestep,
+        bool isCond,
+        int nCond,
+        StableAudioMediumGpuWeights gpuWeights,
+        IVisionOpsBackend visionOps,
+        IImageOpsBackend imageOps,
+        CoreTensor outputVelocity)
+    {
+        if (!_globalEmbedCache.TryGetValue(secondsTotalRaw, out var globalEmbedBase))
+        {
+            globalEmbedBase = ToGlobalEmbed(secondsTotalRaw);
+            _globalEmbedCache[secondsTotalRaw] = globalEmbedBase;
+        }
+
+        var globalEmbed = new float[Dim];
+        globalEmbedBase.AsSpan().CopyTo(globalEmbed);
+        var timestepEmbed = ToTimestepEmbed(timestep);
+        for (int i = 0; i < Dim; i++) globalEmbed[i] += timestepEmbed[i];
+
+        var globalCond = GlobalCondEmbedder(globalEmbed);
+
+        // Precompute and write layer modulations into pinned memory
+        var hostMod = new float[6 * Dim];
+        for (int layer = 0; layer < Depth; layer++)
+        {
+            var toScaleShiftGate = gpuWeights.Layers[layer].ToScaleShiftGate;
+            string p = $"model.model.transformer.layers.{layer}";
+            var preNormW = ReadWeight($"{p}.pre_norm.gamma");
+            var ffNormW = ReadWeight($"{p}.ff_norm.gamma");
+
+            for (int i = 0; i < Dim; i++)
+            {
+                float g0 = toScaleShiftGate[i] + globalCond[i];
+                float g1 = toScaleShiftGate[Dim + i] + globalCond[Dim + i];
+                float g2 = toScaleShiftGate[2 * Dim + i] + globalCond[2 * Dim + i];
+                float g3 = toScaleShiftGate[3 * Dim + i] + globalCond[3 * Dim + i];
+                float g4 = toScaleShiftGate[4 * Dim + i] + globalCond[4 * Dim + i];
+                float g5 = toScaleShiftGate[5 * Dim + i] + globalCond[5 * Dim + i];
+
+                // s' = gamma * (1 + scale) - 1
+                // sh' = shift
+                // gate = sigmoid(1 - g)
+                hostMod[i] = preNormW[i] * (1f + g0) - 1f;
+                hostMod[Dim + i] = g1;
+                hostMod[2 * Dim + i] = StableAudioAttentionKernels.Sigmoid(1f - g2);
+
+                hostMod[3 * Dim + i] = ffNormW[i] * (1f + g3) - 1f;
+                hostMod[4 * Dim + i] = g4;
+                hostMod[5 * Dim + i] = StableAudioAttentionKernels.Sigmoid(1f - g5);
+            }
+            backend_WritePinned(imageOps, ws.LayerMods[layer], hostMod);
+        }
+
+        int totalSeq = MemoryTokens + seqLen;
+
+        // Input preprocess conv 1x1 + residual
+        imageOps.Sgemm(ws.LatentPre, ws.Latent, gpuWeights.PreprocessConvW, seqLen, IoChannels, IoChannels);
+        imageOps.AddInPlace(ws.LatentPre, ws.Latent);
+
+        // Project in
+        imageOps.Sgemm(ws.XIn, ws.LatentPre, gpuWeights.ProjInW, seqLen, IoChannels, Dim);
+
+        // Concat memory tokens
+        visionOps.FluxConcatTxtImg(gpuWeights.MemoryTokens, ws.XIn, ws.XFull, MemoryTokens, seqLen, Dim);
+
+        var targetK = isCond ? ws.CondLayerK : ws.UncondLayerK;
+        var targetKDiff = isCond ? ws.CondLayerKDiff : ws.UncondLayerKDiff;
+        var targetV = isCond ? ws.CondLayerV : ws.UncondLayerV;
+
+        for (int layer = 0; layer < Depth; layer++)
+        {
+            var bw = gpuWeights.Layers[layer];
+            var modTensor = ws.LayerMods[layer];
+
+            // 1. Differential Self-attention
+            visionOps.AdaLNModulate(ws.Normed, ws.XFull, modTensor, totalSeq, Dim, shiftOffset: Dim, scaleOffset: 0, isRmsNorm: true, eps: 1e-5f);
+            imageOps.Sgemm(ws.Qkv, ws.Normed, bw.SelfAttnQkvW, totalSeq, Dim, 5 * Dim);
+            visionOps.DiffUnpack5(ws.Qkv, ws.Q, ws.K, ws.V, ws.QDiff, ws.KDiff, totalSeq, Dim);
+
+            visionOps.RmsNormBatched(ws.Q, ws.Q, bw.SelfAttnQNormGamma, HeadDim, totalSeq * Heads, eps: 1e-5f);
+            visionOps.RmsNormBatched(ws.K, ws.K, bw.SelfAttnKNormGamma, HeadDim, totalSeq * Heads, eps: 1e-5f);
+            visionOps.RmsNormBatched(ws.QDiff, ws.QDiff, bw.SelfAttnQNormGamma, HeadDim, totalSeq * Heads, eps: 1e-5f);
+            visionOps.RmsNormBatched(ws.KDiff, ws.KDiff, bw.SelfAttnKNormGamma, HeadDim, totalSeq * Heads, eps: 1e-5f);
+
+            visionOps.RoPEPartialBatched(ws.Q, basePosition: 0, headDim: HeadDim, ropeDim: RopeRotDim, ropeTheta: RopeTheta, numHeads: Heads, nTok: totalSeq, neox: true);
+            visionOps.RoPEPartialBatched(ws.K, basePosition: 0, headDim: HeadDim, ropeDim: RopeRotDim, ropeTheta: RopeTheta, numHeads: Heads, nTok: totalSeq, neox: true);
+            visionOps.RoPEPartialBatched(ws.QDiff, basePosition: 0, headDim: HeadDim, ropeDim: RopeRotDim, ropeTheta: RopeTheta, numHeads: Heads, nTok: totalSeq, neox: true);
+            visionOps.RoPEPartialBatched(ws.KDiff, basePosition: 0, headDim: HeadDim, ropeDim: RopeRotDim, ropeTheta: RopeTheta, numHeads: Heads, nTok: totalSeq, neox: true);
+
+            imageOps.MultiHeadAttentionTiled(ws.AttnOut, ws.Q, ws.K, ws.V, totalSeq, totalSeq, Heads, HeadDim);
+            imageOps.MultiHeadAttentionTiled(ws.AttnOutDiff, ws.QDiff, ws.KDiff, ws.V, totalSeq, totalSeq, Heads, HeadDim);
+            visionOps.FluxEulerStep(ws.AttnOut, ws.AttnOutDiff, -1.0f, totalSeq * Dim);
+
+            imageOps.Sgemm(ws.AttnProj, ws.AttnOut, bw.SelfAttnToOutW, totalSeq, Dim, Dim);
+            visionOps.ScaleGateAdd(ws.XFull, ws.AttnProj, modTensor, totalSeq, Dim, gateOffset: 2 * Dim);
+
+            // 2. Differential Cross-attention
+            visionOps.RmsNormBatched(ws.CrossNormed, ws.XFull, bw.CrossAttendNormGamma, Dim, totalSeq, eps: 1e-5f);
+            imageOps.Sgemm(ws.CrossQBoth, ws.CrossNormed, bw.CrossAttnQW, totalSeq, Dim, 2 * Dim);
+            visionOps.DiffUnpack2(ws.CrossQBoth, ws.CrossQ, ws.CrossQDiff, totalSeq, Dim);
+
+            visionOps.RmsNormBatched(ws.CrossQ, ws.CrossQ, bw.CrossAttnQNormGamma, HeadDim, totalSeq * Heads, eps: 1e-5f);
+            visionOps.RmsNormBatched(ws.CrossQDiff, ws.CrossQDiff, bw.CrossAttnQNormGamma, HeadDim, totalSeq * Heads, eps: 1e-5f);
+
+            imageOps.MultiHeadAttentionTiled(ws.CrossAttnOut, ws.CrossQ, targetK[layer], targetV[layer], totalSeq, nCond, Heads, HeadDim);
+            imageOps.MultiHeadAttentionTiled(ws.CrossAttnOutDiff, ws.CrossQDiff, targetKDiff[layer], targetV[layer], totalSeq, nCond, Heads, HeadDim);
+            visionOps.FluxEulerStep(ws.CrossAttnOut, ws.CrossAttnOutDiff, -1.0f, totalSeq * Dim);
+
+            imageOps.Sgemm(ws.CrossAttnProj, ws.CrossAttnOut, bw.CrossAttnToOutW, totalSeq, Dim, Dim);
+            imageOps.AddInPlace(ws.XFull, ws.CrossAttnProj);
+
+            // 3. SwiGLU FeedForward
+            visionOps.AdaLNModulate(ws.FfNormed, ws.XFull, modTensor, totalSeq, Dim, shiftOffset: 4 * Dim, scaleOffset: 3 * Dim, isRmsNorm: true, eps: 1e-5f);
+            imageOps.Sgemm(ws.FfGate, ws.FfNormed, bw.Ff0GateW, totalSeq, Dim, FfInner);
+            imageOps.AddRowBroadcastInPlace(ws.FfGate, bw.Ff0GateB, totalSeq, FfInner);
+
+            imageOps.Sgemm(ws.FfUp, ws.FfNormed, bw.Ff0UpW, totalSeq, Dim, FfInner);
+            imageOps.AddRowBroadcastInPlace(ws.FfUp, bw.Ff0UpB, totalSeq, FfInner);
+
+            imageOps.SiLuMul(ws.FfGate, ws.FfUp);
+
+            imageOps.Sgemm(ws.FfOut, ws.FfGate, bw.Ff2W, totalSeq, FfInner, Dim);
+            imageOps.AddRowBroadcastInPlace(ws.FfOut, bw.Ff2B, totalSeq, Dim);
+
+            visionOps.ScaleGateAdd(ws.XFull, ws.FfOut, modTensor, totalSeq, Dim, gateOffset: 5 * Dim);
+        }
+
+        // Slice out acoustic tokens
+        visionOps.FluxSliceImg(ws.XFull, ws.Stripped, MemoryTokens, seqLen, Dim);
+
+        // Project out
+        imageOps.Sgemm(ws.OutLow, ws.Stripped, gpuWeights.ProjOutW, seqLen, Dim, IoChannels);
+
+        // Postprocess conv 1x1 + residual
+        imageOps.Sgemm(outputVelocity, ws.OutLow, gpuWeights.PostprocessConvW, seqLen, IoChannels, IoChannels);
+        imageOps.AddInPlace(outputVelocity, ws.OutLow);
+    }
+
+    private static void backend_WritePinned(IImageOpsBackend imageOps, CoreTensor tensor, ReadOnlySpan<float> data)
+    {
+        imageOps.WritePinned(tensor, data);
+    }
+
     public void Dispose()
     {
+        _gpuWeights?.Dispose();
         if (_ownsLoader) _st.Dispose();
     }
 }

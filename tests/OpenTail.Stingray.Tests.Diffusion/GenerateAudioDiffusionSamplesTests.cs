@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using OpenTail.Stingray.Audio;
 using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Diffusion.AceStep;
@@ -69,7 +70,9 @@ public sealed class GenerateAudioDiffusionSamplesTests
         using var pipeline = new StableAudioPipeline(ditWeights, textEncoderWeights, t5gemmaDir!);
 
         string outPath = Path.Combine(GetOutputDir(), "sample_stable_audio_small_lofi_4s.wav");
+        if (File.Exists(outPath)) File.Delete(outPath);
 
+        var sw = Stopwatch.StartNew();
         var pcm = pipeline.Generate(new StableAudioRequest
         {
             Prompt = "A smooth lo-fi jazz beat with soft electric piano and mellow vinyl crackle",
@@ -79,11 +82,12 @@ public sealed class GenerateAudioDiffusionSamplesTests
             Seed = 42,
             OutputPath = outPath,
         });
+        sw.Stop();
 
         Assert.True(pcm.Length > 0, "generated zero samples");
         foreach (var v in pcm) Assert.True(float.IsFinite(v), "PCM contains NaN/Inf");
         Assert.True(File.Exists(outPath), $"Output file {outPath} does not exist");
-        Console.WriteLine($"[Sample Generated] Stable Audio Small -> {outPath} ({pcm.Length} samples)");
+        Console.WriteLine($"[Sample Generated] Stable Audio Small -> {outPath} ({pcm.Length} samples) in {sw.ElapsedMilliseconds} ms ({sw.Elapsed.TotalSeconds:F2}s)");
     }
 
     [Fact]
@@ -99,7 +103,9 @@ public sealed class GenerateAudioDiffusionSamplesTests
         using var pipeline = new StableAudioMediumPipeline(ditWeights, textEncoderWeights, t5gemmaDir!);
 
         string outPath = Path.Combine(GetOutputDir(), "sample_stable_audio_medium_orchestral_4s.wav");
+        if (File.Exists(outPath)) File.Delete(outPath);
 
+        var sw = Stopwatch.StartNew();
         var pcm = pipeline.Generate(new StableAudioRequest
         {
             Prompt = "A cinematic orchestral crescendo with sweeping strings and timpani",
@@ -109,11 +115,12 @@ public sealed class GenerateAudioDiffusionSamplesTests
             Seed = 42,
             OutputPath = outPath,
         });
+        sw.Stop();
 
         Assert.True(pcm.Length > 0, "generated zero samples");
         foreach (var v in pcm) Assert.True(float.IsFinite(v), "PCM contains NaN/Inf");
         Assert.True(File.Exists(outPath), $"Output file {outPath} does not exist");
-        Console.WriteLine($"[Sample Generated] Stable Audio Medium -> {outPath} ({pcm.Length} samples)");
+        Console.WriteLine($"[Sample Generated] Stable Audio Medium -> {outPath} ({pcm.Length} samples) in {sw.ElapsedMilliseconds} ms ({sw.Elapsed.TotalSeconds:F2}s)");
     }
 
     [Fact]
@@ -148,6 +155,10 @@ public sealed class GenerateAudioDiffusionSamplesTests
         };
         using var pipeline = new AceStepPipeline(model);
 
+        string outPath = Path.Combine(GetOutputDir(), "sample_acestep_turbo_synthwave_2.5s.wav");
+        if (File.Exists(outPath)) File.Delete(outPath);
+
+        var sw = Stopwatch.StartNew();
         var result = pipeline.Generate(new AceStepGenerationParams
         {
             Prompt = "An upbeat electronic synthwave track with retro bass and energetic drums",
@@ -169,10 +180,10 @@ public sealed class GenerateAudioDiffusionSamplesTests
             interleaved[i * 2 + 1] = result.Right[i];
         }
 
-        string outPath = Path.Combine(GetOutputDir(), "sample_acestep_turbo_synthwave_2.5s.wav");
         WavWriter.WriteWav(outPath, interleaved, result.SampleRate, channels: 2, DitherMode.Tpdf);
+        sw.Stop();
 
         Assert.True(File.Exists(outPath), $"Output file {outPath} does not exist");
-        Console.WriteLine($"[Sample Generated] ACE-Step Turbo -> {outPath} ({result.SampleCount} samples)");
+        Console.WriteLine($"[Sample Generated] ACE-Step Turbo -> {outPath} ({result.SampleCount} samples) in {sw.ElapsedMilliseconds} ms ({sw.Elapsed.TotalSeconds:F2}s)");
     }
 }

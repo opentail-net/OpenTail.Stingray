@@ -528,25 +528,16 @@ public static class AceStepDiT
     }
 
     /// <summary>
-    /// Executes one full 24-layer DiT forward pass entirely on GPU:
-    /// ProjIn -> 24 Layers (SelfAttn with GQA+RoPE, CrossAttn with precomputed KV, SwiGLU MLP) -> Final Norm -> ProjOut.
-    /// Velocity is written directly into <paramref name="velocityOut"/>.
+    /// Precomputes timestep modulations for all 24 layers plus final modulation on CPU into host pinned buffers.
     /// </summary>
-    public static void ForwardGpuCore(
-        AceStepDiTGpuWorkspace ws,
-        int latentFrames,
+    public static void ComputeStepModulations(
+        AceStepGpuWeights gpuWeights,
         float timestep,
         float timestepR,
-        int condLen,
-        AceStepGpuWeights gpuWeights,
-        IVisionOpsBackend visionOps,
-        IImageOpsBackend imageOps,
-        CoreTensor velocityOut)
+        Span<float> hostMods,
+        Span<float> hostFinalMod)
     {
         int hidden = AceStepConfig.HiddenSize;
-        int outLen = (latentFrames + AceStepConfig.PatchSize - 1) / AceStepConfig.PatchSize;
-
-        // Timestep embeddings on CPU
         var (tembT, timestepProjT) = TimestepEmbed(gpuWeights.CpuWeights.TimeEmbed, timestep);
         var (tembR, timestepProjR) = TimestepEmbed(gpuWeights.CpuWeights.TimeEmbedR, timestep - timestepR);
         var temb = new float[hidden];
@@ -554,8 +545,6 @@ public static class AceStepDiT
         for (int i = 0; i < hidden; i++) temb[i] = tembT[i] + tembR[i];
         for (int i = 0; i < timestepProj.Length; i++) timestepProj[i] = timestepProjT[i] + timestepProjR[i];
 
-        // Populate pinned host memory for modulations
-        var hostMods = new float[gpuWeights.Layers.Length * 6 * hidden];
         for (int l = 0; l < gpuWeights.Layers.Length; l++)
         {
             var lw = gpuWeights.Layers[l];
@@ -581,9 +570,7 @@ public static class AceStepDiT
                 hostMods[lOffset + 5 * hidden + i] = cGateMsa;
             }
         }
-        WritePinned(imageOps, ws.LayerMods, hostMods);
 
-        var hostFinalMod = new float[2 * hidden];
         for (int i = 0; i < hidden; i++)
         {
             float shiftFinal = gpuWeights.FinalScaleShiftTable[i] + temb[i];
@@ -593,7 +580,26 @@ public static class AceStepDiT
             hostFinalMod[i] = shiftFinal;
             hostFinalMod[hidden + i] = gammaFinal * (1f + scaleFinal) - 1f;
         }
-        WritePinned(imageOps, ws.FinalMod, hostFinalMod);
+    }
+
+    /// <summary>
+    /// Executes one full 24-layer DiT forward pass entirely on GPU:
+    /// ProjIn -> 24 Layers (SelfAttn with fused QKV+GQA+RoPE, CrossAttn with precomputed KV, fused SwiGLU MLP) -> Final Norm -> ProjOut.
+    /// Velocity is written directly into <paramref name="velocityOut"/>.
+    /// </summary>
+    public static void ForwardGpuCore(
+        AceStepDiTGpuWorkspace ws,
+        int latentFrames,
+        int stepModBase,
+        int stepFinalModBase,
+        int condLen,
+        AceStepGpuWeights gpuWeights,
+        IVisionOpsBackend visionOps,
+        IImageOpsBackend imageOps,
+        CoreTensor velocityOut)
+    {
+        int hidden = AceStepConfig.HiddenSize;
+        int outLen = (latentFrames + AceStepConfig.PatchSize - 1) / AceStepConfig.PatchSize;
 
         // ProjIn: Pack window then GEMM
         visionOps.PackProjInWindow(ws.ProjInWindow, ws.ContextLatents, ws.Latent, latentFrames, outLen, inCh: 192, ctxCh: 128, noisyCh: 64, patch: 2);
@@ -603,14 +609,14 @@ public static class AceStepDiT
         for (int l = 0; l < gpuWeights.Layers.Length; l++)
         {
             var lw = gpuWeights.Layers[l];
-            int lOffset = l * 6 * hidden;
+            int lOffset = stepModBase + l * 6 * hidden;
 
             // 1. Self-Attention with AdaLN
             visionOps.AdaLNModulate(ws.Normed1, ws.XFull, ws.LayerMods, outLen, hidden, shiftOffset: lOffset, scaleOffset: lOffset + hidden, isRmsNorm: true, eps: 1e-6f);
 
-            imageOps.Sgemm(ws.Q, ws.Normed1, lw.SelfAttnQW, outLen, hidden, 2048);
-            imageOps.Sgemm(ws.K8, ws.Normed1, lw.SelfAttnKW, outLen, hidden, 1024);
-            imageOps.Sgemm(ws.V8, ws.Normed1, lw.SelfAttnVW, outLen, hidden, 1024);
+            // Fused QKV GEMM: 1 SGEMM (4096 cols) instead of 3 (2048 + 1024 + 1024)
+            imageOps.Sgemm(ws.Qkv, ws.Normed1, lw.SelfAttnQkvW, outLen, hidden, 4096);
+            visionOps.UnpackQkvGqa(ws.Qkv, ws.Q, ws.K8, ws.V8, outLen, 2048, 1024);
 
             visionOps.RmsNormBatched(ws.Q, ws.Q, lw.SelfAttnQNormW, rowDim: 128, numTokens: outLen * 16, eps: 1e-6f);
             visionOps.RmsNormBatched(ws.K8, ws.K8, lw.SelfAttnKNormW, rowDim: 128, numTokens: outLen * 8, eps: 1e-6f);
@@ -637,19 +643,18 @@ public static class AceStepDiT
 
             imageOps.AddInPlace(ws.XFull, ws.CrossAttnProj);
 
-            // 3. MLP with SwiGLU
+            // 3. MLP with SwiGLU: 1 SGEMM (12288 cols) instead of 2 (6144 + 6144)
             visionOps.AdaLNModulate(ws.Normed3, ws.XFull, ws.LayerMods, outLen, hidden, shiftOffset: lOffset + 3 * hidden, scaleOffset: lOffset + 4 * hidden, isRmsNorm: true, eps: 1e-6f);
 
-            imageOps.Sgemm(ws.MlpGate, ws.Normed3, lw.MlpGateW, outLen, hidden, 6144);
-            imageOps.Sgemm(ws.MlpUp, ws.Normed3, lw.MlpUpW, outLen, hidden, 6144);
-            imageOps.SiLuMul(ws.MlpGate, ws.MlpUp);
+            imageOps.Sgemm(ws.MlpGateUp, ws.Normed3, lw.MlpGateUpW, outLen, hidden, 12288);
+            visionOps.SwiGluSplit(ws.MlpGate, ws.MlpGateUp, outLen, 6144);
             imageOps.Sgemm(ws.MlpOut, ws.MlpGate, lw.MlpDownW, outLen, 6144, hidden);
 
             visionOps.ScaleGateAdd(ws.XFull, ws.MlpOut, ws.LayerMods, outLen, hidden, gateOffset: lOffset + 5 * hidden);
         }
 
         // Final Norm + AdaLN
-        visionOps.AdaLNModulate(ws.XFull, ws.XFull, ws.FinalMod, outLen, hidden, shiftOffset: 0, scaleOffset: hidden, isRmsNorm: true, eps: 1e-6f);
+        visionOps.AdaLNModulate(ws.XFull, ws.XFull, ws.FinalMod, outLen, hidden, shiftOffset: stepFinalModBase, scaleOffset: stepFinalModBase + hidden, isRmsNorm: true, eps: 1e-6f);
 
         // ProjOut: output is outLen x 128 (contiguous latentFrames x 64)
         imageOps.Sgemm(velocityOut, ws.XFull, gpuWeights.ProjOutW, outLen, hidden, 128);
@@ -673,6 +678,7 @@ public static class AceStepDiT
 
         int latentFrames = noisyLatent.Length;
         int acousticDim = AceStepConfig.AudioAcousticHiddenDim;
+        int hidden = AceStepConfig.HiddenSize;
         var gpuWeights = weights.EnsureGpuWeights(backend);
         using var ws = new AceStepDiTGpuWorkspace(backend, maxFrames: latentFrames, condLen: condition.Length);
 
@@ -688,8 +694,16 @@ public static class AceStepDiT
 
         PrecomputeConditioningGpu(condition, ws, gpuWeights, backend);
 
+        int stepModStride = gpuWeights.Layers.Length * 6 * hidden;
+        int stepFinalModStride = 2 * hidden;
+        var hostMods = new float[stepModStride];
+        var hostFinalMod = new float[stepFinalModStride];
+        ComputeStepModulations(gpuWeights, timestep, timestepR, hostMods, hostFinalMod);
+        backend.WritePinned(ws.LayerMods, hostMods);
+        backend.WritePinned(ws.FinalMod, hostFinalMod);
+
         imageOps.BeginBatch();
-        ForwardGpuCore(ws, latentFrames, timestep, timestepR, condition.Length, gpuWeights, visionOps, imageOps, ws.Velocity);
+        ForwardGpuCore(ws, latentFrames, stepModBase: 0, stepFinalModBase: 0, condition.Length, gpuWeights, visionOps, imageOps, ws.Velocity);
         imageOps.EndBatch();
 
         var flatVel = new float[latentFrames * acousticDim];

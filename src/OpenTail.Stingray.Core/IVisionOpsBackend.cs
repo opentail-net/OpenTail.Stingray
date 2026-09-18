@@ -128,6 +128,18 @@ public interface IVisionOpsBackend : IComputeBackend
         => throw new NotSupportedException();
 
     /// <summary>
+    /// Unpack fused 5-way differential self-attention QKV [nTokens, 5*dim] into Q, K, V, QDiff, KDiff [nTokens, dim].
+    /// </summary>
+    void DiffUnpack5(Tensor src, Tensor q, Tensor k, Tensor v, Tensor qDiff, Tensor kDiff, int nTokens, int dim, int dstTokenOffset = 0)
+        => throw new NotSupportedException();
+
+    /// <summary>
+    /// Unpack fused 2-way differential cross-attention Q [nTokens, 2*dim] into Q, QDiff [nTokens, dim].
+    /// </summary>
+    void DiffUnpack2(Tensor src, Tensor q, Tensor qDiff, int nTokens, int dim, int dstTokenOffset = 0)
+        => throw new NotSupportedException();
+
+    /// <summary>
     /// Interleaves Attention output [nSeq, dim] and MLP output [nSeq, 4*dim] per token into Combined [nSeq, 5*dim].
     /// </summary>
     void FluxConcatAttnMlp(Tensor attnOut, Tensor mlp, Tensor combined, int nSeq, int dim)
@@ -179,5 +191,19 @@ public interface IVisionOpsBackend : IComputeBackend
     /// </summary>
     void RoPEPartialBatched(Tensor x, int basePosition, int headDim, int ropeDim,
         float ropeTheta, int numHeads, int nTok, bool neox = true)
+        => throw new NotSupportedException();
+
+    /// <summary>
+    /// Unpacks fused QKV [nTokens, qDim + 2*kvDim] into Q [nTokens, qDim], K [nTokens, kvDim], and V [nTokens, kvDim].
+    /// </summary>
+    void UnpackQkvGqa(Tensor qkv, Tensor q, Tensor k, Tensor v, int nTokens, int qDim, int kvDim)
+        => throw new NotSupportedException();
+
+    /// <summary>
+    /// SwiGLU activation on fused [nTokens, 2*ffnDim] buffer:
+    /// output[t, i] = silu(gateup[t, i]) * gateup[t, ffnDim + i]
+    /// where output is [nTokens, ffnDim].
+    /// </summary>
+    void SwiGluSplit(Tensor output, Tensor gateUp, int nTokens, int ffnDim)
         => throw new NotSupportedException();
 }

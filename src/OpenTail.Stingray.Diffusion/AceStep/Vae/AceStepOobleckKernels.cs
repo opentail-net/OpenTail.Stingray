@@ -1,3 +1,5 @@
+using System.Numerics.Tensors;
+
 namespace OpenTail.Stingray.Diffusion.AceStep.Vae;
 
 /// <summary>
@@ -15,7 +17,7 @@ internal static class AceStepOobleckKernels
     public static float[] Snake(float[] x, int channels, int t, float[] logAlpha, float[] logBeta)
     {
         var output = new float[x.Length];
-        for (int c = 0; c < channels; c++)
+        Parallel.For(0, channels, c =>
         {
             float alpha = MathF.Exp(logAlpha[c]);
             float beta = MathF.Exp(logBeta[c]);
@@ -27,7 +29,7 @@ internal static class AceStepOobleckKernels
                 float s = MathF.Sin(alpha * v);
                 output[baseIdx + i] = v + invBeta * s * s;
             }
-        }
+        });
         return output;
     }
 
@@ -44,114 +46,137 @@ internal static class AceStepOobleckKernels
         return output;
     }
 
-    /// <summary>Real FULL (non-depthwise) Conv1d, stride=1, symmetric ("same"-style) padding.</summary>
+    /// <summary>Real FULL (non-depthwise) Conv1d, stride=1, symmetric ("same"-style) padding. Direct contiguous vectorized implementation without im2col buffer allocations.</summary>
     public static unsafe float[] FullConv1d(float[] x, int inCh, int outCh, int t, float[] weight, float[]? bias, int kernel, int dilation, int padding)
     {
-        int rowLen = inCh * kernel;
-        var col = new float[t * rowLen];
-        Parallel.For(0, t, ti =>
-        {
-            int rowBase = ti * rowLen;
-            for (int ic = 0; ic < inCh; ic++)
-            {
-                int xBase = ic * t;
-                int rBase = rowBase + ic * kernel;
-                for (int k = 0; k < kernel; k++)
-                {
-                    int src = ti - padding + k * dilation;
-                    col[rBase + k] = (uint)src < (uint)t ? x[xBase + src] : 0f;
-                }
-            }
-        });
-
         var output = new float[outCh * t];
-        fixed (float* colPtr = col, weightPtr = weight, outputPtr = output)
+        fixed (float* px = x, pw = weight, pb = bias, po = output)
         {
-            var colPtrLocal = colPtr;
-            var weightPtrLocal = weightPtr;
-            var outputPtrLocal = outputPtr;
+            float* pxLocal = px;
+            float* pwLocal = pw;
+            float* pbLocal = pb;
+            float* poLocal = po;
+
             Parallel.For(0, outCh, oc =>
             {
-                float b = bias?[oc] ?? 0f;
-                float* wOc = weightPtrLocal + oc * rowLen;
-                float* outBase = outputPtrLocal + oc * t;
-                for (int ti = 0; ti < t; ti++)
-                    outBase[ti] = b + SimdKernels.DotF32(wOc, colPtrLocal + ti * rowLen, rowLen);
+                float b = pbLocal != null ? pbLocal[oc] : 0f;
+                float* outRow = poLocal + oc * t;
+                if (b != 0f)
+                {
+                    for (int ti = 0; ti < t; ti++) outRow[ti] = b;
+                }
+
+                for (int ic = 0; ic < inCh; ic++)
+                {
+                    float* xRow = pxLocal + ic * t;
+                    float* wRow = pwLocal + (oc * inCh + ic) * kernel;
+
+                    for (int k = 0; k < kernel; k++)
+                    {
+                        float w = wRow[k];
+                        if (w == 0f) continue;
+
+                        int shift = k * dilation - padding;
+                        int tStart = Math.Max(0, -shift);
+                        int tEnd = Math.Min(t, t - shift);
+                        if (tStart >= tEnd) continue;
+
+                        int count = tEnd - tStart;
+                        var inSpan = new ReadOnlySpan<float>(xRow + tStart + shift, count);
+                        var outSpan = new Span<float>(outRow + tStart, count);
+                        TensorPrimitives.MultiplyAdd(inSpan, w, outSpan, outSpan);
+                    }
+                }
             });
         }
         return output;
     }
 
-    /// <summary>Real FULL Conv1d with stride &gt; 1 (used by the encoder's per-block downsample conv). Standard PyTorch semantics: `outT = (t + 2*padding - dilation*(kernel-1) - 1) / stride + 1`.</summary>
+    /// <summary>Real FULL Conv1d with stride &gt; 1 (used by the encoder's per-block downsample conv). Direct implementation without im2col buffer allocations.</summary>
     public static unsafe (float[] Data, int T) StridedConv1d(float[] x, int inCh, int outCh, int t, float[] weight, float[]? bias, int kernel, int stride, int padding)
     {
         int outT = (t + 2 * padding - (kernel - 1) - 1) / stride + 1;
-        int rowLen = inCh * kernel;
-        var col = new float[outT * rowLen];
-        Parallel.For(0, outT, ti =>
-        {
-            int rowBase = ti * rowLen;
-            int inStart = ti * stride - padding;
-            for (int ic = 0; ic < inCh; ic++)
-            {
-                int xBase = ic * t;
-                int rBase = rowBase + ic * kernel;
-                for (int k = 0; k < kernel; k++)
-                {
-                    int src = inStart + k;
-                    col[rBase + k] = (uint)src < (uint)t ? x[xBase + src] : 0f;
-                }
-            }
-        });
-
         var output = new float[outCh * outT];
-        fixed (float* colPtr = col, weightPtr = weight, outputPtr = output)
+        fixed (float* px = x, pw = weight, pb = bias, po = output)
         {
-            var colPtrLocal = colPtr;
-            var weightPtrLocal = weightPtr;
-            var outputPtrLocal = outputPtr;
+            float* pxLocal = px;
+            float* pwLocal = pw;
+            float* pbLocal = pb;
+            float* poLocal = po;
+
             Parallel.For(0, outCh, oc =>
             {
-                float b = bias?[oc] ?? 0f;
-                float* wOc = weightPtrLocal + oc * rowLen;
-                float* outBase = outputPtrLocal + oc * outT;
-                for (int ti = 0; ti < outT; ti++)
-                    outBase[ti] = b + SimdKernels.DotF32(wOc, colPtrLocal + ti * rowLen, rowLen);
+                float b = pbLocal != null ? pbLocal[oc] : 0f;
+                float* outBase = poLocal + oc * outT;
+                for (int ti = 0; ti < outT; ti++) outBase[ti] = b;
+
+                for (int ic = 0; ic < inCh; ic++)
+                {
+                    float* xBase = pxLocal + ic * t;
+                    float* wRow = pwLocal + (oc * inCh + ic) * kernel;
+
+                    for (int k = 0; k < kernel; k++)
+                    {
+                        float w = wRow[k];
+                        if (w == 0f) continue;
+
+                        int kOffset = k - padding;
+                        for (int ti = 0; ti < outT; ti++)
+                        {
+                            int src = ti * stride + kOffset;
+                            if ((uint)src < (uint)t)
+                            {
+                                outBase[ti] += w * xBase[src];
+                            }
+                        }
+                    }
+                }
             });
         }
         return (output, outT);
     }
 
     /// <summary>Real ConvTranspose1d, weight layout `[inCh, outCh, kernel]` flat row-major.</summary>
-    public static (float[] Data, int T) ConvTranspose1d(float[] x, int inCh, int outCh, int t, float[] weight, float[] bias, int kernel, int stride, int padding)
+    public static unsafe (float[] Data, int T) ConvTranspose1d(float[] x, int inCh, int outCh, int t, float[] weight, float[] bias, int kernel, int stride, int padding)
     {
         int outT = (t - 1) * stride - 2 * padding + kernel;
         var output = new float[outCh * outT];
-        Parallel.For(0, outCh, oc =>
+        fixed (float* px = x, pw = weight, pb = bias, po = output)
         {
-            float b = bias[oc];
-            int dstBase = oc * outT;
-            for (int ti = 0; ti < outT; ti++) output[dstBase + ti] = b;
+            float* pxLocal = px;
+            float* pwLocal = pw;
+            float* pbLocal = pb;
+            float* poLocal = po;
 
-            for (int ic = 0; ic < inCh; ic++)
+            Parallel.For(0, outCh, oc =>
             {
-                int srcBase = ic * t;
-                int wBase = (ic * outCh + oc) * kernel;
-                for (int ti = 0; ti < t; ti++)
+                float b = pbLocal[oc];
+                float* dstBase = poLocal + oc * outT;
+                for (int ti = 0; ti < outT; ti++) dstBase[ti] = b;
+
+                for (int ic = 0; ic < inCh; ic++)
                 {
-                    float v = x[srcBase + ti];
-                    int outStart = ti * stride - padding;
+                    float* srcBase = pxLocal + ic * t;
+                    float* wBase = pwLocal + (ic * outCh + oc) * kernel;
+                    for (int ti = 0; ti < t; ti++)
+                    {
+                        float v = srcBase[ti];
+                        if (v == 0f) continue;
 
-                    int kStart = outStart < 0 ? -outStart : 0;
-                    int kEnd = outStart + kernel > outT ? outT - outStart : kernel;
-                    if (kStart >= kEnd) continue;
+                        int outStart = ti * stride - padding;
+                        int kStart = outStart < 0 ? -outStart : 0;
+                        int kEnd = outStart + kernel > outT ? outT - outStart : kernel;
+                        if (kStart >= kEnd) continue;
 
-                    var wSpan = weight.AsSpan(wBase + kStart, kEnd - kStart);
-                    var dstSpan = output.AsSpan(dstBase + outStart + kStart, kEnd - kStart);
-                    TensorPrimitives.MultiplyAdd(wSpan, v, dstSpan, dstSpan);
+                        int count = kEnd - kStart;
+                        var wSpan = new ReadOnlySpan<float>(wBase + kStart, count);
+                        var dstSpan = new Span<float>(dstBase + outStart + kStart, count);
+                        TensorPrimitives.MultiplyAdd(wSpan, v, dstSpan, dstSpan);
+                    }
                 }
-            }
-        });
+            });
+        }
         return (output, outT);
     }
 }
+

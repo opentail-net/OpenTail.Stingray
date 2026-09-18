@@ -20,4 +20,9 @@
     <InternalsVisibleTo Include="OpenTail.Stingray.Tests.Diffusion" />
   </ItemGroup>
 
+  <ItemGroup>
+    <EmbeddedResource Include="AceStep\silence_latent.bin" />
+    <EmbeddedResource Include="AceStep\silence_timbre.bin" />
+  </ItemGroup>
+
 </Project>

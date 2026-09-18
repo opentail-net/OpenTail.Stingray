@@ -66,7 +66,7 @@ public static class AceStepConfig
 
     // ── Turbo inference defaults (real generate_audio) ─────────────────────
     public const int DefaultInferenceSteps = 8; // "fix_nfe"
-    public const float DefaultShift = 3.0f;
+    public const float DefaultShift = 1.0f; // audio.cpp and ACE-Step reference default schedule: [1.0 -> 0.125]
     public const string DefaultInferMethod = "ode";
 
     /// <summary>Real hardcoded 8-step Euler-ODE timestep schedules, transcribed verbatim from `AceStepConditionGenerationModel.generate_audio`'s `SHIFT_TIMESTEPS` table. Only shift values 1, 2, or 3 are real/supported -- any other requested shift snaps to the nearest of these three in the real reference, do not interpolate a new schedule for other shifts.</summary>

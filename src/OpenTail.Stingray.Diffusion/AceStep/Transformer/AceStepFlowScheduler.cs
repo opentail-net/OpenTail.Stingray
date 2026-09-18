@@ -80,7 +80,7 @@ public static class AceStepFlowScheduler
         if (backend is IVisionOpsBackend visionOps && backend is IImageOpsBackend imageOps)
         {
             var gpuWeights = w.EnsureGpuWeights(backend);
-            using var ws = new AceStepDiTGpuWorkspace(backend, maxFrames: latentFrames, condLen: conditionSequence.Length);
+            using var ws = new AceStepDiTGpuWorkspace(backend, maxFrames: latentFrames, condLen: conditionSequence.Length, maxSteps: numSteps);
 
             var flatCtx = new float[latentFrames * 2 * acousticDim];
             for (int t = 0; t < latentFrames; t++)
@@ -94,28 +94,47 @@ public static class AceStepFlowScheduler
 
             AceStepDiT.PrecomputeConditioningGpu(conditionSequence, ws, gpuWeights, backend);
 
+            int hidden = AceStepConfig.HiddenSize;
+            int stepModStride = gpuWeights.Layers.Length * 6 * hidden;
+            int stepFinalModStride = 2 * hidden;
+            var hostMods = new float[numSteps * stepModStride];
+            var hostFinalMod = new float[numSteps * stepFinalModStride];
+
             for (int step = 0; step < numSteps; step++)
             {
                 float currentT = schedule[step];
+                int sModBase = step * stepModStride;
+                int sFinalBase = step * stepFinalModStride;
+                AceStepDiT.ComputeStepModulations(
+                    gpuWeights, currentT, currentT,
+                    hostMods.AsSpan(sModBase, stepModStride),
+                    hostFinalMod.AsSpan(sFinalBase, stepFinalModStride));
+            }
+            backend.WritePinned(ws.LayerMods, hostMods);
+            backend.WritePinned(ws.FinalMod, hostFinalMod);
+
+            imageOps.BeginBatch();
+            for (int step = 0; step < numSteps; step++)
+            {
+                float currentT = schedule[step];
+                int sModBase = step * stepModStride;
+                int sFinalBase = step * stepFinalModStride;
 
                 if (step == numSteps - 1)
                 {
                     // Real `get_x0_from_noise`: x0 = xt - vt * t.
-                    imageOps.BeginBatch();
-                    AceStepDiT.ForwardGpuCore(ws, latentFrames, currentT, currentT, conditionSequence.Length, gpuWeights, visionOps, imageOps, ws.Velocity);
+                    AceStepDiT.ForwardGpuCore(ws, latentFrames, sModBase, sFinalBase, conditionSequence.Length, gpuWeights, visionOps, imageOps, ws.Velocity);
                     visionOps.FluxEulerStep(ws.Latent, ws.Velocity, -currentT, latentFrames * acousticDim);
-                    imageOps.EndBatch();
                     break;
                 }
 
                 float nextT = schedule[step + 1];
                 float dt = currentT - nextT;
 
-                imageOps.BeginBatch();
-                AceStepDiT.ForwardGpuCore(ws, latentFrames, currentT, currentT, conditionSequence.Length, gpuWeights, visionOps, imageOps, ws.Velocity);
+                AceStepDiT.ForwardGpuCore(ws, latentFrames, sModBase, sFinalBase, conditionSequence.Length, gpuWeights, visionOps, imageOps, ws.Velocity);
                 visionOps.FluxEulerStep(ws.Latent, ws.Velocity, -dt, latentFrames * acousticDim);
-                imageOps.EndBatch();
             }
+            imageOps.EndBatch();
 
             var flatClean = new float[latentFrames * acousticDim];
             backend.Download(ws.Latent, flatClean);
