@@ -228,9 +228,16 @@ worse than no status.
       silently denoised on CPU; re-ran with the real `--device 0` flag, confirmed real Vulkan GPU
       dispatch, clean output, and 122.1s total/81.5s DiT (4.08s/step) -- matches
       `PerformanceLeague.md`'s documented 132.8s/79.4s within noise (actually faster), **no
-      regression**, satisfying the operator's explicit instruction. Not fully closed: only 2 seeds
-      checked, only at 256×256 (not production resolutions) -- but quality AND performance are now
-      both real, confirmed, and consistent. README/`PerformanceLeague.md` updated. Below is
+      regression**, satisfying the operator's explicit instruction.
+
+      **CLOSED 2026-09-18, deliberate broad sweep (operator-requested): 4 seeds at 256×256 (42, 7,
+      13, 100) plus 1 run at 512×512 (seed 2024, the first higher-resolution check this item ever
+      had) -- 5 of 5 clean, coherent, zero checkerboard.** 512×512 real Vulkan GPU timing: 394.8s
+      total (DiT 318.9s/15.9s-per-step, VAE decode 41.6s) -- no documented C++ reference exists yet
+      at this resolution to diff against, but the per-step cost scales consistently with the
+      256×256 numbers (roughly 4x pixels -> roughly 4x DiT time), no anomalies. Quality AND
+      performance are now real, confirmed, and consistent across both resolutions and 5 independent
+      seeds -- **upgraded to 🟢**, closing this item. README/`PerformanceLeague.md` updated. Below is
       the now-superseded investigation trail kept for reference (T5-padding/masking hypotheses,
       both real and correctly ruled out, just not the actual cause) -- every individual
       hypothesis checked so far (RoPE axes, AdaLN modulation, flow-schedule/CFG formula, GELU,
