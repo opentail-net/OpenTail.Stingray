@@ -513,14 +513,25 @@ public sealed record ModelHyperparams
         // RoPE convention: NEOX (pairs offset by headDim/2) vs NORM/interleaved (consecutive pairs).
         // Mirrors llama.cpp's llama_model_rope_type() in src/llama-model.cpp (NEOX block).
         // Architectures NOT listed here default to NORM (LLaMA-style interleaved).
-        // Special rope types (MROPE for QWEN2VL/PADDLEOCR, IMROPE for QWEN3VL family, conditional
+        // Special rope types (MROPE for PADDLEOCR, IMROPE for QWEN3VL family, conditional
         // for GLM4/GLM4_MOE) are not currently supported and would need their own dispatch.
+        // qwen2vl IS listed below as NEOX, but ONLY for text-only use (no image/video tokens ever
+        // fed through this engine's forward pass) -- confirmed against the real vendored
+        // `transformers.models.qwen2_vl.modeling_qwen2_vl` source (2026-09-18, docs/089): for pure
+        // text, `get_rope_index`'s own docstring states "text tokens use standard 1D RoPE" (all 3
+        // M-RoPE position axes t/h/w are set to the SAME sequential value for text tokens), and
+        // `rotate_half` uses the standard NEOX (rotate-half, not interleaved) convention. Feeding
+        // the same position value into all 3 mrope_section channel groups is mathematically
+        // identical to plain single-axis 1D NEOX rope -- the multimodal section-splitting only
+        // matters when real image/video tokens are interleaved with text, which this engine's
+        // text-conditioning-extraction use case (docs/089, Qwen Image's Mistral-equivalent path)
+        // never does.
         bool isNeoxRope = arch switch
         {
             "falcon" or "falcon-h1" or "grok" or "dbrx" or
             "bert" or "jina-bert-v3" or "modern-bert" or "nomic-bert" or "nomic-bert-moe" or "eurobert" or
             "stablelm" or "bitnet" or
-            "qwen" or "qwen2" or "dream" or "qwen2moe" or "qwen3" or "qwen3moe" or "qwen3-tts" or
+            "qwen" or "qwen2" or "qwen2vl" or "dream" or "qwen2moe" or "qwen3" or "qwen3moe" or "qwen3-tts" or
             "llada-moe" or "rnd1" or
             "olmo2" or "olmoe" or
             "phi2" or "phi3" or "phimoe" or

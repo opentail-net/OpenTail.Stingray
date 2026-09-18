@@ -14,6 +14,14 @@ public static class ModelCompatibility
         // Decoder-only transformer profiles exercised by OpenTail's forward passes.
         "llama", "llama4",
         "qwen", "qwen2", "qwen2moe", "qwen3", "qwen3moe",
+        // qwen2vl -- admitted 2026-08-18 (docs/089) SCOPED TO TEXT-ONLY use (no image/video
+        // tokens ever fed through this engine): confirmed against the real vendored
+        // `transformers.models.qwen2_vl.modeling_qwen2_vl` source that pure-text M-RoPE reduces
+        // exactly to standard 1D NEOX rope (see ModelGraph.cs's `isNeoxRope` dispatch comment for
+        // the full derivation). Used by Qwen Image's real LLM text-conditioning extraction
+        // (Qwen2.5-VL-7B-Instruct's text backbone), not for real vision/multimodal generation --
+        // that would need the real multi-section M-RoPE this engine does not implement.
+        "qwen2vl",
         // qwen35 — hybrid Gated-DeltaNet MoE + MTP path (docs/02-qwen35moe-plan.md). Ornith-1.0
         // 9B (dense-ish, no MoE) was the original end-to-end validation. Extended 2026-08-28 with
         // a FULL 24-of-24-token exact greedy match on Qwen3.8-27B UD-Q3_K_XL (Unsloth Dynamic
