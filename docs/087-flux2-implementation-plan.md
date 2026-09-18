@@ -209,19 +209,30 @@ prediction exactly (`OUTPUT_LAYERS_MISTRAL=[10,20,30]` out of 40 layers, `15360 
 `llama` architecture is already fully allowlisted and supported by this engine's generic forward
 pass -- **no new architecture code is needed to run Mistral-Small-24B itself**, only a way to
 extract and capture its hidden states at three specific INTERMEDIATE layers (10/20/30 of 40)
-simultaneously, not just the final logits. **Checked 2026-09-18: `ForwardPass.ExtractHiddenStates`
-(`src/OpenTail.Stingray.Engine/ForwardPass.cs:1096`) only ever captures the FINAL transformer
-layer's hidden state, not arbitrary intermediate layers** -- this is NOT a drop-in reuse for
-FLUX.2's recipe (unlike Qwen Image's, which needs exactly this final-layer behavior -- see
-`docs/089`). A real, new capability is needed here: either a new
-`ExtractIntermediateHiddenStates(layers)`-style method, or three separate full forward passes each
-truncated at a different depth (wasteful -- shares the first 10/20 layers of compute three times),
-or a single pass that snapshots the residual stream at the three target layers as it runs (the
-efficient approach, matching how `PrefillCore` already threads an `outAllHiddenStates` sink through
-its layer loop -- extending that same mechanism to snapshot at N caller-specified layers instead of
-only after the last one is the natural, minimal-diff way to do this). This significantly de-risks
-FLUX.2's text-conditioning step (checkpoint ready, architecture already supported) but the
-multi-layer capture itself is real, un-built work, not just a wiring exercise.
+simultaneously, not just the final logits. **CORRECTION, 2026-09-18: this capability already
+exists and does not need to be built.** `IForwardPass.EnableHiddenTaps(ReadOnlySpan<int> layerIds)`
+/ `HiddenTapDim` / `HiddenTapsAt(position)` (PR #413, `HiddenTapBuffer.cs`) is exactly this
+mechanism -- position-indexed capture of arbitrary, caller-specified intermediate layers,
+concatenated per position in the order given. `ForwardPass.SupportsHiddenTaps` is `true` for the
+plain (CPU) path (`ForwardPass.PrefillCore.cs:944`, false only when SnapKV/TurboQuant are active --
+neither applies here), and `GpuForwardPass.SupportsHiddenTaps` is unconditionally `true` too. The
+call shape for FLUX.2's exact recipe needs one more real correction, found reading
+`ForwardPassHiddenTapTests.cs`'s own doc comment precisely: **this codebase's tap convention is
+"layer i's tap is that layer's OWN output, which is HF's `hidden_states[i+1]`"** (HF's
+`hidden_states[0]` is the pre-layer embedding, so HF's `hidden_states[k]` = the output of this
+codebase's layer `k-1`). FLUX.2's real recipe wants HF's literal `hidden_states[10, 20, 30]` — so
+the correct call is **`forwardPass.EnableHiddenTaps([9, 19, 29])`**, NOT `[10, 20, 30]` (which
+would silently grab HF's `hidden_states[11, 21, 31]` instead, exactly the off-by-one trap flagged
+as a risk earlier in this doc, now concretely resolved rather than left as a warning). Full call
+shape: `forwardPass.EnableHiddenTaps([9, 19, 29]); /* run prefill */ var ctx =
+forwardPass.HiddenTapsAt(tokenPosition);` -- `HiddenTapDim` will be
+`3 * 5120 = 15360`, matching `ContextInDim` exactly. My earlier claim that this needed new
+infrastructure was wrong (found by actually reading `ForwardPass.PrefillCore.cs`'s tap-buffer
+plumbing rather than assuming from `ExtractHiddenStates`'s final-layer-only behavior alone --
+`ExtractHiddenStates` and `EnableHiddenTaps` are two separate, independent mechanisms on
+`IForwardPass`, not the same one). This fully de-risks FLUX.2's text-conditioning step: the
+checkpoint is ready, the architecture is already supported, and the exact capture mechanism the
+real recipe needs already exists and is proven (used elsewhere for real hidden-state extraction).
 
 ## 2026-09-18 UPDATE: steps 1-2 DONE -- first real-weight forward pass passes
 
