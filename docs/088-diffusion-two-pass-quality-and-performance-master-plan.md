@@ -247,10 +247,17 @@ worse than no status.
             mismatch (FLUX.1's own history had exactly this bug class). See `docs/087` for the
             full candidate list. **Do not report FLUX.2 as visually verified — the wiring milestone
             is real, image correctness is a confirmed open bug, not just unconfirmed.**
-      - [ ] Real next step: work through the candidate list above via structural/numeric checks
-            (matching this project's own established discipline, e.g. FLUX.1's Round 1-9 history)
-            rather than more blind step-count/resolution runs — those are now ruled out as the
-            explanation.
+      - [x] Real bug found and fixed, 2026-09-18: `Flux2Pipeline.Generate` built a real
+            `EulerFlowScheduler` but never called it, using a plain linear timestep ramp instead
+            of FLUX.2's real resolution/step-dependent shifted schedule (`Flux2Schedule.cs`, new,
+            `Flux2ScheduleTests` confirms real numeric properties). **Re-ran the 20-step check with
+            this fix: STILL pure noise, visually unchanged** — the schedule bug was real and worth
+            fixing, but not the dominant cause (or there are multiple compounding bugs). 5 real
+            candidates now ruled out total without resolving the visual symptom.
+      - [ ] Real next step: the standalone numeric differential test against an independent
+            Mistral/DiT reference (docs/087's own repeated recommendation) — structural re-reading
+            plus one real fix have both been tried without success, matching FLUX.1's own Round 6-8
+            pattern before its real fix was found by a numeric, not structural, check.
       - [ ] **The real end-to-end run on Vulkan GPU explicitly** — per the user's stated
             requirement (every run so far has been CPU-only; `Flux2DiT` has zero GPU-residency
             wiring yet, see Pass 2 below) — should wait until the correctness bug above is found,

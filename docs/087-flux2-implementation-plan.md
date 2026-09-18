@@ -387,16 +387,26 @@ itself is now complete and proven, not just its individual pieces.
    scale mismatch between what the DiT actually outputs and what the VAE's `post_quant_conv`/
    `conv_in` expect (FLUX.1's own fix history includes exactly this class of bug) — still not
    checked.
-   **After re-checking (a)/(b)/(c)/(d) and finding all four exactly correct, the remaining bug is
-   most likely in (e), or somewhere not yet on this list at all** (e.g. a subtlety in the fused
-   single-block `linear1`/`linear2` output-concatenation order, or the attention scale/masking
-   within `DiffusionOps.MultiHeadAttention` as used here — both spot-checked by re-reading, not by
-   a numeric test). This narrowing is real, cumulative progress even without having found the bug
-   yet — a numeric differential test against a real independent Mistral/DiT reference remains the
-   single highest-leverage next step, since structural re-reading has now ruled out 4 real
-   candidates without finding the actual cause (the same pattern FLUX.1's own Round 6-8 experience
-   had before its real fix was found by a numeric, not structural, check). **Do not report FLUX.2
-   as visually verified
+   **A real, separate bug WAS found and fixed the same day: `Flux2Pipeline.Generate` built a real
+   `EulerFlowScheduler` but never actually called it, instead stepping a plain linear
+   `t = 1 - step/steps` ramp -- FLUX.2 needs the real resolution/step-count-dependent SHIFTED
+   schedule (`Flux2Schedule.cs`, new, implements the real `compute_empirical_mu`/
+   `generalized_time_snr_shift` formulas from `sampling.py`, `Flux2ScheduleTests` confirms real
+   numeric properties). But re-running the 20-step check with that fix applied is STILL pure
+   noise, visually indistinguishable in character from before the fix** — the schedule bug was real (confirmed
+   correct by unit test, `Flux2ScheduleTests`) and worth fixing regardless, but it was NOT the
+   dominant cause of the non-convergence, or there are multiple compounding bugs. Candidates
+   (a)/(b)/(c)/(d) were all re-checked and found exactly correct; the schedule bug (previously
+   uncategorized, now understood) is also fixed; **the remaining bug is most likely in (e), or
+   somewhere not yet on this list at all** (e.g. a subtlety in the fused single-block `linear1`/
+   `linear2` output-concatenation order, or the attention scale/masking within `DiffusionOps.
+   MultiHeadAttention` as used here — both spot-checked by re-reading, not by a numeric test).
+   This narrowing is real, cumulative progress even without having found the visually-confirmed
+   bug yet — a numeric differential test against a real independent Mistral/DiT reference remains
+   the single highest-leverage next step, since structural re-reading plus one real fix have now
+   ruled out 5 real candidates without resolving the visual symptom (the same pattern FLUX.1's own
+   Round 6-8 experience had before its real fix was found by a numeric, not structural, check).
+   **Do not report FLUX.2 as visually verified
    until the bug is found and fixed and a re-run shows real structure** — the wiring milestone
    (all 3 components load and run together without crashing) is real and worth keeping, but image
    correctness is a confirmed open bug, not just an unconfirmed claim.
