@@ -363,6 +363,29 @@ weight-cache OOM), each verified against either the real C++ reference or a real
 — DiT now verified numerically healthy end-to-end with real weights. VAE decode is the one
 remaining, real, scoped gap (needs a dedicated port, not a quick fix).
 
+**Real shortcut found for the VAE port, worth stating precisely so it isn't re-derived cold**: a
+full tensor-name enumeration of `qwen_image_vae.safetensors` (194 tensors) shows this is **not a
+novel architecture** — it is, tensor-name-for-tensor-name, the same causal-3D-VAE template this
+codebase already ports in `src/OpenTail.Stingray.Diffusion/Wan/WanVaeDecoder3D.cs`:
+`decoder.middle.{0,1,2}` (`residual`/`to_qkv`+`proj` attention/`residual`, matching
+`WanVaeDecoder3D`'s own `RmsNorm3D`→`CausalConv3D` residual-block and attention-block methods
+exactly), `decoder.upsamples.{0..14}.residual.{0,2,3,6}` (RMSNorm-conv-RMSNorm-conv, matching
+`WanVaeDecoder3D`'s `residual.0/.2/.3/.6` key pattern verbatim), `.resample.1`/`.time_conv`/
+`.shortcut` sub-blocks appearing only on specific upsample-stage indices (exactly `WanVaeDecoder3D`'s
+own "not every stage upsamples/not every stage needs a channel-matching shortcut" pattern), and
+`.gamma`-not-`.weight` naming for every norm (confirmed by `WanVaeDecoder3D`'s own doc comment:
+real `WanRMS_norm`, `x/rms(x)*gamma`, no bias). **A real port here is very likely closer to
+"parameterize `WanVaeDecoder3D`'s existing pattern for Qwen-Image's own channel counts and exact
+upsample-stage indices" than "research and port a new architecture from scratch"** — the real
+per-stage channel counts / which of the 15 `decoder.upsamples.N` entries carry `resample`/
+`time_conv`/`shortcut` would need to be read directly off this checkpoint's own tensor shapes
+(same "check the real checkpoint, don't assume" discipline used everywhere else in this doc), but
+the architectural skeleton does not need to be independently re-derived. **Not attempted this
+pass** — a real port is still real work (reading and encoding the correct per-stage shape table,
+writing a new class, golden-checking non-degenerate output), just meaningfully less than "from
+scratch," and this session's remaining time went to documenting the shortcut precisely rather than
+executing it partially/riskily at the tail end of an already-long session.
+
 ## Working notes / running log
 
 ### 2026-09-18: HunyuanVideo — two real correctness bugs found and fixed, VAE verified, text-conditioning gap now directly demonstrated
