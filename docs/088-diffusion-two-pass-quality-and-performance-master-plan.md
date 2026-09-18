@@ -60,8 +60,11 @@ worse than no status.
 - [x] **Stable Diffusion 1.5 (+ControlNet)** — 2026-09-18: re-ran, exit 0, real per-pass Vulkan GPU
       timing logged (`~3.6-4.0s/pass`), total 199.9s for 20 steps/512×512 -- matches
       `PerformanceLeague.md`'s documented 204.4s within noise. No regression.
-- [ ] **SDXL / SDXL-Turbo** — same: re-run, confirm pixel-identical to `test_sdxl_turbo_batched.png`
-      baseline.
+- [ ] **SDXL / SDXL-Turbo** — 2026-09-18: attempted re-run, `SdxlRealWeightsTests` silently no-op'd
+      (0.196s, exit 0, "2 passed") -- per CLAUDE.md rule 12, this is NOT a real pass, the checkpoint
+      (`sd_xl_turbo_1.0_fp16.safetensors`) isn't currently present in `models/` (rotating curated
+      disk set). Not claiming verification. Redownload kicked off in background to close this out
+      for real.
 - [ ] **FLUX.1-schnell** — same: re-run the Round 9 repro command from `docs/056`, confirm the
       tiling artifact is still gone.
 - [ ] **Z-Image-Turbo** — same: re-run, confirm matching `z-image-turbo_..._FIXED-2026-09-12.png`.
