@@ -67,4 +67,25 @@ public sealed class Flux2MistralHiddenTapsTests
             Assert.False(allZero, $"hidden tap at position {p} is all-zero -- likely a wiring bug");
         }
     }
+
+    [Fact]
+    public void Flux2TextConditioning_Encode_RealWeights_ProducesFiniteConditioning()
+    {
+        string? modelPath = FindModelPath(ModelFileName);
+        Assert.SkipUnless(modelPath != null, "Mistral-Small-3.2-24B-Instruct-2506-Q4_K_S.gguf not found");
+
+        using var model = GgufModel.Open(modelPath!);
+        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var tokenizer = GgufTokenizer.FromGgufModel(model);
+        using var backend = new OpenTail.Stingray.Cpu.CpuBackend();
+        using var fwd = new Engine.ForwardPass(model, backend, hp);
+
+        var (embeds, nTokens) = OpenTail.Stingray.Diffusion.Flux2.Flux2TextConditioning.Encode(
+            fwd, tokenizer, "a red apple on a wooden table");
+
+        Assert.True(nTokens > 0);
+        Assert.Equal(nTokens * 15360, embeds.Length);
+        foreach (var v in embeds)
+            Assert.True(float.IsFinite(v), "Flux2TextConditioning.Encode output contains NaN/Inf");
+    }
 }
