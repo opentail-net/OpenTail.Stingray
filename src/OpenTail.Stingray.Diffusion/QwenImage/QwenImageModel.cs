@@ -12,7 +12,6 @@ public sealed class QwenImageModel : IDisposable
     private readonly IWeightLoader _weights;
     private readonly string _prefix;
     private readonly IComputeBackend? _backend;
-    private readonly Dictionary<string, float[]> _weightCache = new(StringComparer.Ordinal);
     private readonly Dictionary<string, CoreTensor>? _gpuWeights;
     private readonly int _numLayers;
     private bool _disposed;
@@ -57,24 +56,28 @@ public sealed class QwenImageModel : IDisposable
         return direct;
     }
 
+    // NOT cached, deliberately -- a single 60-layer Forward() pass touches every distinct
+    // per-block tensor exactly once (no reuse WITHIN one pass), so a permanent Dictionary cache
+    // gives zero benefit inside a single call and only pays off across the ~steps calls in one
+    // generation, at the cost of holding every dequantized layer in memory simultaneously forever.
+    // At Q3_K_S (real checkpoint) that's roughly a 9x dequant-to-float32 expansion across 60
+    // layers -- measured growing linearly to 53GB+ and still climbing (heading toward ~75GB) on
+    // this 64GB machine before being killed for OOM, real run, 2026-09-18 (see docs/086). Re-reading
+    // fresh per call costs at most `steps` extra dequant passes over the same 8.3GB compressed
+    // checkpoint -- cheap relative to risking an OOM kill. Small per-head norm weights ([128]/
+    // [3072]) are negligible either way; this only matters for the large per-layer matmul weights.
     private float[] GetWeight(string name)
     {
         string fullName = Resolve(name);
-        if (_weightCache.TryGetValue(fullName, out var cached)) return cached;
-        var data = _weights.ReadF32(fullName);
-        _weightCache[fullName] = data;
-        return data;
+        return _weights.ReadF32(fullName);
     }
 
     private float[]? TryGetWeight(string name)
     {
         string fullName = Resolve(name);
-        if (_weightCache.TryGetValue(fullName, out var cached)) return cached;
         if (_weights.Contains(fullName))
         {
-            var data = _weights.ReadF32(fullName);
-            _weightCache[fullName] = data;
-            return data;
+            return _weights.ReadF32(fullName);
         }
         return null;
     }
@@ -137,17 +140,26 @@ public sealed class QwenImageModel : IDisposable
             (imgTokens, txtTokens) = TransformerBlock(p, imgTokens, txtTokens, tEmb, cos, sin, numImgTokens, numTxtTokens, modulateIndex);
         }
 
-        // 6. Final layer norm and projection (AdaLN + Linear 3072 -> 64)
-        var finalNorm = Linear("final_layer.adaLN_modulation.1", DiffusionOpsSilu(tEmb), HiddenDim, HiddenDim * 2);
-        var finalGamma = finalNorm.AsSpan(0, HiddenDim);
-        var finalBeta = finalNorm.AsSpan(HiddenDim, HiddenDim);
+        // 6. Final layer norm and projection -- real checkpoint key names are `norm_out.linear`
+        // (AdaLN shift/scale) and `proj_out` (final projection), NOT `final_layer.*` (a real bug
+        // found via KeyNotFoundException on the first real-weight run, 2026-09-18 -- confirmed
+        // against the checkpoint's own tensor names, not guessed).
+        // Real reference chunks this into [scale, shift] (in that order) and applies
+        // Flux::modulate's x*(1+scale)+shift -- the `1+scale` offset is easy to miss since
+        // DiffusionOps.LayerNorm's generic weight/bias multiply doesn't add it implicitly (found
+        // by direct comparison against AdaLayerNormContinuous::forward, not assumed).
+        var finalNorm = Linear("norm_out.linear", DiffusionOpsSilu(tEmb), HiddenDim, HiddenDim * 2);
+        var finalScale = finalNorm.AsSpan(0, HiddenDim);
+        var finalShift = finalNorm.AsSpan(HiddenDim, HiddenDim);
+        var finalGamma = new float[HiddenDim];
+        for (int d = 0; d < HiddenDim; d++) finalGamma[d] = 1.0f + finalScale[d];
 
         // Extract target canvas tokens (first numTargetTokens)
         var targetTokens = imgTokens.AsSpan(0, numTargetTokens * HiddenDim).ToArray();
         var normImg = (float[])targetTokens.Clone();
-        DiffusionOps.LayerNorm(normImg, finalGamma, finalBeta, HiddenDim);
+        DiffusionOps.LayerNorm(normImg, finalGamma, finalShift, HiddenDim);
 
-        var outPacked = Linear("final_layer.linear", normImg, HiddenDim, InChannels);
+        var outPacked = Linear("proj_out", normImg, HiddenDim, InChannels);
 
         // 7. Unpack patches [numTargetTokens, 64] -> [16, latH, latW]
         return UnpackLatents(outPacked, latH, latW);
@@ -182,9 +194,19 @@ public sealed class QwenImageModel : IDisposable
         var txtSc2 = txtMod.AsSpan(4 * HiddenDim, HiddenDim);
         var txtG2 = txtMod.AsSpan(5 * HiddenDim, HiddenDim);
 
-        // 2. Modulated norm1
-        var normedImg1 = Modulate(img, numImg, imgS1, imgSc1, modulateIndex);
-        var normedTxt1 = Modulate(txt, numTxt, txtS1, txtSc1, null);
+        // 2. Modulated norm1 -- real reference (examples/stable-diffusion.cpp/src/model/diffusion/
+        // qwen_image.hpp) applies an affine-free LayerNorm (img_norm1/txt_norm1, both constructed
+        // with elementwise_affine=false, i.e. no learnable weight -- LayerNormNoAffine is the exact
+        // match) BEFORE Flux::modulate, not a direct modulate of the raw residual stream. Missing
+        // this caused HunyuanVideoModel to blow up to NaN by block 8 of 20 on a real checkpoint
+        // (docs/086, 2026-09-18) -- fixed proactively here after finding the identical gap by
+        // inspection, confirmed against this model's own real C++ reference before applying.
+        var normedImg1 = (float[])img.Clone();
+        DiffusionOps.LayerNormNoAffine(normedImg1, HiddenDim);
+        normedImg1 = Modulate(normedImg1, numImg, imgS1, imgSc1, modulateIndex);
+        var normedTxt1 = (float[])txt.Clone();
+        DiffusionOps.LayerNormNoAffine(normedTxt1, HiddenDim);
+        normedTxt1 = Modulate(normedTxt1, numTxt, txtS1, txtSc1, null);
 
         // 3. Joint Attention
         var (imgAttn, txtAttn) = JointAttention($"{prefix}.attn", normedImg1, normedTxt1, cos, sin, numImg, numTxt);
@@ -194,8 +216,12 @@ public sealed class QwenImageModel : IDisposable
         ApplyGatedResidual(txt, txtAttn, numTxt, txtG1, null);
 
         // 5. Modulated norm2 + MLP
-        var normedImg2 = Modulate(img, numImg, imgS2, imgSc2, modulateIndex);
-        var normedTxt2 = Modulate(txt, numTxt, txtS2, txtSc2, null);
+        var normedImg2 = (float[])img.Clone();
+        DiffusionOps.LayerNormNoAffine(normedImg2, HiddenDim);
+        normedImg2 = Modulate(normedImg2, numImg, imgS2, imgSc2, modulateIndex);
+        var normedTxt2 = (float[])txt.Clone();
+        DiffusionOps.LayerNormNoAffine(normedTxt2, HiddenDim);
+        normedTxt2 = Modulate(normedTxt2, numTxt, txtS2, txtSc2, null);
 
         var imgMlp = FeedForward($"{prefix}.img_mlp", normedImg2, numImg);
         var txtMlp = FeedForward($"{prefix}.txt_mlp", normedTxt2, numTxt);
@@ -328,19 +354,24 @@ public sealed class QwenImageModel : IDisposable
 
     private float[] FeedForward(string prefix, float[] x, int seqLen)
     {
+        // Real reference (examples/stable-diffusion.cpp/src/model/diffusion/qwen_image.hpp,
+        // block.hpp's shared FeedForward): img_mlp/txt_mlp are BOTH constructed with
+        // Activation::GELU, NOT the default GEGLU -- a plain net.0=GELU(dim,inner_dim) (Linear then
+        // gelu, no gating) followed by net.2's down-projection. Confirmed directly against the real
+        // checkpoint too: transformer_blocks.N.img_mlp.net.0.proj.weight is [3072,12288]
+        // (dim->4*dim, single width), not [3072,24576] (which a GEGLU gate+value split would need)
+        // -- a real bug found via ArgumentOutOfRangeException on the first real-weight run
+        // (2026-09-18), not a guess.
         int intermediateDim = HiddenDim * 4;
-        var up = Linear($"{prefix}.net.0.proj", x, HiddenDim, intermediateDim * 2);
+        var up = Linear($"{prefix}.net.0.proj", x, HiddenDim, intermediateDim);
         var result = new float[seqLen * intermediateDim];
 
         for (int i = 0; i < seqLen; i++)
         {
-            int srcOff = i * (intermediateDim * 2);
-            int dstOff = i * intermediateDim;
+            int off = i * intermediateDim;
             for (int d = 0; d < intermediateDim; d++)
             {
-                float val = up[srcOff + d];
-                float gate = up[srcOff + intermediateDim + d];
-                result[dstOff + d] = val * DiffusionOps.Gelu(gate);
+                result[off + d] = DiffusionOps.Gelu(up[off + d]);
             }
         }
 

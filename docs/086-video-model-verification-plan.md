@@ -241,6 +241,95 @@ availability check first) → DeepSeek-V4/Llama-4 vision/MobileNetV5 (blocked/im
 hardware, not simply forgotten — don't spend session time here without a real plan for the disk/RAM
 constraint first).
 
+### 2026-09-18: Qwen Image — real checkpoint downloaded and verified, 3 real bugs found and fixed so far
+
+Downloaded all 3 real components (`qwen-image-Q3_K_S.gguf` 8.3GB DiT, `Qwen2.5-VL-7B-Instruct-
+Q4_K_M.gguf` 4.7GB text encoder, `qwen_image_vae.safetensors` 0.25GB VAE — ~13.9GB total,
+`models/_models/`). Confirmed `QwenImageModel`/`QwenImagePipeline` are genuinely real (unlike
+FLUX.2/3) — real `IWeightLoader` wiring, real VAE decode call, same shape as HunyuanVideo.
+
+Before running anything, proactively checked for the same missing-pre-modulation-LayerNorm bug
+just found in HunyuanVideo (`docs/086`'s earlier entry) — **found it here too**, and confirmed
+against QwenImage's own real C++ reference (`examples/stable-diffusion.cpp/src/model/diffusion/
+qwen_image.hpp`, which explicitly instantiates `img_norm1`/`txt_norm1`/`img_norm2`/`txt_norm2` as
+affine-free `LayerNorm`s applied before `Flux::modulate` in `TransformerBlock`). Fixed the same way
+as HunyuanVideo (`DiffusionOps.LayerNormNoAffine` then `Modulate`), verified Q-norm was NOT missing
+here (unlike HunyuanVideo — `norm_q`/`norm_k`/`norm_added_q`/`norm_added_k` are all correctly
+applied already).
+
+First real-weight run then surfaced two more real bugs, in order, each found by a real crash (not
+speculation) and each fixed by checking the real checkpoint's own tensor names/shapes or the C++
+reference before writing the fix:
+
+1. **`FeedForward` assumed a gated GEGLU MLP** (`net.0.proj` doubled-width, `val * gelu(gate)`
+   split) — real checkpoint's `transformer_blocks.N.img_mlp.net.0.proj.weight` is `[3072, 12288]`
+   (plain 4x expansion, no doubling), and the real reference explicitly constructs
+   `FeedForward(dim, dim, 4, Activation::GELU, ...)`, NOT the default GEGLU. Fixed to a plain
+   `Linear -> GELU -> Linear` (`net.0.proj` then `net.2`, no gating).
+2. **Final layer used wrong tensor names** (`final_layer.adaLN_modulation.1`/`final_layer.linear`)
+   — real checkpoint uses `norm_out.linear`/`proj_out`. Fixed.
+3. **Final layer's AdaLN modulation was missing the standard `1+scale` offset** — passed raw
+   `scale` as `DiffusionOps.LayerNorm`'s multiplicative weight instead of `1+scale`. Found by
+   direct comparison against `AdaLayerNormContinuous::forward`'s real `Flux::modulate(x, shift,
+   scale)` call (which internally does `x*(1+scale)+shift`). Also confirmed, while checking this,
+   that the real reference's final-layer chunk order is `[scale, shift]` (not `[shift, scale]` like
+   every per-block modulation) — genuinely different ordering between the two, not a copy-paste
+   bug, verified both independently against the reference before touching either.
+
+**Update — real, serious memory bug found and fixed**: the first full-run attempt after the 3 fixes
+above was **killed by the OS for system-wide low memory**. Investigated before retrying blind:
+monitored the retry's working set directly (`Get-Process`) and found it growing **linearly and
+unboundedly** — 19GB → 53GB in under 2 minutes, clearly heading past this machine's 64GB ceiling.
+Root cause: `QwenImageModel.GetWeight`/`TryGetWeight` cached every dequantized tensor in a
+`Dictionary<string,float[]>` that is **never evicted**. A single 60-layer forward pass touches
+every per-block tensor exactly once (no reuse *within* one pass), so the cache provided zero
+benefit inside a call and only paid off *across* the `steps` calls in one generation — at the cost
+of holding all ~60 layers' worth of Q3_K-dequantized-to-float32 weights (roughly a 9x expansion)
+simultaneously, forever. Killed the runaway process manually (freed 58.8GB back) rather than risk a
+second uncontrolled OOM, then removed the cache entirely (`_weightCache` field deleted, both
+lookup methods now always read fresh via `_weights.ReadF32`). **Verified the fix**: re-ran with live
+memory monitoring — growth is now bounded, plateauing around 8-9GB instead of climbing past 53GB.
+
+**This is far more systemic than "just QwenImage" — checked via a direct grep before writing this
+note**: `Dictionary<string, float[]> _weightCache` (the identical unbounded-cache pattern) appears
+in **15 files**: `ControlNetModel`, `DcAeDecoder`, `FluxDiT`, `HunyuanVaeDecoder3D`,
+`HunyuanVideoModel`, `LtxVaeDecoder`, `LtxVideoModel`, `ClipLEncoder`, `OpenClipGEncoder`,
+`T5Encoder`, `T5GemmaEncoder`, `UMT5Encoder`, `TinyVaeDecoder`, `TinyVaeEncoder`, `WanModel`,
+`WanVaeDecoder3D`. **Critically, this includes `FluxDiT` and `WanModel`** — pipelines this project's
+own README and PerformanceLeague.md call verified-working — which means the failure mode is real
+and latent there too, not just in never-yet-run code. They haven't been observed to OOM so far
+most likely because of some combination of smaller checkpoint size, lower quant dequant expansion,
+fewer layers, or simply not having been run back-to-back with other memory-heavy processes (like
+this session's parallel downloads) competing for RAM — none of which make the underlying pattern
+actually safe, they just mean the ceiling hasn't been hit yet on those specific runs.
+
+**Not fixed anywhere except `QwenImageModel` this pass** — deliberately. Mass-editing 15 files
+blind under time pressure risks silently regressing already-verified-correct, already-performance-
+tuned pipelines (FLUX.1 and Wan both have dedicated GPU-residency work landed in this codebase,
+per `docs/069`/`docs/072`-`074` — touching their weight-loading path carelessly could interact with
+that). **Real recommended follow-up**: a dedicated, careful pass — one file at a time, each with
+its own before/after real-weight timing check (removing the cache trades memory for repeated
+dequant cost, which may or may not matter depending on how many times each model's `Forward()`/
+`Decode()` gets called per generation) — not a single blanket find-and-replace.
+
+**Result after the memory fix**: the DiT completes cleanly through all 60 layers × 2 denoising
+steps (439.5s real wall-clock, bounded memory) — **numerically healthy**, same as HunyuanVideo's
+DiT. VAE decode then failed on `decoder.conv_in.weight` not found. Direct tensor-name enumeration
+of `qwen_image_vae.safetensors` shows this is **not a simple key-rename fix** — it's a structurally
+different VAE architecture from the generic `VaeDecoder` class this pipeline currently calls:
+`decoder.conv1`/`decoder.middle.{0,1,2}` (including a middle self-attention block, `to_qkv`) /
+`decoder.upsamples.{0..N}`, RMSNorm-style `.gamma` weight naming throughout — closer in shape to
+Wan's causal 3D VAE than to SDXL/FLUX.1's VAE the shared class was built for. **Real remaining
+scope**: a dedicated Qwen-Image VAE decoder port (same category of work as `HunyuanVaeDecoder3D`
+was for HunyuanVideo) — not attempted this pass, scoping stops here to avoid rushing a VAE port
+blind the way the FLUX.2 section above explicitly avoided doing.
+
+**Net real progress this pass**: 4 real bugs found and fixed (missing pre-modulation LayerNorm,
+wrong gated-FFN assumption, wrong final-layer tensor names + missing `1+scale` offset, unbounded
+weight-cache OOM), each verified against either the real C++ reference or a real crash/measurement
+— DiT now verified numerically healthy end-to-end with real weights. VAE decode is the one
+remaining, real, scoped gap (needs a dedicated port, not a quick fix).
+
 ## Working notes / running log
 
 ### 2026-09-18: HunyuanVideo — two real correctness bugs found and fixed, VAE verified, text-conditioning gap now directly demonstrated
