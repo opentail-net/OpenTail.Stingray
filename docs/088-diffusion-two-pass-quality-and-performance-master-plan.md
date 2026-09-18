@@ -67,7 +67,12 @@ worse than no status.
       for real.
 - [ ] **FLUX.1-schnell** — same: re-run the Round 9 repro command from `docs/056`, confirm the
       tiling artifact is still gone.
-- [ ] **Z-Image-Turbo** — same: re-run, confirm matching `z-image-turbo_..._FIXED-2026-09-12.png`.
+- [ ] **Z-Image-Turbo** — 2026-09-18: `ZImageRealWeightsTests` looks for a standalone
+      `z_image_turbo-Q4_0.gguf` in `models/` root, which isn't present -- current on-disk layout
+      is `models/z-image-turbo/{tokenizer,vae}/` only, missing the main DiT/text-encoder weights.
+      Not re-verified this pass (that specific test is stale relative to the current checkpoint
+      layout, not necessarily evidence of a real regression) -- needs either a redownload or a
+      test path update to match the current directory-based layout other models use.
 
 ### 1b. 🟡 with a real, named, scoped gap — close these next
 - [ ] **SD3/SD3.5** — real coherent output exists but is **not yet numerically golden-verified**
