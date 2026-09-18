@@ -316,8 +316,21 @@ itself is now complete and proven, not just its individual pieces.
      32-channel raw latent `VaeDecoder.Decode` can then consume with `scaleOverride=1,
      shiftOverride=0` since the real normalization already happened) — genuinely new but small
      code, not a full VAE reimplementation.
-5. Only then attempt a real end-to-end run — per `docs/086`, on Vulkan GPU explicitly, per the
-   user's stated requirement.
+5. **DONE, 2026-09-18: first real end-to-end run completed (CPU).** `Flux2Pipeline.Load(ditPath,
+   mistralPath, vaePath)` wires all three real components together; `Generate()` now uses real
+   `Flux2TextConditioning.Encode` and real `Flux2Vae.UnnormalizeAndUnshuffle` + `VaeDecoder` when
+   real weights are loaded (structural-only constructor unchanged, zero regression to existing
+   conformance tests). `Flux2Pipeline_RealWeights_EndToEndGenerateProducesFiniteImage` passes: all
+   three checkpoints loaded together (~44GB combined working set, stable, no OOM), 123.9s for a
+   64×64/2-step generation, finite output, real PNG written
+   (`docs/diffusion-samples/flux2_first_e2e_smoke_2026-09-18.png`). Output is visual noise, the
+   correct/expected result for a 2-step/64px wiring smoke test (not enough steps or resolution to
+   converge -- Wan/LTX-Video both needed ~20 steps). **This is the first-ever complete FLUX.2 image
+   generation in this codebase's history.** Still not done: a real full-resolution/full-step CPU
+   run to judge actual image quality, and **the real end-to-end run on Vulkan GPU explicitly** (the
+   user's own stated requirement -- this run was CPU-only) — `Flux2DiT`'s real-weight forward pass
+   currently has no GPU-residency wiring at all (see `docs/088`'s Pass 2 section), so a Vulkan run
+   needs that work done first.
 
 This is real, substantial implementation work (steps 2-5 each comparable in scope to one of this
 session's other single-model fixes) — scoped here so it can be picked up as a focused task rather

@@ -228,10 +228,16 @@ worse than no status.
             passes: real `flux2-vae.safetensors` (336MB), finite RGB output.
             **All three major FLUX.2 components (DiT, text conditioning, VAE) are now proven
             working against real weights independently.**
-      - [ ] Wire `Flux2TextConditioning.Encode` + `Flux2Vae.UnnormalizeAndUnshuffle` into
-            `Flux2Pipeline.Generate`'s currently-synthetic conditioning/decode calls.
-      - [ ] First real end-to-end run — **on Vulkan GPU explicitly**, per the user's stated
-            requirement (a CPU-only run does not close this item).
+      - [x] Wired, 2026-09-18 -- `Flux2Pipeline.Load`/`Generate` now uses real
+            `Flux2TextConditioning.Encode` + real `Flux2Vae.UnnormalizeAndUnshuffle`/`VaeDecoder`.
+            `Flux2Pipeline_RealWeights_EndToEndGenerateProducesFiniteImage` passes: **first-ever
+            complete FLUX.2 image generation** (all 3 real checkpoints loaded together, ~44GB
+            working set stable, 123.9s for 64×64/2-step, finite output). Output is visual noise --
+            correct/expected for 2 steps at 64px, not a bug (Wan/LTX both needed ~20 steps).
+      - [ ] Still needed: a real full-resolution/full-step CPU run to judge actual quality, and
+            **the real end-to-end run on Vulkan GPU explicitly** — per the user's stated
+            requirement (this run was CPU-only; `Flux2DiT` has zero GPU-residency wiring yet, see
+            Pass 2 below).
 - [x] **FLUX.3 — CLOSED, 2026-09-18: not a real target.** `Flux3Params.cs`/`Flux3DiT.cs`'s own doc
       comments describe "FLUX 3 multimodal foundation model... unified video, native synchronized
       audio, and text conditioning" — this does not match any real Black Forest Labs product.
