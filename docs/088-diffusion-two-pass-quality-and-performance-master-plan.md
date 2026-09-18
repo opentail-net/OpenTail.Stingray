@@ -203,11 +203,18 @@ worse than no status.
       `Flux2RealWeightsTests` passes: real `flux2-dev-Q4_K_S.gguf` (18GB), 68s, finite output -- the
       first successful real-weight FLUX.2 forward pass ever in this codebase. See `docs/087` for
       full detail. Remaining real next steps, in order:
-      - [ ] Real Mistral-Small-3.2-24B forward pass for text conditioning — **build the standalone
-            differential test comparing extracted hidden-layer activations against an independent
-            Mistral reference BEFORE wiring into FLUX.2**, per `docs/087`'s own warning (a wrong
-            15360-dim conditioning vector would make a correct DiT look completely broken, exactly
-            FLUX.1's Round 1-8 experience).
+      - [x] Real Mistral-Small-3.2-24B hidden-state tap MECHANISM proven, 2026-09-18 --
+            `Flux2MistralHiddenTapsTests` passes: real weights (12.61 GiB), `EnableHiddenTaps
+            ([9,19,29])` (off-by-one-corrected for HF's `hidden_states[10,20,30]`), real finite
+            non-zero 15360-dim output at every position. This capability turned out to already
+            exist in the codebase (`IForwardPass.EnableHiddenTaps`, PR #413) -- an earlier claim
+            this session that it needed new infra was wrong.
+      - [ ] Still needed: real ChatML template/`drop_idx` cropping convention wired into
+            `Flux2Pipeline`, and **build the standalone differential test comparing extracted
+            hidden-layer activations against an independent Mistral reference BEFORE trusting this
+            for real image generation**, per `docs/087`'s own warning (a wrong 15360-dim
+            conditioning vector would make a correct DiT look completely broken, exactly FLUX.1's
+            Round 1-8 experience).
       - [ ] Real FLUX.2 VAE decoder (32-channel, checkpoint downloaded).
       - [ ] First real end-to-end run — **on Vulkan GPU explicitly**, per the user's stated
             requirement (a CPU-only run does not close this item).

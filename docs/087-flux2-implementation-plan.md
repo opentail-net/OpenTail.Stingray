@@ -253,16 +253,25 @@ synthetic (random floats, not real Mistral output) — not a coherence check yet
 "structurally sound, not yet coherent" milestone HunyuanVideo/Qwen Image reached before their own
 text-conditioning wiring landed.
 
+## 2026-09-18 UPDATE: step 3 mechanism proven end-to-end against real weights
+
+`Flux2MistralHiddenTapsTests` confirms the real extraction mechanism works: real Mistral-Small-
+3.2-24B-Instruct-2506-Q4_K_S.gguf (12.61 GiB pre-faulted), `EnableHiddenTaps([9, 19, 29])` (the
+off-by-one-corrected indices for HF's literal `hidden_states[10, 20, 30]`), real finite non-zero
+15360-dim tap vectors at every token position. **Not yet done**: the real ChatML system-prompt/
+chat-template/`drop_idx`-style cropping convention (`docs/087`'s original recipe, still needs
+implementing in `Flux2Pipeline`'s conditioning path, not just the raw tokenize-and-tap mechanism
+tested here), and a standalone differential test comparing this port's tap output against a real
+independent Mistral reference BEFORE wiring into FLUX.2 end-to-end — a wrong 15360-dim conditioning
+vector would make a perfectly correct DiT port look completely broken, exactly the failure mode
+`docs/056` spent 9 rounds chasing on FLUX.1's T5 conditioning.
+
 ## Recommended next steps (implementation, NOT done this pass)
 
-3. Wire a real Mistral-Small-24B forward pass (the checkpoint is downloaded: `models/_models/
-   Mistral-Small-3.2-24B-Instruct-2506-Q4_K_S.gguf`) for the text-conditioning path, extracting and
-   concatenating hidden-layer activations at the confirmed layer indices, with the confirmed system
-   prompt/chat-template/padding convention. Build a standalone differential test comparing this
-   port's layer-10/20/30 hidden states against a real independent Mistral reference BEFORE wiring
-   into FLUX.2 at all — a wrong 15360-dim conditioning vector will make a perfectly correct DiT
-   port look completely broken, exactly the failure mode `docs/056` spent 9 rounds chasing on
-   FLUX.1's T5 conditioning.
+3. Wire the real ChatML template/system-prompt/`drop_idx` cropping convention into
+   `Flux2Pipeline`'s text-conditioning path (the raw `EnableHiddenTaps` mechanism itself is now
+   proven, per the update above) — then build the standalone differential test against a real
+   independent Mistral reference before trusting the output for real image generation.
 4. Port a real FLUX.2 VAE decoder (checkpoint downloaded: `models/_models/flux2-vae.safetensors`)
    replacing the current raw-channel-repeat stub. Note InChannels=128 (32 latent channels × 2×2
    patch) confirms FLUX.2's VAE has 32 latent channels, double FLUX.1's 16 — verify this against
