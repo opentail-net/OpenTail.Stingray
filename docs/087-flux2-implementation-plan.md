@@ -406,6 +406,22 @@ itself is now complete and proven, not just its individual pieces.
    the single highest-leverage next step, since structural re-reading plus one real fix have now
    ruled out 5 real candidates without resolving the visual symptom (the same pattern FLUX.1's own
    Round 6-8 experience had before its real fix was found by a numeric, not structural, check).
+
+   **Attempted 2026-09-18, real hardware constraint found.** This machine unexpectedly DOES have
+   PyTorch 2.11 + transformers 5.7.0 installed, and `transformers` can load a GGUF checkpoint
+   directly via `AutoModelForCausalLM.from_pretrained(gguf_file=...)` (confirmed working for the
+   tokenizer/chat-template). Attempted an independent reference dump of the real Mistral-Small-24B
+   checkpoint: killed by the OS for low memory at `dtype=torch.float32` (~96GB needed, far over
+   this machine's 63GB), retried at `dtype=torch.float16` (~48GB needed vs ~51GB free at the time)
+   — got to 84% of tensors converted (304/363) before also being killed. **This is a genuine
+   hardware memory constraint, not a bug or a dead end from insufficient effort** —
+   `transformers`' GGUF loader fully dequantizes every tensor into a live Python object graph
+   before the model is usable at all (no streaming/lazy-per-layer load path), so there's no way to
+   get partial credit without a fundamentally different approach (e.g. a custom minimal script
+   that loads and runs only the first ~30 layers via the low-level `gguf` tensor reader directly,
+   skipping the rest — real, substantial new work, not attempted this pass). Matches this
+   project's own established pattern for hardware-constrained items (DeepSeek-V4, Llama-4 vision)
+   — a real, named blocker, not silently dropped.
    **Do not report FLUX.2 as visually verified
    until the bug is found and fixed and a re-run shows real structure** — the wiring milestone
    (all 3 components load and run together without crashing) is real and worth keeping, but image
