@@ -124,11 +124,16 @@ worse than no status.
       `QwenImagePipeline` itself** via a new `Load(modelPath, textEncoderPath, vaePath, backend)`
       overload, `Generate()` uses it automatically when no explicit `textContext` is supplied
       (additive, no regression on the existing real-weight forward-pass test). **Qwen Image's
-      text-conditioning gap is now closed at the code level.** Real next step (not done): re-run
-      the 256×256/4-step repro with this real conditioning and judge actual coherence — per
-      FLUX.2's own experience this session (real wiring landed but visual correctness is still an
-      open question, and one real "built but never actually used" bug was found only via a real
-      end-to-end run), do not assume this will just work without a real check.
+      text-conditioning gap is now closed at the code level.** **Coherence check DONE, same day:
+      NOT coherent -- a severe, regular checkerboard/tiling artifact** (256×256/8-step, real CFG
+      guidance=4.0, 2889.9s). **Critical finding: this output is visually IDENTICAL to the earlier
+      zero-conditioning run** — proving the real text-conditioning wiring works correctly (real
+      vs. zero conditioning makes zero difference to this artifact) and the checkerboard pattern
+      is a completely separate, pre-existing structural bug (patchify/RoPE/VAE-tiling, the exact
+      same failure class this project spent 9 rounds finding for FLUX.1 and separately fixed for
+      Wan). **Do not re-investigate text conditioning for this artifact.** See `docs/089` for the
+      full finding and the real next-step playbook (same patchify/RoPE/VAE-tiling checks that
+      resolved FLUX.1's and Wan's artifacts).
 - [ ] **HunyuanVideo** — same shape of gap as Qwen Image: DiT+VAE numerically sound, single named
       gap is real LLaMA-3/Qwen2.5-VL text conditioning (`HunyuanVideoPipeline.Generate` currently
       defaults to all-zero context). **2026-09-18 scoping**: confirmed against

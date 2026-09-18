@@ -107,16 +107,33 @@ callers unaffected. Confirmed no regression on the existing real-weight DiT forw
 4.7GB + VAE) load and construct together cleanly. **Qwen Image's real text-conditioning gap
 (docs/086's original finding) is now closed at the code level** -- every piece is real and wired.
 
+## 2026-09-18 UPDATE: step 5 done -- real conditioning does NOT produce a coherent image, a SEPARATE bug found
+
+Ran `QwenImageRealConditioningCoherenceTests` (256×256/8-step, real CFG guidance=4.0, 2889.9s):
+output is a severe, regular checkerboard/basket-weave tiling artifact
+(`docs/diffusion-samples/qwenimage_real_conditioning_256_8step_2026-09-18.png`), NOT a coherent
+image. **Critical diagnostic comparison**: this output is visually IDENTICAL in character to the
+earlier zero-conditioning run's output (`qwenimage_red-apple-on-white-table_256x256_4steps_
+zero-cond_2026-09-18.png`) — same checkerboard pattern, same colors, same structure. **This proves
+two things at once**: (1) the real text-conditioning wiring landed this session is functioning
+correctly (real vs. zero conditioning demonstrably makes zero visual difference to this
+artifact, exactly what you'd expect if conditioning is being read and applied but the actual bug
+lives somewhere the conditioning signal never reaches, e.g. downstream of/parallel to it); (2) the
+checkerboard artifact is a real, SEPARATE, pre-existing structural bug, not caused by or related
+to text conditioning at all. This is the exact same class of periodic-tiling failure signature
+this project spent 9 real rounds root-causing for FLUX.1 (`docs/056`, eventually found: missing T5
+sequence-length padding) and separately found+fixed for Wan (`README`'s Wan row, a `flipSinToCos`
+timestep-embedding bug). **Do not re-investigate the text-conditioning path for this specific
+artifact — it's confirmed not the cause.** Real next step: the same patchify/unpatchify,
+position-embedding, and VAE-tiling-boundary checks that found Wan's and FLUX.1's real causes,
+applied to `QwenImageModel.cs`/`WanVaeDecoder3D.cs`'s Qwen-Image-specific call sites.
+
 ## Recommended next steps (NOT done this pass)
 
-5. Re-run the existing 256×256/4-step repro (`docs/086`) with this real conditioning instead of
-   zero-vectors; confirm coherent (not just structurally non-degenerate) output, same bar
-   HunyuanVideo/LTX-Video are held to. **Given FLUX.2's own recent experience** (its text
-   conditioning was similarly wired end-to-end but the output is still not visually verified as
-   coherent, and one real bug -- an unused timestep scheduler -- was found only after real
-   end-to-end runs, not by code review alone) **do not assume Qwen Image will "just work" once
-   run — budget real time for this verification pass, including checking for the equivalent class
-   of "component built correctly but never actually wired/used" bug.**
+6. Apply the FLUX.1/Wan periodic-tiling-artifact investigation playbook to Qwen Image: check
+   patchify/unpatchify ordering, 2D/3D RoPE position-id construction, and VAE decoder tiling/
+   upsampling boundaries -- in that rough order of likely-cost-to-check, matching how those two
+   prior investigations were actually resolved.
 
 This is comparable in scope to FLUX.2's Mistral wiring, though simpler (final-layer only, no
 gated-FFN/shared-modulation DiT complexity on this side) -- the `qwen2vl` architecture-support gap
