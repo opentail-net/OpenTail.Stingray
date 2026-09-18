@@ -1851,14 +1851,17 @@ None of these were found by deliberate auditing — they surfaced incidentally w
 models for `PerformanceLeague.md`. All are measured/reproduced, none are fixed. Listed roughly by
 severity.
 
-- **`stingray embed`'s GGUF path is a complete fake, silently.** Any `-m <path>.gguf` that isn't
-  `.onnx` falls through to `EmbeddingEngine.cs`'s `EmbeddingEngine.Embed` — a hash-based synthetic
-  stub (FNV-1a hash of the input text run through `sin`/`cos`, `EmbeddingEngine.cs:147-162`) that
-  never opens the GGUF file at all. Confirmed by running it against three different real GGUF
-  embedding models plus one nonexistent path — all four produced byte-identical output vectors, no
-  error. This is worse than wrong output: it's a command that looks like it works and doesn't touch
-  the model you gave it. Fix: wire a real GGUF forward pass into `EmbeddingEngine` (or route GGUF
-  paths through the same `ForwardPass`/backend machinery `run`/`image` already use).
+- ~~**`stingray embed`'s GGUF path is a complete fake, silently.**~~ **FIXED, already landed by
+  `e9403ff` (2026-09-16) before this item was picked back up — this entry was stale.**
+  `EmbeddingEngine`'s constructor now does a real `GgufModel.Open`/`ForwardPass` load for any
+  `File.Exists` GGUF path. Re-verified 2026-09-18: real run against `qwen3-embedding-0.6b-q8_0.gguf`
+  logs a real weight pre-fault (`[ForwardPass] Pre-faulted 0.74 GiB...`) and produces real,
+  prompt-varying, non-degenerate output — not the old hash stub. **One residual bug found and fixed
+  in the same pass, same failure shape but narrower**: a `.gguf` path that does NOT exist still
+  silently fell through to the synthetic placeholder generator with no error. Fixed at
+  `EmbedCommand.cs` (errors out before constructing `EmbeddingEngine`, mirroring the ONNX branch's
+  existing real error handling). `EmbeddingTests` (11 tests, real weight-loading confirmed via
+  timing) re-verified passing.
 - ~~**`stingray embed`'s ONNX path crashes on a real BERT-family checkpoint.**~~ **FIXED
   2026-09-11.** Was: `Missing Input: token_type_ids` on `all-MiniLM-L6-v2_quantized.onnx` because
   `EmbedCommand.cs`'s ONNX branch never constructed that tensor. Fix landed: an all-zero
