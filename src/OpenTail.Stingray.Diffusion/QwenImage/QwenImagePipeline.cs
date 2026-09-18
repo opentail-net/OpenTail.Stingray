@@ -10,6 +10,10 @@ public sealed class QwenImagePipeline : IDiffusionPipeline
     private readonly IWeightLoader _weights;
     private readonly QwenImageModel _transformer;
     private readonly Wan.WanVaeDecoder3D _vae;
+    private readonly GgufModel? _textEncoderModel;
+    private readonly Engine.ForwardPass? _textEncoderForward;
+    private readonly GgufTokenizer? _textEncoderTokenizer;
+    private readonly Cpu.CpuBackend? _textEncoderBackend;
     private bool _disposed;
 
     public string Architecture => "QwenImage";
@@ -22,6 +26,17 @@ public sealed class QwenImagePipeline : IDiffusionPipeline
         _weights = weights;
         _transformer = transformer;
         _vae = vae;
+    }
+
+    private QwenImagePipeline(
+        IWeightLoader weights, QwenImageModel transformer, Wan.WanVaeDecoder3D vae,
+        GgufModel textEncoderModel, Engine.ForwardPass textEncoderForward, GgufTokenizer textEncoderTokenizer, Cpu.CpuBackend textEncoderBackend)
+        : this(weights, transformer, vae)
+    {
+        _textEncoderModel = textEncoderModel;
+        _textEncoderForward = textEncoderForward;
+        _textEncoderTokenizer = textEncoderTokenizer;
+        _textEncoderBackend = textEncoderBackend;
     }
 
     /// <summary>
@@ -57,6 +72,37 @@ public sealed class QwenImagePipeline : IDiffusionPipeline
     }
 
     /// <summary>
+    /// Loads a Qwen-Image pipeline WITH real Qwen2.5-VL-7B text conditioning (docs/089) --
+    /// <c>Generate</c> will use <see cref="QwenImageTextConditioning.Encode"/> automatically when
+    /// the caller doesn't supply an explicit <c>textContext</c>.
+    /// </summary>
+    public static QwenImagePipeline Load(string modelPath, string textEncoderPath, string? vaePath, IComputeBackend? backend = null)
+    {
+        IWeightLoader weights = modelPath.EndsWith(".gguf", StringComparison.OrdinalIgnoreCase)
+            ? GgufWeightLoader.Open(modelPath)
+            : SafetensorsLoader.Open(modelPath);
+
+        var transformer = new QwenImageModel(weights, prefix: "", backend: backend);
+
+        IWeightLoader vaeLoader = weights;
+        if (!string.IsNullOrWhiteSpace(vaePath) && File.Exists(vaePath))
+        {
+            vaeLoader = vaePath.EndsWith(".gguf", StringComparison.OrdinalIgnoreCase)
+                ? GgufWeightLoader.Open(vaePath)
+                : SafetensorsLoader.Open(vaePath);
+        }
+        var vae = new Wan.WanVaeDecoder3D(vaeLoader, backend);
+
+        var textEncoderModel = GgufModel.Open(textEncoderPath);
+        var hp = ModelHyperparams.FromGgufMetadata(textEncoderModel.Metadata, textEncoderModel);
+        var tokenizer = GgufTokenizer.FromGgufModel(textEncoderModel);
+        var textEncoderBackend = new Cpu.CpuBackend();
+        var textEncoderForward = new Engine.ForwardPass(textEncoderModel, textEncoderBackend, hp);
+
+        return new QwenImagePipeline(weights, transformer, vae, textEncoderModel, textEncoderForward, tokenizer, textEncoderBackend);
+    }
+
+    /// <summary>
     /// Generates an image using Qwen Image Rectified Flow-Matching.
     /// Supports Text-to-Image and Qwen Image Edit (reference visual conditioning).
     /// </summary>
@@ -83,10 +129,29 @@ public sealed class QwenImagePipeline : IDiffusionPipeline
         int latW = width / 8;
         int latC = 16;
 
-        // 1. Text conditioning context [seqLen, 3584]
-        int seqLen = 77;
-        var condContext = textContext ?? new float[seqLen * QwenImageModel.ContextDim];
-        var uncondContext = new float[seqLen * QwenImageModel.ContextDim];
+        // 1. Text conditioning context [seqLen, 3584] -- real Qwen2.5-VL-7B conditioning
+        //    (QwenImageTextConditioning.Encode, docs/089) when this pipeline owns a real text
+        //    encoder (Load(modelPath, textEncoderPath, ...)) and the caller didn't already supply
+        //    an explicit textContext; falls back to zero-conditioning otherwise (unchanged
+        //    behavior for existing callers).
+        float[] condContext;
+        float[] uncondContext;
+        if (textContext is not null)
+        {
+            condContext = textContext;
+            uncondContext = new float[condContext.Length];
+        }
+        else if (_textEncoderForward is not null && _textEncoderTokenizer is not null)
+        {
+            (condContext, _) = QwenImageTextConditioning.Encode(_textEncoderForward, _textEncoderTokenizer, prompt);
+            (uncondContext, _) = QwenImageTextConditioning.Encode(_textEncoderForward, _textEncoderTokenizer, negativePrompt ?? "");
+        }
+        else
+        {
+            int seqLen = 77;
+            condContext = new float[seqLen * QwenImageModel.ContextDim];
+            uncondContext = new float[seqLen * QwenImageModel.ContextDim];
+        }
 
         // 2. Reference image latents for Qwen Image Edit
         float[]? refLatent = null;
@@ -207,6 +272,9 @@ public sealed class QwenImagePipeline : IDiffusionPipeline
             _weights.Dispose();
             _transformer.Dispose();
             _vae.Dispose();
+            _textEncoderForward?.Dispose();
+            _textEncoderBackend?.Dispose();
+            _textEncoderModel?.Dispose();
         }
     }
 }
