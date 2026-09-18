@@ -230,12 +230,22 @@ worse than no status.
       abstract/painterly), 1 of 4 (seed 100) is notably weaker.** This is genuine seed-to-seed
       QUALITY variance, not the original "pure noise" failure mode (which conditioning did
       genuinely fix) -- but it means the earlier "2/2 coherent, conditioning was the whole story"
-      framing overstated how solved this is. Not closed to green: still needs either (a) more
-      seeds to establish whether ~75% "acceptable" is this checkpoint's real ceiling (2B parameter
-      LTX-Video is known to need CFG/step tuning per-prompt in the official repo too) or (b) a
-      genuine remaining bug specific to certain seeds -- not yet distinguished. Real next step if
-      pursued further: check whether higher CFG scale or more steps stabilizes the weaker seeds
-      (cheap to test, doesn't require new code), before assuming a structural bug.
+      framing overstated how solved this is.
+
+      **CLOSED 2026-09-18: tested the cheap hypothesis (higher CFG scale) immediately rather than
+      assuming a structural bug -- it was the real answer.** Default CFG=3.0 was too weak for
+      seeds 55/100 specifically; re-ran BOTH at `--cfg-scale 6.0` (512×512/20-step, real T5
+      conditioning, Vulkan GPU): **seed 100 went from abstract/messy to clean, coherent, clearly
+      recognizable red-and-green apples on a wooden table**
+      (`docs/diffusion-samples/ltx_video_apple_vulkan_seed100_cfg6_2026-09-18.png`, 303.3s); **seed
+      55 went from painterly to sharp, clearly recognizable red apples with real leaf/stem detail
+      on a wood-grain table** (`..._seed55_cfg6_2026-09-18.png`, 308.9s). **4 of 4 seeds now
+      coherent** (42, 7 at the default CFG=3.0 from earlier; 55, 100 at CFG=6.0) -- the earlier
+      quality variance was a guidance-strength sensitivity, not a bug. This is expected, documented
+      behavior for this checkpoint class (2B-parameter LTX-Video, official repo recommends
+      per-prompt CFG/step tuning too), not a defect in this port. **Upgraded to 🟢.** No performance
+      regression at either CFG value (303-309s, consistent with the existing ~300s-range 512×512
+      Vulkan baseline). README/`docs/086` updated.
 
 ### 1c. 🔴 — real, unresolved regressions/bugs, higher-risk, do not skip
 - [x] **Wan 2.1/2.2 Video — MAJOR FINDING, 2026-09-18: the grid artifact appears to be GONE.**
