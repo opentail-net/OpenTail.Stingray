@@ -60,11 +60,15 @@ worse than no status.
 - [x] **Stable Diffusion 1.5 (+ControlNet)** — 2026-09-18: re-ran, exit 0, real per-pass Vulkan GPU
       timing logged (`~3.6-4.0s/pass`), total 199.9s for 20 steps/512×512 -- matches
       `PerformanceLeague.md`'s documented 204.4s within noise. No regression.
-- [ ] **SDXL / SDXL-Turbo** — 2026-09-18: attempted re-run, `SdxlRealWeightsTests` silently no-op'd
-      (0.196s, exit 0, "2 passed") -- per CLAUDE.md rule 12, this is NOT a real pass, the checkpoint
-      (`sd_xl_turbo_1.0_fp16.safetensors`) isn't currently present in `models/` (rotating curated
-      disk set). Not claiming verification. Redownload kicked off in background to close this out
-      for real.
+- [x] **SDXL / SDXL-Turbo** — 2026-09-18: redownloaded `sd_xl_turbo_1.0_fp16.safetensors` (6.9GB,
+      `hf download stabilityai/sdxl-turbo`). Real re-run surfaced one genuine, immediate gap (not a
+      no-op): `SdxlPipeline.Load` needs `models/clip_tokenizer.json`, which wasn't present either --
+      copied from `models/flux1-schnell/tokenizer_clip/tokenizer.json` (same real HF CLIP tokenizer
+      format, `ClipTokenizer.FromFile` confirmed format-compatible). Re-ran: both facts pass with
+      real weights loaded (pipeline init + safetensors validity). Full generation-timing
+      re-verification (the 1.60x-of-C++ claim) NOT done this pass -- that needs the actual
+      end-to-end generation benchmark, not just load/init; loading real weights successfully is
+      real progress but is a narrower claim than the full perf re-check.
 - [x] **FLUX.1-schnell** — 2026-09-18: re-ran `FluxRealWeightsTests` (real Vulkan GPU weights,
       full CLIP-L+T5-XXL+VAE pipeline). Warm pass 198.4s -- matches `PerformanceLeague.md`'s
       documented 198.1s within noise, no regression. Output PNG regenerated (444KB, non-degenerate)
