@@ -157,14 +157,29 @@ sinf(arg)`, i.e. real `[cos, sin]` order) -- this port's default (`flipSinToCos:
 `[sin, cos]`, the wrong order. Every AdaLN modulation in every DiT block derives from this one
 value, so this is a real, structural, whole-network corruption -- exactly the same bug class (same
 shared helper, same missing flag) already found and fixed for Wan's and LTX-Video's own timestep
-embeddings, now recurring a third time in a third model. Fixed. **Not yet re-verified with a real
-end-to-end run** -- that's the immediate next step.
+embeddings, now recurring a third time in a third model. Fixed.
+
+**Re-ran the coherence check with the flipSinToCos fix applied (real weights, 256x256/8-step,
+guidance=4.0, 2957.1s): the artifact CHANGED CHARACTER but is still not coherent.** The previous
+checkerboard/basket-weave pattern (locally-coherent texture tiles, no global structure) is gone,
+replaced by a completely different failure signature: broad horizontal color bands (a pink band,
+a white band, a dark-blue band, a thin multicolor noisy band at the bottom) with no vertical/tiling
+periodicity at all (`docs/diffusion-samples/qwenimage_real_conditioning_256_8step_2026-09-18.png`,
+overwritten in place from the pre-fix version -- same filename, different image). This is real,
+useful evidence: **the flipSinToCos fix had a genuine, visible effect on the network's output**,
+confirming it was a real bug worth fixing (kept), but it was not the sole cause of incoherence --
+a horizontal-banding failure signature is a different, still-unidentified bug, not the same
+checkerboard bug persisting.
 
 ## Recommended next steps (NOT done this pass)
 
-7. Re-run the coherence check with the timestep-embedding fix applied. If the checkerboard artifact
-   is STILL unresolved, move to VAE decoder tiling/upsampling boundaries (`WanVaeDecoder3D`'s
-   Qwen-Image-specific call sites) as the next candidate, per the original playbook.
+7. ~~Re-run the coherence check with the timestep-embedding fix applied.~~ **Done 2026-09-18.**
+   Artifact changed from checkerboard to horizontal banding -- still incoherent. Per the original
+   playbook, move to VAE decoder tiling/upsampling boundaries (`WanVaeDecoder3D`'s Qwen-Image-specific
+   call sites) as the next candidate. A horizontal-banding pattern specifically (as opposed to a
+   2D checkerboard) is consistent with a row-wise/height-axis bug -- worth checking the VAE's
+   spatial upsampling stride/padding along the H axis first, and Qwen Image's own H/W patchify
+   split (`imgH`/`imgW` in `QwenImageRoPE`) for an axis-order mismatch, before assuming it's VAE-only.
 
 This is comparable in scope to FLUX.2's Mistral wiring, though simpler (final-layer only, no
 gated-FFN/shared-modulation DiT complexity on this side) -- the `qwen2vl` architecture-support gap
