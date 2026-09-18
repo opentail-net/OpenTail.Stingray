@@ -113,6 +113,9 @@ public sealed class HunyuanVideoPipeline : IDiffusionPipeline
             timesteps[i] = (flowShift * linearT) / (1.0f + (flowShift - 1.0f) * linearT);
         }
 
+        bool dumpDiag = Environment.GetEnvironmentVariable("STINGRAY_HUNYUAN_DUMP_LATENT") == "1";
+        if (dumpDiag) Console.Error.WriteLine($"[HunyuanVideo] init noise: nanCount={latent.Count(v => !float.IsFinite(v))}/{latent.Length}");
+
         // 4. Euler Flow trajectory loop
         for (int step = 0; step < steps; step++)
         {
@@ -121,6 +124,7 @@ public sealed class HunyuanVideoPipeline : IDiffusionPipeline
             float dt = t - tNext;
 
             var condVelocity = _transformer.Forward(latent, t * 1000.0f, condContext, numFrames, latH, latW);
+            if (dumpDiag) Console.Error.WriteLine($"[HunyuanVideo] step={step} t={t:F4} condVelocity nanCount={condVelocity.Count(v => !float.IsFinite(v))}/{condVelocity.Length}");
             float[] velocity;
 
             if (guidance > 1.0f)
@@ -139,6 +143,21 @@ public sealed class HunyuanVideoPipeline : IDiffusionPipeline
                 latent[i] -= dt * velocity[i];
 
             progress?.Invoke(step + 1, steps);
+        }
+
+        if (Environment.GetEnvironmentVariable("STINGRAY_HUNYUAN_DUMP_LATENT") == "1")
+        {
+            double sum = 0, sumSq = 0; int nanCount = 0; float min = float.MaxValue, max = float.MinValue;
+            foreach (var v in latent)
+            {
+                if (!float.IsFinite(v)) { nanCount++; continue; }
+                sum += v; sumSq += (double)v * v;
+                if (v < min) min = v;
+                if (v > max) max = v;
+            }
+            double mean = sum / latent.Length;
+            double std = Math.Sqrt(sumSq / latent.Length - mean * mean);
+            Console.Error.WriteLine($"[HunyuanVideo] pre-decode latent: mean={mean:F4} std={std:F4} min={min:F4} max={max:F4} nanCount={nanCount}/{latent.Length}");
         }
 
         // 5. Decode the full video latent [16, numFrames, latH, latW] to RGB pixels via the real

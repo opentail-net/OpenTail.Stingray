@@ -177,11 +177,24 @@ public sealed class HunyuanVideoModel : IDisposable
         // 4. 3D-RoPE positional frequencies
         var (cos, sin) = HunyuanVideoRoPE.Compute3DRoPE(numFrames, patchH, patchW, _headDim);
 
+        bool dumpDiag = Environment.GetEnvironmentVariable("STINGRAY_HUNYUAN_DUMP_LATENT") == "1";
+        if (dumpDiag)
+        {
+            Console.Error.WriteLine($"[HunyuanVideo.Forward] imgTokens nan={imgTokens.Count(v => !float.IsFinite(v))}/{imgTokens.Length} txtTokens nan={txtTokens.Count(v => !float.IsFinite(v))}/{txtTokens.Length} tEmb nan={tEmb.Count(v => !float.IsFinite(v))}/{tEmb.Length} cos nan={cos.Count(v => !float.IsFinite(v))} sin nan={sin.Count(v => !float.IsFinite(v))}");
+        }
+
         // 5. Dual-Stream Blocks (double_blocks)
         for (int b = 0; b < _depthDouble; b++)
         {
             string p = $"double_blocks.{b}";
             (imgTokens, txtTokens) = DoubleBlock(p, imgTokens, txtTokens, tEmb, cos, sin, numImgTokens, numTxtTokens);
+            if (dumpDiag)
+            {
+                int imgNan = imgTokens.Count(v => !float.IsFinite(v));
+                int txtNan = txtTokens.Count(v => !float.IsFinite(v));
+                if (imgNan > 0 || txtNan > 0)
+                    Console.Error.WriteLine($"[HunyuanVideo.Forward] after double_blocks.{b}: imgTokens nan={imgNan}/{imgTokens.Length} txtTokens nan={txtNan}/{txtTokens.Length}");
+            }
         }
 
         // 6. Single-Stream Blocks (single_blocks) if present
@@ -238,16 +251,31 @@ public sealed class HunyuanVideoModel : IDisposable
         var txtSc2 = txtMod.AsSpan(4 * _dim, _dim);
         var txtG2 = txtMod.AsSpan(5 * _dim, _dim);
 
-        var normedImg1 = Modulate(img, numImg, imgS1, imgSc1);
-        var normedTxt1 = Modulate(txt, numTxt, txtS1, txtSc1);
+        // Real AdaLN-Zero requires an affine-free LayerNorm BEFORE the scale/shift modulation --
+        // same "LayerNormNoAffine -> Modulate" pattern WanModel's CPU path uses (see its
+        // ApplyGatedResidualRows doc comment: this Modulate/gating logic is a byte-identical
+        // extraction shared with Wan). Modulating the raw, unnormalized residual stream directly
+        // (as this previously did) leaves img/txt growing unboundedly across blocks via the gated
+        // residual adds below, with no renormalization -- confirmed to overflow into NaN by
+        // double_blocks.8-9 of 20 on the real fp8 checkpoint (2026-09-18 diagnostic).
+        var normedImg1 = (float[])img.Clone();
+        DiffusionOps.LayerNormNoAffine(normedImg1, _dim);
+        normedImg1 = Modulate(normedImg1, numImg, imgS1, imgSc1);
+        var normedTxt1 = (float[])txt.Clone();
+        DiffusionOps.LayerNormNoAffine(normedTxt1, _dim);
+        normedTxt1 = Modulate(normedTxt1, numTxt, txtS1, txtSc1);
 
         var (imgAttn, txtAttn) = JointAttention($"{prefix}", normedImg1, normedTxt1, cos, sin, numImg, numTxt);
 
         ApplyGatedResidual(img, imgAttn, numImg, imgG1);
         ApplyGatedResidual(txt, txtAttn, numTxt, txtG1);
 
-        var normedImg2 = Modulate(img, numImg, imgS2, imgSc2);
-        var normedTxt2 = Modulate(txt, numTxt, txtS2, txtSc2);
+        var normedImg2 = (float[])img.Clone();
+        DiffusionOps.LayerNormNoAffine(normedImg2, _dim);
+        normedImg2 = Modulate(normedImg2, numImg, imgS2, imgSc2);
+        var normedTxt2 = (float[])txt.Clone();
+        DiffusionOps.LayerNormNoAffine(normedTxt2, _dim);
+        normedTxt2 = Modulate(normedTxt2, numTxt, txtS2, txtSc2);
 
         var imgMlp = FeedForward($"{prefix}.img_mlp", normedImg2, numImg);
         var txtMlp = FeedForward($"{prefix}.txt_mlp", normedTxt2, numTxt);
@@ -275,8 +303,17 @@ public sealed class HunyuanVideoModel : IDisposable
         var (imgQ, imgK, imgV) = SplitQkv(imgQkv, numImg, _dim);
         var (txtQ, txtK, txtV) = SplitQkv(txtQkv, numTxt, _dim);
 
+        // Real checkpoint carries BOTH q_norm and k_norm per attention (img_attn_q_norm/k_norm,
+        // txt_attn_q_norm/k_norm) -- QK-RMSNorm, same convention as Qwen3/SD3.5. Applying only
+        // K-norm (as this previously did) leaves Q magnitude unbounded across blocks, which was
+        // found to overflow attention scores into NaN by block 8 of 20 double_blocks on the real
+        // fp8 checkpoint (STINGRAY_HUNYUAN_DUMP_LATENT=1 diagnostic, 2026-09-18).
+        var normImgQ = TryGetWeight($"{prefix}.img_attn.norm.query_norm.weight") ?? TryGetWeight($"{prefix}.img_attn.norm.query_norm.scale");
+        if (normImgQ is not null) RmsNormHeads(imgQ, numImg, _numHeads, _headDim, normImgQ);
         var normImgK = TryGetWeight($"{prefix}.img_attn.norm.key_norm.weight") ?? TryGetWeight($"{prefix}.img_attn.norm.key_norm.scale");
         if (normImgK is not null) RmsNormHeads(imgK, numImg, _numHeads, _headDim, normImgK);
+        var normTxtQ = TryGetWeight($"{prefix}.txt_attn.norm.query_norm.weight") ?? TryGetWeight($"{prefix}.txt_attn.norm.query_norm.scale");
+        if (normTxtQ is not null) RmsNormHeads(txtQ, numTxt, _numHeads, _headDim, normTxtQ);
         var normTxtK = TryGetWeight($"{prefix}.txt_attn.norm.key_norm.weight") ?? TryGetWeight($"{prefix}.txt_attn.norm.key_norm.scale");
         if (normTxtK is not null) RmsNormHeads(txtK, numTxt, _numHeads, _headDim, normTxtK);
 
@@ -312,7 +349,11 @@ public sealed class HunyuanVideoModel : IDisposable
         var sc = mod.AsSpan(1 * _dim, _dim);
         var g = mod.AsSpan(2 * _dim, _dim);
 
-        var normed = Modulate(x, totalSeq, s, sc);
+        // Same missing-pre-norm bug as DoubleBlock (see its comment) -- affine-free LayerNorm
+        // before the AdaLN modulation, not a direct modulate of the raw residual stream.
+        var normed = (float[])x.Clone();
+        DiffusionOps.LayerNormNoAffine(normed, _dim);
+        normed = Modulate(normed, totalSeq, s, sc);
 
         // QKV + MLP in single linear1
         int mlpHidden = _dim * 4;
@@ -324,6 +365,10 @@ public sealed class HunyuanVideoModel : IDisposable
 
         var (q, k, v) = SplitQkv(qkv, totalSeq, _dim);
 
+        // Same missing-Q-norm bug as JointAttention (see its comment) -- single_blocks.N.q_norm.weight
+        // is a real tensor in the checkpoint, confirmed via direct tensor-name enumeration.
+        var normQ = TryGetWeight($"{prefix}.q_norm.weight") ?? TryGetWeight($"{prefix}.q_norm.scale");
+        if (normQ is not null) RmsNormHeads(q, totalSeq, _numHeads, _headDim, normQ);
         var normK = TryGetWeight($"{prefix}.k_norm.weight") ?? TryGetWeight($"{prefix}.k_norm.scale");
         if (normK is not null) RmsNormHeads(k, totalSeq, _numHeads, _headDim, normK);
 
