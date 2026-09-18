@@ -469,7 +469,12 @@ public sealed class HunyuanVideoModel : IDisposable
 
     private float[] ComputeTimestepEmbedding(float timestep)
     {
-        var emb = DiffusionOps.SinusoidalTimestepEmbedding(timestep);
+        // REAL BUG FOUND AND FIXED 2026-09-18 (docs/088's HunyuanVideo noise investigation):
+        // confirmed against the real reference (transformer_hunyuan_video.py's
+        // `self.time_proj = Timesteps(num_channels=256, flip_sin_to_cos=True, ...)`) -- missing
+        // `flipSinToCos: true` produced the wrong `[sin,cos]` order instead of real `[cos,sin]`.
+        // Same bug class already found and fixed for Wan, LTX-Video, and Qwen Image this session.
+        var emb = DiffusionOps.SinusoidalTimestepEmbedding(timestep, flipSinToCos: true);
         var t0 = Linear("time_in.in_layer", emb, 256, _dim);
         DiffusionOps.SiluInPlace(t0);
         return Linear("time_in.out_layer", t0, _dim, _dim);
@@ -497,7 +502,9 @@ public sealed class HunyuanVideoModel : IDisposable
                 pooled[d] += textContext[s * TextDim + d];
         for (int d = 0; d < TextDim; d++) pooled[d] /= seqLen;
 
-        var tEmb = DiffusionOps.SinusoidalTimestepEmbedding(timestep);
+        // Same flipSinToCos fix as ComputeTimestepEmbedding above -- this is a separate call site
+        // (token refiner's own timestep embedder) using the same real Timesteps(flip_sin_to_cos=True).
+        var tEmb = DiffusionOps.SinusoidalTimestepEmbedding(timestep, flipSinToCos: true);
         var t0 = Linear("txt_in.t_embedder.mlp.0", tEmb, 256, _dim);
         DiffusionOps.SiluInPlace(t0);
         var tOut = Linear("txt_in.t_embedder.mlp.2", t0, _dim, _dim);
