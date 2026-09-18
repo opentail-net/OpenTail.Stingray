@@ -57,8 +57,9 @@ handoff doc) in the same pass a real finding lands — per CLAUDE.md rule 10, an
 worse than no status.
 
 ### 1a. Already 🟢 — confirm still true, do not re-derive from scratch
-- [ ] **Stable Diffusion 1.5 (+ControlNet)** — re-run the existing real-weight smoke test, confirm
-      output still matches the known-good sample. No new investigation expected.
+- [x] **Stable Diffusion 1.5 (+ControlNet)** — 2026-09-18: re-ran, exit 0, real per-pass Vulkan GPU
+      timing logged (`~3.6-4.0s/pass`), total 199.9s for 20 steps/512×512 -- matches
+      `PerformanceLeague.md`'s documented 204.4s within noise. No regression.
 - [ ] **SDXL / SDXL-Turbo** — same: re-run, confirm pixel-identical to `test_sdxl_turbo_batched.png`
       baseline.
 - [ ] **FLUX.1-schnell** — same: re-run the Round 9 repro command from `docs/056`, confirm the
