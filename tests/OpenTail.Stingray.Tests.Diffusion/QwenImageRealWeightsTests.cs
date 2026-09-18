@@ -9,18 +9,21 @@ namespace OpenTail.Stingray.Tests.Diffusion;
 /// backlog: real DiT code, structural conformance tests only before this, never run against real
 /// weights.
 ///
-/// Verifies the DiT directly (not the full <see cref="QwenImagePipeline"/>.Generate, which also
-/// calls VAE decode) -- as of 2026-09-18, the generic <c>VaeDecoder</c> class this pipeline
-/// currently calls does not match Qwen-Image's real VAE tensor layout (a structurally different,
-/// Wan-style causal VAE with a middle self-attention block -- see docs/086 for the real tensor
-/// inventory). A dedicated Qwen-Image VAE decoder port is real, scoped, remaining work, not
-/// attempted here. This test's job is to confirm what IS verified: the 60-layer DiT itself runs
-/// clean and produces a numerically healthy (finite, non-degenerate) velocity prediction across a
-/// real multi-step denoising loop with real weights.
+/// <see cref="QwenImageModel_RealWeights_ForwardProducesHealthyVelocity"/> verifies the DiT
+/// directly. <see cref="QwenImagePipeline_RealWeights_FullGenerateProducesNonDegenerateImage"/>
+/// verifies the full pipeline including VAE decode -- as of 2026-09-18, `QwenImagePipeline.Load`
+/// uses <see cref="Wan.WanVaeDecoder3D"/> for VAE decode (not the generic `VaeDecoder`, which does
+/// not match Qwen-Image's real VAE tensor layout). This works because Qwen-Image's real VAE is
+/// architecturally identical to Wan2.1's -- confirmed directly against
+/// `examples/stable-diffusion.cpp/src/model.h`'s `sd_version_uses_wan_vae(VERSION_QWEN_IMAGE)`,
+/// which routes it through the literal same `WAN::WanVAERunner` class, not just a similar one. See
+/// docs/086-video-model-verification-plan.md for the full tensor-shape evidence and reference
+/// cross-check.
 /// </summary>
 public sealed class QwenImageRealWeightsTests
 {
     private const string ModelFileName = "qwen-image-Q3_K_S.gguf";
+    private const string VaeFileName = "qwen_image_vae.safetensors";
 
     private static string? FindModelPath(string fileName)
     {
@@ -77,5 +80,30 @@ public sealed class QwenImageRealWeightsTests
         foreach (var v in velocity) sumSq += (double)v * v;
         double rms = Math.Sqrt(sumSq / velocity.Length);
         Assert.True(rms > 1e-6, $"DiT velocity RMS too small ({rms}), likely degenerate/all-zero");
+    }
+
+    [Fact]
+    public void QwenImagePipeline_RealWeights_FullGenerateProducesNonDegenerateImage()
+    {
+        string? modelPath = FindModelPath(ModelFileName);
+        if (modelPath is null) return;
+        string? vaePath = FindModelPath(VaeFileName);
+
+        using var pipeline = QwenImagePipeline.Load(modelPath, vaePath);
+        Assert.Equal("QwenImage", pipeline.Architecture);
+
+        string outPath = Path.Combine(Path.GetTempPath(), "qwenimage_full_pipeline_test.png");
+        pipeline.Generate(
+            prompt: "a red apple on a white table",
+            width: 256,
+            height: 256,
+            steps: 2,
+            guidance: 1.0f,
+            seed: 42,
+            outputPath: outPath);
+
+        Assert.True(File.Exists(outPath));
+        var info = new FileInfo(outPath);
+        Assert.True(info.Length > 1000, $"output PNG too small ({info.Length} bytes), likely degenerate");
     }
 }

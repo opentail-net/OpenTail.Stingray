@@ -380,11 +380,46 @@ upsample-stage indices" than "research and port a new architecture from scratch"
 per-stage channel counts / which of the 15 `decoder.upsamples.N` entries carry `resample`/
 `time_conv`/`shortcut` would need to be read directly off this checkpoint's own tensor shapes
 (same "check the real checkpoint, don't assume" discipline used everywhere else in this doc), but
-the architectural skeleton does not need to be independently re-derived. **Not attempted this
-pass** — a real port is still real work (reading and encoding the correct per-stage shape table,
-writing a new class, golden-checking non-degenerate output), just meaningfully less than "from
-scratch," and this session's remaining time went to documenting the shortcut precisely rather than
-executing it partially/riskily at the tail end of an already-long session.
+the architectural skeleton does not need to be independently re-derived. **Update, same day, follow-up session — the shortcut turned out to be a direct, exact reuse, not
+just an architectural template match.** Checked the real C++ reference precisely (per CLAUDE.md
+rule 8) before writing any code: `examples/stable-diffusion.cpp/src/model.h`'s
+`sd_version_uses_wan_vae(SDVersion)` explicitly includes `sd_version_is_qwen_image(version)` in its
+OR-list — Qwen-Image's real pipeline **literally routes VAE decode through the same
+`WAN::WanVAERunner`/`wan_vae.hpp` class Wan2.1 uses**, not merely a similar one. Confirmed the
+non-monotonic channel pattern found in the earlier tensor-shape dump
+(`decoder.upsamples.4`'s residual conv going 192→384, which looked like an anomaly) is exactly
+explained by `wan_vae.hpp`'s real `Decoder3d` constructor logic (`if (i==1||i==2||i==3) in_dim /=
+2;`) — and `WanVaeDecoder3D.cs`'s existing `DecodeSingleFrame` loop (`if (i > 0) inDim /= 2;`)
+**already implements this exact logic**, generically, parameterized by the `Dims[]`/
+`TemporalUpsample[]` arrays already in that file. Also confirmed `wan_vae.hpp`'s
+`get_latents_mean_std` uses the **exact same** per-channel constants for any 16-channel latent
+(the "Wan2.1 VAE" branch, keyed only on channel count == 16, not on model version) with
+`scale_factor` hardcoded to `1.0f` and never overridden anywhere in the file — meaning
+`WanVaeDecoder3D`'s existing `LatentsMean`/`LatentsStd` arrays are correct for Qwen-Image too,
+unchanged.
+
+**Tested the hypothesis directly** before wiring it into the real pipeline: instantiated
+`WanVaeDecoder3D` against the real `qwen_image_vae.safetensors` checkpoint with zero code changes
+and decoded a random 16×16 latent — real, fast (3.15s), finite, non-degenerate output (RMS=0.363).
+**Wired it into `QwenImagePipeline.Load`**, replacing the mismatched generic `VaeDecoder` field —
+a 3-line signature change plus a doc comment explaining why (`_vae` is now `Wan.WanVaeDecoder3D`,
+`Decode(latent, 1, latH, latW)[0]` in place of the old 3-arg call, its `[0,1]`-clamped output
+convention already matches `PngWriter`'s expectation with no rescale needed).
+
+**Result: a real, full 4-step 256×256 end-to-end generation (DiT + VAE together) succeeded** —
+881.2s real wall-clock, real weights throughout, no crash, no NaN. Output saved
+(`docs/diffusion-samples/qwenimage_red-apple-on-white-table_256x256_4steps_zero-cond_2026-09-18.png`,
+gitignored/local) and visually confirmed: structured, non-degenerate texture — same "numerically
+healthy but not coherent" signature as HunyuanVideo's own zero-conditioning sample, expected and
+correct given the same all-zero placeholder text context (not a defect in the DiT or VAE). **The
+Qwen-Image VAE gap this doc opened with is now genuinely closed**, not just scoped for later — a
+real, materially better outcome than the "needs a dedicated port" conclusion reached a few hours
+earlier the same day, found by checking the real reference more carefully rather than assuming the
+tensor-shape anomaly meant a from-scratch architecture. Added a permanent
+`QwenImagePipeline_RealWeights_FullGenerateProducesNonDegenerateImage` test alongside the existing
+DiT-only one; both real, both pass. Qwen-Image's remaining gap is now the same single, well-scoped
+one as HunyuanVideo's: real LLM (Qwen2.5-VL-7B, already downloaded) text conditioning, not
+architecture/wiring work.
 
 ## Working notes / running log
 

@@ -9,7 +9,7 @@ public sealed class QwenImagePipeline : IDiffusionPipeline
 {
     private readonly IWeightLoader _weights;
     private readonly QwenImageModel _transformer;
-    private readonly VaeDecoder _vae;
+    private readonly Wan.WanVaeDecoder3D _vae;
     private bool _disposed;
 
     public string Architecture => "QwenImage";
@@ -17,13 +17,24 @@ public sealed class QwenImagePipeline : IDiffusionPipeline
     public QwenImagePipeline(
         IWeightLoader weights,
         QwenImageModel transformer,
-        VaeDecoder vae)
+        Wan.WanVaeDecoder3D vae)
     {
         _weights = weights;
         _transformer = transformer;
         _vae = vae;
     }
 
+    /// <summary>
+    /// Loads a Qwen-Image pipeline. VAE decode uses <see cref="Wan.WanVaeDecoder3D"/> directly,
+    /// unmodified -- Qwen-Image's real VAE is architecturally identical to Wan2.1's (confirmed via
+    /// `examples/stable-diffusion.cpp`'s own `sd_version_uses_wan_vae(VERSION_QWEN_IMAGE)`, which
+    /// literally routes it through the same `WAN::WanVAERunner`/`wan_vae.hpp` class -- same
+    /// dim_mult=[1,2,4,4]/z_dim=16/dim=96 channel progression, same temperal_upsample=[true,true,
+    /// false], and even the exact same per-channel latents_mean/latents_std constants as Wan2.1's
+    /// 16-channel variant, confirmed directly in `wan_vae.hpp`'s `get_latents_mean_std`). Verified
+    /// with a real checkpoint decode (2026-09-18): finite, non-degenerate output. See
+    /// docs/086-video-model-verification-plan.md for the full tensor-shape evidence.
+    /// </summary>
     public static QwenImagePipeline Load(string modelPath, string? vaePath = null, IComputeBackend? backend = null)
     {
         IWeightLoader weights = modelPath.EndsWith(".gguf", StringComparison.OrdinalIgnoreCase)
@@ -40,7 +51,7 @@ public sealed class QwenImagePipeline : IDiffusionPipeline
                 : SafetensorsLoader.Open(vaePath);
         }
 
-        var vae = new VaeDecoder(vaeLoader, backend: backend);
+        var vae = new Wan.WanVaeDecoder3D(vaeLoader, backend);
 
         return new QwenImagePipeline(weights, transformer, vae);
     }
@@ -124,8 +135,9 @@ public sealed class QwenImagePipeline : IDiffusionPipeline
             progress?.Invoke(step + 1, steps);
         }
 
-        // 6. Decode 16-channel latents to RGB pixels via VAE
-        var pixels = _vae.Decode(latent, latH, latW);
+        // 6. Decode 16-channel latents to RGB pixels via VAE (single-frame, t=1 -- WanVaeDecoder3D
+        // already returns [0,1]-clamped pixels, matching PngWriter's expected convention directly).
+        var pixels = _vae.Decode(latent, 1, latH, latW)[0];
 
         // 7. Optional Super-Resolution Upscaling
         int outWidth = width, outHeight = height;
