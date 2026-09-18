@@ -106,13 +106,25 @@ worse than no status.
 - [ ] **Wan 2.1/2.2 Video** — persistent, still-unlocated grid artifact. Every individual
       hypothesis checked so far (RoPE axes, AdaLN modulation, flow-schedule/CFG formula, GELU,
       tensor shapes) is ruled out. **This is the same failure shape FLUX.1 had for 8 rounds before
-      Round 9 found it via T5 sequence-length padding, not another structural check.** Do the
-      equivalent for Wan: compare T5/UMT5 text-conditioning sequence length/padding convention
-      against `examples/diffusers`' real Wan pipeline (`WanPipeline`/`_get_t5_prompt_embeds`) and
-      `sd.cpp`'s Wan path, exactly like FLUX.1's real fix. **Explicit instruction from the operator:
-      Wan worked once — do not touch/regress `docs/083`'s existing GPU-residency performance work
-      while hunting this. Fix forward.** Re-measure Wan's Vulkan timing against the exact same
-      `PerformanceLeague.md` methodology after any fix lands, to confirm no perf regression.
+      Round 9 found it via T5 sequence-length padding, not another structural check.**
+      **2026-09-18: checked the FLUX.1-style T5-padding hypothesis directly for Wan — RULED OUT.**
+      `ImageCommand.cs`'s `RunWan` (line ~1009-1032) already implements the exact real convention
+      confirmed against `examples/diffusers/.../pipeline_wan.py`'s `_get_t5_prompt_embeds`: tokenize
+      the real (unpadded) prompt, encode through UMT5 with the real attention mask, THEN zero-pad
+      the resulting EMBEDDINGS (not re-encode padded/pad-token ids) up to `max_sequence_length=226`
+      (Wan's own real constant, confirmed in-repo, different from FLUX.1's 256) — this was already
+      fixed 2026-09-14 (`docs/081`) and matches the reference exactly, mathematically equivalent to
+      the reference's mask-then-slice-then-zero-pad approach. Also checked cross-attention masking
+      convention (`transformer_wan.py`): real Wan's DiT cross-attention is unmasked over the padded
+      region, same as FLUX.1's convention — this codebase does the same, not a divergence. **Two
+      more hypotheses now ruled out with real in-repo evidence; the remaining bug is narrower than
+      before but still not found.** Next real step unchanged from `docs/086`: a genuine numeric
+      (not structural) per-block diff against the real diffusers Wan forward pass — structural
+      read-throughs have now been tried and exhausted multiple times on this bug, matching FLUX.1's
+      own Round 6-8 experience before its real fix was found via a *different kind* of check.
+      **Explicit instruction from the operator: Wan worked once — do not touch/regress `docs/083`'s
+      existing GPU-residency performance work while hunting this. Fix forward.** Re-measure Wan's
+      Vulkan timing against the exact same `PerformanceLeague.md` methodology after any fix lands.
 
 ### 1d. Not yet real code at all — implementation, not verification
 - [ ] **FLUX.2** — per `docs/087`: `Flux2DiT` has zero weight-loading wiring, `Flux2Pipeline` is a
