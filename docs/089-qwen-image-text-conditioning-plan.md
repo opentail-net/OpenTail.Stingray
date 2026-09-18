@@ -95,18 +95,28 @@ the tokenizer's own `apply_chat_template`, unlike FLUX.2's Mistral recipe), fina
 extraction via `ForwardPass.ExtractHiddenStates`, and the real `drop_idx=34` crop of the template's
 own wrapper tokens. `QwenImageTextConditioning_Encode_RealWeights_ProducesFiniteConditioning`
 passes against the real Qwen2.5-VL-7B checkpoint: finite `ContextDim=3584`-per-token output (no
-projection needed -- 3584 matches Qwen2.5-VL-7B's own real hidden size exactly). **Not yet wired
-into `QwenImagePipeline.Generate`** (still accepts a caller-supplied `textContext`, doesn't own
-text encoding itself) -- a real next step, matching FLUX.2's `Flux2Pipeline.Load` pattern.
+projection needed -- 3584 matches Qwen2.5-VL-7B's own real hidden size exactly).
 
-## Recommended next steps (implementation, NOT done this pass)
+**Same day, step 4 also DONE: wired into `QwenImagePipeline` itself.** New
+`QwenImagePipeline.Load(modelPath, textEncoderPath, vaePath, backend)` overload owns a real
+Qwen2.5-VL-7B text encoder; `Generate()` now calls `QwenImageTextConditioning.Encode` automatically
+(cond from the real prompt, uncond from `negativePrompt ?? ""`) when the caller doesn't already
+supply an explicit `textContext` -- additive, existing 2-arg `Load()`/explicit-`textContext`
+callers unaffected. Confirmed no regression on the existing real-weight DiT forward-pass test
+(366s) and a new wiring smoke test confirms all three real checkpoints (DiT 8.3GB + text encoder
+4.7GB + VAE) load and construct together cleanly. **Qwen Image's real text-conditioning gap
+(docs/086's original finding) is now closed at the code level** -- every piece is real and wired.
 
-4. Wire `QwenImageTextConditioning.Encode` into `QwenImagePipeline` itself (a `Load`-style factory
-   owning the real Qwen2.5-VL weights + tokenizer, matching `Flux2Pipeline.Load`'s pattern) rather
-   than leaving text encoding to the caller.
-5. Re-run the existing 256×256/4-step repro (`docs/086`) with real conditioning instead of
+## Recommended next steps (NOT done this pass)
+
+5. Re-run the existing 256×256/4-step repro (`docs/086`) with this real conditioning instead of
    zero-vectors; confirm coherent (not just structurally non-degenerate) output, same bar
-   HunyuanVideo/LTX-Video are held to.
+   HunyuanVideo/LTX-Video are held to. **Given FLUX.2's own recent experience** (its text
+   conditioning was similarly wired end-to-end but the output is still not visually verified as
+   coherent, and one real bug -- an unused timestep scheduler -- was found only after real
+   end-to-end runs, not by code review alone) **do not assume Qwen Image will "just work" once
+   run — budget real time for this verification pass, including checking for the equivalent class
+   of "component built correctly but never actually wired/used" bug.**
 
 This is comparable in scope to FLUX.2's Mistral wiring, though simpler (final-layer only, no
 gated-FFN/shared-modulation DiT complexity on this side) -- the `qwen2vl` architecture-support gap

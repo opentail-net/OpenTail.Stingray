@@ -95,7 +95,7 @@ worse than no status.
       `pipeline_stable_diffusion_3.py` -- that real per-stage numeric diff (the actual remaining
       gap to reach 🟢) was not attempted this pass, scoped as future work matching LTX-Video's own
       golden-verification pattern.
-- [ ] **Qwen Image / Qwen Image Edit** — DiT+VAE verified, single named gap: real LLM text
+- [x] **Qwen Image / Qwen Image Edit** — DiT+VAE verified, single named gap: real LLM text
       conditioning. **CORRECTION, 2026-09-18: the checkpoint was never actually missing.**
       `Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf` (4.68GB, dated 2026-09-18 02:22) IS present at
       `models/_models/` -- an earlier check this same session used `find models/_models -maxdepth 1
@@ -120,10 +120,15 @@ worse than no status.
       real forward pass against Qwen2.5-VL-7B-Instruct (4.36GB) produces finite non-zero hidden
       states. **Full recipe DONE, same day**: `QwenImageTextConditioning.Encode` (new) implements
       the real ChatML template + `drop_idx=34` crop + final-layer extraction, passes against real
-      weights (finite `ContextDim=3584`-per-token output). Remaining: wire it into
-      `QwenImagePipeline` itself (a `Load`-style factory owning the real weights, matching
-      `Flux2Pipeline.Load`'s pattern -- currently the pipeline still just accepts a caller-supplied
-      `textContext`).
+      weights (finite `ContextDim=3584`-per-token output). **DONE, same day: wired into
+      `QwenImagePipeline` itself** via a new `Load(modelPath, textEncoderPath, vaePath, backend)`
+      overload, `Generate()` uses it automatically when no explicit `textContext` is supplied
+      (additive, no regression on the existing real-weight forward-pass test). **Qwen Image's
+      text-conditioning gap is now closed at the code level.** Real next step (not done): re-run
+      the 256×256/4-step repro with this real conditioning and judge actual coherence — per
+      FLUX.2's own experience this session (real wiring landed but visual correctness is still an
+      open question, and one real "built but never actually used" bug was found only via a real
+      end-to-end run), do not assume this will just work without a real check.
 - [ ] **HunyuanVideo** — same shape of gap as Qwen Image: DiT+VAE numerically sound, single named
       gap is real LLaMA-3/Qwen2.5-VL text conditioning (`HunyuanVideoPipeline.Generate` currently
       defaults to all-zero context). **2026-09-18 scoping**: confirmed against
