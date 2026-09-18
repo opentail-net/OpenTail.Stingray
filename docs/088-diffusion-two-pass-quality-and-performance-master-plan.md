@@ -259,14 +259,18 @@ rule 7 exists).
       `docs/083` is closing the remaining `MultiHeadAttentionTiled` gap vs. sd.cpp's cooperative
       wave ops — do not attempt this speculatively without a profiler-driven measurement first
       (CLAUDE.md rule 7: measure, don't assume).
-- [ ] **SD1.5 + ControlNet Canny**: confirm 1.96x still holds.
-- [ ] **SDXL-Turbo**: confirm 1.60x still holds (already sub-2x, VAE decode already *faster* than
-      C++ — a genuine win, don't touch it).
-- [ ] **SD3.5 Medium**: confirm 1.89x still holds. VAE decode already faster than C++ (0.76x) — a
-      genuine win, don't touch it. Denoise loop (2.85x) is the real remaining gap if further work
-      is ever justified — `docs/083` already names the cause (C++ uses quantized matmul/cooperative
-      wave ops vs. this port's FP16/FP32 tiled Sgemm).
-- [ ] **FLUX.1-schnell**: confirm 1.98x still holds (<200s barrier already broken).
+- [x] **SD1.5 + ControlNet Canny**: 2026-09-18 -- confirmed, 199.9s real re-run vs. 204.4s
+      documented (within noise), no regression (see Pass 1 §1a above).
+- [ ] **SDXL-Turbo**: only load/init re-verified this session (real weights load correctly after
+      the redownload + clip_tokenizer.json fix), NOT full generation timing -- the 1.60x claim
+      itself is unconfirmed this pass, narrower claim only.
+- [x] **SD3.5 Medium**: 2026-09-18 -- confirmed, 77.1s warm/84.9s cold real re-run vs. 91.3s
+      documented (beats it, no regression). VAE decode already faster than C++ (0.76x) — a genuine
+      win, don't touch it. Denoise loop (2.85x) is the real remaining gap if further work is ever
+      justified — `docs/083` already names the cause (C++ uses quantized matmul/cooperative wave
+      ops vs. this port's FP16/FP32 tiled Sgemm).
+- [x] **FLUX.1-schnell**: 2026-09-18 -- confirmed, 198.4s real re-run vs. 198.1s documented
+      (matches within noise, <200s barrier still holds).
 - [x] **Wan2.1-T2V-1.3B**: 2026-09-18 -- confirmed ~2.03x still holds (122.1s vs. the documented
       132.8s/60.25s C++ ref, within noise) on the real Vulkan GPU path, verified in the same pass
       as Pass 1's correctness re-check (see 1c above) -- no regression, operator's instruction
