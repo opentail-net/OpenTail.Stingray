@@ -150,13 +150,30 @@ worse than no status.
       (`clip_l.safetensors`) were already present. **Real-weight verification** (`HunyuanVideoText
       ConditioningTests`, 12.1s, 4.58 GiB pre-faulted): finite/non-degenerate embeddings, and two
       genuinely different prompts produce clearly different embeddings (diffRms well above the
-      near-identical threshold) -- both pass. **Not yet closed end-to-end**: no HunyuanVideo VAE
-      checkpoint is downloaded (`hunyuan_video_vae_bf16.safetensors` or equivalent repack) -- the
-      main DiT checkpoint bundles zero VAE tensors, so a full `Generate()` call still throws at the
-      decode stage. This is a new, separately-named, real remaining gap -- the text-encoder half is
-      done and verified, the VAE download is the next step to reach a real end-to-end coherence
-      check (same shape as Qwen Image's VAE-reuse discovery, but HunyuanVideo's own VAE is a
-      genuinely distinct architecture, not shared with Wan/Qwen).
+      near-identical threshold) -- both pass. Downloaded the real VAE too, same day
+      (`Comfy-Org/HunyuanVideo_repackaged`'s `split_files/vae/hunyuan_video_vae_bf16.safetensors`,
+      493MB, confirmed a real, existing HF file via `curl -I` before downloading -- not guessed).
+      **Real end-to-end run with REAL text conditioning (all three components real: DiT, LLaMA-3-8B,
+      VAE) executed for the first time, 524.3s, 256x256/4-step, guidance=6.0**
+      (`HunyuanVideoRealConditioningCoherenceTests`) -- **output is pure visual noise, not
+      coherent** (`docs/diffusion-samples/hunyuanvideo_real_conditioning_256_4step_2026-09-18.png`).
+      **Critical diagnostic finding, same technique that separated Qwen Image's checkerboard bug
+      from its text-conditioning wiring**: this real-conditioning noise pattern is visually
+      indistinguishable from the earlier zero-conditioning sample
+      (`hunyuanvideo_red-apple-on-white-table_256x256_4steps_zero-cond_2026-09-18.png`) -- same
+      fine-grained colorful speckle texture, no structural difference despite guidance=6.0 vs 1.0
+      and genuinely different (real vs. all-zero) conditioning tensors feeding the DiT. **This
+      proves the noise is NOT a text-conditioning gap** (the real LLaMA-3 wiring above is correct
+      and verified in isolation) **-- it is a separate, structural DiT or VAE bug**, independent of
+      conditioning, the same failure shape this project has now found in Qwen Image, FLUX.2, and
+      (historically) FLUX.1/Wan before their respective fixes. `HunyuanVideoRealWeightsTests`'s
+      earlier "healthy finite latent/pixel stats" characterization was true (finite, non-degenerate)
+      but is not evidence of coherence -- pure noise is also finite and non-degenerate, a real
+      instance of this matrix's own logged pitfall (see FLUX.2/Qwen Image's own "structured but not
+      coherent" language now recognized as a genuine failure signature, not just "early progress").
+      **Do not re-investigate text conditioning for this artifact.** Real next step: the same
+      patchify/RoPE/AdaLN-modulation/VAE-tiling playbook already used for Wan, FLUX.1, and Qwen
+      Image -- not yet started for HunyuanVideo specifically.
 - [x] **LTX-Video — MAJOR FINDING, 2026-09-18: the "pure noise" instability was (largely/entirely)
       a missing-real-text-conditioning artifact.** Every prior noise-producing run in this item's
       history used placeholder (zero/mock) text conditioning; a real local T5-v1.1-XXL checkpoint
