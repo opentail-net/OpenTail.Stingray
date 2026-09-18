@@ -108,22 +108,86 @@ linear1.weight            [6144, 55296]   -- fused QKV+MLP-up, single big linear
 linear2.weight            [24576, 6144]   -- fused output projection -- 24576 = 6144(attn-out) + 18432(mlp-down input) -- again consistent with an 18432-wide (not 36864) post-gate MLP hidden state
 ```
 
+## Open questions RESOLVED (2026-09-18, external report — needs in-repo cross-check before numeric-parity work)
+
+The three open questions above were answered via an external report (ChatGPT, prompted with this
+doc's exact open questions) claiming to have read BFL's real `flux2/src/flux2/model.py` and HF
+Diffusers' FLUX.2 pipeline directly. **Caveat, per this project's CLAUDE.md rule 8**: this has NOT
+yet been independently re-verified against a vendored reference under `examples/` in this repo —
+treat as a strong, shape-corroborated lead, not a confirmed fact, until cross-checked. The shape
+corroboration is real and specific (every number below was independently predictable from this
+doc's own tensor inventory before the answer arrived, and the external answer reproduced every one
+exactly): `36864 = 2×18432` (gated-FFN split), `55296 = 18432(qkv) + 36864(mlp-up)`,
+`24576 = 6144(attn-out) + 18432(mlp-down-in)`, `15360 = 3×5120` (Mistral-Small-24B hidden size).
+
+1. **Shared modulation — genuinely shared, no per-block differentiation via AdaLN at all.**
+   `vec = time_in(timestep_emb) + guidance_in(guidance_emb)` (both 256→6144 MLPs) is computed ONCE
+   per denoising step, then the three shared `Modulation` modules
+   (`double_stream_modulation_img`/`_txt`, `single_stream_modulation`) are each called ONCE on that
+   same `vec` to produce ONE set of shift/scale/gate values used identically by every block of that
+   type. `Modulation.forward`: `SiLU(vec) -> Linear(dim, multiplier*dim) -> chunk(multiplier)`
+   (multiplier=6 for double giving two (shift,scale,gate) triples for img/txt; multiplier=3 for
+   single giving one triple). No per-block embedding, no block-index conditioning of any kind —
+   blocks differentiate purely via their own attention/MLP weights, not via modulation.
+2. **Gated FFN — confirmed SiLU-gated (SwiGLU-style), `mlp_hidden_dim = HiddenSize * 3 = 18432`.**
+   `Linear(6144->36864, bias=false) -> chunk(2) -> [u1,u2] -> SiLU(u1)*u2 -> Linear(18432->6144,
+   bias=false)`. Same structure for both `img_mlp` and `txt_mlp`. Single-stream blocks fuse QKV +
+   this same gated-MLP-up into one `linear1: Linear(6144 -> 3*6144 + 2*18432 = 55296, bias=false)`,
+   split into `qkv (18432)` and `mlp (36864)`, then `linear2: Linear(6144+18432=24576 -> 6144,
+   bias=false)` on `concat(attn_out, SiLU(mlp)*mlp)`. This is an actual algorithmic simplification
+   worth implementing as one fused op in C#, not three independent Q/K/V projections plus a
+   separate conventional FFN, if aiming for reference-equivalent execution.
+3. **`ContextInDim=15360` — 3 concatenated Mistral-Small-3.2-24B hidden-STATE SEQUENCES (not
+   pooled), feature-dim-concatenated, from layers (10, 20, 30) of 40 (0-indexed into
+   `output.hidden_states`).** Per token position `i`: `ctx[i] = hidden[10][i] || hidden[20][i] ||
+   hidden[30][i]` (each 5120-wide, concatenated to 15360), preserving the full sequence length —
+   NOT averaged/pooled/CLS. Reported default extraction layers `(10, 20, 30)`; **this specific
+   triple, and the "which HF hidden_states index = which of Mistral's 40 layers" off-by-one
+   convention, is exactly the kind of numeric fact that needs an in-repo cross-check (or a real
+   golden-parity diff against actual Mistral layer outputs) before trusting for implementation** —
+   do not substitute 9/19/29 or 11/21/31 without checking.
+   **Also reported (unverified in-repo)**: FLUX.2 prepends a fixed BFL system message before the
+   user prompt via Mistral's chat template (`add_generation_prompt=False`), and Diffusers pads/
+   truncates the conditioning sequence to a fixed `max_length=512` (same discipline as FLUX.1's own
+   T5-padding bug fixed in `docs/056` Round 9 — get this length-and-padding convention right on
+   the FIRST attempt for FLUX.2, don't rediscover it the hard way like FLUX.1 did). Reported system
+   message text: "You are an AI that reasons about image descriptions. You give structured
+   responses focusing on object relationships, object attribution and actions without
+   speculation." — verify this exact string against a real source before shipping it, since a
+   wrong system prompt would silently shift every generation's conditioning without crashing
+   anything.
+
+`Flux2Params.cs` has been updated with the corrected values from the table above (HiddenSize 6144,
+NumHeads 48, DepthDoubleBlocks 8, DepthSingleBlocks 48, ContextInDim 15360, MlpRatio 3.0,
+QkvBias false, InChannels/OutChannels 128, VecInDim 0/unused) — `Flux2ConformanceTests` re-verified
+passing after the change. `AxesDim`/`Theta` remain UNCONFIRMED (FLUX.1 values carried over as a
+plausible prior only) — the external report did not address RoPE.
+
 ## Recommended next steps (implementation, NOT done this pass)
 
-1. **Resolve the two open questions above first** (shared-modulation mechanism, gated-FFN
-   confirmation, `ContextInDim=15360` extraction recipe) against a real FLUX.2 reference — check
-   whether `examples/diffusers` (vendored in this repo) has gained a FLUX.2 pipeline file, or
-   whether `black-forest-labs`' own repo/paper describes these explicitly. Do not guess.
-2. Write a new `Flux2Params` with the corrected values from the table above.
-3. Add `IWeightLoader` wiring to `Flux2DiT`, following the `Resolve()`/`TryGetWeight()`/`Linear()`
+1. **Cross-check the three answers above against an in-repo reference** before writing DiT/
+   attention code from them — check whether `examples/diffusers` (vendored in this repo) has
+   gained a real FLUX.2 pipeline file since this doc was first written, which would let every claim
+   above be grep-verified directly rather than trusted from an external report alone. This is the
+   single highest-leverage next step: everything downstream (weight loader, text encoder, VAE) is
+   only as trustworthy as this cross-check.
+2. Add `IWeightLoader` wiring to `Flux2DiT`, following the `Resolve()`/`TryGetWeight()`/`Linear()`
    pattern already used by `HunyuanVideoModel`/`QwenImageModel` in this codebase — not a new
-   pattern, a proven one.
-4. Wire a real Mistral-Small-24B forward pass (the checkpoint is downloaded: `models/_models/
-   Mistral-Small-3.2-24B-Instruct-2506-Q4_K_S.gguf`) for the text-conditioning path, once the
-   hidden-state extraction recipe (step 1) is confirmed.
-5. Port a real FLUX.2 VAE decoder (checkpoint downloaded: `models/_models/flux2-vae.safetensors`)
-   replacing the current raw-channel-repeat stub.
-6. Only then attempt a real end-to-end run — per `docs/086`, on Vulkan GPU explicitly, per the
+   pattern, a proven one. Implement the fused single-stream QKV+gated-MLP linear and the shared
+   (not per-block) modulation exactly as described above, not as three separate Q/K/V projections.
+3. Wire a real Mistral-Small-24B forward pass (the checkpoint is downloaded: `models/_models/
+   Mistral-Small-3.2-24B-Instruct-2506-Q4_K_S.gguf`) for the text-conditioning path, extracting and
+   concatenating hidden-layer activations at the confirmed layer indices, with the confirmed system
+   prompt/chat-template/padding convention. Build a standalone differential test comparing this
+   port's layer-10/20/30 hidden states against a real independent Mistral reference BEFORE wiring
+   into FLUX.2 at all — a wrong 15360-dim conditioning vector will make a perfectly correct DiT
+   port look completely broken, exactly the failure mode `docs/056` spent 9 rounds chasing on
+   FLUX.1's T5 conditioning.
+4. Port a real FLUX.2 VAE decoder (checkpoint downloaded: `models/_models/flux2-vae.safetensors`)
+   replacing the current raw-channel-repeat stub. Note InChannels=128 (32 latent channels × 2×2
+   patch) confirms FLUX.2's VAE has 32 latent channels, double FLUX.1's 16 — verify this against
+   `flux2-vae.safetensors`'s own tensor shapes before assuming parity with FLUX.1's VAE structure.
+5. Only then attempt a real end-to-end run — per `docs/086`, on Vulkan GPU explicitly, per the
    user's stated requirement.
 
 This is real, substantial implementation work (steps 2-5 each comparable in scope to one of this
