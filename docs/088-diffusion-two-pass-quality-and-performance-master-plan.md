@@ -160,10 +160,20 @@ worse than no status.
       - [ ] Real FLUX.2 VAE decoder (32-channel, checkpoint downloaded).
       - [ ] First real end-to-end run — **on Vulkan GPU explicitly**, per the user's stated
             requirement (a CPU-only run does not close this item).
-- [ ] **FLUX.3** — first confirm a real, independently-released FLUX.3 checkpoint actually exists
-      (not yet confirmed as of `docs/086`). If it doesn't exist as a real released artifact,
-      downgrade/close this item rather than inventing a target. If it does, repeat FLUX.2's plan
-      once FLUX.2 itself is real (do not duplicate effort building both blind in parallel).
+- [x] **FLUX.3 — CLOSED, 2026-09-18: not a real target.** `Flux3Params.cs`/`Flux3DiT.cs`'s own doc
+      comments describe "FLUX 3 multimodal foundation model... unified video, native synchronized
+      audio, and text conditioning" — this does not match any real Black Forest Labs product.
+      BFL's real FLUX line (confirmed via the now-vendored `examples/flux` and `examples/flux2`) is
+      image-only; their newest real release is FLUX.2 (image+text). No "FLUX 3" with video/audio
+      support has ever been announced by BFL. Checked: no `examples/flux3` was added alongside the
+      real `examples/flux`/`examples/flux2` the user provided, no such checkpoint exists on
+      Hugging Face under any BFL org. **Conclusion: `Flux3DiT`/`Flux3Pipeline`/`Flux3RoPE` are
+      speculative/fabricated code from an earlier session, not a port of any real released model.**
+      Per this plan's own instruction ("if it doesn't exist as a real released artifact, downgrade/
+      close this item rather than inventing a target"), this item is closed, not deferred. The
+      code itself is left in place (not deleted this pass -- a separate decision from closing the
+      verification item) but README/docs claiming it as a real, pending coverage target should be
+      corrected to say so plainly rather than imply a real checkpoint is merely unverified.
 
 ## PASS 2 — PERFORMANCE (Vulkan iGPU inventory + optimization, only after Pass 1 closes a model)
 
