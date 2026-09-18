@@ -22,15 +22,59 @@ public sealed record Flux2GenerationRequest
 public sealed class Flux2Pipeline : IDisposable
 {
     private readonly Flux2DiT _transformer;
+    private readonly IWeightLoader? _ditWeights;
+    private readonly GgufModel? _mistralModel;
+    private readonly Engine.ForwardPass? _mistralForward;
+    private readonly GgufTokenizer? _mistralTokenizer;
+    private readonly IWeightLoader? _vaeWeights;
+    private readonly Cpu.CpuBackend? _mistralBackend;
     private bool _disposed;
 
     public bool IsDisposed => _disposed;
     public Flux2Params Params => _transformer.Params;
 
+    /// <summary>Structural-only constructor (no real weights) -- unchanged, backs the existing
+    /// conformance tests. <see cref="Generate"/> in this mode uses synthetic conditioning/decode.</summary>
     public Flux2Pipeline(Flux2Params? @params = null)
     {
         var p = @params ?? new Flux2Params();
         _transformer = new Flux2DiT(p);
+    }
+
+    private Flux2Pipeline(
+        Flux2DiT transformer, IWeightLoader ditWeights,
+        GgufModel mistralModel, Engine.ForwardPass mistralForward, GgufTokenizer mistralTokenizer, Cpu.CpuBackend mistralBackend,
+        IWeightLoader vaeWeights)
+    {
+        _transformer = transformer;
+        _ditWeights = ditWeights;
+        _mistralModel = mistralModel;
+        _mistralForward = mistralForward;
+        _mistralTokenizer = mistralTokenizer;
+        _mistralBackend = mistralBackend;
+        _vaeWeights = vaeWeights;
+    }
+
+    /// <summary>
+    /// Loads a real FLUX.2 pipeline: real DiT weights (GGUF), real Mistral-Small-24B text encoder
+    /// (GGUF), and real VAE (safetensors). See docs/087 for the full architecture derivation --
+    /// all three components independently verified against real weights before this wiring.
+    /// </summary>
+    public static Flux2Pipeline Load(string ditPath, string mistralPath, string vaePath, Flux2Params? @params = null)
+    {
+        var ditWeights = GgufWeightLoader.Open(ditPath);
+        var p = @params ?? new Flux2Params();
+        var transformer = new Flux2DiT(ditWeights, p);
+
+        var mistralModel = GgufModel.Open(mistralPath);
+        var hp = ModelHyperparams.FromGgufMetadata(mistralModel.Metadata, mistralModel);
+        var tokenizer = GgufTokenizer.FromGgufModel(mistralModel);
+        var mistralBackend = new Cpu.CpuBackend();
+        var mistralForward = new Engine.ForwardPass(mistralModel, mistralBackend, hp);
+
+        var vaeWeights = SafetensorsLoader.Open(vaePath);
+
+        return new Flux2Pipeline(transformer, ditWeights, mistralModel, mistralForward, tokenizer, mistralBackend, vaeWeights);
     }
 
     /// <summary>
@@ -100,11 +144,21 @@ public sealed class Flux2Pipeline : IDisposable
         var rng = request.Seed >= 0 ? new Random(request.Seed) : new Random();
         var targetLatent = SampleGaussian(nTargetTokens * inChannels, rng);
 
-        // 4. Mock / Initial Text Embeddings (Mistral-Small-24B conditioning -- real wiring not
-        //    yet landed, see docs/087). Text token positions per the real scheme (prc_txt):
-        //    t=0/h=0/w=0 (dummy), l=sequential index -- the only axis that varies for text.
-        int nTxt = 64;
-        var txtEmbeds = new float[nTxt * _transformer.Params.ContextInDim];
+        // 4. Text Embeddings -- real Mistral-Small-24B conditioning when real weights are loaded
+        //    (Flux2TextConditioning.Encode, docs/087); synthetic fallback for the structural-only
+        //    constructor. Text token positions per the real scheme (prc_txt): t=0/h=0/w=0 (dummy),
+        //    l=sequential index -- the only axis that varies for text.
+        int nTxt;
+        float[] txtEmbeds;
+        if (_mistralForward != null && _mistralTokenizer != null)
+        {
+            (txtEmbeds, nTxt) = Flux2TextConditioning.Encode(_mistralForward, _mistralTokenizer, request.Prompt);
+        }
+        else
+        {
+            nTxt = 64;
+            txtEmbeds = new float[nTxt * _transformer.Params.ContextInDim];
+        }
         var txtPositions = new int[nTxt * 4];
         for (int i = 0; i < nTxt; i++)
         {
@@ -140,12 +194,30 @@ public sealed class Flux2Pipeline : IDisposable
             request.Progress?.Invoke(step + 1, steps);
         }
 
-        // 6. Decode Latent to RGB
+        // 6. Decode Latent to RGB -- real VAE (Flux2Vae + VaeDecoder, docs/087) when real weights
+        //    are loaded; synthetic channel-repeat fallback for the structural-only constructor.
         int pixelCount = request.Width * request.Height;
-        var rgb = new float[pixelCount * 3];
-        for (int p = 0; p < pixelCount * 3; p++)
+        float[] rgb;
+        if (_vaeWeights != null)
         {
-            rgb[p] = Math.Clamp(targetLatent[p % targetLatent.Length] * 0.5f + 0.5f, 0f, 1f);
+            // targetLatent is token-major [nTarget, 128]; Flux2Vae needs channel-major [128, h, w].
+            var chw = new float[nTargetTokens * inChannels];
+            for (int i = 0; i < nTargetTokens; i++)
+                for (int c = 0; c < inChannels; c++)
+                    chw[c * nTargetTokens + i] = targetLatent[i * inChannels + c];
+
+            var runningMean = _vaeWeights.ReadF32("bn.running_mean");
+            var runningVar = _vaeWeights.ReadF32("bn.running_var");
+            var (rawLatent, latH, latW) = Flux2Vae.UnnormalizeAndUnshuffle(chw, patchH, patchW, runningMean, runningVar);
+
+            using var vae = new VaeDecoder(_vaeWeights);
+            rgb = vae.Decode(rawLatent, latH, latW, scaleOverride: 1f, shiftOverride: 0f);
+        }
+        else
+        {
+            rgb = new float[pixelCount * 3];
+            for (int p = 0; p < pixelCount * 3; p++)
+                rgb[p] = Math.Clamp(targetLatent[p % targetLatent.Length] * 0.5f + 0.5f, 0f, 1f);
         }
 
         // 7. Save Image
@@ -184,6 +256,12 @@ public sealed class Flux2Pipeline : IDisposable
 
     public void Dispose()
     {
+        if (_disposed) return;
         _disposed = true;
+        _mistralForward?.Dispose();
+        _mistralBackend?.Dispose();
+        _mistralModel?.Dispose();
+        (_ditWeights as IDisposable)?.Dispose();
+        (_vaeWeights as IDisposable)?.Dispose();
     }
 }
