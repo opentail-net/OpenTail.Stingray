@@ -171,9 +171,29 @@ worse than no status.
       but is not evidence of coherence -- pure noise is also finite and non-degenerate, a real
       instance of this matrix's own logged pitfall (see FLUX.2/Qwen Image's own "structured but not
       coherent" language now recognized as a genuine failure signature, not just "early progress").
-      **Do not re-investigate text conditioning for this artifact.** Real next step: the same
-      patchify/RoPE/AdaLN-modulation/VAE-tiling playbook already used for Wan, FLUX.1, and Qwen
-      Image -- not yet started for HunyuanVideo specifically.
+      **Do not re-investigate text conditioning for this artifact.**
+
+      **Same day, found and fixed the flipSinToCos bug (5th occurrence this session, same shared
+      helper, same missing flag) in HunyuanVideoModel -- confirmed against the real reference
+      (`transformer_hunyuan_video.py`'s `self.time_proj = Timesteps(..., flip_sin_to_cos=True, ...)`)
+      at BOTH call sites (`ComputeTimestepEmbedding` for the main DiT, and `TokenRefiner`'s own
+      separate timestep embedder).** Re-ran the real end-to-end coherence check with the fix applied
+      (524.5s, same config): **the output is pixel-for-pixel IDENTICAL to the pre-fix noise** -- a
+      real, necessary fix (confirmed correct against the reference, kept), but this time it had
+      literally zero visible effect on the output, unlike Qwen Image's own flipSinToCos fix (which
+      at least changed the artifact's character from checkerboard to horizontal banding). This
+      suggests HunyuanVideo's remaining bug dominates the output so completely that a timestep-
+      embedding-order fix is invisible by comparison, or the corrupted embedding was already
+      saturating some downstream nonlinearity in a way that made the fix's numeric effect
+      negligible at this small scale (256×256/4-step) -- not yet determined which. Real next step:
+      the same patchify/RoPE/AdaLN-modulation/VAE-tiling playbook already used for Wan, FLUX.1, and
+      Qwen Image -- not yet started for HunyuanVideo specifically. A full sweep of every other
+      diffusion model's `SinusoidalTimestepEmbedding` call site was done same day: Flux2, LTX-Video,
+      Qwen Image, and now HunyuanVideo all have `flipSinToCos: true`; `ZImageDiT` still calls it
+      without the flag, but Z-Image-Turbo is already verified 🟢/coherent, so that's very likely a
+      genuinely different (correct) convention for that model's own reference, not an unfixed
+      instance of this bug -- left untouched per CLAUDE.md rule 8 (don't "fix" a verified-working
+      port because it looks structurally similar to a bug found elsewhere).
 - [x] **LTX-Video — MAJOR FINDING, 2026-09-18: the "pure noise" instability was (largely/entirely)
       a missing-real-text-conditioning artifact.** Every prior noise-producing run in this item's
       history used placeholder (zero/mock) text conditioning; a real local T5-v1.1-XXL checkpoint
