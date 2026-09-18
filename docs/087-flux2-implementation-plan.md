@@ -326,11 +326,23 @@ itself is now complete and proven, not just its individual pieces.
    (`docs/diffusion-samples/flux2_first_e2e_smoke_2026-09-18.png`). Output is visual noise, the
    correct/expected result for a 2-step/64px wiring smoke test (not enough steps or resolution to
    converge -- Wan/LTX-Video both needed ~20 steps). **This is the first-ever complete FLUX.2 image
-   generation in this codebase's history.** Still not done: a real full-resolution/full-step CPU
-   run to judge actual image quality, and **the real end-to-end run on Vulkan GPU explicitly** (the
-   user's own stated requirement -- this run was CPU-only) — `Flux2DiT`'s real-weight forward pass
-   currently has no GPU-residency wiring at all (see `docs/088`'s Pass 2 section), so a Vulkan run
-   needs that work done first.
+   generation in this codebase's history.**
+
+   **Same-day follow-up: 128×128/4-step moderate quality check, still noise -- inconclusive, not
+   evidence of a bug.** Ran a larger real check (300.8s CPU): still pure color noise, no structure
+   emerging. Every other model in this codebase's history (FLUX.1, SD3.5, Wan, LTX-Video) needed
+   roughly 20 steps to converge to coherent output, so 4 steps at this small a resolution genuinely
+   may not be enough — this result does NOT confirm the real wiring is correct, but it also does
+   NOT demonstrate a bug (unlike, say, a severe periodic checkerboard artifact, which WOULD be
+   diagnostic at any step count). A real, more diagnostic next step per this doc's own earlier
+   warning: the standalone numeric differential test against an independent Mistral reference
+   (still not done) would isolate whether the text-conditioning path is correct BEFORE spending
+   more CPU time on a full 20-step run — cheaper and more conclusive than just running longer blind.
+   Still not done: a real full 20-step run (CPU, ~25+ min estimated at this scale) to see if
+   structure emerges, the differential conditioning test, and **the real end-to-end run on Vulkan
+   GPU explicitly** (the user's own stated requirement -- every run so far has been CPU-only) —
+   `Flux2DiT`'s real-weight forward pass currently has no GPU-residency wiring at all (see
+   `docs/088`'s Pass 2 section), so a Vulkan run needs that work done first.
 
 This is real, substantial implementation work (steps 2-5 each comparable in scope to one of this
 session's other single-model fixes) — scoped here so it can be picked up as a focused task rather

@@ -234,9 +234,14 @@ worse than no status.
             complete FLUX.2 image generation** (all 3 real checkpoints loaded together, ~44GB
             working set stable, 123.9s for 64×64/2-step, finite output). Output is visual noise --
             correct/expected for 2 steps at 64px, not a bug (Wan/LTX both needed ~20 steps).
-      - [ ] Still needed: a real full-resolution/full-step CPU run to judge actual quality, and
-            **the real end-to-end run on Vulkan GPU explicitly** — per the user's stated
-            requirement (this run was CPU-only; `Flux2DiT` has zero GPU-residency wiring yet, see
+            **Follow-up: 128×128/4-step check (300.8s) also still noise -- inconclusive, not
+            evidence of a bug either way** (4 steps may genuinely be too few; a real diagnostic
+            differential test against an independent Mistral reference, still not done, would
+            isolate this cheaper than running a full 20-step CPU pass blind).
+      - [ ] Still needed: a real full 20-step CPU run (or the differential test first, more
+            diagnostic per compute-dollar), and **the real end-to-end run on Vulkan GPU explicitly**
+            — per the user's stated requirement (this run was CPU-only; `Flux2DiT` has zero
+            GPU-residency wiring yet, see
             Pass 2 below).
 - [x] **FLUX.3 — CLOSED, 2026-09-18: not a real target.** `Flux3Params.cs`/`Flux3DiT.cs`'s own doc
       comments describe "FLUX 3 multimodal foundation model... unified video, native synchronized
