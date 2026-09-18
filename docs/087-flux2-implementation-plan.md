@@ -344,6 +344,44 @@ itself is now complete and proven, not just its individual pieces.
    `Flux2DiT`'s real-weight forward pass currently has no GPU-residency wiring at all (see
    `docs/088`'s Pass 2 section), so a Vulkan run needs that work done first.
 
+   **Same-day, real 20-step run completed (64×64, 1055.6s CPU): STILL PURE NOISE, ZERO visible
+   improvement over 2 or 4 steps.** This resolves the "inconclusive, too few steps" question from
+   above with a real negative result: 20 steps is the exact step count every other model in this
+   codebase (FLUX.1, SD3.5, Wan, LTX-Video) converges by, and FLUX.2 shows no structural change at
+   all across 2/4/20 steps — the output at step 20 looks like the same character of random-colored-
+   blob noise as step 2, not a partially-converged image. **This is now real evidence of an actual
+   bug somewhere in the real DiT/text-conditioning/VAE chain, not just an under-stepped run.**
+   Checked two of the most likely candidates directly against `examples/flux2/src/flux2/
+   sampling.py`'s real `denoise()` before ruling them out:
+   - **Euler integration sign**: real `img = img + (t_prev - t_curr) * pred` (timesteps descend
+     1→0). This port's `Flux2Pipeline.Generate` loop computes `dt = nextT - t` with the same
+     descending convention — signs match, confirmed NOT the cause (unlike the real sign-inversion
+     bug that hit both FLUX.1 and, via the shared `EulerFlowScheduler` class, Z-Image-Turbo
+     earlier this session's history — worth checking here specifically because of that precedent,
+     but this port uses its own inline Euler step in `Flux2Pipeline.cs`, not the shared scheduler
+     class, so that specific regression can't have propagated here).
+   - **Guidance mechanism**: real FLUX.2-dev uses single-pass DISTILLED guidance (`guidance_emb`
+     fed into `guidance_in` MLP, baked into `vec` before the DiT ever runs — confirmed in `model.py`'s
+     plain `forward()`, matching `Flux2Params.GuidanceEmbed=true`), not the separate two-pass
+     classifier-free-guidance path (`denoise_cfg`, a different real function for non-distilled
+     use). This port's `ComputeModulationVec` already does the distilled-guidance path — confirmed
+     NOT the cause.
+   **Real, not-yet-checked candidates for the next investigation round** (in likely-cost-to-check
+   order): (a) the shared-modulation split order/mapping (real `Modulation.forward` returns
+   `out.chunk(multiplier)` — confirmed the chunk COUNT and general shape earlier, but not
+   independently re-verified that shift/scale/gate map to chunks 0/1/2 in that exact order, not
+   e.g. gate/shift/scale); (b) the gated-FFN split order (`u1, u2 = x.chunk(2)`, confirmed which
+   half gates which, but worth a second look); (c) a genuine RoPE frequency/rotation bug specific
+   to the 4-axis scheme (the 3-axis→4-axis rewrite was structural, not independently numeric-
+   verified); (d) the VAE's per-channel BatchNorm eps/formula or the pixel-unshuffle index mapping
+   (`(c pi pj) i j -> c (i pi) (j pj)` — confirmed the einops semantics by reasoning, not by a
+   real numeric round-trip test); (e) a latent-space scale mismatch between what the DiT actually
+   outputs and what the VAE expects (FLUX.1's own fix history includes exactly this class of bug).
+   **Do not report FLUX.2 as visually verified until one of these is found and fixed and a
+   re-run shows real structure** — the wiring milestone (all 3 components load and run together
+   without crashing) is real and worth keeping, but image correctness is now a confirmed open
+   question, not just an unconfirmed one.
+
 This is real, substantial implementation work (steps 2-5 each comparable in scope to one of this
 session's other single-model fixes) — scoped here so it can be picked up as a focused task rather
 than re-derived cold.

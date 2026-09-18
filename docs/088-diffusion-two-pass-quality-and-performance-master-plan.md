@@ -234,15 +234,27 @@ worse than no status.
             complete FLUX.2 image generation** (all 3 real checkpoints loaded together, ~44GB
             working set stable, 123.9s for 64×64/2-step, finite output). Output is visual noise --
             correct/expected for 2 steps at 64px, not a bug (Wan/LTX both needed ~20 steps).
-            **Follow-up: 128×128/4-step check (300.8s) also still noise -- inconclusive, not
-            evidence of a bug either way** (4 steps may genuinely be too few; a real diagnostic
-            differential test against an independent Mistral reference, still not done, would
-            isolate this cheaper than running a full 20-step CPU pass blind).
-      - [ ] Still needed: a real full 20-step CPU run (or the differential test first, more
-            diagnostic per compute-dollar), and **the real end-to-end run on Vulkan GPU explicitly**
-            — per the user's stated requirement (this run was CPU-only; `Flux2DiT` has zero
-            GPU-residency wiring yet, see
-            Pass 2 below).
+            **Follow-up: 128×128/4-step check (300.8s) also still noise.** **Then a real 20-step/
+            64px run (1055.6s) also still pure noise, zero visible improvement over 2 or 4 steps.**
+            This resolves the "just needs more steps" question with a real negative result — 20
+            steps is where every other model in this codebase converges, and FLUX.2 shows no
+            structural change at all. **This is real, confirmed evidence of an actual bug**, not
+            an under-stepped run. Checked and ruled out the two most likely candidates (Euler
+            integration sign, guidance mechanism) directly against the real reference -- both
+            match. Real not-yet-checked candidates, in likely-cost-to-check order: shared-
+            modulation chunk-order mapping, gated-FFN split order, 4-axis RoPE numeric correctness,
+            VAE BatchNorm/pixel-unshuffle correctness, DiT-output-vs-VAE-input latent scale
+            mismatch (FLUX.1's own history had exactly this bug class). See `docs/087` for the
+            full candidate list. **Do not report FLUX.2 as visually verified — the wiring milestone
+            is real, image correctness is a confirmed open bug, not just unconfirmed.**
+      - [ ] Real next step: work through the candidate list above via structural/numeric checks
+            (matching this project's own established discipline, e.g. FLUX.1's Round 1-9 history)
+            rather than more blind step-count/resolution runs — those are now ruled out as the
+            explanation.
+      - [ ] **The real end-to-end run on Vulkan GPU explicitly** — per the user's stated
+            requirement (every run so far has been CPU-only; `Flux2DiT` has zero GPU-residency
+            wiring yet, see Pass 2 below) — should wait until the correctness bug above is found,
+            per CLAUDE.md rule 7 (performance work only after correctness).
 - [x] **FLUX.3 — CLOSED, 2026-09-18: not a real target.** `Flux3Params.cs`/`Flux3DiT.cs`'s own doc
       comments describe "FLUX 3 multimodal foundation model... unified video, native synchronized
       audio, and text conditioning" — this does not match any real Black Forest Labs product.

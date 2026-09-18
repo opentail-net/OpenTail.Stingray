@@ -93,4 +93,43 @@ public sealed class Flux2EndToEndRealWeightsTests
         foreach (var v in rgb) Assert.True(float.IsFinite(v), "FLUX.2 quality-check output contains NaN/Inf");
         Assert.True(File.Exists(outputPath));
     }
+
+    /// <summary>
+    /// Tests the "too few steps" hypothesis cheaply (docs/087): same tiny 64x64 resolution as the
+    /// wiring smoke test (fast per-step), but a real full 20-step schedule -- if structure emerges
+    /// here, 4 steps really was just too few and the wiring is plausibly correct; if it's still
+    /// pure noise at 20 real steps, that's real evidence of an actual bug (every other model in
+    /// this codebase converges by ~20 steps).
+    /// </summary>
+    [Fact]
+    public void Flux2Pipeline_RealWeights_20StepConvergenceCheck()
+    {
+        string? ditPath = FindModelPath("flux2-dev-Q4_K_S.gguf");
+        string? mistralPath = FindModelPath("Mistral-Small-3.2-24B-Instruct-2506-Q4_K_S.gguf");
+        string? vaePath = FindModelPath("flux2-vae.safetensors");
+        Assert.SkipUnless(ditPath != null && mistralPath != null && vaePath != null,
+            "FLUX.2 DiT/Mistral/VAE checkpoints not all found");
+
+        using var pipeline = OpenTail.Stingray.Diffusion.Flux2.Flux2Pipeline.Load(ditPath!, mistralPath!, vaePath!);
+
+        string outputPath = Path.Combine(@"C:\Git-Public\OpenTail.Stingray", "docs", "diffusion-samples", "flux2_20step_convergence_check_64_2026-09-18.png");
+
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var rgb = pipeline.Generate(new OpenTail.Stingray.Diffusion.Flux2.Flux2GenerationRequest
+        {
+            Prompt = "a red apple on a wooden table",
+            Width = 64,
+            Height = 64,
+            Steps = 20,
+            Guidance = 3.5f,
+            Seed = 42,
+            OutputPath = outputPath,
+        });
+        sw.Stop();
+        Console.WriteLine($"[Flux2 20-step convergence check 64x64] Took {sw.Elapsed.TotalSeconds:F1}s");
+
+        Assert.True(rgb.Length > 0);
+        foreach (var v in rgb) Assert.True(float.IsFinite(v), "FLUX.2 20-step check output contains NaN/Inf");
+        Assert.True(File.Exists(outputPath));
+    }
 }
