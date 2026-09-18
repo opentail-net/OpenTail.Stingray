@@ -73,19 +73,26 @@ capture 3 different INTERMEDIATE layers (10/20/30 of 40) simultaneously — `Ext
 only ever returns the final layer, so FLUX.2's Mistral wiring is NOT a drop-in reuse of this same
 method, a real difference between the two items despite looking superficially similar).
 
+## 2026-09-18 UPDATE: steps 1-3 DONE -- qwen2vl admitted, real forward pass confirmed
+
+This machine unexpectedly has PyTorch + `transformers` installed, so step 1's verification was
+done against the REAL vendored `transformers.models.qwen2_vl.modeling_qwen2_vl` source directly,
+not just by analogy to the Qwen3-ForcedAligner precedent: `get_rope_index`'s own docstring
+confirms "text tokens use standard 1D RoPE" (all 3 M-RoPE axes get the same sequential position
+for text), and `rotate_half` is the standard NEOX convention. Reasoning through the math: feeding
+an identical position value into all 3 `mrope_section` channel groups is exactly equivalent to
+plain single-axis 1D NEOX rope, so `qwen2vl` dispatches as NEOX in `ModelGraph.cs` (step 2, scoped
+explicitly to text-only use, real multimodal M-RoPE still NOT implemented). `QwenImageTextConditioningTests`
+confirms step 3 empirically: real Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf (4.36GB), real ChatML-templated
+forward pass via `ForwardPass.ExtractHiddenStates`, finite non-zero hidden states -- the mechanism
+works end-to-end.
+
 ## Recommended next steps (implementation, NOT done this pass)
 
-1. Verify Qwen2.5-VL's real text-only position-id behavior against a real reference (the same
-   verification Qwen3-ForcedAligner got) before adding `"qwen2vl"` to `ModelGraph.cs`'s
-   architecture-support switch — confirm plain 1D sequential position ids apply for text-only
-   input, and confirm the interleaved-vs-NEOX rotation convention.
-2. Add `"qwen2vl"` to `ModelGraph.cs`'s architecture list and `ModelCompatibility`'s allowlist
-   (scoped to this real, verified text-only behavior — same pattern as the Qwen3-ForcedAligner
-   per-checkpoint override, not a blind allowlist add).
-3. Once `qwen2vl` is admitted, `ForwardPass.ExtractHiddenStates` should work unmodified for the
-   final-layer extraction this recipe needs -- confirm with a real run rather than assuming.
 4. Implement the real ChatML template + `drop_idx=34` crop + dynamic re-pad recipe above in
-   `QwenImagePipeline`'s text-conditioning path.
+   `QwenImagePipeline`'s text-conditioning path (the smoke test above used the raw template
+   without the `drop_idx` crop or dynamic re-pad -- those still need wiring into the real
+   pipeline, matching `Flux2TextConditioning.Encode`'s pattern for FLUX.2).
 5. Re-run the existing 256×256/4-step repro (`docs/086`) with real conditioning instead of
    zero-vectors; confirm coherent (not just structurally non-degenerate) output, same bar
    HunyuanVideo/LTX-Video are held to.

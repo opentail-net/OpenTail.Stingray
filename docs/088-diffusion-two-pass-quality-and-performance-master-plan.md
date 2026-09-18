@@ -114,7 +114,12 @@ worse than no status.
       conditioning-plan.md`** (ChatML template, `drop_idx=34` crop, final-layer-only extraction,
       dynamic re-pad -- checked against the real `pipeline_qwenimage.py`), plus a concrete plan for
       the `qwen2vl` architecture gap reusing the exact precedent already established for
-      Qwen3-ForcedAligner's M-RoPE-degenerates-to-1D-for-text-only case. Ready for implementation.
+      Qwen3-ForcedAligner's M-RoPE-degenerates-to-1D-for-text-only case. **`qwen2vl` admitted
+      2026-09-18** -- verified directly against the real vendored `transformers` source (this
+      machine has PyTorch+transformers installed), `QwenImageTextConditioningTests` confirms a
+      real forward pass against Qwen2.5-VL-7B-Instruct (4.36GB) produces finite non-zero hidden
+      states. Remaining: wire the real ChatML/`drop_idx` recipe into `QwenImagePipeline` itself
+      (currently only the raw mechanism is proven, not the full pipeline integration).
 - [ ] **HunyuanVideo** — same shape of gap as Qwen Image: DiT+VAE numerically sound, single named
       gap is real LLaMA-3/Qwen2.5-VL text conditioning (`HunyuanVideoPipeline.Generate` currently
       defaults to all-zero context). **2026-09-18 scoping**: confirmed against
