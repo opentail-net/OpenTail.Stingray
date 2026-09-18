@@ -134,22 +134,29 @@ worse than no status.
       Wan). **Do not re-investigate text conditioning for this artifact.** See `docs/089` for the
       full finding and the real next-step playbook (same patchify/RoPE/VAE-tiling checks that
       resolved FLUX.1's and Wan's artifacts).
-- [ ] **HunyuanVideo** — same shape of gap as Qwen Image: DiT+VAE numerically sound, single named
-      gap is real LLaMA-3/Qwen2.5-VL text conditioning (`HunyuanVideoPipeline.Generate` currently
-      defaults to all-zero context). **2026-09-18 scoping**: confirmed against
-      `examples/diffusers/.../pipeline_hunyuan_video.py`'s real `_get_llama_prompt_embeds` --
-      HunyuanVideo needs a real `LlamaModel` (specifically `xtuner/llava-llama-3-8b-v1_1-
-      transformers`, an 8B decoder LLM) as PRIMARY text encoder plus a secondary `CLIPTextModel`
-      (same secondary-CLIP-pooled-conditioning pattern as FLUX.1). Real subtlety confirmed in the
-      reference worth getting right on the first attempt (same discipline as FLUX.2's system-
-      message/layer-extraction recipe): a fixed `prompt_template` wraps the user prompt before
-      encoding, and `crop_start` (computed by tokenizing the template alone first) crops the
-      template's own tokens back OFF the final embeddings before they reach the DiT -- get this
-      crop-after-encode convention right or conditioning will be silently offset. Neither the
-      8B LLaMA checkpoint nor a CLIP-L is currently downloaded for this pipeline -- real,
-      substantial (~16GB+) download needed before this item can proceed; not started this pass to
-      avoid contending with the SDXL-Turbo download / Qwen Image's own pending redownload already
-      queued.
+- [x] **HunyuanVideo text conditioning — CLOSED 2026-09-18.** The named gap (real LLaMA-3 text
+      conditioning) is now wired end-to-end. Confirmed against
+      `examples/diffusers/.../pipeline_hunyuan_video.py`'s real `_get_llama_prompt_embeds`: a fixed
+      literal (non-Jinja) `prompt_template` wraps the user prompt, hidden states are tapped at HF's
+      `hidden_states[-3]` (real `num_hidden_layers_to_skip=2` default = this codebase's
+      `EnableHiddenTaps([29])`), and the template's own `crop_start=95` leading token positions are
+      cropped OFF the resulting embeddings before reaching the DiT. Implemented in new
+      `HunyuanVideoTextConditioning.Encode`, wired into `HunyuanVideoPipeline.Load(modelPath,
+      textEncoderPath, vaePath, backend)` (same ownership pattern as `Flux2Pipeline.Load`/
+      `QwenImagePipeline.Load`). Downloaded the real checkpoint
+      (`xtuner/llava-llama-3-8b-v1_1-gguf`, int4 quant, 4.58GB -- 3 retries needed, HF connection
+      kept dropping mid-download, each resume picked up where it left off) into `models/_models/`;
+      the DiT (`hunyuan_video_720_cfgdistill_fp8_e4m3fn.safetensors`) and secondary CLIP-L
+      (`clip_l.safetensors`) were already present. **Real-weight verification** (`HunyuanVideoText
+      ConditioningTests`, 12.1s, 4.58 GiB pre-faulted): finite/non-degenerate embeddings, and two
+      genuinely different prompts produce clearly different embeddings (diffRms well above the
+      near-identical threshold) -- both pass. **Not yet closed end-to-end**: no HunyuanVideo VAE
+      checkpoint is downloaded (`hunyuan_video_vae_bf16.safetensors` or equivalent repack) -- the
+      main DiT checkpoint bundles zero VAE tensors, so a full `Generate()` call still throws at the
+      decode stage. This is a new, separately-named, real remaining gap -- the text-encoder half is
+      done and verified, the VAE download is the next step to reach a real end-to-end coherence
+      check (same shape as Qwen Image's VAE-reuse discovery, but HunyuanVideo's own VAE is a
+      genuinely distinct architecture, not shared with Wan/Qwen).
 - [x] **LTX-Video — MAJOR FINDING, 2026-09-18: the "pure noise" instability was (largely/entirely)
       a missing-real-text-conditioning artifact.** Every prior noise-producing run in this item's
       history used placeholder (zero/mock) text conditioning; a real local T5-v1.1-XXL checkpoint
