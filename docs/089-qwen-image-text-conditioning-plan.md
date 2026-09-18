@@ -128,12 +128,43 @@ artifact — it's confirmed not the cause.** Real next step: the same patchify/u
 position-embedding, and VAE-tiling-boundary checks that found Wan's and FLUX.1's real causes,
 applied to `QwenImageModel.cs`/`WanVaeDecoder3D.cs`'s Qwen-Image-specific call sites.
 
+## 2026-09-18 UPDATE: real RoPE bug found and fixed, but did NOT resolve the artifact
+
+Checked patchify/unpatchify first (traced the real ggml permute chain in `dit.hpp`'s `patchify`/
+`unpatchify` byte-for-byte): confirmed correct, channel-outer/dy/dx ordering with dx fastest,
+matching this port exactly.
+
+Checked RoPE next against the real `Rope::gen_qwen_image_ids`/`gen_vid_ids`
+(`examples/stable-diffusion.cpp/src/model/common/rope.hpp`) and found a REAL, concrete bug: text
+tokens were using a completely different position scheme from image tokens (full-128-dim
+single-axis RoPE at sequential positions 0..txtLen-1) instead of the real scheme (same 3-axis
+split as image tokens, same position value repeated across all 3 axes, starting at
+`txt_id_start = max(h_len, w_len) / 2`). Image tokens were also missing a real detail: the
+reference calls `gen_vid_ids` with `scale_rope=true`, centering row/col offsets at
+`-len/2` rather than starting at 0. Fixed `QwenImageRoPE.Compute3DRoPE` to match exactly.
+
+**Re-ran the coherence check with the RoPE fix: STILL the identical checkerboard artifact,
+pixel-for-pixel unchanged.** The RoPE fix was real and is being kept (it now matches the reference
+exactly, a genuine correctness improvement even though it didn't resolve this symptom), but it was
+not the (sole) cause.
+
+**Same day, found and fixed a SECOND real bug, the exact same class independently found for Wan
+and LTX-Video this project's history**: `QwenImageModel.ComputeTimestepEmbedding` called
+`DiffusionOps.SinusoidalTimestepEmbedding` without `flipSinToCos: true`. Confirmed against the
+real op (`examples/stable-diffusion.cpp/ggml/src/ggml-cpu/ops.cpp`'s
+`ggml_compute_forward_timestep_embedding_f32`: `embed_data[j] = cosf(arg); embed_data[j+half] =
+sinf(arg)`, i.e. real `[cos, sin]` order) -- this port's default (`flipSinToCos: false`) produces
+`[sin, cos]`, the wrong order. Every AdaLN modulation in every DiT block derives from this one
+value, so this is a real, structural, whole-network corruption -- exactly the same bug class (same
+shared helper, same missing flag) already found and fixed for Wan's and LTX-Video's own timestep
+embeddings, now recurring a third time in a third model. Fixed. **Not yet re-verified with a real
+end-to-end run** -- that's the immediate next step.
+
 ## Recommended next steps (NOT done this pass)
 
-6. Apply the FLUX.1/Wan periodic-tiling-artifact investigation playbook to Qwen Image: check
-   patchify/unpatchify ordering, 2D/3D RoPE position-id construction, and VAE decoder tiling/
-   upsampling boundaries -- in that rough order of likely-cost-to-check, matching how those two
-   prior investigations were actually resolved.
+7. Re-run the coherence check with the timestep-embedding fix applied. If the checkerboard artifact
+   is STILL unresolved, move to VAE decoder tiling/upsampling boundaries (`WanVaeDecoder3D`'s
+   Qwen-Image-specific call sites) as the next candidate, per the original playbook.
 
 This is comparable in scope to FLUX.2's Mistral wiring, though simpler (final-layer only, no
 gated-FFN/shared-modulation DiT complexity on this side) -- the `qwen2vl` architecture-support gap

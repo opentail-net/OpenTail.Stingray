@@ -407,7 +407,15 @@ public sealed class QwenImageModel : IDisposable
 
     private float[] ComputeTimestepEmbedding(float timestep)
     {
-        var emb = DiffusionOps.SinusoidalTimestepEmbedding(timestep);
+        // REAL BUG FOUND AND FIXED 2026-09-18 (docs/089's checkerboard-artifact investigation):
+        // this call was missing flipSinToCos: true. The real reference's own timestep-embedding op
+        // (examples/stable-diffusion.cpp/ggml/src/ggml-cpu/ops.cpp's
+        // ggml_compute_forward_timestep_embedding_f32: `embed_data[j] = cosf(arg);
+        // embed_data[j+half] = sinf(arg);`) fills [cos, sin] order -- the same flip_sin_to_cos=true
+        // convention already found missing for Wan's and LTX-Video's own timestep embeddings this
+        // project's history (same shared-helper default-false bug class, independently recurring a
+        // third time here). Every AdaLN modulation in the DiT derives from this one value.
+        var emb = DiffusionOps.SinusoidalTimestepEmbedding(timestep, flipSinToCos: true);
         var t0 = Linear("time_text_embed.timestep_embedder.linear_1", emb, 256, HiddenDim);
         DiffusionOps.SiluInPlace(t0);
         return Linear("time_text_embed.timestep_embedder.linear_2", t0, HiddenDim, HiddenDim);
