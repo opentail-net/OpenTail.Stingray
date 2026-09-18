@@ -140,7 +140,24 @@ worse than no status.
       real ceiling), and only 2 seeds checked (not an exhaustive sweep). README/`docs/086` updated.
 
 ### 1c. 🔴 — real, unresolved regressions/bugs, higher-risk, do not skip
-- [ ] **Wan 2.1/2.2 Video** — persistent, still-unlocated grid artifact. Every individual
+- [x] **Wan 2.1/2.2 Video — MAJOR FINDING, 2026-09-18: the grid artifact appears to be GONE.**
+      Two fresh real runs (256×256/20-step, real UMT5 conditioning, seeds 42 and 7) both produced
+      clean, coherent, recognizable red-apple-on-wooden-table images with zero checkerboard/
+      basket-weave texture anywhere -- a dramatic, visually unambiguous difference from the
+      documented reference bad sample (`wan2.1-t2v-1.3b-perfleague-check.png`, 2026-09-11: severe
+      whole-image checkerboard, no coherent content at all). Likely real cause: Wan's own
+      `TimestepEmbedder` had the identical `flipSinToCos` convention bug LTX-Video independently
+      had, found and fixed 2026-09-14 (`docs/077`) -- every AdaLN modulation in the DiT derives
+      from that one value, so this plausibly explains a severe structured whole-image corruption
+      exactly like the documented artifact. **That fix was never visually re-verified against this
+      specific artifact until this session's re-run** -- same "real fix landed, never re-checked"
+      pattern already found twice this session (SDXL-Turbo, LTX-Video). Not fully closed: only 2
+      seeds checked at only 256×256, and both CLI runs denoised on CPU despite `--backend vulkan`
+      (worth checking whether the CLI's Wan path actually routes the denoise loop through Vulkan --
+      `docs/083`'s 2.20x-of-C++ GPU-residency figure needs re-confirming with this fix in place,
+      per the operator's explicit instruction not to regress that work). README updated. Below is
+      the now-superseded investigation trail kept for reference (T5-padding/masking hypotheses,
+      both real and correctly ruled out, just not the actual cause) -- every individual
       hypothesis checked so far (RoPE axes, AdaLN modulation, flow-schedule/CFG formula, GELU,
       tensor shapes) is ruled out. **This is the same failure shape FLUX.1 had for 8 rounds before
       Round 9 found it via T5 sequence-length padding, not another structural check.**
