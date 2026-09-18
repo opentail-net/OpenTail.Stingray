@@ -312,6 +312,39 @@ its own before/after real-weight timing check (removing the cache trades memory 
 dequant cost, which may or may not matter depending on how many times each model's `Forward()`/
 `Decode()` gets called per generation) — not a single blanket find-and-replace.
 
+**Real, concrete risk assessment (2026-09-18), not just a hypothetical list of 15 files** — checked
+actual checkpoint sizes/layer counts for the two highest-risk currently-verified-working pipelines
+before assuming they're fine:
+- **FLUX.1-schnell** (`flux1-schnell-Q4_K_S.gguf`, 6.78GB, 19 double + 38 single blocks at
+  dim=3072 — comparable scale to Qwen-Image's 60 blocks): Q4_K's dequant-to-float32 expansion is
+  roughly 7-8x, putting a fully-cached forward pass at **very roughly 47-54GB** — close enough to
+  this 64GB machine's ceiling that it plausibly has NOT been hit yet by luck (available headroom at
+  generation time, not because the pattern is actually safe) rather than because FLUX.1 is
+  meaningfully smaller than the config that just OOM'd. **Real, near-term risk, not just a
+  theoretical one** — worth prioritizing first in any follow-up fix pass, before Wan or the smaller
+  VAE/text-encoder files in the 15-file list.
+- **Wan2.1-T2V-1.3B** (`Wan2.1-T2V-1.3B-Q4_0.gguf`, 865MB, 30 layers at dim=1536): dequant-expanded
+  size is roughly 6GB — clearly safe, not a near-term concern despite using the identical pattern.
+
+This doesn't change the "don't mass-edit blind" recommendation, but does change the priority order
+of a real follow-up pass: **FLUX.1 first** (real, plausible risk on this machine), Wan and the
+smaller VAE/text-encoder files later (checked and currently safe by a comfortable margin).
+
+**Important nuance found before touching `FluxDiT.cs`, checked rather than assumed**: it already
+has two separate weight-lookup paths — `W`/`OptW` (CPU, cached, the risky pair) and
+`GetWeightUncached`/`OptGetWeightUncached` (used by the GPU-resident path, `FluxGpuWeights`,
+confirmed via its constructor call site at line 84). This means the unbounded-cache risk is
+**CPU-path-only** — a real generation running on Vulkan GPU (this session's own auto-probe work
+made this the default for audio pipelines; check whether the same is true for `ImageCommand`'s
+FLUX.1 path before assuming) never touches the risky cache at all. **Deliberately not fixing
+`FluxDiT.cs` this pass**: this file has substantial existing GPU-residency optimization work
+(`docs/069`/`docs/071`) that a rushed CPU-path cache change could interact with in ways this
+session doesn't have time to properly verify (unlike `QwenImageModel`, which had no comparable
+GPU-residency investment to risk regressing). Real follow-up: confirm whether FLUX.1's actual
+default/typical invocation path is CPU or GPU before deciding this is urgent — if GPU is already
+the default (as it now is for audio), the real-world exposure may be much lower than the raw
+checkpoint-size math above suggests.
+
 **Result after the memory fix**: the DiT completes cleanly through all 60 layers × 2 denoising
 steps (439.5s real wall-clock, bounded memory) — **numerically healthy**, same as HunyuanVideo's
 DiT. VAE decode then failed on `decoder.conv_in.weight` not found. Direct tensor-name enumeration
