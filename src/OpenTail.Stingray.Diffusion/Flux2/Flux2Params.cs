@@ -41,11 +41,11 @@ public sealed record Flux2Params
     /// <summary>Number of single-stream unified blocks (confirmed by direct count: single_blocks.{0..47}).</summary>
     public int DepthSingleBlocks { get; init; } = 48;
 
-    /// <summary>3D Context RoPE axial dimensions -- unconfirmed against a real reference; carried over from FLUX.1 as a plausible prior only (same HeadDim=128). Verify before trusting for numeric parity.</summary>
-    public int[] AxesDim { get; init; } = [16, 56, 56];
+    /// <summary>4D Context RoPE axial dimensions [t, h, w, l] (frame/time, height, width, sequence-local) -- NOT FLUX.1's 3-axis [16,56,56] scheme. Confirmed against real BFL source (examples/flux2/src/flux2/model.py: `axes_dim: list[int] = [32, 32, 32, 32]`, sum=128=HeadDim). The extra "t" axis is used for multi-reference-image temporal offsetting (examples/flux2/src/flux2/sampling.py's `encode_image_refs`/`scatter_ids`); plain text-to-image (no reference images) uses a constant/zero t-coordinate.</summary>
+    public int[] AxesDim { get; init; } = [32, 32, 32, 32];
 
-    /// <summary>Base theta for RoPE frequency calculation -- unconfirmed against a real reference, same caveat as AxesDim.</summary>
-    public float Theta { get; init; } = 10000.0f;
+    /// <summary>Base theta for RoPE frequency calculation. Confirmed against real BFL source: `theta: int = 2000` -- NOT FLUX.1's 10000.</summary>
+    public float Theta { get; init; } = 2000.0f;
 
     /// <summary>FLUX.2's linears are bias-free -- no .bias tensor exists alongside any .qkv.weight/.proj.weight/mlp linear/final_layer.linear in the checkpoint, unlike FLUX.1.</summary>
     public bool QkvBias { get; init; } = false;

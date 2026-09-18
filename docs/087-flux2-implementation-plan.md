@@ -108,17 +108,17 @@ linear1.weight            [6144, 55296]   -- fused QKV+MLP-up, single big linear
 linear2.weight            [24576, 6144]   -- fused output projection -- 24576 = 6144(attn-out) + 18432(mlp-down input) -- again consistent with an 18432-wide (not 36864) post-gate MLP hidden state
 ```
 
-## Open questions RESOLVED (2026-09-18, external report — needs in-repo cross-check before numeric-parity work)
+## Open questions RESOLVED AND IN-REPO VERIFIED (2026-09-18)
 
-The three open questions above were answered via an external report (ChatGPT, prompted with this
-doc's exact open questions) claiming to have read BFL's real `flux2/src/flux2/model.py` and HF
-Diffusers' FLUX.2 pipeline directly. **Caveat, per this project's CLAUDE.md rule 8**: this has NOT
-yet been independently re-verified against a vendored reference under `examples/` in this repo —
-treat as a strong, shape-corroborated lead, not a confirmed fact, until cross-checked. The shape
-corroboration is real and specific (every number below was independently predictable from this
-doc's own tensor inventory before the answer arrived, and the external answer reproduced every one
-exactly): `36864 = 2×18432` (gated-FFN split), `55296 = 18432(qkv) + 36864(mlp-up)`,
-`24576 = 6144(attn-out) + 18432(mlp-down-in)`, `15360 = 3×5120` (Mistral-Small-24B hidden size).
+The three open questions above were first answered via an external report (ChatGPT), then the user
+added the **real BFL FLUX.2 source** to this repo (`examples/flux2/`, plus `examples/diffusers`
+gaining `src/diffusers/.../transformer_flux2.py`/`pipelines/flux2/pipeline_flux2.py`). **Every
+single claim below has now been independently confirmed by direct grep against that real vendored
+source** (`examples/flux2/src/flux2/model.py`, `text_encoder.py`, `system_messages.py`) — this is
+no longer an externally-sourced lead, it is a verified fact per CLAUDE.md rule 8. Shape
+corroboration that held even before this verification: `36864 = 2×18432` (gated-FFN split),
+`55296 = 18432(qkv) + 36864(mlp-up)`, `24576 = 6144(attn-out) + 18432(mlp-down-in)`,
+`15360 = 3×5120` (Mistral-Small-24B hidden size).
 
 1. **Shared modulation — genuinely shared, no per-block differentiation via AdaLN at all.**
    `vec = time_in(timestep_emb) + guidance_in(guidance_emb)` (both 256→6144 MLPs) is computed ONCE
@@ -146,31 +146,64 @@ exactly): `36864 = 2×18432` (gated-FFN split), `55296 = 18432(qkv) + 36864(mlp-
    convention, is exactly the kind of numeric fact that needs an in-repo cross-check (or a real
    golden-parity diff against actual Mistral layer outputs) before trusting for implementation** —
    do not substitute 9/19/29 or 11/21/31 without checking.
-   **Also reported (unverified in-repo)**: FLUX.2 prepends a fixed BFL system message before the
-   user prompt via Mistral's chat template (`add_generation_prompt=False`), and Diffusers pads/
-   truncates the conditioning sequence to a fixed `max_length=512` (same discipline as FLUX.1's own
-   T5-padding bug fixed in `docs/056` Round 9 — get this length-and-padding convention right on
-   the FIRST attempt for FLUX.2, don't rediscover it the hard way like FLUX.1 did). Reported system
-   message text: "You are an AI that reasons about image descriptions. You give structured
-   responses focusing on object relationships, object attribution and actions without
-   speculation." — verify this exact string against a real source before shipping it, since a
-   wrong system prompt would silently shift every generation's conditioning without crashing
-   anything.
+   FLUX.2 prepends a fixed BFL system message before the user prompt via Mistral's chat template,
+   and pads/truncates the conditioning sequence to a fixed length — same discipline as FLUX.1's own
+   T5-padding bug fixed in `docs/056` Round 9.
+
+## 2026-09-18 UPDATE: real BFL FLUX.2 source now vendored (`examples/flux2/`) — every claim above IN-REPO CONFIRMED, plus 2 new real findings
+
+The user added the real BFL FLUX.2 repo to this project (`examples/flux2/src/flux2/`), and
+`examples/diffusers` separately gained a real FLUX.2 pipeline (`src/diffusers/pipelines/flux2/
+pipeline_flux2.py`, `transformer_flux2.py`). Direct grep against `examples/flux2/src/flux2/
+model.py`/`text_encoder.py`/`system_messages.py` confirms **every one of the three external-report
+answers above exactly, verbatim**:
+- Shared modulation: `model.py`'s `Flux2` class creates exactly one `double_stream_modulation_img`/
+  `_txt`/`single_stream_modulation`, computes `vec` once, and passes the same modulation output
+  into every block in a `for block in self.double_blocks:`/`self.single_blocks:` loop — no
+  per-block modulation anywhere.
+- Gated FFN: `mlp_ratio: float = 3.0` (all three `Flux2Params`-equivalent dataclasses), real
+  `SiLUActivation` class (`x1, x2 = x.chunk(2); return SiLU(x1) * x2`), single-block `linear1`/
+  `linear2` fusion exactly as reported.
+- Text conditioning: `OUTPUT_LAYERS_MISTRAL = [10, 20, 30]` (0-indexed into `hidden_states`),
+  `MAX_LENGTH = 512`, and `SYSTEM_MESSAGE` is the exact verbatim string reported. `Flux2Params.cs`
+  now cites these directly instead of "reported."
 
 `Flux2Params.cs` has been updated with the corrected values from the table above (HiddenSize 6144,
 NumHeads 48, DepthDoubleBlocks 8, DepthSingleBlocks 48, ContextInDim 15360, MlpRatio 3.0,
-QkvBias false, InChannels/OutChannels 128, VecInDim 0/unused) — `Flux2ConformanceTests` re-verified
-passing after the change. `AxesDim`/`Theta` remain UNCONFIRMED (FLUX.1 values carried over as a
-plausible prior only) — the external report did not address RoPE.
+QkvBias false, InChannels/OutChannels 128, VecInDim 0/unused, AxesDim/Theta per finding 1 below) —
+`Flux2ConformanceTests` re-verified passing after the change.
+
+**Two new real findings the external report never addressed, found by reading `model.py` directly:**
+
+1. **RoPE is 4-axis `[t,h,w,l]`, not FLUX.1's 3-axis, and uses a different theta.** Real
+   `axes_dim: list[int] = [32, 32, 32, 32]` (sum=128=HeadDim, confirmed), `theta: int = 2000` (NOT
+   FLUX.1's 10000). The extra `t` axis is a frame/time coordinate used to temporally offset
+   multiple reference images relative to the target image (`sampling.py`'s `encode_image_refs`:
+   `t_off = [scale + scale*t for t in range(len(refs))]`, `scale=10`) — for plain text-to-image
+   with zero reference images, `t` is effectively constant/zero for every token. `Flux2Params.cs`
+   corrected; `Flux2RoPE.cs` (still built for the OLD 3-axis/FLUX.1-style scheme) needs a real
+   rewrite to 4 axes before any numeric work, not just a params tweak — do not reuse the existing
+   `BuildContextFreqs` unmodified.
+2. **Attention is NOT FLUX.1's plain joint bidirectional attention — reference-image tokens are
+   attention-isolated.** `model.py`'s `causal_attn_fn` (used by every block instead of a plain
+   joint-attention call): sequence layout is `[txt, ref, img]`; **txt and img tokens attend to
+   everything** (txt+ref+img keys), but **reference-image tokens only self-attend** (only to other
+   ref tokens, never to txt or img) — implemented as two separate `scaled_dot_product_attention`
+   calls per block (one over `[txt,img]` queries against `[txt,ref,img]` keys, one over `[ref]`
+   queries against `[ref]` keys only), concatenated back together. This is a genuinely new
+   mechanism, not present in FLUX.1's DiT at all, and is currently completely unimplemented in
+   `Flux2DiT.cs`. For plain text-to-image (no reference images, `nRefTotal=0` in the existing C#
+   signature), this degenerates to ordinary joint `[txt,img]` attention — **but `Flux2DiT.Forward`
+   already has a `refLatents`/`refPositions` parameter in its signature, so implement the real
+   `causal_attn_fn` split from the start rather than hardcoding the degenerate no-ref case**, since
+   multi-reference conditioning is one of FLUX.2's headline real features (the class doc already
+   says "Supports multi-image conditioning").
 
 ## Recommended next steps (implementation, NOT done this pass)
 
-1. **Cross-check the three answers above against an in-repo reference** before writing DiT/
-   attention code from them — check whether `examples/diffusers` (vendored in this repo) has
-   gained a real FLUX.2 pipeline file since this doc was first written, which would let every claim
-   above be grep-verified directly rather than trusted from an external report alone. This is the
-   single highest-leverage next step: everything downstream (weight loader, text encoder, VAE) is
-   only as trustworthy as this cross-check.
+1. Rewrite `Flux2RoPE.cs` for the real 4-axis `[t,h,w,l]`/theta=2000 scheme (finding 1 above) —
+   check `examples/flux2/src/flux2/model.py`'s `rope`/`apply_rope`/`EmbedND` functions directly,
+   they're now in-repo, no more guessing needed.
 2. Add `IWeightLoader` wiring to `Flux2DiT`, following the `Resolve()`/`TryGetWeight()`/`Linear()`
    pattern already used by `HunyuanVideoModel`/`QwenImageModel` in this codebase — not a new
    pattern, a proven one. Implement the fused single-stream QKV+gated-MLP linear and the shared
