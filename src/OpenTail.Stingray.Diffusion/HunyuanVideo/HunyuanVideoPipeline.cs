@@ -11,6 +11,10 @@ public sealed class HunyuanVideoPipeline : IDiffusionPipeline
     private readonly IWeightLoader? _vaeWeights;
     private readonly HunyuanVideoModel _transformer;
     private readonly HunyuanVaeDecoder3D _vae;
+    private readonly GgufModel? _textEncoderModel;
+    private readonly Engine.ForwardPass? _textEncoderForward;
+    private readonly GgufTokenizer? _textEncoderTokenizer;
+    private readonly Cpu.CpuBackend? _textEncoderBackend;
     private bool _disposed;
 
     public string Architecture => "HunyuanVideo";
@@ -25,6 +29,17 @@ public sealed class HunyuanVideoPipeline : IDiffusionPipeline
         _transformer = transformer;
         _vae = vae;
         _vaeWeights = vaeWeights;
+    }
+
+    private HunyuanVideoPipeline(
+        IWeightLoader weights, HunyuanVideoModel transformer, HunyuanVaeDecoder3D vae, IWeightLoader? vaeWeights,
+        GgufModel textEncoderModel, Engine.ForwardPass textEncoderForward, GgufTokenizer textEncoderTokenizer, Cpu.CpuBackend textEncoderBackend)
+        : this(weights, transformer, vae, vaeWeights)
+    {
+        _textEncoderModel = textEncoderModel;
+        _textEncoderForward = textEncoderForward;
+        _textEncoderTokenizer = textEncoderTokenizer;
+        _textEncoderBackend = textEncoderBackend;
     }
 
     /// <summary>
@@ -61,6 +76,43 @@ public sealed class HunyuanVideoPipeline : IDiffusionPipeline
     }
 
     /// <summary>
+    /// Loads a HunyuanVideo pipeline WITH real llava-llama-3-8b-v1_1 text conditioning (docs/088)
+    /// -- <c>Generate</c> will use <see cref="HunyuanVideoTextConditioning.Encode"/> automatically
+    /// when the caller doesn't supply an explicit <c>textContext</c>.
+    /// </summary>
+    public static HunyuanVideoPipeline Load(string modelPath, string textEncoderPath, string? vaePath, IComputeBackend? backend = null)
+    {
+        IWeightLoader weights = modelPath.EndsWith(".gguf", StringComparison.OrdinalIgnoreCase)
+            ? GgufWeightLoader.Open(modelPath)
+            : SafetensorsLoader.Open(modelPath);
+
+        var transformer = new HunyuanVideoModel(weights, prefix: "", backend: backend);
+
+        IWeightLoader? vaeLoader = null;
+        if (!string.IsNullOrWhiteSpace(vaePath) && File.Exists(vaePath))
+        {
+            vaeLoader = vaePath.EndsWith(".gguf", StringComparison.OrdinalIgnoreCase)
+                ? GgufWeightLoader.Open(vaePath)
+                : SafetensorsLoader.Open(vaePath);
+        }
+        else if (weights.Contains("decoder.conv_in.conv.weight") || weights.Contains("vae.decoder.conv_in.conv.weight"))
+        {
+            vaeLoader = weights;
+        }
+
+        var vae = new HunyuanVaeDecoder3D(vaeLoader);
+
+        var textEncoderModel = GgufModel.Open(textEncoderPath);
+        var hp = ModelHyperparams.FromGgufMetadata(textEncoderModel.Metadata, textEncoderModel);
+        var tokenizer = GgufTokenizer.FromGgufModel(textEncoderModel);
+        var textEncoderBackend = new Cpu.CpuBackend();
+        var textEncoderForward = new Engine.ForwardPass(textEncoderModel, textEncoderBackend, hp);
+
+        return new HunyuanVideoPipeline(weights, transformer, vae, vaeLoader == weights ? null : vaeLoader,
+            textEncoderModel, textEncoderForward, tokenizer, textEncoderBackend);
+    }
+
+    /// <summary>
     /// Generates image or multi-frame video using HunyuanVideo Rectified Flow-Matching.
     /// </summary>
     public List<float[]> Generate(
@@ -87,10 +139,29 @@ public sealed class HunyuanVideoPipeline : IDiffusionPipeline
         int latW = width / 8;
         int latC = 16;
 
-        // 1. Text conditioning context [seqLen, 4096] (or dummy context for conformance)
-        int seqLen = 256;
-        var condContext = textContext ?? new float[seqLen * HunyuanVideoModel.TextDim];
-        var uncondContext = new float[seqLen * HunyuanVideoModel.TextDim];
+        // 1. Text conditioning context [seqLen, 4096] -- real llava-llama-3-8b-v1_1 conditioning
+        //    (HunyuanVideoTextConditioning.Encode, docs/088) when this pipeline owns a real text
+        //    encoder (Load(modelPath, textEncoderPath, ...)) and the caller didn't already supply
+        //    an explicit textContext; falls back to zero-conditioning otherwise (unchanged
+        //    behavior for existing callers).
+        float[] condContext;
+        float[] uncondContext;
+        if (textContext is not null)
+        {
+            condContext = textContext;
+            uncondContext = new float[condContext.Length];
+        }
+        else if (_textEncoderForward is not null && _textEncoderTokenizer is not null)
+        {
+            (condContext, _) = HunyuanVideoTextConditioning.Encode(_textEncoderForward, _textEncoderTokenizer, prompt);
+            (uncondContext, _) = HunyuanVideoTextConditioning.Encode(_textEncoderForward, _textEncoderTokenizer, negativePrompt ?? "");
+        }
+        else
+        {
+            int seqLen = 256;
+            condContext = new float[seqLen * HunyuanVideoModel.TextDim];
+            uncondContext = new float[seqLen * HunyuanVideoModel.TextDim];
+        }
 
         // 2. Initial Gaussian noise in video latent space [16, numFrames, latH, latW]
         var latent = SampleGaussianNoise(latC * numFrames * latH * latW, seed);
@@ -261,6 +332,9 @@ public sealed class HunyuanVideoPipeline : IDiffusionPipeline
             _vaeWeights?.Dispose();
             _transformer.Dispose();
             _vae.Dispose();
+            _textEncoderForward?.Dispose();
+            _textEncoderBackend?.Dispose();
+            _textEncoderModel?.Dispose();
         }
     }
 }
