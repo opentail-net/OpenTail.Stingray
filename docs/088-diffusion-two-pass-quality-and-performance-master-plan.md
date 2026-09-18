@@ -81,11 +81,14 @@ worse than no status.
       comparison) the same way LTX-Video's components were golden-verified. Upgrade to 🟢 only once
       that's real and passing.
 - [ ] **Qwen Image / Qwen Image Edit** — DiT+VAE verified, single named gap: real LLM text
-      conditioning. `Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf` is already downloaded
-      (`models/_models/`). Wire its real forward pass into the conditioning path (this project
-      already has a working Qwen2.5-VL text backbone for the LLM/vision side — reuse that, don't
-      reimplement). Re-run the 256×256/4-step repro with real conditioning instead of zero-vectors
-      and confirm coherent (not just non-degenerate) output.
+      conditioning. **2026-09-18 checkpoint-status check**: `Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf` is
+      NOT currently present in `models/_models/` (rotating curated disk set -- deleted after the
+      2026-09-18 DiT/VAE session per disk discipline). `qwen2` architecture (the plain text
+      backbone) is already in `ModelCompatibility`'s allowlist -- but this specific checkpoint's
+      real `general.architecture` string (`qwen2` vs `qwen2vl`, which may need M-RoPE handling even
+      for text-only use) is unconfirmed until redownloaded and inspected via `list-metadata`.
+      Needs a ~4-5GB redownload before this item can proceed -- not started this pass to avoid
+      contending with the SDXL-Turbo/FLUX.1 downloads/runs already in flight.
 - [ ] **HunyuanVideo** — same shape of gap as Qwen Image: DiT+VAE numerically sound, single named
       gap is real LLaMA-3/Qwen2.5-VL text conditioning (`HunyuanVideoPipeline.Generate` currently
       defaults to all-zero context). Wire it, re-verify with a real small-scale run, confirm a
