@@ -21,8 +21,15 @@ public sealed class ZImageRealWeightsTests
         var dir = Directory.GetCurrentDirectory();
         for (int i = 0; i < 8; i++)
         {
+            // Check models/ directly (curated/pinned checkpoints), then models/_models/ (the
+            // rotating disk-cache set, symlinked to F:\_models -- checkpoints commonly live here
+            // instead, and the previous version of this method never checked it, matching the
+            // same systemic gap PerformanceLeague.md's "Known Measurement Gaps" section already
+            // flagged for ParakeetRealWeightsTests).
             var p = Path.Combine(dir, "models", fileName);
             if (File.Exists(p)) return p;
+            var pModels = Path.Combine(dir, "models", "_models", fileName);
+            if (File.Exists(pModels)) return pModels;
             var parent = Directory.GetParent(dir);
             if (parent is null) break;
             dir = parent.FullName;

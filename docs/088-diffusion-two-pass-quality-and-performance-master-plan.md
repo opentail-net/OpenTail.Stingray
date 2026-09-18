@@ -73,12 +73,14 @@ worse than no status.
       full CLIP-L+T5-XXL+VAE pipeline). Warm pass 198.4s -- matches `PerformanceLeague.md`'s
       documented 198.1s within noise, no regression. Output PNG regenerated (444KB, non-degenerate)
       confirming the Round 9 T5-padding fix still holds.
-- [ ] **Z-Image-Turbo** — 2026-09-18: `ZImageRealWeightsTests` looks for a standalone
-      `z_image_turbo-Q4_0.gguf` in `models/` root, which isn't present -- current on-disk layout
-      is `models/z-image-turbo/{tokenizer,vae}/` only, missing the main DiT/text-encoder weights.
-      Not re-verified this pass (that specific test is stale relative to the current checkpoint
-      layout, not necessarily evidence of a real regression) -- needs either a redownload or a
-      test path update to match the current directory-based layout other models use.
+- [x] **Z-Image-Turbo** — 2026-09-18 CORRECTED: `z_image_turbo-Q4_0.gguf` WAS present all along, at
+      `models/_models/` (symlinked to `F:\_models`) -- `ZImageRealWeightsTests.FindModelPath` only
+      ever searched `models/` directly, never `models/_models/`, the exact same systemic gap
+      `PerformanceLeague.md`'s "Known Measurement Gaps" section already flagged for
+      `ParakeetRealWeightsTests`. Fixed `FindModelPath` to also check `models/_models/`; re-ran,
+      now genuinely passes (real GGUF open + tensor-count assertion, not a no-op). Z-Image-Turbo's
+      known-good end-to-end sample (`z-image-turbo_..._FIXED-2026-09-12.png`) was never actually in
+      question -- this only fixes a stale unit test's search path.
 
 ### 1b. 🟡 with a real, named, scoped gap — close these next
 - [ ] **SD3/SD3.5** — real coherent output exists but is **not yet numerically golden-verified**
