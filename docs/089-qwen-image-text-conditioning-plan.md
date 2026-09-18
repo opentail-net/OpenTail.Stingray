@@ -61,6 +61,18 @@ this needs the same real verification Qwen3-ForcedAligner got (checking `qwen2vl
 `use_mrope`/position-id behavior for text-only sequences against a real reference,
 `examples/transformers`'s `Qwen2VLModel` or similar) before assuming it, not copy-pasted blind.
 
+## Confirmed 2026-09-18: `ForwardPass.ExtractHiddenStates` already does exactly what this needs
+
+Checked `src/OpenTail.Stingray.Engine/ForwardPass.cs:1096` directly: `ExtractHiddenStates` already
+captures the FINAL transformer layer's hidden state per token (via `PrefillCore`'s
+`outAllHiddenStates` parameter, or a per-token `Forward` fallback for MoE/single-token/TurboQuant
+cases) — this is the exact same "final hidden_states[-1]" extraction Qwen Image's real recipe
+needs (see above), already proven in production for `EmbeddingEngine`. **No new hidden-state-
+extraction capability is needed for Qwen Image** (unlike FLUX.2, which needs a NEW capability to
+capture 3 different INTERMEDIATE layers (10/20/30 of 40) simultaneously — `ExtractHiddenStates`
+only ever returns the final layer, so FLUX.2's Mistral wiring is NOT a drop-in reuse of this same
+method, a real difference between the two items despite looking superficially similar).
+
 ## Recommended next steps (implementation, NOT done this pass)
 
 1. Verify Qwen2.5-VL's real text-only position-id behavior against a real reference (the same
@@ -70,9 +82,8 @@ this needs the same real verification Qwen3-ForcedAligner got (checking `qwen2vl
 2. Add `"qwen2vl"` to `ModelGraph.cs`'s architecture list and `ModelCompatibility`'s allowlist
    (scoped to this real, verified text-only behavior — same pattern as the Qwen3-ForcedAligner
    per-checkpoint override, not a blind allowlist add).
-3. Extend `IForwardPass`'s hidden-state extraction (`ExtractHiddenStates`/
-   `ExtractHiddenStatesBatch`, already used by `EmbeddingEngine` for embedding models) to expose
-   the final-layer hidden state for this use case, or confirm it already does what's needed.
+3. Once `qwen2vl` is admitted, `ForwardPass.ExtractHiddenStates` should work unmodified for the
+   final-layer extraction this recipe needs -- confirm with a real run rather than assuming.
 4. Implement the real ChatML template + `drop_idx=34` crop + dynamic re-pad recipe above in
    `QwenImagePipeline`'s text-conditioning path.
 5. Re-run the existing 256×256/4-step repro (`docs/086`) with real conditioning instead of

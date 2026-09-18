@@ -208,11 +208,20 @@ session check this same day wrongly reported it missing due to a `find`-vs-symli
 prediction exactly (`OUTPUT_LAYERS_MISTRAL=[10,20,30]` out of 40 layers, `15360 = 3×5120`). Plain
 `llama` architecture is already fully allowlisted and supported by this engine's generic forward
 pass -- **no new architecture code is needed to run Mistral-Small-24B itself**, only a way to
-extract and capture its hidden states at three specific layers instead of just the final logits
-(check whether `IForwardPass`'s existing `ExtractHiddenStates`/`ExtractHiddenStatesBatch` --
-already used by `EmbeddingEngine` for embedding models -- can be pointed at arbitrary intermediate
-layers, or whether that needs extending). This significantly de-risks FLUX.2's text-conditioning
-step versus initially assumed.
+extract and capture its hidden states at three specific INTERMEDIATE layers (10/20/30 of 40)
+simultaneously, not just the final logits. **Checked 2026-09-18: `ForwardPass.ExtractHiddenStates`
+(`src/OpenTail.Stingray.Engine/ForwardPass.cs:1096`) only ever captures the FINAL transformer
+layer's hidden state, not arbitrary intermediate layers** -- this is NOT a drop-in reuse for
+FLUX.2's recipe (unlike Qwen Image's, which needs exactly this final-layer behavior -- see
+`docs/089`). A real, new capability is needed here: either a new
+`ExtractIntermediateHiddenStates(layers)`-style method, or three separate full forward passes each
+truncated at a different depth (wasteful -- shares the first 10/20 layers of compute three times),
+or a single pass that snapshots the residual stream at the three target layers as it runs (the
+efficient approach, matching how `PrefillCore` already threads an `outAllHiddenStates` sink through
+its layer loop -- extending that same mechanism to snapshot at N caller-specified layers instead of
+only after the last one is the natural, minimal-diff way to do this). This significantly de-risks
+FLUX.2's text-conditioning step (checkpoint ready, architecture already supported) but the
+multi-layer capture itself is real, un-built work, not just a wiring exercise.
 
 ## Recommended next steps (implementation, NOT done this pass)
 
