@@ -218,7 +218,18 @@ worse than no status.
             independent Mistral reference** — per `docs/087`'s own warning, a wrong conditioning
             vector would make a correct DiT look completely broken, exactly FLUX.1's Round 1-8
             experience. Both remain real next steps.
-      - [ ] Real FLUX.2 VAE decoder (32-channel, checkpoint downloaded).
+      - [x] Real FLUX.2 VAE decode DONE, 2026-09-18 -- decoder blocks reused unmodified from the
+            existing general-purpose `VaeDecoder.cs` (same real diffusers `AutoencoderKL` schema
+            as FLUX.1/SD1.5/SDXL/SD3, zero new decoder-block code). Only new code: `Flux2Vae.
+            UnnormalizeAndUnshuffle` implementing FLUX.2's real per-channel BatchNorm
+            un-normalization (128 values from `bn.running_mean`/`running_var`) + 2x2 pixel-unshuffle
+            rearrange, confirmed against `examples/flux2/src/flux2/autoencoder.py` -- a genuinely
+            different convention from FLUX.1's scalar scale/shift. `Flux2VaeRealWeightsTests`
+            passes: real `flux2-vae.safetensors` (336MB), finite RGB output.
+            **All three major FLUX.2 components (DiT, text conditioning, VAE) are now proven
+            working against real weights independently.**
+      - [ ] Wire `Flux2TextConditioning.Encode` + `Flux2Vae.UnnormalizeAndUnshuffle` into
+            `Flux2Pipeline.Generate`'s currently-synthetic conditioning/decode calls.
       - [ ] First real end-to-end run — **on Vulkan GPU explicitly**, per the user's stated
             requirement (a CPU-only run does not close this item).
 - [x] **FLUX.3 — CLOSED, 2026-09-18: not a real target.** `Flux3Params.cs`/`Flux3DiT.cs`'s own doc
