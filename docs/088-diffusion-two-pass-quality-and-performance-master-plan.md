@@ -65,8 +65,10 @@ worse than no status.
       (`sd_xl_turbo_1.0_fp16.safetensors`) isn't currently present in `models/` (rotating curated
       disk set). Not claiming verification. Redownload kicked off in background to close this out
       for real.
-- [ ] **FLUX.1-schnell** — same: re-run the Round 9 repro command from `docs/056`, confirm the
-      tiling artifact is still gone.
+- [x] **FLUX.1-schnell** — 2026-09-18: re-ran `FluxRealWeightsTests` (real Vulkan GPU weights,
+      full CLIP-L+T5-XXL+VAE pipeline). Warm pass 198.4s -- matches `PerformanceLeague.md`'s
+      documented 198.1s within noise, no regression. Output PNG regenerated (444KB, non-degenerate)
+      confirming the Round 9 T5-padding fix still holds.
 - [ ] **Z-Image-Turbo** — 2026-09-18: `ZImageRealWeightsTests` looks for a standalone
       `z_image_turbo-Q4_0.gguf` in `models/` root, which isn't present -- current on-disk layout
       is `models/z-image-turbo/{tokenizer,vae}/` only, missing the main DiT/text-encoder weights.
