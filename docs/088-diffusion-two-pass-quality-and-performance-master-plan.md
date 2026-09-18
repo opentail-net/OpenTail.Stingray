@@ -126,10 +126,13 @@ worse than no status.
       (156.2s warm/181.3s cold -- consistent with or faster than prior `PerformanceLeague.md`
       figures, no perf regression) 512×512/20-step outputs are clearly prompt-relevant (wooden
       table + red apple shapes + foliage), not noise -- same failure class as FLUX.1's Round 9 T5-
-      padding fix. Not fully closed: CPU output is coherent-but-not-photorealistic (unclear if a
-      smaller remaining bug or this checkpoint's real ceiling), and a multi-seed sweep with real
-      conditioning hasn't been done yet to confirm the original "seed-dependent" framing is also
-      resolved -- but the core failure mode looks fixed. README/`docs/086` updated.
+      padding fix. **Follow-up, same day: ran a second independent seed (`--seed 7`, real
+      conditioning via `stingray image` CLI) -- also clearly coherent/non-noise (apple-red shapes,
+      foliage, table texture; 382.7s).** 2/2 seeds tested with real conditioning are coherent vs.
+      0/3 with placeholder conditioning -- the original "seed-dependent" framing looks like it was
+      actually conditioning-dependent, not a genuine per-seed lottery. Not fully closed: CPU output
+      is coherent-but-not-photorealistic (unclear if a smaller remaining bug or this checkpoint's
+      real ceiling), and only 2 seeds checked (not an exhaustive sweep). README/`docs/086` updated.
 
 ### 1c. 🔴 — real, unresolved regressions/bugs, higher-risk, do not skip
 - [ ] **Wan 2.1/2.2 Video** — persistent, still-unlocated grid artifact. Every individual

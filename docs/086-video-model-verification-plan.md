@@ -134,9 +134,17 @@ as FLUX.1's Round 9 T5-padding fix (`docs/056`), just discovered via "actually u
 that was already there" rather than a numeric diff. Real remaining open questions, not yet closed:
 (a) the CPU output is visibly less clean/more abstract than the Vulkan output from the same
 weights/prompt -- not yet determined whether that's a real remaining bug or expected precision
-variance; (b) this hasn't been re-swept across multiple seeds with real conditioning to confirm the
-original "seed-dependent" framing is also resolved, not just lucky on this one seed. README and
+variance; (b) only 2 seeds checked so far, not an exhaustive sweep. README and
 `PerformanceLeague.md` updated with this finding.
+
+**Same-day follow-up: seed 7 also checked, also coherent.** Ran a second independent seed
+(`--seed 7`, real conditioning auto-detected via `stingray image` CLI's `models/ltx-t5/`
+detection) -- output is again clearly non-noise and prompt-relevant (apple-red round shapes,
+green foliage, brown table texture; `docs/diffusion-samples/ltx_video_apple_vulkan_seed7_20step.png`,
+382.7s). **2 of 2 seeds tested with real conditioning are coherent, versus 0 of 3 with placeholder
+conditioning** -- resolves open question (b) above: the original "seed-dependent instability"
+framing from 2026-09-11 looks like it was actually a conditioning-dependent one all along, not a
+genuine per-seed lottery. Question (a) (CPU-vs-Vulkan output quality gap) remains open.
 
 ## 3. FLUX.2 / FLUX.3 — GPU-required real-weight verification
 
