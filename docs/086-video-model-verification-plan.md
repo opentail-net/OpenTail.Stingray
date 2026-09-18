@@ -326,6 +326,19 @@ conditioning could itself be part of what's destabilizing convergence at this ch
 below-trained-regime resolutions). Worth trying before assuming the bug lives purely in RoPE/
 VAE/scheduler math that's already golden-verified component-by-component.
 
+### 2026-09-18: DeepSeek-V3.2 — checked checkpoint availability, genuinely disk-blocked
+
+A real GGUF now exists (`unsloth/DeepSeek-V3.2-GGUF`, didn't exist when the README was last updated
+per the extended-backlog note above) — checked its smallest available quant (`UD-IQ1_S`, the most
+aggressive 1-bit dynamic quant Unsloth publishes) directly via the HF API before assuming it fits:
+**4 shards totaling 184.1GB** (49.98 + 48.94 + 49.55 + 35.66 GB). `F:` had 46G free at check time;
+`K:\_other_models` (added this session specifically as extra headroom) has 182G free — even that
+doesn't clear 184GB, and this ignores that a model this size also needs to actually load into
+RAM/VRAM to run inference, not just fit on disk. **Confirmed genuinely disk/RAM-constrained on this
+machine, not simply forgotten** — matches the ChatGPT-relayed assessment's own read on this item
+without needing to guess. Not pursuing further this pass; would need either a much smaller
+official quant (none published smaller than 184GB as of this check) or different hardware.
+
 ### 2026-09-18: FLUX.2/FLUX.3 — real scope correction (see section 3 above)
 
 Checked `Flux2DiT.cs`/`Flux3DiT.cs` before attempting anything: zero `IWeightLoader` wiring in
