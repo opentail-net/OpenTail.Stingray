@@ -115,6 +115,29 @@ README's LTX-Video row is still describing the pre-fix "1 of 6 runs coherent" fi
    open question the fix's own doc left unanswered.
 4. Update README's LTX-Video row and `docs/055`/`docs/077` with the real, dated, post-fix finding.
 
+### 2026-09-18 UPDATE: real T5 conditioning actually run for the first time -- output is coherent, not noise
+
+Every prior run in this section's history (including the "3 fresh real runs, 0/3 coherent"
+re-verification logged just above this) used PLACEHOLDER text conditioning -- no local T5-v1.1-XXL
+checkpoint was believed to exist. That premise was wrong: `models/ltx-t5/` was already fully
+downloaded (real sharded text encoder + tokenizer), just never actually exercised, because the one
+test class that wires real conditioning (`LtxVideoRealWeightsTests`) hadn't been run against real
+weights recently. Ran it for real this pass: all 5 facts pass, GPU/CPU parity cosine=1.000000, and
+both the CPU (399.5s) and Vulkan (156.2s warm/181.3s cold -- faster than the prior GPU-residency
+figures, no perf regression) 512×512/20-step outputs are clearly prompt-relevant (recognizable
+wooden table + red apple shapes + foliage on Vulkan; more abstract but still clearly
+apple/foliage-colored on CPU), not the pure noise every placeholder-conditioning run produced.
+
+**This strongly suggests the "only 1 of 6/instability" correctness item tracked since 2026-09-11
+was largely or entirely a missing-real-text-conditioning artifact** -- the exact same failure class
+as FLUX.1's Round 9 T5-padding fix (`docs/056`), just discovered via "actually use the checkpoint
+that was already there" rather than a numeric diff. Real remaining open questions, not yet closed:
+(a) the CPU output is visibly less clean/more abstract than the Vulkan output from the same
+weights/prompt -- not yet determined whether that's a real remaining bug or expected precision
+variance; (b) this hasn't been re-swept across multiple seeds with real conditioning to confirm the
+original "seed-dependent" framing is also resolved, not just lucky on this one seed. README and
+`PerformanceLeague.md` updated with this finding.
+
 ## 3. FLUX.2 / FLUX.3 — GPU-required real-weight verification
 
 Both have real code (`src/OpenTail.Stingray.Diffusion/Flux2`/`Flux3`: DiT, RoPE, params, pipeline;

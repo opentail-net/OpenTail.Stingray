@@ -111,14 +111,19 @@ worse than no status.
       substantial (~16GB+) download needed before this item can proceed; not started this pass to
       avoid contending with the SDXL-Turbo download / Qwen Image's own pending redownload already
       queued.
-- [ ] **LTX-Video** — every individual component golden-verified, but full end-to-end convergence
-      is real-bug-blocked and seed-dependent (0/3 coherent as of the 2026-09-18 re-check). The
-      `flipSinToCos` fix was real but insufficient. Next real step per `docs/086`: a step-by-step
-      multi-step Euler trajectory diff against `examples/diffusers`' actual
-      `pipeline_ltx_video.py`, not another structural read-through (structural read-throughs have
-      now been tried and exhausted twice on this exact bug, matching FLUX.1's own Round 6-8
-      experience before the real T5-padding bug was found in Round 9 by a *different kind* of
-      check — take the hint, do a numeric diff, not a fourth structural read).
+- [x] **LTX-Video — MAJOR FINDING, 2026-09-18: the "pure noise" instability was (largely/entirely)
+      a missing-real-text-conditioning artifact.** Every prior noise-producing run in this item's
+      history used placeholder (zero/mock) text conditioning; a real local T5-v1.1-XXL checkpoint
+      (`models/ltx-t5/`) turned out to already be downloaded but never actually exercised via
+      `LtxVideoRealWeightsTests` (which has always wired real conditioning) until this pass. Ran it
+      for real: all 5 tests pass, GPU/CPU parity cosine=1.000000, and both CPU (399.5s) and Vulkan
+      (156.2s warm/181.3s cold -- consistent with or faster than prior `PerformanceLeague.md`
+      figures, no perf regression) 512×512/20-step outputs are clearly prompt-relevant (wooden
+      table + red apple shapes + foliage), not noise -- same failure class as FLUX.1's Round 9 T5-
+      padding fix. Not fully closed: CPU output is coherent-but-not-photorealistic (unclear if a
+      smaller remaining bug or this checkpoint's real ceiling), and a multi-seed sweep with real
+      conditioning hasn't been done yet to confirm the original "seed-dependent" framing is also
+      resolved -- but the core failure mode looks fixed. README/`docs/086` updated.
 
 ### 1c. 🔴 — real, unresolved regressions/bugs, higher-risk, do not skip
 - [ ] **Wan 2.1/2.2 Video** — persistent, still-unlocated grid artifact. Every individual
