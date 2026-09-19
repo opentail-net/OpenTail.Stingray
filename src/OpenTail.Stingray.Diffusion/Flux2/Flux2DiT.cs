@@ -713,14 +713,13 @@ public sealed class Flux2DiT : IDisposable
         visionOps.AdaLNModulate(ws.NormedTxt, ws.TxtHidden, ws.TxtMod, nTxt, d, shiftOffset: 3 * d, scaleOffset: 4 * d, isRmsNorm: false, eps: 1e-6f);
         visionOps.AdaLNModulate(ws.NormedImg, ws.ImgHidden, ws.ImgMod, nImg, d, shiftOffset: 3 * d, scaleOffset: 4 * d, isRmsNorm: false, eps: 1e-6f);
 
-        // 10. SiLU-gated FFN (NOT GEGLU): up-project to 2*mlpHidden, gate+multiply, down-project.
+        // 10. SiLU-gated FFN: up-project to 2*mlpHidden, then fused down-GEMM with on-the-fly SiLU activation.
+        //     Eliminates 2 SiluGateMul dispatches and the intermediate ws.MlpGatedBuf round-trip.
         visionOps.Sgemm(ws.MlpUpBuf, ws.NormedTxt, bw.TxtMlp0Weight, nTxt, d, 2 * mlpHidden);
-        visionOps.SiluGateMul(ws.MlpGatedBuf, ws.MlpUpBuf, nTxt, mlpHidden);
-        visionOps.Sgemm(ws.OutTxt, ws.MlpGatedBuf, bw.TxtMlp2Weight, nTxt, mlpHidden, d);
+        visionOps.SgemmSiluGate(ws.OutTxt, ws.MlpUpBuf, bw.TxtMlp2Weight, nTxt, mlpHidden, d);
 
         visionOps.Sgemm(ws.MlpUpBuf, ws.NormedImg, bw.ImgMlp0Weight, nImg, d, 2 * mlpHidden);
-        visionOps.SiluGateMul(ws.MlpGatedBuf, ws.MlpUpBuf, nImg, mlpHidden);
-        visionOps.Sgemm(ws.OutImg, ws.MlpGatedBuf, bw.ImgMlp2Weight, nImg, mlpHidden, d);
+        visionOps.SgemmSiluGate(ws.OutImg, ws.MlpUpBuf, bw.ImgMlp2Weight, nImg, mlpHidden, d);
 
         // 11. Gated residual (gate2, offset 5*d).
         visionOps.ScaleGateAdd(ws.TxtHidden, ws.OutTxt, ws.TxtMod, nTxt, d, gateOffset: 5 * d);

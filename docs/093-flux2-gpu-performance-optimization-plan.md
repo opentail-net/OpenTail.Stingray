@@ -177,15 +177,26 @@ own evidence disagreed or added nuance)
 ### Phase 2 — kernel fusion (medium effort, real shader-authoring work, do only after Phase 0
 data justifies it)
 
-- [ ] **Fuse `SiluGateMul` into the FFN down-GEMM's activation-tile load** (the review's own
-      top-priority fusion pick, with real reasoning: this intermediate is `n×18432` — the LARGEST
-      materialized intermediate in the block, ~36MiB at FP16 for the image stream alone — versus
-      `ScaleGateAdd`'s `n×6144`, a much smaller, lower-payoff fusion target). Real implementation
-      note from the review, worth preserving: don't attempt to fuse the UP-gemm and DOWN-gemm into
-      one giant kernel (the up-projection's full `1024×36864` output can't cheaply live in
-      registers/LDS) — instead, modify the down-GEMM's own tile-loading code to compute
-      `silu(gate)*value` from the up-projection's raw output AS it loads each activation tile, never
-      materializing the gated result as its own buffer.
+- [x] **Step 4 DONE 2026-09-19: Fuse `SiluGateMul` into the FFN down-GEMM's activation-tile load (`SgemmSiluGate`).**
+      - **Implementation**: Created custom `SgemmSiluGateF16` compute shader in `Shaders.cs` (64x128 output
+        tile per workgroup, 32 K per step, collaborative loading of activation tile A computing `silu(gate)*val`
+        on the fly into LDS `tileA_T` using vectorized `vec4` loads and scalar fallback).
+        Regenerated SPIR-V table via `tools/SpirvGen --only SgemmSiluGateF16` (slot `_s142`, 165,052 bytes).
+        Verified via `VulkanPrecompiledShaderTests` with `STINGRAY_RUN_HEAVY_TESTS=1` (3/3 passed).
+      - **API**: Added `SgemmSiluGate` to `IVisionOpsBackend` and `VulkanBackend` (with fallback to unfused
+        `SiluGateMul` + `Sgemm` if FP16 shader extensions are not present).
+      - **Parity verification**: Created `Flux2SgemmSiluGateGpuTests` testing synthetic, tile-multiple,
+        unaligned, and large-scale matrices against the unfused GPU sequence (`SiluGateMul` + `Sgemm`),
+        achieving bit-exact output (`maxDiff = 0.0000E+000`, `relErr = 0.0000E+000`).
+      - **Wiring & Parity**: Wired into `Flux2DiT.DoubleBlockGpu` for both text and image streams.
+        Verified via `Flux2DoubleBlockGpuParityTests` (img cosine=0.9999706, txt cosine=0.9999590 vs CPU).
+        Verified via `Flux2GpuWiredEndToEndTests` (full pipeline generated image in 168.5s).
+      - **Measured benchmark impact (`Flux2DoubleBlockGpuBenchmarkTests`)**:
+        8-block double-stream GPU loop time dropped to **21,603.9ms** unbatched (batch=8: **21,479.8ms**),
+        down from the baseline 22,461-24,668ms (CPU is 17,092.3ms; GPU-to-CPU ratio down to 1.26x from ~1.45x).
+      - **Savings**: Eliminates 2 `SiluGateMul` dispatches + fence waits per block (16 dispatches per pass)
+        and eliminates materialization of the gated intermediate buffer `ws.MlpGatedBuf` (~75.5 MB FP32 /
+        ~37.7 MB FP16 per block, saving >600 MB DRAM traffic per pass).
 - [x] **Step 3 DONE 2026-09-19: Fuse QKV-unpack + QK-RMSNorm + RoPE into one dispatch (`Flux2QkvNormRope`).**
       - **Implementation**: Created custom `Flux2QkvNormRope` compute shader in `Shaders.cs` (64 threads
         per workgroup, collaborative Q/K sum-of-squares reduction in LDS, RMSNorm scaling, GPT-NeoX

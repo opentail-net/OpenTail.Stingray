@@ -1605,6 +1605,7 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
     private ComputePipeline? _bufCopyPipeline;
     private ComputePipeline? _sgemmF32Pipeline;
     private ComputePipeline? _sgemmF16Pipeline;
+    private ComputePipeline? _sgemmSiluGateF16Pipeline;
     private ComputePipeline? _sgemmBf16Pipeline;
     private ComputePipeline? _sgemmFp8Pipeline;
     private ComputePipeline? _matMulTiledQ4KPipeline;   // Path 2 tiled GEMM
@@ -4284,6 +4285,31 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
         DispatchOrRecord(_siluGateMulPipeline, [GetBuffer(input), GetBuffer(output)], groups, &p);
     }
 
+    /// <summary>
+    /// Fused SiLU-gated down-GEMM for FLUX.2:
+    /// C[M, N] = (silu(A[:, :K]) * A[:, K:2K]) × B[N, K]^T
+    /// Computes silu(gate)*val on the fly as activation tile loads into shared memory,
+    /// avoiding materialization of the gated [M, K] intermediate buffer.
+    /// </summary>
+    public unsafe void SgemmSiluGate(Tensor C, Tensor A, Tensor B, int M, int K, int N, int inputRowOffsetElements = 0)
+    {
+        if (A.DType == DType.Float32 && B.DType == DType.Float16 && HasShaderFloat16Int8 && Has16BitStorage)
+        {
+            var p = new SgemmParams { M = (uint)M, N = (uint)N, K = (uint)K, aOffset = (uint)inputRowOffsetElements };
+            uint gx64 = ((uint)M + 63u) / 64u;
+            uint gy128 = ((uint)N + 127u) / 128u;
+            _sgemmSiluGateF16Pipeline ??= new ComputePipeline(this, Shaders.SgemmSiluGateF16, 3,
+                pushConstantSize: sizeof(SgemmParams));
+            DispatchOrRecord(_sgemmSiluGateF16Pipeline, [GetBuffer(A), GetBuffer(B), GetBuffer(C)], gx64, &p, gy128);
+            return;
+        }
+
+        // Fallback: unfused SiluGateMul + Sgemm
+        using var gated = Allocate(TensorShape.D2(M, K));
+        SiluGateMul(gated, A, M, K);
+        Sgemm(C, gated, B, M, K, N, inputRowOffsetElements);
+    }
+
     public void QKNorm(Tensor q, Tensor k, Tensor qScale, Tensor kScale, int nTokens, int numHeads, int headDim, float eps = 1e-5f)
         => QKNorm(q, k, qScale, kScale, nTokens, numHeads, headDim, eps, 0);
 
@@ -4747,6 +4773,7 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
         _bufCopyPipeline?.Dispose();
         _sgemmF32Pipeline?.Dispose();
         _sgemmF16Pipeline?.Dispose();
+        _sgemmSiluGateF16Pipeline?.Dispose();
         _sgemmBf16Pipeline?.Dispose();
         _sgemmFp8Pipeline?.Dispose();
         _dequantQ5KMPipeline?.Dispose();

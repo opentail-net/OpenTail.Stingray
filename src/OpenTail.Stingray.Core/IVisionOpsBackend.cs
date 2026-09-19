@@ -78,6 +78,14 @@ public interface IVisionOpsBackend : IComputeBackend
         => throw new NotSupportedException();
 
     /// <summary>
+    /// Fused SiLU-gated down-GEMM: C[M, N] = (silu(A[:, :K]) * A[:, K:2K]) × B[N, K]^T.
+    /// A is [M, 2*K] activations (gate followed by value), B is [N, K] weights, C is [M, N] output.
+    /// Eliminates materialization of the gated intermediate buffer.
+    /// </summary>
+    void SgemmSiluGate(Tensor C, Tensor A, Tensor B, int M, int K, int N, int inputRowOffsetElements = 0)
+        => throw new NotSupportedException();
+
+    /// <summary>
     /// Per-head QK Normalization in VRAM:
     /// q_h = RMSNorm(q_h) * qScale, k_h = RMSNorm(k_h) * kScale
     /// </summary>
