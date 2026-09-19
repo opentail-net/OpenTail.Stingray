@@ -128,9 +128,26 @@ own evidence disagreed or added nuance)
       substantial compute op over the full 1280-token sequence, not yet benchmarked in isolation).**
       This makes Phase 1 (remove `FluxSliceImg`) and Phase 2 (fuse the utility-dispatch chains) the
       correctly-prioritized next real work — exactly where the plan's own decision rule said to
-      look if GEMM throughput came back clean. A real next diagnostic, not yet done: benchmark
-      `MultiHeadAttentionTiled` in isolation at the production 1280-token/48-head/128-headDim shape
-      to determine how much of the remaining gap is attention itself vs. the smaller utility ops.
+      look if GEMM throughput came back clean.
+
+- [x] **Step 1 DONE 2026-09-19: benchmark `MultiHeadAttentionTiled` in isolation at production shape.**
+      New `Flux2GpuAttentionBenchmarkTests.JointAttention_ReportsThroughputAndTiming` (production
+      shape: `1280` tokens = 1024 img + 256 txt, `48` heads, `headDim=128`, dim=6144, 5 timed trials):
+      best=`459.86ms`, avg=`475.72ms` for 40.27 GFLOP (87.6 GFLOP/s).
+      Summed across all 8 double blocks: **≈3,679ms (best) to 3,806ms (avg)**.
+
+      **Combined arithmetic breakdown of the 22.5s-24.7s double-block loop**:
+      - GEMMs (8 shapes x 8 blocks): ≈16,488ms (~16.5s, 73% of total)
+      - Joint Attention (8 blocks): ≈3,679ms (~3.7s, 16% of total)
+      - **GEMM + Attention combined: ≈20,167ms (~20.2s, ~89-90% of total)**
+      - Remaining utility ops + per-dispatch latency: ≈2.3s - 4.5s (~10-11% of total)
+
+      **Diagnosis**: MultiHeadAttentionTiled accounts for roughly half of the remaining ~6-8s gap.
+      Its ~88 GFLOP/s throughput (vs. GEMM's ~610 GFLOP/s) reflects memory/reduction limits of
+      the tiled online-softmax shader. The remaining ~2.3-4.5s is spread across the ~16 utility
+      dispatches per block (AdaLN, QKV unpack, QKNorm, RoPE, FluxSliceImg, ScaleGateAdd, SiluGateMul).
+      Proceed directly to Step 2 (row-offset Sgemm to eliminate FluxSliceImg) and Phase 2 fusions.
+
 
 ### Phase 1 — cheap, concrete removals (low effort, real, no new shader math)
 
