@@ -206,6 +206,23 @@ worse than no status.
       genuinely different (correct) convention for that model's own reference, not an unfixed
       instance of this bug -- left untouched per CLAUDE.md rule 8 (don't "fix" a verified-working
       port because it looks structurally similar to a bug found elsewhere).
+
+      **2026-09-19: same RoPE-pairing-convention fix that closed Qwen Image applied here too --
+      HunyuanVideoRoPE.cs also delegated to the wrong `SplitHalfRoPE` kernel, confirmed against the
+      real reference (`examples/diffusers`'s `apply_rotary_emb`, the default `use_real_unbind_dim
+      =-1` branch, explicitly commented "Used for flux, cogvideox, hunyuan-dit") -- fixed by
+      delegating to the shared `Primitives.InterleavedRoPE` kernel (docs/092). Re-ran the real
+      coherence check (256×256/4-step, real LLaMA-3 conditioning, 566.7s, alone with no other
+      heavy process running, to rule out the memory-contention issue found for Qwen Image's own
+      re-verification): **output is UNCHANGED -- still pure visual noise, pixel-pattern
+      indistinguishable from every prior attempt.** Unlike Qwen Image (where this exact class of
+      fix fully resolved the artifact) and unlike the earlier flipSinToCos fix (which also had zero
+      visible effect here), this RoPE-pairing fix is real and correct per the reference but is NOT
+      the cause of HunyuanVideo's noise. Two real, well-evidenced fixes now applied with zero
+      visible effect -- the actual bug is somewhere the noise's total dominance is masking, not in
+      either of these two (now-eliminated) candidates. Real next step: the patchify/AdaLN-
+      modulation/VAE-tiling playbook, still not yet started for this model specifically -- both
+      RoPE and timestep-embedding candidates are now closed off, narrowing the remaining search.
 - [x] **LTX-Video — MAJOR FINDING, 2026-09-18: the "pure noise" instability was (largely/entirely)
       a missing-real-text-conditioning artifact.** Every prior noise-producing run in this item's
       history used placeholder (zero/mock) text conditioning; a real local T5-v1.1-XXL checkpoint
