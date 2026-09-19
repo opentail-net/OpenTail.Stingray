@@ -164,16 +164,31 @@ architecture derivation) — do not design a new GPU-residency pattern from scra
    **DONE 2026-09-19**, machine-precision match confirmed on real hardware (see blocker 3 above).
 4. ~~Author the new SiLU-gated-FFN GPU shader~~ — **DONE 2026-09-19**, machine-precision match
    confirmed on real hardware, zero regression to FLUX.1's GPU path (see blocker 2 above).
-5. Build `Flux2GpuWorkspace.cs` (double-block-scale buffers only — `nImg`/`nTxt`/`d`-sized
-   activation/attention/modulation buffers, following `FluxGpuWorkspace.cs`'s structure) and wire a
-   `Flux2DiT.ForwardGpu` that runs `img_in`/`txt_in` projection + the 8 double blocks on GPU (using
-   `Flux2GpuWeights` with `includeSingleBlocks: false`), then downloads to CPU `float[]` for the
-   remaining 48 single blocks + final layer via the already-working, unchanged CPU path.
-6. Write a real GPU-vs-CPU parity test comparing img/txt hidden states after the double-block loop
-   (before the single-block CPU handoff) — do not trust any output or timing until this passes.
-7. Get a real, measured single-step GPU-vs-CPU timing comparison on THIS machine's iGPU — per the
-   gating conditions, partial (double-block-only) residency could still lose to CPU on this
-   hardware; measure, don't assume (CLAUDE.md rule 13).
+5. ~~Build `Flux2GpuWorkspace.cs`~~ — **DONE 2026-09-19** (`Flux2GpuWorkspace.cs`, commit
+   `48fffe1`). ~~Wire a `Flux2DiT.ForwardGpu` that runs img_in/txt_in projection + the 8 double
+   blocks on GPU~~ — the double-block loop itself is done (`Flux2DiT.DoubleBlockGpu` +
+   `ComputeSharedDoubleModulationGpu`, block-granularity methods mirroring FLUX.1's own
+   `DoubleBlockGpu`/`SingleBlockGpu` internal-method pattern rather than one monolithic
+   `ForwardGpu`) — **img_in/txt_in projection and the CPU handoff for the remaining 48 single
+   blocks + final layer are NOT yet wired into a full pipeline entry point**; only the double-block
+   math itself has been built and verified so far (see step 6).
+6. ~~Write a real GPU-vs-CPU parity test~~ — **DONE 2026-09-19**
+   (`Flux2DoubleBlockGpuParityTests.cs`, commit pending). Real weights
+   (`flux2-dev-Q4_K_S.gguf`), small synthetic scale (16 image tokens, 8 text tokens), 8 real double
+   blocks looped on both CPU (`ApplyDoubleBlockReal`, made `internal`) and GPU (`DoubleBlockGpu` +
+   `ComputeSharedDoubleModulationGpu`, both new `internal` methods). **Result: cosine=0.9999706
+   (img) / 0.9999590 (txt), maxDiff=0.85/3.62** — a genuinely strong match; the residual diff is
+   consistent with expected FP16(GPU)-vs-FP32(CPU) precision compounding across 8 residual blocks
+   at large activation magnitudes, not a structural bug (same order of divergence FLUX.1's own
+   `FluxGpuParityTests` sees at this precision gap). **The double-block GPU math is now verified
+   correct.** Test runtime: 46.4s (dominated by real weight load/dequant, not the tiny synthetic
+   forward pass itself).
+7. Get a real, measured single-step GPU-vs-CPU timing comparison on THIS machine's iGPU, at
+   PRODUCTION token counts (not the tiny synthetic scale used for the correctness check above) —
+   per the gating conditions, partial (double-block-only) residency could still lose to CPU on this
+   hardware, especially since the CPU path already benefits from `QuantizedWeightCache`'s
+   pre-transposed Q4Kx8 SIMD matmuls while the GPU path currently uploads FP16-expanded weights;
+   measure, don't assume (CLAUDE.md rule 13). NOT YET DONE — the real next step.
 8. If GPU wins: consider whether the SiLU-gated shader from step 4 or the `isRmsNorm=false` path
    from step 3 need the same optimization sequence FLUX.1 went through (matrix-vector fast paths,
    command-buffer batching) — don't assume the win transfers automatically.

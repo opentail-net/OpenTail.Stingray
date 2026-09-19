@@ -75,7 +75,9 @@ public sealed class Flux2GpuWorkspace : IDisposable
         int mlpHidden,
         int headDim,
         ReadOnlySpan<float> ropeCosCompact,
-        ReadOnlySpan<float> ropeSinCompact)
+        ReadOnlySpan<float> ropeSinCompact,
+        ReadOnlySpan<float> initialImgHidden = default,
+        ReadOnlySpan<float> initialTxtHidden = default)
     {
         _backend = backend;
         int nSeq = nImg + nTxt;
@@ -88,8 +90,16 @@ public sealed class Flux2GpuWorkspace : IDisposable
         int maxStream = Math.Max(nImg, nTxt);
         int nPairs = headDim / 2;
 
-        ImgHidden = backend.Allocate(TensorShape.D2(nImg, d));
-        TxtHidden = backend.Allocate(TensorShape.D2(nTxt, d));
+        // ImgHidden/TxtHidden are uploaded directly from the caller's initial data when supplied
+        // (there is no generic "upload into an existing tensor" op on IComputeBackend, only
+        // Upload which allocates fresh) -- falls back to a zero-initialized buffer of the right
+        // shape otherwise.
+        ImgHidden = initialImgHidden.IsEmpty
+            ? backend.Allocate(TensorShape.D2(nImg, d))
+            : backend.Upload(initialImgHidden, TensorShape.D2(nImg, d), exact: true);
+        TxtHidden = initialTxtHidden.IsEmpty
+            ? backend.Allocate(TensorShape.D2(nTxt, d))
+            : backend.Upload(initialTxtHidden, TensorShape.D2(nTxt, d), exact: true);
         NormedImg = backend.Allocate(TensorShape.D2(nImg, d));
         NormedTxt = backend.Allocate(TensorShape.D2(nTxt, d));
         QkvTxt = backend.Allocate(TensorShape.D2(nTxt, d * 3));

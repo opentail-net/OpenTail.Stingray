@@ -228,7 +228,7 @@ public sealed class Flux2DiT : IDisposable
     /// `forward()`: `vec = time_in(timestep_embedding(t,256)); if guidance: vec += guidance_in(...)`.
     /// FLUX.2 has NO pooled CLIP conditioning (VecInDim=0) -- pooledEmbed is unused when real
     /// weights are present.</summary>
-    private float[] ComputeModulationVec(float timestep, float[] pooledEmbed, float guidance)
+    internal float[] ComputeModulationVec(float timestep, float[] pooledEmbed, float guidance)
     {
         int d = _p.HiddenSize;
         if (_weights == null)
@@ -267,7 +267,7 @@ public sealed class Flux2DiT : IDisposable
 
     /// <summary>Real `Modulation.forward`: SiLU(vec) -> Linear(dim, multiplier*dim) -> chunk into
     /// `multiplier` pieces of width `dim` each.</summary>
-    private float[][] ComputeModulation(string weightName, float[] vec, int dim, int multiplier)
+    internal float[][] ComputeModulation(string weightName, float[] vec, int dim, int multiplier)
     {
         var silu = (float[])vec.Clone();
         DiffusionOps.SiluInPlace(silu);
@@ -300,7 +300,9 @@ public sealed class Flux2DiT : IDisposable
     /// split the attention output back per-stream, then a separate gated-residual + separate
     /// gated-FFN (SiLU-gated, mlp_ratio=3.0) per stream.
     /// </summary>
-    private void ApplyDoubleBlockReal(
+    /// <summary>Internal (not private) so <c>Flux2DoubleBlockGpuParityTests</c> can call it
+    /// directly per-block, matching <see cref="DoubleBlockGpu"/>'s test structure exactly.</summary>
+    internal void ApplyDoubleBlockReal(
         int layerIdx,
         float[] img, float[] txt,
         float[][] modImg, float[][] modTxt,
@@ -528,4 +530,101 @@ public sealed class Flux2DiT : IDisposable
     }
 
     private static void RmsNorm(Span<float> tensor, int dim) => DiffusionOps.RmsNormNoAffinePostSqrtEps(tensor, dim);
+
+    // ── GPU double-block-only residency (docs/091, 2026-09-19) ─────────────────────────────
+
+    /// <summary>
+    /// Computes the SHARED double-stream modulation vectors (real finding, docs/087: ONE set,
+    /// reused by every double block -- NOT per-block AdaLN like FLUX.1). Must be called once per
+    /// step, before the double-block GPU loop. <paramref name="siluVecGpu"/> is `SiLU(vec)`
+    /// pre-computed and uploaded by the caller (a `[1,d]` vector -- cheap enough on the CPU side
+    /// that a dedicated GPU SiLU kernel isn't warranted for this single small vector, unlike the
+    /// per-token gated-FFN activation which does need one, see <c>SiluGateMul</c>).
+    /// </summary>
+    internal void ComputeSharedDoubleModulationGpu(
+        IVisionOpsBackend visionOps,
+        Flux2GpuWorkspace ws,
+        Flux2GpuWeights gw,
+        OpenTail.Stingray.Core.Tensor siluVecGpu)
+    {
+        int d = _p.HiddenSize;
+        visionOps.Sgemm(ws.ImgMod, siluVecGpu, gw.DoubleModImgWeight, 1, d, d * 6);
+        visionOps.Sgemm(ws.TxtMod, siluVecGpu, gw.DoubleModTxtWeight, 1, d, d * 6);
+    }
+
+    /// <summary>
+    /// Real DoubleStreamBlock GPU forward (mirrors <see cref="ApplyDoubleBlockReal"/>'s CPU math
+    /// exactly): modulate img/txt separately using the SHARED <paramref name="ws"/>.ImgMod/TxtMod
+    /// (computed once by <see cref="ComputeSharedDoubleModulationGpu"/>, not per-block) -> QKV
+    /// projections -> per-stream QK-RMSNorm -> concat q/k/v as [txt, img] -> 4-axis RoPE on the
+    /// FULL concatenated sequence (both streams are rotated in FLUX.2, unlike HunyuanVideo,
+    /// confirmed 2026-09-19 against `model.py`'s `_prepare_qkv`) -> joint attention -> split back
+    /// -> proj + gated residual -> re-modulate -> SiLU-gated FFN (<c>SiluGateMul</c>, not GEGLU) ->
+    /// proj + gated residual. No bias terms anywhere (FLUX.2's linears are bias-free).
+    /// </summary>
+    internal void DoubleBlockGpu(
+        Flux2GpuWorkspace ws,
+        Flux2GpuWeights.DoubleBlockGpuWeights bw,
+        IVisionOpsBackend visionOps,
+        IImageOpsBackend imageOps)
+    {
+        int d = _p.HiddenSize;
+        int mlpHidden = (int)(d * _p.MlpRatio);
+        int nImg = ws.NumImg, nTxt = ws.NumTxt, nSeq = ws.NumSeq;
+        int nh = _p.NumHeads, hd = _p.HeadDim;
+
+        // 1. Modulate (affine-free LayerNorm, isRmsNorm: false -- verified 2026-09-19,
+        //    Flux2AdaLNModulateLayerNormGpuTests) using the shared shift1/scale1 (offsets 0/d).
+        visionOps.AdaLNModulate(ws.NormedImg, ws.ImgHidden, ws.ImgMod, nImg, d, shiftOffset: 0, scaleOffset: d, isRmsNorm: false, eps: 1e-6f);
+        visionOps.AdaLNModulate(ws.NormedTxt, ws.TxtHidden, ws.TxtMod, nTxt, d, shiftOffset: 0, scaleOffset: d, isRmsNorm: false, eps: 1e-6f);
+
+        // 2. QKV projections (separate weights per stream, bias-free).
+        visionOps.Sgemm(ws.QkvImg, ws.NormedImg, bw.ImgAttnQkv, nImg, d, d * 3);
+        visionOps.Sgemm(ws.QkvTxt, ws.NormedTxt, bw.TxtAttnQkv, nTxt, d, d * 3);
+
+        // 3. Unpack into the combined [txt, img] Q/K/V buffers (txt-first, matching the CPU
+        //    reference's ConcatSequences(txtQ, imgQ, ...) order exactly).
+        visionOps.FluxUnpackQkv(ws.QkvTxt, ws.Q, ws.K, ws.V, nTxt, d, dstTokenOffset: 0);
+        visionOps.FluxUnpackQkv(ws.QkvImg, ws.Q, ws.K, ws.V, nImg, d, dstTokenOffset: nTxt);
+
+        // 4. Per-stream QK-RMSNorm (separate scales per stream, applied over each stream's own
+        //    token range within the combined buffer).
+        visionOps.QKNorm(ws.Q, ws.K, bw.TxtQkNormQScale, bw.TxtQkNormKScale, nTxt, nh, hd, eps: 1e-6f, startToken: 0);
+        visionOps.QKNorm(ws.Q, ws.K, bw.ImgQkNormQScale, bw.ImgQkNormKScale, nImg, nh, hd, eps: 1e-6f, startToken: nTxt);
+
+        // 5. 4-axis RoPE on the FULL concatenated sequence (real reference behavior -- text tokens
+        //    are rotated too, unlike HunyuanVideo). ws.RopeCos/RopeSin already cover [0, nSeq).
+        visionOps.Flux2DRoPE(ws.Q, ws.K, ws.RopeCos, ws.RopeSin, startToken: 0, tokenCount: nSeq, nh, hd);
+
+        // 6. Joint attention over the full sequence.
+        imageOps.MultiHeadAttentionTiled(ws.AttnOut, ws.Q, ws.K, ws.V, nSeq, nSeq, nh, hd);
+
+        // 7. Split back: txt occupies AttnOut's first nTxt rows directly (no copy needed, row-major
+        //    contiguous); img is sliced out via FluxSliceImg into NormedImg as scratch.
+        visionOps.FluxSliceImg(ws.AttnOut, ws.NormedImg, nTxt, nImg, d);
+
+        visionOps.Sgemm(ws.OutTxt, ws.AttnOut, bw.TxtAttnProjWeight, nTxt, d, d);
+        visionOps.Sgemm(ws.OutImg, ws.NormedImg, bw.ImgAttnProjWeight, nImg, d, d);
+
+        // 8. Gated residual (gate1, offset 2*d).
+        visionOps.ScaleGateAdd(ws.TxtHidden, ws.OutTxt, ws.TxtMod, nTxt, d, gateOffset: 2 * d);
+        visionOps.ScaleGateAdd(ws.ImgHidden, ws.OutImg, ws.ImgMod, nImg, d, gateOffset: 2 * d);
+
+        // 9. Re-modulate for the FFN (shift2/scale2, offsets 3*d/4*d).
+        visionOps.AdaLNModulate(ws.NormedTxt, ws.TxtHidden, ws.TxtMod, nTxt, d, shiftOffset: 3 * d, scaleOffset: 4 * d, isRmsNorm: false, eps: 1e-6f);
+        visionOps.AdaLNModulate(ws.NormedImg, ws.ImgHidden, ws.ImgMod, nImg, d, shiftOffset: 3 * d, scaleOffset: 4 * d, isRmsNorm: false, eps: 1e-6f);
+
+        // 10. SiLU-gated FFN (NOT GEGLU): up-project to 2*mlpHidden, gate+multiply, down-project.
+        visionOps.Sgemm(ws.MlpUpBuf, ws.NormedTxt, bw.TxtMlp0Weight, nTxt, d, 2 * mlpHidden);
+        visionOps.SiluGateMul(ws.MlpGatedBuf, ws.MlpUpBuf, nTxt, mlpHidden);
+        visionOps.Sgemm(ws.OutTxt, ws.MlpGatedBuf, bw.TxtMlp2Weight, nTxt, mlpHidden, d);
+
+        visionOps.Sgemm(ws.MlpUpBuf, ws.NormedImg, bw.ImgMlp0Weight, nImg, d, 2 * mlpHidden);
+        visionOps.SiluGateMul(ws.MlpGatedBuf, ws.MlpUpBuf, nImg, mlpHidden);
+        visionOps.Sgemm(ws.OutImg, ws.MlpGatedBuf, bw.ImgMlp2Weight, nImg, mlpHidden, d);
+
+        // 11. Gated residual (gate2, offset 5*d).
+        visionOps.ScaleGateAdd(ws.TxtHidden, ws.OutTxt, ws.TxtMod, nTxt, d, gateOffset: 5 * d);
+        visionOps.ScaleGateAdd(ws.ImgHidden, ws.OutImg, ws.ImgMod, nImg, d, gateOffset: 5 * d);
+    }
 }
