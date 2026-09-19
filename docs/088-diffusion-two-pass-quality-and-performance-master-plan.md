@@ -29,10 +29,20 @@ the next item, since a status can change mid-loop):**
    exists (unlike LTX-Video's), and it's not yet confirmed whether the remaining CPU-vs-C++ perf
    gap (mostly the DiT denoise loop) has any correctness angle left or is purely Pass 2 work.
 3. **SD3/3.5** — 🟡 open, real coherent non-photorealistic structure achieved (536.4s CPU,
-   256×256/20-step, 11.17x slower than C++'s 48.01s), but **never numerically golden-verified**
-   against a reference — this is real, concrete, doable work (build a golden fixture from
-   `examples/diffusers`/`examples/stable-diffusion.cpp` at a fixed seed/step, compare tensor-level,
-   not just eyeball the image) that this item has been missing since 2026-09-05.
+   256×256/20-step, 11.17x slower than C++'s 48.01s). **2026-09-19 correction: this section's
+   "never numerically golden-verified" framing was itself stale** — `Sd3TimestepEmbedParityTests.cs`
+   (verifying `MMDiTModel.ComputeTimeAndPooledEmbedding`, the single conditioning-vector input every
+   joint block's AdaLN depends on, same class of check as FLUX.1's new one above) already existed
+   with a real fixture (`tests/fixtures/sd3_timestep_embed/`) but had never been re-confirmed
+   passing after the 2026-09-05 correctness fixes. Re-ran it for real (`STINGRAY_SD3_DIT_PATH` set
+   to the real `sd3.5_medium-Q4_K_M.gguf`): **passes, 0.499s.** This closes the conditioning-vector
+   piece specifically. **Still genuinely open**: no block-level or full-DiT-output golden fixture
+   exists for SD3.5 (unlike LTX-Video's `TestData/LtxGolden/manifest.json`) — the dual-attention
+   MMDiT-X extension, AdaLN gating, and unpatchify math (all fixed 2026-09-05 by reasoning against
+   source, never numerically confirmed) remain unverified at the tensor level. That deeper check —
+   reimplementing one real joint-attention block in Python via direct GGUF weight reads (same
+   pattern as `scripts/flux1_vec_embed_ref.py`/`scripts/sd3_timestep_embed_ref.py`) — is real,
+   scoped, doable work, just not done this pass.
 4. **HunyuanVideo** — 🟡 open, unresolved, furthest from done. Text conditioning closed; DiT+VAE
    run end-to-end but output is still pure noise despite 3 independently-confirmed-correct fixes
    (flipSinToCos, RoPE pairing convention, RoPE img/txt ordering — see Pass 1 entry for detail).
