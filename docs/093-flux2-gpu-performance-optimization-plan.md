@@ -97,14 +97,40 @@ own evidence disagreed or added nuance)
       the ~8.3s gap lives in the non-GEMM utility dispatches (Phase 1/2's fusion targets become the
       priority); if they collapse to 250-350 GFLOP/s at these specific shapes, the GEMM shader
       itself is the real problem, ahead of any fusion work on the smaller ops.
-- [ ] **Experiment 3: production-shape GEMM ladder.** Benchmark the actual 8 GEMM shapes this
-      workload uses (`1024×6144×18432`, `256×6144×18432`, `1024×6144×6144`, `256×6144×6144`,
-      `1024×6144×36864`, `256×6144×36864`, `1024×18432×6144`, `256×18432×6144`) with the exact
-      `SgemmF16` shader and buffer layout already in production use — not a generic microbenchmark.
-      Real decision rule: if these land around 500-600 GFLOP/s, GEMM throughput itself is fine and
-      the gap lives elsewhere (utility dispatches, materialization, dispatch count); if they
-      collapse to 250-350 GFLOP/s at these specific shapes, the GEMM shader/dispatch parameters
-      for THIS data size are the real problem, ahead of any fusion work.
+
+      **[x] DONE 2026-09-19 — DEFINITIVE, CLEAN RESULT: GEMM throughput is NOT the problem.**
+      New `Flux2GpuGemmLadderBenchmarkTests.ProductionShapeGemmLadder_ReportsThroughput` (real
+      `Sgemm` dispatch, real FP16 weight upload, exact production shapes, 3 timed trials each,
+      no real weights needed since this only exercises the GEMM shader/buffer path):
+
+      | Op | Shape | Time | GFLOP/s |
+      |---|---|---:|---:|
+      | QKV proj (img) | 1024×6144×18432 | 382.78ms | 605.9 |
+      | QKV proj (txt) | 256×6144×18432 | 90.56ms | 640.2 |
+      | O proj (img) | 1024×6144×6144 | 128.32ms | 602.5 |
+      | O proj (txt) | 256×6144×6144 | 30.52ms | 633.2 |
+      | FFN up (img) | 1024×6144×36864 | 767.14ms | 604.7 |
+      | FFN up (txt) | 256×6144×36864 | 180.37ms | 642.9 |
+      | FFN down (img) | 1024×18432×6144 | 386.08ms | 600.7 |
+      | FFN down (txt) | 256×18432×6144 | 95.18ms | 609.2 |
+
+      **All 8 production shapes land at 600-643 GFLOP/s — matching or exceeding the isolated ~611
+      GFLOP/s microbenchmark, zero degradation at these specific sizes.** Summing all 8 GEMM times
+      gives ≈2061ms per block; ×8 blocks ≈**16,488ms (16.5s) for GEMM compute alone across the
+      whole double-block pass — almost exactly matching both the CPU baseline (16.3-16.6s) and the
+      arithmetic-only theoretical floor (16.4s) independently derived earlier in this doc.**
+
+      **Real conclusion: the GEMMs are essentially optimal already. The ~6-8s gap between this
+      16.5s GEMM-only floor and the measured 22.5-24.7s double-block-pass total is NOT explained by
+      GEMM inefficiency — it must live in the ~16 non-GEMM utility dispatches per block (AdaLN,
+      QKV-unpack, QK-RMSNorm, RoPE, ScaleGateAdd, SiluGateMul) and/or the joint attention dispatch
+      itself (NOT covered by this GEMM ladder — `MultiHeadAttentionTiled`, a real, separate,
+      substantial compute op over the full 1280-token sequence, not yet benchmarked in isolation).**
+      This makes Phase 1 (remove `FluxSliceImg`) and Phase 2 (fuse the utility-dispatch chains) the
+      correctly-prioritized next real work — exactly where the plan's own decision rule said to
+      look if GEMM throughput came back clean. A real next diagnostic, not yet done: benchmark
+      `MultiHeadAttentionTiled` in isolation at the production 1280-token/48-head/128-headDim shape
+      to determine how much of the remaining gap is attention itself vs. the smaller utility ops.
 
 ### Phase 1 — cheap, concrete removals (low effort, real, no new shader math)
 
