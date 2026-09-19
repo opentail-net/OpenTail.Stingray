@@ -171,9 +171,21 @@ the starting picture:
     Not yet implemented — this pass only completed the architecture scoping, not the port itself
     (kept small deliberately while the SD3.5 correctness fix above was still being verified in the
     background; picking this up is the next real chunk of work once that's confirmed).
-- [ ] Build `QwenImageGpuWeights`/`QwenImageGpuWorkspace` + `ForwardGpu`, following the
+- [x] **`QwenImageGpuWeights.cs` built and compiling clean, 2026-09-19** — real tensor names taken
+      directly from `QwenImageModel.cs`'s own confirmed checkpoint keys (per-block `img_mod.1`/
+      `txt_mod.1` AdaLN, separate (non-fused) `to_q`/`to_k`/`to_v`/`add_q_proj`/`add_k_proj`/
+      `add_v_proj`, plain-GELU `img_mlp.net.0.proj`/`net.2` FFN, `norm_out.linear`/`proj_out` final
+      layer) — NOT copy-pasted from FLUX.2's shapes despite using its class as a structural template;
+      every real architectural difference `QwenImageModel`'s own doc comments already found (no fused
+      QKV, per-block not shared modulation, affine-free pre-norm, plain not gated GELU) is reflected.
+      All weights optionally support a bias tensor (`UploadOptionalBias`) since it wasn't yet verified
+      whether this checkpoint's linears carry biases — safe either way.
+- [ ] Build `QwenImageGpuWorkspace` + `ForwardGpu`, mirroring `MMDiTModel.ForwardGpu`'s per-block
+      dispatch structure (AdaLN modulation → affine-free LayerNorm → modulate → QKV projection →
+      per-stream QK-RMSNorm → 3D-RoPE → joint `MultiHeadAttentionTiled` (HeadDim=128, existing kernel)
+      → gated residual → plain-GELU FFN → gated residual), following the
       Upload-once/resident-chain pattern (not per-op dispatch — that mistake has already been made and
-      unmade three times in this codebase, don't repeat it).
+      unmade three times in this codebase, don't repeat it). This is the next real chunk of work.
 - [ ] Real numerical parity test (GPU vs CPU forward, real weights) before any timing claim.
 - [ ] Real end-to-end Vulkan timing vs the existing 348.4s CPU baseline. Document in
       `PerformanceLeague.md`. No C++ reference exists for Qwen Image in `examples/` — note that
