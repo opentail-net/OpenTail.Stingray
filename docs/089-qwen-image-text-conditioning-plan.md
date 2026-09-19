@@ -171,17 +171,39 @@ confirming it was a real bug worth fixing (kept), but it was not the sole cause 
 a horizontal-banding failure signature is a different, still-unidentified bug, not the same
 checkerboard bug persisting.
 
-## Recommended next steps (NOT done this pass)
+## RESOLVED 2026-09-19
 
 7. ~~Re-run the coherence check with the timestep-embedding fix applied.~~ **Done 2026-09-18.**
-   Artifact changed from checkerboard to horizontal banding -- still incoherent. Per the original
-   playbook, move to VAE decoder tiling/upsampling boundaries (`WanVaeDecoder3D`'s Qwen-Image-specific
-   call sites) as the next candidate. A horizontal-banding pattern specifically (as opposed to a
-   2D checkerboard) is consistent with a row-wise/height-axis bug -- worth checking the VAE's
-   spatial upsampling stride/padding along the H axis first, and Qwen Image's own H/W patchify
-   split (`imgH`/`imgW` in `QwenImageRoPE`) for an axis-order mismatch, before assuming it's VAE-only.
+   Artifact changed from checkerboard to horizontal banding -- still incoherent.
 
-This is comparable in scope to FLUX.2's Mistral wiring, though simpler (final-layer only, no
-gated-FFN/shared-modulation DiT complexity on this side) -- the `qwen2vl` architecture-support gap
-(step 1-2) is the real unknown-sized piece, everything else is a well-scoped, mechanical port of a
-precisely-confirmed recipe.
+8. **REAL ROOT CAUSE FOUND AND FIXED 2026-09-19** (docs/092's cross-model RoPE-pairing-convention
+   audit, prompted by reviewing the exact same bug class just found and fixed in FLUX.2):
+   `QwenImageRoPE.cs` delegated to `SplitHalfRoPE` (split-half/"NEOX" pairing `(x[i], x[i+dim/2])`),
+   but the real reference (`examples/diffusers/.../transformer_qwenimage.py`'s
+   `apply_rotary_emb_qwen`, called with `use_real=False` at every real site) uses adjacent-pair
+   ("interleaved"/"GPT-J") pairing `(x[2i], x[2i+1])` via `view_as_complex` on a
+   `reshape(*x.shape[:-1], -1, 2)` -- the identical bug already found and fixed for Wan
+   (2026-08-31) and FLUX.2 (2026-09-18) this session. Fixed by delegating to the shared
+   `Primitives.InterleavedRoPE` kernel instead (consolidated from Wan's own hand-rolled copy in the
+   same pass, see docs/092). Axis-dim split, theta, and the existing txt/img position-scheme fix
+   (item 6 above) were all left unchanged -- only the pairing/table-layout convention.
+
+   **Re-ran the real coherence check with the fix applied (real weights, 256x256/8-step,
+   guidance=4.0, 1107.9s): the artifact is COMPLETELY RESOLVED.** Output is a genuinely coherent,
+   realistic red apple on a wooden table -- zero checkerboard, zero banding, zero residual artifact
+   of any kind (`docs/diffusion-samples/qwenimage_real_conditioning_256_8step_2026-09-18.png`,
+   overwritten in place, same filename as the two previous failed attempts, now a clean real
+   photo-realistic result). **This closes Qwen Image's Pass 1 (quality) item.** README/`docs/088`
+   updated to reflect this in the same pass.
+
+   A real verification hiccup along the way, worth recording precisely (not a code bug): two
+   earlier attempts at this same re-run silently died mid-execution with no exception and no test
+   summary. Root-caused via short, cheap isolation tests
+   (`QwenImageQuantizedCacheIsolationTests.cs`) rather than assumption: a 32x32/1-step run and a
+   256x256/8-step zero-conditioning run (both without the ~4.36GB Qwen2.5-VL text encoder loaded)
+   both completed cleanly, ruling out a `QuantizedWeightCache`/Q3_K-specific bug. The actual cause
+   was a separate AI session running its own large real-weight test process concurrently on this
+   same 63GB machine at the same time as both failed attempts (confirmed directly: a 4.1GB resident
+   process was observed holding a file lock during the investigation) -- memory contention between
+   two simultaneous heavy processes, not a defect in the fix or the cache. Re-running alone, with no
+   other heavy process active, succeeded on the first attempt.

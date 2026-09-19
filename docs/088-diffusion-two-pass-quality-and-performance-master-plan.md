@@ -131,9 +131,21 @@ worse than no status.
       vs. zero conditioning makes zero difference to this artifact) and the checkerboard pattern
       is a completely separate, pre-existing structural bug (patchify/RoPE/VAE-tiling, the exact
       same failure class this project spent 9 rounds finding for FLUX.1 and separately fixed for
-      Wan). **Do not re-investigate text conditioning for this artifact.** See `docs/089` for the
-      full finding and the real next-step playbook (same patchify/RoPE/VAE-tiling checks that
-      resolved FLUX.1's and Wan's artifacts).
+      Wan). **Do not re-investigate text conditioning for this artifact.**
+
+      **RESOLVED 2026-09-19.** Real root cause found via docs/092's cross-model RoPE-pairing-
+      convention audit (prompted by the exact same bug just found in FLUX.2): `QwenImageRoPE.cs`
+      used the wrong rotation pairing convention (split-half instead of the real reference's
+      adjacent-pair/"interleaved" convention -- confirmed against `transformer_qwenimage.py`'s
+      `apply_rotary_emb_qwen`), the same class of bug already found for Wan and FLUX.2 this
+      session. Fixed by delegating to the shared `Primitives.InterleavedRoPE` kernel. Re-ran the
+      real coherence check (256×256/8-step, real conditioning, 1107.9s): **output is now a fully
+      coherent, realistic red apple on a wooden table -- zero checkerboard, zero banding, zero
+      residual artifact.** Qwen Image's Pass 1 (quality) item is CLOSED. See `docs/089`/`docs/092`
+      for the full finding, including a real verification hiccup (two earlier attempts silently
+      died due to memory contention with a concurrently-running separate AI session's own
+      real-weight test process on this same machine -- not a code bug, confirmed via short
+      isolation tests before assuming otherwise).
 - [x] **HunyuanVideo text conditioning — CLOSED 2026-09-18.** The named gap (real LLaMA-3 text
       conditioning) is now wired end-to-end. Confirmed against
       `examples/diffusers/.../pipeline_hunyuan_video.py`'s real `_get_llama_prompt_embeds`: a fixed
