@@ -102,6 +102,8 @@ public sealed class Sd3BaselineTests
         string clipGPath = FindModelPath(Path.Combine("models", "sd35-medium-aux", "text_encoder_2", "model.fp16.safetensors"));
         string vaePath = FindModelPath(Path.Combine("models", "sd35-medium-aux", "vae", "diffusion_pytorch_model.safetensors"));
         string tokPath = FindModelPath(Path.Combine("models", "flux1-schnell", "tokenizer_clip", "tokenizer.json"));
+        string t5Path = FindModelPath(Path.Combine("models", "flux1-schnell", "t5xxl_fp8_e4m3fn.safetensors"));
+        string t5TokPath = FindModelPath(Path.Combine("models", "flux1-schnell", "tokenizer_t5", "tokenizer.json"));
 
         if (!File.Exists(ditPath) || !File.Exists(clipLPath) || !File.Exists(clipGPath) || !File.Exists(vaePath) || !File.Exists(tokPath))
         {
@@ -112,7 +114,7 @@ public sealed class Sd3BaselineTests
         var swTotal = Stopwatch.StartNew();
 
         var swLoad = Stopwatch.StartNew();
-        using var pipeline = Sd3Pipeline.LoadSeparate(clipLPath, clipGPath, ditPath, vaePath, tokPath, backend: null);
+        using var pipeline = Sd3Pipeline.LoadSeparate(clipLPath, clipGPath, ditPath, vaePath, tokPath, backend: null, t5EncoderPath: t5Path, t5TokenizerPath: t5TokPath);
         swLoad.Stop();
         string msgLoad = $"[Sd3Profile CPU] Pipeline load took {swLoad.ElapsedMilliseconds} ms";
         _output.WriteLine(msgLoad);
@@ -151,6 +153,8 @@ public sealed class Sd3BaselineTests
         string clipGPath = FindModelPath(Path.Combine("models", "sd35-medium-aux", "text_encoder_2", "model.fp16.safetensors"));
         string vaePath = FindModelPath(Path.Combine("models", "sd35-medium-aux", "vae", "diffusion_pytorch_model.safetensors"));
         string tokPath = FindModelPath(Path.Combine("models", "flux1-schnell", "tokenizer_clip", "tokenizer.json"));
+        string t5Path = FindModelPath(Path.Combine("models", "flux1-schnell", "t5xxl_fp8_e4m3fn.safetensors"));
+        string t5TokPath = FindModelPath(Path.Combine("models", "flux1-schnell", "tokenizer_t5", "tokenizer.json"));
 
         if (!File.Exists(ditPath) || !File.Exists(clipLPath) || !File.Exists(clipGPath) || !File.Exists(vaePath) || !File.Exists(tokPath))
         {
@@ -162,7 +166,7 @@ public sealed class Sd3BaselineTests
         var swTotal = Stopwatch.StartNew();
 
         var swLoad = Stopwatch.StartNew();
-        using var pipeline = Sd3Pipeline.LoadSeparate(clipLPath, clipGPath, ditPath, vaePath, tokPath, backend: vulkan);
+        using var pipeline = Sd3Pipeline.LoadSeparate(clipLPath, clipGPath, ditPath, vaePath, tokPath, backend: vulkan, t5EncoderPath: t5Path, t5TokenizerPath: t5TokPath);
         swLoad.Stop();
         string msgLoad = $"[Sd3Profile Vulkan] Pipeline load took {swLoad.ElapsedMilliseconds} ms";
         _output.WriteLine(msgLoad);

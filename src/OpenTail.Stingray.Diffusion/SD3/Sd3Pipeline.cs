@@ -1,4 +1,5 @@
 using OpenTail.Stingray.Diffusion.StableDiffusion;
+using OpenTail.Stingray.Diffusion.TextEncoders;
 
 namespace OpenTail.Stingray.Diffusion.SD3;
 
@@ -6,15 +7,33 @@ namespace OpenTail.Stingray.Diffusion.SD3;
 /// Stable Diffusion 3 / 3.5 Pipeline.
 /// Triple text conditioning (CLIP-L + OpenCLIP-bigG + T5), MMDiT DiT transformer,
 /// Rectified Flow-Matching scheduler, and 16-channel VAE decoder.
+///
+/// <para><b>Real bug found and fixed 2026-09-19 (docs/094)</b>: the real reference
+/// (<c>pipeline_stable_diffusion_3.py</c>'s <c>encode_prompt</c>) builds the joint-attention text
+/// sequence as CLIP-L+G (channel-padded from 2048 to 4096, 77 tokens) concatenated ALONG THE TOKEN
+/// AXIS with T5-XXL's own 4096-dim hidden states (<c>max_sequence_length=256</c> by default) --
+/// total 333 text tokens, not 77. This pipeline previously built only the 77-token CLIP block and
+/// never called T5 at all (zero T5 wiring existed despite this class's own doc comment claiming
+/// "Triple text conditioning"), silently feeding the DiT a text sequence less than a quarter of its
+/// trained length with the other three-quarters simply absent rather than even zero-padded --
+/// producing garbled, incoherent output on both CPU and GPU (visually confirmed, not numeric-only).
+/// T5-XXL is optional in the real pipeline (falls back to an all-zero block, same shape, when no T5
+/// checkpoint is supplied) -- mirrored here via <paramref name="t5EncoderPath"/>/<paramref
+/// name="t5TokenizerPath"/> being optional constructor inputs.</para>
 /// </summary>
 public sealed class Sd3Pipeline : IDisposable, IDiffusionPipeline
 {
+    private const int T5MaxTokens = 256;
+    private const int ContextDim = 4096;
+
     private readonly IWeightLoader _weights;
     private readonly ClipTokenizer _clipTokenizer;
     private readonly ClipLEncoder _clipL;
     private readonly OpenClipGEncoder _clipG;
     private readonly MMDiTModel _mmdit;
     private readonly VaeDecoder _vae;
+    private readonly T5Encoder? _t5;
+    private readonly T5Tokenizer? _t5Tokenizer;
     private bool _disposed;
 
     public Sd3Pipeline(
@@ -23,7 +42,9 @@ public sealed class Sd3Pipeline : IDisposable, IDiffusionPipeline
         ClipLEncoder clipL,
         OpenClipGEncoder clipG,
         MMDiTModel mmdit,
-        VaeDecoder vae)
+        VaeDecoder vae,
+        T5Encoder? t5 = null,
+        T5Tokenizer? t5Tokenizer = null)
     {
         _weights = weights;
         _clipTokenizer = clipTokenizer;
@@ -31,6 +52,8 @@ public sealed class Sd3Pipeline : IDisposable, IDiffusionPipeline
         _clipG = clipG;
         _mmdit = mmdit;
         _vae = vae;
+        _t5 = t5;
+        _t5Tokenizer = t5Tokenizer;
     }
 
     public MMDiTModel MMDiT => _mmdit;
@@ -60,6 +83,13 @@ public sealed class Sd3Pipeline : IDisposable, IDiffusionPipeline
         var vaeLoader = new PrefixWeightLoader(weights, "first_stage_model.");
         var vae = new VaeDecoder(vaeLoader, backend: backend);
 
+        // TODO(docs/094): the combined single-file checkpoint variant (StabilityAI's
+        // "..._incl_clips_t5xxlfp8.safetensors") embeds T5-XXL too, presumably under a
+        // "text_encoders.t5xxl.transformer." prefix mirroring the clip_l/clip_g siblings above --
+        // NOT verified against a real checkpoint (this project only has the gated single-file
+        // variant's separate-file diffusers-layout sibling, wired via LoadSeparate below, which
+        // DOES have real T5 wiring). Wire this once a real combined checkpoint is available to
+        // confirm the tensor prefix rather than guessing it here.
         return new Sd3Pipeline(weights, tokenizer, clipL, clipG, mmdit, vae);
     }
 
@@ -77,7 +107,8 @@ public sealed class Sd3Pipeline : IDisposable, IDiffusionPipeline
     /// </summary>
     public static Sd3Pipeline LoadSeparate(
         string clipLPath, string clipGPath, string transformerPath, string vaePath,
-        string? tokenizerPath = null, IComputeBackend? backend = null)
+        string? tokenizerPath = null, IComputeBackend? backend = null,
+        string? t5EncoderPath = null, string? t5TokenizerPath = null)
     {
         tokenizerPath ??= Path.Combine(AppContext.BaseDirectory, "models", "clip_tokenizer.json");
         var tokenizer = ClipTokenizer.FromFile(tokenizerPath);
@@ -106,7 +137,15 @@ public sealed class Sd3Pipeline : IDisposable, IDiffusionPipeline
         var vaeWeights = SafetensorsLoader.Open(vaePath);
         var vae = new VaeDecoder(vaeWeights, backend: backend);
 
-        return new Sd3Pipeline(mmditWeights, tokenizer, clipL, clipG, mmdit, vae);
+        T5Encoder? t5 = null;
+        T5Tokenizer? t5Tok = null;
+        if (t5EncoderPath is not null && File.Exists(t5EncoderPath) && t5TokenizerPath is not null && File.Exists(t5TokenizerPath))
+        {
+            t5 = new T5Encoder(t5EncoderPath);
+            t5Tok = T5Tokenizer.FromFile(t5TokenizerPath, maxLen: T5MaxTokens);
+        }
+
+        return new Sd3Pipeline(mmditWeights, tokenizer, clipL, clipG, mmdit, vae, t5, t5Tok);
     }
 
     public void Generate(
@@ -133,16 +172,19 @@ public sealed class Sd3Pipeline : IDisposable, IDiffusionPipeline
         var condTokens = _clipTokenizer.Tokenize(prompt);
         var (condHiddenL, condPooledL) = _clipL.Encode(condTokens);
         var (condHiddenG, condPooledG) = _clipG.Encode(condTokens);
+        var condT5 = EncodeT5(prompt);
 
-        var condContext = BuildContext(condHiddenL, condHiddenG);
+        var condContext = BuildContext(condHiddenL, condHiddenG, condT5);
         var condPooledY = BuildPooledY(condPooledL, condPooledG);
 
         var uncondTokens = _clipTokenizer.Tokenize(negativePrompt ?? "");
         var (uncondHiddenL, uncondPooledL) = _clipL.Encode(uncondTokens);
         var (uncondHiddenG, uncondPooledG) = _clipG.Encode(uncondTokens);
+        var uncondT5 = EncodeT5(negativePrompt ?? "");
 
-        var uncondContext = BuildContext(uncondHiddenL, uncondHiddenG);
+        var uncondContext = BuildContext(uncondHiddenL, uncondHiddenG, uncondT5);
         var uncondPooledY = BuildPooledY(uncondPooledL, uncondPooledG);
+        int numTextTokens = 77 + T5MaxTokens;
 
         // 2. Initial Noise
         var rng = seed >= 0 ? new Random(seed) : new Random();
@@ -169,8 +211,8 @@ public sealed class Sd3Pipeline : IDisposable, IDiffusionPipeline
             float[] condPred = null!;
             float[] uncondPred = null!;
             Parallel.Invoke(
-                () => condPred = _mmdit.Forward(x, timestep, condContext, condPooledY, latH, latW, 77),
-                () => uncondPred = _mmdit.Forward(x, timestep, uncondContext, uncondPooledY, latH, latW, 77)
+                () => condPred = _mmdit.Forward(x, timestep, condContext, condPooledY, latH, latW, numTextTokens),
+                () => uncondPred = _mmdit.Forward(x, timestep, uncondContext, uncondPooledY, latH, latW, numTextTokens)
             );
 
             // CFG Combination
@@ -208,15 +250,35 @@ public sealed class Sd3Pipeline : IDisposable, IDiffusionPipeline
         PngWriter.Write(outputPath, pixels, outWidth, outHeight);
     }
 
-    private static float[] BuildContext(float[] hiddenL, float[] hiddenG)
+    private float[] EncodeT5(string prompt)
     {
-        // 77 tokens padded to 4096 context dimension
-        var context = new float[77 * 4096];
+        if (_t5 is null || _t5Tokenizer is null) return new float[T5MaxTokens * ContextDim];
+        // T5Tokenizer.Tokenize returns unpadded ids; the real reference always pads/truncates to a
+        // FIXED length before encoding (same convention already established for FLUX.1 in
+        // ImagePipeline.cs) -- remaining slots stay 0 (T5's <pad> token id).
+        var raw = _t5Tokenizer.Tokenize(prompt);
+        var tokens = new int[T5MaxTokens];
+        Array.Copy(raw, tokens, Math.Min(raw.Length, T5MaxTokens));
+        return _t5.Encode(tokens);
+    }
+
+    /// <summary>
+    /// Real SD3 text sequence per <c>pipeline_stable_diffusion_3.py</c>'s <c>encode_prompt</c>:
+    /// CLIP-L+G channel-concatenated (768+1280=2048) then zero-padded to the full 4096
+    /// <c>joint_attention_dim</c>, occupying the FIRST 77 token rows; T5-XXL's own native
+    /// 4096-dim hidden states (or an all-zero block of the same shape when T5 is unavailable)
+    /// occupy the NEXT <see cref="T5MaxTokens"/> token rows. Concatenation is along the token
+    /// axis (<c>dim=-2</c>), not the channel axis -- the two blocks are never mixed per-token.
+    /// </summary>
+    private static float[] BuildContext(float[] hiddenL, float[] hiddenG, float[] t5Context)
+    {
+        var context = new float[(77 + T5MaxTokens) * ContextDim];
         for (int t = 0; t < 77; t++)
         {
-            Array.Copy(hiddenL, t * 768, context, t * 4096, 768);
-            Array.Copy(hiddenG, t * 1280, context, t * 4096 + 768, 1280);
+            Array.Copy(hiddenL, t * 768, context, t * ContextDim, 768);
+            Array.Copy(hiddenG, t * 1280, context, t * ContextDim + 768, 1280);
         }
+        Array.Copy(t5Context, 0, context, 77 * ContextDim, T5MaxTokens * ContextDim);
         return context;
     }
 
@@ -254,6 +316,7 @@ public sealed class Sd3Pipeline : IDisposable, IDiffusionPipeline
             _clipG.Dispose();
             _mmdit.Dispose();
             _vae.Dispose();
+            _t5?.Dispose();
             _weights.Dispose();
         }
     }

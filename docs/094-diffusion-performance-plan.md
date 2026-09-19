@@ -86,12 +86,61 @@ the starting picture:
     situation CLAUDE.md warns about: bisect against `examples/stable-diffusion.cpp`'s real MMDiT
     forward stage-by-stage (same technique already used successfully for Z-Image's sign-convention bug
     and FLUX's T5-padding bug) rather than guessing.
-- [ ] **Bisect the SD3.5 regression**: dump intermediate latents at each of the 20 steps (same
+- [x] **T5-conditioning bug fixed and verified, 2026-09-19**: `Sd3Pipeline.BuildContext` only ever
+      built the 77-token CLIP-L+G block and never called T5-XXL at all — confirmed by direct
+      inspection against `pipeline_stable_diffusion_3.py`'s real `encode_prompt` (CLIP padded to 4096
+      channels occupies the first 77 token rows; T5-XXL's native 4096-dim hidden states, real or
+      zero-filled if unavailable, occupy the next 256 token rows — total 333 tokens, concatenated
+      along the TOKEN axis, never mixed per-token). This codebase's DiT was getting a text sequence
+      < 1/4 its trained length with the rest simply absent, not even zero-padded. Fixed:
+      `Sd3Pipeline` now takes optional `t5EncoderPath`/`t5TokenizerPath` (real `T5Encoder`/
+      `T5Tokenizer`, `maxLen: 256`, same padding convention already proven for FLUX.1 in
+      `ImagePipeline.cs`), builds the real 333-token context, and passes `numTextTokens: 333` to
+      `MMDiTModel.Forward` (already fully generic on this parameter, no other changes needed there).
+      Wired into `Sd3BaselineTests` via `models/flux1-schnell/t5xxl_fp8_e4m3fn.safetensors` +
+      `tokenizer_t5/tokenizer.json` (same real T5-XXL checkpoint the doc's own C++ reference run
+      already used for SD3.5 — a shared component across FLUX/SD3.5 checkpoints, not model-specific).
+  - **CPU path re-verified visually, 2026-09-19: FIXED.** `sd35_medium_apple_cpu_256_20steps.png` is
+    now a real, coherent, on-prompt image — a wooden table with a red apple in frame (not perfectly
+    composed/centered, but unambiguously correct, structured content, not noise). Real timing:
+    267.0s (up from the pre-fix 175.3s / originally-documented 536.4s — slower now because the
+    context is 4.3x longer (333 vs 77 tokens) AND two more full T5-XXL encoder passes run per
+    generation (cond+uncond), a real, expected cost of fixing a real correctness bug, not a
+    regression to chase away).
+  - **Vulkan path re-verified visually, 2026-09-19: STILL BROKEN — a second, separate, GPU-specific
+    bug.** `sd35_medium_apple_proof_20260916.png` (Vulkan `ForwardGpu` path, same fixed context) is
+    still garbled orange/brown noise, not a coherent image — CPU and GPU now visibly diverge for the
+    first time (they previously both failed identically, masking this). This lines up with the
+    parity test's own finding (cosine 0.999724 but **maxDiff 0.118420**, the worst of any model's
+    GPU-vs-CPU parity in this entire doc) — a small but real per-element divergence in `ForwardGpu`
+    that was previously invisible under the much larger T5 bug's noise, now the dominant remaining
+    defect. Timing: Vulkan 166.4s cold / 148.4s warm (vs CPU's 267.0s — GPU is ~1.8x faster, but its
+    output is not yet trustworthy). **This GPU-specific bug is the new, real, precise blocker** —
+    tracked as its own item below rather than assumed fixed by the T5 change.
+- [ ] **Bisect the remaining SD3.5 GPU-specific bug** (maxDiff 0.118, incoherent output despite a
+      correct CPU reference now existing to diff against): dump intermediate latents at each of the 20
+      Vulkan steps (same
       `STINGRAY_ZIMAGE_DUMP_LATENT`-style env-var-gated pattern used for Z-Image) and compare divergence
       point against a step-by-step dump from `examples/stable-diffusion.cpp`'s MMDiT (`--diffusion-model`
       flag pattern already established for FLUX/SD1.5 C++ reference runs in this doc). Find the first
       step where output diverges meaningfully, then check that step's the exact ops against
       `examples/diffusers`' real `SD3Transformer2DModel` for the same stage.
+  - **Two likely candidates checked directly by code inspection, 2026-09-19, both ruled out**:
+    (1) *Dual-attention norm timing* (the exact bug class the real 2026-09-05 CPU fix addressed —
+    "dual-attention blocks normalized the wrong (post-residual) input") — re-checked `ForwardGpu`
+    (`MMDiTModel.cs:452-509`): `ws.NormedImg2` is computed from `xGpu` BEFORE the first attention's
+    `ScaleGateAdd` mutates it, i.e. correctly using the pre-residual input, matching the fixed CPU
+    behavior — not the bug. (2) *GELU variant mismatch* (CPU's `DiffusionOps.GeluInPlace` vs GPU's
+    `VisionGeluInPlace` shader) — both are the tanh-approximation GELU (`DiffusionOps.Gelu`, not the
+    erf-exact `GeluExact` variant used elsewhere for Wan's `text_embedding.1`); consistent, not the
+    bug. Remaining unchecked candidates for the next pass: (a) `MMDiTGpuWeights`'s per-layer weight
+    upload/transpose (a wrong stride/layout there would produce exactly this "finite but wrong"
+    signature without NaNs); (b) the cached-context-by-array-reference lookup (`_cachedContextGpu`,
+    keyed by `ReferenceEqualityComparer` on the `textContext` array) — verify it isn't accidentally
+    serving a stale/wrong-shaped cached tensor across the cond/uncond switch now that context length
+    changed from 77 to 333; (c) `QuantizedWeightCache`'s GPU-resident path for this specific model
+    (already flagged as a recurring bug source for Qwen Image/FLUX.2 elsewhere in this project's
+    history) — check whether `MMDiTGpuWeights` even uses it or loads raw.
 - [ ] Once root-caused and fixed: re-verify with a fresh visual check (not just golden/numeric parity —
       this bug proves numeric-only checks can miss real breakage) and re-run both CPU and Vulkan timings.
 - [ ] Re-verify output is visually coherent (not just non-crashing) before trusting any further timing.
