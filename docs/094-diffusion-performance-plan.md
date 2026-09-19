@@ -37,6 +37,21 @@ the starting picture:
 - No subagents for this work (project-wide rule) — all done in the main/looped session directly.
 - A performance win must be measured, not assumed (a handful of runs, keep the number even if it's a
   negative result — see PerformanceLeague.md's own many recorded reverts for the expected format).
+- **"Useful" is not only wall-clock speed — memory footprint counts as a real, first-class win too**
+  (2026-09-19, user directive). This project has repeated, real evidence that memory pressure is
+  often the actual bottleneck, not raw compute: Qwen Image's CPU path was OOM-killed at 53GB+ heading
+  toward ~75GB on a 64GB machine before `QuantizedWeightCache` fixed it (docs/086); FLUX.2's own GPU
+  residency plan is explicitly capped at 8 double-blocks specifically because the 48 single-blocks
+  would need ~63GB, this machine's entire RAM (`Flux2GpuWeights.cs`'s own doc comment); several
+  models in this doc measure "7.4× less memory" or "fits in 17.37GB where PyTorch needs ~120GB" as a
+  headline result alongside (sometimes instead of) a wall-clock number. When scoping or measuring any
+  item below: **record peak memory (CPU RSS and/or GPU VRAM, e.g. via `STINGRAY_PROFILE_GPU_SPLIT=1`'s
+  live/peak device-local byte tracking, already wired in `VulkanBackend`) alongside wall-clock time**,
+  and treat a real, measured memory reduction as worth documenting and keeping even when wall-clock is
+  flat or slightly worse — the same standard already applied to Stingray-vs-PyTorch comparisons
+  elsewhere in `PerformanceLeague.md`. A change that trades a little speed for a lot of headroom (e.g.
+  making a model fit on this iGPU's shared-memory budget at all, or avoiding an OOM kill outright) is
+  a real win, not a wash, and should be reported as such rather than only through a speed lens.
 
 ---
 
