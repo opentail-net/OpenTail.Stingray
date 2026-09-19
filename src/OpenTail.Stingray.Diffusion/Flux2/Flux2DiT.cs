@@ -689,19 +689,13 @@ public sealed class Flux2DiT : IDisposable
         visionOps.Sgemm(ws.QkvImg, ws.NormedImg, bw.ImgAttnQkv, nImg, d, d * 3);
         visionOps.Sgemm(ws.QkvTxt, ws.NormedTxt, bw.TxtAttnQkv, nTxt, d, d * 3);
 
-        // 3. Unpack into the combined [txt, img] Q/K/V buffers (txt-first, matching the CPU
-        //    reference's ConcatSequences(txtQ, imgQ, ...) order exactly).
-        visionOps.FluxUnpackQkv(ws.QkvTxt, ws.Q, ws.K, ws.V, nTxt, d, dstTokenOffset: 0);
-        visionOps.FluxUnpackQkv(ws.QkvImg, ws.Q, ws.K, ws.V, nImg, d, dstTokenOffset: nTxt);
-
-        // 4. Per-stream QK-RMSNorm (separate scales per stream, applied over each stream's own
-        //    token range within the combined buffer).
-        visionOps.QKNorm(ws.Q, ws.K, bw.TxtQkNormQScale, bw.TxtQkNormKScale, nTxt, nh, hd, eps: 1e-6f, startToken: 0);
-        visionOps.QKNorm(ws.Q, ws.K, bw.ImgQkNormQScale, bw.ImgQkNormKScale, nImg, nh, hd, eps: 1e-6f, startToken: nTxt);
-
-        // 5. 4-axis RoPE on the FULL concatenated sequence (real reference behavior -- text tokens
-        //    are rotated too, unlike HunyuanVideo). ws.RopeCos/RopeSin already cover [0, nSeq).
-        visionOps.Flux2DRoPE(ws.Q, ws.K, ws.RopeCos, ws.RopeSin, startToken: 0, tokenCount: nSeq, nh, hd);
+        // 3-5. Fused QKV unpack + per-stream QK-RMSNorm + full 4-axis RoPE (Flux2QkvNormRope).
+        //      Replaces 5 separate dispatches (2 unpacks + 2 norms + 1 RoPE) with 2 fused dispatches,
+        //      eliminating unnormalized and unrotated Q/K/V round-trips through GPU memory.
+        visionOps.Flux2QkvNormRope(ws.QkvTxt, ws.Q, ws.K, ws.V, ws.RopeCos, ws.RopeSin,
+            bw.TxtQkNormQScale, bw.TxtQkNormKScale, nTxt, nh, hd, dstTokenOffset: 0, eps: 1e-6f);
+        visionOps.Flux2QkvNormRope(ws.QkvImg, ws.Q, ws.K, ws.V, ws.RopeCos, ws.RopeSin,
+            bw.ImgQkNormQScale, bw.ImgQkNormKScale, nImg, nh, hd, dstTokenOffset: nTxt, eps: 1e-6f);
 
         // 6. Joint attention over the full sequence.
         imageOps.MultiHeadAttentionTiled(ws.AttnOut, ws.Q, ws.K, ws.V, nSeq, nSeq, nh, hd);

@@ -10371,6 +10371,108 @@ internal static class Shaders
         """;
 
     /// <summary>
+    /// Fused QKV unpack + per-head QK-RMSNorm + RoPE for FLUX.2.
+    /// Unpacks Q, K, V from fused Qkv [nTokens, 3*dim], applies per-head RMSNorm with learned scales,
+    /// rotates Q and K with 2D/4D RoPE tables, and writes Q, K, V to [nSeq, dim] at dstTokenOffset.
+    /// </summary>
+    internal const string Flux2QkvNormRope = """
+        #version 450
+        layout(local_size_x = 64) in;
+
+        layout(binding = 0) readonly buffer QkvBuf    { float qkvData[]; };
+        layout(binding = 1) writeonly buffer QBuf     { float qData[]; };
+        layout(binding = 2) writeonly buffer KBuf     { float kData[]; };
+        layout(binding = 3) writeonly buffer VBuf     { float vData[]; };
+        layout(binding = 4) readonly buffer CosBuf    { float cosData[]; };
+        layout(binding = 5) readonly buffer SinBuf    { float sinData[]; };
+        layout(binding = 6) readonly buffer QScaleBuf { float qScaleData[]; };
+        layout(binding = 7) readonly buffer KScaleBuf { float kScaleData[]; };
+
+        layout(push_constant) uniform Params {
+            uint nTokens;
+            uint numHeads;
+            uint headDim;
+            uint dim;
+            uint dstTokenOffset;
+            float eps;
+        };
+
+        shared float s_sq_q[64];
+        shared float s_sq_k[64];
+
+        void main() {
+            uint workgroupId = gl_WorkGroupID.x;
+            if (workgroupId >= nTokens * numHeads) return;
+
+            uint t = workgroupId / numHeads;
+            uint h = workgroupId % numHeads;
+            uint tid = gl_LocalInvocationID.x; // 0..63
+
+            uint d0 = tid * 2u;
+            uint d1 = d0 + 1u;
+            uint hOff = h * headDim;
+
+            // Source offsets in qkv [nTokens, 3 * dim]
+            uint srcRow = t * (dim * 3u);
+            uint srcOffQ = srcRow + hOff;
+            uint srcOffK = srcRow + dim + hOff;
+            uint srcOffV = srcRow + dim * 2u + hOff;
+
+            // Dest offsets in [nSeq, dim]
+            uint dstRow = (dstTokenOffset + t) * dim;
+            uint dstOff = dstRow + hOff;
+
+            // 1. Copy V directly to output
+            vData[dstOff + d0] = qkvData[srcOffV + d0];
+            vData[dstOff + d1] = qkvData[srcOffV + d1];
+
+            // 2. Load Q and K, accumulate local squared sum
+            float q0 = qkvData[srcOffQ + d0];
+            float q1 = qkvData[srcOffQ + d1];
+            float k0 = qkvData[srcOffK + d0];
+            float k1 = qkvData[srcOffK + d1];
+
+            s_sq_q[tid] = q0 * q0 + q1 * q1;
+            s_sq_k[tid] = k0 * k0 + k1 * k1;
+            barrier();
+
+            // 3. Parallel reduction in LDS over 64 threads (headDim = 128)
+            for (uint stride = 32u; stride > 0u; stride >>= 1u) {
+                if (tid < stride) {
+                    s_sq_q[tid] += s_sq_q[tid + stride];
+                    s_sq_k[tid] += s_sq_k[tid + stride];
+                }
+                barrier();
+            }
+
+            // 4. RMS normalizer
+            float invStdQ = inversesqrt(s_sq_q[0] / float(headDim) + eps);
+            float invStdK = inversesqrt(s_sq_k[0] / float(headDim) + eps);
+
+            float gq0 = qScaleData[d0];
+            float gq1 = qScaleData[d1];
+            float gk0 = kScaleData[d0];
+            float gk1 = kScaleData[d1];
+
+            float q0n = q0 * invStdQ * gq0;
+            float q1n = q1 * invStdQ * gq1;
+            float k0n = k0 * invStdK * gk0;
+            float k1n = k1 * invStdK * gk1;
+
+            // 5. RoPE rotation using compact [nSeq, headDim/2] freq tables
+            uint nPairs = headDim / 2u;
+            uint freqOff = (dstTokenOffset + t) * nPairs + tid;
+            float c = cosData[freqOff];
+            float s = sinData[freqOff];
+
+            qData[dstOff + d0] = q0n * c - q1n * s;
+            qData[dstOff + d1] = q0n * s + q1n * c;
+            kData[dstOff + d0] = k0n * c - k1n * s;
+            kData[dstOff + d1] = k0n * s + k1n * c;
+        }
+        """;
+
+    /// <summary>
     /// Unpack fused QKV [nTokens, 3*dim] into separate Q, K, V buffers [nSeq, dim] at dstTokenOffset.
     /// </summary>
     internal const string FluxUnpackQkv = """

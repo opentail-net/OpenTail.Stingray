@@ -186,12 +186,22 @@ data justifies it)
       registers/LDS) — instead, modify the down-GEMM's own tile-loading code to compute
       `silu(gate)*value` from the up-projection's raw output AS it loads each activation tile, never
       materializing the gated result as its own buffer.
-- [ ] **Fuse QKV-unpack + QK-RMSNorm + RoPE into one dispatch** (`Flux2QkvNormRope`, mirroring the
-      real, already-shipped FLUX.1 precedent for the same class of fusion). Confirmed real
-      candidate: Q and K share identical normalization structure, RoPE immediately follows
-      normalization, V needs neither transform, and there's no correctness reason to materialize
-      the unpacked-but-not-yet-normalized Q/K/V tensors as their own round-trip through GPU memory
-      first.
+- [x] **Step 3 DONE 2026-09-19: Fuse QKV-unpack + QK-RMSNorm + RoPE into one dispatch (`Flux2QkvNormRope`).**
+      - **Implementation**: Created custom `Flux2QkvNormRope` compute shader in `Shaders.cs` (64 threads
+        per workgroup, collaborative Q/K sum-of-squares reduction in LDS, RMSNorm scaling, GPT-NeoX
+        interleaved 4-axis RoPE rotation, and direct V copying). Slices directly into `[nSeq, dim]`
+        at `dstTokenOffset`. Regenerated SPIR-V table via `scripts/gen-spirv.ps1` (142 precompiled).
+      - **API**: Added `Flux2QkvNormRope` to `IVisionOpsBackend` and `VulkanBackend`.
+      - **Parity verification**: New `Flux2QkvNormRopeGpuTests` confirms bit-parity against the unfused
+        GPU sequence (FluxUnpackQkv + QKNorm + Flux2DRoPE) across multiple token counts and offsets,
+        achieving maxDiffQ/K <= 1.43e-6 and bit-exact V.
+      - **Wiring & Parity**: Wired into `Flux2DiT.DoubleBlockGpu` for both text and image streams.
+        Replaces 5 separate dispatches per block with 2 fused dispatches (reducing dispatch count by 24
+        across 8 blocks). Verified via `Flux2DoubleBlockGpuParityTests` (img cosine=0.9999706, txt
+        cosine=0.9999590 vs CPU reference, exceeding the >0.999 bar).
+      - **Savings**: Eliminates 3 GPU dispatches + fence waits per block (24 per pass) and avoids
+        materializing unnormalized and un-RoPE'd Q/K intermediates (~250 MB VRAM traffic saved per block,
+        >2 GB per forward pass).
 - [ ] **Combine img/txt-stream AdaLN and ScaleGateAdd pairs into single dispatches** (branch on
       row index against `nTxt` inside one dispatch spanning `nTxt+nImg` rows, instead of two
       separate dispatches). Real, correctly deprioritized by the review below the two fusions

@@ -1677,6 +1677,7 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
     private ComputePipeline? _qkNormPipeline;
     private ComputePipeline? _rope3dPipeline;
     private ComputePipeline? _flux2DRoPEPipeline;
+    private ComputePipeline? _flux2QkvNormRopePipeline;
     private ComputePipeline? _fluxUnpackQkvPipeline;
     private ComputePipeline? _diffUnpack5Pipeline;
     private ComputePipeline? _diffUnpack2Pipeline;
@@ -1792,6 +1793,7 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
     private struct QKNormParams { public uint nTokens; public uint numHeads; public uint headDim; public float eps; public uint startToken; }
     private struct RoPE3DParams { public uint numTokens; public uint numHeads; public uint headDim; public uint tDim; public uint hDim; public uint wDim; public float theta; }
     private struct Flux2DRoPEParams { public uint startToken; public uint tokenCount; public uint numHeads; public uint headDim; }
+    private struct Flux2QkvNormRopeParams { public uint nTokens; public uint numHeads; public uint headDim; public uint dim; public uint dstTokenOffset; public float eps; }
     private struct FluxUnpackQkvParams { public uint nTokens; public uint dim; public uint dstTokenOffset; }
     private struct FluxUnpackSingleLin1Params { public uint nSeq; public uint dim; }
     private struct FluxConcatAttnMlpParams { public uint nSeq; public uint dim; }
@@ -4435,6 +4437,28 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
         DispatchOrRecord(_swiGluSplitPipeline, [GetBuffer(gateUp), GetBuffer(output)], groups, &p);
     }
 
+    public void Flux2QkvNormRope(Tensor qkv, Tensor q, Tensor k, Tensor v, Tensor cos, Tensor sin,
+                                 Tensor qScale, Tensor kScale, int nTokens, int numHeads, int headDim,
+                                 int dstTokenOffset, float eps = 1e-6f)
+    {
+        _flux2QkvNormRopePipeline ??= new ComputePipeline(this, Shaders.Flux2QkvNormRope, 8,
+            pushConstantSize: sizeof(Flux2QkvNormRopeParams));
+        var p = new Flux2QkvNormRopeParams
+        {
+            nTokens = (uint)nTokens,
+            numHeads = (uint)numHeads,
+            headDim = (uint)headDim,
+            dim = (uint)(numHeads * headDim),
+            dstTokenOffset = (uint)dstTokenOffset,
+            eps = eps,
+        };
+        uint groups = (uint)(nTokens * numHeads);
+        DispatchOrRecord(_flux2QkvNormRopePipeline,
+            [GetBuffer(qkv), GetBuffer(q), GetBuffer(k), GetBuffer(v),
+             GetBuffer(cos), GetBuffer(sin), GetBuffer(qScale), GetBuffer(kScale)],
+            groups, &p);
+    }
+
     public void FluxUnpackQkv(Tensor qkv, Tensor q, Tensor k, Tensor v, int nTokens, int dim, int dstTokenOffset)
     {
         _fluxUnpackQkvPipeline ??= new ComputePipeline(this, Shaders.FluxUnpackQkv, 4, pushConstantSize: sizeof(FluxUnpackQkvParams));
@@ -4781,6 +4805,7 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
         _qkNormPipeline?.Dispose();
         _rope3dPipeline?.Dispose();
         _flux2DRoPEPipeline?.Dispose();
+        _flux2QkvNormRopePipeline?.Dispose();
         _fluxUnpackQkvPipeline?.Dispose();
         _diffUnpack5Pipeline?.Dispose();
         _diffUnpack2Pipeline?.Dispose();

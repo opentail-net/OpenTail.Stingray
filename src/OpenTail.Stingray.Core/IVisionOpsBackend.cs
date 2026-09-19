@@ -124,6 +124,16 @@ public interface IVisionOpsBackend : IComputeBackend
         => throw new NotSupportedException();
 
     /// <summary>
+    /// Fused QKV unpack + per-head QK-RMSNorm + RoPE for FLUX.2.
+    /// Unpacks Q, K, V from fused Qkv [nTokens, 3*dim], applies per-head RMSNorm with learned scales,
+    /// rotates Q and K with 2D/4D RoPE tables, and writes Q, K, V to [nSeq, dim] at dstTokenOffset.
+    /// </summary>
+    void Flux2QkvNormRope(Tensor qkv, Tensor q, Tensor k, Tensor v, Tensor cos, Tensor sin,
+                          Tensor qScale, Tensor kScale, int nTokens, int numHeads, int headDim,
+                          int dstTokenOffset, float eps = 1e-6f)
+        => throw new NotSupportedException();
+
+    /// <summary>
     /// Unpack fused QKV [nTokens, 3*dim] into separate Q, K, V buffers [nSeq, dim] at dstTokenOffset.
     /// </summary>
     void FluxUnpackQkv(Tensor qkv, Tensor q, Tensor k, Tensor v, int nTokens, int dim, int dstTokenOffset)
