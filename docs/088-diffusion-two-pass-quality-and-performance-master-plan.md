@@ -721,11 +721,15 @@ faster wrong answer, doubling the eventual debugging cost (this exact mistake is
 rule 7 exists).
 
 ### 2a. Already at/near C++ parity — re-verify only, do not re-optimize blind
-- [ ] **SD1.5**: confirm 2.14x ratio still holds (`PerformanceLeague.md`, 2026-09-16 entry) after
-      any unrelated infra changes since. If a real further win is found, the next lever per
-      `docs/083` is closing the remaining `MultiHeadAttentionTiled` gap vs. sd.cpp's cooperative
-      wave ops — do not attempt this speculatively without a profiler-driven measurement first
-      (CLAUDE.md rule 7: measure, don't assume).
+- [x] **SD1.5**: 2026-09-19 -- confirmed, **170.8s real re-run vs. 171.7-172.2s documented**
+      (within noise, ratio holds). Deliberately run AFTER the machine had returned to idle
+      following the LTX-Video thermal-throttling investigation above -- this clean result is
+      itself corroborating evidence for that investigation's thermal-throttling conclusion (SD1.5
+      shows no regression once the machine had cooled down, consistent with LTX-Video's own
+      slowdown being transient/environmental rather than a code regression). Output verified
+      coherent (photorealistic banquet table scene, matching the documented character exactly). No
+      further win attempted this pass -- the `MultiHeadAttentionTiled` lever from `docs/083` stays
+      un-started, correctly gated on a profiler-driven measurement first per CLAUDE.md rule 7.
 - [x] **SD1.5 + ControlNet Canny**: 2026-09-18 -- confirmed, 199.9s real re-run vs. 204.4s
       documented (within noise), no regression (see Pass 1 §1a above).
 - [x] **SDXL-Turbo**: full generation timing re-verified for real, 2026-09-19 -- **40.7s Vulkan
