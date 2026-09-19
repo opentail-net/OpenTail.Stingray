@@ -728,9 +728,14 @@ rule 7 exists).
       (CLAUDE.md rule 7: measure, don't assume).
 - [x] **SD1.5 + ControlNet Canny**: 2026-09-18 -- confirmed, 199.9s real re-run vs. 204.4s
       documented (within noise), no regression (see Pass 1 §1a above).
-- [ ] **SDXL-Turbo**: only load/init re-verified this session (real weights load correctly after
-      the redownload + clip_tokenizer.json fix), NOT full generation timing -- the 1.60x claim
-      itself is unconfirmed this pass, narrower claim only.
+- [x] **SDXL-Turbo**: full generation timing re-verified for real, 2026-09-19 -- **40.7s Vulkan
+      total** (512×512, 4 steps, `--cfg-scale 0.0`, real prompt, real output verified coherent and
+      on-prompt). This is a major, real improvement over every previously documented number: 128.8s
+      (the 2026-09-11 "session-cumulative" figure, itself already the fastest on record) → 40.7s
+      now, a further 3.16x speedup, almost certainly from unrelated shared-kernel infra work landed
+      since (not bisected to a specific commit this pass). Against the real C++ reference (21.18s):
+      only ~1.92x slower now, down from the historical ~6.08x gap -- the closest this port has ever
+      gotten. See `PerformanceLeague.md`'s new entry for the full stage breakdown.
 - [x] **SD3.5 Medium**: 2026-09-18 -- confirmed, 77.1s warm/84.9s cold real re-run vs. 91.3s
       documented (beats it, no regression). VAE decode already faster than C++ (0.76x) — a genuine
       win, don't touch it. Denoise loop (2.85x) is the real remaining gap if further work is ever
