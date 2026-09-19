@@ -124,6 +124,15 @@ architecture derivation) — do not design a new GPU-residency pattern from scra
    shared, safety-critical shader is exactly the kind of thing that silently breaks everything
    downstream.
 
+   **RESOLVED 2026-09-19** (`tests/OpenTail.Stingray.Tests.Diffusion/
+   Flux2AdaLNModulateLayerNormGpuTests.cs`, new): two real GPU tests on this actual Vulkan driver.
+   `AdaLNModulate_IsRmsNormFalse_MatchesCpuLayerNormReference` confirms `isRmsNorm: false` matches
+   the CPU `DiffusionOps.AdaLNModulate` LayerNorm reference to machine precision
+   (`maxDiff=7.15×10⁻⁷`). `AdaLNModulate_RmsNormAndLayerNormBranches_GenuinelyDiffer` guards against
+   a trivial false-pass (e.g. a dead/no-op branch) by confirming the two branches genuinely diverge
+   on a nonzero-mean input (`maxDiff=2.82`, as expected since RMSNorm skips mean-subtraction).
+   **Blocker 3 is closed** — safe to build the double-block forward pass on top of this now.
+
 4. **RoPE dispatch is likely already solved.** `Flux2RoPE.BuildContextFreqsCompact` (added in
    `4e4dc96`) already builds the compact `[nTokens, headDim/2]` one-value-per-pair table the
    existing `Flux2DRoPE` GPU shader expects, with a passing unit test confirming it matches the
@@ -139,10 +148,8 @@ architecture derivation) — do not design a new GPU-residency pattern from scra
 2. ~~Profile where CPU time actually goes~~ — not yet done with fresh post-close numbers; worth a
    quick check before investing further GPU effort, but not currently believed to change the plan
    (the DiT denoise loop dominated every other FLUX-family model's own profile).
-3. Write a small, ISOLATED test exercising `AdaLNModulate`'s `isRmsNorm: false` branch against a
-   known-good CPU `LayerNormNoAffine` + modulate reference — this branch has never been exercised
-   anywhere in this codebase and is a real correctness risk if wrong (see blocker 3 above). Do this
-   BEFORE building anything that depends on it.
+3. ~~Write a small, ISOLATED test exercising `AdaLNModulate`'s `isRmsNorm: false` branch~~ —
+   **DONE 2026-09-19**, machine-precision match confirmed on real hardware (see blocker 3 above).
 4. Author the new SiLU-gated-FFN GPU shader (blocker 2 above) — GLSL kernel, `ComputePipeline`
    dispatch method, `scripts/gen-spirv.ps1` recompile, a parity test against the CPU `GatedFfn`
    reference at a small synthetic scale before trusting it at DiT scale.
