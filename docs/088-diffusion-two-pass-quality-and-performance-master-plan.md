@@ -790,11 +790,54 @@ attention, same general shape as FLUX.1):
       modulation are the two structural differences from FLUX.1 to account for when porting —
       re-read `Flux2DiT.cs`'s `ApplyDoubleBlockReal`/`ApplySingleBlockReal` CPU implementation
       first, do not assume FLUX.1's GPU block structure ports 1:1.
+
+      **2026-09-19: REAL BLOCKER FOUND before writing any weight-upload code — naively porting
+      `FluxGpuWeights`'s pattern (dequantize each Q4_K tensor to F32, re-upload as FP16) does NOT
+      fit this machine's memory budget for FLUX.2, unlike FLUX.1.** Worked the real numbers: FLUX.2
+      has 48 single-stream blocks (vs FLUX.1's 38) at `HiddenSize=6144`/`MlpRatio=3.0` — each single
+      block's `linear1` alone is `[55296, 6144]` (340M params) and `linear2` is `[24576, 6144]`
+      (151M params), ≈982MB per block at FP16, **×48 blocks ≈ 47.1GB** just for the single-stream
+      weights; the 8 double-stream blocks add another ≈15.7GB. **Total FLUX.2 DiT at FP16 ≈ 63GB**
+      — this machine has 63GB of TOTAL system RAM (this iGPU has no dedicated VRAM, per CLAUDE.md's
+      hardware note), meaning a full FP16 GPU-resident upload would consume essentially the entire
+      machine with zero room left for the OS, the Mistral-24B text encoder, or any host-side
+      buffers. This is a real, quantitative, checked-before-coding finding, not a guess — the exact
+      kind of measurement CLAUDE.md rule 7 asks for before assuming an approach works.
+
+      **A real quantized-GPU-matmul path already exists in this codebase** (`VulkanBackend.
+      TryMatMulBatchedPath2`, dispatching `Shaders.MatMulTiledQ4K`/`MatMulTiledQ6K` directly against
+      raw Q4_K/Q6_K bytes with zero F32/FP16 expansion, keeping VRAM at the quantized file's own
+      size, ≈18GB for FLUX.2's DiT — comfortably fits) — but it was built for LLM prefill/decode and
+      is hard-capped at `VulkanMatMulPathConfig.Path2MaxTokensPerDispatch = 16` tokens per dispatch
+      (`cols % 256 == 0` also required). FLUX.2's DiT processes 1000+ image tokens per forward call
+      at production resolution — using this path as-is would mean chunking every single linear
+      projection into ≥64 sequential 16-token dispatches, which is both a real amount of new
+      integration work (this path has never been exercised outside the LLM decode loop) and an
+      unknown performance cost (many small dispatches vs the DiT's current single large CPU-side
+      Q4Kx8 batched matmul via `QuantizedWeightCache`) — not yet measured either way.
+
+      **Real options for whoever picks this up, in likely-cost order** (checked (a) directly against
+      `Shaders.cs`'s `MatMulTiledQ4K` GLSL source before writing this: `BN=16` is a `#define`
+      compiled directly into the shader's shared-memory layout (`buf_b[BN*STRIDE]`) and thread
+      mapping (`tn_i = tid/(BM/TM)`, requires `BN/TN == 8`) — NOT a runtime parameter, so "just raise
+      the cap" is actually "author and precompile a new SPIR-V shader variant with a larger BN,
+      re-derive the thread/LDS mapping, and re-run `scripts/gen-spirv.ps1`" — real shader-authoring
+      work, not a one-line change): (a) author a wider-BN `MatMulTiledQ4K`-family shader variant
+      sized for DiT-scale token counts (real, substantial, but keeps VRAM at the quantized ≈18GB
+      size, the only option that doesn't compromise something else); (b) chunk the DiT's own
+      per-block linear calls into 16-token tiles reusing the existing `MatMulTiledQ4K` shader
+      unmodified, accepting the dispatch-count overhead and measuring it for real before judging;
+      (c) partial GPU residency — keep only a subset of blocks resident (e.g. the 8 double blocks,
+      ≈15.7GB) and leave the 48 single blocks on the CPU's already-fast `QuantizedWeightCache` path,
+      a smaller but real, safe win; (d) don't attempt full GPU residency on this specific machine at
+      all and treat it as a hardware-scale limitation, revisiting only if this project ever runs on
+      a machine with real discrete VRAM (per CLAUDE.md's own iGPU-generalization caution). **Do not
+      attempt a naive FP16-upload port — it will exhaust this machine's RAM.**
 - [ ] **Phase 2 (FLUX.2) — real end-to-end Vulkan run.** Per the user's own stated requirement
       that FLUX.2 must ultimately run on Vulkan GPU (not just CPU) — this is part of Pass 1's own
-      definition of done for FLUX.2, not a purely optional Pass 2 nice-to-have. Blocked until the
-      512×512/20-step CPU correctness re-check (immediate next step, see the FLUX.2 Pass 1 entry
-      above) confirms the RoPE-pairing fix holds at production resolution, not just 128×128.
+      definition of done for FLUX.2, not a purely optional Pass 2 nice-to-have. Blocked on Phase 1
+      choosing and implementing one of the real options above — the memory-budget finding means
+      this is now a genuinely bigger task than originally scoped, not a quick GPU port.
 
 - [ ] **FLUX.3 Vulkan GPU residency** — same, blocked on FLUX.3 existing at all (closed as
       not-a-real-target, see Pass 1 above — do not resurrect this without a real reason).
