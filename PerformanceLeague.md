@@ -981,13 +981,21 @@ hand and untested.
 > for a model this size, and this is the very first time this pipeline has ever been run beyond the
 > tiny 32×32/1-step `HunyuanVideoRealWeightsTests` smoke case, so there's no known-good zero-cond
 > reference to compare against (unlike Qwen Image's own documented 2026-09-18 zero-cond checkerboard
-> baseline). **Real next step**: a run with actual `HunyuanVideoTextConditioning`-encoded prompt
-> conditioning (this pipeline's `Load(modelPath, textEncoderPath, vaePath)` 3-arg overload, real
-> llava-llama-3-8b-v1_1 weights already present in `models/_models/`) is needed before concluding
-> anything about correctness — pure noise under literally-zero conditioning is not necessarily wrong
-> for a model this text-dependent, but should not be assumed benign either. GPU port: none exists
-> (confirmed by grep). No C++ reference exists for HunyuanVideo in this repo's vendored
-> `examples/stable-diffusion.cpp` (re-checked 2026-09-19, still true).
+> baseline).
+>
+> **Follow-up, same pass, 2026-09-19: ran the decisive real-conditioning test**
+> (`HunyuanVideoRealConditioningCoherenceTests`, real llava-llama-3-8b-v1_1 text encoder + DiT +
+> VAE) — 599.5s total, output visually indistinguishable from the zero-conditioning noise above.
+> This re-confirms (per README.md's own already-existing, already-honest HunyuanVideo row) that the
+> noise is a real, structural DiT/VAE bug, NOT a text-conditioning gap — text conditioning is
+> separately verified correct in isolation per README.md's own tracking, and two RoPE/timestep fixes
+> already tried since neither moved the needle. This isn't a new finding; what's new here is simply
+> this doc finally having real, correct timing numbers for this model at all (434.0s zero-cond /
+> 599.5s real-cond, both 256×256/4-step CPU-only) instead of the stale "not attempted" line above.
+> GPU port: none exists (confirmed by grep). No C++ reference exists for HunyuanVideo in this repo's
+> vendored `examples/stable-diffusion.cpp` (re-checked 2026-09-19, still true). **Do not attempt a
+> production-scale (larger resolution) timing run for this model until the underlying noise bug is
+> fixed** — a bigger, slower run of known-broken output has no diagnostic or performance value.
 
 ---
 

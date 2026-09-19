@@ -377,20 +377,35 @@ the starting picture:
 
 ### Phase 4 — HunyuanVideo: first real production-scale measurement
 
-- [ ] Real end-to-end run via `stingray image` (not just the 32×32 unit-test smoke case) at a
-      realistic resolution/frame count for this checkpoint, CPU first.
-- [ ] Visually verify output coherence (this model has never been visually judged in this project per
-      the doc's own history) before trusting any timing as a "working" row.
-- [ ] Document real CPU timing in `PerformanceLeague.md`, replacing the incorrect "never attempted"
-      line from Phase 0.
-- [ ] No GPU path exists yet (confirmed by grep) — scope whether a `ForwardGpu` port is worth building
-      given the CPU timing found, using the same residency playbook as everywhere else. If the CPU
-      timing is large enough to justify it, build it; if blocked (e.g. checkpoint too large for
-      am iGPU's VRAM budget), document the real memory numbers that make it impractical rather than
-      guessing.
-- [ ] No C++ reference for HunyuanVideo exists in `examples/stable-diffusion.cpp` per the doc's own
-      2026-09-13 check — re-verify that's still true (a newer sd.cpp vendor drop may have added it)
-      before repeating the "no reference" conclusion.
+- [x] Real end-to-end run at 256×256/1-frame/4-step, zero-conditioning (`ZZ_ScratchHunyuanVideoSampleGen`,
+      a pre-existing test that had never actually been executed+recorded): **434.0s, CPU-only, real
+      weights.** Visual check: uniform fine speckle noise, no local structure.
+- [x] Visually verify output coherence — done, and extended one step further than the checklist
+      asked: also ran the REAL-conditioning test (`HunyuanVideoRealConditioningCoherenceTests`, real
+      llava-llama-3-8b-v1_1 text encoder), since zero-conditioning noise alone doesn't distinguish
+      "weak test" from "real bug." **599.5s, output visually indistinguishable from the zero-cond
+      noise.** This confirms the noise is a real, structural DiT/VAE bug, not a conditioning gap —
+      matches (re-confirms with fresh numbers) `README.md`'s own already-existing, already-honest
+      🟡 HunyuanVideo row, which already documents this exact bug and two prior fix attempts
+      (RoPE-pairing, timestep-scale) that didn't move the needle. Not a new discovery — but this doc
+      (`PerformanceLeague.md`) previously had zero real timing for this model at any scale, so the
+      manufactured numbers are a real, useful addition even though the underlying bug isn't newly
+      found.
+- [x] Documented real CPU timing in `PerformanceLeague.md`, replacing the incorrect "never attempted"
+      line from Phase 0, and cross-referencing `README.md`'s existing bug tracking rather than
+      duplicating it.
+- [ ] **Do not build a GPU port or attempt a production-scale (larger resolution) run for this model
+      until the underlying noise bug is fixed** (explicit scope decision, not an oversight) — both
+      would just make broken output slower/bigger to generate, with zero diagnostic or performance
+      value. Real next step for whoever picks this up: the same stage-by-stage GPU-vs-CPU dump
+      technique flagged for SD3.5/Qwen Image's GPU bugs isn't applicable here (this is a pure-CPU
+      correctness bug, no CPU/GPU split to diff against) — instead needs the same "compare
+      intermediate stats against a real reference at each stage" technique already used successfully
+      for Z-Image's and FLUX's own noise-cause bugs, picking up from where README.md's own
+      investigation left off (patchify/AdaLN-modulation/VAE-tiling, per its own "real next step"
+      note).
+- [x] No C++ reference for HunyuanVideo exists in `examples/stable-diffusion.cpp` — re-verified
+      2026-09-19, still true.
 
 ### Phase 5 — LTX-Video: fix the correctness blocker, then benchmark the existing GPU path
 
