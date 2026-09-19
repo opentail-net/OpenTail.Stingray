@@ -23,6 +23,14 @@ namespace OpenTail.Stingray.Diffusion.Flux2;
 /// `[3*d + 2*mlpHidden, d]`, and `linear2` consumes `[d + mlpHidden]` (attn output concatenated
 /// with the already-gated MLP activation), not FLUX.1's `[d + 4*d]`/`[d, d+4*d]` shapes.</item>
 /// </list>
+///
+/// <para><b>Scope, 2026-09-19 (docs/088 Pass 2 §2d)</b>: by default this only uploads the 8
+/// double-stream blocks (≈15.7GB) -- NOT the 48 single-stream blocks (≈47.1GB), which would push
+/// total GPU-resident memory to ≈63GB, this machine's entire RAM budget (see the constructor's own
+/// doc comment for the real numbers). The 48 single blocks stay on the existing, already-fast CPU
+/// `QuantizedWeightCache` path. This is a deliberate, real, measured scoping decision, not an
+/// oversight -- do not "complete" this by flipping `includeSingleBlocks` to `true` without first
+/// re-deriving whether the target machine actually has the headroom.</para>
 /// </summary>
 public sealed class Flux2GpuWeights : IDisposable
 {
@@ -144,7 +152,21 @@ public sealed class Flux2GpuWeights : IDisposable
         }
     }
 
-    public Flux2GpuWeights(IComputeBackend backend, Func<string, float[]> getWeight, Flux2Params p)
+    /// <summary>
+    /// <c>includeSingleBlocks</c> defaults to <c>false</c> -- REAL, MEASURED FINDING (2026-09-19,
+    /// docs/088 Pass 2 §2d, docs/091): FLUX.2 has 48 single-stream blocks at
+    /// <c>HiddenSize=6144</c>/<c>MlpRatio=3.0</c>, each with a <c>[55296,6144]</c> `linear1` (340M
+    /// params) and `[24576,6144]` `linear2` (151M params) -- uploading all 48 at FP16 needs
+    /// ≈47.1GB, plus ≈15.7GB for the 8 double blocks, ≈63GB total. This machine has 63GB of TOTAL
+    /// system RAM (an integrated Radeon iGPU, not a discrete GPU with its own VRAM -- see
+    /// CLAUDE.md rule 13), leaving nothing for the OS, the Mistral-24B text encoder, or host
+    /// buffers. Uploading all single blocks by default WILL exhaust this machine's memory.
+    /// Pass <c>includeSingleBlocks: true</c> only on a machine with real headroom to spare
+    /// (discrete GPU with its own VRAM, or a host with substantially more than 63GB RAM), and even
+    /// then, measure before assuming it's safe -- do not flip this default without re-deriving the
+    /// real numbers for whatever checkpoint/hardware is in front of you.
+    /// </summary>
+    public Flux2GpuWeights(IComputeBackend backend, Func<string, float[]> getWeight, Flux2Params p, bool includeSingleBlocks = false)
     {
         _backend = backend;
         int d = p.HiddenSize;
@@ -171,8 +193,11 @@ public sealed class Flux2GpuWeights : IDisposable
         for (int i = 0; i < p.DepthDoubleBlocks; i++)
             DoubleBlocks[i] = new DoubleBlockGpuWeights(backend, getWeight, i, d, mlpHidden);
 
-        SingleBlocks = new SingleBlockGpuWeights[p.DepthSingleBlocks];
-        for (int i = 0; i < p.DepthSingleBlocks; i++)
+        // See this constructor's own doc comment -- uploading all 48 single blocks by default
+        // would need ≈47.1GB on top of the double blocks' ≈15.7GB, exhausting this machine's 63GB
+        // total RAM. Empty array (not null) when skipped, so callers can safely check .Length.
+        SingleBlocks = includeSingleBlocks ? new SingleBlockGpuWeights[p.DepthSingleBlocks] : [];
+        for (int i = 0; i < SingleBlocks.Length; i++)
             SingleBlocks[i] = new SingleBlockGpuWeights(backend, getWeight, i, d, mlpHidden);
 
         FinalModWeight = UploadWeight(backend, getWeight("final_layer.adaLN_modulation.1.weight"), TensorShape.D2(2 * d, d));
