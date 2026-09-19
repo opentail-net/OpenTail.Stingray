@@ -156,4 +156,44 @@ public sealed class Flux2ConformanceTests
             if (File.Exists(tempPng)) File.Delete(tempPng);
         }
     }
+
+    [Fact]
+    public void Flux2RoPE_ApplyRoPE_PerformsAdjacentInterleavedRotation()
+    {
+        int nTokens = 1;
+        int numHeads = 1;
+        int headDim = 16;
+        int[] axesDim = [4, 4, 4, 4];
+        int[] positions = [1, 2, 3, 4];
+
+        var (cos, sin) = Flux2RoPE.BuildContextFreqs(positions, nTokens, axesDim, theta: 2000f);
+
+        var tensor = new float[headDim];
+        var original = new float[headDim];
+        for (int i = 0; i < headDim; i++)
+        {
+            tensor[i] = (i + 1) * 1.5f;
+            original[i] = tensor[i];
+        }
+
+        Flux2RoPE.ApplyRoPE(tensor, cos, sin, nTokens, numHeads, headDim);
+
+        int nPairs = headDim / 2;
+        for (int d = 0; d < nPairs; d++)
+        {
+            int j = d * 2;
+            float x0 = original[j];
+            float x1 = original[j + 1];
+            float c = cos[j];
+            float s = sin[j];
+
+            float expected0 = x0 * c - x1 * s;
+            float expected1 = x0 * s + x1 * c;
+
+            Assert.True(MathF.Abs(tensor[j] - expected0) < 1e-5f,
+                $"Pair {d} element 0 mismatch: expected {expected0}, got {tensor[j]}");
+            Assert.True(MathF.Abs(tensor[j + 1] - expected1) < 1e-5f,
+                $"Pair {d} element 1 mismatch: expected {expected1}, got {tensor[j + 1]}");
+        }
+    }
 }

@@ -14,6 +14,7 @@ public sealed class QwenImageModel : IDisposable
     private readonly IComputeBackend? _backend;
     private readonly Dictionary<string, CoreTensor>? _gpuWeights;
     private readonly int _numLayers;
+    private readonly QuantizedWeightCache _cache;
     private bool _disposed;
 
     public const int HiddenDim = 3072;
@@ -31,6 +32,7 @@ public sealed class QwenImageModel : IDisposable
         _weights = weights;
         _prefix = prefix;
         _backend = backend;
+        _cache = new QuantizedWeightCache(weights, "");
         _numLayers = DetectNumLayers(weights, prefix, numLayers);
         if (backend is not null)
             _gpuWeights = new Dictionary<string, CoreTensor>(StringComparer.Ordinal);
@@ -430,10 +432,13 @@ public sealed class QwenImageModel : IDisposable
 
     private float[] Linear(string name, float[] x, int inDim, int outDim)
     {
-        var w = GetWeight($"{name}.weight");
-        var b = TryGetWeight($"{name}.bias");
+        string wName = Resolve($"{name}.weight");
+        string bName = Resolve($"{name}.bias");
+        float[]? b = _weights.Contains(bName) ? _weights.ReadF32(bName) : null;
         int rows = x.Length / inDim;
-        return DiffusionOps.Linear(x, w, b, rows, inDim, outDim);
+        var result = new float[rows * outDim];
+        _cache.Linear(wName, x, b ?? ReadOnlySpan<float>.Empty, result, rows, inDim, outDim);
+        return result;
     }
 
     public static float[] PackLatents(float[] latents, int latH, int latW)
@@ -496,6 +501,7 @@ public sealed class QwenImageModel : IDisposable
         if (!_disposed)
         {
             _disposed = true;
+            _cache.Dispose();
             _weights.Dispose();
         }
     }

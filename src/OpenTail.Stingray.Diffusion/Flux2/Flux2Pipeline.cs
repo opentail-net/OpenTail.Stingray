@@ -279,6 +279,7 @@ public sealed class Flux2Pipeline : IDisposable
     {
         if (_disposed) return;
         _disposed = true;
+        _transformer?.Dispose();
         _mistralForward?.Dispose();
         _mistralBackend?.Dispose();
         _mistralModel?.Dispose();

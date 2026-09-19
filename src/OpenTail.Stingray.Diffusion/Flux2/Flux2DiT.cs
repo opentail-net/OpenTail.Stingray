@@ -5,13 +5,15 @@ namespace OpenTail.Stingray.Diffusion.Flux2;
 /// FLUX.2 (Klein &amp; Kontext) Multi-Reference Diffusion Transformer forward pass.
 /// Supports simultaneous conditioning on text prompts and multiple reference images.
 /// </summary>
-public sealed class Flux2DiT
+public sealed class Flux2DiT : IDisposable
 {
     private readonly Flux2Params _p;
     private readonly IWeightLoader? _weights;
     private readonly string _prefix;
+    private readonly QuantizedWeightCache? _cache;
 
     public Flux2Params Params => _p;
+    public QuantizedWeightCache? WeightCache => _cache;
 
     /// <summary>Structural-only constructor (no real weights) -- used by conformance tests that
     /// check RoPE orthogonality, shape flow, and data-flow order without real checkpoint math.
@@ -21,6 +23,7 @@ public sealed class Flux2DiT
         _p = @params ?? throw new ArgumentNullException(nameof(@params));
         _weights = null;
         _prefix = "";
+        _cache = null;
     }
 
     /// <summary>Real weight-loading constructor. Tensor names/shapes confirmed against the real
@@ -31,6 +34,12 @@ public sealed class Flux2DiT
         _weights = weights ?? throw new ArgumentNullException(nameof(weights));
         _p = @params ?? throw new ArgumentNullException(nameof(@params));
         _prefix = prefix;
+        _cache = new QuantizedWeightCache(weights, prefix);
+    }
+
+    public void Dispose()
+    {
+        _cache?.Dispose();
     }
 
     private string Resolve(string name) => _prefix + name;
@@ -38,9 +47,8 @@ public sealed class Flux2DiT
     /// <summary>
     /// Perf instrumentation (docs/088's FLUX.2 speed investigation, 2026-09-19): opt-in via
     /// <c>STINGRAY_FLUX2_PERF_TRACE=1</c>, zero overhead otherwise. Accumulates wall-clock time
-    /// spent dequantizing (GGUF Q4_K_S -> FP32) vs. spent in the actual matmul, to answer "is this
-    /// dequant-bound or compute-bound" before committing to a weight-residency or quantized-matmul
-    /// fix (ChatGPT-guided investigation, see docs/087's perf section).
+    /// spent dequantizing vs. spent in the actual matmul, to answer "is this dequant-bound or
+    /// compute-bound" before committing to a weight-residency or quantized-matmul fix.
     /// </summary>
     public static class PerfTrace
     {
@@ -55,25 +63,25 @@ public sealed class Flux2DiT
             DequantTicks = 0; MatmulTicks = 0; DequantBytes = 0; DequantCalls = 0;
         }
 
-        public static void Report(string label)
+        public static void Report(string label, QuantizedWeightCache? cache = null)
         {
             if (!Enabled) return;
             double dequantS = DequantTicks / (double)System.Diagnostics.Stopwatch.Frequency;
             double matmulS = MatmulTicks / (double)System.Diagnostics.Stopwatch.Frequency;
             double total = dequantS + matmulS;
+            string cacheInfo = cache != null
+                ? $", repacked={cache.CachedTensorCount} tensors ({cache.UsedBytes / 1024.0 / 1024.0:F1}MB / {cache.BudgetBytes / 1024.0 / 1024.0:F1}MB)"
+                : "";
             Console.Error.WriteLine(
                 $"[Flux2PerfTrace] {label}: dequant={dequantS:F2}s ({(total > 0 ? 100 * dequantS / total : 0):F1}%), " +
                 $"matmul={matmulS:F2}s ({(total > 0 ? 100 * matmulS / total : 0):F1}%), " +
-                $"dequantCalls={DequantCalls}, dequantBytes={DequantBytes / 1024.0 / 1024.0:F1}MB");
+                $"dequantCalls={DequantCalls}, dequantBytes={DequantBytes / 1024.0 / 1024.0:F1}MB{cacheInfo}");
         }
     }
 
     /// <summary>
-    /// Reads a tensor fresh from the loader every call -- deliberately NOT cached. A per-tensor
-    /// dictionary cache here would grow unbounded across FLUX.2's 8 double + 48 single blocks
-    /// (each with its own real weight set) and get the process OS-killed for low memory, the exact
-    /// same real bug already found and fixed for Qwen Image this session (cache grew past 53GB).
-    /// `QwenImageModel.GetWeight` uses this same no-cache pattern for the identical reason.
+    /// Reads small auxiliary tensors (norm scales, 1D vectors) from the loader. Small tensors
+    /// (&lt;=1M elements) are automatically cached in <see cref="GgufWeightLoader"/>.
     /// </summary>
     private float[] GetWeight(string name)
     {
@@ -89,22 +97,29 @@ public sealed class Flux2DiT
     }
 
     /// <summary>Bias-free linear projection -- confirmed empirically (docs/087): no `.bias` tensor
-    /// exists anywhere in the real FLUX.2 checkpoint for any linear layer.</summary>
+    /// exists anywhere in the real FLUX.2 checkpoint for any linear layer.
+    /// Routes through <see cref="QuantizedWeightCache"/> when available, using native repacked Q4_K_X8
+    /// SIMD matmuls without FP32 allocations.</summary>
     private float[] LinearNoBias(string weightName, ReadOnlySpan<float> x, int n, int inDim, int outDim)
     {
-        var w = GetWeight(weightName);
         var result = new float[n * outDim];
-
-        if (!PerfTrace.Enabled)
+        if (_cache != null)
         {
-            DiffusionOps.Linear(x, w, ReadOnlySpan<float>.Empty, result, n, inDim, outDim);
+            if (!PerfTrace.Enabled)
+            {
+                _cache.Linear(weightName, x, ReadOnlySpan<float>.Empty, result, n, inDim, outDim);
+                return result;
+            }
+
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            _cache.Linear(weightName, x, ReadOnlySpan<float>.Empty, result, n, inDim, outDim);
+            sw.Stop();
+            PerfTrace.MatmulTicks += sw.ElapsedTicks;
             return result;
         }
 
-        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var w = GetWeight(weightName);
         DiffusionOps.Linear(x, w, ReadOnlySpan<float>.Empty, result, n, inDim, outDim);
-        sw.Stop();
-        PerfTrace.MatmulTicks += sw.ElapsedTicks;
         return result;
     }
 
@@ -195,7 +210,10 @@ public sealed class Flux2DiT
         var velocity = new float[nTarget * _p.OutChannels];
         if (_weights != null)
         {
-            var finalOut = LinearNoBias("final_layer.linear.weight", unified.AsSpan(nTxt * d, nTarget * d), nTarget, d, _p.OutChannels);
+            var modFinal = ComputeModulation("final_layer.adaLN_modulation.1.weight", vec, d, 2);
+            var (finalShift, finalScale) = (modFinal[0], modFinal[1]);
+            var imgMod = ModulateCopy(unified.AsSpan(nTxt * d, nTarget * d).ToArray(), nTarget, d, finalShift, finalScale);
+            var finalOut = LinearNoBias("final_layer.linear.weight", imgMod, nTarget, d, _p.OutChannels);
             finalOut.AsSpan().CopyTo(velocity);
         }
         else
@@ -307,12 +325,25 @@ public sealed class Flux2DiT
         var imgQkv = LinearNoBias($"{bp}img_attn.qkv.weight", imgMod1, nTarget, d, 3 * d);
         var txtQkv = LinearNoBias($"{bp}txt_attn.qkv.weight", txtMod1, nTxt, d, 3 * d);
 
-        var imgQ = imgQkv.AsSpan(0, nTarget * d).ToArray();
-        var imgK = imgQkv.AsSpan(nTarget * d, nTarget * d).ToArray();
-        var imgV = imgQkv.AsSpan(2 * nTarget * d, nTarget * d).ToArray();
-        var txtQ = txtQkv.AsSpan(0, nTxt * d).ToArray();
-        var txtK = txtQkv.AsSpan(nTxt * d, nTxt * d).ToArray();
-        var txtV = txtQkv.AsSpan(2 * nTxt * d, nTxt * d).ToArray();
+        var imgQ = new float[nTarget * d];
+        var imgK = new float[nTarget * d];
+        var imgV = new float[nTarget * d];
+        for (int i = 0; i < nTarget; i++)
+        {
+            imgQkv.AsSpan(i * 3 * d, d).CopyTo(imgQ.AsSpan(i * d, d));
+            imgQkv.AsSpan(i * 3 * d + d, d).CopyTo(imgK.AsSpan(i * d, d));
+            imgQkv.AsSpan(i * 3 * d + 2 * d, d).CopyTo(imgV.AsSpan(i * d, d));
+        }
+
+        var txtQ = new float[nTxt * d];
+        var txtK = new float[nTxt * d];
+        var txtV = new float[nTxt * d];
+        for (int i = 0; i < nTxt; i++)
+        {
+            txtQkv.AsSpan(i * 3 * d, d).CopyTo(txtQ.AsSpan(i * d, d));
+            txtQkv.AsSpan(i * 3 * d + d, d).CopyTo(txtK.AsSpan(i * d, d));
+            txtQkv.AsSpan(i * 3 * d + 2 * d, d).CopyTo(txtV.AsSpan(i * d, d));
+        }
 
         var imgQNorm = GetWeight($"{bp}img_attn.norm.query_norm.scale");
         var imgKNorm = GetWeight($"{bp}img_attn.norm.key_norm.scale");

@@ -35,7 +35,7 @@ public sealed class Flux2PerfTraceSingleForwardTests
 
         using var weights = GgufWeightLoader.Open(ditPath!);
         var p = new Flux2Params();
-        var dit = new Flux2DiT(weights, p);
+        using var dit = new Flux2DiT(weights, p);
 
         // 512x512 -> patchH=patchW=32 -> 1024 image tokens, matching the real production resolution
         // regime this session found the model expects (limit_pixels = 1024**2 in sampling.py).
@@ -71,7 +71,7 @@ public sealed class Flux2PerfTraceSingleForwardTests
         sw.Stop();
 
         Console.WriteLine($"[Flux2 single forward, 512x512] wall clock: {sw.Elapsed.TotalSeconds:F2}s");
-        Flux2DiT.PerfTrace.Report("single forward @ 512x512");
+        Flux2DiT.PerfTrace.Report("single forward @ 512x512", dit.WeightCache);
 
         Assert.True(v.Length > 0);
         Assert.All(v, x => Assert.True(float.IsFinite(x)));

@@ -3,7 +3,7 @@ namespace OpenTail.Stingray.Diffusion.Primitives;
 /// <summary>
 /// Shared kernels for the "interleaved" RoPE layout used by Flux2 and Flux3: each axis writes
 /// (cos,cos)/(sin,sin) pairs at even/odd offsets within its slice of the head dimension, and
-/// apply rotates adjacent (d, d+half) pairs using the even-indexed table entries. Per-model
+/// apply rotates adjacent (2d, 2d+1) pairs using the per-pair table entries. Per-model
 /// axis composition (image-index/y/x, t/y/x, t/freq) stays in each model's own RoPE file.
 /// </summary>
 internal static class InterleavedRoPE
@@ -51,13 +51,14 @@ internal static class InterleavedRoPE
 
                 for (int d = 0; d < halfHead; d++)
                 {
-                    float x0 = headSpan[d];
-                    float x1 = headSpan[d + halfHead];
-                    float c = cosToken[d * 2];
-                    float s = sinToken[d * 2];
+                    int j = d * 2;
+                    float x0 = headSpan[j];
+                    float x1 = headSpan[j + 1];
+                    float c = cosToken[j];
+                    float s = sinToken[j];
 
-                    headSpan[d] = x0 * c - x1 * s;
-                    headSpan[d + halfHead] = x0 * s + x1 * c;
+                    headSpan[j]     = x0 * c - x1 * s;
+                    headSpan[j + 1] = x0 * s + x1 * c;
                 }
             }
         }
