@@ -23,10 +23,11 @@ the next item, since a status can change mid-loop):**
    Pass 1 entry: real 512×512/20-step run confirms a clean, coherent, photorealistic apple, zero
    artifacts. Move straight to item 2.
 2. **FLUX.1** — 🟡 open, tiling artifact already fully fixed 2026-09-13, real recognizable apple
-   renders (853s CPU, 3.40x slower than C++'s 251.1s). Not yet golden/numerically re-verified after
-   the T5-padding fix and not yet re-examined for whether the remaining CPU-vs-C++ perf gap (mostly
-   the DiT denoise loop, per `PerformanceLeague.md`'s per-stage profiling) has any correctness angle
-   left, or is now purely a Pass 2 (performance) item — confirm which before assuming.
+   renders (853s CPU, 3.40x slower than C++'s 251.1s). **2026-09-19: conditioning-vector golden
+   check added and passes at machine precision** (cosine=1.0, see Pass 1 entry) — a real, scoped
+   win, not full numeric verification. Still open: no block-level/output-level golden fixture
+   exists (unlike LTX-Video's), and it's not yet confirmed whether the remaining CPU-vs-C++ perf
+   gap (mostly the DiT denoise loop) has any correctness angle left or is purely Pass 2 work.
 3. **SD3/3.5** — 🟡 open, real coherent non-photorealistic structure achieved (536.4s CPU,
    256×256/20-step, 11.17x slower than C++'s 48.01s), but **never numerically golden-verified**
    against a reference — this is real, concrete, doable work (build a golden fixture from
@@ -101,6 +102,30 @@ worse than no status.
       full CLIP-L+T5-XXL+VAE pipeline). Warm pass 198.4s -- matches `PerformanceLeague.md`'s
       documented 198.1s within noise, no regression. Output PNG regenerated (444KB, non-degenerate)
       confirming the Round 9 T5-padding fix still holds.
+
+      **2026-09-19: real numeric golden-parity check added for FLUX.1's conditioning vector
+      (`FluxDiT.ComputeVec`) -- the single input every double/single block's AdaLN modulation
+      derives from, and this session's own repeated bug class (FLUX.2's `t*1000` timestep-
+      blindness bug, HunyuanVideo/Qwen Image's RoPE bugs -- all "one shared upstream value feeds
+      every block" bugs).** FLUX.1 never had this check before, unlike SD3.5 (which has had an
+      analogous `MMDiTModel.ComputeTimeAndPooledEmbedding` golden check since 2026-09-14). Built
+      `scripts/flux1_vec_embed_ref.py` (same pattern as `scripts/sd3_timestep_embed_ref.py`: reads
+      the real `time_in`/`vector_in` MLP weights directly out of the real
+      `flux1-schnell-Q4_K_S.gguf` checkpoint via the `gguf` Python package already installed on
+      this machine, reimplements the exact real formula confirmed against `examples/diffusers`'s
+      `CombinedTimestepTextProjEmbeddings`/`get_timestep_embedding` -- no full diffusers pipeline
+      load needed) and a new `Flux1VecEmbedGoldenTests.cs` (made `FluxDiT.ComputeVec` `internal`
+      instead of `private` to call it directly, via the existing `InternalsVisibleTo` grant).
+      **Result: cosine=1.000000000, maxDiff=3.8×10⁻⁶ — machine-precision match.** This
+      independently confirms FLUX.1's `t*1000` timestep pre-scaling (already fixed 2026-09-11) and
+      the `[cos,sin]` (not `[sin,cos]`) flip-sin-to-cos ordering are both correct against the real
+      reference, closing the "never golden-verified" gap for this one specific, high-leverage
+      piece. **Honest scope limit**: this is a real, valuable, but narrow win — it verifies the
+      conditioning-vector MLP math only (with a synthetic, not real-CLIP, pooled input, same
+      deliberate scope limit as SD3.5's own script), not the full DiT block/attention/RoPE/VAE
+      chain end-to-end. A full block-level or output-level golden fixture (comparable to LTX-
+      Video's `TestData/LtxGolden/manifest.json`) still does not exist for FLUX.1 and would be the
+      next real step if deeper numeric verification is ever prioritized — not done this pass.
 - [x] **Z-Image-Turbo** — 2026-09-18 CORRECTED: `z_image_turbo-Q4_0.gguf` WAS present all along, at
       `models/_models/` (symlinked to `F:\_models`) -- `ZImageRealWeightsTests.FindModelPath` only
       ever searched `models/` directly, never `models/_models/`, the exact same systemic gap

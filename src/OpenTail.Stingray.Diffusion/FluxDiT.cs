@@ -52,11 +52,14 @@ public sealed class FluxDiT : IDisposable
 
     public FluxParams Params => _p;
 
+    private readonly QuantizedWeightCache? _quantizedCache;
+
     public FluxDiT(GgufModel model, FluxParams p, IComputeBackend backend)
     {
         _model   = model;
         _p       = p;
         _backend = backend;
+        _quantizedCache = new QuantizedWeightCache(new GgufWeightLoader(model), prefix: "");
         if (backend?.BestSgemmPrecision == SgemmPrecision.Bf16)
             _gpuWeightsBf16 = new Dictionary<string, CoreTensor>(StringComparer.Ordinal);
         if (backend?.BestSgemmPrecision == SgemmPrecision.Fp16)
@@ -477,7 +480,10 @@ public sealed class FluxDiT : IDisposable
 
     // ── Conditioning embedding ────────────────────────────────────────────
 
-    private float[] ComputeVec(float timestep, float[] pooled, float guidance)
+    /// <summary>Internal (not private) so <c>Flux1VecEmbedGoldenTests</c> can call it directly for
+    /// golden-parity verification against <c>scripts/flux1_vec_embed_ref.py</c> -- same pattern as
+    /// SD3.5's own timestep+pooled conditioning-vector golden check.</summary>
+    internal float[] ComputeVec(float timestep, float[] pooled, float guidance)
     {
         int d = _p.HiddenSize;
 
@@ -1152,10 +1158,17 @@ public sealed class FluxDiT : IDisposable
             }
             else
             {
-                // CPU path: zero-copy via unsafe pointer into mmap'd buffer
-                fixed (byte* rawPtr = rawBytes)
-                fixed (float* xPtr = x, rPtr = result)
-                    SimdKernels.MatMulBatched(rPtr, rawPtr, xPtr, n, rows, cols, ti.DType);
+                // CPU path: fast pre-transposed Q4Kx8 if compatible, otherwise direct raw MatMulBatched
+                if (_quantizedCache != null)
+                {
+                    _quantizedCache.Linear(wName, x, ReadOnlySpan<float>.Empty, result, n, inDim, outDim);
+                }
+                else
+                {
+                    fixed (byte* rawPtr = rawBytes)
+                    fixed (float* xPtr = x, rPtr = result)
+                        SimdKernels.MatMulBatched(rPtr, rawPtr, xPtr, n, rows, cols, ti.DType);
+                }
             }
         }
         else
@@ -1227,6 +1240,7 @@ public sealed class FluxDiT : IDisposable
             _cachedAllRope = null;
             _cachedImgIds = null;
             _cachedImgRope = null;
+            _quantizedCache?.Dispose();
             _model.Dispose();
         }
     }
