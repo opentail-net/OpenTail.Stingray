@@ -387,11 +387,42 @@ worse than no status.
       stats — e.g. a wrong per-head or per-patch-channel ordering somewhere not yet checked, such as
       the `TokenRefiner`'s own internal wiring, or `PackLatents`/`UnpackLatents`'s patchify channel
       order under a specific case not yet re-verified since the img/txt-ordering fix touched
-      adjacent code) rather than the VAE. Real next step for whoever picks this up: audit
-      `HunyuanVideoModel.cs`'s `TokenRefiner` (the real `IndividualTokenRefiner` wiring, wired
-      2026-09-15 but never independently re-checked since) against
-      `transformer_hunyuan_video.py`'s `HunyuanVideoTokenRefiner` line-by-line — this is the one
-      remaining major DiT subsystem not yet re-audited this session.
+      adjacent code) rather than the VAE.
+
+      **2026-09-19, same pass: `TokenRefiner` audit also done — real negative result, no bug
+      found.** Checked `HunyuanVideoModel.cs`'s `TokenRefiner`/`TokenRefinerBlock` against
+      `transformer_hunyuan_video.py`'s `HunyuanVideoTokenRefiner`/
+      `HunyuanVideoIndividualTokenRefinerBlock` line-by-line: pooled-projection mean-over-sequence,
+      the `t_embedder`+`c_embedder` combined conditioning vector, the AFFINE (not affine-free)
+      `norm1`/`norm2` LayerNorms (a genuinely different convention from the double/single blocks'
+      AdaLN-Zero pattern — confirmed intentional, not a missed fix), the gate-only (no shift/scale)
+      `HunyuanVideoAdaNorm`-style residual gating, and the `"linear-silu"` FeedForward activation
+      (confirmed via `activations.py`'s `LinearActivation` — a single `Linear→SiLU`, NOT a gated/
+      GEGLU variant, i.e. plain `fc2(silu(fc1(x)))`) all match exactly. **Also spot-checked the
+      classic silent-bug candidate — AdaLN chunk order** — for both `DoubleBlock` (`shift1, scale1,
+      gate1, shift2, scale2, gate2`, matching `AdaLayerNormZero.forward`'s real
+      `emb.chunk(6, dim=1)` order exactly) and confirmed correct.
+
+      **Every major DiT/VAE subsystem has now been independently re-audited this session with zero
+      bugs remaining found**: RoPE (pairing convention + img/txt ordering + application scope),
+      timestep embedding (flip-sin-to-cos + scale), TokenRefiner, AdaLN chunk order, and the full
+      VAE decoder (causal padding, upsample frame-casing, attention mask). This is a genuinely
+      unusual state for this project's own history — every other model's "structured but not
+      coherent" or "pure noise" bug has been found within this same class of audit. Real remaining
+      candidates, none yet checked: (a) the GGUF checkpoint's own tensor VALUES for a possible
+      quantization/dequantization bug specific to this checkpoint's fp8 format (confirmed earlier
+      this session's history that `hunyuan_video_720_cfgdistill_fp8_e4m3fn.safetensors` is fp8, a
+      format most other models in this codebase don't use — worth checking `QuantizedWeightCache`/
+      dequant paths handle fp8 correctly, not just the more common Q4_K/Q6_K/F16); (b) a genuinely
+      new architecture detail unique to HunyuanVideo not covered by the Wan/FLUX.1/Qwen-Image
+      "known failure class" playbook this session has been applying — worth re-reading
+      `transformer_hunyuan_video.py`'s full `HunyuanVideoTransformer3DModel.forward` (not just the
+      sub-blocks already checked) for something structural at the top level, e.g. patch embedding
+      Conv3d weight layout/channel order, which has NOT been directly verified this session despite
+      `PackLatents` being checked -- the two are related but distinct (PackLatents flattens the
+      input into the conv's implied ordering; whether that ordering is actually what `img_in.proj`
+      -- a Linear, not a Conv3d directly, in this GGUF conversion -- expects has not been
+      independently confirmed against the checkpoint's own tensor shape).
 - [x] **LTX-Video — MAJOR FINDING, 2026-09-18: the "pure noise" instability was (largely/entirely)
       a missing-real-text-conditioning artifact.** Every prior noise-producing run in this item's
       history used placeholder (zero/mock) text conditioning; a real local T5-v1.1-XXL checkpoint
