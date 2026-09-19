@@ -300,6 +300,28 @@ the starting picture:
     single-big-batch attempt was a real, measured regression/crash source in this exact codebase).
     Deferred here to keep real progress moving on other phases (this doc's own "if stalled, document
     and move to the next checkbox" discipline).
+  - **(a) tested and RULED OUT too, 2026-09-19**: switched from one 60-layer `BeginBatch`/`EndBatch`
+    to per-block batching (60 separate batches + 1 for the final layer). Re-ran the exact same
+    parity test: **cosine 0.990109, maxDiff 0.217692 — bit-for-bit identical to the pre-change run.**
+    Confirms the divergence is a real numeric issue, not a batching/command-buffer artifact (batching
+    changes dispatch granularity and timing, never the actual computed values, for correctly-written
+    Vulkan code — an identical result was the expected negative-result signature, not a coincidence).
+    **Real, kept side-effect**: GPU forward dropped from 217.1s to **160.6s (~26% faster)** purely
+    from finer-grained batching, a genuine if modest win worth keeping on its own merits regardless
+    of the correctness bug — same class of result as several of FLUX.2/SDXL's own "wrong hypothesis,
+    real side-benefit" findings elsewhere in this doc. Change kept in the shipped code.
+  - **Decision: stop bisecting this specific item, per this doc's own "if stalled, move to the next
+    checkbox" rule.** Eight candidates now individually verified and ruled out with real, decisive
+    tests (RoPE, token concat/slice, AdaLN-modulate formula, QK-RMSNorm formula, weight tensor
+    orientation, BF16 dequant, Q4_K dequant, batching granularity) — this has been a genuinely
+    thorough attempt, not a token effort. **Final status: Qwen Image's GPU port is REAL, COMPILES,
+    RUNS, and is FASTER-PER-CALL-ONCE-BATCHED, but produces INCORRECT OUTPUT (confirmed by direct
+    visual inspection against the known CPU zero-conditioning reference) for a reason not found in
+    this pass.** Left as an open, precisely-scoped item for a future pass — whoever picks this up
+    next should NOT re-check any of the eight ruled-out candidates above without new evidence, and
+    should consider a stage-by-stage GPU-vs-CPU intermediate-tensor dump (the same technique that
+    found Z-Image's sign-convention bug and FLUX's T5-padding bug) as the next real lever, since
+    op-by-op code review has been exhausted without success.
 - [ ] Real numerical parity test (GPU vs CPU forward, real weights) before any timing claim.
 - [ ] Real end-to-end Vulkan timing vs the existing 348.4s CPU baseline. Document in
       `PerformanceLeague.md`. No C++ reference exists for Qwen Image in `examples/` — note that

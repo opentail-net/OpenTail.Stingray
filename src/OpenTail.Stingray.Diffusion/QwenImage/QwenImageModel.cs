@@ -138,12 +138,17 @@ public sealed class QwenImageModel : IDisposable
         var tVecSilu = DiffusionOpsSilu(tEmb);
         var tVecGpu = _backend.Upload(tVecSilu.AsSpan(0, HiddenDim), TensorShape.D1(HiddenDim), exact: true);
 
-        imageOps.BeginBatch();
         bool batchSuccess = false;
         try
         {
+            // Per-block batching (docs/094 Phase 2 debugging pass, 2026-09-19), NOT one single
+            // 60-layer batch: real precedent in this codebase for a single giant batch being a
+            // genuine bug/regression source (FLUX.2's Stage 5 finding -- see
+            // docs/093-flux2-gpu-performance-optimization-plan.md). Being investigated as a
+            // candidate for this port's own "runs fine, wrong texture" defect.
             for (int b = 0; b < _numLayers; b++)
             {
+                imageOps.BeginBatch();
                 var bw = gw.Blocks[b];
 
                 visionOps.Sgemm(ws.ImgMod, tVecGpu, bw.ImgModWeight, 1, HiddenDim, 6 * HiddenDim);
@@ -212,9 +217,12 @@ public sealed class QwenImageModel : IDisposable
                 visionOps.Sgemm(ws.TxtOut, ws.TxtMlpBuf, bw.TxtMlpDownWeight, numTxtTokens, ffDim, HiddenDim);
                 if (bw.TxtMlpDownBias is { } tmdb) imageOps.AddRowBroadcastInPlace(ws.TxtOut, tmdb, numTxtTokens, HiddenDim);
                 visionOps.ScaleGateAdd(cGpu, ws.TxtOut, ws.TxtMod, numTxtTokens, HiddenDim, gateOffset: 5 * HiddenDim);
+                imageOps.EndBatch();
             }
+            batchSuccess = true;
 
             // Final layer: norm_out.linear (AdaLN shift/scale) + proj_out.
+            imageOps.BeginBatch();
             visionOps.Sgemm(ws.FinalMod, tVecGpu, gw.FinalNormLinearWeight, 1, HiddenDim, 2 * HiddenDim);
             if (gw.FinalNormLinearBias is { } fnb) imageOps.AddRowBroadcastInPlace(ws.FinalMod, fnb, 1, 2 * HiddenDim);
 
@@ -222,9 +230,7 @@ public sealed class QwenImageModel : IDisposable
 
             visionOps.Sgemm(ws.Unpatchified, ws.NormedImg1, gw.FinalProjOutWeight, numImgTokens, HiddenDim, InChannels);
             if (gw.FinalProjOutBias is { } fpb) imageOps.AddRowBroadcastInPlace(ws.Unpatchified, fpb, numImgTokens, InChannels);
-
             imageOps.EndBatch();
-            batchSuccess = true;
 
             var outPacked = new float[numImgTokens * InChannels];
             _backend.Download(ws.Unpatchified, outPacked);
