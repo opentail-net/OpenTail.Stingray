@@ -19,8 +19,9 @@ using the exact same measurement methodology already in `PerformanceLeague.md`'s
 
 **Current standing priority order, 2026-09-19 (re-check this list is still current before picking
 the next item, since a status can change mid-loop):**
-1. **FLUX.2 512×512/20-step CPU re-verification** (see the FLUX.2 Pass 1 entry, "docs/088 was
-   stale" finding) — closest to fully closing; do this first.
+1. ~~**FLUX.2 512×512/20-step CPU re-verification**~~ — **DONE AND CLOSED 2026-09-19**, see the
+   Pass 1 entry: real 512×512/20-step run confirms a clean, coherent, photorealistic apple, zero
+   artifacts. Move straight to item 2.
 2. **FLUX.1** — 🟡 open, tiling artifact already fully fixed 2026-09-13, real recognizable apple
    renders (853s CPU, 3.40x slower than C++'s 251.1s). Not yet golden/numerically re-verified after
    the T5-padding fix and not yet re-examined for whether the remaining CPU-vs-C++ perf gap (mostly
@@ -424,8 +425,27 @@ worse than no status.
       Vulkan timing against the exact same `PerformanceLeague.md` methodology after any fix lands.
 
 ### 1d. Not yet real code at all — implementation, not verification
-- [ ] **FLUX.2 — MAJOR PROGRESS, 2026-09-18: real weight-loading DONE, first real forward pass
-      passes.** Every architectural question is now in-repo confirmed (the user added
+- [x] **FLUX.2 — CLOSED 2026-09-19: real 512×512/20-step production-resolution run confirms a
+      genuinely clean, coherent, photorealistic red apple on a wooden table** (`docs/diffusion-
+      samples/flux2_512_20step_resolution_check_2026-09-18.png`, 2341.5s CPU, real Mistral-24B
+      conditioning, real DiT+VAE, seed 42, guidance 3.5). Zero grid/tiling artifacts, zero noise.
+      This closes a real doc-staleness gap, not just a code gap: this section had been describing
+      FLUX.2 as stuck on a "structured but not coherent" periodic grid artifact based on 64×64/
+      128×128 runs from BEFORE commit `c1cc771` ("FLUX.2 InterleavedRoPE adjacent-pair fix" — a
+      separate AI thread's fix to the shared `Primitives/InterleavedRoPE.cs` kernel, the same
+      split-half-vs-adjacent-pair bug class independently found in Qwen Image and HunyuanVideo this
+      session). That fix was never reflected here even though `PerformanceLeague.md` already had a
+      128×128 entry claiming resolution. This 512×512/20-step run is the first confirmation at the
+      model's actual production resolution (`examples/flux2/src/flux2/sampling.py`'s own
+      `limit_pixels = 1024**2` — 128×128 is 64x smaller in pixel area) and removes any doubt the
+      128px fix was a small-scale coincidence. **FLUX.2's Pass 1 (quality) is genuinely done.**
+      Real next steps: FLUX.2 GPU-residency (Pass 2 §2d below, now unblocked) is the user's own
+      stated requirement, not optional; a standalone Mistral/DiT differential test is no longer
+      necessary given this real, unambiguous visual confirmation.
+
+- [ ] ~~FLUX.2 — MAJOR PROGRESS, 2026-09-18: real weight-loading DONE, first real forward pass
+      passes.~~ (superseded by the CLOSED entry above; kept for the historical bug-fix trail).
+      Every architectural question is now in-repo confirmed (the user added
       `examples/flux2/`, BFL's real source) and `Flux2DiT` has real `IWeightLoader` wiring: separate
       per-stream QKV with per-head RMSNorm, RoPE-after-norm, joint `[txt,img]` attention, SiLU-gated
       FFN, fused single-block linear1/linear2, shared modulation -- all exactly per the confirmed
