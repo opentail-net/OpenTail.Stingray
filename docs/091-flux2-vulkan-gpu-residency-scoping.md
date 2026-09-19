@@ -1,9 +1,12 @@
-# 091 — FLUX.2 Vulkan GPU-residency scoping (NOT started, planning only)
+# 091 — FLUX.2 Vulkan GPU-residency scoping
 
-**Status: scoping document, no implementation done.** This is a plan for a future task, written
-after CPU performance work landed (`docs/090-flux2-cpu-perf-handoff.md`) and before deciding
-whether/when to actually build it. Do not start implementation from this doc alone without
-re-checking the gating conditions below first — they may have changed.
+**Status, 2026-09-19: gating condition 1 (CPU correctness) is now MET — FLUX.2's Pass 1 closed
+for real (512×512/20-step production run confirms a clean coherent apple, see docs/088). Real
+scoping work has now started** (`Flux2GpuWeights.cs` exists, defused of a real OOM landmine — see
+below), but the double-block GPU forward pass, workspace, and a NEW required shader are not yet
+built. Do not start further implementation from this doc alone without re-reading the "Real
+blockers found before/while implementing" section below — they materially change the scope from
+what was originally planned here.
 
 ## Gating conditions — check these before starting
 
@@ -78,19 +81,87 @@ architecture derivation) — do not design a new GPU-residency pattern from scra
   should match whatever the CPU path supports at the time it's built, not attempt to add ref-image
   support as part of a GPU-residency task (that's a separate, unrelated correctness task).
 
-## Suggested implementation order, if/when this is picked up
+## Real blockers found before/while implementing (2026-09-19)
 
-1. Re-verify the CPU path is both correct (coherent output) and reasonably fast (per the gating
-   conditions above) — get fresh real numbers, don't reuse pre-`docs/090`-fix numbers.
-2. Profile where CPU time actually goes at that point (DiT forward vs. Mistral text encoding vs.
-   VAE decode) — this determines whether DiT GPU residency is even the right next lever, or whether
-   the 24B text encoder dominates and deserves attention first.
-3. If DiT GPU residency is warranted: build `Flux2GpuWeights.cs`/`Flux2GpuWorkspace.cs` following
-   `FluxGpuWeights.cs`/`FluxGpuWorkspace.cs`'s structure, adjusted per the differences above.
-4. Get a real, measured single-step GPU-vs-CPU comparison on THIS machine's iGPU before committing
-   further — per the gating conditions, this could go either way on this hardware.
-5. If GPU wins: follow FLUX.1's own measured optimization sequence
-   (`PerformanceLeague.md`'s FLUX.1-schnell rows) — matrix-vector fast paths, command-buffer
-   batching, pipelining — rather than re-deriving which optimizations matter from scratch.
-6. Record every real measurement in `PerformanceLeague.md` and `docs/088`, following this project's
-   existing documentation conventions (see any other model's entries for the expected format).
+1. **Memory budget — full residency does not fit this machine.** Worked the real numbers before
+   writing any upload code: FLUX.2's 48 single-stream blocks at `HiddenSize=6144`/`MlpRatio=3.0`
+   need ≈47.1GB at FP16 (each block's `linear1` is `[55296,6144]`=340M params, `linear2` is
+   `[24576,6144]`=151M params), plus ≈15.7GB for the 8 double-stream blocks — ≈63GB total, this
+   machine's ENTIRE system RAM (an iGPU sharing system memory, not a discrete GPU with its own
+   VRAM — CLAUDE.md rule 13). A prior commit (`4e4dc96`, a concurrent AI thread) had already built
+   `Flux2GpuWeights.cs` uploading all 48 single blocks unconditionally — a real, uncaught OOM
+   landmine (never wired to a call site, so never actually triggered, but would have exhausted this
+   machine's memory the moment anyone instantiated it expecting FLUX.1-style full parity). **Fixed
+   (commit `347aabd`)**: added an `includeSingleBlocks` parameter, default `false` — by default only
+   the 8 double-stream blocks (≈15.7GB) upload to GPU; the 48 single blocks stay on the existing,
+   already-fast CPU `QuantizedWeightCache` path. This is now a genuinely scoped **partial**
+   GPU-residency task (double blocks only), not full residency — re-scope expectations accordingly.
+
+2. **A required GPU shader does not exist yet.** FLUX.2's gated FFN is `SiLU(gate) * value` on a
+   `2*mlpHidden`-wide up-projection split in half (confirmed against `examples/flux2/src/flux2/
+   model.py`) — checked every existing GPU op in `IVisionOpsBackend`/`IImageOpsBackend` (`grep -n
+   "Silu\|Multiply" src/OpenTail.Stingray.Core/I*OpsBackend.cs`) and **no generic standalone SiLU or
+   elementwise-multiply op exists on GPU tensors at all**, let alone a fused gate-multiply kernel.
+   FLUX.1's GPU path only has `VisionGeluInPlace` (plain GELU, no gating) because FLUX.1's own MLP
+   is GEGLU-free per-element GELU, not gated. **A new compute shader is required** (GLSL, a new
+   `ComputePipeline` dispatch method analogous to `AdaLNModulate`'s, and a `scripts/gen-spirv.ps1`
+   recompile per CLAUDE.md rule 5) before the double-block GPU forward pass can be correctly
+   implemented — this is real shader-authoring work, not a matter of wiring existing ops together.
+   Not yet done.
+
+3. **`AdaLNModulate`'s `isRmsNorm` flag needs to be `false` for FLUX.2, unlike FLUX.1's GPU path.**
+   `AdaLNModulate` (used by FLUX.1's `DoubleBlockGpu`) takes a real `isRmsNorm` toggle dispatched
+   into the shader's push constants — FLUX.1's GPU path passes `isRmsNorm: true` for every call.
+   FLUX.2's real CPU path (`Flux2DiT.cs`'s `ModulateCopy`) uses `DiffusionOps.LayerNormNoAffine`
+   (mean-subtracted, affine-free LayerNorm), NOT RMSNorm — confirmed by direct source read. The GPU
+   port MUST pass `isRmsNorm: false` at every FLUX.2 call site, or it will silently compute the
+   wrong normalization (RMSNorm skips mean-subtraction; the outputs would differ non-trivially,
+   producing a real, hard-to-spot numerical bug rather than an obvious crash). Not yet verified this
+   flag actually produces correct LayerNorm math on this driver when set to `false` — no test
+   exercises the `isRmsNorm=false` branch anywhere in this codebase yet (checked: FLUX.1 is the only
+   caller, and always passes `true`). **Verify this branch works correctly with a small isolated
+   test BEFORE wiring the full double-block forward pass around it** — an untested code path in a
+   shared, safety-critical shader is exactly the kind of thing that silently breaks everything
+   downstream.
+
+4. **RoPE dispatch is likely already solved.** `Flux2RoPE.BuildContextFreqsCompact` (added in
+   `4e4dc96`) already builds the compact `[nTokens, headDim/2]` one-value-per-pair table the
+   existing `Flux2DRoPE` GPU shader expects, with a passing unit test confirming it matches the
+   existing CPU `InterleavedRoPE` math — since the GPU rotation kernel itself only consumes a
+   precomputed per-token cos/sin table (axis count is a CPU-side table-construction concern, not a
+   GPU-kernel concern), this piece does NOT need new shader work, just correct wiring. Not yet
+   independently re-verified this session, but no red flags found.
+
+## Suggested implementation order — REVISED 2026-09-19 to reflect the real blockers found above
+
+1. ~~Re-verify the CPU path is correct~~ — **DONE**, FLUX.2's Pass 1 closed 2026-09-19 (real
+   512×512/20-step production run, clean coherent output, see docs/088).
+2. ~~Profile where CPU time actually goes~~ — not yet done with fresh post-close numbers; worth a
+   quick check before investing further GPU effort, but not currently believed to change the plan
+   (the DiT denoise loop dominated every other FLUX-family model's own profile).
+3. Write a small, ISOLATED test exercising `AdaLNModulate`'s `isRmsNorm: false` branch against a
+   known-good CPU `LayerNormNoAffine` + modulate reference — this branch has never been exercised
+   anywhere in this codebase and is a real correctness risk if wrong (see blocker 3 above). Do this
+   BEFORE building anything that depends on it.
+4. Author the new SiLU-gated-FFN GPU shader (blocker 2 above) — GLSL kernel, `ComputePipeline`
+   dispatch method, `scripts/gen-spirv.ps1` recompile, a parity test against the CPU `GatedFfn`
+   reference at a small synthetic scale before trusting it at DiT scale.
+5. Build `Flux2GpuWorkspace.cs` (double-block-scale buffers only — `nImg`/`nTxt`/`d`-sized
+   activation/attention/modulation buffers, following `FluxGpuWorkspace.cs`'s structure) and wire a
+   `Flux2DiT.ForwardGpu` that runs `img_in`/`txt_in` projection + the 8 double blocks on GPU (using
+   `Flux2GpuWeights` with `includeSingleBlocks: false`), then downloads to CPU `float[]` for the
+   remaining 48 single blocks + final layer via the already-working, unchanged CPU path.
+6. Write a real GPU-vs-CPU parity test comparing img/txt hidden states after the double-block loop
+   (before the single-block CPU handoff) — do not trust any output or timing until this passes.
+7. Get a real, measured single-step GPU-vs-CPU timing comparison on THIS machine's iGPU — per the
+   gating conditions, partial (double-block-only) residency could still lose to CPU on this
+   hardware; measure, don't assume (CLAUDE.md rule 13).
+8. If GPU wins: consider whether the SiLU-gated shader from step 4 or the `isRmsNorm=false` path
+   from step 3 need the same optimization sequence FLUX.1 went through (matrix-vector fast paths,
+   command-buffer batching) — don't assume the win transfers automatically.
+9. Record every real measurement in `PerformanceLeague.md` and `docs/088`, following this project's
+   existing documentation conventions.
+10. Single-stream-block GPU residency (the other ≈47.1GB) is a SEPARATE, larger future task —
+    requires either a wider-BN quantized-matmul shader variant (see docs/088 Pass 2 §2d's own
+    analysis) to stay within this machine's memory budget, or a machine with real headroom. Do not
+    attempt it by simply flipping `includeSingleBlocks: true` on this hardware.
