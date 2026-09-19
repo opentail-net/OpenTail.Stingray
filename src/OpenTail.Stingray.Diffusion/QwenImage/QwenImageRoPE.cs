@@ -1,3 +1,4 @@
+using OpenTail.Stingray.Diffusion.Primitives;
 
 namespace OpenTail.Stingray.Diffusion.QwenImage;
 
@@ -19,6 +20,18 @@ namespace OpenTail.Stingray.Diffusion.QwenImage;
 /// leaving local image-image relative-RoPE relationships intact -- consistent with the observed
 /// severe, periodic checkerboard/tiling artifact (locally-coherent texture, no global structure).
 /// </para>
+///
+/// <para><b>SECOND REAL BUG FOUND AND FIXED 2026-09-19 (docs/092)</b>: this file also delegated to
+/// <see cref="SplitHalfRoPE"/> (split-half/"NEOX" pairing), but the real reference uses
+/// adjacent-pair ("interleaved"/"GPT-J") pairing. Confirmed against
+/// `examples/diffusers/src/diffusers/models/transformers/transformer_qwenimage.py`'s
+/// `apply_rotary_emb_qwen` -- every real call site (`img_query`/`img_key`/`txt_query`/`txt_key`)
+/// passes `use_real=False`, taking the complex-number path:
+/// `x_rotated = torch.view_as_complex(x.float().reshape(*x.shape[:-1], -1, 2))` -- still adjacent
+/// pairs, just via complex multiplication instead of explicit cos/sin. Same bug class already
+/// found and fixed for Wan (2026-08-31) and FLUX.2 (2026-09-18) this session. Axis-dim split
+/// (t=16, h=56, w=56), theta, and the txt/img position-scheme fix above are UNCHANGED by this fix
+/// -- only the pairing/table-layout convention.</para>
 /// </summary>
 public static class QwenImageRoPE
 {
@@ -40,6 +53,10 @@ public static class QwenImageRoPE
         var cos = new float[totalLen * headDim];
         var sin = new float[totalLen * headDim];
 
+        var invFreqT = InterleavedRoPE.ComputeInvFreqs(dimT, theta);
+        var invFreqH = InterleavedRoPE.ComputeInvFreqs(dimH, theta);
+        var invFreqW = InterleavedRoPE.ComputeInvFreqs(dimW, theta);
+
         // Real `txt_id_start = max(h_len, w_len) / 2` (integer division) -- NOT 0.
         int txtIdStart = Math.Max(imgH, imgW) / 2;
 
@@ -49,11 +66,11 @@ public static class QwenImageRoPE
         //    each token gets `{txt_ids[j], txt_ids[j], txt_ids[j]}`).
         for (int i = 0; i < txtLen; i++)
         {
-            float pos = txtIdStart + i;
+            int pos = txtIdStart + i;
             int off = i * headDim;
-            SplitHalfRoPE.FillFrequencies(cos, sin, off, pos: pos, dim: dimT, theta: theta);
-            SplitHalfRoPE.FillFrequencies(cos, sin, off + dimT, pos: pos, dim: dimH, theta: theta);
-            SplitHalfRoPE.FillFrequencies(cos, sin, off + dimT + dimH, pos: pos, dim: dimW, theta: theta);
+            InterleavedRoPE.FillAxisFreqs(cos.AsSpan(off, dimT), sin.AsSpan(off, dimT), pos, invFreqT);
+            InterleavedRoPE.FillAxisFreqs(cos.AsSpan(off + dimT, dimH), sin.AsSpan(off + dimT, dimH), pos, invFreqH);
+            InterleavedRoPE.FillAxisFreqs(cos.AsSpan(off + dimT + dimH, dimW), sin.AsSpan(off + dimT + dimH, dimW), pos, invFreqW);
         }
 
         // 2. Image tokens: real scheme -- `scale_rope=true` in the real `gen_vid_ids` call means
@@ -69,13 +86,13 @@ public static class QwenImageRoPE
                 int tokenIdx = txtLen + row * imgW + col;
                 int baseOff = tokenIdx * headDim;
 
-                float tPos = 0f;
-                float hPos = hOffset + row;
-                float wPos = wOffset + col;
+                int tPos = 0;
+                int hPos = hOffset + row;
+                int wPos = wOffset + col;
 
-                SplitHalfRoPE.FillFrequencies(cos, sin, baseOff, pos: tPos, dim: dimT, theta: theta);
-                SplitHalfRoPE.FillFrequencies(cos, sin, baseOff + dimT, pos: hPos, dim: dimH, theta: theta);
-                SplitHalfRoPE.FillFrequencies(cos, sin, baseOff + dimT + dimH, pos: wPos, dim: dimW, theta: theta);
+                InterleavedRoPE.FillAxisFreqs(cos.AsSpan(baseOff, dimT), sin.AsSpan(baseOff, dimT), tPos, invFreqT);
+                InterleavedRoPE.FillAxisFreqs(cos.AsSpan(baseOff + dimT, dimH), sin.AsSpan(baseOff + dimT, dimH), hPos, invFreqH);
+                InterleavedRoPE.FillAxisFreqs(cos.AsSpan(baseOff + dimT + dimH, dimW), sin.AsSpan(baseOff + dimT + dimH, dimW), wPos, invFreqW);
             }
         }
 
@@ -86,5 +103,5 @@ public static class QwenImageRoPE
     /// Applies 3D RoPE in-place to Q or K tensor [seqLen, numHeads, headDim].
     /// </summary>
     public static void ApplyRoPE(float[] qk, float[] cos, float[] sin, int seqLen, int numHeads, int headDim)
-        => SplitHalfRoPE.ApplyRoPE(qk, cos, sin, seqLen, numHeads, headDim);
+        => InterleavedRoPE.ApplyRoPE(qk, cos, sin, seqLen, numHeads, headDim);
 }
