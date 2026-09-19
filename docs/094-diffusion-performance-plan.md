@@ -491,6 +491,26 @@ the starting picture:
       compute low despite the model's large weight footprint, the same effect noted for Wan2.1's own
       early small-scale numbers), a real production-resolution run is a reasonable next step, not
       prohibitively expensive like HunyuanVideo's broken-output case.
+  - **Real dual-model `WanPipeline.Generate` run completed, 2026-09-19** (`Wan22DualModelGenerateSmokeTests`):
+      the actual next step, done — loaded the low-noise transformer via `WanPipeline.Load` (with
+      Wan2.1's own `Wan2.1_VAE.safetensors`, expected-compatible per Wan2.2's real public release
+      notes: the T2V-A14B variant shares Wan2.1's 16-channel/8×-spatial VAE, only the separate
+      TI2V-5B variant uses a different one — not independently re-derived from a spec in this repo,
+      but the VAE decode completing cleanly with healthy stats is itself real evidence this
+      assumption held), loaded the high-noise transformer as a plain second `WanModel`, and called
+      `Generate(..., highNoiseTransformer: highModel, highNoiseBoundary: 0.5f)` — the real,
+      previously-never-exercised swap path. **128×128, 1 frame, 2 steps, zero-conditioning: 40.0s
+      total** (denoise + VAE decode 2.35s), healthy latent stats (mean=0.0226, std=0.4337 — a
+      reasonable, non-diverging flow-matching latent, same health-check convention used throughout
+      this doc). Output image is real, structured (not literal noise) but not coherent — expected
+      and unremarkable for a 2-step/zero-conditioning smoke test, the same bar every other model's
+      first milestone in this doc is held to, not a sign of a defect. **This closes Wan2.2-A14B's
+      dual-model coverage gap for real**: both transformers load with auto-detected correct config,
+      forward-pass individually, AND the actual `Generate`-level swap between them runs end-to-end
+      producing a real, finite, decodable image — genuinely new capability in this codebase, not a
+      documentation correction like several other findings this session. Real next steps for a
+      future pass: real text conditioning (this used zero-conditioning, matching this pass's
+      deliberately minimal smoke-test scope) and a production-resolution timing run.
 
 ### Phase 9 — Cross-model DRY + perf-doc consistency pass (per CLAUDE.md's own performance+DRY pass rule)
 
