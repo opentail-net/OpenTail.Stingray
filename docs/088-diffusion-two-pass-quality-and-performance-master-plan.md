@@ -812,6 +812,35 @@ attention, same general shape as FLUX.1):
       catalog first). Verify with a real GPU-vs-CPU parity test (`QwenImageGpuParityTests`, new)
       before trusting any timing number, matching every other model's own GPU-residency rollout in
       this doc.
+
+      **2026-09-19: real pre-implementation sizing check done before writing code (same discipline
+      that caught FLUX.2's memory-budget blocker) — a strong prior now argues against starting this
+      on this hardware.** Qwen Image's real checkpoint (`qwen-image-Q3_K_S.gguf`, 8.95GB at
+      Q3_K ≈3.44 bits/param) implies **≈20.8B total DiT parameters** — larger than FLUX.2's DiT —
+      across a UNIFORM 60-layer stack (`QwenImageModel.cs`'s `NumLayers`, `HiddenDim=3072`,
+      `mlpHidden=12288`), with no obvious cheap "double-block-only" subset the way FLUX.2 had (its
+      60 layers appear to all carry the same dual img/txt-attention cost per layer, not a
+      cheap-single-stream/expensive-double-stream split). A full FP16 upload would need
+      **≈40GB+**, and there's no clean way to shrink that the way FLUX.2's `includeSingleBlocks:
+      false` did, without arbitrarily choosing some prefix of the 60 layers (a real option, but a
+      real complexity add).
+
+      **More importantly**: this session already produced a REAL, MEASURED result for the exact
+      same class of work (double-stream-block GPU residency, real weights, correctly implemented
+      and numerically verified) on THIS SAME iGPU for FLUX.2 — CPU won by 1.49x, and the one-time
+      weight upload alone cost more than a full CPU compute pass (see this doc's FLUX.2 Phase 1
+      entry above and `docs/091`). The underlying cause (per-call dispatch overhead + no dedicated
+      VRAM bandwidth advantage on a shared-memory integrated GPU, CLAUDE.md rule 13) is a hardware
+      property, not a FLUX.2-specific one — there is no structural reason to expect Qwen Image's
+      own dual-stream attention blocks to behave differently on the identical GPU. **Recommendation:
+      do not start Qwen Image GPU residency on this machine without a real reason to expect a
+      different outcome than FLUX.2's.** If this is ever picked up, the responsible order is: (a)
+      re-read CLAUDE.md rule 13's own framing before assuming otherwise, (b) if proceeding anyway,
+      do the cheapest possible real test first — a single-layer (not full-model) GPU-vs-CPU
+      microbenchmark — before investing in the full weight-upload/workspace/parity-test
+      infrastructure FLUX.2's port required, since that infrastructure cost (a full session) would
+      be wasted again if the single-layer test already shows CPU winning. **Deprioritized, not
+      abandoned** — revisit if this project ever runs on hardware with genuine discrete VRAM.
 - [ ] **Phase 2 (Qwen Image) — real end-to-end Vulkan run + C++ reference comparison.** Real
       256×256/8-step coherence run on Vulkan GPU (compare visually against the already-verified
       CPU output, `docs/diffusion-samples/qwenimage_real_conditioning_256_8step_2026-09-18.png`);
