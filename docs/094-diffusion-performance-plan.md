@@ -132,9 +132,39 @@ the starting picture:
     defect. Timing: Vulkan 166.4s cold / 148.4s warm (vs CPU's 267.0s — GPU is ~1.8x faster, but its
     output is not yet trustworthy). **This GPU-specific bug is the new, real, precise blocker** —
     tracked as its own item below rather than assumed fixed by the T5 change.
-- [ ] **Bisect the remaining SD3.5 GPU-specific bug** (maxDiff 0.118, incoherent output despite a
-      correct CPU reference now existing to diff against): dump intermediate latents at each of the 20
-      Vulkan steps (same
+- [x] **Third candidate checked and RULED OUT, 2026-09-19** (`Sd3Q5KDequantCrossCheckTests`): a real
+      checkpoint inventory (`stingray list-tensors`) found `joint_blocks.*.{x_block,context_block}
+      .attn.qkv.weight` are **Q5_K** (not Q4_K like most of this checkpoint's other block weights) —
+      a quant format not yet cross-checked for the ReadF32-vs-fused-kernel dequant-agreement bug
+      class that this same technique found NOT to be the cause for Qwen Image's own GPU bug (BF16/
+      Q4_K both verified there). Same test: computed the real QKV projection two ways (`ReadF32`'s
+      `Dequantize.DequantQ5_K` vs `QuantizedWeightCache.Linear`'s fused Q5_K SIMD kernel) via a
+      one-hot-column extraction, 8 sampled columns × 4608 rows. **Result: maxDiff = 0.0 exactly.**
+      Q5_K dequant is not the bug either.
+  - **Batching-depth candidate not re-tested for SD3.5 specifically** — Qwen Image's own test of
+    this exact hypothesis (per-block vs. one-giant-batch) produced a bit-for-bit IDENTICAL parity
+    result either way, confirming (for correctly-written Vulkan dispatch code) that batching
+    granularity cannot change computed values, only timing/dispatch overhead — this generalizes and
+    doesn't need re-testing per-model. Not the cause here either, by that same logic.
+  - **The reference-keyed context cache (`_cachedContextGpu`) is not the cause of THIS specific
+    parity test's divergence** — `TestSd35GpuVsCpuParity` calls `MMDiT.Forward` exactly ONCE per
+    pipeline instance with a single one-shot random context array; the cache is empty beforehand and
+    populated with exactly one entry during that single call, so no staleness/reuse scenario the
+    cache exists to serve is even exercised. Ruled out by direct reasoning about the test's own
+    call pattern, not empirically, but conclusively for this test.
+  - **Status: three real candidates ruled out (dual-attention norm timing, GELU variant, Q5_K
+    dequant), one ruled out by generalization from Qwen Image's own test (batching), one ruled out
+    by direct reasoning about the test's call pattern (context cache staleness).** No candidate
+    confirmed yet. Given both this model's and Qwen Image's GPU bugs have now resisted the same
+    op-by-op review technique, the next real lever for EITHER is almost certainly a stage-by-stage
+    intermediate-tensor dump comparing GPU vs. CPU block-by-block (the technique that found Z-Image's
+    sign bug and FLUX's T5-padding bug), not more code-reading. Deferred — moving to other phases per
+    this doc's own "if stalled, move to the next checkbox" discipline; this is now the second GPU
+    correctness bug in this plan that needs that specific diagnostic technique, which is real
+    information for whoever picks either one up next (build the dump infrastructure once, reuse for
+    both).
+- [ ] (superseded scaffolding kept for the eventual bisection attempt) dump intermediate latents at
+      each of the 20 Vulkan steps (same
       `STINGRAY_ZIMAGE_DUMP_LATENT`-style env-var-gated pattern used for Z-Image) and compare divergence
       point against a step-by-step dump from `examples/stable-diffusion.cpp`'s MMDiT (`--diffusion-model`
       flag pattern already established for FLUX/SD1.5 C++ reference runs in this doc). Find the first
