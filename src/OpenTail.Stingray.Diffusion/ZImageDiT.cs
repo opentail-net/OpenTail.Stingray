@@ -49,6 +49,8 @@ public sealed class ZImageDiT : IDisposable
 
     /// <summary>Minimum batch size to route a MatQ call through the GPU backend.</summary>
     private const int MinGpuBatch = 16;
+    private readonly QuantizedWeightCache _quantizedCache;
+    private readonly Dictionary<string, float[]?> _biasCache = new(StringComparer.Ordinal);
 
     public ZImageDiT(IWeightLoader st, ZImageParams p, IComputeBackend? backend = null)
     {
@@ -56,6 +58,7 @@ public sealed class ZImageDiT : IDisposable
         _p       = p;
         _rope    = new ZImageRoPE(p);
         _backend = backend;
+        _quantizedCache = new QuantizedWeightCache(st);
         if (backend?.SupportsGpuDequant == true)
             _gpuWeights = new Dictionary<string, Core.Tensor>(StringComparer.Ordinal);
         // Cache bf16 weights on GPU so each weight is uploaded only once across all denoising steps.
@@ -752,9 +755,8 @@ public sealed class ZImageDiT : IDisposable
             }
             else
             {
-                // CPU path
-                fixed (float* xPtr = x, rPtr = result)
-                    SimdKernels.MatMulBatched(rPtr, (byte*)ptr, xPtr, n, rows, cols, dtype);
+                // CPU path: fast pre-transposed Q4Kx8 if compatible, otherwise direct raw MatMulBatched
+                _quantizedCache.Linear(wName, x.AsSpan(0, n * inDim), ReadOnlySpan<float>.Empty, result.AsSpan(), n, inDim, outDim);
             }
         }
         else
@@ -766,10 +768,21 @@ public sealed class ZImageDiT : IDisposable
 
         if (bName is not null)
         {
-            var bias = _st.ReadF32(bName);
-            for (int b = 0; b < n; b++)
-                TensorPrimitives.Add(result.AsSpan(b * outDim, outDim),
-                                     bias.AsSpan(), result.AsSpan(b * outDim, outDim));
+            float[]? bias;
+            lock (_biasCache)
+            {
+                if (!_biasCache.TryGetValue(bName, out bias))
+                {
+                    bias = _st.ReadF32(bName);
+                    _biasCache[bName] = bias;
+                }
+            }
+            if (bias is not null)
+            {
+                for (int b = 0; b < n; b++)
+                    TensorPrimitives.Add(result.AsSpan(b * outDim, outDim),
+                                         bias.AsSpan(), result.AsSpan(b * outDim, outDim));
+            }
         }
 
         return result;
@@ -824,6 +837,8 @@ public sealed class ZImageDiT : IDisposable
                 _gpuWeightsFp8.Clear();
             }
             _cache.Clear();
+            lock (_biasCache) _biasCache.Clear();
+            _quantizedCache.Dispose();
             _st.Dispose();
         }
     }

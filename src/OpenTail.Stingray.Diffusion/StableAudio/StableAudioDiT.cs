@@ -35,6 +35,7 @@ public sealed class StableAudioDiT : IDisposable
     private const float ExpoMaxFreq = 10000f;
 
     private readonly IWeightLoader _st;
+    private readonly QuantizedWeightCache _quantizedCache;
     private readonly CachedWeightReader _reader;
     private readonly bool _ownsLoader;
     private readonly Dictionary<float[], float[]> _condEmbedCache = new(ReferenceEqualityComparer.Instance);
@@ -44,6 +45,7 @@ public sealed class StableAudioDiT : IDisposable
     public StableAudioDiT(string path)
     {
         _st = SafetensorsLoader.Open(path);
+        _quantizedCache = new QuantizedWeightCache(_st);
         _reader = new CachedWeightReader(_st, "");
         _ownsLoader = true;
     }
@@ -51,11 +53,20 @@ public sealed class StableAudioDiT : IDisposable
     private StableAudioDiT(IWeightLoader loader, bool ownsLoader)
     {
         _st = loader;
+        _quantizedCache = new QuantizedWeightCache(_st);
         _reader = new CachedWeightReader(_st, "");
         _ownsLoader = ownsLoader;
     }
 
     private float[] ReadWeight(string name) => _reader.Get(name);
+
+    private float[] Linear(string weightName, string? biasName, ReadOnlySpan<float> x, int rows, int inDim, int outDim)
+    {
+        var outF = new float[rows * outDim];
+        var bias = biasName is not null ? ReadWeight(biasName) : null;
+        _quantizedCache.Linear(weightName, x, bias ?? ReadOnlySpan<float>.Empty, outF.AsSpan(), rows, inDim, outDim);
+        return outF;
+    }
 
     /// <summary>Wraps an already-open loader -- caller retains ownership.</summary>
     public static StableAudioDiT FromLoader(IWeightLoader loader) => new(loader, ownsLoader: false);
@@ -101,8 +112,7 @@ public sealed class StableAudioDiT : IDisposable
 
         var latentPre = Conv1x1Residual(latent, seqLen, IoChannels, "model.model.preprocess_conv.weight");
 
-        var projInW = ReadWeight("model.model.transformer.project_in.weight");
-        var x = DiffusionOps.Linear(latentPre, projInW, null, seqLen, IoChannels, Dim);
+        var x = Linear("model.model.transformer.project_in.weight", null, latentPre, seqLen, IoChannels, Dim);
 
         int totalSeq = MemoryTokens + seqLen;
         var xFull = new float[totalSeq * Dim];
@@ -122,8 +132,7 @@ public sealed class StableAudioDiT : IDisposable
         var stripped = new float[seqLen * Dim];
         xFull.AsSpan(MemoryTokens * Dim, seqLen * Dim).CopyTo(stripped);
 
-        var projOutW = ReadWeight("model.model.transformer.project_out.weight");
-        var outLow = DiffusionOps.Linear(stripped, projOutW, null, seqLen, Dim, IoChannels);
+        var outLow = Linear("model.model.transformer.project_out.weight", null, stripped, seqLen, Dim, IoChannels);
 
         return Conv1x1Residual(outLow, seqLen, IoChannels, "model.model.postprocess_conv.weight");
     }
@@ -133,51 +142,38 @@ public sealed class StableAudioDiT : IDisposable
     /// channels-first or token-first, so no real conv machinery is needed.</summary>
     private float[] Conv1x1Residual(float[] x, int seqLen, int channels, string weightKey)
     {
-        var w = ReadWeight(weightKey); // [channels, channels, 1] -> read as [channels, channels]
-        var y = DiffusionOps.Linear(x, w, null, seqLen, channels, channels);
+        var y = Linear(weightKey, null, x, seqLen, channels, channels);
         for (int i = 0; i < y.Length; i++) y[i] += x[i];
         return y;
     }
 
     private float[] ToCondEmbed(float[] condTokens, int nCond)
     {
-        var w0 = ReadWeight("model.model.to_cond_embed.0.weight");
-        var w2 = ReadWeight("model.model.to_cond_embed.2.weight");
-        var h = DiffusionOps.Linear(condTokens, w0, null, nCond, CondTokenDimRaw, Dim);
+        var h = Linear("model.model.to_cond_embed.0.weight", null, condTokens, nCond, CondTokenDimRaw, Dim);
         DiffusionOps.SiluInPlace(h);
-        return DiffusionOps.Linear(h, w2, null, nCond, Dim, Dim);
+        return Linear("model.model.to_cond_embed.2.weight", null, h, nCond, Dim, Dim);
     }
 
     private float[] ToGlobalEmbed(float[] secondsTotalRaw)
     {
-        var w0 = ReadWeight("model.model.to_global_embed.0.weight");
-        var w2 = ReadWeight("model.model.to_global_embed.2.weight");
-        var h = DiffusionOps.Linear(secondsTotalRaw, w0, null, 1, GlobalCondDimRaw, Dim);
+        var h = Linear("model.model.to_global_embed.0.weight", null, secondsTotalRaw, 1, GlobalCondDimRaw, Dim);
         DiffusionOps.SiluInPlace(h);
-        return DiffusionOps.Linear(h, w2, null, 1, Dim, Dim);
+        return Linear("model.model.to_global_embed.2.weight", null, h, 1, Dim, Dim);
     }
 
     private float[] ToTimestepEmbed(float timestep)
     {
         var feats = StableAudioAttentionKernels.ExpoFourierFeatures(timestep, TimestepFeaturesDim);
-        var w0 = ReadWeight("model.model.to_timestep_embed.0.weight");
-        var b0 = ReadWeight("model.model.to_timestep_embed.0.bias");
-        var w2 = ReadWeight("model.model.to_timestep_embed.2.weight");
-        var b2 = ReadWeight("model.model.to_timestep_embed.2.bias");
-        var h = DiffusionOps.Linear(feats, w0, b0, 1, TimestepFeaturesDim, Dim);
+        var h = Linear("model.model.to_timestep_embed.0.weight", "model.model.to_timestep_embed.0.bias", feats, 1, TimestepFeaturesDim, Dim);
         DiffusionOps.SiluInPlace(h);
-        return DiffusionOps.Linear(h, w2, b2, 1, Dim, Dim);
+        return Linear("model.model.to_timestep_embed.2.weight", "model.model.to_timestep_embed.2.bias", h, 1, Dim, Dim);
     }
 
     private float[] GlobalCondEmbedder(float[] globalEmbed)
     {
-        var w0 = ReadWeight("model.model.transformer.global_cond_embedder.0.weight");
-        var b0 = ReadWeight("model.model.transformer.global_cond_embedder.0.bias");
-        var w2 = ReadWeight("model.model.transformer.global_cond_embedder.2.weight");
-        var b2 = ReadWeight("model.model.transformer.global_cond_embedder.2.bias");
-        var h = DiffusionOps.Linear(globalEmbed, w0, b0, 1, Dim, Dim);
+        var h = Linear("model.model.transformer.global_cond_embedder.0.weight", "model.model.transformer.global_cond_embedder.0.bias", globalEmbed, 1, Dim, Dim);
         DiffusionOps.SiluInPlace(h);
-        return DiffusionOps.Linear(h, w2, b2, 1, Dim, 6 * Dim);
+        return Linear("model.model.transformer.global_cond_embedder.2.weight", "model.model.transformer.global_cond_embedder.2.bias", h, 1, Dim, 6 * Dim);
     }
 
     private float[] TransformerLayer(
@@ -242,12 +238,10 @@ public sealed class StableAudioDiT : IDisposable
 
     private float[] SelfAttention(float[] x, int seq, string p, float[] cos, float[] sin)
     {
-        var qkvW = ReadWeight($"{p}.self_attn.to_qkv.weight");
         var qNormW = ReadWeight($"{p}.self_attn.q_norm.gamma");
         var kNormW = ReadWeight($"{p}.self_attn.k_norm.gamma");
-        var outW = ReadWeight($"{p}.self_attn.to_out.weight");
 
-        var qkv = DiffusionOps.Linear(x, qkvW, null, seq, Dim, 3 * Dim);
+        var qkv = Linear($"{p}.self_attn.to_qkv.weight", null, x, seq, Dim, 3 * Dim);
         var q = new float[seq * Dim];
         var k = new float[seq * Dim];
         var v = new float[seq * Dim];
@@ -266,19 +260,16 @@ public sealed class StableAudioDiT : IDisposable
 
         var attnOut = StableAudioAttentionKernels.DotProductAttention(q, k, v, seq, seq, Heads, Dim);
 
-        return DiffusionOps.Linear(attnOut, outW, null, seq, Dim, Dim);
+        return Linear($"{p}.self_attn.to_out.weight", null, attnOut, seq, Dim, Dim);
     }
 
     private float[] CrossAttention(float[] x, int seq, float[] condEmbed, int nCond, string p)
     {
-        var qW = ReadWeight($"{p}.cross_attn.to_q.weight");
-        var kvW = ReadWeight($"{p}.cross_attn.to_kv.weight");
         var qNormW = ReadWeight($"{p}.cross_attn.q_norm.gamma");
         var kNormW = ReadWeight($"{p}.cross_attn.k_norm.gamma");
-        var outW = ReadWeight($"{p}.cross_attn.to_out.weight");
 
-        var q = DiffusionOps.Linear(x, qW, null, seq, Dim, Dim);
-        var kv = DiffusionOps.Linear(condEmbed, kvW, null, nCond, Dim, 2 * Dim);
+        var q = Linear($"{p}.cross_attn.to_q.weight", null, x, seq, Dim, Dim);
+        var kv = Linear($"{p}.cross_attn.to_kv.weight", null, condEmbed, nCond, Dim, 2 * Dim);
         var k = new float[nCond * Dim];
         var v = new float[nCond * Dim];
         for (int t = 0; t < nCond; t++)
@@ -290,28 +281,14 @@ public sealed class StableAudioDiT : IDisposable
         StableAudioAttentionKernels.PerHeadRmsNorm(q, seq, Heads, Dim, qNormW);
         StableAudioAttentionKernels.PerHeadRmsNorm(k, nCond, Heads, Dim, kNormW);
 
-        // Real reference behavior, confirmed by reading dit.py line-by-line (not the "V-zeroing"
-        // this class originally implemented, which was a plausible-looking but wrong guess): the
-        // real forward() UNCONDITIONALLY discards any cross_attn_cond_mask right after receiving it
-        // (`cross_attn_cond_mask = None  # Temporarily disabling conditioning masks due to kernel
-        // issue for flash attention`), on every code path including the CFG branch -- so real
-        // cross-attention in this shipped checkpoint never masks padded context rows at all, despite
-        // `mask_padding_attention: true` in the real model_config.json suggesting otherwise. No
-        // masking is applied here to match that real (if surprising) behavior exactly.
-
         var attnOut = StableAudioAttentionKernels.DotProductAttention(q, k, v, seq, nCond, Heads, Dim);
 
-        return DiffusionOps.Linear(attnOut, outW, null, seq, Dim, Dim);
+        return Linear($"{p}.cross_attn.to_out.weight", null, attnOut, seq, Dim, Dim);
     }
 
     private float[] FeedForward(float[] x, int seq, string p)
     {
-        var w0 = ReadWeight($"{p}.ff.ff.0.proj.weight");
-        var b0 = ReadWeight($"{p}.ff.ff.0.proj.bias");
-        var w2 = ReadWeight($"{p}.ff.ff.2.weight");
-        var b2 = ReadWeight($"{p}.ff.ff.2.bias");
-
-        var proj = DiffusionOps.Linear(x, w0, b0, seq, Dim, 2 * FfInner);
+        var proj = Linear($"{p}.ff.ff.0.proj.weight", $"{p}.ff.ff.0.proj.bias", x, seq, Dim, 2 * FfInner);
         var h = new float[seq * FfInner];
         for (int t = 0; t < seq; t++)
         {
@@ -321,7 +298,29 @@ public sealed class StableAudioDiT : IDisposable
             for (int i = 0; i < FfInner; i++) dst[i] = val[i] * DiffusionOps.Silu(gate[i]);
         }
 
-        return DiffusionOps.Linear(h, w2, b2, seq, FfInner, Dim);
+        return Linear($"{p}.ff.ff.2.weight", $"{p}.ff.ff.2.bias", h, seq, FfInner, Dim);
+    }
+
+    public (float[] k, float[] v)[] PrecomputeConditioning(float[] condTokens, int nCond)
+    {
+        var condEmbed = ToCondEmbed(condTokens, nCond);
+        var kvCache = new (float[] k, float[] v)[Depth];
+        for (int layer = 0; layer < Depth; layer++)
+        {
+            string p = $"model.model.transformer.layers.{layer}";
+            var kv = Linear($"{p}.cross_attn.to_kv.weight", null, condEmbed, nCond, Dim, 2 * Dim);
+            var k = new float[nCond * Dim];
+            var v = new float[nCond * Dim];
+            for (int t = 0; t < nCond; t++)
+            {
+                kv.AsSpan(t * 2 * Dim, Dim).CopyTo(k.AsSpan(t * Dim, Dim));
+                kv.AsSpan(t * 2 * Dim + Dim, Dim).CopyTo(v.AsSpan(t * Dim, Dim));
+            }
+            var kNormW = ReadWeight($"{p}.cross_attn.k_norm.gamma");
+            StableAudioAttentionKernels.PerHeadRmsNorm(k, nCond, Heads, Dim, kNormW);
+            kvCache[layer] = (k, v);
+        }
+        return kvCache;
     }
 
     public StableAudioGpuWeights EnsureGpuWeights(IComputeBackend backend)
@@ -545,6 +544,7 @@ public sealed class StableAudioDiT : IDisposable
     public void Dispose()
     {
         if (_ownsLoader) _st.Dispose();
+        _quantizedCache.Dispose();
         _gpuWeights?.Dispose();
     }
 }

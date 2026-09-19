@@ -24,6 +24,7 @@ public sealed class LtxVideoModel : IDisposable
     private readonly IWeightLoader _weights;
     private readonly string _prefix;
     private readonly IComputeBackend? _backend;
+    private readonly QuantizedWeightCache _quantizedCache;
     private readonly Dictionary<string, float[]> _weightCache = new(StringComparer.Ordinal);
     private LtxVideoGpuWeights? _gpuWeights;
     private LtxVideoGpuWorkspace? _gpuWorkspace;
@@ -65,6 +66,7 @@ public sealed class LtxVideoModel : IDisposable
         _weights = weights;
         _prefix = prefix.Length > 0 && !prefix.EndsWith('.') ? prefix + "." : prefix;
         _backend = backend;
+        _quantizedCache = new QuantizedWeightCache(weights, _prefix);
 
         (InChannels, HiddenSize, NumHeads, HeadDim, OutChannels, CrossAttentionDim, CaptionChannels,
             NumLayers, CrossAttentionAdaln, SelfAttentionGated, CrossAttentionGated) = DetectConfig(_weights, _prefix);
@@ -448,19 +450,20 @@ public sealed class LtxVideoModel : IDisposable
 
     private float[] Linear(string name, float[] x, int inDim, int outDim)
     {
-        var w = GetWeight($"{name}.weight");
         var b = TryGetWeight($"{name}.bias");
         int rows = x.Length / inDim;
-        return DiffusionOps.Linear(x, w, b, rows, inDim, outDim);
+        var result = new float[rows * outDim];
+        _quantizedCache.Linear($"{name}.weight", x.AsSpan(0, rows * inDim), b ?? ReadOnlySpan<float>.Empty, result.AsSpan(), rows, inDim, outDim);
+        return result;
     }
 
     private float[] Linear(string name, ReadOnlySpan<float> x, int inDim, int outDim)
     {
-        var w = GetWeight($"{name}.weight");
         var b = TryGetWeight($"{name}.bias");
         int rows = x.Length / inDim;
-        var xArr = x.ToArray();
-        return DiffusionOps.Linear(xArr, w, b, rows, inDim, outDim);
+        var result = new float[rows * outDim];
+        _quantizedCache.Linear($"{name}.weight", x.Slice(0, rows * inDim), b ?? ReadOnlySpan<float>.Empty, result.AsSpan(), rows, inDim, outDim);
+        return result;
     }
 
     private void EnsureGpuResident(IVisionOpsBackend visionOps, IImageOpsBackend imageOps, int numTokens, int numTxt)
@@ -662,6 +665,7 @@ public sealed class LtxVideoModel : IDisposable
             if (_cachedRopeSinGpu is not null) { _backend?.Free(_cachedRopeSinGpu); _cachedRopeSinGpu = null; }
             _gpuWorkspace?.Dispose();
             _gpuWeights?.Dispose();
+            _quantizedCache.Dispose();
             _weights.Dispose();
         }
     }

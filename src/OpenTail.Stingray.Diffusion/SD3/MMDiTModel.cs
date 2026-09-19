@@ -14,6 +14,8 @@ public sealed class MMDiTModel : IDisposable
     private readonly CachedWeightReader _weightReader;
     private readonly IComputeBackend? _backend;
     private readonly Dictionary<string, CoreTensor>? _gpuWeights;
+    private readonly QuantizedWeightCache _quantizedCache;
+    private readonly Dictionary<string, float[]?> _biasCache = new(StringComparer.Ordinal);
     private MMDiTGpuWeights? _residentGpuWeights;
     private MMDiTGpuWorkspace? _residentGpuWorkspace;
     private readonly Dictionary<float[], CoreTensor> _cachedContextGpu = new(ReferenceEqualityComparer.Instance);
@@ -42,6 +44,7 @@ public sealed class MMDiTModel : IDisposable
         IComputeBackend? backend = null)
     {
         _weightReader = new CachedWeightReader(weights, prefix);
+        _quantizedCache = new QuantizedWeightCache(weights, prefix);
         HiddenSize = hiddenSize;
         NumHeads = numHeads;
         HeadDim = hiddenSize / numHeads;
@@ -215,11 +218,29 @@ public sealed class MMDiTModel : IDisposable
             return wGpu;
         }
     }
-
     public unsafe void Lin(string name, ReadOnlySpan<float> x, Span<float> dst, int n, int inDim, int outDim)
     {
+        float[]? bF;
+        lock (_biasCache)
+        {
+            if (!_biasCache.TryGetValue(name, out bF))
+            {
+                bF = TryGetWeight($"{name}.bias");
+                _biasCache[name] = bF;
+            }
+        }
+
+        if (bF is not null && bF.Length != outDim)
+            throw new InvalidOperationException(
+                $"MMDiTModel.Lin(\"{name}\"): bias buffer has {bF.Length} elements, expected outDim={outDim}.");
+
+        if (_backend is null)
+        {
+            _quantizedCache.Linear($"{name}.weight", x.Slice(0, n * inDim), bF is not null ? bF.AsSpan(0, outDim) : ReadOnlySpan<float>.Empty, dst.Slice(0, n * outDim), n, inDim, outDim);
+            return;
+        }
+
         var wF = GetWeight($"{name}.weight");
-        var bF = TryGetWeight($"{name}.bias");
 
         // Real checkpoint has never been run against this port before this pass -- a wrong
         // n/inDim/outDim here previously corrupted memory silently (DiffusionOps.Linear indexes
@@ -239,15 +260,6 @@ public sealed class MMDiTModel : IDisposable
             throw new InvalidOperationException(
                 $"MMDiTModel.Lin(\"{name}\"): dest buffer has {dst.Length} elements, expected at least " +
                 $"n*outDim = {n}*{outDim} = {(long)n * outDim}.");
-        if (bF is not null && bF.Length != outDim)
-            throw new InvalidOperationException(
-                $"MMDiTModel.Lin(\"{name}\"): bias buffer has {bF.Length} elements, expected outDim={outDim}.");
-
-        if (_backend is null)
-        {
-            DiffusionOps.Linear(x.Slice(0, n * inDim), wF.AsSpan(0, outDim * inDim), bF is not null ? bF.AsSpan(0, outDim) : ReadOnlySpan<float>.Empty, dst.Slice(0, n * outDim), n, inDim, outDim);
-            return;
-        }
 
         var wGpu = GetGpuWeight($"{name}.weight", wF);
         var xGpu = _backend.Upload(x.Slice(0, n * inDim), TensorShape.D1(n * inDim));
@@ -904,5 +916,7 @@ public sealed class MMDiTModel : IDisposable
             }
         }
         _weightReader.Clear();
+        _quantizedCache.Dispose();
+        lock (_biasCache) _biasCache.Clear();
     }
 }

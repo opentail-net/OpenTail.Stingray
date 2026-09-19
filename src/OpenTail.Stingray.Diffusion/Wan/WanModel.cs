@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using CoreTensor = OpenTail.Stingray.Core.Tensor;
 
 namespace OpenTail.Stingray.Diffusion.Wan;
@@ -9,6 +10,8 @@ namespace OpenTail.Stingray.Diffusion.Wan;
 public sealed class WanModel : IDisposable
 {
     private readonly IWeightLoader _weights;
+    private readonly QuantizedWeightCache _quantizedCache;
+    private readonly ConcurrentDictionary<string, float[]?> _biasCache = new(StringComparer.Ordinal);
     private readonly string _prefix;
     private readonly IComputeBackend? _backend;
     private readonly Dictionary<string, float[]> _weightCache = new(StringComparer.Ordinal);
@@ -48,6 +51,7 @@ public sealed class WanModel : IDisposable
     public WanModel(IWeightLoader weights, string prefix = "", int numLayers = 30, int dim = 1536, int numHeads = 12, IComputeBackend? backend = null)
     {
         _weights = weights;
+        _quantizedCache = new QuantizedWeightCache(weights);
         _prefix = prefix;
         _backend = backend;
         (_numLayers, _dim, _numHeads) = DetectConfig(weights, prefix, numLayers, dim, numHeads);
@@ -1065,26 +1069,22 @@ public sealed class WanModel : IDisposable
         return res;
     }
 
-    private unsafe void Linear(string name, float[] x, Span<float> output, int inDim, int outDim)
+    private void Linear(string name, float[] x, Span<float> output, int inDim, int outDim)
     {
-        var w = GetWeight($"{name}.weight");
-        var b = TryGetWeight($"{name}.bias");
+        string wName = Resolve($"{name}.weight");
+        string bName = Resolve($"{name}.bias");
+        var b = _biasCache.GetOrAdd(bName, k => TryGetWeightDirect(k));
         int rows = x.Length / inDim;
+        _quantizedCache.Linear(wName, x, b ?? ReadOnlySpan<float>.Empty, output, rows, inDim, outDim);
+    }
 
-        fixed (float* pOut = output, pIn = x, pW = w)
+    private float[]? TryGetWeightDirect(string fullName)
+    {
+        if (_weights.Contains(fullName))
         {
-            if (b is not null)
-            {
-                fixed (float* pB = b)
-                {
-                    SimdKernels.MatMulBatchedF32(pOut, pW, pIn, rows, outDim, inDim, pB);
-                }
-            }
-            else
-            {
-                SimdKernels.MatMulBatchedF32(pOut, pW, pIn, rows, outDim, inDim, null);
-            }
+            return _weights.ReadF32(fullName);
         }
+        return null;
     }
 
     private float[] Linear(string name, float[] x, int inDim, int outDim)
@@ -1202,6 +1202,7 @@ public sealed class WanModel : IDisposable
                     _backend?.Free(tensor);
                 _gpuWeights.Clear();
             }
+            _quantizedCache.Dispose();
             _weights.Dispose();
         }
     }
