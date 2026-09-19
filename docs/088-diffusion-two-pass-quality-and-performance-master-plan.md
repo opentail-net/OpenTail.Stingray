@@ -58,12 +58,16 @@ the next item, since a status can change mid-loop):**
    approach (e.g. a full numeric latent dump compared directly against a Python-side partial
    reference, rather than more line-by-line reading) may be more productive than another audit pass.
 5. **GPU-residency phases for Qwen Image and FLUX.2** (see Pass 2 §2d, new) — FLUX.2's
-   double-block-only GPU residency **investigated and CLOSED 2026-09-19, real negative result**:
-   built and numerically verified correct (cosine>0.9999 vs CPU), but a real production-scale
-   timing measurement found CPU is 1.49x faster than GPU, and the one-time weight upload alone
-   costs more than an entire CPU compute pass — see `docs/091`'s final status and
-   `PerformanceLeague.md` for the full measurement. **Not pursued further on this hardware.**
-   Qwen Image's GPU-residency phase remains open/not-started.
+   double-block-only GPU residency: built and numerically verified correct (cosine>0.9999 vs CPU);
+   a real production-scale timing measurement found CPU is 1.49x faster than GPU on this dev iGPU,
+   with the one-time weight upload alone costing more than an entire CPU compute pass. **Per
+   explicit operator instruction, wired into the real pipeline anyway** (`Flux2Pipeline.Load`'s new
+   `ditBackend` parameter) — real end-to-end GPU-wired generation verified producing correct,
+   coherent output (`Flux2GpuWiredEndToEndTests.cs`). GPU is a real, selectable, exercised option
+   in the actual `Generate()` path now, not just an isolated test; being slower today is the reason
+   to optimize it further, not a reason to leave it unwired. See `docs/091`'s status for the full
+   trail. Qwen Image's GPU-residency phase remains open/not-started (deprioritized with the same
+   reasoning, pending revisit).
 
 ## Why two passes, in this order
 

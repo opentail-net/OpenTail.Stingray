@@ -1,17 +1,26 @@
 # 091 — FLUX.2 Vulkan GPU-residency scoping
 
-**FINAL STATUS, 2026-09-19: INVESTIGATED AND CLOSED — real negative result, do not pursue further
-on this machine.** Gating condition 1 (CPU correctness) was met (FLUX.2's Pass 1 closed, see
-docs/088). Double-block-only GPU residency was fully built (`Flux2GpuWeights.cs`,
-`Flux2GpuWorkspace.cs`, `Flux2DiT.DoubleBlockGpu`) and independently verified numerically correct
-against the real CPU reference (cosine>0.9999). But a real, production-scale timing measurement
-(`Flux2DoubleBlockGpuBenchmarkTests.cs`) found **CPU is 1.49x faster than GPU for the compute
-itself, and the one-time weight upload alone costs more than an entire CPU compute pass** — GPU
-residency would make full generations SLOWER on this specific iGPU hardware, confirming gating
-condition 3's own concern (CLAUDE.md rule 13). See "Real blockers found before/while implementing"
-below for the full investigation trail, and its final entry for the complete negative result. The
-double-block GPU code is real, correct, and kept in the codebase as potentially reusable on
-hardware with genuine discrete VRAM — it is just not enabled or built upon further here.
+**STATUS, 2026-09-19: GPU double-block residency is REAL, CORRECT, WIRED INTO THE ACTUAL PIPELINE,
+and MEASURED SLOWER than CPU on this specific dev iGPU — all three of those are true at once, and
+none of them contradict the others.** Gating condition 1 (CPU correctness) was met (FLUX.2's Pass 1
+closed, see docs/088). Double-block-only GPU residency was fully built (`Flux2GpuWeights.cs`,
+`Flux2GpuWorkspace.cs`, `Flux2DiT.DoubleBlockGpu`/`ComputeSharedDoubleModulationGpu`) and
+independently verified numerically correct against the real CPU reference (cosine>0.9999). A real,
+production-scale timing measurement (`Flux2DoubleBlockGpuBenchmarkTests.cs`) found CPU is 1.49x
+faster than GPU for the compute itself on this machine, and the one-time weight upload alone costs
+more than an entire CPU compute pass (CLAUDE.md rule 13's own iGPU caution, confirmed for real).
+**Per explicit operator instruction, this was NOT treated as a reason to leave the GPU path
+unwired**: `Flux2Pipeline.Load` now takes an optional `ditBackend` parameter that, when a real GPU
+backend is passed, routes the double-block loop through the verified GPU path inside the ACTUAL
+`Generate()` call — not just an isolated unit-level test. A real end-to-end run through this wired
+path (`Flux2GpuWiredEndToEndTests.cs`, 128×128/4-step, real Mistral+VAE, real Vulkan GPU) produced a
+genuinely coherent, correct output image, matching the CPU-only path's quality exactly. **GPU is
+now a real, selectable, exercised option in the real generation pipeline — being slower today is
+the reason to keep optimizing it, not a reason it shouldn't exist as an option.** See "Real
+blockers found before/while implementing" below for the full investigation trail. The 48
+single-stream blocks stay CPU-only (memory-budget reasons); optimizing the wired double-block GPU
+path further, or extending residency to single blocks (needs the wider-BN quantized-shader work
+from docs/088 Pass 2 §2d), are the real next steps if GPU speed is prioritized.
 
 ## Gating conditions — check these before starting
 
