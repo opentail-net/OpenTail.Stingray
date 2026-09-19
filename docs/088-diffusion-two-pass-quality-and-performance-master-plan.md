@@ -46,12 +46,12 @@ the next item, since a status can change mid-loop):**
 4. **HunyuanVideo** — 🟡 open, unresolved, furthest from done. Text conditioning closed; DiT+VAE
    run end-to-end but output is still pure noise despite 3 independently-confirmed-correct fixes
    (flipSinToCos, RoPE pairing convention, RoPE img/txt ordering — see Pass 1 entry for detail).
-   Pre-decode latent stats are healthy (mean~0, std~1.04) but inconclusive (a wrong permutation
-   would look identical in aggregate stats). Real next step, not yet done: a byte-for-byte audit of
-   `HunyuanVaeDecoder3D.cs`'s `HunyuanVideoCausalConv3d` REPLICATE-padding offsets and
-   `UpsampleCausal3D`'s per-frame (frame-0-special-cased) nearest-neighbor upsample logic against
-   `autoencoder_kl_hunyuan_video.py` — this has NOT been done yet, only the upsample-stage
-   flags/attention-head-count/GroupNorm/tensor-naming have been checked so far.
+   **2026-09-19: the full VAE decoder audit is now done — real negative result, no bug found**
+   (causal-padding, upsample frame-0-special-casing, and causal attention mask all confirmed
+   byte-for-byte correct against `autoencoder_kl_hunyuan_video.py`). This narrows the remaining
+   search toward the DiT itself. Real next step, not yet done: audit `HunyuanVideoModel.cs`'s
+   `TokenRefiner` (`IndividualTokenRefiner`, wired 2026-09-15, never re-checked since) against
+   `transformer_hunyuan_video.py`'s `HunyuanVideoTokenRefiner` line-by-line.
 5. **GPU-residency phases for Qwen Image and FLUX.2** (see Pass 2 §2d, new) — start once their
    respective Pass 1 items above are confirmed closed at production resolution, not before
    (CLAUDE.md rule 7: don't port a still-uncertain CPU implementation to GPU).
@@ -355,6 +355,43 @@ worse than no status.
       so the next real chunk of work here is a full byte-for-byte causal-padding/upsample-frame-
       indexing re-audit of `HunyuanVaeDecoder3D.cs`, not yet done. Picking up FLUX.2's next open
       candidate instead per the backlog ordering.
+
+      **2026-09-19: the deferred VAE audit is now DONE — full byte-for-byte comparison against
+      `autoencoder_kl_hunyuan_video.py`, real negative result (no bug found).** Checked all three
+      previously-flagged pieces:
+      - `CausalConv3D`'s padding exactly matches `HunyuanVideoCausalConv3d`'s
+        `time_causal_padding = (kw//2, kw//2, kh//2, kh//2, kt-1, 0)` with REPLICATE mode: temporal
+        is causal left-only pad of `kt-1` frames clamped to frame 0 (`padT = kt-1`, confirmed in
+        `HunyuanVaeDecoder3D.cs` line ~351), spatial is symmetric `kh/2`/`kw/2` clamp-to-edge —
+        byte-for-byte match.
+      - `UpsampleCausal3D`'s frame-0-special-casing exactly matches
+        `HunyuanVideoUpsampleCausal3D.forward`'s real split: frame 0 gets spatial-only nearest
+        upsample (`F.interpolate(first_frame, scale_factor=upsample_factor[1:])`, no temporal
+        scaling — a causal decoder literally cannot temporally upsample the first frame since
+        there's no earlier frame to interpolate from), frames 1..N-1 get full temporal+spatial
+        nearest upsample producing `1 + (t-1)*factorT` total output frames, not `t*factorT` — this
+        port's own `outT = temporal ? 1 + (t - 1) * factorT : t` and the explicit frame-index
+        mapping `outTIdx = 1 + (inT - 1) * factorT + dt` match this exactly.
+      - The mid-block self-attention's causal FRAME mask (`prepare_causal_attention_mask`,
+        blocking a query frame from attending to any LATER frame, but allowing full attention
+        within/before its own frame) exactly matches this port's `frameJ > frameI` score-masking
+        in `SelfAttention3D`; the `1/sqrt(ch)` attention scale also matches (heads=1,
+        `dim_head=in_channels=ch`).
+
+      **No bug found anywhere in the VAE decoder.** Combined with the already-verified upsample-
+      stage flags, GroupNorm structure, and tensor naming from the prior pass, this constitutes a
+      genuinely complete audit of `HunyuanVaeDecoder3D.cs` against its real reference — every
+      documented candidate has now been checked and found correct. This is real, valuable negative
+      information: it substantially narrows the remaining search toward the DiT itself (most likely
+      a permutation-class bug that would look identical to healthy output in aggregate latent
+      stats — e.g. a wrong per-head or per-patch-channel ordering somewhere not yet checked, such as
+      the `TokenRefiner`'s own internal wiring, or `PackLatents`/`UnpackLatents`'s patchify channel
+      order under a specific case not yet re-verified since the img/txt-ordering fix touched
+      adjacent code) rather than the VAE. Real next step for whoever picks this up: audit
+      `HunyuanVideoModel.cs`'s `TokenRefiner` (the real `IndividualTokenRefiner` wiring, wired
+      2026-09-15 but never independently re-checked since) against
+      `transformer_hunyuan_video.py`'s `HunyuanVideoTokenRefiner` line-by-line — this is the one
+      remaining major DiT subsystem not yet re-audited this session.
 - [x] **LTX-Video — MAJOR FINDING, 2026-09-18: the "pure noise" instability was (largely/entirely)
       a missing-real-text-conditioning artifact.** Every prior noise-producing run in this item's
       history used placeholder (zero/mock) text conditioning; a real local T5-v1.1-XXL checkpoint
