@@ -242,11 +242,28 @@ the starting picture:
     caching) — a single-call parity test structurally cannot show it. **Real next step, not done this
     pass**: a multi-step timing test (matching `Sd3BaselineTests`' own `GenerateApple_20Steps_*`
     pattern) to get a real amortized per-step GPU number instead of this single-call one.
-  - **Honest status: PLAUSIBLE, not CONFIRMED.** The op-level math checks out and the timing anomaly
-    has a credible non-bug explanation, but this has not been re-verified with an actual coherent
-    end-to-end image (no `QwenImagePipeline`-level GPU generate + visual check has been run yet,
-    the same standard SD3.5's fix was held to before being trusted). Do not cite this GPU port as
-    "working" until that real image exists and is visually inspected.
+  - **Real end-to-end visual check run, 2026-09-19 — REVISED VERDICT: likely a real remaining bug,
+    not just FP16 accumulation.** `QwenImageGpuEndToEndSmokeTests` (128×128, 4 steps, zero-conditioning,
+    Vulkan) completed without crashing (214.9s) and produced a real, non-degenerate PNG
+    (`qwenimage_gpu_smoke_2026-09-19.png`) — but its visual CHARACTER is qualitatively different from
+    the known CPU zero-conditioning reference (`qwenimage_red-apple-on-white-table_256x256_4steps_zero-cond_2026-09-18.png`,
+    from the real 2026-09-18 CPU run docs/089 already investigated): the CPU reference is a sharp,
+    highly regular checkerboard/tiling grid (this project's own documented zero-conditioning
+    signature); the GPU output is diffuse, blotchy, smudged patches with NO grid structure at all.
+    FP16 rounding error compounding over depth would be expected to blur or slightly distort a
+    pattern like this, not erase its entire regular structure — this qualitative mismatch is harder
+    to explain as pure precision accumulation than the parity test's maxDiff number alone suggested.
+    **Verdict revised: PLAUSIBLE-BUT-LIKELY-BUGGY**, not confirmed working. The five ops manually
+    verified byte-for-byte in the row above (RoPE, concat/slice, AdaLN modulate, QKNorm) are still
+    ruled out; remaining unchecked candidates are `QwenImageGpuWeights`' per-layer weight
+    upload/transpose (a subtly wrong stride here — e.g. a mismatched `[out,in]` vs `[in,out]`
+    orientation for one of the 8+ weight matrices per block — would plausibly produce exactly this
+    "runs fine, wrong texture" signature) and the FP16 conversion path itself interacting badly with
+    this checkpoint's specific weight magnitude distribution (Q3_K_S is a much more aggressive
+    quantization than the FP16/BF16 checkpoints FLUX.1/SD3.5's own GPU ports were built against —
+    worth checking whether `QuantizedWeightCache`'s CPU dequant and this port's own independent
+    `GetWeight`-then-cast-to-FP16 path could disagree for this specific quant format). Not resolved
+    this pass — real, precise next step for whoever picks this up, not a vague "needs more testing."
 - [ ] Real numerical parity test (GPU vs CPU forward, real weights) before any timing claim.
 - [ ] Real end-to-end Vulkan timing vs the existing 348.4s CPU baseline. Document in
       `PerformanceLeague.md`. No C++ reference exists for Qwen Image in `examples/` — note that
