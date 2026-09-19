@@ -57,11 +57,44 @@ the starting picture:
       worth taking yet — so readers don't conclude "GPU work not started" when it's "GPU work started,
       blocked on upstream correctness."
 
-### Phase 1 — SD3.5: benchmark the existing (undocumented) GPU path, then close the gap to C++
+### Phase 1 — SD3.5: **CRITICAL REGRESSION FOUND** — fix correctness before any more perf work counts
 
-- [ ] Real end-to-end SD3.5 Vulkan run, same config as the CPU baseline (256×256, 20 steps, seed 42,
-      "a red apple on a wooden table") using the already-built `ForwardGpu` path. Verify output is
-      visually coherent (not just non-crashing) before trusting the timing.
+- [x] Real end-to-end SD3.5 Vulkan run, same config as the CPU baseline (256×256, 20 steps, seed 42,
+      "a red apple on a wooden table") using the already-built `ForwardGpu` path — ran via the
+      already-existing `Sd3BaselineTests.GenerateApple_20Steps_Sd35_Cpu`/`..._Vulkan`/`TestSd35GpuVsCpuParity`,
+      2026-09-19. **Real numbers**: CPU 175.3s (down from the doc's stale 536.4s — 3.06× faster,
+      consistent with the shared cross-model infra wins e.g. SDXL's own 2026-09-19 3.16× jump);
+      Vulkan 78.1s warm / 87.1s cold (first-ever GPU timing for this model); GPU-vs-CPU forward parity
+      cosine 0.999724, maxDiff 0.118420 (**notably higher maxDiff than every other model's parity
+      check in this doc**, e.g. FLUX's ~5.5e-3 — flagged, not yet explained). Vulkan is only ~1.63×
+      slower than the C++ reference (78.1s vs 48.01s) — much closer than any prior SD3.5 number on
+      record, IF the output were correct.
+  - **But visual inspection of both output PNGs (`sd35_medium_apple_cpu_256_20steps.png`,
+    `sd35_medium_apple_vulkan_256_20steps.png`) shows garbled, incoherent color-block noise on BOTH
+    backends — not a red apple, not "coherent geometric structure" as `PerformanceLeague.md` line 877
+    currently (wrongly) claims.** The real C++ reference PNG
+    (`sd35_medium_apple_cpp_vulkan_256_20steps.png`) is a genuine, correct, photorealistic apple —
+    confirming this is a real regression in our own port, not a reference/prompt mismatch. This
+    contradicts the doc's post-2026-09-05-fix claim and must be re-diagnosed: either a real regression
+    landed after 2026-09-05's dual-attention-norm/VAE-scale/unpatchify/pos-embed fixes, or that
+    correctness claim was itself never re-verified visually (the doc's own words hedge: "output ...
+    matching the verified post-fix appearance in docs/057" — a citation, not a fresh look). The high
+    parity maxDiff (0.118) between CPU and GPU, both producing garbage, suggests the bug is upstream
+    of the backend split (shared `MMDiTModel.Forward` CPU math, or the scheduler/VAE common to both).
+  - **Root-causing this is now the actual top priority for SD3.5** — every item below in this phase is
+    blocked on it. This is exactly the "check the real reference before fixing code that looks wrong"
+    situation CLAUDE.md warns about: bisect against `examples/stable-diffusion.cpp`'s real MMDiT
+    forward stage-by-stage (same technique already used successfully for Z-Image's sign-convention bug
+    and FLUX's T5-padding bug) rather than guessing.
+- [ ] **Bisect the SD3.5 regression**: dump intermediate latents at each of the 20 steps (same
+      `STINGRAY_ZIMAGE_DUMP_LATENT`-style env-var-gated pattern used for Z-Image) and compare divergence
+      point against a step-by-step dump from `examples/stable-diffusion.cpp`'s MMDiT (`--diffusion-model`
+      flag pattern already established for FLUX/SD1.5 C++ reference runs in this doc). Find the first
+      step where output diverges meaningfully, then check that step's the exact ops against
+      `examples/diffusers`' real `SD3Transformer2DModel` for the same stage.
+- [ ] Once root-caused and fixed: re-verify with a fresh visual check (not just golden/numeric parity —
+      this bug proves numeric-only checks can miss real breakage) and re-run both CPU and Vulkan timings.
+- [ ] Re-verify output is visually coherent (not just non-crashing) before trusting any further timing.
 - [ ] Compare against the already-captured C++ reference (`stable-diffusion.cpp` Vulkan: 48.01s total,
       MMDiT sampling 36.81s/1.75s-per-step) — compute the real ratio, same format as every other model
       in the doc.
