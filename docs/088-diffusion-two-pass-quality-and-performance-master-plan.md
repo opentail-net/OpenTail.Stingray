@@ -17,6 +17,33 @@ Vulkan reference, `WanModel.cs`'s 54 real backend call sites) while fixing the c
 regression. Fix forward: find and fix the real bug, then re-verify performance hasn't regressed
 using the exact same measurement methodology already in `PerformanceLeague.md`'s Wan rows.**
 
+**Current standing priority order, 2026-09-19 (re-check this list is still current before picking
+the next item, since a status can change mid-loop):**
+1. **FLUX.2 512×512/20-step CPU re-verification** (see the FLUX.2 Pass 1 entry, "docs/088 was
+   stale" finding) — closest to fully closing; do this first.
+2. **FLUX.1** — 🟡 open, tiling artifact already fully fixed 2026-09-13, real recognizable apple
+   renders (853s CPU, 3.40x slower than C++'s 251.1s). Not yet golden/numerically re-verified after
+   the T5-padding fix and not yet re-examined for whether the remaining CPU-vs-C++ perf gap (mostly
+   the DiT denoise loop, per `PerformanceLeague.md`'s per-stage profiling) has any correctness angle
+   left, or is now purely a Pass 2 (performance) item — confirm which before assuming.
+3. **SD3/3.5** — 🟡 open, real coherent non-photorealistic structure achieved (536.4s CPU,
+   256×256/20-step, 11.17x slower than C++'s 48.01s), but **never numerically golden-verified**
+   against a reference — this is real, concrete, doable work (build a golden fixture from
+   `examples/diffusers`/`examples/stable-diffusion.cpp` at a fixed seed/step, compare tensor-level,
+   not just eyeball the image) that this item has been missing since 2026-09-05.
+4. **HunyuanVideo** — 🟡 open, unresolved, furthest from done. Text conditioning closed; DiT+VAE
+   run end-to-end but output is still pure noise despite 3 independently-confirmed-correct fixes
+   (flipSinToCos, RoPE pairing convention, RoPE img/txt ordering — see Pass 1 entry for detail).
+   Pre-decode latent stats are healthy (mean~0, std~1.04) but inconclusive (a wrong permutation
+   would look identical in aggregate stats). Real next step, not yet done: a byte-for-byte audit of
+   `HunyuanVaeDecoder3D.cs`'s `HunyuanVideoCausalConv3d` REPLICATE-padding offsets and
+   `UpsampleCausal3D`'s per-frame (frame-0-special-cased) nearest-neighbor upsample logic against
+   `autoencoder_kl_hunyuan_video.py` — this has NOT been done yet, only the upsample-stage
+   flags/attention-head-count/GroupNorm/tensor-naming have been checked so far.
+5. **GPU-residency phases for Qwen Image and FLUX.2** (see Pass 2 §2d, new) — start once their
+   respective Pass 1 items above are confirmed closed at production resolution, not before
+   (CLAUDE.md rule 7: don't port a still-uncertain CPU implementation to GPU).
+
 ## Why two passes, in this order
 
 This project's own ordering rule (`docs/00-current-work.md`'s "goal that orders this list"): a
@@ -600,13 +627,49 @@ rule 7 exists).
       and producing verified-coherent output first. Once unblocked, follow the exact same pattern
       already proven 5 times in this codebase (`FluxGpuWeights`/`FluxGpuWorkspace`,
       `MMDiTGpuWeights`/`MMDiTGpuWorkspace`, `LtxVideoGpuWeights`/`LtxVideoGpuWorkspace`, etc.) —
-      not a new pattern, a proven one, just not yet applied here.
-- [ ] **Qwen Image Vulkan GPU residency** — same, blocked on Pass 1's text-conditioning wiring.
-- [ ] **FLUX.2 Vulkan GPU residency** — blocked on Pass 1's entire implementation landing first
-      (the user's own stated requirement is that FLUX.2 must ultimately run on Vulkan GPU, not
-      just CPU — so this isn't purely a "later" item, it's baked into Pass 1's own definition of
-      done for FLUX.2, listed here too so it isn't lost track of).
-- [ ] **FLUX.3 Vulkan GPU residency** — same, blocked on FLUX.3 existing at all.
+      not a new pattern, a proven one, just not yet applied here. **Still blocked as of 2026-09-19**
+      — three real, reference-confirmed DiT bugs fixed this session (flipSinToCos, RoPE pairing,
+      RoPE img/txt ordering) with zero cumulative visible effect; output is still pure noise. Do
+      not start GPU work here until Pass 1 actually produces a coherent image.
+
+### 2d. Qwen Image / FLUX.2 GPU-residency phase plan (unblocked or near-unblocked as of 2026-09-19)
+
+Qwen Image's Pass 1 closed 🟢 on 2026-09-19 (real coherent apple, RoPE-pairing fix). FLUX.2's Pass 1
+status needs re-verification at production resolution (512×512/20-step — the only real-weight run
+so far confirmed clean was 128×128/4-step; `docs/088`'s own FLUX.2 section had gone stale relative
+to a later fix, see the entry below) before GPU work should start on it, per CLAUDE.md rule 7. Once
+each is confirmed closed, follow the SAME proven residency pattern already used 5 times in this
+codebase (`FluxGpuWeights`/`FluxGpuWorkspace` is the closest architectural analog for both, since
+Qwen Image and FLUX.2 are both flow-matching MMDiT-style transformers with joint text/image
+attention, same general shape as FLUX.1):
+
+- [ ] **Phase 1 (Qwen Image) — weight upload + resident GPU forward pass.** Port
+      `QwenImageModel.cs`'s CPU `Linear`/attention call sites to a new `QwenImageGpuWeights`/
+      `QwenImageGpuWorkspace` pair, reusing the existing shared Vulkan `Sgemm`/RoPE
+      (`Primitives.InterleavedRoPE`-equivalent GPU dispatch)/attention compute shaders — do NOT
+      write new shaders unless a genuine new op shape is needed (check `Shaders.cs`'s existing
+      catalog first). Verify with a real GPU-vs-CPU parity test (`QwenImageGpuParityTests`, new)
+      before trusting any timing number, matching every other model's own GPU-residency rollout in
+      this doc.
+- [ ] **Phase 2 (Qwen Image) — real end-to-end Vulkan run + C++ reference comparison.** Real
+      256×256/8-step coherence run on Vulkan GPU (compare visually against the already-verified
+      CPU output, `docs/diffusion-samples/qwenimage_real_conditioning_256_8step_2026-09-18.png`);
+      if a real `stable-diffusion.cpp` Qwen Image build is available, get a real head-to-head
+      timing (this doc's own convention — see FLUX.1/SD1.5/SD3.5's own C++ comparison rows in
+      `PerformanceLeague.md` for the exact format expected).
+- [ ] **Phase 1 (FLUX.2) — weight upload + resident GPU forward pass.** Same pattern, new
+      `Flux2GpuWeights`/`Flux2GpuWorkspace`. FLUX.2's 4-axis RoPE and shared (not per-block) AdaLN
+      modulation are the two structural differences from FLUX.1 to account for when porting —
+      re-read `Flux2DiT.cs`'s `ApplyDoubleBlockReal`/`ApplySingleBlockReal` CPU implementation
+      first, do not assume FLUX.1's GPU block structure ports 1:1.
+- [ ] **Phase 2 (FLUX.2) — real end-to-end Vulkan run.** Per the user's own stated requirement
+      that FLUX.2 must ultimately run on Vulkan GPU (not just CPU) — this is part of Pass 1's own
+      definition of done for FLUX.2, not a purely optional Pass 2 nice-to-have. Blocked until the
+      512×512/20-step CPU correctness re-check (immediate next step, see the FLUX.2 Pass 1 entry
+      above) confirms the RoPE-pairing fix holds at production resolution, not just 128×128.
+
+- [ ] **FLUX.3 Vulkan GPU residency** — same, blocked on FLUX.3 existing at all (closed as
+      not-a-real-target, see Pass 1 above — do not resurrect this without a real reason).
 
 ## Bookkeeping discipline for every checkbox above
 
