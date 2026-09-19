@@ -151,18 +151,25 @@ own evidence disagreed or added nuance)
 
 ### Phase 1 — cheap, concrete removals (low effort, real, no new shader math)
 
-- [ ] **Remove `FluxSliceImg` by adding a row-offset parameter to `Sgemm`.** Real, concrete
-      finding from the review: `ws.AttnOut`'s img-stream rows are already contiguous starting at
-      row `nTxt` — `FluxSliceImg` exists only because `Sgemm`'s current signature has no way to
-      read a matmul's input starting at a row offset into an existing buffer. **Needs real
-      verification before assuming this is a one-line change**: `Tensor` (`Core/Tensor.cs`) wraps
-      an opaque backend-owned `Handle` with no offset/stride field, and `VulkanBackend.GetBuffer`
-      needs to be checked for whether Vulkan buffer bindings in this codebase already support a
-      byte-offset bind (`vkCmdBindDescriptorSets` dynamic offsets, or a manually-offset
-      `VkDescriptorBufferInfo`) or whether this needs new plumbing. Real next step: read
-      `GetBuffer`/`DispatchOrRecord`'s descriptor-set binding code before assuming this is cheap —
-      if row-offset binding doesn't exist anywhere in this codebase yet, this becomes a real (if
-      still valuable) new capability, not a one-line change, and should be re-costed honestly.
+- [x] **Step 2 DONE 2026-09-19: Remove `FluxSliceImg` by adding a row-offset parameter to `Sgemm`.**
+      - **Plumbing evaluation**: Tensor has an opaque handle without offset metadata, and Vulkan
+        descriptor bindings (`ComputePipeline.UpdateDescriptorSet`) statically bind buffer ranges
+        at `offset=0` with `minStorageBufferOffsetAlignment` constraints. Rather than invasive
+        changes to `ComputePipeline`, row offset was implemented cleanly via push constants:
+        added `uint aOffset;` to `SgemmParams` and all 4 SGEMM shaders (`SgemmF16`, `SgemmF32`,
+        `SgemmBf16`, `SgemmFp8`). Regenerated `Shaders.Precompiled.g.cs` via `scripts/gen-spirv.ps1`
+        and verified lockstep via `VulkanPrecompiledShaderTests`.
+      - **API additions**: Added `Sgemm(Tensor C, Tensor A, Tensor B, int M, int K, int N, int inputRowOffsetElements)`
+        to `IComputeBackend` (with default fallback), `CpuBackend`, `CudaBackend`, and `VulkanBackend`.
+      - **Verification**: New `Flux2SgemmOffsetParityTests` tests both `SgemmF16` and `SgemmF32` across
+        multiple shapes including production shape (M=1024, K=6144, N=128, rowOffset=256), confirming
+        exact bit-parity against both pre-sliced buffers and CPU backend.
+      - **Wiring & Parity**: Removed `FluxSliceImg` in `Flux2DiT.DoubleBlockGpu`, dispatching
+        `Sgemm(ws.OutImg, ws.AttnOut, bw.ImgAttnProjWeight, nImg, d, d, inputRowOffsetElements: nTxt * d)`
+        directly. Verified via `Flux2DoubleBlockGpuParityTests` (img cosine=0.9999706, txt cosine=0.9999590,
+        identical to baseline) and `Flux2GpuWiredEndToEndTests` (finite image produced in 169.7s).
+      - **Savings**: Eliminates 1 dispatch + fence wait per block (8 dispatches per pass) and
+        avoids copying 50.3 MB per block (402.6 MB DRAM traffic per pass).
 - [ ] **Apply the same row-offset idea anywhere else a materialize-then-immediately-consume
       pattern exists** in the double-block sequence, once the offset capability exists (audit
       `DoubleBlockGpu` for other candidates once Sgemm supports it).

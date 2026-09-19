@@ -1732,7 +1732,7 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
     private struct TqKvAppendParams { public uint kvDim; public uint headDim; public uint position; public uint maxSeqLen; public uint numKvHeads; public uint blockBytes; }
     private struct TqAttentionParams { public uint numHeads; public uint numKvHeads; public uint headDim; public uint tqSeqLen; public uint fp16SeqLen; public uint maxSeqLen; public uint blockBytes; }
     private struct BufCopyParams { public uint count; public uint srcOffset; public uint dstOffset; }
-    private struct SgemmParams { public uint M; public uint N; public uint K; }
+    private struct SgemmParams { public uint M; public uint N; public uint K; public uint aOffset; }
     private struct DequantParams { public uint numBlocks; }
     private struct GdnConv1dParams { public uint channels; public uint kernelSize; }
     private struct GdnL2NormParams { public uint headDim; public uint numHeads; public float eps; public uint offset; }
@@ -3639,8 +3639,11 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
     /// A, B, C must already be GPU-resident tensors.
     /// </summary>
     public unsafe void Sgemm(Tensor C, Tensor A, Tensor B, int M, int K, int N)
+        => Sgemm(C, A, B, M, K, N, 0);
+
+    public unsafe void Sgemm(Tensor C, Tensor A, Tensor B, int M, int K, int N, int inputRowOffsetElements)
     {
-        var p = new SgemmParams { M = (uint)M, N = (uint)N, K = (uint)K };
+        var p = new SgemmParams { M = (uint)M, N = (uint)N, K = (uint)K, aOffset = (uint)inputRowOffsetElements };
         uint gx = ((uint)M + 15u) / 16u;
         uint gy = ((uint)N + 15u) / 16u;
 
@@ -3680,7 +3683,7 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
 
         if (A.DType == DType.Float32 && B.DType == DType.Float16 && HasShaderFloat16Int8 && Has16BitStorage)
         {
-            if (M == 1 && (K % 2 == 0))
+            if (M == 1 && (K % 2 == 0) && inputRowOffsetElements == 0)
             {
                 var mvp = new MatVecParams { rows = (uint)N, cols = (uint)K };
                 _matVecF16Pipeline ??= new ComputePipeline(this, Shaders.MatVecF16, 3, pushConstantSize: sizeof(MatVecParams));
@@ -3695,7 +3698,7 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
             return;
         }
 
-        if (M == 1 && A.DType == DType.Float32 && B.DType == DType.Float32)
+        if (M == 1 && A.DType == DType.Float32 && B.DType == DType.Float32 && inputRowOffsetElements == 0)
         {
             var mvp = new MatVecParams { rows = (uint)N, cols = (uint)K };
             _matVecF32Pipeline ??= new ComputePipeline(this, Shaders.MatVecF32, 3, pushConstantSize: sizeof(MatVecParams));

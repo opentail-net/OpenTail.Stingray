@@ -248,8 +248,11 @@ public sealed unsafe class CpuBackend : IComputeBackend
     /// Falls back to a scalar loop if OpenBLAS is not available.
     /// </summary>
     public unsafe void Sgemm(Tensor C, Tensor A, Tensor B, int M, int K, int N)
+        => Sgemm(C, A, B, M, K, N, 0);
+
+    public unsafe void Sgemm(Tensor C, Tensor A, Tensor B, int M, int K, int N, int inputRowOffsetElements)
     {
-        var a = (float*)A.Handle;
+        var a = (float*)A.Handle + inputRowOffsetElements;
         var b = (float*)B.Handle;
         var c = (float*)C.Handle;
 

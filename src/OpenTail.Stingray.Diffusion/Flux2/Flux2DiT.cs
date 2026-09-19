@@ -706,12 +706,10 @@ public sealed class Flux2DiT : IDisposable
         // 6. Joint attention over the full sequence.
         imageOps.MultiHeadAttentionTiled(ws.AttnOut, ws.Q, ws.K, ws.V, nSeq, nSeq, nh, hd);
 
-        // 7. Split back: txt occupies AttnOut's first nTxt rows directly (no copy needed, row-major
-        //    contiguous); img is sliced out via FluxSliceImg into NormedImg as scratch.
-        visionOps.FluxSliceImg(ws.AttnOut, ws.NormedImg, nTxt, nImg, d);
-
+        // 7. Split back: txt occupies AttnOut's first nTxt rows directly (row-major contiguous);
+        //    img starts at row nTxt, projected directly via row-offset Sgemm without FluxSliceImg copy.
         visionOps.Sgemm(ws.OutTxt, ws.AttnOut, bw.TxtAttnProjWeight, nTxt, d, d);
-        visionOps.Sgemm(ws.OutImg, ws.NormedImg, bw.ImgAttnProjWeight, nImg, d, d);
+        visionOps.Sgemm(ws.OutImg, ws.AttnOut, bw.ImgAttnProjWeight, nImg, d, d, inputRowOffsetElements: nTxt * d);
 
         // 8. Gated residual (gate1, offset 2*d).
         visionOps.ScaleGateAdd(ws.TxtHidden, ws.OutTxt, ws.TxtMod, nTxt, d, gateOffset: 2 * d);

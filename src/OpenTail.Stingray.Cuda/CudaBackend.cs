@@ -2071,8 +2071,18 @@ public sealed unsafe class CudaBackend : IComputeBackend, IImageOpsBackend, IVis
     ///   row-major C=A*B^T  ≡  col-major C^T = B*A^T
     /// </summary>
     public void Sgemm(Tensor C, Tensor A, Tensor B, int M, int K, int N)
+        => Sgemm(C, A, B, M, K, N, 0);
+
+    public void Sgemm(Tensor C, Tensor A, Tensor B, int M, int K, int N, int inputRowOffsetElements)
     {
-        nint aPtr = GetDevPtr(A);
+        int elemSize = A.DType switch
+        {
+            DType.Float32 => 4,
+            DType.Float16 or DType.BFloat16 => 2,
+            DType.Float8E4M3 => 1,
+            _ => 4,
+        };
+        nint aPtr = GetDevPtr(A) + (nint)(inputRowOffsetElements * elemSize);
         nint bPtr = GetDevPtr(B);
         nint cPtr = GetDevPtr(C);
         float alpha = 1.0f, beta = 0.0f;

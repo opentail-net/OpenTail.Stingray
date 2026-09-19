@@ -110,6 +110,19 @@ public interface IComputeBackend : IDisposable
     void Sgemm(Tensor C, Tensor A, Tensor B, int M, int K, int N);
 
     /// <summary>
+    /// General matrix multiply with an element offset into buffer A: C[M,N] = A[offset..][M,K] × B[N,K]^T.
+    /// Allows reading contiguous rows of A starting at a row offset (e.g. image stream starting at row nTxt)
+    /// without an intermediate copy buffer.
+    /// </summary>
+    void Sgemm(Tensor C, Tensor A, Tensor B, int M, int K, int N, int inputRowOffsetElements)
+    {
+        if (inputRowOffsetElements == 0)
+            Sgemm(C, A, B, M, K, N);
+        else
+            throw new NotSupportedException("inputRowOffsetElements != 0 not supported on this backend");
+    }
+
+    /// <summary>
     /// Full-sequence self-attention: softmax(Q×K^T / sqrt(headDim)) × V
     /// q, k, v: [nTok, nHeads * headDim] with interleaved layout [tok*nHeads + head, headDim]
     /// output: [nTok, nHeads * headDim] same layout

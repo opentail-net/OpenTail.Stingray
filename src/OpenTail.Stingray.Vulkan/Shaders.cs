@@ -6328,6 +6328,7 @@ internal static class Shaders
             uint M;
             uint N;
             uint K;
+            uint aOffset;
         } pc;
 
         layout(binding = 0) readonly  buffer BufA { float a_data[]; };   // [M, K] activations
@@ -6362,7 +6363,7 @@ internal static class Shaders
                     uint c = idx & 15u;
                     uint gm = row_base + r;
                     uint gk = k_base + c;
-                    tileA[r][c] = (gm < pc.M && gk < pc.K) ? a_data[gm * pc.K + gk] : 0.0;
+                    tileA[r][c] = (gm < pc.M && gk < pc.K) ? a_data[gm * pc.K + gk + pc.aOffset] : 0.0;
                 }
 
                 // Load tileB [32, 16] using 64 threads (8 elements per thread)
@@ -6436,6 +6437,7 @@ internal static class Shaders
             uint M;
             uint N;
             uint K;
+            uint aOffset;
         } pc;
 
         layout(binding = 0) readonly  buffer BufA { float    a_data[]; };
@@ -6474,18 +6476,18 @@ internal static class Shaders
                     uint c4 = (idx & 7u) << 2; // 0, 4, 8, ...
                     uint gm = row_base + r;
                     uint gk = k_base + c4;
-                    if (gm < pc.M && gk + 3u < pc.K && k_is_vec4_aligned) {
-                        uint g_vec = (gm * pc.K + gk) >> 2;
+                    if (gm < pc.M && gk + 3u < pc.K && k_is_vec4_aligned && ((pc.aOffset & 3u) == 0u)) {
+                        uint g_vec = (gm * pc.K + gk + pc.aOffset) >> 2;
                         vec4 v = a_vec4[g_vec];
                         tileA_T[c4 + 0u][r] = v.x;
                         tileA_T[c4 + 1u][r] = v.y;
                         tileA_T[c4 + 2u][r] = v.z;
                         tileA_T[c4 + 3u][r] = v.w;
                     } else {
-                        tileA_T[c4 + 0u][r] = (gm < pc.M && gk + 0u < pc.K) ? a_data[gm * pc.K + gk + 0u] : 0.0;
-                        tileA_T[c4 + 1u][r] = (gm < pc.M && gk + 1u < pc.K) ? a_data[gm * pc.K + gk + 1u] : 0.0;
-                        tileA_T[c4 + 2u][r] = (gm < pc.M && gk + 2u < pc.K) ? a_data[gm * pc.K + gk + 2u] : 0.0;
-                        tileA_T[c4 + 3u][r] = (gm < pc.M && gk + 3u < pc.K) ? a_data[gm * pc.K + gk + 3u] : 0.0;
+                        tileA_T[c4 + 0u][r] = (gm < pc.M && gk + 0u < pc.K) ? a_data[gm * pc.K + gk + 0u + pc.aOffset] : 0.0;
+                        tileA_T[c4 + 1u][r] = (gm < pc.M && gk + 1u < pc.K) ? a_data[gm * pc.K + gk + 1u + pc.aOffset] : 0.0;
+                        tileA_T[c4 + 2u][r] = (gm < pc.M && gk + 2u < pc.K) ? a_data[gm * pc.K + gk + 2u + pc.aOffset] : 0.0;
+                        tileA_T[c4 + 3u][r] = (gm < pc.M && gk + 3u < pc.K) ? a_data[gm * pc.K + gk + 3u + pc.aOffset] : 0.0;
                     }
                 }
 
@@ -6655,7 +6657,7 @@ internal static class Shaders
         #extension GL_EXT_shader_16bit_storage : require
 
         layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
-        layout(push_constant) uniform PC { uint M; uint N; uint K; } pc;
+        layout(push_constant) uniform PC { uint M; uint N; uint K; uint aOffset; } pc;
         layout(binding = 0) readonly  buffer BufA { bfloat16_t a_data[]; };
         layout(binding = 1) readonly  buffer BufB { bfloat16_t b_data[]; };
         layout(binding = 2) writeonly buffer BufC { bfloat16_t c_data[]; };
@@ -6672,7 +6674,7 @@ internal static class Shaders
                 uint aCol = t * 16u + gl_LocalInvocationID.y;
                 uint bCol = t * 16u + gl_LocalInvocationID.x;
                 tileA[gl_LocalInvocationID.x][gl_LocalInvocationID.y] =
-                    (row < pc.M && aCol < pc.K) ? float(a_data[row * pc.K + aCol]) : 0.0;
+                    (row < pc.M && aCol < pc.K) ? float(a_data[row * pc.K + aCol + pc.aOffset]) : 0.0;
                 tileB[gl_LocalInvocationID.y][gl_LocalInvocationID.x] =
                     (col < pc.N && bCol < pc.K) ? float(b_data[col * pc.K + bCol]) : 0.0;
                 barrier();
@@ -6697,7 +6699,7 @@ internal static class Shaders
         #extension GL_EXT_shader_explicit_arithmetic_types_float8_e4m3 : require
 
         layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
-        layout(push_constant) uniform PC { uint M; uint N; uint K; } pc;
+        layout(push_constant) uniform PC { uint M; uint N; uint K; uint aOffset; } pc;
         layout(binding = 0) readonly  buffer BufA { float8_e4m3_t a_data[]; };
         layout(binding = 1) readonly  buffer BufB { float8_e4m3_t b_data[]; };
         layout(binding = 2) writeonly buffer BufC { float c_data[]; };
@@ -6713,7 +6715,7 @@ internal static class Shaders
                 uint aCol = t * 16u + gl_LocalInvocationID.y;
                 uint bCol = t * 16u + gl_LocalInvocationID.x;
                 tileA[gl_LocalInvocationID.x][gl_LocalInvocationID.y] =
-                    (row < pc.M && aCol < pc.K) ? float(a_data[row * pc.K + aCol]) : 0.0;
+                    (row < pc.M && aCol < pc.K) ? float(a_data[row * pc.K + aCol + pc.aOffset]) : 0.0;
                 tileB[gl_LocalInvocationID.y][gl_LocalInvocationID.x] =
                     (col < pc.N && bCol < pc.K) ? float(b_data[col * pc.K + bCol]) : 0.0;
                 barrier();
