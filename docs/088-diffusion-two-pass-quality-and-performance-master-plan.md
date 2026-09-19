@@ -735,7 +735,11 @@ rule 7 exists).
       now, a further 3.16x speedup, almost certainly from unrelated shared-kernel infra work landed
       since (not bisected to a specific commit this pass). Against the real C++ reference (21.18s):
       only ~1.92x slower now, down from the historical ~6.08x gap -- the closest this port has ever
-      gotten. See `PerformanceLeague.md`'s new entry for the full stage breakdown.
+      gotten. **Real CPU re-run same pass: 615.7s, pixel-identical output (confirms CPU/GPU
+      parity) -- real CPU-vs-GPU ratio at today's numbers is 15.1x, up from the historical
+      ~6.46x** (CPU also improved 832.3s→615.7s, but GPU improved far more). VAE decode is now
+      58% of CPU total time -- the real remaining CPU bottleneck if ever revisited. See
+      `PerformanceLeague.md`'s two new entries for the full stage breakdowns.
 - [x] **SD3.5 Medium**: 2026-09-18 -- confirmed, 77.1s warm/84.9s cold real re-run vs. 91.3s
       documented (beats it, no regression). VAE decode already faster than C++ (0.76x) — a genuine
       win, don't touch it. Denoise loop (2.85x) is the real remaining gap if further work is ever
