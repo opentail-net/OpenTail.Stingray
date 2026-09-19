@@ -470,12 +470,27 @@ the starting picture:
       `LowNoise/`/`HighNoise/` subdirs — both real, `city96`'s own equivalent repos 401'd, likely
       gated) and started background downloads of both the low-noise and high-noise Q4_K_S variants
       (~8.15GB each, `bullerwins` repo, `models/_models/wan2.2_t2v_{low,high}_noise_14B_Q4_K_S.gguf`)
-      — per CLAUDE.md's blanket download authorization. **Not yet wired or tested this pass** — no
-      `WanPipeline.Load` overload exists yet that takes two transformer paths and constructs the
-      dual-model swap; that's the real next step once the download completes, followed by a first
-      real-weights smoke test (matching every other model's first-coverage pattern in this doc).
-      Given A14B's size, expect this to be a genuinely slow (many-minutes-per-step) CPU run on this
-      hardware — stated explicitly as a real cost, not absorbed silently.
+      — per CLAUDE.md's blanket download authorization.
+  - **Downloads completed and real first coverage landed, 2026-09-19** (`Wan22DualModelRealWeightsTests`):
+      corrected an earlier wrong assumption (see the test's own doc comment) that `WanModel` needed
+      manual hyperparameter wiring for A14B — a closer read of `WanModel.DetectConfig` shows it
+      ALREADY auto-detects Wan2.2-A14B's exact real config from the checkpoint itself (block-count
+      scanning, `patch_embedding.weight`'s shape for `dim`, and a hardcoded `dim==5120 -> numHeads=40,
+      ffnDim=13824` branch) — no new pipeline wiring was actually needed. **Verified against the real
+      checkpoint's own tensor shapes first** (`list-tensors`: `blocks.0.self_attn.q.weight`
+      `[5120,5120]`, `blocks.0.ffn.0.weight` `[5120,13824]`, block 39 is the last real block), THEN
+      asserted `WanModel` auto-detects the identical values (`numLayers=40, dim=5120, numHeads=40,
+      headDim=128, ffnDim=13824`) — confirmed exact match, not assumed. **First-ever real forward
+      pass for this checkpoint**: 64×64/1-frame, real weights, completed in **4.5s**, healthy finite
+      output (velocity RMS 0.266, not degenerate). This is genuinely new, previously-nonexistent
+      coverage for a 14B-active-parameter checkpoint in this codebase, done carefully (verify-first,
+      not guess-first) rather than a rushed version. **Not yet done**: a real `WanPipeline.Generate`
+      run exercising the actual `highNoiseTransformer`/`highNoiseBoundary` swap logic together (this
+      pass only forward-tested the low-noise model in isolation), and any production-scale timing —
+      given the surprisingly cheap 4.5s at this tiny 64×64/1-frame scale (small token count keeps
+      compute low despite the model's large weight footprint, the same effect noted for Wan2.1's own
+      early small-scale numbers), a real production-resolution run is a reasonable next step, not
+      prohibitively expensive like HunyuanVideo's broken-output case.
 
 ### Phase 9 — Cross-model DRY + perf-doc consistency pass (per CLAUDE.md's own performance+DRY pass rule)
 
