@@ -107,10 +107,21 @@ the starting picture:
 
 ### Phase 2 — Qwen Image: first GPU port (biggest true gap — zero GPU code exists)
 
-- [ ] Scope `QwenImageModel`'s architecture (attention head dims, channel counts, block structure) and
-      identify which existing Vulkan primitives (from FLUX.1/FLUX.2/SD3.5's residency work) directly
-      apply vs. need new shapes (cf. SD1.5 needing new `MultiHeadAttentionTiled40/80/160` variants for
-      its non-64/128 head dims).
+- [x] Scope `QwenImageModel`'s architecture (2026-09-19): `NumHeads=24`, `HeadDim=128`
+      (`src/OpenTail.Stingray.Diffusion/QwenImage/QwenImageModel.cs:21-22`) — **same head dim as
+      FLUX.1/FLUX.2**, so the existing `MultiHeadAttentionTiled128`/`SgemmF16` Vulkan shaders should
+      apply directly with no new attention-shape variants needed (unlike SD1.5, which genuinely needed
+      new `MultiHeadAttentionTiled40/80/160` kernels for its 40/80/160 head dims). Joint QK-RMSNorm
+      (`norm_q`/`norm_k`/`norm_added_q`/`norm_added_k`) + 3D RoPE + concatenated img/txt joint
+      attention (`totalSeq = numImg + numTxt`) is structurally the same double-stream-block shape
+      FLUX.1/FLUX.2/SD3.5 already have GPU-resident ports for — `Flux2GpuWeights`/`Flux2GpuWorkspace`
+      is the closest template to copy from (same fused-QKV-norm-RoPE opportunity applies).
+  - Real, concrete next step: build `QwenImageGpuWeights.cs`/`QwenImageGpuWorkspace.cs` following
+    `Flux2GpuWeights.cs`'s shape (per-layer QKV/proj/MLP weight upload, cached FP16), then a
+    `ForwardGpu` mirroring `MMDiTModel.ForwardGpu`'s or `Flux2DiT`'s per-block dispatch structure.
+    Not yet implemented — this pass only completed the architecture scoping, not the port itself
+    (kept small deliberately while the SD3.5 correctness fix above was still being verified in the
+    background; picking this up is the next real chunk of work once that's confirmed).
 - [ ] Build `QwenImageGpuWeights`/`QwenImageGpuWorkspace` + `ForwardGpu`, following the
       Upload-once/resident-chain pattern (not per-op dispatch — that mistake has already been made and
       unmade three times in this codebase, don't repeat it).
