@@ -66,20 +66,37 @@ own evidence disagreed or added nuance)
 
 ### Phase 0 — diagnostic experiments (very low effort, do first, no shader changes)
 
-- [ ] **Experiment 1: record-vs-submit-wait split for the CURRENT (unbatched) double-block loop.**
-      Wrap `RunDoubleBlocksGpu`'s 8-block loop with `VulkanBackend.ResetGpuProfile()`/
-      `PrintGpuProfile("Flux2DoubleBlocks")` (gated on `STINGRAY_PROFILE_GPU_SPLIT=1`, zero
-      overhead otherwise, matching this codebase's existing convention). Real question: is the
-      24.7s dominated by `submitWait` (genuine GPU execution+fence-wait, matching the SD1.5
-      precedent where submitWait dominated ~10:1 over record time) or by CPU-side dispatch
-      recording? This determines whether batching (Phase 1) is even the right lever BEFORE writing
-      any batching code.
-- [ ] **Experiment 2: batch-size sweep — 1 / 2 / 4 / 8 blocks per `BeginBatch`/`EndBatch` group.**
-      Real, cheap (a loop-chunking change, no new shaders), directly measurable with Experiment 1's
-      same instrumentation. Per this repo's own Wan precedent (2.5% win from full batching) AND
-      FLUX.1's own precedent (a real, large win from 2-block chunking) both existing in this
-      project's history for genuinely different outcomes, this must be measured for FLUX.2's own
-      op shape, not assumed either way.
+- [x] **Experiment 1+2 DONE 2026-09-19, combined — DEFINITIVE, SURPRISING RESULT: batching gives
+      ZERO measurable benefit, and the bottleneck is proven to be genuine GPU execution time, not
+      CPU-side dispatch overhead.** Added a `STINGRAY_FLUX2_GPU_BATCH_SIZE` env var to
+      `RunDoubleBlocksGpu` (groups N blocks per `BeginBatch`/`EndBatch`, default 1 = current
+      unbatched behavior) and a new `Flux2DoubleBlockGpuBenchmarkTests.
+      DoubleBlockLoop_BatchSizeSweep_ProfiledTiming` theory sweeping batch sizes 1/2/4/8 with
+      `STINGRAY_PROFILE_GPU_SPLIT=1`, real weights, production scale (1024 img + 256 txt tokens),
+      3 timed trials each after a warm-up. **Real results**: batchSize=1: 22,547ms; batchSize=2:
+      23,554ms; batchSize=4: 22,461ms; batchSize=8: 23,460ms — **all four are within noise of each
+      other, no trend whatsoever.** This matches this repo's own Wan precedent (near-null result),
+      not FLUX.1's (large win) — confirming the plan's own stated need to measure rather than
+      assume for this specific op shape. **Even more decisive**: at every batched size (2/4/8),
+      `submitWait` accounts for essentially 100% of total wall time (e.g. batchSize=8:
+      submitWait=23,519.9ms of total=23,541.4ms) — this is real, direct proof (not inference) that
+      the cost is genuine GPU submit+execute+fence-wait time, not CPU-side command-buffer
+      recording. **Batching is definitively ruled out as a lever for this workload.** The real
+      remaining question is why GPU execution itself takes this long — Experiment 3 (below) is now
+      the critical next diagnostic.
+- [ ] **Experiment 3: production-shape GEMM ladder.** NOW THE HIGHEST-PRIORITY REMAINING
+      DIAGNOSTIC given Experiment 1+2's result (real GPU execution time, not CPU overhead, is the
+      confirmed bottleneck) — this determines whether that execution time is dominated by the
+      GEMMs themselves running below their isolated-benchmark throughput, or by the ~16 small
+      utility dispatches per block (AdaLN/unpack/QKNorm/RoPE/attention/ScaleGateAdd/SiluGateMul)
+      that aren't GEMMs at all. Benchmark the actual 8 GEMM shapes this workload uses
+      (`1024×6144×18432`, `256×6144×18432`, `1024×6144×6144`, `256×6144×6144`,
+      `1024×6144×36864`, `256×6144×36864`, `1024×18432×6144`, `256×18432×6144`) with the exact
+      `SgemmF16` shader and buffer layout already in production use — not a generic microbenchmark.
+      Real decision rule: if these land around 500-600 GFLOP/s, GEMM throughput itself is fine and
+      the ~8.3s gap lives in the non-GEMM utility dispatches (Phase 1/2's fusion targets become the
+      priority); if they collapse to 250-350 GFLOP/s at these specific shapes, the GEMM shader
+      itself is the real problem, ahead of any fusion work on the smaller ops.
 - [ ] **Experiment 3: production-shape GEMM ladder.** Benchmark the actual 8 GEMM shapes this
       workload uses (`1024×6144×18432`, `256×6144×18432`, `1024×6144×6144`, `256×6144×6144`,
       `1024×6144×36864`, `256×6144×36864`, `1024×18432×6144`, `256×18432×6144`) with the exact

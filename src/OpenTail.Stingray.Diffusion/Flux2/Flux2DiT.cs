@@ -637,9 +637,27 @@ public sealed class Flux2DiT : IDisposable
 
         try
         {
+            var imageOps = (IImageOpsBackend)backend;
             ComputeSharedDoubleModulationGpu(visionOps, ws, _gpuWeights, siluVecGpu);
-            for (int layer = 0; layer < _p.DepthDoubleBlocks; layer++)
-                DoubleBlockGpu(ws, _gpuWeights.DoubleBlocks[layer], visionOps, (IImageOpsBackend)backend);
+
+            // Batch-size sweep experiment (docs/093, Phase 0): STINGRAY_FLUX2_GPU_BATCH_SIZE
+            // groups this many blocks per BeginBatch/EndBatch (one command buffer + one
+            // submit+fence-wait per group) instead of the default 1 (every dispatch inside
+            // DoubleBlockGpu submits+waits individually -- the current, un-optimized baseline).
+            // This project's own history has BOTH a large real win (FLUX.1, 2-block chunking) and
+            // a near-null result (Wan, ~2.5%) from batching -- measure for this workload, don't
+            // assume either outcome (docs/093).
+            int batchSize = int.TryParse(Environment.GetEnvironmentVariable("STINGRAY_FLUX2_GPU_BATCH_SIZE"), out var bs) && bs > 0
+                ? bs : 1;
+
+            for (int i = 0; i < _p.DepthDoubleBlocks; i += batchSize)
+            {
+                int end = Math.Min(i + batchSize, _p.DepthDoubleBlocks);
+                if (batchSize > 1) imageOps.BeginBatch();
+                for (int layer = i; layer < end; layer++)
+                    DoubleBlockGpu(ws, _gpuWeights.DoubleBlocks[layer], visionOps, imageOps);
+                if (batchSize > 1) imageOps.EndBatch();
+            }
             backend.Synchronize();
 
             backend.Download(ws.ImgHidden, img);

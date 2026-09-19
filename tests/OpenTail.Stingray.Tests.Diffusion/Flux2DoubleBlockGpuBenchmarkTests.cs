@@ -164,4 +164,118 @@ public sealed class Flux2DoubleBlockGpuBenchmarkTests
         Assert.True(cpuBestMs > 0 && double.IsFinite(cpuBestMs));
         Assert.True(gpuBestMs > 0 && double.IsFinite(gpuBestMs));
     }
+
+    /// <summary>
+    /// docs/093 Phase 0, Experiments 1+2: real record-vs-submit-wait split (reusing this
+    /// codebase's existing <c>STINGRAY_PROFILE_GPU_SPLIT</c> instrumentation, set by the caller
+    /// via environment variable before running this test) AND a batch-size sweep (1/2/4/8 blocks
+    /// per <c>BeginBatch</c>/<c>EndBatch</c> group) for the double-block loop at production scale.
+    /// `DoubleBlockGpu`'s 24-op-per-block sequence currently has ZERO batching in the unswept
+    /// (batchSize=1) case -- every dispatch is its own individual submit+fence-wait. This project's
+    /// own history has both a large real batching win (FLUX.1) and a near-null one (Wan, ~2.5%) --
+    /// measured here for FLUX.2's own op shape rather than assumed either way.
+    /// </summary>
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    [InlineData(4)]
+    [InlineData(8)]
+    public void DoubleBlockLoop_BatchSizeSweep_ProfiledTiming(int batchSize)
+    {
+        string? modelPath = FindModelPath();
+        Assert.SkipUnless(modelPath != null, "models/_models/flux2-dev-Q4_K_S.gguf not found");
+
+        using var backend = TryCreateVulkan();
+        if (backend is null) return;
+
+        using var weights = GgufWeightLoader.Open(modelPath!);
+        var p = new Flux2Params();
+        using var dit = new Flux2DiT(weights, p);
+
+        int d = p.HiddenSize;
+        int headDim = p.HeadDim;
+        int mlpHidden = (int)(d * p.MlpRatio);
+
+        const int patchH = 32, patchW = 32;
+        int nImg = patchH * patchW;
+        const int nTxt = 256;
+        int nSeq = nTxt + nImg;
+
+        var rng = new Random(2091);
+        float[] RandArray(int n)
+        {
+            var a = new float[n];
+            for (int i = 0; i < n; i++) a[i] = (float)(rng.NextDouble() * 2 - 1);
+            return a;
+        }
+
+        var imgCpu = RandArray(nImg * d);
+        var txtCpu = RandArray(nTxt * d);
+
+        float[] vec = dit.ComputeModulationVec(timestep: 0.5f, pooledEmbed: [], guidance: 3.5f);
+
+        var txtPositions = new int[nTxt * 4];
+        for (int i = 0; i < nTxt; i++) txtPositions[i * 4 + 3] = i;
+
+        var imgPositions = new int[nImg * 4];
+        int idx = 0;
+        for (int y = 0; y < patchH; y++)
+            for (int x = 0; x < patchW; x++)
+            {
+                imgPositions[idx * 4 + 1] = y;
+                imgPositions[idx * 4 + 2] = x;
+                idx++;
+            }
+
+        var combinedPositions = new int[nSeq * 4];
+        Array.Copy(txtPositions, 0, combinedPositions, 0, txtPositions.Length);
+        Array.Copy(imgPositions, 0, combinedPositions, txtPositions.Length, imgPositions.Length);
+        var (ropeCosCompact, ropeSinCompact) = Flux2RoPE.BuildContextFreqsCompact(combinedPositions, nSeq, p.AxesDim, p.Theta);
+
+        using var gpuWeights = new Flux2GpuWeights(backend, weights.ReadF32, p, includeSingleBlocks: false);
+        using var ws = new Flux2GpuWorkspace(backend, nImg, nTxt, d, mlpHidden, headDim, ropeCosCompact, ropeSinCompact,
+            initialImgHidden: imgCpu, initialTxtHidden: txtCpu);
+
+        var siluVec = (float[])vec.Clone();
+        DiffusionOps.SiluInPlace(siluVec);
+        var siluVecGpu = backend.Upload(siluVec, TensorShape.D1(d));
+
+        void RunOnce()
+        {
+            dit.ComputeSharedDoubleModulationGpu(backend, ws, gpuWeights, siluVecGpu);
+            for (int i = 0; i < p.DepthDoubleBlocks; i += batchSize)
+            {
+                int end = Math.Min(i + batchSize, p.DepthDoubleBlocks);
+                if (batchSize > 1) backend.BeginBatch();
+                for (int layer = i; layer < end; layer++)
+                    dit.DoubleBlockGpu(ws, gpuWeights.DoubleBlocks[layer], backend, backend);
+                if (batchSize > 1) backend.EndBatch();
+            }
+            backend.Synchronize();
+        }
+
+        double bestMs = double.MaxValue;
+        try
+        {
+            RunOnce(); // warm-up: pays one-time pipeline-compile cost
+
+            for (int trial = 0; trial < 3; trial++)
+            {
+                VulkanBackend.ResetGpuProfile();
+                var sw = Stopwatch.StartNew();
+                RunOnce();
+                sw.Stop();
+                double totalMs = sw.Elapsed.TotalMilliseconds;
+                bestMs = Math.Min(bestMs, totalMs);
+                VulkanBackend.PrintGpuProfile($"Flux2DoubleBlocks batchSize={batchSize} trial={trial} total={totalMs:F1}ms");
+            }
+        }
+        finally
+        {
+            backend.Free(siluVecGpu);
+        }
+
+        Console.WriteLine($"[Flux2 batch sweep] batchSize={batchSize} best={bestMs:F1}ms");
+        Assert.True(bestMs > 0 && double.IsFinite(bestMs));
+    }
 }
