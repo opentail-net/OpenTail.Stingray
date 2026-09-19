@@ -763,6 +763,22 @@ rule 7 exists).
       GGUF in `audio.cpp`'s expected layout can now be obtained; if so, run a real head-to-head and
       replace the unverified citation with a measured one (or retract it if it can't be obtained).
 
+      **2026-09-19: real progress, still blocked, but on a more specific/smaller gap than before.**
+      `models/acestep-v15/turbo.safetensors` IS present now (wasn't previously) -- ran
+      `audiocpp_cli.exe --task gen --family ace_step --model models/acestep-v15/turbo.safetensors`
+      directly. First attempt failed with `model spec not found for family 'ace_step'` (the real
+      `examples/audio.cpp/model_specs/ace_step.json` spec exists but isn't auto-discovered without
+      `--model-spec-override`). Passing `--model-spec-override examples/audio.cpp/model_specs/
+      ace_step.json` got further -- **the spec DOES support a `safetensors` source** (not GGUF-only
+      as the spec's own `"runtime": {"tags": ["gguf"]}` metadata implied at a glance) -- but failed
+      on a real, specific missing dependency: `missing model package file 'lm_chat_template':
+      .../acestep-5Hz-lm-1.7B/chat_template.jinja`. This is a SEPARATE 1.7B LM checkpoint
+      (lyrics/text conditioning) that ACE-Step's real pipeline needs alongside the turbo DiT
+      weights -- not present anywhere in `models/`, not yet downloaded. **Real next step, not done
+      this pass**: locate and download the real `acestep-5Hz-lm-1.7B` package (check the same HF
+      org/repo the `turbo.safetensors` came from for a sibling directory) -- this is a real,
+      bounded, obtainable gap now, a meaningfully narrower blocker than "no checkpoint at all."
+
 ### 2c. Blocked entirely on Pass 1 closing first — do not start until unblocked
 - [ ] **HunyuanVideo Vulkan GPU residency** — blocked on Pass 1's text-conditioning wiring landing
       and producing verified-coherent output first. Once unblocked, follow the exact same pattern
