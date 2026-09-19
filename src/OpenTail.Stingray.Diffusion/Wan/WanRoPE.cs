@@ -1,3 +1,4 @@
+using OpenTail.Stingray.Diffusion.Primitives;
 
 namespace OpenTail.Stingray.Diffusion.Wan;
 
@@ -15,11 +16,18 @@ namespace OpenTail.Stingray.Diffusion.Wan;
 /// differs, confirmed directly: `x1, x2 = hidden_states.unflatten(-1, (-1, 2)).unbind(-1)` takes
 /// consecutive-pair elements, and `WanRotaryPosEmbed.__init__` builds its frequency tables with
 /// `repeat_interleave_real=True`, i.e. each frequency value duplicated at consecutive positions
-/// -- matching this file's own <see cref="ComputeFrequency"/> below, NOT the split-half
+/// -- matching this file's own frequency layout below, NOT the split-half
 /// `SplitHalfRoPE.FillFrequencies` this file previously (incorrectly) delegated to). Per-axis
 /// dims (t=44, h=42, w=42) were already correct and unaffected by this fix -- confirmed matching
 /// the real `h_dim = w_dim = 2*(head_dim//6); t_dim = head_dim - h_dim - w_dim` formula for
 /// head_dim=128.</para>
+///
+/// <para><b>Consolidated 2026-09-19 (docs/092)</b>: this file's interleaved frequency/rotation
+/// math was found to be a byte-for-byte duplicate of the shared
+/// <see cref="Primitives.InterleavedRoPE"/> kernel (already used by Flux2/Flux3) -- confirmed via
+/// <c>RoPeKernelConsolidationTests</c> before this refactor. Now delegates to the shared kernel;
+/// only Wan's own axis-dim composition (t=44, h=42, w=42, no leading identity axis) stays local.
+/// </para>
 /// </summary>
 public static class WanRoPE
 {
@@ -39,6 +47,10 @@ public static class WanRoPE
         var cos = new float[totalTokens * headDim];
         var sin = new float[totalTokens * headDim];
 
+        var invFreqT = InterleavedRoPE.ComputeInvFreqs(dimT, theta);
+        var invFreqH = InterleavedRoPE.ComputeInvFreqs(dimH, theta);
+        var invFreqW = InterleavedRoPE.ComputeInvFreqs(dimW, theta);
+
         for (int t = 0; t < numFrames; t++)
         {
             for (int y = 0; y < patchH; y++)
@@ -49,13 +61,13 @@ public static class WanRoPE
                     int baseOff = tokenIdx * headDim;
 
                     // Temporal axis: pos=t, dim=44
-                    FillFrequenciesInterleaved(cos, sin, baseOff + 0, pos: t, dim: dimT, theta: theta);
+                    InterleavedRoPE.FillAxisFreqs(cos.AsSpan(baseOff, dimT), sin.AsSpan(baseOff, dimT), t, invFreqT);
 
                     // Height axis: pos=y, dim=42
-                    FillFrequenciesInterleaved(cos, sin, baseOff + dimT, pos: y, dim: dimH, theta: theta);
+                    InterleavedRoPE.FillAxisFreqs(cos.AsSpan(baseOff + dimT, dimH), sin.AsSpan(baseOff + dimT, dimH), y, invFreqH);
 
                     // Width axis: pos=x, dim=42
-                    FillFrequenciesInterleaved(cos, sin, baseOff + dimT + dimH, pos: x, dim: dimW, theta: theta);
+                    InterleavedRoPE.FillAxisFreqs(cos.AsSpan(baseOff + dimT + dimH, dimW), sin.AsSpan(baseOff + dimT + dimH, dimW), x, invFreqW);
                 }
             }
         }
@@ -126,52 +138,11 @@ public static class WanRoPE
         }
     }
 
-    /// <summary>Real Wan RoPE frequency layout: for pair index i (0..dim/2), angle = pos * theta^(-2i/dim),
-    /// written at BOTH consecutive positions 2i and 2i+1 (repeat-interleaved, matching the real
-    /// `repeat_interleave_real=True` reference) -- NOT the split-half [0,half)/[half,dim) layout.</summary>
-    private static void FillFrequenciesInterleaved(float[] cos, float[] sin, int offset, float pos, int dim, float theta)
-    {
-        int half = dim / 2;
-        for (int i = 0; i < half; i++)
-        {
-            float freq = MathF.Pow(theta, -2.0f * i / dim);
-            float angle = pos * freq;
-            float c = MathF.Cos(angle);
-            float s = MathF.Sin(angle);
-
-            cos[offset + 2 * i] = c;
-            cos[offset + 2 * i + 1] = c;
-            sin[offset + 2 * i] = s;
-            sin[offset + 2 * i + 1] = s;
-        }
-    }
-
     /// <summary>Real Wan interleaved rotation: pairs (x[2i], x[2i+1]), matching
     /// `x1, x2 = hidden_states.unflatten(-1, (-1, 2)).unbind(-1); out[...,0::2] = x1*cos - x2*sin;
-    /// out[...,1::2] = x1*sin + x2*cos`.</summary>
-    public static unsafe void ApplyRoPE(float[] qk, float[] cos, float[] sin, int seqLen, int numHeads, int headDim)
-    {
-        fixed (float* pQk = qk, pCos = cos, pSin = sin)
-        {
-            for (int s = 0; s < seqLen; s++)
-            {
-                float* pCosTok = pCos + s * headDim;
-                float* pSinTok = pSin + s * headDim;
-                for (int h = 0; h < numHeads; h++)
-                {
-                    float* head = pQk + (s * numHeads + h) * headDim;
-                    for (int d = 0; d < headDim; d += 2)
-                    {
-                        float x1 = head[d];
-                        float x2 = head[d + 1];
-                        float c = pCosTok[d];
-                        float sRot = pSinTok[d];
-
-                        head[d] = x1 * c - x2 * sRot;
-                        head[d + 1] = x1 * sRot + x2 * c;
-                    }
-                }
-            }
-        }
-    }
+    /// out[...,1::2] = x1*sin + x2*cos`. Delegates to the shared <see cref="InterleavedRoPE"/>
+    /// kernel (docs/092 consolidation) -- byte-identical math, confirmed via
+    /// <c>RoPeKernelConsolidationTests</c> before this refactor.</summary>
+    public static void ApplyRoPE(float[] qk, float[] cos, float[] sin, int seqLen, int numHeads, int headDim)
+        => InterleavedRoPE.ApplyRoPE(qk, cos, sin, seqLen, numHeads, headDim);
 }
