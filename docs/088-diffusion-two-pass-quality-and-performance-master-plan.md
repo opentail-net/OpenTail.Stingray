@@ -57,9 +57,13 @@ the next item, since a status can change mid-loop):**
    has had unusually high audit effort for zero bugs found — a genuinely different investigative
    approach (e.g. a full numeric latent dump compared directly against a Python-side partial
    reference, rather than more line-by-line reading) may be more productive than another audit pass.
-5. **GPU-residency phases for Qwen Image and FLUX.2** (see Pass 2 §2d, new) — start once their
-   respective Pass 1 items above are confirmed closed at production resolution, not before
-   (CLAUDE.md rule 7: don't port a still-uncertain CPU implementation to GPU).
+5. **GPU-residency phases for Qwen Image and FLUX.2** (see Pass 2 §2d, new) — FLUX.2's
+   double-block-only GPU residency **investigated and CLOSED 2026-09-19, real negative result**:
+   built and numerically verified correct (cosine>0.9999 vs CPU), but a real production-scale
+   timing measurement found CPU is 1.49x faster than GPU, and the one-time weight upload alone
+   costs more than an entire CPU compute pass — see `docs/091`'s final status and
+   `PerformanceLeague.md` for the full measurement. **Not pursued further on this hardware.**
+   Qwen Image's GPU-residency phase remains open/not-started.
 
 ## Why two passes, in this order
 
@@ -785,7 +789,8 @@ attention, same general shape as FLUX.1):
       if a real `stable-diffusion.cpp` Qwen Image build is available, get a real head-to-head
       timing (this doc's own convention — see FLUX.1/SD1.5/SD3.5's own C++ comparison rows in
       `PerformanceLeague.md` for the exact format expected).
-- [ ] **Phase 1 (FLUX.2) — weight upload + resident GPU forward pass.** Same pattern, new
+- [x] **Phase 1 (FLUX.2) — weight upload + resident GPU forward pass. CLOSED 2026-09-19: built,
+      verified correct, real negative performance result.** Same pattern, new
       `Flux2GpuWeights`/`Flux2GpuWorkspace`. FLUX.2's 4-axis RoPE and shared (not per-block) AdaLN
       modulation are the two structural differences from FLUX.1 to account for when porting —
       re-read `Flux2DiT.cs`'s `ApplyDoubleBlockReal`/`ApplySingleBlockReal` CPU implementation
@@ -833,7 +838,31 @@ attention, same general shape as FLUX.1):
       all and treat it as a hardware-scale limitation, revisiting only if this project ever runs on
       a machine with real discrete VRAM (per CLAUDE.md's own iGPU-generalization caution). **Do not
       attempt a naive FP16-upload port — it will exhaust this machine's RAM.**
-- [ ] **Phase 2 (FLUX.2) — real end-to-end Vulkan run.** Per the user's own stated requirement
+
+      **Option (c) chosen and completed, 2026-09-19: real double-block-only GPU residency built,
+      verified correct, and measured.** `Flux2GpuWeights.cs` (`includeSingleBlocks: false` by
+      default), `Flux2GpuWorkspace.cs`, and `Flux2DiT.DoubleBlockGpu`/
+      `ComputeSharedDoubleModulationGpu` all built and wired. Required two new/verified primitives
+      first: a new `Shaders.SiluGateMul` GPU kernel for FLUX.2's SiLU-gated FFN (didn't exist
+      anywhere in this codebase; machine-precision match vs the CPU `GatedFfn` reference), and
+      verification of `AdaLNModulate`'s previously-untested `isRmsNorm: false` (affine-free
+      LayerNorm) branch (also machine-precision match). The full double-block loop (8 blocks) was
+      then verified against the real CPU reference at cosine=0.9999706 (img) / 0.9999590 (txt) —
+      **the GPU math is correct.**
+
+      **But a real, production-scale timing benchmark (`Flux2DoubleBlockGpuBenchmarkTests.cs`,
+      1024 image + 256 text tokens, best-of-3) found CPU is 1.49x FASTER than GPU for the compute
+      itself (16.6s vs 24.7s per 8-block pass), and the one-time weight upload alone (34.4s) costs
+      MORE than an entire CPU pass** — confirming CLAUDE.md rule 13's own precedent (this same
+      integrated Radeon iGPU measured 2.5x slower than CPU on MiniMax-Music3's DiT) rather than the
+      hoped-for "large payload favors GPU dispatch-overhead amortization" outcome. A full 20-step
+      generation would be ~528.4s (GPU, including one-time upload) vs ~331.7s (CPU) — GPU residency
+      would make real generations SLOWER on this specific machine. **Investigated and CLOSED —
+      not pursued further here.** See `docs/091`'s final status and `PerformanceLeague.md` for the
+      complete measurement. The GPU code is kept in the codebase (real, correct, potentially
+      reusable on hardware with genuine discrete VRAM) but not built upon further on this machine.
+- [ ] **Phase 2 (FLUX.2) — real end-to-end Vulkan run.** MOOT given the Phase 1 negative result
+      above — do not pursue on this hardware. Per the user's own stated requirement
       that FLUX.2 must ultimately run on Vulkan GPU (not just CPU) — this is part of Pass 1's own
       definition of done for FLUX.2, not a purely optional Pass 2 nice-to-have. Blocked on Phase 1
       choosing and implementing one of the real options above — the memory-budget finding means

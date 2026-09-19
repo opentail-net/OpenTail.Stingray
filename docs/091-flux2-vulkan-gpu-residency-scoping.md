@@ -1,12 +1,17 @@
 # 091 — FLUX.2 Vulkan GPU-residency scoping
 
-**Status, 2026-09-19: gating condition 1 (CPU correctness) is now MET — FLUX.2's Pass 1 closed
-for real (512×512/20-step production run confirms a clean coherent apple, see docs/088). Real
-scoping work has now started** (`Flux2GpuWeights.cs` exists, defused of a real OOM landmine — see
-below), but the double-block GPU forward pass, workspace, and a NEW required shader are not yet
-built. Do not start further implementation from this doc alone without re-reading the "Real
-blockers found before/while implementing" section below — they materially change the scope from
-what was originally planned here.
+**FINAL STATUS, 2026-09-19: INVESTIGATED AND CLOSED — real negative result, do not pursue further
+on this machine.** Gating condition 1 (CPU correctness) was met (FLUX.2's Pass 1 closed, see
+docs/088). Double-block-only GPU residency was fully built (`Flux2GpuWeights.cs`,
+`Flux2GpuWorkspace.cs`, `Flux2DiT.DoubleBlockGpu`) and independently verified numerically correct
+against the real CPU reference (cosine>0.9999). But a real, production-scale timing measurement
+(`Flux2DoubleBlockGpuBenchmarkTests.cs`) found **CPU is 1.49x faster than GPU for the compute
+itself, and the one-time weight upload alone costs more than an entire CPU compute pass** — GPU
+residency would make full generations SLOWER on this specific iGPU hardware, confirming gating
+condition 3's own concern (CLAUDE.md rule 13). See "Real blockers found before/while implementing"
+below for the full investigation trail, and its final entry for the complete negative result. The
+double-block GPU code is real, correct, and kept in the codebase as potentially reusable on
+hardware with genuine discrete VRAM — it is just not enabled or built upon further here.
 
 ## Gating conditions — check these before starting
 
@@ -183,18 +188,38 @@ architecture derivation) — do not design a new GPU-residency pattern from scra
    `FluxGpuParityTests` sees at this precision gap). **The double-block GPU math is now verified
    correct.** Test runtime: 46.4s (dominated by real weight load/dequant, not the tiny synthetic
    forward pass itself).
-7. Get a real, measured single-step GPU-vs-CPU timing comparison on THIS machine's iGPU, at
-   PRODUCTION token counts (not the tiny synthetic scale used for the correctness check above) —
-   per the gating conditions, partial (double-block-only) residency could still lose to CPU on this
-   hardware, especially since the CPU path already benefits from `QuantizedWeightCache`'s
-   pre-transposed Q4Kx8 SIMD matmuls while the GPU path currently uploads FP16-expanded weights;
-   measure, don't assume (CLAUDE.md rule 13). NOT YET DONE — the real next step.
-8. If GPU wins: consider whether the SiLU-gated shader from step 4 or the `isRmsNorm=false` path
-   from step 3 need the same optimization sequence FLUX.1 went through (matrix-vector fast paths,
-   command-buffer batching) — don't assume the win transfers automatically.
-9. Record every real measurement in `PerformanceLeague.md` and `docs/088`, following this project's
-   existing documentation conventions.
-10. Single-stream-block GPU residency (the other ≈47.1GB) is a SEPARATE, larger future task —
-    requires either a wider-BN quantized-matmul shader variant (see docs/088 Pass 2 §2d's own
-    analysis) to stay within this machine's memory budget, or a machine with real headroom. Do not
-    attempt it by simply flipping `includeSingleBlocks: true` on this hardware.
+7. ~~Get a real, measured single-step GPU-vs-CPU timing comparison~~ — **DONE 2026-09-19, REAL
+   NEGATIVE RESULT: CPU wins on this hardware.** New `Flux2DoubleBlockGpuBenchmarkTests.cs`,
+   production scale (1024 image tokens + 256 text tokens, a real 512×512-equivalent token count),
+   best-of-3 timed runs each: **CPU 16,583.4ms vs GPU 24,667.6ms per 8-double-block pass — CPU is
+   1.49x faster.** This confirms the gating condition's own concern (CLAUDE.md rule 13's
+   MiniMax-Music3 precedent: this iGPU loses to CPU on real workloads due to per-call dispatch
+   overhead and shared-memory bandwidth with no VRAM advantage) — this is a real, useful finding
+   about THIS hardware, not evidence the GPU code is wrong (the code is independently verified
+   correct, see step 6). **Even more decisive: weight upload alone (`Flux2GpuWeights`'s
+   constructor, uploading the 8 double blocks' ≈15.7GB) took 34,358.4ms — LONGER than an entire
+   CPU 8-block compute pass.** This upload cost was measured separately from the per-step timing
+   above (i.e. NOT amortized into the 24.7s GPU figure) specifically to answer whether it's a
+   one-time cost a multi-step denoising loop could absorb — and the answer is: even ignoring
+   upload entirely, the GPU compute itself already loses. Including the upload cost (relevant for
+   any SINGLE-image generation, where the upload can't be amortized across multiple unrelated
+   images) makes the case overwhelmingly worse: 20 steps × 24.7s GPU compute + 34.4s one-time
+   upload = ~528.4s vs 20 × 16.6s CPU = ~331.7s — GPU residency would make a full generation
+   run SLOWER overall on this specific machine, not faster, even before considering the CPU path's
+   own further optimization headroom (matrix-vector fast paths, command-buffer batching — the
+   exact sequence FLUX.1's GPU port went through — were never applied here since there's no
+   real win to build on top of).
+
+   **Conclusion: FLUX.2 double-block GPU residency does NOT help on this machine and should NOT be
+   pursued further here.** The work was not wasted — the double-block GPU math is real, correct,
+   and reusable if this project ever runs on hardware with genuine discrete VRAM/bandwidth
+   advantages (per CLAUDE.md rule 13's own framing: a negative iGPU result doesn't generalize to
+   different hardware) — but do not sink further engineering time into optimizing or extending it
+   on THIS machine without first re-measuring on different hardware. This closes out item 5 of
+   docs/088's standing priority list as "investigated, real negative result, not pursued further,"
+   not as "done" or "abandoned without reason."
+8. ~~If GPU wins: ...~~ — moot, GPU did not win on this hardware (see step 7).
+9. Recorded in `PerformanceLeague.md` and `docs/088` (this pass).
+10. Single-stream-block GPU residency (the other ≈47.1GB) — **now also moot on this hardware**
+    given the double-block-only result above; the memory-budget concern from blocker 1 is no
+    longer the limiting factor, the compute-speed result is. Do not pursue on this machine.
