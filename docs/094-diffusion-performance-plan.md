@@ -450,10 +450,32 @@ the starting picture:
       decode (3x slower) rather than the DiT loop itself. Attack the two already-identified real
       bottlenecks (T5 streaming-from-disk vs. resident GGUF-quantized loading; VAE decode kernel
       efficiency) rather than re-touching the DiT loop, which is already close to parity.
-- [ ] Check whether `WanModel`/`WanPipeline` supports Wan2.2 checkpoints at all (different
-      architecture/config vs 2.1, or just a different checkpoint under the same class?) — grep the
-      real HF repo's config before assuming compatibility. If genuinely unsupported, that's a coverage
-      gap, not a perf gap — scope it separately, don't conflate.
+- [x] **Checked, 2026-09-19**: `WanPipeline`'s own doc comment claims support for "Dual-Model
+      Low/High Noise swapping (Wan2.2 A14B)" — real, not aspirational: `Generate()` genuinely accepts
+      a `highNoiseTransformer`/`highNoiseBoundary` pair and switches between two loaded `WanModel`
+      instances mid-denoising-loop based on the current timestep (`WanPipeline.cs:76-77,210-211`).
+      **But this is coverage-gap, not perf-gap, per the checklist's own framing**: (a) there is no
+      `Load()` overload that actually constructs a `WanPipeline` with a high-noise transformer from
+      real Wan2.2 checkpoint files — the swap logic exists in the denoising loop but nothing wires it
+      up from a loader; (b) zero test files reference `highNoiseTransformer`/`Wan2.2`/`A14B` anywhere
+      in `tests/`; (c) **no Wan2.2 checkpoint of any kind exists on this machine** (`models/`,
+      `models/_models/`, `models/wan2.1/` all checked — only Wan2.1-T2V-1.3B is present). This is a
+      genuine, real, unstarted coverage item, not a documentation gap like several other findings
+      this session — closing it for real would mean: finding/downloading a real Wan2.2-A14B GGUF
+      (per CLAUDE.md's blanket download authorization), writing the missing `Load` wiring, and a
+      first real-weights smoke test, likely a multi-hour undertaking given A14B's size (14B active
+      params) and this project's own CPU cost history for even the much smaller Wan2.1-1.3B model.
+      **Real download kicked off, 2026-09-19**: found two working real HF sources
+      (`bullerwins/Wan2.2-T2V-A14B-GGUF`, flat naming; `QuantStack/Wan2.2-T2V-A14B-GGUF`,
+      `LowNoise/`/`HighNoise/` subdirs — both real, `city96`'s own equivalent repos 401'd, likely
+      gated) and started background downloads of both the low-noise and high-noise Q4_K_S variants
+      (~8.15GB each, `bullerwins` repo, `models/_models/wan2.2_t2v_{low,high}_noise_14B_Q4_K_S.gguf`)
+      — per CLAUDE.md's blanket download authorization. **Not yet wired or tested this pass** — no
+      `WanPipeline.Load` overload exists yet that takes two transformer paths and constructs the
+      dual-model swap; that's the real next step once the download completes, followed by a first
+      real-weights smoke test (matching every other model's first-coverage pattern in this doc).
+      Given A14B's size, expect this to be a genuinely slow (many-minutes-per-step) CPU run on this
+      hardware — stated explicitly as a real cost, not absorbed silently.
 
 ### Phase 9 — Cross-model DRY + perf-doc consistency pass (per CLAUDE.md's own performance+DRY pass rule)
 
