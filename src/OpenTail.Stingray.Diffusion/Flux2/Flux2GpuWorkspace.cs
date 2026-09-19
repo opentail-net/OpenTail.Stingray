@@ -37,8 +37,8 @@ public sealed class Flux2GpuWorkspace : IDisposable
     public int Dim { get; }
     public int MlpHidden { get; }
 
-    public CoreTensor ImgHidden { get; }
-    public CoreTensor TxtHidden { get; }
+    public CoreTensor ImgHidden { get; private set; }
+    public CoreTensor TxtHidden { get; private set; }
     public CoreTensor NormedImg { get; }
     public CoreTensor NormedTxt { get; }
     public CoreTensor QkvTxt { get; }
@@ -118,6 +118,17 @@ public sealed class Flux2GpuWorkspace : IDisposable
 
         RopeCos = backend.Upload(ropeCosCompact, TensorShape.D2(nSeq, nPairs), exact: true);
         RopeSin = backend.Upload(ropeSinCompact, TensorShape.D2(nSeq, nPairs), exact: true);
+    }
+
+    /// <summary>Re-uploads this step's img/txt hidden state, freeing the previous buffers first --
+    /// used when reusing an already-shape-matched workspace across denoising steps instead of
+    /// rebuilding the whole workspace (which would also needlessly re-upload the RoPE table).</summary>
+    public void RefreshHidden(IComputeBackend backend, ReadOnlySpan<float> img, ReadOnlySpan<float> txt)
+    {
+        backend.Free(ImgHidden);
+        backend.Free(TxtHidden);
+        ImgHidden = backend.Upload(img, TensorShape.D2(NumImg, Dim), exact: true);
+        TxtHidden = backend.Upload(txt, TensorShape.D2(NumTxt, Dim), exact: true);
     }
 
     public void Dispose()

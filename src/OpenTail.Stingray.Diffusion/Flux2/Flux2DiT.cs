@@ -12,6 +12,16 @@ public sealed class Flux2DiT : IDisposable
     private readonly string _prefix;
     private readonly QuantizedWeightCache? _cache;
 
+    // GPU double-block residency (docs/091, wired 2026-09-19). Weights upload once and are
+    // reused for the lifetime of this instance; the workspace is (re)created if the token shape
+    // changes (a different resolution/prompt-length). Real, measured finding on this project's own
+    // dev iGPU: CPU currently wins here (see docs/091/PerformanceLeague.md) -- wired anyway per
+    // explicit operator instruction, since there is nothing to optimize further without a real,
+    // exercised GPU code path in the actual generation pipeline to measure and improve.
+    private Flux2GpuWeights? _gpuWeights;
+    private Flux2GpuWorkspace? _gpuWorkspace;
+    private int _gpuWsNImg = -1, _gpuWsNTxt = -1;
+
     public Flux2Params Params => _p;
     public QuantizedWeightCache? WeightCache => _cache;
 
@@ -40,6 +50,8 @@ public sealed class Flux2DiT : IDisposable
     public void Dispose()
     {
         _cache?.Dispose();
+        _gpuWorkspace?.Dispose();
+        _gpuWeights?.Dispose();
     }
 
     private string Resolve(string name) => _prefix + name;
@@ -141,7 +153,8 @@ public sealed class Flux2DiT : IDisposable
         float[] textEmbeds, int[] textPositions,
         float[] pooledEmbed,
         float timestep,
-        float guidance = 3.5f)
+        float guidance = 3.5f,
+        IComputeBackend? gpuBackend = null)
     {
         if (refLatents != null && refLatents.Count > 0)
         {
@@ -178,12 +191,23 @@ public sealed class Flux2DiT : IDisposable
             modSingle = ComputeModulation("single_stream_modulation.lin.weight", vec, d, 3);
         }
 
-        for (int layer = 0; layer < _p.DepthDoubleBlocks; layer++)
+        bool useGpuDoubleBlocks = _weights != null && gpuBackend is not null
+            && gpuBackend is not CpuBackend
+            && gpuBackend is IVisionOpsBackend && gpuBackend is IImageOpsBackend;
+
+        if (useGpuDoubleBlocks)
         {
-            if (_weights != null)
-                ApplyDoubleBlockReal(layer, img, txt, modImg!, modTxt!, imgCos, imgSin, txtCos, txtSin, nTarget, nTxt);
-            else
-                ApplyDoubleBlock(layer, img, txt, vec, imgCos, imgSin, txtCos, txtSin, nTarget, nTxt);
+            RunDoubleBlocksGpu(gpuBackend!, img, txt, vec, targetPositions, textPositions, nTarget, nTxt);
+        }
+        else
+        {
+            for (int layer = 0; layer < _p.DepthDoubleBlocks; layer++)
+            {
+                if (_weights != null)
+                    ApplyDoubleBlockReal(layer, img, txt, modImg!, modTxt!, imgCos, imgSin, txtCos, txtSin, nTarget, nTxt);
+                else
+                    ApplyDoubleBlock(layer, img, txt, vec, imgCos, imgSin, txtCos, txtSin, nTarget, nTxt);
+            }
         }
 
         int nSeq = nTxt + nTarget;
@@ -562,6 +586,71 @@ public sealed class Flux2DiT : IDisposable
     /// -> proj + gated residual -> re-modulate -> SiLU-gated FFN (<c>SiluGateMul</c>, not GEGLU) ->
     /// proj + gated residual. No bias terms anywhere (FLUX.2's linears are bias-free).
     /// </summary>
+    /// <summary>
+    /// Runs the 8 double-stream blocks on GPU (docs/091, wired 2026-09-19), mutating
+    /// <paramref name="img"/>/<paramref name="txt"/> in place with the result -- everything before
+    /// and after this call (img_in/txt_in projection, the 48 single-stream blocks, final layer)
+    /// stays on the existing CPU path unchanged. GPU weights upload once and are cached for this
+    /// instance's lifetime (<see cref="_gpuWeights"/>); the workspace is recreated only if the
+    /// token shape changes. Real, measured finding on this project's own dev iGPU: CPU currently
+    /// wins here (docs/091) -- this path exists so GPU is a real, selectable, exercised option to
+    /// optimize further, not a dead code path nobody can measure or improve.
+    /// </summary>
+    private void RunDoubleBlocksGpu(
+        IComputeBackend backend,
+        float[] img, float[] txt,
+        float[] vec,
+        int[] targetPositions, int[] textPositions,
+        int nImg, int nTxt)
+    {
+        var visionOps = (IVisionOpsBackend)backend;
+        int d = _p.HiddenSize;
+        int mlpHidden = (int)(d * _p.MlpRatio);
+
+        _gpuWeights ??= new Flux2GpuWeights(backend, GetWeight, _p, includeSingleBlocks: false);
+
+        if (_gpuWorkspace is null || _gpuWsNImg != nImg || _gpuWsNTxt != nTxt)
+        {
+            _gpuWorkspace?.Dispose();
+
+            var combinedPositions = new int[(nTxt + nImg) * 4];
+            Array.Copy(textPositions, 0, combinedPositions, 0, textPositions.Length);
+            Array.Copy(targetPositions, 0, combinedPositions, textPositions.Length, targetPositions.Length);
+            var (ropeCosCompact, ropeSinCompact) = Flux2RoPE.BuildContextFreqsCompact(combinedPositions, nTxt + nImg, _p.AxesDim, _p.Theta);
+
+            _gpuWorkspace = new Flux2GpuWorkspace(backend, nImg, nTxt, d, mlpHidden, _p.HeadDim, ropeCosCompact, ropeSinCompact,
+                initialImgHidden: img, initialTxtHidden: txt);
+            _gpuWsNImg = nImg;
+            _gpuWsNTxt = nTxt;
+        }
+        else
+        {
+            // Same shape as last step (fixed resolution/prompt length across a denoising loop) --
+            // just re-upload this step's hidden state, keeping the RoPE table and scratch buffers.
+            _gpuWorkspace.RefreshHidden(backend, img, txt);
+        }
+
+        var ws = _gpuWorkspace;
+        var siluVec = (float[])vec.Clone();
+        DiffusionOps.SiluInPlace(siluVec);
+        var siluVecGpu = backend.Upload(siluVec, TensorShape.D1(d));
+
+        try
+        {
+            ComputeSharedDoubleModulationGpu(visionOps, ws, _gpuWeights, siluVecGpu);
+            for (int layer = 0; layer < _p.DepthDoubleBlocks; layer++)
+                DoubleBlockGpu(ws, _gpuWeights.DoubleBlocks[layer], visionOps, (IImageOpsBackend)backend);
+            backend.Synchronize();
+
+            backend.Download(ws.ImgHidden, img);
+            backend.Download(ws.TxtHidden, txt);
+        }
+        finally
+        {
+            backend.Free(siluVecGpu);
+        }
+    }
+
     internal void DoubleBlockGpu(
         Flux2GpuWorkspace ws,
         Flux2GpuWeights.DoubleBlockGpuWeights bw,

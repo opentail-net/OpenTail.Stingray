@@ -28,6 +28,7 @@ public sealed class Flux2Pipeline : IDisposable
     private readonly GgufTokenizer? _mistralTokenizer;
     private readonly IWeightLoader? _vaeWeights;
     private readonly Cpu.CpuBackend? _mistralBackend;
+    private readonly IComputeBackend? _ditBackend;
     private bool _disposed;
 
     public bool IsDisposed => _disposed;
@@ -44,7 +45,8 @@ public sealed class Flux2Pipeline : IDisposable
     private Flux2Pipeline(
         Flux2DiT transformer, IWeightLoader ditWeights,
         GgufModel mistralModel, Engine.ForwardPass mistralForward, GgufTokenizer mistralTokenizer, Cpu.CpuBackend mistralBackend,
-        IWeightLoader vaeWeights)
+        IWeightLoader vaeWeights,
+        IComputeBackend? ditBackend)
     {
         _transformer = transformer;
         _ditWeights = ditWeights;
@@ -53,14 +55,23 @@ public sealed class Flux2Pipeline : IDisposable
         _mistralTokenizer = mistralTokenizer;
         _mistralBackend = mistralBackend;
         _vaeWeights = vaeWeights;
+        _ditBackend = ditBackend;
     }
 
     /// <summary>
     /// Loads a real FLUX.2 pipeline: real DiT weights (GGUF), real Mistral-Small-24B text encoder
     /// (GGUF), and real VAE (safetensors). See docs/087 for the full architecture derivation --
     /// all three components independently verified against real weights before this wiring.
+    ///
+    /// <paramref name="ditBackend"/> (optional): when a real GPU backend (e.g. `VulkanBackend`) is
+    /// passed, the DiT's 8 double-stream blocks run on GPU (docs/091, real correctness-verified,
+    /// wired 2026-09-19) -- the 48 single-stream blocks and everything else stay on the existing
+    /// CPU path (memory-budget reasons, see docs/091). Defaults to CPU-only (`null`) if omitted.
+    /// Real, measured finding on this project's own dev iGPU: CPU currently wins end-to-end
+    /// (docs/091/PerformanceLeague.md) -- GPU is offered as a real, selectable, exercised option
+    /// regardless, so it can be measured and improved rather than sitting as dead code.
     /// </summary>
-    public static Flux2Pipeline Load(string ditPath, string mistralPath, string vaePath, Flux2Params? @params = null)
+    public static Flux2Pipeline Load(string ditPath, string mistralPath, string vaePath, Flux2Params? @params = null, IComputeBackend? ditBackend = null)
     {
         var ditWeights = GgufWeightLoader.Open(ditPath);
         var p = @params ?? new Flux2Params();
@@ -74,7 +85,7 @@ public sealed class Flux2Pipeline : IDisposable
 
         var vaeWeights = SafetensorsLoader.Open(vaePath);
 
-        return new Flux2Pipeline(transformer, ditWeights, mistralModel, mistralForward, tokenizer, mistralBackend, vaeWeights);
+        return new Flux2Pipeline(transformer, ditWeights, mistralModel, mistralForward, tokenizer, mistralBackend, vaeWeights, ditBackend);
     }
 
     /// <summary>
@@ -205,7 +216,8 @@ public sealed class Flux2Pipeline : IDisposable
                 refLatents, refPositions,
                 txtEmbeds, txtPositions,
                 pooledEmbed,
-                t * 1000.0f, request.Guidance);
+                t * 1000.0f, request.Guidance,
+                _ditBackend);
 
             for (int i = 0; i < targetLatent.Length; i++)
             {
