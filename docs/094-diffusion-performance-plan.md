@@ -180,12 +180,28 @@ the starting picture:
       QKV, per-block not shared modulation, affine-free pre-norm, plain not gated GELU) is reflected.
       All weights optionally support a bias tensor (`UploadOptionalBias`) since it wasn't yet verified
       whether this checkpoint's linears carry biases — safe either way.
-- [ ] Build `QwenImageGpuWorkspace` + `ForwardGpu`, mirroring `MMDiTModel.ForwardGpu`'s per-block
-      dispatch structure (AdaLN modulation → affine-free LayerNorm → modulate → QKV projection →
-      per-stream QK-RMSNorm → 3D-RoPE → joint `MultiHeadAttentionTiled` (HeadDim=128, existing kernel)
-      → gated residual → plain-GELU FFN → gated residual), following the
-      Upload-once/resident-chain pattern (not per-op dispatch — that mistake has already been made and
-      unmade three times in this codebase, don't repeat it). This is the next real chunk of work.
+- [x] **`QwenImageGpuWorkspace` + `QwenImageModel.ForwardGpu` written, 2026-09-19, compiling clean.**
+      Mirrors `MMDiTModel.ForwardGpu`'s per-block dispatch structure block-for-block, adapted for
+      Qwen Image's real differences (per-block AdaLN, separate non-fused QKV via `Sgemm` +
+      `FluxConcatTxtImg` instead of a fused-QKV unpack, affine-free-LayerNorm `AdaLNModulate(...,
+      isRmsNorm: false)`, plain-GELU FFN via `VisionGeluInPlace`, `[txt;img]` token ordering matching
+      the CPU path's own `ConcatSequences(txtQ, imgQ, ...)` call — opposite of FLUX/SD3.5's
+      `[img;txt]`). RoPE reuses `Flux2DRoPE` directly against Qwen's own real cos/sin tables (verified
+      by inspection that both use the same adjacent-pair/GPT-J rotation convention, confirmed via
+      `InterleavedRoPE.FillAxisFreqs`'s pair-duplicated cos/sin storage matching `Flux2GpuWorkspace`'s
+      compact `[nSeq, headDim/2]` upload convention). Scope: standard text-to-image only, NOT Qwen
+      Image Edit's reference-latent conditioning (`Forward`'s GPU dispatch guard falls back to CPU
+      when `refLatent` is supplied) — matches the first-pass scope of every other GPU port in this
+      codebase.
+  - Checkpoint (`qwen-image-Q3_K_S.gguf`, `city96/Qwen-Image-gguf`) turned out to already be present
+    in `models/_models/` (an initial `find`/`ls` under `models/` missed the `_models` subdirectory,
+    triggering an unnecessary `stingray pull` attempt that hit a benign 416-range error against the
+    already-complete file — no real download was needed).
+  - **Real GPU-vs-CPU parity test written** (`QwenImageGpuParityTests.cs`, same structure as
+    `Sd3BaselineTests.TestSd35GpuVsCpuParity`) and running against real weights — see this doc's
+    Working Log for the actual cosine/maxDiff result once it completes. Per this project's own
+    "check the timing, not just pass/fail" discipline (CLAUDE.md rule 12), do not trust this port
+    until that real number is in hand.
 - [ ] Real numerical parity test (GPU vs CPU forward, real weights) before any timing claim.
 - [ ] Real end-to-end Vulkan timing vs the existing 348.4s CPU baseline. Document in
       `PerformanceLeague.md`. No C++ reference exists for Qwen Image in `examples/` — note that

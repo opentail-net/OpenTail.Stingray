@@ -16,6 +16,8 @@ public sealed class QwenImageModel : IDisposable
     private readonly int _numLayers;
     private readonly QuantizedWeightCache _cache;
     private bool _disposed;
+    private QwenImageGpuWeights? _residentGpuWeights;
+    private QwenImageGpuWorkspace? _residentGpuWorkspace;
 
     public const int HiddenDim = 3072;
     public const int NumHeads = 24;
@@ -84,6 +86,162 @@ public sealed class QwenImageModel : IDisposable
         return null;
     }
 
+    private void EnsureGpuResident(int numImgTokens, int numTxtTokens, float[] ropeCos, float[] ropeSin)
+    {
+        _residentGpuWeights ??= new QwenImageGpuWeights(_backend!, GetWeight, TryGetWeight, _numLayers, HiddenDim, InChannels, ContextDim, HeadDim);
+
+        if (_residentGpuWorkspace is null
+            || _residentGpuWorkspace.NumImgTokens != numImgTokens
+            || _residentGpuWorkspace.NumTxtTokens != numTxtTokens)
+        {
+            _residentGpuWorkspace?.Dispose();
+            _residentGpuWorkspace = new QwenImageGpuWorkspace(_backend!, numImgTokens, numTxtTokens, HiddenDim, InChannels, ropeCos, ropeSin, HeadDim);
+        }
+    }
+
+    /// <summary>
+    /// GPU-resident forward pass (docs/094 Phase 2). Standard text-to-image only (no Edit
+    /// reference-latent conditioning -- see <see cref="Forward"/>'s dispatch guard). Mirrors the CPU
+    /// <see cref="Forward"/>/<see cref="TransformerBlock"/>/<see cref="JointAttention"/> structure
+    /// block-for-block; every op maps to an existing Vulkan primitive already proven correct by
+    /// FLUX.1/FLUX.2/SD3.5's own GPU ports (<see cref="QwenImageGpuWeights"/>'s doc comment has the
+    /// full architectural-difference rationale for why each substitution is safe).
+    /// </summary>
+    private float[] ForwardGpu(
+        IVisionOpsBackend visionOps,
+        IImageOpsBackend imageOps,
+        float[] latent, float timestep, float[] textContext, int latH, int latW)
+    {
+        int patchH = latH / PatchSize;
+        int patchW = latW / PatchSize;
+        int numImgTokens = patchH * patchW;
+        int numTxtTokens = textContext.Length / ContextDim;
+        int totalTokens = numTxtTokens + numImgTokens;
+
+        var (ropeCos, ropeSin) = QwenImageRoPE.Compute3DRoPE(numTxtTokens, patchH, patchW, HeadDim);
+        EnsureGpuResident(numImgTokens, numTxtTokens, ropeCos, ropeSin);
+        var gw = _residentGpuWeights!;
+        var ws = _residentGpuWorkspace!;
+
+        var packedInput = PackLatents(latent, latH, latW);
+
+        // Input projections (host-side patchify, then a real GEMM upload each -- same pattern
+        // MMDiTModel.ForwardGpu uses for its own x_embedder).
+        var imgTokensF32 = Linear("img_in", packedInput, InChannels, HiddenDim);
+        var txtTokensF32 = Linear("txt_in", textContext, ContextDim, HiddenDim);
+        var xGpu = _backend!.Upload(imgTokensF32.AsSpan(0, numImgTokens * HiddenDim), TensorShape.D2(numImgTokens, HiddenDim), exact: true);
+        var cGpu = _backend.Upload(txtTokensF32.AsSpan(0, numTxtTokens * HiddenDim), TensorShape.D2(numTxtTokens, HiddenDim), exact: true);
+
+        // Timestep embedding: tiny (256->3072->3072), kept on the existing CPU path (same choice
+        // MMDiTModel.ForwardGpu makes for its own time+pooled embedding).
+        var tEmb = ComputeTimestepEmbedding(timestep);
+        var tVecSilu = DiffusionOpsSilu(tEmb);
+        var tVecGpu = _backend.Upload(tVecSilu.AsSpan(0, HiddenDim), TensorShape.D1(HiddenDim), exact: true);
+
+        imageOps.BeginBatch();
+        bool batchSuccess = false;
+        try
+        {
+            for (int b = 0; b < _numLayers; b++)
+            {
+                var bw = gw.Blocks[b];
+
+                visionOps.Sgemm(ws.ImgMod, tVecGpu, bw.ImgModWeight, 1, HiddenDim, 6 * HiddenDim);
+                if (bw.ImgModBias is { } imb) imageOps.AddRowBroadcastInPlace(ws.ImgMod, imb, 1, 6 * HiddenDim);
+                visionOps.Sgemm(ws.TxtMod, tVecGpu, bw.TxtModWeight, 1, HiddenDim, 6 * HiddenDim);
+                if (bw.TxtModBias is { } tmb) imageOps.AddRowBroadcastInPlace(ws.TxtMod, tmb, 1, 6 * HiddenDim);
+
+                // Affine-free LayerNorm + modulate (isRmsNorm: false -- see QwenImageModel's own
+                // CPU doc comment on LayerNormNoAffine; AdaLNModulate with isRmsNorm:false applies
+                // the equivalent plain-LayerNorm-then-(1+scale)*x+shift used elsewhere for SD3.5).
+                visionOps.AdaLNModulate(ws.NormedImg1, xGpu, ws.ImgMod, numImgTokens, HiddenDim, shiftOffset: 0, scaleOffset: HiddenDim, isRmsNorm: false, eps: 1e-6f);
+                visionOps.AdaLNModulate(ws.NormedTxt1, cGpu, ws.TxtMod, numTxtTokens, HiddenDim, shiftOffset: 0, scaleOffset: HiddenDim, isRmsNorm: false, eps: 1e-6f);
+
+                // Separate (non-fused) Q/K/V projections.
+                visionOps.Sgemm(ws.ImgQ, ws.NormedImg1, bw.ImgToQWeight, numImgTokens, HiddenDim, HiddenDim);
+                visionOps.Sgemm(ws.ImgK, ws.NormedImg1, bw.ImgToKWeight, numImgTokens, HiddenDim, HiddenDim);
+                visionOps.Sgemm(ws.ImgV, ws.NormedImg1, bw.ImgToVWeight, numImgTokens, HiddenDim, HiddenDim);
+                visionOps.Sgemm(ws.TxtQ, ws.NormedTxt1, bw.TxtAddQWeight, numTxtTokens, HiddenDim, HiddenDim);
+                visionOps.Sgemm(ws.TxtK, ws.NormedTxt1, bw.TxtAddKWeight, numTxtTokens, HiddenDim, HiddenDim);
+                visionOps.Sgemm(ws.TxtV, ws.NormedTxt1, bw.TxtAddVWeight, numTxtTokens, HiddenDim, HiddenDim);
+
+                // Per-stream QK-RMSNorm (different learned scales for img vs. txt).
+                visionOps.QKNorm(ws.ImgQ, ws.ImgK, bw.ImgNormQScale, bw.ImgNormKScale, numImgTokens, NumHeads, HeadDim, eps: 1e-6f);
+                visionOps.QKNorm(ws.TxtQ, ws.TxtK, bw.TxtNormQScale, bw.TxtNormKScale, numTxtTokens, NumHeads, HeadDim, eps: 1e-6f);
+
+                // Concatenate [txt; img] (Qwen Image's own ordering -- opposite of FLUX/SD3.5's
+                // [img; txt], confirmed against the CPU path's ConcatSequences call order).
+                visionOps.FluxConcatTxtImg(ws.TxtQ, ws.ImgQ, ws.Q, numTxtTokens, numImgTokens, HiddenDim);
+                visionOps.FluxConcatTxtImg(ws.TxtK, ws.ImgK, ws.K, numTxtTokens, numImgTokens, HiddenDim);
+                visionOps.FluxConcatTxtImg(ws.TxtV, ws.ImgV, ws.V, numTxtTokens, numImgTokens, HiddenDim);
+
+                // 3D-RoPE over the full joint sequence at once (matches the CPU path's single
+                // ApplyRoPE call over the concatenated q/k arrays).
+                visionOps.Flux2DRoPE(ws.Q, ws.K, ws.RopeCos, ws.RopeSin, startToken: 0, tokenCount: totalTokens, NumHeads, HeadDim);
+
+                imageOps.MultiHeadAttentionTiled(ws.AttnOut, ws.Q, ws.K, ws.V, totalTokens, totalTokens, NumHeads, HeadDim);
+
+                // Slice the joint attention output back into per-stream buffers ([txt; img] order:
+                // txt occupies rows [0, numTxt), img occupies [numTxt, numTxt+numImg)).
+                visionOps.FluxSliceImg(ws.AttnOut, ws.TxtAttnOut, nTxt: 0, nImg: numTxtTokens, dim: HiddenDim);
+                visionOps.FluxSliceImg(ws.AttnOut, ws.ImgAttnOut, nTxt: numTxtTokens, nImg: numImgTokens, dim: HiddenDim);
+
+                visionOps.Sgemm(ws.ImgOut, ws.ImgAttnOut, bw.ImgToOutWeight, numImgTokens, HiddenDim, HiddenDim);
+                if (bw.ImgToOutBias is { } iob) imageOps.AddRowBroadcastInPlace(ws.ImgOut, iob, numImgTokens, HiddenDim);
+                visionOps.ScaleGateAdd(xGpu, ws.ImgOut, ws.ImgMod, numImgTokens, HiddenDim, gateOffset: 2 * HiddenDim);
+
+                visionOps.Sgemm(ws.TxtOut, ws.TxtAttnOut, bw.TxtToAddOutWeight, numTxtTokens, HiddenDim, HiddenDim);
+                if (bw.TxtToAddOutBias is { } tob) imageOps.AddRowBroadcastInPlace(ws.TxtOut, tob, numTxtTokens, HiddenDim);
+                visionOps.ScaleGateAdd(cGpu, ws.TxtOut, ws.TxtMod, numTxtTokens, HiddenDim, gateOffset: 2 * HiddenDim);
+
+                // Norm2 + plain-GELU FFN (NOT gated -- see QwenImageGpuWeights' doc comment).
+                visionOps.AdaLNModulate(ws.NormedImg2, xGpu, ws.ImgMod, numImgTokens, HiddenDim, shiftOffset: 3 * HiddenDim, scaleOffset: 4 * HiddenDim, isRmsNorm: false, eps: 1e-6f);
+                visionOps.AdaLNModulate(ws.NormedTxt2, cGpu, ws.TxtMod, numTxtTokens, HiddenDim, shiftOffset: 3 * HiddenDim, scaleOffset: 4 * HiddenDim, isRmsNorm: false, eps: 1e-6f);
+
+                int ffDim = HiddenDim * 4;
+                visionOps.Sgemm(ws.ImgMlpBuf, ws.NormedImg2, bw.ImgMlpUpWeight, numImgTokens, HiddenDim, ffDim);
+                if (bw.ImgMlpUpBias is { } imub) imageOps.AddRowBroadcastInPlace(ws.ImgMlpBuf, imub, numImgTokens, ffDim);
+                visionOps.VisionGeluInPlace(ws.ImgMlpBuf);
+                visionOps.Sgemm(ws.ImgOut, ws.ImgMlpBuf, bw.ImgMlpDownWeight, numImgTokens, ffDim, HiddenDim);
+                if (bw.ImgMlpDownBias is { } imdb) imageOps.AddRowBroadcastInPlace(ws.ImgOut, imdb, numImgTokens, HiddenDim);
+                visionOps.ScaleGateAdd(xGpu, ws.ImgOut, ws.ImgMod, numImgTokens, HiddenDim, gateOffset: 5 * HiddenDim);
+
+                visionOps.Sgemm(ws.TxtMlpBuf, ws.NormedTxt2, bw.TxtMlpUpWeight, numTxtTokens, HiddenDim, ffDim);
+                if (bw.TxtMlpUpBias is { } tmub) imageOps.AddRowBroadcastInPlace(ws.TxtMlpBuf, tmub, numTxtTokens, ffDim);
+                visionOps.VisionGeluInPlace(ws.TxtMlpBuf);
+                visionOps.Sgemm(ws.TxtOut, ws.TxtMlpBuf, bw.TxtMlpDownWeight, numTxtTokens, ffDim, HiddenDim);
+                if (bw.TxtMlpDownBias is { } tmdb) imageOps.AddRowBroadcastInPlace(ws.TxtOut, tmdb, numTxtTokens, HiddenDim);
+                visionOps.ScaleGateAdd(cGpu, ws.TxtOut, ws.TxtMod, numTxtTokens, HiddenDim, gateOffset: 5 * HiddenDim);
+            }
+
+            // Final layer: norm_out.linear (AdaLN shift/scale) + proj_out.
+            visionOps.Sgemm(ws.FinalMod, tVecGpu, gw.FinalNormLinearWeight, 1, HiddenDim, 2 * HiddenDim);
+            if (gw.FinalNormLinearBias is { } fnb) imageOps.AddRowBroadcastInPlace(ws.FinalMod, fnb, 1, 2 * HiddenDim);
+
+            visionOps.AdaLNModulate(ws.NormedImg1, xGpu, ws.FinalMod, numImgTokens, HiddenDim, shiftOffset: HiddenDim, scaleOffset: 0, isRmsNorm: false, eps: 1e-6f);
+
+            visionOps.Sgemm(ws.Unpatchified, ws.NormedImg1, gw.FinalProjOutWeight, numImgTokens, HiddenDim, InChannels);
+            if (gw.FinalProjOutBias is { } fpb) imageOps.AddRowBroadcastInPlace(ws.Unpatchified, fpb, numImgTokens, InChannels);
+
+            imageOps.EndBatch();
+            batchSuccess = true;
+
+            var outPacked = new float[numImgTokens * InChannels];
+            _backend.Download(ws.Unpatchified, outPacked);
+            return UnpackLatents(outPacked, latH, latW);
+        }
+        finally
+        {
+            if (!batchSuccess)
+            {
+                try { imageOps.EndBatch(); } catch { }
+            }
+            _backend.Free(tVecGpu);
+            _backend.Free(xGpu);
+            _backend.Free(cGpu);
+        }
+    }
+
     /// <summary>
     /// Evaluates the Qwen Image transformer forward pass.
     /// Supports optional reference image latents for Qwen Image Edit.
@@ -96,6 +254,25 @@ public sealed class QwenImageModel : IDisposable
         int latW,
         float[]? refLatent = null)
     {
+        // GPU-resident path (docs/094 Phase 2) only covers standard text-to-image (no Edit
+        // reference-latent conditioning yet, matching the scope of every other GPU port in this
+        // codebase's first pass) -- fall back to CPU when refLatent is supplied.
+        if (_backend is not null && refLatent is null && _backend is IVisionOpsBackend visionOps && _backend is IImageOpsBackend imageOps)
+        {
+            try
+            {
+                lock (this)
+                {
+                    return ForwardGpu(visionOps, imageOps, latent, timestep, textContext, latH, latW);
+                }
+            }
+            catch (Exception ex) when (ex is not OutOfMemoryException)
+            {
+                Console.WriteLine($"[QwenImage GPU Exception] {ex}");
+                // Fall back to CPU if GPU encounters an unexpected issue
+            }
+        }
+
         int patchH = latH / PatchSize;
         int patchW = latW / PatchSize;
         int numTargetTokens = patchH * patchW;
@@ -501,6 +678,8 @@ public sealed class QwenImageModel : IDisposable
         if (!_disposed)
         {
             _disposed = true;
+            _residentGpuWorkspace?.Dispose();
+            _residentGpuWeights?.Dispose();
             _cache.Dispose();
             _weights.Dispose();
         }
