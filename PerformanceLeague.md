@@ -965,6 +965,29 @@ hand and untested.
 > `hunyuanvideo` and `ltx-t5` were not attempted — no wired end-to-end CLI/test path was found for
 > either, and given Wan2.1's real ~71-minute cost for just 2 frames, both would likely take
 > considerably longer still.
+>
+> **CORRECTION, 2026-09-19 (docs/094 Phase 4): the "hunyuanvideo not attempted" line above is
+> stale/wrong** — cross-examining this doc against the actual source found `ImageCommand.IsHunyuanVideo`/
+> `RunHunyuanVideo` already wires it into `stingray image`, and a pre-existing scratch test
+> (`ZZ_ScratchHunyuanVideoSampleGen`) already had real code for a 256×256/4-step/zero-conditioning
+> CPU run — it had just never been executed and its result recorded here. Ran it for real: **434.0s
+> total (256×256, 1 frame, 4 steps, zero-conditioning, CPU-only, real
+> `hunyuan_video_720_cfgdistill_fp8_e4m3fn.safetensors` + `hunyuan_video_vae_bf16.safetensors`
+> weights)**, finite output. **Visual check** (`hunyuanvideo_red-apple-on-white-table_256x256_4steps_zero-cond_2026-09-18.png`):
+> uniform fine-grained multicolor speckle with NO local structure at all — visually indistinguishable
+> from random noise, a different (and more concerning) signature than Qwen Image's own zero-conditioning
+> run (which produced a real, structured, if wrong, checkerboard grid) or SD3.5's. **Not yet possible
+> to conclude this is a bug** — zero real text conditioning for only 4 steps is a genuinely weak test
+> for a model this size, and this is the very first time this pipeline has ever been run beyond the
+> tiny 32×32/1-step `HunyuanVideoRealWeightsTests` smoke case, so there's no known-good zero-cond
+> reference to compare against (unlike Qwen Image's own documented 2026-09-18 zero-cond checkerboard
+> baseline). **Real next step**: a run with actual `HunyuanVideoTextConditioning`-encoded prompt
+> conditioning (this pipeline's `Load(modelPath, textEncoderPath, vaePath)` 3-arg overload, real
+> llava-llama-3-8b-v1_1 weights already present in `models/_models/`) is needed before concluding
+> anything about correctness — pure noise under literally-zero conditioning is not necessarily wrong
+> for a model this text-dependent, but should not be assumed benign either. GPU port: none exists
+> (confirmed by grep). No C++ reference exists for HunyuanVideo in this repo's vendored
+> `examples/stable-diffusion.cpp` (re-checked 2026-09-19, still true).
 
 ---
 
