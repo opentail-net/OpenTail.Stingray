@@ -498,6 +498,20 @@ worse than no status.
             against `prc_img`/`prc_txt` today and found correct in isolation, but not yet checked
             for a token-ORDER mismatch between how `Flux2Pipeline` builds `targetPositions` and how
             `Flux2DiT`'s attention/unpatchify path assumes tokens are laid out).
+
+      **2026-09-19: token-order candidate CHECKED, found CORRECT -- eliminated.** Read
+      `Flux2DiT.ApplyDoubleBlockReal`/`ApplySingleBlockReal` line-by-line against the real
+      reference (`model.py`'s `DoubleStreamBlock._prepare_qkv`/`SingleStreamBlock.forward`):
+      both this port and the reference consistently concatenate TEXT-FIRST/IMAGE-SECOND for
+      q/k/v (`torch.cat((txt_q,img_q))` / `img=torch.cat((txt,img))`) AND for the RoPE
+      cos/sin position table (`pe_full=torch.cat((pe_ctx,pe))`, `pe_ctx`=text) at every site --
+      `ApplyDoubleBlockReal` builds `q`/`k`/`v`/`peCos`/`peSin` with txt in `[0,nTxt)` and img in
+      `[nTxt,nSeq)` (lines 361-373 of `Flux2DiT.cs`), and `ApplySingleBlockReal`'s `unified`
+      buffer is built the same way in `Forward` (line 191: `txt` then `img`). Unlike HunyuanVideo
+      (which selectively RoPEs only a subset of tokens, where order changes WHICH tokens get
+      rotated), FLUX.2's reference RoPEs the whole concatenated sequence uniformly, so internal
+      ordering consistency (not a specific "correct" order) is what matters here -- and it's
+      consistent throughout. This candidate is closed; it was not the remaining bug.
       - [ ] Real next step: the standalone numeric differential test against an independent
             Mistral/DiT reference (docs/087's own repeated recommendation) remains available if the
             structural token-ordering check above doesn't resolve it -- now a much narrower search
