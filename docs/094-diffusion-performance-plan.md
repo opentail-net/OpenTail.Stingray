@@ -212,11 +212,41 @@ the starting picture:
     in `models/_models/` (an initial `find`/`ls` under `models/` missed the `_models` subdirectory,
     triggering an unnecessary `stingray pull` attempt that hit a benign 416-range error against the
     already-complete file — no real download was needed).
-  - **Real GPU-vs-CPU parity test written** (`QwenImageGpuParityTests.cs`, same structure as
-    `Sd3BaselineTests.TestSd35GpuVsCpuParity`) and running against real weights — see this doc's
-    Working Log for the actual cosine/maxDiff result once it completes. Per this project's own
-    "check the timing, not just pass/fail" discipline (CLAUDE.md rule 12), do not trust this port
-    until that real number is in hand.
+  - **Real parity result, 2026-09-19**: cosine **0.990109** (barely above the test's own >0.99
+    threshold), maxDiff **0.217692** (higher than any other model's GPU parity in this doc, including
+    SD3.5's already-flagged 0.118). GPU forward: 217.1s; CPU forward: 69.6s (GPU **3.1× slower**, on
+    a SINGLE forward call).
+  - **Manually verified every non-trivial op this port introduces, byte-for-byte, against both the
+    CPU source and the actual Vulkan shader/GLSL** (not just re-reading my own C# call sites) rather
+    than accepting a marginal pass at face value: `Flux2DRoPE`'s shader rotation formula
+    (`q0*c-q1*s, q0*s+q1*c`) matches `InterleavedRoPE.ApplyRoPE` exactly; `FluxConcatTxtImg`/
+    `FluxSliceImg`'s shaders confirmed to do exactly the offset/count semantics assumed when writing
+    `ForwardGpu` (txt-first `[txt;img]` ordering, `srcIdx = nTxt*dim + idx`); `AdaLNModulate`'s
+    `isRmsNorm=false` shader path is a byte-for-byte match of `LayerNormNoAffine` (mean-center,
+    variance-normalize, no affine) + `Modulate`'s `norm*(1+scale)+shift`; `QKNorm`'s shader matches
+    `RmsNormHeads` exactly (same per-head sumSq/invStd/eps=1e-6 formula). **All five real candidates
+    checked out clean** — no structural bug found in this pass.
+  - **Two real, more likely explanations for the numbers found instead of a fixed bug**:
+    (a) *maxDiff scaling with depth*: SD3.5's own GPU parity test (24 joint blocks) measured maxDiff
+    0.118; Qwen Image has 60 blocks (2.5×) — FP16 weight-upload precision error compounding linearly
+    with depth would predict roughly 0.118×2.5≈0.295, the same order of magnitude as the observed
+    0.218. Not proven (would need an FP32-upload A/B re-run to isolate precision from a residual
+    bug), but consistent with the accumulation pattern already seen elsewhere in this codebase, not
+    obviously a new defect class. (b) *the "3.1× slower" GPU number is very likely a measurement
+    artifact of this specific test's shape, not a real perf regression*: `EnsureGpuResident` uploads
+    the FULL 60-layer, ~9GB dequantized-to-FP16 weight set on the FIRST `ForwardGpu` call, and this
+    parity test calls `Forward` exactly ONCE per model instance — so the 217.1s includes a one-time
+    multi-GB weight upload that a real multi-step generation (which reuses the same resident weights
+    across every denoising step) would pay only once, not per step. This is the same amortization
+    every other GPU-resident port in this codebase relies on (e.g. FLUX.1's `_gpuWeightsFp16`
+    caching) — a single-call parity test structurally cannot show it. **Real next step, not done this
+    pass**: a multi-step timing test (matching `Sd3BaselineTests`' own `GenerateApple_20Steps_*`
+    pattern) to get a real amortized per-step GPU number instead of this single-call one.
+  - **Honest status: PLAUSIBLE, not CONFIRMED.** The op-level math checks out and the timing anomaly
+    has a credible non-bug explanation, but this has not been re-verified with an actual coherent
+    end-to-end image (no `QwenImagePipeline`-level GPU generate + visual check has been run yet,
+    the same standard SD3.5's fix was held to before being trusted). Do not cite this GPU port as
+    "working" until that real image exists and is visually inspected.
 - [ ] Real numerical parity test (GPU vs CPU forward, real weights) before any timing claim.
 - [ ] Real end-to-end Vulkan timing vs the existing 348.4s CPU baseline. Document in
       `PerformanceLeague.md`. No C++ reference exists for Qwen Image in `examples/` — note that
