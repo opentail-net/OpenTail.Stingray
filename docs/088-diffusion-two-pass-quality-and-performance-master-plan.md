@@ -223,6 +223,46 @@ worse than no status.
       either of these two (now-eliminated) candidates. Real next step: the patchify/AdaLN-
       modulation/VAE-tiling playbook, still not yet started for this model specifically -- both
       RoPE and timestep-embedding candidates are now closed off, narrowing the remaining search.
+
+      **2026-09-19, THIRD real bug found and fixed, still zero visible effect:** re-read
+      `HunyuanVideoAttnProcessor2_0` (`transformer_hunyuan_video.py` lines 55-159) line-by-line and
+      found the real reference concatenates `[hidden_states(img), encoder_hidden_states(txt)]` --
+      IMAGE FIRST, TEXT SECOND -- for both the double-block's joint attention (line 127-129,
+      `query=cat([query,encoder_query])`) and the single-block's fused sequence (line 64,
+      `hidden_states=cat([hidden_states,encoder_hidden_states])`), and critically applies RoPE
+      **only to the image-token portion** in both cases (line 82-110's `add_q_proj is None` branch
+      for the single block slices `query[:, :-txt_len]` before rotating; the double block's `else`
+      branch at line 108-110 rotates `query`/`key` before ever concatenating text in at all) --
+      text tokens are never rotated. `HunyuanVideoModel.cs`'s `JointAttention`/`SingleBlock`
+      instead concatenated **TEXT FIRST, IMAGE SECOND**, then called `ApplyRoPE` with `seqLen =
+      min(totalSeq, cos.Length/headDim)` where `cos`/`sin` are sized for `numImgTokens` rows only
+      (`HunyuanVideoRoPE.Compute3DRoPE` never computes frequencies for text tokens) -- since
+      `InterleavedRoPE.ApplyRoPE` only ever rotates the first `seqLen` rows of whatever buffer it's
+      given (confirmed by reading `Primitives/InterleavedRoPE.cs`), this rotated a
+      TEXT-token-dominated prefix with image positional frequencies while the actual image tokens
+      (sitting past that prefix) received NO RoPE at all -- discarding 100% of the DiT's spatial/
+      temporal position information for every image token, every block, every step. This is
+      structurally a much more severe bug than a wrong-convention pairing fix (Qwen Image's own
+      bug): a total information loss, not a numerically-wrong-but-present signal. Fixed by
+      reordering to img-first/txt-second in both `JointAttention` (img's own q/k rotated with
+      `Compute3DRoPE`'s table BEFORE concatenating with unrotated txt q/k, matching the reference's
+      per-stream-then-concat structure exactly) and `SingleBlock` (concatenated img-first/txt-
+      second, RoPE restricted to the `numImg`-row prefix). Build clean, re-ran the real 256×256/
+      4-step coherence check alone (537.8s, real LLaMA-3 conditioning): **output is STILL pure
+      visual noise, pixel-pattern indistinguishable from every prior attempt (including the
+      zero-conditioning sample)** -- a real, structurally significant, correctly-diagnosed-and-
+      fixed bug (image tokens now genuinely receive real 3D RoPE for the first time), with zero
+      visible effect on the output. Three real, independently-verified-correct fixes now applied
+      (flipSinToCos, RoPE pairing convention, RoPE img/txt ordering+application) with zero
+      cumulative visible effect -- strong evidence the dominant remaining bug is NOT in the
+      attention/RoPE/timestep-embedding machinery at all, but somewhere else entirely (VAE decode,
+      patchify/unpatchify, or a numerically-severe issue like a scale mismatch or a missing
+      normalization that saturates a nonlinearity before any of these three fixes' effects could
+      propagate). **Real next diagnostic step, in progress**: dump pre-VAE latent stats
+      (`STINGRAY_HUNYUAN_DUMP_LATENT=1`, already wired in `HunyuanVideoPipeline.Generate`) to
+      determine whether the DiT's OWN output is structured-but-wrong or already degenerate noise
+      before ever reaching the VAE -- this is the fastest way to bisect "DiT bug" vs "VAE bug"
+      without another 9-minute round trip per hypothesis.
 - [x] **LTX-Video — MAJOR FINDING, 2026-09-18: the "pure noise" instability was (largely/entirely)
       a missing-real-text-conditioning artifact.** Every prior noise-producing run in this item's
       history used placeholder (zero/mock) text conditioning; a real local T5-v1.1-XXL checkpoint

@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using CoreTensor = OpenTail.Stingray.Core.Tensor;
 
 namespace OpenTail.Stingray.Diffusion.HunyuanVideo;
@@ -9,6 +10,8 @@ namespace OpenTail.Stingray.Diffusion.HunyuanVideo;
 public sealed class HunyuanVideoModel : IDisposable
 {
     private readonly IWeightLoader _weights;
+    private readonly QuantizedWeightCache _quantizedCache;
+    private readonly ConcurrentDictionary<string, float[]?> _biasCache = new(StringComparer.Ordinal);
     private readonly string _prefix;
     private readonly IComputeBackend? _backend;
     private readonly Dictionary<string, float[]> _weightCache = new(StringComparer.Ordinal);
@@ -39,6 +42,7 @@ public sealed class HunyuanVideoModel : IDisposable
         IComputeBackend? backend = null)
     {
         _weights = weights;
+        _quantizedCache = new QuantizedWeightCache(weights);
         _prefix = prefix;
         _backend = backend;
         (_dim, _numHeads, _depthDouble, _depthSingle) = DetectConfig(weights, prefix, dim, numHeads, depthDouble, depthSingle);
@@ -200,14 +204,21 @@ public sealed class HunyuanVideoModel : IDisposable
         // 6. Single-Stream Blocks (single_blocks) if present
         if (_depthSingle > 0)
         {
-            var singleTokens = ConcatSequences(txtTokens, imgTokens, numTxtTokens, numImgTokens);
+            // Real reference (HunyuanVideoAttnProcessor2_0, `add_q_proj is None` branch) concatenates
+            // [hidden_states(img), encoder_hidden_states(txt)] -- IMAGE FIRST, TEXT SECOND -- and
+            // applies RoPE only to the image prefix (`query[:, :-txt_len]`), leaving text tokens
+            // unrotated. This previously concatenated txt-first, which put RoPE's cos/sin table
+            // (sized for numImgTokens rows only) over the wrong prefix -- rotating (mostly/entirely)
+            // TEXT tokens with image positional frequencies while the real image tokens got NO RoPE
+            // at all, discarding all spatial/temporal structure. Fixed 2026-09-19 (docs/088).
+            var singleTokens = ConcatSequences(imgTokens, txtTokens, numImgTokens, numTxtTokens);
             int totalSeq = numTxtTokens + numImgTokens;
             for (int b = 0; b < _depthSingle; b++)
             {
                 string p = $"single_blocks.{b}";
-                singleTokens = SingleBlock(p, singleTokens, tEmb, cos, sin, totalSeq);
+                singleTokens = SingleBlock(p, singleTokens, tEmb, cos, sin, numImgTokens, totalSeq);
             }
-            imgTokens = singleTokens.AsSpan(numTxtTokens * _dim, numImgTokens * _dim).ToArray();
+            imgTokens = singleTokens.AsSpan(0, numImgTokens * _dim).ToArray();
         }
 
         // 7. Final Layer (AdaLN + Linear dim -> 64)
@@ -317,18 +328,27 @@ public sealed class HunyuanVideoModel : IDisposable
         var normTxtK = TryGetWeight($"{prefix}.txt_attn.norm.key_norm.weight") ?? TryGetWeight($"{prefix}.txt_attn.norm.key_norm.scale");
         if (normTxtK is not null) RmsNormHeads(txtK, numTxt, _numHeads, _headDim, normTxtK);
 
-        var q = ConcatSequences(txtQ, imgQ, numTxt, numImg);
-        var k = ConcatSequences(txtK, imgK, numTxt, numImg);
-        var v = ConcatSequences(txtV, imgV, numTxt, numImg);
+        // Real reference applies RoPE to the img q/k BEFORE concatenating with txt (see
+        // HunyuanVideoAttnProcessor2_0's `else` branch, taken when `add_q_proj is not None` --
+        // the double-block case): text tokens never receive RoPE at all. Rotate img's own q/k
+        // first (img is a standalone numImg-length buffer here), then concatenate img-first,
+        // txt-second to match the reference's `torch.cat([query, encoder_query], dim=1)` and
+        // `hidden_states[:, :-txt_len]` / `hidden_states[:, -txt_len:]` output split. Previously
+        // this concatenated txt-first and RoPE'd the resulting prefix -- rotating text tokens
+        // with image positional frequencies while leaving the real image tokens unrotated. Fixed
+        // 2026-09-19 (docs/088).
+        int ropeSeq = Math.Min(numImg, cos.Length / _headDim);
+        HunyuanVideoRoPE.ApplyRoPE(imgQ, cos, sin, ropeSeq, _numHeads, _headDim);
+        HunyuanVideoRoPE.ApplyRoPE(imgK, cos, sin, ropeSeq, _numHeads, _headDim);
 
-        int ropeSeq = Math.Min(totalSeq, cos.Length / _headDim);
-        HunyuanVideoRoPE.ApplyRoPE(q, cos, sin, ropeSeq, _numHeads, _headDim);
-        HunyuanVideoRoPE.ApplyRoPE(k, cos, sin, ropeSeq, _numHeads, _headDim);
+        var q = ConcatSequences(imgQ, txtQ, numImg, numTxt);
+        var k = ConcatSequences(imgK, txtK, numImg, numTxt);
+        var v = ConcatSequences(imgV, txtV, numImg, numTxt);
 
         var attnOut = MultiHeadAttention(q, k, v, totalSeq, _numHeads, _headDim);
 
-        var txtAttnSlice = attnOut.AsSpan(0, numTxt * _dim).ToArray();
-        var imgAttnSlice = attnOut.AsSpan(numTxt * _dim, numImg * _dim).ToArray();
+        var imgAttnSlice = attnOut.AsSpan(0, numImg * _dim).ToArray();
+        var txtAttnSlice = attnOut.AsSpan(numImg * _dim, numTxt * _dim).ToArray();
 
         var finalImg = Linear($"{prefix}.img_attn.proj", imgAttnSlice, _dim, _dim);
         var finalTxt = Linear($"{prefix}.txt_attn.proj", txtAttnSlice, _dim, _dim);
@@ -342,6 +362,7 @@ public sealed class HunyuanVideoModel : IDisposable
         float[] tEmb,
         float[] cos,
         float[] sin,
+        int numImg,
         int totalSeq)
     {
         var mod = Linear($"{prefix}.modulation.linear", DiffusionOpsSilu(tEmb), _dim, _dim * 3);
@@ -372,7 +393,11 @@ public sealed class HunyuanVideoModel : IDisposable
         var normK = TryGetWeight($"{prefix}.k_norm.weight") ?? TryGetWeight($"{prefix}.k_norm.scale");
         if (normK is not null) RmsNormHeads(k, totalSeq, _numHeads, _headDim, normK);
 
-        int ropeSeq = Math.Min(totalSeq, cos.Length / _headDim);
+        // Real reference (line 82-96's `add_q_proj is None` branch, the single-block case): RoPE
+        // is applied only to the image-token prefix of the concatenated [img, txt] sequence; text
+        // tokens (the tail) are left unrotated. x/q/k here are already ordered img-first (see the
+        // Forward() call site), so restricting to the numImg prefix matches the reference exactly.
+        int ropeSeq = Math.Min(numImg, cos.Length / _headDim);
         HunyuanVideoRoPE.ApplyRoPE(q, cos, sin, ropeSeq, _numHeads, _headDim);
         HunyuanVideoRoPE.ApplyRoPE(k, cos, sin, ropeSeq, _numHeads, _headDim);
 
@@ -581,10 +606,28 @@ public sealed class HunyuanVideoModel : IDisposable
 
     private float[] Linear(string name, float[] x, int inDim, int outDim)
     {
-        var w = GetWeight($"{name}.weight");
-        var b = TryGetWeight($"{name}.bias");
         int rows = x.Length / inDim;
-        return DiffusionOps.Linear(x, w, b, rows, inDim, outDim);
+        var outF = new float[rows * outDim];
+        Linear(name, x.AsSpan(), outF.AsSpan(), inDim, outDim);
+        return outF;
+    }
+
+    private void Linear(string name, ReadOnlySpan<float> x, Span<float> output, int inDim, int outDim)
+    {
+        string wName = Resolve($"{name}.weight");
+        string bName = Resolve($"{name}.bias");
+        var b = _biasCache.GetOrAdd(bName, k => TryGetWeightDirect(k));
+        int rows = x.Length / inDim;
+        _quantizedCache.Linear(wName, x, b ?? ReadOnlySpan<float>.Empty, output, rows, inDim, outDim);
+    }
+
+    private float[]? TryGetWeightDirect(string fullName)
+    {
+        if (_weights.Contains(fullName))
+        {
+            return _weights.ReadF32(fullName);
+        }
+        return null;
     }
 
     public static float[] PackLatents(float[] latents, int numFrames, int latH, int latW)
@@ -663,6 +706,7 @@ public sealed class HunyuanVideoModel : IDisposable
     {
         if (_disposed) return;
         _disposed = true;
+        _quantizedCache.Dispose();
         if (_gpuWeights is not null)
         {
             foreach (var t in _gpuWeights.Values) t.Dispose();
