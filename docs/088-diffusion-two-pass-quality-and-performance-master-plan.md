@@ -43,15 +43,20 @@ the next item, since a status can change mid-loop):**
    reimplementing one real joint-attention block in Python via direct GGUF weight reads (same
    pattern as `scripts/flux1_vec_embed_ref.py`/`scripts/sd3_timestep_embed_ref.py`) — is real,
    scoped, doable work, just not done this pass.
-4. **HunyuanVideo** — 🟡 open, unresolved, furthest from done. Text conditioning closed; DiT+VAE
-   run end-to-end but output is still pure noise despite 3 independently-confirmed-correct fixes
-   (flipSinToCos, RoPE pairing convention, RoPE img/txt ordering — see Pass 1 entry for detail).
-   **2026-09-19: the full VAE decoder audit is now done — real negative result, no bug found**
-   (causal-padding, upsample frame-0-special-casing, and causal attention mask all confirmed
-   byte-for-byte correct against `autoencoder_kl_hunyuan_video.py`). This narrows the remaining
-   search toward the DiT itself. Real next step, not yet done: audit `HunyuanVideoModel.cs`'s
-   `TokenRefiner` (`IndividualTokenRefiner`, wired 2026-09-15, never re-checked since) against
-   `transformer_hunyuan_video.py`'s `HunyuanVideoTokenRefiner` line-by-line.
+4. **HunyuanVideo** — 🟡 open, unresolved, furthest from done. **2026-09-19: every major DiT/VAE
+   subsystem now independently re-audited this session with ZERO bugs found** — RoPE (pairing
+   convention, img/txt ordering, application scope), timestep embedding (flip-sin-to-cos, scale),
+   TokenRefiner (pooling, embedders, affine norms, gating, FFN activation), AdaLN 6-way chunk
+   order, and the full VAE decoder (causal padding, upsample frame-casing, attention mask) — all
+   confirmed correct against the real reference. Output is still pure noise despite this. Two real,
+   not-yet-checked candidates remain (see Pass 1 entry for detail): (a) fp8 dequantization
+   correctness for this checkpoint's unusual `fp8_e4m3fn` format, (b) the patch-embedding
+   Conv3d-as-Linear weight layout vs `PackLatents`' flatten order at the top of
+   `HunyuanVideoTransformer3DModel.forward` — not yet independently confirmed against the real
+   checkpoint's own tensor shape, distinct from `PackLatents`' own logic already checked. This item
+   has had unusually high audit effort for zero bugs found — a genuinely different investigative
+   approach (e.g. a full numeric latent dump compared directly against a Python-side partial
+   reference, rather than more line-by-line reading) may be more productive than another audit pass.
 5. **GPU-residency phases for Qwen Image and FLUX.2** (see Pass 2 §2d, new) — start once their
    respective Pass 1 items above are confirmed closed at production resolution, not before
    (CLAUDE.md rule 7: don't port a still-uncertain CPU implementation to GPU).
