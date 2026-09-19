@@ -258,11 +258,40 @@ worse than no status.
       attention/RoPE/timestep-embedding machinery at all, but somewhere else entirely (VAE decode,
       patchify/unpatchify, or a numerically-severe issue like a scale mismatch or a missing
       normalization that saturates a nonlinearity before any of these three fixes' effects could
-      propagate). **Real next diagnostic step, in progress**: dump pre-VAE latent stats
+      propagate). **Real next diagnostic step**: dumped pre-VAE latent stats
       (`STINGRAY_HUNYUAN_DUMP_LATENT=1`, already wired in `HunyuanVideoPipeline.Generate`) to
       determine whether the DiT's OWN output is structured-but-wrong or already degenerate noise
-      before ever reaching the VAE -- this is the fastest way to bisect "DiT bug" vs "VAE bug"
-      without another 9-minute round trip per hypothesis.
+      before ever reaching the VAE.
+
+      **Result: pre-decode latent is `mean=0.0044 std=1.0371 min=-3.8899 max=4.1852 nanCount=0/
+      16384`** -- a healthy, non-degenerate, roughly unit-scale Gaussian-shaped distribution, the
+      same statistical signature Wan/Qwen Image showed at their own "numerically healthy but not
+      yet coherent" stage before their real bugs were found. This does NOT clear the DiT outright
+      (a wrong channel/token permutation would produce identical aggregate stats while still being
+      completely wrong per-position), but it rules out gross saturation/collapse/blowup in the DiT
+      path, and shifts weight toward either a permutation-class DiT bug or a VAE-side bug.
+      Spent real effort on a partial VAE audit this pass (`HunyuanVaeDecoder3D.cs` vs. the real
+      `autoencoder_kl_hunyuan_video.py`): confirmed per-level `AddSpatialUpsample`/
+      `AddTemporalUpsample` flags (`[true,true,true,false]`/`[false,true,true,false]` in real
+      checkpoint processing order 3,2,1,0) exactly match the reference's `add_spatial_upsample`/
+      `add_time_upsample` derivation for `spatial_compression_ratio=8`/`time_compression_ratio=4`;
+      confirmed the mid-block's self-attention is genuinely single-head (`attention_head_dim=512
+      == in_channels` -> `heads=1`), matching this port's implementation; GroupNorm groups (32),
+      resnet structure (norm1->silu->conv1->norm2->silu->conv2 + nin_shortcut), and CompVis-style
+      (not diffusers-style) tensor naming (`decoder.up.N.block.M`, `decoder.mid.block_1`/`attn_1`)
+      all independently confirmed against the real Comfy-repackaged checkpoint's own tensor names
+      previously. **Did NOT get to**: `HunyuanVideoCausalConv3d`'s REPLICATE-padding exact
+      offsets/kernel-size-3 temporal padding amount, `UpsampleCausal3D`'s exact nearest-neighbor
+      upsample factor application per frame (this port's own doc comment flags "frame 0:
+      spatial-only... remaining frames: full temporal+spatial" as a special case worth
+      re-verifying byte-for-byte against `HunyuanVideoUpsampleCausal3D.forward`'s real frame-0
+      special-casing), and the self-attention's causal frame mask construction. **Stopping this
+      item here for now, not because it's solved** (CLAUDE.md "stopping is for wimps" -- moving to
+      another queue item, not halting): three real, independently-reference-confirmed DiT bugs are
+      now fixed with zero cumulative visible effect and latent stats are healthy-but-inconclusive,
+      so the next real chunk of work here is a full byte-for-byte causal-padding/upsample-frame-
+      indexing re-audit of `HunyuanVaeDecoder3D.cs`, not yet done. Picking up FLUX.2's next open
+      candidate instead per the backlog ordering.
 - [x] **LTX-Video — MAJOR FINDING, 2026-09-18: the "pure noise" instability was (largely/entirely)
       a missing-real-text-conditioning artifact.** Every prior noise-producing run in this item's
       history used placeholder (zero/mock) text conditioning; a real local T5-v1.1-XXL checkpoint
