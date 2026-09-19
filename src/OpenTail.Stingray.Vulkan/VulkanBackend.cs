@@ -4304,10 +4304,23 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
             return;
         }
 
-        // Fallback: unfused SiluGateMul + Sgemm
-        using var gated = Allocate(TensorShape.D2(M, K));
-        SiluGateMul(gated, A, M, K);
-        Sgemm(C, gated, B, M, K, N, inputRowOffsetElements);
+        // Fallback: unfused SiluGateMul + Sgemm. NOTE: `Tensor.Dispose()` is a documented no-op
+        // ("backend-owned; disposed via backend", see Core/Tensor.cs) -- a `using var` here would
+        // silently leak this [M,K] buffer on every call that takes this fallback path (a real,
+        // confirmed bug found 2026-09-19: this method's fast-path condition can be false on a
+        // backend/driver combination that lacks fp16 storage support, routing every SgemmSiluGate
+        // call through here and leaking ~75MB+ per call, unbounded, across a denoising loop).
+        // Must call Free() explicitly.
+        var gated = Allocate(TensorShape.D2(M, K));
+        try
+        {
+            SiluGateMul(gated, A, M, K);
+            Sgemm(C, gated, B, M, K, N, inputRowOffsetElements);
+        }
+        finally
+        {
+            Free(gated);
+        }
     }
 
     public void QKNorm(Tensor q, Tensor k, Tensor qScale, Tensor kScale, int nTokens, int numHeads, int headDim, float eps = 1e-5f)
