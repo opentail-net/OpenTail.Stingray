@@ -262,8 +262,44 @@ the starting picture:
     this checkpoint's specific weight magnitude distribution (Q3_K_S is a much more aggressive
     quantization than the FP16/BF16 checkpoints FLUX.1/SD3.5's own GPU ports were built against —
     worth checking whether `QuantizedWeightCache`'s CPU dequant and this port's own independent
-    `GetWeight`-then-cast-to-FP16 path could disagree for this specific quant format). Not resolved
-    this pass — real, precise next step for whoever picks this up, not a vague "needs more testing."
+    `GetWeight`-then-cast-to-FP16 path could disagree for this specific quant format).
+  - **Quantization dequant candidate directly tested and RULED OUT, 2026-09-19**
+    (`QwenImageQ3KDequantCrossCheckTests`) — with a real correction found along the way: a
+    `stingray list-tensors` dump of the actual checkpoint showed `img_in.weight` (what the test
+    first checked) is **BFloat16, not Q3_K at all** — the "Q3_K_S" filename names the overall
+    llama.cpp quant PROFILE, not every tensor's individual dtype; only the per-block
+    `transformer_blocks.*.{attn,mlp,mod}.*.weight` tensors (the actual bulk of the model's 60
+    layers) are Q4_K, while `img_in`/`txt_in`/`norm_out.linear`/`proj_out` are BF16. Re-ran the same
+    cross-check against a REAL Q4_K tensor (`transformer_blocks.0.attn.to_q.weight`, [3072,3072]):
+    computed the same projection two ways — once via `ReadF32`'s dequant (what `QwenImageGpuWeights`
+    uses), once via `QuantizedWeightCache.Linear`'s real fused Q4_K SIMD kernel (what the CPU path
+    actually uses) — by extracting individual weight columns through a one-hot input vector and
+    diffing against the full dequant buffer. **Result: maxDiff ≈ 1.19e-7 (pure float32 rounding
+    noise) against a mean weight magnitude of ~0.030, over 8 sampled columns × 3072 rows** — the
+    two independently-implemented Q4_K decoders agree to machine precision. Both the entry/exit
+    BF16 tensors and the bulk Q4_K tensors are now confirmed to dequant identically on both paths.
+    Quantization/dequant is conclusively not the bug.
+  - **Status after this pass: genuinely stalled on precise root cause, but the search space is now
+    much smaller.** Every concrete, checkable candidate has been individually verified correct:
+    RoPE rotation math, token concat/slice offsets, AdaLN-modulate's affine-free-LayerNorm formula,
+    QK-RMSNorm formula, weight tensor orientation convention, and now BOTH the BF16 and Q4_K dequant
+    paths. Real checkpoint inventory also confirms bias tensors genuinely exist for essentially
+    every linear in this checkpoint (`img_mod.1.bias`, `attn.to_q.bias`, `mlp.net.0.proj.bias`, etc.
+    all present per the `list-tensors` dump) and `QwenImageGpuWeights`' `TryGetWeight`-based optional
+    upload uses the same `Resolve()` name-resolution logic already proven correct by the working CPU
+    path — the "silently missing bias" theory is now unlikely too, though not independently
+    per-tensor confirmed. Remaining, NOT yet checked: (a) the `BeginBatch()`/`EndBatch()` wrapping
+    ALL 60 layers into one Vulkan command buffer — MMDiT's own `ForwardGpu` does the same for 24
+    blocks without issue, so lower-probability, but 60 layers is deeper than anything else batched
+    this way in this codebase and hasn't been individually stress-tested at this depth (a real,
+    cheap next experiment: temporarily wrap each block's `BeginBatch`/`EndBatch` individually instead
+    of one big batch, matching FLUX.2's own per-block batching fix history, and see if the texture
+    changes); (b) `QwenImageGpuWorkspace`'s `RopeCos`/`RopeSin` tensors only rebuild when
+    `numImgTokens`/`numTxtTokens` change — irrelevant to this pass's single-call tests. **(a) is now
+    the most promising unchecked lever** — it's cheap to try and has real precedent (FLUX.2's Stage-5
+    single-big-batch attempt was a real, measured regression/crash source in this exact codebase).
+    Deferred here to keep real progress moving on other phases (this doc's own "if stalled, document
+    and move to the next checkbox" discipline).
 - [ ] Real numerical parity test (GPU vs CPU forward, real weights) before any timing claim.
 - [ ] Real end-to-end Vulkan timing vs the existing 348.4s CPU baseline. Document in
       `PerformanceLeague.md`. No C++ reference exists for Qwen Image in `examples/` — note that
