@@ -10150,6 +10150,38 @@ internal static class Shaders
         }
         """;
 
+    /// <summary>FLUX.2's SiLU-gated FFN activation (docs/091): input is a `[nTokens, 2*mlpHidden]`
+    /// up-projection output; the FIRST half is the gate (SiLU'd), the SECOND half is the value --
+    /// confirmed against `Flux2DiT.cs`'s own CPU `GatedFfn` reference (`u1=SiLU'd gate,
+    /// u2=value, gated[c]=Silu(u1[c])*u2[c]`) and `examples/flux2/src/flux2/model.py`'s real
+    /// `SiLUActivation`. Output is `[nTokens, mlpHidden]`.</summary>
+    internal const string SiluGateMul = """
+        #version 450
+        layout(local_size_x = 256) in;
+
+        layout(binding = 0) readonly buffer InputBuf { float inData[]; };
+        layout(binding = 1) writeonly buffer OutputBuf { float outData[]; };
+
+        layout(push_constant) uniform Params {
+            uint nTokens;
+            uint mlpHidden;
+        };
+
+        void main() {
+            uint t = gl_GlobalInvocationID.x;
+            if (t >= nTokens) return;
+
+            uint inOff = t * mlpHidden * 2u;
+            uint outOff = t * mlpHidden;
+            for (uint i = 0u; i < mlpHidden; i++) {
+                float gate = inData[inOff + i];
+                float value = inData[inOff + mlpHidden + i];
+                float silu = gate / (1.0 + exp(-gate));
+                outData[outOff + i] = silu * value;
+            }
+        }
+        """;
+
     internal const string QKNorm = """
         #version 450
         layout(local_size_x = 256) in;

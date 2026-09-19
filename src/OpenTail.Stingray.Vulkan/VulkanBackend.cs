@@ -1673,6 +1673,7 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
     private ComputePipeline? _visionSquaredReluPipeline;
     private ComputePipeline? _adalnModulatePipeline;
     private ComputePipeline? _scaleGateAddPipeline;
+    private ComputePipeline? _siluGateMulPipeline;
     private ComputePipeline? _qkNormPipeline;
     private ComputePipeline? _rope3dPipeline;
     private ComputePipeline? _flux2DRoPEPipeline;
@@ -1787,6 +1788,7 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
     private struct VisionActParams { public uint n; }
     private struct AdaLNModulateParams { public uint nTokens; public uint dim; public uint isRmsNorm; public float eps; public uint shiftOffset; public uint scaleOffset; }
     private struct ScaleGateAddParams { public uint nTokens; public uint dim; public uint gateOffset; }
+    private struct SiluGateMulParams { public uint nTokens; public uint mlpHidden; }
     private struct QKNormParams { public uint nTokens; public uint numHeads; public uint headDim; public float eps; public uint startToken; }
     private struct RoPE3DParams { public uint numTokens; public uint numHeads; public uint headDim; public uint tDim; public uint hDim; public uint wDim; public float theta; }
     private struct Flux2DRoPEParams { public uint startToken; public uint tokenCount; public uint numHeads; public uint headDim; }
@@ -4264,6 +4266,19 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
         DispatchOrRecord(_scaleGateAddPipeline, [GetBuffer(x), GetBuffer(proj), GetBuffer(gate)], groups, &p);
     }
 
+    /// <summary>FLUX.2's SiLU-gated FFN activation (docs/091): <c>input</c> is
+    /// <c>[nTokens, 2*mlpHidden]</c> (the up-projection output), <c>output</c> is
+    /// <c>[nTokens, mlpHidden]</c> = <c>silu(input[:, :mlpHidden]) * input[:, mlpHidden:]</c> --
+    /// the first half is the gate, the second is the value (confirmed against
+    /// <c>Flux2DiT.cs</c>'s own CPU <c>GatedFfn</c> reference).</summary>
+    public void SiluGateMul(Tensor output, Tensor input, int nTokens, int mlpHidden)
+    {
+        _siluGateMulPipeline ??= new ComputePipeline(this, Shaders.SiluGateMul, 2, pushConstantSize: sizeof(SiluGateMulParams));
+        var p = new SiluGateMulParams { nTokens = (uint)nTokens, mlpHidden = (uint)mlpHidden };
+        uint groups = ((uint)nTokens + 255u) / 256u;
+        DispatchOrRecord(_siluGateMulPipeline, [GetBuffer(input), GetBuffer(output)], groups, &p);
+    }
+
     public void QKNorm(Tensor q, Tensor k, Tensor qScale, Tensor kScale, int nTokens, int numHeads, int headDim, float eps = 1e-5f)
         => QKNorm(q, k, qScale, kScale, nTokens, numHeads, headDim, eps, 0);
 
@@ -4759,6 +4774,7 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
         _visionSquaredReluPipeline?.Dispose();
         _adalnModulatePipeline?.Dispose();
         _scaleGateAddPipeline?.Dispose();
+        _siluGateMulPipeline?.Dispose();
         _qkNormPipeline?.Dispose();
         _rope3dPipeline?.Dispose();
         _flux2DRoPEPipeline?.Dispose();

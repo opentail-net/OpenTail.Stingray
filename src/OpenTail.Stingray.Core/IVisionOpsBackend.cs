@@ -70,6 +70,14 @@ public interface IVisionOpsBackend : IComputeBackend
         => throw new NotSupportedException();
 
     /// <summary>
+    /// FLUX.2's SiLU-gated FFN activation: input is [nTokens, 2*mlpHidden] (an up-projection
+    /// output), output is [nTokens, mlpHidden] = silu(input[:, :mlpHidden]) * input[:, mlpHidden:]
+    /// -- the first half is the gate, the second is the value.
+    /// </summary>
+    void SiluGateMul(Tensor output, Tensor input, int nTokens, int mlpHidden)
+        => throw new NotSupportedException();
+
+    /// <summary>
     /// Per-head QK Normalization in VRAM:
     /// q_h = RMSNorm(q_h) * qScale, k_h = RMSNorm(k_h) * kScale
     /// </summary>

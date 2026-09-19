@@ -107,7 +107,19 @@ architecture derivation) — do not design a new GPU-residency pattern from scra
    `ComputePipeline` dispatch method analogous to `AdaLNModulate`'s, and a `scripts/gen-spirv.ps1`
    recompile per CLAUDE.md rule 5) before the double-block GPU forward pass can be correctly
    implemented — this is real shader-authoring work, not a matter of wiring existing ops together.
-   Not yet done.
+
+   **RESOLVED 2026-09-19**: authored `Shaders.SiluGateMul` (new GLSL kernel, `VulkanBackend.
+   SiluGateMul` dispatch method, `IVisionOpsBackend.SiluGateMul` interface method with a
+   `NotSupportedException` default for non-Vulkan backends), recompiled the precompiled SPIR-V
+   table via `scripts/gen-spirv.ps1` (141 shaders now, Vulkan SDK 1.4.357.0 confirmed available on
+   this machine), and re-ran `VulkanPrecompiledShaderTests` (`STINGRAY_RUN_HEAVY_TESTS=1`) to
+   confirm the table stays in sync — all 3 pass. New real GPU test
+   (`tests/OpenTail.Stingray.Tests.Diffusion/Flux2SiluGateMulGpuTests.cs`) confirms the shader
+   matches `Flux2DiT.cs`'s own CPU `GatedFfn` reference to machine precision
+   (`maxDiff=1.91×10⁻⁶`, at a deliberately non-workgroup-aligned `nTokens=37` to catch any
+   boundary-handling bug). Re-ran the existing `FluxGpuParityTests` suite (7 tests) to confirm zero
+   regression to FLUX.1's own GPU path from touching shared files (`VulkanBackend.cs`,
+   `IVisionOpsBackend.cs`) — all pass. **Blocker 2 is closed.**
 
 3. **`AdaLNModulate`'s `isRmsNorm` flag needs to be `false` for FLUX.2, unlike FLUX.1's GPU path.**
    `AdaLNModulate` (used by FLUX.1's `DoubleBlockGpu`) takes a real `isRmsNorm` toggle dispatched
@@ -150,9 +162,8 @@ architecture derivation) — do not design a new GPU-residency pattern from scra
    (the DiT denoise loop dominated every other FLUX-family model's own profile).
 3. ~~Write a small, ISOLATED test exercising `AdaLNModulate`'s `isRmsNorm: false` branch~~ —
    **DONE 2026-09-19**, machine-precision match confirmed on real hardware (see blocker 3 above).
-4. Author the new SiLU-gated-FFN GPU shader (blocker 2 above) — GLSL kernel, `ComputePipeline`
-   dispatch method, `scripts/gen-spirv.ps1` recompile, a parity test against the CPU `GatedFfn`
-   reference at a small synthetic scale before trusting it at DiT scale.
+4. ~~Author the new SiLU-gated-FFN GPU shader~~ — **DONE 2026-09-19**, machine-precision match
+   confirmed on real hardware, zero regression to FLUX.1's GPU path (see blocker 2 above).
 5. Build `Flux2GpuWorkspace.cs` (double-block-scale buffers only — `nImg`/`nTxt`/`d`-sized
    activation/attention/modulation buffers, following `FluxGpuWorkspace.cs`'s structure) and wire a
    `Flux2DiT.ForwardGpu` that runs `img_in`/`txt_in` projection + the 8 double blocks on GPU (using
