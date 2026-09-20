@@ -352,6 +352,37 @@ the starting picture:
     should consider a stage-by-stage GPU-vs-CPU intermediate-tensor dump (the same technique that
     found Z-Image's sign-convention bug and FLUX's T5-padding bug) as the next real lever, since
     op-by-op code review has been exhausted without success.
+  - **Bisection tool built and run, 2026-09-20** (`QwenImageGpuBlockByBlockBisectTests`, per-block
+    `OnBlockOutputCpu`/`OnBlockOutputGpu` hooks added to `QwenImageModel`, same convention already
+    proven in `WanModel`). **Real finding**: divergence is NOT gradual from block 0 — cosine holds
+    0.999+ through block 10, drops sharply at block 11 (0.999260→0.998981), then compounds through
+    the remaining 49 blocks down to 0.766 by block 55 (a non-monotonic partial recovery to 0.996 at
+    the final block 59). This sharp-elbow-then-compound shape is NOT what smooth FP16-precision
+    accumulation alone would produce — real evidence pointing toward a specific mechanism, not pure
+    rounding noise.
+  - **FP16-overflow hypothesis directly tested and REFUTED**: added a per-block NaN/Inf + max-finite-
+    magnitude check. **Result: zero NaN/Inf on either path, at any block.** FP16's ~65,504 max
+    representable value is not being exceeded in a way that produces non-finite values — this
+    specific, concrete hypothesis is cleanly ruled out by direct measurement, not assumption.
+  - **Real methodological finding, more significant than the original question**: activation
+    magnitudes on BOTH CPU and GPU paths reach **2.6 million at block 0, growing to ~44 million by
+    block 59** — orders of magnitude larger than a healthy diffusion-model hidden state (typically
+    single/low-double-digit scale). This bisection test's synthetic input (`latent` uniform
+    `[-1,1]`, `textContext` uniform `[0, 0.1]`, `timestep=1000f`) is driving the network into an
+    extreme, ill-conditioned regime where ordinary FP16-vs-FP32 rounding differences between the two
+    backends get chaotically amplified layer-over-layer — a real, known failure mode of numerical
+    bisection with unrealistic inputs, not necessarily evidence of a GPU-specific logic bug. **The
+    real end-to-end smoke test's own wrongness (zero-conditioning, proper Gaussian latent scale,
+    genuine Euler steps) is still real, separate evidence a problem exists** — this bisection run
+    just wasn't able to cleanly isolate it because its own input choice was unrealistic.
+  - **Real next step, not done this pass**: re-run this exact bisection with realistic-scale inputs
+    (a proper unit-Gaussian latent matching `PackLatents`' real expected scale, real or
+    zero-but-properly-shaped text conditioning, a realistic mid-trajectory timestep like 500 rather
+    than the boundary value 1000) to get a clean, non-chaotic signal about where the real divergence
+    starts. Do not re-attempt the op-level candidate list (11 combined candidates across this model
+    and SD3.5 already ruled out) — the bisection tool itself is sound and now proven capable of
+    localizing a divergence point; it just needs a more representative input to point at the real
+    bug rather than an artifact of extreme activation magnitudes.
 - [ ] Real numerical parity test (GPU vs CPU forward, real weights) before any timing claim.
 - [ ] Real end-to-end Vulkan timing vs the existing 348.4s CPU baseline. Document in
       `PerformanceLeague.md`. No C++ reference exists for Qwen Image in `examples/` — note that

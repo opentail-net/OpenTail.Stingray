@@ -52,14 +52,29 @@ public sealed class QwenImageGpuBlockByBlockBisectTests
         using var gpuWeights = GgufWeightLoader.Open(modelPath);
         using var gpuModel = new QwenImageModel(gpuWeights, backend: vulkan);
 
+        // Realistic-scale inputs (2026-09-20 revision): the original uniform [-1,1] latent /
+        // [0,0.1] text-context / timestep=1000 (a trajectory BOUNDARY value) combination drove
+        // activations to 2.6-44 MILLION magnitude by the earlier bisection run -- orders of
+        // magnitude past a healthy diffusion hidden state, which chaotically amplifies ordinary
+        // FP16-vs-FP32 rounding differences and produces a divergence signal dominated by that
+        // artifact rather than the real bug. Use a proper unit-Gaussian latent (matching
+        // PackLatents' real expected input distribution) and a realistic MID-trajectory timestep.
         const int latH = 32, latW = 32, latC = 16;
         var rng = new Random(42);
         var latent = new float[latC * latH * latW];
-        for (int i = 0; i < latent.Length; i++) latent[i] = (float)(rng.NextDouble() * 2 - 1);
+        for (int i = 0; i < latent.Length - 1; i += 2)
+        {
+            double u1 = 1.0 - rng.NextDouble();
+            double u2 = 1.0 - rng.NextDouble();
+            double radius = Math.Sqrt(-2.0 * Math.Log(u1));
+            double theta = 2.0 * Math.PI * u2;
+            latent[i] = (float)(radius * Math.Cos(theta));
+            latent[i + 1] = (float)(radius * Math.Sin(theta));
+        }
 
         int seqLen = 8;
         var textContext = new float[seqLen * QwenImageModel.ContextDim];
-        for (int i = 0; i < textContext.Length; i++) textContext[i] = (float)(rng.NextDouble() * 0.1);
+        for (int i = 0; i < textContext.Length; i++) textContext[i] = (float)(rng.NextDouble() * 2 - 1) * 0.02f;
 
         var cpuBlocks = new Dictionary<int, float[]>();
         var gpuBlocks = new Dictionary<int, float[]>();
@@ -67,10 +82,10 @@ public sealed class QwenImageGpuBlockByBlockBisectTests
         gpuModel.OnBlockOutputGpu = (b, data) => gpuBlocks[b] = (float[])data.Clone();
 
         _output.WriteLine("[Bisect] Running CPU forward with per-block capture..."); Console.WriteLine("[Bisect] Running CPU forward with per-block capture...");
-        cpuModel.Forward(latent, 1000f, textContext, latH, latW);
+        cpuModel.Forward(latent, 500f, textContext, latH, latW);
 
         _output.WriteLine("[Bisect] Running GPU forward with per-block capture..."); Console.WriteLine("[Bisect] Running GPU forward with per-block capture...");
-        gpuModel.Forward(latent, 1000f, textContext, latH, latW);
+        gpuModel.Forward(latent, 500f, textContext, latH, latW);
 
         Assert.True(cpuBlocks.Count > 0, "CPU per-block hook never fired");
         Assert.True(gpuBlocks.Count > 0, "GPU per-block hook never fired");
