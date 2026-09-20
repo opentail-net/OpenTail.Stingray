@@ -845,7 +845,24 @@ attention, same general shape as FLUX.1):
       infrastructure FLUX.2's port required, since that infrastructure cost (a full session) would
       be wasted again if the single-layer test already shows CPU winning. **Deprioritized, not
       abandoned** — revisit if this project ever runs on hardware with genuine discrete VRAM.
-- [ ] **Phase 2 (Qwen Image) — real end-to-end Vulkan run + C++ reference comparison.** Real
+
+      **UPDATE 2026-09-20: built anyway (started before this recommendation was read), real result
+      is worse than "just slower."** `QwenImageGpuWeights`/`QwenImageGpuWorkspace`/`ForwardGpu`
+      exist now (docs/094 Phase 2), full weight upload + resident forward pass, real GPU-vs-CPU
+      parity test written. Real result: cosine 0.990109 (barely passes >0.99), maxDiff 0.217692
+      (worse than any other model's GPU parity in this codebase), and a real end-to-end visual
+      check shows genuinely wrong output (diffuse structureless blotches vs. CPU's own known
+      checkerboard zero-cond signature) -- not the "correct but slow" outcome this section predicted
+      from the FLUX.2 precedent, a real correctness bug on top of the predicted speed problem. Eight
+      candidates individually tested and ruled out (RoPE rotation, token concat/slice, AdaLN
+      modulate, QK-RMSNorm, weight orientation, BF16 dequant, Q4_K dequant, Vulkan batching
+      granularity) -- root cause not found; needs a stage-by-stage GPU-vs-CPU intermediate-tensor
+      dump next, not more op-by-op review. See `docs/094-diffusion-performance-plan.md` Phase 2 for
+      the full trail. This section's own speed prediction (CPU likely wins, matching FLUX.2) may
+      still be correct, but is now moot until the correctness bug is found.
+- [ ] **Phase 2 (Qwen Image) — real end-to-end Vulkan run + C++ reference comparison.** BLOCKED as
+      of 2026-09-20 on the real GPU correctness bug found above -- do not run this until resolved.
+      Real
       256×256/8-step coherence run on Vulkan GPU (compare visually against the already-verified
       CPU output, `docs/diffusion-samples/qwenimage_real_conditioning_256_8step_2026-09-18.png`);
       if a real `stable-diffusion.cpp` Qwen Image build is available, get a real head-to-head
