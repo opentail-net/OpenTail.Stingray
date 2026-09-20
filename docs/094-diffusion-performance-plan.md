@@ -198,6 +198,49 @@ the starting picture:
       the baseline number above justifies it. Re-measure after each change, same discipline as the
       SDXL Stage 0-5 arc.
 - [ ] Document every stage's real number in `PerformanceLeague.md`, including any reverted regressions.
+- [x] **Golden-verify re-confirmation against the real C++ reference, 2026-09-20** (closing the
+      README status matrix's "not golden-verified" row): re-ran `Sd3BaselineTests` (`TestSd35GpuVsCpuParity`,
+      `GenerateApple_20Steps_Sd35_Cpu`, `GenerateApple_20Steps_Sd35_Vulkan`) end-to-end and, separately,
+      a fresh `sd-cli.exe --diffusion-model` C++ reference run at the exact same config (256×256,
+      20 steps, CFG 4.5, seed 42, "a red apple on a wooden table", Euler). **Real timings**: C++
+      reference 54.4s total (12.33s text conditioning + 38.32s sampling/1.77s-per-step + 1.57s VAE
+      decode) — closely matches the 2026-09-15 measurement (48.01s) on this doc, cross-validating
+      both runs. Our CPU: 278.7s (`Sd3BaselineTests` in-process run). Our Vulkan (test harness,
+      cold/warm both write the SAME output file — see caveat below): 174.8s cold / 161.1s warm.
+      GPU-vs-CPU single-forward parity: cosine 0.999724, maxDiff 0.118420 — unchanged from
+      2026-09-19, still the worst of any model's GPU parity in this doc.
+  - **Visual re-confirmation, opening the actual PNGs, not citing pass/fail**: CPU output
+    (`sd35_medium_apple_cpu_256_20steps.png`) shows a real, structured, unambiguously-recognizable
+    red apple with visible wood-grain table — genuinely real content, matching the 2026-09-19
+    "T5-fix" finding. **But directly next to the C++ reference for the first time, a real, distinct,
+    still-open bug is now visible that wasn't named before**: the C++ reference renders a
+    full-frame, centered, photorealistic apple filling most of the 256×256 canvas, while our CPU
+    output renders a small, partial apple cropped into the bottom-left corner with the rest of the
+    frame being bare wood table — same content family (apple + wood table), wrong composition/scale.
+    This is consistent with the "not yet a clean photorealistic match" caveat already on record in
+    `docs/057` and `PerformanceLeague.md`, but this is the first time it's been directly attributed
+    to composition/scale specifically (as opposed to general "not photorealistic yet") by a real
+    side-by-side against the C++ oracle. Candidate causes not yet checked: patchify/unpatchify
+    output-canvas mapping, or a VAE decode crop/scale mismatch — separate from the already-fixed
+    T5-context and already-ruled-out dual-attention-norm/GELU/Q5_K-dequant candidates above.
+  - **GPU harness caveat found, 2026-09-20**: `Sd3BaselineTests.GenerateApple_20Steps_Sd35_Vulkan`
+    runs a cold pass (seed 42) then a warm pass (seed 43) to the SAME `outputPath`, so the saved PNG
+    only ever reflects the LAST (warm, seed-43) run — not a valid seed-42 apples-to-apples comparison
+    against the CPU/C++ runs above. Re-ran a clean, isolated seed-42 GPU generation via
+    `stingray image --backend vulkan` instead (bypassing the test harness's overwrite bug):
+    **122.5s**, output saved to `sd35_medium_apple_gpu_seed42_256_20steps.png`. **Visual result:
+    still broken** — periodic checkerboard/tiling noise, no apple structure at all, distinctly WORSE
+    than the CPU output (which at least has real content, just wrong composition). This reconfirms
+    the 2026-09-19 finding (GPU-specific bug, separate from the now-fixed T5-context bug) is still
+    live and unresolved as of today; the 122.5s isolated timing is also meaningfully faster than the
+    test harness's 174.8s/161.1s figures, worth using as the reference GPU number going forward since
+    it isn't confounded by the harness's double-pass/overwrite bug.
+  - **Net status**: SD3/3.5 is NOT fully golden-verified. CPU is closer than previously credited —
+    real apple content confirmed, but a real, distinct composition/scale bug (not yet root-caused)
+    keeps it short of "clean match to reference." GPU remains genuinely broken (checkerboard noise,
+    zero apple structure) — same unresolved bug class named 2026-09-19, still not root-caused. The
+    README status matrix should read CPU as "🟡 structurally real, composition bug open" and GPU as
+    "🔴 broken, unrelated GPU-specific defect," not a single blended 🟡.
 
 ### Phase 2 — Qwen Image: first GPU port (biggest true gap — zero GPU code exists)
 
