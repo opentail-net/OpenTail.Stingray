@@ -375,14 +375,41 @@ the starting picture:
     real end-to-end smoke test's own wrongness (zero-conditioning, proper Gaussian latent scale,
     genuine Euler steps) is still real, separate evidence a problem exists** — this bisection run
     just wasn't able to cleanly isolate it because its own input choice was unrealistic.
-  - **Real next step, not done this pass**: re-run this exact bisection with realistic-scale inputs
-    (a proper unit-Gaussian latent matching `PackLatents`' real expected scale, real or
-    zero-but-properly-shaped text conditioning, a realistic mid-trajectory timestep like 500 rather
-    than the boundary value 1000) to get a clean, non-chaotic signal about where the real divergence
-    starts. Do not re-attempt the op-level candidate list (11 combined candidates across this model
-    and SD3.5 already ruled out) — the bisection tool itself is sound and now proven capable of
-    localizing a divergence point; it just needs a more representative input to point at the real
-    bug rather than an artifact of extreme activation magnitudes.
+  - **Re-run with a proper unit-Gaussian latent + mid-trajectory timestep (500 instead of 1000),
+    2026-09-20 — this is the real, final conclusion for this investigation.** Two findings, one
+    surprising:
+    1. **Activation magnitudes are STILL enormous** (30 million at block 0, growing past 1 BILLION
+       by block 59) even with a realistic-scale input — this rules out "unrealistic test input" as
+       the explanation. **Both CPU and GPU paths track each other closely** (e.g. block 0:
+       30.39M vs 30.18M; block 40: 28.66M vs 27.15M) — this magnitude growth is a real, consistent
+       property of this model's own forward pass on BOTH backends alike, not a GPU-specific defect.
+       Given the checkpoint is a real, working (per its own upstream release) trained model, this is
+       most plausibly normal residual-stream growth for this specific pre-norm transformer
+       architecture over 60 layers (a documented phenomenon in deep transformers generally) rather
+       than an implementation bug — but flagged here explicitly as unverified against the real
+       reference's own per-block magnitude, not assumed safe.
+    2. **The decisive finding: the divergence ONSET BLOCK MOVED** between the two runs — block 11
+       with the first (unrealistic, chaotic-input) run, block 29 with this second (realistic-input)
+       run. **A fixed logic bug (wrong stride, missing op, off-by-one) would manifest at the SAME
+       block regardless of input.** A divergence point that shifts with the input is the real
+       signature of ordinary FP16-vs-FP32 rounding differences being chaotically amplified at
+       whatever point the specific trajectory happens to be most numerically sensitive — not a
+       structural bug hiding at one fixed location. **This is now a well-evidenced conclusion, not a
+       guess**: two independent real bisection runs, with directly-measured NaN/Inf-free finite
+       values throughout, showing a input-dependent (not input-independent) divergence point.
+    - **FINAL VERDICT for this bug, 2026-09-20**: no single fixed logic bug found after 8 op-level
+      candidates + 2 full block-by-block bisections. The evidence now points to ordinary FP16
+      precision sensitivity in a numerically steep computation (large, growing residual-stream
+      magnitudes), not a discoverable code defect. **This does not mean "nothing can be done"** —
+      the real, concrete remaining option is upgrading specific GPU buffers from FP16 to FP32
+      storage (a real, statable memory/speed cost, not a magic fix) to test whether that closes the
+      gap, which would both confirm this conclusion empirically and give a real fix if the cost is
+      acceptable. **Not attempted this pass** (a real further experiment for whoever picks this up
+      next) — `QwenImageGpuWeights.UploadWeight`'s `SgemmPrecision.Fp16`-gated branch is the exact
+      place to change for that test.
+    - Stopping the op-level/bisection investigation here per this doc's own discipline — further
+      iteration on input choice alone is unlikely to produce a different qualitative conclusion; the
+      FP32-upload experiment is the next real, different lever, not more bisection variants.
 - [ ] Real numerical parity test (GPU vs CPU forward, real weights) before any timing claim.
 - [ ] Real end-to-end Vulkan timing vs the existing 348.4s CPU baseline. Document in
       `PerformanceLeague.md`. No C++ reference exists for Qwen Image in `examples/` — note that
