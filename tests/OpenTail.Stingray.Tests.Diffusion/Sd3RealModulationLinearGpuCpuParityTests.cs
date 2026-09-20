@@ -88,9 +88,11 @@ public sealed class Sd3RealModulationLinearGpuCpuParityTests
         OpenTail.Stingray.Diffusion.DiffusionOps.SiluInPlace(x);
         mmditForTVec.Dispose();
 
-        // CPU path: EXACT same call MMDiTModel.Lin() makes for this tensor when _backend is null.
+        // CPU path: EXACT same call MMDiTModel.Lin() makes for this tensor when _backend is null
+        // (allowQ8: false, post-fix -- see MMDiTModel.Lin's own comment and
+        // QuantizedWeightCache.Linear's allowQ8 doc for why).
         var cpuOut = new float[outDim];
-        cache.Linear(weightName, x, bias, cpuOut, n: 1, inDim, outDim);
+        cache.Linear(weightName, x, bias, cpuOut, n: 1, inDim, outDim, allowQ8: false);
 
         // GPU path: EXACT same dequant (ReadF32) + upload + Sgemm + bias-add MMDiTGpuWeights/
         // ForwardGpu perform, but standalone (no MMDiTGpuWeights/workspace/24-block loop).

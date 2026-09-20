@@ -287,7 +287,18 @@ public sealed class Sd3BaselineTests
     /// QKV/QK-norm, joint attention output) to find exactly which stage first diverges.
     /// </summary>
     [Fact]
-    public void BisectGpuCpuDivergence_Sd35_WithinBlock0()
+    public void BisectGpuCpuDivergence_Sd35_WithinBlock0() => BisectWithinBlock(0);
+
+    /// <summary>
+    /// Same fine-grained bisection, block 1 (2026-09-20 follow-up): after fixing block 0's
+    /// modulation bug (QuantizedWeightCache.Linear's allowQ8:false), the coarse per-block bisection
+    /// showed block 0 alone now matches almost exactly (maxDiff 0.04) but block 1 introduces a NEW,
+    /// large divergence (maxDiff ~17-30) that was previously masked by block 0's dominant error.
+    /// </summary>
+    [Fact]
+    public void BisectGpuCpuDivergence_Sd35_WithinBlock1() => BisectWithinBlock(1);
+
+    private void BisectWithinBlock(int blockIndex)
     {
         string ditPath = FindModelPath(Path.Combine("models", "sd3.5_medium-Q4_K_M.gguf"));
         string clipLPath = FindModelPath(Path.Combine("models", "sd35-medium-aux", "text_encoder", "model.fp16.safetensors"));
@@ -332,8 +343,10 @@ public sealed class Sd3BaselineTests
 
         foreach (var stage in new[] { "mod", "qkv", "attn" })
         {
-            cpuPipeline.MMDiT.MaxBlockIndexForDiagnostic = 0;
-            gpuPipeline.MMDiT.MaxBlockIndexForDiagnostic = 0;
+            cpuPipeline.MMDiT.MaxBlockIndexForDiagnostic = blockIndex;
+            gpuPipeline.MMDiT.MaxBlockIndexForDiagnostic = blockIndex;
+            cpuPipeline.MMDiT.DiagnosticStopBlockIndex = blockIndex;
+            gpuPipeline.MMDiT.DiagnosticStopBlockIndex = blockIndex;
             cpuPipeline.MMDiT.DiagnosticStopStage = stage;
             gpuPipeline.MMDiT.DiagnosticStopStage = stage;
 

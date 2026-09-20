@@ -35,6 +35,10 @@ public sealed class MMDiTModel : IDisposable
     /// it, to test whether dual-attention specifically is the source of a CPU/GPU divergence.</summary>
     public bool SkipDualAttnForDiagnostic;
 
+    /// <summary>Diagnostic-only (2026-09-20 GPU bisection): which block index DiagnosticStopStage
+    /// applies to. Default 0.</summary>
+    public int DiagnosticStopBlockIndex;
+
     /// <summary>Diagnostic-only (2026-09-20 GPU bisection): when set, <see cref="ForwardGpu"/> ends
     /// the batch and downloads intermediate GPU buffers right after block 0's named stage, storing
     /// them here and returning a dummy result -- lets a test compare against the CPU path's own
@@ -264,7 +268,19 @@ public sealed class MMDiTModel : IDisposable
 
         if (_backend is null)
         {
-            _quantizedCache.Linear($"{name}.weight", x.Slice(0, n * inDim), bF is not null ? bF.AsSpan(0, outDim) : ReadOnlySpan<float>.Empty, dst.Slice(0, n * outDim), n, inDim, outDim);
+            // allowQ8: false is the correct default here, not an opt-in -- see
+            // QuantizedWeightCache.Linear's allowQ8 doc. A 2026-09-20 investigation found the
+            // int8-activation-quantized fast path (validated only for LLM decode throughput)
+            // produces real, large per-element errors on this model's wide-dynamic-range
+            // activations. Confirmed NOT just the modulation call: scoping this down to only the
+            // two `adaLN_modulation.1` call sites left `TestSd35GpuVsCpuParity`'s full-forward
+            // maxDiff at 0.105 (barely better than the pre-fix 0.118), so attn.proj/mlp.fc1/fc2
+            // (also real Q4_K tensors) genuinely need it too -- full-model allowQ8:false restores
+            // maxDiff to 0.0009. This costs nothing extra on Q5_K tensors (attn.qkv/attn2.qkv):
+            // Q5_K's MatVec kernels never use the int8 path regardless of this flag (confirmed by
+            // reading DotQ5K's source), so the real, unavoidable cost is scoped to exactly the
+            // Q4_K tensors that need it, not "everything."
+            _quantizedCache.Linear($"{name}.weight", x.Slice(0, n * inDim), bF is not null ? bF.AsSpan(0, outDim) : ReadOnlySpan<float>.Empty, dst.Slice(0, n * outDim), n, inDim, outDim, allowQ8: false);
             return;
         }
 
@@ -476,7 +492,7 @@ public sealed class MMDiTModel : IDisposable
                 visionOps.Sgemm(ws.TxtMod, tVecGpu, bw.TxtModWeight, 1, HiddenSize, txtModChunks * HiddenSize);
                 imageOps.AddRowBroadcastInPlace(ws.TxtMod, bw.TxtModBias, 1, txtModChunks * HiddenSize);
 
-                if (b == 0 && DiagnosticStopStage == "mod")
+                if (b == DiagnosticStopBlockIndex && DiagnosticStopStage == "mod")
                 {
                     imageOps.EndBatch();
                     batchSuccess = true;
@@ -516,7 +532,7 @@ public sealed class MMDiTModel : IDisposable
                 if (bw.TxtAttnLnQ is not null && bw.TxtAttnLnK is not null)
                     visionOps.QKNorm(ws.Q, ws.K, bw.TxtAttnLnQ, bw.TxtAttnLnK, numTextTokens, NumHeads, HeadDim, eps: 1e-6f, startToken: numImgTokens);
 
-                if (b == 0 && DiagnosticStopStage == "qkv")
+                if (b == DiagnosticStopBlockIndex && DiagnosticStopStage == "qkv")
                 {
                     imageOps.EndBatch();
                     batchSuccess = true;
@@ -530,7 +546,7 @@ public sealed class MMDiTModel : IDisposable
                 // Joint MultiHeadAttention
                 imageOps.MultiHeadAttentionTiled(ws.AttnOut, ws.Q, ws.K, ws.V, totalTokens, totalTokens, NumHeads, HeadDim);
 
-                if (b == 0 && DiagnosticStopStage == "attn")
+                if (b == DiagnosticStopBlockIndex && DiagnosticStopStage == "attn")
                 {
                     imageOps.EndBatch();
                     batchSuccess = true;
@@ -755,7 +771,7 @@ public sealed class MMDiTModel : IDisposable
             Lin($"{blk}.x_block.adaLN_modulation.1", ws.TVecSilu.AsSpan(0, HiddenSize), ws.ImgMod.AsSpan(0, imgModChunks * HiddenSize), 1, HiddenSize, imgModChunks * HiddenSize);
             Lin($"{blk}.context_block.adaLN_modulation.1", ws.TVecSilu.AsSpan(0, HiddenSize), ws.TxtMod.AsSpan(0, txtModChunks * HiddenSize), 1, HiddenSize, txtModChunks * HiddenSize);
 
-            if (b == 0 && DiagnosticStopStage == "mod")
+            if (b == DiagnosticStopBlockIndex && DiagnosticStopStage == "mod")
             {
                 DiagnosticImgModOut = ws.ImgMod.AsSpan(0, imgModChunks * HiddenSize).ToArray();
                 DiagnosticTxtModOut = ws.TxtMod.AsSpan(0, txtModChunks * HiddenSize).ToArray();
@@ -800,7 +816,7 @@ public sealed class MMDiTModel : IDisposable
             ApplyHeadRmsNorm(ws.Q.AsSpan(numImgTokens * HiddenSize, numTextTokens * HiddenSize), $"{blk}.context_block.attn.ln_q", numTextTokens, NumHeads, HeadDim);
             ApplyHeadRmsNorm(ws.K.AsSpan(numImgTokens * HiddenSize, numTextTokens * HiddenSize), $"{blk}.context_block.attn.ln_k", numTextTokens, NumHeads, HeadDim);
 
-            if (b == 0 && DiagnosticStopStage == "qkv")
+            if (b == DiagnosticStopBlockIndex && DiagnosticStopStage == "qkv")
             {
                 DiagnosticQOut = ws.Q.AsSpan(0, totalTokens * HiddenSize).ToArray();
                 DiagnosticKOut = ws.K.AsSpan(0, totalTokens * HiddenSize).ToArray();
@@ -809,7 +825,7 @@ public sealed class MMDiTModel : IDisposable
 
             JointMultiHeadAttention(ws.Q.AsSpan(0, totalTokens * HiddenSize), ws.K.AsSpan(0, totalTokens * HiddenSize), ws.V.AsSpan(0, totalTokens * HiddenSize), ws.AttnOut.AsSpan(0, totalTokens * HiddenSize), ws.Scores, totalTokens, HiddenSize, NumHeads, HeadDim);
 
-            if (b == 0 && DiagnosticStopStage == "attn")
+            if (b == DiagnosticStopBlockIndex && DiagnosticStopStage == "attn")
             {
                 DiagnosticAttnOut = ws.AttnOut.AsSpan(0, totalTokens * HiddenSize).ToArray();
                 return new float[OutChannels * latH * latW];

@@ -49,14 +49,29 @@ public sealed class QuantizedWeightCache : IDisposable
 
     private string Resolve(string name) => _prefix.Length == 0 ? name : _prefix + name;
 
-    public float[] Linear(string weightName, ReadOnlySpan<float> x, ReadOnlySpan<float> bias, int n, int inDim, int outDim)
+    public float[] Linear(string weightName, ReadOnlySpan<float> x, ReadOnlySpan<float> bias, int n, int inDim, int outDim, bool allowQ8 = true)
     {
         var result = new float[n * outDim];
-        Linear(weightName, x, bias, result.AsSpan(), n, inDim, outDim);
+        Linear(weightName, x, bias, result.AsSpan(), n, inDim, outDim, allowQ8);
         return result;
     }
 
-    public unsafe void Linear(string weightName, ReadOnlySpan<float> x, ReadOnlySpan<float> bias, Span<float> output, int n, int inDim, int outDim)
+    /// <param name="allowQ8">
+    /// When true (default), quantized (Q4_K/Q5_K/Q6_K) weight tensors may be matmul'd against the
+    /// activation via an int8-quantized-activation fast path (the repacked Q4_K_X8 kernel and/or
+    /// <see cref="SimdKernels.MatMulBatched"/>'s own Q8 prefill tier) -- validated safe for LLM
+    /// next-token perplexity (the workload this was tuned for), but NOT for diffusion-model
+    /// precision: a 2026-09-20 SD3.5 investigation found this int8 activation quantization produces
+    /// real, large per-element errors (maxDiff ~1.0 on a real `adaLN_modulation.1` Linear call,
+    /// reproduced in isolation with the real checkpoint weight and real timestep-embedding input --
+    /// far beyond ordinary float32 summation-order noise) once fed a wide-dynamic-range activation
+    /// like a diffusion timestep/modulation vector, as opposed to the narrower-range token
+    /// embeddings this optimization was validated against. Pass <c>false</c> for any diffusion-model
+    /// Linear call where correctness matters more than the throughput this buys (every diffusion
+    /// pipeline's block count is small -- tens, not the thousands of LLM decode steps this
+    /// optimization amortizes over) -- this falls through to the plain float32 dequant+dot path.
+    /// </param>
+    public unsafe void Linear(string weightName, ReadOnlySpan<float> x, ReadOnlySpan<float> bias, Span<float> output, int n, int inDim, int outDim, bool allowQ8 = true)
     {
         string resolved = Resolve(weightName);
 
@@ -66,8 +81,9 @@ public sealed class QuantizedWeightCache : IDisposable
             {
                 fixed (float* px = x, po = output)
                 {
-                    // 1. Try repacked Q4_K_X8 kernel (fastest path)
-                    if (dtype == DType.Q4_K && SimdKernels.CanRepackQ4Kx8(rows, cols))
+                    // 1. Try repacked Q4_K_X8 kernel (fastest path) -- also int8-activation-
+                    // quantized internally (QuantizeRowToQ8KS), so gated on allowQ8 too.
+                    if (allowQ8 && dtype == DType.Q4_K && SimdKernels.CanRepackQ4Kx8(rows, cols))
                     {
                         byte* packed = GetOrCreateRepackedQ4Kx8(resolved, (byte*)dataPtr, rows, cols);
                         if (packed != null && SimdKernels.TryMatMulBatchedQ4Kx8(po, packed, px, n, rows, cols))
@@ -78,7 +94,7 @@ public sealed class QuantizedWeightCache : IDisposable
                     }
 
                     // 2. Try direct raw-quantized MatMulBatched (MicroGemmQ4K, TryMatMulBatchedQ8, or fused MatVec)
-                    SimdKernels.MatMulBatched(po, (byte*)dataPtr, px, n, rows, cols, dtype, allowQ8: true, allowBlas: true);
+                    SimdKernels.MatMulBatched(po, (byte*)dataPtr, px, n, rows, cols, dtype, allowQ8: allowQ8, allowBlas: true);
                     ApplyBias(output, bias, n, outDim);
                     return;
                 }

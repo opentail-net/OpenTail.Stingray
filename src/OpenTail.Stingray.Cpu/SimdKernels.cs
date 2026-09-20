@@ -197,19 +197,19 @@ public static unsafe class SimdKernels
                               weights,
                               input + (long)t * cols, input + (long)(t + 1) * cols,
                               input + (long)(t + 2) * cols, input + (long)(t + 3) * cols,
-                              rows, cols, dtype);
+                              rows, cols, dtype, allowQ8);
                 for (; t + 2 <= batchSize; t += 2)
                     MatVec2In(output + (long)t * rows, output + (long)(t + 1) * rows,
                               weights,
                               input + (long)t * cols, input + (long)(t + 1) * cols,
-                              rows, cols, dtype);
+                              rows, cols, dtype, allowQ8);
                 for (; t < batchSize; t++)
-                    MatVec(output + (long)t * rows, weights, input + (long)t * cols, rows, cols, dtype);
+                    MatVec(output + (long)t * rows, weights, input + (long)t * cols, rows, cols, dtype, allowQ8);
                 return;
             }
 
             for (int n = 0; n < batchSize; n++)
-                MatVec(output + n * rows, weights, input + n * cols, rows, cols, dtype);
+                MatVec(output + n * rows, weights, input + n * cols, rows, cols, dtype, allowQ8);
             return;
         }
 
@@ -831,7 +831,7 @@ public static unsafe class SimdKernels
     /// happens in registers — no intermediate F32 buffer is allocated.
     /// </summary>
     public static void MatVec(float* output, byte* weights, float* input,
-        int rows, int cols, DType dtype)
+        int rows, int cols, DType dtype, bool allowQ8 = true)
     {
         switch (dtype)
         {
@@ -839,7 +839,7 @@ public static unsafe class SimdKernels
                 MatVecF32(output, (float*)weights, input, rows, cols);
                 break;
             case DType.Q4_K:
-                MatVecQ4K(output, weights, input, rows, cols);
+                MatVecQ4K(output, weights, input, rows, cols, allowQ8);
                 break;
             case DType.Q6_K:
                 MatVecQ6K(output, weights, input, rows, cols);
@@ -1201,12 +1201,21 @@ public static unsafe class SimdKernels
     public static void MatVec2In(
         float* output1, float* output2,
         byte* weights, float* input1, float* input2,
-        int rows, int cols, DType dtype)
+        int rows, int cols, DType dtype, bool allowQ8 = true)
     {
         switch (dtype)
         {
             case DType.Q4_K:
             {
+                // allowQ8: false -- give up the 2-input amortization and fall back to two
+                // independent legacy (fully-F32) single-vector dots. See MatVecQ4K's allowQ8 doc.
+                if (!allowQ8)
+                {
+                    MatVecQ4K(output1, weights, input1, rows, cols, allowQ8: false);
+                    MatVecQ4K(output2, weights, input2, rows, cols, allowQ8: false);
+                    break;
+                }
+
                 int bpr = (cols / 256) * 144;
                 int scratchBytes = Q8KSScratchBytes(cols);
                 // Two Q8KS scratches (one per input); pre-quantize activation once,
@@ -1385,12 +1394,23 @@ public static unsafe class SimdKernels
         float* output0, float* output1, float* output2, float* output3,
         byte* weights,
         float* input0, float* input1, float* input2, float* input3,
-        int rows, int cols, DType dtype)
+        int rows, int cols, DType dtype, bool allowQ8 = true)
     {
         switch (dtype)
         {
             case DType.Q4_K:
             {
+                // allowQ8: false -- give up the 4-input amortization and fall back to four
+                // independent legacy (fully-F32) single-vector dots. See MatVecQ4K's allowQ8 doc.
+                if (!allowQ8)
+                {
+                    MatVecQ4K(output0, weights, input0, rows, cols, allowQ8: false);
+                    MatVecQ4K(output1, weights, input1, rows, cols, allowQ8: false);
+                    MatVecQ4K(output2, weights, input2, rows, cols, allowQ8: false);
+                    MatVecQ4K(output3, weights, input3, rows, cols, allowQ8: false);
+                    break;
+                }
+
                 int bpr = (cols / 256) * 144;
                 int scratchBytes = Q8KSScratchBytes(cols);
                 // Four Q8KS scratches (one per input); same stack-alloc discipline as MatVec2In.
@@ -1902,14 +1922,21 @@ public static unsafe class SimdKernels
     internal static readonly bool LegacyDotQ4K =
         Environment.GetEnvironmentVariable("STINGRAY_LEGACY_DOTQ4K") == "1";
 
-    public static void MatVecQ4K(float* output, byte* weights, float* input, int rows, int cols) =>
-        MatVecQ4K(output, weights, null, input, rows, cols);
+    public static void MatVecQ4K(float* output, byte* weights, float* input, int rows, int cols, bool allowQ8 = true) =>
+        MatVecQ4K(output, weights, null, input, rows, cols, allowQ8);
 
-    public static void MatVecQ4K(float* output, byte* weights, float* bias, float* input, int rows, int cols)
+    /// <param name="allowQ8">See <c>QuantizedWeightCache.Linear</c>'s own <c>allowQ8</c> doc
+    /// comment (OpenTail.Stingray.Diffusion) for the full rationale. False forces the fully-F32
+    /// legacy dot (the same path <c>STINGRAY_LEGACY_DOTQ4K=1</c> forces globally), bypassing this
+    /// kernel's default int8-quantized-activation fast path -- needed for diffusion-model
+    /// correctness on wide-dynamic-range activations (e.g. SD3.5's timestep/modulation vectors),
+    /// where that quantization (validated only for LLM decode perplexity) produces real, large
+    /// per-element errors.</param>
+    public static void MatVecQ4K(float* output, byte* weights, float* bias, float* input, int rows, int cols, bool allowQ8 = true)
     {
         int bytesPerRow = (cols / 256) * 144;
 
-        if (Avx2.IsSupported && Fma.IsSupported && cols >= 256 && !LegacyDotQ4K)
+        if (Avx2.IsSupported && Fma.IsSupported && cols >= 256 && !LegacyDotQ4K && allowQ8)
         {
             int scratchBytes = Q8KSScratchBytes(cols);
             byte* scratch = stackalloc byte[scratchBytes];
