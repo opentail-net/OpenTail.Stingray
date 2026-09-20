@@ -768,6 +768,29 @@ the starting picture:
       documentation correction like several other findings this session. Real next steps for a
       future pass: real text conditioning (this used zero-conditioning, matching this pass's
       deliberately minimal smoke-test scope) and a production-resolution timing run.
+  - [x] **Real UMT5 text conditioning closed, 2026-09-20** (`Wan22DualModelRealTextConditioningTests`):
+      the real UMT5-XXL encoder checkpoint (`models/wan2.1/models_t5_umt5-xxl-enc-bf16.safetensors`,
+      shared with Wan2.1 per its own release notes) and tokenizer were already present locally.
+      Encoded the real prompt "a red apple on a wooden table" (and an empty negative prompt) through
+      the exact same fixed-length 226-token zero-padded-embedding convention `ImageCommand.RunWan`
+      uses for the CLI (found and fixed 2026-09-14 per docs/081) — not reinvented, reused directly.
+      **UMT5 encode (cond+uncond) took 13.2s**, producing a real, non-degenerate embedding
+      (RMS 1.27E-2, finite). Ran the SAME dual-model `Generate` config as the zero-conditioning smoke
+      test above (128×128, 1 frame, 2 steps, low+high noise swap) but with the real embeddings
+      supplied via `textContext`/`negativeTextContext` instead of the null-fallback: **50.7s total**
+      (denoise + VAE decode 2.2s), healthy latent stats (mean=-0.0820, std=0.9302). **Output image
+      visually inspected**: a reddish glow over a dark table-like shape at the bottom of frame —
+      plausible, on-prompt structure for only 2 denoising steps at 128×128 (not expected to be a
+      polished, recognizable apple at this step count — the same "structured but not coherent" bar
+      Wan2.2's own zero-conditioning smoke test above was held to), and qualitatively different from
+      a zero-conditioned run in a way consistent with the prompt actually influencing generation
+      (red color concentration, distinct foreground/background separation). **This closes the
+      remaining Wan2.2-A14B coverage gap named above**: dual-model swap + real text conditioning now
+      both verified working together, end to end, with real weights. Production-resolution timing
+      with real conditioning remains a real, not-yet-measured follow-up (this pass stayed at the
+      same tiny 128×128/2-step scale as the zero-conditioning smoke test for a clean apples-to-apples
+      comparison of "does real conditioning work" — a separate question from "how fast is it at
+      real scale").
 
 ### Phase 9 — Cross-model DRY + perf-doc consistency pass (per CLAUDE.md's own performance+DRY pass rule)
 
