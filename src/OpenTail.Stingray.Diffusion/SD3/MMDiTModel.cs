@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.Numerics.Tensors;
+using OpenTail.Stingray.Vulkan;
 using CoreTensor = OpenTail.Stingray.Core.Tensor;
 
 namespace OpenTail.Stingray.Diffusion.SD3;
@@ -18,6 +19,23 @@ public sealed class MMDiTModel : IDisposable
     private readonly Dictionary<string, float[]?> _biasCache = new(StringComparer.Ordinal);
     private MMDiTGpuWeights? _residentGpuWeights;
     private MMDiTGpuWorkspace? _residentGpuWorkspace;
+
+    /// <summary>
+    /// Performance follow-up to the 2026-09-20 context-cache-corruption fix (docs/094 Phase 1):
+    /// caches the CLEAN, NEVER-mutated projected context (post context_embedder Sgemm+bias, before
+    /// any block's residual updates touch it) per <c>textContext</c> array reference -- restoring
+    /// the "compute the projection once per Generate() call, not once per denoising step" win the
+    /// old (buggy) `_cachedContextGpu` was going for, but safely this time: every `ForwardGpu` call
+    /// still gets its OWN fresh, independent mutable working tensor (GPU-side device-to-device
+    /// copy from this cache via `VulkanBackend.RecordComputeCopy`, never the cached tensor itself),
+    /// so nothing downstream can ever corrupt what's stored here. Mirrors how the real C++
+    /// reference (`examples/stable-diffusion.cpp`, ggml) handles this: ggml's graph-based execution
+    /// model computes conditioning once before the sampling loop and treats it as an immutable
+    /// graph leaf by construction (every op produces a fresh output tensor, never mutates an input
+    /// in place) -- this cache/copy pattern reproduces that same invariant explicitly, since this
+    /// codebase's GPU ops write in-place rather than being purely functional.
+    /// </summary>
+    private readonly Dictionary<float[], CoreTensor> _cachedCleanContextGpu = new(ReferenceEqualityComparer.Instance);
 
     /// <summary>
     /// Diagnostic-only early-exit (2026-09-20 GPU bisection): when set (0-based, inclusive), both
@@ -450,29 +468,43 @@ public sealed class MMDiTModel : IDisposable
         // Upload x to xGpu
         var xGpu = _backend!.Upload(x.AsSpan(0, numImgTokens * HiddenSize), TensorShape.D2(numImgTokens, HiddenSize), exact: true);
 
-        // 2. Project text context & upload to cGpu.
-        //
-        // NOT cached across denoising steps (2026-09-20 fix -- docs/094 Phase 1's GPU trajectory
-        // investigation): this used to be cached per-textContext-array via `_cachedContextGpu`,
-        // reasoning the projected context doesn't change across steps. But the SAME cGpu tensor is
-        // then used as the text stream's MUTABLE residual-connection buffer throughout the block
-        // loop below (`visionOps.ScaleGateAdd(cGpu, ...)` at both the attention and MLP residual
-        // sites mutates it in place) -- so caching it meant every Forward() call corrupted the
-        // cached tensor with its own 24-block residual stream, and the NEXT call (next denoising
-        // step) then started from that already-mutated, wrong state instead of a fresh projected
-        // context. This produced a real, measured per-step latent divergence between CPU (which
-        // never caches -- `Forward`'s `c` is a fresh local array every call) and GPU that started
-        // small (single-call parity is exact) but compounded step over step into the fully garbled
-        // checkerboard final image. Recomputing this one Sgemm (context_embedder: n=numTextTokens,
-        // k=ContextSize=4096, outDim=HiddenSize) fresh every call is cheap relative to the full
-        // 24-block forward pass it feeds into, so the fix is to simply stop caching rather than add
-        // a separate per-call working-copy buffer.
-        var rawContextGpu = _backend.Upload(textContext.AsSpan(0, numTextTokens * ContextSize), TensorShape.D2(numTextTokens, ContextSize), exact: true);
-        var cGpu = _backend.Allocate(TensorShape.D2(numTextTokens, HiddenSize));
-        visionOps.Sgemm(cGpu, rawContextGpu, gw.ContextEmbedderWeight, numTextTokens, ContextSize, HiddenSize);
-        if (gw.ContextEmbedderBias is not null)
-            imageOps.AddRowBroadcastInPlace(cGpu, gw.ContextEmbedderBias, numTextTokens, HiddenSize);
-        _backend.Free(rawContextGpu);
+        // 2. Project text context into cGpu -- a FRESH, independent tensor every call (2026-09-20
+        // correctness fix, docs/094 Phase 1). The projection itself (context_embedder Sgemm) is
+        // cached CLEAN (see `_cachedCleanContextGpu`'s own doc comment) and copied device-to-device
+        // into this call's own cGpu when available (Vulkan), restoring most of the perf this used
+        // to get from directly caching+reusing cGpu -- which was UNSAFE because cGpu is also the
+        // text stream's mutable residual-connection buffer throughout the block loop below
+        // (`visionOps.ScaleGateAdd(cGpu, ...)` mutates it in place). Falls back to a fresh
+        // upload+Sgemm+bias every call (no caching at all) on any non-Vulkan backend.
+        CoreTensor cGpu;
+        if (_backend is VulkanBackend vulkanBackend)
+        {
+            CoreTensor cleanContext;
+            lock (_cachedCleanContextGpu)
+            {
+                if (!_cachedCleanContextGpu.TryGetValue(textContext, out cleanContext!))
+                {
+                    var rawContextGpu = _backend.Upload(textContext.AsSpan(0, numTextTokens * ContextSize), TensorShape.D2(numTextTokens, ContextSize), exact: true);
+                    cleanContext = _backend.Allocate(TensorShape.D2(numTextTokens, HiddenSize), exact: true);
+                    visionOps.Sgemm(cleanContext, rawContextGpu, gw.ContextEmbedderWeight, numTextTokens, ContextSize, HiddenSize);
+                    if (gw.ContextEmbedderBias is not null)
+                        imageOps.AddRowBroadcastInPlace(cleanContext, gw.ContextEmbedderBias, numTextTokens, HiddenSize);
+                    _backend.Free(rawContextGpu);
+                    _cachedCleanContextGpu[textContext] = cleanContext;
+                }
+            }
+            cGpu = _backend.Allocate(TensorShape.D2(numTextTokens, HiddenSize));
+            vulkanBackend.RecordComputeCopy(cGpu, cleanContext);
+        }
+        else
+        {
+            var rawContextGpu = _backend.Upload(textContext.AsSpan(0, numTextTokens * ContextSize), TensorShape.D2(numTextTokens, ContextSize), exact: true);
+            cGpu = _backend.Allocate(TensorShape.D2(numTextTokens, HiddenSize));
+            visionOps.Sgemm(cGpu, rawContextGpu, gw.ContextEmbedderWeight, numTextTokens, ContextSize, HiddenSize);
+            if (gw.ContextEmbedderBias is not null)
+                imageOps.AddRowBroadcastInPlace(cGpu, gw.ContextEmbedderBias, numTextTokens, HiddenSize);
+            _backend.Free(rawContextGpu);
+        }
 
         // 3. Time + Pooled Embedding: upload tVecSilu
         var tVec = ComputeTimeAndPooledEmbedding(timestep, pooledY);
@@ -1007,6 +1039,11 @@ public sealed class MMDiTModel : IDisposable
     {
         _residentGpuWeights?.Dispose();
         _residentGpuWorkspace?.Dispose();
+        lock (_cachedCleanContextGpu)
+        {
+            foreach (var t in _cachedCleanContextGpu.Values) _backend?.Free(t);
+            _cachedCleanContextGpu.Clear();
+        }
         if (_gpuWeights is not null)
         {
             lock (_gpuWeights)
