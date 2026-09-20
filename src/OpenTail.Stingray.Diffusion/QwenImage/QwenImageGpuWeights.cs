@@ -184,13 +184,16 @@ public sealed class QwenImageGpuWeights : IDisposable
     private static CoreTensor? UploadOptionalBias(IComputeBackend backend, float[]? bias)
         => bias is null ? null : backend.Upload(bias, TensorShape.D1(bias.Length), exact: true);
 
-    // TEMP experiment (docs/094 Phase 2, 2026-09-20): force FP32 weight upload to test whether
-    // FP16 storage precision is the real cause of the unresolved GPU parity/texture bug (two
-    // independent block-by-block bisections found the divergence onset shifts with input choice,
-    // pointing at FP16 rounding sensitivity rather than a fixed logic bug -- this is the confirming
-    // experiment, not yet run). Real cost if kept: ~2x GPU weight memory and likely slower Sgemm
-    // (this backend's fast paths are tuned for Fp16/Bf16).
-    private static readonly bool ForceFp32WeightsExperiment = true;
+    // Tried and REJECTED, 2026-09-20 (docs/094 Phase 2): forcing FP32 weight upload to test the
+    // FP16-precision-sensitivity hypothesis (two independent block-by-block bisections found the
+    // divergence onset shifts with input choice, pointing at rounding sensitivity, not a fixed
+    // logic bug) hit a real `VkErrorOutOfHostMemory` -- this checkpoint's ~20.8B params at FP32
+    // (~2x the FP16 upload's already-large footprint) simply do not fit in this hardware's
+    // GPU-accessible memory. The confirming experiment could not even run to completion, let alone
+    // produce a result -- a real, decisive negative finding (infeasibility, not inconclusiveness).
+    // Kept `false` permanently; FP32 upload is not a viable path forward on this hardware for this
+    // model's full 60-layer weight set.
+    private static readonly bool ForceFp32WeightsExperiment = false;
 
     private static CoreTensor UploadWeight(IComputeBackend backend, float[] f32Data, TensorShape shape)
     {

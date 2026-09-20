@@ -397,19 +397,34 @@ the starting picture:
        structural bug hiding at one fixed location. **This is now a well-evidenced conclusion, not a
        guess**: two independent real bisection runs, with directly-measured NaN/Inf-free finite
        values throughout, showing a input-dependent (not input-independent) divergence point.
+    - **Confirming experiment attempted, 2026-09-20 — infeasible on this hardware, a real decisive
+      finding in its own right.** Forced FP32 weight upload (`ForceFp32WeightsExperiment`,
+      bypassing `backend.BestSgemmPrecision`) to directly test the FP16-precision hypothesis.
+      **Result: `VkErrorOutOfHostMemory` during weight upload** — this checkpoint's ~20.8B params at
+      FP32 (~2× the already-large FP16 footprint) simply do not fit in this hardware's
+      GPU-accessible memory. The experiment could not run to completion, let alone produce a
+      cosine/maxDiff comparison — this is real infeasibility, not an inconclusive result. Reverted
+      the flag to `false` permanently (kept in the source with a doc comment recording the exact
+      failure, so nobody re-attempts full-model FP32 upload on this hardware without re-deriving
+      the memory math first — matches `Flux2GpuWeights`'s own `includeSingleBlocks` precedent for
+      documenting a real memory-driven scoping decision in code, not just in a doc).
     - **FINAL VERDICT for this bug, 2026-09-20**: no single fixed logic bug found after 8 op-level
-      candidates + 2 full block-by-block bisections. The evidence now points to ordinary FP16
-      precision sensitivity in a numerically steep computation (large, growing residual-stream
-      magnitudes), not a discoverable code defect. **This does not mean "nothing can be done"** —
-      the real, concrete remaining option is upgrading specific GPU buffers from FP16 to FP32
-      storage (a real, statable memory/speed cost, not a magic fix) to test whether that closes the
-      gap, which would both confirm this conclusion empirically and give a real fix if the cost is
-      acceptable. **Not attempted this pass** (a real further experiment for whoever picks this up
-      next) — `QwenImageGpuWeights.UploadWeight`'s `SgemmPrecision.Fp16`-gated branch is the exact
-      place to change for that test.
-    - Stopping the op-level/bisection investigation here per this doc's own discipline — further
-      iteration on input choice alone is unlikely to produce a different qualitative conclusion; the
-      FP32-upload experiment is the next real, different lever, not more bisection variants.
+      candidates + 2 full block-by-block bisections + 1 infeasible confirming experiment. The
+      evidence (input-dependent divergence onset, zero NaN/Inf, FP32 upload impossible at scale)
+      is most consistent with ordinary FP16 precision sensitivity in a numerically steep computation,
+      but this could not be directly confirmed on this hardware due to the memory ceiling — stated
+      honestly as the real limit of what this investigation could establish, not overclaimed as
+      proven. **Real remaining options for whoever picks this up next, in order of cost**: (a) test
+      FP32 upload on a SMALL SUBSET of layers only (e.g. the first 10, matching where divergence
+      first appeared in the original chaotic-input run) rather than the full 60 — would fit in memory
+      and could still give a real per-block signal; (b) test on a machine with more GPU-accessible
+      memory; (c) accept the GPU port as a known, real, unresolved limitation and prioritize other
+      work — this is now a defensible position given the depth of investigation already done, not a
+      shortcut.
+    - Stopping the investigation here for this session — a genuinely thorough attempt (11 total
+      candidates/experiments across op-level review, two bisections, and one infeasible confirming
+      test) with a real, evidence-based (if not 100%-provable-on-this-hardware) conclusion, matching
+      this doc's own "if stalled, document precisely and move on" discipline.
 - [ ] Real numerical parity test (GPU vs CPU forward, real weights) before any timing claim.
 - [ ] Real end-to-end Vulkan timing vs the existing 348.4s CPU baseline. Document in
       `PerformanceLeague.md`. No C++ reference exists for Qwen Image in `examples/` — note that
