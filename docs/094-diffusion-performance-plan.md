@@ -825,6 +825,60 @@ the starting picture:
       single isolated GPU block, rather than letting each backend run its own full trajectory from
       the shared initial input) would isolate the true remaining cause more precisely than another
       whole-model bisection — not yet implemented.
+  - **Same-day follow-up #2, 2026-09-20 — the single-block cross-injection experiment, implemented
+    and run: FP16 weight precision RULED OUT, and a real, useful negative result about the whole
+    bisection's own onset-block finding.** Refactored `ForwardGpu`'s per-block loop body into a
+    shared `RunBlockGpu` method (zero behavior change confirmed: re-ran `QwenImageGpuParityTests`
+    before/after, cosine 0.990131 unchanged both times) so a single block can be run in isolation
+    without duplicating logic. Added `OnBlockStateCpu` (exposes both [img] AND [txt] streams'
+    post-block state, needed since Qwen Image's joint attention consumes both) and two test-only
+    entry points, `RunSingleBlockCpuForTest`/`RunSingleBlockGpuForTest`.
+    - **Real memory-safety fix made in the same pass, prompted by the operator observing RAM hit
+      ~99% during the earlier full end-to-end `QwenImageGpuParityTests` run**: `EnsureGpuResident`
+      uploads ALL 60 blocks' weights (~41GB at FP16 for this ~20.8B-param checkpoint) even though a
+      single-block test only ever needs one. `RunSingleBlockGpuForTest` deliberately does NOT call
+      `EnsureGpuResident` — it builds a fresh, standalone `QwenImageGpuWorkspace` and exactly ONE
+      `QwenImageGpuWeights.BlockGpuWeights` per call (both disposed immediately after), bounding the
+      test's real footprint to ~680MB (FP16) / ~1.36GB (FP32) instead of the whole model's resident
+      set. Confirmed via direct `Get-CimInstance Win32_OperatingSystem` memory checks that this test
+      run stayed well within available RAM. **Flagged as a real, separate concern needing its own
+      pass later**: the full-model 60-layer resident upload's ~41GB footprint against this machine's
+      63.3GB total RAM is a genuine capacity risk independent of today's investigation, not
+      addressed here.
+    - **Experiment**: froze the real CPU trajectory's [img,txt] state entering block 29 (= block
+      28's output, captured via `OnBlockStateCpu` from a real full CPU forward pass, same
+      unit-Gaussian-latent/timestep-500 input the earlier bisection used) as the common input. Ran
+      three things against that identical frozen input: (1) CPU's own isolated block 29
+      (`RunSingleBlockCpuForTest`) as a sanity check that isolation reproduces the real trajectory
+      exactly; (2) GPU block 29 at production FP16 weight precision (Lane A); (3) GPU block 29 with
+      FP32 weights for that one block only (Lane B), everything else identical.
+    - **Results**: CPU isolation self-check: cosine 1.000000, maxDiff 0.0 — exact, confirms the
+      harness itself introduces no discrepancy. **Lane A (FP16) vs CPU: img cosine 0.968982,
+      maxDiff 1.47e7; txt cosine 0.922722, maxDiff 5.26e6.** **Lane B (FP32) vs CPU: img cosine
+      0.968983, maxDiff 1.47e7; txt cosine 0.922727, maxDiff 5.26e6 — statistically identical to
+      Lane A** (cosine-gap improvement ratio 1.00x: FP32 closed essentially none of the gap).
+    - **Two real, decisive conclusions**: (1) **FP16 weight precision is RULED OUT** as the cause —
+      forcing FP32 for the exact block under test changed nothing measurable, directly contradicting
+      the "strongest remaining candidate" ranking an external second-opinion review had proposed
+      (verified this specific prediction against real numbers, not left as a plausible-sounding
+      unfalsified theory). (2) **A single block, fed IDENTICAL real input, already diverges this
+      much from CPU on its own** (cosine 0.92-0.97, on the same order as the whole 60-block model's
+      end-to-end cosine 0.990109) — meaning the whole-model bisection's "first divergence at block
+      29" finding was never about 29 blocks of compounding drift finally crossing a threshold; block
+      29's OWN computation (given a real, correct input) is already substantially wrong on its own.
+      This reframes the search: the cause lives inside a single block's operations (Sgemm reduction
+      order, QKNorm, RoPE, or — the leading remaining candidate — the attention kernel's online-
+      softmax/tiled-P·V-accumulation algorithm, which is structurally different from CPU's standard
+      global-max-then-normalize softmax even though both were already verified to use the same
+      FORMULA), not in cross-block accumulation.
+    - **Real, concrete next step, not yet done**: Lane C from the same review's plan — feed CPU's
+      own post-RoPE Q/K/V for the identical frozen input into ONLY the GPU attention kernel
+      (`MultiHeadAttentionTiled`), bypassing GPU's own norm1/QKV-projection/QKNorm/RoPE for that
+      block, to test the attention kernel in complete isolation from everything upstream of it. If
+      that still diverges from CPU's own attention output (computed from the same injected Q/K/V),
+      the online-softmax/tiled-accumulation algorithm itself is confirmed as the cause; if it agrees,
+      the divergence is upstream of attention (Sgemm/QKNorm/RoPE) and those become the next
+      candidates to isolate individually using the same block-29 harness now in place.
 - [ ] Real numerical parity test (GPU vs CPU forward, real weights) before any timing claim.
 - [ ] Real end-to-end Vulkan timing vs the existing 348.4s CPU baseline. Document in
       `PerformanceLeague.md`. No C++ reference exists for Qwen Image in `examples/` — note that

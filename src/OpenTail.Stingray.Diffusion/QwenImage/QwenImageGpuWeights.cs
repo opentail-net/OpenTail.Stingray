@@ -91,41 +91,41 @@ public sealed class QwenImageGpuWeights : IDisposable
         public CoreTensor TxtMlpDownWeight { get; }
         public CoreTensor? TxtMlpDownBias { get; }
 
-        public BlockGpuWeights(IComputeBackend backend, Func<string, float[]> getWeight, Func<string, float[]?> tryGetWeight, int idx, int d, int headDim)
+        public BlockGpuWeights(IComputeBackend backend, Func<string, float[]> getWeight, Func<string, float[]?> tryGetWeight, int idx, int d, int headDim, bool forceFp32 = false)
         {
             _backend = backend;
             string p = $"transformer_blocks.{idx}.";
 
-            ImgModWeight = UploadWeight(backend, getWeight($"{p}img_mod.1.weight"), TensorShape.D2(6 * d, d));
+            ImgModWeight = UploadWeight(backend, getWeight($"{p}img_mod.1.weight"), TensorShape.D2(6 * d, d), forceFp32);
             ImgModBias = UploadOptionalBias(backend, tryGetWeight($"{p}img_mod.1.bias"));
-            TxtModWeight = UploadWeight(backend, getWeight($"{p}txt_mod.1.weight"), TensorShape.D2(6 * d, d));
+            TxtModWeight = UploadWeight(backend, getWeight($"{p}txt_mod.1.weight"), TensorShape.D2(6 * d, d), forceFp32);
             TxtModBias = UploadOptionalBias(backend, tryGetWeight($"{p}txt_mod.1.bias"));
 
-            ImgToQWeight = UploadWeight(backend, getWeight($"{p}attn.to_q.weight"), TensorShape.D2(d, d));
-            ImgToKWeight = UploadWeight(backend, getWeight($"{p}attn.to_k.weight"), TensorShape.D2(d, d));
-            ImgToVWeight = UploadWeight(backend, getWeight($"{p}attn.to_v.weight"), TensorShape.D2(d, d));
-            TxtAddQWeight = UploadWeight(backend, getWeight($"{p}attn.add_q_proj.weight"), TensorShape.D2(d, d));
-            TxtAddKWeight = UploadWeight(backend, getWeight($"{p}attn.add_k_proj.weight"), TensorShape.D2(d, d));
-            TxtAddVWeight = UploadWeight(backend, getWeight($"{p}attn.add_v_proj.weight"), TensorShape.D2(d, d));
+            ImgToQWeight = UploadWeight(backend, getWeight($"{p}attn.to_q.weight"), TensorShape.D2(d, d), forceFp32);
+            ImgToKWeight = UploadWeight(backend, getWeight($"{p}attn.to_k.weight"), TensorShape.D2(d, d), forceFp32);
+            ImgToVWeight = UploadWeight(backend, getWeight($"{p}attn.to_v.weight"), TensorShape.D2(d, d), forceFp32);
+            TxtAddQWeight = UploadWeight(backend, getWeight($"{p}attn.add_q_proj.weight"), TensorShape.D2(d, d), forceFp32);
+            TxtAddKWeight = UploadWeight(backend, getWeight($"{p}attn.add_k_proj.weight"), TensorShape.D2(d, d), forceFp32);
+            TxtAddVWeight = UploadWeight(backend, getWeight($"{p}attn.add_v_proj.weight"), TensorShape.D2(d, d), forceFp32);
 
             ImgNormQScale = backend.Upload(getWeight($"{p}attn.norm_q.weight"), TensorShape.D1(headDim), exact: true);
             ImgNormKScale = backend.Upload(getWeight($"{p}attn.norm_k.weight"), TensorShape.D1(headDim), exact: true);
             TxtNormQScale = backend.Upload(getWeight($"{p}attn.norm_added_q.weight"), TensorShape.D1(headDim), exact: true);
             TxtNormKScale = backend.Upload(getWeight($"{p}attn.norm_added_k.weight"), TensorShape.D1(headDim), exact: true);
 
-            ImgToOutWeight = UploadWeight(backend, getWeight($"{p}attn.to_out.0.weight"), TensorShape.D2(d, d));
+            ImgToOutWeight = UploadWeight(backend, getWeight($"{p}attn.to_out.0.weight"), TensorShape.D2(d, d), forceFp32);
             ImgToOutBias = UploadOptionalBias(backend, tryGetWeight($"{p}attn.to_out.0.bias"));
-            TxtToAddOutWeight = UploadWeight(backend, getWeight($"{p}attn.to_add_out.weight"), TensorShape.D2(d, d));
+            TxtToAddOutWeight = UploadWeight(backend, getWeight($"{p}attn.to_add_out.weight"), TensorShape.D2(d, d), forceFp32);
             TxtToAddOutBias = UploadOptionalBias(backend, tryGetWeight($"{p}attn.to_add_out.bias"));
 
             int ffDim = d * 4;
-            ImgMlpUpWeight = UploadWeight(backend, getWeight($"{p}img_mlp.net.0.proj.weight"), TensorShape.D2(ffDim, d));
+            ImgMlpUpWeight = UploadWeight(backend, getWeight($"{p}img_mlp.net.0.proj.weight"), TensorShape.D2(ffDim, d), forceFp32);
             ImgMlpUpBias = UploadOptionalBias(backend, tryGetWeight($"{p}img_mlp.net.0.proj.bias"));
-            ImgMlpDownWeight = UploadWeight(backend, getWeight($"{p}img_mlp.net.2.weight"), TensorShape.D2(d, ffDim));
+            ImgMlpDownWeight = UploadWeight(backend, getWeight($"{p}img_mlp.net.2.weight"), TensorShape.D2(d, ffDim), forceFp32);
             ImgMlpDownBias = UploadOptionalBias(backend, tryGetWeight($"{p}img_mlp.net.2.bias"));
-            TxtMlpUpWeight = UploadWeight(backend, getWeight($"{p}txt_mlp.net.0.proj.weight"), TensorShape.D2(ffDim, d));
+            TxtMlpUpWeight = UploadWeight(backend, getWeight($"{p}txt_mlp.net.0.proj.weight"), TensorShape.D2(ffDim, d), forceFp32);
             TxtMlpUpBias = UploadOptionalBias(backend, tryGetWeight($"{p}txt_mlp.net.0.proj.bias"));
-            TxtMlpDownWeight = UploadWeight(backend, getWeight($"{p}txt_mlp.net.2.weight"), TensorShape.D2(d, ffDim));
+            TxtMlpDownWeight = UploadWeight(backend, getWeight($"{p}txt_mlp.net.2.weight"), TensorShape.D2(d, ffDim), forceFp32);
             TxtMlpDownBias = UploadOptionalBias(backend, tryGetWeight($"{p}txt_mlp.net.2.bias"));
         }
 
@@ -195,15 +195,16 @@ public sealed class QwenImageGpuWeights : IDisposable
     // model's full 60-layer weight set.
     private static readonly bool ForceFp32WeightsExperiment = false;
 
-    private static CoreTensor UploadWeight(IComputeBackend backend, float[] f32Data, TensorShape shape)
+    private static CoreTensor UploadWeight(IComputeBackend backend, float[] f32Data, TensorShape shape, bool forceFp32 = false)
     {
-        if (!ForceFp32WeightsExperiment && backend.BestSgemmPrecision == SgemmPrecision.Fp16)
+        bool skipReducedPrecision = ForceFp32WeightsExperiment || forceFp32;
+        if (!skipReducedPrecision && backend.BestSgemmPrecision == SgemmPrecision.Fp16)
         {
             var half = new Half[f32Data.Length];
             for (int i = 0; i < f32Data.Length; i++) half[i] = (Half)f32Data[i];
             return backend.UploadHalf(half, shape);
         }
-        if (!ForceFp32WeightsExperiment && backend.BestSgemmPrecision == SgemmPrecision.Bf16)
+        if (!skipReducedPrecision && backend.BestSgemmPrecision == SgemmPrecision.Bf16)
         {
             var bf16 = new ushort[f32Data.Length];
             for (int i = 0; i < f32Data.Length; i++)
