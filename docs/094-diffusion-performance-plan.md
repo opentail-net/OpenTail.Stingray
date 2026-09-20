@@ -433,6 +433,48 @@ the starting picture:
     (public test-support method exposing the real CLIP-L/G/T5+BuildContext/BuildPooledY encode
     pipeline `Generate` uses internally, so a diagnostic test can build real conditioning without
     duplicating that logic).
+- [x] **THE ACTUAL GPU BUG FOUND AND FIXED, same-day follow-up, 2026-09-20**: the anomalous step
+    0→1 jump flagged above was the real lead. `ForwardGpu` cached the projected text context
+    (`cGpu`) per `textContext` array reference (`_cachedContextGpu`), reasoning it's identical
+    across denoising steps so re-uploading/re-projecting it every call would be wasted work. But
+    the SAME `cGpu` tensor is also the text stream's MUTABLE residual-connection buffer throughout
+    the block loop — `visionOps.ScaleGateAdd(cGpu, ws.OutTxt, ws.TxtMod, ...)` mutates it in place
+    at both the joint-attention and MLP residual sites, once per block, 24 times per call. Caching
+    it meant every `Forward()` call corrupted the cached tensor with its own full 24-block residual
+    stream; the NEXT call (the next denoising step) then started its text-stream computation from
+    that already-mutated, wrong state instead of a fresh projected context — exactly matching the
+    step-0→1 jump signature (step 0's first two calls, cond/uncond, each populate the cache fresh;
+    step 1 is the first point where BOTH calls hit the now-corrupted cache).
+  - **Fix**: removed the cache entirely — recompute the context_embedder projection (one Sgemm:
+    n=numTextTokens, k=4096=ContextSize, outDim=1536=HiddenSize) fresh every `Forward()` call,
+    matching what the CPU path already does (`Forward`'s local `c` array was never cached to begin
+    with — only the GPU path had this bug). This Sgemm is cheap relative to the 24-block forward
+    pass it feeds, so the fix costs nothing measurable. Removed the now-dead `_cachedContextGpu`
+    field and its `Dispose` cleanup.
+  - **Re-ran `Sd3PerStepTrajectoryParityTests` post-fix**: the 59× step-0→1 jump is COMPLETELY
+    GONE. Latent maxDiff over 6 steps: 0.003 → 0.006 → 0.007 → 0.009 → 0.011 → 0.014 — small and
+    smoothly, nearly-linearly growing (was 0.003 → 0.187 → 0.285 → 0.479 → 0.623 → 0.760). Mean/
+    std/maxAbs track almost identically between CPU and GPU at every step now.
+    `TestSd35GpuVsCpuParity`'s single-call parity unaffected (still cosine 1.000000/maxDiff
+    0.000898 — that test only ever made one call, so it never exercised the cache-reuse bug).
+  - **Real end-to-end re-verification, the actual deliverable**: re-generated the full 20-step
+    Vulkan `Generate` run (`sd35_medium_apple_gpu_seed42_256_20steps_cachefix.png`, same
+    seed 42/256×256/20-step/cfg-4.5 config as every prior GPU sample in this doc). **The
+    checkerboard/tiling noise is GONE.** Output is now a clean, coherent wood-grain table texture
+    — visually consistent with the CPU row's own (still imperfect) output rather than garbled
+    noise, confirming the GPU path now produces genuinely structured, on-distribution content for
+    the first time. Timing unaffected: **126.4s**, matching the pre-fix 122.5s/130.0s range (the
+    fix has no measurable perf cost, as expected for replacing one cheap cached lookup with one
+    cheap recomputed Sgemm). The apple itself is not visible in this particular sample — consistent
+    with, and likely the SAME underlying cause as, the still-open composition/scale bug already
+    tracked above (both backends now share the same forward-pass math, so they should also now
+    share the same remaining bugs, which is exactly what's observed: coherent structure, no visible
+    apple, on both CPU and GPU alike).
+  - **Status**: SD3.5's GPU path is no longer broken at the structural/correctness level — it now
+    produces the same class of output as CPU (coherent, on-distribution, but missing/cropped apple
+    due to the separate, still-open composition bug). Both `README.md` and `PerformanceLeague.md`
+    need their GPU row updated from 🔴 to match CPU's 🟡 status, sharing the same open blocker
+    (composition/scale, not correctness/noise) as the next update to this doc.
 
 ### Phase 2 — Qwen Image: first GPU port (biggest true gap — zero GPU code exists)
 
