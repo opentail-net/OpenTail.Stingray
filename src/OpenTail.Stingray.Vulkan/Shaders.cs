@@ -10301,15 +10301,30 @@ internal static class Shaders
                     outData[off + i] = norm * (1.0 + s) + sh;
                 }
             } else {
-                float sum = 0.0;
-                for (uint i = 0u; i < dim; i++) sum += inData[off + i];
-                float mean = sum / float(dim);
-                float sumSq = 0.0;
+                // Welford's online mean/variance algorithm, NOT a naive running-sum-then-divide
+                // reduction (docs/094 Phase 2 follow-up, 2026-09-20): a plain `sum += x[i]` allows
+                // the accumulator to grow to the row's raw magnitude (this model's real residual
+                // stream reaches 1e7-1e9), so on the next affine-free-LayerNorm call each new
+                // addend's low-order bits get rounded away against that huge accumulator --
+                // catastrophic cancellation once subtracted back out in `x - mean`. A real,
+                // decisive precision test (QwenImageAdaLnPrecisionTests, dim=3072, huge-magnitude/
+                // tiny-relative-variance rows matching this model's own measured activations) found
+                // this branch's output diverged from a float64 reference by maxDiff~1.25 (vs a
+                // float32-SIMD CPU reduction's ~0.015-0.019) -- confirming the GPU side, not the
+                // CPU side, was the wrong one. Welford's algorithm keeps `mean` close to the true
+                // running mean and `m2` proportional to the actual variance at every step,
+                // regardless of the row's absolute offset, so it never builds the huge intermediate
+                // sum that causes the cancellation.
+                float mean = 0.0;
+                float m2 = 0.0;
                 for (uint i = 0u; i < dim; i++) {
-                    float d = inData[off + i] - mean;
-                    sumSq += d * d;
+                    float x = inData[off + i];
+                    float delta = x - mean;
+                    mean += delta / float(i + 1u);
+                    float delta2 = x - mean;
+                    m2 += delta * delta2;
                 }
-                float invStd = inversesqrt(sumSq / float(dim) + eps);
+                float invStd = inversesqrt(m2 / float(dim) + eps);
                 for (uint i = 0u; i < dim; i++) {
                     float norm = (inData[off + i] - mean) * invStd;
                     float s = scaleData[scaleOffset + i];
@@ -11292,15 +11307,25 @@ internal static class Shaders
             uint rowOff   = localT * dim;
 
             // ---- Parallel reduction ----
+            // isRmsNorm branch: sum-of-squares has no mean-subtraction, so no cancellation risk.
+            // isRmsNorm==false (affine-free LayerNorm) branch: this used to compute
+            // `variance = E[x^2] - mean^2` from a SINGLE combined reduction pass -- the textbook
+            // numerically-unstable variance formula, doubly so here since it subtracts two
+            // similarly-huge float32 values (E[x^2] and mean^2 both ~1e18 for this model's real
+            // ~1e9-magnitude residual-stream rows) to recover a comparatively tiny variance. Direct
+            // sibling of the same-class bug found and fixed in the standalone (non-dual)
+            // `AdaLNModulate` shader above (docs/094 Phase 2 follow-up, 2026-09-20,
+            // QwenImageAdaLnPrecisionTests) -- not exercised by that same test today (FLUX.2 uses
+            // this dual-stream shader, not Qwen Image's single-stream one), but the same real
+            // mechanism applies and is fixed proactively here rather than left for a future,
+            // separately-discovered bug report. Fixed to a genuine two-pass mean-then-variance
+            // (still using this shader's existing parallel tree reduction, just run twice) instead
+            // of the naive one-pass formula -- mirrors what the CPU path and the fixed
+            // single-stream shader both already do.
             float partialSum = 0.0;
-            float partialSq  = 0.0;
-
             for (uint i = tid; i < dim; i += 256u) {
-                float v = isTxt ? inDataA[rowOff + i] : inDataB[rowOff + i];
-                partialSum += v;
-                partialSq  += v * v;
+                partialSum += isTxt ? inDataA[rowOff + i] : inDataB[rowOff + i];
             }
-
             s_scratch[tid] = partialSum;
             barrier();
             for (uint stride = 128u; stride > 0u; stride >>= 1u) {
@@ -11310,23 +11335,37 @@ internal static class Shaders
             float totalSum = s_scratch[0];
             barrier();
 
-            s_scratch[tid] = partialSq;
-            barrier();
-            for (uint stride = 128u; stride > 0u; stride >>= 1u) {
-                if (tid < stride) s_scratch[tid] += s_scratch[tid + stride];
-                barrier();
-            }
-            float totalSq = s_scratch[0];
-
             float invStd;
             float mean = 0.0;
             if (isRmsNorm != 0u) {
-                invStd = inversesqrt(totalSq / float(dim) + eps);
+                float partialSq = 0.0;
+                for (uint i = tid; i < dim; i += 256u) {
+                    float v = isTxt ? inDataA[rowOff + i] : inDataB[rowOff + i];
+                    partialSq += v * v;
+                }
+                s_scratch[tid] = partialSq;
+                barrier();
+                for (uint stride = 128u; stride > 0u; stride >>= 1u) {
+                    if (tid < stride) s_scratch[tid] += s_scratch[tid + stride];
+                    barrier();
+                }
+                invStd = inversesqrt(s_scratch[0] / float(dim) + eps);
             } else {
-                mean   = totalSum / float(dim);
-                float variance = totalSq / float(dim) - mean * mean;
-                invStd = inversesqrt(max(variance, 0.0) + eps);
+                mean = totalSum / float(dim);
+                float partialSqDev = 0.0;
+                for (uint i = tid; i < dim; i += 256u) {
+                    float d = (isTxt ? inDataA[rowOff + i] : inDataB[rowOff + i]) - mean;
+                    partialSqDev += d * d;
+                }
+                s_scratch[tid] = partialSqDev;
+                barrier();
+                for (uint stride = 128u; stride > 0u; stride >>= 1u) {
+                    if (tid < stride) s_scratch[tid] += s_scratch[tid + stride];
+                    barrier();
+                }
+                invStd = inversesqrt(max(s_scratch[0] / float(dim), 0.0) + eps);
             }
+            barrier();
 
             // ---- Apply norm + modulation ----
             for (uint i = tid; i < dim; i += 256u) {

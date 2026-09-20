@@ -757,6 +757,74 @@ the starting picture:
       candidates/experiments across op-level review, two bisections, and one infeasible confirming
       test) with a real, evidence-based (if not 100%-provable-on-this-hardware) conclusion, matching
       this doc's own "if stalled, document precisely and move on" discipline.
+  - **Same-day follow-up, 2026-09-20 — a real, decisive, GENUINE numerical bug found and fixed, but
+    confirmed NOT to be the dominant cause of this model's real-checkpoint divergence.** Prompted by
+    an external second-opinion review of this exact investigation (a ChatGPT critique of the
+    findings above, given the real code) that flagged one candidate never directly tested: whether
+    `Shaders.AdaLNModulate`'s `isRmsNorm: false` (affine-free LayerNorm) branch's numerical
+    REDUCTION implementation — not just its formula, already verified byte-for-byte identical to
+    CPU above — agrees with CPU at Qwen Image's real scale (dim=3072) and, critically, at the huge
+    activation magnitudes this investigation's own bisections measured (tens of millions to
+    billions).
+    - **New isolated test, `QwenImageAdaLnPrecisionTests.cs`**: compares CPU's
+      `DiffusionOps.LayerNormNoAffine` (SIMD-vectorized `TensorPrimitives.Sum`/`SumOfSquares`) against
+      the GPU shader's plain sequential per-element accumulation, both against a float64 ground-truth
+      reference computed independently in the test. Four cases: small-scale input (both already
+      known to agree, per `Flux2AdaLNModulateLayerNormGpuTests`), huge-magnitude (~3e7) input with
+      ORDINARY relative variance, and two "huge magnitude with TINY relative variance" cases (a huge
+      common per-row offset plus a comparatively tiny per-element perturbation) at two magnitude
+      scales (~3e7 and ~1e9, matching the bisection's own measured block-0 and block-59 activation
+      scales) — the specific shape that produces catastrophic cancellation in a running-sum
+      reduction.
+    - **Result, pre-fix**: ordinary-variance case: CPU/GPU agree to float32 noise (maxDiff 1.19e-7,
+      cosine 1.000000) — matches the existing small-scale test's own finding, nothing new. Both
+      tiny-variance cases: **CPU/GPU cosine collapses to 0.71-0.72, maxDiff ~1.22-1.26** (on a
+      unit-scale normalized output) — a large, real, previously-undetected divergence. **The
+      float64 arbiter proved which side was wrong**: CPU stayed close to the double-precision
+      reference (maxDiff ~0.015-0.019) while GPU diverged by ~1.25 — essentially as far from the
+      truth as the CPU/GPU difference itself. **Root cause, confirmed not guessed**: the GPU shader
+      computed `sum`/`mean` via a single running float32 accumulator over up to 3072 same-magnitude
+      terms; once that accumulator's own magnitude grows large (tens of billions for a 3072-element
+      row of ~1e9-magnitude values), individual terms round against it below the row's actual
+      variance, corrupting the mean and, downstream, every `x - mean` subtraction. This is the exact
+      same real mechanism the original investigation's "huge activation magnitude" observation and
+      "CPU/GPU disagree" observation had left unconnected.
+    - **Fixed**: rewrote `Shaders.AdaLNModulate`'s `isRmsNorm: false` branch to use Welford's online
+      mean/variance algorithm (never builds a large intermediate sum — `mean` tracks the running
+      per-element mean incrementally and stays close to the true value regardless of the row's
+      absolute magnitude). **Post-fix**: both tiny-variance cases improved from cosine 0.71-0.72 to
+      **0.999691-0.999729** (maxDiff 1.22-1.26 → 0.049-0.063) — a ~25x reduction in error, confirmed
+      by the same float64 arbiter. **Proactively also fixed the same bug class, found by inspection
+      while in this shader file, in `Shaders.AdaLNModulateDual`** (FLUX.2's fused dual-stream
+      variant) — that shader's `isRmsNorm: false` path used the textbook-unstable one-pass
+      `variance = E[x^2] - mean^2` formula, an even more direct form of the identical cancellation
+      risk (subtracting two similarly-huge float32 values to recover a small variance). Converted to
+      a genuine two-pass mean-then-variance using the shader's existing parallel tree reduction run
+      twice. Not covered by `QwenImageAdaLnPrecisionTests` (that shader isn't on Qwen Image's GPU
+      path), so unverified numerically pending a dedicated test, but the mechanism and fix are
+      identical to the proven case above. SPIR-V regenerated via `scripts/gen-spirv.ps1` (147
+      precompiled + 2 skipped, clean) for both changes.
+    - **Real end-to-end re-check on the actual checkpoint, post-fix — the honest, decisive negative
+      result**: re-ran `QwenImageGpuParityTests` (same real weights, same single forward call):
+      cosine 0.990109 → **0.990131**, maxDiff 0.217692 → **0.217700** — statistically unchanged.
+      Re-ran `QwenImageGpuBlockByBlockBisectTests` (same unit-Gaussian/timestep-500 input): first
+      divergence still at **block 29** (unchanged from the pre-fix run), cosine trajectory 0.998788
+      (block 30) down to 0.970822 (block 55), recovering to 0.999912 (block 59) — not directly
+      comparable block-by-block to the pre-fix run (whose exact intermediate values weren't recorded
+      beyond onset block and endpoints), but the overall divergence magnitude and onset point are
+      materially the same shape as before. **Conclusion: this was a real, now-fixed, genuinely
+      dangerous numerical bug in shared GPU infrastructure — worth having found and fixed on its own
+      merits — but it is NOT the dominant cause of Qwen Image's real-checkpoint GPU divergence.**
+      The real checkpoint's actual residual-stream rows evidently don't reach the specific
+      "huge-magnitude-with-abnormally-tiny-relative-variance" shape severely enough to be the primary
+      driver, even though they do reach huge absolute magnitude (confirming the earlier "ordinary
+      variance at huge magnitude" case, which was already known to be fine, is closer to Qwen
+      Image's actual real-data regime than the pathological case that WAS found and fixed).
+      **Real, narrower next step for whoever continues this**: the cross-injection technique this
+      same external review also proposed (feed an IDENTICAL captured CPU intermediate state into a
+      single isolated GPU block, rather than letting each backend run its own full trajectory from
+      the shared initial input) would isolate the true remaining cause more precisely than another
+      whole-model bisection — not yet implemented.
 - [ ] Real numerical parity test (GPU vs CPU forward, real weights) before any timing claim.
 - [ ] Real end-to-end Vulkan timing vs the existing 348.4s CPU baseline. Document in
       `PerformanceLeague.md`. No C++ reference exists for Qwen Image in `examples/` — note that
