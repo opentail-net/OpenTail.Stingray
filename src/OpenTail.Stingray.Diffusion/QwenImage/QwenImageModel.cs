@@ -19,6 +19,14 @@ public sealed class QwenImageModel : IDisposable
     private QwenImageGpuWeights? _residentGpuWeights;
     private QwenImageGpuWorkspace? _residentGpuWorkspace;
 
+    // Per-block diagnostic hooks (docs/094 Phase 2's GPU-bug bisection, 2026-09-20), same
+    // convention already proven in WanModel (OnBlockOutputCpu/OnBlockOutputGpu) -- lets a real test
+    // dump the [img] hidden state after each of the 60 blocks on both paths and diff them to find
+    // the FIRST divergence point, rather than guessing at op-level candidates (8 already ruled out
+    // that way for this exact bug, see docs/094).
+    public Action<int, float[]>? OnBlockOutputCpu { get; set; }
+    public Action<int, float[]>? OnBlockOutputGpu { get; set; }
+
     // RoPE cache (docs/094 FLUX.2 GPU optimization wave's cross-model caching survey, 2026-09-20):
     // Compute3DRoPE depends only on (numTxtTokens, patchH, patchW, HeadDim) -- fixed for the whole
     // generation -- but both Forward() and ForwardGpu() recomputed it via fresh trig evaluation on
@@ -241,6 +249,13 @@ public sealed class QwenImageModel : IDisposable
                 if (bw.TxtMlpDownBias is { } tmdb) imageOps.AddRowBroadcastInPlace(ws.TxtOut, tmdb, numTxtTokens, HiddenDim);
                 visionOps.ScaleGateAdd(cGpu, ws.TxtOut, ws.TxtMod, numTxtTokens, HiddenDim, gateOffset: 5 * HiddenDim);
                 imageOps.EndBatch();
+
+                if (OnBlockOutputGpu != null)
+                {
+                    var imgHost = new float[numImgTokens * HiddenDim];
+                    _backend.Download(xGpu, imgHost);
+                    OnBlockOutputGpu(b, imgHost);
+                }
             }
             batchSuccess = true;
 
@@ -346,6 +361,7 @@ public sealed class QwenImageModel : IDisposable
         {
             string p = $"transformer_blocks.{b}";
             (imgTokens, txtTokens) = TransformerBlock(p, imgTokens, txtTokens, tEmb, cos, sin, numImgTokens, numTxtTokens, modulateIndex);
+            OnBlockOutputCpu?.Invoke(b, imgTokens);
         }
 
         // 6. Final layer norm and projection -- real checkpoint key names are `norm_out.linear`
