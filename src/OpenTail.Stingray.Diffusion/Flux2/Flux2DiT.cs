@@ -22,6 +22,20 @@ public sealed class Flux2DiT : IDisposable
     private Flux2GpuWorkspace? _gpuWorkspace;
     private int _gpuWsNImg = -1, _gpuWsNTxt = -1;
 
+    // Text-conditioning cache (docs/094 FLUX.2 GPU optimization wave, 2026-09-20): txt_in's
+    // projection and the text-position RoPE tables depend ONLY on textEmbeds/textPositions --
+    // never on the evolving image latent or timestep -- but Forward() is called once per
+    // denoising step with the SAME textEmbeds/textPositions array references every time (the
+    // pipeline's Generate() loop computes them once, outside the step loop). Recomputing this
+    // CPU-side work from scratch on every step was pure, free waste, the same class of bug
+    // already found and fixed for FLUX.1/SD3.5's own text encoders and MMDiT's
+    // `_cachedContextGpu` pattern -- keyed by reference equality since these are the literal same
+    // array objects across the whole generation, not merely equal in content.
+    private float[]? _cachedTextEmbedsKey;
+    private int[]? _cachedTextPositionsKey;
+    private float[]? _cachedTxt;
+    private (float[] cos, float[] sin)? _cachedTxtRope;
+
     public Flux2Params Params => _p;
     public QuantizedWeightCache? WeightCache => _cache;
 
@@ -174,12 +188,37 @@ public sealed class Flux2DiT : IDisposable
         float[] img = _weights != null
             ? LinearNoBias("img_in.weight", targetLatent, nTarget, _p.InChannels, d)
             : ProjectTokens(targetLatent, nTarget, _p.InChannels, d);
-        float[] txt = _weights != null
-            ? LinearNoBias("txt_in.weight", textEmbeds, nTxt, _p.ContextInDim, d)
-            : ProjectTokens(textEmbeds, nTxt, _p.ContextInDim, d);
+
+        // Text-side caching: textEmbeds/textPositions are the same array objects on every step of
+        // one Generate() call (see this class's own field doc comment) -- skip redoing the
+        // projection/RoPE-table work if this is a repeat call with the same inputs.
+        // IMPORTANT: the double-block path (both CPU and GPU) mutates its own `txt` working array
+        // in place (residual adds; the GPU path even downloads the post-block result back into the
+        // same array reference passed in) -- so the CACHED value must never be handed out directly,
+        // only a fresh clone each call, or step 2 would silently see step 1's evolved post-block
+        // state instead of the true invariant pre-block projection.
+        float[] txt;
+        float[] txtCos, txtSin;
+        if (ReferenceEquals(_cachedTextEmbedsKey, textEmbeds) && ReferenceEquals(_cachedTextPositionsKey, textPositions))
+        {
+            txt = (float[])_cachedTxt!.Clone();
+            (txtCos, txtSin) = _cachedTxtRope!.Value;
+        }
+        else
+        {
+            var freshTxt = _weights != null
+                ? LinearNoBias("txt_in.weight", textEmbeds, nTxt, _p.ContextInDim, d)
+                : ProjectTokens(textEmbeds, nTxt, _p.ContextInDim, d);
+            (txtCos, txtSin) = Flux2RoPE.BuildContextFreqs(textPositions, nTxt, _p.AxesDim, _p.Theta);
+
+            _cachedTextEmbedsKey = textEmbeds;
+            _cachedTextPositionsKey = textPositions;
+            _cachedTxt = (float[])freshTxt.Clone();
+            _cachedTxtRope = (txtCos, txtSin);
+            txt = freshTxt;
+        }
 
         var (imgCos, imgSin) = Flux2RoPE.BuildContextFreqs(targetPositions, nTarget, _p.AxesDim, _p.Theta);
-        var (txtCos, txtSin) = Flux2RoPE.BuildContextFreqs(textPositions, nTxt, _p.AxesDim, _p.Theta);
 
         // Shared modulation -- computed ONCE from vec, reused identically by every double/single
         // block of that type (real finding, docs/087 -- NOT per-block AdaLN like FLUX.1).

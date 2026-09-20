@@ -359,6 +359,48 @@ the starting picture:
 
 ### Phase 3 — FLUX.2: extend GPU residency past the double-blocks, re-test at real resolution
 
+- [x] **User-provided optimization plan implemented and measured, 2026-09-20.** Three real changes,
+      two kept:
+  1. **Dual-stream `AdaLNModulateDual`/`ScaleGateAddDual` dispatch** (merge each block's separate
+     img/txt AdaLN-modulate and gated-residual pairs into one dispatch each, 19→15 dispatches/block).
+     The GLSL shaders + push-constant structs already existed with ZERO C# dispatch wiring
+     (`CS0649` unused-field build errors confirmed this) — wrote the actual `VulkanBackend` methods,
+     `IVisionOpsBackend` interface declarations, and `Flux2DiT.DoubleBlockGpu` call sites.
+     **KEPT — real, measured win**: isolated double-block benchmark 21,604ms → 21,131.5ms (~2.2%
+     faster). Parity unaffected (`Flux2DoubleBlockGpuParityTests`: cosine 0.9999706 img / 0.9999590
+     txt, identical to pre-change).
+  2. **FP16 attention for headDim=128** (mirrors the already-proven headDim=64 FP16 pattern; same
+     existing-shader-no-wiring situation). **REVERTED — real, measured regression**: two separate
+     clean benchmark runs (22,049.8ms, 22,195ms) both meaningfully worse than Improvement 1 alone
+     (21,131.5ms). Permanently disabled via `Fp16Attention128RegressedRealMeasurement = false` in
+     `VulkanBackend.cs` (a `static readonly`, not `const`, specifically to avoid the compiler's
+     `CS0162` unreachable-code error while keeping the dead branch's shader/pipeline field around for
+     a future attempt) — real doc comment at the call site explaining the numbers. Hypothesis: the 3
+     extra `CastF32ToF16` dispatches per attention call (24 total/pass) cost more in fixed
+     per-dispatch overhead than the halved Q/K/V bandwidth saves at FLUX.2's scale — this iGPU is
+     dispatch-overhead-bound here, not bandwidth-bound (directly confirmed, not assumed: this is the
+     same conclusion the plan's own background section's GEMM/attention percentage breakdown pointed
+     toward, now empirically validated by a real negative result rather than just theory).
+  3. **Text-conditioning cache** (found by direct code reading while answering an operator question
+     about caching opportunities, NOT part of the original plan): `Flux2DiT.Forward` was recomputing
+     `txt_in`'s projection AND the text RoPE tables from scratch on EVERY denoising step, despite
+     `textEmbeds`/`textPositions` being the same array objects for the whole `Generate()` call (only
+     the image latent evolves per step). Added a reference-keyed cache mirroring `MMDiTModel`'s
+     existing `_cachedContextGpu` pattern. **Real correctness subtlety caught before shipping**: the
+     double-block path (CPU and GPU) mutates its own `txt` working array in place (residual adds; the
+     GPU path downloads results back into the same reference) — the cache now always hands out a
+     fresh `Clone()`, never the shared array, or step 2 would silently see step 1's evolved
+     post-block state instead of the true invariant projection. **KEPT — real win, but only visible
+     in a real multi-step run** (the isolated double-block benchmark calls the block loop directly
+     with fixed inputs, bypassing `Forward`'s step-to-step caching entirely).
+  - **Real combined end-to-end result** (`Flux2GpuWiredEndToEndTests`, 128×128/4-step, real
+    Mistral-24B + DiT + VAE): **154.2s, down from the documented 167.8s baseline (-13.6s, ~8.1%
+    faster)**. Output re-verified visually correct (clean, coherent red apple, unchanged character
+    from the pre-change sample). `Flux2ConformanceTests` (6 tests, CPU path, shares `Forward`) all
+    still pass.
+  - Real, honest framing per this doc's "memory counts too" ground rule: this pass was purely a
+    wall-clock speed investigation, no memory measurement taken — a real gap for whoever revisits
+    this phase next.
 - [ ] The current GPU path only covers 8 double-blocks; 48 single-blocks + Mistral-24B text encoder +
       VAE are still CPU. Port `Flux2DiT`'s single-block loop to GPU residency using the same
       `Flux2GpuWeights`/`Flux2GpuWorkspace` infra, reusing the fused `Flux2QkvNormRope`/`SgemmSiluGate`

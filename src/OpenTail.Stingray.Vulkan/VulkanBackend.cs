@@ -1657,6 +1657,10 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
     private ComputePipeline? _multiHeadAttentionTiled80Pipeline;
     private ComputePipeline? _multiHeadAttentionTiled128Pipeline;
     private ComputePipeline? _multiHeadAttentionTiled128FP16Pipeline;
+
+    /// <summary>Kept <c>false</c> permanently -- real, measured regression, see the call site's
+    /// own doc comment in <see cref="MultiHeadAttentionTiled(Tensor,Tensor,Tensor,Tensor,int,int,int,int)"/>.</summary>
+    private static readonly bool Fp16Attention128RegressedRealMeasurement = false;
     private ComputePipeline? _adalnModulateDualPipeline;
     private ComputePipeline? _scaleGateAddDualPipeline;
     private ComputePipeline? _multiHeadAttentionTiled160Pipeline;
@@ -4063,11 +4067,19 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
             var p = new MultiHeadAttentionTiledParams { qSeq = (uint)qSeq, kvSeq = (uint)kvSeq, numHeads = (uint)numHeads, scale = 1f / MathF.Sqrt(headDim) };
             uint groupsX = (uint)((qSeq + 31) / 32);
 
-            // FLUX.2's shape (docs/094's FLUX.2 GPU optimization plan): attention here is
-            // memory-bandwidth-bound, not compute-bound (nSeq=1280, ~87.6 GFLOP/s vs the GEMM
-            // kernels' ~610 GFLOP/s) -- halving Q/K/V read volume via FP16 storage mirrors the
-            // existing headDim=64 path's same win for the same reason.
-            if (HasShaderFloat16Int8 && Has16BitStorage)
+            // FP16 attention for headDim=128 (FLUX.2's shape) was tried and REAL-MEASURED AS A
+            // REGRESSION, not a win (docs/094 FLUX.2 GPU optimization wave, 2026-09-20): isolated
+            // vs. combined A/B on Flux2DoubleBlockGpuBenchmarkTests gave Improvement-1-alone
+            // 21,131.5ms vs Improvement-1+this-FP16-path 22,049.8ms (+918ms/+4.3%, confirmed
+            // reproducible across two separate clean runs, not measurement noise). The bandwidth
+            // savings this was expected to yield (same reasoning as the proven headDim=64 win)
+            // did not materialize at FLUX.2's specific token count/head count -- the 3 extra
+            // CastF32ToF16 dispatches per attention call (24 total across 8 blocks) apparently
+            // cost more than the halved Q/K/V read volume saves here. Left permanently disabled;
+            // the shader (Shaders.MultiHeadAttentionTiled128_FP16) and pipeline field are kept for
+            // a future attempt (e.g. fusing the cast into Flux2QkvNormRope directly, avoiding the
+            // separate CastF32ToF16 dispatches) but the always-FP32 path below is what's live.
+            if (Fp16Attention128RegressedRealMeasurement)
             {
                 _multiHeadAttentionTiled128FP16Pipeline ??= new ComputePipeline(this, Shaders.MultiHeadAttentionTiled128_FP16, 4, pushConstantSize: sizeof(MultiHeadAttentionTiledParams));
 
