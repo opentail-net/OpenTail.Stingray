@@ -184,15 +184,23 @@ public sealed class QwenImageGpuWeights : IDisposable
     private static CoreTensor? UploadOptionalBias(IComputeBackend backend, float[]? bias)
         => bias is null ? null : backend.Upload(bias, TensorShape.D1(bias.Length), exact: true);
 
+    // TEMP experiment (docs/094 Phase 2, 2026-09-20): force FP32 weight upload to test whether
+    // FP16 storage precision is the real cause of the unresolved GPU parity/texture bug (two
+    // independent block-by-block bisections found the divergence onset shifts with input choice,
+    // pointing at FP16 rounding sensitivity rather than a fixed logic bug -- this is the confirming
+    // experiment, not yet run). Real cost if kept: ~2x GPU weight memory and likely slower Sgemm
+    // (this backend's fast paths are tuned for Fp16/Bf16).
+    private static readonly bool ForceFp32WeightsExperiment = true;
+
     private static CoreTensor UploadWeight(IComputeBackend backend, float[] f32Data, TensorShape shape)
     {
-        if (backend.BestSgemmPrecision == SgemmPrecision.Fp16)
+        if (!ForceFp32WeightsExperiment && backend.BestSgemmPrecision == SgemmPrecision.Fp16)
         {
             var half = new Half[f32Data.Length];
             for (int i = 0; i < f32Data.Length; i++) half[i] = (Half)f32Data[i];
             return backend.UploadHalf(half, shape);
         }
-        if (backend.BestSgemmPrecision == SgemmPrecision.Bf16)
+        if (!ForceFp32WeightsExperiment && backend.BestSgemmPrecision == SgemmPrecision.Bf16)
         {
             var bf16 = new ushort[f32Data.Length];
             for (int i = 0; i < f32Data.Length; i++)
