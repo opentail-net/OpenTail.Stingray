@@ -380,6 +380,16 @@ public sealed class QwenImageModel : IDisposable
     /// <see cref="RunSingleBlockGpuForTest"/> -- runs exactly one <see cref="TransformerBlock"/>
     /// call against an arbitrary injected (img, txt) state. Used as the CPU-side control/reference
     /// for the same cross-injection experiment.
+    ///
+    /// <para><b>WARNING, real trap found and fixed 2026-09-20 (docs/094 Phase 2 follow-up)</b>:
+    /// <see cref="TransformerBlock"/> mutates <paramref name="imgIn"/>/<paramref name="txtIn"/> IN
+    /// PLACE (it applies the residual directly onto the passed arrays and returns those SAME
+    /// references) -- calling this method turns your input arrays into the block's OUTPUT as a
+    /// side effect. If you need to reuse the same input elsewhere afterward (e.g. also feeding it to
+    /// <see cref="RunSingleBlockGpuForTest"/>), pass clones here, not the originals — a real bug in
+    /// an earlier version of <c>QwenImageBlock29Fp32IsolationTests</c> called this on the same
+    /// arrays it later fed to the GPU lanes, silently corrupting them and producing a large, entirely
+    /// spurious CPU-vs-GPU divergence that had nothing to do with the GPU at all.</para>
     /// </summary>
     public (float[] imgOut, float[] txtOut) RunSingleBlockCpuForTest(
         int blockIndex, float[] imgIn, float[] txtIn, float timestep, int patchH, int patchW)

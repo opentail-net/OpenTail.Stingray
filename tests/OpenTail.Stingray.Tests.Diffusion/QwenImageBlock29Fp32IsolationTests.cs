@@ -132,7 +132,20 @@ public sealed class QwenImageBlock29Fp32IsolationTests
         // single-block entry point, to confirm it reproduces the trajectory run's own real output
         // bit-for-bit (sanity check that isolation itself introduces no discrepancy before drawing
         // any GPU conclusion).
-        var (cpuIsoImg, cpuIsoTxt) = cpuModel.RunSingleBlockCpuForTest(BlockIndex, imgIntoBlock29, txtIntoBlock29, timestep, patchH, patchW);
+        //
+        // REAL BUG FOUND AND FIXED HERE, 2026-09-20 (docs/094 Phase 2 follow-up): this call used to
+        // pass imgIntoBlock29/txtIntoBlock29 DIRECTLY. QwenImageModel.TransformerBlock mutates its
+        // img/txt arguments IN PLACE (ApplyGatedResidual writes the residual directly into the
+        // passed array) and returns those SAME references -- so this "control" call was silently
+        // corrupting imgIntoBlock29/txtIntoBlock29 into block 29's OWN OUTPUT before the GPU lanes
+        // below ever saw them as input. Every GPU lane then computed block 29 on an
+        // already-post-block-29 state, producing a large, consistent (both lanes equally wrong, so
+        // FP32-vs-FP16 looked identical) but entirely spurious divergence that had nothing to do
+        // with the GPU. Caught via QwenImageBlock29ReproDiagnosticTests, which reproduced the SAME
+        // computation without this ordering bug and got a dramatically different (small-divergence)
+        // result. Fixed by passing CLONES to this CPU-only control call, leaving the originals
+        // intact for the GPU lanes.
+        var (cpuIsoImg, cpuIsoTxt) = cpuModel.RunSingleBlockCpuForTest(BlockIndex, (float[])imgIntoBlock29.Clone(), (float[])txtIntoBlock29.Clone(), timestep, patchH, patchW);
         double cpuSelfCos = CosineAndMaxDiff(cpuBlock29ImgOut!, cpuIsoImg, out double cpuSelfMaxDiff);
         Console.WriteLine($"[Block29Isolation] CPU isolation self-check: cosine={cpuSelfCos:F6} maxDiff={cpuSelfMaxDiff:E4} (should be ~exact)");
 

@@ -879,6 +879,62 @@ the starting picture:
       the online-softmax/tiled-accumulation algorithm itself is confirmed as the cause; if it agrees,
       the divergence is upstream of attention (Sgemm/QKNorm/RoPE) and those become the next
       candidates to isolate individually using the same block-29 harness now in place.
+  - **CORRECTION, same day, 2026-09-20 — a real bug in the ABOVE experiment's own test harness was
+    found and fixed; the "block 29's own computation is substantially wrong" conclusion is
+    RETRACTED.** Built a 6-block sweep (`QwenImageBlockSweepIsolationTests`: blocks 10, 20, 28, 29,
+    30, 50, all captured from one real CPU forward pass) to check whether block 29 was uniquely
+    anomalous versus every other block showing the same intrinsic divergence. **Result contradicted
+    the block-29 test above by ~30x**: block 29's own img cosine came out 0.999997 (maxDiff 2.36e5)
+    in the sweep — nearly identical to every other sampled block (0.999992-1.000000) — not the
+    0.968982/maxDiff-1.47e7 the dedicated block-29 test had found for the SAME block, SAME seed,
+    SAME frozen input.
+    - **Root-caused via a targeted repro test (`QwenImageBlock29ReproDiagnosticTests`)**: ran the
+      identical computation three ways (reused GPU instance called twice, brand-new instance for a
+      single call) in one process against the same CPU reference — all three gave the IDENTICAL,
+      fully deterministic 0.999997/2.36e5 result, ruling out GPU non-determinism, instance-reuse
+      state, and call-order as explanations. That meant the bug had to be in the original
+      `QwenImageBlock29Fp32IsolationTests` test's OWN code, not the GPU.
+    - **Actual bug, found by inspection once GPU non-determinism was ruled out**:
+      `QwenImageModel.TransformerBlock` mutates its `img`/`txt` array arguments IN PLACE
+      (`ApplyGatedResidual` writes the residual directly onto the passed arrays) and returns those
+      SAME references — a real, load-bearing implementation detail of the production `Forward` loop
+      (which reassigns `imgTokens = (...)` each iteration, so this is fine there), but a trap for any
+      caller that wants to reuse the same array afterward. The original test called a CPU-only
+      "self-check" control (`RunSingleBlockCpuForTest`) on `imgIntoBlock29`/`txtIntoBlock29` BEFORE
+      feeding those same arrays to the GPU lanes — silently turning the intended "input to block 29"
+      into "output of block 29" as a side effect, before the GPU ever saw it. Every GPU lane then
+      computed block 29 on an already-post-block-29 state, producing a large, spurious divergence
+      that had nothing to do with the GPU at all — and explaining every detail of the original wrong
+      result: both lanes were equally wrong (both fed the same corrupted input) and FP32 changed
+      nothing (the bug was never precision-related). **Fixed** by passing clones to the CPU-only
+      control call; documented the in-place-mutation trap directly on
+      `RunSingleBlockCpuForTest`'s doc comment so it isn't rediscovered the hard way again.
+      Re-ran the corrected test: Lane A (FP16) img cosine 0.999997/maxDiff 2.36e5, Lane B (FP32) img
+      cosine 0.999997/maxDiff 2.34e5 — matches the sweep exactly, confirming the fix.
+    - **What survives this correction and what doesn't**: the **FP16-weight-precision-is-not-the-
+      cause finding survives** (still ratio ≈1.00x on the corrected, valid baseline) — that
+      conclusion was never dependent on the buggy premise. What's **retracted**: "block 29's own
+      computation is substantially wrong given a correct input" and the reframing away from
+      cross-block compounding. **The evidence now points the other way**: every sampled block (10,
+      20, 28, 29, 30, 50), given a correct real input, shows only a SMALL, roughly uniform intrinsic
+      CPU/GPU divergence (cosine 0.999992-1.000000, relative L2 error 0.0003-0.004) — no block is
+      anomalous, block 29 is entirely typical. This means the whole-model bisection's "onset at block
+      29" was a threshold artifact of the cumulative trajectory (the point where compounding small
+      per-block differences first crossed the bisection's own 0.999-cosine flag threshold), not
+      evidence of a discrete bug anywhere. **The original "amplification of ordinary small numerical
+      differences over 60 layers" framing — this investigation's very first hypothesis, from before
+      any of this session's bisections — is now the best-supported explanation again**, this time
+      backed by direct per-block measurement rather than indirect reasoning about FP16 precision or
+      residual magnitude. **Real, honest state of the investigation**: the SOURCE of each block's
+      small (~0.0003-0.004 relative-L2) intrinsic divergence is still not pinned to one exact
+      operation — Sgemm's different reduction order vs CPU's fused Q4_K SIMD kernel, and the
+      attention kernel's online-softmax algorithm vs CPU's standard softmax, remain the two live
+      candidates (both structurally different in *implementation* even where formulas already match)
+      — but the search is no longer "find one bug that fully explains a large error," it's "identify
+      which small, likely-benign implementation difference(s) compound over 60 layers." Lane C
+      (CPU Q/K/V injected into GPU attention) remains a valid next experiment for isolating those two
+      remaining candidates from each other, just without the "block 29 is special" motivation that
+      originally justified it — any block would now serve equally well as the test subject.
 - [ ] Real numerical parity test (GPU vs CPU forward, real weights) before any timing claim.
 - [ ] Real end-to-end Vulkan timing vs the existing 348.4s CPU baseline. Document in
       `PerformanceLeague.md`. No C++ reference exists for Qwen Image in `examples/` — note that
