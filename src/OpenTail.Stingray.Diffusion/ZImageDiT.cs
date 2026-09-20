@@ -60,6 +60,28 @@ public sealed class ZImageDiT : IDisposable
     /// comment. Not a `const` so the branch stays reachable (avoids CS0162) while disabled.</summary>
     private static readonly bool ZImageGpuResidencyRealScaleBugFound = false;
 
+    // Per-block diagnostic hooks for the real-scale bug bisection (docs/094 Phase 7, 2026-09-20),
+    // same convention already proven for WanModel/QwenImageModel this session.
+    public Action<int, float[]>? OnMainBlockOutputCpu { get; set; }
+    public Action<int, float[]>? OnMainBlockOutputGpu { get; set; }
+
+    /// <summary>Test-only entry point running the real GPU-resident 30-block loop directly
+    /// (bypassing the disabled-by-default dispatch in <see cref="Forward"/>), for a real-scale
+    /// bisection against <see cref="RunMainLayersCpuForTest"/>.</summary>
+    public void RunMainLayersGpuForTest(IImageOpsBackend imageOps, float[] x, int nTok, float[] freqs, float[] adaln)
+        => RunMainLayersGpu(imageOps, x, nTok, freqs, adaln);
+
+    /// <summary>Test-only entry point running the real CPU 30-block loop directly, with per-block
+    /// capture, for a real-scale bisection against <see cref="RunMainLayersGpuForTest"/>.</summary>
+    public void RunMainLayersCpuForTest(float[] x, int nTok, float[] freqs, float[] adaln)
+    {
+        for (int l = 0; l < _p.NLayers; l++)
+        {
+            ApplyBlock($"layers.{l}", x, nTok, freqs, adaln, true);
+            OnMainBlockOutputCpu?.Invoke(l, (float[])x.Clone());
+        }
+    }
+
     /// <summary>Minimum batch size to route a MatQ call through the GPU backend.</summary>
     private const int MinGpuBatch = 16;
     private readonly QuantizedWeightCache _quantizedCache;
@@ -255,7 +277,15 @@ public sealed class ZImageDiT : IDisposable
         // across blocks (no per-block activation Upload/Download), not from command-buffer
         // batching, which is a separate, independent optimization this pass doesn't attempt.
         for (int l = 0; l < _p.NLayers; l++)
+        {
             ApplyBlockGpu(_residentGpuWeights.Layers[l], ws, nTok, adalnGpu, imageOps);
+            if (OnMainBlockOutputGpu != null)
+            {
+                var hostX = new float[nTok * dim];
+                _backend.Download(ws.X, hostX);
+                OnMainBlockOutputGpu(l, hostX);
+            }
+        }
 
         _backend.Download(ws.X, x);
     }

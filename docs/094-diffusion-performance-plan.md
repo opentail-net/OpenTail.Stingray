@@ -614,16 +614,32 @@ the starting picture:
     matching this whole session's own hard-won discipline from the Qwen Image/SD3.5 investigations.
     The naive/CPU fallback path is confirmed still reachable and unaffected (re-ran the same test
     with the flag off).
-  - **Real next step for whoever picks this up**: the bug is real-scale-specific, not caught by the
-    existing small synthetic test — the most direct next lever is extending `ZImageGpuParityTests`
-    itself to real production dimensions (dim=3840, nHeads=30, a realistic `t`) with REAL checkpoint
-    weights rather than synthetic ones, then applying the same per-block bisection technique already
-    proven for Qwen Image (`OnBlockOutputCpu`/`OnBlockOutputGpu` hooks, same convention) to find
-    where CPU and GPU diverge across the 30 real blocks. Given `ApplyBlockGpu`'s math already passed
-    a real (if small-scale) numeric check, this is far more likely a genuine shape/size-dependent
-    bug (e.g. a shader code path that only activates above some `nTok`/`nHeads` threshold) than a
-    fundamental logic error — a more tractable class of bug than SD3.5/Qwen Image's own unresolved
-    ones, given a real synthetic-scale baseline to compare against.
+  - **Real-scale, real-weight bisection built and run, 2026-09-20** (`ZImageGpuRealScaleBisectTests`,
+    `OnMainBlockOutputCpu`/`OnMainBlockOutputGpu` hooks added, real `z_image_turbo-Q4_0.gguf`
+    weights, real dim=3840/nHeads=30/headDim=128, nTok=320). **Real, decisive, different signature
+    from Qwen Image's own bisection**: divergence starts IMMEDIATELY at block 0 (cosine 0.988507,
+    already below the 0.999 threshold) and compounds steadily through all 30 blocks down to 0.497 by
+    block 29 — no multi-block "clean" prefix like Qwen Image had (which stayed >0.999 through block
+    10). An immediate, monotonically-compounding divergence from the very first block, with real
+    weights, is a different pattern from the input-dependent, delayed-onset signature that pointed
+    to precision sensitivity for Qwen Image — plausibly a real early divergence, though not
+    conclusively separable from FP16 weight-precision effects given ALL of this checkpoint's 30
+    layers are genuinely quantized (Q4_0), unlike the small-scale parity test's synthetic F32
+    weights, which never exercised any real dequant-to-FP16 round-trip at all.
+  - **Q4_0 dequant candidate directly tested and RULED OUT** (`ZImageQ4_0DequantCrossCheckTests`,
+    same cross-decoder-diff technique proven for Qwen Image's Q4_K/BF16 and SD3.5's Q5_K tensors):
+    `ReadF32`'s Q4_0 decode (what `ZImageGpuWeights` uses) vs `QuantizedWeightCache.Linear`'s fused
+    Q4_0 kernel (what CPU's real matmuls use) agree to **maxDiff ≈ 6e-8** — machine precision, a
+    clean negative result. Weight dequantization is not the cause.
+  - **Status: real, thorough investigation (2 real bisections at different scales + 1 dequant
+    cross-check), root cause not conclusively isolated to a single line of code.** Kept disabled.
+    Given the immediate-onset (not delayed) divergence pattern, the most promising REMAINING lever
+    for whoever picks this up next (not attempted this pass, given time already invested) is a
+    finer-grained bisection WITHIN block 0 itself (capture after each of `ApplyBlockGpu`'s named
+    sub-steps — modulation, attention, FFN — rather than only after the whole block) to localize
+    which specific operation inside the very first block already diverges, since the current
+    per-block-only granularity cannot distinguish "attention is slightly off" from "FFN is slightly
+    off" within block 0.
 - [ ] Real end-to-end Vulkan timing vs. the existing 183.6s baseline (256×256, 4 steps), once the
       residency port above lands.
 - [ ] No C++ reference exists for Z-Image in `examples/` — document that plainly rather than
