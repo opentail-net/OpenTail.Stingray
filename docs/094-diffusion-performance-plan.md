@@ -475,6 +475,61 @@ the starting picture:
     due to the separate, still-open composition bug). Both `README.md` and `PerformanceLeague.md`
     need their GPU row updated from 🔴 to match CPU's 🟡 status, sharing the same open blocker
     (composition/scale, not correctness/noise) as the next update to this doc.
+- [x] **Dispatch-orchestration perf pass, same-day follow-up, 2026-09-20 -- real, verified, but a
+    negative result on the actual bottleneck.** User observed sparse, far-apart GPU activity
+    "blips" on a live utilization graph while a real generation ran -- a real, concrete lead.
+    Compared against the real C++ reference's Vulkan backend (`examples/ggml/src/ggml-vulkan/
+    ggml-vulkan.cpp`, vendored in this repo): ggml (1) computes conditioning ONCE before its
+    sampling loop and never mutates it in place (every graph op produces a fresh output tensor,
+    unlike this codebase's in-place GPU ops), and (2) tracks per-buffer `need_sync` flags to skip
+    barriers between dispatches that don't actually share a buffer, rather than this codebase's
+    `DispatchOrRecord`'s unconditional barrier-after-every-dispatch. Two real, verified changes
+    made from this comparison:
+  - (1) `Sd3Pipeline.Generate` no longer uses `Parallel.Invoke` for cond/uncond CFG passes on GPU
+    (`MMDiTModel.Forward` locks `this` for the whole call, so the parallel dispatch bought zero
+    real overlap, only ThreadPool/lock-contention overhead) -- kept for CPU, where it's a real win.
+  - (2) x_embedder/t_embedder/y_embedder now run GPU-resident, batched with the 24-block loop,
+    instead of via the CPU-array `Lin()` helper (Upload+Sgemm+Download, 18 separate submit+
+    fence-wait cycles per `Forward()` call). Added the missing GPU weight uploads
+    (`MMDiTGpuWeights.TEmbedder0/2Weight`/`YEmbedder0/2Weight`), a new plain-SiLU GPU shader
+    (`Shaders.VisionSilu`, real SPIR-V regenerated via `scripts/gen-spirv.ps1`), and a GPU
+    cropped-pos_embed cache mirroring the existing clean-context-cache pattern. Hit and fixed a
+    real bug along the way: `Upload()` does its own internal GPU submit, illegal to call from
+    inside an already-active `BeginBatch()` recording session (`VkException: ErrorUnknown`) --
+    fixed by pre-populating both GPU caches (context, pos_embed) BEFORE `BeginBatch()`, only ever
+    reading from them inside the batch.
+  - **Verified via the full test battery**: `TestSd35GpuVsCpuParity` unchanged (cosine 1.000000,
+    maxDiff ~0.0009), `Sd3PerStepTrajectoryParityTests`'s 6-step divergence numbers unchanged
+    within floating-point noise (~0.003→~0.014, same shape as the already-fixed baseline), all 6
+    isolated SD3.5 correctness tests pass, real end-to-end image re-generated and visually
+    confirmed identical to the pre-change output.
+  - **Real, measured result (`STINGRAY_PROFILE_GPU_SPLIT=1`, new `Sd3GpuProfileTests.cs`
+    harness)**: dispatch count **1294 → 898 (-31%)**, staging-copy overhead **376ms → 31ms**
+    (near-eliminated) -- but total submit+fence-wait time **UNCHANGED (110.0s → 110.1s)**, and
+    total generation time unchanged (120.0-120.5s either way, profiling instrumentation overhead
+    aside). **This is a real, decisive, negative result on the actual bottleneck**: dispatch-count/
+    orchestration overhead was never SD3.5's problem. This independently reproduces the exact
+    conclusion a 2026-09-13 investigation already reached for FLUX.1 on this SAME hardware
+    (`docs/069-flux-vulkan-gemm-perf-handoff.md`): ~91% of DiT-loop time is genuine
+    `vkQueueSubmit`+GPU-execute+`vkWaitForFences`, and even a pathological per-dispatch barrier/
+    recording overhead estimate is nowhere near large enough to explain gaps of this size (that
+    doc's own math: 1ms × 1027 dispatches ≈ 1s, against a many-hundred-second gap).
+  - **Real, corrected next step**: the remaining ~2.5× gap to the C++ reference (120s vs 48.0s)
+    is GEMM kernel compute efficiency, not submit/dispatch orchestration -- confirmed not assumed.
+    That FLUX handoff's own prescribed methodology (not yet attempted for SD3.5 or re-attempted
+    for FLUX) is the real next step for whoever picks this up: (1) a per-dispatch, per-shader-type
+    GPU timing breakdown using real Vulkan timestamp queries (`vkCmdWriteTimestamp`), not just
+    submit-to-fence wall-clock: (2) a standalone GEMM microbenchmark at SD3.5's REAL matrix shapes
+    (`d=1536`, `d*3`/`d*4`/`d*6`/`d*9` -- see `MMDiTGpuWeights.cs` for exact shapes) to measure
+    real GFLOP/s in isolation; (3) confirming what SPIR-V the FP16-storage `SgemmF16` shader
+    actually compiles to (packed FP16 arithmetic vs. fp16-load-then-fp32-convert with no real
+    throughput benefit); (4) checking what ggml's OWN runtime-selected shader variant/subgroup
+    strategy is for this exact AMD Cezanne-family iGPU, not just reading its C++ source. Changing
+    tile sizes or workgroup shapes blind, before doing 1-3, is explicitly flagged (by both that
+    handoff and this one) as a likely wasted iteration.
+  - **New file**: `tests/OpenTail.Stingray.Tests.Diffusion/Sd3GpuProfileTests.cs` (real
+    `STINGRAY_PROFILE_GPU_SPLIT`-based profiling harness for SD3.5, previously only wired for FLUX
+    in the CLI).
 
 ### Phase 2 — Qwen Image: first GPU port (biggest true gap — zero GPU code exists)
 
