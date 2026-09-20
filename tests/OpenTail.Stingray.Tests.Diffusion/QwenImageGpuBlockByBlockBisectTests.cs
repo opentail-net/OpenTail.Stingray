@@ -42,7 +42,7 @@ public sealed class QwenImageGpuBlockByBlockBisectTests
         string? modelPath = FindModelPath("qwen-image-Q3_K_S.gguf");
         if (modelPath is null)
         {
-            _output.WriteLine("[QwenImageGpuBlockByBlockBisectTests] Checkpoint missing, skipping.");
+            _output.WriteLine("[QwenImageGpuBlockByBlockBisectTests] Checkpoint missing, skipping."); Console.WriteLine("[QwenImageGpuBlockByBlockBisectTests] Checkpoint missing, skipping.");
             return;
         }
 
@@ -66,10 +66,10 @@ public sealed class QwenImageGpuBlockByBlockBisectTests
         cpuModel.OnBlockOutputCpu = (b, data) => cpuBlocks[b] = (float[])data.Clone();
         gpuModel.OnBlockOutputGpu = (b, data) => gpuBlocks[b] = (float[])data.Clone();
 
-        _output.WriteLine("[Bisect] Running CPU forward with per-block capture...");
+        _output.WriteLine("[Bisect] Running CPU forward with per-block capture..."); Console.WriteLine("[Bisect] Running CPU forward with per-block capture...");
         cpuModel.Forward(latent, 1000f, textContext, latH, latW);
 
-        _output.WriteLine("[Bisect] Running GPU forward with per-block capture...");
+        _output.WriteLine("[Bisect] Running GPU forward with per-block capture..."); Console.WriteLine("[Bisect] Running GPU forward with per-block capture...");
         gpuModel.Forward(latent, 1000f, textContext, latH, latW);
 
         Assert.True(cpuBlocks.Count > 0, "CPU per-block hook never fired");
@@ -80,7 +80,7 @@ public sealed class QwenImageGpuBlockByBlockBisectTests
         {
             if (!cpuBlocks.TryGetValue(b, out var cpuOut) || !gpuBlocks.TryGetValue(b, out var gpuOut))
             {
-                _output.WriteLine($"[Bisect] Block {b}: missing capture on one side, skipping");
+                _output.WriteLine($"[Bisect] Block {b}: missing capture on one side, skipping"); Console.WriteLine($"[Bisect] Block {b}: missing capture on one side, skipping");
                 continue;
             }
 
@@ -96,6 +96,17 @@ public sealed class QwenImageGpuBlockByBlockBisectTests
             }
             double cosSim = dot / (Math.Sqrt(normA) * Math.Sqrt(normB));
 
+            bool cpuHasNonFinite = Array.Exists(cpuOut, v => !float.IsFinite(v));
+            bool gpuHasNonFinite = Array.Exists(gpuOut, v => !float.IsFinite(v));
+            float cpuMaxAbs = 0, gpuMaxAbs = 0;
+            foreach (var v in cpuOut) { if (float.IsFinite(v) && MathF.Abs(v) > cpuMaxAbs) cpuMaxAbs = MathF.Abs(v); }
+            foreach (var v in gpuOut) { if (float.IsFinite(v) && MathF.Abs(v) > gpuMaxAbs) gpuMaxAbs = MathF.Abs(v); }
+            if (cpuHasNonFinite || gpuHasNonFinite || cpuMaxAbs > 60000 || gpuMaxAbs > 60000)
+            {
+                string m = $"[Bisect] Block {b}: NaN/Inf check -- cpuNonFinite={cpuHasNonFinite} gpuNonFinite={gpuHasNonFinite} cpuMaxAbs={cpuMaxAbs:E3} gpuMaxAbs={gpuMaxAbs:E3}";
+                _output.WriteLine(m); Console.WriteLine(m);
+            }
+
             string flag = "";
             if (cosSim < 0.999 && firstDivergent < 0)
             {
@@ -107,17 +118,17 @@ public sealed class QwenImageGpuBlockByBlockBisectTests
             // 60 blocks.
             if (b % 5 == 0 || b == cpuModel.NumLayers - 1 || flag.Length > 0)
             {
-                _output.WriteLine($"[Bisect] Block {b}: cosine={cosSim:F6} maxDiff={maxDiff:E4}{flag}");
+                _output.WriteLine($"[Bisect] Block {b}: cosine={cosSim:F6} maxDiff={maxDiff:E4}{flag}"); Console.WriteLine($"[Bisect] Block {b}: cosine={cosSim:F6} maxDiff={maxDiff:E4}{flag}");
             }
         }
 
         if (firstDivergent < 0)
         {
-            _output.WriteLine("[Bisect] No block crossed the 0.999 cosine threshold -- divergence (if any) accumulates gradually rather than starting at one identifiable block.");
+            _output.WriteLine("[Bisect] No block crossed the 0.999 cosine threshold -- divergence (if any) accumulates gradually rather than starting at one identifiable block."); Console.WriteLine("[Bisect] No block crossed the 0.999 cosine threshold -- divergence (if any) accumulates gradually rather than starting at one identifiable block.");
         }
         else
         {
-            _output.WriteLine($"[Bisect] CONCLUSION: first meaningful divergence at block {firstDivergent} of {cpuModel.NumLayers}.");
+            _output.WriteLine($"[Bisect] CONCLUSION: first meaningful divergence at block {firstDivergent} of {cpuModel.NumLayers}."); Console.WriteLine($"[Bisect] CONCLUSION: first meaningful divergence at block {firstDivergent} of {cpuModel.NumLayers}.");
         }
     }
 }
