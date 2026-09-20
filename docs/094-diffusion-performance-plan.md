@@ -551,10 +551,39 @@ the starting picture:
 
 ### Phase 7 — Z-Image-Turbo: apply the proven GPU-residency playbook (currently barely faster than CPU)
 
-- [ ] Port `ZImageDiT`'s per-op GPU calls (`ZImageGpuWeights.cs`/`ZImageGpuWorkspace.cs` already exist
-      — check whether they already do residency or are per-op like FLUX.1 was before its 2026-09-13
-      residency work) to the Upload-once/resident-chain pattern.
-- [ ] Real end-to-end Vulkan timing vs. the existing 183.6s baseline (256×256, 4 steps).
+- [x] **Checked, 2026-09-20**: `ZImageDiT.cs` genuinely still uses the OLD naive per-op immediate-
+      dispatch pattern — confirmed by direct code inspection, not assumed. Its generic Linear-style
+      GPU helper does its OWN `Upload(activation)` → `Sgemm`/matmul → `Download(result)` round-trip
+      on EVERY SINGLE call (12 distinct `Upload`/`Download` call sites in the file, each invoked
+      once per linear layer per block per denoising step) — zero chaining, zero activation
+      residency between ops. Weight caching DOES exist (`_gpuWeights`/`_gpuWeightsBf16`/
+      `_gpuWeightsFp16`/`_gpuWeightsFp8` dictionaries, keyed by tensor name, populated once and
+      reused) — so this is a partial-residency state (weights cached, activations are not), not a
+      complete absence of any caching. The file's own doc comment even names this as "the same
+      accepted tradeoff F5's own ForwardGpu made for its own per-block modulation" — a known,
+      deliberate (if suboptimal) choice at the time, not an oversight nobody noticed. **This is
+      real, confirmed room to apply the proven residency playbook** (the exact class of fix that
+      took SDXL 137s→77s, FLUX.1 858s→297s, and gave Wan its own multi-x wins) — matches this
+      phase's own prediction exactly.
+  - **Real, honest scoping**: a full `ZImageGpuWorkspace`-based `ForwardGpu` residency rewrite
+    (mirroring the exact recipe already used for `Flux2DiT`/`QwenImageModel`/`MMDiTModel`: allocate
+    all per-block activation buffers once, chain every op via resident GPU tensors, download only
+    the final result) is comparable in size to this session's own Qwen Image GPU port — a genuinely
+    large, multi-hour undertaking, not a quick patch. **Real, decisive advantage over Qwen
+    Image/SD3.5's own GPU work**: Z-Image already has a verified-correct, known-good CPU AND GPU
+    output on record (the 2026-09-12 sign-convention fix produced matching coherent apple images on
+    both backends) — so any residency change here can be checked against a real, trusted baseline
+    immediately via visual + numeric parity, unlike the two bugs above that had nothing solid to
+    diff against. This makes it a genuinely safer, more tractable next big undertaking than either
+    of those, matching the user's own "real opportunity vs. dead end" framing.
+  - **Not started this pass** (scoping only, given the size) — real next step for whoever picks this
+    up: build `ZImageGpuWorkspace` following `Flux2GpuWorkspace`'s exact structural template
+    (allocate NormedX/QKV/AttnOut/MlpBuf/Mod buffers once per shape, not per-call), rewrite the
+    block loop to chain through resident tensors, verify with a real GPU-vs-CPU parity test FIRST
+    (matching this whole doc's own discipline) before touching any timing claim, then measure
+    real before/after against the existing 183.6s Vulkan / ~194-232s CPU baseline.
+- [ ] Real end-to-end Vulkan timing vs. the existing 183.6s baseline (256×256, 4 steps), once the
+      residency port above lands.
 - [ ] No C++ reference exists for Z-Image in `examples/` — document that plainly rather than
       fabricating one.
 
