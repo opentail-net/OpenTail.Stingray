@@ -26,6 +26,23 @@ public sealed class MMDiTGpuWeights : IDisposable
     public CoreTensor FinalLinearWeight { get; }
     public CoreTensor FinalLinearBias { get; }
 
+    /// <summary>Timestep/pooled-Y embedder weights (2026-09-20 perf pass, docs/094 Phase 1):
+    /// previously not GPU-resident at all -- `ForwardGpu` computed these via the CPU-path `Lin()`
+    /// helper (Upload+Sgemm+Download, 3 separate submit+fence-wait cycles per call, 4 calls total)
+    /// even when running on a Vulkan backend, then re-uploaded the CPU result back to GPU as
+    /// `tVecGpu`. Real `STINGRAY_PROFILE_GPU_SPLIT=1` profiling found this and `x_embedder`'s own
+    /// analogous CPU round-trip together account for roughly half of a real generation's ~1300
+    /// total submit+fence-wait cycles. Loading these here lets `ForwardGpu` compute the whole
+    /// timestep/pooled-Y embedding GPU-resident, batched with everything else.</summary>
+    public CoreTensor TEmbedder0Weight { get; }
+    public CoreTensor? TEmbedder0Bias { get; }
+    public CoreTensor TEmbedder2Weight { get; }
+    public CoreTensor? TEmbedder2Bias { get; }
+    public CoreTensor YEmbedder0Weight { get; }
+    public CoreTensor? YEmbedder0Bias { get; }
+    public CoreTensor YEmbedder2Weight { get; }
+    public CoreTensor? YEmbedder2Bias { get; }
+
     public sealed class JointBlockGpuWeights : IDisposable
     {
         private readonly IComputeBackend _backend;
@@ -214,7 +231,8 @@ public sealed class MMDiTGpuWeights : IDisposable
         int inChannels,
         int outChannels,
         int patchSize,
-        int contextSize)
+        int contextSize,
+        int admInChannels)
     {
         _backend = backend;
         int d = hiddenSize;
@@ -228,6 +246,22 @@ public sealed class MMDiTGpuWeights : IDisposable
         ContextEmbedderWeight = UploadWeight(backend, getWeight("context_embedder.weight"), TensorShape.D2(d, contextSize));
         var ctxEmbB = tryGetWeight("context_embedder.bias");
         if (ctxEmbB is not null) ContextEmbedderBias = backend.Upload(ctxEmbB, TensorShape.D1(d), exact: true);
+
+        // t_embedder: Fourier(timestep) [256] -> [d] -> SiLU -> [d]
+        TEmbedder0Weight = UploadWeight(backend, getWeight("t_embedder.mlp.0.weight"), TensorShape.D2(d, 256));
+        var tEmb0B = tryGetWeight("t_embedder.mlp.0.bias");
+        if (tEmb0B is not null) TEmbedder0Bias = backend.Upload(tEmb0B, TensorShape.D1(d), exact: true);
+        TEmbedder2Weight = UploadWeight(backend, getWeight("t_embedder.mlp.2.weight"), TensorShape.D2(d, d));
+        var tEmb2B = tryGetWeight("t_embedder.mlp.2.bias");
+        if (tEmb2B is not null) TEmbedder2Bias = backend.Upload(tEmb2B, TensorShape.D1(d), exact: true);
+
+        // y_embedder: pooledY [admInChannels] -> [d] -> SiLU -> [d]
+        YEmbedder0Weight = UploadWeight(backend, getWeight("y_embedder.mlp.0.weight"), TensorShape.D2(d, admInChannels));
+        var yEmb0B = tryGetWeight("y_embedder.mlp.0.bias");
+        if (yEmb0B is not null) YEmbedder0Bias = backend.Upload(yEmb0B, TensorShape.D1(d), exact: true);
+        YEmbedder2Weight = UploadWeight(backend, getWeight("y_embedder.mlp.2.weight"), TensorShape.D2(d, d));
+        var yEmb2B = tryGetWeight("y_embedder.mlp.2.bias");
+        if (yEmb2B is not null) YEmbedder2Bias = backend.Upload(yEmb2B, TensorShape.D1(d), exact: true);
 
         JointBlocks = new JointBlockGpuWeights[depth];
         for (int i = 0; i < depth; i++)
@@ -278,6 +312,15 @@ public sealed class MMDiTGpuWeights : IDisposable
         if (XEmbedderBias is not null) _backend.Free(XEmbedderBias);
         _backend.Free(ContextEmbedderWeight);
         if (ContextEmbedderBias is not null) _backend.Free(ContextEmbedderBias);
+
+        _backend.Free(TEmbedder0Weight);
+        if (TEmbedder0Bias is not null) _backend.Free(TEmbedder0Bias);
+        _backend.Free(TEmbedder2Weight);
+        if (TEmbedder2Bias is not null) _backend.Free(TEmbedder2Bias);
+        _backend.Free(YEmbedder0Weight);
+        if (YEmbedder0Bias is not null) _backend.Free(YEmbedder0Bias);
+        _backend.Free(YEmbedder2Weight);
+        if (YEmbedder2Bias is not null) _backend.Free(YEmbedder2Bias);
 
         for (int i = 0; i < JointBlocks.Length; i++)
             JointBlocks[i]?.Dispose();

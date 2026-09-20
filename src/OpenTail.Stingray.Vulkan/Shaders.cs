@@ -10180,6 +10180,28 @@ internal static class Shaders
         }
         """;
 
+    /// <summary>Plain (non-gated) in-place SiLU: x = x * sigmoid(x). Added 2026-09-20 (docs/094
+    /// Phase 1 perf pass) for SD3.5's t_embedder/y_embedder GPU-resident path -- distinct from
+    /// <see cref="Shaders.SiluGateMul"/>, which is the SwiGLU-style gated variant used elsewhere
+    /// and expects a `[nTokens, 2*mlpHidden]` gate+value input, not a plain elementwise buffer.</summary>
+    internal const string VisionSilu = """
+        #version 450
+        layout(local_size_x = 256) in;
+
+        layout(binding = 0) buffer Data { float data[]; };
+
+        layout(push_constant) uniform Params {
+            uint n;
+        };
+
+        void main() {
+            uint idx = gl_GlobalInvocationID.x;
+            if (idx >= n) return;
+            float v = data[idx];
+            data[idx] = v / (1.0 + exp(-v));
+        }
+        """;
+
     internal const string VisionGelu = """
         #version 450
         layout(local_size_x = 256) in;

@@ -1677,6 +1677,7 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
     private ComputePipeline? _visionContinuousRopePipeline;
     private ComputePipeline? _visionLayerNormPipeline;
     private ComputePipeline? _visionGeluPipeline;
+    private ComputePipeline? _visionSiluPipeline;
     private ComputePipeline? _visionQuickGeluPipeline;
     private ComputePipeline? _visionSquaredReluPipeline;
     private ComputePipeline? _adalnModulatePipeline;
@@ -4259,6 +4260,17 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
         var p = new VisionActParams { n = (uint)n };
         uint groups = ((uint)n + 255u) / 256u;
         DispatchOrRecord(_visionGeluPipeline, [GetBuffer(x)], groups, &p);
+    }
+
+    /// <summary>Plain (non-gated) in-place SiLU: x = x * sigmoid(x). See <see cref="Shaders.VisionSilu"/>'s
+    /// own doc comment for why this is separate from the SwiGLU-gated <see cref="SiluGateMul"/>.</summary>
+    public void VisionSiluInPlace(Tensor x)
+    {
+        int n = (int)x.ElementCount;
+        _visionSiluPipeline ??= new ComputePipeline(this, Shaders.VisionSilu, 1, pushConstantSize: sizeof(VisionActParams));
+        var p = new VisionActParams { n = (uint)n };
+        uint groups = ((uint)n + 255u) / 256u;
+        DispatchOrRecord(_visionSiluPipeline, [GetBuffer(x)], groups, &p);
     }
 
     public void VisionQuickGeluInPlace(Tensor x)

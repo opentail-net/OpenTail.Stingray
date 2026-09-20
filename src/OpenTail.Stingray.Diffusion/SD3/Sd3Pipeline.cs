@@ -223,12 +223,30 @@ public sealed class Sd3Pipeline : IDisposable, IDiffusionPipeline
             float t = 1.0f - step * dt;
             float timestep = t * 1000.0f; // Scale to 0..1000 for Fourier embedding
 
-            float[] condPred = null!;
-            float[] uncondPred = null!;
-            Parallel.Invoke(
-                () => condPred = _mmdit.Forward(x, timestep, condContext, condPooledY, latH, latW, numTextTokens),
-                () => uncondPred = _mmdit.Forward(x, timestep, uncondContext, uncondPooledY, latH, latW, numTextTokens)
-            );
+            float[] condPred;
+            float[] uncondPred;
+            // GPU: `MMDiTModel.Forward` locks `this` for the whole call (one Vulkan context can't
+            // run two forward passes concurrently), so `Parallel.Invoke` buys zero real overlap
+            // here -- it's already fully serialized by that lock -- while still paying real
+            // ThreadPool scheduling and lock-contention overhead between the two calls, a plausible
+            // contributor to the "far-apart GPU activity" gaps observed on a live utilization graph
+            // (2026-09-20 perf pass, docs/094 Phase 1). CPU: the two forward passes are genuinely
+            // independent CPU-bound work, so Parallel.Invoke is a real, kept win there.
+            if (_mmdit.IsGpuBacked)
+            {
+                condPred = _mmdit.Forward(x, timestep, condContext, condPooledY, latH, latW, numTextTokens);
+                uncondPred = _mmdit.Forward(x, timestep, uncondContext, uncondPooledY, latH, latW, numTextTokens);
+            }
+            else
+            {
+                float[] cp = null!, up = null!;
+                Parallel.Invoke(
+                    () => cp = _mmdit.Forward(x, timestep, condContext, condPooledY, latH, latW, numTextTokens),
+                    () => up = _mmdit.Forward(x, timestep, uncondContext, uncondPooledY, latH, latW, numTextTokens)
+                );
+                condPred = cp;
+                uncondPred = up;
+            }
 
             // CFG Combination
             for (int i = 0; i < x.Length; i++)

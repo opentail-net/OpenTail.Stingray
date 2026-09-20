@@ -34,6 +34,13 @@ public interface IVisionOpsBackend : IComputeBackend
     void VisionGeluInPlace(Tensor x);
 
     /// <summary>
+    /// Plain (non-gated) SiLU activation in-place: x = x * sigmoid(x). Default throws --
+    /// only implemented on Vulkan as of 2026-09-20 (SD3.5's GPU-resident t_embedder/y_embedder
+    /// path, docs/094 Phase 1); add a real CUDA kernel here if/when a CUDA caller needs it.
+    /// </summary>
+    void VisionSiluInPlace(Tensor x) => throw new NotSupportedException("VisionSiluInPlace is not implemented on this backend.");
+
+    /// <summary>
     /// Vision QuickGELU activation in-place (x * sigmoid(1.702 * x)).
     /// </summary>
     void VisionQuickGeluInPlace(Tensor x);

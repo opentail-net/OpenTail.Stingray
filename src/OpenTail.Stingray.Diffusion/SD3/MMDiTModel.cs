@@ -37,6 +37,13 @@ public sealed class MMDiTModel : IDisposable
     /// </summary>
     private readonly Dictionary<float[], CoreTensor> _cachedCleanContextGpu = new(ReferenceEqualityComparer.Instance);
 
+    /// <summary>Cached CLEAN (never mutated) cropped positional-embedding slice, GPU-resident, keyed
+    /// by (imgH, imgW) -- same safety pattern as `_cachedCleanContextGpu`. A real generation always
+    /// uses one fixed image size across all its denoising steps, so this is computed (a cheap
+    /// `Span`-level crop of the CPU-resident `_posEmbed`, never the full 432MB tensor) and uploaded
+    /// once, then reused via `AddInPlace` every call. 2026-09-20 perf pass, docs/094 Phase 1.</summary>
+    private readonly Dictionary<(int, int), CoreTensor> _cachedCroppedPosEmbedGpu = new();
+
     /// <summary>
     /// Diagnostic-only early-exit (2026-09-20 GPU bisection): when set (0-based, inclusive), both
     /// <see cref="Forward"/> and <see cref="ForwardGpu"/> stop running joint blocks after this index
@@ -68,6 +75,14 @@ public sealed class MMDiTModel : IDisposable
     public float[]? DiagnosticQOut;
     public float[]? DiagnosticKOut;
     public float[]? DiagnosticAttnOut;
+
+    /// <summary>True when this model runs on a GPU backend. `Forward` locks `this` for the whole
+    /// GPU call (a single Vulkan context can't run two forward passes concurrently), so callers
+    /// doing cond/uncond CFG passes should call sequentially rather than via `Parallel.Invoke` when
+    /// this is true -- the parallel dispatch buys nothing (still fully serialized by the lock) and
+    /// only adds thread-pool scheduling/lock-contention overhead on top (2026-09-20 perf pass,
+    /// docs/094 Phase 1).</summary>
+    public bool IsGpuBacked => _backend is not null;
 
     public int HiddenSize { get; }
     public int NumHeads { get; }
@@ -144,6 +159,45 @@ public sealed class MMDiTModel : IDisposable
                     TensorPrimitives.Add(dst, src, dst);
                 }
             }
+        }
+    }
+
+    /// <summary>GPU-resident equivalent of <see cref="AddCroppedPosEmbed"/>: returns a cached,
+    /// device-resident, CLEAN (never mutated) cropped [numImgTokens, HiddenSize] tensor, uploaded
+    /// once per unique (imgH, imgW) via a real CPU-side crop of `_posEmbed` (not the full 432MB
+    /// tensor). Caller adds it via `AddInPlace`, batched with the rest of `ForwardGpu`.</summary>
+    private unsafe CoreTensor GetCroppedPosEmbedGpu(int numImgTokens, int imgH, int imgW)
+    {
+        lock (_cachedCroppedPosEmbedGpu)
+        {
+            var key = (imgH, imgW);
+            if (_cachedCroppedPosEmbedGpu.TryGetValue(key, out var cached)) return cached;
+
+            if (_posEmbed is null)
+            {
+                _posEmbed = GetWeight("pos_embed");
+                _posEmbedMaxSize = (int)Math.Round(Math.Sqrt(_posEmbed.Length / (double)HiddenSize));
+            }
+
+            int top = (_posEmbedMaxSize - imgH) / 2;
+            int left = (_posEmbedMaxSize - imgW) / 2;
+
+            var cropped = new float[numImgTokens * HiddenSize];
+            fixed (float* cp = cropped, pep = _posEmbed)
+            {
+                for (int py = 0; py < imgH; py++)
+                for (int px = 0; px < imgW; px++)
+                {
+                    int tokenIdx = py * imgW + px;
+                    int gridIdx = (top + py) * _posEmbedMaxSize + (left + px);
+                    new ReadOnlySpan<float>(pep + (long)gridIdx * HiddenSize, HiddenSize)
+                        .CopyTo(new Span<float>(cp + (long)tokenIdx * HiddenSize, HiddenSize));
+                }
+            }
+
+            var gpu = _backend!.Upload(cropped.AsSpan(), TensorShape.D2(numImgTokens, HiddenSize), exact: true);
+            _cachedCroppedPosEmbedGpu[key] = gpu;
+            return gpu;
         }
     }
 
@@ -406,7 +460,8 @@ public sealed class MMDiTModel : IDisposable
                 InChannels,
                 OutChannels,
                 PatchSize,
-                ContextSize);
+                ContextSize,
+                AdmInChannels);
         }
 
         int outPatchDim = OutChannels * PatchSize * PatchSize;
@@ -461,30 +516,35 @@ public sealed class MMDiTModel : IDisposable
             }
         }
 
-        // x_embedder: inPatchDim -> HiddenSize
-        var x = Lin("x_embedder.proj", imgTokens, numImgTokens, inPatchDim, HiddenSize);
-        AddCroppedPosEmbed(x, numImgTokens, imgH, imgW);
+        // x_embedder/t_embedder/y_embedder/context_embedder projections, and the whole 24-block
+        // loop, ALL run GPU-resident inside ONE BeginBatch/EndBatch cycle (2026-09-20 perf pass,
+        // docs/094 Phase 1). Previously x_embedder/t_embedder/y_embedder ran via the CPU-array
+        // `Lin()` helper even on a GPU backend (Upload+Sgemm+Download, 3 separate submit+fence-wait
+        // cycles per call, 6 calls total = 18 submits), then re-uploaded their CPU result back to
+        // GPU. Real `STINGRAY_PROFILE_GPU_SPLIT=1` profiling found ~1294 total submit+fence-wait
+        // cycles across a real 20-step generation (vs. the ~40 a naive "one batch per Forward()
+        // call" model would predict) -- this unbatched setup work was roughly half of that. Moving
+        // it inside the batch, using the now-GPU-resident `MMDiTGpuWeights.TEmbedder*`/`YEmbedder*`/
+        // `XEmbedderWeight` weights, collapses all of it into the SAME single submit as the block
+        // loop.
+        bool isVulkan = _backend is VulkanBackend;
+        var vulkanBackend = _backend as VulkanBackend;
 
-        // Upload x to xGpu
-        var xGpu = _backend!.Upload(x.AsSpan(0, numImgTokens * HiddenSize), TensorShape.D2(numImgTokens, HiddenSize), exact: true);
-
-        // 2. Project text context into cGpu -- a FRESH, independent tensor every call (2026-09-20
-        // correctness fix, docs/094 Phase 1). The projection itself (context_embedder Sgemm) is
-        // cached CLEAN (see `_cachedCleanContextGpu`'s own doc comment) and copied device-to-device
-        // into this call's own cGpu when available (Vulkan), restoring most of the perf this used
-        // to get from directly caching+reusing cGpu -- which was UNSAFE because cGpu is also the
-        // text stream's mutable residual-connection buffer throughout the block loop below
-        // (`visionOps.ScaleGateAdd(cGpu, ...)` mutates it in place). Falls back to a fresh
-        // upload+Sgemm+bias every call (no caching at all) on any non-Vulkan backend.
-        CoreTensor cGpu;
-        if (_backend is VulkanBackend vulkanBackend)
+        // Pre-populate both GPU-resident caches BEFORE BeginBatch(): each cache-miss path calls
+        // `Upload()`, which does its own internal GPU submit -- illegal to call while a SEPARATE
+        // BeginBatch/EndBatch recording session is already in progress (a real
+        // "VkException: ErrorUnknown" was hit here when this was tried inside the batch). Cache
+        // hits (the overwhelming common case -- both are keyed on values that don't change across
+        // a generation's 20 denoising steps) are cheap TryGetValue lookups, safe to call anywhere.
+        var posEmbedGpu = GetCroppedPosEmbedGpu(numImgTokens, imgH, imgW);
+        CoreTensor? cleanContextForBatch = null;
+        if (isVulkan)
         {
-            CoreTensor cleanContext;
             lock (_cachedCleanContextGpu)
             {
-                if (!_cachedCleanContextGpu.TryGetValue(textContext, out cleanContext!))
+                if (!_cachedCleanContextGpu.TryGetValue(textContext, out var cleanContext))
                 {
-                    var rawContextGpu = _backend.Upload(textContext.AsSpan(0, numTextTokens * ContextSize), TensorShape.D2(numTextTokens, ContextSize), exact: true);
+                    var rawContextGpu = _backend!.Upload(textContext.AsSpan(0, numTextTokens * ContextSize), TensorShape.D2(numTextTokens, ContextSize), exact: true);
                     cleanContext = _backend.Allocate(TensorShape.D2(numTextTokens, HiddenSize), exact: true);
                     visionOps.Sgemm(cleanContext, rawContextGpu, gw.ContextEmbedderWeight, numTextTokens, ContextSize, HiddenSize);
                     if (gw.ContextEmbedderBias is not null)
@@ -492,30 +552,117 @@ public sealed class MMDiTModel : IDisposable
                     _backend.Free(rawContextGpu);
                     _cachedCleanContextGpu[textContext] = cleanContext;
                 }
+                cleanContextForBatch = cleanContext;
             }
-            cGpu = _backend.Allocate(TensorShape.D2(numTextTokens, HiddenSize));
-            vulkanBackend.RecordComputeCopy(cGpu, cleanContext);
         }
-        else
-        {
-            var rawContextGpu = _backend.Upload(textContext.AsSpan(0, numTextTokens * ContextSize), TensorShape.D2(numTextTokens, ContextSize), exact: true);
-            cGpu = _backend.Allocate(TensorShape.D2(numTextTokens, HiddenSize));
-            visionOps.Sgemm(cGpu, rawContextGpu, gw.ContextEmbedderWeight, numTextTokens, ContextSize, HiddenSize);
-            if (gw.ContextEmbedderBias is not null)
-                imageOps.AddRowBroadcastInPlace(cGpu, gw.ContextEmbedderBias, numTextTokens, HiddenSize);
-            _backend.Free(rawContextGpu);
-        }
-
-        // 3. Time + Pooled Embedding: upload tVecSilu
-        var tVec = ComputeTimeAndPooledEmbedding(timestep, pooledY);
-        var tVecSilu = (float[])tVec.Clone();
-        DiffusionOps.SiluInPlace(tVecSilu);
-        var tVecGpu = _backend.Upload(tVecSilu.AsSpan(0, HiddenSize), TensorShape.D1(HiddenSize), exact: true);
 
         imageOps.BeginBatch();
         bool batchSuccess = false;
+        CoreTensor imgTokensGpu = null!, sinEmbGpu = null!, pooledYGpu = null!, tEmb0Gpu = null!, yEmb0Gpu = null!, yEmbGpu = null!;
+        CoreTensor xGpu = null!, cGpu = null!, tVecGpu = null!;
         try
         {
+            // x_embedder: inPatchDim -> HiddenSize, plus the cropped positional embedding add --
+            // entirely GPU-resident (input uploaded via the pinned zero-copy path on Vulkan; see
+            // AllocatePinned/WritePinned's own doc comments for why this beats the regular
+            // staging-buffer `Upload()` on this UMA iGPU).
+            xGpu = _backend!.Allocate(TensorShape.D2(numImgTokens, HiddenSize));
+            if (isVulkan)
+            {
+                imgTokensGpu = _backend.AllocatePinned(TensorShape.D2(numImgTokens, inPatchDim));
+                vulkanBackend!.WritePinned(imgTokensGpu, imgTokens.AsSpan(0, numImgTokens * inPatchDim));
+            }
+            else
+            {
+                imgTokensGpu = _backend.Upload(imgTokens.AsSpan(0, numImgTokens * inPatchDim), TensorShape.D2(numImgTokens, inPatchDim), exact: true);
+            }
+            visionOps.Sgemm(xGpu, imgTokensGpu, gw.XEmbedderWeight, numImgTokens, inPatchDim, HiddenSize);
+            if (gw.XEmbedderBias is not null)
+                imageOps.AddRowBroadcastInPlace(xGpu, gw.XEmbedderBias, numImgTokens, HiddenSize);
+            _backend.AddInPlace(xGpu, posEmbedGpu);
+
+            // 2. Project text context into cGpu -- a FRESH, independent tensor every call
+            // (2026-09-20 correctness fix, docs/094 Phase 1). The projection itself
+            // (context_embedder Sgemm) is cached CLEAN (see `_cachedCleanContextGpu`'s own doc
+            // comment, and the pre-batch cache-population block above) and copied device-to-device
+            // into this call's own cGpu when available (Vulkan) -- unsafe to cache cGpu itself
+            // directly, since it's also the text stream's mutable residual-connection buffer
+            // throughout the block loop below (`visionOps.ScaleGateAdd(cGpu, ...)` mutates it in
+            // place). Falls back to a fresh upload+Sgemm+bias every call (no caching at all) on any
+            // non-Vulkan backend.
+            if (isVulkan)
+            {
+                cGpu = _backend.Allocate(TensorShape.D2(numTextTokens, HiddenSize));
+                vulkanBackend!.RecordComputeCopy(cGpu, cleanContextForBatch!);
+            }
+            else
+            {
+                var rawContextGpu = _backend.Upload(textContext.AsSpan(0, numTextTokens * ContextSize), TensorShape.D2(numTextTokens, ContextSize), exact: true);
+                cGpu = _backend.Allocate(TensorShape.D2(numTextTokens, HiddenSize));
+                visionOps.Sgemm(cGpu, rawContextGpu, gw.ContextEmbedderWeight, numTextTokens, ContextSize, HiddenSize);
+                if (gw.ContextEmbedderBias is not null)
+                    imageOps.AddRowBroadcastInPlace(cGpu, gw.ContextEmbedderBias, numTextTokens, HiddenSize);
+                _backend.Free(rawContextGpu);
+            }
+
+            // 3. Time + Pooled Embedding: Fourier(timestep) -> t_embedder MLP (SiLU-gated) and
+            // pooledY -> y_embedder MLP (SiLU-gated), summed, then SiLU'd once more -- all
+            // GPU-resident. Real reference: `emb = linear(silu(t_emb(t) + y_emb(pooled)))` fed to
+            // every block's own modulation linear; the intermediate SiLUs inside each embedder MLP
+            // are the real checkpoint's own architecture (mlp = Sequential(Linear, SiLU, Linear)).
+            int dim = 256;
+            var sinEmb = new float[dim];
+            int half = dim / 2;
+            float logMaxPeriod = MathF.Log(10000.0f);
+            for (int i = 0; i < half; i++)
+            {
+                float freq = MathF.Exp(-logMaxPeriod * i / half);
+                float arg = timestep * freq;
+                sinEmb[i] = MathF.Cos(arg);
+                sinEmb[half + i] = MathF.Sin(arg);
+            }
+
+            if (isVulkan)
+            {
+                sinEmbGpu = _backend.AllocatePinned(TensorShape.D1(dim));
+                vulkanBackend!.WritePinned(sinEmbGpu, sinEmb.AsSpan(0, dim));
+                pooledYGpu = _backend.AllocatePinned(TensorShape.D1(AdmInChannels));
+                vulkanBackend.WritePinned(pooledYGpu, pooledY.AsSpan(0, AdmInChannels));
+            }
+            else
+            {
+                sinEmbGpu = _backend.Upload(sinEmb.AsSpan(0, dim), TensorShape.D1(dim), exact: true);
+                pooledYGpu = _backend.Upload(pooledY.AsSpan(0, AdmInChannels), TensorShape.D1(AdmInChannels), exact: true);
+            }
+
+            tEmb0Gpu = _backend.Allocate(TensorShape.D1(HiddenSize));
+            visionOps.Sgemm(tEmb0Gpu, sinEmbGpu, gw.TEmbedder0Weight, 1, dim, HiddenSize);
+            if (gw.TEmbedder0Bias is not null)
+                imageOps.AddRowBroadcastInPlace(tEmb0Gpu, gw.TEmbedder0Bias, 1, HiddenSize);
+            visionOps.VisionSiluInPlace(tEmb0Gpu);
+
+            // tVecGpu accumulates tEmb, then += yEmb, then gets SiLU'd in place -- this IS the
+            // final `tVecSilu` fed to every block's modulation linear; no separate clone needed
+            // (the CPU path's un-SiLU'd `tVec` is never read anywhere else in ForwardGpu either).
+            tVecGpu = _backend.Allocate(TensorShape.D1(HiddenSize));
+            visionOps.Sgemm(tVecGpu, tEmb0Gpu, gw.TEmbedder2Weight, 1, HiddenSize, HiddenSize);
+            if (gw.TEmbedder2Bias is not null)
+                imageOps.AddRowBroadcastInPlace(tVecGpu, gw.TEmbedder2Bias, 1, HiddenSize);
+
+            yEmb0Gpu = _backend.Allocate(TensorShape.D1(HiddenSize));
+            visionOps.Sgemm(yEmb0Gpu, pooledYGpu, gw.YEmbedder0Weight, 1, AdmInChannels, HiddenSize);
+            if (gw.YEmbedder0Bias is not null)
+                imageOps.AddRowBroadcastInPlace(yEmb0Gpu, gw.YEmbedder0Bias, 1, HiddenSize);
+            visionOps.VisionSiluInPlace(yEmb0Gpu);
+
+            yEmbGpu = _backend.Allocate(TensorShape.D1(HiddenSize));
+            visionOps.Sgemm(yEmbGpu, yEmb0Gpu, gw.YEmbedder2Weight, 1, HiddenSize, HiddenSize);
+            if (gw.YEmbedder2Bias is not null)
+                imageOps.AddRowBroadcastInPlace(yEmbGpu, gw.YEmbedder2Bias, 1, HiddenSize);
+
+            _backend.AddInPlace(tVecGpu, yEmbGpu);
+            visionOps.VisionSiluInPlace(tVecGpu);
+
             // 4. Joint MMDiT Transformer Blocks (100% GPU Resident)
             int gpuMaxBlock = MaxBlockIndexForDiagnostic ?? Depth - 1;
             for (int b = 0; b <= gpuMaxBlock; b++)
@@ -701,9 +848,15 @@ public sealed class MMDiTModel : IDisposable
             {
                 try { imageOps.EndBatch(); } catch { }
             }
-            _backend.Free(xGpu);
-            _backend.Free(tVecGpu);
-            _backend.Free(cGpu);
+            if (xGpu is not null) _backend!.Free(xGpu);
+            if (tVecGpu is not null) _backend!.Free(tVecGpu);
+            if (cGpu is not null) _backend!.Free(cGpu);
+            if (imgTokensGpu is not null) _backend!.Free(imgTokensGpu);
+            if (sinEmbGpu is not null) _backend!.Free(sinEmbGpu);
+            if (pooledYGpu is not null) _backend!.Free(pooledYGpu);
+            if (tEmb0Gpu is not null) _backend!.Free(tEmb0Gpu);
+            if (yEmb0Gpu is not null) _backend!.Free(yEmb0Gpu);
+            if (yEmbGpu is not null) _backend!.Free(yEmbGpu);
         }
     }
 
@@ -1043,6 +1196,11 @@ public sealed class MMDiTModel : IDisposable
         {
             foreach (var t in _cachedCleanContextGpu.Values) _backend?.Free(t);
             _cachedCleanContextGpu.Clear();
+        }
+        lock (_cachedCroppedPosEmbedGpu)
+        {
+            foreach (var t in _cachedCroppedPosEmbedGpu.Values) _backend?.Free(t);
+            _cachedCroppedPosEmbedGpu.Clear();
         }
         if (_gpuWeights is not null)
         {
