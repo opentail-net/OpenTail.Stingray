@@ -58,6 +58,21 @@ public sealed class Sd3Pipeline : IDisposable, IDiffusionPipeline
 
     public MMDiTModel MMDiT => _mmdit;
 
+    /// <summary>Test-support method (docs/094 Phase 1, 2026-09-20 GPU trajectory investigation):
+    /// exposes the exact same real text-conditioning encode <see cref="Generate(string,string?,int,int,int,float,int,string,Action{int,int}?,RRDBNet?,float)"/>
+    /// uses internally, so a test can build the real (context, pooledY, numTextTokens) tuple for a
+    /// prompt without duplicating the CLIP-L/G/T5 encode+BuildContext+BuildPooledY logic. Text
+    /// encoders (ClipLEncoder/OpenClipGEncoder/T5Encoder) take no backend parameter and always run
+    /// on CPU, so this is identical whether called on a CPU-backed or GPU-backed pipeline instance.</summary>
+    public (float[] context, float[] pooledY, int numTextTokens) EncodePromptForTesting(string prompt)
+    {
+        var tokens = _clipTokenizer.Tokenize(prompt);
+        var (hiddenL, pooledL) = _clipL.Encode(tokens);
+        var (hiddenG, pooledG) = _clipG.Encode(tokens);
+        var t5 = EncodeT5(prompt);
+        return (BuildContext(hiddenL, hiddenG, t5), BuildPooledY(pooledL, pooledG), 77 + T5MaxTokens);
+    }
+
     public static Sd3Pipeline Load(string modelPath, string? tokenizerPath = null, IComputeBackend? backend = null)
     {
         IWeightLoader weights = modelPath.EndsWith(".gguf", StringComparison.OrdinalIgnoreCase) ? GgufWeightLoader.Open(modelPath) : SafetensorsLoader.Open(modelPath);

@@ -364,6 +364,75 @@ the starting picture:
     CPU for the M=1/K=1536/N=13824 shape on synthetic data), `Sd3RealModulationLinearGpuCpuParityTests.cs`
     (the decisive real-weight/real-input test, plus the `STINGRAY_SD3_BYPASS_Q4KX8_REPACK` env-var
     diagnostic knob on `QuantizedWeightCache`'s existing `budgetBytes` constructor parameter).
+- [x] **CPU BUG FIXED, real, measured, 2026-09-20, same-day follow-up**: bisected the exact
+    mechanism (`MatVecQ4K` and its `MatVec2In`/`MatVec4In` siblings unconditionally call
+    `QuantizeRowToQ8KS` — quantizing the ACTIVATION to int8 before the dot product — whenever
+    AVX2/FMA is available, gated only by the process-wide `STINGRAY_LEGACY_DOTQ4K` env var, which
+    `MatMulBatched`'s own `allowQ8` PARAMETER never reached). Confirmed via `STINGRAY_LEGACY_DOTQ4K=1`:
+    the isolated real-weight/real-`tVecSilu` test's maxDiff dropped from 1.003 to 7.6e-6 (exact).
+    **Fixed properly**: threaded a real `allowQ8` parameter all the way from
+    `QuantizedWeightCache.Linear` through `SimdKernels.MatMulBatched`/`MatVec`/`MatVec2In`/
+    `MatVec4In`/`MatVecQ4K` (default `true`, zero behavior change for every existing LLM caller),
+    called with `allowQ8: false` from `MMDiTModel.Lin()` for every SD3.5 CPU Linear call.
+    `TestSd35GpuVsCpuParity`'s full single-forward-pass parity: **cosine 1.000000, maxDiff 0.000898**
+    (was 0.999724/0.118420 — the worst GPU parity of any model in this codebase; now among the best).
+  - **Scoping correction (the user caught a real mistake here)**: first tried scoping the fix down
+    to just the two `adaLN_modulation.1` call sites (the originally isolated bug), reasoning QKV/
+    dual-attn weights are Q5_K (proven exact regardless of this flag — confirmed by reading
+    `DotQ5K`'s source, it never branches on activation quantization at all) and MLP wasn't proven
+    to need it. That measurably broke correctness: `TestSd35GpuVsCpuParity`'s maxDiff stayed at
+    0.105, barely better than the pre-fix 0.118 — proving `attn.proj`/`mlp.fc1`/`mlp.fc2` (also real
+    Q4_K tensors) genuinely need `allowQ8: false` too, not just modulation. Reverted to
+    `allowQ8: false` for every CPU Linear call in `MMDiTModel.Lin()`, restoring the 1.0/0.000898
+    parity. **Key finding that makes this cheaper than it sounds**: passing `allowQ8: false` to a
+    Q5_K call costs nothing (Q5_K never takes the int8 path regardless of the flag), so the real,
+    unavoidable cost is scoped to exactly the Q4_K tensors (modulation + attn.proj + attn2.proj +
+    mlp.fc1/fc2), not "the whole model."
+  - **Real, measured cost**: `GenerateApple_20Steps_Sd35_Cpu` generation time **278.7s → 450.4s**
+    (~62% slower) — the genuine, necessary cost of disabling a lossy fast path that was silently
+    corrupting output, not a regression to chase away. Confirmed this is real and required, not
+    over-caution, via the scoping experiment above.
+  - **Visual result, re-generated post-fix**: `sd35_medium_apple_cpu_256_20steps.png` is
+    **visually IDENTICAL to the pre-fix image** — same small apple cropped into the bottom-left
+    corner, rest of the 256×256 canvas bare wood table. **This numerics fix does NOT touch the
+    composition/scale bug** (candidates still open: patchify/unpatchify canvas mapping, VAE
+    decode crop/scale) — that remains a real, separate, still-unfixed bug, confirmed by direct
+    visual re-inspection, not assumed unchanged.
+  - **GPU re-generated post-fix, still broken, confirmed unaffected by the CPU-only fix (as
+    expected — the fix touches only `OpenTail.Stingray.Cpu`/`QuantizedWeightCache`, never GPU
+    code)**: `sd35_medium_apple_gpu_seed42_256_20steps_postfix.png` is still periodic
+    checkerboard noise, visually indistinguishable from the pre-fix GPU output.
+  - **GPU root-cause investigation, continued**: with the CPU bug fixed, single-forward-pass
+    parity is now near-perfect (cosine 1.0, maxDiff 0.0009) — yet the full 20-step GPU trajectory
+    is still pure noise. This means the remaining GPU problem is NOT in `MMDiTModel.Forward`'s
+    per-call math (now proven correct to high precision) but in how small per-call differences
+    COMPOUND over the 20-step Euler trajectory. Built `Sd3PerStepTrajectoryParityTests` (manually
+    replicates `Sd3Pipeline.Generate`'s real Euler loop for both backends with IDENTICAL real
+    encoded text conditioning — CLIP-L/G/T5 take no backend parameter and always run on CPU, so
+    `condContext`/`pooledY` are provably identical for both trajectories — and identical initial
+    noise), dumping per-step latent mean/std/maxAbs and CPU-vs-GPU maxDiff. **Real result over 6
+    steps**: latent maxDiff grows 0.003 → 0.187 → 0.285 → 0.479 → 0.623 → 0.760 — a large
+    (~59×) jump from step 0→1, then **roughly linear/additive growth afterward** (per-step delta
+    ~0.10-0.19, ratio decelerating from 1.68× toward 1.22×) — NOT exponential/chaotic blowup.
+    Extrapolated linearly to a full 20-step run, cumulative divergence would reach roughly the
+    same order of magnitude as the latent's own scale (maxAbs ~3-4), which is sufficient to fully
+    decorrelate the final image from a coherent result even without any single catastrophic op
+    — consistent with the observed checkerboard-noise final output.
+  - **Working hypothesis, not yet fully proven**: the remaining divergence is genuine floating-
+    point non-associativity between CPU's AVX2 SIMD reduction order and GPU's Vulkan compute-shader
+    reduction order (different hardware, different summation order, both "correct" IEEE-754 math,
+    neither bit-identical to the other) — a fundamentally different, harder class of problem than
+    the Q8-quantization bug just fixed. True CPU/GPU bit-parity is not generally achievable for any
+    nontrivial reduction; the real lever (if this hypothesis holds) would be reducing per-step
+    divergence further (e.g. matching GPU's tiled-Sgemm reduction order more closely to CPU's), not
+    finding one more "wrong line." **Not conclusively proven** — the step-0→1 jump (59×, much
+    larger than the subsequent per-step deltas) is still unexplained and worth a dedicated look
+    before accepting the "just FP chaos" conclusion; a fresh session should re-open with that
+    specific jump, not assume it's already explained by the linear-growth trend after it.
+  - **New file**: `Sd3PerStepTrajectoryParityTests.cs`; added `Sd3Pipeline.EncodePromptForTesting`
+    (public test-support method exposing the real CLIP-L/G/T5+BuildContext/BuildPooledY encode
+    pipeline `Generate` uses internally, so a diagnostic test can build real conditioning without
+    duplicating that logic).
 
 ### Phase 2 — Qwen Image: first GPU port (biggest true gap — zero GPU code exists)
 
