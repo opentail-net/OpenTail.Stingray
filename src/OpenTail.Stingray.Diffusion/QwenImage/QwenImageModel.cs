@@ -19,6 +19,29 @@ public sealed class QwenImageModel : IDisposable
     private QwenImageGpuWeights? _residentGpuWeights;
     private QwenImageGpuWorkspace? _residentGpuWorkspace;
 
+    // RoPE cache (docs/094 FLUX.2 GPU optimization wave's cross-model caching survey, 2026-09-20):
+    // Compute3DRoPE depends only on (numTxtTokens, patchH, patchW, HeadDim) -- fixed for the whole
+    // generation -- but both Forward() and ForwardGpu() recomputed it via fresh trig evaluation on
+    // every single denoising step. Same bug class already found and fixed in Flux2DiT/WanModel/
+    // HunyuanVideoModel this same pass. Shared by both CPU and GPU paths since the math (and the
+    // key it depends on) is identical either way.
+    private readonly object _ropeCacheLock = new();
+    private (int numTxtTokens, int patchH, int patchW, int headDim)? _cachedRopeKey;
+    private (float[] cos, float[] sin)? _cachedRope;
+
+    private (float[] cos, float[] sin) GetOrComputeRope(int numTxtTokens, int patchH, int patchW)
+    {
+        var key = (numTxtTokens, patchH, patchW, HeadDim);
+        lock (_ropeCacheLock)
+        {
+            if (_cachedRopeKey == key && _cachedRope is not null) return _cachedRope.Value;
+            var rope = QwenImageRoPE.Compute3DRoPE(numTxtTokens, patchH, patchW, HeadDim);
+            _cachedRopeKey = key;
+            _cachedRope = rope;
+            return rope;
+        }
+    }
+
     public const int HiddenDim = 3072;
     public const int NumHeads = 24;
     public const int HeadDim = 128;
@@ -118,7 +141,7 @@ public sealed class QwenImageModel : IDisposable
         int numTxtTokens = textContext.Length / ContextDim;
         int totalTokens = numTxtTokens + numImgTokens;
 
-        var (ropeCos, ropeSin) = QwenImageRoPE.Compute3DRoPE(numTxtTokens, patchH, patchW, HeadDim);
+        var (ropeCos, ropeSin) = GetOrComputeRope(numTxtTokens, patchH, patchW);
         EnsureGpuResident(numImgTokens, numTxtTokens, ropeCos, ropeSin);
         var gw = _residentGpuWeights!;
         var ws = _residentGpuWorkspace!;
@@ -316,7 +339,7 @@ public sealed class QwenImageModel : IDisposable
         var tEmb = ComputeTimestepEmbedding(timestep);
 
         // 4. 3D-RoPE positional encoding
-        var (cos, sin) = QwenImageRoPE.Compute3DRoPE(numTxtTokens, patchH, patchW, HeadDim);
+        var (cos, sin) = GetOrComputeRope(numTxtTokens, patchH, patchW);
 
         // 5. 60 MM-DiT Transformer blocks
         for (int b = 0; b < _numLayers; b++)

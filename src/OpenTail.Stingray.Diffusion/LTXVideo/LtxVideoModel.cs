@@ -34,6 +34,14 @@ public sealed class LtxVideoModel : IDisposable
     private (int numFrames, int patchH, int patchW) _cachedRopeKey;
     private bool _disposed;
 
+    // CPU-path RoPE cache (docs/094 FLUX.2 GPU optimization wave's cross-model caching survey,
+    // 2026-09-20): the GPU path above already cached its own RoPE tables keyed by
+    // (numFrames, patchH, patchW); the CPU Forward() below had the same recomputed-every-step gap
+    // this pass found and fixed in Flux2DiT/WanModel/HunyuanVideoModel/QwenImageModel.
+    private readonly object _cpuRopeCacheLock = new();
+    private (int numFrames, int patchH, int patchW)? _cachedCpuRopeKey;
+    private (float[] cos, float[] sin)? _cachedCpuRope;
+
     public int InChannels { get; }
     public int OutChannels { get; }
     public int HiddenSize { get; }
@@ -254,7 +262,21 @@ public sealed class LtxVideoModel : IDisposable
         // `LTXVideoRotaryPosEmbed.__init__`'s `dim` argument in diffusers' real transformer_ltx.py
         // (found via golden-tensor mismatch: a per-head-width table gave near-zero cosine
         // similarity against the real reference's actual rope_cos/rope_sin dump).
-        var (ropeCos, ropeSin) = LtxVideoRoPE.ComputeContinuous3DRoPE(numFrames, patchH, patchW, d, RopeTheta);
+        float[] ropeCos, ropeSin;
+        var cpuRopeKey = (numFrames, patchH, patchW);
+        lock (_cpuRopeCacheLock)
+        {
+            if (_cachedCpuRopeKey == cpuRopeKey && _cachedCpuRope is not null)
+            {
+                (ropeCos, ropeSin) = _cachedCpuRope.Value;
+            }
+            else
+            {
+                (ropeCos, ropeSin) = LtxVideoRoPE.ComputeContinuous3DRoPE(numFrames, patchH, patchW, d, RopeTheta);
+                _cachedCpuRopeKey = cpuRopeKey;
+                _cachedCpuRope = (ropeCos, ropeSin);
+            }
+        }
 
         LastProjInOut = (float[])x.Clone();
         LastCaptionProjOut = captionProj;

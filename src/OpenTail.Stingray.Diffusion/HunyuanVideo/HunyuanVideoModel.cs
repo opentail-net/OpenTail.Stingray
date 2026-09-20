@@ -23,6 +23,18 @@ public sealed class HunyuanVideoModel : IDisposable
     private readonly int _depthSingle;
     private bool _disposed;
 
+    // CPU-path RoPE cache (docs/094 FLUX.2 GPU optimization wave's cross-model caching survey,
+    // 2026-09-20): Compute3DRoPE depends only on (numFrames, patchH, patchW, headDim) -- fixed for
+    // the whole generation -- but Forward() recomputed it via fresh trig evaluation on every single
+    // denoising step. Same bug class already found and fixed in Flux2DiT (text-conditioning) and
+    // WanModel (this exact same RoPE-table case) this same pass. NOTE: unlike Flux2DiT's
+    // text-conditioning, HunyuanVideo's own `TokenRefiner` output is NOT cached here even though it
+    // looks superficially similar -- it takes `timestep` as an input and genuinely varies per step
+    // (real architectural difference, not an oversight).
+    private readonly object _ropeCacheLock = new();
+    private (int numFrames, int patchH, int patchW, int headDim)? _cachedRopeKey;
+    private (float[] cos, float[] sin)? _cachedRope;
+
     public const int InChannels = 64;   // 16 * 2 * 2
     public const int OutChannels = 16;
     public const int TextDim = 4096;    // LLaMA-3 / Qwen2.5-VL text dimension
@@ -178,8 +190,23 @@ public sealed class HunyuanVideoModel : IDisposable
         // 3. Timestep embedding (sinusoidal 256 -> linear dim -> silu -> linear dim)
         var tEmb = ComputeTimestepEmbedding(timestep);
 
-        // 4. 3D-RoPE positional frequencies
-        var (cos, sin) = HunyuanVideoRoPE.Compute3DRoPE(numFrames, patchH, patchW, _headDim);
+        // 4. 3D-RoPE positional frequencies (cached across steps -- see _cachedRope's own doc
+        //    comment; cos/sin are read-only ApplyRoPE inputs, safe to share across calls).
+        float[] cos, sin;
+        var ropeKey = (numFrames, patchH, patchW, _headDim);
+        lock (_ropeCacheLock)
+        {
+            if (_cachedRopeKey == ropeKey && _cachedRope is not null)
+            {
+                (cos, sin) = _cachedRope.Value;
+            }
+            else
+            {
+                (cos, sin) = HunyuanVideoRoPE.Compute3DRoPE(numFrames, patchH, patchW, _headDim);
+                _cachedRopeKey = ropeKey;
+                _cachedRope = (cos, sin);
+            }
+        }
 
         bool dumpDiag = Environment.GetEnvironmentVariable("STINGRAY_HUNYUAN_DUMP_LATENT") == "1";
         if (dumpDiag)

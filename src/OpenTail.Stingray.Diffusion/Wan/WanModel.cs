@@ -18,6 +18,18 @@ public sealed class WanModel : IDisposable
     private readonly Dictionary<string, CoreTensor>? _gpuWeights;
     private readonly int _numLayers;
     private readonly int _dim;
+
+    // CPU-path RoPE cache (docs/094 FLUX.2 GPU optimization wave's caching survey, 2026-09-20):
+    // Compute3DRoPE depends only on (numFrames, patchH, patchW, headDim) -- all fixed for the whole
+    // generation (resolution/frame-count never change mid-run) -- but the CPU Forward() below
+    // recomputed it via fresh trig evaluation on every single denoising step. The GPU path already
+    // avoided this (WanGpuWorkspace uploads its own RopeCos/RopeSin once in its constructor, reused
+    // for the workspace's lifetime); only the CPU path had the gap. Same bug class found in
+    // Flux2DiT's text-conditioning cache this same pass, and matches LtxVideoModel's own
+    // `_cachedRopeKey`-keyed GPU cache convention (this is the CPU-side equivalent).
+    private readonly object _ropeCacheLock = new();
+    private (int numFrames, int patchH, int patchW, int headDim)? _cachedRopeKey;
+    private (float[] cos, float[] sin)? _cachedRope;
     private readonly int _numHeads;
     private readonly int _headDim;
     private readonly int _ffnDim;
@@ -665,8 +677,24 @@ public sealed class WanModel : IDisposable
         DiffusionOps.SiluInPlace(timeProjSilu);
         var timestepProj = Linear("time_projection.1", timeProjSilu, _dim, _dim * 6);
 
-        // 4. 3D-RoPE positional frequencies
-        var (cos, sin) = WanRoPE.Compute3DRoPE(numFrames, patchH, patchW, _headDim);
+        // 4. 3D-RoPE positional frequencies (cached across steps -- see _cachedRope's own doc
+        //    comment; cos/sin are read-only inputs to ApplyRoPE below, never mutated, so sharing
+        //    the cached arrays directly across calls is safe with no cloning needed).
+        float[] cos, sin;
+        var ropeKey = (numFrames, patchH, patchW, _headDim);
+        lock (_ropeCacheLock)
+        {
+            if (_cachedRopeKey == ropeKey && _cachedRope is not null)
+            {
+                (cos, sin) = _cachedRope.Value;
+            }
+            else
+            {
+                (cos, sin) = WanRoPE.Compute3DRoPE(numFrames, patchH, patchW, _headDim);
+                _cachedRopeKey = ropeKey;
+                _cachedRope = (cos, sin);
+            }
+        }
 
         // 5. Transformer Blocks
         bool debugPerBlock = Environment.GetEnvironmentVariable("STINGRAY_WAN_DEBUG_PERBLOCK") == "1";
