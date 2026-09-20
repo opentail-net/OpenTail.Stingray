@@ -20,6 +20,34 @@ public sealed class MMDiTModel : IDisposable
     private MMDiTGpuWorkspace? _residentGpuWorkspace;
     private readonly Dictionary<float[], CoreTensor> _cachedContextGpu = new(ReferenceEqualityComparer.Instance);
 
+    /// <summary>
+    /// Diagnostic-only early-exit (2026-09-20 GPU bisection): when set (0-based, inclusive), both
+    /// <see cref="Forward"/> and <see cref="ForwardGpu"/> stop running joint blocks after this index
+    /// and go straight to the final layer -- letting a test binary-search which block first
+    /// introduces a CPU/GPU divergence, without downloading mid-GPU-batch (which would require
+    /// breaking the BeginBatch/EndBatch command recording this path depends on for its GPU-resident
+    /// performance). Null (default) runs the real, full Depth.
+    /// </summary>
+    public int? MaxBlockIndexForDiagnostic;
+
+    /// <summary>Diagnostic-only (2026-09-20 GPU bisection): when true, skips the dual-attention
+    /// (attn2) pass in BOTH <see cref="Forward"/> and <see cref="ForwardGpu"/> for blocks that have
+    /// it, to test whether dual-attention specifically is the source of a CPU/GPU divergence.</summary>
+    public bool SkipDualAttnForDiagnostic;
+
+    /// <summary>Diagnostic-only (2026-09-20 GPU bisection): when set, <see cref="ForwardGpu"/> ends
+    /// the batch and downloads intermediate GPU buffers right after block 0's named stage, storing
+    /// them here and returning a dummy result -- lets a test compare against the CPU path's own
+    /// plain-array workspace state at the exact same point without breaking GPU batching normally.
+    /// Values: "mod" (after modulation Sgemm+bias, before any norm/attention), "qkv" (after QKV
+    /// projection+bias+unpack, before QK-norm), "attn" (after joint attention, before proj).</summary>
+    public string? DiagnosticStopStage;
+    public float[]? DiagnosticImgModOut;
+    public float[]? DiagnosticTxtModOut;
+    public float[]? DiagnosticQOut;
+    public float[]? DiagnosticKOut;
+    public float[]? DiagnosticAttnOut;
+
     public int HiddenSize { get; }
     public int NumHeads { get; }
     public int HeadDim { get; }
@@ -434,7 +462,8 @@ public sealed class MMDiTModel : IDisposable
         try
         {
             // 4. Joint MMDiT Transformer Blocks (100% GPU Resident)
-            for (int b = 0; b < Depth; b++)
+            int gpuMaxBlock = MaxBlockIndexForDiagnostic ?? Depth - 1;
+            for (int b = 0; b <= gpuMaxBlock; b++)
             {
                 var bw = gw.JointBlocks[b];
                 int imgModChunks = bw.ImgModChunks;
@@ -446,6 +475,17 @@ public sealed class MMDiTModel : IDisposable
 
                 visionOps.Sgemm(ws.TxtMod, tVecGpu, bw.TxtModWeight, 1, HiddenSize, txtModChunks * HiddenSize);
                 imageOps.AddRowBroadcastInPlace(ws.TxtMod, bw.TxtModBias, 1, txtModChunks * HiddenSize);
+
+                if (b == 0 && DiagnosticStopStage == "mod")
+                {
+                    imageOps.EndBatch();
+                    batchSuccess = true;
+                    DiagnosticImgModOut = new float[imgModChunks * HiddenSize];
+                    DiagnosticTxtModOut = new float[txtModChunks * HiddenSize];
+                    _backend.Download(ws.ImgMod, DiagnosticImgModOut);
+                    _backend.Download(ws.TxtMod, DiagnosticTxtModOut);
+                    return new float[OutChannels * latH * latW];
+                }
 
                 // ModulateNorm
                 visionOps.AdaLNModulate(ws.NormedImg, xGpu, ws.ImgMod, numImgTokens, HiddenSize, shiftOffset: 0, scaleOffset: HiddenSize, isRmsNorm: false, eps: 1e-6f);
@@ -476,8 +516,28 @@ public sealed class MMDiTModel : IDisposable
                 if (bw.TxtAttnLnQ is not null && bw.TxtAttnLnK is not null)
                     visionOps.QKNorm(ws.Q, ws.K, bw.TxtAttnLnQ, bw.TxtAttnLnK, numTextTokens, NumHeads, HeadDim, eps: 1e-6f, startToken: numImgTokens);
 
+                if (b == 0 && DiagnosticStopStage == "qkv")
+                {
+                    imageOps.EndBatch();
+                    batchSuccess = true;
+                    DiagnosticQOut = new float[totalTokens * HiddenSize];
+                    DiagnosticKOut = new float[totalTokens * HiddenSize];
+                    _backend.Download(ws.Q, DiagnosticQOut);
+                    _backend.Download(ws.K, DiagnosticKOut);
+                    return new float[OutChannels * latH * latW];
+                }
+
                 // Joint MultiHeadAttention
                 imageOps.MultiHeadAttentionTiled(ws.AttnOut, ws.Q, ws.K, ws.V, totalTokens, totalTokens, NumHeads, HeadDim);
+
+                if (b == 0 && DiagnosticStopStage == "attn")
+                {
+                    imageOps.EndBatch();
+                    batchSuccess = true;
+                    DiagnosticAttnOut = new float[totalTokens * HiddenSize];
+                    _backend.Download(ws.AttnOut, DiagnosticAttnOut);
+                    return new float[OutChannels * latH * latW];
+                }
 
                 // Img attention projection & gate-residual
                 visionOps.Sgemm(ws.OutImg, ws.AttnOut, bw.ImgAttnProjWeight, numImgTokens, HiddenSize, HiddenSize);
@@ -496,7 +556,7 @@ public sealed class MMDiTModel : IDisposable
                 }
 
                 // Dual-attention (blocks 0..12)
-                if (bw.DualAttn)
+                if (bw.DualAttn && !SkipDualAttnForDiagnostic)
                 {
                     visionOps.Sgemm(ws.QkvImg, ws.NormedImg2, bw.ImgAttn2QkvWeight!, numImgTokens, HiddenSize, 3 * HiddenSize);
                     if (bw.ImgAttn2QkvBias is not null)
@@ -660,7 +720,8 @@ public sealed class MMDiTModel : IDisposable
         DiffusionOps.SiluInPlace(ws.TVecSilu.AsSpan(0, HiddenSize));
 
         // 4. Joint MMDiT Transformer Blocks
-        for (int b = 0; b < Depth; b++)
+        int cpuMaxBlock = MaxBlockIndexForDiagnostic ?? Depth - 1;
+        for (int b = 0; b <= cpuMaxBlock; b++)
         {
             string blk = $"joint_blocks.{b}";
 
@@ -693,6 +754,13 @@ public sealed class MMDiTModel : IDisposable
             // actually in the checkpoint).
             Lin($"{blk}.x_block.adaLN_modulation.1", ws.TVecSilu.AsSpan(0, HiddenSize), ws.ImgMod.AsSpan(0, imgModChunks * HiddenSize), 1, HiddenSize, imgModChunks * HiddenSize);
             Lin($"{blk}.context_block.adaLN_modulation.1", ws.TVecSilu.AsSpan(0, HiddenSize), ws.TxtMod.AsSpan(0, txtModChunks * HiddenSize), 1, HiddenSize, txtModChunks * HiddenSize);
+
+            if (b == 0 && DiagnosticStopStage == "mod")
+            {
+                DiagnosticImgModOut = ws.ImgMod.AsSpan(0, imgModChunks * HiddenSize).ToArray();
+                DiagnosticTxtModOut = ws.TxtMod.AsSpan(0, txtModChunks * HiddenSize).ToArray();
+                return new float[OutChannels * latH * latW];
+            }
 
             // ── Self/Joint Attention ────────────────────────────────────────
             ModulateNorm(x.AsSpan(0, numImgTokens * HiddenSize), ws.NormedImg.AsSpan(0, numImgTokens * HiddenSize), ws.ImgMod.AsSpan(0, imgModChunks * HiddenSize), 0, numImgTokens, HiddenSize);
@@ -732,7 +800,20 @@ public sealed class MMDiTModel : IDisposable
             ApplyHeadRmsNorm(ws.Q.AsSpan(numImgTokens * HiddenSize, numTextTokens * HiddenSize), $"{blk}.context_block.attn.ln_q", numTextTokens, NumHeads, HeadDim);
             ApplyHeadRmsNorm(ws.K.AsSpan(numImgTokens * HiddenSize, numTextTokens * HiddenSize), $"{blk}.context_block.attn.ln_k", numTextTokens, NumHeads, HeadDim);
 
+            if (b == 0 && DiagnosticStopStage == "qkv")
+            {
+                DiagnosticQOut = ws.Q.AsSpan(0, totalTokens * HiddenSize).ToArray();
+                DiagnosticKOut = ws.K.AsSpan(0, totalTokens * HiddenSize).ToArray();
+                return new float[OutChannels * latH * latW];
+            }
+
             JointMultiHeadAttention(ws.Q.AsSpan(0, totalTokens * HiddenSize), ws.K.AsSpan(0, totalTokens * HiddenSize), ws.V.AsSpan(0, totalTokens * HiddenSize), ws.AttnOut.AsSpan(0, totalTokens * HiddenSize), ws.Scores, totalTokens, HiddenSize, NumHeads, HeadDim);
+
+            if (b == 0 && DiagnosticStopStage == "attn")
+            {
+                DiagnosticAttnOut = ws.AttnOut.AsSpan(0, totalTokens * HiddenSize).ToArray();
+                return new float[OutChannels * latH * latW];
+            }
 
             var xAttn = ws.AttnOut.AsSpan(0, numImgTokens * HiddenSize);
             var cAttn = ws.AttnOut.AsSpan(numImgTokens * HiddenSize, numTextTokens * HiddenSize);
@@ -757,7 +838,7 @@ public sealed class MMDiTModel : IDisposable
             // attention's residual and BEFORE the MLP -- real attn2 has its own separate
             // qkv/proj/ln_q/ln_k weights and never sees the text tokens at all (image-only,
             // ordinary non-joint self-attention).
-            if (dualAttn)
+            if (dualAttn && !SkipDualAttnForDiagnostic)
             {
                 Lin($"{blk}.x_block.attn2.qkv", ws.NormedImg2.AsSpan(0, numImgTokens * HiddenSize), ws.QkvImg.AsSpan(0, numImgTokens * 3 * HiddenSize), numImgTokens, HiddenSize, 3 * HiddenSize);
                 UnpackQkv(ws.QkvImg.AsSpan(0, numImgTokens * 3 * HiddenSize), ws.Q.AsSpan(0, numImgTokens * HiddenSize), ws.K.AsSpan(0, numImgTokens * HiddenSize), ws.V.AsSpan(0, numImgTokens * HiddenSize), 0, numImgTokens, HiddenSize);

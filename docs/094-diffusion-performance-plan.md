@@ -241,6 +241,67 @@ the starting picture:
     zero apple structure) — same unresolved bug class named 2026-09-19, still not root-caused. The
     README status matrix should read CPU as "🟡 structurally real, composition bug open" and GPU as
     "🔴 broken, unrelated GPU-specific defect," not a single blended 🟡.
+- [x] **Real GPU-bug bisection infrastructure built and five real candidates ruled out with
+      controlled experiments, 2026-09-20** — the exact root cause is still NOT found, but this
+      session closes several real, previously-only-hypothesized candidates and precisely localizes
+      WHERE the divergence first appears, which is genuine forward progress even without a fix.
+  - **New diagnostic infrastructure** (`MMDiTModel.cs`): `MaxBlockIndexForDiagnostic` (int?, lets a
+    caller truncate both `Forward`/`ForwardGpu` to run only the first N joint blocks then go
+    straight to the final layer, without breaking the GPU's `BeginBatch`/`EndBatch` command
+    recording), `DiagnosticStopStage` (string?, "mod"/"qkv"/"attn" — ends the GPU batch early and
+    downloads intermediate buffers at three named points inside block 0, with matching CPU-side
+    capture at the same points), `SkipDualAttnForDiagnostic` (bool). All four default to
+    off/null — zero behavior change, zero perf cost, for real production runs. Two new tests use
+    them: `Sd3BaselineTests.BisectGpuCpuDivergence_Sd35` (coarse, per-block-depth) and
+    `..._WithinBlock0` (fine, three stop-points inside block 0).
+  - **Coarse bisection result**: truncating to 0 blocks (skip the joint-block loop entirely, go
+    x_embedder→pos_embed→final_layer only) gives cosine=1.000000, maxDiff=0.000351 — CPU and GPU
+    agree almost exactly. Truncating to just 1 block already gives maxDiff=10.2 — the divergence is
+    NOT accumulated drift over 24 blocks, it is introduced entirely within block 0 itself.
+  - **Five real candidates tested and RULED OUT** (each via a real env-var-gated code-path swap,
+    re-running the SAME bisection, confirming the maxDiff numbers are unchanged to 3+ sig figs):
+    (1) *FP16 tiled attention shader* (`STINGRAY_FORCE_MHA64_F32=1`, forces the headDim=64 F32
+    fallback instead of `MultiHeadAttentionTiled64_FP16`) — maxDiff unchanged (10.2→10.2).
+    (2) *FP16-resident block weights* (`STINGRAY_SD3_FORCE_GPU_WEIGHTS_F32=1`, forces
+    `MMDiTGpuWeights.UploadWeight` to always upload plain F32 instead of FP16/BF16) — maxDiff
+    unchanged (10.2→10.2). Together, (1)+(2) rule out reduced-precision GPU compute as the cause
+    entirely — the bug reproduces bit-for-bit-comparably even at full F32 GPU precision.
+    (3) *Dual-attention* (`SkipDualAttnForDiagnostic=true`, skips the attn2 pass in BOTH CPU and
+    GPU) — maxDiff barely moved (10.2→9.7), well within noise, ruling out the dual-attention-only
+    code path (`attn2.qkv`/`attn2.proj`/dual-attn residual) as the sole or dominant cause.
+    (4) *Q5_K dequant for `attn.qkv.weight`* — already ruled out 2026-09-19
+    (`Sd3Q5KDequantCrossCheckTests`, maxDiff 0.0 exactly).
+    (5) *Q4_K dequant for `adaLN_modulation.1.weight`* — NEW this pass
+    (`Sd3AdaLNQ4KDequantCrossCheckTests`): `list-tensors` shows this is the FIRST quantized tensor
+    touched anywhere in the forward pass (Q4_K, [1536,13824]) — every tensor read before block 0
+    (x_embedder/context_embedder/pos_embed/t_embedder/y_embedder) is plain Float16, exactly why the
+    "0 blocks" truncation matched almost perfectly while block 0 immediately diverges. Cross-checked
+    `IWeightLoader.ReadF32`'s Q4_K dequant (the path GPU's resident-weight upload uses) against
+    `QuantizedWeightCache.Linear`'s fused Q4_K SIMD kernel (the path CPU's `Lin()` uses) via the same
+    one-hot-column technique as the Q5_K check: **maxDiff = 2.98e-8, essentially exact** — Q4_K
+    dequant is not the bug either.
+  - **Fine (within-block-0) bisection result**: at all three stop-points (mod / qkv+qknorm /
+    joint-attention-output), cosine stays extremely high (0.999955-0.999984) but maxDiff is already
+    large and growing (mod: ImgMod 1.06 / TxtMod 2.42 → qkv: Q 0.05 / K 0.11 → attn-out: 5.69). The
+    divergence is diffuse, not concentrated: ALL 333 tokens (100%) have at least one element with
+    absolute diff > 1.0 after the joint attention, not a handful of outlier tokens/heads — this
+    argues against a single wrong index/offset (which would typically corrupt a specific
+    token/head/channel range, not every token uniformly) and toward either (a) a genuine, still
+    unidentified logic difference in the modulation Sgemm/AdaLN path itself (ruled-out precision and
+    dequant candidates above still leave the Sgemm/AdaLNModulate GPU shaders' own math unverified
+    line-by-line), or (b) real amplification: modulation errors of ~1-2 (on activations of
+    plausible O(1-30) scale, given the worst attn-output element was CPU=-27.75 vs GPU=-22.06, both
+    large-magnitude, same sign) feeding into every downstream QKV/attention/MLP computation and
+    compounding, which alone would explain both the block-0 numbers above and the fully garbled
+    24-block/20-step final image.
+  - **Real next step, not yet done**: candidates (a)/(b) above are not yet distinguished. The most
+    promising next move is verifying the `AdaLNModulate` GPU shader's LayerNorm math line-by-line
+    against `ModulateNorm`'s CPU math with a DIRECT unit test (feed identical x/shift/scale/mean/var
+    inputs to both, bypassing the Sgemm/weight-upload chain entirely) — narrower than this pass's
+    dequant/precision checks, and not yet attempted. The `MaxBlockIndexForDiagnostic`/
+    `DiagnosticStopStage` infrastructure built this pass makes that the next natural extension point
+    (add a 4th named stop-point immediately after each `AdaLNModulate` call, comparing `ws.NormedImg`
+    output directly rather than the modulation vector that feeds it).
 
 ### Phase 2 — Qwen Image: first GPU port (biggest true gap — zero GPU code exists)
 

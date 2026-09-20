@@ -248,6 +248,8 @@ public sealed class MMDiTGpuWeights : IDisposable
 
     private static CoreTensor UploadWeight(IComputeBackend backend, float[] f32Data, TensorShape shape)
     {
+        if (Environment.GetEnvironmentVariable("STINGRAY_SD3_FORCE_GPU_WEIGHTS_F32") == "1")
+            return backend.Upload(f32Data, shape, exact: true);
         if (backend.BestSgemmPrecision == SgemmPrecision.Fp16)
         {
             var half = new Half[f32Data.Length];

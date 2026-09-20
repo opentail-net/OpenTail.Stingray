@@ -4034,7 +4034,7 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
             var p = new MultiHeadAttentionTiledParams { qSeq = (uint)qSeq, kvSeq = (uint)kvSeq, numHeads = (uint)numHeads, scale = 1f / MathF.Sqrt(headDim) };
             uint groupsX = (uint)((qSeq + 31) / 32);
 
-            if (HasShaderFloat16Int8 && Has16BitStorage)
+            if (HasShaderFloat16Int8 && Has16BitStorage && Environment.GetEnvironmentVariable("STINGRAY_FORCE_MHA64_F32") != "1")
             {
                 _multiHeadAttentionTiled64FP16Pipeline ??= new ComputePipeline(this, Shaders.MultiHeadAttentionTiled64_FP16, 4, pushConstantSize: sizeof(MultiHeadAttentionTiledParams));
 
