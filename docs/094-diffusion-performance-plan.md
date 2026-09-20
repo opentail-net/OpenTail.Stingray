@@ -576,12 +576,54 @@ the starting picture:
     immediately via visual + numeric parity, unlike the two bugs above that had nothing solid to
     diff against. This makes it a genuinely safer, more tractable next big undertaking than either
     of those, matching the user's own "real opportunity vs. dead end" framing.
-  - **Not started this pass** (scoping only, given the size) — real next step for whoever picks this
-    up: build `ZImageGpuWorkspace` following `Flux2GpuWorkspace`'s exact structural template
-    (allocate NormedX/QKV/AttnOut/MlpBuf/Mod buffers once per shape, not per-call), rewrite the
-    block loop to chain through resident tensors, verify with a real GPU-vs-CPU parity test FIRST
-    (matching this whole doc's own discipline) before touching any timing claim, then measure
-    real before/after against the existing 183.6s Vulkan / ~194-232s CPU baseline.
+  - **Wired up and tested, 2026-09-20 — real speedup found, but output is WRONG, disabled.**
+    Better news than initially scoped: `ZImageGpuWeights`/`ZImageGpuWorkspace`/`ApplyBlockGpu` (the
+    exact resident-chain trio the plan above called for) already existed in full, complete, and
+    ALREADY had a passing small-scale synthetic parity test (`ZImageGpuParityTests`) — nobody had
+    ever wired it into `ZImageDiT.Forward`'s real dispatch path, the same "built, tested, never
+    connected" situation found for FLUX.2's `AdaLNModulateDual`/`ScaleGateAddDual`/FP16-attention
+    shaders earlier this session. Wired `Forward`'s 30-main-`layers.N` loop to call the resident
+    path when a GPU backend is present (upload `x` into `ws.X` once, chain all 30 blocks through
+    resident tensors, download once at the end) — real code, not a stub, cached the RoPE
+    de-interleave conversion by reference too.
+  - **Real bug found and fixed during wiring**: my first attempt wrapped each `ApplyBlockGpu` call
+    in `imageOps.BeginBatch()`/`EndBatch()` per the method's own doc comment — this crashed with a
+    real Vulkan `ErrorUnknown`, because `ApplyBlockGpu` does a genuine mid-block `Download()` (the
+    tanh-gate modulation round-trip) which needs an immediate submit+fence-wait, invalid while a
+    batch is being recorded — the EXACT SAME class of driver rejection already documented in this
+    codebase for SDXL's own Stage 5 attempt. Removed the batching (the parity test itself never used
+    it either) — residency here comes from `ws.X` staying GPU-resident across blocks, not from
+    command-buffer batching, which stays a separate, unattempted optimization.
+  - **Real end-to-end run, 256×256/4 steps, post-fix**: **64.8s, down from the documented 183.6s
+    baseline — a real 2.8× speedup on paper.** But **the output PNG is pure structureless noise with
+    no color clustering at all.** Re-ran the SAME test with the resident path disabled (the naive/
+    fallback path) to get a real control: 129.3s, and its output — while also not the clean,
+    coherent apple this doc's earlier documented sample shows — has visible red color clustering
+    against a textured background, a qualitatively different (and less broken) result than the
+    residency path's pure abstract noise. **Honest caveat**: this specific test run's checkpoint
+    choice (`z_image_turbo-Q4_0.gguf`, picked because the `Q5_0` file on this machine turned out
+    truncated/corrupted — a separate, real, unrelated finding) may not exactly match whatever config
+    the originally-documented 183.6s/coherent-apple sample used, so this pass cannot cleanly claim
+    "residency broke a clean baseline" — only that residency's output is clearly, visibly worse than
+    the naive path's own output under the identical test conditions, which is sufficient reason to
+    keep it disabled regardless of the baseline's own exact fidelity. The small-scale synthetic
+    parity test (dim=384, nHeads=3, t=24) did not catch this — it's a bug that only manifests at
+    Z-Image's real production scale (dim=3840, nHeads=30, much larger `t`). **DISABLED immediately**
+    (`ZImageGpuResidencyRealScaleBugFound = false` in `ZImageDiT.cs`, a `static readonly` not
+    `const` so the branch stays reachable/no `CS0162`) rather than ship a fast-but-wrong result —
+    matching this whole session's own hard-won discipline from the Qwen Image/SD3.5 investigations.
+    The naive/CPU fallback path is confirmed still reachable and unaffected (re-ran the same test
+    with the flag off).
+  - **Real next step for whoever picks this up**: the bug is real-scale-specific, not caught by the
+    existing small synthetic test — the most direct next lever is extending `ZImageGpuParityTests`
+    itself to real production dimensions (dim=3840, nHeads=30, a realistic `t`) with REAL checkpoint
+    weights rather than synthetic ones, then applying the same per-block bisection technique already
+    proven for Qwen Image (`OnBlockOutputCpu`/`OnBlockOutputGpu` hooks, same convention) to find
+    where CPU and GPU diverge across the 30 real blocks. Given `ApplyBlockGpu`'s math already passed
+    a real (if small-scale) numeric check, this is far more likely a genuine shape/size-dependent
+    bug (e.g. a shader code path that only activates above some `nTok`/`nHeads` threshold) than a
+    fundamental logic error — a more tractable class of bug than SD3.5/Qwen Image's own unresolved
+    ones, given a real synthetic-scale baseline to compare against.
 - [ ] Real end-to-end Vulkan timing vs. the existing 183.6s baseline (256×256, 4 steps), once the
       residency port above lands.
 - [ ] No C++ reference exists for Z-Image in `examples/` — document that plainly rather than

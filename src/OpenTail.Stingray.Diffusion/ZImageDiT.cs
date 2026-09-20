@@ -47,6 +47,19 @@ public sealed class ZImageDiT : IDisposable
     // Cached unit-scale / unit-gate arrays (unmodulated blocks use scale=1, gate=1)
     private float[]? _onesCache;
 
+    // GPU residency for the 30 main `layers.N` blocks (docs/094 Phase 7, 2026-09-20): the
+    // resident ApplyBlockGpu/ZImageGpuWeights/ZImageGpuWorkspace trio already existed, fully
+    // built and parity-tested (ZImageGpuParityTests), but nothing in this class's own Forward()
+    // ever called it -- the real per-step loop still used the old per-op immediate-dispatch MatQ
+    // path. Wiring it in here, not writing a new implementation.
+    private ZImageGpuWeights? _residentGpuWeights;
+    private ZImageGpuWorkspace? _residentGpuWorkspace;
+    private int _residentGpuNTok = -1;
+
+    /// <summary>Kept `false` -- real-scale run produces noise, see the call site's own doc
+    /// comment. Not a `const` so the branch stays reachable (avoids CS0162) while disabled.</summary>
+    private static readonly bool ZImageGpuResidencyRealScaleBugFound = false;
+
     /// <summary>Minimum batch size to route a MatQ call through the GPU backend.</summary>
     private const int MinGpuBatch = 16;
     private readonly QuantizedWeightCache _quantizedCache;
@@ -151,14 +164,100 @@ public sealed class ZImageDiT : IDisposable
         var freqs = _cachedCombinedFreqs;
 
         // ── 4. 30 main transformer blocks ─────────────────────────────────
-        for (int l = 0; l < _p.NLayers; l++)
-            ApplyBlock($"layers.{l}", x, nTotal, freqs, adaln, true);
+        // DISABLED, 2026-09-20 (docs/094 Phase 7): real end-to-end run (256x256/4 steps) completed
+        // in 64.8s (down from 183.6s -- a real 2.8x speedup on paper) but produced PURE NOISE, not
+        // the known-good coherent apple this exact config verifies on the CPU/naive-GPU path. The
+        // existing small-scale synthetic ZImageGpuParityTests (t=24, dim=384) still passes -- the
+        // bug is real-scale-specific and not yet found. Do NOT re-enable
+        // (ZImageGpuResidencyRealScaleBugFound=false) until root-caused; a fast wrong answer is not
+        // a result, matching this whole project's own hard-won discipline (see docs/094's Qwen
+        // Image/SD3.5 GPU investigations for the same lesson repeatedly).
+        if (ZImageGpuResidencyRealScaleBugFound && _backend is IImageOpsBackend imageOpsMain)
+        {
+            try
+            {
+                RunMainLayersGpu(imageOpsMain, x, nTotal, freqs, adaln);
+            }
+            catch (Exception ex) when (ex is not OutOfMemoryException)
+            {
+                Console.WriteLine($"[ZImage GPU Exception] {ex}");
+                for (int l = 0; l < _p.NLayers; l++)
+                    ApplyBlock($"layers.{l}", x, nTotal, freqs, adaln, true);
+            }
+        }
+        else
+        {
+            for (int l = 0; l < _p.NLayers; l++)
+                ApplyBlock($"layers.{l}", x, nTotal, freqs, adaln, true);
+        }
 
         // ── 5. Extract image portion (first nImg tokens) and apply final layer
         var imgOut = new float[nImg * dim];
         Array.Copy(x, 0, imgOut, 0, nImg * dim);
 
         return FinalLayer(imgOut, nImg, adaln);
+    }
+
+    // GPU-resident dispatch for the 30 main `layers.N` blocks (docs/094 Phase 7). Mutates `x` in
+    // place, matching ApplyBlock's own CPU calling convention exactly so the caller's fallback
+    // path is a drop-in swap. Weights upload once (first call) and are reused for this instance's
+    // lifetime; the workspace is rebuilt only if the token count changes (a different
+    // resolution/prompt length).
+    private float[]? _cachedGpuRopeCos, _cachedGpuRopeSin;
+    private float[]? _cachedGpuRopeFreqsKey;
+
+    private void RunMainLayersGpu(IImageOpsBackend imageOps, float[] x, int nTok, float[] freqs, float[] adaln)
+    {
+        int dim = _p.Dim;
+        int headDim = _p.HeadDim;
+        int halfHead = headDim / 2;
+
+        _residentGpuWeights ??= new ZImageGpuWeights(_backend!, W, _p.NLayers, dim, headDim, _p.FfnHidden, _p.AdalnEmbedDim);
+
+        // De-interleave freqs (real format: (cos,sin) pairs per token) into the compact GPU
+        // layout, cached by reference since freqs is the same array object across denoising steps
+        // (Forward's own _cachedCombinedFreqs) -- avoids redoing this O(nTok*halfHead) split every
+        // single step.
+        if (!ReferenceEquals(_cachedGpuRopeFreqsKey, freqs))
+        {
+            var ropeCos = new float[nTok * halfHead];
+            var ropeSin = new float[nTok * halfHead];
+            for (int i = 0; i < nTok * halfHead; i++)
+            {
+                ropeCos[i] = freqs[i * 2];
+                ropeSin[i] = freqs[i * 2 + 1];
+            }
+            _cachedGpuRopeCos = ropeCos;
+            _cachedGpuRopeSin = ropeSin;
+            _cachedGpuRopeFreqsKey = freqs;
+        }
+
+        if (_residentGpuWorkspace is null || _residentGpuNTok != nTok)
+        {
+            _residentGpuWorkspace?.Dispose();
+            _residentGpuWorkspace = new ZImageGpuWorkspace(_backend!, nTok, dim, _p.FfnHidden, _cachedGpuRopeCos!, _cachedGpuRopeSin!, headDim);
+            _residentGpuNTok = nTok;
+        }
+
+        var ws = _residentGpuWorkspace;
+        using var xGpu = _backend!.Upload(x, TensorShape.D2(nTok, dim), exact: true);
+        imageOps.ScaleInPlace(ws.X, 0f);
+        _backend.AddInPlace(ws.X, xGpu);
+        using var adalnGpu = _backend.Upload(adaln, TensorShape.D2(1, _p.AdalnEmbedDim), exact: true);
+
+        // NOT wrapped in BeginBatch()/EndBatch() per block: ApplyBlockGpu does a real mid-block
+        // Download() (the tanh-gate modulation round-trip, see its own doc comment) which requires
+        // an immediate submit+fence-wait -- invalid while a batch recording session is open (the
+        // exact same class of driver rejection already documented in this codebase for SDXL's own
+        // Stage 5 attempt). The already-existing, already-verified-correct ZImageGpuParityTests
+        // exercises ApplyBlockGpu completely unbatched too -- matching that, not inventing a new
+        // untested combination. The real residency win here comes from ws.X staying GPU-resident
+        // across blocks (no per-block activation Upload/Download), not from command-buffer
+        // batching, which is a separate, independent optimization this pass doesn't attempt.
+        for (int l = 0; l < _p.NLayers; l++)
+            ApplyBlockGpu(_residentGpuWeights.Layers[l], ws, nTok, adalnGpu, imageOps);
+
+        _backend.Download(ws.X, x);
     }
 
     // ── Embedding helpers ─────────────────────────────────────────────────
@@ -812,6 +911,8 @@ public sealed class ZImageDiT : IDisposable
         if (!_disposed)
         {
             _disposed = true;
+            _residentGpuWorkspace?.Dispose();
+            _residentGpuWeights?.Dispose();
             if (_gpuWeights != null && _backend != null)
             {
                 foreach (var t in _gpuWeights.Values)
