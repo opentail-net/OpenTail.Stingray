@@ -631,17 +631,72 @@ the starting picture:
     `ReadF32`'s Q4_0 decode (what `ZImageGpuWeights` uses) vs `QuantizedWeightCache.Linear`'s fused
     Q4_0 kernel (what CPU's real matmuls use) agree to **maxDiff ≈ 6e-8** — machine precision, a
     clean negative result. Weight dequantization is not the cause.
-  - **Status: real, thorough investigation (2 real bisections at different scales + 1 dequant
-    cross-check), root cause not conclusively isolated to a single line of code.** Kept disabled.
-    Given the immediate-onset (not delayed) divergence pattern, the most promising REMAINING lever
-    for whoever picks this up next (not attempted this pass, given time already invested) is a
-    finer-grained bisection WITHIN block 0 itself (capture after each of `ApplyBlockGpu`'s named
-    sub-steps — modulation, attention, FFN — rather than only after the whole block) to localize
-    which specific operation inside the very first block already diverges, since the current
-    per-block-only granularity cannot distinguish "attention is slightly off" from "FFN is slightly
-    off" within block 0.
-- [ ] Real end-to-end Vulkan timing vs. the existing 183.6s baseline (256×256, 4 steps), once the
-      residency port above lands.
+  - **ROOT CAUSE FOUND AND FIXED, 2026-09-20**: a within-block-0 sub-step bisection (comparing
+    `ApplyBlock`'s CPU formula against `ApplyBlockGpu`'s GPU formula directly, line by line, rather
+    than adding new runtime hooks) found a real, structural bug in the modulation scale computation.
+    CPU's real formula: `DiffusionOps.RmsNorm(x, ..., normW1, ...)` applies the LEARNED per-channel
+    RMSNorm gamma (`attention_norm1.weight`/`ffn_norm1.weight`) as part of the norm itself, THEN a
+    separate elementwise multiply by `scaleMsa`/`scaleMlp` (= `1+rawScale` from the adaLN modulation
+    projection). GPU's `AdaLNModulate` shader is an UNWEIGHTED RMSNorm with no learned-gamma input
+    at all, computing `norm*(1.0+s)+shift` internally — and `ApplyBlockGpu` was passing
+    `s = 1+rawScale` directly. This is two compounding bugs in one line: (a) the learned gamma
+    (`AttnNorm1W`/`FfnNorm1W` — uploaded to GPU, confirmed via grep to be referenced NOWHERE in
+    `ApplyBlockGpu`'s body) is silently dropped entirely, and (b) the shader's own internal `+1` is
+    double-counted (`norm*(1+(1+rawScale))` instead of `norm*(1+rawScale)`). Invisible in the
+    small-scale synthetic parity test because it used all-ones norm weights (masking (a) completely,
+    since multiplying by 1 is a no-op) with a tolerance loose enough to pass despite (b).
+    **Fix**: added `AttnNorm1WHost`/`FfnNorm1WHost` host-side float arrays to
+    `ZImageGpuWeights.BlockWeights` (alongside the existing GPU-resident tensors), and changed
+    `ApplyBlockGpu` to fold the learned gamma into the scale vector before upload:
+    `s[i] = normW1Host[i] * (1+rawScale[i]) - 1`, which cancels the shader's own `+1` and
+    reproduces CPU's `RmsNorm(x)*normW1*(1+rawScale)` exactly (the two per-channel multiplies
+    commute since they both apply after RMSNorm's own normalization).
+  - **Verified via the same real-scale bisection**: block-0 cosine went from **0.988507 → 0.999997**
+    (essentially machine precision), and the run now only crosses the 0.999 divergence threshold at
+    block 28 of 30 (0.998470) — consistent with ordinary accumulated floating-point drift over 28
+    residual blocks, not a remaining structural bug.
+  - **Re-enabled and re-ran end-to-end** (`ZImageGpuResidencyRealScaleBugFound = true`,
+    256×256/4 steps, real `z_image_turbo-Q4_0.gguf` weights): **63.6s** (matches the earlier 64.8s
+    measurement — confirms the ~2.9x speedup over the 183.6s CPU baseline is real and reproducible),
+    with **no crash and no NaN/Inf**. **But the output image, while no longer pure noise, is still
+    not the clean coherent apple** the naive/CPU path produces (`docs/diffusion-samples/
+    zimage-vulkan-fixed.png`) — it shows a visible quilted/patchwork texture artifact (color
+    clustering into a red-apple-like palette is present, unlike the pre-fix pure-noise result, but
+    the spatial structure is wrong). Saved for inspection:
+    `docs/diffusion-samples/zimage_gpu_residency_2026-09-20.png`.
+  - **Honest remaining-cause assessment**: this machine's Vulkan device reports
+    `HasShaderFloat16Int8 && Has16BitStorage = true`, so `ZImageGpuWeights.UploadWeight` quantizes
+    EVERY block weight to FP16 on upload (`BestSgemmPrecision == Fp16` branch) — a second,
+    independent precision-loss source, structurally identical to the already-documented Qwen Image
+    GPU precision-sensitivity finding earlier in this session (Phase 2). A quilted, per-patch-visible
+    artifact (rather than uniform grain) is the expected visual signature of small per-token
+    numerical drift in a patch-based DiT, since each of the 256 image patches/tokens accumulates its
+    own slightly-different rounding error across 30 residual blocks — and Z-Image-Turbo's 4-step
+    "turbo" schedule leaves very little room for the diffusion process to self-correct such drift,
+    unlike a 20-50 step model. This is a plausible, evidence-consistent explanation, not a
+    conclusively proven one (matches this session's own standard of honesty already applied to Qwen
+    Image/SD3.5's unresolved GPU bugs) — testing it further (e.g. forcing FP32 weight upload) is the
+    natural next lever for whoever picks this up, but is deferred here given the real, decisive
+    structural bug above is now fixed and documented, and given Qwen Image's own FP32-upload
+    experiment on this exact hardware already hit a real `VkErrorOutOfHostMemory` ceiling for a
+    smaller-than-Z-Image weight set, suggesting this may not even be testable on this machine.
+  - **Kept DISABLED** (`ZImageGpuResidencyRealScaleBugFound = false`) despite the real, confirmed
+    block-math fix: this session's own established discipline (SD3.5, Qwen Image) is not to ship a
+    fast-but-visibly-wrong result, and the end-to-end image is still visibly wrong (quilted texture,
+    not a clean apple) even though it is no longer pure noise. The structural bug fix is real,
+    genuine progress — it took block-0 cosine from 0.9885 to 0.999997 and is worth keeping in the
+    code regardless of the flag, since it is provably more correct than what shipped before — but
+    correctness at the per-block-math level is not the same as a correct final image, and only the
+    latter is the real bar. The residual defect is plausibly this iGPU's forced FP16 weight
+    quantization (`HasShaderFloat16Int8 && Has16BitStorage` on this device) compounding over 30
+    blocks with only 4 turbo-schedule steps to self-correct — the same class of precision-sensitivity
+    already documented for Qwen Image (Phase 2) on this exact hardware, and Qwen Image's own
+    FP32-upload confirming experiment already hit a real `VkErrorOutOfHostMemory` ceiling on this
+    machine, so that avenue may not even be testable here. A future pass with a real discrete GPU
+    (no FP16 auto-selection forced) is the only way to get decisive evidence either way.
+- [x] Real end-to-end Vulkan timing vs. the existing 183.6s baseline (256×256, 4 steps): **63.6s**
+      measured with the fix applied and the flag temporarily enabled to get a real number — still
+      disabled in the shipped code per the correctness bar above.
 - [ ] No C++ reference exists for Z-Image in `examples/` — document that plainly rather than
       fabricating one.
 

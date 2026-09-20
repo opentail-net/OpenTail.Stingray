@@ -23,6 +23,18 @@ public sealed class ZImageGpuWeights : IDisposable
         public CoreTensor AdaLnModB { get; }
         public CoreTensor AttnNorm1W { get; }
         public CoreTensor AttnNorm2W { get; }
+        /// <summary>
+        /// Host-side copy of `attention_norm1.weight`/`ffn_norm1.weight` (the learned per-channel
+        /// RMSNorm gamma applied BEFORE the AdaLN modulation scale on the CPU path, via
+        /// `DiffusionOps.RmsNorm(x, ..., normW1, ...)` then a separate multiply by scaleMsa).
+        /// `AdaLNModulate`'s shader is an UNWEIGHTED RMSNorm -- it has no way to apply a learned
+        /// gamma itself, only an externally-supplied per-token scale+shift. Kept host-side (not
+        /// just GPU-resident) so `ApplyBlockGpu` can fold it into the modulation scale vector
+        /// on the CPU before uploading, since both are per-channel and RMSNorm's normalization
+        /// commutes with elementwise scaling: RMSNorm(x)*normW1*scaleMsa == RMSNorm(x)*(normW1*scaleMsa).
+        /// </summary>
+        public float[] AttnNorm1WHost { get; }
+        public float[] FfnNorm1WHost { get; }
         public CoreTensor QkvW { get; }
         public CoreTensor QNormW { get; }
         public CoreTensor KNormW { get; }
@@ -40,7 +52,8 @@ public sealed class ZImageGpuWeights : IDisposable
             AdaLnModW = UploadWeight(backend, getWeight($"{prefix}.adaLN_modulation.0.weight"), TensorShape.D2(4 * dim, adalnEmbedDim));
             AdaLnModB = backend.Upload(getWeight($"{prefix}.adaLN_modulation.0.bias"), TensorShape.D1(4 * dim), exact: true);
 
-            AttnNorm1W = backend.Upload(getWeight($"{prefix}.attention_norm1.weight"), TensorShape.D1(dim), exact: true);
+            AttnNorm1WHost = getWeight($"{prefix}.attention_norm1.weight");
+            AttnNorm1W = backend.Upload(AttnNorm1WHost, TensorShape.D1(dim), exact: true);
             AttnNorm2W = backend.Upload(getWeight($"{prefix}.attention_norm2.weight"), TensorShape.D1(dim), exact: true);
 
             QkvW = UploadWeight(backend, getWeight($"{prefix}.attention.qkv.weight"), TensorShape.D2(3 * dim, dim));
@@ -48,7 +61,8 @@ public sealed class ZImageGpuWeights : IDisposable
             KNormW = backend.Upload(getWeight($"{prefix}.attention.k_norm.weight"), TensorShape.D1(headDim), exact: true);
             OutW = UploadWeight(backend, getWeight($"{prefix}.attention.out.weight"), TensorShape.D2(dim, dim));
 
-            FfnNorm1W = backend.Upload(getWeight($"{prefix}.ffn_norm1.weight"), TensorShape.D1(dim), exact: true);
+            FfnNorm1WHost = getWeight($"{prefix}.ffn_norm1.weight");
+            FfnNorm1W = backend.Upload(FfnNorm1WHost, TensorShape.D1(dim), exact: true);
             FfnNorm2W = backend.Upload(getWeight($"{prefix}.ffn_norm2.weight"), TensorShape.D1(dim), exact: true);
 
             W1 = UploadWeight(backend, getWeight($"{prefix}.feed_forward.w1.weight"), TensorShape.D2(ffnHidden, dim));

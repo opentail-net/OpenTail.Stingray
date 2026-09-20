@@ -56,14 +56,33 @@ public sealed class ZImageDiT : IDisposable
     private ZImageGpuWorkspace? _residentGpuWorkspace;
     private int _residentGpuNTok = -1;
 
-    /// <summary>Kept `false` -- real-scale run produces noise, see the call site's own doc
-    /// comment. Not a `const` so the branch stays reachable (avoids CS0162) while disabled.</summary>
+    /// <summary>A real structural bug WAS found and fixed 2026-09-20 (docs/094 Phase 7):
+    /// `ApplyBlockGpu` passed `AdaLNModulate` a scale of (1+rawScale) where the shader's own
+    /// formula is norm*(1.0+s)+sh, double-counting the "+1" AND never applying the learned RMSNorm
+    /// gamma (attention_norm1.weight/ffn_norm1.weight, uploaded but referenced nowhere in the GPU
+    /// path). Fixed by folding the host-side norm weight into the scale vector before upload:
+    /// `s = normW1*(1+rawScale) - 1`. Real-scale bisection went from cosine=0.9885 at block 0 to
+    /// cosine=0.999997 at block 0 -- confirms the fix is real and correct at the block-math level.
+    /// BUT the full end-to-end image is STILL not the clean coherent apple the naive/CPU path
+    /// produces (a quilted/patchwork artifact remains, plausibly this iGPU's forced FP16 weight
+    /// upload compounding over 30 blocks / 4 turbo-schedule steps -- see the doc comment for full
+    /// analysis). Kept `false` matching this session's own standard (SD3.5/Qwen Image): don't ship
+    /// fast-but-visibly-wrong. Not a `const` so the branch stays reachable (avoids CS0162).</summary>
     private static readonly bool ZImageGpuResidencyRealScaleBugFound = false;
 
     // Per-block diagnostic hooks for the real-scale bug bisection (docs/094 Phase 7, 2026-09-20),
     // same convention already proven for WanModel/QwenImageModel this session.
     public Action<int, float[]>? OnMainBlockOutputCpu { get; set; }
     public Action<int, float[]>? OnMainBlockOutputGpu { get; set; }
+
+    // Finer within-block debug hooks (docs/094 Phase 7 sub-block bisection, 2026-09-20): capture
+    // the four modulation vectors, and the activation right after each sub-block's gated residual
+    // add, so a divergence can be localized to modulation vs. attention vs. FFN within a single
+    // block rather than only "somewhere in the whole block".
+    public Action<float[], float[], float[], float[]>? OnModulationCpu { get; set; }
+    public Action<float[], float[], float[], float[]>? OnModulationGpu { get; set; }
+    public Action<float[]>? OnAfterAttnCpu { get; set; }
+    public Action<float[]>? OnAfterAttnGpu { get; set; }
 
     /// <summary>Test-only entry point running the real GPU-resident 30-block loop directly
     /// (bypassing the disabled-by-default dispatch in <see cref="Forward"/>), for a real-scale
@@ -353,6 +372,8 @@ public sealed class ZImageDiT : IDisposable
             gateMsa  = gateMlp  = ones;
         }
 
+        OnModulationCpu?.Invoke((float[])scaleMsa.Clone(), (float[])gateMsa.Clone(), (float[])scaleMlp.Clone(), (float[])gateMlp.Clone());
+
         // ── Attention sub-block ───────────────────────────────────────────
         var normW1  = W($"{prefix}.attention_norm1.weight");
         var attnBuf = ArrayPool<float>.Shared.Rent(nTok * dim);
@@ -377,6 +398,7 @@ public sealed class ZImageDiT : IDisposable
             TensorPrimitives.MultiplyAdd<float>(attnOut.AsSpan(off, dim), gateMsa,
                                                 x.AsSpan(off, dim), x.AsSpan(off, dim));
         });
+        OnAfterAttnCpu?.Invoke((float[])x.Clone());
 
         // ── FFN sub-block ─────────────────────────────────────────────────
         var normW3  = W($"{prefix}.ffn_norm1.weight");
@@ -441,15 +463,29 @@ public sealed class ZImageDiT : IDisposable
         var modHost = new float[4 * dim];
         imageOps.Download(modGpu, modHost);
 
+        // CPU's real formula (ApplyBlock): DiffusionOps.RmsNorm(x, ..., normW1, ...) applies the
+        // LEARNED per-channel gamma (attention_norm1.weight/ffn_norm1.weight) as part of the
+        // RMSNorm itself, THEN a separate elementwise multiply by scaleMsa/scaleMlp (=1+rawScale
+        // from the adaLN modulation projection). `AdaLNModulate`'s shader has no learned-gamma
+        // input at all (unweighted RMSNorm) and internally computes norm*(1.0+s)+shift -- so to
+        // reproduce CPU's norm*normW1*(1+rawScale) exactly, the value passed as `s` must be
+        // (normW1*(1+rawScale) - 1), NOT (1+rawScale) directly. Passing (1+rawScale) as `s`
+        // silently (a) drops normW1 entirely and (b) double-counts the "+1" baked into the
+        // shader's own "1.0+s" -- this was the real root cause of Z-Image GPU residency's
+        // real-scale block-0 divergence (docs/094 Phase 7): invisible in the small-scale parity
+        // test because it used synthetic all-ones norm weights (masking (a)) with a loose enough
+        // tolerance to pass despite (b).
         var scaleMsa = new float[dim];
         var gateMsa = new float[dim];
         var scaleMlp = new float[dim];
         var gateMlp = new float[dim];
         for (int i = 0; i < dim; i++)
         {
-            scaleMsa[i] = modHost[i] + 1f;
+            float rawScalePlus1Msa = modHost[i] + 1f;
+            scaleMsa[i] = bw.AttnNorm1WHost[i] * rawScalePlus1Msa - 1f;
             gateMsa[i] = MathF.Tanh(modHost[dim + i]);
-            scaleMlp[i] = modHost[2 * dim + i] + 1f;
+            float rawScalePlus1Mlp = modHost[2 * dim + i] + 1f;
+            scaleMlp[i] = bw.FfnNorm1WHost[i] * rawScalePlus1Mlp - 1f;
             gateMlp[i] = MathF.Tanh(modHost[3 * dim + i]);
         }
         using var scaleMsaGpu = imageOps.Upload(scaleMsa, Core.TensorShape.D1(dim), exact: true);
