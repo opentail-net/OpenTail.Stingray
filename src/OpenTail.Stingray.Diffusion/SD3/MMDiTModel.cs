@@ -18,7 +18,6 @@ public sealed class MMDiTModel : IDisposable
     private readonly Dictionary<string, float[]?> _biasCache = new(StringComparer.Ordinal);
     private MMDiTGpuWeights? _residentGpuWeights;
     private MMDiTGpuWorkspace? _residentGpuWorkspace;
-    private readonly Dictionary<float[], CoreTensor> _cachedContextGpu = new(ReferenceEqualityComparer.Instance);
 
     /// <summary>
     /// Diagnostic-only early-exit (2026-09-20 GPU bisection): when set (0-based, inclusive), both
@@ -451,21 +450,29 @@ public sealed class MMDiTModel : IDisposable
         // Upload x to xGpu
         var xGpu = _backend!.Upload(x.AsSpan(0, numImgTokens * HiddenSize), TensorShape.D2(numImgTokens, HiddenSize), exact: true);
 
-        // 2. Project text context & upload to cGpu (cached across denoising steps)
-        CoreTensor cGpu;
-        lock (_cachedContextGpu)
-        {
-            if (!_cachedContextGpu.TryGetValue(textContext, out cGpu!))
-            {
-                var rawContextGpu = _backend.Upload(textContext.AsSpan(0, numTextTokens * ContextSize), TensorShape.D2(numTextTokens, ContextSize), exact: true);
-                cGpu = _backend.Allocate(TensorShape.D2(numTextTokens, HiddenSize));
-                visionOps.Sgemm(cGpu, rawContextGpu, gw.ContextEmbedderWeight, numTextTokens, ContextSize, HiddenSize);
-                if (gw.ContextEmbedderBias is not null)
-                    imageOps.AddRowBroadcastInPlace(cGpu, gw.ContextEmbedderBias, numTextTokens, HiddenSize);
-                _backend.Free(rawContextGpu);
-                _cachedContextGpu[textContext] = cGpu;
-            }
-        }
+        // 2. Project text context & upload to cGpu.
+        //
+        // NOT cached across denoising steps (2026-09-20 fix -- docs/094 Phase 1's GPU trajectory
+        // investigation): this used to be cached per-textContext-array via `_cachedContextGpu`,
+        // reasoning the projected context doesn't change across steps. But the SAME cGpu tensor is
+        // then used as the text stream's MUTABLE residual-connection buffer throughout the block
+        // loop below (`visionOps.ScaleGateAdd(cGpu, ...)` at both the attention and MLP residual
+        // sites mutates it in place) -- so caching it meant every Forward() call corrupted the
+        // cached tensor with its own 24-block residual stream, and the NEXT call (next denoising
+        // step) then started from that already-mutated, wrong state instead of a fresh projected
+        // context. This produced a real, measured per-step latent divergence between CPU (which
+        // never caches -- `Forward`'s `c` is a fresh local array every call) and GPU that started
+        // small (single-call parity is exact) but compounded step over step into the fully garbled
+        // checkerboard final image. Recomputing this one Sgemm (context_embedder: n=numTextTokens,
+        // k=ContextSize=4096, outDim=HiddenSize) fresh every call is cheap relative to the full
+        // 24-block forward pass it feeds into, so the fix is to simply stop caching rather than add
+        // a separate per-call working-copy buffer.
+        var rawContextGpu = _backend.Upload(textContext.AsSpan(0, numTextTokens * ContextSize), TensorShape.D2(numTextTokens, ContextSize), exact: true);
+        var cGpu = _backend.Allocate(TensorShape.D2(numTextTokens, HiddenSize));
+        visionOps.Sgemm(cGpu, rawContextGpu, gw.ContextEmbedderWeight, numTextTokens, ContextSize, HiddenSize);
+        if (gw.ContextEmbedderBias is not null)
+            imageOps.AddRowBroadcastInPlace(cGpu, gw.ContextEmbedderBias, numTextTokens, HiddenSize);
+        _backend.Free(rawContextGpu);
 
         // 3. Time + Pooled Embedding: upload tVecSilu
         var tVec = ComputeTimeAndPooledEmbedding(timestep, pooledY);
@@ -664,6 +671,7 @@ public sealed class MMDiTModel : IDisposable
             }
             _backend.Free(xGpu);
             _backend.Free(tVecGpu);
+            _backend.Free(cGpu);
         }
     }
 
@@ -999,11 +1007,6 @@ public sealed class MMDiTModel : IDisposable
     {
         _residentGpuWeights?.Dispose();
         _residentGpuWorkspace?.Dispose();
-        lock (_cachedContextGpu)
-        {
-            foreach (var t in _cachedContextGpu.Values) _backend?.Free(t);
-            _cachedContextGpu.Clear();
-        }
         if (_gpuWeights is not null)
         {
             lock (_gpuWeights)
