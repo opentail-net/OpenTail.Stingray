@@ -302,6 +302,68 @@ the starting picture:
     `DiagnosticStopStage` infrastructure built this pass makes that the next natural extension point
     (add a 4th named stop-point immediately after each `AdaLNModulate` call, comparing `ws.NormedImg`
     output directly rather than the modulation vector that feeds it).
+- [x] **ROOT CAUSE FOUND, same day, follow-up session, 2026-09-20 — reverses the original
+      hypothesis: it's a real CPU-side bug, not a GPU-side one.** Three new isolated unit tests
+      (`Sd3AdaLNModulateGpuCpuParityTests`, `Sd3ModulationSgemmGpuCpuParityTests`,
+      `Sd3RealModulationLinearGpuCpuParityTests`) decisively narrowed this down:
+  - **`AdaLNModulate` GPU shader, tested in complete isolation** (hand-fed random x/shift/scale,
+    no Sgemm/weight-upload at all): cosine=1.000000, maxDiff=9.5e-7. The shader's own LayerNorm/
+    affine math is exact — fully exonerated.
+  - **The M=1/K=1536/N=13824 Sgemm shape (SD3.5-medium's real `adaLN_modulation.1` dims), tested
+    with a SYNTHETIC random weight matrix and random small-magnitude x**: cosine=1.000000,
+    maxDiff=3.9e-6, and **6.25× faster on GPU than the naive CPU loop for this exact shape**. The
+    GPU matvec kernel is exact and fast at this shape with ordinary-magnitude data — also
+    exonerated.
+  - **The SAME Sgemm call, but with the REAL checkpoint weight (Q4_K, dequantized via `ReadF32`,
+    same values GPU's resident-weight upload uses) and a synthetic random small-magnitude x**:
+    maxDiff jumped to 9.4e-3 — small but real, and far too small to explain the pipeline's ~1-2.4.
+  - **The decisive test: the REAL checkpoint weight AND the REAL `tVecSilu`** (computed via the
+    checkpoint's own `MMDiTModel.ComputeTimeAndPooledEmbedding(1000f, pooledY)` + `SiluInPlace`,
+    the exact real input this Linear receives in the real pipeline) **reproduces the bug in
+    complete isolation: maxDiff = 1.003** (CPU=-60.61, GPU=-59.61 on the worst output element) —
+    matching the real pipeline's block-0 "mod" stage divergence (ImgMod maxDiff 1.06) almost
+    exactly, with NONE of the rest of the 24-block pipeline involved. **This flips the original
+    hypothesis**: the GPU side of this comparison (`ReadF32` dequant → plain F32 GPU Sgemm) is the
+    one that stayed close to a from-scratch independent ground truth; the CPU side
+    (`QuantizedWeightCache.Linear`'s fused/repacked Q4_K SIMD kernel, the path every CPU-backend
+    run of this model actually uses) is the one that diverges. The reason random small-magnitude
+    x never caught this: `tVecSilu`'s real values are much larger in magnitude (dot-product terms
+    summing to output values around -60, vs ~-4 to -5 for a `[-1,1]`-uniform random x on the same
+    real weight) — large enough to expose a genuine per-summation-order divergence that small
+    inputs don't.
+  - **Bisected further within the CPU kernel itself**: `QuantizedWeightCache.Linear` has two CPU
+    code paths for a Q4_K tensor of this shape — (1) the repacked `Q4Kx8` fast SIMD path
+    (`SimdKernels.TryMatMulBatchedQ4Kx8`, used when the tensor's dims pass
+    `CanRepackQ4Kx8` and cache budget allows) and (2) a raw-quantized fallback
+    (`SimdKernels.MatMulBatched`, `allowBlas: true` — can route through OpenBLAS). Re-ran the same
+    isolated real-weight/real-tVecSilu test with the repacked path forced OFF (`budgetBytes: 0`,
+    via `STINGRAY_SD3_BYPASS_Q4KX8_REPACK=1`): **maxDiff dropped from 1.003 to 0.585** — real,
+    substantial, but not zero. **Conclusion: the repacked Q4Kx8 SIMD kernel contributes roughly
+    half the error (~0.42), and the raw `MatMulBatched`/OpenBLAS fallback path contributes the
+    other half (~0.585) on its own** — two separate, compounding real error sources inside the CPU
+    quantized-kernel dispatch, neither of which is the GPU path.
+  - **Ruled out plain floating-point summation-order noise as the explanation**: computed the
+    worst output element's cancellation ratio directly (`sum(|term_k|)` vs `|net sum|` over the
+    1536-term dot product) — 85.9 vs 59.8, a ratio of only 1.4×, nowhere near the "severe
+    cancellation" territory (ratios of 100×+) that would be needed to produce a ~1.0-unit absolute
+    error from reordering alone. The theoretical float32 summation-order error bound for a sum
+    this size (`n·ε·Σ|term|` ≈ 1536 × 1.19e-7 × 85.9 ≈ 0.016) is ~60× smaller than the observed
+    1.003 — this is a real correctness bug in the CPU quantized kernel dispatch, not benign FP
+    reordering noise.
+  - **Real, corrected next step**: the bug is in `QuantizedWeightCache`'s CPU-side Q4_K decode
+    path(s) (`SimdKernels.TryMatMulBatchedQ4Kx8`/`RepackQ4KMatrix` and/or
+    `SimdKernels.MatMulBatched`'s Q4_K branch, both in `OpenTail.Stingray.Cpu`), NOT in any GPU
+    code. This also means every OTHER model in this codebase using `QuantizedWeightCache.Linear`
+    for large-N Q4_K linears with large-magnitude activations is a real, unverified risk of the
+    same bug class — worth a broader sweep once root-caused here, not just an SD3.5-specific fix.
+    Given this reverses which side of the codebase the bug lives in, `docs/00-current-work.md`'s
+    SD3.5 GPU-bug framing should be corrected to "CPU quantized-kernel bug masquerading as a GPU
+    parity failure" in its next update.
+  - **New test/diagnostic files this follow-up**: `Sd3AdaLNModulateGpuCpuParityTests.cs`,
+    `Sd3ModulationSgemmGpuCpuParityTests.cs` (includes a real perf number: GPU is 6.25× faster than
+    CPU for the M=1/K=1536/N=13824 shape on synthetic data), `Sd3RealModulationLinearGpuCpuParityTests.cs`
+    (the decisive real-weight/real-input test, plus the `STINGRAY_SD3_BYPASS_Q4KX8_REPACK` env-var
+    diagnostic knob on `QuantizedWeightCache`'s existing `budgetBytes` constructor parameter).
 
 ### Phase 2 — Qwen Image: first GPU port (biggest true gap — zero GPU code exists)
 
