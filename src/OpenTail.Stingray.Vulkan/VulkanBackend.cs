@@ -1656,6 +1656,9 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
     private ComputePipeline? _multiHeadAttentionTiled40Pipeline;
     private ComputePipeline? _multiHeadAttentionTiled80Pipeline;
     private ComputePipeline? _multiHeadAttentionTiled128Pipeline;
+    private ComputePipeline? _multiHeadAttentionTiled128FP16Pipeline;
+    private ComputePipeline? _adalnModulateDualPipeline;
+    private ComputePipeline? _scaleGateAddDualPipeline;
     private ComputePipeline? _multiHeadAttentionTiled160Pipeline;
     private ComputePipeline? _leakyReluPipeline;
     private ComputePipeline? _clampPipeline;
@@ -1789,7 +1792,9 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
     private struct VisionLayerNormParams { public uint nTokens; public uint embd; public float eps; public uint hasBias; }
     private struct VisionActParams { public uint n; }
     private struct AdaLNModulateParams { public uint nTokens; public uint dim; public uint isRmsNorm; public float eps; public uint shiftOffset; public uint scaleOffset; }
+    private struct AdaLNModulateDualParams { public uint nTokens; public uint dim; public uint isRmsNorm; public float eps; public uint streamSplit; public uint shiftOffsetA; public uint scaleOffsetA; public uint shiftOffsetB; public uint scaleOffsetB; }
     private struct ScaleGateAddParams { public uint nTokens; public uint dim; public uint gateOffset; }
+    private struct ScaleGateAddDualParams { public uint nTokens; public uint dim; public uint streamSplit; public uint gateOffsetA; public uint gateOffsetB; }
     private struct SiluGateMulParams { public uint nTokens; public uint mlpHidden; }
     private struct QKNormParams { public uint nTokens; public uint numHeads; public uint headDim; public float eps; public uint startToken; }
     private struct RoPE3DParams { public uint numTokens; public uint numHeads; public uint headDim; public uint tDim; public uint hDim; public uint wDim; public float theta; }
@@ -4055,10 +4060,33 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
         }
         else if (headDim == 128)
         {
-            _multiHeadAttentionTiled128Pipeline ??= new ComputePipeline(this, Shaders.MultiHeadAttentionTiled128, 4, pushConstantSize: sizeof(MultiHeadAttentionTiledParams));
             var p = new MultiHeadAttentionTiledParams { qSeq = (uint)qSeq, kvSeq = (uint)kvSeq, numHeads = (uint)numHeads, scale = 1f / MathF.Sqrt(headDim) };
             uint groupsX = (uint)((qSeq + 31) / 32);
-            DispatchOrRecord(_multiHeadAttentionTiled128Pipeline, [GetBuffer(q), GetBuffer(k), GetBuffer(v), GetBuffer(output)], groupsX, &p, 1u, (uint)numHeads);
+
+            // FLUX.2's shape (docs/094's FLUX.2 GPU optimization plan): attention here is
+            // memory-bandwidth-bound, not compute-bound (nSeq=1280, ~87.6 GFLOP/s vs the GEMM
+            // kernels' ~610 GFLOP/s) -- halving Q/K/V read volume via FP16 storage mirrors the
+            // existing headDim=64 path's same win for the same reason.
+            if (HasShaderFloat16Int8 && Has16BitStorage)
+            {
+                _multiHeadAttentionTiled128FP16Pipeline ??= new ComputePipeline(this, Shaders.MultiHeadAttentionTiled128_FP16, 4, pushConstantSize: sizeof(MultiHeadAttentionTiledParams));
+
+                Tensor qF16 = (q.DType == DType.Float16) ? q : EnsureMhaScratch(ref _mhaScratchQ, ref _mhaScratchQBytes, q.ElementCount);
+                if (q.DType != DType.Float16) CastF32ToF16(q, qF16);
+
+                Tensor kF16 = (k.DType == DType.Float16) ? k : EnsureMhaScratch(ref _mhaScratchK, ref _mhaScratchKBytes, k.ElementCount);
+                if (k.DType != DType.Float16) CastF32ToF16(k, kF16);
+
+                Tensor vF16 = (v.DType == DType.Float16) ? v : EnsureMhaScratch(ref _mhaScratchV, ref _mhaScratchVBytes, v.ElementCount);
+                if (v.DType != DType.Float16) CastF32ToF16(v, vF16);
+
+                DispatchOrRecord(_multiHeadAttentionTiled128FP16Pipeline, [GetBuffer(qF16), GetBuffer(kF16), GetBuffer(vF16), GetBuffer(output)], groupsX, &p, 1u, (uint)numHeads);
+            }
+            else
+            {
+                _multiHeadAttentionTiled128Pipeline ??= new ComputePipeline(this, Shaders.MultiHeadAttentionTiled128, 4, pushConstantSize: sizeof(MultiHeadAttentionTiledParams));
+                DispatchOrRecord(_multiHeadAttentionTiled128Pipeline, [GetBuffer(q), GetBuffer(k), GetBuffer(v), GetBuffer(output)], groupsX, &p, 1u, (uint)numHeads);
+            }
         }
         else if (headDim == 160)
         {
@@ -4261,8 +4289,54 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
         DispatchOrRecord(_adalnModulatePipeline, [GetBuffer(input), GetBuffer(shift), GetBuffer(scale), GetBuffer(output)], groups, &p);
     }
 
+    /// <summary>
+    /// Dual-stream fused AdaLN modulate for FLUX.2's img+txt stream pairs: one dispatch instead of
+    /// two. Rows <c>[0, streamSplit)</c> read/write stream A (typically txt), rows
+    /// <c>[streamSplit, nTokens)</c> read/write stream B (typically img), where
+    /// <paramref name="nTokens"/> = streamSplit + (B's own token count).
+    /// </summary>
+    public void AdaLNModulateDual(
+        Tensor outputA, Tensor inputA, Tensor modA, int shiftOffsetA, int scaleOffsetA,
+        Tensor outputB, Tensor inputB, Tensor modB, int shiftOffsetB, int scaleOffsetB,
+        int nTokens, int streamSplit, int dim, bool isRmsNorm = false, float eps = 1e-6f)
+    {
+        _adalnModulateDualPipeline ??= new ComputePipeline(this, Shaders.AdaLNModulateDual, 6, pushConstantSize: sizeof(AdaLNModulateDualParams));
+        var p = new AdaLNModulateDualParams
+        {
+            nTokens = (uint)nTokens,
+            dim = (uint)dim,
+            isRmsNorm = isRmsNorm ? 1u : 0u,
+            eps = eps,
+            streamSplit = (uint)streamSplit,
+            shiftOffsetA = (uint)shiftOffsetA,
+            scaleOffsetA = (uint)scaleOffsetA,
+            shiftOffsetB = (uint)shiftOffsetB,
+            scaleOffsetB = (uint)scaleOffsetB
+        };
+        // One workgroup per token -- matches the shader's own gl_WorkGroupID.x-as-token-index
+        // design (a per-token parallel-reduction LayerNorm, not a 256-tokens-per-dispatch grid).
+        uint groups = (uint)nTokens;
+        DispatchOrRecord(_adalnModulateDualPipeline, [GetBuffer(inputA), GetBuffer(inputB), GetBuffer(modA), GetBuffer(modB), GetBuffer(outputA), GetBuffer(outputB)], groups, &p);
+    }
+
     public void ScaleGateAdd(Tensor x, Tensor proj, Tensor gate, int nTokens, int dim)
         => ScaleGateAdd(x, proj, gate, nTokens, dim, 0);
+
+    /// <summary>
+    /// Dual-stream fused gated residual add for FLUX.2's img+txt stream pairs: one dispatch
+    /// instead of two. Rows <c>[0, streamSplit)</c> apply to stream A, rows
+    /// <c>[streamSplit, nTokens)</c> apply to stream B.
+    /// </summary>
+    public void ScaleGateAddDual(
+        Tensor xA, Tensor projA, Tensor gateA, int gateOffsetA,
+        Tensor xB, Tensor projB, Tensor gateB, int gateOffsetB,
+        int nTokens, int streamSplit, int dim)
+    {
+        _scaleGateAddDualPipeline ??= new ComputePipeline(this, Shaders.ScaleGateAddDual, 6, pushConstantSize: sizeof(ScaleGateAddDualParams));
+        var p = new ScaleGateAddDualParams { nTokens = (uint)nTokens, dim = (uint)dim, streamSplit = (uint)streamSplit, gateOffsetA = (uint)gateOffsetA, gateOffsetB = (uint)gateOffsetB };
+        uint groups = ((uint)nTokens + 255u) / 256u;
+        DispatchOrRecord(_scaleGateAddDualPipeline, [GetBuffer(xA), GetBuffer(projA), GetBuffer(gateA), GetBuffer(xB), GetBuffer(projB), GetBuffer(gateB)], groups, &p);
+    }
 
     public void ScaleGateAdd(Tensor x, Tensor proj, Tensor gate, int nTokens, int dim, int gateOffset)
     {
@@ -4825,6 +4899,9 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
         _multiHeadAttentionTiled40Pipeline?.Dispose();
         _multiHeadAttentionTiled80Pipeline?.Dispose();
         _multiHeadAttentionTiled128Pipeline?.Dispose();
+        _multiHeadAttentionTiled128FP16Pipeline?.Dispose();
+        _adalnModulateDualPipeline?.Dispose();
+        _scaleGateAddDualPipeline?.Dispose();
         _multiHeadAttentionTiled160Pipeline?.Dispose();
         _leakyReluPipeline?.Dispose();
         _clampPipeline?.Dispose();

@@ -682,8 +682,13 @@ public sealed class Flux2DiT : IDisposable
 
         // 1. Modulate (affine-free LayerNorm, isRmsNorm: false -- verified 2026-09-19,
         //    Flux2AdaLNModulateLayerNormGpuTests) using the shared shift1/scale1 (offsets 0/d).
-        visionOps.AdaLNModulate(ws.NormedImg, ws.ImgHidden, ws.ImgMod, nImg, d, shiftOffset: 0, scaleOffset: d, isRmsNorm: false, eps: 1e-6f);
-        visionOps.AdaLNModulate(ws.NormedTxt, ws.TxtHidden, ws.TxtMod, nTxt, d, shiftOffset: 0, scaleOffset: d, isRmsNorm: false, eps: 1e-6f);
+        //    Dual-dispatch (docs/094 FLUX.2 GPU optimization wave): txt is stream A (rows
+        //    [0, nTxt)), img is stream B (rows [nTxt, nTxt+nImg)) -- matches AttnOut's own
+        //    [txt;img] row-major layout used later in this method.
+        visionOps.AdaLNModulateDual(
+            ws.NormedTxt, ws.TxtHidden, ws.TxtMod, shiftOffsetA: 0, scaleOffsetA: d,
+            ws.NormedImg, ws.ImgHidden, ws.ImgMod, shiftOffsetB: 0, scaleOffsetB: d,
+            nTokens: nSeq, streamSplit: nTxt, dim: d, isRmsNorm: false, eps: 1e-6f);
 
         // 2. QKV projections (separate weights per stream, bias-free).
         visionOps.Sgemm(ws.QkvImg, ws.NormedImg, bw.ImgAttnQkv, nImg, d, d * 3);
@@ -705,13 +710,17 @@ public sealed class Flux2DiT : IDisposable
         visionOps.Sgemm(ws.OutTxt, ws.AttnOut, bw.TxtAttnProjWeight, nTxt, d, d);
         visionOps.Sgemm(ws.OutImg, ws.AttnOut, bw.ImgAttnProjWeight, nImg, d, d, inputRowOffsetElements: nTxt * d);
 
-        // 8. Gated residual (gate1, offset 2*d).
-        visionOps.ScaleGateAdd(ws.TxtHidden, ws.OutTxt, ws.TxtMod, nTxt, d, gateOffset: 2 * d);
-        visionOps.ScaleGateAdd(ws.ImgHidden, ws.OutImg, ws.ImgMod, nImg, d, gateOffset: 2 * d);
+        // 8. Gated residual (gate1, offset 2*d). Dual-dispatch: txt=A, img=B.
+        visionOps.ScaleGateAddDual(
+            ws.TxtHidden, ws.OutTxt, ws.TxtMod, gateOffsetA: 2 * d,
+            ws.ImgHidden, ws.OutImg, ws.ImgMod, gateOffsetB: 2 * d,
+            nTokens: nSeq, streamSplit: nTxt, dim: d);
 
-        // 9. Re-modulate for the FFN (shift2/scale2, offsets 3*d/4*d).
-        visionOps.AdaLNModulate(ws.NormedTxt, ws.TxtHidden, ws.TxtMod, nTxt, d, shiftOffset: 3 * d, scaleOffset: 4 * d, isRmsNorm: false, eps: 1e-6f);
-        visionOps.AdaLNModulate(ws.NormedImg, ws.ImgHidden, ws.ImgMod, nImg, d, shiftOffset: 3 * d, scaleOffset: 4 * d, isRmsNorm: false, eps: 1e-6f);
+        // 9. Re-modulate for the FFN (shift2/scale2, offsets 3*d/4*d). Dual-dispatch.
+        visionOps.AdaLNModulateDual(
+            ws.NormedTxt, ws.TxtHidden, ws.TxtMod, shiftOffsetA: 3 * d, scaleOffsetA: 4 * d,
+            ws.NormedImg, ws.ImgHidden, ws.ImgMod, shiftOffsetB: 3 * d, scaleOffsetB: 4 * d,
+            nTokens: nSeq, streamSplit: nTxt, dim: d, isRmsNorm: false, eps: 1e-6f);
 
         // 10. SiLU-gated FFN: up-project to 2*mlpHidden, then fused down-GEMM with on-the-fly SiLU activation.
         //     Eliminates 2 SiluGateMul dispatches and the intermediate ws.MlpGatedBuf round-trip.
@@ -721,8 +730,10 @@ public sealed class Flux2DiT : IDisposable
         visionOps.Sgemm(ws.MlpUpBuf, ws.NormedImg, bw.ImgMlp0Weight, nImg, d, 2 * mlpHidden);
         visionOps.SgemmSiluGate(ws.OutImg, ws.MlpUpBuf, bw.ImgMlp2Weight, nImg, mlpHidden, d);
 
-        // 11. Gated residual (gate2, offset 5*d).
-        visionOps.ScaleGateAdd(ws.TxtHidden, ws.OutTxt, ws.TxtMod, nTxt, d, gateOffset: 5 * d);
-        visionOps.ScaleGateAdd(ws.ImgHidden, ws.OutImg, ws.ImgMod, nImg, d, gateOffset: 5 * d);
+        // 11. Gated residual (gate2, offset 5*d). Dual-dispatch.
+        visionOps.ScaleGateAddDual(
+            ws.TxtHidden, ws.OutTxt, ws.TxtMod, gateOffsetA: 5 * d,
+            ws.ImgHidden, ws.OutImg, ws.ImgMod, gateOffsetB: 5 * d,
+            nTokens: nSeq, streamSplit: nTxt, dim: d);
     }
 }

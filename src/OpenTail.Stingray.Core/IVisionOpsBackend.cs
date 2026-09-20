@@ -70,6 +70,27 @@ public interface IVisionOpsBackend : IComputeBackend
         => throw new NotSupportedException();
 
     /// <summary>
+    /// Dual-stream fused AdaLN modulate (FLUX.2's img+txt stream pairs): one dispatch instead of
+    /// two. Rows [0, streamSplit) apply to stream A, rows [streamSplit, nTokens) apply to stream B.
+    /// </summary>
+    void AdaLNModulateDual(
+        Tensor outputA, Tensor inputA, Tensor modA, int shiftOffsetA, int scaleOffsetA,
+        Tensor outputB, Tensor inputB, Tensor modB, int shiftOffsetB, int scaleOffsetB,
+        int nTokens, int streamSplit, int dim, bool isRmsNorm = false, float eps = 1e-6f)
+        => throw new NotSupportedException();
+
+    /// <summary>
+    /// Dual-stream fused gated residual add (FLUX.2's img+txt stream pairs): one dispatch instead
+    /// of two. Rows [0, streamSplit) apply to stream A, rows [streamSplit, nTokens) apply to
+    /// stream B.
+    /// </summary>
+    void ScaleGateAddDual(
+        Tensor xA, Tensor projA, Tensor gateA, int gateOffsetA,
+        Tensor xB, Tensor projB, Tensor gateB, int gateOffsetB,
+        int nTokens, int streamSplit, int dim)
+        => throw new NotSupportedException();
+
+    /// <summary>
     /// FLUX.2's SiLU-gated FFN activation: input is [nTokens, 2*mlpHidden] (an up-projection
     /// output), output is [nTokens, mlpHidden] = silu(input[:, :mlpHidden]) * input[:, mlpHidden:]
     /// -- the first half is the gate, the second is the value.

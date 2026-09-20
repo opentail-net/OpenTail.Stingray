@@ -11213,5 +11213,346 @@ internal static class Shaders
             }
         }
         """;
-}
 
+    /// <summary>
+    /// Dual-stream fused AdaLN-Zero Modulation for FLUX.2's img+txt stream pairs (docs/093):
+    /// processes the txt stream for rows [0, streamSplit) and the img stream for rows
+    /// [streamSplit, nTokens), each with its own mod buffer and shift/scale offsets.
+    /// Eliminates one separate AdaLNModulate dispatch per call site — 8 fewer dispatches per
+    /// forward pass when replacing the 4 AdaLNModulate pairs in DoubleBlockGpu.
+    ///
+    /// Shader uses one workgroup per token (local_size_x = 256) with a parallel LDS reduction
+    /// over the row to compute the LayerNorm denominator, matching the single-stream shader's
+    /// semantics exactly (isRmsNorm=false: standard LayerNorm; isRmsNorm=true: RMSNorm).
+    ///
+    /// Push constants: { nTokens, dim, isRmsNorm, eps, streamSplit,
+    ///                   shiftOffsetA, scaleOffsetA, shiftOffsetB, scaleOffsetB }
+    /// Bindings: 0=inputA (txt, FP32), 1=inputB (img, FP32),
+    ///           2=modA (txt mod vector), 3=modB (img mod vector),
+    ///           4=outputA (normed txt), 5=outputB (normed img).
+    /// Dispatch: (nTokens) workgroups with local_size_x=256.
+    /// </summary>
+    internal const string AdaLNModulateDual = """
+        #version 450
+        layout(local_size_x = 256) in;
+
+        layout(binding = 0) readonly  buffer InA  { float inDataA[]; };   // txt input
+        layout(binding = 1) readonly  buffer InB  { float inDataB[]; };   // img input
+        layout(binding = 2) readonly  buffer ModA { float modDataA[]; };  // txt mod vector
+        layout(binding = 3) readonly  buffer ModB { float modDataB[]; };  // img mod vector
+        layout(binding = 4) writeonly buffer OutA { float outDataA[]; };  // normed txt
+        layout(binding = 5) writeonly buffer OutB { float outDataB[]; };  // normed img
+
+        layout(push_constant) uniform Params {
+            uint nTokens;       // total tokens = nTxt + nImg
+            uint dim;
+            uint isRmsNorm;
+            float eps;
+            uint streamSplit;   // rows [0, streamSplit) = txt; [streamSplit, nTokens) = img
+            uint shiftOffsetA;  // offset into modDataA for shift
+            uint scaleOffsetA;  // offset into modDataA for scale
+            uint shiftOffsetB;  // offset into modDataB for shift
+            uint scaleOffsetB;  // offset into modDataB for scale
+        };
+
+        shared float s_scratch[256];
+
+        void main() {
+            uint t = gl_WorkGroupID.x;    // token index in [0, nTokens)
+            uint tid = gl_LocalInvocationID.x; // 0..255
+            if (t >= nTokens) return;
+
+            // Determine which stream this token belongs to
+            bool isTxt = (t < streamSplit);
+            uint localT   = isTxt ? t : (t - streamSplit);
+            uint shiftOff = isTxt ? shiftOffsetA : shiftOffsetB;
+            uint scaleOff = isTxt ? scaleOffsetA : scaleOffsetB;
+            uint rowOff   = localT * dim;
+
+            // ---- Parallel reduction ----
+            float partialSum = 0.0;
+            float partialSq  = 0.0;
+
+            for (uint i = tid; i < dim; i += 256u) {
+                float v = isTxt ? inDataA[rowOff + i] : inDataB[rowOff + i];
+                partialSum += v;
+                partialSq  += v * v;
+            }
+
+            s_scratch[tid] = partialSum;
+            barrier();
+            for (uint stride = 128u; stride > 0u; stride >>= 1u) {
+                if (tid < stride) s_scratch[tid] += s_scratch[tid + stride];
+                barrier();
+            }
+            float totalSum = s_scratch[0];
+            barrier();
+
+            s_scratch[tid] = partialSq;
+            barrier();
+            for (uint stride = 128u; stride > 0u; stride >>= 1u) {
+                if (tid < stride) s_scratch[tid] += s_scratch[tid + stride];
+                barrier();
+            }
+            float totalSq = s_scratch[0];
+
+            float invStd;
+            float mean = 0.0;
+            if (isRmsNorm != 0u) {
+                invStd = inversesqrt(totalSq / float(dim) + eps);
+            } else {
+                mean   = totalSum / float(dim);
+                float variance = totalSq / float(dim) - mean * mean;
+                invStd = inversesqrt(max(variance, 0.0) + eps);
+            }
+
+            // ---- Apply norm + modulation ----
+            for (uint i = tid; i < dim; i += 256u) {
+                float v   = isTxt ? inDataA[rowOff + i] : inDataB[rowOff + i];
+                float norm = (v - mean) * invStd;
+                float s    = isTxt ? modDataA[scaleOff + i] : modDataB[scaleOff + i];
+                float sh   = isTxt ? modDataA[shiftOff + i] : modDataB[shiftOff + i];
+                float result = norm * (1.0 + s) + sh;
+                if (isTxt) outDataA[rowOff + i] = result;
+                else        outDataB[rowOff + i] = result;
+            }
+        }
+        """;
+
+    /// <summary>
+    /// Dual-stream fused gated residual addition for FLUX.2's img+txt stream pairs (docs/093):
+    /// x_A[t] += proj_A[t] * gate_A[gateOffsetA + d]  for txt rows,
+    /// x_B[t] += proj_B[t] * gate_B[gateOffsetB + d]  for img rows.
+    /// Replaces two ScaleGateAdd dispatches with one, saving 8 dispatches per forward pass.
+    ///
+    /// Push constants: { nTokens, dim, streamSplit, gateOffsetA, gateOffsetB }
+    /// Bindings: 0=xA (txt residual, RW), 1=projA (txt attn/FFN output),
+    ///           2=gateA (txt mod vector), 3=xB (img residual, RW),
+    ///           4=projB (img attn/FFN output), 5=gateB (img mod vector).
+    /// Dispatch: ceil((nTokens) / 256) workgroups.
+    /// </summary>
+    internal const string ScaleGateAddDual = """
+        #version 450
+        layout(local_size_x = 256) in;
+
+        layout(binding = 0) buffer     XA    { float xDataA[]; };   // txt residual (RW)
+        layout(binding = 1) readonly buffer ProjA { float projDataA[]; }; // txt proj
+        layout(binding = 2) readonly buffer GateA { float gateDataA[]; }; // txt mod
+        layout(binding = 3) buffer     XB    { float xDataB[]; };   // img residual (RW)
+        layout(binding = 4) readonly buffer ProjB { float projDataB[]; }; // img proj
+        layout(binding = 5) readonly buffer GateB { float gateDataB[]; }; // img mod
+
+        layout(push_constant) uniform Params {
+            uint nTokens;      // total = nTxt + nImg
+            uint dim;
+            uint streamSplit;  // rows [0, streamSplit) = txt; [streamSplit, nTokens) = img
+            uint gateOffsetA;
+            uint gateOffsetB;
+        };
+
+        void main() {
+            uint t = gl_GlobalInvocationID.x;
+            if (t >= nTokens) return;
+
+            bool isTxt = (t < streamSplit);
+            uint localT = isTxt ? t : (t - streamSplit);
+            uint off    = localT * dim;
+
+            for (uint i = 0u; i < dim; i++) {
+                if (isTxt) {
+                    xDataA[off + i] += projDataA[off + i] * gateDataA[gateOffsetA + i];
+                } else {
+                    xDataB[off + i] += projDataB[off + i] * gateDataB[gateOffsetB + i];
+                }
+            }
+        }
+        """;
+
+    /// <summary>
+    /// FP16 tiled flash-attention for HEAD_DIM=128 (FLUX.2's attention shape), docs/093.
+    /// Identical tiling strategy to MultiHeadAttentionTiled128 (BR=32, BC=16, 128 threads,
+    /// vec4 vectorized loads) but reads Q, K, V as f16vec4 to halve memory bandwidth on the
+    /// memory-bound joint-attention step (87.6 GFLOP/s vs GEMM's 610 GFLOP/s on the 5700G iGPU).
+    /// Accumulation is in FP32; output is FP32.
+    ///
+    /// Dispatch: (ceil(qSeq/32), 1, numHeads) with local_size=(128,1,1).
+    /// Bindings: 0=Q (FP16), 1=K (FP16), 2=V (FP16), 3=Output (FP32).
+    /// Push constants: { qSeq, kvSeq, numHeads, scale }.
+    /// </summary>
+    internal const string MultiHeadAttentionTiled128_FP16 = """
+        #version 450
+        #extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+        #extension GL_EXT_shader_16bit_storage : require
+        #extension GL_EXT_control_flow_attributes : enable
+
+        #define HEAD_DIM   128
+        #define BR         32
+        #define BC         16
+        #define WG_SIZE    128
+
+        const float NEG_INF = -3.402823466e+38;
+
+        layout(std430, binding = 0) readonly  buffer QVec { f16vec4 q_vec[]; };
+        layout(std430, binding = 1) readonly  buffer KVec { f16vec4 k_vec[]; };
+        layout(std430, binding = 2) readonly  buffer VVec { f16vec4 v_vec[]; };
+        layout(std430, binding = 3) writeonly buffer OVec { vec4    o_vec[]; };
+
+        layout(push_constant) uniform Params {
+            uint qSeq;
+            uint kvSeq;
+            uint numHeads;
+            float scale;
+        } p;
+
+        shared vec4  q_tile[BR * 32];
+        shared vec4  k_tile[BC * 32];
+        shared vec4  v_tile[BC * 32];
+        shared float score_tile[BR * BC];
+        shared float row_m[BR];
+        shared float row_l[BR];
+        shared float row_alpha[BR];
+
+        layout(local_size_x = 128, local_size_y = 1, local_size_z = 1) in;
+
+        void main() {
+            const uint tid = gl_LocalInvocationIndex; // 0..127
+            const uint qr  = tid >> 2;                // 0..31
+            const uint sub = tid & 3u;                // 0..3
+            const uint kc  = sub * 4u;                // 0,4,8,12
+            const uint q_row = gl_WorkGroupID.x * BR + qr;
+
+            const uint h = gl_WorkGroupID.z;
+            const uint headVecOff = (h * HEAD_DIM) >> 2;
+            const uint dimVec     = (p.numHeads * HEAD_DIM) >> 2;
+
+            // Load Q tile [32, 32 vec4s] = 1024 f16vec4s, convert to fp32 in LDS
+            [[unroll]] for (uint p_load = 0u; p_load < 8u; ++p_load) {
+                uint idx    = tid + p_load * 128u;
+                uint r      = idx >> 5;
+                uint d      = idx & 31u;
+                uint globalQ = gl_WorkGroupID.x * BR + r;
+                if (globalQ < p.qSeq) {
+                    q_tile[idx] = vec4(q_vec[globalQ * dimVec + headVecOff + d]);
+                } else {
+                    q_tile[idx] = vec4(0.0);
+                }
+            }
+
+            if (tid < BR) {
+                row_m[tid]     = NEG_INF;
+                row_l[tid]     = 0.0;
+                row_alpha[tid] = 0.0;
+            }
+            barrier();
+
+            vec4 acc0 = vec4(0.0), acc1 = vec4(0.0), acc2 = vec4(0.0), acc3 = vec4(0.0);
+            vec4 acc4 = vec4(0.0), acc5 = vec4(0.0), acc6 = vec4(0.0), acc7 = vec4(0.0);
+            bool q_valid = (q_row < p.qSeq);
+
+            for (uint tile_base = 0u; tile_base < p.kvSeq; tile_base += BC) {
+                // Load K and V tiles [16, 32 vec4s], convert f16->fp32 in LDS
+                [[unroll]] for (uint p_load = 0u; p_load < 4u; ++p_load) {
+                    uint idx    = tid + p_load * 128u;
+                    uint r      = idx >> 5;
+                    uint d      = idx & 31u;
+                    uint globalK = tile_base + r;
+                    if (globalK < p.kvSeq) {
+                        k_tile[idx] = vec4(k_vec[globalK * dimVec + headVecOff + d]);
+                        v_tile[idx] = vec4(v_vec[globalK * dimVec + headVecOff + d]);
+                    } else {
+                        k_tile[idx] = vec4(0.0);
+                        v_tile[idx] = vec4(0.0);
+                    }
+                }
+                barrier();
+
+                // QK dot products (fp32 accumulation)
+                if (q_valid) {
+                    uint q_base = qr * 32u;
+                    float s0 = 0.0, s1 = 0.0, s2 = 0.0, s3 = 0.0;
+                    [[unroll]] for (uint d = 0u; d < 32u; ++d) {
+                        vec4 q_val = q_tile[q_base + d];
+                        s0 += dot(q_val, k_tile[(kc + 0u) * 32u + d]);
+                        s1 += dot(q_val, k_tile[(kc + 1u) * 32u + d]);
+                        s2 += dot(q_val, k_tile[(kc + 2u) * 32u + d]);
+                        s3 += dot(q_val, k_tile[(kc + 3u) * 32u + d]);
+                    }
+
+                    s0 = (tile_base + kc + 0u < p.kvSeq) ? s0 * p.scale : NEG_INF;
+                    s1 = (tile_base + kc + 1u < p.kvSeq) ? s1 * p.scale : NEG_INF;
+                    s2 = (tile_base + kc + 2u < p.kvSeq) ? s2 * p.scale : NEG_INF;
+                    s3 = (tile_base + kc + 3u < p.kvSeq) ? s3 * p.scale : NEG_INF;
+
+                    score_tile[qr * BC + kc + 0u] = s0;
+                    score_tile[qr * BC + kc + 1u] = s1;
+                    score_tile[qr * BC + kc + 2u] = s2;
+                    score_tile[qr * BC + kc + 3u] = s3;
+                }
+                barrier();
+
+                // Online softmax
+                if (tid < BR && (gl_WorkGroupID.x * BR + tid < p.qSeq)) {
+                    float m_old = row_m[tid];
+                    float l_old = row_l[tid];
+
+                    float tile_max = NEG_INF;
+                    [[unroll]] for (uint k = 0u; k < BC; ++k) {
+                        tile_max = max(tile_max, score_tile[tid * BC + k]);
+                    }
+
+                    float m_new   = max(m_old, tile_max);
+                    float alpha   = exp(m_old - m_new);
+                    row_alpha[tid] = alpha;
+
+                    float tile_sum = 0.0;
+                    [[unroll]] for (uint k = 0u; k < BC; ++k) {
+                        float prob = (score_tile[tid * BC + k] > NEG_INF * 0.5) ? exp(score_tile[tid * BC + k] - m_new) : 0.0;
+                        score_tile[tid * BC + k] = prob;
+                        tile_sum += prob;
+                    }
+
+                    row_l[tid] = l_old * alpha + tile_sum;
+                    row_m[tid] = m_new;
+                }
+                barrier();
+
+                // P * V accumulate
+                if (q_valid) {
+                    float alpha = row_alpha[qr];
+                    acc0 *= alpha; acc1 *= alpha; acc2 *= alpha; acc3 *= alpha;
+                    acc4 *= alpha; acc5 *= alpha; acc6 *= alpha; acc7 *= alpha;
+
+                    uint d_chunk = sub * 8u;
+                    [[unroll]] for (uint k = 0u; k < BC; ++k) {
+                        float prob   = score_tile[qr * BC + k];
+                        uint  v_base = k * 32u + d_chunk;
+                        acc0 += prob * v_tile[v_base + 0u];
+                        acc1 += prob * v_tile[v_base + 1u];
+                        acc2 += prob * v_tile[v_base + 2u];
+                        acc3 += prob * v_tile[v_base + 3u];
+                        acc4 += prob * v_tile[v_base + 4u];
+                        acc5 += prob * v_tile[v_base + 5u];
+                        acc6 += prob * v_tile[v_base + 6u];
+                        acc7 += prob * v_tile[v_base + 7u];
+                    }
+                }
+                barrier();
+            }
+
+            // Normalize and write FP32 output
+            if (q_valid) {
+                float l    = row_l[qr];
+                float invL = (l > 0.0) ? (1.0 / l) : 0.0;
+                uint outBase = q_row * dimVec + headVecOff + sub * 8u;
+                o_vec[outBase + 0u] = acc0 * invL;
+                o_vec[outBase + 1u] = acc1 * invL;
+                o_vec[outBase + 2u] = acc2 * invL;
+                o_vec[outBase + 3u] = acc3 * invL;
+                o_vec[outBase + 4u] = acc4 * invL;
+                o_vec[outBase + 5u] = acc5 * invL;
+                o_vec[outBase + 6u] = acc6 * invL;
+                o_vec[outBase + 7u] = acc7 * invL;
+            }
+        }
+        """;
+}
