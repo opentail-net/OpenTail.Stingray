@@ -99,13 +99,25 @@ public sealed class WanModel : IDisposable
         return (detectedLayers, detectedDim, detectedHeads);
     }
 
+    // 2026-09-21: Resolve() used to re-do the full prefix-candidate probing (string concat +
+    // IWeightLoader.Contains lookups) on every single call, even for a name already resolved --
+    // called every block, every denoising step (Linear() alone calls it twice per invocation, and
+    // there are ~11 Linear() calls per transformer block). Weight presence never changes for the
+    // lifetime of a loaded checkpoint, so the resolved full name is safe to cache once per short name.
+    private readonly Dictionary<string, string> _resolvedNameCache = new(StringComparer.Ordinal);
+
     private string Resolve(string name)
     {
+        if (_resolvedNameCache.TryGetValue(name, out var cached)) return cached;
+
         string direct = _prefix + name;
-        if (_weights.Contains(direct)) return direct;
-        if (_weights.Contains("model.diffusion_model." + direct)) return "model.diffusion_model." + direct;
-        if (_weights.Contains("diffusion_model." + direct)) return "diffusion_model." + direct;
-        return direct;
+        string resolved = direct;
+        if (_weights.Contains(direct)) resolved = direct;
+        else if (_weights.Contains("model.diffusion_model." + direct)) resolved = "model.diffusion_model." + direct;
+        else if (_weights.Contains("diffusion_model." + direct)) resolved = "diffusion_model." + direct;
+
+        _resolvedNameCache[name] = resolved;
+        return resolved;
     }
 
     private float[] GetWeight(string name)

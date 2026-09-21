@@ -866,11 +866,16 @@ internal static unsafe class DiffusionOps
 
     public static void ModulateRows(ReadOnlySpan<float> input, Span<float> output, int seqLen, int dim, ReadOnlySpan<float> shift, ReadOnlySpan<float> scale)
     {
+        // 2026-09-21: was a scalar double-loop; vectorized with TensorPrimitives, same pattern
+        // (and same measured-safe precedent) as SDXL's own 2026-09-11 CPU-vectorization pass.
+        // `1+scale` is per-channel and invariant across rows, so compute it once per call rather
+        // than per row.
+        var scale1 = new float[dim];
+        TensorPrimitives.Add(scale, 1.0f, scale1);
         for (int i = 0; i < seqLen; i++)
         {
             int off = i * dim;
-            for (int d = 0; d < dim; d++)
-                output[off + d] = input[off + d] * (1.0f + scale[d]) + shift[d];
+            TensorPrimitives.MultiplyAdd(input.Slice(off, dim), scale1, shift, output.Slice(off, dim));
         }
     }
 
@@ -885,11 +890,13 @@ internal static unsafe class DiffusionOps
 
     public static void ApplyGatedResidualRows(Span<float> x, ReadOnlySpan<float> branch, int seqLen, int dim, ReadOnlySpan<float> gate)
     {
+        // 2026-09-21: was a scalar double-loop; vectorized with TensorPrimitives.MultiplyAdd
+        // (x = branch*gate + x, destination == the addend operand, a supported full-overlap case).
         for (int i = 0; i < seqLen; i++)
         {
             int off = i * dim;
-            for (int d = 0; d < dim; d++)
-                x[off + d] += branch[off + d] * gate[d];
+            var xRow = x.Slice(off, dim);
+            TensorPrimitives.MultiplyAdd(branch.Slice(off, dim), gate, xRow, xRow);
         }
     }
 

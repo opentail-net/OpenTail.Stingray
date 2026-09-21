@@ -216,12 +216,47 @@ public sealed class Sd3Pipeline : IDisposable, IDiffusionPipeline
         }
 
         // 3. Rectified Flow Matching Denoising Loop
-        // In flow matching, timestep ranges from 1.0 down to 0.0
-        float dt = 1.0f / steps;
+        //
+        // Real bug found and fixed 2026-09-21 (docs/094, SD3.5 composition/scale investigation):
+        // this loop previously used a plain LINEAR sigma schedule (t = 1 - step/steps, constant
+        // dt = 1/steps per step) -- but the real reference (`examples/stable-diffusion.cpp`'s
+        // `DiscreteFlowDenoiser`, used for every sd_version_is_sd3() checkpoint with
+        // `default_flow_shift = 3.f`) applies a SHIFT to that linear fraction before it becomes a
+        // sigma: `sigma(t) = shift*t / (1 + (shift-1)*t)`. This is the same real "flow shift"
+        // mechanism this project's own Wan/LTX-Video pipelines already expose as a `flowShift`
+        // parameter -- SD3/3.5 needed it too and never had it. With shift=3, the schedule is NOT
+        // evenly spaced in true noise-level space: sigma collapses from 1.0 toward ~0 much faster
+        // than a linear schedule would over the first steps, then spends proportionally more of the
+        // step budget refining near-zero-noise detail. Feeding the model the raw unshifted t as its
+        // timestep (and stepping x by a constant, too-large dt every iteration) systematically
+        // mismatches the noise level the model was actually trained to expect at each step,
+        // consistent with the previously-observed correct-content-wrong-scale/position artifact.
+        // Mirrors `DiscreteScheduler::get_sigmas` + `DiscreteFlowDenoiser::t_to_sigma` exactly:
+        // discretize t evenly over integer timesteps [0,999], shift each through the formula above,
+        // then force the final sigma to exactly 0 (not a shifted near-zero value).
+        const float FlowShift = 3.0f;
+        var sigmas = new float[steps + 1];
+        if (steps == 1)
+        {
+            sigmas[0] = ShiftedSigma(FlowShift, 999f);
+        }
+        else
+        {
+            float tMax = 999f;
+            float stepT = tMax / (steps - 1);
+            for (int i = 0; i < steps; i++)
+            {
+                float ti = tMax - stepT * i;
+                sigmas[i] = ShiftedSigma(FlowShift, ti);
+            }
+        }
+        sigmas[steps] = 0f;
+
         for (int step = 0; step < steps; step++)
         {
-            float t = 1.0f - step * dt;
-            float timestep = t * 1000.0f; // Scale to 0..1000 for Fourier embedding
+            float sigma = sigmas[step];
+            float dSigma = sigma - sigmas[step + 1];
+            float timestep = sigma * 1000.0f; // Scale to 0..1000 for Fourier embedding
 
             float[] condPred;
             float[] uncondPred;
@@ -252,8 +287,9 @@ public sealed class Sd3Pipeline : IDisposable, IDiffusionPipeline
             for (int i = 0; i < x.Length; i++)
             {
                 float v = uncondPred[i] + guidance * (condPred[i] - uncondPred[i]);
-                // Euler update along flow: x_{t-dt} = x_t - dt * v
-                x[i] -= dt * v;
+                // Euler update along flow: x_{sigma_next} = x_sigma - dSigma * v (real, non-uniform
+                // step size from the shifted sigma schedule above, not a fixed dt).
+                x[i] -= dSigma * v;
             }
 
             progress?.Invoke(step + 1, steps);
@@ -281,6 +317,15 @@ public sealed class Sd3Pipeline : IDisposable, IDiffusionPipeline
         }
 
         PngWriter.Write(outputPath, pixels, outWidth, outHeight);
+    }
+
+    /// <summary>Real reference's `time_snr_shift` (denoiser.hpp): sigma(t) = shift*t/(1+(shift-1)*t)
+    /// for t in [0,1], where `t999` is a raw integer timestep in [0,999] (t = (t999+1)/1000).</summary>
+    private static float ShiftedSigma(float shift, float t999)
+    {
+        float t = (t999 + 1f) / 1000f;
+        if (shift == 1.0f) return t;
+        return shift * t / (1f + (shift - 1f) * t);
     }
 
     private float[] EncodeT5(string prompt)

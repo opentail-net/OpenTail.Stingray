@@ -146,6 +146,15 @@ public sealed class MMDiTModel : IDisposable
         int top = (_posEmbedMaxSize - imgH) / 2;
         int left = (_posEmbedMaxSize - imgW) / 2;
 
+        // Diagnostic-only (2026-09-21, composition/left-shift bisection): lets a test force the
+        // crop origin away from center to see whether the generated subject's position tracks it --
+        // a decisive way to confirm or rule out the pos_embed crop as the source of the still-open
+        // left-shift bug. No effect unless the env vars are set (zero prod cost).
+        string? topOverride = Environment.GetEnvironmentVariable("STINGRAY_SD3_POSEMBED_TOP");
+        string? leftOverride = Environment.GetEnvironmentVariable("STINGRAY_SD3_POSEMBED_LEFT");
+        if (topOverride is not null && int.TryParse(topOverride, out int t)) top = t;
+        if (leftOverride is not null && int.TryParse(leftOverride, out int l)) left = l;
+
         fixed (float* xp = x, pep = _posEmbed)
         {
             for (int py = 0; py < imgH; py++)
