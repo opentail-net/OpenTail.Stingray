@@ -67,7 +67,7 @@ public sealed class Sd3Pipeline : IDisposable, IDiffusionPipeline
     public (float[] context, float[] pooledY, int numTextTokens) EncodePromptForTesting(string prompt)
     {
         var tokens = _clipTokenizer.Tokenize(prompt);
-        var (hiddenL, pooledL) = _clipL.Encode(tokens);
+        var (_, hiddenL, pooledL) = _clipL.Encode(tokens);
         var (hiddenG, pooledG) = _clipG.Encode(tokens);
         var t5 = EncodeT5(prompt);
         return (BuildContext(hiddenL, hiddenG, t5), BuildPooledY(pooledL, pooledG), 77 + T5MaxTokens);
@@ -185,7 +185,7 @@ public sealed class Sd3Pipeline : IDisposable, IDiffusionPipeline
 
         // 1. Text tokenization & pooled vectors
         var condTokens = _clipTokenizer.Tokenize(prompt);
-        var (condHiddenL, condPooledL) = _clipL.Encode(condTokens);
+        var (_, condHiddenL, condPooledL) = _clipL.Encode(condTokens);
         var (condHiddenG, condPooledG) = _clipG.Encode(condTokens);
         var condT5 = EncodeT5(prompt);
 
@@ -193,7 +193,7 @@ public sealed class Sd3Pipeline : IDisposable, IDiffusionPipeline
         var condPooledY = BuildPooledY(condPooledL, condPooledG);
 
         var uncondTokens = _clipTokenizer.Tokenize(negativePrompt ?? "");
-        var (uncondHiddenL, uncondPooledL) = _clipL.Encode(uncondTokens);
+        var (_, uncondHiddenL, uncondPooledL) = _clipL.Encode(uncondTokens);
         var (uncondHiddenG, uncondPooledG) = _clipG.Encode(uncondTokens);
         var uncondT5 = EncodeT5(negativePrompt ?? "");
 

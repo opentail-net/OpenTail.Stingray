@@ -118,7 +118,7 @@ public sealed class ImagePipeline : IDisposable, IDiffusionPipeline
 
         // ── 1. Encode text ────────────────────────────────────────────────
         var clipTokens = _clipTok.Tokenize(prompt);
-        var (_, pooledEmbed) = _clip.Encode(clipTokens);   // [768]
+        var (_, _, pooledEmbed) = _clip.Encode(clipTokens);   // [768]
         double msClip = sw?.Elapsed.TotalMilliseconds ?? 0; sw?.Restart();
 
         // Real FLUX (both the vendored diffusers `_get_t5_prompt_embeds` — `padding="max_length"`,

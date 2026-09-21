@@ -94,11 +94,11 @@ public sealed class StableDiffusionPipeline : IDiffusionPipeline
 
         // 1. Text Conditioning:
         var condTokens = _tokenizer.Tokenize(prompt);
-        var (condContext, _) = _textEncoder.Encode(condTokens);
+        var (condContext, _, _) = _textEncoder.Encode(condTokens);
 
         // 2. Negative / Unconditional Conditioning:
         var uncondTokens = _tokenizer.Tokenize(negativePrompt ?? "");
-        var (uncondContext, _) = _textEncoder.Encode(uncondTokens);
+        var (uncondContext, _, _) = _textEncoder.Encode(uncondTokens);
 
         // 3. Scheduler & Initial Noise / Latent Setup:
         var scheduler = new EulerDiscreteScheduler(steps, schedulerType: schedulerType, timestepSpacing: timestepSpacing);

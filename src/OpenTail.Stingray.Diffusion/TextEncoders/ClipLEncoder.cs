@@ -4,12 +4,26 @@ namespace OpenTail.Stingray.Diffusion.TextEncoders;
 /// <summary>
 /// CLIP-L (ViT-L/14) text encoder.
 /// Produces:
-///   - last_hidden_state [seq, 768] — used as secondary conditioning in some models
-///   - pooled_output [768]          — the [EOS] token embedding, main conditioning for FLUX vector_in
+///   - penultimate_hidden_state [seq, 768] — real SD3/3.5 joint-context conditioning (see below)
+///   - pooled_output [768]                 — projected [EOS] token embedding, main conditioning for FLUX vector_in
 ///
 /// Loads weights from clip_l.safetensors or unified SD 1.5 checkpoints.
 /// Architecture: 12 transformer encoder layers, 768-dim, 12 heads, head_dim=64.
 /// Activation: QuickGELU (x * sigmoid(1.702*x)).
+///
+/// <para><b>Two real bugs found and fixed 2026-09-21</b> (SD3.5 composition/left-shift
+/// investigation): (1) this class previously returned the FINAL hidden state (post-final-LayerNorm,
+/// after all 12 layers) as its "last_hidden_state" output, but the real SD3 reference pipeline
+/// (`encode_prompt` in `pipeline_stable_diffusion_3.py`) requests `output_hidden_states=True` and
+/// uses `hidden_states[-2]` -- the PENULTIMATE hidden state, i.e. the output after layer 10 (skipping
+/// only the final layer 11 and the final LayerNorm entirely) -- exactly the convention
+/// <see cref="OpenClipGEncoder"/> already implemented correctly for CLIP-G, creating a silent
+/// asymmetry between the two encoders feeding the same joint context tensor. (2) this class
+/// previously returned the raw post-final-LN EOS token vector as its pooled output with no
+/// projection at all, but the real reference is `CLIPTextModelWithProjection`, whose pooled output
+/// is `text_projection(pooler_output)` -- a real, checkpoint-stored `text_projection.weight` matrix
+/// this class never read (confirmed present in the real checkpoint via direct safetensors header
+/// inspection). Both fixed to match <see cref="OpenClipGEncoder"/>'s already-correct pattern.</para>
 /// </summary>
 public sealed class ClipLEncoder : IDisposable
 {
@@ -41,9 +55,14 @@ public sealed class ClipLEncoder : IDisposable
 
     /// <summary>
     /// Encode a list of token ids (length ≤ 77, padded to 77 with 0).
-    /// Returns (lastHiddenState [77, 768], pooledOutput [768]).
+    /// Returns (finalHidden [77,768], penultimateHidden [77,768], projectedPooledOutput [768]).
+    /// Both hidden states are real, distinct consumer requirements -- NOT a redundant pair: SD1.5's
+    /// plain <c>CLIPTextModel</c> cross-attention conditioning uses the standard FINAL (post-final-
+    /// LayerNorm) hidden state, while SD3/3.5's joint context tensor specifically requires the
+    /// PENULTIMATE state (see this class's own doc comment). Callers pick whichever their real
+    /// reference pipeline uses -- do not assume one is "the" hidden state for every caller.
     /// </summary>
-    public (float[] lastHidden, float[] pooled) Encode(int[] tokens)
+    public (float[] finalHidden, float[] penultimateHidden, float[] pooled) Encode(int[] tokens)
     {
         int seq = MaxSeqLen;
         // Pad/truncate to MaxSeqLen
@@ -68,23 +87,44 @@ public sealed class ClipLEncoder : IDisposable
         // Build causal mask (CLIP uses causal masking like GPT)
         var mask = BuildCausalMask(seq);
 
-        // 12 encoder layers
+        // 12 encoder layers -- capture the PENULTIMATE state (after layer Layers-2, i.e. skipping
+        // only the final layer and the final LayerNorm) the same way OpenClipGEncoder already does,
+        // matching the real reference's `hidden_states[-2]` convention.
+        float[]? penultimateState = null;
         for (int i = 0; i < Layers; i++)
+        {
             x = EncoderLayer(x, mask, seq, i);
+            if (i == Layers - 2)
+                penultimateState = (float[])x.Clone();
+        }
 
-        // Final layer norm
+        // Pooled = EOS token (last non-pad token, or last position) after the FULL stack including
+        // the final layer + final LayerNorm -- CLIPTextModel's pooler_output is always taken from
+        // the final hidden state, unlike the penultimate convention used for last_hidden_state above.
         var lnW = Wt("text_model.final_layer_norm.weight");
         var lnB = Wt("text_model.final_layer_norm.bias");
         DiffusionOps.LayerNorm(x, lnW, lnB, Dim);
 
-        // Pooled = EOS token (last non-pad token, or last position)
         // CLIP uses the EOS token embedding at position of the EOT (49407)
         int eosPos = copy - 1;
         for (int t = 0; t < copy; t++)
             if (ids[t] == 49407) { eosPos = t; break; }
 
-        var pooled = x.AsSpan(eosPos * Dim, Dim).ToArray();
-        return (x, pooled);
+        var eosVector = x.AsSpan(eosPos * Dim, Dim).ToArray();
+
+        // Real CLIPTextModelWithProjection: pooled_output = text_projection(pooler_output).
+        float[] pooled;
+        if (_st.Contains("text_projection.weight"))
+        {
+            var projW = Wt("text_projection.weight");
+            pooled = DiffusionOps.Linear(eosVector, projW, null, 1, Dim, Dim);
+        }
+        else
+        {
+            pooled = eosVector;
+        }
+
+        return (x, penultimateState ?? x, pooled);
     }
 
     private float[] EncoderLayer(float[] x, float[] mask, int seq, int layerIdx)

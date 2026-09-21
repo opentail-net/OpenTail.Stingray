@@ -110,8 +110,13 @@ public sealed class SdxlPipeline : IDiffusionPipeline
         }
 
         // 1. Dual text conditioning (CLIP-L [77, 768] + OpenCLIP-bigG [77, 1280] -> [77, 2048])
+        // Real bug found and fixed 2026-09-21 (found while auditing ClipLEncoder for the SD3.5
+        // composition-bug investigation): SDXL's real reference (`StableDiffusionXLPipeline.
+        // encode_prompt`) uses `hidden_states[-2]` (penultimate, pre-final-LayerNorm) for BOTH
+        // CLIP-L and CLIP-G -- this call site was taking CLIP-L's FINAL hidden state (the first
+        // tuple element), the same asymmetry ClipLEncoder itself had internally, now fixed there.
         var condTokens = _clipTokenizer.Tokenize(prompt);
-        var (condHiddenL, _) = _clipL.Encode(condTokens);
+        var (_, condHiddenL, _) = _clipL.Encode(condTokens);
         var (condHiddenG, condPooledG) = _clipG.Encode(condTokens);
         var condContext = ConcatContext(condHiddenL, condHiddenG);
         var condAddEmbeds = BuildAddEmbeddings(condPooledG, height, width, 0, 0, height, width);
@@ -121,7 +126,7 @@ public sealed class SdxlPipeline : IDiffusionPipeline
         if (guidance > 1f)
         {
             var uncondTokens = _clipTokenizer.Tokenize(negativePrompt ?? "");
-            var (uncondHiddenL, _) = _clipL.Encode(uncondTokens);
+            var (_, uncondHiddenL, _) = _clipL.Encode(uncondTokens);
             var (uncondHiddenG, uncondPooledG) = _clipG.Encode(uncondTokens);
             uncondContext = ConcatContext(uncondHiddenL, uncondHiddenG);
             uncondAddEmbeds = BuildAddEmbeddings(uncondPooledG, height, width, 0, 0, height, width);
