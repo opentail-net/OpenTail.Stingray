@@ -44,6 +44,19 @@ public sealed class OpenClipGEncoder : IDisposable
         int copy = Math.Min(tokens.Length, seq);
         Array.Copy(tokens, ids, copy);
 
+        // Real bug found and fixed 2026-09-21 (SD3.5 composition-bug investigation, found via a
+        // real token-ID dump against the reference): Sd3Pipeline shares ONE ClipTokenizer's
+        // output (which pads trailing positions with EOS/49407 repeated, the real CLIP-L/HF
+        // convention) for BOTH CLIP-L and CLIP-G. But the real reference's separate CLIP-G
+        // tokenizer pads trailing positions with 0, not repeated EOS -- confirmed directly:
+        // reference clip_g token dump is "...,2175,49407,0,0,0,...", not "...,49407,49407,...".
+        // Zero out everything after the first EOS occurrence to match (content + the one real EOS
+        // stay untouched).
+        const int EosTokenId = 49407;
+        int firstEosPos = Array.IndexOf(ids, EosTokenId, 0, copy);
+        if (firstEosPos >= 0)
+            Array.Clear(ids, firstEosPos + 1, seq - (firstEosPos + 1));
+
         float[] tokEmb, posEmb;
         if (_isOpenClipFormat)
         {

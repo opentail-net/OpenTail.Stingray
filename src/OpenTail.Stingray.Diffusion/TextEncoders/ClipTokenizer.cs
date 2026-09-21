@@ -108,20 +108,27 @@ public sealed class ClipTokenizer
 
     private List<string> Bpe(string token)
     {
-        // Start with individual characters
+        // Real bug found and fixed 2026-09-21 (SD3.5 composition-bug investigation): `token`
+        // always ends with the literal "</w>" suffix SplitWords appended. Real CLIP/GPT-2-style
+        // BPE fuses that end-of-word marker onto the LAST character as a single atomic initial
+        // unit (e.g. "red</w>" -> ["r","e","d</w>"], and a single-character word "a</w>" -> just
+        // ["a</w>"], already complete) -- confirmed directly against the real vocab/merges file:
+        // there is no "a </w>" merge rule anywhere (`_merges.IndexOf(("a","</w>"))` == -1) because
+        // the real vocab already seeds "a</w>" as a base unit reachable with zero merges, and
+        // "</w>" alone was never even a registered vocab entry. The previous version emitted
+        // "</w>" as its OWN separate initial list element, so single-character words like "a"
+        // silently fell back to the wrong base token id (64, plain "a") instead of the real
+        // "a</w>" (320) -- and longer words had their merge priority skewed by the extra required
+        // merge step. Confirmed the fix against the real reference's own token IDs for "a red
+        // apple on a wooden table": now matches exactly (320,736,3055,525,320,9057,2175).
+        string core = token.Length >= 4 && token.EndsWith("</w>") ? token[..^4] : token;
         var word = new List<string>();
-        for (int i = 0; i < token.Length; i++)
-        {
-            if (token.Substring(i).StartsWith("</w>"))
-            {
-                word.Add("</w>");
-                i += 3;
-            }
-            else
-            {
-                word.Add(token[i].ToString());
-            }
-        }
+        for (int i = 0; i < core.Length; i++)
+            word.Add(core[i].ToString());
+        if (word.Count == 0)
+            word.Add("</w>");
+        else
+            word[^1] += "</w>";
 
         while (word.Count > 1)
         {
