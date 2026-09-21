@@ -540,3 +540,4 @@ examples/
 /vibevoice-asr-tensor-names.txt
 /voxcpm2-audiovae-tensor-names.txt
 /voxcpm2-config.json
+/tests/OpenTail.Stingray.Tests.Diffusion/ZZ_ScratchSd3PosEmbedBisectTest.cs
