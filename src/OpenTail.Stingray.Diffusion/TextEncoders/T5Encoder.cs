@@ -72,29 +72,48 @@ public sealed class T5Encoder : IDisposable
     /// <summary>
     /// Pre-allocates GPU weights and execution workspace for fast GPU encoding.
     /// </summary>
-    public void InitGpu(IVisionOpsBackend backend, int maxSeqLen = 256)
+    private int _gpuValidLen = -1;
+
+    public void InitGpu(IVisionOpsBackend backend, int maxSeqLen = 256) => InitGpu(backend, maxSeqLen, maxSeqLen);
+
+    public void InitGpu(IVisionOpsBackend backend, int maxSeqLen, int validLen)
     {
         if (_gpuWeights is null)
         {
             _gpuWeights = new T5GpuWeights(backend, Wt, Layers, Dim, FfDim);
         }
 
-        if (_gpuWorkspace is null || _gpuWorkspace.SeqLen != maxSeqLen)
+        if (_gpuWorkspace is null || _gpuWorkspace.SeqLen != maxSeqLen || _gpuValidLen != validLen)
         {
             _gpuWorkspace?.Dispose();
             var rpW = Wt("encoder.block.0.layer.0.SelfAttention.relative_attention_bias.weight");
-            _relPosBias = ComputeRelPosBias(rpW, maxSeqLen, Heads);
+            _relPosBias = ComputeRelPosBias(rpW, maxSeqLen, Heads, validLen);
             _gpuWorkspace = new T5GpuWorkspace(backend, maxSeqLen, _relPosBias, Dim, Heads, HeadDim, FfDim);
+            _gpuValidLen = validLen;
         }
     }
 
     /// <summary>
     /// Encodes token ids → context embeddings [seq, 4096] directly on GPU with zero round trips per layer.
     /// </summary>
-    public float[] EncodeGpu(int[] tokens, IVisionOpsBackend backend)
+    public float[] EncodeGpu(int[] tokens, IVisionOpsBackend backend) => EncodeGpu(tokens, backend, tokens.Length);
+
+    /// <param name="validLen">Real (non-padding) token count, including the trailing EOS token.
+    /// Real bug found and fixed 2026-09-21 (SD3.5 composition-bug investigation): callers pad
+    /// `tokens` to a fixed length (e.g. 256) with the real `&lt;pad&gt;` token id (0, a genuine
+    /// embedding row, not a sentinel), and this encoder's self-attention previously let every
+    /// padding position fully participate as both query and key with no mask at all -- for a short
+    /// prompt (~10 real tokens in a 256-slot buffer), ~96% of the bidirectional self-attention
+    /// signal at every layer was mixing in meaningless `&lt;pad&gt;` embeddings, corrupting the real
+    /// tokens' own hidden states before they ever reach the DiT. Confirmed against the real
+    /// reference (`stable-diffusion.cpp`'s T5 path builds an explicit additive attention mask from
+    /// padding and applies it in every self-attention layer). Fixed by masking key positions
+    /// `&gt;= validLen` to -inf in the attention scores before softmax, baked directly into the
+    /// (per-call, not cached) relative-position bias tensor.</param>
+    public float[] EncodeGpu(int[] tokens, IVisionOpsBackend backend, int validLen)
     {
         int seq = tokens.Length;
-        InitGpu(backend, seq);
+        InitGpu(backend, seq, validLen);
 
         var ws = _gpuWorkspace!;
         var weights = _gpuWeights!;
@@ -174,7 +193,13 @@ public sealed class T5Encoder : IDisposable
     /// <summary>
     /// Encode token ids → context embeddings [seq, 4096].
     /// </summary>
-    public float[] Encode(int[] tokens)
+    public float[] Encode(int[] tokens) => Encode(tokens, tokens.Length);
+
+    private int _cpuValidLen = -1;
+
+    /// <param name="validLen">See <see cref="EncodeGpu(int[],IVisionOpsBackend,int)"/>'s doc for why
+    /// this must be the real (non-padding) token count, not <c>tokens.Length</c>.</param>
+    public float[] Encode(int[] tokens, int validLen)
     {
         int seq = tokens.Length;
         var tokEmb = Wt("shared.weight");
@@ -187,18 +212,15 @@ public sealed class T5Encoder : IDisposable
             tokEmb.AsSpan(off, Dim).CopyTo(x.AsSpan(t * Dim, Dim));
         }
 
-        // Precompute relative position bias from first block (shared across all blocks)
-        if (_relPosBias is null)
+        // Precompute relative position bias (with the real padding mask baked in -- see
+        // EncodeGpu's doc comment). Not safely cacheable across calls with different validLen
+        // (cond vs. uncond prompts have different real lengths), so recompute whenever either
+        // seq or validLen changes.
+        if (_relPosBias is null || _relPosBias.Length != seq * seq * Heads || _cpuValidLen != validLen)
         {
             var rpW = Wt("encoder.block.0.layer.0.SelfAttention.relative_attention_bias.weight");
-            // rpW: [num_buckets, num_heads] = [32, 64]
-            _relPosBias = ComputeRelPosBias(rpW, seq, Heads);
-        }
-        else if (_relPosBias.Length != seq * seq * Heads)
-        {
-            // Recompute if sequence length changed
-            var rpW = Wt("encoder.block.0.layer.0.SelfAttention.relative_attention_bias.weight");
-            _relPosBias = ComputeRelPosBias(rpW, seq, Heads);
+            _relPosBias = ComputeRelPosBias(rpW, seq, Heads, validLen);
+            _cpuValidLen = validLen;
         }
 
         for (int i = 0; i < Layers; i++)
@@ -304,10 +326,13 @@ public sealed class T5Encoder : IDisposable
         return DiffusionOps.Linear(gate, woW, null, seq, FfDim, Dim);
     }
 
-    /// <summary>Compute T5 relative position bias for a sequence length.</summary>
-    private static float[] ComputeRelPosBias(float[] biasWeight, int seq, int nHeads)
+    /// <summary>Compute T5 relative position bias for a sequence length, with padding keys masked
+    /// out (additive -1e9 for any key position j &gt;= <paramref name="validLen"/> -- see
+    /// <see cref="EncodeGpu(int[],IVisionOpsBackend,int)"/>'s doc comment for why).</summary>
+    private static float[] ComputeRelPosBias(float[] biasWeight, int seq, int nHeads, int validLen)
     {
         // biasWeight: [RelPosBuckets, nHeads] = [32, 64]
+        const float MaskBias = -1e9f;
         var bias = new float[nHeads * seq * seq];
         for (int i = 0; i < seq; i++)
         {
@@ -318,8 +343,9 @@ public sealed class T5Encoder : IDisposable
                 // right" of the query) a given position pair lands in without erroring, a subtle
                 // directional bug caught while re-deriving this exact formula for Wan's UMT5 encoder.
                 int bucket = RelPosBucket(j - i);
+                bool isPadKey = j >= validLen;
                 for (int h = 0; h < nHeads; h++)
-                    bias[(h * seq + i) * seq + j] = biasWeight[bucket * nHeads + h];
+                    bias[(h * seq + i) * seq + j] = isPadKey ? MaskBias : biasWeight[bucket * nHeads + h];
             }
         }
         return bias;

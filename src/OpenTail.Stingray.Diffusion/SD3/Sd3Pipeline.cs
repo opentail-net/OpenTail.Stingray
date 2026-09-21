@@ -202,17 +202,36 @@ public sealed class Sd3Pipeline : IDisposable, IDiffusionPipeline
         int numTextTokens = 77 + T5MaxTokens;
 
         // 2. Initial Noise
-        var rng = seed >= 0 ? new Random(seed) : new Random();
         int latentCount = latC * latH * latW;
         var x = new float[latentCount];
-        for (int i = 0; i < latentCount - 1; i += 2)
+
+        // TEMP DIAGNOSTIC (2026-09-21, SD3.5 composition/left-shift bug investigation): lets a
+        // caller bypass System.Random+Box-Muller entirely and inject the C++ reference's own real
+        // Philox-RNG noise tensor (dumped via examples/stable-diffusion.cpp's SD_DUMP_NOISE_PATH
+        // hook, same flat float32 layout: channel-major, matching this array's own
+        // ch*latH*latW+y*latW+x convention) -- isolates "different RNG source" from "real algorithm
+        // bug" as the cause of the still-open composition/scale mismatch. No effect unless the env
+        // var is set (zero prod cost).
+        string? injectedNoisePath = Environment.GetEnvironmentVariable("STINGRAY_SD3_INJECT_NOISE_PATH");
+        if (injectedNoisePath is not null && File.Exists(injectedNoisePath))
         {
-            double u1 = 1.0 - rng.NextDouble();
-            double u2 = 1.0 - rng.NextDouble();
-            double radius = Math.Sqrt(-2.0 * Math.Log(u1));
-            double theta = 2.0 * Math.PI * u2;
-            x[i]     = (float)(radius * Math.Cos(theta));
-            x[i + 1] = (float)(radius * Math.Sin(theta));
+            byte[] raw = File.ReadAllBytes(injectedNoisePath);
+            if (raw.Length != latentCount * sizeof(float))
+                throw new InvalidOperationException($"STINGRAY_SD3_INJECT_NOISE_PATH byte length {raw.Length} != expected {latentCount * sizeof(float)}");
+            Buffer.BlockCopy(raw, 0, x, 0, raw.Length);
+        }
+        else
+        {
+            var rng = seed >= 0 ? new Random(seed) : new Random();
+            for (int i = 0; i < latentCount - 1; i += 2)
+            {
+                double u1 = 1.0 - rng.NextDouble();
+                double u2 = 1.0 - rng.NextDouble();
+                double radius = Math.Sqrt(-2.0 * Math.Log(u1));
+                double theta = 2.0 * Math.PI * u2;
+                x[i]     = (float)(radius * Math.Cos(theta));
+                x[i + 1] = (float)(radius * Math.Sin(theta));
+            }
         }
 
         // 3. Rectified Flow Matching Denoising Loop
@@ -336,8 +355,14 @@ public sealed class Sd3Pipeline : IDisposable, IDiffusionPipeline
         // ImagePipeline.cs) -- remaining slots stay 0 (T5's <pad> token id).
         var raw = _t5Tokenizer.Tokenize(prompt);
         var tokens = new int[T5MaxTokens];
-        Array.Copy(raw, tokens, Math.Min(raw.Length, T5MaxTokens));
-        return _t5.Encode(tokens);
+        int validLen = Math.Min(raw.Length, T5MaxTokens);
+        Array.Copy(raw, tokens, validLen);
+        // Real bug found and fixed 2026-09-21 (SD3.5 composition/left-shift investigation): must
+        // pass the REAL (non-padding) token count so T5Encoder masks out the <pad> positions in its
+        // self-attention -- see T5Encoder.Encode's doc comment. A short prompt leaves ~96% of this
+        // 256-slot buffer as <pad>; without this, every real token's hidden state was previously
+        // corrupted by attending to hundreds of meaningless padding embeddings.
+        return _t5.Encode(tokens, validLen);
     }
 
     /// <summary>
