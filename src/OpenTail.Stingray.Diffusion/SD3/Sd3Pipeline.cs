@@ -23,7 +23,20 @@ namespace OpenTail.Stingray.Diffusion.SD3;
 /// </summary>
 public sealed class Sd3Pipeline : IDisposable, IDiffusionPipeline
 {
-    private const int T5MaxTokens = 256;
+    // Real bug found and fixed 2026-09-21 (SD3.5 composition/left-shift investigation, the actual
+    // root cause after a full context/pooledY tensor dump against the real reference): was 256,
+    // guessed by analogy to FLUX's own T5 sequence length. But SD3's real reference
+    // (`examples/stable-diffusion.cpp`'s `SD3CLIPEmbedder::get_learned_condition_common`,
+    // `conditioner.hpp:857`) hardcodes `chunk_len = 77` and uses that SAME 77-token chunk length
+    // for CLIP-L, CLIP-G, AND T5 alike -- confirmed by dumping the reference's real assembled
+    // context tensor for this exact prompt/config: shape [4096, 154, 1], i.e. 77 (CLIP) + 77 (T5)
+    // = 154 total tokens, not 333. Using 256 T5 tokens made this port's joint sequence more than
+    // twice the real reference's length, corrupting the ratio and relative token-position
+    // structure between text and image tokens that the joint attention was trained on -- a much
+    // more structural error than any single encoder-output bug, and a strong candidate for the
+    // still-open composition/left-shift symptom (FLUX's own T5 IS real 256, a different model with
+    // a different convention -- do not "fix" FLUX to match this).
+    private const int T5MaxTokens = 77;
     private const int ContextDim = 4096;
 
     private readonly IWeightLoader _weights;

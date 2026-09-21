@@ -1234,8 +1234,15 @@ public sealed class ImageCommand : Command<ImageCommand.Settings>
             if (s.UpscalerPath is not null)
                 upscaler = RRDBNet.Load(s.UpscalerPath, gpu);
 
+            // Real bug found and fixed 2026-09-21 (SD3.5 composition-bug investigation): this call
+            // never passed --t5xxl/--t5-tokenizer even though both flags exist (wired for FLUX
+            // only) -- every SD3/3.5 `stingray image` invocation silently ran with T5 conditioning
+            // entirely zero-filled, a real and severe conditioning gap distinct from any of this
+            // investigation's other findings. Threaded through to match Sd3BaselineTests' own
+            // already-correct xunit-test wiring.
             using var pipeline = s.ClipGPath is not null && s.ClipLPath is not null && s.VaePath is not null
-                ? Sd3Pipeline.LoadSeparate(s.ClipLPath, s.ClipGPath, modelPath, s.VaePath, s.ClipTokenizerPath, gpu)
+                ? Sd3Pipeline.LoadSeparate(s.ClipLPath, s.ClipGPath, modelPath, s.VaePath, s.ClipTokenizerPath, gpu,
+                    t5EncoderPath: s.T5XXLPath, t5TokenizerPath: s.T5TokenizerPath)
                 : Sd3Pipeline.Load(modelPath, s.ClipTokenizerPath, gpu);
 
             string target = gpu is not null ? gpu.Name : "CPU";

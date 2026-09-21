@@ -5,25 +5,34 @@ namespace OpenTail.Stingray.Diffusion.TextEncoders;
 /// CLIP-L (ViT-L/14) text encoder.
 /// Produces:
 ///   - penultimate_hidden_state [seq, 768] — real SD3/3.5 joint-context conditioning (see below)
-///   - pooled_output [768]                 — projected [EOS] token embedding, main conditioning for FLUX vector_in
+///   - pooled_output [768]                 — raw, UNPROJECTED [EOS] token embedding
 ///
 /// Loads weights from clip_l.safetensors or unified SD 1.5 checkpoints.
 /// Architecture: 12 transformer encoder layers, 768-dim, 12 heads, head_dim=64.
 /// Activation: QuickGELU (x * sigmoid(1.702*x)).
 ///
-/// <para><b>Two real bugs found and fixed 2026-09-21</b> (SD3.5 composition/left-shift
-/// investigation): (1) this class previously returned the FINAL hidden state (post-final-LayerNorm,
-/// after all 12 layers) as its "last_hidden_state" output, but the real SD3 reference pipeline
-/// (`encode_prompt` in `pipeline_stable_diffusion_3.py`) requests `output_hidden_states=True` and
-/// uses `hidden_states[-2]` -- the PENULTIMATE hidden state, i.e. the output after layer 10 (skipping
-/// only the final layer 11 and the final LayerNorm entirely) -- exactly the convention
-/// <see cref="OpenClipGEncoder"/> already implemented correctly for CLIP-G, creating a silent
-/// asymmetry between the two encoders feeding the same joint context tensor. (2) this class
-/// previously returned the raw post-final-LN EOS token vector as its pooled output with no
-/// projection at all, but the real reference is `CLIPTextModelWithProjection`, whose pooled output
-/// is `text_projection(pooler_output)` -- a real, checkpoint-stored `text_projection.weight` matrix
-/// this class never read (confirmed present in the real checkpoint via direct safetensors header
-/// inspection). Both fixed to match <see cref="OpenClipGEncoder"/>'s already-correct pattern.</para>
+/// <para><b>Real bug found and fixed 2026-09-21</b> (SD3.5 composition/left-shift investigation):
+/// this class previously returned the FINAL hidden state (post-final-LayerNorm, after all 12
+/// layers) as its "last_hidden_state" output, but the real SD3 reference pipeline (`encode_prompt`
+/// in `pipeline_stable_diffusion_3.py`, confirmed independently against `examples/
+/// stable-diffusion.cpp`'s own `CLIPEncoder::forward` -- `clip_skip` defaults to 2, and
+/// `layer_idx = n_layer - clip_skip` with a loop that breaks at `i == layer_idx + 1`, i.e.
+/// processes layers 0..10 and stops, never reaching layer 11 or a final LayerNorm) requests the
+/// PENULTIMATE hidden state -- exactly the convention <see cref="OpenClipGEncoder"/> already
+/// implemented correctly for CLIP-G, creating a silent asymmetry between the two encoders feeding
+/// the same joint context tensor. Fixed to match.</para>
+///
+/// <para><b>A second suspected bug was found, then RETRACTED same day</b> after checking the real
+/// reference source directly (CLAUDE.md rule 8): this checkpoint file DOES physically contain a
+/// `text_projection.weight` tensor, which looked like it should parallel CLIP-G's own (correct)
+/// projected-pooled-output pattern. But `examples/stable-diffusion.cpp/src/model/te/clip.hpp`'s
+/// `CLIPTextModel::init_params` only ever registers that param `if (version ==
+/// OPEN_CLIP_VIT_BIGG_14)` -- CLIP-G ONLY -- so the reference's CLIP-L graph never wires that
+/// tensor in regardless of whether a given checkpoint file happens to contain it, and always takes
+/// the explicit `LOG_DEBUG("identity projection")` fallback. Applying it anyway was measurably
+/// wrong on this session's own noise-injection regression test (this pooled vector feeds AdaLN
+/// modulation in every block, so an incorrect transform here has whole-model impact) -- reverted;
+/// this class's pooled output stays the raw, unprojected EOS vector, matching the reference.</para>
 /// </summary>
 public sealed class ClipLEncoder : IDisposable
 {
@@ -110,19 +119,22 @@ public sealed class ClipLEncoder : IDisposable
         for (int t = 0; t < copy; t++)
             if (ids[t] == 49407) { eosPos = t; break; }
 
-        var eosVector = x.AsSpan(eosPos * Dim, Dim).ToArray();
-
-        // Real CLIPTextModelWithProjection: pooled_output = text_projection(pooler_output).
-        float[] pooled;
-        if (_st.Contains("text_projection.weight"))
-        {
-            var projW = Wt("text_projection.weight");
-            pooled = DiffusionOps.Linear(eosVector, projW, null, 1, Dim, Dim);
-        }
-        else
-        {
-            pooled = eosVector;
-        }
+        // Real bug found 2026-09-21, then RETRACTED same day after checking the real reference
+        // directly (`examples/stable-diffusion.cpp/src/model/te/clip.hpp`'s `CLIPTextModel::
+        // init_params`/`forward`, per CLAUDE.md rule 8): a `text_projection.weight` tensor IS
+        // physically present in this checkpoint file, and it first looked like CLIP-G's own
+        // already-correct projection pattern should apply here too. But the reference's own
+        // `init_params` only ever registers `params["text_projection"]` `if (version ==
+        // OPEN_CLIP_VIT_BIGG_14)` -- i.e. CLIP-G ONLY. For CLIP-L (`OPENAI_CLIP_VIT_L_14`), that
+        // param is never wired into the graph at all, so `forward`'s own `if (text_projection !=
+        // nullptr)` check is always false and it falls through to the explicit `LOG_DEBUG("identity
+        // projection")` branch -- the reference NEVER projects CLIP-L's pooled output, regardless of
+        // what tensors happen to exist in a given checkpoint file. Applying the projection here was
+        // measurably wrong: it visibly corrupted output on this session's own noise-injection
+        // regression test (this pooled vector feeds AdaLN modulation in every block, so an
+        // unintended transform here has whole-model impact). Left as the raw, unprojected EOS
+        // vector, matching the reference exactly.
+        var pooled = x.AsSpan(eosPos * Dim, Dim).ToArray();
 
         return (x, penultimateState ?? x, pooled);
     }
