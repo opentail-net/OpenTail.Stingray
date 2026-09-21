@@ -212,6 +212,9 @@ public sealed class T5Encoder : IDisposable
             tokEmb.AsSpan(off, Dim).CopyTo(x.AsSpan(t * Dim, Dim));
         }
 
+        // Diagnostic dump E0: token embedding output (before any blocks)
+        DiagnosticDump("E0", x);
+
         // Precompute relative position bias (with the real padding mask baked in -- see
         // EncodeGpu's doc comment). Not safely cacheable across calls with different validLen
         // (cond vs. uncond prompts have different real lengths), so recompute whenever either
@@ -224,11 +227,23 @@ public sealed class T5Encoder : IDisposable
         }
 
         for (int i = 0; i < Layers; i++)
+        {
             x = EncoderBlock(x, _relPosBias, seq, i);
+            
+            // Diagnostic dumps for block 0 checkpoints
+            if (i == 0)
+            {
+                DiagnosticDump("F0", x); // F0: output after block 0's FFN + residual
+            }
+        }
 
         // Final layer norm
         var fnW = Wt("encoder.final_layer_norm.weight");
         DiffusionOps.RmsNorm(x, fnW, Dim);
+        
+        // Diagnostic dump: final output after all blocks + final RMSNorm
+        DiagnosticDump("final", x);
+        
         return x;  // [seq, 4096]
     }
 
@@ -242,6 +257,12 @@ public sealed class T5Encoder : IDisposable
         DiffusionOps.RmsNorm(xNorm, lnW0, Dim);
         var attn = SelfAttention(xNorm, relPosBias, seq, $"{p}.0.SelfAttention", blockIdx);
         TensorPrimitives.Add(x, attn, x);
+        
+        // Diagnostic dump A0: output after block 0's self-attention + residual (before FFN)
+        if (blockIdx == 0)
+        {
+            DiagnosticDump("A0", x);
+        }
 
         // Feed-forward sub-layer
         var lnW1 = Wt($"{p}.1.layer_norm.weight");
@@ -372,6 +393,28 @@ public sealed class T5Encoder : IDisposable
         }
 
         return relPos > 0 ? numBuckets + bucket : bucket;
+    }
+
+    private static int _diagnosticCallCount = 0;
+    
+    /// <summary>
+    /// Diagnostic helper for T5 encoder bisection (2026-09-21). Dumps internal checkpoints to disk
+    /// when STINGRAY_T5_DUMP_PREFIX env var is set, for direct comparison against the C++ reference.
+    /// Checkpoints: E0 (token embeddings), A0 (after block 0 attn), F0 (after block 0 FFN), final.
+    /// </summary>
+    private static void DiagnosticDump(string checkpoint, float[] data)
+    {
+        string? prefix = Environment.GetEnvironmentVariable("STINGRAY_T5_DUMP_PREFIX");
+        if (string.IsNullOrEmpty(prefix)) return;
+        
+        // Append a call counter to distinguish cond vs uncond passes (matches C++ SD_DUMP_CONDITION_PREFIX convention)
+        string path = $"{prefix}_{checkpoint}_{_diagnosticCallCount}.bin";
+        _diagnosticCallCount++;
+        
+        var bytes = new byte[data.Length * 4];
+        Buffer.BlockCopy(data, 0, bytes, 0, bytes.Length);
+        File.WriteAllBytes(path, bytes);
+        Console.WriteLine($"[T5 Diagnostic] Dumped {checkpoint}: {data.Length} floats ({data.Length / 4096} tokens x 4096) -> {path}");
     }
 
     public void Dispose()
