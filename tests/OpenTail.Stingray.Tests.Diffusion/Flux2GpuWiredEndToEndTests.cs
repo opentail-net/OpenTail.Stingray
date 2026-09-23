@@ -47,26 +47,34 @@ public sealed class Flux2GpuWiredEndToEndTests
         using var vulkan = TryCreateVulkan();
         if (vulkan is null) return;
 
-        using var pipeline = Flux2Pipeline.Load(ditPath!, mistralPath!, vaePath!, ditBackend: vulkan);
-
-        string outputPath = Path.Combine(@"C:\Git-Public\OpenTail.Stingray", "docs", "diffusion-samples", "flux2_gpu_wired_smoke_2026-09-19.png");
-
-        var sw = System.Diagnostics.Stopwatch.StartNew();
-        var rgb = pipeline.Generate(new Flux2GenerationRequest
+        Environment.SetEnvironmentVariable("STINGRAY_FLUX2_GPU_SINGLE_BLOCKS", "1");
+        try
         {
-            Prompt = "a red apple on a wooden table",
-            Width = 128,
-            Height = 128,
-            Steps = 4,
-            Guidance = 3.5f,
-            Seed = 42,
-            OutputPath = outputPath,
-        });
-        sw.Stop();
-        Console.WriteLine($"[Flux2 GPU-wired E2E] Took {sw.Elapsed.TotalSeconds:F1}s");
+            using var pipeline = Flux2Pipeline.Load(ditPath!, mistralPath!, vaePath!, ditBackend: vulkan);
 
-        Assert.True(rgb.Length > 0);
-        foreach (var v in rgb) Assert.True(float.IsFinite(v), "FLUX.2 GPU-wired end-to-end output contains NaN/Inf");
-        Assert.True(File.Exists(outputPath));
+            string outputPath = Path.Combine(@"C:\Git-Public\OpenTail.Stingray", "docs", "diffusion-samples", "flux2_gpu_wired_smoke_2026-09-19.png");
+
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            var rgb = pipeline.Generate(new Flux2GenerationRequest
+            {
+                Prompt = "a red apple on a wooden table",
+                Width = 128,
+                Height = 128,
+                Steps = 4,
+                Guidance = 3.5f,
+                Seed = 42,
+                OutputPath = outputPath,
+            });
+            sw.Stop();
+            Console.WriteLine($"[Flux2 GPU-wired E2E] Took {sw.Elapsed.TotalSeconds:F1}s");
+
+            Assert.True(rgb.Length > 0);
+            foreach (var v in rgb) Assert.True(float.IsFinite(v), "FLUX.2 GPU-wired end-to-end output contains NaN/Inf");
+            Assert.True(File.Exists(outputPath));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("STINGRAY_FLUX2_GPU_SINGLE_BLOCKS", null);
+        }
     }
 }

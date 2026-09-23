@@ -671,7 +671,7 @@ public sealed class Flux2DiT : IDisposable
         int d = _p.HiddenSize;
         int mlpHidden = (int)(d * _p.MlpRatio);
 
-        _gpuWeights ??= new Flux2GpuWeights(backend, GetWeight, _p, includeSingleBlocks: false);
+        _gpuWeights ??= new Flux2GpuWeights(backend, GetWeight, _p, _weights, includeSingleBlocks: false);
 
         if (_gpuWorkspace is null || _gpuWsNImg != nImg || _gpuWsNTxt != nTxt)
         {

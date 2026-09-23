@@ -95,7 +95,7 @@ public sealed class Flux2SingleBlockGpuParityTests
 
         // --- 2. GPU Path ---
         Func<string, float[]> getWeight = weights.ReadF32;
-        using var gpuWeights = new Flux2GpuWeights(backend, getWeight, p, includeSingleBlocks: false);
+        using var gpuWeights = new Flux2GpuWeights(backend, getWeight, p, weights, includeSingleBlocks: false);
 
         var combinedPositions = new int[nSeq * 4];
         Array.Copy(txtPositions, 0, combinedPositions, 0, txtPositions.Length);
