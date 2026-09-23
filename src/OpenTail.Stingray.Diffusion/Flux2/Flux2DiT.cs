@@ -220,6 +220,13 @@ public sealed class Flux2DiT : IDisposable
 
         var (imgCos, imgSin) = Flux2RoPE.BuildContextFreqs(targetPositions, nTarget, _p.AxesDim, _p.Theta);
 
+        bool useGpuDoubleBlocks = _weights != null && gpuBackend is not null
+            && gpuBackend is not CpuBackend
+            && gpuBackend is IVisionOpsBackend && gpuBackend is IImageOpsBackend;
+
+        bool useGpuSingleBlocks = useGpuDoubleBlocks
+            && (Environment.GetEnvironmentVariable("STINGRAY_FLUX2_GPU_SINGLE_BLOCKS") == "1");
+
         // Shared modulation -- computed ONCE from vec, reused identically by every double/single
         // block of that type (real finding, docs/087 -- NOT per-block AdaLN like FLUX.1).
         float[][]? modImg = null, modTxt = null, modSingle = null;
@@ -227,16 +234,17 @@ public sealed class Flux2DiT : IDisposable
         {
             modImg = ComputeModulation("double_stream_modulation_img.lin.weight", vec, d, 6);
             modTxt = ComputeModulation("double_stream_modulation_txt.lin.weight", vec, d, 6);
-            modSingle = ComputeModulation("single_stream_modulation.lin.weight", vec, d, 3);
+            if (!useGpuSingleBlocks)
+                modSingle = ComputeModulation("single_stream_modulation.lin.weight", vec, d, 3);
         }
 
-        bool useGpuDoubleBlocks = _weights != null && gpuBackend is not null
-            && gpuBackend is not CpuBackend
-            && gpuBackend is IVisionOpsBackend && gpuBackend is IImageOpsBackend;
+        int nSeq = nTxt + nTarget;
+        var unified = new float[nSeq * d];
 
         if (useGpuDoubleBlocks)
         {
-            RunDoubleBlocksGpu(gpuBackend!, img, txt, vec, targetPositions, textPositions, nTarget, nTxt);
+            RunDoubleBlocksGpu(gpuBackend!, img, txt, vec, targetPositions, textPositions, nTarget, nTxt,
+                unified: unified, runSingleBlocks: useGpuSingleBlocks);
         }
         else
         {
@@ -249,25 +257,26 @@ public sealed class Flux2DiT : IDisposable
             }
         }
 
-        int nSeq = nTxt + nTarget;
-        var unified = new float[nSeq * d];
-        txt.AsSpan().CopyTo(unified.AsSpan(0, nTxt * d));
-        img.AsSpan().CopyTo(unified.AsSpan(nTxt * d, nTarget * d));
-
-        int headDim = _p.HeadDim;
-        var unifiedCos = new float[nSeq * headDim];
-        var unifiedSin = new float[nSeq * headDim];
-        txtCos.AsSpan().CopyTo(unifiedCos.AsSpan(0, nTxt * headDim));
-        txtSin.AsSpan().CopyTo(unifiedSin.AsSpan(0, nTxt * headDim));
-        imgCos.AsSpan().CopyTo(unifiedCos.AsSpan(nTxt * headDim, nTarget * headDim));
-        imgSin.AsSpan().CopyTo(unifiedSin.AsSpan(nTxt * headDim, nTarget * headDim));
-
-        for (int layer = 0; layer < _p.DepthSingleBlocks; layer++)
+        if (!useGpuSingleBlocks)
         {
-            if (_weights != null)
-                ApplySingleBlockReal(layer, unified, modSingle!, unifiedCos, unifiedSin, nSeq);
-            else
-                ApplySingleBlock(layer, unified, vec, unifiedCos, unifiedSin, nSeq);
+            txt.AsSpan().CopyTo(unified.AsSpan(0, nTxt * d));
+            img.AsSpan().CopyTo(unified.AsSpan(nTxt * d, nTarget * d));
+
+            int headDim = _p.HeadDim;
+            var unifiedCos = new float[nSeq * headDim];
+            var unifiedSin = new float[nSeq * headDim];
+            txtCos.AsSpan().CopyTo(unifiedCos.AsSpan(0, nTxt * headDim));
+            txtSin.AsSpan().CopyTo(unifiedSin.AsSpan(0, nTxt * headDim));
+            imgCos.AsSpan().CopyTo(unifiedCos.AsSpan(nTxt * headDim, nTarget * headDim));
+            imgSin.AsSpan().CopyTo(unifiedSin.AsSpan(nTxt * headDim, nTarget * headDim));
+
+            for (int layer = 0; layer < _p.DepthSingleBlocks; layer++)
+            {
+                if (_weights != null)
+                    ApplySingleBlockReal(layer, unified, modSingle!, unifiedCos, unifiedSin, nSeq);
+                else
+                    ApplySingleBlock(layer, unified, vec, unifiedCos, unifiedSin, nSeq);
+            }
         }
 
         var velocity = new float[nTarget * _p.OutChannels];
@@ -473,7 +482,7 @@ public sealed class Flux2DiT : IDisposable
     /// the no-ref case this method implements), `concat(attn, SiLU-gated-mlp)` through `linear2`,
     /// gated residual.
     /// </summary>
-    private void ApplySingleBlockReal(int layerIdx, float[] unified, float[][] mod, float[] cos, float[] sin, int nSeq)
+    internal void ApplySingleBlockReal(int layerIdx, float[] unified, float[][] mod, float[] cos, float[] sin, int nSeq)
     {
         int d = _p.HiddenSize;
         int headDim = _p.HeadDim;
@@ -616,6 +625,20 @@ public sealed class Flux2DiT : IDisposable
     }
 
     /// <summary>
+    /// Computes the SHARED single-stream modulation vector (real finding, docs/087: ONE set,
+    /// reused by every single block -- NOT per-block like FLUX.1).
+    /// </summary>
+    internal void ComputeSharedSingleModulationGpu(
+        IVisionOpsBackend visionOps,
+        Flux2GpuWorkspace ws,
+        Flux2GpuWeights gw,
+        OpenTail.Stingray.Core.Tensor siluVecGpu)
+    {
+        int d = _p.HiddenSize;
+        visionOps.Sgemm(ws.SingleMod, siluVecGpu, gw.SingleModWeight, 1, d, d * 3);
+    }
+
+    /// <summary>
     /// Real DoubleStreamBlock GPU forward (mirrors <see cref="ApplyDoubleBlockReal"/>'s CPU math
     /// exactly): modulate img/txt separately using the SHARED <paramref name="ws"/>.ImgMod/TxtMod
     /// (computed once by <see cref="ComputeSharedDoubleModulationGpu"/>, not per-block) -> QKV
@@ -640,7 +663,9 @@ public sealed class Flux2DiT : IDisposable
         float[] img, float[] txt,
         float[] vec,
         int[] targetPositions, int[] textPositions,
-        int nImg, int nTxt)
+        int nImg, int nTxt,
+        float[]? unified = null,
+        bool runSingleBlocks = false)
     {
         var visionOps = (IVisionOpsBackend)backend;
         int d = _p.HiddenSize;
@@ -697,10 +722,32 @@ public sealed class Flux2DiT : IDisposable
                     DoubleBlockGpu(ws, _gpuWeights.DoubleBlocks[layer], visionOps, imageOps);
                 if (batchSize > 1) imageOps.EndBatch();
             }
-            backend.Synchronize();
 
-            backend.Download(ws.ImgHidden, img);
-            backend.Download(ws.TxtHidden, txt);
+            if (runSingleBlocks && unified != null)
+            {
+                // GPU-resident single-stream blocks (docs/094, 2026-09-23):
+                // 1. Concat txt [nTxt, d] + img [nImg, d] into unified [nSeq, d] on GPU.
+                visionOps.FluxConcatTxtImg(ws.TxtHidden, ws.ImgHidden, ws.Unified, nTxt, nImg, d);
+
+                // 2. Compute shared single modulation vector on GPU.
+                ComputeSharedSingleModulationGpu(visionOps, ws, _gpuWeights, siluVecGpu);
+
+                // 3. Dispatch all single blocks with dynamic per-block streaming weights (~981MB VRAM per block).
+                for (int layer = 0; layer < _p.DepthSingleBlocks; layer++)
+                {
+                    using var bw = _gpuWeights.LoadSingleBlock(layer);
+                    SingleBlockGpu(ws, bw, visionOps, imageOps);
+                }
+
+                backend.Synchronize();
+                backend.Download(ws.Unified, unified);
+            }
+            else
+            {
+                backend.Synchronize();
+                backend.Download(ws.ImgHidden, img);
+                backend.Download(ws.TxtHidden, txt);
+            }
         }
         finally
         {
@@ -774,5 +821,50 @@ public sealed class Flux2DiT : IDisposable
             ws.TxtHidden, ws.OutTxt, ws.TxtMod, gateOffsetA: 5 * d,
             ws.ImgHidden, ws.OutImg, ws.ImgMod, gateOffsetB: 5 * d,
             nTokens: nSeq, streamSplit: nTxt, dim: d);
+    }
+
+    /// <summary>
+    /// Real SingleStreamBlock GPU forward (mirrors <see cref="ApplySingleBlockReal"/>'s CPU math exactly):
+    /// Modulate unified sequence using SHARED ws.SingleMod -> fused linear1 -> fused unpack QKV +
+    /// per-head QK-RMSNorm + 4-axis RoPE -> joint attention over unified sequence -> fused SiLU-gate
+    /// on MLP and concatenation with attention output -> linear2 -> gated residual add into ws.Unified.
+    /// </summary>
+    internal void SingleBlockGpu(
+        Flux2GpuWorkspace ws,
+        Flux2GpuWeights.SingleBlockGpuWeights bw,
+        IVisionOpsBackend visionOps,
+        IImageOpsBackend imageOps)
+    {
+        int d = _p.HiddenSize;
+        int mlpHidden = (int)(d * _p.MlpRatio);
+        int nSeq = ws.NumSeq;
+        int nh = _p.NumHeads;
+        int hd = _p.HeadDim;
+        int rowStride = 3 * d + 2 * mlpHidden;
+
+        // 1. Modulate unified sequence using shared SingleMod (shift, scale)
+        visionOps.AdaLNModulate(
+            ws.NormedSeq, ws.Unified, ws.SingleMod,
+            nSeq, d, shiftOffset: 0, scaleOffset: d, isRmsNorm: false, eps: 1e-6f);
+
+        // 2. Fused linear1: [nSeq, d] -> [nSeq, 3*d + 2*mlpHidden]
+        visionOps.Sgemm(ws.Lin1Out, ws.NormedSeq, bw.Linear1Weight, nSeq, d, rowStride);
+
+        // 3. Fused Unpack QKV + per-head QK-RMSNorm + 4-axis RoPE: writes to ws.Q, ws.K, ws.V
+        visionOps.Flux2SingleUnpackNormRope(
+            ws.Lin1Out, ws.Q, ws.K, ws.V, ws.RopeCos, ws.RopeSin,
+            bw.QkNormQScale, bw.QkNormKScale, nSeq, nh, hd, rowStride, eps: 1e-6f);
+
+        // 4. Joint Attention over the unified sequence
+        imageOps.MultiHeadAttentionTiled(ws.AttnOut, ws.Q, ws.K, ws.V, nSeq, nSeq, nh, hd);
+
+        // 5. Fused SiLU-gate on MLP and concat with attention output -> ws.Lin2In [nSeq, d + mlpHidden]
+        visionOps.Flux2SingleConcatAttnMlp(ws.AttnOut, ws.Lin1Out, ws.Lin2In, nSeq, d, mlpHidden, rowStride);
+
+        // 6. linear2: [nSeq, d + mlpHidden] -> [nSeq, d]
+        visionOps.Sgemm(ws.OutSeq, ws.Lin2In, bw.Linear2Weight, nSeq, d + mlpHidden, d);
+
+        // 7. Gated residual add into ws.Unified
+        visionOps.ScaleGateAdd(ws.Unified, ws.OutSeq, ws.SingleMod, nSeq, d, gateOffset: 2 * d);
     }
 }

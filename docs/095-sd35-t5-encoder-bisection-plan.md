@@ -130,6 +130,9 @@ Now that tokens are proven correct, this is a real bug in `OpenClipGEncoder`'s o
 ## The concrete next-session plan (in priority order, per a second-opinion review of this doc's
 ## own findings — do these, don't re-derive `RelPosBucket` by hand again)
 
+**UPDATE 2026-09-21 (later same day)**: T5 bisection diagnostic infrastructure is now in place and ready to use.
+See `docs/096-t5-bisection-howto.md` for complete usage instructions.
+
 1. ~~Byte-compare the 77×77 relative-position bucket matrix~~ **CHECKED 2026-09-21, CLEARED, do not
    re-check.** Compared `T5Encoder.RelPosBucket` term-for-term against the reference's real
    `T5::_relative_position_bucket` (`t5.hpp:463-497`) by direct source read (no build/dump needed):
@@ -161,9 +164,7 @@ Now that tokens are proven correct, this is a real bug in `OpenClipGEncoder`'s o
    `DiffusionOps.GeluExact` (the separate erf-based implementation used elsewhere in this codebase,
    e.g. for Wan's `text_embedding.1`). **Not a bug — activation matches the real T5-v1.1-XXL config
    (`dense_act_fn=gelu_new`) exactly.**
-4. **If none of the above resolves it** (all three cheap checks above are now cleared — this is the
-   next real thing to try), do the 4-point T5 bisection (real dump hooks needed on
-   both sides, more infrastructure work than 1-3 above):
+4. **Run the 4-point T5 bisection** (now ready to use — see `docs/096-t5-bisection-howto.md`):
    - `E0` = token embedding output (before any blocks)
    - `A0` = output after block 0's self-attention + residual (before block 0's FFN)
    - `F0` = output after block 0's FFN + residual (= input to block 1)

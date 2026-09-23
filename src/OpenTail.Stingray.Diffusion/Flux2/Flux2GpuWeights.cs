@@ -35,6 +35,8 @@ namespace OpenTail.Stingray.Diffusion.Flux2;
 public sealed class Flux2GpuWeights : IDisposable
 {
     private readonly IComputeBackend _backend;
+    private readonly Func<string, float[]> _getWeight;
+    private readonly Flux2Params _p;
     private bool _disposed;
 
     public CoreTensor ImgInWeight { get; }
@@ -169,6 +171,8 @@ public sealed class Flux2GpuWeights : IDisposable
     public Flux2GpuWeights(IComputeBackend backend, Func<string, float[]> getWeight, Flux2Params p, bool includeSingleBlocks = false)
     {
         _backend = backend;
+        _getWeight = getWeight;
+        _p = p;
         int d = p.HiddenSize;
         int mlpHidden = (int)(d * p.MlpRatio);
 
@@ -204,6 +208,19 @@ public sealed class Flux2GpuWeights : IDisposable
         FinalLinearWeight = UploadWeight(backend, getWeight("final_layer.linear.weight"), TensorShape.D2(p.OutChannels, d));
 
         GC.Collect();
+    }
+
+    /// <summary>
+    /// Loads a single block's GPU weights on demand (for dynamic streaming mode, avoiding 47GB VRAM residency).
+    /// If static residency was configured (includeSingleBlocks: true), returns the resident instance.
+    /// </summary>
+    public SingleBlockGpuWeights LoadSingleBlock(int layerIdx)
+    {
+        if (layerIdx < SingleBlocks.Length && SingleBlocks[layerIdx] != null)
+            return SingleBlocks[layerIdx];
+        int d = _p.HiddenSize;
+        int mlpHidden = (int)(d * _p.MlpRatio);
+        return new SingleBlockGpuWeights(_backend, _getWeight, layerIdx, d, mlpHidden);
     }
 
     private static CoreTensor UploadWeight(IComputeBackend backend, float[] f32Data, TensorShape shape)

@@ -1687,6 +1687,8 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
     private ComputePipeline? _rope3dPipeline;
     private ComputePipeline? _flux2DRoPEPipeline;
     private ComputePipeline? _flux2QkvNormRopePipeline;
+    private ComputePipeline? _flux2SingleUnpackNormRopePipeline;
+    private ComputePipeline? _flux2SingleConcatAttnMlpPipeline;
     private ComputePipeline? _fluxUnpackQkvPipeline;
     private ComputePipeline? _diffUnpack5Pipeline;
     private ComputePipeline? _diffUnpack2Pipeline;
@@ -1805,6 +1807,8 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
     private struct RoPE3DParams { public uint numTokens; public uint numHeads; public uint headDim; public uint tDim; public uint hDim; public uint wDim; public float theta; }
     private struct Flux2DRoPEParams { public uint startToken; public uint tokenCount; public uint numHeads; public uint headDim; }
     private struct Flux2QkvNormRopeParams { public uint nTokens; public uint numHeads; public uint headDim; public uint dim; public uint dstTokenOffset; public float eps; }
+    private struct Flux2SingleUnpackNormRopeParams { public uint nTokens; public uint numHeads; public uint headDim; public uint dim; public uint rowStride; public float eps; }
+    private struct Flux2SingleConcatAttnMlpParams { public uint nSeq; public uint dim; public uint mlpHidden; public uint rowStride; }
     private struct FluxUnpackQkvParams { public uint nTokens; public uint dim; public uint dstTokenOffset; }
     private struct FluxUnpackSingleLin1Params { public uint nSeq; public uint dim; }
     private struct FluxConcatAttnMlpParams { public uint nSeq; public uint dim; }
@@ -4596,6 +4600,48 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
             groups, &p);
     }
 
+    public void Flux2SingleUnpackNormRope(Tensor lin1, Tensor q, Tensor k, Tensor v, Tensor cos, Tensor sin,
+                                          Tensor qScale, Tensor kScale, int nTokens, int numHeads, int headDim,
+                                          int rowStride, float eps = 1e-6f)
+    {
+        _flux2SingleUnpackNormRopePipeline ??= new ComputePipeline(this, Shaders.Flux2SingleUnpackNormRope, 8,
+            pushConstantSize: sizeof(Flux2SingleUnpackNormRopeParams));
+        var p = new Flux2SingleUnpackNormRopeParams
+        {
+            nTokens = (uint)nTokens,
+            numHeads = (uint)numHeads,
+            headDim = (uint)headDim,
+            dim = (uint)(numHeads * headDim),
+            rowStride = (uint)rowStride,
+            eps = eps,
+        };
+        uint groups = (uint)(nTokens * numHeads);
+        DispatchOrRecord(_flux2SingleUnpackNormRopePipeline,
+            [GetBuffer(lin1), GetBuffer(q), GetBuffer(k), GetBuffer(v),
+             GetBuffer(cos), GetBuffer(sin), GetBuffer(qScale), GetBuffer(kScale)],
+            groups, &p);
+    }
+
+    public void Flux2SingleConcatAttnMlp(Tensor attnOut, Tensor lin1Out, Tensor lin2In,
+                                         int nSeq, int dim, int mlpHidden, int rowStride)
+    {
+        _flux2SingleConcatAttnMlpPipeline ??= new ComputePipeline(this, Shaders.Flux2SingleConcatAttnMlp, 3,
+            pushConstantSize: sizeof(Flux2SingleConcatAttnMlpParams));
+        var p = new Flux2SingleConcatAttnMlpParams
+        {
+            nSeq = (uint)nSeq,
+            dim = (uint)dim,
+            mlpHidden = (uint)mlpHidden,
+            rowStride = (uint)rowStride,
+        };
+        uint outRowWidth = (uint)(dim + mlpHidden);
+        uint totalVec4 = (uint)(nSeq * outRowWidth) / 4u;
+        uint groups = (totalVec4 + 255u) / 256u;
+        DispatchOrRecord(_flux2SingleConcatAttnMlpPipeline,
+            [GetBuffer(attnOut), GetBuffer(lin1Out), GetBuffer(lin2In)],
+            groups, &p);
+    }
+
     public void FluxUnpackQkv(Tensor qkv, Tensor q, Tensor k, Tensor v, int nTokens, int dim, int dstTokenOffset)
     {
         _fluxUnpackQkvPipeline ??= new ComputePipeline(this, Shaders.FluxUnpackQkv, 4, pushConstantSize: sizeof(FluxUnpackQkvParams));
@@ -4947,6 +4993,8 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
         _rope3dPipeline?.Dispose();
         _flux2DRoPEPipeline?.Dispose();
         _flux2QkvNormRopePipeline?.Dispose();
+        _flux2SingleUnpackNormRopePipeline?.Dispose();
+        _flux2SingleConcatAttnMlpPipeline?.Dispose();
         _fluxUnpackQkvPipeline?.Dispose();
         _diffUnpack5Pipeline?.Dispose();
         _diffUnpack2Pipeline?.Dispose();

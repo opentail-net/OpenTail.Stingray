@@ -10681,6 +10681,164 @@ internal static class Shaders
         """;
 
     /// <summary>
+    /// Fused QKV unpack + per-head QK-RMSNorm + RoPE for FLUX.2 SingleStreamBlock.
+    /// Unpacks Q, K, V from fused Lin1 [nTokens, rowStride] where rowStride = 3*dim + 2*mlpHidden.
+    /// Applies per-head RMSNorm with learned scales to Q and K,
+    /// rotates Q and K with 4D compact RoPE tables, and writes Q, K, V to [nSeq, dim].
+    /// </summary>
+    internal const string Flux2SingleUnpackNormRope = """
+        #version 450
+        layout(local_size_x = 64) in;
+
+        layout(binding = 0) readonly buffer Lin1Buf   { float lin1Data[]; };
+        layout(binding = 1) writeonly buffer QBuf     { float qData[]; };
+        layout(binding = 2) writeonly buffer KBuf     { float kData[]; };
+        layout(binding = 3) writeonly buffer VBuf     { float vData[]; };
+        layout(binding = 4) readonly buffer CosBuf    { float cosData[]; };
+        layout(binding = 5) readonly buffer SinBuf    { float sinData[]; };
+        layout(binding = 6) readonly buffer QScaleBuf { float qScaleData[]; };
+        layout(binding = 7) readonly buffer KScaleBuf { float kScaleData[]; };
+
+        layout(push_constant) uniform Params {
+            uint nTokens;
+            uint numHeads;
+            uint headDim;
+            uint dim;
+            uint rowStride;
+            float eps;
+        };
+
+        shared float s_sq_q[64];
+        shared float s_sq_k[64];
+
+        void main() {
+            uint workgroupId = gl_WorkGroupID.x;
+            if (workgroupId >= nTokens * numHeads) return;
+
+            uint t = workgroupId / numHeads;
+            uint h = workgroupId % numHeads;
+            uint tid = gl_LocalInvocationID.x; // 0..63
+
+            uint d0 = tid * 2u;
+            uint d1 = d0 + 1u;
+            uint hOff = h * headDim;
+
+            // Source offsets in lin1 [nTokens, rowStride]
+            uint srcRow = t * rowStride;
+            uint srcOffQ = srcRow + hOff;
+            uint srcOffK = srcRow + dim + hOff;
+            uint srcOffV = srcRow + dim * 2u + hOff;
+
+            // Dest offsets in [nSeq, dim]
+            uint dstRow = t * dim;
+            uint dstOff = dstRow + hOff;
+
+            // 1. Copy V directly to output
+            vData[dstOff + d0] = lin1Data[srcOffV + d0];
+            vData[dstOff + d1] = lin1Data[srcOffV + d1];
+
+            // 2. Load Q and K, accumulate local squared sum
+            float q0 = lin1Data[srcOffQ + d0];
+            float q1 = lin1Data[srcOffQ + d1];
+            float k0 = lin1Data[srcOffK + d0];
+            float k1 = lin1Data[srcOffK + d1];
+
+            s_sq_q[tid] = q0 * q0 + q1 * q1;
+            s_sq_k[tid] = k0 * k0 + k1 * k1;
+            barrier();
+
+            // 3. Parallel reduction in LDS over 64 threads (headDim = 128)
+            for (uint stride = 32u; stride > 0u; stride >>= 1u) {
+                if (tid < stride) {
+                    s_sq_q[tid] += s_sq_q[tid + stride];
+                    s_sq_k[tid] += s_sq_k[tid + stride];
+                }
+                barrier();
+            }
+
+            // 4. RMS normalizer
+            float invStdQ = inversesqrt(s_sq_q[0] / float(headDim) + eps);
+            float invStdK = inversesqrt(s_sq_k[0] / float(headDim) + eps);
+
+            float gq0 = qScaleData[d0];
+            float gq1 = qScaleData[d1];
+            float gk0 = kScaleData[d0];
+            float gk1 = kScaleData[d1];
+
+            float q0n = q0 * invStdQ * gq0;
+            float q1n = q1 * invStdQ * gq1;
+            float k0n = k0 * invStdK * gk0;
+            float k1n = k1 * invStdK * gk1;
+
+            // 5. RoPE rotation using compact [nSeq, headDim/2] freq tables
+            uint nPairs = headDim / 2u;
+            uint freqOff = t * nPairs + tid;
+            float c = cosData[freqOff];
+            float s = sinData[freqOff];
+
+            qData[dstOff + d0] = q0n * c - q1n * s;
+            qData[dstOff + d1] = q0n * s + q1n * c;
+            kData[dstOff + d0] = k0n * c - k1n * s;
+            kData[dstOff + d1] = k0n * s + k1n * c;
+        }
+        """;
+
+    /// <summary>
+    /// Fused attention-output concat + SiLU-gated MLP for FLUX.2 SingleStreamBlock.
+    /// Takes AttnOut [nSeq, dim] and Lin1Out [nSeq, 3*dim + 2*mlpHidden].
+    /// Reads AttnOut for the first `dim` elements of each token.
+    /// Reads the MLP slice [3*dim .. 3*dim + 2*mlpHidden] from Lin1Out, computes silu(gate) * val
+    /// on the fly, and packs the resulting `mlpHidden` floats immediately after AttnOut.
+    /// Writes out contiguous Lin2In [nSeq, dim + mlpHidden].
+    /// </summary>
+    internal const string Flux2SingleConcatAttnMlp = """
+        #version 450
+        layout(local_size_x = 256) in;
+
+        layout(binding = 0) readonly buffer AttnBuf { float attnData[]; };
+        layout(binding = 1) readonly buffer Lin1Buf { float lin1Data[]; };
+        layout(binding = 2) writeonly buffer OutBuf { float outData[]; };
+
+        layout(binding = 0) readonly buffer AttnBufVec { vec4 attnVec[]; };
+        layout(binding = 1) readonly buffer Lin1BufVec { vec4 lin1Vec[]; };
+        layout(binding = 2) writeonly buffer OutBufVec { vec4 outVec[]; };
+
+        layout(push_constant) uniform Params {
+            uint nSeq;
+            uint dim;
+            uint mlpHidden;
+            uint rowStride;
+        };
+
+        void main() {
+            uint idx = gl_GlobalInvocationID.x;
+            uint outRowWidth = dim + mlpHidden;
+            uint totalVec4 = (nSeq * outRowWidth) >> 2;
+            if (idx >= totalVec4) return;
+
+            uint rowVec4 = outRowWidth >> 2;
+            uint t = idx / rowVec4;
+            uint cVec4 = idx % rowVec4;
+            uint c = cVec4 << 2;
+
+            if (c < dim) {
+                // Copy attention output
+                uint attnIdx = (t * dim + c) >> 2;
+                outVec[idx] = attnVec[attnIdx];
+            } else {
+                // Compute gated MLP activation
+                uint m = c - dim;
+                uint gateOffset = (t * rowStride + 3u * dim + m) >> 2;
+                uint valOffset = (t * rowStride + 3u * dim + mlpHidden + m) >> 2;
+                vec4 gate = lin1Vec[gateOffset];
+                vec4 val = lin1Vec[valOffset];
+                vec4 siluGate = gate / (vec4(1.0) + exp(-gate));
+                outVec[idx] = siluGate * val;
+            }
+        }
+        """;
+
+    /// <summary>
     /// Unpack fused QKV [nTokens, 3*dim] into separate Q, K, V buffers [nSeq, dim] at dstTokenOffset.
     /// </summary>
     internal const string FluxUnpackQkv = """

@@ -170,6 +170,25 @@ public interface IVisionOpsBackend : IComputeBackend
         => throw new NotSupportedException();
 
     /// <summary>
+    /// Fused QKV unpack + per-head QK-RMSNorm + RoPE for FLUX.2 SingleStreamBlock.
+    /// Unpacks Q, K, V from fused Lin1 [nTokens, rowStride], applies per-head RMSNorm with learned scales,
+    /// rotates Q and K with 4D RoPE tables, and writes Q, K, V to [nSeq, dim].
+    /// </summary>
+    void Flux2SingleUnpackNormRope(Tensor lin1, Tensor q, Tensor k, Tensor v, Tensor cos, Tensor sin,
+                                  Tensor qScale, Tensor kScale, int nTokens, int numHeads, int headDim,
+                                  int rowStride, float eps = 1e-6f)
+        => throw new NotSupportedException();
+
+    /// <summary>
+    /// Fused attention-output concat + SiLU-gated MLP for FLUX.2 SingleStreamBlock.
+    /// Takes AttnOut [nSeq, dim] and Lin1Out [nSeq, rowStride]. Computes silu(gate) * val on the fly
+    /// for the MLP portion, packing [AttnOut; MlpGated] into Lin2In [nSeq, dim + mlpHidden].
+    /// </summary>
+    void Flux2SingleConcatAttnMlp(Tensor attnOut, Tensor lin1Out, Tensor lin2In,
+                                 int nSeq, int dim, int mlpHidden, int rowStride)
+        => throw new NotSupportedException();
+
+    /// <summary>
     /// Unpack fused QKV [nTokens, 3*dim] into separate Q, K, V buffers [nSeq, dim] at dstTokenOffset.
     /// </summary>
     void FluxUnpackQkv(Tensor qkv, Tensor q, Tensor k, Tensor v, int nTokens, int dim, int dstTokenOffset)

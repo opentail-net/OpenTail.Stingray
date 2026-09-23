@@ -21,7 +21,7 @@ public sealed record Flux2GenerationRequest
 /// </summary>
 public sealed class Flux2Pipeline : IDisposable
 {
-    private readonly Flux2DiT _transformer;
+    private readonly Flux2DiT? _transformer;
     private readonly IWeightLoader? _ditWeights;
     private readonly GgufModel? _mistralModel;
     private readonly Engine.ForwardPass? _mistralForward;
@@ -29,17 +29,23 @@ public sealed class Flux2Pipeline : IDisposable
     private readonly IWeightLoader? _vaeWeights;
     private readonly Cpu.CpuBackend? _mistralBackend;
     private readonly IComputeBackend? _ditBackend;
+    private readonly string? _ditPath;
+    private readonly string? _mistralPath;
+    private readonly string? _vaePath;
+    private readonly Flux2Params _params;
+    private readonly bool _sequential;
     private bool _disposed;
 
     public bool IsDisposed => _disposed;
-    public Flux2Params Params => _transformer.Params;
+    public Flux2Params Params => _params;
 
     /// <summary>Structural-only constructor (no real weights) -- unchanged, backs the existing
     /// conformance tests. <see cref="Generate"/> in this mode uses synthetic conditioning/decode.</summary>
     public Flux2Pipeline(Flux2Params? @params = null)
     {
-        var p = @params ?? new Flux2Params();
-        _transformer = new Flux2DiT(p);
+        _params = @params ?? new Flux2Params();
+        _transformer = new Flux2DiT(_params);
+        _sequential = false;
     }
 
     private Flux2Pipeline(
@@ -49,6 +55,7 @@ public sealed class Flux2Pipeline : IDisposable
         IComputeBackend? ditBackend)
     {
         _transformer = transformer;
+        _params = transformer.Params;
         _ditWeights = ditWeights;
         _mistralModel = mistralModel;
         _mistralForward = mistralForward;
@@ -56,6 +63,20 @@ public sealed class Flux2Pipeline : IDisposable
         _mistralBackend = mistralBackend;
         _vaeWeights = vaeWeights;
         _ditBackend = ditBackend;
+        _sequential = false;
+    }
+
+    private Flux2Pipeline(
+        string ditPath, string mistralPath, string vaePath,
+        Flux2Params @params,
+        IComputeBackend? ditBackend)
+    {
+        _ditPath = ditPath;
+        _mistralPath = mistralPath;
+        _vaePath = vaePath;
+        _params = @params;
+        _ditBackend = ditBackend;
+        _sequential = true;
     }
 
     /// <summary>
@@ -67,14 +88,25 @@ public sealed class Flux2Pipeline : IDisposable
     /// passed, the DiT's 8 double-stream blocks run on GPU (docs/091, real correctness-verified,
     /// wired 2026-09-19) -- the 48 single-stream blocks and everything else stay on the existing
     /// CPU path (memory-budget reasons, see docs/091). Defaults to CPU-only (`null`) if omitted.
-    /// Real, measured finding on this project's own dev iGPU: CPU currently wins end-to-end
-    /// (docs/091/PerformanceLeague.md) -- GPU is offered as a real, selectable, exercised option
-    /// regardless, so it can be measured and improved rather than sitting as dead code.
+    ///
+    /// <paramref name="sequential"/> (defaults to true): executes text conditioning, DiT generation,
+    /// and VAE decoding as sequential staged passes, disposing and releasing each model before loading
+    /// the next. This cuts peak memory usage roughly in half (never holding the 14GB Mistral and 17GB DiT
+    /// concurrently in RAM). Set to false to keep all models resident simultaneously.
     /// </summary>
-    public static Flux2Pipeline Load(string ditPath, string mistralPath, string vaePath, Flux2Params? @params = null, IComputeBackend? ditBackend = null)
+    public static Flux2Pipeline Load(
+        string ditPath, string mistralPath, string vaePath,
+        Flux2Params? @params = null,
+        IComputeBackend? ditBackend = null,
+        bool sequential = true)
     {
-        var ditWeights = GgufWeightLoader.Open(ditPath);
         var p = @params ?? new Flux2Params();
+        if (sequential)
+        {
+            return new Flux2Pipeline(ditPath, mistralPath, vaePath, p, ditBackend);
+        }
+
+        var ditWeights = GgufWeightLoader.Open(ditPath);
         var transformer = new Flux2DiT(ditWeights, p);
 
         var mistralModel = GgufModel.Open(mistralPath);
@@ -99,7 +131,7 @@ public sealed class Flux2Pipeline : IDisposable
         int patchW = request.Width / 16;
         int patchH = request.Height / 16;
         int nTargetTokens = patchW * patchH;
-        int inChannels = _transformer.Params.InChannels;
+        int inChannels = _params.InChannels;
 
         // 1. Build Target 4D Position Grid (t, h, w, l), per the real BFL scheme
         //    (examples/flux2/src/flux2/sampling.py's prc_img): t=image index (0 for the
@@ -161,14 +193,26 @@ public sealed class Flux2Pipeline : IDisposable
         //    l=sequential index -- the only axis that varies for text.
         int nTxt;
         float[] txtEmbeds;
-        if (_mistralForward != null && _mistralTokenizer != null)
+        if (_sequential && _mistralPath != null)
+        {
+            using (var mistralModel = GgufModel.Open(_mistralPath))
+            {
+                var hp = ModelHyperparams.FromGgufMetadata(mistralModel.Metadata, mistralModel);
+                var tokenizer = GgufTokenizer.FromGgufModel(mistralModel);
+                using var mistralBackend = new Cpu.CpuBackend();
+                using var mistralForward = new Engine.ForwardPass(mistralModel, mistralBackend, hp);
+                (txtEmbeds, nTxt) = Flux2TextConditioning.Encode(mistralForward, tokenizer, request.Prompt);
+            }
+            GC.Collect();
+        }
+        else if (_mistralForward != null && _mistralTokenizer != null)
         {
             (txtEmbeds, nTxt) = Flux2TextConditioning.Encode(_mistralForward, _mistralTokenizer, request.Prompt);
         }
         else
         {
             nTxt = 64;
-            txtEmbeds = new float[nTxt * _transformer.Params.ContextInDim];
+            txtEmbeds = new float[nTxt * Params.ContextInDim];
         }
         var txtPositions = new int[nTxt * 4];
         for (int i = 0; i < nTxt; i++)
@@ -182,56 +226,88 @@ public sealed class Flux2Pipeline : IDisposable
 
         // 5. Flow-Matching Integration Loop -- real FLUX.2 schedule (docs/087, confirmed 2026-09-18
         //    against examples/flux2/src/flux2/sampling.py's real get_schedule/compute_empirical_mu/
-        //    generalized_time_snr_shift). REAL BUG FOUND AND FIXED here: this previously built an
-        //    EulerFlowScheduler but never actually used it, instead stepping through a plain LINEAR
-        //    `t = 1 - step/steps` ramp -- FLUX.2 (like FLUX.1/SD3.5) is trained with a resolution-
-        //    and step-count-dependent SHIFTED schedule, not a linear one; feeding the DiT timestep
-        //    values it was never trained to see at each step plausibly explains the total failure
-        //    to converge found in this session's 2/4/20-step real-weight checks (all pure noise,
-        //    zero improvement with more steps -- consistent with a systematically wrong noise
-        //    schedule, not random per-block math errors).
+        //    generalized_time_snr_shift).
         int steps = Math.Max(1, request.Steps);
         int imageSeqLen = nTargetTokens;
         var timesteps = Flux2Schedule.GetSchedule(steps, imageSeqLen);
 
-        for (int step = 0; step < steps; step++)
+        if (_sequential && _ditPath != null)
         {
-            float t = timesteps[step];
-            float nextT = timesteps[step + 1];
-            float dt = nextT - t;
-
-            // REAL BUG FOUND AND FIXED 2026-09-18 (docs/088's FLUX.2 investigation): the real
-            // reference's `timestep_embedding(t, dim, time_factor=1000.0)` (model.py line ~719)
-            // internally multiplies the raw [0,1] flow-matching t by 1000 before computing
-            // sinusoidal angles -- but this codebase's shared `DiffusionOps.SinusoidalTimestepEmbedding`
-            // helper does NOT do this scaling itself (by design -- every other caller, e.g.
-            // WanPipeline.cs/HunyuanVideoPipeline.cs, pre-scales with `t * 1000.0f` at the pipeline
-            // call site before invoking Forward). Flux2Pipeline was the only one in the codebase
-            // passing raw t (already in [0,1]) straight through -- angles were computed ~1000x too
-            // small across the ENTIRE denoising trajectory, making the timestep embedding nearly
-            // flat/degenerate and the DiT effectively timestep-blind at every step. This plausibly
-            // explains the "zero visible improvement from 2 to 20 steps" symptom exactly.
-            var v = _transformer.Forward(
-                targetLatent, targetPositions,
-                refLatents, refPositions,
-                txtEmbeds, txtPositions,
-                pooledEmbed,
-                t * 1000.0f, request.Guidance,
-                _ditBackend);
-
-            for (int i = 0; i < targetLatent.Length; i++)
+            using (var ditWeights = GgufWeightLoader.Open(_ditPath))
+            using (var transformer = new Flux2DiT(ditWeights, _params))
             {
-                targetLatent[i] += dt * v[i];
-            }
+                for (int step = 0; step < steps; step++)
+                {
+                    float t = timesteps[step];
+                    float nextT = timesteps[step + 1];
+                    float dt = nextT - t;
 
-            request.Progress?.Invoke(step + 1, steps);
+                    var v = transformer.Forward(
+                        targetLatent, targetPositions,
+                        refLatents, refPositions,
+                        txtEmbeds, txtPositions,
+                        pooledEmbed,
+                        t * 1000.0f, request.Guidance,
+                        _ditBackend);
+
+                    for (int i = 0; i < targetLatent.Length; i++)
+                    {
+                        targetLatent[i] += dt * v[i];
+                    }
+
+                    request.Progress?.Invoke(step + 1, steps);
+                }
+            }
+            GC.Collect();
+        }
+        else
+        {
+            for (int step = 0; step < steps; step++)
+            {
+                float t = timesteps[step];
+                float nextT = timesteps[step + 1];
+                float dt = nextT - t;
+
+                var v = _transformer!.Forward(
+                    targetLatent, targetPositions,
+                    refLatents, refPositions,
+                    txtEmbeds, txtPositions,
+                    pooledEmbed,
+                    t * 1000.0f, request.Guidance,
+                    _ditBackend);
+
+                for (int i = 0; i < targetLatent.Length; i++)
+                {
+                    targetLatent[i] += dt * v[i];
+                }
+
+                request.Progress?.Invoke(step + 1, steps);
+            }
         }
 
         // 6. Decode Latent to RGB -- real VAE (Flux2Vae + VaeDecoder, docs/087) when real weights
         //    are loaded; synthetic channel-repeat fallback for the structural-only constructor.
         int pixelCount = request.Width * request.Height;
         float[] rgb;
-        if (_vaeWeights != null)
+        if (_sequential && _vaePath != null)
+        {
+            var chw = new float[nTargetTokens * inChannels];
+            for (int i = 0; i < nTargetTokens; i++)
+                for (int c = 0; c < inChannels; c++)
+                    chw[c * nTargetTokens + i] = targetLatent[i * inChannels + c];
+
+            using (var vaeWeights = SafetensorsLoader.Open(_vaePath))
+            {
+                var runningMean = vaeWeights.ReadF32("bn.running_mean");
+                var runningVar = vaeWeights.ReadF32("bn.running_var");
+                var (rawLatent, latH, latW) = Flux2Vae.UnnormalizeAndUnshuffle(chw, patchH, patchW, runningMean, runningVar);
+
+                using var vae = new VaeDecoder(vaeWeights, _ditBackend);
+                rgb = vae.Decode(rawLatent, latH, latW, scaleOverride: 1f, shiftOverride: 0f);
+            }
+            GC.Collect();
+        }
+        else if (_vaeWeights != null)
         {
             // targetLatent is token-major [nTarget, 128]; Flux2Vae needs channel-major [128, h, w].
             var chw = new float[nTargetTokens * inChannels];
@@ -243,7 +319,7 @@ public sealed class Flux2Pipeline : IDisposable
             var runningVar = _vaeWeights.ReadF32("bn.running_var");
             var (rawLatent, latH, latW) = Flux2Vae.UnnormalizeAndUnshuffle(chw, patchH, patchW, runningMean, runningVar);
 
-            using var vae = new VaeDecoder(_vaeWeights);
+            using var vae = new VaeDecoder(_vaeWeights, _ditBackend);
             rgb = vae.Decode(rawLatent, latH, latW, scaleOverride: 1f, shiftOverride: 0f);
         }
         else

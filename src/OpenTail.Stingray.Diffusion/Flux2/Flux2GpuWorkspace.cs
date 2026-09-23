@@ -50,6 +50,24 @@ public sealed class Flux2GpuWorkspace : IDisposable
     public CoreTensor OutImg { get; }
     public CoreTensor OutTxt { get; }
 
+    /// <summary>Unified [nSeq, d] sequence holding [Txt; Img] concatenated for single-stream blocks.</summary>
+    public CoreTensor Unified { get; private set; }
+
+    /// <summary>Normalized unified sequence [nSeq, d] after AdaLN modulation in single-stream blocks.</summary>
+    public CoreTensor NormedSeq { get; }
+
+    /// <summary>Shared modulation vector [3*d] for single-stream blocks (shift, scale, gate).</summary>
+    public CoreTensor SingleMod { get; }
+
+    /// <summary>Output of linear1 in single-stream blocks: [nSeq, 3*d + 2*mlpHidden].</summary>
+    public CoreTensor Lin1Out { get; }
+
+    /// <summary>Input to linear2 in single-stream blocks: [nSeq, d + mlpHidden] (AttnOut concatenated with gated MLP).</summary>
+    public CoreTensor Lin2In { get; }
+
+    /// <summary>Output of linear2 in single-stream blocks: [nSeq, d].</summary>
+    public CoreTensor OutSeq { get; }
+
     /// <summary>SiLU-gated FFN up-projection output, `[n, 2*mlpHidden]` (n = max(nImg, nTxt)) --
     /// wide enough to hold either stream's up-projection.</summary>
     public CoreTensor MlpUpBuf { get; }
@@ -116,6 +134,13 @@ public sealed class Flux2GpuWorkspace : IDisposable
         ImgMod = backend.Allocate(TensorShape.D1(d * 6));
         TxtMod = backend.Allocate(TensorShape.D1(d * 6));
 
+        Unified = backend.Allocate(TensorShape.D2(nSeq, d));
+        NormedSeq = backend.Allocate(TensorShape.D2(nSeq, d));
+        SingleMod = backend.Allocate(TensorShape.D1(d * 3));
+        Lin1Out = backend.Allocate(TensorShape.D2(nSeq, 3 * d + 2 * mlpHidden));
+        Lin2In = backend.Allocate(TensorShape.D2(nSeq, d + mlpHidden));
+        OutSeq = backend.Allocate(TensorShape.D2(nSeq, d));
+
         RopeCos = backend.Upload(ropeCosCompact, TensorShape.D2(nSeq, nPairs), exact: true);
         RopeSin = backend.Upload(ropeSinCompact, TensorShape.D2(nSeq, nPairs), exact: true);
     }
@@ -129,6 +154,13 @@ public sealed class Flux2GpuWorkspace : IDisposable
         backend.Free(TxtHidden);
         ImgHidden = backend.Upload(img, TensorShape.D2(NumImg, Dim), exact: true);
         TxtHidden = backend.Upload(txt, TensorShape.D2(NumTxt, Dim), exact: true);
+    }
+
+    /// <summary>Uploads data directly into ws.Unified (used for standalone single-block tests).</summary>
+    public void SetUnified(IComputeBackend backend, ReadOnlySpan<float> data)
+    {
+        backend.Free(Unified);
+        Unified = backend.Upload(data, TensorShape.D2(NumSeq, Dim), exact: true);
     }
 
     public void Dispose()
@@ -148,6 +180,12 @@ public sealed class Flux2GpuWorkspace : IDisposable
         _backend.Free(AttnOut);
         _backend.Free(OutImg);
         _backend.Free(OutTxt);
+        _backend.Free(Unified);
+        _backend.Free(NormedSeq);
+        _backend.Free(SingleMod);
+        _backend.Free(Lin1Out);
+        _backend.Free(Lin2In);
+        _backend.Free(OutSeq);
         _backend.Free(MlpUpBuf);
         _backend.Free(MlpGatedBuf);
         _backend.Free(ImgMod);
