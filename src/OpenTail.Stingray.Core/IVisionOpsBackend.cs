@@ -279,4 +279,10 @@ public interface IVisionOpsBackend : IComputeBackend
     /// </summary>
     void SwiGluSplit(Tensor output, Tensor gateUp, int nTokens, int ffnDim)
         => throw new NotSupportedException();
+
+    /// <summary>
+    /// Copy an entire device-local tensor using compute/device-copy.
+    /// </summary>
+    void RecordComputeCopy(Tensor dst, Tensor src)
+        => throw new NotSupportedException();
 }

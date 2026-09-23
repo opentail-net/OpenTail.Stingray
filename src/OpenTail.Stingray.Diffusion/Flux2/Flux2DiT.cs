@@ -649,6 +649,116 @@ public sealed class Flux2DiT : IDisposable
     /// proj + gated residual. No bias terms anywhere (FLUX.2's linears are bias-free).
     /// </summary>
     /// <summary>
+    /// Full GPU-resident DiT forward step:
+    /// 1. GPU img_in projection directly from targetLatentGpu via Sgemm
+    /// 2. GPU txt_in projection (cached on first call, copied via RecordComputeCopy on subsequent steps)
+    /// 3. All double-stream blocks in VRAM
+    /// 4. All single-stream blocks in VRAM with streaming weights
+    /// 5. GPU final_layer modulation and linear projection directly into ws.Velocity
+    /// Returns ws.Velocity (GPU Tensor [nTarget, outChannels]) ready for GPU FluxEulerStep without host transfers.
+    /// </summary>
+    public OpenTail.Stingray.Core.Tensor ForwardGpu(
+        OpenTail.Stingray.Core.Tensor targetLatentGpu,
+        int[] targetPositions,
+        float[] textEmbeds,
+        int[] textPositions,
+        float timestep,
+        float guidance,
+        IComputeBackend gpuBackend)
+    {
+        var visionOps = (IVisionOpsBackend)gpuBackend;
+        var imageOps = (IImageOpsBackend)gpuBackend;
+        int d = _p.HiddenSize;
+        int mlpHidden = (int)(d * _p.MlpRatio);
+        int nTarget = targetPositions.Length / 4;
+        int nTxt = textPositions.Length / 4;
+        int nSeq = nTxt + nTarget;
+
+        float[] vec = ComputeModulationVec(timestep, Array.Empty<float>(), guidance);
+        var siluVec = (float[])vec.Clone();
+        DiffusionOps.SiluInPlace(siluVec);
+        var siluVecGpu = gpuBackend.Upload(siluVec, TensorShape.D1(d));
+
+        _gpuWeights ??= new Flux2GpuWeights(gpuBackend, GetWeight, _p, _weights, includeSingleBlocks: false);
+
+        if (_gpuWorkspace is null || _gpuWsNImg != nTarget || _gpuWsNTxt != nTxt)
+        {
+            _gpuWorkspace?.Dispose();
+
+            var combinedPositions = new int[(nTxt + nTarget) * 4];
+            Array.Copy(textPositions, 0, combinedPositions, 0, textPositions.Length);
+            Array.Copy(targetPositions, 0, combinedPositions, textPositions.Length, targetPositions.Length);
+            var (ropeCosCompact, ropeSinCompact) = Flux2RoPE.BuildContextFreqsCompact(combinedPositions, nSeq, _p.AxesDim, _p.Theta);
+
+            _gpuWorkspace = new Flux2GpuWorkspace(gpuBackend, nTarget, nTxt, d, mlpHidden, _p.HeadDim, ropeCosCompact, ropeSinCompact,
+                outChannels: _p.OutChannels, contextInDim: _p.ContextInDim);
+            _gpuWsNImg = nTarget;
+            _gpuWsNTxt = nTxt;
+            _cachedTextEmbedsKey = null;
+        }
+
+        var ws = _gpuWorkspace;
+
+        try
+        {
+            // 1. GPU Text Input Projection (cached across steps of same prompt)
+            if (!ReferenceEquals(_cachedTextEmbedsKey, textEmbeds))
+            {
+                var txtEmbedsGpu = gpuBackend.Upload(textEmbeds, TensorShape.D2(nTxt, _p.ContextInDim), exact: true);
+                visionOps.Sgemm(ws.CachedTxtInitial, txtEmbedsGpu, _gpuWeights.TxtInWeight, nTxt, _p.ContextInDim, d);
+                gpuBackend.Free(txtEmbedsGpu);
+                _cachedTextEmbedsKey = textEmbeds;
+            }
+            visionOps.RecordComputeCopy(ws.TxtHidden, ws.CachedTxtInitial);
+
+            // 2. GPU Image Input Projection: [nTarget, inChannels] -> [nTarget, d] via Sgemm
+            visionOps.Sgemm(ws.ImgHidden, targetLatentGpu, _gpuWeights.ImgInWeight, nTarget, _p.InChannels, d);
+
+            // 3. Shared Double-Stream Modulation
+            ComputeSharedDoubleModulationGpu(visionOps, ws, _gpuWeights, siluVecGpu);
+
+            // 4. Double-Stream Blocks
+            for (int layer = 0; layer < _p.DepthDoubleBlocks; layer++)
+            {
+                DoubleBlockGpu(ws, _gpuWeights.DoubleBlocks[layer], visionOps, imageOps);
+            }
+
+            // 5. Concat txt + img into unified sequence on GPU
+            visionOps.FluxConcatTxtImg(ws.TxtHidden, ws.ImgHidden, ws.Unified, nTxt, nTarget, d);
+
+            // 6. Shared Single-Stream Modulation
+            ComputeSharedSingleModulationGpu(visionOps, ws, _gpuWeights, siluVecGpu);
+
+            // 7. Single-Stream Blocks (streaming weights from GGUF)
+            for (int layer = 0; layer < _p.DepthSingleBlocks; layer++)
+            {
+                using var bw = _gpuWeights.LoadSingleBlock(layer);
+                SingleBlockGpu(ws, bw, visionOps, imageOps);
+            }
+
+            // 8. GPU Final Layer:
+            // Slice img [nTarget, d] from ws.Unified [nSeq, d]
+            visionOps.FluxSliceImg(ws.Unified, ws.ImgHidden, nTxt, nTarget, d);
+
+            // Compute final AdaLN modulation vector: [2 * d]
+            visionOps.Sgemm(ws.FinalMod, siluVecGpu, _gpuWeights.FinalModWeight, 1, d, d * 2);
+
+            // Modulate img tokens (Affine-free LayerNorm with shift & scale)
+            visionOps.AdaLNModulate(ws.NormedImg, ws.ImgHidden, ws.FinalMod, nTarget, d, shiftOffset: 0, scaleOffset: d, isRmsNorm: false, eps: 1e-6f);
+
+            // Final linear projection to velocity: [nTarget, d] -> [nTarget, outChannels]
+            visionOps.Sgemm(ws.Velocity, ws.NormedImg, _gpuWeights.FinalLinearWeight, nTarget, d, _p.OutChannels);
+
+            gpuBackend.Synchronize();
+            return ws.Velocity;
+        }
+        finally
+        {
+            gpuBackend.Free(siluVecGpu);
+        }
+    }
+
+    /// <summary>
     /// Runs the 8 double-stream blocks on GPU (docs/091, wired 2026-09-19), mutating
     /// <paramref name="img"/>/<paramref name="txt"/> in place with the result -- everything before
     /// and after this call (img_in/txt_in projection, the 48 single-stream blocks, final layer)
@@ -683,7 +793,7 @@ public sealed class Flux2DiT : IDisposable
             var (ropeCosCompact, ropeSinCompact) = Flux2RoPE.BuildContextFreqsCompact(combinedPositions, nTxt + nImg, _p.AxesDim, _p.Theta);
 
             _gpuWorkspace = new Flux2GpuWorkspace(backend, nImg, nTxt, d, mlpHidden, _p.HeadDim, ropeCosCompact, ropeSinCompact,
-                initialImgHidden: img, initialTxtHidden: txt);
+                initialImgHidden: img, initialTxtHidden: txt, outChannels: _p.OutChannels, contextInDim: _p.ContextInDim);
             _gpuWsNImg = nImg;
             _gpuWsNTxt = nTxt;
         }

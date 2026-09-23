@@ -85,6 +85,18 @@ public sealed class Flux2GpuWorkspace : IDisposable
     public CoreTensor RopeCos { get; }
     public CoreTensor RopeSin { get; }
 
+    /// <summary>Modulation vector for final layer: [2 * d] (shift, scale).</summary>
+    public CoreTensor FinalMod { get; }
+
+    /// <summary>Output velocity tensor on GPU: [nImg, outChannels].</summary>
+    public CoreTensor Velocity { get; }
+
+    /// <summary>Precomputed text projection: [nTxt, d], invariant across steps.</summary>
+    public CoreTensor CachedTxtInitial { get; }
+
+    /// <summary>Text embeddings uploaded on GPU: [nTxt, contextInDim].</summary>
+    public CoreTensor TxtEmbedsGpu { get; }
+
     public Flux2GpuWorkspace(
         IComputeBackend backend,
         int nImg,
@@ -95,7 +107,9 @@ public sealed class Flux2GpuWorkspace : IDisposable
         ReadOnlySpan<float> ropeCosCompact,
         ReadOnlySpan<float> ropeSinCompact,
         ReadOnlySpan<float> initialImgHidden = default,
-        ReadOnlySpan<float> initialTxtHidden = default)
+        ReadOnlySpan<float> initialTxtHidden = default,
+        int outChannels = 128,
+        int contextInDim = 15360)
     {
         _backend = backend;
         int nSeq = nImg + nTxt;
@@ -140,6 +154,11 @@ public sealed class Flux2GpuWorkspace : IDisposable
         Lin1Out = backend.Allocate(TensorShape.D2(nSeq, 3 * d + 2 * mlpHidden));
         Lin2In = backend.Allocate(TensorShape.D2(nSeq, d + mlpHidden));
         OutSeq = backend.Allocate(TensorShape.D2(nSeq, d));
+
+        FinalMod = backend.Allocate(TensorShape.D1(d * 2));
+        Velocity = backend.Allocate(TensorShape.D2(nImg, outChannels));
+        CachedTxtInitial = backend.Allocate(TensorShape.D2(nTxt, d));
+        TxtEmbedsGpu = backend.Allocate(TensorShape.D2(nTxt, contextInDim));
 
         RopeCos = backend.Upload(ropeCosCompact, TensorShape.D2(nSeq, nPairs), exact: true);
         RopeSin = backend.Upload(ropeSinCompact, TensorShape.D2(nSeq, nPairs), exact: true);
@@ -192,5 +211,9 @@ public sealed class Flux2GpuWorkspace : IDisposable
         _backend.Free(TxtMod);
         _backend.Free(RopeCos);
         _backend.Free(RopeSin);
+        _backend.Free(FinalMod);
+        _backend.Free(Velocity);
+        _backend.Free(CachedTxtInitial);
+        _backend.Free(TxtEmbedsGpu);
     }
 }

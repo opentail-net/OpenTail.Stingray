@@ -1,3 +1,6 @@
+using OpenTail.Stingray.Core;
+using OpenTail.Stingray.Vulkan;
+
 namespace OpenTail.Stingray.Diffusion.Flux2;
 
 /// <summary>
@@ -24,10 +27,10 @@ public sealed class Flux2Pipeline : IDisposable
     private readonly Flux2DiT? _transformer;
     private readonly IWeightLoader? _ditWeights;
     private readonly GgufModel? _mistralModel;
-    private readonly Engine.ForwardPass? _mistralForward;
+    private readonly IForwardPass? _mistralForward;
     private readonly GgufTokenizer? _mistralTokenizer;
     private readonly IWeightLoader? _vaeWeights;
-    private readonly Cpu.CpuBackend? _mistralBackend;
+    private readonly IDisposable? _mistralBackend;
     private readonly IComputeBackend? _ditBackend;
     private readonly string? _ditPath;
     private readonly string? _mistralPath;
@@ -50,7 +53,7 @@ public sealed class Flux2Pipeline : IDisposable
 
     private Flux2Pipeline(
         Flux2DiT transformer, IWeightLoader ditWeights,
-        GgufModel mistralModel, Engine.ForwardPass mistralForward, GgufTokenizer mistralTokenizer, Cpu.CpuBackend mistralBackend,
+        GgufModel mistralModel, IForwardPass mistralForward, GgufTokenizer mistralTokenizer, IDisposable? mistralBackend,
         IWeightLoader vaeWeights,
         IComputeBackend? ditBackend)
     {
@@ -112,8 +115,18 @@ public sealed class Flux2Pipeline : IDisposable
         var mistralModel = GgufModel.Open(mistralPath);
         var hp = ModelHyperparams.FromGgufMetadata(mistralModel.Metadata, mistralModel);
         var tokenizer = GgufTokenizer.FromGgufModel(mistralModel);
-        var mistralBackend = new Cpu.CpuBackend();
-        var mistralForward = new Engine.ForwardPass(mistralModel, mistralBackend, hp);
+        IDisposable? mistralBackend = null;
+        IForwardPass mistralForward;
+        if (ditBackend is VulkanBackend vb)
+        {
+            mistralForward = new Engine.GpuForwardPass(mistralModel, vb, hp, maxContextLength: 512);
+        }
+        else
+        {
+            var cpu = new Cpu.CpuBackend();
+            mistralBackend = cpu;
+            mistralForward = new Engine.ForwardPass(mistralModel, cpu, hp);
+        }
 
         var vaeWeights = SafetensorsLoader.Open(vaePath);
 
@@ -199,9 +212,17 @@ public sealed class Flux2Pipeline : IDisposable
             {
                 var hp = ModelHyperparams.FromGgufMetadata(mistralModel.Metadata, mistralModel);
                 var tokenizer = GgufTokenizer.FromGgufModel(mistralModel);
-                using var mistralBackend = new Cpu.CpuBackend();
-                using var mistralForward = new Engine.ForwardPass(mistralModel, mistralBackend, hp);
-                (txtEmbeds, nTxt) = Flux2TextConditioning.Encode(mistralForward, tokenizer, request.Prompt);
+                if (_ditBackend is VulkanBackend vb)
+                {
+                    using var mistralForward = new Engine.GpuForwardPass(mistralModel, vb, hp, maxContextLength: 512);
+                    (txtEmbeds, nTxt) = Flux2TextConditioning.Encode(mistralForward, tokenizer, request.Prompt);
+                }
+                else
+                {
+                    using var mistralBackend = new Cpu.CpuBackend();
+                    using var mistralForward = new Engine.ForwardPass(mistralModel, mistralBackend, hp);
+                    (txtEmbeds, nTxt) = Flux2TextConditioning.Encode(mistralForward, tokenizer, request.Prompt);
+                }
             }
             GC.Collect();
         }
@@ -236,13 +257,92 @@ public sealed class Flux2Pipeline : IDisposable
             using (var ditWeights = GgufWeightLoader.Open(_ditPath))
             using (var transformer = new Flux2DiT(ditWeights, _params))
             {
+                if (_ditBackend is VulkanBackend vb && vb is IVisionOpsBackend visionOps
+                    && Environment.GetEnvironmentVariable("STINGRAY_FLUX2_GPU_SINGLE_BLOCKS") == "1")
+                {
+                    using var targetLatentGpu = vb.Upload(targetLatent, TensorShape.D2(nTargetTokens, inChannels));
+
+                    for (int step = 0; step < steps; step++)
+                    {
+                        float t = timesteps[step];
+                        float nextT = timesteps[step + 1];
+                        float dt = nextT - t;
+
+                        var velGpu = transformer.ForwardGpu(
+                            targetLatentGpu, targetPositions,
+                            txtEmbeds, txtPositions,
+                            t * 1000.0f, request.Guidance,
+                            vb);
+
+                        visionOps.FluxEulerStep(targetLatentGpu, velGpu, dt, nTargetTokens * inChannels);
+
+                        request.Progress?.Invoke(step + 1, steps);
+                    }
+
+                    vb.Download(targetLatentGpu, targetLatent);
+                }
+                else
+                {
+                    for (int step = 0; step < steps; step++)
+                    {
+                        float t = timesteps[step];
+                        float nextT = timesteps[step + 1];
+                        float dt = nextT - t;
+
+                        var v = transformer.Forward(
+                            targetLatent, targetPositions,
+                            refLatents, refPositions,
+                            txtEmbeds, txtPositions,
+                            pooledEmbed,
+                            t * 1000.0f, request.Guidance,
+                            _ditBackend);
+
+                        for (int i = 0; i < targetLatent.Length; i++)
+                        {
+                            targetLatent[i] += dt * v[i];
+                        }
+
+                        request.Progress?.Invoke(step + 1, steps);
+                    }
+                }
+            }
+            GC.Collect();
+        }
+        else
+        {
+            if (_ditBackend is VulkanBackend vb && vb is IVisionOpsBackend visionOps
+                && Environment.GetEnvironmentVariable("STINGRAY_FLUX2_GPU_SINGLE_BLOCKS") == "1")
+            {
+                using var targetLatentGpu = vb.Upload(targetLatent, TensorShape.D2(nTargetTokens, inChannels));
+
                 for (int step = 0; step < steps; step++)
                 {
                     float t = timesteps[step];
                     float nextT = timesteps[step + 1];
                     float dt = nextT - t;
 
-                    var v = transformer.Forward(
+                    var velGpu = _transformer!.ForwardGpu(
+                        targetLatentGpu, targetPositions,
+                        txtEmbeds, txtPositions,
+                        t * 1000.0f, request.Guidance,
+                        vb);
+
+                    visionOps.FluxEulerStep(targetLatentGpu, velGpu, dt, nTargetTokens * inChannels);
+
+                    request.Progress?.Invoke(step + 1, steps);
+                }
+
+                vb.Download(targetLatentGpu, targetLatent);
+            }
+            else
+            {
+                for (int step = 0; step < steps; step++)
+                {
+                    float t = timesteps[step];
+                    float nextT = timesteps[step + 1];
+                    float dt = nextT - t;
+
+                    var v = _transformer!.Forward(
                         targetLatent, targetPositions,
                         refLatents, refPositions,
                         txtEmbeds, txtPositions,
@@ -257,31 +357,6 @@ public sealed class Flux2Pipeline : IDisposable
 
                     request.Progress?.Invoke(step + 1, steps);
                 }
-            }
-            GC.Collect();
-        }
-        else
-        {
-            for (int step = 0; step < steps; step++)
-            {
-                float t = timesteps[step];
-                float nextT = timesteps[step + 1];
-                float dt = nextT - t;
-
-                var v = _transformer!.Forward(
-                    targetLatent, targetPositions,
-                    refLatents, refPositions,
-                    txtEmbeds, txtPositions,
-                    pooledEmbed,
-                    t * 1000.0f, request.Guidance,
-                    _ditBackend);
-
-                for (int i = 0; i < targetLatent.Length; i++)
-                {
-                    targetLatent[i] += dt * v[i];
-                }
-
-                request.Progress?.Invoke(step + 1, steps);
             }
         }
 

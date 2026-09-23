@@ -88,4 +88,50 @@ public sealed class Flux2MistralHiddenTapsTests
         foreach (var v in embeds)
             Assert.True(float.IsFinite(v), "Flux2TextConditioning.Encode output contains NaN/Inf");
     }
+
+    [Fact]
+    public void Flux2TextConditioning_Encode_GpuMatchesCpu()
+    {
+        string? modelPath = FindModelPath(ModelFileName);
+        Assert.SkipUnless(modelPath != null, "Mistral-Small-3.2-24B-Instruct-2506-Q4_K_S.gguf not found");
+
+        using var model = GgufModel.Open(modelPath!);
+        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var tokenizer = GgufTokenizer.FromGgufModel(model);
+
+        // 1. CPU forward pass
+        float[] cpuEmbeds;
+        int cpuTokens;
+        using (var cpuBackend = new OpenTail.Stingray.Cpu.CpuBackend())
+        using (var cpuFwd = new Engine.ForwardPass(model, cpuBackend, hp))
+        {
+            (cpuEmbeds, cpuTokens) = OpenTail.Stingray.Diffusion.Flux2.Flux2TextConditioning.Encode(
+                cpuFwd, tokenizer, "a red apple on a wooden table");
+        }
+
+        // 2. GPU forward pass
+        using var vulkan = new Vulkan.VulkanBackend();
+        float[] gpuEmbeds;
+        int gpuTokens;
+        using (var gpuFwd = new Engine.GpuForwardPass(model, vulkan, hp, maxContextLength: 512))
+        {
+            (gpuEmbeds, gpuTokens) = OpenTail.Stingray.Diffusion.Flux2.Flux2TextConditioning.Encode(
+                gpuFwd, tokenizer, "a red apple on a wooden table");
+        }
+
+        Assert.Equal(cpuTokens, gpuTokens);
+        Assert.Equal(cpuEmbeds.Length, gpuEmbeds.Length);
+
+        // Cosine similarity
+        double dot = 0, normRef = 0, normGpu = 0;
+        for (int i = 0; i < cpuEmbeds.Length; i++)
+        {
+            dot += cpuEmbeds[i] * gpuEmbeds[i];
+            normRef += cpuEmbeds[i] * cpuEmbeds[i];
+            normGpu += gpuEmbeds[i] * gpuEmbeds[i];
+        }
+        double cosine = dot / (Math.Sqrt(normRef) * Math.Sqrt(normGpu));
+        Console.WriteLine($"[Mistral Text Conditioning GPU vs CPU] Cosine: {cosine:F6}");
+        Assert.True(cosine > 0.99, $"Cosine similarity was {cosine:F6}, expected > 0.99");
+    }
 }
