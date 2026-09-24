@@ -84,7 +84,7 @@ public sealed class FluxDiT : IDisposable
     {
         if (_backend is null || _backend is CpuBackend)
             throw new InvalidOperationException("No GPU compute backend configured for FluxDiT GPU residency.");
-        return _gpuWeightsResident ??= new FluxGpuWeights(_backend, GetWeightUncached, OptGetWeightUncached, _p);
+        return _gpuWeightsResident ??= new FluxGpuWeights(_backend, GetWeightUncached, OptGetWeightUncached, _p, TryGetRawWeight);
     }
 
     // ── Entry point ───────────────────────────────────────────────────────
@@ -868,6 +868,20 @@ public sealed class FluxDiT : IDisposable
         return name.StartsWith(DiffusionModelPrefix, StringComparison.Ordinal)
             ? _model.FindTensor(name[DiffusionModelPrefix.Length..])
             : null;
+    }
+
+    /// <summary>Raw GGUF bytes for <see cref="FluxGpuWeights"/>' quantized-on-GPU upload
+    /// (same name resolution as <see cref="GetWeightUncached"/>). GGUF dims are inner-first.</summary>
+    private unsafe bool TryGetRawWeight(string name, out nint data, out long byteLen, out DType dtype, out int rows, out int cols)
+    {
+        data = 0; byteLen = 0; dtype = default; rows = 0; cols = 0;
+        if (FindTensor(name) is not { } info || info.NDimensions != 2) return false;
+        dtype = info.DType;
+        cols = (int)info.Dimensions[0];
+        rows = (int)info.Dimensions[1];
+        data = (nint)_model.GetTensorDataPtr(info);
+        byteLen = DTypeInfo.ByteSize(info.ElementCount, dtype);
+        return true;
     }
 
     private float[] GetWeightUncached(string name)

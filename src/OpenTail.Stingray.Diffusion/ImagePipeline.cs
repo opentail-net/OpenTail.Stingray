@@ -135,8 +135,15 @@ public sealed class ImagePipeline : IDisposable, IDiffusionPipeline
         var t5Tokens = new int[T5MaxSequenceLength];
         Array.Copy(t5TokensRaw, t5Tokens, Math.Min(t5TokensRaw.Length, T5MaxSequenceLength));
         // Remaining entries stay 0 (T5's <pad> token id), matching real T5 padding.
-        var txtEmbeds = (_backend is not CpuBackend && _backend is IVisionOpsBackend t5GpuOps)
-            ? _t5.EncodeGpu(t5Tokens, t5GpuOps)
+        // T5 device: on an integrated GPU the CPU encode is faster (measured 2026-09-24, FLUX.1 512²:
+        // 14.8s CPU vs 32.4s on the Vega 8 iGPU, which has to take ~9.5 GB of T5 weights out of the
+        // same shared RAM for a single encode). A discrete GPU keeps the GPU encode. Override with
+        // STINGRAY_FLUX_T5_DEVICE=cpu|gpu.
+        string? t5Device = Environment.GetEnvironmentVariable("STINGRAY_FLUX_T5_DEVICE");
+        bool t5OnGpu = _backend is not CpuBackend && _backend is IVisionOpsBackend
+            && (t5Device == "gpu" || (t5Device != "cpu" && _backend is not OpenTail.Stingray.Vulkan.VulkanBackend { IsIntegratedGpu: true }));
+        var txtEmbeds = t5OnGpu
+            ? _t5.EncodeGpu(t5Tokens, (IVisionOpsBackend)_backend)
             : _t5.Encode(t5Tokens);             // [seq, 4096]
         // Free T5's ~19GB FP32 host cache (and GPU weights, if any) before the DiT runs: on GPU it
         // collides with the ~24GB FP16 DiT upload; on CPU it pushes a 32GB machine into paging
