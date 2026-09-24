@@ -24,7 +24,9 @@ public sealed class ZImagePipeline : IDisposable, IDiffusionPipeline
 {
     private readonly ZImageDiT _dit;
     private readonly VaeDecoder _vae;
-    private readonly QwenTextEncoder _encoder;
+    private QwenTextEncoder? _encoder;
+    private readonly string? _qwenPath;
+    private readonly IComputeBackend? _backend;
     private readonly QwenTokenizer _tokenizer;
     private readonly ZImageParams _p;
     private string? _cachedPrompt;
@@ -32,14 +34,17 @@ public sealed class ZImagePipeline : IDisposable, IDiffusionPipeline
     private bool _disposed;
 
     private ZImagePipeline(ZImageDiT dit, VaeDecoder vae,
-                            QwenTextEncoder encoder, QwenTokenizer tokenizer,
-                            ZImageParams p)
+                            QwenTextEncoder? encoder, QwenTokenizer tokenizer,
+                            ZImageParams p, string? qwenPath = null,
+                            IComputeBackend? backend = null)
     {
         _dit       = dit;
         _vae       = vae;
         _encoder   = encoder;
         _tokenizer = tokenizer;
         _p         = p;
+        _qwenPath  = qwenPath;
+        _backend   = backend;
     }
 
     /// <summary>
@@ -84,8 +89,7 @@ public sealed class ZImagePipeline : IDisposable, IDiffusionPipeline
         var vae       = new VaeDecoder(vaeLoader, backend);
         var qwen      = new QwenTextEncoder(GgufModel.Open(qwenPath), p, backend);
         var tokenizer = QwenTokenizer.FromFile(tokenizerPath);
-
-        return new ZImagePipeline(dit, vae, qwen, tokenizer, p);
+        return new ZImagePipeline(dit, vae, qwen, tokenizer, p, qwenPath, backend);
     }
 
     // ── Main generation entry point ───────────────────────────────────────
@@ -145,11 +149,18 @@ public sealed class ZImagePipeline : IDisposable, IDiffusionPipeline
             statusCallback?.Invoke("Encoding text prompt (Qwen3-4B)…");
             tokenIds  = _tokenizer.EncodeWithTemplate(prompt);
             int totalEncLayers = _p.QwenEncoderLayer + 1;
+            _encoder ??= new QwenTextEncoder(GgufModel.Open(_qwenPath!), _p, _backend);
             txtEmbeds = _encoder.Encode(tokenIds,
                 encodeProgress: (layer, _) =>
                     statusCallback?.Invoke($"Encoding text: layer {layer + 1}/{totalEncLayers}…"));
             _cachedPrompt  = prompt;
             _cachedEmbeds  = txtEmbeds;
+
+            // Free the ~3GB text encoder model during the long denoising loop
+            _encoder.Dispose();
+            _encoder = null;
+            GC.Collect(2, GCCollectionMode.Aggressive, blocking: true, compacting: true);
+            TrimWorkingSet();
         }
         int nTxt = tokenIds.Length;
 
@@ -242,7 +253,23 @@ public sealed class ZImagePipeline : IDisposable, IDiffusionPipeline
             _disposed = true;
             _dit.Dispose();
             _vae.Dispose();
-            _encoder.Dispose();
+            _encoder?.Dispose();
         }
+    }
+
+    [System.Runtime.InteropServices.DllImport("psapi.dll")]
+    private static extern bool EmptyWorkingSet(IntPtr hProcess);
+
+    private static void TrimWorkingSet()
+    {
+        try
+        {
+            if (OperatingSystem.IsWindows())
+            {
+                using var proc = System.Diagnostics.Process.GetCurrentProcess();
+                EmptyWorkingSet(proc.Handle);
+            }
+        }
+        catch { }
     }
 }

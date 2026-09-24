@@ -38,6 +38,57 @@ public sealed class ZImageGpuRealScaleBisectTests
     }
 
     [Fact]
+    public void Block0Parity_RealScale()
+    {
+        string? ditPath = FindModelPath("z_image_turbo-Q4_0.gguf");
+        if (ditPath is null) return;
+
+        var p = new ZImageParams();
+        int dim = p.Dim;
+        using var cpuWeights = GgufWeightLoader.Open(ditPath);
+        using var cpuDit = new ZImageDiT(cpuWeights, p);
+        using var vulkan = new VulkanBackend();
+        using var gpuWeights = GgufWeightLoader.Open(ditPath);
+        using var gpuDit = new ZImageDiT(gpuWeights, p, vulkan);
+
+        const int nImg = 256;
+        const int nTxt = 64;
+        int nTok = nImg + nTxt;
+
+        var rng = new Random(42);
+        var x = new float[nTok * dim];
+        for (int i = 0; i < x.Length; i++) x[i] = (float)(rng.NextDouble() * 2.0 - 1.0);
+
+        var adaln = new float[p.AdalnEmbedDim];
+        for (int i = 0; i < adaln.Length; i++) adaln[i] = (float)(rng.NextDouble() * 0.5 - 0.25);
+
+        var posIds = new int[nTok * 3];
+        for (int i = 0; i < nTok; i++) { posIds[i * 3] = i; posIds[i * 3 + 1] = 0; posIds[i * 3 + 2] = 0; }
+        var rope = new ZImageRoPE(p);
+        var freqs = rope.BuildFreqs(posIds, nTok);
+
+        var cpuX = (float[])x.Clone();
+        cpuDit.ApplyBlockForTest("layers.0", cpuX, nTok, freqs, adaln, true);
+
+        var gpuX = (float[])x.Clone();
+        gpuDit.ApplyBlockForTest("layers.0", gpuX, nTok, freqs, adaln, true);
+
+        double dot = 0, normA = 0, normB = 0;
+        float maxDiff = 0;
+        for (int i = 0; i < cpuX.Length; i++)
+        {
+            float diff = MathF.Abs(cpuX[i] - gpuX[i]);
+            if (diff > maxDiff) maxDiff = diff;
+            dot += (double)cpuX[i] * gpuX[i];
+            normA += (double)cpuX[i] * cpuX[i];
+            normB += (double)gpuX[i] * gpuX[i];
+        }
+        double cosSim = dot / (Math.Sqrt(normA) * Math.Sqrt(normB));
+        Console.WriteLine($"[Block0Parity] cosSim={cosSim:F6} maxDiff={maxDiff:F4}");
+        Assert.True(cosSim > 0.999, $"Block 0 parity failed: cosSim={cosSim:F6} maxDiff={maxDiff:F4}");
+    }
+
+    [Fact]
     public void FindFirstDivergentMainBlock_RealWeights_RealScale()
     {
         string? ditPath = FindModelPath("z_image_turbo-Q4_0.gguf");

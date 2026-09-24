@@ -4,6 +4,17 @@ namespace OpenTail.Stingray.Diffusion;
 /// <summary>
 /// Z-Image Scalable Single-Stream DiT (S3-DiT) forward pass.
 ///
+/// =========================================================================================
+/// ARCHITECTURAL ISOLATION RULE — DO NOT CONFLATE WITH WAN, FLUX, SD3, OR OTHER MODELS:
+/// =========================================================================================
+/// Z-Image S3-DiT is strictly self-contained. Under NO circumstances should this class import,
+/// call, or reuse attention kernels, context-caching schemes, or weights from Wan (e.g.,
+/// WanAttention.TiledMultiHeadAttention), FLUX, SD3, or other models.
+///
+/// Conflating Wan into Z-Image in commit ffa2681 broke numerical parity, caused quilted mosaic
+/// noise, and coupled disparate model codebases. Maintain complete architectural separation.
+/// =========================================================================================
+///
 /// Architecture (30 layers + 2 refiners each):
 ///   x_embedder:       Linear(64, 3840)   — project image patches
 ///   cap_embedder:     [RMSNorm(2560) → Linear(2560, 3840)]  — project Qwen3 text features
@@ -40,9 +51,6 @@ public sealed class ZImageDiT : IDisposable
     private float[]? _cachedTxtFreqs;
     private float[]? _cachedCombinedFreqs;
 
-    // ── Text Context cache (invariant across denoising steps for a given prompt) ──
-    private float[]? _cachedTxtEmbeds;
-    private float[]? _cachedRefinedTxtHid;
 
     // Cached unit-scale / unit-gate arrays (unmodulated blocks use scale=1, gate=1)
     private float[]? _onesCache;
@@ -164,21 +172,11 @@ public sealed class ZImageDiT : IDisposable
         var imgFreqs = _cachedImgFreqs!;
         var txtFreqs = _cachedTxtFreqs!;
 
-        // ── 3. Refine text context (cached across steps) ────────────────────
-        float[] txtHid;
-        if (ReferenceEquals(txtEmbeds, _cachedTxtEmbeds) && _cachedRefinedTxtHid is not null)
-        {
-            txtHid = _cachedRefinedTxtHid;
-        }
-        else
-        {
-            txtHid = EmbedCap(txtEmbeds, nTxt);
-            for (int r = 0; r < _p.NRefinerLayers; r++)
-                ApplyBlock($"context_refiner.{r}", txtHid, nTxt, txtFreqs, null, false);
-
-            _cachedTxtEmbeds = txtEmbeds;
-            _cachedRefinedTxtHid = (float[])txtHid.Clone();
-        }
+        // ── 3. Refine separately ──────────────────────────────────────────
+        // Context refiner: 2 unmodulated blocks on text tokens with text RoPE
+        var txtHid = EmbedCap(txtEmbeds, nTxt);
+        for (int r = 0; r < _p.NRefinerLayers; r++)
+            ApplyBlock($"context_refiner.{r}", txtHid, nTxt, txtFreqs, null, false);
 
         // Noise refiner: 2 modulated blocks on image tokens with image RoPE
         for (int r = 0; r < _p.NRefinerLayers; r++)
@@ -330,7 +328,9 @@ public sealed class ZImageDiT : IDisposable
         // So t_model = 1 - t.
         float tScaled = (1f - t) * _p.TScale;
         int   freqDim = 256;
-        var   sinEmb  = DiffusionOps.SinusoidalTimestepEmbedding(tScaled, freqDim);
+        // Z-Image's TimestepEmbedder is cat([cos, sin]) — flipSinToCos must be explicit since the
+        // shared helper's default changed to [sin, cos] after 235fab2 (silently broke Z-Image).
+        var   sinEmb  = DiffusionOps.SinusoidalTimestepEmbedding(tScaled, freqDim, flipSinToCos: true);
         var h = MatQ(sinEmb, 1, freqDim, "t_embedder.mlp.0.weight", "t_embedder.mlp.0.bias", 1024);
         DiffusionOps.SiLUInPlace(h);
         return MatQ(h, 1, 1024, "t_embedder.mlp.2.weight", "t_embedder.mlp.2.bias", _p.AdalnEmbedDim);
@@ -534,7 +534,10 @@ public sealed class ZImageDiT : IDisposable
     }
 
     // ── Self-attention ────────────────────────────────────────────────────
-
+    // ARCHITECTURAL BOUNDARY:
+    // DO NOT REPLACE THIS METHOD WITH Wan.WanAttention OR ANY OTHER EXTERNAL ATTENTION KERNEL.
+    // Z-Image requires its own verified SIMD attention loop with per-head Q/K RMSNorm and RoPE.
+    // Conflating this with Wan's attention broke image generation in commit ffa2681. Keep separate.
     private float[] SelfAttention(string prefix, float[] x, int nTok, float[]? freqs)
     {
         int dim     = _p.Dim;
@@ -567,8 +570,57 @@ public sealed class ZImageDiT : IDisposable
             _rope.Apply(k, nTok, nHeads, freqs);
         }
 
-        var attn = new float[nTok * dim];
-        Wan.WanAttention.TiledMultiHeadAttention(q, k, v, attn.AsSpan(), nTok, nTok, nHeads, headDim);
+        float scale      = 1f / MathF.Sqrt(headDim);
+        var   attn       = new float[nTok * dim];
+        int   scoreCount = nHeads * nTok * nTok;
+        var   scoresBuf  = ArrayPool<float>.Shared.Rent(scoreCount);
+
+        try
+        {
+            // Parallelise over heads — Span locals inside the lambda are fine
+            Parallel.For(0, nHeads, h =>
+            {
+                int sBase = h * nTok * nTok;
+
+                // QK scores using SIMD dot products
+                for (int i = 0; i < nTok; i++)
+                {
+                    var qi   = q.AsSpan((i * nHeads + h) * headDim, headDim);
+                    int sRow = sBase + i * nTok;
+                    for (int j = 0; j < nTok; j++)
+                    {
+                        var kj = k.AsSpan((j * nHeads + h) * headDim, headDim);
+                        scoresBuf[sRow + j] = TensorPrimitives.Dot<float>(qi, kj) * scale;
+                    }
+                    DiffusionOps.Softmax(scoresBuf, sRow, nTok);
+                }
+
+                // Extract contiguous per-head V for vectorized value aggregation
+                var vhBuf = ArrayPool<float>.Shared.Rent(nTok * headDim);
+                try
+                {
+                    for (int j = 0; j < nTok; j++)
+                        v.AsSpan((j * nHeads + h) * headDim, headDim)
+                         .CopyTo(vhBuf.AsSpan(j * headDim));
+
+                    for (int i = 0; i < nTok; i++)
+                    {
+                        int    sRow  = sBase + i * nTok;
+                        var    outSl = attn.AsSpan((i * nHeads + h) * headDim, headDim);
+                        outSl.Clear();
+                        for (int j = 0; j < nTok; j++)
+                        {
+                            TensorPrimitives.MultiplyAdd<float>(
+                                vhBuf.AsSpan(j * headDim, headDim),
+                                scoresBuf[sRow + j],
+                                outSl, outSl);
+                        }
+                    }
+                }
+                finally { ArrayPool<float>.Shared.Return(vhBuf); }
+            });
+        }
+        finally { ArrayPool<float>.Shared.Return(scoresBuf); }
 
         return MatQ(attn, nTok, dim, $"{prefix}.attention.out.weight", dim);
     }
@@ -920,8 +972,9 @@ public sealed class ZImageDiT : IDisposable
             }
             else
             {
-                // CPU path: fast pre-transposed Q4Kx8 if compatible, otherwise direct raw MatMulBatched
-                _quantizedCache.Linear(wName, x.AsSpan(0, n * inDim), ReadOnlySpan<float>.Empty, result.AsSpan(), n, inDim, outDim);
+                // CPU path: exact non-quantized activation path matching 235fab2
+                fixed (float* xPtr = x, rPtr = result)
+                    SimdKernels.MatMulBatched(rPtr, (byte*)ptr, xPtr, n, rows, cols, dtype, allowQ8: false);
             }
         }
         else

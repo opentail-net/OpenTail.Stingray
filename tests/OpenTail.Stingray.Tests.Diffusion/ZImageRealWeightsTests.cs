@@ -9,6 +9,7 @@ public sealed class ZImageRealWeightsTests
     {
         string[] absoluteCandidates =
         {
+            $@"C:\Git-Public\OpenTail.Stingray\models\_models\{fileName}",
             $@"C:\Git-Public\OpenTail.Stingray\models\{fileName}",
             $@"C:\p\opentail-llm\models\{fileName}",
             $@"E:\models\{fileName}",

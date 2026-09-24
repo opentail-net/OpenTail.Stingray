@@ -55,7 +55,8 @@ public sealed class ZImageGpuResidencyEndToEndTests
         using var vulkan = new VulkanBackend();
         using var pipeline = ZImagePipeline.Load(ditPath, vaePath, encoderPath, tokenizerPath, vulkan);
 
-        string outputPath = Path.Combine(@"C:\Git-Public\OpenTail.Stingray", "docs", "diffusion-samples", "zimage_gpu_residency_2026-09-20.png");
+        Environment.SetEnvironmentVariable("STINGRAY_ZIMAGE_DUMP_LATENT", "1");
+        string outputPath = Path.Combine(@"C:\Git-Public\OpenTail.Stingray", "docs", "diffusion-samples", "zimage_vulkan_restored.png");
 
         var sw = Stopwatch.StartNew();
         pipeline.Generate(
@@ -68,6 +69,75 @@ public sealed class ZImageGpuResidencyEndToEndTests
         sw.Stop();
 
         string msg = $"[ZImage GPU residency] Generate (256x256, 4 steps) took {sw.Elapsed.TotalSeconds:F1}s";
+        _output.WriteLine(msg); Console.WriteLine(msg);
+
+        Assert.True(File.Exists(outputPath), $"Expected output file at {outputPath}");
+    }
+
+    [Fact]
+    public void ZImagePipeline_Cpu_256x256_4Steps_RealApple()
+    {
+        string? ditPath = FindModelPath("z_image_turbo-Q4_0.gguf") ?? FindModelPath("z_image_turbo-Q5_0.gguf");
+        string? encoderPath = FindModelPath("Z-Image-AbliteratedV1.Q5_K_M.gguf");
+        string vaePath = @"C:\Git-Public\OpenTail.Stingray\models\z-image-turbo\vae\diffusion_pytorch_model.safetensors";
+        string tokenizerPath = @"C:\Git-Public\OpenTail.Stingray\models\z-image-turbo\tokenizer\tokenizer.json";
+
+        if (ditPath is null || encoderPath is null || !File.Exists(vaePath) || !File.Exists(tokenizerPath))
+        {
+            _output.WriteLine("[ZImageGpuResidencyEndToEndTests] Checkpoints missing, skipping.");
+            return;
+        }
+
+        using var pipeline = ZImagePipeline.Load(ditPath, vaePath, encoderPath, tokenizerPath, backend: null);
+
+        string outputPath = Path.Combine(@"C:\Git-Public\OpenTail.Stingray", "docs", "diffusion-samples", "zimage_cpu_verified.png");
+
+        var sw = Stopwatch.StartNew();
+        pipeline.Generate(
+            prompt: "a red apple on a white table",
+            width: 256,
+            height: 256,
+            steps: 4,
+            seed: 42,
+            outputPath: outputPath);
+        sw.Stop();
+
+        string msg = $"[ZImage CPU] Generate (256x256, 4 steps) took {sw.Elapsed.TotalSeconds:F1}s";
+        _output.WriteLine(msg); Console.WriteLine(msg);
+
+        Assert.True(File.Exists(outputPath), $"Expected output file at {outputPath}");
+    }
+
+    [Fact]
+    public void ZImagePipeline_Cpu_64x64_4Steps_FastApple()
+    {
+        Environment.SetEnvironmentVariable("STINGRAY_ZIMAGE_DUMP_LATENT", "1");
+        string? ditPath = FindModelPath("z_image_turbo-Q4_0.gguf") ?? FindModelPath("z_image_turbo-Q5_0.gguf");
+        string? encoderPath = FindModelPath("Z-Image-AbliteratedV1.Q5_K_M.gguf");
+        string vaePath = @"C:\Git-Public\OpenTail.Stingray\models\z-image-turbo\vae\diffusion_pytorch_model.safetensors";
+        string tokenizerPath = @"C:\Git-Public\OpenTail.Stingray\models\z-image-turbo\tokenizer\tokenizer.json";
+
+        if (ditPath is null || encoderPath is null || !File.Exists(vaePath) || !File.Exists(tokenizerPath))
+        {
+            _output.WriteLine("[ZImageGpuResidencyEndToEndTests] Checkpoints missing, skipping.");
+            return;
+        }
+
+        using var pipeline = ZImagePipeline.Load(ditPath, vaePath, encoderPath, tokenizerPath, backend: null);
+
+        string outputPath = Path.Combine(@"C:\Git-Public\OpenTail.Stingray", "docs", "diffusion-samples", "zimage_cpu_64x64_test.png");
+
+        var sw = Stopwatch.StartNew();
+        pipeline.Generate(
+            prompt: "a red apple on a white table",
+            width: 64,
+            height: 64,
+            steps: 4,
+            seed: 42,
+            outputPath: outputPath);
+        sw.Stop();
+
+        string msg = $"[ZImage CPU] Generate (64x64, 4 steps) took {sw.Elapsed.TotalSeconds:F1}s";
         _output.WriteLine(msg); Console.WriteLine(msg);
 
         Assert.True(File.Exists(outputPath), $"Expected output file at {outputPath}");
