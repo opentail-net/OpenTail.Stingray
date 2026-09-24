@@ -138,8 +138,10 @@ public sealed class ImagePipeline : IDisposable, IDiffusionPipeline
         var txtEmbeds = (_backend is not CpuBackend && _backend is IVisionOpsBackend t5GpuOps)
             ? _t5.EncodeGpu(t5Tokens, t5GpuOps)
             : _t5.Encode(t5Tokens);             // [seq, 4096]
-        if (_backend is not CpuBackend)
-            _t5.ReleaseMemory(); // free T5's GPU + host weights before the ~24GB FLUX DiT upload
+        // Free T5's ~19GB FP32 host cache (and GPU weights, if any) before the DiT runs: on GPU it
+        // collides with the ~24GB FP16 DiT upload; on CPU it pushes a 32GB machine into paging
+        // alongside the mmap'd DiT + its repacked Q4_K cache. T5 is re-read on the next Generate.
+        _t5.ReleaseMemory();
         int nTxt = t5Tokens.Length;
         double msT5 = sw?.Elapsed.TotalMilliseconds ?? 0; sw?.Restart();
 
