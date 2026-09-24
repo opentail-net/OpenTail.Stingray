@@ -1686,6 +1686,11 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
     private ComputePipeline? _multiHeadAttentionTiled40Pipeline;
     private ComputePipeline? _multiHeadAttentionTiled80Pipeline;
     private ComputePipeline? _multiHeadAttentionTiled128Pipeline;
+    private ComputePipeline? _flashAttention128Pipeline;
+
+    /// <summary><c>STINGRAY_ATTN128_LEGACY=1</c> routes headDim=128 back to the old
+    /// MultiHeadAttentionTiled128 kernel (A/B comparison and fallback).</summary>
+    private static bool UseLegacyAttention128 => Environment.GetEnvironmentVariable("STINGRAY_ATTN128_LEGACY") == "1";
     private ComputePipeline? _multiHeadAttentionTiled128FP16Pipeline;
 
     /// <summary>Kept <c>false</c> permanently -- real, measured regression, see the call site's
@@ -4117,6 +4122,15 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
             var p = new MultiHeadAttentionTiledParams { qSeq = (uint)qSeq, kvSeq = (uint)kvSeq, numHeads = (uint)numHeads, scale = 1f / MathF.Sqrt(headDim) };
             uint groupsX = (uint)((qSeq + 31) / 32);
 
+            // Register-tiled flash attention (Shaders.FlashAttention128). Its softmax reduces over
+            // 16-lane groups with subgroup shuffles, so it needs a known subgroup size >= 16.
+            if (MinSubgroupSize >= 16 && !UseLegacyAttention128)
+            {
+                _flashAttention128Pipeline ??= new ComputePipeline(this, Shaders.FlashAttention128, 4, pushConstantSize: sizeof(MultiHeadAttentionTiledParams));
+                DispatchOrRecord(_flashAttention128Pipeline, [GetBuffer(q), GetBuffer(k), GetBuffer(v), GetBuffer(output)], (uint)((qSeq + 63) / 64), &p, 1u, (uint)numHeads);
+                return;
+            }
+
             // FP16 attention for headDim=128 (FLUX.2's shape) was tried and REAL-MEASURED AS A
             // REGRESSION, not a win (docs/094 FLUX.2 GPU optimization wave, 2026-09-20): isolated
             // vs. combined A/B on Flux2DoubleBlockGpuBenchmarkTests gave Improvement-1-alone
@@ -5024,6 +5038,7 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
         _multiHeadAttentionTiled40Pipeline?.Dispose();
         _multiHeadAttentionTiled80Pipeline?.Dispose();
         _multiHeadAttentionTiled128Pipeline?.Dispose();
+        _flashAttention128Pipeline?.Dispose();
         _multiHeadAttentionTiled128FP16Pipeline?.Dispose();
         _adalnModulateDualPipeline?.Dispose();
         _scaleGateAddDualPipeline?.Dispose();

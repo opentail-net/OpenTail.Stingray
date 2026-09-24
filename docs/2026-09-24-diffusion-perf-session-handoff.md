@@ -172,3 +172,8 @@ Next steps:
    (Phase 1 resumes at OmniVoice: 32 steps, guidance 2.0; see `docs/2026-09-24-audio-recheck-plan.md`).
 
 Housekeeping: the `Zz*ProfTmp.cs` scratch harnesses are untracked, so never commit them. `main` has unpushed commits; do not push unless asked.
+
+**Update 2026-09-25: steps 1–5 of §8 are done and committed.** FlashAttention128 passes parity after one fix
+(the float `mix` against NEG_INF cancelled every score, so it now uses a boolean `mix`). Isolated it runs 35–48 ms vs 184 ms per call.
+FLUX.1 Vulkan went from 173.6s to **132.0s** (23.5s vs 35.0s per step), with a correct image. Next, not started:
+re-measure FLUX.2 (237s), Qwen GPU (159s) and SD3.5 GPU (85s), which use the same kernel; then the §8 step-6 backlog.

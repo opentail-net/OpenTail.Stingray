@@ -32,6 +32,9 @@ public sealed class MultiHeadAttentionTiledGpuParityTests
     [InlineData(1, 77, 10, 64)]     // single query token, larger nHeads
     [InlineData(4096, 77, 5, 64)]   // SDXL's largest cross-attention query count (64x64 latent)
     [InlineData(1024, 1024, 10, 64)] // large self-attention: multiple Br AND Bc tiles
+    [InlineData(1280, 1280, 3, 128)] // FLUX.1 512x512 shape (fewer heads): FlashAttention128, whole 64-row/64-key tiles
+    [InlineData(100, 77, 2, 128)]    // headDim=128 partial query AND key tiles
+    [InlineData(1, 300, 2, 128)]     // headDim=128 single query, 5 key tiles with a partial last one
     public void GpuAttentionTiled_MatchesCpuReference(int qSeq, int kvSeq, int numHeads, int headDim)
     {
         int dim = numHeads * headDim;

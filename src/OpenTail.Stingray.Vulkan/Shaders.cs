@@ -8906,6 +8906,159 @@ internal static class Shaders
         """;
 
     /// <summary>
+    /// Register-tiled flash attention for HEAD_DIM=128 (FLUX.1/FLUX.2/Qwen Image/SD3.5/Z-Image).
+    /// 256 threads own a 64-query x 64-key score tile, 4x4 per thread, so QK^T and P.V run as
+    /// small GEMMs out of LDS (one vec4 Q + one vec4 K read per 16 FMAs; one P + two V reads per
+    /// 32 FMAs) instead of MultiHeadAttentionTiled128's per-row dot products and serial softmax.
+    /// The online-softmax row max/sum reduce over the 16 threads sharing a row group with
+    /// subgroup shuffles (needs subgroup size >= 16), so the softmax needs no LDS or barrier.
+    /// LDS: 16 KB P tile + 16 KB buffer reused for the Q/K d-chunks and the V key-chunks.
+    /// Dispatch ((qSeq + 63) / 64, 1, numHeads); same bindings/push constants as the old kernel.
+    /// </summary>
+    internal const string FlashAttention128 = """
+        #version 450
+        #extension GL_EXT_control_flow_attributes : enable
+        #extension GL_KHR_shader_subgroup_basic   : require
+        #extension GL_KHR_shader_subgroup_shuffle : require
+
+        #define BR 64
+        #define BC 64
+        const float NEG_INF = -3.402823466e+38;
+
+        layout(std430, binding = 0) readonly  buffer QVec { vec4 q_vec[]; };
+        layout(std430, binding = 1) readonly  buffer KVec { vec4 k_vec[]; };
+        layout(std430, binding = 2) readonly  buffer VVec { vec4 v_vec[]; };
+        layout(std430, binding = 3) writeonly buffer OVec { vec4 o_vec[]; };
+
+        layout(push_constant) uniform Params {
+            uint qSeq;
+            uint kvSeq;
+            uint numHeads;
+            float scale;
+        } p;
+
+        // p_lds[key * 16 + rowGroup] = P for rows rowGroup*4..+3 at that key.
+        shared vec4 p_lds[BC * 16];
+        // Phase S: [0,512) = Q d-chunk as [d][rowGroup], [512,1024) = K d-chunk as [d][keyGroup].
+        // Phase PV: V key-chunk as [key(32)][dimVec(32)].
+        shared vec4 buf[1024];
+
+        layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+        float groupMax(float x) {
+            x = max(x, subgroupShuffleXor(x, 1u));
+            x = max(x, subgroupShuffleXor(x, 2u));
+            x = max(x, subgroupShuffleXor(x, 4u));
+            x = max(x, subgroupShuffleXor(x, 8u));
+            return x;
+        }
+
+        float groupSum(float x) {
+            x += subgroupShuffleXor(x, 1u);
+            x += subgroupShuffleXor(x, 2u);
+            x += subgroupShuffleXor(x, 4u);
+            x += subgroupShuffleXor(x, 8u);
+            return x;
+        }
+
+        void main() {
+            const uint tid = gl_LocalInvocationIndex;
+            const uint tx = tid & 15u;   // key group (scores) / dim group (output)
+            const uint ty = tid >> 4;    // row group: rows ty*4..ty*4+3
+            const uint qBase = gl_WorkGroupID.x * BR;
+            const uint headVecOff = gl_WorkGroupID.z * 32u;
+            const uint dimVec = p.numHeads * 32u;
+
+            // Load helpers: 64 rows x 8 vec4 (one 32-float d-chunk) = 512 vec4, 2 per thread.
+            const uint ldRow0 = tid >> 3, ldRow1 = ldRow0 + 32u, ldC = tid & 7u;
+
+            vec4 acc0[4], acc1[4];
+            float m[4], l[4];
+            [[unroll]] for (uint i = 0u; i < 4u; ++i) { acc0[i] = vec4(0.0); acc1[i] = vec4(0.0); m[i] = NEG_INF; l[i] = 0.0; }
+
+            for (uint kvBase = 0u; kvBase < p.kvSeq; kvBase += BC) {
+                // ---- S = Q K^T over 4 d-chunks of 32 ----
+                vec4 s[4];
+                [[unroll]] for (uint i = 0u; i < 4u; ++i) s[i] = vec4(0.0);
+                [[unroll]] for (uint dc = 0u; dc < 4u; ++dc) {
+                    uint gq0 = qBase + ldRow0, gq1 = qBase + ldRow1;
+                    uint gk0 = kvBase + ldRow0, gk1 = kvBase + ldRow1;
+                    uint col = headVecOff + dc * 8u + ldC;
+                    vec4 q0 = gq0 < p.qSeq  ? q_vec[gq0 * dimVec + col] : vec4(0.0);
+                    vec4 q1 = gq1 < p.qSeq  ? q_vec[gq1 * dimVec + col] : vec4(0.0);
+                    vec4 k0 = gk0 < p.kvSeq ? k_vec[gk0 * dimVec + col] : vec4(0.0);
+                    vec4 k1 = gk1 < p.kvSeq ? k_vec[gk1 * dimVec + col] : vec4(0.0);
+                    barrier(); // previous users of buf are done
+                    uint d0 = ldC * 4u;
+                    [[unroll]] for (uint c = 0u; c < 4u; ++c) {
+                        buf[(d0 + c) * 16u + (ldRow0 >> 2)][ldRow0 & 3u] = q0[c];
+                        buf[(d0 + c) * 16u + (ldRow1 >> 2)][ldRow1 & 3u] = q1[c];
+                        buf[512u + (d0 + c) * 16u + (ldRow0 >> 2)][ldRow0 & 3u] = k0[c];
+                        buf[512u + (d0 + c) * 16u + (ldRow1 >> 2)][ldRow1 & 3u] = k1[c];
+                    }
+                    barrier();
+                    [[unroll]] for (uint d = 0u; d < 32u; ++d) {
+                        vec4 qv = buf[d * 16u + ty];
+                        vec4 kv = buf[512u + d * 16u + tx];
+                        s[0] += qv.x * kv; s[1] += qv.y * kv; s[2] += qv.z * kv; s[3] += qv.w * kv;
+                    }
+                }
+
+                // ---- online softmax (rows ty*4+i, keys tx*4+j) ----
+                // Boolean mix is an exact select; the float form may lower to a + t*(b-a), which
+                // cancels catastrophically against NEG_INF and destroys every score.
+                uvec4 keyIdx = uvec4(kvBase + tx * 4u) + uvec4(0u, 1u, 2u, 3u);
+                bvec4 keyOk = lessThan(keyIdx, uvec4(p.kvSeq));
+                [[unroll]] for (uint i = 0u; i < 4u; ++i) {
+                    vec4 si = mix(vec4(NEG_INF), s[i] * p.scale, keyOk);
+                    float mNew = max(m[i], groupMax(max(max(si.x, si.y), max(si.z, si.w))));
+                    float alpha = exp(m[i] - mNew);
+                    vec4 pi = mix(vec4(0.0), exp(si - mNew), keyOk);
+                    l[i] = l[i] * alpha + groupSum(pi.x + pi.y + pi.z + pi.w);
+                    m[i] = mNew;
+                    acc0[i] *= alpha; acc1[i] *= alpha;
+                    s[i] = pi;
+                }
+                [[unroll]] for (uint j = 0u; j < 4u; ++j)
+                    p_lds[(tx * 4u + j) * 16u + ty] = vec4(s[0][j], s[1][j], s[2][j], s[3][j]);
+
+                // ---- O += P V over 2 key-chunks of 32 ----
+                [[unroll]] for (uint kc = 0u; kc < 2u; ++kc) {
+                    // 32 keys x 32 vec4 = 1024 vec4, 4 per thread.
+                    vec4 vv[4];
+                    [[unroll]] for (uint r = 0u; r < 4u; ++r) {
+                        uint idx = tid + r * 256u;
+                        uint gk = kvBase + kc * 32u + (idx >> 5);
+                        vv[r] = gk < p.kvSeq ? v_vec[gk * dimVec + headVecOff + (idx & 31u)] : vec4(0.0);
+                    }
+                    barrier(); // S-phase / previous chunk reads of buf done; p_lds writes visible
+                    [[unroll]] for (uint r = 0u; r < 4u; ++r) buf[tid + r * 256u] = vv[r];
+                    barrier();
+                    [[unroll]] for (uint k = 0u; k < 32u; ++k) {
+                        vec4 pv = p_lds[(kc * 32u + k) * 16u + ty];
+                        vec4 v0 = buf[k * 32u + tx];
+                        vec4 v1 = buf[k * 32u + 16u + tx];
+                        acc0[0] += pv.x * v0; acc1[0] += pv.x * v1;
+                        acc0[1] += pv.y * v0; acc1[1] += pv.y * v1;
+                        acc0[2] += pv.z * v0; acc1[2] += pv.z * v1;
+                        acc0[3] += pv.w * v0; acc1[3] += pv.w * v1;
+                    }
+                }
+            }
+
+            [[unroll]] for (uint i = 0u; i < 4u; ++i) {
+                uint row = qBase + ty * 4u + i;
+                if (row < p.qSeq) {
+                    float invL = l[i] > 0.0 ? 1.0 / l[i] : 0.0;
+                    uint o = row * dimVec + headVecOff;
+                    o_vec[o + tx] = acc0[i] * invL;
+                    o_vec[o + 16u + tx] = acc1[i] * invL;
+                }
+            }
+        }
+        """;
+
+    /// <summary>
     /// Tiled ("flash-attention"-style) variant of MultiHeadAttention for HEAD_DIM=40 (SD 1.5 Level 0).
     /// </summary>
     internal const string MultiHeadAttentionTiled40 = """
