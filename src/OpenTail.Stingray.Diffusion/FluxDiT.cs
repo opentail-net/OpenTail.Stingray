@@ -1161,7 +1161,9 @@ public sealed class FluxDiT : IDisposable
                 // CPU path: fast pre-transposed Q4Kx8 if compatible, otherwise direct raw MatMulBatched
                 if (_quantizedCache != null)
                 {
-                    _quantizedCache.Linear(wName, x, ReadOnlySpan<float>.Empty, result, n, inDim, outDim);
+                    // ti.Name, not wName: FindTensor may have stripped "model.diffusion_model." (GGUFs
+                    // with unprefixed names), and the cache's loader only ever ADDS prefixes.
+                    _quantizedCache.Linear(ti.Name, x, ReadOnlySpan<float>.Empty, result, n, inDim, outDim);
                 }
                 else
                 {
