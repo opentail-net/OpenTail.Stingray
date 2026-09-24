@@ -110,8 +110,9 @@ time. Correctness before perf. Check images by eye. CPU first, then GPU. Scratch
 - [x] **SD 3.5** (done, 🟢 CPU and GPU): composition bug = T5 wrongly masked for SD3 + OpenCLIP-bigG
       had 16×80 heads instead of 20×64. The image matches C++ with the same noise. CPU 284.8s → 82.5s.
 - [x] **Qwen Image** (CPU done): 8 steps ~1,290s → 277.4s (C++ 231.4s). Scalar attention loop + new
-      `GemmQuant`. GPU is **blocked on this machine**: the 20B upload fails with ErrorOutOfHostMemory on the
-      iGPU. Needs a machine with a ≥24 GB discrete GPU to verify. The old "GPU diverges" evidence compared
+      `GemmQuant`. GPU **verified 2026-09-24** (the earlier "blocked" note was wrong): partial residency (`STINGRAY_QWEN_GPU_BLOCKS`
+      caps it); all 60 blocks fit, 18.8s per step vs CPU 33.5s, correct image; the 40+20 hybrid is also correct. Next:
+      quantized weights on the GPU (option 3), to drop the ~41 GB FP16 footprint and the ~205s upload. The old "GPU diverges" evidence compared
       against a CPU path that was itself lossy (int8 activations, relErr ~4e-3).
 - [~] **HunyuanVideo** (partly done, timeboxed): noise → recognisable apple (4 DiT bugs fixed, VAE 25×).
       **Open blocker**: wrong colours plus a fine stripe texture. The latent is clean (visualised), so suspect the

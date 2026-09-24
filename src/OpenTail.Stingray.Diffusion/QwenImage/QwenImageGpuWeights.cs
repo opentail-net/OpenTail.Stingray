@@ -94,6 +94,8 @@ public sealed class QwenImageGpuWeights : IDisposable
         public BlockGpuWeights(IComputeBackend backend, Func<string, float[]> getWeight, Func<string, float[]?> tryGetWeight, int idx, int d, int headDim, bool forceFp32 = false)
         {
             _backend = backend;
+            try
+            {
             string p = $"transformer_blocks.{idx}.";
 
             ImgModWeight = UploadWeight(backend, getWeight($"{p}img_mod.1.weight"), TensorShape.D2(6 * d, d), forceFp32);
@@ -127,40 +129,33 @@ public sealed class QwenImageGpuWeights : IDisposable
             TxtMlpUpBias = UploadOptionalBias(backend, tryGetWeight($"{p}txt_mlp.net.0.proj.bias"));
             TxtMlpDownWeight = UploadWeight(backend, getWeight($"{p}txt_mlp.net.2.weight"), TensorShape.D2(d, ffDim), forceFp32);
             TxtMlpDownBias = UploadOptionalBias(backend, tryGetWeight($"{p}txt_mlp.net.2.bias"));
+            }
+            catch
+            {
+                // A failed upload (e.g. the device heap is full) must not leak the tensors already
+                // uploaded for this block: QwenImageGpuWeights uploads blocks until one fails.
+                Dispose();
+                throw;
+            }
         }
 
         public void Dispose()
         {
-            _backend.Free(ImgModWeight);
-            if (ImgModBias is { } b1) _backend.Free(b1);
-            _backend.Free(TxtModWeight);
-            if (TxtModBias is { } b2) _backend.Free(b2);
-            _backend.Free(ImgToQWeight);
-            _backend.Free(ImgToKWeight);
-            _backend.Free(ImgToVWeight);
-            _backend.Free(TxtAddQWeight);
-            _backend.Free(TxtAddKWeight);
-            _backend.Free(TxtAddVWeight);
-            _backend.Free(ImgNormQScale);
-            _backend.Free(ImgNormKScale);
-            _backend.Free(TxtNormQScale);
-            _backend.Free(TxtNormKScale);
-            _backend.Free(ImgToOutWeight);
-            if (ImgToOutBias is { } b3) _backend.Free(b3);
-            _backend.Free(TxtToAddOutWeight);
-            if (TxtToAddOutBias is { } b4) _backend.Free(b4);
-            _backend.Free(ImgMlpUpWeight);
-            if (ImgMlpUpBias is { } b5) _backend.Free(b5);
-            _backend.Free(ImgMlpDownWeight);
-            if (ImgMlpDownBias is { } b6) _backend.Free(b6);
-            _backend.Free(TxtMlpUpWeight);
-            if (TxtMlpUpBias is { } b7) _backend.Free(b7);
-            _backend.Free(TxtMlpDownWeight);
-            if (TxtMlpDownBias is { } b8) _backend.Free(b8);
+            // Null-tolerant: also called on a partially constructed block.
+            foreach (var t in new[] {
+                ImgModWeight, ImgModBias, TxtModWeight, TxtModBias,
+                ImgToQWeight, ImgToKWeight, ImgToVWeight, TxtAddQWeight, TxtAddKWeight, TxtAddVWeight,
+                ImgNormQScale, ImgNormKScale, TxtNormQScale, TxtNormKScale,
+                ImgToOutWeight, ImgToOutBias, TxtToAddOutWeight, TxtToAddOutBias,
+                ImgMlpUpWeight, ImgMlpUpBias, ImgMlpDownWeight, ImgMlpDownBias,
+                TxtMlpUpWeight, TxtMlpUpBias, TxtMlpDownWeight, TxtMlpDownBias })
+            {
+                if (t is not null) _backend.Free(t);
+            }
         }
     }
 
-    public QwenImageGpuWeights(IComputeBackend backend, Func<string, float[]> getWeight, Func<string, float[]?> tryGetWeight, int numLayers, int hiddenDim, int inChannels, int contextDim, int headDim)
+    public QwenImageGpuWeights(IComputeBackend backend, Func<string, float[]> getWeight, Func<string, float[]?> tryGetWeight, int numLayers, int hiddenDim, int inChannels, int contextDim, int headDim, int? maxResidentBlocks = null)
     {
         _backend = backend;
 
@@ -169,17 +164,49 @@ public sealed class QwenImageGpuWeights : IDisposable
         TxtInWeight = UploadWeight(backend, getWeight("txt_in.weight"), TensorShape.D2(hiddenDim, contextDim));
         TxtInBias = UploadOptionalBias(backend, tryGetWeight("txt_in.bias"));
 
-        Blocks = new BlockGpuWeights[numLayers];
-        for (int i = 0; i < numLayers; i++)
-            Blocks[i] = new BlockGpuWeights(backend, getWeight, tryGetWeight, i, hiddenDim, headDim);
-
         FinalNormLinearWeight = UploadWeight(backend, getWeight("norm_out.linear.weight"), TensorShape.D2(2 * hiddenDim, hiddenDim));
         FinalNormLinearBias = UploadOptionalBias(backend, tryGetWeight("norm_out.linear.bias"));
         FinalProjOutWeight = UploadWeight(backend, getWeight("proj_out.weight"), TensorShape.D2(inChannels, hiddenDim));
         FinalProjOutBias = UploadOptionalBias(backend, tryGetWeight("proj_out.bias"));
 
+        // Partial residency: the full 20.8B-parameter model is ~41 GB at FP16, more than e.g. a
+        // shared-memory iGPU's 31.4 GiB host-visible heap. Upload blocks in order until the device
+        // refuses one (or maxResidentBlocks is reached), then give back HeadroomBlocks for runtime
+        // allocations. The caller runs blocks [ResidentBlockCount, numLayers) on the CPU.
+        int cap = maxResidentBlocks is int m ? Math.Clamp(m, 0, numLayers) : numLayers;
+        var blocks = new List<BlockGpuWeights>(cap);
+        bool hitLimit = false;
+        for (int i = 0; i < cap; i++)
+        {
+            try
+            {
+                blocks.Add(new BlockGpuWeights(backend, getWeight, tryGetWeight, i, hiddenDim, headDim));
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[QwenImage] GPU heap full after {blocks.Count} blocks ({ex.GetType().Name}); the rest run on CPU.");
+                hitLimit = true;
+                break;
+            }
+        }
+        if (hitLimit)
+        {
+            for (int k = 0; k < HeadroomBlocks && blocks.Count > 0; k++)
+            {
+                blocks[^1].Dispose();
+                blocks.RemoveAt(blocks.Count - 1);
+            }
+        }
+        Blocks = blocks.ToArray();
+
         GC.Collect();
     }
+
+    /// <summary>Blocks freed again after the heap-full point, for workspace/attention scratch
+    /// and other runtime allocations.</summary>
+    private const int HeadroomBlocks = 2;
+
+    public int ResidentBlockCount => Blocks.Length;
 
     private static CoreTensor? UploadOptionalBias(IComputeBackend backend, float[]? bias)
         => bias is null ? null : backend.Upload(bias, TensorShape.D1(bias.Length), exact: true);

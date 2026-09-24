@@ -129,14 +129,21 @@ public sealed class QwenImageModel : IDisposable
 
     private void EnsureGpuResident(int numImgTokens, int numTxtTokens, float[] ropeCos, float[] ropeSin)
     {
-        _residentGpuWeights ??= new QwenImageGpuWeights(_backend!, GetWeight, TryGetWeight, _numLayers, HiddenDim, InChannels, ContextDim, HeadDim);
-
+        // Workspace first so the weight upload (which fills the heap as far as it goes) can't
+        // starve it.
         if (_residentGpuWorkspace is null
             || _residentGpuWorkspace.NumImgTokens != numImgTokens
             || _residentGpuWorkspace.NumTxtTokens != numTxtTokens)
         {
             _residentGpuWorkspace?.Dispose();
             _residentGpuWorkspace = new QwenImageGpuWorkspace(_backend!, numImgTokens, numTxtTokens, HiddenDim, InChannels, ropeCos, ropeSin, HeadDim);
+        }
+
+        if (_residentGpuWeights is null)
+        {
+            int? cap = int.TryParse(Environment.GetEnvironmentVariable("STINGRAY_QWEN_GPU_BLOCKS"), out int c) ? c : null;
+            _residentGpuWeights = new QwenImageGpuWeights(_backend!, GetWeight, TryGetWeight, _numLayers, HiddenDim, InChannels, ContextDim, HeadDim, cap);
+            Console.WriteLine($"[QwenImage] {_residentGpuWeights.ResidentBlockCount}/{_numLayers} blocks resident on GPU");
         }
     }
 
@@ -187,7 +194,8 @@ public sealed class QwenImageModel : IDisposable
             // genuine bug/regression source (FLUX.2's Stage 5 finding -- see
             // docs/093-flux2-gpu-performance-optimization-plan.md). Being investigated as a
             // candidate for this port's own "runs fine, wrong texture" defect.
-            for (int b = 0; b < _numLayers; b++)
+            int gpuBlocks = gw.ResidentBlockCount;
+            for (int b = 0; b < gpuBlocks; b++)
             {
                 imageOps.BeginBatch();
                 RunBlockGpu(visionOps, imageOps, ws, gw.Blocks[b], xGpu, cGpu, tVecGpu, numImgTokens, numTxtTokens, totalTokens);
@@ -201,6 +209,22 @@ public sealed class QwenImageModel : IDisposable
                 }
             }
             batchSuccess = true;
+
+            if (gpuBlocks < _numLayers)
+            {
+                // Hybrid tail: the blocks that didn't fit on the GPU run on the verified CPU path,
+                // continuing from the GPU residual streams.
+                var img = new float[numImgTokens * HiddenDim];
+                var txt = new float[numTxtTokens * HiddenDim];
+                _backend.Download(xGpu, img);
+                _backend.Download(cGpu, txt);
+                for (int b = gpuBlocks; b < _numLayers; b++)
+                {
+                    (img, txt) = TransformerBlock($"transformer_blocks.{b}", img, txt, tEmb, ropeCos, ropeSin, numImgTokens, numTxtTokens, modulateIndex: null);
+                    OnBlockOutputCpu?.Invoke(b, img);
+                }
+                return FinalLayerCpu(img, tEmb, numImgTokens, latH, latW);
+            }
 
             // Final layer: norm_out.linear (AdaLN shift/scale) + proj_out.
             imageOps.BeginBatch();
@@ -495,6 +519,13 @@ public sealed class QwenImageModel : IDisposable
         // Flux::modulate's x*(1+scale)+shift -- the `1+scale` offset is easy to miss since
         // DiffusionOps.LayerNorm's generic weight/bias multiply doesn't add it implicitly (found
         // by direct comparison against AdaLayerNormContinuous::forward, not assumed).
+        return FinalLayerCpu(imgTokens, tEmb, numTargetTokens, latH, latW);
+    }
+
+    /// <summary>CPU final layer (norm_out AdaLN + proj_out + unpatchify). Shared by
+    /// <see cref="Forward"/> and the hybrid tail of <see cref="ForwardGpu"/>.</summary>
+    private float[] FinalLayerCpu(float[] imgTokens, float[] tEmb, int numTargetTokens, int latH, int latW)
+    {
         var finalNorm = Linear("norm_out.linear", DiffusionOpsSilu(tEmb), HiddenDim, HiddenDim * 2);
         var finalScale = finalNorm.AsSpan(0, HiddenDim);
         var finalShift = finalNorm.AsSpan(HiddenDim, HiddenDim);
@@ -508,7 +539,7 @@ public sealed class QwenImageModel : IDisposable
 
         var outPacked = Linear("proj_out", normImg, HiddenDim, InChannels);
 
-        // 7. Unpack patches [numTargetTokens, 64] -> [16, latH, latW]
+        // Unpack patches [numTargetTokens, 64] -> [16, latH, latW]
         return UnpackLatents(outPacked, latH, latW);
     }
 
