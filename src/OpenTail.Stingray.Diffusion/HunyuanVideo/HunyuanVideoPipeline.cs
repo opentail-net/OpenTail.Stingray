@@ -15,6 +15,8 @@ public sealed class HunyuanVideoPipeline : IDiffusionPipeline
     private readonly Engine.ForwardPass? _textEncoderForward;
     private readonly GgufTokenizer? _textEncoderTokenizer;
     private readonly Cpu.CpuBackend? _textEncoderBackend;
+    private TextEncoders.ClipLEncoder? _clipL;
+    private TextEncoders.ClipTokenizer? _clipTokenizer;
     private bool _disposed;
 
     public string Architecture => "HunyuanVideo";
@@ -80,7 +82,8 @@ public sealed class HunyuanVideoPipeline : IDiffusionPipeline
     /// -- <c>Generate</c> will use <see cref="HunyuanVideoTextConditioning.Encode"/> automatically
     /// when the caller doesn't supply an explicit <c>textContext</c>.
     /// </summary>
-    public static HunyuanVideoPipeline Load(string modelPath, string textEncoderPath, string? vaePath, IComputeBackend? backend = null)
+    public static HunyuanVideoPipeline Load(string modelPath, string textEncoderPath, string? vaePath, IComputeBackend? backend = null,
+        string? clipLPath = null, string? clipTokenizerPath = null)
     {
         IWeightLoader weights = modelPath.EndsWith(".gguf", StringComparison.OrdinalIgnoreCase)
             ? GgufWeightLoader.Open(modelPath)
@@ -108,8 +111,16 @@ public sealed class HunyuanVideoPipeline : IDiffusionPipeline
         var textEncoderBackend = new Cpu.CpuBackend();
         var textEncoderForward = new Engine.ForwardPass(textEncoderModel, textEncoderBackend, hp);
 
-        return new HunyuanVideoPipeline(weights, transformer, vae, vaeLoader == weights ? null : vaeLoader,
+        var pipe = new HunyuanVideoPipeline(weights, transformer, vae, vaeLoader == weights ? null : vaeLoader,
             textEncoderModel, textEncoderForward, tokenizer, textEncoderBackend);
+        // CLIP-L pooled output feeds the DiT's vector_in (the second text encoder of the real
+        // pipeline, `text_encoder_2` in diffusers). Optional: without it vector_in is skipped.
+        if (clipLPath is not null && File.Exists(clipLPath) && clipTokenizerPath is not null && File.Exists(clipTokenizerPath))
+        {
+            pipe._clipL = new TextEncoders.ClipLEncoder(clipLPath);
+            pipe._clipTokenizer = TextEncoders.ClipTokenizer.FromFile(clipTokenizerPath);
+        }
+        return pipe;
     }
 
     /// <summary>
@@ -187,6 +198,21 @@ public sealed class HunyuanVideoPipeline : IDiffusionPipeline
         bool dumpDiag = Environment.GetEnvironmentVariable("STINGRAY_HUNYUAN_DUMP_LATENT") == "1";
         if (dumpDiag) Console.Error.WriteLine($"[HunyuanVideo] init noise: nanCount={latent.Count(v => !float.IsFinite(v))}/{latent.Length}");
 
+        // CLIP-L pooled vectors for vector_in (null when no CLIP-L was loaded).
+        float[]? condPooled = null, uncondPooled = null;
+        if (_clipL is not null && _clipTokenizer is not null)
+        {
+            condPooled = _clipL.Encode(_clipTokenizer.Tokenize(prompt)).pooled;
+            uncondPooled = _clipL.Encode(_clipTokenizer.Tokenize(negativePrompt ?? "")).pooled;
+        }
+
+        // Guidance-distilled checkpoints (guidance_in present) take the guidance scale as an
+        // embedding -- diffusers passes guidance_scale * 1000 with true CFG off by default -- so
+        // one forward per step. Running real CFG on them (as this did until 2026-09-24) is the
+        // wrong algorithm and doubles the cost.
+        bool distilled = _transformer.HasGuidanceEmbedding;
+        float? distilledGuidance = distilled ? guidance * 1000.0f : null;
+
         // 4. Euler Flow trajectory loop
         for (int step = 0; step < steps; step++)
         {
@@ -194,13 +220,13 @@ public sealed class HunyuanVideoPipeline : IDiffusionPipeline
             float tNext = timesteps[step + 1];
             float dt = t - tNext;
 
-            var condVelocity = _transformer.Forward(latent, t * 1000.0f, condContext, numFrames, latH, latW);
+            var condVelocity = _transformer.Forward(latent, t * 1000.0f, condContext, numFrames, latH, latW, condPooled, distilledGuidance);
             if (dumpDiag) Console.Error.WriteLine($"[HunyuanVideo] step={step} t={t:F4} condVelocity nanCount={condVelocity.Count(v => !float.IsFinite(v))}/{condVelocity.Length}");
             float[] velocity;
 
-            if (guidance > 1.0f)
+            if (!distilled && guidance > 1.0f)
             {
-                var uncondVelocity = _transformer.Forward(latent, t * 1000.0f, uncondContext, numFrames, latH, latW);
+                var uncondVelocity = _transformer.Forward(latent, t * 1000.0f, uncondContext, numFrames, latH, latW, uncondPooled);
                 velocity = new float[condVelocity.Length];
                 for (int i = 0; i < velocity.Length; i++)
                     velocity[i] = uncondVelocity[i] + guidance * (condVelocity[i] - uncondVelocity[i]);
@@ -208,6 +234,23 @@ public sealed class HunyuanVideoPipeline : IDiffusionPipeline
             else
             {
                 velocity = condVelocity;
+            }
+
+            if (dumpDiag)
+            {
+                // x0 estimate = x_t - t*v. A working model gives a spatially smooth x0 (high
+                // neighbour correlation along W); noise-like x0 (~0) means the DiT isn't denoising.
+                int frameLen = latH * latW;
+                double num = 0, den = 0, sq = 0; int cnt = 0;
+                for (int ch = 0; ch < latC; ch++)
+                    for (int y = 0; y < latH; y++)
+                        for (int x = 0; x + 1 < latW; x++)
+                        {
+                            int i0 = ch * numFrames * frameLen + y * latW + x;
+                            float a = latent[i0] - t * velocity[i0], b = latent[i0 + 1] - t * velocity[i0 + 1];
+                            num += a * b; den += a * a; sq += a * a; cnt++;
+                        }
+                Console.Error.WriteLine($"[HunyuanVideo] step={step} t={t:F3} x0 std={Math.Sqrt(sq / cnt):F3} neighbourCorr={num / den:F3}");
             }
 
             for (int i = 0; i < latent.Length; i++)
@@ -235,6 +278,10 @@ public sealed class HunyuanVideoPipeline : IDiffusionPipeline
         // causal 3D VAE in one call -- unlike per-frame decoding, this reproduces the real
         // temporal upsampling/causal-conv context between neighboring latent frames (see
         // HunyuanVaeDecoder3D's class doc comment).
+        string? latentDumpPath = Environment.GetEnvironmentVariable("STINGRAY_HUNYUAN_DUMP_LATENT_PATH");
+        if (latentDumpPath is not null)
+            File.WriteAllBytes(latentDumpPath, System.Runtime.InteropServices.MemoryMarshal.AsBytes(latent.AsSpan()).ToArray());
+
         var decodedFrames = _vae.Decode(latent, numFrames, latH, latW);
         var allFrames = new List<float[]>(decodedFrames.Count);
 
@@ -335,6 +382,7 @@ public sealed class HunyuanVideoPipeline : IDiffusionPipeline
             _textEncoderForward?.Dispose();
             _textEncoderBackend?.Dispose();
             _textEncoderModel?.Dispose();
+            _clipL?.Dispose();
         }
     }
 }

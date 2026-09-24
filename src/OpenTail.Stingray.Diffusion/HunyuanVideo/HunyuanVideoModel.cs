@@ -44,6 +44,10 @@ public sealed class HunyuanVideoModel : IDisposable
     public int DepthDouble => _depthDouble;
     public int DepthSingle => _depthSingle;
 
+    /// <summary>True for guidance-distilled checkpoints (e.g. <c>hunyuan_video_720_cfgdistill</c>):
+    /// guidance goes in through <c>guidance_in</c>, one forward per step, no true CFG.</summary>
+    public bool HasGuidanceEmbedding => _weights.Contains(Resolve("guidance_in.mlp.0.weight"));
+
     public HunyuanVideoModel(
         IWeightLoader weights,
         string prefix = "",
@@ -167,13 +171,18 @@ public sealed class HunyuanVideoModel : IDisposable
     /// <summary>
     /// Evaluates the HunyuanVideo forward pass.
     /// </summary>
+    /// <param name="pooledClip">CLIP-L <c>pooler_output</c> [768] for <c>vector_in</c>; null = omitted.</param>
+    /// <param name="guidance">Distilled guidance, already x1000 (diffusers: <c>guidance_scale * 1000</c>),
+    /// for the <c>guidance_in</c> embedder of guidance-distilled checkpoints; null = omitted.</param>
     public float[] Forward(
         float[] latent,
         float timestep,
         float[] textContext,
         int numFrames,
         int latH,
-        int latW)
+        int latW,
+        float[]? pooledClip = null,
+        float? guidance = null)
     {
         int patchH = latH / 2;
         int patchW = latW / 2;
@@ -187,8 +196,26 @@ public sealed class HunyuanVideoModel : IDisposable
         var imgTokens = Linear("img_in.proj", packed, InChannels, _dim);
         var txtTokens = TokenRefiner(textContext, timestep, numTxtTokens);
 
-        // 3. Timestep embedding (sinusoidal 256 -> linear dim -> silu -> linear dim)
+        // 3. Modulation vector: vec = time_in(t) + vector_in(CLIP-L pooled) + guidance_in(g).
+        // Reference: stable-diffusion.cpp hunyuan.hpp forward (and diffusers
+        // HunyuanVideoConditionEmbedding). Until 2026-09-24 only time_in was used, so every
+        // block's AdaLN modulation was missing the text and guidance terms.
         var tEmb = ComputeTimestepEmbedding(timestep);
+        if (pooledClip is not null && TryGetWeight("vector_in.in_layer.weight") is not null)
+        {
+            var v0 = Linear("vector_in.in_layer", pooledClip, pooledClip.Length, _dim);
+            DiffusionOps.SiluInPlace(v0);
+            var v1 = Linear("vector_in.out_layer", v0, _dim, _dim);
+            for (int d = 0; d < _dim; d++) tEmb[d] += v1[d];
+        }
+        if (guidance is float g && HasGuidanceEmbedding)
+        {
+            var gEmb = DiffusionOps.SinusoidalTimestepEmbedding(g, flipSinToCos: true);
+            var g0 = Linear("guidance_in.mlp.0", gEmb, 256, _dim);
+            DiffusionOps.SiluInPlace(g0);
+            var g1 = Linear("guidance_in.mlp.2", g0, _dim, _dim);
+            for (int d = 0; d < _dim; d++) tEmb[d] += g1[d];
+        }
 
         // 4. 3D-RoPE positional frequencies (cached across steps -- see _cachedRope's own doc
         //    comment; cos/sin are read-only ApplyRoPE inputs, safe to share across calls).
@@ -248,13 +275,17 @@ public sealed class HunyuanVideoModel : IDisposable
             imgTokens = singleTokens.AsSpan(0, numImgTokens * _dim).ToArray();
         }
 
-        // 7. Final Layer (AdaLN + Linear dim -> 64)
+        // 7. Final Layer: chunks are [shift, scale] and the modulation is LN(x)*(1+scale)+shift with
+        // an affine-free LayerNorm (reference: Flux::LastLayer, used by hunyuan.hpp; the original
+        // checkpoint's order -- diffusers' converter swaps it). This previously used the shift
+        // half as the multiplier (no +1) and the scale half as the offset.
         var headMod = Linear("final_layer.adaLN_modulation.1", DiffusionOpsSilu(tEmb), _dim, _dim * 2);
-        var headGamma = headMod.AsSpan(0, _dim);
-        var headBeta = headMod.AsSpan(_dim, _dim);
+        var headShift = headMod.AsSpan(0, _dim);
+        var headScale = headMod.AsSpan(_dim, _dim);
 
         var normed = (float[])imgTokens.Clone();
-        DiffusionOps.LayerNorm(normed, headGamma, headBeta, _dim);
+        DiffusionOps.LayerNormNoAffine(normed, _dim);
+        normed = Modulate(normed, numImgTokens, headShift, headScale);
 
         var outPacked = Linear("final_layer.linear", normed, _dim, InChannels);
 
@@ -408,8 +439,17 @@ public sealed class HunyuanVideoModel : IDisposable
         int linear1Out = _dim * 3 + mlpHidden;
         var preAttnMlp = Linear($"{prefix}.linear1", normed, _dim, linear1Out);
 
-        var qkv = preAttnMlp.AsSpan(0, totalSeq * _dim * 3).ToArray();
-        var mlpIn = preAttnMlp.AsSpan(totalSeq * _dim * 3, totalSeq * mlpHidden).ToArray();
+        // Split along the LAST dim, per token (reference: torch.split(linear1(x), [3*hidden,
+        // mlp_hidden], dim=-1)). This used to take the first totalSeq*3*dim floats of the whole
+        // row-major buffer as "qkv", scrambling q/k/v and the MLP input across tokens in all 40
+        // single blocks (found 2026-09-24).
+        var qkv = new float[totalSeq * _dim * 3];
+        var mlpIn = new float[totalSeq * mlpHidden];
+        for (int tok = 0; tok < totalSeq; tok++)
+        {
+            Array.Copy(preAttnMlp, tok * linear1Out, qkv, tok * _dim * 3, _dim * 3);
+            Array.Copy(preAttnMlp, tok * linear1Out + _dim * 3, mlpIn, tok * mlpHidden, mlpHidden);
+        }
 
         var (q, k, v) = SplitQkv(qkv, totalSeq, _dim);
 

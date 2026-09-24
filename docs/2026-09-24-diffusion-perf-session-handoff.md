@@ -113,8 +113,12 @@ time. Correctness before perf. Check images by eye. CPU first, then GPU. Scratch
       `GemmQuant`. GPU is **blocked on this machine**: the 20B upload fails with ErrorOutOfHostMemory on the
       iGPU. Needs a machine with a ≥24 GB discrete GPU to verify. The old "GPU diverges" evidence compared
       against a CPU path that was itself lossy (int8 activations, relErr ~4e-3).
-- [ ] **HunyuanVideo** (🟡 noise): confirm `sd-cli` runs our checkpoints coherently, then bisect
-      block by block. Timeboxed; write down the blocker if it stalls.
+- [~] **HunyuanVideo** (partly done, timeboxed): noise → recognisable apple (4 DiT bugs fixed, VAE 25×).
+      **Open blocker**: wrong colours plus a fine stripe texture. The latent is clean (visualised), so suspect the
+      VAE or latent statistics. No runnable reference: sd.cpp here supports HunyuanVideo 1.5 only, and the
+      no-Python rule rules out diffusers. Next idea: get the HunyuanVideo 1.5 checkpoint (sd.cpp-supported)
+      to validate the shared VAE-style code, or find a v1 VAE golden fixture. Harness: `ZzHunyuanProfTmp.cs`
+      (`ZZ_HYVAE=1 ZZ_LATENT=<dump>` decodes a saved latent in ~6s; `STINGRAY_HUNYUAN_DUMP_LATENT_PATH` saves one).
 
 ## 7. Next after the four-model plan: audio re-check
 

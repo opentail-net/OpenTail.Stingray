@@ -353,6 +353,9 @@ public sealed class HunyuanVaeDecoder3D : IDisposable
         int padW = kw / 2;
         int spatial = h * w;
 
+        if (kh == 3 && kw == 3)
+            return CausalConv3DGemm(x, weight, bias, inCh, outCh, t, h, w, kt);
+
         if (kt == 1 && kh == 1 && kw == 1)
         {
             Parallel.For(0, outCh, oc =>
@@ -425,6 +428,64 @@ public sealed class HunyuanVaeDecoder3D : IDisposable
             }
         });
 
+        return output;
+    }
+
+    /// <summary>
+    /// 3x3 spatial (any kt) causal conv as im2col+GEMM: each output frame is a sum over temporal
+    /// taps of 2D 3x3 convs of the clamped (causal, replicate) source frame. Taps landing on the same
+    /// source frame get pre-summed weights; each source frame is replicate-padded by 1 on H/W and
+    /// run once through <see cref="DiffusionOps.Conv2D"/> with no further padding.
+    /// </summary>
+    private static float[] CausalConv3DGemm(float[] x, float[] weight, float[] bias, int inCh, int outCh, int t, int h, int w, int kt)
+    {
+        int spatial = h * w, ph = h + 2, pw = w + 2;
+        var output = new float[outCh * t * spatial];
+        var padded = new float[inCh * ph * pw];
+        var w2d = new float[outCh * inCh * 9];
+        for (int outT = 0; outT < t; outT++)
+        {
+            bool first = true;
+            for (int src = 0; src <= outT; src++)
+            {
+                int taps = 0;
+                for (int dt = 0; dt < kt; dt++)
+                    if (Math.Max(0, outT - (kt - 1) + dt) == src) taps |= 1 << dt;
+                if (taps == 0) continue;
+
+                Parallel.For(0, outCh * inCh, oi =>
+                {
+                    int wb = oi * kt * 9, ob = oi * 9;
+                    for (int j = 0; j < 9; j++)
+                    {
+                        float s = 0f;
+                        for (int dt = 0; dt < kt; dt++)
+                            if ((taps & (1 << dt)) != 0) s += weight[wb + dt * 9 + j];
+                        w2d[ob + j] = s;
+                    }
+                });
+
+                Parallel.For(0, inCh, ic =>
+                {
+                    int srcOff = (ic * t + src) * spatial, dstOff = ic * ph * pw;
+                    for (int yy = 0; yy < ph; yy++)
+                    {
+                        int sy = Math.Clamp(yy - 1, 0, h - 1);
+                        for (int xx = 0; xx < pw; xx++)
+                            padded[dstOff + yy * pw + xx] = x[srcOff + sy * w + Math.Clamp(xx - 1, 0, w - 1)];
+                    }
+                });
+
+                var y = DiffusionOps.Conv2D(padded, w2d, first ? bias : null, 1, inCh, ph, pw, outCh, 3, 3, 1, 0);
+                for (int oc = 0; oc < outCh; oc++)
+                {
+                    var dst = output.AsSpan((oc * t + outT) * spatial, spatial);
+                    var part = y.AsSpan(oc * spatial, spatial);
+                    if (first) part.CopyTo(dst); else TensorPrimitives.Add(dst, part, dst);
+                }
+                first = false;
+            }
+        }
         return output;
     }
 
