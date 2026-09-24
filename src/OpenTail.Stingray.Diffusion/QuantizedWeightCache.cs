@@ -97,11 +97,16 @@ public sealed class QuantizedWeightCache : IDisposable
                         }
                     }
 
-                    // 2. FP32 weights with a real token batch: panel-packed 6x16 SGEMM
-                    // (1.5-2x the dot-product kernel on DiT shapes, see PackedSgemmF32).
-                    if (dtype == DType.Float32 && n >= MinBatchForPackedF32 && PackedSgemmF32.IsSupported)
+                    // 2. FP32 weights, or quantized weights whose caller refused the int8-activation
+                    // path (allowQ8: false, e.g. SD3.5), with a real token batch: panel-packed 6x16
+                    // SGEMM (1.5-2x the dot-product kernel on DiT shapes, see PackedSgemmF32).
+                    // Quantized weights are dequantized once via ReadF32 -- the alternative for them
+                    // is re-dequantizing every weight row for every group of 4 tokens.
+                    if ((dtype == DType.Float32 || !allowQ8) && n >= MinBatchForPackedF32 && PackedSgemmF32.IsSupported)
                     {
-                        float* packedF32 = GetOrCreatePackedF32(resolved, (float*)dataPtr, rows, cols);
+                        float* packedF32 = dtype == DType.Float32
+                            ? GetOrCreatePackedF32(resolved, (float*)dataPtr, rows, cols)
+                            : GetOrCreatePackedF32(resolved, rows, cols);
                         if (packedF32 != null)
                         {
                             PackedSgemmF32.Gemm(po, px, packedF32, null, n, rows, cols);

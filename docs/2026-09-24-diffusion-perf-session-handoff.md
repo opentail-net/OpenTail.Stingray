@@ -107,8 +107,8 @@ time. Correctness before perf. Check images by eye. CPU first, then GPU. Scratch
 - [x] **LTX-Video** (done): 311.6s → 133.3s at 512²/20 steps (DiT 2.2×, VAE 13×). No C++ reference
       possible (vendored sd-cli is LTX-2 only). The CPU-vs-Vulkan "quality gap" was a seed mix-up in the
       Vulkan test. Remaining: T5 ~22s (first-read + bf16 conversion), DiT ~5.3s per step.
-- [ ] **SD 3.5** (🟡): (a) off-centre composition, bisect vs C++ tensor dumps (pos-embed crop,
-      unpatchify); (b) CPU perf: dequant Q4_K once → F32 → `PackedSgemmF32`.
+- [x] **SD 3.5** (done, 🟢 CPU and GPU): composition bug = T5 wrongly masked for SD3 + OpenCLIP-bigG
+      had 16×80 heads instead of 20×64. The image matches C++ with the same noise. CPU 284.8s → 82.5s.
 - [ ] **Qwen Image** (🟢 CPU, slow; GPU broken): dequant-on-the-fly packed GEMM for K-quants
       (F32 activations), then GPU bisection vs CPU.
 - [ ] **HunyuanVideo** (🟡 noise): confirm `sd-cli` runs our checkpoints coherently, then bisect

@@ -9,8 +9,11 @@ public sealed class OpenClipGEncoder : IDisposable
 {
     private const int Layers    = 32;
     private const int Dim       = 1280;
-    private const int Heads     = 16;
-    private const int HeadDim   = 80;
+    // ViT-bigG-14 text tower: 20 heads x 64 (stable-diffusion.cpp clip.hpp OPEN_CLIP_VIT_BIGG_14,
+    // n_head = 20). This was 16 x 80 until 2026-09-24; row 0 still matched the reference (a
+    // single-key softmax ignores Q/K), later rows drifted to ~0.5 cosine.
+    private const int Heads     = 20;
+    private const int HeadDim   = 64;
     private const int MlpDim    = 5120;
     private const int MaxSeqLen = 77;
 

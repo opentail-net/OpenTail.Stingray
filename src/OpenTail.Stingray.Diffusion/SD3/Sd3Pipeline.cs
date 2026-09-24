@@ -370,12 +370,13 @@ public sealed class Sd3Pipeline : IDisposable, IDiffusionPipeline
         var tokens = new int[T5MaxTokens];
         int validLen = Math.Min(raw.Length, T5MaxTokens);
         Array.Copy(raw, tokens, validLen);
-        // Real bug found and fixed 2026-09-21 (SD3.5 composition/left-shift investigation): must
-        // pass the REAL (non-padding) token count so T5Encoder masks out the <pad> positions in its
-        // self-attention -- see T5Encoder.Encode's doc comment. A short prompt leaves ~96% of this
-        // 256-slot buffer as <pad>; without this, every real token's hidden state was previously
-        // corrupted by attending to hundreds of meaningless padding embeddings.
-        return _t5.Encode(tokens, validLen);
+        // NO padding mask for SD3: the reference's SD3CLIPEmbedder calls `t5->compute(..., input_ids,
+        // sd::Tensor<float>() /* no mask */, ...)` (examples/stable-diffusion.cpp conditioner.hpp),
+        // as does diffusers' SD3 pipeline. The <pad> rows are part of the 154-token context the
+        // MMDiT was trained on, so masking them (as briefly done 2026-09-21) diverges from it.
+        // Masked encoding is right for other models (the reference passes a mask there) -- keep
+        // T5Encoder.Encode(tokens, validLen) for those.
+        return _t5.Encode(tokens);
     }
 
     /// <summary>

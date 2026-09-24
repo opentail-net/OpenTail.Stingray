@@ -99,17 +99,13 @@ public sealed class T5Encoder : IDisposable
     public float[] EncodeGpu(int[] tokens, IVisionOpsBackend backend) => EncodeGpu(tokens, backend, tokens.Length);
 
     /// <param name="validLen">Real (non-padding) token count, including the trailing EOS token.
-    /// Real bug found and fixed 2026-09-21 (SD3.5 composition-bug investigation): callers pad
-    /// `tokens` to a fixed length (e.g. 256) with the real `&lt;pad&gt;` token id (0, a genuine
-    /// embedding row, not a sentinel), and this encoder's self-attention previously let every
-    /// padding position fully participate as both query and key with no mask at all -- for a short
-    /// prompt (~10 real tokens in a 256-slot buffer), ~96% of the bidirectional self-attention
-    /// signal at every layer was mixing in meaningless `&lt;pad&gt;` embeddings, corrupting the real
-    /// tokens' own hidden states before they ever reach the DiT. Confirmed against the real
-    /// reference (`stable-diffusion.cpp`'s T5 path builds an explicit additive attention mask from
-    /// padding and applies it in every self-attention layer). Fixed by masking key positions
-    /// `&gt;= validLen` to -inf in the attention scores before softmax, baked directly into the
-    /// (per-call, not cached) relative-position bias tensor.</param>
+    /// Key positions <c>&gt;= validLen</c> are masked to -inf in the attention scores, baked into
+    /// the (per-call, not cached) relative-position bias tensor. <b>Whether to mask is per model,
+    /// so follow what that model's reference does:</b> stable-diffusion.cpp passes an explicit
+    /// padding mask for some T5 callers but <i>none</i> for SD3 (<c>SD3CLIPEmbedder</c>) or FLUX.1,
+    /// whose DiTs were trained on unmasked, <c>&lt;pad&gt;</c>-filled encodings. Masking SD3 (as done
+    /// 2026-09-21) dropped its T5 context to cosine 0.169 against the reference; those callers use
+    /// the unmasked overloads.</param>
     public float[] EncodeGpu(int[] tokens, IVisionOpsBackend backend, int validLen)
     {
         int seq = tokens.Length;

@@ -1,6 +1,6 @@
 # SD3.5 composition/left-shift bug — T5 encoder bisection plan
 
-**Status as of 2026-09-21 (end of session): NOT fixed.** Real, substantial, numerically-verified
+**Status 2026-09-24: FIXED.** The two remaining numeric targets below were real bugs: T5 must NOT be masked for SD3 (the reference passes no mask), and OpenCLIP-bigG has 20 heads × 64, not 16 × 80. The image now matches the C++ reference with injected noise. See README/PerformanceLeague 2026-09-24. Original 2026-09-21 status: NOT fixed. Real, substantial, numerically-verified
 progress made on conditioning accuracy (see below), but the end-to-end composition/left-shift bug
 remains open. This doc is the handoff for continuing tomorrow — read this before re-opening
 `docs/094-diffusion-performance-plan.md`'s SD3.5 rows for the fuller history.
