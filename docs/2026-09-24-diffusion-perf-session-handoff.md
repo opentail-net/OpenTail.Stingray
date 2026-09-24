@@ -113,3 +113,12 @@ time. Correctness before perf. Check images by eye. CPU first, then GPU. Scratch
       (F32 activations), then GPU bisection vs CPU.
 - [ ] **HunyuanVideo** (🟡 noise): confirm `sd-cli` runs our checkpoints coherently, then bisect
       block by block. Timeboxed; write down the blocker if it stalls.
+
+## 7. Next after the four-model plan: audio re-check
+
+When §6 is done (all four ticked, or precisely blocked), continue straight into
+[`docs/2026-09-24-audio-recheck-plan.md`](2026-09-24-audio-recheck-plan.md), starting with its
+Phase 0 (a regression sweep of the audio engines that share today's changed code). Same rules:
+real weights, visible timing, one heavy process at a time, and commit per engine.
+
+- [ ] Audio re-check: Phase 0 → 1 → 2 → 3 (tracked in that doc's Status list)
