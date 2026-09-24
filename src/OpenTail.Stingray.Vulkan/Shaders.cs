@@ -6415,15 +6415,19 @@ internal static class Shaders
     /// B (weights) is fp16 — bandwidth savings on large weight matrices.
     /// Accumulation and output C are fp32 — full range, no overflow.
     ///
-    /// 64×128 output tile per workgroup, 128 threads (local_size=(16,8,1), 2 wavefronts on AMD Wave64).
-    /// Uses 128-bit vector memory loads (vec4 / f16vec4) and transposed LDS storage (tileA_T[32][65],
-    /// tileB_T[32][129]) to eliminate bank conflicts and uncoalesced memory traffic.
+    /// 128×256 output tile per workgroup, 512 threads (local_size=(16,32,1)), 8×8 outputs per thread,
+    /// vec4-packed LDS tiles (tileA4[32][32] + tileB4[32][64] = 48KB). For DiT-sized GEMMs (K in the
+    /// thousands) a K-strip of one tile doesn't fit in L2, so every workgroup streams its A/B strips
+    /// from DRAM; total traffic scales with (4/tileN + 2/tileM), and the old 64×128 tile moved ~2x more
+    /// bytes. Measured 2026-09-24 on FLUX.2 shapes (Radeon Vega 8 iGPU): [1088x6144]x[55296x6144]^T
+    /// 1237 -> 807ms, [1088x30720]x[6144x30720]^T 710 -> 478ms, [96x6144]x[55296x6144]^T 134 -> 83ms,
+    /// identical error vs a double-precision reference.
     ///
     /// Requires: VK_KHR_shader_float16_int8 + VK_KHR_16bit_storage
     ///
-    /// Push constants: { uint M, uint N, uint K }.
+    /// Push constants: { uint M, uint N, uint K, uint aOffset }.
     /// Bindings: 0=A (readonly fp32 activations), 1=B (readonly fp16 weights), 2=C (writeonly fp32).
-    /// Dispatch: (ceil(M/64), ceil(N/128), 1) with local_size=(16,8,1), 4x16 per thread.
+    /// Dispatch: (ceil(M/128), ceil(N/256), 1).
     /// </summary>
     internal const string SgemmF16 = """
         #version 450
@@ -6431,7 +6435,7 @@ internal static class Shaders
         #extension GL_EXT_shader_16bit_storage : require
         #extension GL_EXT_control_flow_attributes : enable
 
-        layout(local_size_x = 16, local_size_y = 8, local_size_z = 1) in;
+        layout(local_size_x = 16, local_size_y = 32, local_size_z = 1) in;
 
         layout(push_constant) uniform PC {
             uint M;
@@ -6447,134 +6451,100 @@ internal static class Shaders
         layout(binding = 0) readonly  buffer BufAVec { vec4     a_vec4[]; };
         layout(binding = 1) readonly  buffer BufBVec { f16vec4  b_vec4[]; };
 
-        shared float tileA_T[32][65];
-        shared float tileB_T[32][129];
+        // vec4-packed LDS tiles: the inner loop reads 1 vec4 of A + 4 vec4 of B per k (5 LDS reads
+        // per 64 FMAs) instead of 20 scalar reads -- the scalar version was LDS-read bound.
+        shared vec4 tileA4[32][32];   // 128 rows
+        shared vec4 tileB4[32][64];   // 256 cols
 
         void main() {
-            uint tx = gl_LocalInvocationID.x; // 0..15 (4 rows each -> 64 rows)
-            uint ty = gl_LocalInvocationID.y; // 0..7  (16 cols each -> 128 cols)
-            uint tid = ty * 16u + tx;         // 0..127 (128 threads)
+            uint tx = gl_LocalInvocationID.x; // 0..15 -> rows tx*8 .. +7
+            uint ty = gl_LocalInvocationID.y; // 0..15 -> cols ty*8 .. +7
+            uint tid = ty * 16u + tx;         // 0..255
+            uint row_base = gl_WorkGroupID.x * 128u;
+            uint col_base = gl_WorkGroupID.y * 256u;
 
-            uint row_base = gl_WorkGroupID.x * 64u;
-            uint col_base = gl_WorkGroupID.y * 128u;
-
-            float acc[4][16];
-            [[unroll]] for (uint i = 0u; i < 4u; i++)
-                [[unroll]] for (uint j = 0u; j < 16u; j++)
+            float acc[8][8];
+            [[unroll]] for (uint i = 0u; i < 8u; i++)
+                [[unroll]] for (uint j = 0u; j < 8u; j++)
                     acc[i][j] = 0.0;
 
             uint numTiles = (pc.K + 31u) / 32u;
-            bool k_is_vec4_aligned = ((pc.K & 3u) == 0u);
+            bool vecOk = ((pc.K & 3u) == 0u) && ((pc.aOffset & 3u) == 0u);
 
             for (uint t = 0u; t < numTiles; t++) {
                 uint k_base = t * 32u;
-
-                // Load tileA [64, 32] = 512 vec4s (4 vec4s / thread)
-                [[unroll]] for (uint p = 0u; p < 4u; p++) {
-                    uint idx = tid + p * 128u;
-                    uint r = idx >> 3;       // 0..63
-                    uint c4 = (idx & 7u) << 2; // 0, 4, 8, ...
+                [[unroll]] for (uint p = 0u; p < 2u; p++) {
+                    uint idx = tid + p * 512u;
+                    uint r = idx >> 3;          // 0..127
+                    uint c4 = (idx & 7u) << 2;
                     uint gm = row_base + r;
                     uint gk = k_base + c4;
-                    if (gm < pc.M && gk + 3u < pc.K && k_is_vec4_aligned && ((pc.aOffset & 3u) == 0u)) {
-                        uint g_vec = (gm * pc.K + gk + pc.aOffset) >> 2;
-                        vec4 v = a_vec4[g_vec];
-                        tileA_T[c4 + 0u][r] = v.x;
-                        tileA_T[c4 + 1u][r] = v.y;
-                        tileA_T[c4 + 2u][r] = v.z;
-                        tileA_T[c4 + 3u][r] = v.w;
+                    vec4 v;
+                    if (gm < pc.M && gk + 3u < pc.K && vecOk) {
+                        v = a_vec4[(gm * pc.K + gk + pc.aOffset) >> 2];
                     } else {
-                        tileA_T[c4 + 0u][r] = (gm < pc.M && gk + 0u < pc.K) ? a_data[gm * pc.K + gk + 0u + pc.aOffset] : 0.0;
-                        tileA_T[c4 + 1u][r] = (gm < pc.M && gk + 1u < pc.K) ? a_data[gm * pc.K + gk + 1u + pc.aOffset] : 0.0;
-                        tileA_T[c4 + 2u][r] = (gm < pc.M && gk + 2u < pc.K) ? a_data[gm * pc.K + gk + 2u + pc.aOffset] : 0.0;
-                        tileA_T[c4 + 3u][r] = (gm < pc.M && gk + 3u < pc.K) ? a_data[gm * pc.K + gk + 3u + pc.aOffset] : 0.0;
+                        v = vec4(
+                            (gm < pc.M && gk + 0u < pc.K) ? a_data[gm * pc.K + gk + 0u + pc.aOffset] : 0.0,
+                            (gm < pc.M && gk + 1u < pc.K) ? a_data[gm * pc.K + gk + 1u + pc.aOffset] : 0.0,
+                            (gm < pc.M && gk + 2u < pc.K) ? a_data[gm * pc.K + gk + 2u + pc.aOffset] : 0.0,
+                            (gm < pc.M && gk + 3u < pc.K) ? a_data[gm * pc.K + gk + 3u + pc.aOffset] : 0.0);
                     }
+                    tileA4[c4 + 0u][r >> 2u][r & 3u] = v.x;
+                    tileA4[c4 + 1u][r >> 2u][r & 3u] = v.y;
+                    tileA4[c4 + 2u][r >> 2u][r & 3u] = v.z;
+                    tileA4[c4 + 3u][r >> 2u][r & 3u] = v.w;
                 }
-
-                // Load tileB [128, 32] = 1024 f16vec4s (8 f16vec4s / thread)
-                [[unroll]] for (uint p = 0u; p < 8u; p++) {
-                    uint idx = tid + p * 128u;
-                    uint r = idx >> 3;       // 0..127
+                [[unroll]] for (uint p = 0u; p < 4u; p++) {
+                    uint idx = tid + p * 512u;
+                    uint r = idx >> 3;          // 0..255
                     uint c4 = (idx & 7u) << 2;
                     uint gn = col_base + r;
                     uint gk = k_base + c4;
-                    if (gn < pc.N && gk + 3u < pc.K && k_is_vec4_aligned) {
-                        uint g_vec = (gn * pc.K + gk) >> 2;
-                        f16vec4 v = b_vec4[g_vec];
-                        tileB_T[c4 + 0u][r] = float(v.x);
-                        tileB_T[c4 + 1u][r] = float(v.y);
-                        tileB_T[c4 + 2u][r] = float(v.z);
-                        tileB_T[c4 + 3u][r] = float(v.w);
+                    vec4 v;
+                    if (gn < pc.N && gk + 3u < pc.K && ((pc.K & 3u) == 0u)) {
+                        v = vec4(b_vec4[(gn * pc.K + gk) >> 2]);
                     } else {
-                        tileB_T[c4 + 0u][r] = (gn < pc.N && gk + 0u < pc.K) ? float(b_data[gn * pc.K + gk + 0u]) : 0.0;
-                        tileB_T[c4 + 1u][r] = (gn < pc.N && gk + 1u < pc.K) ? float(b_data[gn * pc.K + gk + 1u]) : 0.0;
-                        tileB_T[c4 + 2u][r] = (gn < pc.N && gk + 2u < pc.K) ? float(b_data[gn * pc.K + gk + 2u]) : 0.0;
-                        tileB_T[c4 + 3u][r] = (gn < pc.N && gk + 3u < pc.K) ? float(b_data[gn * pc.K + gk + 3u]) : 0.0;
+                        v = vec4(
+                            (gn < pc.N && gk + 0u < pc.K) ? float(b_data[gn * pc.K + gk + 0u]) : 0.0,
+                            (gn < pc.N && gk + 1u < pc.K) ? float(b_data[gn * pc.K + gk + 1u]) : 0.0,
+                            (gn < pc.N && gk + 2u < pc.K) ? float(b_data[gn * pc.K + gk + 2u]) : 0.0,
+                            (gn < pc.N && gk + 3u < pc.K) ? float(b_data[gn * pc.K + gk + 3u]) : 0.0);
                     }
+                    tileB4[c4 + 0u][r >> 2u][r & 3u] = v.x;
+                    tileB4[c4 + 1u][r >> 2u][r & 3u] = v.y;
+                    tileB4[c4 + 2u][r >> 2u][r & 3u] = v.z;
+                    tileB4[c4 + 3u][r >> 2u][r & 3u] = v.w;
                 }
-
                 barrier();
 
-                uint a_offset0 = tx * 4u;
-                uint b_offset0 = ty * 16u;
-
                 [[unroll]] for (uint k = 0u; k < 32u; k++) {
-                    float a0 = tileA_T[k][a_offset0 + 0u];
-                    float a1 = tileA_T[k][a_offset0 + 1u];
-                    float a2 = tileA_T[k][a_offset0 + 2u];
-                    float a3 = tileA_T[k][a_offset0 + 3u];
-
-                    float b0 = tileB_T[k][b_offset0 + 0u];
-                    float b1 = tileB_T[k][b_offset0 + 1u];
-                    float b2 = tileB_T[k][b_offset0 + 2u];
-                    float b3 = tileB_T[k][b_offset0 + 3u];
-                    float b4 = tileB_T[k][b_offset0 + 4u];
-                    float b5 = tileB_T[k][b_offset0 + 5u];
-                    float b6 = tileB_T[k][b_offset0 + 6u];
-                    float b7 = tileB_T[k][b_offset0 + 7u];
-                    float b8 = tileB_T[k][b_offset0 + 8u];
-                    float b9 = tileB_T[k][b_offset0 + 9u];
-                    float b10 = tileB_T[k][b_offset0 + 10u];
-                    float b11 = tileB_T[k][b_offset0 + 11u];
-                    float b12 = tileB_T[k][b_offset0 + 12u];
-                    float b13 = tileB_T[k][b_offset0 + 13u];
-                    float b14 = tileB_T[k][b_offset0 + 14u];
-                    float b15 = tileB_T[k][b_offset0 + 15u];
-
-                    acc[0][0] += a0 * b0; acc[0][1] += a0 * b1; acc[0][2] += a0 * b2; acc[0][3] += a0 * b3;
-                    acc[0][4] += a0 * b4; acc[0][5] += a0 * b5; acc[0][6] += a0 * b6; acc[0][7] += a0 * b7;
-                    acc[0][8] += a0 * b8; acc[0][9] += a0 * b9; acc[0][10] += a0 * b10; acc[0][11] += a0 * b11;
-                    acc[0][12] += a0 * b12; acc[0][13] += a0 * b13; acc[0][14] += a0 * b14; acc[0][15] += a0 * b15;
-
-                    acc[1][0] += a1 * b0; acc[1][1] += a1 * b1; acc[1][2] += a1 * b2; acc[1][3] += a1 * b3;
-                    acc[1][4] += a1 * b4; acc[1][5] += a1 * b5; acc[1][6] += a1 * b6; acc[1][7] += a1 * b7;
-                    acc[1][8] += a1 * b8; acc[1][9] += a1 * b9; acc[1][10] += a1 * b10; acc[1][11] += a1 * b11;
-                    acc[1][12] += a1 * b12; acc[1][13] += a1 * b13; acc[1][14] += a1 * b14; acc[1][15] += a1 * b15;
-
-                    acc[2][0] += a2 * b0; acc[2][1] += a2 * b1; acc[2][2] += a2 * b2; acc[2][3] += a2 * b3;
-                    acc[2][4] += a2 * b4; acc[2][5] += a2 * b5; acc[2][6] += a2 * b6; acc[2][7] += a2 * b7;
-                    acc[2][8] += a2 * b8; acc[2][9] += a2 * b9; acc[2][10] += a2 * b10; acc[2][11] += a2 * b11;
-                    acc[2][12] += a2 * b12; acc[2][13] += a2 * b13; acc[2][14] += a2 * b14; acc[2][15] += a2 * b15;
-
-                    acc[3][0] += a3 * b0; acc[3][1] += a3 * b1; acc[3][2] += a3 * b2; acc[3][3] += a3 * b3;
-                    acc[3][4] += a3 * b4; acc[3][5] += a3 * b5; acc[3][6] += a3 * b6; acc[3][7] += a3 * b7;
-                    acc[3][8] += a3 * b8; acc[3][9] += a3 * b9; acc[3][10] += a3 * b10; acc[3][11] += a3 * b11;
-                    acc[3][12] += a3 * b12; acc[3][13] += a3 * b13; acc[3][14] += a3 * b14; acc[3][15] += a3 * b15;
+                    vec4 a0 = tileA4[k][tx * 2u + 0u];
+                    vec4 a1 = tileA4[k][tx * 2u + 1u];
+                    vec4 b0 = tileB4[k][ty * 2u + 0u];
+                    vec4 b1 = tileB4[k][ty * 2u + 1u];
+                    float av[8] = float[8](a0.x, a0.y, a0.z, a0.w, a1.x, a1.y, a1.z, a1.w);
+                    float bw[8] = float[8](b0.x, b0.y, b0.z, b0.w, b1.x, b1.y, b1.z, b1.w);
+                    [[unroll]] for (uint i = 0u; i < 8u; i++)
+                        [[unroll]] for (uint j = 0u; j < 8u; j++)
+                            acc[i][j] += av[i] * bw[j];
                 }
-
                 barrier();
             }
 
-            [[unroll]] for (uint i = 0u; i < 4u; i++) {
-                [[unroll]] for (uint j = 0u; j < 16u; j++) {
-                    uint out_r = row_base + tx * 4u + i;
-                    uint out_c = col_base + ty * 16u + j;
-                    if (out_r < pc.M && out_c < pc.N)
+            [[unroll]] for (uint i = 0u; i < 8u; i++) {
+                uint out_r = row_base + tx * 8u + i;
+                if (out_r >= pc.M) continue;
+                [[unroll]] for (uint j = 0u; j < 8u; j++) {
+                    uint out_c = col_base + ty * 8u + j;
+                    if (out_c < pc.N)
                         c_data[out_r * pc.N + out_c] = acc[i][j];
                 }
             }
         }
         """;
+
+    /// <summary>SgemmF16 with vec4-packed LDS tiles (same interface/dispatch/tiling). See SgemmF16.</summary>
+
 
     /// <summary>
     /// Fused SiLU-gated down-GEMM: C[M,N] = (silu(A[:, :K]) * A[:, K:2K]) × B[N,K]^T

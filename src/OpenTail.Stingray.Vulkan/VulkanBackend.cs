@@ -3707,11 +3707,11 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
                 DispatchOrRecord(_matVecF16Pipeline, [GetBuffer(B), GetBuffer(A), GetBuffer(C)], ((uint)N + 7u) / 8u, &mvp);
                 return;
             }
-            uint gx64 = ((uint)M + 63u) / 64u;
-            uint gy128 = ((uint)N + 127u) / 128u;
+            uint gx128 = ((uint)M + 127u) / 128u;
+            uint gy256 = ((uint)N + 255u) / 256u;
             _sgemmF16Pipeline ??= new ComputePipeline(this, Shaders.SgemmF16, 3,
                 pushConstantSize: sizeof(SgemmParams));
-            DispatchOrRecord(_sgemmF16Pipeline, [GetBuffer(A), GetBuffer(B), GetBuffer(C)], gx64, &p, gy128);
+            DispatchOrRecord(_sgemmF16Pipeline, [GetBuffer(A), GetBuffer(B), GetBuffer(C)], gx128, &p, gy256);
             return;
         }
 
