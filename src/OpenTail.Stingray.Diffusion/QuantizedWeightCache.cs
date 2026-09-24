@@ -120,7 +120,7 @@ public sealed class QuantizedWeightCache : IDisposable
                     // Image Q3_K/Q4_K at m=271, Wan2.2 Q5_K at m=1024): 1.1-4x faster than
                     // MatMulBatched, and exact (FP32 activations), where MatMulBatched's int8 paths
                     // carried relErr ~4e-3.
-                    if (n >= MinBatchForPackedF32 && PackedSgemmF32.CanGemmQuant(dtype, cols))
+                    if (n >= MinBatchForGemmQuant && PackedSgemmF32.CanGemmQuant(dtype, cols))
                     {
                         PackedSgemmF32.GemmQuant(po, px, (byte*)dataPtr, dtype, n, rows, cols);
                         ApplyBias(output, bias, n, outDim);
@@ -184,6 +184,11 @@ public sealed class QuantizedWeightCache : IDisposable
     /// <summary>Below this many tokens the dot-product kernel's cost is dominated by the weight
     /// stream either way, and packing buys nothing.</summary>
     private const int MinBatchForPackedF32 = 16;
+
+    /// <summary>GemmQuant dequantizes every weight once per call (scalar <c>Dequantize.ToFloat32</c>),
+    /// a fixed cost the GEMM only amortizes with enough rows. Measured crossover vs MatMulBatched:
+    /// Q5_K ~48 rows, Q3_K ~128 (2026-09-24). A vectorized per-dtype dequant would lower this.</summary>
+    private const int MinBatchForGemmQuant = 128;
 
     private unsafe float* GetOrCreatePackedF32(string name, float* src, int rows, int cols)
     {
