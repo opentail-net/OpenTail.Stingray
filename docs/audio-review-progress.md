@@ -18861,3 +18861,16 @@ models/ggml-base.bin`): 5/6 of our samples transcribe exactly, and one gets the 
 ("Follow the old, ..."). The reference's scored 3/6 exact, with three word errors. README row merged
 (it was listed twice) and upgraded to 🟢 👂. Harness: `tests/OpenTail.Stingray.Tests.Audio/ZzMossProfTmp.cs`
 (untracked).
+
+## Higgs Audio TTS -- reference distribution check passes; upgraded to 🟢, 2026-09-24
+
+Same method as MOSS-TTS-Nano above: 4 seeds of "Hello there, this is a test of speech synthesis."
+from this port (`HiggsGenerator.Generate`, temperature 0.7 / top-k 50 / top-p 0.95) and from the vendored
+reference (`audiocpp_cli --family higgs_audio_tts`, same `higgs-audio-v3-tts-4b-q8_0.gguf`, CPU).
+
+- Whisper round trip (`stingray stt -m base`): **4/4 exact on both sides**.
+- Duration: ours 3.00-3.68s, reference 3.40-3.92s.
+- RMS: ours 0.080 0.048 0.057 0.053 (mean 0.060), reference 0.062 0.060 0.051 0.059 (mean 0.058).
+
+Upgraded 🟡 ⚪ → 🟢 👂. Open, perf only: ~47s per sample vs the reference's ~16s (≈3×), so a Phase 2
+target. Harness: `tests/OpenTail.Stingray.Tests.Audio/ZzHiggsProfTmp.cs` (untracked).
