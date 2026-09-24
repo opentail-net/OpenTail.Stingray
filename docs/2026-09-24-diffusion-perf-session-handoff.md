@@ -54,7 +54,13 @@ checks against scalar or double-precision references.
 
 ## 4. Open items / where to pick up
 
-1. **FLUX.2 GPU E2E after `0958d6f`**: runs were in flight when the session ended, so re-run.
+1. **FLUX.2 GPU E2E after `0958d6f`: still unmeasured, come back to it.** The end-of-session
+   runs are **invalid, so discard them**. The timing loop was accidentally launched twice (about
+   13s apart), so two test processes ran concurrently and fought over CPU, iGPU and RAM (each held
+   4–10GB). The results were full GPU 529–545s (vs the clean 308–340s above) and hybrid failing
+   with `OutOfMemoryException` in every run. Both are artifacts of the doubled load, not a
+   regression. The stray process was killed and not re-run. Next time, run **one** loop at a time,
+   and before starting, check that no other `OpenTail.Stingray.Tests.Diffusion.exe` is running.
    Harness: the untracked `tests/OpenTail.Stingray.Tests.Diffusion/ZzFlux2ProfTmp.cs`. Env vars:
    `ZZ_RES=512`, `ZZ_STEPS=2`, `ZZ_SB=1` for full GPU (unset for hybrid), `ZZ_CPU=1` for CPU.
    Output goes to `docs/diffusion-samples/zz_flux2_prof.png`. Take ≥2 runs per mode; single runs
