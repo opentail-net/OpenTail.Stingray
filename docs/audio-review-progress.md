@@ -18841,3 +18841,23 @@ pass; `maxSteps` reverted to 60 in the debug test, the temporary 400-step/token-
 experiment was run standalone and not left as the test's default.
 
 
+
+## MOSS-TTS-Nano -- the "2.7x loudness gap" was a one-sample artifact; upgraded to 🟢, 2026-09-24
+
+The 2026-09-08 conclusion compared ONE reference sample against ONE of ours (seed 11), and
+attributed a ~2.7x RMS difference to the RNG mismatch. A different random stream explains why
+individual samples differ, but it can't produce a *systematic* loudness gap unless the sampling
+distribution differs, and one sample can't tell those apart. Re-checked with 6 seeds of the same
+sentence ("Hello there, this is a test of speech synthesis.") on both sides:
+
+| | RMS per seed 1..6 | mean | durations |
+|---|---|---|---|
+| reference `audiocpp_cli` (same q8_0 GGUF, `--backend cpu`) | 0.091 0.092 0.065 0.114 0.077 0.089 | 0.088 | 3.3-4.7s |
+| this port (`MossTtsGenerator`, same sampling defaults) | 0.113 0.100 0.083 0.084 0.052 0.094 | 0.088 | 3.0-4.8s |
+
+The distributions are indistinguishable, so there is no loudness gap. The seed-to-seed spread alone is ~2x.
+Intelligibility was checked with a Whisper round trip (`stingray stt -m base --model-file
+models/ggml-base.bin`): 5/6 of our samples transcribe exactly, and one gets the first two words wrong
+("Follow the old, ..."). The reference's scored 3/6 exact, with three word errors. README row merged
+(it was listed twice) and upgraded to 🟢 👂. Harness: `tests/OpenTail.Stingray.Tests.Audio/ZzMossProfTmp.cs`
+(untracked).
