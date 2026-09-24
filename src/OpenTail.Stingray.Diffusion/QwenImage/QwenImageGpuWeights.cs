@@ -91,43 +91,43 @@ public sealed class QwenImageGpuWeights : IDisposable
         public CoreTensor TxtMlpDownWeight { get; }
         public CoreTensor? TxtMlpDownBias { get; }
 
-        public BlockGpuWeights(IComputeBackend backend, Func<string, float[]> getWeight, Func<string, float[]?> tryGetWeight, int idx, int d, int headDim, bool forceFp32 = false)
+        public BlockGpuWeights(IComputeBackend backend, Func<string, float[]> getWeight, Func<string, float[]?> tryGetWeight, int idx, int d, int headDim, bool forceFp32 = false, RawWeightSource? rawSource = null)
         {
             _backend = backend;
             try
             {
             string p = $"transformer_blocks.{idx}.";
 
-            ImgModWeight = UploadWeight(backend, getWeight($"{p}img_mod.1.weight"), TensorShape.D2(6 * d, d), forceFp32);
+            ImgModWeight = UploadWeight(backend, rawSource, $"{p}img_mod.1.weight", getWeight, TensorShape.D2(6 * d, d), forceFp32);
             ImgModBias = UploadOptionalBias(backend, tryGetWeight($"{p}img_mod.1.bias"));
-            TxtModWeight = UploadWeight(backend, getWeight($"{p}txt_mod.1.weight"), TensorShape.D2(6 * d, d), forceFp32);
+            TxtModWeight = UploadWeight(backend, rawSource, $"{p}txt_mod.1.weight", getWeight, TensorShape.D2(6 * d, d), forceFp32);
             TxtModBias = UploadOptionalBias(backend, tryGetWeight($"{p}txt_mod.1.bias"));
 
-            ImgToQWeight = UploadWeight(backend, getWeight($"{p}attn.to_q.weight"), TensorShape.D2(d, d), forceFp32);
-            ImgToKWeight = UploadWeight(backend, getWeight($"{p}attn.to_k.weight"), TensorShape.D2(d, d), forceFp32);
-            ImgToVWeight = UploadWeight(backend, getWeight($"{p}attn.to_v.weight"), TensorShape.D2(d, d), forceFp32);
-            TxtAddQWeight = UploadWeight(backend, getWeight($"{p}attn.add_q_proj.weight"), TensorShape.D2(d, d), forceFp32);
-            TxtAddKWeight = UploadWeight(backend, getWeight($"{p}attn.add_k_proj.weight"), TensorShape.D2(d, d), forceFp32);
-            TxtAddVWeight = UploadWeight(backend, getWeight($"{p}attn.add_v_proj.weight"), TensorShape.D2(d, d), forceFp32);
+            ImgToQWeight = UploadWeight(backend, rawSource, $"{p}attn.to_q.weight", getWeight, TensorShape.D2(d, d), forceFp32);
+            ImgToKWeight = UploadWeight(backend, rawSource, $"{p}attn.to_k.weight", getWeight, TensorShape.D2(d, d), forceFp32);
+            ImgToVWeight = UploadWeight(backend, rawSource, $"{p}attn.to_v.weight", getWeight, TensorShape.D2(d, d), forceFp32);
+            TxtAddQWeight = UploadWeight(backend, rawSource, $"{p}attn.add_q_proj.weight", getWeight, TensorShape.D2(d, d), forceFp32);
+            TxtAddKWeight = UploadWeight(backend, rawSource, $"{p}attn.add_k_proj.weight", getWeight, TensorShape.D2(d, d), forceFp32);
+            TxtAddVWeight = UploadWeight(backend, rawSource, $"{p}attn.add_v_proj.weight", getWeight, TensorShape.D2(d, d), forceFp32);
 
             ImgNormQScale = backend.Upload(getWeight($"{p}attn.norm_q.weight"), TensorShape.D1(headDim), exact: true);
             ImgNormKScale = backend.Upload(getWeight($"{p}attn.norm_k.weight"), TensorShape.D1(headDim), exact: true);
             TxtNormQScale = backend.Upload(getWeight($"{p}attn.norm_added_q.weight"), TensorShape.D1(headDim), exact: true);
             TxtNormKScale = backend.Upload(getWeight($"{p}attn.norm_added_k.weight"), TensorShape.D1(headDim), exact: true);
 
-            ImgToOutWeight = UploadWeight(backend, getWeight($"{p}attn.to_out.0.weight"), TensorShape.D2(d, d), forceFp32);
+            ImgToOutWeight = UploadWeight(backend, rawSource, $"{p}attn.to_out.0.weight", getWeight, TensorShape.D2(d, d), forceFp32);
             ImgToOutBias = UploadOptionalBias(backend, tryGetWeight($"{p}attn.to_out.0.bias"));
-            TxtToAddOutWeight = UploadWeight(backend, getWeight($"{p}attn.to_add_out.weight"), TensorShape.D2(d, d), forceFp32);
+            TxtToAddOutWeight = UploadWeight(backend, rawSource, $"{p}attn.to_add_out.weight", getWeight, TensorShape.D2(d, d), forceFp32);
             TxtToAddOutBias = UploadOptionalBias(backend, tryGetWeight($"{p}attn.to_add_out.bias"));
 
             int ffDim = d * 4;
-            ImgMlpUpWeight = UploadWeight(backend, getWeight($"{p}img_mlp.net.0.proj.weight"), TensorShape.D2(ffDim, d), forceFp32);
+            ImgMlpUpWeight = UploadWeight(backend, rawSource, $"{p}img_mlp.net.0.proj.weight", getWeight, TensorShape.D2(ffDim, d), forceFp32);
             ImgMlpUpBias = UploadOptionalBias(backend, tryGetWeight($"{p}img_mlp.net.0.proj.bias"));
-            ImgMlpDownWeight = UploadWeight(backend, getWeight($"{p}img_mlp.net.2.weight"), TensorShape.D2(d, ffDim), forceFp32);
+            ImgMlpDownWeight = UploadWeight(backend, rawSource, $"{p}img_mlp.net.2.weight", getWeight, TensorShape.D2(d, ffDim), forceFp32);
             ImgMlpDownBias = UploadOptionalBias(backend, tryGetWeight($"{p}img_mlp.net.2.bias"));
-            TxtMlpUpWeight = UploadWeight(backend, getWeight($"{p}txt_mlp.net.0.proj.weight"), TensorShape.D2(ffDim, d), forceFp32);
+            TxtMlpUpWeight = UploadWeight(backend, rawSource, $"{p}txt_mlp.net.0.proj.weight", getWeight, TensorShape.D2(ffDim, d), forceFp32);
             TxtMlpUpBias = UploadOptionalBias(backend, tryGetWeight($"{p}txt_mlp.net.0.proj.bias"));
-            TxtMlpDownWeight = UploadWeight(backend, getWeight($"{p}txt_mlp.net.2.weight"), TensorShape.D2(d, ffDim), forceFp32);
+            TxtMlpDownWeight = UploadWeight(backend, rawSource, $"{p}txt_mlp.net.2.weight", getWeight, TensorShape.D2(d, ffDim), forceFp32);
             TxtMlpDownBias = UploadOptionalBias(backend, tryGetWeight($"{p}txt_mlp.net.2.bias"));
             }
             catch
@@ -155,7 +155,7 @@ public sealed class QwenImageGpuWeights : IDisposable
         }
     }
 
-    public QwenImageGpuWeights(IComputeBackend backend, Func<string, float[]> getWeight, Func<string, float[]?> tryGetWeight, int numLayers, int hiddenDim, int inChannels, int contextDim, int headDim, int? maxResidentBlocks = null)
+    public QwenImageGpuWeights(IComputeBackend backend, Func<string, float[]> getWeight, Func<string, float[]?> tryGetWeight, int numLayers, int hiddenDim, int inChannels, int contextDim, int headDim, int? maxResidentBlocks = null, RawWeightSource? rawSource = null)
     {
         _backend = backend;
 
@@ -180,7 +180,7 @@ public sealed class QwenImageGpuWeights : IDisposable
         {
             try
             {
-                blocks.Add(new BlockGpuWeights(backend, getWeight, tryGetWeight, i, hiddenDim, headDim));
+                blocks.Add(new BlockGpuWeights(backend, getWeight, tryGetWeight, i, hiddenDim, headDim, rawSource: rawSource));
             }
             catch (Exception ex)
             {
@@ -221,6 +221,31 @@ public sealed class QwenImageGpuWeights : IDisposable
     // Kept `false` permanently; FP32 upload is not a viable path forward on this hardware for this
     // model's full 60-layer weight set.
     private static readonly bool ForceFp32WeightsExperiment = false;
+
+    /// <summary>Raw GGUF tensor access (e.g. <see cref="IWeightLoader.TryGetRaw"/>), used to keep
+    /// block-quantized weights quantized on the GPU.</summary>
+    public delegate bool RawWeightSource(string name, out nint data, out long byteLen, out DType dtype, out int rows, out int cols);
+
+    /// <summary>
+    /// Q3_K/Q4_K weights are uploaded as their raw GGUF blocks when the backend's Sgemm can consume
+    /// them (Vulkan: dequant-in-shader SgemmQ3K/SgemmQ4K + MatVecDq*): ~3.4-4.5 bits per weight
+    /// instead of 16, so the whole 20.8B-parameter model is ~9 GB on the GPU rather than ~41 GB,
+    /// and no host-side dequantize+convert is needed. Anything else (or
+    /// STINGRAY_QWEN_GPU_FP16=1) takes the FP16/BF16/FP32 path below.
+    /// </summary>
+    private static unsafe CoreTensor UploadWeight(IComputeBackend backend, RawWeightSource? raw, string name,
+        Func<string, float[]> getWeight, TensorShape shape, bool forceFp32 = false)
+    {
+        if (!forceFp32 && raw is not null && backend.SupportsQuantizedSgemm
+            && Environment.GetEnvironmentVariable("STINGRAY_QWEN_GPU_FP16") != "1"
+            && raw(name, out nint data, out long len, out DType dt, out int rows, out int cols)
+            && (dt == DType.Q3_K || dt == DType.Q4_K)
+            && rows == shape.Dims[0] && cols == shape.Dims[1] && cols % 256 == 0)
+        {
+            return backend.UploadRaw(new ReadOnlySpan<byte>((void*)data, checked((int)len)), shape, dt);
+        }
+        return UploadWeight(backend, getWeight(name), shape, forceFp32);
+    }
 
     private static CoreTensor UploadWeight(IComputeBackend backend, float[] f32Data, TensorShape shape, bool forceFp32 = false)
     {

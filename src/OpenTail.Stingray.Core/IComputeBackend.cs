@@ -21,6 +21,10 @@ public interface IComputeBackend : IDisposable
     /// <summary>Best SGEMM precision the backend supports for ZImage DiT.</summary>
     SgemmPrecision BestSgemmPrecision { get; }
 
+    /// <summary>True when <see cref="Sgemm(Tensor, Tensor, Tensor, int, int, int)"/> accepts a B operand
+    /// uploaded via <see cref="UploadRaw"/> as GGUF Q3_K/Q4_K blocks (dequantized in the kernel).</summary>
+    bool SupportsQuantizedSgemm => false;
+
     // --- Memory management ---
 
     /// <summary>Allocate a tensor of the given shape, initialized to zero.

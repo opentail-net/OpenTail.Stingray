@@ -142,7 +142,8 @@ public sealed class QwenImageModel : IDisposable
         if (_residentGpuWeights is null)
         {
             int? cap = int.TryParse(Environment.GetEnvironmentVariable("STINGRAY_QWEN_GPU_BLOCKS"), out int c) ? c : null;
-            _residentGpuWeights = new QwenImageGpuWeights(_backend!, GetWeight, TryGetWeight, _numLayers, HiddenDim, InChannels, ContextDim, HeadDim, cap);
+            _residentGpuWeights = new QwenImageGpuWeights(_backend!, GetWeight, TryGetWeight, _numLayers, HiddenDim, InChannels, ContextDim, HeadDim, cap,
+                rawSource: (string n, out nint d, out long l, out DType t, out int r, out int c) => _weights.TryGetRaw(Resolve(n), out d, out l, out t, out r, out c));
             Console.WriteLine($"[QwenImage] {_residentGpuWeights.ResidentBlockCount}/{_numLayers} blocks resident on GPU");
         }
     }

@@ -6547,6 +6547,264 @@ internal static class Shaders
         }
         """;
 
+    /// <summary>
+    /// <see cref="SgemmF16"/> with the weights left in GGUF block-quantized form (Q3_K / Q4_K,
+    /// 256-element super-blocks, raw bytes bound as <c>uint[]</c>): the weight-tile load decodes each
+    /// element straight into the FP32 LDS tile, so each weight is dequantized once per 128 activation
+    /// rows and never exists as FP16/FP32 in device memory. Everything else -- 128x256 tile, 512
+    /// threads, 8x8 accumulators, dispatch (ceil(M/128), ceil(N/256)) -- is identical to SgemmF16.
+    /// Decoders follow ggml's <c>dequantize_row_q3_K</c>/<c>dequantize_row_q4_K</c>.
+    /// Requires K % 256 == 0. Push constants { M, N, K, aOffset }. Bindings: 0=A fp32, 1=B raw, 2=C fp32.
+    /// </summary>
+    private const string SgemmQHead = """
+        #version 450
+        #extension GL_EXT_control_flow_attributes : enable
+
+        layout(local_size_x = 16, local_size_y = 32, local_size_z = 1) in;
+
+        layout(push_constant) uniform PC { uint M; uint N; uint K; uint aOffset; } pc;
+
+        layout(binding = 0) readonly  buffer BufA { float a_data[]; };
+        layout(binding = 1) readonly  buffer BufB { uint  b_u32[]; };
+        layout(binding = 2) writeonly buffer BufC { float c_data[]; };
+        layout(binding = 0) readonly  buffer BufAVec { vec4 a_vec4[]; };
+
+        shared vec4 tileA4[32][32];
+        shared vec4 tileB4[32][64];
+
+        uint rb(uint off) { return (b_u32[off >> 2] >> ((off & 3u) * 8u)) & 0xFFu; }
+        float rh(uint off) { return unpackHalf2x16(rb(off) | (rb(off + 1u) << 8)).x; }
+        // 4 bytes at an arbitrary (possibly unaligned: Q3_K blocks are 110 bytes) offset.
+        uint rw(uint off)
+        {
+            uint lo = b_u32[off >> 2];
+            uint sh = (off & 3u) * 8u;
+            return sh == 0u ? lo : (lo >> sh) | (b_u32[(off >> 2) + 1u] << (32u - sh));
+        }
+
+        """;
+
+    private const string SgemmQ4KDecode = """
+        #define QBLOCK_BYTES 144u
+        // Q4_K: half d, half dmin, uint8 scales[12], uint8 qs[128].
+        float dq(uint row, uint k) {
+            uint base = row * ((pc.K >> 8) * QBLOCK_BYTES) + (k >> 8) * QBLOCK_BYTES;
+            uint j = k & 255u;
+            uint c = j >> 6;
+            bool hi = (j & 63u) >= 32u;
+            uint is_ = 2u * c + (hi ? 1u : 0u);
+            uint s = base + 4u;
+            uint sc, m;
+            if (is_ < 4u) { sc = rb(s + is_) & 63u; m = rb(s + is_ + 4u) & 63u; }
+            else {
+                sc = (rb(s + is_ + 4u) & 0xFu) | ((rb(s + is_ - 4u) >> 6) << 4);
+                m  = (rb(s + is_ + 4u) >> 4)   | ((rb(s + is_) >> 6) << 4);
+            }
+            uint q = rb(base + 16u + c * 32u + (j & 31u));
+            uint nib = hi ? (q >> 4) : (q & 0xFu);
+            return rh(base) * float(sc) * float(nib) - rh(base + 2u) * float(m);
+        }
+
+        // 4 consecutive elements k..k+3 (k % 4 == 0): always in one 32-element sub-block, so the
+        // scale/min and d/dmin are decoded once and the 4 quant bytes come from one 32-bit read.
+        vec4 dq4(uint row, uint k) {
+            uint base = row * ((pc.K >> 8) * QBLOCK_BYTES) + (k >> 8) * QBLOCK_BYTES;
+            uint j = k & 255u;
+            uint c = j >> 6;
+            bool hi = (j & 63u) >= 32u;
+            uint is_ = 2u * c + (hi ? 1u : 0u);
+            uint s = base + 4u;
+            uint sc, m;
+            if (is_ < 4u) { sc = rb(s + is_) & 63u; m = rb(s + is_ + 4u) & 63u; }
+            else {
+                sc = (rb(s + is_ + 4u) & 0xFu) | ((rb(s + is_ - 4u) >> 6) << 4);
+                m  = (rb(s + is_ + 4u) >> 4)   | ((rb(s + is_) >> 6) << 4);
+            }
+            vec2 dd = unpackHalf2x16(rw(base));
+            float d1 = dd.x * float(sc), m1 = dd.y * float(m);
+            uint q = rw(base + 16u + c * 32u + (j & 31u));
+            uvec4 b = uvec4(q & 0xFFu, (q >> 8) & 0xFFu, (q >> 16) & 0xFFu, q >> 24);
+            uvec4 nib = hi ? (b >> 4) : (b & 0xFu);
+            return d1 * vec4(nib) - m1;
+        }
+
+        """;
+
+    private const string SgemmQ3KDecode = """
+        #define QBLOCK_BYTES 110u
+        // Q3_K: uint8 hmask[32], uint8 qs[64], uint8 scales[12] (16 packed 6-bit), half d.
+        float dq(uint row, uint k) {
+            uint base = row * ((pc.K >> 8) * QBLOCK_BYTES) + (k >> 8) * QBLOCK_BYTES;
+            uint j = k & 255u;
+            uint n = j >> 7;
+            uint r = j & 127u;
+            uint jj = r >> 5;
+            uint l32 = r & 31u;
+            uint is_ = n * 8u + jj * 2u + (l32 >= 16u ? 1u : 0u);
+            uint i4 = is_ & 3u, grp = is_ >> 2;
+            uint low = (rb(base + 96u + i4 + 4u * (grp & 1u)) >> ((grp >> 1) * 4u)) & 0xFu;
+            uint high = (rb(base + 104u + i4) >> (2u * grp)) & 3u;
+            int sc = int(low | (high << 4)) - 32;
+            uint q2 = (rb(base + 32u + n * 32u + l32) >> (2u * jj)) & 3u;
+            bool hbit = ((rb(base + l32) >> (n * 4u + jj)) & 1u) != 0u;
+            return rh(base + 108u) * float(sc) * float(int(q2) - (hbit ? 0 : 4));
+        }
+
+        // 4 consecutive elements k..k+3 (k % 4 == 0): same 16-element scale group, same shift and
+        // high-bit, so the scale is decoded once and qs/hmask each come from one 32-bit read.
+        vec4 dq4(uint row, uint k) {
+            uint base = row * ((pc.K >> 8) * QBLOCK_BYTES) + (k >> 8) * QBLOCK_BYTES;
+            uint j = k & 255u;
+            uint n = j >> 7;
+            uint r = j & 127u;
+            uint jj = r >> 5;
+            uint l32 = r & 31u;
+            uint is_ = n * 8u + jj * 2u + (l32 >= 16u ? 1u : 0u);
+            uint i4 = is_ & 3u, grp = is_ >> 2;
+            uint low = (rb(base + 96u + i4 + 4u * (grp & 1u)) >> ((grp >> 1) * 4u)) & 0xFu;
+            uint high = (rb(base + 104u + i4) >> (2u * grp)) & 3u;
+            float dl = rh(base + 108u) * float(int(low | (high << 4)) - 32);
+            uint q = rw(base + 32u + n * 32u + l32);
+            uint h = rw(base + l32);
+            uint sh = 2u * jj, hb = n * 4u + jj;
+            ivec4 q2 = ivec4((uvec4(q, q >> 8, q >> 16, q >> 24) >> sh) & 3u);
+            ivec4 hv = ivec4((uvec4(h, h >> 8, h >> 16, h >> 24) >> hb) & 1u);
+            return dl * vec4(q2 - (1 - hv) * 4);
+        }
+
+        """;
+
+    private const string SgemmQBody = """
+        void main() {
+            uint tx = gl_LocalInvocationID.x;
+            uint ty = gl_LocalInvocationID.y;
+            uint tid = ty * 16u + tx;
+            uint row_base = gl_WorkGroupID.x * 128u;
+            uint col_base = gl_WorkGroupID.y * 256u;
+
+            float acc[8][8];
+            [[unroll]] for (uint i = 0u; i < 8u; i++)
+                [[unroll]] for (uint j = 0u; j < 8u; j++)
+                    acc[i][j] = 0.0;
+
+            uint numTiles = pc.K / 32u;
+            bool vecOk = (pc.aOffset & 3u) == 0u;
+
+            for (uint t = 0u; t < numTiles; t++) {
+                uint k_base = t * 32u;
+                [[unroll]] for (uint p = 0u; p < 2u; p++) {
+                    uint idx = tid + p * 512u;
+                    uint r = idx >> 3;
+                    uint c4 = (idx & 7u) << 2;
+                    uint gm = row_base + r;
+                    uint gk = k_base + c4;
+                    vec4 v = vec4(0.0);
+                    if (gm < pc.M) {
+                        if (vecOk) v = a_vec4[(gm * pc.K + gk + pc.aOffset) >> 2];
+                        else v = vec4(a_data[gm * pc.K + gk + pc.aOffset], a_data[gm * pc.K + gk + 1u + pc.aOffset],
+                                      a_data[gm * pc.K + gk + 2u + pc.aOffset], a_data[gm * pc.K + gk + 3u + pc.aOffset]);
+                    }
+                    tileA4[c4 + 0u][r >> 2u][r & 3u] = v.x;
+                    tileA4[c4 + 1u][r >> 2u][r & 3u] = v.y;
+                    tileA4[c4 + 2u][r >> 2u][r & 3u] = v.z;
+                    tileA4[c4 + 3u][r >> 2u][r & 3u] = v.w;
+                }
+                [[unroll]] for (uint p = 0u; p < 4u; p++) {
+                    uint idx = tid + p * 512u;
+                    uint r = idx >> 3;
+                    uint c4 = (idx & 7u) << 2;
+                    uint gn = col_base + r;
+                    uint gk = k_base + c4;
+                    vec4 v = vec4(0.0);
+                    if (gn < pc.N) v = dq4(gn, gk);
+                    tileB4[c4 + 0u][r >> 2u][r & 3u] = v.x;
+                    tileB4[c4 + 1u][r >> 2u][r & 3u] = v.y;
+                    tileB4[c4 + 2u][r >> 2u][r & 3u] = v.z;
+                    tileB4[c4 + 3u][r >> 2u][r & 3u] = v.w;
+                }
+                barrier();
+
+                [[dont_unroll]] for (uint k0 = 0u; k0 < 32u; k0 += 8u)
+                [[unroll]] for (uint kk = 0u; kk < 8u; kk++) {
+                    uint k = k0 + kk;
+                    vec4 a0 = tileA4[k][tx * 2u + 0u];
+                    vec4 a1 = tileA4[k][tx * 2u + 1u];
+                    vec4 b0 = tileB4[k][ty * 2u + 0u];
+                    vec4 b1 = tileB4[k][ty * 2u + 1u];
+                    float av[8] = float[8](a0.x, a0.y, a0.z, a0.w, a1.x, a1.y, a1.z, a1.w);
+                    float bw[8] = float[8](b0.x, b0.y, b0.z, b0.w, b1.x, b1.y, b1.z, b1.w);
+                    [[unroll]] for (uint i = 0u; i < 8u; i++)
+                        [[unroll]] for (uint j = 0u; j < 8u; j++)
+                            acc[i][j] += av[i] * bw[j];
+                }
+                barrier();
+            }
+
+            [[unroll]] for (uint i = 0u; i < 8u; i++) {
+                uint out_r = row_base + tx * 8u + i;
+                if (out_r >= pc.M) continue;
+                [[unroll]] for (uint j = 0u; j < 8u; j++) {
+                    uint out_c = col_base + ty * 8u + j;
+                    if (out_c < pc.N)
+                        c_data[out_r * pc.N + out_c] = acc[i][j];
+                }
+            }
+        }
+        """;
+
+    internal const string SgemmQ4K = SgemmQHead + SgemmQ4KDecode + SgemmQBody;
+    internal const string SgemmQ3K = SgemmQHead + SgemmQ3KDecode + SgemmQBody;
+
+    /// <summary>
+    /// M == 1 companion to SgemmQ3K/SgemmQ4K (a 128-row tile wastes 127/128 of its work on a single
+    /// activation row, e.g. AdaLN modulation). 256 threads = 8 output rows x 32 lanes; each lane
+    /// dots 4 decoded weights at a time against the activation, then a shared-memory reduction.
+    /// Same push constants/bindings as SgemmQ*. Requires K % 256 == 0 and aOffset % 4 == 0.
+    /// Dispatch: ceil(N / 8).
+    /// </summary>
+    private const string MatVecQHead = """
+        #version 450
+        layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+        layout(push_constant) uniform PC { uint M; uint N; uint K; uint aOffset; } pc;
+        layout(binding = 0) readonly  buffer BufAVec { vec4 a_vec4[]; };
+        layout(binding = 1) readonly  buffer BufB { uint  b_u32[]; };
+        layout(binding = 2) writeonly buffer BufC { float c_data[]; };
+        shared float red[256];
+
+        uint rb(uint off) { return (b_u32[off >> 2] >> ((off & 3u) * 8u)) & 0xFFu; }
+        float rh(uint off) { return unpackHalf2x16(rb(off) | (rb(off + 1u) << 8)).x; }
+        uint rw(uint off)
+        {
+            uint lo = b_u32[off >> 2];
+            uint sh = (off & 3u) * 8u;
+            return sh == 0u ? lo : (lo >> sh) | (b_u32[(off >> 2) + 1u] << (32u - sh));
+        }
+
+        """;
+
+    private const string MatVecQBody = """
+        void main() {
+            uint tid = gl_LocalInvocationID.x;
+            uint lane = tid & 31u;
+            uint row = gl_WorkGroupID.x * 8u + (tid >> 5);
+            float sum = 0.0;
+            if (row < pc.N) {
+                for (uint k = lane * 4u; k < pc.K; k += 128u)
+                    sum += dot(dq4(row, k), a_vec4[(k + pc.aOffset) >> 2]);
+            }
+            red[tid] = sum;
+            barrier();
+            for (uint s = 16u; s > 0u; s >>= 1) {
+                if (lane < s) red[tid] += red[tid + s];
+                barrier();
+            }
+            if (lane == 0u && row < pc.N) c_data[row] = red[tid];
+        }
+        """;
+
+    internal const string MatVecDqQ4K = MatVecQHead + SgemmQ4KDecode + MatVecQBody;
+    internal const string MatVecDqQ3K = MatVecQHead + SgemmQ3KDecode + MatVecQBody;
+
     /// <summary>SgemmF16 with vec4-packed LDS tiles (same interface/dispatch/tiling). See SgemmF16.</summary>
 
 

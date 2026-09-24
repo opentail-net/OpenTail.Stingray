@@ -111,8 +111,10 @@ time. Correctness before perf. Check images by eye. CPU first, then GPU. Scratch
       had 16×80 heads instead of 20×64. The image matches C++ with the same noise. CPU 284.8s → 82.5s.
 - [x] **Qwen Image** (CPU done): 8 steps ~1,290s → 277.4s (C++ 231.4s). Scalar attention loop + new
       `GemmQuant`. GPU **verified 2026-09-24** (the earlier "blocked" note was wrong): partial residency (`STINGRAY_QWEN_GPU_BLOCKS`
-      caps it); all 60 blocks fit, 18.8s per step vs CPU 33.5s, correct image; the 40+20 hybrid is also correct. Next:
-      quantized weights on the GPU (option 3), to drop the ~41 GB FP16 footprint and the ~205s upload. The old "GPU diverges" evidence compared
+      caps it); all 60 blocks fit, 18.8s per step vs CPU 33.5s, correct image; the 40+20 hybrid is also correct. Then option 3 landed the same day:
+      weights stay Q3_K/Q4_K on the GPU (`SgemmQ3K`/`Q4K`, `MatVecDqQ3K`/`Q4K`), ~9 GB, 8 steps in 159.4s / 161.1s (CPU 277.4s).
+      Open: `QwenImageGpuParityTests` fails at cosine ~0.989 (smooth 60-block compounding on synthetic input, same
+      with FP16). Next candidates: route FLUX.2/Wan2.2/SD3.5 GGUF weights through the same kernels. The old "GPU diverges" evidence compared
       against a CPU path that was itself lossy (int8 activations, relErr ~4e-3).
 - [~] **HunyuanVideo** (partly done, timeboxed): noise → recognisable apple (4 DiT bugs fixed, VAE 25×).
       **Open blocker**: wrong colours plus a fine stripe texture. The latent is clean (visualised), so suspect the
