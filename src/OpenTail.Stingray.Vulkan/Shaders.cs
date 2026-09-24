@@ -6698,12 +6698,7 @@ internal static class Shaders
                     uint c4 = (idx & 7u) << 2;
                     uint gm = row_base + r;
                     uint gk = k_base + c4;
-                    vec4 v = vec4(0.0);
-                    if (gm < pc.M) {
-                        if (vecOk) v = a_vec4[(gm * pc.K + gk + pc.aOffset) >> 2];
-                        else v = vec4(a_data[gm * pc.K + gk + pc.aOffset], a_data[gm * pc.K + gk + 1u + pc.aOffset],
-                                      a_data[gm * pc.K + gk + 2u + pc.aOffset], a_data[gm * pc.K + gk + 3u + pc.aOffset]);
-                    }
+                    vec4 v = gm < pc.M ? loadA(gm, gk, vecOk) : vec4(0.0);
                     tileA4[c4 + 0u][r >> 2u][r & 3u] = v.x;
                     tileA4[c4 + 1u][r >> 2u][r & 3u] = v.y;
                     tileA4[c4 + 2u][r >> 2u][r & 3u] = v.z;
@@ -6752,8 +6747,35 @@ internal static class Shaders
         }
         """;
 
-    internal const string SgemmQ4K = SgemmQHead + SgemmQ4KDecode + SgemmQBody;
-    internal const string SgemmQ3K = SgemmQHead + SgemmQ3KDecode + SgemmQBody;
+    // Activation-row loaders for the SgemmQ body: plain A[M,K], or the SiLU-gated A[M,2K]
+    // (silu(A[:, :K]) * A[:, K:], same as SgemmSiluGateF16).
+    private const string SgemmQLoadPlain = """
+        vec4 loadA(uint gm, uint gk, bool vecOk) {
+            uint o = gm * pc.K + gk + pc.aOffset;
+            if (vecOk) return a_vec4[o >> 2];
+            return vec4(a_data[o], a_data[o + 1u], a_data[o + 2u], a_data[o + 3u]);
+        }
+
+        """;
+
+    private const string SgemmQLoadSiluGate = """
+        vec4 loadA(uint gm, uint gk, bool vecOk) {
+            uint o = gm * pc.K * 2u + gk + pc.aOffset;
+            vec4 g, v;
+            if (vecOk) { g = a_vec4[o >> 2]; v = a_vec4[(o + pc.K) >> 2]; }
+            else {
+                g = vec4(a_data[o], a_data[o + 1u], a_data[o + 2u], a_data[o + 3u]);
+                v = vec4(a_data[o + pc.K], a_data[o + pc.K + 1u], a_data[o + pc.K + 2u], a_data[o + pc.K + 3u]);
+            }
+            return g / (vec4(1.0) + exp(-g)) * v;
+        }
+
+        """;
+
+    internal const string SgemmQ4K = SgemmQHead + SgemmQ4KDecode + SgemmQLoadPlain + SgemmQBody;
+    internal const string SgemmQ3K = SgemmQHead + SgemmQ3KDecode + SgemmQLoadPlain + SgemmQBody;
+    internal const string SgemmSiluGateQ4K = SgemmQHead + SgemmQ4KDecode + SgemmQLoadSiluGate + SgemmQBody;
+    internal const string SgemmSiluGateQ3K = SgemmQHead + SgemmQ3KDecode + SgemmQLoadSiluGate + SgemmQBody;
 
     /// <summary>
     /// M == 1 companion to SgemmQ3K/SgemmQ4K (a 128-row tile wastes 127/128 of its work on a single

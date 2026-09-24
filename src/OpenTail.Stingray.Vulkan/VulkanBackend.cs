@@ -1616,6 +1616,8 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
     private ComputePipeline? _sgemmQ3KPipeline;
     private ComputePipeline? _matVecDqQ4KPipeline;
     private ComputePipeline? _matVecDqQ3KPipeline;
+    private ComputePipeline? _sgemmSiluGateQ4KPipeline;
+    private ComputePipeline? _sgemmSiluGateQ3KPipeline;
     private ComputePipeline? _matMulTiledQ6KPipeline;   // Path 2 tiled GEMM (ffn_down)
     private ComputePipeline? _dequantQ5KMPipeline;
     private ComputePipeline? _dequantQ4KMPipeline;
@@ -4421,6 +4423,16 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
     /// </summary>
     public unsafe void SgemmSiluGate(Tensor C, Tensor A, Tensor B, int M, int K, int N, int inputRowOffsetElements = 0)
     {
+        if (A.DType == DType.Float32 && (B.DType == DType.Q4_K || B.DType == DType.Q3_K) && K % 256 == 0)
+        {
+            var pq = new SgemmParams { M = (uint)M, N = (uint)N, K = (uint)K, aOffset = (uint)inputRowOffsetElements };
+            ComputePipeline pipe = B.DType == DType.Q4_K
+                ? (_sgemmSiluGateQ4KPipeline ??= new ComputePipeline(this, Shaders.SgemmSiluGateQ4K, 3, pushConstantSize: sizeof(SgemmParams)))
+                : (_sgemmSiluGateQ3KPipeline ??= new ComputePipeline(this, Shaders.SgemmSiluGateQ3K, 3, pushConstantSize: sizeof(SgemmParams)));
+            DispatchOrRecord(pipe, [GetBuffer(A), GetBuffer(B), GetBuffer(C)], ((uint)M + 127u) / 128u, &pq, ((uint)N + 255u) / 256u);
+            return;
+        }
+
         if (A.DType == DType.Float32 && B.DType == DType.Float16 && HasShaderFloat16Int8 && Has16BitStorage)
         {
             var p = new SgemmParams { M = (uint)M, N = (uint)N, K = (uint)K, aOffset = (uint)inputRowOffsetElements };
@@ -4960,6 +4972,8 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
         _sgemmQ3KPipeline?.Dispose();
         _matVecDqQ4KPipeline?.Dispose();
         _matVecDqQ3KPipeline?.Dispose();
+        _sgemmSiluGateQ4KPipeline?.Dispose();
+        _sgemmSiluGateQ3KPipeline?.Dispose();
         _sgemmSiluGateF16Pipeline?.Dispose();
         _sgemmBf16Pipeline?.Dispose();
         _sgemmFp8Pipeline?.Dispose();

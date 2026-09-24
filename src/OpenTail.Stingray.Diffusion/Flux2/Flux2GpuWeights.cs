@@ -233,10 +233,17 @@ private static unsafe CoreTensor UploadWeight(
     TensorShape shape)
 {
     if (loader != null
-        && loader.TryGetRaw(name, out nint dataPtr, out long byteLen, out DType dtype, out _, out _)
+        && loader.TryGetRaw(name, out nint dataPtr, out long byteLen, out DType dtype, out _, out int cols)
         && dtype == DType.Q4_K)
     {
         var span = new ReadOnlySpan<byte>((void*)dataPtr, (int)byteLen);
+
+        // Keep it quantized when the backend's Sgemm/SgemmSiluGate can consume raw Q4_K
+        // (Vulkan SgemmQ4K / SgemmSiluGateQ4K / MatVecDqQ4K): ~4.5 bits per weight instead of 16.
+        if (backend.SupportsQuantizedSgemm && cols % 256 == 0
+            && Environment.GetEnvironmentVariable("STINGRAY_FLUX2_GPU_FP16") != "1")
+            return backend.UploadRaw(span, shape, DType.Q4_K);
+
         var rawGpu = backend.UploadRaw(span, TensorShape.D1(span.Length / 4), DType.Float32);
         try
         {

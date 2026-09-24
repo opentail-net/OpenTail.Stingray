@@ -79,4 +79,55 @@ public sealed unsafe class VulkanSgemmQuantParityTests
 
         Assert.True(rel < 1e-4, $"relErr {rel:E2}");
     }
+
+    private const string Flux2Path = @"C:\Git-Public\OpenTail.Stingray\models\_models\flux2-dev-Q4_K_S.gguf";
+
+    // FLUX.2's MLP down-projection runs through the fused SgemmSiluGate: A is [M, 2K] (gate | value)
+    // and the GEMM input is silu(gate) * value.
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Flux2Q4K_SgemmAndSiluGate_MatchCpu(bool siluGate)
+    {
+        Assert.SkipUnless(File.Exists(Flux2Path), "flux2-dev-Q4_K_S.gguf not found");
+        using var w = GgufWeightLoader.Open(Flux2Path);
+        string tensor = siluGate ? "double_blocks.0.img_mlp.2.weight" : "double_blocks.0.img_attn.qkv.weight";
+        Assert.True(w.TryGetRaw(tensor, out nint data, out long byteLen, out var dt, out int n, out int k));
+        Assert.Equal(DType.Q4_K, dt);
+        const int m = 300;
+        int aCols = siluGate ? 2 * k : k;
+        var rng = new Random(4);
+        var a = new float[m * aCols];
+        for (int i = 0; i < a.Length; i++) a[i] = (float)(rng.NextDouble() * 2 - 1);
+        var gemmIn = a;
+        if (siluGate)
+        {
+            gemmIn = new float[m * k];
+            for (int r = 0; r < m; r++)
+                for (int j = 0; j < k; j++)
+                {
+                    float g = a[r * aCols + j], v = a[r * aCols + k + j];
+                    gemmIn[r * k + j] = g / (1f + MathF.Exp(-g)) * v;
+                }
+        }
+        var cpu = new float[m * n];
+        fixed (float* px = gemmIn, pc = cpu)
+            PackedSgemmF32.GemmQuant(pc, px, (byte*)data, dt, m, n, k);
+
+        using var vk = new VulkanBackend();
+        var bq = vk.UploadRaw(new ReadOnlySpan<byte>((void*)data, checked((int)byteLen)), TensorShape.D2(n, k), dt);
+        var ag = vk.Upload(a, TensorShape.D2(m, aCols), exact: true);
+        var c = vk.Upload(new float[m * n], TensorShape.D2(m, n), exact: true);
+        if (siluGate) vk.SgemmSiluGate(c, ag, bq, m, k, n); else vk.Sgemm(c, ag, bq, m, k, n);
+        var gpu = new float[m * n];
+        vk.Download(c, gpu);
+        double num = 0, den = 0;
+        for (int i = 0; i < cpu.Length; i++) { double d = gpu[i] - cpu[i]; num += d * d; den += (double)cpu[i] * cpu[i]; }
+        double rel = Math.Sqrt(num / den);
+        string msg = $"FLUX.2 {tensor} [{n}x{k}] m={m} siluGate={siluGate}: relErr vs CPU {rel:E2}";
+        _out.WriteLine(msg);
+        Console.WriteLine(msg);
+        vk.Free(bq); vk.Free(ag); vk.Free(c);
+        Assert.True(rel < 1e-4, $"relErr {rel:E2}");
+    }
 }
