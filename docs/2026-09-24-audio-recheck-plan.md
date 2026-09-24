@@ -94,7 +94,12 @@ dated and sourced findings. Commit per engine.
 
 ## Status
 
-- [ ] Phase 0: shared-change regression sweep
+- [x] Phase 0: shared-change regression sweep (2026-09-24). Only the **Stable Audio 3** DiTs
+      (Small + Medium, via `QuantizedWeightCache`) touch the changed code. The Audio project's T5 users
+      (MusicGen, AudioGen, Parler, F5) use their own encoders and are unaffected, as is MiniMax-Music3. All Stable
+      Audio golden and real-weight tests pass with real timings (6-40s). The CPU pipeline golden cosine
+      A/B is 0.4535 (old path) → 0.4594 (new), now equal to the GPU run's 0.459419; no slowdown. SDXL
+      (CLIP-G heads fix) was re-checked separately: still a clean on-prompt image.
 - [ ] Phase 1: correctness triage
 - [ ] Phase 2: performance
 - [ ] Phase 3: record

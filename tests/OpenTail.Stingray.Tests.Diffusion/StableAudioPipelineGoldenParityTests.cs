@@ -118,6 +118,7 @@ public sealed class StableAudioPipelineGoldenParityTests
 
         Assert.Equal(goldenPcm.Length, pcm.Length);
         float cos = CosineSimilarity(pcm, goldenPcm);
+        Console.Error.WriteLine($"[CPU Pipeline] Cosine similarity = {cos:F6}");
         Assert.True(cos > 0.3f, $"Full-pipeline cosine-sim too low: {cos}");
     }
 
