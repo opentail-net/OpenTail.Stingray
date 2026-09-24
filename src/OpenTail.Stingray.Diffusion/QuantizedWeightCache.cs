@@ -10,8 +10,11 @@ namespace OpenTail.Stingray.Diffusion;
 /// Tensors in Q4_K with compatible dimensions are repacked once into Q4Kx8 layout and cached up to
 /// an explicit byte budget, routing to <see cref="SimdKernels.TryMatMulBatchedQ4Kx8"/>.
 /// Uncached/incompatible tensors fall back to <see cref="SimdKernels.MatMulBatched"/> directly on
-/// raw mmap bytes without allocating FP32 weight buffers. Safetensors/unsupported loaders fall back
-/// to <see cref="IWeightLoader.ReadF32"/> + <see cref="DiffusionOps.Linear"/>.
+/// raw mmap bytes without allocating FP32 weight buffers. FP32 weights used with a real token batch
+/// (raw FP32 tensors, or any tensor from a loader without raw access such as safetensors, via
+/// <see cref="IWeightLoader.ReadF32"/>) are packed once into <see cref="PackedSgemmF32"/> panels
+/// under the same byte budget. Anything left over falls back to
+/// <see cref="IWeightLoader.ReadF32"/> + <see cref="DiffusionOps.Linear"/>.
 /// </summary>
 public sealed class QuantizedWeightCache : IDisposable
 {
@@ -20,6 +23,7 @@ public sealed class QuantizedWeightCache : IDisposable
     private readonly long _budgetBytes;
     private long _usedBytes;
     private readonly Dictionary<string, nint> _repackedQ4Kx8 = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, nint> _packedF32 = new(StringComparer.Ordinal);
     private bool _disposed;
 
     public long BudgetBytes => _budgetBytes;
@@ -28,7 +32,7 @@ public sealed class QuantizedWeightCache : IDisposable
     {
         get
         {
-            lock (_repackedQ4Kx8) return _repackedQ4Kx8.Count;
+            lock (_repackedQ4Kx8) return _repackedQ4Kx8.Count + _packedF32.Count;
         }
     }
 
@@ -93,7 +97,20 @@ public sealed class QuantizedWeightCache : IDisposable
                         }
                     }
 
-                    // 2. Try direct raw-quantized MatMulBatched (MicroGemmQ4K, TryMatMulBatchedQ8, or fused MatVec)
+                    // 2. FP32 weights with a real token batch: panel-packed 6x16 SGEMM
+                    // (1.5-2x the dot-product kernel on DiT shapes, see PackedSgemmF32).
+                    if (dtype == DType.Float32 && n >= MinBatchForPackedF32 && PackedSgemmF32.IsSupported)
+                    {
+                        float* packedF32 = GetOrCreatePackedF32(resolved, (float*)dataPtr, rows, cols);
+                        if (packedF32 != null)
+                        {
+                            PackedSgemmF32.Gemm(po, px, packedF32, null, n, rows, cols);
+                            ApplyBias(output, bias, n, outDim);
+                            return;
+                        }
+                    }
+
+                    // 3. Try direct raw-quantized MatMulBatched (MicroGemmQ4K, TryMatMulBatchedQ8, or fused MatVec)
                     SimdKernels.MatMulBatched(po, (byte*)dataPtr, px, n, rows, cols, dtype, allowQ8: allowQ8, allowBlas: true);
                     ApplyBias(output, bias, n, outDim);
                     return;
@@ -101,9 +118,40 @@ public sealed class QuantizedWeightCache : IDisposable
             }
         }
 
-        // 3. Fallback: ReadF32 + DiffusionOps.Linear (safetensors or non-2D tensors)
+        // 4. Loaders without raw access (SafetensorsLoader.TryGetRaw always declines): pack the
+        // ReadF32 result once and keep it. Without this every call re-read (copied) the whole
+        // weight tensor and ran the dot-product kernel -- ~95% of Wan's CPU DiT time.
+        if (n >= MinBatchForPackedF32 && PackedSgemmF32.IsSupported)
+        {
+            float* packedF32 = GetOrCreatePackedF32(resolved, outDim, inDim);
+            if (packedF32 != null)
+            {
+                fixed (float* px = x, po = output)
+                    PackedSgemmF32.Gemm(po, px, packedF32, null, n, outDim, inDim);
+                ApplyBias(output, bias, n, outDim);
+                return;
+            }
+        }
+
+        // 5. Fallback: ReadF32 + DiffusionOps.Linear
         float[] w = _weights.ReadF32(resolved);
         DiffusionOps.Linear(x, w, bias, output, n, inDim, outDim);
+    }
+
+    private unsafe float* GetOrCreatePackedF32(string name, int rows, int cols)
+    {
+        lock (_repackedQ4Kx8)
+        {
+            if (_packedF32.TryGetValue(name, out var cached))
+                return (float*)cached;
+            // Over budget: decline before reading, so the caller's fallback is the only ReadF32.
+            if (_usedBytes + PackedSgemmF32.PackedFloats(rows, cols) * sizeof(float) > _budgetBytes)
+                return null;
+        }
+        float[] w = _weights.ReadF32(name);
+        if (w.Length != (long)rows * cols) return null;
+        fixed (float* pw = w)
+            return GetOrCreatePackedF32(name, pw, rows, cols);
     }
 
     private static void ApplyBias(Span<float> output, ReadOnlySpan<float> bias, int n, int outDim)
@@ -113,6 +161,28 @@ public sealed class QuantizedWeightCache : IDisposable
         {
             var row = output.Slice(t * outDim, outDim);
             TensorPrimitives.Add(row, bias, row);
+        }
+    }
+
+    /// <summary>Below this many tokens the dot-product kernel's cost is dominated by the weight
+    /// stream either way, and packing buys nothing.</summary>
+    private const int MinBatchForPackedF32 = 16;
+
+    private unsafe float* GetOrCreatePackedF32(string name, float* src, int rows, int cols)
+    {
+        lock (_repackedQ4Kx8) // one lock for both caches: they share _usedBytes
+        {
+            if (_packedF32.TryGetValue(name, out var cached))
+                return (float*)cached;
+
+            long bytes = PackedSgemmF32.PackedFloats(rows, cols) * sizeof(float);
+            if (_usedBytes + bytes > _budgetBytes)
+                return null;
+
+            float* buf = PackedSgemmF32.PackWeights(src, rows, cols);
+            _packedF32[name] = (nint)buf;
+            _usedBytes += bytes;
+            return buf;
         }
     }
 
@@ -155,6 +225,11 @@ public sealed class QuantizedWeightCache : IDisposable
                 if (ptr != 0) NativeMemory.Free((void*)ptr);
             }
             _repackedQ4Kx8.Clear();
+            foreach (var ptr in _packedF32.Values)
+            {
+                if (ptr != 0) NativeMemory.AlignedFree((void*)ptr);
+            }
+            _packedF32.Clear();
             _usedBytes = 0;
         }
         GC.SuppressFinalize(this);

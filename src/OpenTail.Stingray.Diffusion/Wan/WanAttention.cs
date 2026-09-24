@@ -40,24 +40,32 @@ public static class WanAttention
                 nint vtAddr = (nint)pVT;
                 nint otAddr = (nint)pOT;
 
-                Parallel.For(0, numHeads, h =>
+                // Split each head's query rows into chunks as well: parallelising over heads alone
+                // gives 12 tasks for Wan-1.3B, which leaves cores idle in the second round.
+                int qChunks = Math.Max(1, Math.Min((Environment.ProcessorCount * 2 + numHeads - 1) / numHeads, qSeq / 32));
+                int qChunkLen = (qSeq + qChunks - 1) / qChunks;
+                Parallel.For(0, numHeads * qChunks, task =>
                 {
-                    float* qHead = (float*)qtAddr + (long)h * qSeq * headDim;
+                    int h = task / qChunks;
+                    int q0 = (task % qChunks) * qChunkLen;
+                    int qLen = Math.Min(qChunkLen, qSeq - q0);
+                    if (qLen <= 0) return;
+                    float* qHead = (float*)qtAddr + ((long)h * qSeq + q0) * headDim;
                     float* kHead = (float*)ktAddr + (long)h * kvSeq * headDim;
                     float* vHead = (float*)vtAddr + (long)h * kvSeq * headDim;
-                    float* oHead = (float*)otAddr + (long)h * qSeq * headDim;
+                    float* oHead = (float*)otAddr + ((long)h * qSeq + q0) * headDim;
 
                     if (Avx2.IsSupported && Fma.IsSupported && headDim == 128)
                     {
-                        ComputeHeadAttentionAvx2_Dim128(qHead, kHead, vHead, oHead, qSeq, kvSeq, scale);
+                        ComputeHeadAttentionAvx2_Dim128(qHead, kHead, vHead, oHead, qLen, kvSeq, scale);
                     }
                     else if (Avx2.IsSupported && Fma.IsSupported && (headDim % 8 == 0))
                     {
-                        ComputeHeadAttentionAvx2_Generic(qHead, kHead, vHead, oHead, qSeq, kvSeq, headDim, scale);
+                        ComputeHeadAttentionAvx2_Generic(qHead, kHead, vHead, oHead, qLen, kvSeq, headDim, scale);
                     }
                     else
                     {
-                        ComputeHeadAttentionScalar(qHead, kHead, vHead, oHead, qSeq, kvSeq, headDim, scale);
+                        ComputeHeadAttentionScalar(qHead, kHead, vHead, oHead, qLen, kvSeq, headDim, scale);
                     }
                 });
 

@@ -14,6 +14,7 @@ and not yet pushed. The measured numbers are also in `README.md` and `Performanc
 | SDXL-Turbo 512² / 4 steps, CFG 0 | ✅ 42.4s | ✅ 35.8s, then ~4.1s/step after the new SGEMM | CLI now defaults Turbo to CFG 0 / 4 steps |
 | FLUX.2-dev 128² / 4 steps | ✅ 73.6s | ✅ hybrid 134s, full GPU 161–268s | Not broken on GPU (checked visually) |
 | FLUX.2-dev 512² / 2 steps | ✅ 258.8s | full 307.9–340s, hybrid 291–295s | GPU numbers from before `0958d6f` are noisy (see §4) |
+| Wan2.1-T2V-1.3B 256² / 1f / 20 steps, CFG 6 | ✅ 74–77s generate (was ~190s; C++ CPU 256.6s total) | not re-measured | F32 packed SGEMM, see §3 |
 
 ## 2. Bugs found (all fixed and committed)
 
@@ -42,6 +43,7 @@ and not yet pushed. The measured numbers are also in `README.md` and `Performanc
 | Vulkan `SgemmF16` 128×256 tiles, vec4 LDS, 512 threads | 1.5–1.6× (598 → 916 GFLOP/s on FLUX.2 linear1) |
 | Vulkan `SgemmSiluGateF16` on the same kernel | 525 → 325ms (1.6×) |
 | FLUX.2 Mistral truncated to 30 layers (last tap is layer 29) | text encode 34.9s → 25.9s |
+| `PackedSgemmF32` + F32 pack-once in `QuantizedWeightCache` (safetensors had no raw access, so every Linear re-read its weight) | Wan DiT 9.0 → 3.2s/step at 256². Applies to every safetensors DiT going through the cache (LTX-Video, HunyuanVideo, ...) |
 
 Tried and rejected (not measurably better, reverted): a branch-free im2col interior path, register
 prefetch in the SGEMM (VGPR pressure), 128×128 tiles (128×256 was better), full k-loop unroll
@@ -72,7 +74,7 @@ checks against scalar or double-precision references.
    - Next levers: an int8 dot-product (`integer_dot_product` is available on this GPU) quantized
      GEMM that keeps weights as Q4_K/Q8. That would cut DRAM traffic ~2–4× and lift the FP32 ALU
      ceiling. Big job. Also: `VulkanMatMulPathConfig` "Path 2" (tiled quantized GEMM) is an empty seam.
-3. **Next models in the table**: Wan 2.1/2.2, LTX-Video, Qwen Image (GPU broken), SD3/3.5
+3. **Next models in the table**: (Wan CPU done 2026-09-24; `WanTests` has 4 pre-existing pack/unpack failures, identical on clean `main`, likely stale expectations) LTX-Video, Qwen Image (GPU broken), SD3/3.5
    (composition issue), HunyuanVideo (noise). The new shared kernels will change their CPU (and
    FP16-GEMM GPU) numbers, so re-measure before trusting old table figures.
 4. **Safety net (strongly recommended)**: add a cheap per-pipeline E2E smoke test. Use a small
