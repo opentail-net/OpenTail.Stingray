@@ -417,6 +417,22 @@ public sealed class T5Encoder : IDisposable
         Console.WriteLine($"[T5 Diagnostic] Dumped {checkpoint}: {data.Length} floats ({data.Length / 4096} tokens x 4096) -> {path}");
     }
 
+    /// <summary>
+    /// Frees the GPU-resident weights/workspace AND the host-side FP32 weight cache (~19GB for T5-XXL).
+    /// The next Encode/EncodeGpu call reloads them on demand. Call this after encoding when the next
+    /// stage needs the memory. On a shared-memory iGPU, keeping T5 resident alongside FLUX.1's ~24GB
+    /// of FP16 DiT weights exhausts device memory.
+    /// </summary>
+    public void ReleaseMemory()
+    {
+        _gpuWorkspace?.Dispose();
+        _gpuWorkspace = null;
+        _gpuWeights?.Dispose();
+        _gpuWeights = null;
+        _gpuValidLen = -1;
+        _weightCache.Clear();
+    }
+
     public void Dispose()
     {
         _gpuWorkspace?.Dispose();

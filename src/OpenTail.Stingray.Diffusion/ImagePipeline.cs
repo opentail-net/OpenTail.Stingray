@@ -138,6 +138,8 @@ public sealed class ImagePipeline : IDisposable, IDiffusionPipeline
         var txtEmbeds = (_backend is not CpuBackend && _backend is IVisionOpsBackend t5GpuOps)
             ? _t5.EncodeGpu(t5Tokens, t5GpuOps)
             : _t5.Encode(t5Tokens);             // [seq, 4096]
+        if (_backend is not CpuBackend)
+            _t5.ReleaseMemory(); // free T5's GPU + host weights before the ~24GB FLUX DiT upload
         int nTxt = t5Tokens.Length;
         double msT5 = sw?.Elapsed.TotalMilliseconds ?? 0; sw?.Restart();
 
