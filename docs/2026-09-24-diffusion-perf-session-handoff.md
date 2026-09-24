@@ -97,3 +97,19 @@ checks against scalar or double-precision references.
   bigger tiles were the lever.
 - Watch driver first-use compile time for heavily unrolled shaders. It's paid once per process
   and dominates short benchmark runs.
+
+## 6. Four-model plan (started 2026-09-24, worked in this order)
+
+Rules: get a measured C++ `sd-cli` reference at the same config first. Run one heavy process at a
+time. Correctness before perf. Check images by eye. CPU first, then GPU. Scratch harnesses are
+`Zz*ProfTmp.cs` (untracked).
+
+- [x] **LTX-Video** (done): 311.6s → 133.3s at 512²/20 steps (DiT 2.2×, VAE 13×). No C++ reference
+      possible (vendored sd-cli is LTX-2 only). The CPU-vs-Vulkan "quality gap" was a seed mix-up in the
+      Vulkan test. Remaining: T5 ~22s (first-read + bf16 conversion), DiT ~5.3s per step.
+- [ ] **SD 3.5** (🟡): (a) off-centre composition, bisect vs C++ tensor dumps (pos-embed crop,
+      unpatchify); (b) CPU perf: dequant Q4_K once → F32 → `PackedSgemmF32`.
+- [ ] **Qwen Image** (🟢 CPU, slow; GPU broken): dequant-on-the-fly packed GEMM for K-quants
+      (F32 activations), then GPU bisection vs CPU.
+- [ ] **HunyuanVideo** (🟡 noise): confirm `sd-cli` runs our checkpoints coherently, then bisect
+      block by block. Timeboxed; write down the blocker if it stalls.

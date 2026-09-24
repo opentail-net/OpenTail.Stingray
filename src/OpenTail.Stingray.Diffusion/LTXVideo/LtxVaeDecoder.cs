@@ -421,7 +421,64 @@ public sealed class LtxVaeDecoder : IDisposable
         return CausalConv3D(xArr, weight, bias, inCh, outCh, f, h, w, padT, padH, padW, spatial);
     }
 
+    /// <summary>
+    /// Temporal padding is replicate (clamped frame index), so each output frame is a sum of 3×3
+    /// 2D convolutions over the clamped source frames, one per temporal tap. Taps that land on the
+    /// same source frame (all three for a single-frame decode) have their weights pre-summed, and
+    /// each distinct source frame runs once through the im2col+GEMM <see cref="DiffusionOps.Conv2D"/>
+    /// (~40x the scalar loop this replaced at 512² single-frame).
+    /// </summary>
     private static float[] CausalConv3D(float[] xArr, float[] weight, float[] bias, int inCh, int outCh, int f, int h, int w, int padT, int padH, int padW, int spatial)
+    {
+        const int k = 3;
+        if (padH != 1 || padW != 1) return CausalConv3DScalar(xArr, weight, bias, inCh, outCh, f, h, w, padT, padH, padW, spatial);
+
+        var output = new float[outCh * f * spatial];
+        var frameIn = f == 1 ? xArr : new float[inCh * spatial];
+        var w2d = new float[outCh * inCh * 9];
+        for (int outT = 0; outT < f; outT++)
+        {
+            int outBase = outT * spatial;
+            bool first = true;
+            for (int src = 0; src < f; src++)
+            {
+                // Sum the weights of every temporal tap whose clamped source frame is `src`.
+                int taps = 0;
+                for (int dt = 0; dt < k; dt++)
+                    if (Math.Clamp(outT - padT + dt, 0, f - 1) == src) taps |= 1 << dt;
+                if (taps == 0) continue;
+
+                Parallel.For(0, outCh * inCh, oi =>
+                {
+                    int wb = oi * 27, ob = oi * 9;
+                    for (int j = 0; j < 9; j++)
+                    {
+                        float s = 0f;
+                        for (int dt = 0; dt < k; dt++)
+                            if ((taps & (1 << dt)) != 0) s += weight[wb + dt * 9 + j];
+                        w2d[ob + j] = s;
+                    }
+                });
+
+                if (f > 1)
+                    for (int ic = 0; ic < inCh; ic++)
+                        Array.Copy(xArr, (ic * f + src) * spatial, frameIn, ic * spatial, spatial);
+
+                var y = DiffusionOps.Conv2D(frameIn, w2d, first ? bias : null, 1, inCh, h, w, outCh, 3, 3, 1, 1);
+                for (int oc = 0; oc < outCh; oc++)
+                {
+                    var dst = output.AsSpan(oc * f * spatial + outBase, spatial);
+                    var part = y.AsSpan(oc * spatial, spatial);
+                    if (first) part.CopyTo(dst);
+                    else TensorPrimitives.Add(dst, part, dst);
+                }
+                first = false;
+            }
+        }
+        return output;
+    }
+
+    private static float[] CausalConv3DScalar(float[] xArr, float[] weight, float[] bias, int inCh, int outCh, int f, int h, int w, int padT, int padH, int padW, int spatial)
     {
         const int k = 3;
         var output = new float[outCh * f * spatial];
