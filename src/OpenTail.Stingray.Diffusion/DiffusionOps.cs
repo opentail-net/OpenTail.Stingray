@@ -300,58 +300,84 @@ internal static unsafe class DiffusionOps
         int outW = (inW + 2 * padding - kW) / stride + 1;
         var output = new float[n * outC * outH * outW];
 
+        // im2col + GEMM (OpenBLAS/microkernel via MatMulBatchedF32) instead of a scalar direct
+        // convolution: each output pixel's receptive field becomes one row of a [pixels, inC*kH*kW]
+        // matrix, multiplied against the kernel viewed as [outC, inC*kH*kW] (its native layout).
+        // Rows are processed in chunks to bound the im2col buffer (~chunk*K floats).
         int hw = outH * outW;
         int inHW = inH * inW;
+        int kSize = inC * kH * kW;
+        int chunk = Math.Min(hw, Math.Max(64, (16 << 20) / Math.Max(1, kSize))); // ~64MB col buffer
+        var col = ArrayPool<float>.Shared.Rent(chunk * kSize);
+        var gemmOut = ArrayPool<float>.Shared.Rent(chunk * outC);
 
-        fixed (float* pIn = input)
-        fixed (float* pKernel = kernel)
-        fixed (float* pOut = output)
-        fixed (float* pBias = bias)
+        try
         {
-            var inPtr = pIn;
-            var kPtr = pKernel;
-            var outPtr = pOut;
-            var bPtr = pBias;
-
-            Parallel.For(0, n * outC, bo =>
+            fixed (float* pIn = input)
+            fixed (float* pKernel = kernel)
+            fixed (float* pOut = output)
+            fixed (float* pBias = bias)
+            fixed (float* pCol = col)
+            fixed (float* pG = gemmOut)
             {
-                int b  = bo / outC;
-                int oc = bo % outC;
-
-                float biasVal = bPtr != null ? bPtr[oc] : 0f;
-                int outBase = b * outC * hw + oc * hw;
-                int kBase0  = oc * inC * kH * kW;
-                int inBatch = b * inC * inHW;
-
-                for (int oh = 0; oh < outH; oh++)
+                nint inAddr = (nint)pIn, colAddr = (nint)pCol, gAddr = (nint)pG, outAddr = (nint)pOut;
+                for (int b = 0; b < n; b++)
                 {
-                    int ih0 = oh * stride - padding;
-                    for (int ow2 = 0; ow2 < outW; ow2++)
+                    int inBatch = b * inC * inHW;
+                    int outBatch = b * outC * hw;
+                    for (int p0 = 0; p0 < hw; p0 += chunk)
                     {
-                        int iw0 = ow2 * stride - padding;
-                        float sum = biasVal;
-                        for (int ic = 0; ic < inC; ic++)
+                        int rows = Math.Min(chunk, hw - p0);
+
+                        // Gather: row r = output pixel p0+r, column order (ic, kh, kw) matches the kernel.
+                        Parallel.For(0, rows, r =>
                         {
-                            int kBase = kBase0 + ic * kH * kW;
-                            int inBase = inBatch + ic * inHW;
-                            for (int kh = 0; kh < kH; kh++)
+                            float* src = (float*)inAddr + inBatch;
+                            float* dst = (float*)colAddr + (nint)r * kSize;
+                            int p = p0 + r;
+                            int ih0 = (p / outW) * stride - padding;
+                            int iw0 = (p % outW) * stride - padding;
+                            int c = 0;
+                            for (int ic = 0; ic < inC; ic++)
                             {
-                                int ih = ih0 + kh;
-                                if ((uint)ih >= (uint)inH) continue;
-                                int inRow = inBase + ih * inW;
-                                int kRow  = kBase + kh * kW;
-                                for (int kw = 0; kw < kW; kw++)
+                                float* plane = src + ic * inHW;
+                                for (int kh = 0; kh < kH; kh++)
                                 {
-                                    int iw = iw0 + kw;
-                                    if ((uint)iw >= (uint)inW) continue;
-                                    sum += inPtr[inRow + iw] * kPtr[kRow + kw];
+                                    int ih = ih0 + kh;
+                                    if ((uint)ih >= (uint)inH)
+                                    {
+                                        new Span<float>(dst + c, kW).Clear();
+                                        c += kW;
+                                        continue;
+                                    }
+                                    float* row = plane + ih * inW;
+                                    for (int kw = 0; kw < kW; kw++)
+                                    {
+                                        int iw = iw0 + kw;
+                                        dst[c++] = (uint)iw < (uint)inW ? row[iw] : 0f;
+                                    }
                                 }
                             }
-                        }
-                        outPtr[outBase + oh * outW + ow2] = sum;
+                        });
+
+                        SimdKernels.MatMulBatchedF32(pG, pKernel, pCol, rows, outC, kSize, pBias);
+
+                        // Scatter [rows, outC] -> NCHW output [outC, hw] slice.
+                        Parallel.For(0, outC, oc =>
+                        {
+                            float* g = (float*)gAddr + oc;
+                            float* o = (float*)outAddr + outBatch + (nint)oc * hw + p0;
+                            for (int r = 0; r < rows; r++)
+                                o[r] = g[(nint)r * outC];
+                        });
                     }
                 }
-            });
+            }
+        }
+        finally
+        {
+            ArrayPool<float>.Shared.Return(col);
+            ArrayPool<float>.Shared.Return(gemmOut);
         }
         return output;
     }
