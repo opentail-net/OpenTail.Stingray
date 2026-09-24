@@ -852,6 +852,23 @@ going forward, not just these two.
 
 ## Image & Video Diffusion (CPU + Vulkan iGPU) — out of core scope, tried anyway
 
+### Status matrix, 2026-09-24 (supersedes the older summary; every cell is a dated row below)
+
+Same dev machine throughout (Ryzen 7 5700G CPU / Radeon Vega 8 iGPU, shared RAM). "Total" = generate
+time unless marked. N/M = not measured. ✅ = correct image checked by eye.
+
+| Model | CPU working | GPU working | CPU speed | GPU speed | C++ CPU ref | C++ GPU ref |
+|---|---|---|---|---|---|---|
+| Wan 2.1 (1.3B) | ✅ | ✅ Vulkan (not re-run today) | **74.0-76.9s**, 256² 1f 20-step (was 209.6s this morning; 4238.7s pre-opt at 512² 2f) | 122.1s, 256² 1f 20-step (2026-09-18) | **256.6s**, same config (measured today) | 60.3s, same config (2026-09-15) |
+| LTX-Video 2B | ✅ | ✅ Vulkan | **133.3s**, 512² 1f 20-step (was 311.6s) | 144.0s, same config, measured before today's 13× VAE fix | N/M: vendored sd-cli is LTX-2 only | N/M |
+| FLUX.2-dev | ✅ | ✅ Vulkan (hybrid default) | 258.8s, 512² 2-step; 73.6s, 128² 4-step | 291-295s hybrid / 308-340s full, 512² 2-step; 134s hybrid, 128² 4-step | N/M | N/M |
+| Qwen Image (Q3_K_S) | ✅ | ✅ Vulkan, weights quantized on GPU | **277.4s**, 256² 8-step (was ~1,290s) | **159.4 / 161.1s**, same config (FP16 weights: 361.9s) | **231.4s**, same config | N/M |
+| FLUX.1-schnell | ✅ | ✅ Vulkan | 178.8s, 512² 4-step | 238.9s, same config | 191.7s | 99.8s (2026-09-16) |
+| SDXL-Turbo | ✅ | ✅ Vulkan | 42.4s, 512² 4-step, CFG 0 | 35.8s, same config | N/M | 21.2s (older config) |
+| SD 3.5 medium | ✅ matches C++ (fixed today) | ✅ Vulkan (same fix) | **82.5s**, 256² 20-step (was 284.8s) | 96.5s, same config | N/M (clip_g not on disk) | 48.0s, same config (2026-09-15) |
+| HunyuanVideo | 🟡 apple shape correct, colours wrong + stripe texture (was pure noise) | ⚪ not attempted | ~19s per step at 256², ~55s per step at 512²; 512² 1f 12-step 700.0s | N/A | N/M: vendored sd-cli is HunyuanVideo 1.5 only | N/M |
+| Z-Image-Turbo | ✅ | ✅ Vulkan (residency re-enabled) | 87.8-97.8s, 256² 4-step | 52.0-57.6s, same config | N/M | N/M |
+
 Different domain from this doc's LLM/TTS/ASR focus (a different pipeline, `OpenTail.Stingray.Diffusion`,
 not benchmarked here systematically) — included as real data points since the checkpoints were on
 hand and untested.
@@ -1182,7 +1199,7 @@ This section reads across the ratios above; it doesn't replace them.
 
 ---
 
-*Last updated: 2026-09-21 (SD3.5 composition/scale bug: real root cause found -- missing flow_shift=3.0 in the flow-matching sigma schedule, confirmed against examples/stable-diffusion.cpp's DiscreteFlowDenoiser -- fixed in Sd3Pipeline.cs; real visually-confirmed improvement, tiny-corner-cropped apple to large correctly-scaled apple, but a secondary left-shift position bug remains open, NOT fully golden-verified yet. Also: Wan2.1 CPU `ModulateRows`/`ApplyGatedResidualRows` vectorization + `Resolve()` memoization: real, verified-safe via 3-run real-weight end-to-end comparison, but not a measurable end-to-end win at this scale -- see the 2026-09-21 Wan row above). Prior: 2026-09-19 (FLUX.2 GPU Steps 1-4 shader fusions, wired end-to-end 167.8s, and head-to-head benchmarks vs official PyTorch examples/flux2 reference: Stingray CPU 1.30x faster, Vulkan iGPU 1.03x faster; FLUX.2 CPU correctness & QuantizedWeightCache: 3 compounding structural bugs resolved, photorealistic output verified, 3.1x faster end-to-end; Qwen-Image 2.3x faster; Audio Diffusion GPU Acceleration; see walkthrough logs).*
+*Last updated: 2026-09-24 (diffusion status matrix refreshed; Wan/LTX/SD3.5/Qwen Image CPU speedups via packed and dequant-on-the-fly GEMMs; SD3.5 composition bug fixed and matches C++; Qwen Image Vulkan with quantized weights 159.4s; HunyuanVideo noise → recognisable apple; MOSS-TTS-Nano and Higgs Audio upgraded to green). Prior: 2026-09-21 (SD3.5 composition/scale bug: real root cause found -- missing flow_shift=3.0 in the flow-matching sigma schedule, confirmed against examples/stable-diffusion.cpp's DiscreteFlowDenoiser -- fixed in Sd3Pipeline.cs; real visually-confirmed improvement, tiny-corner-cropped apple to large correctly-scaled apple, but a secondary left-shift position bug remains open, NOT fully golden-verified yet. Also: Wan2.1 CPU `ModulateRows`/`ApplyGatedResidualRows` vectorization + `Resolve()` memoization: real, verified-safe via 3-run real-weight end-to-end comparison, but not a measurable end-to-end win at this scale -- see the 2026-09-21 Wan row above). Prior: 2026-09-19 (FLUX.2 GPU Steps 1-4 shader fusions, wired end-to-end 167.8s, and head-to-head benchmarks vs official PyTorch examples/flux2 reference: Stingray CPU 1.30x faster, Vulkan iGPU 1.03x faster; FLUX.2 CPU correctness & QuantizedWeightCache: 3 compounding structural bugs resolved, photorealistic output verified, 3.1x faster end-to-end; Qwen-Image 2.3x faster; Audio Diffusion GPU Acceleration; see walkthrough logs).*
 Source documents: `docs/done/perf-loop-progress.md`, `docs/cpu-performance-baseline.md`,
 `docs/tts-performance-baseline-and-plan.md`, `docs/done/cpu-speculative-decoding-findings.md`,
 `docs/done/vulkan-backend-evidence.md`, `docs/done/gpu-review-log.md`, `GR_performance.md`,
