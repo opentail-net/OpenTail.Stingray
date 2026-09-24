@@ -141,6 +141,93 @@ public static unsafe class PackedSgemmF32
         }
     }
 
+    /// <summary>
+    /// Same GEMM with <c>W</c> left in its GGUF block-quantized form: each task owns
+    /// <see cref="NcPanels"/> panels (64 output rows) for ALL <paramref name="m"/> rows, and for each
+    /// K-block dequantizes just those 64 rows × <see cref="Kc"/> into a thread-local panel buffer
+    /// that stays in L2 while the 6×16 kernel sweeps every token. Each weight element is
+    /// dequantized once per call, and activations stay FP32, unlike the int8-activation
+    /// (Q8) paths, which are lossy on wide-range diffusion activations. For weights too large to
+    /// keep a dequantized FP32 copy of.
+    /// </summary>
+    public static bool CanGemmQuant(DType dtype, int k)
+    {
+        int bs = DTypeInfo.BlockSize(dtype);
+        return IsSupported && bs > 1 && Kc % bs == 0 && k % bs == 0;
+    }
+
+    public static void GemmQuant(float* output, float* input, byte* weights, DType dtype, int m, int n, int k)
+    {
+        if (!CanGemmQuant(dtype, k)) throw new NotSupportedException($"GemmQuant: {dtype} with k={k}");
+        if (m <= 0 || n <= 0) return;
+
+        int bs = DTypeInfo.BlockSize(dtype);
+        long rowBytes = (long)(k / bs) * DTypeInfo.BytesPerBlock(dtype);
+        int panels = (n + Nr - 1) / Nr;
+        int nBlocks = (panels + NcPanels - 1) / NcPanels;
+
+        nint o = (nint)output, x = (nint)input, w = (nint)weights;
+        Parallel.For(0, nBlocks,
+            () => (Buf: (nint)NativeMemory.AlignedAlloc((nuint)(NcPanels * Kc * Nr * sizeof(float)), 64),
+                   Row: new float[Kc]),
+            (nb, _, local) =>
+            {
+                float* bufBase = (float*)local.Buf;
+                int p0 = nb * NcPanels, p1 = Math.Min(panels, p0 + NcPanels);
+                int c0 = p0 * Nr, c1 = Math.Min(n, p1 * Nr);
+                float* tmp = stackalloc float[Mr * Nr];
+                for (int k0 = 0; k0 < k; k0 += Kc)
+                {
+                    int kc = Math.Min(Kc, k - k0);
+                    int srcBytes = kc / bs * DTypeInfo.BytesPerBlock(dtype);
+                    // Dequantize rows [c0, c1) x [k0, k0+kc) straight into panel layout.
+                    for (int c = c0; c < p1 * Nr; c++)
+                    {
+                        int p = c / Nr - p0, j = c % Nr;
+                        float* pd = bufBase + (long)p * Kc * Nr + j;
+                        if (c < c1)
+                        {
+                            var src = new ReadOnlySpan<byte>((byte*)w + c * rowBytes + (long)k0 / bs * DTypeInfo.BytesPerBlock(dtype), srcBytes);
+                            Dequantize.ToFloat32(src, local.Row.AsSpan(0, kc), dtype, kc);
+                            for (int kk = 0; kk < kc; kk++) pd[kk * Nr] = local.Row[kk];
+                        }
+                        else
+                        {
+                            for (int kk = 0; kk < kc; kk++) pd[kk * Nr] = 0f;
+                        }
+                    }
+
+                    bool acc = k0 > 0;
+                    for (int p = p0; p < p1; p++)
+                    {
+                        int cc = p * Nr;
+                        int valid = Math.Min(Nr, n - cc);
+                        float* bp = bufBase + (long)(p - p0) * Kc * Nr;
+                        int r = 0;
+                        if (valid == Nr)
+                        {
+                            for (; r + Mr <= m; r += Mr)
+                                Kernel6x16((float*)x + (long)r * k + k0, k, bp, kc, (float*)o + (long)r * n + cc, n, acc);
+                            for (; r < m; r++)
+                                Kernel1x16((float*)x + (long)r * k + k0, bp, kc, (float*)o + (long)r * n + cc, acc);
+                        }
+                        else
+                        {
+                            for (; r < m; r++)
+                            {
+                                float* orow = (float*)o + (long)r * n + cc;
+                                if (acc) { for (int j = 0; j < valid; j++) tmp[j] = orow[j]; }
+                                Kernel1x16((float*)x + (long)r * k + k0, bp, kc, tmp, acc);
+                                for (int j = 0; j < valid; j++) orow[j] = tmp[j];
+                            }
+                        }
+                    }
+                }
+                return local;
+            },
+            local => NativeMemory.AlignedFree((void*)local.Buf));
+    }
+
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static void Kernel6x16(float* a, int lda, float* bp, int kc, float* c, int ldc, bool accumulate)
     {

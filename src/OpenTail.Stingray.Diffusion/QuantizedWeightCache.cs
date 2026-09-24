@@ -115,7 +115,19 @@ public sealed class QuantizedWeightCache : IDisposable
                         }
                     }
 
-                    // 3. Try direct raw-quantized MatMulBatched (MicroGemmQ4K, TryMatMulBatchedQ8, or fused MatVec)
+                    // 3. Block-quantized weights with a real token batch that were not cached above:
+                    // dequantize-on-the-fly packed GEMM. Measured on real diffusion tensors (Qwen
+                    // Image Q3_K/Q4_K at m=271, Wan2.2 Q5_K at m=1024): 1.1-4x faster than
+                    // MatMulBatched, and exact (FP32 activations), where MatMulBatched's int8 paths
+                    // carried relErr ~4e-3.
+                    if (n >= MinBatchForPackedF32 && PackedSgemmF32.CanGemmQuant(dtype, cols))
+                    {
+                        PackedSgemmF32.GemmQuant(po, px, (byte*)dataPtr, dtype, n, rows, cols);
+                        ApplyBias(output, bias, n, outDim);
+                        return;
+                    }
+
+                    // 4. Direct raw-quantized MatMulBatched (small batches: fused MatVec)
                     SimdKernels.MatMulBatched(po, (byte*)dataPtr, px, n, rows, cols, dtype, allowQ8: allowQ8, allowBlas: true);
                     ApplyBias(output, bias, n, outDim);
                     return;
@@ -123,7 +135,7 @@ public sealed class QuantizedWeightCache : IDisposable
             }
         }
 
-        // 4. Loaders without raw access (SafetensorsLoader.TryGetRaw always declines): pack the
+        // 5. Loaders without raw access (SafetensorsLoader.TryGetRaw always declines): pack the
         // ReadF32 result once and keep it. Without this every call re-read (copied) the whole
         // weight tensor and ran the dot-product kernel -- ~95% of Wan's CPU DiT time.
         if (n >= MinBatchForPackedF32 && PackedSgemmF32.IsSupported)
@@ -138,7 +150,7 @@ public sealed class QuantizedWeightCache : IDisposable
             }
         }
 
-        // 5. Fallback: ReadF32 + DiffusionOps.Linear
+        // 6. Fallback: ReadF32 + DiffusionOps.Linear
         float[] w = _weights.ReadF32(resolved);
         DiffusionOps.Linear(x, w, bias, output, n, inDim, outDim);
     }

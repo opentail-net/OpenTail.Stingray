@@ -109,8 +109,10 @@ time. Correctness before perf. Check images by eye. CPU first, then GPU. Scratch
       Vulkan test. Remaining: T5 ~22s (first-read + bf16 conversion), DiT ~5.3s per step.
 - [x] **SD 3.5** (done, 🟢 CPU and GPU): composition bug = T5 wrongly masked for SD3 + OpenCLIP-bigG
       had 16×80 heads instead of 20×64. The image matches C++ with the same noise. CPU 284.8s → 82.5s.
-- [ ] **Qwen Image** (🟢 CPU, slow; GPU broken): dequant-on-the-fly packed GEMM for K-quants
-      (F32 activations), then GPU bisection vs CPU.
+- [x] **Qwen Image** (CPU done): 8 steps ~1,290s → 277.4s (C++ 231.4s). Scalar attention loop + new
+      `GemmQuant`. GPU is **blocked on this machine**: the 20B upload fails with ErrorOutOfHostMemory on the
+      iGPU. Needs a machine with a ≥24 GB discrete GPU to verify. The old "GPU diverges" evidence compared
+      against a CPU path that was itself lossy (int8 activations, relErr ~4e-3).
 - [ ] **HunyuanVideo** (🟡 noise): confirm `sd-cli` runs our checkpoints coherently, then bisect
       block by block. Timeboxed; write down the blocker if it stalls.
 

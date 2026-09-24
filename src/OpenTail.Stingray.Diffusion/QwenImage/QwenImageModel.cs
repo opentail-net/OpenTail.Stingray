@@ -15,6 +15,8 @@ public sealed class QwenImageModel : IDisposable
     private readonly Dictionary<string, CoreTensor>? _gpuWeights;
     private readonly int _numLayers;
     private readonly QuantizedWeightCache _cache;
+    private bool _gpuDisabled;
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, float[]?> _biasCache = new(StringComparer.Ordinal);
     private bool _disposed;
     private QwenImageGpuWeights? _residentGpuWeights;
     private QwenImageGpuWorkspace? _residentGpuWorkspace;
@@ -417,7 +419,7 @@ public sealed class QwenImageModel : IDisposable
         // GPU-resident path (docs/094 Phase 2) only covers standard text-to-image (no Edit
         // reference-latent conditioning yet, matching the scope of every other GPU port in this
         // codebase's first pass) -- fall back to CPU when refLatent is supplied.
-        if (_backend is not null && refLatent is null && _backend is IVisionOpsBackend visionOps && _backend is IImageOpsBackend imageOps)
+        if (!_gpuDisabled && _backend is not null && refLatent is null && _backend is IVisionOpsBackend visionOps && _backend is IImageOpsBackend imageOps)
         {
             try
             {
@@ -428,8 +430,12 @@ public sealed class QwenImageModel : IDisposable
             }
             catch (Exception ex) when (ex is not OutOfMemoryException)
             {
-                Console.WriteLine($"[QwenImage GPU Exception] {ex}");
-                // Fall back to CPU if GPU encounters an unexpected issue
+                // Fall back to CPU for the rest of this model's lifetime. Retrying every call
+                // re-attempted the whole 20B-parameter upload per forward (and on a device that can't
+                // hold it -- e.g. a shared-memory iGPU, ErrorOutOfHostMemory -- turned each CPU step
+                // from ~34s into ~250s).
+                _gpuDisabled = true;
+                Console.WriteLine($"[QwenImage] GPU forward failed, using CPU from now on: {ex.GetType().Name}: {ex.Message}");
             }
         }
 
@@ -592,10 +598,10 @@ public sealed class QwenImageModel : IDisposable
         var txtK = Linear($"{prefix}.add_k_proj", txt, HiddenDim, HiddenDim);
         var txtV = Linear($"{prefix}.add_v_proj", txt, HiddenDim, HiddenDim);
 
-        RmsNormHeads(imgQ, numImg, NumHeads, HeadDim, GetWeight($"{prefix}.norm_q.weight"));
-        RmsNormHeads(imgK, numImg, NumHeads, HeadDim, GetWeight($"{prefix}.norm_k.weight"));
-        RmsNormHeads(txtQ, numTxt, NumHeads, HeadDim, GetWeight($"{prefix}.norm_added_q.weight"));
-        RmsNormHeads(txtK, numTxt, NumHeads, HeadDim, GetWeight($"{prefix}.norm_added_k.weight"));
+        RmsNormHeads(imgQ, numImg, NumHeads, HeadDim, SmallWeight($"{prefix}.norm_q.weight"));
+        RmsNormHeads(imgK, numImg, NumHeads, HeadDim, SmallWeight($"{prefix}.norm_k.weight"));
+        RmsNormHeads(txtQ, numTxt, NumHeads, HeadDim, SmallWeight($"{prefix}.norm_added_q.weight"));
+        RmsNormHeads(txtK, numTxt, NumHeads, HeadDim, SmallWeight($"{prefix}.norm_added_k.weight"));
 
         var q = ConcatSequences(txtQ, imgQ, numTxt, numImg);
         var k = ConcatSequences(txtK, imgK, numTxt, numImg);
@@ -617,53 +623,11 @@ public sealed class QwenImageModel : IDisposable
         return (finalImg, finalTxt);
     }
 
+    // Shared tiled/AVX2 attention (same [seq, heads*headDim] layout). This was a scalar,
+    // single-threaded loop with a per-row allocation and a 3072-float stride through V in P·V:
+    // ~27 G multiply-adds per forward on one core, most of Qwen Image's CPU step time.
     private static float[] MultiHeadAttention(float[] q, float[] k, float[] v, int seqLen, int numHeads, int headDim)
-    {
-        float scale = 1.0f / MathF.Sqrt(headDim);
-        var output = new float[seqLen * numHeads * headDim];
-
-        for (int h = 0; h < numHeads; h++)
-        {
-            int hOff = h * headDim;
-            for (int i = 0; i < seqLen; i++)
-            {
-                int qRow = (i * numHeads + h) * headDim;
-                var scores = new float[seqLen];
-                float maxScore = float.NegativeInfinity;
-
-                for (int j = 0; j < seqLen; j++)
-                {
-                    int kRow = (j * numHeads + h) * headDim;
-                    float dot = 0f;
-                    for (int d = 0; d < headDim; d++)
-                        dot += q[qRow + d] * k[kRow + d];
-                    dot *= scale;
-                    scores[j] = dot;
-                    if (dot > maxScore) maxScore = dot;
-                }
-
-                float sumExp = 0f;
-                for (int j = 0; j < seqLen; j++)
-                {
-                    scores[j] = MathF.Exp(scores[j] - maxScore);
-                    sumExp += scores[j];
-                }
-                float invSum = 1f / sumExp;
-                for (int j = 0; j < seqLen; j++) scores[j] *= invSum;
-
-                int outRow = (i * numHeads + h) * headDim;
-                for (int d = 0; d < headDim; d++)
-                {
-                    float sum = 0f;
-                    for (int j = 0; j < seqLen; j++)
-                        sum += scores[j] * v[(j * numHeads + h) * headDim + d];
-                    output[outRow + d] = sum;
-                }
-            }
-        }
-
-        return output;
-    }
+        => DiffusionOps.MultiHeadAttention(q, k, v, seqLen, seqLen, numHeads, headDim);
 
     private static void RmsNormHeads(float[] qk, int seqLen, int numHeads, int headDim, float[] gamma)
     {
@@ -685,6 +649,9 @@ public sealed class QwenImageModel : IDisposable
         }
     }
 
+    // Small per-block tensors (QK-norm gammas) cached: GetWeight is a locked disk read.
+    private float[] SmallWeight(string name) => _biasCache.GetOrAdd("w:" + name, _ => GetWeight(name))!;
+
     private static float[] ConcatSequences(float[] a, float[] b, int lenA, int lenB)
     {
         var result = new float[(lenA + lenB) * HiddenDim];
@@ -705,18 +672,8 @@ public sealed class QwenImageModel : IDisposable
         // (2026-09-18), not a guess.
         int intermediateDim = HiddenDim * 4;
         var up = Linear($"{prefix}.net.0.proj", x, HiddenDim, intermediateDim);
-        var result = new float[seqLen * intermediateDim];
-
-        for (int i = 0; i < seqLen; i++)
-        {
-            int off = i * intermediateDim;
-            for (int d = 0; d < intermediateDim; d++)
-            {
-                result[off + d] = DiffusionOps.Gelu(up[off + d]);
-            }
-        }
-
-        return Linear($"{prefix}.net.2", result, intermediateDim, HiddenDim);
+        DiffusionOps.GeluInPlace(up.AsSpan(0, seqLen * intermediateDim)); // parallel, same tanh GELU
+        return Linear($"{prefix}.net.2", up, intermediateDim, HiddenDim);
     }
 
     private static float[] Modulate(float[] x, int seqLen, ReadOnlySpan<float> shift, ReadOnlySpan<float> scale, int[]? index)
@@ -773,7 +730,8 @@ public sealed class QwenImageModel : IDisposable
     {
         string wName = Resolve($"{name}.weight");
         string bName = Resolve($"{name}.bias");
-        float[]? b = _weights.Contains(bName) ? _weights.ReadF32(bName) : null;
+        // Cached: ReadF32 is a locked disk read, and this ran for every Linear of every block and step.
+        float[]? b = _biasCache.GetOrAdd(bName, n => _weights.Contains(n) ? _weights.ReadF32(n) : null);
         int rows = x.Length / inDim;
         var result = new float[rows * outDim];
         _cache.Linear(wName, x, b ?? ReadOnlySpan<float>.Empty, result, rows, inDim, outDim);
