@@ -131,3 +131,44 @@ Phase 0 (a regression sweep of the audio engines that share today's changed code
 real weights, visible timing, one heavy process at a time, and commit per engine.
 
 - [ ] Audio re-check: Phase 0 → 1 → 2 → 3 (tracked in that doc's Status list)
+
+## 8. RESUME HERE (PC shut down mid-task, late 2026-09-24): Vulkan headDim=128 attention rewrite
+
+**State: new kernel is written, not yet compiled or tested. The changes are uncommitted in the working tree.**
+
+Why: FLUX.1 on Vulkan takes 35.0s/step against C++'s 20.45s. `MultiHeadAttentionTiled128` costs 223 ms/call
+(90 GFLOP/s) at 1280 tok × 24 heads × 128, which is **12.7s of each step** (57 blocks). The GEMMs are
+already near ggml (Q4_K ~905 vs 1,250 GFLOP/s, commit `56435a6`). The same kernel is used by FLUX.2, Qwen Image, SD3.5 and Z-Image.
+
+Uncommitted edits:
+- `src/OpenTail.Stingray.Vulkan/Shaders.cs`: new `FlashAttention128`, just above `MultiHeadAttentionTiled40`.
+  - 256 threads, a 64q × 64k score tile, 4×4 per thread (tx=tid&15 key/dim group, ty=tid>>4 row group).
+  - QKᵀ runs over 4 d-chunks of 32, with the Q and K chunks stored transposed into `buf` (vec4[1024]).
+  - Online softmax runs in registers, with 16-lane `subgroupShuffleXor` max/sum.
+  - P goes into `p_lds` (vec4[1024], [key][rowGroup]).
+  - P·V runs over 2 key-chunks of 32 (V chunk in `buf`), with thread output dims `tx` and `16+tx` (vec4 index).
+  - LDS is exactly 32 KB, which is this device's max (`maxComputeSharedMemorySize=32768`, subgroup 64).
+- `VulkanBackend.cs`:
+  - Field `_flashAttention128Pipeline` (disposed with the backend).
+  - `UseLegacyAttention128` property, controlled by env `STINGRAY_ATTN128_LEGACY=1` and read every call, for A/B.
+  - Routing in `MultiHeadAttentionTiled`, headDim==128 branch: `if (MinSubgroupSize >= 16 && !UseLegacyAttention128)`
+    dispatches `((qSeq+63)/64, 1, numHeads)` and returns. Otherwise the old path runs.
+- `tests/OpenTail.Stingray.Tests.Diffusion/MultiHeadAttentionTiledGpuParityTests.cs`: 3 new headDim=128 cases
+  (1280/1280/3, 100/77/2, 1, 300/2) compared against the CPU `DiffusionOps.MultiHeadAttention` (tolerance 5e-3).
+
+Next steps:
+1. `dotnet build tests/OpenTail.Stingray.Tests.Diffusion -c Release` and fix any GLSL compile errors. Unverified risks:
+   - component writes `buf[i][c] = x` into a shared vec4;
+   - `m[i] = NEG_INF` array init.
+2. Run `...Tests.Diffusion.exe -class OpenTail.Stingray.Tests.Diffusion.MultiHeadAttentionTiledGpuParityTests`.
+3. Bench: run `ZZ_VKATTN=1` with `-class OpenTail.Stingray.Tests.Diffusion.ZzQwenImageProfTmp` (method `VulkanAttentionFluxShape`),
+   then run it again with `STINGRAY_ATTN128_LEGACY=1` for the A/B (baseline 223.1 ms). Target <50 ms.
+   - If it is slow, try the Q/K transposed-store bank conflicts, or 128 threads with 8×4 per thread.
+4. Run `scripts/gen-spirv.ps1`, then the drift test and Tests.Vulkan.Fast.
+5. FLUX.1 end to end: `stingray image --backend vulkan`, 512², 4 steps, `STINGRAY_PROFILE_DECODE=1`
+   (baseline 173.6s total, 35.0s/step). Check the image visually, then commit and add a PerformanceLeague row.
+   Re-check FLUX.2 (237s), Qwen GPU (159s) and SD3.5 GPU (85s) if time allows.
+6. After that, the backlog is: the block-repacked Q4_K layout; Wan2.2 dual-model GPU; the HunyuanVideo VAE colour/stripes; the audio re-check
+   (Phase 1 resumes at OmniVoice: 32 steps, guidance 2.0; see `docs/2026-09-24-audio-recheck-plan.md`).
+
+Housekeeping: the `Zz*ProfTmp.cs` scratch harnesses are untracked, so never commit them. `main` has unpushed commits; do not push unless asked.
