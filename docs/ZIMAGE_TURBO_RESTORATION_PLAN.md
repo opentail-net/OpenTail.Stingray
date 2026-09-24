@@ -48,8 +48,9 @@ white table against a dark background, with no grid or pebble artifacts. The fil
 > per-head loop to max |diff| ~1e-6. Median time at 320 tokens was 13.3ms vs 50.7ms; at 1056 tokens,
 > 124ms vs 195ms; at 4128 tokens, 12.0s vs 8.9s, but the per-head loop needs a ~2 GB score buffer there.
 > `ZImageDiT` uses `WanAttention` again, and §3 rule 1's attention-kernel ban no longer applies.
-> (B) `SimdKernels.MatMulBatched` already defaults to `allowQ8: false`, so this simply restores `235fab2`'s
-> exact CPU matmul path; the measured CPU time (226s) is in line with 2026-09-12's 194–232s.
+> (B) **Disproven and reverted**: an A/B with `allowQ8: true` on the Q4_0 DiT gave ~20s vs ~30s per CPU step,
+> latent std 1.4538 vs 1.4486, and a visually identical image. 8-bit activations don't cause the mosaic, so
+> `ZImageDiT` now uses `allowQ8: true`.
 
 ### A. The Conflation Regression (Commit `ffa2681`)
 On Sunday, Sep 13, 2026, commit `ffa2681` (`feat(diffusion): accelerate CPU DiT paths with FlashAttention, context caching, and full numerical parity`) attempted to apply optimizations across Wan 2.1, HunyuanVideo, SD3, and Z-Image concurrently. In that commit:

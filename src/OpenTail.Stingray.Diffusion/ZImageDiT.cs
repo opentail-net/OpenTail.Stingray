@@ -908,9 +908,12 @@ public sealed class ZImageDiT : IDisposable
             }
             else
             {
-                // CPU path: exact non-quantized activation path matching 235fab2
+                // CPU path: Q8 activations (llama.cpp-style Q4_0 x Q8 dot). Measured 2026-09-24 at
+                // 256x256/4 steps: ~20s vs ~30s per step against allowQ8:false, latent std 1.4538 vs
+                // 1.4486, visually identical image. It did not cause the 16x16 mosaic (that was the
+                // timestep-embedding order bug).
                 fixed (float* xPtr = x, rPtr = result)
-                    SimdKernels.MatMulBatched(rPtr, (byte*)ptr, xPtr, n, rows, cols, dtype, allowQ8: false);
+                    SimdKernels.MatMulBatched(rPtr, (byte*)ptr, xPtr, n, rows, cols, dtype, allowQ8: true);
             }
         }
         else
