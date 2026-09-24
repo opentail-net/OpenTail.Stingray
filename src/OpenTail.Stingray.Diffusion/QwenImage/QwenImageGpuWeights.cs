@@ -222,10 +222,6 @@ public sealed class QwenImageGpuWeights : IDisposable
     // model's full 60-layer weight set.
     private static readonly bool ForceFp32WeightsExperiment = false;
 
-    /// <summary>Raw GGUF tensor access (e.g. <see cref="IWeightLoader.TryGetRaw"/>), used to keep
-    /// block-quantized weights quantized on the GPU.</summary>
-    public delegate bool RawWeightSource(string name, out nint data, out long byteLen, out DType dtype, out int rows, out int cols);
-
     /// <summary>
     /// Q3_K/Q4_K weights are uploaded as their raw GGUF blocks when the backend's Sgemm can consume
     /// them (Vulkan: dequant-in-shader SgemmQ3K/SgemmQ4K + MatVecDq*): ~3.4-4.5 bits per weight
@@ -236,14 +232,8 @@ public sealed class QwenImageGpuWeights : IDisposable
     private static unsafe CoreTensor UploadWeight(IComputeBackend backend, RawWeightSource? raw, string name,
         Func<string, float[]> getWeight, TensorShape shape, bool forceFp32 = false)
     {
-        if (!forceFp32 && raw is not null && backend.SupportsQuantizedSgemm
-            && Environment.GetEnvironmentVariable("STINGRAY_QWEN_GPU_FP16") != "1"
-            && raw(name, out nint data, out long len, out DType dt, out int rows, out int cols)
-            && (dt == DType.Q3_K || dt == DType.Q4_K)
-            && rows == shape.Dims[0] && cols == shape.Dims[1] && cols % 256 == 0)
-        {
-            return backend.UploadRaw(new ReadOnlySpan<byte>((void*)data, checked((int)len)), shape, dt);
-        }
+        if (!forceFp32 && QuantizedGpuUpload.TryUpload(backend, raw, name, shape, "STINGRAY_QWEN_GPU_FP16") is { } q)
+            return q;
         return UploadWeight(backend, getWeight(name), shape, forceFp32);
     }
 

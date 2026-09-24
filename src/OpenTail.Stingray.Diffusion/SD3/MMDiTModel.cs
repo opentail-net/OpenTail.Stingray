@@ -470,7 +470,8 @@ public sealed class MMDiTModel : IDisposable
                 OutChannels,
                 PatchSize,
                 ContextSize,
-                AdmInChannels);
+                AdmInChannels,
+                rawSource: _weightReader.TryGetRaw);
         }
 
         int outPatchDim = OutChannels * PatchSize * PatchSize;

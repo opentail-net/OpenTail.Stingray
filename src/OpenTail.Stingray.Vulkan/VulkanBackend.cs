@@ -1612,12 +1612,33 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
     private ComputePipeline? _sgemmBf16Pipeline;
     private ComputePipeline? _sgemmFp8Pipeline;
     private ComputePipeline? _matMulTiledQ4KPipeline;   // Path 2 tiled GEMM
-    private ComputePipeline? _sgemmQ4KPipeline;         // dequant-in-shader SgemmF16 variant (diffusion)
-    private ComputePipeline? _sgemmQ3KPipeline;
-    private ComputePipeline? _matVecDqQ4KPipeline;
-    private ComputePipeline? _matVecDqQ3KPipeline;
-    private ComputePipeline? _sgemmSiluGateQ4KPipeline;
-    private ComputePipeline? _sgemmSiluGateQ3KPipeline;
+    // Dequant-in-shader GEMM family for GGUF K-quant weights (Shaders.SgemmQ*K, MatVecDqQ*K,
+    // SgemmSiluGateQ*K), keyed by (kind, weight dtype).
+    private readonly Dictionary<(QuantGemmKind, DType), ComputePipeline> _quantGemmPipelines = new();
+    private enum QuantGemmKind { Sgemm, MatVec, SiluGate }
+
+    private static bool IsQuantGemmDType(DType dt) => dt is DType.Q3_K or DType.Q4_K or DType.Q5_K;
+
+    private unsafe ComputePipeline QuantGemmPipeline(QuantGemmKind kind, DType dt)
+    {
+        if (_quantGemmPipelines.TryGetValue((kind, dt), out var p)) return p;
+        string src = (kind, dt) switch
+        {
+            (QuantGemmKind.Sgemm, DType.Q3_K) => Shaders.SgemmQ3K,
+            (QuantGemmKind.Sgemm, DType.Q4_K) => Shaders.SgemmQ4K,
+            (QuantGemmKind.Sgemm, DType.Q5_K) => Shaders.SgemmQ5K,
+            (QuantGemmKind.MatVec, DType.Q3_K) => Shaders.MatVecDqQ3K,
+            (QuantGemmKind.MatVec, DType.Q4_K) => Shaders.MatVecDqQ4K,
+            (QuantGemmKind.MatVec, DType.Q5_K) => Shaders.MatVecDqQ5K,
+            (QuantGemmKind.SiluGate, DType.Q3_K) => Shaders.SgemmSiluGateQ3K,
+            (QuantGemmKind.SiluGate, DType.Q4_K) => Shaders.SgemmSiluGateQ4K,
+            (QuantGemmKind.SiluGate, DType.Q5_K) => Shaders.SgemmSiluGateQ5K,
+            _ => throw new NotSupportedException($"No dequant GEMM for {kind}/{dt}"),
+        };
+        p = new ComputePipeline(this, src, 3, pushConstantSize: sizeof(SgemmParams));
+        _quantGemmPipelines[(kind, dt)] = p;
+        return p;
+    }
     private ComputePipeline? _matMulTiledQ6KPipeline;   // Path 2 tiled GEMM (ffn_down)
     private ComputePipeline? _dequantQ5KMPipeline;
     private ComputePipeline? _dequantQ4KMPipeline;
@@ -3709,19 +3730,15 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
 
         // Weights kept in GGUF block-quantized form (uploaded via UploadRaw): dequantize-in-shader
         // GEMM, same tiling as SgemmF16 (see Shaders.SgemmQ4K / SgemmQ3K).
-        if (A.DType == DType.Float32 && (B.DType == DType.Q4_K || B.DType == DType.Q3_K) && K % 256 == 0)
+        if (A.DType == DType.Float32 && IsQuantGemmDType(B.DType) && K % 256 == 0)
         {
             if (M == 1 && inputRowOffsetElements % 4 == 0)
             {
-                ComputePipeline mv = B.DType == DType.Q4_K
-                    ? (_matVecDqQ4KPipeline ??= new ComputePipeline(this, Shaders.MatVecDqQ4K, 3, pushConstantSize: sizeof(SgemmParams)))
-                    : (_matVecDqQ3KPipeline ??= new ComputePipeline(this, Shaders.MatVecDqQ3K, 3, pushConstantSize: sizeof(SgemmParams)));
+                ComputePipeline mv = QuantGemmPipeline(QuantGemmKind.MatVec, B.DType);
                 DispatchOrRecord(mv, [GetBuffer(A), GetBuffer(B), GetBuffer(C)], ((uint)N + 7u) / 8u, &p);
                 return;
             }
-            ComputePipeline pipe = B.DType == DType.Q4_K
-                ? (_sgemmQ4KPipeline ??= new ComputePipeline(this, Shaders.SgemmQ4K, 3, pushConstantSize: sizeof(SgemmParams)))
-                : (_sgemmQ3KPipeline ??= new ComputePipeline(this, Shaders.SgemmQ3K, 3, pushConstantSize: sizeof(SgemmParams)));
+            ComputePipeline pipe = QuantGemmPipeline(QuantGemmKind.Sgemm, B.DType);
             DispatchOrRecord(pipe, [GetBuffer(A), GetBuffer(B), GetBuffer(C)], ((uint)M + 127u) / 128u, &p, ((uint)N + 255u) / 256u);
             return;
         }
@@ -4423,12 +4440,10 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
     /// </summary>
     public unsafe void SgemmSiluGate(Tensor C, Tensor A, Tensor B, int M, int K, int N, int inputRowOffsetElements = 0)
     {
-        if (A.DType == DType.Float32 && (B.DType == DType.Q4_K || B.DType == DType.Q3_K) && K % 256 == 0)
+        if (A.DType == DType.Float32 && IsQuantGemmDType(B.DType) && K % 256 == 0)
         {
             var pq = new SgemmParams { M = (uint)M, N = (uint)N, K = (uint)K, aOffset = (uint)inputRowOffsetElements };
-            ComputePipeline pipe = B.DType == DType.Q4_K
-                ? (_sgemmSiluGateQ4KPipeline ??= new ComputePipeline(this, Shaders.SgemmSiluGateQ4K, 3, pushConstantSize: sizeof(SgemmParams)))
-                : (_sgemmSiluGateQ3KPipeline ??= new ComputePipeline(this, Shaders.SgemmSiluGateQ3K, 3, pushConstantSize: sizeof(SgemmParams)));
+            ComputePipeline pipe = QuantGemmPipeline(QuantGemmKind.SiluGate, B.DType);
             DispatchOrRecord(pipe, [GetBuffer(A), GetBuffer(B), GetBuffer(C)], ((uint)M + 127u) / 128u, &pq, ((uint)N + 255u) / 256u);
             return;
         }
@@ -4968,12 +4983,8 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
         _bufCopyPipeline?.Dispose();
         _sgemmF32Pipeline?.Dispose();
         _sgemmF16Pipeline?.Dispose();
-        _sgemmQ4KPipeline?.Dispose();
-        _sgemmQ3KPipeline?.Dispose();
-        _matVecDqQ4KPipeline?.Dispose();
-        _matVecDqQ3KPipeline?.Dispose();
-        _sgemmSiluGateQ4KPipeline?.Dispose();
-        _sgemmSiluGateQ3KPipeline?.Dispose();
+        foreach (var qp in _quantGemmPipelines.Values) qp.Dispose();
+        _quantGemmPipelines.Clear();
         _sgemmSiluGateF16Pipeline?.Dispose();
         _sgemmBf16Pipeline?.Dispose();
         _sgemmFp8Pipeline?.Dispose();

@@ -23,6 +23,10 @@ internal sealed class CachedWeightReader
         _prefix = prefix;
     }
 
+    /// <summary>Raw (still-quantized) tensor bytes, same name resolution as <see cref="Get"/>.</summary>
+    public bool TryGetRaw(string name, out nint data, out long byteLen, out DType dtype, out int rows, out int cols)
+        => _weights.TryGetRaw(_prefix + name, out data, out byteLen, out dtype, out rows, out cols);
+
     public float[] Get(string name)
     {
         string fullName = _prefix + name;

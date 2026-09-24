@@ -80,7 +80,42 @@ public sealed unsafe class VulkanSgemmQuantParityTests
         Assert.True(rel < 1e-4, $"relErr {rel:E2}");
     }
 
-    private const string Flux2Path = @"C:\Git-Public\OpenTail.Stingray\models\_models\flux2-dev-Q4_K_S.gguf";
+    // Q5_K coverage from the two checkpoints that use it (SD3.5 medium, Wan2.2-A14B).
+    [Theory]
+    [InlineData(@"C:\Git-Public\OpenTail.Stingray\models\sd3.5_medium-Q4_K_M.gguf", "joint_blocks.0.x_block.attn.qkv.weight", 1100)]
+    [InlineData(@"C:\Git-Public\OpenTail.Stingray\models\sd3.5_medium-Q4_K_M.gguf", "joint_blocks.0.x_block.attn.qkv.weight", 1)]
+    [InlineData(@"C:\Git-Public\OpenTail.Stingray\models\_models\wan2.2_t2v_low_noise_14B_Q4_K_S.gguf", "blocks.0.ffn.2.weight", 300)]
+    public void Q5K_SgemmAndMatVec_MatchCpu(string path, string tensor, int m)
+    {
+        Assert.SkipUnless(File.Exists(path), $"{Path.GetFileName(path)} not found");
+        using var w = GgufWeightLoader.Open(path);
+        Assert.True(w.TryGetRaw(tensor, out nint data, out long byteLen, out var dt, out int n, out int k));
+        Assert.Equal(DType.Q5_K, dt);
+        var rng = new Random(6);
+        var x = new float[m * k];
+        for (int i = 0; i < x.Length; i++) x[i] = (float)(rng.NextDouble() * 2 - 1);
+        var cpu = new float[m * n];
+        fixed (float* px = x, pc = cpu)
+            PackedSgemmF32.GemmQuant(pc, px, (byte*)data, dt, m, n, k);
+
+        using var vk = new VulkanBackend();
+        var bq = vk.UploadRaw(new ReadOnlySpan<byte>((void*)data, checked((int)byteLen)), TensorShape.D2(n, k), dt);
+        var a = vk.Upload(x, TensorShape.D2(m, k), exact: true);
+        var c = vk.Upload(new float[m * n], TensorShape.D2(m, n), exact: true);
+        vk.Sgemm(c, a, bq, m, k, n);
+        var gpu = new float[m * n];
+        vk.Download(c, gpu);
+        double num = 0, den = 0;
+        for (int i = 0; i < cpu.Length; i++) { double d = gpu[i] - cpu[i]; num += d * d; den += (double)cpu[i] * cpu[i]; }
+        double rel = Math.Sqrt(num / den);
+        string msg = $"Q5_K {tensor} [{n}x{k}] m={m}: relErr vs CPU {rel:E2}";
+        _out.WriteLine(msg);
+        Console.WriteLine(msg);
+        vk.Free(bq); vk.Free(a); vk.Free(c);
+        Assert.True(rel < 1e-4, $"relErr {rel:E2}");
+    }
+
+    private const string Flux2Path =@"C:\Git-Public\OpenTail.Stingray\models\_models\flux2-dev-Q4_K_S.gguf";
 
     // FLUX.2's MLP down-projection runs through the fused SgemmSiluGate: A is [M, 2K] (gate | value)
     // and the GEMM input is silu(gate) * value.

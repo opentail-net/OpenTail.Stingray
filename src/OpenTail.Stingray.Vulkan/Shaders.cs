@@ -6630,6 +6630,51 @@ internal static class Shaders
 
         """;
 
+    private const string SgemmQ5KDecode = """
+        #define QBLOCK_BYTES 176u
+        // Q5_K: half d, half dmin, uint8 scales[12] (Q4_K packing), uint8 qh[32], uint8 qs[128].
+        // Element j: 4-bit nibble as Q4_K, plus 16 * bit (2c + hi) of qh[j % 32].
+        void q5params(uint row, uint k, out uint base, out uint c, out bool hi, out float d1, out float m1) {
+            base = row * ((pc.K >> 8) * QBLOCK_BYTES) + (k >> 8) * QBLOCK_BYTES;
+            uint j = k & 255u;
+            c = j >> 6;
+            hi = (j & 63u) >= 32u;
+            uint is_ = 2u * c + (hi ? 1u : 0u);
+            uint s = base + 4u;
+            uint sc, m;
+            if (is_ < 4u) { sc = rb(s + is_) & 63u; m = rb(s + is_ + 4u) & 63u; }
+            else {
+                sc = (rb(s + is_ + 4u) & 0xFu) | ((rb(s + is_ - 4u) >> 6) << 4);
+                m  = (rb(s + is_ + 4u) >> 4)   | ((rb(s + is_) >> 6) << 4);
+            }
+            vec2 dd = unpackHalf2x16(rw(base));
+            d1 = dd.x * float(sc);
+            m1 = dd.y * float(m);
+        }
+        float dq(uint row, uint k) {
+            uint base, c; bool hi; float d1, m1;
+            q5params(row, k, base, c, hi, d1, m1);
+            uint l = k & 31u;
+            uint q = rb(base + 48u + c * 32u + l);
+            uint nib = hi ? (q >> 4) : (q & 0xFu);
+            uint h = (rb(base + 16u + l) >> (2u * c + (hi ? 1u : 0u))) & 1u;
+            return d1 * float(nib + 16u * h) - m1;
+        }
+        vec4 dq4(uint row, uint k) {
+            uint base, c; bool hi; float d1, m1;
+            q5params(row, k, base, c, hi, d1, m1);
+            uint l = k & 31u;
+            uint q = rw(base + 48u + c * 32u + l);
+            uint hb = rw(base + 16u + l);
+            uvec4 b = uvec4(q & 0xFFu, (q >> 8) & 0xFFu, (q >> 16) & 0xFFu, q >> 24);
+            uvec4 nib = hi ? (b >> 4) : (b & 0xFu);
+            uint sh = 2u * c + (hi ? 1u : 0u);
+            uvec4 h = (uvec4(hb, hb >> 8, hb >> 16, hb >> 24) >> sh) & 1u;
+            return d1 * vec4(nib + 16u * h) - m1;
+        }
+
+        """;
+
     private const string SgemmQ3KDecode = """
         #define QBLOCK_BYTES 110u
         // Q3_K: uint8 hmask[32], uint8 qs[64], uint8 scales[12] (16 packed 6-bit), half d.
@@ -6776,6 +6821,8 @@ internal static class Shaders
     internal const string SgemmQ3K = SgemmQHead + SgemmQ3KDecode + SgemmQLoadPlain + SgemmQBody;
     internal const string SgemmSiluGateQ4K = SgemmQHead + SgemmQ4KDecode + SgemmQLoadSiluGate + SgemmQBody;
     internal const string SgemmSiluGateQ3K = SgemmQHead + SgemmQ3KDecode + SgemmQLoadSiluGate + SgemmQBody;
+    internal const string SgemmQ5K = SgemmQHead + SgemmQ5KDecode + SgemmQLoadPlain + SgemmQBody;
+    internal const string SgemmSiluGateQ5K = SgemmQHead + SgemmQ5KDecode + SgemmQLoadSiluGate + SgemmQBody;
 
     /// <summary>
     /// M == 1 companion to SgemmQ3K/SgemmQ4K (a 128-row tile wastes 127/128 of its work on a single
@@ -6826,6 +6873,7 @@ internal static class Shaders
 
     internal const string MatVecDqQ4K = MatVecQHead + SgemmQ4KDecode + MatVecQBody;
     internal const string MatVecDqQ3K = MatVecQHead + SgemmQ3KDecode + MatVecQBody;
+    internal const string MatVecDqQ5K = MatVecQHead + SgemmQ5KDecode + MatVecQBody;
 
     /// <summary>SgemmF16 with vec4-packed LDS tiles (same interface/dispatch/tiling). See SgemmF16.</summary>
 

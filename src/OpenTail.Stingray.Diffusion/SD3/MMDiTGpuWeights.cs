@@ -96,7 +96,8 @@ public sealed class MMDiTGpuWeights : IDisposable
             int idx,
             int d,
             int totalDepth,
-            int headDim)
+            int headDim,
+            RawWeightSource? rawSource = null)
         {
             _backend = backend;
             string blk = $"joint_blocks.{idx}";
@@ -106,19 +107,19 @@ public sealed class MMDiTGpuWeights : IDisposable
             ImgModChunks = DualAttn ? 9 : 6;
             TxtModChunks = ContextPreOnly ? 2 : 6;
 
-            ImgModWeight = UploadWeight(backend, getWeight($"{blk}.x_block.adaLN_modulation.1.weight"), TensorShape.D2(ImgModChunks * d, d));
+            ImgModWeight = UploadWeight(backend, rawSource, $"{blk}.x_block.adaLN_modulation.1.weight", getWeight, TensorShape.D2(ImgModChunks * d, d));
             var imgModB = tryGetWeight($"{blk}.x_block.adaLN_modulation.1.bias");
             ImgModBias = imgModB is not null ? backend.Upload(imgModB, TensorShape.D1(ImgModChunks * d), exact: true) : backend.Upload(new float[ImgModChunks * d], TensorShape.D1(ImgModChunks * d), exact: true);
 
-            TxtModWeight = UploadWeight(backend, getWeight($"{blk}.context_block.adaLN_modulation.1.weight"), TensorShape.D2(TxtModChunks * d, d));
+            TxtModWeight = UploadWeight(backend, rawSource, $"{blk}.context_block.adaLN_modulation.1.weight", getWeight, TensorShape.D2(TxtModChunks * d, d));
             var txtModB = tryGetWeight($"{blk}.context_block.adaLN_modulation.1.bias");
             TxtModBias = txtModB is not null ? backend.Upload(txtModB, TensorShape.D1(TxtModChunks * d), exact: true) : backend.Upload(new float[TxtModChunks * d], TensorShape.D1(TxtModChunks * d), exact: true);
 
-            ImgAttnQkvWeight = UploadWeight(backend, getWeight($"{blk}.x_block.attn.qkv.weight"), TensorShape.D2(3 * d, d));
+            ImgAttnQkvWeight = UploadWeight(backend, rawSource, $"{blk}.x_block.attn.qkv.weight", getWeight, TensorShape.D2(3 * d, d));
             var imgQkvB = tryGetWeight($"{blk}.x_block.attn.qkv.bias");
             if (imgQkvB is not null) ImgAttnQkvBias = backend.Upload(imgQkvB, TensorShape.D1(3 * d), exact: true);
 
-            TxtAttnQkvWeight = UploadWeight(backend, getWeight($"{blk}.context_block.attn.qkv.weight"), TensorShape.D2(3 * d, d));
+            TxtAttnQkvWeight = UploadWeight(backend, rawSource, $"{blk}.context_block.attn.qkv.weight", getWeight, TensorShape.D2(3 * d, d));
             var txtQkvB = tryGetWeight($"{blk}.context_block.attn.qkv.bias");
             if (txtQkvB is not null) TxtAttnQkvBias = backend.Upload(txtQkvB, TensorShape.D1(3 * d), exact: true);
 
@@ -132,20 +133,20 @@ public sealed class MMDiTGpuWeights : IDisposable
             var txtLnK = tryGetWeight($"{blk}.context_block.attn.ln_k.weight");
             if (txtLnK is not null) TxtAttnLnK = backend.Upload(txtLnK, TensorShape.D1(headDim), exact: true);
 
-            ImgAttnProjWeight = UploadWeight(backend, getWeight($"{blk}.x_block.attn.proj.weight"), TensorShape.D2(d, d));
+            ImgAttnProjWeight = UploadWeight(backend, rawSource, $"{blk}.x_block.attn.proj.weight", getWeight, TensorShape.D2(d, d));
             var imgProjB = tryGetWeight($"{blk}.x_block.attn.proj.bias");
             if (imgProjB is not null) ImgAttnProjBias = backend.Upload(imgProjB, TensorShape.D1(d), exact: true);
 
             if (!ContextPreOnly)
             {
-                TxtAttnProjWeight = UploadWeight(backend, getWeight($"{blk}.context_block.attn.proj.weight"), TensorShape.D2(d, d));
+                TxtAttnProjWeight = UploadWeight(backend, rawSource, $"{blk}.context_block.attn.proj.weight", getWeight, TensorShape.D2(d, d));
                 var txtProjB = tryGetWeight($"{blk}.context_block.attn.proj.bias");
                 if (txtProjB is not null) TxtAttnProjBias = backend.Upload(txtProjB, TensorShape.D1(d), exact: true);
             }
 
             if (DualAttn)
             {
-                ImgAttn2QkvWeight = UploadWeight(backend, getWeight($"{blk}.x_block.attn2.qkv.weight"), TensorShape.D2(3 * d, d));
+                ImgAttn2QkvWeight = UploadWeight(backend, rawSource, $"{blk}.x_block.attn2.qkv.weight", getWeight, TensorShape.D2(3 * d, d));
                 var img2QkvB = tryGetWeight($"{blk}.x_block.attn2.qkv.bias");
                 if (img2QkvB is not null) ImgAttn2QkvBias = backend.Upload(img2QkvB, TensorShape.D1(3 * d), exact: true);
 
@@ -154,27 +155,27 @@ public sealed class MMDiTGpuWeights : IDisposable
                 var img2LnK = tryGetWeight($"{blk}.x_block.attn2.ln_k.weight");
                 if (img2LnK is not null) ImgAttn2LnK = backend.Upload(img2LnK, TensorShape.D1(headDim), exact: true);
 
-                ImgAttn2ProjWeight = UploadWeight(backend, getWeight($"{blk}.x_block.attn2.proj.weight"), TensorShape.D2(d, d));
+                ImgAttn2ProjWeight = UploadWeight(backend, rawSource, $"{blk}.x_block.attn2.proj.weight", getWeight, TensorShape.D2(d, d));
                 var img2ProjB = tryGetWeight($"{blk}.x_block.attn2.proj.bias");
                 if (img2ProjB is not null) ImgAttn2ProjBias = backend.Upload(img2ProjB, TensorShape.D1(d), exact: true);
             }
 
             int mlpHidden = d * 4;
-            ImgMlp0Weight = UploadWeight(backend, getWeight($"{blk}.x_block.mlp.fc1.weight"), TensorShape.D2(mlpHidden, d));
+            ImgMlp0Weight = UploadWeight(backend, rawSource, $"{blk}.x_block.mlp.fc1.weight", getWeight, TensorShape.D2(mlpHidden, d));
             var imgMlp0B = tryGetWeight($"{blk}.x_block.mlp.fc1.bias");
             if (imgMlp0B is not null) ImgMlp0Bias = backend.Upload(imgMlp0B, TensorShape.D1(mlpHidden), exact: true);
 
-            ImgMlp2Weight = UploadWeight(backend, getWeight($"{blk}.x_block.mlp.fc2.weight"), TensorShape.D2(d, mlpHidden));
+            ImgMlp2Weight = UploadWeight(backend, rawSource, $"{blk}.x_block.mlp.fc2.weight", getWeight, TensorShape.D2(d, mlpHidden));
             var imgMlp2B = tryGetWeight($"{blk}.x_block.mlp.fc2.bias");
             if (imgMlp2B is not null) ImgMlp2Bias = backend.Upload(imgMlp2B, TensorShape.D1(d), exact: true);
 
             if (!ContextPreOnly)
             {
-                TxtMlp0Weight = UploadWeight(backend, getWeight($"{blk}.context_block.mlp.fc1.weight"), TensorShape.D2(mlpHidden, d));
+                TxtMlp0Weight = UploadWeight(backend, rawSource, $"{blk}.context_block.mlp.fc1.weight", getWeight, TensorShape.D2(mlpHidden, d));
                 var txtMlp0B = tryGetWeight($"{blk}.context_block.mlp.fc1.bias");
                 if (txtMlp0B is not null) TxtMlp0Bias = backend.Upload(txtMlp0B, TensorShape.D1(mlpHidden), exact: true);
 
-                TxtMlp2Weight = UploadWeight(backend, getWeight($"{blk}.context_block.mlp.fc2.weight"), TensorShape.D2(d, mlpHidden));
+                TxtMlp2Weight = UploadWeight(backend, rawSource, $"{blk}.context_block.mlp.fc2.weight", getWeight, TensorShape.D2(d, mlpHidden));
                 var txtMlp2B = tryGetWeight($"{blk}.context_block.mlp.fc2.bias");
                 if (txtMlp2B is not null) TxtMlp2Bias = backend.Upload(txtMlp2B, TensorShape.D1(d), exact: true);
             }
@@ -232,7 +233,8 @@ public sealed class MMDiTGpuWeights : IDisposable
         int outChannels,
         int patchSize,
         int contextSize,
-        int admInChannels)
+        int admInChannels,
+        RawWeightSource? rawSource = null)
     {
         _backend = backend;
         int d = hiddenSize;
@@ -266,7 +268,7 @@ public sealed class MMDiTGpuWeights : IDisposable
         JointBlocks = new JointBlockGpuWeights[depth];
         for (int i = 0; i < depth; i++)
         {
-            JointBlocks[i] = new JointBlockGpuWeights(backend, getWeight, tryGetWeight, i, d, depth, headDim);
+            JointBlocks[i] = new JointBlockGpuWeights(backend, getWeight, tryGetWeight, i, d, depth, headDim, rawSource);
         }
 
         FinalModWeight = UploadWeight(backend, getWeight("final_layer.adaLN_modulation.1.weight"), TensorShape.D2(2 * d, d));
@@ -279,6 +281,13 @@ public sealed class MMDiTGpuWeights : IDisposable
 
         GC.Collect();
     }
+
+    /// <summary>Q3_K/Q4_K/Q5_K weights stay quantized on the GPU when the backend supports it
+    /// (see <see cref="QuantizedGpuUpload"/>); STINGRAY_SD3_GPU_FP16=1 forces the FP16 path.</summary>
+    private static CoreTensor UploadWeight(IComputeBackend backend, RawWeightSource? raw, string name,
+        Func<string, float[]> getWeight, TensorShape shape)
+        => QuantizedGpuUpload.TryUpload(backend, raw, name, shape, "STINGRAY_SD3_GPU_FP16")
+           ?? UploadWeight(backend, getWeight(name), shape);
 
     private static CoreTensor UploadWeight(IComputeBackend backend, float[] f32Data, TensorShape shape)
     {
