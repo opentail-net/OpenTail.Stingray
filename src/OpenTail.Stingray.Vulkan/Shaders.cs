@@ -6628,6 +6628,60 @@ internal static class Shaders
             return d1 * vec4(nib) - m1;
         }
 
+        // 16 consecutive elements k..k+15 (k % 16 == 0): half of one 32-element sub-block, so one
+        // scale/min decode serves all 16 (the tile load uses 2 threads per 32-wide row slice).
+        void dq16(uint row, uint k, out vec4 v[4]) {
+            uint base = row * ((pc.K >> 8) * QBLOCK_BYTES) + (k >> 8) * QBLOCK_BYTES;
+            uint j = k & 255u;
+            uint c = j >> 6;
+            bool hi = (j & 63u) >= 32u;
+            uint is_ = 2u * c + (hi ? 1u : 0u);
+            uint s = base + 4u;
+            uint sc, m;
+            if (is_ < 4u) { sc = rb(s + is_) & 63u; m = rb(s + is_ + 4u) & 63u; }
+            else {
+                sc = (rb(s + is_ + 4u) & 0xFu) | ((rb(s + is_ - 4u) >> 6) << 4);
+                m  = (rb(s + is_ + 4u) >> 4)   | ((rb(s + is_) >> 6) << 4);
+            }
+            vec2 dd = unpackHalf2x16(rw(base));
+            float d1 = dd.x * float(sc), m1 = dd.y * float(m);
+            uint qo = base + 16u + c * 32u + (j & 31u);
+            [[unroll]] for (uint i = 0u; i < 4u; i++) {
+                uint q = rw(qo + 4u * i);
+                uvec4 b = uvec4(q & 0xFFu, (q >> 8) & 0xFFu, (q >> 16) & 0xFFu, q >> 24);
+                v[i] = d1 * vec4(hi ? (b >> 4) : (b & 0xFu)) - m1;
+            }
+        }
+
+        // Even K-step (low nibbles of a 64-element chunk) also decodes the high nibbles of the same
+        // 32 quant bytes into `stash`; the following odd step stores them with no memory read.
+        void kscale(uint s, uint is_, out uint sc, out uint m) {
+            if (is_ < 4u) { sc = rb(s + is_) & 63u; m = rb(s + is_ + 4u) & 63u; }
+            else {
+                sc = (rb(s + is_ + 4u) & 0xFu) | ((rb(s + is_ - 4u) >> 6) << 4);
+                m  = (rb(s + is_ + 4u) >> 4)   | ((rb(s + is_) >> 6) << 4);
+            }
+        }
+        void dq16s(uint row, uint k, out vec4 v[4], inout vec4 stash[4], bool odd) {
+            if (odd) { v = stash; return; }
+            uint base = row * ((pc.K >> 8) * QBLOCK_BYTES) + (k >> 8) * QBLOCK_BYTES;
+            uint j = k & 255u;
+            uint c = j >> 6;
+            uint sc0, m0, sc1, m1s;
+            kscale(base + 4u, 2u * c, sc0, m0);
+            kscale(base + 4u, 2u * c + 1u, sc1, m1s);
+            vec2 dd = unpackHalf2x16(rw(base));
+            float dlo = dd.x * float(sc0), mlo = dd.y * float(m0);
+            float dhi = dd.x * float(sc1), mhi = dd.y * float(m1s);
+            uint qo = base + 16u + c * 32u + (j & 31u);
+            [[unroll]] for (uint i = 0u; i < 4u; i++) {
+                uint q = rw(qo + 4u * i);
+                uvec4 b = uvec4(q & 0xFFu, (q >> 8) & 0xFFu, (q >> 16) & 0xFFu, q >> 24);
+                v[i] = dlo * vec4(b & 0xFu) - mlo;
+                stash[i] = dhi * vec4(b >> 4) - mhi;
+            }
+        }
+
         """;
 
     private const string SgemmQ5KDecode = """
@@ -6671,6 +6725,49 @@ internal static class Shaders
             uint sh = 2u * c + (hi ? 1u : 0u);
             uvec4 h = (uvec4(hb, hb >> 8, hb >> 16, hb >> 24) >> sh) & 1u;
             return d1 * vec4(nib + 16u * h) - m1;
+        }
+        void dq16(uint row, uint k, out vec4 v[4]) {
+            uint base, c; bool hi; float d1, m1;
+            q5params(row, k, base, c, hi, d1, m1);
+            uint l = k & 31u;
+            uint sh = 2u * c + (hi ? 1u : 0u);
+            [[unroll]] for (uint i = 0u; i < 4u; i++) {
+                uint q = rw(base + 48u + c * 32u + l + 4u * i);
+                uint hb = rw(base + 16u + l + 4u * i);
+                uvec4 b = uvec4(q & 0xFFu, (q >> 8) & 0xFFu, (q >> 16) & 0xFFu, q >> 24);
+                uvec4 nib = hi ? (b >> 4) : (b & 0xFu);
+                uvec4 h = (uvec4(hb, hb >> 8, hb >> 16, hb >> 24) >> sh) & 1u;
+                v[i] = d1 * vec4(nib + 16u * h) - m1;
+            }
+        }
+
+        void kscale5(uint s, uint is_, out uint sc, out uint m) {
+            if (is_ < 4u) { sc = rb(s + is_) & 63u; m = rb(s + is_ + 4u) & 63u; }
+            else {
+                sc = (rb(s + is_ + 4u) & 0xFu) | ((rb(s + is_ - 4u) >> 6) << 4);
+                m  = (rb(s + is_ + 4u) >> 4)   | ((rb(s + is_) >> 6) << 4);
+            }
+        }
+        void dq16s(uint row, uint k, out vec4 v[4], inout vec4 stash[4], bool odd) {
+            if (odd) { v = stash; return; }
+            uint base = row * ((pc.K >> 8) * QBLOCK_BYTES) + (k >> 8) * QBLOCK_BYTES;
+            uint j = k & 255u;
+            uint c = j >> 6;
+            uint l = j & 31u;
+            uint sc0, m0, sc1, m1s;
+            kscale5(base + 4u, 2u * c, sc0, m0);
+            kscale5(base + 4u, 2u * c + 1u, sc1, m1s);
+            vec2 dd = unpackHalf2x16(rw(base));
+            float dlo = dd.x * float(sc0), mlo = dd.y * float(m0);
+            float dhi = dd.x * float(sc1), mhi = dd.y * float(m1s);
+            [[unroll]] for (uint i = 0u; i < 4u; i++) {
+                uint q = rw(base + 48u + c * 32u + l + 4u * i);
+                uint hb = rw(base + 16u + l + 4u * i);
+                uvec4 b = uvec4(q & 0xFFu, (q >> 8) & 0xFFu, (q >> 16) & 0xFFu, q >> 24);
+                uvec4 h = uvec4(hb, hb >> 8, hb >> 16, hb >> 24) >> (2u * c);
+                v[i] = dlo * vec4((b & 0xFu) + 16u * (h & 1u)) - mlo;
+                stash[i] = dhi * vec4((b >> 4) + 16u * ((h >> 1) & 1u)) - mhi;
+            }
         }
 
         """;
@@ -6717,6 +6814,31 @@ internal static class Shaders
             return dl * vec4(q2 - (1 - hv) * 4);
         }
 
+        // 16 consecutive elements k..k+15 (k % 16 == 0): exactly one 16-element scale group.
+        void dq16(uint row, uint k, out vec4 v[4]) {
+            uint base = row * ((pc.K >> 8) * QBLOCK_BYTES) + (k >> 8) * QBLOCK_BYTES;
+            uint j = k & 255u;
+            uint n = j >> 7;
+            uint r = j & 127u;
+            uint jj = r >> 5;
+            uint l32 = r & 31u;
+            uint is_ = n * 8u + jj * 2u + (l32 >= 16u ? 1u : 0u);
+            uint i4 = is_ & 3u, grp = is_ >> 2;
+            uint low = (rb(base + 96u + i4 + 4u * (grp & 1u)) >> ((grp >> 1) * 4u)) & 0xFu;
+            uint high = (rb(base + 104u + i4) >> (2u * grp)) & 3u;
+            float dl = rh(base + 108u) * float(int(low | (high << 4)) - 32);
+            uint sh = 2u * jj, hb = n * 4u + jj;
+            [[unroll]] for (uint i = 0u; i < 4u; i++) {
+                uint q = rw(base + 32u + n * 32u + l32 + 4u * i);
+                uint h = rw(base + l32 + 4u * i);
+                ivec4 q2 = ivec4((uvec4(q, q >> 8, q >> 16, q >> 24) >> sh) & 3u);
+                ivec4 hv = ivec4((uvec4(h, h >> 8, h >> 16, h >> 24) >> hb) & 1u);
+                v[i] = dl * vec4(q2 - (1 - hv) * 4);
+            }
+        }
+
+        void dq16s(uint row, uint k, out vec4 v[4], inout vec4 stash[4], bool odd) { dq16(row, k, v); }
+
         """;
 
     private const string SgemmQBody = """
@@ -6733,6 +6855,7 @@ internal static class Shaders
                     acc[i][j] = 0.0;
 
             uint numTiles = pc.K / 32u;
+            vec4 stash[4];
             bool vecOk = (pc.aOffset & 3u) == 0u;
 
             for (uint t = 0u; t < numTiles; t++) {
@@ -6749,18 +6872,23 @@ internal static class Shaders
                     tileA4[c4 + 2u][r >> 2u][r & 3u] = v.z;
                     tileA4[c4 + 3u][r >> 2u][r & 3u] = v.w;
                 }
-                [[unroll]] for (uint p = 0u; p < 4u; p++) {
-                    uint idx = tid + p * 512u;
-                    uint r = idx >> 3;
-                    uint c4 = (idx & 7u) << 2;
+                {
+                    // 256 rows x 2 halves = 512 threads: each decodes 16 consecutive weights of one
+                    // row with a single scale decode (was 8 threads x 4 elements, each re-decoding
+                    // the same scale).
+                    uint r = tid >> 1;
+                    uint half16 = (tid & 1u) * 16u;
                     uint gn = col_base + r;
-                    uint gk = k_base + c4;
-                    vec4 v = vec4(0.0);
-                    if (gn < pc.N) v = dq4(gn, gk);
-                    tileB4[c4 + 0u][r >> 2u][r & 3u] = v.x;
-                    tileB4[c4 + 1u][r >> 2u][r & 3u] = v.y;
-                    tileB4[c4 + 2u][r >> 2u][r & 3u] = v.z;
-                    tileB4[c4 + 3u][r >> 2u][r & 3u] = v.w;
+                    vec4 v[4];
+                    if (gn < pc.N) dq16s(gn, k_base + half16, v, stash, (t & 1u) == 1u);
+                    else { v[0] = vec4(0.0); v[1] = vec4(0.0); v[2] = vec4(0.0); v[3] = vec4(0.0); }
+                    [[unroll]] for (uint i = 0u; i < 4u; i++) {
+                        uint kc = half16 + i * 4u;
+                        tileB4[kc + 0u][r >> 2u][r & 3u] = v[i].x;
+                        tileB4[kc + 1u][r >> 2u][r & 3u] = v[i].y;
+                        tileB4[kc + 2u][r >> 2u][r & 3u] = v[i].z;
+                        tileB4[kc + 3u][r >> 2u][r & 3u] = v[i].w;
+                    }
                 }
                 barrier();
 
@@ -6833,6 +6961,7 @@ internal static class Shaders
     /// </summary>
     private const string MatVecQHead = """
         #version 450
+        #extension GL_EXT_control_flow_attributes : enable
         layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
         layout(push_constant) uniform PC { uint M; uint N; uint K; uint aOffset; } pc;
         layout(binding = 0) readonly  buffer BufAVec { vec4 a_vec4[]; };
