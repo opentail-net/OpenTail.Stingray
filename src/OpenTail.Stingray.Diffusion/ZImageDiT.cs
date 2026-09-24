@@ -63,9 +63,12 @@ public sealed class ZImageDiT : IDisposable
     /// BUT the full end-to-end image is STILL not the clean coherent apple the naive/CPU path
     /// produces (a quilted/patchwork artifact remains, plausibly this iGPU's forced FP16 weight
     /// upload compounding over 30 blocks / 4 turbo-schedule steps -- see the doc comment for full
-    /// analysis). Kept `false` matching this session's own standard (SD3.5/Qwen Image): don't ship
-    /// fast-but-visibly-wrong. Not a `const` so the branch stays reachable (avoids CS0162).</summary>
-    private static readonly bool ZImageGpuResidencyRealScaleBugFound = false;
+    /// analysis). **Re-enabled 2026-09-24**: the remaining artifact was NOT FP16 precision -- it was the
+    /// shared timestep-embedding [sin,cos] order bug (fixed in TimestepEmbed), which broke the CPU path
+    /// too. With it fixed, the resident path gives a clean apple at 256x256/4 steps, latent std 1.4486
+    /// (same as CPU), in 76.1s vs 145.4s for the per-op Vulkan path. Not a `const` so the fallback
+    /// branch stays reachable (avoids CS0162).</summary>
+    private static readonly bool ZImageGpuResidencyRealScaleBugFound = true;
 
     // Per-block diagnostic hooks for the real-scale bug bisection (docs/094 Phase 7, 2026-09-20),
     // same convention already proven for WanModel/QwenImageModel this session.
@@ -192,14 +195,8 @@ public sealed class ZImageDiT : IDisposable
         var freqs = _cachedCombinedFreqs;
 
         // ── 4. 30 main transformer blocks ─────────────────────────────────
-        // DISABLED, 2026-09-20 (docs/094 Phase 7): real end-to-end run (256x256/4 steps) completed
-        // in 64.8s (down from 183.6s -- a real 2.8x speedup on paper) but produced PURE NOISE, not
-        // the known-good coherent apple this exact config verifies on the CPU/naive-GPU path. The
-        // existing small-scale synthetic ZImageGpuParityTests (t=24, dim=384) still passes -- the
-        // bug is real-scale-specific and not yet found. Do NOT re-enable
-        // (ZImageGpuResidencyRealScaleBugFound=false) until root-caused; a fast wrong answer is not
-        // a result, matching this whole project's own hard-won discipline (see docs/094's Qwen
-        // Image/SD3.5 GPU investigations for the same lesson repeatedly).
+        // GPU-resident chain (re-enabled 2026-09-24; see ZImageGpuResidencyRealScaleBugFound). Falls
+        // back to the per-op path on CPU-only backends.
         if (ZImageGpuResidencyRealScaleBugFound && _backend is IImageOpsBackend imageOpsMain)
         {
             try
