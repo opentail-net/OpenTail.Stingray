@@ -927,11 +927,13 @@ internal static unsafe class DiffusionOps
     }
 
     /// <summary>
-    /// Sinusoidal timestep positional embedding: `[cos(t*f_0..f_{half-1}), sin(t*f_0..f_{half-1})]`,
-    /// `f_i = exp(-log(theta) * i / half)` -- the same building block duplicated (byte-for-byte, only
-    /// the surrounding Linear/SiLU/Linear MLP tensor names differed) across Wan, HunyuanVideo,
-    /// QwenImage, LTX-Video's transformer AND VAE decoder, and Z-Image before this extraction.
+    /// Sinusoidal timestep positional embedding with `f_i = exp(-log(theta) * i / half)`.
+    /// Output order depends on <paramref name="flipSinToCos"/>: `true` gives
+    /// `[cos(t*f), sin(t*f)]` (what every current caller -- Wan, HunyuanVideo, QwenImage, LTX-Video,
+    /// FLUX.2, Z-Image -- needs); `false` gives `[sin(t*f), cos(t*f)]`. Pass it explicitly: Z-Image
+    /// silently broke (16x16 mosaic) when it relied on the default.
     /// </summary>
+    /// <param name="flipSinToCos">diffusers' `flip_sin_to_cos`: true puts cos first.</param>
     public static float[] SinusoidalTimestepEmbedding(float timestep, int dim = 256, float theta = 10000f, bool flipSinToCos = false)
     {
         var emb = new float[dim];

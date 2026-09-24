@@ -2,7 +2,7 @@
 
 **Document Path**: `docs/ZIMAGE_TURBO_RESTORATION_PLAN.md`  
 **Date**: September 24, 2026  
-**Status**: Ready for Verification / External Review
+**Status**: Verified and closed (2026-09-24). See §1a for the real root cause; §2–§4 are the original plan, partly superseded.
 
 ---
 
@@ -79,11 +79,10 @@ As documented in `docs/diffusion-samples/README.md`:
 To ensure this regression never happens again, the following rules are enforced:
 
 1. **Zero Cross-Model Kernel Sharing**:
-   - `WanAttention` is reserved strictly for `Wan 2.1`.
-   - `ZImageDiT` must maintain its own dedicated, isolated SIMD attention kernel.
+   - ~~`WanAttention` is reserved strictly for `Wan 2.1`.~~ **Superseded 2026-09-24**: `WanAttention` was measured to be numerically identical for Z-Image and faster at 256–512px, so `ZImageDiT` uses it again (see the §2 caveat).
    - Do not call `Wan` or `Flux` kernels from `ZImage`, and do not call `ZImage` kernels from other pipelines.
 2. **Explicit Disabling of Int8-Activation Quantization**:
-   - CPU `MatQ` calls in `ZImageDiT.cs` must explicitly pass `allowQ8: false` when calling `SimdKernels.MatMulBatched`.
+   - ~~CPU `MatQ` must pass `allowQ8: false`.~~ **Superseded 2026-09-24**: an A/B showed Q8 activations are ~1.5x faster with a visually identical image, so `ZImageDiT` passes `allowQ8: true`.
 3. **No State Caching Across Pipeline Steps**:
    - Text conditioning and context refiners must execute cleanly per step unless mathematically invariant and proven against ground truth.
 

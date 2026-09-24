@@ -8,7 +8,9 @@ namespace OpenTail.Stingray.Tests.Diffusion;
 /// <summary>
 /// Real-weight, real-scale bisection for Z-Image-Turbo's GPU residency bug (docs/094 Phase 7):
 /// the existing small-scale synthetic parity test (dim=384, nHeads=3, t=24) passes, but the real
-/// end-to-end run (dim=3840, nHeads=30, real t) produces pure noise. Loads the REAL checkpoint
+/// end-to-end run (dim=3840, nHeads=30, real t) produced pure noise (historical: the block-math part
+/// was the AdaLN gamma bug fixed 2026-09-20; the remaining end-to-end noise was the timestep-embedding
+/// order bug fixed 2026-09-24, and GPU residency is now on). Loads the REAL checkpoint
 /// (`z_image_turbo-Q4_0.gguf`) at REAL dimensions and runs the 30-block main loop through both
 /// <see cref="ZImageDiT.RunMainLayersCpuForTest"/> and <see cref="ZImageDiT.RunMainLayersGpuForTest"/>
 /// with per-block capture, to find the first block where they diverge -- same technique already

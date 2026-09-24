@@ -44,34 +44,19 @@ public sealed class ZImageDiT : IDisposable
     // Cached unit-scale / unit-gate arrays (unmodulated blocks use scale=1, gate=1)
     private float[]? _onesCache;
 
-    // GPU residency for the 30 main `layers.N` blocks (docs/094 Phase 7, 2026-09-20): the
-    // resident ApplyBlockGpu/ZImageGpuWeights/ZImageGpuWorkspace trio already existed, fully
-    // built and parity-tested (ZImageGpuParityTests), but nothing in this class's own Forward()
-    // ever called it -- the real per-step loop still used the old per-op immediate-dispatch MatQ
-    // path. Wiring it in here, not writing a new implementation.
+    // GPU residency for the 30 main `layers.N` blocks: weights uploaded once (ZImageGpuWeights),
+    // activations kept on-device across blocks (ZImageGpuWorkspace), one ApplyBlockGpu per block.
     private ZImageGpuWeights? _residentGpuWeights;
     private ZImageGpuWorkspace? _residentGpuWorkspace;
     private int _residentGpuNTok = -1;
 
-    /// <summary>A real structural bug WAS found and fixed 2026-09-20 (docs/094 Phase 7):
-    /// `ApplyBlockGpu` passed `AdaLNModulate` a scale of (1+rawScale) where the shader's own
-    /// formula is norm*(1.0+s)+sh, double-counting the "+1" AND never applying the learned RMSNorm
-    /// gamma (attention_norm1.weight/ffn_norm1.weight, uploaded but referenced nowhere in the GPU
-    /// path). Fixed by folding the host-side norm weight into the scale vector before upload:
-    /// `s = normW1*(1+rawScale) - 1`. Real-scale bisection went from cosine=0.9885 at block 0 to
-    /// cosine=0.999997 at block 0 -- confirms the fix is real and correct at the block-math level.
-    /// BUT the full end-to-end image is STILL not the clean coherent apple the naive/CPU path
-    /// produces (a quilted/patchwork artifact remains, plausibly this iGPU's forced FP16 weight
-    /// upload compounding over 30 blocks / 4 turbo-schedule steps -- see the doc comment for full
-    /// analysis). **Re-enabled 2026-09-24**: the remaining artifact was NOT FP16 precision -- it was the
-    /// shared timestep-embedding [sin,cos] order bug (fixed in TimestepEmbed), which broke the CPU path
-    /// too. With it fixed, the resident path gives a clean apple at 256x256/4 steps, latent std 1.4486
-    /// (same as CPU), in 76.1s vs 145.4s for the per-op Vulkan path. Not a `const` so the fallback
+    /// <summary>Routes the main blocks through the GPU-resident chain when the backend supports it.
+    /// Verified 2026-09-24 against the CPU path (256x256/4 steps: same clean apple, latent std 1.4486
+    /// on both), about 2x faster than the per-op Vulkan path. Not a `const` so the per-op fallback
     /// branch stays reachable (avoids CS0162).</summary>
-    private static readonly bool ZImageGpuResidencyRealScaleBugFound = true;
+    private static readonly bool UseGpuResidency = true;
 
-    // Per-block diagnostic hooks for the real-scale bug bisection (docs/094 Phase 7, 2026-09-20),
-    // same convention already proven for WanModel/QwenImageModel this session.
+    // Per-block diagnostic hooks for CPU-vs-GPU bisection (docs/094 Phase 7).
     public Action<int, float[]>? OnMainBlockOutputCpu { get; set; }
     public Action<int, float[]>? OnMainBlockOutputGpu { get; set; }
 
@@ -84,9 +69,8 @@ public sealed class ZImageDiT : IDisposable
     public Action<float[]>? OnAfterAttnCpu { get; set; }
     public Action<float[]>? OnAfterAttnGpu { get; set; }
 
-    /// <summary>Test-only entry point running the real GPU-resident 30-block loop directly
-    /// (bypassing the disabled-by-default dispatch in <see cref="Forward"/>), for a real-scale
-    /// bisection against <see cref="RunMainLayersCpuForTest"/>.</summary>
+    /// <summary>Test-only entry point running the GPU-resident 30-block loop directly, for a
+    /// real-scale bisection against <see cref="RunMainLayersCpuForTest"/>.</summary>
     public void RunMainLayersGpuForTest(IImageOpsBackend imageOps, float[] x, int nTok, float[] freqs, float[] adaln)
         => RunMainLayersGpu(imageOps, x, nTok, freqs, adaln);
 
@@ -195,9 +179,9 @@ public sealed class ZImageDiT : IDisposable
         var freqs = _cachedCombinedFreqs;
 
         // ── 4. 30 main transformer blocks ─────────────────────────────────
-        // GPU-resident chain (re-enabled 2026-09-24; see ZImageGpuResidencyRealScaleBugFound). Falls
+        // GPU-resident chain (see UseGpuResidency). Falls
         // back to the per-op path on CPU-only backends.
-        if (ZImageGpuResidencyRealScaleBugFound && _backend is IImageOpsBackend imageOpsMain)
+        if (UseGpuResidency && _backend is IImageOpsBackend imageOpsMain)
         {
             try
             {
