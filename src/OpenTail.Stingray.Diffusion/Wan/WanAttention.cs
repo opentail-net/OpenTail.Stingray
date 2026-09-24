@@ -10,11 +10,6 @@ namespace OpenTail.Stingray.Diffusion.Wan;
 /// High-performance cache-friendly MultiHeadAttention kernel for Wan 2.1 DiT.
 /// Transposes input to head-contiguous memory [heads, seq, headDim] to eliminate 6KB memory strides
 /// and keep inner token dot products strictly within sequential L1/L2 cache lines.
-///
-/// ARCHITECTURAL BOUNDARY:
-/// This class is strictly designed for Wan 2.1 video diffusion. DO NOT CALL THIS FROM OTHER MODELS
-/// (Z-Image, FLUX, SD3, AceStep, etc.). Conflating models causes subtle numerical divergences and
-/// breaks model parity. Keep architectures decoupled.
 /// </summary>
 public static class WanAttention
 {

@@ -43,10 +43,11 @@ white table against a dark background, with no grid or pebble artifacts. The fil
 ## 2. Archaeological Root Cause Analysis
 
 > **Caveat (2026-09-24)**: A and B below are the plan's original hypotheses. **Neither was shown to cause
-> the mosaic**; §1a has the real cause. Their changes are kept because they match the known-good `235fab2`
-> code and gave a correct image. Two notes: (A) `DiffusionOps.MultiHeadAttention` now forwards to the same
-> `WanAttention` kernel for other models, so the kernel isn't proven broken, and the restored per-head loop
-> allocates `nHeads·nTok²` floats of scores (~2 GB at 1024×1024, versus the tiled kernel's small footprint).
+> the mosaic**; §1a has the real cause. (A) **Disproven and reverted**: a 2026-09-24 benchmark on
+> Z-Image's real attention shapes (30 heads × 128) found `WanAttention.TiledMultiHeadAttention` matches the
+> per-head loop to max |diff| ~1e-6. Median time at 320 tokens was 13.3ms vs 50.7ms; at 1056 tokens,
+> 124ms vs 195ms; at 4128 tokens, 12.0s vs 8.9s, but the per-head loop needs a ~2 GB score buffer there.
+> `ZImageDiT` uses `WanAttention` again, and §3 rule 1's attention-kernel ban no longer applies.
 > (B) `SimdKernels.MatMulBatched` already defaults to `allowQ8: false`, so this simply restores `235fab2`'s
 > exact CPU matmul path; the measured CPU time (226s) is in line with 2026-09-12's 194–232s.
 
