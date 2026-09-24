@@ -1309,8 +1309,11 @@ public sealed class ImageCommand : Command<ImageCommand.Settings>
     private static int RunSdxl(Settings s, string modelPath, int deviceIndex, bool deviceNone)
     {
         string output = s.OutputPath ?? "output.png";
-        int steps = s.Steps > 0 ? s.Steps : 20;
-        float guidance = s.CfgScale >= 0f ? s.CfgScale : 7.5f;
+        // Distilled checkpoints (SDXL-Turbo) are trained for guidance_scale=0 (CFG off) and 1-4 steps.
+        // Defaulting them to CFG 7.5 degraded the image AND ran the UNet twice per step (cond + uncond).
+        bool distilled = IsDistilled(modelPath);
+        int steps = s.Steps > 0 ? s.Steps : distilled ? 4 : 20;
+        float guidance = s.CfgScale >= 0f ? s.CfgScale : distilled ? 0f : 7.5f;
 
         string backendChoice = (s.Backend ?? "auto").ToLowerInvariant();
         if (deviceNone && (backendChoice is "cuda" or "vulkan"))
