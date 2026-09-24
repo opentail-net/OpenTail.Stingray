@@ -132,9 +132,9 @@ real weights, visible timing, one heavy process at a time, and commit per engine
 
 - [ ] Audio re-check: Phase 0 → 1 → 2 → 3 (tracked in that doc's Status list)
 
-## 8. RESUME HERE (PC shut down mid-task, late 2026-09-24): Vulkan headDim=128 attention rewrite
+## 8. Vulkan headDim=128 attention rewrite — DONE 2026-09-25 (commit `a5daf08`); resume at "Next" below
 
-**State: new kernel is written, not yet compiled or tested. The changes are uncommitted in the working tree.**
+**State: DONE and committed (`a5daf08`). Parity passes and FLUX.1 Vulkan went 173.6s -> 132.0s. The text below is the original plan, kept for the record; the "Update 2026-09-25" note at the end of this section says what is next.**
 
 Why: FLUX.1 on Vulkan takes 35.0s/step against C++'s 20.45s. `MultiHeadAttentionTiled128` costs 223 ms/call
 (90 GFLOP/s) at 1280 tok × 24 heads × 128, which is **12.7s of each step** (57 blocks). The GEMMs are
