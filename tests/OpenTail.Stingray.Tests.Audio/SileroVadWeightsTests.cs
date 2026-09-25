@@ -43,11 +43,17 @@ public sealed class SileroVadWeightsTests : HeavyTestBase
         using var vad = SileroVad.Load(onnxPath!);
         float prob = vad.ProcessFrame(frame);
 
-        // Captured via a single onnxruntime session.run() call (ORT_DISABLE_ALL, matching this
-        // doc's established golden-dump discipline) against the exact same 512-sample frame,
-        // fresh zero LSTM state on both sides: 0.025505661964416504.
-        const float goldenProb = 0.025505661964416504f;
+        // Oracle computed live with onnxruntime on the OFFICIAL v5 input: 64 samples of context (all
+        // zero for a fresh stream) + the 512-sample frame, fresh zero state. The old hard-coded golden
+        // (0.025505661964416504) came from feeding onnxruntime the bare 512-sample frame, the same
+        // missing-context convention the native port had until 2026-09-25, so it agreed with the bug.
+        using var ort = OpenTail.Stingray.Core.OnnxModelSession.TryLoad(onnxPath);
+        Assert.SkipUnless(ort is { IsAvailable: true }, "onnxruntime not available");
+        var x = new float[576];
+        frame.CopyTo(x, 64);
+        var outs = ort!.Run(("input", x, new[] { 1, 576 }), ("state", new float[256], new[] { 2, 1, 128 }), ("sr", new long[] { 16000 }, Array.Empty<int>()));
+        float goldenProb = outs["output"][0];
         Assert.True(MathF.Abs(prob - goldenProb) < 0.0001f,
-            $"prob={prob} vs golden={goldenProb}, diff={MathF.Abs(prob - goldenProb)}");
+            $"prob={prob} vs onnxruntime={goldenProb}, diff={MathF.Abs(prob - goldenProb)}");
     }
 }

@@ -4,10 +4,18 @@ namespace OpenTail.Stingray.Tests.Audio;
 
 public sealed class SileroVadTests
 {
+    // Silero needs its real weights (no procedural fallback); skip visibly when the model is absent.
+    private static SileroVad LoadRealVad()
+    {
+        var vad = SileroVad.TryLoadDefault();
+        Assert.SkipUnless(vad != null, "models/silero_vad.onnx not found");
+        return vad!;
+    }
+
     [Fact]
     public void SileroVad_ProcessFrame_SilenceProducesLowProbability()
     {
-        using var vad = new SileroVad();
+        using var vad = LoadRealVad();
         float[] silence = new float[512]; // Zero frame
 
         float prob = vad.ProcessFrame(silence);
@@ -18,7 +26,7 @@ public sealed class SileroVadTests
     [Fact]
     public void SileroVad_ProcessFrame_SpeechSignalProducesHighProbability()
     {
-        using var vad = new SileroVad();
+        using var vad = LoadRealVad();
         float[] speech = new float[512];
 
         // Synthesize a speech-like multi-harmonic vowel waveform (150Hz fundamental + harmonics)
@@ -40,7 +48,7 @@ public sealed class SileroVadTests
     [Fact]
     public void SileroVad_StreamingReset_ClearsInternalState()
     {
-        using var vad = new SileroVad();
+        using var vad = LoadRealVad();
         float[] frame = new float[512];
         Array.Fill(frame, 0.1f);
 
@@ -90,7 +98,7 @@ public sealed class SileroVadTests
     [Fact]
     public void SileroVad_DetectSegments_EndToEndWaveformSegmentation()
     {
-        using var vad = new SileroVad();
+        using var vad = LoadRealVad();
 
         // 3 seconds of audio: 1s silence, 1s speech, 1s silence
         int sampleRate = 16000;

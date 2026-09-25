@@ -280,3 +280,24 @@ synthetic 300 Hz tone.
 Qwen3-ASR: 0 real errors in 65 words. Parakeet: 2 deletions (~3% WER), plausibly q4_k quantisation;
 not investigated. README rows added (🟢 👂). Also corrected: the Qwen3 Forced Aligner check above was manual,
 so its confidence is 👂, not 🔬 (🔬 needs an automated reference test per the README legend).
+
+## Silero VAD -- missing 64-sample context fixed (now exact vs onnxruntime); `stt --vad` crash fixed, 2026-09-25
+
+Checked our native `SileroVad` against onnxruntime running the same `models/silero_vad.onnx` (oracle only),
+per 512-sample frame of `a.wav` with 1s of silence each side.
+- **Before:** per-frame probabilities up to 0.755 apart (frame 60: 0.48 vs 0.93); decisions 240/248.
+- **Cause:** Silero v5's model input is the previous chunk's last **64 samples of context + the 512-sample
+  frame** (576, which the graph reflect-pads to 640 → 4 STFT frames). The port fed the bare 512-sample frame
+  (→ 3 STFT frames). The old golden test agreed with the bug because its onnxruntime golden was also captured
+  on a bare 512-sample frame.
+- **After:** `SileroVad` keeps a 64-sample context (cleared by `Reset`): maxAbsDiff **8.9e-7**, decisions
+  **248/248**. New `SileroVadOnnxRuntimeParityTests` (onnxruntime oracle computed live, official input
+  convention); `SileroVadWeightsTests` now computes its oracle live the same way instead of the stale constant.
+
+**Also a real product bug:** `WhisperPipeline` defaulted to `new SileroVad()` with no weights, so
+`stingray stt --vad` (and the server's `vad=true`) threw "requires real SileroVadWeights". It now resolves
+real weights lazily via the new `SileroVad.TryLoadDefault()` (`STINGRAY_SILERO_VAD_PATH`, else
+`models/silero_vad.onnx` walking up from cwd / app dir), with a clear error if none exists. Verified:
+`stt --vad` on `a.wav` segments and transcribes correctly. The 5 Fast `SileroVadTests` that constructed a
+weightless VAD (failing since the procedural fallback was removed) now load real weights or skip visibly;
+6/6 pass.

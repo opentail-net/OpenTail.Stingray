@@ -25,7 +25,7 @@ public sealed class WhisperPipeline : ISpeechToTextPipeline
     private readonly WhisperTokenizer _tokenizer;
     private readonly WhisperEncoder _encoder;
     private readonly WhisperDecoder _decoder;
-    private readonly SileroVad _vad;
+    private SileroVad? _vad;
 
     public WhisperConfig Config => _config;
 
@@ -42,7 +42,7 @@ public sealed class WhisperPipeline : ISpeechToTextPipeline
         _tokenizer = tokenizer ?? (_config.IsV3 ? WhisperTokenizer.CreateV3() : new WhisperTokenizer());
         _encoder = encoder ?? new WhisperEncoder(_config);
         _decoder = decoder ?? new WhisperDecoder(_config);
-        _vad = vad ?? new SileroVad();
+        _vad = vad; // resolved lazily on first VAD use (real weights required)
     }
 
     /// <summary>
@@ -172,6 +172,8 @@ public sealed class WhisperPipeline : ISpeechToTextPipeline
         // If VAD is enabled, detect speech boundaries first
         if (request.UseVad)
         {
+            _vad ??= SileroVad.TryLoadDefault() ?? throw new InvalidOperationException(
+                "UseVad requires Silero VAD weights: put silero_vad.onnx under models/ or set STINGRAY_SILERO_VAD_PATH.");
             var speechSegments = _vad.DetectSegments(samples);
             if (speechSegments.Count == 0)
             {

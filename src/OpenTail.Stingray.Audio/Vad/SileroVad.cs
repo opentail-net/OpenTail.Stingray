@@ -15,12 +15,17 @@ namespace OpenTail.Stingray.Audio.Vad;
 public sealed class SileroVad : IVoiceActivityDetector
 {
     private const int FrameSize = 512;
-    private const int PaddedLen = FrameSize + SileroVadWeights.PadEnd; // 576
-    private const int NumStftFrames = (PaddedLen - SileroVadWeights.SttKernel) / SileroVadWeights.SttStride + 1; // 3 -- (576-256)/128+1, floor division
+    // Real Silero v5 input is 64 samples of context (the previous frame's tail, zeros after Reset)
+    // + the 512-sample frame = 576, which the graph reflect-pads at the end by 64 -> 640.
+    private const int ContextSize = 64;
+    private const int ModelInputLen = ContextSize + FrameSize; // 576
+    private const int PaddedLen = ModelInputLen + SileroVadWeights.PadEnd; // 640
+    private const int NumStftFrames = (PaddedLen - SileroVadWeights.SttKernel) / SileroVadWeights.SttStride + 1; // 4
 
     private readonly SileroVadWeights? _weights;
     private readonly float[] _hState = new float[SileroVadWeights.HiddenDim];
     private readonly float[] _cState = new float[SileroVadWeights.HiddenDim];
+    private readonly float[] _context = new float[ContextSize];
 
     public SileroVad(SileroVadWeights? weights = null)
     {
@@ -30,6 +35,25 @@ public sealed class SileroVad : IVoiceActivityDetector
     /// <summary>Loads real Silero VAD weights directly from `models/silero_vad.onnx` (NOT the messy auto-converted .gguf -- see <see cref="SileroVadWeights"/>'s doc comment for why).</summary>
     public static SileroVad Load(string onnxPath) => new(new SileroVadWeights(onnxPath));
 
+    /// <summary>Loads real weights from <c>STINGRAY_SILERO_VAD_PATH</c>, else the first
+    /// <c>models/silero_vad.onnx</c> found walking up from the working directory or the app
+    /// directory; returns null when none exists. (A weightless <c>new SileroVad()</c> can't run:
+    /// <see cref="ProcessFrame"/> throws, which is what broke <c>stt --vad</c> until 2026-09-25.)</summary>
+    public static SileroVad? TryLoadDefault()
+    {
+        string? env = Environment.GetEnvironmentVariable("STINGRAY_SILERO_VAD_PATH");
+        if (!string.IsNullOrEmpty(env) && File.Exists(env)) return Load(env);
+        foreach (var start in new[] { Directory.GetCurrentDirectory(), AppContext.BaseDirectory })
+        {
+            for (var dir = new DirectoryInfo(start); dir is not null; dir = dir.Parent)
+            {
+                string candidate = Path.Combine(dir.FullName, "models", "silero_vad.onnx");
+                if (File.Exists(candidate)) return Load(candidate);
+            }
+        }
+        return null;
+    }
+
     /// <summary>Evaluates one 512-sample frame and returns real speech probability in [0.0, 1.0]. Requires real weights (no procedural fallback -- see docs/audio-review-progress.md).</summary>
     public float ProcessFrame(ReadOnlySpan<float> frame512)
     {
@@ -37,17 +61,21 @@ public sealed class SileroVad : IVoiceActivityDetector
             throw new InvalidOperationException("SileroVad.ProcessFrame requires real SileroVadWeights -- construct via SileroVad.Load(onnxPath).");
         var w = _weights;
 
-        // 1. Reflect-pad the END only by 64 samples (NOT symmetric head+tail -- confirmed from
+        // 1. Model input = [64-sample context | 512-sample frame]: the official v5 wrapper prepends
+        // the previous chunk's last 64 samples (fixed 2026-09-25 -- this port used to feed the bare
+        // frame, giving 3 STFT frames instead of 4 and probabilities up to 0.75 off onnxruntime).
+        // Then reflect-pad the END only by 64 samples (NOT symmetric head+tail -- confirmed from
         // the real ONNX Pad node's amount tensor [0,0,0,64]).
         Span<float> padded = stackalloc float[PaddedLen];
+        _context.CopyTo(padded);
         int len = Math.Min(frame512.Length, FrameSize);
-        frame512[..len].CopyTo(padded);
-        if (len < FrameSize) padded.Slice(len, FrameSize - len).Clear();
+        frame512[..len].CopyTo(padded[ContextSize..]);
+        if (len < FrameSize) padded.Slice(ContextSize + len, FrameSize - len).Clear();
+        padded.Slice(ModelInputLen - ContextSize, ContextSize).CopyTo(_context);
         for (int i = 0; i < SileroVadWeights.PadEnd; i++)
         {
             // torch/onnx 'reflect' mode: mirror excluding the boundary sample itself.
-            int srcIdx = Math.Max(0, len - 2 - i);
-            padded[FrameSize + i] = padded[srcIdx];
+            padded[ModelInputLen + i] = padded[ModelInputLen - 2 - i];
         }
 
         // 2. Learned STFT: Conv1d(padded, StftBasis[258,1,256], stride=128) -> real/imag halves.
@@ -192,6 +220,7 @@ public sealed class SileroVad : IVoiceActivityDetector
     {
         Array.Clear(_hState);
         Array.Clear(_cState);
+        Array.Clear(_context);
     }
 
     private static float Sigmoid(float x) => 1.0f / (1.0f + MathF.Exp(-Math.Clamp(x, -20f, 20f)));
