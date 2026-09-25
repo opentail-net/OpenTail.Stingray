@@ -227,3 +227,15 @@ divergence in shared conditioning/DiT code that the 0.5s component goldens don't
 would be a reference latent dump (needs a small `audiocpp_cli` patch + rebuild) to diff per-step latents
 at CFG 1.
 Timing (GPU iGPU, 6s/50 steps): small 50s, medium 140s; reference CPU: small 52-55s, medium 167-170s.
+
+## Full heavy Audio sweep attempt -- stopped for memory; one finding, 2026-09-25
+
+A single-process run of the whole Audio test project with `STINGRAY_RUN_HEAVY_TESTS=1` was stopped by
+Claude Code's low-memory guard. The test process had grown to **44.9 GB** (it was loading PersonaPlex's
+25.5 GB of weights while earlier classes' models were still resident). The orphaned process was killed
+by hand. **Lesson:** a heavy sweep has to run one class per process (memory released between classes),
+not one process for all 313 test files. Not re-run automatically.
+
+Before it stopped, the only failure was `CosyVoice3DiTInputEmbedGoldenTests` (cosine 0.639). That's a
+known stale oracle (2026-09-06 entry: Python fixture uses centered conv-pos padding; the real reference
+and our code are causal). The test now skips visibly with that reason instead of failing.
