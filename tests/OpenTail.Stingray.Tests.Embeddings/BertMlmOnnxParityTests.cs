@@ -8,36 +8,41 @@ namespace OpenTail.Stingray.Tests.Embeddings;
 /// only MLM <c>logits</c>, so the encoder is checked through the checkpoint's own MLM head applied to our
 /// last hidden state: <c>logits = LN(gelu(W·h + b)) · word_embeddings^T + bias</c> (HF
 /// <c>BertLMPredictionHead</c>, decoder tied to the word embeddings). This checkpoint also exercises the
-/// <c>bert.</c> prefix and the TF-era <c>LayerNorm.gamma/beta</c> tensor names. Includes the model card's
-/// fill-mask prompt, whose documented top prediction is "fashion".
+/// <c>bert.</c> prefix and the TF-era <c>LayerNorm.gamma/beta</c> tensor names. FacebookAI/xlm-roberta-base
+/// (<c>XLMRobertaForMaskedLM</c>, <c>lm_head.*</c>, same head shape) is checked the same way and covers the
+/// RoBERTa position offset (pad + 1). Includes the model cards' fill-mask prompt, whose documented top
+/// prediction is "fashion" for both.
 /// </summary>
 public sealed class BertMlmOnnxParityTests
 {
-    [Fact]
-    public void BertBaseUncased_MlmLogits_MatchOnnx()
+    [Theory]
+    [InlineData("google-bert__bert-base-uncased", "bert.", "cls.predictions.transform.dense", "cls.predictions.transform.LayerNorm", "cls.predictions.bias", 103, "[MASK]")]
+    [InlineData("FacebookAI__xlm-roberta-base", "roberta.", "lm_head.dense", "lm_head.layer_norm", "lm_head.bias", 250001, "<mask>")]
+    public void MlmLogits_MatchOnnx(string repoDir, string prefix, string headDense, string headLn, string decoderBias, int maskId, string maskText)
     {
-        string? dir = BertEncoderOnnxParityTests.FindRepoDir("models/_models/hf/google-bert__bert-base-uncased");
+        string? dir = BertEncoderOnnxParityTests.FindRepoDir($"models/_models/hf/{repoDir}");
         string? onnxPath = dir is null ? null : BertEncoderOnnxParityTests.FindOnnx(dir);
-        Assert.SkipUnless(onnxPath != null, "bert-base-uncased checkpoint/onnx not found");
+        Assert.SkipUnless(onnxPath != null, $"{repoDir} checkpoint/onnx not found");
 
         var sw = Stopwatch.StartNew();
         using var encoder = TransformerEncoder.Load(dir!);
-        Assert.Equal("bert.", encoder.Prefix);
+        Assert.Equal(prefix, encoder.Prefix);
         var tok = EncoderTokenizer.FromTokenizerJson(Path.Combine(dir!, "tokenizer.json"));
         using var st = SafetensorsLoader.OpenDirectory(dir!);
         int h = encoder.Config.HiddenSize, vocab = encoder.Config.VocabSize;
-        var dense = st.ReadF32("cls.predictions.transform.dense.weight");
-        var denseB = st.ReadF32("cls.predictions.transform.dense.bias");
-        var (lnW, lnB) = TransformerEncoder.ReadLayerNorm(st, "cls.predictions.transform.LayerNorm");
-        var wordEmb = st.ReadF32("bert.embeddings.word_embeddings.weight");
-        var decBias = st.ReadF32("cls.predictions.bias");
+        var dense = st.ReadF32(headDense + ".weight");
+        var denseB = st.ReadF32(headDense + ".bias");
+        var (lnW, lnB) = TransformerEncoder.ReadLayerNorm(st, headLn);
+        var wordEmb = st.ReadF32(prefix + "embeddings.word_embeddings.weight");
+        var decBias = st.ReadF32(decoderBias);
+        var pieces = JsonDocumentPieces(Path.Combine(dir!, "tokenizer.json"));
         using var onnx = new OnnxModelSession(onnxPath!);
-        Console.WriteLine($"[BertMlm] loaded in {sw.ElapsedMilliseconds} ms");
+        Console.WriteLine($"[Mlm] {repoDir}: loaded in {sw.ElapsedMilliseconds} ms; onnx outputs {string.Join(",", onnx.OutputNames)}");
 
-        // Model card prompt "Hello I'm a [MASK] model." with [MASK] = 103 spliced in by id.
+        // Model card prompt "Hello I'm a {maskText} model." with the mask id spliced in.
         var left = tok.Encode("Hello I'm a");
         var right = tok.Encode("model.");
-        int[] maskedIds = [.. left.Ids[..^1], 103, .. right.Ids[1..]];
+        int[] maskedIds = [.. left.Ids[..^1], maskId, .. right.Ids[1..]];
         var inputs = BertEncoderOnnxParityTests.Texts.Select(t => tok.Encode(t))
             .Append(new EncodedInput(maskedIds, new int[maskedIds.Length])).ToArray();
 
@@ -72,14 +77,26 @@ public sealed class BertMlmOnnxParityTests
             }
             if (input.Ids == maskedIds)
             {
-                int maskPos = Array.IndexOf(maskedIds, 103);
+                int maskPos = Array.IndexOf(maskedIds, maskId);
                 int best = TensorPrimitives.IndexOfMax(ours.AsSpan(maskPos * vocab, vocab));
-                Console.WriteLine($"[BertMlm] fill-mask top id = {best} (model card: 4827 'fashion')");
-                Assert.Equal(4827, best);
+                Console.WriteLine($"[Mlm] {repoDir}: 'Hello I'm a {maskText} model.' top = {best} '{pieces[best]}' (model cards: 'fashion')");
+                Assert.Equal("fashion", pieces[best].TrimStart('▁'));
             }
         }
-        Console.WriteLine($"[BertMlm] {inputs.Length} inputs: logits maxAbs={worstAbs:E3} minCos={worstCos:F7}, total {sw.ElapsedMilliseconds} ms");
+        Console.WriteLine($"[Mlm] {repoDir}: {inputs.Length} inputs: logits maxAbs={worstAbs:E3} minCos={worstCos:F7}, total {sw.ElapsedMilliseconds} ms");
         Assert.True(worstCos >= 0.9999f, $"min cosine {worstCos}");
         Assert.True(worstAbs <= 2e-3f, $"max abs diff {worstAbs}");
+    }
+
+    /// <summary>Id → piece from a tokenizer.json vocab (WordPiece dict or Unigram [piece, score] list).</summary>
+    private static string[] JsonDocumentPieces(string tokenizerJson)
+    {
+        using var doc = System.Text.Json.JsonDocument.Parse(File.ReadAllBytes(tokenizerJson));
+        var vocab = doc.RootElement.GetProperty("model").GetProperty("vocab");
+        if (vocab.ValueKind == System.Text.Json.JsonValueKind.Array)
+            return vocab.EnumerateArray().Select(e => e[0].GetString() ?? "").ToArray();
+        var pieces = new string[vocab.EnumerateObject().Max(p => p.Value.GetInt32()) + 1];
+        foreach (var p in vocab.EnumerateObject()) pieces[p.Value.GetInt32()] = p.Name;
+        return pieces;
     }
 }

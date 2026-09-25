@@ -278,3 +278,19 @@ the oracle.
   (`SentenceEmbeddingLlamaCppTests`, via a reusable `LlamaServerOracle` test helper): cos 0.9996-0.9999 per text
   (Q8_0-bound), where mean pooling instead of the configured CLS would give 0.895-0.959.
 - Next: Phase 3 (XLM-R positions + classification heads → xlm-roberta-base, ms-marco-MiniLM, bge-reranker-v2-m3).
+
+### Phase 3 progress (2026-09-25): XLM-R + cross-encoders done
+- **xlm-roberta-base** (RoBERTa positions from pad+1): its root `model.onnx` is `XLMRobertaForMaskedLM`, checked through
+  the checkpoint's `lm_head` on our hidden states: logits maxAbs 3.6e-4, min cosine 0.9999998 over 6 inputs; the card's
+  fill-mask prompt gives `▁fashion` (54543) as documented. (`BertMlmOnnxParityTests` is now a Theory over both.)
+- New `HfCrossEncoderPipeline` (implements `IRerankerPipeline`): pair input via `EncoderTokenizer.EncodePair`, head picked
+  from the checkpoint's tensors (RoBERTa `classifier.dense`→tanh→`out_proj`; BERT `pooler`→tanh→`classifier`); raw
+  logit score, optional sigmoid.
+- **ms-marco-MiniLM-L6-v2** vs its ONNX: identical to 5 decimals on 4 pairs (8.84585, -11.24556, 0.66096, -11.19189).
+- **bge-reranker-v2-m3** (no ONNX): matches the model card's documented `compute_score` values:
+  `[query, passage]` -5.6501 (card -5.6523), panda batch -8.1838 / 5.2650 (card -8.1875 / 5.2617, card computed in fp16).
+  `llama-server --rerank` on the gpustack FP16 and Q8_0 GGUFs gives the **same ranking** but scores the card's own
+  `[query, passage]` example -6.37 / -6.33, i.e. a systematic llama.cpp-side difference from the HF reference
+  (both quantizations agree with each other, so it isn't precision). The model card is used as the tight oracle; llama.cpp
+  is checked for ranking order only. `bge-reranker-v2-m3-FP16.gguf` (1.1 GB) was added to `models/_models` for this.
+- Next: Phase 4 (MPNet relative position bias; NomicBERT RoPE/SwiGLU/no-bias).
