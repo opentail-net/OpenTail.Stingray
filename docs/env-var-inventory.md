@@ -29,7 +29,12 @@ names are treated as valid, `doctor` would not have flagged it either. The warni
 `STINGRAY_MAX_QUEUE` and the dead entry is out of the registry, so the mistake is now reported with
 a closest-match suggestion.
 
-**Reconciled again 2026-09-16 — `KnownEnvironmentVariables.All` now contains **203** names**
+**Reconciled again 2026-09-25 — `KnownEnvironmentVariables.All` now contains **225** names**
+(22 added: diffusion GPU/FP16 toggles for FLUX/FLUX.2/Qwen-Image/SD3, SD3/Hunyuan/T5 debug dumps,
+`STINGRAY_ATTN128_LEGACY`, `STINGRAY_FORCE_MHA64_F32`, the ASR/TTS/RVC profiling switches and
+`STINGRAY_SILERO_VAD_PATH`).
+
+**Reconciled 2026-09-16 — `KnownEnvironmentVariables.All` contained **203** names**
 (reconciled recent diffusion, audio, profiling, and Wan2.1 / LTX / CosyVoice3 / XTTS diagnostic environment variables into the source registry).
 
 **Reconciled again 2026-09-02 — `KnownEnvironmentVariables.All` now contains **173** names**

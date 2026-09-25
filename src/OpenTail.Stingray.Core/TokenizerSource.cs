@@ -43,6 +43,9 @@ public sealed record TokenizerSource
     /// <summary>Per-token type codes, or null when the source does not classify tokens.</summary>
     public int[]? TokenTypes { get; init; }
 
+    /// <summary>SentencePiece <c>precompiled_charsmap</c> blob for Unigram (UGM) vocabs, or null.</summary>
+    public byte[]? PrecompiledCharsmap { get; init; }
+
     /// <summary>
     /// Special tokens the source names directly, merged over anything derived from
     /// <see cref="TokenTypes"/>. This is how a Hugging Face package contributes its added tokens.

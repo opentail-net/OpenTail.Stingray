@@ -240,6 +240,15 @@ public sealed partial class GgufTokenizer : ITokenizer
             for (int i = 0; i < raw.Length; i++) scores[i] = Convert.ToSingle(raw[i]);
         }
 
+        // SentencePiece normalization rules for UGM vocabs (uint8 array, same blob as tokenizer.json's
+        // base64 precompiled_charsmap).
+        byte[]? precompiledCharsmap = null;
+        if (model.Metadata.TryGetValue("tokenizer.ggml.precompiled_charsmap", out var charsmapObj) && charsmapObj is object[] rawMap)
+        {
+            precompiledCharsmap = new byte[rawMap.Length];
+            for (int i = 0; i < rawMap.Length; i++) precompiledCharsmap[i] = unchecked((byte)Convert.ToInt32(rawMap[i]));
+        }
+
         int eos = GetMetadataInt(model, "tokenizer.ggml.eos_token_id", 2);
         string modelFamily = model.Metadata.TryGetValue("tokenizer.ggml.model", out var tmObj) ? (string)tmObj : "";
         // Real llama.cpp default for LLAMA_VOCAB_TYPE_SPM (tokenizer.ggml.model=llama) is
@@ -262,6 +271,7 @@ public sealed partial class GgufTokenizer : ITokenizer
             Merges = merges,
             Scores = scores,
             TokenTypes = tokenTypes,
+            PrecompiledCharsmap = precompiledCharsmap,
             BosTokenId = GetMetadataInt(model, "tokenizer.ggml.bos_token_id", 1),
             EosTokenId = eos,
             UnknownTokenId = GetMetadataInt(model, "tokenizer.ggml.unknown_token_id", defaultUnkId),
@@ -371,7 +381,7 @@ public sealed partial class GgufTokenizer : ITokenizer
         // algorithm this engine already implements).
         bool isUnigramModel = source.ModelFamily == "t5";
         UnigramTokenizer? unigram = isUnigramModel && source.Scores is not null
-            ? UnigramTokenizer.FromGgufVocab(source.Tokens, source.Scores, source.UnknownTokenId, source.TokenTypes)
+            ? UnigramTokenizer.FromGgufVocab(source.Tokens, source.Scores, source.UnknownTokenId, source.TokenTypes, source.PrecompiledCharsmap)
             : null;
 
         Tokenizer? inner = null;

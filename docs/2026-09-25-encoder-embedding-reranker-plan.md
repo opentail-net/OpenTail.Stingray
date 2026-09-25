@@ -221,3 +221,19 @@ the oracle.
 - **Same pitfall elsewhere (follow-up):** `UnigramTokenizer` and `SentencePieceBpeTokenizer` call
   `Normalize(FormKC)`, a no-op on non-ASCII under invariant mode. For XLM-R-family Unigram the real fix is the
   tokenizer.json **Precompiled charsmap** (next); `SentencePieceBpeTokenizer`'s users should be checked too.
+- **Unigram (XLM-R family): golden-verified, 58/58 on all four checkpoints.** New `PrecompiledCharsmap`
+  ports llama.cpp's UGM XCDA/`normalize_prefix` (longest-prefix charsmap replacement, as in
+  SentencePiece's `normalizer.cc`). `UnigramTokenizer.FromTokenizerJson` now follows the file's own
+  `normalizer` (`Precompiled`/`Strip`/`Replace`, alone or in a `Sequence`) and `pre_tokenizer`
+  (`WhitespaceSplit`, `Metaspace` with `add_prefix_space`/`prepend_scheme`/`split`), accepts the older
+  tokenizer.json with no `model.type` (xlm-roberta-base), and merges runs of consecutive UNK pieces as
+  SentencePiece does. The GGUF path reads `tokenizer.ggml.precompiled_charsmap` too. Oracle: llama.cpp
+  `llama-tokenize --ids` on `gpustack/bge-reranker-v2-m3-GGUF` Q8_0 (downloaded to `models/_models`, also
+  the Phase 2 rerank oracle), over llama.cpp's SPM test inputs plus multilingual/charsmap cases, stored as
+  `Tests.Core/Fixtures/xlm-roberta-ugm.inp/.out`. `XlmRobertaUnigramGoldenTests` runs it against bge-reranker-v2-m3,
+  xlm-roberta-base, paraphrase-multilingual-MiniLM and multilingual-e5-small. The only config-driven difference is
+  e5 (`Replace " {2,}"` without Strip), which keeps trailing whitespace as a `▁` piece where llama.cpp drops
+  it, so the test compares e5 on right-trimmed input. Parler's T5 goldens still pass.
+- **Still open in Phase 1:** WordPiece from `tokenizer.json` (lowercase/strip flags, MPNet `<s>`/`</s>`), special-token
+  templates and pair inputs (`<s> A </s></s> B </s>`, BERT `[SEP]` + token types), and the
+  `SentencePieceBpeTokenizer` `FormKC` no-op.

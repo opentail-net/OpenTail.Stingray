@@ -7,7 +7,8 @@ namespace OpenTail.Stingray.Core;
 /// declares <c>"model": {"type": "Unigram", ...}</c> -- a genuinely different segmentation
 /// algorithm from this codebase's existing BPE tokenizer (<see cref="GgufTokenizer"/>/
 /// <see cref="HuggingFaceTokenizerSource"/>), not something that can be reused by swapping the
-/// vocabulary.
+/// vocabulary. Also serves the XLM-RoBERTa family (xlm-roberta, multilingual-e5, bge-m3,
+/// paraphrase-multilingual-MiniLM).
 ///
 /// <para><b>Real algorithm, transcribed from the authoritative sources (not guessed) -- Google's
 /// `sentencepiece` `src/unigram_model.cc` (`Model::EncodeOptimized`, `Model::PopulateNodes`,
@@ -23,28 +24,15 @@ namespace OpenTail.Stingray.Core;
 /// Ties are broken by strict `&gt;` (first-encountered path wins), matching the reference's own
 /// `if (best_node == nullptr || score &gt; best_score)`.</para>
 ///
-/// <para><b>Real preprocessing, from the same `tokenizer.json`'s `normalizer`/`pre_tokenizer`
-/// sections (confirmed via direct inspection of Parler-TTS's real
-/// `scratch-llamacpp-ref/parler-tokenizer/tokenizer.json`)</b>: a `Sequence` normalizer whose
-/// first stage is `Precompiled` (SentencePiece's custom `nmt_nfkc`-family normalization, compiled
-/// into a binary `precompiled_charsmap` darts-trie blob embedded in the model) -- <b>NOT yet
-/// implemented here, a real and precisely documented gap, see the class-level "Known gap" note
-/// below</b> -- followed by a `Replace` stage, then a `Metaspace` pre-tokenizer (`▁` replacement,
-/// `prepend_scheme="always"`, `split=true`): every run of whitespace collapses and is represented
-/// by `▁` (U+2581), and a `▁` is always prepended even at the very start of the input (SentencePiece's
-/// real "dummy prefix" behavior).</para>
-///
-/// <para><b>Known gap, not worked around</b>: the `precompiled_charsmap` binary format (a compiled
-/// darts double-array trie mapping arbitrary input substrings to Unicode-normalized replacement
-/// strings -- covers things like fullwidth-character folding and various dash/space-equivalent
-/// normalization beyond plain NFKC) is NOT implemented. This class instead applies plain Unicode
-/// NFKC normalization as a stand-in. For plain-ASCII input (confirmed against a real golden
-/// oracle, see <c>UnigramTokenizerTests</c>) this produces IDENTICAL output to the real
-/// `precompiled_charsmap` pipeline, because the charsmap's real behavior only diverges from plain
-/// NFKC on non-ASCII/exotic input (the specific substitution rules it encodes). Text containing
-/// such characters may therefore segment differently from the real reference until this gap is
-/// closed -- documented precisely per this project's blocker-honesty discipline, not silently
-/// approximated.</para>
+/// <para><b>Preprocessing follows the <c>tokenizer.json</c>'s own <c>normalizer</c> and
+/// <c>pre_tokenizer</c></b>: <c>Precompiled</c> (SentencePiece's charsmap, see
+/// <see cref="PrecompiledCharsmap"/>), <c>Strip</c> and <c>Replace</c> normalizers (alone or in a
+/// <c>Sequence</c>), then an optional <c>WhitespaceSplit</c> and a <c>Metaspace</c> pre-tokenizer
+/// (spaces become `▁`, a `▁` is prepended when the piece doesn't already start with one, and with
+/// <c>split</c> each `▁` starts a new segment). The GGUF factory has no such config and keeps the
+/// SentencePiece default: whitespace runs collapse to one `▁` and one `▁` is always prepended.
+/// Id parity for the XLM-R vocab is checked against llama.cpp's UGM tokenizer
+/// (<c>XlmRobertaUnigramGoldenTests</c>).</para>
 /// </summary>
 public sealed class UnigramTokenizer
 {
@@ -53,6 +41,11 @@ public sealed class UnigramTokenizer
     private readonly int _unkId;
     private readonly float _minNormalScore;
     private readonly TrieNode _root = new();
+    private readonly List<Func<string, string>> _normalizers = [];
+    private bool _legacyPreprocess = true;
+    private bool _whitespaceSplit;
+    private bool _metaspacePrepend = true;
+    private bool _metaspaceSplit;
 
     private const char MetaspaceChar = '▁'; // ▁
 
@@ -80,7 +73,12 @@ public sealed class UnigramTokenizer
         using var doc = JsonDocument.Parse(File.ReadAllBytes(tokenizerJsonPath));
         var root = doc.RootElement;
         var model = root.GetProperty("model");
-        if (model.GetProperty("type").GetString() != "Unigram")
+        // Older tokenizers releases (e.g. FacebookAI/xlm-roberta-base) omit model.type; a [piece, score]
+        // vocab array is the Unigram shape.
+        bool isUnigram = model.TryGetProperty("type", out var type)
+            ? type.GetString() == "Unigram"
+            : model.TryGetProperty("vocab", out var v) && v.ValueKind == JsonValueKind.Array;
+        if (!isUnigram)
             throw new InvalidDataException($"'{tokenizerJsonPath}' model type is not Unigram.");
 
         var vocab = model.GetProperty("vocab");
@@ -108,7 +106,80 @@ public sealed class UnigramTokenizer
         }
         int unkId = model.TryGetProperty("unk_id", out var u) ? u.GetInt32() : 0;
 
-        return new UnigramTokenizer(pieces, scores, unkId, isNormal);
+        var tok = new UnigramTokenizer(pieces, scores, unkId, isNormal);
+        if (root.TryGetProperty("normalizer", out var norm) && norm.ValueKind == JsonValueKind.Object)
+            tok.AddNormalizer(norm, tokenizerJsonPath);
+        if (root.TryGetProperty("pre_tokenizer", out var pre) && pre.ValueKind == JsonValueKind.Object)
+        {
+            tok._legacyPreprocess = false;
+            tok.AddPreTokenizer(pre, tokenizerJsonPath);
+        }
+        return tok;
+    }
+
+    private void AddNormalizer(JsonElement n, string path)
+    {
+        switch (n.GetProperty("type").GetString())
+        {
+            case "Sequence":
+                foreach (var child in n.GetProperty("normalizers").EnumerateArray()) AddNormalizer(child, path);
+                break;
+            case "Precompiled":
+                var b64 = n.TryGetProperty("precompiled_charsmap", out var pc) ? pc.GetString() : null;
+                if (!string.IsNullOrEmpty(b64))
+                {
+                    var map = new PrecompiledCharsmap(Convert.FromBase64String(b64));
+                    _normalizers.Add(map.Normalize);
+                }
+                break;
+            case "Strip":
+                bool left = n.TryGetProperty("strip_left", out var sl) && sl.GetBoolean();
+                bool right = n.TryGetProperty("strip_right", out var sr) && sr.GetBoolean();
+                _normalizers.Add(s => left && right ? s.Trim() : left ? s.TrimStart() : right ? s.TrimEnd() : s);
+                break;
+            case "Replace":
+                var pattern = n.GetProperty("pattern");
+                string content = n.GetProperty("content").GetString() ?? "";
+                if (pattern.TryGetProperty("Regex", out var rx))
+                {
+                    var regex = new Regex(rx.GetString()!, RegexOptions.CultureInvariant);
+                    _normalizers.Add(s => regex.Replace(s, content));
+                }
+                else
+                {
+                    string literal = pattern.GetProperty("String").GetString()!;
+                    _normalizers.Add(s => s.Replace(literal, content, StringComparison.Ordinal));
+                }
+                break;
+            default:
+                throw new NotSupportedException($"'{path}': Unigram normalizer type '{n.GetProperty("type").GetString()}' is not supported.");
+        }
+    }
+
+    private void AddPreTokenizer(JsonElement p, string path)
+    {
+        switch (p.GetProperty("type").GetString())
+        {
+            case "Sequence":
+                foreach (var child in p.GetProperty("pretokenizers").EnumerateArray()) AddPreTokenizer(child, path);
+                break;
+            case "WhitespaceSplit":
+                _whitespaceSplit = true;
+                break;
+            case "Metaspace":
+                if (p.TryGetProperty("replacement", out var rep) && rep.GetString() != "▁")
+                    throw new NotSupportedException($"'{path}': Metaspace replacement other than U+2581 is not supported.");
+                // Legacy configs carry add_prefix_space (true == prepend_scheme "always"); newer ones
+                // carry prepend_scheme. "first" only differs from "always" for pre-split inputs.
+                if (p.TryGetProperty("prepend_scheme", out var ps))
+                    _metaspacePrepend = ps.GetString() != "never";
+                else if (p.TryGetProperty("add_prefix_space", out var aps))
+                    _metaspacePrepend = aps.GetBoolean();
+                _metaspaceSplit = !p.TryGetProperty("split", out var sp) || sp.GetBoolean();
+                break;
+            default:
+                throw new NotSupportedException($"'{path}': Unigram pre-tokenizer type '{p.GetProperty("type").GetString()}' is not supported.");
+        }
     }
 
     /// <summary>
@@ -121,7 +192,8 @@ public sealed class UnigramTokenizer
     /// 6=BYTE) -- used here directly for the NORMAL-vs-not distinction that feeds the UNK fallback
     /// score, when present, instead of guessing from bracket punctuation.
     /// </summary>
-    public static UnigramTokenizer FromGgufVocab(string[] tokens, float[] scores, int unkId, int[]? tokenTypes)
+    public static UnigramTokenizer FromGgufVocab(string[] tokens, float[] scores, int unkId, int[]? tokenTypes,
+        byte[]? precompiledCharsmap = null)
     {
         var isNormal = new bool[tokens.Length];
         for (int i = 0; i < tokens.Length; i++)
@@ -130,7 +202,10 @@ public sealed class UnigramTokenizer
                 ? tokenTypes[i] == 1 // llama_token_type.LLAMA_TOKEN_TYPE_NORMAL
                 : !(tokens[i].Length >= 2 && tokens[i][0] == '<' && tokens[i][^1] == '>');
         }
-        return new UnigramTokenizer(tokens, scores, unkId, isNormal);
+        var tok = new UnigramTokenizer(tokens, scores, unkId, isNormal);
+        if (precompiledCharsmap is { Length: > 0 })
+            tok._normalizers.Add(new PrecompiledCharsmap(precompiledCharsmap).Normalize);
+        return tok;
     }
 
     private void Insert(string piece, int id)
@@ -151,13 +226,40 @@ public sealed class UnigramTokenizer
     }
 
     /// <summary>
-    /// Real preprocessing: NFKC (stand-in for the real `precompiled_charsmap`, see class doc's
-    /// "Known gap") -&gt; Metaspace (collapse whitespace runs to a single `▁`, always prepend one
-    /// at the start -- SentencePiece's real "dummy prefix" behavior).
+    /// Normalizers, then pre-tokenization into the segments Viterbi runs on independently (see the
+    /// class doc). Each returned segment already carries its `▁` markers.
     /// </summary>
-    private static string Preprocess(string text)
+    private List<string> Preprocess(string text)
     {
-        string normalized = text.Normalize(NormalizationForm.FormKC);
+        foreach (var normalize in _normalizers) text = normalize(text);
+        if (_legacyPreprocess) return [LegacyMetaspace(text)];
+
+        var segments = new List<string>();
+        var words = _whitespaceSplit
+            ? text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries)
+            : text.Length > 0 ? [text] : [];
+        foreach (var word in words)
+        {
+            string w = word.Replace(' ', MetaspaceChar);
+            if (_metaspacePrepend && w[0] != MetaspaceChar) w = MetaspaceChar + w;
+            if (!_metaspaceSplit) { segments.Add(w); continue; }
+            // Split with MergedWithNext: every ▁ starts a new segment.
+            int start = 0;
+            for (int i = 1; i < w.Length; i++)
+            {
+                if (w[i] != MetaspaceChar) continue;
+                segments.Add(w[start..i]);
+                start = i;
+            }
+            segments.Add(w[start..]);
+        }
+        return segments;
+    }
+
+    /// <summary>SentencePiece default (no tokenizer.json config): collapse whitespace runs to a
+    /// single `▁` and always start with exactly one `▁` (the "dummy prefix").</summary>
+    private static string LegacyMetaspace(string normalized)
+    {
         var sb = new StringBuilder(normalized.Length + 1);
         bool prevWasSpace = false;
         foreach (char c in normalized)
@@ -182,8 +284,13 @@ public sealed class UnigramTokenizer
     /// <summary>Real Unigram Viterbi segmentation (no special tokens added -- see the class's golden test, which compares against the real reference's `add_special_tokens=False` output).</summary>
     public List<int> Encode(string text)
     {
-        string prepped = Preprocess(text);
-        var bytes = Encoding.UTF8.GetBytes(prepped);
+        var ids = new List<int>();
+        foreach (var segment in Preprocess(text)) EncodeSegment(Encoding.UTF8.GetBytes(segment), ids);
+        return ids;
+    }
+
+    private void EncodeSegment(byte[] bytes, List<int> output)
+    {
         int n = bytes.Length;
 
         var bestScore = new float[n + 1];
@@ -228,20 +335,31 @@ public sealed class UnigramTokenizer
                 {
                     bestScore[pos2] = unkScore;
                     bestStart[pos2] = start;
-                    bestId[pos2] = _unkId;
+                    bestId[pos2] = -1; // UNK edge, mapped to _unkId on backtrack
                 }
             }
         }
 
-        var ids = new List<int>();
+        int first = output.Count;
         int cur = n;
         while (cur > 0)
         {
-            ids.Add(bestId[cur]);
+            output.Add(bestId[cur]);
             cur = bestStart[cur];
         }
-        ids.Reverse();
-        return ids;
+        output.Reverse(first, output.Count - first);
+
+        // SentencePiece (and llama.cpp UGM / HF Unigram) merge a run of consecutive unknown pieces
+        // into one UNK token, e.g. two unknown emoji in a row.
+        int w = first;
+        for (int r = first; r < output.Count; r++)
+        {
+            if (output[r] < 0 && w > first && output[w - 1] < 0) continue;
+            output[w++] = output[r];
+        }
+        output.RemoveRange(w, output.Count - w);
+        for (int i = first; i < output.Count; i++)
+            if (output[i] < 0) output[i] = _unkId;
     }
 
     private static int Utf8ScalarByteLength(byte[] bytes, int start)
