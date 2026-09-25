@@ -33,6 +33,9 @@ public static class RvcRmvpeEncoder
             for (int m = 0; m < RvcRmvpeWeights.MelBins; m++)
                 image[0][f, m] = mel[f][m];
 
+        bool prof = Environment.GetEnvironmentVariable("STINGRAY_RVC_PROFILE") == "1";
+        var psw = System.Diagnostics.Stopwatch.StartNew();
+        void Stage(string name) { if (prof) { Console.WriteLine($"[RvcRmvpe]   {name}: {psw.Elapsed.TotalSeconds:F2}s"); psw.Restart(); } }
         var x = BatchNorm2d(image, w.EncoderInputBn);
         Trace("after-input-bn", x);
 
@@ -49,6 +52,7 @@ public static class RvcRmvpeEncoder
             Trace($"after-encoder-level{level}", x);
         }
 
+        Stage("encoder (5 levels)");
         channels = 256;
         int interOut = 512;
         for (int level = 0; level < 4; level++)
@@ -58,6 +62,7 @@ public static class RvcRmvpeEncoder
         }
         Trace("after-bottleneck", x);
 
+        Stage("intermediate (4 levels)");
         channels = 512;
         for (int level = 0; level < 5; level++)
         {
@@ -77,6 +82,7 @@ public static class RvcRmvpeEncoder
         }
 
         Trace("after-decoder", x);
+        Stage("decoder (5 levels)");
         // Final projection: Conv2d(16->3, 3x3, pad 1).
         var final = Conv2dSamePad3x3(x, channels, w.CnnWeight, w.CnnBias, outCh: 3);
         Trace("after-final-cnn", final);
@@ -94,11 +100,13 @@ public static class RvcRmvpeEncoder
             flat[f] = row;
         }
 
+        Stage("final conv + flatten");
         TraceFlat("flat", flat);
         var (fwdSeq, _) = GruUnroll(flat, w.GruForward, reverse: false);
         var (revSeq, _) = GruUnroll(flat, w.GruReverse, reverse: true);
         TraceFlat("gru-fwd", fwdSeq);
         TraceFlat("gru-rev", revSeq);
+        Stage("bi-GRU");
 
         var output = new float[frames][];
         for (int f = 0; f < frames; f++)

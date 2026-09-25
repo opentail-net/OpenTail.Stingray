@@ -109,20 +109,18 @@ internal static class Stft
         var output = new float[frames][];
         int freqBins = nFft / 2 + 1;
 
-        var real = new double[nFft];
-        var imag = new double[nFft];
-        for (int f = 0; f < frames; f++)
+        // Per-frame windowed DFT magnitude via the shared twiddle-table kernel (SIMD dots, no trig per term),
+        // frames in parallel. Was a direct O(n^2) DFT calling Math.Cos/Math.Sin per term (~5.8s for 6s of audio).
+        Parallel.For(0, frames, f =>
         {
             int start = f * hop;
-            for (int i = 0; i < nFft; i++) real[i] = padded[start + i] * window[i];
-            Array.Clear(imag);
-            Dft(real, imag);
-
+            var windowed = new float[nFft];
+            for (int i = 0; i < nFft; i++) windowed[i] = padded[start + i] * window[i];
             var mag = new float[freqBins];
-            for (int k = 0; k < freqBins; k++)
-                mag[k] = (float)Math.Sqrt(real[k] * real[k] + imag[k] * imag[k]);
+            OpenTail.Stingray.Audio.Primitives.SpectralKernels.ComputePowerSpectrum(windowed, mag);
+            for (int k = 0; k < freqBins; k++) mag[k] = MathF.Sqrt(mag[k]);
             output[f] = mag;
-        }
+        });
         return output;
     }
 
@@ -142,27 +140,4 @@ internal static class Stft
         return w;
     }
 
-    /// <summary>Direct O(n^2) DFT (real magnitude spectrum only needed, correctness over speed --
-    /// n_fft=1024 is small enough this is not a real bottleneck for pitch extraction's frame rate).</summary>
-    private static void Dft(double[] real, double[] imag)
-    {
-        int n = real.Length;
-        var outRe = new double[n];
-        var outIm = new double[n];
-        for (int k = 0; k < n / 2 + 1; k++)
-        {
-            double sumRe = 0, sumIm = 0;
-            for (int t = 0; t < n; t++)
-            {
-                double angle = -2.0 * Math.PI * k * t / n;
-                double c = Math.Cos(angle), s = Math.Sin(angle);
-                sumRe += real[t] * c - imag[t] * s;
-                sumIm += real[t] * s + imag[t] * c;
-            }
-            outRe[k] = sumRe;
-            outIm[k] = sumIm;
-        }
-        Array.Copy(outRe, real, n / 2 + 1);
-        Array.Copy(outIm, imag, n / 2 + 1);
-    }
 }

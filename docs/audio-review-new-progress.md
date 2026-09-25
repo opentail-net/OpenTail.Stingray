@@ -539,3 +539,9 @@ cached on `RvcHubertWeights`. Measured (2 runs, `STINGRAY_RVC_PROFILE=1`): huber
 19.4 → 16.1 / 15.8s; output vs the pre-change WAV cosine 1.000000, maxAbs 4.76e-5 (16-bit quantisation). Wav2Vec2 parity
 (ONNX, WER 1.4 %) and `RvcHubertEncoderForwardTests` pass. Remaining: RMVPE ~7.5s and the synthesizer ~7s; the reference
 is 8.2s, so RVC is now ~1.9× behind (was ~2.4×).
+- **RMVPE mel STFT (2026-09-25): 15.9 → 9.7s.** New RMVPE stage timers (`STINGRAY_RVC_PROFILE=1`) showed the U-Net + GRU
+  take only ~1.85s of the 7.7s "rmvpe f0" stage; the rest was the mel extractor's direct O(n²) DFT calling
+  `Math.Cos`/`Math.Sin` per term. It now uses the shared `SpectralKernels.ComputePowerSpectrum` (twiddle tables, SIMD
+  dots) with frames in parallel. 2 runs: rmvpe 7.67 → 1.86 / 1.88s, convert 9.7 / 9.7s; output vs pre-change cosine
+  1.000000, maxAbs 3.0e-4 (float vs double DFT); `RvcRmvpeEndToEndRealAudioTests` passes. RVC is now ~1.2× behind the
+  reference (8.2s); the synthesizer (~6.6s) is the remaining big stage.
