@@ -87,7 +87,7 @@ public sealed class VibeVoiceAsrRealSpeechRealWeightsTests : HeavyTestBase
     {
         string? path = FindRepoFile("models/_models/vibevoice_asr/VibeVoice-ASR-GGUF/vibevoice-asr-q8_0.gguf");
         Assert.SkipUnless(path != null, "vibevoice-asr-q8_0.gguf not found");
-        string? wavPath = FindRepoFile("examples/audio.cpp/assets/asr_validation/librispeech/librispeech_test_clean_6930-75918-0000.wav");
+        string? wavPath = Environment.GetEnvironmentVariable("VV_WAV") ?? FindRepoFile("examples/audio.cpp/assets/asr_validation/librispeech/librispeech_test_clean_6930-75918-0000.wav");
         Assert.SkipUnless(wavPath != null, "librispeech reference clip not found");
 
         var (rawSamples, rawRate, rawChannels) = WavReader.ReadWav(wavPath!);
@@ -113,6 +113,8 @@ public sealed class VibeVoiceAsrRealSpeechRealWeightsTests : HeavyTestBase
             waveform, new Random(7));
         int speechFrames = speechEmbeddingsChannelMajor[0].Length;
 
+        bool trace = Environment.GetEnvironmentVariable("VV_TRACE") == "1"; // fixed tap indices assume the default LibriSpeech clip
+        if (trace)
         {
             // DEBUG: per-stage taps inside the semantic encoder itself, matching the reference's
             // own `STINGRAY_ASR_TRACE`-gated `stageN_downsample`/`stageN_blockM` dump added to
@@ -185,6 +187,7 @@ public sealed class VibeVoiceAsrRealSpeechRealWeightsTests : HeavyTestBase
             Console.WriteLine(sb.ToString());
         }
 
+        if (trace)
         {
             var sb = new System.Text.StringBuilder("[DEBUG] semantic_tokenizer.raw_waveform samples=[");
             int[] idx = [0, 2156, 4313, 6470, 8627, 10784, 12941, 15097, 17254, 19411, 21568, 23725, 25882, 28039, 28040, 30589, 33138, 35686, 38236, 40785, 43333, 45883, 48432, 50981, 53530, 56079, 56080, 58236, 60393, 62550, 64707, 66864, 69021, 71177, 73334, 75491, 77648, 79805, 81962, 84119];
@@ -195,6 +198,7 @@ public sealed class VibeVoiceAsrRealSpeechRealWeightsTests : HeavyTestBase
         double audioSeconds = waveform.Length / (double)RealSampleRate;
         var prompt = tokenizer.BuildPrompt(audioSeconds, speechFrames);
         Console.WriteLine($"[DEBUG] speechFrames={speechFrames} promptTokens={prompt.InputIds.Length} rawSamples={rawSamples.Length} rawRate={rawRate} resampledLen={waveform.Length}");
+        if (trace)
         {
             var flat = new float[speechFrames * HiddenDim];
             for (int f = 0; f < speechFrames; f++)

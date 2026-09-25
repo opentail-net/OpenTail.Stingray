@@ -64,3 +64,32 @@ The transcripts are unchanged after the change (4/4 exact), and `OmniVoiceMaskGi
 still passes (2.5s: a real 4-frame, 8-step run). We remain ~1.9× behind the reference. The next
 levers would be fusing QKV/gate-up and a KV-reuse scheme for the static text prefix, not attempted.
 Gap: no CLI/server wiring (library + test harness only).
+
+## VibeVoice ASR -- transcribes correctly now; the 09-08 "resampler amplification" conclusion was wrong, 2026-09-25
+
+The 2026-09-08 entries concluded that the garbled transcripts came from an unavoidable resampler
+phase difference amplified by the encoder, and closed the investigation. That rested on comparing
+**one element per stage**. The decisive test: feed audio that is **already 24 kHz** (the model's
+native rate), so neither side resamples. Our port then transcribed it perfectly, and so did the
+resampled 16 kHz LibriSpeech clips. Whatever made the transcripts garbled on 09-08 has since been
+fixed (most likely one of the later shared ForwardPass/norm fixes; not bisected), and the resampler
+was never the cause.
+
+Test: `VibeVoiceAsrRealSpeechRealWeightsTests` (now takes `VV_WAV`; its fixed-index debug taps only
+run with `VV_TRACE=1`, since they crashed on any other clip). Reference: vendored
+`audiocpp_cli --task asr --family vibevoice_asr --backend cpu --threads 8`, same `vibevoice-asr-q8_0.gguf`.
+
+| clip | ground truth | ours | reference |
+|---|---|---|---|
+| OmniVoice 24 kHz sample | Hello there, this is a real test of speech synthesis. | exact | exact |
+| test-clean 6930-75918-0000 | CONCORD RETURNED TO ITS PLACE AMIDST THE TENTS | exact | exact |
+| test-clean 6930-75918-0001 (15s) | THE ENGLISH FORWARDED … THE NEXT DAY | exact (identical to ref) | exact |
+| test-other 7902-96591-0000 | I AM FROM THE CUTTER LYING OFF THE COAST | "I'm from the **corner** lying off the coast." | "I'm from the cutter lying off the coast." |
+| test-other 7902-96591-0001 | DON'T CRY HE SAID I WAS OBLIGED TO COME | exact (identical to ref) | exact |
+
+4/5 identical to the reference; one word differs on a "test-other" (hard) clip. That's plausibly
+the 16→24 kHz resampler difference flipping a close token, not investigated further.
+
+Performance (CPU only: no GPU path, no CLI wiring): ours 47-56s for 3.5s clips and 142s for the 15s
+clip (test wall **including** GGUF load), vs reference 11.3-12.6s and 31.1s (`metrics.wall_ms`).
+~4× behind: a Phase 2 target (profile first).
