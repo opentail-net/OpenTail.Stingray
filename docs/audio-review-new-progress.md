@@ -186,3 +186,44 @@ single-threaded, with an inner channel loop striding through memory.
 RMVPE rewrite.) RMVPE salience after the rewrite is still 0.00475 / 0.04768 / 0.97143, and the end-to-end
 test's reference asserts still pass. Whisper round trip is still word-exact. Reference: 8.2s → we're ~2.4× behind.
 Remaining big items: HuBERT (5.1s), RMVPE (7.7s, other convs / GRU) if more is wanted.
+
+## Stable Audio 3 -- sampling schedule fixed; small-music + medium match the reference at official settings; SFX + cfg=1 gap open, 2026-09-25
+
+Checked all three local base checkpoints (`models/stable-audio-3-{small-music,small-sfx,medium}-base`)
+against the vendored `audiocpp_cli --task gen --family stable_audio` on the same safetensors. The reference
+needed each model's `model_config.json` and 3 small T5Gemma files (`config.json`, `tokenizer.model`,
+`generation_config.json` from `stabilityai/stable-audio-3-small-music-base/t5gemma-b-b-ul2`, now in
+`models/stable-audio-3-t5gemma`, junctioned into each model dir as `t5gemma-b-b-ul2`). Whisper can't judge music,
+so the comparison uses duration / rms / peak / HF-energy ratio / zero-crossing rate
+(untracked harness `ZzSa3CmpTmp.cs`); samples are local-only in `docs/audio-samples/sa3-cmp-2026-09-25_*`.
+
+Findings, in order:
+1. **Comparison trap (not a port bug)**: the C++ reference defaults to the **pingpong** sampler
+   (`rf_dit.cpp`: empty sampler → pingpong), while official Python picks by objective and all three
+   base configs are `rectified_flow` → **Euler** (`sampling.py:434`). Against pingpong, ours looked 7-20×
+   "muffled". With `--request-option sampler=euler` the gap mostly disappears (below).
+2. **Real fix — sampling schedule.** `models/diffusion.py`: inference uses `sampling_dist_shift`, which
+   defaults to `LogSNRShift(rate=0, anchor_logsnr=-6.2, logsnr_end=2.0)` when the config has no
+   `sampling_distribution_shift_options` (true for all three). `distribution_shift_options`
+   (`DistributionShift`, what `StableAudioScheduleKernels.ShiftTimestep` applied) is the *training*
+   distribution. The C++ reference's `shifted_logsnr_timestep` agrees. `ShiftTimestep` now implements
+   the LogSNR schedule (old formula kept as `TrainingDistributionShift`). Measured effect on these stats is
+   small (hfRatio 0.0070 → 0.0074 small-music), so this rests on the source code, not the numbers.
+3. **Auto-GPU**: with no backend passed, `DiffusionBackendResolver` creates Vulkan, so "CPU" harness runs
+   were GPU. The true CPU path (`STINGRAY_BACKEND=cpu`) gives the same stats (small-music cfg 7: hfRatio
+   0.0074 both), so CPU and GPU agree; CPU 93.9s vs GPU 50.4s for 6s/50 steps.
+4. Tokenizer: our T5Gemma ids for the golden prompt equal the fixture's official ids (`545,2485,3036,10273`).
+
+| 6s, 50 steps, CFG 7, Euler | rms ours / ref | hfRatio ours / ref | zcr ours / ref |
+|---|---|---|---|
+| small-music (seed 1) | 0.080 / 0.087 | 0.0074 / 0.0060 | 0.014 / 0.012 |
+| medium (seed 1) | 0.337 / 0.290 (both peak 1.0: model behaviour) | 0.0037 / 0.0057 | 0.019 / 0.020 |
+| small-sfx seeds 1-4 | 0.05-0.06 / 0.08-0.12 | 0.08-0.73 (mean ~0.43) / 0.61-0.93 (mean ~0.76) | 0.06-0.12 / 0.15-0.22 |
+
+**Open (timeboxed, not root-caused)**: (a) SFX is consistently darker than the reference over 4 seeds
+(~0.6× HF energy, ~0.5× ZCR; ranges overlap); (b) at CFG 1 (conditional only, off-nominal for base
+models) the reference is much brighter (hfRatio 0.055 vs ours 0.002). Both point to a subtle
+divergence in shared conditioning/DiT code that the 0.5s component goldens don't catch. Next step
+would be a reference latent dump (needs a small `audiocpp_cli` patch + rebuild) to diff per-step latents
+at CFG 1.
+Timing (GPU iGPU, 6s/50 steps): small 50s, medium 140s; reference CPU: small 52-55s, medium 167-170s.

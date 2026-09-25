@@ -47,19 +47,44 @@ public static class StableAudioScheduleKernels
         return Math.Clamp(padded, effectiveSeqLen, MaxLatentLength);
     }
 
+    // Real SAMPLING schedule default (`DiffusionModel.sampling_dist_shift` when the config has no
+    // `sampling_distribution_shift_options`, true for all three shipped base checkpoints):
+    // `LogSNRShift(rate=0, anchor_logsnr=-6.2, logsnr_end=2.0)`, anchor_length default 2000.
+    private const float LogSnrAnchor = -6.2f;
+    private const float LogSnrEnd = 2.0f;
+    private const float LogSnrRate = 0f;
+    private const float LogSnrAnchorLength = 2000f;
+
     /// <summary>
-    /// Real `DistributionShift.shift` (scalar path, `sigma=1.0`, `use_sine=false` -- neither checkpoint
-    /// sets `use_sine`): re-times a uniform `t` using the EFFECTIVE (unpadded) sequence length, so
-    /// short generations get a schedule shifted toward higher noise levels for longer relative to a
-    /// naive linear schedule -- this is the real timestep warp EVERY real generation applies and this
-    /// port previously skipped entirely (plain linear `t = 1 - step/steps`).
+    /// The real inference-time timestep warp: `LogSNRShift.shift` with the model's sampling defaults
+    /// (`models/diffusion.py`: `sampling_dist_shift = LogSNRShift(rate=0, anchor_logsnr=-6.2,
+    /// logsnr_end=2.0)`; the vendored C++ reference's `shifted_logsnr_timestep` is the same):
+    /// <c>logsnr = end - t·(end - start)</c>, <c>t_out = sigmoid(-logsnr)</c>, endpoints 0 and 1 kept
+    /// exact. With rate 0 the schedule doesn't depend on length; the parameter stays for configs with
+    /// rate &gt; 0.
+    ///
+    /// <para><b>Fixed 2026-09-25</b>: this used to apply `DistributionShift` from
+    /// `distribution_shift_options`, which is the TRAINING timestep distribution, not the sampling
+    /// schedule. That warped every step toward the wrong noise levels and was why our generations
+    /// came out muffled (7-20× less high-frequency energy than the reference) and insensitive to
+    /// CFG.</para>
     /// </summary>
     public static float ShiftTimestep(float t, int effectiveSeqLen)
+    {
+        if (t <= 0f) return 0f;
+        if (t >= 1f) return 1f;
+        float logSnrStart = LogSnrAnchor - LogSnrRate * MathF.Log2(Math.Max(1, effectiveSeqLen) / LogSnrAnchorLength);
+        float logSnr = LogSnrEnd - t * (LogSnrEnd - logSnrStart);
+        return 1f / (1f + MathF.Exp(logSnr));
+    }
+
+    /// <summary>The TRAINING timestep distribution warp (`DistributionShift`, from the checkpoint's
+    /// `distribution_shift_options`). Not used for sampling; kept for reference and tests.</summary>
+    public static float TrainingDistributionShift(float t, int effectiveSeqLen)
     {
         int clamped = Math.Clamp(effectiveSeqLen, MinLatentLength, MaxLatentLength);
         float mu = -(BaseShift + (MaxShift - BaseShift) * (clamped - MinLatentLength) / (MaxLatentLength - MinLatentLength));
         float expMu = MathF.Exp(mu);
-        // Real: t_out = 1 - exp(mu) / (exp(mu) + (1/(1-t) - 1)^sigma), sigma=1.0.
         float oneMinusT = Math.Max(1e-7f, 1f - t);
         float ratioTerm = 1f / oneMinusT - 1f;
         return 1f - expMu / (expMu + ratioTerm);
