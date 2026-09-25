@@ -39,7 +39,8 @@ public sealed class CosyVoice2GenerateWavDebugTest : HeavyTestBase
             "CosyVoice2 model files not found");
 
         using var pipeline = CosyVoice2Pipeline.Load(llmPath!, tokDir!, flowPath!, hiftPath!);
-        var wav = pipeline.Generate("This is a test of voice synthesis.", seed: int.TryParse(Environment.GetEnvironmentVariable("CV2_SEED"), out var sd) ? sd : 42);
+        var wav = pipeline.Generate("This is a test of voice synthesis.", seed: int.TryParse(Environment.GetEnvironmentVariable("CV2_SEED"), out var sd) ? sd : 42,
+            referenceAudioPath: Environment.GetEnvironmentVariable("CV2_REF"), referenceText: Environment.GetEnvironmentVariable("CV2_REF_TEXT"));
 
         Assert.True(wav.Length > 0, "CosyVoice2 produced empty audio");
 

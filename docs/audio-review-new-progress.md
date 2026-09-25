@@ -476,3 +476,28 @@ on the RVC pipeline (2 runs): hubert 5.1 → 4.64 / 4.69s (~9%); total 19.8 → 
 cosine 1.000000 (same 1.65e-4 maxAbs), Whisper exact, `RvcHubertEncoderForwardTests` passes. Modest because the
 projections weren't HuBERT's main cost (likely the 128-tap grouped positional conv); not pursued further. RVC stays
 ~2.4× behind the reference (8.2s).
+
+## CosyVoice2 -- reference-prompt path ported; bisection pins the garbled tail on LLM token generation (open), 2026-09-25
+
+Ported CosyVoice2's zero-shot prompt path (upstream `inference_zero_shot`) into `CosyVoice2Pipeline.Generate(…,
+referenceAudioPath, referenceText)`: CamPlus x-vector → speaker embedding; speech-tokenizer-v2 prompt tokens aligned
+with the reference mel (2 mel frames/token); LLM conditioned on prompt text + prompt speech tokens; flow over
+prompt+generated tokens; `CosyVoiceCfmDecoder.Generate` gains the real `cond` input (prompt mel in the first
+frames, channel-first); prompt frames trimmed before HiFT. ONNX helpers resolved from `models/` or `models/_models/`.
+
+It did **not** fix the garbled endings, so I bisected with an untracked resynthesis harness (`ZzCv2ResynthProfTmp`):
+
+| experiment (a.wav / "This is a test of voice synthesis.") | Whisper |
+|---|---|
+| a.wav's real speech tokens → flow/CFM/HiFT, zero speaker | "…finished in year 8 to do out of 3 and intended for you to complication." |
+| real tokens, **real CamPlus x-vector** | "This little work was finished in 1803 and intended for a media publication." (≈ exact) |
+| real tokens, x-vector, 30 ODE steps | worse (trained setting is 10) |
+| **LLM** tokens (no prompt), x-vector, seeds 42/1/2 | "This is the task of wasting distance." / "…of voicing, isn't it?" / "…of this industry." |
+| LLM tokens + full reference prompt, seeds 42/1/2 | "This is a task that works in some business." / "…of voice and resist." / "Yes, if the chance for the voices to pass." |
+
+**Conclusion:** the acoustic stack is right given a real speaker embedding (the zero x-vector alone hurts it,
+and CosyVoice2-0.5B is a zero-shot-only model anyway). The defect is in **LLM speech-token generation**, which
+starts right and drifts off the text. Checked and ruled out: q/k/v biases are mapped, the prefill layout is
+`[sos, text, task_id, prompt_speech]`, and the sampler is the reference RAS. Next suspects: text
+tokenization/normalization against the upstream frontend, the speech-token embedding offset / `llm_decoder` head
+indexing, RoPE/position handling in `ForwardPass` for this source. README row stays 🟡.

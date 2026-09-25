@@ -22,14 +22,18 @@ namespace OpenTail.Stingray.Audio.CosyVoice;
 /// </summary>
 public static class CosyVoiceCfmDecoder
 {
-    public static float[] Generate(CosyVoiceCfmDecoderWeights w, float[] mu, float[] spkEmbed, int t, Random rng, int nSteps = 10)
+    /// <param name="cond">Optional channel-first [mel, t] prompt-mel conditioning: real CosyVoice2
+    /// `flow.inference` builds `conds = zeros(mel_len1 + mel_len2)` and fills the first `mel_len1`
+    /// frames with the reference prompt's mel. Null (all zeros) for prompt-less synthesis.</param>
+    public static float[] Generate(CosyVoiceCfmDecoderWeights w, float[] mu, float[] spkEmbed, int t, Random rng, int nSteps = 10, float[]? cond = null)
     {
         const int mel = CosyVoiceCfmDecoderWeights.OutChannels;
 
         var x = new float[mel * t];
         for (int i = 0; i < x.Length; i++) x[i] = SampleGaussian(rng);
 
-        var cond = new float[mel * t]; // no separate cond tensor for this checkpoint's non-streaming path
+        cond ??= new float[mel * t];
+        if (cond.Length != mel * t) throw new ArgumentException($"cond must be [{mel}, {t}] channel-first.");
 
         var tSpan = new float[nSteps + 1];
         for (int i = 0; i <= nSteps; i++) tSpan[i] = 1f - MathF.Cos(0.05f * MathF.PI * i);
