@@ -388,3 +388,43 @@ the oracle.
 - DRY: the encoder shares `PackedLinearF32` with Audio's `DenseKernels` (Phase 2). Follow-up noted, not done: four
   scalar Abramowitz-Stegun erf copies in the audio ports (F5Kernels, CosyVoice3DiTModel, AudioGenTransformer,
   FishSpeechCodec) could call `Cpu/ErfGelu.Apply`; left alone to avoid touching verified audio numerics in this pass.
+
+## Final report (2026-09-25)
+
+All 16 target checkpoints now run from their own Hugging Face files, CPU, and each is validated against an
+independent reference (not against this code base):
+
+| Checkpoint | Runs as | Oracle and result |
+|---|---|---|
+| google-bert/bert-base-uncased | encoder + MLM head | its ONNX (`BertForMaskedLM`) logits: cos 0.9999997; card fill-mask → "fashion" |
+| sentence-transformers/all-MiniLM-L6-v2 | embeddings (mean, norm) | ONNX hidden states maxAbs 3.7e-6 |
+| BAAI/bge-small-en-v1.5 | embeddings (CLS, norm) | ONNX maxAbs 2.9e-6; llama-server embeddings cos ≥ 0.9996 (Q8_0 GGUF) |
+| BAAI/bge-large-en-v1.5 | embeddings (CLS, norm) | ONNX maxAbs 2.4e-5 |
+| intfloat/multilingual-e5-small | embeddings (mean, norm; caller adds `query: `/`passage: `) | ONNX maxAbs 1.6e-6 |
+| sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2 | embeddings (mean, no norm) | ONNX maxAbs 5.7e-6 |
+| FacebookAI/xlm-roberta-base | encoder + MLM head | its ONNX logits cos 0.9999997; card fill-mask → "▁fashion" |
+| sentence-transformers/all-mpnet-base-v2 | embeddings (mean, norm) | ONNX maxAbs 3.7e-6 |
+| nomic-ai/nomic-embed-text-v1.5 | embeddings (mean) | ONNX maxAbs 1.2e-5 |
+| google/electra-base-discriminator | discriminator | converted weights bit-identical to repo Flax weights; card example flags only "fake" |
+| cross-encoder/ms-marco-MiniLM-L6-v2 | cross-encoder rerank | ONNX logits identical to 5 decimals |
+| BAAI/bge-reranker-v2-m3 | cross-encoder rerank | model card scores within fp16 rounding (3 values); llama.cpp ranking identical |
+| openai-community/gpt2 | decoder (HF safetensors) | llama.cpp greedy receipt 22/22 tokens |
+| Qwen/Qwen3-0.6B | decoder (HF safetensors) | vs Q8_0 GGUF: cos ≥ 0.9992, 16/16 greedy × 3 prompts |
+| Qwen/Qwen3-8B | decoder (existing GGUF path) | existing receipts; HF-safetensors 8B not downloaded (16 GB), same code path as 0.6B |
+| trl-internal-testing/tiny-Qwen2ForCausalLM-2.5 | decoder (HF safetensors) | loader harness only (random weights): inspector + finite logits |
+
+Tokenizers: WordPiece id-exact vs llama.cpp on 7 checkpoints (46/46 each), XLM-R Unigram id-exact on 4 (58/58 each).
+Fakes removed: `BertGgufEmbeddingPipeline`, the sine/hash embedding fallback, the char-code ONNX tokenizer, and the
+server's synthetic default models. Wired into `stingray embed`/`rerank` and `/v1/embeddings`/`/v1/rerank`.
+Performance: ahead of ONNX Runtime batched on 3 of 4 benchmarked encoders and one-by-one on all 4 (`PerformanceLeague.md`).
+
+**Remaining issues / not done**
+- No Vulkan/CUDA encoder path (CPU only). F16/quantized encoder weights not supported (F32 safetensors only; GPT-2 F32 only).
+- Nomic task prefixes and Matryoshka (layer_norm → truncate → L2) aren't built into the pipeline; E5/BGE query prefixes
+  are the caller's job.
+- `llama-server --rerank` scores bge-reranker-v2-m3 ~0.7 lower than the HF reference on the card's example (a
+  llama.cpp-side difference; ranking agrees).
+- Added-token splitting inside input text (a literal `[MASK]`/`<mask>` string) isn't implemented.
+- The server embedding/rerank endpoints are covered by Tests.Server.Fast and the pipelines' own tests, but weren't run
+  against a live server process in this pass.
+- The CLI shows `<think>` spans as plain text for HF-safetensors Qwen3 (tokenizer special-token metadata).
