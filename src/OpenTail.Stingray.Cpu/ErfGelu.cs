@@ -1,3 +1,7 @@
+using System.Runtime.InteropServices;
+using System.Runtime.Intrinsics;
+using System.Runtime.Intrinsics.X86;
+
 namespace OpenTail.Stingray.Cpu;
 
 /// <summary>
@@ -11,7 +15,39 @@ public static class ErfGelu
 
     public static void InPlace(Span<float> x)
     {
-        for (int i = 0; i < x.Length; i++) x[i] = Apply(x[i]);
+        int i = 0;
+        if (Avx2.IsSupported && Fma.IsSupported && x.Length >= 8)
+        {
+            // Same Abramowitz-Stegun form, 8 lanes at a time; exp via SimdKernels.ExpApprox256.
+            var inv = Vector256.Create(0.70710678118654752f);
+            var one = Vector256.Create(1f);
+            var half = Vector256.Create(0.5f);
+            var p = Vector256.Create(0.3275911f);
+            var a1 = Vector256.Create(0.254829592f);
+            var a2 = Vector256.Create(-0.284496736f);
+            var a3 = Vector256.Create(1.421413741f);
+            var a4 = Vector256.Create(-1.453152027f);
+            var a5 = Vector256.Create(1.061405429f);
+            var signMask = Vector256.Create(-0f);
+            ref float start = ref MemoryMarshal.GetReference(x);
+            for (; i + 8 <= x.Length; i += 8)
+            {
+                var v = Vector256.LoadUnsafe(ref start, (nuint)i);
+                var z = Avx.Multiply(v, inv);
+                var a = Avx.AndNot(signMask, z);
+                var t = Avx.Divide(one, Fma.MultiplyAdd(p, a, one));
+                var poly = Fma.MultiplyAdd(a5, t, a4);
+                poly = Fma.MultiplyAdd(poly, t, a3);
+                poly = Fma.MultiplyAdd(poly, t, a2);
+                poly = Fma.MultiplyAdd(poly, t, a1);
+                poly = Avx.Multiply(poly, t);
+                var e = SimdKernels.ExpApprox256(Avx.Xor(Avx.Multiply(a, a), signMask));
+                var y = Fma.MultiplyAddNegated(poly, e, one);           // 1 - poly * e
+                var erf = Avx.Or(y, Avx.And(z, signMask));              // copy the sign of z
+                Avx.Multiply(Avx.Multiply(half, v), Avx.Add(one, erf)).StoreUnsafe(ref start, (nuint)i);
+            }
+        }
+        for (; i < x.Length; i++) x[i] = Apply(x[i]);
     }
 
     public static float Erf(float x)

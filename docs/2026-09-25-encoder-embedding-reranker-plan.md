@@ -209,7 +209,7 @@ the oracle.
 
 - [x] Phase 0 (2026-09-25): all 15 repos downloaded to `models/_models/hf/<owner>__<name>/` (17 GB; F: 11 GB free after). Each has weights (ELECTRA: `flax_model.msgpack` only, as expected), `tokenizer.json` + `config.json`, the ST `modules.json`/`1_Pooling` where published, and `onnx/model.onnx` for 11 repos (none for bge-reranker-v2-m3, GPT-2, Qwen3-0.6B, tiny-Qwen2). Qwen3-8B stays on the existing GGUF.
 - [x] Phase 1 tokenizers (2026-09-25, see progress below): WordPiece via vocab.txt + `tokenizer.json` normalizer flags; Unigram needs the **Precompiled charsmap** normalizer (port from `examples/llama.cpp/llama.cpp/src/llama-vocab.cpp` UGM `precompiled_charsmap`/xcda); id oracles = llama.cpp `models/ggml-vocab-bert-bge.gguf.inp/.out` + `llama-server /tokenize` on small GGUFs.
-- [ ] Phases 2-8
+- [x] Phases 2-8 (2026-09-25; CPU; see the progress sections below — Vulkan encoder path not started)
 
 ### Phase 1 progress (2026-09-25)
 - **WordPiece: golden-verified.** New `Tests.Core/BertWordPieceTokenizerGoldenTests` runs llama.cpp's BERT/BGE
@@ -372,3 +372,19 @@ the oracle.
 - README matrix: four new sourced rows (HF-safetensors decoders, text embeddings, cross-encoder rerank, ELECTRA).
 - Still open for later phases: Nomic task prefixes/Matryoshka as pipeline options; E5/BGE query prefixes are the
   caller's job (documented in the plan's §2 table). Next: Phase 8 (perf + DRY).
+
+### Phase 8 progress (2026-09-25): CPU perf pass + DRY pass
+- New `EncoderBenchmarkTests` (heavy-gated): 32 × ~86-token passages, ours vs ONNX Runtime on the same machine, median
+  of 5. **Before → after (ours, batch 32):** MiniLM 242-250 → 193-201 ms, bge-small 355-380 → 272-285 ms, bge-large
+  3403-3525 → 3062-3150 ms, nomic 1299-1376 → 1236 ms. Now ahead of ORT batched on bge-small/bge-large/nomic, level
+  on MiniLM (ORT is very noisy here: 172-477 ms), and ahead one-by-one on all four. Numbers in `PerformanceLeague.md`.
+- Changes kept (each measured per stage): AVX2 erf-GELU in `Cpu/ErfGelu` (reusing `SimdKernels.ExpApprox256`, now
+  internal; `ErfGeluTests` checks it against the scalar form, ≤ 2e-6 relative), attention on per-head transposed K/V
+  (1.5-1.7x on that stage), vectorized SwiGLU. Parity re-run after the changes: all 22 Tests.Embeddings pass with
+  unchanged numbers (e.g. bge-large maxAbs 2.4e-5, MLM logits cos 0.9999997, ms-marco 8.84586 vs ONNX 8.84585).
+- The packed F32 GEMMs are now ~75% of encoder time; F16/Q8 weights (`GemmQuant`) and a Vulkan path are the next
+  levers. **Not done:** the Vulkan encoder path (no GPU encoder code exists yet; it's its own work item, and per
+  CLAUDE.md rule 13 an iGPU result here wouldn't settle whether it helps).
+- DRY: the encoder shares `PackedLinearF32` with Audio's `DenseKernels` (Phase 2). Follow-up noted, not done: four
+  scalar Abramowitz-Stegun erf copies in the audio ports (F5Kernels, CosyVoice3DiTModel, AudioGenTransformer,
+  FishSpeechCodec) could call `Cpu/ErfGelu.Apply`; left alone to avoid touching verified audio numerics in this pass.

@@ -11553,7 +11553,7 @@ public static unsafe class SimdKernels
     /// Max relative error ~1.5e-7 in [-87, 88].
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static Vector256<float> ExpApprox256(Vector256<float> x)
+    internal static Vector256<float> ExpApprox256(Vector256<float> x)
     {
         // Clamp to avoid overflow/underflow
         x = Avx.Max(x, Vector256.Create(-87.3365f));

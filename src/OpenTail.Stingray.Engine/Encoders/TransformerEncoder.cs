@@ -200,7 +200,9 @@ public sealed class TransformerEncoder : IDisposable
                     var gate = ffn.AsSpan(r * 2 * inter, inter);
                     var up = ffn.AsSpan(r * 2 * inter + inter, inter);
                     var o = act.AsSpan(r * inter, inter);
-                    for (int k = 0; k < inter; k++) o[k] = gate[k] / (1f + MathF.Exp(-gate[k])) * up[k];
+                    TensorPrimitives.Sigmoid(gate, o);          // silu(gate) * up
+                    TensorPrimitives.Multiply(o, gate, o);
+                    TensorPrimitives.Multiply(o, up, o);
                 });
             else
                 Parallel.For(0, t, r => ErfGelu.InPlace(ffn.AsSpan(r * inter, inter)));
@@ -323,24 +325,40 @@ public sealed class TransformerEncoder : IDisposable
                 bucketOf[rel + maxLen] = RelativePositionBucket(rel, Config.RelativeAttentionBuckets);
         }
 
-        const int QueryBlock = 16;
+        // Work items are (sequence, head, block of queries). Each item copies its head's K and V into
+        // [d, len] (transposed) so scores are d length-len AXPYs and the context d length-len dots,
+        // instead of len*len tiny head_dim dots.
+        const int QueryBlock = 32;
         var work = new List<(int S, int Head, int Q0)>();
         for (int s = 0; s < seqs; s++)
             for (int hd = 0; hd < heads; hd++)
                 for (int q0 = 0; q0 < offsets[s + 1] - offsets[s]; q0 += QueryBlock)
                     work.Add((s, hd, q0));
 
-        Parallel.For(0, work.Count, () => new float[maxLen], (wi, _, scores) =>
+        Parallel.For(0, work.Count, () => new float[maxLen * (2 * d + 1)], (wi, _, buf) =>
         {
             var (s, hd, q0) = work[wi];
             int o = offsets[s], len = offsets[s + 1] - o;
             int q1 = Math.Min(len, q0 + QueryBlock);
+            var kt = buf.AsSpan(0, d * len);
+            var vt = buf.AsSpan(maxLen * d, d * len);
+            var sc = buf.AsSpan(2 * maxLen * d, len);
+            for (int j = 0; j < len; j++)
+            {
+                var kRow = qkv.AsSpan((o + j) * stride + h + hd * d, d);
+                var vRow = qkv.AsSpan((o + j) * stride + 2 * h + hd * d, d);
+                for (int k = 0; k < d; k++)
+                {
+                    kt[k * len + j] = kRow[k];
+                    vt[k * len + j] = vRow[k];
+                }
+            }
             for (int i = q0; i < q1; i++)
             {
                 var q = qkv.AsSpan((o + i) * stride + hd * d, d);
-                var sc = scores.AsSpan(0, len);
-                for (int j = 0; j < len; j++)
-                    sc[j] = TensorPrimitives.Dot(q, qkv.AsSpan((o + j) * stride + h + hd * d, d)) * scale;
+                sc.Clear();
+                for (int k = 0; k < d; k++)
+                    TensorPrimitives.MultiplyAdd(kt.Slice(k * len, len), q[k] * scale, sc, sc);
                 if (bucketOf is not null)
                     for (int j = 0; j < len; j++)
                         sc[j] += _relBias![bucketOf[j - i + maxLen] * heads + hd];
@@ -349,11 +367,10 @@ public sealed class TransformerEncoder : IDisposable
                 TensorPrimitives.Exp(sc, sc);
                 TensorPrimitives.Divide(sc, TensorPrimitives.Sum(sc), sc);
                 var outRow = ctx.AsSpan((o + i) * h + hd * d, d);
-                outRow.Clear();
-                for (int j = 0; j < len; j++)
-                    TensorPrimitives.FusedMultiplyAdd(qkv.AsSpan((o + j) * stride + 2 * h + hd * d, d), sc[j], outRow, outRow);
+                for (int k = 0; k < d; k++)
+                    outRow[k] = TensorPrimitives.Dot(sc, vt.Slice(k * len, len));
             }
-            return scores;
+            return buf;
         }, _ => { });
     }
 

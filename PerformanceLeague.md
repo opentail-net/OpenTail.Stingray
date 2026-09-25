@@ -27,6 +27,26 @@
 
 ---
 
+## Text encoders (embeddings / rerank), vs ONNX Runtime
+
+32 passages of ~86 tokens (2,752 tokens), CPU F32, median of 5 timed runs after warm-up, two separate runs each
+(`EncoderBenchmarkTests`, `STINGRAY_RUN_HEAVY_TESTS=1`). ONNX Runtime runs each checkpoint's own `onnx/model.onnx`
+(default CPU session; padded [32, L] batch with an attention mask); ours packs the batch without padding. ORT
+timings on this machine swing a lot between runs (MiniLM batch 172-477 ms), so both runs are shown.
+
+| Model | Batch 32: ours | Batch 32: ORT | One-by-one: ours | One-by-one: ORT | Performance Check |
+|---|---|---|---|---|---|
+| all-MiniLM-L6-v2 | 193 / 201 ms (166 / 160 emb/s) | 363 / 172 ms | 250 / 224 ms | 455 / 237 ms | 2026-09-25 |
+| bge-small-en-v1.5 | 285 / 272 ms (112 / 118 emb/s) | 543 / 367 ms | 456 / 438 ms | 1127 / 448 ms | 2026-09-25 |
+| bge-large-en-v1.5 | 3062 / 3150 ms (10.5 / 10.2 emb/s) | 3522 / 3373 ms | 4058 / 4022 ms | 4536 / 4859 ms | 2026-09-25 |
+| nomic-embed-text-v1.5 | 1236 / 1236 ms (25.9 emb/s) | 1530 / 1491 ms | 1535 / 1532 ms | 2385 / 1964 ms | 2026-09-25 |
+
+Perf pass 2026-09-25 (before → after, ours, batch 32): MiniLM 242-250 → 193-201 ms, bge-small 355-380 → 272-285 ms,
+bge-large 3403-3525 → 3062-3150 ms, nomic 1299-1376 → 1236 ms. What moved it: AVX2 erf-GELU (`Cpu/ErfGelu`, was
+scalar; 3-5x on that stage) and an attention kernel that transposes each head's K/V to [d, len] (d long AXPYs/dots
+instead of len² head_dim-long dots; ~1.6x on that stage), plus vectorized SwiGLU for Nomic. The packed F32 GEMMs
+(`PackedLinearF32`) are now ~75% of the time.
+
 ## SmolLM2-1.7B-Instruct
 
 | Scenario | Backend | C# (OT, t/s) | C++ (llama.cpp, t/s) | Ratio | Performance Check | Source |
