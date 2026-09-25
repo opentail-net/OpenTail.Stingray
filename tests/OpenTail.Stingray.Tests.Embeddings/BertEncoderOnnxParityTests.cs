@@ -55,6 +55,8 @@ public sealed class BertEncoderOnnxParityTests
     [InlineData("intfloat__multilingual-e5-small")]
     [InlineData("sentence-transformers__paraphrase-multilingual-MiniLM-L12-v2")]
     [InlineData("BAAI__bge-large-en-v1.5")]
+    [InlineData("sentence-transformers__all-mpnet-base-v2")]
+    [InlineData("nomic-ai__nomic-embed-text-v1.5")]
     public void LastHiddenState_MatchesOnnx(string repoDir)
     {
         string? dir = FindRepoDir($"models/_models/hf/{repoDir}");

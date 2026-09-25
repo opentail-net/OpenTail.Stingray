@@ -294,3 +294,19 @@ the oracle.
   (both quantizations agree with each other, so it isn't precision). The model card is used as the tight oracle; llama.cpp
   is checked for ranking order only. `bge-reranker-v2-m3-FP16.gguf` (1.1 GB) was added to `models/_models` for this.
 - Next: Phase 4 (MPNet relative position bias; NomicBERT RoPE/SwiGLU/no-bias).
+
+### Phase 4 progress (2026-09-25): MPNet + NomicBERT done, ONNX-verified
+- `EncoderFamily` switch in `EncoderConfig`/`TransformerEncoder`:
+  - **MPNet**: `attention.attn.{q,k,v,o}` names, positions from pad+1, no token types, T5 bidirectional bucketed
+    relative bias (`encoder.relative_attention_bias`, 32 buckets, max distance 128, float32 log like torch) added to
+    the scaled scores in every layer.
+  - **NomicBERT** (per vLLM `bert_with_rope.py` + llama.cpp tensor map): no position table, `emb_ln`, fused bias-free
+    `Wqkv`, NeoX RoPE base 1000 over the full 64-dim head, FFN `fc2(silu(fc12·h) ⊙ fc11·h)` (fc12 = gate, fc11 = up,
+    packed as one [gate|up] GEMM), post-LN `norm1`/`norm2`. Unsupported Nomic variants (prenorm, biases, partial or
+    scaled rotary, parallel block) are rejected from config rather than mis-run.
+- `BertEncoderOnnxParityTests` last_hidden_state vs ONNX: **all-mpnet-base-v2** maxAbs 3.8e-6, min cos 0.9999998
+  (191 tokens); **nomic-embed-text-v1.5** maxAbs 1.4e-5, min cos 0.9999998. The 5 BERT-family rows are unchanged.
+- Pooling from the ST files: MPNet mean + Normalize (max 384 tokens), Nomic mean, no Normalize module (max 8192).
+  Nomic's task prefixes (`search_query: ` etc.) and Matryoshka (layer_norm → truncate → L2) are caller/pipeline
+  options still to wire in Phase 7.
+- Next: Phase 5 (ELECTRA: Flax msgpack weights + discriminator head).
