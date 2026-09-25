@@ -263,3 +263,20 @@ inner-monologue text stream says? 150 frames (12s), q8_0 GGUF, CPU:
 
 Intelligible, on-topic speech that follows the text stream, with Whisper mishearing some words (the
 name, one phrase). Not reference parity. Perf: 240s per 12s sample (RTF ~20), a Phase 2 candidate.
+
+## Qwen3-ASR + Parakeet -- first real-speech checks (no README rows before), 2026-09-25
+
+Untracked harness `ZzAsrSweepProfTmp` (`ZZ_ASR=qwen|parakeet`) over the 4 audio.cpp LibriSpeech validation
+clips, CPU. Neither engine had a README row; Parakeet's `ParakeetRealWeightsTests` only ever transcribed a
+synthetic 300 Hz tone.
+
+| clip | truth | Qwen3-ASR 0.6B (safetensors) | Parakeet CTC 0.6B (q4_k) |
+|---|---|---|---|
+| test-clean 0000 (3.5s) | CONCORD RETURNED TO ITS PLACE AMIDST THE TENTS | exact (3.9s) | exact (1.6s) |
+| test-clean 0001 (14.2s) | THE ENGLISH FORWARDED … THE NEXT DAY | exact (5.6s) | "made ~~a~~ plentiful provision", "to ~~a~~ supper" (3.2s) |
+| test-other 0000 (2.1s) | I AM FROM THE CUTTER LYING OFF THE COAST | "I'm from the cutter…" (2.2s) | "i'm from the cutter…" (0.7s) |
+| test-other 0001 (2.5s) | DON'T CRY HE SAID I WAS OBLIGED TO COME | exact (2.4s) | exact (0.8s) |
+
+Qwen3-ASR: 0 real errors in 65 words. Parakeet: 2 deletions (~3% WER), plausibly q4_k quantisation;
+not investigated. README rows added (🟢 👂). Also corrected: the Qwen3 Forced Aligner check above was manual,
+so its confidence is 👂, not 🔬 (🔬 needs an automated reference test per the README legend).
