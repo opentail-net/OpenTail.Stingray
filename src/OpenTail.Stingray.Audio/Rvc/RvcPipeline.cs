@@ -53,6 +53,10 @@ public static class RvcPipeline
         long contentPad = (long)ContentSampleRate * options.AudioPadDurationSec;
         var padded = RvcAudioPreprocessing.ReflectPad(content, contentPad, contentPad);
 
+        bool profile = Environment.GetEnvironmentVariable("STINGRAY_RVC_PROFILE") == "1";
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        void Mark(string stage) { if (profile) Console.WriteLine($"[RvcPipeline] {stage}: {sw.Elapsed.TotalSeconds:F2}s"); sw.Restart(); }
+
         float[] f0 = [];
         if (synth.HasF0)
         {
@@ -60,6 +64,7 @@ public static class RvcPipeline
             if (f0.Length == 0) throw new InvalidOperationException("RVC RMVPE produced no f0 frames.");
             if (options.PitchFilterRadius > 2) f0 = MedianFilter(f0, 1);
         }
+        Mark("rmvpe f0");
 
         var splits = QuietSplitPoints(content, options.SplitQuerySec, options.SplitCenterSec, options.SplitThresholdSec);
         long targetPad = (long)synth.SampleRate * options.AudioPadDurationSec;
@@ -84,7 +89,9 @@ public static class RvcPipeline
                 targetFrames = segmentF0.Length;
             }
 
+            sw.Restart();
             var contentFrames = RvcHubertEncoder.Forward(hubert, segmentAudio);
+            Mark("hubert");
             int frames = contentFrames.Length, dim = contentFrames[0].Length;
             var original = Flatten(contentFrames, dim);
             var blended = original;
@@ -96,7 +103,9 @@ public static class RvcPipeline
             bool protect = synth.HasF0 && options.UnvoicedProtection < 0.5f;
             var input = BuildSynthesizerInput(blended, protect ? original : null, frames, dim, segmentF0, options, synth, (int)targetFrames, rng);
 
+            Mark("synth input");
             var audio = RvcSynthesizerEncoder.Forward(synth, input.Features, input.Pitch, input.SineSource, options.SpeakerId, rng).Audio;
+            Mark("synthesizer");
             if (audio.Length <= 2 * targetPad) throw new InvalidOperationException("RVC synthesized audio is too short for the padding crop.");
             converted.AddRange(audio.AsSpan((int)targetPad, (int)(audio.Length - 2 * targetPad)));
         }
@@ -110,7 +119,9 @@ public static class RvcPipeline
         RunSegment(content.Length, finalSegment: true);
 
         var output = converted.ToArray();
+        sw.Restart();
         ApplyRmsMix(content, output, synth.SampleRate, options.RmsMixRate);
+        Mark("rms mix");
         return output;
     }
 

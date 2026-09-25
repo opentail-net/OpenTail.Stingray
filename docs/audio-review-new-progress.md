@@ -168,3 +168,21 @@ publication."), packaged `default` v2 voice, CPU.
 
 **Performance, flagged as its own line item (CLAUDE.md rule 11):** ours 523.7s of compute vs
 the reference's 8.2s (**~64× slower**). A profile-first perf pass is the next RVC step.
+
+## RVC perf pass -- 482.6s → 19.8s for 6s of audio (24×), output unchanged, 2026-09-25
+
+Profile first (`STINGRAY_RVC_PROFILE=1` stage timers in `RvcPipeline`, kept): rmvpe 14.95s,
+hubert 5.42s, **synthesizer 462.2s (96%)**. The synthesizer's conv helpers were scalar,
+single-threaded, with an inner channel loop striding through memory.
+
+| step | synthesizer | rmvpe | total convert | vs pre-change output |
+|---|---|---|---|---|
+| before | 462.2s | 14.95s | 482.6s | — |
+| conv helpers → row-wise vectorized axpy, parallel over out-channels | 75.0 / 73.0s | 14.8s | 95.0 / 92.8s | cosine 1.000000, maxAbs 4.85e-5 |
+| stride-1 Conv1d → im2col + packed GEMM (`DenseKernels.LinearBatchedNoBias`, PyTorch weight used as-is) | 8.01 / 7.88s | 14.7s | 28.0 / 28.0s | cosine 1.000000, maxAbs 4.85e-5 |
+| RMVPE 3×3 Conv2d → im2col + packed GEMM | 7.08 / 6.88s | 7.59 / 7.77s | **19.9 / 19.7s** | cosine 1.000000, maxAbs 1.65e-4 |
+
+(maxAbs 4.85e-5 is 16-bit WAV quantisation; 1.65e-4 comes from tiny f0 differences after the
+RMVPE rewrite.) RMVPE salience after the rewrite is still 0.00475 / 0.04768 / 0.97143, and the end-to-end
+test's reference asserts still pass. Whisper round trip is still word-exact. Reference: 8.2s → we're ~2.4× behind.
+Remaining big items: HuBERT (5.1s), RMVPE (7.7s, other convs / GRU) if more is wanted.

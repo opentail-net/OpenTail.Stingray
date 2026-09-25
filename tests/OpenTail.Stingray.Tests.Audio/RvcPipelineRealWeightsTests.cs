@@ -52,6 +52,22 @@ public sealed class RvcPipelineRealWeightsTests : HeavyTestBase
         Assert.InRange(outSeconds, inSeconds - 0.05, inSeconds + 0.05);
         Assert.True(rms > 1e-3, $"output is near-silent (rms {rms})");
 
+        // Optional A/B against an earlier run's WAV (same seed => same noise draws), e.g. to check a
+        // kernel rewrite is numerically neutral. 16-bit WAV quantisation bounds agreement at ~3e-5.
+        string? comparePath = Environment.GetEnvironmentVariable("RVC_COMPARE");
+        if (comparePath is not null)
+        {
+            var (prev, _, _) = WavReader.ReadWav(comparePath);
+            int n = Math.Min(prev.Length, output.Length);
+            double maxDiff = 0, dot = 0, na = 0, nb = 0;
+            for (int i = 0; i < n; i++)
+            {
+                maxDiff = Math.Max(maxDiff, Math.Abs(prev[i] - output[i]));
+                dot += (double)prev[i] * output[i]; na += (double)prev[i] * prev[i]; nb += (double)output[i] * output[i];
+            }
+            Console.WriteLine($"[RvcPipeline] vs {Path.GetFileName(comparePath)}: maxAbsDiff {maxDiff:E2}, cosine {dot / Math.Sqrt(na * nb):F6}, lengths {prev.Length}/{output.Length}");
+        }
+
         string? outPath = Environment.GetEnvironmentVariable("RVC_OUT");
         if (outPath is not null)
             new OpenTail.Stingray.Audio.AudioGenerationResult(output, synth.SampleRate).SaveWav(outPath);

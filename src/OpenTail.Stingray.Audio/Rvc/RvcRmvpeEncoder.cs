@@ -212,6 +212,8 @@ public static class RvcRmvpeEncoder
     private static float[][,] Conv2dSamePad3x3(float[][,] x, int inCh, float[] weight, float[]? bias, int outCh)
     {
         int height = x[0].GetLength(0), width = x[0].GetLength(1);
+        if (OpenTail.Stingray.Cpu.PackedSgemmF32.IsSupported && inCh * 9 >= 16 && height * width >= 64)
+            return Conv2dSamePad3x3Gemm(x, inCh, weight, bias, outCh, height, width);
         var output = new float[outCh][,];
         System.Threading.Tasks.Parallel.For(0, outCh, oc =>
         {
@@ -243,6 +245,55 @@ public static class RvcRmvpeEncoder
             }
             output[oc] = plane;
         });
+        return output;
+    }
+
+    /// <summary>im2col + packed GEMM form of the 3x3 same-pad conv: per block of pixels, patches
+    /// <c>P[p, ic*9 + kh*3 + kw]</c> (zero outside), <c>Y = P · Wᵀ</c> with the PyTorch weight
+    /// <c>[outCh, inCh*9]</c> as-is (packed once, cached by DenseKernels), scattered back to planes.
+    /// Same math as the scalar loop, summation order aside (2026-09-25 perf pass).</summary>
+    private static float[][,] Conv2dSamePad3x3Gemm(float[][,] x, int inCh, float[] weight, float[]? bias, int outCh, int height, int width)
+    {
+        const int block = 2048;
+        int patch = inCh * 9, pixels = height * width;
+        var output = new float[outCh][,];
+        for (int oc = 0; oc < outCh; oc++) output[oc] = new float[height, width];
+        var patches = new float[Math.Min(block, pixels) * patch];
+        var y = new float[Math.Min(block, pixels) * outCh];
+        for (int p0 = 0; p0 < pixels; p0 += block)
+        {
+            int m = Math.Min(block, pixels - p0);
+            System.Threading.Tasks.Parallel.For(0, m, r =>
+            {
+                int i = (p0 + r) / width, j = (p0 + r) % width;
+                var pr = patches.AsSpan(r * patch, patch);
+                for (int ic = 0; ic < inCh; ic++)
+                {
+                    var xi = x[ic];
+                    int b = ic * 9;
+                    for (int kh = 0; kh < 3; kh++)
+                    {
+                        int ih = i - 1 + kh;
+                        for (int kw = 0; kw < 3; kw++)
+                        {
+                            int iw = j - 1 + kw;
+                            pr[b + kh * 3 + kw] = (uint)ih < (uint)height && (uint)iw < (uint)width ? xi[ih, iw] : 0f;
+                        }
+                    }
+                }
+            });
+            OpenTail.Stingray.Audio.Primitives.DenseKernels.LinearBatchedNoBias(patches.AsSpan(0, m * patch), weight, y.AsSpan(0, m * outCh), m, patch, outCh);
+            System.Threading.Tasks.Parallel.For(0, outCh, oc =>
+            {
+                var plane = output[oc];
+                float bv = bias is null ? 0f : bias[oc];
+                for (int r = 0; r < m; r++)
+                {
+                    int p = p0 + r;
+                    plane[p / width, p % width] = y[r * outCh + oc] + bv;
+                }
+            });
+        }
         return output;
     }
 

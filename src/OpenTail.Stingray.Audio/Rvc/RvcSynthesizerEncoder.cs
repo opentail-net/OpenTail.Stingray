@@ -439,76 +439,88 @@ public static class RvcSynthesizerEncoder
     private static float LeakyRelu(float x) => x >= 0f ? x : x * LReluSlope;
     private static float Sigmoid(float x) => 1f / (1f + MathF.Exp(-x));
 
-    /// <summary>Conv1d(kernel=1) over a [C][T] channel-major tensor -- equivalent to a per-frame
-    /// Linear over channels.</summary>
-    private static float[] Conv1dK1Bct(float[] x, int inCh, int frames, float[] weight, float[] bias, int outCh)
-    {
-        var output = new float[outCh * frames];
-        for (int oc = 0; oc < outCh; oc++)
-        {
-            int wBase = oc * inCh;
-            float b = bias[oc];
-            for (int t = 0; t < frames; t++)
-            {
-                float sum = b;
-                for (int ic = 0; ic < inCh; ic++) sum += weight[wBase + ic] * x[ic * frames + t];
-                output[oc * frames + t] = sum;
-            }
-        }
-        return output;
-    }
+    // ── Conv helpers ────────────────────────────────────────────────────────
+    // All tensors are channel-major [C][T]; weights are PyTorch [outCh, inCh, kernel]. The stride-1
+    // convs are computed as row-wise axpys (out[oc, t] += w[oc,ic,k] * x[ic, t - pad + k*dil] over
+    // the whole valid t range at once, vectorized) in parallel over output channels; the old
+    // per-output-sample scalar loops (inner loop striding by `frames` through memory) made the
+    // synthesizer ~96% of RVC's runtime (2026-09-25 perf pass).
 
-    /// <summary>Real "same"-padding (stride 1, dilation 1) Conv1d over a [C][T] tensor. Weight
-    /// real PyTorch layout [outCh, inCh, kernel].</summary>
+    /// <summary>Conv1d(kernel=1) over a [C][T] channel-major tensor -- a per-frame Linear over channels.</summary>
+    private static float[] Conv1dK1Bct(float[] x, int inCh, int frames, float[] weight, float[] bias, int outCh)
+        => Conv1dStride1(x, inCh, frames, weight, bias, outCh, kernel: 1, dilation: 1, padding: 0);
+
+    /// <summary>Real "same"-padding (stride 1, dilation 1) Conv1d.</summary>
     private static float[] Conv1dSamePad(float[] x, int inCh, int frames, float[] weight, float[]? bias, int outCh, int kernel)
-    {
-        int pad = (kernel - 1) / 2;
-        var output = new float[outCh * frames];
-        for (int oc = 0; oc < outCh; oc++)
-        {
-            float b = bias is null ? 0f : bias[oc];
-            int wBase = oc * inCh * kernel;
-            for (int t = 0; t < frames; t++)
-            {
-                float sum = b;
-                for (int ic = 0; ic < inCh; ic++)
-                {
-                    int wIcBase = wBase + ic * kernel;
-                    for (int k = 0; k < kernel; k++)
-                    {
-                        int it = t - pad + k;
-                        if ((uint)it >= (uint)frames) continue;
-                        sum += weight[wIcBase + k] * x[ic * frames + it];
-                    }
-                }
-                output[oc * frames + t] = sum;
-            }
-        }
-        return output;
-    }
+        => Conv1dStride1(x, inCh, frames, weight, bias, outCh, kernel, dilation: 1, padding: (kernel - 1) / 2);
 
     private static float[] Conv1dDilatedSamePad(float[] x, int inCh, int frames, float[] weight, float[] bias, int outCh, int kernel, int dilation, int padding)
+        => Conv1dStride1(x, inCh, frames, weight, bias, outCh, kernel, dilation, padding);
+
+    /// <summary>Stride-1 Conv1d with zero padding `padding` on each side and output length == input length.</summary>
+    private static float[] Conv1dStride1(float[] x, int inCh, int frames, float[] weight, float[]? bias, int outCh, int kernel, int dilation, int padding)
     {
+        if (OpenTail.Stingray.Cpu.PackedSgemmF32.IsSupported && inCh * kernel >= 16 && frames >= 64)
+            return Conv1dStride1Gemm(x, inCh, frames, weight, bias, outCh, kernel, dilation, padding);
         var output = new float[outCh * frames];
-        for (int oc = 0; oc < outCh; oc++)
+        Parallel.For(0, outCh, oc =>
         {
-            float b = bias[oc];
+            var o = output.AsSpan(oc * frames, frames);
+            if (bias is not null) o.Fill(bias[oc]);
             int wBase = oc * inCh * kernel;
-            for (int t = 0; t < frames; t++)
+            for (int ic = 0; ic < inCh; ic++)
             {
-                float sum = b;
+                var xi = new ReadOnlySpan<float>(x, ic * frames, frames);
+                for (int k = 0; k < kernel; k++)
+                {
+                    float wv = weight[wBase + ic * kernel + k];
+                    if (wv == 0f) continue;
+                    int shift = k * dilation - padding;             // out[t] reads x[t + shift]
+                    int t0 = Math.Max(0, -shift), t1 = Math.Min(frames, frames - shift);
+                    if (t0 >= t1) continue;
+                    var dst = o.Slice(t0, t1 - t0);
+                    TensorPrimitives.MultiplyAdd(xi.Slice(t0 + shift, t1 - t0), wv, dst, dst);
+                }
+            }
+        });
+        return output;
+    }
+
+    /// <summary>im2col + packed GEMM form of <see cref="Conv1dStride1"/>: for a block of output
+    /// times, patches <c>P[t, ic*K+k] = x[ic, t + k*dil - pad]</c> (zero outside), then
+    /// <c>Y = P · Wᵀ</c> with the PyTorch weight <c>[outCh, inCh*K]</c> used as-is (packed once and
+    /// cached by <see cref="DenseKernels.LinearBatchedNoBias"/>), then transposed back to [C][T].</summary>
+    private static float[] Conv1dStride1Gemm(float[] x, int inCh, int frames, float[] weight, float[]? bias, int outCh, int kernel, int dilation, int padding)
+    {
+        const int block = 2048;
+        int patch = inCh * kernel;
+        var output = new float[outCh * frames];
+        var patches = new float[block * patch];
+        var y = new float[block * outCh];
+        for (int t0 = 0; t0 < frames; t0 += block)
+        {
+            int m = Math.Min(block, frames - t0);
+            Parallel.For(0, m, r =>
+            {
+                int t = t0 + r;
+                var p = patches.AsSpan(r * patch, patch);
                 for (int ic = 0; ic < inCh; ic++)
                 {
-                    int wIcBase = wBase + ic * kernel;
+                    int xBase = ic * frames, pBase = ic * kernel;
                     for (int k = 0; k < kernel; k++)
                     {
-                        int it = t - padding + k * dilation;
-                        if ((uint)it >= (uint)frames) continue;
-                        sum += weight[wIcBase + k] * x[ic * frames + it];
+                        int it = t + k * dilation - padding;
+                        p[pBase + k] = (uint)it < (uint)frames ? x[xBase + it] : 0f;
                     }
                 }
-                output[oc * frames + t] = sum;
-            }
+            });
+            DenseKernels.LinearBatchedNoBias(patches.AsSpan(0, m * patch), weight, y.AsSpan(0, m * outCh), m, patch, outCh);
+            Parallel.For(0, outCh, oc =>
+            {
+                float b = bias is null ? 0f : bias[oc];
+                int oBase = oc * frames + t0;
+                for (int r = 0; r < m; r++) output[oBase + r] = y[r * outCh + oc] + b;
+            });
         }
         return output;
     }
@@ -517,27 +529,24 @@ public static class RvcSynthesizerEncoder
     {
         int outLen = (inLen + 2 * padding - kernel) / stride + 1;
         var output = new float[outCh * outLen];
-        for (int oc = 0; oc < outCh; oc++)
+        Parallel.For(0, outCh, oc =>
         {
-            float b = bias[oc];
+            var o = output.AsSpan(oc * outLen, outLen);
+            o.Fill(bias[oc]);
             int wBase = oc * inCh * kernel;
-            for (int ot = 0; ot < outLen; ot++)
+            for (int ic = 0; ic < inCh; ic++)
             {
-                float sum = b;
-                int start = ot * stride - padding;
-                for (int ic = 0; ic < inCh; ic++)
+                int xBase = ic * inLen, wIcBase = wBase + ic * kernel;
+                for (int ot = 0; ot < outLen; ot++)
                 {
-                    int wIcBase = wBase + ic * kernel;
-                    for (int k = 0; k < kernel; k++)
-                    {
-                        int it = start + k;
-                        if ((uint)it >= (uint)inLen) continue;
-                        sum += weight[wIcBase + k] * x[ic * inLen + it];
-                    }
+                    int start = ot * stride - padding;
+                    int k0 = Math.Max(0, -start), k1 = Math.Min(kernel, inLen - start);
+                    float sum = 0f;
+                    for (int k = k0; k < k1; k++) sum += weight[wIcBase + k] * x[xBase + start + k];
+                    o[ot] += sum;
                 }
-                output[oc * outLen + ot] = sum;
             }
-        }
+        });
         return output;
     }
 
@@ -547,28 +556,25 @@ public static class RvcSynthesizerEncoder
     private static (float[] Output, int OutLen) ConvTranspose1dPyTorch(float[] x, int inCh, int inLen, float[] weight, float[] bias, int outCh, int kernel, int stride, int padding)
     {
         int rawLen = (inLen - 1) * stride + kernel;
-        var raw = new float[outCh * rawLen];
-        for (int oc = 0; oc < outCh; oc++)
-            for (int ot = 0; ot < rawLen; ot++) raw[oc * rawLen + ot] = bias[oc];
-        for (int ic = 0; ic < inCh; ic++)
-        {
-            for (int it = 0; it < inLen; it++)
-            {
-                float v = x[ic * inLen + it];
-                if (v == 0f) continue;
-                for (int oc = 0; oc < outCh; oc++)
-                {
-                    int wBase = (ic * outCh + oc) * kernel;
-                    int outBase = stride * it;
-                    for (int k = 0; k < kernel; k++)
-                        raw[oc * rawLen + outBase + k] += v * weight[wBase + k];
-                }
-            }
-        }
         int trimmedLen = rawLen - 2 * padding;
         var output = new float[outCh * trimmedLen];
-        for (int oc = 0; oc < outCh; oc++)
-            Array.Copy(raw, oc * rawLen + padding, output, oc * trimmedLen, trimmedLen);
+        Parallel.For(0, outCh, () => new float[rawLen], (oc, _, raw) =>
+        {
+            Array.Fill(raw, bias[oc]);
+            for (int ic = 0; ic < inCh; ic++)
+            {
+                int wBase = (ic * outCh + oc) * kernel, xBase = ic * inLen;
+                for (int it = 0; it < inLen; it++)
+                {
+                    float v = x[xBase + it];
+                    if (v == 0f) continue;
+                    int outBase = stride * it;
+                    for (int k = 0; k < kernel; k++) raw[outBase + k] += v * weight[wBase + k];
+                }
+            }
+            Array.Copy(raw, padding, output, oc * trimmedLen, trimmedLen);
+            return raw;
+        }, static _ => { });
         return (output, trimmedLen);
     }
 }
