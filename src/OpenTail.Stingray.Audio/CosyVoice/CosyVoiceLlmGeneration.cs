@@ -97,6 +97,44 @@ public static class CosyVoiceLlmGeneration
         return [.. generated];
     }
 
+    /// <summary>
+    /// Teacher-forced scoring: with the same prefill as <see cref="GenerateSpeechTokens"/> (<c>[sos, text, task_id]</c>),
+    /// feeds <paramref name="speechTokens"/> one by one and returns, for each, its rank among the speech logits
+    /// (0 = argmax) and its log-probability. A correct LLM ranks real speech tokens of the text's own recording highly
+    /// all the way through; decay with position points at position handling, poor ranks from the start at the
+    /// embedding/head indexing.
+    /// </summary>
+    public static (int Rank, float LogProb)[] ScoreSpeechTokens(CosyVoiceLlmTensorSource source, string tokenizerDir, string text, int[] speechTokens)
+    {
+        source.EnableSpeechGenerationMode();
+        var tokenizer = BuildTokenizer(tokenizerDir);
+        var prefillIds = new List<int> { source.SosTaskTokenIdBase };
+        prefillIds.AddRange(tokenizer.Encode(text));
+        prefillIds.Add(source.SosTaskTokenIdBase + 1);
+
+        var hp = ModelHyperparams.FromGgufMetadata(source.Metadata, source);
+        using var backend = new Cpu.CpuBackend();
+        using var fwd = new ForwardPass(source, backend, hp);
+        var logits = ApplyBias(fwd.Prefill(prefillIds).ToArray(), source.LlmDecoderBias);
+        int pos = prefillIds.Count;
+        var result = new (int, float)[speechTokens.Length];
+        for (int i = 0; i < speechTokens.Length; i++)
+        {
+            int n = source.LlmDecoderBias?.Length ?? logits.Length;
+            var l = logits.AsSpan(0, n);
+            float max = System.Numerics.Tensors.TensorPrimitives.Max(l);
+            double sum = 0;
+            foreach (float v in l) sum += Math.Exp(v - max);
+            float target = l[speechTokens[i]];
+            int rank = 0;
+            foreach (float v in l) if (v > target) rank++;
+            result[i] = (rank, (float)(target - max - Math.Log(sum)));
+            logits = ApplyBias(fwd.Forward(source.SpeechTokenIdOffset + speechTokens[i], pos).ToArray(), source.LlmDecoderBias);
+            pos++;
+        }
+        return result;
+    }
+
     private static float[] ApplyBias(float[] logits, float[]? bias)
     {
         if (bias is null) return logits;

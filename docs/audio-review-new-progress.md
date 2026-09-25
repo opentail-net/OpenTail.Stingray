@@ -501,3 +501,25 @@ starts right and drifts off the text. Checked and ruled out: q/k/v biases are ma
 `[sos, text, task_id, prompt_speech]`, and the sampler is the reference RAS. Next suspects: text
 tokenization/normalization against the upstream frontend, the speech-token embedding offset / `llm_decoder` head
 indexing, RoPE/position handling in `ForwardPass` for this source. README row stays 🟡.
+
+## Parakeet -- the ~3% WER was a tokenizer bug; now word-for-word with the C++ reference, 2026-09-25
+
+Checked the "plausibly q4_k" theory first: the unquantized checkpoint (cstr/parakeet-ctc-0.6b-GGUF `parakeet-ctc-0.6b.gguf`,
+saved as `models/_models/parakeet-ctc-0.6b-f16.gguf`) gave exactly the same transcripts, so not quantization. Built the
+reference (`examples/CrispASR`, after fetching its `ggml` and `c2pa-audio` submodules): on the same file and clips it
+transcribes "made **a** plentiful provision" / "to **a** supper", the two words we dropped. A frame dump showed our encoder
+does emit `▁a` (frame 54: 118.6 vs blank 113.8), so it was lost in decoding: `ParakeetTokenizer.Decode` skipped the
+fallback vocab's hard-coded special ids 0/2/3, and in this NeMo SentencePiece vocab id 2 is "▁th" and id 3 is "▁a" (the
+blank is 1024, past the vocab). `FromGguf` now skips only real `<...>` special pieces. `ParakeetLibriSpeechTests` (new,
+tracked) asserts equality with CrispASR's transcripts (casing/punctuation stripped) for q4_k and unquantized. The
+onnx-community ONNX export needs HF-style features (it outputs only blanks on NeMo-style features) and was not used.
+Also noted: `ParakeetConformerEncoderTests` look only in `models/`, but the checkpoint lives in `models/_models/`.
+
+## CosyVoice2 -- teacher-forcing check narrows the drift away from the LLM math, 2026-09-25
+
+New `CosyVoiceLlmGeneration.ScoreSpeechTokens` + `CosyVoice2TeacherForcingTests`: a.wav's real speech tokens after its
+own transcript. Top-10 accuracy by quartile 45 / 48 / 56 / 55 %, median rank 14 → 8 of 6561, mean log-prob ≈ −4
+(random ≈ −8.8). No decay with position (rules out RoPE/position handling; rope_theta is 1e6 as in the config) and real
+tokens rank near the top (rules out a misindexed speech embedding or llm_decoder head). The drift is more likely in
+generation-time behaviour (sampling / stopping) or input text normalization than in the forward pass. Not fixed; the
+missing piece is upstream's per-token log-likelihoods for the same tokens as a direct comparison.

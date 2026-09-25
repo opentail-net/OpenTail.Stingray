@@ -15,6 +15,11 @@ public sealed class ParakeetTokenizer
     private readonly Dictionary<string, int> _vocab = new(StringComparer.Ordinal);
     private readonly Dictionary<int, string> _idToToken = [];
 
+    // Ids Decode skips. The built-in fallback vocab uses the constants above; a GGUF vocab (NeMo SentencePiece) has
+    // no BOS/EOS and puts ordinary pieces at those ids (1 = "▁t", 2 = "▁th", 3 = "▁a"), so FromGguf replaces this with
+    // only its real special pieces ("<unk>"-style); the CTC blank lies past the end of that vocab.
+    private HashSet<int> _skipIds = [BlankTokenId, BosTokenId, EosTokenId];
+
     public int VocabSize => _vocab.Count;
 
     public ParakeetTokenizer()
@@ -39,6 +44,7 @@ public sealed class ParakeetTokenizer
                 tokenizer._vocab[tok] = i;
                 tokenizer._idToToken[i] = tok;
             }
+            tokenizer._skipIds = [.. tokenizer._idToToken.Where(kv => kv.Value.StartsWith('<') && kv.Value.EndsWith('>')).Select(kv => kv.Key)];
         }
         return tokenizer;
     }
@@ -150,7 +156,7 @@ public sealed class ParakeetTokenizer
         var sb = new StringBuilder();
         foreach (int tid in tokenIds)
         {
-            if (tid == BlankTokenId || tid == BosTokenId || tid == EosTokenId)
+            if (_skipIds.Contains(tid))
             {
                 continue;
             }
