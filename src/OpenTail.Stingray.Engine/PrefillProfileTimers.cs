@@ -12,7 +12,7 @@ namespace OpenTail.Stingray.Engine;
 /// </summary>
 public static class PrefillProfileTimers
 {
-    public enum Category { QkvProj, Attention, OutProj, Ffn, RmsNorm, RoPE, Other, Count }
+    public enum Category { QkvProj, Attention, OutProj, Ffn, RmsNorm, RoPE, Other, GdnBlock, MoeFfn, GdnRecurrence, Count }
 
     public static readonly bool Enabled =
         Environment.GetEnvironmentVariable("STINGRAY_PROFILE_PREFILL") == "1";
@@ -23,7 +23,9 @@ public static class PrefillProfileTimers
     private static readonly string[] s_names =
     [
         "QKV projection (batched GEMM)", "Attention (per-token, NOT batched)", "Output projection (batched GEMM)",
-        "FFN (batched GEMM)", "RmsNorm", "RoPE", "Other (residuals/embed/misc)"
+        "FFN (batched GEMM)", "RmsNorm", "RoPE", "Other (residuals/embed/misc)",
+        "Hybrid: GDN block (proj + recurrence)", "Hybrid: MoE FFN (routed + shared)",
+        "  of which GDN chunked recurrence"
     ];
 
     public static void Add(Category c, long elapsedTicks) => s_ticks[(int)c] += elapsedTicks;
@@ -33,7 +35,8 @@ public static class PrefillProfileTimers
     public static void Report(TextWriter w)
     {
         long total = 0;
-        foreach (var t in s_ticks) total += t;
+        for (int i = 0; i < s_ticks.Length; i++)
+            if (i != (int)Category.GdnRecurrence) total += s_ticks[i]; // a sub-part of GdnBlock, not added twice
         double totalMs = Stopwatch.GetElapsedTime(0, total).TotalMilliseconds;
 
         w.WriteLine($"[PrefillProfile] {s_tokenCount} tokens, {totalMs:F2}ms total measured trunk time ({(s_tokenCount > 0 ? totalMs / s_tokenCount : 0):F3}ms/token)");

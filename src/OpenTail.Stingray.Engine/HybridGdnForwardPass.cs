@@ -794,6 +794,7 @@ public sealed unsafe class HybridGdnForwardPass : IForwardPass
             gB = Alloc(n * hv);
             gO = Alloc(n * valueDim);
 
+            if (PrefillProfileTimers.Enabled) PrefillProfileTimers.CountTokens(n);
             for (int t = 0; t < n; t++) EmbedTokenInto(tokens[t], hid + (long)t * e);
             for (int t = 0; t < n; t++) _kvCache.ReserveBlockAt(startPos + t);
 
@@ -807,17 +808,19 @@ public sealed unsafe class HybridGdnForwardPass : IForwardPass
                 for (int t = 0; t < n; t++)
                     SimdKernels.RmsNorm(nrm + (long)t * e, hid + (long)t * e, attnNormW, e, _hp.RmsNormEps);
 
+                long tBlock = PrefillProfileTimers.Enabled ? Stopwatch.GetTimestamp() : 0;
                 if (isAttn)
                 {
-                    // Per-token attention in position order — t reads K/V of 0..t.
-                    for (int t = 0; t < n; t++)
-                        AttnBlockAt(layer, position: startPos + t, kvPosition: startPos + t,
-                            normIn: nrm + (long)t * e, hiddenOut: hid + (long)t * e);
+                    // Batched projections; attention itself per token in position order (t reads K/V of 0..t).
+                    AttnBlockChunked(layer, n, startPos, nrm, hid);
                 }
                 else
                 {
                     GdnBlockChunked(layer, n, nrm, hid, gQ, gK, gV, gZ, gA, gB, gO);
                 }
+                if (PrefillProfileTimers.Enabled)
+                    PrefillProfileTimers.Add(isAttn ? PrefillProfileTimers.Category.Attention : PrefillProfileTimers.Category.GdnBlock,
+                        Stopwatch.GetTimestamp() - tBlock);
 
                 // Residual add (per token).
                 for (int t = 0; t < n; t++)
@@ -829,7 +832,16 @@ public sealed unsafe class HybridGdnForwardPass : IForwardPass
                 for (int t = 0; t < n; t++)
                     SimdKernels.RmsNorm(nrm + (long)t * e, hid + (long)t * e, postNormW, e, _hp.RmsNormEps);
 
-                // ── FFN per token (same kernels/order as Forward). ───────
+                // ── FFN: batched routed experts for MoE (see MoeFfnBatchedPrefill), else per token
+                //    with the same kernels/order as Forward. ───────
+                long tFfn = PrefillProfileTimers.Enabled ? Stopwatch.GetTimestamp() : 0;
+                if (_hp.IsMoE && MoeBatchedPrefillEnabled && n > 1)
+                {
+                    MoeFfnBatchedPrefill(layer, nrm, hid, n);
+                    if (PrefillProfileTimers.Enabled)
+                        PrefillProfileTimers.Add(PrefillProfileTimers.Category.MoeFfn, Stopwatch.GetTimestamp() - tFfn);
+                }
+                else
                 for (int t = 0; t < n; t++)
                 {
                     float* normIn = nrm + (long)t * e;
@@ -915,16 +927,19 @@ public sealed unsafe class HybridGdnForwardPass : IForwardPass
         var aRef = _ssmAlpha[layer];
         var bRef = _ssmBeta[layer];
 
-        // Pre-recurrence stages, per token (conv state threads in token order).
+        // Input projections batched over all n tokens (weights streamed once; int8 batched path, like the MoE and
+        // dense batched prefill); z goes straight into gZ. The causal conv then threads its state in token order.
+        float* qkvAll = Alloc(n * convCh);
+        try
+        {
+        BatchedProjection(qkvAll, _wQkv[layer], nrm, n, convCh, e);
+        BatchedProjection(gZ, _wZGate[layer], nrm, n, valueDim, e);
         for (int t = 0; t < n; t++)
         {
             float* normIn = nrm + (long)t * e;
 
-            FusedMatVec(_qkv, _wQkv[layer], normIn, convCh, e);
-            FusedMatVec(_z, _wZGate[layer], normIn, valueDim, e);
-
             GdnKernels.CausalDepthwiseConv1dDecode(
-                new ReadOnlySpan<float>(_qkv, convCh),
+                new ReadOnlySpan<float>(qkvAll + (long)t * convCh, convCh),
                 new Span<float>(convState, convStateLen),
                 new ReadOnlySpan<float>(_ssmConv1d[layer], _gdnConvKernel * convCh),
                 new Span<float>(_qkvConv, convCh),
@@ -944,8 +959,6 @@ public sealed unsafe class HybridGdnForwardPass : IForwardPass
             GdnKernels.TileHeads(kPre, new Span<float>(gK + (long)t * valueDim, valueDim),
                 _gdnNumKHeads, _gdnKvRepeat, hd);
 
-            new ReadOnlySpan<float>(_z, valueDim).CopyTo(new Span<float>(gZ + (long)t * valueDim, valueDim));
-
             SimdKernels.MatVecDual(
                 gA + (long)t * hv, aRef.DataPtr,
                 gB + (long)t * hv, bRef.DataPtr,
@@ -953,6 +966,7 @@ public sealed unsafe class HybridGdnForwardPass : IForwardPass
         }
 
         // One batched recurrence over all n tokens.
+        long tRec = PrefillProfileTimers.Enabled ? Stopwatch.GetTimestamp() : 0;
         GdnKernels.GdnRecurrenceChunkedPrefill(
             n,
             new ReadOnlySpan<float>(gQ, n * valueDim),
@@ -967,10 +981,16 @@ public sealed unsafe class HybridGdnForwardPass : IForwardPass
             new Span<float>(scanState, scanStateLen),
             new Span<float>(gO, n * valueDim),
             hv, hd, normEps: 1e-6f);
+        if (PrefillProfileTimers.Enabled)
+            PrefillProfileTimers.Add(PrefillProfileTimers.Category.GdnRecurrence, Stopwatch.GetTimestamp() - tRec);
 
-        // Per-token ssm-out projection → block output.
-        for (int t = 0; t < n; t++)
-            FusedMatVec(hid + (long)t * e, _ssmOut[layer], gO + (long)t * valueDim, e, valueDim);
+        // ssm-out projection → block output, batched.
+        BatchedProjection(hid, _ssmOut[layer], gO, n, e, valueDim);
+        }
+        finally
+        {
+            NativeMemory.Free(qkvAll);
+        }
     }
 
     /// <summary>Dense FFN on external in/out pointers (the <see cref="DenseFfn"/> body,
@@ -1927,10 +1947,29 @@ public sealed unsafe class HybridGdnForwardPass : IForwardPass
     {
         int qDim = _numHeads * _headDim;
         int kvDim = _numKvHeads * _headDim;
-        int twoHd = _headDim * 2;   // 512: per-head [Q256, G256]
 
-        // 1. Project: attn_q → [Q‖G] interleaved per head (output 8192).
+        // 1. Project: attn_q → [Q‖G] interleaved per head (output 8192, per head [Q256, G256]); K; V.
         FusedMatVec(_qGate, _wQGate[layer], normIn, qDim * 2, _embDim);
+        FusedMatVec(_k, _wK[layer], normIn, kvDim, _embDim);
+        FusedMatVec(_v, _wV[layer], normIn, kvDim, _embDim);
+
+        AttnCoreAt(layer, position, kvPosition);
+
+        // 8. Output projection (input dim = numHeads * headDim = 4096; output dim = embDim).
+        FusedMatVec(hiddenOut, _wO[layer], _attnOut, _embDim, qDim);
+    }
+
+    /// <summary>
+    /// Attention layer between the projections and the output projection, for one token: reads the projected
+    /// <c>_qGate</c> / <c>_k</c> / <c>_v</c>, de-interleaves Q and the GLU gate, per-head Q/K RMSNorm, partial NeoX
+    /// RoPE at <paramref name="position"/>, appends K/V at <paramref name="kvPosition"/>, attends over 0..kvPosition and
+    /// applies the sigmoid gate into <c>_attnOut</c>. Shared by the per-token path and the chunked prefill.
+    /// </summary>
+    private void AttnCoreAt(int layer, int position, int kvPosition)
+    {
+        int qDim = _numHeads * _headDim;
+        int kvDim = _numKvHeads * _headDim;
+        int twoHd = _headDim * 2;
 
         // 2. De-interleave: per head h, _q[h*hd : (h+1)*hd] ← _qGate[h*2hd : h*2hd+hd]
         //                              _gate[h*hd : (h+1)*hd] ← _qGate[h*2hd+hd : (h+1)*2hd]
@@ -1942,9 +1981,6 @@ public sealed unsafe class HybridGdnForwardPass : IForwardPass
             new ReadOnlySpan<float>(src, _headDim).CopyTo(new Span<float>(dstQ, _headDim));
             new ReadOnlySpan<float>(src + _headDim, _headDim).CopyTo(new Span<float>(dstG, _headDim));
         }
-
-        FusedMatVec(_k, _wK[layer], normIn, kvDim, _embDim);
-        FusedMatVec(_v, _wV[layer], normIn, kvDim, _embDim);
 
         // 3. Per-head Q/K RMSNorm (Qwen3-style: norm BEFORE RoPE; weight is shared across heads).
         PerHeadRmsNorm(_q, _qNorm[layer], _numHeads, _headDim, _hp.RmsNormEps);
@@ -1966,9 +2002,56 @@ public sealed unsafe class HybridGdnForwardPass : IForwardPass
 
         // 7. Apply GLU gate: attn_out *= sigmoid(gate). (per llama.cpp qwen35moe.cpp build_layer_attn)
         ApplySigmoidGate(_attnOut, _gate, qDim);
+    }
 
-        // 8. Output projection (input dim = numHeads * headDim = 4096; output dim = embDim).
-        FusedMatVec(hiddenOut, _wO[layer], _attnOut, _embDim, qDim);
+    /// <summary>Batch at or above which chunked-prefill projections use <see cref="PackedSgemmF32.GemmQuant"/>
+    /// (dequantize-on-the-fly packed F32 GEMM) instead of <see cref="SimdKernels.MatMulBatched"/>.</summary>
+    private const int MinBatchForGemmQuant = 64;
+
+    /// <summary>output[n, rows] = input[n, cols] · Wᵀ for a chunked-prefill projection. Large batches of a block-quantized
+    /// weight take the packed GEMM (FP32 activations, weights dequantized per panel); smaller ones, or dtypes it can't
+    /// take, the int8 batched matmul.</summary>
+    private static void BatchedProjection(float* output, in TensorRef w, float* input, int n, int rows, int cols)
+    {
+        if (n >= MinBatchForGemmQuant && PackedSgemmF32.CanGemmQuant(w.DType, cols))
+            PackedSgemmF32.GemmQuant(output, input, w.DataPtr, w.DType, n, rows, cols);
+        else
+            SimdKernels.MatMulBatched(output, w.DataPtr, input, n, rows, cols, w.DType, allowQ8: true);
+    }
+
+    /// <summary>Chunked-prefill attention layer: Q-gate / K / V and output projections batched over the
+    /// <paramref name="n"/> tokens; norm, RoPE, KV append and attention per token in position order via
+    /// <see cref="AttnCoreAt"/> (token t reads K/V of 0..t).</summary>
+    private void AttnBlockChunked(int layer, int n, int startPos, float* nrm, float* hid)
+    {
+        int qDim = _numHeads * _headDim, kvDim = _numKvHeads * _headDim, e = _embDim;
+        float* qg = null, kAll = null, vAll = null, ao = null;
+        try
+        {
+            qg = Alloc(n * qDim * 2);
+            kAll = Alloc(n * kvDim);
+            vAll = Alloc(n * kvDim);
+            ao = Alloc(n * qDim);
+            BatchedProjection(qg, _wQGate[layer], nrm, n, qDim * 2, e);
+            BatchedProjection(kAll, _wK[layer], nrm, n, kvDim, e);
+            BatchedProjection(vAll, _wV[layer], nrm, n, kvDim, e);
+            for (int t = 0; t < n; t++)
+            {
+                Copy(_qGate, qg + (long)t * qDim * 2, qDim * 2);
+                Copy(_k, kAll + (long)t * kvDim, kvDim);
+                Copy(_v, vAll + (long)t * kvDim, kvDim);
+                AttnCoreAt(layer, position: startPos + t, kvPosition: startPos + t);
+                Copy(ao + (long)t * qDim, _attnOut, qDim);
+            }
+            BatchedProjection(hid, _wO[layer], ao, n, e, qDim);
+        }
+        finally
+        {
+            NativeMemory.Free(qg);
+            NativeMemory.Free(kAll);
+            NativeMemory.Free(vAll);
+            NativeMemory.Free(ao);
+        }
     }
 
     private void Attention(int layer, int position)
@@ -2699,6 +2782,121 @@ public sealed unsafe class HybridGdnForwardPass : IForwardPass
 
         // 4. Add shared expert output.
         SimdKernels.AddInPlace(hiddenOutLocal, _sharedOut, _embDim);
+    }
+
+    /// <summary>Batched routed-expert prefill for the chunked path (<c>STINGRAY_MOE_BATCHED_PREFILL=0</c> turns it off,
+    /// the same switch as <see cref="ForwardPass.MoeBatchedPrefillEnabled"/>).</summary>
+    public static bool MoeBatchedPrefillEnabled { get; set; } =
+        Environment.GetEnvironmentVariable("STINGRAY_MOE_BATCHED_PREFILL") != "0";
+
+    /// <summary>
+    /// Batched MoE FFN for one chunked-prefill layer: the hybrid-GDN twin of <c>ForwardPass.MoeFfnBatched</c>.
+    /// Writes the FFN output for <paramref name="n"/> tokens into <paramref name="hiddenOut"/> (the caller adds the
+    /// residual); <paramref name="normIn"/> holds the post-attention-normed rows and must not alias it.
+    ///
+    /// <para>(1) Route each token exactly as <see cref="MoeFfnCore"/> does (per-token F32 router, softmax, top-k):
+    /// batching the router could flip a marginal expert choice, and it is a tiny share of the work. (2) Bucket the
+    /// (token, slot) pairs by expert (CSR). (3) Per used expert, gather its tokens and run gate/up/down as batched
+    /// matmuls, so each expert's weights stream once per bucket instead of once per token (the per-token path is what
+    /// made hybrid-GDN MoE prefill ~0.05x llama.cpp). (4) Reduce each token's partials in top-k slot order (FP32
+    /// addition order matters; same reasoning as ForwardPass.MoeFfnBatched). (5) Shared expert batched over all tokens,
+    /// scaled per token by sigmoid(ffn_gate_inp_shexp · x) as in qwen35moe.</para>
+    ///
+    /// <para>The expert matmuls take the int8 batched path (<c>allowQ8: true</c>), as the dense and MoE batched prefill in
+    /// ForwardPass do: rows are positions of one prompt. That is the divergence from the per-token path (which is
+    /// itself already not bit-exact with the per-token GDN scan once chunked prefill is on); MTP models never reach
+    /// here because they keep the exact per-token scan.</para>
+    /// </summary>
+    private void MoeFfnBatchedPrefill(int layer, float* normIn, float* hiddenOut, int n)
+    {
+        int numExperts = _hp.NumExperts, na = _hp.NumActiveExperts, expertDim = _hp.ExpertIntermediateDim, e = _embDim;
+        long pairs = (long)n * na;
+        var sel = new int[pairs];
+        var wts = new float[pairs];
+        float* router = null, gathered = null, gate = null, up = null, down = null, partial = null;
+        try
+        {
+            router = Alloc(numExperts);
+            gathered = Alloc(n * Math.Max(e, expertDim));
+            gate = Alloc(n * expertDim);
+            up = Alloc(n * expertDim);
+            down = Alloc(n * e);
+            partial = (float*)NativeMemory.Alloc((nuint)(pairs * e * sizeof(float)));
+
+            // 1. Route (identical to MoeFfnCore).
+            for (int t = 0; t < n; t++)
+            {
+                FusedMatVec(router, _wGateInp[layer], normIn + (long)t * e, numExperts, e);
+                SimdKernels.SoftmaxInPlace(router, numExperts);
+                SelectTopK(router, numExperts, na, sel.AsSpan(t * na, na), wts.AsSpan(t * na, na),
+                    normalize: _hp.NormalizeMoeTopKWeights);
+            }
+
+            // 2. CSR buckets of (token, slot) by expert.
+            var start = new int[numExperts + 1];
+            foreach (int x in sel) start[x + 1]++;
+            for (int x = 0; x < numExperts; x++) start[x + 1] += start[x];
+            var cursor = (int[])start.Clone();
+            var slotOf = new int[pairs];
+            for (int s = 0; s < pairs; s++) slotOf[cursor[sel[s]]++] = s;
+
+            // 3. Per expert: gather → gate/up → SiLU·mul → down → scatter unweighted partials by (token, slot).
+            var gateExps = _wGateExps[layer];
+            var upExps = _wUpExps[layer];
+            var downExps = _wDownExps[layer];
+            int bprG = (e / DTypeInfo.BlockSize(gateExps.DType)) * DTypeInfo.BytesPerBlock(gateExps.DType);
+            int bprU = (e / DTypeInfo.BlockSize(upExps.DType)) * DTypeInfo.BytesPerBlock(upExps.DType);
+            int bprD = (expertDim / DTypeInfo.BlockSize(downExps.DType)) * DTypeInfo.BytesPerBlock(downExps.DType);
+            for (int x = 0; x < numExperts; x++)
+            {
+                int p0 = start[x], cnt = start[x + 1] - p0;
+                if (cnt == 0) continue;
+                for (int i = 0; i < cnt; i++)
+                    Copy(gathered + (long)i * e, normIn + (long)(slotOf[p0 + i] / na) * e, e);
+                SimdKernels.MatMulBatched(gate, gateExps.DataPtr + (long)x * expertDim * bprG, gathered,
+                    cnt, expertDim, e, gateExps.DType, allowQ8: true);
+                SimdKernels.MatMulBatched(up, upExps.DataPtr + (long)x * expertDim * bprU, gathered,
+                    cnt, expertDim, e, upExps.DType, allowQ8: true);
+                SimdKernels.SiLuMul(gate, up, cnt * expertDim);
+                SimdKernels.MatMulBatched(down, downExps.DataPtr + (long)x * e * bprD, gate,
+                    cnt, e, expertDim, downExps.DType, allowQ8: true);
+                for (int i = 0; i < cnt; i++)
+                    Copy(partial + (long)slotOf[p0 + i] * e, down + (long)i * e, e);
+            }
+
+            // 4. Weighted reduce per token in top-k slot order.
+            for (int t = 0; t < n; t++)
+            {
+                float* dst = hiddenOut + (long)t * e;
+                new Span<float>(dst, e).Clear();
+                for (int k = 0; k < na; k++)
+                    SimdKernels.WeightedAddInPlace(dst, partial + ((long)t * na + k) * e, wts[t * na + k], e);
+            }
+
+            // 5. Shared expert over all tokens, gated per token.
+            var gs = _wGateShexp[layer];
+            var us = _wUpShexp[layer];
+            var ds = _wDownShexp[layer];
+            BatchedProjection(gate, gs, normIn, n, expertDim, e);
+            BatchedProjection(up, us, normIn, n, expertDim, e);
+            SimdKernels.SiLuMul(gate, up, n * expertDim);
+            BatchedProjection(down, ds, gate, n, e, expertDim);
+            float* shexpGate = _wGateInpShexp[layer];
+            for (int t = 0; t < n; t++)
+            {
+                float g = 1f / (1f + MathF.Exp(-SimdKernels.DotF32(shexpGate, normIn + (long)t * e, e)));
+                SimdKernels.WeightedAddInPlace(hiddenOut + (long)t * e, down + (long)t * e, g, e);
+            }
+        }
+        finally
+        {
+            NativeMemory.Free(router);
+            NativeMemory.Free(gathered);
+            NativeMemory.Free(gate);
+            NativeMemory.Free(up);
+            NativeMemory.Free(down);
+            NativeMemory.Free(partial);
+        }
     }
 
     // ParallelOptions for the routed-MoE sweeps. Pinning to ProcessorCount avoids

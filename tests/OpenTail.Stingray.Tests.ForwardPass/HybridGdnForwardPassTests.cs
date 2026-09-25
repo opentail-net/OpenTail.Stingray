@@ -33,6 +33,7 @@ public sealed class HybridGdnForwardPassTests : HeavyTestBase
         {
             @"models\Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
             @"models\Qwen3.6-35B-A3B-Q4_K_M.gguf",
+            @"models\_models\Qwen3.6-35B-A3B-UD-Q6_K.gguf",
         };
         var dir = Directory.GetCurrentDirectory();
         for (int i = 0; i < 8; i++)
