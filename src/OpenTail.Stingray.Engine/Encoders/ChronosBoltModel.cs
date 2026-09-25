@@ -16,36 +16,8 @@ namespace OpenTail.Stingray.Engine.Encoders;
 /// </summary>
 public sealed class ChronosBoltModel : IDisposable
 {
-    private sealed class ResidualBlock(PackedLinearF32 hidden, PackedLinearF32 output, PackedLinearF32 residual) : IDisposable
-    {
-        public int OutDim => output.OutDim;
-
-        /// <summary><c>output_layer(relu(hidden_layer(x))) + residual_layer(x)</c> over <paramref name="rows"/> rows.</summary>
-        public float[] Forward(float[] x, int rows)
-        {
-            var h = new float[rows * hidden.OutDim];
-            hidden.Forward(x, h, rows);
-            TensorPrimitives.Max(h, 0f, h);
-            var y = new float[rows * output.OutDim];
-            output.Forward(h, y, rows);
-            var r = new float[rows * residual.OutDim];
-            residual.Forward(x, r, rows);
-            TensorPrimitives.Add(y, r, y);
-            return y;
-        }
-
-        public void Dispose() { hidden.Dispose(); output.Dispose(); residual.Dispose(); }
-
-        public static ResidualBlock Load(SafetensorsLoader st, string name, int inDim, int hDim, int outDim) => new(
-            new PackedLinearF32(st.ReadF32(name + ".hidden_layer.weight"), st.ReadF32(name + ".hidden_layer.bias"), hDim, inDim),
-            new PackedLinearF32(st.ReadF32(name + ".output_layer.weight"), st.ReadF32(name + ".output_layer.bias"), outDim, hDim),
-            new PackedLinearF32(st.ReadF32(name + ".residual_layer.weight"), st.ReadF32(name + ".residual_layer.bias"), outDim, inDim));
-    }
-
-    private const float InstanceNormEps = 1e-5f;
-
     private readonly T5Model _t5;
-    private readonly ResidualBlock _inPatch, _outPatch;
+    private readonly ChronosResidualBlock _inPatch, _outPatch;
     private readonly float[] _regEmbedding; // shared[reg_token_id], or empty when use_reg_token is false
 
     public int ContextLength { get; }
@@ -53,7 +25,7 @@ public sealed class ChronosBoltModel : IDisposable
     public int PatchSize { get; }
     public float[] Quantiles { get; }
 
-    private ChronosBoltModel(T5Model t5, ResidualBlock inPatch, ResidualBlock outPatch, float[] reg, int ctx, int pred, int patch, float[] q)
+    private ChronosBoltModel(T5Model t5, ChronosResidualBlock inPatch, ChronosResidualBlock outPatch, float[] reg, int ctx, int pred, int patch, float[] q)
     {
         (_t5, _inPatch, _outPatch, _regEmbedding) = (t5, inPatch, outPatch, reg);
         (ContextLength, PredictionLength, PatchSize, Quantiles) = (ctx, pred, patch, q);
@@ -81,8 +53,8 @@ public sealed class ChronosBoltModel : IDisposable
         float[] shared = st.ReadF32("shared.weight");
         float[] regEmb = reg ? shared.AsSpan(1 * c.DModel, c.DModel).ToArray() : [];
         return new ChronosBoltModel(t5,
-            ResidualBlock.Load(st, "input_patch_embedding", 2 * patch, c.DFf, c.DModel),
-            ResidualBlock.Load(st, "output_patch_embedding", c.DModel, c.DFf, quantiles.Length * pred),
+            ChronosResidualBlock.Load(st, "input_patch_embedding", 2 * patch, c.DFf, c.DModel),
+            ChronosResidualBlock.Load(st, "output_patch_embedding", c.DModel, c.DFf, quantiles.Length * pred),
             regEmb, ctx, pred, patch, quantiles);
     }
 
@@ -93,15 +65,7 @@ public sealed class ChronosBoltModel : IDisposable
         if (context.Length > ContextLength) context = context[^ContextLength..];
         int d = _t5.Config.DModel, n = context.Length;
 
-        // InstanceNorm (float32, nan-aware)
-        double sum = 0;
-        int count = 0;
-        foreach (float v in context) if (!float.IsNaN(v)) { sum += v; count++; }
-        float loc = count == 0 ? 0f : (float)(sum / count);
-        double sq = 0;
-        foreach (float v in context) if (!float.IsNaN(v)) sq += (double)(v - loc) * (v - loc);
-        float scale = count == 0 ? 1f : MathF.Sqrt((float)(sq / count));
-        if (scale == 0f) scale = InstanceNormEps;
+        var norm = ChronosInstanceNorm.Fit(context, arcsinh: false);
 
         // Patch: left-pad with NaN (context) / NaN→0 (mask) to a multiple of PatchSize.
         int pad = n % PatchSize == 0 ? 0 : PatchSize - n % PatchSize;
@@ -116,7 +80,7 @@ public sealed class ChronosBoltModel : IDisposable
                 int src = i * p + j - pad;
                 float v = src < 0 ? float.NaN : context[src];
                 bool ok = !float.IsNaN(v);
-                features[i * 2 * p + j] = ok ? (v - loc) / scale : 0f;
+                features[i * 2 * p + j] = ok ? norm.Apply(v) : 0f;
                 features[i * 2 * p + p + j] = ok ? 1f : 0f;
                 observed += ok ? 1f : 0f;
             }
@@ -134,8 +98,7 @@ public sealed class ChronosBoltModel : IDisposable
         var hidden = _t5.EncodeEmbeddings(embeds, len, keyMask);
         var dec = _t5.StartDecoder(hidden, len, 1, keyMask).Step([_t5.Config.DecoderStartTokenId]);
         var q = _outPatch.Forward(dec, 1);
-        TensorPrimitives.Multiply(q, scale, q);
-        TensorPrimitives.Add(q, loc, q);
+        norm.InverseInPlace(q);
         return q;
     }
 
