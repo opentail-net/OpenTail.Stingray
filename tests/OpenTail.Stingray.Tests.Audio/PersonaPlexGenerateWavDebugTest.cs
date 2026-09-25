@@ -96,12 +96,12 @@ public sealed class PersonaPlexGenerateWavDebugTest : HeavyTestBase
 
         var textOptions = new SamplingParams { Temperature = 0.7f, TopK = 25, TopP = 1.0f };
         var audioOptions = new SamplingParams { Temperature = 0.8f, TopK = 250, TopP = 1.0f };
-        var rng = new Random(42424242);
+        var rng = new Random(int.TryParse(Environment.GetEnvironmentVariable("PP_SEED"), out var sd) ? sd : 42424242);
 
         var frames = PersonaPlexGenerator.GenerateWithVoicePrompt(
             fwd, llm, depformer, voicePrompt, MimiFrameRate,
             systemPrompt: "You are a wise and friendly assistant. Speak clearly and introduce yourself.", tokenizer,
-            numOutputFrames: 50, TextVocabSize, AudioCodebookSize,
+            numOutputFrames: int.TryParse(Environment.GetEnvironmentVariable("PP_FRAMES"), out var nf) ? nf : 50, TextVocabSize, AudioCodebookSize,
             textOptions: textOptions, audioOptions: audioOptions, rng: rng);
 
         Assert.True(frames.Length > 0);
@@ -117,7 +117,7 @@ public sealed class PersonaPlexGenerateWavDebugTest : HeavyTestBase
         File.WriteAllText(txtPath, $"Decoded text: {decodedText}\nTokens: [{string.Join(", ", textTokens)}]");
 
         var wavResult = new OpenTail.Stingray.Audio.AudioGenerationResult(waveform, OutputSampleRate);
-        string outPath = Path.Combine(repoRoot!, "audio-samples", "personaplex-real-check.wav");
+        string outPath = Environment.GetEnvironmentVariable("PP_OUT") ?? Path.Combine(repoRoot!, "audio-samples", "personaplex-real-check.wav");
         wavResult.SaveWav(outPath);
         Console.WriteLine($"Wrote {outPath}, {waveform.Length} samples, {waveform.Length / (double)OutputSampleRate:F2}s. Decoded LM text: {decodedText}");
     }

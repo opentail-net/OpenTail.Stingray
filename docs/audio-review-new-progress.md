@@ -248,3 +248,18 @@ and our code are causal). The test now skips visibly with that reason instead of
 all 16 words present on both sides; start/end times agree exactly for 31 of 32 boundaries (80 ms frame
 grid). The one difference is the end of "year": ours 2.16s, reference 2.24s (1 frame). (The reference CLI
 needs `--language`.)
+
+## PersonaPlex -- first intelligibility check: speech tracks the model's own text stream; confidence ⚪ → 👂, 2026-09-25
+
+The vendored reference only exposes speech-to-speech (`s2s`, needs user audio), while our harness
+(`PersonaPlexGenerateWavDebugTest`, now takes `PP_SEED`/`PP_FRAMES`/`PP_OUT`) drives the text-system-prompt
+path. So the check is self-consistency: does Whisper hear in the generated audio what the model's
+inner-monologue text stream says? 150 frames (12s), q8_0 GGUF, CPU:
+
+| seed | LM text stream | Whisper on the generated audio |
+|---|---|---|
+| 1 | "Hello, this is Kendra. How can I help you today?" | "Hello, this is Sandra. I want to help you today." |
+| 2 | "Hey, let me know if you have any questions." | "Thank you. Thank you. You have any questions?" |
+
+Intelligible, on-topic speech that follows the text stream, with Whisper mishearing some words (the
+name, one phrase). Not reference parity. Perf: 240s per 12s sample (RTF ~20), a Phase 2 candidate.
