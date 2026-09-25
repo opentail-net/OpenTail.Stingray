@@ -423,3 +423,26 @@ pass: VibeVoice TTS (2 loop bugs), RVC (RMVPE kernel + pipeline + 24× perf), Om
 (context + `stt --vad` crash), Voxtral (invented tail), CosyVoice2 (argmax → RAS), Stable Audio (sampling schedule),
 Melo (ZH speaker id). Open: CosyVoice2 garbled ending (needs a speaker-prompt path), Stable Audio SFX darker + CFG-1
 divergence, MeloTTS English intelligibility, Parakeet ~3% WER.
+
+## VibeVoice ASR -- EOS never matched (decoded padding to the cap) + encoder perf; 40.8s → ~17.5s, 2026-09-25
+
+Profile first (new `STINGRAY_ASR_PROFILE=1` timers in `VibeVoiceAsrGenerator`, and stage timers in the real-speech
+test), 3.5s LibriSpeech clip, CPU: speech features 15.9s, LLM prefill+decode 24.9s. Two findings:
+1. **Real bug — EOS never matched.** The raw output was the complete answer
+   (`[{"Start":0,"End":3.5,"Speaker":0,"Content":"Concord returned…"}]<|im_end|>`) followed by dozens of
+   `<|endoftext|>` tokens up to the 96-token cap. The reference resolves EOS explicitly as `<|endoftext|>`
+   (`tokenizer_text.cpp`); ours used `GgufTokenizer.EosTokenId`, which isn't that id for this checkpoint.
+   `VibeVoiceAsrTextTokenizer` now resolves it explicitly: decode stops after 34 tokens (was 96).
+2. **Encoder perf.** The ConvNeXt FFN ran a mat-vec per frame (re-streaming both weights per frame) and the
+   full/depthwise causal convs looped serially over channels. The FFN is now two batched GEMMs through
+   `DenseKernels.LinearBatchedNoBias` (shared helper, whole-clip and streaming paths), and the four conv loops
+   are parallel over output channels.
+
+| 3.5s clip | before | after (2 runs) |
+|---|---|---|
+| speech features | 15.9s | 4.0 / 4.5s |
+| LLM prefill (86 tokens) + decode | 24.9s (6.8 + 18.1, 96 tokens) | 13.2 / 13.2s (6.8 + 6.4, 34 tokens) |
+| total compute | 40.8s | ~17.5s (2.3×) |
+
+Transcript unchanged (exact). Reference `audiocpp_cli`: 12.4s → now ~1.4× behind (was ~4×). Remaining lever:
+prefill runs at ~12.6 tok/s on the 7B q8 backbone, not investigated.

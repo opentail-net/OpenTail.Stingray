@@ -32,13 +32,19 @@ public sealed class VibeVoiceAsrTextTokenizer
     {
         _tokenizer = GgufTokenizer.FromSource(source);
         _speechPad = RequireTokenId(source, "<|box_start|>");
+        // Real `tokenizer_text.cpp`: eos = require_token_id(tokenizer, "<|endoftext|>"). The generic
+        // GgufTokenizer.EosTokenId did NOT resolve to that id for this checkpoint, so generation never
+        // stopped and spent the whole MaxNewTokens budget emitting <|endoftext|> (fixed 2026-09-25).
+        _eos = RequireTokenId(source, "<|endoftext|>");
     }
+
+    private readonly int _eos;
 
     /// <summary>Real `&lt;|endoftext|&gt;` id (`tokenizer_text.cpp`'s `eos_id()`, resolved via
     /// `require_token_id(tokenizer, "&lt;|endoftext|&gt;")`) -- `GgufTokenizer.EosTokenId` already
     /// resolves the checkpoint's real EOS from its `tokenizer_config.json`, no bespoke lookup
     /// needed.</summary>
-    public int EosTokenId => _tokenizer.EosTokenId;
+    public int EosTokenId => _eos;
 
     public string Decode(IEnumerable<int> tokenIds) => _tokenizer.Decode(tokenIds);
 

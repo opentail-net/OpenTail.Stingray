@@ -30,19 +30,45 @@ public static class VibeVoiceConvNeXtBlock
         var afterMixer = AddChannelsMajor(channelsMajor, mixed);
 
         var ffnNormed = ChannelRmsNorm(afterMixer, w.FfnNormWeight, eps);
-        // Transpose to frame-major for the pointwise FFN (Linear operates per-frame across channels).
-        var frameMajor = Transpose(ffnNormed, channels, frames);
-        var hidden = new float[frames][];
-        int ffnDim = w.FfnLinear1Weight.Length / channels;
-        Parallel.For(0, frames, t =>
-        {
-            var h = LinearRow(frameMajor[t], w.FfnLinear1Weight, w.FfnLinear1Bias, channels, ffnDim);
-            for (int c = 0; c < ffnDim; c++) h[c] = GeluErf(h[c]);
-            hidden[t] = LinearRow(h, w.FfnLinear2Weight, w.FfnLinear2Bias, ffnDim, channels);
-        });
-        var ffnOut = Transpose(hidden, frames, channels); // back to channels-major
+        var ffnOut = FfnBatched(ffnNormed, w, channels, frames);
         ScaleChannelsInPlace(ffnOut, w.FfnGamma);
         return AddChannelsMajor(afterMixer, ffnOut);
+    }
+
+    /// <summary>The pointwise FFN (Linear → GELU(erf) → Linear, weights row-major [out, in]) over all
+    /// frames at once: two batched GEMMs through <see cref="Primitives.DenseKernels.LinearBatchedNoBias"/>
+    /// instead of one mat-vec per frame, which re-streamed both weight matrices for every frame
+    /// (2026-09-25 perf pass). Input and output are channels-major.</summary>
+    private static float[][] FfnBatched(float[][] normedChannelsMajor, VibeVoiceConvNeXtBlockWeights w, int channels, int frames)
+    {
+        int ffnDim = w.FfnLinear1Weight.Length / channels;
+        var x = new float[frames * channels];
+        Parallel.For(0, channels, c =>
+        {
+            var src = normedChannelsMajor[c];
+            for (int t = 0; t < frames; t++) x[t * channels + c] = src[t];
+        });
+
+        var h = new float[frames * ffnDim];
+        Primitives.DenseKernels.LinearBatchedNoBias(x, w.FfnLinear1Weight, h, frames, channels, ffnDim);
+        Parallel.For(0, frames, t =>
+        {
+            var row = h.AsSpan(t * ffnDim, ffnDim);
+            if (w.FfnLinear1Bias is { } b1) System.Numerics.Tensors.TensorPrimitives.Add(row, b1, row);
+            for (int c = 0; c < ffnDim; c++) row[c] = GeluErf(row[c]);
+        });
+
+        var y = new float[frames * channels];
+        Primitives.DenseKernels.LinearBatchedNoBias(h, w.FfnLinear2Weight, y, frames, ffnDim, channels);
+        var output = new float[channels][];
+        Parallel.For(0, channels, c =>
+        {
+            var row = new float[frames];
+            float b = w.FfnLinear2Bias?[c] ?? 0f;
+            for (int t = 0; t < frames; t++) row[t] = y[t * channels + c] + b;
+            output[c] = row;
+        });
+        return output;
     }
 
     /// <summary>Real STREAMING ConvNeXt-1D block, ported from `tokenizer_block_streaming` (not
@@ -60,16 +86,7 @@ public static class VibeVoiceConvNeXtBlock
         var afterMixer = AddChannelsMajor(channelsMajor, mixed);
 
         var ffnNormed = ChannelRmsNorm(afterMixer, w.FfnNormWeight, eps);
-        var frameMajor = Transpose(ffnNormed, channels, frames);
-        var hidden = new float[frames][];
-        int ffnDim = w.FfnLinear1Weight.Length / channels;
-        for (int t = 0; t < frames; t++)
-        {
-            var h = LinearRow(frameMajor[t], w.FfnLinear1Weight, w.FfnLinear1Bias, channels, ffnDim);
-            for (int c = 0; c < ffnDim; c++) h[c] = GeluErf(h[c]);
-            hidden[t] = LinearRow(h, w.FfnLinear2Weight, w.FfnLinear2Bias, ffnDim, channels);
-        }
-        var ffnOut = Transpose(hidden, frames, channels);
+        var ffnOut = FfnBatched(ffnNormed, w, channels, frames);
         ScaleChannelsInPlace(ffnOut, w.FfnGamma);
         return AddChannelsMajor(afterMixer, ffnOut);
     }
@@ -90,7 +107,7 @@ public static class VibeVoiceConvNeXtBlock
         int outFrames = (paddedFrames - (kernel - 1) * dilation - 1) / stride + 1;
 
         var output = new float[outCh][];
-        for (int oc = 0; oc < outCh; oc++)
+        Parallel.For(0, outCh, oc =>
         {
             var row = new float[outFrames];
             float b = bias?[oc] ?? 0f;
@@ -117,7 +134,7 @@ public static class VibeVoiceConvNeXtBlock
                 row[t] = sum;
             }
             output[oc] = row;
-        }
+        });
         return (output, outFrames);
     }
 
@@ -135,7 +152,7 @@ public static class VibeVoiceConvNeXtBlock
         int outFrames = paddedFrames - (kernel - 1) * dilation;
 
         var output = new float[channels][];
-        for (int c = 0; c < channels; c++)
+        Parallel.For(0, channels, c =>
         {
             var row = new float[outFrames];
             float b = bias?[c] ?? 0f;
@@ -149,7 +166,7 @@ public static class VibeVoiceConvNeXtBlock
                 row[t] = sum;
             }
             output[c] = row;
-        }
+        });
         return output;
     }
 
@@ -174,7 +191,7 @@ public static class VibeVoiceConvNeXtBlock
         int outFrames = (fullLen - (kernel - 1) * dilation - 1) / stride + 1;
 
         var output = new float[outCh][];
-        for (int oc = 0; oc < outCh; oc++)
+        Parallel.For(0, outCh, oc =>
         {
             var row = new float[outFrames];
             float b = bias?[oc] ?? 0f;
@@ -201,7 +218,7 @@ public static class VibeVoiceConvNeXtBlock
                 row[t] = sum;
             }
             output[oc] = row;
-        }
+        });
         cache = LastFrames(full, contextFrames);
         return output;
     }
@@ -218,7 +235,7 @@ public static class VibeVoiceConvNeXtBlock
         int outFrames = (fullLen - (kernel - 1) * dilation - 1) / stride + 1;
 
         var output = new float[channels][];
-        for (int c = 0; c < channels; c++)
+        Parallel.For(0, channels, c =>
         {
             var row = new float[outFrames];
             float b = bias?[c] ?? 0f;
@@ -233,7 +250,7 @@ public static class VibeVoiceConvNeXtBlock
                 row[t] = sum;
             }
             output[c] = row;
-        }
+        });
         cache = LastFrames(full, contextFrames);
         return output;
     }

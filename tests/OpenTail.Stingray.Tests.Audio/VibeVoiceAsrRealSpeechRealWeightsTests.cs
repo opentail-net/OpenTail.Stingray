@@ -107,10 +107,12 @@ public sealed class VibeVoiceAsrRealSpeechRealWeightsTests : HeavyTestBase
         var acousticConnector = VibeVoiceConnectorWeights.Load("model.acoustic_connector", inputDim: 64, hiddenSize: HiddenDim, source.GetTensor);
         var semanticConnector = VibeVoiceConnectorWeights.Load("model.semantic_connector", inputDim: 128, hiddenSize: HiddenDim, source.GetTensor);
 
+        var swFeat = System.Diagnostics.Stopwatch.StartNew();
         var speechEmbeddingsChannelMajor = VibeVoiceSpeechFeatures.Extract(
             acousticEncoder, AcousticConfig(), acousticConnector,
             semanticEncoder, SemanticConfig(), semanticConnector,
             waveform, new Random(7));
+        double featSeconds = swFeat.Elapsed.TotalSeconds;
         int speechFrames = speechEmbeddingsChannelMajor[0].Length;
 
         bool trace = Environment.GetEnvironmentVariable("VV_TRACE") == "1"; // fixed tap indices assume the default LibriSpeech clip
@@ -228,10 +230,12 @@ public sealed class VibeVoiceAsrRealSpeechRealWeightsTests : HeavyTestBase
         using var backend = new CpuBackend();
         using var fwd = new ForwardPass(llm, backend, hp);
 
+        var swDecode = System.Diagnostics.Stopwatch.StartNew();
         string transcript = VibeVoiceAsrGenerator.GenerateTranscript(
             fwd, tokenizer, remappedPrompt, new VibeVoiceAsrGenerationOptions { MaxNewTokens = 96 });
 
         Assert.NotNull(transcript);
         Console.WriteLine($"[VibeVoiceAsr] real speech ({audioSeconds:F2}s) transcript='{transcript}'");
+        Console.WriteLine($"[VibeVoiceAsr] timing: speech features {featSeconds:F1}s, LLM prefill+decode {swDecode.Elapsed.TotalSeconds:F1}s");
     }
 }

@@ -26,7 +26,11 @@ public static class VibeVoiceAsrGenerator
         VibeVoiceAsrGenerationOptions options)
     {
         var promptIds = prompt.InputIds;
+        bool profile = Environment.GetEnvironmentVariable("STINGRAY_ASR_PROFILE") == "1";
+        var sw = System.Diagnostics.Stopwatch.StartNew();
         var logits = fwd.Prefill(promptIds, startPos: 0).ToArray();
+        if (profile) Console.WriteLine($"[VibeVoiceAsr] prefill {promptIds.Length} tokens: {sw.Elapsed.TotalSeconds:F2}s");
+        sw.Restart();
 
         var generated = new List<int>();
         int position = promptIds.Length;
@@ -42,6 +46,7 @@ public static class VibeVoiceAsrGenerator
             position++;
         }
 
+        if (profile) Console.WriteLine($"[VibeVoiceAsr] decode {generated.Count} tokens: {sw.Elapsed.TotalSeconds:F2}s; raw='{tokenizer.Decode(generated)}'");
         string rawText = tokenizer.Decode(generated);
         return VibeVoicePostprocessor.Decode(rawText).Text;
     }
