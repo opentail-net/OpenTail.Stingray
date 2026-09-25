@@ -362,3 +362,15 @@ Also this pass (Whisper round trips, CPU): QwenTTS "Hello, I will make some lunc
 VoxCPM2 "Hello there, this is a real end-to-end test of speech synthesis." (exact, 33s); CosyVoice3 zero-shot
 cloning from `a.wav` "Hello, I will make some lunch darling." (exact, 82s). `CosyVoice3ClipGenDebugTests` depended on
 a deleted local sample and skipped; it now defaults to `a.wav` + its transcript (`CV3_REF`/`CV3_REF_TEXT`/`CV3_OUT`).
+
+## Fish Speech, MMS-TTS, XTTS-v2 -- Whisper round trips + perf baselines, 2026-09-25
+
+`TtsPerformanceBaselineDebugTest` (warm-up + 3 timed runs, "Hello, I will make some lunch, darling!", CPU).
+XTTS's reference clip (`docs/audio-samples/fishspeech-lunch-REFERENCE.wav`, local-only) had been deleted, which made
+the XTTS baselines skip; they now fall back to `a.wav`.
+
+| engine | Whisper | mean | RTF |
+|---|---|---|---|
+| Fish Speech S2 Pro | "Hello, I will make some lunch darling." (exact) | 22.3s (22.1/22.5/22.3) | 8.28 (the audio plan's RTF table listed 16.3×) |
+| MMS-TTS (eng) | "Hello, I will make some lunch with Darling." (1 inserted word) | 1.50s | 0.41 |
+| XTTS-v2 (cloning `a.wav`) | "Hello, I'll make some lunch darling." (contraction only) | 8.38s | 2.74 |

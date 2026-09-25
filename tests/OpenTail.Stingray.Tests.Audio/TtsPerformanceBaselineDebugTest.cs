@@ -267,7 +267,8 @@ public sealed class TtsPerformanceBaselineDebugTest : HeavyTestBase
     public void Baseline_Xtts()
     {
         string? checkpointDir = FindRepoFile("models/xtts-v2/model.safetensors") is { } p ? Path.GetDirectoryName(p) : null;
-        string? refWav = FindRepoFile("docs/audio-samples/fishspeech-lunch-REFERENCE.wav");
+        // The old local-only reference sample was deleted; fall back to the audio.cpp a.wav.
+        string? refWav = FindRepoFile("docs/audio-samples/fishspeech-lunch-REFERENCE.wav") ?? FindRepoFile("examples/audio.cpp/assets/resources/a.wav");
         Assert.SkipUnless(checkpointDir != null && refWav != null, "XTTS checkpoint or reference audio not found");
 
         var pipeline = OpenTail.Stingray.Audio.Xtts.XttsPipeline.Load(checkpointDir!);
@@ -312,7 +313,8 @@ public sealed class TtsPerformanceBaselineDebugTest : HeavyTestBase
     public async Task Streaming_Xtts()
     {
         string? checkpointDir = FindRepoFile("models/xtts-v2/model.safetensors") is { } p ? Path.GetDirectoryName(p) : null;
-        string? refWav = FindRepoFile("docs/audio-samples/fishspeech-lunch-REFERENCE.wav");
+        // The old local-only reference sample was deleted; fall back to the audio.cpp a.wav.
+        string? refWav = FindRepoFile("docs/audio-samples/fishspeech-lunch-REFERENCE.wav") ?? FindRepoFile("examples/audio.cpp/assets/resources/a.wav");
         Assert.SkipUnless(checkpointDir != null && refWav != null, "XTTS checkpoint or reference audio not found");
 
         var pipeline = OpenTail.Stingray.Audio.Xtts.XttsPipeline.Load(checkpointDir!);
