@@ -162,8 +162,8 @@ public sealed class T5Model : IDisposable
         return bias;
     }
 
-    /// <summary>ctx[qn, inner] = softmax(q·kᵀ (+ bias) (+ causal)) · v, no scaling. q: [qn, inner]; k, v: [kn, inner].</summary>
-    private void Attention(float[] q, int qn, float[] k, float[] v, int kn, float[]? bias, int causalOffset, float[] ctx)
+    /// <summary>ctx[qn, inner] = softmax(q·kᵀ (+ bias) (+ causal) (+ key mask)) · v, no scaling. q: [qn, inner]; k, v: [kn, inner].</summary>
+    private void Attention(float[] q, int qn, float[] k, float[] v, int kn, float[]? bias, int causalOffset, float[] ctx, bool[]? keyMask = null)
     {
         int heads = Config.NumHeads, dk = Config.DKv, inner = heads * dk;
         Array.Clear(ctx, 0, qn * inner);
@@ -174,8 +174,14 @@ public sealed class T5Model : IDisposable
             var scores = new float[visible];
             var qi = q.AsSpan(i * inner + h * dk, dk);
             for (int j = 0; j < visible; j++)
+            {
                 scores[j] = TensorPrimitives.Dot(qi, k.AsSpan(j * inner + h * dk, dk)) + (bias is null ? 0f : bias[(h * qn + i) * kn + j]);
-            TensorPrimitives.SoftMax(scores, scores);
+                if (keyMask is not null && !keyMask[j]) scores[j] = float.MinValue; // HF adds finfo(float32).min to masked keys
+            }
+            // Max-subtracted softmax: T5 scores are unscaled and can exceed exp's float range.
+            TensorPrimitives.Subtract(scores, TensorPrimitives.Max(scores), scores);
+            TensorPrimitives.Exp(scores, scores);
+            TensorPrimitives.Divide(scores, TensorPrimitives.Sum(scores), scores);
             var o = ctx.AsSpan(i * inner + h * dk, dk);
             for (int j = 0; j < visible; j++)
                 TensorPrimitives.MultiplyAdd(v.AsSpan(j * inner + h * dk, dk), scores[j], o, o);
@@ -216,8 +222,9 @@ public sealed class T5Model : IDisposable
     /// <summary>Encoder over token ids: <c>encoder.final_layer_norm</c>'d hidden states [t, DModel].</summary>
     public float[] Encode(ReadOnlySpan<int> ids) => EncodeEmbeddings(Embed(ids), ids.Length);
 
-    /// <summary>Encoder over precomputed input embeddings (e.g. Chronos-Bolt's patch embeddings) [t, DModel].</summary>
-    public float[] EncodeEmbeddings(float[] embeddings, int t)
+    /// <summary>Encoder over precomputed input embeddings (e.g. Chronos-Bolt's patch embeddings) [t, DModel]. <paramref name="keyMask"/>
+    /// (false = padding / unobserved) is excluded as an attention key, as HF's <c>attention_mask</c>.</summary>
+    public float[] EncodeEmbeddings(float[] embeddings, int t, bool[]? keyMask = null)
     {
         int d = Config.DModel, inner = Config.NumHeads * Config.DKv;
         var x = (float[])embeddings.Clone();
@@ -230,7 +237,7 @@ public sealed class T5Model : IDisposable
             b.Self.Q.Forward(n, q, t);
             b.Self.K.Forward(n, k, t);
             b.Self.V.Forward(n, v, t);
-            Attention(q, t, k, v, t, bias, -1, ctx);
+            Attention(q, t, k, v, t, bias, -1, ctx, keyMask);
             b.Self.O.Forward(ctx, o, t);
             TensorPrimitives.Add(x, o, x);
             Ffn(b, x, t);
@@ -246,11 +253,12 @@ public sealed class T5Model : IDisposable
         private readonly T5Model _m;
         private readonly float[][] _crossK, _crossV, _selfK, _selfV;
         private readonly int _encLen, _capacity;
+        private readonly bool[]? _encMask;
         public int Length { get; private set; }
 
-        internal Decoder(T5Model m, float[] encoderHidden, int encLen, int capacity)
+        internal Decoder(T5Model m, float[] encoderHidden, int encLen, int capacity, bool[]? encoderMask)
         {
-            (_m, _encLen, _capacity) = (m, encLen, capacity);
+            (_m, _encLen, _capacity, _encMask) = (m, encLen, capacity, encoderMask);
             int inner = m.Config.NumHeads * m.Config.DKv, layers = m._dec.Length;
             _crossK = new float[layers][];
             _crossV = new float[layers][];
@@ -294,7 +302,7 @@ public sealed class T5Model : IDisposable
 
                 _m.RmsNormRows(x, b.CrossNorm!, nx, n);
                 b.Cross!.Q.Forward(nx, q, n);
-                _m.Attention(q, n, _crossK[l], _crossV[l], _encLen, null, -1, ctx);
+                _m.Attention(q, n, _crossK[l], _crossV[l], _encLen, null, -1, ctx, _encMask);
                 b.Cross.O.Forward(ctx, o, n);
                 TensorPrimitives.Add(x, o, x);
 
@@ -307,7 +315,8 @@ public sealed class T5Model : IDisposable
         }
     }
 
-    public Decoder StartDecoder(float[] encoderHidden, int encLen, int capacity = 512) => new(this, encoderHidden, encLen, capacity);
+    public Decoder StartDecoder(float[] encoderHidden, int encLen, int capacity = 512, bool[]? encoderMask = null) =>
+        new(this, encoderHidden, encLen, capacity, encoderMask);
 
     /// <summary>LM logits [n, vocab] for final-normed decoder hidden states (tied embeddings: scaled by d_model^-0.5 first).</summary>
     public float[] Logits(float[] decoderHidden, int n)
