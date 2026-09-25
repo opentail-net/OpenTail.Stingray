@@ -150,3 +150,21 @@ encoder and weight-load tests pass (30-45s each, real weights). `RvcSynthesizerR
 skips visibly (it needs reference `STINGRAY_RVC_TRACE` dump files that aren't on disk).
 Still open for RVC: the `native_pipeline.cpp` orchestration (segmenting, synthesizer-input
 assembly, RMS mix, pad-crop) — next.
+
+## RVC -- end-to-end pipeline ported (`RvcPipeline`); round trip word-exact vs reference, 2026-09-25
+
+New `src/OpenTail.Stingray.Audio/Rvc/RvcPipeline.cs` ports `native_pipeline.cpp`'s orchestration
+over the verified stages: high-pass + reflect pad, RMVPE salience → f0 (threshold 0.03, ±4-class
+cents average), median filter, quiet-point segmenting (>32s inputs), HuBERT content ×2 upsample,
+optional retrieval blend, coarse pitch bins + semitone shift, unvoiced protection (0.33), NSF sine
+source, per-segment pad crop, RMS mix (0.25). Defaults copied from the reference's `RvcInferenceConfig`.
+Scope: v2 voices only (v1 needs HuBERT layer-9 + `final_proj`, not ported; rejected explicitly).
+Sine-source noise uses .NET `Random`, not the reference's Philox CUDA RNG, so output is not bit-identical.
+
+Check: `a.wav` (5.95s, "This little work was finished in the year 1803 and intended for immediate
+publication."), packaged `default` v2 voice, CPU.
+- ours (`RvcPipelineRealWeightsTests`, `RVC_OUT`): 5.94s @ 40 kHz, rms 0.071; Whisper: exact.
+- reference `audiocpp_cli --task vc --family rvc --backend cpu --threads 8`: 5.94s; Whisper: exact.
+
+**Performance, flagged as its own line item (CLAUDE.md rule 11):** ours 523.7s of compute vs
+the reference's 8.2s (**~64× slower**). A profile-first perf pass is the next RVC step.
