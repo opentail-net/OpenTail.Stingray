@@ -128,6 +128,41 @@ public sealed unsafe class SimdKernelsIqQ8KTests
             (row, s, c) => SimdKernels.DotIq3S_Q8K_Scalar((byte*)row, (byte*)s, c));
 
     /// <summary>
+    /// Decode-shape throughput of <see cref="SimdKernels.MatVec"/> per weight dtype at Qwen3.8-27B's FFN shape
+    /// (17408 × 5120), GB/s of weight bytes streamed, Q4_K as the baseline. Heavy: <c>STINGRAY_RUN_HEAVY_TESTS=1</c>.
+    /// </summary>
+    [Fact]
+    public void MatVecThroughput_ByDType()
+    {
+        Assert.SkipUnless(Environment.GetEnvironmentVariable("STINGRAY_RUN_HEAVY_TESTS") == "1", "benchmark: set STINGRAY_RUN_HEAVY_TESTS=1");
+        const int rows = 17408, cols = 5120;
+        var input = new float[cols];
+        var rng = new Random(7);
+        for (int i = 0; i < cols; i++) input[i] = (float)(rng.NextDouble() * 2 - 1);
+        var output = new float[rows];
+        foreach (var (dt, bpb) in new[] { (DType.Q4_K, 144), (DType.Q3_K, 110), (DType.IQ4_XS, 136), (DType.IQ3_S, 110),
+                     (DType.IQ3_XXS, 98), (DType.IQ2_S, 82), (DType.IQ2_XS, 74), (DType.IQ2_XXS, 66) })
+        {
+            byte[] w = BuildIqMatrix(rows, cols, bpb, rng);
+            fixed (byte* wp = w)
+            fixed (float* ip = input, op = output)
+            {
+                SimdKernels.MatVec(op, wp, ip, rows, cols, dt);
+                var times = new List<double>();
+                for (int r = 0; r < 7; r++)
+                {
+                    var sw = System.Diagnostics.Stopwatch.StartNew();
+                    SimdKernels.MatVec(op, wp, ip, rows, cols, dt);
+                    times.Add(sw.Elapsed.TotalMilliseconds);
+                }
+                times.Sort();
+                double ms = times[3];
+                Console.WriteLine($"[MatVecBench] {dt,-8} {ms,8:F2} ms  {w.Length / 1e6 / ms,7:F1} GB/s");
+            }
+        }
+    }
+
+    /// <summary>
     /// Independent reference for every Q8_K-paired IQ kernel: <see cref="Dequantize.ToFloat32"/> (the path that produced
     /// the Qwen3.8-27B llama.cpp greedy receipt) followed by a float dot. AVX2-vs-scalar agreement alone cannot catch a
     /// mistake both variants share: IQ3_S shipped 2026-08-28 returning <c>0.25f * sumf</c> (a factor that belongs to

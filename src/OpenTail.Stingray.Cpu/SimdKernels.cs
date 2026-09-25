@@ -4255,6 +4255,35 @@ public static unsafe class SimdKernels
     /// indirect call per ROW (not per element) versus the previous inlined-call-site copies —
     /// verified with a before/after timing check, not just assumed safe.
     /// </summary>
+    // Byte l of a broadcast 32-bit sign word feeds elements 8l..8l+7 (lane 0: bytes 0,1; lane 1: bytes 2,3), and
+    // element 8l+j tests bit j — ggml's k_mask1 / k_mask2 in its AVX2 IQ dot kernels.
+    private static readonly Vector256<byte> s_iqSignShuffle = Vector256.Create(
+        (byte)0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3, 3);
+    private static readonly Vector256<byte> s_iqSignBits = Vector256.Create(
+        (byte)1, 2, 4, 8, 16, 32, 64, 128, 1, 2, 4, 8, 16, 32, 64, 128, 1, 2, 4, 8, 16, 32, 64, 128, 1, 2, 4, 8, 16, 32, 64, 128);
+
+    /// <summary>
+    /// 32 IQ weights · 32 Q8_K activations as 16 int16 pair sums: four 8-byte groups of unsigned grid magnitudes
+    /// (<paramref name="g0"/>..<paramref name="g3"/>, element 8l+j = byte j of group l), sign bit j of byte l of
+    /// <paramref name="signs4"/> negating element 8l+j. The signs are applied to the activations with a
+    /// shuffle/and/cmpeq mask (ggml's AVX2 scheme) instead of building signed weights byte by byte; the products are
+    /// the same as maddubs(|w|, sign(q8, w)). Grid magnitudes are ≤ 43, so maddubs cannot saturate.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static Vector256<short> IqSignedMaddubs(ulong g0, ulong g1, ulong g2, ulong g3, uint signs4, sbyte* q8)
+    {
+        var grid = Vector256.Create(g0, g1, g2, g3).AsByte();
+        var bits = Avx2.And(Avx2.Shuffle(Vector256.Create(signs4).AsByte(), s_iqSignShuffle), s_iqSignBits);
+        var neg = Avx2.CompareEqual(bits, s_iqSignBits);
+        var q8s = Avx2.Subtract(Avx2.Xor(Avx.LoadVector256((byte*)q8), neg), neg).AsSByte();
+        return Avx2.MultiplyAddAdjacent(grid, q8s);
+    }
+
+    /// <summary>IQ3_S: grid entries 2l and 2l+1 of a 32-weight group (9-bit indices, high bit from <paramref name="qh"/>) as one 8-byte group.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static ulong Iq3SPair(uint[] grid, byte* q, byte qh, int l) =>
+        grid[q[2 * l] | ((uint)(qh << (8 - 2 * l)) & 256)] | (ulong)grid[q[2 * l + 1] | ((uint)(qh << (7 - 2 * l)) & 256)] << 32;
+
     private static void MatVecQ8KDispatch(float* output, byte* weights, float* input, int rows, int cols,
         int bytesPerRow, delegate*<byte*, byte*, int, float> dot)
     {
@@ -4477,24 +4506,10 @@ public static unsafe class SimdKernels
                 int ls1 = 2 * (scales[ib32] & 0xF) + 1;
                 int ls2 = 2 * (scales[ib32] >> 4) + 1;
 
-                for (int l = 0; l < 4; l++)
-                {
-                    int qOff = (4 * ib32 + l) * 2;
-                    int qval = qsBytes[qOff] | (qsBytes[qOff + 1] << 8);
-                    ulong gridVal = grid[qval & 511];
-                    byte signs = ksigns[qval >> 9];
-                    for (int j = 0; j < 8; j++)
-                    {
-                        byte gb = (byte)(gridVal >> (8 * j));
-                        gbuf[l * 8 + j] = (sbyte)((signs & kmask[j]) != 0 ? -gb : gb);
-                    }
-                }
-
-                var gridVec = Avx.LoadVector256(gbuf);
-                var q8Vec = Avx.LoadVector256((sbyte*)(q8 + ib32 * 32));
-                var ax = Avx2.Abs(gridVec);
-                var sy = Avx2.Sign(q8Vec, gridVec);
-                var p16 = Avx2.MultiplyAddAdjacent(ax, sy);
+                ushort* qv = (ushort*)(qsBytes + ib32 * 8);
+                uint signs4 = ksigns[qv[0] >> 9] | (uint)ksigns[qv[1] >> 9] << 8 | (uint)ksigns[qv[2] >> 9] << 16 | (uint)ksigns[qv[3] >> 9] << 24;
+                var p16 = IqSignedMaddubs(grid[qv[0] & 511], grid[qv[1] & 511], grid[qv[2] & 511], grid[qv[3] & 511],
+                    signs4, q8 + ib32 * 32);
                 var scalesVec = Vector256.Create(Vector128.Create((short)ls1), Vector128.Create((short)ls2));
                 sumi = Avx2.Add(sumi, Avx2.MultiplyAddAdjacent(p16, scalesVec));
             }
@@ -4602,23 +4617,11 @@ public static unsafe class SimdKernels
                 int ls2 = 1 + 2 * (scales[ib32] >> 4);
                 int baseOff = ib32 * 4;
 
-                for (int l = 0; l < 4; l++)
-                {
-                    int idx = qsLow[baseOff + l] | ((qh[ib32] << (8 - 2 * l)) & 0x300);
-                    ulong gridVal = grid[idx];
-                    byte sgn = signs[baseOff + l];
-                    for (int j = 0; j < 8; j++)
-                    {
-                        byte gb = (byte)(gridVal >> (8 * j));
-                        gbuf[l * 8 + j] = (sbyte)((sgn & kmask[j]) != 0 ? -gb : gb);
-                    }
-                }
-
-                var gridVec = Avx.LoadVector256(gbuf);
-                var q8Vec = Avx.LoadVector256((sbyte*)(q8 + ib32 * 32));
-                var ax = Avx2.Abs(gridVec);
-                var sy = Avx2.Sign(q8Vec, gridVec);
-                var p16 = Avx2.MultiplyAddAdjacent(ax, sy);
+                byte* ql = qsLow + baseOff;
+                int h = qh[ib32];
+                var p16 = IqSignedMaddubs(grid[ql[0] | ((h << 8) & 0x300)], grid[ql[1] | ((h << 6) & 0x300)],
+                    grid[ql[2] | ((h << 4) & 0x300)], grid[ql[3] | ((h << 2) & 0x300)],
+                    *(uint*)(signs + baseOff), q8 + ib32 * 32);
                 var scalesVec = Vector256.Create(Vector128.Create((short)ls1), Vector128.Create((short)ls2));
                 sumi = Avx2.Add(sumi, Avx2.MultiplyAddAdjacent(p16, scalesVec));
             }
@@ -4723,25 +4726,13 @@ public static unsafe class SimdKernels
                 int ls = (int)(2 * (aux32 >> 28) + 1);
                 int qOff = ib32 * 8;
 
-                for (int l = 0; l < 4; l++)
-                {
-                    uint g1 = grid[q3[qOff + 2 * l + 0]];
-                    uint g2 = grid[q3[qOff + 2 * l + 1]];
-                    byte signs = ksigns[(int)((aux32 >> (7 * l)) & 127)];
-                    for (int j = 0; j < 4; j++)
-                    {
-                        byte gb1 = (byte)(g1 >> (8 * j));
-                        byte gb2 = (byte)(g2 >> (8 * j));
-                        gbuf[l * 8 + j] = (sbyte)((signs & kmask[j]) != 0 ? -gb1 : gb1);
-                        gbuf[l * 8 + 4 + j] = (sbyte)((signs & kmask[j + 4]) != 0 ? -gb2 : gb2);
-                    }
-                }
-
-                var gridVec = Avx.LoadVector256(gbuf);
-                var q8Vec = Avx.LoadVector256((sbyte*)(q8 + ib32 * 32));
-                var ax = Avx2.Abs(gridVec);
-                var sy = Avx2.Sign(q8Vec, gridVec);
-                var p16 = Avx2.MultiplyAddAdjacent(ax, sy);
+                byte* qq = q3 + qOff;
+                uint signs4 = ksigns[(int)(aux32 & 127)] | (uint)ksigns[(int)((aux32 >> 7) & 127)] << 8
+                    | (uint)ksigns[(int)((aux32 >> 14) & 127)] << 16 | (uint)ksigns[(int)((aux32 >> 21) & 127)] << 24;
+                var p16 = IqSignedMaddubs(
+                    grid[qq[0]] | (ulong)grid[qq[1]] << 32, grid[qq[2]] | (ulong)grid[qq[3]] << 32,
+                    grid[qq[4]] | (ulong)grid[qq[5]] << 32, grid[qq[6]] | (ulong)grid[qq[7]] << 32,
+                    signs4, q8 + ib32 * 32);
                 sumi = Avx2.Add(sumi, Avx2.MultiplyAddAdjacent(p16, Vector256.Create((short)ls)));
             }
 
@@ -4848,22 +4839,10 @@ public static unsafe class SimdKernels
                 uint aux1 = (uint)(qs[off + 4] | (qs[off + 5] << 8) | (qs[off + 6] << 16) | (qs[off + 7] << 24));
                 int ls = (int)(2 * (aux1 >> 28) + 1);
 
-                for (int l = 0; l < 4; l++)
-                {
-                    ulong gridVal = grid[(byte)(aux0 >> (8 * l))];
-                    byte signs = ksigns[(int)((aux1 >> (7 * l)) & 127)];
-                    for (int j = 0; j < 8; j++)
-                    {
-                        byte gb = (byte)(gridVal >> (8 * j));
-                        gbuf[l * 8 + j] = (sbyte)((signs & kmask[j]) != 0 ? -gb : gb);
-                    }
-                }
-
-                var gridVec = Avx.LoadVector256(gbuf);
-                var q8Vec = Avx.LoadVector256((sbyte*)(q8 + ib32 * 32));
-                var ax = Avx2.Abs(gridVec);
-                var sy = Avx2.Sign(q8Vec, gridVec);
-                var p16 = Avx2.MultiplyAddAdjacent(ax, sy);
+                uint signs4 = ksigns[(int)(aux1 & 127)] | (uint)ksigns[(int)((aux1 >> 7) & 127)] << 8
+                    | (uint)ksigns[(int)((aux1 >> 14) & 127)] << 16 | (uint)ksigns[(int)((aux1 >> 21) & 127)] << 24;
+                var p16 = IqSignedMaddubs(grid[(byte)aux0], grid[(byte)(aux0 >> 8)], grid[(byte)(aux0 >> 16)], grid[(byte)(aux0 >> 24)],
+                    signs4, q8 + ib32 * 32);
                 sumi = Avx2.Add(sumi, Avx2.MultiplyAddAdjacent(p16, Vector256.Create((short)ls)));
             }
 
@@ -4958,26 +4937,9 @@ public static unsafe class SimdKernels
                     int ls = half == 0 ? ls1 : ls2;
                     byte qhByte = qh[ib32 + half];
 
-                    for (int l = 0; l < 4; l++)
-                    {
-                        uint g1 = grid[qs[qsOff + 2 * l] | ((uint)(qhByte << (8 - 2 * l)) & 256)];
-                        uint g2 = grid[qs[qsOff + 2 * l + 1] | ((uint)(qhByte << (7 - 2 * l)) & 256)];
-                        byte s = signs[signsOff + l];
-                        for (int j = 0; j < 4; j++)
-                        {
-                            byte gb1 = (byte)(g1 >> (8 * j));
-                            byte gb2 = (byte)(g2 >> (8 * j));
-                            gbuf[l * 8 + j] = (sbyte)((s & kmask[j]) != 0 ? -gb1 : gb1);
-                            gbuf[l * 8 + 4 + j] = (sbyte)((s & kmask[j + 4]) != 0 ? -gb2 : gb2);
-                        }
-                    }
-
-                    int q8Off = (ib32 + half) * 32;
-                    var gridVec = Avx.LoadVector256(gbuf);
-                    var q8Vec = Avx.LoadVector256((sbyte*)(q8 + q8Off));
-                    var ax = Avx2.Abs(gridVec);
-                    var sy = Avx2.Sign(q8Vec, gridVec);
-                    var p16 = Avx2.MultiplyAddAdjacent(ax, sy);
+                    byte* q = qs + qsOff;
+                    var p16 = IqSignedMaddubs(Iq3SPair(grid, q, qhByte, 0), Iq3SPair(grid, q, qhByte, 1),
+                        Iq3SPair(grid, q, qhByte, 2), Iq3SPair(grid, q, qhByte, 3), *(uint*)(signs + signsOff), q8 + (ib32 + half) * 32);
                     sumiAcc = Avx2.Add(sumiAcc, Avx2.MultiplyAddAdjacent(p16, Vector256.Create((short)ls)));
 
                     qsOff += 8;
