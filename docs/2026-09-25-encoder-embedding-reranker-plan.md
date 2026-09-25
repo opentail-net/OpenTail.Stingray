@@ -249,3 +249,32 @@ the oracle.
   word-pieced rather than mapped to its id). Embedding/rerank inputs don't need it.
 - **Phase 1 is complete.** Next: Phase 2, the TransformerEncoder (BERT first: bge-small/all-MiniLM vs ONNX + llama.cpp
   `--embedding`).
+
+### Phase 2 progress (2026-09-25): BERT encoder done, ONNX-verified
+- New `Engine/Encoders/TransformerEncoder` (post-LN BERT, CPU F32 from HF safetensors): fused QKV, one packed GEMM
+  per Linear over **all tokens of all inputs** (no padding; attention runs per sequence), exact-erf GELU
+  (`Cpu/ErfGelu`), LayerNorm eps from config, `bert.`/`roberta.`/… prefix and `gamma`/`beta` names handled.
+  `EncoderConfig` reads `config.json` (BERT/ELECTRA and RoBERTa/XLM-R position offset). New shared
+  `Cpu/PackedLinearF32` (pack once, keep only panels); Audio's `DenseKernels` batched path now reuses it (DRY;
+  Audio.Fast 72/72 and RVC HuBERT real-weight forward pass still pass).
+- `HfEncoderEmbeddingPipeline` (implements `IEmbeddingPipeline`): pooling/Normalize/max_seq_length from the
+  sentence-transformers files.
+- **Parity vs each checkpoint's own ONNX** (new `tests/OpenTail.Stingray.Tests.Embeddings`, `BertEncoderOnnxParityTests`,
+  5 texts incl. multilingual and a ~150-token passage), last_hidden_state per token:
+
+  | checkpoint | tokens | maxAbs | min cosine | ours / onnx ms |
+  |---|---|---|---|---|
+  | bge-small-en-v1.5 | 191 | 3.0e-6 | 0.9999998 | 234 / 118 |
+  | all-MiniLM-L6-v2 | 191 | 3.5e-6 | 0.9999998 | 92 / 20 |
+  | multilingual-e5-small | 229 | 1.6e-6 | 0.9999998 | 496 / 48 |
+  | paraphrase-multilingual-MiniLM-L12-v2 | 203 | 6.2e-6 | 0.9999998 | 46 / 43 |
+  | bge-large-en-v1.5 | 191 | 3.2e-5 | 0.9999997 | 360 / 384 |
+
+  (Timings are first-call, unoptimized; the perf pass is Phase 8.) Batched output equals one-at-a-time bit for bit.
+- **bert-base-uncased**: its `model.onnx` is `BertForMaskedLM` (logits only), so `BertMlmOnnxParityTests` applies the
+  checkpoint's MLM head to our hidden states: logits maxAbs 1.8e-4, min cosine 0.9999997 over 6 inputs; the model
+  card's fill-mask prompt ("Hello I'm a [MASK] model.") gives top id 4827 "fashion", as documented.
+- **Pooling independently checked** against `llama-server --embedding` on `bge-small-en-v1.5-q8_0.gguf`
+  (`SentenceEmbeddingLlamaCppTests`, via a reusable `LlamaServerOracle` test helper): cos 0.9996-0.9999 per text
+  (Q8_0-bound), where mean pooling instead of the configured CLS would give 0.895-0.959.
+- Next: Phase 3 (XLM-R positions + classification heads → xlm-roberta-base, ms-marco-MiniLM, bge-reranker-v2-m3).

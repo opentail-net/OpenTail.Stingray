@@ -57,13 +57,12 @@ public static class DenseKernels
                         SimdKernels.MatVecF32(yp + (long)r * outDim, wp, xp + (long)r * inDim, outDim, inDim);
                 return;
             }
-            int rows = outDim, cols = inDim;
-            var packed = s_packedWeights.GetValue(weight, w => new PackedWeight(w, rows, cols));
-            if (packed.Rows != outDim || packed.Cols != inDim)
-                throw new ArgumentException($"LinearBatchedNoBias: weight packed as [{packed.Rows}x{packed.Cols}], called as [{outDim}x{inDim}].");
-            PackedSgemmF32.Gemm(yp, xp, (float*)packed.Ptr, null, m, outDim, inDim);
-            GC.KeepAlive(packed);
         }
+        int rows = outDim, cols = inDim;
+        var packed = s_packedWeights.GetValue(weight, w => new PackedLinearF32(w, null, rows, cols));
+        if (packed.OutDim != outDim || packed.InDim != inDim)
+            throw new ArgumentException($"LinearBatchedNoBias: weight packed as [{packed.OutDim}x{packed.InDim}], called as [{outDim}x{inDim}].");
+        packed.Forward(input, output, m);
     }
 
     /// <summary>Row-array convenience over <see cref="LinearBatchedNoBias"/>: y[r] = W@x[r] + b for all
@@ -86,22 +85,8 @@ public static class DenseKernels
         return output;
     }
 
-    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<float[], PackedWeight> s_packedWeights = new();
-
-    /// <summary>Packed panel copy of one weight array (shape fixed by its first use).</summary>
-    private sealed unsafe class PackedWeight
-    {
-        public readonly nint Ptr;
-        public readonly int Rows, Cols;
-
-        public PackedWeight(float[] w, int rows, int cols)
-        {
-            (Rows, Cols) = (rows, cols);
-            fixed (float* wp = w) Ptr = (nint)PackedSgemmF32.PackWeights(wp, Rows, Cols);
-        }
-
-        ~PackedWeight() => System.Runtime.InteropServices.NativeMemory.AlignedFree((void*)Ptr);
-    }
+    // Packed panel copy of each weight array (shape fixed by its first use), freed with the array.
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<float[], PackedLinearF32> s_packedWeights = new();
 
     /// <summary>y = W@x, no bias (span input).</summary>
     public static unsafe float[] LinearNoBias(ReadOnlySpan<float> input, float[] weight, int inDim, int outDim)

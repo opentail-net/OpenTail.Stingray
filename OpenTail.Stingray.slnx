@@ -31,6 +31,7 @@
     <Project Path="tests/OpenTail.Stingray.Tests.Audio.Fast/OpenTail.Stingray.Tests.Audio.Fast.csproj" />
     <Project Path="tests/OpenTail.Stingray.Tests.Cli/OpenTail.Stingray.Tests.Cli.csproj" />
     <Project Path="tests/OpenTail.Stingray.Tests.Core/OpenTail.Stingray.Tests.Core.csproj" />
+    <Project Path="tests/OpenTail.Stingray.Tests.Embeddings/OpenTail.Stingray.Tests.Embeddings.csproj" />
     <Project Path="tests/OpenTail.Stingray.Tests.Cuda/OpenTail.Stingray.Tests.Cuda.csproj" />
     <Project Path="tests/OpenTail.Stingray.Tests.Diffusion/OpenTail.Stingray.Tests.Diffusion.csproj" />
     <Project Path="tests/OpenTail.Stingray.Tests.ForwardPass/OpenTail.Stingray.Tests.ForwardPass.csproj" />
