@@ -23,9 +23,9 @@ public static class MeloVoices
     {
         return voice.ToUpperInvariant() switch
         {
-            "EN-US" or "EN" or "EN-DEFAULT" => 1,
-            "ZH" => 0,
-            _ => 1 // Default to active speaker in melotts-zh_en
+            // melotts-zh_en has a single speaker, id 1 ("ZH-MIX-EN" in the MeloTTS.cpp reference,
+            // src/tts.cpp speaker_ids); ZH used to map to 0, which this checkpoint does not use.
+            _ => 1
         };
     }
 }

@@ -301,3 +301,21 @@ real weights lazily via the new `SileroVad.TryLoadDefault()` (`STINGRAY_SILERO_V
 `stt --vad` on `a.wav` segments and transcribes correctly. The 5 Fast `SileroVadTests` that constructed a
 weightless VAD (failing since the procedural fallback was removed) now load real weights or skip visibly;
 6/6 pass.
+
+## Audio.Fast suite -- 6 stale tests updated, one real Melo fix; now 72/72 green, 2026-09-25
+
+Running the light `OpenTail.Stingray.Tests.Audio.Fast` suite (3.9s, no heavy models) showed 6 failures
+beyond the Silero ones. In every case the implementation had changed deliberately after the test was last
+edited (tests 2026-08-29; implementations 09-05 → 09-13), so these were stale expectations, each checked
+against the current real behaviour or a reference before updating:
+- Qwen3-ASR prompt: the real chat template (064334e) puts the language hint in the assistant prefix
+  (`language en<asr_text>`), not a `Language: en` line.
+- Chatterbox no-weights tokenizer: a documented char-level stub with no `<s>`/`</s>` (real BPE path is
+  covered by the real-weight tests).
+- Kokoro phonemes: `wˈɜɹld` (American, rhotic, correct for the en-us voice), not British `wˈɜːld`.
+- Piper tokenize: "abc" now expands to real phonemes, so the raw length isn't pinned to 5 (intersperse
+  structure still asserted). Piper streaming is frame-chunked, not per sentence.
+- **Melo speaker ids, with a real fix:** the shipped `melotts-zh_en` checkpoint's only speaker is id 1
+  ("ZH-MIX-EN", `examples/MeloTTS.cpp/src/tts.cpp` `speaker_ids`); the test's 0-4 accent table belongs to
+  the English-only checkpoint. `MeloVoices.GetSpeakerId` also mapped "ZH" to 0, which this checkpoint
+  doesn't use; it now maps everything to 1 (English was already 1 and ear-confirmed).

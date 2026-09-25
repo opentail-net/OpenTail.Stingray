@@ -23,11 +23,12 @@ public sealed class MeloTtsTests
     [Fact]
     public void MeloVoices_GetSpeakerId_MapsAccents()
     {
-        Assert.Equal(0, MeloVoices.GetSpeakerId("EN-US"));
-        Assert.Equal(1, MeloVoices.GetSpeakerId("EN-BR"));
-        Assert.Equal(2, MeloVoices.GetSpeakerId("EN-INDIA"));
-        Assert.Equal(10, MeloVoices.GetSpeakerId("ZH"));
-        Assert.Equal(20, MeloVoices.GetSpeakerId("ES"));
+        // The shipped checkpoint is melotts-zh_en, whose only speaker is id 1 ("ZH-MIX-EN" in the
+        // MeloTTS.cpp reference, src/tts.cpp speaker_ids); the 0-4 accent table belongs to the
+        // separate English-only checkpoint.
+        Assert.Equal(1, MeloVoices.GetSpeakerId("EN-US"));
+        Assert.Equal(1, MeloVoices.GetSpeakerId("ZH"));
+        Assert.Equal(1, MeloVoices.GetSpeakerId("anything"));
     }
 
     [Fact]

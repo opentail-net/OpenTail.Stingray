@@ -13,9 +13,10 @@ public sealed class ChatterboxTests
         int[] tokens = tokenizer.Encode(text);
 
         Assert.NotNull(tokens);
-        Assert.True(tokens.Length >= 3);
-        Assert.Equal(1, tokens[0]); // <s>
-        Assert.Equal(2, tokens[^1]); // </s>
+        // No-weights fallback is a char-level stub (one id per character, no <s>/</s>); the real
+        // BPE path needs GGUF weights and is covered by the real-weight Chatterbox tests.
+        Assert.Equal(text.Length, tokens.Length);
+        Assert.All(tokens, id => Assert.True(id > 0));
     }
 
     [Fact]

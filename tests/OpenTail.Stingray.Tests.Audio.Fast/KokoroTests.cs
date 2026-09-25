@@ -13,7 +13,7 @@ public sealed class KokoroTests
         Assert.NotNull(phonemes);
         Assert.NotEmpty(phonemes);
         Assert.Contains("həlˈoʊ", phonemes);
-        Assert.Contains("wˈɜːld", phonemes);
+        Assert.Contains("wˈɜɹld", phonemes); // American (rhotic) misaki phonemes for the en-us voice
     }
 
     [Fact]

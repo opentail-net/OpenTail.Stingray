@@ -45,7 +45,8 @@ public sealed class QwenAsrTests
 
         Assert.Contains("<|im_start|>", prompt, StringComparison.Ordinal);
         Assert.Contains("<|audio_start|><|audio_pad|><|audio_pad|><|audio_pad|><|audio_end|>", prompt, StringComparison.Ordinal);
-        Assert.Contains("Language: en", prompt, StringComparison.Ordinal);
+        // Real Qwen3-ASR chat template (since 064334e): the language hint is the assistant prefix.
+        Assert.Contains("<|im_start|>assistant\nlanguage en<asr_text>", prompt, StringComparison.Ordinal);
     }
 
     // QwenAsrAudioEncoder_Forward_AppliesConv2dStemAndWindowedAttention removed: the AuT
