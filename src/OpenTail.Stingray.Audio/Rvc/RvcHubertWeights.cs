@@ -54,6 +54,17 @@ public sealed class RvcHubertWeights
     /// computed once at load time so the forward pass never needs to redo the weight-norm math.</summary>
     public float[] PosConvWeight { get; }
 
+    private OpenTail.Stingray.Cpu.PackedLinearF32[]? _packedConv, _packedPosConv;
+
+    /// <summary>Feature-extractor conv weights packed for <see cref="Primitives.Wav2Vec2FrontendKernels.Conv1dValid"/>
+    /// (built on first use, then reused).</summary>
+    internal OpenTail.Stingray.Cpu.PackedLinearF32[] PackedConv => _packedConv ??= [.. Enumerable.Range(0, ConvWeights.Length).Select(i =>
+        new OpenTail.Stingray.Cpu.PackedLinearF32(ConvWeights[i], null, ConvDim[i], (i == 0 ? 1 : ConvDim[i - 1]) * ConvKernel[i]))];
+
+    /// <summary>Positional conv packed per group for <see cref="Primitives.Wav2Vec2FrontendKernels.GroupedConvSamePad"/>.</summary>
+    internal OpenTail.Stingray.Cpu.PackedLinearF32[] PackedPosConv => _packedPosConv ??=
+        Primitives.Wav2Vec2FrontendKernels.PackGroupedConv(PosConvWeight, HiddenDim, ConvPosGroups, ConvPosKernel);
+
     public float[] EncoderLayerNormWeight { get; }
     public float[] EncoderLayerNormBias { get; }
 

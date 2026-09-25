@@ -23,16 +23,20 @@ public static class RvcHubertEncoder
     {
         // 1. Feature extractor: 7 valid (no-padding) conv1d layers, GroupNorm only after layer 0,
         // exact-erf GELU after every layer.
-        float[][] x = ToFrames1Channel(waveform16k);
-        int channels = 1;
+        //    Convs run as im2col + packed GEMM (shared Wav2Vec2FrontendKernels, 2026-09-25; they were scalar loops).
+        float[] flat = waveform16k.ToArray();
+        int frames = flat.Length, channels = 1;
         for (int layerIdx = 0; layerIdx < 7; layerIdx++)
         {
-            x = Conv1dValid(x, channels, w.ConvWeights[layerIdx], bias: null, outCh: RvcHubertWeights.ConvDim[layerIdx], kernel: RvcHubertWeights.ConvKernel[layerIdx], stride: RvcHubertWeights.ConvStride[layerIdx]);
+            flat = Primitives.Wav2Vec2FrontendKernels.Conv1dValid(flat, frames, channels, RvcHubertWeights.ConvKernel[layerIdx],
+                RvcHubertWeights.ConvStride[layerIdx], w.PackedConv[layerIdx], out frames);
             channels = RvcHubertWeights.ConvDim[layerIdx];
             if (layerIdx == 0)
-                x = GroupNorm(x, numGroups: channels, w.ConvLayer0GroupNormWeight, w.ConvLayer0GroupNormBias);
-            GeluErfInPlaceRows(x);
+                Primitives.Wav2Vec2FrontendKernels.GroupNormPerChannel(flat, frames, channels, w.ConvLayer0GroupNormWeight, w.ConvLayer0GroupNormBias);
+            Parallel.For(0, frames, i => { var row = flat.AsSpan(i * channels, channels); for (int c = 0; c < row.Length; c++) row[c] = GeluErf(row[c]); });
         }
+        float[][] x = new float[frames][];
+        for (int i = 0; i < frames; i++) x[i] = flat.AsSpan(i * channels, channels).ToArray();
 
         // 2. Feature projection: LayerNorm(512) + Linear(512->768).
         int t = x.Length;
@@ -44,8 +48,12 @@ public static class RvcHubertEncoder
 
         // 3. Positional conv: grouped conv1d (16 groups, kernel 128, pad=64 each side, output
         // trimmed by 1 trailing frame since kernel is even), exact-erf GELU, added as a residual.
-        var pos = GroupedConv1dSamePad(hidden, RvcHubertWeights.HiddenDim, w.PosConvWeight, w.PosConvBias,
-            groups: RvcHubertWeights.ConvPosGroups, kernel: RvcHubertWeights.ConvPosKernel);
+        int hd = RvcHubertWeights.HiddenDim;
+        var hiddenFlat = new float[t * hd];
+        for (int i = 0; i < t; i++) hidden[i].CopyTo(hiddenFlat, i * hd);
+        var posFlat = Primitives.Wav2Vec2FrontendKernels.GroupedConvSamePad(hiddenFlat, t, hd, w.PackedPosConv, w.PosConvBias, RvcHubertWeights.ConvPosKernel);
+        var pos = new float[t][];
+        for (int i = 0; i < t; i++) pos[i] = posFlat.AsSpan(i * hd, hd).ToArray();
         GeluErfInPlaceRows(pos);
         for (int i = 0; i < t; i++)
             for (int d = 0; d < RvcHubertWeights.HiddenDim; d++)
@@ -84,59 +92,8 @@ public static class RvcHubertEncoder
         return hidden;
     }
 
-    private static float[][] ToFrames1Channel(ReadOnlySpan<float> waveform)
-    {
-        var frames = new float[waveform.Length][];
-        for (int i = 0; i < waveform.Length; i++) frames[i] = [waveform[i]];
-        return frames;
-    }
 
-    /// <summary>Valid (no padding) 1D conv, input frame-major [T, cin], weight [cout, cin, kernel] (real PyTorch layout), no bias (RVC's HuBERT uses FirstLayerGroupNorm, which omits conv bias per the reference).</summary>
-    private static float[][] Conv1dValid(float[][] input, int cin, float[] weight, float[]? bias, int outCh, int kernel, int stride)
-    {
-        int tIn = input.Length;
-        int tOut = (tIn - kernel) / stride + 1;
-        var output = new float[tOut][];
-        System.Threading.Tasks.Parallel.For(0, tOut, to =>
-        {
-            var row = new float[outCh];
-            int srcBase = to * stride;
-            for (int oc = 0; oc < outCh; oc++)
-            {
-                float sum = bias is null ? 0f : bias[oc];
-                int wBase = oc * cin * kernel;
-                for (int ic = 0; ic < cin; ic++)
-                {
-                    int wOff = wBase + ic * kernel;
-                    for (int k = 0; k < kernel; k++)
-                        sum += weight[wOff + k] * input[srcBase + k][ic];
-                }
-                row[oc] = sum;
-            }
-            output[to] = row;
-        });
-        return output;
-    }
 
-    /// <summary>Real PyTorch GroupNorm with numGroups == numChannels (i.e. per-channel InstanceNorm over the time axis, matching HuBERT's real `nn.GroupNorm(dim, dim, affine=True)` feature-extractor norm) -- normalizes EACH channel independently across all T frames, not per-frame.</summary>
-    private static float[][] GroupNorm(float[][] x, int numGroups, float[] weight, float[] bias, float eps = 1e-5f)
-    {
-        int t = x.Length;
-        int channels = weight.Length;
-        var output = new float[t][];
-        for (int i = 0; i < t; i++) output[i] = new float[channels];
-        System.Threading.Tasks.Parallel.For(0, channels, c =>
-        {
-            double sum = 0, sumSq = 0;
-            for (int i = 0; i < t; i++) { double v = x[i][c]; sum += v; sumSq += v * v; }
-            double mean = sum / t;
-            double variance = Math.Max(0, sumSq / t - mean * mean);
-            double invStd = 1.0 / Math.Sqrt(variance + eps);
-            for (int i = 0; i < t; i++)
-                output[i][c] = (float)(((x[i][c] - mean) * invStd) * weight[c] + bias[c]);
-        });
-        return output;
-    }
 
     private static void GeluErfInPlaceRows(float[][] x)
     {
@@ -159,46 +116,6 @@ public static class RvcHubertEncoder
         return sign * y;
     }
 
-    /// <summary>Real weight-normalized grouped positional conv: same padding (pad=kernel/2 each side), then the last output frame is dropped since kernel is even, matching the reference's `SliceModule({2, 0, input_length})` trim exactly.</summary>
-    private static float[][] GroupedConv1dSamePad(float[][] input, int channels, float[] weight, float[] bias, int groups, int kernel)
-    {
-        int t = input.Length;
-        int pad = kernel / 2;
-        int chPerGroup = channels / groups;
-        int tConv = t + 1; // (t + 2*pad - kernel)/1 + 1 == t+1 for even kernel with pad=kernel/2
-        var conv = new float[tConv][];
-        System.Threading.Tasks.Parallel.For(0, tConv, to =>
-        {
-            var row = new float[channels];
-            for (int g = 0; g < groups; g++)
-            {
-                int chBase = g * chPerGroup;
-                for (int ocLocal = 0; ocLocal < chPerGroup; ocLocal++)
-                {
-                    int oc = chBase + ocLocal;
-                    float sum = bias[oc];
-                    int wBase = oc * chPerGroup * kernel;
-                    for (int icLocal = 0; icLocal < chPerGroup; icLocal++)
-                    {
-                        int ic = chBase + icLocal;
-                        int wOff = wBase + icLocal * kernel;
-                        for (int k = 0; k < kernel; k++)
-                        {
-                            int srcT = to - pad + k;
-                            if ((uint)srcT < (uint)t)
-                                sum += weight[wOff + k] * input[srcT][ic];
-                        }
-                    }
-                    row[oc] = sum;
-                }
-            }
-            conv[to] = row;
-        });
-        // Drop the trailing frame (even-kernel convention).
-        var output = new float[t][];
-        Array.Copy(conv, output, t);
-        return output;
-    }
 
     private static float[][] EncoderBlock(float[][] x, RvcHubertLayerWeights l, int t, int dim, int heads, bool maskLastKey)
     {

@@ -97,9 +97,7 @@ public sealed class Wav2Vec2CtcModel : IDisposable
         for (int idx = 0; idx < v.Length; idx++) norms[idx % posKernel] += (double)v[idx] * v[idx];
         var w = new float[v.Length];
         for (int idx = 0; idx < v.Length; idx++) w[idx] = (float)(g[idx % posKernel] * v[idx] / Math.Sqrt(norms[idx % posKernel]));
-        var posConv = new PackedLinearF32[posGroups];
-        for (int gi = 0; gi < posGroups; gi++)
-            posConv[gi] = new PackedLinearF32(w.AsSpan(gi * groupCh * groupCh * posKernel, groupCh * groupCh * posKernel).ToArray(), null, groupCh, groupCh * posKernel);
+        var posConv = OpenTail.Stingray.Audio.Primitives.Wav2Vec2FrontendKernels.PackGroupedConv(w, hidden, posGroups, posKernel);
 
         var layers = new Layer[layersN];
         for (int i = 0; i < layersN; i++)
@@ -141,23 +139,6 @@ public sealed class Wav2Vec2CtcModel : IDisposable
 
     private static void LayerNormRows(float[] x, int rows, int dim, float[] w, float[] b, float eps) => RowKernels.LayerNormRows(x, x, rows, dim, w, b, eps);
 
-    /// <summary>Valid conv1d over frame-major [t, inCh] → [tOut, outCh] via im2col (row = [c0k0..c0kK, c1k0..]).</summary>
-    private static float[] Conv1d(float[] x, int t, ConvLayer l, out int tOut)
-    {
-        tOut = (t - l.Kernel) / l.Stride + 1;
-        int kIn = l.InCh * l.Kernel, to = tOut;
-        var cols = new float[(long)tOut * kIn];
-        Parallel.For(0, to, o =>
-        {
-            var row = cols.AsSpan(o * kIn, kIn);
-            int start = o * l.Stride;
-            for (int c = 0; c < l.InCh; c++)
-                for (int j = 0; j < l.Kernel; j++) row[c * l.Kernel + j] = x[(start + j) * l.InCh + c];
-        });
-        var y = new float[(long)tOut * l.OutCh];
-        l.Conv.Forward(cols, y, tOut);
-        return y;
-    }
 
     /// <summary>CTC logits [frames, vocab] for a 16 kHz mono waveform (normalized here, as the feature extractor does).</summary>
     public float[] Logits(ReadOnlySpan<float> waveform16k, out int frames)
@@ -178,11 +159,11 @@ public sealed class Wav2Vec2CtcModel : IDisposable
         for (int li = 0; li < _conv.Length; li++)
         {
             var l = _conv[li];
-            x = Conv1d(x, t, l, out t);
+            x = OpenTail.Stingray.Audio.Primitives.Wav2Vec2FrontendKernels.Conv1dValid(x, t, l.InCh, l.Kernel, l.Stride, l.Conv, out t);
             if (t <= 0) throw new ArgumentException("Wav2Vec2: audio too short for the feature extractor.");
             if (l.NormW is not null)
             {
-                if (_groupNorm) GroupNormPerChannel(x, t, l.OutCh, l.NormW, l.NormB!);
+                if (_groupNorm) OpenTail.Stingray.Audio.Primitives.Wav2Vec2FrontendKernels.GroupNormPerChannel(x, t, l.OutCh, l.NormW, l.NormB!);
                 else LayerNormRows(x, t, l.OutCh, l.NormW, l.NormB!, _lnEps);
             }
             ErfGelu.InPlace(x);
@@ -193,7 +174,8 @@ public sealed class Wav2Vec2CtcModel : IDisposable
         var hs = new float[t * h];
         _proj.Forward(x, hs, t);
 
-        var pos = PositionalConv(hs, t);
+        var pos = OpenTail.Stingray.Audio.Primitives.Wav2Vec2FrontendKernels.GroupedConvSamePad(hs, t, _hidden, _posConv, _posBias, _posKernel);
+        ErfGelu.InPlace(pos);
         TensorPrimitives.Add(hs, pos, hs);
         if (!_stableLayerNorm) LayerNormRows(hs, t, h, _encLnW, _encLnB, _lnEps);
 
@@ -234,47 +216,7 @@ public sealed class Wav2Vec2CtcModel : IDisposable
         return logits;
     }
 
-    /// <summary>GroupNorm with num_groups == channels: each channel normalized over time (frame-major [t, ch]).</summary>
-    private static void GroupNormPerChannel(float[] x, int t, int ch, float[] w, float[] b)
-    {
-        Parallel.For(0, ch, c =>
-        {
-            double sum = 0, sq = 0;
-            for (int i = 0; i < t; i++) sum += x[i * ch + c];
-            double mean = sum / t;
-            for (int i = 0; i < t; i++) { double d = x[i * ch + c] - mean; sq += d * d; }
-            float inv = (float)(1.0 / Math.Sqrt(sq / t + 1e-5));
-            for (int i = 0; i < t; i++) x[i * ch + c] = (float)(x[i * ch + c] - mean) * inv * w[c] + b[c];
-        });
-    }
 
-    /// <summary>Grouped conv1d, kernel K, padding K/2 both sides, last output dropped when K is even (Wav2Vec2SamePadLayer), then GELU.</summary>
-    private float[] PositionalConv(float[] hs, int t)
-    {
-        int h = _hidden, gc = h / _posGroups, k = _posKernel, pad = k / 2, kIn = gc * k;
-        var outp = new float[t * h];
-        var cols = new float[(long)t * kIn];
-        var y = new float[t * gc];
-        for (int g = 0; g < _posGroups; g++)
-        {
-            int g0 = g * gc;
-            Parallel.For(0, t, o =>
-            {
-                var row = cols.AsSpan(o * kIn, kIn);
-                for (int c = 0; c < gc; c++)
-                    for (int j = 0; j < k; j++)
-                    {
-                        int src = o + j - pad;
-                        row[c * k + j] = src < 0 || src >= t ? 0f : hs[src * h + g0 + c];
-                    }
-            });
-            _posConv[g].Forward(cols, y, t);
-            for (int o = 0; o < t; o++) y.AsSpan(o * gc, gc).CopyTo(outp.AsSpan(o * h + g0, gc));
-        }
-        for (int o = 0; o < t; o++) TensorPrimitives.Add(outp.AsSpan(o * h, h), _posBias, outp.AsSpan(o * h, h));
-        ErfGelu.InPlace(outp);
-        return outp;
-    }
 
     private void Attention(Layer layer, float[] x, int t, float[] qkv, float[] ctx)
     {

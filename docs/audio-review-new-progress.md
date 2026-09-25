@@ -529,3 +529,13 @@ missing piece is upstream's per-token log-likelihoods for the same tokens as a d
   business." / "…of the district."; 1.0 → "…of voice and business." / "…of wisdom, this is-" / "…of white synthesis."
   Same quality: the start is right and it drifts at "voice synthesis" either way. With the forward pass (teacher forcing)
   and the sampler both ruled out, the next step needs upstream's own tokens or log-likelihoods for the same text.
+
+## RVC HuBERT -- front-end convs shared with Wav2Vec2 and GEMM-based: hubert 4.63 → 1.2s, RVC 19.4 → 15.9s, 2026-09-25
+
+HuBERT's feature-extractor convs and 128-tap grouped positional conv were scalar loops. They now use the new shared
+`Primitives/Wav2Vec2FrontendKernels` (valid conv1d and grouped "same" conv as im2col + packed GEMM, per-channel GroupNorm),
+which `Wav2Vec2CtcModel` also uses now instead of its private copies (DRY). RVC keeps its own erf GELU. Packed weights are
+cached on `RvcHubertWeights`. Measured (2 runs, `STINGRAY_RVC_PROFILE=1`): hubert 4.63 → 1.31 / 1.17s, total convert
+19.4 → 16.1 / 15.8s; output vs the pre-change WAV cosine 1.000000, maxAbs 4.76e-5 (16-bit quantisation). Wav2Vec2 parity
+(ONNX, WER 1.4 %) and `RvcHubertEncoderForwardTests` pass. Remaining: RMVPE ~7.5s and the synthesizer ~7s; the reference
+is 8.2s, so RVC is now ~1.9× behind (was ~2.4×).
