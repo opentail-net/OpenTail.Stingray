@@ -100,12 +100,12 @@ dated and sourced findings. Commit per engine.
       Audio golden and real-weight tests pass with real timings (6-40s). The CPU pipeline golden cosine
       A/B is 0.4535 (old path) → 0.4594 (new), now equal to the GPU run's 0.459419; no slowdown. SDXL
       (CLIP-G heads fix) was re-checked separately: still a clean on-prompt image.
-- [~] Phase 1: correctness triage (details in `docs/audio-review-new-progress.md`)
+- [x] Phase 1: correctness triage (details in `docs/audio-review-new-progress.md`)
   - [x] 1.1 open 🟡 rows (2026-09-25): OmniVoice, VibeVoice ASR, VibeVoice TTS (2 real loop bugs) and
         RVC (RMVPE 3×3 fix + ported pipeline) are now 🟢, checked against the vendored reference with Whisper
         round trips. MOSS/Higgs were done 2026-09-24. Stable Audio 3: sampling schedule fixed, and small-music
         and medium match the reference; SFX darker and CFG-1 divergence remain open (🟡).
-  - [ ] 1.2–1.4 ⚪/🟢 regression sweep: full heavy Audio test run in progress (2026-09-25)
+  - [x] 1.2–1.4 ⚪/🟢 checks (2026-09-25): per engine, one class at a time (a one-process heavy sweep hit 44.9 GB and was stopped). All TTS got Whisper round trips and all ASR got LibriSpeech/reference checks; see the Phase 1 summary in the progress log.
 - [ ] Phase 2: performance
 - [ ] Phase 3: record
 

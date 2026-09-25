@@ -406,3 +406,20 @@ so it invented a tail. The reference (`examples/audio.cpp/src/models/voxtral_rea
 decoder step per audio row and states "only the audio source running dry ends the stream". Fixed to stop when the
 audio rows are exhausted. After: 4/4 exact ("I'm" for "I am" aside), 21-60s per clip on CPU. All Voxtral test classes
 pass (7.8-178s each; `VoxtralRealReferenceMatchTests` skips visibly for missing reference dumps).
+
+## Nemotron / Citrinet / SenseVoice ASR -- real-speech checks, 2026-09-25
+
+- Nemotron 3.5 ASR (`NemotronAsrEndToEndTests`, `a.wav`, 7.2s): "This little work was finished in the year eighteen oh
+  three and intended for immediate publication." (exact) followed by a raw `<en-US>` tag. That tag appears only in
+  the test's own ad-hoc detokenizer. The reference strips special/language tokens by default
+  (`keep_language_tags = false`), and there's no user-facing Nemotron text pipeline here yet, so it's a note for
+  whenever one is added, not a product bug.
+- Citrinet (`CitrinetAsrRealWeightsTests`, LibriSpeech 0000, 0.95s): exact, and the test asserts the full transcript.
+- SenseVoice (`SenseVoiceRealWeightsTests`, same clip, 2.3s): exact, lang `<|en|>`, event `<|Speech|>`.
+
+**Phase 1 summary (2026-09-25):** every 🟡 and ⚪ audio row and every 🟢 TTS/ASR engine with a runnable path has now had
+a real-weight check with visible timing (Whisper round trip for TTS; ground truth or reference for ASR). Fixed this
+pass: VibeVoice TTS (2 loop bugs), RVC (RMVPE kernel + pipeline + 24× perf), OmniVoice (3.9× perf), Silero VAD
+(context + `stt --vad` crash), Voxtral (invented tail), CosyVoice2 (argmax → RAS), Stable Audio (sampling schedule),
+Melo (ZH speaker id). Open: CosyVoice2 garbled ending (needs a speaker-prompt path), Stable Audio SFX darker + CFG-1
+divergence, MeloTTS English intelligibility, Parakeet ~3% WER.
