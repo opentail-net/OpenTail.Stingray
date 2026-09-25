@@ -3607,5 +3607,6 @@ public sealed unsafe class GpuForwardPass : IForwardPass
     /// the CPU. Keeping these quantized is the whole point of the GPU matvec shaders.
     /// </summary>
     internal static bool IsRawGpuQuant(DType dtype) =>
-        dtype is DType.Q4_K or DType.Q5_K or DType.Q6_K or DType.Q8_0 or DType.Q4_0;
+        dtype is DType.Q4_K or DType.Q5_K or DType.Q6_K or DType.Q8_0 or DType.Q4_0
+            or DType.IQ4_XS or DType.IQ3_S or DType.IQ3_XXS or DType.Q3_K or DType.IQ2_S;
 }

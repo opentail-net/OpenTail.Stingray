@@ -4066,4 +4066,57 @@ public sealed unsafe class VulkanShaderTests : HeavyTestBase
         if (mag > 0f) for (int i = 0; i < dim; i++) v[i] /= mag;
         return v;
     }
+
+    /// <summary>
+    /// IQ3_XXS raw matvec (<c>MatVecIQ3XXS</c>, 2026-09-25) vs the CPU <c>Dequantize.ToFloat32</c> reference on the same
+    /// random 98-byte blocks (any bytes are valid: 8-bit grid indices, 7-bit sign indices, 4-bit scale). rows=37 and
+    /// cols=512 exercise the tail workgroup and the multi-block loop.
+    /// </summary>
+    [Theory]
+    [InlineData(DType.IQ3_XXS, 98, 0)]
+    [InlineData(DType.Q3_K, 110, 108)]
+    [InlineData(DType.IQ2_S, 82, 0)]
+    [InlineData(DType.IQ4_XS, 136, 0)]
+    [InlineData(DType.IQ3_S, 110, 0)]
+    public void MatVecRawQuantMatchesCpu(DType dtype, int blockBytes, int dOffset)
+    {
+        using var backend = CreateBackendOrSkip();
+        const int matRows = 37, matCols = 512;
+        var rng = new Random(9801 + (int)dtype);
+        var rawData = new byte[matRows * (matCols / 256) * blockBytes];
+        for (int off = 0; off < rawData.Length; off += blockBytes)
+        {
+            for (int j = 0; j < blockBytes; j++) rawData[off + j] = (byte)rng.Next(0, 256);
+            PutHalf(rawData, off + dOffset, (float)(rng.NextDouble() * 0.045 + 0.005));
+        }
+
+        var f32Weights = new float[matRows * matCols];
+        OpenTail.Stingray.Cpu.Dequantize.ToFloat32(rawData, f32Weights, dtype, f32Weights.Length);
+        var input = new float[matCols];
+        for (int i = 0; i < matCols; i++) input[i] = (float)(rng.NextDouble() * 2 - 1);
+        var cpuOutput = new float[matRows];
+        for (int r = 0; r < matRows; r++)
+            for (int c = 0; c < matCols; c++) cpuOutput[r] += f32Weights[r * matCols + c] * input[c];
+
+        var rawAsFloats = new float[rawData.Length / 4];
+        System.Runtime.InteropServices.MemoryMarshal.Cast<byte, float>(rawData).CopyTo(rawAsFloats);
+        var gpuWeights = backend.Upload(rawAsFloats, TensorShape.D1(rawAsFloats.Length));
+        var gpuInput = backend.Upload(input, TensorShape.D1(matCols));
+        var gpuOutput = backend.Allocate(TensorShape.D1(matRows));
+        backend.MatMul(gpuOutput, gpuWeights, gpuInput, dtype);
+        var gpuResult = new float[matRows];
+        backend.Download(gpuOutput, gpuResult);
+
+        int mismatches = 0;
+        for (int i = 0; i < matRows; i++)
+        {
+            float rel = MathF.Abs(gpuResult[i] - cpuOutput[i]) / (MathF.Abs(cpuOutput[i]) + 1e-6f);
+            if (rel > 0.01f && mismatches++ < 5) Console.WriteLine($"  [{i}]: gpu={gpuResult[i]:F4} cpu={cpuOutput[i]:F4} rel={rel:P1}");
+        }
+        Console.WriteLine($"MatVec {dtype}: {mismatches}/{matRows} mismatches (>1% rel error)");
+        Assert.Equal(0, mismatches);
+        backend.Free(gpuWeights);
+        backend.Free(gpuInput);
+        backend.Free(gpuOutput);
+    }
 }

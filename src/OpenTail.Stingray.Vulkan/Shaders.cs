@@ -4108,7 +4108,7 @@ internal static class Shaders
         layout(local_size_x = 256) in;
 
         layout(binding = 0) readonly buffer Weights { uint weight_data[]; };
-        layout(binding = 1) readonly buffer Input   { float input_data[]; };
+        layout(binding = 1) readonly buffer Input   { vec4 input_vec4[]; };
         layout(binding = 2) writeonly buffer Output  { float output_data[]; };
 
         layout(push_constant) uniform Params {
@@ -4125,35 +4125,13 @@ internal static class Shaders
         );
 
         shared float sdata[256];
-
-        uint load_u8(uint wordBase, uint byteOffset) {
-            uint word = weight_data[wordBase + (byteOffset >> 2u)];
-            return (word >> ((byteOffset & 3u) * 8u)) & 0xFFu;
-        }
-
-        // Decodes element `element` (0..255) of the IQ4_XS block starting at `blockWordBase`.
-        float decode_iq4xs(uint blockWordBase, uint element) {
-            uint dWord = weight_data[blockWordBase];
-            float d = unpackHalf2x16(dWord).x;      // bytes 0:1
-            uint scalesH = dWord >> 16u;             // bytes 2:3
-
-            uint group = element >> 5u;              // 0..7  (32 elements/group)
-            uint inGroup = element & 31u;             // 0..31
-
-            uint scalesLByte = load_u8(blockWordBase, 4u + (group >> 1u));
-            uint lsLow  = (scalesLByte >> ((group & 1u) * 4u)) & 0xFu;
-            uint lsHigh = (scalesH >> (2u * group)) & 0x3u;
-            uint ls = lsLow | (lsHigh << 4u);
-            float dl = d * float(int(ls) - 32);
-
-            uint qByte = load_u8(blockWordBase, 8u + group * 16u + (inGroup & 15u));
-            uint code = (inGroup < 16u) ? (qByte & 0xFu) : (qByte >> 4u);
-
-            return dl * IQ4_NL[code];
-        }
+        // Codebook staged in LDS: a dynamically indexed const array can be lowered to per-thread scratch.
+        shared float kv[16];
 
         void main() {
             uint tid = gl_LocalInvocationID.x;
+            if (tid < 16u) kv[tid] = IQ4_NL[tid];
+            barrier();
             uint row_in_wg = tid / THREADS_PER_ROW;
             uint lane = tid % THREADS_PER_ROW;
             uint row = gl_WorkGroupID.x * N_ROWS + row_in_wg;
@@ -4163,18 +4141,26 @@ internal static class Shaders
             const uint words_per_block = 34u;         // 136 bytes / 4
             uint word_row_base = row * num_blocks * words_per_block;
 
-            // This lane owns 8 of each block's 256 elements, strided by THREADS_PER_ROW — same
-            // "32 lanes cover a 256-element block" shape as MatVecQ4K's coalesced read, just
-            // without that kernel's extra register-precompute optimization (v1: correctness and
-            // measured footprint first, per docs/084-...; revisit if profiling calls for it).
+            // Coalesced read (the MatVecQ4K scheme): block = d(2) scales_h(2) scales_l[4] qs[128], and group
+            // g's 32 elements are qs[16g..16g+16) (low nibble = element i, high = element 16+i). Lane
+            // L = 4g + p owns qs dword L outright: elements 32g+4p..+3 (low nibbles) and 32g+16+4p..+3 (high).
+            uint g = lane >> 2u, p = lane & 3u;
             float acc = 0.0;
             for (uint b = 0; b < num_blocks; b++) {
-                uint blockWordBase = word_row_base + b * words_per_block;
-                uint inputBase = b * 256u;
-                [[unroll]] for (uint k = 0; k < 8u; k++) {
-                    uint element = lane + k * THREADS_PER_ROW;
-                    acc += decode_iq4xs(blockWordBase, element) * input_data[inputBase + element];
+                uint wb = word_row_base + b * words_per_block;
+                uint dWord = weight_data[wb];
+                uint qw = weight_data[wb + 2u + lane];
+                uint scL = weight_data[wb + 1u];
+                uint ls = ((scL >> (4u * g)) & 0xFu) | (((dWord >> (16u + 2u * g)) & 3u) << 4u);
+                float dl = unpackHalf2x16(dWord).x * float(int(ls) - 32);
+                uint vi = b * 64u + g * 8u + p;
+                vec4 xLo = input_vec4[vi], xHi = input_vec4[vi + 4u];
+                vec4 wLo, wHi;
+                [[unroll]] for (uint t = 0; t < 4u; t++) {
+                    wLo[t] = kv[(qw >> (8u * t)) & 0xFu];
+                    wHi[t] = kv[(qw >> (8u * t + 4u)) & 0xFu];
                 }
+                acc += dl * (dot(wLo, xLo) + dot(wHi, xHi));
             }
 
             sdata[tid] = acc;
@@ -4223,7 +4209,7 @@ internal static class Shaders
         layout(local_size_x = 256) in;
 
         layout(binding = 0) readonly buffer Weights { uint weight_data[]; };
-        layout(binding = 1) readonly buffer Input   { float input_data[]; };
+        layout(binding = 1) readonly buffer Input   { vec4 input_vec4[]; };
         layout(binding = 2) writeonly buffer Output  { float output_data[]; };
 
         layout(push_constant) uniform Params {
@@ -4301,20 +4287,33 @@ internal static class Shaders
                 0x0f090307U, 0x0f090501U, 0x0f090b01U, 0x0f0b0505U, 0x0f0b0905U, 0x0f0d0105U, 0x0f0d0703U, 0x0f0f0101U
         );
 
-        const uint KMASK_IQ2XS[8] = uint[](1u, 2u, 4u, 8u, 16u, 32u, 64u, 128u);
-
         shared float sdata[256];
+        // Grid staged in LDS: a dynamically indexed const array can be lowered to per-thread scratch.
+        shared uint gridS[512];
 
         // Reads one byte at an absolute byte offset into the weight buffer (blocks aren't
-        // 4-byte aligned, so this can't be a plain word index) — same pattern as the
-        // EmbedLookupQ3K/Q6K shaders' gByte helper.
+        // 4-byte aligned, so this can't be a plain word index).
         uint load_u8(uint byteOffset) {
             uint word = weight_data[byteOffset >> 2u];
             return (word >> ((byteOffset & 3u) * 8u)) & 0xFFu;
         }
 
+        // A 2-byte field at an even offset never straddles a dword (110-byte blocks are 2-byte aligned).
+        uint load_u16(uint byteOffset) {
+            return (weight_data[byteOffset >> 2u] >> ((byteOffset & 2u) * 8u)) & 0xFFFFu;
+        }
+
+        vec4 signedGrid(uint g, uint signs) {
+            return vec4(float(g & 0xFFu), float((g >> 8u) & 0xFFu), float((g >> 16u) & 0xFFu), float(g >> 24u))
+                 * vec4((signs & 1u) != 0u ? -1.0 : 1.0, (signs & 2u) != 0u ? -1.0 : 1.0,
+                        (signs & 4u) != 0u ? -1.0 : 1.0, (signs & 8u) != 0u ? -1.0 : 1.0);
+        }
+
         void main() {
             uint tid = gl_LocalInvocationID.x;
+            gridS[tid] = IQ3S_GRID[tid];
+            gridS[tid + 256u] = IQ3S_GRID[tid + 256u];
+            barrier();
             uint row_in_wg = tid / THREADS_PER_ROW;
             uint lane = tid % THREADS_PER_ROW;
             uint row = gl_WorkGroupID.x * N_ROWS + row_in_wg;
@@ -4333,45 +4332,605 @@ internal static class Shaders
 
             float acc = 0.0;
             for (uint b = 0; b < num_blocks; b++) {
-                uint blockByteBase = byte_row_base + b * bytes_per_block;
-                uint inputBase = b * 256u + lane * 8u;
-
-                uint dByte0 = load_u8(blockByteBase + 0u);
-                uint dByte1 = load_u8(blockByteBase + 1u);
-                float d = unpackHalf2x16(dByte0 | (dByte1 << 8u)).x;
-
-                uint scaleByte = load_u8(blockByteBase + 106u + ib32Idx);
-                uint scaleNibble = (halfSel == 0u) ? (scaleByte & 0xFu) : (scaleByte >> 4u);
+                uint blk = byte_row_base + b * bytes_per_block;
+                float d = unpackHalf2x16(load_u16(blk)).x;
+                uint scaleNibble = (load_u8(blk + 106u + ib32Idx) >> (4u * halfSel)) & 0xFu;
                 float db = d * (1.0 + 2.0 * float(scaleNibble));
 
-                uint qhByte = load_u8(blockByteBase + 66u + combinedIdx);
-                uint qsBase = 2u + combinedIdx * 8u;
-                uint qs1 = load_u8(blockByteBase + qsBase + 2u * l);
-                uint qs2 = load_u8(blockByteBase + qsBase + 2u * l + 1u);
+                uint qhByte = load_u8(blk + 66u + combinedIdx);
+                uint qs = load_u16(blk + 2u + combinedIdx * 8u + 2u * l);
+                uint gridIdx1 = (qs & 0xFFu) | ((qhByte << (8u - 2u * l)) & 256u);
+                uint gridIdx2 = (qs >> 8u) | ((qhByte << (7u - 2u * l)) & 256u);
+                uint signByte = load_u8(blk + 74u + combinedIdx * 4u + l);
 
-                uint gridIdx1 = qs1 | ((qhByte << (8u - 2u * l)) & 256u);
-                uint gridIdx2 = qs2 | ((qhByte << (7u - 2u * l)) & 256u);
-
-                uint grid1 = IQ3S_GRID[gridIdx1];
-                uint grid2 = IQ3S_GRID[gridIdx2];
-
-                uint signByte = load_u8(blockByteBase + 74u + combinedIdx * 4u + l);
-
-                [[unroll]] for (uint j = 0; j < 4u; j++) {
-                    uint mag1 = (grid1 >> (8u * j)) & 0xFFu;
-                    float sign1 = ((signByte & KMASK_IQ2XS[j]) != 0u) ? -1.0 : 1.0;
-                    acc += db * float(mag1) * sign1 * input_data[inputBase + j];
-
-                    uint mag2 = (grid2 >> (8u * j)) & 0xFFu;
-                    float sign2 = ((signByte & KMASK_IQ2XS[j + 4u]) != 0u) ? -1.0 : 1.0;
-                    acc += db * float(mag2) * sign2 * input_data[inputBase + 4u + j];
-                }
+                uint vi = (b * 256u + lane * 8u) >> 2u;
+                acc += db * (dot(signedGrid(gridS[gridIdx1], signByte), input_vec4[vi])
+                           + dot(signedGrid(gridS[gridIdx2], signByte >> 4u), input_vec4[vi + 1u]));
             }
 
             sdata[tid] = acc;
             barrier();
             [[unroll]] for (uint s = 16; s > 0; s >>= 1) {
                 if (lane < s) sdata[tid] += sdata[tid + s];
+                barrier();
+            }
+            if (lane == 0)
+                output_data[row] = sdata[tid];
+        }
+        """;
+
+    /// <summary>
+    /// Matrix-vector multiply with raw IQ3_XXS dequantization, so IQ3_XXS weights stay compressed on the GPU (3.06 bpw)
+    /// instead of the F16 fallback (16 bpw). Same 8-rows / 32-lanes-per-row / shared-memory tree-reduction topology as
+    /// <see cref="MatVecIQ3S"/>.
+    ///
+    /// IQ3_XXS block (256 elements / 98 bytes), matching <c>Dequantize.DequantIq3Xxs</c>:
+    ///   bytes 0:1    d (FP16)
+    ///   bytes 2:65   qs[64] (8-bit indices into the 256-entry grid; 8 per 32-element group)
+    ///   bytes 66:97  scales_and_signs: one little-endian uint32 per 32-element group — four 7-bit sign-pattern indices
+    ///                (into ksigns_iq2xs) in bits 0..27, scale in bits 28..31: db = d * (0.5 + scale) * 0.5
+    /// Lane = ib32 * 4 + l: each lane decodes the 8 elements [lane*8, lane*8+8) of a block from grid entries 2l, 2l+1.
+    /// Push constants: { uint rows, uint cols }. Bindings: 0=weights, 1=input[cols], 2=output[rows].
+    /// </summary>
+    internal const string MatVecIQ3XXS = """
+        #version 450
+        #extension GL_EXT_control_flow_attributes : enable
+
+        #define N_ROWS 8
+        #define THREADS_PER_ROW 32
+
+        layout(local_size_x = 256) in;
+
+        layout(binding = 0) readonly buffer Weights { uint weight_data[]; };
+        layout(binding = 1) readonly buffer Input   { vec4 input_vec4[]; };
+        layout(binding = 2) writeonly buffer Output  { float output_data[]; };
+
+        layout(push_constant) uniform Params {
+            uint rows;
+            uint cols;
+        };
+
+        // ggml iq3xxs_grid (IqCodebooks.Iq3XxsGrid) — generated mechanically from the C# source.
+        const uint IQ3XXS_GRID[256] = uint[](
+        0x04040404U, 0x04040414U, 0x04040424U, 0x04040c0cU, 0x04040c1cU, 0x04040c3eU, 0x04041404U, 0x04041414U,
+        0x04041c0cU, 0x04042414U, 0x04043e1cU, 0x04043e2cU, 0x040c040cU, 0x040c041cU, 0x040c0c04U, 0x040c0c14U,
+        0x040c140cU, 0x040c142cU, 0x040c1c04U, 0x040c1c14U, 0x040c240cU, 0x040c2c24U, 0x040c3e04U, 0x04140404U,
+        0x04140414U, 0x04140424U, 0x04140c0cU, 0x04141404U, 0x04141414U, 0x04141c0cU, 0x04141c1cU, 0x04141c3eU,
+        0x04142c0cU, 0x04142c3eU, 0x04143e2cU, 0x041c040cU, 0x041c043eU, 0x041c0c04U, 0x041c0c14U, 0x041c142cU,
+        0x041c3e04U, 0x04240c1cU, 0x04241c3eU, 0x04242424U, 0x04242c3eU, 0x04243e1cU, 0x04243e2cU, 0x042c040cU,
+        0x042c043eU, 0x042c1c14U, 0x042c2c14U, 0x04341c2cU, 0x04343424U, 0x043e0c04U, 0x043e0c24U, 0x043e0c34U,
+        0x043e241cU, 0x043e340cU, 0x0c04040cU, 0x0c04041cU, 0x0c040c04U, 0x0c040c14U, 0x0c04140cU, 0x0c04141cU,
+        0x0c041c04U, 0x0c041c14U, 0x0c041c24U, 0x0c04243eU, 0x0c042c04U, 0x0c0c0404U, 0x0c0c0414U, 0x0c0c0c0cU,
+        0x0c0c1404U, 0x0c0c1414U, 0x0c14040cU, 0x0c14041cU, 0x0c140c04U, 0x0c140c14U, 0x0c14140cU, 0x0c141c04U,
+        0x0c143e14U, 0x0c1c0404U, 0x0c1c0414U, 0x0c1c1404U, 0x0c1c1c0cU, 0x0c1c2434U, 0x0c1c3434U, 0x0c24040cU,
+        0x0c24042cU, 0x0c242c04U, 0x0c2c1404U, 0x0c2c1424U, 0x0c2c2434U, 0x0c2c3e0cU, 0x0c34042cU, 0x0c3e1414U,
+        0x0c3e2404U, 0x14040404U, 0x14040414U, 0x14040c0cU, 0x14040c1cU, 0x14041404U, 0x14041414U, 0x14041434U,
+        0x14041c0cU, 0x14042414U, 0x140c040cU, 0x140c041cU, 0x140c042cU, 0x140c0c04U, 0x140c0c14U, 0x140c140cU,
+        0x140c1c04U, 0x140c341cU, 0x140c343eU, 0x140c3e04U, 0x14140404U, 0x14140414U, 0x14140c0cU, 0x14140c3eU,
+        0x14141404U, 0x14141414U, 0x14141c3eU, 0x14142404U, 0x14142c2cU, 0x141c040cU, 0x141c0c04U, 0x141c0c24U,
+        0x141c3e04U, 0x141c3e24U, 0x14241c2cU, 0x14242c1cU, 0x142c041cU, 0x142c143eU, 0x142c240cU, 0x142c3e24U,
+        0x143e040cU, 0x143e041cU, 0x143e0c34U, 0x143e242cU, 0x1c04040cU, 0x1c040c04U, 0x1c040c14U, 0x1c04140cU,
+        0x1c04141cU, 0x1c042c04U, 0x1c04342cU, 0x1c043e14U, 0x1c0c0404U, 0x1c0c0414U, 0x1c0c1404U, 0x1c0c1c0cU,
+        0x1c0c2424U, 0x1c0c2434U, 0x1c14040cU, 0x1c14041cU, 0x1c140c04U, 0x1c14142cU, 0x1c142c14U, 0x1c143e14U,
+        0x1c1c0c0cU, 0x1c1c1c1cU, 0x1c241c04U, 0x1c24243eU, 0x1c243e14U, 0x1c2c0404U, 0x1c2c0434U, 0x1c2c1414U,
+        0x1c2c2c2cU, 0x1c340c24U, 0x1c341c34U, 0x1c34341cU, 0x1c3e1c1cU, 0x1c3e3404U, 0x24040424U, 0x24040c3eU,
+        0x24041c2cU, 0x24041c3eU, 0x24042c1cU, 0x24042c3eU, 0x240c3e24U, 0x24141404U, 0x24141c3eU, 0x24142404U,
+        0x24143404U, 0x24143434U, 0x241c043eU, 0x241c242cU, 0x24240424U, 0x24242c0cU, 0x24243424U, 0x242c142cU,
+        0x242c241cU, 0x242c3e04U, 0x243e042cU, 0x243e0c04U, 0x243e0c14U, 0x243e1c04U, 0x2c040c14U, 0x2c04240cU,
+        0x2c043e04U, 0x2c0c0404U, 0x2c0c0434U, 0x2c0c1434U, 0x2c0c2c2cU, 0x2c140c24U, 0x2c141c14U, 0x2c143e14U,
+        0x2c1c0414U, 0x2c1c2c1cU, 0x2c240c04U, 0x2c24141cU, 0x2c24143eU, 0x2c243e14U, 0x2c2c0414U, 0x2c2c1c0cU,
+        0x2c342c04U, 0x2c3e1424U, 0x2c3e2414U, 0x34041424U, 0x34042424U, 0x34042434U, 0x34043424U, 0x340c140cU,
+        0x340c340cU, 0x34140c3eU, 0x34143424U, 0x341c1c04U, 0x341c1c34U, 0x34242424U, 0x342c042cU, 0x342c2c14U,
+        0x34341c1cU, 0x343e041cU, 0x343e140cU, 0x3e04041cU, 0x3e04042cU, 0x3e04043eU, 0x3e040c04U, 0x3e041c14U,
+        0x3e042c14U, 0x3e0c1434U, 0x3e0c2404U, 0x3e140c14U, 0x3e14242cU, 0x3e142c14U, 0x3e1c0404U, 0x3e1c0c2cU,
+        0x3e1c1c1cU, 0x3e1c3404U, 0x3e24140cU, 0x3e24240cU, 0x3e2c0404U, 0x3e2c0414U, 0x3e2c1424U, 0x3e341c04U
+        );
+
+        // ggml ksigns_iq2xs (IqCodebooks.KSignsIq2Xs) — generated mechanically from the C# source.
+        const uint KSIGNS_IQ2XS[128] = uint[](
+          0u, 129u, 130u,   3u, 132u,   5u,   6u, 135u, 136u,   9u,  10u, 139u,  12u, 141u, 142u,  15u,
+        144u,  17u,  18u, 147u,  20u, 149u, 150u,  23u,  24u, 153u, 154u,  27u, 156u,  29u,  30u, 159u,
+        160u,  33u,  34u, 163u,  36u, 165u, 166u,  39u,  40u, 169u, 170u,  43u, 172u,  45u,  46u, 175u,
+         48u, 177u, 178u,  51u, 180u,  53u,  54u, 183u, 184u,  57u,  58u, 187u,  60u, 189u, 190u,  63u,
+        192u,  65u,  66u, 195u,  68u, 197u, 198u,  71u,  72u, 201u, 202u,  75u, 204u,  77u,  78u, 207u,
+         80u, 209u, 210u,  83u, 212u,  85u,  86u, 215u, 216u,  89u,  90u, 219u,  92u, 221u, 222u,  95u,
+         96u, 225u, 226u,  99u, 228u, 101u, 102u, 231u, 232u, 105u, 106u, 235u, 108u, 237u, 238u, 111u,
+        240u, 113u, 114u, 243u, 116u, 245u, 246u, 119u, 120u, 249u, 250u, 123u, 252u, 125u, 126u, 255u
+        );
+
+        shared float sdata[256];
+        // Codebooks staged in LDS: a dynamically indexed const array can be lowered to per-thread scratch.
+        shared uint gridS[256];
+        shared uint ksignsS[128];
+
+        // 98-byte blocks are only 2-byte aligned, so a 4-byte field may straddle two dwords.
+        uint load_u32(uint byteOffset) {
+            uint w = byteOffset >> 2u, sh = (byteOffset & 3u) * 8u;
+            uint a = weight_data[w];
+            return sh == 0u ? a : (a >> sh) | (weight_data[w + 1u] << (32u - sh));
+        }
+
+        // A 2-byte field at an even offset never straddles a dword.
+        uint load_u16(uint byteOffset) {
+            return (weight_data[byteOffset >> 2u] >> ((byteOffset & 2u) * 8u)) & 0xFFFFu;
+        }
+
+        vec4 signedGrid(uint g, uint signs) {
+            return vec4(float(g & 0xFFu), float((g >> 8u) & 0xFFu), float((g >> 16u) & 0xFFu), float(g >> 24u))
+                 * vec4((signs & 1u) != 0u ? -1.0 : 1.0, (signs & 2u) != 0u ? -1.0 : 1.0,
+                        (signs & 4u) != 0u ? -1.0 : 1.0, (signs & 8u) != 0u ? -1.0 : 1.0);
+        }
+
+        void main() {
+            uint tid = gl_LocalInvocationID.x;
+            gridS[tid] = IQ3XXS_GRID[tid];
+            if (tid < 128u) ksignsS[tid] = KSIGNS_IQ2XS[tid];
+            barrier();
+            uint row_in_wg = tid / THREADS_PER_ROW;
+            uint lane = tid % THREADS_PER_ROW;
+            uint row = gl_WorkGroupID.x * N_ROWS + row_in_wg;
+            if (row >= rows) return;
+
+            uint num_blocks = cols >> 8u;
+            const uint bytes_per_block = 98u;
+            uint byte_row_base = row * num_blocks * bytes_per_block;
+            uint ib32 = lane >> 2u;   // 0..7
+            uint l = lane & 3u;       // 0..3
+
+            float acc = 0.0;
+            for (uint b = 0; b < num_blocks; b++) {
+                uint blk = byte_row_base + b * bytes_per_block;
+                float d = unpackHalf2x16(load_u16(blk)).x;
+                uint aux32 = load_u32(blk + 66u + ib32 * 4u);
+                float db = d * (0.5 + float(aux32 >> 28u)) * 0.5;
+                uint signByte = ksignsS[(aux32 >> (7u * l)) & 127u];
+                uint qs2 = load_u16(blk + 2u + ib32 * 8u + 2u * l);
+                uint vi = (b * 256u + lane * 8u) >> 2u;
+                acc += db * (dot(signedGrid(gridS[qs2 & 0xFFu], signByte), input_vec4[vi])
+                           + dot(signedGrid(gridS[qs2 >> 8u], signByte >> 4u), input_vec4[vi + 1u]));
+            }
+
+            sdata[tid] = acc;
+            barrier();
+            [[unroll]] for (uint s = 16; s > 0; s >>= 1) {
+                if (lane < s) sdata[tid] += sdata[tid + s];
+                barrier();
+            }
+            if (lane == 0)
+                output_data[row] = sdata[tid];
+        }
+        """;
+
+    /// <summary>
+    /// Matrix-vector multiply with raw Q3_K dequantization (3.4375 bpw kept on the GPU instead of the F16 fallback),
+    /// matching <c>Dequantize.DequantQ3K</c>. Block (256 elements / 110 bytes): hmask[32] (bytes 0..31), qs[64] (32..95),
+    /// scales[12] (96..107: 16 six-bit scales, low nibbles in 96..103, high 2 bits in 104..107), d FP16 (108..109).
+    /// Element e: n = e/128, j = (e%128)/32, k = e%32; q = ((qs[32 + 32n + k] >> 2j) &amp; 3) − (hmask[k] bit (4n+j) ? 0 : 4);
+    /// scale index 8n + 2j + (k ≥ 16), value (scale − 32) * d. Lane owns elements [lane*8, lane*8+8) (never crosses a
+    /// 16-element scale group). Same 8-rows / 32-lanes / tree-reduction topology as <see cref="MatVecIQ3S"/>.
+    /// Push constants: { uint rows, uint cols }. Bindings: 0=weights, 1=input[cols], 2=output[rows].
+    /// </summary>
+    internal const string MatVecQ3K = """
+        #version 450
+        #extension GL_EXT_control_flow_attributes : enable
+
+        #define N_ROWS 8
+        #define THREADS_PER_ROW 32
+
+        layout(local_size_x = 256) in;
+
+        layout(binding = 0) readonly buffer Weights { uint weight_data[]; };
+        layout(binding = 1) readonly buffer Input   { vec4 input_vec4[]; };
+        layout(binding = 2) writeonly buffer Output  { float output_data[]; };
+
+        layout(push_constant) uniform Params {
+            uint rows;
+            uint cols;
+        };
+
+        shared float sdata[256];
+
+        uint load_u8(uint byteOffset) {
+            uint word = weight_data[byteOffset >> 2u];
+            return (word >> ((byteOffset & 3u) * 8u)) & 0xFFu;
+        }
+
+        // 110-byte blocks are only 2-byte aligned, so a 4-byte field may straddle two dwords.
+        uint load_u32(uint byteOffset) {
+            uint w = byteOffset >> 2u, sh = (byteOffset & 3u) * 8u;
+            uint a = weight_data[w];
+            return sh == 0u ? a : (a >> sh) | (weight_data[w + 1u] << (32u - sh));
+        }
+
+        void main() {
+            uint tid = gl_LocalInvocationID.x;
+            uint row_in_wg = tid / THREADS_PER_ROW;
+            uint lane = tid % THREADS_PER_ROW;
+            uint row = gl_WorkGroupID.x * N_ROWS + row_in_wg;
+            if (row >= rows) return;
+
+            uint num_blocks = cols >> 8u;
+            const uint bytes_per_block = 110u;
+            uint byte_row_base = row * num_blocks * bytes_per_block;
+
+            // Lane owns 8 consecutive elements e0..e0+7 = 8 consecutive qs bytes (2-bit field `shift`)
+            // and 8 consecutive hmask bytes (bit `mbit`), all under one 16-element sub-block scale s.
+            uint e0 = lane * 8u;
+            uint n = e0 >> 7u;
+            uint j = (e0 & 127u) >> 5u;
+            uint k0 = e0 & 31u;
+            uint s = 8u * n + 2u * j + (k0 >= 16u ? 1u : 0u);
+            uint shift = 2u * j;
+            uint mbit = 1u << (4u * n + j);
+            uint qsOff = 32u + 32u * n + k0;
+            uint scOff = (s < 8u) ? 96u + s : 96u + s - 8u;
+            uint scSh = (s < 8u) ? 0u : 4u;
+            uint hiOff = 104u + (s & 3u), hiSh = 2u * (s >> 2u);
+
+            float acc = 0.0;
+            for (uint b = 0; b < num_blocks; b++) {
+                uint blk = byte_row_base + b * bytes_per_block;
+                uint q0 = load_u32(blk + qsOff), q1 = load_u32(blk + qsOff + 4u);
+                uint h0 = load_u32(blk + k0), h1 = load_u32(blk + k0 + 4u);
+                float d = unpackHalf2x16(load_u32(blk + 108u) & 0xFFFFu).x;
+                uint lowNib = (load_u8(blk + scOff) >> scSh) & 0xFu;
+                uint hi2 = (load_u8(blk + hiOff) >> hiSh) & 3u;
+                float dl = d * float(int(lowNib | (hi2 << 4u)) - 32);
+                uint vi = (b * 256u + e0) >> 2u;
+                vec4 x0 = input_vec4[vi], x1 = input_vec4[vi + 1u];
+                vec4 w0, w1;
+                [[unroll]] for (uint t = 0; t < 4u; t++) {
+                    uint bs = t * 8u;
+                    w0[t] = float(int((q0 >> (bs + shift)) & 3u) - (((h0 >> bs) & mbit) != 0u ? 0 : 4));
+                    w1[t] = float(int((q1 >> (bs + shift)) & 3u) - (((h1 >> bs) & mbit) != 0u ? 0 : 4));
+                }
+                acc += dl * (dot(w0, x0) + dot(w1, x1));
+            }
+
+            sdata[tid] = acc;
+            barrier();
+            [[unroll]] for (uint st = 16; st > 0; st >>= 1) {
+                if (lane < st) sdata[tid] += sdata[tid + st];
+                barrier();
+            }
+            if (lane == 0)
+                output_data[row] = sdata[tid];
+        }
+        """;
+
+    /// <summary>
+    /// Matrix-vector multiply with raw IQ2_S dequantization (2.5625 bpw kept on the GPU), matching
+    /// <c>Dequantize.DequantIq2S</c>. Block (256 elements / 82 bytes): d FP16, qsLow[32] (2..33), signs[32] (34..65),
+    /// qh[8] (66..73), scales[8] (74..81). Lane = ib32*4 + l owns elements [lane*8, lane*8+8): 10-bit grid index
+    /// qsLow[lane] | ((qh[ib32] &lt;&lt; (8 − 2l)) &amp; 0x300) into the 1024-entry 8-byte grid (stored here as lo/hi uint
+    /// pairs), sign byte signs[lane], scale d * (0.5 + nibble) * 0.25 (low nibble for l &lt; 2, high for l ≥ 2).
+    /// Push constants: { uint rows, uint cols }. Bindings: 0=weights, 1=input[cols], 2=output[rows].
+    /// </summary>
+    internal const string MatVecIQ2S = """
+        #version 450
+        #extension GL_EXT_control_flow_attributes : enable
+
+        #define N_ROWS 8
+        #define THREADS_PER_ROW 32
+
+        layout(local_size_x = 256) in;
+
+        layout(binding = 0) readonly buffer Weights { uint weight_data[]; };
+        layout(binding = 1) readonly buffer Input   { vec4 input_vec4[]; };
+        layout(binding = 2) writeonly buffer Output  { float output_data[]; };
+
+        layout(push_constant) uniform Params {
+            uint rows;
+            uint cols;
+        };
+
+        // ggml iq2s_grid (IqCodebooks.Iq2SGrid), 1024 x 8 bytes as (lo, hi) uint pairs — generated mechanically.
+        const uint IQ2S_GRID[2048] = uint[](
+                0x08080808U, 0x08080808U,0x0808082bU, 0x08080808U,0x08081919U, 0x08080808U,0x08082b08U, 0x08080808U,
+                0x08082b2bU, 0x08080808U,0x08190819U, 0x08080808U,0x08191908U, 0x08080808U,0x0819192bU, 0x08080808U,
+                0x08192b19U, 0x08080808U,0x082b0808U, 0x08080808U,0x082b082bU, 0x08080808U,0x082b1919U, 0x08080808U,
+                0x082b2b08U, 0x08080808U,0x19080819U, 0x08080808U,0x19081908U, 0x08080808U,0x1908192bU, 0x08080808U,
+                0x19082b19U, 0x08080808U,0x19190808U, 0x08080808U,0x1919082bU, 0x08080808U,0x19191919U, 0x08080808U,
+                0x19192b08U, 0x08080808U,0x192b0819U, 0x08080808U,0x192b1908U, 0x08080808U,0x192b192bU, 0x08080808U,
+                0x192b2b19U, 0x08080808U,0x2b080808U, 0x08080808U,0x2b08082bU, 0x08080808U,0x2b081919U, 0x08080808U,
+                0x2b082b08U, 0x08080808U,0x2b190819U, 0x08080808U,0x2b191908U, 0x08080808U,0x2b2b0808U, 0x08080808U,
+                0x2b2b1919U, 0x08080808U,0x2b2b2b2bU, 0x08080808U,0x08080819U, 0x08080819U,0x08081908U, 0x08080819U,
+                0x0808192bU, 0x08080819U,0x08082b19U, 0x08080819U,0x08190808U, 0x08080819U,0x0819082bU, 0x08080819U,
+                0x08191919U, 0x08080819U,0x08192b08U, 0x08080819U,0x082b0819U, 0x08080819U,0x082b1908U, 0x08080819U,
+                0x19080808U, 0x08080819U,0x1908082bU, 0x08080819U,0x19081919U, 0x08080819U,0x19082b08U, 0x08080819U,
+                0x19190819U, 0x08080819U,0x19191908U, 0x08080819U,0x1919192bU, 0x08080819U,0x19192b19U, 0x08080819U,
+                0x192b0808U, 0x08080819U,0x192b1919U, 0x08080819U,0x192b2b08U, 0x08080819U,0x2b080819U, 0x08080819U,
+                0x2b081908U, 0x08080819U,0x2b190808U, 0x08080819U,0x2b19082bU, 0x08080819U,0x2b191919U, 0x08080819U,
+                0x2b2b0819U, 0x08080819U,0x2b2b1908U, 0x08080819U,0x08080808U, 0x0808082bU,0x0808082bU, 0x0808082bU,
+                0x08081919U, 0x0808082bU,0x08082b08U, 0x0808082bU,0x08190819U, 0x0808082bU,0x08191908U, 0x0808082bU,
+                0x082b0808U, 0x0808082bU,0x082b2b2bU, 0x0808082bU,0x19080819U, 0x0808082bU,0x19081908U, 0x0808082bU,
+                0x1908192bU, 0x0808082bU,0x19082b19U, 0x0808082bU,0x19190808U, 0x0808082bU,0x19191919U, 0x0808082bU,
+                0x2b080808U, 0x0808082bU,0x2b081919U, 0x0808082bU,0x2b082b2bU, 0x0808082bU,0x2b191908U, 0x0808082bU,
+                0x2b2b082bU, 0x0808082bU,0x08080819U, 0x08081908U,0x08081908U, 0x08081908U,0x0808192bU, 0x08081908U,
+                0x08082b19U, 0x08081908U,0x08190808U, 0x08081908U,0x0819082bU, 0x08081908U,0x08191919U, 0x08081908U,
+                0x08192b08U, 0x08081908U,0x082b0819U, 0x08081908U,0x082b1908U, 0x08081908U,0x082b192bU, 0x08081908U,
+                0x082b2b19U, 0x08081908U,0x19080808U, 0x08081908U,0x1908082bU, 0x08081908U,0x19081919U, 0x08081908U,
+                0x19082b08U, 0x08081908U,0x19082b2bU, 0x08081908U,0x19190819U, 0x08081908U,0x19191908U, 0x08081908U,
+                0x1919192bU, 0x08081908U,0x19192b19U, 0x08081908U,0x192b0808U, 0x08081908U,0x192b082bU, 0x08081908U,
+                0x192b1919U, 0x08081908U,0x2b080819U, 0x08081908U,0x2b081908U, 0x08081908U,0x2b08192bU, 0x08081908U,
+                0x2b082b19U, 0x08081908U,0x2b190808U, 0x08081908U,0x2b191919U, 0x08081908U,0x2b192b08U, 0x08081908U,
+                0x2b2b0819U, 0x08081908U,0x2b2b1908U, 0x08081908U,0x08080808U, 0x08081919U,0x0808082bU, 0x08081919U,
+                0x08081919U, 0x08081919U,0x08082b08U, 0x08081919U,0x08082b2bU, 0x08081919U,0x08190819U, 0x08081919U,
+                0x08191908U, 0x08081919U,0x0819192bU, 0x08081919U,0x08192b19U, 0x08081919U,0x082b0808U, 0x08081919U,
+                0x082b1919U, 0x08081919U,0x082b2b08U, 0x08081919U,0x19080819U, 0x08081919U,0x19081908U, 0x08081919U,
+                0x1908192bU, 0x08081919U,0x19082b19U, 0x08081919U,0x19190808U, 0x08081919U,0x1919082bU, 0x08081919U,
+                0x19191919U, 0x08081919U,0x19192b08U, 0x08081919U,0x192b0819U, 0x08081919U,0x192b1908U, 0x08081919U,
+                0x2b080808U, 0x08081919U,0x2b08082bU, 0x08081919U,0x2b081919U, 0x08081919U,0x2b082b08U, 0x08081919U,
+                0x2b190819U, 0x08081919U,0x2b191908U, 0x08081919U,0x2b2b0808U, 0x08081919U,0x08080819U, 0x0808192bU,
+                0x08081908U, 0x0808192bU,0x0808192bU, 0x0808192bU,0x08082b19U, 0x0808192bU,0x08190808U, 0x0808192bU,
+                0x08191919U, 0x0808192bU,0x19080808U, 0x0808192bU,0x19081919U, 0x0808192bU,0x19082b08U, 0x0808192bU,
+                0x19190819U, 0x0808192bU,0x19191908U, 0x0808192bU,0x192b0808U, 0x0808192bU,0x2b080819U, 0x0808192bU,
+                0x2b081908U, 0x0808192bU,0x2b190808U, 0x0808192bU,0x08080808U, 0x08082b08U,0x0808082bU, 0x08082b08U,
+                0x08081919U, 0x08082b08U,0x08082b08U, 0x08082b08U,0x08190819U, 0x08082b08U,0x08191908U, 0x08082b08U,
+                0x0819192bU, 0x08082b08U,0x08192b19U, 0x08082b08U,0x082b0808U, 0x08082b08U,0x082b1919U, 0x08082b08U,
+                0x082b2b2bU, 0x08082b08U,0x19080819U, 0x08082b08U,0x19081908U, 0x08082b08U,0x1908192bU, 0x08082b08U,
+                0x19082b19U, 0x08082b08U,0x19190808U, 0x08082b08U,0x1919082bU, 0x08082b08U,0x19191919U, 0x08082b08U,
+                0x19192b08U, 0x08082b08U,0x192b0819U, 0x08082b08U,0x192b1908U, 0x08082b08U,0x2b080808U, 0x08082b08U,
+                0x2b081919U, 0x08082b08U,0x2b191908U, 0x08082b08U,0x2b2b2b2bU, 0x08082b08U,0x08080819U, 0x08082b19U,
+                0x08081908U, 0x08082b19U,0x08190808U, 0x08082b19U,0x0819082bU, 0x08082b19U,0x08191919U, 0x08082b19U,
+                0x08192b08U, 0x08082b19U,0x082b0819U, 0x08082b19U,0x19080808U, 0x08082b19U,0x19081919U, 0x08082b19U,
+                0x19082b08U, 0x08082b19U,0x19190819U, 0x08082b19U,0x19191908U, 0x08082b19U,0x192b0808U, 0x08082b19U,
+                0x2b080819U, 0x08082b19U,0x2b190808U, 0x08082b19U,0x08080808U, 0x08082b2bU,0x08190819U, 0x08082b2bU,
+                0x08191908U, 0x08082b2bU,0x082b082bU, 0x08082b2bU,0x082b2b08U, 0x08082b2bU,0x082b2b2bU, 0x08082b2bU,
+                0x19190808U, 0x08082b2bU,0x2b192b19U, 0x08082b2bU,0x08080819U, 0x08190808U,0x08081908U, 0x08190808U,
+                0x0808192bU, 0x08190808U,0x08082b19U, 0x08190808U,0x08190808U, 0x08190808U,0x0819082bU, 0x08190808U,
+                0x08191919U, 0x08190808U,0x08192b08U, 0x08190808U,0x082b0819U, 0x08190808U,0x082b1908U, 0x08190808U,
+                0x082b192bU, 0x08190808U,0x19080808U, 0x08190808U,0x1908082bU, 0x08190808U,0x19081919U, 0x08190808U,
+                0x19082b08U, 0x08190808U,0x19190819U, 0x08190808U,0x19191908U, 0x08190808U,0x1919192bU, 0x08190808U,
+                0x19192b19U, 0x08190808U,0x192b0808U, 0x08190808U,0x192b082bU, 0x08190808U,0x192b1919U, 0x08190808U,
+                0x192b2b08U, 0x08190808U,0x2b080819U, 0x08190808U,0x2b081908U, 0x08190808U,0x2b08192bU, 0x08190808U,
+                0x2b190808U, 0x08190808U,0x2b191919U, 0x08190808U,0x2b192b08U, 0x08190808U,0x2b2b0819U, 0x08190808U,
+                0x2b2b1908U, 0x08190808U,0x08080808U, 0x08190819U,0x0808082bU, 0x08190819U,0x08081919U, 0x08190819U,
+                0x08082b08U, 0x08190819U,0x08082b2bU, 0x08190819U,0x08190819U, 0x08190819U,0x08191908U, 0x08190819U,
+                0x0819192bU, 0x08190819U,0x08192b19U, 0x08190819U,0x082b0808U, 0x08190819U,0x082b082bU, 0x08190819U,
+                0x082b1919U, 0x08190819U,0x082b2b08U, 0x08190819U,0x19080819U, 0x08190819U,0x19081908U, 0x08190819U,
+                0x1908192bU, 0x08190819U,0x19082b19U, 0x08190819U,0x19190808U, 0x08190819U,0x1919082bU, 0x08190819U,
+                0x19191919U, 0x08190819U,0x19192b08U, 0x08190819U,0x192b0819U, 0x08190819U,0x192b1908U, 0x08190819U,
+                0x2b080808U, 0x08190819U,0x2b08082bU, 0x08190819U,0x2b081919U, 0x08190819U,0x2b082b08U, 0x08190819U,
+                0x2b190819U, 0x08190819U,0x2b191908U, 0x08190819U,0x08080819U, 0x0819082bU,0x08081908U, 0x0819082bU,
+                0x08082b19U, 0x0819082bU,0x08190808U, 0x0819082bU,0x08191919U, 0x0819082bU,0x082b0819U, 0x0819082bU,
+                0x082b1908U, 0x0819082bU,0x19080808U, 0x0819082bU,0x19081919U, 0x0819082bU,0x19190819U, 0x0819082bU,
+                0x19191908U, 0x0819082bU,0x2b080819U, 0x0819082bU,0x2b081908U, 0x0819082bU,0x2b190808U, 0x0819082bU,
+                0x08080808U, 0x08191908U,0x0808082bU, 0x08191908U,0x08081919U, 0x08191908U,0x08082b08U, 0x08191908U,
+                0x08190819U, 0x08191908U,0x08191908U, 0x08191908U,0x0819192bU, 0x08191908U,0x08192b19U, 0x08191908U,
+                0x082b0808U, 0x08191908U,0x082b1919U, 0x08191908U,0x082b2b08U, 0x08191908U,0x19080819U, 0x08191908U,
+                0x19081908U, 0x08191908U,0x1908192bU, 0x08191908U,0x19082b19U, 0x08191908U,0x19190808U, 0x08191908U,
+                0x1919082bU, 0x08191908U,0x19191919U, 0x08191908U,0x19192b08U, 0x08191908U,0x192b0819U, 0x08191908U,
+                0x192b1908U, 0x08191908U,0x2b080808U, 0x08191908U,0x2b08082bU, 0x08191908U,0x2b081919U, 0x08191908U,
+                0x2b082b08U, 0x08191908U,0x2b190819U, 0x08191908U,0x2b191908U, 0x08191908U,0x2b2b0808U, 0x08191908U,
+                0x08080819U, 0x08191919U,0x08081908U, 0x08191919U,0x0808192bU, 0x08191919U,0x08082b19U, 0x08191919U,
+                0x08190808U, 0x08191919U,0x0819082bU, 0x08191919U,0x08191919U, 0x08191919U,0x08192b08U, 0x08191919U,
+                0x082b0819U, 0x08191919U,0x082b1908U, 0x08191919U,0x19080808U, 0x08191919U,0x1908082bU, 0x08191919U,
+                0x19081919U, 0x08191919U,0x19082b08U, 0x08191919U,0x19190819U, 0x08191919U,0x19191908U, 0x08191919U,
+                0x192b0808U, 0x08191919U,0x2b080819U, 0x08191919U,0x2b081908U, 0x08191919U,0x2b190808U, 0x08191919U,
+                0x08080808U, 0x0819192bU,0x08081919U, 0x0819192bU,0x08082b08U, 0x0819192bU,0x08190819U, 0x0819192bU,
+                0x08191908U, 0x0819192bU,0x082b0808U, 0x0819192bU,0x19080819U, 0x0819192bU,0x19081908U, 0x0819192bU,
+                0x19190808U, 0x0819192bU,0x2b080808U, 0x0819192bU,0x2b2b2b2bU, 0x0819192bU,0x08080819U, 0x08192b08U,
+                0x08081908U, 0x08192b08U,0x0808192bU, 0x08192b08U,0x08082b19U, 0x08192b08U,0x08190808U, 0x08192b08U,
+                0x08191919U, 0x08192b08U,0x08192b08U, 0x08192b08U,0x082b0819U, 0x08192b08U,0x19080808U, 0x08192b08U,
+                0x1908082bU, 0x08192b08U,0x19081919U, 0x08192b08U,0x19082b08U, 0x08192b08U,0x19190819U, 0x08192b08U,
+                0x19191908U, 0x08192b08U,0x192b0808U, 0x08192b08U,0x2b080819U, 0x08192b08U,0x2b081908U, 0x08192b08U,
+                0x08080808U, 0x08192b19U,0x0808082bU, 0x08192b19U,0x08081919U, 0x08192b19U,0x08082b08U, 0x08192b19U,
+                0x08190819U, 0x08192b19U,0x08191908U, 0x08192b19U,0x082b0808U, 0x08192b19U,0x19080819U, 0x08192b19U,
+                0x19081908U, 0x08192b19U,0x19190808U, 0x08192b19U,0x192b2b19U, 0x08192b19U,0x2b2b082bU, 0x08192b19U,
+                0x08081908U, 0x08192b2bU,0x08190808U, 0x08192b2bU,0x19080808U, 0x08192b2bU,0x1919192bU, 0x08192b2bU,
+                0x08080808U, 0x082b0808U,0x0808082bU, 0x082b0808U,0x08081919U, 0x082b0808U,0x08082b08U, 0x082b0808U,
+                0x08190819U, 0x082b0808U,0x08191908U, 0x082b0808U,0x0819192bU, 0x082b0808U,0x08192b19U, 0x082b0808U,
+                0x082b0808U, 0x082b0808U,0x082b1919U, 0x082b0808U,0x082b2b2bU, 0x082b0808U,0x19080819U, 0x082b0808U,
+                0x19081908U, 0x082b0808U,0x19190808U, 0x082b0808U,0x1919082bU, 0x082b0808U,0x19191919U, 0x082b0808U,
+                0x192b1908U, 0x082b0808U,0x2b080808U, 0x082b0808U,0x2b082b2bU, 0x082b0808U,0x2b191908U, 0x082b0808U,
+                0x2b2b2b2bU, 0x082b0808U,0x08080819U, 0x082b0819U,0x08081908U, 0x082b0819U,0x08190808U, 0x082b0819U,
+                0x0819082bU, 0x082b0819U,0x08191919U, 0x082b0819U,0x082b0819U, 0x082b0819U,0x19080808U, 0x082b0819U,
+                0x1908082bU, 0x082b0819U,0x19081919U, 0x082b0819U,0x19190819U, 0x082b0819U,0x19191908U, 0x082b0819U,
+                0x192b0808U, 0x082b0819U,0x2b080819U, 0x082b0819U,0x2b081908U, 0x082b0819U,0x2b190808U, 0x082b0819U,
+                0x08080808U, 0x082b082bU,0x08082b2bU, 0x082b082bU,0x082b082bU, 0x082b082bU,0x082b2b08U, 0x082b082bU,
+                0x082b2b2bU, 0x082b082bU,0x19081908U, 0x082b082bU,0x19190808U, 0x082b082bU,0x2b082b08U, 0x082b082bU,
+                0x2b082b2bU, 0x082b082bU,0x2b2b2b08U, 0x082b082bU,0x08080819U, 0x082b1908U,0x08081908U, 0x082b1908U,
+                0x0808192bU, 0x082b1908U,0x08082b19U, 0x082b1908U,0x08190808U, 0x082b1908U,0x08191919U, 0x082b1908U,
+                0x08192b08U, 0x082b1908U,0x082b0819U, 0x082b1908U,0x082b1908U, 0x082b1908U,0x19080808U, 0x082b1908U,
+                0x1908082bU, 0x082b1908U,0x19081919U, 0x082b1908U,0x19082b08U, 0x082b1908U,0x19190819U, 0x082b1908U,
+                0x19191908U, 0x082b1908U,0x192b0808U, 0x082b1908U,0x2b080819U, 0x082b1908U,0x2b081908U, 0x082b1908U,
+                0x2b190808U, 0x082b1908U,0x08080808U, 0x082b1919U,0x08081919U, 0x082b1919U,0x08082b08U, 0x082b1919U,
+                0x08190819U, 0x082b1919U,0x08191908U, 0x082b1919U,0x082b0808U, 0x082b1919U,0x19080819U, 0x082b1919U,
+                0x19081908U, 0x082b1919U,0x19190808U, 0x082b1919U,0x192b192bU, 0x082b1919U,0x2b080808U, 0x082b1919U,
+                0x08080819U, 0x082b192bU,0x08081908U, 0x082b192bU,0x08190808U, 0x082b192bU,0x19080808U, 0x082b192bU,
+                0x19192b19U, 0x082b192bU,0x08080808U, 0x082b2b08U,0x08081919U, 0x082b2b08U,0x08190819U, 0x082b2b08U,
+                0x08191908U, 0x082b2b08U,0x19080819U, 0x082b2b08U,0x19081908U, 0x082b2b08U,0x19190808U, 0x082b2b08U,
+                0x2b082b2bU, 0x082b2b08U,0x2b2b2b2bU, 0x082b2b08U,0x08080819U, 0x082b2b19U,0x08081908U, 0x082b2b19U,
+                0x08190808U, 0x082b2b19U,0x2b191919U, 0x082b2b19U,0x08082b2bU, 0x082b2b2bU,0x082b082bU, 0x082b2b2bU,
+                0x192b1908U, 0x082b2b2bU,0x2b082b08U, 0x082b2b2bU,0x2b082b2bU, 0x082b2b2bU,0x08080819U, 0x19080808U,
+                0x08081908U, 0x19080808U,0x0808192bU, 0x19080808U,0x08082b19U, 0x19080808U,0x08190808U, 0x19080808U,
+                0x0819082bU, 0x19080808U,0x08191919U, 0x19080808U,0x08192b08U, 0x19080808U,0x08192b2bU, 0x19080808U,
+                0x082b0819U, 0x19080808U,0x082b1908U, 0x19080808U,0x082b192bU, 0x19080808U,0x19080808U, 0x19080808U,
+                0x1908082bU, 0x19080808U,0x19081919U, 0x19080808U,0x19082b08U, 0x19080808U,0x19082b2bU, 0x19080808U,
+                0x19190819U, 0x19080808U,0x19191908U, 0x19080808U,0x1919192bU, 0x19080808U,0x19192b19U, 0x19080808U,
+                0x192b0808U, 0x19080808U,0x192b082bU, 0x19080808U,0x192b1919U, 0x19080808U,0x2b080819U, 0x19080808U,
+                0x2b081908U, 0x19080808U,0x2b190808U, 0x19080808U,0x2b191919U, 0x19080808U,0x2b192b08U, 0x19080808U,
+                0x2b2b0819U, 0x19080808U,0x2b2b1908U, 0x19080808U,0x08080808U, 0x19080819U,0x0808082bU, 0x19080819U,
+                0x08081919U, 0x19080819U,0x08082b08U, 0x19080819U,0x08190819U, 0x19080819U,0x08191908U, 0x19080819U,
+                0x0819192bU, 0x19080819U,0x08192b19U, 0x19080819U,0x082b0808U, 0x19080819U,0x082b082bU, 0x19080819U,
+                0x082b1919U, 0x19080819U,0x19080819U, 0x19080819U,0x19081908U, 0x19080819U,0x1908192bU, 0x19080819U,
+                0x19082b19U, 0x19080819U,0x19190808U, 0x19080819U,0x1919082bU, 0x19080819U,0x19191919U, 0x19080819U,
+                0x19192b08U, 0x19080819U,0x192b0819U, 0x19080819U,0x192b1908U, 0x19080819U,0x2b080808U, 0x19080819U,
+                0x2b08082bU, 0x19080819U,0x2b081919U, 0x19080819U,0x2b082b08U, 0x19080819U,0x2b190819U, 0x19080819U,
+                0x2b191908U, 0x19080819U,0x2b2b0808U, 0x19080819U,0x08080819U, 0x1908082bU,0x08081908U, 0x1908082bU,
+                0x08190808U, 0x1908082bU,0x0819082bU, 0x1908082bU,0x08191919U, 0x1908082bU,0x08192b08U, 0x1908082bU,
+                0x082b1908U, 0x1908082bU,0x19080808U, 0x1908082bU,0x19081919U, 0x1908082bU,0x19082b08U, 0x1908082bU,
+                0x19190819U, 0x1908082bU,0x19191908U, 0x1908082bU,0x192b0808U, 0x1908082bU,0x2b080819U, 0x1908082bU,
+                0x2b081908U, 0x1908082bU,0x08080808U, 0x19081908U,0x0808082bU, 0x19081908U,0x08081919U, 0x19081908U,
+                0x08082b08U, 0x19081908U,0x08082b2bU, 0x19081908U,0x08190819U, 0x19081908U,0x08191908U, 0x19081908U,
+                0x0819192bU, 0x19081908U,0x08192b19U, 0x19081908U,0x082b0808U, 0x19081908U,0x082b082bU, 0x19081908U,
+                0x082b1919U, 0x19081908U,0x082b2b08U, 0x19081908U,0x19080819U, 0x19081908U,0x19081908U, 0x19081908U,
+                0x1908192bU, 0x19081908U,0x19082b19U, 0x19081908U,0x19190808U, 0x19081908U,0x1919082bU, 0x19081908U,
+                0x19191919U, 0x19081908U,0x19192b08U, 0x19081908U,0x192b0819U, 0x19081908U,0x192b1908U, 0x19081908U,
+                0x2b080808U, 0x19081908U,0x2b08082bU, 0x19081908U,0x2b081919U, 0x19081908U,0x2b082b08U, 0x19081908U,
+                0x2b190819U, 0x19081908U,0x2b191908U, 0x19081908U,0x2b2b0808U, 0x19081908U,0x08080819U, 0x19081919U,
+                0x08081908U, 0x19081919U,0x0808192bU, 0x19081919U,0x08082b19U, 0x19081919U,0x08190808U, 0x19081919U,
+                0x0819082bU, 0x19081919U,0x08191919U, 0x19081919U,0x08192b08U, 0x19081919U,0x082b0819U, 0x19081919U,
+                0x082b1908U, 0x19081919U,0x19080808U, 0x19081919U,0x1908082bU, 0x19081919U,0x19081919U, 0x19081919U,
+                0x19082b08U, 0x19081919U,0x19190819U, 0x19081919U,0x19191908U, 0x19081919U,0x192b0808U, 0x19081919U,
+                0x192b2b2bU, 0x19081919U,0x2b080819U, 0x19081919U,0x2b081908U, 0x19081919U,0x2b190808U, 0x19081919U,
+                0x08080808U, 0x1908192bU,0x0808082bU, 0x1908192bU,0x08081919U, 0x1908192bU,0x08082b08U, 0x1908192bU,
+                0x08190819U, 0x1908192bU,0x08191908U, 0x1908192bU,0x082b0808U, 0x1908192bU,0x19080819U, 0x1908192bU,
+                0x19081908U, 0x1908192bU,0x19190808U, 0x1908192bU,0x2b080808U, 0x1908192bU,0x2b2b1919U, 0x1908192bU,
+                0x08080819U, 0x19082b08U,0x08081908U, 0x19082b08U,0x08082b19U, 0x19082b08U,0x08190808U, 0x19082b08U,
+                0x0819082bU, 0x19082b08U,0x08191919U, 0x19082b08U,0x08192b08U, 0x19082b08U,0x082b0819U, 0x19082b08U,
+                0x082b1908U, 0x19082b08U,0x19080808U, 0x19082b08U,0x1908082bU, 0x19082b08U,0x19081919U, 0x19082b08U,
+                0x19082b08U, 0x19082b08U,0x19190819U, 0x19082b08U,0x19191908U, 0x19082b08U,0x192b0808U, 0x19082b08U,
+                0x2b081908U, 0x19082b08U,0x2b190808U, 0x19082b08U,0x08080808U, 0x19082b19U,0x0808082bU, 0x19082b19U,
+                0x08081919U, 0x19082b19U,0x08082b08U, 0x19082b19U,0x08190819U, 0x19082b19U,0x08191908U, 0x19082b19U,
+                0x082b0808U, 0x19082b19U,0x19080819U, 0x19082b19U,0x19081908U, 0x19082b19U,0x19190808U, 0x19082b19U,
+                0x2b080808U, 0x19082b19U,0x2b19192bU, 0x19082b19U,0x08080819U, 0x19082b2bU,0x08081908U, 0x19082b2bU,
+                0x08190808U, 0x19082b2bU,0x19080808U, 0x19082b2bU,0x08080808U, 0x19190808U,0x0808082bU, 0x19190808U,
+                0x08081919U, 0x19190808U,0x08082b08U, 0x19190808U,0x08190819U, 0x19190808U,0x08191908U, 0x19190808U,
+                0x0819192bU, 0x19190808U,0x08192b19U, 0x19190808U,0x082b0808U, 0x19190808U,0x082b082bU, 0x19190808U,
+                0x082b1919U, 0x19190808U,0x082b2b08U, 0x19190808U,0x19080819U, 0x19190808U,0x19081908U, 0x19190808U,
+                0x1908192bU, 0x19190808U,0x19082b19U, 0x19190808U,0x19190808U, 0x19190808U,0x1919082bU, 0x19190808U,
+                0x19191919U, 0x19190808U,0x19192b08U, 0x19190808U,0x192b0819U, 0x19190808U,0x192b1908U, 0x19190808U,
+                0x2b080808U, 0x19190808U,0x2b08082bU, 0x19190808U,0x2b081919U, 0x19190808U,0x2b082b08U, 0x19190808U,
+                0x2b190819U, 0x19190808U,0x2b191908U, 0x19190808U,0x08080819U, 0x19190819U,0x08081908U, 0x19190819U,
+                0x0808192bU, 0x19190819U,0x08082b19U, 0x19190819U,0x08190808U, 0x19190819U,0x0819082bU, 0x19190819U,
+                0x08191919U, 0x19190819U,0x08192b08U, 0x19190819U,0x082b0819U, 0x19190819U,0x082b1908U, 0x19190819U,
+                0x19080808U, 0x19190819U,0x1908082bU, 0x19190819U,0x19081919U, 0x19190819U,0x19082b08U, 0x19190819U,
+                0x19190819U, 0x19190819U,0x19191908U, 0x19190819U,0x192b0808U, 0x19190819U,0x2b080819U, 0x19190819U,
+                0x2b081908U, 0x19190819U,0x2b190808U, 0x19190819U,0x08080808U, 0x1919082bU,0x08081919U, 0x1919082bU,
+                0x08082b08U, 0x1919082bU,0x08190819U, 0x1919082bU,0x08191908U, 0x1919082bU,0x082b0808U, 0x1919082bU,
+                0x19080819U, 0x1919082bU,0x19081908U, 0x1919082bU,0x19190808U, 0x1919082bU,0x192b2b19U, 0x1919082bU,
+                0x2b080808U, 0x1919082bU,0x08080819U, 0x19191908U,0x08081908U, 0x19191908U,0x0808192bU, 0x19191908U,
+                0x08082b19U, 0x19191908U,0x08190808U, 0x19191908U,0x0819082bU, 0x19191908U,0x08191919U, 0x19191908U,
+                0x08192b08U, 0x19191908U,0x082b0819U, 0x19191908U,0x082b1908U, 0x19191908U,0x19080808U, 0x19191908U,
+                0x1908082bU, 0x19191908U,0x19081919U, 0x19191908U,0x19082b08U, 0x19191908U,0x19190819U, 0x19191908U,
+                0x19191908U, 0x19191908U,0x192b0808U, 0x19191908U,0x2b080819U, 0x19191908U,0x2b081908U, 0x19191908U,
+                0x2b190808U, 0x19191908U,0x08080808U, 0x19191919U,0x0808082bU, 0x19191919U,0x08081919U, 0x19191919U,
+                0x08082b08U, 0x19191919U,0x08190819U, 0x19191919U,0x08191908U, 0x19191919U,0x082b0808U, 0x19191919U,
+                0x19080819U, 0x19191919U,0x19081908U, 0x19191919U,0x19190808U, 0x19191919U,0x2b080808U, 0x19191919U,
+                0x08080819U, 0x1919192bU,0x08081908U, 0x1919192bU,0x08190808U, 0x1919192bU,0x082b192bU, 0x1919192bU,
+                0x19080808U, 0x1919192bU,0x08080808U, 0x19192b08U,0x0808082bU, 0x19192b08U,0x08081919U, 0x19192b08U,
+                0x08082b08U, 0x19192b08U,0x08190819U, 0x19192b08U,0x08191908U, 0x19192b08U,0x082b0808U, 0x19192b08U,
+                0x19080819U, 0x19192b08U,0x19081908U, 0x19192b08U,0x19190808U, 0x19192b08U,0x19192b2bU, 0x19192b08U,
+                0x2b080808U, 0x19192b08U,0x08080819U, 0x19192b19U,0x08081908U, 0x19192b19U,0x08190808U, 0x19192b19U,
+                0x19080808U, 0x19192b19U,0x08080808U, 0x19192b2bU,0x08192b19U, 0x19192b2bU,0x2b081919U, 0x19192b2bU,
+                0x2b2b2b08U, 0x19192b2bU,0x08080819U, 0x192b0808U,0x08081908U, 0x192b0808U,0x0808192bU, 0x192b0808U,
+                0x08190808U, 0x192b0808U,0x0819082bU, 0x192b0808U,0x08191919U, 0x192b0808U,0x08192b08U, 0x192b0808U,
+                0x082b0819U, 0x192b0808U,0x082b1908U, 0x192b0808U,0x19080808U, 0x192b0808U,0x19081919U, 0x192b0808U,
+                0x19082b08U, 0x192b0808U,0x19190819U, 0x192b0808U,0x19191908U, 0x192b0808U,0x192b0808U, 0x192b0808U,
+                0x2b081908U, 0x192b0808U,0x2b190808U, 0x192b0808U,0x08080808U, 0x192b0819U,0x0808082bU, 0x192b0819U,
+                0x08081919U, 0x192b0819U,0x08082b08U, 0x192b0819U,0x08190819U, 0x192b0819U,0x08191908U, 0x192b0819U,
+                0x082b0808U, 0x192b0819U,0x19080819U, 0x192b0819U,0x19081908U, 0x192b0819U,0x19190808U, 0x192b0819U,
+                0x2b080808U, 0x192b0819U,0x2b192b19U, 0x192b0819U,0x08081908U, 0x192b082bU,0x08190808U, 0x192b082bU,
+                0x19080808U, 0x192b082bU,0x1919192bU, 0x192b082bU,0x2b2b0819U, 0x192b082bU,0x08080808U, 0x192b1908U,
+                0x08081919U, 0x192b1908U,0x08082b08U, 0x192b1908U,0x08190819U, 0x192b1908U,0x08191908U, 0x192b1908U,
+                0x082b0808U, 0x192b1908U,0x19080819U, 0x192b1908U,0x19081908U, 0x192b1908U,0x19190808U, 0x192b1908U,
+                0x2b080808U, 0x192b1908U,0x08080819U, 0x192b1919U,0x08081908U, 0x192b1919U,0x08190808U, 0x192b1919U,
+                0x19080808U, 0x192b1919U,0x19082b2bU, 0x192b1919U,0x192b2b08U, 0x192b1919U,0x2b19082bU, 0x192b1919U,
+                0x08080808U, 0x192b192bU,0x2b191908U, 0x192b192bU,0x08080819U, 0x192b2b08U,0x08081908U, 0x192b2b08U,
+                0x08190808U, 0x192b2b08U,0x192b1919U, 0x192b2b08U,0x2b192b08U, 0x192b2b08U,0x08080808U, 0x192b2b19U,
+                0x082b2b2bU, 0x192b2b19U,0x1908082bU, 0x192b2b2bU,0x2b2b0819U, 0x192b2b2bU,0x08080808U, 0x2b080808U,
+                0x0808082bU, 0x2b080808U,0x08081919U, 0x2b080808U,0x08082b08U, 0x2b080808U,0x08190819U, 0x2b080808U,
+                0x08191908U, 0x2b080808U,0x08192b19U, 0x2b080808U,0x082b0808U, 0x2b080808U,0x082b1919U, 0x2b080808U,
+                0x19080819U, 0x2b080808U,0x19081908U, 0x2b080808U,0x19190808U, 0x2b080808U,0x1919082bU, 0x2b080808U,
+                0x19191919U, 0x2b080808U,0x19192b08U, 0x2b080808U,0x192b0819U, 0x2b080808U,0x2b080808U, 0x2b080808U,
+                0x2b081919U, 0x2b080808U,0x2b190819U, 0x2b080808U,0x2b191908U, 0x2b080808U,0x08080819U, 0x2b080819U,
+                0x08081908U, 0x2b080819U,0x08082b19U, 0x2b080819U,0x08190808U, 0x2b080819U,0x0819082bU, 0x2b080819U,
+                0x08191919U, 0x2b080819U,0x08192b08U, 0x2b080819U,0x082b0819U, 0x2b080819U,0x082b1908U, 0x2b080819U,
+                0x19080808U, 0x2b080819U,0x1908082bU, 0x2b080819U,0x19081919U, 0x2b080819U,0x19082b08U, 0x2b080819U,
+                0x19190819U, 0x2b080819U,0x19191908U, 0x2b080819U,0x2b080819U, 0x2b080819U,0x2b081908U, 0x2b080819U,
+                0x2b190808U, 0x2b080819U,0x2b2b2b19U, 0x2b080819U,0x08080808U, 0x2b08082bU,0x08081919U, 0x2b08082bU,
+                0x08082b2bU, 0x2b08082bU,0x08190819U, 0x2b08082bU,0x08191908U, 0x2b08082bU,0x19080819U, 0x2b08082bU,
+                0x19081908U, 0x2b08082bU,0x19190808U, 0x2b08082bU,0x08080819U, 0x2b081908U,0x08081908U, 0x2b081908U,
+                0x0808192bU, 0x2b081908U,0x08082b19U, 0x2b081908U,0x08190808U, 0x2b081908U,0x0819082bU, 0x2b081908U,
+                0x08191919U, 0x2b081908U,0x08192b08U, 0x2b081908U,0x082b0819U, 0x2b081908U,0x19080808U, 0x2b081908U,
+                0x1908082bU, 0x2b081908U,0x19081919U, 0x2b081908U,0x19082b08U, 0x2b081908U,0x19190819U, 0x2b081908U,
+                0x19191908U, 0x2b081908U,0x192b0808U, 0x2b081908U,0x2b080819U, 0x2b081908U,0x2b081908U, 0x2b081908U,
+                0x2b190808U, 0x2b081908U,0x08080808U, 0x2b081919U,0x0808082bU, 0x2b081919U,0x08081919U, 0x2b081919U,
+                0x08082b08U, 0x2b081919U,0x08190819U, 0x2b081919U,0x08191908U, 0x2b081919U,0x082b0808U, 0x2b081919U,
+                0x19080819U, 0x2b081919U,0x19081908U, 0x2b081919U,0x19190808U, 0x2b081919U,0x2b080808U, 0x2b081919U,
+                0x2b082b2bU, 0x2b081919U,0x08080819U, 0x2b08192bU,0x08081908U, 0x2b08192bU,0x08190808U, 0x2b08192bU,
+                0x082b2b19U, 0x2b08192bU,0x19080808U, 0x2b08192bU,0x08080808U, 0x2b082b08U,0x08081919U, 0x2b082b08U,
+                0x08190819U, 0x2b082b08U,0x08191908U, 0x2b082b08U,0x19080819U, 0x2b082b08U,0x19081908U, 0x2b082b08U,
+                0x19190808U, 0x2b082b08U,0x2b2b082bU, 0x2b082b08U,0x08080819U, 0x2b082b19U,0x08081908U, 0x2b082b19U,
+                0x19080808U, 0x2b082b19U,0x192b1919U, 0x2b082b19U,0x082b082bU, 0x2b082b2bU,0x19192b08U, 0x2b082b2bU,
+                0x19192b2bU, 0x2b082b2bU,0x2b08082bU, 0x2b082b2bU,0x2b2b082bU, 0x2b082b2bU,0x08080819U, 0x2b190808U,
+                0x08081908U, 0x2b190808U,0x08082b19U, 0x2b190808U,0x08190808U, 0x2b190808U,0x0819082bU, 0x2b190808U,
+                0x08191919U, 0x2b190808U,0x08192b08U, 0x2b190808U,0x082b1908U, 0x2b190808U,0x19080808U, 0x2b190808U,
+                0x1908082bU, 0x2b190808U,0x19081919U, 0x2b190808U,0x19082b08U, 0x2b190808U,0x19190819U, 0x2b190808U,
+                0x19191908U, 0x2b190808U,0x192b0808U, 0x2b190808U,0x2b080819U, 0x2b190808U,0x2b081908U, 0x2b190808U,
+                0x2b190808U, 0x2b190808U,0x08080808U, 0x2b190819U,0x08081919U, 0x2b190819U,0x08190819U, 0x2b190819U,
+                0x08191908U, 0x2b190819U,0x19080819U, 0x2b190819U,0x19081908U, 0x2b190819U,0x19190808U, 0x2b190819U,
+                0x19192b2bU, 0x2b190819U,0x08080819U, 0x2b19082bU,0x08081908U, 0x2b19082bU,0x08190808U, 0x2b19082bU,
+                0x19080808U, 0x2b19082bU,0x2b2b192bU, 0x2b19082bU,0x08080808U, 0x2b191908U,0x0808082bU, 0x2b191908U,
+                0x08081919U, 0x2b191908U,0x08082b08U, 0x2b191908U,0x08190819U, 0x2b191908U,0x08191908U, 0x2b191908U,
+                0x082b0808U, 0x2b191908U,0x19080819U, 0x2b191908U,0x19081908U, 0x2b191908U,0x19190808U, 0x2b191908U,
+                0x2b080808U, 0x2b191908U,0x2b19192bU, 0x2b191908U,0x08080819U, 0x2b191919U,0x08081908U, 0x2b191919U,
+                0x08190808U, 0x2b191919U,0x19080808U, 0x2b191919U,0x2b192b08U, 0x2b191919U,0x2b2b0819U, 0x2b191919U,
+                0x08080808U, 0x2b19192bU,0x1908192bU, 0x2b19192bU,0x192b1908U, 0x2b19192bU,0x08080819U, 0x2b192b08U,
+                0x08081908U, 0x2b192b08U,0x08190808U, 0x2b192b08U,0x082b192bU, 0x2b192b08U,0x19080808U, 0x2b192b08U,
+                0x2b2b2b19U, 0x2b192b08U,0x08080808U, 0x2b192b19U,0x19082b19U, 0x2b192b19U,0x1919082bU, 0x2b192b19U,
+                0x2b190808U, 0x2b192b2bU,0x08080808U, 0x2b2b0808U,0x08081919U, 0x2b2b0808U,0x08082b2bU, 0x2b2b0808U,
+                0x08191908U, 0x2b2b0808U,0x082b082bU, 0x2b2b0808U,0x082b2b2bU, 0x2b2b0808U,0x19080819U, 0x2b2b0808U,
+                0x19081908U, 0x2b2b0808U,0x19190808U, 0x2b2b0808U,0x2b2b082bU, 0x2b2b0808U,0x2b2b2b2bU, 0x2b2b0808U,
+                0x19080808U, 0x2b2b0819U,0x192b1919U, 0x2b2b0819U,0x0808082bU, 0x2b2b082bU,0x08082b2bU, 0x2b2b082bU,
+                0x082b082bU, 0x2b2b082bU,0x082b2b08U, 0x2b2b082bU,0x082b2b2bU, 0x2b2b082bU,0x2b08082bU, 0x2b2b082bU,
+                0x2b082b08U, 0x2b2b082bU,0x2b082b2bU, 0x2b2b082bU,0x2b2b2b08U, 0x2b2b082bU,0x08080819U, 0x2b2b1908U,
+                0x08081908U, 0x2b2b1908U,0x08190808U, 0x2b2b1908U,0x19080808U, 0x2b2b1908U,0x2b082b19U, 0x2b2b1908U,
+                0x2b2b1908U, 0x2b2b1908U,0x08080808U, 0x2b2b1919U,0x08192b19U, 0x2b2b1919U,0x19190819U, 0x2b2b192bU,
+                0x08082b2bU, 0x2b2b2b08U,0x082b2b08U, 0x2b2b2b08U,0x2b2b082bU, 0x2b2b2b08U,0x19191908U, 0x2b2b2b19U,
+                0x2b08192bU, 0x2b2b2b19U,0x08082b08U, 0x2b2b2b2bU,0x08082b2bU, 0x2b2b2b2bU,0x082b0808U, 0x2b2b2b2bU,
+                0x082b082bU, 0x2b2b2b2bU,0x082b2b08U, 0x2b2b2b2bU,0x2b082b08U, 0x2b2b2b2bU,0x2b2b2b2bU, 0x2b2b2b2bU
+        );
+
+        shared float sdata[256];
+        // Grid staged in LDS: a dynamically indexed const array can be lowered to per-thread scratch.
+        shared uint gridS[2048];
+
+        uint load_u8(uint byteOffset) {
+            uint word = weight_data[byteOffset >> 2u];
+            return (word >> ((byteOffset & 3u) * 8u)) & 0xFFu;
+        }
+
+        vec4 signedGrid(uint g, uint signs) {
+            return vec4(float(g & 0xFFu), float((g >> 8u) & 0xFFu), float((g >> 16u) & 0xFFu), float(g >> 24u))
+                 * vec4((signs & 1u) != 0u ? -1.0 : 1.0, (signs & 2u) != 0u ? -1.0 : 1.0,
+                        (signs & 4u) != 0u ? -1.0 : 1.0, (signs & 8u) != 0u ? -1.0 : 1.0);
+        }
+
+        void main() {
+            uint tid = gl_LocalInvocationID.x;
+            [[unroll]] for (uint i = 0; i < 8u; i++) gridS[tid + 256u * i] = IQ2S_GRID[tid + 256u * i];
+            barrier();
+            uint row_in_wg = tid / THREADS_PER_ROW;
+            uint lane = tid % THREADS_PER_ROW;
+            uint row = gl_WorkGroupID.x * N_ROWS + row_in_wg;
+            if (row >= rows) return;
+
+            uint num_blocks = cols >> 8u;
+            const uint bytes_per_block = 82u;
+            uint byte_row_base = row * num_blocks * bytes_per_block;
+            uint ib32 = lane >> 2u;
+            uint l = lane & 3u;
+
+            float acc = 0.0;
+            for (uint b = 0; b < num_blocks; b++) {
+                uint blk = byte_row_base + b * bytes_per_block;
+                float d = unpackHalf2x16(weight_data[blk >> 2u] >> ((blk & 2u) * 8u)).x;
+                uint scaleByte = load_u8(blk + 74u + ib32);
+                float dl = d * (0.5 + float((scaleByte >> (l < 2u ? 0u : 4u)) & 0xFu)) * 0.25;
+                uint idx = load_u8(blk + 2u + lane) | ((load_u8(blk + 66u + ib32) << (8u - 2u * l)) & 0x300u);
+                uint signByte = load_u8(blk + 34u + lane);
+                uint vi = (b * 256u + lane * 8u) >> 2u;
+                acc += dl * (dot(signedGrid(gridS[2u * idx], signByte), input_vec4[vi])
+                           + dot(signedGrid(gridS[2u * idx + 1u], signByte >> 4u), input_vec4[vi + 1u]));
+            }
+
+            sdata[tid] = acc;
+            barrier();
+            [[unroll]] for (uint st = 16; st > 0; st >>= 1) {
+                if (lane < st) sdata[tid] += sdata[tid + st];
                 barrier();
             }
             if (lane == 0)

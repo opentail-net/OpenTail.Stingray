@@ -1578,6 +1578,9 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
     private ComputePipeline? _matVecF16Pipeline;
     private ComputePipeline? _matVecIQ4XSPipeline;
     private ComputePipeline? _matVecIQ3SPipeline;
+    private ComputePipeline? _matVecIQ3XXSPipeline;
+    private ComputePipeline? _matVecQ3KPipeline;
+    private ComputePipeline? _matVecIQ2SPipeline;
     private ComputePipeline? _kvAppendPipeline;
     private ComputePipeline? _attentionPipeline;
     private ComputePipeline? _kvAppendBatchedPipeline;
@@ -2711,6 +2714,18 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
             case DType.IQ3_S:
                 _matVecIQ3SPipeline ??= new ComputePipeline(this, Shaders.MatVecIQ3S, 3, pushConstantSize: sizeof(MatVecParams));
                 DispatchOrRecord(_matVecIQ3SPipeline, bufs, (totalRows + 7) / 8, &p);
+                break;
+            case DType.IQ3_XXS:
+                _matVecIQ3XXSPipeline ??= new ComputePipeline(this, Shaders.MatVecIQ3XXS, 3, pushConstantSize: sizeof(MatVecParams));
+                DispatchOrRecord(_matVecIQ3XXSPipeline, bufs, (totalRows + 7) / 8, &p);
+                break;
+            case DType.Q3_K:
+                _matVecQ3KPipeline ??= new ComputePipeline(this, Shaders.MatVecQ3K, 3, pushConstantSize: sizeof(MatVecParams));
+                DispatchOrRecord(_matVecQ3KPipeline, bufs, (totalRows + 7) / 8, &p);
+                break;
+            case DType.IQ2_S:
+                _matVecIQ2SPipeline ??= new ComputePipeline(this, Shaders.MatVecIQ2S, 3, pushConstantSize: sizeof(MatVecParams));
+                DispatchOrRecord(_matVecIQ2SPipeline, bufs, (totalRows + 7) / 8, &p);
                 break;
             case DType.Q6_K:
                 _matVecQ6KPipeline ??= new ComputePipeline(this, Shaders.MatVecQ6K, 3, pushConstantSize: sizeof(MatVecParams));
@@ -4967,6 +4982,9 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
         _matVecF16Pipeline?.Dispose();
         _matVecIQ4XSPipeline?.Dispose();
         _matVecIQ3SPipeline?.Dispose();
+        _matVecIQ3XXSPipeline?.Dispose();
+        _matVecQ3KPipeline?.Dispose();
+        _matVecIQ2SPipeline?.Dispose();
         _kvAppendPipeline?.Dispose();
         _attentionPipeline?.Dispose();
         _kvAppendBatchedPipeline?.Dispose();

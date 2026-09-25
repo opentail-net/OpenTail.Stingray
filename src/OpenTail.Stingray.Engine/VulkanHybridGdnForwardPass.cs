@@ -2689,7 +2689,19 @@ public sealed unsafe class VulkanHybridGdnForwardPass : IForwardPass
                 $"MiB − margin {safetyMarginBytes / (1024 * 1024)} MiB). All FFN stays on CPU.");
             return;
         }
-        int canUpload = (int)Math.Min(L, budget / perLayerBytes);
+        // Admit layers by their ACTUAL post-upload size (a "UD" quant varies dtype per layer, so layer 0 is not a
+        // representative estimate for the rest), stopping at the first layer that no longer fits.
+        long remaining = budget;
+        int canUpload = 0;
+        for (int i = 0; i < L; i++)
+        {
+            long bytes = 0;
+            foreach (var part in (string[])["ffn_gate", "ffn_up", "ffn_down"])
+                if (_model.FindTensor($"blk.{i}.{part}.weight") is { } ti) bytes += EstimateWeightGpuBytes(ti);
+            if (bytes > remaining) break;
+            remaining -= bytes;
+            canUpload++;
+        }
 
         _gpuWFfnGate = new Tensor?[L];
         _gpuWFfnUp   = new Tensor?[L];
@@ -2719,7 +2731,7 @@ public sealed unsafe class VulkanHybridGdnForwardPass : IForwardPass
         }
         _denseFfnGpuLayers = uploaded;
         Console.Error.WriteLine(
-            $"[VulkanHybridGdnForwardPass] Dense FFN-on-GPU: uploaded {uploaded}/{L} layers ({uploaded * perLayerBytes / (1024 * 1024)} MiB); {L - uploaded} stay on CPU.");
+            $"[VulkanHybridGdnForwardPass] Dense FFN-on-GPU: uploaded {uploaded}/{L} layers ({(budget - remaining) / (1024 * 1024)} MiB); {L - uploaded} stay on CPU.");
     }
 
     // ================================================================
@@ -2841,7 +2853,7 @@ public sealed unsafe class VulkanHybridGdnForwardPass : IForwardPass
             _uploadedVramBytes += (long)floats.Length * sizeof(float);
         }
         else if (info.DType is DType.Q4_K or DType.Q5_K or DType.Q6_K or DType.Q8_0 or DType.Q4_0
-                             or DType.IQ4_XS or DType.IQ3_S)
+                             or DType.IQ4_XS or DType.IQ3_S or DType.IQ3_XXS or DType.Q3_K or DType.IQ2_S)
         {
             // Vulkan MatMul dispatches on these quants directly — keep them raw. IQ4_XS/IQ3_S
             // added after MatVecIQ4XS/MatVecIQ3S (docs/084-vulkan-large-tensor-sharding-plan.md):
@@ -2990,7 +3002,7 @@ public sealed unsafe class VulkanHybridGdnForwardPass : IForwardPass
     private static long EstimateWeightGpuBytes(GgufTensorInfo tensor)
     {
         if (tensor.DType is DType.Q4_K or DType.Q6_K or DType.Q5_K or DType.Q8_0 or DType.Q4_0
-                          or DType.IQ4_XS or DType.IQ3_S)
+                          or DType.IQ4_XS or DType.IQ3_S or DType.IQ3_XXS or DType.Q3_K or DType.IQ2_S)
             return tensor.ByteSize;
         return (long)tensor.ElementCount * sizeof(ushort);
     }
