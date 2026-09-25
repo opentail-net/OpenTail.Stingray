@@ -294,14 +294,21 @@ public sealed class TransformerEncoder : IDisposable
         });
     }
 
-    /// <summary>MPNet/T5 bidirectional relative-position bucket for <c>relative = key - query</c>
-    /// (HF <c>MPNetEncoder.relative_position_bucket</c>, max distance 128, float32 log like torch).</summary>
-    internal static int RelativePositionBucket(int relative, int numBuckets, int maxDistance = 128)
+    /// <summary>MPNet/T5 relative-position bucket for <c>relative = key - query</c>
+    /// (HF <c>MPNetEncoder.relative_position_bucket</c> / <c>T5Attention._relative_position_bucket</c>, float32 log like
+    /// torch). Bidirectional (encoders) splits the buckets by sign; unidirectional (T5 decoder self-attention) only
+    /// buckets keys at or before the query.</summary>
+    internal static int RelativePositionBucket(int relative, int numBuckets, int maxDistance = 128, bool bidirectional = true)
     {
         int ret = 0, n = -relative;
-        numBuckets /= 2;
-        if (n < 0) ret += numBuckets;
-        n = Math.Abs(n);
+        if (bidirectional)
+        {
+            numBuckets /= 2;
+            if (n < 0) ret += numBuckets;
+            n = Math.Abs(n);
+        }
+        else
+            n = Math.Max(n, 0);
         int maxExact = numBuckets / 2;
         if (n < maxExact) return ret + n;
         float scaled = MathF.Log(n / (float)maxExact) / (float)Math.Log(maxDistance / (double)maxExact) * (numBuckets - maxExact);
