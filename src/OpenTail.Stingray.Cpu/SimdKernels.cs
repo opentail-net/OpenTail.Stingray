@@ -949,6 +949,13 @@ public static unsafe class SimdKernels
         float* output2, byte* weights2,
         float* input, int rows, int cols, DType dtype1, DType dtype2)
     {
+        if (rows >= MinRowsForParallel && TryIqQ8KKernel(dtype1, cols, out int bpr1, out var dot1)
+            && TryIqQ8KKernel(dtype2, cols, out int bpr2, out var dot2))
+        {
+            MatVecDualQ8K(output1, weights1, bpr1, dot1, output2, weights2, bpr2, dot2, input, rows, cols);
+            return;
+        }
+
         if (dtype1 != dtype2)
         {
             MatVec(output1, weights1, input, rows, cols, dtype1);
@@ -4282,6 +4289,39 @@ public static unsafe class SimdKernels
         return Avx2.MultiplyAddAdjacent(grid, q8s);
     }
 
+    /// <summary>Row bytes and Q8_K dot kernel for the IQ formats that pair with a Q8_K-quantized input.</summary>
+    private static bool TryIqQ8KKernel(DType dtype, int cols, out int bytesPerRow, out delegate*<byte*, byte*, int, float> dot)
+    {
+        int bpb;
+        switch (dtype)
+        {
+            case DType.IQ4_XS: bpb = 136; dot = &DotIq4Xs_Q8K; break;
+            case DType.IQ2_XS: bpb = 74; dot = &DotIq2Xs_Q8K; break;
+            case DType.IQ2_S: bpb = 82; dot = &DotIq2S_Q8K; break;
+            case DType.IQ3_XXS: bpb = 98; dot = &DotIq3Xxs_Q8K; break;
+            case DType.IQ2_XXS: bpb = 66; dot = &DotIq2Xxs_Q8K; break;
+            case DType.IQ3_S: bpb = 110; dot = &DotIq3S_Q8K; break;
+            default: bpb = 0; dot = null; break;
+        }
+        bytesPerRow = (cols / 256) * bpb;
+        return bpb != 0 && cols % 256 == 0;
+    }
+
+    /// <summary>Two same-shape IQ matvecs over one input (FFN gate + up): the input is quantized to Q8_K once and both
+    /// rows are dotted in one parallel sweep. Per-row arithmetic is that of <see cref="MatVecQ8KDispatch"/>.</summary>
+    private static void MatVecDualQ8K(float* out1, byte* w1, int bpr1, delegate*<byte*, byte*, int, float> dot1,
+        float* out2, byte* w2, int bpr2, delegate*<byte*, byte*, int, float> dot2, float* input, int rows, int cols)
+    {
+        byte* scratch = stackalloc byte[Q8KScratchBytes(cols)];
+        QuantizeRowToQ8K(input, cols, scratch);
+        var s = scratch; int c = cols;
+        Parallel.For(0, rows, s_parallelOpts, i =>
+        {
+            out1[i] = dot1(w1 + (long)i * bpr1, s, c);
+            out2[i] = dot2(w2 + (long)i * bpr2, s, c);
+        });
+    }
+
     private static void MatVecQ8KDispatch(float* output, byte* weights, float* input, int rows, int cols,
         int bytesPerRow, delegate*<byte*, byte*, int, float> dot)
     {
@@ -4291,6 +4331,8 @@ public static unsafe class SimdKernels
 
         if (rows >= MinRowsForParallel)
         {
+            // Measured 2026-09-25: 32-row chunks here were slower on Qwen3.8-27B decode (2.0 vs 2.1 t/s, 3 runs
+            // each) than one work item per row, so the per-row loop stays.
             var w = weights; var s = scratch; var outp = output; int c = cols; var d = dot;
             Parallel.For(0, rows, s_parallelOpts, i =>
             {

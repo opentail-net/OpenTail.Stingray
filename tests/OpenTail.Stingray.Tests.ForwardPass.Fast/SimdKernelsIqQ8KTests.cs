@@ -149,14 +149,14 @@ public sealed unsafe class SimdKernelsIqQ8KTests
             {
                 SimdKernels.MatVec(op, wp, ip, rows, cols, dt);
                 var times = new List<double>();
-                for (int r = 0; r < 7; r++)
+                for (int r = 0; r < 15; r++)
                 {
                     var sw = System.Diagnostics.Stopwatch.StartNew();
                     SimdKernels.MatVec(op, wp, ip, rows, cols, dt);
                     times.Add(sw.Elapsed.TotalMilliseconds);
                 }
                 times.Sort();
-                double ms = times[3];
+                double ms = times[0]; // best of 15: filters thread wake-up noise
                 Console.WriteLine($"[MatVecBench] {dt,-8} {ms,8:F2} ms  {w.Length / 1e6 / ms,7:F1} GB/s");
             }
         }
