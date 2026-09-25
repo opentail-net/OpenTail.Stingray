@@ -382,3 +382,10 @@ the XTTS baselines skip; they now fall back to `a.wav`.
 - Vulkan (iGPU): transformer 9.96s (14.1 tok/s) + SNAC 0.45s; Whisper: **"Hello, this is a test."** (exact).
 - CPU: transformer 11.13s (12.6 tok/s) + SNAC 0.44s; Whisper: "Hello, this is it." (last two words differ).
 Audio tokens are sampled, so backend numeric differences can change a token. Minor, not investigated further.
+
+## Parler-TTS mini v1 -- Whisper round trip, 2026-09-25
+
+`ParlerFullPipelineTests` (now takes `PARLER_TEXT`/`PARLER_TOKENS`/`PARLER_SEED`/`PARLER_OUT`; its default 40 tokens
+is ~0.5s, too short for a sentence), "Hello there, this is a real test of speech synthesis.", 500 tokens, CPU:
+seed 1 "Hello there, this is a real test speech synthesis." (33s, drops "of"); seed 2 "Along there, this is a real
+test of speech sympathy." (24s). Intelligible, with small sampled-token slips.

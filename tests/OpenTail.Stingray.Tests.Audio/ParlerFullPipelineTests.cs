@@ -37,7 +37,14 @@ public sealed class ParlerFullPipelineTests : HeavyTestBase
         using var loader = SafetensorsLoader.Open(modelPath!);
         using var pipeline = new ParlerFullPipeline(tokenizerPath!, loader);
 
-        var pcm = pipeline.Synthesize("Hello there.", maxNewTokens: 40, minNewTokens: 10);
+        // PARLER_TEXT / PARLER_TOKENS / PARLER_SEED / PARLER_OUT: optional overrides for a Whisper round trip
+        // (the default 40 tokens is ~0.5s of audio, too short to say a sentence).
+        string text = Environment.GetEnvironmentVariable("PARLER_TEXT") ?? "Hello there.";
+        int maxTokens = int.TryParse(Environment.GetEnvironmentVariable("PARLER_TOKENS"), out var mt) ? mt : 40;
+        int seed = int.TryParse(Environment.GetEnvironmentVariable("PARLER_SEED"), out var sd) ? sd : -1;
+        var pcm = pipeline.Synthesize(text, maxNewTokens: maxTokens, minNewTokens: 10, seed: seed);
+        if (Environment.GetEnvironmentVariable("PARLER_OUT") is { } outPath)
+            new AudioGenerationResult(pcm, pipeline.SampleRate).SaveWav(outPath);
 
         Assert.NotEmpty(pcm);
         foreach (var s in pcm)
