@@ -467,3 +467,12 @@ out of the timestep loop. `DenseKernels.LinearBatchedNoBias` now uses the packed
 Whisper (seeds 1, 2): both "Hello there, this is a real end-to-end test of speech synthesis." (exact).
 Regression suites pass: diffusion head, generator, voice cloning, OmniVoice MaskGIT, RVC pipeline.
 Start of the session: 65-72s. Reference `audiocpp_cli`: 19-20s → now ~1.3× behind (was ~3.5×).
+
+## RVC HuBERT -- batched projections (small gain), 2026-09-25
+
+HuBERT's q/k/v, attention-output (serial!) and FFN linears ran one mat-vec per frame. They now go through the new
+shared `DenseKernels.LinearBatchedRows` (row-array wrapper over `LinearBatchedNoBias`, bias added per row). Measured
+on the RVC pipeline (2 runs): hubert 5.1 → 4.64 / 4.69s (~9%); total 19.8 → 19.2 / 19.4s; output vs pre-change
+cosine 1.000000 (same 1.65e-4 maxAbs), Whisper exact, `RvcHubertEncoderForwardTests` passes. Modest because the
+projections weren't HuBERT's main cost (likely the 128-tap grouped positional conv); not pursued further. RVC stays
+~2.4× behind the reference (8.2s).

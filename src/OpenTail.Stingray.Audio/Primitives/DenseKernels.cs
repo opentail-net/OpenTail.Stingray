@@ -66,6 +66,26 @@ public static class DenseKernels
         }
     }
 
+    /// <summary>Row-array convenience over <see cref="LinearBatchedNoBias"/>: y[r] = W@x[r] + b for all
+    /// rows in one batched GEMM (weight row-major [outDim, inDim]), for callers that hold per-frame
+    /// row arrays and previously ran one <see cref="Linear"/> per row.</summary>
+    public static float[][] LinearBatchedRows(float[][] rows, float[] weight, float[]? bias, int inDim, int outDim)
+    {
+        int m = rows.Length;
+        var x = new float[m * inDim];
+        for (int r = 0; r < m; r++) rows[r].AsSpan(0, inDim).CopyTo(x.AsSpan(r * inDim, inDim));
+        var y = new float[m * outDim];
+        LinearBatchedNoBias(x, weight, y, m, inDim, outDim);
+        var output = new float[m][];
+        Parallel.For(0, m, r =>
+        {
+            var row = y.AsSpan(r * outDim, outDim).ToArray();
+            if (bias != null) TensorPrimitives.Add((ReadOnlySpan<float>)row, bias, row);
+            output[r] = row;
+        });
+        return output;
+    }
+
     private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<float[], PackedWeight> s_packedWeights = new();
 
     /// <summary>Packed panel copy of one weight array (shape fixed by its first use).</summary>

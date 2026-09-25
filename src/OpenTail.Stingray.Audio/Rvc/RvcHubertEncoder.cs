@@ -211,14 +211,20 @@ public static class RvcHubertEncoder
             afterAttn[i] = LayerNorm(row, l.SelfAttnLayerNormWeight, l.SelfAttnLayerNormBias);
         }
 
+        // FFN as two batched GEMMs over all frames (was a mat-vec per frame; 2026-09-25 perf pass).
+        int ffnDim = l.Fc1Bias.Length;
+        var hidden = OpenTail.Stingray.Audio.Primitives.DenseKernels.LinearBatchedRows(afterAttn, l.Fc1Weight, l.Fc1Bias, dim, ffnDim);
+        System.Threading.Tasks.Parallel.For(0, t, i =>
+        {
+            var h = hidden[i];
+            for (int d = 0; d < h.Length; d++) h[d] = GeluErf(h[d]);
+        });
+        var down = OpenTail.Stingray.Audio.Primitives.DenseKernels.LinearBatchedRows(hidden, l.Fc2Weight, l.Fc2Bias, ffnDim, dim);
         var output = new float[t][];
         System.Threading.Tasks.Parallel.For(0, t, i =>
         {
-            var h = LinearBias(afterAttn[i], l.Fc1Weight, l.Fc1Bias, inDim: dim, outDim: l.Fc1Bias.Length);
-            for (int d = 0; d < h.Length; d++) h[d] = GeluErf(h[d]);
-            var down = LinearBias(h, l.Fc2Weight, l.Fc2Bias, inDim: h.Length, outDim: dim);
             var row = new float[dim];
-            for (int d = 0; d < dim; d++) row[d] = afterAttn[i][d] + down[d];
+            for (int d = 0; d < dim; d++) row[d] = afterAttn[i][d] + down[i][d];
             output[i] = LayerNorm(row, l.FinalLayerNormWeight, l.FinalLayerNormBias);
         });
         return output;
@@ -229,15 +235,9 @@ public static class RvcHubertEncoder
         int headDim = dim / heads;
         float scale = 1f / MathF.Sqrt(headDim);
 
-        var q = new float[t][];
-        var k = new float[t][];
-        var v = new float[t][];
-        System.Threading.Tasks.Parallel.For(0, t, i =>
-        {
-            q[i] = LinearBias(x[i], l.AttnQWeight, l.AttnQBias, dim, dim);
-            k[i] = LinearBias(x[i], l.AttnKWeight, l.AttnKBias, dim, dim);
-            v[i] = LinearBias(x[i], l.AttnVWeight, l.AttnVBias, dim, dim);
-        });
+        var q = OpenTail.Stingray.Audio.Primitives.DenseKernels.LinearBatchedRows(x, l.AttnQWeight, l.AttnQBias, dim, dim);
+        var k = OpenTail.Stingray.Audio.Primitives.DenseKernels.LinearBatchedRows(x, l.AttnKWeight, l.AttnKBias, dim, dim);
+        var v = OpenTail.Stingray.Audio.Primitives.DenseKernels.LinearBatchedRows(x, l.AttnVWeight, l.AttnVBias, dim, dim);
 
         var context = new float[t][];
         for (int i = 0; i < t; i++) context[i] = new float[dim];
@@ -260,10 +260,7 @@ public static class RvcHubertEncoder
             });
         }
 
-        var output = new float[t][];
-        for (int i = 0; i < t; i++)
-            output[i] = LinearBias(context[i], l.AttnOutWeight, l.AttnOutBias, dim, dim);
-        return output;
+        return OpenTail.Stingray.Audio.Primitives.DenseKernels.LinearBatchedRows(context, l.AttnOutWeight, l.AttnOutBias, dim, dim);
     }
 
     // Perf-sweep horizontal pass (docs/perf-sweep-plan.md): was a naive O(outDim*inDim) scalar
