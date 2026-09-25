@@ -207,4 +207,6 @@ the oracle.
 
 ## Status
 
-- [ ] Phase 0 … 8 (not started; queued after the audio re-check)
+- [x] Phase 0 (2026-09-25): all 15 repos downloaded to `models/_models/hf/<owner>__<name>/` (17 GB; F: 11 GB free after). Each has weights (ELECTRA: `flax_model.msgpack` only, as expected), `tokenizer.json` + `config.json`, the ST `modules.json`/`1_Pooling` where published, and `onnx/model.onnx` for 11 repos (none for bge-reranker-v2-m3, GPT-2, Qwen3-0.6B, tiny-Qwen2). Qwen3-8B stays on the existing GGUF.
+- [ ] Phase 1 tokenizers (next): WordPiece via vocab.txt + `tokenizer.json` normalizer flags; Unigram needs the **Precompiled charsmap** normalizer (port from `examples/llama.cpp/llama.cpp/src/llama-vocab.cpp` UGM `precompiled_charsmap`/xcda); id oracles = llama.cpp `models/ggml-vocab-bert-bge.gguf.inp/.out` + `llama-server /tokenize` on small GGUFs.
+- [ ] Phases 2-8
