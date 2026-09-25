@@ -283,46 +283,51 @@ public static class RvcRmvpeEncoder
         return output;
     }
 
-    /// <summary>Real PyTorch ConvTranspose2d(kernel=2, stride=2), matching the reference's exact "oversized-then-sliced" trick: computes a (2*size+1)-sized full transpose-conv output then keeps only [1, 2*size), producing an exact 2x upsample.</summary>
+    /// <summary>Real PyTorch <c>ConvTranspose2d(kernel=3, stride=2, padding=1, output_padding=1)</c>
+    /// (RMVPE's decoder upsample; the checkpoint's `conv1.0.weight` is <c>[in, out, 3, 3]</c>),
+    /// an exact 2x upsample. The reference computes the full <c>(2n+1)</c>-sized transpose-conv
+    /// and keeps <c>[1, 2n+1)</c>; equivalently each input pixel <c>(i, j)</c> scatters kernel tap
+    /// <c>(kh, kw)</c> to <c>(2i+kh-1, 2j+kw-1)</c>, dropping taps outside <c>[0, 2n)</c>.
+    /// (Fixed 2026-09-25: this used to treat the weight as a 2x2 kernel, misreading every
+    /// decoder upsample stage, which was the "decoder divergence" in the RMVPE end-to-end test.)</summary>
     private static float[][,] ConvTranspose2dPyTorch2x(float[][,] x, float[] weight, int inCh, int outCh)
     {
+        const int k = 3;
         int height = x[0].GetLength(0), width = x[0].GetLength(1);
         int outH = height * 2, outW = width * 2;
+        if (weight.Length != inCh * outCh * k * k)
+            throw new ArgumentException($"RMVPE ConvTranspose2d weight has {weight.Length} elements, expected [{inCh},{outCh},3,3].");
         var output = new float[outCh][,];
         for (int oc = 0; oc < outCh; oc++) output[oc] = new float[outH, outW];
 
-        // Real PyTorch ConvTranspose2d weight layout: [inCh, outCh, kh, kw]. Each input pixel
-        // (i,j) scatters into a 2x2 output block at (2i, 2j) via the kernel -- this is the
-        // standard, mathematically exact ConvTranspose2d(kernel=2, stride=2, pad=0) result, size
-        // exactly 2x the input with no extra row/column. The reference computes an oversized
-        // (2*size+1) output then slices [1, 2*size) to drop a leading row/column -- that's an
-        // artifact specific to GGML's own conv_transpose_2d_p0 kernel implementation, not a
-        // property of the real math itself, so this direct from-scratch scatter (which never
-        // produces that extra row/column to begin with) does NOT need the same -1 shift.
-        for (int ic = 0; ic < inCh; ic++)
+        Parallel.For(0, outCh, oc =>
         {
-            for (int i = 0; i < height; i++)
+            var o = output[oc];
+            for (int ic = 0; ic < inCh; ic++)
             {
-                for (int j = 0; j < width; j++)
+                var xi = x[ic];
+                int wBase = (ic * outCh + oc) * k * k;
+                for (int i = 0; i < height; i++)
                 {
-                    float v = x[ic][i, j];
-                    if (v == 0f) continue;
-                    for (int oc = 0; oc < outCh; oc++)
+                    for (int j = 0; j < width; j++)
                     {
-                        int wBase = (ic * outCh + oc) * 4;
-                        for (int kh = 0; kh < 2; kh++)
+                        float v = xi[i, j];
+                        if (v == 0f) continue;
+                        for (int kh = 0; kh < k; kh++)
                         {
-                            int oh = 2 * i + kh;
-                            for (int kw = 0; kw < 2; kw++)
+                            int oh = 2 * i + kh - 1;
+                            if ((uint)oh >= (uint)outH) continue;
+                            for (int kw = 0; kw < k; kw++)
                             {
-                                int ow = 2 * j + kw;
-                                output[oc][oh, ow] += v * weight[wBase + kh * 2 + kw];
+                                int ow = 2 * j + kw - 1;
+                                if ((uint)ow >= (uint)outW) continue;
+                                o[oh, ow] += v * weight[wBase + kh * k + kw];
                             }
                         }
                     }
                 }
             }
-        }
+        });
         return output;
     }
 

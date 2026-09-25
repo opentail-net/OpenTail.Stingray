@@ -129,7 +129,7 @@ public sealed class RvcResUNetLevel
 /// <summary>One decoder level: ConvTranspose2d(2x2,stride2) upsample + BN + ReLU (`conv1`), then 4 ResBlocks over the concatenated [upsampled, skip] channels (`conv2`).</summary>
 public sealed class RvcDecoderLevel
 {
-    public float[] UpsampleWeight { get; } // real PyTorch ConvTranspose2d weight [in, out, 2, 2]
+    public float[] UpsampleWeight { get; } // real PyTorch ConvTranspose2d weight [in, out, 3, 3] (k=3, s=2, p=1, output_padding=1)
     public RvcBatchNorm2d UpsampleBn { get; }
     public RvcResBlock[] Conv2Blocks { get; } = new RvcResBlock[4];
 

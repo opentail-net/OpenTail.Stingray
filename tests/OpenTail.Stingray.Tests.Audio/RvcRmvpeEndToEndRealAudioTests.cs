@@ -68,7 +68,15 @@ public sealed class RvcRmvpeEndToEndRealAudioTests : HeavyTestBase
         double std = Math.Sqrt(Math.Max(0, sumSq / n - mean * mean));
         Console.Error.WriteLine($"[RvcRmvpeSalience] frames={realFrames} classes={salience[0].Length} mean={mean:F5} std={std:F5} max={max:F5}");
 
-        // NOT YET FULLY GOLDEN-VERIFIED, but very close: the real reference (same audio, same
+        // GOLDEN-MATCHED 2026-09-25: the decoder divergence below was ConvTranspose2dPyTorch2x
+        // treating the real [in,out,3,3] upsample kernel as 2x2. With the real k=3/s=2/p=1/
+        // output_padding=1 transpose conv this gives mean=0.00475 std=0.04768 max=0.97143 vs the
+        // reference's 0.00474 / 0.04768 / 0.97022 (was 0.00298 / 0.02489 / 0.81235).
+        Assert.InRange(mean, 0.00474 * 0.98, 0.00474 * 1.02);
+        Assert.InRange(std, 0.04768 * 0.99, 0.04768 * 1.01);
+        Assert.InRange(max, 0.97022f * 0.99f, 0.97022f * 1.01f);
+
+        // History -- NOT YET FULLY GOLDEN-VERIFIED (before the fix above), but very close: the real reference (same audio, same
         // audio_pad_duration_sec=1 preprocessing) reports frames=796 mean=0.00474 std=0.04768
         // max=0.97022 (STINGRAY_RVC_TRACE=1 in rmvpe_pitch_extractor.cpp); this test currently
         // gets mean=0.00298 std=0.02489 max=0.81235 -- three real bugs found and fixed to get

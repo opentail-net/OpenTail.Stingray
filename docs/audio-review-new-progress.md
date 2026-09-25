@@ -126,3 +126,27 @@ those were symptoms of these two deterministic bugs.
 
 Perf (CPU only, no GPU path, no CLI wiring): ours 65-72s per ~4.5s sample (test wall incl. GGUF
 load) vs reference 19.0-19.9s (`metrics.wall_ms`); ~3.5× behind, a Phase 2 target.
+
+## RVC -- RMVPE pitch extractor now golden-matches (transpose-conv kernel was read as 2×2, is 3×3), 2026-09-25
+
+The README row said RMVPE's remaining gap was a quirk of the reference, but
+`RvcRmvpeEndToEndRealAudioTests`' own comment said the divergence starts at the U-Net decoder's
+ConvTranspose2d stage and was "not yet root-caused". The checkpoint settles it: every
+`support_rmvpe/unet.decoder.layers.N.conv1.0.weight` is `[3, 3, out, in]` (PyTorch `[in, out, 3, 3]`),
+i.e. `ConvTranspose2d(kernel=3, stride=2, padding=1, output_padding=1)`. The reference's
+"(2n+1) full output, keep [1, 2n+1)" trick is exactly that; it's not a ggml artifact, as our comment
+claimed. `ConvTranspose2dPyTorch2x` hard-coded a 2×2 kernel (`weight[... * 4]`), misreading all five
+decoder upsample stages. Fixed to the real k=3 scatter (tap `(kh,kw)` → `(2i+kh-1, 2j+kw-1)`), with a
+weight-size guard, and parallelised over output channels.
+
+| salience (a.wav, 796 frames) | mean | std | max |
+|---|---|---|---|
+| reference | 0.00474 | 0.04768 | 0.97022 |
+| ours before | 0.00298 | 0.02489 | 0.81235 |
+| **ours after** | **0.00475** | **0.04768** | **0.97143** |
+
+The test now asserts these (mean ±2 %, std/max ±1 %) instead of only printing them. HuBERT, the RMVPE
+encoder and weight-load tests pass (30-45s each, real weights). `RvcSynthesizerRealReferenceMatchTests`
+skips visibly (it needs reference `STINGRAY_RVC_TRACE` dump files that aren't on disk).
+Still open for RVC: the `native_pipeline.cpp` orchestration (segmenting, synthesizer-input
+assembly, RMS mix, pad-crop) — next.
