@@ -44,7 +44,7 @@ public static class CosyVoiceLlmGeneration
     /// </summary>
     public static int[] GenerateSpeechTokens(
         CosyVoiceLlmTensorSource source, string tokenizerDir, string text,
-        string promptText = "", int[]? promptSpeechTokens = null, int maxNewTokens = 200, Random? rng = null)
+        string promptText = "", int[]? promptSpeechTokens = null, int maxNewTokens = 200, Random? rng = null, float repetitionPenalty = 1.0f)
     {
         rng ??= new Random(0);
         source.EnableSpeechGenerationMode();
@@ -86,7 +86,9 @@ public static class CosyVoiceLlmGeneration
         int pos = prefillIds.Count;
         for (int step = 0; step < maxLen; step++)
         {
-            int localId = CosyVoice3Llm.SampleSpeechToken(logits, generated, allowStop: step >= minLen, rng);
+            // Upstream CosyVoice2 ras_sampling has no logit repetition penalty (its only repetition handling is the
+            // full-distribution resample); the 1.15 default of the shared sampler comes from the CosyVoice3 C++ port.
+            int localId = CosyVoice3Llm.SampleSpeechToken(logits, generated, allowStop: step >= minLen, rng, repetitionPenalty: repetitionPenalty);
             if (stopTokenIds.Contains(localId)) break;
 
             generated.Add(localId);

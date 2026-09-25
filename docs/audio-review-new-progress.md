@@ -523,3 +523,9 @@ own transcript. Top-10 accuracy by quartile 45 / 48 / 56 / 55 %, median rank 14 
 tokens rank near the top (rules out a misindexed speech embedding or llm_decoder head). The drift is more likely in
 generation-time behaviour (sampling / stopping) or input text normalization than in the forward pass. Not fixed; the
 missing piece is upstream's per-token log-likelihoods for the same tokens as a direct comparison.
+- **Repetition penalty ruled out (2026-09-25).** The shared RAS sampler applied a 1.15 logit penalty to recent tokens
+  (from the CosyVoice3 C++ port); upstream CosyVoice2 `ras_sampling` has none. Now a parameter (CosyVoice3 keeps 1.15,
+  CosyVoice2 uses 1.0). A/B with x-vector, seeds 42/1/2, Whisper medium: 1.15 → "…of your synthesis." / "…of voice and
+  business." / "…of the district."; 1.0 → "…of voice and business." / "…of wisdom, this is-" / "…of white synthesis."
+  Same quality: the start is right and it drifts at "voice synthesis" either way. With the forward pass (teacher forcing)
+  and the sampler both ruled out, the next step needs upstream's own tokens or log-likelihoods for the same text.

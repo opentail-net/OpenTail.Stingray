@@ -101,7 +101,9 @@ public sealed class SttCommand : Command<SttCommand.Settings>
             WhisperConfig config;
             if (modelFile is not null)
             {
-                var wp = WhisperPipeline.Load(modelFile);
+                var wp = modelFile.EndsWith(".gguf", StringComparison.OrdinalIgnoreCase)
+                    ? WhisperPipeline.LoadFromGguf(modelFile)
+                    : WhisperPipeline.Load(modelFile);
                 config = wp.Config;
                 pipeline = wp;
             }
