@@ -352,3 +352,23 @@ the oracle.
   Two inspector tests that used "gpt2" as their unsupported-architecture example now use "falcon".
 - **Phase 6 complete.** Next: Phase 7 (replace the fake `BertGgufEmbeddingPipeline` / `EmbeddingEngine.Rerank` in
   CLI and server with the real encoder pipelines; README rows).
+
+### Phase 7 progress (2026-09-25): fakes replaced, CLI + server wired, README rows
+- New `EncoderPipelineFactory`: an HF encoder directory → `HfEncoderEmbeddingPipeline` / `HfCrossEncoderPipeline`;
+  a `.gguf` → `EmbeddingEngine` (real decoder-embedder forward pass; its rerank stays a bi-encoder cosine and the CLI
+  labels it so); anything else throws. Shared, lazily loaded pipelines for the server.
+- **Removed:** `BertGgufEmbeddingPipeline` (sine "embeddings", `GetHashCode` tokenizer) and its misleadingly named
+  `BertEmbeddingRealWeightsTests`; `EmbeddingEngine`'s sine/hash fallback (a bare name like "bge-large-en-v1.5" now throws
+  `FileNotFoundException`); `stingray embed`'s ONNX char-code "tokenizer" fallback (now an error without vocab.txt);
+  the server's synthetic default models ("text-embedding-3-small", "bge-reranker-large"). The two tests that asserted
+  the fake's output shape became one refusal test.
+- **CLI:** `stingray embed -m <hf-dir>` (pooling defaults to the model's own sentence-transformers config; `--pooling`
+  overrides) and `stingray rerank -m <hf-dir>`; smoke-checked on bge-small (CLS, 384-d, 83 ms) and ms-marco
+  (8.8459 / -11.2456, the ONNX-verified logits).
+- **Server:** `/v1/embeddings` and `/v1/rerank` take the request's `model` when it's a path on disk, else
+  `STINGRAY_EMBEDDING_MODEL` / `STINGRAY_RERANK_MODEL` (registered; inventory now 227), else 404 `model_not_found`.
+  Calls are serialized per pipeline (the GGUF forward pass isn't re-entrant). Tests.Server.Fast 359/359. Not yet
+  exercised with a live server process.
+- README matrix: four new sourced rows (HF-safetensors decoders, text embeddings, cross-encoder rerank, ELECTRA).
+- Still open for later phases: Nomic task prefixes/Matryoshka as pipeline options; E5/BGE query prefixes are the
+  caller's job (documented in the plan's §2 table). Next: Phase 8 (perf + DRY).

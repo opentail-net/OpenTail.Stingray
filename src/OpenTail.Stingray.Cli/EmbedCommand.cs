@@ -1,4 +1,5 @@
 using OpenTail.Stingray.Core.Embeddings;
+using OpenTail.Stingray.Engine.Encoders;
 
 namespace OpenTail.Stingray.Cli;
 
@@ -15,16 +16,16 @@ public sealed class EmbedCommand : Command<EmbedCommand.Settings>
         public string? FilePath { get; init; }
 
         [CommandOption("-m|--model <MODEL>")]
-        [Description("Embedding model name or GGUF path. Default: text-embedding-3-small.")]
-        public string Model { get; init; } = "text-embedding-3-small";
+        [Description("HF encoder checkpoint directory (config.json + model.safetensors + tokenizer.json), GGUF file, or ONNX file.")]
+        public string Model { get; init; } = "";
 
         [CommandOption("-d|--dimensions <N>")]
         [Description("Matryoshka representation dimension reduction (e.g. 512, 768, 1536).")]
         public int? Dimensions { get; init; }
 
         [CommandOption("--pooling <TYPE>")]
-        [Description("Sequence pooling strategy: mean (default), cls, or last.")]
-        public string Pooling { get; init; } = "mean";
+        [Description("Sequence pooling: mean, cls, or last. Default: the model's own (sentence-transformers config or GGUF pooling_type).")]
+        public string? Pooling { get; init; }
 
         [CommandOption("--no-norm")]
         [Description("Disable unit L2 vector normalization.")]
@@ -56,12 +57,16 @@ public sealed class EmbedCommand : Command<EmbedCommand.Settings>
             return 1;
         }
 
-        PoolingType pooling = s.Pooling.ToLowerInvariant() switch
+        // No --pooling: each model's own default (sentence-transformers Pooling config, or GGUF pooling_type).
+        PoolingType? requestedPooling = s.Pooling?.ToLowerInvariant() switch
         {
+            null => null,
             "cls" or "first" => PoolingType.Cls,
             "last" or "lasttoken" => PoolingType.LastToken,
-            _ => PoolingType.Mean
+            "mean" => PoolingType.Mean,
+            _ => throw new ArgumentException($"Unknown --pooling '{s.Pooling}' (mean, cls or last).")
         };
+        PoolingType pooling = requestedPooling ?? PoolingType.Mean;
 
         if (s.Model.EndsWith(".onnx", StringComparison.OrdinalIgnoreCase) && File.Exists(s.Model))
         {
@@ -73,12 +78,18 @@ public sealed class EmbedCommand : Command<EmbedCommand.Settings>
             }
 
             var wordPieceTokenizer = TryLoadWordPieceTokenizer(s.Model);
+            if (wordPieceTokenizer is null)
+            {
+                // No vocab, no real tokenization: refuse instead of feeding char codes as token ids.
+                Console.Error.WriteLine($"Error: no vocab.txt next to {s.Model}; an HF encoder directory (-m <dir>) tokenizes from its tokenizer.json.");
+                return 1;
+            }
 
             Console.WriteLine($"Dense Text Embedding Generation ({Path.GetFileName(s.Model)})");
             Console.WriteLine($"Input Count:  {texts.Count}");
             Console.WriteLine($"Pooling Mode: {pooling}");
             Console.WriteLine($"L2 Normalize: {!s.NoNorm}");
-            Console.WriteLine($"Tokenizer:    {(wordPieceTokenizer is not null ? "real WordPiece (vocab.txt)" : "char-per-token placeholder (no vocab.txt found -- see EmbedCommand.TryLoadWordPieceTokenizer)")}");
+            Console.WriteLine("Tokenizer:    WordPiece (vocab.txt)");
             Console.WriteLine();
 
             var swOnnx = Stopwatch.StartNew();
@@ -87,27 +98,10 @@ public sealed class EmbedCommand : Command<EmbedCommand.Settings>
 
             foreach (var text in texts)
             {
-                long[] inputIds;
-                if (wordPieceTokenizer is not null)
-                {
-                    // Real WordPiece tokenization (BasicTokenizer + WordpieceTokenizer, a faithful
-                    // port of HuggingFace transformers' real BertTokenizer algorithm) against this
-                    // checkpoint's own real vocab.txt -- see BertWordPieceTokenizer.cs.
-                    inputIds = wordPieceTokenizer.Encode(text);
-                }
-                else
-                {
-                    // Fallback for checkpoints with no locally-available vocab.txt: NOT real
-                    // WordPiece/BPE tokenization -- maps each raw character to its char code as a
-                    // placeholder "token id". The model will run and produce a real vector, but it
-                    // will not be a semantically meaningful embedding of the input text.
-                    inputIds = text.Select(c => (long)c).ToArray();
-                    if (inputIds.Length == 0) inputIds = [0];
-                }
-                // Most BERT-family encoders cap position embeddings at 512; truncate defensively
-                // instead of letting ONNX Runtime fail with an opaque broadcast error deep in the
-                // graph (real WordPiece tokenization rarely exceeds this for reasonably-sized
-                // inputs, but the char-per-token fallback inflates length ~4x and hits it often).
+                // Real WordPiece tokenization (HF BertTokenizer algorithm) against the checkpoint's vocab.txt.
+                long[] inputIds = wordPieceTokenizer.Encode(text);
+                // BERT-family encoders cap position embeddings at 512; truncate instead of letting
+                // ONNX Runtime fail with an opaque broadcast error deep in the graph.
                 const int maxPositions = 512;
                 if (inputIds.Length > maxPositions)
                 {
@@ -168,26 +162,21 @@ public sealed class EmbedCommand : Command<EmbedCommand.Settings>
             return 0;
         }
 
-        if (s.Model.EndsWith(".gguf", StringComparison.OrdinalIgnoreCase) && !File.Exists(s.Model))
+        IEmbeddingPipeline engine;
+        try
         {
-            // A GGUF path was explicitly requested but doesn't exist -- error out rather than
-            // silently falling through to EmbeddingEngine's synthetic hash-based placeholder
-            // vectors (real for named catalogue models like "text-embedding-3-small" that were
-            // never meant to resolve to real weights, but a real bug for an explicit .gguf path
-            // that's simply wrong -- see docs/00-current-work.md's "stingray embed's GGUF path is
-            // a complete fake" 2026-09-10/11 entry for the original, now-fixed version of this).
-            Console.Error.WriteLine($"Error: GGUF model file not found: {s.Model}");
+            engine = EncoderPipelineFactory.CreateEmbedding(s.Model);
+        }
+        catch (FileNotFoundException ex)
+        {
+            Console.Error.WriteLine($"Error: {ex.Message}");
             return 1;
         }
-
-        using var engine = new EmbeddingEngine(
-            modelName: s.Model,
-            embeddingDimensions: s.Dimensions,
-            defaultPooling: pooling);
+        using var engineScope = engine;
 
         Console.WriteLine($"Dense Text Embedding Generation ({engine.ModelName})");
         Console.WriteLine($"Input Count:  {texts.Count}");
-        Console.WriteLine($"Pooling Mode: {pooling}");
+        Console.WriteLine($"Pooling Mode: {requestedPooling ?? engine.DefaultPooling}{(requestedPooling is null ? " (model default)" : "")}");
         Console.WriteLine($"Dimensions:   {s.Dimensions ?? engine.EmbeddingDimensions}");
         Console.WriteLine($"L2 Normalize: {!s.NoNorm}");
         Console.WriteLine();
@@ -200,7 +189,7 @@ public sealed class EmbedCommand : Command<EmbedCommand.Settings>
             Model = s.Model,
             Dimensions = s.Dimensions,
             Normalize = !s.NoNorm,
-            Pooling = pooling
+            Pooling = requestedPooling
         };
 
         var result = engine.Embed(req);
@@ -232,8 +221,7 @@ public sealed class EmbedCommand : Command<EmbedCommand.Settings>
     // stripped first, so a quantized checkpoint's own basename still resolves to its base model's
     // vocab; (3) a plain "vocab.txt" in the same directory (the standard HF convention, for any
     // future checkpoint that ships one directly alongside the .onnx file). Returns null (not an
-    // error) when none exist -- callers fall back to the char-per-token placeholder rather than
-    // failing outright, since not every ONNX checkpoint on this machine has a downloaded vocab yet.
+    // error) when none exist; the caller then refuses to run (it never guesses token ids).
     private static BertWordPieceTokenizer? TryLoadWordPieceTokenizer(string onnxModelPath)
     {
         string? dir = Path.GetDirectoryName(onnxModelPath);
@@ -264,7 +252,7 @@ public sealed class EmbedCommand : Command<EmbedCommand.Settings>
                 }
                 catch (Exception ex)
                 {
-                    Console.Error.WriteLine($"Warning: found vocab file {candidate} but failed to load it: {ex.Message}. Falling back to char-per-token placeholder.");
+                    Console.Error.WriteLine($"Warning: found vocab file {candidate} but failed to load it: {ex.Message}. Refusing to run without a tokenizer.");
                     return null;
                 }
             }

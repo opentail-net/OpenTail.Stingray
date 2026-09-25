@@ -74,67 +74,13 @@ public sealed class EmbeddingTests(ITestOutputHelper? output = null)
     }
 
     [Fact]
-    public void EmbeddingEngine_Embed_ProducesNormalizedEmbeddings()
+    public void EmbeddingEngine_WithoutWeights_RefusesInsteadOfSyntheticVectors()
     {
-        using var engine = new EmbeddingEngine(
-            modelName: "bge-large-en-v1.5",
-            embeddingDimensions: 1024,
-            defaultPooling: PoolingType.Mean);
-
-        var req = new EmbeddingRequest
-        {
-            Inputs = ["What is retrieval-augmented generation?", "OpenTail Stingray embedding engine"],
-            Normalize = true
-        };
-
-        var result = engine.Embed(req);
-
-        Assert.NotNull(result);
-        Assert.Equal("bge-large-en-v1.5", result.Model);
-        Assert.Equal(2, result.Data.Count);
-
-        for (int i = 0; i < result.Data.Count; i++)
-        {
-            var item = result.Data[i];
-            Assert.Equal(i, item.Index);
-            Assert.Equal(1024, item.Vector.Length);
-
-            float normSq = TensorPrimitives.Dot(item.Vector, item.Vector);
-            Assert.InRange(MathF.Sqrt(normSq), 0.999f, 1.001f);
-        }
-    }
-
-    [Fact]
-    public void EmbeddingEngine_Rerank_RanksDocumentsByScoreDescending()
-    {
-        using var engine = new EmbeddingEngine(
-            modelName: "bge-reranker-large",
-            embeddingDimensions: 768);
-
-        var req = new RerankRequest
-        {
-            Query = "How to write high-performance C# code",
-            Documents =
-            [
-                "The recipe for chocolate chip cookies includes flour and sugar.",
-                "High-performance C# relies on Span, Memory, SIMD, and zero-allocation techniques.",
-                "Weather forecast for tomorrow is sunny with scattered clouds."
-            ],
-            TopN = 2,
-            ReturnDocuments = true
-        };
-
-        var result = engine.Rerank(req);
-
-        Assert.NotNull(result);
-        Assert.Equal(2, result.Results.Count);
-
-        // Verify descending sort by relevance score
-        Assert.True(result.Results[0].RelevanceScore >= result.Results[1].RelevanceScore);
-
-        // Top document should have valid score in [0.0, 1.0]
-        Assert.InRange(result.Results[0].RelevanceScore, 0.0f, 1.0f);
-        Assert.NotNull(result.Results[0].Document);
+        // A catalogue-style name with no weights behind it used to yield sine/hash "embeddings" and a
+        // cosine "rerank" over them. Both were meaningless; now it is an error.
+        Assert.Throws<FileNotFoundException>(() => new EmbeddingEngine(modelName: "bge-large-en-v1.5"));
+        Assert.Throws<FileNotFoundException>(() => new EmbeddingEngine(modelName: "bge-reranker-large"));
+        Assert.Throws<FileNotFoundException>(() => OpenTail.Stingray.Engine.Encoders.EncoderPipelineFactory.CreateReranker("bge-reranker-large"));
     }
 
     [Fact]
@@ -371,5 +317,4 @@ public sealed class EmbeddingTests(ITestOutputHelper? output = null)
         return null;
     }
 }
-
 

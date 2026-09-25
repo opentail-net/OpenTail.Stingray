@@ -45,21 +45,28 @@ public static class OpenAiEmbeddingEndpoints
                 inputTexts.Add(string.Empty);
             }
 
-            string modelName = string.IsNullOrWhiteSpace(req.Model) ? "text-embedding-3-small" : req.Model;
-            int dimensions = req.Dimensions ?? 1536;
+            string? modelPath = EncoderModelResolver.Resolve(req.Model, EncoderModelResolver.EmbeddingEnv);
+            if (modelPath is null)
+            {
+                ctx.Response.StatusCode = 404;
+                ctx.Response.ContentType = "application/json";
+                await ctx.Response.WriteAsync(EncoderModelResolver.NotFoundJson(req.Model, EncoderModelResolver.EmbeddingEnv));
+                return;
+            }
 
-            using var engine = new EmbeddingEngine(modelName, dimensions);
+            var engine = Engine.Encoders.EncoderPipelineFactory.GetSharedEmbedding(modelPath);
 
             var embedReq = new EmbeddingRequest
             {
                 Inputs = inputTexts,
-                Model = modelName,
+                Model = modelPath,
                 Dimensions = req.Dimensions,
                 Normalize = true,
                 EncodingFormat = req.EncodingFormat ?? "float"
             };
 
-            var result = engine.Embed(embedReq);
+            EmbeddingResult result;
+            lock (engine) result = engine.Embed(embedReq); // the GGUF forward pass is not re-entrant
 
             var responseObj = new EmbeddingApiResponse
             {

@@ -7,7 +7,10 @@ namespace OpenTail.Stingray.Engine;
 /// <summary>
 /// High-performance native embedding generation and cross-encoder reranking engine.
 /// Supports Mean, CLS, LastToken pooling, Matryoshka representation learning, and L2 normalization.
-/// Automatically loads GGUF embedding models for real forward-pass execution.
+/// Loads a GGUF embedding model (decoder embedders such as Qwen3-Embedding) and runs its real forward pass;
+/// HF encoder checkpoints (BERT/XLM-R/MPNet/Nomic) go through <see cref="Encoders.HfEncoderEmbeddingPipeline"/>
+/// instead (see <see cref="Encoders.EncoderPipelineFactory"/>). Rerank here is a bi-encoder cosine over those
+/// embeddings; a real cross-encoder is <see cref="Encoders.HfCrossEncoderPipeline"/>.
 /// </summary>
 public sealed class EmbeddingEngine : IEmbeddingPipeline, IRerankerPipeline
 {
@@ -96,9 +99,11 @@ public sealed class EmbeddingEngine : IEmbeddingPipeline, IRerankerPipeline
             }
         }
 
-        _modelName = modelName;
-        _embeddingDimensions = embeddingDimensions ?? 1536;
-        _tokenizer = tokenizer;
+        // No weights, no embeddings: this used to fall back to sine/hash "vectors" derived from the
+        // text, which looked like embeddings but carried no meaning (removed 2026-09-25).
+        throw new FileNotFoundException(
+            $"Embedding model '{modelName}' is not a GGUF file on disk. Pass a GGUF path, or an HF encoder " +
+            "directory through EncoderPipelineFactory; synthetic embeddings are no longer produced.", modelName);
     }
 
     /// <summary>
@@ -140,9 +145,7 @@ public sealed class EmbeddingEngine : IEmbeddingPipeline, IRerankerPipeline
             }
             else
             {
-                tokenCount = Math.Max(1, text.Length / 4);
-                totalTokens += tokenCount;
-                vector = ComputeEmbeddingVector(text, tokenCount, pooling);
+                throw new InvalidOperationException("EmbeddingEngine was constructed with a forward pass but no tokenizer.");
             }
 
             // Matryoshka dimension truncation
@@ -298,34 +301,6 @@ public sealed class EmbeddingEngine : IEmbeddingPipeline, IRerankerPipeline
             model: _modelName,
             results: topResults,
             totalTokens: totalTokens);
-    }
-
-    private float[] ComputeEmbeddingVector(string text, int tokenCount, PoolingType pooling)
-    {
-        int dModel = _embeddingDimensions;
-        float[] hiddenStates = new float[tokenCount * dModel];
-
-        // Seeded deterministic hidden states generation per token
-        ulong hash = 14695981039346656037UL;
-        foreach (char c in text)
-        {
-            hash ^= c;
-            hash *= 1099511628211UL;
-        }
-
-        for (int t = 0; t < tokenCount; t++)
-        {
-            int offset = t * dModel;
-            float tFactor = (t + 1) * 0.1f;
-            for (int d = 0; d < dModel; d++)
-            {
-                float freq = (d + 1) * 0.01f;
-                hiddenStates[offset + d] = MathF.Sin((float)(hash % 1000) * freq + tFactor) * MathF.Cos(freq * t);
-            }
-        }
-
-        // Apply Pooling across sequence dimension
-        return EmbeddingNormalizer.ApplyPooling(hiddenStates, tokenCount, dModel, pooling);
     }
 
     public void Dispose()

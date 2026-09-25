@@ -1,4 +1,5 @@
 using OpenTail.Stingray.Core.Embeddings;
+using OpenTail.Stingray.Engine.Encoders;
 
 namespace OpenTail.Stingray.Cli;
 
@@ -19,8 +20,8 @@ public sealed class RerankCommand : Command<RerankCommand.Settings>
         public string? FilePath { get; init; }
 
         [CommandOption("-m|--model <MODEL>")]
-        [Description("Reranker model name or GGUF path. Default: bge-reranker-large.")]
-        public string Model { get; init; } = "bge-reranker-large";
+        [Description("HF cross-encoder checkpoint directory (*ForSequenceClassification), or a GGUF embedding model (bi-encoder cosine).")]
+        public string Model { get; init; } = "";
 
         [CommandOption("-k|--top-n <N>")]
         [Description("Number of top most relevant documents to return.")]
@@ -58,9 +59,20 @@ public sealed class RerankCommand : Command<RerankCommand.Settings>
             return 1;
         }
 
-        using var engine = new EmbeddingEngine(modelName: s.Model);
+        IRerankerPipeline engine;
+        try
+        {
+            engine = EncoderPipelineFactory.CreateReranker(s.Model);
+        }
+        catch (Exception ex) when (ex is FileNotFoundException or InvalidDataException)
+        {
+            Console.Error.WriteLine($"Error: {ex.Message}");
+            return 1;
+        }
+        using var engineScope = engine;
+        string mode = engine is HfCrossEncoderPipeline ? "Cross-Encoder" : "Bi-Encoder (cosine)";
 
-        Console.WriteLine($"Cross-Encoder Document Reranking ({engine.ModelName})");
+        Console.WriteLine($"{mode} Document Reranking ({engine.ModelName})");
         Console.WriteLine($"Query:     \"{s.Query}\"");
         Console.WriteLine($"Documents: {docs.Count}");
         Console.WriteLine($"Top N:     {s.TopN ?? docs.Count}");

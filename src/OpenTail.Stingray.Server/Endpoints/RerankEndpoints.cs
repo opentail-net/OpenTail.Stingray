@@ -37,20 +37,28 @@ public static class RerankEndpoints
                 return;
             }
 
-            string modelName = string.IsNullOrWhiteSpace(req.Model) ? "bge-reranker-large" : req.Model;
+            string? modelPath = EncoderModelResolver.Resolve(req.Model, EncoderModelResolver.RerankEnv);
+            if (modelPath is null)
+            {
+                ctx.Response.StatusCode = 404;
+                ctx.Response.ContentType = "application/json";
+                await ctx.Response.WriteAsync(EncoderModelResolver.NotFoundJson(req.Model, EncoderModelResolver.RerankEnv));
+                return;
+            }
 
-            using var engine = new EmbeddingEngine(modelName);
+            var engine = Engine.Encoders.EncoderPipelineFactory.GetSharedReranker(modelPath);
 
             var rerankReq = new RerankRequest
             {
                 Query = req.Query,
                 Documents = req.Documents,
                 TopN = req.TopN,
-                Model = modelName,
+                Model = modelPath,
                 ReturnDocuments = req.ReturnDocuments
             };
 
-            var result = engine.Rerank(rerankReq);
+            RerankResult result;
+            lock (engine) result = engine.Rerank(rerankReq); // the GGUF forward pass is not re-entrant
 
             var responseObj = new RerankApiResponse
             {

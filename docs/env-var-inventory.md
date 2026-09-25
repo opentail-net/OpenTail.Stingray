@@ -29,8 +29,8 @@ names are treated as valid, `doctor` would not have flagged it either. The warni
 `STINGRAY_MAX_QUEUE` and the dead entry is out of the registry, so the mistake is now reported with
 a closest-match suggestion.
 
-**Reconciled again 2026-09-25 — `KnownEnvironmentVariables.All` now contains **225** names**
-(22 added: diffusion GPU/FP16 toggles for FLUX/FLUX.2/Qwen-Image/SD3, SD3/Hunyuan/T5 debug dumps,
+**Reconciled again 2026-09-25 — `KnownEnvironmentVariables.All` now contains **227** names**
+(2026-09-25b: `STINGRAY_EMBEDDING_MODEL` and `STINGRAY_RERANK_MODEL`, the server defaults for `/v1/embeddings` and `/v1/rerank`. Earlier the same day, 22 added: diffusion GPU/FP16 toggles for FLUX/FLUX.2/Qwen-Image/SD3, SD3/Hunyuan/T5 debug dumps,
 `STINGRAY_ATTN128_LEGACY`, `STINGRAY_FORCE_MHA64_F32`, the ASR/TTS/RVC profiling switches and
 `STINGRAY_SILERO_VAD_PATH`).
 
