@@ -310,3 +310,14 @@ the oracle.
   Nomic's task prefixes (`search_query: ` etc.) and Matryoshka (layer_norm → truncate → L2) are caller/pipeline
   options still to wire in Phase 7.
 - Next: Phase 5 (ELECTRA: Flax msgpack weights + discriminator head).
+
+### Phase 5 progress (2026-09-25): ELECTRA done
+- Instead of an engine-side Flax reader: the hub's official **safetensors-convert bot PR** (`refs/pr/6`, author
+  `SFconvertbot`, 440,318,828 bytes, SHA-256 `7f7b1605…f8ef` = the hub's linked ETag) was downloaded as
+  `model.safetensors`. It is **verified bit-identical** to the repo's own `flax_model.msgpack`: a test-only
+  `FlaxMsgpackReader` (msgpack + flax ndarray ext type 1) compares all 201 tensors (Linear kernels transposed).
+  The stray `electra.embeddings_project` is ignored, as HF does when `embedding_size == hidden_size`.
+- New `ElectraDiscriminator` (`dense_prediction(gelu(dense(h)))` per token). Model-card example "The quick brown fox
+  fake over the lazy dog": only "fake" gets a positive replaced-token logit (+0.27; all others -1.65 to -5.74).
+  The encoder is the ONNX-verified BERT path (same `electra.` prefix handling).
+- Next: Phase 6 (HF-safetensors decoder loading: Qwen2/Qwen3/GPT-2 + tiny Qwen2 + logit parity).
