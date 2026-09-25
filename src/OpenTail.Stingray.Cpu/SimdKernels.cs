@@ -4988,7 +4988,7 @@ public static unsafe class SimdKernels
             var total = Avx.ConvertToVector256Single(sumiAcc);
             accum = Fma.MultiplyAdd(Vector256.Create(d), total, accum);
         }
-        return 0.25f * HSum256(accum);
+        return HSum256(accum); // ggml_vec_dot_iq3_s_q8_K: *s = sumf (no 0.25, unlike IQ3_XXS)
     }
 
     /// <summary>Scalar reference for <see cref="DotIq3S_Q8K_Avx2"/>; also the non-AVX2 fallback.</summary>
@@ -5044,7 +5044,7 @@ public static unsafe class SimdKernels
             }
             sumf += d * bsum;
         }
-        return 0.25f * sumf;
+        return sumf; // ggml: *s = sumf
     }
 
     // ================================================================

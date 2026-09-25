@@ -126,4 +126,54 @@ public sealed unsafe class SimdKernelsIqQ8KTests
         AssertAvx2MatchesScalar("IQ3_S", 110,
             (row, s, c) => SimdKernels.DotIq3S_Q8K((byte*)row, (byte*)s, c),
             (row, s, c) => SimdKernels.DotIq3S_Q8K_Scalar((byte*)row, (byte*)s, c));
+
+    /// <summary>
+    /// Independent reference for every Q8_K-paired IQ kernel: <see cref="Dequantize.ToFloat32"/> (the path that produced
+    /// the Qwen3.8-27B llama.cpp greedy receipt) followed by a float dot. AVX2-vs-scalar agreement alone cannot catch a
+    /// mistake both variants share: IQ3_S shipped 2026-08-28 returning <c>0.25f * sumf</c> (a factor that belongs to
+    /// IQ3_XXS; ggml's <c>ggml_vec_dot_iq3_s_q8_K</c> returns <c>sumf</c>), which made every IQ3_S matmul 4x too small
+    /// and broke Qwen3.8-27B's output until found by bisect on 2026-09-25. Tolerance covers Q8_K activation rounding.
+    /// </summary>
+    [Theory]
+    [InlineData(DType.IQ4_XS, 136)]
+    [InlineData(DType.IQ2_XS, 74)]
+    [InlineData(DType.IQ2_S, 82)]
+    [InlineData(DType.IQ3_XXS, 98)]
+    [InlineData(DType.IQ2_XXS, 66)]
+    [InlineData(DType.IQ3_S, 110)]
+    public void IqQ8KDot_MatchesDequantizedFloatDot(DType dtype, int bytesPerBlock)
+    {
+        Func<nint, nint, int, float> dot = dtype switch
+        {
+            DType.IQ4_XS => (r, s, c) => SimdKernels.DotIq4Xs_Q8K((byte*)r, (byte*)s, c),
+            DType.IQ2_XS => (r, s, c) => SimdKernels.DotIq2Xs_Q8K((byte*)r, (byte*)s, c),
+            DType.IQ2_S => (r, s, c) => SimdKernels.DotIq2S_Q8K((byte*)r, (byte*)s, c),
+            DType.IQ3_XXS => (r, s, c) => SimdKernels.DotIq3Xxs_Q8K((byte*)r, (byte*)s, c),
+            DType.IQ2_XXS => (r, s, c) => SimdKernels.DotIq2Xxs_Q8K((byte*)r, (byte*)s, c),
+            _ => (r, s, c) => SimdKernels.DotIq3S_Q8K((byte*)r, (byte*)s, c),
+        };
+        const int rows = 6, cols = 1024;
+        var rng = new Random(12345 + (int)dtype);
+        byte[] w = BuildIqMatrix(rows, cols, bytesPerBlock, rng);
+        var input = new float[cols];
+        for (int i = 0; i < cols; i++) input[i] = (float)(rng.NextDouble() * 2 - 1);
+        var scratch = new byte[SimdKernels.Q8KScratchBytes(cols)];
+        int bytesPerRow = cols / 256 * bytesPerBlock;
+        var deq = new float[cols];
+        fixed (byte* wp = w)
+        fixed (byte* sp = scratch)
+        fixed (float* ip = input)
+        {
+            SimdKernels.QuantizeRowToQ8K(ip, cols, sp);
+            for (int r = 0; r < rows; r++)
+            {
+                Dequantize.ToFloat32(w.AsSpan(r * bytesPerRow, bytesPerRow), deq, dtype, cols);
+                float expected = 0, scale = 0;
+                for (int i = 0; i < cols; i++) { expected += deq[i] * input[i]; scale += MathF.Abs(deq[i] * input[i]); }
+                float got = dot((nint)(wp + (long)r * bytesPerRow), (nint)sp, cols);
+                Assert.True(MathF.Abs(got - expected) <= 0.02f * scale + 1e-4f,
+                    $"{dtype} row {r}: kernel {got} vs dequantized dot {expected} (sum|terms| {scale})");
+            }
+        }
+    }
 }
