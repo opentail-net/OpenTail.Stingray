@@ -43,6 +43,7 @@ public static class RvcSynthesizerEncoder
     {
         int frames = featuresBtc.Length;
         var (m, logs) = BuildTextEncoderStats(w, featuresBtc, pitchIds);
+        Prof("text encoder");
 
         int inter = RvcSynthesizerWeights.InterChannels;
         var zp = new float[inter * frames];
@@ -51,6 +52,7 @@ public static class RvcSynthesizerEncoder
 
         var g = SpeakerEmbedding(w, speakerId); // [GinChannels]
         var z = BuildFlowReverse(w, zp, frames, g);
+        Prof("flow");
         var audio = BuildGenerator(w, z, frames, g, sineSource);
         return new ForwardResult(m, logs, zp, z, audio);
     }
@@ -70,6 +72,10 @@ public static class RvcSynthesizerEncoder
         for (int i = 0; i < noise.Length; i++) noise[i] = SampleStandardNormal(noiseRng);
         return Forward(w, featuresBtc, pitchIds, sineSource, speakerId, noise);
     }
+
+    private static readonly bool s_prof = Environment.GetEnvironmentVariable("STINGRAY_RVC_PROFILE") == "1";
+    private static readonly System.Diagnostics.Stopwatch s_profSw = System.Diagnostics.Stopwatch.StartNew();
+    private static void Prof(string stage) { if (!s_prof) return; Console.WriteLine($"[RvcSynth]   {stage}: {s_profSw.Elapsed.TotalSeconds:F2}s"); s_profSw.Restart(); }
 
     private static float SampleStandardNormal(Random rng)
     {
@@ -319,6 +325,7 @@ public static class RvcSynthesizerEncoder
 
             int padding = (upKernel - upRate) / 2;
             var (upsampled, newT) = ConvTranspose1dPyTorch(x, curCh, t, w.DecUps[up].Weight, w.DecUps[up].Bias, channels[up], upKernel, upRate, padding);
+            Prof($"gen up{up} convT");
             x = upsampled;
             t = newT;
             curCh = channels[up];
@@ -334,6 +341,7 @@ public static class RvcSynthesizerEncoder
                 for (int i = 0; i < n; i++) x[i] += xSource[i];
             }
 
+            Prof($"gen up{up} noise conv");
             float[]? sum = null;
             for (int kernelIndex = 0; kernelIndex < 3; kernelIndex++)
             {
@@ -342,6 +350,7 @@ public static class RvcSynthesizerEncoder
                 else for (int i = 0; i < sum.Length; i++) sum[i] += rb[i];
             }
             for (int i = 0; i < sum!.Length; i++) x[i] = sum[i] / 3f;
+            Prof($"gen up{up} resblocks (t={t}, ch={curCh})");
         }
 
         for (int i = 0; i < x.Length; i++) x[i] = LeakyRelu(x[i]);
@@ -555,26 +564,38 @@ public static class RvcSynthesizerEncoder
     /// (compute the untrimmed transpose-conv, then slice `[padding, padding+trimmedLen)`).</summary>
     private static (float[] Output, int OutLen) ConvTranspose1dPyTorch(float[] x, int inCh, int inLen, float[] weight, float[] bias, int outCh, int kernel, int stride, int padding)
     {
+        // GEMM + overlap-add (2026-09-25; was a scalar loop per output channel): Y[t, oc*K + k] = sum_ic x[ic, t] *
+        // W[ic, oc, k] as one packed GEMM over all input frames, then raw[oc][stride*t + k] += Y[t, oc*K + k].
         int rawLen = (inLen - 1) * stride + kernel;
         int trimmedLen = rawLen - 2 * padding;
+        int cols = outCh * kernel;
+        var wT = s_convTWeights.GetValue(weight, w =>
+        {
+            var t = new float[cols * inCh];
+            for (int ic = 0; ic < inCh; ic++)
+                for (int j = 0; j < cols; j++) t[j * inCh + ic] = w[ic * cols + j];
+            return t;
+        });
+        var xT = new float[inLen * inCh];
+        Parallel.For(0, inLen, it => { for (int ic = 0; ic < inCh; ic++) xT[it * inCh + ic] = x[ic * inLen + it]; });
+        var y = new float[(long)inLen * cols];
+        DenseKernels.LinearBatchedNoBias(xT, wT, y, inLen, inCh, cols);
+
         var output = new float[outCh * trimmedLen];
         Parallel.For(0, outCh, () => new float[rawLen], (oc, _, raw) =>
         {
             Array.Fill(raw, bias[oc]);
-            for (int ic = 0; ic < inCh; ic++)
+            for (int it = 0; it < inLen; it++)
             {
-                int wBase = (ic * outCh + oc) * kernel, xBase = ic * inLen;
-                for (int it = 0; it < inLen; it++)
-                {
-                    float v = x[xBase + it];
-                    if (v == 0f) continue;
-                    int outBase = stride * it;
-                    for (int k = 0; k < kernel; k++) raw[outBase + k] += v * weight[wBase + k];
-                }
+                var src = y.AsSpan(it * cols + oc * kernel, kernel);
+                var dst = raw.AsSpan(stride * it, kernel);
+                System.Numerics.Tensors.TensorPrimitives.Add(dst, src, dst);
             }
             Array.Copy(raw, padding, output, oc * trimmedLen, trimmedLen);
             return raw;
         }, static _ => { });
         return (output, trimmedLen);
     }
+
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<float[], float[]> s_convTWeights = new();
 }

@@ -545,3 +545,8 @@ is 8.2s, so RVC is now ~1.9× behind (was ~2.4×).
   dots) with frames in parallel. 2 runs: rmvpe 7.67 → 1.86 / 1.88s, convert 9.7 / 9.7s; output vs pre-change cosine
   1.000000, maxAbs 3.0e-4 (float vs double DFT); `RvcRmvpeEndToEndRealAudioTests` passes. RVC is now ~1.2× behind the
   reference (8.2s); the synthesizer (~6.6s) is the remaining big stage.
+- **Synthesizer transpose convs (2026-09-25): 9.7 → 8.6 / 9.0s.** New synthesizer stage timers showed resblocks 3.76s
+  (already GEMM, ~114 GMAC/s at the largest level, about half of peak) and the four ConvTranspose1d 1.26s (scalar per
+  output channel). ConvTranspose1d is now one packed GEMM over all input frames plus overlap-add: 1.26 → ~0.2s. Output vs
+  pre-change cosine 1.000000 (maxAbs 3.0e-4, unchanged); `RvcSynthesizerEncoderForwardTests` passes. **RVC: 19.4s → 8.6–9.0s
+  today vs the reference's 8.2s.** What's left is mostly the resblock GEMMs, near this CPU's throughput.
