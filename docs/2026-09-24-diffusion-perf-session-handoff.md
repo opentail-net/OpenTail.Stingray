@@ -116,7 +116,7 @@ time. Correctness before perf. Check images by eye. CPU first, then GPU. Scratch
       Open: `QwenImageGpuParityTests` fails at cosine ~0.989 (smooth 60-block compounding on synthetic input, same
       with FP16). Next candidates: route FLUX.2/Wan2.2/SD3.5 GGUF weights through the same kernels. The old "GPU diverges" evidence compared
       against a CPU path that was itself lossy (int8 activations, relErr ~4e-3).
-- [~] **HunyuanVideo** (partly done, timeboxed): noise → recognisable apple (4 DiT bugs fixed, VAE 25×).
+- [x] **HunyuanVideo** (DONE 2026-09-25): noise → correct red apple on wood. 4 DiT bugs (09-24) plus the missing VAE `post_quant_conv` (09-25), which was the colour/stripe blocker below; A/B on one saved latent confirms it. Kept for the record:
       **Open blocker**: wrong colours plus a fine stripe texture. The latent is clean (visualised), so suspect the
       VAE or latent statistics. No runnable reference: sd.cpp here supports HunyuanVideo 1.5 only, and the
       no-Python rule rules out diffusers. Next idea: get the HunyuanVideo 1.5 checkpoint (sd.cpp-supported)
@@ -138,7 +138,9 @@ real weights, visible timing, one heavy process at a time, and commit per engine
 
 Why: FLUX.1 on Vulkan takes 35.0s/step against C++'s 20.45s. `MultiHeadAttentionTiled128` costs 223 ms/call
 (90 GFLOP/s) at 1280 tok × 24 heads × 128, which is **12.7s of each step** (57 blocks). The GEMMs are
-already near ggml (Q4_K ~905 vs 1,250 GFLOP/s, commit `56435a6`). The same kernel is used by FLUX.2, Qwen Image, SD3.5 and Z-Image.
+already near ggml (Q4_K ~905 vs 1,250 GFLOP/s, commit `56435a6`). The same kernel is used by FLUX.2, Qwen Image and Z-Image
+(all headDim 128). **Correction 2026-09-25:** SD3.5-medium is *not* affected: `Sd3Pipeline` builds `MMDiTModel` with the
+defaults hidden 1536 / 24 heads = headDim 64, which routes to `MultiHeadAttentionTiled64_FP16`, not `FlashAttention128`.
 
 Uncommitted edits:
 - `src/OpenTail.Stingray.Vulkan/Shaders.cs`: new `FlashAttention128`, just above `MultiHeadAttentionTiled40`.
@@ -177,3 +179,5 @@ Housekeeping: the `Zz*ProfTmp.cs` scratch harnesses are untracked, so never comm
 (the float `mix` against NEG_INF cancelled every score, so it now uses a boolean `mix`). Isolated it runs 35–48 ms vs 184 ms per call.
 FLUX.1 Vulkan went from 173.6s to **132.0s** (23.5s vs 35.0s per step), with a correct image. Next, not started:
 re-measure FLUX.2 (237s), Qwen GPU (159s) and SD3.5 GPU (85s), which use the same kernel; then the §8 step-6 backlog.
+
+**Update 2026-09-25 (later)**: FLUX.2 full GPU 512²/2-step re-measured: new kernel 208.1s vs legacy 223.1s (warm, one run each; the user deprioritised further FLUX.2 runs). SD3.5 is headDim 64, not affected. Qwen/Z-Image GPU not re-measured. HunyuanVideo colour/stripe bug FIXED (missing `post_quant_conv`). Next: the audio re-check (`docs/2026-09-24-audio-recheck-plan.md`), logging to `docs/audio-review-new-progress.md`.

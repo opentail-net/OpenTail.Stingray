@@ -88,6 +88,10 @@ public sealed class HunyuanVaeDecoder3D : IDisposable
         float invScale = 1.0f / ScalingFactor;
         for (int i = 0; i < z.Length; i++) z[i] = latent[i] * invScale;
 
+        // Real `_decode`: z = post_quant_conv(z) (a learned 16->16 1x1x1 channel mix) BEFORE the
+        // decoder. Skipping it leaves every latent channel un-mixed -> right shapes, wrong colours.
+        z = CausalConv3D(z, "post_quant_conv", c, c, t, latH, latW, kt: 1, kh: 1, kw: 1);
+
         int curC = LevelOutChannels[0]; // 512, matches decoder.conv_in.conv output channels.
         var x = CausalConv3D(z, "decoder.conv_in.conv", c, curC, t, latH, latW);
         int curT = t, curH = latH, curW = latW;
