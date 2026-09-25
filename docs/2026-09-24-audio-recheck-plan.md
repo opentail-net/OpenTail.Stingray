@@ -106,7 +106,9 @@ dated and sourced findings. Commit per engine.
         round trips. MOSS/Higgs were done 2026-09-24. Stable Audio 3: sampling schedule fixed, and small-music
         and medium match the reference; SFX darker and CFG-1 divergence remain open (🟡).
   - [x] 1.2–1.4 ⚪/🟢 checks (2026-09-25): per engine, one class at a time (a one-process heavy sweep hit 44.9 GB and was stopped). All TTS got Whisper round trips and all ASR got LibriSpeech/reference checks; see the Phase 1 summary in the progress log.
-- [ ] Phase 2: performance
-- [ ] Phase 3: record
+- [x] Phase 2: performance (2026-09-25): profiled the engines behind their reference. VibeVoice ASR 40.8 → ~17.5s (EOS bug + batched ConvNeXt), VibeVoice TTS 65-72 → ~25s (parallel ConvTranspose1d + batched diffusion head), RVC 482.6 → ~19.3s (im2col GEMM convs), OmniVoice 118-129 → ~31s (batched projections). Engines already ahead of their reference (F5, CosyVoice3, Chatterbox, Kokoro, Fish) were left alone per the plan.
+- [x] Phase 3: record: README rows, PerformanceLeague rows and `docs/audio-review-new-progress.md` updated per engine as each landed.
+
+**Open after the re-check:** CosyVoice2 LLM token drift (🟡, bisected to LLM generation); Stable Audio SFX darker + CFG-1 divergence (🟡); MeloTTS English intelligibility (zh_en checkpoint); Parakeet ~3% WER; RVC ~2.4× and VibeVoice ~1.3-1.4× behind their references. A one-process heavy sweep needs one class per process (44.9 GB otherwise).
 
 **Queued next (after Phase 3):** [`docs/2026-09-25-encoder-embedding-reranker-plan.md`](2026-09-25-encoder-embedding-reranker-plan.md), covering the BERT/XLM-R/MPNet/Nomic encoders, the rerankers, and the HF-safetensors decoder loading.
