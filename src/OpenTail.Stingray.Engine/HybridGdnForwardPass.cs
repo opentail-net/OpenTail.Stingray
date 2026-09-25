@@ -42,10 +42,10 @@ public sealed unsafe class HybridGdnForwardPass : IForwardPass
     // OutProj/FFN/Norm/RoPE) and doesn't have a GDN-recurrence bucket. Reuses the same
     // STINGRAY_PROFILE_DECODE env var so `RunCommand`'s existing Report() call site doesn't need
     // touching; remove once the real bottleneck is found and fixed.
-    private enum ProfCat { Gdn, Attention, Moe }
+    private enum ProfCat { Gdn, Attention, Moe, GdnRecurrence }
     private static readonly bool s_profEnabled =
         Environment.GetEnvironmentVariable("STINGRAY_PROFILE_DECODE") == "1";
-    private static readonly long[] s_profTicks = new long[3];
+    private static readonly long[] s_profTicks = new long[4];
     private static void AddProf(ProfCat c, long ticks) => System.Threading.Interlocked.Add(ref s_profTicks[(int)c], ticks);
 
     public static void ReportGdnProfile(TextWriter w)
@@ -58,6 +58,7 @@ public sealed unsafe class HybridGdnForwardPass : IForwardPass
         w.WriteLine($"  GDN recurrence blocks  {Ms(s_profTicks[0]),10:F2}ms  {100.0 * s_profTicks[0] / total,6:F2}%");
         w.WriteLine($"  Attention blocks       {Ms(s_profTicks[1]),10:F2}ms  {100.0 * s_profTicks[1] / total,6:F2}%");
         w.WriteLine($"  MoE/FFN blocks         {Ms(s_profTicks[2]),10:F2}ms  {100.0 * s_profTicks[2] / total,6:F2}%");
+        w.WriteLine($"  (GDN blocks: recurrence kernel) {Ms(s_profTicks[3]),10:F2}ms  {100.0 * s_profTicks[3] / total,6:F2}%");
     }
 
     private readonly GgufModel _model;
@@ -2444,6 +2445,7 @@ public sealed unsafe class HybridGdnForwardPass : IForwardPass
         }
 
         // 8. Recurrence: rank-1 state update + per-head RMSNorm + SiLU(z) gate, all fused.
+        long __tRec = s_profEnabled ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
         GdnKernels.GdnRecurrenceDecode(
             q:          new ReadOnlySpan<float>(_qVHeads, _gdnNumVHeads * _gdnHeadDim),
             k:          new ReadOnlySpan<float>(_kVHeads, _gdnNumVHeads * _gdnHeadDim),
@@ -2461,6 +2463,7 @@ public sealed unsafe class HybridGdnForwardPass : IForwardPass
             normEps:    1e-6f,
             layer:      layer,
             position:   position);
+        if (s_profEnabled) AddProf(ProfCat.GdnRecurrence, System.Diagnostics.Stopwatch.GetTimestamp() - __tRec);
         if (_traceLayers) {
             EmitBufTrace(position, layer, "gdn-out",       _gdnOut, _gdnValueDim);
             // Per-head L2 of gdn-out (32 heads x 128 dims). Helps spot a single

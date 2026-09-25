@@ -1,3 +1,4 @@
+using System.Numerics.Tensors;
 namespace OpenTail.Stingray.Cpu;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -407,8 +408,11 @@ public static class GdnKernels
         ValidateRecurrenceArgs(q, k, v, alphaIn, beta, ssmA, dtBias, normWeight, z, state, output,
             numVHeads, headDim);
 
-        GdnStepInternal(q, k, v, alphaIn, beta, ssmA, dtBias, normWeight, z,
-            state, output, numVHeads, headDim, normEps, layer, position);
+        if (ShouldTraceGdn(layer, position))
+            GdnStepInternal(q, k, v, alphaIn, beta, ssmA, dtBias, normWeight, z,
+                state, output, numVHeads, headDim, normEps, layer, position);
+        else
+            GdnStepFast(q, k, v, alphaIn, beta, ssmA, dtBias, normWeight, z, state, output, numVHeads, headDim, normEps);
     }
 
     /// <summary>
@@ -465,7 +469,7 @@ public static class GdnKernels
 
         for (int t = 0; t < tokens; t++)
         {
-            GdnStepInternal(
+            GdnStepFast(
                 q.Slice(t * perTokQkv, perTokQkv),
                 k.Slice(t * perTokQkv, perTokQkv),
                 v.Slice(t * perTokQkv, perTokQkv),
@@ -765,7 +769,69 @@ public static class GdnKernels
         if (output.Length != qkvLen) throw new ArgumentException("output length mismatch");
     }
 
-    private static void GdnStepInternal(
+    /// <summary>
+    /// Same step as the reference loop below, bit for bit, but with the heads in parallel, each row vectorized
+    /// (<c>TensorPrimitives.MultiplyAdd</c> is the unfused <c>(x*y)+z</c>, like the scalar code) and the four passes over
+    /// the d×d state fused into two: (1) decay the row and accumulate k·S into p, (2) rank-1 update the row and
+    /// accumulate q·S into the readout. Every element sees the same operations in the same order and every sum keeps
+    /// its row order, so results are identical. Used whenever GDN tracing is off.
+    /// </summary>
+    internal static unsafe void GdnStepFast(
+        ReadOnlySpan<float> q, ReadOnlySpan<float> k, ReadOnlySpan<float> v,
+        ReadOnlySpan<float> alphaIn, ReadOnlySpan<float> beta,
+        ReadOnlySpan<float> ssmA, ReadOnlySpan<float> dtBias,
+        ReadOnlySpan<float> normWeight, ReadOnlySpan<float> z,
+        Span<float> state, Span<float> output, int hv, int d, float normEps)
+    {
+        fixed (float* qp = q, kp = k, vp = v, ap = alphaIn, bp = beta, sa = ssmA, dtb = dtBias, nw = normWeight, zp = z, st = state, op = output)
+        {
+            float* qP = qp, kP = kp, vP = vp, aP = ap, bP = bp, saP = sa, dtP = dtb, nwP = nw, zP = zp, stP = st, oP = op;
+            Parallel.For(0, hv, h =>
+            {
+                int dd = d * d;
+                float alphaX = aP[h] + dtP[h];
+                float dt = alphaX >= 20.0f ? alphaX : MathF.Log(1.0f + MathF.Exp(alphaX));
+                float decay = MathF.Exp(dt * saP[h]);
+                float bScalar = 1.0f / (1.0f + MathF.Exp(-bP[h]));
+                float* S = stP + (long)h * dd;
+                float* kh = kP + h * d, vh = vP + h * d, qh = qP + h * d, oh = oP + h * d;
+                Span<float> p = stackalloc float[d];
+                Span<float> dvec = stackalloc float[d];
+                var ohs = new Span<float>(oh, d);
+                p.Clear();
+                for (int i = 0; i < d; i++)
+                {
+                    var row = new Span<float>(S + i * d, d);
+                    TensorPrimitives.Multiply(row, decay, row);
+                    TensorPrimitives.MultiplyAdd(row, kh[i], p, p);
+                }
+                for (int j = 0; j < d; j++) dvec[j] = bScalar * (vh[j] - p[j]);
+                ohs.Clear();
+                for (int i = 0; i < d; i++)
+                {
+                    var row = new Span<float>(S + i * d, d);
+                    TensorPrimitives.MultiplyAdd(dvec, kh[i], row, row);
+                    TensorPrimitives.MultiplyAdd(row, qh[i], ohs, ohs);
+                }
+                float readoutScale = 1.0f / MathF.Sqrt((float)d);
+                double sumSq = 0.0;
+                for (int j = 0; j < d; j++)
+                {
+                    oh[j] *= readoutScale;
+                    sumSq += (double)oh[j] * oh[j];
+                }
+                float scale = 1.0f / MathF.Sqrt((float)(sumSq / d) + normEps);
+                float* zh = zP + h * d;
+                for (int j = 0; j < d; j++)
+                {
+                    float zv = zh[j];
+                    oh[j] = oh[j] * scale * nwP[j] * (zv / (1.0f + MathF.Exp(-zv)));
+                }
+            });
+        }
+    }
+
+    internal static void GdnStepInternal(
         ReadOnlySpan<float> q, ReadOnlySpan<float> k, ReadOnlySpan<float> v,
         ReadOnlySpan<float> alphaIn, ReadOnlySpan<float> beta,
         ReadOnlySpan<float> ssmA, ReadOnlySpan<float> dtBias,

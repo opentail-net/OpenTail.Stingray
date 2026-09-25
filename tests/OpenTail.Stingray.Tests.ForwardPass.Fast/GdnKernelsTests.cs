@@ -626,3 +626,35 @@ public sealed class GdnKernelsTests
         return arr;
     }
 }
+
+/// <summary>
+/// The parallel, vectorized, two-pass <c>GdnStepFast</c> must equal the reference four-pass loop bit for bit (same
+/// per-element operations, same accumulation order, unfused multiply-add), over several consecutive steps so the
+/// carried state is compared too. Shape = Qwen3.8-27B's GDN layer (48 v-heads × 128).
+/// </summary>
+public sealed class GdnStepFastBitExactTests
+{
+    [Fact]
+    public void GdnStepFast_IsBitIdenticalToReference()
+    {
+        const int hv = 48, d = 128, steps = 4;
+        var rng = new Random(2026);
+        float[] R(int n, float s) => Enumerable.Range(0, n).Select(_ => (float)(rng.NextDouble() * 2 - 1) * s).ToArray();
+        var ssmA = R(hv, 1f).Select(x => -MathF.Abs(x) - 0.1f).ToArray();
+        var dtBias = R(hv, 1f);
+        var normW = R(d, 1f);
+        var stateRef = R(hv * d * d, 0.1f);
+        var stateFast = (float[])stateRef.Clone();
+        for (int s = 0; s < steps; s++)
+        {
+            var q = R(hv * d, 0.2f); var k = R(hv * d, 0.2f); var v = R(hv * d, 1f); var z = R(hv * d, 2f);
+            var a = R(hv, 3f); var b = R(hv, 3f);
+            var outRef = new float[hv * d];
+            var outFast = new float[hv * d];
+            GdnKernels.GdnStepInternal(q, k, v, a, b, ssmA, dtBias, normW, z, stateRef, outRef, hv, d, 1e-6f);
+            GdnKernels.GdnStepFast(q, k, v, a, b, ssmA, dtBias, normW, z, stateFast, outFast, hv, d, 1e-6f);
+            Assert.Equal(outRef, outFast);
+            Assert.Equal(stateRef, stateFast);
+        }
+    }
+}
