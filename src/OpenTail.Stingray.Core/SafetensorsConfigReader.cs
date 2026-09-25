@@ -51,6 +51,8 @@ public static class SafetensorsConfigReader
         "rope_theta", "rms_norm_eps", "hidden_act", "attention_bias", "mlp_bias",
         "tie_word_embeddings", "rope_scaling", "head_dim", "rope_interleaved",
         "bos_token_id", "eos_token_id", "pad_token_id",
+        // Qwen2/Qwen3 attention-window settings: validated below (full attention only).
+        "use_sliding_window", "sliding_window", "max_window_layers", "layer_types",
     };
 
     /// <summary>
@@ -115,9 +117,9 @@ public static class SafetensorsConfigReader
             if (modelType is null)
                 rejections.Add(new ModelPackageRejection(ModelPackageRejectionKind.UnsupportedConfig,
                     "model_type", "Missing from config.json."));
-            else if (modelType is not ("llama" or "mistral"))
+            else if (modelType is not ("llama" or "mistral" or "qwen2" or "qwen3"))
                 rejections.Add(new ModelPackageRejection(ModelPackageRejectionKind.UnsupportedArchitecture,
-                    modelType, "Profile 'dense-llama-cpu' covers llama/mistral."));
+                    modelType, "Profiles 'dense-llama-cpu' and 'dense-qwen-cpu' cover llama/mistral/qwen2/qwen3."));
 
             int hidden = RequiredInt(json, "hidden_size", rejections);
             int layers = RequiredInt(json, "num_hidden_layers", rejections);
@@ -152,6 +154,24 @@ public static class SafetensorsConfigReader
             if (rmsEps <= 0)
                 rejections.Add(new ModelPackageRejection(ModelPackageRejectionKind.UnsupportedConfig,
                     "rms_norm_eps", $"Must be positive; found {rmsEps}."));
+
+            // Sliding-window attention changes which keys each query sees. For Qwen, sliding_window and
+            // max_window_layers only take effect when use_sliding_window is true, so with it false
+            // (and every layer full_attention) they are provably inert.
+            if (OptionalBool(json, "use_sliding_window") == true)
+                rejections.Add(new ModelPackageRejection(ModelPackageRejectionKind.UnsupportedConfig,
+                    "use_sliding_window", "Sliding-window attention is not implemented by this profile."));
+            if (json.TryGetProperty("layer_types", out var layerTypes) && layerTypes.ValueKind == JsonValueKind.Array
+                && layerTypes.EnumerateArray().Any(t => t.ValueKind != JsonValueKind.String || t.GetString() != "full_attention"))
+                rejections.Add(new ModelPackageRejection(ModelPackageRejectionKind.UnsupportedConfig,
+                    "layer_types", "Every layer must be full_attention for this profile."));
+            // Only Qwen gates the window behind use_sliding_window; Mistral applies sliding_window
+            // whenever it is set, so for Llama/Mistral any window key is refused as before.
+            if (modelType is not ("qwen2" or "qwen3"))
+                foreach (string key in (string[])["sliding_window", "use_sliding_window", "max_window_layers", "layer_types"])
+                    if (json.TryGetProperty(key, out var v) && v.ValueKind != JsonValueKind.Null)
+                        rejections.Add(new ModelPackageRejection(ModelPackageRejectionKind.UnsupportedConfig,
+                            key, "Attention-window setting on a Llama/Mistral package; sliding-window attention is not implemented."));
 
             string? activation = OptionalString(json, "hidden_act");
             if (activation is not null && !string.Equals(activation, "silu", StringComparison.OrdinalIgnoreCase))

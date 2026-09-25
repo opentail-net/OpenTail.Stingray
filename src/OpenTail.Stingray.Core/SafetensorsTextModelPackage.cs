@@ -26,7 +26,8 @@ public sealed record SafetensorsTextModelPackage(
     int ContextLength,
     float RopeTheta,
     float RmsNormEps,
-    IReadOnlyList<string> WeightDtypes)
+    IReadOnlyList<string> WeightDtypes,
+    int HeadDim = 0)
 {
     private static readonly HashSet<string> SupportedDtypes = new(StringComparer.Ordinal)
     {
@@ -54,9 +55,9 @@ public sealed record SafetensorsTextModelPackage(
         using var document = JsonDocument.Parse(File.ReadAllBytes(config));
         var json = document.RootElement;
         string modelType = RequiredString(json, "model_type", config);
-        if (modelType is not ("llama" or "mistral"))
+        if (modelType is not ("llama" or "mistral" or "qwen2" or "qwen3"))
             throw new NotSupportedException(
-                $"SafeTensors text-model support currently covers dense Llama-family packages only; model_type '{modelType}' is not supported.");
+                $"SafeTensors text-model support currently covers dense Llama-family packages (llama, mistral, qwen2, qwen3) only; model_type '{modelType}' is not supported.");
 
         int hiddenSize = RequiredInt(json, "hidden_size", config);
         int layerCount = RequiredInt(json, "num_hidden_layers", config);
@@ -69,7 +70,7 @@ public sealed record SafetensorsTextModelPackage(
         float rmsNormEps = OptionalFloat(json, "rms_norm_eps", 1e-5f);
         if (hiddenSize <= 0 || layerCount <= 0 || attentionHeads <= 0 || kvHeads <= 0
             || intermediateSize <= 0 || vocabSize <= 0 || contextLength <= 0
-            || ropeTheta <= 0 || rmsNormEps <= 0 || hiddenSize % attentionHeads != 0)
+            || ropeTheta <= 0 || rmsNormEps <= 0 || (!json.TryGetProperty("head_dim", out _) && hiddenSize % attentionHeads != 0))
             throw new InvalidDataException($"SafeTensors config contains invalid dense Llama dimensions: {config}");
         if (json.TryGetProperty("hidden_act", out var activation)
             && activation.ValueKind == JsonValueKind.String
@@ -77,10 +78,12 @@ public sealed record SafetensorsTextModelPackage(
             throw new NotSupportedException(
                 $"SafeTensors text-model support currently requires the Llama SiLU activation; found '{activation.GetString()}'.");
         bool tiedEmbeddings = OptionalBool(json, "tie_word_embeddings", false);
+        // Qwen3 decouples head_dim from hidden/heads (0.6B: 16 heads x 128 at hidden 1024).
+        int headDim = OptionalInt(json, "head_dim", hiddenSize / attentionHeads);
 
         using var tensors = OpenWeights(root, weights);
         ValidateRequiredTensors(tensors, hiddenSize, layerCount, attentionHeads, kvHeads,
-            intermediateSize, vocabSize, tiedEmbeddings);
+            intermediateSize, vocabSize, tiedEmbeddings, modelType, headDim);
         var dtypes = tensors.TensorNames.Select(tensors.GetDtype).Distinct(StringComparer.Ordinal).Order().ToArray();
         string[] unsupported = dtypes.Where(dtype => !SupportedDtypes.Contains(dtype)).ToArray();
         if (unsupported.Length > 0)
@@ -89,7 +92,7 @@ public sealed record SafetensorsTextModelPackage(
 
         return new SafetensorsTextModelPackage(root, weights, config, tokenizer, modelType,
             hiddenSize, layerCount, attentionHeads, kvHeads, intermediateSize, vocabSize,
-            contextLength, ropeTheta, rmsNormEps, dtypes);
+            contextLength, ropeTheta, rmsNormEps, dtypes, headDim);
     }
 
     internal static SafetensorsLoader OpenWeights(SafetensorsTextModelPackage package) =>
@@ -107,22 +110,30 @@ public sealed record SafetensorsTextModelPackage(
     /// SafeTensors weight adapter use the same graph contract without inventing another
     /// hyperparameter representation.
     /// </summary>
-    public IReadOnlyDictionary<string, object> ToOpenTailMetadata() =>
-        new Dictionary<string, object>(StringComparer.Ordinal)
+    public IReadOnlyDictionary<string, object> ToOpenTailMetadata()
+    {
+        // qwen2/qwen3 keep their own GGUF architecture (NeoX rope, biases / QK-norm), keyed the way
+        // llama.cpp's converter writes them; llama and mistral share the llama graph.
+        string arch = ModelType is "qwen2" or "qwen3" ? ModelType : "llama";
+        int headDim = HeadDim > 0 ? HeadDim : HiddenSize / NumAttentionHeads;
+        var metadata = new Dictionary<string, object>(StringComparer.Ordinal)
         {
-            ["general.architecture"] = "llama",
-            ["llama.vocab_size"] = VocabSize,
-            ["llama.context_length"] = ContextLength,
-            ["llama.embedding_length"] = HiddenSize,
-            ["llama.block_count"] = NumHiddenLayers,
-            ["llama.attention.head_count"] = NumAttentionHeads,
-            ["llama.attention.head_count_kv"] = NumKeyValueHeads,
-            ["llama.attention.key_length"] = HiddenSize / NumAttentionHeads,
-            ["llama.rope.dimension_count"] = HiddenSize / NumAttentionHeads,
-            ["llama.feed_forward_length"] = IntermediateSize,
-            ["llama.attention.layer_norm_rms_epsilon"] = RmsNormEps,
-            ["llama.rope.freq_base"] = RopeTheta,
+            ["general.architecture"] = arch,
+            [$"{arch}.vocab_size"] = VocabSize,
+            [$"{arch}.context_length"] = ContextLength,
+            [$"{arch}.embedding_length"] = HiddenSize,
+            [$"{arch}.block_count"] = NumHiddenLayers,
+            [$"{arch}.attention.head_count"] = NumAttentionHeads,
+            [$"{arch}.attention.head_count_kv"] = NumKeyValueHeads,
+            [$"{arch}.attention.key_length"] = headDim,
+            [$"{arch}.feed_forward_length"] = IntermediateSize,
+            [$"{arch}.attention.layer_norm_rms_epsilon"] = RmsNormEps,
+            [$"{arch}.rope.freq_base"] = RopeTheta,
         };
+        if (arch == "llama") metadata["llama.rope.dimension_count"] = headDim;
+        else metadata[$"{arch}.attention.value_length"] = headDim;
+        return metadata;
+    }
 
     /// <summary>
     /// Maps the dense Hugging Face Llama/Mistral tensor naming scheme to the canonical
@@ -160,6 +171,11 @@ public sealed record SafetensorsTextModelPackage(
             "mlp.gate_proj.weight" => "ffn_gate.weight",
             "mlp.up_proj.weight" => "ffn_up.weight",
             "mlp.down_proj.weight" => "ffn_down.weight",
+            "self_attn.q_proj.bias" => "attn_q.bias",
+            "self_attn.k_proj.bias" => "attn_k.bias",
+            "self_attn.v_proj.bias" => "attn_v.bias",
+            "self_attn.q_norm.weight" => "attn_q_norm.weight",
+            "self_attn.k_norm.weight" => "attn_k_norm.weight",
             _ => string.Empty,
         };
         return targetSuffix.Length == 0 ? null : $"blk.{layer}.{targetSuffix}";
@@ -194,7 +210,7 @@ public sealed record SafetensorsTextModelPackage(
     }
 
     private static void ValidateRequiredTensors(SafetensorsLoader tensors, int hiddenSize, int layerCount,
-        int attentionHeads, int kvHeads, int intermediateSize, int vocabSize, bool tiedEmbeddings)
+        int attentionHeads, int kvHeads, int intermediateSize, int vocabSize, bool tiedEmbeddings, string modelType, int headDim)
     {
         string[] shared = tiedEmbeddings || !tensors.Contains("lm_head.weight")
             ? ["model.embed_tokens.weight", "model.norm.weight"]
@@ -204,7 +220,6 @@ public sealed record SafetensorsTextModelPackage(
             if (!tensors.Contains(name))
                 throw new InvalidDataException($"SafeTensors Llama package is missing required tensor '{name}'.");
 
-        int headDim = hiddenSize / attentionHeads;
         ValidateShape(tensors, "model.embed_tokens.weight", vocabSize, hiddenSize);
         ValidateShape(tensors, "model.norm.weight", hiddenSize);
         if (tensors.Contains("lm_head.weight"))
@@ -222,14 +237,25 @@ public sealed record SafetensorsTextModelPackage(
                     throw new InvalidDataException($"SafeTensors Llama package is missing required tensor '{prefix + suffix}'.");
 
             ValidateShape(tensors, prefix + "input_layernorm.weight", hiddenSize);
-            ValidateShape(tensors, prefix + "self_attn.q_proj.weight", hiddenSize, hiddenSize);
+            ValidateShape(tensors, prefix + "self_attn.q_proj.weight", attentionHeads * headDim, hiddenSize);
             ValidateShape(tensors, prefix + "self_attn.k_proj.weight", kvHeads * headDim, hiddenSize);
             ValidateShape(tensors, prefix + "self_attn.v_proj.weight", kvHeads * headDim, hiddenSize);
-            ValidateShape(tensors, prefix + "self_attn.o_proj.weight", hiddenSize, hiddenSize);
+            ValidateShape(tensors, prefix + "self_attn.o_proj.weight", hiddenSize, attentionHeads * headDim);
             ValidateShape(tensors, prefix + "post_attention_layernorm.weight", hiddenSize);
             ValidateShape(tensors, prefix + "mlp.gate_proj.weight", intermediateSize, hiddenSize);
             ValidateShape(tensors, prefix + "mlp.up_proj.weight", intermediateSize, hiddenSize);
             ValidateShape(tensors, prefix + "mlp.down_proj.weight", hiddenSize, intermediateSize);
+            if (modelType == "qwen2")
+            {
+                ValidateShape(tensors, prefix + "self_attn.q_proj.bias", attentionHeads * headDim);
+                ValidateShape(tensors, prefix + "self_attn.k_proj.bias", kvHeads * headDim);
+                ValidateShape(tensors, prefix + "self_attn.v_proj.bias", kvHeads * headDim);
+            }
+            if (modelType == "qwen3")
+            {
+                ValidateShape(tensors, prefix + "self_attn.q_norm.weight", headDim);
+                ValidateShape(tensors, prefix + "self_attn.k_norm.weight", headDim);
+            }
         }
     }
 

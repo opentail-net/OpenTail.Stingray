@@ -321,3 +321,23 @@ the oracle.
   fake over the lazy dog": only "fake" gets a positive replaced-token logit (+0.27; all others -1.65 to -5.74).
   The encoder is the ONNX-verified BERT path (same `electra.` prefix handling).
 - Next: Phase 6 (HF-safetensors decoder loading: Qwen2/Qwen3/GPT-2 + tiny Qwen2 + logit parity).
+
+### Phase 6 progress (2026-09-25): HF-safetensors Qwen2/Qwen3 decoders run through the existing ForwardPass
+- New capability profile **`dense-qwen-cpu`** (qwen2/qwen3, F32/F16/BF16, CPU) next to `dense-llama-cpu`;
+  `ModelPackageInspector.Inspect(path)` now picks the profile by `model_type`. `SafetensorsTextModelPackage` /
+  `SafetensorsTensorSource` map Qwen2 q/k/v biases (`attn_{q,k,v}.bias`) and Qwen3 QK-norm (`attn_{q,k}_norm.weight`),
+  honour explicit `head_dim` (Qwen3: 128 at hidden 1024) in shape validation, and emit `qwen2.*`/`qwen3.*` metadata
+  exactly as llama.cpp's converter writes it (NeoX RoPE, no weight permutation needed).
+- The strict `SafetensorsConfigReader` admits qwen2/qwen3 and maps the Qwen window keys: `use_sliding_window: true`
+  or any non-`full_attention` `layer_types` is refused; `sliding_window`/`max_window_layers` are inert only for Qwen.
+  For Llama/Mistral any window key is still refused (Mistral applies `sliding_window` without a flag — the existing
+  `Read_UnknownConfigKey_IsRefusedNotIgnored` test caught my first, too-broad version of this).
+- **Qwen/Qwen3-0.6B (BF16 safetensors) vs the Q8_0 GGUF** (`HfDecoderSafetensorsTests`, 3 prompts): prefill logits
+  cos 0.99923-0.99939, identical top-1, **16/16 greedy tokens identical** on all three (" Paris. The capital of Italy is
+  Rome. …", fibonacci code, translation prompt). CLI: `stingray -m models/_models/hf/Qwen__Qwen3-0.6B` gives the same
+  32-token greedy text as the GGUF (decode 15.6 t/s on F32-expanded weights vs 45.6 t/s Q8_0). Known cosmetic gap: the
+  safetensors tokenizer path doesn't mark `<think>` spans as "thinking" in CLI output.
+- **tiny-Qwen2ForCausalLM-2.5** (random 2-layer harness): passes the inspector under `dense-qwen-cpu`, maps its q/k/v
+  biases, produces finite logits over all 152,064 ids (structural check only; the weights are random).
+- Remaining in Phase 6: GPT-2 from HF safetensors (Conv1D `[in, out]` weights need transposing on load, LayerNorm +
+  learned positions, fused `c_attn`), vs the existing `gpt2.Q8_0.gguf` receipt.

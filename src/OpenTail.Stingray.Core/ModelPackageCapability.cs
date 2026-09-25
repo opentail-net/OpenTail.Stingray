@@ -116,8 +116,41 @@ public sealed record ModelPackageCapability(
             "CUDA and Vulkan routes; each needs its own dtype, layout and transfer contract.",
         ]);
 
+    /// <summary>
+    /// Dense decoder-only Qwen2/Qwen3 from Hugging Face SafeTensors, CPU. Same graph contract as the
+    /// GGUF <c>qwen2</c>/<c>qwen3</c> architectures llama.cpp's converter writes: NeoX RoPE, SiLU MLP,
+    /// Qwen2's inherent q/k/v projection biases, Qwen3's per-head RMS QK-norm and explicit
+    /// <c>head_dim</c>. Tied output embeddings are aliased like the Llama profile.
+    /// </summary>
+    public static ModelPackageCapability DenseQwenCpu { get; } = new(
+        SchemaVersion: CurrentSchemaVersion,
+        ProfileId: "dense-qwen-cpu",
+        Description: "Dense decoder-only Qwen2/Qwen3, CPU, high-precision source weights.",
+        ArchitectureIds: ["qwen2", "qwen3"],
+        SourceDtypes: ["F32", "F16", "BF16"],
+        TokenizerFamily: ModelPackageTokenizerFamily.HuggingFaceJson,
+        Backends: ModelPackageBackends.Cpu,
+        SupportsBatching: false,
+        SupportsSessions: false,
+        SupportsSpeculation: false,
+        SupportsAdapters: false,
+        SupportsMultimodal: false,
+        Exclusions:
+        [
+            "Sliding-window attention (use_sliding_window: true, or any non full_attention layer type).",
+            "Output-projection or MLP bias, and Qwen3 attention_bias: true.",
+            "Non-SiLU activations.",
+            "RoPE scaling of any kind.",
+            "Quantized SafeTensors weights; use GGUF for block-quantized deployment.",
+            "CUDA and Vulkan routes; each needs its own dtype, layout and transfer contract.",
+        ]);
+
+    /// <summary>The profile that covers <paramref name="modelType"/>, or null.</summary>
+    public static ModelPackageCapability? ForArchitecture(string? modelType) =>
+        modelType is null ? null : All.FirstOrDefault(p => p.ArchitectureIds.Contains(modelType, StringComparer.Ordinal));
+
     /// <summary>All profiles OpenTail currently publishes.</summary>
-    public static IReadOnlyList<ModelPackageCapability> All { get; } = [DenseLlamaCpu];
+    public static IReadOnlyList<ModelPackageCapability> All { get; } = [DenseLlamaCpu, DenseQwenCpu];
 }
 
 /// <summary>

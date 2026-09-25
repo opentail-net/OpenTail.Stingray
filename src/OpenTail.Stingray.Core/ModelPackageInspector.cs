@@ -17,9 +17,27 @@ namespace OpenTail.Stingray.Core;
 /// </remarks>
 public static class ModelPackageInspector
 {
-    /// <summary>Inspects <paramref name="packagePath"/> against the dense Llama/Mistral CPU profile.</summary>
+    /// <summary>Inspects <paramref name="packagePath"/> against the profile covering its
+    /// <c>model_type</c> (dense Llama/Mistral or dense Qwen2/Qwen3), defaulting to the Llama profile.</summary>
     public static ModelPackageCapabilityReport Inspect(string packagePath) =>
-        Inspect(packagePath, ModelPackageCapability.DenseLlamaCpu);
+        Inspect(packagePath, ModelPackageCapability.ForArchitecture(PeekModelType(packagePath)) ?? ModelPackageCapability.DenseLlamaCpu);
+
+    private static string? PeekModelType(string packagePath)
+    {
+        try
+        {
+            string root = Directory.Exists(packagePath) ? packagePath : Path.GetDirectoryName(Path.GetFullPath(packagePath)) ?? packagePath;
+            string config = Path.Combine(root, "config.json");
+            if (!File.Exists(config)) return null;
+            using var doc = JsonDocument.Parse(File.ReadAllBytes(config));
+            return doc.RootElement.ValueKind == JsonValueKind.Object && doc.RootElement.TryGetProperty("model_type", out var mt)
+                && mt.ValueKind == JsonValueKind.String ? mt.GetString() : null;
+        }
+        catch (Exception ex) when (ex is JsonException or IOException or UnauthorizedAccessException)
+        {
+            return null; // the full inspection reports the malformed package
+        }
+    }
 
     /// <summary>Inspects <paramref name="packagePath"/> against one profile.</summary>
     public static ModelPackageCapabilityReport Inspect(string packagePath, ModelPackageCapability profile)
@@ -141,6 +159,15 @@ public static class ModelPackageInspector
             if (TryGetBool(json, "mlp_bias"))
                 rejections.Add(new ModelPackageRejection(ModelPackageRejectionKind.UnsupportedConfig,
                     "mlp_bias", "Profile requires bias-free MLP projections."));
+
+            // Sliding-window attention changes which keys each query sees; this lane runs full attention.
+            if (TryGetBool(json, "use_sliding_window"))
+                rejections.Add(new ModelPackageRejection(ModelPackageRejectionKind.UnsupportedConfig,
+                    "use_sliding_window", "Sliding-window attention is not part of this profile."));
+            if (json.TryGetProperty("layer_types", out var layerTypes) && layerTypes.ValueKind == JsonValueKind.Array
+                && layerTypes.EnumerateArray().Any(t => t.GetString() != "full_attention"))
+                rejections.Add(new ModelPackageRejection(ModelPackageRejectionKind.UnsupportedConfig,
+                    "layer_types", "Every layer must be full_attention for this profile."));
 
             if (json.TryGetProperty("rope_scaling", out var scaling) && scaling.ValueKind is not JsonValueKind.Null)
                 rejections.Add(new ModelPackageRejection(ModelPackageRejectionKind.UnsupportedConfig,

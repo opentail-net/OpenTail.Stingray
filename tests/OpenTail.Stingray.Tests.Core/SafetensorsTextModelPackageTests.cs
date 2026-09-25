@@ -43,7 +43,10 @@ public sealed class SafetensorsTextModelPackageTests
         Assert.Equal("token_embd.weight", SafetensorsTextModelPackage.TryMapToOpenTailTensorName("model.embed_tokens.weight"));
         Assert.Equal("blk.0.attn_q.weight", SafetensorsTextModelPackage.TryMapToOpenTailTensorName("model.layers.0.self_attn.q_proj.weight"));
         Assert.Equal("blk.12.ffn_down.weight", SafetensorsTextModelPackage.TryMapToOpenTailTensorName("model.layers.12.mlp.down_proj.weight"));
-        Assert.Null(SafetensorsTextModelPackage.TryMapToOpenTailTensorName("model.layers.0.self_attn.q_proj.bias"));
+        // Qwen2 q/k/v biases and Qwen3 QK-norm map to the llama.cpp names; other tensors stay unmapped.
+        Assert.Equal("blk.0.attn_q.bias", SafetensorsTextModelPackage.TryMapToOpenTailTensorName("model.layers.0.self_attn.q_proj.bias"));
+        Assert.Equal("blk.3.attn_k_norm.weight", SafetensorsTextModelPackage.TryMapToOpenTailTensorName("model.layers.3.self_attn.k_norm.weight"));
+        Assert.Null(SafetensorsTextModelPackage.TryMapToOpenTailTensorName("model.layers.0.self_attn.rotary_emb.inv_freq"));
     }
 
     [Fact]
