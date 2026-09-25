@@ -338,3 +338,27 @@ this iGPU (CLAUDE.md rule 13: says nothing about discrete GPUs). **MeloTTS Engli
 on both backends. The shipped checkpoint is the Chinese/English-mixed model; the MeloTTS.cpp demo audio is
 all Chinese, so there's no reference for its English quality. Logged as an observation, not root-caused.
 Note: piper/f5tts/melo need an explicit `-m` in the CLI; only kokoro and chatterbox have default model paths.
+
+## CosyVoice2 -- greedy decoding replaced with RAS (now stops by itself); garbled ending remains; README 🟢 → 🟡, 2026-09-25
+
+First direct check of CosyVoice2 (its 🟢 row was inferred from sharing CosyVoice3's code). `CosyVoice2GenerateWavDebugTest`,
+"This is a test of voice synthesis." (its path lookups were also fixed: weights live in `models/_models`, and the
+output path no longer comes from the checkpoint's grandparent directory).
+- **Before:** `CosyVoiceLlmGeneration` decoded speech tokens greedily (argmax). It never emitted EOS, ran to the
+  200-token cap (8.00s), and Whisper heard "This is the taxidest place to possess."
+- **Fix:** the reference samples with Repetition-Aware Sampling (top_k 25, top_p 0.8, win 10, tau 0.1), stop
+  tokens masked before `min_len = 2 × text tokens`, capped at `20 ×`. CosyVoice3 already had this
+  (`c8a4bf9`); its `SampleSpeechToken` is now `internal` and shared (no copy), and CosyVoice2 threads the seed.
+- **After** (3 seeds): natural stop at 2.0-2.9s; Whisper hears "This is a test of worst existence." /
+  "This is a test of moistness and mistness." / "Is it a test of voice and visit?". The opening is right; the
+  last words are garbled on every seed.
+- **Likely cause (not yet fixed):** CosyVoice2-0.5B is a zero-shot model that expects a speaker prompt
+  (reference audio → CamPlus x-vector + speech-tokenizer prompt tokens). `CosyVoice2Pipeline` has no prompt
+  path: empty prompt tokens and an all-zero speaker embedding (its own class doc names this gap). CosyVoice3
+  *with* a real reference is word-exact. Next step: port CosyVoice3's reference-prompt path
+  (`cosyvoice_speech_tokenizer_v2.onnx` + CamPlus are on disk).
+
+Also this pass (Whisper round trips, CPU): QwenTTS "Hello, I will make some lunch darling." (exact, 12s);
+VoxCPM2 "Hello there, this is a real end-to-end test of speech synthesis." (exact, 33s); CosyVoice3 zero-shot
+cloning from `a.wav` "Hello, I will make some lunch darling." (exact, 82s). `CosyVoice3ClipGenDebugTests` depended on
+a deleted local sample and skipped; it now defaults to `a.wav` + its transcript (`CV3_REF`/`CV3_REF_TEXT`/`CV3_OUT`).

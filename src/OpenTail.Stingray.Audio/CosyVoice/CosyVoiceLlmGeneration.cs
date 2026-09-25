@@ -44,8 +44,9 @@ public static class CosyVoiceLlmGeneration
     /// </summary>
     public static int[] GenerateSpeechTokens(
         CosyVoiceLlmTensorSource source, string tokenizerDir, string text,
-        string promptText = "", int[]? promptSpeechTokens = null, int maxNewTokens = 200)
+        string promptText = "", int[]? promptSpeechTokens = null, int maxNewTokens = 200, Random? rng = null)
     {
+        rng ??= new Random(0);
         source.EnableSpeechGenerationMode();
         if (source.SosTaskTokenIdBase < 0)
             throw new InvalidOperationException("CosyVoiceLlmTensorSource has no real llm_embedding.weight tensor -- cannot address sos/task_id.");
@@ -58,6 +59,7 @@ public static class CosyVoiceLlmGeneration
 
         var textTokens = new List<int>();
         if (!string.IsNullOrEmpty(promptText)) textTokens.AddRange(tokenizer.Encode(promptText));
+        int synthTextTokens = tokenizer.Encode(text).Count;
         textTokens.AddRange(tokenizer.Encode(text));
 
         promptSpeechTokens ??= [];
@@ -73,11 +75,18 @@ public static class CosyVoiceLlmGeneration
 
         var logits = ApplyBias(fwd.Prefill(prefillIds).ToArray(), source.LlmDecoderBias);
 
+        // Real CosyVoice2 inference (`llm.inference` + `sampling_ids`): Repetition-Aware Sampling
+        // (top_k 25, top_p 0.8, win 10, tau 0.1), stop tokens masked before min_len = 2 x synth-text
+        // tokens, capped at max_len = 20 x. This used plain argmax until 2026-09-25, which looped
+        // without ever emitting EOS (always ran to the cap) and garbled the speech. Shares
+        // CosyVoice3's RAS sampler.
+        int minLen = Math.Max(1, synthTextTokens * 2);
+        int maxLen = synthTextTokens > 0 ? Math.Min(maxNewTokens, synthTextTokens * 20) : maxNewTokens;
         var generated = new List<int>();
         int pos = prefillIds.Count;
-        for (int step = 0; step < maxNewTokens; step++)
+        for (int step = 0; step < maxLen; step++)
         {
-            int localId = ArgMax(logits);
+            int localId = CosyVoice3Llm.SampleSpeechToken(logits, generated, allowStop: step >= minLen, rng);
             if (stopTokenIds.Contains(localId)) break;
 
             generated.Add(localId);
@@ -119,14 +128,5 @@ public static class CosyVoiceLlmGeneration
             ModelFamily = "gpt2",
         };
         return GgufTokenizer.FromSource(source);
-    }
-
-    private static int ArgMax(ReadOnlySpan<float> logits)
-    {
-        int best = 0;
-        float bestVal = float.NegativeInfinity;
-        for (int i = 0; i < logits.Length; i++)
-            if (logits[i] > bestVal) { bestVal = logits[i]; best = i; }
-        return best;
     }
 }

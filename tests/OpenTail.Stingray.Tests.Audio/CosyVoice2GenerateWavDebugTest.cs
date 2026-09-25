@@ -18,6 +18,9 @@ public sealed class CosyVoice2GenerateWavDebugTest : HeavyTestBase
         {
             var p = Path.Combine(dir, relPath);
             if (File.Exists(p) || Directory.Exists(p)) return p;
+            // Large checkpoints live in models/_models (the curated working set on F:).
+            var q = Path.Combine(dir, relPath.Replace("models/", "models/_models/", StringComparison.Ordinal));
+            if (File.Exists(q) || Directory.Exists(q)) return q;
             var parent = Directory.GetParent(dir);
             if (parent is null) break;
             dir = parent.FullName;
@@ -36,13 +39,13 @@ public sealed class CosyVoice2GenerateWavDebugTest : HeavyTestBase
             "CosyVoice2 model files not found");
 
         using var pipeline = CosyVoice2Pipeline.Load(llmPath!, tokDir!, flowPath!, hiftPath!);
-        var wav = pipeline.Generate("This is a test of voice synthesis.", seed: 42);
+        var wav = pipeline.Generate("This is a test of voice synthesis.", seed: int.TryParse(Environment.GetEnvironmentVariable("CV2_SEED"), out var sd) ? sd : 42);
 
         Assert.True(wav.Length > 0, "CosyVoice2 produced empty audio");
 
-        string repoRoot = Directory.GetParent(Path.GetDirectoryName(llmPath!)!)!.FullName;
+        string repoRoot = Path.GetDirectoryName(Path.GetDirectoryName(FindModelPath("docs/00-current-work.md"))!)!;
         var result = new AudioGenerationResult(wav, pipeline.SampleRate);
-        string outPath = Path.Combine(repoRoot, "docs", "audio-samples", "cosyvoice2-real-check.wav");
+        string outPath = Environment.GetEnvironmentVariable("CV2_OUT") ?? Path.Combine(repoRoot, "docs", "audio-samples", "cosyvoice2-real-check.wav");
         result.SaveWav(outPath);
         Console.WriteLine($"Wrote {outPath}, {wav.Length} samples, {wav.Length / (double)pipeline.SampleRate:F2}s");
     }

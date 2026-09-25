@@ -63,7 +63,7 @@ public sealed class CosyVoice2Pipeline : IDisposable
     /// <summary>Synthesizes real 24kHz PCM audio for the given text.</summary>
     public float[] Generate(string text, int maxNewSpeechTokens = 200, int odeSteps = 10, int? seed = null)
     {
-        var speechTokens = CosyVoiceLlmGeneration.GenerateSpeechTokens(_llmSource, _tokenizerDir, text, maxNewTokens: maxNewSpeechTokens);
+        var speechTokens = CosyVoiceLlmGeneration.GenerateSpeechTokens(_llmSource, _tokenizerDir, text, maxNewTokens: maxNewSpeechTokens, rng: new Random(seed ?? 0));
         if (speechTokens.Length == 0) return [];
 
         var (mu, totalFrames) = CosyVoiceFlowEncoder.Forward(_flowWeights, promptTokens: [], speechTokens);

@@ -166,7 +166,7 @@ public static class CosyVoice3Llm
     /// recent window >= (winSize * tau) times, it is masked out and resampled, preventing phoneme stutter
     /// without distorting natural continuous acoustic code repetitions.
     /// </summary>
-    private static int SampleSpeechToken(ReadOnlySpan<float> logits, List<int> pastTokens, bool allowStop, Random rng, int topK = 25, float topP = 0.8f, int winSize = 10, float tauR = 0.1f, float temperature = 1.0f)
+    internal static int SampleSpeechToken(ReadOnlySpan<float> logits, List<int> pastTokens, bool allowStop, Random rng, int topK = 25, float topP = 0.8f, int winSize = 10, float tauR = 0.1f, float temperature = 1.0f)
     {
         int totalVocab = logits.Length;
         int maxAllowed = allowStop ? totalVocab : Math.Min(totalVocab, 6561);
