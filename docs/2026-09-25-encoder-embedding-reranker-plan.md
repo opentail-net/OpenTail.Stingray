@@ -210,3 +210,14 @@ the oracle.
 - [x] Phase 0 (2026-09-25): all 15 repos downloaded to `models/_models/hf/<owner>__<name>/` (17 GB; F: 11 GB free after). Each has weights (ELECTRA: `flax_model.msgpack` only, as expected), `tokenizer.json` + `config.json`, the ST `modules.json`/`1_Pooling` where published, and `onnx/model.onnx` for 11 repos (none for bge-reranker-v2-m3, GPT-2, Qwen3-0.6B, tiny-Qwen2). Qwen3-8B stays on the existing GGUF.
 - [ ] Phase 1 tokenizers (next): WordPiece via vocab.txt + `tokenizer.json` normalizer flags; Unigram needs the **Precompiled charsmap** normalizer (port from `examples/llama.cpp/llama.cpp/src/llama-vocab.cpp` UGM `precompiled_charsmap`/xcda); id oracles = llama.cpp `models/ggml-vocab-bert-bge.gguf.inp/.out` + `llama-server /tokenize` on small GGUFs.
 - [ ] Phases 2-8
+
+### Phase 1 progress (2026-09-25)
+- **WordPiece: golden-verified.** New `Tests.Core/BertWordPieceTokenizerGoldenTests` runs llama.cpp's BERT/BGE
+  vocab test vectors (`ggml-vocab-bert-bge.gguf.inp/.out`, 46 cases: whitespace, accents, punctuation, emoji,
+  CJK) through `BertWordPieceTokenizer` with the real bge-small `vocab.txt`. **Found a real bug:** accent
+  stripping used `string.Normalize(FormD)`, which under this repo's `InvariantGlobalization` does not decompose
+  non-ASCII, so "Äpfel" → [UNK] instead of `apfel` (same for "Cửa Việt"). Fixed with a culture-free
+  `UnicodeAccentStrip` (generated 1,493-entry canonical-decomposition table + algorithmic Hangul). Now 46/46.
+- **Same pitfall elsewhere (follow-up):** `UnigramTokenizer` and `SentencePieceBpeTokenizer` call
+  `Normalize(FormKC)`, a no-op on non-ASCII under invariant mode. For XLM-R-family Unigram the real fix is the
+  tokenizer.json **Precompiled charsmap** (next); `SentencePieceBpeTokenizer`'s users should be checked too.

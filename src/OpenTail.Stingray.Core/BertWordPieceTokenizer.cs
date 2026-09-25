@@ -154,18 +154,9 @@ public sealed class BertWordPieceTokenizer
         (cp >= 0xF900 && cp <= 0xFAFF) ||
         (cp >= 0x2F800 && cp <= 0x2FA1F);
 
-    private static string StripAccents(string text)
-    {
-        var normalized = text.Normalize(NormalizationForm.FormD);
-        var sb = new StringBuilder(normalized.Length);
-        foreach (var c in normalized)
-        {
-            if (CharUnicodeInfo.GetUnicodeCategory(c) == UnicodeCategory.NonSpacingMark)
-                continue;
-            sb.Append(c);
-        }
-        return sb.ToString();
-    }
+    // NFD + drop Mn via a culture-free table: string.Normalize(FormD) does not decompose non-ASCII
+    // under InvariantGlobalization (see UnicodeAccentStrip).
+    private static string StripAccents(string text) => UnicodeAccentStrip.StripAccents(text);
 
     private static List<string> WhitespaceTokenize(string text) =>
         text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries).ToList();
