@@ -319,3 +319,22 @@ against the current real behaviour or a reference before updating:
   ("ZH-MIX-EN", `examples/MeloTTS.cpp/src/tts.cpp` `speaker_ids`); the test's 0-4 accent table belongs to
   the English-only checkpoint. `MeloVoices.GetSpeakerId` also mapped "ZH" to 0, which this checkpoint
   doesn't use; it now maps everything to 1 (English was already 1 and ear-confirmed).
+
+## CLI TTS engines on CPU and Vulkan -- Whisper round trip, 2026-09-25
+
+`stingray tts -e <engine> -g cpu|vulkan -t "Hello there, this is a real test of speech synthesis."`,
+Whisper-base round trip (`stingray stt`). One process at a time; wall time includes model load.
+
+| engine | CPU | Vulkan | Whisper (both backends) |
+|---|---|---|---|
+| Kokoro (default voice) | 6s | 5s | exact / exact |
+| Chatterbox-Turbo | 13s | 9s | exact / exact |
+| Piper (`en_US-lessac-medium`) | 2s | 3s | exact / exact |
+| F5-TTS (`f5tts_base`, cloning `a.wav`) | 124s | 226s | exact / exact |
+| MeloTTS (`melotts-zh_en`, EN-US) | 9s | 9s | **"…this is Aurelite Test at Speech's offices."** / **"…a relay test at speech synthesis."** |
+
+Kokoro, Chatterbox, Piper and F5-TTS are word-exact on both backends. F5-TTS on Vulkan is slower than CPU on
+this iGPU (CLAUDE.md rule 13: says nothing about discrete GPUs). **MeloTTS English is only partly intelligible**
+on both backends. The shipped checkpoint is the Chinese/English-mixed model; the MeloTTS.cpp demo audio is
+all Chinese, so there's no reference for its English quality. Logged as an observation, not root-caused.
+Note: piper/f5tts/melo need an explicit `-m` in the CLI; only kokoro and chatterbox have default model paths.
