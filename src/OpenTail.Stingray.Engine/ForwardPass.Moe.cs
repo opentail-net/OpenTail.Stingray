@@ -125,11 +125,38 @@ public sealed unsafe partial class ForwardPass
             FusedMatVec(_sharedOut, _wDownShexp![layer], _expertGate, _embDim, expertDim);
         }
 
-        // Step 3: Selected expert(s) — 2-sweep folded execution
-        MoeFfnFolded(
-            _wGateExps![layer], _wUpExps![layer], _wDownExps![layer],
-            selectedExperts, expertWeights, numActive, expertDim,
-            _normBuf, _hidden);
+        // Step 3: Selected expert(s) — 2-sweep folded execution when every expert dtype has a
+        // float-input row dot (DispatchDot); otherwise the per-expert sequential loop, whose
+        // SimdKernels.MatVec covers every dtype (Q2_K, MXFP4, IQ*, ... — the folded path threw
+        // on those, breaking e.g. DeepSeek-V2-Lite Q2_K and gpt-oss MXFP4 decode).
+        if (IsFoldedDotDType(_wGateExps![layer].DType) && IsFoldedDotDType(_wUpExps![layer].DType)
+            && IsFoldedDotDType(_wDownExps![layer].DType))
+        {
+            MoeFfnFolded(
+                _wGateExps[layer], _wUpExps[layer], _wDownExps[layer],
+                selectedExperts, expertWeights, numActive, expertDim,
+                _normBuf, _hidden);
+        }
+        else
+        {
+            new Span<float>(_hidden, _embDim).Clear();
+            for (int k = 0; k < numActive; k++)
+            {
+                int expertIdx = selectedExperts[k];
+                float weight = expertWeights[k];
+                ExpertMatVecDual(_expertGate, _wGateExps[layer], _expertUp, _wUpExps![layer],
+                    expertIdx, expertDim, _embDim, _normBuf);
+                if (_hp.UseSigmoidGating)
+                {
+                    // Llama-4: apply sigmoid weight before FFN (scale gate/up ≡ scaling input)
+                    SimdKernels.ScaleInPlace(_expertGate, weight, expertDim);
+                    SimdKernels.ScaleInPlace(_expertUp, weight, expertDim);
+                    weight = 1.0f;
+                }
+                SimdKernels.SiLuMul(_expertGate, _expertUp, expertDim);
+                ExpertMatVecDown(_hidden, _wDownExps![layer], expertIdx, _embDim, expertDim, _expertGate, weight);
+            }
+        }
 
         // Step 4: Add shared expert output
         if (_hp.HasSharedExpert)
@@ -271,6 +298,9 @@ public sealed unsafe partial class ForwardPass
     {
         MaxDegreeOfParallelism = Environment.ProcessorCount
     };
+
+    private static bool IsFoldedDotDType(DType dtype) =>
+        dtype is DType.Q3_K or DType.Q4_K or DType.Q5_K or DType.Q6_K or DType.Q8_0 or DType.Float32;
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static float DispatchDot(byte* row, float* input, int cols, DType dtype) =>
