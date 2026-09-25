@@ -126,19 +126,7 @@ public sealed class T5Model : IDisposable
             new PackedLinearF32((float[])lm.Clone(), null, loadLmHead ? c.VocabSize : 1, c.DModel));
     }
 
-    private void RmsNorm(ReadOnlySpan<float> x, ReadOnlySpan<float> w, Span<float> y)
-    {
-        float ms = TensorPrimitives.SumOfSquares(x) / x.Length;
-        float inv = 1f / MathF.Sqrt(ms + Config.LayerNormEps);
-        TensorPrimitives.Multiply(x, inv, y);
-        TensorPrimitives.Multiply(y, w, y);
-    }
-
-    private void RmsNormRows(float[] x, float[] w, float[] y, int rows)
-    {
-        int d = Config.DModel;
-        Parallel.For(0, rows, r => RmsNorm(x.AsSpan(r * d, d), w, y.AsSpan(r * d, d)));
-    }
+    private void RmsNormRows(float[] x, float[] w, float[] y, int rows) => RowKernels.RmsNormRows(x, y, rows, Config.DModel, w, Config.LayerNormEps);
 
     private float[] Embed(ReadOnlySpan<int> ids)
     {
@@ -179,9 +167,7 @@ public sealed class T5Model : IDisposable
                 if (keyMask is not null && !keyMask[j]) scores[j] = float.MinValue; // HF adds finfo(float32).min to masked keys
             }
             // Max-subtracted softmax: T5 scores are unscaled and can exceed exp's float range.
-            TensorPrimitives.Subtract(scores, TensorPrimitives.Max(scores), scores);
-            TensorPrimitives.Exp(scores, scores);
-            TensorPrimitives.Divide(scores, TensorPrimitives.Sum(scores), scores);
+            RowKernels.SoftmaxInPlace(scores);
             var o = ctx.AsSpan(i * inner + h * dk, dk);
             for (int j = 0; j < visible; j++)
                 TensorPrimitives.MultiplyAdd(v.AsSpan(j * inner + h * dk, dk), scores[j], o, o);

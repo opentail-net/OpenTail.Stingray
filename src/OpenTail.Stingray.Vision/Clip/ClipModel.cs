@@ -109,20 +109,7 @@ public sealed class ClipModel : IDisposable
             MathF.Exp(st.ReadF32("logit_scale")[0]), imageSize, patchSize, mean, std);
     }
 
-    private static void LayerNorm(float[] x, int rows, int d, float[] w, float[] b, float eps, float[] y)
-    {
-        Parallel.For(0, rows, r =>
-        {
-            var xr = x.AsSpan(r * d, d);
-            var yr = y.AsSpan(r * d, d);
-            float mean = TensorPrimitives.Sum(xr) / d;
-            TensorPrimitives.Subtract(xr, mean, yr);
-            float inv = 1f / MathF.Sqrt(TensorPrimitives.SumOfSquares(yr) / d + eps);
-            TensorPrimitives.Multiply(yr, inv, yr);
-            TensorPrimitives.Multiply(yr, w, yr);
-            TensorPrimitives.Add(yr, b, yr);
-        });
-    }
+    private static void LayerNorm(float[] x, int rows, int d, float[] w, float[] b, float eps, float[] y) => RowKernels.LayerNormRows(x, y, rows, d, w, b, eps);
 
     /// <summary>Pre-LN encoder over [t, dim] in place; causal masks keys after the query (text tower).</summary>
     private static void Encode(Tower tw, float[] x, int t, bool causal)
@@ -145,9 +132,7 @@ public sealed class ClipModel : IDisposable
                 var scores = new float[keys];
                 var q = qkv.AsSpan(i * 3 * d + off, dh);
                 for (int j = 0; j < keys; j++) scores[j] = TensorPrimitives.Dot(q, qkv.AsSpan(j * 3 * d + d + off, dh)) * scale;
-                TensorPrimitives.Subtract(scores, TensorPrimitives.Max(scores), scores);
-                TensorPrimitives.Exp(scores, scores);
-                TensorPrimitives.Divide(scores, TensorPrimitives.Sum(scores), scores);
+                RowKernels.SoftmaxInPlace(scores);
                 var c = ctx.AsSpan(i * d + off, dh);
                 for (int j = 0; j < keys; j++) TensorPrimitives.MultiplyAdd(qkv.AsSpan(j * 3 * d + 2 * d + off, dh), scores[j], c, c);
             });

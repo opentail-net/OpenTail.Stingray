@@ -111,18 +111,7 @@ public sealed class Chronos2Model : IDisposable
             d, heads, dk, patch, eps, timeScale, arcsinh, theta, ctx, cc.GetProperty("max_output_patches").GetInt32(), quantiles);
     }
 
-    private void RmsNorm(float[] x, float[] w, float[] y, int rows)
-    {
-        int d = _d;
-        Parallel.For(0, rows, r =>
-        {
-            var xr = x.AsSpan(r * d, d);
-            float inv = 1f / MathF.Sqrt(TensorPrimitives.SumOfSquares(xr) / d + _eps);
-            var yr = y.AsSpan(r * d, d);
-            TensorPrimitives.Multiply(xr, inv, yr);
-            TensorPrimitives.Multiply(yr, w, yr);
-        });
-    }
+    private void RmsNorm(float[] x, float[] w, float[] y, int rows) => RowKernels.RmsNormRows(x, y, rows, _d, w, _eps);
 
     /// <summary>Unscaled softmax attention for one query over <paramref name="keys"/> key rows (masked → finfo.min; all masked → uniform).</summary>
     private static void AttendOne(ReadOnlySpan<float> q, Func<int, ReadOnlySpan<float>> key, Func<int, ReadOnlySpan<float>> value, int keys,
@@ -136,9 +125,7 @@ public sealed class Chronos2Model : IDisposable
         if (!any) s.Fill(1f / keys);
         else
         {
-            TensorPrimitives.Subtract(s, TensorPrimitives.Max(s), s);
-            TensorPrimitives.Exp(s, s);
-            TensorPrimitives.Divide(s, TensorPrimitives.Sum(s), s);
+            RowKernels.SoftmaxInPlace(s);
         }
         output.Clear();
         for (int j = 0; j < keys; j++) if (s[j] != 0f) TensorPrimitives.MultiplyAdd(value(j), s[j], output, output);

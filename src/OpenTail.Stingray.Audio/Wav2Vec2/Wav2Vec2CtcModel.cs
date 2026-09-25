@@ -139,19 +139,7 @@ public sealed class Wav2Vec2CtcModel : IDisposable
         return vocab;
     }
 
-    private void LayerNormRows(float[] x, int rows, int dim, float[] w, float[] b, float eps)
-    {
-        Parallel.For(0, rows, r =>
-        {
-            var row = x.AsSpan(r * dim, dim);
-            float mean = TensorPrimitives.Sum(row) / dim;
-            TensorPrimitives.Subtract(row, mean, row);
-            float inv = 1f / MathF.Sqrt(TensorPrimitives.SumOfSquares(row) / dim + eps);
-            TensorPrimitives.Multiply(row, inv, row);
-            TensorPrimitives.Multiply(row, w, row);
-            TensorPrimitives.Add(row, b, row);
-        });
-    }
+    private static void LayerNormRows(float[] x, int rows, int dim, float[] w, float[] b, float eps) => RowKernels.LayerNormRows(x, x, rows, dim, w, b, eps);
 
     /// <summary>Valid conv1d over frame-major [t, inCh] → [tOut, outCh] via im2col (row = [c0k0..c0kK, c1k0..]).</summary>
     private static float[] Conv1d(float[] x, int t, ConvLayer l, out int tOut)
@@ -300,9 +288,7 @@ public sealed class Wav2Vec2CtcModel : IDisposable
             var scores = new float[t];
             var q = qkv.AsSpan(i * stride + off, dh);
             for (int j = 0; j < t; j++) scores[j] = TensorPrimitives.Dot(q, qkv.AsSpan(j * stride + h + off, dh)) * scale;
-            TensorPrimitives.Subtract(scores, TensorPrimitives.Max(scores), scores);
-            TensorPrimitives.Exp(scores, scores);
-            TensorPrimitives.Divide(scores, TensorPrimitives.Sum(scores), scores);
+            RowKernels.SoftmaxInPlace(scores);
             var o = ctx.AsSpan(i * h + off, dh);
             for (int j = 0; j < t; j++) TensorPrimitives.MultiplyAdd(qkv.AsSpan(j * stride + 2 * h + off, dh), scores[j], o, o);
         });
