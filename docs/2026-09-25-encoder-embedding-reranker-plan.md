@@ -208,7 +208,7 @@ the oracle.
 ## Status
 
 - [x] Phase 0 (2026-09-25): all 15 repos downloaded to `models/_models/hf/<owner>__<name>/` (17 GB; F: 11 GB free after). Each has weights (ELECTRA: `flax_model.msgpack` only, as expected), `tokenizer.json` + `config.json`, the ST `modules.json`/`1_Pooling` where published, and `onnx/model.onnx` for 11 repos (none for bge-reranker-v2-m3, GPT-2, Qwen3-0.6B, tiny-Qwen2). Qwen3-8B stays on the existing GGUF.
-- [ ] Phase 1 tokenizers (next): WordPiece via vocab.txt + `tokenizer.json` normalizer flags; Unigram needs the **Precompiled charsmap** normalizer (port from `examples/llama.cpp/llama.cpp/src/llama-vocab.cpp` UGM `precompiled_charsmap`/xcda); id oracles = llama.cpp `models/ggml-vocab-bert-bge.gguf.inp/.out` + `llama-server /tokenize` on small GGUFs.
+- [x] Phase 1 tokenizers (2026-09-25, see progress below): WordPiece via vocab.txt + `tokenizer.json` normalizer flags; Unigram needs the **Precompiled charsmap** normalizer (port from `examples/llama.cpp/llama.cpp/src/llama-vocab.cpp` UGM `precompiled_charsmap`/xcda); id oracles = llama.cpp `models/ggml-vocab-bert-bge.gguf.inp/.out` + `llama-server /tokenize` on small GGUFs.
 - [ ] Phases 2-8
 
 ### Phase 1 progress (2026-09-25)
@@ -234,6 +234,18 @@ the oracle.
   xlm-roberta-base, paraphrase-multilingual-MiniLM and multilingual-e5-small. The only config-driven difference is
   e5 (`Replace " {2,}"` without Strip), which keeps trailing whitespace as a `▁` piece where llama.cpp drops
   it, so the test compares e5 on right-trimmed input. Parler's T5 goldens still pass.
-- **Still open in Phase 1:** WordPiece from `tokenizer.json` (lowercase/strip flags, MPNet `<s>`/`</s>`), special-token
-  templates and pair inputs (`<s> A </s></s> B </s>`, BERT `[SEP]` + token types), and the
-  `SentencePieceBpeTokenizer` `FormKC` no-op.
+- **WordPiece from tokenizer.json + templates/pairs: done.** `BertWordPieceTokenizer.FromTokenizerJson` reads the
+  vocab dict, `unk_token`/`continuing_subword_prefix`/`max_input_chars_per_word` and the `BertNormalizer` flags
+  (`strip_accents: null` follows `lowercase`, as in HF). New `EncoderTokenizer` picks WordPiece or Unigram from the
+  file and applies the `post_processor`: `TemplateProcessing` as written (BERT `[CLS] A [SEP] B [SEP]`, types 0/1;
+  XLM-R `<s> A </s></s> B </s>`) or `RobertaProcessing` (MPNet), pad id from `padding.pad_id` or `[PAD]`/`<pad>`.
+  It truncates with HF's `LongestFirst` arithmetic. `EncoderTokenizerTests` reruns llama.cpp's BGE golden through the
+  JSON path for all 7 uncased-BERT-vocab checkpoints (bge-small/large, all-MiniLM, ms-marco-MiniLM,
+  bert-base-uncased, electra-base, nomic-embed v1.5): 46/46 each. The pair/template/truncation cases are structural
+  tests. Their real check is Phase 2+ rerank score parity against llama.cpp `--rerank` and ONNX.
+- **`SentencePieceBpeTokenizer` (MOSS-TTS) now applies the model's own charsmap** (`NormalizerSpec` field 2 in the
+  `.model` protobuf) instead of the `FormKC` no-op. The MOSS tokenizer and reference-parity real-weight tests still pass.
+- **Not handled (noted):** added-token splitting inside the text (e.g. a literal `[MASK]` or `<mask>` in the input is
+  word-pieced rather than mapped to its id). Embedding/rerank inputs don't need it.
+- **Phase 1 is complete.** Next: Phase 2, the TransformerEncoder (BERT first: bge-small/all-MiniLM vs ONNX + llama.cpp
+  `--embedding`).

@@ -18,23 +18,35 @@ public sealed class BertWordPieceTokenizer
 {
     private readonly Dictionary<string, int> _vocab;
     private readonly bool _doLowerCase;
+    private readonly bool _stripAccents;
     private readonly bool _tokenizeChineseChars;
-    private const int MaxInputCharsPerWord = 100;
+    private readonly bool _cleanText;
+    private readonly string _unkToken;
+    private readonly string _continuingPrefix;
+    private readonly int _maxInputCharsPerWord;
 
     public int ClsTokenId { get; }
     public int SepTokenId { get; }
     public int UnkTokenId { get; }
     public int PadTokenId { get; }
 
-    private BertWordPieceTokenizer(Dictionary<string, int> vocab, bool doLowerCase, bool tokenizeChineseChars)
+    private BertWordPieceTokenizer(Dictionary<string, int> vocab, bool doLowerCase, bool tokenizeChineseChars,
+        bool? stripAccents = null, bool cleanText = true, string unkToken = "[UNK]", string continuingPrefix = "##",
+        int maxInputCharsPerWord = 100)
     {
         _vocab = vocab;
         _doLowerCase = doLowerCase;
+        // HF BertNormalizer / BasicTokenizer: strip_accents unset (null) follows lowercase.
+        _stripAccents = stripAccents ?? doLowerCase;
         _tokenizeChineseChars = tokenizeChineseChars;
+        _cleanText = cleanText;
+        _unkToken = unkToken;
+        _continuingPrefix = continuingPrefix;
+        _maxInputCharsPerWord = maxInputCharsPerWord;
 
         ClsTokenId = _vocab.TryGetValue("[CLS]", out var cls) ? cls : 0;
         SepTokenId = _vocab.TryGetValue("[SEP]", out var sep) ? sep : 0;
-        UnkTokenId = _vocab.TryGetValue("[UNK]", out var unk) ? unk : 0;
+        UnkTokenId = _vocab.TryGetValue(unkToken, out var unk) ? unk : 0;
         PadTokenId = _vocab.TryGetValue("[PAD]", out var pad) ? pad : 0;
     }
 
@@ -60,11 +72,60 @@ public sealed class BertWordPieceTokenizer
         return new BertWordPieceTokenizer(vocab, doLowerCase, tokenizeChineseChars);
     }
 
+    /// <summary>
+    /// Loads a HF <c>tokenizer.json</c> whose model is <c>WordPiece</c>: the vocab dict, <c>unk_token</c>,
+    /// <c>continuing_subword_prefix</c> and <c>max_input_chars_per_word</c>, plus the <c>BertNormalizer</c>
+    /// flags (<c>lowercase</c>, <c>strip_accents</c>, <c>handle_chinese_chars</c>, <c>clean_text</c>).
+    /// Special-token templates are applied by <see cref="EncoderTokenizer"/>, not here.
+    /// </summary>
+    public static BertWordPieceTokenizer FromTokenizerJson(string tokenizerJsonPath)
+    {
+        using var doc = JsonDocument.Parse(File.ReadAllBytes(tokenizerJsonPath));
+        var root = doc.RootElement;
+        var model = root.GetProperty("model");
+        bool isWordPiece = model.TryGetProperty("type", out var type)
+            ? type.GetString() == "WordPiece"
+            : model.TryGetProperty("continuing_subword_prefix", out _) && model.TryGetProperty("max_input_chars_per_word", out _);
+        if (!isWordPiece)
+            throw new InvalidDataException($"'{tokenizerJsonPath}' model type is not WordPiece.");
+
+        var vocab = new Dictionary<string, int>(StringComparer.Ordinal);
+        foreach (var entry in model.GetProperty("vocab").EnumerateObject()) vocab[entry.Name] = entry.Value.GetInt32();
+
+        bool lower = true, chinese = true, clean = true;
+        bool? strip = null;
+        if (root.TryGetProperty("normalizer", out var n) && n.ValueKind == JsonValueKind.Object)
+        {
+            if (n.GetProperty("type").GetString() != "BertNormalizer")
+                throw new NotSupportedException($"'{tokenizerJsonPath}': WordPiece normalizer '{n.GetProperty("type").GetString()}' is not supported.");
+            lower = !n.TryGetProperty("lowercase", out var lc) || lc.GetBoolean();
+            chinese = !n.TryGetProperty("handle_chinese_chars", out var hc) || hc.GetBoolean();
+            clean = !n.TryGetProperty("clean_text", out var ct) || ct.GetBoolean();
+            if (n.TryGetProperty("strip_accents", out var sa) && sa.ValueKind != JsonValueKind.Null) strip = sa.GetBoolean();
+        }
+        string unk = model.TryGetProperty("unk_token", out var u) && u.ValueKind == JsonValueKind.String ? u.GetString()! : "[UNK]";
+        string prefix = model.TryGetProperty("continuing_subword_prefix", out var p) && p.ValueKind == JsonValueKind.String ? p.GetString()! : "##";
+        int maxChars = model.TryGetProperty("max_input_chars_per_word", out var mc) && mc.ValueKind == JsonValueKind.Number ? mc.GetInt32() : 100;
+        return new BertWordPieceTokenizer(vocab, lower, chinese, strip, clean, unk, prefix, maxChars);
+    }
+
+    /// <summary>Vocab id of <paramref name="token"/>, or null when it is not in the vocab.</summary>
+    public int? TokenToId(string token) => _vocab.TryGetValue(token, out var id) ? id : null;
+
+    /// <summary>Ids for <paramref name="text"/> with no special tokens.</summary>
+    public List<int> EncodeIds(string text)
+    {
+        var tokens = Tokenize(text);
+        var ids = new List<int>(tokens.Count);
+        foreach (var t in tokens) ids.Add(_vocab.TryGetValue(t, out var id) ? id : UnkTokenId);
+        return ids;
+    }
+
     /// <summary>Basic tokenization: clean, optional CJK spacing, lowercase+strip-accents, whitespace
     /// split, then punctuation split -- matches the real `BasicTokenizer.tokenize`.</summary>
     private List<string> BasicTokenize(string text)
     {
-        text = CleanText(text);
+        if (_cleanText) text = CleanText(text);
         if (_tokenizeChineseChars)
             text = TokenizeChineseChars(text);
 
@@ -73,11 +134,8 @@ public sealed class BertWordPieceTokenizer
         foreach (var token in origTokens)
         {
             string t = token;
-            if (_doLowerCase)
-            {
-                t = t.ToLowerInvariant();
-                t = StripAccents(t);
-            }
+            if (_doLowerCase) t = t.ToLowerInvariant();
+            if (_stripAccents) t = StripAccents(t);
             splitTokens.AddRange(SplitOnPunctuation(t));
         }
         return splitTokens;
@@ -200,8 +258,8 @@ public sealed class BertWordPieceTokenizer
     /// prefix and the whole-word-becomes-[UNK] fallback when no valid split exists).</summary>
     private List<string> WordpieceTokenize(string token)
     {
-        if (token.Length > MaxInputCharsPerWord)
-            return ["[UNK]"];
+        if (token.Length > _maxInputCharsPerWord)
+            return [_unkToken];
 
         var subTokens = new List<string>();
         int start = 0;
@@ -212,7 +270,7 @@ public sealed class BertWordPieceTokenizer
             while (start < end)
             {
                 string substr = token[start..end];
-                if (start > 0) substr = "##" + substr;
+                if (start > 0) substr = _continuingPrefix + substr;
                 if (_vocab.ContainsKey(substr))
                 {
                     curSubstr = substr;
@@ -221,7 +279,7 @@ public sealed class BertWordPieceTokenizer
                 end--;
             }
             if (curSubstr is null)
-                return ["[UNK]"];
+                return [_unkToken];
             subTokens.Add(curSubstr);
             start = end;
         }

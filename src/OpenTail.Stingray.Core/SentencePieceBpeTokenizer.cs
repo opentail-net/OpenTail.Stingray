@@ -26,13 +26,13 @@ namespace OpenTail.Stingray.Core;
 /// single opaque UNK token (SentencePiece's real `ByteToPiece`/`PopulateSentencePieceText` byte
 /// fallback path).</para>
 ///
-/// <para><b>Known gap, not worked around</b> (same discipline as <see cref="UnigramTokenizer"/>'s
-/// documented gap): the real `precompiled_charsmap` (a compiled darts double-array trie mapping
-/// arbitrary input substrings to Unicode-normalized replacements -- MOSS-TTS-Nano's real
-/// checkpoint carries a real 237561-byte one, confirmed via `MossTtsSpmProtoDumpDebugTest`, name
-/// `nmt_nfkc`) is NOT implemented; plain Unicode NFKC is applied as a stand-in, identical to the
-/// real pipeline for plain-ASCII input and possibly divergent on exotic/non-ASCII input until this
-/// gap is closed.</para>
+/// <para><b>Normalization</b>: the model's own <c>normalizer_spec.precompiled_charsmap</c>
+/// (MOSS-TTS-Nano carries a 237561-byte <c>nmt_nfkc</c> one, confirmed via
+/// <c>MossTtsSpmProtoDumpDebugTest</c>) is applied through <see cref="PrecompiledCharsmap"/>, the same
+/// port that <see cref="UnigramTokenizer"/> uses and that matches llama.cpp's UGM normalizer id-for-id on
+/// the XLM-R vocab. Models without a charsmap get no normalization. (Earlier this used
+/// <c>string.Normalize(FormKC)</c>, which under this repo's InvariantGlobalization does nothing to
+/// non-ASCII.)</para>
 /// </summary>
 public sealed class SentencePieceBpeTokenizer
 {
@@ -41,6 +41,7 @@ public sealed class SentencePieceBpeTokenizer
     private readonly List<string> _userDefinedSymbols = [];
     private readonly int _unkId;
     private readonly bool _byteFallback;
+    private PrecompiledCharsmap? _charsmap;
 
     private const char MetaspaceChar = '▁';
 
@@ -76,6 +77,7 @@ public sealed class SentencePieceBpeTokenizer
         var userDefined = new List<string>();
         int unkId = -1;
         bool byteFallback = false;
+        byte[]? charsmap = null;
 
         int i = 0;
         int pieceIndex = 0;
@@ -121,7 +123,25 @@ public sealed class SentencePieceBpeTokenizer
                         }
                     }
                 }
-                // fieldNo == 3 (NormalizerSpec) and others: skip, not needed (see class doc's known gap).
+                else if (fieldNo == 3) // NormalizerSpec: field 2 = precompiled_charsmap
+                {
+                    int j = start;
+                    while (j < start + len)
+                    {
+                        long subTag = ReadVarint(data, ref j);
+                        int subField = (int)(subTag >> 3);
+                        int subWire = (int)(subTag & 7);
+                        if (subWire == 0) ReadVarint(data, ref j);
+                        else if (subWire == 5) j += 4;
+                        else if (subWire == 1) j += 8;
+                        else if (subWire == 2)
+                        {
+                            long subLen = ReadVarint(data, ref j);
+                            if (subField == 2 && subLen > 0) charsmap = data[j..(j + (int)subLen)];
+                            j += (int)subLen;
+                        }
+                    }
+                }
             }
             else
             {
@@ -130,7 +150,10 @@ public sealed class SentencePieceBpeTokenizer
         }
 
         if (unkId < 0) throw new InvalidDataException("SentencePiece model has no UNKNOWN piece.");
-        return new SentencePieceBpeTokenizer(pieces, reserved, userDefined, unkId, byteFallback);
+        return new SentencePieceBpeTokenizer(pieces, reserved, userDefined, unkId, byteFallback)
+        {
+            _charsmap = charsmap is null ? null : new PrecompiledCharsmap(charsmap),
+        };
     }
 
     private static void ParsePiece(
@@ -204,15 +227,12 @@ public sealed class SentencePieceBpeTokenizer
     }
 
     /// <summary>
-    /// Real preprocessing stand-in: NFKC (see class doc's "Known gap" for the real
-    /// `precompiled_charsmap`) -&gt; Metaspace (collapse whitespace runs to a single `▁`, always
-    /// prepend one at the start -- SentencePiece's real "dummy prefix" behavior, same as
-    /// <see cref="UnigramTokenizer"/>'s identical stage since normalization is shared across model
-    /// types).
+    /// The model's precompiled charsmap (see class doc), then Metaspace: collapse whitespace runs to a
+    /// single `▁` and prepend one at the start (SentencePiece's "dummy prefix").
     /// </summary>
-    private static string Preprocess(string text)
+    private string Preprocess(string text)
     {
-        string normalized = text.Normalize(NormalizationForm.FormKC).Trim();
+        string normalized = (_charsmap?.Normalize(text) ?? text).Trim();
         if (normalized.Length == 0) return string.Empty;
 
         var sb = new StringBuilder(normalized.Length + 1);

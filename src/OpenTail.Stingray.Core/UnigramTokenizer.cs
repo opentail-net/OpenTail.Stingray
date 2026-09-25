@@ -371,6 +371,20 @@ public sealed class UnigramTokenizer
 
     public IReadOnlyList<string> Pieces => _pieces;
 
+    private Dictionary<string, int>? _pieceIds;
+
+    /// <summary>Vocab id of <paramref name="piece"/>, or null when it is not in the vocab.</summary>
+    public int? TokenToId(string piece)
+    {
+        if (_pieceIds is null)
+        {
+            var map = new Dictionary<string, int>(_pieces.Length, StringComparer.Ordinal);
+            for (int i = 0; i < _pieces.Length; i++) map.TryAdd(_pieces[i], i);
+            _pieceIds = map;
+        }
+        return _pieceIds.TryGetValue(piece, out var id) ? id : null;
+    }
+
     private sealed class TrieNode
     {
         public Dictionary<byte, TrieNode>? Children;
