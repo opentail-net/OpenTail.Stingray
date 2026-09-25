@@ -52,6 +52,24 @@ Target checkpoints (16), grouped by architecture family rather than treated as 1
     index handling; `attention.cc`/`attention_cpu_base.h`/`attention_helper.h`: masked MHA with
     key-padding masks; `bias_gelu.cc`/`fast_gelu.cc`: erf vs tanh GELU; `skip_layer_norm`;
     `rotary_embedding` for Nomic). Diff ported math against these (CLAUDE.md rule 8).
+  - **Vendored llama.cpp encoder graphs**: `examples/llama.cpp/llama.cpp/src/models/bert.cpp`
+    (one graph for BERT / RoBERTa / XLM-R / NomicBERT / Jina, with per-arch branches for token types,
+    positions, fused QKV, SwiGLU and RoPE), `nomic-bert.cpp`, and `conversion/bert.py` (the HF→GGUF
+    tensor-name maps for `BertModel`/`BertForSequenceClassification`/`RobertaModel`/
+    `XLMRobertaModel`/`XLMRobertaForSequenceClassification`/`NomicBertModel`, which is also exactly the
+    HF-name ↔ GGUF-name table the weight-source layer needs). Pooling and rerank:
+    `examples/embedding/embedding.cpp` plus the server's `tools/server/tests/unit/test_rerank.py`.
+    **Tokenizer goldens**: `models/ggml-vocab-bert-bge.gguf` with `.inp`/`.out` (input strings and
+    expected ids) and `ggml-vocab-nomic-bert-moe.gguf`, for free WordPiece/Unigram id-parity tests.
+    llama.cpp does **not** cover MPNet or ELECTRA; for those the oracle is ONNX (MPNet) or see §4.
+  - `examples/CrispASR/src/bert_encoder.cpp`: a standalone ggml BERT encoder (bert-base-uncased for
+    MeloTTS: WordPiece, embeddings + LN, per-layer output taps), a second C++ read.
+  - **vLLM model sources** (readable references; no Python gets added to this repo):
+    `examples/vllm/vllm/vllm/model_executor/models/bert.py` (BERT + pooler + sequence
+    classification), `roberta.py` (RoBERTa/XLM-R position-id offset and classification head), and
+    `bert_with_rope.py` (NomicBERT and other RoPE+SwiGLU BERT variants).
+  - No vendored source covers **MPNet** or **ELECTRA** (searched `examples/` 2026-09-25): port those
+    deltas from the HF model cards/configs, with ONNX as the oracle.
   - `KokoroBertEncoder` (Audio) is an ALBERT encoder: check it for reusable layer code (DRY), but
     don't bend it into the general encoder.
 
@@ -114,6 +132,9 @@ before coding; the table is a starting map, not a substitute.
    `ForwardPass`. GPT-2 note: HF stores `c_attn`/`c_fc` as Conv1D ([in, out]), so transpose on load.
 
 ## 4. Correctness plan (per the task: not "working" until validated on real checkpoints)
+
+**Oracle coverage by family**: A/B/D/E → llama.cpp (`llama-server --embedding` / `--rerank`,
+same graph source as above) **and** ONNX; C (MPNet) → ONNX only; ELECTRA → neither (see below).
 
 **Oracle** (no Python in this repo): each repo's own **`onnx/model.onnx`** run through
 onnxruntime in tests (available for 12 of 16; confirmed via the HF API 2026-09-25), plus the vendored
