@@ -239,3 +239,12 @@ not one process for all 313 test files. Not re-run automatically.
 Before it stopped, the only failure was `CosyVoice3DiTInputEmbedGoldenTests` (cosine 0.639). That's a
 known stale oracle (2026-09-06 entry: Python fixture uses centered conv-pos padding; the real reference
 and our code are causal). The test now skips visibly with that reason instead of failing.
+
+## Qwen3 Forced Aligner -- first reference check: 31/32 word boundaries identical; confidence ⚪ → 🔬, 2026-09-25
+
+`QwenForcedAlignerRealAlignmentTests` (safetensors `models/qwen3-forcedaligner`, 5.3s incl. load) vs vendored
+`audiocpp_cli --task align --family qwen3_forced_aligner --language English` (q8_0 GGUF, 0.8s) on `a.wav` with
+"This little work was finished in the year eighteen o three, and intended for immediate publication.":
+all 16 words present on both sides; start/end times agree exactly for 31 of 32 boundaries (80 ms frame
+grid). The one difference is the end of "year": ours 2.16s, reference 2.24s (1 frame). (The reference CLI
+needs `--language`.)
