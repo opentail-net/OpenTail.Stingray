@@ -420,6 +420,9 @@ Performance: ahead of ONNX Runtime batched on 3 of 4 benchmarked encoders and on
 
 **Remaining issues / not done**
 - No Vulkan/CUDA encoder path (CPU only). F16/quantized encoder weights not supported (F32 safetensors only; GPT-2 F32 only).
+  Measured 2026-09-25 (`PerformanceLeague.md`): llama.cpp Q8_0 is no faster than its own F32 on these encoders on this
+  AVX2 CPU, and ours F32 is ahead of llama.cpp batched on all four benchmarked models, so int8 is a memory option, not a
+  speed one, here.
 - Nomic task prefixes and Matryoshka (layer_norm → truncate → L2) aren't built into the pipeline; E5/BGE query prefixes
   are the caller's job.
 - `llama-server --rerank` scores bge-reranker-v2-m3 ~0.7 lower than the HF reference on the card's example (a

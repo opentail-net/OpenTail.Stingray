@@ -71,4 +71,55 @@ public sealed class EncoderBenchmarkTests
             $"batch: ours {oursBatch:F0} ms ({b * 1000 / oursBatch:F1} emb/s) vs ORT {onnxBatch:F0} ms ({b * 1000 / onnxBatch:F1} emb/s) | " +
             $"one-by-one: ours {oursSingle:F0} ms vs ORT {onnxSingle:F0} ms");
     }
+
+    /// <summary>
+    /// The same 32 passages through the vendored <c>llama-server --embedding</c> (C++/ggml, CPU) on F32 and Q8_0
+    /// GGUFs of the same checkpoint: one 32-input request (all sequences in one ubatch, like our packed batch) and
+    /// 32 single-input requests. Includes localhost HTTP + JSON overhead, which the one-by-one numbers feel most.
+    /// Threads: llama.cpp's default (physical cores) unless <c>STINGRAY_BENCH_LLAMA_THREADS</c> is set.
+    /// </summary>
+    [Theory]
+    [InlineData("sentence-transformers__all-MiniLM-L6-v2", "all-MiniLM-L6-v2.F32.gguf", "all-MiniLM-L6-v2.Q8_0.gguf")]
+    [InlineData("BAAI__bge-small-en-v1.5", "bge-small-en-v1.5-f32.gguf", "bge-small-en-v1.5-q8_0.gguf")]
+    [InlineData("BAAI__bge-large-en-v1.5", "bge-large-en-v1.5-f32.gguf", "bge-large-en-v1.5-q8_0.gguf")]
+    [InlineData("nomic-ai__nomic-embed-text-v1.5", "nomic-embed-text-v1.5.f32.gguf", "nomic-embed-text-v1.5.Q8_0.gguf")]
+    public void Throughput_VsLlamaCpp(string repoDir, string f32Gguf, string q8Gguf)
+    {
+        Assert.SkipUnless(Environment.GetEnvironmentVariable("STINGRAY_RUN_HEAVY_TESTS") == "1", "benchmark: set STINGRAY_RUN_HEAVY_TESTS=1");
+        string? dir = BertEncoderOnnxParityTests.FindRepoDir($"models/_models/hf/{repoDir}");
+        string? ggufDir = BertEncoderOnnxParityTests.FindRepoDir("models/_models/encoder-gguf");
+        string? exe = LlamaServerOracle.FindServerExe();
+        Assert.SkipUnless(dir != null && ggufDir != null && exe != null, $"{repoDir} checkpoint, models/_models/encoder-gguf or llama-server not found");
+
+        using var pipeline = HfEncoderEmbeddingPipeline.Load(dir!);
+        using var encoder = TransformerEncoder.Load(dir!);
+        var inputs = s_passages.Select(p => pipeline.Tokenizer.Encode(p, 512)).ToArray();
+        int tokens = inputs.Sum(x => x.Ids.Length);
+
+        double Time(Action a)
+        {
+            a();
+            var runs = new List<double>();
+            for (int r = 0; r < 5; r++) { var sw = Stopwatch.StartNew(); a(); runs.Add(sw.Elapsed.TotalMilliseconds); }
+            return Median(runs);
+        }
+
+        double oursBatch = Time(() => encoder.EncodeBatch(inputs));
+        double oursSingle = Time(() => { foreach (var x in inputs) encoder.Encode(x); });
+        Console.WriteLine($"[LlamaBench] {repoDir}: {inputs.Length} passages, {tokens} tokens | ours F32: batch {oursBatch:F0} ms, one-by-one {oursSingle:F0} ms");
+
+        string? threads = Environment.GetEnvironmentVariable("STINGRAY_BENCH_LLAMA_THREADS");
+        foreach (string gguf in new[] { f32Gguf, q8Gguf })
+        {
+            string path = Path.Combine(ggufDir!, gguf);
+            Assert.SkipUnless(File.Exists(path), $"{path} not found");
+            var extra = new List<string> { "-np", "32" };
+            if (threads is not null) extra.AddRange(["-t", threads, "-tb", threads]);
+            using var server = LlamaServerOracle.Start(exe!, path, "--embedding", extraArgs: extra);
+            int llamaTokens = server.EmbedAndCountTokens(s_passages);
+            double batch = Time(() => server.EmbedAndCountTokens(s_passages));
+            double single = Time(() => { foreach (var p in s_passages) server.EmbedAndCountTokens([p]); });
+            Console.WriteLine($"[LlamaBench] {repoDir}: llama.cpp {gguf} ({llamaTokens} tokens): batch {batch:F0} ms, one-by-one {single:F0} ms");
+        }
+    }
 }

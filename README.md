@@ -119,7 +119,7 @@ Sourced from [`docs/audio-review-new-progress.md`](docs/audio-review-new-progres
 | Vision: MobileNetV5 | 🔴 | ⚪ | — | Encoder migrated, builds clean — but no real checkpoint on Hugging Face actually declares the `mobilenetv5`/`mobilenet_v5` projector type this adapter targets; the obvious candidate (gemma-3n) routes to `Gemma3Adapter` instead. Blocked on checkpoint availability, not a code gap |
 
 Runs GGUF and SafeTensors models on CPU (AVX2/AVX-512 SIMD) and GPU (Vulkan compute shaders or CUDA cuBLAS), with:
-- **OpenAI- and Anthropic-compatible API server** (/v1/chat/completions, /v1/audio/speech, /v1/audio/transcriptions), native dynamic Multi-LoRA serving,
+- **OpenAI- and Anthropic-compatible API server** (/v1/chat/completions, /v1/embeddings, /v1/rerank, /v1/audio/speech, /v1/audio/transcriptions), native dynamic Multi-LoRA serving,
 - **Native Multimodal Vision Understanding** across 17+ architectures:
   - Alibaba Qwen2.5-VL / Qwen3-VL
   - DeepSeek-OCR & DeepSeek-OCR2
@@ -138,6 +138,11 @@ Runs GGUF and SafeTensors models on CPU (AVX2/AVX-512 SIMD) and GPU (Vulkan comp
   - Xiaomi MiMo-VL
   - StepFun Step3-VL
   - Google Gemma 4 unified (`gemma4uv`), Gemma 4 ViT (`gemma4v`), Gemma 3 SigLIP (`gemma3`), and Meta Llama 4 (`llama4`),
+- **Text embeddings, rerankers and Hugging Face SafeTensors checkpoints** (new 2026-09-25, CPU, each checked against its own ONNX export, llama.cpp or the model card, see the status table above): a native BERT-family encoder that loads HF safetensors + `tokenizer.json` (WordPiece and XLM-R Unigram) + the sentence-transformers pooling config for
+  - Embeddings: BERT (bert-base-uncased), all-MiniLM-L6-v2, BGE small/large v1.5, multilingual-e5-small, paraphrase-multilingual-MiniLM-L12-v2, all-mpnet-base-v2 (MPNet), nomic-embed-text-v1.5 (NomicBERT), XLM-RoBERTa base
+  - Cross-encoder rerankers: cross-encoder/ms-marco-MiniLM-L6-v2, BAAI/bge-reranker-v2-m3
+  - ELECTRA discriminator (google/electra-base-discriminator)
+  - Decoder LLMs straight from HF safetensors: Qwen2, Qwen3 (e.g. Qwen3-0.6B) and GPT-2,
 - **Native Speech-to-Text (ASR) & Forced Alignment**: OpenAI Whisper Large-v3 & Turbo with 100 languages, NVIDIA NeMo Parakeet FastConformer CTC (TDT decode head not implemented — confirmed 2026-09-11, only `ParakeetCtcDecoder.cs` exists), NVIDIA NeMo Citrinet CTC, Alibaba Qwen3-ASR 0.6B/1.7B, Qwen3-ForcedAligner, Silero VAD, NVIDIA NeMo MarbleNet VAD, and (as of 2026-09-11, real ONNX-backed pipelines, see the status table below) SenseVoice and FunASR Paraformer. The native GGUF Paraformer path is still broken (missing `pf.vocab` metadata, a bad conversion, not a code bug) — Paraformer now works via a separate, real ONNX path instead,
 - **Native Text-to-Speech (TTS) Synthesis & Voice Cloning**: Alibaba Qwen3-TTS 12Hz (with ERes2NetV2 192-dim voice cloning speaker encoder), Coqui XTTS-v2 (GPT2 autoregressive codec + FiLM-conditioned HiFi-GAN, zero-shot voice cloning), Fish Speech S2 Pro, Kokoro-82M, Piper VITS, Meta MMS-TTS (Massively Multilingual VITS), F5-TTS Flow-Matching DiT, CosyVoice 2.0 / 300M, Chatterbox-Turbo, Orpheus-TTS (SNAC codec), Parler-TTS Mini, and MeloTTS Multilingual VITS with clause-level real-time streaming,
 - **Native Studio-Grade DSP**: Rational windowed-sinc resamplers, ATSC A/85 broadcast downmixing, and TPDF noise-shaped dithered WAV export,
@@ -179,6 +184,8 @@ stingray -m models/SmolLM2-1.7B-Instruct-Q4_K_M.gguf -p "Once upon a time"
 stingray -m models/Qwen3-8B-Q4_K_M.gguf -p "Explain mmap" -g -1     # all layers on GPU
 stingray -m models/Qwen3-8B-Q4_K_M.gguf                             # interactive chat
 stingray tts -t "Hello from OpenTail Stingray!" -v af_heart -o speech.wav # native TTS
+stingray embed -m models/_models/hf/BAAI__bge-small-en-v1.5 -p "What is mmap?"      # HF embedding model dir
+stingray rerank -m models/_models/hf/cross-encoder__ms-marco-MiniLM-L6-v2 -q "What is mmap?" -d "mmap maps files into memory." -d "Pandas eat bamboo."
 ```
 
 Or use it as a library:

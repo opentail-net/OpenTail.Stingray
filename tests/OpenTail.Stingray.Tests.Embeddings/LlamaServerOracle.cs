@@ -28,7 +28,7 @@ internal sealed class LlamaServerOracle : IDisposable
             : null;
 
     /// <param name="mode">"--embedding" or "--rerank".</param>
-    public static LlamaServerOracle Start(string exe, string gguf, string mode, string? pooling = null)
+    public static LlamaServerOracle Start(string exe, string gguf, string mode, string? pooling = null, IEnumerable<string>? extraArgs = null)
     {
         var listener = new TcpListener(IPAddress.Loopback, 0);
         listener.Start();
@@ -46,6 +46,7 @@ internal sealed class LlamaServerOracle : IDisposable
                      "--host", "127.0.0.1", "-c", "8192", "-b", "8192", "-ub", "8192", "-ngl", "0", "--no-webui" })
             psi.ArgumentList.Add(a);
         if (pooling is not null) { psi.ArgumentList.Add("--pooling"); psi.ArgumentList.Add(pooling); }
+        foreach (var a in extraArgs ?? []) psi.ArgumentList.Add(a);
 
         var process = Process.Start(psi) ?? throw new InvalidOperationException("llama-server did not start");
         process.OutputDataReceived += (_, _) => { };
@@ -108,6 +109,13 @@ internal sealed class LlamaServerOracle : IDisposable
             .OrderBy(e => e.GetProperty("index").GetInt32())
             .Select(e => e.GetProperty("embedding").EnumerateArray().Select(v => v.GetSingle()).ToArray())
             .ToArray();
+    }
+
+    /// <summary>Embeds <paramref name="inputs"/> in one request and returns the server's reported prompt token count.</summary>
+    public int EmbedAndCountTokens(IReadOnlyList<string> inputs)
+    {
+        using var doc = Post("/v1/embeddings", "{\"input\":[" + string.Join(",", inputs.Select(JsonString)) + "]}");
+        return doc.RootElement.GetProperty("usage").GetProperty("prompt_tokens").GetInt32();
     }
 
     /// <summary>Raw relevance score per document, in input order.</summary>

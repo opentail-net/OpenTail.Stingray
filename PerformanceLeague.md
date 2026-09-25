@@ -47,6 +47,35 @@ scalar; 3-5x on that stage) and an attention kernel that transposes each head's 
 instead of len² head_dim-long dots; ~1.6x on that stage), plus vectorized SwiGLU for Nomic. The packed F32 GEMMs
 (`PackedLinearF32`) are now ~75% of the time.
 
+### Same encoders vs llama.cpp (C++/ggml), F32 and Q8_0
+
+Same 32 passages (2,752 tokens; llama-server reports the identical token count), `llama-server --embedding -np 32`
+with the whole batch in one ubatch (like our packed batch), CPU, median of 5 after warm-up
+(`EncoderBenchmarkTests.Throughput_VsLlamaCpp`, `STINGRAY_RUN_HEAVY_TESTS=1`). GGUFs: F32 and Q8_0 conversions from the
+hub (leliuga/all-MiniLM-L6-v2-GGUF, CompendiumLabs/bge-{small,large}-en-v1.5-gguf, nomic-ai/nomic-embed-text-v1.5-GGUF)
+in `models/_models/encoder-gguf/`. llama.cpp timings include localhost HTTP + JSON (felt most by the 32 one-by-one
+requests). Run with `STINGRAY_BENCH_LLAMA_THREADS=16` (all logical cores, as ours uses); llama.cpp's default 8 threads was
+the same or slower (F32 batch: MiniLM 244, bge-small 454, bge-large 4084, nomic 1401 ms).
+
+| Model | Batch 32: ours F32 | Batch 32: llama.cpp F32 | Batch 32: llama.cpp Q8_0 | One-by-one: ours F32 | One-by-one: llama.cpp F32 | One-by-one: llama.cpp Q8_0 | Performance Check |
+|---|---|---|---|---|---|---|---|
+| all-MiniLM-L6-v2 | **170 ms** | 216 ms | 236 ms | **212 ms** | 259 ms | 235 ms | 2026-09-25 |
+| bge-small-en-v1.5 | **263 ms** | 422 ms | 422 ms | **405 ms** | 443 ms | 408 ms | 2026-09-25 |
+| bge-large-en-v1.5 | **2924 ms** | 3906 ms | 4670 ms | **3201 ms** | 4261 ms | 3597 ms | 2026-09-25 |
+| nomic-embed-text-v1.5 | **1220 ms** | 1378 ms | 1356 ms | 1370 ms | 1393 ms | **1364 ms** | 2026-09-25 |
+
+Ours (F32) is ahead of llama.cpp's best (F32 or Q8_0) batched on all four: 1.1x (nomic) to 1.6x (bge-small). One at a
+time it's ahead on MiniLM and bge-large and level on bge-small and nomic.
+
+**Quantization doesn't buy encoder speed on this CPU (Ryzen 5700G, AVX2, no VNNI).** llama.cpp's Q8_0 is level with its
+own F32 (within ±10%) except bge-large batched, where it's 20% *slower*; at 8 threads Q8_0 was 20-70% slower than F32 on all
+four. An encoder pass multiplies every weight by thousands of tokens at once, so the GEMMs are compute-bound, not
+weight-bandwidth-bound, and int8 on AVX2 (`vpmaddubsw`/`vpmaddwd` plus activation quantization) doesn't beat F32 FMA by
+enough to matter. So no int8 encoder path was added: the reference implementation shows no gain to chase here, and Q8_0
+also costs accuracy (bge-small Q8_0 vs F32 cos 0.9996). F16/Q8 storage would still halve or quarter weight memory; that's a
+memory feature, not a speed one. CPUs with AVX-512 VNNI / AMX (where int8 throughput is 2-4x F32) could change this and
+weren't measured.
+
 ## SmolLM2-1.7B-Instruct
 
 | Scenario | Backend | C# (OT, t/s) | C++ (llama.cpp, t/s) | Ratio | Performance Check | Source |
