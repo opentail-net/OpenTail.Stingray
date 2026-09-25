@@ -103,3 +103,5 @@ dated and sourced findings. Commit per engine.
 - [ ] Phase 1: correctness triage
 - [ ] Phase 2: performance
 - [ ] Phase 3: record
+
+**Queued next (after Phase 3):** [`docs/2026-09-25-encoder-embedding-reranker-plan.md`](2026-09-25-encoder-embedding-reranker-plan.md), covering the BERT/XLM-R/MPNet/Nomic encoders, the rerankers, and the HF-safetensors decoder loading.
