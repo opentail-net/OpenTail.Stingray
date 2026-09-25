@@ -33,7 +33,7 @@ public sealed class RvcTensorNameDumpDebugTest : HeavyTestBase
         var namesObj = (object[])model.Metadata["audiocpp.tensor_names"];
         Assert.Equal(model.Tensors.Count, namesObj.Length);
 
-        string? outDir = FindRepoFile("docs/audio-review-progress.md");
+        string? outDir = FindRepoFile("docs/00-current-work.md");
         string outPath = Path.Combine(Path.GetDirectoryName(outDir!)!, "..", "rvc-tensor-names.txt");
         outPath = Path.GetFullPath(outPath);
 

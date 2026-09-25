@@ -155,7 +155,7 @@ public sealed class MossTtsSpmProtoDumpDebugTest : HeavyTestBase
             else throw new InvalidDataException($"unexpected wire type {wire} at field {fieldNo}, offset {i}");
         }
 
-        string? outDir = FindRepoFile("docs/audio-review-progress.md");
+        string? outDir = FindRepoFile("docs/00-current-work.md");
         string outPath = Path.GetFullPath(Path.Combine(Path.GetDirectoryName(outDir!)!, "..", "moss-tts-spm-proto-dump.txt"));
         var sb = new System.Text.StringBuilder();
         sb.AppendLine($"top-level field counts: {string.Join(", ", topLevelCounts.Select(kv => $"{kv.Key}={kv.Value}"))}");

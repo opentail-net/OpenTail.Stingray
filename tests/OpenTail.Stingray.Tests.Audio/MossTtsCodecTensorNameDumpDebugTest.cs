@@ -29,7 +29,7 @@ public sealed class MossTtsCodecTensorNameDumpDebugTest : HeavyTestBase
         using var model = OpenTail.Stingray.Core.GgufModel.Open(path!);
         var namesObj = (object[])model.Metadata["audiocpp.tensor_names"];
 
-        string? outDir = FindRepoFile("docs/audio-review-progress.md");
+        string? outDir = FindRepoFile("docs/00-current-work.md");
         string outPath = Path.GetFullPath(Path.Combine(Path.GetDirectoryName(outDir!)!, "..", "moss-tts-codec-tensor-names.txt"));
 
         var sb = new System.Text.StringBuilder();

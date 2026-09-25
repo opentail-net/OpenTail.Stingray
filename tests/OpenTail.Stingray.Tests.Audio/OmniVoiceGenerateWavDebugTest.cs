@@ -31,7 +31,7 @@ public sealed class OmniVoiceGenerateWavDebugTest : HeavyTestBase
     {
         string? path = FindRepoFile("models/_models/omnivoice/model.safetensors");
         Assert.SkipUnless(path != null, "omnivoice model.safetensors not found");
-        string? repoRoot = Path.GetDirectoryName(FindRepoFile("docs/audio-review-progress.md"));
+        string? repoRoot = Path.GetDirectoryName(FindRepoFile("docs/00-current-work.md"));
         Assert.NotNull(repoRoot);
 
         string? codecPath = FindRepoFile("models/_models/omnivoice/audio_tokenizer/model.safetensors");

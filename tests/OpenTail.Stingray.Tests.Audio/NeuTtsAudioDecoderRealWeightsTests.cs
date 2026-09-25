@@ -59,7 +59,7 @@ public sealed class NeuTtsAudioDecoderRealWeightsTests : HeavyTestBase
     {
         string? path = FindRepoFile("models/_models/neutts/NeuTTS-2E-GGUF/neutts-2e-orig.gguf");
         Assert.SkipUnless(path != null, "neutts-2e-orig.gguf not found");
-        string? repoRoot = Path.GetDirectoryName(FindRepoFile("docs/audio-review-progress.md"));
+        string? repoRoot = Path.GetDirectoryName(FindRepoFile("docs/00-current-work.md"));
 
         var sw = System.Diagnostics.Stopwatch.StartNew();
         using var model = GgufModel.Open(path!);

@@ -91,7 +91,7 @@ public sealed class MossTtsAudioCodecDecoderRealWeightsTests : HeavyTestBase
         Assert.All(waveform.Left, s => Assert.True(float.IsFinite(s)));
         Assert.All(waveform.Right, s => Assert.True(float.IsFinite(s)));
 
-        string? repoRoot = Path.GetDirectoryName(FindRepoFile("docs/audio-review-progress.md"));
+        string? repoRoot = Path.GetDirectoryName(FindRepoFile("docs/00-current-work.md"));
         if (repoRoot != null)
         {
             string outPath = Path.Combine(repoRoot, "audio-samples", "moss-tts-nano-ours-comparable.wav");

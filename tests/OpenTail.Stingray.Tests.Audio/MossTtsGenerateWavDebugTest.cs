@@ -43,7 +43,7 @@ public sealed class MossTtsGenerateWavDebugTest : HeavyTestBase
     {
         string? path = FindRepoFile("models/_models/moss-tts-nano/MOSS-TTS-Nano-100M-GGUF/moss-tts-nano-100m-q8_0.gguf");
         Assert.SkipUnless(path != null, "moss-tts-nano checkpoint not found");
-        string? repoRoot = Path.GetDirectoryName(FindRepoFile("docs/audio-review-progress.md"));
+        string? repoRoot = Path.GetDirectoryName(FindRepoFile("docs/00-current-work.md"));
         Assert.NotNull(repoRoot);
 
         using var model = GgufModel.Open(path!);

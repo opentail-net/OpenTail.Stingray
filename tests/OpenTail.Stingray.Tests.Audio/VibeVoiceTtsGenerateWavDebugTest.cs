@@ -71,7 +71,7 @@ public sealed class VibeVoiceTtsGenerateWavDebugTest : HeavyTestBase
     {
         string? path = FindRepoFile("models/_models/vibevoice-tts/VibeVoice-1.5B-GGUF/vibevoice-1.5b-q8_0.gguf");
         Assert.SkipUnless(path != null, "vibevoice-1.5b-q8_0.gguf not found");
-        string? repoRoot = Path.GetDirectoryName(FindRepoFile("docs/audio-review-progress.md"));
+        string? repoRoot = Path.GetDirectoryName(FindRepoFile("docs/00-current-work.md"));
         Assert.NotNull(repoRoot);
 
         using var model = GgufModel.Open(path!);

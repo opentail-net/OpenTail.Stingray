@@ -42,7 +42,7 @@ public sealed class VoxCpm2GenerateWavDebugTest : HeavyTestBase
     {
         string? path = FindRepoFile("models/_models/voxcpm2/VoxCPM2-GGUF/voxcpm2-q8_0.gguf");
         Assert.SkipUnless(path != null, "voxcpm2-q8_0.gguf not found");
-        string? repoRoot = Path.GetDirectoryName(FindRepoFile("docs/audio-review-progress.md"));
+        string? repoRoot = Path.GetDirectoryName(FindRepoFile("docs/00-current-work.md"));
         Assert.NotNull(repoRoot);
 
         using var model = GgufModel.Open(path!);

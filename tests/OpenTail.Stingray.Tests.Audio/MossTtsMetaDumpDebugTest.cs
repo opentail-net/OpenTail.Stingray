@@ -24,7 +24,7 @@ public sealed class MossTtsMetaDumpDebugTest : HeavyTestBase
         string? path = FindRepoFile("models/_models/moss-tts-nano/MOSS-TTS-Nano-100M-GGUF/moss-tts-nano-100m-q8_0.gguf");
         Assert.SkipUnless(path != null, "gguf not found");
         using var model = OpenTail.Stingray.Core.GgufModel.Open(path!);
-        string? outDir = FindRepoFile("docs/audio-review-progress.md");
+        string? outDir = FindRepoFile("docs/00-current-work.md");
         string outPath = Path.GetFullPath(Path.Combine(Path.GetDirectoryName(outDir!)!, "..", "moss-tts-meta.txt"));
         var sb = new System.Text.StringBuilder();
         foreach (var kv in model.Metadata)

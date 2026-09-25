@@ -27,7 +27,7 @@ public sealed class VibeVoiceTtsDumpDebugTest : HeavyTestBase
         Assert.SkipUnless(path != null, "vibevoice-1.5b-q8_0.gguf not found");
 
         using var model = OpenTail.Stingray.Core.GgufModel.Open(path!);
-        string? outDir = FindRepoFile("docs/audio-review-progress.md");
+        string? outDir = FindRepoFile("docs/00-current-work.md");
         string root = Path.GetDirectoryName(outDir!)!;
 
         if (model.Metadata.TryGetValue("audiocpp.embedded_files.names", out var namesObj) && namesObj is object[] names)

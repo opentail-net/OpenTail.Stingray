@@ -74,7 +74,7 @@ public sealed class PersonaPlexGenerateWavDebugTest : HeavyTestBase
     {
         string? path = FindRepoFile("models/_models/personaplex/PersonaPlex-GGUF/personaplex-7b-v1-q8_0.gguf");
         Assert.SkipUnless(path != null, "personaplex-7b-v1-q8_0.gguf not found");
-        string? repoRoot = Path.GetDirectoryName(FindRepoFile("docs/audio-review-progress.md"));
+        string? repoRoot = Path.GetDirectoryName(FindRepoFile("docs/00-current-work.md"));
         Assert.NotNull(repoRoot);
 
         using var model = GgufModel.Open(path!);

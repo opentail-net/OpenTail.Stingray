@@ -32,7 +32,7 @@ public sealed class HiggsAudioTtsGenerateWavDebugTest : HeavyTestBase
     {
         string? path = FindRepoFile("models/_models/higgs_audio_tts/Higgs-Audio-v3-TTS-4B-GGUF/higgs-audio-v3-tts-4b-q8_0.gguf");
         Assert.SkipUnless(path != null, "higgs-audio-v3-tts-4b-q8_0.gguf not found");
-        string? repoRoot = Path.GetDirectoryName(FindRepoFile("docs/audio-review-progress.md"));
+        string? repoRoot = Path.GetDirectoryName(FindRepoFile("docs/00-current-work.md"));
         Assert.NotNull(repoRoot);
 
         using var model = GgufModel.Open(path!);
