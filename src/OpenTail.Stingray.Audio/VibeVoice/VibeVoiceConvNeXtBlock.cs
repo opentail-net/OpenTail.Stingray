@@ -277,29 +277,27 @@ public static class VibeVoiceConvNeXtBlock
         int fullInLen = full[0].Length;
         int rawLen = (fullInLen - 1) * stride + kernel;
 
+        // Parallel over output channels (each owns raw[oc]); was a fully serial scatter and the
+        // largest cost in VibeVoice TTS's per-frame acoustic decode (2026-09-25 perf pass).
         var raw = new float[outChannels][];
-        for (int oc = 0; oc < outChannels; oc++)
+        Parallel.For(0, outChannels, oc =>
         {
-            raw[oc] = new float[rawLen];
-            float b = bias[oc];
-            for (int o = 0; o < rawLen; o++) raw[oc][o] = b;
-        }
-        for (int ic = 0; ic < inChannels; ic++)
-        {
-            var inRow = full[ic];
-            for (int i = 0; i < fullInLen; i++)
+            var outRow = new float[rawLen];
+            Array.Fill(outRow, bias[oc]);
+            for (int ic = 0; ic < inChannels; ic++)
             {
-                float v = inRow[i];
-                if (v == 0f) continue;
-                int baseOut = i * stride;
-                for (int oc = 0; oc < outChannels; oc++)
+                var inRow = full[ic];
+                var wRow = weight[ic][oc];
+                for (int i = 0; i < fullInLen; i++)
                 {
-                    var wRow = weight[ic][oc];
-                    var outRow = raw[oc];
+                    float v = inRow[i];
+                    if (v == 0f) continue;
+                    int baseOut = i * stride;
                     for (int k = 0; k < kernel; k++) outRow[baseOut + k] += wRow[k] * v;
                 }
             }
-        }
+            raw[oc] = outRow;
+        });
 
         int paddingTotal = kernel - stride;
         if (paddingTotal < 0) throw new InvalidOperationException("VibeVoice streaming tokenizer ConvTranspose1d padding_total is negative.");

@@ -446,3 +446,24 @@ test), 3.5s LibriSpeech clip, CPU: speech features 15.9s, LLM prefill+decode 24.
 
 Transcript unchanged (exact). Reference `audiocpp_cli`: 12.4s → now ~1.4× behind (was ~4×). Remaining lever:
 prefill runs at ~12.6 tok/s on the 7B q8 backbone, not investigated.
+
+## VibeVoice TTS perf pass -- 65-72s → 24.5-26.4s per sample, Whisper still exact, 2026-09-25
+
+Profile (new `STINGRAY_TTS_PROFILE=1` stage timers in `VibeVoiceGenerator`), ~35 frames, CPU:
+
+| stage | after ASR-side ConvNeXt fix | + streaming ConvTranspose1d parallel | + batched diffusion head |
+|---|---|---|---|
+| diffusion head | 8.10s | 8.07 / 8.63s | **3.99 / 4.44s** |
+| acoustic decode | 15.86s | **5.10 / 6.05s** | 5.54 / 6.11s |
+| semantic encode | 3.55s | 3.63 / 3.67s | 3.50 / 3.95s |
+| negative + positive LM | 1.96 + 2.04s | 1.94 + 2.02s | 1.89 + 1.98s |
+| test wall (incl. load) | 39.6s | 28.6 / 30.1s | **24.5 / 26.4s** |
+
+Changes: `SConvTranspose1dStreaming` scattered serially over (in-channel, time, out-channel); it's now parallel
+over output channels. The diffusion head ran its CFG cond/uncond rows one after another (each weight read twice
+per solver step) and recomputed `cond_proj(condition)` at all 10 solver steps. `VibeVoiceDiffusionHead` now
+batches rows through `DenseKernels.LinearBatchedNoBias` (`PredictProjected`) and `ProjectCondition` is hoisted
+out of the timestep loop. `DenseKernels.LinearBatchedNoBias` now uses the packed GEMM from 2 rows (was 4).
+Whisper (seeds 1, 2): both "Hello there, this is a real end-to-end test of speech synthesis." (exact).
+Regression suites pass: diffusion head, generator, voice cloning, OmniVoice MaskGIT, RVC pipeline.
+Start of the session: 65-72s. Reference `audiocpp_cli`: 19-20s → now ~1.3× behind (was ~3.5×).

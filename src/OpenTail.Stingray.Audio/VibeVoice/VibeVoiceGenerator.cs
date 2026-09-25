@@ -260,6 +260,9 @@ public static class VibeVoiceGenerator
         var currentHidden = positiveHidden;
         int position = promptLength;
 
+        bool profile = Environment.GetEnvironmentVariable("STINGRAY_TTS_PROFILE") == "1";
+        var prof = new double[5];
+        var psw = System.Diagnostics.Stopwatch.StartNew();
         for (int step = 0; step < maxSteps; step++)
         {
             if (Environment.GetEnvironmentVariable("STINGRAY_TTS_TRACE") is not null)
@@ -307,18 +310,24 @@ public static class VibeVoiceGenerator
                 // room for both halves but only ever reads/duplicates the first).
                 var initialNoise = RandnBoxMuller(rng, diffusionHeadWeights.LatentSize);
 
+                psw.Restart();
                 var speechLatent = VibeVoiceDiffusionSampler.Sample(
                     diffusionHeadWeights, scheduler, currentHidden, negativeHidden, initialNoise, guidanceScale);
+                prof[0] += psw.Elapsed.TotalSeconds;
 
                 var unscaled = new float[speechLatent.Length];
                 for (int i = 0; i < unscaled.Length; i++) unscaled[i] = speechLatent[i] / speechScalingFactor - speechBiasFactor;
 
                 var latentChannelMajor = ToChannelMajorSingleFrame(unscaled);
+                psw.Restart();
                 var chunkChannelMajor = VibeVoiceTokenizerDecoder.DecodeStreaming(acousticDecoderWeights, acousticDecoderState, latentChannelMajor, layerNormEps);
+                prof[1] += psw.Elapsed.TotalSeconds;
                 var chunk = chunkChannelMajor[0];
                 audioSamples.AddRange(chunk);
 
+                psw.Restart();
                 var semanticFeatures = VibeVoiceTokenizerEncoder.EncodeStreaming(semanticEncoderWeights, semanticEncoderState, chunk, layerNormEps);
+                prof[2] += psw.Elapsed.TotalSeconds;
                 // Real reference (`generator.cpp`: `connector.project_acoustic(speech_latents.front()...)`):
                 // the acoustic connector takes the SCALED diffusion output, not the unscaled
                 // decoder latent (same convention as the voice-prompt path above, which scales
@@ -343,7 +352,9 @@ public static class VibeVoiceGenerator
                 // shared prompt-relative position (this MUST increment every such call; the
                 // pre-fix version left it fixed, causing successive diffusion steps to overwrite
                 // the same cache slot on the shared instance).
+                psw.Restart();
                 negativeFwd.ForwardEmbedding(nextEmbedding, negativePosition);
+                prof[3] += psw.Elapsed.TotalSeconds;
                 negativeHidden = negativeFwd.LastHidden.ToArray();
                 negativePosition++;
             }
@@ -352,11 +363,14 @@ public static class VibeVoiceGenerator
             // promptLength+N (the reference appends at its cache's current end). This used to pass
             // position+1, which skipped KV slot promptLength and left it unwritten inside the
             // attention window for every later step (fixed 2026-09-25).
+            psw.Restart();
             currentLogits = fwd.ForwardEmbedding(nextEmbedding, position).ToArray();
+            prof[4] += psw.Elapsed.TotalSeconds;
             currentHidden = fwd.LastHidden.ToArray();
             position++;
         }
 
+        if (profile) Console.WriteLine($"[VibeVoiceTts] profile: diffusion {prof[0]:F2}s, acoustic decode {prof[1]:F2}s, semantic encode {prof[2]:F2}s, negative LM {prof[3]:F2}s, positive LM {prof[4]:F2}s, steps {generatedTokens.Count}");
         if (audioSamples.Count == 0) throw new InvalidOperationException("VibeVoice generation produced no audio.");
         return new Result([.. audioSamples], [.. generatedTokens]);
     }

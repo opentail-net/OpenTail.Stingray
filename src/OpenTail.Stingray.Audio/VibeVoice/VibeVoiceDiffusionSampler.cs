@@ -47,13 +47,15 @@ public static class VibeVoiceDiffusionSampler
         if (initialSpeech.Length != latent) throw new ArgumentException("initialSpeech length mismatch.");
 
         var condition = new[] { positiveCondition, negativeCondition };
+        // cond_proj(condition) is timestep-independent: project once per frame, not per solver step.
+        var projectedCondition = VibeVoiceDiffusionHead.ProjectCondition(headWeights, condition);
         var speech = initialSpeech;
         scheduler.ResetStepState();
 
         foreach (int timestep in scheduler.Timesteps)
         {
             var combined = new[] { speech, speech };
-            var prediction = VibeVoiceDiffusionHead.Predict(headWeights, combined, condition, timestep);
+            var prediction = VibeVoiceDiffusionHead.PredictProjected(headWeights, combined, projectedCondition, timestep);
 
             var cond = prediction[0];
             var uncond = prediction[1];

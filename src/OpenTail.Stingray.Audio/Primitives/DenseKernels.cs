@@ -50,7 +50,7 @@ public static class DenseKernels
             throw new ArgumentException("LinearBatchedNoBias: input/output span too small.");
         fixed (float* xp = input, yp = output)
         {
-            if (!PackedSgemmF32.IsSupported || m < 4)
+            if (!PackedSgemmF32.IsSupported || m < 2)
             {
                 fixed (float* wp = weight)
                     for (int r = 0; r < m; r++)

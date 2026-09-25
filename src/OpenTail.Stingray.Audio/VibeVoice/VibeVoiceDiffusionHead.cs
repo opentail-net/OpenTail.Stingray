@@ -88,22 +88,101 @@ public static class VibeVoiceDiffusionHead
     /// `condition[frames][hidden]`, single shared scalar `timestep`. Returns `[frames][latent]`
     /// predicted v (v-prediction target, per the scheduler's `prediction_type=v_prediction`).</summary>
     public static float[][] Predict(VibeVoiceDiffusionHeadWeights w, float[][] noisy, float[][] condition, float timestep)
+        => PredictProjected(w, noisy, ProjectCondition(w, condition), timestep);
+
+    /// <summary>`cond_proj(condition)` for all rows, flat `[rows, hidden]`. It doesn't depend on the
+    /// timestep, so a sampler computes it once per frame, not once per solver step.</summary>
+    public static float[] ProjectCondition(VibeVoiceDiffusionHeadWeights w, float[][] condition)
     {
-        int frames = noisy.Length;
+        int m = condition.Length, h = w.HiddenSize;
+        var projected = new float[m * h];
+        DenseKernels.LinearBatchedNoBias(Flatten(condition, h), w.CondProjWeight, projected, m, h, h);
+        return projected;
+    }
+
+    /// <summary>
+    /// Same math as the per-row version, with all rows (the CFG cond/uncond pair) batched through every
+    /// Linear so each weight matrix is read once per solver step instead of once per row
+    /// (<see cref="DenseKernels.LinearBatchedNoBias"/>; 2026-09-25 perf pass).
+    /// </summary>
+    public static float[][] PredictProjected(VibeVoiceDiffusionHeadWeights w, float[][] noisy, float[] projectedCondition, float timestep)
+    {
+        int m = noisy.Length, h = w.HiddenSize, f = w.FfnDim, lat = w.LatentSize;
         var timestepEmbedding = TimestepEmbedding(w, timestep);
 
-        var output = new float[frames][];
-        for (int t = 0; t < frames; t++)
+        // c = cond_proj(condition) + t_emb; every AdaLN uses silu(c), which is the same for all layers.
+        var siluC = new float[m * h];
+        for (int r = 0; r < m; r++)
         {
-            var x = DenseKernels.LinearNoBias(noisy[t], w.NoisyImagesProjWeight, w.LatentSize, w.HiddenSize);
-            var projectedCondition = DenseKernels.LinearNoBias(condition[t], w.CondProjWeight, w.HiddenSize, w.HiddenSize);
-            var c = Add(projectedCondition, timestepEmbedding);
-
-            foreach (var layer in w.Layers) x = HeadLayer(w, layer, x, c);
-
-            output[t] = FinalLayer(w, x, c);
+            var row = siluC.AsSpan(r * h, h);
+            System.Numerics.Tensors.TensorPrimitives.Add(projectedCondition.AsSpan(r * h, h), timestepEmbedding, row);
         }
+        DenseKernels.SiluInPlace(siluC);
+
+        var x = new float[m * h];
+        DenseKernels.LinearBatchedNoBias(Flatten(noisy, lat), w.NoisyImagesProjWeight, x, m, lat, h);
+
+        var modulation = new float[m * 3 * h];
+        var modulated = new float[m * h];
+        var gate = new float[m * f];
+        var up = new float[m * f];
+        var ffnOut = new float[m * h];
+        foreach (var layer in w.Layers)
+        {
+            DenseKernels.LinearBatchedNoBias(siluC, layer.AdaLnWeight, modulation, m, h, 3 * h);
+            for (int r = 0; r < m; r++)
+            {
+                var mod = modulation.AsSpan(r * 3 * h, 3 * h);
+                RmsNormModulateRow(x.AsSpan(r * h, h), layer.NormWeight, mod[..h], mod.Slice(h, h), w.RmsNormEps, modulated.AsSpan(r * h, h));
+            }
+            DenseKernels.LinearBatchedNoBias(modulated, layer.GateProjWeight, gate, m, h, f);
+            DenseKernels.SiluInPlace(gate);
+            DenseKernels.LinearBatchedNoBias(modulated, layer.UpProjWeight, up, m, h, f);
+            System.Numerics.Tensors.TensorPrimitives.Multiply(gate, up, gate);
+            DenseKernels.LinearBatchedNoBias(gate, layer.DownProjWeight, ffnOut, m, f, h);
+            for (int r = 0; r < m; r++)
+            {
+                var xr = x.AsSpan(r * h, h);
+                var g = modulation.AsSpan(r * 3 * h + 2 * h, h);
+                for (int i = 0; i < h; i++) xr[i] += g[i] * ffnOut[r * h + i];
+            }
+        }
+
+        // Final layer: 2-way AdaLN, RMSNorm with NO learnable scale, Linear(hidden -> latent).
+        var finalMod = new float[m * 2 * h];
+        DenseKernels.LinearBatchedNoBias(siluC, w.FinalAdaLnWeight, finalMod, m, h, 2 * h);
+        for (int r = 0; r < m; r++)
+        {
+            var mod = finalMod.AsSpan(r * 2 * h, 2 * h);
+            RmsNormModulateRow(x.AsSpan(r * h, h), null, mod[..h], mod.Slice(h, h), w.RmsNormEps, modulated.AsSpan(r * h, h));
+        }
+        var outFlat = new float[m * lat];
+        DenseKernels.LinearBatchedNoBias(modulated, w.FinalLinearWeight, outFlat, m, h, lat);
+
+        var output = new float[m][];
+        for (int r = 0; r < m; r++) output[r] = outFlat.AsSpan(r * lat, lat).ToArray();
         return output;
+    }
+
+    /// <summary>`modulate(RMSNorm(x) [* weight], shift, scale) = n * (1 + scale) + shift`, with the
+    /// RMS statistic accumulated in double exactly as the per-row helpers do.</summary>
+    private static void RmsNormModulateRow(ReadOnlySpan<float> x, float[]? weight, ReadOnlySpan<float> shift, ReadOnlySpan<float> scale, float eps, Span<float> output)
+    {
+        double sumSq = 0;
+        for (int i = 0; i < x.Length; i++) sumSq += (double)x[i] * x[i];
+        float invRms = (float)(1.0 / Math.Sqrt(sumSq / x.Length + eps));
+        for (int i = 0; i < x.Length; i++)
+        {
+            float n = weight is null ? x[i] * invRms : x[i] * invRms * weight[i];
+            output[i] = n * (1f + scale[i]) + shift[i];
+        }
+    }
+
+    private static float[] Flatten(float[][] rows, int dim)
+    {
+        var flat = new float[rows.Length * dim];
+        for (int r = 0; r < rows.Length; r++) rows[r].AsSpan(0, dim).CopyTo(flat.AsSpan(r * dim, dim));
+        return flat;
     }
 
     private static float[] TimestepEmbedding(VibeVoiceDiffusionHeadWeights w, float timestep)
@@ -122,81 +201,4 @@ public static class VibeVoiceDiffusionHead
         return DenseKernels.LinearNoBias(hidden, w.TimestepFc2Weight, w.HiddenSize, w.HiddenSize);
     }
 
-    private static float[] HeadLayer(VibeVoiceDiffusionHeadWeights w, VibeVoiceDiffusionHeadLayerWeights layer, float[] x, float[] c)
-    {
-        int hidden = w.HiddenSize;
-        var siluC = (float[])c.Clone();
-        DenseKernels.SiluInPlace(siluC);
-        var modulation = DenseKernels.LinearNoBias(siluC, layer.AdaLnWeight, hidden, 3 * hidden);
-        var shift = modulation.AsSpan(0, hidden).ToArray();
-        var scale = modulation.AsSpan(hidden, hidden).ToArray();
-        var gate = modulation.AsSpan(2 * hidden, hidden).ToArray();
-
-        var normed = RmsNormNoAffine(x, w.RmsNormEps, layer.NormWeight);
-        var modulated = Modulate(normed, shift, scale);
-        var ffnOut = SwiGlu(layer, modulated, w.FfnDim, hidden);
-
-        var result = new float[hidden];
-        for (int i = 0; i < hidden; i++) result[i] = x[i] + gate[i] * ffnOut[i];
-        return result;
-    }
-
-    private static float[] FinalLayer(VibeVoiceDiffusionHeadWeights w, float[] x, float[] c)
-    {
-        int hidden = w.HiddenSize;
-        var siluC = (float[])c.Clone();
-        DenseKernels.SiluInPlace(siluC);
-        var modulation = DenseKernels.LinearNoBias(siluC, w.FinalAdaLnWeight, hidden, 2 * hidden);
-        var shift = modulation.AsSpan(0, hidden).ToArray();
-        var scale = modulation.AsSpan(hidden, hidden).ToArray();
-
-        // Final RMSNorm has NO learnable scale (real reference: norm_data(nullopt,nullopt)).
-        var normed = RmsNormUnweighted(x, w.RmsNormEps);
-        var modulated = Modulate(normed, shift, scale);
-        return DenseKernels.LinearNoBias(modulated, w.FinalLinearWeight, hidden, w.LatentSize);
-    }
-
-    /// <summary>Real `modulate(x, shift, scale) = x * (1 + scale) + shift`.</summary>
-    private static float[] Modulate(float[] x, float[] shift, float[] scale)
-    {
-        var output = new float[x.Length];
-        for (int i = 0; i < x.Length; i++) output[i] = x[i] * (1f + scale[i]) + shift[i];
-        return output;
-    }
-
-    private static float[] SwiGlu(VibeVoiceDiffusionHeadLayerWeights layer, float[] input, int ffnDim, int hidden)
-    {
-        var gate = DenseKernels.LinearNoBias(input, layer.GateProjWeight, hidden, ffnDim);
-        DenseKernels.SiluInPlace(gate);
-        var up = DenseKernels.LinearNoBias(input, layer.UpProjWeight, hidden, ffnDim);
-        for (int i = 0; i < gate.Length; i++) gate[i] *= up[i];
-        return DenseKernels.LinearNoBias(gate, layer.DownProjWeight, ffnDim, hidden);
-    }
-
-    private static float[] RmsNormNoAffine(float[] x, float eps, float[] weight)
-    {
-        double sumSq = 0;
-        for (int i = 0; i < x.Length; i++) sumSq += (double)x[i] * x[i];
-        float invRms = (float)(1.0 / Math.Sqrt(sumSq / x.Length + eps));
-        var output = new float[x.Length];
-        for (int i = 0; i < x.Length; i++) output[i] = x[i] * invRms * weight[i];
-        return output;
-    }
-
-    private static float[] RmsNormUnweighted(float[] x, float eps)
-    {
-        double sumSq = 0;
-        for (int i = 0; i < x.Length; i++) sumSq += (double)x[i] * x[i];
-        float invRms = (float)(1.0 / Math.Sqrt(sumSq / x.Length + eps));
-        var output = new float[x.Length];
-        for (int i = 0; i < x.Length; i++) output[i] = x[i] * invRms;
-        return output;
-    }
-
-    private static float[] Add(float[] a, float[] b)
-    {
-        var output = new float[a.Length];
-        for (int i = 0; i < a.Length; i++) output[i] = a[i] + b[i];
-        return output;
-    }
 }
