@@ -66,7 +66,12 @@ public sealed class SttCommand : Command<SttCommand.Settings>
         string variant = s.Model.ToLowerInvariant();
         ISpeechToTextPipeline pipeline;
         string modelTitle;
-        if (variant.Contains("voxtral"))
+        if (s.ModelFile is not null && OpenTail.Stingray.Audio.Wav2Vec2.Wav2Vec2CtcPipeline.IsWav2Vec2CtcDirectory(s.ModelFile))
+        {
+            pipeline = OpenTail.Stingray.Audio.Wav2Vec2.Wav2Vec2CtcPipeline.Load(s.ModelFile);
+            modelTitle = $"Wav2Vec2 CTC Native Speech-to-Text ({Path.GetFileName(Path.TrimEndingDirectorySeparator(s.ModelFile))})";
+        }
+        else if (variant.Contains("voxtral"))
         {
             string? checkpointDir = ResolveVoxtralDir(s.ModelFile);
             if (checkpointDir is null || !File.Exists(Path.Combine(checkpointDir, "model.safetensors")))
