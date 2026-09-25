@@ -128,12 +128,13 @@ public sealed class VibeVoiceTtsGenerateWavDebugTest : HeavyTestBase
             acousticConnectorWeights, semanticConnectorWeights,
             speechScalingFactor, speechBiasFactor, TokenizerLayerNormEps,
             DdpmNumSteps, inferenceSteps: 10, guidanceScale: 1.5f,
-            maxSteps: 60, new Random(31));
+            maxSteps: int.TryParse(Environment.GetEnvironmentVariable("VV_MAXSTEPS"), out var ms) ? ms : 60,
+            new Random(int.TryParse(Environment.GetEnvironmentVariable("VV_SEED"), out var sd) ? sd : 31));
 
         Assert.True(result.AudioSamples.Length > 0);
 
         var wavResult = new OpenTail.Stingray.Audio.AudioGenerationResult(result.AudioSamples, OutputSampleRate);
-        string outPath = Path.Combine(repoRoot!, "audio-samples", "vibevoice-tts-real-check.wav");
+        string outPath = Environment.GetEnvironmentVariable("VV_OUT") ?? Path.Combine(repoRoot!, "audio-samples", "vibevoice-tts-real-check.wav");
         wavResult.SaveWav(outPath);
         Console.WriteLine($"Wrote {outPath}, {result.AudioSamples.Length} samples, {result.AudioSamples.Length / (double)OutputSampleRate:F2}s");
 

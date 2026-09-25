@@ -93,3 +93,36 @@ the 16→24 kHz resampler difference flipping a close token, not investigated fu
 Performance (CPU only: no GPU path, no CLI wiring): ours 47-56s for 3.5s clips and 142s for the 15s
 clip (test wall **including** GGUF load), vs reference 11.3-12.6s and 31.1s (`metrics.wall_ms`).
 ~4× behind: a Phase 2 target (profile first).
+
+## VibeVoice TTS -- two real generation-loop bugs found and fixed; never stopped → natural stop, 3/3 exact; upgraded to 🟢, 2026-09-25
+
+**Symptom (re-measured before the fix).** Script "Speaker 1: Hello there, this is a real end to end
+test of speech synthesis.", 1.5B q8_0, 10 inference steps, guidance 1.5, 3 seeds. Ours never emitted
+`speech_end`: every run hit the 60-frame cap (8.00s) and Whisper heard "[inaudible]" ×2 and
+"Oh, oh, oh…". Reference (`audiocpp_cli --family vibevoice --backend cpu`, same GGUF) stopped by
+itself at 4.80-5.07s ("We held it!", "Hello there, this is Aurel M2N Test of Speech synthesis.",
+"Hello there. This is a real end-to-end test of speech synthesis.").
+
+**Root causes**, both found by reading `VibeVoiceGenerator`'s loop against the reference's
+`src/models/vibevoice/generator.cpp` (following the 2026-09-09 lead that the feedback embedding
+wasn't carrying progress information):
+1. **Wrong connector input.** The reference projects the *scaled* diffusion output
+   (`connector.project_acoustic(speech_latents.front())`) as the acoustic half of the next-step
+   embedding. We projected the *unscaled* decoder latent (`latent / scaling - bias`), so the LM got a
+   mis-scaled feedback embedding every frame. (The voice-prompt path already scaled correctly.)
+2. **Off-by-one position.** The prompt fills positions `0..promptLength-1`; we wrote generated
+   step N at `promptLength + 1 + N`, leaving KV slot `promptLength` unwritten but inside the
+   attention window for every later step. The reference appends at its cache's current end (its
+   third `cached_step` argument is a capacity, not a position).
+
+**After** (same seeds): natural stop at 4.80 / 4.27 / 4.53s; Whisper: **3/3 exact**
+("Hello there, this is a real end-to-end test of speech synthesis."), better than the reference's
+own 3 samples. Real-weight suites still pass with real timings: `VibeVoiceGeneratorRealWeightsTests`
+26.5s, `VibeVoiceTtsVoiceCloningRealWeightsTests` 21.1s, `VibeVoiceDiffusionHeadRealWeightsTests`
+1.9s, `VibeVoiceTtsPromptBuilderRealWeightsTests` 16.9s.
+
+This overturns the 2026-09-08 "compounding floating-point drift / non-associativity" conclusions:
+those were symptoms of these two deterministic bugs.
+
+Perf (CPU only, no GPU path, no CLI wiring): ours 65-72s per ~4.5s sample (test wall incl. GGUF
+load) vs reference 19.0-19.9s (`metrics.wall_ms`); ~3.5× behind, a Phase 2 target.

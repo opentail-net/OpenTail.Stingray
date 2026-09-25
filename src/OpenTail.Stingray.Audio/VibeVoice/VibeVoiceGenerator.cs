@@ -319,7 +319,12 @@ public static class VibeVoiceGenerator
                 audioSamples.AddRange(chunk);
 
                 var semanticFeatures = VibeVoiceTokenizerEncoder.EncodeStreaming(semanticEncoderWeights, semanticEncoderState, chunk, layerNormEps);
-                var acousticEmbedding = VibeVoiceConnector.Project(acousticConnectorWeights, latentChannelMajor);
+                // Real reference (`generator.cpp`: `connector.project_acoustic(speech_latents.front()...)`):
+                // the acoustic connector takes the SCALED diffusion output, not the unscaled
+                // decoder latent (same convention as the voice-prompt path above, which scales
+                // before projecting). Projecting the unscaled latent fed the LM a wrongly scaled
+                // feedback embedding every frame (fixed 2026-09-25).
+                var acousticEmbedding = VibeVoiceConnector.Project(acousticConnectorWeights, ToChannelMajorSingleFrame(speechLatent));
                 var semanticEmbedding = VibeVoiceConnector.Project(semanticConnectorWeights, semanticFeatures);
 
                 nextEmbedding = new float[hiddenDim];
@@ -343,7 +348,11 @@ public static class VibeVoiceGenerator
                 negativePosition++;
             }
 
-            currentLogits = fwd.ForwardEmbedding(nextEmbedding, position + 1).ToArray();
+            // The prompt occupies positions 0..promptLength-1, so generated step N goes at
+            // promptLength+N (the reference appends at its cache's current end). This used to pass
+            // position+1, which skipped KV slot promptLength and left it unwritten inside the
+            // attention window for every later step (fixed 2026-09-25).
+            currentLogits = fwd.ForwardEmbedding(nextEmbedding, position).ToArray();
             currentHidden = fwd.LastHidden.ToArray();
             position++;
         }
