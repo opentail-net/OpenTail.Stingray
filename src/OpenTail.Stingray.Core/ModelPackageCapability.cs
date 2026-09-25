@@ -145,12 +145,38 @@ public sealed record ModelPackageCapability(
             "CUDA and Vulkan routes; each needs its own dtype, layout and transfer contract.",
         ]);
 
+
+    /// <summary>
+    /// GPT-2 (<c>GPT2LMHeadModel</c>) from Hugging Face SafeTensors, CPU, F32 only: LayerNorm with bias,
+    /// learned absolute positions, fused <c>c_attn</c>, tanh-GELU (<c>gelu_new</c>) MLP, tied output. The
+    /// Conv1D <c>[in, out]</c> weights are transposed on load exactly as llama.cpp's converter does.
+    /// </summary>
+    public static ModelPackageCapability DenseGpt2Cpu { get; } = new(
+        SchemaVersion: CurrentSchemaVersion,
+        ProfileId: "dense-gpt2-cpu",
+        Description: "GPT-2 (GPT2LMHeadModel), CPU, F32 source weights.",
+        ArchitectureIds: ["gpt2"],
+        SourceDtypes: ["F32"],
+        TokenizerFamily: ModelPackageTokenizerFamily.HuggingFaceJson,
+        Backends: ModelPackageBackends.Cpu,
+        SupportsBatching: false,
+        SupportsSessions: false,
+        SupportsSpeculation: false,
+        SupportsAdapters: false,
+        SupportsMultimodal: false,
+        Exclusions:
+        [
+            "Activations other than gelu_new.",
+            "F16/BF16 source weights (the Conv1D transpose path is F32 only).",
+            "Quantized SafeTensors weights; use GGUF for block-quantized deployment.",
+            "CUDA and Vulkan routes; each needs its own dtype, layout and transfer contract.",
+        ]);
     /// <summary>The profile that covers <paramref name="modelType"/>, or null.</summary>
     public static ModelPackageCapability? ForArchitecture(string? modelType) =>
         modelType is null ? null : All.FirstOrDefault(p => p.ArchitectureIds.Contains(modelType, StringComparer.Ordinal));
 
     /// <summary>All profiles OpenTail currently publishes.</summary>
-    public static IReadOnlyList<ModelPackageCapability> All { get; } = [DenseLlamaCpu, DenseQwenCpu];
+    public static IReadOnlyList<ModelPackageCapability> All { get; } = [DenseLlamaCpu, DenseQwenCpu, DenseGpt2Cpu];
 }
 
 /// <summary>

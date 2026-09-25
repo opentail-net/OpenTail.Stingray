@@ -55,6 +55,8 @@ public sealed record SafetensorsTextModelPackage(
         using var document = JsonDocument.Parse(File.ReadAllBytes(config));
         var json = document.RootElement;
         string modelType = RequiredString(json, "model_type", config);
+        if (modelType == "gpt2")
+            return OpenGpt2(json, root, weights, config, tokenizer);
         if (modelType is not ("llama" or "mistral" or "qwen2" or "qwen3"))
             throw new NotSupportedException(
                 $"SafeTensors text-model support currently covers dense Llama-family packages (llama, mistral, qwen2, qwen3) only; model_type '{modelType}' is not supported.");
@@ -95,6 +97,58 @@ public sealed record SafetensorsTextModelPackage(
             contextLength, ropeTheta, rmsNormEps, dtypes, headDim);
     }
 
+    /// <summary>
+    /// GPT-2 (<c>GPT2LMHeadModel</c>): LayerNorm with bias, learned absolute positions, fused <c>c_attn</c>,
+    /// tanh-GELU (<c>gelu_new</c>) MLP, tied output. HF stores the four projection weights as Conv1D
+    /// <c>[in, out]</c>; <see cref="SafetensorsTensorSource"/> transposes them on load, as llama.cpp's
+    /// <c>conversion/gpt2.py</c> does, so the GGUF <c>gpt2</c> graph sees <c>[out, in]</c>.
+    /// </summary>
+    private static SafetensorsTextModelPackage OpenGpt2(JsonElement json, string root, string weights, string config, string tokenizer)
+    {
+        int hidden = RequiredInt(json, "n_embd", config);
+        int layers = RequiredInt(json, "n_layer", config);
+        int heads = RequiredInt(json, "n_head", config);
+        int vocab = RequiredInt(json, "vocab_size", config);
+        int context = OptionalInt(json, "n_positions", OptionalInt(json, "n_ctx", 0));
+        int inner = json.TryGetProperty("n_inner", out var ni) && ni.ValueKind == JsonValueKind.Number ? ni.GetInt32() : 4 * hidden;
+        float eps = OptionalFloat(json, "layer_norm_epsilon", 1e-5f);
+        string activation = json.TryGetProperty("activation_function", out var af) && af.ValueKind == JsonValueKind.String ? af.GetString()! : "gelu_new";
+        if (activation != "gelu_new")
+            throw new NotSupportedException($"GPT-2 SafeTensors support requires activation_function 'gelu_new'; found '{activation}'.");
+        if (hidden <= 0 || layers <= 0 || heads <= 0 || vocab <= 0 || context <= 0 || hidden % heads != 0)
+            throw new InvalidDataException($"SafeTensors config contains invalid GPT-2 dimensions: {config}");
+
+        using var tensors = OpenWeights(root, weights);
+        ValidateShape(tensors, "wte.weight", vocab, hidden);
+        ValidateShape(tensors, "wpe.weight", context, hidden);
+        ValidateShape(tensors, "ln_f.weight", hidden);
+        for (int l = 0; l < layers; l++)
+        {
+            string p = $"h.{l}.";
+            ValidateShape(tensors, p + "ln_1.weight", hidden);
+            ValidateShape(tensors, p + "ln_1.bias", hidden);
+            ValidateShape(tensors, p + "attn.c_attn.weight", hidden, 3 * hidden);
+            ValidateShape(tensors, p + "attn.c_attn.bias", 3 * hidden);
+            ValidateShape(tensors, p + "attn.c_proj.weight", hidden, hidden);
+            ValidateShape(tensors, p + "ln_2.weight", hidden);
+            ValidateShape(tensors, p + "mlp.c_fc.weight", hidden, inner);
+            ValidateShape(tensors, p + "mlp.c_proj.weight", inner, hidden);
+        }
+        var dtypes = tensors.TensorNames.Select(tensors.GetDtype).Distinct(StringComparer.Ordinal).Order().ToArray();
+        if (dtypes.Any(d => d != "F32"))
+            throw new NotSupportedException($"GPT-2 SafeTensors support currently accepts only F32 weights; found {string.Join(", ", dtypes)}.");
+        return new SafetensorsTextModelPackage(root, weights, config, tokenizer, "gpt2",
+            hidden, layers, heads, heads, inner, vocab, context, RopeTheta: 0f, RmsNormEps: eps, dtypes, hidden / heads);
+    }
+
+    /// <summary>True for GPT-2 Conv1D weights stored <c>[in, out]</c> that must be transposed to <c>[out, in]</c>.</summary>
+    public static bool IsConv1DWeight(string safetensorsName) =>
+        safetensorsName.StartsWith("h.", StringComparison.Ordinal)
+        && (safetensorsName.EndsWith(".attn.c_attn.weight", StringComparison.Ordinal)
+            || safetensorsName.EndsWith(".attn.c_proj.weight", StringComparison.Ordinal)
+            || safetensorsName.EndsWith(".mlp.c_fc.weight", StringComparison.Ordinal)
+            || safetensorsName.EndsWith(".mlp.c_proj.weight", StringComparison.Ordinal));
+
     internal static SafetensorsLoader OpenWeights(SafetensorsTextModelPackage package) =>
         OpenWeights(package.RootDirectory, package.WeightsPath);
 
@@ -112,6 +166,19 @@ public sealed record SafetensorsTextModelPackage(
     /// </summary>
     public IReadOnlyDictionary<string, object> ToOpenTailMetadata()
     {
+        if (ModelType == "gpt2")
+            return new Dictionary<string, object>(StringComparer.Ordinal)
+            {
+                ["general.architecture"] = "gpt2",
+                ["gpt2.vocab_size"] = VocabSize,
+                ["gpt2.context_length"] = ContextLength,
+                ["gpt2.embedding_length"] = HiddenSize,
+                ["gpt2.feed_forward_length"] = IntermediateSize,
+                ["gpt2.block_count"] = NumHiddenLayers,
+                ["gpt2.attention.head_count"] = NumAttentionHeads,
+                ["gpt2.attention.layer_norm_epsilon"] = RmsNormEps,
+            };
+
         // qwen2/qwen3 keep their own GGUF architecture (NeoX rope, biases / QK-norm), keyed the way
         // llama.cpp's converter writes them; llama and mistral share the llama graph.
         string arch = ModelType is "qwen2" or "qwen3" ? ModelType : "llama";
@@ -147,10 +214,41 @@ public sealed record SafetensorsTextModelPackage(
             "model.embed_tokens.weight" => "token_embd.weight",
             "model.norm.weight" => "output_norm.weight",
             "lm_head.weight" => "output.weight",
-            _ => TryMapLayerTensorName(safetensorsName),
+            "wte.weight" => "token_embd.weight",
+            "wpe.weight" => "position_embd.weight",
+            "ln_f.weight" => "output_norm.weight",
+            "ln_f.bias" => "output_norm.bias",
+            _ => TryMapLayerTensorName(safetensorsName) ?? TryMapGpt2LayerTensorName(safetensorsName),
         };
     }
 
+
+    private static string? TryMapGpt2LayerTensorName(string name)
+    {
+        const string prefix = "h.";
+        if (!name.StartsWith(prefix, StringComparison.Ordinal)) return null;
+        int separator = name.IndexOf('.', prefix.Length);
+        if (separator < 0 || !int.TryParse(name.AsSpan(prefix.Length, separator - prefix.Length),
+                NumberStyles.None, CultureInfo.InvariantCulture, out int layer) || layer < 0)
+            return null;
+        string targetSuffix = name[(separator + 1)..] switch
+        {
+            "ln_1.weight" => "attn_norm.weight",
+            "ln_1.bias" => "attn_norm.bias",
+            "attn.c_attn.weight" => "attn_qkv.weight",
+            "attn.c_attn.bias" => "attn_qkv.bias",
+            "attn.c_proj.weight" => "attn_output.weight",
+            "attn.c_proj.bias" => "attn_output.bias",
+            "ln_2.weight" => "ffn_norm.weight",
+            "ln_2.bias" => "ffn_norm.bias",
+            "mlp.c_fc.weight" => "ffn_up.weight",
+            "mlp.c_fc.bias" => "ffn_up.bias",
+            "mlp.c_proj.weight" => "ffn_down.weight",
+            "mlp.c_proj.bias" => "ffn_down.bias",
+            _ => string.Empty, // attn.bias / attn.masked_bias are causal-mask buffers, not weights
+        };
+        return targetSuffix.Length == 0 ? null : $"blk.{layer}.{targetSuffix}";
+    }
     private static string? TryMapLayerTensorName(string name)
     {
         const string prefix = "model.layers.";

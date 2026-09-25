@@ -341,3 +341,14 @@ the oracle.
   biases, produces finite logits over all 152,064 ids (structural check only; the weights are random).
 - Remaining in Phase 6: GPT-2 from HF safetensors (Conv1D `[in, out]` weights need transposing on load, LayerNorm +
   learned positions, fused `c_attn`), vs the existing `gpt2.Q8_0.gguf` receipt.
+- **GPT-2 from HF safetensors: done (2026-09-25).** New profile **`dense-gpt2-cpu`** (F32). `SafetensorsTextModelPackage`
+  has a GPT-2 branch (`n_embd`/`n_layer`/`n_head`/`n_positions`, `gelu_new` required) and maps `wte`/`wpe`/`ln_f`/`h.N.*`
+  to the llama.cpp `gpt2` names; `SafetensorsTensorSource` serves the four Conv1D weights (`c_attn`, `attn.c_proj`,
+  `c_fc`, `mlp.c_proj`, stored `[in, out]`) as owned transposed copies, exactly as llama.cpp's `conversion/gpt2.py`
+  transposes them; the causal-mask buffers `h.N.attn.bias` stay unmapped. `HuggingFaceTokenizerSource` now accepts the
+  older tokenizer.json shape with no `model.type` (vocab dict + merges = BPE). The inspector checks GPT-2's own required
+  keys. **Receipt:** the F32 safetensors model reproduces the existing llama.cpp greedy receipt (`Gpt2GreedyParityTests`,
+  F16 GGUF) **22/22 tokens** (" the capital of the French Republic, and the capital of …"), tokenizer ids identical.
+  Two inspector tests that used "gpt2" as their unsupported-architecture example now use "falcon".
+- **Phase 6 complete.** Next: Phase 7 (replace the fake `BertGgufEmbeddingPipeline` / `EmbeddingEngine.Rerank` in
+  CLI and server with the real encoder pipelines; README rows).

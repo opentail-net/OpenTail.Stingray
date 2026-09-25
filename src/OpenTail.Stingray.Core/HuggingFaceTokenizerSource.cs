@@ -78,8 +78,13 @@ public static class HuggingFaceTokenizerSource
                 return new Result(null, rejections);
             }
 
+            // Older tokenizers releases (e.g. openai-community/gpt2) omit model.type; a model with a
+            // vocab dict plus a merges list is the BPE shape.
             string? modelType = model.TryGetProperty("type", out var t) && t.ValueKind == JsonValueKind.String
-                ? t.GetString() : null;
+                ? t.GetString()
+                : model.TryGetProperty("merges", out var mg) && mg.ValueKind == JsonValueKind.Array
+                    && model.TryGetProperty("vocab", out var vc) && vc.ValueKind == JsonValueKind.Object ? "BPE" : null;
+
             if (!string.Equals(modelType, "BPE", StringComparison.Ordinal))
             {
                 rejections.Add(new ModelPackageRejection(ModelPackageRejectionKind.MissingTokenizer,

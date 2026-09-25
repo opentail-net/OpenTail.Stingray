@@ -173,8 +173,14 @@ public static class ModelPackageInspector
                 rejections.Add(new ModelPackageRejection(ModelPackageRejectionKind.UnsupportedConfig,
                     "rope_scaling", "RoPE scaling is not part of this profile."));
 
-            foreach (string required in (string[])["hidden_size", "num_hidden_layers", "num_attention_heads",
-                                                   "intermediate_size", "vocab_size"])
+            string[] requiredKeys = architecture == "gpt2"
+                ? ["n_embd", "n_layer", "n_head", "vocab_size"]
+                : ["hidden_size", "num_hidden_layers", "num_attention_heads", "intermediate_size", "vocab_size"];
+            if (architecture == "gpt2" && json.TryGetProperty("activation_function", out var gptAct)
+                && gptAct.ValueKind == JsonValueKind.String && gptAct.GetString() != "gelu_new")
+                rejections.Add(new ModelPackageRejection(ModelPackageRejectionKind.UnsupportedConfig,
+                    "activation_function", $"Profile requires gelu_new; found '{gptAct.GetString()}'."));
+            foreach (string required in requiredKeys)
             {
                 if (!json.TryGetProperty(required, out var value) || value.ValueKind != JsonValueKind.Number)
                     rejections.Add(new ModelPackageRejection(ModelPackageRejectionKind.UnsupportedConfig,

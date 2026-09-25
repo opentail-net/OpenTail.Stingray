@@ -67,13 +67,13 @@ public sealed class ModelPackageInspectorTests
     [Fact]
     public void Inspect_UnsupportedArchitecture_NamesTheModelType()
     {
-        using var pkg = Package.Create(modelType: "gpt2");
+        using var pkg = Package.Create(modelType: "falcon");
 
         var report = ModelPackageInspector.Inspect(pkg.Directory);
 
         Assert.False(report.IsSupported);
         var r = Assert.Single(report.Rejections, x => x.Kind == ModelPackageRejectionKind.UnsupportedArchitecture);
-        Assert.Equal("gpt2", r.Subject);
+        Assert.Equal("falcon", r.Subject);
     }
 
     /// <summary>
@@ -191,7 +191,7 @@ public sealed class ModelPackageInspectorTests
     [Fact]
     public void Inspect_SeveralFaults_ReportsAllOfThem()
     {
-        using var pkg = Package.Create(modelType: "gpt2", dtype: "I64", deleteTokenizer: true);
+        using var pkg = Package.Create(modelType: "falcon", dtype: "I64", deleteTokenizer: true);
 
         var report = ModelPackageInspector.Inspect(pkg.Directory);
 
@@ -216,7 +216,7 @@ public sealed class ModelPackageInspectorTests
     [Fact]
     public void UnsupportedPackage_AdvertisesNoBackends()
     {
-        using var pkg = Package.Create(modelType: "gpt2");
+        using var pkg = Package.Create(modelType: "falcon");
 
         var report = ModelPackageInspector.Inspect(pkg.Directory);
 

@@ -97,4 +97,44 @@ public sealed class HfDecoderSafetensorsTests
         Assert.NotEqual(0f, TensorPrimitives.MaxMagnitude(logits)); // signed value of largest magnitude
         Console.WriteLine($"[TinyQwen2] logits finite over {logits.Length} vocab; top1 {TensorPrimitives.IndexOfMax(logits)}");
     }
+
+    /// <summary>llama.cpp greedy receipt for openai-community/gpt2 (F16 GGUF), from <c>Gpt2GreedyParityTests</c>.</summary>
+    private static readonly int[] s_gpt2Prompt = [464, 3139, 286, 4881, 318];
+    private static readonly int[] s_gpt2Reference =
+        [262, 3139, 286, 262, 4141, 2066, 11, 290, 262, 3139, 286, 262, 4141, 2066, 318, 262, 3139, 286, 262, 4141, 2066, 13];
+
+    [Fact]
+    public void Gpt2_Safetensors_MatchesLlamaCppGreedyReceipt()
+    {
+        string? dir = BertEncoderOnnxParityTests.FindRepoDir("models/_models/hf/openai-community__gpt2");
+        Assert.SkipUnless(dir != null, "openai-community/gpt2 safetensors not found");
+
+        var report = ModelPackageInspector.Inspect(dir!);
+        Assert.True(report.IsSupported, string.Join("; ", report.Rejections.Select(r => r.Subject + ": " + r.Detail)));
+        Assert.Equal("dense-gpt2-cpu", report.ProfileId);
+
+        var sw = Stopwatch.StartNew();
+        using var st = SafetensorsTensorSource.Open(dir!);
+        var hp = ModelHyperparams.FromGgufMetadata(st.Metadata, st);
+        Assert.True(hp.UsesLayerNorm);
+        Assert.Equal(1, hp.NoRopeLayerStep);
+        var tok = HuggingFaceTokenizerSource.Load(dir!);
+        Assert.True(tok.IsUsable, string.Join("; ", tok.Rejections.Select(r => r.Detail)));
+        var tokenizer = GgufTokenizer.FromSource(tok.Source!);
+        Assert.Equal(s_gpt2Prompt, tokenizer.Encode("The capital of France is"));
+
+        using var backend = new CpuBackend();
+        using var fwd = new Engine.ForwardPass(st, backend, hp, maxContextLength: 256);
+        var logits = fwd.Prefill(s_gpt2Prompt);
+        var generated = new List<int>();
+        int pos = s_gpt2Prompt.Length;
+        for (int i = 0; i < s_gpt2Reference.Length; i++)
+        {
+            int next = TensorPrimitives.IndexOfMax(logits[..hp.VocabSize]);
+            generated.Add(next);
+            if (i + 1 < s_gpt2Reference.Length) logits = fwd.Forward(next, pos++);
+        }
+        Console.WriteLine($"[Gpt2St] {sw.ElapsedMilliseconds} ms: {tokenizer.Decode(generated).Replace("\n", "\n")}");
+        Assert.Equal(s_gpt2Reference, generated);
+    }
 }

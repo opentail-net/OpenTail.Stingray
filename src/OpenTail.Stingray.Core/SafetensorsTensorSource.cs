@@ -18,6 +18,7 @@ public sealed unsafe class SafetensorsTensorSource : IModelTensorSource, IDispos
     private readonly Dictionary<string, GgufTensorInfo> _byCanonicalName;
     private readonly Dictionary<string, string> _sourceNameByCanonicalName;
     private readonly Dictionary<string, bool> _isBf16ByCanonicalName;
+    private Dictionary<string, (int Rows, int Cols)> _transposedShapes = new(StringComparer.Ordinal);
     private readonly Dictionary<string, nint> _convertedBf16Buffers = new(StringComparer.Ordinal);
     private readonly HashSet<nint> _ownedPointers = [];
     private readonly Lock _convertLock = new();
@@ -59,6 +60,7 @@ public sealed unsafe class SafetensorsTensorSource : IModelTensorSource, IDispos
             var descriptors = new Dictionary<string, GgufTensorInfo>(StringComparer.Ordinal);
             var sourceNames = new Dictionary<string, string>(StringComparer.Ordinal);
             var isBf16Map = new Dictionary<string, bool>(StringComparer.Ordinal);
+            var transposed = new Dictionary<string, (int Rows, int Cols)>(StringComparer.Ordinal);
 
             foreach (string sourceName in loader.TensorNames)
             {
@@ -77,6 +79,14 @@ public sealed unsafe class SafetensorsTensorSource : IModelTensorSource, IDispos
                 };
 
                 int[] shape = loader.GetShape(sourceName);
+                // GPT-2 Conv1D weights are stored [in, out]; they are served transposed as [out, in].
+                bool transpose = package.ModelType == "gpt2" && SafetensorsTextModelPackage.IsConv1DWeight(sourceName);
+                if (transpose)
+                {
+                    if (dtype != "F32") throw new NotSupportedException($"GPT-2 Conv1D weight {sourceName} must be F32; found {dtype}.");
+                    transposed[canonical] = (shape[0], shape[1]);
+                    shape = [shape[1], shape[0]];
+                }
                 long[] dims = ToGgufDimensionOrder(shape);
 
                 descriptors[canonical] = new GgufTensorInfo(canonical, dims.Length, dims, mapped, DataOffset: 0);
@@ -97,7 +107,10 @@ public sealed unsafe class SafetensorsTensorSource : IModelTensorSource, IDispos
                 }
             }
 
-            return new SafetensorsTensorSource(loader, descriptors, sourceNames, isBf16Map, package.ToOpenTailMetadata());
+            return new SafetensorsTensorSource(loader, descriptors, sourceNames, isBf16Map, package.ToOpenTailMetadata())
+            {
+                _transposedShapes = transposed,
+            };
         }
         catch
         {
@@ -136,6 +149,9 @@ public sealed unsafe class SafetensorsTensorSource : IModelTensorSource, IDispos
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
 
+        if (_transposedShapes.TryGetValue(tensor.Name, out var srcShape))
+            return GetTransposedF32Ptr(tensor.Name, srcShape.Rows, srcShape.Cols);
+
         if (_isBf16ByCanonicalName.TryGetValue(tensor.Name, out bool isBf16) && isBf16)
         {
             lock (_convertLock)
@@ -164,6 +180,27 @@ public sealed unsafe class SafetensorsTensorSource : IModelTensorSource, IDispos
         return pointer;
     }
 
+
+    /// <summary>Owned row-major [cols, rows] copy of an F32 source tensor stored [rows, cols].</summary>
+    private byte* GetTransposedF32Ptr(string canonicalName, int rows, int cols)
+    {
+        lock (_convertLock)
+        {
+            if (_convertedBf16Buffers.TryGetValue(canonicalName, out nint existing))
+                return (byte*)existing;
+            string sourceName = _sourceNameByCanonicalName[canonicalName];
+            if (!_loader.TryGetMappedPointer(sourceName, out byte* pointer, out _, out _))
+                throw new KeyNotFoundException($"SafeTensors shard has no tensor '{sourceName}'.");
+            float* src = (float*)pointer;
+            float* dst = (float*)NativeMemory.Alloc((nuint)((long)rows * cols * sizeof(float)));
+            for (int r = 0; r < rows; r++)
+                for (int c = 0; c < cols; c++)
+                    dst[(long)c * rows + r] = src[(long)r * cols + c];
+            _convertedBf16Buffers[canonicalName] = (nint)dst;
+            _ownedPointers.Add((nint)dst);
+            return (byte*)dst;
+        }
+    }
     private byte* GetRawFloat32Ptr(string canonicalName)
     {
         if (!_sourceNameByCanonicalName.TryGetValue(canonicalName, out string? sourceName))
