@@ -11,159 +11,174 @@ namespace OpenTail.Stingray.Audio.OmniVoice;
 /// `attention_mask` zeroes the WHOLE valid `[0,len)x[0,len)` block, no triangular restriction),
 /// so this implementation simply omits any masking rather than replicating the reference's
 /// padding-capacity scheme (this port has no fixed-capacity graph to pad).
+///
+/// <para>Layout: every activation is one flat token-major buffer `[seqLen, dim]`, and every
+/// projection is ONE batched GEMM over all tokens (<see cref="DenseKernels.LinearBatchedNoBias"/>),
+/// not a mat-vec per token (which re-streamed each weight matrix seqLen times; 2026-09-25 perf pass).</para>
 /// </summary>
 public static class OmniVoiceMaskGitForward
 {
-    /// <summary>Runs the full `NumLayers`-deep transformer over one already-built
-    /// `[seqLen][HiddenDim]` embedding sequence (frame-major), returning the FINAL RMSNorm'd
-    /// hidden states. Positions are real sequential `0..seqLen-1` (matches the reference's own
-    /// `position_host[i]=i`).</summary>
-    public static float[][] Forward(OmniVoiceMaskGitWeights w, float[][] embeddings)
-    {
-        int seqLen = embeddings.Length;
-        var hidden = embeddings;
-        for (int l = 0; l < OmniVoiceMaskGitWeights.NumLayers; l++)
-            hidden = Layer(w.Layers[l], hidden, seqLen);
+    private const int Hidden = OmniVoiceMaskGitWeights.HiddenDim;
+    private const int NumHeads = OmniVoiceMaskGitWeights.NumHeads;
+    private const int NumKvHeads = OmniVoiceMaskGitWeights.NumKvHeads;
+    private const int HeadDim = OmniVoiceMaskGitWeights.HeadDim;
+    private const int QDim = NumHeads * HeadDim;
+    private const int KvDim = NumKvHeads * HeadDim;
+    private const int FfDim = OmniVoiceMaskGitWeights.FfDim;
 
-        var output = new float[seqLen][];
-        Parallel.For(0, seqLen, t => output[t] = RmsNorm(hidden[t], w.FinalNorm));
+    /// <summary>Runs the full `NumLayers`-deep transformer over one flat `[seqLen, HiddenDim]`
+    /// embedding buffer (frame-major), returning the FINAL RMSNorm'd hidden states in the same
+    /// layout. Positions are real sequential `0..seqLen-1` (matches the reference's own
+    /// `position_host[i]=i`).</summary>
+    public static float[] Forward(OmniVoiceMaskGitWeights w, float[] embeddings, int seqLen)
+    {
+        var ws = new Workspace(seqLen);
+        var hidden = (float[])embeddings.Clone();
+        for (int l = 0; l < OmniVoiceMaskGitWeights.NumLayers; l++)
+            Layer(w.Layers[l], hidden, seqLen, ws);
+
+        var output = new float[seqLen * Hidden];
+        RmsNormRows(hidden, output, w.FinalNorm, seqLen, Hidden);
         return output;
     }
 
-    private static float[][] Layer(OmniVoiceMaskGitLayerWeights w, float[][] input, int seqLen)
+    private sealed class Workspace(int seqLen)
     {
-        const int hidden = OmniVoiceMaskGitWeights.HiddenDim;
-        const int numHeads = OmniVoiceMaskGitWeights.NumHeads;
-        const int numKvHeads = OmniVoiceMaskGitWeights.NumKvHeads;
-        const int headDim = OmniVoiceMaskGitWeights.HeadDim;
-        int kvRepeats = numHeads / numKvHeads;
+        public readonly float[] XNorm = new float[seqLen * Hidden];
+        public readonly float[] Q = new float[seqLen * QDim];
+        public readonly float[] K = new float[seqLen * KvDim];
+        public readonly float[] V = new float[seqLen * KvDim];
+        public readonly float[] Context = new float[seqLen * QDim];
+        public readonly float[] Proj = new float[seqLen * Hidden];
+        public readonly float[] Gate = new float[seqLen * FfDim];
+        public readonly float[] Up = new float[seqLen * FfDim];
+        public readonly (float[] Cos, float[] Sin) Rope = BuildRopeTable(seqLen);
+    }
 
-        var xNorm = new float[seqLen][];
-        Parallel.For(0, seqLen, t => xNorm[t] = RmsNorm(input[t], w.InputNorm));
+    /// <summary>One decoder layer, updating <paramref name="x"/> ([seqLen, Hidden]) in place.</summary>
+    private static void Layer(OmniVoiceMaskGitLayerWeights w, float[] x, int seqLen, Workspace ws)
+    {
+        const int kvRepeats = NumHeads / NumKvHeads;
 
-        // Real per-head q/k RMSNorm + RoPE-NEOX, applied per position/head in parallel across tokens.
-        var q = new float[seqLen][][]; // [t][head][headDim]
-        var k = new float[seqLen][][];
-        var v = new float[seqLen][][];
+        RmsNormRows(x, ws.XNorm, w.InputNorm, seqLen, Hidden);
+        DenseKernels.LinearBatchedNoBias(ws.XNorm, w.QProj, ws.Q, seqLen, Hidden, QDim);
+        DenseKernels.LinearBatchedNoBias(ws.XNorm, w.KProj, ws.K, seqLen, Hidden, KvDim);
+        DenseKernels.LinearBatchedNoBias(ws.XNorm, w.VProj, ws.V, seqLen, Hidden, KvDim);
+
+        // Real per-head q/k RMSNorm + RoPE-NEOX, in place, per token.
+        var (cos, sin) = ws.Rope;
         Parallel.For(0, seqLen, t =>
         {
-            var qFlat = DenseKernels.LinearNoBias(xNorm[t], w.QProj, hidden, numHeads * headDim);
-            var kFlat = DenseKernels.LinearNoBias(xNorm[t], w.KProj, hidden, numKvHeads * headDim);
-            var vFlat = DenseKernels.LinearNoBias(xNorm[t], w.VProj, hidden, numKvHeads * headDim);
-            var qHeads = new float[numHeads][];
-            for (int h = 0; h < numHeads; h++)
-            {
-                var head = new float[headDim];
-                Array.Copy(qFlat, h * headDim, head, 0, headDim);
-                head = RmsNorm(head, w.QNorm);
-                RopeNeoxInPlace(head, t, headDim);
-                qHeads[h] = head;
-            }
-            q[t] = qHeads;
-
-            var kHeads = new float[numKvHeads][];
-            var vHeads = new float[numKvHeads][];
-            for (int h = 0; h < numKvHeads; h++)
-            {
-                var head = new float[headDim];
-                Array.Copy(kFlat, h * headDim, head, 0, headDim);
-                head = RmsNorm(head, w.KNorm);
-                RopeNeoxInPlace(head, t, headDim);
-                kHeads[h] = head;
-                var vHead = new float[headDim];
-                Array.Copy(vFlat, h * headDim, vHead, 0, headDim);
-                vHeads[h] = vHead;
-            }
-            k[t] = kHeads;
-            v[t] = vHeads;
+            for (int h = 0; h < NumHeads; h++)
+                NormRopeHead(ws.Q.AsSpan(t * QDim + h * HeadDim, HeadDim), w.QNorm, cos, sin, t);
+            for (int h = 0; h < NumKvHeads; h++)
+                NormRopeHead(ws.K.AsSpan(t * KvDim + h * HeadDim, HeadDim), w.KNorm, cos, sin, t);
         });
 
-        // Real full (non-causal) scaled-dot-product attention per head, GQA-repeated kv in parallel across heads.
-        float scale = 1f / MathF.Sqrt(headDim);
-        var context = new float[seqLen][]; // [t][numHeads*headDim]
-        for (int t = 0; t < seqLen; t++) context[t] = new float[numHeads * headDim];
-
-        Parallel.For(0, numHeads, h =>
+        // Real full (non-causal) scaled-dot-product attention, GQA-repeated kv, parallel over
+        // (head, query-chunk) so all cores stay busy even with few heads.
+        float scale = 1f / MathF.Sqrt(HeadDim);
+        const int chunk = 16;
+        int qChunks = (seqLen + chunk - 1) / chunk;
+        var q = ws.Q; var k = ws.K; var v = ws.V; var context = ws.Context;
+        Parallel.For(0, NumHeads * qChunks, () => new float[seqLen], (item, _, scores) =>
         {
-            int kvHead = h / kvRepeats;
-            int baseOff = h * headDim;
-            var scores = new float[seqLen];
-            for (int tq = 0; tq < seqLen; tq++)
+            int h = item / qChunks, t0 = item % qChunks * chunk, t1 = Math.Min(seqLen, t0 + chunk);
+            int kvOff = h / kvRepeats * HeadDim;
+            for (int tq = t0; tq < t1; tq++)
             {
-                var qv = (ReadOnlySpan<float>)q[tq][h];
+                var qv = new ReadOnlySpan<float>(q, tq * QDim + h * HeadDim, HeadDim);
                 float maxScore = float.NegativeInfinity;
                 for (int tk = 0; tk < seqLen; tk++)
                 {
-                    float dot = TensorPrimitives.Dot(qv, k[tk][kvHead]) * scale;
+                    float dot = TensorPrimitives.Dot(qv, new ReadOnlySpan<float>(k, tk * KvDim + kvOff, HeadDim)) * scale;
                     scores[tk] = dot;
                     if (dot > maxScore) maxScore = dot;
                 }
                 double sum = 0;
                 for (int tk = 0; tk < seqLen; tk++)
                 {
-                    float exp = MathF.Exp(scores[tk] - maxScore);
-                    scores[tk] = exp;
-                    sum += exp;
+                    float e = MathF.Exp(scores[tk] - maxScore);
+                    scores[tk] = e;
+                    sum += e;
                 }
-                var outHead = context[tq].AsSpan(baseOff, headDim);
+                var outHead = context.AsSpan(tq * QDim + h * HeadDim, HeadDim);
+                outHead.Clear();
                 for (int tk = 0; tk < seqLen; tk++)
                 {
                     float p = (float)(scores[tk] / sum);
                     if (p == 0f) continue;
-                    TensorPrimitives.MultiplyAdd((ReadOnlySpan<float>)v[tk][kvHead], p, outHead, outHead);
+                    TensorPrimitives.MultiplyAdd(new ReadOnlySpan<float>(v, tk * KvDim + kvOff, HeadDim), p, outHead, outHead);
                 }
             }
-        });
+            return scores;
+        }, static _ => { });
 
-        var afterAttn = new float[seqLen][];
-        Parallel.For(0, seqLen, t =>
-        {
-            var o = DenseKernels.LinearNoBias(context[t], w.OProj, numHeads * headDim, hidden);
-            var row = new float[hidden];
-            TensorPrimitives.Add((ReadOnlySpan<float>)input[t], o, row);
-            afterAttn[t] = row;
-        });
+        DenseKernels.LinearBatchedNoBias(ws.Context, w.OProj, ws.Proj, seqLen, QDim, Hidden);
+        TensorPrimitives.Add(x, ws.Proj, x);
 
-        var output = new float[seqLen][];
-        Parallel.For(0, seqLen, t =>
-        {
-            var ffNorm = RmsNorm(afterAttn[t], w.PostNorm);
-            var gate = DenseKernels.LinearNoBias(ffNorm, w.GateProj, hidden, OmniVoiceMaskGitWeights.FfDim);
-            var up = DenseKernels.LinearNoBias(ffNorm, w.UpProj, hidden, OmniVoiceMaskGitWeights.FfDim);
-            DenseKernels.SiluInPlace(gate);
-            TensorPrimitives.Multiply((ReadOnlySpan<float>)gate, up, gate);
-            var down = DenseKernels.LinearNoBias(gate, w.DownProj, OmniVoiceMaskGitWeights.FfDim, hidden);
-            var row = new float[hidden];
-            TensorPrimitives.Add((ReadOnlySpan<float>)afterAttn[t], down, row);
-            output[t] = row;
-        });
-        return output;
+        RmsNormRows(x, ws.XNorm, w.PostNorm, seqLen, Hidden);
+        DenseKernels.LinearBatchedNoBias(ws.XNorm, w.GateProj, ws.Gate, seqLen, Hidden, FfDim);
+        DenseKernels.LinearBatchedNoBias(ws.XNorm, w.UpProj, ws.Up, seqLen, Hidden, FfDim);
+        DenseKernels.SiluInPlace(ws.Gate);
+        TensorPrimitives.Multiply(ws.Gate, ws.Up, ws.Gate);
+        DenseKernels.LinearBatchedNoBias(ws.Gate, w.DownProj, ws.Proj, seqLen, FfDim, Hidden);
+        TensorPrimitives.Add(x, ws.Proj, x);
     }
 
     /// <summary>Real RoPE-NEOX (rotate-half convention, matching `GGML_ROPE_TYPE_NEOX`): pairs
-    /// `(i, i+headDim/2)` for `i` in `[0, headDim/2)`, `theta_i = ropeTheta^(-2i/headDim)`.</summary>
-    private static void RopeNeoxInPlace(float[] head, int position, int headDim)
+    /// `(i, i+headDim/2)` for `i` in `[0, headDim/2)`, `theta_i = ropeTheta^(-2i/headDim)`.
+    /// Table `[seqLen, headDim/2]`, computed once per forward in double precision.</summary>
+    private static (float[] Cos, float[] Sin) BuildRopeTable(int seqLen)
     {
-        int half = headDim / 2;
+        const int half = HeadDim / 2;
+        var cos = new float[seqLen * half];
+        var sin = new float[seqLen * half];
         for (int i = 0; i < half; i++)
         {
-            double theta = Math.Pow(OmniVoiceMaskGitWeights.RopeTheta, -2.0 * i / headDim);
-            double angle = position * theta;
-            float cos = (float)Math.Cos(angle), sin = (float)Math.Sin(angle);
+            double theta = Math.Pow(OmniVoiceMaskGitWeights.RopeTheta, -2.0 * i / HeadDim);
+            for (int t = 0; t < seqLen; t++)
+            {
+                double angle = t * theta;
+                cos[t * half + i] = (float)Math.Cos(angle);
+                sin[t * half + i] = (float)Math.Sin(angle);
+            }
+        }
+        return (cos, sin);
+    }
+
+    private static void NormRopeHead(Span<float> head, float[] normWeight, float[] cos, float[] sin, int position)
+    {
+        RmsNormInPlace(head, normWeight);
+        const int half = HeadDim / 2;
+        int off = position * half;
+        for (int i = 0; i < half; i++)
+        {
+            float c = cos[off + i], s = sin[off + i];
             float a = head[i], b = head[i + half];
-            head[i] = a * cos - b * sin;
-            head[i + half] = a * sin + b * cos;
+            head[i] = a * c - b * s;
+            head[i + half] = a * s + b * c;
         }
     }
 
-    private static float[] RmsNorm(float[] x, float[] weight)
+    private static void RmsNormRows(float[] src, float[] dst, float[] weight, int rows, int dim)
+    {
+        Parallel.For(0, rows, r =>
+        {
+            var x = new ReadOnlySpan<float>(src, r * dim, dim);
+            var y = dst.AsSpan(r * dim, dim);
+            double sumSq = TensorPrimitives.SumOfSquares(x);
+            float invRms = (float)(1.0 / Math.Sqrt(sumSq / dim + OmniVoiceMaskGitWeights.RmsNormEps));
+            TensorPrimitives.Multiply(x, invRms, y);
+            TensorPrimitives.Multiply(y, weight, y);
+        });
+    }
+
+    private static void RmsNormInPlace(Span<float> x, float[] weight)
     {
         double sumSq = TensorPrimitives.SumOfSquares((ReadOnlySpan<float>)x);
         float invRms = (float)(1.0 / Math.Sqrt(sumSq / x.Length + OmniVoiceMaskGitWeights.RmsNormEps));
-        var output = new float[x.Length];
-        TensorPrimitives.Multiply((ReadOnlySpan<float>)x, invRms, output);
-        TensorPrimitives.Multiply((ReadOnlySpan<float>)output, weight, output);
-        return output;
+        TensorPrimitives.Multiply(x, invRms, x);
+        TensorPrimitives.Multiply(x, weight, x);
     }
-
 }

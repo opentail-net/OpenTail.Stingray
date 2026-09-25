@@ -33,3 +33,34 @@ reference (`audiocpp_cli --family higgs_audio_tts`, same `higgs-audio-v3-tts-4b-
 
 Upgraded 🟡 ⚪ → 🟢 👂. Open, perf only: ~47s per sample vs the reference's ~16s (≈3×), so a Phase 2
 target. Harness: `tests/OpenTail.Stingray.Tests.Audio/ZzHiggsProfTmp.cs` (untracked).
+
+## OmniVoice -- reference check passes, 3.9× faster; upgraded to 🟢, 2026-09-25
+
+**Correctness.** Same sentence ("Hello there, this is a real test of speech synthesis."), 4 seeds on
+each side, at the reference's own defaults (32 MaskGIT steps, guidance 2.0):
+- ours: `OmniVoiceMaskGitGenerator` via `OmniVoiceGenerateWavDebugTest` (now takes `OMNI_SEED` /
+  `OMNI_STEPS` / `OMNI_OUT`; the default went from 12 to the reference's 32 steps), fixed 3.20s target;
+- reference: vendored `audiocpp_cli --task tts --family omnivoice --backend cpu --threads 8` on the
+  same `models/_models/omnivoice` safetensors (it needed `audio_tokenizer/preprocessor_config.json`,
+  downloaded from `k2-fsa/OmniVoice`), which picks its own duration (3.31-3.36s).
+- Whisper round trip (`stingray stt -m base`): **4/4 word-exact on both sides** (the only difference
+  is a comma vs a full stop after "Hello there", which each side produces once).
+
+**Performance (CPU only: OmniVoice has no GPU path).** Profile by reading the code: every
+projection ran as one mat-vec **per token** (`DenseKernels.LinearNoBias` inside `Parallel.For` over
+tokens), so each weight matrix was streamed from memory once per token, and RoPE recomputed
+`Math.Pow`/`Cos`/`Sin` per element per head per layer. Fix: flat `[seq, dim]` buffers, one batched
+GEMM per projection through the new shared `DenseKernels.LinearBatchedNoBias` (weights packed once
+into `PackedSgemmF32` panels, cached per weight array), batched audio-head GEMMs for the CFG
+logits, a RoPE table per forward, and attention parallel over head × query-chunk.
+
+| | per sample (32 steps, 3.2s audio, includes model load) |
+|---|---|
+| before | 118.3 / 118.4 / 128.3 / 128.5s |
+| after | 31.6 / 31.0 / 30.8 / 31.4s (**~3.9×**) |
+| reference `audiocpp_cli` | 16.2 / 16.7 / 16.7 / 16.9s |
+
+The transcripts are unchanged after the change (4/4 exact), and `OmniVoiceMaskGitGeneratorRealWeightsTests`
+still passes (2.5s: a real 4-frame, 8-step run). We remain ~1.9× behind the reference. The next
+levers would be fusing QKV/gate-up and a KV-reuse scheme for the static text prefix, not attempted.
+Gap: no CLI/server wiring (library + test harness only).

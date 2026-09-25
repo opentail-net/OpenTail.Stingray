@@ -105,27 +105,32 @@ public static class OmniVoiceMaskGitGenerator
             if (active.Count == 0) break;
 
             // Real conditional forward: [style+text (text embed)] + [reference+target audio (audio embed)].
-            var condEmbeddings = new float[totalTokens][];
+            var condEmbeddings = new float[totalTokens * hidden];
             for (int t = 0; t < conditionalAudioStart; t++)
-                condEmbeddings[t] = EmbedRow(w.TextEmbedding, conditionalTextIds[t], hidden);
+                Array.Copy(w.TextEmbedding, (long)conditionalTextIds[t] * hidden, condEmbeddings, (long)t * hidden, hidden);
             for (int f = 0; f < referenceFrames + targetFrames; f++)
-                condEmbeddings[conditionalAudioStart + f] = SumCodebookEmbeddings(w.AudioEmbedding, conditionalAudioIds, f, codebooks, hidden);
-            var condHidden = OmniVoiceMaskGitForward.Forward(w, condEmbeddings);
+                SumCodebookEmbeddings(w.AudioEmbedding, conditionalAudioIds, f, codebooks, condEmbeddings.AsSpan((conditionalAudioStart + f) * hidden, hidden));
+            var condHidden = OmniVoiceMaskGitForward.Forward(w, condEmbeddings, totalTokens);
 
             // Real unconditional forward: target frames only, all audio-embedded.
-            var uncondEmbeddings = new float[targetFrames][];
+            var uncondEmbeddings = new float[targetFrames * hidden];
             for (int f = 0; f < targetFrames; f++)
-                uncondEmbeddings[f] = SumCodebookEmbeddings(w.AudioEmbedding, unconditionalAudioIds, f, codebooks, hidden);
-            var uncondHidden = OmniVoiceMaskGitForward.Forward(w, uncondEmbeddings);
+                SumCodebookEmbeddings(w.AudioEmbedding, unconditionalAudioIds, f, codebooks, uncondEmbeddings.AsSpan(f * hidden, hidden));
+            var uncondHidden = OmniVoiceMaskGitForward.Forward(w, uncondEmbeddings, targetFrames);
 
-            // Real CFG-combined per-frame [8*vocab] logits: combined = cond + guidance*(cond-uncond).
+            // Real CFG-combined per-frame [8*vocab] logits: combined = cond + guidance*(cond-uncond),
+            // with both audio-head projections as one batched GEMM each.
+            int logitsDim = codebooks * vocab;
+            var condLogits = new float[targetFrames * logitsDim];
+            var uncondLogits = new float[targetFrames * logitsDim];
+            DenseKernels.LinearBatchedNoBias(condHidden.AsSpan(conditionalTargetStart * hidden, targetFrames * hidden), w.AudioHead, condLogits, targetFrames, hidden, logitsDim);
+            DenseKernels.LinearBatchedNoBias(uncondHidden, w.AudioHead, uncondLogits, targetFrames, hidden, logitsDim);
             var combinedLogits = new float[targetFrames][];
             Parallel.For(0, targetFrames, f =>
             {
-                var condRow = DenseKernels.LinearNoBias(condHidden[conditionalTargetStart + f], w.AudioHead, hidden, codebooks * vocab);
-                var uncondRow = DenseKernels.LinearNoBias(uncondHidden[f], w.AudioHead, hidden, codebooks * vocab);
-                var row = new float[codebooks * vocab];
-                TensorPrimitives.Subtract((ReadOnlySpan<float>)condRow, uncondRow, row);
+                var condRow = new ReadOnlySpan<float>(condLogits, f * logitsDim, logitsDim);
+                var row = new float[logitsDim];
+                TensorPrimitives.Subtract(condRow, new ReadOnlySpan<float>(uncondLogits, f * logitsDim, logitsDim), row);
                 TensorPrimitives.MultiplyAdd((ReadOnlySpan<float>)row, options.GuidanceScale, condRow, row);
                 combinedLogits[f] = row;
             });
@@ -167,23 +172,15 @@ public static class OmniVoiceMaskGitGenerator
         return output;
     }
 
-    private static float[] EmbedRow(float[] table, int id, int hidden)
+    private static void SumCodebookEmbeddings(float[] audioEmbedding, int[][] audioIdsPerCodebook, int frame, int codebooks, Span<float> row)
     {
-        var row = new float[hidden];
-        Array.Copy(table, (long)id * hidden, row, 0, hidden);
-        return row;
-    }
-
-    private static float[] SumCodebookEmbeddings(float[] audioEmbedding, int[][] audioIdsPerCodebook, int frame, int codebooks, int hidden)
-    {
-        var row = new float[hidden];
+        int hidden = row.Length;
+        row.Clear();
         for (int cb = 0; cb < codebooks; cb++)
         {
             long id = audioIdsPerCodebook[cb][frame];
-            long baseOff = id * hidden;
-            for (int d = 0; d < hidden; d++) row[d] += audioEmbedding[baseOff + d];
+            TensorPrimitives.Add(row, new ReadOnlySpan<float>(audioEmbedding, (int)(id * hidden), hidden), row);
         }
-        return row;
     }
 
     /// <summary>Real `best_log_prob_excluding_mask`: best (non-mask) logit index/log-softmax-value

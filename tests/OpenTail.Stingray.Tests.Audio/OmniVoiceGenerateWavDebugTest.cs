@@ -69,7 +69,8 @@ public sealed class OmniVoiceGenerateWavDebugTest : HeavyTestBase
 
         var codesFlat = OmniVoiceMaskGitGenerator.Generate(
             maskGitWeights, styleTokenIds, textTokenIds, referenceAudioTokens: null,
-            targetFrames, new OmniVoiceMaskGitGenerator.Options(numInferenceSteps: 12), new Random(21));
+            targetFrames, new OmniVoiceMaskGitGenerator.Options(numInferenceSteps: int.TryParse(Environment.GetEnvironmentVariable("OMNI_STEPS"), out var st) ? st : 32),
+            new Random(int.TryParse(Environment.GetEnvironmentVariable("OMNI_SEED"), out var sd) ? sd : 21));
 
         var codes = new int[targetFrames][];
         for (int f = 0; f < targetFrames; f++)
@@ -84,7 +85,7 @@ public sealed class OmniVoiceGenerateWavDebugTest : HeavyTestBase
 
         const int sampleRate = 24000; // real OmniVoice/Higgs acoustic codec output rate, confirmed this session
         var result = new OpenTail.Stingray.Audio.AudioGenerationResult(waveform, sampleRate);
-        string outPath = Path.Combine(repoRoot!, "audio-samples", "omnivoice-real-check.wav");
+        string outPath = Environment.GetEnvironmentVariable("OMNI_OUT") ?? Path.Combine(repoRoot!, "audio-samples", "omnivoice-real-check.wav");
         result.SaveWav(outPath);
         Console.WriteLine($"Wrote {outPath}, {waveform.Length} samples, {waveform.Length / (double)sampleRate:F2}s");
     }

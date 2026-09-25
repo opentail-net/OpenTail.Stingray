@@ -36,6 +36,53 @@ public static class DenseKernels
         return output;
     }
 
+    /// <summary>
+    /// Batched Y[m, outDim] = X[m, inDim] @ W^T (no bias), weight row-major [outDim, inDim]. Use this
+    /// instead of calling <see cref="LinearNoBias(float[], float[], int, int)"/> once per token:
+    /// a per-token mat-vec re-streams the whole weight for every row, while this packs W once
+    /// (cached per weight array, 64-byte-aligned native memory freed with the array) and runs the
+    /// blocked <see cref="PackedSgemmF32"/> GEMM. Results match the mat-vec to FP32 rounding.
+    /// </summary>
+    public static unsafe void LinearBatchedNoBias(ReadOnlySpan<float> input, float[] weight, Span<float> output, int m, int inDim, int outDim)
+    {
+        if (m <= 0) return;
+        if (input.Length < m * inDim || output.Length < m * outDim)
+            throw new ArgumentException("LinearBatchedNoBias: input/output span too small.");
+        fixed (float* xp = input, yp = output)
+        {
+            if (!PackedSgemmF32.IsSupported || m < 4)
+            {
+                fixed (float* wp = weight)
+                    for (int r = 0; r < m; r++)
+                        SimdKernels.MatVecF32(yp + (long)r * outDim, wp, xp + (long)r * inDim, outDim, inDim);
+                return;
+            }
+            int rows = outDim, cols = inDim;
+            var packed = s_packedWeights.GetValue(weight, w => new PackedWeight(w, rows, cols));
+            if (packed.Rows != outDim || packed.Cols != inDim)
+                throw new ArgumentException($"LinearBatchedNoBias: weight packed as [{packed.Rows}x{packed.Cols}], called as [{outDim}x{inDim}].");
+            PackedSgemmF32.Gemm(yp, xp, (float*)packed.Ptr, null, m, outDim, inDim);
+            GC.KeepAlive(packed);
+        }
+    }
+
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<float[], PackedWeight> s_packedWeights = new();
+
+    /// <summary>Packed panel copy of one weight array (shape fixed by its first use).</summary>
+    private sealed unsafe class PackedWeight
+    {
+        public readonly nint Ptr;
+        public readonly int Rows, Cols;
+
+        public PackedWeight(float[] w, int rows, int cols)
+        {
+            (Rows, Cols) = (rows, cols);
+            fixed (float* wp = w) Ptr = (nint)PackedSgemmF32.PackWeights(wp, Rows, Cols);
+        }
+
+        ~PackedWeight() => System.Runtime.InteropServices.NativeMemory.AlignedFree((void*)Ptr);
+    }
+
     /// <summary>y = W@x, no bias (span input).</summary>
     public static unsafe float[] LinearNoBias(ReadOnlySpan<float> input, float[] weight, int inDim, int outDim)
     {
