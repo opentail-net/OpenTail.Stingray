@@ -166,17 +166,23 @@ streaming mode, where supported.
 
 | Rank | Engine | Family / Architecture | Sample Rate | Batch Latency (Audio Sec) | Batch RTF | Streaming TTFA | Sample |
 |---|---|---|---|---|---|---|---|
-| 🥇 | Piper | VITS (lessac-medium) | 22,050 Hz | 0.61s (3.24s) | 0.188× 🚀 | 89ms ⚡ | [piper-perf-turn1.wav](docs/audio-samples/piper-perf-turn1.wav) |
-| 🥈 | MMS-TTS | VITS (mms-tts-eng) | 16,000 Hz | 1.42s (3.07s) | 0.463× ⚡ | 188ms ⚡ | [mms-tts-perf-turn2.wav](docs/audio-samples/mms-tts-perf-turn2.wav) |
-| 🥉 | Kokoro | StyleTTS2 (82m-q8_0) | 24,000 Hz | 2.73s (2.93s) | 0.933× ⚡ | 1.27s ⚡ | [kokoro-perf-turn2.wav](docs/audio-samples/kokoro-perf-turn2.wav) |
-| 4 | MeloTTS | VITS MRF (zh_en) | 44,100 Hz | 3.65s (2.73s) | 1.337× | 671ms ⚡ | [melotts-perf-turn2.wav](docs/audio-samples/melotts-perf-turn2.wav) |
-| 5 | XTTS-v2 | GPT-2 + HiFi-GAN | 24,000 Hz | 11.28s (3.85s) | 2.930× | 1.33s ⚡ | [xtts-perf-turn2.wav](docs/audio-samples/xtts-perf-turn2.wav) |
-| 6 | QwenTTS | Qwen-Talker 0.6B + DAC | 24,000 Hz | 6.38s (2.16s) | 2.954× | 465ms ⚡ | [qwen-tts-perf-turn5.wav](docs/audio-samples/qwen-tts-perf-turn5.wav) |
-| 7 | Chatterbox | Llama3-AR + S3Gen | 24,000 Hz | 11.55s (2.44s) | 4.733× | 11.47s (sentence) | [chatterbox-perf-turn1.wav](docs/audio-samples/chatterbox-perf-turn1.wav) |
-| 8 | Parler-TTS | Transformer + DAC (mini-v1) | 44,100 Hz | 14.52s (2.57s) | 5.659× | 1.73s ⚡ | [parler-perf-turn2.wav](docs/audio-samples/parler-perf-turn2.wav) |
-| 9 | CosyVoice 3 | DiT Flow Matching | 24,000 Hz | 22.13s (2.96s) | 7.476× | — | [cosyvoice3-perf-turn2.wav](docs/audio-samples/cosyvoice3-perf-turn2.wav) |
-| 10 | F5-TTS | DiT Flow Matching (Q8_0 + decayed CFG) | 24,000 Hz | 35.96s (2.77s) | 12.965× | 35.8s (sentence) | [f5tts-perf-turn4.wav](docs/audio-samples/f5tts-perf-turn4.wav) |
-| 11 | FishSpeech | Dual-AR + Firefly | 44,100 Hz | 50.67s (3.11s) | 16.285× | 1.76s ⚡ | [fishspeech-perf-turn3.wav](docs/audio-samples/fishspeech-perf-turn3.wav) |
+| 🥇 | Piper | VITS (lessac-medium) | 22,050 Hz | 0.32s (2.51s) | 0.129× 🚀 | 159ms ⚡ | [piper-perf-turn1.wav](docs/audio-samples/piper-perf-turn1.wav) |
+| 🥈 | MMS-TTS | VITS (mms-tts-eng) | 16,000 Hz | 1.30s (3.66s) | 0.356× ⚡ | 236ms ⚡ | [mms-tts-perf-turn2.wav](docs/audio-samples/mms-tts-perf-turn2.wav) |
+| 🥉 | Kokoro | StyleTTS2 (82m-q8_0) | 24,000 Hz | 2.48s (2.93s) | 0.849× ⚡ | 2.53s (= total: not chunking, see below) | [kokoro-perf-turn2.wav](docs/audio-samples/kokoro-perf-turn2.wav) |
+| 4 | MeloTTS | VITS MRF (zh_en) | 44,100 Hz | 3.17s (2.75s) | 1.150× | 3.10s (= total: not chunking, see below) | [melotts-perf-turn2.wav](docs/audio-samples/melotts-perf-turn2.wav) |
+| 5 | XTTS-v2 | GPT-2 + HiFi-GAN | 24,000 Hz | 8.10s (3.06s) | 2.644× | 2.74s | [xtts-perf-turn3.wav](docs/audio-samples/xtts-perf-turn3.wav) |
+| 6 | QwenTTS | Qwen-Talker 0.6B + DAC | 24,000 Hz | 6.17s (2.16s) | 2.857× | 855ms ⚡ | [qwen-tts-perf-turn5.wav](docs/audio-samples/qwen-tts-perf-turn5.wav) |
+| 7 | CosyVoice 3 | DiT Flow Matching | 24,000 Hz | 12.72s (3.00s) | 4.238× | — | [cosyvoice3-perf-turn2.wav](docs/audio-samples/cosyvoice3-perf-turn2.wav) |
+| 8 | Chatterbox | Llama3-AR + S3Gen | 24,000 Hz | 12.02s (2.40s) | 5.006× | 12.82s (sentence) | [chatterbox-perf-turn1.wav](docs/audio-samples/chatterbox-perf-turn1.wav) |
+| 9 | Parler-TTS | Transformer + DAC (mini-v1) | 44,100 Hz | 16.69s (2.81s) | 5.941× | 1.66s ⚡ | [parler-perf-turn2.wav](docs/audio-samples/parler-perf-turn2.wav) |
+| 10 | FishSpeech | Dual-AR + Firefly | 44,100 Hz | 20.91s (2.69s) | 7.762× | 640ms ⚡ | [fishspeech-perf-turn3.wav](docs/audio-samples/fishspeech-perf-turn3.wav) |
+| 11 | F5-TTS | DiT Flow Matching (Q8_0 + decayed CFG) | 24,000 Hz | 28.57s (2.77s) | 10.301× | 28.85s (sentence) | [f5tts-perf-turn4.wav](docs/audio-samples/f5tts-perf-turn4.wav) |
+
+Re-measured 2026-09-25 (all 22 benchmarks of `TtsPerformanceBaselineDebugTest`, real weights, 3 timed runs each;
+previous table 2026-08-31). Since then CosyVoice 3 went 7.48× → 4.24×, FishSpeech 16.29× → 7.76×, F5-TTS 12.97× → 10.30×,
+XTTS-v2 2.93× → 2.64×. **Regression found:** Kokoro's and MeloTTS's streaming now deliver all audio at once
+(time-to-first-audio = total time; they were 1.27s and 671ms), so their streaming path needs a look. Samples live in
+`docs/audio-samples/` (local only, gitignored).
 
 Raw run data: [docs/tts-benchmark-log.txt](docs/tts-benchmark-log.txt).
 
