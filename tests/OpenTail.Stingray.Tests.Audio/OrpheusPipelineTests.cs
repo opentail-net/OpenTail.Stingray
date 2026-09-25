@@ -31,7 +31,7 @@ public sealed class OrpheusPipelineTests : HeavyTestBase
         string? snacPath = FindModelPath("snac-24khz.gguf");
         Assert.SkipUnless(talkerPath != null && snacPath != null, "Orpheus/SNAC GGUF files not found");
 
-        using var pipeline = new OrpheusPipeline(talkerPath!, snacPath!);
+        using var pipeline = new OrpheusPipeline(talkerPath!, snacPath!, allowGpu: Environment.GetEnvironmentVariable("ORPHEUS_CPU") != "1");
         var pcm = pipeline.Synthesize("Hello, this is a test.", voice: "tara", maxTokens: 140);
 
         Assert.NotEmpty(pcm);

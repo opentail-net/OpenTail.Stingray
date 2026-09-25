@@ -374,3 +374,11 @@ the XTTS baselines skip; they now fall back to `a.wav`.
 | Fish Speech S2 Pro | "Hello, I will make some lunch darling." (exact) | 22.3s (22.1/22.5/22.3) | 8.28 (the audio plan's RTF table listed 16.3×) |
 | MMS-TTS (eng) | "Hello, I will make some lunch with Darling." (1 inserted word) | 1.50s | 0.41 |
 | XTTS-v2 (cloning `a.wav`) | "Hello, I'll make some lunch darling." (contraction only) | 8.38s | 2.74 |
+
+## Orpheus-TTS -- Whisper round trip on Vulkan and CPU, 2026-09-25
+
+`OrpheusPipelineTests` (namespace `OpenTail.Stingray.Tests.Audio.Fast`; `ORPHEUS_CPU=1` now forces `allowGpu: false`),
+"Hello, this is a test.", voice tara, Q4_K_M 3B talker + SNAC:
+- Vulkan (iGPU): transformer 9.96s (14.1 tok/s) + SNAC 0.45s; Whisper: **"Hello, this is a test."** (exact).
+- CPU: transformer 11.13s (12.6 tok/s) + SNAC 0.44s; Whisper: "Hello, this is it." (last two words differ).
+Audio tokens are sampled, so backend numeric differences can change a token. Minor, not investigated further.
