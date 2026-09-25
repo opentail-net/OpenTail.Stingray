@@ -4270,19 +4270,17 @@ public static unsafe class SimdKernels
     /// the same as maddubs(|w|, sign(q8, w)). Grid magnitudes are ≤ 43, so maddubs cannot saturate.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static Vector256<short> IqSignedMaddubs(ulong g0, ulong g1, ulong g2, ulong g3, uint signs4, sbyte* q8)
+    private static Vector256<short> IqSignedMaddubs(ulong g0, ulong g1, ulong g2, ulong g3, uint signs4, sbyte* q8) =>
+        IqSignedMaddubs(Vector256.Create(g0, g1, g2, g3).AsByte(), signs4, q8);
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static Vector256<short> IqSignedMaddubs(Vector256<byte> grid, uint signs4, sbyte* q8)
     {
-        var grid = Vector256.Create(g0, g1, g2, g3).AsByte();
         var bits = Avx2.And(Avx2.Shuffle(Vector256.Create(signs4).AsByte(), s_iqSignShuffle), s_iqSignBits);
         var neg = Avx2.CompareEqual(bits, s_iqSignBits);
         var q8s = Avx2.Subtract(Avx2.Xor(Avx.LoadVector256((byte*)q8), neg), neg).AsSByte();
         return Avx2.MultiplyAddAdjacent(grid, q8s);
     }
-
-    /// <summary>IQ3_S: grid entries 2l and 2l+1 of a 32-weight group (9-bit indices, high bit from <paramref name="qh"/>) as one 8-byte group.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static ulong Iq3SPair(uint[] grid, byte* q, byte qh, int l) =>
-        grid[q[2 * l] | ((uint)(qh << (8 - 2 * l)) & 256)] | (ulong)grid[q[2 * l + 1] | ((uint)(qh << (7 - 2 * l)) & 256)] << 32;
 
     private static void MatVecQ8KDispatch(float* output, byte* weights, float* input, int rows, int cols,
         int bytesPerRow, delegate*<byte*, byte*, int, float> dot)
@@ -4907,48 +4905,44 @@ public static unsafe class SimdKernels
 
     private static float DotIq3S_Q8K_Avx2(byte* row, byte* scratch, int cols)
     {
+        // Mirrors ggml's AVX2 ggml_vec_dot_iq3_s_q8_K: the 9-bit grid indices of each 32-weight group are built in one
+        // vector (qs bytes zero-extended, bit k of qh shifted to bit 8 of lane k), then looked up by pointer (ggml notes
+        // a hardware gather is slower on Ryzen); signs go through IqSignedMaddubs.
         int nb = cols / 256;
         float* dArr = (float*)scratch;
         sbyte* qsArr = (sbyte*)(scratch + nb * 4);
-        var grid = IqCodebooks.Iq3SGrid;
-        var kmask = IqCodebooks.KMaskIq2Xs;
+        var idxShift = Vector256.Create(8u, 7u, 6u, 5u, 4u, 3u, 2u, 1u);
+        var idxMask = Vector256.Create(256u);
+        uint* idx = stackalloc uint[8];
         var accum = Vector256<float>.Zero;
-        sbyte* gbuf = stackalloc sbyte[32];
 
-        for (int i = 0; i < nb; i++)
+        fixed (uint* grid = IqCodebooks.Iq3SGrid)
         {
-            byte* blk = row + i * 110;
-            float d = HalfToFloat(blk[0], blk[1]) * dArr[i];
-            byte* qs = blk + 2;
-            byte* qh = blk + 2 + 64;
-            byte* signs = blk + 2 + 64 + 8;
-            byte* scales = blk + 2 + 64 + 8 + 32;
-            sbyte* q8 = qsArr + i * 256;
-            var sumiAcc = Vector256<int>.Zero;
-            int qsOff = 0, signsOff = 0;
-
-            for (int ib32 = 0; ib32 < 8; ib32 += 2)
+            for (int i = 0; i < nb; i++)
             {
-                int ls1 = 2 * (scales[ib32 / 2] & 0xF) + 1;
-                int ls2 = 2 * (scales[ib32 / 2] >> 4) + 1;
+                byte* blk = row + i * 110;
+                float d = HalfToFloat(blk[0], blk[1]) * dArr[i];
+                byte* qs = blk + 2;
+                byte* qh = blk + 2 + 64;
+                byte* signs = blk + 2 + 64 + 8;
+                byte* scales = blk + 2 + 64 + 8 + 32;
+                sbyte* q8 = qsArr + i * 256;
+                var sumiAcc = Vector256<int>.Zero;
 
-                for (int half = 0; half < 2; half++)
+                for (int ib32 = 0; ib32 < 8; ib32++)
                 {
-                    int ls = half == 0 ? ls1 : ls2;
-                    byte qhByte = qh[ib32 + half];
-
-                    byte* q = qs + qsOff;
-                    var p16 = IqSignedMaddubs(Iq3SPair(grid, q, qhByte, 0), Iq3SPair(grid, q, qhByte, 1),
-                        Iq3SPair(grid, q, qhByte, 2), Iq3SPair(grid, q, qhByte, 3), *(uint*)(signs + signsOff), q8 + (ib32 + half) * 32);
+                    int ls = 2 * ((scales[ib32 >> 1] >> (4 * (ib32 & 1))) & 0xF) + 1;
+                    var lo = Avx2.ConvertToVector256Int32(qs + ib32 * 8).AsUInt32();
+                    var hi = Avx2.And(Avx2.ShiftLeftLogicalVariable(Vector256.Create((uint)qh[ib32]), idxShift), idxMask);
+                    Avx.Store(idx, Avx2.Or(lo, hi));
+                    var g = Vector256.Create(grid[idx[0]], grid[idx[1]], grid[idx[2]], grid[idx[3]],
+                        grid[idx[4]], grid[idx[5]], grid[idx[6]], grid[idx[7]]).AsByte();
+                    var p16 = IqSignedMaddubs(g, *(uint*)(signs + ib32 * 4), q8 + ib32 * 32);
                     sumiAcc = Avx2.Add(sumiAcc, Avx2.MultiplyAddAdjacent(p16, Vector256.Create((short)ls)));
-
-                    qsOff += 8;
-                    signsOff += 4;
                 }
-            }
 
-            var total = Avx.ConvertToVector256Single(sumiAcc);
-            accum = Fma.MultiplyAdd(Vector256.Create(d), total, accum);
+                accum = Fma.MultiplyAdd(Vector256.Create(d), Avx.ConvertToVector256Single(sumiAcc), accum);
+            }
         }
         return HSum256(accum); // ggml_vec_dot_iq3_s_q8_K: *s = sumf (no 0.25, unlike IQ3_XXS)
     }
