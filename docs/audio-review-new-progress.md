@@ -389,3 +389,20 @@ Audio tokens are sampled, so backend numeric differences can change a token. Min
 is ~0.5s, too short for a sentence), "Hello there, this is a real test of speech synthesis.", 500 tokens, CPU:
 seed 1 "Hello there, this is a real test speech synthesis." (33s, drops "of"); seed 2 "Along there, this is a real
 test of speech sympathy." (24s). Intelligible, with small sampled-token slips.
+
+## NeuTTS -- Whisper round trip, 2026-09-25
+
+`NeuTtsAudioDecoderRealWeightsTests` (full chain: Emily voice prompt → backbone → FSQ codec, 14.4s CPU):
+"Hello there, this is a full test of the NeuTTS speech synthesis system." → Whisper "Hello Bear, this is a full
+test of the new task speech synthesis system." One real slip ("there" → "Bear"); "NeuTTS" → "new task" is just
+the proper noun's pronunciation.
+
+## Voxtral Realtime ASR -- spurious trailing "ished." fixed (decode past end of audio), 2026-09-25
+
+`stingray stt -m voxtral --model-file models/_models/voxtral-mini-realtime` on the 4 LibriSpeech clips: every word
+right, but 3/4 transcripts ended with a spurious "ished." (e.g. "…amidst the tents.ished."). Cause:
+`VoxtralPipeline.Transcribe` kept stepping the decoder after the audio-embedding rows ran out, feeding it no audio,
+so it invented a tail. The reference (`examples/audio.cpp/src/models/voxtral_realtime/session.cpp`) runs exactly one
+decoder step per audio row and states "only the audio source running dry ends the stream". Fixed to stop when the
+audio rows are exhausted. After: 4/4 exact ("I'm" for "I am" aside), 21-60s per clip on CPU. All Voxtral test classes
+pass (7.8-178s each; `VoxtralRealReferenceMatchTests` skips visibly for missing reference dumps).

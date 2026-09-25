@@ -103,8 +103,12 @@ public sealed class VoxtralPipeline : ISpeechToTextPipeline
 
         for (int step = 0; step < MaxNewTokens && nextToken != EosTokenId; step++)
         {
-            float[]? audioRow = nextAudioRow < audioEmbeddings.Length ? audioEmbeddings[nextAudioRow] : null;
-            if (audioRow != null) nextAudioRow++;
+            // Reference (`voxtral_realtime/session.cpp`): one decoder step per audio-embedding row, and
+            // "only the audio source running dry ends the stream". Stepping on past the last row with no
+            // audio made the model invent a tail (e.g. a trailing "ished." on 3/4 LibriSpeech clips,
+            // fixed 2026-09-25).
+            if (nextAudioRow >= audioEmbeddings.Length) break;
+            float[] audioRow = audioEmbeddings[nextAudioRow++];
 
             var stepLogits = VoxtralTextDecoder.Step(_textWeights, cache, nextToken, audioRow, position, DefaultNumDelayTokens);
             nextToken = ArgMax(stepLogits);
