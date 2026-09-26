@@ -480,6 +480,25 @@ public sealed class WanVaeDecoder3D : IDisposable
     {
         int outC = c / 2;
         int outH = h * 2, outW = w * 2;
+        if (PackedSgemmF32.IsSupported)
+        {
+            // Nearest x2 upsample, then the 3x3 conv (zero pad 1) through the im2col GEMM path —
+            // identical to the fused loop below, which reads input (oh + dh - 1) / 2 per tap.
+            var up = new float[(long)c * t * outH * outW];
+            int inSpatial = h * w;
+            Parallel.For(0, c * t, ct =>
+            {
+                int src = ct * inSpatial, dst = ct * outH * outW;
+                for (int oh = 0; oh < outH; oh++)
+                {
+                    int inRow = src + (oh >> 1) * w, outRow = dst + oh * outW;
+                    for (int ow = 0; ow < outW; ow++) up[outRow + ow] = x[inRow + (ow >> 1)];
+                }
+            });
+            var convOut = CausalConv3D(up, $"{prefix}.resample.1", c, outC, t, outH, outW, kt: 1, kh: 3, kw: 3);
+            return (convOut, outC, outH, outW);
+        }
+
         var weight = GetWeight($"{prefix}.resample.1.weight", outC * c * 3 * 3);
         var bias = GetWeight($"{prefix}.resample.1.bias", outC);
 
