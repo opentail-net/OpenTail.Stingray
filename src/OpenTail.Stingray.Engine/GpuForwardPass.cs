@@ -46,6 +46,10 @@ public sealed unsafe class GpuForwardPass : IForwardPass
     private readonly Tensor[]? _wGateInp, _wGateShexp, _wUpShexp, _wDownShexp;
     private readonly Tensor[][]? _wGateExps, _wUpExps, _wDownExps;
     private readonly Tensor _wOutputNorm;
+    // LayerNorm models (NormRows): norm biases when the GGUF has them, else one shared zero bias.
+    private readonly Tensor[]? _bAttnNorm, _bFfnNorm;
+    private readonly Tensor? _bOutputNorm, _zeroEmbBias;
+    private readonly bool _partialRope;
     private readonly Tensor _wOutput;
 
     // Optional attention biases in VRAM (Qwen models)
@@ -447,16 +451,20 @@ public sealed unsafe class GpuForwardPass : IForwardPass
 
     /// <summary>
     /// Why this pass cannot run <paramref name="model"/> correctly, or null when it can. The Vulkan
-    /// layer loop is RMSNorm (no norm bias), sequential residual, gated FFN (SiLU, or Gemma's
-    /// GELU-tanh), RoPE-only positions and plain wk/wv (or fused attn_qkv) — it has no LayerNorm,
-    /// no parallel residual, no non-gated GELU MLP, no learned position table, and no MLA. A model
+    /// layer loop is RMSNorm or LayerNorm (+bias), sequential residual, gated FFN (SiLU, or Gemma's
+    /// GELU-tanh) without biases, RoPE-only positions (full, or partial NEOX) and plain wk/wv (or
+    /// fused attn_qkv) — it has no parallel residual, no non-gated GELU MLP, no learned position
+    /// table, no LayerNorm QK-norm, and no MLA. A model
     /// needing any of those would load fine and then compute silently wrong logits, so callers
     /// (CLI, server loader) use this to fall back to the CPU pass with a note instead.
     /// </summary>
     public static string? UnsupportedReason(GgufModel model, ModelHyperparams hp)
     {
         if (hp.KvLoraRank > 0) return "MLA attention (deepseek2)";
-        if (hp.UsesLayerNorm || hp.HasNormBias) return "LayerNorm / biased norms";
+        if (hp.UsesLayerNorm && hp.HasQkNorm) return "LayerNorm QK-norm";
+        if (hp.RopeDim > 0 && hp.RopeDim < hp.HeadDim && !hp.IsNeoxRope) return "partial non-NEOX RoPE";
+        if (model.FindTensor("blk.0.ffn_down.bias") is not null || model.FindTensor("blk.0.ffn_up.bias") is not null)
+            return "FFN biases";
         if (hp.UseParallelResidual) return "parallel attention+FFN residual";
         if (model.FindTensor("position_embd.weight") is not null) return "learned absolute position embeddings";
         if (model.FindTensor("blk.0.ffn_gate.weight") is null && model.FindTensor("blk.0.ffn_gate_exps.weight") is null
@@ -1070,6 +1078,22 @@ public sealed unsafe class GpuForwardPass : IForwardPass
         }
 
         _wOutputNorm = UploadWeight("output_norm.weight");
+        if (hp.UsesLayerNorm)
+        {
+            _zeroEmbBias = _gpu.Upload(new float[_embDim], TensorShape.D1(_embDim));
+            if (model.FindTensor("output_norm.bias") is not null) _bOutputNorm = UploadWeight("output_norm.bias");
+            if (model.FindTensor("blk.0.attn_norm.bias") is not null)
+            {
+                _bAttnNorm = new Tensor[L];
+                for (int i = 0; i < L; i++) _bAttnNorm[i] = UploadWeight($"blk.{i}.attn_norm.bias");
+            }
+            if (model.FindTensor("blk.0.ffn_norm.bias") is not null)
+            {
+                _bFfnNorm = new Tensor[L];
+                for (int i = 0; i < L; i++) _bFfnNorm[i] = UploadWeight($"blk.{i}.ffn_norm.bias");
+            }
+        }
+        _partialRope = hp.RopeDim > 0 && hp.RopeDim < _headDim;
         _wOutput = model.FindTensor("output.weight") is not null
             ? UploadWeight("output.weight")
             : _gpuEmbedding;
@@ -1429,7 +1453,7 @@ public sealed unsafe class GpuForwardPass : IForwardPass
 
         // Final norm + output projection
         _gpu.RecordBarrier(); // last layer's AddInPlace → final norm
-        _gpu.RmsNorm(_hidden, _hidden, _wOutputNorm, _hp.RmsNormEps);
+        OutputNormInPlace(_hidden, 1);
         _gpu.RecordBarrier();
         GpuMatMul(_logits, _wOutput, _hidden);
 
@@ -1474,7 +1498,7 @@ public sealed unsafe class GpuForwardPass : IForwardPass
             CopyBuffer(_residual, _hidden);
             _gpu.RecordBarrier();
 
-            _gpu.RmsNorm(_normBuf, _hidden, _wAttnNorm[layer], _hp.RmsNormEps);
+            NormRows(_normBuf, _hidden, _wAttnNorm[layer], _bAttnNorm?[layer], 1);
             _gpu.RecordBarrier();
 
             // Q/K/V all read normBuf (no conflict between them)
@@ -1512,8 +1536,17 @@ public sealed unsafe class GpuForwardPass : IForwardPass
                 if (useRoPE)
                 {
                     // RoPE on Q and K
-                    _gpu.RoPE(_q, position, _headDim, layerRopeTheta, _hp.IsNeoxRope);
-                    _gpu.RoPE(_k, position, _headDim, layerRopeTheta, _hp.IsNeoxRope);
+                    if (_partialRope)
+                    {
+                        // StableLM / GPT-NeoX: rotate only the first rope.dimension_count dims.
+                        _gpu.RoPEPartial(_q, position, _headDim, _hp.RopeDim, layerRopeTheta, neox: true);
+                        _gpu.RoPEPartial(_k, position, _headDim, _hp.RopeDim, layerRopeTheta, neox: true);
+                    }
+                    else
+                    {
+                        _gpu.RoPE(_q, position, _headDim, layerRopeTheta, _hp.IsNeoxRope);
+                        _gpu.RoPE(_k, position, _headDim, layerRopeTheta, _hp.IsNeoxRope);
+                    }
                     _gpu.RecordBarrier();
                 }
 
@@ -1703,7 +1736,7 @@ public sealed unsafe class GpuForwardPass : IForwardPass
             CopyBuffer(_residual, _hidden);
             _gpu.RecordBarrier();
 
-            _gpu.RmsNorm(_normBuf, _hidden, _wFfnNorm[layer], _hp.RmsNormEps);
+            NormRows(_normBuf, _hidden, _wFfnNorm[layer], _bFfnNorm?[layer], 1);
             _gpu.RecordBarrier();
 
             if (_isMoE)
@@ -1812,7 +1845,7 @@ public sealed unsafe class GpuForwardPass : IForwardPass
         RunGemma4Layers(position);
 
         // 3. Final norm + output projection + softcap.
-        _gpu.RmsNorm(_hidden, _hidden, _wOutputNorm, _hp.RmsNormEps);
+        OutputNormInPlace(_hidden, 1);
         _gpu.RecordBarrier();
         GpuMatMul(_logits, _wOutput, _hidden);
         if (_hp.LogitScale != 1f)
@@ -1870,7 +1903,7 @@ public sealed unsafe class GpuForwardPass : IForwardPass
             if (_hasPle) BuildPerLayerProjectionsGpu();
             RunGemma4Layers(position);
 
-            _gpu.RmsNorm(_hidden, _hidden, _wOutputNorm, _hp.RmsNormEps);
+            OutputNormInPlace(_hidden, 1);
             _gpu.RecordBarrier();
             GpuMatMul(_logits, _wOutput, _hidden);
             if (_hp.LogitScale != 1f)
@@ -1901,7 +1934,7 @@ public sealed unsafe class GpuForwardPass : IForwardPass
 
             // Final norm + output projection
             _gpu.RecordBarrier();
-            _gpu.RmsNorm(_hidden, _hidden, _wOutputNorm, _hp.RmsNormEps);
+            OutputNormInPlace(_hidden, 1);
             _gpu.RecordBarrier();
             GpuMatMul(_logits, _wOutput, _hidden);
             if (_hp.LogitScale != 1f)
@@ -2423,7 +2456,7 @@ public sealed unsafe class GpuForwardPass : IForwardPass
         // Then batched output projection → logitsK. Verify needs EVERY row's logits (that is the
         // point — it compares each draft token against the target), unlike prefill, which needs
         // only the last and therefore skips this whole vocab-sized projection for k-1 rows.
-        _gpu.RmsNormBatched(_hiddenK, _hiddenK, _wOutputNorm, embDim, k, _hp.RmsNormEps);
+        OutputNormInPlace(_hiddenK, k);
         _gpu.RecordBarrier();
         _gpu.MatMulBatched(_logitsK, _wOutput, _hiddenK, k, WeightDType(_wOutput));
         if (_hp.LogitScale != 1f)
@@ -2522,7 +2555,7 @@ public sealed unsafe class GpuForwardPass : IForwardPass
             // attn RmsNorm: all k rows of [K][embDim] in one batched dispatch (was a per-token
             // gather/op/scatter K-loop). Bit-identical: each row normalized independently with the
             // shared attn-norm weight.
-            _gpu.RmsNormBatched(_normK, _hiddenK, _wAttnNorm[layer], embDim, k, _hp.RmsNormEps);
+            NormRows(_normK, _hiddenK, _wAttnNorm[layer], _bAttnNorm?[layer], k);
             _gpu.RecordBarrier();
 
             // Q/K/V projections: batched (weight read once for all k tokens).
@@ -2573,8 +2606,16 @@ public sealed unsafe class GpuForwardPass : IForwardPass
             {
                 // RoPE: row r uses position startPos+r (per-token absolute position via base_pos
                 // + gl_WorkGroupID.y in the shader) — bit-identical to k RoPE calls.
-                _gpu.RoPEBatched(_qK, startPos, _headDim, _numHeads, k, layerRopeTheta, _hp.IsNeoxRope);
-                _gpu.RoPEBatched(_kK, startPos, _headDim, _numKvHeads, k, layerRopeTheta, _hp.IsNeoxRope);
+                if (_partialRope)
+                {
+                    _gpu.RoPEPartialBatched(_qK, startPos, _headDim, _hp.RopeDim, layerRopeTheta, _numHeads, k, neox: true);
+                    _gpu.RoPEPartialBatched(_kK, startPos, _headDim, _hp.RopeDim, layerRopeTheta, _numKvHeads, k, neox: true);
+                }
+                else
+                {
+                    _gpu.RoPEBatched(_qK, startPos, _headDim, _numHeads, k, layerRopeTheta, _hp.IsNeoxRope);
+                    _gpu.RoPEBatched(_kK, startPos, _headDim, _numKvHeads, k, layerRopeTheta, _hp.IsNeoxRope);
+                }
                 _gpu.RecordBarrier();
             }
 
@@ -2736,7 +2777,7 @@ public sealed unsafe class GpuForwardPass : IForwardPass
 
             // ffn RmsNorm: all k rows of [K][embDim] in one batched dispatch (bit-identical to the
             // per-token K-loop).
-            _gpu.RmsNormBatched(_normK, _hiddenK, _wFfnNorm[layer], embDim, k, _hp.RmsNormEps);
+            NormRows(_normK, _hiddenK, _wFfnNorm[layer], _bFfnNorm?[layer], k);
             _gpu.RecordBarrier();
 
             // gate/up: batched. SiLuMul over the whole [K][ffnDim] buffer. down: batched.
@@ -2810,7 +2851,7 @@ public sealed unsafe class GpuForwardPass : IForwardPass
         const int f32 = sizeof(float);
         _gpu.RecordComputeCopyRegion(_hidden, 0, _hiddenK, (long)(k - 1) * _embDim * f32, (long)_embDim * f32);
         _gpu.RecordBarrier();
-        _gpu.RmsNorm(_hidden, _hidden, _wOutputNorm, _hp.RmsNormEps);
+        OutputNormInPlace(_hidden, 1);
         _gpu.RecordBarrier();
         GpuMatMul(_logits, _wOutput, _hidden);
         if (_hp.LogitScale != 1f)
@@ -3156,6 +3197,37 @@ public sealed unsafe class GpuForwardPass : IForwardPass
 
     // Track quantization type per weight tensor for MatMul dispatch
     private readonly Dictionary<nint, DType> _weightDTypes = new();
+
+    /// <summary>
+    /// Pre-attention / pre-FFN norm over <paramref name="rows"/> contiguous [embDim] rows: RMSNorm,
+    /// or LayerNorm (+ its bias, or a zero bias) when <see cref="ModelHyperparams.UsesLayerNorm"/>
+    /// (StableLM, Cohere, GPT-2/NeoX, StarCoder2) — the same choice ForwardPass.FastNorm makes.
+    /// </summary>
+    private void NormRows(Tensor output, Tensor x, Tensor weight, Tensor? bias, int rows)
+    {
+        if (_hp.UsesLayerNorm)
+            _gpu.LayerNormGpu(output, x, weight, bias ?? _zeroEmbBias!, rows, _embDim, _hp.RmsNormEps);
+        else if (rows == 1)
+            _gpu.RmsNorm(output, x, weight, _hp.RmsNormEps);
+        else
+            _gpu.RmsNormBatched(output, x, weight, _embDim, rows, _hp.RmsNormEps);
+    }
+
+    /// <summary>Final norm in place. LayerNorm goes through the norm scratch and back, since its
+    /// shader binds input readonly and output writeonly.</summary>
+    private void OutputNormInPlace(Tensor hidden, int rows)
+    {
+        if (!_hp.UsesLayerNorm)
+        {
+            if (rows == 1) _gpu.RmsNorm(hidden, hidden, _wOutputNorm, _hp.RmsNormEps);
+            else _gpu.RmsNormBatched(hidden, hidden, _wOutputNorm, _embDim, rows, _hp.RmsNormEps);
+            return;
+        }
+        Tensor scratch = rows == 1 ? _normBuf : _normK;
+        _gpu.LayerNormGpu(scratch, hidden, _wOutputNorm, _bOutputNorm ?? _zeroEmbBias!, rows, _embDim, _hp.RmsNormEps);
+        _gpu.RecordBarrier();
+        CopyBuffer(hidden, scratch);
+    }
 
     /// <summary>
     /// Weighted QK RMSNorm on one token's Q or K. Per-head (Qwen3 style: a [headDim] weight,

@@ -265,6 +265,23 @@ Steps:
 7. Every step: GPU-vs-CPU logit parity test on real weights (timing-checked per CLAUDE.md
    rule 12), README matrix row updated with the dated evidence.
 
+### Step 2 plan (refined 2026-09-26 from the audit)
+
+Each item: implement in all three GpuForwardPass trunks (single-token, batched prefill, and the
+gemma4 path where relevant), remove the matching clause from `UnsupportedReason`, add the model to
+`VulkanArchLogitParityTests`, and check free-running greedy against llama-server (teacher-forced
+parity alone missed OLMoE).
+- 2a StableLM — DONE 2026-09-26: `NormRows`/`OutputNormInPlace` pick LayerNorm (+ norm bias or a
+  zero bias) when `UsesLayerNorm`, in the single-token and batched trunks; partial NEOX RoPE
+  through the existing `RoPEPartial(Batched)` shaders. `UnsupportedReason` now only rejects
+  LayerNorm QK-norm, partial non-NEOX RoPE and FFN biases on that axis. Greedy 24/24 vs
+  llama-server; parity cos 0.99473, 0 flips (lower than the RMS models' 0.998+, plausibly the
+  single-pass E[x^2]-mean^2 variance in LayerNormGpu; no decision flipped).
+- 2b Cohere2: LayerNorm (no bias) + parallel attention/FFN residual (+ its SWA pattern, logit scale).
+- 2c GPT-2 / StarCoder2 / GPT-NeoX: non-gated GELU MLP, biases on every linear, learned position
+  table (GPT-2), parallel residual + partial RoPE (NeoX).
+- 2d Apertus: non-gated xIELU MLP.
+
 ### Step 1 — audit (2026-09-26)
 
 CLI, "The capital of France is", greedy 24 tokens, `-g 0` vs `-g -1` (Vulkan, iGPU). "same" = same
@@ -283,7 +300,8 @@ decode steps, CPU vs Vulkan logits).
 | olmoe | WRONG: free-running Vulkan emitted "\n" forever | FIXED: full-width (per-channel) QK-norm; now = llama-server 16/16, cos 0.99923 |
 | qwen3moe (Coder-30B-A3B) | same | |
 | qwen35 hybrid (Ornith 9B) | same (Vulkan hybrid GDN) | |
-| stablelm, cohere2 | SILENT GARBAGE | GPU pass has no LayerNorm / parallel residual -> now CPU with a note |
+| stablelm | SILENT GARBAGE | FIXED (step 2a): LayerNorm(+bias) + partial NEOX RoPE on Vulkan; = CPU = llama-server 24/24, cos 0.99473 |
+| cohere2 | SILENT GARBAGE | needs parallel residual (step 2b) -> CPU with a note meanwhile |
 | gpt2, gptneox, phi2-file*, starcoder2, apertus | CRASHED (missing attn_q / ffn_gate) | now CPU with a note (LayerNorm, learned pos, non-gated FFN) |
 | deepseek2 (MLA), gpt-oss | CPU fallback (by design) | |
 | jais | not admitted (CPU too) | out of scope |

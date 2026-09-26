@@ -21,6 +21,7 @@ public sealed class VulkanArchLogitParityTests : HeavyTestBase
     [InlineData("Phi-3-mini-4k-instruct-Q4_K_M.gguf")]      // fused attn_qkv + fused gate/up
     [InlineData("OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf")]   // MoE + full-width (per-channel) QK-norm
     [InlineData("Mistral-7B-Instruct-v0.3-Q4_K_M.gguf")]
+    [InlineData("stablelm-zephyr-3b.Q4_K_M.gguf")]           // LayerNorm + bias, partial NEOX RoPE
     [InlineData("gemma-4-E4B-it-Q4_K_M.gguf")]
     [InlineData("gemma-3-4b-it-Q4_K_M.gguf")]
     [InlineData("qwen2.5-0.5b-instruct-q4_k_m.gguf")]       // attention bias
