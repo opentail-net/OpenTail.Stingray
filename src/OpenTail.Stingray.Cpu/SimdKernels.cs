@@ -13,6 +13,9 @@ public static unsafe class SimdKernels
         MaxDegreeOfParallelism = ResolveCpuThreads()
     };
 
+    /// <summary>The kernels' shared thread cap, for sibling kernel classes in this assembly.</summary>
+    internal static ParallelOptions ParallelOpts => s_parallelOpts;
+
     /// <summary>
     /// Number of worker threads used by the CPU SIMD kernels. Defaults to the logical
     /// processor count and can be set at process start with <c>STINGRAY_CPU_THREADS</c>.

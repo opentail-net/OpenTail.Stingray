@@ -205,7 +205,13 @@ public sealed unsafe partial class ForwardPass
 
                     long pRopeTicks = 0, pAttnTicks = 0;
                     pStage = profPrefill ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
-                    for (int n = 0; n < N; n++)
+
+                    // Per-token Q/K/V transforms (QK-norm, V-norm, RoPE) touch only that token's
+                    // rows and read-only tables, so they run across tokens in parallel; the KV
+                    // append below stays sequential (it advances the cache position). Same ops
+                    // on the same operands per token, so the result is bit-identical to the old
+                    // single loop — which ran ~4% of SmolLM2 prefill on one core.
+                    void TransformToken(int n)
                     {
                         float* qn = batchQ + (long)n * qDim;
                         float* kn = batchK + (long)n * kvDim;
@@ -243,7 +249,22 @@ public sealed unsafe partial class ForwardPass
                             if (!kvShared)
                                 PerHeadPureRmsNorm(kn, layerKv, layerHd, _hp.RmsNormEps);
                         }
+                    }
 
+                    const int TransformTokensPerJob = 16;
+                    if (N >= 2 * TransformTokensPerJob)
+                        Parallel.For(0, (N + TransformTokensPerJob - 1) / TransformTokensPerJob, job =>
+                        {
+                            int end = Math.Min(N, (job + 1) * TransformTokensPerJob);
+                            for (int n = job * TransformTokensPerJob; n < end; n++) TransformToken(n);
+                        });
+                    else
+                        for (int n = 0; n < N; n++) TransformToken(n);
+
+                    for (int n = 0; n < N; n++)
+                    {
+                        float* kn = batchK + (long)n * kvDim;
+                        float* vn = batchV + (long)n * kvDim;
                         if (!kvShared)
                         {
                             if (kStage is null)

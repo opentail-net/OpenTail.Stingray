@@ -80,6 +80,9 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
     /// </summary>
     private readonly long _q4kx8CacheBudgetBytes = ResolveQ4Kx8CacheBudget();
 
+    /// <summary><c>STINGRAY_Q6K_GEMM=0</c> keeps Q6_K prefill on the row-major int8 tier (A/B).</summary>
+    private static readonly bool DisableQ6KPrefillGemm = Environment.GetEnvironmentVariable("STINGRAY_Q6K_GEMM") == "0";
+
     /// <summary>
     /// Auto-sizes the repacked-weight budget from memory the runtime reports as available,
     /// honouring an explicit <c>STINGRAY_Q4KX8_CACHE_MB</c> override (including <c>0</c> to
@@ -1481,6 +1484,12 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
             byte* packed = GetRepackedQ4Kx8(in w, rows, cols);
             if (packed != null &&
                 SimdKernels.TryMatMulBatchedQ4Kx8(output, packed, input, N, rows, cols))
+                return;
+
+            // Q6_K (ffn_down/attn_v on half the layers of a Q4_K_M model): the group-paired GEMM
+            // over the stock bytes. Any N, for the same chunked-vs-unchunked reason as above.
+            if (w.DType == DType.Q6_K && !DisableQ6KPrefillGemm &&
+                Q6KPrefillGemm.TryMatMulBatched(output, w.DataPtr, input, N, rows, cols))
                 return;
         }
 
