@@ -852,10 +852,15 @@ public static unsafe class VisionOps
         int qHeads,
         int kvHeads,
         int headDim,
-        float theta = 10000.0f)
+        float theta = 10000.0f,
+        bool independentSections = false)
     {
         int half = headDim / 2;
         int quarter = headDim / 4;
+        // ggml GGML_ROPE_TYPE_VISION computes each position section's angles independently
+        // (ggml_mrope_cache_init indep_sects): the column quarter restarts at theta^0 instead of
+        // continuing the row quarter's frequency ladder. Found 2026-09-26 on dots.ocr against
+        // llama-mtmd-debug (Qcur_pos sum -657 ref vs +622 without the reset).
 
         Parallel.For(0, patchesY, py =>
         {
@@ -869,7 +874,8 @@ public static unsafe class VisionOps
                     for (int ic = 0; ic < half; ic++)
                     {
                         float pos = ic < quarter ? py : px;
-                        float freq = MathF.Pow(theta, -4.0f * ic / headDim);
+                        int fi = independentSections && ic >= quarter ? ic - quarter : ic;
+                        float freq = MathF.Pow(theta, -4.0f * fi / headDim);
                         float th = pos * freq;
                         float cosT = MathF.Cos(th);
                         float sinT = MathF.Sin(th);
@@ -887,7 +893,8 @@ public static unsafe class VisionOps
                     for (int ic = 0; ic < half; ic++)
                     {
                         float pos = ic < quarter ? py : px;
-                        float freq = MathF.Pow(theta, -4.0f * ic / headDim);
+                        int fi = independentSections && ic >= quarter ? ic - quarter : ic;
+                        float freq = MathF.Pow(theta, -4.0f * fi / headDim);
                         float th = pos * freq;
                         float cosT = MathF.Cos(th);
                         float sinT = MathF.Sin(th);

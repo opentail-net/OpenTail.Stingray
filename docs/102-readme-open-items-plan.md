@@ -32,3 +32,23 @@ dated evidence in the same pass.
   named gap. At CFG 1 (conditional-only) ours is much darker than the reference; at the official
   CFG 7 they match. Item 11 (Small SFX "darker than the reference") is the same symptom, so #2 and
   #11 become one investigation, placed with the large items after #10.
+- 2026-09-26 #3 RE-SCOPED (moved after #8): Nemotron-Nano's `nemotron_h` text backbone is a
+  Mamba-2 hybrid. Every layer is Mamba-2 (`ssm_in` [5120->22656], `ssm_conv1d` k=4, per-head
+  `ssm_a`/`ssm_d`/`ssm_dt.bias`, grouped `ssm_norm` [1280x8], `ssm_out`), an MLP-only block
+  (`ffn_up`/`ffn_down`, no gate) or attention. This codebase has no Mamba-2 implementation at all.
+  The "per-layer feed_forward_length" crash is only the first missing piece, so this is a new
+  architecture port (reference: llama.cpp nemotron-h.cpp / build_mamba2_layer), not a small fix.
+- 2026-09-26 #4 DONE dots.ocr. It was not a prompt-format problem: the vision encoder was wrong in
+  five places, plus the image markers, all diffed against dotsocr.cpp / clip.cpp and
+  `llama-mtmd-debug -p encode --image cb` stage fingerprints.
+  - Fused `attn_qkv` never read: it looked for attn_q/k/v, which don't exist.
+  - SwiGLU `ffn_gate` ignored: GELU was used.
+  - Post-norm is `mm.post_norm`: it looked for v.post_ln.
+  - Vision M-RoPE lacked ggml's per-section angle reset: `Qcur_pos-0` sum +622 vs ref -657.
+  - Projector GELU is erf, not tanh.
+  - Image markers are `<|img|>`/`<|endofimg|>` (from the llama-mtmd-cli log), not
+    `<|vision_start|>`/`<|vision_end|>`.
+  - After: projector sum 15843.43 vs ref 15843.74. The OCR test image reads "Invoice 4217 / Total:
+    38.50 EUR", identical to llama-mtmd-cli. Vision test project 154 tests green.
+  - FOLLOW-UP: Exaone4, MiMo-VL and YoutuVL also call VisionOps.ApplyMRoPE without the section reset
+    (now an opt-in flag). Check each against llama-mtmd-debug before switching them.
