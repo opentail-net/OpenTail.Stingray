@@ -1589,6 +1589,7 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
     private ComputePipeline? _xieluPipeline;
     private ComputePipeline? _ropeFactorsBatchedPipeline;
     private ComputePipeline? _matVecMxfp4Pipeline, _swigluOaiPipeline, _attentionSinksPipeline;
+    private ComputePipeline? _matVecQ2KPipeline, _matVecIQ4NLPipeline;
     private ComputePipeline? _clearPipeline;
     private ComputePipeline? _elementwiseMulPipeline;
     private ComputePipeline? _ropePipeline;
@@ -2809,6 +2810,11 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
                 _matVecQ4_0Pipeline ??= new ComputePipeline(this, Shaders.MatVecQ4_0, 3, pushConstantSize: sizeof(MatVecParams));
                 DispatchOrRecord(_matVecQ4_0Pipeline, bufs, (totalRows + 7) / 8, &p);
                 break;
+            case DType.Q2_K:
+            case DType.IQ4_NL:
+            case DType.MXFP4:
+                MatVecRowOffset(output, matrix, vector, (int)vector.ElementCount, 0, weightDType);
+                break;
             default: // Q4_K — 256 threads, 8 rows per workgroup, subgroupAdd reduction
                 _matVecQ4KPipeline ??= new ComputePipeline(this, Shaders.MatVecQ4K, 3, pushConstantSize: sizeof(MatVecParams));
                 DispatchOrRecord(_matVecQ4KPipeline, bufs, (totalRows + 7) / 8, &p);
@@ -3254,11 +3260,24 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
     /// inside a stacked expert tensor.
     /// </summary>
     public void MatVecMxfp4(Tensor output, Tensor weights, Tensor input, int cols, int rowOffset)
+        => MatVecRowOffset(output, weights, input, cols, rowOffset, DType.MXFP4);
+
+    /// <summary>
+    /// output[r] = W[rowOffset + r] · input over raw Q2_K / IQ4_NL / MXFP4 weights; rowOffset picks
+    /// one expert inside a stacked [experts*rows][cols] tensor (0 for a plain matrix).
+    /// </summary>
+    public void MatVecRowOffset(Tensor output, Tensor weights, Tensor input, int cols, int rowOffset, DType dtype)
     {
-        _matVecMxfp4Pipeline ??= new ComputePipeline(this, Shaders.MatVecMxfp4, 3, pushConstantSize: sizeof(MatVecOffsetParams));
+        ComputePipeline pipe = dtype switch
+        {
+            DType.Q2_K => _matVecQ2KPipeline ??= new ComputePipeline(this, Shaders.MatVecQ2K, 3, pushConstantSize: sizeof(MatVecOffsetParams)),
+            DType.IQ4_NL => _matVecIQ4NLPipeline ??= new ComputePipeline(this, Shaders.MatVecIQ4NL, 3, pushConstantSize: sizeof(MatVecOffsetParams)),
+            DType.MXFP4 => _matVecMxfp4Pipeline ??= new ComputePipeline(this, Shaders.MatVecMxfp4, 3, pushConstantSize: sizeof(MatVecOffsetParams)),
+            _ => throw new NotSupportedException($"No row-offset matvec for {dtype}."),
+        };
         uint rows = (uint)output.ElementCount;
         var p = new MatVecOffsetParams { rows = rows, cols = (uint)cols, rowOffset = (uint)rowOffset };
-        DispatchOrRecord(_matVecMxfp4Pipeline, [GetBuffer(weights), GetBuffer(input), GetBuffer(output)], (rows + 7) / 8, &p);
+        DispatchOrRecord(pipe, [GetBuffer(weights), GetBuffer(input), GetBuffer(output)], (rows + 7) / 8, &p);
     }
 
     /// <summary>gpt-oss OAI SwiGLU in place into <paramref name="gate"/> (first n elements).</summary>
@@ -5089,6 +5108,8 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
         _xieluPipeline?.Dispose();
         _ropeFactorsBatchedPipeline?.Dispose();
         _matVecMxfp4Pipeline?.Dispose();
+        _matVecQ2KPipeline?.Dispose();
+        _matVecIQ4NLPipeline?.Dispose();
         _swigluOaiPipeline?.Dispose();
         _attentionSinksPipeline?.Dispose();
         _clearPipeline?.Dispose();

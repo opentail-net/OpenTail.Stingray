@@ -2643,6 +2643,144 @@ internal static class Shaders
         """;
 
     /// <summary>
+    /// Matrix-vector multiply over Q2_K weights, 8 rows per workgroup (32 lanes per row). Block =
+    /// 256 elements in 84 bytes: [0:16] scales (low nibble scale, high nibble min), [16:80] 2-bit
+    /// codes, [80:82] FP16 d, [82:84] FP16 dmin — Dequantize.DequantQ2K's layout. Element
+    /// e = lane + 32*i (i = 0..7): half n = i/4 picks the 32-byte qs group and the scale octet, j = i%4
+    /// the 2-bit shift, and the lane's half (lane/16) and offset (lane%16) the byte inside it.
+    /// Push constants: { uint rows, uint cols, uint row_offset }.
+    /// </summary>
+    internal const string MatVecQ2K = """
+        #version 450
+        #extension GL_EXT_control_flow_attributes : enable
+
+        #define N_ROWS 8
+        #define THREADS_PER_ROW 32
+
+        layout(local_size_x = 256) in;
+
+        layout(binding = 0) readonly buffer Weights { uint weights_data[]; };
+        layout(binding = 1) readonly buffer Input   { float input_data[]; };
+        layout(binding = 2) writeonly buffer Output  { float output_data[]; };
+
+        layout(push_constant) uniform Params {
+            uint rows;
+            uint cols;
+            uint row_offset;
+        };
+
+        shared float sdata[256];
+
+        uint gByte(uint b) { return (weights_data[b >> 2] >> ((b & 3) * 8)) & 0xFF; }
+
+        void main() {
+            uint tid = gl_LocalInvocationID.x;
+            uint row_in_wg = tid / THREADS_PER_ROW;
+            uint lane = tid % THREADS_PER_ROW;
+            uint row = gl_WorkGroupID.x * N_ROWS + row_in_wg;
+            if (row >= rows) return;
+
+            uint num_blocks = cols >> 8;
+            uint boff_base = (row_offset + row) * num_blocks * 84u;
+            uint half_ = lane >> 4;
+            uint l = lane & 15u;
+
+            float acc = 0.0;
+            for (uint blk = 0; blk < num_blocks; blk++) {
+                uint b0 = boff_base + blk * 84u;
+                float d    = unpackHalf2x16(gByte(b0 + 80u) | (gByte(b0 + 81u) << 8)).x;
+                float dmin = unpackHalf2x16(gByte(b0 + 82u) | (gByte(b0 + 83u) << 8)).x;
+                uint xbase = blk * 256u;
+                [[unroll]] for (uint n = 0; n < 2u; n++) {
+                    uint qbyte = gByte(b0 + 16u + n * 32u + half_ * 16u + l);
+                    [[unroll]] for (uint j = 0; j < 4u; j++) {
+                        uint sc = gByte(b0 + n * 8u + j * 2u + half_);
+                        float q = float((qbyte >> (2u * j)) & 3u);
+                        uint e = xbase + n * 128u + j * 32u + lane;
+                        acc += (d * float(sc & 0xFu) * q - dmin * float(sc >> 4)) * input_data[e];
+                    }
+                }
+            }
+
+            sdata[tid] = acc;
+            barrier();
+            [[unroll]] for (uint s = 16; s > 0; s >>= 1) {
+                if (lane < s) sdata[tid] += sdata[tid + s];
+                barrier();
+            }
+            if (lane == 0)
+                output_data[row] = sdata[tid];
+        }
+        """;
+
+    /// <summary>
+    /// Matrix-vector multiply over IQ4_NL weights: <see cref="MatVecQ4_0"/>'s layout (FP16 d + 16
+    /// bytes, element k low nibble of byte k, k+16 high nibble) with the non-linear 16-entry
+    /// codebook instead of (nibble - 8). Mirrors Dequantize.DequantIq4Nl.
+    /// Push constants: { uint rows, uint cols, uint row_offset }.
+    /// </summary>
+    internal const string MatVecIQ4NL = """
+        #version 450
+        #extension GL_EXT_control_flow_attributes : enable
+
+        #define N_ROWS 8
+        #define THREADS_PER_ROW 32
+
+        layout(local_size_x = 256) in;
+
+        layout(binding = 0) readonly buffer Weights { uint weights_data[]; };
+        layout(binding = 1) readonly buffer Input   { float input_data[]; };
+        layout(binding = 2) writeonly buffer Output  { float output_data[]; };
+
+        layout(push_constant) uniform Params {
+            uint rows;
+            uint cols;
+            uint row_offset;
+        };
+
+        shared float sdata[256];
+
+        const float KVALUES[16] = float[16](-127.0, -104.0, -83.0, -65.0, -49.0, -35.0, -22.0, -10.0,
+                                            1.0, 13.0, 25.0, 38.0, 53.0, 69.0, 89.0, 113.0);
+
+        uint gByte(uint b) { return (weights_data[b >> 2] >> ((b & 3) * 8)) & 0xFF; }
+
+        void main() {
+            uint tid = gl_LocalInvocationID.x;
+            uint row_in_wg = tid / THREADS_PER_ROW;
+            uint lane = tid % THREADS_PER_ROW;
+            uint row = gl_WorkGroupID.x * N_ROWS + row_in_wg;
+            if (row >= rows) return;
+
+            uint num_blocks = cols >> 5;
+            uint boff_base = (row_offset + row) * num_blocks * 18u;
+
+            float acc = 0.0;
+            uint blkHalf = lane >> 4;
+            uint bidx    = lane & 15;
+            for (uint pair = 0; pair < num_blocks; pair += 2) {
+                uint blk = pair + blkHalf;
+                if (blk >= num_blocks) continue;
+                uint b0 = boff_base + blk * 18u;
+                float d = unpackHalf2x16(gByte(b0) | (gByte(b0 + 1u) << 8)).x;
+                uint qbyte = gByte(b0 + 2u + bidx);
+                uint e0 = blk * 32 + bidx;
+                acc += d * KVALUES[qbyte & 0xFu] * input_data[e0];
+                acc += d * KVALUES[qbyte >> 4]   * input_data[e0 + 16];
+            }
+
+            sdata[tid] = acc;
+            barrier();
+            [[unroll]] for (uint s = 16; s > 0; s >>= 1) {
+                if (lane < s) sdata[tid] += sdata[tid + s];
+                barrier();
+            }
+            if (lane == 0)
+                output_data[row] = sdata[tid];
+        }
+        """;
+
+    /// <summary>
     /// gpt-oss "OAI" SwiGLU, in place into gate: x = min(gate, limit), g = clamp(up, -limit, limit),
     /// gate = x * sigmoid(alpha * x) * (1 + g). Mirrors GptOssGraph.SwigluOai.
     /// Push constants: { uint n, float alpha, float limit }.
