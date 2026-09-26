@@ -481,20 +481,18 @@ public static unsafe class SimdKernels
             int groupsOf4 = remAfter8 / 4;
             int offset4 = groupsOf8 * 8;
 
-            void ProcessRow(int r)
+            // PERF (2026-09-26): row-block x token-group tiling. The old loop ran every token of the
+            // chunk (up to 512) against ONE weight row before moving on, so each row re-streamed the
+            // whole quantized activation chunk (~4.5 MB at cols = 8192) from L3 — ~8x the activation
+            // traffic of the repacked Q4Kx8 GEMM, which covers 8 rows per pass. Now a block of
+            // RowBlock rows is walked token-group-outer / row-inner, so one 8-token activation slice
+            // (~66 KB at cols = 8192) stays in L2 while every row of the block consumes it. Each
+            // output is the same dot call on the same operands, so results are bit-identical.
+            const int RowBlock = 16;
+            void ProcessRowBlock(int blk)
             {
-                byte* row = weights + (long)r * bytesPerRow;
-                float* o = output + r; // output is [token, row]; stride between tokens is `rows`
-
-                // Software prefetch: pull next row's first cache lines into L1 while computing
-                // the current row. Helps batched prefill where threads jump between rows with
-                // stride bytesPerRow — the hardware prefetcher can't predict this access pattern.
-                if (Sse.IsSupported && r + 1 < rows)
-                {
-                    byte* nextRow = weights + (long)(r + 1) * bytesPerRow;
-                    Sse.Prefetch0(nextRow);
-                    Sse.Prefetch0(nextRow + 64);
-                }
+                int r0 = blk * RowBlock;
+                int r1 = Math.Min(rows, r0 + RowBlock);
 
                 for (int g = 0; g < groupsOf8; g++)
                 {
@@ -507,17 +505,21 @@ public static unsafe class SimdKernels
                     byte* s5 = scratchBase + (long)(n + 5) * scratchPerToken;
                     byte* s6 = scratchBase + (long)(n + 6) * scratchPerToken;
                     byte* s7 = scratchBase + (long)(n + 7) * scratchPerToken;
-                    dot8!(row, s0, s1, s2, s3, s4, s5, s6, s7, cols,
-                        out float v0, out float v1, out float v2, out float v3,
-                        out float v4, out float v5, out float v6, out float v7);
-                    o[(long)n * rows] = v0;
-                    o[(long)(n + 1) * rows] = v1;
-                    o[(long)(n + 2) * rows] = v2;
-                    o[(long)(n + 3) * rows] = v3;
-                    o[(long)(n + 4) * rows] = v4;
-                    o[(long)(n + 5) * rows] = v5;
-                    o[(long)(n + 6) * rows] = v6;
-                    o[(long)(n + 7) * rows] = v7;
+                    for (int r = r0; r < r1; r++)
+                    {
+                        float* o = output + r; // output is [token, row]; stride between tokens is `rows`
+                        dot8!(weights + (long)r * bytesPerRow, s0, s1, s2, s3, s4, s5, s6, s7, cols,
+                            out float v0, out float v1, out float v2, out float v3,
+                            out float v4, out float v5, out float v6, out float v7);
+                        o[(long)n * rows] = v0;
+                        o[(long)(n + 1) * rows] = v1;
+                        o[(long)(n + 2) * rows] = v2;
+                        o[(long)(n + 3) * rows] = v3;
+                        o[(long)(n + 4) * rows] = v4;
+                        o[(long)(n + 5) * rows] = v5;
+                        o[(long)(n + 6) * rows] = v6;
+                        o[(long)(n + 7) * rows] = v7;
+                    }
                 }
 
                 for (int g = 0; g < groupsOf4; g++)
@@ -527,21 +529,29 @@ public static unsafe class SimdKernels
                     byte* s1 = scratchBase + (long)(n + 1) * scratchPerToken;
                     byte* s2 = scratchBase + (long)(n + 2) * scratchPerToken;
                     byte* s3 = scratchBase + (long)(n + 3) * scratchPerToken;
-                    dot4(row, s0, s1, s2, s3, cols, out float v0, out float v1, out float v2, out float v3);
-                    o[(long)n * rows] = v0;
-                    o[(long)(n + 1) * rows] = v1;
-                    o[(long)(n + 2) * rows] = v2;
-                    o[(long)(n + 3) * rows] = v3;
+                    for (int r = r0; r < r1; r++)
+                    {
+                        float* o = output + r;
+                        dot4(weights + (long)r * bytesPerRow, s0, s1, s2, s3, cols,
+                            out float v0, out float v1, out float v2, out float v3);
+                        o[(long)n * rows] = v0;
+                        o[(long)(n + 1) * rows] = v1;
+                        o[(long)(n + 2) * rows] = v2;
+                        o[(long)(n + 3) * rows] = v3;
+                    }
                 }
 
                 for (int n = offset4 + groupsOf4 * 4; n < batchSize; n++)
-                    o[(long)n * rows] = dot1(row, scratchBase + (long)n * scratchPerToken, cols);
+                    for (int r = r0; r < r1; r++)
+                        output[(long)n * rows + r] = dot1(weights + (long)r * bytesPerRow,
+                            scratchBase + (long)n * scratchPerToken, cols);
             }
 
+            int rowBlocks = (rows + RowBlock - 1) / RowBlock;
             if (rows >= MinRowsForParallel)
-                Parallel.For(0, rows, s_parallelOpts, ProcessRow);
+                Parallel.For(0, rowBlocks, s_parallelOpts, ProcessRowBlock);
             else
-                for (int r = 0; r < rows; r++) ProcessRow(r);
+                for (int b = 0; b < rowBlocks; b++) ProcessRowBlock(b);
 
             return true;
         }
