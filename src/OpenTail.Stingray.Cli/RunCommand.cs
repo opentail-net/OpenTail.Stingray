@@ -2390,6 +2390,9 @@ public sealed class RunCommand : Command<RunCommand.Settings>
 
         if (OpenTail.Stingray.Engine.PrefillProfileTimers.Enabled)
             OpenTail.Stingray.Engine.PrefillProfileTimers.Report(Console.Out);
+        // STINGRAY_PROFILE_GPU_SPLIT=1: Vulkan queue submits (each one a fence wait) per phase.
+        OpenTail.Stingray.Vulkan.VulkanBackend.PrintGpuProfile($"prefill {tokens.Count} tokens");
+        OpenTail.Stingray.Vulkan.VulkanBackend.ResetGpuProfile();
 
         if (!s.NoDisplayPrompt)
             Console.Write(s.Prompt);
@@ -2433,6 +2436,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
             (totalDecoded > generated ? $" ({generated} visible, {totalDecoded - generated} thinking)" : "") +
             (acceptanceRate is float ar ? $" | MTP accept: {ar:P0} ({mtpAccepted}/{mtpEmitted})" : "") +
             "[/]");
+        OpenTail.Stingray.Vulkan.VulkanBackend.PrintGpuProfile($"decode {totalDecoded} tokens");
 
         if (OpenTail.Stingray.Engine.DecodeProfileTimers.Enabled)
             OpenTail.Stingray.Engine.DecodeProfileTimers.Report(Console.Out);

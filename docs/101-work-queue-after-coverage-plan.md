@@ -86,7 +86,30 @@ many models. Learn from the layout, don't copy the implementation.
 - DONE (b316550, +~5%): int8 prefill tier (Q6_K/Q3_K/Q4_0) tiled row-block x token-group so an
   8-token activation slice stays in L2; bit-identical. A/B 6 runs: 203-217 -> 217-237 t/s.
 - STATUS: ~220 t/s vs llama 260.6 (-t 16) = ~0.85x (was ~0.62x at the start of this item).
-- NEXT LEAD: Q6_K compute rate. Microbench (noisy on this machine, +-15%): Q6_K int8 tier
+- DONE (2026-09-26, Q6KPrefillGemm): group-paired Q6_K prefill GEMM over the stock GGUF bytes
+  (no repacked copy). `vpunpck{l,h}qdq` of the stock-decoded sextet vectors lines up elements
+  0-7 / 8-15 of the same four 16-element scale groups, so two `maddubs` results add in int16
+  (max 32004) before ONE scale `madd` — 6 multiplies per 128 weights per token instead of 8 — and
+  the row-outer / token-inner loop keeps 4 weight + 2 scale vectors in registers with activations
+  as memory operands (the row-major `_8In` spills). A first version repacked Q6_K into a permuted
+  copy; dropped because the one-off repack (~10 ms per 13 MB ffn_down) ate the prefill gain.
+  Kernel microbench, b512, 16 threads, 3 rounds each: 2048x8192 row-major 155-286 -> paired
+  233-315 GMAC/s; 2048x2048 203-245 -> 270-371. Single thread 2048x2048: 41 -> 68 GMAC/s.
+  vs `TryMatMulBatchedQ8` on REAL SmolLM2 blk.0 ffn_down/attn_v at N=256: max abs diff 7.6e-5 on
+  rms 11.4 (6e-6 rel; int dot exact, only per-lane float order differs).
+  End-to-end, 1018-token prompt, 6 alternating runs each (`STINGRAY_Q6K_GEMM=0` A/B):
+  225.9 -> 231.0 t/s mean (+2.3%; Q6_K is ~16% of MACs). Greedy 40-token output identical.
+  PPL (wikitext-2, --batched): -c 2048 6.8611 -> 6.8865, -c 16384 (8191 tokens) 9.7624 -> 9.7661
+  (+0.04%) — the 2k delta is re-quantisation noise concentrated in the first 255 tokens (bucket
+  [256,1024) moves the other way), not a kernel error (see the real-weight diff above).
+  Now ~231 t/s vs llama 260.6 = ~0.89x.
+- DONE (2026-09-26): prefill per-token Q/K transforms (QK-norm, V-norm, RoPE) run across tokens
+  in parallel; the KV append stays sequential. Bit-identical (same ops per token). Profile "RoPE"
+  stage, 3 runs each: 159-161 -> 138-143 ms (~0.4% of prefill). The remaining ~140 ms is the
+  serial append into freshly allocated KV pages (first-touch faults on ~400 MB for SmolLM2, no GQA).
+- NEXT LEAD (remaining gap ~11%): Q4_K Path-2 GEMM itself (65% of trunk time), RoPE (scalar,
+  ~3%), attention (~6%). Previous Q6_K note kept below for history.
+- (superseded) Q6_K compute rate. Microbench (noisy on this machine, +-15%): Q6_K int8 tier
   ~160-350 GMAC/s vs repacked Q4_K ~400-600. llama.cpp has NO x86 Q6_K repack
   (repack.cpp: q4_0, q4_K, iq4_nl, mxfp4, q2_K only), so a Q6_K x8 repacked GEMM (8 rows in lanes,
   pre-decoded scales, no per-row hsum) would be original work and could beat llama here. Q6_K is
@@ -119,19 +142,81 @@ End-to-end ~122s vs C++ Vulkan 60.3s. Stages: DiT 79.4 vs 45.2s (1.76x), UMT5 38
   because EncodePairGpu converts every BF16 layer to F32 on the host and uploads ~9 GB; lead:
   upload BF16 and convert on-GPU, or keep UMT5 on CPU when it is faster (needs a discrete-GPU
   measurement before changing any default — CLAUDE.md rule 13).
+- DONE (2026-09-26): new Vulkan `SgemmBf16W` (fp32 activations x raw bf16 weights, SgemmF16's
+  tiling; bf16->fp32 is a 16-bit shift, 32-bit loads only, no extension needed) +
+  `IComputeBackend.SupportsBf16WeightSgemm`. UMT5 GPU weights now upload the mmap'd safetensors
+  bf16 bytes directly — no host bf16->fp32->fp16 passes, and no fp16 range loss. Idle A/B, same
+  build, alternating (3 each): fp16 21.6 (cold) / 14.7 / 14.5 s -> bf16 7.52 / 7.54 / 7.59 s
+  (~1.95x; C++ Vulkan 13.0 s, our CPU path 6.5 s). 1-step 256x256 image vs CPU: mean abs 0.01678
+  (bf16) vs 0.01681 (fp16) levels, max 1. Parity: VulkanRawWeightSgemmTests (vec4 + odd-K paths).
 
 ### HunyuanVideo GPU
 CPU works (256² ≈19s/step, 512² ≈55s/step); GPU not attempted. Needs model-specific RoPE/data
 handling. High potential, high effort.
+
+**DONE 2026-09-26:** double + single blocks on Vulkan (`HunyuanVideoModel.Gpu.cs`), FLUX.1-style
+GPU blocks with Hunyuan's differences applied as the CPU path has them (affine-free LayerNorm
+modulation, image-first sequence, RoPE on image rows only via the compacted interleaved table,
+biases everywhere); token refiner / embeddings / final layer stay on CPU (~0.6 s/step). Weights stay
+fp8 in VRAM through the new `Shaders.SgemmFp8W` (fp32 x raw E4M3, exact in-shader decode, 32-bit
+loads, no float8 extension) — ~13 GB instead of 26 GB fp16. `UseGpu` defaults on for a Vulkan
+backend; `STINGRAY_HUNYUAN_GPU=0` forces CPU.
+- Parity, real fp8 checkpoint, 64 image + 24 text tokens: cosine 1.000000, rel L2 1.6e-6
+  (`HunyuanVideoGpuParityTests`, heavy). fp8/bf16 GEMM parity: `VulkanRawWeightSgemmTests` 6/6.
+- End to end, 256², 1 frame, 8 steps, real LLaMA-3 + CLIP-L, seed 42 (ZzHunyuanProfTmp harness):
+  CPU 18.0 s/step (168 s generate) -> GPU 8.8 s/step (99 s generate incl. one-off ~13 GB upload);
+  images match (mean abs 0.00015 levels, max 1). A step is ~6.9 TFLOP (2 x 13B x 265 tokens) in
+  ~8.0 s of blocks = ~0.86 TFLOP/s, ~42% of this Vega-8 iGPU's fp32 peak: compute-bound, so the
+  remaining lever is the GEMM kernel itself (or fp16 math), not dispatch/upload.
+- One OOM seen when the parity test ran concurrently with the full Diffusion suite (GPU weights
+  live in shared system RAM on this APU); clean on rerun alone.
 
 ### Cross-cutting: GPU command batching / graph execution
 Per-dispatch overhead (upload→dispatch→wait→download per op) keeps hurting small LLMs, SDXL,
 diffusion, TTS/DiT. Missing piece: record N ops into one command buffer, submit once, sync once.
 Highest-leverage GPU infrastructure left.
 
+**Status check 2026-09-26 (measured, not assumed):** the "missing piece" already exists and is in
+use. `VulkanBackend.BeginBatch/EndBatch` + `DispatchOrRecord` record into one command buffer with a
+barrier per dispatch and submit/wait once; 24 diffusion/audio models call it, and GpuForwardPass /
+HybridForwardPass / VulkanHybridGdnForwardPass record whole tokens. `STINGRAY_PROFILE_GPU_SPLIT=1`
+now also reports per phase from `stingray run`: SmolLM2-1.7B `-g -1` decode = **1 queue submit per
+token** (7 tokens -> 7 submits, ~88 ms/token of GPU time on this iGPU); prefill of 35 tokens = 225
+submits (weight uploads + per-chunk). So for LLM decode the remaining cost is GPU execution, not
+dispatch/sync overhead. Remaining per-op-sync users, if any, should be found the same way (count
+submits per step) before building anything new.
+
 ### Cross-cutting: CPU safetensors packed GEMM audit
 PackedSgemmF32 (load once, pack once, reuse panel) gave huge wins on Wan, LTX, SD3.5. Audit every
 major safetensors-backed diffusion/audio model for the read-F32/convert/dot/discard anti-pattern.
+
+**Progress 2026-09-26:**
+- DcAeDecoder, TinyVaeDecoder, TinyVaeEncoder: their scalar direct convs now delegate to
+  `DiffusionOps.Conv2D` (im2col + GEMM; same NCHW / "same"-padding / stride semantics, checked in
+  the im2col index code). Note: none of the three has a production caller today (only shape tests
+  with zero weights), so this is DRY + future-proofing, not a measured pipeline speedup.
+- `DiffusionOps.Conv2D`'s shared 1x1 path (every 1x1 conv in the diffusion stack: VAE shortcuts
+  and attention q/k/v/proj, UNet, ControlNet, LTX/Wan VAEs) was the dot-product anti-pattern
+  (one `TensorPrimitives.Dot` per output pixel/channel, then a strided unpack pass). Now one packed
+  GEMM with the roles swapped — kernel as the row operand, activations packed straight from NCHW
+  into 16-pixel panels — so the output lands channel-major with no transposes. ms after warm-up:
+  512x512 @4096 58-73 -> 10-14; 128->256 @65536 89 -> 28-39; 64x64 @65536 14.7 -> 7-10;
+  32->64 @65536 14.8 -> 6-8; 256x256 @16384 ~16 vs ~17 (tie). SD1.5 256² image old vs new:
+  99.87% pixels identical, max 1 level.
+- Hunyuan VAE `Linear1x1` and pointwise `CausalConv3D` (per-channel axpy) now go through that
+  shared 1x1 path: zero-latent decode pixel-identical, smooth latent 1 level at one pixel.
+  Remaining: the VAE mid-block causal self-attention is still scalar seq x seq x ch (measure its
+  share before touching it; at 32x32x1 latent the whole decode is a few seconds).
+
+## Found along the way
+
+- 2026-09-26: `HybridGdnForwardPass_Ornith9B_SnapshotRestore` fails (2608/248320 non-finite
+  logits, "giochi giochi..." from the CLI). NOT an engine bug: vendored llama.cpp prints "GGGG..."
+  on the same file, clean HEAD and a 2026-09-19 build reproduce it, and the local
+  `F:\_models\deepreinforce-ai_Ornith-1.0-9B-Q4_K_M.gguf` is 6,912,246,464 bytes vs the HF file's
+  5,910,782,656 (etag 5035e767…). FIXED: re-downloaded (sha256 5035e767… matches HF), bad copy
+  kept at `K:\_other_models\deepreinforce-ai_Ornith-1.0-9B-Q4_K_M.gguf.BAD-6912246464`. The test now
+  passes on real weights (8.7 s, 0 non-finite logits); CLI output coherent.
 
 ## GPU for LLMs
 

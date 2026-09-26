@@ -29,7 +29,11 @@ names are treated as valid, `doctor` would not have flagged it either. The warni
 `STINGRAY_MAX_QUEUE` and the dead entry is out of the registry, so the mistake is now reported with
 a closest-match suggestion.
 
-**Reconciled again 2026-09-25 — `KnownEnvironmentVariables.All` now contains **227** names**
+**Reconciled again 2026-09-26 — `KnownEnvironmentVariables.All` now contains **229** names**
+(2026-09-26: `STINGRAY_Q6K_GEMM`, the A/B toggle for the group-paired Q6_K prefill GEMM;
+`STINGRAY_HUNYUAN_GPU`, `0` keeps HunyuanVideo's transformer blocks on the CPU with a GPU backend.)
+
+**Reconciled 2026-09-25 — `KnownEnvironmentVariables.All` contained **227** names**
 (2026-09-25b: `STINGRAY_EMBEDDING_MODEL` and `STINGRAY_RERANK_MODEL`, the server defaults for `/v1/embeddings` and `/v1/rerank`. Earlier the same day, 22 added: diffusion GPU/FP16 toggles for FLUX/FLUX.2/Qwen-Image/SD3, SD3/Hunyuan/T5 debug dumps,
 `STINGRAY_ATTN128_LEGACY`, `STINGRAY_FORCE_MHA64_F32`, the ASR/TTS/RVC profiling switches and
 `STINGRAY_SILERO_VAD_PATH`).
@@ -333,6 +337,8 @@ dynamically composed names.
 | `STINGRAY_Q4KX8_CACHE_MB` | experimental | |
 | `STINGRAY_Q4K_Q8K` | experimental | |
 | `STINGRAY_Q4K_SOA` | experimental | |
+| `STINGRAY_HUNYUAN_GPU` | experimental | `0` keeps HunyuanVideo's double/single blocks on the CPU even when a Vulkan backend is passed (default: GPU blocks, `HunyuanVideoModel.Gpu.cs`). |
+| `STINGRAY_Q6K_GEMM` | experimental | `0` sends Q6_K prefill matmuls back to the row-major int8 tier instead of the group-paired `Q6KPrefillGemm` (A/B toggle). |
 | `STINGRAY_Q6K_SOA` | experimental | |
 | `STINGRAY_Q8_0_Q8K` | experimental | |
 | `STINGRAY_SNAPKV_RECENCY` | expert | Sibling of `STINGRAY_SNAPKV_BUDGET` (above) — one feature, classified together. |
