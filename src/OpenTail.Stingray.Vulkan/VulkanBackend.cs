@@ -1333,6 +1333,31 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
         else p.Dispose();
     }
 
+    /// <summary>
+    /// Copy host floats into an existing device tensor (staging buffer + transfer, waits for
+    /// completion). Must not be called while a command buffer is being recorded.
+    /// </summary>
+    public void UploadInto(Tensor dst, ReadOnlySpan<float> data)
+    {
+        ulong byteSize = (ulong)(data.Length * sizeof(float));
+        using var staging = GpuBuffer.CreateStaging(this, byteSize, VkBufferUsageFlags.TransferSrc);
+        float* mapped = (float*)staging.Map();
+        data.CopyTo(new Span<float>(mapped, data.Length));
+        staging.Unmap();
+
+        var cmd = _transferCmd;
+        VkCommandBufferBeginInfo beginInfo = new() { flags = VkCommandBufferUsageFlags.OneTimeSubmit };
+        _vkd.vkBeginCommandBuffer(cmd, &beginInfo).CheckResult();
+        VkBufferCopy region = new() { size = byteSize };
+        _vkd.vkCmdCopyBuffer(cmd, staging.Buffer, GetBuffer(dst).Buffer, 1, &region);
+        _vkd.vkEndCommandBuffer(cmd).CheckResult();
+        VkSubmitInfo submit = new() { commandBufferCount = 1, pCommandBuffers = &cmd };
+        var fence = _fence;
+        _vkd.vkResetFences(1, &fence).CheckResult();
+        _vkd.vkQueueSubmit(_computeQueue, 1, &submit, fence).CheckResult();
+        _vkd.vkWaitForFences(1, &fence, true, ulong.MaxValue).CheckResult();
+    }
+
     public void Download(Tensor src, Span<float> dst)
     {
         var gpuBuf = GetBuffer(src);
@@ -1563,6 +1588,7 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
     private ComputePipeline? _scaleInPlacePipeline;
     private ComputePipeline? _xieluPipeline;
     private ComputePipeline? _ropeFactorsBatchedPipeline;
+    private ComputePipeline? _matVecMxfp4Pipeline, _swigluOaiPipeline, _attentionSinksPipeline;
     private ComputePipeline? _clearPipeline;
     private ComputePipeline? _elementwiseMulPipeline;
     private ComputePipeline? _ropePipeline;
@@ -1762,6 +1788,8 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
     private struct ScaleParams { public uint n; public float scale; }
     private struct XieluParams { public uint n; public float alphaN; public float alphaP; public float beta; public float eps; }
     private struct RoPEParams { public uint numHeads; public uint headDim; public int position; public float theta; }
+    private struct MatVecOffsetParams { public uint rows; public uint cols; public uint rowOffset; }
+    private struct SwigluOaiParams { public uint n; public float alpha; public float limit; }
     private struct RoPEFactorsParams { public uint numHeads; public uint headDim; public int basePos; public float theta; public uint neox; public float mscale; }
     private struct MatVecParams { public uint rows; public uint cols; }
     private struct MatVecBatchedParams { public uint rows; public uint cols; public uint nTok; }
@@ -3198,6 +3226,47 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
             [GetBuffer(q), GetBuffer(kCache), GetBuffer(vCache), GetBuffer(output),
              GetBuffer(scoresScratch)],
             numHeads, &p);
+    }
+
+    /// <summary>
+    /// <see cref="Attention"/> with gpt-oss attention sinks (<paramref name="sinks"/>: one logit per
+    /// query head). See <see cref="Shaders.AttentionSinks"/>.
+    /// </summary>
+    public void AttentionSinks(Tensor q, Tensor kCache, Tensor vCache, Tensor output,
+        Tensor scoresScratch, Tensor sinks,
+        uint numHeads, uint numKvHeads, uint headDim, uint seqLen, uint maxSeqLen, uint window = 0u)
+    {
+        _attentionSinksPipeline ??= new ComputePipeline(this, Shaders.AttentionSinks, 6, pushConstantSize: sizeof(AttentionParams));
+        var p = new AttentionParams
+        {
+            numHeads = numHeads, numKvHeads = numKvHeads,
+            headDim = headDim, seqLen = seqLen, maxSeqLen = maxSeqLen, window = window
+        };
+        DispatchOrRecord(_attentionSinksPipeline,
+            [GetBuffer(q), GetBuffer(kCache), GetBuffer(vCache), GetBuffer(output),
+             GetBuffer(scoresScratch), GetBuffer(sinks)],
+            numHeads, &p);
+    }
+
+    /// <summary>
+    /// output[r] = W[rowOffset + r] · input for r in [0, output.ElementCount), W raw MXFP4 bytes
+    /// ([totalRows][cols], 17 bytes per 32 values). <paramref name="rowOffset"/> selects one expert
+    /// inside a stacked expert tensor.
+    /// </summary>
+    public void MatVecMxfp4(Tensor output, Tensor weights, Tensor input, int cols, int rowOffset)
+    {
+        _matVecMxfp4Pipeline ??= new ComputePipeline(this, Shaders.MatVecMxfp4, 3, pushConstantSize: sizeof(MatVecOffsetParams));
+        uint rows = (uint)output.ElementCount;
+        var p = new MatVecOffsetParams { rows = rows, cols = (uint)cols, rowOffset = (uint)rowOffset };
+        DispatchOrRecord(_matVecMxfp4Pipeline, [GetBuffer(weights), GetBuffer(input), GetBuffer(output)], (rows + 7) / 8, &p);
+    }
+
+    /// <summary>gpt-oss OAI SwiGLU in place into <paramref name="gate"/> (first n elements).</summary>
+    public void SwigluOai(Tensor gate, Tensor up, int n, float alpha = 1.702f, float limit = 7.0f)
+    {
+        _swigluOaiPipeline ??= new ComputePipeline(this, Shaders.SwigluOai, 2, pushConstantSize: sizeof(SwigluOaiParams));
+        var p = new SwigluOaiParams { n = (uint)n, alpha = alpha, limit = limit };
+        DispatchOrRecord(_swigluOaiPipeline, [GetBuffer(gate), GetBuffer(up)], ((uint)n + 255) / 256, &p);
     }
 
     /// <summary>
@@ -5019,6 +5088,9 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
         _scaleInPlacePipeline?.Dispose();
         _xieluPipeline?.Dispose();
         _ropeFactorsBatchedPipeline?.Dispose();
+        _matVecMxfp4Pipeline?.Dispose();
+        _swigluOaiPipeline?.Dispose();
+        _attentionSinksPipeline?.Dispose();
         _clearPipeline?.Dispose();
         _elementwiseMulPipeline?.Dispose();
         _ropePipeline?.Dispose();

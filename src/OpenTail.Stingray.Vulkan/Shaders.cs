@@ -2444,6 +2444,232 @@ internal static class Shaders
         """;
 
     /// <summary>
+    /// <see cref="Attention"/> with gpt-oss attention sinks: one learned logit per query head joins
+    /// the softmax max and denominator but has no value row, so it only absorbs probability mass
+    /// (GptOssGraph.SoftmaxWithSink). Same bindings plus 5=sinks[num_heads]; same push constants,
+    /// including the SWA window.
+    /// </summary>
+    internal const string AttentionSinks = """
+        #version 450
+        #extension GL_EXT_control_flow_attributes : enable
+
+        layout(local_size_x = 256) in;
+
+        layout(binding = 0) readonly buffer Q     { float q_data[]; };
+        layout(binding = 1) readonly buffer KCache { float k_cache[]; };
+        layout(binding = 2) readonly buffer VCache { float v_cache[]; };
+        layout(binding = 3) buffer Out             { float out_data[]; };
+        layout(binding = 4) buffer ScoresScratch   { float scores_scratch[]; };
+        layout(binding = 5) readonly buffer Sinks  { float sinks[]; };   // one logit per query head
+
+        layout(push_constant) uniform Params {
+            uint num_heads;
+            uint num_kv_heads;
+            uint head_dim;
+            uint seq_len;
+            uint max_seq_len;
+            uint window;        // SWA: attend only [start_seq, seq_len); 0 = full attention
+        };
+
+        // Score-storage strategy mirrors the CUDA `llm_attention` kernel:
+        //   • seq_len ≤ MAX_SHARED_SCORES (4096): fast path uses shared memory.
+        //   • seq_len > 4096: spills to scores_scratch[h*max_seq_len .. +seq_len).
+        // The fast path does not touch the scratch buffer, but Vulkan descriptors
+        // require it to be bound — callers pass a 1-float placeholder when the
+        // whole context is guaranteed to fit in shared memory.
+        const uint MAX_SHARED_SCORES = 4096u;
+        shared float scores[MAX_SHARED_SCORES];
+        shared float sdata[256];   // reduction scratch
+
+        void main() {
+            uint h = gl_WorkGroupID.x;
+            uint tid = gl_LocalInvocationID.x;
+            if (h >= num_heads) return;
+
+            uint kv_head = h / (num_heads / num_kv_heads);
+            uint kv_dim = num_kv_heads * head_dim;
+            float scale = inversesqrt(float(head_dim));
+            uint q_off = h * head_dim;
+            uint out_off = h * head_dim;
+
+            // Sliding-window bound (Gemma SWA layers): mirror the CPU ForwardPass.Attention
+            // start_seq = window > 0 ? max(0, seq_len - window) : 0. Computed with the uint
+            // underflow guard (window < seq_len) so window==0 OR window>=seq_len ⇒ full attention.
+            uint start_seq = (window != 0u && window < seq_len) ? (seq_len - window) : 0u;
+
+            bool use_shared = (seq_len <= MAX_SHARED_SCORES);
+            uint scratch_base = h * max_seq_len;
+
+            // ─── Phase 1: per-position Q·K scores over [start_seq, seq_len) ───
+            for (uint t = start_seq + tid; t < seq_len; t += 256) {
+                float dot = 0.0;
+                uint k_off = t * kv_dim + kv_head * head_dim;
+                for (uint d = 0; d < head_dim; d++)
+                    dot += q_data[q_off + d] * k_cache[k_off + d];
+                float score = dot * scale;
+                if (use_shared) scores[t] = score;
+                else            scores_scratch[scratch_base + t] = score;
+            }
+            // Pad the shared tail so the max scan ignores stale slots. The masked-off head
+            // ([0, start_seq)) is never read because every scan below starts at start_seq.
+            if (use_shared) {
+                for (uint t = seq_len + tid; t < MAX_SHARED_SCORES; t += 256)
+                    scores[t] = -1.0/0.0;
+            }
+            barrier();
+
+            // ─── Phase 2: in-place softmax over [start_seq, seq_len) ───
+            float local_max = -1.0/0.0;
+            for (uint t = start_seq + tid; t < seq_len; t += 256) {
+                float s = use_shared ? scores[t] : scores_scratch[scratch_base + t];
+                local_max = max(local_max, s);
+            }
+            sdata[tid] = local_max;
+            barrier();
+            [[unroll]] for (uint s = 128; s > 0; s >>= 1) {
+                if (tid < s) sdata[tid] = max(sdata[tid], sdata[tid + s]);
+                barrier();
+            }
+            float max_val = max(sdata[0], sinks[h]);   // the sink joins the max
+            barrier();
+
+            float local_sum = 0.0;
+            for (uint t = start_seq + tid; t < seq_len; t += 256) {
+                float s = use_shared ? scores[t] : scores_scratch[scratch_base + t];
+                float e = exp(s - max_val);
+                if (use_shared) scores[t] = e;
+                else            scores_scratch[scratch_base + t] = e;
+                local_sum += e;
+            }
+            sdata[tid] = local_sum;
+            barrier();
+            [[unroll]] for (uint s = 128; s > 0; s >>= 1) {
+                if (tid < s) sdata[tid] += sdata[tid + s];
+                barrier();
+            }
+            float inv_sum = 1.0 / (sdata[0] + exp(sinks[h] - max_val));   // ...and the denominator
+            barrier();
+
+            for (uint t = start_seq + tid; t < seq_len; t += 256) {
+                if (use_shared) scores[t] *= inv_sum;
+                else            scores_scratch[scratch_base + t] *= inv_sum;
+            }
+            barrier();
+
+            // ─── Phase 3: weighted V sum over [start_seq, seq_len). K is NOT re-derived here. ───
+            for (uint d = tid; d < head_dim; d += 256) {
+                float sum = 0.0;
+                for (uint t = start_seq; t < seq_len; t++) {
+                    float weight = use_shared ? scores[t] : scores_scratch[scratch_base + t];
+                    uint v_off = t * kv_dim + kv_head * head_dim;
+                    sum += weight * v_cache[v_off + d];
+                }
+                out_data[out_off + d] = sum;
+            }
+        }
+        """;
+
+    /// <summary>
+    /// Matrix-vector multiply over MXFP4 weights (gpt-oss experts), 8 rows per workgroup like
+    /// <see cref="MatVecQ4_0"/>. Block = 1 E8M0 scale byte + 16 bytes of 4-bit codes (element k in
+    /// the low nibble of byte k, element k+16 in the high nibble), 17 bytes per 32 elements. Values
+    /// and scale mirror Dequantize.DequantMxfp4 exactly (value table x half-scale E8M0).
+    /// row_offset addresses one expert inside a layer's stacked [experts*rows][cols] tensor.
+    /// Push constants: { uint rows, uint cols, uint row_offset }.
+    /// </summary>
+    internal const string MatVecMxfp4 = """
+        #version 450
+        #extension GL_EXT_control_flow_attributes : enable
+
+        #define N_ROWS 8
+        #define THREADS_PER_ROW 32
+
+        layout(local_size_x = 256) in;
+
+        layout(binding = 0) readonly buffer Weights { uint weights_data[]; };
+        layout(binding = 1) readonly buffer Input   { float input_data[]; };
+        layout(binding = 2) writeonly buffer Output  { float output_data[]; };
+
+        layout(push_constant) uniform Params {
+            uint rows;
+            uint cols;
+            uint row_offset;
+        };
+
+        shared float sdata[256];
+
+        const float KVALUES[16] = float[16](0.0, 1.0, 2.0, 3.0, 4.0, 6.0, 8.0, 12.0,
+                                            0.0, -1.0, -2.0, -3.0, -4.0, -6.0, -8.0, -12.0);
+
+        uint gByte(uint b) { return (weights_data[b >> 2] >> ((b & 3) * 8)) & 0xFF; }
+
+        float e8m0Half(uint e) {
+            return uintBitsToFloat(e < 2u ? (0x00200000u << e) : ((e - 1u) << 23));
+        }
+
+        void main() {
+            uint tid = gl_LocalInvocationID.x;
+            uint row_in_wg = tid / THREADS_PER_ROW;
+            uint lane = tid % THREADS_PER_ROW;
+            uint row = gl_WorkGroupID.x * N_ROWS + row_in_wg;
+            if (row >= rows) return;
+
+            uint num_blocks = cols >> 5;
+            uint boff_base = (row_offset + row) * num_blocks * 17u;
+
+            float acc = 0.0;
+            uint blkHalf = lane >> 4;
+            uint bidx    = lane & 15;
+            for (uint pair = 0; pair < num_blocks; pair += 2) {
+                uint blk = pair + blkHalf;
+                if (blk >= num_blocks) continue;
+                uint b0 = boff_base + blk * 17u;
+                float d = e8m0Half(gByte(b0));
+                uint qbyte = gByte(b0 + 1u + bidx);
+                uint e0 = blk * 32 + bidx;
+                acc += d * KVALUES[qbyte & 0xFu] * input_data[e0];
+                acc += d * KVALUES[qbyte >> 4]   * input_data[e0 + 16];
+            }
+
+            sdata[tid] = acc;
+            barrier();
+            [[unroll]] for (uint s = 16; s > 0; s >>= 1) {
+                if (lane < s) sdata[tid] += sdata[tid + s];
+                barrier();
+            }
+            if (lane == 0)
+                output_data[row] = sdata[tid];
+        }
+        """;
+
+    /// <summary>
+    /// gpt-oss "OAI" SwiGLU, in place into gate: x = min(gate, limit), g = clamp(up, -limit, limit),
+    /// gate = x * sigmoid(alpha * x) * (1 + g). Mirrors GptOssGraph.SwigluOai.
+    /// Push constants: { uint n, float alpha, float limit }.
+    /// </summary>
+    internal const string SwigluOai = """
+        #version 450
+        layout(local_size_x = 256) in;
+
+        layout(binding = 0) buffer Gate { float gate_data[]; };
+        layout(binding = 1) readonly buffer Up { float up_data[]; };
+
+        layout(push_constant) uniform Params {
+            uint n;
+            float alpha;
+            float limit;
+        };
+
+        void main() {
+            uint i = gl_GlobalInvocationID.x;
+            if (i >= n) return;
+            float x = min(gate_data[i], limit);
+            float g = clamp(up_data[i], -limit, limit);
+            gate_data[i] = x / (1.0 + exp(-alpha * x)) * (1.0 + g);
+        }
+        """;
+
+    /// <summary>
     /// Batched fp32 attention (issue #308): the spec-decode batched-verify crux. Runs K queries in
     /// ONE dispatch over a 2D grid <c>num_heads × num_queries</c> workgroups, where query qi (at
     /// absolute position <c>base_pos + qi</c>) attends causally over <c>[0, base_pos + qi]</c> — i.e.

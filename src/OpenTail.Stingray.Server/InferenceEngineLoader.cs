@@ -594,9 +594,19 @@ public static class InferenceEngineLoader
         {
             if (turboQuant)
                 throw new InvalidOperationException("TurboQuant is not supported for gpt-oss.");
+            var gptOssHp = GptOssHyperparams.FromModel(model);
+            // Full Vulkan offload only (GptOssGpuForwardPass); CUDA and a -g N split run on CPU.
+            if (backend == ServerBackend.Vulkan && (nGpuLayers < 0 || nGpuLayers >= gptOssHp.NumLayer))
+            {
+                var vk = new VulkanBackend();
+                owned.Add(vk);
+                var gptOssGpu = new GptOssGpuForwardPass(model, vk, gptOssHp, maxContextLength: ctxSize);
+                owned.Add(gptOssGpu);
+                return (gptOssGpu, BatchingSupported: false, GpuWeightBytesExact: null);
+            }
             if (backend != ServerBackend.Cpu)
-                Console.Error.WriteLine("[InferenceEngineLoader] gpt-oss has no GPU forward pass yet; running on CPU.");
-            var gptOss = new GptOssForwardPass(model, GptOssHyperparams.FromModel(model));
+                Console.Error.WriteLine("[InferenceEngineLoader] gpt-oss runs on GPU only as a full Vulkan offload; running on CPU.");
+            var gptOss = new GptOssForwardPass(model, gptOssHp);
             owned.Add(gptOss);
             return (gptOss, BatchingSupported: false, GpuWeightBytesExact: null);
         }

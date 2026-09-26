@@ -1034,12 +1034,27 @@ public sealed class RunCommand : Command<RunCommand.Settings>
                 AnsiConsole.MarkupLine("[red]Error:[/] gpt-oss runs on its own CPU forward pass, which supports neither TurboQuant nor speculative decoding.");
                 return 1;
             }
-            if (effNGpuLayers != 0)
+            var gptOssHp = GptOssHyperparams.FromModel(model);
+            bool wantsCudaOnly = (settings.Backend ?? "auto").Trim().ToLowerInvariant() == "cuda";
+            if (effNGpuLayers != 0 && (wantsCudaOnly || (effNGpuLayers > 0 && effNGpuLayers < gptOssHp.NumLayer)))
             {
-                AnsiConsole.MarkupLine("[yellow]Note:[/] gpt-oss has no GPU forward pass yet; running on CPU.");
+                AnsiConsole.MarkupLine("[yellow]Note:[/] gpt-oss runs on GPU only as a full Vulkan offload (-g -1); running on CPU.");
                 effNGpuLayers = 0;
             }
-            gptOssFwd = new GptOssForwardPass(model, GptOssHyperparams.FromModel(model));
+            if (effNGpuLayers != 0)
+            {
+                // Full Vulkan offload: GptOssGpuForwardPass. It lives in gpuFwd/gpuBackend so the
+                // finally block disposes the pass before its backend; effNGpuLayers = 0 then routes
+                // past the generic GPU branches to the gpt-oss wiring below.
+                var vk = new VulkanBackend(gpuDeviceIndex);
+                gpuBackend = vk;
+                gpuFwd = new GptOssGpuForwardPass(model, vk, gptOssHp, maxContextLength: ctxSize);
+                effNGpuLayers = 0;
+            }
+            else
+            {
+                gptOssFwd = new GptOssForwardPass(model, gptOssHp);
+            }
         }
         else if (hp.IsHybridSsm && effNGpuLayers == 0)
         {
@@ -1238,6 +1253,13 @@ public sealed class RunCommand : Command<RunCommand.Settings>
                 prefill = tokens => gptOssFwd.Prefill(tokens);
                 resetCache = gptOssFwd.ResetCache;
                 AnsiConsole.MarkupLine("[dim]Backend: [blue]CPU[/] (gpt-oss)[/]");
+            }
+            else if (gpuFwd is GptOssGpuForwardPass gptOssGpu)
+            {
+                forward = gptOssGpu.Forward;
+                prefill = tokens => gptOssGpu.Prefill(tokens);
+                resetCache = gptOssGpu.ResetCache;
+                AnsiConsole.MarkupLine($"[dim]Backend: [green]GPU[/] ({((VulkanBackend)gpuBackend!).Name}, gpt-oss, all layers)[/]");
             }
             else if (hybridFwd is not null)
             {

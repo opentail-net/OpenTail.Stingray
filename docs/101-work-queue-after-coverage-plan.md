@@ -425,6 +425,26 @@ parity alone missed OLMoE).
     --no-jinja, which is why the first greedy check returned nothing. With --no-jinja, greedy
     matches ours until ~token 20 ("rich cultural heritage" vs our "rich history").
 
+- 3a gpt-oss on Vulkan — DONE 2026-09-26: new `GptOssGpuForwardPass`, full offload, token by token.
+  - New shaders: `MatVecMxfp4` (raw MXFP4 experts, row offset into the stacked expert tensor),
+    `AttentionSinks` (the Attention shader with the sink in max and denominator, SWA window
+    kept) and `SwigluOai`.
+  - YaRN runs through `RoPEFactorsBatched`: the YaRN angle is linear in position, so it is exactly
+    per-pair factors 1/(s(1-r)+r) plus a constant cos/sin scale.
+  - Router top-k is on the CPU from a 32-float readback per layer.
+  - Parity vs GptOssForwardPass (`GptOssGpuParityTests`, prefill + 8 teacher-forced steps): worst
+    cos 0.999929, 2 near-tie flips, 28 s real-weight run.
+  - CLI/server: -g -1 on Vulkan uses it; CUDA and -g N stay on CPU with a note. Greedy, 24 tokens:
+    Vulkan output is identical to CPU.
+  - Both differ from llama-server at token 2. llama.cpp itself has `."
+` -1.847 vs `."` -1.854
+    there (a 0.007 tie). The 12/12 receipt in the status log fell on the other side of it.
+  - iGPU: decode 6.6 t/s on Vulkan vs 11.4 on CPU. Per CLAUDE.md rule 13 that is not evidence
+    against the path. Known cost: 24 submits + router readbacks per token. A GPU-side top-k
+    would remove them.
+  - Also fixed: the CLI passes ctx 0 ("default"), which made zero-byte KV buffers and an access
+    violation in vkBindBufferMemory. It now means 4096.
+
 ### Step 1 — audit (2026-09-26)
 
 CLI, "The capital of France is", greedy 24 tokens, `-g 0` vs `-g -1` (Vulkan, iGPU). "same" = same
