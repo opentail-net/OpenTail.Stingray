@@ -236,6 +236,41 @@ major safetensors-backed diffusion/audio model for the read-F32/convert/dot/disc
   "all" figure is not comparable, which is why several earlier gaps went in both directions.
   Falcon3 after the BOS fix: all-positions 6.55 -> 6.31 (llama 5.97, second half only).
 
+  Full audit on the fixed build: wikitext-2, -c 2048, CPU; ours is the [1024,+) bucket, llama.cpp
+  is `llama-perplexity --chunks 1`.
+
+  | Model | Ours | llama.cpp |
+  |---|---|---|
+  | SmolLM2-360M | 9.517 | 9.505 |
+  | Qwen2.5-0.5B | 11.978 | 12.006 |
+  | Qwen3-0.6B | 15.116 | 15.162 |
+  | Phi-3-mini | 4.772 | 4.761 |
+  | phi-2 file (phi3) | 4.960 | 4.961 |
+  | Pythia-160m | 24.265 | 24.443 |
+  | StableLM-zephyr-3b | 21.055 | 21.466 |
+  | StarCoder2-3b | 6.339 | 6.333 |
+  | Falcon3-3B | 5.947 | 5.968 |
+  | ERNIE-4.5-0.3B | 11.409 | 11.408 |
+  | Maincoder-1B | 11.899 (was 12.609) | 12.005 |
+  | Gemma 3 4B | 11.178 | 11.335 |
+  | Gemma 4 E4B | 39.808 | 40.137 |
+  | SmolLM3 | 7.485 | 7.495 |
+  | Cohere2 7B | 6.899 | 6.864 |
+  | Xverse-7B | 4.781 | 4.806 |
+  | Apertus-8B | 4.513 | 4.792 (see 2h) |
+  | Mistral-7B v0.3 | 4.773 | 4.829 |
+  | OLMoE-1B-7B | 7.424 | 7.506 |
+  | DeepSeek-V2-Lite Q2_K | 32.821 | 32.677 |
+  | Ornith-9B (hybrid GDN) | 6.494 | 6.521 |
+  | Qwen3-Coder-30B-A3B | 7.030 | 7.081 |
+  | gpt-oss-20b | 3809 | 4145 |
+
+  Both gpt-oss numbers are huge: raw wikitext with no harmony format is out of distribution.
+  - Maincoder's gap was a real bug (2e).
+  - Ornith and gpt-oss first failed on our side for tooling reasons: `perplexity` built the generic
+    ForwardPass for every model. Fixed in db55e52. Before the fix, gpt-oss scored 994k and Ornith
+    crashed.
+
 - 2026-09-26: `HybridGdnForwardPass_Ornith9B_SnapshotRestore` fails (2608/248320 non-finite
   logits, "giochi giochi..." from the CLI). NOT an engine bug: vendored llama.cpp prints "GGGG..."
   on the same file, clean HEAD and a 2026-09-19 build reproduce it, and the local
@@ -356,8 +391,39 @@ parity alone missed OLMoE).
     prompt (batched path).
   - VulkanBatchedPrefill / ChunkSplit / SpecBatchVerify / MtpBatchVerify tests mostly skip: their
     checkpoints are not on this machine, so they are no evidence either way.
-  - Still per-token only: non-gated FFN / FFN bias / position table (GPT-2, StarCoder2, NeoX),
-    QK-norm-after-RoPE is batched.
+- 2g Batched prefill for non-gated FFNs — DONE 2026-09-26 (03f84b2). Covers up+bias -> GELU/xIELU
+  -> down+bias, plus GPT-2's position rows, in the batched trunk.
+  - Prefill, 3 runs each, -g -1: StarCoder2-3B 10.6-14.1 -> 46.0-46.4 t/s; Apertus-8B 4.3-4.7 ->
+    19.5 t/s.
+  - GPT-2 and Pythia are Q8_0, so they stay per-token: the batched trunk is Q4_K/Q6_K only.
+- 2h RoPE frequency factors on Vulkan — DONE 2026-09-26 (03f84b2). The full Vulkan pass applied
+  rope_freqs for Gemma 4 only. Orpheus (Llama 3.2), Apertus (Llama-3-style 1->8 factors) and Phi-3
+  128k LongRoPE all ran plain RoPE, which only shows at long context. New `RoPEFactorsBatched`
+  shader (NORM/NEOX, per-pair factors, LongRoPE mscale) in both trunks.
+  - Apertus wikitext second-half PPL on Vulkan: 4.798 -> 4.470 (CPU 4.513).
+  - Parity: Orpheus 0.999270, phi3 LongRoPE file 0.996710.
+  - Not fixed (cannot test here): CudaForwardPass/CudaHybridForwardPass apply rope_freqs for
+    Gemma 4 only, and HybridForwardPass for NEOX only. Llama-3.1-style models on CUDA or a Vulkan
+    -g N split still run unscaled RoPE, wrong only at long context. Not gated, because gating
+    would push every Llama 3.1 CUDA user to CPU.
+  - RESOLVED — Apertus vs llama.cpp (4.513 vs 4.792) is int8 activation quantization, not RoPE.
+    Second-half PPL:
+
+    | Run | Real factors | Factors patched to 1 (GGUF copy) |
+    |---|---|---|
+    | llama.cpp | 4.792 | 5.114 |
+    | ours, CPU batched (int8 activations) | 4.848 | 5.066 |
+    | ours, CPU sequential (fp32) | 4.513 | 4.847 |
+
+    - `STINGRAY_CPU_PREFILL_Q8=0 --batched` gives 4.5132, identical to sequential. The factors act
+      the same on both sides (~0.32), so our RoPE is right. llama.cpp's q8 activations cost the
+      same ~7% our int8 prefill does. The likely cause is xIELU's x^2 branch producing outliers.
+    - Tried: F32 activations for ffn_down only recovers 4.848 -> 4.733 (23.0 t/s; all-F32 is
+      16.1 t/s). Parked at the user's direction (not worth more time for one niche model).
+      No code change kept.
+  - Also found: llama-server exits on Apertus's chat template (json parse error) unless run with
+    --no-jinja, which is why the first greedy check returned nothing. With --no-jinja, greedy
+    matches ours until ~token 20 ("rich cultural heritage" vs our "rich history").
 
 ### Step 1 — audit (2026-09-26)
 
