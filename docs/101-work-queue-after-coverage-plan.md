@@ -264,3 +264,48 @@ Steps:
 6. Gemma 4 on Vulkan hybrid; MLA on GPU; speculative decoding on Vulkan — only after 1-5.
 7. Every step: GPU-vs-CPU logit parity test on real weights (timing-checked per CLAUDE.md
    rule 12), README matrix row updated with the dated evidence.
+
+### Step 1 — audit (2026-09-26)
+
+CLI, "The capital of France is", greedy 24 tokens, `-g 0` vs `-g -1` (Vulkan, iGPU). "same" = same
+greedy text; parity numbers are from `VulkanArchLogitParityTests` (real prompt + 8 teacher-forced
+decode steps, CPU vs Vulkan logits).
+
+| arch (file) | Vulkan result | notes |
+|---|---|---|
+| llama (SmolLM2-360M, Falcon3-3B, Mistral-7B) | same; Mistral parity cos 0.99974, 0 flips | SmolLM2 decode 29.7 vs 24.9 t/s CPU; prefill 30 vs 78 t/s |
+| qwen2 (qwen2.5-0.5B) | same; cos 0.99966 | |
+| qwen3 (0.6B) | same; cos 0.99847, 1 near-tie flip | |
+| ernie4_5, maincoder, smollm3, xverse, hunyuan-dense | same | |
+| gemma3 (4B) | same text; cos 0.99857 | see Gemma CPU finding below |
+| gemma4 (E4B) | GPU was RIGHT, CPU prefill wrong | fixed on CPU, cos now 0.99893, 0 flips |
+| phi3 (Phi-3-mini) | CRASHED (fused attn_qkv) | FIXED: fused qkv / gate+up row split; cos 0.99890, 0 flips |
+| olmoe | same text; cos 0.9856 at 1 decode step, 0 flips | open: likely a routing near-tie, not yet proven |
+| qwen3moe (Coder-30B-A3B) | same | |
+| qwen35 hybrid (Ornith 9B) | same (Vulkan hybrid GDN) | |
+| stablelm, cohere2 | SILENT GARBAGE | GPU pass has no LayerNorm / parallel residual -> now CPU with a note |
+| gpt2, gptneox, phi2-file*, starcoder2, apertus | CRASHED (missing attn_q / ffn_gate) | now CPU with a note (LayerNorm, learned pos, non-gated FFN) |
+| deepseek2 (MLA), gpt-oss | CPU fallback (by design) | |
+| jais | not admitted (CPU too) | out of scope |
+
+\* phi-2.Q4_K_M reports `general.architecture = phi3` in this file.
+
+- `GpuForwardPass.UnsupportedReason(model, hp)` (CLI + server loader) replaces the MLA-only check:
+  MLA, LayerNorm/biased norms, parallel residual, learned position table, non-gated FFN -> CPU with
+  a one-line note instead of a crash or wrong logits. Next GPU work (step 2) = implement those.
+- Gemma-4 E4B finding (the audit's biggest result): the Vulkan pass matched llama-server 16/16
+  greedy tokens; the CPU PREFILL was wrong. Two CPU bugs, both fixed:
+  1. prefill staged K/V at a `_maxHeadDim` head stride while every cache reader (decode K, the
+     transposed V store) uses the layer's own head dim — half the heads read zero padding
+     (token-0 attn_out cosine 0.7071 = 1/sqrt2). Now `StageCompactKv` (compact + zero tail).
+  2. KV-shared layers (24+) left the cache length at `startPos` after the per-layer TruncateTo, so
+     they attended to nothing from the chunk; now `TruncateTo(startPos + N)`.
+  (A third suspect — Path-2 Q4_K GEMM, Q8_K one scale per 256, flipping a 2.4-logit greedy
+  decision on a BOS-less prompt — was tried as a gemma Path-1 override and REVERTED on
+  perplexity: wikitext-2 -c 2048, E4B batched Path 1 45.6086 / Path 2 45.3548 / sequential
+  45.5941; gemma3 Path 1 21.1517 / Path 2 20.9569. Path 2 does not hurt aggregate quality. At
+  kernel level with 50x outliers Path 2's rel err is ~3.2% vs Path 1 ~1.3%, equal otherwise.)
+  CPU prefill vs sequential cos 0.908 -> 0.99929; CPU vs Vulkan 0.885 -> 0.99929; CPU greedy vs
+  llama-server 16/16. `perplexity --batched` had refused per-layer-head-dim models on the stale
+  claim that PrefillCore falls back to sequential for them — the guard hid these bugs; removed.
+

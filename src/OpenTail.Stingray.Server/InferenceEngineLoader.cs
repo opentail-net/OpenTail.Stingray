@@ -555,10 +555,11 @@ public static class InferenceEngineLoader
             return TqQuantizer.LloydMax;
         }
 
-        // MLA (deepseek2) has no GPU forward pass: the GPU passes expect plain wk/wv tensors.
-        if (hp.KvLoraRank > 0 && nGpuLayers != 0)
+        // Features the GPU layer loops don't implement (MLA, LayerNorm, parallel residual, learned
+        // positions, non-gated FFN): run on CPU rather than compute silently wrong logits.
+        if (nGpuLayers != 0 && GpuForwardPass.UnsupportedReason(model, hp) is { } gpuGap)
         {
-            Console.Error.WriteLine("[InferenceEngineLoader] MLA models (deepseek2) have no GPU forward pass yet; running on CPU.");
+            Console.Error.WriteLine($"[InferenceEngineLoader] no GPU forward pass for {gpuGap} yet; running on CPU.");
             nGpuLayers = 0;
         }
 

@@ -1019,10 +1019,11 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         // IForwardPass handle for MtpDecoder integration (issue #32). Captured when the
         // chosen forward pass ships an MTP head. The actual MTP gating happens later in
         // RunSinglePrompt / RunInteractive based on sp.SpecType.
-        // MLA (deepseek2) has no GPU forward pass: the GPU passes expect plain wk/wv tensors.
-        if (hp.KvLoraRank > 0 && effNGpuLayers != 0)
+        // Features the GPU layer loops don't implement (MLA, LayerNorm, parallel residual, learned
+        // positions, non-gated FFN): run on CPU rather than compute silently wrong logits.
+        if (effNGpuLayers != 0 && GpuForwardPass.UnsupportedReason(model, hp) is { } gpuGap)
         {
-            AnsiConsole.MarkupLine("[yellow]Note:[/] MLA models (deepseek2) have no GPU forward pass yet; running on CPU.");
+            AnsiConsole.MarkupLine($"[yellow]Note:[/] no GPU forward pass for {Markup.Escape(gpuGap)} yet; running on CPU.");
             effNGpuLayers = 0;
         }
 

@@ -445,6 +445,26 @@ public sealed unsafe class GpuForwardPass : IForwardPass
     internal static DType ChooseDefaultKvDType(ModelHyperparams hp, bool tqEnabled, SnapKvConfig snapKv)
         => CanNarrowKv(DType.BFloat16, hp, tqEnabled, snapKv) ? DType.BFloat16 : DType.Float32;
 
+    /// <summary>
+    /// Why this pass cannot run <paramref name="model"/> correctly, or null when it can. The Vulkan
+    /// layer loop is RMSNorm (no norm bias), sequential residual, gated FFN (SiLU, or Gemma's
+    /// GELU-tanh), RoPE-only positions and plain wk/wv (or fused attn_qkv) — it has no LayerNorm,
+    /// no parallel residual, no non-gated GELU MLP, no learned position table, and no MLA. A model
+    /// needing any of those would load fine and then compute silently wrong logits, so callers
+    /// (CLI, server loader) use this to fall back to the CPU pass with a note instead.
+    /// </summary>
+    public static string? UnsupportedReason(GgufModel model, ModelHyperparams hp)
+    {
+        if (hp.KvLoraRank > 0) return "MLA attention (deepseek2)";
+        if (hp.UsesLayerNorm || hp.HasNormBias) return "LayerNorm / biased norms";
+        if (hp.UseParallelResidual) return "parallel attention+FFN residual";
+        if (model.FindTensor("position_embd.weight") is not null) return "learned absolute position embeddings";
+        if (model.FindTensor("blk.0.ffn_gate.weight") is null && model.FindTensor("blk.0.ffn_gate_exps.weight") is null
+            && !(model.FindTensor("blk.0.ffn_up.weight") is { } up && up.Dimensions[^1] == 2L * hp.IntermediateDim))
+            return "non-gated FFN";
+        return null;
+    }
+
     public GpuForwardPass(GgufModel model, VulkanBackend gpu, ModelHyperparams hp,
         int maxContextLength = 0, bool enableTurboQuant = false, int tqFp32Window = 256, int tqBits = 3,
         DType? kvDtype = null)
@@ -903,8 +923,18 @@ public sealed unsafe class GpuForwardPass : IForwardPass
             bool kvShared = hp.KvSourceLayer is { } ksl && ksl[i] >= 0;
 
             _wAttnNorm[i] = UploadWeight($"blk.{i}.attn_norm.weight");
-            _wq[i] = UploadWeight($"blk.{i}.attn_q.weight");
-            if (!kvShared)
+            bool fusedQkv = model.FindTensor($"blk.{i}.attn_qkv.weight") is not null;
+            if (fusedQkv)
+            {
+                // Phi-3 / GPT-NeoX style fused projection: Q rows, then K rows, then V rows.
+                int qRows = _numHeads * _headDim, kvRows = _numKvHeads * _headDim;
+                _wq[i] = UploadWeightRows($"blk.{i}.attn_qkv.weight", 0, qRows);
+                _wk[i] = UploadWeightRows($"blk.{i}.attn_qkv.weight", qRows, kvRows);
+                _wv[i] = UploadWeightRows($"blk.{i}.attn_qkv.weight", qRows + kvRows, kvRows);
+            }
+            else
+                _wq[i] = UploadWeight($"blk.{i}.attn_q.weight");
+            if (!kvShared && !fusedQkv)
             {
                 _wk[i] = UploadWeight($"blk.{i}.attn_k.weight");
                 // Gemma 4 12B global layers omit attn_v (attention_k_eq_v): V reuses the raw K
@@ -953,12 +983,33 @@ public sealed unsafe class GpuForwardPass : IForwardPass
             }
             else
             {
-                _wGate[i] = UploadWeight($"blk.{i}.ffn_gate.weight");
-                _wUp[i] = UploadWeight($"blk.{i}.ffn_up.weight");
+                if (model.FindTensor($"blk.{i}.ffn_gate.weight") is null
+                    && model.FindTensor($"blk.{i}.ffn_up.weight") is { } upInfo
+                    && upInfo.Dimensions[^1] == 2L * _intermDim)
+                {
+                    // Fused gate+up (Phi-3, GLM4): first half of the rows is the gate
+                    // (SiLU'd), second half the up projection — same split as ForwardPass.
+                    _wGate[i] = UploadWeightRows($"blk.{i}.ffn_up.weight", 0, _intermDim);
+                    _wUp[i] = UploadWeightRows($"blk.{i}.ffn_up.weight", _intermDim, _intermDim);
+                }
+                else
+                {
+                    _wGate[i] = UploadWeight($"blk.{i}.ffn_gate.weight");
+                    _wUp[i] = UploadWeight($"blk.{i}.ffn_up.weight");
+                }
                 _wDown[i] = UploadWeight($"blk.{i}.ffn_down.weight");
             }
 
-            if (_hasAttnBias)
+            if (_hasAttnBias && model.FindTensor($"blk.{i}.attn_qkv.bias") is not null)
+            {
+                int qRows = _numHeads * _headDim, kvRows = _numKvHeads * _headDim;
+                _bq![i] = UploadWeightRows($"blk.{i}.attn_qkv.bias", 0, qRows);
+                _bk![i] = UploadWeightRows($"blk.{i}.attn_qkv.bias", qRows, kvRows);
+                _bv![i] = UploadWeightRows($"blk.{i}.attn_qkv.bias", qRows + kvRows, kvRows);
+                if (_hasAttnOutputBias)
+                    _bo![i] = UploadWeight($"blk.{i}.attn_output.bias");
+            }
+            else if (_hasAttnBias)
             {
                 _bq![i] = UploadWeight($"blk.{i}.attn_q.bias");
                 // Shared-KV layers carry no K/V bias (no K/V projection). E4B has no attn bias
@@ -3110,8 +3161,30 @@ public sealed unsafe class GpuForwardPass : IForwardPass
     {
         var info = _model.FindTensor(name)
             ?? throw new InvalidOperationException($"Missing tensor: {name}");
-        var data = _model.GetTensorData(info);
+        return UploadWeightData(info, _model.GetTensorData(info), info.ElementCount);
+    }
 
+    /// <summary>
+    /// Upload rows [<paramref name="rowStart"/>, +<paramref name="rowCount"/>) of a 2-D weight as its
+    /// own tensor. Used for fused tensors whose parts are contiguous row blocks — attn_qkv (Q, then
+    /// K, then V rows: GPT-NeoX / Phi-3 converters) and fused gate+up ffn_up (gate rows first) —
+    /// the same byte-offset split ForwardPass does on the CPU. Rows are whole quant blocks, so a
+    /// row range is a plain byte range.
+    /// </summary>
+    private Tensor UploadWeightRows(string name, long rowStart, long rowCount)
+    {
+        var info = _model.FindTensor(name)
+            ?? throw new InvalidOperationException($"Missing tensor: {name}");
+        long cols = info.Dimensions[0];
+        long bytesPerRow = info.DType == DType.Float32
+            ? cols * sizeof(float)
+            : cols / DTypeInfo.BlockSize(info.DType) * DTypeInfo.BytesPerBlock(info.DType);
+        var data = _model.GetTensorData(info).Slice((int)(rowStart * bytesPerRow), (int)(rowCount * bytesPerRow));
+        return UploadWeightData(info, data, rowCount * cols);
+    }
+
+    private Tensor UploadWeightData(GgufTensorInfo info, ReadOnlySpan<byte> data, long elementCount)
+    {
         Tensor result;
         if (info.DType == DType.Float32)
         {
@@ -3132,7 +3205,7 @@ public sealed unsafe class GpuForwardPass : IForwardPass
         else
         {
             // Other types: dequantize to F32 on CPU
-            int count = (int)info.ElementCount;
+            int count = (int)elementCount;
             var f32 = new float[count];
             Dequantize.ToFloat32(data, f32, info.DType, count);
             result = _gpu.Upload(f32, TensorShape.D1(count));
