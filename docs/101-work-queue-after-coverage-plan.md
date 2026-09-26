@@ -347,6 +347,17 @@ parity alone missed OLMoE).
     Now honored in both trunks. Parity: Maincoder 0.999855, Hunyuan-0.5B 0.999642, 0 flips.
     Hunyuan greedy is identical to llama-server (both degenerate on this prompt).
   - `PartialOffloadUnsupportedReason` also rejects it (Hybrid/CUDA never read it).
+- 2f Batched prefill for attention-bias models (Qwen2 family) — DONE 2026-09-26. The batched
+  Vulkan trunk excluded every QKV/output-bias model; its bias path was an unverified per-token
+  copy/add/copy loop. It is now one row-broadcast add per bias over all k rows.
+  - Qwen2.5-3B-Instruct Q4_K_M, 605-token wikitext prompt, `-g -1`, 3 runs each (CPU busy with
+    the perplexity audit throughout): prefill 10.0 / 10.3 / 10.1 -> 44.3 / 44.0 / 43.9 t/s (4.4x).
+  - Parity cos 0.997875 (1 near-tie flip). Greedy 24/24 identical to llama-server on a 29-token
+    prompt (batched path).
+  - VulkanBatchedPrefill / ChunkSplit / SpecBatchVerify / MtpBatchVerify tests mostly skip: their
+    checkpoints are not on this machine, so they are no evidence either way.
+  - Still per-token only: non-gated FFN / FFN bias / position table (GPT-2, StarCoder2, NeoX),
+    QK-norm-after-RoPE is batched.
 
 ### Step 1 — audit (2026-09-26)
 

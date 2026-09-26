@@ -32,6 +32,7 @@ public sealed class VulkanArchLogitParityTests : HeavyTestBase
     [InlineData("gemma-4-E4B-it-Q4_K_M.gguf")]
     [InlineData("gemma-3-4b-it-Q4_K_M.gguf")]
     [InlineData("qwen2.5-0.5b-instruct-q4_k_m.gguf")]       // attention bias
+    [InlineData("qwen2.5-3b-instruct-q4_k_m.gguf")]         // attention bias on the batched prefill trunk (all Q4_K/Q6_K)
     [InlineData("Qwen3-0.6B-Q8_0.gguf")]                     // QK-norm
     public void PrefillAndDecodeLogits_AgreeWithCpu(string file)
     {

@@ -1206,13 +1206,12 @@ public sealed unsafe class GpuForwardPass : IForwardPass
     private bool ComputeCanBatchedTrunk()
     {
         // MoE (mid-trunk router submit), gemma4 (per-layer dims), and TQ are excluded.
-        // QKV/output bias is excluded too: the batched trunk wires a bias gather/add/scatter
-        // path but no local Q4_K bias model (e.g. a Q4 Qwen2) exercises it yet, so keep bias
-        // models on the verified K-loop fallback until a parity test covers that path.
+        // QKV/output bias runs batched (row-broadcast add) since 2026-09-26, covered by
+        // VulkanArchLogitParityTests on Qwen2.5-3B.
         // L2 QK-norm (HeadNormPure post-RoPE, Llama-4) is excluded EXPLICITLY: the batched trunk
         // has no L2 path (it would silently skip the norm), and the Debug.Assert that guards it is
         // stripped in Release — so don't rely on the L2⟹Llama4⟹MoE coupling, exclude it directly.
-        if (_isMoE || _isGemma4 || _hasAttnBias || _hasAttnOutputBias || _hp.UseL2QkNorm) return false;
+        if (_isMoE || _isGemma4 || _hp.UseL2QkNorm) return false;
         // Non-gated FFN, FFN biases and the learned position table are wired in the per-token
         // trunk only.
         if (_gatelessFfn || _bFfnUp is not null || _gpuPosEmbd is not null) return false;
@@ -2666,22 +2665,11 @@ public sealed unsafe class GpuForwardPass : IForwardPass
 
             if (_hasAttnBias)
             {
-                // Bias is per-channel and identical across tokens; replicate per token via views.
-                for (int i = 0; i < k; i++)
-                {
-                    _gpu.RecordComputeCopyRegion(_q, 0, _qK, (long)i * qDim * f32, (long)qDim * f32);
-                    _gpu.RecordComputeCopyRegion(_k, 0, _kK, (long)i * kvDim * f32, (long)kvDim * f32);
-                    _gpu.RecordComputeCopyRegion(_v, 0, _vK, (long)i * kvDim * f32, (long)kvDim * f32);
-                    _gpu.RecordBarrier();
-                    _gpu.AddInPlace(_q, _bq![layer]);
-                    _gpu.AddInPlace(_k, _bk![layer]);
-                    _gpu.AddInPlace(_v, _bv![layer]);
-                    _gpu.RecordBarrier();
-                    _gpu.RecordComputeCopyRegion(_qK, (long)i * qDim * f32, _q, 0, (long)qDim * f32);
-                    _gpu.RecordComputeCopyRegion(_kK, (long)i * kvDim * f32, _k, 0, (long)kvDim * f32);
-                    _gpu.RecordComputeCopyRegion(_vK, (long)i * kvDim * f32, _v, 0, (long)kvDim * f32);
-                    _gpu.RecordBarrier();
-                }
+                // Per-channel bias, identical for every token: one broadcast add over all k rows.
+                _gpu.AddRowBroadcastInPlace(_qK, _bq![layer], k, qDim);
+                _gpu.AddRowBroadcastInPlace(_kK, _bk![layer], k, kvDim);
+                _gpu.AddRowBroadcastInPlace(_vK, _bv![layer], k, kvDim);
+                _gpu.RecordBarrier();
             }
 
             bool useRoPE = _hp.NoRopeLayerStep == 0
@@ -2849,15 +2837,8 @@ public sealed unsafe class GpuForwardPass : IForwardPass
 
             if (_hasAttnOutputBias)
             {
-                for (int i = 0; i < k; i++)
-                {
-                    _gpu.RecordComputeCopyRegion(_hidden, 0, _hiddenK, (long)i * embDim * f32, (long)embDim * f32);
-                    _gpu.RecordBarrier();
-                    _gpu.AddInPlace(_hidden, _bo![layer]);
-                    _gpu.RecordBarrier();
-                    _gpu.RecordComputeCopyRegion(_hiddenK, (long)i * embDim * f32, _hidden, 0, (long)embDim * f32);
-                    _gpu.RecordBarrier();
-                }
+                _gpu.AddRowBroadcastInPlace(_hiddenK, _bo![layer], k, embDim);
+                _gpu.RecordBarrier();
             }
 
             // Sandwich norm (Gemma 2/3, not gemma4-exclusive): post-attention RmsNorm over all k
