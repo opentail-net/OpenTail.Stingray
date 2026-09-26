@@ -1029,14 +1029,19 @@ public sealed class ImageCommand : Command<ImageCommand.Settings>
 
                 if (gpu is IVisionOpsBackend vBackend)
                 {
-                    condContext = ZeroPadEmbedding(umt5.EncodeGpu(tokenizer.Tokenize(s.Prompt!), vBackend));
-                    uncondContext = ZeroPadEmbedding(umt5.EncodeGpu(tokenizer.Tokenize(s.NegativePrompt ?? ""), vBackend));
+                    // One pass over the 24 streamed layers for both prompts (EncodePairGpu), not
+                    // two full EncodeGpu passes that each re-read and re-upload every layer.
+                    var (condRaw, uncondRaw) = umt5.EncodePairGpu(
+                        tokenizer.Tokenize(s.Prompt!), tokenizer.Tokenize(s.NegativePrompt ?? ""), vBackend);
+                    condContext = ZeroPadEmbedding(condRaw);
+                    uncondContext = ZeroPadEmbedding(uncondRaw);
                 }
                 else
                 {
                     condContext = ZeroPadEmbedding(umt5.Encode(tokenizer.Tokenize(s.Prompt!)));
                     uncondContext = ZeroPadEmbedding(umt5.Encode(tokenizer.Tokenize(s.NegativePrompt ?? "")));
                 }
+                Console.Error.WriteLine($"[WanPipeline Profile] UMT5 encode (cond+uncond) took {sw.ElapsedMilliseconds} ms");
             }
 
             using var pipeline = OpenTail.Stingray.Diffusion.Wan.WanPipeline.Load(modelPath, vaePath, gpu);

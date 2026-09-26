@@ -50,6 +50,45 @@ public sealed class UMT5Encoder : IDisposable
     // Perf (2026-09-11): same fix as ClipLEncoder/OpenClipGEncoder/T5Encoder -- _st.ReadF32 does a
     // real file.Seek+ReadExactly disk read under a lock on EVERY call, no caching.
     private readonly Dictionary<string, float[]> _weightCache = new(StringComparer.Ordinal);
+    /// <summary>
+    /// Token-embedding lookup that converts only the looked-up rows. token_embedding.weight is
+    /// [256384, 4096] — ~2 GB BF16 on disk, ~4 GB as F32 — and every encode path used to read and
+    /// convert the whole table to fetch a few dozen rows (twice per Wan generation on the GPU path,
+    /// and the CPU path then kept the 4 GB copy cached for the encoder's lifetime). Reads rows
+    /// straight from the memory-mapped safetensors file when the loader exposes it; otherwise
+    /// falls back to the full read.
+    /// </summary>
+    private unsafe float[] LookupTokenEmbeddings(int[] tokens)
+    {
+        var x = new float[tokens.Length * Dim];
+        if (_st is SafetensorsLoader sl
+            && sl.TryGetMappedPointer("token_embedding.weight", out byte* p, out long bytes, out string dt)
+            && dt is "BF16" or "F16" or "F32")
+        {
+            int elem = dt == "F32" ? 4 : 2;
+            for (int t = 0; t < tokens.Length; t++)
+            {
+                long off = (long)tokens[t] * Dim * elem;
+                if (off < 0 || off + (long)Dim * elem > bytes)
+                    throw new ArgumentOutOfRangeException(nameof(tokens), $"token id {tokens[t]} outside the embedding table");
+                byte* row = p + off;
+                var dst = x.AsSpan(t * Dim, Dim);
+                if (dt == "F32")
+                    new ReadOnlySpan<float>(row, Dim).CopyTo(dst);
+                else if (dt == "BF16")
+                    for (int d = 0; d < Dim; d++) dst[d] = BitConverter.Int32BitsToSingle(((ushort*)row)[d] << 16);
+                else
+                    for (int d = 0; d < Dim; d++) dst[d] = (float)((Half*)row)[d];
+            }
+            return x;
+        }
+
+        var tokEmb = _st.ReadF32("token_embedding.weight");
+        for (int t = 0; t < tokens.Length; t++)
+            tokEmb.AsSpan(tokens[t] * Dim, Dim).CopyTo(x.AsSpan(t * Dim, Dim));
+        return x;
+    }
+
     private float[] Wt(string name)
     {
         if (_weightCache.TryGetValue(name, out var w)) return w;
@@ -111,18 +150,8 @@ public sealed class UMT5Encoder : IDisposable
 
         using var ws = new UMT5GpuWorkspace(backend, seq, _relPosBiases, Dim, Heads, HeadDim, FfDim);
 
-        // 1. Host token embedding lookup & upload to ws.X.
-        // IMPORTANT: token_embedding.weight is [256384, 4096] ≈ 4 GB in FP32 -- read it directly
-        // (uncached) so it can be GC-collected immediately after the lookup loop.
-        var tokEmb = _st.ReadF32("token_embedding.weight");
-        var xHost = new float[seq * Dim];
-        for (int t = 0; t < seq; t++)
-        {
-            int off = tokens[t] * Dim;
-            tokEmb.AsSpan(off, Dim).CopyTo(xHost.AsSpan(t * Dim, Dim));
-        }
-        tokEmb = null!; // Allow immediate GC of the ~4 GB array
-        GC.Collect(2, GCCollectionMode.Aggressive, blocking: true);
+        // 1. Host token embedding lookup (only the needed rows) & upload to ws.X.
+        var xHost = LookupTokenEmbeddings(tokens);
 
         using (var xInit = backend.Upload(xHost, TensorShape.D2(seq, Dim), exact: true))
         {
@@ -200,23 +229,9 @@ public sealed class UMT5Encoder : IDisposable
         using var wsCond = new UMT5GpuWorkspace(backend, seqCond, relPosCond, Dim, Heads, HeadDim, FfDim);
         using var wsUncond = new UMT5GpuWorkspace(backend, seqUncond, relPosUncond, Dim, Heads, HeadDim, FfDim);
 
-        // 2. Token embedding lookup (read 4GB token_embedding.weight ONCE for both)
-        var tokEmb = _st.ReadF32("token_embedding.weight");
-        var xCondHost = new float[seqCond * Dim];
-        for (int t = 0; t < seqCond; t++)
-        {
-            int off = condTokens[t] * Dim;
-            tokEmb.AsSpan(off, Dim).CopyTo(xCondHost.AsSpan(t * Dim, Dim));
-        }
-
-        var xUncondHost = new float[seqUncond * Dim];
-        for (int t = 0; t < seqUncond; t++)
-        {
-            int off = uncondTokens[t] * Dim;
-            tokEmb.AsSpan(off, Dim).CopyTo(xUncondHost.AsSpan(t * Dim, Dim));
-        }
-        tokEmb = null!;
-        GC.Collect(2, GCCollectionMode.Aggressive, blocking: true);
+        // 2. Token embedding lookup (only the needed rows)
+        var xCondHost = LookupTokenEmbeddings(condTokens);
+        var xUncondHost = LookupTokenEmbeddings(uncondTokens);
 
         using (var xInitCond = backend.Upload(xCondHost, TensorShape.D2(seqCond, Dim), exact: true))
         {
@@ -311,14 +326,7 @@ public sealed class UMT5Encoder : IDisposable
     public float[] Encode(int[] tokens)
     {
         int seq = tokens.Length;
-        var tokEmb = Wt("token_embedding.weight");
-
-        var x = new float[seq * Dim];
-        for (int t = 0; t < seq; t++)
-        {
-            int off = tokens[t] * Dim;
-            tokEmb.AsSpan(off, Dim).CopyTo(x.AsSpan(t * Dim, Dim));
-        }
+        var x = LookupTokenEmbeddings(tokens);
 
         for (int i = 0; i < Layers; i++)
             x = EncoderBlock(x, seq, i);
