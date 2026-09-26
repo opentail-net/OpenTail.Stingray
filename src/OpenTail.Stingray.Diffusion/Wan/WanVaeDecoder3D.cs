@@ -182,6 +182,9 @@ public sealed class WanVaeDecoder3D : IDisposable
         var weight = GetWeight($"{weightPrefix}.weight", outCh * inCh * kt * kh * kw);
         var bias = GetWeight($"{weightPrefix}.bias", outCh);
 
+        if (PackedSgemmF32.IsSupported)
+            return CausalConv3DGemm(x, weight, bias, weightPrefix, inCh, outCh, t, h, w, kt, kh, kw);
+
         var output = new float[outCh * t * h * w];
         int padT = kt - 1;
         int padH = kh / 2;
@@ -265,6 +268,102 @@ public sealed class WanVaeDecoder3D : IDisposable
             }
         });
 
+        return output;
+    }
+
+    // Packed conv weights for PackedSgemmF32, per (conv, temporal-tap variant). Native memory,
+    // freed in Dispose.
+    private readonly Dictionary<string, nint> _packedConv = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// Causal 3D conv as im2col + packed GEMM: <c>out[s, oc] = col[s, K] . W[oc, K]^T + b</c>, then
+    /// transposed back to channel-major. Replaces a per-(oc, ic, tap) broadcast-multiply-add loop
+    /// that never reused a weight across more than one row. For a single frame (t = 1) only the
+    /// last temporal tap sees non-padding input (inT = outT - (kt-1) + dt), so K shrinks to
+    /// inCh*kh*kw; otherwise the full inCh*kt*kh*kw with the causal zeros written into the columns.
+    /// The spatial dimension is processed in chunks so the column buffer stays small.
+    /// </summary>
+    private unsafe float[] CausalConv3DGemm(float[] x, float[] weight, float[] bias, string prefix,
+        int inCh, int outCh, int t, int h, int w, int kt, int kh, int kw)
+    {
+        int padT = kt - 1, padH = kh / 2, padW = kw / 2;
+        int spatial = h * w;
+        bool lastTapOnly = t == 1;
+        int taps = lastTapOnly ? 1 : kt;
+        int k = inCh * taps * kh * kw;
+
+        string key = lastTapOnly ? prefix + "#t1" : prefix;
+        if (!_packedConv.TryGetValue(key, out nint packedPtr))
+        {
+            float[] wMat;
+            if (lastTapOnly && kt > 1)
+            {
+                wMat = new float[outCh * k];
+                int khw = kh * kw;
+                for (int oc = 0; oc < outCh; oc++)
+                    for (int ic = 0; ic < inCh; ic++)
+                        Array.Copy(weight, ((oc * inCh + ic) * kt + (kt - 1)) * khw, wMat, (oc * inCh + ic) * khw, khw);
+            }
+            else
+            {
+                wMat = weight; // already [oc][ic][dt][dh][dw] = [outCh, k] row-major
+            }
+            fixed (float* wp = wMat)
+                packedPtr = (nint)PackedSgemmF32.PackWeights(wp, outCh, k);
+            _packedConv[key] = packedPtr;
+        }
+
+        var output = new float[outCh * t * spatial];
+        const int ChunkRows = 2048;
+        var col = new float[(long)Math.Min(ChunkRows, spatial) * k];
+        var outT_s = new float[(long)Math.Min(ChunkRows, spatial) * outCh];
+
+        fixed (float* xp = x, colp = col, op = outT_s, bp = bias, outp = output)
+        {
+            float* xpl = xp, colpl = colp, opl = op, outpl = outp;
+            for (int outT = 0; outT < t; outT++)
+            {
+                for (int s0 = 0; s0 < spatial; s0 += ChunkRows)
+                {
+                    int m = Math.Min(ChunkRows, spatial - s0);
+                    // im2col: row = output position, column = (ic, dt, dh, dw)
+                    Parallel.For(0, m, i =>
+                    {
+                        int s = s0 + i;
+                        int oh = s / w, ow = s % w;
+                        float* crow = colpl + (long)i * k;
+                        int c = 0;
+                        for (int ic = 0; ic < inCh; ic++)
+                            for (int ti = 0; ti < taps; ti++)
+                            {
+                                int dt = lastTapOnly ? kt - 1 : ti;
+                                int inT = outT - padT + dt;
+                                bool tOk = inT >= 0 && inT < t;
+                                float* frame = xpl + (long)(ic * t + (tOk ? inT : 0)) * spatial;
+                                for (int dh = 0; dh < kh; dh++)
+                                {
+                                    int ih = oh + dh - padH;
+                                    bool hOk = tOk && ih >= 0 && ih < h;
+                                    for (int dw = 0; dw < kw; dw++)
+                                    {
+                                        int iw = ow + dw - padW;
+                                        crow[c++] = hOk && iw >= 0 && iw < w ? frame[ih * w + iw] : 0f;
+                                    }
+                                }
+                            }
+                    });
+
+                    PackedSgemmF32.Gemm(opl, colpl, (float*)packedPtr, bp, m, outCh, k);
+
+                    // [m, outCh] -> output[oc, outT, s]
+                    Parallel.For(0, outCh, oc =>
+                    {
+                        float* dst = outpl + (long)(oc * t + outT) * spatial + s0;
+                        for (int i = 0; i < m; i++) dst[i] = opl[(long)i * outCh + oc];
+                    });
+                }
+            }
+        }
         return output;
     }
 
@@ -487,6 +586,9 @@ public sealed class WanVaeDecoder3D : IDisposable
         {
             _disposed = true;
             _weightCache.Clear();
+            foreach (var p in _packedConv.Values)
+                unsafe { System.Runtime.InteropServices.NativeMemory.AlignedFree((void*)p); }
+            _packedConv.Clear();
         }
     }
 }
