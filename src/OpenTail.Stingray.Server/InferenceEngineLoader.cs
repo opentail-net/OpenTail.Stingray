@@ -786,6 +786,16 @@ public static class InferenceEngineLoader
                 return (gfwd, BatchingSupported: false, GpuWeightBytesExact: null); // full offload — EstimatedModelBytes is already exact
             }
 
+            if (hp.LayerHeadDim is not null && !turboQuant)
+            {
+                // Gemma 4 -g N: GPU layers [0, N) + CPU layers [N, L), N capped so shared-KV
+                // source layers stay on the CPU (HybridForwardPass refuses Gemma 4).
+                int split = Math.Min(gpuLayers, Gemma4VulkanSplitForwardPass.MaxGpuLayers(hp));
+                var sfwd = new Gemma4VulkanSplitForwardPass(model, vulkan, hp, split, ctxSize);
+                owned.Add(sfwd);
+                return (sfwd, BatchingSupported: false, GpuWeightBytesExact: null);
+            }
+
             _ = ResolveTq(TqSupport.VulkanReason);
             var planForHybrid = TierPlanner.Plan(model, hp, hwProfile, turboQuant, requestedCtxSize: ctxSize,
                 pinGpuLayers: gpuLayers);

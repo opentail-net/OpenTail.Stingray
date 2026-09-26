@@ -495,8 +495,9 @@ parity alone missed OLMoE).
     all 18 architectures after the GpuForwardPass change.
   - iGPU decode: -g 22 9.5 t/s, -g 10 7.9, -g 0 9.2, -g -1 9.3. The split exists for GPUs too
     small for the whole model, not for speed here.
-  - Not done: server loader routing; the per-token loop is also used for prefill (no batched split
-    prefill).
+  - Server: Vulkan -g N on Gemma 4 routes here. Verified with STINGRAY_N_GPU_LAYERS=10: 10 layers
+    uploaded, chat answer "Paris".
+  - Not done: batched split prefill (the per-token loop serves prefill).
 
 ### Step 1 — audit (2026-09-26)
 
