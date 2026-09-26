@@ -65,6 +65,16 @@ public static class ModelCompatibility
         // token 14 with a different top-5, so the YaRN wiring is load-bearing. See
         // docs/101-work-queue-after-coverage-plan.md.
         "gpt-oss",
+        // deepseek2 — admitted 2026-09-26 (CPU only; GPU backends have no MLA). docs/done/032's
+        // "trained router margins" conclusion was wrong: two plain bugs made it emit garbage from
+        // token 0. (1) The shared expert is n_shared x expert dim wide (2 x 1408 = 2816) but ran at
+        // 1408 (ModelHyperparams.SharedExpertIntermediateDim). (2) MLA decode reordered Q
+        // [nope, rope] -> [rope, nope] IN PLACE, clobbering nope channels (decode diverged from
+        // prefill from the 2nd position; now via _mlaQRaw). Receipt vs llama-server:
+        // DeepSeek-V2-Lite-Chat Q2_K, templated "The capital of France is", 16/16 exact
+        // (DeepSeek2GreedyParityTests); Q8_0 on a 195-token prompt: first-token top-5 in the same
+        // order with gaps within 0.17 logits, 14/24 exact then a flip at a 0.15-logit near-tie.
+        "deepseek2",
         // granite — admitted 2026-08-08 on FULL 24-token exact greedy match against llama.cpp
         // (stronger than the olmoe receipt above, which only reaches a 2-token prefix). Needs a
         // "scale trio" + attention-scale override beyond the plain llama trunk, read from GGUF
@@ -656,27 +666,6 @@ public static class ModelCompatibility
         // test to catch a mistake.
         "minicpm",
     };
-    // deepseek2 — NOT admitted, closed for now. A CPU-only MLA implementation exists in
-    // ForwardPass.cs (compressed-latent K/V, YaRN RoPE, kq_scale/mscale correction, per-layer
-    // dense/MoE dispatch) and loads/generates with zero crashes against real GGUFs
-    // (DeepSeek-V2-Lite-Chat, Q2_K and native Q8_0), but produces numerically wrong output
-    // ("The capital of France is" does not continue with "Paris", while the same GGUFs via a
-    // reference llama.cpp build do). Four investigation rounds found and fixed several real,
-    // independently-useful bugs along the way (YaRN/kq_scale formula, expert_weights_norm/scale
-    // GGUF handling, RMSNorm/softmax/SiLU ggml-fidelity fixes, and a genuine Q8_0
-    // activation-quantization gap in MatVecQ8_0) but did not find a discrete root cause. The
-    // decisive, twice-replicated finding (Q2_K and native Q8_0, both measured through
-    // numerically-sound kernels) is that this checkpoint's MoE router has chronically near-tied
-    // top-6-of-64 routing decisions (median boundary margin ~0.002), a property of its trained
-    // weights that any tiny remaining numerical difference from ggml can flip, compounding
-    // through 27 layers into a fully sign-flipped residual stream by ~layer 22. Decision
-    // (2026-08-28): stop chasing this checkpoint further. Full writeup, including what was
-    // ruled out and what's left untried (a larger DeepSeek-V2/V3 checkpoint, full graph-wide
-    // SIMD reduction-order matching), is in
-    // docs/done/032-deepseek2-mla-yarn-moe-routing-investigation.md. Do not re-admit without
-    // either a passing greedy-parity receipt or an explicit decision to ship known-wrong behind
-    // --allow-unverified-arch. GPU backends have no MLA support at all — CPU-only was the
-    // deliberately agreed scope.
     //
     // deepseek4 — NOT admitted. DeepSeek4ForwardPass (DeepSeek4ForwardPass.cs) is a structurally
     // complete ALPHA/UNTESTED IForwardPass covering all three of V4's attention variants (raw,

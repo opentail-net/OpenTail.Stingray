@@ -555,6 +555,13 @@ public static class InferenceEngineLoader
             return TqQuantizer.LloydMax;
         }
 
+        // MLA (deepseek2) has no GPU forward pass: the GPU passes expect plain wk/wv tensors.
+        if (hp.KvLoraRank > 0 && nGpuLayers != 0)
+        {
+            Console.Error.WriteLine("[InferenceEngineLoader] MLA models (deepseek2) have no GPU forward pass yet; running on CPU.");
+            nGpuLayers = 0;
+        }
+
         // Resolve "auto" first so the rest of the method can treat backend as concrete.
         if (nGpuLayers != 0 && backend == ServerBackend.Auto)
         {

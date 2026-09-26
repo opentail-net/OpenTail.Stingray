@@ -586,10 +586,12 @@ public sealed unsafe partial class ForwardPass
         int qDimMla = _numHeads * _headDim;
 
         // Q: standard per-head projection, ggml [nope, rope] order -> reorder to [rope, nope].
-        FusedMatVec(_q, _wq[layer], normBuf, qDimMla, _embDim);
+        // Projected into _mlaQRaw, NOT _q: callers pass q == _q, and reordering in place overwrote
+        // each head's nope channels before copying them.
+        FusedMatVec(_mlaQRaw, _wq[layer], normBuf, qDimMla, _embDim);
         for (int h = 0; h < _numHeads; h++)
         {
-            float* src = _q + (long)h * _headDim;      // [nope(_mlaNopeDim), rope(_ropeDim)]
+            float* src = _mlaQRaw + (long)h * _headDim; // [nope(_mlaNopeDim), rope(_ropeDim)]
             float* dst = q + (long)h * _maxHeadDim;     // [rope(_ropeDim), nope(_mlaNopeDim)]
             Copy(dst, src + _mlaNopeDim, _ropeDim);
             Copy(dst + _ropeDim, src, _mlaNopeDim);

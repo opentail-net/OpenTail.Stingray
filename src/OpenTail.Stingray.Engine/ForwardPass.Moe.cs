@@ -116,13 +116,13 @@ public sealed unsafe partial class ForwardPass
         }
 
         // Step 2: Shared expert (runs on every token if present)
-        // Shared expert uses the same dim as routed experts (ExpertIntermediateDim)
+        // Shared expert width is its own tensor's (n_shared x expert dim), not ExpertIntermediateDim.
         if (_hp.HasSharedExpert)
         {
             SimdKernels.MatVecDual(_expertGate, _wGateShexp![layer].DataPtr, _expertUp, _wUpShexp![layer].DataPtr,
-                _normBuf, expertDim, _embDim, _wGateShexp[layer].DType, _wUpShexp[layer].DType);
-            SimdKernels.SiLuMul(_expertGate, _expertUp, expertDim);
-            FusedMatVec(_sharedOut, _wDownShexp![layer], _expertGate, _embDim, expertDim);
+                _normBuf, _sharedExpertDim, _embDim, _wGateShexp[layer].DType, _wUpShexp[layer].DType);
+            SimdKernels.SiLuMul(_expertGate, _expertUp, _sharedExpertDim);
+            FusedMatVec(_sharedOut, _wDownShexp![layer], _expertGate, _embDim, _sharedExpertDim);
         }
 
         // Step 3: Selected expert(s) — 2-sweep folded execution when every expert dtype has a
@@ -414,7 +414,8 @@ public sealed unsafe partial class ForwardPass
 
         int numExperts = _hp.NumExperts;
         int na = _hp.NumActiveExperts;
-        int expertDim = _hp.ExpertIntermediateDim;
+        // Gate/up scratch also serves the shared expert, which can be wider than one routed expert.
+        int expertDim = Math.Max(_hp.ExpertIntermediateDim, _sharedExpertDim);
         long pairs = (long)n * na;
 
         _moeBatchRouter   = (float*)NativeMemory.Alloc((nuint)((long)n * numExperts * sizeof(float)));
@@ -603,10 +604,11 @@ public sealed unsafe partial class ForwardPass
         // ── 5. Shared expert: dense over every token, so an ordinary batched FFN ───────────
         if (_hp.HasSharedExpert)
         {
-            MatMulBatchedCached(_moeBatchGate, in _wGateShexp![layer], batchNorm, n, expertDim, _embDim);
-            MatMulBatchedCached(_moeBatchUp, in _wUpShexp![layer], batchNorm, n, expertDim, _embDim);
-            SimdKernels.SiLuMul(_moeBatchGate, _moeBatchUp, n * expertDim);
-            MatMulBatchedCached(_moeBatchDown, in _wDownShexp![layer], _moeBatchGate, n, _embDim, expertDim);
+            int sd = _sharedExpertDim;
+            MatMulBatchedCached(_moeBatchGate, in _wGateShexp![layer], batchNorm, n, sd, _embDim);
+            MatMulBatchedCached(_moeBatchUp, in _wUpShexp![layer], batchNorm, n, sd, _embDim);
+            SimdKernels.SiLuMul(_moeBatchGate, _moeBatchUp, n * sd);
+            MatMulBatchedCached(_moeBatchDown, in _wDownShexp![layer], _moeBatchGate, n, _embDim, sd);
             for (int t = 0; t < n; t++)
                 SimdKernels.AddInPlace(batchOut + (long)t * _embDim,
                     _moeBatchDown + (long)t * _embDim, _embDim);

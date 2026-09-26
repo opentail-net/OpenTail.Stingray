@@ -33,6 +33,26 @@ Progress notes go under each item with dates and measured numbers.
     top-k renorm, LongRoPE factors (chosen by CONTEXT SIZE like llama.cpp, not per position as
     docs/100 said) + rope.scaling.attn_factor 1.19024. 24/24 exact at -c 4096, 32/32 on a 214-token
     prompt at -c 8192. Phi-3.5-MoE Q3_K_M lives at K:\_other_models (F: is full).
+  - DONE Phase 3 (93332cf, 69141da): EXAONE 4.5 33B. CPU: 64-layer SWA 3:1 + NoPE global layers
+    (was missing entirely; the 1.2B receipt never exercised it), PrefillCore no-pre-norm guard (was
+    crashing). Vulkan hybrid: optional pre-norm, post-norms, SWA window, RoPE-only-on-SWA,
+    rope_freqs. 12/12 + 16/16 exact vs llama-server on CPU and -g 16. Vision: adapter markers were
+    `<image>` (not in vocab) -> `<vision>`/`<|image_pad|>`; no structured-message work needed.
+    iGPU: hybrid decode = CPU (1.8-1.9 t/s); hybrid prefill 1.8 vs CPU batched 10.3 t/s.
+  - DONE Phase 4 (DeepSeek V2-Lite), admitted. Second bug: MLA decode reordered Q [nope,rope] ->
+    [rope,nope] IN PLACE (q == _q), clobbering nope channels; decode diverged from prefill from the
+    2nd position (n=1 matched because attention over one position returns V regardless of Q).
+    Fixed via _mlaQRaw. Q2_K 16/16 exact; Q8_0 195-token prompt top-5 same order within 0.17
+    logits, 14/24 exact then a 0.15-logit near-tie. -g falls back to CPU (no MLA on GPU).
+    COVERAGE PLAN (docs/100) COMPLETE: all four phases done 2026-09-26.
+  - (history) Phase 4 first finding: a gross bug — the shared expert is
+    n_shared x expert dim wide (2 x 1408 = 2816) but every CPU path ran it at 1408 (half the rows,
+    wrong down-proj stride). Fixed via ModelHyperparams.SharedExpertIntermediateDim (ForwardPass,
+    HybridForwardPass/CudaHybridForwardPass CPU layers). First token now " Paris" (was "lum"/
+    zero-width garbage); still diverges at token 2 on Q2_K (ours " (" 25.66 vs " is" 25.52; llama
+    " is" at logprob -0.33, " (" not in its top 5) — investigating. The same bug likely hit
+    qwen2moe (shared 5632 vs expert 1408). GPU shared-expert paths size by buffer length: audit
+    in the GPU plan.
   - Pre-existing failures (identical on clean HEAD 49cc225, not caused by this work):
     ForwardPass.Fast 14 fails — MatMulBatchedEquivalenceTests.Q4K_* (e.g. batch=1 64x256 index 0
     batched -36.21 vs ref -35.98), BatchedMatVecTierTests.TieredFallback_DoesNotMisattributeSlots,

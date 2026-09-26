@@ -225,8 +225,11 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
     private readonly TensorRef[]? _wGateExps, _wUpExps, _wDownExps;   // packed expert weights per layer
     private readonly float* _routerLogits;  // [numExperts] scratch
     private readonly float* _sharedOut;     // [embDim] shared expert output
-    private readonly float* _expertGate;    // [expertIntermDim] single-expert gate scratch (shared-expert / sequential decode fallback)
-    private readonly float* _expertUp;      // [expertIntermDim] single-expert up scratch
+    // Shared-expert FFN width (ModelHyperparams.SharedExpertIntermediateDim): n_shared x expert dim
+    // (DeepSeek-V2-Lite: 2 x 1408 = 2816), NOT ExpertIntermediateDim. 0 without a shared expert.
+    private readonly int _sharedExpertDim;
+    private readonly float* _expertGate;    // [max(expertIntermDim, _sharedExpertDim)] gate scratch (shared expert / sequential decode fallback)
+    private readonly float* _expertUp;      // [max(expertIntermDim, _sharedExpertDim)] up scratch
     // Folded-decode scratch: holds ALL numActive experts' gate/up results contiguously
     // so the Phase-A gate+up Parallel.For and the Phase-B down Parallel.For can run
     // across all k experts in 2 sweeps rather than k sequential per-expert passes.
@@ -286,6 +289,10 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
     private readonly int _mlaVDim;           // per-head V width (attention.value_length)
     private readonly float* _mlaKvCmprPe;    // scratch [kvLoraRank + ropeDim]: compressed latent + shared rope key
     private readonly float* _mlaDecompressed; // scratch [numHeads * (nopeDim + vDim)]: decompressed k_nope+v, per head
+    // scratch [numHeads * headDim]: raw ggml-order [nope, rope] Q projection, reordered into _q.
+    // MUST be separate from _q: an in-place reorder clobbers each head's nope channels before
+    // they are copied (decode diverged from prefill from the 2nd position on).
+    private readonly float* _mlaQRaw;
     private readonly float* _mlaAttnOutCompact; // scratch [numHeads * vDim]: attention output with the zero-pad tail dropped, ready for _wo
 
     /// <summary>
@@ -627,6 +634,7 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
             _wKvB = new TensorRef[L];
             _mlaKvCmprPe = Alloc(_mlaKvLoraRank + _ropeDim);
             _mlaDecompressed = Alloc(_numHeads * (_mlaNopeDim + _mlaVDim));
+            _mlaQRaw = Alloc(_numHeads * _headDim);
             _mlaAttnOutCompact = Alloc(_numHeads * _mlaVDim);
         }
 
@@ -641,8 +649,10 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
             }
             _routerLogits = Alloc(hp.NumExperts);
             _sharedOut = Alloc(_embDim);
-            _expertGate    = Alloc(hp.ExpertIntermediateDim);
-            _expertUp      = Alloc(hp.ExpertIntermediateDim);
+            _sharedExpertDim = hp.SharedExpertIntermediateDim;
+            int expertScratch = Math.Max(hp.ExpertIntermediateDim, _sharedExpertDim);
+            _expertGate    = Alloc(expertScratch);
+            _expertUp      = Alloc(expertScratch);
             _expertGateAll = Alloc(hp.NumActiveExperts * hp.ExpertIntermediateDim);
             _expertUpAll   = Alloc(hp.NumActiveExperts * hp.ExpertIntermediateDim);
             _moeDownTemp   = Alloc(_embDim);

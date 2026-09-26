@@ -1019,6 +1019,13 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         // IForwardPass handle for MtpDecoder integration (issue #32). Captured when the
         // chosen forward pass ships an MTP head. The actual MTP gating happens later in
         // RunSinglePrompt / RunInteractive based on sp.SpecType.
+        // MLA (deepseek2) has no GPU forward pass: the GPU passes expect plain wk/wv tensors.
+        if (hp.KvLoraRank > 0 && effNGpuLayers != 0)
+        {
+            AnsiConsole.MarkupLine("[yellow]Note:[/] MLA models (deepseek2) have no GPU forward pass yet; running on CPU.");
+            effNGpuLayers = 0;
+        }
+
         if (s_arch == "gpt-oss")
         {
             if (settings.TurboQuant || settings.DraftModelPath is not null || settings.DraftLookup)

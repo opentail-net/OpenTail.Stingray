@@ -174,6 +174,11 @@ public sealed record ModelHyperparams
     /// <summary>FFN dimension per expert (may differ from IntermediateDim which is the shared FFN dim).</summary>
     public int ExpertIntermediateDim { get; init; }
 
+    /// <summary>Shared-expert FFN width (rows of ffn_gate_shexp): n_shared_experts x expert dim for
+    /// DeepSeek-V2 (2 x 1408 = 2816 on V2-Lite), shared_expert_intermediate_size for Qwen2-MoE —
+    /// NOT <see cref="ExpertIntermediateDim"/>. 0 without a shared expert.</summary>
+    public int SharedExpertIntermediateDim { get; init; }
+
     /// <summary>Whether the model has a shared expert that runs on every token (e.g. Llama 4, DeepSeek-V2).</summary>
     public bool HasSharedExpert { get; init; }
 
@@ -483,6 +488,14 @@ public sealed record ModelHyperparams
             && (GetInt(metadata, $"{arch}.expert_shared_count") > 0
                 || (tensorSource?.FindTensor("blk.0.ffn_gate_shexp.weight") is not null)
                 || (tensorSource?.FindTensor("blk.1.ffn_gate_shexp.weight") is not null));
+        int sharedExpertDim = 0;
+        if (hasSharedExpert)
+            foreach (var l in new[] { 0, 1, GetInt(metadata, $"{arch}.leading_dense_block_count", 0) })
+                if (tensorSource?.FindTensor($"blk.{l}.ffn_gate_shexp.weight") is { } shx)
+                {
+                    sharedExpertDim = (int)shx.Dimensions[1];
+                    break;
+                }
 
         // NoPE: every Nth layer skips RoPE entirely. Hardcoded in llama.cpp rather than stored in
         // GGUF metadata, for both architectures that use it — Llama-4 (`llama.cpp` sets
@@ -1054,6 +1067,7 @@ public sealed record ModelHyperparams
             ExpertIntermediateDim = GetInt(metadata, $"{arch}.expert_feed_forward_length",
                                        GetInt(metadata, $"{arch}.feed_forward_length")),
             HasSharedExpert = hasSharedExpert,
+            SharedExpertIntermediateDim = sharedExpertDim,
             NumSharedExperts = GetInt(metadata, $"{arch}.expert_shared_count", hasSharedExpert ? 1 : 0),
             LeadingDenseBlockCount = GetInt(metadata, $"{arch}.leading_dense_block_count", 0),
             KvLoraRank = GetInt(metadata, $"{arch}.attention.kv_lora_rank", 0),

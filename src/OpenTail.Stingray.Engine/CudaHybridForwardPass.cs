@@ -806,8 +806,8 @@ public sealed unsafe class CudaHybridForwardPass : IForwardPass
         _cpuAttnScores = Alloc(_numHeads * _maxSeqLen);
         _cpuRouterLogits = _isMoE ? Alloc(hp.NumExperts) : null;
         _cpuSharedOut = _isMoE && _hasSharedExpert ? Alloc(_embDim) : null;
-        _cpuExpertGate = _isMoE ? Alloc(_expertDim) : null;
-        _cpuExpertUp = _isMoE ? Alloc(_expertDim) : null;
+        _cpuExpertGate = _isMoE ? Alloc(Math.Max(_expertDim, hp.SharedExpertIntermediateDim)) : null;
+        _cpuExpertUp = _isMoE ? Alloc(Math.Max(_expertDim, hp.SharedExpertIntermediateDim)) : null;
         _cpuMoeDownTemp = _isMoE ? Alloc(_embDim) : null;
 
         // Precompute RoPE cos/sin tables for CPU layers. Gemma 4 builds two: the
@@ -3215,10 +3215,10 @@ public sealed unsafe class CudaHybridForwardPass : IForwardPass
     {
         if (_hasSharedExpert)
         {
-            SimdKernels.MatVec(_cpuExpertGate, _cpuWGateShexp![ci].DataPtr, _cpuNormBuf, _expertDim, _embDim, _cpuWGateShexp[ci].DType);
-            SimdKernels.MatVec(_cpuExpertUp,   _cpuWUpShexp![ci].DataPtr,   _cpuNormBuf, _expertDim, _embDim, _cpuWUpShexp[ci].DType);
-            SimdKernels.SiLuMul(_cpuExpertGate, _cpuExpertUp, _expertDim);
-            SimdKernels.MatVec(_cpuSharedOut, _cpuWDownShexp![ci].DataPtr, _cpuExpertGate, _embDim, _expertDim, _cpuWDownShexp[ci].DType);
+            SimdKernels.MatVec(_cpuExpertGate, _cpuWGateShexp![ci].DataPtr, _cpuNormBuf, _hp.SharedExpertIntermediateDim, _embDim, _cpuWGateShexp[ci].DType);
+            SimdKernels.MatVec(_cpuExpertUp,   _cpuWUpShexp![ci].DataPtr,   _cpuNormBuf, _hp.SharedExpertIntermediateDim, _embDim, _cpuWUpShexp[ci].DType);
+            SimdKernels.SiLuMul(_cpuExpertGate, _cpuExpertUp, _hp.SharedExpertIntermediateDim);
+            SimdKernels.MatVec(_cpuSharedOut, _cpuWDownShexp![ci].DataPtr, _cpuExpertGate, _embDim, _hp.SharedExpertIntermediateDim, _cpuWDownShexp[ci].DType);
         }
         CpuMoeRouted(_cpuWGateInp![ci], _cpuWGateExps![ci], _cpuWUpExps![ci], _cpuWDownExps![ci], _cpuNormBuf, _cpuHidden);
         if (_hasSharedExpert)

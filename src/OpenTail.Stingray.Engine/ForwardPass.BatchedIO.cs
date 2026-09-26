@@ -733,6 +733,11 @@ public sealed unsafe partial class ForwardPass
             if (_bOutputNorm != null) NativeMemory.Free(_bOutputNorm);
         }
         if (_bOutput != null) NativeMemory.Free(_bOutput);
+        if (_mlaQRaw != null)
+        {
+            NativeMemory.Free(_mlaKvCmprPe); NativeMemory.Free(_mlaDecompressed);
+            NativeMemory.Free(_mlaQRaw); NativeMemory.Free(_mlaAttnOutCompact);
+        }
         if (_hasFfnBias)
         {
             for (int i = 0; i < _hp.NumLayers; i++)
