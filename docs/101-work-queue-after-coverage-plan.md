@@ -53,13 +53,13 @@ Progress notes go under each item with dates and measured numbers.
     " is" at logprob -0.33, " (" not in its top 5) — investigating. The same bug likely hit
     qwen2moe (shared 5632 vs expert 1408). GPU shared-expert paths size by buffer length: audit
     in the GPU plan.
-  - Pre-existing failures (identical on clean HEAD 49cc225, not caused by this work):
+  - FIXED (b1019ee) — were pre-existing failures (identical on clean HEAD 49cc225
     ForwardPass.Fast 14 fails — MatMulBatchedEquivalenceTests.Q4K_* (e.g. batch=1 64x256 index 0
     batched -36.21 vs ref -35.98), BatchedMatVecTierTests.TieredFallback_DoesNotMisattributeSlots,
     MatMulBatchedQ8EquivalenceTests.GateOff_MatMulBatchedNeverCallsTheQ8Path; heavy
     MoeBatchedPrefillParityTests.BatchedMoePrefill_MatchesSequential_F32 and
     DecodePathParityTests.SingleSequenceBatchForwardMulti_VsPlainForward_ForTheSamePosition.
-    The Q4K batched ones sit right in the SmolLM2 Q4_K GEMM target below — investigate there.
+    Root causes: 8195547 conflated MatMulBatched's allowQ8 with activation quantization (new floatActivations param), and f14b954's folded MoE used F32 activations + non-FMA accumulation. All green now.
   - Test-harness trick (no admin needed): `models/_models` is a symlink to `F:\_models`; tests that
     only search `<ancestor>/models/<file>` can be pointed at it by running the test exe through a
     directory junction in a scratch dir whose `models` is a junction to `F:\_models`.
@@ -71,6 +71,20 @@ Progress notes go under each item with dates and measured numbers.
 not KV/attention/length. llama.cpp's edge: `block_q4_Kx8` 8-row interleave + integer-domain scale
 folding. Stingray's Q4Kx8 repack moved 0.33x→0.38x only. A better small-batch Q4_K GEMM benefits
 many models. Learn from the layout, don't copy the implementation.
+
+**Progress 2026-09-26:** the league's 0.24-0.27x was stale (OT ~50 t/s then). Measured now,
+991-token raw prompt, CPU: OT 160-166 t/s vs llama-bench pp1024 260.6 t/s (-t 16) / 208.7 (-t 8).
+- DONE (f801243, +15%): MatMulBatchedDualCached sent the FFN gate/up (largest Q4_K GEMMs) to the
+  F32 dequant cache + BLAS whenever the cache was on (CLI default), bypassing the repacked Path-2
+  GEMM; Q6_K likewise preferred F32 BLAS over the int8 tier. Now 183-187 t/s (~0.71x of llama's
+  best thread count; ~0.81x at equal 8 threads). .NET thread sweep: 16 > 12 > 8.
+- Profile after (5.2 s trunk): FFN 64.5%, QKV 19.5%, out-proj 5.7%, attention 5.0%, RoPE 2.8%
+  (148 ms — scalar per-token rotation, vectorizable), RmsNorm 1%.
+- NEXT LEAD (kernel): RepackedGemmPath2 keeps 32 shuffled RHS vectors (sp1/sp2 x 16) live across
+  the per-row-group `rp` loop — twice the 16 YMM registers. Check RyuJIT's spill code (JitDisasm)
+  against the C original; consider precomputing the shuffled RHS into a 1 KB L1 stack buffer per
+  (b, sb) so the rp loop uses memory operands deliberately. Also: attn_v/ffn_down Q6_K go through
+  the generic int8 tier, not a repacked GEMM (a Q6_K x8 repack would cover 1/6 of FFN flops).
 
 ### Wan2.1 GPU (Vulkan)
 End-to-end ~122s vs C++ Vulkan 60.3s. Stages: DiT 79.4 vs 45.2s (1.76x), UMT5 38.7 vs 13.0s
