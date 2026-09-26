@@ -2819,7 +2819,10 @@ public sealed unsafe class GpuForwardPass : IForwardPass
             _gpu.MatMulBatched(_ffnGateK, _wGate[layer], _normK, k, WeightDType(_wGate[layer]), allowInt8);
             _gpu.MatMulBatched(_ffnUpK, _wUp[layer], _normK, k, WeightDType(_wUp[layer]), allowInt8);
             _gpu.RecordBarrier();
-            _gpu.SiLuMul(_ffnGateK, _ffnUpK); // [K*ffnDim] elementwise, K-agnostic
+            if (_hp.FfnActivation == FfnActivation.GeluApprox)   // [K*ffnDim] elementwise, K-agnostic
+                _gpu.GeluTanhMul(_ffnGateK, _ffnUpK);
+            else
+                _gpu.SiLuMul(_ffnGateK, _ffnUpK);
             _gpu.RecordBarrier();
             _gpu.MatMulBatched(_hiddenK, _wDown[layer], _ffnGateK, k, WeightDType(_wDown[layer]), allowInt8);
             _gpu.RecordBarrier();
@@ -3105,7 +3108,11 @@ public sealed unsafe class GpuForwardPass : IForwardPass
         GpuMatMul(_ffnUp, _wUp[layer], _normBuf);
         _gpu.RecordBarrier();
 
-        _gpu.SiLuMul(_ffnGate, _ffnUp);
+        // SwiGLU, or GEGLU (tanh GELU) for the Gemma family — ForwardPass.DenseFfn's choice.
+        if (_hp.FfnActivation == FfnActivation.GeluApprox)
+            _gpu.GeluTanhMul(_ffnGate, _ffnUp);
+        else
+            _gpu.SiLuMul(_ffnGate, _ffnUp);
         _gpu.RecordBarrier();
 
         GpuMatMul(_hidden, _wDown[layer], _ffnGate);

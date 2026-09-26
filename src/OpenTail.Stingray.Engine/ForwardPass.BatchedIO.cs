@@ -369,8 +369,13 @@ public sealed unsafe partial class ForwardPass
                     SimdKernels.MatMulBatched(batchFfnUp, _wUp[layer].DataPtr, batchNorm,
                         N, _intermDim, _embDim, _wUp[layer].DType);
                     for (int n = 0; n < N; n++)
-                        SimdKernels.SiLuMul(batchFfnGate + (long)n * _intermDim,
-                            batchFfnUp + (long)n * _intermDim, _intermDim);
+                    {
+                        float* g = batchFfnGate + (long)n * _intermDim, u = batchFfnUp + (long)n * _intermDim;
+                        if (_hp.FfnActivation == FfnActivation.GeluApprox)
+                            SimdKernels.GeluTanhMul(g, u, g, _intermDim);
+                        else
+                            SimdKernels.SiLuMul(g, u, _intermDim);
+                    }
                     SimdKernels.MatMulBatched(batchNorm, _wDown[layer].DataPtr, batchFfnGate,
                         N, _embDim, _intermDim, _wDown[layer].DType);
                     for (int n = 0; n < N; n++)
@@ -601,8 +606,13 @@ public sealed unsafe partial class ForwardPass
                     MatMulBatchedCached(batchFfnGate, in _wGate[layer], batchNorm, N, _intermDim, _embDim, allowBlas: false);
                     MatMulBatchedCached(batchFfnUp, in _wUp[layer], batchNorm, N, _intermDim, _embDim, allowBlas: false);
                     for (int n = 0; n < N; n++)
-                        SimdKernels.SiLuMul(batchFfnGate + (long)n * _intermDim,
-                            batchFfnUp + (long)n * _intermDim, _intermDim);
+                    {
+                        float* g = batchFfnGate + (long)n * _intermDim, u = batchFfnUp + (long)n * _intermDim;
+                        if (_hp.FfnActivation == FfnActivation.GeluApprox)
+                            SimdKernels.GeluTanhMul(g, u, g, _intermDim);
+                        else
+                            SimdKernels.SiLuMul(g, u, _intermDim);
+                    }
                     MatMulBatchedCached(batchNorm, in _wDown[layer], batchFfnGate, N, _embDim, _intermDim, allowBlas: false);
                     for (int n = 0; n < N; n++)
                     {

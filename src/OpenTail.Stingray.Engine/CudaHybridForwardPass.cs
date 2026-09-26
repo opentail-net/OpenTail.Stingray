@@ -3717,7 +3717,10 @@ public sealed unsafe class CudaHybridForwardPass : IForwardPass
         GpuMatMul(_gpuFfnUp, _gpuWUp[layer], _gpuNormBuf);
         _gpu.RecordBarrier();
 
-        _gpu.SiLuMul(_gpuFfnGate, _gpuFfnUp);
+        if (_hp.FfnActivation == FfnActivation.GeluApprox)
+            _gpu.GeluTanhMul(_gpuFfnGate, _gpuFfnUp);
+        else
+            _gpu.SiLuMul(_gpuFfnGate, _gpuFfnUp);
         _gpu.RecordBarrier();
 
         GpuMatMul(_gpuHidden, _gpuWDown[layer], _gpuFfnGate);

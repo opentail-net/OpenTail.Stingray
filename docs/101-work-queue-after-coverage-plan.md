@@ -299,7 +299,7 @@ decode steps, CPU vs Vulkan logits).
 | qwen2 (qwen2.5-0.5B) | same; cos 0.99966 | |
 | qwen3 (0.6B) | same; cos 0.99847, 1 near-tie flip | |
 | ernie4_5, maincoder, smollm3, xverse, hunyuan-dense | same | |
-| gemma3 (4B) | same text; cos 0.99857 | see Gemma CPU finding below |
+| gemma3 (4B) | same text; cos 0.99857 | but BOTH backends ran SiLU instead of GELU — FIXED (PPL 20.96 -> 11.17, llama.cpp 11.34) |
 | gemma4 (E4B) | GPU was RIGHT, CPU prefill wrong | fixed on CPU, cos now 0.99893, 0 flips |
 | phi3 (Phi-3-mini) | CRASHED (fused attn_qkv) | FIXED: fused qkv / gate+up row split; cos 0.99890, 0 flips |
 | olmoe | WRONG: free-running Vulkan emitted "\n" forever | FIXED: full-width (per-channel) QK-norm; now = llama-server 16/16, cos 0.99923 |
@@ -316,6 +316,14 @@ decode steps, CPU vs Vulkan logits).
 - `GpuForwardPass.UnsupportedReason(model, hp)` (CLI + server loader) replaces the MLA-only check:
   MLA, LayerNorm/biased norms, parallel residual, learned position table, non-gated FFN -> CPU with
   a one-line note instead of a crash or wrong logits. Next GPU work (step 2) = implement those.
+- Gemma 3 finding (2026-09-26): ModelGraph's gemma3 branch never set `FfnActivation`, so Gemma 3
+  ran SwiGLU (SiLU) instead of GEGLU (tanh GELU) on EVERY backend — invisible to CPU/GPU parity
+  because both agreed. wikitext-2 -c 2048 --batched: 20.9569 -> 11.1675 (llama-perplexity on the
+  same text: 11.3351). Also made every dense FFN that hard-coded SiLU honour `FfnActivation`
+  (GpuForwardPass single + batched, HybridForwardPass CPU/GPU, CudaHybridForwardPass GPU, CPU
+  BatchedIO) — before, Gemma 4 on those paths had the same gap. Greedy vs llama-server now 10/10
+  identical then a 0.46-nat choice (was 4 tokens); Vulkan parity 0.99718, 0 flips. Gemma 1/2 have
+  no ModelGraph branch at all (no local checkpoint to verify with) — noted, not attempted.
 - OLMoE finding: `IsPerChannelQkNorm` models (OLMoE, OLMo2) normalise the WHOLE [heads*headDim]
   Q/K vector once (llama.cpp applies attn_q_norm before the per-head reshape; the CPU path does
   this and matched llama-server 16/16). Vulkan ran one RMS per head with the per-channel weight:

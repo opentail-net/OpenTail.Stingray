@@ -967,7 +967,10 @@ public sealed unsafe class HybridForwardPass : IForwardPass
     {
         SimdKernels.MatVecDual(_cpuFfnGate, _cpuWGate[ci].DataPtr, _cpuFfnUp, _cpuWUp[ci].DataPtr,
             _cpuNormBuf, _intermDim, _embDim, _cpuWGate[ci].DType, _cpuWUp[ci].DType);
-        SimdKernels.SiLuMul(_cpuFfnGate, _cpuFfnUp, _intermDim);
+        if (_hp.FfnActivation == FfnActivation.GeluApprox)
+            SimdKernels.GeluTanhMul(_cpuFfnGate, _cpuFfnUp, _cpuFfnGate, _intermDim);
+        else
+            SimdKernels.SiLuMul(_cpuFfnGate, _cpuFfnUp, _intermDim);
         SimdKernels.MatVec(_cpuHidden, _cpuWDown[ci].DataPtr, _cpuFfnGate, _embDim, _intermDim, _cpuWDown[ci].DType);
     }
 
@@ -1448,7 +1451,10 @@ public sealed unsafe class HybridForwardPass : IForwardPass
         GpuMatMul(_gpuFfnUp, _gpuWUp[layer], _gpuNormBuf);
         _gpu.RecordBarrier();
 
-        _gpu.SiLuMul(_gpuFfnGate, _gpuFfnUp);
+        if (_hp.FfnActivation == FfnActivation.GeluApprox)
+            _gpu.GeluTanhMul(_gpuFfnGate, _gpuFfnUp);
+        else
+            _gpu.SiLuMul(_gpuFfnGate, _gpuFfnUp);
         _gpu.RecordBarrier();
 
         GpuMatMul(_gpuHidden, _gpuWDown[layer], _gpuFfnGate);

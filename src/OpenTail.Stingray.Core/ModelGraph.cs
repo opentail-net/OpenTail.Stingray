@@ -804,6 +804,12 @@ public sealed record ModelHyperparams
             //    carries the raw (unscaled) embedding forward untouched.
             embeddingScale = MathF.Sqrt(embDim);
 
+            // 1b. FFN activation: gemma3.cpp builds the FFN with LLM_FFN_GELU (tanh-approximate
+            //     GELU gate), like every Gemma generation — this branch used to leave the SiLU
+            //     default, so Gemma 3 ran SwiGLU on BOTH backends (they agreed with each other, so
+            //     no CPU/GPU parity check could see it). Found 2026-09-26.
+            ffnActivation = FfnActivation.GeluApprox;
+
             // 2. Sliding-window attention: real gemma3.cpp reads a plain scalar window size
             //    (LLM_KV_ATTENTION_SLIDING_WINDOW) and a period (LLM_KV_ATTENTION_SLIDING_WINDOW_
             //    PATTERN, real default 6 when absent — NOT Gemma 4's literal per-layer bool-array
