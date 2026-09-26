@@ -763,9 +763,12 @@ public static class UnifiedVisionPipeline
         public int EmbeddingDim => _model.ProjectionDim;
         public int ImageWidth => _model.ImageSize;
         public int ImageHeight => _model.ImageSize;
-        public string ImageOpenMarker => "<image>";
-        public string ImageCloseMarker => "</image>";
-        public string PlaceholderMarker => "<image>";
+        // EXAONE 4.5's vocabulary has no <image> token: its chat template emits
+        // "<vision><|image_pad|></vision>" per image, and llama.cpp mtmd (PROJECTOR_TYPE_EXAONE4_5)
+        // wraps the soft tokens in <vision> ... </vision>.
+        public string ImageOpenMarker => "<vision>";
+        public string ImageCloseMarker => "</vision>";
+        public string PlaceholderMarker => "<|image_pad|>";
 
         public float[] EmbedImage(ReadOnlySpan<byte> rgb, int width, int height, out int tokenCount)
         {
