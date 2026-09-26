@@ -280,7 +280,7 @@ decode steps, CPU vs Vulkan logits).
 | gemma3 (4B) | same text; cos 0.99857 | see Gemma CPU finding below |
 | gemma4 (E4B) | GPU was RIGHT, CPU prefill wrong | fixed on CPU, cos now 0.99893, 0 flips |
 | phi3 (Phi-3-mini) | CRASHED (fused attn_qkv) | FIXED: fused qkv / gate+up row split; cos 0.99890, 0 flips |
-| olmoe | same text; cos 0.9856 at 1 decode step, 0 flips | open: likely a routing near-tie, not yet proven |
+| olmoe | WRONG: free-running Vulkan emitted "\n" forever | FIXED: full-width (per-channel) QK-norm; now = llama-server 16/16, cos 0.99923 |
 | qwen3moe (Coder-30B-A3B) | same | |
 | qwen35 hybrid (Ornith 9B) | same (Vulkan hybrid GDN) | |
 | stablelm, cohere2 | SILENT GARBAGE | GPU pass has no LayerNorm / parallel residual -> now CPU with a note |
@@ -293,6 +293,14 @@ decode steps, CPU vs Vulkan logits).
 - `GpuForwardPass.UnsupportedReason(model, hp)` (CLI + server loader) replaces the MLA-only check:
   MLA, LayerNorm/biased norms, parallel residual, learned position table, non-gated FFN -> CPU with
   a one-line note instead of a crash or wrong logits. Next GPU work (step 2) = implement those.
+- OLMoE finding: `IsPerChannelQkNorm` models (OLMoE, OLMo2) normalise the WHOLE [heads*headDim]
+  Q/K vector once (llama.cpp applies attn_q_norm before the per-head reshape; the CPU path does
+  this and matched llama-server 16/16). Vulkan ran one RMS per head with the per-channel weight:
+  free-running greedy output was newline tokens forever. Now dispatched as one full-width "head"
+  (`GpuForwardPass.QkNorm`/`QkNormBatched`, no shader change); Vulkan = llama-server 16/16. The
+  parity test had passed it (cos 0.9856, 0 flips) because it built hyperparameters with the
+  metadata-only `FromGgufMetadata` overload, which never sets `IsPerChannelQkNorm`, so it compared
+  two equally-wrong configurations. The test now uses the model-aware overload, as the CLI does.
 - Gemma-4 E4B finding (the audit's biggest result): the Vulkan pass matched llama-server 16/16
   greedy tokens; the CPU PREFILL was wrong. Two CPU bugs, both fixed:
   1. prefill staged K/V at a `_maxHeadDim` head stride while every cache reader (decode K, the

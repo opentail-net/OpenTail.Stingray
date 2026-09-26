@@ -1504,8 +1504,8 @@ public sealed unsafe class GpuForwardPass : IForwardPass
                 //   • L2 QK-norm (Llama-4):        norm AFTER  RoPE (RoPE layers only)
                 if (_hasQkNorm && !_hp.UseL2QkNorm)
                 {
-                    _gpu.HeadNorm(_q, _wqNorm![layer], (uint)_numHeads, (uint)_headDim, _hp.RmsNormEps, _hp.IsPerChannelQkNorm);
-                    _gpu.HeadNorm(_k, _wkNorm![layer], (uint)_numKvHeads, (uint)_headDim, _hp.RmsNormEps, _hp.IsPerChannelQkNorm);
+                    QkNorm(_q, _wqNorm![layer], _numHeads);
+                    QkNorm(_k, _wkNorm![layer], _numKvHeads);
                     _gpu.RecordBarrier();
                 }
 
@@ -2564,8 +2564,8 @@ public sealed unsafe class GpuForwardPass : IForwardPass
             {
                 // Per-head RMS QK-norm: each of the k rows normalized independently with the
                 // shared per-head weight — bit-identical to k HeadNorm calls.
-                _gpu.HeadNormBatched(_qK, _wqNorm![layer], (uint)_numHeads, (uint)_headDim, k, _hp.RmsNormEps, _hp.IsPerChannelQkNorm);
-                _gpu.HeadNormBatched(_kK, _wkNorm![layer], (uint)_numKvHeads, (uint)_headDim, k, _hp.RmsNormEps, _hp.IsPerChannelQkNorm);
+                QkNormBatched(_qK, _wqNorm![layer], _numHeads, k);
+                QkNormBatched(_kK, _wkNorm![layer], _numKvHeads, k);
                 _gpu.RecordBarrier();
             }
 
@@ -3156,6 +3156,31 @@ public sealed unsafe class GpuForwardPass : IForwardPass
 
     // Track quantization type per weight tensor for MatMul dispatch
     private readonly Dictionary<nint, DType> _weightDTypes = new();
+
+    /// <summary>
+    /// Weighted QK RMSNorm on one token's Q or K. Per-head (Qwen3 style: a [headDim] weight,
+    /// one RMS per head) or, when <see cref="ModelHyperparams.IsPerChannelQkNorm"/>, ONE RMS over
+    /// the whole [heads*headDim] vector with a [heads*headDim] weight — OLMoE / OLMo2, where
+    /// llama.cpp applies attn_q_norm before the per-head reshape (ForwardPass.PerChannelRmsNorm
+    /// does the same on the CPU). The per-channel case used to run per-head RMS with a
+    /// per-channel weight: OLMoE on Vulkan then emitted newline tokens forever (found 2026-09-26).
+    /// </summary>
+    private void QkNorm(Tensor data, Tensor weight, int heads)
+    {
+        if (_hp.IsPerChannelQkNorm)
+            _gpu.HeadNorm(data, weight, 1u, (uint)(heads * _headDim), _hp.RmsNormEps, perChannelWeight: true);
+        else
+            _gpu.HeadNorm(data, weight, (uint)heads, (uint)_headDim, _hp.RmsNormEps, perChannelWeight: false);
+    }
+
+    /// <summary><see cref="QkNorm"/> over <paramref name="rows"/> contiguous tokens.</summary>
+    private void QkNormBatched(Tensor data, Tensor weight, int heads, int rows)
+    {
+        if (_hp.IsPerChannelQkNorm)
+            _gpu.HeadNormBatched(data, weight, 1u, (uint)(heads * _headDim), rows, _hp.RmsNormEps, perChannelWeight: true);
+        else
+            _gpu.HeadNormBatched(data, weight, (uint)heads, (uint)_headDim, rows, _hp.RmsNormEps, perChannelWeight: false);
+    }
 
     private Tensor UploadWeight(string name)
     {

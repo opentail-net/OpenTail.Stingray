@@ -19,8 +19,7 @@ public sealed class VulkanArchLogitParityTests : HeavyTestBase
 
     [Theory]
     [InlineData("Phi-3-mini-4k-instruct-Q4_K_M.gguf")]      // fused attn_qkv + fused gate/up
-    // OLMoE is left out until its open item is settled: worst cosine 0.9856 at one decode step
-    // with 0 argmax flips (docs/101 "GPU for LLMs" audit) — a routing near-tie or a real MoE bug.
+    [InlineData("OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf")]   // MoE + full-width (per-channel) QK-norm
     [InlineData("Mistral-7B-Instruct-v0.3-Q4_K_M.gguf")]
     [InlineData("gemma-4-E4B-it-Q4_K_M.gguf")]
     [InlineData("gemma-3-4b-it-Q4_K_M.gguf")]
@@ -36,7 +35,10 @@ public sealed class VulkanArchLogitParityTests : HeavyTestBase
         using var _gpu = gpu;
 
         using var model = GgufModel.Open(path!);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
+        // The model-aware overload, as the CLI and server use: it infers tensor-shape features
+        // (e.g. IsPerChannelQkNorm) that the metadata-only one misses — without it this test
+        // compared two equally-wrong OLMoE configurations and passed a broken Vulkan path.
+        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
         int[] prompt = GgufTokenizer.FromGgufModel(model).Encode(PromptText).ToArray();
         const int steps = 8;
 
