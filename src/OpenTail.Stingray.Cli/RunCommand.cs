@@ -1219,6 +1219,16 @@ public sealed class RunCommand : Command<RunCommand.Settings>
             }
         }
 
+        // The CUDA passes and the Vulkan -g N split lack features only the full Vulkan pass has
+        // (fused QKV, LayerNorm, parallel residual, non-gated FFN, ...). An auto (-1) Vulkan run
+        // that later resolves to a partial split is caught by HybridForwardPass's own guard.
+        if (nGpuLayers != 0 && (wantCuda || (nGpuLayers > 0 && nGpuLayers < hp.NumLayers))
+            && GpuForwardPass.PartialOffloadUnsupportedReason(model, hp) is { } partialGap)
+        {
+            AnsiConsole.MarkupLine($"[yellow]Note:[/] {(wantCuda ? "the CUDA backend" : "a partial GPU offload")} has no path for {Markup.Escape(partialGap)}; running on CPU.");
+            nGpuLayers = 0;
+        }
+
         if (nGpuLayers == 0)
         {
             // CPU only

@@ -168,6 +168,8 @@ public sealed unsafe class HybridForwardPass : IForwardPass
         LayerPlacement placement, bool enableTq = false, int tqFp32Window = 256, int tqBits = 3,
         int expertSlotCapacity = -1)
     {
+        if (GpuForwardPass.PartialOffloadUnsupportedReason(model, hp) is { } gpuGap)
+            throw new NotSupportedException($"HybridForwardPass has no path for {gpuGap}; use the CPU pass (-g 0).");
         // Gemma 4 has no Vulkan implementation (no SWA / PLE / per-layer head_dim / softcap);
         // a hybrid Vulkan split would silently produce garbage. hp.LayerHeadDim is the gemma4
         // master switch. CUDA (CudaHybridForwardPass) and CPU are the supported backends.

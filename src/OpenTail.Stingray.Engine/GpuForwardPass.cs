@@ -50,6 +50,12 @@ public sealed unsafe class GpuForwardPass : IForwardPass
     // LayerNorm models (NormRows): norm biases when the GGUF has them, else one shared zero bias.
     private readonly Tensor[]? _bAttnNorm, _bFfnNorm;
     private readonly Tensor? _bOutputNorm, _zeroEmbBias;
+    // Non-gated FFN (GPT-2 / StarCoder2 / GPT-NeoX): _wGate[i] is null and the FFN is
+    // down(gelu(up·x + b_up)) + b_down. The biases are null for models without them.
+    private readonly bool _gatelessFfn;
+    private readonly Tensor[]? _bFfnUp, _bFfnDown;
+    // GPT-2 learned absolute position table (F32 in VRAM) and a one-row gather target.
+    private readonly Tensor? _gpuPosEmbd, _posRow;
     private readonly bool _partialRope;
     private readonly Tensor _wOutput;
 
@@ -453,10 +459,10 @@ public sealed unsafe class GpuForwardPass : IForwardPass
 
     /// <summary>
     /// Why this pass cannot run <paramref name="model"/> correctly, or null when it can. The Vulkan
-    /// layer loop is RMSNorm or LayerNorm (+bias), sequential residual, gated FFN (SiLU, or Gemma's
-    /// GELU-tanh) without biases, RoPE-only positions (full, or partial NEOX) and plain wk/wv (or
-    /// fused attn_qkv) — it has no parallel residual, no non-gated GELU MLP, no learned position
-    /// table, no LayerNorm QK-norm, and no MLA. A model
+    /// layer loop is RMSNorm or LayerNorm (+bias), sequential or parallel residual, gated FFN (SiLU,
+    /// or Gemma's GELU-tanh) without biases or non-gated GELU FFN (+ biases), RoPE (full, or partial
+    /// NEOX) or GPT-2's learned position table, and plain wk/wv (or fused attn_qkv) — it has no
+    /// xIELU / ReLU² MLP, no LayerNorm QK-norm, and no MLA. A model
     /// needing any of those would load fine and then compute silently wrong logits, so callers
     /// (CLI, server loader) use this to fall back to the CPU pass with a note instead.
     /// </summary>
@@ -465,12 +471,35 @@ public sealed unsafe class GpuForwardPass : IForwardPass
         if (hp.KvLoraRank > 0) return "MLA attention (deepseek2)";
         if (hp.UsesLayerNorm && hp.HasQkNorm) return "LayerNorm QK-norm";
         if (hp.RopeDim > 0 && hp.RopeDim < hp.HeadDim && !hp.IsNeoxRope) return "partial non-NEOX RoPE";
-        if (model.FindTensor("blk.0.ffn_down.bias") is not null || model.FindTensor("blk.0.ffn_up.bias") is not null)
-            return "FFN biases";
-        if (model.FindTensor("position_embd.weight") is not null) return "learned absolute position embeddings";
-        if (model.FindTensor("blk.0.ffn_gate.weight") is null && model.FindTensor("blk.0.ffn_gate_exps.weight") is null
-            && !(model.FindTensor("blk.0.ffn_up.weight") is { } up && up.Dimensions[^1] == 2L * hp.IntermediateDim))
-            return "non-gated FFN";
+        bool gateless = model.FindTensor("blk.0.ffn_gate.weight") is null && model.FindTensor("blk.0.ffn_gate_exps.weight") is null
+            && !(model.FindTensor("blk.0.ffn_up.weight") is { } up && up.Dimensions[^1] == 2L * hp.IntermediateDim);
+        // Non-gated GELU (GPT-2 / StarCoder2 / GPT-NeoX) runs on the GPU; the other non-gated
+        // activations do not yet.
+        if (gateless && hp.XieluAlphaP is not null) return "non-gated xIELU FFN (Apertus)";
+        if (gateless && hp.UsesReluSquared) return "non-gated ReLU² FFN";
+        if (!gateless && model.FindTensor("blk.0.ffn_up.bias") is not null) return "gated FFN with biases";
+        return null;
+    }
+
+    /// <summary>
+    /// <see cref="UnsupportedReason"/> for the GPU passes other than a full Vulkan offload —
+    /// <see cref="HybridForwardPass"/> (Vulkan -g N), <see cref="CudaForwardPass"/> and
+    /// <see cref="CudaHybridForwardPass"/>. The features added to the full Vulkan pass in the
+    /// 2026-09-26 "GPU for LLMs" work (fused attn_qkv / gate+up, LayerNorm, parallel residual,
+    /// partial RoPE, non-gated FFN, FFN biases, learned positions) are not in those layer loops:
+    /// a fused-QKV model faults on a missing attn_q tensor and the rest compute wrong logits.
+    /// </summary>
+    public static string? PartialOffloadUnsupportedReason(GgufModel model, ModelHyperparams hp)
+    {
+        if (UnsupportedReason(model, hp) is { } reason) return reason;
+        if (model.FindTensor("blk.0.attn_qkv.weight") is not null) return "fused attn_qkv (full Vulkan offload only)";
+        if (hp.UsesLayerNorm) return "LayerNorm (full Vulkan offload only)";
+        if (hp.UseParallelResidual) return "parallel residual (full Vulkan offload only)";
+        if (hp.RopeDim > 0 && hp.RopeDim < hp.HeadDim) return "partial RoPE (full Vulkan offload only)";
+        if (model.FindTensor("blk.0.ffn_gate.weight") is null && model.FindTensor("blk.0.ffn_gate_exps.weight") is null)
+            return "non-gated or fused gate/up FFN (full Vulkan offload only)";
+        if (model.FindTensor("blk.0.ffn_up.bias") is not null) return "FFN biases (full Vulkan offload only)";
+        if (model.FindTensor("position_embd.weight") is not null) return "learned position table (full Vulkan offload only)";
         return null;
     }
 
@@ -1002,6 +1031,13 @@ public sealed unsafe class GpuForwardPass : IForwardPass
                     _wGate[i] = UploadWeightRows($"blk.{i}.ffn_up.weight", 0, _intermDim);
                     _wUp[i] = UploadWeightRows($"blk.{i}.ffn_up.weight", _intermDim, _intermDim);
                 }
+                else if (model.FindTensor($"blk.{i}.ffn_gate.weight") is null)
+                {
+                    // Non-gated MLP (GPT-2 / StarCoder2 / GPT-NeoX): no gate projection.
+                    _gatelessFfn = true;
+                    _wGate[i] = null!;
+                    _wUp[i] = UploadWeight($"blk.{i}.ffn_up.weight");
+                }
                 else
                 {
                     _wGate[i] = UploadWeight($"blk.{i}.ffn_gate.weight");
@@ -1095,6 +1131,25 @@ public sealed unsafe class GpuForwardPass : IForwardPass
                 for (int i = 0; i < L; i++) _bFfnNorm[i] = UploadWeight($"blk.{i}.ffn_norm.bias");
             }
         }
+        if (!_isMoE && model.FindTensor("blk.0.ffn_up.bias") is not null)
+        {
+            _bFfnUp = new Tensor[L];
+            _bFfnDown = new Tensor[L];
+            for (int i = 0; i < L; i++)
+            {
+                _bFfnUp[i] = UploadWeight($"blk.{i}.ffn_up.bias");
+                _bFfnDown[i] = UploadWeight($"blk.{i}.ffn_down.bias");
+            }
+        }
+        if (model.FindTensor("position_embd.weight") is { } posInfo)
+        {
+            // GPT-2: ctx_train x embDim, small (1024 x 768 for gpt2-small) — dequantize once.
+            int rows = (int)(posInfo.ElementCount / _embDim);
+            var table = new float[(long)rows * _embDim];
+            Dequantize.ToFloat32(model.GetTensorData(posInfo), table, posInfo.DType, table.Length);
+            _gpuPosEmbd = _gpu.Upload(table, TensorShape.D1(table.Length));
+            _posRow = _gpu.Upload(new float[_embDim], TensorShape.D1(_embDim));
+        }
         _partialRope = hp.RopeDim > 0 && hp.RopeDim < _headDim;
         _wOutput = model.FindTensor("output.weight") is not null
             ? UploadWeight("output.weight")
@@ -1155,6 +1210,9 @@ public sealed unsafe class GpuForwardPass : IForwardPass
         // has no L2 path (it would silently skip the norm), and the Debug.Assert that guards it is
         // stripped in Release — so don't rely on the L2⟹Llama4⟹MoE coupling, exclude it directly.
         if (_isMoE || _isGemma4 || _hasAttnBias || _hasAttnOutputBias || _hp.UseL2QkNorm) return false;
+        // Non-gated FFN, FFN biases and the learned position table are wired in the per-token
+        // trunk only.
+        if (_gatelessFfn || _bFfnUp is not null || _gpuPosEmbd is not null) return false;
 
         bool IsBatchable(Tensor w) =>
             _weightDTypes.GetValueOrDefault(w.Handle, DType.Q4_K) is DType.Q4_K or DType.Q6_K;
@@ -1437,6 +1495,14 @@ public sealed unsafe class GpuForwardPass : IForwardPass
         // Embed token (GPU lookup from cached table — no PCIe transfer)
         DispatchEmbedLookup(token);
         _gpu.RecordBarrier();
+        if (_gpuPosEmbd is not null)
+        {
+            // GPT-2: + learned position row (src/models/gpt2.cpp: inpL = tok_embd + pos_embd).
+            _gpu.EmbedLookup(_gpuPosEmbd, _posRow!, (uint)position, (uint)_embDim);
+            _gpu.RecordBarrier();
+            _gpu.AddInPlace(_hidden, _posRow!);
+            _gpu.RecordBarrier();
+        }
 
         // Embedding scale (sqrt(embDim) for every Gemma generation, 1/2/3/4 alike) was only ever
         // applied on the ForwardGemma4 path below — the standard (non-gemma4) path never applied
@@ -3104,6 +3170,27 @@ public sealed unsafe class GpuForwardPass : IForwardPass
 
     private void GpuDenseFfn(int layer)
     {
+        if (_gatelessFfn)
+        {
+            // ForwardPass.DenseFfn's non-gated branch: the up bias goes INSIDE the GELU.
+            GpuMatMul(_ffnUp, _wUp[layer], _normBuf);
+            _gpu.RecordBarrier();
+            if (_bFfnUp is not null)
+            {
+                _gpu.AddRowBroadcastInPlace(_ffnUp, _bFfnUp[layer], 1, _intermDim);
+                _gpu.RecordBarrier();
+            }
+            _gpu.VisionGeluInPlace(_ffnUp);   // tanh GELU, as SimdKernels.GeluInPlace
+            _gpu.RecordBarrier();
+            GpuMatMul(_hidden, _wDown[layer], _ffnUp);
+            if (_bFfnDown is not null)
+            {
+                _gpu.RecordBarrier();
+                _gpu.AddRowBroadcastInPlace(_hidden, _bFfnDown[layer], 1, _embDim);
+            }
+            return;
+        }
+
         GpuMatMul(_ffnGate, _wGate[layer], _normBuf);
         GpuMatMul(_ffnUp, _wUp[layer], _normBuf);
         _gpu.RecordBarrier();
@@ -3321,7 +3408,8 @@ public sealed unsafe class GpuForwardPass : IForwardPass
     {
         var info = _model.FindTensor(name)
             ?? throw new InvalidOperationException($"Missing tensor: {name}");
-        long cols = info.Dimensions[0];
+        // A 1-D tensor (fused attn_qkv.bias) is a column of 1-element rows.
+        long cols = info.Dimensions.Length == 1 ? 1 : info.Dimensions[0];
         long bytesPerRow = info.DType == DType.Float32
             ? cols * sizeof(float)
             : cols / DTypeInfo.BlockSize(info.DType) * DTypeInfo.BytesPerBlock(info.DType);
@@ -3682,7 +3770,9 @@ public sealed unsafe class GpuForwardPass : IForwardPass
             }
             else
             {
-                _gpu.Free(_wGate[i]); _gpu.Free(_wUp[i]); _gpu.Free(_wDown[i]);
+                if (_wGate[i] is not null) _gpu.Free(_wGate[i]);
+                _gpu.Free(_wUp[i]); _gpu.Free(_wDown[i]);
+                if (_bFfnUp is not null) { _gpu.Free(_bFfnUp[i]); _gpu.Free(_bFfnDown![i]); }
             }
 
             if (_hasAttnBias)
@@ -3722,6 +3812,7 @@ public sealed unsafe class GpuForwardPass : IForwardPass
             }
         }
         _gpu.Free(_wOutputNorm);
+        if (_gpuPosEmbd is not null) { _gpu.Free(_gpuPosEmbd); _gpu.Free(_posRow!); }
         if (_wOutput.Handle != _gpuEmbedding.Handle)
             _gpu.Free(_wOutput);
         _gpu.Free(_gpuEmbedding);

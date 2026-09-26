@@ -303,8 +303,34 @@ parity alone missed OLMoE).
   were already there; LayerNorm without bias uses the zero bias from 2a. Greedy 24/24 vs
   llama-server; parity cos 0.99944, 0 flips. `UnsupportedReason` no longer rejects parallel
   residual (GPT-NeoX / phi-2 still fall back on their non-gated FFN).
-- 2c GPT-2 / StarCoder2 / GPT-NeoX: non-gated GELU MLP, biases on every linear, learned position
-  table (GPT-2), parallel residual + partial RoPE (NeoX).
+- 2c GPT-2 / StarCoder2 / GPT-NeoX — DONE 2026-09-26 (per-token trunk; these models all have
+  QKV bias, so they were already outside the batched trunk):
+  - Non-gated FFN computes down(gelu_tanh(up·x + b_up)) + b_down, with the up bias inside the
+    GELU as in `ForwardPass.DenseFfn`.
+  - GPT-2's position table is dequantized once to F32 in VRAM, and one row is added after the
+    token lookup.
+  - Fixed along the way: `UploadWeightRows` treated a 1-D fused `attn_qkv.bias` as a single row
+    (ArgumentOutOfRange).
+
+  Results against llama-server:
+  - Parity, worst cosine / flips: GPT-2 0.999994 / 1 (near-tie), Pythia-160m 1.000000 / 0,
+    StarCoder2-3B 0.998765 / 1 (near-tie).
+  - Free-running greedy, 24 tokens, `STINGRAY_RAW_PROMPT=1 --repeat-penalty 1.0`: GPT-2 24/24.
+    Pythia diverges at token ~20 and StarCoder2 at token 5, identically on our CPU and Vulkan.
+  - StarCoder2 teacher-forced, CPU: the first 4 steps' log-probs are within 0.15 of
+    llama-server's. At the divergence ours is "\n" -1.67 vs "The" -1.77 (a near-tie); llama.cpp
+    picks "The".
+  - Gotcha: the CLI defaults to `--repeat-penalty 1.1` (llama.cpp's is 1.0) and wraps base models
+    in a ChatML fallback template. Greedy comparisons need both turned off.
+
+  Also found: the step 1–2b relaxations of `UnsupportedReason` were applied to every GPU path. But
+  `HybridForwardPass` (Vulkan -g N) and the CUDA passes have none of fused QKV / LayerNorm /
+  parallel residual / partial RoPE / non-gated FFN. Phi-3 at `-g 8` crashed on the missing
+  `attn_q` tensor. New `PartialOffloadUnsupportedReason` covers these:
+  - The CLI and server fall back to CPU for CUDA or a partial split.
+  - The three constructors throw as a last-resort guard (an auto -1 Vulkan run that resolves to a
+    partial split).
+  - Verified: Phi-3 `-g 8` and GPT-2 `-g 4` now run on CPU with a note; `-g -1` stays on Vulkan.
 - 2d Apertus: non-gated xIELU MLP.
 
 ### Step 1 — audit (2026-09-26)

@@ -580,6 +580,15 @@ public static class InferenceEngineLoader
             backend = ServerBackend.Cpu;
         }
 
+        // CUDA and the Vulkan -g N split lack features only the full Vulkan pass has.
+        if ((backend == ServerBackend.Cuda || (backend == ServerBackend.Vulkan && nGpuLayers > 0 && nGpuLayers < hp.NumLayers))
+            && GpuForwardPass.PartialOffloadUnsupportedReason(model, hp) is { } partialGap)
+        {
+            Console.Error.WriteLine($"[InferenceEngineLoader] {backend} (this offload) has no path for {partialGap}; running on CPU.");
+            backend = ServerBackend.Cpu;
+            nGpuLayers = 0;
+        }
+
         // gpt-oss runs only on its own CPU forward pass (sinks, SWA, biased MoE, OAI SwiGLU, YaRN).
         if (arch == "gpt-oss")
         {

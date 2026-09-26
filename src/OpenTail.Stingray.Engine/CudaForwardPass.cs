@@ -709,6 +709,8 @@ public sealed unsafe class CudaForwardPass : IForwardPass, IBatchedForwardPass, 
         bool? mmqSoa = null, bool preferBatchingOverAutoSnapKv = false,
         TqQuantizer tqQuantizer = TqQuantizer.LloydMax)
     {
+        if (GpuForwardPass.PartialOffloadUnsupportedReason(model, hp) is { } gpuGap)
+            throw new NotSupportedException($"CudaForwardPass has no path for {gpuGap}; use the CPU pass (-g 0).");
         _model = model;
         _gpu = gpu;
         _hp = hp;

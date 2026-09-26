@@ -348,6 +348,8 @@ public sealed unsafe class CudaHybridForwardPass : IForwardPass
         LayerPlacement placement, bool enableTq = false, int tqFp32Window = 256, int tqBits = 3,
         int expertSlotCapacity = -1)
     {
+        if (GpuForwardPass.PartialOffloadUnsupportedReason(model, hp) is { } gpuGap)
+            throw new NotSupportedException($"CudaHybridForwardPass has no path for {gpuGap}; use the CPU pass (-g 0).");
         _model = model;
         _gpu = gpu;
         _hp = hp;
