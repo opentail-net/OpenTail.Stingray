@@ -54,4 +54,21 @@ public sealed class GgufTokenizerByteLevelTests
         int[] expected = [209, 30, 6911, 378, 3941, 350, 209, 30, 275, 209, 1518, 17, 13, 247, 12, 67, 44072, 68, 209, 95, 536];
         Assert.Equal(expected, tok.Encode(" = Robert Boulter = in 2000, a+b<=c ~ok").ToArray());
     }
+
+    /// <summary>
+    /// tokenizer.ggml.model=gemma4 is merge-RANK BPE in llama.cpp (not score-based SPM), with the
+    /// text split into newline / non-newline runs first. Score-based merging gave "▁Heron"+"s"
+    /// instead of "▁Her"+"ons". Reference ids: llama-tokenize --no-bos on the same GGUF.
+    /// </summary>
+    [Fact]
+    public void Gemma4_RankBpeAndNewlineRuns_MatchLlamaTokenize()
+    {
+        string? path = FindModel("gemma-4-E4B-it-Q4_K_M.gguf");
+        Assert.SkipUnless(path is not null, "gemma-4-E4B-it-Q4_K_M.gguf not present");
+        using var model = GgufModel.Open(path!);
+        var tok = GgufTokenizer.FromGgufModel(model);
+
+        int[] expected = [528, 506, 1441, 5165, 1190, 109, 25217, 684, 138, 63862, 107];
+        Assert.Equal(expected, tok.Encode(" in the play Herons\n\n\nwritten by  Simon\n").ToArray());
+    }
 }

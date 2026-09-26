@@ -38,6 +38,10 @@ public sealed partial class GgufTokenizer : ITokenizer
     // tokenizer (real llama.cpp SPM has no merge-rank concept at all, even when a GGUF happens to
     // carry a tokenizer.ggml.merges convenience array -- see SpmMergePiecesByScore's doc comment).
     private readonly bool _mergesAreRankPriority;
+    // Gemma 4 (tokenizer.ggml.model=gemma4): llama.cpp's LLAMA_VOCAB_PRE_TYPE_GEMMA4 splits the
+    // text into newline runs and non-newline runs before merging (merges never cross a newline),
+    // and a newline run that is itself a vocab token is emitted whole.
+    private bool _splitNewlineRuns;
     private readonly bool _addSpacePrefix;
     // Real SentencePiece Unigram-LM (tokenizer.ggml.model=t5) -- a genuinely different
     // segmentation algorithm (Viterbi lattice over per-token scores), not merges-based at all.
@@ -284,6 +288,11 @@ public sealed partial class GgufTokenizer : ITokenizer
             PadTokenId = GetMetadataInt(model, "tokenizer.ggml.padding_token_id", eos),
             AddBosToken = ResolveAddBos(model, modelFamily),
             AddSpacePrefix = addSpacePrefix,
+            // llama.cpp loads tokenizer.ggml.model=gemma4 as LLAMA_VOCAB_TYPE_BPE with the GGUF's
+            // merges as the rank table — not score-based SPM. Score-based merging picked
+            // "▁Heron"+"s" where the real tokenizer gives "▁Her"+"ons" (found 2026-09-26 diffing
+            // wikitext against llama-tokenize).
+            MergesAreRankPriority = modelFamily == "gemma4",
             ModelFamily = modelFamily,
             TokenizerPre = model.Metadata.TryGetValue("tokenizer.ggml.pre", out var tpObj) ? (string)tpObj : "",
             ChatTemplate = model.Metadata.TryGetValue("tokenizer.chat_template", out var tmpl) && tmpl is string t ? t : null,
@@ -555,6 +564,7 @@ public sealed partial class GgufTokenizer : ITokenizer
             chatTemplateBos,
             chatTemplateEos);
         tokenizer.PreTokenizerIsKnown = knownPre;
+        tokenizer._splitNewlineRuns = source.ModelFamily == "gemma4";
         tokenizer.DeclaredPreTokenizer = source.TokenizerPre;
 
         return tokenizer;
@@ -771,6 +781,27 @@ public sealed partial class GgufTokenizer : ITokenizer
     /// NOT the same as the merges-rank-table algorithm the byte-BPE path uses.
     /// </summary>
     private IReadOnlyList<int> EncodeSpm(string text)
+    {
+        if (_splitNewlineRuns)
+        {
+            var all = new List<int>();
+            int start = 0;
+            while (start < text.Length)
+            {
+                bool nl = text[start] == '\n';
+                int end = start + 1;
+                while (end < text.Length && (text[end] == '\n') == nl) end++;
+                string run = text[start..end];
+                if (nl && _vocab.TryGetValue(run, out int runId)) all.Add(runId);
+                else all.AddRange(EncodeSpmRun(run));
+                start = end;
+            }
+            return all;
+        }
+        return EncodeSpmRun(text);
+    }
+
+    private List<int> EncodeSpmRun(string text)
     {
         // Split into Unicode text elements (code points / graphemes), each a start symbol.
         var pieces = new List<string>(text.Length);
