@@ -216,6 +216,26 @@ major safetensors-backed diffusion/audio model for the read-F32/convert/dot/disc
 
 ## Found along the way
 
+- 2026-09-26: cross-architecture tokenizer audit. Method: tokenize a 20 KB wikitext-2 prefix with
+  ours and with `llama-tokenize --ids` on the same GGUF, then diff. Found by a perplexity audit
+  where our wikitext PPL was far from llama-perplexity's (StableLM 28.5 vs 21.5, Xverse 7.36 vs
+  4.81, Pythia 19.1 vs 24.4). Four fixes:
+  - 57d54c4: GPT-2 byte-level BPE mapped byte 0xAD to itself, not U+0143, so every "í" (C3 AD)
+    became garbage.
+  - ac0cc24: add_bos and the BOS/EOS defaults now follow llama-vocab.cpp's per-vocab-type rules.
+    Falcon3, Xverse and ERNIE had run without BOS.
+  - 72cc0e1: a missing or "default" `tokenizer.ggml.pre` uses llama.cpp's DEFAULT cascade
+    (punctuation runs, GPT-2, digits), not plain GPT-2. StableLM differed from token 0.
+  - d9f19c9: Gemma 4 is merge-rank BPE with newline-run splitting, not score-based SPM.
+
+  After the fixes, these match llama-tokenize token-for-token: Qwen2.5, Pythia, StableLM, phi-2,
+  Falcon3, Xverse, Cohere2, SmolLM3, ERNIE, Gemma 3 and Gemma 4.
+
+  Comparing perplexity: `stingray perplexity` averages positions 1..2047, but llama-perplexity
+  scores only the second half of each chunk. The comparable number is our `[1024,+)` bucket. Our
+  "all" figure is not comparable, which is why several earlier gaps went in both directions.
+  Falcon3 after the BOS fix: all-positions 6.55 -> 6.31 (llama 5.97, second half only).
+
 - 2026-09-26: `HybridGdnForwardPass_Ornith9B_SnapshotRestore` fails (2608/248320 non-finite
   logits, "giochi giochi..." from the CLI). NOT an engine bug: vendored llama.cpp prints "GGGG..."
   on the same file, clean HEAD and a 2026-09-19 build reproduce it, and the local
