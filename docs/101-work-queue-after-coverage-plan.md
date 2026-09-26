@@ -106,6 +106,20 @@ End-to-end ~122s vs C++ Vulkan 60.3s. Stages: DiT 79.4 vs 45.2s (1.76x), UMT5 38
 - VAE second (smaller share).
 - DiT: 1.76x is respectable on the iGPU; don't attack it blindly.
 
+**Progress 2026-09-26** (Wan2.1-T2V-1.3B, 256x256, 1 frame, 20 steps, seed 42, CLI `image`):
+- Fresh baseline: Vulkan (`--device 0`; Wan's default is CPU) 105.3 s — UMT5 ~40 s, DiT 57.5 s
+  (2.88 s/step), VAE 6.8 s. CPU 88.6 s.
+- DONE cf37910: UMT5 converted the whole 4 GB token-embedding table per encode (twice per run) —
+  now only the looked-up rows from the mmap; CLI uses EncodePairGpu (one layer stream for
+  cond+uncond). UMT5 GPU 14.1 s (C++ 13.0), CPU 6.5 s. Output PNG byte-identical.
+- DONE aad52f6 + efa1dda: VAE causal conv3d and the spatial resample conv via im2col +
+  PackedSgemmF32 (packed weights cached). VAE 6.85 -> 1.83 s (C++ 2.02 s). Pixel diff max 1/255.
+- NOW: CPU end-to-end 77.3 s; Vulkan ~88 s (DiT loop 57-62 s vs C++ 45.2 s — left alone per the
+  "don't attack DiT blindly" note). On this iGPU the GPU UMT5 path (14.1 s) loses to CPU (6.5 s)
+  because EncodePairGpu converts every BF16 layer to F32 on the host and uploads ~9 GB; lead:
+  upload BF16 and convert on-GPU, or keep UMT5 on CPU when it is faster (needs a discrete-GPU
+  measurement before changing any default — CLAUDE.md rule 13).
+
 ### HunyuanVideo GPU
 CPU works (256² ≈19s/step, 512² ≈55s/step); GPU not attempted. Needs model-specific RoPE/data
 handling. High potential, high effort.

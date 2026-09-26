@@ -929,7 +929,7 @@ time unless marked. N/M = not measured. ✅ = correct image checked by eye.
 
 | Model | CPU working | GPU working | CPU speed | GPU speed | C++ CPU ref | C++ GPU ref |
 |---|---|---|---|---|---|---|
-| Wan 2.1 (1.3B) | ✅ | ✅ Vulkan (not re-run today) | **74.0-76.9s**, 256² 1f 20-step (was 209.6s this morning; 4238.7s pre-opt at 512² 2f) | 122.1s, 256² 1f 20-step (2026-09-18) | **256.6s**, same config (measured today) | 60.3s, same config (2026-09-15) |
+| Wan 2.1 (1.3B) | ✅ | ✅ Vulkan (`--device 0`) | **77.3s**, 256² 1f 20-step (2026-09-26: UMT5 6.5s, VAE 1.83s; cf37910/aad52f6/efa1dda) | **~88s** (2026-09-26: UMT5 14.1s, DiT 57-62s, VAE 1.8s; was 105.3s same day) | 62.3s (text 14.80s, DiT 45.40s, VAE 2.06s) | 60.3s (text 13.02s, DiT 45.20s, VAE 2.02s) |
 | LTX-Video 2B | ✅ | ✅ Vulkan | **133.3s**, 512² 1f 20-step (was 311.6s) | 144.0s, same config, measured before today's 13× VAE fix | N/M: vendored sd-cli is LTX-2 only | N/M |
 | FLUX.2-dev | ✅ | ✅ Vulkan | 258.8s, 512² 2-step; 73.6s, 128² 4-step | **236.7 / 237.0s** full GPU with quantized Q4_K weights, 512² 2-step (FP16 weights: 298.4s; old hybrid 291-295s); 134s hybrid, 128² 4-step | N/M | N/M |
 | Qwen Image (Q3_K_S) | ✅ | ✅ Vulkan, weights quantized on GPU | **277.4s**, 256² 8-step (was ~1,290s) | **159.4 / 161.1s**, same config (FP16 weights: 361.9s) | **231.4s**, same config | N/M |
