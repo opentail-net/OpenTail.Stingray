@@ -277,7 +277,12 @@ parity alone missed OLMoE).
   LayerNorm QK-norm, partial non-NEOX RoPE and FFN biases on that axis. Greedy 24/24 vs
   llama-server; parity cos 0.99473, 0 flips (lower than the RMS models' 0.998+, plausibly the
   single-pass E[x^2]-mean^2 variance in LayerNormGpu; no decision flipped).
-- 2b Cohere2: LayerNorm (no bias) + parallel attention/FFN residual (+ its SWA pattern, logit scale).
+- 2b Cohere2 — DONE 2026-09-26: parallel attention/FFN residual in both GPU trunks (the FFN
+  norms the layer INPUT; attn-out and FFN-out are both added to it), and `RopeOnlySwaLayers`
+  (NoPE global layers) which the GPU trunks had never applied. SWA windows and the logit scale
+  were already there; LayerNorm without bias uses the zero bias from 2a. Greedy 24/24 vs
+  llama-server; parity cos 0.99944, 0 flips. `UnsupportedReason` no longer rejects parallel
+  residual (GPT-NeoX / phi-2 still fall back on their non-gated FFN).
 - 2c GPT-2 / StarCoder2 / GPT-NeoX: non-gated GELU MLP, biases on every linear, learned position
   table (GPT-2), parallel residual + partial RoPE (NeoX).
 - 2d Apertus: non-gated xIELU MLP.
@@ -301,7 +306,7 @@ decode steps, CPU vs Vulkan logits).
 | qwen3moe (Coder-30B-A3B) | same | |
 | qwen35 hybrid (Ornith 9B) | same (Vulkan hybrid GDN) | |
 | stablelm | SILENT GARBAGE | FIXED (step 2a): LayerNorm(+bias) + partial NEOX RoPE on Vulkan; = CPU = llama-server 24/24, cos 0.99473 |
-| cohere2 | SILENT GARBAGE | needs parallel residual (step 2b) -> CPU with a note meanwhile |
+| cohere2 | SILENT GARBAGE | FIXED (step 2b): parallel residual + RoPE-only-on-SWA-layers on Vulkan; = CPU = llama-server 24/24, cos 0.99944 |
 | gpt2, gptneox, phi2-file*, starcoder2, apertus | CRASHED (missing attn_q / ffn_gate) | now CPU with a note (LayerNorm, learned pos, non-gated FFN) |
 | deepseek2 (MLA), gpt-oss | CPU fallback (by design) | |
 | jais | not admitted (CPU too) | out of scope |

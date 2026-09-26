@@ -24,6 +24,7 @@ public sealed unsafe class GpuForwardPass : IForwardPass
     // GPU scratch buffers
     private readonly Tensor _hidden;     // [embDim]
     private readonly Tensor _residual;   // [embDim]
+    private readonly Tensor? _parAttnOut; // [embDim] parallel-residual attn out (UseParallelResidual)
     private readonly Tensor _normBuf;    // [embDim]
     private readonly Tensor _q;          // [numHeads * headDim]
     private readonly Tensor _k;          // [numKvHeads * headDim]
@@ -186,6 +187,7 @@ public sealed unsafe class GpuForwardPass : IForwardPass
     private int _bvK;                          // K the buffers below are currently sized for (0 = unallocated)
     private Tensor _hiddenK = default!;        // [K * embDim]
     private Tensor _residualK = default!;      // [K * embDim]
+    private Tensor? _parAttnOutK;              // [K * embDim] parallel-residual attn out (UseParallelResidual)
     private Tensor _normK = default!;          // [K * embDim]
     private Tensor _qK = default!;             // [K * numHeads * headDim]
     private Tensor _kK = default!;             // [K * numKvHeads * headDim]
@@ -465,7 +467,6 @@ public sealed unsafe class GpuForwardPass : IForwardPass
         if (hp.RopeDim > 0 && hp.RopeDim < hp.HeadDim && !hp.IsNeoxRope) return "partial non-NEOX RoPE";
         if (model.FindTensor("blk.0.ffn_down.bias") is not null || model.FindTensor("blk.0.ffn_up.bias") is not null)
             return "FFN biases";
-        if (hp.UseParallelResidual) return "parallel attention+FFN residual";
         if (model.FindTensor("position_embd.weight") is not null) return "learned absolute position embeddings";
         if (model.FindTensor("blk.0.ffn_gate.weight") is null && model.FindTensor("blk.0.ffn_gate_exps.weight") is null
             && !(model.FindTensor("blk.0.ffn_up.weight") is { } up && up.Dimensions[^1] == 2L * hp.IntermediateDim))
@@ -666,6 +667,7 @@ public sealed unsafe class GpuForwardPass : IForwardPass
         // Allocate GPU scratch buffers
         _hidden = gpu.Allocate(TensorShape.D1(_embDim));
         _residual = gpu.Allocate(TensorShape.D1(_embDim));
+        if (hp.UseParallelResidual) _parAttnOut = gpu.Allocate(TensorShape.D1(_embDim));
         _normBuf = gpu.Allocate(TensorShape.D1(_embDim));
         // Sized for the widest layer head_dim so gemma4 per-layer view tensors (256 SWA /
         // 512 global) can carve out the active rows. Identity to _headDim for non-gemma4.
@@ -1519,6 +1521,9 @@ public sealed unsafe class GpuForwardPass : IForwardPass
             {
                 bool useRoPE = _hp.NoRopeLayerStep == 0
                     || (layer + 1) % _hp.NoRopeLayerStep != 0;
+                // Cohere2 / EXAONE 4: RoPE on sliding-window layers only (NoPE global layers),
+                // as ForwardPass.Decode does.
+                if (_hp.RopeOnlySwaLayers) useRoPE = useRoPE && isSwa;
 
                 // Ordering (issue #157): RoPE does NOT commute with per-channel-weighted
                 // QK-norm (NEOX RoPE mixes channels i and i+d/2, which carry different
@@ -1730,14 +1735,27 @@ public sealed unsafe class GpuForwardPass : IForwardPass
                 _gpu.RecordBarrier();
             }
 
-            _gpu.AddInPlace(_hidden, _residual);
-            _gpu.RecordBarrier(); // hidden done → FFN copy reads it
+            if (_hp.UseParallelResidual)
+            {
+                // Parallel block (Cohere, GPT-NeoX): the FFN reads its own norm of the layer INPUT
+                // (still in _residual), not attn-out + input; both sublayer outputs are added to
+                // the input at the end. Mirrors ForwardPass.Decode's parallel branch.
+                CopyBuffer(_parAttnOut!, _hidden);
+                _gpu.RecordBarrier();
+                NormRows(_normBuf, _residual, _wFfnNorm[layer], _bFfnNorm?[layer], 1);
+                _gpu.RecordBarrier();
+            }
+            else
+            {
+                _gpu.AddInPlace(_hidden, _residual);
+                _gpu.RecordBarrier(); // hidden done → FFN copy reads it
 
-            CopyBuffer(_residual, _hidden);
-            _gpu.RecordBarrier();
+                CopyBuffer(_residual, _hidden);
+                _gpu.RecordBarrier();
 
-            NormRows(_normBuf, _hidden, _wFfnNorm[layer], _bFfnNorm?[layer], 1);
-            _gpu.RecordBarrier();
+                NormRows(_normBuf, _hidden, _wFfnNorm[layer], _bFfnNorm?[layer], 1);
+                _gpu.RecordBarrier();
+            }
 
             if (_isMoE)
                 GpuMoeFfn(layer);
@@ -1759,6 +1777,11 @@ public sealed unsafe class GpuForwardPass : IForwardPass
                 _gpu.RecordBarrier();
             }
 
+            if (_hp.UseParallelResidual)
+            {
+                _gpu.AddInPlace(_hidden, _parAttnOut!);
+                _gpu.RecordBarrier();
+            }
             _gpu.AddInPlace(_hidden, _residual);
             _gpu.RecordBarrier(); // hidden done → next layer's compute copy reads it
 
@@ -2586,6 +2609,7 @@ public sealed unsafe class GpuForwardPass : IForwardPass
 
             bool useRoPE = _hp.NoRopeLayerStep == 0
                 || (layer + 1) % _hp.NoRopeLayerStep != 0;
+            if (_hp.RopeOnlySwaLayers) useRoPE = useRoPE && isSwa;
 
             // QK-norm + RoPE (issue #157 ordering, mirrors Forward), now BATCHED over all k rows
             // of _qK/_kK in a handful of dispatches instead of the per-token gather/op/scatter
@@ -2769,16 +2793,27 @@ public sealed unsafe class GpuForwardPass : IForwardPass
                 _gpu.RecordBarrier();
             }
 
-            // + residual (whole buffer), then residualK = hiddenK for the FFN.
-            _gpu.AddInPlace(_hiddenK, _residualK);
-            _gpu.RecordBarrier();
-            _gpu.RecordComputeCopy(_residualK, _hiddenK);
-            _gpu.RecordBarrier();
+            if (_hp.UseParallelResidual)
+            {
+                // Parallel block: see RunStandardLayers. _residualK still holds the layer input.
+                _gpu.RecordComputeCopy(_parAttnOutK!, _hiddenK);
+                _gpu.RecordBarrier();
+                NormRows(_normK, _residualK, _wFfnNorm[layer], _bFfnNorm?[layer], k);
+                _gpu.RecordBarrier();
+            }
+            else
+            {
+                // + residual (whole buffer), then residualK = hiddenK for the FFN.
+                _gpu.AddInPlace(_hiddenK, _residualK);
+                _gpu.RecordBarrier();
+                _gpu.RecordComputeCopy(_residualK, _hiddenK);
+                _gpu.RecordBarrier();
 
-            // ffn RmsNorm: all k rows of [K][embDim] in one batched dispatch (bit-identical to the
-            // per-token K-loop).
-            NormRows(_normK, _hiddenK, _wFfnNorm[layer], _bFfnNorm?[layer], k);
-            _gpu.RecordBarrier();
+                // ffn RmsNorm: all k rows of [K][embDim] in one batched dispatch (bit-identical to
+                // the per-token K-loop).
+                NormRows(_normK, _hiddenK, _wFfnNorm[layer], _bFfnNorm?[layer], k);
+                _gpu.RecordBarrier();
+            }
 
             // gate/up: batched. SiLuMul over the whole [K][ffnDim] buffer. down: batched.
             _gpu.MatMulBatched(_ffnGateK, _wGate[layer], _normK, k, WeightDType(_wGate[layer]), allowInt8);
@@ -2803,6 +2838,11 @@ public sealed unsafe class GpuForwardPass : IForwardPass
                 _gpu.RecordBarrier();
             }
 
+            if (_hp.UseParallelResidual)
+            {
+                _gpu.AddInPlace(_hiddenK, _parAttnOutK!);
+                _gpu.RecordBarrier();
+            }
             _gpu.AddInPlace(_hiddenK, _residualK);
             _gpu.RecordBarrier();
         }
@@ -3015,6 +3055,7 @@ public sealed unsafe class GpuForwardPass : IForwardPass
         {
             _hiddenK = Alloc((long)k * _embDim);
             _residualK = Alloc((long)k * _embDim);
+            if (_hp.UseParallelResidual) _parAttnOutK = Alloc((long)k * _embDim);
             _normK = Alloc((long)k * _embDim);
             _qK = Alloc((long)k * qDim);
             _kK = Alloc((long)k * kvDim);
@@ -3050,6 +3091,7 @@ public sealed unsafe class GpuForwardPass : IForwardPass
     private void FreeBatchVerifyScratch()
     {
         _gpu.Free(_hiddenK); _gpu.Free(_residualK); _gpu.Free(_normK);
+        if (_parAttnOutK is not null) { _gpu.Free(_parAttnOutK); _parAttnOutK = null; }
         _gpu.Free(_qK); _gpu.Free(_kK); _gpu.Free(_vK); _gpu.Free(_attnOutK);
         _gpu.Free(_ffnGateK); _gpu.Free(_ffnUpK);
         if (_logitsKBuf is not null) _gpu.Free(_logitsK);
@@ -3596,6 +3638,7 @@ public sealed unsafe class GpuForwardPass : IForwardPass
 
         _taps?.Dispose();
         _gpu.Free(_hidden); _gpu.Free(_residual); _gpu.Free(_normBuf);
+        if (_parAttnOut is not null) _gpu.Free(_parAttnOut);
         _gpu.Free(_q); _gpu.Free(_k); _gpu.Free(_v); _gpu.Free(_attnOut);
         _gpu.Free(_ffnGate); _gpu.Free(_ffnUp); _gpu.Free(_logits);
         if (_routerLogits is not null) _gpu.Free(_routerLogits);
