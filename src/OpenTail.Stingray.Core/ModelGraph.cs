@@ -208,6 +208,11 @@ public sealed record ModelHyperparams
     /// used by the YaRN correction-range formula. Only meaningful when <see cref="RopeYarnFactor"/> &gt; 1.</summary>
     public int RopeYarnOrigCtxLen { get; init; }
 
+    /// <summary>{arch}.rope.scaling.attn_factor: magnitude scale baked into every RoPE cos/sin
+    /// (llama-context.cpp multiplies it into yarn_attn_factor unconditionally). Phi-3.5 LongRoPE
+    /// ships 1.19024; 1 when absent.</summary>
+    public float RopeAttnFactor { get; init; } = 1f;
+
     /// <summary>
     /// DeepSeek2-specific YaRN attention-score correction ({arch}.rope.scaling.yarn_log_multiplier).
     /// Unlike the rest of the YaRN parameters (which feed the RoPE cos/sin table itself), this one
@@ -978,7 +983,9 @@ public sealed record ModelHyperparams
         // an explicit arch-string check the same way useParallelResidual does above; a GGUF's
         // tensor inventory alone can't distinguish "RMSNorm with a weight tensor" from
         // "bias-less LayerNorm with a weight tensor", since both look identical on disk.
-        bool usesLayerNorm = hasNormBias || arch == "cohere2";
+        // phimoe is the opposite case: it ships norm bias tensors but is RMSNorm + bias
+        // (phi3.cpp's graph, shared by phimoe: build_norm(..., norm_b, LLM_NORM_RMS)).
+        bool usesLayerNorm = (hasNormBias && arch != "phimoe") || arch == "cohere2";
         bool ropeOnlySwaLayers = arch == "cohere2";
 
         // OLMo v1 ships no attn_norm/ffn_norm/output_norm tensor at all (confirmed against
@@ -1040,6 +1047,7 @@ public sealed record ModelHyperparams
             MlaVHeadDim = GetInt(metadata, $"{arch}.attention.value_length", 0),
             RopeYarnFactor = GetFloat(metadata, $"{arch}.rope.scaling.factor", 1f),
             RopeYarnOrigCtxLen = GetInt(metadata, $"{arch}.rope.scaling.original_context_length", 0),
+            RopeAttnFactor = GetFloat(metadata, $"{arch}.rope.scaling.attn_factor", 1f),
             // [TAG_DEEPSEEK2_YARN_LOG_MUL_FIX] see the matching comment above -- same /0.1f
             // correction llama.cpp applies at load time, not just in the local kq_scale calc.
             RopeYarnLogMul = GetFloat(metadata, $"{arch}.rope.scaling.yarn_log_multiplier", 0f) / 0.1f,
@@ -1056,7 +1064,8 @@ public sealed record ModelHyperparams
             // previous version of this line defaulted to TRUE for every non-olmoe architecture
             // (including deepseek2) when the key was absent -- backwards from llama.cpp's own
             // default, and the reason this fix didn't unblock deepseek2 on first attempt.
-            NormalizeMoeTopKWeights = arch.Equals("qwen3moe", StringComparison.OrdinalIgnoreCase) ? true
+            // phimoe: phi3.cpp's build_moe_ffn passes norm_w = true unconditionally.
+            NormalizeMoeTopKWeights = arch is "qwen3moe" or "phimoe" ? true
                 : arch.Equals("olmoe", StringComparison.OrdinalIgnoreCase) ? false
                 : GetBool(metadata, $"{arch}.expert_weights_norm", false),
             // llama.cpp's LLM_KV_EXPERT_WEIGHTS_SCALE ("routed_scaling_factor" in DeepSeek-V2/V3's

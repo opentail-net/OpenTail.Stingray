@@ -38,6 +38,12 @@ public static class ModelCompatibility
         "qwen35", "qwen35moe",
         "mimo", "mimo2",
         "gemma", "gemma2", "gemma3", "gemma3n", "gemma4",
+        // phimoe — was allowlisted without a receipt and produced word salad. Fixed 2026-09-26
+        // (RMSNorm + bias instead of LayerNorm, output.bias, top-k weight renormalization,
+        // LongRoPE short/long factors chosen by context size + rope.scaling.attn_factor).
+        // Receipt: PhiMoeGreedyParityTests — Phi-3.5-MoE-instruct Q3_K_M vs llama-server, 24/24
+        // exact greedy tokens at -c 4096 (short factors) and 32/32 on a 214-token prompt at
+        // -c 8192 (long factors).
         "phi2", "phi3", "phimoe",
         // olmoe — admitted 2026-08-08 on perplexity parity, NOT on token-for-token greedy parity,
         // which it does not achieve. On wikitext at a matched 2048-token context llama.cpp b8585

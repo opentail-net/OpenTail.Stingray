@@ -129,7 +129,7 @@ public sealed unsafe partial class ForwardPass
         cache.IncrementPosition();
         var outNormW = GetNormWeight(_outputNorm);
         SimdKernels.RmsNorm(_hidden, _hidden, outNormW, _embDim, _hp.RmsNormEps);
-        FusedMatVec(_logits, _outputWeight, _hidden, _hp.VocabSize, _embDim);
+        ProjectLogits(_hidden);
         return new ReadOnlySpan<float>(_logits, _hp.VocabSize);
     }
 
@@ -400,7 +400,7 @@ public sealed unsafe partial class ForwardPass
             {
                 float* h = batchHidden + (long)n * _embDim;
                 SimdKernels.RmsNorm(h, h, outNormW, _embDim, _hp.RmsNormEps);
-                FusedMatVec(_logits, _outputWeight, h, _hp.VocabSize, _embDim);
+                ProjectLogits(h);
                 result[n] = new float[_hp.VocabSize];
                 new ReadOnlySpan<float>(_logits, _hp.VocabSize).CopyTo(result[n]);
             }
@@ -636,7 +636,7 @@ public sealed unsafe partial class ForwardPass
                 if (!wantLogits[s]) continue;
                 float* lastHidden = batchHidden + (long)(off[s + 1] - 1) * _embDim;
                 SimdKernels.RmsNorm(lastHidden, lastHidden, outNormW, _embDim, _hp.RmsNormEps);
-                FusedMatVec(_logits, _outputWeight, lastHidden, _hp.VocabSize, _embDim);
+                ProjectLogits(lastHidden);
                 var arr = new float[_hp.VocabSize];
                 new ReadOnlySpan<float>(_logits, _hp.VocabSize).CopyTo(arr);
                 result[s] = arr;
@@ -732,6 +732,7 @@ public sealed unsafe partial class ForwardPass
             }
             if (_bOutputNorm != null) NativeMemory.Free(_bOutputNorm);
         }
+        if (_bOutput != null) NativeMemory.Free(_bOutput);
         if (_hasFfnBias)
         {
             for (int i = 0; i < _hp.NumLayers; i++)

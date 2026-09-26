@@ -658,7 +658,7 @@ public sealed unsafe partial class ForwardPass
                     if (positionFilter != null && !positionFilter(n)) continue;
                     float* hn = batchHidden + (long)n * _embDim;
                     ApplyFinalNorm(hn, hn);
-                    FusedMatVec(_logits, _outputWeight, hn, _hp.VocabSize, _embDim);
+                    ProjectLogits(hn);
                     if (_hp.LogitScale != 1f)
                         SimdKernels.ScaleInPlace(_logits, _hp.LogitScale, _hp.VocabSize);
                     if (_hp.FinalLogitSoftcap > 0f)
@@ -671,7 +671,7 @@ public sealed unsafe partial class ForwardPass
             float* lastHidden = batchHidden + (long)(N - 1) * _embDim;
             ApplyFinalNorm(lastHidden, lastHidden);
             Copy(_hidden, lastHidden, _embDim);
-            FusedMatVec(_logits, _outputWeight, lastHidden, _hp.VocabSize, _embDim);
+            ProjectLogits(lastHidden);
             if (_hp.LogitScale != 1f)
                 SimdKernels.ScaleInPlace(_logits, _hp.LogitScale, _hp.VocabSize);
             if (_hp.FinalLogitSoftcap > 0f)
@@ -911,7 +911,7 @@ public sealed unsafe partial class ForwardPass
             float* lastHidden = batchHidden + (long)(N - 1) * _embDim;
             var outNormW = GetNormWeight(_outputNorm);
             SimdKernels.RmsNorm(lastHidden, lastHidden, outNormW, _embDim, _hp.RmsNormEps);
-            FusedMatVec(_logits, _outputWeight, lastHidden, _hp.VocabSize, _embDim);
+            ProjectLogits(lastHidden);
 
             return new ReadOnlySpan<float>(_logits, _hp.VocabSize);
         }
@@ -1200,7 +1200,7 @@ public sealed unsafe partial class ForwardPass
             {
                 float* h = batchHidden + (long)n * _embDim;
                 SimdKernels.RmsNorm(h, h, outNormW, _embDim, _hp.RmsNormEps);
-                FusedMatVec(_logits, _outputWeight, h, _hp.VocabSize, _embDim);
+                ProjectLogits(h);
                 result[n] = new float[_hp.VocabSize];
                 new ReadOnlySpan<float>(_logits, _hp.VocabSize).CopyTo(result[n]);
             }

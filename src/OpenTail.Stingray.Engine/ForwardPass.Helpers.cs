@@ -131,12 +131,24 @@ public sealed unsafe partial class ForwardPass
     /// cohere2 without one — see <see cref="_usesLayerNorm"/>) or the ordinary RMSNorm path
     /// every other architecture uses. <paramref name="bias"/> may be null (no bias tensor for
     /// this architecture, e.g. cohere2) — <see cref="SimdKernels.LayerNorm"/> handles that
-    /// directly; it is ignored entirely on the RMSNorm path.
+    /// directly. On the RMSNorm path a non-null bias is added after the weight (phimoe:
+    /// build_norm(LLM_NORM_RMS) with a bias tensor).
     /// </summary>
     private void FastNorm(float* output, float* input, float* weight, float* bias, int size, float eps)
     {
         if (_usesLayerNorm) SimdKernels.LayerNorm(output, input, weight, bias, size, eps);
-        else                FastRmsNorm(output, input, weight, size, eps);
+        else
+        {
+            FastRmsNorm(output, input, weight, size, eps);
+            if (bias != null) SimdKernels.AddInPlace(output, bias, size);
+        }
+    }
+
+    /// <summary>LM head: <c>_logits = output.weight × hidden (+ output.bias when present)</c>.</summary>
+    private void ProjectLogits(float* hidden)
+    {
+        FusedMatVec(_logits, _outputWeight, hidden, _hp.VocabSize, _embDim);
+        if (_bOutput != null) SimdKernels.AddInPlace(_logits, _bOutput, _hp.VocabSize);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

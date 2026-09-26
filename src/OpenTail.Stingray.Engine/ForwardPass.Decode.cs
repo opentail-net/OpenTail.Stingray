@@ -492,7 +492,7 @@ public sealed unsafe partial class ForwardPass
         if (!SkipOutputProjection)
         {
             long logitsStart = profDecode ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
-            FusedMatVec(_logits, _outputWeight, _hidden, _hp.VocabSize, _embDim);
+            ProjectLogits(_hidden);
             if (profDecode) DecodeProfileTimers.Add(DecodeProfileTimers.Category.OutProj, System.Diagnostics.Stopwatch.GetTimestamp() - logitsStart);
 
             // Granite/MiniCPM final-logit scale (already carries llama.cpp's 1/f_logit_scale

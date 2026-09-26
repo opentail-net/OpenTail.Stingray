@@ -196,6 +196,8 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
     private readonly float*[]? _bAttnNorm;
     private readonly float*[]? _bFfnNorm;
     private readonly float* _bOutputNorm;
+    // LM-head bias (phimoe output.bias); null for every model without one.
+    private readonly float* _bOutput;
     private readonly bool _hasFfnBias;
     private readonly float*[]? _bFfnUp;
     private readonly float*[]? _bFfnDown;
@@ -504,6 +506,19 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
             ropeFreqsBuf = new float[_ropeHalfDim];
             src.Slice(0, _ropeHalfDim).CopyTo(ropeFreqsBuf);
         }
+        else
+        {
+            // LongRoPE (Phi-3 128k / Phi-3.5): per-pair short/long factor tensors, chosen ONCE by
+            // the context size, not per position — llama_model::get_rope_factors picks long when
+            // n_ctx_seq > original_context_length, short otherwise.
+            bool useLong = hp.RopeYarnOrigCtxLen > 0 && ctxLen > hp.RopeYarnOrigCtxLen;
+            if (model.FindTensor(useLong ? "rope_factors_long.weight" : "rope_factors_short.weight") is GgufTensorInfo lri
+                && lri.DType == DType.Float32 && lri.ElementCount == _ropeHalfDim)
+            {
+                ropeFreqsBuf = new float[_ropeHalfDim];
+                MemoryMarshal.Cast<byte, float>(model.GetTensorData(lri)).Slice(0, _ropeHalfDim).CopyTo(ropeFreqsBuf);
+            }
+        }
         fixed (float* p = ropeFreqsBuf)
         {
             globalFreqFactors = p;
@@ -529,6 +544,12 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
             else
             {
                 SimdKernels.BuildRopeTable(_ropeCosTable, _ropeSinTable, ctxLen, maxRopeDim, hp.RopeTheta, globalFreqFactors);
+                if (hp.RopeAttnFactor != 1f)
+                {
+                    long n = (long)ctxLen * _ropeHalfDim;
+                    SimdKernels.ScaleInPlace(_ropeCosTable, hp.RopeAttnFactor, (int)n);
+                    SimdKernels.ScaleInPlace(_ropeSinTable, hp.RopeAttnFactor, (int)n);
+                }
             }
         }
 
@@ -875,6 +896,8 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
         _outputWeight = model.FindTensor("output.weight") is not null
             ? ResolveTensor("output.weight")
             : _embTensor; // tied embeddings
+        if (model.FindTensor("output.bias") is not null)
+            _bOutput = LoadBias("output.bias", hp.VocabSize);
 
         if (hp.HasPerLayerTokenEmbd)
         {
