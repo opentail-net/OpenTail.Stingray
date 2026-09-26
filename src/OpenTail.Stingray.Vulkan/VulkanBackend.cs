@@ -796,6 +796,12 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
     /// <summary>Sgemm consumes raw Q3_K/Q4_K B operands (Shaders.SgemmQ3K/Q4K, MatVecDqQ3K/Q4K).</summary>
     public bool SupportsQuantizedSgemm => true;
 
+    /// <summary>fp32 x raw-bf16 GEMM via Shaders.SgemmBf16W (32-bit loads only, no extension needed).</summary>
+    public bool SupportsBf16WeightSgemm => true;
+
+    /// <summary>fp32 x raw fp8-E4M3 GEMM via Shaders.SgemmFp8W (32-bit loads only).</summary>
+    public bool SupportsFp8WeightSgemm => true;
+
     public SgemmPrecision BestSgemmPrecision =>
         HasShaderFloat16Int8 && Has16BitStorage ? SgemmPrecision.Fp16 :
         SgemmPrecision.Fp32;
@@ -1611,6 +1617,8 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
     private ComputePipeline? _bufCopyPipeline;
     private ComputePipeline? _sgemmF32Pipeline;
     private ComputePipeline? _sgemmF16Pipeline;
+    private ComputePipeline? _sgemmBf16WPipeline;
+    private ComputePipeline? _sgemmFp8WPipeline;
     private ComputePipeline? _sgemmSiluGateF16Pipeline;
     private ComputePipeline? _sgemmBf16Pipeline;
     private ComputePipeline? _sgemmFp8Pipeline;
@@ -3763,6 +3771,26 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
             return;
         }
 
+        // fp32 activations x raw fp8 E4M3 weights (see Shaders.SgemmFp8W).
+        if (A.DType == DType.Float32 && B.DType == DType.Float8E4M3)
+        {
+            _sgemmFp8WPipeline ??= new ComputePipeline(this, Shaders.SgemmFp8W, 3,
+                pushConstantSize: sizeof(SgemmParams));
+            DispatchOrRecord(_sgemmFp8WPipeline, [GetBuffer(A), GetBuffer(B), GetBuffer(C)],
+                ((uint)M + 127u) / 128u, &p, ((uint)N + 255u) / 256u);
+            return;
+        }
+
+        // fp32 activations x raw-bf16 weights (see Shaders.SgemmBf16W).
+        if (A.DType == DType.Float32 && B.DType == DType.BFloat16)
+        {
+            _sgemmBf16WPipeline ??= new ComputePipeline(this, Shaders.SgemmBf16W, 3,
+                pushConstantSize: sizeof(SgemmParams));
+            DispatchOrRecord(_sgemmBf16WPipeline, [GetBuffer(A), GetBuffer(B), GetBuffer(C)],
+                ((uint)M + 127u) / 128u, &p, ((uint)N + 255u) / 256u);
+            return;
+        }
+
         if (A.DType == DType.Float32 && B.DType == DType.Float16 && HasShaderFloat16Int8 && Has16BitStorage)
         {
             if (M == 1 && (K % 2 == 0) && inputRowOffsetElements == 0)
@@ -5015,6 +5043,8 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
         _bufCopyPipeline?.Dispose();
         _sgemmF32Pipeline?.Dispose();
         _sgemmF16Pipeline?.Dispose();
+        _sgemmBf16WPipeline?.Dispose();
+        _sgemmFp8WPipeline?.Dispose();
         foreach (var qp in _quantGemmPipelines.Values) qp.Dispose();
         _quantGemmPipelines.Clear();
         _sgemmSiluGateF16Pipeline?.Dispose();

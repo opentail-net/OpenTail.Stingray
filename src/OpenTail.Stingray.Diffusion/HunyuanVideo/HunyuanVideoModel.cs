@@ -7,7 +7,7 @@ namespace OpenTail.Stingray.Diffusion.HunyuanVideo;
 /// Native C# HunyuanVideo Dual-Stream and Single-Stream Diffusion Transformer (DiT).
 /// Reference: stable-diffusion.cpp:src/model/diffusion/hunyuan.hpp:HunyuanVideoModel
 /// </summary>
-public sealed class HunyuanVideoModel : IDisposable
+public sealed partial class HunyuanVideoModel : IDisposable
 {
     private readonly IWeightLoader _weights;
     private readonly QuantizedWeightCache _quantizedCache;
@@ -65,6 +65,7 @@ public sealed class HunyuanVideoModel : IDisposable
         _headDim = _dim / _numHeads;
         if (backend is not null)
             _gpuWeights = new Dictionary<string, CoreTensor>(StringComparer.Ordinal);
+        InitGpuDefault();
     }
 
     private static (int dim, int numHeads, int depthDouble, int depthSingle) DetectConfig(
@@ -241,6 +242,13 @@ public sealed class HunyuanVideoModel : IDisposable
             Console.Error.WriteLine($"[HunyuanVideo.Forward] imgTokens nan={imgTokens.Count(v => !float.IsFinite(v))}/{imgTokens.Length} txtTokens nan={txtTokens.Count(v => !float.IsFinite(v))}/{txtTokens.Length} tEmb nan={tEmb.Count(v => !float.IsFinite(v))}/{tEmb.Length} cos nan={cos.Count(v => !float.IsFinite(v))} sin nan={sin.Count(v => !float.IsFinite(v))}");
         }
 
+        if (UseGpu && GpuCapable)
+        {
+            // Double + single blocks on the GPU (HunyuanVideoModel.Gpu.cs); final layer below.
+            imgTokens = BlocksGpu(imgTokens, txtTokens, tEmb, cos, sin, numImgTokens, numTxtTokens);
+            goto FinalLayer;
+        }
+
         // 5. Dual-Stream Blocks (double_blocks)
         for (int b = 0; b < _depthDouble; b++)
         {
@@ -275,6 +283,7 @@ public sealed class HunyuanVideoModel : IDisposable
             imgTokens = singleTokens.AsSpan(0, numImgTokens * _dim).ToArray();
         }
 
+    FinalLayer:
         // 7. Final Layer: chunks are [shift, scale] and the modulation is LN(x)*(1+scale)+shift with
         // an affine-free LayerNorm (reference: Flux::LastLayer, used by hunyuan.hpp; the original
         // checkpoint's order -- diffusers' converter swaps it). This previously used the shift
@@ -774,6 +783,7 @@ public sealed class HunyuanVideoModel : IDisposable
         if (_disposed) return;
         _disposed = true;
         _quantizedCache.Dispose();
+        DisposeGpu();
         if (_gpuWeights is not null)
         {
             foreach (var t in _gpuWeights.Values) t.Dispose();

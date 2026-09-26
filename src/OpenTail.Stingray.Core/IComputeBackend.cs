@@ -25,6 +25,14 @@ public interface IComputeBackend : IDisposable
     /// uploaded via <see cref="UploadRaw"/> as GGUF Q3_K/Q4_K blocks (dequantized in the kernel).</summary>
     bool SupportsQuantizedSgemm => false;
 
+    /// <summary>True when <see cref="Sgemm(Tensor, Tensor, Tensor, int, int, int)"/> accepts an fp32 A
+    /// with a B operand uploaded via <see cref="UploadBf16"/> (bf16 weights widened in the kernel).</summary>
+    bool SupportsBf16WeightSgemm => false;
+
+    /// <summary>True when <see cref="Sgemm(Tensor, Tensor, Tensor, int, int, int)"/> accepts an fp32 A
+    /// with a B operand uploaded via <see cref="UploadFp8"/> (E4M3 weights widened in the kernel).</summary>
+    bool SupportsFp8WeightSgemm => false;
+
     // --- Memory management ---
 
     /// <summary>Allocate a tensor of the given shape, initialized to zero.

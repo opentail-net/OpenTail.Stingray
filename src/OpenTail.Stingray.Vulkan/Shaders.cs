@@ -7107,6 +7107,271 @@ internal static class Shaders
         """;
 
     /// <summary>
+    /// <see cref="SgemmF16"/> with the weights (B) as raw bf16 bits instead of fp16: C[M,N] =
+    /// A[M,K] x B[N,K]^T, A and C fp32. bf16 widens to fp32 exactly (a 16-bit shift), so bf16
+    /// checkpoints (UMT5-XXL for Wan) upload their safetensors bytes as-is — no host-side
+    /// bf16 -> fp32 -> fp16 conversion pass, and no fp16 range/subnormal loss. Needs no 16-bit
+    /// storage or float16 extension: B is read as 32-bit words. Tiling/dispatch identical to
+    /// SgemmF16: (ceil(M/128), ceil(N/256), 1), push constants { M, N, K, aOffset }.
+    /// </summary>
+    internal const string SgemmBf16W = """
+        #version 450
+        #extension GL_EXT_control_flow_attributes : enable
+
+        layout(local_size_x = 16, local_size_y = 32, local_size_z = 1) in;
+
+        layout(push_constant) uniform PC {
+            uint M;
+            uint N;
+            uint K;
+            uint aOffset;
+        } pc;
+
+        layout(binding = 0) readonly  buffer BufA { float    a_data[]; };
+        layout(binding = 1) readonly  buffer BufB { uint b_data[]; };   // bf16 pairs, element 2i in the low half
+        layout(binding = 2) writeonly buffer BufC { float    c_data[]; };
+
+        layout(binding = 0) readonly  buffer BufAVec { vec4     a_vec4[]; };
+        layout(binding = 1) readonly  buffer BufBVec { uvec2    b_vec4[]; };   // 4 bf16
+
+        // bf16 -> fp32 is exact: the bf16 bits are the high half of the fp32 bits.
+        float bf16At(uint e) {
+            uint w = b_data[e >> 1];
+            return uintBitsToFloat((e & 1u) != 0u ? (w & 0xFFFF0000u) : (w << 16));
+        }
+
+        // vec4-packed LDS tiles: the inner loop reads 1 vec4 of A + 4 vec4 of B per k (5 LDS reads
+        // per 64 FMAs) instead of 20 scalar reads -- the scalar version was LDS-read bound.
+        shared vec4 tileA4[32][32];   // 128 rows
+        shared vec4 tileB4[32][64];   // 256 cols
+
+        void main() {
+            uint tx = gl_LocalInvocationID.x; // 0..15 -> rows tx*8 .. +7
+            uint ty = gl_LocalInvocationID.y; // 0..15 -> cols ty*8 .. +7
+            uint tid = ty * 16u + tx;         // 0..255
+            uint row_base = gl_WorkGroupID.x * 128u;
+            uint col_base = gl_WorkGroupID.y * 256u;
+
+            float acc[8][8];
+            [[unroll]] for (uint i = 0u; i < 8u; i++)
+                [[unroll]] for (uint j = 0u; j < 8u; j++)
+                    acc[i][j] = 0.0;
+
+            uint numTiles = (pc.K + 31u) / 32u;
+            bool vecOk = ((pc.K & 3u) == 0u) && ((pc.aOffset & 3u) == 0u);
+
+            for (uint t = 0u; t < numTiles; t++) {
+                uint k_base = t * 32u;
+                [[unroll]] for (uint p = 0u; p < 2u; p++) {
+                    uint idx = tid + p * 512u;
+                    uint r = idx >> 3;          // 0..127
+                    uint c4 = (idx & 7u) << 2;
+                    uint gm = row_base + r;
+                    uint gk = k_base + c4;
+                    vec4 v;
+                    if (gm < pc.M && gk + 3u < pc.K && vecOk) {
+                        v = a_vec4[(gm * pc.K + gk + pc.aOffset) >> 2];
+                    } else {
+                        v = vec4(
+                            (gm < pc.M && gk + 0u < pc.K) ? a_data[gm * pc.K + gk + 0u + pc.aOffset] : 0.0,
+                            (gm < pc.M && gk + 1u < pc.K) ? a_data[gm * pc.K + gk + 1u + pc.aOffset] : 0.0,
+                            (gm < pc.M && gk + 2u < pc.K) ? a_data[gm * pc.K + gk + 2u + pc.aOffset] : 0.0,
+                            (gm < pc.M && gk + 3u < pc.K) ? a_data[gm * pc.K + gk + 3u + pc.aOffset] : 0.0);
+                    }
+                    tileA4[c4 + 0u][r >> 2u][r & 3u] = v.x;
+                    tileA4[c4 + 1u][r >> 2u][r & 3u] = v.y;
+                    tileA4[c4 + 2u][r >> 2u][r & 3u] = v.z;
+                    tileA4[c4 + 3u][r >> 2u][r & 3u] = v.w;
+                }
+                [[unroll]] for (uint p = 0u; p < 4u; p++) {
+                    uint idx = tid + p * 512u;
+                    uint r = idx >> 3;          // 0..255
+                    uint c4 = (idx & 7u) << 2;
+                    uint gn = col_base + r;
+                    uint gk = k_base + c4;
+                    vec4 v;
+                    if (gn < pc.N && gk + 3u < pc.K && ((pc.K & 3u) == 0u)) {
+                        uvec2 w = b_vec4[(gn * pc.K + gk) >> 2];
+                        v = vec4(uintBitsToFloat(w.x << 16), uintBitsToFloat(w.x & 0xFFFF0000u),
+                                 uintBitsToFloat(w.y << 16), uintBitsToFloat(w.y & 0xFFFF0000u));
+                    } else {
+                        v = vec4(
+                            (gn < pc.N && gk + 0u < pc.K) ? bf16At(gn * pc.K + gk + 0u) : 0.0,
+                            (gn < pc.N && gk + 1u < pc.K) ? bf16At(gn * pc.K + gk + 1u) : 0.0,
+                            (gn < pc.N && gk + 2u < pc.K) ? bf16At(gn * pc.K + gk + 2u) : 0.0,
+                            (gn < pc.N && gk + 3u < pc.K) ? bf16At(gn * pc.K + gk + 3u) : 0.0);
+                    }
+                    tileB4[c4 + 0u][r >> 2u][r & 3u] = v.x;
+                    tileB4[c4 + 1u][r >> 2u][r & 3u] = v.y;
+                    tileB4[c4 + 2u][r >> 2u][r & 3u] = v.z;
+                    tileB4[c4 + 3u][r >> 2u][r & 3u] = v.w;
+                }
+                barrier();
+
+                // Partially unrolled (4 x 8 k-steps): full 32-step unrolling ran ~2x faster than none but
+                // made the AMD driver's first-use pipeline compile take ~12s per process.
+                [[dont_unroll]] for (uint k0 = 0u; k0 < 32u; k0 += 8u)
+                [[unroll]] for (uint kk = 0u; kk < 8u; kk++) {
+                    uint k = k0 + kk;
+                    vec4 a0 = tileA4[k][tx * 2u + 0u];
+                    vec4 a1 = tileA4[k][tx * 2u + 1u];
+                    vec4 b0 = tileB4[k][ty * 2u + 0u];
+                    vec4 b1 = tileB4[k][ty * 2u + 1u];
+                    float av[8] = float[8](a0.x, a0.y, a0.z, a0.w, a1.x, a1.y, a1.z, a1.w);
+                    float bw[8] = float[8](b0.x, b0.y, b0.z, b0.w, b1.x, b1.y, b1.z, b1.w);
+                    [[unroll]] for (uint i = 0u; i < 8u; i++)
+                        [[unroll]] for (uint j = 0u; j < 8u; j++)
+                            acc[i][j] += av[i] * bw[j];
+                }
+                barrier();
+            }
+
+            [[unroll]] for (uint i = 0u; i < 8u; i++) {
+                uint out_r = row_base + tx * 8u + i;
+                if (out_r >= pc.M) continue;
+                [[unroll]] for (uint j = 0u; j < 8u; j++) {
+                    uint out_c = col_base + ty * 8u + j;
+                    if (out_c < pc.N)
+                        c_data[out_r * pc.N + out_c] = acc[i][j];
+                }
+            }
+        }
+        """;
+
+    /// <summary>
+    /// <see cref="SgemmBf16W"/> with the weights (B) as raw fp8 E4M3 bytes (one per element, as
+    /// uploaded by <c>UploadFp8</c>): C[M,N] = A[M,K] x B[N,K]^T, A and C fp32, no per-tensor scale.
+    /// Decodes in-shader from 32-bit word loads, so no float8/16-bit-storage extension is needed —
+    /// lets fp8 checkpoints (HunyuanVideo 720p cfg-distilled) stay at 1 byte/weight in VRAM.
+    /// Tiling/dispatch identical to SgemmF16: (ceil(M/128), ceil(N/256), 1).
+    /// </summary>
+    internal const string SgemmFp8W = """
+        #version 450
+        #extension GL_EXT_control_flow_attributes : enable
+
+        layout(local_size_x = 16, local_size_y = 32, local_size_z = 1) in;
+
+        layout(push_constant) uniform PC {
+            uint M;
+            uint N;
+            uint K;
+            uint aOffset;
+        } pc;
+
+        layout(binding = 0) readonly  buffer BufA { float    a_data[]; };
+        layout(binding = 1) readonly  buffer BufB { uint b_data[]; };   // fp8 E4M3 quads, element 4i in the low byte
+        layout(binding = 2) writeonly buffer BufC { float    c_data[]; };
+
+        layout(binding = 0) readonly  buffer BufAVec { vec4     a_vec4[]; };
+        // E4M3 (bias 7, no inf; 0x7F/0xFF = NaN) -> fp32, exact. Matches the CPU safetensors
+        // decode: e == 0 -> m * 2^-9 (subnormal), else (1 + m/8) * 2^(e-7).
+        float fp8ToF32(uint b) {
+            uint e = (b >> 3) & 15u, m = b & 7u;
+            float v = (e == 0u) ? float(m) * (1.0 / 512.0) : uintBitsToFloat(((e + 120u) << 23) | (m << 20));
+            if ((b & 0x7Fu) == 0x7Fu) v = uintBitsToFloat(0x7FC00000u);
+            return (b & 0x80u) != 0u ? -v : v;
+        }
+        float fp8At(uint e) { return fp8ToF32((b_data[e >> 2] >> ((e & 3u) * 8u)) & 0xFFu); }
+
+        // vec4-packed LDS tiles: the inner loop reads 1 vec4 of A + 4 vec4 of B per k (5 LDS reads
+        // per 64 FMAs) instead of 20 scalar reads -- the scalar version was LDS-read bound.
+        shared vec4 tileA4[32][32];   // 128 rows
+        shared vec4 tileB4[32][64];   // 256 cols
+
+        void main() {
+            uint tx = gl_LocalInvocationID.x; // 0..15 -> rows tx*8 .. +7
+            uint ty = gl_LocalInvocationID.y; // 0..15 -> cols ty*8 .. +7
+            uint tid = ty * 16u + tx;         // 0..255
+            uint row_base = gl_WorkGroupID.x * 128u;
+            uint col_base = gl_WorkGroupID.y * 256u;
+
+            float acc[8][8];
+            [[unroll]] for (uint i = 0u; i < 8u; i++)
+                [[unroll]] for (uint j = 0u; j < 8u; j++)
+                    acc[i][j] = 0.0;
+
+            uint numTiles = (pc.K + 31u) / 32u;
+            bool vecOk = ((pc.K & 3u) == 0u) && ((pc.aOffset & 3u) == 0u);
+
+            for (uint t = 0u; t < numTiles; t++) {
+                uint k_base = t * 32u;
+                [[unroll]] for (uint p = 0u; p < 2u; p++) {
+                    uint idx = tid + p * 512u;
+                    uint r = idx >> 3;          // 0..127
+                    uint c4 = (idx & 7u) << 2;
+                    uint gm = row_base + r;
+                    uint gk = k_base + c4;
+                    vec4 v;
+                    if (gm < pc.M && gk + 3u < pc.K && vecOk) {
+                        v = a_vec4[(gm * pc.K + gk + pc.aOffset) >> 2];
+                    } else {
+                        v = vec4(
+                            (gm < pc.M && gk + 0u < pc.K) ? a_data[gm * pc.K + gk + 0u + pc.aOffset] : 0.0,
+                            (gm < pc.M && gk + 1u < pc.K) ? a_data[gm * pc.K + gk + 1u + pc.aOffset] : 0.0,
+                            (gm < pc.M && gk + 2u < pc.K) ? a_data[gm * pc.K + gk + 2u + pc.aOffset] : 0.0,
+                            (gm < pc.M && gk + 3u < pc.K) ? a_data[gm * pc.K + gk + 3u + pc.aOffset] : 0.0);
+                    }
+                    tileA4[c4 + 0u][r >> 2u][r & 3u] = v.x;
+                    tileA4[c4 + 1u][r >> 2u][r & 3u] = v.y;
+                    tileA4[c4 + 2u][r >> 2u][r & 3u] = v.z;
+                    tileA4[c4 + 3u][r >> 2u][r & 3u] = v.w;
+                }
+                [[unroll]] for (uint p = 0u; p < 4u; p++) {
+                    uint idx = tid + p * 512u;
+                    uint r = idx >> 3;          // 0..255
+                    uint c4 = (idx & 7u) << 2;
+                    uint gn = col_base + r;
+                    uint gk = k_base + c4;
+                    vec4 v;
+                    if (gn < pc.N && gk + 3u < pc.K && ((pc.K & 3u) == 0u)) {
+                        uint w = b_data[(gn * pc.K + gk) >> 2];
+                        v = vec4(fp8ToF32(w & 0xFFu), fp8ToF32((w >> 8) & 0xFFu),
+                                 fp8ToF32((w >> 16) & 0xFFu), fp8ToF32(w >> 24));
+                    } else {
+                        v = vec4(
+                            (gn < pc.N && gk + 0u < pc.K) ? fp8At(gn * pc.K + gk + 0u) : 0.0,
+                            (gn < pc.N && gk + 1u < pc.K) ? fp8At(gn * pc.K + gk + 1u) : 0.0,
+                            (gn < pc.N && gk + 2u < pc.K) ? fp8At(gn * pc.K + gk + 2u) : 0.0,
+                            (gn < pc.N && gk + 3u < pc.K) ? fp8At(gn * pc.K + gk + 3u) : 0.0);
+                    }
+                    tileB4[c4 + 0u][r >> 2u][r & 3u] = v.x;
+                    tileB4[c4 + 1u][r >> 2u][r & 3u] = v.y;
+                    tileB4[c4 + 2u][r >> 2u][r & 3u] = v.z;
+                    tileB4[c4 + 3u][r >> 2u][r & 3u] = v.w;
+                }
+                barrier();
+
+                // Partially unrolled (4 x 8 k-steps): full 32-step unrolling ran ~2x faster than none but
+                // made the AMD driver's first-use pipeline compile take ~12s per process.
+                [[dont_unroll]] for (uint k0 = 0u; k0 < 32u; k0 += 8u)
+                [[unroll]] for (uint kk = 0u; kk < 8u; kk++) {
+                    uint k = k0 + kk;
+                    vec4 a0 = tileA4[k][tx * 2u + 0u];
+                    vec4 a1 = tileA4[k][tx * 2u + 1u];
+                    vec4 b0 = tileB4[k][ty * 2u + 0u];
+                    vec4 b1 = tileB4[k][ty * 2u + 1u];
+                    float av[8] = float[8](a0.x, a0.y, a0.z, a0.w, a1.x, a1.y, a1.z, a1.w);
+                    float bw[8] = float[8](b0.x, b0.y, b0.z, b0.w, b1.x, b1.y, b1.z, b1.w);
+                    [[unroll]] for (uint i = 0u; i < 8u; i++)
+                        [[unroll]] for (uint j = 0u; j < 8u; j++)
+                            acc[i][j] += av[i] * bw[j];
+                }
+                barrier();
+            }
+
+            [[unroll]] for (uint i = 0u; i < 8u; i++) {
+                uint out_r = row_base + tx * 8u + i;
+                if (out_r >= pc.M) continue;
+                [[unroll]] for (uint j = 0u; j < 8u; j++) {
+                    uint out_c = col_base + ty * 8u + j;
+                    if (out_c < pc.N)
+                        c_data[out_r * pc.N + out_c] = acc[i][j];
+                }
+            }
+        }
+        """;
+
+    /// <summary>
     /// <see cref="SgemmF16"/> with the weights left in GGUF block-quantized form (Q3_K / Q4_K,
     /// 256-element super-blocks, raw bytes bound as <c>uint[]</c>): the weight-tile load decodes each
     /// element straight into the FP32 LDS tile, so each weight is dequantized once per 128 activation

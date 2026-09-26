@@ -118,7 +118,7 @@ public sealed class UMT5Encoder : IDisposable
     {
         if (_gpuWeights is null)
         {
-            _gpuWeights = new UMT5GpuWeights(backend, _st.ReadF32, Layers, Dim, FfDim);
+            _gpuWeights = new UMT5GpuWeights(backend, _st.ReadF32, Layers, Dim, FfDim, _st as SafetensorsLoader);
         }
 
         if (_gpuWorkspace is null || _gpuWorkspace.SeqLen != maxSeqLen)
@@ -180,7 +180,7 @@ public sealed class UMT5Encoder : IDisposable
         {
             for (int i = 0; i < Layers; i++)
             {
-                var lw = new UMT5GpuWeights.UMT5LayerGpuWeights(backend, _st.ReadF32, i, Dim, FfDim);
+                var lw = new UMT5GpuWeights.UMT5LayerGpuWeights(backend, _st.ReadF32, i, Dim, FfDim, _st as SafetensorsLoader);
                 try
                 {
                     imageOps?.BeginBatch();
@@ -267,7 +267,7 @@ public sealed class UMT5Encoder : IDisposable
         {
             for (int i = 0; i < Layers; i++)
             {
-                var lw = new UMT5GpuWeights.UMT5LayerGpuWeights(backend, _st.ReadF32, i, Dim, FfDim);
+                var lw = new UMT5GpuWeights.UMT5LayerGpuWeights(backend, _st.ReadF32, i, Dim, FfDim, _st as SafetensorsLoader);
                 try
                 {
                     imageOps?.BeginBatch();

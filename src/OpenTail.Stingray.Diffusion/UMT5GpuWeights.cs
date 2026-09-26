@@ -31,21 +31,25 @@ public sealed class UMT5GpuWeights : IDisposable
         public CoreTensor Wi1Weight { get; }
         public CoreTensor WoWeight { get; }
 
-        public UMT5LayerGpuWeights(IComputeBackend backend, Func<string, float[]> getWeight, int idx, int dim, int ffDim)
+        /// <param name="mapped">When given and the backend supports fp32 x bf16 GEMM
+        /// (<see cref="IComputeBackend.SupportsBf16WeightSgemm"/>), bf16 projection weights are
+        /// uploaded straight from the memory-mapped checkpoint — no host conversion pass.</param>
+        public UMT5LayerGpuWeights(IComputeBackend backend, Func<string, float[]> getWeight, int idx, int dim, int ffDim,
+            SafetensorsLoader? mapped = null)
         {
             _backend = backend;
             string p = $"blocks.{idx}";
 
             LayerNorm0Weight = backend.Upload(getWeight($"{p}.norm1.weight"), TensorShape.D1(dim), exact: true);
-            QWeight = UploadWeight(backend, getWeight($"{p}.attn.q.weight"), TensorShape.D2(dim, dim));
-            KWeight = UploadWeight(backend, getWeight($"{p}.attn.k.weight"), TensorShape.D2(dim, dim));
-            VWeight = UploadWeight(backend, getWeight($"{p}.attn.v.weight"), TensorShape.D2(dim, dim));
-            OWeight = UploadWeight(backend, getWeight($"{p}.attn.o.weight"), TensorShape.D2(dim, dim));
+            QWeight = UploadWeight(backend, getWeight, mapped, $"{p}.attn.q.weight", TensorShape.D2(dim, dim));
+            KWeight = UploadWeight(backend, getWeight, mapped, $"{p}.attn.k.weight", TensorShape.D2(dim, dim));
+            VWeight = UploadWeight(backend, getWeight, mapped, $"{p}.attn.v.weight", TensorShape.D2(dim, dim));
+            OWeight = UploadWeight(backend, getWeight, mapped, $"{p}.attn.o.weight", TensorShape.D2(dim, dim));
 
             LayerNorm1Weight = backend.Upload(getWeight($"{p}.norm2.weight"), TensorShape.D1(dim), exact: true);
-            Wi0Weight = UploadWeight(backend, getWeight($"{p}.ffn.gate.0.weight"), TensorShape.D2(ffDim, dim));
-            Wi1Weight = UploadWeight(backend, getWeight($"{p}.ffn.fc1.weight"), TensorShape.D2(ffDim, dim));
-            WoWeight = UploadWeight(backend, getWeight($"{p}.ffn.fc2.weight"), TensorShape.D2(dim, ffDim));
+            Wi0Weight = UploadWeight(backend, getWeight, mapped, $"{p}.ffn.gate.0.weight", TensorShape.D2(ffDim, dim));
+            Wi1Weight = UploadWeight(backend, getWeight, mapped, $"{p}.ffn.fc1.weight", TensorShape.D2(ffDim, dim));
+            WoWeight = UploadWeight(backend, getWeight, mapped, $"{p}.ffn.fc2.weight", TensorShape.D2(dim, ffDim));
         }
 
         public void Dispose()
@@ -62,15 +66,27 @@ public sealed class UMT5GpuWeights : IDisposable
         }
     }
 
-    public UMT5GpuWeights(IComputeBackend backend, Func<string, float[]> getWeight, int numLayers = 24, int dim = 4096, int ffDim = 10240)
+    public UMT5GpuWeights(IComputeBackend backend, Func<string, float[]> getWeight, int numLayers = 24, int dim = 4096, int ffDim = 10240,
+        SafetensorsLoader? mapped = null)
     {
         _backend = backend;
         Layers = new UMT5LayerGpuWeights[numLayers];
         for (int i = 0; i < numLayers; i++)
         {
-            Layers[i] = new UMT5LayerGpuWeights(backend, getWeight, i, dim, ffDim);
+            Layers[i] = new UMT5LayerGpuWeights(backend, getWeight, i, dim, ffDim, mapped);
         }
         FinalLayerNormWeight = backend.Upload(getWeight("norm.weight"), TensorShape.D1(dim), exact: true);
+    }
+
+    private static unsafe CoreTensor UploadWeight(IComputeBackend backend, Func<string, float[]> getWeight,
+        SafetensorsLoader? mapped, string name, TensorShape shape)
+    {
+        long elems = shape.ElementCount;
+        if (mapped is not null && backend.SupportsBf16WeightSgemm
+            && mapped.TryGetMappedPointer(name, out byte* ptr, out long bytes, out string dt)
+            && dt == "BF16" && bytes == elems * 2 && elems <= int.MaxValue)
+            return backend.UploadBf16(new ReadOnlySpan<ushort>(ptr, (int)elems), shape);
+        return UploadWeight(backend, getWeight(name), shape);
     }
 
     private static CoreTensor UploadWeight(IComputeBackend backend, float[] f32Data, TensorShape shape)
