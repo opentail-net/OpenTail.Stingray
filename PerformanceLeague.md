@@ -105,6 +105,8 @@ weren't measured.
 
 
 > **2026-09-26 re-measure** (commit f801243, 991-token raw prompt, CPU, 4 runs): OT **183-187 t/s** vs `llama-bench -p 1024 -n 0 -ngl 0 -r 3` **260.6 t/s at -t 16** (208.7 at -t 8) = **~0.71x** (~0.81x at equal 8 threads). The ~50 t/s OT figures above were stale; before f801243 OT was 160-166 t/s — the FFN gate/up GEMMs had been routed to the F32 dequant cache instead of the repacked Q4Kx8 GEMM. See docs/101-work-queue-after-coverage-plan.md for the profile and next lead.
+>
+> **2026-09-26 later** (b85bd33 Path-2 GEMM register-pressure restructure, bit-identical; b316550 int8-tier L2 tiling, bit-identical): OT **217-237 t/s** (6 runs) = **~0.85x** of llama.cpp best (260.6 t/s, -t 16). Remaining gap: Q6_K dot rate (ffn_down/attn_v) — see docs/101.
 > Backfilled 2026-09-10 via `llama-bench.exe -m SmolLM2-1.7B-Instruct-Q4_K_M.gguf -p 267,773,1621,3218 -n 0 -t 6 -ngl 0 -r 3`. The 0.33x default-prefill ratio at the top of this section holds roughly flat (0.24-0.27x) across the full context range — the gap is not context-length-dependent, consistent with the `block_q4_Kx8` GEMM-interleave explanation already given, not a KV-cache-scaling effect.
 
 **CPU decode context scaling — Performance Check: 2026-09-10 (llama.cpp backfill; OT: contiguous KV score pass, iter 35):**

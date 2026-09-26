@@ -80,7 +80,19 @@ many models. Learn from the layout, don't copy the implementation.
   best thread count; ~0.81x at equal 8 threads). .NET thread sweep: 16 > 12 > 8.
 - Profile after (5.2 s trunk): FFN 64.5%, QKV 19.5%, out-proj 5.7%, attention 5.0%, RoPE 2.8%
   (148 ms — scalar per-token rotation, vectorizable), RmsNorm 1%.
-- NEXT LEAD (kernel): RepackedGemmPath2 keeps 32 shuffled RHS vectors (sp1/sp2 x 16) live across
+- DONE (b85bd33, +12%): Path-2 GEMM restructure (RHS shuffles staged in a 1 KB L1 buffer, LHS
+  streamed) — bit-identical (output hash equal at batch 1/3/17/65/991); JIT spills 91/154 -> 14/17.
+  201-226 t/s.
+- DONE (b316550, +~5%): int8 prefill tier (Q6_K/Q3_K/Q4_0) tiled row-block x token-group so an
+  8-token activation slice stays in L2; bit-identical. A/B 6 runs: 203-217 -> 217-237 t/s.
+- STATUS: ~220 t/s vs llama 260.6 (-t 16) = ~0.85x (was ~0.62x at the start of this item).
+- NEXT LEAD: Q6_K compute rate. Microbench (noisy on this machine, +-15%): Q6_K int8 tier
+  ~160-350 GMAC/s vs repacked Q4_K ~400-600. llama.cpp has NO x86 Q6_K repack
+  (repack.cpp: q4_0, q4_K, iq4_nl, mxfp4, q2_K only), so a Q6_K x8 repacked GEMM (8 rows in lanes,
+  pre-decoded scales, no per-row hsum) would be original work and could beat llama here. Q6_K is
+  ffn_down/attn_v on half the layers of every Q4_K_M model. Smaller: RoPE 150 ms (scalar,
+  ~3%), attention 280 ms (~6%).
+- (superseded) Earlier lead (kernel): RepackedGemmPath2 keeps 32 shuffled RHS vectors (sp1/sp2 x 16) live across
   the per-row-group `rp` loop — twice the 16 YMM registers. Check RyuJIT's spill code (JitDisasm)
   against the C original; consider precomputing the shuffled RHS into a 1 KB L1 stack buffer per
   (b, sb) so the rp loop uses memory operands deliberately. Also: attn_v/ffn_down Q6_K go through
