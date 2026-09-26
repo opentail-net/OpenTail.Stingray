@@ -289,6 +289,22 @@ public sealed class WanVaeDecoder3D : IDisposable
         int padT = kt - 1, padH = kh / 2, padW = kw / 2;
         int spatial = h * w;
         bool lastTapOnly = t == 1;
+        // Single frame: only the last causal tap sees real input, so this is a plain 2D conv —
+        // use the shared DiffusionOps.Conv2D (im2col + GEMM; measured equal to a dedicated path).
+        if (lastTapOnly)
+        {
+            string k2 = prefix + "#k2d";
+            if (!_weightCache.TryGetValue(k2, out var w2))
+            {
+                int khw2 = kh * kw;
+                w2 = new float[outCh * inCh * khw2];
+                for (int oc = 0; oc < outCh; oc++)
+                    for (int ic = 0; ic < inCh; ic++)
+                        Array.Copy(weight, ((oc * inCh + ic) * kt + (kt - 1)) * khw2, w2, (oc * inCh + ic) * khw2, khw2);
+                _weightCache[k2] = w2;
+            }
+            return DiffusionOps.Conv2D(x, w2, bias, 1, inCh, h, w, outCh, kh, kw, 1, kh / 2);
+        }
         int taps = lastTapOnly ? 1 : kt;
         int k = inCh * taps * kh * kw;
 
