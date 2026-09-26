@@ -85,7 +85,15 @@ public sealed class PullCommand : Command<PullCommand.Settings>
 
         foreach (var (name, size) in selected)
         {
-            string destPath = Path.Combine(settings.OutDir, name);
+            // Repo file names come from the Hugging Face listing; never let one escape --out
+            // (a "../" or rooted name). Hugging Face does not allow them, but check locally anyway.
+            string outRoot = Path.GetFullPath(settings.OutDir);
+            string destPath = Path.GetFullPath(Path.Combine(outRoot, name));
+            if (Path.IsPathRooted(name) || !destPath.StartsWith(outRoot + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+            {
+                AnsiConsole.MarkupLine($"[red]Skipping {Markup.Escape(name)}:[/] it would be written outside {Markup.Escape(outRoot)}.");
+                continue;
+            }
             string url = $"https://huggingface.co/{repo}/resolve/main/{Uri.EscapeDataString(name).Replace("%2F", "/")}?download=true";
             AnsiConsole.MarkupLine($"[bold]Downloading[/] {Markup.Escape(name)} {(size is { } s ? $"({FormatBytes(s)})" : "")}");
             try
@@ -115,7 +123,9 @@ public sealed class PullCommand : Command<PullCommand.Settings>
     {
         input = input.Trim();
         if (input.Length == 0) return input;
-        if (Uri.TryCreate(input, UriKind.Absolute, out var uri) && uri.Host.Contains("huggingface.co", StringComparison.OrdinalIgnoreCase))
+        if (Uri.TryCreate(input, UriKind.Absolute, out var uri) && (uri.Host.Equals("huggingface.co", StringComparison.OrdinalIgnoreCase)
+                || uri.Host.Equals("www.huggingface.co", StringComparison.OrdinalIgnoreCase)
+                || uri.Host.Equals("hf.co", StringComparison.OrdinalIgnoreCase)))
         {
             var segments = uri.AbsolutePath.Trim('/').Split('/');
             if (segments.Length >= 2) return $"{segments[0]}/{segments[1]}";

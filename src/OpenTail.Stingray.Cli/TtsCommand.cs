@@ -103,9 +103,13 @@ public sealed class TtsCommand : Command<TtsCommand.Settings>
                 "kokoro" => new KokoroPipeline(KokoroModel.Load(
                     ResolveKokoroModelPath(s.ModelPath),
                     ResolveKokoroVoiceFile(s.VoicesDir ?? ResolveKokoroVoicesDir(s.ModelPath), s.Voice))),
+                // Accept the voice's .onnx (what people naturally pass) as well as its .onnx.json
+                // config, which piper-voices always ships beside it.
                 "piper" => s.ModelPath is not null
-                    ? PiperPipeline.FromConfigFile(s.ModelPath)
-                    : throw new ArgumentException("--model (-m) is required for the piper engine (path to .onnx.json config)."),
+                    ? PiperPipeline.FromConfigFile(
+                        s.ModelPath.EndsWith(".onnx", StringComparison.OrdinalIgnoreCase) && File.Exists(s.ModelPath + ".json")
+                            ? s.ModelPath + ".json" : s.ModelPath)
+                    : throw new ArgumentException("--model (-m) is required for the piper engine (the voice's .onnx, with its .onnx.json beside it)."),
                 "f5" or "f5tts" or "f5-tts" => s.ModelPath is not null
                     ? F5TtsPipeline.Load(s.ModelPath, backend: gpuBackend)
                     : throw new ArgumentException("--model (-m) is required for the f5tts engine (path to .safetensors model file)."),

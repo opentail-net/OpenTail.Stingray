@@ -1,12 +1,12 @@
-# README open items — fixable on this PC (plan, 2026-09-26)
+# STATUS open items — fixable on this PC (plan, 2026-09-26)
 
-The README status-matrix rows that are not fully green, minus what this machine cannot fix (no
+The STATUS status-matrix rows that are not fully green, minus what this machine cannot fix (no
 checkpoint, too large for 64 GB RAM, upstream GGUF bug): DeepSeek-V3.2, DeepSeek-V4, Llama 4
 vision, MobileNetV5 and MiMo-VL are out of scope.
 
 Order: quickest expected fix first. The estimates are guesses; the log below records what
 actually happened. Every fix follows CLAUDE.md: real weights, an independent reference (llama.cpp
-/ vendored C++ / recorded reference outputs), timed test runs, and the README row updated with the
+/ vendored C++ / recorded reference outputs), timed test runs, and the STATUS row updated with the
 dated evidence in the same pass.
 
 | # | Item | Why it is where it is | Expected size |

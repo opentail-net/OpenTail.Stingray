@@ -255,12 +255,20 @@ public sealed class InferenceEngine : IInferenceEngine, IDisposable, IAsyncDispo
     /// reports its own errors through the request's channel and never throws, so this only needs to
     /// signal completion (so the generation's drain in the <c>finally</c> can release the gate).
     /// </summary>
-    private Task RunOnEngineThread(Action work)
+    /// <param name="onFault">
+    /// Receives an exception that escapes <paramref name="work"/> — including one thrown before the
+    /// work item's own try/catch can run, such as a FileNotFoundException for a missing dependency
+    /// while the lambda is JIT-compiled. Without it such a fault only reached the loop's stderr
+    /// guard and the caller's stream waited forever (found 2026-09-26: the 1.0.7 NuGet package
+    /// lacked Microsoft.Extensions.Logging.Abstractions and GenerateAsync hung).
+    /// </param>
+    private Task RunOnEngineThread(Action work, Action<Exception>? onFault = null)
     {
         var tcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         _engineWork.Add(() =>
         {
             try { work(); }
+            catch (Exception ex) when (onFault is not null) { onFault(ex); }
             finally { tcs.TrySetResult(); }
         });
         return tcs.Task;
@@ -1384,7 +1392,7 @@ public sealed class InferenceEngine : IInferenceEngine, IDisposable, IAsyncDispo
                             ttftMs >= 0 ? ttftMs : totalMs, decodeTokens, decTps, totalMs);
                     }
                 }
-            });
+            }, onFault: ex => channel.Writer.TryComplete(ex));
 
             try
             {
