@@ -69,7 +69,27 @@ public sealed unsafe partial class ForwardPass
     /// populated for <paramref name="position"/>. <paramref name="traceToken"/> is used only
     /// for the optional norm trace (−1 for embedding input).
     /// </summary>
-    private ReadOnlySpan<float> RunTrunk(int position, int traceToken)
+    /// <summary>
+    /// Layer-split decode (<see cref="Gemma4VulkanSplitForwardPass"/>): layers [0, <paramref name="startLayer"/>)
+    /// ran elsewhere and produced <paramref name="hidden"/>; this runs [startLayer, NumLayers) plus the
+    /// output head. The token is still embedded here because Gemma 4's per-layer inputs are built from
+    /// the scaled token embedding, not from the mid-trunk hidden state.
+    /// </summary>
+    internal ReadOnlySpan<float> ForwardFromHidden(ReadOnlySpan<float> hidden, int token, int position, int startLayer)
+    {
+        _currentPos = position;
+        EmbedToken(token, position);
+        if (_hp.EmbeddingScale != 1f)
+            SimdKernels.ScaleInPlace(_hidden, _hp.EmbeddingScale, _embDim);
+        if (_hp.HasPerLayerTokenEmbd)
+            BuildPerLayerProjections(token);
+        hidden.CopyTo(new Span<float>(_hidden, _embDim));
+        // Layer 0 never appends here, and PagedKvCache allocates a page only on layer 0's append.
+        if (startLayer > 0) _kvCache.ReserveBlock();
+        return RunTrunk(position, token, startLayer);
+    }
+
+    private ReadOnlySpan<float> RunTrunk(int position, int traceToken, int startLayer = 0)
     {
         float embNorm = _traceNorms ? L2Norm(_hidden, _embDim) : 0f;
 
@@ -80,7 +100,7 @@ public sealed unsafe partial class ForwardPass
         if (profDecode) DecodeProfileTimers.CountToken();
 
         // 2. Transformer layers
-        for (int layer = 0; layer < _hp.NumLayers; layer++)
+        for (int layer = startLayer; layer < _hp.NumLayers; layer++)
         {
             long layerStart = profDecode ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
             long namedTicks = 0;

@@ -1581,6 +1581,21 @@ public sealed class RunCommand : Command<RunCommand.Settings>
                     resetCache = gfwd.ResetCache;
                     AnsiConsole.MarkupLine($"[dim]Backend: [green]GPU[/] ({gpu.Name}, all {hp.NumLayers} layers)[/]");
                 }
+                else if (hp.LayerHeadDim is not null)
+                {
+                    // Gemma 4 -g N: GPU layers [0, N) + CPU layers [N, L) (Gemma4VulkanSplitForwardPass).
+                    // N is capped so every shared-KV source layer stays on the CPU.
+                    int maxSplit = Gemma4VulkanSplitForwardPass.MaxGpuLayers(hp);
+                    int split = Math.Min(nGpuLayers, maxSplit);
+                    if (split < nGpuLayers)
+                        AnsiConsole.MarkupLine($"[yellow]Note:[/] Gemma 4 splits at most {maxSplit} layers onto the GPU (shared-KV source layers stay on the CPU); using -g {split}.");
+                    var sfwd = new Gemma4VulkanSplitForwardPass(model, gpu, hp, split, ctxSize);
+                    gpuFwd = sfwd;
+                    forward = sfwd.Forward;
+                    prefill = tokens => sfwd.Prefill(tokens);
+                    resetCache = sfwd.ResetCache;
+                    AnsiConsole.MarkupLine($"[dim]Backend: [yellow]Split[/] ({gpu.Name}, {split} GPU + {hp.NumLayers - split} CPU layers, Gemma 4)[/]");
+                }
                 else
                 {
                     // Hybrid: N layers GPU, rest CPU. nGpuLayers is the auto value on -g -1 and the

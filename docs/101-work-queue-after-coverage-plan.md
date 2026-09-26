@@ -480,6 +480,24 @@ parity alone missed OLMoE).
     is bandwidth-bound (a discrete GPU).
   - Per CLAUDE.md rule 13 this is not evidence against the path. Needs a discrete-GPU measurement.
 
+- 3d Gemma 4 with -g N on Vulkan — DONE 2026-09-26: `Gemma4VulkanSplitForwardPass`.
+  - Layers [0, N) run in GpuForwardPass's verified Gemma 4 trunk: new `gemma4LayerLimit`; only
+    those layers' weights and KV are uploaded.
+  - The hidden state crosses to the CPU once per token.
+  - CPU ForwardPass runs [N, L) and the output head: new `ForwardFromHidden`. It still embeds the
+    token, because PLE inputs come from the scaled embedding, and calls PagedKvCache.ReserveBlock
+    since layer 0 no longer appends there.
+  - N is capped at the first shared-KV source layer, the same rule as CudaHybridForwardPass: 22 of
+    42 for E4B.
+  - Parity vs all-CPU (`Gemma4SplitParityTests`): N=4 cos 0.999329, N=22 0.999352, 0 flips; rewind
+    + replay bit-exact.
+  - CLI -g 10 / 22 / -1 / 0: the same 24 greedy tokens. `VulkanArchLogitParityTests` still passes
+    all 18 architectures after the GpuForwardPass change.
+  - iGPU decode: -g 22 9.5 t/s, -g 10 7.9, -g 0 9.2, -g -1 9.3. The split exists for GPUs too
+    small for the whole model, not for speed here.
+  - Not done: server loader routing; the per-token loop is also used for prefill (no batched split
+    prefill).
+
 ### Step 1 — audit (2026-09-26)
 
 CLI, "The capital of France is", greedy 24 tokens, `-g 0` vs `-g -1` (Vulkan, iGPU). "same" = same

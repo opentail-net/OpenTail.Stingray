@@ -512,7 +512,7 @@ public sealed unsafe class GpuForwardPass : IForwardPass
 
     public GpuForwardPass(GgufModel model, VulkanBackend gpu, ModelHyperparams hp,
         int maxContextLength = 0, bool enableTurboQuant = false, int tqFp32Window = 256, int tqBits = 3,
-        DType? kvDtype = null)
+        DType? kvDtype = null, int gemma4LayerLimit = int.MaxValue)
     {
         // Gemma 4 master switch: hp.LayerHeadDim is non-null only for gemma4-family models.
         // The full gemma4 trunk (per-layer head_dim, SWA, dual RoPE + rope_freqs, sandwich
@@ -522,6 +522,10 @@ public sealed unsafe class GpuForwardPass : IForwardPass
         // issue #351 Phase 2 — the per-layer append/attention now dtype-branch like the dense
         // path. TurboQuant remains unsupported on the gemma4 path and is rejected up front.
         _isGemma4 = hp.LayerHeadDim is not null;
+        // Gemma 4 layer split (Gemma4VulkanSplitForwardPass): only layers [0, limit) get weights and
+        // KV on the GPU; the rest run on the CPU.
+        Gemma4LayerLimit = gemma4LayerLimit;
+        _residentLayers = _isGemma4 ? Math.Min(hp.NumLayers, gemma4LayerLimit) : hp.NumLayers;
         if (_isGemma4)
         {
             if (enableTurboQuant)
@@ -815,7 +819,7 @@ public sealed unsafe class GpuForwardPass : IForwardPass
             // per-layer SWA/global dims are validated explicitly below so a future gemma variant
             // with an odd SWA head_dim or a per-layer kvDim not divisible by 32 fails loud rather
             // than mis-storing. Aliased layers copy the source handle regardless of dtype.
-            for (int i = 0; i < hp.NumLayers; i++)
+            for (int i = 0; i < _residentLayers; i++)
             {
                 int kvSrc = hp.KvSourceLayer is { } ksl ? ksl[i] : -1;
                 if (kvSrc >= 0)
@@ -959,8 +963,8 @@ public sealed unsafe class GpuForwardPass : IForwardPass
             _gpuPlePostNorm = new Tensor[L];
         }
 
-        Console.Error.Write($"[GpuForwardPass] Uploading {L} layers to VRAM...");
-        for (int i = 0; i < L; i++)
+        Console.Error.Write($"[GpuForwardPass] Uploading {_residentLayers} layers to VRAM...");
+        for (int i = 0; i < _residentLayers; i++)
         {
             // Gemma 4 shared-KV tail layers (issue #351): no own attn_k/attn_v/attn_k_norm —
             // they reuse the source layer's projections + aliased K/V pages (skip the lookups so
@@ -1922,6 +1926,38 @@ public sealed unsafe class GpuForwardPass : IForwardPass
     private static readonly string? s_gemma4Probe =
         Environment.GetEnvironmentVariable("STINGRAY_GEMMA4_PROBE");
 
+    /// <summary>
+    /// Layer split (<see cref="Gemma4VulkanSplitForwardPass"/>): the Gemma 4 trunk stops after this many
+    /// layers. Default: all of them.
+    /// </summary>
+    internal int Gemma4LayerLimit { get; set; } = int.MaxValue;
+    private readonly int _residentLayers;
+
+    /// <summary>
+    /// Embedding + PLE + layers [0, <see cref="Gemma4LayerLimit"/>), then downloads the hidden state
+    /// instead of computing logits. The CPU pass continues from there.
+    /// </summary>
+    internal void ForwardGemma4Hidden(int token, int position, Span<float> hiddenOut)
+    {
+        if (_hasPle) BuildPerLayerRowUpload(token);
+        _gpu.BeginRecord();
+        if (_hasPle) _gpu.RecordTransferBarrier();
+        EmbedTokenGemma4(token);
+        _gpu.RecordBarrier();
+        if (_hp.EmbeddingScale != 1f)
+        {
+            _gpu.ScaleInPlace(_hidden, _hp.EmbeddingScale);
+            _gpu.RecordBarrier();
+        }
+        if (_hasPle) BuildPerLayerProjectionsGpu();
+        RunGemma4Layers(position);
+        _gpu.RecordComputeToTransferBarrier();
+        _gpu.RecordDownloadToStaging(_hidden, _embDim);
+        _gpu.EndRecordAndSubmit();
+        _gpu.ReadFromStaging(hiddenOut);
+        _kvLength = Math.Max(_kvLength, position + 1);
+    }
+
     private ReadOnlySpan<float> ForwardGemma4(int token, int position)
     {
         // PLE row gather + upload (issue #351) must run BEFORE BeginRecord: UploadToExisting owns
@@ -2113,7 +2149,7 @@ public sealed unsafe class GpuForwardPass : IForwardPass
     /// </summary>
     private void RunGemma4Layers(int position)
     {
-        int L = _hp.NumLayers;
+        int L = Math.Min(_hp.NumLayers, Gemma4LayerLimit);
 
         // Bisect probe (STINGRAY_GEMMA4_PROBE=layers): dump _hidden after EVERY layer in ONE
         // model load, then throw with the whole table. Splitting the command buffer per layer
@@ -3810,7 +3846,7 @@ public sealed unsafe class GpuForwardPass : IForwardPass
         if (_moeSharedOut is not null) _gpu.Free(_moeSharedOut);
         if (_moeExpertOut is not null) _gpu.Free(_moeExpertOut);
 
-        for (int i = 0; i < _hp.NumLayers; i++)
+        for (int i = 0; i < _residentLayers; i++)
         {
             // Gemma 4 shared-KV tail layers (issue #351) never loaded attn_k/attn_v/attn_k_norm —
             // those array slots are null. Guard the frees (_gpu.Free dereferences the Tensor).
@@ -3888,7 +3924,7 @@ public sealed unsafe class GpuForwardPass : IForwardPass
             _gpu.Free(_wOutput);
         _gpu.Free(_gpuEmbedding);
 
-        for (int i = 0; i < _hp.NumLayers; i++)
+        for (int i = 0; i < _residentLayers; i++)
         {
             // Shared-KV tail layers (issue #351) alias the source layer's handles — the source
             // owns and frees them, so skip the alias to avoid a double-free.
