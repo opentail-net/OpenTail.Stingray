@@ -440,8 +440,11 @@ parity alone missed OLMoE).
 ` -1.847 vs `."` -1.854
     there (a 0.007 tie). The 12/12 receipt in the status log fell on the other side of it.
   - iGPU: decode 6.6 t/s on Vulkan vs 11.4 on CPU. Per CLAUDE.md rule 13 that is not evidence
-    against the path. Known cost: 24 submits + router readbacks per token. A GPU-side top-k
-    would remove them.
+    against the path. Measured 2026-09-26 whether the 24 per-layer router readbacks matter: faking
+    the routing (no submit/readback) moves decode 6.8 -> 7.0 t/s (2 runs each), so a GPU-side
+    top-k is not worth building. The time is matvec bandwidth: ~1.3 GB of MXFP4 experts per token
+    at the Q4_0-style shader's ~18 GB/s on this iGPU is ~70 ms. That is generic iGPU matvec
+    tuning, not gpt-oss specific.
   - Also fixed: the CLI passes ctx 0 ("default"), which made zero-byte KV buffers and an access
     violation in vkBindBufferMemory. It now means 4096.
 
