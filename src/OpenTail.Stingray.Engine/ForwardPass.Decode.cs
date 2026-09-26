@@ -70,7 +70,7 @@ public sealed unsafe partial class ForwardPass
     /// for the optional norm trace (−1 for embedding input).
     /// </summary>
     /// <summary>
-    /// Layer-split decode (<see cref="Gemma4VulkanSplitForwardPass"/>): layers [0, <paramref name="startLayer"/>)
+    /// Layer-split decode (<see cref="VulkanLayerSplitForwardPass"/>): layers [0, <paramref name="startLayer"/>)
     /// ran elsewhere and produced <paramref name="hidden"/>; this runs [startLayer, NumLayers) plus the
     /// output head. The token is still embedded here because Gemma 4's per-layer inputs are built from
     /// the scaled token embedding, not from the mid-trunk hidden state.

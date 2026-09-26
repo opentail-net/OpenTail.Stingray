@@ -593,7 +593,7 @@ public static class InferenceEngineLoader
         }
 
         // CUDA and the Vulkan -g N split lack features only the full Vulkan pass has.
-        if ((backend == ServerBackend.Cuda || (backend == ServerBackend.Vulkan && nGpuLayers > 0 && nGpuLayers < hp.NumLayers))
+        if (backend == ServerBackend.Cuda
             && GpuForwardPass.PartialOffloadUnsupportedReason(model, hp) is { } partialGap)
         {
             Console.Error.WriteLine($"[InferenceEngineLoader] {backend} (this offload) has no path for {partialGap}; running on CPU.");
@@ -786,12 +786,13 @@ public static class InferenceEngineLoader
                 return (gfwd, BatchingSupported: false, GpuWeightBytesExact: null); // full offload — EstimatedModelBytes is already exact
             }
 
-            if (hp.LayerHeadDim is not null && !turboQuant)
+            if ((hp.LayerHeadDim is not null || GpuForwardPass.PartialOffloadUnsupportedReason(model, hp) is not null)
+                && !turboQuant)
             {
-                // Gemma 4 -g N: GPU layers [0, N) + CPU layers [N, L), N capped so shared-KV
-                // source layers stay on the CPU (HybridForwardPass refuses Gemma 4).
-                int split = Math.Min(gpuLayers, Gemma4VulkanSplitForwardPass.MaxGpuLayers(hp));
-                var sfwd = new Gemma4VulkanSplitForwardPass(model, vulkan, hp, split, ctxSize);
+                // -g N for Gemma 4 and for architectures HybridForwardPass has no path for: GPU
+                // layers [0, N) + CPU layers [N, L) (VulkanLayerSplitForwardPass).
+                int split = Math.Min(gpuLayers, VulkanLayerSplitForwardPass.MaxGpuLayers(hp));
+                var sfwd = new VulkanLayerSplitForwardPass(model, vulkan, hp, split, ctxSize);
                 owned.Add(sfwd);
                 return (sfwd, BatchingSupported: false, GpuWeightBytesExact: null);
             }

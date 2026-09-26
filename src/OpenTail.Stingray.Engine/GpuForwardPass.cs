@@ -512,7 +512,7 @@ public sealed unsafe class GpuForwardPass : IForwardPass
 
     public GpuForwardPass(GgufModel model, VulkanBackend gpu, ModelHyperparams hp,
         int maxContextLength = 0, bool enableTurboQuant = false, int tqFp32Window = 256, int tqBits = 3,
-        DType? kvDtype = null, int gemma4LayerLimit = int.MaxValue)
+        DType? kvDtype = null, int layerLimit = int.MaxValue)
     {
         // Gemma 4 master switch: hp.LayerHeadDim is non-null only for gemma4-family models.
         // The full gemma4 trunk (per-layer head_dim, SWA, dual RoPE + rope_freqs, sandwich
@@ -522,10 +522,10 @@ public sealed unsafe class GpuForwardPass : IForwardPass
         // issue #351 Phase 2 — the per-layer append/attention now dtype-branch like the dense
         // path. TurboQuant remains unsupported on the gemma4 path and is rejected up front.
         _isGemma4 = hp.LayerHeadDim is not null;
-        // Gemma 4 layer split (Gemma4VulkanSplitForwardPass): only layers [0, limit) get weights and
-        // KV on the GPU; the rest run on the CPU.
-        Gemma4LayerLimit = gemma4LayerLimit;
-        _residentLayers = _isGemma4 ? Math.Min(hp.NumLayers, gemma4LayerLimit) : hp.NumLayers;
+        // Layer split (VulkanLayerSplitForwardPass): only layers [0, limit) get weights and KV on
+        // the GPU; the rest run on the CPU.
+        LayerLimit = layerLimit;
+        _residentLayers = Math.Min(hp.NumLayers, layerLimit);
         if (_isGemma4)
         {
             if (enableTurboQuant)
@@ -740,7 +740,7 @@ public sealed unsafe class GpuForwardPass : IForwardPass
         if (_tqEnabled)
         {
             // FP32 window: only tqFp32Window positions
-            for (int i = 0; i < hp.NumLayers; i++)
+            for (int i = 0; i < _residentLayers; i++)
             {
                 _gpuKCache[i] = gpu.Allocate(TensorShape.D1((long)_tqFp32Window * kvDim));
                 _gpuVCache[i] = gpu.Allocate(TensorShape.D1((long)_tqFp32Window * kvDim));
@@ -754,7 +754,7 @@ public sealed unsafe class GpuForwardPass : IForwardPass
             _gpuTqKCache = new Tensor[hp.NumLayers];
             _gpuTqVCache = new Tensor[hp.NumLayers];
             _gpuSignPatterns = new Tensor[hp.NumLayers];
-            for (int i = 0; i < hp.NumLayers; i++)
+            for (int i = 0; i < _residentLayers; i++)
             {
                 _gpuTqKCache[i] = gpu.Allocate(TensorShape.D1(tqUintsPerLayer));
                 _gpuTqVCache[i] = gpu.Allocate(TensorShape.D1(tqUintsPerLayer));
@@ -780,7 +780,7 @@ public sealed unsafe class GpuForwardPass : IForwardPass
             // shaders bind the buffer as uint[] (2 fp16 per word) regardless of the declared
             // dtype, and index it identically to the fp32 path (no ring modulo).
             // gemma4 needs PER-LAYER geometry, so it falls through to the _isGemma4 branch.
-            for (int i = 0; i < hp.NumLayers; i++)
+            for (int i = 0; i < _residentLayers; i++)
             {
                 _gpuKCache[i] = gpu.Allocate(TensorShape.D1((long)_maxSeqLen * kvDim), DType.BFloat16);
                 _gpuVCache[i] = gpu.Allocate(TensorShape.D1((long)_maxSeqLen * kvDim), DType.BFloat16);
@@ -796,7 +796,7 @@ public sealed unsafe class GpuForwardPass : IForwardPass
             // gemma4 needs PER-LAYER geometry, so it falls through to the _isGemma4 branch.
             long q8Bytes = DTypeInfo.ByteSize((long)_maxSeqLen * kvDim, DType.Q8_0); // (count/32)*34
             long words = (q8Bytes + 3) / 4;
-            for (int i = 0; i < hp.NumLayers; i++)
+            for (int i = 0; i < _residentLayers; i++)
             {
                 _gpuKCache[i] = gpu.Allocate(TensorShape.D1(words));
                 _gpuVCache[i] = gpu.Allocate(TensorShape.D1(words));
@@ -866,7 +866,7 @@ public sealed unsafe class GpuForwardPass : IForwardPass
         else
         {
             // Full FP32 cache: [maxSeqLen, kvDim] per layer
-            for (int i = 0; i < hp.NumLayers; i++)
+            for (int i = 0; i < _residentLayers; i++)
             {
                 _gpuKCache[i] = gpu.Allocate(TensorShape.D1((long)_maxSeqLen * kvDim));
                 _gpuVCache[i] = gpu.Allocate(TensorShape.D1((long)_maxSeqLen * kvDim));
@@ -1134,12 +1134,12 @@ public sealed unsafe class GpuForwardPass : IForwardPass
             if (model.FindTensor("blk.0.attn_norm.bias") is not null)
             {
                 _bAttnNorm = new Tensor[L];
-                for (int i = 0; i < L; i++) _bAttnNorm[i] = UploadWeight($"blk.{i}.attn_norm.bias");
+                for (int i = 0; i < _residentLayers; i++) _bAttnNorm[i] = UploadWeight($"blk.{i}.attn_norm.bias");
             }
             if (model.FindTensor("blk.0.ffn_norm.bias") is not null)
             {
                 _bFfnNorm = new Tensor[L];
-                for (int i = 0; i < L; i++) _bFfnNorm[i] = UploadWeight($"blk.{i}.ffn_norm.bias");
+                for (int i = 0; i < _residentLayers; i++) _bFfnNorm[i] = UploadWeight($"blk.{i}.ffn_norm.bias");
             }
         }
         _xielu = hp.XieluAlphaN is not null;
@@ -1147,7 +1147,7 @@ public sealed unsafe class GpuForwardPass : IForwardPass
         {
             _bFfnUp = new Tensor[L];
             _bFfnDown = new Tensor[L];
-            for (int i = 0; i < L; i++)
+            for (int i = 0; i < _residentLayers; i++)
             {
                 _bFfnUp[i] = UploadWeight($"blk.{i}.ffn_up.bias");
                 _bFfnDown[i] = UploadWeight($"blk.{i}.ffn_down.bias");
@@ -1241,6 +1241,7 @@ public sealed unsafe class GpuForwardPass : IForwardPass
         // has no L2 path (it would silently skip the norm), and the Debug.Assert that guards it is
         // stripped in Release — so don't rely on the L2⟹Llama4⟹MoE coupling, exclude it directly.
         if (_isMoE || _isGemma4 || _hp.UseL2QkNorm) return false;
+        if (_residentLayers < _hp.NumLayers) return false;   // layer split: per-token trunk only
 
         bool IsBatchable(Tensor w) =>
             _weightDTypes.GetValueOrDefault(w.Handle, DType.Q4_K) is DType.Q4_K or DType.Q6_K;
@@ -1575,7 +1576,8 @@ public sealed unsafe class GpuForwardPass : IForwardPass
 
     private void RunStandardLayers(int position)
     {
-        for (int layer = 0; layer < _hp.NumLayers; layer++)
+        int layerEnd = Math.Min(_hp.NumLayers, LayerLimit);
+        for (int layer = 0; layer < layerEnd; layer++)
         {
             // Sliding-window attention (Gemma 3, Cohere2, ...): this whole method previously had
             // NO per-layer SWA handling at all — every attention dispatch below hardcoded
@@ -1927,17 +1929,47 @@ public sealed unsafe class GpuForwardPass : IForwardPass
         Environment.GetEnvironmentVariable("STINGRAY_GEMMA4_PROBE");
 
     /// <summary>
-    /// Layer split (<see cref="Gemma4VulkanSplitForwardPass"/>): the Gemma 4 trunk stops after this many
+    /// Layer split (<see cref="VulkanLayerSplitForwardPass"/>): the trunk stops after this many
     /// layers. Default: all of them.
     /// </summary>
-    internal int Gemma4LayerLimit { get; set; } = int.MaxValue;
+    internal int LayerLimit { get; set; } = int.MaxValue;
     private readonly int _residentLayers;
 
     /// <summary>
-    /// Embedding + PLE + layers [0, <see cref="Gemma4LayerLimit"/>), then downloads the hidden state
+    /// Embedding + PLE + layers [0, <see cref="LayerLimit"/>), then downloads the hidden state
     /// instead of computing logits. The CPU pass continues from there.
     /// </summary>
-    internal void ForwardGemma4Hidden(int token, int position, Span<float> hiddenOut)
+    /// <summary>
+    /// Embedding + layers [0, <see cref="LayerLimit"/>), then the hidden state is downloaded instead
+    /// of computing logits; a CPU <see cref="ForwardPass"/> continues from there.
+    /// </summary>
+    internal void ForwardHidden(int token, int position, Span<float> hiddenOut)
+    {
+        if (_isGemma4) { ForwardGemma4Hidden(token, position, hiddenOut); return; }
+        _gpu.BeginRecord();
+        DispatchEmbedLookup(token);
+        _gpu.RecordBarrier();
+        if (_gpuPosEmbd is not null)
+        {
+            _gpu.EmbedLookup(_gpuPosEmbd, _posRow!, (uint)position, (uint)_embDim);
+            _gpu.RecordBarrier();
+            _gpu.AddInPlace(_hidden, _posRow!);
+            _gpu.RecordBarrier();
+        }
+        if (_hp.EmbeddingScale != 1f)
+        {
+            _gpu.ScaleInPlace(_hidden, _hp.EmbeddingScale);
+            _gpu.RecordBarrier();
+        }
+        RunStandardLayers(position);
+        _gpu.RecordComputeToTransferBarrier();
+        _gpu.RecordDownloadToStaging(_hidden, _embDim);
+        _gpu.EndRecordAndSubmit();
+        _gpu.ReadFromStaging(hiddenOut);
+        _kvLength = Math.Max(_kvLength, position + 1);
+    }
+
+    private void ForwardGemma4Hidden(int token, int position, Span<float> hiddenOut)
     {
         if (_hasPle) BuildPerLayerRowUpload(token);
         _gpu.BeginRecord();
@@ -2149,7 +2181,7 @@ public sealed unsafe class GpuForwardPass : IForwardPass
     /// </summary>
     private void RunGemma4Layers(int position)
     {
-        int L = Math.Min(_hp.NumLayers, Gemma4LayerLimit);
+        int L = Math.Min(_hp.NumLayers, LayerLimit);
 
         // Bisect probe (STINGRAY_GEMMA4_PROBE=layers): dump _hidden after EVERY layer in ONE
         // model load, then throw with the whole table. Splitting the command buffer per layer
@@ -3935,7 +3967,7 @@ public sealed unsafe class GpuForwardPass : IForwardPass
 
         if (_tqEnabled)
         {
-            for (int i = 0; i < _hp.NumLayers; i++)
+            for (int i = 0; i < _residentLayers; i++)
             {
                 _gpu.Free(_gpuTqKCache![i]);
                 _gpu.Free(_gpuTqVCache![i]);

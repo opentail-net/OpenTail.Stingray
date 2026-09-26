@@ -483,7 +483,7 @@ parity alone missed OLMoE).
     is bandwidth-bound (a discrete GPU).
   - Per CLAUDE.md rule 13 this is not evidence against the path. Needs a discrete-GPU measurement.
 
-- 3d Gemma 4 with -g N on Vulkan — DONE 2026-09-26: `Gemma4VulkanSplitForwardPass`.
+- 3d Gemma 4 with -g N on Vulkan — DONE 2026-09-26: `VulkanLayerSplitForwardPass`.
   - Layers [0, N) run in GpuForwardPass's verified Gemma 4 trunk: new `gemma4LayerLimit`; only
     those layers' weights and KV are uploaded.
   - The hidden state crosses to the CPU once per token.
@@ -501,6 +501,23 @@ parity alone missed OLMoE).
   - Server: Vulkan -g N on Gemma 4 routes here. Verified with STINGRAY_N_GPU_LAYERS=10: 10 layers
     uploaded, chat answer "Paris".
   - Not done: batched split prefill (the per-token loop serves prefill).
+
+- 3e -g N on Vulkan for the newer architectures — DONE 2026-09-26. The Gemma 4 split is now
+  architecture-generic.
+  - `VulkanLayerSplitForwardPass` (renamed from Gemma4VulkanSplitForwardPass) plus
+    GpuForwardPass.LayerLimit, which bounds the standard trunk and the resident weights/KV, and a
+    generic ForwardHidden entry.
+  - CLI and server route Vulkan -g N here for Gemma 4 and for every model HybridForwardPass has no
+    path for (`PartialOffloadUnsupportedReason`). Those models previously fell back to CPU; CUDA
+    still does.
+  - `VulkanLayerSplitParityTests` at half the layers vs all-CPU, worst cos / flips: Phi-3 -g 16
+    0.998875; StableLM 16 0.998136; Cohere2 16 0.999465; GPT-2 6 0.999997 (1 near-tie); StarCoder2
+    15 0.999086; Pythia 6 1.000000; Maincoder 16 0.999824 (1 near-tie); Hunyuan-0.5B 12 0.998421;
+    Orpheus 14 0.999287; Gemma 4 E4B 4 / 22 as before.
+  - `VulkanArchLogitParityTests` (18 archs) is unchanged.
+  - Phi-3 -g 16 free-running greedy departs from CPU at step 2: the CPU's own margin is 0.297
+    logits (" Paris" vs newline), and the split shifts it by ~0.33. A near-tie.
+  - The partial-offload item's CUDA half is not done (not testable here).
 
 ### Step 1 — audit (2026-09-26)
 

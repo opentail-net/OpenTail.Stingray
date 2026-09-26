@@ -1,23 +1,32 @@
 namespace OpenTail.Stingray.Tests.Vulkan;
 
 /// <summary>
-/// Gemma 4 E4B split across Vulkan and CPU (<see cref="Gemma4VulkanSplitForwardPass"/>, -g N) against
-/// the all-CPU <see cref="Engine.ForwardPass"/>, at a small split and at the largest legal one: a real prompt, then
+/// -g N layer split across Vulkan and CPU (<see cref="VulkanLayerSplitForwardPass"/>) against the
+/// all-CPU <see cref="Engine.ForwardPass"/>: Gemma 4 E4B at a small and the largest legal split, and
+/// the architectures HybridForwardPass has no path for at half their layers: a real prompt, then
 /// eight teacher-forced steps on the CPU's greedy tokens. Same contract as
 /// <see cref="VulkanArchLogitParityTests"/>: cosine above 0.99 everywhere, and an argmax
 /// disagreement only on a near-tie of the CPU's own logits. Skips visibly without the checkpoint.
 /// </summary>
-public sealed class Gemma4SplitParityTests : HeavyTestBase
+public sealed class VulkanLayerSplitParityTests : HeavyTestBase
 {
-    private const string ModelFile = "gemma-4-E4B-it-Q4_K_M.gguf";
 
     [Theory]
-    [InlineData(4)]
-    [InlineData(-1)] // MaxGpuLayers
-    public void PrefillAndDecodeLogits_AgreeWithCpu(int split)
+    [InlineData("gemma-4-E4B-it-Q4_K_M.gguf", 4)]
+    [InlineData("gemma-4-E4B-it-Q4_K_M.gguf", -1)]           // MaxGpuLayers (22 of 42)
+    [InlineData("Phi-3-mini-4k-instruct-Q4_K_M.gguf", 0)]    // 0 = half the layers
+    [InlineData("stablelm-zephyr-3b.Q4_K_M.gguf", 0)]
+    [InlineData("c4ai-command-r7b-12-2024-Q4_K_M.gguf", 0)]
+    [InlineData("gpt2.Q8_0.gguf", 0)]
+    [InlineData("starcoder2-3b.Q4_K_M.gguf", 0)]
+    [InlineData("pythia-160m.Q8_0.gguf", 0)]
+    [InlineData("Maincoder-1B-Q4_K_M.gguf", 0)]
+    [InlineData("tencent_Hunyuan-0.5B-Instruct-Q8_0.gguf", 0)]
+    [InlineData("orpheus-3b-0.1-ft.Q4_K_M.gguf", 0)]         // rope_freqs through the split
+    public void PrefillAndDecodeLogits_AgreeWithCpu(string file, int split)
     {
-        string? path = FindModelPath();
-        Assert.SkipWhen(path is null, $"{ModelFile} not present");
+        string? path = FindModelPath(file);
+        Assert.SkipWhen(path is null, $"{file} not present");
         VulkanBackend? gpu;
         try { gpu = new VulkanBackend(); } catch { gpu = null; }
         Assert.SkipWhen(gpu is null, "no Vulkan device available on this host");
@@ -25,6 +34,7 @@ public sealed class Gemma4SplitParityTests : HeavyTestBase
 
         using var model = GgufModel.Open(path!);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        int n = split > 0 ? split : split < 0 ? VulkanLayerSplitForwardPass.MaxGpuLayers(hp) : hp.NumLayers / 2;
         int[] prompt = GgufTokenizer.FromGgufModel(model)
             .Encode("The scheduler assigns runnable threads to cores, balancing throughput against latency.").ToArray();
         const int steps = 8;
@@ -45,7 +55,7 @@ public sealed class Gemma4SplitParityTests : HeavyTestBase
         }
 
         var gpuLogits = new List<float[]>();
-        using (var fwd = new Gemma4VulkanSplitForwardPass(model, gpu!, hp, split > 0 ? split : Gemma4VulkanSplitForwardPass.MaxGpuLayers(hp), maxContextLength: 512))
+        using (var fwd = new VulkanLayerSplitForwardPass(model, gpu!, hp, n, maxContextLength: 512))
         {
             gpuLogits.Add(fwd.Prefill(prompt).ToArray());
             for (int s = 0; s < steps; s++)
@@ -74,10 +84,10 @@ public sealed class Gemma4SplitParityTests : HeavyTestBase
                 if (gap / range >= 0.02)
                     failures.Add($"{stage}: CPU {ca} vs Vulkan {ga}, CPU gap {gap:F3} of range {range:F3}");
             }
-            Console.WriteLine($"[gemma4-split] {stage}: cos {cos:F6} argmax CPU {ca} GPU {ga}");
+            Console.WriteLine($"[layer-split] {stage}: cos {cos:F6} argmax CPU {ca} GPU {ga}");
             if (cos <= 0.99) failures.Add($"{stage}: cosine {cos:F6}");
         }
-        Console.WriteLine($"[gemma4-split] split {split}: worst cosine {worst:F6}, argmax flips {flips}/{cpu.Count}");
+        Console.WriteLine($"[layer-split] {file} -g {n}: worst cosine {worst:F6}, argmax flips {flips}/{cpu.Count}");
         Assert.True(failures.Count == 0, string.Join("; ", failures));
     }
 
@@ -95,7 +105,7 @@ public sealed class Gemma4SplitParityTests : HeavyTestBase
         return d / (Math.Sqrt(na) * Math.Sqrt(nb));
     }
 
-    private static string? FindModelPath()
+    private static string? FindModelPath(string ModelFile)
     {
         var dir = new DirectoryInfo(AppContext.BaseDirectory);
         while (dir is not null)

@@ -1249,13 +1249,13 @@ public sealed class RunCommand : Command<RunCommand.Settings>
             }
         }
 
-        // The CUDA passes and the Vulkan -g N split lack features only the full Vulkan pass has
-        // (fused QKV, LayerNorm, parallel residual, non-gated FFN, ...). An auto (-1) Vulkan run
-        // that later resolves to a partial split is caught by HybridForwardPass's own guard.
-        if (nGpuLayers != 0 && (wantCuda || (nGpuLayers > 0 && nGpuLayers < hp.NumLayers))
+        // The CUDA passes lack features only the full Vulkan pass has (fused QKV, LayerNorm,
+        // parallel residual, non-gated FFN, ...). A Vulkan -g N split of such a model runs
+        // VulkanLayerSplitForwardPass instead of HybridForwardPass (see the Vulkan branch below).
+        if (nGpuLayers != 0 && wantCuda
             && GpuForwardPass.PartialOffloadUnsupportedReason(model, hp) is { } partialGap)
         {
-            AnsiConsole.MarkupLine($"[yellow]Note:[/] {(wantCuda ? "the CUDA backend" : "a partial GPU offload")} has no path for {Markup.Escape(partialGap)}; running on CPU.");
+            AnsiConsole.MarkupLine($"[yellow]Note:[/] the CUDA backend has no path for {Markup.Escape(partialGap)}; running on CPU.");
             nGpuLayers = 0;
         }
 
@@ -1581,20 +1581,21 @@ public sealed class RunCommand : Command<RunCommand.Settings>
                     resetCache = gfwd.ResetCache;
                     AnsiConsole.MarkupLine($"[dim]Backend: [green]GPU[/] ({gpu.Name}, all {hp.NumLayers} layers)[/]");
                 }
-                else if (hp.LayerHeadDim is not null)
+                else if (hp.LayerHeadDim is not null || GpuForwardPass.PartialOffloadUnsupportedReason(model, hp) is not null)
                 {
-                    // Gemma 4 -g N: GPU layers [0, N) + CPU layers [N, L) (Gemma4VulkanSplitForwardPass).
-                    // N is capped so every shared-KV source layer stays on the CPU.
-                    int maxSplit = Gemma4VulkanSplitForwardPass.MaxGpuLayers(hp);
+                    // -g N for Gemma 4 and for architectures HybridForwardPass has no path for: GPU
+                    // layers [0, N) + CPU layers [N, L) (VulkanLayerSplitForwardPass). Gemma 4 caps N
+                    // so every shared-KV source layer stays on the CPU.
+                    int maxSplit = VulkanLayerSplitForwardPass.MaxGpuLayers(hp);
                     int split = Math.Min(nGpuLayers, maxSplit);
                     if (split < nGpuLayers)
-                        AnsiConsole.MarkupLine($"[yellow]Note:[/] Gemma 4 splits at most {maxSplit} layers onto the GPU (shared-KV source layers stay on the CPU); using -g {split}.");
-                    var sfwd = new Gemma4VulkanSplitForwardPass(model, gpu, hp, split, ctxSize);
+                        AnsiConsole.MarkupLine($"[yellow]Note:[/] this model splits at most {maxSplit} layers onto the GPU; using -g {split}.");
+                    var sfwd = new VulkanLayerSplitForwardPass(model, gpu, hp, split, ctxSize);
                     gpuFwd = sfwd;
                     forward = sfwd.Forward;
                     prefill = tokens => sfwd.Prefill(tokens);
                     resetCache = sfwd.ResetCache;
-                    AnsiConsole.MarkupLine($"[dim]Backend: [yellow]Split[/] ({gpu.Name}, {split} GPU + {hp.NumLayers - split} CPU layers, Gemma 4)[/]");
+                    AnsiConsole.MarkupLine($"[dim]Backend: [yellow]Split[/] ({gpu.Name}, {split} GPU + {hp.NumLayers - split} CPU layers)[/]");
                 }
                 else
                 {
