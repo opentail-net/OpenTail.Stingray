@@ -10814,6 +10814,20 @@ public static unsafe class SimdKernels
         float betaFast = 32f, float betaSlow = 1f)
     {
         int halfDim = headDim / 2;
+        for (int p = 0; p < maxSeqLen; p++)
+            BuildYarnRopeRow(cosOut + (long)p * halfDim, sinOut + (long)p * halfDim, p, headDim,
+                theta, origCtxLen, freqScale, extFactor, attnFactor, betaFast, betaSlow);
+    }
+
+    /// <summary>
+    /// One position's row of <see cref="BuildYarnRopeTable"/> (headDim / 2 cos and sin values), for
+    /// forward passes that compute RoPE per decode step instead of holding a full table.
+    /// </summary>
+    public static void BuildYarnRopeRow(float* c, float* s, int position, int headDim,
+        float theta, int origCtxLen, float freqScale, float extFactor, float attnFactor,
+        float betaFast = 32f, float betaSlow = 1f)
+    {
+        int halfDim = headDim / 2;
 
         // rope_yarn_corr_dim: n_dims * log(n_ctx_orig / (n_rot * 2*PI)) / (2*log(base))
         static float CorrDim(int nDims, int nCtxOrig, float nRot, float b) =>
@@ -10827,30 +10841,24 @@ public static unsafe class SimdKernels
         }
 
         float thetaScale = MathF.Pow(theta, -2.0f / headDim);
-
-        for (int p = 0; p < maxSeqLen; p++)
+        float thetaExtrap = position; // theta_base for this position; scaled by thetaScale each step below
+        for (int i = 0; i < halfDim; i++)
         {
-            float* c = cosOut + (long)p * halfDim;
-            float* s = sinOut + (long)p * halfDim;
-            float thetaExtrap = p; // theta_base for position p; scaled by thetaScale each step below
-            for (int i = 0; i < halfDim; i++)
+            float thetaInterp = freqScale * thetaExtrap;
+            float thetaFinal = thetaInterp;
+            float mscale = attnFactor;
+            if (extFactor != 0f)
             {
-                float thetaInterp = freqScale * thetaExtrap;
-                float thetaFinal = thetaInterp;
-                float mscale = attnFactor;
-                if (extFactor != 0f)
-                {
-                    // rope_yarn_ramp(low, high, i0) with i0 = 2*i (rope_yarn indexes by the
-                    // ungrouped dim, this table by the pair index).
-                    float y = (i - corrLow) / MathF.Max(0.001f, corrHigh - corrLow);
-                    float rampMix = (1f - MathF.Min(1f, MathF.Max(0f, y))) * extFactor;
-                    thetaFinal = thetaInterp * (1f - rampMix) + thetaExtrap * rampMix;
-                    mscale *= 1f + 0.1f * MathF.Log(1f / freqScale);
-                }
-                c[i] = MathF.Cos(thetaFinal) * mscale;
-                s[i] = MathF.Sin(thetaFinal) * mscale;
-                thetaExtrap *= thetaScale;
+                // rope_yarn_ramp(low, high, i0) with i0 = 2*i (rope_yarn indexes by the
+                // ungrouped dim, this table by the pair index).
+                float y = (i - corrLow) / MathF.Max(0.001f, corrHigh - corrLow);
+                float rampMix = (1f - MathF.Min(1f, MathF.Max(0f, y))) * extFactor;
+                thetaFinal = thetaInterp * (1f - rampMix) + thetaExtrap * rampMix;
+                mscale *= 1f + 0.1f * MathF.Log(1f / freqScale);
             }
+            c[i] = MathF.Cos(thetaFinal) * mscale;
+            s[i] = MathF.Sin(thetaFinal) * mscale;
+            thetaExtrap *= thetaScale;
         }
     }
 

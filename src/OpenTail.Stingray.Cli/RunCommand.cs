@@ -722,6 +722,9 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         GgufModel? model = null;
         ForwardPass? fwd = null;
         HybridGdnForwardPass? hybridFwd = null;
+        // Architecture-specific CPU forward pass for gpt-oss (attention sinks, SWA, biased MoE,
+        // OAI SwiGLU, YaRN) — the generic ForwardPass does not model any of these.
+        GptOssForwardPass? gptOssFwd = null;
         IForwardPass? mtpFwd = null;
         IDisposable? gpuBackend = null;
         IDisposable? gpuFwd = null;
@@ -1016,7 +1019,21 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         // IForwardPass handle for MtpDecoder integration (issue #32). Captured when the
         // chosen forward pass ships an MTP head. The actual MTP gating happens later in
         // RunSinglePrompt / RunInteractive based on sp.SpecType.
-        if (hp.IsHybridSsm && effNGpuLayers == 0)
+        if (s_arch == "gpt-oss")
+        {
+            if (settings.TurboQuant || settings.DraftModelPath is not null || settings.DraftLookup)
+            {
+                AnsiConsole.MarkupLine("[red]Error:[/] gpt-oss runs on its own CPU forward pass, which supports neither TurboQuant nor speculative decoding.");
+                return 1;
+            }
+            if (effNGpuLayers != 0)
+            {
+                AnsiConsole.MarkupLine("[yellow]Note:[/] gpt-oss has no GPU forward pass yet; running on CPU.");
+                effNGpuLayers = 0;
+            }
+            gptOssFwd = new GptOssForwardPass(model, GptOssHyperparams.FromModel(model));
+        }
+        else if (hp.IsHybridSsm && effNGpuLayers == 0)
         {
             hybridFwd = new HybridGdnForwardPass(model, cpuBackend, hp);
             if (hybridFwd.HasMtpHead) mtpFwd = hybridFwd;
@@ -1197,7 +1214,14 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         if (nGpuLayers == 0)
         {
             // CPU only
-            if (hybridFwd is not null)
+            if (gptOssFwd is not null)
+            {
+                forward = gptOssFwd.Forward;
+                prefill = tokens => gptOssFwd.Prefill(tokens);
+                resetCache = gptOssFwd.ResetCache;
+                AnsiConsole.MarkupLine("[dim]Backend: [blue]CPU[/] (gpt-oss)[/]");
+            }
+            else if (hybridFwd is not null)
             {
                 forward = hybridFwd.Forward;
                 prefill = tokens => hybridFwd.Prefill(tokens);
@@ -1744,6 +1768,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
                     gpuBackend?.Dispose();
                     fwd?.Dispose();
                     hybridFwd?.Dispose();
+                    gptOssFwd?.Dispose();
                 }
             }
             else if (!File.Exists(settings.DraftModelPath))
@@ -1805,6 +1830,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
                     gpuBackend?.Dispose();
                     fwd?.Dispose();
                     hybridFwd?.Dispose();
+                    gptOssFwd?.Dispose();
                 }
             }
         }
@@ -1900,6 +1926,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
                     gpuBackend?.Dispose();
                     fwd?.Dispose();
                     hybridFwd?.Dispose();
+                    gptOssFwd?.Dispose();
                     return rc;
                 }
                 // rc < 0: placement said Off — fall through to normal generation.
@@ -1908,7 +1935,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
 
         try
         {
-            IForwardPass activeForwardPass = (gpuFwd as IForwardPass) ?? (fwd as IForwardPass) ?? (hybridFwd as IForwardPass)
+            IForwardPass activeForwardPass = (gpuFwd as IForwardPass) ?? (fwd as IForwardPass) ?? (hybridFwd as IForwardPass) ?? gptOssFwd
                 ?? throw new InvalidOperationException("No forward pass was configured.");
             if (settings.ImagePaths is { Length: > 0 })
                 return RunImagePrompt(settings, activeForwardPass, tokenizer, hp, sp, rng,
@@ -1930,6 +1957,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
             gpuBackend?.Dispose();
             fwd?.Dispose();
             hybridFwd?.Dispose();
+            gptOssFwd?.Dispose();
             // Package-path resources: null in the GGUF path. Disposed after fwd so that
             // ForwardPass finishes reading tensor data before the memory maps are closed.
             cpuBackend?.Dispose();

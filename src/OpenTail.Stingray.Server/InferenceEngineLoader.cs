@@ -572,6 +572,18 @@ public static class InferenceEngineLoader
             backend = ServerBackend.Cpu;
         }
 
+        // gpt-oss runs only on its own CPU forward pass (sinks, SWA, biased MoE, OAI SwiGLU, YaRN).
+        if (arch == "gpt-oss")
+        {
+            if (turboQuant)
+                throw new InvalidOperationException("TurboQuant is not supported for gpt-oss.");
+            if (backend != ServerBackend.Cpu)
+                Console.Error.WriteLine("[InferenceEngineLoader] gpt-oss has no GPU forward pass yet; running on CPU.");
+            var gptOss = new GptOssForwardPass(model, GptOssHyperparams.FromModel(model));
+            owned.Add(gptOss);
+            return (gptOss, BatchingSupported: false, GpuWeightBytesExact: null);
+        }
+
         var cpuBackend = new CpuBackend();
         owned.Add(cpuBackend);
 

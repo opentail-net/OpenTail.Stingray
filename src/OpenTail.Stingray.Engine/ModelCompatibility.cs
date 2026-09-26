@@ -47,6 +47,18 @@ public static class ModelCompatibility
         // docs/01-gguf-model-coverage-plan.md §1b. Note `olmo2` is deliberately NOT here — it
         // shares neither a fixture nor a receipt.
         "olmoe",
+        // gpt-oss — admitted 2026-09-26. Runs on its own GptOssForwardPass (CPU only; attention
+        // sinks, 1:1 SWA/full alternation, biased MoE, OAI SwiGLU, YaRN factor 32 on both layer
+        // kinds), routed by RunCommand/InferenceEngineLoader. Receipt vs llama-server (vendored
+        // tools/llama.cpp) on gpt-oss-20b-MXFP4: "The capital of France is" teacher-forced over
+        // llama-server's 24 greedy tokens, 22/24 exact argmax, worst gap 0.063 logits
+        // (GptOssRealWeightSmokeTests; step 1 is a 0.02-logit tie inside llama.cpp itself); a 188-token Paris-history prompt (past the 128-token window) 16/32 exact, then
+        // a flip at a 0.105-logit near-tie (220 vs 5030). First-token top-5 in identical order,
+        // gaps to the top logit within 0.002-0.065 of llama.cpp's -fa off run — smaller than
+        // llama.cpp's own -fa on/off shift (up to 0.13). Plain RoPE instead of YaRN diverged at
+        // token 14 with a different top-5, so the YaRN wiring is load-bearing. See
+        // docs/101-work-queue-after-coverage-plan.md.
+        "gpt-oss",
         // granite — admitted 2026-08-08 on FULL 24-token exact greedy match against llama.cpp
         // (stronger than the olmoe receipt above, which only reaches a 2-token prefix). Needs a
         // "scale trio" + attention-scale override beyond the plain llama trunk, read from GGUF
@@ -689,23 +701,6 @@ public static class ModelCompatibility
     // mechanism; none of deepseek4's CSA/HCA/hyper-connection code is reusable here. Shares the
     // lightning-indexer/DSA concept with deepseek4, but deepseek32's indexer is simpler (a real
     // raw indexer_attn_k tensor, no compression needed).
-    //
-    // gpt-oss — NOT admitted. GptOssForwardPass (GptOssForwardPass.cs) is a structurally
-    // complete ALPHA/UNTESTED IForwardPass: GQA attention with biased QKVO, attention sinks,
-    // alternating 1:1 sliding/full-window masking, and MoE with per-expert biases, the OAI
-    // SwiGLU activation, and select-then-softmax gating. NEVER RUN — a real gpt-oss-20b MXFP4
-    // GGUF download was started but this code was written without waiting for it, per explicit
-    // user direction. Unlike DeepSeek, this codebase ALREADY has full MXFP4 weight-format
-    // support (SimdKernels.MatVecMxfp4, admitted dtype) — the real gap here was purely the
-    // architecture graph, not the quantization format; see
-    // docs/060-gpt-oss-implementation-plan.md for the full architecture-mapping audit against
-    // an external plan that incorrectly assumed MXFP4 was missing. Known gap: RoPE is plain
-    // (non-YaRN) — an external, NOT-independently-confirmed claim says gpt-oss-20b uses YaRN
-    // (factor 32/orig-ctx 4096/beta_fast 32/beta_slow 1/theta 150000); if a real GGUF confirms
-    // this, port the same already-verified YaRN formula chain used for deepseek32
-    // (`ApplyYarnRope` in DeepSeek32ForwardPass.cs) rather than re-deriving it. Per-expert MoE
-    // bias tensor slicing was also not independently re-verified against a real GGUF's actual
-    // layout. Do not admit until a real checkpoint produces a passing receipt.
     //
     // minicpm — NOT admitted. The forward-pass scale trio (reusing Granite's graph, see
     // GraniteGreedyParityTests) is implemented and presumed correct, but MiniCPM4-0.5B — the only

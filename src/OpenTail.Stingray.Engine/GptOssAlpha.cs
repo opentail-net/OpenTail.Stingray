@@ -59,6 +59,17 @@ public sealed record GptOssHyperparams
     public float RopeFreqBaseSwa { get; init; } = 10000f;
 
     /// <summary>
+    /// YaRN context extension ({arch}.rope.scaling.*). gpt-oss-20b ships type=yarn, factor=32,
+    /// original_context_length=4096, beta_fast=32, beta_slow=1 -- applied to BOTH SWA and global
+    /// layers (openai-moe.cpp: rope_freq_scale_train_swa = rope_freq_scale_train). Factor 1 /
+    /// OrigCtx 0 means no scaling (plain RoPE).
+    /// </summary>
+    public float RopeScalingFactor { get; init; } = 1f;
+    public int RopeOrigContext { get; init; }
+    public float YarnBetaFast { get; init; } = 32f;
+    public float YarnBetaSlow { get; init; } = 1f;
+
+    /// <summary>
     /// True for layer <paramref name="il"/> being sliding-window, false for global/full attention.
     /// Reproduces llama_hparams::set_swa_pattern's dense_first=false formula (llama-hparams.cpp:
     /// 13-16): <c>(il % swaPeriod) &lt; (swaPeriod - 1)</c>. For the default swaPeriod=2, this
@@ -67,6 +78,19 @@ public sealed record GptOssHyperparams
     /// per-layer behavior.
     /// </summary>
     public bool IsSwaLayer(int il) => SwaPeriod == 0 || (il % SwaPeriod) < (SwaPeriod - 1);
+
+    /// <summary>Reads every hyperparameter from an opened gpt-oss GGUF.</summary>
+    public static GptOssHyperparams FromModel(GgufModel model)
+    {
+        const string arch = "gpt-oss";
+        var m = model.Metadata;
+        return FromGgufMetadata(m, arch,
+            GetInt(m, $"{arch}.block_count"), GetInt(m, $"{arch}.embedding_length"),
+            GetInt(m, $"{arch}.attention.head_count"), GetInt(m, $"{arch}.attention.head_count_kv"),
+            GetInt(m, $"{arch}.attention.key_length"), GetInt(m, $"{arch}.expert_count"),
+            GetInt(m, $"{arch}.expert_used_count"),
+            (int)model.FindTensor("output.weight")!.Value.Dimensions[1]);
+    }
 
     public static GptOssHyperparams FromGgufMetadata(
         IReadOnlyDictionary<string, object> metadata, string arch, int numLayer,
@@ -90,6 +114,11 @@ public sealed record GptOssHyperparams
             SwaPeriod = GetInt(metadata, $"{arch}.attention.sliding_window_pattern", 2),
             RopeFreqBase = ropeFreqBase,
             RopeFreqBaseSwa = GetFloat(metadata, $"{arch}.rope.freq_base_swa", ropeFreqBase),
+            RopeScalingFactor = metadata.TryGetValue($"{arch}.rope.scaling.type", out var st) && Convert.ToString(st) == "yarn"
+                ? GetFloat(metadata, $"{arch}.rope.scaling.factor", 1f) : 1f,
+            RopeOrigContext = GetInt(metadata, $"{arch}.rope.scaling.original_context_length"),
+            YarnBetaFast = GetFloat(metadata, $"{arch}.rope.scaling.yarn_beta_fast", 32f),
+            YarnBetaSlow = GetFloat(metadata, $"{arch}.rope.scaling.yarn_beta_slow", 1f),
         };
     }
 

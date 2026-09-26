@@ -23,9 +23,7 @@ public sealed unsafe class GptOssForwardPass : IForwardPass
     private readonly int _embedDim, _numHeads, _numHeadsKv, _headDim, _numLayer;
     private readonly int _kvDim;
 
-    // Precomputed RoPE frequency tables
-    private readonly float[] _invFreqGlobal;
-    private readonly float[] _invFreqSwa;
+    // Per-position RoPE (YaRN) cos/sin scratch
     private readonly float[] _cosBuf;
     private readonly float[] _sinBuf;
 
@@ -67,16 +65,8 @@ public sealed unsafe class GptOssForwardPass : IForwardPass
         _kvDim = _numHeadsKv * _headDim;
 
         int half = _headDim / 2;
-        _invFreqGlobal = new float[half];
-        _invFreqSwa = new float[half];
         _cosBuf = new float[half];
         _sinBuf = new float[half];
-
-        for (int i = 0; i < half; i++)
-        {
-            _invFreqGlobal[i] = MathF.Pow(_hp.RopeFreqBase, -2f * i / _headDim);
-            _invFreqSwa[i] = MathF.Pow(_hp.RopeFreqBaseSwa, -2f * i / _headDim);
-        }
 
         _curBuf = new float[_embedDim];
         _residualBuf = new float[_embedDim];
@@ -170,15 +160,15 @@ public sealed unsafe class GptOssForwardPass : IForwardPass
     private void Attention(int il, GptOssLayerTensors layer, float[] normedInput, int position, float[] output)
     {
         bool isSwa = _hp.IsSwaLayer(il);
-        float[] invFreq = isSwa ? _invFreqSwa : _invFreqGlobal;
 
-        int half = _headDim / 2;
-        for (int i = 0; i < half; i++)
-        {
-            float theta = position * invFreq[i];
-            _cosBuf[i] = MathF.Cos(theta);
-            _sinBuf[i] = MathF.Sin(theta);
-        }
+        // YaRN on both layer kinds (openai-moe.cpp). attn_factor is 1: llama-context.cpp sets
+        // yarn_attn_factor = get_mscale(factor) and then cancels it by 1/(1 + 0.1 ln factor), so
+        // the only magnitude scale left is rope_yarn's own 1 + 0.1 ln(1/freq_scale).
+        bool yarn = _hp.RopeScalingFactor > 1f;
+        fixed (float* c = _cosBuf, s = _sinBuf)
+            SimdKernels.BuildYarnRopeRow(c, s, position, _headDim,
+                isSwa ? _hp.RopeFreqBaseSwa : _hp.RopeFreqBase, _hp.RopeOrigContext,
+                1f / _hp.RopeScalingFactor, yarn ? 1f : 0f, 1f, _hp.YarnBetaFast, _hp.YarnBetaSlow);
 
         var kFlat = _kCacheFlat[il];
         var vFlat = _vCacheFlat[il];

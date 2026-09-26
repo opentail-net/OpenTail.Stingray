@@ -4,15 +4,9 @@ using OpenTail.Stingray.Engine;
 namespace OpenTail.Stingray.Tests.ForwardPass;
 
 /// <summary>
-/// FIRST real-weight check for the alpha gpt-oss port (GptOssForwardPass.cs,
-/// docs/060-gpt-oss-implementation-plan.md Phase 3). This is deliberately a SMOKE test, not a
-/// parity receipt: gpt-oss is not admitted to <see cref="ModelCompatibility"/> and this
-/// intentionally bypasses that gate by constructing <see cref="GptOssForwardPass"/> directly
-/// (the same alpha class the plan doc describes, not the shared <c>Engine.ForwardPass</c> every
-/// admitted architecture uses) — a pass here means "loads and produces finite, non-crashing
-/// output," NOT "produces correct output." No token-level comparison against any reference
-/// exists yet; that needs an actual llama.cpp/llama-eval-callback run against this same
-/// checkpoint, not done this session.
+/// Real-weight checks for gpt-oss (GptOssForwardPass.cs): finite logits, a greedy parity
+/// receipt against llama-server, and a decode-speed benchmark. gpt-oss is admitted to
+/// <see cref="ModelCompatibility"/> on the parity receipt below (2026-09-26).
 /// </summary>
 public sealed class GptOssRealWeightSmokeTests : HeavyTestBase
 {
@@ -29,24 +23,9 @@ public sealed class GptOssRealWeightSmokeTests : HeavyTestBase
 
         Assert.Equal("gpt-oss", Convert.ToString(metadata["general.architecture"]));
 
-        const string arch = "gpt-oss";
-        int numLayer = Convert.ToInt32(metadata[$"{arch}.block_count"]);
-        int embedDim = Convert.ToInt32(metadata[$"{arch}.embedding_length"]);
-        int numHeads = Convert.ToInt32(metadata[$"{arch}.attention.head_count"]);
-        int numHeadsKv = Convert.ToInt32(metadata[$"{arch}.attention.head_count_kv"]);
-        int headDim = Convert.ToInt32(metadata[$"{arch}.attention.key_length"]);
-        int numExperts = Convert.ToInt32(metadata[$"{arch}.expert_count"]);
-        int numExpertsUsed = Convert.ToInt32(metadata[$"{arch}.expert_used_count"]);
-        int vocabSize = (int)model.FindTensor("output.weight")!.Value.Dimensions[1];
-
-        // Record the real checkpoint's shape once, since docs/060-...md's specific numbers (32
-        // experts, top-4, hidden 2880, 64/8 heads) came from an external, unverified source --
-        // this is the first time they're checked against the actual file.
-        Assert.True(numLayer is 24 or 36, $"unexpected layer count {numLayer} (reference only recognizes 24=20B/36=120B)");
-
-        var hp = GptOssHyperparams.FromGgufMetadata(
-            metadata, arch, numLayer, embedDim, numHeads, numHeadsKv, headDim,
-            numExperts, numExpertsUsed, vocabSize);
+        var hp = GptOssHyperparams.FromModel(model);
+        int vocabSize = hp.VocabSize;
+        Assert.True(hp.NumLayer is 24 or 36, $"unexpected layer count {hp.NumLayer} (reference only recognizes 24=20B/36=120B)");
 
         using var fwd = new GptOssForwardPass(model, hp);
 
@@ -71,66 +50,56 @@ public sealed class GptOssRealWeightSmokeTests : HeavyTestBase
     }
 
     /// <summary>
-    /// Diagnostic, not a parity receipt (no known-correct reference completion exists to assert
-    /// against yet — see docs/060-...md Phase 4). Tokenizes a real prompt (exercising the new
-    /// "gpt-4o" pre-tokenizer cascade added to PreTokenizerPatterns.cs this session, confirmed
-    /// against this checkpoint's real tokenizer.ggml.pre value) and greedy-decodes a few tokens,
-    /// printing the completion for a human to eyeball. Only weak invariants are asserted (no
-    /// crash, no immediate degenerate single-token repetition) since there's nothing stronger to
-    /// check against yet.
+    /// Greedy parity receipt against llama-server (vendored tools/llama.cpp, same GGUF, raw
+    /// completion, temperature 0, top_k 1, captured 2026-09-26 with return_tokens:true). The
+    /// prompt tokenization is checked too (it exercises the "gpt-4o" pre-tokenizer cascade).
     /// </summary>
     [Fact]
-    public void GptOss_TokenizesAndGreedyDecodes_ForEyeballing()
+    public void GptOss_TeacherForcedMatchesLlamaServer_24Tokens()
     {
         var path = FindModel();
-        Assert.SkipWhen(path is null, $"{ModelFile} is required for this smoke test.");
+        Assert.SkipWhen(path is null, $"{ModelFile} is required for this parity test.");
 
         using var model = GgufModel.Open(path!);
-        var metadata = model.Metadata;
-        const string arch = "gpt-oss";
-
-        Assert.Equal("gpt-4o", Convert.ToString(metadata["tokenizer.ggml.pre"]));
+        Assert.Equal("gpt-4o", Convert.ToString(model.Metadata["tokenizer.ggml.pre"]));
 
         var tokenizer = GgufTokenizer.FromGgufModel(model);
         var promptTokens = tokenizer.Encode("The capital of France is");
-        Assert.True(promptTokens.Count > 0);
+        Assert.Equal([976, 9029, 328, 10128, 382], promptTokens);
 
-        int numLayer = Convert.ToInt32(metadata[$"{arch}.block_count"]);
-        int embedDim = Convert.ToInt32(metadata[$"{arch}.embedding_length"]);
-        int numHeads = Convert.ToInt32(metadata[$"{arch}.attention.head_count"]);
-        int numHeadsKv = Convert.ToInt32(metadata[$"{arch}.attention.head_count_kv"]);
-        int headDim = Convert.ToInt32(metadata[$"{arch}.attention.key_length"]);
-        int numExperts = Convert.ToInt32(metadata[$"{arch}.expert_count"]);
-        int numExpertsUsed = Convert.ToInt32(metadata[$"{arch}.expert_used_count"]);
-        int vocabSize = (int)model.FindTensor("output.weight")!.Value.Dimensions[1];
-        var hp = GptOssHyperparams.FromGgufMetadata(
-            metadata, arch, numLayer, embedDim, numHeads, numHeadsKv, headDim,
-            numExperts, numExpertsUsed, vocabSize);
-
-        using var fwd = new GptOssForwardPass(model, hp);
+        using var fwd = new GptOssForwardPass(model, GptOssHyperparams.FromModel(model));
 
         ReadOnlySpan<float> logits = default;
         int pos = 0;
         foreach (int t in promptTokens)
-        {
             logits = fwd.Forward(t, pos++);
-        }
 
-        var generated = new List<int>();
-        for (int i = 0; i < 12; i++)
+        // " Paris.\"\n    # Test with a non-existent page\n    content = fetch_wikipedia_page_content(\"ThisPageDoesNot"
+        int[] expected =
+        [
+            12650, 14396, 271, 1069, 4674, 483, 261, 2893, 130142, 3011, 198, 271,
+            3100, 314, 12011, 3567, 18249, 13263, 16500, 568, 2500, 3325, 28133, 2874,
+        ];
+        // Teacher-forced: feed llama-server's own greedy tokens and require each to sit within
+        // MaxGap logits of our top logit. An exact free-running match is too brittle here —
+        // step 1 is a 0.02-logit tie in llama.cpp itself (14396 -1.852 vs 3692 -1.872), and
+        // llama.cpp's -fa on/off alone moves logits by up to 0.13.
+        const float MaxGap = 0.25f;
+        int exact = 0;
+        float worstGap = 0f;
+        for (int i = 0; i < expected.Length; i++)
         {
-            int next = Argmax(logits);
-            generated.Add(next);
-            logits = fwd.Forward(next, pos++);
+            int argmax = Argmax(logits);
+            float gap = logits[argmax] - logits[expected[i]];
+            if (argmax == expected[i]) exact++;
+            worstGap = MathF.Max(worstGap, gap);
+            Assert.True(gap <= MaxGap, $"step {i}: reference token {expected[i]} is {gap:F3} logits below our argmax {argmax}");
+            logits = fwd.Forward(expected[i], pos++);
         }
 
-        string continuation = tokenizer.Decode(generated.ToArray());
-        Console.WriteLine($"Prompt: The capital of France is");
-        Console.WriteLine($"Continuation ({generated.Count} tokens): {continuation}");
-        Console.WriteLine($"Token ids: {string.Join(", ", generated)}");
-
-        Assert.False(generated.TrueForAll(t => t == generated[0]), "degenerate: every generated token identical");
+        Console.WriteLine($"Teacher-forced: {exact}/{expected.Length} exact argmax, worst gap {worstGap:F3}");
     }
+
 
     [Fact]
     public void GptOss_Benchmark_DecodeSpeed()
@@ -139,20 +108,7 @@ public sealed class GptOssRealWeightSmokeTests : HeavyTestBase
         Assert.SkipWhen(path is null, $"{ModelFile} is required for this smoke test.");
 
         using var model = GgufModel.Open(path!);
-        var metadata = model.Metadata;
-        const string arch = "gpt-oss";
-
-        int numLayer = Convert.ToInt32(metadata[$"{arch}.block_count"]);
-        int embedDim = Convert.ToInt32(metadata[$"{arch}.embedding_length"]);
-        int numHeads = Convert.ToInt32(metadata[$"{arch}.attention.head_count"]);
-        int numHeadsKv = Convert.ToInt32(metadata[$"{arch}.attention.head_count_kv"]);
-        int headDim = Convert.ToInt32(metadata[$"{arch}.attention.key_length"]);
-        int numExperts = Convert.ToInt32(metadata[$"{arch}.expert_count"]);
-        int numExpertsUsed = Convert.ToInt32(metadata[$"{arch}.expert_used_count"]);
-        int vocabSize = (int)model.FindTensor("output.weight")!.Value.Dimensions[1];
-        var hp = GptOssHyperparams.FromGgufMetadata(
-            metadata, arch, numLayer, embedDim, numHeads, numHeadsKv, headDim,
-            numExperts, numExpertsUsed, vocabSize);
+        var hp = GptOssHyperparams.FromModel(model);
 
         using var fwd = new GptOssForwardPass(model, hp);
 
