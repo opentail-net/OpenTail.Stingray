@@ -24,11 +24,13 @@ public sealed class VulkanArchLogitParityTests : HeavyTestBase
     [InlineData("stablelm-zephyr-3b.Q4_K_M.gguf")]           // LayerNorm + bias, partial NEOX RoPE
     [InlineData("c4ai-command-r7b-12-2024-Q4_K_M.gguf")]     // cohere2: parallel residual, LayerNorm, SWA + NoPE globals
     [InlineData("gpt2.Q8_0.gguf")]                           // learned position table, non-gated GELU + biases
-    [InlineData("starcoder2-3b.Q4_K_M.gguf")]                // non-gated GELU + biases, LayerNorm
+    [InlineData("starcoder2-3b.Q4_K_M.gguf")]                // non-gated GELU + biases, LayerNorm (all Q4_K/Q6_K: batched prefill trunk)
     [InlineData("pythia-160m.Q8_0.gguf")]                    // gpt-neox: parallel residual, partial NEOX RoPE, biases
     [InlineData("swiss-ai.Apertus-8B-Instruct-2509.Q4_K_M.gguf")] // non-gated xIELU FFN
     [InlineData("Maincoder-1B-Q4_K_M.gguf")]                 // weighted QK-norm AFTER RoPE
     [InlineData("tencent_Hunyuan-0.5B-Instruct-Q8_0.gguf")]  // hunyuan-dense: QK-norm after RoPE
+    [InlineData("phi-2.Q4_K_M.gguf")]                        // phi3 arch with LongRoPE rope_factors_short/long
+    [InlineData("orpheus-3b-0.1-ft.Q4_K_M.gguf")]            // Llama 3.2: rope_freqs.weight, NORM RoPE
     [InlineData("gemma-4-E4B-it-Q4_K_M.gguf")]
     [InlineData("gemma-3-4b-it-Q4_K_M.gguf")]
     [InlineData("qwen2.5-0.5b-instruct-q4_k_m.gguf")]       // attention bias

@@ -1562,6 +1562,7 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
     private ComputePipeline? _addScaledInPlacePipeline;
     private ComputePipeline? _scaleInPlacePipeline;
     private ComputePipeline? _xieluPipeline;
+    private ComputePipeline? _ropeFactorsBatchedPipeline;
     private ComputePipeline? _clearPipeline;
     private ComputePipeline? _elementwiseMulPipeline;
     private ComputePipeline? _ropePipeline;
@@ -1761,6 +1762,7 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
     private struct ScaleParams { public uint n; public float scale; }
     private struct XieluParams { public uint n; public float alphaN; public float alphaP; public float beta; public float eps; }
     private struct RoPEParams { public uint numHeads; public uint headDim; public int position; public float theta; }
+    private struct RoPEFactorsParams { public uint numHeads; public uint headDim; public int basePos; public float theta; public uint neox; public float mscale; }
     private struct MatVecParams { public uint rows; public uint cols; }
     private struct MatVecBatchedParams { public uint rows; public uint cols; public uint nTok; }
     private struct EmbedParams { public uint tokenId; public uint embDim; }
@@ -2672,6 +2674,24 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
         // RoPEParams.position carries base_pos; the shader adds the row (gl_WorkGroupID.y) index.
         var p = new RoPEParams { numHeads = (uint)numHeads, headDim = (uint)headDim, position = basePos, theta = ropeTheta };
         DispatchOrRecord(pipeline, [GetBuffer(x)], (totalPairs + 255) / 256, &p, groupY: (uint)numTokens);
+    }
+
+    /// <summary>
+    /// RoPE over <paramref name="numTokens"/> rows (row r at position basePos + r) with per-pair
+    /// <paramref name="freqFactors"/> (head_dim/2 floats dividing each frequency) and cos/sin scaled
+    /// by <paramref name="mscale"/>; NORM or NEOX pairing. See <see cref="Shaders.RoPEFactorsBatched"/>.
+    /// </summary>
+    public void RoPEFactorsBatched(Tensor x, int basePos, int headDim, int numHeads, int numTokens,
+        float ropeTheta, bool neox, Tensor freqFactors, float mscale = 1f)
+    {
+        _ropeFactorsBatchedPipeline ??= new ComputePipeline(this, Shaders.RoPEFactorsBatched, 2, pushConstantSize: sizeof(RoPEFactorsParams));
+        uint totalPairs = (uint)numHeads * (uint)(headDim / 2);
+        var p = new RoPEFactorsParams
+        {
+            numHeads = (uint)numHeads, headDim = (uint)headDim, basePos = basePos, theta = ropeTheta,
+            neox = neox ? 1u : 0u, mscale = mscale,
+        };
+        DispatchOrRecord(_ropeFactorsBatchedPipeline, [GetBuffer(x), GetBuffer(freqFactors)], (totalPairs + 255) / 256, &p, groupY: (uint)numTokens);
     }
 
     /// <summary>
@@ -4998,6 +5018,7 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
         _addScaledInPlacePipeline?.Dispose();
         _scaleInPlacePipeline?.Dispose();
         _xieluPipeline?.Dispose();
+        _ropeFactorsBatchedPipeline?.Dispose();
         _clearPipeline?.Dispose();
         _elementwiseMulPipeline?.Dispose();
         _ropePipeline?.Dispose();

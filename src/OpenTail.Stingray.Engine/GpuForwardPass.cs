@@ -395,6 +395,11 @@ public sealed unsafe class GpuForwardPass : IForwardPass
     private readonly float[]? _layerOutputScale;
     // Optional rope_freqs.weight table (size = maxHeadDim/2), applied on global layers only.
     private readonly Tensor? _gpuRopeFreqs;
+    // Non-Gemma-4 RoPE frequency factors: rope_freqs.weight (Llama-3.1-style, Apertus) or LongRoPE
+    // rope_factors_short/long (chosen by context size, as ForwardPass does), plus LongRoPE's
+    // cos/sin scale. Null for plain RoPE.
+    private readonly Tensor? _ropeFactors;
+    private readonly float _ropeMscale = 1f;
 
     // Layers whose K/V cache aliases another layer's (Gemma 4 shared-KV tail, issue #351);
     // Dispose must NOT free their cache handles (the source layer owns + frees them).
@@ -1169,6 +1174,26 @@ public sealed unsafe class GpuForwardPass : IForwardPass
         {
             _gpuRopeFreqs = UploadWeight("rope_freqs.weight");
         }
+        else if (!_isGemma4)
+        {
+            string? factorsName = null;
+            if (model.FindTensor("rope_freqs.weight") is GgufTensorInfo rf && rf.DType == DType.Float32
+                && rf.ElementCount == _headDim / 2)
+                factorsName = "rope_freqs.weight";
+            else
+            {
+                bool useLong = hp.RopeYarnOrigCtxLen > 0 && _maxSeqLen > hp.RopeYarnOrigCtxLen;
+                string name = useLong ? "rope_factors_long.weight" : "rope_factors_short.weight";
+                if (model.FindTensor(name) is GgufTensorInfo lr && lr.DType == DType.Float32
+                    && lr.ElementCount == _headDim / 2)
+                    factorsName = name;
+            }
+            if (factorsName is not null)
+            {
+                _ropeFactors = UploadWeight(factorsName);
+                _ropeMscale = hp.RopeAttnFactor;
+            }
+        }
 
         // Gemma 4 PLE (issue #351): the big per_layer_token_embd table stays CPU-resident (mmap;
         // gathered + dequant'd one row per token), while per_layer_model_proj / per_layer_proj_norm
@@ -1212,9 +1237,6 @@ public sealed unsafe class GpuForwardPass : IForwardPass
         // has no L2 path (it would silently skip the norm), and the Debug.Assert that guards it is
         // stripped in Release — so don't rely on the L2⟹Llama4⟹MoE coupling, exclude it directly.
         if (_isMoE || _isGemma4 || _hp.UseL2QkNorm) return false;
-        // Non-gated FFN, FFN biases and the learned position table are wired in the per-token
-        // trunk only.
-        if (_gatelessFfn || _bFfnUp is not null || _gpuPosEmbd is not null) return false;
 
         bool IsBatchable(Tensor w) =>
             _weightDTypes.GetValueOrDefault(w.Handle, DType.Q4_K) is DType.Q4_K or DType.Q6_K;
@@ -1222,7 +1244,7 @@ public sealed unsafe class GpuForwardPass : IForwardPass
         for (int i = 0; i < _hp.NumLayers; i++)
         {
             if (!IsBatchable(_wq[i]) || !IsBatchable(_wk[i]) || !IsBatchable(_wv[i]) ||
-                !IsBatchable(_wo[i]) || !IsBatchable(_wGate[i]) || !IsBatchable(_wUp[i]) ||
+                !IsBatchable(_wo[i]) || (_wGate[i] is not null && !IsBatchable(_wGate[i])) || !IsBatchable(_wUp[i]) ||
                 !IsBatchable(_wDown[i]))
                 return false;
         }
@@ -1615,6 +1637,11 @@ public sealed unsafe class GpuForwardPass : IForwardPass
                         // StableLM / GPT-NeoX: rotate only the first rope.dimension_count dims.
                         _gpu.RoPEPartial(_q, position, _headDim, _hp.RopeDim, layerRopeTheta, neox: true);
                         _gpu.RoPEPartial(_k, position, _headDim, _hp.RopeDim, layerRopeTheta, neox: true);
+                    }
+                    else if (_ropeFactors is not null)
+                    {
+                        _gpu.RoPEFactorsBatched(_q, position, _headDim, _numHeads, 1, layerRopeTheta, _hp.IsNeoxRope, _ropeFactors, _ropeMscale);
+                        _gpu.RoPEFactorsBatched(_k, position, _headDim, _numKvHeads, 1, layerRopeTheta, _hp.IsNeoxRope, _ropeFactors, _ropeMscale);
                     }
                     else
                     {
@@ -2630,6 +2657,14 @@ public sealed unsafe class GpuForwardPass : IForwardPass
                 _gpu.ScaleInPlace(_hidden, _hp.EmbeddingScale);
                 _gpu.RecordBarrier();
             }
+            if (_gpuPosEmbd is not null)
+            {
+                // GPT-2 learned position row for this token's absolute position.
+                _gpu.EmbedLookup(_gpuPosEmbd, _posRow!, (uint)(startPos + i), (uint)embDim);
+                _gpu.RecordBarrier();
+                _gpu.AddInPlace(_hidden, _posRow!);
+                _gpu.RecordBarrier();
+            }
             _gpu.RecordComputeCopyRegion(_hiddenK, (long)i * embDim * f32, _hidden, 0, (long)embDim * f32);
             _gpu.RecordBarrier();
         }
@@ -2699,6 +2734,11 @@ public sealed unsafe class GpuForwardPass : IForwardPass
                 {
                     _gpu.RoPEPartialBatched(_qK, startPos, _headDim, _hp.RopeDim, layerRopeTheta, _numHeads, k, neox: true);
                     _gpu.RoPEPartialBatched(_kK, startPos, _headDim, _hp.RopeDim, layerRopeTheta, _numKvHeads, k, neox: true);
+                }
+                else if (_ropeFactors is not null)
+                {
+                    _gpu.RoPEFactorsBatched(_qK, startPos, _headDim, _numHeads, k, layerRopeTheta, _hp.IsNeoxRope, _ropeFactors, _ropeMscale);
+                    _gpu.RoPEFactorsBatched(_kK, startPos, _headDim, _numKvHeads, k, layerRopeTheta, _hp.IsNeoxRope, _ropeFactors, _ropeMscale);
                 }
                 else
                 {
@@ -2880,17 +2920,44 @@ public sealed unsafe class GpuForwardPass : IForwardPass
                 _gpu.RecordBarrier();
             }
 
-            // gate/up: batched. SiLuMul over the whole [K][ffnDim] buffer. down: batched.
-            _gpu.MatMulBatched(_ffnGateK, _wGate[layer], _normK, k, WeightDType(_wGate[layer]), allowInt8);
-            _gpu.MatMulBatched(_ffnUpK, _wUp[layer], _normK, k, WeightDType(_wUp[layer]), allowInt8);
-            _gpu.RecordBarrier();
-            if (_hp.FfnActivation == FfnActivation.GeluApprox)   // [K*ffnDim] elementwise, K-agnostic
-                _gpu.GeluTanhMul(_ffnGateK, _ffnUpK);
+            if (_gatelessFfn)
+            {
+                // Non-gated FFN (GpuDenseFfn's batched twin): up (+b_up) -> GELU/xIELU -> down (+b_down).
+                _gpu.MatMulBatched(_ffnUpK, _wUp[layer], _normK, k, WeightDType(_wUp[layer]), allowInt8);
+                _gpu.RecordBarrier();
+                if (_bFfnUp is not null)
+                {
+                    _gpu.AddRowBroadcastInPlace(_ffnUpK, _bFfnUp[layer], k, _intermDim);
+                    _gpu.RecordBarrier();
+                }
+                if (_xielu)
+                    _gpu.XieluInPlace(_ffnUpK, k * _intermDim, _hp.XieluAlphaN![layer], _hp.XieluAlphaP![layer],
+                        _hp.XieluBeta![layer], _hp.XieluEps![layer]);
+                else
+                    _gpu.VisionGeluInPlace(_ffnUpK);
+                _gpu.RecordBarrier();
+                _gpu.MatMulBatched(_hiddenK, _wDown[layer], _ffnUpK, k, WeightDType(_wDown[layer]), allowInt8);
+                _gpu.RecordBarrier();
+                if (_bFfnDown is not null)
+                {
+                    _gpu.AddRowBroadcastInPlace(_hiddenK, _bFfnDown[layer], k, embDim);
+                    _gpu.RecordBarrier();
+                }
+            }
             else
-                _gpu.SiLuMul(_ffnGateK, _ffnUpK);
-            _gpu.RecordBarrier();
-            _gpu.MatMulBatched(_hiddenK, _wDown[layer], _ffnGateK, k, WeightDType(_wDown[layer]), allowInt8);
-            _gpu.RecordBarrier();
+            {
+                // gate/up: batched. SiLuMul over the whole [K][ffnDim] buffer. down: batched.
+                _gpu.MatMulBatched(_ffnGateK, _wGate[layer], _normK, k, WeightDType(_wGate[layer]), allowInt8);
+                _gpu.MatMulBatched(_ffnUpK, _wUp[layer], _normK, k, WeightDType(_wUp[layer]), allowInt8);
+                _gpu.RecordBarrier();
+                if (_hp.FfnActivation == FfnActivation.GeluApprox)   // [K*ffnDim] elementwise, K-agnostic
+                    _gpu.GeluTanhMul(_ffnGateK, _ffnUpK);
+                else
+                    _gpu.SiLuMul(_ffnGateK, _ffnUpK);
+                _gpu.RecordBarrier();
+                _gpu.MatMulBatched(_hiddenK, _wDown[layer], _ffnGateK, k, WeightDType(_wDown[layer]), allowInt8);
+                _gpu.RecordBarrier();
+            }
 
             // Sandwich norm: post-FFN RmsNorm over all k rows BEFORE the residual add.
             if (_wPostFfwNorm is not null)
@@ -3816,6 +3883,7 @@ public sealed unsafe class GpuForwardPass : IForwardPass
         }
         _gpu.Free(_wOutputNorm);
         if (_gpuPosEmbd is not null) { _gpu.Free(_gpuPosEmbd); _gpu.Free(_posRow!); }
+        if (_ropeFactors is not null) _gpu.Free(_ropeFactors);
         if (_wOutput.Handle != _gpuEmbedding.Handle)
             _gpu.Free(_wOutput);
         _gpu.Free(_gpuEmbedding);
