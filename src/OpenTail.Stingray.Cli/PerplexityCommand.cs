@@ -65,7 +65,7 @@ public sealed class PerplexityCommand : Command<PerplexityCommand.Settings>
         public string? Backend { get; init; }
 
         [CommandOption("--batched")]
-        [Description("Score every position through batched ForwardPass.Prefill (docs/cpu-prefill-plan.md §14) instead of token-by-token Forward. Default mode NEVER calls MatMulBatched, so it cannot see STINGRAY_CPU_PREFILL_Q8's effect at all -- this flag is required to actually measure that path's perplexity impact. Not supported with --tq, -g -1, or per-layer-head-dim models (those still fall back to sequential Forward inside PrefillCore); MoE models ARE supported and route through the batched per-expert FFN. Prompts are evaluated in --batch-chunk-size chunks so KV-cache truncation matches real multi-chunk prefill.")]
+        [Description("Score every position through batched ForwardPass.Prefill (docs/cpu-prefill-plan.md §14) instead of token-by-token Forward. Default mode NEVER calls MatMulBatched, so it cannot see STINGRAY_CPU_PREFILL_Q8's effect at all -- this flag is required to actually measure that path's perplexity impact. Not supported with --tq or -g -1; per-layer-head-dim (gemma-4) and MoE models ARE supported (MoE routes through the batched per-expert FFN). Prompts are evaluated in --batch-chunk-size chunks so KV-cache truncation matches real multi-chunk prefill.")]
         [DefaultValue(false)]
         public bool Batched { get; init; }
 
@@ -289,12 +289,9 @@ public sealed class PerplexityCommand : Command<PerplexityCommand.Settings>
         // MoE models DO route through PrefillCore now (MoeFfnBatched), so --batched is the only
         // way to perplexity-gate the int8 expert GEMMs — the default token-by-token mode never
         // calls MatMulBatched and would report the sequential path's quality either way.
-        // Per-layer head-dim models still fall back to sequential Forward internally.
-        if (settings.Batched && hp.LayerHeadDim is not null)
-        {
-            AnsiConsole.MarkupLine("[red]Error:[/] --batched cannot measure per-layer-head-dim models; they fall back to sequential Forward inside PrefillCore (same as the default mode), so --batched would just measure the token-by-token path anyway. Drop --batched for this model.");
-            return 1;
-        }
+        // Per-layer head-dim models (gemma-4) DO run batched PrefillCore — the old "falls back to
+        // sequential" rejection here was stale, and it hid two real prefill bugs from this gate
+        // (KV staging stride, KV-shared layer length; fixed 2026-09-26).
 
         // Raw-text tokenization (no chat template), like llama.cpp perplexity. BOS is
         // prepended for models whose metadata asks for it (add_bos_token=true), mirroring

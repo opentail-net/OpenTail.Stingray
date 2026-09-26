@@ -99,13 +99,12 @@ public sealed unsafe partial class ForwardPass
         // gemma4-aware; the dimension itself was not.
         int headDim = _layerHeadDim?[layer] ?? _headDim;
         int qDim = numHeads * headDim;
-        // Quantity 1 (see the doc's "three quantities" table): the CACHE's head stride, which is
-        // fixed at construction by _maxHeadDim and is NOT this layer's head dim. K rows are
-        // _numKvHeads * _maxHeadDim wide with head h at h * _maxHeadDim, so a narrow layer must
-        // still step by the wide stride to find its head — it just reads headDim of it.
-        // (ValueAtHead already does this internally; KeyAt returns the row base, so the caller
-        // owns the head offset and this is where it was being got wrong.)
-        int cacheHeadStride = _layerHeadDim is not null ? _maxHeadDim : headDim;
+        // K head offset inside a cache row. Rows are cache.KvDim (= max-layer) wide, but every
+        // writer packs a layer's heads compactly (head h at h * headDim, zero tail) and the decode
+        // Attention reads them the same way, so the stride is THIS layer's head dim. It used to be
+        // _maxHeadDim here while decode used headDim — prefill K and decode K disagreed on
+        // per-layer head_dim models (gemma-4 E4B), fixed 2026-09-26 with StageCompactKv.
+        int cacheHeadStride = headDim;
         int hpkg = numHeads / numKvHeads;
         int kvSrc = _layerKvSrc is not null ? _layerKvSrc[layer] : -1;
         int readLayer = kvSrc >= 0 ? kvSrc : layer;

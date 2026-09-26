@@ -245,8 +245,8 @@ public sealed unsafe partial class ForwardPass
                         }
                         else
                         {
-                            ScatterToCacheStride(kStage, kn, layerKv, layerHd, _maxHeadDim);
-                            ScatterToCacheStride(vStage!, vn, layerKv, layerHd, _maxHeadDim);
+                            StageCompactKv(kStage, kn, kvDim, kvDimMax);
+                            StageCompactKv(vStage!, vn, kvDim, kvDimMax);
                             _kvCache.Append(layer,
                                 new ReadOnlySpan<float>(kStage, kvDimMax),
                                 new ReadOnlySpan<float>(vStage, kvDimMax));

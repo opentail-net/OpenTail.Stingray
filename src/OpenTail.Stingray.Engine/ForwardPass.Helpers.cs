@@ -311,22 +311,18 @@ public sealed unsafe partial class ForwardPass
         (float*)NativeMemory.AllocZeroed((nuint)(count * sizeof(float)));
 
     /// <summary>
-    /// Widen one token's K or V row from a compact per-layer head packing (head <c>h</c> at
-    /// <c>h * headDim</c>) to the KV cache's own head stride (head <c>h</c> at
-    /// <c>h * cacheHeadStride</c>), which is fixed model-wide at <c>_maxHeadDim</c>.
-    /// <para>The destination must already be zeroed; the gaps between heads are never written, so
-    /// re-zeroing per token would be pure waste — every call writes exactly the same head slots.</para>
+    /// Stage one token's K or V row for <see cref="PagedKvCache.Append"/> on a per-layer head_dim
+    /// model: the <paramref name="kvDim"/> compact floats (head <c>h</c> at <c>h * layerHeadDim</c>)
+    /// followed by zeros up to the cache row width <paramref name="kvDimMax"/>. This is the layout the
+    /// decode path appends and every cache reader uses — K as <c>KeyAt + kvHead * layerHeadDim</c>
+    /// (decode <c>Attention</c>), V through the transposed store's per-head <c>HeadDimOf(layer)</c>
+    /// stride. The tail is re-zeroed each call because a narrow layer can follow a wider one in the
+    /// same staging buffer.
     /// </summary>
-    private static void ScatterToCacheStride(float* dst, float* src, int numHeads,
-        int headDim, int cacheHeadStride)
+    private static void StageCompactKv(float* dst, float* src, int kvDim, int kvDimMax)
     {
-        if (headDim == cacheHeadStride)
-        {
-            Copy(dst, src, numHeads * headDim);
-            return;
-        }
-        for (int h = 0; h < numHeads; h++)
-            Copy(dst + (long)h * cacheHeadStride, src + (long)h * headDim, headDim);
+        Copy(dst, src, kvDim);
+        if (kvDimMax > kvDim) new Span<float>(dst + kvDim, kvDimMax - kvDim).Clear();
     }
 
     private static void Copy(float* dst, float* src, int size) =>

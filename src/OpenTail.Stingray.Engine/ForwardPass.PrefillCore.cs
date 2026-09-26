@@ -275,12 +275,13 @@ public sealed unsafe partial class ForwardPass
                             }
                             else
                             {
-                                // Quantity 1. A flat copy into a kvDimMax-long span would have the
-                                // right LENGTH and therefore throw nothing, while placing every head
-                                // but the first at the wrong offset — the cache strides heads by
-                                // _maxHeadDim, so this is a per-head SCATTER, not a pad.
-                                ScatterToCacheStride(kStage, kn, layerKv, layerHd, _maxHeadDim);
-                                ScatterToCacheStride(vStage!, vn, layerKv, layerHd, _maxHeadDim);
+                                // Compact heads + zero tail, exactly as the decode path appends.
+                                // (This used to scatter heads to a _maxHeadDim stride, which no
+                                // reader uses: V's transposed store reads h * layerHd, so every KV
+                                // head but the first read zero padding — found 2026-09-26 on
+                                // gemma-4 E4B, where prefill-vs-sequential cosine was 0.91.)
+                                StageCompactKv(kStage, kn, kvDim, kvDimMax);
+                                StageCompactKv(vStage!, vn, kvDim, kvDimMax);
                                 cache.Append(layer,
                                     new ReadOnlySpan<float>(kStage, kvDimMax),
                                     new ReadOnlySpan<float>(vStage, kvDimMax));
@@ -289,6 +290,16 @@ public sealed unsafe partial class ForwardPass
                         }
                     }
                     if (profPrefill) pRopeTicks = System.Diagnostics.Stopwatch.GetTimestamp() - pStage;
+
+                    // KV-share layers (gemma-4 E4B tail, issue #351) append nothing, so the
+                    // TruncateTo(startPos) at the top of this layer left the logical length at
+                    // startPos and attention saw none of this chunk's positions. The source layer
+                    // already wrote positions [startPos, startPos + N) into the shared pages, so
+                    // expose them — exactly what the decode path's per-token IncrementPosition
+                    // gives a shared layer. (Found 2026-09-26: prefill-vs-sequential cosine fell
+                    // from 0.9992 at layer 23 to 0.93 at layer 24, the first shared layer.)
+                    if (kvShared)
+                        cache.TruncateTo(startPos + N);
 
                     if (s_mlaTrace && _isMla)
                     {
