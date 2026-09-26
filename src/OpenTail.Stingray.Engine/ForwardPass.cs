@@ -1484,7 +1484,7 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
                 return;
         }
 
-        if (allowBlas && _dequantCacheEnabled && w.DType != DType.Float32 && N >= SimdKernels.MinBatchForBlas)
+        if (UseDequantCache(in w, N, rows, cols, allowBlas))
         {
             float* wf32 = GetDequantWeightF32(in w, rows, cols);
             if (wf32 != null)
@@ -1508,11 +1508,30 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
     /// dtype (Q5_K/Q2_K/Float32/Q8_0 have no _8In/_4In dot -- same set TryMatMulBatchedQ8 itself
     /// falls back for).
     /// </summary>
+    /// <summary>
+    /// Whether a batched matmul should take the dequant-once F32 + BLAS route. Declined when an
+    /// int8 route exists that measured faster: Q4_K with a repacked x8 copy (Path 2 GEMM) and
+    /// Q6_K through the Q8 prefill tier. SmolLM2-1.7B Q4_K_M, 991-token prefill, 3 runs each:
+    /// dequant cache on 160-166 t/s vs these tensors on int8 184-187 t/s — the dual gate/up path
+    /// had been sending the model's largest Q4_K GEMMs to F32 BLAS whenever the cache was on.
+    /// </summary>
+    private bool UseDequantCache(in TensorRef w, int N, int rows, int cols, bool allowBlas)
+    {
+        if (!allowBlas || !_dequantCacheEnabled || w.DType == DType.Float32 || N < SimdKernels.MinBatchForBlas)
+            return false;
+        if (SimdKernels.Q8PrefillEnabled)
+        {
+            if (w.DType == DType.Q4_K && GetRepackedQ4Kx8(in w, rows, cols) != null) return false;
+            if (w.DType == DType.Q6_K && N >= SimdKernels.MinBatchForQ8Prefill) return false;
+        }
+        return true;
+    }
+
     private void MatMulBatchedDualCached(float* output1, in TensorRef w1, float* output2, in TensorRef w2,
         float* input, int N, int rows, int cols, bool allowBlas = true)
     {
-        bool useCache1 = allowBlas && _dequantCacheEnabled && w1.DType != DType.Float32 && N >= SimdKernels.MinBatchForBlas;
-        bool useCache2 = allowBlas && _dequantCacheEnabled && w2.DType != DType.Float32 && N >= SimdKernels.MinBatchForBlas;
+        bool useCache1 = UseDequantCache(in w1, N, rows, cols, allowBlas);
+        bool useCache2 = UseDequantCache(in w2, N, rows, cols, allowBlas);
 
         // The repacked Q4_K path OUTRANKS the dual-Q8 path when both are available.
         //
