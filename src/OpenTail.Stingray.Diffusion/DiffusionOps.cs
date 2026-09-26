@@ -421,44 +421,82 @@ internal static unsafe class DiffusionOps
             int inBatchBase = b * inC * hw;
             int outBatchBase = b * outC * hw;
 
-            // 1. Pack input NCHW -> [HW, inC]
+            // out[outC, hw] = K[outC, inC] x X[inC, hw] as ONE packed GEMM with the roles swapped — the
+            // kernel is the GEMM's row operand and the activations are packed straight from
+            // channel-major NCHW into 16-pixel panels (contiguous reads), so the result lands
+            // channel-major with no transpose in or out. Measured 2026-09-26 against the previous
+            // token-major Dot + unpack version (ms, after warm-up): 512x512 @4096 58-73 -> 10-14,
+            // 128->256 @65536 89 -> 28-39, 64x64 @65536 14.7 -> 7-10, 32->64 @65536 14.8 -> 6-8,
+            // 512->16 @4096 3.2 -> 2.0; 256x256 @16384 a near-tie (~16 vs ~17).
+            if (PackedSgemmF32.IsSupported && hw >= PackedSgemmF32.Nr && (long)inC * outC >= 1024)
+            {
+                Conv1x1PackedGemm(input, inBatchBase, kernel, bias, output, outBatchBase, inC, hw, outC);
+                continue;
+            }
+
+            // Fallback (no AVX2/FMA, tiny shapes): token-major copy of the input, then one dot per
+            // output written directly in channel-major order (no separate strided unpack pass).
             var packedIn = new float[hw * inC];
             Parallel.For(0, hw, p =>
             {
                 int dstOff = p * inC;
                 for (int ic = 0; ic < inC; ic++)
-                {
                     packedIn[dstOff + ic] = input[inBatchBase + ic * hw + p];
-                }
             });
-
-            // 2. Compute packed output: [HW, outC] = [HW, inC] @ [outC, inC]^T via TensorPrimitives.Dot
-            var packedOut = new float[hw * outC];
             Parallel.For(0, hw, p =>
             {
                 var rowIn = packedIn.AsSpan(p * inC, inC);
-                var rowOut = packedOut.AsSpan(p * outC, outC);
-
                 for (int oc = 0; oc < outC; oc++)
-                {
-                    var kRow = kernel.AsSpan(oc * inC, inC);
-                    float dot = TensorPrimitives.Dot(rowIn, kRow);
-                    rowOut[oc] = dot + (bias is not null ? bias[oc] : 0f);
-                }
-            });
-
-            // 3. Unpack packed output [HW, outC] -> output NCHW [outC, H, W]
-            Parallel.For(0, outC, oc =>
-            {
-                int outBase = outBatchBase + oc * hw;
-                for (int p = 0; p < hw; p++)
-                {
-                    output[outBase + p] = packedOut[p * outC + oc];
-                }
+                    output[outBatchBase + oc * hw + p] =
+                        TensorPrimitives.Dot(rowIn, kernel.AsSpan(oc * inC, inC)) + (bias is not null ? bias[oc] : 0f);
             });
         }
 
         return output;
+    }
+
+    private static unsafe void Conv1x1PackedGemm(float[] input, int inBase, float[] kernel, float[]? bias,
+        float[] output, int outBase, int inC, int hw, int outC)
+    {
+        const int Nr = PackedSgemmF32.Nr;
+        int panels = (hw + Nr - 1) / Nr;
+        long count = PackedSgemmF32.PackedFloats(hw, inC);
+        float* packed = (float*)NativeMemory.AlignedAlloc((nuint)(count * sizeof(float)), 64);
+        try
+        {
+            fixed (float* pIn = input)
+            {
+                nint src = (nint)(pIn + inBase), dst = (nint)packed;
+                // Panel p holds pixels p*16..p*16+15 as [inC][16]: channel ic's 16 pixels are
+                // contiguous in NCHW, so each panel row is one 64-byte copy.
+                Parallel.For(0, panels, p =>
+                {
+                    float* pd = (float*)dst + (long)p * inC * Nr;
+                    int c0 = p * Nr, valid = Math.Min(Nr, hw - c0);
+                    for (int ic = 0; ic < inC; ic++)
+                    {
+                        float* s = (float*)src + (long)ic * hw + c0;
+                        float* d = pd + (long)ic * Nr;
+                        int j = 0;
+                        for (; j < valid; j++) d[j] = s[j];
+                        for (; j < Nr; j++) d[j] = 0f;
+                    }
+                });
+            }
+            fixed (float* pK = kernel) fixed (float* pOut = output)
+                PackedSgemmF32.Gemm(pOut + outBase, pK, packed, null, outC, hw, inC);
+        }
+        finally
+        {
+            NativeMemory.AlignedFree(packed);
+        }
+
+        if (bias is not null)
+            Parallel.For(0, outC, oc =>
+            {
+                var row = output.AsSpan(outBase + oc * hw, hw);
+                TensorPrimitives.Add(row, bias[oc], row);
+            });
     }
 
     // ── Spatial ops ───────────────────────────────────────────────────────

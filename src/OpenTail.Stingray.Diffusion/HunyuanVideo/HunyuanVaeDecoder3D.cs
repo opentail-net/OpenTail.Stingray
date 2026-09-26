@@ -262,24 +262,9 @@ public sealed class HunyuanVaeDecoder3D : IDisposable
     {
         var weight = GetWeight($"{prefix}.weight", outCh * inCh);
         var bias = GetWeight($"{prefix}.bias", outCh);
-        int seq = t * spatial;
-        var output = new float[outCh * seq];
-
-        Parallel.For(0, outCh, oc =>
-        {
-            float b = bias[oc];
-            int wOff = oc * inCh;
-            var outSpan = output.AsSpan(oc * seq, seq);
-            outSpan.Fill(b);
-            for (int ic = 0; ic < inCh; ic++)
-            {
-                float wVal = weight[wOff + ic];
-                if (wVal == 0f) continue;
-                var inSpan = x.AsSpan(ic * seq, seq);
-                TensorPrimitives.MultiplyAdd(inSpan, wVal, outSpan, outSpan);
-            }
-        });
-        return output;
+        // [ch, t*spatial] channel-major is exactly a 1x1 conv over a 1 x (t*spatial) image: the shared
+        // packed-GEMM 1x1 path (DiffusionOps.Conv2D) replaces a per-channel axpy loop.
+        return DiffusionOps.Conv2D(x, weight, bias, 1, inCh, 1, t * spatial, outCh, 1, 1, 1, 0);
     }
 
     /// <summary>Real `HunyuanVideoUpsampleCausal3D`: nearest-neighbor upsample (frame 0 gets only
@@ -351,7 +336,6 @@ public sealed class HunyuanVaeDecoder3D : IDisposable
         var weight = GetWeight($"{weightPrefix}.weight", outCh * inCh * kt * kh * kw);
         var bias = GetWeight($"{weightPrefix}.bias", outCh);
 
-        var output = new float[outCh * t * h * w];
         int padT = kt - 1;
         int padH = kh / 2;
         int padW = kw / 2;
@@ -361,28 +345,10 @@ public sealed class HunyuanVaeDecoder3D : IDisposable
             return CausalConv3DGemm(x, weight, bias, inCh, outCh, t, h, w, kt);
 
         if (kt == 1 && kh == 1 && kw == 1)
-        {
-            Parallel.For(0, outCh, oc =>
-            {
-                float b = bias[oc];
-                int wBase = oc * inCh;
-                for (int ti = 0; ti < t; ti++)
-                {
-                    int outOffset = (oc * t + ti) * spatial;
-                    var outSpan = output.AsSpan(outOffset, spatial);
-                    outSpan.Fill(b);
-                    for (int ic = 0; ic < inCh; ic++)
-                    {
-                        float wVal = weight[wBase + ic];
-                        if (wVal == 0f) continue;
-                        int inOffset = (ic * t + ti) * spatial;
-                        var inSpan = x.AsSpan(inOffset, spatial);
-                        TensorPrimitives.MultiplyAdd(inSpan, wVal, outSpan, outSpan);
-                    }
-                }
-            });
-            return output;
-        }
+            // Pointwise: [inCh, t*spatial] channel-major, same as Linear1x1.
+            return DiffusionOps.Conv2D(x, weight, bias, 1, inCh, 1, t * spatial, outCh, 1, 1, 1, 0);
+
+        var output = new float[outCh * t * h * w];
 
         Parallel.For(0, outCh, oc =>
         {

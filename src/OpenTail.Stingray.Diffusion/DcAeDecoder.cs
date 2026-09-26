@@ -112,44 +112,11 @@ public sealed class DcAeDecoder : IDisposable
 
     private float[] Conv2D(float[] x, string prefix, int inCh, int outCh, int h, int w, int ksize)
     {
-        var weights = GetWeight($"{prefix}.weight", outCh * inCh * ksize * ksize);
+        // Shared im2col + packed GEMM convolution (stride 1, "same" padding) — replaces a scalar
+        // 7-deep direct loop that duplicated it.
+        var weights = GetWeight($"{prefix}.weight", outCh * inCh * ksize * ksize)!;
         var bias = GetWeight($"{prefix}.bias", outCh);
-
-        var output = new float[outCh * h * w];
-        int pad = ksize / 2;
-
-        Parallel.For(0, outCh, oc =>
-        {
-            float b = bias != null ? bias[oc] : 0.0f;
-            int outOff = oc * h * w;
-
-            for (int oh = 0; oh < h; oh++)
-            for (int ow = 0; ow < w; ow++)
-            {
-                float sum = b;
-                for (int ic = 0; ic < inCh; ic++)
-                {
-                    int inOff = ic * h * w;
-                    int wOff = (oc * inCh + ic) * ksize * ksize;
-
-                    for (int kh = 0; kh < ksize; kh++)
-                    for (int kw = 0; kw < ksize; kw++)
-                    {
-                        int ih = oh - pad + kh;
-                        int iw = ow - pad + kw;
-                        if (ih >= 0 && ih < h && iw >= 0 && iw < w)
-                        {
-                            float inVal = x[inOff + ih * w + iw];
-                            float wVal = weights != null ? weights[wOff + kh * ksize + kw] : 0.0f;
-                            sum += inVal * wVal;
-                        }
-                    }
-                }
-                output[outOff + oh * w + ow] = sum;
-            }
-        });
-
-        return output;
+        return DiffusionOps.Conv2D(x, weights, bias, 1, inCh, h, w, outCh, ksize, ksize);
     }
 
     private float[] NormChannel(float[] x, string prefix, int c, int h, int w, float eps = 1e-5f)

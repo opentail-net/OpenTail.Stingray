@@ -145,60 +145,12 @@ public sealed class TinyVaeEncoder : IDisposable
 
     private float[] Conv2D(float[] x, string prefix, int inCh, int outCh, int inH, int inW, int ksize, int stride, bool hasBias)
     {
-        var weights = GetWeight($"{prefix}.weight", outCh * inCh * ksize * ksize);
+        // Shared im2col + packed GEMM convolution, padding ksize/2 — replaces a scalar direct loop
+        // that duplicated it. Output is inH/stride x inW/stride for the even sizes this encoder
+        // sees, matching the old loop.
+        var weights = GetWeight($"{prefix}.weight", outCh * inCh * ksize * ksize) ?? new float[outCh * inCh * ksize * ksize];
         var bias = hasBias ? GetWeight($"{prefix}.bias", outCh) : null;
-
-        int outH = inH / stride;
-        int outW = inW / stride;
-        var output = new float[outCh * outH * outW];
-        int pad = ksize / 2;
-
-        Parallel.For(0, outCh, oc =>
-        {
-            float b = bias != null && oc < bias.Length ? bias[oc] : 0.0f;
-            int outOff = oc * outH * outW;
-
-            for (int oh = 0; oh < outH; oh++)
-            {
-                int outRowOff = outOff + oh * outW;
-                int inCenterH = oh * stride;
-
-                for (int ow = 0; ow < outW; ow++)
-                {
-                    int inCenterW = ow * stride;
-                    float sum = b;
-
-                    for (int ic = 0; ic < inCh; ic++)
-                    {
-                        int inOff = ic * inH * inW;
-                        int wOff = (oc * inCh + ic) * ksize * ksize;
-
-                        for (int kh = 0; kh < ksize; kh++)
-                        {
-                            int ih = inCenterH - pad + kh;
-                            if ((uint)ih >= (uint)inH) continue;
-
-                            int inRowOff = inOff + ih * inW;
-                            int wRowOff = wOff + kh * ksize;
-
-                            for (int kw = 0; kw < ksize; kw++)
-                            {
-                                int iw = inCenterW - pad + kw;
-                                if ((uint)iw < (uint)inW)
-                                {
-                                    float inVal = x[inRowOff + iw];
-                                    float wVal = weights != null ? weights[wRowOff + kw] : 0.0f;
-                                    sum += inVal * wVal;
-                                }
-                            }
-                        }
-                    }
-                    output[outRowOff + ow] = sum;
-                }
-            }
-        });
-
-        return output;
+        return DiffusionOps.Conv2D(x, weights, bias, 1, inCh, inH, inW, outCh, ksize, ksize, stride, ksize / 2);
     }
 
     private float[]? GetWeight(string key, int expectedLength)
