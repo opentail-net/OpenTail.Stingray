@@ -207,6 +207,12 @@ major safetensors-backed diffusion/audio model for the read-F32/convert/dot/disc
   shared 1x1 path: zero-latent decode pixel-identical, smooth latent 1 level at one pixel.
   Remaining: the VAE mid-block causal self-attention is still scalar seq x seq x ch (measure its
   share before touching it; at 32x32x1 latent the whole decode is a few seconds).
+- Tried and reverted (2026-09-26): SD-family `VaeDecoder.LinearHW` (mid-block attention q/k/v/out,
+  per-(token, output) Dot) as a packed GEMM. SD1.5 512², 2 steps, CPU, 2 alternating runs each:
+  old 25.6/25.7 s vs new 28.6/26.4 s — no gain; the projections are not a measurable share here.
+- Swept Audio/Diffusion for the weight-row Dot anti-pattern: remaining hits (HiggsCodecDecoder,
+  VibeVoice ConvNeXt, XttsConditioningEncoder, LTX VAE timestep Linear) are single-vector matvecs,
+  not multi-token GEMMs — nothing left there to pack.
 
 ## Found along the way
 
