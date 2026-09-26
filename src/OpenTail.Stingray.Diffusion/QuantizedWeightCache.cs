@@ -128,7 +128,7 @@ public sealed class QuantizedWeightCache : IDisposable
                     }
 
                     // 4. Direct raw-quantized MatMulBatched (small batches: fused MatVec)
-                    SimdKernels.MatMulBatched(po, (byte*)dataPtr, px, n, rows, cols, dtype, allowQ8: allowQ8, allowBlas: true);
+                    SimdKernels.MatMulBatched(po, (byte*)dataPtr, px, n, rows, cols, dtype, allowQ8: allowQ8, floatActivations: !allowQ8, allowBlas: true);
                     ApplyBias(output, bias, n, outDim);
                     return;
                 }

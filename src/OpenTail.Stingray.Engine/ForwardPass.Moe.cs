@@ -206,34 +206,29 @@ public sealed unsafe partial class ForwardPass
         int bprGL = bprG, bprUL = bprU, bprDL = bprD;
         bool sigGating = _hp.UseSigmoidGating;
 
+        // Activations are quantized exactly as SimdKernels.MatVec quantizes them for each dtype
+        // (Q4_K -> Q8_KS, Q3_K/Q6_K -> Q8_K, Q8_0 -> Q8_0; Q5_K/F32 stay F32), once per input
+        // row, so folded decode is bit-identical to per-expert MatVec and to the batched MoE
+        // prefill's per-token tier — and matches ggml, which quantizes activations the same way.
+        // (The first version of this path dotted F32 activations, silently diverging from both.)
+        byte* gateAct = stackalloc byte[Math.Max(1, ActScratchBytes(gateDt, embDimL))];
+        byte* upActOwn = stackalloc byte[upDt == gateDt ? 1 : Math.Max(1, ActScratchBytes(upDt, embDimL))];
+        byte* upAct = upDt == gateDt ? gateAct : upActOwn;
+        QuantizeAct(gateDt, normBuf, embDimL, gateAct);
+        if (upDt != gateDt) QuantizeAct(upDt, normBuf, embDimL, upAct);
+
         // Phase A: gate + up rows for all (k, r) pairs in one parallel sweep.
         // Each worker computes row r of expert k's gate and up projection.
-        if (gateDt == DType.Q4_K && upDt == DType.Q4_K)
+        Parallel.For(0, numActiveL * expertDimL, s_moeParallelOpts, idx =>
         {
-            Parallel.For(0, numActiveL * expertDimL, s_moeParallelOpts, idx =>
-            {
-                int k = idx / expertDimL;
-                int r = idx % expertDimL;
-                int ei = sePtr[k];
-                long offG = (long)ei * expertDimL * bprGL + (long)r * bprGL;
-                long offU = (long)ei * expertDimL * bprUL + (long)r * bprUL;
-                gateAll[idx] = SimdKernels.DotQ4K(gateP + offG, normBuf, embDimL);
-                upAll[idx]   = SimdKernels.DotQ4K(upP   + offU, normBuf, embDimL);
-            });
-        }
-        else
-        {
-            Parallel.For(0, numActiveL * expertDimL, s_moeParallelOpts, idx =>
-            {
-                int k = idx / expertDimL;
-                int r = idx % expertDimL;
-                int ei = sePtr[k];
-                long offG = (long)ei * expertDimL * bprGL + (long)r * bprGL;
-                long offU = (long)ei * expertDimL * bprUL + (long)r * bprUL;
-                gateAll[idx] = DispatchDot(gateP + offG, normBuf, embDimL, gateDt);
-                upAll[idx]   = DispatchDot(upP   + offU, normBuf, embDimL, upDt);
-            });
-        }
+            int k = idx / expertDimL;
+            int r = idx % expertDimL;
+            int ei = sePtr[k];
+            long offG = (long)ei * expertDimL * bprGL + (long)r * bprGL;
+            long offU = (long)ei * expertDimL * bprUL + (long)r * bprUL;
+            gateAll[idx] = DispatchDot(gateP + offG, normBuf, gateAct, embDimL, gateDt);
+            upAll[idx]   = DispatchDot(upP   + offU, normBuf, upAct, embDimL, upDt);
+        });
 
         // Llama-4 sigmoid weighting scales gate/up BEFORE SiLuMul (scales input),
         // weight baked in; the down phase then uses weight = 1.
@@ -255,40 +250,28 @@ public sealed unsafe partial class ForwardPass
         // loop, so the result is bit-identical to the per-expert sequential path
         // when Q8 quantisation is off — same invariant as MoeFfnBatched phase 4.
         new Span<float>(hiddenOut, embDimL).Clear();
-        if (downDt == DType.Q4_K)
+        // Each expert's down input (its SiLU(gate)*up row) is quantized once, like MatVec would.
+        bool fma = System.Runtime.Intrinsics.X86.Fma.IsSupported && embDimL >= 8;
+        int downActBytes = ActScratchBytes(downDt, expertDimL);
+        byte* downAct = stackalloc byte[Math.Max(1, downActBytes * numActiveL)];
+        for (int k = 0; k < numActiveL; k++)
+            QuantizeAct(downDt, gateAll + (long)k * expertDimL, expertDimL, downAct + (long)k * downActBytes);
+        Parallel.For(0, embDimL, s_moeParallelOpts, r =>
         {
-            Parallel.For(0, embDimL, s_moeParallelOpts, r =>
+            float sum = 0f;
+            for (int k = 0; k < numActiveL; k++)
             {
-                float sum = 0f;
-                for (int k = 0; k < numActiveL; k++)
-                {
-                    int ei = sePtr[k];
-                    float w = sigGating ? 1f : ewPtr[k];
-                    long offD = (long)ei * embDimL * bprDL + (long)r * bprDL;
-                    sum += w * SimdKernels.DotQ4K(downP + offD,
-                                                  gateAll + (long)k * expertDimL,
-                                                  expertDimL);
-                }
-                hiddenOut[r] = sum;
-            });
-        }
-        else
-        {
-            Parallel.For(0, embDimL, s_moeParallelOpts, r =>
-            {
-                float sum = 0f;
-                for (int k = 0; k < numActiveL; k++)
-                {
-                    int ei = sePtr[k];
-                    float w = sigGating ? 1f : ewPtr[k];
-                    long offD = (long)ei * embDimL * bprDL + (long)r * bprDL;
-                    sum += w * DispatchDot(downP + offD,
-                                          gateAll + (long)k * expertDimL,
-                                          expertDimL, downDt);
-                }
-                hiddenOut[r] = sum;
-            });
-        }
+                int ei = sePtr[k];
+                float w = sigGating ? 1f : ewPtr[k];
+                long offD = (long)ei * embDimL * bprDL + (long)r * bprDL;
+                float d = DispatchDot(downP + offD, gateAll + (long)k * expertDimL,
+                                      downAct + (long)k * downActBytes, expertDimL, downDt);
+                // Same rounding as WeightedAddInPlace (the per-expert and batched paths): fused
+                // multiply-add where FMA exists, so the three MoE paths stay bit-identical.
+                sum = fma ? MathF.FusedMultiplyAdd(w, d, sum) : sum + w * d;
+            }
+            hiddenOut[r] = sum;
+        });
     }
 
     // ParallelOptions for the routed-MoE sweeps. Pinning to ProcessorCount avoids
@@ -302,15 +285,35 @@ public sealed unsafe partial class ForwardPass
     private static bool IsFoldedDotDType(DType dtype) =>
         dtype is DType.Q3_K or DType.Q4_K or DType.Q5_K or DType.Q6_K or DType.Q8_0 or DType.Float32;
 
+    // Activation quantization per weight dtype, mirroring what SimdKernels.MatVec does internally
+    // (MatVecQ4K -> Q8_KS, MatVecQ3K/MatVecQ6K -> Q8_K, MatVecQ8_0 -> Q8_0; Q5_K/F32 use F32).
+    private static int ActScratchBytes(DType dtype, int cols) => dtype switch
+    {
+        DType.Q4_K => SimdKernels.Q8KSScratchBytes(cols),
+        DType.Q3_K or DType.Q6_K => SimdKernels.Q8KScratchBytes(cols),
+        DType.Q8_0 => SimdKernels.Q8_0ScratchBytes(cols),
+        _ => 0,
+    };
+
+    private static void QuantizeAct(DType dtype, float* input, int cols, byte* scratch)
+    {
+        switch (dtype)
+        {
+            case DType.Q4_K: SimdKernels.QuantizeRowToQ8KS(input, cols, scratch); break;
+            case DType.Q3_K or DType.Q6_K: SimdKernels.QuantizeRowToQ8K(input, cols, scratch); break;
+            case DType.Q8_0: SimdKernels.QuantizeRowToQ8_0(input, cols, scratch); break;
+        }
+    }
+
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static float DispatchDot(byte* row, float* input, int cols, DType dtype) =>
+    private static float DispatchDot(byte* row, float* input, byte* act, int cols, DType dtype) =>
         dtype switch
         {
-            DType.Q3_K    => SimdKernels.DotQ3K(row, input, cols),
-            DType.Q4_K    => SimdKernels.DotQ4K(row, input, cols),
+            DType.Q3_K    => SimdKernels.DotQ3K_Q8K(row, act, cols),
+            DType.Q4_K    => SimdKernels.DotQ4K_Q8KS(row, act, cols),
             DType.Q5_K    => SimdKernels.DotQ5K(row, input, cols),
-            DType.Q6_K    => SimdKernels.DotQ6K(row, input, cols),
-            DType.Q8_0    => SimdKernels.DotQ8_0(row, input, cols),
+            DType.Q6_K    => SimdKernels.DotQ6K_Q8K(row, act, cols),
+            DType.Q8_0    => SimdKernels.DotQ8_0_Q8_0(row, act, cols),
             DType.Float32 => SimdKernels.DotF32((float*)row, input, cols),
             _ => throw new NotSupportedException($"Routed expert dtype {dtype} not supported in folded decode path"),
         };

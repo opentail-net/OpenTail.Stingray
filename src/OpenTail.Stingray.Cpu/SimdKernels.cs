@@ -89,8 +89,16 @@ public static unsafe class SimdKernels
     /// producing output that is silently sensitive to unrelated concurrent traffic (found via a
     /// real-model concurrency stress test, docs/031-concurrent-decode-batch-tier-divergence-bug.md).
     /// </param>
+    /// <param name="floatActivations">
+    /// Keep activations in F32 on the per-token MatVec paths (Q4_K otherwise quantizes each input
+    /// row to int8, exactly like single-token decode). Separate from <paramref name="allowQ8"/> on
+    /// purpose: batched LLM decode passes <c>allowQ8: false</c> (no Q8 prefill GEMM tier) but must
+    /// stay bit-identical to single-token <see cref="MatVec"/> — 8195547 conflated the two and
+    /// broke that. Diffusion callers that need F32-exact linears (SD3.5) set this instead.
+    /// </param>
     public static void MatMulBatched(float* output, byte* weights, float* input,
-        int batchSize, int rows, int cols, DType dtype, bool allowQ8 = false, bool allowBlas = true)
+        int batchSize, int rows, int cols, DType dtype, bool allowQ8 = false, bool allowBlas = true,
+        bool floatActivations = false)
     {
         if (!s_blasLogged)
         {
@@ -197,19 +205,19 @@ public static unsafe class SimdKernels
                               weights,
                               input + (long)t * cols, input + (long)(t + 1) * cols,
                               input + (long)(t + 2) * cols, input + (long)(t + 3) * cols,
-                              rows, cols, dtype, allowQ8);
+                              rows, cols, dtype, !floatActivations);
                 for (; t + 2 <= batchSize; t += 2)
                     MatVec2In(output + (long)t * rows, output + (long)(t + 1) * rows,
                               weights,
                               input + (long)t * cols, input + (long)(t + 1) * cols,
-                              rows, cols, dtype, allowQ8);
+                              rows, cols, dtype, !floatActivations);
                 for (; t < batchSize; t++)
-                    MatVec(output + (long)t * rows, weights, input + (long)t * cols, rows, cols, dtype, allowQ8);
+                    MatVec(output + (long)t * rows, weights, input + (long)t * cols, rows, cols, dtype, !floatActivations);
                 return;
             }
 
             for (int n = 0; n < batchSize; n++)
-                MatVec(output + n * rows, weights, input + n * cols, rows, cols, dtype, allowQ8);
+                MatVec(output + n * rows, weights, input + n * cols, rows, cols, dtype, !floatActivations);
             return;
         }
 
