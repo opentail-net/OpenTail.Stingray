@@ -36,4 +36,22 @@ public sealed class GgufTokenizerByteLevelTests
         Assert.Equal(expected, ids);
         Assert.Equal(Text, tok.Decode(ids));
     }
+
+    /// <summary>
+    /// A byte-level BPE GGUF with no <c>tokenizer.ggml.pre</c> key (StableLM-zephyr's conversion)
+    /// must use llama.cpp's LLAMA_VOCAB_PRE_TYPE_DEFAULT cascade — punctuation/symbol runs split out
+    /// first, then GPT-2, then digit runs — not plain GPT-2. With plain GPT-2 wikitext diverged from
+    /// token 0 (" = " came out as different pieces); the reference is llama-tokenize's output.
+    /// </summary>
+    [Fact]
+    public void StableLm_MissingPreTokenizer_UsesLlamaCppDefaultCascade()
+    {
+        string? path = FindModel("stablelm-zephyr-3b.Q4_K_M.gguf");
+        Assert.SkipUnless(path is not null, "stablelm-zephyr-3b.Q4_K_M.gguf not present");
+        using var model = GgufModel.Open(path!);
+        var tok = GgufTokenizer.FromGgufModel(model);
+
+        int[] expected = [209, 30, 6911, 378, 3941, 350, 209, 30, 275, 209, 1518, 17, 13, 247, 12, 67, 44072, 68, 209, 95, 536];
+        Assert.Equal(expected, tok.Encode(" = Robert Boulter = in 2000, a+b<=c ~ok").ToArray());
+    }
 }

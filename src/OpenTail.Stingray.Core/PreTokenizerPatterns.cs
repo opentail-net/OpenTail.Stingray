@@ -42,6 +42,16 @@ public static partial class PreTokenizerPatterns
     [GeneratedRegex("""\p{N}""")]
     private static partial Regex SingleDigit();
 
+    // llama.cpp LLAMA_VOCAB_PRE_TYPE_DEFAULT cascade (llm_tokenizer_bpe `default:`).
+    [GeneratedRegex("""[\p{P}\$\+<=>\^~\|]+""")]
+    private static partial Regex DefaultPunct();
+
+    [GeneratedRegex("""\p{N}+""")]
+    private static partial Regex DigitRun();
+
+    [GeneratedRegex("""[0-9][0-9][0-9]""")]
+    private static partial Regex Digit3();
+
     /// <summary>
     /// Llama-3 family. Differs from GPT-2 in three ways that change real text: case-insensitive
     /// contractions, any single non-alphanumeric may attach to a following word (not just a space),
@@ -111,8 +121,8 @@ public static partial class PreTokenizerPatterns
     /// <summary>
     /// Resolves the pre-tokenizer cascade for a <c>tokenizer.ggml.pre</c> value.
     /// </summary>
-    /// <param name="pre">The raw metadata value. Empty or absent resolves to GPT-2, matching
-    /// llama.cpp's default for a BPE vocab that declares no pre-tokenizer.</param>
+    /// <param name="pre">The raw metadata value. Empty, absent or "default" resolves to llama.cpp's
+    /// LLAMA_VOCAB_PRE_TYPE_DEFAULT cascade (punctuation runs, GPT-2, digit runs).</param>
     /// <param name="patterns">The ordered cascade to apply.</param>
     /// <returns>
     /// <c>true</c> when <paramref name="pre"/> is a value this table recognises. <c>false</c> means
@@ -129,7 +139,16 @@ public static partial class PreTokenizerPatterns
             // tokenizer_pre=="exaone4" maps to the plain GPT2 pre_type, distinct from "exaone"
             // (already covered below under the SmolLM/digit-split group) and "exaone-moe" (its
             // own dedicated pre_type, not yet ported).
+            // llama.cpp: an absent tokenizer.ggml.pre (or "default") is LLAMA_VOCAB_PRE_TYPE_DEFAULT,
+            // whose BPE cascade splits punctuation/symbol runs out FIRST, then applies the GPT-2
+            // pattern, then digit runs (llm_tokenizer_bpe's `default:` case). This used to fall
+            // into the plain GPT-2 group, so e.g. StableLM-zephyr (no pre key) tokenized " = "
+            // differently from token 0 of wikitext — found 2026-09-26 against llama-tokenize.
             case null or "":
+            case "default":
+                patterns = [DefaultPunct(), Gpt2(), DigitRun(), Digit3()];
+                return true;
+
             case "gpt-2":
             case "mpt":
             case "olmo":
