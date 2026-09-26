@@ -54,6 +54,8 @@ public sealed unsafe class GpuForwardPass : IForwardPass
     // down(gelu(up·x + b_up)) + b_down. The biases are null for models without them.
     private readonly bool _gatelessFfn;
     private readonly Tensor[]? _bFfnUp, _bFfnDown;
+    // Apertus: xIELU instead of GELU on the non-gated FFN (per-layer scalars from ModelHyperparams).
+    private readonly bool _xielu;
     // GPT-2 learned absolute position table (F32 in VRAM) and a one-row gather target.
     private readonly Tensor? _gpuPosEmbd, _posRow;
     private readonly bool _partialRope;
@@ -462,7 +464,7 @@ public sealed unsafe class GpuForwardPass : IForwardPass
     /// layer loop is RMSNorm or LayerNorm (+bias), sequential or parallel residual, gated FFN (SiLU,
     /// or Gemma's GELU-tanh) without biases or non-gated GELU FFN (+ biases), RoPE (full, or partial
     /// NEOX) or GPT-2's learned position table, and plain wk/wv (or fused attn_qkv) — it has no
-    /// xIELU / ReLU² MLP, no LayerNorm QK-norm, and no MLA. A model
+    /// ReLU² MLP, no LayerNorm QK-norm, and no MLA. A model
     /// needing any of those would load fine and then compute silently wrong logits, so callers
     /// (CLI, server loader) use this to fall back to the CPU pass with a note instead.
     /// </summary>
@@ -473,9 +475,8 @@ public sealed unsafe class GpuForwardPass : IForwardPass
         if (hp.RopeDim > 0 && hp.RopeDim < hp.HeadDim && !hp.IsNeoxRope) return "partial non-NEOX RoPE";
         bool gateless = model.FindTensor("blk.0.ffn_gate.weight") is null && model.FindTensor("blk.0.ffn_gate_exps.weight") is null
             && !(model.FindTensor("blk.0.ffn_up.weight") is { } up && up.Dimensions[^1] == 2L * hp.IntermediateDim);
-        // Non-gated GELU (GPT-2 / StarCoder2 / GPT-NeoX) runs on the GPU; the other non-gated
-        // activations do not yet.
-        if (gateless && hp.XieluAlphaP is not null) return "non-gated xIELU FFN (Apertus)";
+        // Non-gated GELU (GPT-2 / StarCoder2 / GPT-NeoX) and xIELU (Apertus) run on the GPU;
+        // ReLU² (JAIS-2) does not yet.
         if (gateless && hp.UsesReluSquared) return "non-gated ReLU² FFN";
         if (!gateless && model.FindTensor("blk.0.ffn_up.bias") is not null) return "gated FFN with biases";
         return null;
@@ -500,6 +501,7 @@ public sealed unsafe class GpuForwardPass : IForwardPass
             return "non-gated or fused gate/up FFN (full Vulkan offload only)";
         if (model.FindTensor("blk.0.ffn_up.bias") is not null) return "FFN biases (full Vulkan offload only)";
         if (model.FindTensor("position_embd.weight") is not null) return "learned position table (full Vulkan offload only)";
+        if (hp.QkNormAfterRope) return "QK-norm after RoPE (full Vulkan offload only)";
         return null;
     }
 
@@ -1131,6 +1133,7 @@ public sealed unsafe class GpuForwardPass : IForwardPass
                 for (int i = 0; i < L; i++) _bFfnNorm[i] = UploadWeight($"blk.{i}.ffn_norm.bias");
             }
         }
+        _xielu = hp.XieluAlphaN is not null;
         if (!_isMoE && model.FindTensor("blk.0.ffn_up.bias") is not null)
         {
             _bFfnUp = new Tensor[L];
@@ -1597,7 +1600,8 @@ public sealed unsafe class GpuForwardPass : IForwardPass
                 // build_qwen3 order exactly:
                 //   • weighted QK-norm (Qwen3, …): norm BEFORE RoPE
                 //   • L2 QK-norm (Llama-4):        norm AFTER  RoPE (RoPE layers only)
-                if (_hasQkNorm && !_hp.UseL2QkNorm)
+                //   • weighted, QkNormAfterRope (Hunyuan-Dense, Maincoder): AFTER RoPE
+                if (_hasQkNorm && !_hp.UseL2QkNorm && !_hp.QkNormAfterRope)
                 {
                     QkNorm(_q, _wqNorm![layer], _numHeads);
                     QkNorm(_k, _wkNorm![layer], _numKvHeads);
@@ -1618,6 +1622,13 @@ public sealed unsafe class GpuForwardPass : IForwardPass
                         _gpu.RoPE(_q, position, _headDim, layerRopeTheta, _hp.IsNeoxRope);
                         _gpu.RoPE(_k, position, _headDim, layerRopeTheta, _hp.IsNeoxRope);
                     }
+                    _gpu.RecordBarrier();
+                }
+
+                if (_hasQkNorm && !_hp.UseL2QkNorm && _hp.QkNormAfterRope)
+                {
+                    QkNorm(_q, _wqNorm![layer], _numHeads);
+                    QkNorm(_k, _wkNorm![layer], _numKvHeads);
                     _gpu.RecordBarrier();
                 }
 
@@ -2683,7 +2694,7 @@ public sealed unsafe class GpuForwardPass : IForwardPass
             // _canBatchedTrunk (MoE), so it is unreachable here — asserted, not batched.
             System.Diagnostics.Debug.Assert(!_hp.UseL2QkNorm, "Batched trunk excludes L2 QK-norm (Llama4/MoE).");
 
-            if (_hasQkNorm)
+            if (_hasQkNorm && !_hp.QkNormAfterRope)
             {
                 // Per-head RMS QK-norm: each of the k rows normalized independently with the
                 // shared per-head weight — bit-identical to k HeadNorm calls.
@@ -2706,6 +2717,13 @@ public sealed unsafe class GpuForwardPass : IForwardPass
                     _gpu.RoPEBatched(_qK, startPos, _headDim, _numHeads, k, layerRopeTheta, _hp.IsNeoxRope);
                     _gpu.RoPEBatched(_kK, startPos, _headDim, _numKvHeads, k, layerRopeTheta, _hp.IsNeoxRope);
                 }
+                _gpu.RecordBarrier();
+            }
+
+            if (_hasQkNorm && _hp.QkNormAfterRope)
+            {
+                QkNormBatched(_qK, _wqNorm![layer], _numHeads, k);
+                QkNormBatched(_kK, _wkNorm![layer], _numKvHeads, k);
                 _gpu.RecordBarrier();
             }
 
@@ -3180,7 +3198,11 @@ public sealed unsafe class GpuForwardPass : IForwardPass
                 _gpu.AddRowBroadcastInPlace(_ffnUp, _bFfnUp[layer], 1, _intermDim);
                 _gpu.RecordBarrier();
             }
-            _gpu.VisionGeluInPlace(_ffnUp);   // tanh GELU, as SimdKernels.GeluInPlace
+            if (_xielu)
+                _gpu.XieluInPlace(_ffnUp, _intermDim, _hp.XieluAlphaN![layer], _hp.XieluAlphaP![layer],
+                    _hp.XieluBeta![layer], _hp.XieluEps![layer]);
+            else
+                _gpu.VisionGeluInPlace(_ffnUp);   // tanh GELU, as SimdKernels.GeluInPlace
             _gpu.RecordBarrier();
             GpuMatMul(_hidden, _wDown[layer], _ffnUp);
             if (_bFfnDown is not null)

@@ -525,8 +525,10 @@ public sealed record ModelHyperparams
         // Hunyuan-Dense's graph (src/models/hunyuan-vl.cpp, shared by the dense variant) applies
         // its WEIGHTED attn_q_norm/attn_k_norm AFTER ggml_rope_ext, not before like every other
         // weighted-QK-norm architecture this engine has (Qwen3, OLMoE). Distinct from Llama-4's
-        // UseL2QkNorm (also after-RoPE, but unweighted).
-        bool qkNormAfterRope = arch == "hunyuan-dense";
+        // UseL2QkNorm (also after-RoPE, but unweighted). Maincoder (src/models/maincoder.cpp) does
+        // the same; it ran with the before-RoPE order until 2026-09-26 (wikitext second-half PPL
+        // 12.61 vs llama.cpp 12.01; 11.90 after).
+        bool qkNormAfterRope = arch is "hunyuan-dense" or "maincoder";
 
         // RoPE convention: NEOX (pairs offset by headDim/2) vs NORM/interleaved (consecutive pairs).
         // Mirrors llama.cpp's llama_model_rope_type() in src/llama-model.cpp (NEOX block).

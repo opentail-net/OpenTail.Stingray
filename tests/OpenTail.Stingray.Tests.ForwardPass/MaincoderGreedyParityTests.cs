@@ -7,9 +7,9 @@ namespace OpenTail.Stingray.Tests.ForwardPass;
 ///
 /// <para><b>Zero new code — a literal Qwen3-shaped architecture.</b> Confirmed against
 /// <c>examples/llama.cpp/llama.cpp/src/models/maincoder.cpp</c> before writing any code: plain
-/// RMSNorm pre-norm trunk, biasless GQA attention with weighted per-head QK-norm applied BEFORE
-/// RoPE (shape <c>[headDim]</c>, shared across heads — confirmed via <c>list-tensors</c>, the
-/// exact Qwen3 convention this engine already defaults to), standard SiLU-gated FFN, and standard
+/// RMSNorm pre-norm trunk, biasless GQA attention with weighted per-head QK-norm (shape
+/// <c>[headDim]</c>, shared across heads) applied AFTER RoPE — originally ported with the Qwen3
+/// before-RoPE order, corrected 2026-09-26 (see the QkNormAfterRope assert), standard SiLU-gated FFN, and standard
 /// interleaved (non-NEOX) RoPE — confirmed via <c>llama_model_rope_type()</c> returning
 /// <c>LLAMA_ROPE_TYPE_NORM</c> for <c>LLM_ARCH_MAINCODER</c>, matching this engine's default (no
 /// arch string needed in the <c>isNeoxRope</c> list). <c>tokenizer.ggml.pre = qwen2</c> with a
@@ -60,9 +60,13 @@ public sealed class MaincoderGreedyParityTests : HeavyTestBase
         Assert.Equal(s_promptTokens, tokenizer.Encode("The capital of France is"));
 
         // Guards the QK-norm/RoPE detection: this receipt is worthless if the fixture silently
-        // lost its weighted-before-RoPE QK-norm or fell into the NEOX rope convention.
+        // lost its weighted QK-norm, applied it before RoPE, or fell into the NEOX rope convention.
         Assert.True(hp.HasQkNorm, "maincoder has learned attn_q_norm/attn_k_norm");
-        Assert.False(hp.UseL2QkNorm, "maincoder's QK-norm is weighted, applied before RoPE (Qwen3 convention)");
+        Assert.False(hp.UseL2QkNorm, "maincoder's QK-norm is weighted, not L2");
+        // src/models/maincoder.cpp: build_norm(attn_q_norm) runs AFTER ggml_rope_ext. Applying it
+        // before (the Qwen3 order) passed this 24-token receipt but cost 5% wikitext perplexity
+        // (second-half PPL 12.61 vs llama.cpp 12.01; 11.90 after the fix, 2026-09-26).
+        Assert.True(hp.QkNormAfterRope, "maincoder applies its weighted QK-norm after RoPE");
         Assert.False(hp.IsNeoxRope, "maincoder uses standard/NORM RoPE (llama_model_rope_type returns NORM)");
 
         using var backend = new CpuBackend();

@@ -1561,6 +1561,7 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
     private ComputePipeline? _addInPlacePipeline;
     private ComputePipeline? _addScaledInPlacePipeline;
     private ComputePipeline? _scaleInPlacePipeline;
+    private ComputePipeline? _xieluPipeline;
     private ComputePipeline? _clearPipeline;
     private ComputePipeline? _elementwiseMulPipeline;
     private ComputePipeline? _ropePipeline;
@@ -1758,6 +1759,7 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
     private struct WeightedHeadNormBatchedParams { public uint headDim; public uint numHeads; public float eps; public uint weightStride; public uint numTokens; }
     private struct CountParams { public uint n; }
     private struct ScaleParams { public uint n; public float scale; }
+    private struct XieluParams { public uint n; public float alphaN; public float alphaP; public float beta; public float eps; }
     private struct RoPEParams { public uint numHeads; public uint headDim; public int position; public float theta; }
     private struct MatVecParams { public uint rows; public uint cols; }
     private struct MatVecBatchedParams { public uint rows; public uint cols; public uint nTok; }
@@ -2577,6 +2579,14 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
         _scaleInPlacePipeline ??= new ComputePipeline(this, Shaders.ScaleInPlace, 1, pushConstantSize: sizeof(ScaleParams));
         var p = new ScaleParams { n = (uint)x.ElementCount, scale = scale };
         DispatchOrRecord(_scaleInPlacePipeline, [GetBuffer(x)], ((uint)x.ElementCount + 255) / 256, &p);
+    }
+
+    /// <summary>In-place xIELU over the first <paramref name="n"/> elements (Apertus non-gated FFN).</summary>
+    public void XieluInPlace(Tensor x, int n, float alphaN, float alphaP, float beta, float eps)
+    {
+        _xieluPipeline ??= new ComputePipeline(this, Shaders.Xielu, 1, pushConstantSize: sizeof(XieluParams));
+        var p = new XieluParams { n = (uint)n, alphaN = alphaN, alphaP = alphaP, beta = beta, eps = eps };
+        DispatchOrRecord(_xieluPipeline, [GetBuffer(x)], ((uint)n + 255) / 256, &p);
     }
 
     /// <summary>Copy an entire device-local tensor using a compute shader (stays in compute pipeline stage).</summary>
@@ -4987,6 +4997,7 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
         _addInPlacePipeline?.Dispose();
         _addScaledInPlacePipeline?.Dispose();
         _scaleInPlacePipeline?.Dispose();
+        _xieluPipeline?.Dispose();
         _clearPipeline?.Dispose();
         _elementwiseMulPipeline?.Dispose();
         _ropePipeline?.Dispose();

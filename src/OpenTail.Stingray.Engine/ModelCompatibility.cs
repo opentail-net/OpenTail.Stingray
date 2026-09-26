@@ -583,7 +583,7 @@ public static class ModelCompatibility
         // maincoder — admitted 2026-08-09, FULL 24-of-24-token exact greedy match, bucket-1
         // (genuinely Apache-2.0), zero new code. Confirmed against maincoder.cpp before writing
         // any code: a literal Qwen3-shaped architecture — RMSNorm, biasless GQA with weighted
-        // per-head QK-norm before RoPE (this engine's default timing), standard SiLU-gated FFN,
+        // per-head QK-norm (AFTER RoPE — corrected 2026-09-26, see QkNormAfterRope), standard SiLU-gated FFN,
         // standard interleaved (non-NEOX) RoPE (confirmed via llama_model_rope_type() returning
         // NORM for LLM_ARCH_MAINCODER, matching the default). tokenizer.ggml.pre=qwen2 with real
         // merges — already covered. Every mechanism this checkpoint exercises predates this

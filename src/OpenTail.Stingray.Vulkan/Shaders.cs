@@ -272,6 +272,34 @@ internal static class Shaders
         """;
 
     /// <summary>
+    /// xIELU (Apertus non-gated FFN), in place over the first n elements — mirrors
+    /// SimdKernels.XieluInPlace: x > 0 ? aP*x*x + b*x : aN*(exp(min(x, eps)) - 1 - x) + b*x.
+    /// </summary>
+    internal const string Xielu = """
+        #version 450
+        layout(local_size_x = 256) in;
+
+        layout(binding = 0) buffer Data { float data[]; };
+
+        layout(push_constant) uniform Params {
+            uint n;
+            float alphaN;
+            float alphaP;
+            float beta;
+            float eps;
+        };
+
+        void main() {
+            uint i = gl_GlobalInvocationID.x;
+            if (i >= n) return;
+            float v = data[i];
+            data[i] = v > 0.0
+                ? alphaP * v * v + beta * v
+                : alphaN * (exp(min(v, eps)) - 1.0 - v) + beta * v;
+        }
+        """;
+
+    /// <summary>
     /// In-place final-logit softcap: x[i] = tanh(x[i] / cap) * cap for i in [0, n).
     /// Used by Gemma to clip extreme logits before sampling (cap=30).
     /// Push constants: { uint n, float cap } (reuses the ScaleParams layout, scale=cap).

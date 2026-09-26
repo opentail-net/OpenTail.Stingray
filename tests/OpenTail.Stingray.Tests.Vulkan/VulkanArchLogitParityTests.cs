@@ -26,6 +26,9 @@ public sealed class VulkanArchLogitParityTests : HeavyTestBase
     [InlineData("gpt2.Q8_0.gguf")]                           // learned position table, non-gated GELU + biases
     [InlineData("starcoder2-3b.Q4_K_M.gguf")]                // non-gated GELU + biases, LayerNorm
     [InlineData("pythia-160m.Q8_0.gguf")]                    // gpt-neox: parallel residual, partial NEOX RoPE, biases
+    [InlineData("swiss-ai.Apertus-8B-Instruct-2509.Q4_K_M.gguf")] // non-gated xIELU FFN
+    [InlineData("Maincoder-1B-Q4_K_M.gguf")]                 // weighted QK-norm AFTER RoPE
+    [InlineData("tencent_Hunyuan-0.5B-Instruct-Q8_0.gguf")]  // hunyuan-dense: QK-norm after RoPE
     [InlineData("gemma-4-E4B-it-Q4_K_M.gguf")]
     [InlineData("gemma-3-4b-it-Q4_K_M.gguf")]
     [InlineData("qwen2.5-0.5b-instruct-q4_k_m.gguf")]       // attention bias

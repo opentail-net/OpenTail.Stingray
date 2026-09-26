@@ -331,7 +331,22 @@ parity alone missed OLMoE).
   - The three constructors throw as a last-resort guard (an auto -1 Vulkan run that resolves to a
     partial split).
   - Verified: Phi-3 `-g 8` and GPT-2 `-g 4` now run on CPU with a note; `-g -1` stays on Vulkan.
-- 2d Apertus: non-gated xIELU MLP.
+- 2d Apertus — DONE 2026-09-26: new `Xielu` shader (per-layer alpha_n/alpha_p/beta/eps push
+  constants, same formula as SimdKernels.XieluInPlace) on the non-gated FFN path. Parity cos
+  0.994190, 0 flips. Free-running greedy on Vulkan = CPU ("Paris, and the country has a population
+  of approximately 67 million..."); llama-server's side came back empty twice while the audit was
+  loading the CPU. Re-check pending.
+- 2e QK-norm after RoPE — DONE 2026-09-26. Found by the perplexity audit: Maincoder second-half PPL
+  was 12.61 vs llama.cpp 12.01 with an exact tokenizer. src/models/maincoder.cpp applies the
+  weighted attn_q/k_norm AFTER ggml_rope_ext; we used the Qwen3 before-RoPE order, and the
+  admission note said "before". Fix: `QkNormAfterRope` for maincoder (was hunyuan-dense only).
+  After the fix PPL is 11.90. Teacher-forced log-probs match llama-server within 0.07 except at a
+  step-3 near-tie ("capital" -1.52 vs "population" -1.56 ours; llama -1.58 / -1.36), where greedy
+  now differs.
+  - GpuForwardPass never read QkNormAfterRope, so Hunyuan-dense on Vulkan used the wrong order.
+    Now honored in both trunks. Parity: Maincoder 0.999855, Hunyuan-0.5B 0.999642, 0 flips.
+    Hunyuan greedy is identical to llama-server (both degenerate on this prompt).
+  - `PartialOffloadUnsupportedReason` also rejects it (Hybrid/CUDA never read it).
 
 ### Step 1 — audit (2026-09-26)
 
