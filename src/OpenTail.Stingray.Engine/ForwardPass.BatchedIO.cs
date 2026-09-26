@@ -747,6 +747,8 @@ public sealed unsafe partial class ForwardPass
         {
             NativeMemory.Free(_mlaKvCmprPe); NativeMemory.Free(_mlaDecompressed);
             NativeMemory.Free(_mlaQRaw); NativeMemory.Free(_mlaAttnOutCompact);
+            if (_qLoraBuf != null) NativeMemory.Free(_qLoraBuf);
+            if (_synthKvB is not null) foreach (var p in _synthKvB) NativeMemory.Free((void*)p);
         }
         if (_hasFfnBias)
         {

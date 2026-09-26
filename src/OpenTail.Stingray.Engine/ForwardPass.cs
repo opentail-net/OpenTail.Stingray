@@ -286,6 +286,15 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
     private readonly bool _isMla;
     private readonly TensorRef[]? _wKvAMqa;  // [embDim, kvLoraRank + ropeDim] per layer
     private readonly TensorRef[]? _kvANorm;  // [kvLoraRank] per layer (RMSNorm weight)
+    // MLA query LoRA (q_lora_rank > 0, e.g. Youtu-VL): Q = W_qb · RMSNorm(W_qa · x). Null otherwise.
+    private readonly TensorRef[]? _wQa, _wQb, _qANorm;
+    // DeepSeek-V3-style router selection bias (blk.N.exp_probs_b.bias, F32 [numExperts]); null
+    // entries for layers without one (dense leading layers).
+    private readonly float*[]? _expProbsB;
+    private readonly int _qLoraRank;
+    private readonly float* _qLoraBuf;
+    // attn_kv_b rebuilt in F32 from a split attn_k_b / attn_v_b GGUF (freed in Dispose).
+    private readonly List<nint>? _synthKvB;
     private readonly TensorRef[]? _wKvB;     // legacy unsplit [kvLoraRank, numHeads*(nopeDim+vDim)] per layer
     private readonly int _mlaKvLoraRank;
     private readonly int _mlaNopeDim;        // headDim - ropeDim (K's non-RoPE component width)
@@ -638,6 +647,13 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
             _mlaKvCmprPe = Alloc(_mlaKvLoraRank + _ropeDim);
             _mlaDecompressed = Alloc(_numHeads * (_mlaNopeDim + _mlaVDim));
             _mlaQRaw = Alloc(_numHeads * _headDim);
+            if (hp.QLoraRank > 0 && _model.FindTensor("blk.0.attn_q_a.weight") is not null)
+            {
+                _qLoraRank = hp.QLoraRank;
+                _wQa = new TensorRef[L]; _wQb = new TensorRef[L]; _qANorm = new TensorRef[L];
+                _qLoraBuf = Alloc(_qLoraRank);
+            }
+            if (_model.FindTensor("blk.0.attn_kv_b.weight") is null) _synthKvB = new List<nint>();
             _mlaAttnOutCompact = Alloc(_numHeads * _mlaVDim);
         }
 
@@ -645,6 +661,13 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
         if (hp.IsMoE)
         {
             _wGateInp = new TensorRef[L];
+            if (_model.FindTensor($"blk.{hp.LeadingDenseBlockCount}.exp_probs_b.bias") is not null)
+            {
+                _expProbsB = new float*[L];
+                for (int li = 0; li < L; li++)
+                    if (_model.FindTensor($"blk.{li}.exp_probs_b.bias") is { } eb && eb.DType == DType.Float32)
+                        _expProbsB[li] = (float*)_model.GetTensorDataPtr(eb);
+            }
             _wGateExps = new TensorRef[L]; _wUpExps = new TensorRef[L]; _wDownExps = new TensorRef[L];
             if (hp.HasSharedExpert)
             {
@@ -734,14 +757,21 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
                 // wq. Full-size DeepSeek-V2/V3/R1 (q_lora_rank>0, separate wq_a/wq_b + a q-side
                 // RMSNorm) are NOT handled -- ResolveTensor will throw "Missing tensor:
                 // blk.N.attn_q.weight" on such a checkpoint rather than silently mis-loading it.
-                _wq[i] = ResolveTensor($"blk.{i}.attn_q.weight");
+                if (_wQa is not null)
+                {
+                    _wQa[i] = ResolveTensor($"blk.{i}.attn_q_a.weight");
+                    _qANorm![i] = ResolveTensor($"blk.{i}.attn_q_a_norm.weight");
+                    _wQb![i] = ResolveTensor($"blk.{i}.attn_q_b.weight");
+                }
+                else
+                    _wq[i] = ResolveTensor($"blk.{i}.attn_q.weight");
                 _wKvAMqa![i] = ResolveTensor($"blk.{i}.attn_kv_a_mqa.weight");
                 _kvANorm![i] = ResolveTensor($"blk.{i}.attn_kv_a_norm.weight");
-                // Only the legacy unsplit wkv_b tensor is handled (see MlaComputeKv's doc
-                // comment). A GGUF shipping the split wk_b/wv_b "absorption" layout instead has
-                // no attn_kv_b tensor at all, so this throws "Missing tensor" rather than loading
-                // nothing and producing silently-wrong attention.
-                _wKvB![i] = ResolveTensor($"blk.{i}.attn_kv_b.weight");
+                // Legacy unsplit wkv_b, or rebuilt from the split wk_b / wv_b "absorption" layout
+                // (Kimi-VL, Youtu-VL GGUFs) so the same decompress path serves both.
+                _wKvB![i] = _synthKvB is null
+                    ? ResolveTensor($"blk.{i}.attn_kv_b.weight")
+                    : BuildKvBFromSplit(i);
             }
             else
             {

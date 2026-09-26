@@ -608,7 +608,14 @@ public sealed unsafe partial class ForwardPass
         // Q: standard per-head projection, ggml [nope, rope] order -> reorder to [rope, nope].
         // Projected into _mlaQRaw, NOT _q: callers pass q == _q, and reordering in place overwrote
         // each head's nope channels before copying them.
-        FusedMatVec(_mlaQRaw, _wq[layer], normBuf, qDimMla, _embDim);
+        if (_wQa is not null)
+        {
+            FusedMatVec(_qLoraBuf, _wQa[layer], normBuf, _qLoraRank, _embDim);
+            FastNorm(_qLoraBuf, _qLoraBuf, GetNormWeight(_qANorm![layer]), null, _qLoraRank, _hp.RmsNormEps);
+            FusedMatVec(_mlaQRaw, _wQb![layer], _qLoraBuf, qDimMla, _qLoraRank);
+        }
+        else
+            FusedMatVec(_mlaQRaw, _wq[layer], normBuf, qDimMla, _embDim);
         for (int h = 0; h < _numHeads; h++)
         {
             float* src = _mlaQRaw + (long)h * _headDim; // [nope(_mlaNopeDim), rope(_ropeDim)]
@@ -641,6 +648,40 @@ public sealed unsafe partial class ForwardPass
             if (_mlaVDim < _maxHeadDim)
                 new Span<float>(vHead + _mlaVDim, _maxHeadDim - _mlaVDim).Clear();
         }
+    }
+
+    /// <summary>
+    /// Rebuilds the legacy fused <c>attn_kv_b</c> ([numHeads*(nope+v)] rows x kvLoraRank cols, F32)
+    /// from the split absorption tensors: <c>attn_k_b</c> {nope, kvLora, heads} is W_kb^T per head
+    /// (llama.cpp multiplies it into q_nope), so head h's K rows are its transpose;
+    /// <c>attn_v_b</c> {kvLora, v, heads} is head h's V rows as stored.
+    /// </summary>
+    private TensorRef BuildKvBFromSplit(int layer)
+    {
+        var kb = _model.FindTensor($"blk.{layer}.attn_k_b.weight")
+            ?? throw new InvalidOperationException($"Missing tensor: blk.{layer}.attn_k_b.weight (nor attn_kv_b)");
+        var vb = _model.FindTensor($"blk.{layer}.attn_v_b.weight")
+            ?? throw new InvalidOperationException($"Missing tensor: blk.{layer}.attn_v_b.weight");
+        int nope = _mlaNopeDim, v = _mlaVDim, r = _mlaKvLoraRank, h = _numHeads;
+        var kbF = new float[(long)nope * r * h];
+        var vbF = new float[(long)r * v * h];
+        Dequantize.ToFloat32(_model.GetTensorData(kb), kbF, kb.DType, kbF.Length);
+        Dequantize.ToFloat32(_model.GetTensorData(vb), vbF, vb.DType, vbF.Length);
+        int rowsPerHead = nope + v;
+        long total = (long)h * rowsPerHead * r;
+        var dst = (float*)NativeMemory.Alloc((nuint)(total * sizeof(float)));
+        _synthKvB!.Add((nint)dst);
+        for (int hh = 0; hh < h; hh++)
+        {
+            float* headBase = dst + (long)hh * rowsPerHead * r;
+            for (int i = 0; i < nope; i++)
+                for (int c = 0; c < r; c++)
+                    headBase[(long)i * r + c] = kbF[((long)hh * r + c) * nope + i];
+            for (int j = 0; j < v; j++)
+                for (int c = 0; c < r; c++)
+                    headBase[(long)(nope + j) * r + c] = vbF[((long)hh * v + j) * r + c];
+        }
+        return new TensorRef($"blk.{layer}.attn_kv_b.weight(split)", kb, DType.Float32, (byte*)dst);
     }
 
     /// <summary>
@@ -690,7 +731,21 @@ public sealed unsafe partial class ForwardPass
         var batchDecompressed = (float*)NativeMemory.AllocZeroed((nuint)((long)N * decompDim * sizeof(float)));
         try
         {
-            MatMulBatchedCached(batchQRaw, in _wq[layer], batchNorm, N, qDimMla, _embDim);
+            if (_wQa is not null)
+            {
+                var batchQLora = (float*)NativeMemory.AllocZeroed((nuint)((long)N * _qLoraRank * sizeof(float)));
+                try
+                {
+                    MatMulBatchedCached(batchQLora, in _wQa[layer], batchNorm, N, _qLoraRank, _embDim);
+                    var qaNorm = GetNormWeight(_qANorm![layer]);
+                    for (int n = 0; n < N; n++)
+                        FastNorm(batchQLora + (long)n * _qLoraRank, batchQLora + (long)n * _qLoraRank, qaNorm, null, _qLoraRank, _hp.RmsNormEps);
+                    MatMulBatchedCached(batchQRaw, in _wQb![layer], batchQLora, N, qDimMla, _qLoraRank);
+                }
+                finally { NativeMemory.Free(batchQLora); }
+            }
+            else
+                MatMulBatchedCached(batchQRaw, in _wq[layer], batchNorm, N, qDimMla, _embDim);
             MatMulBatchedCached(batchKvCmprPe, in _wKvAMqa![layer], batchNorm, N, kvCmprPeDim, _embDim);
 
             if (s_mlaTrace && layer == 0)

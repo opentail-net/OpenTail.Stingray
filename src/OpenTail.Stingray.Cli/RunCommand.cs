@@ -1021,7 +1021,8 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         // RunSinglePrompt / RunInteractive based on sp.SpecType.
         // DeepSeek2 (MLA): its own full-offload Vulkan pass. Held in gpuFwd/gpuBackend (disposed
         // pass-first); effNGpuLayers = 0 then routes past the generic GPU branches.
-        if (hp.KvLoraRank > 0 && effNGpuLayers != 0)
+        if (hp.KvLoraRank > 0 && effNGpuLayers != 0
+            && model.FindTensor("blk.0.attn_kv_b.weight") is not null && model.FindTensor("blk.0.attn_q_a.weight") is null)
         {
             bool cudaOnly = (settings.Backend ?? "auto").Trim().ToLowerInvariant() == "cuda";
             bool partial = effNGpuLayers > 0 && effNGpuLayers < hp.NumLayers;

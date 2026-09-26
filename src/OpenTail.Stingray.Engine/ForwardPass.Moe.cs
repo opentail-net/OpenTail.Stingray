@@ -62,21 +62,9 @@ public sealed unsafe partial class ForwardPass
         // Step 1: Router — compute expert logits and select top-k
         FusedMatVec(_routerLogits, _wGateInp![layer], _normBuf, numExperts, _embDim);
 
-        // Gating: sigmoid for Llama-4, softmax for others
-        if (_hp.UseSigmoidGating)
-            SimdKernels.SigmoidInPlace(_routerLogits, numExperts);
-        else
-            SimdKernels.SoftmaxInPlace(_routerLogits, numExperts);
-
-        // Find top-k experts (for k=1, just argmax)
         Span<int> selectedExperts = stackalloc int[numActive];
         Span<float> expertWeights = stackalloc float[numActive];
-        SelectTopK(_routerLogits, numExperts, numActive, selectedExperts, expertWeights,
-            normalize: _hp.NormalizeMoeTopKWeights);
-
-        if (_hp.ExpertWeightsScale != 1f)
-            for (int k = 0; k < numActive; k++)
-                expertWeights[k] *= _hp.ExpertWeightsScale;
+        RouteExperts(layer, _routerLogits, numExperts, selectedExperts, expertWeights);
 
         if (_traceRouters && (_traceRouterPos < 0 || _traceRouterPos == _currentPos))
         {
@@ -497,20 +485,8 @@ public sealed unsafe partial class ForwardPass
             float* logits = _moeBatchRouter + (long)t * numExperts;
             FusedMatVec(logits, _wGateInp![layer], batchNorm + (long)t * _embDim, numExperts, _embDim);
 
-            if (_hp.UseSigmoidGating)
-                SimdKernels.SigmoidInPlace(logits, numExperts);
-            else
-                SimdKernels.SoftmaxInPlace(logits, numExperts);
-
             var wts = new Span<float>(_moeBatchWts + (long)t * na, na);
-            SelectTopK(logits, numExperts, na,
-                new Span<int>(_moeBatchSel + (long)t * na, na),
-                wts,
-                normalize: _hp.NormalizeMoeTopKWeights);
-
-            if (_hp.ExpertWeightsScale != 1f)
-                for (int k = 0; k < na; k++)
-                    wts[k] *= _hp.ExpertWeightsScale;
+            RouteExperts(layer, logits, numExperts, new Span<int>(_moeBatchSel + (long)t * na, na), wts);
 
             if (s_mlaTrace && t == 0)
             {
@@ -672,6 +648,53 @@ public sealed unsafe partial class ForwardPass
         SimdKernels.MatVec(_moeDownTemp, expertData, input, rows, cols, packedTensor.DType);
 
         SimdKernels.WeightedAddInPlace(output, _moeDownTemp, weight, rows);
+    }
+
+    /// <summary>
+    /// Router gating + top-k, shared by decode and batched prefill. <c>expert_gating_func = 2</c>
+    /// (DeepSeek-V3 style, llama.cpp build_moe_ffn SIGMOID): probs = sigmoid(logits); experts are
+    /// SELECTED by probs + exp_probs_b but WEIGHTED by the unbiased probs, then optionally
+    /// renormalized and scaled. Otherwise sigmoid (Llama-4) or softmax, then top-k.
+    /// Overwrites <paramref name="logits"/> with the gate probabilities.
+    /// </summary>
+    private void RouteExperts(int layer, float* logits, int numExperts, Span<int> selected, Span<float> weights)
+    {
+        int k = selected.Length;
+        if (_hp.ExpertGatingFunc == 2 && !_hp.UseSigmoidGating)
+        {
+            SimdKernels.SigmoidInPlace(logits, numExperts);
+            float* bias = _expProbsB?[layer];
+            Span<float> score = stackalloc float[numExperts];
+            for (int i = 0; i < numExperts; i++) score[i] = logits[i] + (bias != null ? bias[i] : 0f);
+            for (int ki = 0; ki < k; ki++)
+            {
+                int best = 0; float bestVal = float.NegativeInfinity;
+                for (int i = 0; i < numExperts; i++)
+                {
+                    bool taken = false;
+                    for (int j = 0; j < ki; j++) if (selected[j] == i) { taken = true; break; }
+                    if (!taken && score[i] > bestVal) { bestVal = score[i]; best = i; }
+                }
+                selected[ki] = best;
+                weights[ki] = logits[best];
+            }
+            if (_hp.NormalizeMoeTopKWeights && k > 1)
+            {
+                float sum = 0;
+                for (int i = 0; i < k; i++) sum += weights[i];
+                if (sum > 0) for (int i = 0; i < k; i++) weights[i] /= sum;
+            }
+        }
+        else
+        {
+            if (_hp.UseSigmoidGating)
+                SimdKernels.SigmoidInPlace(logits, numExperts);
+            else
+                SimdKernels.SoftmaxInPlace(logits, numExperts);
+            SelectTopK(logits, numExperts, k, selected, weights, normalize: _hp.NormalizeMoeTopKWeights);
+        }
+        if (_hp.ExpertWeightsScale != 1f)
+            for (int i = 0; i < k; i++) weights[i] *= _hp.ExpertWeightsScale;
     }
 
     private static void SelectTopK(float* logits, int n, int k,

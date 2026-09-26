@@ -559,6 +559,7 @@ public static class InferenceEngineLoader
         // positions, non-gated FFN): run on CPU rather than compute silently wrong logits.
         // DeepSeek2 (MLA): its own full-offload Vulkan pass (no CUDA / -g N / TurboQuant path).
         if (hp.KvLoraRank > 0 && nGpuLayers != 0 && !turboQuant
+            && model.FindTensor("blk.0.attn_kv_b.weight") is not null && model.FindTensor("blk.0.attn_q_a.weight") is null
             && backend is ServerBackend.Auto or ServerBackend.Vulkan
             && (nGpuLayers < 0 || nGpuLayers >= hp.NumLayers))
         {

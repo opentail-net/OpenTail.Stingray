@@ -9,21 +9,72 @@ actually happened. Every fix follows CLAUDE.md: real weights, an independent ref
 / vendored C++ / recorded reference outputs), timed test runs, and the STATUS row updated with the
 dated evidence in the same pass.
 
-| # | Item | Why it is where it is | Expected size |
-|---|---|---|---|
-| 1 | SD3/3.5 (GPU/Vulkan) row: Status/Confidence columns swapped | table edit | minutes |
-| 2 | Stable Audio 3 Small Music + Medium still 🟡 though the rows say they match the reference | re-grade from the existing evidence, or name the open gap | minutes |
-| 3 | Nemotron-Nano-12B-v2-VL: `nemotron_h` text backbone crashes (per-layer `feed_forward_length` array; 0 = pure Mamba layer) | root cause already known | small |
-| 4 | dots.ocr: decode stops after one token | suspected prompt-format mismatch | small–medium |
-| 5 | Kimi-VL + YoutuVL: split `attn_k_b` / `attn_v_b` MLA layout not read | known math (llama.cpp deepseek2 absorption path); unblocks two models | medium |
-| 6 | PaddleOCR-VL: degenerate output | text architecture (`paddleocr`) has no validated forward pass | medium |
-| 7 | DeepSeek-OCR / OCR2: garbled | text architecture (`deepseek2-ocr`) has no validated forward pass | medium |
-| 8 | Step3-VL: garbled | unvalidated architecture on a Q2_K checkpoint | medium–large |
-| 9 | IBM Granite Vision 3.2 / 4.0: output not image-grounded | investigation; 3.2 via LlavaAdapter, 4.0 via QFormer projector | large |
-| 10 | CosyVoice 2: audio only partly right | investigation | large |
-| 11 | Stable Audio 3 Small SFX: darker than the reference | investigation | large |
-| 12 | Chronos-Bolt / Chronos-2: no numeric reference | needs an independent oracle without new Python reference scripts | large |
-| 13 | 🟢-but-⚪ diffusion rows (HunyuanVideo, FLUX.2, Qwen Image, SD3 CPU): not independently verified | needs reference outputs (vendored C++ / recorded) | large |
+| # | Status | Item | Why it is where it is | Expected size |
+|---|---|---|---|---|
+| 1 | ✅ DONE | SD3/3.5 (GPU/Vulkan) row: Status/Confidence columns swapped | table edit | minutes |
+| 2 | ↪ merged into #11 | Stable Audio 3 Small Music + Medium still 🟡 though the rows say they match the reference | re-grade from the existing evidence, or name the open gap | minutes |
+| 3 | ⏸ RE-SCOPED (Mamba-2 port, large) | Nemotron-Nano-12B-v2-VL: `nemotron_h` text backbone crashes (per-layer `feed_forward_length` array; 0 = pure Mamba layer) | root cause already known | small |
+| 4 | ✅ DONE | dots.ocr: decode stops after one token | suspected prompt-format mismatch | small–medium |
+| 5 | 🟡 IN PROGRESS (code in, verification pending) | Kimi-VL + YoutuVL: split `attn_k_b` / `attn_v_b` MLA layout not read | known math (llama.cpp deepseek2 absorption path); unblocks two models | medium |
+| 6 | ⬜ TODO | PaddleOCR-VL: degenerate output | text architecture (`paddleocr`) has no validated forward pass | medium |
+| 7 | ⬜ TODO | DeepSeek-OCR / OCR2: garbled | text architecture (`deepseek2-ocr`) has no validated forward pass | medium |
+| 8 | ⬜ TODO | Step3-VL: garbled | unvalidated architecture on a Q2_K checkpoint | medium–large |
+| 9 | ⬜ TODO | IBM Granite Vision 3.2 / 4.0: output not image-grounded | investigation; 3.2 via LlavaAdapter, 4.0 via QFormer projector | large |
+| 10 | ⬜ TODO | CosyVoice 2: audio only partly right | investigation | large |
+| 11 | ⬜ TODO | Stable Audio 3 Small SFX: darker than the reference | investigation | large |
+| 12 | ⬜ TODO | Chronos-Bolt / Chronos-2: no numeric reference | needs an independent oracle without new Python reference scripts | large |
+| 13 | ⬜ TODO | 🟢-but-⚪ diffusion rows (HunyuanVideo, FLUX.2, Qwen Image, SD3 CPU): not independently verified | needs reference outputs (vendored C++ / recorded) | large |
+
+## Current state (paused 2026-09-26)
+
+Done: #1, #4 (#2 merged into #11). In progress: #5. Re-scoped: #3. Not started: #6–#13.
+
+#5 detail. Uncommitted-then-committed code:
+- ModelGraph reads `key_length_mla` / `value_length_mla` / `q_lora_rank` / `expert_gating_func`;
+  absorbed-MLA GGUFs get NumKvHeads = NumHeads.
+- ForwardPass rebuilds `attn_kv_b` from `attn_k_b` / `attn_v_b` and adds the Q LoRA path
+  (`attn_q_a` -> norm -> `attn_q_b`).
+- `RouteExperts` adds DeepSeek-V3 sigmoid routing with the `exp_probs_b` selection bias.
+- The GPU MLA pass is only used for the legacy layout.
+
+Results so far: Kimi-VL text PPL 115.6 vs llama.cpp 114.1 (matches); first-token logprob " Paris"
+-1.25 vs -1.20. Youtu-VL text PPL 14.02 vs 13.30: 5.4% high, NOT yet explained. Suspects: the Q
+LoRA path, or the YoutuVL vision encoder's `ApplyMRoPE` lacking the section reset (see #4
+follow-up). Vision end-to-end: Kimi Q2_K reads the OCR test image wrongly on BOTH llama.cpp and
+ours (checkpoint too weak), so it is not a useful test.
+
+## Tests for another model to run (hand-off)
+
+Read CLAUDE.md first. Rules:
+- Run test exes directly with the fully qualified `-class`.
+- Heavy tests need `STINGRAY_RUN_HEAVY_TESTS=1`.
+- Check the timing: a pass in ~0.1 s means the model was absent and nothing ran.
+- Models live in `models/_models` (-> F:\_models).
+- Oracles: `tools/llama.cpp/llama-server.exe` (use `--no-jinja`), `llama-perplexity.exe`,
+  `llama-mtmd-cli.exe` / `llama-mtmd-debug.exe`.
+
+1. Regression suites (must stay green):
+   `dotnet test tests/OpenTail.Stingray.Tests.Core`,
+   `tests/OpenTail.Stingray.Tests.Server.Fast` and `tests/OpenTail.Stingray.Tests.ForwardPass.Fast`
+   (never pass `--nologo`).
+   Vision project: `tests/OpenTail.Stingray.Tests.Vision/bin/Release/net10.0/OpenTail.Stingray.Tests.Vision.exe`
+   (154 tests).
+   Vulkan: `-class OpenTail.Stingray.Tests.Vulkan.VulkanArchLogitParityTests`,
+   `VulkanLayerSplitParityTests`, `GptOssGpuParityTests`, `DeepSeek2GpuParityTests`,
+   `VulkanRowOffsetMatVecTests` (all with STINGRAY_RUN_HEAVY_TESTS=1).
+2. DeepSeek-V2-Lite regression from #5's changes (legacy MLA must be unchanged): wikitext
+   second-half PPL, `stingray perplexity -m models/_models/DeepSeek-V2-Lite-Chat.Q2_K.gguf -f
+   scripts/kvarn-gate/wiki.test.raw -c 2048` ([1024,+) bucket) vs `llama-perplexity ... -c 2048
+   --chunks 1`. Before #5 it was 32.82 vs 32.68.
+3. #5 Youtu-VL: find the 5.4% PPL gap. Same PPL commands on `youtu-vl-4b-Q8_0.gguf`. Then
+   teacher-forced logprobs vs llama-server on a short prompt.
+4. #5 vision: `llama-mtmd-debug.exe -m <text gguf> --mmproj <mmproj> -p encode -n 224 --image cb`
+   vs our encoder on the same checkerboard (pattern: tests/OpenTail.Stingray.Tests.Vision/
+   DotsocrVisionEmbedderParityTests.cs), for mmproj-youtuvl-4b-q8_0 and mmproj-kimivl-q8_0.
+   Also Exaone4 / MiMo-VL encoders (the ApplyMRoPE section-reset follow-up from #4).
+5. README recipes (docs-as-tests, manual for now): run every command/snippet in README.md from an
+   empty folder with fresh downloads. They were verified 2026-09-26 on source; the quick start also
+   against NuGet 1.0.7 plus Microsoft.Extensions.Logging.Abstractions.
 
 ## Log
 - 2026-09-26 #1 DONE: SD3/3.5 (GPU/Vulkan) row had Status and Confidence swapped; now

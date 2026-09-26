@@ -192,6 +192,20 @@ public sealed record ModelHyperparams
     public int KvLoraRank { get; init; }
 
     /// <summary>
+    /// MLA query LoRA rank (<c>attention.q_lora_rank</c>): Q = W_qb · RMSNorm(W_qa · x) instead of a
+    /// plain W_q (0 = the "lite" layout with a plain attn_q).
+    /// </summary>
+    public int QLoraRank { get; init; }
+
+    /// <summary>
+    /// <c>expert_gating_func</c> (llama.cpp LLAMA_EXPERT_GATING_FUNC_TYPE): 0/1 softmax, 2 sigmoid
+    /// (DeepSeek-V3 / Moonlight / Kimi-VL: sigmoid probabilities, selection biased by
+    /// <c>exp_probs_b</c>, weights from the unbiased probabilities). Llama-4's own sigmoid
+    /// semantics stay on <see cref="UseSigmoidGating"/>.
+    /// </summary>
+    public int ExpertGatingFunc { get; init; }
+
+    /// <summary>
     /// MLA's per-head VALUE width ({arch}.attention.value_length), read separately from
     /// <see cref="HeadDim"/> (which is the Q/K width, {arch}.attention.key_length) because MLA's
     /// decompressed nope+rope Q/K width and its decompressed V width are independent GGUF keys --
@@ -586,7 +600,8 @@ public sealed record ModelHyperparams
         int numHeads = GetInt(metadata, $"{arch}.attention.head_count");
         // Some models (e.g. Qwen3-MoE) use a head dim that differs from embDim/numHeads.
         // Read from metadata if available; fall back to computed value.
-        int headDimFromMeta = GetInt(metadata, $"{arch}.attention.key_length");
+        int headDimFromMeta = GetInt(metadata, $"{arch}.attention.key_length_mla", 0) is > 0 and var kMla
+            ? kMla : GetInt(metadata, $"{arch}.attention.key_length");
         int headDim = headDimFromMeta > 0 ? headDimFromMeta : (numHeads > 0 ? embDim / numHeads : embDim);
 
         // Partial RoPE: rope.dimension_count, when present and smaller than headDim,
@@ -1049,7 +1064,12 @@ public sealed record ModelHyperparams
             NumLayers = numLayers,
             NumMtpLayers = numMtpLayers,
             NumHeads = numHeads,
-            NumKvHeads = GetInt(metadata, $"{arch}.attention.head_count_kv",
+            // Absorbed-MLA GGUFs (key_length_mla present) declare head_count_kv = 1 (the shared latent);
+            // this engine expands K/V per head, so they need one KV head per query head.
+            NumKvHeads = GetInt(metadata, $"{arch}.attention.key_length_mla", 0) > 0
+                         && GetInt(metadata, $"{arch}.attention.kv_lora_rank", 0) > 0
+                ? numHeads
+                : GetInt(metadata, $"{arch}.attention.head_count_kv",
                             GetInt(metadata, $"{arch}.attention.head_count")),
             IntermediateDim = GetInt(metadata, $"{arch}.feed_forward_length"),
             HeadDim = headDim,
@@ -1079,7 +1099,12 @@ public sealed record ModelHyperparams
             NumSharedExperts = GetInt(metadata, $"{arch}.expert_shared_count", hasSharedExpert ? 1 : 0),
             LeadingDenseBlockCount = GetInt(metadata, $"{arch}.leading_dense_block_count", 0),
             KvLoraRank = GetInt(metadata, $"{arch}.attention.kv_lora_rank", 0),
-            MlaVHeadDim = GetInt(metadata, $"{arch}.attention.value_length", 0),
+            QLoraRank = GetInt(metadata, $"{arch}.attention.q_lora_rank", 0),
+            ExpertGatingFunc = GetInt(metadata, $"{arch}.expert_gating_func", 0),
+            // Absorbed-MLA GGUFs (split attn_k_b / attn_v_b) store the latent sizes in
+            // key_length / value_length (576 / 512) and the per-head sizes in *_mla (192 / 128).
+            MlaVHeadDim = GetInt(metadata, $"{arch}.attention.value_length_mla", 0) is > 0 and var vMla
+                ? vMla : GetInt(metadata, $"{arch}.attention.value_length", 0),
             RopeYarnFactor = GetFloat(metadata, $"{arch}.rope.scaling.factor", 1f),
             RopeYarnOrigCtxLen = GetInt(metadata, $"{arch}.rope.scaling.original_context_length", 0),
             RopeAttnFactor = GetFloat(metadata, $"{arch}.rope.scaling.attn_factor", 1f),
