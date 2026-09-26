@@ -249,8 +249,14 @@ public sealed partial class GgufTokenizer : ITokenizer
             for (int i = 0; i < rawMap.Length; i++) precompiledCharsmap[i] = unchecked((byte)Convert.ToInt32(rawMap[i]));
         }
 
-        int eos = GetMetadataInt(model, "tokenizer.ggml.eos_token_id", 2);
         string modelFamily = model.Metadata.TryGetValue("tokenizer.ggml.model", out var tmObj) ? (string)tmObj : "";
+        // Fallback special ids when the GGUF declares none, per llama-vocab.cpp: SPM ("llama")
+        // BOS 1 / EOS 2, WPM ("bert") BOS 101, byte-level BPE ("gpt2") BOS 11 / EOS 11. Falcon3
+        // declares no bos_token_id; the old fixed fallback of 1 made its BOS ">>ABSTRACT<<"
+        // instead of "<|endoftext|>" (11) — found 2026-09-26 against llama-tokenize.
+        bool bpeFamily = modelFamily is "gpt2" or "hybriddna" or "whitespace";
+        int defaultBos = bpeFamily ? 11 : modelFamily == "bert" ? 101 : 1;
+        int eos = GetMetadataInt(model, "tokenizer.ggml.eos_token_id", bpeFamily ? 11 : 2);
         // Real llama.cpp default for LLAMA_VOCAB_TYPE_SPM (tokenizer.ggml.model=llama) is
         // add_space_prefix=true -- a leading space is prepended before tokenizing, so "The" at
         // the very start of a prompt encodes as the SAME piece as a mid-sentence " The" (both
@@ -272,11 +278,11 @@ public sealed partial class GgufTokenizer : ITokenizer
             Scores = scores,
             TokenTypes = tokenTypes,
             PrecompiledCharsmap = precompiledCharsmap,
-            BosTokenId = GetMetadataInt(model, "tokenizer.ggml.bos_token_id", 1),
+            BosTokenId = GetMetadataInt(model, "tokenizer.ggml.bos_token_id", defaultBos),
             EosTokenId = eos,
             UnknownTokenId = GetMetadataInt(model, "tokenizer.ggml.unknown_token_id", defaultUnkId),
             PadTokenId = GetMetadataInt(model, "tokenizer.ggml.padding_token_id", eos),
-            AddBosToken = GetMetadataBool(model, "tokenizer.ggml.add_bos_token", false),
+            AddBosToken = ResolveAddBos(model, modelFamily),
             AddSpacePrefix = addSpacePrefix,
             ModelFamily = modelFamily,
             TokenizerPre = model.Metadata.TryGetValue("tokenizer.ggml.pre", out var tpObj) ? (string)tpObj : "",
@@ -1145,6 +1151,31 @@ public sealed partial class GgufTokenizer : ITokenizer
             }
         }
         return bytes.ToArray();
+    }
+
+    /// <summary>
+    /// llama.cpp's add_bos decision (llama-vocab.cpp load): a default by vocab type — SPM
+    /// ("llama") and WPM ("bert") true, UGM ("t5") false, BPE ("gpt2") false except the
+    /// llama3-style pre-tokenizers (llama3, llama-v3, llama-bpe, falcon3, falcon-h1, pixtral,
+    /// midm-2.0, lfm2, jina-v5-nano) plus tekken and chameleon — then
+    /// <c>tokenizer.ggml.add_bos_token</c> overrides it, and Gemma 4 is forced on. This used to
+    /// default to false whenever the key was absent, so e.g. Falcon3, Xverse and ERNIE ran their
+    /// raw prompts and perplexity without the BOS they were trained with (found 2026-09-26
+    /// diffing against llama-tokenize: Xverse wikitext PPL 7.36 vs llama.cpp 4.81).
+    /// </summary>
+    private static bool ResolveAddBos(GgufModel model, string modelFamily)
+    {
+        string pre = model.Metadata.TryGetValue("tokenizer.ggml.pre", out var p) && p is string ps ? ps : "";
+        bool def = modelFamily switch
+        {
+            "llama" or "bert" => true,
+            "gpt2" => pre is "llama3" or "llama-v3" or "llama-bpe" or "falcon3" or "falcon-h1" or "pixtral"
+                or "midm-2.0" or "lfm2" or "jina-v5-nano" or "tekken" or "chameleon",
+            _ => false,
+        };
+        bool addBos = GetMetadataBool(model, "tokenizer.ggml.add_bos_token", def);
+        if (modelFamily == "gemma4") addBos = true;   // llama.cpp: forced for the Gemma 4 pre-type
+        return addBos;
     }
 
     private static int GetMetadataInt(GgufModel model, string key, int defaultValue)
