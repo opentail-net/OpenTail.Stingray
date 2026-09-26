@@ -26,3 +26,9 @@ dated evidence in the same pass.
 | 13 | 🟢-but-⚪ diffusion rows (HunyuanVideo, FLUX.2, Qwen Image, SD3 CPU): not independently verified | needs reference outputs (vendored C++ / recorded) | large |
 
 ## Log
+- 2026-09-26 #1 DONE: SD3/3.5 (GPU/Vulkan) row had Status and Confidence swapped; now
+  🟢 (closed 2026-09-24) / ⚪, matching the CPU row.
+- 2026-09-26 #2 RE-SCOPED, not a re-grade: Stable Audio 3 Small Music and Medium are 🟡 for a real,
+  named gap. At CFG 1 (conditional-only) ours is much darker than the reference; at the official
+  CFG 7 they match. Item 11 (Small SFX "darker than the reference") is the same symptom, so #2 and
+  #11 become one investigation, placed with the large items after #10.
