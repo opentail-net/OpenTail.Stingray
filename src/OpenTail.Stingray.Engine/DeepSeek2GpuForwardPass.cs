@@ -135,6 +135,8 @@ public sealed unsafe class DeepSeek2GpuForwardPass : IForwardPass
 
     public int VocabSize => _hp.VocabSize;
     public int MaxSeqLen => _maxSeq;
+    // Position-addressed KV (attention reads only [0, position]), so any rewind is exact.
+    public bool SupportsPartialRewind => true;
 
     private Tensor Alloc(long n) => _gpu.Allocate(TensorShape.D1(n));
     private Tensor Upload(ReadOnlySpan<float> d) => _gpu.Upload(d, TensorShape.D1(d.Length));

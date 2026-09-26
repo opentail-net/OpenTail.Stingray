@@ -102,6 +102,8 @@ public sealed unsafe class GptOssGpuForwardPass : IForwardPass
 
     public int VocabSize => _hp.VocabSize;
     public int MaxSeqLen => _maxSeq;
+    // Position-addressed KV (attention reads only [0, position]), so any rewind is exact.
+    public bool SupportsPartialRewind => true;
 
     private Tensor Alloc(long n) => _gpu.Allocate(TensorShape.D1(n));
 

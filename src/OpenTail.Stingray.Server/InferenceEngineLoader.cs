@@ -557,6 +557,18 @@ public static class InferenceEngineLoader
 
         // Features the GPU layer loops don't implement (MLA, LayerNorm, parallel residual, learned
         // positions, non-gated FFN): run on CPU rather than compute silently wrong logits.
+        // DeepSeek2 (MLA): its own full-offload Vulkan pass (no CUDA / -g N / TurboQuant path).
+        if (hp.KvLoraRank > 0 && nGpuLayers != 0 && !turboQuant
+            && backend is ServerBackend.Auto or ServerBackend.Vulkan
+            && (nGpuLayers < 0 || nGpuLayers >= hp.NumLayers))
+        {
+            var vk = new VulkanBackend();
+            owned.Add(vk);
+            var mla = new DeepSeek2GpuForwardPass(model, vk, hp, maxContextLength: ctxSize);
+            owned.Add(mla);
+            return (mla, BatchingSupported: false, GpuWeightBytesExact: null);
+        }
+
         if (nGpuLayers != 0 && GpuForwardPass.UnsupportedReason(model, hp) is { } gpuGap)
         {
             Console.Error.WriteLine($"[InferenceEngineLoader] no GPU forward pass for {gpuGap} yet; running on CPU.");

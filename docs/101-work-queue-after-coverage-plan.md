@@ -460,8 +460,11 @@ parity alone missed OLMoE).
     50-token bucket, with no positional drift.
   - Free-running greedy vs llama-server diverges on near-ties: step 1 "," vs "." is a 0.07 tie,
     step 8 "the" vs "France" 0.07 on GPU. Not a clean receipt.
-  - CLI: -g -1 routes MLA models here; CUDA, -g N, TurboQuant and drafts stay on CPU. The server
-    loader is not wired yet.
+  - CLI and server: -g -1 routes MLA models here; CUDA, -g N, TurboQuant and drafts stay on CPU.
+    Server check: /v1/chat/completions returned "The capital of France is Paris, which" (HTTP 200).
+  - Both new passes (gpt-oss, DeepSeek2) opt into SupportsPartialRewind: their KV is
+    position-addressed, and rewind + replay is bit-exact (asserted in both parity tests). Without
+    it the server disabled its prefix cache.
 
 ### Step 1 — audit (2026-09-26)
 

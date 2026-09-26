@@ -48,6 +48,11 @@ public sealed class DeepSeek2GpuParityTests : HeavyTestBase
             gpuLogits.Add(fwd.Prefill(prompt).ToArray());
             for (int s = 0; s < steps; s++)
                 gpuLogits.Add(fwd.Forward(forced[s], prompt.Length + s).ToArray());
+
+            // SupportsPartialRewind: rewinding to the prompt and replaying step 1 is exact.
+            Assert.True(fwd.SupportsPartialRewind);
+            fwd.TruncateTo(prompt.Length);
+            Assert.Equal(gpuLogits[1], fwd.Forward(forced[0], prompt.Length).ToArray());
         }
 
         double worst = 1;
