@@ -402,8 +402,11 @@ parity alone missed OLMoE).
   shader (NORM/NEOX, per-pair factors, LongRoPE mscale) in both trunks.
   - Apertus wikitext second-half PPL on Vulkan: 4.798 -> 4.470 (CPU 4.513).
   - Parity: Orpheus 0.999270, phi3 LongRoPE file 0.996710.
-  - Not fixed (cannot test here): CudaForwardPass/CudaHybridForwardPass apply rope_freqs for
-    Gemma 4 only, and HybridForwardPass for NEOX only. Llama-3.1-style models on CUDA or a Vulkan
+  - FIXED 2026-09-26 for the Vulkan -g N path: HybridForwardPass applied rope_freqs for NEOX only,
+    on both its GPU and CPU layers. Orpheus (Llama 3.2) -g 14 vs all-CPU over a 1501-token wikitext
+    stream: cos at position 1500 went 0.996536 -> 0.999799 (position 100: 0.99997 both).
+  - Still not fixed (cannot test here): CudaForwardPass/CudaHybridForwardPass apply rope_freqs for
+    Gemma 4 only. Llama-3.1-style models on CUDA or a Vulkan
     -g N split still run unscaled RoPE, wrong only at long context. Not gated, because gating
     would push every Llama 3.1 CUDA user to CPU.
   - RESOLVED — Apertus vs llama.cpp (4.513 vs 4.792) is int8 activation quantization, not RoPE.

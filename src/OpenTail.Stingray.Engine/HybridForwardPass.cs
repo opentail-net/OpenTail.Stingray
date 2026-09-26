@@ -33,7 +33,7 @@ public sealed unsafe class HybridForwardPass : IForwardPass
     private readonly Tensor[]? _gpuQNorm, _gpuKNorm;
     // Post-sublayer (sandwich / post-only) norms — EXAONE 4, OLMo2, Gemma 2/3. Null when absent.
     private readonly Tensor[]? _gpuPostAttnNorm, _gpuPostFfwNorm;
-    // rope_freqs.weight (NEOX models only; applied on layers using the global RoPE theta).
+    // rope_freqs.weight (Llama-3.x-style scaling, NORM or NEOX), applied with the global RoPE theta.
     private readonly Tensor? _gpuRopeFreqs;
     private readonly Tensor[] _gpuKCache, _gpuVCache;
     private readonly Tensor[]? _gpuTqKCache, _gpuTqVCache, _gpuSignPatterns;
@@ -318,8 +318,7 @@ public sealed unsafe class HybridForwardPass : IForwardPass
 
         if (hp.HasPostAttnNorm) _gpuPostAttnNorm = new Tensor[_nGpuLayers];
         if (hp.HasPostFfwNorm) _gpuPostFfwNorm = new Tensor[_nGpuLayers];
-        if (hp.IsNeoxRope
-            && model.FindTensor("rope_freqs.weight") is GgufTensorInfo rfInfo
+        if (model.FindTensor("rope_freqs.weight") is GgufTensorInfo rfInfo
             && rfInfo.DType == DType.Float32 && rfInfo.ElementCount == _headDim / 2)
             _gpuRopeFreqs = UploadWeight("rope_freqs.weight");
 
@@ -429,11 +428,11 @@ public sealed unsafe class HybridForwardPass : IForwardPass
         _ropeHalfDim = _headDim / 2;
         _ropeCosTable = (float*)NativeMemory.Alloc((nuint)((long)_maxSeqLen * _ropeHalfDim * sizeof(float)));
         _ropeSinTable = (float*)NativeMemory.Alloc((nuint)((long)_maxSeqLen * _ropeHalfDim * sizeof(float)));
-        // rope_freqs.weight divides each pair's frequency, as in ForwardPass's global table (the
-        // GPU side applies the same factors via RoPEWithFactors; NEOX-only, see _gpuRopeFreqs).
+        // rope_freqs.weight divides each pair's frequency, as in ForwardPass's global table (the GPU
+        // side applies the same factors via RoPEFactorsBatched). It was NEOX-only until 2026-09-26,
+        // so Llama-3.x (NORM) models ran unscaled RoPE at -g N.
         float[]? ropeFreqs = null;
-        if (hp.IsNeoxRope
-            && model.FindTensor("rope_freqs.weight") is GgufTensorInfo cpuRf
+        if (model.FindTensor("rope_freqs.weight") is GgufTensorInfo cpuRf
             && cpuRf.DType == DType.Float32 && cpuRf.ElementCount == _ropeHalfDim)
             ropeFreqs = MemoryMarshal.Cast<byte, float>(model.GetTensorData(cpuRf)).Slice(0, _ropeHalfDim).ToArray();
         fixed (float* rf = ropeFreqs)
@@ -737,8 +736,8 @@ public sealed unsafe class HybridForwardPass : IForwardPass
             {
                 if (_gpuRopeFreqs is not null)
                 {
-                    _gpu.RoPEWithFactors(_gpuQ, position, _headDim, _hp.RopeTheta, _gpuRopeFreqs);
-                    _gpu.RoPEWithFactors(_gpuK, position, _headDim, _hp.RopeTheta, _gpuRopeFreqs);
+                    _gpu.RoPEFactorsBatched(_gpuQ, position, _headDim, _numHeads, 1, _hp.RopeTheta, _hp.IsNeoxRope, _gpuRopeFreqs);
+                    _gpu.RoPEFactorsBatched(_gpuK, position, _headDim, _numKvHeads, 1, _hp.RopeTheta, _hp.IsNeoxRope, _gpuRopeFreqs);
                 }
                 else
                 {
