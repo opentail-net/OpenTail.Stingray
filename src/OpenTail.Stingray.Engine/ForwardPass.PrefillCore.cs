@@ -114,7 +114,10 @@ public sealed unsafe partial class ForwardPass
                     long pNamedTicks = 0;
 
                     cache.TruncateTo(startPos);
-                    var normW = GetNormWeight(_attnNorm[layer]);
+                    // Post-norm-only models (OLMo2, EXAONE 4) have no attn_norm tensor: attention
+                    // reads the raw residual, exactly as the decode path's DataPtr-null branch does.
+                    bool hasAttnPreNorm = _attnNorm[layer].DataPtr is not null;
+                    var normW = hasAttnPreNorm ? GetNormWeight(_attnNorm[layer]) : null;
                     var attnNormB = _hasNormBias && _bAttnNorm is not null ? _bAttnNorm[layer] : null;
 
                     // Batch norm (LayerNorm w/ bias for gptneox, RMSNorm otherwise) for all tokens
@@ -122,8 +125,11 @@ public sealed unsafe partial class ForwardPass
                     for (int n = 0; n < N; n++)
                     {
                         Copy(batchResidual + (long)n * _embDim, batchHidden + (long)n * _embDim, _embDim);
-                        FastNorm(batchNorm + (long)n * _embDim,
-                            batchHidden + (long)n * _embDim, normW, attnNormB, _embDim, _hp.RmsNormEps);
+                        if (hasAttnPreNorm)
+                            FastNorm(batchNorm + (long)n * _embDim,
+                                batchHidden + (long)n * _embDim, normW, attnNormB, _embDim, _hp.RmsNormEps);
+                        else
+                            Copy(batchNorm + (long)n * _embDim, batchHidden + (long)n * _embDim, _embDim);
                     }
                     if (profPrefill)
                     {

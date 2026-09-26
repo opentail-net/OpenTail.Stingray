@@ -758,6 +758,19 @@ public sealed record ModelHyperparams
             // ModelHyperparams.RopeOnlySwaLayers) — ropeThetaSwa stays 0f (unset), so the
             // SWA-rope-table construction path (gated on RopeThetaSwa > 0f) never fires.
         }
+        else if (arch == "exaone4" && numLayers == 64)
+        {
+            // EXAONE 4 32B / 4.5 33B (exaone4.cpp load_arch_hparams: only n_layer == 64 gets SWA,
+            // the 1.2B stays full attention): 4096-token window, period 4 (3 SWA : 1 global), and
+            // RoPE ONLY on SWA layers (graph: use_rope = is_swa(il)) — same shape as cohere2.
+            // The 4.5 GGUF stores the pattern as a per-layer bool array; honour it when present.
+            slidingWindow = GetInt(metadata, $"{arch}.attention.sliding_window", 4096);
+            var pattern = GetBoolArray(metadata, $"{arch}.attention.sliding_window_pattern");
+            var swa = new bool[numLayers];
+            for (int i = 0; i < numLayers; i++)
+                swa[i] = pattern is { Count: > 0 } ? pattern[i % pattern.Count] : i % 4 < 3;
+            isSwaLayer = swa;
+        }
         else if (arch.Equals("gemma3", StringComparison.OrdinalIgnoreCase) && numLayers > 0)
         {
             // Real gemma3.cpp (load_arch_hparams + graph<iswa>::graph), confirmed against source
@@ -986,7 +999,7 @@ public sealed record ModelHyperparams
         // phimoe is the opposite case: it ships norm bias tensors but is RMSNorm + bias
         // (phi3.cpp's graph, shared by phimoe: build_norm(..., norm_b, LLM_NORM_RMS)).
         bool usesLayerNorm = (hasNormBias && arch != "phimoe") || arch == "cohere2";
-        bool ropeOnlySwaLayers = arch == "cohere2";
+        bool ropeOnlySwaLayers = arch == "cohere2" || (arch == "exaone4" && isSwaLayer is not null);
 
         // OLMo v1 ships no attn_norm/ffn_norm/output_norm tensor at all (confirmed against
         // src/models/olmo.cpp: build_norm's weight AND bias arguments are both NULL) — the SAME
