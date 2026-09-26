@@ -396,6 +396,32 @@ public sealed class PerplexityCommand : Command<PerplexityCommand.Settings>
                 backendLabel = $"[green]Vulkan[/] ({vulkanBackend.Name}, all {hp.NumLayers} layers){kvTag}";
             }
         }
+        else if (Convert.ToString(model.Metadata["general.architecture"]) == "gpt-oss")
+        {
+            // gpt-oss runs only on its own CPU pass (sinks, SWA, biased MoE, OAI SwiGLU, YaRN, MXFP4),
+            // as RunCommand and the server route it. The generic ForwardPass scored ~994k on
+            // wikitext where llama.cpp gives ~4.1k.
+            if (settings.Batched || settings.TurboQuant)
+            {
+                AnsiConsole.MarkupLine("[red]Error:[/] gpt-oss perplexity supports neither --batched nor --tq.");
+                return 1;
+            }
+            fwd = new GptOssForwardPass(model, GptOssHyperparams.FromModel(model));
+            backendLabel = "[blue]CPU[/] (gpt-oss)";
+        }
+        else if (hp.IsHybridSsm)
+        {
+            // Hybrid Gated-DeltaNet (qwen35 / Ornith): its own CPU pass, token by token. It used to
+            // fall through to ForwardPass and die on the first missing attention tensor.
+            if (settings.Batched || settings.TurboQuant)
+            {
+                AnsiConsole.MarkupLine("[red]Error:[/] hybrid GDN perplexity supports neither --batched nor --tq.");
+                return 1;
+            }
+            cpuBackend = new CpuBackend();
+            fwd = new HybridGdnForwardPass(model, cpuBackend, hp, maxContextLength: ctx);
+            backendLabel = "[blue]CPU[/] (hybrid GDN)";
+        }
         else
         {
             cpuBackend = new CpuBackend();
