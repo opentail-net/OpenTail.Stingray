@@ -1058,6 +1058,11 @@ public sealed partial class GgufTokenizer : ITokenizer
     private static char EncodeByteToGpt2(char c)
     {
         if (c is >= '!' and <= '~') return c;   // printable ASCII: unchanged
+        // 0xAD (soft hyphen) is NOT in GPT-2's printable set: bytes_to_unicode maps it to U+0143,
+        // after 0x00-0x20 (U+0100-U+0120) and 0x7F-0xA0 (U+0121-U+0142). Passing it through made
+        // every character whose UTF-8 contains 0xAD (e.g. "í" = C3 AD) tokenize into byte garbage
+        // — found 2026-09-26 against llama-tokenize on wikitext ("jídàchéng").
+        if (c == '­') return 'Ń';
         if (c >= '\u00A1') return c;             // extended printable: unchanged
         if (c <= '\u0020') return (char)(c + 0x100); // 0x00–0x20 → U+0100–U+0120
         return (char)(c - 0x7F + 0x121);        // 0x7F–0xA0 → U+0121–U+0142
@@ -1130,6 +1135,8 @@ public sealed partial class GgufTokenizer : ITokenizer
                 bytes.Add((byte)(c - 0x100));
             else if (c is >= 'ġ' and <= 'ł')
                 bytes.Add((byte)(c - 0xA2));
+            else if (c == 'Ń')              // U+0143 → 0xAD (see EncodeByteToGpt2)
+                bytes.Add(0xAD);
             else
             {
                 // Not a byte token — encode as UTF-8 (rare fallback)
