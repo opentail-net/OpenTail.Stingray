@@ -362,6 +362,7 @@ public static unsafe class RepackedGemmPath2
 
         Vector256<float>* acc_rows = stackalloc Vector256<float>[16];
         Vector256<float>* acc_min_rows = stackalloc Vector256<float>[16];
+        Vector256<byte>* rhs = stackalloc Vector256<byte>[32];
         byte** a_ptrs = stackalloc byte*[4];
 
         // DEVIATION 4: the original writes two near-identical ~320-line bodies — a main loop taking
@@ -437,41 +438,20 @@ public static unsafe class RepackedGemmPath2
                     var rhs_mat_0145_13 = Avx2.And(Shr4(rhs_raw_mat_0145_3), m4b);
                     var rhs_mat_2367_13 = Avx2.And(Shr4(rhs_raw_mat_2367_3), m4b);
 
-                    // Shuffle pattern one - right side input
-                    var rhs_mat_0145_00_sp1 = Sh136(rhs_mat_0145_00);
-                    var rhs_mat_2367_00_sp1 = Sh136(rhs_mat_2367_00);
-                    var rhs_mat_0145_01_sp1 = Sh136(rhs_mat_0145_01);
-                    var rhs_mat_2367_01_sp1 = Sh136(rhs_mat_2367_01);
-                    var rhs_mat_0145_02_sp1 = Sh136(rhs_mat_0145_02);
-                    var rhs_mat_2367_02_sp1 = Sh136(rhs_mat_2367_02);
-                    var rhs_mat_0145_03_sp1 = Sh136(rhs_mat_0145_03);
-                    var rhs_mat_2367_03_sp1 = Sh136(rhs_mat_2367_03);
-                    var rhs_mat_0145_10_sp1 = Sh136(rhs_mat_0145_10);
-                    var rhs_mat_2367_10_sp1 = Sh136(rhs_mat_2367_10);
-                    var rhs_mat_0145_11_sp1 = Sh136(rhs_mat_0145_11);
-                    var rhs_mat_2367_11_sp1 = Sh136(rhs_mat_2367_11);
-                    var rhs_mat_0145_12_sp1 = Sh136(rhs_mat_0145_12);
-                    var rhs_mat_2367_12_sp1 = Sh136(rhs_mat_2367_12);
-                    var rhs_mat_0145_13_sp1 = Sh136(rhs_mat_0145_13);
-                    var rhs_mat_2367_13_sp1 = Sh136(rhs_mat_2367_13);
-
-                    // Shuffle pattern two - right side input
-                    var rhs_mat_0145_00_sp2 = Sh221(rhs_mat_0145_00);
-                    var rhs_mat_2367_00_sp2 = Sh221(rhs_mat_2367_00);
-                    var rhs_mat_0145_01_sp2 = Sh221(rhs_mat_0145_01);
-                    var rhs_mat_2367_01_sp2 = Sh221(rhs_mat_2367_01);
-                    var rhs_mat_0145_02_sp2 = Sh221(rhs_mat_0145_02);
-                    var rhs_mat_2367_02_sp2 = Sh221(rhs_mat_2367_02);
-                    var rhs_mat_0145_03_sp2 = Sh221(rhs_mat_0145_03);
-                    var rhs_mat_2367_03_sp2 = Sh221(rhs_mat_2367_03);
-                    var rhs_mat_0145_10_sp2 = Sh221(rhs_mat_0145_10);
-                    var rhs_mat_2367_10_sp2 = Sh221(rhs_mat_2367_10);
-                    var rhs_mat_0145_11_sp2 = Sh221(rhs_mat_0145_11);
-                    var rhs_mat_2367_11_sp2 = Sh221(rhs_mat_2367_11);
-                    var rhs_mat_0145_12_sp2 = Sh221(rhs_mat_0145_12);
-                    var rhs_mat_2367_12_sp2 = Sh221(rhs_mat_2367_12);
-                    var rhs_mat_0145_13_sp2 = Sh221(rhs_mat_0145_13);
-                    var rhs_mat_2367_13_sp2 = Sh221(rhs_mat_2367_13);
+                    // PERF (2026-09-26): the 32 shuffled RHS vectors are written once per
+                    // (b, sb) to an L1-resident stack buffer and consumed from there as memory
+                    // operands. Holding them as 32 locals across the rp loop (twice the 16 YMM
+                    // registers) made RyuJIT spill ad hoc. Layout: rhs[(c * 2 + s) * 8 + p * 4 + j]
+                    // with c = column group (0145, 2367), s = sub block, p = shuffle pattern
+                    // (sp1, sp2), j = 32-byte chunk.
+                    rhs[0]  = Sh136(rhs_mat_0145_00); rhs[1]  = Sh136(rhs_mat_0145_01); rhs[2]  = Sh136(rhs_mat_0145_02); rhs[3]  = Sh136(rhs_mat_0145_03);
+                    rhs[4]  = Sh221(rhs_mat_0145_00); rhs[5]  = Sh221(rhs_mat_0145_01); rhs[6]  = Sh221(rhs_mat_0145_02); rhs[7]  = Sh221(rhs_mat_0145_03);
+                    rhs[8]  = Sh136(rhs_mat_0145_10); rhs[9]  = Sh136(rhs_mat_0145_11); rhs[10] = Sh136(rhs_mat_0145_12); rhs[11] = Sh136(rhs_mat_0145_13);
+                    rhs[12] = Sh221(rhs_mat_0145_10); rhs[13] = Sh221(rhs_mat_0145_11); rhs[14] = Sh221(rhs_mat_0145_12); rhs[15] = Sh221(rhs_mat_0145_13);
+                    rhs[16] = Sh136(rhs_mat_2367_00); rhs[17] = Sh136(rhs_mat_2367_01); rhs[18] = Sh136(rhs_mat_2367_02); rhs[19] = Sh136(rhs_mat_2367_03);
+                    rhs[20] = Sh221(rhs_mat_2367_00); rhs[21] = Sh221(rhs_mat_2367_01); rhs[22] = Sh221(rhs_mat_2367_02); rhs[23] = Sh221(rhs_mat_2367_03);
+                    rhs[24] = Sh136(rhs_mat_2367_10); rhs[25] = Sh136(rhs_mat_2367_11); rhs[26] = Sh136(rhs_mat_2367_12); rhs[27] = Sh136(rhs_mat_2367_13);
+                    rhs[28] = Sh221(rhs_mat_2367_10); rhs[29] = Sh221(rhs_mat_2367_11); rhs[30] = Sh221(rhs_mat_2367_12); rhs[31] = Sh221(rhs_mat_2367_13);
 
                     // DEVIATION 1: utmp/kmask block replaced by direct loads of the pre-decoded
                     // scales/mins. Lane layout is identical to the original's scales_0/scales_1
@@ -493,31 +473,35 @@ public static unsafe class RepackedGemmPath2
                         short* absums = (short*)(ablk + 16 + QK_K * 4);
                         sbyte* aq = aqs + 256 * sb;
 
-                        // Load the four block_q8_k values interleaved in chunks of eight bytes
-                        var lhs_mat_0123_00 = Vector256.LoadUnsafe(ref *(aq + 0)).AsByte();
-                        var lhs_mat_01_00 = Perm0(lhs_mat_0123_00);
-                        var lhs_mat_23_00 = Perm17(lhs_mat_0123_00);
-                        var lhs_mat_0123_01 = Vector256.LoadUnsafe(ref *(aq + 32)).AsByte();
-                        var lhs_mat_01_01 = Perm0(lhs_mat_0123_01);
-                        var lhs_mat_23_01 = Perm17(lhs_mat_0123_01);
-                        var lhs_mat_0123_02 = Vector256.LoadUnsafe(ref *(aq + 64)).AsByte();
-                        var lhs_mat_01_02 = Perm0(lhs_mat_0123_02);
-                        var lhs_mat_23_02 = Perm17(lhs_mat_0123_02);
-                        var lhs_mat_0123_03 = Vector256.LoadUnsafe(ref *(aq + 96)).AsByte();
-                        var lhs_mat_01_03 = Perm0(lhs_mat_0123_03);
-                        var lhs_mat_23_03 = Perm17(lhs_mat_0123_03);
-                        var lhs_mat_0123_10 = Vector256.LoadUnsafe(ref *(aq + 128)).AsByte();
-                        var lhs_mat_01_10 = Perm0(lhs_mat_0123_10);
-                        var lhs_mat_23_10 = Perm17(lhs_mat_0123_10);
-                        var lhs_mat_0123_11 = Vector256.LoadUnsafe(ref *(aq + 160)).AsByte();
-                        var lhs_mat_01_11 = Perm0(lhs_mat_0123_11);
-                        var lhs_mat_23_11 = Perm17(lhs_mat_0123_11);
-                        var lhs_mat_0123_12 = Vector256.LoadUnsafe(ref *(aq + 192)).AsByte();
-                        var lhs_mat_01_12 = Perm0(lhs_mat_0123_12);
-                        var lhs_mat_23_12 = Perm17(lhs_mat_0123_12);
-                        var lhs_mat_0123_13 = Vector256.LoadUnsafe(ref *(aq + 224)).AsByte();
-                        var lhs_mat_01_13 = Perm0(lhs_mat_0123_13);
-                        var lhs_mat_23_13 = Perm17(lhs_mat_0123_13);
+                        // PERF (2026-09-26): stream one 32-byte LHS chunk at a time into four int16
+                        // accumulators per sub block instead of materialising all 32 shuffled LHS
+                        // vectors first. The partial sums are wrap-around int16 adds of the same
+                        // vpmaddubsw products, so reordering them is bit-exact.
+                        var iacc_mat_00_0 = Vector256<short>.Zero; var iacc_mat_01_0 = Vector256<short>.Zero;
+                        var iacc_mat_10_0 = Vector256<short>.Zero; var iacc_mat_11_0 = Vector256<short>.Zero;
+                        var iacc_mat_00_1 = Vector256<short>.Zero; var iacc_mat_01_1 = Vector256<short>.Zero;
+                        var iacc_mat_10_1 = Vector256<short>.Zero; var iacc_mat_11_1 = Vector256<short>.Zero;
+                        for (int j = 0; j < 4; j++)
+                        {
+                            // Sub block 0: chunk j at aq + 32 j; sub block 1: aq + 128 + 32 j.
+                            var l0 = Vector256.LoadUnsafe(ref *(aq + 32 * j)).AsByte();
+                            var l0_01 = Perm0(l0); var l0_23 = Perm17(l0);
+                            var l0_01a = Sh160(l0_01); var l0_23a = Sh160(l0_23);
+                            var l0_01b = Sh245(l0_01); var l0_23b = Sh245(l0_23);
+                            iacc_mat_00_0 = Add16(iacc_mat_00_0, Add16(Mul(rhs[0 + j], l0_01a), Mul(rhs[4 + j], l0_01b)));
+                            iacc_mat_01_0 = Add16(iacc_mat_01_0, Add16(Mul(rhs[16 + j], l0_01a), Mul(rhs[20 + j], l0_01b)));
+                            iacc_mat_10_0 = Add16(iacc_mat_10_0, Add16(Mul(rhs[0 + j], l0_23a), Mul(rhs[4 + j], l0_23b)));
+                            iacc_mat_11_0 = Add16(iacc_mat_11_0, Add16(Mul(rhs[16 + j], l0_23a), Mul(rhs[20 + j], l0_23b)));
+
+                            var l1 = Vector256.LoadUnsafe(ref *(aq + 128 + 32 * j)).AsByte();
+                            var l1_01 = Perm0(l1); var l1_23 = Perm17(l1);
+                            var l1_01a = Sh160(l1_01); var l1_23a = Sh160(l1_23);
+                            var l1_01b = Sh245(l1_01); var l1_23b = Sh245(l1_23);
+                            iacc_mat_00_1 = Add16(iacc_mat_00_1, Add16(Mul(rhs[8 + j], l1_01a), Mul(rhs[12 + j], l1_01b)));
+                            iacc_mat_01_1 = Add16(iacc_mat_01_1, Add16(Mul(rhs[24 + j], l1_01a), Mul(rhs[28 + j], l1_01b)));
+                            iacc_mat_10_1 = Add16(iacc_mat_10_1, Add16(Mul(rhs[8 + j], l1_23a), Mul(rhs[12 + j], l1_23b)));
+                            iacc_mat_11_1 = Add16(iacc_mat_11_1, Add16(Mul(rhs[24 + j], l1_23a), Mul(rhs[28 + j], l1_23b)));
+                        }
 
                         // Bsums - four bsums for two sub blocks from the different Q8_K blocks
                         var lhs_bsums_0123_01 = Vector256.LoadUnsafe(ref *(absums + 16 * sb));
@@ -525,71 +509,6 @@ public static unsafe class RepackedGemmPath2
                             Ssse3.HorizontalAdd(lhs_bsums_0123_01.GetLower(), lhs_bsums_0123_01.GetUpper())
                                  .ToVector256Unsafe();
                         lhs_bsums_hsum_0123_01 = Perm0s(lhs_bsums_hsum_0123_01);
-
-                        // Shuffle pattern one - left side input
-                        var lhs_mat_01_00_sp1 = Sh160(lhs_mat_01_00);
-                        var lhs_mat_23_00_sp1 = Sh160(lhs_mat_23_00);
-                        var lhs_mat_01_01_sp1 = Sh160(lhs_mat_01_01);
-                        var lhs_mat_23_01_sp1 = Sh160(lhs_mat_23_01);
-                        var lhs_mat_01_02_sp1 = Sh160(lhs_mat_01_02);
-                        var lhs_mat_23_02_sp1 = Sh160(lhs_mat_23_02);
-                        var lhs_mat_01_03_sp1 = Sh160(lhs_mat_01_03);
-                        var lhs_mat_23_03_sp1 = Sh160(lhs_mat_23_03);
-                        var lhs_mat_01_10_sp1 = Sh160(lhs_mat_01_10);
-                        var lhs_mat_23_10_sp1 = Sh160(lhs_mat_23_10);
-                        var lhs_mat_01_11_sp1 = Sh160(lhs_mat_01_11);
-                        var lhs_mat_23_11_sp1 = Sh160(lhs_mat_23_11);
-                        var lhs_mat_01_12_sp1 = Sh160(lhs_mat_01_12);
-                        var lhs_mat_23_12_sp1 = Sh160(lhs_mat_23_12);
-                        var lhs_mat_01_13_sp1 = Sh160(lhs_mat_01_13);
-                        var lhs_mat_23_13_sp1 = Sh160(lhs_mat_23_13);
-
-                        // Shuffle pattern two - left side input
-                        var lhs_mat_01_00_sp2 = Sh245(lhs_mat_01_00);
-                        var lhs_mat_23_00_sp2 = Sh245(lhs_mat_23_00);
-                        var lhs_mat_01_01_sp2 = Sh245(lhs_mat_01_01);
-                        var lhs_mat_23_01_sp2 = Sh245(lhs_mat_23_01);
-                        var lhs_mat_01_02_sp2 = Sh245(lhs_mat_01_02);
-                        var lhs_mat_23_02_sp2 = Sh245(lhs_mat_23_02);
-                        var lhs_mat_01_03_sp2 = Sh245(lhs_mat_01_03);
-                        var lhs_mat_23_03_sp2 = Sh245(lhs_mat_23_03);
-                        var lhs_mat_01_10_sp2 = Sh245(lhs_mat_01_10);
-                        var lhs_mat_23_10_sp2 = Sh245(lhs_mat_23_10);
-                        var lhs_mat_01_11_sp2 = Sh245(lhs_mat_01_11);
-                        var lhs_mat_23_11_sp2 = Sh245(lhs_mat_23_11);
-                        var lhs_mat_01_12_sp2 = Sh245(lhs_mat_01_12);
-                        var lhs_mat_23_12_sp2 = Sh245(lhs_mat_23_12);
-                        var lhs_mat_01_13_sp2 = Sh245(lhs_mat_01_13);
-                        var lhs_mat_23_13_sp2 = Sh245(lhs_mat_23_13);
-
-                        // maddubs within 32-bit lanes, chained in int16 (safe: 4 * 2*15*127 < 32767)
-                        var iacc_mat_00_0_sp1 = Add16(Add16(Add16(Mul(rhs_mat_0145_03_sp1, lhs_mat_01_03_sp1), Mul(rhs_mat_0145_02_sp1, lhs_mat_01_02_sp1)), Mul(rhs_mat_0145_01_sp1, lhs_mat_01_01_sp1)), Mul(rhs_mat_0145_00_sp1, lhs_mat_01_00_sp1));
-                        var iacc_mat_01_0_sp1 = Add16(Add16(Add16(Mul(rhs_mat_2367_03_sp1, lhs_mat_01_03_sp1), Mul(rhs_mat_2367_02_sp1, lhs_mat_01_02_sp1)), Mul(rhs_mat_2367_01_sp1, lhs_mat_01_01_sp1)), Mul(rhs_mat_2367_00_sp1, lhs_mat_01_00_sp1));
-                        var iacc_mat_10_0_sp1 = Add16(Add16(Add16(Mul(rhs_mat_0145_03_sp1, lhs_mat_23_03_sp1), Mul(rhs_mat_0145_02_sp1, lhs_mat_23_02_sp1)), Mul(rhs_mat_0145_01_sp1, lhs_mat_23_01_sp1)), Mul(rhs_mat_0145_00_sp1, lhs_mat_23_00_sp1));
-                        var iacc_mat_11_0_sp1 = Add16(Add16(Add16(Mul(rhs_mat_2367_03_sp1, lhs_mat_23_03_sp1), Mul(rhs_mat_2367_02_sp1, lhs_mat_23_02_sp1)), Mul(rhs_mat_2367_01_sp1, lhs_mat_23_01_sp1)), Mul(rhs_mat_2367_00_sp1, lhs_mat_23_00_sp1));
-                        var iacc_mat_00_1_sp1 = Add16(Add16(Add16(Mul(rhs_mat_0145_13_sp1, lhs_mat_01_13_sp1), Mul(rhs_mat_0145_12_sp1, lhs_mat_01_12_sp1)), Mul(rhs_mat_0145_11_sp1, lhs_mat_01_11_sp1)), Mul(rhs_mat_0145_10_sp1, lhs_mat_01_10_sp1));
-                        var iacc_mat_01_1_sp1 = Add16(Add16(Add16(Mul(rhs_mat_2367_13_sp1, lhs_mat_01_13_sp1), Mul(rhs_mat_2367_12_sp1, lhs_mat_01_12_sp1)), Mul(rhs_mat_2367_11_sp1, lhs_mat_01_11_sp1)), Mul(rhs_mat_2367_10_sp1, lhs_mat_01_10_sp1));
-                        var iacc_mat_10_1_sp1 = Add16(Add16(Add16(Mul(rhs_mat_0145_13_sp1, lhs_mat_23_13_sp1), Mul(rhs_mat_0145_12_sp1, lhs_mat_23_12_sp1)), Mul(rhs_mat_0145_11_sp1, lhs_mat_23_11_sp1)), Mul(rhs_mat_0145_10_sp1, lhs_mat_23_10_sp1));
-                        var iacc_mat_11_1_sp1 = Add16(Add16(Add16(Mul(rhs_mat_2367_13_sp1, lhs_mat_23_13_sp1), Mul(rhs_mat_2367_12_sp1, lhs_mat_23_12_sp1)), Mul(rhs_mat_2367_11_sp1, lhs_mat_23_11_sp1)), Mul(rhs_mat_2367_10_sp1, lhs_mat_23_10_sp1));
-
-                        var iacc_mat_00_0_sp2 = Add16(Add16(Add16(Mul(rhs_mat_0145_03_sp2, lhs_mat_01_03_sp2), Mul(rhs_mat_0145_02_sp2, lhs_mat_01_02_sp2)), Mul(rhs_mat_0145_01_sp2, lhs_mat_01_01_sp2)), Mul(rhs_mat_0145_00_sp2, lhs_mat_01_00_sp2));
-                        var iacc_mat_01_0_sp2 = Add16(Add16(Add16(Mul(rhs_mat_2367_03_sp2, lhs_mat_01_03_sp2), Mul(rhs_mat_2367_02_sp2, lhs_mat_01_02_sp2)), Mul(rhs_mat_2367_01_sp2, lhs_mat_01_01_sp2)), Mul(rhs_mat_2367_00_sp2, lhs_mat_01_00_sp2));
-                        var iacc_mat_10_0_sp2 = Add16(Add16(Add16(Mul(rhs_mat_0145_03_sp2, lhs_mat_23_03_sp2), Mul(rhs_mat_0145_02_sp2, lhs_mat_23_02_sp2)), Mul(rhs_mat_0145_01_sp2, lhs_mat_23_01_sp2)), Mul(rhs_mat_0145_00_sp2, lhs_mat_23_00_sp2));
-                        var iacc_mat_11_0_sp2 = Add16(Add16(Add16(Mul(rhs_mat_2367_03_sp2, lhs_mat_23_03_sp2), Mul(rhs_mat_2367_02_sp2, lhs_mat_23_02_sp2)), Mul(rhs_mat_2367_01_sp2, lhs_mat_23_01_sp2)), Mul(rhs_mat_2367_00_sp2, lhs_mat_23_00_sp2));
-                        var iacc_mat_00_1_sp2 = Add16(Add16(Add16(Mul(rhs_mat_0145_13_sp2, lhs_mat_01_13_sp2), Mul(rhs_mat_0145_12_sp2, lhs_mat_01_12_sp2)), Mul(rhs_mat_0145_11_sp2, lhs_mat_01_11_sp2)), Mul(rhs_mat_0145_10_sp2, lhs_mat_01_10_sp2));
-                        var iacc_mat_01_1_sp2 = Add16(Add16(Add16(Mul(rhs_mat_2367_13_sp2, lhs_mat_01_13_sp2), Mul(rhs_mat_2367_12_sp2, lhs_mat_01_12_sp2)), Mul(rhs_mat_2367_11_sp2, lhs_mat_01_11_sp2)), Mul(rhs_mat_2367_10_sp2, lhs_mat_01_10_sp2));
-                        var iacc_mat_10_1_sp2 = Add16(Add16(Add16(Mul(rhs_mat_0145_13_sp2, lhs_mat_23_13_sp2), Mul(rhs_mat_0145_12_sp2, lhs_mat_23_12_sp2)), Mul(rhs_mat_0145_11_sp2, lhs_mat_23_11_sp2)), Mul(rhs_mat_0145_10_sp2, lhs_mat_23_10_sp2));
-                        var iacc_mat_11_1_sp2 = Add16(Add16(Add16(Mul(rhs_mat_2367_13_sp2, lhs_mat_23_13_sp2), Mul(rhs_mat_2367_12_sp2, lhs_mat_23_12_sp2)), Mul(rhs_mat_2367_11_sp2, lhs_mat_23_11_sp2)), Mul(rhs_mat_2367_10_sp2, lhs_mat_23_10_sp2));
-
-                        // Outputs of both shuffle patterns are added to sum all 32 values in block
-                        var iacc_mat_00_0 = Avx2.Add(iacc_mat_00_0_sp1, iacc_mat_00_0_sp2);
-                        var iacc_mat_01_0 = Avx2.Add(iacc_mat_01_0_sp1, iacc_mat_01_0_sp2);
-                        var iacc_mat_10_0 = Avx2.Add(iacc_mat_10_0_sp1, iacc_mat_10_0_sp2);
-                        var iacc_mat_11_0 = Avx2.Add(iacc_mat_11_0_sp1, iacc_mat_11_0_sp2);
-                        var iacc_mat_00_1 = Avx2.Add(iacc_mat_00_1_sp1, iacc_mat_00_1_sp2);
-                        var iacc_mat_01_1 = Avx2.Add(iacc_mat_01_1_sp1, iacc_mat_01_1_sp2);
-                        var iacc_mat_10_1 = Avx2.Add(iacc_mat_10_1_sp1, iacc_mat_10_1_sp2);
-                        var iacc_mat_11_1 = Avx2.Add(iacc_mat_11_1_sp1, iacc_mat_11_1_sp2);
 
                         var i00_0 = Avx2.MultiplyAddAdjacent(iacc_mat_00_0, scale_0145_0);
                         var i01_0 = Avx2.MultiplyAddAdjacent(iacc_mat_01_0, scale_2367_0);
