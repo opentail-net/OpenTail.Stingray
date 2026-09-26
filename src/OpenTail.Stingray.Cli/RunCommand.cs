@@ -1781,12 +1781,6 @@ public sealed class RunCommand : Command<RunCommand.Settings>
             {
                 AnsiConsole.MarkupLine("[yellow]Warning:[/] Speculative decoding requires pure CPU (-g 0), full CUDA offload of a dense or Gemma-4 model, or full Vulkan offload of a dense Q4_K/Q6_K model (--draft-lookup). Falling back to normal generation.");
             }
-            else if (vulkanSpecTarget && settings.DraftModelPath is not null)
-            {
-                // --draft-model needs a 2nd GpuForwardPass + VRAM management on Vulkan; not yet
-                // wired. Guard before the draft-model branch's (CudaForwardPass)gpuFwd cast.
-                AnsiConsole.MarkupLine("[yellow]Warning:[/] --draft-model speculative decoding is not yet supported on Vulkan (use --draft-lookup, or CUDA); falling back to normal generation.");
-            }
             else if (sampledSpec && settings.DraftLookup)
             {
                 AnsiConsole.MarkupLine("[yellow]Warning:[/] --draft-lookup supports greedy (--temp 0) only; sampled speculative decoding needs --draft-model. Falling back to normal generation.");
@@ -1862,6 +1856,19 @@ public sealed class RunCommand : Command<RunCommand.Settings>
                         using var draftCuda = CudaBackend.Create();
                         using var draftFwd = new CudaForwardPass(draftModel, draftCuda, draftHp, draftCtx);
                         AnsiConsole.MarkupLine($"[dim]Draft model: {draftHp.NumLayers}L, {draftHp.EmbeddingDim}d ([green]CUDA[/]) | Lookahead k={settings.SpecLookahead}[/]");
+                        if (settings.Prompt is not null)
+                            return RunSpeculativeSinglePrompt(settings, target, draftFwd, tokenizer, sp, rng);
+                        return RunSpeculativeInteractive(settings, target, draftFwd, tokenizer, sp, rng);
+                    }
+                    else if (vulkanSpecTarget)
+                    {
+                        var target = (GpuForwardPass)gpuFwd!;
+                        // The draft gets its own VulkanBackend (its own command buffer and
+                        // pipelines) and the same context clamp as the CUDA branch above.
+                        int draftCtx = ctxSize > 0 ? target.MaxSeqLen : Math.Min(target.MaxSeqLen, 4096);
+                        using var draftVk = new VulkanBackend(gpuDeviceIndex);
+                        using var draftFwd = new GpuForwardPass(draftModel, draftVk, draftHp, draftCtx);
+                        AnsiConsole.MarkupLine($"[dim]Draft model: {draftHp.NumLayers}L, {draftHp.EmbeddingDim}d ([green]Vulkan[/]) | Lookahead k={settings.SpecLookahead}[/]");
                         if (settings.Prompt is not null)
                             return RunSpeculativeSinglePrompt(settings, target, draftFwd, tokenizer, sp, rng);
                         return RunSpeculativeInteractive(settings, target, draftFwd, tokenizer, sp, rng);

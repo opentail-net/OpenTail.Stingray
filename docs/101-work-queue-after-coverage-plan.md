@@ -466,6 +466,17 @@ parity alone missed OLMoE).
     position-addressed, and rewind + replay is bit-exact (asserted in both parity tests). Without
     it the server disabled its prefix cache.
 
+- 3c Speculative decoding on Vulkan with a draft model — DONE 2026-09-26. --draft-lookup already
+  ran on Vulkan; --model-draft was refused. Now the draft is a second GpuForwardPass on its own
+  VulkanBackend, context clamped like the CUDA branch, feeding the target's BatchVerify.
+  - Lossless: Qwen2.5-Coder-3B target + 0.5B draft, "def quicksort(arr):", 128 greedy tokens.
+    Output is identical to plain greedy; acceptance 84-86%.
+  - iGPU speed: plain 16.0 t/s. Speculative: k=4 10.4, k=2 10.1, k=3 10.1, k=6 10.1 t/s. Total
+    verify time is ~7.6 s whatever k is, so a k-token batched verify costs ~k single forwards on
+    this compute-bound iGPU. The weight amortization the scheme relies on only pays where decode
+    is bandwidth-bound (a discrete GPU).
+  - Per CLAUDE.md rule 13 this is not evidence against the path. Needs a discrete-GPU measurement.
+
 ### Step 1 — audit (2026-09-26)
 
 CLI, "The capital of France is", greedy 24 tokens, `-g 0` vs `-g -1` (Vulkan, iGPU). "same" = same
