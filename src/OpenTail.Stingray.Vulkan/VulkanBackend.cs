@@ -1791,7 +1791,7 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
     private struct RoPEParams { public uint numHeads; public uint headDim; public int position; public float theta; }
     private struct MatVecOffsetParams { public uint rows; public uint cols; public uint rowOffset; }
     private struct SwigluOaiParams { public uint n; public float alpha; public float limit; }
-    private struct RoPEFactorsParams { public uint numHeads; public uint headDim; public int basePos; public float theta; public uint neox; public float mscale; }
+    private struct RoPEFactorsParams { public uint numHeads; public uint headDim; public int basePos; public float theta; public uint neox; public float mscale; public uint rotDim; }
     private struct MatVecParams { public uint rows; public uint cols; }
     private struct MatVecBatchedParams { public uint rows; public uint cols; public uint nTok; }
     private struct EmbedParams { public uint tokenId; public uint embDim; }
@@ -2711,14 +2711,15 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
     /// by <paramref name="mscale"/>; NORM or NEOX pairing. See <see cref="Shaders.RoPEFactorsBatched"/>.
     /// </summary>
     public void RoPEFactorsBatched(Tensor x, int basePos, int headDim, int numHeads, int numTokens,
-        float ropeTheta, bool neox, Tensor freqFactors, float mscale = 1f)
+        float ropeTheta, bool neox, Tensor freqFactors, float mscale = 1f, int rotDim = 0)
     {
         _ropeFactorsBatchedPipeline ??= new ComputePipeline(this, Shaders.RoPEFactorsBatched, 2, pushConstantSize: sizeof(RoPEFactorsParams));
-        uint totalPairs = (uint)numHeads * (uint)(headDim / 2);
+        if (rotDim <= 0) rotDim = headDim;
+        uint totalPairs = (uint)numHeads * (uint)(rotDim / 2);
         var p = new RoPEFactorsParams
         {
             numHeads = (uint)numHeads, headDim = (uint)headDim, basePos = basePos, theta = ropeTheta,
-            neox = neox ? 1u : 0u, mscale = mscale,
+            neox = neox ? 1u : 0u, mscale = mscale, rotDim = (uint)rotDim,
         };
         DispatchOrRecord(_ropeFactorsBatchedPipeline, [GetBuffer(x), GetBuffer(freqFactors)], (totalPairs + 255) / 256, &p, groupY: (uint)numTokens);
     }

@@ -1019,6 +1019,21 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         // IForwardPass handle for MtpDecoder integration (issue #32). Captured when the
         // chosen forward pass ships an MTP head. The actual MTP gating happens later in
         // RunSinglePrompt / RunInteractive based on sp.SpecType.
+        // DeepSeek2 (MLA): its own full-offload Vulkan pass. Held in gpuFwd/gpuBackend (disposed
+        // pass-first); effNGpuLayers = 0 then routes past the generic GPU branches.
+        if (hp.KvLoraRank > 0 && effNGpuLayers != 0)
+        {
+            bool cudaOnly = (settings.Backend ?? "auto").Trim().ToLowerInvariant() == "cuda";
+            bool partial = effNGpuLayers > 0 && effNGpuLayers < hp.NumLayers;
+            if (!cudaOnly && !partial && !settings.TurboQuant && settings.DraftModelPath is null && !settings.DraftLookup)
+            {
+                var vk = new VulkanBackend(gpuDeviceIndex);
+                gpuBackend = vk;
+                gpuFwd = new DeepSeek2GpuForwardPass(model, vk, hp, maxContextLength: ctxSize);
+                effNGpuLayers = 0;
+            }
+        }
+
         // Features the GPU layer loops don't implement (MLA, LayerNorm, parallel residual, learned
         // positions, non-gated FFN): run on CPU rather than compute silently wrong logits.
         if (effNGpuLayers != 0 && GpuForwardPass.UnsupportedReason(model, hp) is { } gpuGap)
@@ -1061,7 +1076,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
             hybridFwd = new HybridGdnForwardPass(model, cpuBackend, hp);
             if (hybridFwd.HasMtpHead) mtpFwd = hybridFwd;
         }
-        else if (!hp.IsHybridSsm)
+        else if (!hp.IsHybridSsm && gpuFwd is null)
         {
             // #189 dequant cache: only the pure-CPU path (no GPU offload) runs the batched
             // CPU prefill that consults it; under -g it would be a wasted F32 model copy.
@@ -1254,12 +1269,14 @@ public sealed class RunCommand : Command<RunCommand.Settings>
                 resetCache = gptOssFwd.ResetCache;
                 AnsiConsole.MarkupLine("[dim]Backend: [blue]CPU[/] (gpt-oss)[/]");
             }
-            else if (gpuFwd is GptOssGpuForwardPass gptOssGpu)
+            else if (gpuFwd is IForwardPass archGpu)
             {
-                forward = gptOssGpu.Forward;
-                prefill = tokens => gptOssGpu.Prefill(tokens);
-                resetCache = gptOssGpu.ResetCache;
-                AnsiConsole.MarkupLine($"[dim]Backend: [green]GPU[/] ({((VulkanBackend)gpuBackend!).Name}, gpt-oss, all layers)[/]");
+                // Architecture-specific full-offload Vulkan passes (gpt-oss, DeepSeek2 MLA).
+                forward = archGpu.Forward;
+                prefill = tokens => archGpu.Prefill(tokens);
+                resetCache = archGpu.ResetCache;
+                string kind = archGpu is GptOssGpuForwardPass ? "gpt-oss" : "DeepSeek2 MLA";
+                AnsiConsole.MarkupLine($"[dim]Backend: [green]GPU[/] ({((VulkanBackend)gpuBackend!).Name}, {kind}, all layers)[/]");
             }
             else if (hybridFwd is not null)
             {

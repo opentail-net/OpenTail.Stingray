@@ -445,6 +445,24 @@ parity alone missed OLMoE).
   - Also fixed: the CLI passes ctx 0 ("default"), which made zero-byte KV buffers and an access
     violation in vkBindBufferMemory. It now means 4096.
 
+- 3b DeepSeek2 MLA on Vulkan — DONE 2026-09-26: new `DeepSeek2GpuForwardPass` (lite layout,
+  q_lora_rank 0), full offload, token by token. It mirrors ForwardPass's MLA decode:
+  - Q is reordered [nope,rope] -> [rope,nope].
+  - K/V: kv_a -> RMS-norm of the 512-wide latent -> kv_b; K = shared rope part + per-head nope,
+    V zero-padded to 192. Attention output is compacted to 128 per head before wo.
+  - YaRN runs on the leading 64 channels (`RoPEFactorsBatched` gained a rot_dim push constant).
+  - FFN: the leading dense layer, then the softmax top-6 MoE plus the shared expert.
+  - New shaders `MatVecQ2K` / `MatVecIQ4NL` (896cc55) keep the Q2_K checkpoint raw on the GPU.
+  - Parity vs CPU: worst cos 0.9879 at one step, 0.996-0.999 elsewhere. The model's router margins
+    are < 0.003 at nearly every layer, so CPU and GPU sometimes pick different experts. The test
+    floor for this model is 0.98, documented in the test.
+  - Aggregate over 300 teacher-forced wikitext tokens: GPU mean NLL within ±0.08 of CPU in every
+    50-token bucket, with no positional drift.
+  - Free-running greedy vs llama-server diverges on near-ties: step 1 "," vs "." is a 0.07 tie,
+    step 8 "the" vs "France" 0.07 on GPU. Not a clean receipt.
+  - CLI: -g -1 routes MLA models here; CUDA, -g N, TurboQuant and drafts stay on CPU. The server
+    loader is not wired yet.
+
 ### Step 1 — audit (2026-09-26)
 
 CLI, "The capital of France is", greedy 24 tokens, `-g 0` vs `-g -1` (Vulkan, iGPU). "same" = same

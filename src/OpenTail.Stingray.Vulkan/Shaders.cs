@@ -1847,8 +1847,10 @@ internal static class Shaders
     /// (base_pos + r) * theta^(-2i/d) / freq_factors[i], and cos/sin are multiplied by mscale
     /// (LongRoPE's rope.scaling.attn_factor; 1 otherwise) — the same table the CPU pass builds
     /// (SimdKernels.BuildRopeTable with freqFactors, then ScaleInPlace by RopeAttnFactor).
-    /// Push constants: { uint num_heads, uint head_dim, int base_pos, float theta, uint neox, float mscale }.
-    /// Bindings: 0=x ([num_tokens][num_heads*head_dim], in/out), 1=freq_factors[head_dim/2].
+    /// Only the leading rot_dim channels of each head_dim-wide head rotate (MLA's rope part; rot_dim =
+    /// head_dim otherwise), with frequencies over rot_dim.
+    /// Push constants: { uint num_heads, uint head_dim, int base_pos, float theta, uint neox, float mscale, uint rot_dim }.
+    /// Bindings: 0=x ([num_tokens][num_heads*head_dim], in/out), 1=freq_factors[rot_dim/2].
     /// Dispatch ceil(num_heads*head_dim/2 / 256) x num_tokens groups.
     /// </summary>
     internal const string RoPEFactorsBatched = """
@@ -1865,12 +1867,13 @@ internal static class Shaders
             float theta;
             uint neox;
             float mscale;
+            uint rot_dim;
         };
 
         void main() {
             uint pair_idx = gl_GlobalInvocationID.x;
             uint row      = gl_WorkGroupID.y;
-            uint half_dim = head_dim / 2;
+            uint half_dim = rot_dim / 2;
             uint total_pairs = num_heads * half_dim;
             if (pair_idx >= total_pairs) return;
 
@@ -1878,7 +1881,7 @@ internal static class Shaders
             uint i = pair_idx % half_dim;
 
             int position = base_pos + int(row);
-            float freq = 1.0 / pow(theta, 2.0 * float(i) / float(head_dim)) / freq_factors[i];
+            float freq = 1.0 / pow(theta, 2.0 * float(i) / float(rot_dim)) / freq_factors[i];
             float angle = float(position) * freq;
             float cos_a = cos(angle) * mscale;
             float sin_a = sin(angle) * mscale;
