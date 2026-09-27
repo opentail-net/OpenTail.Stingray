@@ -23,6 +23,14 @@ public sealed unsafe partial class ForwardPass
 
     /// <summary>The paged KV cache allocates each position's block on layer 0's append and tracks positions per
     /// layer, so layers without attention append a zero row. TODO(perf): skip the storage.</summary>
+    private void EnsureZeroKv()
+    {
+        if (_m2ZeroKv is not null) return;
+        int n = Math.Max(1, _numKvHeads * _maxHeadDim);
+        _m2ZeroKv = Alloc(n);
+        new Span<float>(_m2ZeroKv, n).Clear();
+    }
+
     private void AppendZeroKv(int layer)
     {
         var zero = new ReadOnlySpan<float>(_m2ZeroKv, _kvCache.KvDim);
@@ -65,8 +73,7 @@ public sealed unsafe partial class ForwardPass
         _m2Proj = Alloc(c.InProjDim);
         _m2Xbc = Alloc(c.ConvDim);
         _m2Y = Alloc(c.InnerSize);
-        _m2ZeroKv = Alloc(Math.Max(1, _numKvHeads * _maxHeadDim));
-        new Span<float>(_m2ZeroKv, Math.Max(1, _numKvHeads * _maxHeadDim)).Clear();
+        EnsureZeroKv();
         ResetMamba2State();
     }
 

@@ -178,6 +178,14 @@ public sealed unsafe partial class ForwardPass
                 goto AfterAttentionBlock;
             }
 
+            // LFM2 gated short-conv layer: replaces attention, then the shared residual + FFN path.
+            if (_scIn is not null && IsShortConvLayer(layer))
+            {
+                ShortConvStep(layer, _normBuf, _hidden);
+                AppendZeroKv(layer);
+                goto AfterAttentionBlock;
+            }
+
             // Nemotron-H MLP-only layer: FFN on the attn_norm output, own residual, no attention.
             if (_hp.HybridFfnOnlyLayer is { } ffnOnly && ffnOnly[layer])
             {

@@ -32,56 +32,6 @@ public sealed class NemotronHParityTests : HeavyTestBase
             [2.763, 1.611, 0.134, 0.279, 0.496, 3.561, 8.038, 5.213, 2.415, 2.031, 2.459, 0.605, 0.458, 1.936, 0.019, 4.517]);
     }
 
-    private static void AssertTeacherForced(string prompt, int[] reference, double[] llamaMargins)
-    {
-        var path = FindModel();
-        Assert.SkipWhen(path is null, $"{ModelFile} is required for this parity receipt.");
-
-        using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path!);
-        var model = modelHandle.Model;
-        Assert.Equal("nemotron_h", Convert.ToString(model.Metadata["general.architecture"]));
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
-        Assert.NotNull(hp.HybridFfnOnlyLayer);
-        var tokenizer = GgufTokenizer.FromGgufModel(model);
-        var promptTokens = tokenizer.Encode(prompt);
-
-        var input = new List<int>(promptTokens);
-        input.AddRange(reference[..^1]);
-        int firstPredicting = promptTokens.Count - 1;
-        var argmax = new int[reference.Length];
-
-        using var backend = new CpuBackend();
-        using var fwd = new Engine.ForwardPass(model, backend, hp, maxContextLength: 1024);
-        fwd.PrefillWithPerPositionLogits(input, 0, (pos, logits) =>
-        {
-            int j = pos - firstPredicting;
-            if (j >= 0 && j < reference.Length) argmax[j] = Sampler.Greedy(logits);
-        });
-
-        int checkedCount = 0;
-        for (int j = 0; j < reference.Length; j++)
-        {
-            if (llamaMargins[j] <= 1.5) continue;
-            checkedCount++;
-            Assert.True(argmax[j] == reference[j],
-                $"position {j}: ours {argmax[j]} ({tokenizer.Decode([argmax[j]])}) vs llama.cpp {reference[j]} ({tokenizer.Decode([reference[j]])}), llama margin {llamaMargins[j]}");
-        }
-        Assert.True(checkedCount >= 8, $"only {checkedCount} confident positions");
-    }
-
-    private static string? FindModel()
-    {
-        var dir = Directory.GetCurrentDirectory();
-        for (int i = 0; i < 8; i++)
-        {
-            foreach (var sub in new[] { "models", Path.Combine("models", "_models") })
-            {
-                var candidate = Path.Combine(dir, sub, ModelFile);
-                if (File.Exists(candidate)) return candidate;
-            }
-            if (Directory.GetParent(dir) is not { } parent) break;
-            dir = parent.FullName;
-        }
-        return null;
-    }
+    private static void AssertTeacherForced(string prompt, int[] reference, double[] llamaMargins) =>
+        TeacherForcedParity.Assert(ModelFile, "nemotron_h", TeacherForcedParity.Tokenize(ModelFile, prompt), reference, llamaMargins);
 }

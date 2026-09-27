@@ -365,9 +365,20 @@ public sealed record ModelHyperparams
     /// <summary>Per-layer: the layer is an MLP-only block with no attention/mixer (Nemotron-H). Null otherwise.</summary>
     public IReadOnlyList<bool>? HybridFfnOnlyLayer { get; init; }
 
+    /// <summary>Per-layer: true where the layer is a Liquid LFM2 gated short-conv mixer instead of attention (its
+    /// <c>attention.head_count_kv</c> entry is 0). Null for other models.</summary>
+    public IReadOnlyList<bool>? IsShortConvLayer { get; init; }
+
+    /// <summary>LFM2 <c>shortconv.l_cache</c>: the conv window, current token included.</summary>
+    public int ShortConvKernel { get; init; }
+
     /// <summary>Per-layer: the layer has no FFN after its attention/mixer (Nemotron-H's single-sublayer attention
     /// and Mamba-2 blocks). Null otherwise.</summary>
     public IReadOnlyList<bool>? HybridNoFfnLayer { get; init; }
+
+    /// <summary>GLM-4.5 (<c>glm4moe</c>): <c>blk.N.post_attention_norm</c> is the pre-FFN norm (applied to the
+    /// post-attention residual), not a norm on the attention output.</summary>
+    public bool PostAttnNormIsFfnNorm { get; init; }
 
     /// <summary>
     /// Number of Multi-Token Prediction (MTP) head layers stored at the end of the GGUF
@@ -526,12 +537,16 @@ public sealed record ModelHyperparams
             || (tensorSource?.FindTensor("blk.0.attn_norm.bias") is not null);
         bool hasFfnBias = metadata.ContainsKey("_opentailllm.has_ffn_bias")
             || (tensorSource?.FindTensor("blk.0.ffn_up.bias") is not null);
+        // Probe the first layer that has one: hybrids (LFM2) can start with a conv layer that has no attention.
+        string qNormProbe = "blk.0.attn_q_norm.weight";
+        for (int pl = 0; pl < 16 && tensorSource is not null; pl++)
+            if (tensorSource.FindTensor($"blk.{pl}.attn_q_norm.weight") is not null) { qNormProbe = $"blk.{pl}.attn_q_norm.weight"; break; }
         bool hasQkNorm = metadata.ContainsKey("_opentailllm.has_qk_norm")
-            || (tensorSource?.FindTensor("blk.0.attn_q_norm.weight") is not null);
+            || (tensorSource?.FindTensor(qNormProbe) is not null);
         bool perChannelQkNorm = false;
         if (hasQkNorm && tensorSource is not null)
         {
-            var qNormInfo = tensorSource.FindTensor("blk.0.attn_q_norm.weight");
+            var qNormInfo = tensorSource.FindTensor(qNormProbe);
             int numHeadsTmp = GetInt(metadata, $"{arch}.attention.head_count");
             int embDimTmp = GetInt(metadata, $"{arch}.embedding_length");
             int headDimMetaTmp = GetInt(metadata, $"{arch}.attention.key_length");
@@ -612,7 +627,7 @@ public sealed record ModelHyperparams
             "falcon" or "falcon-h1" or "grok" or "dbrx" or
             "bert" or "jina-bert-v3" or "modern-bert" or "nomic-bert" or "nomic-bert-moe" or "eurobert" or
             "stablelm" or "bitnet" or
-            "qwen" or "qwen2" or "qwen2vl" or "paddleocr" or "deepseek2-ocr" or "dream" or "qwen2moe" or "qwen3" or "qwen3moe" or "qwen3-tts" or
+            "qwen" or "qwen2" or "qwen2vl" or "paddleocr" or "deepseek2-ocr" or "glm4moe" or "lfm2" or "dream" or "qwen2moe" or "qwen3" or "qwen3moe" or "qwen3-tts" or
             "llada-moe" or "rnd1" or
             "olmo2" or "olmoe" or
             "phi2" or "phi3" or "phimoe" or
@@ -666,7 +681,9 @@ public sealed record ModelHyperparams
         // selective scan, not delta rule. A layer is recurrent iff its head_count_kv entry is 0 (llama.cpp
         // granite-hybrid.cpp / nemotron-h.cpp is_recr_impl).
         bool isMamba2Hybrid = arch is "granitehybrid" or "nemotron_h";
-        if (isMamba2Hybrid) isHybridSsm = false;
+        // Liquid LFM2: gated short-conv layers (head_count_kv 0) + attention layers (llama.cpp lfm2.cpp).
+        bool isShortConvHybrid = arch == "lfm2";
+        if (isMamba2Hybrid || isShortConvHybrid) isHybridSsm = false;
 
         // {arch}.block_count is the total block count in the file, which on MTP-enabled
         // models (qwen35 27B-MTP, qwen35moe-MTP) includes the MTP head blocks appended
@@ -684,6 +701,19 @@ public sealed record ModelHyperparams
         IReadOnlyList<bool>? hybridNoFfnLayer = null;
         int mamba2KvHeads = 0;
         int mamba2MaxFf = 0;
+        IReadOnlyList<bool>? isShortConvLayer = null;
+        if (isShortConvHybrid && numLayers > 0)
+        {
+            var kvArr = GetIntArray(metadata, $"{arch}.attention.head_count_kv");
+            var sc = new bool[numLayers];
+            for (int i = 0; i < numLayers; i++)
+            {
+                int kv = kvArr is { Count: > 0 } ? kvArr[i % kvArr.Count] : GetInt(metadata, $"{arch}.attention.head_count_kv");
+                sc[i] = kv == 0;
+                mamba2KvHeads = Math.Max(mamba2KvHeads, kv);
+            }
+            isShortConvLayer = sc;
+        }
         if (isMamba2Hybrid && numLayers > 0)
         {
             var kvArr = GetIntArray(metadata, $"{arch}.attention.head_count_kv");
@@ -767,8 +797,11 @@ public sealed record ModelHyperparams
         // ONLY this post-norm, reusing the exact same llama.cpp tensor names/roles
         // (LLM_TENSOR_ATTN_POST_NORM/FFN_POST_NORM both map to blk.%d.post_attention_norm /
         // blk.%d.post_ffw_norm for both architectures) — see src/models/olmo2.cpp vs gemma4.cpp.
-        bool hasPostAttnNorm = metadata.ContainsKey("_opentailllm.has_post_attn_norm")
-            || (tensorSource?.FindTensor("blk.0.post_attention_norm.weight") is not null);
+        // GLM-4.5 (glm4moe) names its pre-FFN norm post_attention_norm (llama.cpp glm4-moe.cpp: norm(ffn_inp) then
+        // the FFN), so there it is the FFN norm, NOT a Gemma/OLMo2-style norm on the attention output.
+        bool postAttnNormIsFfnNorm = arch == "glm4moe";
+        bool hasPostAttnNorm = !postAttnNormIsFfnNorm && (metadata.ContainsKey("_opentailllm.has_post_attn_norm")
+            || (tensorSource?.FindTensor("blk.0.post_attention_norm.weight") is not null));
         bool hasPostFfwNorm = metadata.ContainsKey("_opentailllm.has_post_ffw_norm")
             || (tensorSource?.FindTensor("blk.0.post_ffw_norm.weight") is not null);
 
@@ -1195,7 +1228,9 @@ public sealed record ModelHyperparams
             LeadingDenseBlockCount = GetInt(metadata, $"{arch}.leading_dense_block_count", 0),
             KvLoraRank = GetInt(metadata, $"{arch}.attention.kv_lora_rank", 0),
             QLoraRank = GetInt(metadata, $"{arch}.attention.q_lora_rank", 0),
-            ExpertGatingFunc = GetInt(metadata, $"{arch}.expert_gating_func", 0),
+            // glm4moe defaults to sigmoid + selection bias when the key is absent (llama.cpp glm4-moe.cpp).
+            ExpertGatingFunc = GetInt(metadata, $"{arch}.expert_gating_func", arch == "glm4moe" ? 2 : 0),
+            PostAttnNormIsFfnNorm = postAttnNormIsFfnNorm,
             // Absorbed-MLA GGUFs (split attn_k_b / attn_v_b) store the latent sizes in
             // key_length / value_length (576 / 512) and the per-head sizes in *_mla (192 / 128).
             MlaVHeadDim = GetInt(metadata, $"{arch}.attention.value_length_mla", 0) is > 0 and var vMla
@@ -1268,6 +1303,8 @@ public sealed record ModelHyperparams
             Mamba2 = mamba2,
             IsMamba2Layer = isMamba2Layer,
             HybridFfnOnlyLayer = hybridFfnOnlyLayer,
+            IsShortConvLayer = isShortConvLayer,
+            ShortConvKernel = isShortConvHybrid ? GetInt(metadata, $"{arch}.shortconv.l_cache") : 0,
             HybridNoFfnLayer = hybridNoFfnLayer,
         };
     }

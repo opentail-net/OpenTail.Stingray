@@ -274,6 +274,16 @@ public static class ModelCompatibility
         // '."' + newline at 0.22 nats in llama.cpp, 0.10 the other way in ours).
         "nemotron_h",
 
+        // lfm2 — Liquid LFM2 (llama.cpp lfm2.cpp): gated short-conv layers (in_proj -> b|c|x, causal depthwise conv of
+        // b*x over shortconv.l_cache steps, gate by c, out_proj) + GQA attention with QK-norm and NeoX RoPE, SwiGLU FFN
+        // on every layer; final norm stored as token_embd_norm. ADMITTED 2026-09-27 (ForwardPass.ShortConv.cs, CPU).
+        // Evidence: LFM2-1.2B Q8_0 wikitext second-half [1024,+) PPL at -c 2048 10.9195 vs llama-perplexity --chunks 1
+        // 10.9543 (0.3%); with BOS the next-token top-5 after "The capital of France is" matches llama-server to 0.14
+        // nats; Lfm2ParityTests teacher-forces llama-server continuations (14 confident positions match). The model
+        // degenerates without BOS, so admit-arch now prepends it like llama-server does. Licence: LFM Open License
+        // v1.0 (free commercial use under $10M revenue); documented, not a support gate.
+        "lfm2",
+
         // internlm2 -- ADMITTED 2026-09-01. Was blocked purely on the tokenizer axis (same as
         // minicpm/ernie4_5/baichuan): tokenizer.ggml.model=llama with tokenizer.ggml.scores
         // (92,544 entries) and no tokenizer.ggml.merges array -- already fixed by

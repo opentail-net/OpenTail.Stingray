@@ -689,6 +689,7 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
         if (hp.HasLayerOutputScale) _layerOutputScale = new float[L];
 
         InitMamba2(L);
+        InitShortConv(L);
 
         for (int i = 0; i < L; i++)
         {
@@ -697,7 +698,7 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
             // Mamba-2 mixer layers (granitehybrid) carry ssm_* tensors instead of attn_q/k/v/output.
             bool mamba2Layer = IsMamba2Layer(i);
             // Nemotron-H MLP-only layers have no attention tensors either; its attention/Mamba layers have no FFN.
-            bool noAttnLayer = mamba2Layer || (hp.HybridFfnOnlyLayer is { } ffo && ffo[i]);
+            bool noAttnLayer = mamba2Layer || IsShortConvLayer(i) || (hp.HybridFfnOnlyLayer is { } ffo && ffo[i]);
             bool noFfnLayer = hp.HybridNoFfnLayer is { } nf && nf[i];
             // Gemma 4 12B global layers carry no attn_v (attention_k_eq_v): V reuses
             // the K projection, so the tensor is genuinely absent.
@@ -723,7 +724,9 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
             // either" rather than accidentally reusing a tensor that doesn't exist.
             _ffnNorm[i] = _model.FindTensor($"blk.{i}.ffn_norm.weight") is not null
                 ? ResolveTensor($"blk.{i}.ffn_norm.weight")
-                : _attnNorm[i];
+                : hp.PostAttnNormIsFfnNorm && _model.FindTensor($"blk.{i}.post_attention_norm.weight") is not null
+                    ? ResolveTensor($"blk.{i}.post_attention_norm.weight")
+                    : _attnNorm[i];
 
             // GPT-NeoX/Pythia ships one fused blk.N.attn_qkv.weight (shape [embDim, embDim +
             // 2*kvEmbDim]) rather than separate attn_q/attn_k/attn_v tensors. llama.cpp's
@@ -921,7 +924,7 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
                 _bFfnDown![i] = LoadBias($"blk.{i}.ffn_down.bias", _embDim);
             }
 
-            if (_hasQkNorm && !hp.UseL2QkNorm)
+            if (_hasQkNorm && !hp.UseL2QkNorm && !noAttnLayer)
             {
                 int qNormSize = _perChannelQkNorm ? _numHeads * layerHd : layerHd;
                 _qNorm[i] = LoadBias($"blk.{i}.attn_q_norm.weight", qNormSize);
@@ -948,9 +951,12 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
         // OLMo v1 has no output_norm tensor at all (UsesUnweightedNorm) — left at its default
         // (DataPtr null); RunTrunk's final-norm step calls SimdKernels.PureLayerNorm directly
         // instead of dereferencing a weight that doesn't exist.
+        // LFM2 stores its final norm as token_embd_norm (llama.cpp LLM_TENSOR_OUTPUT_NORM_LFM2, a naming slip).
         _outputNorm = model.FindTensor("output_norm.weight") is not null
             ? ResolveTensor("output_norm.weight")
-            : default;
+            : hp.IsShortConvLayer is not null && model.FindTensor("token_embd_norm.weight") is not null
+                ? ResolveTensor("token_embd_norm.weight")
+                : default;
         _outputWeight = model.FindTensor("output.weight") is not null
             ? ResolveTensor("output.weight")
             : _embTensor; // tied embeddings
@@ -1205,14 +1211,14 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
     /// </summary>
     public void TruncateTo(int length)
     {
-        if (_m2 is not null)
+        if (HasRecurrentState)
         {
-            // The Mamba-2 state is updated destructively: only a full reset or a no-op keeps it consistent.
+            // Mamba-2 / short-conv state is updated destructively: only a full reset or a no-op keeps it consistent.
             int current = _tqKvCache?.Length ?? _kvCache.Length;
-            if (length == 0) ResetMamba2State();
+            if (length == 0) { ResetMamba2State(); ResetShortConvState(); }
             else if (length != current)
                 throw new NotSupportedException(
-                    $"ForwardPass.TruncateTo({length}): Mamba-2 recurrent state cannot be partially rewound; only 0 (reset) " +
+                    $"ForwardPass.TruncateTo({length}): recurrent (Mamba-2 / short-conv) state cannot be partially rewound; only 0 (reset) " +
                     $"or the current length ({current}) is supported. SupportsPartialRewind is false for this model.");
         }
         _mropeImages.RemoveAll(r => r.Start + r.Nx * r.Ny > length);
@@ -1223,7 +1229,7 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
     }
 
     /// <inheritdoc />
-    public bool SupportsPartialRewind => _m2 is null;
+    public bool SupportsPartialRewind => !HasRecurrentState;
 
     /// <inheritdoc />
     /// <remarks>TurboQuant compresses KV in place once it leaves the FP32 recent window, so
@@ -1235,6 +1241,7 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
     {
         _mropeImages.Clear();
         ResetMamba2State();
+        ResetShortConvState();
         if (_tqKvCache != null)
             _tqKvCache.Reset();
         else
@@ -1356,7 +1363,7 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
         // their F32 path costs negligible normal-prompt performance and removes an unsafe default
         // divergence. A mixed prompt (including the usual BOS + text) remains eligible for Q8.
         // Mamba-2 hybrids: the recurrent mixer is only implemented token by token (the scan is sequential).
-        if (IsAllControlTokenPrompt(tokens) || IsSingleDistinctTokenPrompt(tokens) || _m2 is not null)
+        if (IsAllControlTokenPrompt(tokens) || IsSingleDistinctTokenPrompt(tokens) || HasRecurrentState)
         {
             ReadOnlySpan<float> logits = default;
             for (int i = 0; i < N; i++)
