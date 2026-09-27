@@ -32,7 +32,7 @@ public sealed class ChatterboxT3Tests : HeavyTestBase
     public void ChatterboxTokenizer_RealBpe_RoundTripsPlausibleTokenIds()
     {
         string? t3Path = FindRepoFile("models/chatterbox-turbo-t3-q4_k.gguf");
-        if (t3Path is null) return;
+        if (t3Path is null) Assert.Skip("t3Path not found (checkpoint or fixture missing).");
 
         using var weights = new ChatterboxWeights(t3Path);
         var tokenizer = new ChatterboxTokenizer(weights);
@@ -51,7 +51,7 @@ public sealed class ChatterboxT3Tests : HeavyTestBase
     public void ChatterboxAcousticLm_RealT3Weights_GeneratesValidInVocabSpeechTokens()
     {
         string? t3Path = FindRepoFile("models/chatterbox-turbo-t3-q4_k.gguf");
-        if (t3Path is null) return;
+        if (t3Path is null) Assert.Skip("t3Path not found (checkpoint or fixture missing).");
 
         using var weights = new ChatterboxWeights(t3Path);
         Assert.NotNull(weights.SpeakerEmbedding);
@@ -88,7 +88,7 @@ public sealed class ChatterboxT3Tests : HeavyTestBase
     public void ChatterboxAcousticLm_RealT3Weights_IsDeterministicForFixedSeed()
     {
         string? t3Path = FindRepoFile("models/chatterbox-turbo-t3-q4_k.gguf");
-        if (t3Path is null) return;
+        if (t3Path is null) Assert.Skip("t3Path not found (checkpoint or fixture missing).");
 
         using var weights = new ChatterboxWeights(t3Path);
         var tokenizer = new ChatterboxTokenizer(weights);

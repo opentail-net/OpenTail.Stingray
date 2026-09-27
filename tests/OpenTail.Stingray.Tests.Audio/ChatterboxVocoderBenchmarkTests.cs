@@ -30,7 +30,7 @@ public sealed class ChatterboxVocoderBenchmarkTests : HeavyTestBase
     public void ChatterboxVocoder_Benchmark_SyntheticMelAtRealisticScale()
     {
         string? s3GenPath = FindRepoFile("models/chatterbox-turbo-s3gen-q4_k.gguf");
-        if (s3GenPath is null) return;
+        if (s3GenPath is null) Assert.Skip("s3GenPath not found (checkpoint or fixture missing).");
 
         using var w = new ChatterboxS3GenWeights(s3GenPath);
 

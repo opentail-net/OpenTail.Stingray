@@ -53,7 +53,7 @@ public sealed class MossTtsLocalFrameDecoderRealWeightsTests : HeavyTestBase
         // Either a clean "end generation" signal, or a real in-range frame -- both are valid,
         // architecture-correct outcomes for an untrained-on-this-prompt real forward pass; the
         // property under test is that nothing crashes/produces NaN/out-of-range tokens.
-        if (frame is null) return;
+        if (frame is null) Assert.Skip("frame not found (checkpoint or fixture missing).");
         Assert.Equal(MossTtsGlobalTransformerWeights.NumCodebooks, frame.Length);
         foreach (var token in frame)
             Assert.InRange(token, 0, MossTtsGlobalTransformerWeights.AudioCodebookSize - 1);

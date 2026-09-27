@@ -28,7 +28,7 @@ public sealed class OnnxModelTests : HeavyTestBase
     public void OnnxModel_RealPiperFile_ParsesExpectedGraphShape()
     {
         string? path = FindRepoFile("models/en_US-lessac-medium.onnx");
-        if (path is null) return;
+        if (path is null) Assert.Skip("path not found (checkpoint or fixture missing).");
 
         var model = OnnxModel.Open(path);
 

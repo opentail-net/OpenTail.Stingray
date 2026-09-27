@@ -42,7 +42,7 @@ public sealed class CosyVoiceBenchmarkTests : HeavyTestBase
     public void HiftVocoder_Benchmark_SyntheticMelAtRealisticScale()
     {
         string? path = FindRepoFile("models/cosyvoice2_hift.safetensors");
-        if (path is null) return;
+        if (path is null) Assert.Skip("path not found (checkpoint or fixture missing).");
 
         using var w = new CosyVoiceHiftWeights(path);
 
@@ -65,7 +65,7 @@ public sealed class CosyVoiceBenchmarkTests : HeavyTestBase
     public void FlowEncoder_Benchmark_RealisticTokenCounts()
     {
         string? path = FindRepoFile("models/cosyvoice2_flow.safetensors");
-        if (path is null) return;
+        if (path is null) Assert.Skip("path not found (checkpoint or fixture missing).");
 
         using var w = new CosyVoiceFlowWeights(path);
 
@@ -94,7 +94,7 @@ public sealed class CosyVoiceBenchmarkTests : HeavyTestBase
     public void LlmTensorSource_Benchmark_PrefillRealisticPromptLength()
     {
         string? path = FindRepoFile("models/cosyvoice2_llm.safetensors");
-        if (path is null) return;
+        if (path is null) Assert.Skip("path not found (checkpoint or fixture missing).");
 
         using var source = OpenLlm(path);
         var hp = ModelHyperparams.FromGgufMetadata(source.Metadata);
@@ -118,7 +118,7 @@ public sealed class CosyVoiceBenchmarkTests : HeavyTestBase
     public void CosyVoice3DiTModel_Benchmark_RunBackbone_RealisticFrameCount()
     {
         string? path = FindRepoFile("models/cosyvoice3/CosyVoice3-2512_F16.gguf");
-        if (path is null) return;
+        if (path is null) Assert.Skip("path not found (checkpoint or fixture missing).");
 
         using var model = GgufModel.Open(path);
         var w = new CosyVoice3DiTWeights(model);
@@ -147,7 +147,7 @@ public sealed class CosyVoiceBenchmarkTests : HeavyTestBase
     public void CosyVoiceCfmDecoder_Benchmark_RealisticFrameCount()
     {
         string? path = FindRepoFile("models/cosyvoice2_flow.safetensors");
-        if (path is null) return;
+        if (path is null) Assert.Skip("path not found (checkpoint or fixture missing).");
 
         using var flow = new CosyVoiceFlowWeights(path);
         var w = new CosyVoiceCfmDecoderWeights(flow);

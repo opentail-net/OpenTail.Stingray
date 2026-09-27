@@ -23,6 +23,8 @@ public sealed class PiperRealWeightsTests : HeavyTestBase
         {
             var p = Path.Combine(dir, "models", fileName);
             if (File.Exists(p)) return p;
+            var pNested = Path.Combine(dir, "models", "_models", fileName);
+            if (File.Exists(pNested)) return pNested;
             var parent = Directory.GetParent(dir);
             if (parent is null) break;
             dir = parent.FullName;
@@ -34,7 +36,7 @@ public sealed class PiperRealWeightsTests : HeavyTestBase
     public void Piper_RealConfigFile_LoadsAndSynthesizesSpeech()
     {
         string? configPath = FindModelPath(ConfigFileName);
-        if (configPath is null) return;
+        if (configPath is null) Assert.Skip("configPath not found (checkpoint or fixture missing).");
 
         var pipeline = PiperPipeline.FromConfigFile(configPath);
         Assert.NotNull(pipeline);

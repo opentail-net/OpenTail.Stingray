@@ -22,6 +22,8 @@ public sealed class F5GpuResidencyParityTests
         {
             var p = Path.Combine(dir, "models", fileName);
             if (File.Exists(p)) return p;
+            var pNested = Path.Combine(dir, "models", "_models", fileName);
+            if (File.Exists(pNested)) return pNested;
             var parent = Directory.GetParent(dir);
             if (parent is null) break;
             dir = parent.FullName;
@@ -39,10 +41,10 @@ public sealed class F5GpuResidencyParityTests
     public void ForwardVelocityGpu_MatchesForwardVelocityCpu_Numerically()
     {
         string? modelPath = FindModelPath(ModelFileName);
-        if (modelPath is null) return;
+        if (modelPath is null) Assert.Skip("modelPath not found (checkpoint or fixture missing).");
 
         using var vulkan = TryCreateVulkan();
-        if (vulkan is null) return;
+        if (vulkan is null) Assert.Skip("vulkan not found (checkpoint or fixture missing).");
 
         using var w = new F5TtsWeights(modelPath);
 
@@ -95,10 +97,10 @@ public sealed class F5GpuResidencyParityTests
     public void ForwardGpu_SingleBlock_MatchesCpu_Numerically()
     {
         string? modelPath = FindModelPath(ModelFileName);
-        if (modelPath is null) return;
+        if (modelPath is null) Assert.Skip("modelPath not found (checkpoint or fixture missing).");
 
         using var vulkan = TryCreateVulkan();
-        if (vulkan is null) return;
+        if (vulkan is null) Assert.Skip("vulkan not found (checkpoint or fixture missing).");
 
         using var w = new F5TtsWeights(modelPath);
 
@@ -153,9 +155,9 @@ public sealed class F5GpuResidencyParityTests
     public void Benchmark_ForwardVelocityGpu_Vs_Cpu_RealTiming()
     {
         string? modelPath = FindModelPath(ModelFileName);
-        if (modelPath is null) return;
+        if (modelPath is null) Assert.Skip("modelPath not found (checkpoint or fixture missing).");
         using var vulkan = TryCreateVulkan();
-        if (vulkan is null) return;
+        if (vulkan is null) Assert.Skip("vulkan not found (checkpoint or fixture missing).");
 
         using var w = new F5TtsWeights(modelPath);
         const int t = 200; // ~2s of audio at F5's real mel hop (realistic single-utterance length)

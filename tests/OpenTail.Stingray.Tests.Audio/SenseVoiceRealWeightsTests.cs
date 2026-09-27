@@ -59,4 +59,27 @@ public sealed class SenseVoiceRealWeightsTests
 
         Assert.False(string.IsNullOrWhiteSpace(result.Text));
     }
+
+    /// <summary>The <see cref="ISpeechToTextPipeline"/> path <c>stingray stt -m sensevoice</c> uses (docs/103 item 5):
+    /// exact LibriSpeech reference transcript, case-insensitive, and the detected language tag.</summary>
+    [Fact]
+    public void SpeechToTextPipeline_OnRealLibriSpeechClip_MatchesReferenceTranscript()
+    {
+        const string onnxPath = @"F:\_models\sensevoice-small.int8.onnx";
+        Assert.SkipUnless(File.Exists(onnxPath), $"{onnxPath} not found");
+        string? tokensPath = SenseVoicePipeline.ResolveTokensPath(onnxPath);
+        Assert.SkipUnless(tokensPath is not null, "sensevoice tokens file not found next to the model");
+        string? wavPath = FindRepoFile("examples/audio.cpp/assets/asr_validation/librispeech/librispeech_test_clean_6930-75918-0000.wav");
+        Assert.SkipUnless(wavPath != null, "librispeech reference clip not found");
+
+        using ISpeechToTextPipeline pipeline = SenseVoicePipeline.TryLoad(onnxPath, tokensPath!)!;
+        var (samples, rate, _) = WavReader.ReadWav(wavPath!);
+        var result = pipeline.Transcribe(new SpeechToTextRequest { AudioSamples = samples, SampleRate = rate });
+
+        string reference = File.ReadAllText(Path.ChangeExtension(wavPath!, ".txt")).Trim();
+        Console.WriteLine($"[SenseVoice stt] lang={result.Language} '{result.Text}' vs '{reference}'");
+        Assert.Equal(reference, result.Text, ignoreCase: true);
+        Assert.Equal("en", result.Language);
+        Assert.Single(result.Segments);
+    }
 }

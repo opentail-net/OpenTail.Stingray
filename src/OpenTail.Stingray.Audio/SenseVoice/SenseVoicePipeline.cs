@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using OpenTail.Stingray.Audio.FunASR;
 
 namespace OpenTail.Stingray.Audio.SenseVoice;
@@ -23,8 +24,11 @@ public sealed record SenseVoiceResult(string Text, string? Language, string? Emo
 /// as language/emotion/event tags, and the real transcript text starts from decoded-token index 4
 /// onward.</para>
 /// </summary>
-public sealed class SenseVoicePipeline : IDisposable
+public sealed class SenseVoicePipeline : ISpeechToTextPipeline
 {
+    public string Architecture => "SenseVoice-Small-ONNX";
+    public int SampleRate => 16000;
+
     private readonly SenseVoiceModel _model;
     private readonly SenseVoiceVocab _vocab;
     private readonly FunAsrRealMelExtractor _melExtractor = new();
@@ -33,6 +37,17 @@ public sealed class SenseVoicePipeline : IDisposable
     {
         _model = model;
         _vocab = vocab;
+    }
+
+    /// <summary>Tokens file next to the model: <c>&lt;name&gt;-tokens.txt</c> (e.g.
+    /// <c>sensevoice-small.int8.onnx</c> -> <c>sensevoice-small-tokens.txt</c>) or <c>tokens.txt</c>.</summary>
+    public static string? ResolveTokensPath(string onnxPath)
+    {
+        string dir = Path.GetDirectoryName(Path.GetFullPath(onnxPath)) ?? ".";
+        string stem = Path.GetFileName(onnxPath).Split('.')[0];
+        foreach (var candidate in new[] { Path.Combine(dir, $"{stem}-tokens.txt"), Path.Combine(dir, "tokens.txt") })
+            if (File.Exists(candidate)) return candidate;
+        return null;
     }
 
     public static SenseVoicePipeline? TryLoad(string onnxPath, string tokensPath)
@@ -110,6 +125,39 @@ public sealed class SenseVoicePipeline : IDisposable
         string text = _vocab.Decode(textIds);
 
         return new SenseVoiceResult(text, lang, emotion, evt);
+    }
+
+    /// <summary><see cref="ISpeechToTextPipeline"/> entry: resamples to 16 kHz, maps <c>request.Language</c> (null =
+    /// auto) and returns the whole utterance as one segment. The detected language tag (e.g. <c>&lt;|en|&gt;</c>) is
+    /// reported as the result language.</summary>
+    public SpeechToTextResult Transcribe(SpeechToTextRequest request)
+    {
+        if (request.AudioSamples is null || request.AudioSamples.Length == 0)
+            return new SpeechToTextResult(string.Empty, request.Language ?? "auto", TimeSpan.Zero, []);
+        float[] pcm16k = request.AudioSamples;
+        if (request.SampleRate != SampleRate)
+            pcm16k = AudioResampler.Resample(pcm16k, request.SampleRate, SampleRate);
+        var duration = TimeSpan.FromSeconds((double)pcm16k.Length / SampleRate);
+
+        var r = Transcribe(pcm16k, string.IsNullOrEmpty(request.Language) ? "auto" : request.Language);
+        string lang = r.Language?.Trim('<', '|', '>') is { Length: > 0 } l ? l : request.Language ?? "auto";
+        string text = r.Text.Trim();
+        var segment = new SpeechSegment { Id = 0, Start = TimeSpan.Zero, End = duration, Text = text, Probability = 1.0f };
+        return new SpeechToTextResult(text, lang, duration, [segment]);
+    }
+
+    /// <summary>SenseVoice-Small is an offline, whole-utterance CTC model: buffer the stream, then one pass.</summary>
+    public async IAsyncEnumerable<SpeechSegment> TranscribeStreamAsync(
+        IAsyncEnumerable<ReadOnlyMemory<float>> audioStream,
+        SpeechToTextRequest baseRequest,
+        [EnumeratorCancellation] CancellationToken ct = default)
+    {
+        var buffer = new List<float>();
+        await foreach (var chunk in audioStream.WithCancellation(ct))
+            buffer.AddRange(chunk.ToArray());
+        if (buffer.Count == 0) yield break;
+        foreach (var seg in Transcribe(baseRequest with { AudioSamples = [.. buffer] }).Segments)
+            yield return seg;
     }
 
     public void Dispose() => _model.Dispose();

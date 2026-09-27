@@ -21,11 +21,11 @@ public sealed class SttCommand : Command<SttCommand.Settings>
         public string Task { get; init; } = "transcribe";
 
         [CommandOption("-m|--model <VARIANT>")]
-        [Description("Whisper model architecture preset: tiny (default), base, small, medium, large-v3, or turbo; or voxtral.")]
+        [Description("Whisper model architecture preset: tiny (default), base, small, medium, large-v3, or turbo; or voxtral; or sensevoice / paraformer (ONNX, pass the .onnx with --model-file; its tokens file is found next to it).")]
         public string Model { get; init; } = "tiny";
 
         [CommandOption("--model-file <PATH>")]
-        [Description("Path to a whisper.cpp GGML .bin checkpoint with real weights, or a voxtral model directory. If omitted, searched for under ./models.")]
+        [Description("Path to a whisper.cpp GGML .bin checkpoint with real weights, a voxtral model directory, or a SenseVoice / Paraformer .onnx file. If omitted, searched for under ./models.")]
         public string? ModelFile { get; init; }
 
         [CommandOption("--no-timestamps")]
@@ -70,6 +70,32 @@ public sealed class SttCommand : Command<SttCommand.Settings>
         {
             pipeline = OpenTail.Stingray.Audio.Wav2Vec2.Wav2Vec2CtcPipeline.Load(s.ModelFile);
             modelTitle = $"Wav2Vec2 CTC Native Speech-to-Text ({Path.GetFileName(Path.TrimEndingDirectorySeparator(s.ModelFile))})";
+        }
+        else if (variant is "sensevoice" or "paraformer")
+        {
+            string? onnx = s.ModelFile ?? FindModelsFile(variant == "sensevoice" ? "sensevoice-small.int8.onnx" : "paraformer-zh-small.int8.onnx");
+            if (onnx is null || !File.Exists(onnx))
+            {
+                Console.Error.WriteLine($"Error: {variant} ONNX model not found. Pass --model-file <path-to-.onnx> (its tokens file must sit next to it).");
+                return 1;
+            }
+            string? tokens = OpenTail.Stingray.Audio.SenseVoice.SenseVoicePipeline.ResolveTokensPath(onnx);
+            if (variant == "sensevoice")
+            {
+                if (tokens is null)
+                {
+                    Console.Error.WriteLine($"Error: no tokens file next to {onnx} (expected <name>-tokens.txt or tokens.txt).");
+                    return 1;
+                }
+                pipeline = OpenTail.Stingray.Audio.SenseVoice.SenseVoicePipeline.TryLoad(onnx, tokens)
+                    ?? throw new InvalidOperationException($"Failed to load SenseVoice ONNX model: {onnx}");
+                modelTitle = "SenseVoice-Small (ONNX) Speech-to-Text";
+            }
+            else
+            {
+                pipeline = OpenTail.Stingray.Audio.ParaformerOnnx.ParaformerOnnxPipeline.Load(onnx, tokens);
+                modelTitle = "FunASR Paraformer (ONNX) Speech-to-Text";
+            }
         }
         else if (variant.Contains("voxtral"))
         {
@@ -204,6 +230,23 @@ public sealed class SttCommand : Command<SttCommand.Settings>
             dir = dir.Parent;
         }
 
+        return null;
+    }
+
+    /// <summary>First <paramref name="fileName"/> under ./models or ./models/_models, walking up from the current
+    /// directory.</summary>
+    private static string? FindModelsFile(string fileName)
+    {
+        var dir = new DirectoryInfo(Directory.GetCurrentDirectory());
+        for (int i = 0; i < 8 && dir is not null; i++)
+        {
+            foreach (var sub in new[] { "models", Path.Combine("models", "_models") })
+            {
+                string candidate = Path.Combine(dir.FullName, sub, fileName);
+                if (File.Exists(candidate)) return candidate;
+            }
+            dir = dir.Parent;
+        }
         return null;
     }
 

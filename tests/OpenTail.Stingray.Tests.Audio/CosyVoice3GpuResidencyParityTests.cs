@@ -38,10 +38,10 @@ public sealed class CosyVoice3GpuResidencyParityTests
     public void RunBackboneGpu_MatchesRunBackboneCpu_Numerically()
     {
         string? path = FindRepoFile("models/cosyvoice3/CosyVoice3-2512_F16.gguf");
-        if (path is null) return;
+        if (path is null) Assert.Skip("path not found (checkpoint or fixture missing).");
 
         using var vulkan = TryCreateVulkan();
-        if (vulkan is null) return;
+        if (vulkan is null) Assert.Skip("vulkan not found (checkpoint or fixture missing).");
 
         using var model = GgufModel.Open(path);
         var w = new CosyVoice3DiTWeights(model);
@@ -84,9 +84,9 @@ public sealed class CosyVoice3GpuResidencyParityTests
     public void Benchmark_RunBackboneGpu_Vs_Cpu_RealTiming()
     {
         string? path = FindRepoFile("models/cosyvoice3/CosyVoice3-2512_F16.gguf");
-        if (path is null) return;
+        if (path is null) Assert.Skip("path not found (checkpoint or fixture missing).");
         using var vulkan = TryCreateVulkan();
-        if (vulkan is null) return;
+        if (vulkan is null) Assert.Skip("vulkan not found (checkpoint or fixture missing).");
 
         using var model = GgufModel.Open(path);
         var w = new CosyVoice3DiTWeights(model);

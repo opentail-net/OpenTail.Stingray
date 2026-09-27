@@ -21,6 +21,8 @@ public sealed class KokoroRealWeightsTests : HeavyTestBase
         {
             var p = Path.Combine(dir, "models", fileName);
             if (File.Exists(p)) return p;
+            var pNested = Path.Combine(dir, "models", "_models", fileName);
+            if (File.Exists(pNested)) return pNested;
             var parent = Directory.GetParent(dir);
             if (parent is null) break;
             dir = parent.FullName;
@@ -34,7 +36,7 @@ public sealed class KokoroRealWeightsTests : HeavyTestBase
         string? modelPath = FindModelPath("kokoro-82m-q8_0.gguf");
         string? voicePath = FindModelPath("kokoro-voice-af_heart.gguf");
 
-        if (modelPath is null) return;
+        if (modelPath is null) Assert.Skip("modelPath not found (checkpoint or fixture missing).");
 
         using var model = KokoroModel.Load(modelPath, voicePath);
         using var pipeline = new KokoroPipeline(model);

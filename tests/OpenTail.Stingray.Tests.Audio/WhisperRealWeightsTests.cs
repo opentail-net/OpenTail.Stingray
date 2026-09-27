@@ -21,6 +21,8 @@ public sealed class WhisperRealWeightsTests : HeavyTestBase
         {
             var p = Path.Combine(dir, "models", fileName);
             if (File.Exists(p)) return p;
+            var pNested = Path.Combine(dir, "models", "_models", fileName);
+            if (File.Exists(pNested)) return pNested;
             var parent = Directory.GetParent(dir);
             if (parent is null) break;
             dir = parent.FullName;
@@ -84,7 +86,7 @@ public sealed class WhisperRealWeightsTests : HeavyTestBase
     public void WhisperPipeline_LoadRealGgmlTiny_TranscribesAudioEndToEnd()
     {
         string? modelPath = FindModelPath("ggml-tiny.bin");
-        if (modelPath is null) return;
+        if (modelPath is null) Assert.Skip("modelPath not found (checkpoint or fixture missing).");
 
         using var pipeline = WhisperPipeline.Load(modelPath);
         Assert.NotNull(pipeline);
@@ -120,7 +122,7 @@ public sealed class WhisperRealWeightsTests : HeavyTestBase
     public void WhisperPipeline_LoadRealGgmlMedium_TranscribesAudioEndToEnd()
     {
         string? modelPath = FindModelPath("ggml-medium.bin");
-        if (modelPath is null) return;
+        if (modelPath is null) Assert.Skip("modelPath not found (checkpoint or fixture missing).");
 
         using var pipeline = WhisperPipeline.Load(modelPath);
         Assert.NotNull(pipeline);
@@ -148,7 +150,7 @@ public sealed class WhisperRealWeightsTests : HeavyTestBase
     public void WhisperGgmlModel_TinyRealWeights_EncoderProducesFiniteOutput()
     {
         string? modelPath = FindModelPath("ggml-tiny.bin");
-        if (modelPath is null) return;
+        if (modelPath is null) Assert.Skip("modelPath not found (checkpoint or fixture missing).");
 
         var ggml = WhisperGgmlModel.Load(modelPath);
         Assert.True(ggml.VocabSize is 51864 or 51865 or 51866, $"Unexpected vocab size {ggml.VocabSize}.");
@@ -180,7 +182,7 @@ public sealed class WhisperRealWeightsTests : HeavyTestBase
     public void WhisperGgmlModel_TinyRealWeights_DecoderStepProducesFiniteLogitsAndPeaksOnKnownToken()
     {
         string? modelPath = FindModelPath("ggml-tiny.bin");
-        if (modelPath is null) return;
+        if (modelPath is null) Assert.Skip("modelPath not found (checkpoint or fixture missing).");
 
         var ggml = WhisperGgmlModel.Load(modelPath);
         var config = ggml.ToConfig();

@@ -82,7 +82,7 @@ public sealed class MossTtsLocalFrameDecoderTests
 
         // With random untrained weights the text choice could legitimately go either way; only
         // assert the shape/range invariant when generation continued.
-        if (frame is null) return;
+        if (frame is null) Assert.Skip("frame not found (checkpoint or fixture missing).");
 
         Assert.Equal(MossTtsGlobalTransformerWeights.NumCodebooks, frame.Length);
         foreach (var token in frame)

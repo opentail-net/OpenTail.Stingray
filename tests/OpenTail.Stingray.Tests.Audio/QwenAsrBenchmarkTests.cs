@@ -40,7 +40,7 @@ public sealed class QwenAsrBenchmarkTests : HeavyTestBase
     public void AudioEncoder_Benchmark_RealisticClipLength()
     {
         string? path = FindRepoFile("models/qwen3-asr-0.6b-q4_k.gguf");
-        if (path is null) return;
+        if (path is null) Assert.Skip("path not found (checkpoint or fixture missing).");
 
         using var w = new QwenAsrWeights(path);
         var config = new QwenAsrEncoderConfig

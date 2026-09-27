@@ -36,10 +36,10 @@ public sealed class ParlerT5GpuResidencyParityTests
     public void EncodeGpu_MatchesForwardCpu_Numerically()
     {
         string? modelPath = FindRepoFile("models/parler-tts-mini-v1.safetensors");
-        if (modelPath is null) return;
+        if (modelPath is null) Assert.Skip("modelPath not found (checkpoint or fixture missing).");
 
         using var vulkan = TryCreateVulkan();
-        if (vulkan is null) return;
+        if (vulkan is null) Assert.Skip("vulkan not found (checkpoint or fixture missing).");
 
         using var loader = SafetensorsLoader.Open(modelPath);
         var w = new T5EncoderWeights(loader);
@@ -81,9 +81,9 @@ public sealed class ParlerT5GpuResidencyParityTests
     public void EncodeGpu_SingleLayerActivationTrace()
     {
         string? modelPath = FindRepoFile("models/parler-tts-mini-v1.safetensors");
-        if (modelPath is null) return;
+        if (modelPath is null) Assert.Skip("modelPath not found (checkpoint or fixture missing).");
         using var vulkan = TryCreateVulkan();
-        if (vulkan is null) return;
+        if (vulkan is null) Assert.Skip("vulkan not found (checkpoint or fixture missing).");
 
         using var loader = SafetensorsLoader.Open(modelPath);
         var w = new T5EncoderWeights(loader);
@@ -165,9 +165,9 @@ public sealed class ParlerT5GpuResidencyParityTests
     public void Benchmark_EncodeGpu_Vs_Cpu_RealTiming()
     {
         string? modelPath = FindRepoFile("models/parler-tts-mini-v1.safetensors");
-        if (modelPath is null) return;
+        if (modelPath is null) Assert.Skip("modelPath not found (checkpoint or fixture missing).");
         using var vulkan = TryCreateVulkan();
-        if (vulkan is null) return;
+        if (vulkan is null) Assert.Skip("vulkan not found (checkpoint or fixture missing).");
 
         using var loader = SafetensorsLoader.Open(modelPath);
         var w = new T5EncoderWeights(loader);

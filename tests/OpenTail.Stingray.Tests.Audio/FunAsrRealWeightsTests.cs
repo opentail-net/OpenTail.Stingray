@@ -21,6 +21,8 @@ public sealed class FunAsrRealWeightsTests : HeavyTestBase
         {
             var p = Path.Combine(dir, "models", fileName);
             if (File.Exists(p)) return p;
+            var pNested = Path.Combine(dir, "models", "_models", fileName);
+            if (File.Exists(pNested)) return pNested;
             var parent = Directory.GetParent(dir);
             if (parent is null) break;
             dir = parent.FullName;
@@ -32,7 +34,7 @@ public sealed class FunAsrRealWeightsTests : HeavyTestBase
     public void Paraformer_GgufRealModelFile_LoadsAndTranscribes()
     {
         string? modelPath = FindModelPath("paraformer-q8.gguf");
-        if (modelPath is null) return;
+        if (modelPath is null) Assert.Skip("modelPath not found (checkpoint or fixture missing).");
 
         using var pipeline = FunAsrPipeline.Load(modelPath);
         Assert.NotNull(pipeline);
@@ -69,7 +71,7 @@ public sealed class FunAsrRealWeightsTests : HeavyTestBase
     public void Paraformer_OnnxRealModelFile_LoadsAndTranscribes()
     {
         string? modelPath = FindModelPath("paraformer-zh-small.int8.onnx");
-        if (modelPath is null) return;
+        if (modelPath is null) Assert.Skip("modelPath not found (checkpoint or fixture missing).");
 
         using var pipeline = FunAsrPipeline.Load(modelPath);
         Assert.NotNull(pipeline);
@@ -95,7 +97,7 @@ public sealed class FunAsrRealWeightsTests : HeavyTestBase
     public void SenseVoice_OnnxRealModelFile_LoadsAndTranscribes()
     {
         string? modelPath = FindModelPath("sensevoice-small.int8.onnx");
-        if (modelPath is null) return;
+        if (modelPath is null) Assert.Skip("modelPath not found (checkpoint or fixture missing).");
 
         using var pipeline = FunAsrPipeline.Load(modelPath);
         Assert.NotNull(pipeline);

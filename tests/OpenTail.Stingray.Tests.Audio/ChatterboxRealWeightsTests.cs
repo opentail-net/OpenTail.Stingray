@@ -21,6 +21,8 @@ public sealed class ChatterboxRealWeightsTests : HeavyTestBase
         {
             var p = Path.Combine(dir, "models", fileName);
             if (File.Exists(p)) return p;
+            var pNested = Path.Combine(dir, "models", "_models", fileName);
+            if (File.Exists(pNested)) return pNested;
             var parent = Directory.GetParent(dir);
             if (parent is null) break;
             dir = parent.FullName;
@@ -34,7 +36,7 @@ public sealed class ChatterboxRealWeightsTests : HeavyTestBase
         string? t3Path = FindModelPath("chatterbox-turbo-t3-q4_k.gguf");
         string? s3GenPath = FindModelPath("chatterbox-turbo-s3gen-q4_k.gguf");
 
-        if (t3Path is null) return;
+        if (t3Path is null) Assert.Skip("t3Path not found (checkpoint or fixture missing).");
 
         using var pipeline = ChatterboxPipeline.Load(t3Path, s3GenPath);
         Assert.NotNull(pipeline);
@@ -58,7 +60,7 @@ public sealed class ChatterboxRealWeightsTests : HeavyTestBase
     public void Chatterbox_ExportStyleBinFiles()
     {
         string? t3Path = FindModelPath("chatterbox-turbo-t3-q4_k.gguf");
-        if (t3Path is null) return;
+        if (t3Path is null) Assert.Skip("t3Path not found (checkpoint or fixture missing).");
 
         using var w = new ChatterboxWeights(t3Path);
         string outDir = @"C:\Git-Public\OpenTail.Stingray\examples\Chatterbox-turbo-cpp\style";
@@ -124,7 +126,7 @@ public sealed class ChatterboxRealWeightsTests : HeavyTestBase
     public void Chatterbox_T3_GgufRealModelFile_LoadsAndInspectsTensors()
     {
         string? modelPath = FindModelPath("chatterbox-turbo-t3-q4_k.gguf");
-        if (modelPath is null) return;
+        if (modelPath is null) Assert.Skip("modelPath not found (checkpoint or fixture missing).");
 
         using var model = GgufModel.Open(modelPath);
         Assert.NotNull(model);
@@ -136,7 +138,7 @@ public sealed class ChatterboxRealWeightsTests : HeavyTestBase
     public void Chatterbox_S3Gen_GgufRealModelFile_LoadsAndInspectsTensors()
     {
         string? modelPath = FindModelPath("chatterbox-turbo-s3gen-q4_k.gguf");
-        if (modelPath is null) return;
+        if (modelPath is null) Assert.Skip("modelPath not found (checkpoint or fixture missing).");
 
         using var model = GgufModel.Open(modelPath);
         Assert.NotNull(model);

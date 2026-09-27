@@ -23,6 +23,8 @@ public sealed class CosyVoiceRealWeightsTests : HeavyTestBase
         {
             var p = Path.Combine(dir, "models", fileName);
             if (File.Exists(p)) return p;
+            var pNested = Path.Combine(dir, "models", "_models", fileName);
+            if (File.Exists(pNested)) return pNested;
             var parent = Directory.GetParent(dir);
             if (parent is null) break;
             dir = parent.FullName;
@@ -34,7 +36,7 @@ public sealed class CosyVoiceRealWeightsTests : HeavyTestBase
     public void CosyVoice_RealModelFile_SafetensorsValid()
     {
         string? modelPath = FindModelPath(ModelFileName);
-        if (modelPath is null) return;
+        if (modelPath is null) Assert.Skip("modelPath not found (checkpoint or fixture missing).");
 
         using var st = SafetensorsLoader.Open(modelPath);
         Assert.NotNull(st);
@@ -45,7 +47,7 @@ public sealed class CosyVoiceRealWeightsTests : HeavyTestBase
     public void CosyVoicePipeline_LoadRealSafetensors_SynthesizesAudio()
     {
         string? modelPath = FindModelPath(ModelFileName);
-        if (modelPath is null) return;
+        if (modelPath is null) Assert.Skip("modelPath not found (checkpoint or fixture missing).");
 
         using var pipeline = CosyVoicePipeline.Load(modelPath);
         Assert.NotNull(pipeline);

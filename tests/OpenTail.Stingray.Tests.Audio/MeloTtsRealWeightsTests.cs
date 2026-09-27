@@ -23,6 +23,8 @@ public sealed class MeloTtsRealWeightsTests : HeavyTestBase
         {
             var p = Path.Combine(dir, "models", fileName);
             if (File.Exists(p)) return p;
+            var pNested = Path.Combine(dir, "models", "_models", fileName);
+            if (File.Exists(pNested)) return pNested;
             var parent = Directory.GetParent(dir);
             if (parent is null) break;
             dir = parent.FullName;
@@ -34,7 +36,7 @@ public sealed class MeloTtsRealWeightsTests : HeavyTestBase
     public void MeloTts_RealModelFile_OnnxHeaderValidAndSynthesizesSpeech()
     {
         string? modelPath = FindModelPath(ModelFileName);
-        if (modelPath is null) return;
+        if (modelPath is null) Assert.Skip("modelPath not found (checkpoint or fixture missing).");
 
         var fileInfo = new FileInfo(modelPath);
         Assert.True(fileInfo.Length > 50 * 1024 * 1024, "MeloTTS ONNX model file must be > 50MB");

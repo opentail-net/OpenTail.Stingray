@@ -18,6 +18,17 @@ restart a fourth round of kernel-level chasing on this checkpoint without new ev
 
 ## Tracked items
 
+- [ ] **Fish Speech S2 Pro golden parity fails** (found 2026-09-27 by the `docs/103` item 2 landscape sweep).
+  - **Failures:**
+    - `FishSpeechCodecTests.Decode_RealWeights_MatchesGoldenPcmOutput`: PCM cosine 0.052 vs golden.
+    - `FishSpeechFastArTests.Forward_RealWeights_MatchesGoldenOracle`: fast-AR logits cosine 0.44 vs golden.
+  - **Checkpoint:** `models/s2-pro-q4_k_m.gguf`.
+  - **Leading suspect:** `d377049` (2026-09-05, "perf(audio): optimize FishSpeech S2 Pro Codec and Fast-AR
+    pipeline"). It is the last change to both the Fish Speech sources and these tests. The STATUS
+    row's 🟢 comes from a listening check on 2026-08-29, before that commit.
+  - **Next step:** run both tests at `7a68185` (the commit before d377049) in a worktree. If they pass
+    there, bisect d377049's hunks.
+  - **Until fixed:** the STATUS row should not be treated as current.
 - [ ] **GLM-4.5 (`glm4moe`) perplexity 1.9% worse than llama.cpp; not admitted** (logged 2026-09-27; `docs/done/102-status-open-items-plan.md` #16).
   - **Checkpoint:** `cerebras_GLM-4.5-Air-REAP-82B-A12B-Q2_K.gguf`. It mixes quant types: attn_q
     Q2_K, attn_output Q5_K, expert gate/up Q2_K, expert down IQ4_NL.

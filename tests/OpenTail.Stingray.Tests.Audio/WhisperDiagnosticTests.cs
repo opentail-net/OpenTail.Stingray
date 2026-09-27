@@ -24,6 +24,8 @@ public sealed class WhisperDiagnosticTests : HeavyTestBase
         {
             var p = Path.Combine(dir, "models", fileName);
             if (File.Exists(p)) return p;
+            var pNested = Path.Combine(dir, "models", "_models", fileName);
+            if (File.Exists(pNested)) return pNested;
             var jfk = Path.Combine(dir, "examples", "whisper.cpp", "samples", "jfk.wav");
             var parent = Directory.GetParent(dir);
             if (parent is null) break;
