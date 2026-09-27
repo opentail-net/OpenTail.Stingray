@@ -164,6 +164,8 @@ public sealed class HotSessionCapabilityPortTests
         }
     }
 
+
+
     private static SessionRequestDigest Digest(string value) => SessionRequestDigest.FromCanonicalValue(value);
 
     private sealed class FakeSkill(string name, params string[] toolNames) : ISkill

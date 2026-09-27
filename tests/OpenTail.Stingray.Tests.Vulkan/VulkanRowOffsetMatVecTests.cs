@@ -67,6 +67,32 @@ public sealed class VulkanRowOffsetMatVecTests
                 $"{dtype} row {r}: GPU {actual[r]} vs CPU {expected[r]}");
     }
 
+    [Theory]
+    [InlineData(DType.Float32)]
+    [InlineData((DType)999)]
+    public void UnsupportedDType_ThrowsNotSupportedException(DType dtype)
+    {
+        VulkanBackend? gpu;
+        try { gpu = new VulkanBackend(); } catch { gpu = null; }
+        Assert.SkipWhen(gpu is null, "no Vulkan device available on this host");
+        using var _ = gpu;
+
+        var dummyWeight = gpu!.Allocate(TensorShape.D1(256));
+        var dummyInput = gpu.Allocate(TensorShape.D1(64));
+        var dummyOutput = gpu.Allocate(TensorShape.D1(16));
+        try
+        {
+            Assert.Throws<NotSupportedException>(() =>
+                gpu.MatVecRowOffset(dummyOutput, dummyWeight, dummyInput, cols: 64, rowOffset: 0, dtype));
+        }
+        finally
+        {
+            gpu.Free(dummyWeight);
+            gpu.Free(dummyInput);
+            gpu.Free(dummyOutput);
+        }
+    }
+
     private static void PutHalf(byte[] b, int o, float v)
     {
         ushort h = BitConverter.HalfToUInt16Bits((Half)v);
@@ -74,3 +100,4 @@ public sealed class VulkanRowOffsetMatVecTests
         b[o + 1] = (byte)(h >> 8);
     }
 }
+

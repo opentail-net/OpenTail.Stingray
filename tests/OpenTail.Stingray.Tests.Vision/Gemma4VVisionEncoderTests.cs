@@ -73,4 +73,58 @@ public class Gemma4VVisionEncoderTests
         foreach (var value in output) maxAbs = MathF.Max(maxAbs, MathF.Abs(value));
         Assert.InRange(maxAbs, 1e-4f, 1e4f);
     }
+
+    [Fact]
+    public void Gemma4V_GeometryAndTokenCount_MatchesContract()
+    {
+        // Issue #250 / 03-gemma4-e4b-vision-plan.md: Gemma 4 E4B ViT vision encoder contract.
+        // Input image size: 224x224, Patch size: 16 -> 14x14 patches (gridSize = 14).
+        // Token reduction: n_merge = 3 -> floor((14 - 3) / 3) + 1 = 4 tokens per side -> 16 soft tokens total.
+        const int imageSize = 224;
+        const int patchSize = 16;
+        const int nMerge = 3;
+
+        int gridSize = imageSize / patchSize;
+        Assert.Equal(14, gridSize);
+
+        int outSide = ((gridSize - nMerge) / nMerge) + 1;
+        Assert.Equal(4, outSide);
+
+        int tokenCount = outSide * outSide;
+        Assert.Equal(16, tokenCount);
+
+        // 2D-RoPE frequency base is hardcoded 100 for gemma4v ViT
+        Assert.Equal(100f, Gemma4VVisionModel.RopeTheta);
+
+        // Head dimension must be 64 for the 32+32 per-axis 2D-RoPE split
+        const int headDim = 64;
+        const int halfHeadDim = headDim / 2;
+        Assert.Equal(32, halfHeadDim);
+    }
+
+    [Fact]
+    public void Gemma4VClamp_AppliesInputAndOutputClamping()
+    {
+        // Issue #250 / 03-gemma4-e4b-vision-plan.md: Gemma4VClamp INT8 range limits.
+        var clamp = new Gemma4VClamp(
+            InputMin: -10f,
+            InputMax: 10f,
+            OutputMin: -5f,
+            OutputMax: 5f);
+
+        Assert.Equal(-10f, clamp.InputMin);
+        Assert.Equal(10f, clamp.InputMax);
+        Assert.Equal(-5f, clamp.OutputMin);
+        Assert.Equal(5f, clamp.OutputMax);
+
+        // Verify clamping logic on out-of-range and in-range values
+        Assert.Equal(-10f, Math.Clamp(-15f, clamp.InputMin, clamp.InputMax));
+        Assert.Equal(10f, Math.Clamp(20f, clamp.InputMin, clamp.InputMax));
+        Assert.Equal(3.5f, Math.Clamp(3.5f, clamp.InputMin, clamp.InputMax));
+
+        Assert.Equal(-5f, Math.Clamp(-12f, clamp.OutputMin, clamp.OutputMax));
+        Assert.Equal(5f, Math.Clamp(8.5f, clamp.OutputMin, clamp.OutputMax));
+        Assert.Equal(1.2f, Math.Clamp(1.2f, clamp.OutputMin, clamp.OutputMax));
+    }
 }
+

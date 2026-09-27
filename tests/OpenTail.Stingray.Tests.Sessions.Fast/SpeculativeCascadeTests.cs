@@ -102,6 +102,66 @@ public sealed class SpeculativeCascadeTests
         Assert.True(draft.ForwardCallCount > 0);
     }
 
+    /// <summary>
+    /// Correctness test for docs/1-correctness/bugstofix.md:
+    /// "SpeculativeDecoder.cs StepSampled/PLD bugs".
+    /// When PLD proposes fewer tokens than lookahead - 1 (e.g. 4 proposals for lookahead=7) and all proposals
+    /// are accepted, StepSampled must not access beyond the batch size and must decode successfully.
+    /// Skipped until SpeculativeDecoder.cs:557 bounds check is implemented.
+    /// </summary>
+    [Fact(Skip = "Known bug: SpeculativeDecoder.cs:557 throws IndexOutOfRangeException when proposals.Length < lookahead - 1 (docs/1-correctness/bugstofix.md)")]
+    public void Test6_CascadeSampled_PldHit_ProposalsShorterThanLookahead_DecodesSuccessfully()
+    {
+        var target = new TrackingForwardPass();
+        var draft = new TrackingForwardPass();
+        var pld = new PromptLookupDraft(ngramMax: 3, ngramMin: 2);
+        var sampling = new SamplingParams { Temperature = 0.5f };
+        var rng = new Random(42);
+
+        var decoder = new SpeculativeDecoder(target, pld, draft, sampling, rng, lookahead: 7);
+
+        var prompt = new int[] { 10, 20, 30, 40, 10 };
+        var initLogits = target.Prefill(prompt);
+        decoder.Initialize(prompt, initLogits);
+
+        var emitted = new List<int>();
+        var ex = Record.Exception(() =>
+            decoder.Decode(maxTokens: 10, stopTokenIds: Array.Empty<int>(), token => emitted.Add(token)));
+        Assert.Null(ex);
+        Assert.NotEmpty(emitted);
+    }
+
+    /// <summary>
+    /// Correctness test for docs/1-correctness/bugstofix.md:
+    /// "SpeculativeDecoder.cs StepSampled/PLD bugs".
+    /// When PLD is used in sampled mode, StepSampled must synchronize the draft forward pass cache
+    /// with the accepted PLD proposals, and increment PromptLookupAcceptedTokens in metrics.
+    /// Skipped until StepSampled metrics tracking and draft sync are implemented.
+    /// </summary>
+    [Fact(Skip = "Known bug: StepSampled does not increment PromptLookupAcceptedTokens or synchronize draft cache (docs/1-correctness/bugstofix.md)")]
+    public void Test7_CascadeSampled_PldHit_TracksAcceptedTokens()
+    {
+        var target = new TrackingForwardPass();
+        var draft = new TrackingForwardPass();
+        var pld = new PromptLookupDraft(ngramMax: 3, ngramMin: 2);
+        var sampling = new SamplingParams { Temperature = 0.5f };
+        var rng = new Random(42);
+
+        var decoder = new SpeculativeDecoder(target, pld, draft, sampling, rng, lookahead: 4);
+
+        // Prompt where PLD proposes tokens that diverge at token 2
+        var prompt = new int[] { 99, 10, 20, 30, 10, 20 };
+        var initLogits = target.Prefill(prompt);
+        decoder.Initialize(prompt, initLogits);
+
+        var emitted = new List<int>();
+        decoder.Decode(maxTokens: 3, stopTokenIds: Array.Empty<int>(), token => emitted.Add(token));
+
+        var metrics = decoder.Metrics;
+        Assert.True(metrics.PromptLookupHits > 0);
+        Assert.True(metrics.PromptLookupAcceptedTokens > 0);
+    }
+
     private sealed class TrackingForwardPass : IForwardPass
     {
         public bool SupportsPartialRewind => true;

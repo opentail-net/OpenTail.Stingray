@@ -163,6 +163,32 @@ public sealed class VulkanMatMulPathTests
         Assert.Equal(16d, VulkanMatMulStats.TokensPerDispatch, 6);
     }
 
+    [Fact]
+    public void Path2_ChargesWeightsOncePerDispatch()
+    {
+        using var _ = Scoped();
+        VulkanMatMulPathConfig.StatsEnabled = true;
+
+        VulkanMatMulStats.RecordPath2(16, 4096, 4096, DType.Q4_K);
+
+        long once = VulkanMatMulStats.WeightBytesFor(4096, 4096, DType.Q4_K);
+        Assert.Equal(1, VulkanMatMulStats.Path2Dispatches);
+        Assert.Equal(16, VulkanMatMulStats.AmortizedTokenDispatches);
+        Assert.Equal(once, VulkanMatMulStats.WeightBytes);
+        Assert.Equal(16d, VulkanMatMulStats.TokensPerDispatch, 6);
+    }
+
+    [Theory]
+    [InlineData(VulkanMatMulPath.Path1, 16)]
+    [InlineData(VulkanMatMulPath.Path2, 16)]
+    public void MaxTokensPerDispatch_ReflectsContractAcrossPaths(VulkanMatMulPath path, int expectedMaxTokens)
+    {
+        using var _ = Scoped();
+        VulkanMatMulPathConfig.Current = path;
+        Assert.Equal(expectedMaxTokens, VulkanMatMulPathConfig.MaxTokensPerDispatch);
+    }
+
+
     /// <summary>
     /// Reproduces the real 931-token Vulkan prefill (24 layers x 7 trunk matmuls, chunked at 16)
     /// and pins the distinction that the first hardware run exposed: summed <c>nTok</c> is

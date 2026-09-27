@@ -123,4 +123,82 @@ public sealed class AceStepFlowSchedulerTests
             Assert.True(rms > 1e-4, $"flow scheduler GPU output RMS ({rms}) is near-zero -- likely a wiring bug");
         }
     }
+
+    [Fact]
+    public void AceStepConfig_ShiftTimestepSchedules_MonotonicallyDecreasingAndValidRange()
+    {
+        // Issue #064: 8-step Euler-ODE timestep schedules for shift 1, 2, and 3.
+        Assert.Equal(8, AceStepConfig.DefaultInferenceSteps);
+        Assert.Equal(1.0f, AceStepConfig.DefaultShift);
+        Assert.Equal("ode", AceStepConfig.DefaultInferMethod);
+
+        float[] validShifts = [1.0f, 2.0f, 3.0f];
+        Assert.Equal(3, AceStepConfig.ShiftTimestepSchedules.Count);
+
+        foreach (var shift in validShifts)
+        {
+            Assert.True(AceStepConfig.ShiftTimestepSchedules.ContainsKey(shift), $"Missing schedule for shift {shift}");
+            var schedule = AceStepConfig.ShiftTimestepSchedules[shift];
+            Assert.Equal(AceStepConfig.DefaultInferenceSteps, schedule.Length);
+
+            // First step must start at 1.0f
+            Assert.Equal(1.0f, schedule[0]);
+
+            // Every step must be strictly decreasing and stay within (0, 1]
+            for (int i = 1; i < schedule.Length; i++)
+            {
+                Assert.True(schedule[i] < schedule[i - 1], $"Step {i} ({schedule[i]}) was not strictly smaller than previous ({schedule[i - 1]}) for shift {shift}");
+                Assert.True(schedule[i] > 0f, $"Step {i} ({schedule[i]}) was not positive for shift {shift}");
+                Assert.True(schedule[i] <= 1.0f, $"Step {i} ({schedule[i]}) exceeded 1.0 for shift {shift}");
+            }
+        }
+    }
+
+    [Fact]
+    public void AceStepConfig_AudioParameters_ConsistentWith25HzLatents()
+    {
+        // Issue #064: VAE and audio pipeline parameters.
+        Assert.Equal(48_000, AceStepConfig.VaeSampleRate);
+        Assert.Equal(2, AceStepConfig.VaeAudioChannels);
+        Assert.Equal(64, AceStepConfig.VaeDecoderInputChannels);
+        Assert.Equal(64, AceStepConfig.AudioAcousticHiddenDim);
+        Assert.Equal(192, AceStepConfig.InChannels); // 64 * 3
+
+        // Downsampling ratios product must be 1920, producing 48000 / 1920 = 25Hz latent frames
+        int totalDownsampleRatio = 1;
+        foreach (var ratio in AceStepConfig.VaeDownsamplingRatios)
+        {
+            totalDownsampleRatio *= ratio;
+        }
+        Assert.Equal(1920, totalDownsampleRatio);
+        Assert.Equal(25, AceStepConfig.VaeSampleRate / totalDownsampleRatio);
+    }
+
+    [Fact]
+    public void AceStepConfig_SlidingWindowPattern_AlternatesCorrectly()
+    {
+        // Issue #064: DiT layers alternate sliding window (even layers) and full attention (odd layers).
+        Assert.Equal(24, AceStepConfig.NumHiddenLayers);
+        Assert.True(AceStepConfig.UseSlidingWindow);
+        Assert.Equal(128, AceStepConfig.SlidingWindow);
+
+        int slidingCount = 0;
+        int fullCount = 0;
+        for (int l = 0; l < AceStepConfig.NumHiddenLayers; l++)
+        {
+            if (AceStepConfig.IsSlidingLayer(l))
+            {
+                Assert.True(l % 2 == 0, $"Expected even layer {l} to be sliding");
+                slidingCount++;
+            }
+            else
+            {
+                Assert.True(l % 2 == 1, $"Expected odd layer {l} to be full");
+                fullCount++;
+            }
+        }
+        Assert.Equal(12, slidingCount);
+        Assert.Equal(12, fullCount);
+    }
 }
+

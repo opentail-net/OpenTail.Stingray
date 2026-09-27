@@ -528,27 +528,87 @@ public sealed class ModelCompatibilityTests
 {
     [Theory]
     [InlineData("llama")]
+    [InlineData("llama4")]
+    [InlineData("qwen")]
+    [InlineData("qwen2")]
+    [InlineData("qwen2moe")]
     [InlineData("qwen3")]
+    [InlineData("qwen3moe")]
+    [InlineData("qwen2vl")]
+    [InlineData("qwen3vl")]
+    [InlineData("qwen35")]
     [InlineData("qwen35moe")]
+    [InlineData("mimo")]
+    [InlineData("mimo2")]
+    [InlineData("gemma")]
+    [InlineData("gemma2")]
+    [InlineData("gemma3")]
+    [InlineData("gemma3n")]
     [InlineData("gemma4")]
+    [InlineData("phi2")]
+    [InlineData("phi3")]
     [InlineData("phimoe")]
+    [InlineData("olmoe")]
+    [InlineData("olmo2")]
+    [InlineData("falcon")]
+    [InlineData("gptneox")]
+    [InlineData("apertus")]
+    [InlineData("smollm3")]
+    [InlineData("gpt2")]
     public void TextGenerationProfiles_RecognizeImplementedArchitectures(string architecture) =>
         Assert.True(ModelCompatibility.IsTextGenerationArchitectureSupported(architecture));
 
+    /// <summary>
+    /// Regression / fail-closed guard for docs/1-correctness/bugstofix.md:
+    /// Unadmitted architectures lacking forward-pass graphs or missing GGML ops
+    /// (e.g. GGML_OP_SSM_SCAN for Mamba, RWKV6/7, DeepSeek-V4 ops, Swin window attention)
+    /// must be strictly rejected at model-compatibility check time.
+    /// </summary>
     [Theory]
     [InlineData("mamba")]
+    [InlineData("mamba2")]
+    [InlineData("jamba")]
+    [InlineData("zamba")]
+    [InlineData("falcon_mamba")]
+    [InlineData("codestral_mamba")]
+    [InlineData("rwkv")]
+    [InlineData("rwkv6")]
     [InlineData("rwkv7")]
+    [InlineData("deepseek4")]
+    [InlineData("deepseek_v4")]
+    [InlineData("dsv4")]
+    [InlineData("swin")]
+    [InlineData("vit_window")]
     [InlineData("bert")]
-    [InlineData("qwen3vl")]
+    [InlineData("qwen3vlmoe")]
+    [InlineData("t5")]
+    [InlineData("")]
+    [InlineData("unknown")]
+    [InlineData("Mamba")]
+    [InlineData("MAMBA2")]
+    [InlineData("RWKV6")]
     public void TextGenerationProfiles_RejectArchitecturesWithoutAForwardPass(string architecture) =>
         Assert.False(ModelCompatibility.IsTextGenerationArchitectureSupported(architecture));
 
+    /// <summary>
+    /// Verifies both admitted and unadmitted weight DTypes per docs/1-correctness/bugstofix.md:
+    /// only executable weight formats return true; unported or activation-only formats return false.
+    /// </summary>
     [Theory]
-    [InlineData(DType.Q4_K, true)]
+    [InlineData(DType.Float32, true)]
+    [InlineData(DType.Float16, true)]
     [InlineData(DType.BFloat16, true)]
+    [InlineData(DType.Q4_0, true)]
     [InlineData(DType.Q4_1, true)]
+    [InlineData(DType.Q5_0, true)]
     [InlineData(DType.Q5_1, true)]
+    [InlineData(DType.Q8_0, true)]
     [InlineData(DType.Q8_1, true)]
+    [InlineData(DType.Q2_K, true)]
+    [InlineData(DType.Q3_K, true)]
+    [InlineData(DType.Q4_K, true)]
+    [InlineData(DType.Q5_K, true)]
+    [InlineData(DType.Q6_K, true)]
     [InlineData(DType.IQ4_NL, true)]
     [InlineData(DType.IQ4_XS, true)]
     [InlineData(DType.IQ2_XS, true)]
@@ -562,6 +622,21 @@ public sealed class ModelCompatibilityTests
     [InlineData(DType.NVFP4, true)]
     [InlineData(DType.Q1_0, true)]
     [InlineData(DType.Q2_0, true)]
+    [InlineData(DType.TQ2_0, true)]
+    [InlineData(DType.TQ1_0, true)]
+    [InlineData(DType.Q8_K, false)]
+    [InlineData(DType.Int8, false)]
+    [InlineData(DType.Int16, false)]
+    [InlineData(DType.Int32, false)]
+    [InlineData(DType.Int64, false)]
+    [InlineData(DType.Float64, false)]
+    [InlineData(DType.Reserved31, false)]
+    [InlineData(DType.Reserved32, false)]
+    [InlineData(DType.Reserved33, false)]
+    [InlineData(DType.Reserved36, false)]
+    [InlineData(DType.Reserved37, false)]
+    [InlineData(DType.Reserved38, false)]
+    [InlineData((DType)999, false)]
     public void WeightDTypeProfile_OnlyAdvertisesExecutableFormats(DType dtype, bool supported) =>
         Assert.Equal(supported, ModelCompatibility.IsSupportedWeightDType(dtype));
 }

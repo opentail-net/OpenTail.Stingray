@@ -62,6 +62,11 @@ public sealed unsafe class VulkanSubgroupSizeTests : HeavyTestBase
             "layout(local_size_x = 128, local_size_y = 1) in;"));
         Assert.Equal(16, ComputePipeline.ParseLocalSizeX(
             "layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;"));
+        // 2D 8x8 workgroups (e.g. FLUX.1 / FLUX.2 utility kernels)
+        Assert.Equal(8, ComputePipeline.ParseLocalSizeX(
+            "layout(local_size_x = 8, local_size_y = 8) in;"));
+        Assert.Equal(64, ComputePipeline.ParseLocalSizeX(
+            "layout(local_size_x = 64) in;"));
         // Tolerates extra whitespace around the '=' (within a layout qualifier).
         Assert.Equal(256, ComputePipeline.ParseLocalSizeX("layout(local_size_x   =   256) in;"));
         // No declaration → 0 (disables pinning).
@@ -73,8 +78,10 @@ public sealed unsafe class VulkanSubgroupSizeTests : HeavyTestBase
     [Theory]
     [InlineData(256, true)]   // reduction shaders → pinned
     [InlineData(128, true)]   // reduction shaders → pinned
+    [InlineData(64, true)]    // 64-thread reduction shaders → pinned
     [InlineData(512, true)]   // any multiple of 32 → pinned
     [InlineData(16, false)]   // image-op shaders → NOT pinned (smaller than one subgroup)
+    [InlineData(8, false)]    // 2D 8x8 workgroups with local_size_x = 8 (< 32) → NOT pinned
     [InlineData(0, false)]    // no local_size_x → NOT pinned
     public void PinGateIncludesMultiplesOf32(int localSizeX, bool multipleOf32Expected)
     {
@@ -98,12 +105,14 @@ public sealed unsafe class VulkanSubgroupSizeTests : HeavyTestBase
 
         // 16-thread image-op shaders must never be pinned, regardless of HW capability.
         Assert.False(ComputePipeline.ShouldPinSubgroupSize32(backend, 16));
+        Assert.False(ComputePipeline.ShouldPinSubgroupSize32(backend, 8));
         // 0 (no local_size_x) must never be pinned.
         Assert.False(ComputePipeline.ShouldPinSubgroupSize32(backend, 0));
 
         // Multiples of 32 are pinned iff the device needs the pin.
         Assert.Equal(needsPin, ComputePipeline.ShouldPinSubgroupSize32(backend, 256));
         Assert.Equal(needsPin, ComputePipeline.ShouldPinSubgroupSize32(backend, 128));
+        Assert.Equal(needsPin, ComputePipeline.ShouldPinSubgroupSize32(backend, 64));
     }
 
     [Fact]

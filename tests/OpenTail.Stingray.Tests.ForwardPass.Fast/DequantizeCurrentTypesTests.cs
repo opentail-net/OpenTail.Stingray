@@ -66,4 +66,31 @@ public sealed class DequantizeCurrentTypesTests
         Assert.Throws<ArgumentException>(() =>
             Dequantize.ToFloat32(new byte[36], new float[count], dtype, count));
     }
+
+    /// <summary>
+    /// Regression / fail-closed guard for docs/1-correctness/bugstofix.md:
+    /// Unimplemented or non-weight storage formats declared in DType must fail closed
+    /// by throwing NotSupportedException in Dequantize.ToFloat32 rather than corrupting memory.
+    /// </summary>
+    [Theory]
+    [InlineData(DType.Int8)]
+    [InlineData(DType.Int16)]
+    [InlineData(DType.Int32)]
+    [InlineData(DType.Int64)]
+    [InlineData(DType.Float64)]
+    [InlineData(DType.Reserved31)]
+    [InlineData(DType.Reserved32)]
+    [InlineData(DType.Reserved33)]
+    [InlineData(DType.Reserved36)]
+    [InlineData(DType.Reserved37)]
+    [InlineData(DType.Reserved38)]
+    [InlineData((DType)999)]
+    public void Dequantize_UnsupportedDTypes_ThrowNotSupportedException(DType dtype)
+    {
+        var src = new byte[256];
+        var dst = new float[256];
+        var ex = Assert.Throws<NotSupportedException>(() =>
+            Dequantize.ToFloat32(src, dst, dtype, dst.Length));
+        Assert.Contains("Dequantization not implemented for", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
 }

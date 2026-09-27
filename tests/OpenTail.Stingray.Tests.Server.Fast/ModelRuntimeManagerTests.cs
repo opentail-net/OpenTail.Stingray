@@ -1122,4 +1122,42 @@ public sealed class ModelRuntimeManagerTests
         registry.Release(sessionId); // second release: no-op, must not throw or double-dispose
         Assert.False(registry.TryGet(sessionId, out _));
     }
+
+    // ── ModelId and ModelResidencyMode contract tests (docs/032) ─────────────
+
+    [Fact]
+    public void ModelId_Canonicalize_ResolvesExistingPathOrFallsBackToRawString()
+    {
+        // Issue #032: ModelId canonicalization contract.
+        // Whitespace/null throws ArgumentException
+        Assert.Throws<ArgumentException>(() => ModelId.Canonicalize(""));
+        Assert.Throws<ArgumentException>(() => ModelId.Canonicalize("   "));
+
+        // Non-existent path returns raw string unchanged
+        string fakePath = "non_existent_model_path_12345.gguf";
+        var idFake = ModelId.Canonicalize(fakePath);
+        Assert.Equal(fakePath, idFake.Value);
+        Assert.Equal(fakePath, idFake.ToString());
+
+        // Existing path resolves to Path.GetFullPath
+        string tempFile = Path.GetTempFileName();
+        try
+        {
+            var idReal = ModelId.Canonicalize(tempFile);
+            Assert.Equal(Path.GetFullPath(tempFile), idReal.Value);
+        }
+        finally
+        {
+            File.Delete(tempFile);
+        }
+    }
+
+    [Fact]
+    public void ModelResidencyMode_EnumValues_MatchPlanContract()
+    {
+        // Issue #032: MultiSlot = 0 (default pressure-driven), SingleSlot = 1 (single resident model)
+        Assert.Equal(0, (int)ModelResidencyMode.MultiSlot);
+        Assert.Equal(1, (int)ModelResidencyMode.SingleSlot);
+    }
 }
+

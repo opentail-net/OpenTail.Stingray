@@ -339,4 +339,82 @@ public class DeepSeek4AlphaTests
             }
         }
     }
+
+    [Fact]
+    public void SqrtSoftplusGate_ComputesNumericallyStableSqrtSoftplus()
+    {
+        // Issue #058: DeepSeek4Graph.SqrtSoftplusGate calculates sqrt(softplus(x)) per logit.
+        // x = 0: softplus(0) = ln(2) ~ 0.69314718 -> sqrt ~ 0.8325546
+        // x = 50 (large positive): softplus(50) ~ 50 -> sqrt ~ 7.0710678
+        // x = -50 (large negative): softplus(-50) ~ exp(-50) ~ 0 -> sqrt ~ 0
+        float[] logits = [0f, 50f, -50f, 1f, -1f];
+        var scores = new float[logits.Length];
+
+        DeepSeek4Graph.SqrtSoftplusGate(logits, scores);
+
+        float expected0 = MathF.Sqrt(MathF.Log(2f));
+        Assert.True(MathF.Abs(scores[0] - expected0) < 1e-4f, $"score[0] was {scores[0]}, expected ~{expected0}");
+
+        float expected50 = MathF.Sqrt(50f);
+        Assert.True(MathF.Abs(scores[1] - expected50) < 1e-3f, $"score[1] was {scores[1]}, expected ~{expected50}");
+
+        Assert.True(scores[2] >= 0f && scores[2] < 1e-5f, $"score[2] was {scores[2]}, expected ~0");
+
+        float softplus1 = 1f + MathF.Log(1f + MathF.Exp(-1f));
+        float expected1 = MathF.Sqrt(softplus1);
+        Assert.True(MathF.Abs(scores[3] - expected1) < 1e-4f, $"score[3] was {scores[3]}, expected ~{expected1}");
+
+        float softplusMinus1 = MathF.Log(1f + MathF.Exp(-1f));
+        float expectedMinus1 = MathF.Sqrt(softplusMinus1);
+        Assert.True(MathF.Abs(scores[4] - expectedMinus1) < 1e-4f, $"score[4] was {scores[4]}, expected ~{expectedMinus1}");
+    }
+
+    [Fact]
+    public void SelectAndWeightExperts_NormalizesAndScales()
+    {
+        // Issue #058: Top-K selection with optional sum-to-1 normalization and scaling.
+        float[] scores = [0.1f, 0.9f, 0.4f, 0.6f, 0.05f];
+        const int topK = 3;
+        var indices = new int[topK];
+        var weights = new float[topK];
+
+        // 1. With normalization and scale = 2.0
+        DeepSeek4Graph.SelectAndWeightExperts(scores, topK, normalize: true, scale: 2.0f, indices, weights);
+
+        // Top 3 should be index 1 (0.9), index 3 (0.6), index 2 (0.4)
+        Assert.Equal(1, indices[0]);
+        Assert.Equal(3, indices[1]);
+        Assert.Equal(2, indices[2]);
+
+        float sum = weights[0] + weights[1] + weights[2];
+        Assert.True(MathF.Abs(sum - 2.0f) < 1e-4f, $"Normalized weights sum was {sum}, expected 2.0");
+
+        // 2. Without normalization, scale = 1.0 (raw top-K scores)
+        DeepSeek4Graph.SelectAndWeightExperts(scores, topK, normalize: false, scale: 1.0f, indices, weights);
+        Assert.Equal(0.9f, weights[0]);
+        Assert.Equal(0.6f, weights[1]);
+        Assert.Equal(0.4f, weights[2]);
+    }
+
+    [Fact]
+    public void HashLayerSelectExperts_CopiesFixedExpertRow()
+    {
+        // Issue #058: Hash-layer routing uses lookup table [vocabSize * numExpertsUsed]
+        const int vocabSize = 4;
+        const int numExpertsUsed = 2;
+        int[] tid2eid =
+        [
+            10, 11, // token 0
+            20, 21, // token 1
+            30, 31, // token 2
+            40, 41, // token 3
+        ];
+
+        var selected = new int[numExpertsUsed];
+        DeepSeek4Graph.HashLayerSelectExperts(tid2eid, numExpertsUsed, vocabSize, tokenId: 2, selected);
+
+        Assert.Equal(30, selected[0]);
+        Assert.Equal(31, selected[1]);
+    }
 }
+

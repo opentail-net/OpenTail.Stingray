@@ -286,4 +286,149 @@ public sealed unsafe class GdnStateCacheTests
         Assert.True(cache.ConvStateAt(0) == null, "Conv state should be null when ConvKernel == 1 (no past tokens to store).");
         Assert.True(cache.ScanStateAt(0) != null);
     }
+
+    [Fact]
+    public void GdnStateCache_RetainedSessionLifecycle_ConformanceAcrossTurns()
+    {
+        // Issue #21 / 02-qwen35moe-plan.md: GDN state preservation across chat continuation turns.
+        // Recurrent state is destructively updated token-by-token and does NOT support partial rewind.
+        // Across turns, session state must be retained via Snapshot/Restore or Reset.
+        using var cache = new GdnStateCache(RealisticLayerTypes(), RealisticGdn());
+
+        // Turn 1: Process 5 tokens
+        for (int i = 0; i < 5; i++)
+            cache.IncrementPosition();
+        Assert.Equal(5, cache.Length);
+
+        // Scribble distinctive markers into first, middle, and last layer's conv and scan buffers (head and tail)
+        int lastLayer = cache.NumGdnLayers - 1;
+        int midLayer = cache.NumGdnLayers / 2;
+        int convTail = cache.ConvStateFloatsPerLayer - 1;
+        int scanTail = cache.ScanStateFloatsPerLayer - 1;
+
+        cache.ConvStateAt(0)[0] = 12.34f;
+        cache.ConvStateAt(0)[convTail] = 23.45f;
+        cache.ScanStateAt(0)[0] = 56.78f;
+        cache.ScanStateAt(0)[scanTail] = 67.89f;
+
+        cache.ConvStateAt(midLayer)[0] = 34.56f;
+        cache.ScanStateAt(midLayer)[0] = 78.90f;
+
+        cache.ConvStateAt(lastLayer)[0] = 45.67f;
+        cache.ConvStateAt(lastLayer)[convTail] = 56.78f;
+        cache.ScanStateAt(lastLayer)[0] = 89.01f;
+        cache.ScanStateAt(lastLayer)[scanTail] = 90.12f;
+
+        // TruncateTo(Length) is a valid, documented no-op (used when sequence is at terminal position)
+        cache.TruncateTo(cache.Length);
+        Assert.Equal(5, cache.Length);
+        Assert.Equal(12.34f, cache.ConvStateAt(0)[0]);
+
+        // Verify partial rewind is prohibited (throws InvalidOperationException)
+        Assert.Throws<InvalidOperationException>(() => cache.TruncateTo(4));
+        Assert.Throws<InvalidOperationException>(() => cache.TruncateTo(1));
+
+        // Snapshot state at end of Turn 1
+        var snapshot = new byte[cache.SnapshotBytes];
+        fixed (byte* pSnap = snapshot)
+        {
+            cache.SnapshotInto(pSnap, snapshot.Length);
+        }
+
+        // Turn 2: Advance by 3 more tokens, mutating state
+        for (int i = 0; i < 3; i++)
+            cache.IncrementPosition();
+        Assert.Equal(8, cache.Length);
+        cache.ConvStateAt(0)[0] = 999.0f;
+        cache.ScanStateAt(0)[0] = -999.0f;
+        cache.ConvStateAt(lastLayer)[0] = 888.0f;
+        cache.ScanStateAt(lastLayer)[0] = -888.0f;
+
+        // Restore back to Turn 1 snapshot
+        fixed (byte* pSnap = snapshot)
+        {
+            cache.RestoreFrom(pSnap, snapshot.Length);
+        }
+
+        // State and length must be exactly restored to Turn 1 across all layers and positions
+        Assert.Equal(5, cache.Length);
+        Assert.Equal(12.34f, cache.ConvStateAt(0)[0]);
+        Assert.Equal(23.45f, cache.ConvStateAt(0)[convTail]);
+        Assert.Equal(56.78f, cache.ScanStateAt(0)[0]);
+        Assert.Equal(67.89f, cache.ScanStateAt(0)[scanTail]);
+
+        Assert.Equal(34.56f, cache.ConvStateAt(midLayer)[0]);
+        Assert.Equal(78.90f, cache.ScanStateAt(midLayer)[0]);
+
+        Assert.Equal(45.67f, cache.ConvStateAt(lastLayer)[0]);
+        Assert.Equal(56.78f, cache.ConvStateAt(lastLayer)[convTail]);
+        Assert.Equal(89.01f, cache.ScanStateAt(lastLayer)[0]);
+        Assert.Equal(90.12f, cache.ScanStateAt(lastLayer)[scanTail]);
+
+        // Reset (or TruncateTo(0)) wipes all state and length for a fresh session
+        cache.TruncateTo(0);
+        Assert.Equal(0, cache.Length);
+        Assert.Equal(0f, cache.ConvStateAt(0)[0]);
+        Assert.Equal(0f, cache.ScanStateAt(0)[0]);
+        Assert.Equal(0f, cache.ConvStateAt(lastLayer)[0]);
+        Assert.Equal(0f, cache.ScanStateAt(lastLayer)[0]);
+    }
+
+    [Fact]
+    public void GdnStateCache_SnapshotRing_RollbackToIntermediatePosition_Conformance()
+    {
+        // Issue #21 / 02-qwen35moe-plan.md: Simulates speculative decoding or batched verification
+        // where recurrent state is snapshotted per candidate step and restored upon rejection.
+        using var cache = new GdnStateCache(RealisticLayerTypes(), RealisticGdn());
+
+        var ringSnapshots = new byte[3][];
+        for (int i = 0; i < 3; i++)
+            ringSnapshots[i] = new byte[cache.SnapshotBytes];
+
+        int lastLayer = cache.NumGdnLayers - 1;
+
+        // Step 1
+        cache.IncrementPosition();
+        cache.ConvStateAt(0)[0] = 101f;
+        cache.ScanStateAt(0)[0] = 201f;
+        cache.ConvStateAt(lastLayer)[0] = 301f;
+        cache.ScanStateAt(lastLayer)[0] = 401f;
+        fixed (byte* p = ringSnapshots[0]) cache.SnapshotInto(p, ringSnapshots[0].Length);
+
+        // Step 2
+        cache.IncrementPosition();
+        cache.ConvStateAt(0)[0] = 102f;
+        cache.ScanStateAt(0)[0] = 202f;
+        cache.ConvStateAt(lastLayer)[0] = 302f;
+        cache.ScanStateAt(lastLayer)[0] = 402f;
+        fixed (byte* p = ringSnapshots[1]) cache.SnapshotInto(p, ringSnapshots[1].Length);
+
+        // Step 3
+        cache.IncrementPosition();
+        cache.ConvStateAt(0)[0] = 103f;
+        cache.ScanStateAt(0)[0] = 203f;
+        cache.ConvStateAt(lastLayer)[0] = 303f;
+        cache.ScanStateAt(lastLayer)[0] = 403f;
+        fixed (byte* p = ringSnapshots[2]) cache.SnapshotInto(p, ringSnapshots[2].Length);
+
+
+        Assert.Equal(3, cache.Length);
+
+        // Reject back to Step 1
+        fixed (byte* p = ringSnapshots[0]) cache.RestoreFrom(p, ringSnapshots[0].Length);
+        Assert.Equal(1, cache.Length);
+        Assert.Equal(101f, cache.ConvStateAt(0)[0]);
+        Assert.Equal(201f, cache.ScanStateAt(0)[0]);
+        Assert.Equal(301f, cache.ConvStateAt(lastLayer)[0]);
+        Assert.Equal(401f, cache.ScanStateAt(lastLayer)[0]);
+
+        // Reject/Roll to Step 2
+        fixed (byte* p = ringSnapshots[1]) cache.RestoreFrom(p, ringSnapshots[1].Length);
+        Assert.Equal(2, cache.Length);
+        Assert.Equal(102f, cache.ConvStateAt(0)[0]);
+        Assert.Equal(202f, cache.ScanStateAt(0)[0]);
+        Assert.Equal(302f, cache.ConvStateAt(lastLayer)[0]);
+        Assert.Equal(402f, cache.ScanStateAt(lastLayer)[0]);
+    }
 }
+
