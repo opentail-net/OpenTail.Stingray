@@ -145,6 +145,8 @@ public sealed class QwenImagePipeline : IDiffusionPipeline
         {
             (condContext, _) = QwenImageTextConditioning.Encode(_textEncoderForward, _textEncoderTokenizer, prompt);
             (uncondContext, _) = QwenImageTextConditioning.Encode(_textEncoderForward, _textEncoderTokenizer, negativePrompt ?? "");
+            // Parity: compare with stable-diffusion.cpp's SD_DUMP_COND_PATH (positive prompt, [seqLen, 3584]).
+            DiffusionParityHooks.DumpToFile("STINGRAY_QWENIMAGE_DUMP_COND_PATH", condContext);
         }
         else
         {

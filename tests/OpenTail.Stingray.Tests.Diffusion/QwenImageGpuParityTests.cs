@@ -46,6 +46,28 @@ public sealed class QwenImageGpuParityTests
         return null;
     }
 
+    private static string? FindGoldenDir()
+    {
+        var dir = Directory.GetCurrentDirectory();
+        for (int i = 0; i < 8; i++)
+        {
+            var p = Path.Combine(dir, "tests", "OpenTail.Stingray.Tests.Diffusion", "TestData", "QwenImageSdCppGolden");
+            if (Directory.Exists(p)) return p;
+            var parent = Directory.GetParent(dir);
+            if (parent is null) break;
+            dir = parent.FullName;
+        }
+        return null;
+    }
+
+    private static float[] ReadFloats(string path)
+    {
+        var bytes = File.ReadAllBytes(path);
+        var arr = new float[bytes.Length / 4];
+        Buffer.BlockCopy(bytes, 0, arr, 0, bytes.Length);
+        return arr;
+    }
+
     [Fact]
     public void TestQwenImageGpuVsCpuParity()
     {
@@ -62,14 +84,15 @@ public sealed class QwenImageGpuParityTests
         using var gpuWeights = GgufWeightLoader.Open(modelPath);
         using var gpuModel = new QwenImageModel(gpuWeights, backend: vulkan);
 
+        // Real sd.cpp noise and Qwen2.5-VL conditioning (QwenImageSdCppParityTests' fixture). The earlier synthetic
+        // context (uniform [0, 0.1]) became unrepresentative once txt_norm was applied (2026-09-27): it rescales that
+        // all-positive input to unit RMS, far from what a real prompt produces.
         const int latH = 32, latW = 32, latC = 16;
-        var rng = new Random(42);
-        var latent = new float[latC * latH * latW];
-        for (int i = 0; i < latent.Length; i++) latent[i] = (float)(rng.NextDouble() * 2 - 1);
-
-        int seqLen = 8;
-        var textContext = new float[seqLen * QwenImageModel.ContextDim];
-        for (int i = 0; i < textContext.Length; i++) textContext[i] = (float)(rng.NextDouble() * 0.1);
+        string? golden = FindGoldenDir();
+        Assert.SkipUnless(golden is not null, "TestData/QwenImageSdCppGolden not found");
+        var latent = ReadFloats(Path.Combine(golden!, "noise.f32"));
+        var textContext = ReadFloats(Path.Combine(golden!, "cond.f32"));
+        Assert.Equal(latC * latH * latW, latent.Length);
 
         _output.WriteLine("[QwenImageParity] Running GPU forward pass...");
         var swGpu = Stopwatch.StartNew();

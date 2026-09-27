@@ -117,6 +117,23 @@ public sealed class QwenImageModel : IDisposable
         return _weights.ReadF32(fullName);
     }
 
+    /// <summary>
+    /// <c>txt_norm</c>: RMSNorm (eps 1e-6) over the Qwen2.5-VL conditioning before <c>txt_in</c> -- stable-diffusion.cpp
+    /// <c>qwen_image.hpp forward_orig</c> and diffusers' <c>QwenImageTransformer2DModel</c>. Missing from both paths
+    /// until 2026-09-27: one-step velocity sat ~2x further from sd.cpp than sd.cpp's own CPU and Vulkan backends are
+    /// from each other (docs/102 #13).
+    /// </summary>
+    private float[] TxtNorm(float[] textContext)
+    {
+        _txtNormWeight ??= TryGetWeight("txt_norm.weight") ?? [];
+        if (_txtNormWeight.Length != ContextDim) return textContext;
+        var normed = (float[])textContext.Clone();
+        DiffusionOps.RmsNorm(normed, _txtNormWeight, ContextDim, 1e-6f);
+        return normed;
+    }
+
+    private float[]? _txtNormWeight;
+
     private float[]? TryGetWeight(string name)
     {
         string fullName = Resolve(name);
@@ -177,7 +194,7 @@ public sealed class QwenImageModel : IDisposable
         // Input projections (host-side patchify, then a real GEMM upload each -- same pattern
         // MMDiTModel.ForwardGpu uses for its own x_embedder).
         var imgTokensF32 = Linear("img_in", packedInput, InChannels, HiddenDim);
-        var txtTokensF32 = Linear("txt_in", textContext, ContextDim, HiddenDim);
+        var txtTokensF32 = Linear("txt_in", TxtNorm(textContext), ContextDim, HiddenDim);
         var xGpu = _backend!.Upload(imgTokensF32.AsSpan(0, numImgTokens * HiddenDim), TensorShape.D2(numImgTokens, HiddenDim), exact: true);
         var cGpu = _backend.Upload(txtTokensF32.AsSpan(0, numTxtTokens * HiddenDim), TensorShape.D2(numTxtTokens, HiddenDim), exact: true);
 
@@ -495,7 +512,7 @@ public sealed class QwenImageModel : IDisposable
 
         // 2. Input projections
         var imgTokens = Linear("img_in", packedInput, InChannels, HiddenDim);
-        var txtTokens = Linear("txt_in", textContext, ContextDim, HiddenDim);
+        var txtTokens = Linear("txt_in", TxtNorm(textContext), ContextDim, HiddenDim);
 
         // 3. Timestep embedding (sinusoidal 256 -> linear 3072 -> silu -> linear 3072)
         var tEmb = ComputeTimestepEmbedding(timestep);

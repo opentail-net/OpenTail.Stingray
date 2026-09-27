@@ -114,6 +114,41 @@ MODELS.md entry if it qualifies.
 
 ## Log
 
+- 2026-09-27 #13 part 2: Qwen Image had a missing `txt_norm`, now fixed and verified against `sd-cli`.
+  - **Bug:** neither the CPU nor the GPU path applied `txt_norm`, the RMSNorm (eps 1e-6) over the
+    Qwen2.5-VL conditioning before `txt_in` (`qwen_image.hpp forward_orig`). The weight is in the
+    checkpoint but was never read.
+  - **Noise floor:** `sd-cli` defaults to Vulkan in this build (`SD_VULKAN=ON`). Its own CPU and
+    Vulkan backends differ, so the comparison was run against both with `--backend cpu|vulkan0`.
+    - One step, no guidance: sd.cpp CPU vs Vulkan is cosine 0.9984, relative L2 6.6%.
+    - 8 steps, guidance 4: cosine 0.9957, 9.6%.
+  - **Results:** 256², `--scheduler simple` (sd.cpp's default `discrete` spaces the steps
+    differently), same injected noise, seed 42.
+
+    | Case | Before the fix | After the fix |
+    |---|---|---|
+    | 1 step, no guidance, same conditioning, vs sd.cpp CPU | 0.9933 (11.9%) | **0.99968 (2.5%)** |
+    | 8 steps, guidance 4, final latent, vs sd.cpp CPU | 0.981 (20%) | **0.99908 (4.3%)** |
+    | Our Vulkan path, 8 steps, vs sd.cpp CPU | not measured | 0.9936 |
+    | Our Vulkan path, 8 steps, vs sd.cpp Vulkan | not measured | 0.9961 |
+
+    Both Vulkan results are within sd.cpp's own CPU-vs-Vulkan gap.
+  - **Ruled out:**
+    - **Text conditioning:** cosine 0.998 against `SD_DUMP_COND_PATH`, and feeding in the
+      reference conditioning changes nothing.
+    - **Activation rounding:** routing through the int8-activation path moves our output 0.18%.
+  - **New env var:** `STINGRAY_QWENIMAGE_DUMP_COND_PATH`.
+  - **Automated test:** `QwenImageSdCppParityTests` asserts cosine > 0.999 against the committed
+    sd.cpp CPU fixture (`TestData/QwenImageSdCppGolden`: noise, conditioning, 1-step latent, 300 KB).
+    Measured 0.999676 in a 16 s real-weight run.
+  - **Regression:** of the 14 Qwen Image test classes, 13 passed with real weights.
+    `QwenImageGpuParityTests` fell to 0.9883 because its synthetic context (uniform [0, 0.1]) is
+    rescaled to unit RMS by `txt_norm`. It now uses the fixture's real noise and conditioning:
+    GPU vs CPU 0.99655, passes.
+  - **Caveat for part 1:** the SD3.5 and FLUX.2 references were most likely `sd-cli`'s default
+    Vulkan backend too; their cosines are against that.
+  - **Next:** HunyuanVideo.
+
 - 2026-09-27 #13 part 1: latent-level parity against `examples/stable-diffusion.cpp` (`sd-cli`).
   - The reference is patched locally (git-ignored): `SD_DUMP_NOISE_PATH` (existing),
     `SD_DUMP_LATENT_PATH` (x_0 before VAE decode) and `SD_DUMP_COND_PATH` (cross-attention
