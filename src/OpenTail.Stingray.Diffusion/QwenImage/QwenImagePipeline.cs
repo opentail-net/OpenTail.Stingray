@@ -48,7 +48,7 @@ public sealed class QwenImagePipeline : IDiffusionPipeline
     /// false], and even the exact same per-channel latents_mean/latents_std constants as Wan2.1's
     /// 16-channel variant, confirmed directly in `wan_vae.hpp`'s `get_latents_mean_std`). Verified
     /// with a real checkpoint decode (2026-09-18): finite, non-degenerate output. See
-    /// docs/086-video-model-verification-plan.md for the full tensor-shape evidence.
+    /// docs/done/086-video-model-verification-plan.md for the full tensor-shape evidence.
     /// </summary>
     public static QwenImagePipeline Load(string modelPath, string? vaePath = null, IComputeBackend? backend = null)
     {

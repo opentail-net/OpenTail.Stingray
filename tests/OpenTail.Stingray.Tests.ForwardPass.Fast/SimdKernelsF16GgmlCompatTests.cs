@@ -3,7 +3,7 @@ namespace OpenTail.Stingray.Tests.ForwardPass.Fast;
 
 /// <summary>
 /// <see cref="SimdKernels.MatVecF16GgmlCompat"/> — the opt-in ggml-parity dot for
-/// <see cref="OpenTail.Stingray.Core.DType.Float16"/> weights (see docs/bugstofix.md's
+/// <see cref="OpenTail.Stingray.Core.DType.Float16"/> weights (see docs/1-correctness/bugstofix.md's
 /// "activation-precision-matching" finding). ggml's F16 weight paths pair with
 /// vec_dot_type=F16: the F32 activation is rounded to half precision before the dot,
 /// not kept at full F32 precision. This asserts the rounded-activation result differs

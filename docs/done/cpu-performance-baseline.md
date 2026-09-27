@@ -1,6 +1,6 @@
 **Status (2026-09-27): DONE — a completed, self-contained measurement, not an open plan.** Its
 finding (Gemma 4's ~5.7x prefill penalty from missing batched prefill) is cited as evidence by the
-still-open [070-gemma4-batched-prefill-plan.md](../070-gemma4-batched-prefill-plan.md). Kept in
+still-open [070-gemma4-batched-prefill-plan.md](070-gemma4-batched-prefill-plan.md). Kept in
 `docs/done/` as the historical record.
 
 # CPU performance baseline — all locally available models

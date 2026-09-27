@@ -4,7 +4,7 @@ namespace OpenTail.Stingray.Server;
 
 /// <summary>
 /// Tracks which <see cref="ModelId"/> a live multi-model session belongs to
-/// (docs/032-multi-model-inference-runtime-plan.md Phase 7 follow-up — closing the Phase 4 gap:
+/// (docs/3-product-and-runtime/032-multi-model-inference-runtime-plan.md Phase 7 follow-up — closing the Phase 4 gap:
 /// "a live but currently-idle <c>HotSession</c> doesn't hold a <see cref="ModelRuntimeHandle"/>").
 /// Single-model deployments never touch this type — they keep resolving <see cref="IServerSessionRuntime"/>
 /// directly, byte-identical to before this existed.

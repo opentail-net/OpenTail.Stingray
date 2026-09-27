@@ -3,7 +3,7 @@ namespace OpenTail.Stingray.Tests.ForwardPass.Fast;
 
 /// <summary>
 /// AVX2-vs-scalar equivalence for the Q8_0-paired legacy-format matvec kernels added 2026-08-28
-/// (docs/05-cpu-architecture-kernel-opportunities.md, Backlog B) — Q5_0, Q1_0, Q2_0, MXFP4. All
+/// (docs/4-performance/cpu/05-cpu-architecture-kernel-opportunities.md, Backlog B) — Q5_0, Q1_0, Q2_0, MXFP4. All
 /// four were admitted with working dequantizers but fell through to <c>MatVecDequantFallback</c>
 /// with no dedicated kernel. Mirrors <c>SimdKernelsIqQ8KTests</c>'s pattern: fill blocks with
 /// random bytes (safe — every field decodes to an in-range value regardless of bit pattern), force

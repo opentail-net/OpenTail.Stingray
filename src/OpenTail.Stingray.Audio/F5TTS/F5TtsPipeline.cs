@@ -52,7 +52,7 @@ public sealed class F5TtsPipeline : ITextToSpeechPipeline
     /// to `models/vocos-mel-24khz.safetensors` next to the weights file if not given (falls back
     /// to the fake vocoder if not found). <paramref name="backend"/>, when supplied, routes the
     /// DiT's Sgemm-shaped projections through it (--backend vulkan, see
-    /// docs/052-vulkan-backend-for-tts-engines-plan.md); the mel extractor and Vocos vocoder stay
+    /// docs/4-performance/audio/052-vulkan-backend-for-tts-engines-plan.md); the mel extractor and Vocos vocoder stay
     /// CPU-only regardless.
     /// </summary>
     public static F5TtsPipeline Load(string safetensorsPath, string? vocabPath = null, string? vocosPath = null, Core.IComputeBackend? backend = null)

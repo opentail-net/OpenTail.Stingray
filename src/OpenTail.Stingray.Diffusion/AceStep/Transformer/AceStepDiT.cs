@@ -10,7 +10,7 @@ namespace OpenTail.Stingray.Diffusion.AceStep.Transformer;
 /// <summary>
 /// Real ACE-Step Turbo DiT forward pass (`AceStepDiTModel`), transcribed directly from the real
 /// `modeling_acestep_v15_turbo.py` bundled in the `ACE-Step/Ace-Step1.5` HF repo as `custom_code`
-/// (read directly, not reconstructed) -- see docs/064-acestep-implementation-plan.md.
+/// (read directly, not reconstructed) -- see docs/2-coverage/064-acestep-implementation-plan.md.
 ///
 /// <para><b>Real, easy-to-get-wrong structural facts, confirmed from source</b>: (1) this is a
 /// BIDIRECTIONAL (non-causal) transformer -- the whole latent sequence is processed in one shot

@@ -3,7 +3,7 @@ namespace OpenTail.Stingray.Tests.ForwardPass.Fast;
 
 /// <summary>
 /// AVX2-vs-scalar equivalence, plus a real timing microbenchmark, for the Q8_1-paired legacy
-/// format kernels added 2026-08-28 (docs/05-cpu-architecture-kernel-opportunities.md, Backlog B)
+/// format kernels added 2026-08-28 (docs/4-performance/cpu/05-cpu-architecture-kernel-opportunities.md, Backlog B)
 /// — Q4_1, Q5_1. Both were admitted with working dequantizers but fell through to
 /// <c>MatVecDequantFallback</c> with no dedicated kernel; both needed a new Q8_1 activation-quant
 /// scratch (<see cref="SimdKernels.QuantizeRowToQ8_1"/>) that didn't exist before this session.

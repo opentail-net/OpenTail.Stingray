@@ -117,7 +117,7 @@ public sealed class ListEnvCommand : Command<ListEnvCommand.Settings>
         Console.WriteLine("Note: this lists what is SET in the environment, not what the engine resolved —");
         Console.WriteLine("a setting may still be overridden by a CLI flag, or ignored as inapplicable to");
         Console.WriteLine("the selected backend or model. Membership in the known list means the engine");
-        Console.WriteLine("reads the name, not that it is supported configuration; see docs/env-var-inventory.md.");
+        Console.WriteLine("reads the name, not that it is supported configuration; see docs/reference/env-var-inventory.md.");
         return 0;
     }
 

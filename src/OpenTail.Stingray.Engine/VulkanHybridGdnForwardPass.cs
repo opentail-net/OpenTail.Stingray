@@ -530,7 +530,7 @@ public sealed unsafe class VulkanHybridGdnForwardPass : IForwardPass
         else
         {
             // No general large-tensor sharding mechanism exists yet (tracked separately —
-            // docs/084-vulkan-large-tensor-sharding-plan.md); until then this remains a hard
+            // docs/4-performance/gpu/084-vulkan-large-tensor-sharding-plan.md); until then this remains a hard
             // failure rather than a silent CPU fallback. Report the actual queried device limit
             // and estimated on-GPU sizes so the failure is diagnosable without re-deriving them.
             long embBytes = EstimateEmbeddingGpuBytes(embeddingInfo);
@@ -2656,7 +2656,7 @@ public sealed unsafe class VulkanHybridGdnForwardPass : IForwardPass
         // kernel), the raw on-disk size is ~6x smaller than what actually lands in VRAM after the
         // F16 dequant fallback — using it here silently admitted far more layers than actually fit
         // and was the dominant cause of a mid-load Vulkan ErrorOutOfHostMemory at
-        // STINGRAY_VULKAN_UMA_FRACTION=0.7 (docs/084-vulkan-large-tensor-sharding-plan.md,
+        // STINGRAY_VULKAN_UMA_FRACTION=0.7 (docs/4-performance/gpu/084-vulkan-large-tensor-sharding-plan.md,
         // "Follow-up 3"). Still an approximation (layer 0's dtypes stand in for every layer's,
         // and a "UD" quant can vary dtype per layer), but far closer than the raw byte size.
         long perLayerBytes = EstimateWeightGpuBytes(gateInfo.Value)
@@ -2676,7 +2676,7 @@ public sealed unsafe class VulkanHybridGdnForwardPass : IForwardPass
         // no idea LoadMtpHead needs more space right after) is exactly the bug that produced a
         // mid-load Vulkan ErrorOutOfHostMemory at STINGRAY_VULKAN_UMA_FRACTION=0.7 — the FFN loop
         // filled 59/64 layers, leaving nothing for the head that was always going to load next.
-        // See docs/084-vulkan-large-tensor-sharding-plan.md, "Follow-up 2" for the full incident.
+        // See docs/4-performance/gpu/084-vulkan-large-tensor-sharding-plan.md, "Follow-up 2" for the full incident.
         long mtpHeadReserveBytes = EstimateMtpHeadGpuBytes();
 
         long budget = (long)gpu.VramBytes - _uploadedVramBytes - mtpHeadReserveBytes - safetyMarginBytes;
@@ -2856,7 +2856,7 @@ public sealed unsafe class VulkanHybridGdnForwardPass : IForwardPass
                              or DType.IQ4_XS or DType.IQ3_S or DType.IQ3_XXS or DType.Q3_K or DType.IQ2_S)
         {
             // Vulkan MatMul dispatches on these quants directly — keep them raw. IQ4_XS/IQ3_S
-            // added after MatVecIQ4XS/MatVecIQ3S (docs/084-vulkan-large-tensor-sharding-plan.md):
+            // added after MatVecIQ4XS/MatVecIQ3S (docs/4-performance/gpu/084-vulkan-large-tensor-sharding-plan.md):
             // they were the two largest sources of avoidable GPU-memory expansion in
             // "UD"/dynamic-quant checkpoints, previously F16-expanded via the else branch below.
             result = _gpu.UploadRaw(data, TensorShape.D1(data.Length), info.DType, exact: true);
@@ -2869,7 +2869,7 @@ public sealed unsafe class VulkanHybridGdnForwardPass : IForwardPass
             // Vulkan has no raw matvec kernel for these (mostly the IQ codebook-quant family
             // used by "UD"/dynamic-quant GGUFs). Dequantize to F16 rather than F32: halves the
             // on-GPU footprint of this fallback path (still larger than the ideal raw-quant
-            // size, but a real, measured win — see docs/084-vulkan-large-tensor-sharding-plan.md
+            // size, but a real, measured win — see docs/4-performance/gpu/084-vulkan-large-tensor-sharding-plan.md
             // §"memory accounting" for the per-dtype breakdown that motivated this). A native
             // raw Vulkan kernel per dtype would be the further win but isn't implemented here.
             bool profile = Environment.GetEnvironmentVariable("STINGRAY_PROFILE_VULKAN_UPLOADS") == "1";
@@ -3011,7 +3011,7 @@ public sealed unsafe class VulkanHybridGdnForwardPass : IForwardPass
     /// Aborts the mandatory GPU-resident core upload (embedding/output/per-layer attention+GDN)
     /// early, with a clear diagnostic, if available system RAM has dropped dangerously low —
     /// rather than continuing to allocate until Windows starts paging to disk
-    /// (docs/084-vulkan-large-tensor-sharding-plan.md, "pre-flight RAM check" gap).
+    /// (docs/4-performance/gpu/084-vulkan-large-tensor-sharding-plan.md, "pre-flight RAM check" gap).
     ///
     /// This upload has no per-user budget knob the way the optional dense-FFN-on-GPU path does
     /// (<c>STINGRAY_VULKAN_UMA_FRACTION</c>) or the CPU-resident prefault path does

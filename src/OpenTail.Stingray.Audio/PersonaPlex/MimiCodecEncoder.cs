@@ -93,7 +93,7 @@ public static class MimiCodecEncoder
         return best;
     }
 
-    // Perf-sweep horizontal pass (docs/perf-sweep-plan.md): was a naive O(outDim*inDim) scalar
+    // Perf-sweep horizontal pass (docs/4-performance/perf-sweep-plan.md): was a naive O(outDim*inDim) scalar
     // loop, same anti-pattern found and fixed in Voxtral -- delegates to the shared SIMD/parallel
     // helper instead (OpenTail.Stingray.Audio.Primitives.DenseKernels, already the documented
     // single source of truth for this exact function across this codebase's Conformer/Transformer

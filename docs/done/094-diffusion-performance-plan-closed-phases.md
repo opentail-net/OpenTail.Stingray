@@ -1,7 +1,7 @@
 # 094 — Diffusion Stack Performance Plan: closed phases
 
 > **ARCHIVED 2026-09-27.** Phases moved verbatim out of
-> [../094-diffusion-performance-plan.md](../094-diffusion-performance-plan.md), which keeps Phases 6
+> [../094-diffusion-performance-plan.md](../4-performance/diffusion/094-diffusion-performance-plan.md), which keeps Phases 6
 > and 9. What closed each one:
 >
 > - **Phase 0** (doc truth pass): `PerformanceLeague.md` now has SD3.5 Vulkan, HunyuanVideo and
@@ -475,7 +475,7 @@
     aside). **This is a real, decisive, negative result on the actual bottleneck**: dispatch-count/
     orchestration overhead was never SD3.5's problem. This independently reproduces the exact
     conclusion a 2026-09-13 investigation already reached for FLUX.1 on this SAME hardware
-    (`docs/069-flux-vulkan-gemm-perf-handoff.md`): ~91% of DiT-loop time is genuine
+    (`docs/4-performance/diffusion/069-flux-vulkan-gemm-perf-handoff.md`): ~91% of DiT-loop time is genuine
     `vkQueueSubmit`+GPU-execute+`vkWaitForFences`, and even a pathological per-dispatch barrier/
     recording overhead estimate is nowhere near large enough to explain gaps of this size (that
     doc's own math: 1ms × 1027 dispatches ≈ 1s, against a many-hundred-second gap).

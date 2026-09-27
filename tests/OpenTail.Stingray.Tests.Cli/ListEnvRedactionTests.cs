@@ -43,7 +43,7 @@ public sealed class ListEnvRedactionTests
     /// <summary>
     /// Deliberate, reviewed exception to the "nothing should trip the filter" rule below.
     /// <c>STINGRAY_DBG_TOKEN_RANK</c> holds a numeric LLM token ID for a <c>--verbose-prompt</c>
-    /// debug probe (see <c>docs/env-var-inventory.md</c>), not an authentication token — the name
+    /// debug probe (see <c>docs/reference/env-var-inventory.md</c>), not an authentication token — the name
     /// collides with the credential filter's "TOKEN" substring purely coincidentally. Reviewed and
     /// accepted 2026-09-01: masking its value in <c>list-env</c> is harmless (it's a debug integer,
     /// nobody needs to read it off a screenshot), so over-redaction here costs nothing, and

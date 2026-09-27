@@ -8,7 +8,7 @@ namespace OpenTail.Stingray.Tests.Diffusion.MiniMaxMusic3;
 /// Real numeric golden-parity check for <see cref="MiniMaxMusic3Vocoder"/> against the real
 /// `diffusers.MiniMaxMusic3Vocoder` reference (already installed, `diffusers==0.40.0`), loaded with
 /// the SAME real `vocoder/diffusion_pytorch_model.safetensors` weights (zero missing/unexpected
-/// keys) and run on a fixed-seed synthetic latent. See docs/066-minimax-music3-future-plan.md for
+/// keys) and run on a fixed-seed synthetic latent. See docs/4-performance/audio/066-minimax-music3-future-plan.md for
 /// the archaeology; reference dump (`minimax_vocoder_*.bin`) not checked into the repo.
 /// </summary>
 public sealed class MiniMaxMusic3VocoderGoldenParityTests

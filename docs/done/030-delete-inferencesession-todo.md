@@ -6,7 +6,7 @@ its trackable home. See that doc's 2026-08-27 addendum for the summary, includin
 the deletion re-check found (`SamplingParams.AllowedChoices`, ported onto
 `ContinuousBatchingEngine` rather than dropped) and
 `docs/done/051-hotsession-capability-wiring-plan.md` for how each ported capability was wired into
-the live Server path (remaining TODOs in `docs/051-hotsession-capability-wiring-plan.md`).
+the live Server path (remaining TODOs in `docs/3-product-and-runtime/051-hotsession-capability-wiring-plan.md`).
 
 ## Why this is safe to do now
 
@@ -55,7 +55,7 @@ confirmed novel (now ported), 3 confirmed redundant or alternate-design, 1 parti
   `InMemorySessionManager.cs`** (or whatever the actual registry file is named) — superseded by
   Phase 2's `HotSession`-native scan (`HotSessionRuntime.CreateWithSharedPrefixHint`, using
   `HotSessionRuntime`'s own `_sessions` dictionary). Note:
-  `docs/bugstofix.md` flagged a real bug in `CrossSessionPrefixSynthesizer.cs` (hardcoded
+  `docs/1-correctness/bugstofix.md` flagged a real bug in `CrossSessionPrefixSynthesizer.cs` (hardcoded
   `("default-model","default-kv")` namespace) — that finding becomes moot once the file is deleted,
   not something to fix first.
 - **`SessionBranchingExtensions.cs`** and any other `InferenceSession`-only branching code —

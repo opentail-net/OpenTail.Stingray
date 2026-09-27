@@ -8,7 +8,7 @@ namespace OpenTail.Stingray.Tests.Diffusion.MiniMaxMusic3;
 /// Real golden-parity check for <see cref="MiniMaxMusic3PromptEncoder"/> against the real
 /// `diffusers.modular_pipelines.minimax_music3.encoders._clean_caption`/`_normalize_lyrics` plus
 /// the real `transformers.Qwen2Tokenizer` loaded from this checkpoint's own real
-/// `tokenizer/tokenizer.json`. See docs/066-minimax-music3-future-plan.md.
+/// `tokenizer/tokenizer.json`. See docs/4-performance/audio/066-minimax-music3-future-plan.md.
 /// </summary>
 public sealed class MiniMaxMusic3PromptEncoderGoldenParityTests
 {

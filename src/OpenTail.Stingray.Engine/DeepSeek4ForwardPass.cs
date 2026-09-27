@@ -12,7 +12,7 @@ namespace OpenTail.Stingray.Engine;
 //
 // HONEST SCOPE LIMIT, read before using this for anything: compress_ratio 0 (raw), 128 (HCA), and
 // now 4 (CSA) are all implemented -- every attention variant deepseek4 declares. CSA's
-// implementation follows docs/058-deepseek-full-lineage-implementation-plan.md's "CSA
+// implementation follows docs/2-coverage/058-deepseek-full-lineage-implementation-plan.md's "CSA
 // decomposition" section precisely, with the SAME caveats that section flagged, repeated here:
 //  - The overlap gather (which raw-token rows feed a given block's "prev"/"cur" halves) is
 //    implemented as "prev = the 4 rows immediately preceding this block, cur = this block's own
@@ -108,7 +108,7 @@ public sealed unsafe class DeepSeek4ForwardPass : IForwardPass
                 throw new NotSupportedException(
                     $"DeepSeek4ForwardPass (alpha): layer {il} has compress_ratio={ratio} -- " +
                     "only 0, 4, and 128 are valid per the reference (deepseek4.cpp:148-150). " +
-                    "See docs/058-deepseek-full-lineage-implementation-plan.md Phase 0.");
+                    "See docs/2-coverage/058-deepseek-full-lineage-implementation-plan.md Phase 0.");
             }
             _compressRatio[il] = ratio;
         }
@@ -479,7 +479,7 @@ public sealed unsafe class DeepSeek4ForwardPass : IForwardPass
 
     /// <summary>
     /// CSA (ratio==4, coff==2) overlap state accumulation. Per
-    /// docs/058-deepseek-full-lineage-implementation-plan.md's "CSA decomposition" section:
+    /// docs/2-coverage/058-deepseek-full-lineage-implementation-plan.md's "CSA decomposition" section:
     /// projects this token's <c>2*headDim</c>-wide comp-kv/comp-score rows (via
     /// <c>attn_comp_wkv</c>/<c>attn_comp_wgate</c> + the <c>attn_comp_ape</c> positional table,
     /// same shape as HCA's projection but coff=2-wide) into the NEVER-CLEARED per-token row

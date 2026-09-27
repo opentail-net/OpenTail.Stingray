@@ -966,7 +966,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         // architectures generically from the mmproj's own clip.vision.projector_type metadata --
         // it never was gemma4-specific. This stale guard rejected every other architecture before
         // that generic path ever ran, even though the encoders themselves were implemented and
-        // working -- see docs/perf-loop-project-review-progress.md. UnifiedVisionPipeline.Open
+        // working -- see docs/done/perf-loop-project-review-progress.md. UnifiedVisionPipeline.Open
         // still throws a clear NotSupportedException for a genuinely unrecognized mmproj, so this
         // isn't removing validation, just the redundant and wrong one.
         if (settings.ImagePaths is { Length: > 0 } imagePaths)

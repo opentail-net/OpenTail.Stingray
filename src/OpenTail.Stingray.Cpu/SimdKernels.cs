@@ -1653,7 +1653,7 @@ public static unsafe class SimdKernels
     /// quantizes/rounds the activation to half precision first, not a full-F32 dot). This engine's
     /// default (see <see cref="MatVecDequantFallback"/>) keeps the activation at full F32
     /// precision for strictly better accuracy; enable via <c>STINGRAY_GGML_F16_DOT=1</c> only when
-    /// bit-parity comparison against llama.cpp is specifically wanted — see docs/bugstofix.md.
+    /// bit-parity comparison against llama.cpp is specifically wanted — see docs/1-correctness/bugstofix.md.
     /// </summary>
     public static readonly bool GgmlF16DotEnabled =
         Environment.GetEnvironmentVariable("STINGRAY_GGML_F16_DOT") == "1";
@@ -3499,7 +3499,7 @@ public static unsafe class SimdKernels
     }
 
     /// <summary>
-    /// docs/bugstofix.md (ModelCompatibility.cs:461, deepseek2 investigation): unlike every other
+    /// docs/1-correctness/bugstofix.md (ModelCompatibility.cs:461, deepseek2 investigation): unlike every other
     /// quantized dtype's primary MatVec (Q2_K/Q3_K/IQ4_NL all quantize the activation and dot in
     /// the integer domain, matching ggml's real dispatch -- see <see cref="MatVecQ2K"/> for the
     /// pattern), this used to call <see cref="DotQ8_0"/>, which dequantizes the weight to F32 and
@@ -4229,7 +4229,7 @@ public static unsafe class SimdKernels
     // callers use, ggml quantizes the activation to Q8_0 (32-element blocks, matching IQ4_NL's
     // own QK4_NL=32) rather than dotting against the raw F32 activation -- see this file's
     // DotQ2K_Q8K/DotQ3K_Q8K/DotQ6K_Q8K for the same pattern applied to the K-quant family, and
-    // docs/bugstofix.md's 2026-08-21 deepseek2 investigation for why this matters for
+    // docs/1-correctness/bugstofix.md's 2026-08-21 deepseek2 investigation for why this matters for
     // greedy-parity: every quantized weight type in ggml is paired with an activation-precision-
     // reducing vec_dot_type, and IQ4_NL's is Q8_0, not a full-precision F32 dot.
     private static readonly sbyte[] s_iq4NlCodebook =
@@ -4859,7 +4859,7 @@ public static unsafe class SimdKernels
     // grid tables and dequantizers from this session's earlier IqCodebooks.cs fix — only the fast
     // matvec path was missing, so this is the exact same technique applied to the two remaining
     // admitted-but-still-on-MatVecDequantFallback IQ formats found by auditing IsSupportedWeightDType
-    // against SimdKernels.MatVec's dispatch switch (docs/05-cpu-architecture-kernel-opportunities.md).
+    // against SimdKernels.MatVec's dispatch switch (docs/4-performance/cpu/05-cpu-architecture-kernel-opportunities.md).
     // IQ2_XXS: single scale per 32-element group (like IQ4_XS/IQ3_XXS). IQ3_S: two scales per
     // 32-element group (like IQ2_XS/IQ2_S) plus a qh side-channel bit and RAW (non-ksigns-indexed)
     // sign bytes, structurally IQ3_XXS's grid-lookup shape combined with IQ2_S's qh/sign handling.
@@ -5067,7 +5067,7 @@ public static unsafe class SimdKernels
     }
 
     // ================================================================
-    //  IQ1_S · Q8_K Dot Product (Backlog A, docs/05-cpu-architecture-kernel-opportunities.md)
+    //  IQ1_S · Q8_K Dot Product (Backlog A, docs/4-performance/cpu/05-cpu-architecture-kernel-opportunities.md)
     // ================================================================
     // Mirrors ggml_vec_dot_iq1_s_q8_K (examples/ggml/src/ggml-cpu/quants.c). Same Q8_K family as
     // the six kernels above, and reuses their QuantizeRowToQ8K/Q8KScratchBytes scratch directly --
@@ -5283,7 +5283,7 @@ public static unsafe class SimdKernels
     }
 
     // ================================================================
-    //  TQ2_0 / TQ1_0 · Q8_K Dot Products (Backlog C, docs/05-cpu-architecture-kernel-opportunities.md)
+    //  TQ2_0 / TQ1_0 · Q8_K Dot Products (Backlog C, docs/4-performance/cpu/05-cpu-architecture-kernel-opportunities.md)
     // ================================================================
     // Neither format had ANY implementation before this session. Both pair with Q8_K
     // (ggml_vec_dot_tq{1,2}_0_q8_K), reusing QuantizeRowToQ8K/Q8KScratchBytes — no new
@@ -5448,7 +5448,7 @@ public static unsafe class SimdKernels
     }
 
     // ================================================================
-    //  Backlog B (docs/05-cpu-architecture-kernel-opportunities.md): Q5_0, Q1_0, Q2_0, MXFP4 ·
+    //  Backlog B (docs/4-performance/cpu/05-cpu-architecture-kernel-opportunities.md): Q5_0, Q1_0, Q2_0, MXFP4 ·
     //  Q8_0 Dot Products. All four were admitted (working dequantizers) but fell through
     //  MatVecDequantFallback with no dedicated kernel. All four pair with Q8_0 in ggml's own
     //  dispatch table (ggml_vec_dot_{q5_0,q1_0,q2_0,mxfp4}_q8_0), reusing this file's existing
@@ -6120,7 +6120,7 @@ public static unsafe class SimdKernels
     // ================================================================
     //  Q8_0 x Q8_0 integer dot -- ggml_vec_dot_q8_0_q8_0 parity
     // ================================================================
-    // docs/bugstofix.md (ModelCompatibility.cs:461): the ONLY ggml-matching Q8_0-weight dot in
+    // docs/1-correctness/bugstofix.md (ModelCompatibility.cs:461): the ONLY ggml-matching Q8_0-weight dot in
     // this codebase -- see MatVecQ8_0's doc comment for why DotQ8_0/DotQ8_0_Q8K were NOT this.
 
     public static float DotQ8_0_Q8_0(byte* row, byte* scratch, int cols)
@@ -6547,7 +6547,7 @@ public static unsafe class SimdKernels
     // domain, applying the two FP scale corrections (dall, dmin) only once per super-block at
     // the very end. This is not merely "more precise" or "less precise" than the float path --
     // it is ggml's actual arithmetic, bit-for-bit reproducible, whereas the float path's
-    // per-element rounding order can never exactly match it. See docs/bugstofix.md's 2026-08-21
+    // per-element rounding order can never exactly match it. See docs/1-correctness/bugstofix.md's 2026-08-21
     // deepseek2 investigation for the full derivation of why this matters for greedy-parity.
     public static float DotQ2K_Q8K(byte* row, byte* scratch, int cols)
     {
@@ -6558,7 +6558,7 @@ public static unsafe class SimdKernels
     }
 
     /// <summary>
-    /// docs/bugstofix.md (ModelCompatibility.cs:461, deepseek2 investigation): this scalar loop
+    /// docs/1-correctness/bugstofix.md (ModelCompatibility.cs:461, deepseek2 investigation): this scalar loop
     /// mirrors ggml's <c>ggml_vec_dot_q2_K_q8_K_generic</c> exactly — correct in isolation, but NOT
     /// what a real x86 llama.cpp build actually executes. ggml dispatches to a hand-written AVX2
     /// kernel (examples/ggml/src/ggml-cpu/arch/x86/quants.c) that sums in a fundamentally different
@@ -10043,7 +10043,7 @@ public static unsafe class SimdKernels
                 if (x[i] > max) max = x[i];
 
             // Pass 2: exp(x - max) and sum.
-            // docs/bugstofix.md (ModelCompatibility.cs:461, deepseek2 investigation): two real,
+            // docs/1-correctness/bugstofix.md (ModelCompatibility.cs:461, deepseek2 investigation): two real,
             // previously-unaudited discrepancies vs ggml's actual softmax
             // (ggml_vec_soft_max_f32, ggml-cpu/vec.cpp) fixed together here -- both matter because
             // this exact function computes the MoE router's probabilities, the operation the
@@ -10108,7 +10108,7 @@ public static unsafe class SimdKernels
     /// not divide by the sum because the caller still has to merge it with earlier tiles.
     /// </summary>
     /// <summary>
-    /// docs/bugstofix.md (ModelCompatibility.cs:461, deepseek2 investigation): this is the
+    /// docs/1-correctness/bugstofix.md (ModelCompatibility.cs:461, deepseek2 investigation): this is the
     /// Flash-64 online-softmax building block for tiled attention, a different accumulation
     /// STRATEGY from <see cref="SoftmaxInPlace"/> (per-tile sum merged into a running float
     /// accumulator via `runningSum*rescale + tileSum` in ForwardPass.Attention.cs, not one single
@@ -10220,7 +10220,7 @@ public static unsafe class SimdKernels
     // ================================================================
 
     /// <summary>
-    /// docs/bugstofix.md (ModelCompatibility.cs:461, deepseek2 investigation): ggml's real SiLU
+    /// docs/1-correctness/bugstofix.md (ModelCompatibility.cs:461, deepseek2 investigation): ggml's real SiLU
     /// (<c>ggml_v_silu</c>, examples/ggml/src/ggml-cpu/vec.h) is <c>x / (1 + ggml_v_expf(-x))</c> --
     /// a single divide of the ORIGINAL x by the sum, not a reciprocal-then-multiply -- and runs on
     /// every token of every layer's FFN (dense and MoE experts alike), a much wider tensor than

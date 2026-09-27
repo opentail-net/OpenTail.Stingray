@@ -6,7 +6,7 @@ namespace OpenTail.Stingray.Diffusion.MiniMaxMusic3;
 /// Real MiniMax Music 3 single-chunk flow-matching Euler solver (`MiniMaxMusic3ChunkDenoiseStep`'s
 /// "denoise inner" loop, minus the multi-window overlap-blend machinery -- V1 scope is a song short
 /// enough to fit one real `_CHUNK_FRAMES=200`-frame (~8s at 25Hz) window, so `chunk_starts=[0]` and
-/// there is no previous-window state to blend). See docs/066-minimax-music3-future-plan.md, "Real
+/// there is no previous-window state to blend). See docs/4-performance/audio/066-minimax-music3-future-plan.md, "Real
 /// chunked flow-matching denoise + stitching".
 ///
 /// <para><b>Real scheduler -- CORRECTED against the independent `minimaxmusic.cpp` C++ reference

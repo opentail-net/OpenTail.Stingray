@@ -28,7 +28,7 @@ public static class F5DiTBlock
 {
     /// <summary>Dispatches to <see cref="F5Kernels.LinearGpuQ8_0"/> when <paramref name="backend"/>
     /// is supplied (--backend vulkan), else the existing CPU <see cref="F5Kernels.LinearQ8_0"/>
-    /// path. See docs/052-vulkan-backend-for-tts-engines-plan.md.</summary>
+    /// path. See docs/4-performance/audio/052-vulkan-backend-for-tts-engines-plan.md.</summary>
     private static float[] LinQ8(Core.IComputeBackend? backend, float[] x, int t, int inDim, byte[] q8Weight, float[]? bias, int outDim) =>
         backend is not null
             ? F5Kernels.LinearGpuQ8_0(backend, x, t, inDim, q8Weight, bias, outDim)

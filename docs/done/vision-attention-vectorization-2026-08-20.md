@@ -1,7 +1,7 @@
 # Vision attention vectorization — VisionOps.Attention / AttentionGqa
 
 **Context:** part of the 2026-08-20 project-by-project performance/quality review
-(`docs/perf-loop-project-review-progress.md`). Found while comparing `PixtralVisionEncoder`
+(`docs/done/perf-loop-project-review-progress.md`). Found while comparing `PixtralVisionEncoder`
 (delegates its transformer block to `VisionOps.Attention`) against `Gemma3VisionEncoder` (hand-rolls
 the same block inline) as a DRY inconsistency.
 

@@ -109,7 +109,7 @@ public class IqQuantTests
     }
 
     /// <summary>
-    /// docs/084-vulkan-large-tensor-sharding-plan.md: IQ3_S/IQ4_XS's dequant loop was refactored
+    /// docs/4-performance/gpu/084-vulkan-large-tensor-sharding-plan.md: IQ3_S/IQ4_XS's dequant loop was refactored
     /// to dispatch per-block work via <c>Parallel.For</c> once a tensor has enough blocks
     /// (currently ≥64), instead of always running one thread sequentially — a real-world 27B
     /// checkpoint's FFN tensors have tens of millions of elements (hundreds of thousands of

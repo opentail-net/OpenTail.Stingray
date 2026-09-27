@@ -9,7 +9,7 @@ namespace OpenTail.Stingray.Diffusion.MiniMaxMusic3;
 /// <see cref="Music3Representation"/> (produced by <see cref="MiniMaxMusic3AutoregressiveGenerator"/>)
 /// to real stereo PCM. V1 scope: single chunk only (song short enough to fit the real
 /// `_CHUNK_FRAMES=200`-frame, ~8s window) -- no multi-window overlap-blend/stitching yet. See
-/// docs/066-minimax-music3-future-plan.md.
+/// docs/4-performance/audio/066-minimax-music3-future-plan.md.
 /// </summary>
 public static class MiniMaxMusic3Pipeline
 {

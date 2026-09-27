@@ -4,7 +4,7 @@ namespace OpenTail.Stingray.Tests.Audio;
 /// on the reference's own `a.wav` with the packaged v2 `default` voice. Asserts structure (voice
 /// sample rate, output length = input duration, finite, non-silent); intelligibility and the
 /// comparison against `audiocpp_cli --task vc --family rvc` are checked by a Whisper round trip on
-/// the written WAV (`RVC_OUT`), see docs/audio-review-new-progress.md.</summary>
+/// the written WAV (`RVC_OUT`), see docs/done/audio-review-new-progress.md.</summary>
 public sealed class RvcPipelineRealWeightsTests : HeavyTestBase
 {
     private static string? FindRepoFile(string relPath)

@@ -1,4 +1,4 @@
-> **ARCHIVED 2026-09-27.** Closed: the encoder is implemented and structurally verified against the real mmproj (2026-08-15). The only gap left is a real end-to-end run, which needs the 93 GB text checkpoint; [../102-status-open-items-plan.md](../102-status-open-items-plan.md) lists that as out of scope for this PC (STATUS row "Vision: Llama 4").
+> **ARCHIVED 2026-09-27.** Closed: the encoder is implemented and structurally verified against the real mmproj (2026-08-15). The only gap left is a real end-to-end run, which needs the 93 GB text checkpoint; [../102-status-open-items-plan.md](102-status-open-items-plan.md) lists that as out of scope for this PC (STATUS row "Vision: Llama 4").
 
 # Llama 4 Vision Encoder — Implementation Plan
 

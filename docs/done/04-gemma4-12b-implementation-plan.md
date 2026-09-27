@@ -2,7 +2,7 @@
 > GGUF, including the 1,024-token sliding-window crossing, on the corrected per-layer V-cache
 > stride. **Carried forward:** the CUDA and CUDA-hybrid acceptance sequence, which needs an
 > NVIDIA runner this machine does not have — tracked in
-> [../90-external-hardware-work.md](../90-external-hardware-work.md).
+> [../90-external-hardware-work.md](../9-external-hardware/90-external-hardware-work.md).
 
 # Gemma 4 12B (dense `gemma4_unified`) — CUDA / CUDA-Hybrid Implementation Plan
 

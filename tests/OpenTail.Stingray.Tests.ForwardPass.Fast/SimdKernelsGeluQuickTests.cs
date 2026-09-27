@@ -7,7 +7,7 @@ namespace OpenTail.Stingray.Tests.ForwardPass.Fast;
 /// already used elsewhere. Added for the Gemma 4 E4B <c>gemma4v</c> ViT encoder
 /// (<see cref="OpenTail.Stingray.Vision.Gemma4VVisionEncoder"/>), whose FFN activation is
 /// <c>FFN_GELU_QUICK</c> per the real reference (llama.cpp's <c>tools/mtmd/clip.cpp</c>) -- see
-/// docs/03-gemma4-e4b-vision-plan.md for the derivation. Reusing the existing tanh-GELU kernel
+/// docs/2-coverage/03-gemma4-e4b-vision-plan.md for the derivation. Reusing the existing tanh-GELU kernel
 /// would have been silently wrong for this activation variant, which is exactly why this gets its
 /// own dedicated test rather than only exercising it inside the encoder's own structural check.
 /// </summary>

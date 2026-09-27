@@ -860,7 +860,7 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
     /// the OS will honor allocations past (using real system RAM headroom the advertised number
     /// doesn't account for) — this override exists specifically so that question can be
     /// answered by trying it, not guessed at. See
-    /// docs/084-vulkan-large-tensor-sharding-plan.md's Follow-up 8/9 for the measured answer on
+    /// docs/4-performance/gpu/084-vulkan-large-tensor-sharding-plan.md's Follow-up 8/9 for the measured answer on
     /// one specific device. The 2.0 ceiling here is a sanity bound against a typo (e.g. an
     /// accidental extra digit), not a claim that 2.0 is safe on every machine — the dense-FFN
     /// layer loop catches allocation failures cleanly, but later MANDATORY uploads (e.g. the MTP

@@ -14,7 +14,7 @@ namespace OpenTail.Stingray.Tests.Diffusion.AceStep;
 /// through the real <see cref="AceStepPipeline"/>, at a short (2s) duration to keep the real
 /// 8-step Euler-ODE loop's wall-clock cost low. Non-degeneracy receipt (finite, non-silent, real
 /// 48kHz-stereo-shape-correct), not yet a numeric golden-parity test against a real `diffusers`
-/// end-to-end reference run -- see docs/064-acestep-implementation-plan.md.
+/// end-to-end reference run -- see docs/2-coverage/064-acestep-implementation-plan.md.
 /// </summary>
 public sealed class AceStepPipelineEndToEndTests
 {

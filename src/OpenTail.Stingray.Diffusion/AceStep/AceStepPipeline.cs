@@ -8,7 +8,7 @@ namespace OpenTail.Stingray.Diffusion.AceStep;
 /// <summary>
 /// Top-level ACE-Step Turbo text-to-music pipeline: real V1 end-to-end wiring (text+lyrics, plus a
 /// real self-derived "no reference audio" timbre condition -- no actual reference-audio/cover/
-/// repaint support) -- see docs/064-acestep-implementation-plan.md for each component's own
+/// repaint support) -- see docs/2-coverage/064-acestep-implementation-plan.md for each component's own
 /// golden-parity verification against the real `diffusers` reference; this class only wires them
 /// together, it introduces no new math of its own beyond the real SFT prompt template and the
 /// latent-to-channel-major-PCM layout conversions each component already documents.
@@ -32,7 +32,7 @@ public sealed class AceStepPipeline : IDisposable
     private readonly bool _ownsBackend;
     private bool _disposed;
 
-    // TEMPORARY diagnostic instrumentation (perf-sweep Phase 9.1b, docs/perf-sweep-plan.md) for
+    // TEMPORARY diagnostic instrumentation (perf-sweep Phase 9.1b, docs/4-performance/perf-sweep-plan.md) for
     // the ACE-Step Turbo CPU perf investigation (114.14x RTF, worst in PerformanceLeague.md) --
     // no STINGRAY_PROFILE_DECODE-equivalent exists for diffusion pipelines, so this mirrors
     // HybridGdnForwardPass's own STINGRAY_PROFILE_DECODE-gated temporary profiler pattern. Remove
@@ -52,7 +52,7 @@ public sealed class AceStepPipeline : IDisposable
         var swTotal = System.Diagnostics.Stopwatch.StartNew();
         var sw = System.Diagnostics.Stopwatch.StartNew();
         // Real SFT_GEN_PROMPT template, transcribed from the real diffusers ACE-Step pipeline --
-        // see docs/064-acestep-implementation-plan.md's "Corrections and confirmations".
+        // see docs/2-coverage/064-acestep-implementation-plan.md's "Corrections and confirmations".
         string prompt =
             "# Instruction\nFill the audio semantic mask based on the given conditions:\n\n" +
             $"# Caption\n{parameters.Prompt}\n\n" +
@@ -136,7 +136,7 @@ public sealed class AceStepPipeline : IDisposable
         };
     }
 
-    // perf-sweep Phase 9 (docs/perf-sweep-plan.md): real profiling found this stage alone was
+    // perf-sweep Phase 9 (docs/4-performance/perf-sweep-plan.md): real profiling found this stage alone was
     // 83-85% of total Generate() wall-clock (175-186s of a ~214s mean run) -- vastly more than
     // the actual DiT diffusion transformer (~10%). The input is ALWAYS the same all-zero silence
     // PCM for a given `frames` count (a pure function of duration alone, independent of prompt/

@@ -3,7 +3,7 @@ namespace OpenTail.Stingray.Diffusion.AceStep.Vae;
 /// <summary>
 /// Real `AutoencoderOobleck` encoder (`OobleckEncoder`), the counterpart to
 /// <see cref="AceStepOobleckDecoder"/>. Transcribed directly from the real `diffusers` 0.40.0
-/// source -- see docs/064-acestep-implementation-plan.md.
+/// source -- see docs/2-coverage/064-acestep-implementation-plan.md.
 ///
 /// <para>Ported specifically to derive a real `silence_latent` (VAE-encoded true audio silence)
 /// self-sufficiently, without needing an external asset this project doesn't have: the real

@@ -3,7 +3,7 @@ namespace OpenTail.Stingray.Tests.ForwardPass.Fast;
 
 /// <summary>
 /// Correctness and timing for the IQ1_S fast kernel added 2026-08-28
-/// (docs/05-cpu-architecture-kernel-opportunities.md, Backlog A). Unlike the six Q8_K-paired IQ
+/// (docs/4-performance/cpu/05-cpu-architecture-kernel-opportunities.md, Backlog A). Unlike the six Q8_K-paired IQ
 /// kernels done earlier this session, IQ1_S needed its dequantizer (<see
 /// cref="Dequantize"/>'s <c>DequantIq1S</c>) and grid table (<see cref="IqCodebooks.Iq1sGrid"/>)
 /// built from scratch, not just the fast matvec — so this file carries one more check than the

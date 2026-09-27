@@ -91,7 +91,7 @@ src/OpenTail.Stingray.Audio
 
 ### Phase 4: Whisper STT & CLI Integration [COMPLETED]
 * Updated `WhisperPipeline.cs` and `ISpeechToTextPipeline.cs` to support VAD silence pruning.
-* Updated `SttCommand.cs` with `--vad` option and refreshed `docs/cli-option-inventory.md` (190 options).
+* Updated `SttCommand.cs` with `--vad` option and refreshed `docs/reference/cli-option-inventory.md` (190 options).
 
 ### Phase 5: Automated Testing & Verification [COMPLETED]
 * Created `SileroVadTests.cs` in `OpenTail.Stingray.Tests.Audio`.

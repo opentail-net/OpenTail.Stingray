@@ -12,7 +12,7 @@ namespace OpenTail.Stingray.Cpu;
 /// these real calibrated values, and the matching Dequantize.cs decoders ignored the real
 /// formats' per-32-element scale groups and 7-bit sign masks entirely -- silently producing
 /// "plausible but wrong" weights for any IQ2_XXS/IQ3_XXS/IQ3_S/IQ4_XS model. See
-/// docs/bugstofix.md's IqCodebooks.cs entry for the original finding. IQ2_XS was a separate,
+/// docs/1-correctness/bugstofix.md's IqCodebooks.cs entry for the original finding. IQ2_XS was a separate,
 /// later gap: never ported at all (Dequantize.ToFloat32 had no case for it), added once a real
 /// GGUF using it was found (Qwen3.8-27B UD-Q3_K_XL, Unsloth Dynamic quant).</para>
 ///
@@ -128,7 +128,7 @@ public static class IqCodebooks
     /// 512 grid vectors of 8 signed-magnitude bytes for IQ2_XS (ggml's iq2xs_grid). Byte j of
     /// entry i is <c>(byte)(Iq2XsGrid[i] &gt;&gt; (8*j))</c>. Same real-table provenance as
     /// <see cref="Iq2XxsGrid"/> -- IQ2_XS was a genuine coverage gap (never ported, decoder
-    /// previously absent) rather than drift; see docs/bugstofix.md's IqCodebooks.cs entry for
+    /// previously absent) rather than drift; see docs/1-correctness/bugstofix.md's IqCodebooks.cs entry for
     /// the sibling IQ2_XXS/IQ3_XXS/IQ3_S/IQ4_XS fix this table follows the same approach as.
     /// </summary>
     public static readonly ulong[] Iq2XsGrid =

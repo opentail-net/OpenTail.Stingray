@@ -18,7 +18,7 @@ namespace OpenTail.Stingray.Server.Endpoints;
 /// engine fails the same way here as everywhere else instead of serving session routes over a
 /// runtime that was never brought up.</para>
 ///
-/// <para>Multi-model mode (docs/032-multi-model-inference-runtime-plan.md Phase 7 follow-up):
+/// <para>Multi-model mode (docs/3-product-and-runtime/032-multi-model-inference-runtime-plan.md Phase 7 follow-up):
 /// a session is created against one resolved model and holds a real <see cref="ModelRuntimeHandle"/>
 /// for its entire lifetime via <see cref="SessionModelRegistry"/> — closing the Phase 4 gap where
 /// a live session's model runtime had no lease keeping it resident. The single configured

@@ -10,7 +10,7 @@ namespace OpenTail.Stingray.Tests.Diffusion.AceStep;
 /// `diffusers.models.autoencoders.autoencoder_oobleck.AutoencoderOobleck.decoder` reference, loaded
 /// with the SAME real `vae.safetensors` weights (`load_state_dict(strict=False)` reported zero
 /// missing/unexpected keys against the real checkpoint) and run on a fixed-seed synthetic latent.
-/// See docs/064-acestep-implementation-plan.md's "Golden-parity check" section for how the
+/// See docs/2-coverage/064-acestep-implementation-plan.md's "Golden-parity check" section for how the
 /// reference dump (`golden_vae_*.bin`) was produced -- not checked into the repo, regenerate via
 /// the Python script referenced there if needed.
 /// </summary>

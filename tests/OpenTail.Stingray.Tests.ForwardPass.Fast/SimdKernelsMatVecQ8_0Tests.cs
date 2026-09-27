@@ -125,7 +125,7 @@ public sealed unsafe class SimdKernelsMatVecQ8_0Tests
     /// both the sequential and Parallel.For tiers (rows are independent, so the
     /// parallel tier cannot legally reorder any row's accumulation).
     ///
-    /// Updated 2026-08-27 (docs/bugstofix.md, ModelCompatibility.cs:461 deepseek2
+    /// Updated 2026-08-27 (docs/1-correctness/bugstofix.md, ModelCompatibility.cs:461 deepseek2
     /// investigation): MatVecQ8_0 previously dispatched to DotQ8_0 (dequantize
     /// weight, dot against the raw F32 activation) and never quantized the
     /// activation at all -- unlike ggml's real, always-dispatched

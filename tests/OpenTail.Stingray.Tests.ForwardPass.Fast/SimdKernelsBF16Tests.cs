@@ -3,7 +3,7 @@ namespace OpenTail.Stingray.Tests.ForwardPass.Fast;
 
 /// <summary>
 /// AVX2-vs-scalar equivalence and real timing for the BFloat16 fast kernel added 2026-08-28
-/// (docs/05-cpu-architecture-kernel-opportunities.md, Backlog B). Admitted with a working
+/// (docs/4-performance/cpu/05-cpu-architecture-kernel-opportunities.md, Backlog B). Admitted with a working
 /// dequantizer but fell through to <c>MatVecDequantFallback</c> with no dedicated kernel — unlike
 /// every other kernel in this backlog, no block/scale structure or activation requantization is
 /// involved (raw 2-byte values, activation stays full F32), so the test fixture is simpler too.

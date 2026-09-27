@@ -57,7 +57,7 @@ public static class ServiceCollectionExtensions
             return new ChatTemplateRenderer(opts.Architecture);
         });
 
-        // Multi-model runtime manager (docs/032-multi-model-inference-runtime-plan.md). Registered
+        // Multi-model runtime manager (docs/3-product-and-runtime/032-multi-model-inference-runtime-plan.md). Registered
         // even though today's DI wiring below only ever acquires the one configured model — this
         // is Phase 1's abstraction seam, not a behavior change. Lazily constructed like everything
         // else here; constructing it does not itself invoke the loader.

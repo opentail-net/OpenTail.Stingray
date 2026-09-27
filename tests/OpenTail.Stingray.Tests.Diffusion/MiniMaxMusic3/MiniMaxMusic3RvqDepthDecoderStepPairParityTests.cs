@@ -7,7 +7,7 @@ namespace OpenTail.Stingray.Tests.Diffusion.MiniMaxMusic3;
 /// <summary>
 /// Real parity check: <see cref="MiniMaxMusic3RvqDepthDecoder.ForwardStepPair"/> (the CFG-batched,
 /// single-weight-stream incremental step added for the AR-loop performance pass, see
-/// docs/066-minimax-music3-future-plan.md "AR loop, 2026-09-05") must match two separate
+/// docs/4-performance/audio/066-minimax-music3-future-plan.md "AR loop, 2026-09-05") must match two separate
 /// <see cref="MiniMaxMusic3RvqDepthDecoder.ForwardStep"/> calls (one per CFG branch) to within tight
 /// floating-point tolerance -- NOT literal bit-for-bit, since the new path's
 /// <see cref="OpenTail.Stingray.Audio.Primitives.CfmLinearWeight.MatMulPairRowMajor"/> reduces each

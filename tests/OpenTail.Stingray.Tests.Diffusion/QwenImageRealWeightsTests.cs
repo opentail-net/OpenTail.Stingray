@@ -5,7 +5,7 @@ namespace OpenTail.Stingray.Tests.Diffusion;
 
 /// <summary>
 /// First real-weight verification for Qwen-Image against the actual downloaded checkpoint
-/// (city96/Qwen-Image-gguf, Q3_K_S). Per docs/086-video-model-verification-plan.md's extended
+/// (city96/Qwen-Image-gguf, Q3_K_S). Per docs/done/086-video-model-verification-plan.md's extended
 /// backlog: real DiT code, structural conformance tests only before this, never run against real
 /// weights.
 ///
@@ -17,7 +17,7 @@ namespace OpenTail.Stingray.Tests.Diffusion;
 /// architecturally identical to Wan2.1's -- confirmed directly against
 /// `examples/stable-diffusion.cpp/src/model.h`'s `sd_version_uses_wan_vae(VERSION_QWEN_IMAGE)`,
 /// which routes it through the literal same `WAN::WanVAERunner` class, not just a similar one. See
-/// docs/086-video-model-verification-plan.md for the full tensor-shape evidence and reference
+/// docs/done/086-video-model-verification-plan.md for the full tensor-shape evidence and reference
 /// cross-check.
 /// </summary>
 public sealed class QwenImageRealWeightsTests

@@ -6,7 +6,7 @@ public class Gemma4VVisionEncoderTests
     /// <summary>
     /// Structural sanity check, NOT a parity test: there is still no working oracle on this
     /// machine for gemma4v end-to-end numerics (the paired gemma4 text architecture isn't admitted
-    /// by the local llama.cpp build -- see docs/03-gemma4-e4b-vision-plan.md). This only asserts
+    /// by the local llama.cpp build -- see docs/2-coverage/03-gemma4-e4b-vision-plan.md). This only asserts
     /// the encoder runs end-to-end against the real mmproj without crashing, produces the expected
     /// shape, and produces finite, non-degenerate output -- the same class of check this repo has
     /// used elsewhere (e.g. the DeepSeek2 MLA work) when a real reference isn't available yet.

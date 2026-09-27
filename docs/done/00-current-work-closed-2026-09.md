@@ -355,7 +355,7 @@ that is more elegant but lower-visibility.
     `AceStepModel`, `AceStepPipeline`, weight-bundle placeholders) with real config constants;
     `AceStepPipeline.Generate` still throws `NotImplementedException`. Full architecture writeup,
     reuse-vs-new breakdown, and the real next-step order in
-    `docs/064-acestep-implementation-plan.md`. Realistically a multi-session port even scoped to
+    `docs/2-coverage/064-acestep-implementation-plan.md`. Realistically a multi-session port even scoped to
     Turbo-only/text+lyrics-only (no planner LM, no cover/repaint/audio-conditioning, no FSQ
     tokenizer — all confirmed genuinely deferrable from the real `generate_audio` code path).
     **Update, same day**: Phase B (Qwen3 text encoder) done — reuses the EXISTING
@@ -453,7 +453,7 @@ that is more elegant but lower-visibility.
     `silence_latent` substituted for "no reference audio" — blocked on locating that same missing
     buffer flagged in Phase E. **V1 should currently be understood as "numerically correct given its
     inputs, but tested with out-of-distribution conditioning," not yet a reliable generator.** See
-    `docs/064-acestep-implementation-plan.md`'s "Golden-parity check" section for the full writeup.
+    `docs/2-coverage/064-acestep-implementation-plan.md`'s "Golden-parity check" section for the full writeup.
     **Update, same day: both conditioning gaps closed.** Ported the real VAE encoder
     (`AceStepOobleckEncoder`, golden-verified) specifically to self-derive a real `silence_latent`
     (encode true digital silence), and the real timbre encoder (`AceStepTimbreEncoder`, golden-
@@ -480,7 +480,7 @@ that is more elegant but lower-visibility.
     the Q8_0 quant instead (smaller/faster anyway); NOT root-caused or fixed at the engine level —
     a real, separate, low-visibility-but-concerning finding (silent NaN production, not a crash) in
     heavily-shared code worth its own investigation. See
-    `docs/064-acestep-implementation-plan.md`'s "Phase B progress" section for the exact repro
+    `docs/2-coverage/064-acestep-implementation-plan.md`'s "Phase B progress" section for the exact repro
     (token IDs included).
 
 **P3 and later campaigns (not scheduled, revisit only after the above closes):**

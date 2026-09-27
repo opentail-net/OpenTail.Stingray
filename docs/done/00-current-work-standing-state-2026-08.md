@@ -57,7 +57,7 @@ policy above for the same reason.
   detected from element count. **CUDA and Vulkan still carry the same bug** —
   `HeadNorm(..., perChannel)` was written to the same wrong assumption and needs the matching fix
   plus hardware validation. That is open work, tracked in
-  [../90-external-hardware-work.md](../90-external-hardware-work.md).
+  [../90-external-hardware-work.md](../9-external-hardware/90-external-hardware-work.md).
 - **Admitted on perplexity parity, not greedy parity.** wikitext at a matched 2048-token context:
   llama.cpp 7.4868 vs 7.3889 here (1.3%). Greedy token-for-token parity is NOT achieved and is not
   expected to be — the divergence is at a position whose top five candidates span 1.55 logits.
@@ -516,7 +516,7 @@ another 18 minutes to redo.
 tag-triggered and CI fails if the tag and `<Version>` disagree. The `CHANGELOG.md` Unreleased
 section (Mistral/Tekken tokenizer, Jinja fixes, prefix-cache fixes) is **not** in the 1.0.3
 packages, which were built from the earlier candidate commit. See
-[../nuget-release-checklist.md](../nuget-release-checklist.md).
+[../nuget-release-checklist.md](../3-product-and-runtime/nuget-release-checklist.md).
 
 **Parked, with working implementations.** Not scheduled; revisit only if the goal changes.
 - DSpark speculative decoding — [07-dspark-plan.md](07-dspark-plan.md). Remaining:

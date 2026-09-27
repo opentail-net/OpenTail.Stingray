@@ -4,7 +4,7 @@ namespace OpenTail.Stingray.Diffusion.MiniMaxMusic3;
 /// Real MiniMax Music 3 condition encoder (`MiniMaxMusic3ConditionEncoder`), transcribed directly
 /// from the real, already-installed `diffusers==0.40.0` source
 /// (`diffusers/models/condition_embedders/condition_embedder_minimax_music3.py`) -- see
-/// docs/066-minimax-music3-future-plan.md.
+/// docs/4-performance/audio/066-minimax-music3-future-plan.md.
 ///
 /// <para>Tiny, real formula: each generated frame carries `num_condition_layers`(8) hidden states
 /// of size `condition_hidden_dim`(4096) -- one from the global language model plus one per residual

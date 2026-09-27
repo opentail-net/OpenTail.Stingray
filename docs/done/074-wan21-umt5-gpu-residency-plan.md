@@ -9,7 +9,7 @@ Kept in `docs/done/` as the historical record.
 ## Context — a proven template already exists, copy it
 
 `src/OpenTail.Stingray.Diffusion/TextEncoders/T5Encoder.cs` (FLUX's T5-XXL encoder) just went
-through this exact transformation — see `docs/071-flux-t5xxl-gpu-residency-plan.md` for the
+through this exact transformation — see `docs/done/071-flux-t5xxl-gpu-residency-plan.md` for the
 original plan and `git log` commit `53839a3` for what actually landed:
 `T5GpuWeights.cs`, `T5GpuWorkspace.cs`, and `T5Encoder.InitGpu`/`EncodeGpu` (all real, committed,
 verified via `T5GpuParityTests`). **Wan's own text encoder, `UMT5Encoder.cs`, is architecturally

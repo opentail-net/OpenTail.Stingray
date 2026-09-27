@@ -12,7 +12,7 @@ namespace OpenTail.Stingray.Tests.Diffusion.MiniMaxMusic3;
 /// cache is mathematically identical to full recomputation, just incremental) -- this is a real
 /// numerical regression test for the cache/position-offset bookkeeping itself, not an architecture
 /// check (that's already covered by <c>MiniMaxMusic3GlobalModelGoldenParityTests</c>). See
-/// docs/066-minimax-music3-future-plan.md.
+/// docs/4-performance/audio/066-minimax-music3-future-plan.md.
 /// </summary>
 public sealed class MiniMaxMusic3GlobalKvCacheConsistencyTests
 {

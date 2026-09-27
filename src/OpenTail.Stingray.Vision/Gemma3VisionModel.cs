@@ -11,7 +11,7 @@ namespace OpenTail.Stingray.Vision;
 /// wrinkles instead: every per-block linear has a real bias, the final projection tensor is stored
 /// transposed relative to this codebase's row-major convention, weights are F16 (not BF16), and
 /// the input grid is much larger (896px / 14px patches = 4096 patches, 27 blocks, head_dim 72).
-/// See docs/03-gemma4-e4b-vision-plan.md's Gemma 3 addendum for the full derivation, verified
+/// See docs/2-coverage/03-gemma4-e4b-vision-plan.md's Gemma 3 addendum for the full derivation, verified
 /// against the real <c>models/mmproj-gemma-3-4b-it-f16.gguf</c>.
 /// </summary>
 public sealed class Gemma3VisionModel : IDisposable

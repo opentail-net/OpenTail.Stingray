@@ -3,7 +3,7 @@ namespace OpenTail.Stingray.Tests.ForwardPass.Fast;
 
 /// <summary>
 /// Correctness and timing for the TQ2_0/TQ1_0 ternary formats added 2026-08-28
-/// (docs/05-cpu-architecture-kernel-opportunities.md, Backlog C). Neither format had any
+/// (docs/4-performance/cpu/05-cpu-architecture-kernel-opportunities.md, Backlog C). Neither format had any
 /// implementation before this session. TQ2_0 got a full AVX2 kernel (mirrors Q2_0's already-shipped
 /// shape); TQ1_0 is deliberately scalar-only for now (its base-3 digit-extraction packing is novel
 /// in this codebase and AVX2 is gated on TQ2_0's real result), so it's verified the same way

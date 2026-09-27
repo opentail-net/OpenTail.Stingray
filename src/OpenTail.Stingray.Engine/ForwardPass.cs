@@ -346,7 +346,7 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
 
     // Diagnostic: MLA (deepseek2) layer-0 intermediate sums, to diff against llama.cpp's
     // llama-eval-callback ground truth (env: STINGRAY_MLA_TRACE=1). Temporary, for the
-    // 2026-08-21 ground-truth-diffing session -- see docs/bugstofix.md.
+    // 2026-08-21 ground-truth-diffing session -- see docs/1-correctness/bugstofix.md.
     private static readonly bool s_mlaTrace =
         Environment.GetEnvironmentVariable("STINGRAY_MLA_TRACE") == "1";
     // Optional MoE router probe (env: STINGRAY_TRACE_ROUTERS=1 dumps top-k experts for every

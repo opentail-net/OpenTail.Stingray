@@ -151,7 +151,7 @@ public sealed class StaticPlanConfigurationTests
         int sourceCount = Directory.EnumerateFiles(Path.Combine(root, "src", "OpenTail.Stingray.Cli"), "*.cs", SearchOption.AllDirectories)
             .Sum(path => File.ReadLines(path).Count(line => line.Contains("[CommandOption", StringComparison.Ordinal)));
 
-        string inventory = File.ReadAllText(Path.Combine(root, "docs", "cli-option-inventory.md"));
+        string inventory = File.ReadAllText(Path.Combine(root, "docs", "reference", "cli-option-inventory.md"));
         Match count = Regex.Match(inventory, @"\*\*(\d+) option declarations\*\*");
         Assert.True(count.Success, "CLI option inventory must declare its current source option count.");
         Assert.Equal(sourceCount, int.Parse(count.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture));

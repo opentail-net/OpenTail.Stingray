@@ -2,7 +2,7 @@
 namespace OpenTail.Stingray.Tests.ForwardPass.Fast;
 
 /// <summary>
-/// docs/bugstofix.md (ModelCompatibility.cs:461, deepseek2 investigation): <see cref="SimdKernels.SoftmaxInPlace"/>
+/// docs/1-correctness/bugstofix.md (ModelCompatibility.cs:461, deepseek2 investigation): <see cref="SimdKernels.SoftmaxInPlace"/>
 /// now accumulates in double and uses a port of ggml's actual vectorized exp (<c>ggml_v_expf</c>)
 /// instead of an independently-derived polynomial. This pins that the result still IS a correct
 /// softmax (sums to 1, matches a plain double-precision reference closely) -- proving the swap

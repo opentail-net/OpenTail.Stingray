@@ -85,7 +85,7 @@ dotnet run
 ```
 
 Yes, that is more wiring than it should be. A one-line `Open("model")` API is being designed
-([docs/103](docs/103-front-door-design.md)). The code above is what works today, and it is
+([docs/103](docs/3-product-and-runtime/103-front-door-design.md)). The code above is what works today, and it is
 compiled and run as [samples/QuickStart](samples/QuickStart/Program.cs).
 
 ## Speak and listen
@@ -201,7 +201,7 @@ A GPU is optional: any Vulkan-capable card, or NVIDIA with CUDA 12.
 
 ## What's next
 
-A guided "front door" is being designed in [docs/103](docs/103-front-door-design.md): a small
+A guided "front door" is being designed in [docs/103](docs/3-product-and-runtime/103-front-door-design.md): a small
 catalog of verified models per task, `stingray setup <task>` to fetch them, task commands that need
 no file paths, and a one-line C# API.
 

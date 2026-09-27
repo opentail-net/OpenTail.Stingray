@@ -12,12 +12,12 @@ gate-admitted (§2), the tokenizer pre-type defect was found and fixed (§3), an
 coverage was measured with one real defect found and fixed (§4). Verified against
 `src/OpenTail.Stingray.Engine/ModelCompatibility.cs`'s current allowlist, which matches this doc's
 ADMITTED verdicts (plus `gpt-oss` and `deepseek2`/MLA, admitted 2026-09-26 after this doc's last
-edit — see `docs/101-work-queue-after-coverage-plan.md` for those receipts). Remaining open items are
+edit — see `docs/done/101-work-queue-after-coverage-plan.md` for those receipts). Remaining open items are
 narrow and logged in place, not a live plan: a handful of license/checkpoint-blocked architectures
 that stay out permanently (`bitnet`, `nemotron`, `lfm2`, `seed_oss`, `dots1`, the `mamba`/`jamba`/
 `rwkv` recurrent family) and two minor unsupported Jinja expression forms noted in §4. This file is
 kept in `docs/done/` as the historical record; open follow-on work lives in
-`docs/101-work-queue-after-coverage-plan.md` and `docs/00-current-work.md`.
+`docs/done/101-work-queue-after-coverage-plan.md` and `docs/00-current-work.md`.
 
 ## The four axes
 
@@ -1914,7 +1914,7 @@ reference).
 `IQ4_NL`, which predates this list), all copied verbatim from `ggml-quants.c`/`ggml-common.h`'s
 real tables (`IqCodebooks.cs`) rather than reconstructed from a formula. `IQ1_S`/`IQ1_M` were the
 last two, ported same-session as their fast-kernel work — see
-[05-cpu-architecture-kernel-opportunities.md](../05-cpu-architecture-kernel-opportunities.md)'s
+[05-cpu-architecture-kernel-opportunities.md](../4-performance/cpu/05-cpu-architecture-kernel-opportunities.md)'s
 Backlog A for the full writeup (both admitted and correct; `IQ1_S`'s fast matvec kernel was built,
 measured slower than the fallback, and deliberately not wired in; `IQ1_M` skipped a fast-kernel
 attempt entirely on that adjacent evidence).
@@ -1922,7 +1922,7 @@ attempt entirely on that adjacent evidence).
 Two separate defects were found and fixed getting here, not one linear build-out:
 
 - `IQ3_XXS`, `IQ3_S`, and `IQ4_XS` were **already correctly implemented** (from the
-  `IqCodebooks.cs` real-table fix referenced in `docs/bugstofix.md`) but `ModelCompatibility.
+  `IqCodebooks.cs` real-table fix referenced in `docs/1-correctness/bugstofix.md`) but `ModelCompatibility.
   IsSupportedWeightDType` — the load-time gate — had never been updated to admit them. A model
   using any of the three was rejected at the door despite the engine being able to dequantize it
   correctly. One-line gate fix, no new kernel code.
@@ -1959,7 +1959,7 @@ Remaining work:
 A SIMD matvec for the IQ formats is a **follow-up**, not part of admission — scalar dequant plus
 the existing F32 path is enough to make the model *run*, which is the goal.
 This keeps item 3 of
-[05-cpu-architecture-kernel-opportunities.md](../05-cpu-architecture-kernel-opportunities.md)
+[05-cpu-architecture-kernel-opportunities.md](../4-performance/cpu/05-cpu-architecture-kernel-opportunities.md)
 (native IQ4_NL/MXFP4 kernels) a performance follow-up to this correctness work, not a prerequisite.
 
 ---

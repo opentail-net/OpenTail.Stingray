@@ -7,7 +7,7 @@ namespace OpenTail.Stingray.Diffusion.MiniMaxMusic3;
 /// Real MiniMax Music 3 prompt assembly + tokenization (`MiniMaxMusic3TokenizeStep`,
 /// `_clean_caption`, `_normalize_lyrics`), transcribed directly from
 /// `diffusers/modular_pipelines/minimax_music3/encoders.py`. See
-/// docs/066-minimax-music3-future-plan.md, "Real autoregressive generation loop, fully specified
+/// docs/4-performance/audio/066-minimax-music3-future-plan.md, "Real autoregressive generation loop, fully specified
 /// from source" for the archaeology this was captured from.
 ///
 /// <para>Real tokenizer is a stock `Qwen2Tokenizer` (BPE) -- this checkpoint's own

@@ -29,7 +29,7 @@ public static class CosyVoice3DiTModel
 {
     /// <summary>Dispatches to <see cref="F5Kernels.LinearGpu"/> when <paramref name="backend"/> is
     /// supplied (--backend vulkan), else the existing CPU <see cref="F5Kernels.Linear"/> path.
-    /// See docs/052-vulkan-backend-for-tts-engines-plan.md.</summary>
+    /// See docs/4-performance/audio/052-vulkan-backend-for-tts-engines-plan.md.</summary>
     private static float[] Lin(IComputeBackend? backend, float[] x, int t, int inDim, float[] weight, float[]? bias, int outDim) =>
         backend is not null
             ? F5Kernels.LinearGpu(backend, x, t, inDim, weight, bias, outDim)

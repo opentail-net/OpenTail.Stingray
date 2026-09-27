@@ -2,7 +2,7 @@ namespace OpenTail.Stingray.Tests.ForwardPass.Fast;
 
 /// <summary>
 /// Verifies <see cref="OpenTail.Stingray.Core.FastVectorTypeConverter.ConvertF32ToQ8_0"/> against
-/// a real matvec, ahead of perf-sweep Phase 1.2 (docs/perf-sweep-plan.md -- quantizing
+/// a real matvec, ahead of perf-sweep Phase 1.2 (docs/4-performance/perf-sweep-plan.md -- quantizing
 /// Voxtral-Mini-4B-Realtime's weights from F32 to Q8_0). This converter's own doc comment flags it
 /// as previously removed from every product path for being unverified ("a quantizer that runs and
 /// is subtly wrong is worse than either") -- this test is that verification, done once, before

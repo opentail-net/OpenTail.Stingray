@@ -1,4 +1,4 @@
-> **ARCHIVED 2026-09-27.** Closed: all six prioritized gaps (P1-P6) are marked DONE below. Current diffusion ratios against `sd-cli` are in `PerformanceLeague.md`, and the remaining diffusion performance work is in [../094-diffusion-performance-plan.md](../094-diffusion-performance-plan.md).
+> **ARCHIVED 2026-09-27.** Closed: all six prioritized gaps (P1-P6) are marked DONE below. Current diffusion ratios against `sd-cli` are in `PerformanceLeague.md`, and the remaining diffusion performance work is in [../094-diffusion-performance-plan.md](../4-performance/diffusion/094-diffusion-performance-plan.md).
 
 # Diffusion Performance Parity & Measurement Gaps Optimization Plan (2026-09-15)
 

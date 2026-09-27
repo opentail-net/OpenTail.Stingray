@@ -3,7 +3,7 @@ using OpenTail.Stingray.Vulkan;
 namespace OpenTail.Stingray.Server;
 
 /// <summary>
-/// Point-in-time resource snapshot (docs/032-multi-model-inference-runtime-plan.md §"Resource
+/// Point-in-time resource snapshot (docs/3-product-and-runtime/032-multi-model-inference-runtime-plan.md §"Resource
 /// admission"). Host and accelerator memory are kept as separate figures deliberately — never
 /// collapse them into one number. <see cref="AcceleratorMemoryAvailableBytes"/> is <c>null</c>
 /// when no accelerator was detected (or querying it isn't supported/enabled) — treat <c>null</c>

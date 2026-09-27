@@ -210,7 +210,7 @@ public sealed class QwenImageModel : IDisposable
             // Per-block batching (docs/094 Phase 2 debugging pass, 2026-09-19), NOT one single
             // 60-layer batch: real precedent in this codebase for a single giant batch being a
             // genuine bug/regression source (FLUX.2's Stage 5 finding -- see
-            // docs/093-flux2-gpu-performance-optimization-plan.md). Being investigated as a
+            // docs/4-performance/diffusion/093-flux2-gpu-performance-optimization-plan.md). Being investigated as a
             // candidate for this port's own "runs fine, wrong texture" defect.
             int gpuBlocks = gw.ResidentBlockCount;
             for (int b = 0; b < gpuBlocks; b++)

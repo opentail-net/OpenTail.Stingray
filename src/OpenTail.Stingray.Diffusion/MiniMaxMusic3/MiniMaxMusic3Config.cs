@@ -3,7 +3,7 @@ namespace OpenTail.Stingray.Diffusion.MiniMaxMusic3;
 /// <summary>
 /// Real MiniMax Music 3 config, read directly from the real checkpoint's own per-component
 /// `config.json` files (`MiniMaxAI/MiniMax-Music3` on Hugging Face) and the real, already-installed
-/// `diffusers==0.40.0` source -- see docs/066-minimax-music3-future-plan.md for the full
+/// `diffusers==0.40.0` source -- see docs/4-performance/audio/066-minimax-music3-future-plan.md for the full
 /// archaeology (Phase A). Only the real components the actual inference pipeline uses are modeled
 /// here (`condition_encoder`, `language_model`, `rvq_depth_decoder`, `transformer`, `vocoder`,
 /// `scheduler`) -- the checkpoint repo bundles several large additional files

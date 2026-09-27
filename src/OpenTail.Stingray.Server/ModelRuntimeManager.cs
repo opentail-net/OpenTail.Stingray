@@ -1,7 +1,7 @@
 namespace OpenTail.Stingray.Server;
 
 /// <summary>
-/// Production model-residency manager (docs/032-multi-model-inference-runtime-plan.md
+/// Production model-residency manager (docs/3-product-and-runtime/032-multi-model-inference-runtime-plan.md
 /// §"IModelRuntimeManager"). Owns model identity, single-flight loading, residency, and eviction
 /// for <see cref="ModelRuntime"/> instances — the successor to
 /// <see cref="OpenTail.Stingray.Core.SharedModelCache"/> for production use, not a second

@@ -1,4 +1,4 @@
-> **ARCHIVED 2026-09-27.** Closed: the scoped double-block GPU residency was built, verified correct (cosine > 0.9999) and wired into the pipeline 2026-09-19. The follow-up performance work is [../093-flux2-gpu-performance-optimization-plan.md](../093-flux2-gpu-performance-optimization-plan.md).
+> **ARCHIVED 2026-09-27.** Closed: the scoped double-block GPU residency was built, verified correct (cosine > 0.9999) and wired into the pipeline 2026-09-19. The follow-up performance work is [../093-flux2-gpu-performance-optimization-plan.md](../4-performance/diffusion/093-flux2-gpu-performance-optimization-plan.md).
 
 # 091 — FLUX.2 Vulkan GPU-residency scoping
 

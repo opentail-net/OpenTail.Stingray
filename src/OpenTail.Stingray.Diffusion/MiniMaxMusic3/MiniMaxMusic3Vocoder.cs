@@ -5,7 +5,7 @@ namespace OpenTail.Stingray.Diffusion.MiniMaxMusic3;
 /// <summary>
 /// Real MiniMax Music 3 Flow-VAE vocoder (`MiniMaxMusic3Vocoder`), transcribed directly from the
 /// real `diffusers` 0.40.0 source (`diffusers/models/autoencoders/minimax_music3_vocoder.py`,
-/// already installed in this environment -- see docs/066-minimax-music3-future-plan.md for the
+/// already installed in this environment -- see docs/4-performance/audio/066-minimax-music3-future-plan.md for the
 /// full archaeology). A real, single-parameter-Snake DAC-style decoder -- structurally the same
 /// shape as this project's own `Audio.Parler.DacDecoder`, a real second caller of that shape, but
 /// kept self-contained here (CLAUDE.md rule 7: DRY once this class is itself verified, not

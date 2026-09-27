@@ -2,7 +2,7 @@
 namespace OpenTail.Stingray.Tests.Audio;
 
 /// <summary>Real end-to-end test for <see cref="OpenTail.Stingray.Audio.VoxtralRealtime.VoxtralPipeline"/>
-/// (perf-sweep Phase 1.4, docs/perf-sweep-plan.md) -- verifies the real, wired
+/// (perf-sweep Phase 1.4, docs/4-performance/perf-sweep-plan.md) -- verifies the real, wired
 /// <see cref="ISpeechToTextPipeline"/> implementation reproduces the same reference transcript
 /// that <see cref="VoxtralGenerationLoopTests"/> already golden-verified by hand-driving
 /// PrefillWithCache/Step directly. This is the actual usability check: before this pipeline

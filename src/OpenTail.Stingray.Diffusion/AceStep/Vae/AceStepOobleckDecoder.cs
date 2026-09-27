@@ -6,7 +6,7 @@ namespace OpenTail.Stingray.Diffusion.AceStep.Vae;
 /// VAE ACE-Step 1.5 uses to turn 25Hz stereo latents into 48kHz stereo PCM. Transcribed directly
 /// from the real `diffusers` 0.40.0 source (already installed in this environment), tensor
 /// names/shapes confirmed against the real checkpoint's own safetensors header -- see
-/// docs/064-acestep-implementation-plan.md's "Corrections and confirmations" section.
+/// docs/2-coverage/064-acestep-implementation-plan.md's "Corrections and confirmations" section.
 ///
 /// <para><b>NOT the same architecture as this project's existing Stable Audio 3 `AcousticVae`</b>
 /// (Stability's bespoke transformer-resampling design) -- confirmed different, do not conflate.

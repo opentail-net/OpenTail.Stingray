@@ -7,7 +7,7 @@ namespace OpenTail.Stingray.Audio.VoxtralRealtime;
 /// text-decoder prefill (with the audio-embedding splice) → incremental (KV-cache) greedy decode
 /// → tekken vocabulary decode. This wraps the exact sequence already golden-verified against the
 /// real reference by <see cref="VoxtralEndToEndPrefillTests"/>/<see cref="VoxtralGenerationLoopTests"/>
-/// (perf-sweep Phase 1.4, docs/perf-sweep-plan.md) -- those tests exercised this logic by hand in
+/// (perf-sweep Phase 1.4, docs/4-performance/perf-sweep-plan.md) -- those tests exercised this logic by hand in
 /// test code; nothing outside tests could reach it before this class existed, so kernel speed
 /// (Phases 1.1-1.2e) was moot for any real usage. No new algorithm here, only real wiring.
 ///

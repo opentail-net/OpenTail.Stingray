@@ -14,7 +14,7 @@ namespace OpenTail.Stingray.Audio.VoxtralRealtime;
 /// `text_config.tie_word_embeddings=true`, confirmed by the real tensor list having no separate
 /// `lm_head.weight`).
 ///
-/// <para><b>Perf-sweep Phase 1.2</b> (docs/perf-sweep-plan.md): every matvec weight matrix is
+/// <para><b>Perf-sweep Phase 1.2</b> (docs/4-performance/perf-sweep-plan.md): every matvec weight matrix is
 /// quantized to Q8_0 at load time (verified converter, see
 /// `ConvertF32ToQ8_0VerificationTests`) so <see cref="VoxtralTextDecoder"/>'s linear layers hit
 /// <c>SimdKernels.MatVecQ8_0</c> instead of a full-F32 matvec -- 4x less weight-matrix memory

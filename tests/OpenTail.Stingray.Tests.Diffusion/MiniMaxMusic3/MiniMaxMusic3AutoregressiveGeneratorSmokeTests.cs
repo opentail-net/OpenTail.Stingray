@@ -10,7 +10,7 @@ namespace OpenTail.Stingray.Tests.Diffusion.MiniMaxMusic3;
 /// the real per-frame CFG loop runs end-to-end against real weights without exceptions and produces
 /// structurally valid output (right shapes, codes within their real vocab ranges). A full golden
 /// check needs the real Qwen2Tokenizer vocab for this checkpoint plus a real diffusers reference
-/// generation run -- not yet built, see docs/066-minimax-music3-future-plan.md.
+/// generation run -- not yet built, see docs/4-performance/audio/066-minimax-music3-future-plan.md.
 /// </summary>
 public sealed class MiniMaxMusic3AutoregressiveGeneratorSmokeTests
 {

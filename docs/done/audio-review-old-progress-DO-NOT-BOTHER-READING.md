@@ -1018,7 +1018,7 @@ scale, `(clamp(x, max-8) + 4)/4` normalization) — mel extraction is NOT the ob
 suspect, though not numerically verified frame-by-frame against a reference. No
 whisper.cpp reference binary is available locally to diff against directly (only
 `tools/llama.cpp/*.exe`, no whisper-cli) and building one from source was avoided per
-`docs/bugstofix.md`'s existing note that this session deliberately avoids installing MSVC
+`docs/1-correctness/bugstofix.md`'s existing note that this session deliberately avoids installing MSVC
 build tools. Next step: read `WhisperDecoder.cs`'s `PrimeCrossAttention`/`ForwardStep`
 and the tokenizer's `BuildInitialPrompt`/timestamp-suppression logic line-by-line against
 `examples/whisper.cpp`'s C++ source, the same way `docs/00-current-work.md`'s text-model
@@ -1084,7 +1084,7 @@ the positional-embedding addition, or — most likely given "[Music]" appears ev
 `tiny` — the decoder's cross-attention K/V projection or `PrimeCrossAttention`/
 `ForwardStep`'s KV-cache indexing in `WhisperDecoder.cs`. This needs either a real
 per-layer intermediate-tensor oracle (no whisper.cpp binary available locally, and
-building one was avoided per `docs/bugstofix.md`'s standing note about avoiding an MSVC
+building one was avoided per `docs/1-correctness/bugstofix.md`'s standing note about avoiding an MSVC
 toolchain install) or substantially more line-by-line source comparison time than this
 iteration had left. Left for a future iteration with a larger time budget.
 
@@ -11012,13 +11012,13 @@ worth actually re-confirming rather than assumed. Real findings, not assumed:
 - **ACE-Step 1.5 Turbo**: re-ran all 9 real-weight test classes including the full end-to-end
   pipeline test (408s real generation) -- all still pass. Confirmed the existing "~80%,
   archaeology-complete, not yet numerically-verified end-to-end, not yet human-listened" framing in
-  `docs/064-acestep-implementation-plan.md` was ALREADY accurate, unlike MiniMax-Music3 below --
+  `docs/2-coverage/064-acestep-implementation-plan.md` was ALREADY accurate, unlike MiniMax-Music3 below --
   no correction needed, just a fresh re-verification note.
 - **MusicGen/AudioGen**: re-ran both real end-to-end smoke tests (`AudioGenGenerationSmokeTests`
   3/3 passed in 962.9s, `MusicGenGenerationSmokeTests` 2/2 passed in 113.8s) -- both confirmed
   matching their documented "not yet golden-verified numerically, but real end-to-end generation
   works" status exactly. No correction needed.
-- **MiniMax-Music3**: see the dedicated correction in `docs/066-minimax-music3-future-plan.md` and
+- **MiniMax-Music3**: see the dedicated correction in `docs/4-performance/audio/066-minimax-music3-future-plan.md` and
   `docs/00-current-work.md` -- the previous "~15%, only vocoder done, blocked on disk space"
   framing was badly stale. All six real components are downloaded and individually golden-verified
   (8/8 real-weight test classes pass). Real remaining gap: a full end-to-end listening check and

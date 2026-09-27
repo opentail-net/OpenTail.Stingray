@@ -8,7 +8,7 @@ namespace OpenTail.Stingray.Tests.Diffusion.AceStep;
 /// First real-weight smoke test for ACE-Step's text-encoding step: real
 /// `Qwen/Qwen3-Embedding-0.6B-GGUF` (Q8_0) weights through <see cref="AceStepQwen3TextEncoder"/>
 /// (which reuses the existing `Engine.ForwardPass`/`EnableHiddenTaps` machinery, not a new
-/// transformer -- see docs/064-acestep-implementation-plan.md). Non-degeneracy receipt (finite,
+/// transformer -- see docs/2-coverage/064-acestep-implementation-plan.md). Non-degeneracy receipt (finite,
 /// non-trivial, shape-correct), not yet a numeric golden-parity test against a real HF
 /// `transformers` `Qwen3Model` reference run.
 ///
@@ -42,7 +42,7 @@ public sealed class AceStepQwen3TextEncoderTests
         using var encoder = new AceStepQwen3TextEncoder(ggufPath!);
 
         // Real SFT_GEN_PROMPT template, transcribed from the real diffusers ACE-Step pipeline
-        // (see docs/064-acestep-implementation-plan.md's "Corrections and confirmations").
+        // (see docs/2-coverage/064-acestep-implementation-plan.md's "Corrections and confirmations").
         string prompt =
             "# Instruction\nFill the audio semantic mask based on the given conditions:\n\n" +
             "# Caption\nA cinematic orchestral soundtrack with deep drums\n\n" +

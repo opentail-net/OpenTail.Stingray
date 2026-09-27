@@ -8,7 +8,7 @@ namespace OpenTail.Stingray.Tests.Diffusion.MiniMaxMusic3;
 /// Real numeric golden-parity check for <see cref="MiniMaxMusic3Transformer"/> (the flow-matching
 /// DiT) against the real `diffusers.MiniMaxMusic3Transformer1DModel` reference, loaded with the SAME
 /// real `transformer/diffusion_pytorch_model-*.safetensors` weights (zero missing/unexpected keys)
-/// and run on a fixed-seed synthetic input. See docs/066-minimax-music3-future-plan.md.
+/// and run on a fixed-seed synthetic input. See docs/4-performance/audio/066-minimax-music3-future-plan.md.
 /// </summary>
 public sealed class MiniMaxMusic3TransformerGoldenParityTests
 {

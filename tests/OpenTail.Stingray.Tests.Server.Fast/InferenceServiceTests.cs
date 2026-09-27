@@ -2,7 +2,7 @@
 namespace OpenTail.Stingray.Tests.Server.Fast;
 
 /// <summary>
-/// docs/032-multi-model-inference-runtime-plan.md Phase 7 — <see cref="IInferenceService"/> model
+/// docs/3-product-and-runtime/032-multi-model-inference-runtime-plan.md Phase 7 — <see cref="IInferenceService"/> model
 /// resolution/discovery. No real model/GGUF involved: multi-model entries use their own
 /// per-model <see cref="NamedModelOptions.EngineFactory"/> (fakes), exactly like the existing
 /// single-model <see cref="OpenTailStingrayServerOptions.EngineFactory"/> escape hatch tests do.

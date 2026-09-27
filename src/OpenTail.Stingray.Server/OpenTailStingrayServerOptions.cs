@@ -116,7 +116,7 @@ public sealed class OpenTailStingrayServerOptions
     public Func<IServiceProvider, LoadedEngine>? EngineFactory { get; set; }
 
     /// <summary>
-    /// Multi-model residency policy (docs/032-multi-model-inference-runtime-plan.md).
+    /// Multi-model residency policy (docs/3-product-and-runtime/032-multi-model-inference-runtime-plan.md).
     /// <c>null</c> (default) resolves to the <c>STINGRAY_MODEL_RESIDENCY_MODE</c> environment
     /// variable (<c>single</c> / <c>multi</c>, case-insensitive) when set, otherwise
     /// <see cref="OpenTail.Stingray.Server.ModelResidencyMode.MultiSlot"/>. This only seeds the initial value —
@@ -139,7 +139,7 @@ public sealed class OpenTailStingrayServerOptions
     public bool? EnableResourceAdmission { get; set; }
 
     /// <summary>
-    /// Named multi-model deployment (docs/032-multi-model-inference-runtime-plan.md Phase 7 —
+    /// Named multi-model deployment (docs/3-product-and-runtime/032-multi-model-inference-runtime-plan.md Phase 7 —
     /// "OpenTail server integration"). Empty (the default) means exactly today's single-model
     /// behavior: one engine loaded from <see cref="ModelPath"/> and the other singular loading
     /// fields above, eagerly loaded and pinned at startup — completely unchanged, byte-for-byte.
