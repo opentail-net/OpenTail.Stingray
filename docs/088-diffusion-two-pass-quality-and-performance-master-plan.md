@@ -703,6 +703,14 @@ worse than no status.
 ### Real inventory taken 2026-09-18 (backend-integration call-site count per model file, a proxy
 for how much real GPU-residency work exists — 0 means literally no GPU code path at all)
 
+> **CORRECTION 2026-09-27**: the last 4 rows below (HunyuanVideo, Qwen Image, FLUX.2, FLUX.3) are
+> stale — all four gained real GPU residency since this table was written, verified against
+> current source today (`grep -c` of backend/`Gpu` references): HunyuanVideo (`ecb96e4`,
+> 2026-09-26 — dedicated `HunyuanVideoModel.Gpu.cs`, cosine 1.000000 parity, 18.0s->8.8s/step),
+> Qwen Image (4 refs -> 49, `PerformanceLeague.md` 2026-09-24: 159.4s/161.1s Vulkan with
+> quantized GPU weights), FLUX.2 (0 refs -> 39, the entire `090`/`093`/`094` cluster closed
+> 2026-09-27 at 236.7s/208.1s full-GPU). FLUX.3 was not re-checked.
+
 | Model | File | Backend refs | Real Vulkan status |
 |---|---|---:|---|
 | FLUX.1 | `FluxDiT.cs` (+`FluxGpuWeights`/`FluxGpuWorkspace`) | 56 | **Full GPU residency, sub-2x C++ parity (1.98x)** |
@@ -712,10 +720,10 @@ for how much real GPU-residency work exists — 0 means literally no GPU code pa
 | SDXL/SDXL-Turbo | `SDXL/SdxlUNet2DConditionModel.cs` | 35 | **Full GPU residency, sub-2x C++ parity (1.60x)** |
 | SD3/3.5 | `SD3/MMDiTModel.cs` (+`MMDiTGpuWeights`/`MMDiTGpuWorkspace`) | 3 (+dedicated GPU classes) | **Full GPU residency, sub-2x C++ parity (1.89x)** |
 | LTX-Video | `LTXVideo/LtxVideoModel.cs` (+`LtxVideoGpuWeights`/`LtxVideoGpuWorkspace`) | 13 (+dedicated GPU classes) | **Full GPU residency**, 2.76x vs CPU (no C++ ref — sd.cpp blocked on audio cross-attn) |
-| HunyuanVideo | `HunyuanVideo/HunyuanVideoModel.cs` | 7 | **CPU only, effectively no GPU residency** — real work needed once Pass 1's text-conditioning gap closes |
-| Qwen Image | `QwenImage/QwenImageModel.cs` | 4 | **CPU only, effectively no GPU residency** — same, real work needed after Pass 1 |
-| FLUX.2 | `Flux2/Flux2DiT.cs` | 0 | **No GPU code at all** — blocked entirely on Pass 1's implementation work first |
-| FLUX.3 | `Flux3/Flux3DiT.cs` | 0 | Same as FLUX.2 |
+| HunyuanVideo | `HunyuanVideo/HunyuanVideoModel.cs` + `HunyuanVideoModel.Gpu.cs` | 7 (2026-09-18; now real GPU blocks, see correction above) | **DONE 2026-09-26** — real GPU blocks, cosine 1.000000 parity, 18.0s->8.8s/step |
+| Qwen Image | `QwenImage/QwenImageModel.cs` | 4 (2026-09-18) -> **49 (2026-09-27)** | **DONE** — Vulkan with quantized GPU weights, 159.4s/161.1s (`PerformanceLeague.md` 2026-09-24) |
+| FLUX.2 | `Flux2/Flux2DiT.cs` | 0 (2026-09-18) -> **39 (2026-09-27)** | **DONE** — full GPU residency, 236.7s/208.1s (090/093/094 cluster, closed 2026-09-27) |
+| FLUX.3 | `Flux3/Flux3DiT.cs` | 0 | Not re-checked this pass |
 
 **Reading this table**: the low/zero-ref rows (HunyuanVideo, QwenImage, FLUX.2, FLUX.3) are not
 "missing optimization" in the sense the high-ref rows' remaining ~1.6-2.8x gaps are — they have

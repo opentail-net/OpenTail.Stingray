@@ -1,3 +1,12 @@
+> **CLOSED 2026-09-27.** This doc's own success criterion (real, GPU-verified generation for all
+> three parts) is met, verified against `PerformanceLeague.md` and code today: **Part A** (SD3.5) —
+> GPU residency real (`MMDiTGpuWeights.cs`, closed in `done/076-sd35-medium-gpu-residency-plan.md`).
+> **Part B** (LTX-Video) — correctness fixed and GPU working, 133.3s Vulkan (was 311.6s CPU
+> pre-fix), status matrix row shows both CPU/GPU green. **Part C** (SD1.5+ControlNet) — UNet
+> residency done (172.2s Vulkan, 2.14x of the 80.36s C++ reference, cosine 1.0 parity), ControlNet
+> Canny GPU path done (204.4s, **1.96x** of C++, "SUB-2x ACHIEVED"). "Zero GPU code" (this doc's
+> opening framing) is no longer true for any of the three.
+
 # SD3/SD3.5, LTX-Video-2B, SD1.5+ControlNet Performance Improvement Plan (2026-09-15)
 
 ## Scope

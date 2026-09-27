@@ -1,3 +1,12 @@
+> **CLOSED 2026-09-27.** This doc's actual subject (T5-XXL GPU residency) is done — 2.84x speedup
+> landed and verified (296.6s / 299.6s re-verify after the attention-scale fix). The "Phase 3
+> opportunities" section's ~2.97x gap-to-C++ framing is stale: `PerformanceLeague.md`'s 2026-09-25
+> "register-tiled flash attention (headDim=128)" row (cited in `069`'s own banner) since dropped
+> FLUX.1-schnell's total to 132.0s, ~1.32x vs the 99.8s C++ reference — one of the three listed
+> opportunities (GEMM/attention tuning) was substantially acted on, just not written back into this
+> doc. Remaining opportunities (direct quantized-GEMM dot products, command-buffer/barrier fusion)
+> are still real and unimplemented per `069`'s banner and `VulkanMatMulPath.cs`'s Path 2 status.
+
 # FLUX T5-XXL Text Encoder GPU Residency Plan (2026-09-13)
 
 ## Context — read `docs/069-flux-vulkan-gemm-perf-handoff.md` first
