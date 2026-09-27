@@ -36,7 +36,7 @@ public static class Step3VlImagePreprocessor
 
         int cropW = CropExtent(w, window), cropH = CropExtent(h, window);
         byte[] refined = img;
-        if (cropW != w || cropH != h) refined = ResizeBilinearU8(img, w, h, cropW, cropH);
+        if (cropW != w || cropH != h) refined = LlamaImgTool.ResizeBilinear(img, w, h, cropW, cropH);
         int[] xs = Grid(cropW, window), ys = Grid(cropH, window);
         var crops = new List<Step3VlView>(xs.Length * ys.Length);
         foreach (int y in ys)
@@ -62,7 +62,7 @@ public static class Step3VlImagePreprocessor
         {
             float scale = (float)longestEdge / Math.Max(w, h);
             int nw = Math.Max(1, (int)MathF.Floor(w * scale)), nh = Math.Max(1, (int)MathF.Floor(h * scale));
-            img = ResizeBilinearU8(img, w, h, nw, nh);
+            img = LlamaImgTool.ResizeBilinear(img, w, h, nw, nh);
             (w, h) = (nw, nh);
         }
         return (img, w, h);
@@ -101,35 +101,6 @@ public static class Step3VlImagePreprocessor
             Array.Copy(img, (yy * w + x0) * 3, dst, ((yy - y) * size + (x0 - x)) * 3, (x1 - x0) * 3);
         return dst;
     }
-
-    /// <summary>img_tool resize_bilinear: align-corners mapping, result truncated to u8.</summary>
-    private static byte[] ResizeBilinearU8(byte[] src, int sw, int sh, int tw, int th)
-    {
-        var dst = new byte[tw * th * 3];
-        float xr = tw > 1 ? (float)(sw - 1) / (tw - 1) : 0f;
-        float yr = th > 1 ? (float)(sh - 1) / (th - 1) : 0f;
-        Parallel.For(0, th, y =>
-        {
-            float py = y * yr;
-            int y0 = Math.Min((int)py, sh - 1), y1 = Math.Min(y0 + 1, sh - 1);
-            float yf = py - y0;
-            for (int x = 0; x < tw; x++)
-            {
-                float px = x * xr;
-                int x0 = Math.Min((int)px, sw - 1), x1 = Math.Min(x0 + 1, sw - 1);
-                float xf = px - x0;
-                for (int c = 0; c < 3; c++)
-                {
-                    float top = Lerp(src[(y0 * sw + x0) * 3 + c], src[(y0 * sw + x1) * 3 + c], xf);
-                    float bot = Lerp(src[(y1 * sw + x0) * 3 + c], src[(y1 * sw + x1) * 3 + c], xf);
-                    dst[(y * tw + x) * 3 + c] = (byte)Lerp(top, bot, yf);
-                }
-            }
-        });
-        return dst;
-    }
-
-    private static float Lerp(float a, float b, float t) => a + (b - a) * t;
 
     /// <summary>img_u8_resize_bilinear_to_f32: half-pixel bilinear on normalised values, CHW output.</summary>
     private static float[] ResizeNormalize(byte[] src, int sw, int sh, int size, float[] mean, float[] std)

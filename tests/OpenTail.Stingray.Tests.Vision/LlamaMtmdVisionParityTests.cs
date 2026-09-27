@@ -219,6 +219,22 @@ public sealed class LlamaMtmdVisionParityTests
         AssertMatches(tokens, 3959.443, 40.0, [0.1267f, 2.3648f, 1.1197f], 0.05f);
     }
 
+    [Fact]
+    public void GraniteVision32_Rainbow384_MatchesLlamaMtmdDebug()
+    {
+        string? path = FindModel("mmproj-granite-vision-3.2-2b-f16.gguf");
+        Assert.SkipWhen(path is null, "mmproj-granite-vision-3.2-2b-f16.gguf not present");
+        using var model = LlavaVisionModel.Open(path!);
+        float[] tokens = new LlavaVisionEncoder(model).Forward(Rainbow(384), 384, 384, 27, 27, out int count);
+        Report("granite32 rainbow384", tokens, count, 2048);
+
+        // llama-mtmd-debug (-m granite-vision-3.2-2b-Q3_K_S.gguf --mmproj mmproj-granite-vision-3.2-2b-f16.gguf -n 384
+        // --image rainbow): 729 x 2048, sum -3284.434326, row 0 [0.0678, -0.1084, 0.0735]. Exercises the feature-layer
+        // stack [4, 8, 16, 27] (4 x 1152 = 4608-wide projector input), which the port ignored until 2026-09-27.
+        Assert.Equal(729, count);
+        AssertMatches(tokens, -3284.434, 35.0, [0.0678f, -0.1084f, 0.0735f], 0.03f);
+    }
+
     private static string? FindModel(string file)
     {
         var dir = new DirectoryInfo(AppContext.BaseDirectory);

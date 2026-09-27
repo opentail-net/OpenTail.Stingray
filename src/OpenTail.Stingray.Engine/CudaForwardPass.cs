@@ -2186,6 +2186,13 @@ public sealed unsafe class CudaForwardPass : IForwardPass, IBatchedForwardPass, 
                 $"embedding length {embedding.Length} != model embedding dim {_embDim}.");
 
         // 1. Upload the precomputed embedding into _hidden. No sqrt(d) scale.
+        // Granite family: llama.cpp scales raw embeddings by f_embedding_scale too (ModelHyperparams.ScaleRawEmbeddings).
+        if (_hp.ScaleRawEmbeddings && _hp.EmbeddingScale != 1f)
+        {
+            var scaled = embedding.ToArray();
+            System.Numerics.Tensors.TensorPrimitives.Multiply(scaled, _hp.EmbeddingScale, scaled);
+            embedding = scaled;
+        }
         _gpu.UploadInto(_hidden, embedding);
 
         if (_isGemma4Like)

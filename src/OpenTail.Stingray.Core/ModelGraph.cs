@@ -42,6 +42,15 @@ public sealed record ModelHyperparams
     public float EmbeddingScale { get; init; } = 1f;
 
     /// <summary>
+    /// Whether <see cref="EmbeddingScale"/> also applies to precomputed (image/audio) embeddings fed through
+    /// <c>ForwardEmbedding</c>. True for the Granite family, whose scale is llama.cpp's
+    /// <c>hparams.f_embedding_scale</c>, applied in <c>build_inp_embd</c> to token AND raw-embedding input
+    /// (llama-graph.cpp; deepstack models excepted). False for Gemma's sqrt(n_embd), which gemma graphs apply to
+    /// token lookups only. Missing until 2026-09-27: Granite Vision's image embeddings entered 12x too small.
+    /// </summary>
+    public bool ScaleRawEmbeddings { get; init; }
+
+    /// <summary>
     /// Cap value for the final-logits softcap (<c>x = tanh(x/cap) * cap</c>).
     /// 0 disables softcapping (default for non-Gemma architectures). Gemma 4 = 30.0.
     /// </summary>
@@ -1151,6 +1160,9 @@ public sealed record ModelHyperparams
             LayerTypes = layerTypes,
             Gdn = gdn,
             EmbeddingScale = embeddingScale,
+            // llama-graph.cpp build_inp_embd: raw embeddings are scaled unless the model has deepstack layers
+            // (Granite 4.0 Vision's granite.deepstack_mapping), whose multimodal inputs arrive unscaled.
+            ScaleRawEmbeddings = isGraniteFamily && !metadata.ContainsKey($"{arch}.deepstack_mapping"),
             ResidualScale = residualScale,
             AttentionScaleOverride = attentionScaleOverride,
             LogitScale = logitScale,

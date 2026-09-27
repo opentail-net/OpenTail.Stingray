@@ -58,6 +58,9 @@ public sealed unsafe class LlavaVisionEncoder
         public int FfnIntermediate;
     }
 
+    private readonly List<int> _featureLayers = [];
+    private readonly int _maxFeatureLayer;
+
     public int EmbeddingDim => _embd;
     public int ProjectionDim => _projDim;
 
@@ -81,6 +84,12 @@ public sealed unsafe class LlavaVisionEncoder
         _preLnB = VisionOps.GetTensorArray(gguf, "v.pre_ln.bias");
         _postLnW = VisionOps.GetTensorArray(gguf, "v.post_ln.weight");
         _postLnB = VisionOps.GetTensorArray(gguf, "v.post_ln.bias");
+
+        // llama.cpp llava.cpp: explicit feature layers (Granite Vision: [4, 8, 16, 27]) stop the ViT at the deepest
+        // one and concatenate the saved states; otherwise the ViT runs n_layer - 1 layers.
+        if (gguf.Metadata.TryGetValue("clip.vision.feature_layer", out var fl) && fl is System.Collections.IList fls)
+            foreach (var o in fls) _featureLayers.Add(Convert.ToInt32(o));
+        _maxFeatureLayer = _featureLayers.Count > 0 ? _featureLayers.Max() : _layers - 1;
 
         _mlp0W = VisionOps.GetTensor(gguf, "mm.0.weight");
         _mlp0B = VisionOps.GetTensorArray(gguf, "mm.0.bias");
@@ -197,9 +206,11 @@ public sealed unsafe class LlavaVisionEncoder
             if (_blocks[l].FfnIntermediate > maxIntermediate) maxIntermediate = _blocks[l].FfnIntermediate;
         }
         var ffnMid = new float[totalTokensIn * maxIntermediate];
-
-        for (int l = 0; l < _layers; l++)
+        var stack = new List<float[]>();
+        for (int l = 0; l < _maxFeatureLayer; l++)
         {
+            // Feature layer l = the INPUT to layer l (0 is the encoder input after pre_ln).
+            if (_featureLayers.Contains(l)) stack.Add((float[])hiddenStates.Clone());
             var blk = _blocks[l];
 
             fixed (float* ln1W = blk.Ln1W, ln1B = blk.Ln1B, attnQkvB = blk.AttnQkvB, attnQB = blk.AttnQB,
@@ -252,9 +263,18 @@ public sealed unsafe class LlavaVisionEncoder
         }
 
         // Strip CLS token (only if this checkpoint actually has one -- see hasCls above).
+        if (_featureLayers.Contains(_maxFeatureLayer)) stack.Add(hiddenStates);
+
         tokenCount = numPatches;
-        var patchEmbeddings = new float[numPatches * _embd];
-        Array.Copy(hiddenStates, hasCls ? _embd : 0, patchEmbeddings, 0, numPatches * _embd);
+        int featDim = stack.Count > 0 ? _embd * stack.Count : _embd;
+        var patchEmbeddings = new float[numPatches * featDim];
+        int skip = hasCls ? 1 : 0;
+        if (stack.Count == 0)
+            Array.Copy(hiddenStates, skip * _embd, patchEmbeddings, 0, numPatches * _embd);
+        else
+            for (int t = 0; t < numPatches; t++)
+                for (int si = 0; si < stack.Count; si++)
+                    Array.Copy(stack[si], (t + skip) * _embd, patchEmbeddings, t * featDim + si * _embd, _embd);
 
         // 2-layer GELU MLP Projector
         var visualTokens = new float[tokenCount * _projDim];
@@ -262,10 +282,11 @@ public sealed unsafe class LlavaVisionEncoder
         {
             fixed (float* mlp0B = _mlp0B, mlp2B = _mlp2B)
             {
-                var midBuf = new float[tokenCount * _projDim];
-                VisionOps.MatVecAny(patchEmbeddings, _mlp0W, mlp0B, tokenCount, _embd, _projDim, midBuf);
+                int midDim = (int)_mlp0W.Info.Dimensions[1];
+                var midBuf = new float[tokenCount * midDim];
+                VisionOps.MatVecAny(patchEmbeddings, _mlp0W, mlp0B, tokenCount, featDim, midDim, midBuf);
                 VisionOps.Gelu(midBuf);
-                VisionOps.MatVecAny(midBuf, _mlp2W, mlp2B, tokenCount, _projDim, _projDim, visualTokens);
+                VisionOps.MatVecAny(midBuf, _mlp2W, mlp2B, tokenCount, midDim, _projDim, visualTokens);
             }
         }
         else

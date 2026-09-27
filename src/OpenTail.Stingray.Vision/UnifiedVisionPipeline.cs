@@ -529,14 +529,31 @@ public static class UnifiedVisionPipeline
         public int EmbeddingDim => _model.ProjectionDim;
         public int ImageWidth => _model.ImageSize;
         public int ImageHeight => _model.ImageSize;
-        public string ImageOpenMarker => "<image>";
-        public string ImageCloseMarker => "</image>";
+        // mtmd adds no marker tokens around MLP-projector (LLaVA/Granite) images; the placeholder is replaced
+        // by the soft tokens alone (2026-09-27, matched against llama-server).
+        public string ImageOpenMarker => "";
+        public string ImageCloseMarker => "";
         public string PlaceholderMarker => "<image>";
 
         public float[] EmbedImage(ReadOnlySpan<byte> rgb, int width, int height, out int tokenCount)
         {
-            var pre = LlavaImagePreprocessor.Preprocess(rgb, width, height, _model.ImageSize, _model.PatchSize);
-            return _encoder.Forward(pre.Chw, pre.TargetWidth, pre.TargetHeight, pre.PatchesX, pre.PatchesY, out tokenCount);
+            var g = _model.Gguf;
+            float[] mean = VisionOps.GetTensorArrayOrMeta(g, "clip.vision.image_mean") ?? [0.48145466f, 0.4578275f, 0.40821073f];
+            float[] std = VisionOps.GetTensorArrayOrMeta(g, "clip.vision.image_std") ?? [0.26862954f, 0.26130258f, 0.27577711f];
+            var pins = new List<(int W, int H)>();
+            if (VisionOps.GetTensorArrayOrMeta(g, "clip.vision.image_grid_pinpoints") is { } pp)
+                for (int i = 0; i + 1 < pp.Length; i += 2) pins.Add(((int)pp[i], (int)pp[i + 1]));
+            int side = _model.ImageSize, grid = side / _model.PatchSize;
+
+            var views = LlavaImagePreprocessor.PreprocessViews(rgb, width, height, side, pins, mean, std);
+            var parts = new List<float[]>(views.Count);
+            tokenCount = 0;
+            foreach (var chw in views)
+            {
+                parts.Add(_encoder.Forward(chw, side, side, grid, grid, out int n));
+                tokenCount += n;
+            }
+            return parts.Count == 1 ? parts[0] : [.. parts.SelectMany(p => p)];
         }
 
         public float[] EmbedImageFile(string filePath, out int tokenCount)

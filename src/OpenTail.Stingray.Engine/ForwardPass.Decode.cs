@@ -56,7 +56,10 @@ public sealed unsafe partial class ForwardPass
         _currentPos = position;
         embedding.CopyTo(new Span<float>(_hidden, _embDim));
 
-        // Note: no EmbeddingScale here (see remarks). PLE uses the padding token row.
+        // Note: no Gemma EmbeddingScale here (see remarks); Granite's embedding_scale does apply to raw embeddings.
+        if (_hp.ScaleRawEmbeddings && _hp.EmbeddingScale != 1f)
+            SimdKernels.ScaleInPlace(_hidden, _hp.EmbeddingScale, _embDim);
+        // PLE uses the padding token row.
         if (_hp.HasPerLayerTokenEmbd)
             BuildPerLayerProjections(0);
 
