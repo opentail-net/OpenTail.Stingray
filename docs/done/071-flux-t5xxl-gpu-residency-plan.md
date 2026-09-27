@@ -19,6 +19,11 @@
 > `PerformanceLeague.md`'s 2026-09-25 row measures 132.0s total, ~1.32x vs the 99.8s C++ reference
 > (cited in `069`'s own banner) — largely from item 3's neighboring attention work, not from GEMM
 > tuning itself.
+>
+> **Archived, not just closed**: item 1 is already tracked in `00-current-work.md`'s FLUX.2
+> GPU-lever entry and `069`'s banner, so this doc adds nothing further as an active plan. Kept for
+> its one piece of content not recorded anywhere else — the 2026-09-14 addendum below, a real bug
+> fix (T5 attention was wrongly scaled by `1/sqrt(headDim)`; real T5 attention is unscaled).
 
 # FLUX T5-XXL Text Encoder GPU Residency Plan (2026-09-13)
 
