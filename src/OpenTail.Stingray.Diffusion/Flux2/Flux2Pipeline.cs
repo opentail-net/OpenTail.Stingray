@@ -199,6 +199,15 @@ public sealed class Flux2Pipeline : IDisposable
         // 3. Initialize Target Gaussian Latents
         var rng = request.Seed >= 0 ? new Random(request.Seed) : new Random();
         var targetLatent = SampleGaussian(nTargetTokens * inChannels, rng);
+        // Parity: stable-diffusion.cpp's SD_DUMP_NOISE_PATH noise is channel-major [128, tokens]; ours is token-major.
+        int nTokNoise = nTargetTokens, chNoise = inChannels;
+        DiffusionParityHooks.TryLoadNoise("STINGRAY_FLUX2_INJECT_NOISE_PATH", targetLatent, chw =>
+        {
+            var tm = new float[chw.Length];
+            for (int c = 0; c < chNoise; c++)
+                for (int i = 0; i < nTokNoise; i++) tm[i * chNoise + c] = chw[c * nTokNoise + i];
+            return tm;
+        });
 
         // 4. Text Embeddings -- real Mistral-Small-24B conditioning when real weights are loaded
         //    (Flux2TextConditioning.Encode, docs/087); synthetic fallback for the structural-only
@@ -238,6 +247,7 @@ public sealed class Flux2Pipeline : IDisposable
             nTxt = 64;
             txtEmbeds = new float[nTxt * Params.ContextInDim];
         }
+        DiffusionParityHooks.DumpToFile("STINGRAY_FLUX2_DUMP_COND_PATH", txtEmbeds);
         var txtPositions = new int[nTxt * 4];
         for (int i = 0; i < nTxt; i++)
         {
@@ -373,6 +383,7 @@ public sealed class Flux2Pipeline : IDisposable
             for (int i = 0; i < nTargetTokens; i++)
                 for (int c = 0; c < inChannels; c++)
                     chw[c * nTargetTokens + i] = targetLatent[i * inChannels + c];
+            DiffusionParityHooks.DumpToFile("STINGRAY_FLUX2_DUMP_LATENT_PATH", chw);
 
             using (var vaeWeights = SafetensorsLoader.Open(_vaePath))
             {

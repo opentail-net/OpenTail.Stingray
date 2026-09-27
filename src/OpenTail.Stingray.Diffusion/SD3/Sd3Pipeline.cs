@@ -332,6 +332,13 @@ public sealed class Sd3Pipeline : IDisposable, IDiffusionPipeline
         // stabilityai/stable-diffusion-3.5-medium vae/config.json) -- a DIFFERENT 16-channel VAE
         // checkpoint than FLUX/Z-Image-Turbo's, so VaeDecoder's channel-count-based default (tuned
         // for FLUX/Z-Image) is wrong here; pass the real values explicitly.
+        // Parity diagnostic: final denoised latent (same layout as sd.cpp's SD_DUMP_LATENT_PATH x_0 dump).
+        if (Environment.GetEnvironmentVariable("STINGRAY_SD3_DUMP_LATENT_PATH") is { Length: > 0 } latentDump)
+        {
+            var bytes = new byte[x.Length * sizeof(float)];
+            Buffer.BlockCopy(x, 0, bytes, 0, bytes.Length);
+            File.WriteAllBytes(latentDump, bytes);
+        }
         var pixels = _vae.Decode(x, latH, latW, scaleOverride: 1f / 1.5305f, shiftOverride: 0.0609f);
 
         // 5. Optional Super-Resolution

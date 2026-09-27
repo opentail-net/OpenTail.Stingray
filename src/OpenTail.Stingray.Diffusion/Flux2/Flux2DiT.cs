@@ -321,7 +321,11 @@ public sealed class Flux2DiT : IDisposable
 
         if (_p.GuidanceEmbed)
         {
-            var gEmb = DiffusionOps.SinusoidalTimestepEmbedding(guidance, 256, 10000f, flipSinToCos: true);
+            // Upstream timestep_embedding(guidance, 256) has time_factor=1000 (stable-diffusion.cpp:
+            // ggml_ext_timestep_embedding(guidance, 256, 10000, 1000.f)); callers pass the raw guidance (3.5), unlike
+            // the timestep, which the pipeline pre-scales. Embedded unscaled until 2026-09-27: the 1-step velocity was
+            // ~13% too small against the C++ reference (docs/102 #13).
+            var gEmb = DiffusionOps.SinusoidalTimestepEmbedding(guidance * 1000f, 256, 10000f, flipSinToCos: true);
             var gVec = MlpEmbedder("guidance_in", gEmb, d);
             for (int i = 0; i < d; i++) vec[i] += gVec[i];
         }

@@ -163,6 +163,8 @@ public sealed class QwenImagePipeline : IDiffusionPipeline
 
         // 3. Initial Gaussian noise in latent space [16, latH, latW]
         var latent = SampleGaussianNoise(latC * latH * latW, seed);
+        // Parity: stable-diffusion.cpp's SD_DUMP_NOISE_PATH noise, same channel-major [16, h, w] layout.
+        DiffusionParityHooks.TryLoadNoise("STINGRAY_QWENIMAGE_INJECT_NOISE_PATH", latent);
 
         // 4. Rectified Flow-Matching Timesteps with Flow Shift s = 3.0:
         var timesteps = new float[steps + 1];
@@ -202,6 +204,7 @@ public sealed class QwenImagePipeline : IDiffusionPipeline
 
         // 6. Decode 16-channel latents to RGB pixels via VAE (single-frame, t=1 -- WanVaeDecoder3D
         // already returns [0,1]-clamped pixels, matching PngWriter's expected convention directly).
+        DiffusionParityHooks.DumpToFile("STINGRAY_QWENIMAGE_DUMP_LATENT_PATH", latent);
         var pixels = _vae.Decode(latent, 1, latH, latW)[0];
 
         // 7. Optional Super-Resolution Upscaling

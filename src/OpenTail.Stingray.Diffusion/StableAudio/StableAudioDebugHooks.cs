@@ -8,14 +8,7 @@ namespace OpenTail.Stingray.Diffusion.StableAudio;
 /// </summary>
 internal static class StableAudioDebugHooks
 {
-    public static void MaybeLoadNoise(float[] latent)
-    {
-        if (Environment.GetEnvironmentVariable("STINGRAY_SA3_NOISE") is not { Length: > 0 } path) return;
-        var raw = File.ReadAllBytes(path);
-        if (raw.Length != latent.Length * 4)
-            throw new InvalidOperationException($"STINGRAY_SA3_NOISE has {raw.Length / 4} floats, latent needs {latent.Length}.");
-        Buffer.BlockCopy(raw, 0, latent, 0, raw.Length);
-    }
+    public static void MaybeLoadNoise(float[] latent) => DiffusionParityHooks.TryLoadNoise("STINGRAY_SA3_NOISE", latent);
 
     public static void Dump(string name, float[] data)
     {

@@ -23,7 +23,7 @@ dated evidence in the same pass.
 | 10 | ⛔ BLOCKED (needs an upstream CosyVoice2 reference) | CosyVoice 2: audio only partly right | investigation | large |
 | 11 | ✅ DONE (2026-09-27) | Stable Audio 3 Small SFX: darker than the reference | investigation | large |
 | 12 | ✅ DONE (2026-09-27) | Chronos-Bolt / Chronos-2: no numeric reference | needs an independent oracle without new Python reference scripts | large |
-| 13 | ⬜ TODO | 🟢-but-⚪ diffusion rows (HunyuanVideo, FLUX.2, Qwen Image, SD3 CPU): not independently verified | needs reference outputs (vendored C++ / recorded) | large |
+| 13 | 🟡 IN PROGRESS (SD3 + FLUX.2 done; Qwen Image, HunyuanVideo next) | 🟢-but-⚪ diffusion rows (HunyuanVideo, FLUX.2, Qwen Image, SD3 CPU): not independently verified | needs reference outputs (vendored C++ / recorded) | large |
 | 14 | ⬜ TODO | New family: Mamba-2 hybrid layer + state cache, admitting IBM Granite 4.0 (`granitehybrid`, Apache-2.0, 1B-32B) first | missing family; one layer type unlocks #3, #15 and Falcon-H1 | large |
 | 15 | ⬜ TODO | New family: NVIDIA Nemotron Nano v2 / Nemotron 3 Nano (`nemotron_h`) | missing family; reuses #14's Mamba-2 layer; also completes #3 | medium after #14 |
 | 16 | ⬜ TODO | New family: GLM-4.5 / 4.6 / 4.7 incl. Air (`glm4moe`) | missing family, currently a top open family; GLM-4 dense already runs. Air is ~60 GB at Q4 | medium |
@@ -113,6 +113,18 @@ second-half perplexity vs `llama-perplexity`, then an allowlist entry, a STATUS.
 MODELS.md entry if it qualifies.
 
 ## Log
+
+- 2026-09-27 #13 part 1: latent-level parity against `examples/stable-diffusion.cpp` (`sd-cli`).
+  - The reference is patched locally (git-ignored): `SD_DUMP_NOISE_PATH` (existing),
+    `SD_DUMP_LATENT_PATH` (x_0 before VAE decode) and `SD_DUMP_COND_PATH` (cross-attention
+    conditioning).
+  - Ours: the shared `DiffusionParityHooks` plus per-model environment variables
+    (`STINGRAY_SD3_INJECT_NOISE_PATH` / `_DUMP_LATENT_PATH`, `STINGRAY_FLUX2_INJECT_NOISE_PATH` /
+    `_DUMP_LATENT_PATH` / `_DUMP_COND_PATH`).
+  - SD3.5 Medium: verified; CPU 0.9971, Vulkan 0.9930.
+  - FLUX.2: guidance embedding x1000 fix, system-message line break, 512-row zero padding.
+    1-step 0.99986, 4-step 0.9982 (was 0.962).
+  - Next: Qwen Image, HunyuanVideo.
 
 - 2026-09-27 #12 DONE: both Chronos models now have an independent numeric oracle, community ONNX
   exports run through ONNX Runtime from C# (no Python).

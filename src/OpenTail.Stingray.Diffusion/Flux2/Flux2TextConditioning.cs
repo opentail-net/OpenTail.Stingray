@@ -13,11 +13,20 @@ public static class Flux2TextConditioning
 {
     /// <summary>
     /// Real BFL system message (examples/flux2/src/flux2/system_messages.py's `SYSTEM_MESSAGE`,
-    /// verbatim, confirmed in-repo).
+    /// verbatim -- including its line break after "object", which stable-diffusion.cpp keeps too; it was a space
+    /// here until 2026-09-27, changing the token sequence).
     /// </summary>
     public const string SystemMessage =
         "You are an AI that reasons about image descriptions. You give structured responses " +
-        "focusing on object relationships, object attribution and actions without speculation.";
+        "focusing on object relationships, object\nattribution and actions without speculation.";
+
+    /// <summary>
+    /// The DiT sees at least this many text rows: stable-diffusion.cpp (<c>hidden_states_min_length = 512</c> for
+    /// FLUX.2) appends zero rows after the real tokens' hidden states, and those rows take part in joint attention.
+    /// (BFL's text_encoder.py pads at the TOKEN level to 512 instead, so its pad rows hold real hidden states; the
+    /// C++ reference is what this port is verified against -- docs/102 #13.)
+    /// </summary>
+    public const int MinTextRows = 512;
 
     /// <summary>
     /// HF's literal `hidden_states[10, 20, 30]` indices, expressed in this codebase's
@@ -63,6 +72,8 @@ public static class Flux2TextConditioning
         for (int i = 0; i < tokens.Count; i++)
             mistralForwardPass.HiddenTapsAt(i).CopyTo(embeds.AsSpan(i * tapDim, tapDim));
 
-        return (embeds, tokens.Count);
+        int rows = Math.Max(tokens.Count, MinTextRows);
+        if (rows > tokens.Count) Array.Resize(ref embeds, rows * tapDim);   // zero rows, as the C++ reference
+        return (embeds, rows);
     }
 }
