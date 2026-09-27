@@ -1,5 +1,12 @@
 # SD3.5-medium MMDiT GPU Residency Plan (2026-09-13)
 
+**Status (2026-09-27): DONE — was blocked 2026-09-14 on disk space/missing checkpoint, resolved
+later.** `MMDiTGpuWeights`/`MMDiTGpuWorkspace` exist
+(`src/OpenTail.Stingray.Diffusion/SD3/MMDiTGpuWeights.cs`). `PerformanceLeague.md`'s 2026-09-24
+status matrix confirms: SD 3.5 medium "matches C++ (fixed today)" on both CPU (82.5s) and GPU
+(84.9/86.7s with quantized weights), vs the real C++ reference's 48.0s. Kept in `docs/done/` as the
+historical record.
+
 ## Context — read `docs/069` (FLUX) and `docs/072`/`docs/073` (Wan) first
 
 Same transformation both `FluxDiT` and `WanModel` already went through (real, proven, committed:

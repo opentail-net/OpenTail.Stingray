@@ -1,7 +1,10 @@
 # SDXL UNet whole-graph GPU residency — implementation plan
 
-**Status**: approved for implementation 2026-09-12, after external review. Revision 2 (folds in
-review corrections + a code-verified finding about `FullSeqAttention`).
+**Status (2026-09-27): DONE.** All stages executed 2026-09-12 (Stages 0-4 shipped, Stage 5 attempted
+and reverted as a real, documented negative result). Real SDXL-Turbo 512×512/4-step Vulkan run: 137.4s
+→ ~77-79.5s (~42-44% faster), dispatches 6511→1910, pixel-identical output at every stage. The
+identified next lever (>85% of remaining wall time is CPU-side work outside Vulkan) is picked up by
+`docs/done/068-sdxl-cpu-side-overhead-plan.md`. Kept in `docs/done/` as the historical record.
 
 ## Why
 
@@ -316,13 +319,17 @@ GEGLU/norm fusion beyond `GroupNormSilu`, reusable/persistent command buffers re
 denoising steps, INT8/quantized GPU GEMM, any attention-kernel algorithm work beyond re-measuring
 `MultiHeadAttentionTiled` in Stage 3b.
 
-## Open risks
+## Open risks (stale — all resolved by execution; kept for history)
 
-- Stage 0's outcome may force a different Upload/Download design than assumed (recordable
-  transfers rather than "no mid-graph transfers at all") — plan accordingly once that result is in.
-- Stage 4's memory-pressure numbers are unmeasured until that stage's gate runs.
-- Stage 5's descriptor-recycling behavior at full UNet scale is unverified until its stress test
-  runs.
+All three risks below were pre-execution guesses, since overtaken by real stage results: Stage 0
+did not need a different Upload/Download design, Stage 4 shipped with pixel-identical output at
+measured timing (no unresolved memory-pressure question), and Stage 5's real result was a
+regression, not an unverified stress test — see the "Final shipped" table above.
+
+- ~~Stage 0's outcome may force a different Upload/Download design than assumed~~
+- ~~Stage 4's memory-pressure numbers are unmeasured until that stage's gate runs.~~
+- ~~Stage 5's descriptor-recycling behavior at full UNet scale is unverified until its stress test
+  runs.~~
 - `MultiHeadAttentionTiled`'s Stage 3b re-test could still regress even in a resident context —
   treat as a real open question, not a foregone conclusion.
 

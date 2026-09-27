@@ -38,17 +38,18 @@ the order they were written.
   [101-work-queue-after-coverage-plan.md](101-work-queue-after-coverage-plan.md),
   [90-external-hardware-work.md](90-external-hardware-work.md) (needs hardware this machine lacks),
   [bugstofix.md](bugstofix.md)
-- **Model coverage:** 01, 02, 03, 07, 08, 050, 054, 055, 058, 064, 066, 086,
-  [vl-migration-plan-2026-08-20.md](vl-migration-plan-2026-08-20.md)
+- **Model coverage:** 02, 03, 07, 08, 050, 054, 058, 064, 066, 086
+  (01, 055, [vl-migration-plan-2026-08-20.md](done/vl-migration-plan-2026-08-20.md) done — see [done/](done))
 - **Runtime and serving:** 010, 032, 04, 051
-- **Performance:** 05, 049, 052, 053, 067-082, 084, 088, 090, 092-094,
-  [perf-sweep-plan.md](perf-sweep-plan.md), [cpu-performance-baseline.md](cpu-performance-baseline.md),
+- **Performance:** 05, 049, 052, 053, 069, 071, 073, 077-080, 082, 084, 088, 090, 092-094,
+  [perf-sweep-plan.md](perf-sweep-plan.md), [cpu-performance-baseline.md](done/cpu-performance-baseline.md),
   the `PerformanceLeague-*` plans, [perf-loop-project-review-progress.md](perf-loop-project-review-progress.md),
   [vulkan-gemm/](vulkan-gemm)
+  (067, 068, 072, 074-076, 081 done — see [done/](done))
 - **Audio:** [audio-review-new-progress.md](audio-review-new-progress.md),
-  [qwentts-cosyvoice3-handoff.md](qwentts-cosyvoice3-handoff.md),
-  [2026-09-24-audio-recheck-plan.md](2026-09-24-audio-recheck-plan.md),
   [tts-performance-baseline-and-plan.md](tts-performance-baseline-and-plan.md)
+  ([qwentts-cosyvoice3-handoff.md](done/qwentts-cosyvoice3-handoff.md),
+  [2026-09-24-audio-recheck-plan.md](done/2026-09-24-audio-recheck-plan.md) done — see [done/](done))
 - **Front door:** [103-front-door-design.md](103-front-door-design.md) (README and first-run design),
   [nuget-release-checklist.md](nuget-release-checklist.md)
 

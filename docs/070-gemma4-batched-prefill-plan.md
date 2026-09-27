@@ -22,7 +22,7 @@ Measured cost (2026-09-10 backfill, `PerformanceLeague.md`):
 | Gemma-4-12B-it Q4_K_M | 0.13x | prefill ≈ decode (3.5 vs 4.2 t/s) |
 | Gemma4-E4B-it Q4_K_M | 0.12x | prefill ≈ decode (9.8 vs 9.7 t/s) |
 
-Both confirm the original single-model finding (`cpu-performance-baseline.md`'s ~5.7x
+Both confirm the original single-model finding (`done/cpu-performance-baseline.md`'s ~5.7x
 size-adjusted prefill penalty) generalizes across the Gemma 4 family, not just one checkpoint.
 
 ## What `PrefillCoreAttention` is missing, concretely
@@ -81,7 +81,7 @@ try to fix Gemma 4 by touching those flags.
       27.81 t/s, E4B 80.50 t/s). Only keep the change if it's measurably faster — write the
       before/after numbers down, don't estimate.
 - [ ] **Update `PerformanceLeague.md`** with the new ratios once measured, and remove the
-      `perLayerHdUnsupported`/Gemma-4-prefill-penalty framing from `cpu-performance-baseline.md`'s
+      `perLayerHdUnsupported`/Gemma-4-prefill-penalty framing from `done/cpu-performance-baseline.md`'s
       "reading it" section if it's no longer accurate.
 - [ ] **DRY pass** (per `CLAUDE.md` rule 7): check whether the new per-layer-head-dim / sliding-
       window logic duplicates anything already in `RunTrunk`'s sequential `Attention()` — extract

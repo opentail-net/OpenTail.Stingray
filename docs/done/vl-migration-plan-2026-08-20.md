@@ -1,5 +1,9 @@
 # VL encoder migration plan — GetTensorPtr&lt;T&gt;/MatVecF16 → VisionTensorRef/GetTensor/MatVecAny
 
+**Status (2026-09-27): DONE.** All 13 encoders migrated and build-verified; `VisionOps.MatVecF16`
+deleted (confirmed zero live callers — `VisionOps.cs` only mentions it in doc comments explaining
+the old, retired pattern). Kept in `docs/done/` as the historical record.
+
 Read `docs/done/vl-untested-code-findings-2026-08-20.md` first — it has the full story: the old API
 blindly casts a tensor pointer to a fixed CLR type with no dtype check, which corrupted memory on a
 real Q8_0 mmproj (`InternVL3-2B`, confirmed crash, confirmed fixed). `InternVlVisionEncoder` is

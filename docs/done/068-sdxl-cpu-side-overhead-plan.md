@@ -1,7 +1,10 @@
 # SDXL CPU-side (non-Vulkan) overhead — implementation plan
 
-**Status**: approved for implementation 2026-09-12, after external review. Revision 2 (folds in
-review corrections). **Reframed per review**: this isn't really a "CPU optimization" plan — it's
+**Status (2026-09-27): DONE.** Every stage is either shipped, correctly skipped per the plan's own
+go/no-go gate (B5, C0-C2), or explicitly closed out with a measured reason not to pursue further
+(A3). Real result: 77.0s → 61.6s (~20% faster). See "D — Final report" below for the full table;
+the doc's own text says "this plan (docs/068) is now considered complete." Kept in `docs/done/` as
+the historical record. **Reframed per review**: this isn't really a "CPU optimization" plan — it's
 "finish eliminating CPU orchestration from the VAE" (a GPU-residency track, same family as
 docs/067) plus a separate "investigate first-use weight materialization" track (a CPU/I/O overlap
 question). Kept as two explicitly separate tracks so measurements stay attributable.

@@ -1,5 +1,16 @@
 # Master GPU Performance & Accuracy Plan (2026-09-14)
 
+**Status (2026-09-27): Priority 0 DONE** (confirmed within this doc itself: the `ctxLen`/
+`numTxtTokens` desync bug found and fixed, every DiT stage verified matching the real C++ reference
+to machine precision, and a real end-to-end run produced a genuinely coherent image — see the
+"CONFIRMED — RESOLVED" entry below). **The "broader checklist" section is stale** (written
+2026-09-14, before most of the per-model work below it actually happened) — do not trust its
+checkboxes; check each numbered doc's own current status instead: 074/075/076 are done (see
+`docs/done/`), 069/073 are partially done with an unmet perf target (open), 077 is open with a real
+unresolved correctness bug, 078/079/080 are not yet started. Kept in `docs/done/` as the historical
+record of the Wan2.1 correctness investigation — the highest-value content here is the bisection
+trail (real C++ cross-reference, block-by-block cosine comparison) below, not the checklist.
+
 This is the top-level index for all the per-model GPU-residency/perf handoff docs written this
 session (`docs/069`-`080`). Work through it top-to-bottom. **Priority 0 (below) blocks everything
 else for Wan specifically** — do not spend further effort on Wan *performance* until Wan

@@ -1,5 +1,11 @@
 # Wan 2.1/2.2 UMT5-XXL Text Encoder GPU Residency Plan (2026-09-13)
 
+**Status (2026-09-27): DONE.** `UMT5GpuWeights`/`UMT5GpuWorkspace` exist and are wired into
+`UMT5Encoder` (`src/OpenTail.Stingray.Diffusion/UMT5GpuWeights.cs`, `TextEncoders/UMT5Encoder.cs`).
+`PerformanceLeague.md`'s Wan2.1 row confirms real GPU timing (UMT5 text-encode 14.1s on GPU as of
+2026-09-26, vs 6.5s on CPU — reported honestly per this doc's own success criterion, not hidden).
+Kept in `docs/done/` as the historical record.
+
 ## Context — a proven template already exists, copy it
 
 `src/OpenTail.Stingray.Diffusion/TextEncoders/T5Encoder.cs` (FLUX's T5-XXL encoder) just went

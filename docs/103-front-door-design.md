@@ -1,5 +1,11 @@
 # Front door: README and first-run experience (design, 2026-09-26)
 
+**Status (2026-09-27): Step 1 done** (README.md moved/rewritten around a working quick start;
+old matrix now `docs/STATUS.md` — confirmed by STATUS.md's own banner and the current README's
+structure). **Steps 2-4 not started** — no `stingray setup`/starter-manifest/model-home code exists
+in `src/OpenTail.Stingray.Cli` yet, and the README's recipes are not yet rewritten around task
+commands. This doc stays active for steps 2-4.
+
 ## Problem
 
 The repository and the NuGet package present capability lists, not a way in.

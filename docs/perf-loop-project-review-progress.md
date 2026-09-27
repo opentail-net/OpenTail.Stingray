@@ -9,7 +9,7 @@ per-project read rather than run as a separate pass — reading the file once fo
 
 **Method — performance:** read the project for genuine opportunities (not micro-nitpicks), and
 only ship a change that's benchmarked before/after with the existing infra (interleaved runs,
-best-of-N, skeptical of single-run deltas — see docs/cpu-performance-baseline.md methodology).
+best-of-N, skeptical of single-run deltas — see docs/done/cpu-performance-baseline.md methodology).
 Never leave the build broken between firings.
 
 **Method — DRY/quality:** note duplicated logic, dead code, and structurally confusing patterns

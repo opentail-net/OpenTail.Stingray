@@ -1,5 +1,13 @@
 # Handoff: finishing QwenTTS and CosyVoice3 (OpenTail.Stingray)
 
+**Status (2026-09-27): DONE — superseded by later work.** This doc's own investigation trail ends
+inconclusive (CosyVoice3's speaker-identity bug not yet root-caused as of its last entry). Both
+targets are now 🟢 in `docs/STATUS.md`: QwenTTS fixed 2026-08-29 (QK-norm bug), CosyVoice3's
+speaker-identity bug root-caused and fixed 2026-09-06 (DiT attention applying RoPE to all 16 heads
+instead of head 0 — see `docs/audio-review-progress.md`, user-confirmed by ear). The methodology
+section below (read the real C++ reference, numeric stage-by-stage verify, trust the listener's
+ear) remains valid guidance for similar work. Kept in `docs/done/` as the historical record.
+
 ## Context: how to work on this project's audio pipelines (read first)
 
 This is `OpenTail.Stingray`, a C#/.NET port of several GGUF-based inference engines. Fish Speech

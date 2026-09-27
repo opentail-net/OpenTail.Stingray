@@ -1,5 +1,11 @@
 # Wan2.1 GPU Kernel Tuning Plan (2026-09-13)
 
+**Status (2026-09-27): DONE — Phase 1 of the Wan2.1 GPU campaign.** Fixed the real bug (GPU path
+silently running the transformer loop on CPU), then landed FP16 GEMM + workspace tuning: 1873.2ms
+→ 738.7ms/block (2.54x, now 1.78x faster than CPU), `WanGpuParityTests` passing. Superseded/continued
+by Phase 2, [073-wan21-kernel-fusion-and-qkv-plan.md](../073-wan21-kernel-fusion-and-qkv-plan.md)
+(open — that phase's <450ms target was not met). Kept in `docs/done/` as the historical record.
+
 ## Context — what's already real, read `docs/069`/`docs/071` for the FLUX playbook first
 
 As of commit `53839a3`, Wan2.1's Vulkan GPU-resident DiT path is **genuinely correct for the first

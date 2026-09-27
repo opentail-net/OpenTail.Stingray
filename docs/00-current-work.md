@@ -316,9 +316,10 @@ on 2026-09-27: most of it closed (Z-Image Vulkan, xverse tokenizer, SentencePiec
 MusicGen, AudioGen, Wan, LTX-Video, DeepSeek2 MLA, GPT-OSS, FLUX.1, Stable Audio 3; see their
 STATUS rows). Still open, with the original entry's number:
 
-- **#3 CosyVoice 2/3 speaker identity.** CosyVoice 3 is 🟢 in STATUS. CosyVoice 2 is blocked on an
-  upstream reference (item 10 of [102-status-open-items-plan.md](102-status-open-items-plan.md));
-  the remaining CosyVoice 3 work is in [qwentts-cosyvoice3-handoff.md](qwentts-cosyvoice3-handoff.md).
+- **#3 CosyVoice 2/3 speaker identity.** CosyVoice 3 is 🟢 in STATUS — no remaining work; its fix
+  history is in [done/qwentts-cosyvoice3-handoff.md](done/qwentts-cosyvoice3-handoff.md). CosyVoice 2
+  is blocked on an upstream reference (item 10 of
+  [102-status-open-items-plan.md](102-status-open-items-plan.md)).
 - **#6 CPU greedy-decode non-determinism** (2 non-reproducing sightings under CPU contention).
 - **#7 HunyuanVideo numeric verification** (item 13 of [102-status-open-items-plan.md](102-status-open-items-plan.md)).
 - **#11 ACE-Step 1.5 Turbo.** The archived entry says "not started", which is stale:

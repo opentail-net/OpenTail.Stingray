@@ -1,5 +1,11 @@
 # Z-Image-Turbo S3-DiT GPU Residency Plan (2026-09-13)
 
+**Status (2026-09-27): DONE.** `ZImageGpuWeights`/`ZImageGpuWorkspace` exist
+(`src/OpenTail.Stingray.Diffusion/ZImageGpuWeights.cs`). `PerformanceLeague.md`'s 2026-09-24 perf
+pass confirms real GPU-resident timing: 52.8-57.6s (vs 87.8-97.8s CPU) at 256x256/4-step, clean
+apple image, latent std matching CPU (1.4475 vs 1.4538). Kept in `docs/done/` as the historical
+record.
+
 ## Context — read `docs/069` (FLUX) and `docs/072`/`docs/073` (Wan) first
 
 Both FLUX's `FluxDiT` and Wan's `WanModel` have now been through this exact transformation: from

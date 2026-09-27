@@ -1,4 +1,4 @@
-> **ARCHIVED 2026-09-27.** Historical: an external-advice prompt, kept next to the other `cosyvoice3-*-chatgpt-prompt.md` files here. CosyVoice 3's current state is its STATUS row; the remaining open CosyVoice work lives in [../qwentts-cosyvoice3-handoff.md](../qwentts-cosyvoice3-handoff.md).
+> **ARCHIVED 2026-09-27.** Historical: an external-advice prompt, kept next to the other `cosyvoice3-*-chatgpt-prompt.md` files here. CosyVoice 3 is now 🟢 in `docs/STATUS.md` (fixed 2026-09-06); the fix history is in [qwentts-cosyvoice3-handoff.md](qwentts-cosyvoice3-handoff.md), also archived here. Open CosyVoice 2 work (unrelated bug) is tracked in `docs/00-current-work.md`.
 
 # CosyVoice3 zero-shot voice cloning produces a "foreign"/wrong-timbre voice — request for advice
 

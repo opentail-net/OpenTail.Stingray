@@ -1,5 +1,11 @@
 # Audio re-check plan: correctness + performance (written 2026-09-24)
 
+**Status (2026-09-27): DONE.** All four phases (0-3) are checked off below and their results are
+recorded in `docs/STATUS.md`/`PerformanceLeague.md`/`docs/audio-review-new-progress.md`. The
+residual known gaps listed under "Open after the re-check" (CosyVoice2 LLM drift, Stable Audio SFX,
+MeloTTS English, Parakeet WER, RVC/VibeVoice perf) are tracked as their own STATUS.md rows, not open
+items of this plan. Kept in `docs/done/` as the historical record.
+
 Scope: `src/OpenTail.Stingray.Audio`, which has 34 engine folders and ~70k lines. The README
 matrix lists 30 audio capabilities, and there is an RTF table of 11 TTS engines. Checkpoints for
 almost everything are on disk (`models/` and `models/_models` → `F:\_models`). The only ones

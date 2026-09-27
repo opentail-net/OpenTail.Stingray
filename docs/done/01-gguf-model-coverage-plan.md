@@ -4,8 +4,20 @@
 correctly or refuses with a specific, actionable reason. Breadth of models is the priority;
 throughput is explicitly subordinate to it.
 
-**Status:** not started as a programme. The findings below are a code audit performed 2026-08-08;
-none of them are measured against models yet.
+**Status (2026-09-27): programme substantially complete.** All four axes have been addressed with
+receipts: the architecture gate is consistent across entry points (§1a), dozens of architectures
+have been assessed and either ADMITTED with a parity receipt or terminally deferred for a stated
+license/checkpoint-size reason (§1b–§1w), the IQ tensor-format family is fully implemented and
+gate-admitted (§2), the tokenizer pre-type defect was found and fixed (§3), and chat-template corpus
+coverage was measured with one real defect found and fixed (§4). Verified against
+`src/OpenTail.Stingray.Engine/ModelCompatibility.cs`'s current allowlist, which matches this doc's
+ADMITTED verdicts (plus `gpt-oss` and `deepseek2`/MLA, admitted 2026-09-26 after this doc's last
+edit — see `docs/101-work-queue-after-coverage-plan.md` for those receipts). Remaining open items are
+narrow and logged in place, not a live plan: a handful of license/checkpoint-blocked architectures
+that stay out permanently (`bitnet`, `nemotron`, `lfm2`, `seed_oss`, `dots1`, the `mamba`/`jamba`/
+`rwkv` recurrent family) and two minor unsupported Jinja expression forms noted in §4. This file is
+kept in `docs/done/` as the historical record; open follow-on work lives in
+`docs/101-work-queue-after-coverage-plan.md` and `docs/00-current-work.md`.
 
 ## The four axes
 
