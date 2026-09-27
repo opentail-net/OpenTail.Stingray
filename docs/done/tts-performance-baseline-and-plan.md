@@ -28,7 +28,7 @@ one-offs.
 ## What the numbers already tell us
 
 - Both pipelines log `OpenBLAS: not found (fallback to sequential)` at startup. This is
-  **expected, not a bug** — see [docs/done/openblas-elimination-findings-2026-08-20.md](done/openblas-elimination-findings-2026-08-20.md):
+  **expected, not a bug** — see [docs/done/openblas-elimination-findings-2026-08-20.md](../done/openblas-elimination-findings-2026-08-20.md):
   OpenBLAS was deliberately removed from the source tree because it measured strictly worse than
   this codebase's own SIMD kernels on every shape tested. Don't reintroduce it as a "fix."
 - CosyVoice3 is slower in both absolute time and RTF than QwenTTS, despite producing only

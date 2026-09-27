@@ -1,3 +1,18 @@
+> **ARCHIVED 2026-09-27: the "Not yet checked" list below was completed in a follow-up pass.**
+> Outcome, each with evidence in the document's own banner:
+> - Archived: `090-flux2-cpu-perf-handoff.md`, `tts-performance-baseline-and-plan.md`,
+>   `PerformanceLeague-expansion-plan.md`.
+> - Split (closed parts moved verbatim to `done/`): `094-diffusion-performance-plan.md` (Phases 6 and 9
+>   stay open), `perf-sweep-plan.md` (Phases 12 and 14 closed).
+> - Status note added, still open: `093` (Experiment 3, row-offset audit), `064` ACE-Step (the
+>   `silence_latent` gap listed below had already closed; end-to-end parity open), `066` MiniMax-Music3
+>   (vocoder decode gap), `058` DeepSeek V3.2/V4 (unchanged, out of scope per 102).
+> - Leftovers carried forward in [../00-current-work.md](../00-current-work.md).
+> - The same pass fixed the links and `docs/...` paths to the 14 files this session moved (broken
+>   relative links 52 -> 41, all 41 older than both archive passes).
+> - Not audited, as reference material rather than plans: `docs/profiles/` (configs read by tests) and
+>   the samples READMEs.
+
 # Doc audit handoff (2026-09-27, session paused by user request)
 
 The user asked for every doc in `docs/` to be checked against real code/tests/`PerformanceLeague.md`/
@@ -75,7 +90,7 @@ either way — don't assume either "done" or "still open" without checking:
 - `done/tts-performance-baseline-and-plan.md` — Turn 1 done, Turn 2 (Batched CFG & ODE step reduction)
   never appears in the doc; unclear whether it happened elsewhere and was never written back here
   — check `PerformanceLeague.md`'s QwenTTS/CosyVoice3 rows and `docs/audio-review-new-progress.md`
-- `PerformanceLeague-expansion-plan.md` — has some deferred items noted inline; not individually
+- `done/PerformanceLeague-expansion-plan.md` — has some deferred items noted inline; not individually
   re-verified this session
 - `058-deepseek-full-lineage-implementation-plan.md` — last known status: Phase 0/1 alpha code
   written, never run against real weights — worth checking if that changed

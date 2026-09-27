@@ -1094,3 +1094,6 @@ names what closed; these items are what did not.
 - **CosyVoice3 ODE step count**: the default is still 10; the fewer-steps A/B (by ear plus a Whisper
   round trip) proposed as item 2 of
   [done/tts-performance-baseline-and-plan.md](done/tts-performance-baseline-and-plan.md) was never run.
+- **Vision timings not yet in `PerformanceLeague.md`**: Pixtral 12B and GLM-4.6V (gated GGUFs; need an
+  `HF_TOKEN` with the licence accepted), plus LLaVA-NeXT/OneVision, GLM-4V/OCR, Hunyuan-VL and Llama 4
+  vision. See [done/PerformanceLeague-expansion-plan.md](done/PerformanceLeague-expansion-plan.md).
