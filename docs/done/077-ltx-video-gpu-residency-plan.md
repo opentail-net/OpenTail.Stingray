@@ -1,5 +1,13 @@
 # LTX-Video GPU Residency Plan (2026-09-13)
 
+**Status (2026-09-27): DONE.** This doc's own bisection trail ends unresolved (2026-09-14), but
+LTX-Video is 🟢 "closed 2026-09-18" in `docs/STATUS.md`: the remaining bug was root-caused to real
+missing T5 text conditioning (every noise-producing run here had used placeholder/mock conditioning
+despite a real local checkpoint being available) plus insufficient CFG guidance strength at low
+seeds — both fixed, 4/4 tested seeds now coherent, GPU/CPU pixel-identical for the same seed, and a
+2026-09-24 perf pass landed (CPU 311.6s→133.3s). Kept in `docs/done/` as the historical record — the
+bisection methodology here remains a good reference for similar investigations.
+
 ## Read this warning before doing any GPU work here
 
 Unlike FLUX (`docs/069`), Wan (`docs/072`/`docs/073`), Z-Image-Turbo (`docs/075`), and

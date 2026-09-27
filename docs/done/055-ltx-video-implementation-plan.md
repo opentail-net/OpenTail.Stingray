@@ -1,5 +1,12 @@
 # 055 — LTX-Video (Lightricks) real implementation plan
 
+**Status (2026-09-27): DONE.** LTX-Video is 🟢 "closed 2026-09-18" in `docs/STATUS.md`, with a real
+root-caused fix history (timestep-embedding `flipSinToCos` bug + missing real T5 text conditioning,
+both fixed; 4/4 tested seeds now coherent) and a 2026-09-24 perf pass (CPU 311.6s→133.3s at
+512²/20-step). See `docs/done/077-ltx-video-gpu-residency-plan.md` for the detailed bisection that
+found the remaining bug this doc's own "investigation closed" conclusion below didn't yet cover.
+Kept in `docs/done/` as the historical record.
+
 Planning pass (external-AI-assisted architecture research, cross-checked against the real
 downloaded checkpoint's own tensor inventory before writing anything into this doc) following up
 on `docs/diffusion-samples/README.md`'s LTX-Video finding: the current code is a from-scratch
