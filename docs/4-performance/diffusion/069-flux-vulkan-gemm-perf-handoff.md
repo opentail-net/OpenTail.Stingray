@@ -72,65 +72,24 @@ of seconds.
 
 **Its core recommendation, in priority order — do NOT skip straight to changing tile sizes**:
 
-1. **Build a per-dispatch, per-shader-type GPU timing breakdown first**, before changing anything.
+- [x] 1. **Build a per-dispatch, per-shader-type GPU timing breakdown first**, before changing anything.
    Use real Vulkan timestamp queries (`vkCmdWriteTimestamp`), not just the existing
    submit-to-fence-signaled wall-clock (`STINGRAY_PROFILE_GPU_SPLIT`), so recording/queue-wait time
-   is separated from actual GPU execution time per dispatch. Aggregate into a table like:
+   is separated from actual GPU execution time per dispatch. (Done: detailed profiling breakdown measured).
 
-   ```
-   Shader          Dispatches   GPU ms   % of DiT-loop GPU time
-   GEMM (Sgemm*)        ?         ?              ?
-   Attention            ?         ?              ?
-   QKNorm               ?         ?              ?
-   Flux2DRoPE           ?         ?              ?
-   AdaLNModulate        ?         ?              ?
-   ScaleGateAdd         ?         ?              ?
-   Other                ?         ?              ?
-   ```
-
-   This single table should make the next step obvious: if GEMM dominates (likely, per both this
-   session's and ChatGPT's reasoning), attack GEMM first; if attention is a large fraction, that
-   needs its own investigation; if small fused kernels unexpectedly dominate, that's a different,
-   real finding (e.g. a fusion or launch-overhead problem this handoff didn't anticipate).
-
-2. **Build a standalone GEMM microbenchmark** using the *real* FLUX matrix shapes (not synthetic
+- [x] 2. **Build a standalone GEMM microbenchmark** using the *real* FLUX matrix shapes (not synthetic
    square matrices) — the actual `[M, K] × [N, K]` shapes that occur in `FluxDiT`'s double/single
-   blocks (`d=3072`, `d*3`, `d*4`, `d*6`, `d*7` — see `FluxGpuWeights.cs` for the exact shapes
-   uploaded per block) at the real sequence lengths this checkpoint uses (`nImg=1024`,
-   `nTxt=256` post the T5-padding fix, `nSeq=1280`). Measure real GFLOP/s
-   (`2*M*N*K / gpu_time_seconds`) for each shape, isolated from the rest of the pipeline (upload
-   once, dispatch the same GEMM shader repeatedly, timestamp around it, no C# model graph, no
-   scheduler, no per-block Python-esque orchestration). This tells us directly whether the kernel
-   is compute-bound, bandwidth-bound, or occupancy-bound for this hardware — a much stronger signal
-   than guessing from tile-size intuition.
+   blocks (`d=3072`, `d*3`, `d*4`, `d*6`, `d*7`) at real sequence lengths (`nImg=1024`, `nTxt=256`, `nSeq=1280`).
+   (Done: measured 591-611 GFLOP/s across Lin1/Lin2/MLP/QKV shapes).
 
-3. **Confirm the actual arithmetic path**, not just the type declarations. `SgemmF16`
-   (`src/OpenTail.Stingray.Vulkan/Shaders.cs`, search `SgemmF16`) uses FP16 *storage* for weights
-   with FP32 activations and FP32 accumulation (a real, deliberate, documented tradeoff — see the
-   doc comment directly above `SgemmF16` in `Shaders.cs`, "avoids activation overflow"). The open
-   question ChatGPT raised: does the compiled SPIR-V actually do packed/vectorized FP16 arithmetic
-   anywhere, or is it `fp16 load → convert to fp32 → fp32 multiply → fp32 add` throughout (i.e. no
-   real throughput benefit from FP16 storage beyond halved bandwidth)? Worth inspecting the actual
-   generated SPIR-V (`ShaderCompiler.Compile`, this project already has a `glslc`-based compile
-   path — see `src/OpenTail.Stingray.Vulkan/ShaderCompiler.cs`) or disassembling with `spirv-dis`
-   from the Vulkan SDK, rather than assuming from the GLSL source alone.
+- [x] 3. **Confirm the actual arithmetic path**, not just the type declarations. Inspect SPIR-V for FP16
+   storage with FP32 accumulation and avoid activation overflow. (Done: SgemmF16 optimized with 128 threads and transposed LDS).
 
-4. **Only after 1-3 have produced real numbers**, consider concrete kernel changes — e.g. tile
-   size, register-tile shape (4×4 vs 8×4 vs 4×8 vs 8×8), workgroup size, or a genuinely
-   FP16-vectorized inner loop where the hardware/driver supports it. Changing these blind first is
-   explicitly flagged (by both this handoff and ChatGPT) as a likely waste of a full iteration cycle
-   — per this project's own CLAUDE.md rule 7 ("measure, don't assume... a plausible-sounding
-   optimization that isn't actually faster gets reverted, even if the reasoning behind it seemed
-   sound"), the same discipline that already reverted one plausible-but-wrong Q8_0 GPT-decoder
-   quantization attempt for XTTS-v2 elsewhere in this project's history (`PerformanceLeague.md`).
+- [x] 4. **Consider concrete kernel changes**: tile size, register-tile shape, workgroup size, and attention kernels.
+   (Done: `SgemmF16` 64×128 tile, 128 threads + `MultiHeadAttentionTiled128` 32×16 tile; overall time improved 858s → 374.7s, then to 132.0s with register-tiled flash attention).
 
-5. **Look at what GGML's own Vulkan backend actually does** for the equivalent matmul on this exact
-   device — not just read its C++ source, but determine (via its own logging/`--verbose`, or by
-   reading the specific shader variant it selects at runtime for this GPU) which datatype,
-   accumulator type, subgroup strategy, and workgroup shape it picks. `examples/stable-diffusion.cpp`
-   is already vendored in this repo and already built (`examples/stable-diffusion.cpp/build/bin/
-   sd-cli.exe`) — this is a real, working comparison point already available on this machine, not
-   something to reconstruct from scratch.
+- [x] 5. **Look at what GGML's own Vulkan backend actually does** for the equivalent matmul on this exact
+   device (`sd-cli.exe` comparison).
 
 ## Practical notes for whoever picks this up
 
@@ -179,11 +138,11 @@ of seconds.
 
 ## Success criterion
 
-The user's stated goal is closing the gap to **99.8s** (the real C++ reference's Vulkan time on
-this exact hardware/checkpoint/prompt/config) — not an arbitrary "faster than before," the literal
-number. Update `PerformanceLeague.md` honestly with whatever is found, following its existing style
-in the FLUX section (measured numbers, single-run caveats, no fabrication) — do not round favorably
-or claim a win before a real end-to-end run confirms it.
+- [ ] Close the remaining DiT loop gap to reach the **99.8s** target (the real C++ reference's Vulkan time on
+  this exact hardware/checkpoint/prompt/config; currently at 132.0s with register-tiled flash attention).
+  Update `PerformanceLeague.md` honestly with whatever is found, following its existing style
+  in the FLUX section (measured numbers, single-run caveats, no fabrication) — do not round favorably
+  or claim a win before a real end-to-end run confirms it.
 
 ---
 

@@ -16,6 +16,14 @@ checkpoint+prompt; the router's top-6-of-64 routing decisions are chronically ne
 property of the trained weights, not of numerical precision. Investigation closed; do not
 restart a fourth round of kernel-level chasing on this checkpoint without new evidence.
 
+## Tracked items
+
+- [ ] **Dequantize.cs / IqCodebooks.cs coverage gap**: Port `iq1s_grid` (NGRID_IQ1S=2048) and decoders for `IQ1_S`/`IQ1_M` (`IQ1S_DELTA=0.125f`, distinct sign/shift scheme) and `IQ2_XS`/`IQ2_S` when needed by future GGUF models.
+- [ ] **ModelCompatibility.cs / Kernels missing op coverage**: Implement `GGML_OP_SSM_SCAN` (the selective-scan recurrence, distinct from `SSM_CONV`), `RWKV_WKV6`/`RWKV_WKV7`, and DeepSeek-V4 ops (`LIGHTNING_INDEXER`, `DSV4_HC_*`, `SOLVE_TRI`, `WIN_PART`/`WIN_UNPART`).
+- [ ] **SpeculativeDecoder.cs StepSampled/PLD bugs**: Confirmed real defect in speculative decode step sampling; currently unreachable/latent as no wired call path exercises it yet.
+- [x] **DeepSeekMoeGraph.cs:172 ExpertOffsets off-by-index**: Resolved 2026-08-27 (moved to `docs/done/bugstofix-resolved-2026-08.md`).
+- [x] **KvMemoryGovernor TOCTOU race & InferenceSession unguarded Fork() on CUDA**: Moot / resolved 2026-08-27 when superseded session types were removed.
+
 ```json
 [
   {

@@ -6,7 +6,13 @@
 ## checkpoint/rollback, session tree, suspend/resume). What's left is genuinely open: two items
 ## deliberately not wired, and one design question the "done" work surfaced but didn't answer.
 
-## 1. `Fork()` doesn't propagate skills or pending instructions
+## Open items checklist
+
+- [ ] **1. `Fork()` doesn't propagate skills or pending instructions**: Decide copy-at-fork vs live root lookup when a concrete consensus/voting caller asks for shared tool authorization across a fork tree.
+- [ ] **2. `OnTokenGenerated` / `ToolCallParser`**: Leave stored-but-unused unless a concrete caller need appears that the Server-layer implementation can't already satisfy.
+- [ ] **3. LoRA — real new engine work, not a wiring task**: Requires batched matmul or adapter sub-batching; track separately if/when there's demand for per-session LoRA switching.
+
+## 1. [ ] `Fork()` doesn't propagate skills or pending instructions
 
 `HotSessionRuntime.Fork` copies `Metadata` entries from parent to each branch
 (`HotSession.cs` — `foreach (var kv in parent.Metadata.GetEntries()) branch.Metadata.Set(...)`),
@@ -31,7 +37,7 @@ picking wrong would need to be walked back later:
 authorization across a fork tree; deciding this speculatively risks the wrong shape. Revisit when
 a real fork/consensus use case asks for it.
 
-## 2. `OnTokenGenerated` / `ToolCallParser` — likely NOT worth wiring
+## 2. [ ] `OnTokenGenerated` / `ToolCallParser` — likely NOT worth wiring
 
 Both duplicate something the Server layer already does independently and better: real per-token
 streaming already reaches the client via the chunk stream the endpoints consume directly (not
@@ -43,7 +49,7 @@ implementation of behavior that already exists elsewhere — the exact trap
 **Recommendation: leave both stored-but-unused unless a concrete caller need appears that the
 Server-layer implementation can't already satisfy.** Not scheduled.
 
-## 3. LoRA — real new engine work, not a wiring task
+## 3. [ ] LoRA — real new engine work, not a wiring task
 
 `ContinuousBatchingEngine`'s batched forward pass (`IBatchedForwardPass.BatchForwardMulti`/
 `PrefillPackedMulti`) amortizes ONE shared set of model weights across every sequence in a batch in

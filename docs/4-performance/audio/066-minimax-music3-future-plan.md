@@ -478,15 +478,18 @@ fields instead of one prompt string) — a product-layer decision for well after
 
 ## Implementation sequence (user's own phase list)
 
-Phase A archaeology (config, tensor inventory, checkpoint structure, module map) -> Phase B Global
-(Qwen3 reuse, semantic embedding/output head, KV cache, 25Hz generation, hidden-state capture) ->
-Phase C Local (local transformer, 7-codebook generation, hidden-state capture) -> Phase D Fusion
-(projection, fusion, golden test) -> Phase E Flow (2.4B transformer, scheduler, chunking, one-step
-then full-flow golden tests) -> Phase F Flow-VAE (decoder, latent->PCM golden test) -> Phase G
-end-to-end (5s, 10s, WAV, regression corpus) -> Phase H long-form (30s/60s/180s/300s,
-overlap/stitching) -> Phase I optimization (quantization, KV, attention, memory residency, CPU
-threading) -- correctness at FP32/BF16 before any quantization, matching this project's standing
-rule.
+- [x] **Phase A — Archaeology**: config, tensor inventory, checkpoint structure, module map (COMPLETE).
+- [x] **Phase B — Global**: Qwen3 reuse, semantic embedding/output head, KV cache, 25Hz generation, hidden-state capture (`MiniMaxMusic3GlobalModelGoldenParityTests` passing).
+- [x] **Phase C — Local**: local transformer, 7-codebook generation, hidden-state capture (`MiniMaxMusic3RvqDepthDecoderGoldenParityTests` passing).
+- [x] **Phase D — Fusion / Condition**: projection, fusion (`MiniMaxMusic3ConditionEncoderGoldenParityTests` passing).
+- [x] **Phase E — Flow DiT**: 2.4B transformer, scheduler, chunking (`MiniMaxMusic3TransformerGoldenParityTests` passing).
+- [x] **Phase F — Flow-VAE / Vocoder**: decoder, latent->PCM (`MiniMaxMusic3VocoderGoldenParityTests` passing).
+- [x] **Phase G — End-to-end generation**: 5s/10s WAV generation pipeline (`MiniMaxMusic3AudioSampleTests` producing finite stereo audio).
+- [x] **Phase H — Long-form & AR-loop optimization**: chunking/stitching, row-major reduction, CFG pair forward (489.5-528.6s end-to-end).
+- [ ] **Phase I — Remaining optimization & quality verification**:
+  - [ ] Full end-to-end listening check of generated audio by ear.
+  - [ ] Full composed pipeline golden-parity check against reference.
+  - [ ] Conv-kernel cache-blocking redesign for Vocoder/VAE decode to close the 29-33s vs 13.1s gap.
 
 ## Reconciliation with the user's "part 1 + part 2" plan (2026-09-03)
 

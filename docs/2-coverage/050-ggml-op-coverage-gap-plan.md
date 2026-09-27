@@ -13,6 +13,14 @@ Priority order below is by (a) how many real model families the op unlocks and (
 contained the math is. Each phase is independently shippable and independently tested; do not
 block phase N+1 on phase N being "wired in" anywhere beyond kernel + unit test.
 
+## Checklist
+
+- [ ] **Phase 1 — `GGML_OP_SSM_SCAN`**: Mamba / Mamba2 selective scan recurrence in `GdnKernels.cs`.
+- [ ] **Phase 2 — `GGML_OP_RWKV_WKV6` / `GGML_OP_RWKV_WKV7`**: RWKV recurrent-attention kernels in `RwkvKernels.cs`.
+- [ ] **Phase 3 — DeepSeek-V4 ops**: `GGML_OP_LIGHTNING_INDEXER` + `GGML_OP_DSV4_HC_COMB`/`_PRE`/`_POST` in `Dsv4Kernels.cs`.
+- [ ] **Phase 4 — `GGML_OP_SOLVE_TRI`**: Lower-triangular solve in `SimdKernels.cs`.
+- [ ] **Phase 5 — `GGML_OP_WIN_PART` / `GGML_OP_WIN_UNPART`**: Windowed vision attention ops in `OpenTail.Stingray.Vision`.
+
 ---
 
 ## Phase 1 — `GGML_OP_SSM_SCAN` (Mamba / Mamba2 selective scan)

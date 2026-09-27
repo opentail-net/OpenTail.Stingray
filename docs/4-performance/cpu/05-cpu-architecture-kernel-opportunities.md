@@ -19,15 +19,15 @@ was explicitly deferred rather than continued.
 
 ## Ordered work
 
-1. ~~Measure Flash attention at 128/256 head widths against the materialised fallback~~ — **done,
+- [x] 1. ~~Measure Flash attention at 128/256 head widths against the materialised fallback~~ — **done,
    see Backlog D.** Qwen3-8B (headDim 128) Flash-vs-fallback parity passes and performance was
    already measured (+14% throughput, +0.5% perplexity cost) before this session; decision made
    and shipped (opt-in, not default). The hd64 default-on path's own performance question is
    separate and left optional/deferred (Backlog D).
-2. Q6_K AVX2 performance-only investigation. Dispatch is complete: Q8-prefill resolves Q6_K to
+- [ ] 2. Q6_K AVX2 performance-only investigation. Dispatch is complete: Q8-prefill resolves Q6_K to
    Q8_K activation plus 8/4/1-input dots, and F32 multi-input batching uses the 4/2-input paths.
    Focused equivalence coverage passes; any change needs an interleaved end-to-end win.
-3. Native kernels for scalar-fallback formats — **mostly done, backlog C remains (checkboxed plan
+- [x] 3. Native kernels for scalar-fallback formats — **mostly done, backlog C remains (checkboxed plan
    below)**. IQ4_NL/Q4_0 already had fused routes; IQ4_XS/IQ2_XS/IQ2_S/IQ3_XXS/IQ2_XXS/IQ3_S/IQ1_S
    got AVX2 or scalar `Q8_K` kernels 2026-08-28 (backlog A, done); Q1_0/Q2_0/MXFP4/Q4_1/BFloat16
    got real fused kernels the same day (backlog B, done — Q5_0/Q5_1 correctly declined, measured
@@ -35,8 +35,8 @@ was explicitly deferred rather than continued.
    backlog A). `TQ1_0`/`TQ2_0` are dequantized/admitted now too (backlog C, done 2026-08-28 — both
    correctness-only: `TQ2_0`'s AVX2 kernel measured a non-repeatable ~0.89-1.19x, so it stays
    unwired same as `IQ1_S`/`Q5_0`/`Q5_1`; `TQ1_0` never got an AVX2 kernel as a result).
-4. Batched prefill for per-layer head dimensions and CPU MoE.
-5. ARM64 NEON, dot-product, and i8mm coverage (external hardware required).
+- [ ] 4. Batched prefill for per-layer head dimensions and CPU MoE.
+- [ ] 5. ARM64 NEON, dot-product, and i8mm coverage (external hardware required).
 
 Every performance item requires dispatch proof, isolated control/candidate samples, named-model
 end-to-end measurement, and numerical validation. No single-run result is sufficient.

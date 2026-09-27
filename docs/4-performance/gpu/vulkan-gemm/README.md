@@ -20,6 +20,15 @@ wider register tile — it was another level of the memory hierarchy, a repacked
 resident while activation columns streamed past. The GPU equivalent is a weight tile in shared
 memory: what llama.cpp calls `mul_mm` as distinct from `mul_mv`.
 
+## Actionable items checklist
+
+- [x] **Path 1 / Path 2 scaffold and diagnostic counters**: `STINGRAY_VULKAN_MM_PATH`, `STINGRAY_VULKAN_MM_STATS`, and 27 unit tests (`VulkanMatMulPathTests.cs`).
+- [x] **Path 2 initial kernel**: Tiled Q4_K GEMM (`Shaders.MatMulTiledQ4K`, BM=64, BN=16, BK=64) delivering +4.6% prefill speedup.
+- [x] **Toolchain unblocked**: Built `glslc` from source at `examples/glslc/shaderc` (shaderc v2026.4-dev / glslang 11.1.0-1516 / spirv-tools v2026.3).
+- [ ] **Tiled Q6_K shader**: Implement tiled Q6_K kernel for `ffn_down` (1418 of 9914 dispatches) to remove fallback to Path 1.
+- [ ] **Widen tile & prefill chunk**: Raise BN > 16 (chunk 32 / chunk 64) once Q6_K is supported, chasing the projected 1.36x ceiling.
+- [ ] **Perplexity gate**: Run Wikitext-2 (8191 scored tokens) validation on Path 2 before considering making it default.
+
 ## Using it
 
 | variable | effect |

@@ -338,16 +338,26 @@ background/speculative model preloading. All out of scope here.
 
 ## Implementation phases
 
-1. ✅ **Production `ModelRuntime` abstraction.** `ModelRuntime`, `ModelRuntimeHandle`,
+### Phase Checklist
+
+- [x] **Phase 1: Production `ModelRuntime` abstraction** (Implemented)
+- [x] **Phase 2: Shared residency & single-flight loading** (Implemented)
+- [ ] **Phase 3: Bounded, resource-aware residency** (Slices 1–10 done; accelerator accounting in progress)
+- [x] **Phase 4: Multi-session model execution** (Implemented)
+- [x] **Phase 5: Cross-model concurrent execution** (No-lock half proven with real models)
+- [ ] **Phase 6: Fair scheduling & admission** (Slices 1–4 done; service quantum & starvation protection open)
+- [ ] **Phase 7: OpenTail server integration** (Stateless endpoints and session registry done; durable restore deferred)
+
+- [x] 1. **Production `ModelRuntime` abstraction.** `ModelRuntime`, `ModelRuntimeHandle`,
    `ModelRuntimeManager`, `ModelRuntimeState`. Move the existing single-model load path
    (`InferenceEngineLoader`) behind it. *Acceptance: existing single-model server tests stay
    green, now routed through the new abstraction.*
-2. ✅ **Shared residency & single-flight loading.** Carry `SharedModelCache`'s proven
+- [x] 2. **Shared residency & single-flight loading.** Carry `SharedModelCache`'s proven
    refcount/overflow-table ownership (`025`/`026`) into `ModelRuntimeManager`: canonical
    identity, shared handles, async single-flight, safe disposal, load-failure cleanup.
    *Acceptance: 100 concurrent requests for one cold model → 1 physical load, 100 logical
    users.* (Landed alongside Phase 1 — see Status above.)
-3. 🔶 **Bounded, resource-aware residency.** Resident tracking, memory estimates, `IResourceBudget`,
+- [ ] 3. **Bounded, resource-aware residency.** Resident tracking, memory estimates, `IResourceBudget`,
    admission, safe eviction — host RAM first, accelerator accounting added through the same
    abstraction rather than a parallel policy. *Acceptance: two models coexist when resources
    permit; a third triggers safe eviction/queueing.*
@@ -481,7 +491,7 @@ background/speculative model preloading. All out of scope here.
    branches this slice fixed; computing one would mean new placement logic, not just threading an
    existing value through. A CUDA equivalent of the VRAM-capacity probe is parked, not planned —
    no CUDA hardware in this environment to build or verify it against; revisit if that changes.
-4. ✅ **Multi-session model execution.** Wire each runtime to `HotSession` + continuous batching.
+- [x] 4. **Multi-session model execution.** Wire each runtime to `HotSession` + continuous batching.
    *Acceptance: N sessions on one runtime behave exactly as today's same-model concurrency.*
    Proven with a real model, not fakes:
    `tests/OpenTail.Stingray.Tests.Server/SessionRestartPersistenceTests.cs`'s
@@ -498,7 +508,7 @@ background/speculative model preloading. All out of scope here.
    session-to-model handle plumbing with no real caller — Phase 7 is what actually defines how a
    session gets bound to a specific (non-pinned) model, and the fix belongs there, built against
    that real API rather than guessed at ahead of it.
-5. ✅ **Cross-model concurrent execution** *(no-lock half; model-level resource scheduling is
+- [x] 5. **Cross-model concurrent execution** *(no-lock half; model-level resource scheduling is
    still Phase 6)*. `ModelRuntimeManager` never held a lock across a load or generation call to
    begin with, so there was no serialization to remove — what this phase actually needed was
    *proof*, with real models, not just the fake-loader tests in
@@ -524,7 +534,7 @@ background/speculative model preloading. All out of scope here.
    verification (four test suites rerun green, including the largest one touching this file):
    `docs/done/bugstofix-resolved-2026-08.md` → `ForwardPass.cs:6047`. Regression guard:
    `CrossModelConcurrencyTests.cs`'s `SingleRealModel_DisposeAfterGeneration_DoesNotCorruptTheNativeHeap`.
-6. 🔶 **Fair scheduling & admission.** Per-model pending queues, request age, service quantum,
+- [ ] 6. **Fair scheduling & admission.** Per-model pending queues, request age, service quantum,
    starvation protection, cancellation, queue limits — deliberately simple policy.
    **Slice 1 done: the "queue" step itself** (docs/032's own eviction hierarchy: unused → idle →
    drain → KV suspension → queue → hard failure — this was the one step still unbuilt).
@@ -639,7 +649,7 @@ background/speculative model preloading. All out of scope here.
    just a plausible-looking test: manually reverting the reservation line reproduces the failure
    (the woken waiter times out, starved by a fresh caller repeatedly re-stealing the slot) before
    being restored. 328/328 fast, full solution build clean.
-7. 🔶 **OpenTail server integration.** Expose model identity through `IInferenceService`.
+- [ ] 7. **OpenTail server integration.** Expose model identity through `IInferenceService`.
    *Acceptance: Users A/B → sidekick, Users C/D → reasoner, with same-model batching,
    cross-model concurrency, residency, and session isolation all verified together.*
    **Done: multi-model config + routing for the stateless request surface.**

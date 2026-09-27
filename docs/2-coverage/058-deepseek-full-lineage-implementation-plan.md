@@ -219,6 +219,13 @@ The vendored llama.cpp reference declares five distinct architecture strings
 
 ## Phase plan
 
+### Overview Checklist
+
+- [ ] **Phase 0 — `deepseek4` (V4)**: Alpha code structurally written (`DeepSeek4Alpha.cs`, `DeepSeek4ForwardPass.cs`, 15 unit tests); CSA/HCA attention completion + real-weight verification open (needs ~99 GB checkpoint).
+- [ ] **Phase 1 — `deepseek32` (V3.2)**: Alpha code structurally written (`DeepSeek32Alpha.cs`); real-weight verification open.
+- [x] **Phase 2 — `deepseek2` (V2/V3/R1)**: Admitted and verified in `ModelCompatibility.cs` / `ForwardPass.cs`.
+- [ ] **Phase 3 — Mop-up**: Verify any remaining legacy variants.
+
 ### Phase 0 — `deepseek4` (V4): full implementation, current priority
 
 Reference now fully read (`examples/llama.cpp/llama.cpp/src/models/deepseek4.cpp`, all 1547
@@ -647,24 +654,24 @@ tested), the actual attention step is a bounded, mechanical extension of what
 
 ### Summary: ordered list of what to build, with dependencies
 
-1. **Hadamard transform primitive** (`HadamardTransform` kernel + a decision on whether `k_rot` is
+- [ ] 1. **Hadamard transform primitive** (`HadamardTransform` kernel + a decision on whether `k_rot` is
    a loaded weight or code-generated) — needed before anything else if real checkpoints populate
    `k_rot`; independent of the rest, so worth resolving first since it's a small, self-contained
    unknown.
-2. **Raw-token-granularity overlap state store** — a new, `2*headDim`-wide, never-discarded
+- [ ] 2. **Raw-token-granularity overlap state store** — a new, `2*headDim`-wide, never-discarded
    per-token row list per layer (distinct from `DeepSeek4CompressedLayerState`'s per-block
    granularity), for BOTH the main CSA stream and the separate LID stream (two instances per CSA
    layer).
-3. **The prev/cur overlap gather** (the "concrete gather algorithm" section above), feeding the
+- [ ] 3. **The prev/cur overlap gather** (the "concrete gather algorithm" section above), feeding the
    already-implemented `DeepSeek4Graph.CsaCompressBlock` — implement once, reuse for both the main
    CSA stream and the LID stream (same algorithm, different tensors).
-4. **Lightning indexer Q/K projection + top-k scoring wiring** — mostly assembling already-ported
+- [ ] 4. **Lightning indexer Q/K projection + top-k scoring wiring** — mostly assembling already-ported
    pieces (`LightningIndexerScore`, `SelectTopKIndices`) around the new LID compression stream
    from step 3.
-5. **`build_top_k_mask`-equivalent masking + the raw+compressed concat attention step** — the most
+- [ ] 5. **`build_top_k_mask`-equivalent masking + the raw+compressed concat attention step** — the most
    mechanical piece, closely mirroring `RawAttention`'s existing structure and HCA's
    `GetKeyOrCompressed`.
-6. **Wire into `DeepSeek4ForwardPass`**: extend the constructor's ratio gate to accept 4, extend
+- [ ] 6. **Wire into `DeepSeek4ForwardPass`**: extend the constructor's ratio gate to accept 4, extend
    `RawAttention` (or split into a `CsaAttention` method) to call the above instead of throwing.
 
 Steps 2-3 are the direct extension of what HCA already proved out (same compression math, +

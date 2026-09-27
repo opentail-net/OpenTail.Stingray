@@ -582,55 +582,14 @@ framing already matched reality.
 
 ## Immediate next steps (in order)
 
-1. Download the real weights (`acestep-v15-turbo/model.safetensors` ~4.79GB,
+- [x] 1. Download the real weights (`acestep-v15-turbo/model.safetensors` ~4.79GB,
    `vae/diffusion_pytorch_model.safetensors`, `Qwen3-Embedding-0.6B/model.safetensors`) and
-   confirm the full 677-tensor turbo inventory (only a partial range was fetched this session) plus
-   full VAE inventory against the encoder side too (only decoder tensors were visible in this
-   session's partial fetch).
-2. ~~Verify the real `AutoencoderOobleck` Snake1d formula~~ **DONE, same session**: real formula
-   from `diffusers/models/autoencoders/autoencoder_oobleck.py`, confirmed NOT the same as DAC's
-   single-parameter Snake: `x + (1/(exp(beta)+1e-9)) * sin(exp(alpha)*x)^2` -- both `alpha` and
-   `beta` are stored in LOG-SCALE (`logscale=True` real default), so both need `exp()` applied
-   before use, a real easy-to-miss detail (using the raw stored values directly would be a
-   real, silent bug). Full decoder structure also confirmed: `conv1(k=7,pad=3) -> N x
-   OobleckDecoderBlock(snake1 -> ConvTranspose1d(k=2*stride, pad=ceil(stride/2)) -> 3x
-   OobleckResidualUnit at dilations 1/3/9, same shape as DAC's residual stack) -> snake1 ->
-   conv2(k=7,pad=3,NO bias, channels->audio_channels)`. The decoder's `upsampling_ratios`
-   constructor param is the REVERSE of the config's `downsampling_ratios` (confirmed from the real
-   class docstring: "used in reverse order for upsampling in the decoder") -- so decoder strides
-   are `[10,6,4,4,2]` for this checkpoint's real `downsampling_ratios=[2,4,4,6,10]`, not the
-   config order directly. Structurally this is now directly buildable by adapting
-   `Primitives.EncodecDecoderKernels`'s existing `FullConv1d`/`ConvTranspose1dNoPad`/weight-norm-
-   fold helpers with a new two-parameter Snake activation swapped in for ELU.
-3. ~~Verify whether ACE-Step's Qwen3 text/lyric encoding is causal or bidirectional~~ **DONE, same
-   session**: read the real official `diffusers` ACE-Step pipeline (`diffusers` 0.40.0, already
-   installed in this environment -- ships the complete real
-   `diffusers.pipelines.ace_step.pipeline_ace_step`/`diffusers.models.transformers
-   .ace_step_transformer`, 1295+ lines, not partial). See the "Corrections and confirmations" 
-   section above for the full real answer: text is CAUSAL full-Qwen3, lyrics are embedding-lookup-
-   only, metadata is templated into the text string (not a separate tensor), and Turbo genuinely
-   skips CFG. This resolved a real wrong assumption in this plan's first draft (metadata handling)
-   before any code was written against it.
-4. Scaffold the five core classes (`AceStepConfig`, `AceStepGenerationParams`, `AceStepModel`,
-   `AceStepPipeline`, weight-loader stubs) with real constants — **DONE, this session's deliverable**.
-5. ~~Check whether the existing `ForwardPass`/GGUF `"qwen3"` engine path can be reused as the text
-   encoder~~ **Investigated, same session, real nuanced answer** (not a clean yes): `ForwardPass`
-   already has exactly the right extraction primitive for this
-   (`EnableHiddenTaps(layerIds)`/`HiddenTapsAt(position)`, an existing per-token/per-layer hidden-
-   state tap, plus a `LastHidden` property) — if a Qwen3-Embedding-0.6B checkpoint can be loaded
-   into a `ForwardPass`, getting `text_hidden_states` out is basically free. BUT the SafeTensors
-   text-model loading lane (`Core/SafetensorsTextModelPackage.cs`) that would load this checkpoint
-   WITHOUT a GGUF conversion currently gates `model_type` to `llama`/`mistral` only
-   (`SafetensorsTextModelPackage.Open` throws `NotSupportedException` for anything else) — `qwen3`
-   is admitted for the separate GGUF-loading path (`ModelCompatibility.cs`), not this one. So the
-   real options are: (a) convert `Qwen3-Embedding-0.6B` to GGUF first (existing tooling, likely the
-   less risky path), or (b) extend `SafetensorsTextModelPackage`'s supported `model_type` set to
-   include `qwen3` and verify the downstream tensor-name-mapping/QK-norm wiring actually handles it
-   correctly — a real, scoped, but genuinely separate piece of engine work from ACE-Step itself,
-   deliberately NOT attempted in this session (would need its own verification pass, out of scope
-   for "port ACE-Step's text encoder"). Recommend (a) for the next session unless a GGUF conversion
-   turns out to be unexpectedly awkward for this specific checkpoint.
-6. Build outward from there per the golden-test ladder in the original plan (config → tokenizer →
-   Qwen3 → condition encoder → one DiT block → full DiT → one scheduler step → full 8-step latent →
-   VAE → end-to-end), each with a real golden/non-degeneracy check before moving on, matching how
-   MusicGen/AudioGen were verified.
+   confirm the full 677-tensor turbo inventory plus full VAE inventory.
+- [x] 2. **DONE**: Verify the real `AutoencoderOobleck` Snake1d formula (`x + (1/(exp(beta)+1e-9)) * sin(exp(alpha)*x)^2` with log-scale parameters) and decoder structure.
+- [x] 3. **DONE**: Verify causal text / embedding-only lyrics encoding from `diffusers` reference pipeline.
+- [x] 4. **DONE**: Scaffold the core classes (`AceStepConfig`, `AceStepGenerationParams`, `AceStepModel`, `AceStepPipeline`, weight-loader stubs).
+- [x] 5. **DONE**: Text encoder integration via Qwen3 (`ForwardPass`/GGUF `"qwen3"` path).
+- [x] 6. **DONE**: Build outward per golden-test ladder: complete V1 end-to-end pipeline (`AceStepPipeline.Generate()`) producing finite, non-silent 48kHz stereo WAV.
+- [x] 7. **DONE**: GPU residency: 8-step DiT loop running GPU-resident (11.52s DiT, 5.47x in `PerformanceLeague.md`).
+- [ ] 8. End-to-end numeric parity against `audiocpp_cli` reference (blocked on `acestep-5Hz-lm-1.7B` LM package).
+- [ ] 9. Add STATUS matrix row with verification receipts.

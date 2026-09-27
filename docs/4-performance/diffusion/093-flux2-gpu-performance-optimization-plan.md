@@ -219,34 +219,21 @@ data justifies it)
       - **Savings**: Eliminates 3 GPU dispatches + fence waits per block (24 per pass) and avoids
         materializing unnormalized and un-RoPE'd Q/K intermediates (~250 MB VRAM traffic saved per block,
         >2 GB per forward pass).
-- [ ] **Combine img/txt-stream AdaLN and ScaleGateAdd pairs into single dispatches** (branch on
-      row index against `nTxt` inside one dispatch spanning `nTxt+nImg` rows, instead of two
-      separate dispatches). Real, correctly deprioritized by the review below the two fusions
-      above — smaller payloads (`n×6144`, not `n×18432`), test only after the higher-value fusions
-      are measured.
+- [x] **Combine img/txt-stream AdaLN and ScaleGateAdd pairs into single dispatches** (DONE 2026-09-20,
+      `fcca2f7`: dual-stream dispatch branching on row index against `nTxt` inside one dispatch spanning
+      `nTxt+nImg` rows, instead of two separate dispatches).
 
 ### Phase 3 — weight-representation change (high effort, potentially the largest structural win)
 
-- [ ] **Do NOT extend the existing `MatMulTiledQ4K` LLM kernel's 16-row cap to this workload.**
+- [x] **Do NOT extend the existing `MatMulTiledQ4K` LLM kernel's 16-row cap to this workload.**
       Real, important correction from the review, confirmed by reading `Shaders.cs`'s
-      `MatMulTiledQ4K` source directly (already done in `docs/088`'s own memory-budget
-      investigation): `BN=16` is compiled into the shared-memory layout and thread mapping,
-      genuinely not a runtime parameter. Chunking a 1024-row matmul into 64 sequential 16-row
-      dispatches against that kernel would reintroduce exactly the dispatch-count problem Phase 0/1
-      are trying to eliminate. **A real, new, large-tile (`BM=64-128`, `BN=64-128`) Q4_K GEMM
-      kernel sized for diffusion-scale M is a different, larger task than "reuse the LLM kernel."**
-- [ ] **Real quantitative case for why this is worth building on THIS specific machine (a
-      shared-memory iGPU, not a discrete GPU)**: the review's own arithmetic, re-verified —
-      `6144×36864` FP16 weight matrix is `6144×36864×2 ≈ 432MiB`; the same matrix at real Q4_K
-      density (~4.5 bits/param ≈ 0.5625 bytes/param) is `≈121MiB`, a real ≈3.56x reduction in BOTH
-      the one-time upload volume (currently 34.4s for ~15.7GB total across the 8 double blocks) AND
-      every steady-state read of that weight during compute — relevant on a UMA system where GPU
-      "VRAM" bandwidth is the same physical DRAM bus the CPU also uses.
-- [ ] **Real, cheap-first experiment before committing to the full kernel**: build ONE large-tile
-      Q4_K GEMM sized for the single largest shape (`1024×6144×36864`) only, and measure cold-start
-      upload cost + single-GEMM compute time against the current FP16 path for that exact shape —
-      do not build all 8 GEMM shapes' Q4_K variants before this single real data point justifies
-      the larger investment.
+      `MatMulTiledQ4K` source directly: `BN=16` is compiled into the shared-memory layout and thread mapping.
+- [x] **Real quantitative case for why this is worth building on THIS specific machine (a
+      shared-memory iGPU, not a discrete GPU)**: ~3.56x reduction in both one-time upload volume
+      and steady-state memory bandwidth on UMA architecture.
+- [x] **Weight-representation change implemented** (DONE 2026-09-24, `43307bc`): Q4_K weights kept
+      quantized on the GPU; full-GPU 512² 2-step dropped 298.4s -> 237s, parity confirmed in
+      `VulkanSgemmQuantParityTests`.
 
 ## Explicitly deferred / rejected by the review, with reasoning preserved
 

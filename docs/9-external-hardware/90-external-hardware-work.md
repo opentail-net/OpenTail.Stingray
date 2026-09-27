@@ -16,17 +16,17 @@ acceptance evidence requires hardware not present locally.
 The development machine has no NVIDIA device. These items need a designated NVIDIA runner with
 the exact model/configuration recorded alongside each result:
 
-1. **Release evidence.** CUDA dense load/decode/sample, long-context KV dtype, placement/capability
+- [ ] 1. **Release evidence.** CUDA dense load/decode/sample, long-context KV dtype, placement/capability
    output, CUDA-hybrid MoE, and MTP/speculation receipts. These are release gates, not claims that
    can be inferred from CPU or Vulkan tests.
-2. **Gemma 4 12B.** Re-run the dense no-PLE CPU/CUDA/hybrid acceptance sequence after the
+- [ ] 2. **Gemma 4 12B.** Re-run the dense no-PLE CPU/CUDA/hybrid acceptance sequence after the
    per-layer V-cache stride correction. The 12B GGUF may be acquired locally, but CUDA and hybrid
    portions require this runner.
-3. **CUDA dense gate/up fusion.** The design review is archived in
+- [ ] 3. **CUDA dense gate/up fusion.** The design review is archived in
    [done/cuda-fused-gate-up-plan.md](../done/cuda-fused-gate-up-plan.md). Do not implement it blind:
    establish an interleaved baseline first, test CUDA graphs both enabled and disabled, then retain
    the change only if it improves real prefill or decode at a representative model shape.
-4. **CUDA graph default discrepancy.** Dense and hybrid paths historically interpret
+- [ ] 4. **CUDA graph default discrepancy.** Dense and hybrid paths historically interpret
    `STINGRAY_CUDA_GRAPH` differently. Reproduce both paths on actual hardware before changing the
    default or documentation; a source-only harmonisation would be an unmeasured performance change.
 
@@ -34,23 +34,23 @@ the exact model/configuration recorded alongside each result:
 
 Carried from [../done/101-work-queue-after-coverage-plan.md](../done/101-work-queue-after-coverage-plan.md):
 
-5. **CUDA `rope_freqs`.** `CudaForwardPass`/`CudaHybridForwardPass` apply RoPE frequency factors for
+- [ ] 5. **CUDA `rope_freqs`.** `CudaForwardPass`/`CudaHybridForwardPass` apply RoPE frequency factors for
    Gemma 4 only, so Llama-3.1-style models run unscaled RoPE on CUDA (wrong only at long context).
    Fixed on Vulkan (full and `-g N`) on 2026-09-26. Not gated, since that would push every Llama 3.1
    CUDA user to CPU.
-6. **CUDA partial offload for the newer architectures** (fused QKV, LayerNorm, parallel residual,
+- [ ] 6. **CUDA partial offload for the newer architectures** (fused QKV, LayerNorm, parallel residual,
    partial RoPE, non-gated FFN). Vulkan `-g N` covers them via `VulkanLayerSplitForwardPass`; CUDA
    falls back to CPU with a note.
-7. **Discrete-GPU measurements** before changing any default (CLAUDE.md rule 13): speculative
+- [ ] 7. **Discrete-GPU measurements** before changing any default (CLAUDE.md rule 13): speculative
    decoding with a draft model on Vulkan (lossless, slower on the iGPU), the UMT5 GPU path vs CPU,
    gpt-oss on Vulkan (matvec-bandwidth-bound on the iGPU).
 
 ## ARM64 runner
 
-ARM64 NEON, dot-product, and i8mm kernels need an ARM64 device. Keep the work out of the local
-CPU optimisation queue until a runner is available; its first receipt should report ISA features,
-model/dtype, correctness parity, and a measured baseline before any architecture-specific kernel
-is introduced.
+- [ ] **ARM64 NEON, dot-product, and i8mm kernels baseline.** ARM64 NEON, dot-product, and i8mm kernels need an ARM64 device. Keep the work out of the local
+   CPU optimisation queue until a runner is available; its first receipt should report ISA features,
+   model/dtype, correctness parity, and a measured baseline before any architecture-specific kernel
+   is introduced.
 
 ## Receipt discipline
 

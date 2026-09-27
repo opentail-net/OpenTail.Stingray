@@ -298,66 +298,68 @@ and vision abstractions rather than be designed as a diffusion-convolution pipel
 Suggested new module: **`src/OpenTail.Stingray.Vision`** (mmproj loader, preprocessing, encoder,
 projector), keeping vision concerns out of `Core`/`Engine` until the seam is stable.
 
+### Implementation Checklist
+
+- [x] **Phase V0 — mmproj/clip GGUF loader** (DONE 2026-08-07)
+- [x] **Phase V1 — image preprocessing** (Fixed-grid core complete 2026-08-07; Pan & Scan open)
+- [x] **Phase V2 — `gemma4v` ViT encoder forward pass** (IMPLEMENTED 2026-08-15; passes structural tests, numerical parity against oracle remains)
+- [x] **Phase V3 — token reduction + projector MLP** (IMPLEMENTED 2026-08-15; shipped inside V2 `Forward`)
+- [ ] **Phase V4 — embedding splice + bidirectional mask** (`Gemma4VAdapter` landed 2026-09-01; needs verification against real weights)
+- [ ] **Phase V5 — CLI + API surface**
+- [ ] **(Deferred) Phase V6 — audio**
+
 ### Phase V0 — mmproj/clip GGUF loader (low risk) — **DONE 2026-08-07**
-`Gemma4VVisionModel` parses the verified `clip.*` geometry and validates the patch/position/
+- [x] `Gemma4VVisionModel` parses the verified `clip.*` geometry and validates the patch/position/
 projector tensors plus the full 16×13 block tensor inventory. The real E4B mmproj smoke test
 pins the loader to 224px / 16px patch / 768 wide / 12 heads / 3072 FFN / 16 blocks. Token
 reduction and mask semantics are intentionally not inferred from this structural phase.
 
 ### Phase V1 — image preprocessing (low risk) — **fixed-grid core complete 2026-08-07**
-`Gemma4VImagePreprocessor` now performs deterministic align-corners RGB resize to the
+- [x] `Gemma4VImagePreprocessor` now performs deterministic align-corners RGB resize to the
 mmproj-declared fixed grid, packs planar CHW, and applies the header's three channel
 mean/std values. Unit coverage pins channel order, interpolation, affine normalisation, and
 invalid input handling. **This is a bounded implementation, not external parity evidence:** retain
 the alignment/interpolation choice behind V2's reference gate until a Gemma-4-capable oracle
-confirms it. PNG/JPEG decoding is already provided by `ImageIO`; **Pan & Scan remains open** until
-its exact E4B crop policy is derived from the reference rather than guessed.
+confirms it. PNG/JPEG decoding is already provided by `ImageIO`.
+- [ ] **Pan & Scan remains open** until its exact E4B crop policy is derived from the reference rather than guessed.
 
 ### Phase V2 — `gemma4v` ViT encoder forward pass — **IMPLEMENTED 2026-08-15, NOT parity-verified**
-`Gemma4VVisionEncoder.cs`. The verified 16-block, 768-wide, 12-head transformer encoder (real
+- [x] `Gemma4VVisionEncoder.cs`. The verified 16-block, 768-wide, 12-head transformer encoder (real
 per-head QK-norm, gemma4v-only V-norm, 2D RoPE theta=100, unscaled attention, per-block clamped
 linears, quick-GELU FFN — see the contract at the top of this doc), preceded by its 16px
 convolutional patch embedding and learned 2D position table. A CPU reference, as planned — no GPU
 path yet. Passes a real-mmproj structural sanity test (shape, no NaN/Inf, non-degenerate, sane
-magnitude — `Gemma4VVisionEncoderTests.cs`), but **stage-by-stage parity against llama.cpp's
-`clip` path has NOT been done** — no working Gemma-4-capable oracle exists locally yet (see the
-handover-state section below). Do not treat this as numerically verified.
+magnitude — `Gemma4VVisionEncoderTests.cs`).
+- [ ] **Stage-by-stage parity against llama.cpp's `clip` path** — requires a working Gemma-4-capable oracle (see the handover-state section below). Do not treat this as numerically verified.
 
 ### Phase V3 — token reduction + projector MLP — **IMPLEMENTED 2026-08-15, shipped inside V2**
-`Gemma4VVisionEncoder.Forward` runs the 3×3 average pool, `sqrt(768)` scale, unweighted RMSNorm,
+- [x] `Gemma4VVisionEncoder.Forward` runs the 3×3 average pool, `sqrt(768)` scale, unweighted RMSNorm,
 and `mm.input_projection` (768→2560) as the tail of the same call that runs the 16 blocks, rather
-than as a separately invoked phase. Same parity caveat as V2 — not yet checked against
-`mtmd_get_output_embd` or any other oracle output.
+than as a separately invoked phase.
+- [ ] Check output against `mtmd_get_output_embd` or another oracle output for numerical parity.
 
 ### Phase V4 — embedding splice + bidirectional mask (HIGH risk) — **NOT STARTED, do not begin
 without re-reading this note**
-- Add `ForwardPass`/`Prefill` support to accept **precomputed input embeddings** at given
+- [ ] Add `ForwardPass`/`Prefill` support to accept **precomputed input embeddings** at given
   positions (overload of `EmbedTokenInto`; skip `token_embd` lookup; decide embedding-scale
   handling for image rows — text tokens get `× sqrt(2560)`, image embeddings come pre-scaled from
   the projector, *confirm*).
-- **The "causal-except-bidirectional-within-image" mask below is NOT yet confirmed for Gemma 4 —
-  do not assume it transfers from Gemma 3.** V2's ViT encoder is unconditionally bidirectional
-  internally (that part IS settled — attention over image patches, before splicing), but how the
-  TEXT DECODER should attend to the 16 spliced image positions once they're embedded in the token
-  sequence is a genuinely separate, independent question this session has not investigated. Gemma
-  4's PLE, SWA, cross-layer KV-share, dual-RoPE, and paged KV cache are all real interactions a
-  wrong assumption here could break silently. **Confirm the actual Gemma-4 multimodal runtime's
-  decoder-side mask semantics — via the real llama.cpp mtmd graph construction code (the same
-  standard this whole doc has held V2 to) or a working oracle — before writing or modifying any
-  `PagedKvCache`/global-causal-masking code for this.**
-- Chat-template rendering of `<start_of_image>`/`<end_of_image>` + the soft-token placeholders
+- [ ] **The "causal-except-bidirectional-within-image" mask**: confirm actual Gemma-4 multimodal runtime's
+  decoder-side mask semantics via real llama.cpp mtmd graph construction code or a working oracle
+  before writing or modifying any `PagedKvCache`/global-causal-masking code for this.
+- [ ] Chat-template rendering of `<start_of_image>`/`<end_of_image>` + the soft-token placeholders
   (`GgufTokenizer` Jinja path).
-- Acceptance: greedy-decode parity vs `llama-mtmd-cli` on a fixed image+prompt (e.g. "describe
+- [ ] Acceptance: greedy-decode parity vs `llama-mtmd-cli` on a fixed image+prompt (e.g. "describe
   this image") for N tokens.
 
 ### Phase V5 — CLI + API surface (medium risk)
-- CLI: `--image <path>` (and Pan & Scan toggle) on the existing `Spectre.Console.Cli` frontend.
-- Server: image **content blocks** in `/v1/messages` (Anthropic) and `/v1/chat/completions`
+- [ ] CLI: `--image <path>` (and Pan & Scan toggle) on the existing `Spectre.Console.Cli` frontend.
+- [ ] Server: image **content blocks** in `/v1/messages` (Anthropic) and `/v1/chat/completions`
   (OpenAI) — base64 / URL image parts → preprocess → encode → splice. Multi-image support.
-- Smoke tests in `Tests.Server`.
+- [ ] Smoke tests in `Tests.Server`.
 
 ### (Deferred) Phase V6 — audio
-E2B/E4B audio via the `a.*` encoder (USM/conformer). Separate epic; not required for image.
+- [ ] E2B/E4B audio via the `a.*` encoder (USM/conformer). Separate epic; not required for image.
 
 ## 4. Risks & de-risking
 

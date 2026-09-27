@@ -48,7 +48,7 @@ two-minute demo and the tool for non-developers.
 
 ## The front door (tooling)
 
-1. **Starter manifest**: one verified bundle per task, versioned in the repo, with public source
+- [ ] 1. **Starter manifest**: one verified bundle per task, versioned in the repo, with public source
    (HF repo + file + sha256), size, licence, hardware notes, and the status-record row that
    verifies it. Only 🟢 rows with a public source qualify. Candidates to confirm:
 
@@ -61,21 +61,21 @@ two-minute demo and the tool for non-developers.
    | image | FLUX.1-schnell GGUF (city96) + VAE + encoders (comfyanonymous), or Z-Image-Turbo | Apache-2.0; needs a size warning |
    | embed / rerank | bge-small / ms-marco MiniLM (HF) | already used in the CLI examples |
 
-2. **A model home outside the repo**: `%LOCALAPPDATA%\stingray\models` / `~/.cache/stingray/models`,
+- [ ] 2. **A model home outside the repo**: `%LOCALAPPDATA%\stingray\models` / `~/.cache/stingray/models`,
    overridable, searched after explicit paths. The repo-relative `models/` stays a developer
    convenience.
-3. **`stingray setup <task>`**: shows size, licence and expected speed, asks, then downloads the
+- [ ] 3. **`stingray setup <task>`**: shows size, licence and expected speed, asks, then downloads the
    bundle through the existing `pull` machinery (resumable, sha-checked).
-4. **Task commands that need no paths once set up**: `stingray chat`, `speak`, `transcribe`,
+- [ ] 4. **Task commands that need no paths once set up**: `stingray chat`, `speak`, `transcribe`,
    `describe`, `image`. A missing model gives a one-line fix (`run: stingray setup speak (63 MB)`),
    never a stack trace.
-5. **`stingray models`**: installed bundles, which tasks are ready, what to run to fix the rest.
-6. **A small library facade** so the README's C# is three lines per task, and the snippets are
+- [ ] 5. **`stingray models`**: installed bundles, which tasks are ready, what to run to fix the rest.
+- [ ] 6. **A small library facade** so the README's C# is three lines per task, and the snippets are
    compiled by a test so they cannot rot:
    `await using var chat = await StingrayChat.OpenAsync("qwen2.5-0.5b");` /
    `Speech.SynthesizeAsync(...)` / `Transcriber.TranscribeAsync(...)`. The facade is built on the
    existing engines, not new math.
-7. **Docs-as-tests**: every README command and snippet is exercised by a test (downloads cached),
+- [ ] 7. **Docs-as-tests**: every README command and snippet is exercised by a test (downloads cached),
    so the README fails CI before it lies.
 
 ## Model catalog (refined with the user, 2026-09-26)
@@ -110,11 +110,11 @@ two-minute demo and the tool for non-developers.
 
 ## Order of work
 
-1. Move `README.md` to `docs/STATUS.md`; write the new README around what works today: explicit
+- [x] 1. Move `README.md` to `docs/STATUS.md`; write the new README around what works today: explicit
    model downloads, commands and C# that have actually been run. Fix the NuGet README's
-   non-compiling snippets in the same pass.
-2. Starter manifest + model home + `setup` + `models`.
-3. Task commands and the library facade; rewrite the README's recipes around them.
-4. Docs-as-tests.
+   non-compiling snippets in the same pass. (DONE 2026-09-27)
+- [ ] 2. Starter manifest + model home + `setup` + `models`.
+- [ ] 3. Task commands and the library facade; rewrite the README's recipes around them.
+- [ ] 4. Docs-as-tests.
 
 Steps 2–4 are the substance. Step 1 makes the front page truthful now.

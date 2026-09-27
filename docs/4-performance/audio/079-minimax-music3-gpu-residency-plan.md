@@ -73,30 +73,30 @@ docs.
 
 ## Recommended approach
 
-1. **Read the rest of `Forward`'s body** (`MiniMaxMusic3Transformer.cs`) to get the real per-block
+- [ ] 1. **Read the rest of `Forward`'s body** (`MiniMaxMusic3Transformer.cs`) to get the real per-block
    structure (norm/modulation convention, residual/gate wiring, FFN activation) before writing any
    GPU code — this doc's own research stopped at the input-concatenation step and headDim; don't
    assume the rest matches another model without checking.
-2. **`MiniMaxMusic3GpuTransformerWorkspace` class** (new file, since only the weights side
+- [ ] 2. **`MiniMaxMusic3GpuTransformerWorkspace` class** (new file, since only the weights side
    currently has GPU scaffolding): preallocated activation/Q/K/V/attention-output/FFN buffers
    sized for the real `seqLen = length + 1` (per the existing code's own `seqLen` variable) and
    `concatChannels=2304`, following `FluxGpuWorkspace.cs`'s structure.
-3. **`ForwardGpu`/`TransformerBlockGpu`** (new methods): self-attention via `Sgemm` +
+- [ ] 3. **`ForwardGpu`/`TransformerBlockGpu`** (new methods): self-attention via `Sgemm` +
    `MultiHeadAttentionTiled` (headDim=64) + O-projection + residual, FFN analogously — reusing
    `MiniMaxMusic3GpuTransformerWeights`'s already-uploaded weights (confirm its own field names/
    structure directly before assuming they match `FluxGpuWeights`'s naming).
-4. **Batch per-block**, not per-op (`BeginBatch()`/`EndBatch()` per block call).
-5. **Verify correctness with a real, cheap parity test first** — mirror
+- [ ] 4. **Batch per-block**, not per-op (`BeginBatch()`/`EndBatch()` per block call).
+- [ ] 5. **Verify correctness with a real, cheap parity test first** — mirror
    `FluxGpuVsCpuForwardBisectDebugTest.cs`'s pattern: real weights, a small-but-real
    `length`/token count, compare the GPU forward pass against the existing CPU `Forward` (backend:
    null) for identical `latent`/`condition`/`timestep` input, real numeric assertion.
-6. **Real end-to-end re-verification**: use the existing known-good reference —
+- [ ] 6. **Real end-to-end re-verification**: use the existing known-good reference —
    `docs/diffusion-samples/minimax_music3_v1_folk_verse_200frames.wav` (per `PerformanceLeague.md`,
    generated post the frame-index fix) — confirm the GPU path's output is audibly consistent with
    the CPU path's own known output (this doc's own note: the existing sample "not yet judged by ear
    by any session" — if this is still true when picked up, that's worth doing regardless of the
    GPU work, as a real independent correctness check).
-7. **Update `PerformanceLeague.md`** with real, measured before/after numbers, following the same
+- [ ] 7. **Update `PerformanceLeague.md`** with real, measured before/after numbers, following the same
    honesty bar every prior doc this session established — this would be the **first real Vulkan
    timing for this model**, so there's no prior GPU number to compare against, only the 3352.9s CPU
    baseline.

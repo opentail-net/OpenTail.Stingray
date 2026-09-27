@@ -16,11 +16,10 @@
 **Status:** the original SSM/Mamba plan was superseded. The target uses Gated DeltaNet
 linear-attention recurrence plus MoE.
 
-1. Run the existing path against the reference GGUF and capture load, greedy parity, context,
-   batching, and hybrid-placement evidence.
-2. Turn a failure into a narrow tensor/operation discrepancy before designing a kernel.
-3. Add GDN state-lifecycle conformance tests, including retained-session compatibility.
-4. Benchmark only after correctness passes.
+- [x] 1. Run the existing path against the reference GGUF and capture load, greedy parity, context, batching, and hybrid-placement evidence (largely covered in practice: Ornith-1.0 9B and Qwen3.8-27B validated on CPU and full CUDA offload).
+- [x] 2. Turn a failure into a narrow tensor/operation discrepancy before designing a kernel.
+- [ ] 3. Add GDN state-lifecycle conformance tests, including retained-session compatibility.
+- [ ] 4. Benchmark only after correctness passes.
 
 References: [qwen35moe-tensor-layout.md](../reference/qwen35moe-tensor-layout.md) and
 [done/qwen35moe-plan-superseded.md](../done/qwen35moe-plan-superseded.md).
