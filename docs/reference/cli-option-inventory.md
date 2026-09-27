@@ -2,7 +2,7 @@
 
 **Generated:** by `scripts/gen-cli-option-inventory.ps1`, which scans `[CommandOption]` /
 `[Description]` pairs under `src/OpenTail.Stingray.Cli`. Last regenerated **2026-09-27**, recording
-**209 option declarations** across 19 command files — the same count the
+**210 option declarations** across 19 command files — the same count the
 `StaticPlanConfigurationTests` guard enforces against source. (Reconciled 12 rows of drift, caught
 by CI failing `CliOptionInventory_DeclaredCountMatchesSource` on `main`: three new commands —
 `AdmitArchCommand`, `GenVisionScaffoldCommand` and `PullCommand`, see `docs/reference/061-coverage-tooling.md` —
@@ -194,6 +194,7 @@ hoc at each read site rather than in one place.
 | `--batch-chunk-size` | expert | Tokens per Prefill() call in --batched mode (default: 256, matching the engine's STINGRAY_PREFILL_CHUNK default). Smaller chunks exercise more chunk-boundary KV-cache transitions; larger chunks are closer to a single-shot prompt. |
 | `--batched` | expert | Score every position through batched ForwardPass.Prefill (docs/cpu-prefill-plan.md §14) instead of token-by-token Forward. Default mode NEVER calls MatMulBatched, so it cannot see STINGRAY_CPU_PREFILL_Q8's effect at all -- this flag is required to actually measure that path's perplexity impact. Not supported with --tq or -g -1; per-layer-head-dim (gemma-4) and MoE models ARE supported (MoE routes through the batched per-expert FFN). Prompts are evaluated in --batch-chunk-size chunks so KV-cache truncation matches real multi-chunk prefill. |
 | `--ctx-size` | stable | Number of tokens to evaluate (default: 2048). Clamped to the model context length and the corpus length. |
+| `--dump-nll` | diagnostic | Write one line per scored position to this file: target position, target token id, NLL. For diffing per-token log-probs against a reference (e.g. llama-server) to find which tokens carry a PPL gap. |
 | `--file` | stable | UTF-8 text file to evaluate (llama.cpp -f/--file). Tokenized raw (no chat template); the first -c tokens are scored. |
 | `--model` | stable | Path to GGUF model file |
 | `--n-gpu-layers` | stable | Layers on GPU: 0 (default, CPU forward pass) or -1 (full offload — CUDA via CudaForwardPass, else Vulkan via GpuForwardPass). Partial offload is not supported. |

@@ -2574,8 +2574,6 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         // length match against hp.EmbeddingDim; a size mismatch here is a real architecture-adapter
         // bug, not something a caller can work around).
         int embd = vision.EmbeddingDim;
-        if (vision.PlaceholderMarker == "<image>" || vision.ProjectorType == "mlp")
-            s_isVicuna = true;
         if (embd != hp.EmbeddingDim && embd != hp.EmbeddingDim * (1 + hp.NumDeepstack))
         {
             AnsiConsole.MarkupLine(
@@ -3274,15 +3272,14 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         }
     }
 
-    private static string s_arch = "qwen2"; // set during model load
-    private static bool s_hasLlama3Headers;
-    private static bool s_isVicuna;
+    internal static string s_arch = "qwen2"; // set during model load
+    internal static bool s_hasLlama3Headers;
     // Effective "thinking off" state: --no-thinking OR a model whose recommended config
     // disables reasoning (Gemma 4 E4B-it is not a reasoning model). Set during model load.
     private static bool s_noThinking;
     private static int s_thinkTokenId = -1;    // <think> token for any model using the <think>/</think> special-token convention
     private static int s_endThinkTokenId = -1; // </think> token for any model using the <think>/</think> special-token convention
-    private static JinjaChatTemplate? s_jinja;  // parsed from GGUF tokenizer.chat_template
+    internal static JinjaChatTemplate? s_jinja;  // parsed from GGUF tokenizer.chat_template
     // Tool definitions loaded from --tools (template-facing object graph: a list of
     // {type, function:{…}} dicts), rendered into the chat template's `tools` variable. Null
     // unless --tools was given, in which case the prompt advertises no tools (legacy behaviour).
@@ -3539,7 +3536,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         return withBos;
     }
 
-    private static string FormatPrompt(string userMessage, string? systemPrompt, bool enableThinking = true, bool injectDefaultSystem = true)
+    internal static string FormatPrompt(string userMessage, string? systemPrompt, bool enableThinking = true, bool injectDefaultSystem = true)
     {
         // STINGRAY_RAW_PROMPT=1 bypasses the chat template entirely. Used for parity testing
         // against llama.cpp's --no-conversation mode (raw text completion). Not for normal use.
@@ -3581,7 +3578,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         }
         else if (s_arch is "llama")
         {
-            if (s_isVicuna || !s_hasLlama3Headers)
+            if (!s_hasLlama3Headers)
             {
                 // Vicuna (LLaVA-1.5): USER: {userMessage}\nASSISTANT:
                 if (systemPrompt is not null)

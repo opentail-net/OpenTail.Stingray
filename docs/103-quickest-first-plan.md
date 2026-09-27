@@ -120,7 +120,7 @@ Timebox each at half a day, write down what was learned, and move on if blocked.
   - [x] **11.c** NaN in `ForwardPass`'s f16 `qwen3` path (last layer, one position). DONE 2026-09-27: no longer reproduces; pinned by `Qwen3F16FiniteLogitsTests`.
   - [ ] **11.d** `HybridGdnChunkedPrefill_MatchesSequentialPrefill` failure with real weights.
   - [ ] **11.e** Stable Audio 3 padding masks in the APG norm.
-  - [x] **11.f** Classic LLaVA-1.5 (missing image token in vocab). DONE 2026-09-27: direct-splice path in CLI (`RunCommand.cs`) when marker absent from special tokens; Vicuna prompt format for LLaMA-2 backbone; patch/CLS ordering in `LlavaVisionEncoder.cs` (patches 0..575, CLS 576, matching llama.cpp's `clip_graph_llava::build`). Pinned by `LlamaMtmdVisionParityTests.Llava15_Rainbow336_MatchesLlamaMtmdDebug` (576x4096 soft tokens, sum -10587.12 vs -10596.39, row 0 [-0.5335, -0.0007, -0.2534] vs [-0.5347, -0.0022, -0.2532]). End-to-end answers "The newspaper is the New York Times, and the main headline reads \"Men Walk on Moon.\"" matching `llama-mtmd-cli`.
+  - [x] **11.f** Classic LLaVA-1.5 (missing image token in vocab). DONE 2026-09-27: direct-splice path in CLI (`RunCommand.cs`) when marker absent from special tokens; Vicuna prompt format for LLaMA-2 backbone (`!s_hasLlama3Headers` alone, removing `s_isVicuna` so LLaMA-3 VLMs aren't hijacked into Vicuna; pinned by `LlamaPromptFormatRuleTests`); patch/CLS ordering in `LlavaVisionEncoder.cs` (patches 0..575, CLS 576, matching llama.cpp's `clip_graph_llava::build`). Pinned by `LlamaMtmdVisionParityTests.Llava15_Rainbow336_MatchesLlamaMtmdDebug` (576x4096 soft tokens, sum -10587.12 vs -10596.39, row 0 [-0.5335, -0.0007, -0.2534] vs [-0.5347, -0.0022, -0.2532]). End-to-end answers "The newspaper is the New York Times, and the main headline reads \"Men Walk on Moon.\"" matching `llama-mtmd-cli`. Tested two images, count mismatch, no-marker prepend, context overflow, Qwen3-VL regression, and Vulkan GPU offload (-g -1).
 
 ---
 
@@ -329,3 +329,19 @@ Timebox each at half a day, write down what was learned, and move on if blocked.
   - Output unchanged: TDT 4/4 identical to CrispASR, CTC 2.9% WER same words, heavy encoder tests 3/3.
   - Note: single-shot timings from the JIT (`dotnet build`) CLI include ~1 s of JIT warm-up; the AOT binary is
     the fair comparison.
+- 2026-09-27: item 11.f LLaVA-1.5 hardening & verification:
+  - End-to-end vs llama-mtmd-cli: verbatim match on `test-1.png` ("The newspaper is the/The New York Times, and the main headline reads/is \"Men Walk on Moon.\""). Both 598 prompt tokens (576 image + 22 text). Stingray CPU prefill 7.9 t/s, decode 7.0 t/s.
+  - Prompt format rule fix: unit test `LlamaPromptFormatRuleTests.FormatPrompt_LlamaArch_Llama3Headers_ImageModel_RendersLlama3Headers` proved that `s_isVicuna` forced LLaMA-3 models with `<image>`/`mlp` into Vicuna formatting. Removed `s_isVicuna`, relying on `!s_hasLlama3Headers` alone. 4/4 unit tests passed (1.15s). `llama-server --no-jinja` POST /apply-template confirmed ChatML fallback, while `llama-mtmd-cli` requires `--chat-template vicuna` for classic LLaVA.
+  - Direct-splice edge cases:
+    - Two images: 2 x `--image` with `<image>` twice in `-p` -> 1180 tokens (1152 image + 28 text), answered "Yes, the two images are of the same newspaper page." (7.5 t/s prefill / 6.3 t/s decode).
+    - Count mismatch: 2 x `--image` with 1 x `<image>` -> clean exit code 1 (`Error: prompt has 1 '<image>' marker(s) but 2 --image file(s) were given`).
+    - Automatic prepend: no `<image>` in `-p` -> prepended 1 image, 598 tokens, answered correctly.
+    - Context overflow: `--ctx-size 512` -> clean exit code 1 (`Error: prompt plus images expand to 591 tokens (576 image) but the active context is 512`), `plannedPrefill` correctly accounted for -1 sentinel.
+    - Literal word `<image>` without `--image` -> processed as ordinary text without error.
+  - Parity & regression suites:
+    - `LlamaMtmdVisionParityTests` (all 15 real-weight vision parity tests): 15/15 passed in 116.255s.
+    - Qwen3-VL end-to-end regression: answered "This is The New York Times, and the main headline is \"Men Walk on Moon: Astronauts Land On Plain; Collect Rocks, Plant Flag.\"" (321 tokens, 20.3 t/s prefill / 19.0 t/s decode).
+    - `Tests.Cli`: 370/371 passed (1 skipped for missing reference model) in 13.542s.
+    - `Tests.ForwardPass.Fast`: 702/703 passed (1 skipped for STINGRAY_RUN_HEAVY_TESTS=1) in 1m 40s.
+    - `Tests.Server.Fast`: 427/427 passed in 6.074s.
+  - GPU offload (-g -1 on AMD Radeon Vulkan iGPU): uploaded all 32 layers to VRAM; classic LLaVA-1.5 has neither 2D M-RoPE nor deepstack, so GPU offload works end-to-end and outputs "The main headline of the newspaper is \"Men Walked on Moon.\"" at 7.3 t/s prefill / 6.5 t/s decode.
