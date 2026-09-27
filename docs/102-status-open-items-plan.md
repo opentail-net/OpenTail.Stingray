@@ -17,7 +17,7 @@ dated evidence in the same pass.
 | 4 | ✅ DONE | dots.ocr: decode stops after one token | suspected prompt-format mismatch | small–medium |
 | 5 | ✅ DONE (2026-09-27) | Kimi-VL + YoutuVL: split `attn_k_b` / `attn_v_b` MLA layout not read | known math (llama.cpp deepseek2 absorption path); unblocks two models | medium |
 | 6 | ✅ DONE (2026-09-27) | PaddleOCR-VL: degenerate output | text architecture (`paddleocr`) has no validated forward pass | medium |
-| 7 | ⬜ TODO | DeepSeek-OCR / OCR2: garbled | text architecture (`deepseek2-ocr`) has no validated forward pass | medium |
+| 7 | 🟡 MOSTLY DONE (global view; tiles pending) | DeepSeek-OCR / OCR2: garbled | text architecture (`deepseek2-ocr`) has no validated forward pass | medium |
 | 8 | ⬜ TODO | Step3-VL: garbled | unvalidated architecture on a Q2_K checkpoint | medium–large |
 | 9 | ⬜ TODO | IBM Granite Vision 3.2 / 4.0: output not image-grounded | investigation; 3.2 via LlavaAdapter, 4.0 via QFormer projector | large |
 | 10 | ⬜ TODO | CosyVoice 2: audio only partly right | investigation | large |
@@ -113,6 +113,17 @@ second-half perplexity vs `llama-perplexity`, then an allowlist entry, a STATUS.
 MODELS.md entry if it qualifies.
 
 ## Log
+
+- 2026-09-27 #7: DeepSeek-OCR2 reads text and matches llama-server on the test invoice.
+  - This needed a new encoder, larger than the "medium" estimate. The old one had no SAM stage.
+    Ported: SAM ViT-B, neck, Qwen2 query encoder, projection.
+  - Also: `deepseek2-ocr` admitted (NeoX), Pillow-bicubic fit-and-pad preprocessing, BOS for
+    templates that omit it, and a plain-text close marker.
+  - SAM is verified per block against `llama-mtmd-debug`. That tool segfaults in the Qwen2 stage,
+    so that stage is verified end to end only.
+  - Remaining for #7: 768-px tiles for pages larger than 768 px. This needs bicubic resizing of the
+    SAM position table, linear interpolation of the relative-position tables, 144-query tiles, and
+    grid selection. DeepSeek-OCR v1 has no local checkpoint.
 
 - 2026-09-27 #6 DONE: PaddleOCR-VL reads text; OCR output is identical to llama-server.
   - Encoder, 4 bugs: LayerNorm with bias (it used RMSNorm), vision M-RoPE with section reset,

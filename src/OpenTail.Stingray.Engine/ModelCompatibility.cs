@@ -249,6 +249,13 @@ public static class ModelCompatibility
         // by LlamaMtmdVisionParityTests.PaddleOcr_Rainbow448_MatchesLlamaMtmdDebug.
         "paddleocr",
 
+        // deepseek2-ocr — DeepSeek-OCR2 text decoder (llama.cpp src/models/deepseek2.cpp is_ocr branch: plain MHA
+        // with q/k/v, full-head NeoX RoPE, theta 1e4, then the DeepSeek MoE FFN). ADMITTED 2026-09-27 after adding
+        // it to the NeoX list. Evidence (deepseek-ocr-2-Q4_K_M.gguf, CPU): wikitext [512,1024) PPL 8.7955 vs
+        // llama-perplexity 8.7905; OCR of a rendered invoice image matches llama-server --mmproj token for token
+        // except one near-tie line break (two newlines vs two spaces + newline, logprob -0.63 vs -0.78 in llama.cpp).
+        "deepseek2-ocr",
+
         // internlm2 -- ADMITTED 2026-09-01. Was blocked purely on the tokenizer axis (same as
         // minicpm/ernie4_5/baichuan): tokenizer.ggml.model=llama with tokenizer.ggml.scores
         // (92,544 entries) and no tokenizer.ggml.merges array -- already fixed by

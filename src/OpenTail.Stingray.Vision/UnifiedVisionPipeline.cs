@@ -82,6 +82,9 @@ public static class UnifiedVisionPipeline
             return new MobileNetV5Adapter(model);
         }
 
+        if (projType is "deepseekocr2")
+            return new DeepSeekOcr2Adapter(GgufModel.Open(mmprojPath));
+
         if (projType != null && (projType.Contains("deepseekocr") || projType.Contains("deepseek-ocr") || projType.Contains("deepseek_ocr")))
         {
             var model = DeepSeekOcrVisionModel.Open(mmprojPath);
@@ -191,6 +194,9 @@ public static class UnifiedVisionPipeline
             var model = NemotronVisionModel.Open(mmprojPath);
             return new NemotronAdapter(model);
         }
+
+        if (gguf.Tensors.Any(t => t.Name.Contains("resample_query_1024")))
+            return new DeepSeekOcr2Adapter(GgufModel.Open(mmprojPath));
 
         if (gguf.Tensors.Any(t => t.Name.Contains("model.view_seperator") || t.Name.Contains("resample_query_1024")))
         {
@@ -388,6 +394,39 @@ public static class UnifiedVisionPipeline
         }
 
         public void Dispose() => _model.Dispose();
+    }
+
+    /// <summary>DeepSeek-OCR2 (SAM + Qwen2 query encoder), llama.cpp deepseekocr2.cpp. The image is followed
+    /// by a plain newline text token, as mtmd's img_end for DEEPSEEKOCR/DEEPSEEKOCR2. Global view only.</summary>
+    private sealed class DeepSeekOcr2Adapter : IVisionEmbedder
+    {
+        private readonly GgufModel _gguf;
+        private readonly DeepSeekOcr2VisionEncoder _encoder;
+
+        public DeepSeekOcr2Adapter(GgufModel gguf)
+        {
+            _gguf = gguf;
+            _encoder = new DeepSeekOcr2VisionEncoder(gguf);
+        }
+
+        public string ProjectorType => "deepseekocr2";
+        public int EmbeddingDim => _encoder.EmbeddingDim;
+        public int ImageWidth => DeepSeekOcr2ImagePreprocessor.BaseSize;
+        public int ImageHeight => DeepSeekOcr2ImagePreprocessor.BaseSize;
+        public string ImageOpenMarker => "";
+        public string ImageCloseMarker => "\n";
+        public string PlaceholderMarker => "<image>";
+
+        public float[] EmbedImage(ReadOnlySpan<byte> rgb, int width, int height, out int tokenCount) =>
+            _encoder.EncodeGlobalView(DeepSeekOcr2ImagePreprocessor.PreprocessGlobalView(rgb, width, height), out tokenCount);
+
+        public float[] EmbedImageFile(string filePath, out int tokenCount)
+        {
+            var rgb = ImageIO.LoadRgb(filePath, out int w, out int h);
+            return EmbedImage(rgb, w, h, out tokenCount);
+        }
+
+        public void Dispose() => _gguf.Dispose();
     }
 
     private sealed class KimiAdapter : IVisionEmbedder

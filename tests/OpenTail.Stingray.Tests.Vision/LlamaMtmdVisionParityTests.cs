@@ -171,6 +171,23 @@ public sealed class LlamaMtmdVisionParityTests
         AssertMatches(tokens, 1411.853, 30.0, [0.1998f, 0.0144f, -0.2507f], 0.05f);
     }
 
+    [Fact]
+    public void DeepSeekOcr2_Rainbow1024_SamMatchesLlamaMtmdDebug()
+    {
+        string? path = FindModel("mmproj-deepseek-ocr-2-q8_0.gguf");
+        Assert.SkipWhen(path is null, "mmproj-deepseek-ocr-2-q8_0.gguf not present");
+        using var gguf = OpenTail.Stingray.Core.GgufModel.Open(path!);
+        var enc = new DeepSeekOcr2VisionEncoder(gguf);
+        float[] sam = enc.Sam(Rainbow(1024), 1024, out int side);
+        Report("dsocr2 sam_output", sam, side * side, 896);
+
+        // llama-mtmd-debug (-m deepseek-ocr-2-Q4_K_M.gguf --mmproj mmproj-deepseek-ocr-2-q8_0.gguf -n 1024 --image rainbow):
+        // sam_output 16 x 16 x 896 token-major, sum -475.976685, row 0 [-0.1650, 0.0668, 0.0027]. The tool
+        // segfaults later, inside the Qwen2 stage, so that stage is checked end to end instead.
+        Assert.Equal(16, side);
+        AssertMatches(sam, -475.977, 25.0, [-0.1650f, 0.0668f, 0.0027f], 0.03f);
+    }
+
     private static string? FindModel(string file)
     {
         var dir = new DirectoryInfo(AppContext.BaseDirectory);

@@ -2421,17 +2421,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         var prompt = FormatPrompt(s.Prompt!, s.SystemPrompt, enableThinking: !s_noThinking);
         var tokens = tok.Encode(prompt);
 
-        // STINGRAY_RAW_PROMPT bypasses the chat template, so we need to add BOS
-        // manually for models that expect it (e.g. Gemma 4 with add_bos_token=true).
-        // The chat-template path already injects bos_token via Jinja.
-        bool isRaw = Environment.GetEnvironmentVariable("STINGRAY_RAW_PROMPT") == "1";
-        if (isRaw && tok.AddBosToken && tok.BosTokenId >= 0
-            && (tokens.Count == 0 || tokens[0] != tok.BosTokenId))
-        {
-            var withBos = new List<int>(tokens.Count + 1) { tok.BosTokenId };
-            withBos.AddRange(tokens);
-            tokens = withBos;
-        }
+        tokens = EnsureBos(tokens, tok);
 
         // The final prompt token occupies one context slot and ordinary generation needs at
         // least one more. Check after every tokenizer/BOS transformation and before Prefill:
@@ -2646,12 +2636,17 @@ public sealed class RunCommand : Command<RunCommand.Settings>
 
         int imgOpen = !string.IsNullOrEmpty(vision.ImageOpenMarker) && tok.SpecialTokens.TryGetValue(vision.ImageOpenMarker, out var o) ? o : -1;
         int imgClose = !string.IsNullOrEmpty(vision.ImageCloseMarker) && tok.SpecialTokens.TryGetValue(vision.ImageCloseMarker, out var c) ? c : -1;
+        // A close marker that is plain text rather than a special token (DeepSeek-OCR's newline, mtmd img_end)
+        // is tokenized and fed as ordinary tokens after the image.
+        int[] imgCloseText = imgClose < 0 && !string.IsNullOrEmpty(vision.ImageCloseMarker)
+            ? tok.Encode(vision.ImageCloseMarker).Where(t => !tok.SpecialTokens.Values.Contains(t)).ToArray()
+            : [];
         int placeholder = tok.SpecialTokens.TryGetValue(vision.PlaceholderMarker, out var ph) ? ph :
                           (tok.SpecialTokens.TryGetValue("<|image|>", out var ph2) ? ph2 :
                           (tok.SpecialTokens.TryGetValue("<image_soft_token>", out var ph3) ? ph3 : 258880));
 
         var prompt = FormatPrompt(userMsg, s.SystemPrompt, enableThinking: !s_noThinking);
-        var allTokens = tok.Encode(prompt).ToList();
+        var allTokens = EnsureBos(tok.Encode(prompt), tok).ToList();
         int placeholdersFound = allTokens.Count(t => t == placeholder);
         if (placeholdersFound != nImages)
         {
@@ -2666,6 +2661,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         // RoPE scratch from the context bound but not its KV cache, so running past it writes
         // out of bounds instead of failing.
         int markerTokens = (imgOpen >= 0 ? 1 : 0) + (imgClose >= 0 ? 1 : 0);
+        markerTokens += imgCloseText.Length;
         int plannedPrefill = allTokens.Count + (nImages * markerTokens) + totalSoft - nImages;
         if (plannedPrefill >= maxContextLength)
         {
@@ -2693,6 +2689,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
                 for (int t = 0; t < nTok; t++)
                     logits = fwd.ForwardEmbedding(soft.AsSpan(t * embd, embd), pos++);
                 if (imgClose >= 0) logits = fwd.Forward(imgClose, pos++);
+                foreach (int ct in imgCloseText) logits = fwd.Forward(ct, pos++);
             }
             else
             {
@@ -3426,6 +3423,22 @@ public sealed class RunCommand : Command<RunCommand.Settings>
             AnsiConsole.MarkupLine($"[yellow]Warning:[/] Unknown --spec-type [yellow]{Markup.Escape(v)}[/]; expected auto|none|mtp|dspark. Falling back to auto.");
             return SpecType.Auto;
         }
+    }
+
+    /// <summary>
+    /// Prepends BOS when the model asks for it (<c>tokenizer.ggml.add_bos_token</c>) and the prompt does not
+    /// already start with it, as llama.cpp's <c>common_tokenize(..., add_special: true)</c> does. Raw prompts
+    /// never contain it, and neither do chat templates that omit <c>bos_token</c> (DeepSeek-OCR2's is just the
+    /// concatenated contents). Before 2026-09-27 this ran only for STINGRAY_RAW_PROMPT, so such templated
+    /// prompts had no BOS at all.
+    /// </summary>
+    private static IReadOnlyList<int> EnsureBos(IReadOnlyList<int> tokens, GgufTokenizer tok)
+    {
+        if (!tok.AddBosToken || tok.BosTokenId < 0 || (tokens.Count > 0 && tokens[0] == tok.BosTokenId))
+            return tokens;
+        var withBos = new List<int>(tokens.Count + 1) { tok.BosTokenId };
+        withBos.AddRange(tokens);
+        return withBos;
     }
 
     private static string FormatPrompt(string userMessage, string? systemPrompt, bool enableThinking = true)
