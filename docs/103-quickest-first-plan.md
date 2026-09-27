@@ -243,3 +243,8 @@ Timebox each at half a day, write down what was learned, and move on if blocked.
 - 2026-09-27: item 3 not done yet.
   - GLM-4.7-Flash second-half PPL 8.1757 (batched) vs llama.cpp 8.0997: 0.94%, above the ~0.3% bar.
   - Sequential re-run in progress to separate a batched-path effect.
+- 2026-09-27: item 10 done, as a bug entry (its "done when" allows that).
+  - The GGUF Paraformer (`FunAsrPipeline`) returns an empty transcript on real Mandarin speech; the
+    ONNX Paraformer on the same clip is fluent.
+  - Also: `models/paraformer-q8.gguf` is actually Fun-ASR-Nano (`audiocpp`), misnamed.
+  - Both are in `bugstofix.md`.

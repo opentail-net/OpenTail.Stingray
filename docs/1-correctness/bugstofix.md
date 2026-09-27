@@ -18,6 +18,19 @@ restart a fourth round of kernel-level chasing on this checkpoint without new ev
 
 ## Tracked items
 
+- [ ] **FunASR GGUF Paraformer pipeline returns an empty transcript on real speech** (found 2026-09-27, `docs/103` item 10).
+  - **Failure:** `FunAsrPipeline.Load("models/_models/paraformer-q8.gguf")` on
+    `docs/audio-samples/paraformer-zh-test-0.wav` (real Mandarin) produces `''`.
+  - **Control:** the ONNX Paraformer on the same clip gives
+    "对我做了介绍啊那么我想说的是呢大家如果对我的研究感兴趣呢嗯", so the audio is fine.
+  - **Why it looked healthy:** its only end-to-end test feeds a 440 Hz tone, where empty output is
+    expected. The stage goldens (encoder/adaptor/decoder) pass on their own.
+  - **Next step:** feed the real clip through each stage and compare with the goldens' reference
+    path, to find which stage returns nothing useful.
+  - **Related trap:** `models/paraformer-q8.gguf` (1.0 GB) is not a Paraformer. Its metadata says
+    `general.name = Fun-ASR-Nano-2512`, `general.architecture = audiocpp`. The real Paraformer GGUF is
+    `models/_models/paraformer-q8.gguf` (237 MB). Tests that look up "paraformer-q8.gguf" in
+    `models/` first load the wrong model; rename or move the Nano file.
 - [ ] **Fish Speech S2 Pro golden parity fails** (found 2026-09-27 by the `docs/103` item 2 landscape sweep).
   - **Failures:**
     - `FishSpeechCodecTests.Decode_RealWeights_MatchesGoldenPcmOutput`: PCM cosine 0.052 vs golden.
