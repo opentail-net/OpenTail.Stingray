@@ -38,7 +38,7 @@ the order they were written.
   [101-work-queue-after-coverage-plan.md](101-work-queue-after-coverage-plan.md),
   [90-external-hardware-work.md](90-external-hardware-work.md) (needs hardware this machine lacks),
   [bugstofix.md](bugstofix.md)
-- **Model coverage:** 02, 03, 07, 08, 050, 054, 058, 064, 066, 086
+- **Model coverage:** 02, 03, 050, 058, 064, 066, 086
 - **Runtime and serving:** 010, 032, 04, 051
 - **Performance:** 05, 049, 069, 079, 080, 088, 094,
   [perf-sweep-plan.md](perf-sweep-plan.md), [vulkan-gemm/](vulkan-gemm)
