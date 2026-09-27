@@ -18,8 +18,29 @@ restart a fourth round of kernel-level chasing on this checkpoint without new ev
 
 ## Tracked items
 
+- [ ] **GLM-4.5 (`glm4moe`) perplexity 1.9% worse than llama.cpp; not admitted** (logged 2026-09-27; `docs/done/102-status-open-items-plan.md` #16).
+  - **Checkpoint:** `cerebras_GLM-4.5-Air-REAP-82B-A12B-Q2_K.gguf`. It mixes quant types: attn_q
+    Q2_K, attn_output Q5_K, expert gate/up Q2_K, expert down IQ4_NL.
+  - **Result:** wikitext second-half PPL at -c 2048 is 8.7753 vs `llama-perplexity` 8.6125.
+  - **Already fixed:** a tokenizer bug (`glm4` pre-type unmapped, commit 4349db3) that made it 37%.
+  - **Ruled out:**
+    - tokenisation: a 20 KB sample matches `llama-tokenize` exactly;
+    - RoPE: the partial NeoX table is built over `rope.dimension_count`=64;
+    - batched vs sequential MoE prefill: identical PPL;
+    - IQ4_NL dequant and codebook: identical to ggml.
+  - **Symptom:** the error grows with position. Next-token log-probs vs `llama-server` given the same
+    ids differ by about 0.01 nats at 5 tokens, about 0.1 at 23, and up to 0.85 at 326, with the same
+    top-5 order. So look at what accumulates over context: attention over many keys, or
+    sigmoid+bias routing drifting as the hidden state drifts.
+  - **Next step:** compare per-layer hidden states for the last token of the 326-token wikitext
+    prompt (first 1400 bytes of `scripts/kvarn-gate/wiki.test.raw`).
+    - llama.cpp side: `examples/llama.cpp/llama.cpp/build-eval/bin/llama-eval-callback.exe`, tensors
+      `ffn_inp-N` / `l_out-N`.
+    - Our side: `StageCapture` stages `post_attn_resid` / `post_ffn_resid`.
+    - Find the first layer whose last-token values drift.
+  - **Memory:** llama.cpp needs about 46 GB for this file, so run it alone.
 - [ ] **Dequantize.cs / IqCodebooks.cs coverage gap**: Port `iq1s_grid` (NGRID_IQ1S=2048) and decoders for `IQ1_S`/`IQ1_M` (`IQ1S_DELTA=0.125f`, distinct sign/shift scheme) and `IQ2_XS`/`IQ2_S` when needed by future GGUF models.
-- [ ] **ModelCompatibility.cs / Kernels missing op coverage**: Implement `GGML_OP_SSM_SCAN` (the selective-scan recurrence, distinct from `SSM_CONV`), `RWKV_WKV6`/`RWKV_WKV7`, and DeepSeek-V4 ops (`LIGHTNING_INDEXER`, `DSV4_HC_*`, `SOLVE_TRI`, `WIN_PART`/`WIN_UNPART`).
+- [ ] **ModelCompatibility.cs / Kernels missing op coverage** (2026-09-27: the Mamba-2 `SSM_SCAN`/`SSM_CONV` path is now implemented on CPU in `ForwardPass.Mamba2.cs` for Granite 4.0-H / Nemotron-H; Mamba-1 and GPU remain): Implement `GGML_OP_SSM_SCAN` (the selective-scan recurrence, distinct from `SSM_CONV`), `RWKV_WKV6`/`RWKV_WKV7`, and DeepSeek-V4 ops (`LIGHTNING_INDEXER`, `DSV4_HC_*`, `SOLVE_TRI`, `WIN_PART`/`WIN_UNPART`).
 - [ ] **SpeculativeDecoder.cs StepSampled/PLD bugs**: Confirmed real defect in speculative decode step sampling; currently unreachable/latent as no wired call path exercises it yet.
 - [x] **DeepSeekMoeGraph.cs:172 ExpertOffsets off-by-index**: Resolved 2026-08-27 (moved to `docs/done/bugstofix-resolved-2026-08.md`).
 - [x] **KvMemoryGovernor TOCTOU race & InferenceSession unguarded Fork() on CUDA**: Moot / resolved 2026-08-27 when superseded session types were removed.
