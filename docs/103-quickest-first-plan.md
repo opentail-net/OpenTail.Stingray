@@ -30,7 +30,7 @@ sources, but work proceeds in the order below.
   - [x] **Done when:** committed.
 
 ### 2. Rerun the real-weight landscape sweep
-- [ ] **2. Rerun the real-weight landscape sweep**
+- [ ] **2. Rerun the real-weight landscape sweep** (STOPPED 2026-09-27: the memory reaper killed it twice, partway through Audio; not restarted. See Log)
   - [ ] Run `STINGRAY_RUN_HEAVY_TESTS=1` for Diffusion suite with its own log (no other heavy runs).
   - [ ] Run `STINGRAY_RUN_HEAVY_TESTS=1` for Audio suite with its own log.
   - [ ] Run `STINGRAY_RUN_HEAVY_TESTS=1` for Vision suite with its own log.
@@ -44,10 +44,10 @@ sources, but work proceeds in the order below.
 ## About an hour
 
 ### 3. GLM-4.7-Flash (`deepseek2`)
-- [ ] **3. GLM-4.7-Flash (`deepseek2`)**
+- [ ] **3. GLM-4.7-Flash (`deepseek2`)** (BLOCKED 2026-09-27: logged in `bugstofix.md`)
   - [x] `stingray pull -r unsloth/GLM-4.7-Flash-GGUF -q Q2_K` (10.6 GB downloaded to `models/_models/GLM-4.7-Flash-Q2_K.gguf`).
-  - [ ] `admit-arch` verification.
-  - [ ] Run second-half PPL vs `llama-perplexity` (`-c 2048`).
+  - [x] `admit-arch` verification (coherent generation, same top-k order as llama-server).
+  - [x] Run second-half PPL vs `llama-perplexity` (`-c 2048`): 8.1757 batched / 8.2100 sequential vs 8.0997. Not at parity.
   - [ ] **Done when:** PPL within ~0.3% of llama.cpp; add STATUS/RUNNING rows, and entry in MODELS.md if it qualifies.
   - *Note:* uses `deepseek2` in llama.cpp, not `glm4moe`, so it may already work. Waits for Item 2 sweep to free machine.
 
@@ -58,20 +58,20 @@ sources, but work proceeds in the order below.
   - [x] **Done when:** stage fingerprints match; STATUS row added.
 
 ### 5. Wire the ONNX speech-to-text pipelines into `stingray stt`
-- [ ] **5. Wire the ONNX speech-to-text pipelines into `stingray stt`**
+- [x] **5. Wire the ONNX speech-to-text pipelines into `stingray stt`** (DONE 2026-09-27, `4874ea4`)
   - [x] Implement `ISpeechToTextPipeline` in `SenseVoicePipeline`.
   - [x] Add CLI options to `SttCommand`: `-m sensevoice|paraformer --model-file <.onnx>` and auto-discover tokens file.
   - [x] Verify CLI transcription: SenseVoice matches LibriSpeech reference text ("concord returned to its place amidst the tents").
   - [x] Verify CLI transcription: Paraformer outputs fluent Mandarin transcript.
-  - [ ] Run exact-transcript test in `SenseVoiceRealWeightsTests` once Audio test project is free.
-  - [ ] Commit CLI and pipeline changes.
-  - [ ] **Done when:** `stingray stt` transcribes a real clip with each, matching existing pipeline output.
+  - [x] Run exact-transcript test in `SenseVoiceRealWeightsTests` once Audio test project is free.
+  - [x] Commit CLI and pipeline changes.
+  - [x] **Done when:** `stingray stt` transcribes a real clip with each, matching existing pipeline output.
 
 ### 6. Finish the silent-no-op test sweep
-- [ ] **6. Finish the silent-no-op test sweep**
+- [ ] **6. Finish the silent-no-op test sweep** (MOSTLY DONE 2026-09-27; leftovers below)
   - [x] Point real-weight tests at `models/_models` as well as `models/` (Part 1 committed in `e58b58a`: 162 silent returns converted to `Assert.Skip`, 141 lookups updated).
   - [x] Verify `ForwardPass.Fast`: 14 previously silent real-weight tests now run and pass.
-  - [ ] Sweep remaining silent returns in the Audio project (after Item 2 sweep).
+  - [x] Sweep remaining silent returns in the Audio project (46 files, `4874ea4`).
   - [ ] Sweep remaining 14 files under active edit.
   - [ ] Sweep 31 lookup helpers with non-standard shapes (listed by `nested_models.py`).
   - [ ] **Done when:** grep finds no remaining silent returns in real-weight tests, and test runs report skips as skips.
@@ -81,32 +81,32 @@ sources, but work proceeds in the order below.
 ## A few hours, cause already narrowed
 
 ### 7. GLM-4.5 (`glm4moe`) 1.9% perplexity gap
-- [ ] **7. GLM-4.5 (`glm4moe`) 1.9% perplexity gap**
+- [ ] **7. GLM-4.5 (`glm4moe`) 1.9% perplexity gap** (TIMEBOXED 2026-09-27: logged in `bugstofix.md`)
   - [x] Profile layer bisection: drift starts at ~0.3% after layer 0's attention and compounds across layers rather than a single broken layer.
   - [x] Document findings and next experiment into `bugstofix.md` (GLM entry); timebox to day-scale job.
-  - [ ] `llama-eval-callback` on 326-token wikitext prompt for tensors `ffn_inp-N` / `l_out-N`.
-  - [ ] `StageCapture` stages `post_attn_resid` / `post_ffn_resid` on matching token IDs.
+  - [x] `llama-eval-callback` on 326-token wikitext prompt for tensors `ffn_inp-N` / `l_out-N`.
+  - [x] `StageCapture` stages `post_attn_resid` / `post_ffn_resid` on matching token IDs.
   - [ ] Compare layer-by-layer values and isolate cumulative drift cause.
   - [ ] **Done when:** second-half PPL within ~0.3% of llama.cpp's 8.6125; allowlist entry, STATUS, RUNNING, and MODELS rows added.
 
 ### 8. Jinja chat-template gaps
-- [ ] **8. Jinja chat-template gaps**
-  - [ ] Support string concatenation inside a conditional expression (Gemma-3-4B-it and other cases in `00-current-work.md` §1 item 7).
-  - [ ] Add regression tests verifying template rendering against test vectors.
-  - [ ] **Done when:** those templates render identically to llama.cpp's output.
+- [x] **8. Jinja chat-template gaps** (DONE 2026-09-27, `4ed6866`: the real gap was `tojson` formatting)
+  - [x] (No longer reproduces in the template corpus run) Support string concatenation inside a conditional expression (Gemma-3-4B-it and other cases in `00-current-work.md` §1 item 7).
+  - [x] Add regression tests verifying template rendering against test vectors (`JinjaTojsonTests`).
+  - [x] **Done when:** those templates render identically to llama.cpp's output (Qwen3 with tools, byte for byte).
 
 ### 9. Empty KV rows for layers without attention
-- [ ] **9. Empty KV rows for layers without attention**
-  - [ ] Update `PagedKvCache` to allow Mamba-2, short-conv, and MLP-only layers to skip storage rather than allocating zero KV blocks.
-  - [ ] Measure and confirm KV footprint reduction scales with attention layer count only.
-  - [ ] Verify Granite-H, Nemotron-H, and LFM2 parity tests remain unchanged.
-  - [ ] **Done when:** KV memory footprint reduction measured and verified without parity regression.
+- [x] **9. Empty KV rows for layers without attention** (DONE 2026-09-27, `c4cea41`)
+  - [x] Update `PagedKvCache` to allow Mamba-2, short-conv, and MLP-only layers to skip storage rather than allocating zero KV blocks.
+  - [x] Measure and confirm KV footprint reduction scales with attention layer count only.
+  - [x] Verify Granite-H, Nemotron-H, and LFM2 parity tests remain unchanged.
+  - [x] **Done when:** KV memory footprint reduction measured and verified without parity regression.
 
 ### 10. FunASR-Nano on real speech
-- [ ] **10. FunASR-Nano on real speech**
-  - [ ] Transcribe a real clip (LibriSpeech sample in repo).
-  - [ ] Validate output against reference transcript.
-  - [ ] **Done when:** sensible transcript produced, or a precise defect entry logged in `bugstofix.md`.
+- [x] **10. FunASR-Nano on real speech** (DONE 2026-09-27 as a bug entry, `fea7873`)
+  - [x] Transcribe a real clip (real Mandarin clip; output is empty).
+  - [x] Validate output against reference transcript (ONNX Paraformer on the same clip is fluent).
+  - [x] **Done when:** sensible transcript produced, or a precise defect entry logged in `bugstofix.md`.
 
 ---
 
@@ -115,9 +115,9 @@ sources, but work proceeds in the order below.
 Timebox each at half a day, write down what was learned, and move on if blocked.
 
 - [ ] **11. Unknown-cause set**
-  - [ ] **11.a** LFM2 0.24% PPL gap (10.9277 vs 10.9543).
-  - [x] **11.b** Youtu-VL: one 1024-token window +5% PPL vs llama.cpp.
-  - [ ] **11.c** NaN in `ForwardPass`'s f16 `qwen3` path (last layer, one position).
+  - [ ] **11.a** LFM2 0.24% PPL gap (10.9277 vs 10.9543). TIMEBOXED 2026-09-27, logged in `bugstofix.md`.
+  - [x] **11.b** Youtu-VL: one 1024-token window +5% PPL vs llama.cpp. DONE 2026-09-27 (`9568823`, unmapped `youtu` pre-tokenizer).
+  - [ ] **11.c** NaN in `ForwardPass`'s f16 `qwen3` path (last layer, one position). IN PROGRESS: no longer reproduces; adding a regression test.
   - [ ] **11.d** `HybridGdnChunkedPrefill_MatchesSequentialPrefill` failure with real weights.
   - [ ] **11.e** Stable Audio 3 padding masks in the APG norm.
   - [ ] **11.f** Classic LLaVA-1.5 (missing image token in vocab).
