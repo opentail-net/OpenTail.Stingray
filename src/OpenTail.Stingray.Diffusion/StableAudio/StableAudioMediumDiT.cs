@@ -210,6 +210,10 @@ public sealed class StableAudioMediumDiT : IDisposable
         DiffusionOps.RmsNorm(xCrossNorm, crossNormW, Dim, eps: 1e-5f);
         var cross = CrossAttention(xCrossNorm, seq, condEmbed, nCond, p);
         for (int i = 0; i < x.Length; i++) x[i] += cross[i];
+        // Local conditioning constant for latent tokens (StableAudioLocalConditioning).
+        if (LocalEmbedConstant(layerIdx) is { } localConst)
+            for (int t = MemoryTokens; t < seq; t++)
+                System.Numerics.Tensors.TensorPrimitives.Add(x.AsSpan(t * Dim, Dim), localConst, x.AsSpan(t * Dim, Dim));
 
         var ffNormW = ReadWeight($"{p}.ff_norm.gamma");
         var xFfNorm = x.ToArray();
@@ -279,6 +283,25 @@ public sealed class StableAudioMediumDiT : IDisposable
     /// passes). No RoPE (matches Small's cross-attention). Same "real padding mask is always
     /// discarded" behavior as <see cref="StableAudioDiT.CrossAttention"/> -- see that method's doc
     /// comment for the real source citation.</summary>
+    private readonly Dictionary<int, float[]?> _localEmbedConst = [];
+
+    internal float[]? LocalEmbedConstant(int layerIdx)
+    {
+        lock (_localEmbedConst)
+        {
+            if (!_localEmbedConst.TryGetValue(layerIdx, out var c))
+                _localEmbedConst[layerIdx] = c = StableAudioLocalConditioning.ZeroInputConstant(_st.Contains, ReadWeight, layerIdx, Dim);
+            return c;
+        }
+    }
+
+    /// <summary>Uploads every layer's local-conditioning add into <paramref name="ws"/> before any GPU forward.</summary>
+    public void PrepareLocalAdds(StableAudioMediumGpuWorkspace ws)
+    {
+        for (int layer = 0; layer < Depth; layer++)
+            if (LocalEmbedConstant(layer) is { } c) ws.LocalAdd(layer, MemoryTokens, c);
+    }
+
     private float[] CrossAttention(float[] x, int seq, float[] condEmbed, int nCond, string p)
     {
         var qNormW = ReadWeight($"{p}.cross_attn.q_norm.gamma");
@@ -503,6 +526,8 @@ public sealed class StableAudioMediumDiT : IDisposable
 
             imageOps.Sgemm(ws.CrossAttnProj, ws.CrossAttnOut, bw.CrossAttnToOutW, totalSeq, Dim, Dim);
             imageOps.AddInPlace(ws.XFull, ws.CrossAttnProj);
+            if (ws.TryGetLocalAdd(layer) is { } localAdd)
+                imageOps.AddInPlace(ws.XFull, localAdd);
 
             // 3. SwiGLU FeedForward
             visionOps.AdaLNModulate(ws.FfNormed, ws.XFull, modTensor, totalSeq, Dim, shiftOffset: 4 * Dim, scaleOffset: 3 * Dim, isRmsNorm: true, eps: 1e-5f);

@@ -21,7 +21,7 @@ dated evidence in the same pass.
 | 8 | ✅ DONE (2026-09-27) | Step3-VL: garbled | unvalidated architecture on a Q2_K checkpoint | medium–large |
 | 9 | ✅ DONE (2026-09-27) | IBM Granite Vision 3.2 / 4.0: output not image-grounded | investigation; 3.2 via LlavaAdapter, 4.0 via QFormer projector | large |
 | 10 | ⛔ BLOCKED (needs an upstream CosyVoice2 reference) | CosyVoice 2: audio only partly right | investigation | large |
-| 11 | ⬜ TODO | Stable Audio 3 Small SFX: darker than the reference | investigation | large |
+| 11 | ✅ DONE (2026-09-27) | Stable Audio 3 Small SFX: darker than the reference | investigation | large |
 | 12 | ⬜ TODO | Chronos-Bolt / Chronos-2: no numeric reference | needs an independent oracle without new Python reference scripts | large |
 | 13 | ⬜ TODO | 🟢-but-⚪ diffusion rows (HunyuanVideo, FLUX.2, Qwen Image, SD3 CPU): not independently verified | needs reference outputs (vendored C++ / recorded) | large |
 | 14 | ⬜ TODO | New family: Mamba-2 hybrid layer + state cache, admitting IBM Granite 4.0 (`granitehybrid`, Apache-2.0, 1B-32B) first | missing family; one layer type unlocks #3, #15 and Falcon-H1 | large |
@@ -113,6 +113,28 @@ second-half perplexity vs `llama-perplexity`, then an allowlist entry, a STATUS.
 MODELS.md entry if it qualifies.
 
 ## Log
+
+- 2026-09-27 #11 DONE: Stable Audio 3 (all three checkpoints) matches the vendored audio.cpp reference
+  latent for latent.
+  - Method: `examples/audio.cpp` `src/models/stable_audio/rf_dit.cpp` patched locally (git-ignored)
+    to write `noise`, `cross`, `global`, `schedule`, `padding`, `local`, `tfeat0`, `out0` and `final`
+    to `$SA3_DUMP_DIR`. Rebuilt with `ninja audiocpp_cli` in `examples/audio.cpp/build`, then run
+    from `examples/audio.cpp`.
+  - Ours takes the same noise via `STINGRAY_SA3_NOISE` and dumps via `STINGRAY_SA3_DUMP`
+    (`StableAudioDebugHooks`). Note: the reference latent is channel-major, ours token-major.
+  - Root cause: missing per-layer `to_local_embed`. Upstream `model.py` always passes zero
+    inpaint conditioning, so a constant `W2 silu(b1) + b2` is added to latent tokens.
+  - Results:
+    - step-0 velocity cosine 0.9996 -> 0.999998 (the norm deficit of 4% is gone);
+    - Small Music final 0.986 -> 0.9993 (CPU) / 0.9991 (Vulkan);
+    - Medium 0.99994; SFX CFG 7 / 50 steps 0.9978.
+    - SFX brightness now matches (HF 0.852 vs 0.858).
+  - Also: V zeroing for the reference's padded token (valid = eff + floor(6 s x rate)), and GPU
+    QK-norm eps 1e-6.
+  - The component golden `StableAudioDiTGoldenParityTests` was recorded with `local_add_cond=None`
+    and now runs with `IncludeLocalConditioning = false`.
+  - Remaining small gap: the reference masks padded tokens inside the APG norm at CFG > 1; we
+    don't (CFG-7 final 0.9978).
 
 - 2026-09-27 #10 BLOCKED: CosyVoice2's garbled endings need an independent reference that is not
   available here.

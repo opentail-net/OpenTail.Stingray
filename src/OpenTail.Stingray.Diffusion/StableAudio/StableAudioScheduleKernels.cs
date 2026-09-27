@@ -41,6 +41,15 @@ public static class StableAudioScheduleKernels
     /// which doubles as this port's practical max-length cap since the real per-checkpoint
     /// `sample_size` isn't independently available here). Never shorter than the effective length.
     /// </summary>
+    /// <summary>
+    /// Latent tokens the DiT treats as real (the rest have V zeroed in self-attention and are excluded from the
+    /// APG norm): <c>effective + floor(duration_padding_sec * latent_rate)</c>, capped at <paramref name="seqLen"/>
+    /// -- audio.cpp stable_audio sampler.cpp make_padding_mask. The padded length rounds the headroom UP, so this is
+    /// usually one token shorter (found 2026-09-27 against the reference's dumped padding mask).
+    /// </summary>
+    public static int ValidLatentTokens(int effectiveSeqLen, int seqLen, float latentFrameRate) =>
+        Math.Min(seqLen, effectiveSeqLen + (int)MathF.Floor(DurationPaddingSeconds * latentFrameRate));
+
     public static int PaddedSeqLen(int effectiveSeqLen, float latentFrameRate)
     {
         int padded = effectiveSeqLen + (int)MathF.Ceiling(DurationPaddingSeconds * latentFrameRate);

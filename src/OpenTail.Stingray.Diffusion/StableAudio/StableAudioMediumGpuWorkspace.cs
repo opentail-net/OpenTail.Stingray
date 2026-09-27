@@ -142,8 +142,23 @@ public sealed class StableAudioMediumGpuWorkspace : IDisposable
         UncondOutput = backend.Allocate(TensorShape.D2(maxSeqLen, ioChannels));
     }
 
+    private readonly Dictionary<int, OpenTail.Stingray.Core.Tensor> _localAdds = [];
+
+    /// <summary>Per-layer local-conditioning add sized like XFull (see <see cref="StableAudioLocalConditioning"/>).</summary>
+    public OpenTail.Stingray.Core.Tensor LocalAdd(int layer, int memoryTokens, float[] rowConstant)
+    {
+        if (_localAdds.TryGetValue(layer, out var t)) return t;
+        t = _backend.Upload(StableAudioLocalConditioning.BuildRowAdd(MaxTotalSeq, memoryTokens, rowConstant), XFull.Shape, exact: true);
+        _localAdds[layer] = t;
+        return t;
+    }
+
+    public OpenTail.Stingray.Core.Tensor? TryGetLocalAdd(int layer) => _localAdds.TryGetValue(layer, out var t) ? t : null;
+
     public void Dispose()
     {
+        foreach (var t in _localAdds.Values) _backend.Free(t);
+        _localAdds.Clear();
         if (_disposed) return;
         _disposed = true;
 

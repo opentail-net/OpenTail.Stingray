@@ -78,6 +78,9 @@ public sealed class StableAudioDiTGoldenParityTests
 
         using var st = SafetensorsLoader.OpenDirectory(ditDir);
         using var dit = StableAudioDiT.FromLoader(st);
+        // This golden was dumped from a bare DiffusionTransformer call with local_add_cond=None; generation always
+        // passes the zero inpaint conditioning (upstream model.py), covered end to end against audio.cpp (docs/102 #11).
+        dit.IncludeLocalConditioning = false;
 
         var latent = ReadFloats(Path.Combine(goldenDir, "latent.bin"));
         var condTokens = ReadFloats(Path.Combine(goldenDir, "cond_tokens.bin"));
@@ -112,6 +115,9 @@ public sealed class StableAudioDiTGoldenParityTests
         using (var st = SafetensorsLoader.OpenDirectory(ditDir))
         using (var dit = StableAudioDiT.FromLoader(st))
         {
+            // This golden was dumped from a bare DiffusionTransformer call with local_add_cond=None; generation always
+            // passes the zero inpaint conditioning (upstream model.py), covered end to end against audio.cpp (docs/102 #11).
+            dit.IncludeLocalConditioning = false;
             var latent = ReadFloats(Path.Combine(goldenDir, "latent.bin"));
             var condTokens = ReadFloats(Path.Combine(goldenDir, "cond_tokens.bin"));
             var secondsTotalRaw = ReadFloats(Path.Combine(goldenDir, "seconds_total_raw.bin"));

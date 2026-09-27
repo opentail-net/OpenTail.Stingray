@@ -102,6 +102,7 @@ public sealed class StableAudioPipeline : IDisposable
 
         var rng = request.Seed >= 0 ? new Random(request.Seed) : new Random();
         var latent = SampleGaussian(totalLatentElements, rng);
+        StableAudioDebugHooks.MaybeLoadNoise(latent);
 
         float[] pcm = GenerateFromLatent(
             latent, seqLen, promptTokenIds, duration,
@@ -152,6 +153,8 @@ public sealed class StableAudioPipeline : IDisposable
             {
                 _backend.AddInPlace(ws.Latent, hostLatent);
             }
+
+            _transformer.PrepareLocalAdds(ws);
 
             // Precompute cross-attention conditioning ONCE for both conditional and unconditional passes
             _transformer.PrecomputeConditioningGpu(condTokens, nCond, isCond: true, ws, gpuWeights, _backend);
@@ -229,10 +232,16 @@ public sealed class StableAudioPipeline : IDisposable
 
             // Exactly ONE readback of the latent after all steps finish
             imageOps.Download(ws.Latent, latentHost);
+            StableAudioDebugHooks.Dump("final", latentHost);
             return _vae.Decode(latentHost, seqLen);
         }
 
+        _transformer.ValidLatentTokens = effectiveSeqLen is int effLen
+            ? StableAudioScheduleKernels.ValidLatentTokens(effLen, seqLen, _params.LatentFrameRate)
+            : null;
         var latent = initialLatent;
+        StableAudioDebugHooks.Dump("noise", latent);
+        StableAudioDebugHooks.Dump("cross", condTokens);
         for (int step = 0; step < steps; step++)
         {
             float t = 1.0f - (float)step / steps;
@@ -245,6 +254,7 @@ public sealed class StableAudioPipeline : IDisposable
             float dt = nextT - t;
 
             var v = PredictVelocity(latent, seqLen, condTokens, nullCondTokens, nCond, secondsTotalRaw, t, cfgScale);
+            if (step == 0) StableAudioDebugHooks.Dump("out0", v);
 
             for (int i = 0; i < latent.Length; i++)
             {
@@ -254,6 +264,7 @@ public sealed class StableAudioPipeline : IDisposable
             progress?.Invoke(step + 1, steps);
         }
 
+        StableAudioDebugHooks.Dump("final", latent);
         return _vae.Decode(latent, seqLen);
     }
 

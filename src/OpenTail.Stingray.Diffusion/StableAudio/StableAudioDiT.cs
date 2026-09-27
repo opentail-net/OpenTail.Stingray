@@ -176,6 +176,37 @@ public sealed class StableAudioDiT : IDisposable
         return Linear("model.model.transformer.global_cond_embedder.2.weight", "model.model.transformer.global_cond_embedder.2.bias", h, 1, Dim, 6 * Dim);
     }
 
+    private readonly Dictionary<int, float[]?> _localEmbedConst = [];
+
+    /// <summary>
+    /// Whether the forward applies <c>to_local_embed</c> (true for generation: upstream <c>model.py</c> always passes
+    /// the zero inpaint mask/masked input as <c>local_add_cond</c>). Only a bare component comparison against a
+    /// <c>DiffusionTransformer</c> call made with <c>local_add_cond=None</c> turns it off.
+    /// </summary>
+    internal bool IncludeLocalConditioning { get; set; } = true;
+
+    /// <summary>Uploads every layer's local-conditioning add into <paramref name="ws"/>. Call once after creating the
+    /// workspace, before any GPU forward (uploads cannot happen mid-recording on Vulkan).</summary>
+    public void PrepareLocalAdds(StableAudio3GpuWorkspace ws)
+    {
+        for (int layer = 0; layer < Depth; layer++)
+            if (LocalEmbedConstant(layer) is { } c) ws.LocalAdd(layer, MemoryTokens, c);
+    }
+
+    /// <summary>to_local_embed applied to an all-zero local input: W2 * silu(b1) + b2 (null when the checkpoint
+    /// has no local-conditioning weights).</summary>
+    internal float[]? LocalEmbedConstant(int layerIdx)
+    {
+        if (!IncludeLocalConditioning) return null;
+        lock (_localEmbedConst)
+        {
+            if (_localEmbedConst.TryGetValue(layerIdx, out var cached)) return cached;
+            var result = StableAudioLocalConditioning.ZeroInputConstant(_st.Contains, ReadWeight, layerIdx, Dim);
+            _localEmbedConst[layerIdx] = result;
+            return result;
+        }
+    }
+
     private float[] TransformerLayer(
         float[] x, int seq, int layerIdx,
         float[] condEmbed, int nCond,
@@ -216,6 +247,12 @@ public sealed class StableAudioDiT : IDisposable
         var cross = CrossAttention(xCrossNorm, seq, condEmbed, nCond, p);
         for (int i = 0; i < x.Length; i++) x[i] += cross[i];
 
+        // Local conditioning constant for latent tokens (StableAudioLocalConditioning).
+        var localConst = LocalEmbedConstant(layerIdx);
+        if (localConst is not null)
+            for (int t = MemoryTokens; t < seq; t++)
+                System.Numerics.Tensors.TensorPrimitives.Add(x.AsSpan(t * Dim, Dim), localConst, x.AsSpan(t * Dim, Dim));
+
         var ffNormW = ReadWeight($"{p}.ff_norm.gamma");
         var xFfNorm = x.ToArray();
         DiffusionOps.RmsNorm(xFfNorm, ffNormW, Dim, eps: 1e-5f);
@@ -236,6 +273,10 @@ public sealed class StableAudioDiT : IDisposable
         return x;
     }
 
+    /// <summary>Latent tokens that are real (not padding); tokens after them have V zeroed in self-attention
+    /// (audio.cpp rf_dit.cpp apply_padding_to_v). Null = all real.</summary>
+    internal int? ValidLatentTokens { get; set; }
+
     private float[] SelfAttention(float[] x, int seq, string p, float[] cos, float[] sin)
     {
         var qNormW = ReadWeight($"{p}.self_attn.q_norm.gamma");
@@ -254,6 +295,8 @@ public sealed class StableAudioDiT : IDisposable
 
         StableAudioAttentionKernels.PerHeadRmsNorm(q, seq, Heads, Dim, qNormW);
         StableAudioAttentionKernels.PerHeadRmsNorm(k, seq, Heads, Dim, kNormW);
+        if (ValidLatentTokens is int valid && MemoryTokens + valid < seq)
+            v.AsSpan((MemoryTokens + valid) * Dim).Clear();
 
         StableAudioAttentionKernels.ApplyPartialRope(q, seq, Heads, Dim, cos, sin);
         StableAudioAttentionKernels.ApplyPartialRope(k, seq, Heads, Dim, cos, sin);
@@ -455,8 +498,8 @@ public sealed class StableAudioDiT : IDisposable
             imageOps.Sgemm(ws.Qkv, ws.Normed, bw.SelfAttnQkvW, totalSeq, Dim, 3 * Dim);
             visionOps.FluxUnpackQkv(ws.Qkv, ws.Q, ws.K, ws.V, totalSeq, Dim, dstTokenOffset: 0);
 
-            visionOps.RmsNormBatched(ws.Q, ws.Q, bw.SelfAttnQNormGamma, HeadDim, totalSeq * Heads, eps: 1e-5f);
-            visionOps.RmsNormBatched(ws.K, ws.K, bw.SelfAttnKNormGamma, HeadDim, totalSeq * Heads, eps: 1e-5f);
+            visionOps.RmsNormBatched(ws.Q, ws.Q, bw.SelfAttnQNormGamma, HeadDim, totalSeq * Heads, eps: 1e-6f);
+            visionOps.RmsNormBatched(ws.K, ws.K, bw.SelfAttnKNormGamma, HeadDim, totalSeq * Heads, eps: 1e-6f);
 
             visionOps.RoPEPartialBatched(ws.Q, basePosition: 0, headDim: HeadDim, ropeDim: RopeRotDim, ropeTheta: RopeTheta, numHeads: Heads, nTok: totalSeq, neox: true);
             visionOps.RoPEPartialBatched(ws.K, basePosition: 0, headDim: HeadDim, ropeDim: RopeRotDim, ropeTheta: RopeTheta, numHeads: Heads, nTok: totalSeq, neox: true);
@@ -468,11 +511,13 @@ public sealed class StableAudioDiT : IDisposable
             // 2. Cross-attention
             visionOps.RmsNormBatched(ws.CrossNormed, ws.XFull, bw.CrossAttendNormGamma, Dim, totalSeq, eps: 1e-5f);
             imageOps.Sgemm(ws.CrossQ, ws.CrossNormed, bw.CrossAttnQW, totalSeq, Dim, Dim);
-            visionOps.RmsNormBatched(ws.CrossQ, ws.CrossQ, bw.CrossAttnQNormGamma, HeadDim, totalSeq * Heads, eps: 1e-5f);
+            visionOps.RmsNormBatched(ws.CrossQ, ws.CrossQ, bw.CrossAttnQNormGamma, HeadDim, totalSeq * Heads, eps: 1e-6f);
 
             imageOps.MultiHeadAttentionTiled(ws.CrossAttnOut, ws.CrossQ, targetK[layer], targetV[layer], totalSeq, nCond, Heads, HeadDim);
             imageOps.Sgemm(ws.CrossAttnProj, ws.CrossAttnOut, bw.CrossAttnToOutW, totalSeq, Dim, Dim);
             imageOps.AddInPlace(ws.XFull, ws.CrossAttnProj);
+            if (ws.TryGetLocalAdd(layer) is { } localAdd)
+                imageOps.AddInPlace(ws.XFull, localAdd);
 
             // 3. SwiGLU FeedForward
             visionOps.AdaLNModulate(ws.FfNormed, ws.XFull, modTensor, totalSeq, Dim, shiftOffset: 4 * Dim, scaleOffset: 3 * Dim, isRmsNorm: true, eps: 1e-5f);
@@ -522,6 +567,7 @@ public sealed class StableAudioDiT : IDisposable
 
         var gpuWeights = EnsureGpuWeights(backend);
         using var ws = new StableAudio3GpuWorkspace(backend, maxSeqLen: Math.Max(seqLen, 16), memoryTokens: MemoryTokens, dim: Dim, ioChannels: IoChannels, ffInner: FfInner, nCondMax: Math.Max(nCond, 32));
+        PrepareLocalAdds(ws);
 
         backend.Upload(latent, ws.Latent.Shape, exact: false); // Upload latent into ws
         // Copy to ws.Latent via staging upload

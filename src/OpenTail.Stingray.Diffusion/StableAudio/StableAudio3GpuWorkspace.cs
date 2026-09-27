@@ -126,10 +126,30 @@ public sealed class StableAudio3GpuWorkspace : IDisposable
         UncondOutput = backend.Allocate(TensorShape.D2(maxSeqLen, ioChannels));
     }
 
+    private readonly Dictionary<int, OpenTail.Stingray.Core.Tensor> _localAdds = [];
+
+    /// <summary>
+    /// Per-layer local-conditioning add, sized like <see cref="XFull"/>: zeros for the memory-token rows and
+    /// <paramref name="rowConstant"/> (to_local_embed of an all-zero local input) for every latent row. Built once
+    /// per layer for this workspace's sequence length.
+    /// </summary>
+    public OpenTail.Stingray.Core.Tensor LocalAdd(int layer, int memoryTokens, float[] rowConstant)
+    {
+        if (_localAdds.TryGetValue(layer, out var t)) return t;
+        t = _backend.Upload(StableAudioLocalConditioning.BuildRowAdd(MaxTotalSeq, memoryTokens, rowConstant), XFull.Shape, exact: true);
+        _localAdds[layer] = t;
+        return t;
+    }
+
+    /// <summary>The layer's local-conditioning add if <see cref="LocalAdd"/> built it, else null.</summary>
+    public OpenTail.Stingray.Core.Tensor? TryGetLocalAdd(int layer) => _localAdds.TryGetValue(layer, out var t) ? t : null;
+
     public void Dispose()
     {
         if (_disposed) return;
         _disposed = true;
+        foreach (var t in _localAdds.Values) _backend.Free(t);
+        _localAdds.Clear();
 
         _backend.Free(Latent);
         _backend.Free(LatentPre);

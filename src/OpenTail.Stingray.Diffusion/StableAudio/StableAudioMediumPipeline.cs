@@ -76,6 +76,7 @@ public sealed class StableAudioMediumPipeline : IDisposable
 
         var rng = request.Seed >= 0 ? new Random(request.Seed) : new Random();
         var latent = SampleGaussian(totalLatentElements, rng);
+        StableAudioDebugHooks.MaybeLoadNoise(latent);
 
         float[] pcm = GenerateFromLatent(
             latent, seqLen, promptTokenIds, duration,
@@ -110,6 +111,7 @@ public sealed class StableAudioMediumPipeline : IDisposable
         {
             var gpuWeights = _transformer.EnsureGpuWeights(_backend);
             using var ws = new StableAudioMediumGpuWorkspace(_backend, maxSeqLen: Math.Max(seqLen, 16), memoryTokens: 64, dim: 1536, ioChannels: 256, ffInner: 6144, nCondMax: Math.Max(nCond, 32));
+            _transformer.PrepareLocalAdds(ws);
 
             // Upload initial latent once into ws.Latent
             using (var hostLatent = _backend.Upload(initialLatent, ws.Latent.Shape, exact: true))
@@ -193,6 +195,7 @@ public sealed class StableAudioMediumPipeline : IDisposable
 
             // Exactly ONE readback of the latent after all steps finish
             imageOps.Download(ws.Latent, latentHost);
+            StableAudioDebugHooks.Dump("final", latentHost);
             return _vae.Decode(latentHost, seqLen);
         }
 
@@ -219,6 +222,7 @@ public sealed class StableAudioMediumPipeline : IDisposable
             progress?.Invoke(step + 1, steps);
         }
 
+        StableAudioDebugHooks.Dump("final", latent);
         return _vae.Decode(latent, seqLen);
     }
 
