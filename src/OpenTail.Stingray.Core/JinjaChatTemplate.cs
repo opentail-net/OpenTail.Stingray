@@ -1353,7 +1353,7 @@ public sealed class JinjaChatTemplate
         "length"    => val is List<object?> l ? (object)(long)l.Count
                      : val is System.Collections.ICollection col ? (long)col.Count
                      : val is string s ? (long)s.Length : 0L,
-        "tojson"    => ToJson(val),
+        "tojson"    => ToJson(val, -1, ", ", ": "),
         "trim"      => val is string sv ? (object)sv.Trim()            : val,
         "upper"     => val is string su ? (object)su.ToUpperInvariant() : val,
         "lower"     => val is string sl ? (object)sl.ToLowerInvariant() : val,
@@ -1396,6 +1396,10 @@ public sealed class JinjaChatTemplate
         // Without these, a template that narrows a message list by role silently kept every
         // message — e.g. `messages | selectattr('role', 'equalto', 'user') | last` resolved to
         // whatever message came last, of any role.
+        // tojson(indent=4) etc. The arg-list parser drops keyword names, so classify by type as llama.cpp's
+        // positional order would: int = indent, bool = ensure_ascii (non-ASCII is kept either way here),
+        // list = separators.
+        "tojson" => TojsonWithArgs(val, args),
         "selectattr" => AttrFilter(val, args, keep: true),
         "rejectattr" => AttrFilter(val, args, keep: false),
         _ => UnknownArgFilter(val, filter),
@@ -1439,6 +1443,23 @@ public sealed class JinjaChatTemplate
         "in" => ContainsOp(val, operand),
         _ => EvalIsTest(val, test, new()),
     };
+
+    private static string TojsonWithArgs(object? val, List<object?> args)
+    {
+        int indent = -1;
+        string? itemSep = null, keySep = null;
+        foreach (var a in args)
+        {
+            if (a is long n) indent = (int)n;
+            else if (a is int n32) indent = n32;
+            else if (a is List<object?> seps)
+            {
+                if (seps.Count > 0) itemSep = Stringify(seps[0]);
+                if (seps.Count > 1) keySep = Stringify(seps[1]);
+            }
+        }
+        return ToJson(val, indent, itemSep ?? (indent < 0 ? ", " : ","), keySep ?? ": ");
+    }
 
     private static object? UnknownArgFilter(object? val, string filter)
     {
@@ -1723,78 +1744,117 @@ public sealed class JinjaChatTemplate
     /// NativeAOT-safe recursive JSON serializer for the limited types used in Jinja2 template rendering.
     /// Handles: null, bool, long, double, string, List&lt;object?&gt;, Dictionary&lt;string,object?&gt;.
     /// </summary>
-    private static string ToJson(object? val)
+    /// <summary>Compact JSON (<c>,</c> / <c>:</c>), for the server's tool-call argument strings.</summary>
+    private static string ToJson(object? val) => ToJson(val, -1, ",", ":");
+
+    /// <summary>
+    /// JSON as llama.cpp's jinja <c>tojson</c> writes it (<c>common/jinja/value.cpp</c> <c>value_to_json_internal</c>),
+    /// which follows Python's <c>json.dumps</c>: item separator <c>", "</c> (or <c>","</c> when indenting), key
+    /// separator <c>": "</c>, and with <paramref name="indent"/> >= 0 one element per line. Until 2026-09-27 the
+    /// template filter always wrote <c>,</c> / <c>:</c>, so every template that renders tool definitions through
+    /// <c>tojson</c> (Qwen3's, for one) fed the model different text from llama.cpp and from its training data.
+    /// </summary>
+    private static string ToJson(object? val, int indent, string itemSep, string keySep)
     {
-        if (val is null) return "null";
-        if (val is bool b) return b ? "true" : "false";
-        if (val is long l) return l.ToString(System.Globalization.CultureInfo.InvariantCulture);
-        if (val is int i) return i.ToString(System.Globalization.CultureInfo.InvariantCulture);
-        if (val is double d) return d.ToString("G", System.Globalization.CultureInfo.InvariantCulture);
-        if (val is string s)
+        var sb = new System.Text.StringBuilder();
+        WriteJson(sb, val, 0, indent, itemSep, keySep);
+        return sb.ToString();
+    }
+
+    private static void WriteJson(System.Text.StringBuilder sb, object? val, int level, int indent, string itemSep, string keySep)
+    {
+        string Pad(int lvl) => indent > 0 ? new string(' ', lvl * indent) : "";
+        string Newline() => indent >= 0 ? "\n" : "";
+
+
+        void WriteItems<T>(IReadOnlyList<T> items, char open, char close, Action<T> writeItem)
         {
-            var sb = new System.Text.StringBuilder(s.Length + 2);
-            sb.Append('"');
-            foreach (char c in s)
+            sb.Append(open);
+            if (items.Count > 0)
             {
-                switch (c)
+                sb.Append(Newline());
+                for (int k = 0; k < items.Count; k++)
                 {
-                    case '"':  sb.Append("\\\""); break;
-                    case '\\': sb.Append("\\\\"); break;
-                    case '\n': sb.Append("\\n");  break;
-                    case '\r': sb.Append("\\r");  break;
-                    case '\t': sb.Append("\\t");  break;
-                    default:
-                        if (c < 0x20) sb.Append($"\\u{(int)c:x4}");
-                        else sb.Append(c);
-                        break;
+                    sb.Append(Pad(level + 1));
+                    writeItem(items[k]);
+                    if (k < items.Count - 1) sb.Append(itemSep);
+                    sb.Append(Newline());
                 }
+                sb.Append(Pad(level));
             }
-            sb.Append('"');
-            return sb.ToString();
+            sb.Append(close);
         }
-        if (val is List<object?> list)
+
+        switch (val)
         {
-            var sb = new System.Text.StringBuilder("[");
-            for (int k = 0; k < list.Count; k++)
-            {
-                if (k > 0) sb.Append(',');
-                sb.Append(ToJson(list[k]));
-            }
-            sb.Append(']');
-            return sb.ToString();
+            case null: sb.Append("null"); return;
+            case bool b: sb.Append(b ? "true" : "false"); return;
+            case long l: sb.Append(l.ToString(System.Globalization.CultureInfo.InvariantCulture)); return;
+            case int i: sb.Append(i.ToString(System.Globalization.CultureInfo.InvariantCulture)); return;
+            case double d: sb.Append(d.ToString("G", System.Globalization.CultureInfo.InvariantCulture)); return;
+            case string s: WriteJsonString(sb, s); return;
+            case List<object?> list:
+                WriteItems(list, '[', ']', item => WriteJson(sb, item, level + 1, indent, itemSep, keySep));
+                return;
+            case Dictionary<string, object?> dict:
+                WriteItems(dict.ToList(), '{', '}', kv =>
+                {
+                    WriteJsonString(sb, kv.Key);
+                    sb.Append(keySep);
+                    WriteJson(sb, kv.Value, level + 1, indent, itemSep, keySep);
+                });
+                return;
+            case System.Text.Json.JsonElement je:
+                switch (je.ValueKind)
+                {
+                    case System.Text.Json.JsonValueKind.Object:
+                        WriteItems(je.EnumerateObject().ToList(), '{', '}', prop =>
+                        {
+                            WriteJsonString(sb, prop.Name);
+                            sb.Append(keySep);
+                            WriteJson(sb, prop.Value, level + 1, indent, itemSep, keySep);
+                        });
+                        return;
+                    case System.Text.Json.JsonValueKind.Array:
+                        WriteItems(je.EnumerateArray().ToList(), '[', ']', item => WriteJson(sb, item, level + 1, indent, itemSep, keySep));
+                        return;
+                    case System.Text.Json.JsonValueKind.String: WriteJsonString(sb, je.GetString() ?? ""); return;
+                    case System.Text.Json.JsonValueKind.True: sb.Append("true"); return;
+                    case System.Text.Json.JsonValueKind.False: sb.Append("false"); return;
+                    case System.Text.Json.JsonValueKind.Null or System.Text.Json.JsonValueKind.Undefined: sb.Append("null"); return;
+                    default: sb.Append(je.GetRawText()); return;   // numbers keep their literal text
+                }
+            case System.Collections.IEnumerable ie:
+                WriteItems(ie.Cast<object?>().ToList(), '[', ']', item => WriteJson(sb, item, level + 1, indent, itemSep, keySep));
+                return;
+            default:
+                // NamespaceObj or other types
+                WriteJsonString(sb, Stringify(val));
+                return;
         }
-        if (val is Dictionary<string, object?> dict)
+    }
+
+    private static void WriteJsonString(System.Text.StringBuilder sb, string s)
+    {
+        sb.Append('"');
+        foreach (char c in s)
         {
-            var sb = new System.Text.StringBuilder("{");
-            bool first = true;
-            foreach (var kv in dict)
+            switch (c)
             {
-                if (!first) sb.Append(',');
-                first = false;
-                sb.Append(ToJson(kv.Key));
-                sb.Append(':');
-                sb.Append(ToJson(kv.Value));
+                case '"': sb.Append("\\\""); break;
+                case '\\': sb.Append("\\\\"); break;
+                case '\b': sb.Append("\\b"); break;
+                case '\f': sb.Append("\\f"); break;
+                case '\n': sb.Append("\\n"); break;
+                case '\r': sb.Append("\\r"); break;
+                case '\t': sb.Append("\\t"); break;
+                default:
+                    if (c < 0x20) sb.Append($"\\u{(int)c:x4}");
+                    else sb.Append(c);
+                    break;
             }
-            sb.Append('}');
-            return sb.ToString();
         }
-        if (val is System.Text.Json.JsonElement je)
-            return je.GetRawText();
-        if (val is System.Collections.IEnumerable ie && val is not string)
-        {
-            var sb = new System.Text.StringBuilder("[");
-            bool firstItem = true;
-            foreach (var item in ie)
-            {
-                if (!firstItem) sb.Append(',');
-                firstItem = false;
-                sb.Append(ToJson(item));
-            }
-            sb.Append(']');
-            return sb.ToString();
-        }
-        // Fallback for NamespaceObj or other types
-        return ToJson(Stringify(val));
+        sb.Append('"');
     }
 
     private static int FindWordBoundary(string s, string word)
