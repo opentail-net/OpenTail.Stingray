@@ -237,5 +237,6 @@ public sealed unsafe partial class ForwardPass
         }
 
         FusedMatVec(output, _m2Out![layer], _m2Y, _embDim, di);
+        StageCapture.Record("cpu", layer, StageCapture.Stages.OProj, new ReadOnlySpan<float>(output, _embDim));
     }
 }

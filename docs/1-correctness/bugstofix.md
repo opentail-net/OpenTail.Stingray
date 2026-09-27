@@ -78,6 +78,35 @@ restart a fourth round of kernel-level chasing on this checkpoint without new ev
     - **Next experiment:** dump the `attn_out` stage too (llama.cpp `kqv_out-0`) to split attention
       from `wo`; then make the decode path use ggml's per-dtype activation scheme (Q5_K -> Q8_K) and
       re-measure the layer-0 difference and the PPL.
+    - **Caveat found 2026-09-27 (LFM2 bisection):** `llama-eval-callback` prints values to 4
+      decimals, so a "0.0001" difference on values near 0.02 is print resolution, not drift. The
+      GLM "0.3% after layer 0's attention" may be the same artefact; only differences well above
+      1e-4 absolute count.
+- [ ] **GLM-4.7-Flash (`deepseek2`) perplexity 0.9-1.4% worse than llama.cpp; not at parity** (logged 2026-09-27; `docs/103-quickest-first-plan.md` item 3).
+  - **Checkpoint:** `GLM-4.7-Flash-Q2_K.gguf` (10.6 GB).
+  - **Result:** wikitext second-half PPL at -c 2048: ours 8.1757 batched prefill, 8.2100 sequential;
+    `llama-perplexity --chunks 1` 8.0997.
+  - **Pattern:** same as the GLM-4.5 entry above. The generation is coherent and the top-k order
+    matches; the gap is diffuse, not one broken op. Sequential is worse than batched, so the batched
+    prefill path is not the cause.
+  - **Next step:** same layer bisection as GLM-4.5, but only trust differences well above the
+    4-decimal print resolution of `llama-eval-callback`.
+- [ ] **LFM2 (`lfm2`) perplexity 0.24% worse than llama.cpp** (logged 2026-09-27; `docs/103-quickest-first-plan.md` item 11a; timeboxed out).
+  - **Checkpoint:** `LFM2-1.2B-Q8_0.gguf`. PPL 10.9543 vs `llama-perplexity` 10.9277. Admitted anyway
+    (greedy and teacher-forced parity tests pass).
+  - **Layer bisection:** 338-token wikitext prompt (with BOS), last token, `llama-eval-callback` vs
+    `StageCapture` (the short-conv and Mamba-2 mixers now record `o_proj`).
+    - Layer 0 (short conv): `operator_norm` exact, `conv.out_proj` and `l_out` differ by 1e-4,
+      which is the callback's print resolution, so layer 0 matches as far as it can be seen.
+    - From layer 2 the differences are real (about 5e-4 to 1.6e-3 absolute) and grow gradually;
+      no single layer jumps.
+  - **Ruled out:** the Q8_0 activation scheme. Our `MatVecQ8_0` already quantises activations to
+    32-element Q8_0 blocks as ggml does; storing the block scale as fp16 like ggml (tried) changed
+    nothing.
+  - **Remaining suspects:** float summation order in attention softmax/accumulation over long
+    context; the attention layers' K/V storage precision (llama.cpp's default F16 KV cache vs
+    ours); the dump's resolution hides where the error starts. A full-precision dump (tensor
+    binary output, not the printed summary) is needed to go further.
 - [ ] **Dequantize.cs / IqCodebooks.cs coverage gap**: Port `iq1s_grid` (NGRID_IQ1S=2048) and decoders for `IQ1_S`/`IQ1_M` (`IQ1S_DELTA=0.125f`, distinct sign/shift scheme) and `IQ2_XS`/`IQ2_S` when needed by future GGUF models.
 - [ ] **ModelCompatibility.cs / Kernels missing op coverage** (2026-09-27: the Mamba-2 `SSM_SCAN`/`SSM_CONV` path is now implemented on CPU in `ForwardPass.Mamba2.cs` for Granite 4.0-H / Nemotron-H; Mamba-1 and GPU remain): Implement `GGML_OP_SSM_SCAN` (the selective-scan recurrence, distinct from `SSM_CONV`), `RWKV_WKV6`/`RWKV_WKV7`, and DeepSeek-V4 ops (`LIGHTNING_INDEXER`, `DSV4_HC_*`, `SOLVE_TRI`, `WIN_PART`/`WIN_UNPART`).
 - [ ] **SpeculativeDecoder.cs StepSampled/PLD bugs**: Confirmed real defect in speculative decode step sampling; currently unreachable/latent as no wired call path exercises it yet.

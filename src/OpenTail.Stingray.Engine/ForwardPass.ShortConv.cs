@@ -73,5 +73,7 @@ public sealed unsafe partial class ForwardPass
             _scY[ch] = c[ch] * sum;
         }
         FusedMatVec(output, _scOut![layer], _scY, d, d);
+        // Mixer output, comparable with llama.cpp's `conv.out_proj` (and `o_proj` for attention layers).
+        StageCapture.Record("cpu", layer, StageCapture.Stages.OProj, new ReadOnlySpan<float>(output, d));
     }
 }

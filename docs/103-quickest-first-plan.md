@@ -248,3 +248,16 @@ Timebox each at half a day, write down what was learned, and move on if blocked.
     ONNX Paraformer on the same clip is fluent.
   - Also: `models/paraformer-q8.gguf` is actually Fun-ASR-Nano (`audiocpp`), misnamed.
   - Both are in `bugstofix.md`.
+- 2026-09-27: item 3 closed as a bug entry (blocker).
+  - GLM-4.7-Flash sequential PPL 8.2100, batched 8.1757, llama.cpp 8.0997: the gap does not come
+    from the batched path. It is the same diffuse pattern as item 7; details in `bugstofix.md`.
+- 2026-09-27: item 11a timeboxed out, logged in `bugstofix.md`.
+  - LFM2 layer 0 matches llama.cpp to the 4-decimal print resolution of `llama-eval-callback`.
+    Real drift starts around layer 2 and grows gradually.
+  - Ruled out: the Q8_0 activation scheme (ours already matches ggml; an fp16 block scale changed
+    nothing).
+  - Useful side-product: the short-conv and Mamba-2 mixers now record the `o_proj` stage for
+    `StageCapture`.
+  - Lesson for items 3 and 7: differences near 1e-4 in those dumps are print rounding. Going further
+    needs full-precision tensor dumps.
+  - Next: item 11b.
