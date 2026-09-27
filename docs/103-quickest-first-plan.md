@@ -116,7 +116,7 @@ Timebox each at half a day, write down what was learned, and move on if blocked.
 
 - [ ] **11. Unknown-cause set**
   - [ ] **11.a** LFM2 0.24% PPL gap (10.9277 vs 10.9543).
-  - [ ] **11.b** Youtu-VL: one 1024-token window +5% PPL vs llama.cpp.
+  - [x] **11.b** Youtu-VL: one 1024-token window +5% PPL vs llama.cpp.
   - [ ] **11.c** NaN in `ForwardPass`'s f16 `qwen3` path (last layer, one position).
   - [ ] **11.d** `HybridGdnChunkedPrefill_MatchesSequentialPrefill` failure with real weights.
   - [ ] **11.e** Stable Audio 3 padding masks in the APG norm.
@@ -261,3 +261,13 @@ Timebox each at half a day, write down what was learned, and move on if blocked.
   - Lesson for items 3 and 7: differences near 1e-4 in those dumps are print rounding. Going further
     needs full-precision tensor dumps.
   - Next: item 11b.
+- 2026-09-27: item 11b done.
+  - Cause: `tokenizer.ggml.pre = youtu` had no case in `PreTokenizerPatterns.TryResolve`, so it used
+    the GPT-2 fallback. Our tokens diverged from `llama-tokenize` at position 1427 (" 杜甫": we glued
+    the space to the first byte of 杜). That one passage was the +5% window.
+  - Fix: llama.cpp's LLAMA_VOCAB_PRE_TYPE_YOUTU cascade (CJK/Hangul/CJK-punctuation stage, then
+    GPT-4o word shapes with single digits).
+  - Evidence: all 2048 tokens now match `llama-tokenize`. wiki.test.raw [1024,2048) at -c 2048:
+    13.2485 vs llama.cpp 13.2990 (was 13.97). `PreTokenizerParityTests` 27/27 run, 1 pre-existing
+    skip, 59 s, three new `youtu` rows.
+  - Found with the new `stingray perplexity --dump-nll <file>` (per-position token id and NLL).

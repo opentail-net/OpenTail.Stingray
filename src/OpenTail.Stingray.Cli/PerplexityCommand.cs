@@ -73,6 +73,10 @@ public sealed class PerplexityCommand : Command<PerplexityCommand.Settings>
         [Description("Tokens per Prefill() call in --batched mode (default: 256, matching the engine's STINGRAY_PREFILL_CHUNK default). Smaller chunks exercise more chunk-boundary KV-cache transitions; larger chunks are closer to a single-shot prompt.")]
         [DefaultValue(256)]
         public int BatchChunkSize { get; init; }
+
+        [CommandOption("--dump-nll")]
+        [Description("Write one line per scored position to this file: target position, target token id, NLL. For diffing per-token log-probs against a reference (e.g. llama-server) to find which tokens carry a PPL gap.")]
+        public string? DumpNll { get; init; }
     }
 
     /// <summary>
@@ -465,10 +469,12 @@ public sealed class PerplexityCommand : Command<PerplexityCommand.Settings>
         double totalNll = 0.0;
         int scored = 0, nonFinite = 0;
 
+        using var nllDump = settings.DumpNll is { } dumpPath ? new StreamWriter(dumpPath) : null;
         var sw = Stopwatch.StartNew();
         void ScorePosition(int targetPos, ReadOnlySpan<float> logits)
         {
             double nll = NegativeLogLikelihood(logits, tokens[targetPos]);
+            nllDump?.WriteLine(FormattableString.Invariant($"{targetPos} {tokens[targetPos]} {nll:R}"));
             if (!double.IsFinite(nll))
             {
                 nonFinite++;

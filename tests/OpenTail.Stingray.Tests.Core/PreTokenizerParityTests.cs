@@ -117,6 +117,12 @@ public sealed class PreTokenizerParityTests
         { "qwen35", 248320, "12",      new[] { 16, 17 } },
         { "qwen35", 248320, "a  b",    new[] { 64, 220, 292 } },
         { "qwen35", 248320, "café(x)", new[] { 895, 1795, 52033, 2007, 8 } },
+        // Youtu-VL (youtu-vl-4b-Q8_0). llama.cpp: LLAMA_VOCAB_PRE_TYPE_YOUTU, a CJK/Hangul/CJK-punctuation stage
+        // then GPT-4o word shapes with single digits, plus ignore_merges. Unmapped until 2026-09-27: the GPT-2
+        // fallback glued the space before "杜甫" to the first byte of 杜, which was the +5% PPL window (docs/103 11b).
+        { "youtu", 283386, "poet Du Fu ( 杜甫 ; 712", new[] { 2031, 292, 7066, 18133, 342, 220, 104048, 111377, 3591, 220, 22, 16, 17 } },
+        { "youtu", 283386, "한국어 문장，テスト。", new[] { 100670, 4201, 255, 121090, 220, 121151, 121295, 100129, 121437, 121592, 100085 } },
+        { "youtu", 283386, "IT'S 12345", new[] { 1208, 22501, 220, 16, 17, 18, 19, 20 } },
     };
 
     [Theory]
