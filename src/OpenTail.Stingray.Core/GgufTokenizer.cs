@@ -1116,7 +1116,17 @@ public sealed partial class GgufTokenizer : ITokenizer
         var text = _inner.Decode(tokens) ?? string.Empty;
 
         if (_isSpmBpe || _unigram is not null)
+        {
+            // Byte-fallback pieces ("<0x0A>") are raw bytes, not text: rebuild from per-token bytes
+            // so a newline (or a UTF-8 sequence split across byte tokens) comes out as itself.
+            if (text.Contains("<0x", StringComparison.Ordinal))
+            {
+                var bytes = new List<byte>();
+                foreach (int t in tokens) bytes.AddRange(DecodeBytes(t));
+                return Encoding.UTF8.GetString(bytes.ToArray());
+            }
             return text.Replace('▁', ' ');
+        }
 
         // BpeTokenizer may output GPT-2 byte-level BPE artifacts:
         // Ġ (U+0120) = space, Ċ (U+010A) = newline, etc.
@@ -1141,7 +1151,15 @@ public sealed partial class GgufTokenizer : ITokenizer
             return [];
 
         if (_isSpmBpe || _unigram is not null)
-            return Encoding.UTF8.GetBytes(_idToToken[token].Replace('▁', ' '));
+        {
+            // SPM byte-fallback token "<0xXX>" (llama_vocab::token_to_piece, LLAMA_TOKEN_ATTR_BYTE):
+            // one raw byte. Printed literally until 2026-09-27 (PaddleOCR-VL output "<0x0A>").
+            string piece = _idToToken[token];
+            if (piece.Length == 6 && piece.StartsWith("<0x", StringComparison.Ordinal) && piece[5] == '>'
+                && byte.TryParse(piece.AsSpan(3, 2), System.Globalization.NumberStyles.HexNumber, null, out byte b))
+                return [b];
+            return Encoding.UTF8.GetBytes(piece.Replace('▁', ' '));
+        }
 
         return Gpt2CharsToBytes(_idToToken[token]);
     }

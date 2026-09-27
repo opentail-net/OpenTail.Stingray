@@ -1190,6 +1190,7 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
     /// </summary>
     public void TruncateTo(int length)
     {
+        _mropeImages.RemoveAll(r => r.Start + r.Nx * r.Ny > length);
         if (_tqKvCache != null)
             _tqKvCache.TruncateTo(length);
         else
@@ -1207,6 +1208,7 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
 
     public void ResetCache()
     {
+        _mropeImages.Clear();
         if (_tqKvCache != null)
             _tqKvCache.Reset();
         else

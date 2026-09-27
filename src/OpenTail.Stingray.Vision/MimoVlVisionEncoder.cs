@@ -194,7 +194,7 @@ public sealed unsafe class MimoVlVisionEncoder
                 // ApplyMRoPE's real parameter order is (q,k,patchesX,patchesY,...) -- this call
                 // had them swapped (harmless only on square test images; wrong on real non-square
                 // ones, where row/col position would be transposed).
-                VisionOps.ApplyMRoPE(qBuf, kBuf, patchesX, patchesY, _heads, _kvHeads, _headDim, theta: 10000.0f);
+                VisionOps.ApplyMRoPE(qBuf, kBuf, patchesX, patchesY, _heads, _kvHeads, _headDim, theta: 10000.0f, independentSections: true); // GGML_ROPE_TYPE_VISION resets the ladder per section (2026-09-27)
 
                 // GQA Attention with optional Attention Sinks -- windowed except every
                 // waPattern-th layer (real full_attn = (il+1) % waPattern == 0)

@@ -20,7 +20,9 @@ public sealed unsafe class PaddleOcrVisionEncoder
     private readonly float[]? _patchEmbdB;
     private readonly float[] _posEmbdF32;
     private readonly float[]? _preLnW;
+    private readonly float[]? _preLnB;
     private readonly float[]? _postLnW;
+    private readonly float[]? _postLnB;
 
     private readonly float[]? _inputNormW;
     private readonly float[]? _inputNormB;
@@ -71,7 +73,9 @@ public sealed unsafe class PaddleOcrVisionEncoder
         _patchEmbdB = VisionOps.GetTensorArray(gguf, "v.patch_embd.bias");
         _posEmbdF32 = VisionOps.DequantizeToFloat32(VisionOps.GetTensor(gguf, "v.position_embd.weight", "v.position_embd"));
         _preLnW = VisionOps.GetTensorArray(gguf, "v.pre_ln.weight");
+        _preLnB = VisionOps.GetTensorArray(gguf, "v.pre_ln.bias");
         _postLnW = VisionOps.GetTensorArray(gguf, "v.post_ln.weight");
+        _postLnB = VisionOps.GetTensorArray(gguf, "v.post_ln.bias");
 
         _inputNormW = VisionOps.GetTensorArray(gguf, "mm.input_norm.weight", "mm.0.weight");
         _inputNormB = VisionOps.GetTensorArray(gguf, "mm.input_norm.bias", "mm.0.bias");
@@ -129,7 +133,7 @@ public sealed unsafe class PaddleOcrVisionEncoder
 
         if (_preLnW != null)
         {
-            fixed (float* preLnW = _preLnW) VisionOps.RmsNorm(hiddenStates, numPatches, _embd, preLnW, _eps);
+            fixed (float* preLnW = _preLnW, preLnB = _preLnB) VisionOps.LayerNorm(hiddenStates, numPatches, _embd, preLnW, preLnB, _eps);
         }
 
         var qBuf = new float[numPatches * _embd];
@@ -149,18 +153,18 @@ public sealed unsafe class PaddleOcrVisionEncoder
         {
             var blk = _blocks[l];
 
-            fixed (float* ln1W = blk.Ln1W, attnQB = blk.AttnQB, attnKB = blk.AttnKB, attnVB = blk.AttnVB,
+            fixed (float* ln1W = blk.Ln1W, ln1B = blk.Ln1B, ln2B = blk.Ln2B, attnQB = blk.AttnQB, attnKB = blk.AttnKB, attnVB = blk.AttnVB,
                    attnOutB = blk.AttnOutB, ln2W = blk.Ln2W, ffnUpB = blk.FfnUpB, ffnDownB = blk.FfnDownB)
             {
                 Array.Copy(hiddenStates, normed, hiddenStates.Length);
-                VisionOps.RmsNorm(normed, numPatches, _embd, ln1W, _eps);
+                VisionOps.LayerNorm(normed, numPatches, _embd, ln1W, ln1B, _eps);
 
                 VisionOps.MatVecAny(normed, blk.AttnQW, attnQB, numPatches, _embd, _embd, qBuf);
                 VisionOps.MatVecAny(normed, blk.AttnKW, attnKB, numPatches, _embd, _embd, kBuf);
                 VisionOps.MatVecAny(normed, blk.AttnVW, attnVB, numPatches, _embd, _embd, vBuf);
 
                 // 2D M-RoPE
-                VisionOps.Interleaved2DRoPE(qBuf, kBuf, img.PatchesX, img.PatchesY, _heads, _headDim);
+                VisionOps.ApplyMRoPE(qBuf, kBuf, img.PatchesX, img.PatchesY, _heads, _heads, _headDim, theta: 10000.0f, independentSections: true);
 
                 VisionOps.Attention(qBuf, kBuf, vBuf, numPatches, _heads, _headDim, normed);
                 VisionOps.MatVecAny(normed, blk.AttnOutW, attnOutB, numPatches, _embd, _embd, attnOut);
@@ -168,7 +172,7 @@ public sealed unsafe class PaddleOcrVisionEncoder
                 for (int i = 0; i < hiddenStates.Length; i++) hiddenStates[i] += attnOut[i];
 
                 Array.Copy(hiddenStates, normed, hiddenStates.Length);
-                VisionOps.RmsNorm(normed, numPatches, _embd, ln2W, _eps);
+                VisionOps.LayerNorm(normed, numPatches, _embd, ln2W, ln2B, _eps);
 
                 int intermediate = blk.FfnIntermediate;
                 VisionOps.MatVecAny(normed, blk.FfnUpW, ffnUpB, numPatches, _embd, intermediate, ffnMid);
@@ -181,14 +185,14 @@ public sealed unsafe class PaddleOcrVisionEncoder
 
         if (_postLnW != null)
         {
-            fixed (float* postLnW = _postLnW) VisionOps.RmsNorm(hiddenStates, numPatches, _embd, postLnW, _eps);
+            fixed (float* postLnW = _postLnW, postLnB = _postLnB) VisionOps.LayerNorm(hiddenStates, numPatches, _embd, postLnW, postLnB, _eps);
         }
 
         if (_inputNormW != null)
         {
             fixed (float* inputNormW = _inputNormW, inputNormB = _inputNormB)
             {
-                VisionOps.LayerNorm(hiddenStates, numPatches, _embd, inputNormW, inputNormB, _eps);
+                VisionOps.LayerNorm(hiddenStates, numPatches, _embd, inputNormW, inputNormB, 1e-5f); // proj_norm_eps
             }
         }
 
@@ -230,6 +234,9 @@ public sealed unsafe class PaddleOcrVisionEncoder
         int patchSize = _m.PatchSize;
         int patchArea = patchSize * patchSize;
         int planeSize = width * height;
+        // llama.cpp paddleocr.cpp: the 27x27 learned table is resized to the patch grid
+        // (resize_position_embeddings); it was indexed raw (and cut off at 729 patches) until 2026-09-27.
+        float[] posEmbd = VisionOps.ResizePositionEmbeddings(_posEmbdF32, _embd, patchesX, patchesY);
 
         Parallel.For(0, patchesY, py =>
         {
@@ -259,9 +266,9 @@ public sealed unsafe class PaddleOcrVisionEncoder
                             }
                         }
 
-                        if (_posEmbdF32.Length > 0 && patchIdx < 729)
+                        if (posEmbd.Length > 0)
                         {
-                            sum += _posEmbdF32[patchIdx * _embd + d];
+                            sum += posEmbd[patchIdx * _embd + d];
                         }
 
                         output[outOffset + d] = sum;

@@ -2622,6 +2622,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
 
         // Project every image to its soft-token block up front, in --image order.
         var blocks = new (float[] Soft, int NTok)[nImages];
+        var grids = new (int W, int H)[nImages];
         int totalSoft = 0;
         for (int i = 0; i < nImages; i++)
         {
@@ -2638,6 +2639,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
                 return 1;
             }
             blocks[i] = (soft, nTok);
+            grids[i] = vision.LastTokenGrid;
             totalSoft += nTok;
             AnsiConsole.MarkupLine($"[dim]Image {i + 1}/{nImages}: {vision.ProjectorType} -> {nTok} soft tokens ({embd}-dim)[/]");
         }
@@ -2683,8 +2685,11 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         {
             if (id == placeholder)
             {
+                var grid = grids[imgIdx];
                 var (soft, nTok) = blocks[imgIdx++];
                 if (imgOpen >= 0) logits = fwd.Forward(imgOpen, pos++);
+                if (fwd is ForwardPass mrope && mrope.UsesMRope && grid.W * grid.H == nTok)
+                    mrope.AddMRopeImage(pos, grid.W, grid.H);
                 for (int t = 0; t < nTok; t++)
                     logits = fwd.ForwardEmbedding(soft.AsSpan(t * embd, embd), pos++);
                 if (imgClose >= 0) logits = fwd.Forward(imgClose, pos++);

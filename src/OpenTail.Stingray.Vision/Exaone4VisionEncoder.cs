@@ -174,7 +174,7 @@ public sealed unsafe class Exaone4VisionEncoder
                 // ApplyMRoPE's real parameter order is (q,k,patchesX,patchesY,...) -- this call
                 // had them swapped (harmless only on square test images; wrong on real non-square
                 // ones, where row/col position would be transposed).
-                VisionOps.ApplyMRoPE(qBuf, kBuf, patchesX, patchesY, _heads, _kvHeads, _headDim, theta: 10000.0f);
+                VisionOps.ApplyMRoPE(qBuf, kBuf, patchesX, patchesY, _heads, _kvHeads, _headDim, theta: 10000.0f, independentSections: true); // GGML_ROPE_TYPE_VISION resets the ladder per section (2026-09-27)
 
                 // GQA Attention -- windowed on every layer except every waPattern-th (full)
                 bool fullAttn = !useWindowAttn || (l + 1) % _waPattern == 0;

@@ -362,40 +362,12 @@ public sealed unsafe class QwenVlVisionEncoder
     /// its +head_dim/2 partner). The previous version here only rotated the first HALF of
     /// head_dim and used px for every pair (py was never read).
     /// </summary>
-    private void ApplyMrope(float[] q, float[] k, int patchesX, int patchesY)
-    {
-        int half = _headDim / 2;
-        int quarter = _headDim / 4;
-        for (int py = 0; py < patchesY; py++)
-        {
-            for (int px = 0; px < patchesX; px++)
-            {
-                int p = py * patchesX + px;
-                for (int h = 0; h < _heads; h++)
-                {
-                    int headOff = (p * _heads + h) * _headDim;
-                    for (int ic = 0; ic < half; ic++)
-                    {
-                        float pos = ic < quarter ? py : px;
-                        float freq = MathF.Pow(10000.0f, -4.0f * ic / _headDim);
-                        float theta = pos * freq;
-                        float cosT = MathF.Cos(theta);
-                        float sinT = MathF.Sin(theta);
-
-                        float q0 = q[headOff + ic];
-                        float q1 = q[headOff + ic + half];
-                        q[headOff + ic] = q0 * cosT - q1 * sinT;
-                        q[headOff + ic + half] = q0 * sinT + q1 * cosT;
-
-                        float k0 = k[headOff + ic];
-                        float k1 = k[headOff + ic + half];
-                        k[headOff + ic] = k0 * cosT - k1 * sinT;
-                        k[headOff + ic + half] = k0 * sinT + k1 * cosT;
-                    }
-                }
-            }
-        }
-    }
+    // llama.cpp qwen2vl.cpp: ggml_rope_multi(..., d_head/2, {d/4 x4}, GGML_ROPE_TYPE_VISION): rows on the
+    // first quarter-pairs, columns on the second, and each section restarts the frequency ladder
+    // (indep_sects). The earlier port continued one ladder across both sections -- the same bug
+    // dots.ocr had; found 2026-09-27 with QwenVl rainbow448 parity against llama-mtmd-debug.
+    private void ApplyMrope(float[] q, float[] k, int patchesX, int patchesY) =>
+        VisionOps.ApplyMRoPE(q, k, patchesX, patchesY, _heads, _heads, _headDim, theta: 10000.0f, independentSections: true);
 
     private void ApplySpatialMergeAndMlp(float[] hiddenStates, int patchesX, int patchesY, float[] visualTokens)
     {

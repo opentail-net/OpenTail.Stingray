@@ -299,6 +299,14 @@ public sealed record ModelHyperparams
     public bool IsNeoxRope { get; init; }
 
     /// <summary>
+    /// M-RoPE section sizes in dimension PAIRS (<c>{arch}.rope.dimension_sections</c>, e.g. [16, 24, 24, 0]
+    /// for PaddleOCR-VL) for the text decoders llama.cpp runs with <c>LLAMA_ROPE_TYPE_MROPE</c>
+    /// (qwen2vl, paddleocr). Only matters when image tokens carry 2D positions
+    /// (<c>ForwardPass.AddMRopeImage</c>); for text every section sees the same position. Null otherwise.
+    /// </summary>
+    public IReadOnlyList<int>? RopeSections { get; init; }
+
+    /// <summary>
     /// Number of head dims that receive RoPE rotation. Default equals HeadDim (full RoPE).
     /// Some architectures (notably qwen35moe) use partial RoPE where only the first
     /// <see cref="RopeDim"/> dims of each head are rotated and the rest pass through.
@@ -565,7 +573,7 @@ public sealed record ModelHyperparams
             "falcon" or "falcon-h1" or "grok" or "dbrx" or
             "bert" or "jina-bert-v3" or "modern-bert" or "nomic-bert" or "nomic-bert-moe" or "eurobert" or
             "stablelm" or "bitnet" or
-            "qwen" or "qwen2" or "qwen2vl" or "dream" or "qwen2moe" or "qwen3" or "qwen3moe" or "qwen3-tts" or
+            "qwen" or "qwen2" or "qwen2vl" or "paddleocr" or "dream" or "qwen2moe" or "qwen3" or "qwen3moe" or "qwen3-tts" or
             "llada-moe" or "rnd1" or
             "olmo2" or "olmoe" or
             "phi2" or "phi3" or "phimoe" or
@@ -1139,6 +1147,7 @@ public sealed record ModelHyperparams
             IsNeoxRope = isNeoxRope,
             RopeDim = ropeDim,
             IsHybridSsm = isHybridSsm,
+            RopeSections = arch is "qwen2vl" or "paddleocr" ? GetIntArray(metadata, $"{arch}.rope.dimension_sections") : null,
             LayerTypes = layerTypes,
             Gdn = gdn,
             EmbeddingScale = embeddingScale,

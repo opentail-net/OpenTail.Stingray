@@ -531,8 +531,69 @@ public sealed unsafe partial class ForwardPass
         return SkipOutputProjection ? ReadOnlySpan<float>.Empty : new ReadOnlySpan<float>(_logits, _hp.VocabSize);
     }
 
+    // -- M-RoPE image positions (qwen2vl / paddleocr text decoders) --
+    // llama.cpp (mtmd_image_tokens_get_decoder_pos, MTMD_POS_TYPE_MROPE) gives image token i of an
+    // nx x ny grid the position (t, row, col) = (p0, p0 + i / nx, p0 + i % nx) and advances the
+    // sequence by max(nx, ny), not nx*ny, so later text sits at slot - (nx*ny - max(nx, ny)).
+    // KV slots stay contiguous; only the RoPE angles change. CPU ForwardPass only (2026-09-27).
+    private readonly List<(int Start, int Nx, int Ny)> _mropeImages = [];
+
+    /// <summary>True when this model uses M-RoPE sections, so image tokens should be registered with
+    /// <see cref="AddMRopeImage"/> before they are fed.</summary>
+    public bool UsesMRope => _hp.RopeSections is { Count: > 0 };
+
+    /// <summary>Registers an image whose <paramref name="nx"/> x <paramref name="ny"/> soft tokens occupy KV
+    /// slots starting at <paramref name="startSlot"/>. Call before feeding them.</summary>
+    public void AddMRopeImage(int startSlot, int nx, int ny)
+    {
+        if (!UsesMRope || nx <= 0 || ny <= 0) return;
+        _mropeImages.RemoveAll(r => r.Start >= startSlot);
+        _mropeImages.Add((startSlot, nx, ny));
+    }
+
+    /// <summary>(t, h, w) M-RoPE position of a KV slot; all three are equal for text tokens.</summary>
+    private (int T, int H, int W) MRopePosition(int slot)
+    {
+        int shift = 0;
+        foreach (var (start, nx, ny) in _mropeImages)
+        {
+            int n = nx * ny;
+            if (slot >= start + n) { shift += n - Math.Max(nx, ny); continue; }
+            if (slot < start) break;
+            int p0 = start - shift, i = slot - start;
+            return (p0, p0 + i / nx, p0 + i % nx);
+        }
+        int p = slot - shift;
+        return (p, p, p);
+    }
+
+    /// <summary>Fills <paramref name="cos"/>/<paramref name="sin"/> (<paramref name="half"/> pairs) for an
+    /// M-RoPE slot: pair i uses its section's position on the unbroken frequency ladder
+    /// theta^(-2i/ropeDim) (ggml rope_multi, MROPE: sections do not reset the ladder).</summary>
+    private void FillMRopeCosSin(int slot, float* cos, float* sin, int half)
+    {
+        var (t, h, w) = MRopePosition(slot);
+        var sec = _hp.RopeSections!;
+        int s0 = sec[0], s1 = s0 + sec[1], s2 = s1 + (sec.Count > 2 ? sec[2] : 0);
+        for (int i = 0; i < half; i++)
+        {
+            int p = i < s0 ? t : i < s1 ? h : i < s2 ? w : 0;
+            float a = p * MathF.Pow(_hp.RopeTheta, -2f * i / (2 * half));
+            cos[i] = MathF.Cos(a);
+            sin[i] = MathF.Sin(a);
+        }
+    }
+
     private void ApplyRope(float* x, int pos, int heads)
     {
+        if (_mropeImages.Count > 0)
+        {
+            float* mc = stackalloc float[_ropeHalfDim];
+            float* ms = stackalloc float[_ropeHalfDim];
+            FillMRopeCosSin(pos, mc, ms, _ropeHalfDim);
+            SimdKernels.ApplyRoPECachedNeox(x, mc, ms, heads, _headDim);
+            return;
+        }
         var cos = _ropeCosTable + (long)pos * _ropeHalfDim;
         var sin = _ropeSinTable + (long)pos * _ropeHalfDim;
         if (_hp.IsNeoxRope)
@@ -554,6 +615,14 @@ public sealed unsafe partial class ForwardPass
         if (useSwa) sinTab = _ropeSinTableSwa;
         var cos = cosTab + (long)pos * halfDim;
         var sin = sinTab + (long)pos * halfDim;
+        if (_mropeImages.Count > 0 && !useSwa)
+        {
+            float* mc = stackalloc float[halfDim];
+            float* ms = stackalloc float[halfDim];
+            FillMRopeCosSin(pos, mc, ms, halfDim);
+            cos = mc;
+            sin = ms;
+        }
         if (_hp.IsNeoxRope)
         {
             // Partial RoPE (GPT-NeoX/Pythia: rope.dimension_count < headDim, e.g. 16 of 64):

@@ -16,7 +16,7 @@ dated evidence in the same pass.
 | 3 | ⏸ RE-SCOPED (Mamba-2 port, large) | Nemotron-Nano-12B-v2-VL: `nemotron_h` text backbone crashes (per-layer `feed_forward_length` array; 0 = pure Mamba layer) | root cause already known | small |
 | 4 | ✅ DONE | dots.ocr: decode stops after one token | suspected prompt-format mismatch | small–medium |
 | 5 | ✅ DONE (2026-09-27) | Kimi-VL + YoutuVL: split `attn_k_b` / `attn_v_b` MLA layout not read | known math (llama.cpp deepseek2 absorption path); unblocks two models | medium |
-| 6 | ⬜ TODO | PaddleOCR-VL: degenerate output | text architecture (`paddleocr`) has no validated forward pass | medium |
+| 6 | ✅ DONE (2026-09-27) | PaddleOCR-VL: degenerate output | text architecture (`paddleocr`) has no validated forward pass | medium |
 | 7 | ⬜ TODO | DeepSeek-OCR / OCR2: garbled | text architecture (`deepseek2-ocr`) has no validated forward pass | medium |
 | 8 | ⬜ TODO | Step3-VL: garbled | unvalidated architecture on a Q2_K checkpoint | medium–large |
 | 9 | ⬜ TODO | IBM Granite Vision 3.2 / 4.0: output not image-grounded | investigation; 3.2 via LlavaAdapter, 4.0 via QFormer projector | large |
@@ -113,6 +113,24 @@ second-half perplexity vs `llama-perplexity`, then an allowlist entry, a STATUS.
 MODELS.md entry if it qualifies.
 
 ## Log
+
+- 2026-09-27 #6 DONE: PaddleOCR-VL reads text; OCR output is identical to llama-server.
+  - Encoder, 4 bugs: LayerNorm with bias (it used RMSNorm), vision M-RoPE with section reset,
+    antialiased position-table resize, projector eps.
+  - Text decoder: NeoX rotation, and new 2D M-RoPE image positions (`ForwardPass.AddMRopeImage`,
+    CPU `ForwardPass` only). Admitted to the allowlist.
+  - Tokenizer: SPM byte-fallback tokens now decode to bytes.
+  - The same session found Qwen2.5-VL was NOT reading images, despite its 🟢 row: its encoder had
+    the dots.ocr no-section-reset RoPE bug. Fixed; its answer now equals llama-server's.
+  - New parity tests: `LlamaMtmdVisionParityTests` (Kimi x2, Youtu, PaddleOCR, Qwen2.5-VL).
+  - Known gaps:
+    - CUDA/Vulkan forward passes and the server's image path (`InferenceEngine`, Gemma-style
+      placeholders only) do not apply the 2D M-RoPE positions yet.
+    - Qwen3-VL needs IMROPE plus the `qwen3vl` text architecture (not admitted).
+  - The #4 follow-up is done: Exaone 4.5 and MiMo-VL encoders had the same missing section reset.
+    Fixed and pinned: rainbow448 sums 1409.85 vs 1411.85 and -8360.5 vs -8317.8.
+    - Every `GGML_ROPE_TYPE_VISION` encoder in `src/OpenTail.Stingray.Vision` now passes
+      `independentSections: true`.
 
 - 2026-09-27 #5 DONE: Kimi-VL and Youtu-VL vision now match llama.cpp.
   - `llama-mtmd-debug` stage fingerprints (checkerboard 224 and rainbow 448) found five encoder bugs.

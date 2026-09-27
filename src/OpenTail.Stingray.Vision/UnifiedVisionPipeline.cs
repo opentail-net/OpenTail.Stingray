@@ -613,6 +613,7 @@ public static class UnifiedVisionPipeline
             _encoder = new QwenVlVisionEncoder(model);
         }
 
+        public (int Width, int Height) LastTokenGrid { get; private set; }
         public string ProjectorType => _model.ProjectorType;
         public int EmbeddingDim => _model.ProjectionDim;
         public int ImageWidth => 448;
@@ -624,6 +625,8 @@ public static class UnifiedVisionPipeline
         public float[] EmbedImage(ReadOnlySpan<byte> rgb, int width, int height, out int tokenCount)
         {
             var pre = QwenVlImagePreprocessor.Preprocess(rgb, width, height, _model.PatchSize, _model.SpatialMergeFactor);
+            int cell = _model.PatchSize * _model.SpatialMergeFactor;
+            LastTokenGrid = (pre.TargetWidth / cell, pre.TargetHeight / cell);
             return _encoder.Forward(pre.Chw, pre.TargetWidth, pre.TargetHeight, out tokenCount);
         }
 
@@ -980,6 +983,7 @@ public static class UnifiedVisionPipeline
             _encoder = new PaddleOcrVisionEncoder(model);
         }
 
+        public (int Width, int Height) LastTokenGrid { get; private set; }
         public string ProjectorType => _model.ProjectorType;
         public int EmbeddingDim => _model.ProjectionDim;
         public int ImageWidth => _model.ImageSize;
@@ -996,6 +1000,7 @@ public static class UnifiedVisionPipeline
         public float[] EmbedImage(ReadOnlySpan<byte> rgb, int width, int height, out int tokenCount)
         {
             var pre = PaddleOcrImagePreprocessor.Preprocess(rgb, width, height, _model.PatchSize);
+            LastTokenGrid = (pre.PatchesX / 2, pre.PatchesY / 2);
             return _encoder.Forward(pre.Chw, pre.TargetWidth, pre.TargetHeight, pre.PatchesX, pre.PatchesY, out tokenCount);
         }
 

@@ -1,12 +1,12 @@
 namespace OpenTail.Stingray.Tests.Vision;
 
 /// <summary>
-/// Kimi-VL and Youtu-VL vision encoders + projectors against the vendored llama.cpp reference:
+/// Vision encoders + projectors (Kimi-VL, Youtu-VL, PaddleOCR-VL, Qwen2.5-VL) against the vendored llama.cpp reference:
 /// <c>tools/llama.cpp/llama-mtmd-debug.exe -m &lt;text gguf&gt; --mmproj &lt;mmproj&gt; -p encode -n 224 --image cb</c>
 /// (224x224 checkerboard, all three channels <c>(x+y)%2 ? 0 : 1</c>, fed straight to the encoder).
 /// Golden values are the last projector stage's sum and row-0 corner, recorded 2026-09-27.
 /// </summary>
-public sealed class KimiYoutuVisionEmbedderParityTests
+public sealed class LlamaMtmdVisionParityTests
 {
     private static float[] Checkerboard(int n)
     {
@@ -107,6 +107,68 @@ public sealed class KimiYoutuVisionEmbedderParityTests
         // is identical, and llama.cpp's own Q8_0 and BF16 mmproj disagree by 3% on it.
         Assert.Equal(196, count);
         AssertMatches(tokens, 2104.656, 25.0, [0.4770f, 1.0259f, 0.0240f], 0.02f);
+    }
+
+    [Fact]
+    public void PaddleOcr_Rainbow448_MatchesLlamaMtmdDebug()
+    {
+        string? path = FindModel("mmproj-paddleocr-vl-1.6.gguf");
+        Assert.SkipWhen(path is null, "mmproj-paddleocr-vl-1.6.gguf not present");
+        using var model = PaddleOcrVisionModel.Open(path!);
+        float[] tokens = new PaddleOcrVisionEncoder(model).Forward(Rainbow(448), 448, 448, 32, 32, out int count);
+        Report("paddle rainbow448", tokens, count, 1024);
+
+        // llama-mtmd-debug (-m paddleocr-vl-1.6.gguf --mmproj mmproj-paddleocr-vl-1.6.gguf -n 448 --image rainbow):
+        // mlp_out 256 x 1024, sum -4653.626465, row 0 [2.1425, 0.9280, 1.8393].
+        Assert.Equal(256, count);
+        AssertMatches(tokens, -4653.626, 47.0, [2.1425f, 0.9280f, 1.8393f], 0.03f);
+    }
+
+    [Fact]
+    public void Qwen25Vl_Rainbow448_MatchesLlamaMtmdDebug()
+    {
+        string? path = FindModel("mmproj-qwen2.5-vl-7b-f16.gguf");
+        Assert.SkipWhen(path is null, "mmproj-qwen2.5-vl-7b-f16.gguf not present");
+        using var model = QwenVlVisionModel.Open(path!);
+        float[] tokens = new QwenVlVisionEncoder(model).Forward(Rainbow(448), 448, 448, out int count);
+        Report("qwen25vl rainbow448", tokens, count, 3584);
+
+        // llama-mtmd-debug (-m Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf --mmproj mmproj-qwen2.5-vl-7b-f16.gguf -n 448 --image rainbow):
+        // 256 x 3584, sum 18550.607422, row 0 [0.0276, -0.3893, -1.7246]. Measured: 18591.93, [0.0619, -0.4211, -1.7408].
+        // Layer 0 matches to 4 decimals (sum -6771.23 vs -6771.27); the residual is 32-layer drift (layer 31
+        // sum within 0.005%). Before the 2026-09-27 section-reset RoPE fix: 16505.74, [-0.3269, 0.1654, -1.4568].
+        Assert.Equal(256, count);
+        AssertMatches(tokens, 18550.607, 190.0, [0.0276f, -0.3893f, -1.7246f], 0.05f);
+    }
+
+    [Fact]
+    public void MimoVl_Rainbow448_MatchesLlamaMtmdDebug()
+    {
+        string? path = FindModel("mmproj-mimovl-7b-q8_0.gguf");
+        Assert.SkipWhen(path is null, "mmproj-mimovl-7b-q8_0.gguf not present");
+        using var model = MimoVlVisionModel.Open(path!);
+        float[] tokens = new MimoVlVisionEncoder(model).Forward(Rainbow(448), 448, 448, 32, 32, out int count);
+        Report("mimovl rainbow448", tokens, count, 4096);
+
+        // llama-mtmd-debug (-m mimo-vl-7b-sft-Q2_K.gguf --mmproj mmproj-mimovl-7b-q8_0.gguf -n 448 --image rainbow):
+        // 256 x 4096, sum -8317.800781, row 0 [0.9284, 0.8123, 1.3568].
+        Assert.Equal(256, count);
+        AssertMatches(tokens, -8317.801, 85.0, [0.9284f, 0.8123f, 1.3568f], 0.05f);
+    }
+
+    [Fact]
+    public void Exaone45_Rainbow448_MatchesLlamaMtmdDebug()
+    {
+        string? path = FindModel("mmproj-exaone-4.5-q8_0.gguf");
+        Assert.SkipWhen(path is null, "mmproj-exaone-4.5-q8_0.gguf not present");
+        using var model = Exaone4VisionModel.Open(path!);
+        float[] tokens = new Exaone4VisionEncoder(model).Forward(Rainbow(448), 448, 448, 32, 32, out int count);
+        Report("exaone45 rainbow448", tokens, count, 5120);
+
+        // llama-mtmd-debug (-m EXAONE-4.5-33B-Q4_K_M.gguf --mmproj mmproj-exaone-4.5-q8_0.gguf -n 448 --image rainbow):
+        // 256 x 5120, sum 1411.853271, row 0 [0.1998, 0.0144, -0.2507].
+        Assert.Equal(256, count);
+        AssertMatches(tokens, 1411.853, 30.0, [0.1998f, 0.0144f, -0.2507f], 0.05f);
     }
 
     private static string? FindModel(string file)

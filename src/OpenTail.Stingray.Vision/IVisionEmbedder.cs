@@ -33,6 +33,12 @@ public interface IVisionEmbedder : IDisposable
     float[] EmbedImage(ReadOnlySpan<byte> rgb, int width, int height, out int tokenCount);
 
     /// <summary>
+    /// Token grid (columns x rows) of the most recent <see cref="EmbedImage"/> call, for text decoders that
+    /// give image tokens 2D M-RoPE positions (Qwen2-VL family, PaddleOCR-VL). (0, 0) when not tracked.
+    /// </summary>
+    (int Width, int Height) LastTokenGrid => (0, 0);
+
+    /// <summary>
     /// Loads an image file from disk, preprocesses it, and runs the vision encoder.
     /// </summary>
     float[] EmbedImageFile(string filePath, out int tokenCount);

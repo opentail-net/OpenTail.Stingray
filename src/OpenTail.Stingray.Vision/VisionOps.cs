@@ -920,6 +920,61 @@ public static unsafe class VisionOps
         => ApplyMRoPE(q, k, patchesX, patchesY, heads, heads, headDim, theta);
 
     /// <summary>
+    /// A learned square position table (<c>side x side</c> rows of <paramref name="embd"/>) resized to a
+    /// <paramref name="width"/> x <paramref name="height"/> patch grid exactly as llama.cpp's
+    /// <c>clip_graph::resize_position_embeddings()</c>: <c>ggml_interpolate</c> with
+    /// <c>GGML_SCALE_MODE_BILINEAR | GGML_SCALE_FLAG_ANTIALIAS</c> (PyTorch bilinear, align_corners=False,
+    /// antialias=True: triangle filter, support widened when downscaling). Returns the table itself when
+    /// the grid already matches. Used by Kimi-VL and PaddleOCR-VL (2026-09-27).
+    /// </summary>
+    public static float[] ResizePositionEmbeddings(float[] table, int embd, int width, int height)
+    {
+        if (table.Length == 0) return [];
+        int side = (int)Math.Round(Math.Sqrt(table.Length / embd));
+        if (width == side && height == side) return table;
+
+        var dst = new float[width * height * embd];
+        float sf0 = (float)width / side, sf1 = (float)height / side;
+        float support0 = Math.Max(1f, 1f / sf0), invScale0 = 1f / support0;
+        float support1 = Math.Max(1f, 1f / sf1), invScale1 = 1f / support1;
+        const float off = 0.5f;
+        static float Tri(float x) => Math.Max(1f - MathF.Abs(x), 0f);
+        var src = table;
+
+        Parallel.For(0, height, i1 =>
+        {
+            float y = (i1 + off) / sf1;
+            int yMin = Math.Max((int)(y - support1 + off), 0);
+            int yMax = Math.Min((int)(y + support1 + off), side);
+            var acc = new float[embd];
+            for (int i0 = 0; i0 < width; i0++)
+            {
+                float x = (i0 + off) / sf0;
+                int xMin = Math.Max((int)(x - support0 + off), 0);
+                int xMax = Math.Min((int)(x + support0 + off), side);
+                Array.Clear(acc);
+                float total = 0f;
+                for (int sy = yMin; sy < yMax; sy++)
+                {
+                    float wy = Tri((sy - y + off) * invScale1);
+                    for (int sx = xMin; sx < xMax; sx++)
+                    {
+                        float w = Tri((sx - x + off) * invScale0) * wy;
+                        if (w <= 0f) continue;
+                        int so = (sy * side + sx) * embd;
+                        for (int d = 0; d < embd; d++) acc[d] += src[so + d] * w;
+                        total += w;
+                    }
+                }
+                int dOff = (i1 * width + i0) * embd;
+                float inv = total > 0f ? 1f / total : 1f;
+                for (int d = 0; d < embd; d++) dst[dOff + d] = acc[d] * inv;
+            }
+        });
+        return dst;
+    }
+
+    /// <summary>
     /// PixelShuffle 2x2 spatial downsampler: merges 2x2 spatial blocks into 4x channel dimensions.
     /// Input: [gridY, gridX, inDim], Output: [gridY/2, gridX/2, 4*inDim].
     /// </summary>

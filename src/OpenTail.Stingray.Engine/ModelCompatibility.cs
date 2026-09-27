@@ -239,6 +239,16 @@ public static class ModelCompatibility
         // test to catch a mistake (the tokenizer fix itself IS covered, see above).
         "ernie4_5",
 
+        // paddleocr — PaddleOCR-VL 1.6 text decoder (ERNIE-4.5-0.3B-shaped, llama.cpp src/models/paddleocr.cpp:
+        // the qwen2vl graph with LLAMA_ROPE_TYPE_MROPE, sections [16,24,24,0]). ADMITTED 2026-09-27.
+        // Two fixes: NEOX rotation (M-RoPE rotates NeoX-style; it had fallen through to interleaved) and
+        // 2D M-RoPE positions for image tokens (ForwardPass.AddMRopeImage, mirrors mtmd MTMD_POS_TYPE_MROPE).
+        // Evidence (paddleocr-vl-1.6.gguf, CPU): wikitext [512,1024) PPL 39947 vs llama-perplexity 40027
+        // (an OCR model, hence the size); OCR of a rendered "Invoice 4217 / Total: 38.50 EUR" image is
+        // token-for-token identical to llama-server --mmproj (16 tokens + EOS). The vision encoder is pinned
+        // by LlamaMtmdVisionParityTests.PaddleOcr_Rainbow448_MatchesLlamaMtmdDebug.
+        "paddleocr",
+
         // internlm2 -- ADMITTED 2026-09-01. Was blocked purely on the tokenizer axis (same as
         // minicpm/ernie4_5/baichuan): tokenizer.ggml.model=llama with tokenizer.ggml.scores
         // (92,544 entries) and no tokenizer.ggml.merges array -- already fixed by
