@@ -1104,3 +1104,8 @@ names what closed; these items are what did not.
 - **Vision timings not yet in `PerformanceLeague.md`**: Pixtral 12B and GLM-4.6V (gated GGUFs; need an
   `HF_TOKEN` with the licence accepted), plus LLaVA-NeXT/OneVision, GLM-4V/OCR, Hunyuan-VL and Llama 4
   vision. See [done/PerformanceLeague-expansion-plan.md](done/PerformanceLeague-expansion-plan.md).
+- **Llama-4 Scout 17B-16E backfill never completed**: only the historical 2026-06-16 smoke-run rows
+  (`README history 0c171ed`) exist in `PerformanceLeague.md` — no real ratio-vs-llama.cpp measurement.
+  The ~93GB 2-shard download (`unsloth/Llama-4-Scout-17B-16E-Instruct-GGUF`) failed mid-transfer once
+  and was left running in the background; unknown whether it ever completed. See
+  [done/PerformanceLeague-backfill-plan.md](done/PerformanceLeague-backfill-plan.md).
