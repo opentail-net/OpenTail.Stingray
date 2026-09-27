@@ -117,6 +117,41 @@ public static partial class PreTokenizerPatterns
     private static partial Regex Gpt4o();
 
     /// <summary>
+    /// DeepSeek-LLM (llama.cpp LLAMA_VOCAB_PRE_TYPE_DEEPSEEK_LLM) letter stage: an optional whitespace then a run of
+    /// the explicit letter ranges from llama-vocab.cpp. The ranges above U+FFFF are written as UTF-16 surrogate
+    /// pairs because a .NET character class works on 16-bit units.
+    /// </summary>
+    [GeneratedRegex("""\s?(?:[A-Za-zµÀ-ÖØ-öø-ƺƼ-ƿǄ-ʓʕ-ʯͰ-ͳͶͷͻ-ͽͿΆΈ-ΊΌΎ-ΡΣ-ϵϷ-ҁҊ-ԯԱ-ՖႠ-ჅᎠ-Ᏽᏸ-ᏽᲐ-ᲺᲽ-Ჿᴀ-ᴫᵫ-ᵷᵹ-ᶚḀ-ἕἘ-Ἕἠ-ὅὈ-Ὅὐ-ὗὙὛὝὟ-ώᾀ-ᾴᾶ-ᾼιῂ-ῄῆ-ῌῐ-ΐῖ-Ίῠ-Ῥῲ-ῴῶ-ῼℂℇℊ-ℓℕℙ-ℝℤΩℨK-ℭℯ-ℴℹℼ-ℿⅅ-ⅉⅎↃↄⰀ-ⱻⱾ-ⳤⳫ-ⳮⳲⳳꙀ-ꙭꚀ-ꚛꜢ-ꝯꝱ-ꞇꞋ-ꞎꭰ-ꮿﬀ-ﬆﬓ-ﬗＡ-Ｚａ-ｚ]|\uD801[\uDC00-\uDC4F]|\uD801[\uDCB0-\uDCD3]|\uD801[\uDCD8-\uDCFB]|\uD803[\uDC80-\uDCB2]|\uD803[\uDCC0-\uDCF2]|\uD806[\uDCA0-\uDCDF]|\uD83A[\uDD00-\uDD43])+""")]
+    private static partial Regex DeepSeekLlmLetters();
+
+    /// <summary>DeepSeek-LLM punctuation stage: ASCII and full-width punctuation runs.</summary>
+    [GeneratedRegex("""\s?[!-/:-~！-／：-～‘-‟　-。]+""")]
+    private static partial Regex DeepSeekLlmPunct();
+
+    /// <summary>DeepSeek-LLM CJK stage: Han, U+0800-U+4E00 and Hangul runs.</summary>
+    [GeneratedRegex("""[一-龥ࠀ-一가-퟿]+""")]
+    private static partial Regex DeepSeekLlmCjk();
+
+    /// <summary>DeepSeek-LLM first stage: each newline is its own piece.</summary>
+    [GeneratedRegex("""[\r\n]""")]
+    private static partial Regex SingleNewline();
+
+    /// <summary>DeepSeek-LLM trailing-whitespace stage.</summary>
+    [GeneratedRegex("""\s+$""")]
+    private static partial Regex TrailingSpace();
+
+    /// <summary>DeepSeek-LLM digit stage: whole number runs.</summary>
+    [GeneratedRegex("""\p{N}+""")]
+    private static partial Regex NumberRun();
+
+    /// <summary>
+    /// EXAONE-MoE (llama.cpp LLAMA_VOCAB_PRE_TYPE_EXAONE_MOE, the original tokenizer.json regex). Unlike GPT-2, a
+    /// letter run may continue across single spaces, so " is an" can be one piece and one token.
+    /// </summary>
+    [GeneratedRegex("""(?:'[sS]|'[tT]|'[rR][eE]|'[vV][eE]|'[mM]|'[lL][lL]|'[dD])|[^\r\n\p{L}\p{N}]?(?:\p{L}\p{M}*(?: \p{L}\p{M}*)*)+|\p{N}| ?[^\s\p{L}\p{N}]+[\r\n/]?|\s*[\r\n]|\s+(?!\S)|\s+""")]
+    private static partial Regex ExaoneMoe();
+
+    /// <summary>
     /// Youtu (llama.cpp LLAMA_VOCAB_PRE_TYPE_YOUTU) first stage: Hangul, CJK punctuation, Bopomofo and
     /// Han/Kana runs each become their own piece, so a space before CJK text stays a separate piece.
     /// </summary>
@@ -149,7 +184,7 @@ public static partial class PreTokenizerPatterns
             // deliberate llama.cpp choice, not an oversight — confirmed against llama-vocab.cpp:
             // tokenizer_pre=="exaone4" maps to the plain GPT2 pre_type, distinct from "exaone"
             // (already covered below under the SmolLM/digit-split group) and "exaone-moe" (its
-            // own dedicated pre_type, not yet ported).
+            // own dedicated pre_type, below).
             // llama.cpp: an absent tokenizer.ggml.pre (or "default") is LLAMA_VOCAB_PRE_TYPE_DEFAULT,
             // whose BPE cascade splits punctuation/symbol runs out FIRST, then applies the GPT-2
             // pattern, then digit runs (llm_tokenizer_bpe's `default:` case). This used to fall
@@ -229,6 +264,14 @@ public static partial class PreTokenizerPatterns
             case "deepseek3-llm":
             case "joyai-llm":
                 patterns = [DigitRun3(), Cjk(), HunyuanDenseTail()];
+                return true;
+
+            case "deepseek-llm":
+                patterns = [SingleNewline(), DeepSeekLlmLetters(), DeepSeekLlmPunct(), TrailingSpace(), DeepSeekLlmCjk(), NumberRun()];
+                return true;
+
+            case "exaone-moe":
+                patterns = [ExaoneMoe()];
                 return true;
 
             case "youtu":

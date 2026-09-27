@@ -123,6 +123,13 @@ public sealed class PreTokenizerParityTests
         { "youtu", 283386, "poet Du Fu ( 杜甫 ; 712", new[] { 2031, 292, 7066, 18133, 342, 220, 104048, 111377, 3591, 220, 22, 16, 17 } },
         { "youtu", 283386, "한국어 문장，テスト。", new[] { 100670, 4201, 255, 121090, 220, 121151, 121295, 100129, 121437, 121592, 100085 } },
         { "youtu", 283386, "IT'S 12345", new[] { 1208, 22501, 220, 16, 17, 18, 19, 20 } },
+        // DeepSeek-V2-Lite-Chat (Q8_0) and EXAONE-4.5-33B (Q4_K_M), both unmapped until 2026-09-27. EXAONE-MoE letter
+        // runs continue across single spaces (" is an" is one token), which the GPT-2 fallback split. Both checkpoints
+        // live on K:\_other_models on the dev machine, so these rows skip unless one is moved back into models/.
+        { "deepseek-llm", 102400, "Boulter is an English film actor", new[] { 33, 5027, 367, 317, 274, 3517, 6131, 14112 } },
+        { "deepseek-llm", 102400, "poet Du Fu ( 杜甫 ; 712 ) ！？", new[] { 86627, 9497, 39088, 334, 207, 17141, 65577, 6204, 207, 22, 16, 17, 2238, 61198, 2224 } },
+        { "exaone-moe", 153600, "Boulter is an English film actor", new[] { 395, 10103, 813, 115413, 6273, 4779, 16502 } },
+        { "exaone-moe", 153600, "poet Du Fu ( 杜甫 ; 712 ) ！？", new[] { 11440, 758, 12216, 30840, 688, 8922, 612, 9383, 466, 967, 582, 384, 378, 379, 693, 3979, 482, 585, 95744 } },
     };
 
     [Theory]

@@ -271,3 +271,12 @@ Timebox each at half a day, write down what was learned, and move on if blocked.
     13.2485 vs llama.cpp 13.2990 (was 13.97). `PreTokenizerParityTests` 27/27 run, 1 pre-existing
     skip, 59 s, three new `youtu` rows.
   - Found with the new `stingray perplexity --dump-nll <file>` (per-position token id and NLL).
+- 2026-09-27: follow-up to 11b. A scan of every local GGUF's `tokenizer.ggml.pre` found two more
+  values with no case in `PreTokenizerPatterns` (silent GPT-2 fallback): `deepseek-llm`
+  (DeepSeek-V2-Lite) and `exaone-moe` (EXAONE-4.5-33B).
+  - Ported llama.cpp's cascades for both (the DeepSeek-LLM letter class copied from
+    `llama-vocab.cpp`, astral ranges as surrogate pairs).
+  - On an 8 KB wikitext plus mixed-script sample vs `llama-tokenize`: DeepSeek 2002/2002 (it already
+    matched), EXAONE-4.5 1784/1784 (was 1995 tokens, diverging at token 13: " is an" is one token).
+  - Four probe rows in `PreTokenizerParityTests`; they skip while both checkpoints sit on K:.
+  - Every local GGUF's pre value is now mapped.
