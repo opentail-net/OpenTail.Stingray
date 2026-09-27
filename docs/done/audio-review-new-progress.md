@@ -335,6 +335,10 @@ Whisper-base round trip (`stingray stt`). One process at a time; wall time inclu
 | F5-TTS (`f5tts_base`, cloning `a.wav`) | 124s | 226s | exact / exact |
 | MeloTTS (`melotts-zh_en`, EN-US) | 9s | 9s | **"…this is Aurelite Test at Speech's offices."** / **"…a relay test at speech synthesis."** |
 
+> **Correction, 2026-09-27:** Kokoro, Piper and MeloTTS take no backend in `TtsCommand` (their pipelines are
+> loaded without `gpuBackend`), so their "Vulkan" column is a second CPU run. Only Chatterbox and F5-TTS
+> actually ran on Vulkan here. The MeloTTS transcripts differ between two CPU runs, not between backends.
+
 Kokoro, Chatterbox, Piper and F5-TTS are word-exact on both backends. F5-TTS on Vulkan is slower than CPU on
 this iGPU (CLAUDE.md rule 13: says nothing about discrete GPUs). **MeloTTS English is only partly intelligible**
 on both backends. The shipped checkpoint is the Chinese/English-mixed model; the MeloTTS.cpp demo audio is

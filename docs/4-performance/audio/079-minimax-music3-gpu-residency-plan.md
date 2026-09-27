@@ -1,3 +1,13 @@
+> **STATUS 2026-09-27.** Still open: the actual goal (a GPU-resident transformer: `ForwardGpu`, a
+> persistent workspace, one batch per block) is not implemented. The code has only
+> `MiniMaxMusic3GpuTransformerWeights`, used one matmul at a time from `Forward`. Two statements below
+> are stale: (1) "no Vulkan GPU timing exists at all yet": the per-matmul Vulkan path was measured
+> before this doc was written, 761ms vs 298ms CPU for one 36-layer forward on this iGPU
+> (`MiniMaxMusic3TransformerGpuParityTests`, [066](066-minimax-music3-future-plan.md)); (2) the
+> 3352.9s (~56 min) baseline: the full pipeline now runs in 489.5-528.6s on CPU vs the C++
+> reference's 477.8s (2026-09-05; `PerformanceLeague.md`). The DiT is already faster than C++ on CPU
+> (31.73 vs 34.3 s/step), so GPU residency here is about hardware with a real GPU, not this machine.
+
 # MiniMax-Music3 Transformer GPU Residency Plan (2026-09-13)
 
 ## Context — read `docs/069` (FLUX) and `docs/072`/`docs/073` (Wan) first
