@@ -40,7 +40,7 @@ the order they were written.
   [bugstofix.md](bugstofix.md)
 - **Model coverage:** 02, 03, 07, 08, 050, 054, 058, 064, 066, 086
 - **Runtime and serving:** 010, 032, 04, 051
-- **Performance:** 05, 049, 052, 053, 069, 070, 071, 073, 078-080, 082, 084, 088, 092-094,
+- **Performance:** 05, 049, 052, 053, 069, 070, 071, 078-080, 082, 084, 088, 092-094,
   [perf-sweep-plan.md](perf-sweep-plan.md), [PerformanceLeague-backfill-plan.md](PerformanceLeague-backfill-plan.md),
   [perf-loop-project-review-progress.md](perf-loop-project-review-progress.md), [vulkan-gemm/](vulkan-gemm)
 - **Audio:** [audio-review-new-progress.md](audio-review-new-progress.md)

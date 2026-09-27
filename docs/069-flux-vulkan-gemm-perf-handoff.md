@@ -1,3 +1,10 @@
+> **STATUS 2026-09-27.** Still open, target not met, but the gap has closed substantially since this
+> was written: `PerformanceLeague.md`'s 2026-09-25 "register-tiled flash attention (headDim=128)" row
+> measured **132.0s** total (DiT 23.5s/step, down from the 374.7s this doc's own body cites), vs this
+> doc's **99.8s** target — now **~1.32x** slower, not the ~3.75x this doc's numbers implied. Re-check
+> against `PerformanceLeague.md` before assuming either the 374.7s or the 99.8s gap size below is
+> still current.
+
 # FLUX.1-schnell Vulkan GEMM/Attention Performance Handoff (2026-09-13)
 
 ## Where things stand
