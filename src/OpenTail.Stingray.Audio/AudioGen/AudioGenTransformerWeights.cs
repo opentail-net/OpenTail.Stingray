@@ -5,7 +5,7 @@ namespace OpenTail.Stingray.Audio.AudioGen;
 /// Weight loader for AudioGen's decoder-only LM, from the real native AudioCraft checkpoint
 /// converted to safetensors (`audiogen-medium-lm.safetensors`, tensor names preserved verbatim
 /// from the real `state_dict.bin`'s `best_state` dict -- see
-/// docs/063-audiogen-implementation-plan.md for the conversion). Unlike MusicGen's HF-remapped
+/// docs/done/063-audiogen-implementation-plan.md for the conversion). Unlike MusicGen's HF-remapped
 /// checkpoint, this is native AudioCraft `StreamingTransformerLayer` naming: FUSED
 /// `in_proj_weight` (`[3*dim, dim]`, Q/K/V concatenated in that order -- confirmed from the real
 /// `audiocraft.modules.transformer` source) for BOTH self- and cross-attention, `linear1`/`linear2`

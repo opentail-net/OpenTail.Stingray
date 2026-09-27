@@ -8,7 +8,7 @@ namespace OpenTail.Stingray.Tests.Audio.AudioGen;
 /// <summary>
 /// First real end-to-end smoke test for the AudioGen port: real `facebook/audiogen-medium` LM +
 /// codec weights (converted from AudioCraft's native `.bin` checkpoint format to safetensors,
-/// see docs/063-audiogen-implementation-plan.md) + real stock `t5-large` conditioning, full
+/// see docs/done/063-audiogen-implementation-plan.md) + real stock `t5-large` conditioning, full
 /// pipeline run against real weights. NON-DEGENERACY receipt (finite, non-silent), not yet a
 /// numeric golden-parity test against an independent Python/AudioCraft reference run.
 /// </summary>
@@ -105,7 +105,7 @@ public sealed class AudioGenGenerationSmokeTests : HeavyTestBase
 
     /// <summary>A second real sample with a more acoustically distinctive prompt than "heavy rain"
     /// (which is itself a genuinely broadband/noise-like real-world sound, per the
-    /// 2026-09-02 investigation in docs/063-audiogen-implementation-plan.md) -- meant as a fairer
+    /// 2026-09-02 investigation in docs/done/063-audiogen-implementation-plan.md) -- meant as a fairer
     /// by-ear read on this checkpoint's real quality ceiling.</summary>
     [Fact]
     public void Generate_RealWeights_WritesSecondListenableSample()

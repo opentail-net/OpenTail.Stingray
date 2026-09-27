@@ -11,7 +11,7 @@ namespace OpenTail.Stingray.Vision;
 /// <para>Produces exactly ONE tile (<c>ImageSize x ImageSize</c>, 336x336 for the real Scout
 /// mmproj). llama.cpp's own multi-tile ("llava-uhd") preprocessing -- which real Llama 4 inference
 /// uses to slice a source image into up to a 3x3 grid of tiles plus one overview tile -- is out of
-/// scope here; see docs/06-llama4-vision-plan.md.</para>
+/// scope here; see docs/done/06-llama4-vision-plan.md.</para>
 /// </summary>
 public static class Llama4ImagePreprocessor
 {

@@ -1948,7 +1948,7 @@ Build a real oracle and golden-verify Parakeet numerically end-to-end (mel + enc
 the last thing standing between "structurally complete" and "done". (3) Then CosyVoice per
 the queue.
 
-## New planning docs added under `docs/audio/` (2026-08-22) — user-provided, treat as reference not gospel
+## New planning docs added under `docs/done/audio-port-plans/` (2026-08-22) — user-provided, treat as reference not gospel
 
 User added six external planning documents (`046-native-cosyvoice-tts-plan.md` [+ an `-old`
 superseded variant], `049-native-qwen3-asr-completion-plan.md`, `050-QwenTTS-...-plan.md`,
@@ -3803,13 +3803,13 @@ downloading (not blind URLs)**:
   the HF API before download).
 - `models/orpheus-3b-0.1-ft.Q4_K_M.gguf` (~2.36 GB) -- from
   `QuantFactory/orpheus-3b-0.1-ft-GGUF` (`base_model: canopylabs/orpheus-3b-0.1-pretrained`,
-  `gguf.architecture: llama` -- confirms the docs/audio/53orpheous.md planning note that Orpheus's
+  `gguf.architecture: llama` -- confirms the docs/done/audio-port-plans/53orpheous.md planning note that Orpheus's
   talker is a real Llama-3.2-3B-shape model, potentially reusable against this codebase's
   existing Llama forward-pass infrastructure rather than needing an entirely new architecture).
 - `models/Parler_TTS_mini.gguf` (~1.2 GB) -- from `mmwillet2/Parler_TTS_GGUF`
   (`base_model: parler-tts/parler-tts-mini-v1.1`, `gguf.architecture: parler-tts`).
 
-User also pointed at `docs/audio/51fish.md` / `52parlertts.md` / `53orpheous.md` -- pre-existing
+User also pointed at `docs/done/audio-port-plans/51fish.md` / `52parlertts.md` / `53orpheous.md` -- pre-existing
 high-level planning docs for exactly these three pipelines (same family as the
 CosyVoice/QwenASR/QwenTTS planning docs noted earlier in this doc). Skimmed, not fully read yet:
 same caveat as those earlier planners applies -- **treat as directional reference, not gospel,
@@ -3824,7 +3824,7 @@ UNBLOCKED -- real reference source (both third-party C++ ports AND, for Parler/O
 actual source repo that produced the downloaded weights) plus real GGUF weights are both present
 locally. Next fire should start with Orpheus (per 53orpheous.md's own difficulty ranking and the
 `architecture: llama` confirmation above, likely the lowest-effort of the three), read
-`docs/audio/53orpheous.md` in full plus `examples/TTS.cpp`'s Orpheus support and
+`docs/done/audio-port-plans/53orpheous.md` in full plus `examples/TTS.cpp`'s Orpheus support and
 `examples/Orpheus-TTS`'s real generation config, then follow this doc's standard discipline
 (real weight loader -> golden-verify each stage -> wire end-to-end) exactly as done for FunASR.
 
@@ -3903,7 +3903,7 @@ src/OpenTail.Stingray.Cli -c Release -- -m models/orpheus-3b-0.1-ft.Q4_K_M.gguf 
 0 -g 20` -- the model LOADED AND RAN with zero code changes, through this codebase's ordinary
 `HybridForwardPass` (Vulkan+CPU hybrid, same path any other GGUF Llama model uses), printing
 `Model loaded in 6.3s — 28L, 3072d, headDim=128, 156940 vocab, ctx=32768` and completing a normal
-prefill pass. This directly confirms `docs/audio/53orpheous.md`'s central planning question ("how
+prefill pass. This directly confirms `docs/done/audio-port-plans/53orpheous.md`'s central planning question ("how
 much of Orpheus can literally run through Stingray's existing Llama implementation unchanged?
 Potentially: a lot.") -- the answer is: the ENTIRE talker transformer, unchanged, no new
 architecture code needed at all for that part.
@@ -7413,9 +7413,9 @@ one).
 
 Not committed (per standing instruction). No subagents used.
 
-## User returned, dropped new planning docs under docs/audio/ (pre-session, superseded -- see note) and a perf/format-matrix recap. CosyVoice3 HiFT F0 predictor golden-verified -- found and fixed TWO real bugs, shared with CosyVoice2's F0 predictor
+## User returned, dropped new planning docs under docs/done/audio-port-plans/ (pre-session, superseded -- see note) and a perf/format-matrix recap. CosyVoice3 HiFT F0 predictor golden-verified -- found and fixed TWO real bugs, shared with CosyVoice2's F0 predictor
 
-Checked the newly-flagged `docs/audio/*.md` planning files before continuing: confirmed (as this
+Checked the newly-flagged `docs/done/audio-port-plans/*.md` planning files before continuing: confirmed (as this
 doc already noted once before) they predate this session's real CosyVoice/QwenTTS/Whisper work
 and describe components (`CosyVoiceHiFT`, `CosyVoiceFlowDiT`) as still-fake stubs that this
 session has since replaced with real, partially golden-verified implementations. Treated as
@@ -10029,7 +10029,7 @@ MMS-TTS and XTTS-v2 support once real, not before.
 **Huge shortcut found**: Piper (`src/OpenTail.Stingray.Audio/Piper/`) is
 already a REAL, weight-driven, perf-tested VITS + HiFi-GAN implementation
 (NOT the "fake" state an earlier, now-stale doc warning in
-`docs/048-model-provenance-and-real-weights-verification-plan.md`
+`docs/done/048-model-provenance-and-real-weights-verification-plan.md`
 described -- that was fixed later this session; see this doc's own
 `PiperFlow`/`PiperFlowTests` entries). MMS-TTS IS a VITS model (same
 architecture family, Meta's multilingual VITS checkpoints) -- confirmed
@@ -10109,7 +10109,7 @@ use claim**) and reading its real `config.json` + safetensors header
    also has usage restrictions, flag to user). Not started yet this pass.
 5. Once BOTH are real, weight-driven, and tested: update the four READMEs
    per the user's instruction above, and update
-   `docs/048-model-provenance-and-real-weights-verification-plan.md`'s
+   `docs/done/048-model-provenance-and-real-weights-verification-plan.md`'s
    matrix.
 
 ### MMS-TTS: DONE -- real, weight-driven, golden-verified end-to-end against the real HuggingFace reference (2026-08-30, same fire)

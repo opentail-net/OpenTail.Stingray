@@ -79,7 +79,7 @@ public sealed class HuggingFaceTokenizerSourceTests
 
     /// <summary>
     /// Real-checkpoint regression test for the fix above: the real bundled T5Gemma tokenizer
-    /// (Stable Audio 3's text conditioner, see docs/057-stable-audio-3-implementation-plan.md),
+    /// (Stable Audio 3's text conditioner, see docs/done/057-stable-audio-3-implementation-plan.md),
     /// encoding the exact prompt whose real ids were captured from HF `transformers` for
     /// <c>StableAudioT5GemmaEncoderGoldenParityTests</c>. Skips (does not fail) when the local
     /// checkpoint isn't present, same convention as this project's other real-weight fixtures.

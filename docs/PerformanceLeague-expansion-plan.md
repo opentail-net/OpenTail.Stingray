@@ -147,7 +147,7 @@ phase as opportunistic, not a commitment — each of these could be a multi-hour
       ~13GB total). Found and fixed a major real bug (`SingleBlock`'s attn+MLP layout feeding
       `linear2`) — real end-to-end run now shows a genuinely recognizable apple+table for the
       first time ever. A separate background tiling artifact remains, still open — see
-      `docs/056-flux-tiling-artifact-handoff.md`'s Round 7/8.
+      `docs/done/056-flux-tiling-artifact-handoff.md`'s Round 7/8.
 - [x] SD3/3.5 — DONE 2026-09-11. Backfilled the real 656.9s/20-step/256×256 number (the doc's own
       most-recent same-config measurement) with an explicit caveat that it predates 4 real
       correctness bugs fixed 2026-09-05 and no fresh post-fix timing exists.

@@ -8,7 +8,7 @@ namespace OpenTail.Stingray.Tests.Audio;
 /// already-local `models/audiogen-medium/audiogen-medium-lm.safetensors` checkpoint and computes
 /// the real decoder math directly in numpy, transcribed from the real `audiocraft.modules
 /// .transformer`/`audiocraft.models.lm` source. Closes the gap noted in
-/// docs/063-audiogen-implementation-plan.md: AudioGen end-to-end generation was previously
+/// docs/done/063-audiogen-implementation-plan.md: AudioGen end-to-end generation was previously
 /// confirmed correct by ear only (no numeric reference existed), unlike Parler-TTS/F5-TTS/Fish
 /// Speech which already have this same style of golden-parity test.
 ///

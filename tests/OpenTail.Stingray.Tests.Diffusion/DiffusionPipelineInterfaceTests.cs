@@ -2,7 +2,7 @@
 namespace OpenTail.Stingray.Tests.Diffusion;
 
 /// <summary>
-/// Phase 1 acceptance guard for docs/to do - stable diffusion/033-native-stable-diffusion-family-port-plan.md:
+/// Phase 1 acceptance guard for docs/done/native-port-plans/033-native-stable-diffusion-family-port-plan.md:
 /// FLUX (<see cref="ImagePipeline"/>) and Z-Image (<see cref="ZImagePipeline"/>) must conform to the
 /// shared <see cref="IDiffusionPipeline"/> abstraction. These pipelines require real GGUF/safetensors
 /// weights to instantiate, so this only asserts the interface contract (compile-time-checkable

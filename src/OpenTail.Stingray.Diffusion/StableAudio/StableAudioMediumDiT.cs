@@ -6,7 +6,7 @@ namespace OpenTail.Stingray.Diffusion.StableAudio;
 /// <summary>
 /// Real Stable Audio 3 Medium DiT. Structurally the same real `dit.py`/`transformer.py` source as
 /// <see cref="StableAudioDiT"/> (Small), but with real, checkpoint-confirmed config differences --
-/// see docs/057-stable-audio-3-implementation-plan.md's "Medium — real archaeology" section: 24
+/// see docs/done/057-stable-audio-3-implementation-plan.md's "Medium — real archaeology" section: 24
 /// layers, embed dim 1536, 24 heads (head_dim still 64), and real DIFFERENTIAL attention on BOTH
 /// self- and cross-attention (`attn_kwargs.differential=true`, confirmed absent for Small).
 ///

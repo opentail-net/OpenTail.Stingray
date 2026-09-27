@@ -6,7 +6,7 @@ namespace OpenTail.Stingray.Diffusion.StableAudio;
 /// <summary>
 /// Real Stable Audio 3 DiT (`DiffusionTransformer`/`ContinuousTransformer` in the real reference).
 /// Every formula here is transcribed directly from the real `stable_audio_3/models/dit.py` and
-/// `transformer.py` sources (see docs/057-stable-audio-3-implementation-plan.md's "Real DiT
+/// `transformer.py` sources (see docs/done/057-stable-audio-3-implementation-plan.md's "Real DiT
 /// forward-pass spec" section for the full derivation) against the real
 /// `stabilityai/stable-audio-3-small-music-base` checkpoint's resolved config: 20 layers, embed
 /// dim 1024, 16 heads (head_dim 64), `global_cond_type=adaLN`, `qk_norm=rms`, real RoPE (partial

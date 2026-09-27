@@ -53,7 +53,7 @@ In Python and C++, running modern local AI requires juggling 4–5 fragmented, h
 ## Installation
 
 ```bash
-dotnet add package OpenTail.Stingray --version 1.0.6
+dotnet add package OpenTail.Stingray
 ```
 
 ---
@@ -116,7 +116,7 @@ Console.WriteLine($"Synthesized {result.Duration.TotalSeconds:F2}s of audio to o
 
 ## Verification & Provenance
 
-Stingray rigorously validates models against real weight binary checkpoints on disk. See [`docs/048-model-provenance-and-real-weights-verification-plan.md`](docs/048-model-provenance-and-real-weights-verification-plan.md) for the complete provenance matrix and benchmark test runs.
+Stingray rigorously validates models against real weight binary checkpoints on disk. See [the verification status page](https://github.com/opentail-net/OpenTail.Stingray/blob/main/docs/STATUS.md) for the per-model status, confidence and dated evidence.
 
 ---
 

@@ -4,7 +4,7 @@
 
 FLUX.1-schnell's Vulkan GPU-resident path (`FluxDiT.ForwardGpu`/`FluxGpuWeights`/`FluxGpuWorkspace`,
 `src/OpenTail.Stingray.Diffusion/`) is **numerically correct** as of this handoff — both the
-long-standing "repeating tiled background" artifact (see `docs/056-flux-tiling-artifact-handoff.md`
+long-standing "repeating tiled background" artifact (see `docs/done/056-flux-tiling-artifact-handoff.md`
 Round 9) and an earlier NaN/black-image regression in the GPU-resident path itself are fixed and
 verified with real end-to-end runs producing clean, coherent, on-prompt images matching the real
 C++ reference's quality. **This is now a pure performance problem, not a correctness one.**
@@ -28,7 +28,7 @@ The entire ~8.6× gap is concentrated in the DiT loop; VAE decode and CLIP are a
 reference's speed.
 
 Full narrative and every number's provenance: `PerformanceLeague.md`'s FLUX section (search
-"granular stage profiling"), and `docs/056-flux-tiling-artifact-handoff.md`'s Round 9.
+"granular stage profiling"), and `docs/done/056-flux-tiling-artifact-handoff.md`'s Round 9.
 
 ## Hardware correction (important — read before optimizing)
 

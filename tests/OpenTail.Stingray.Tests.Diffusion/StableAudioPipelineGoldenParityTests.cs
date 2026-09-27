@@ -8,7 +8,7 @@ namespace OpenTail.Stingray.Tests.Diffusion;
 /// (multi-step Euler + real CFG/APG) → real VAE decode, compared against a golden run of the
 /// actual `stable_audio_3` Python reference driving the SAME real components with a fixed
 /// (non-random) starting latent for an exact, reproducible comparison -- see
-/// docs/057-stable-audio-3-implementation-plan.md. This is the one test in the suite that
+/// docs/done/057-stable-audio-3-implementation-plan.md. This is the one test in the suite that
 /// exercises every real component together in the same real order `StableAudioPipeline.Generate`
 /// does, rather than one component in isolation.
 ///

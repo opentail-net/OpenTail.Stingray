@@ -1,13 +1,15 @@
-# CLI option inventory — generated from source, classification complete
+# CLI option inventory — generated from source
 
 **Generated:** by `scripts/gen-cli-option-inventory.ps1`, which scans `[CommandOption]` /
-`[Description]` pairs under `src/OpenTail.Stingray.Cli`. Last regenerated **2026-09-01**, recording
-**197 option declarations** across 16 command files — the same count the
-`StaticPlanConfigurationTests` guard enforces against source. (Reconciled three rows of drift:
-`ImageCommand` gained `--umt5-encoder`/`--umt5-tokenizer` for Wan's real UMT5-XXL text encoder, and
-`TtsCommand` lost `--cfg` and gained `--backend` — caught by CI failing
-`CliOptionInventory_DeclaredCountMatchesSource`. New rows classified `stable`, matching every other
-encoder/tokenizer-path and backend-selection option in this table.)
+`[Description]` pairs under `src/OpenTail.Stingray.Cli`. Last regenerated **2026-09-27**, recording
+**209 option declarations** across 19 command files — the same count the
+`StaticPlanConfigurationTests` guard enforces against source. (Reconciled 12 rows of drift, caught
+by CI failing `CliOptionInventory_DeclaredCountMatchesSource` on `main`: three new commands —
+`AdmitArchCommand`, `GenVisionScaffoldCommand` and `PullCommand`, see `docs/061-coverage-tooling.md` —
+plus `ImageCommand`'s `--clip-g`. Six existing descriptions were refreshed from source. **The 12 new
+rows are unclassified**, as are 8 `ImageCommand` rows (`--control-image`, `--control-net`,
+`--control-strength`, `--init-image`, `--mask-image`, `--sampler`, `--strength`, `--video-frames`)
+that were already blank; they need the classification pass described below.)
 
 The tables below are no longer hand-maintained. Regenerate with the script rather than editing rows
 by hand; `-Check` exits non-zero when they are stale.
@@ -22,8 +24,8 @@ handles the ordinary single-line case. Re-running after the fix reproduced the s
 with all three descriptions now populated â a pure information gain, no row/count change.
 
 The **Class** column is hand classification, and the generator preserves existing values by command
-+ option name, so a regeneration never discards it. **Classification is now complete for every row**
-(see below) â this was the outstanding half of Phase 0 deliverable 1 of
++ option name, so a regeneration never discards it. **Classification was complete for every row
+as of 2026-09-01** (20 rows are blank now; see above) â this was the outstanding half of Phase 0 deliverable 1 of
 `04-quality-of-life-improvements-plan.md`, alongside the same pass on `env-var-inventory.md`.
 
 The declared source count is test-guarded by
@@ -67,6 +69,16 @@ count above is declarations, not distinct user-visible spellings.
 thing, the precedence between them is exactly what Â§7.3 must pin down â and today it is decided ad
 hoc at each read site rather than in one place.
 
+## AdmitArchCommand
+
+| Option | Class | Description |
+|---|---|---|
+| `--ctx-size <N>` |  |  |
+| `--model <PATH>` |  | GGUF to evaluate |
+| `--prompt <TEXT>` |  | Raw prompt to tokenize and greedy-decode (no chat template applied) |
+| `--reference-tokens <IDS>` |  | Comma-separated reference token ids (from llama.cpp or another oracle) to compare against, e.g. from `llama-server .../completion` with return_tokens:true |
+| `--tokens <N>` |  | Number of greedy tokens to generate |
+
 ## DoctorCommand
 
 | Option | Class | Description |
@@ -83,11 +95,18 @@ hoc at each read site rather than in one place.
 |---|---|---|
 | `--dimensions <N>` | stable | Matryoshka representation dimension reduction (e.g. 512, 768, 1536). |
 | `--file <PATH>` | stable | Optional path to text file containing input text or lines to embed. |
-| `--model <MODEL>` | stable | Embedding model name or GGUF path. Default: text-embedding-3-small. |
+| `--model <MODEL>` | stable | HF encoder checkpoint directory (config.json + model.safetensors + tokenizer.json), GGUF file, or ONNX file. |
 | `--no-norm` | stable | Disable unit L2 vector normalization. |
 | `--output <PATH>` | stable | Optional output file path to write embedding vectors as JSON. |
-| `--pooling <TYPE>` | stable | Sequence pooling strategy: mean (default), cls, or last. |
+| `--pooling <TYPE>` | stable | Sequence pooling: mean, cls, or last. Default: the model's own (sentence-transformers config or GGUF pooling_type). |
 | `--prompt <TEXT>` | stable | Input text prompt to embed into a dense semantic vector. |
+
+## GenVisionScaffoldCommand
+
+| Option | Class | Description |
+|---|---|---|
+| `--arch <NAME>` |  | Short architecture name, e.g. step3vl (used for the class/file name) |
+| `--mmproj <PATH>` |  | mmproj GGUF for the new architecture |
 
 ## ImageCommand
 
@@ -95,6 +114,7 @@ hoc at each read site rather than in one place.
 |---|---|---|
 | `--backend` | stable | (Z-Image) Force compute backend: auto (default), cuda, vulkan, cpu |
 | `--cfg-scale` | stable | Guidance scale — not used for Z-Image (distilled), 1.0 for FLUX schnell (default: auto) |
+| `--clip-g` |  | (SD3/3.5) Path to OpenCLIP-bigG encoder safetensors -- when given together with --clip-l and --vae, -m is read as the standalone MMDiT transformer safetensors (the standard diffusers multi-file layout) instead of a single combined checkpoint |
 | `--clip-l` | stable | (FLUX) Path to CLIP-L encoder safetensors |
 | `--clip-tokenizer` | stable | (FLUX) Path to CLIP tokenizer.json |
 | `--control-image` |  | Path to ControlNet condition hint image (Canny edge, depth map, openpose, etc.) |
@@ -172,7 +192,7 @@ hoc at each read site rather than in one place.
 |---|---|---|
 | `--backend` | stable | With -g -1, which GPU backend to score on: 'cuda' or 'vulkan'. Default: CUDA when present, else Vulkan. Needed on machines with both to gate the Vulkan path explicitly. |
 | `--batch-chunk-size` | expert | Tokens per Prefill() call in --batched mode (default: 256, matching the engine's STINGRAY_PREFILL_CHUNK default). Smaller chunks exercise more chunk-boundary KV-cache transitions; larger chunks are closer to a single-shot prompt. |
-| `--batched` | expert | Score every position through batched ForwardPass.Prefill (docs/cpu-prefill-plan.md §14) instead of token-by-token Forward. Default mode NEVER calls MatMulBatched, so it cannot see STINGRAY_CPU_PREFILL_Q8's effect at all -- this flag is required to actually measure that path's perplexity impact. Not supported with --tq, -g -1, or per-layer-head-dim models (those still fall back to sequential Forward inside PrefillCore); MoE models ARE supported and route through the batched per-expert FFN. Prompts are evaluated in --batch-chunk-size chunks so KV-cache truncation matches real multi-chunk prefill. |
+| `--batched` | expert | Score every position through batched ForwardPass.Prefill (docs/cpu-prefill-plan.md §14) instead of token-by-token Forward. Default mode NEVER calls MatMulBatched, so it cannot see STINGRAY_CPU_PREFILL_Q8's effect at all -- this flag is required to actually measure that path's perplexity impact. Not supported with --tq or -g -1; per-layer-head-dim (gemma-4) and MoE models ARE supported (MoE routes through the batched per-expert FFN). Prompts are evaluated in --batch-chunk-size chunks so KV-cache truncation matches real multi-chunk prefill. |
 | `--ctx-size` | stable | Number of tokens to evaluate (default: 2048). Clamped to the model context length and the corpus length. |
 | `--file` | stable | UTF-8 text file to evaluate (llama.cpp -f/--file). Tokenized raw (no chat template); the first -c tokens are scored. |
 | `--model` | stable | Path to GGUF model file |
@@ -181,13 +201,22 @@ hoc at each read site rather than in one place.
 | `--tq-mode` | stable | TurboQuant quantizer for --tq: auto (default: kvarn where supported, else lloydmax with a quality warning), kvarn (issue #180: 4-bit K / 2-bit V, 128-token tiles), or lloydmax (3-bit codebooks; severely degrades quality on QK-norm models such as Qwen3 — issue #432). |
 | `--tq-window` | expert | FP32 recent-token window before compression kicks in (default: 256; min 128 for kvarn — one full tile). Also sets the first position-bucket edge of the report, so pass the same value to the fp32 baseline for bucket-comparable numbers. |
 
+## PullCommand
+
+| Option | Class | Description |
+|---|---|---|
+| `--list` |  | List available .gguf files in the repo and exit, without downloading |
+| `--out <DIR>` |  | Destination directory (default: ./models) |
+| `--quant <SUBSTRING>` |  | Case-insensitive substring to pick among multiple .gguf files (e.g. Q4_K_M). Default: prefer Q4_K_M, then Q4_K_S, Q5_K_M, Q8_0, else the first listed. |
+| `--repo <REPO>` |  | Hugging Face repo id, e.g. bartowski/Qwen2.5-7B-Instruct-GGUF (a full https://huggingface.co/... URL also works) |
+
 ## RerankCommand
 
 | Option | Class | Description |
 |---|---|---|
 | `--document <TEXT>` | stable | Candidate document string (can be specified multiple times). |
 | `--file <PATH>` | stable | Optional file containing candidate documents (one per line). |
-| `--model <MODEL>` | stable | Reranker model name or GGUF path. Default: bge-reranker-large. |
+| `--model <MODEL>` | stable | HF cross-encoder checkpoint directory (*ForSequenceClassification), or a GGUF embedding model (bi-encoder cosine). |
 | `--output <PATH>` | stable | Optional output file path to write reranked results as JSON. |
 | `--query <TEXT>` | stable | Search query to rank candidate documents against. |
 | `--top-n <N>` | stable | Number of top most relevant documents to return. |
@@ -319,8 +348,8 @@ hoc at each read site rather than in one place.
 |---|---|---|
 | `--input <PATH>` | stable | Input 16kHz WAV audio file path for Speech-to-Text transcription or translation. |
 | `--language <LANG>` | stable | Spoken language code (e.g. en, es, fr, de, zh, ja). Default: auto/en. |
-| `--model <VARIANT>` | stable | Whisper model architecture preset: tiny (default), base, small, medium, large-v3, or turbo. |
-| `--model-file <PATH>` | stable | Path to a whisper.cpp GGML .bin checkpoint with real weights. If omitted, a file matching --model's preset name is searched for under ./models (e.g. ggml-tiny.bin); if none is found, the pipeline runs with untrained placeholder weights and a warning is printed. |
+| `--model <VARIANT>` | stable | Whisper model architecture preset: tiny (default), base, small, medium, large-v3, or turbo; or voxtral. |
+| `--model-file <PATH>` | stable | Path to a whisper.cpp GGML .bin checkpoint with real weights, or a voxtral model directory. If omitted, searched for under ./models. |
 | `--no-timestamps` | stable | Disable timestamp-aligned subtitle segment generation. |
 | `--output <PATH>` | stable | Optional output file path to write the transcribed text or subtitle segments. |
 | `--task <TASK>` | stable | ASR task: 'transcribe' (default) or 'translate' (translate to English). |

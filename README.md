@@ -208,12 +208,13 @@ no file paths, and a one-line C# API.
 ## Building from source
 
 ```bash
-git clone https://github.com/<you>/OpenTail.Stingray && cd OpenTail.Stingray
+git clone https://github.com/opentail-net/OpenTail.Stingray && cd OpenTail.Stingray
 dotnet build -c Release
 dotnet run --project samples/QuickStart -c Release -- chat models/qwen2.5-0.5b-instruct-q4_k_m.gguf "Hello"
 ```
 
-Architecture and design notes live in [docs/](docs/); contributors should read
+The [documentation index](docs/README.md) sorts `docs/` into user guides, design notes and active
+engineering work; contributors should read
 [CLAUDE.md](CLAUDE.md) for the build and test conventions.
 
 ## License

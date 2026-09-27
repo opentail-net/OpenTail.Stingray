@@ -9,7 +9,7 @@ namespace OpenTail.Stingray.Vision;
 /// <c>clip_graph_llama4::build()</c> plus the shared <c>clip_graph::build_vit</c>/
 /// <c>build_attn</c>/<c>build_ffn</c>/<c>build_rope_2d</c> helpers in <c>tools/mtmd/clip.cpp</c>),
 /// verified against the real <c>models/mmproj-llama-4-scout-17b-16e-instruct-f16.gguf</c> -- see
-/// docs/06-llama4-vision-plan.md.
+/// docs/done/06-llama4-vision-plan.md.
 ///
 /// <para>Distinctive relative to <see cref="Gemma4VVisionEncoder"/>/<see cref="Gemma3VisionEncoder"/>:
 /// a real [CLS] token (concatenated after patch embed, dropped again before the merger), a
@@ -42,7 +42,7 @@ namespace OpenTail.Stingray.Vision;
 /// llama.cpp's own multi-tile ("llava-uhd") preprocessing -- deciding how many tiles a source
 /// image needs, slicing it, and interleaving tile-boundary tokens in the prompt -- is explicitly
 /// out of scope, same precedent as decoder splice (Phase V4) being out of scope for the other two
-/// encoders. See docs/06-llama4-vision-plan.md.</para>
+/// encoders. See docs/done/06-llama4-vision-plan.md.</para>
 ///
 /// <para><b>Unverified end-to-end</b>: sourced from the real reference graph and the real mmproj's
 /// tensor/metadata inventory, not inferred, but there is no working oracle on this machine to run

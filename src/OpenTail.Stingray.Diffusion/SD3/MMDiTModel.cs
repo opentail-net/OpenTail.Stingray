@@ -993,7 +993,7 @@ public sealed class MMDiTModel : IDisposable
             // norm_hidden_states2 here, NOT recompute it later at the attn2 call site: by then `x`
             // has already been mutated by the first attention's residual (below), so a fresh
             // ModulateNorm(x, ...) there would normalize the WRONG (post-residual) input -- a real
-            // bug this port had (see docs/057-sd35-performance-handoff.md's open "does gate_msa2
+            // bug this port had (see docs/done/057-sd35-performance-handoff.md's open "does gate_msa2
             // really apply..." lead; the actual bug was WHICH input gets normalized, not the gate).
             if (dualAttn)
                 ModulateNorm(x.AsSpan(0, numImgTokens * HiddenSize), ws.NormedImg2.AsSpan(0, numImgTokens * HiddenSize), ws.ImgMod.AsSpan(0, imgModChunks * HiddenSize), 6, numImgTokens, HiddenSize);

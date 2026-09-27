@@ -145,7 +145,7 @@ public static class HuggingFaceTokenizerSource
             // 2026-09-02 porting Stable Audio 3's T5Gemma text conditioner: this loader accepted
             // T5Gemma's real tokenizer.json as BPE and silently produced wrong token ids, confirmed
             // by diffing against real `transformers`-tokenized ids for the same prompt -- see
-            // docs/057-stable-audio-3-implementation-plan.md's "T5Gemma tokenizer" section).
+            // docs/done/057-stable-audio-3-implementation-plan.md's "T5Gemma tokenizer" section).
             // `GgufTokenizer` already implements this exact space<->'▁' substitution correctly for
             // any `ModelFamily` in `{gemma, gemma2, gemma3, gemma4, llama}` (the `_isSpmBpe` path,
             // built for GGUF-sourced Gemma/Llama SPM vocabularies) -- routing a detected HF export

@@ -8,7 +8,7 @@ namespace OpenTail.Stingray.Diffusion.Flux2;
 /// multi-reference image conditioning without coordinate collision.
 /// Reference: examples/flux2/src/flux2/model.py's real `rope`/`apply_rope`/`EmbedND` (confirmed
 /// in-repo 2026-09-18; axes_dim=[32,32,32,32], theta=2000 -- NOT FLUX.1's 3-axis/10000 scheme,
-/// see docs/087-flux2-implementation-plan.md for the full derivation). The rotation convention
+/// see docs/done/087-flux2-implementation-plan.md for the full derivation). The rotation convention
 /// itself (interleaved adjacent pairs, `reshape(..., -1, 1, 2)` in `apply_rope`) matches FLUX.1's,
 /// so the existing <see cref="InterleavedRoPE"/> helper is reused unchanged -- only the axis count
 /// (3 -> 4) and per-axis theta differ.

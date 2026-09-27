@@ -175,7 +175,7 @@ public sealed class Flux2DiT : IDisposable
             throw new NotSupportedException(
                 "Flux2DiT.Forward: reference-image conditioning is not yet implemented -- the real " +
                 "reference-token-isolation attention (causal_attn_fn) is a documented gap, see " +
-                "docs/087-flux2-implementation-plan.md. Running the plain no-ref data flow on " +
+                "docs/done/087-flux2-implementation-plan.md. Running the plain no-ref data flow on " +
                 "reference-image input would silently produce a wrong result instead of failing loudly.");
         }
 

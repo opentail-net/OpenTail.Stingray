@@ -5,7 +5,7 @@ namespace OpenTail.Stingray.Audio.MusicGen;
 /// Weight loader for MusicGen's decoder-only LM (the actual autoregressive Transformer over
 /// audio codebook tokens), from musicgen-small's own `model.safetensors`
 /// (`decoder.*` prefix). Real tensor names confirmed against the checkpoint's own safetensors
-/// header (2026-09-02, see docs/062-musicgen-implementation-plan.md) -- standard OPT/Bart-style
+/// header (2026-09-02, see docs/done/062-musicgen-implementation-plan.md) -- standard OPT/Bart-style
 /// pre-norm decoder layer: separate un-biased Q/K/V/O for both self- and cross-attention, plain
 /// `fc1`/`fc2` FFN (GELU, un-biased), LayerNorm (WITH bias, unlike T5's bias-free RMSNorm) before
 /// each sub-block. One embedding table AND one output head PER codebook (4 of each) -- MusicGen

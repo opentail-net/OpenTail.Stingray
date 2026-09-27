@@ -58,6 +58,11 @@ jobs:
       # Discovery does not depend on fixtures or hardware being present -- those only change
       # pass/skip. All floors below are measured discovery counts (not [Fact]/[Theory] method
       # counts, which undercounts Theory expansion), each `dotnet test` run standalone.
+      #
+      # Sessions.Fast: floor lowered 300 -> 100 on 2026-09-27. Commit 284a1926 (2026-08-27, "Delete
+      # InferenceSession/InferenceRuntime, superseded by HotSession") deleted 22 test files (283 test
+      # attributes) together with the API they covered, leaving 127 discovered tests. The floor was not
+      # adjusted then; main CI has not been green since 2026-08-26.
       - name: CPU-safe test suites
         run: |
           dotnet test tests/OpenTail.Stingray.Tests.Core/OpenTail.Stingray.Tests.Core.csproj -c Release --no-restore -- --minimum-expected-tests 450
@@ -66,5 +71,5 @@ jobs:
           dotnet test tests/OpenTail.Stingray.Tests.Cli/OpenTail.Stingray.Tests.Cli.csproj -c Release --no-restore -- --minimum-expected-tests 300
           dotnet test tests/OpenTail.Stingray.Tests.Vision/OpenTail.Stingray.Tests.Vision.csproj -c Release --no-restore -- --minimum-expected-tests 55
           dotnet test tests/OpenTail.Stingray.Tests.Server.Fast/OpenTail.Stingray.Tests.Server.Fast.csproj -c Release --no-restore -- --minimum-expected-tests 200
-          dotnet test tests/OpenTail.Stingray.Tests.Sessions.Fast/OpenTail.Stingray.Tests.Sessions.Fast.csproj -c Release --no-restore -- --minimum-expected-tests 300
+          dotnet test tests/OpenTail.Stingray.Tests.Sessions.Fast/OpenTail.Stingray.Tests.Sessions.Fast.csproj -c Release --no-restore -- --minimum-expected-tests 100
           dotnet test tests/OpenTail.Stingray.Tests.ForwardPass.Fast/OpenTail.Stingray.Tests.ForwardPass.Fast.csproj -c Release --no-restore -- --minimum-expected-tests 480

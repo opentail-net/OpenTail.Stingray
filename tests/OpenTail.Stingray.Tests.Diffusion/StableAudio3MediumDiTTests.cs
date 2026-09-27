@@ -6,7 +6,7 @@ namespace OpenTail.Stingray.Tests.Diffusion;
 
 /// <summary>
 /// First real-weight smoke test for Stable Audio 3 Medium's DiT (<see cref="StableAudioMediumDiT"/>),
-/// the real differential-attention variant -- see docs/057-stable-audio-3-implementation-plan.md's
+/// the real differential-attention variant -- see docs/done/057-stable-audio-3-implementation-plan.md's
 /// "Medium — real archaeology" section. Real weights (9.22GB `model.safetensors`), synthetic
 /// (real-shaped) condition tokens -- no real T5Gemma/VAE wiring yet (Sprint 4's own exit criterion
 /// per docs/065: "latent generation only, no audio yet is fine at this stage"). Non-degeneracy

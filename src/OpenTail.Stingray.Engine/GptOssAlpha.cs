@@ -7,7 +7,7 @@ namespace OpenTail.Stingray.Engine;
 // ggml_soft_max_add_sinks, examples/ggml/src/ggml-cpu/ops.cpp:5541-5551; the OAI SwiGLU variant
 // -- ggml_swiglu_oai, examples/ggml/src/ggml-cuda/unary.cuh:107-114; select-then-softmax MoE
 // gating -- LAMA_EXPERT_GATING_FUNC_TYPE_SOFTMAX_WEIGHT, llama-graph.cpp:1970-1973/2048-2053).
-// See docs/060-gpt-oss-implementation-plan.md for the full plan and the architecture-mapping
+// See docs/done/060-gpt-oss-implementation-plan.md for the full plan and the architecture-mapping
 // table (what's genuinely new vs. already-implemented elsewhere in this codebase).
 //
 // NO real gpt-oss GGUF was loaded while writing this -- a download was started in the background
