@@ -530,16 +530,15 @@ Move a document or section to [done](done) when its outcome is implemented and v
 measured negative result closes that line of investigation. Add a banner saying what closed and what
 carried forward. Keep active documents short: decision, remaining work, acceptance evidence, links.
 
-## Gemma 4 batched-prefill (not started)
+## Gemma 4 batched-prefill (CLOSED 2026-09-27, was stale as "not started" — see below)
 
 Scoped 2026-09-10 after `PerformanceLeague.md`'s C++ backfill measured Gemma 4 CPU prefill at
-0.12-0.13x of llama.cpp on both E4B and 12B — the missing-batched-prefill gap
-(`perLayerHdUnsupported`) confirmed on a second model size, not just the original one. Real fix
-requires teaching `PrefillCoreAttention` five things it doesn't do today (per-layer head-dim
-indexing, per-layer KV-source sharing, `attention_k_eq_v`, per-head V-norm, sliding-window
-masking) — not a quick patch; a prior attempt to force the existing batched path
-(`STINGRAY_PER_LAYER_HD_PREFILL=1`) crashed with `AccessViolationException`, not just wrong output.
-See [070-gemma4-batched-prefill-plan.md](070-gemma4-batched-prefill-plan.md) for the full plan.
+0.12-0.13x of llama.cpp on both E4B and 12B. This actually landed 2026-09-16 (`65e0ff1`, `04cf856`):
+`PrefillCore` now handles per-layer head-dim indexing, per-layer KV-source sharing,
+`attention_k_eq_v`, per-head V-norm and sliding-window masking (verified in
+`ForwardPass.PrefillCore.cs` today), and Gemma-4-12B-it CPU prefill measures **1.02x** of llama.cpp
+(28.5 t/s, an 8.14x speedup) in `PerformanceLeague.md`. See
+[done/070-gemma4-batched-prefill-plan.md](done/070-gemma4-batched-prefill-plan.md).
 
 ## Bugs found during the 2026-09-10/11 PerformanceLeague model sweep (not started)
 

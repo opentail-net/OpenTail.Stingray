@@ -1,3 +1,10 @@
+> **CLOSED 2026-09-27.** All 5 engines resolved: Chatterbox-Turbo/CosyVoice3/F5-TTS/Parler-TTS are
+> DONE with `--backend vulkan` wired and verified in code (`TtsCommand.cs` §1 dispatch;
+> `ParlerFullPipeline.Load`'s `backend` param confirmed threaded into `T5Encoder.Forward` today);
+> FishSpeech S2 Pro is deliberately declined with a real structural reason recorded in its own
+> section (frequent tiny-tensor dual-AR calls, not a GPU-favorable shape on any hardware). No item
+> left in an undecided state.
+
 # 052 — Vulkan GPU backend as an explicit `--backend` option for the slow-tail TTS engines
 
 ## User instruction (verbatim intent, recorded so this isn't second-guessed later)
