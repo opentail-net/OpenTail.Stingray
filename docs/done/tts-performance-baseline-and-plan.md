@@ -1,3 +1,10 @@
+> **ARCHIVED 2026-09-27.** Closed: the follow-up rounds happened but were never written back here.
+> QwenTTS Turn 2 (e2d42f1, 2.15x), the all-engine audio pass (ce6a914, 2026-09-05) and an optional
+> Vulkan backend for CosyVoice3's DiT (e2dd46f, item 5 below). STATUS's TTS table, re-measured
+> 2026-09-25, has QwenTTS at 2.86x RTF (was 6.64x) and CosyVoice3 at 4.24x (was 8.66x). One lever
+> was never tried: CosyVoice3's ODE step count (item 2) is still 10 everywhere. Carried forward: see
+> "Carried forward from docs archived 2026-09-27" in [../00-current-work.md](../00-current-work.md).
+
 # TTS performance: baseline + improvement plan (QwenTTS, CosyVoice3)
 
 **Measured:** 2026-08-29, CPU backend (no CUDA/Vulkan involved), prompt
@@ -21,7 +28,7 @@ one-offs.
 ## What the numbers already tell us
 
 - Both pipelines log `OpenBLAS: not found (fallback to sequential)` at startup. This is
-  **expected, not a bug** — see [docs/done/openblas-elimination-findings-2026-08-20.md](done/openblas-elimination-findings-2026-08-20.md):
+  **expected, not a bug** — see [docs/done/openblas-elimination-findings-2026-08-20.md](../done/openblas-elimination-findings-2026-08-20.md):
   OpenBLAS was deliberately removed from the source tree because it measured strictly worse than
   this codebase's own SIMD kernels on every shape tested. Don't reintroduce it as a "fix."
 - CosyVoice3 is slower in both absolute time and RTF than QwenTTS, despite producing only

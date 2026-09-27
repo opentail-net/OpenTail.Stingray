@@ -49,7 +49,7 @@ weight matrix (Q4_K, Q6_K, ...) has to be fully dequantized into a scratch F32 b
 extra read-and-write pass over the entire tensor — *before* `cblas_sgemm` ever runs, and this
 dequant is redone from scratch on every single call; nothing about it is cached across calls in a
 way that amortizes. Prefill on this hardware is bandwidth-bound, not compute-bound (see
-`docs/cpu-performance-baseline.md`), so a mandatory extra full-tensor memory pass is exactly the
+`docs/done/cpu-performance-baseline.md`), so a mandatory extra full-tensor memory pass is exactly the
 wrong trade. The specialized kernels dequantize in registers, in the same pass as the dot product,
 with no scratch buffer and no second read of the weight matrix. BLAS cannot win a bandwidth-bound
 race it enters with a bandwidth handicap.

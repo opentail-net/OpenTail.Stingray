@@ -41,7 +41,7 @@ public sealed class PreTokenizerParityTests
         { "olmo", 50304, new[] { 11808, 1249, 16767, 25025, 2270, 285, 5976, 15 } },
         // Llama-3 family (orpheus-3b-0.1-ft, a Llama-3-tokenizer TTS checkpoint). llama.cpp:
         // LLAMA_VOCAB_PRE_TYPE_LLAMA3. Was unverified against a real model until this row — see
-        // docs/01-gguf-model-coverage-plan.md §3 remaining-work item 2. Reference captured with
+        // docs/done/01-gguf-model-coverage-plan.md §3 remaining-work item 2. Reference captured with
         // tools/llama.cpp/llama-tokenize.exe build b8585-cpu.
         { "llama-bpe", 156940, new[] { 9370, 220, 4513, 10961, 16474, 15, 323, 220, 2983, 13 } },
         // Qwen-3.5 family (Qwen3.8-27B-UD-Q3_K_XL). llama.cpp: LLAMA_VOCAB_PRE_TYPE_QWEN2 variant

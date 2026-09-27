@@ -104,7 +104,7 @@ near-correctly) chosen tokens still produce recognizable speech.
 
 ## What's NOT yet been tried (the natural next steps, in priority order)
 
-This project's own methodology (documented in `docs/qwentts-cosyvoice3-handoff.md`,
+This project's own methodology (documented in `docs/done/qwentts-cosyvoice3-handoff.md`,
 proven effective for a structurally similar bug in a sibling pipeline,
 QwenTTS's Talker LM) is:
 

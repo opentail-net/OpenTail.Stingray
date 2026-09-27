@@ -83,7 +83,7 @@ public static unsafe class VisionOps
     /// <c>GetTensorPtr&lt;Half&gt;</c> + <c>MatVecF16</c> pair: those threw away the tensor's actual
     /// dtype and handed callers a pointer blindly cast to a fixed CLR type, which is how a
     /// Q8_0-quantized mmproj got silently reinterpreted as raw F16 and corrupted memory (see
-    /// docs/done/vl-untested-code-findings-2026-08-20.md and docs/vl-migration-plan-2026-08-20.md).
+    /// docs/done/vl-untested-code-findings-2026-08-20.md and docs/done/vl-migration-plan-2026-08-20.md).
     /// Pair this with <see cref="MatVecAny"/>, which dispatches on the returned dtype instead of
     /// assuming one — the same pattern <c>OpenTail.Stingray.Cpu.SimdKernels.MatVec</c> already uses
     /// for the main LLM engine. Every vision encoder's matmul-bound weights (attention/FFN/proj) now
@@ -1316,7 +1316,7 @@ public static unsafe class VisionOps
     /// aliases. Only used for <c>float</c> now (norm/bias tensors, read element-wise rather than
     /// matvec'd, genuinely always F32 in real mmproj files) -- matmul-bound weights (attention/FFN/
     /// proj) go through <see cref="GetTensor"/> + <see cref="MatVecAny"/> instead, which carry the
-    /// tensor's real dtype end-to-end (see docs/vl-migration-plan-2026-08-20.md).
+    /// tensor's real dtype end-to-end (see docs/done/vl-migration-plan-2026-08-20.md).
     /// </summary>
     /// <exception cref="NotSupportedException">
     /// The tensor was found under one of <paramref name="candidateNames"/> but its actual GGUF

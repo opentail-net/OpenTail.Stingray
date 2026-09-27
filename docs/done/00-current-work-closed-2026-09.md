@@ -142,7 +142,7 @@ that is more elegant but lower-visibility.
    every numeric stage checked real, this is likely a genuine subtle bug, not a missing feature —
    next real step is a stage-by-stage numeric diff against the real CosyVoice3 Python/C++
    reference (speaker embedding, prompt/speech tokens, DiT mel output), not further structural
-   re-verification. See `docs/qwentts-cosyvoice3-handoff.md` §2 for the full history.
+   re-verification. See `docs/done/qwentts-cosyvoice3-handoff.md` §2 for the full history.
 
 4. **LTX-Video — core port and performance pass complete; trajectory convergence pending** (2026-09-01).
    All individual architecture blocks are implemented, performant, and pass golden numeric parity
@@ -152,7 +152,7 @@ that is more elegant but lower-visibility.
    - T5-v1.1-XXL text encoder (`T5Encoder.cs`) & exact Unigram SentencePiece tokenizer.
    - Measured performance pass landed: 12.5% faster DiT forward, 1.93x faster VAE decode.
    - **Remaining Multi-Step Convergence Gaps** (separate milestone, see
-     [055-ltx-video-implementation-plan.md](../055-ltx-video-implementation-plan.md)): end-to-end visual
+     [055-ltx-video-implementation-plan.md](055-ltx-video-implementation-plan.md)): end-to-end visual
      smoke test (`ltx_test_apple_512.png`) shows clear prompt semantic adherence but high-contrast/
      dither artifacts. Requires step-by-step multi-step Euler trajectory oracle diffing against
      reference `pipeline_ltx_video.py`, VAE spatial noise gating, and CFG guidance rescaling.
@@ -1229,7 +1229,7 @@ gate ordering (`gate_msa2` applying to `attn2` vs `attn`), the QK-RMSNorm per-he
 attention itself. None of the five bugs already fixed were ever golden-verified against a numpy
 reference (only structurally reasoned + crash-driven), unlike this project's usual bar. **Next real
 step is the same block-by-block diffusers-reference numeric diff methodology used for LTX-Video/FLUX
-(`docs/055-ltx-video-implementation-plan.md`/`docs/done/056-flux-tiling-artifact-handoff.md`), not further
+(`docs/done/055-ltx-video-implementation-plan.md`/`docs/done/056-flux-tiling-artifact-handoff.md`), not further
 performance work.** See `docs/done/057-sd35-performance-handoff.md` for the full, current handoff.
 
 `Sd3Pipeline`/`MMDiTModel` were real, non-stubbed ports that had literally never been run against

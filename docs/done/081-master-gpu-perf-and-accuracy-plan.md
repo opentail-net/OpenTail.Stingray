@@ -815,11 +815,11 @@ the doc before starting, don't re-derive from scratch:
       (partially done: real 2.3-2.5× win already landed and independently verified; remaining gap
       to the 99.8s C++ reference target still open, T5-XXL GPU residency done, see docs/071).
 - [ ] `docs/071-flux-t5xxl-gpu-residency-plan.md` — done (T5-XXL GPU residency landed, committed).
-- [ ] `docs/072-wan21-gpu-kernel-tuning-plan.md` + `docs/073-wan21-kernel-fusion-and-qkv-plan.md` —
+- [ ] `docs/done/072-wan21-gpu-kernel-tuning-plan.md` + `docs/073-wan21-kernel-fusion-and-qkv-plan.md` —
       Wan DiT GPU kernel tuning (real progress landed: GPU now faster than CPU per-block; **but see
       Priority 0 above — this is now moot until Wan's real correctness bug is fixed**, since a
       faster wrong answer is not progress).
-- [x] `docs/074-wan21-umt5-gpu-residency-plan.md` — **confirmed DONE 2026-09-14**: `UMT5GpuWeights.cs`,
+- [x] `docs/done/074-wan21-umt5-gpu-residency-plan.md` — **confirmed DONE 2026-09-14**: `UMT5GpuWeights.cs`,
       `UMT5GpuWorkspace.cs`, and `UMT5Encoder.InitGpu`/`EncodeGpu` all exist as real files (not the
       plan doc's own not-yet-done template code). `UMT5GpuParityTests.UMT5Encoder_EncodeGpu_
       MatchesCpuReference_Numerically` (real 24-layer/dim=4096 shapes, synthetic-but-structurally-
@@ -829,13 +829,13 @@ the doc before starting, don't re-derive from scratch:
       GPU` log line on every run). The plan doc itself (`docs/074`) was never updated to reflect
       this — it still reads as a not-yet-started template; leaving it as historical context but
       marking this checklist item done here instead of editing it.
-- [ ] `docs/075-zimage-turbo-gpu-residency-plan.md` — Z-Image-Turbo DiT, not yet started. Real flag:
+- [ ] `docs/done/075-zimage-turbo-gpu-residency-plan.md` — Z-Image-Turbo DiT, not yet started. Real flag:
       unverified RoPE pairing convention (check before reusing `Flux2DRoPE`), tanh-gated/shift-less
       AdaLN convention differs from FLUX/Wan.
-- [ ] `docs/076-sd35-medium-gpu-residency-plan.md` — SD3.5-medium MMDiT, not yet started. Real
+- [ ] `docs/done/076-sd35-medium-gpu-residency-plan.md` — SD3.5-medium MMDiT, not yet started. Real
       flag: `headDim=64` (use `MultiHeadAttentionTiled`, not the 128 variant), absolute sincos
       pos-embed (no RoPE convention risk), same AdaLN convention as FLUX (most direct reuse).
-- [ ] `docs/077-ltx-video-gpu-residency-plan.md` — LTX-Video's separate correctness bug ("only 1 of
+- [ ] `docs/done/077-ltx-video-gpu-residency-plan.md` — LTX-Video's separate correctness bug ("only 1 of
       6 runs ever produced a coherent image") **partially fixed 2026-09-14, still OPEN overall —
       do not mark this done**: `TimestepEmbedder` (DiT) and `TimestepEmbedMlp` (VAE decoder) both
       called `SinusoidalTimestepEmbedding` without `flipSinToCos: true`, using the wrong `[sin,cos]`

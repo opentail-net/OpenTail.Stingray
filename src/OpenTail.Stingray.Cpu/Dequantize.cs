@@ -694,7 +694,7 @@ public static class Dequantize
     private static void DequantF16(ReadOnlySpan<byte> src, Span<float> dst, long elementCount)
     {
         // Real fix (2026-09-12): this was a scalar per-element loop, the exact same bug found and
-        // fixed in SafetensorsLoader.ReadF32's F16 case (docs/068-sdxl-cpu-side-overhead-plan.md's
+        // fixed in SafetensorsLoader.ReadF32's F16 case (docs/done/068-sdxl-cpu-side-overhead-plan.md's
         // Stage A1) -- real profiling there measured a 4.7x speedup and byte-identical output from
         // switching to TensorPrimitives.ConvertToSingle. This is the GGUF-side equivalent, used by
         // every F16 GGUF checkpoint's weight dequant in this whole codebase (LLMs, vision, audio,

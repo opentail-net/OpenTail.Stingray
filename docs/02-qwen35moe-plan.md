@@ -8,7 +8,7 @@
 > **Extended 2026-08-28:** a second, larger, independent receipt — Qwen3.8-27B UD-Q3_K_XL (hybrid
 > GDN + MoE + MTP, not just dense-ish like Ornith), FULL 24-token exact greedy match against
 > llama.cpp. Also drove the IQ2_XS/IQ2_S dequant-format port — see
-> [01-gguf-model-coverage-plan.md](01-gguf-model-coverage-plan.md) §2 and the `qwen35` entry in
+> [01-gguf-model-coverage-plan.md](done/01-gguf-model-coverage-plan.md) §2 and the `qwen35` entry in
 > `ModelCompatibility.cs`.
 
 # Qwen3.5 MoE / Gated DeltaNet — current work

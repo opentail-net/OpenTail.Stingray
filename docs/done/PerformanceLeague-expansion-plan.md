@@ -1,3 +1,12 @@
+> **ARCHIVED 2026-09-27.** Closed except for blocked measurements. Two open items were overtaken:
+> HunyuanVideo now runs (STATUS 🟢, `PerformanceLeague.md` rows from 2026-09-24/25), and the fake
+> `stingray embed` GGUF path is gone (`EmbeddingEngine.ComputeEmbeddingVector` and
+> `BertGgufEmbeddingPipeline` no longer exist; embeddings are the verified `TransformerEncoder`, STATUS
+> 2026-09-25). Still unmeasured: Pixtral 12B and GLM-4.6V timings (every GGUF mirror is gated, needs an
+> `HF_TOKEN` with the licence accepted) and the LLaVA-NeXT/OneVision, GLM-4V/OCR, Hunyuan-VL and
+> Llama 4 vision bucket. Carried forward: see "Carried forward from docs archived 2026-09-27" in
+> [../00-current-work.md](../00-current-work.md).
+
 # PerformanceLeague expansion plan — README coverage claims
 
 **Why this exists:** `README.md`'s "What actually works today" matrix and feature list claim

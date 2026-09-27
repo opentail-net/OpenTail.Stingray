@@ -10,7 +10,7 @@ namespace OpenTail.Stingray.Tests.Diffusion;
 /// `models/ltx-t5/`, config-confirmed: 24 layers, d_model=4096, 64 heads, matching
 /// <see cref="T5Encoder"/>'s existing hardcoded constants exactly). This is the same encoder
 /// architecture family this project already built for FLUX -- LTX just needed the real weights
-/// wired up, per docs/055-ltx-video-implementation-plan.md step 6.
+/// wired up, per docs/done/055-ltx-video-implementation-plan.md step 6.
 /// </summary>
 public sealed class LtxT5EncoderGoldenParityTests
 {

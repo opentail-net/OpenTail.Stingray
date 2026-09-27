@@ -2592,7 +2592,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         // uses its own text (DotsOcr/Granite4 = "<image_pad>", InternVL = "<IMG_CONTEXT>", etc.).
         // Hardcoding "<|image|>" for all of them meant the substituted text tokenized back to
         // ordinary characters instead of the model's real placeholder token id, so the later
-        // placeholder-count check always found 0 -- see docs/vl-migration-plan-2026-08-20.md.
+        // placeholder-count check always found 0 -- see docs/done/vl-migration-plan-2026-08-20.md.
         int markerCount = CountOccurrences(s.Prompt!, ImageMarker);
         string userMsg;
         if (markerCount == 0)

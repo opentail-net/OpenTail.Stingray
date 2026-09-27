@@ -9,7 +9,7 @@ namespace OpenTail.Stingray.Diffusion.LTXVideo;
 /// BasicTransformerBlock, CrossAttention, AdaLayerNormSingle, PixArtAlphaTextProjection).
 ///
 /// Tensor shapes below verified directly against `ltx-video-2b-v0.9.1.safetensors`'s own
-/// safetensors JSON header (see docs/055-ltx-video-implementation-plan.md) -- config is read FROM
+/// safetensors JSON header (see docs/done/055-ltx-video-implementation-plan.md) -- config is read FROM
 /// the checkpoint (<see cref="DetectConfig"/>), not hardcoded, matching this project's own
 /// established convention (<c>WanModel.DetectConfig</c>).
 ///

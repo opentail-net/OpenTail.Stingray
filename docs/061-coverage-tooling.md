@@ -77,7 +77,7 @@ What it does, in order:
 
 What it does **not** do: it cannot manufacture the reference token sequence itself (no independent
 oracle lives in this repo — that's what makes the comparison trustworthy) or evaluate license
-bucket (bucket-1 permissive vs. bucket-2, see `docs/01-gguf-model-coverage-plan.md`'s "License
+bucket (bucket-1 permissive vs. bucket-2, see `docs/done/01-gguf-model-coverage-plan.md`'s "License
 policy: code vs. checkpoint" — that's still a human judgment call before committing a permanent
 parity test).
 

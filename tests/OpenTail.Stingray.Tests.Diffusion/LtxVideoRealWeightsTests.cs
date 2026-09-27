@@ -48,7 +48,7 @@ public sealed class LtxVideoRealWeightsTests
 
     /// <summary>Checks `LtxVideoModel.DetectConfig` against the real v0.9.1 checkpoint's own tensor
     /// shapes (verified directly against the safetensors JSON header --
-    /// docs/055-ltx-video-implementation-plan.md's tensor inventory).</summary>
+    /// docs/done/055-ltx-video-implementation-plan.md's tensor inventory).</summary>
     [Fact]
     public void LtxVideo_RealModelFile_DetectConfigMatchesKnownArchitecture()
     {

@@ -158,7 +158,7 @@ numeric diff (item 4) would localize quickly.
    element ordering the attention scoring code expects.
 4. **A numeric golden-parity pass against real diffusers**, one block at a time (img_in → first
    double block → first single block → final_layer), the same discipline
-   `docs/055-ltx-video-implementation-plan.md` used for LTX-Video. This is the most thorough and
+   `docs/done/055-ltx-video-implementation-plan.md` used for LTX-Video. This is the most thorough and
    most expensive option — only worth it if 1-3 above don't turn up the cause, since it requires
    running the real HuggingFace `diffusers` FLUX pipeline locally (Python, needs its own
    environment) to capture reference intermediate tensors.

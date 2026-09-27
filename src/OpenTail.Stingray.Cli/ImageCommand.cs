@@ -1446,7 +1446,7 @@ public sealed class ImageCommand : Command<ImageCommand.Settings>
 
         // Auto-detect a `<models>/ltx-t5/text_encoder` + `tokenizer/tokenizer.json` pair sitting
         // alongside the model directory (this project's own local download convention -- see
-        // docs/055-ltx-video-implementation-plan.md step 6) for real T5-v1.1-XXL text conditioning;
+        // docs/done/055-ltx-video-implementation-plan.md step 6) for real T5-v1.1-XXL text conditioning;
         // falls back to placeholder conditioning if absent.
         string? modelsDir = Path.GetDirectoryName(Path.GetFullPath(modelPath));
         string? textEncoderDir = modelsDir is null ? null : Path.Combine(modelsDir, "ltx-t5", "text_encoder");

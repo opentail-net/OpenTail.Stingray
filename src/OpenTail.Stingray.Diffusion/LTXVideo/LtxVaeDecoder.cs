@@ -11,7 +11,7 @@ namespace OpenTail.Stingray.Diffusion.LTXVideo;
 /// `LTXVideoDecoder3d` unconditionally builds a `mid_block` (none exists here), and combines each
 /// stage's resnets+upsample into one class instance instead of the real, separate `res_x` /
 /// `compress_all` blocks this checkpoint's own tensor names show (`up_blocks.{0,2,4,6}.res_blocks.*`
-/// vs. `up_blocks.{1,3,5}.conv.*`) -- see docs/055-ltx-video-implementation-plan.md for the full
+/// vs. `up_blocks.{1,3,5}.conv.*`) -- see docs/done/055-ltx-video-implementation-plan.md for the full
 /// investigation. The real per-stage architecture below is read directly from THIS checkpoint's own
 /// embedded `__metadata__["config"]["vae"]["decoder_blocks"]` JSON (confirmed, not inferred):
 /// <c>[["res_x",{"num_layers":5,"inject_noise":true}], ["compress_all",{"residual":true,

@@ -96,7 +96,7 @@ Status at time of writing, confirmed by direct code read (not the stale README w
 ## 2. LTX-Video — generate and save a real, viewable sample
 
 Correctness bug (Euler `flipSinToCos` convention mismatch) was root-caused and fixed on 2026-09-14
-per `docs/077-ltx-video-gpu-residency-plan.md` — all golden-parity tests pass. But per
+per `docs/done/077-ltx-video-gpu-residency-plan.md` — all golden-parity tests pass. But per
 `docs/055`/README: **no full timed/visual end-to-end run has been done since that fix** — the
 README's LTX-Video row is still describing the pre-fix "1 of 6 runs coherent" finding.
 

@@ -104,7 +104,7 @@ namespace OpenTail.Stingray.Tests.ForwardPass;
 /// token-for-token through " located in the city of Paris.\n\nThe city is also home to the famous
 /// French football club, the " (steps 0-21, verified via <see cref="Assert.StartsWith"/> below) and
 /// diverges only at the last two tokens. Accepted on the same basis as the OLMoE and Apertus
-/// receipts (see docs/01-gguf-model-coverage-plan.md §1b, §1f): a divergence this late, on this
+/// receipts (see docs/done/01-gguf-model-coverage-plan.md §1b, §1f): a divergence this late, on this
 /// strong a prefix, after independently verifying every structural claim above against llama.cpp
 /// source rather than a third party's summary of it, reads as ordinary Q8_0 accumulation-order
 /// sensitivity rather than a remaining structural bug.</para>

@@ -16,7 +16,7 @@ namespace OpenTail.Stingray.Tests.ForwardPass;
 /// explicit <c>kq_scale</c> override — this checkpoint declares 0.015625 = 1/64, NOT
 /// 1/sqrt(64) = 0.125, a genuine per-model override rather than a rounding of the usual formula).
 /// <c>MiniCPM</c> shares Granite's exact graph in llama.cpp and reuses this same implementation
-/// (see docs/01-gguf-model-coverage-plan.md §1d).</para>
+/// (see docs/done/01-gguf-model-coverage-plan.md §1d).</para>
 ///
 /// <para><b>Why a test and not a CLI comparison.</b> Same reasoning as
 /// <c>OlmoeGreedyParityTests</c>: the CLI renders the chat template and prefills a different token

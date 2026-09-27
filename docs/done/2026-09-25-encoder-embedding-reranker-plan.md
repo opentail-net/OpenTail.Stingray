@@ -2,7 +2,7 @@
 
 # Plan: encoder / embedding / reranker models + decoder re-verification (written 2026-09-25)
 
-Queued to start **after** the audio re-check (`docs/2026-09-24-audio-recheck-plan.md`).
+Queued to start **after** the audio re-check (`docs/done/2026-09-24-audio-recheck-plan.md`).
 
 Target checkpoints (16), grouped by architecture family rather than treated as 16 engines:
 

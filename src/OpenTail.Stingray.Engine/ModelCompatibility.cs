@@ -31,7 +31,7 @@ public static class ModelCompatibility
         // is Rome.\nThe capital of Spain is", byte-identical on both sides including the 5-token
         // prompt tokenization. This checkpoint also exercises IQ2_S/IQ2_XS/IQ3_XXS/IQ4_XS
         // per-tensor (see IsSupportedWeightDType's IQ2_XS/IQ2_S entries and
-        // docs/01-gguf-model-coverage-plan.md §2), so the receipt covers both the forward-pass
+        // docs/done/01-gguf-model-coverage-plan.md §2), so the receipt covers both the forward-pass
         // architecture and the newly-admitted dequant formats in one shot. 64 layers, 5120d,
         // headDim=256, 248320 vocab, full_attention_interval=4, block 64 is an unused MTP
         // next-token-prediction head (correctly ignored by both engines in non-speculative mode).
@@ -50,7 +50,7 @@ public static class ModelCompatibility
         // scores 7.4868 and this engine scores 7.3889 (1.3%). The greedy divergence is at a flat
         // position where the top five candidates span 1.55 logits, i.e. where a differently
         // quantised matmul reorders candidates. Evidence and the argument for accepting it:
-        // docs/01-gguf-model-coverage-plan.md §1b. Note `olmo2` is deliberately NOT here — it
+        // docs/done/01-gguf-model-coverage-plan.md §1b. Note `olmo2` is deliberately NOT here — it
         // shares neither a fixture nor a receipt.
         "olmoe",
         // gpt-oss — admitted 2026-09-26. Runs on its own GptOssForwardPass (CPU only; attention
@@ -79,7 +79,7 @@ public static class ModelCompatibility
         // (stronger than the olmoe receipt above, which only reaches a 2-token prefix). Needs a
         // "scale trio" + attention-scale override beyond the plain llama trunk, read from GGUF
         // metadata (ModelHyperparams.ResidualScale/AttentionScaleOverride/LogitScale, generalized
-        // EmbeddingScale) — see GraniteGreedyParityTests and docs/01-gguf-model-coverage-plan.md
+        // EmbeddingScale) — see GraniteGreedyParityTests and docs/done/01-gguf-model-coverage-plan.md
         // §1d for the receipt and for what is NOT yet wired (TurboQuant prefill, continuous-batching
         // admission, CUDA/Vulkan). MiniCPM (not MiniCPM3 — that's MLA, a different architecture)
         // shares this exact graph in llama.cpp and reuses the same implementation, unvalidated here
@@ -93,7 +93,7 @@ public static class ModelCompatibility
         // completion (not degenerate output). The first "new-kernel" architecture admitted this
         // session: no ffn_gate tensor at all (plain up -> xIELU -> down, ModelHyperparams.Xielu*,
         // SimdKernels.XieluInPlace), detected from tensor inventory rather than architecture
-        // string. See ApertusGreedyParityTests and docs/01-gguf-model-coverage-plan.md §1f for the
+        // string. See ApertusGreedyParityTests and docs/done/01-gguf-model-coverage-plan.md §1f for the
         // receipt, including a real defect found and fixed in the xIELU parameter transform
         // (GGUF stores pre-softplus values; llama.cpp's ggml_xielu() wrapper — not the compute
         // kernel — applies softplus before use, easy to miss by reading only the kernel).
@@ -106,7 +106,7 @@ public static class ModelCompatibility
         // assumed), and the metadata-driven parallel-residual graph (x + attn(ln1(x)) +
         // ffn(ln2(x)), both norms reading the SAME incoming residual — ModelHyperparams.
         // HasNormBias/HasFfnBias/UseParallelResidual). See GptNeoxGreedyParityTests and
-        // docs/01-gguf-model-coverage-plan.md for the receipt. TurboQuant prefill, continuous-
+        // docs/done/01-gguf-model-coverage-plan.md for the receipt. TurboQuant prefill, continuous-
         // batching admission, and CUDA/Vulkan are not wired to this profile.
         "gptneox",
         // falcon (7B only — 40B's second attn_norm_2 tensor is NOT implemented, no small 40B
@@ -122,7 +122,7 @@ public static class ModelCompatibility
         // for arch=="falcon" rather than reading a key that doesn't exist. Also exercises MQA
         // (head_count=71, head_count_kv=1) through the existing GQA-parametrized fused-QKV
         // split for the first time on this profile. See FalconGreedyParityTests and
-        // docs/01-gguf-model-coverage-plan.md for the receipt.
+        // docs/done/01-gguf-model-coverage-plan.md for the receipt.
         "falcon",
         // olmo2 — a THIRD residual pattern, distinct from both the ordinary pre-norm trunk and
         // gptneox/falcon's parallel residual: post-norm sandwiching. No attn_norm/ffn_norm tensor
@@ -142,7 +142,7 @@ public static class ModelCompatibility
         // also falls back to sequential per-token Forward() for ANY post-norm model, not just
         // per-layer-head-dim ones — the same fallback pattern Gemma 4 already uses, just widened.
         // QK-norm reuses the OLMoE whole-vector-RMS fix unchanged (same convention, same code).
-        // See Olmo2GreedyParityTests and docs/01-gguf-model-coverage-plan.md for the receipt.
+        // See Olmo2GreedyParityTests and docs/done/01-gguf-model-coverage-plan.md for the receipt.
         "olmo2",
         // exaone — ADMITTED 2026-08-09, full 24-of-24-token exact match. Genuinely gate-only: an
         // ordinary pre-norm llama-style trunk (RMSNorm, SiLU-gated FFN, standard GQA attention,
@@ -155,7 +155,7 @@ public static class ModelCompatibility
         // NO AUTOMATED TEST FOR THIS ARCHITECTURE, FOR LICENCE REASONS. Every known EXAONE
         // checkpoint (LGAI-EXAONE, `EXAONE-3.5-2.4B-Instruct-GGUF` was used for this receipt) ships
         // under "EXAONE AI Model License Agreement 1.1 - NC" — explicitly non-commercial, not
-        // MIT/Apache-2.0/BSD/MPL. Per the license policy in docs/01-gguf-model-coverage-plan.md
+        // MIT/Apache-2.0/BSD/MPL. Per the license policy in docs/done/01-gguf-model-coverage-plan.md
         // ("License policy: code vs. checkpoint"), the architecture code itself doesn't redistribute
         // any restricted asset and was verified once against a transient local checkpoint (deleted
         // immediately after, never vendored), but no permanent test is kept in the tree referencing
@@ -305,7 +305,7 @@ public static class ModelCompatibility
         // restrictions, e.g. malicious-code generation), not MIT/Apache-2.0/BSD/MPL. Verified once
         // against `bigcode/starcoder2-3b` (via QuantFactory/starcoder2-3b-GGUF, Q8_0), a transient
         // local download, never vendored, deleted immediately after this receipt. Per the license
-        // policy in docs/01-gguf-model-coverage-plan.md, no permanent test persists.
+        // policy in docs/done/01-gguf-model-coverage-plan.md, no permanent test persists.
         //
         // Verification evidence (2026-08-09, starcoder2-3b Q8_0, llama.cpp b8585-cad2d3884): prompt
         // "The capital of France is" -> ids [1338, 18972, 451, 45569, 458]. Reference 24-token
@@ -382,7 +382,7 @@ public static class ModelCompatibility
         // ggml_vec_swiglu_f32's actual math (first half = gate/SiLU, second half = up/multiplied)
         // — split by byte offset into independent TensorRefs, the same pattern GPT-NeoX's fused
         // attn_qkv already established. See Glm4GreedyParityTests / examples/llama.cpp/
-        // llama.cpp/src/models/glm4.cpp and docs/01-gguf-model-coverage-plan.md for the receipt,
+        // llama.cpp/src/models/glm4.cpp and docs/done/01-gguf-model-coverage-plan.md for the receipt,
         // including two real defects found and fixed while building it: a fused-tensor-slice
         // prefault-sizing bug that actually crashed with AccessViolationException (and was fixed
         // retroactively for the pre-existing GPT-NeoX/Falcon fused-QKV split too, since it's the
@@ -480,7 +480,7 @@ public static class ModelCompatibility
         // gap — read as ordinary quantization sensitivity for a genuinely small/weak 124M model
         // (more sensitive than larger checkpoints, not less) and confirmed by re-running against
         // a near-lossless F16 checkpoint, which matches exactly with no near-tie at all. See
-        // Gpt2GreedyParityTests and docs/01-gguf-model-coverage-plan.md §1q for the receipt.
+        // Gpt2GreedyParityTests and docs/done/01-gguf-model-coverage-plan.md §1q for the receipt.
         "gpt2",
         // granitemoe — admitted 2026-08-09, FULL 24-of-24-token exact greedy match, bucket-1
         // (genuinely Apache-2.0), essentially a free admission. llama_model_granite_moe::graph is
@@ -493,7 +493,7 @@ public static class ModelCompatibility
         // exercises was already correct on the first real attempt (the only failure along the way
         // was a wrong test assertion, not an engine defect — LogitScale already carries the
         // reciprocal of the raw metadata value, documented but momentarily forgotten while writing
-        // the test). See GraniteMoeGreedyParityTests and docs/01-gguf-model-coverage-plan.md §1r.
+        // the test). See GraniteMoeGreedyParityTests and docs/done/01-gguf-model-coverage-plan.md §1r.
         "granitemoe",
         // olmo (v1) — admitted 2026-08-09, FULL 24-of-24-token exact greedy match, bucket-1
         // (genuinely Apache-2.0, AI2). One genuinely new mechanism: LayerNorm with NEITHER a
@@ -512,7 +512,7 @@ public static class ModelCompatibility
         // OLMo2/cohere2/Gemma-4 already use for their own PrefillCore gaps). Everything else
         // (plain MHA, standard interleaved RoPE, SiLU-gated FFN, tied embeddings) was already
         // generic. Full exact match on the first real attempt. See OlmoGreedyParityTests and
-        // docs/01-gguf-model-coverage-plan.md §1s.
+        // docs/done/01-gguf-model-coverage-plan.md §1s.
         "olmo",
         // starcoder (v1) — admitted 2026-08-09, FULL 23-of-23-token exact greedy match, bucket-2,
         // near-zero code change. Confirmed against starcoder.cpp before writing any code: SAME
@@ -604,7 +604,7 @@ public static class ModelCompatibility
         // standard interleaved (non-NEOX) RoPE (confirmed via llama_model_rope_type() returning
         // NORM for LLM_ARCH_MAINCODER, matching the default). tokenizer.ggml.pre=qwen2 with real
         // merges — already covered. Every mechanism this checkpoint exercises predates this
-        // session. See MaincoderGreedyParityTests and docs/01-gguf-model-coverage-plan.md §1w.
+        // session. See MaincoderGreedyParityTests and docs/done/01-gguf-model-coverage-plan.md §1w.
         "maincoder",
         "exaone4",
         "mistral3",
@@ -721,7 +721,7 @@ public static class ModelCompatibility
     // the BPE-order SPM (explicit merges list) that Llama/Gemma use and this engine implements.
     // Measured: our tokenizer produces unrelated single-token-per-fragment ids for a 5-token
     // reference prompt. A different, unimplemented tokenization algorithm, not a scale-trio bug —
-    // see docs/01-gguf-model-coverage-plan.md §1d.
+    // see docs/done/01-gguf-model-coverage-plan.md §1d.
 
     /// <summary>Whether the architecture has an implemented text-generation forward profile.</summary>
     public static bool IsTextGenerationArchitectureSupported(string architecture) =>

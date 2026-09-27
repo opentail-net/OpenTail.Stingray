@@ -8,7 +8,7 @@ namespace OpenTail.Stingray.Tests.Diffusion;
 /// texture seen in every Wan sample (CPU, GPU, guidance on/off) originates in the VAE decoder
 /// itself rather than in denoising. Decodes three very different hand-constructed latents
 /// (zeros, smooth gradient, N(0,1) noise) and dumps per-frame stats + PNGs for visual comparison.
-/// See docs/081-master-gpu-perf-and-accuracy-plan.md Priority 0, "2026-09-14 update".
+/// See docs/done/081-master-gpu-perf-and-accuracy-plan.md Priority 0, "2026-09-14 update".
 /// </summary>
 public sealed class WanVaeOnlyIsolationTests
 {

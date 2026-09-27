@@ -180,7 +180,7 @@ conclusively: a genuinely-converging model shows recognizable structure emerging
 steps at this resolution. **Python 3.14 + torch 2.11+cpu + diffusers are already installed on this
 machine** (`python` on PATH, not `python3` — confirmed 2026-09-02, removes the "needs a Python
 diffusers env" setup step previously assumed blocking this). **Next step is the numeric block-by-block diffusers-reference
-comparison** (same methodology as `docs/055-ltx-video-implementation-plan.md`/
+comparison** (same methodology as `docs/done/055-ltx-video-implementation-plan.md`/
 `docs/done/056-flux-tiling-artifact-handoff.md`) — not more performance work. Suspect areas to check
 first, in order of how recently they were touched without being numerically verified against the
 real diffusers `SD35AdaLayerNormZeroX`/`JointTransformerBlock` source: the dual-attention gate

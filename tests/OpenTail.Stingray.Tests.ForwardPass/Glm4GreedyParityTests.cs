@@ -6,7 +6,7 @@ namespace OpenTail.Stingray.Tests.ForwardPass;
 /// admits <c>glm4</c> to <see cref="ModelCompatibility"/>'s architecture allowlist.
 ///
 /// <para><b>Much smaller in scope than the plan doc originally estimated.</b>
-/// <c>docs/01-gguf-model-coverage-plan.md</c> flagged `glm4` as needing "conditional/multi-section
+/// <c>docs/done/01-gguf-model-coverage-plan.md</c> flagged `glm4` as needing "conditional/multi-section
 /// RoPE" (`ggml_rope_multi`, MRoPE) — checked directly against
 /// <c>examples/llama.cpp/llama.cpp/src/models/glm4.cpp</c> before writing any code: that MRoPE
 /// path is gated behind <c>use_mrope()</c>, which is only true for the multimodal variant — a

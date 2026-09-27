@@ -1,5 +1,14 @@
 # PerformanceLeague sweep — phased plan
 
+> **STATUS 2026-09-27.** Phases 12 and 14 are closed and moved verbatim to
+> [done/perf-sweep-plan-closed-phases.md](done/perf-sweep-plan-closed-phases.md). Also since the phases below were written: Phase 8's item 8.2 is
+> moot (`deepseek2` admitted 2026-09-26, no `--allow-unverified-arch` needed; its perf items are open);
+> Phase 2's 35B point moved from 0.05x to 0.63x of llama.cpp prefill (2026-09-25,
+> [done/2026-09-25-hf-top-downloads-coverage-plan.md](done/2026-09-25-hf-top-downloads-coverage-plan.md)
+> Phase 8); Phase 3's SmolLM2 prefill is now ~0.71-0.81x (f801243, see
+> [101-work-queue-after-coverage-plan.md](101-work-queue-after-coverage-plan.md)). The other phases were
+> not re-verified item by item in this pass.
+
 **Read this file first on every loop firing.** Source of truth across firings (a `/loop`
 session may not carry full context forward). Check a box when a numbered item is measured,
 committed to the checkbox list here, and recorded back into `PerformanceLeague.md` — not before.
@@ -815,27 +824,6 @@ a real, working ASR pipeline, worse than the Whisper Tiny row already queued in 
       (do not regress it) + re-benchmark (3+ runs, this pipeline is fast enough to afford more
       samples than the slow TTS/diffusion pipelines elsewhere in this doc) + record.
 
-## Phase 12 — FLUX.1-schnell's near-zero Vulkan speedup (~3%, unexplained, flagged in the doc itself)
-
-`PerformanceLeague.md`'s own FLUX.1-schnell row explicitly flags this as unresolved: "not yet
-known whether the bottleneck is the T5-XXL encoder... or the DiT body itself" — a real, named
-open question on a flagship diffusion model, not something this plan is inventing.
-
-- [x] 12.1 Added real per-stage `Stopwatch` timing to `ImagePipeline.Generate`
-      (`src/OpenTail.Stingray.Diffusion/ImagePipeline.cs`) — CLIP-L encode / T5-XXL encode /
-      noise+pos-id setup / DiT denoise loop / VAE decode, gated behind the same
-      `STINGRAY_PROFILE_DECODE=1` env var used for ACE-Step's identical Phase 9 instrumentation
-      (reused, not duplicated). Builds clean.
-- [ ] 12.2 Only `models/flux1-schnell/tokenizer_t5/tokenizer.json` was present locally (no
-      DiT/CLIP-L/T5-XXL/VAE weights) — downloading the full ~13GB checkpoint now (68GB free,
-      user-confirmed OK to use) to actually run the profiling.
-- [ ] 12.3 Run the profiled CPU and Vulkan generations, answer whether T5-XXL or the DiT
-      dominates (and specifically whether T5-XXL ignores the backend flag the way several
-      ONNX-based TTS rows elsewhere in this doc do), implement + verify (real on-prompt image
-      content check, not just non-degeneracy — this pipeline has a known separate
-      background-tiling artifact already, re-verify any fix doesn't touch or worsen that) +
-      re-benchmark + record.
-
 ## Phase 13 — SDXL-Turbo/shared-VaeDecoder UNet-attention gap via batched dispatch fusion (not the already-2x-failed per-call residency approach)
 
 The doc's own session-arc for SDXL-Turbo already closed 8 real wins and correctly identified +
@@ -860,25 +848,6 @@ one) or access to a discrete GPU" — batched fusion is the one specific angle N
 - [ ] 13.3 If no viable batching angle exists, this phase should be marked genuinely blocked
       (needs a discrete GPU to re-test the premise, per the doc's own conclusion) rather than
       re-attempting either failed approach a third time.
-
-## Phase 14 — Post-norm architecture GPU-layer-split gap (`HybridForwardPass`, blocks EXAONE-4.5/OLMo2-style models from GPU offload entirely)
-
-Real, infra-level perf gap, not a one-model bug: `HybridForwardPass.cs` (the CPU+GPU layer-split
-path) hardcodes pre-norm tensor names (`attn_norm.weight`/`ffn_norm.weight`) with no fallback to
-post-norm-only architectures' real tensor names (`post_attention_norm.weight`/`post_ffw_norm.weight`),
-unlike plain `ForwardPass.cs` which already has this fallback. This forces EXAONE-4.5-33B (and any
-other post-norm-only architecture) onto CPU-only (`-g 0`), leaving real GPU-offload throughput
-entirely unmeasured and unavailable for this whole architecture family.
-
-- [ ] 14.1 Mirror `ForwardPass.cs`'s existing `FindTensor(...) is not null` fallback + post-norm
-      forward math (norm applied after attn/ffn, before the residual add) into
-      `HybridForwardPass.cs` — real architectural work per the doc's own assessment, not a
-      one-line tensor-name swap.
-- [ ] 14.2 Verify correctness first on a model this codebase already handles correctly via plain
-      `ForwardPass` (confirm `HybridForwardPass`'s new post-norm path produces identical logits to
-      the working CPU-only path) before trusting any new GPU-offload throughput number.
-- [ ] 14.3 Benchmark EXAONE-4.5-33B with real GPU layer-split enabled (currently impossible) vs
-      the existing CPU-only 1.6/1.7 t/s baseline — record the real speedup this unlocks.
 
 ## Phase 15 — DSpark speculative decoding: disambiguate weak-draft-head vs. per-block overhead (currently an unresolved "confirmed loss")
 

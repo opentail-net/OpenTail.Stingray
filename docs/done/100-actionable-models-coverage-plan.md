@@ -81,7 +81,7 @@ An alpha forward-pass for GPT-OSS (`GptOssForwardPass.cs`, `GptOssTensorSet.cs`,
 ## 4. Phase 3 — EXAONE 4.5 33B (`exaone4`): Hybrid GPU Offloading & Vision CLI Alignment
 
 ### Problem Statement
-`EXAONE-4.5-33B` is already admitted and verified for CPU text generation (`Exaone4VerifyTemp.cs`, `docs/PerformanceLeague-expansion-plan.md:97`). However, two distinct issues limit its full capability:
+`EXAONE-4.5-33B` is already admitted and verified for CPU text generation (`Exaone4VerifyTemp.cs`, `docs/done/PerformanceLeague-expansion-plan.md:106`). However, two distinct issues limit its full capability:
 1. **GPU Layer Splitting Blocked:** `HybridForwardPass.cs` (Phase 14 of `docs/perf-sweep-plan.md`) hardcodes pre-norm tensor names (`blk.*.attn_norm.weight`, `blk.*.ffn_norm.weight`) without checking for post-norm tensors (`blk.*.post_attention_norm.weight`, `blk.*.post_ffw_norm.weight`). This forces EXAONE 4.5 onto CPU-only (`-g 0`).
 2. **Vision Multimodal CLI Formatting:** `Exaone4VisionEncoder` works and emits 324 visual soft tokens (5120-dim). However, the CLI's `--image` command passes a flat string, whereas EXAONE's Jinja template expects structured multi-part message parts (`[{'type': 'image'}, {'type': 'text', ...}]`), causing the image token replacement branch to be skipped.
 

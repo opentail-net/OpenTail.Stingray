@@ -1,7 +1,7 @@
 # Vision encoder FFN/QKV scratch-buffer reuse — 2026-08-20
 
 Second pass over `OpenTail.Stingray.Vision`, requested directly after the dtype-safety migration
-(`docs/vl-migration-plan-2026-08-20.md`) closed out: with all 13 encoders freshly re-read, real
+(`docs/done/vl-migration-plan-2026-08-20.md`) closed out: with all 13 encoders freshly re-read, real
 models locally available, and the migration still in recent memory, look for further optimization
 and safety opportunities while it's cheap to verify them against real weights.
 
@@ -99,7 +99,7 @@ dtype-migration already closed:
   edits (the buffer-hoisting changes only touched FFN/QKV scratch buffers, a disjoint set of
   fields).
 - No new `Half*`/blind-cast pattern found; the sweep from the migration's cleanup step
-  (`docs/vl-migration-plan-2026-08-20.md`) still holds.
+  (`docs/done/vl-migration-plan-2026-08-20.md`) still holds.
 
 No further safety issue found worth a code change beyond what's already fixed in the two prior
 passes. The remaining unsafe surface (raw pointers into mmap'd GGUF memory) is structural to how

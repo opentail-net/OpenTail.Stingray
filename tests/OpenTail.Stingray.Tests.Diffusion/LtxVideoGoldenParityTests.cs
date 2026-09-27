@@ -6,7 +6,7 @@ namespace OpenTail.Stingray.Tests.Diffusion;
 /// Numeric parity check of <see cref="LtxVideoModel"/> against golden intermediate tensors dumped
 /// from HuggingFace `diffusers`' real `LTXVideoTransformer3DModel`, loaded with the REAL
 /// `ltx-video-2b-v0.9.1.safetensors` checkpoint weights (see
-/// <c>scripts</c>-adjacent dump script referenced in docs/055-ltx-video-implementation-plan.md --
+/// <c>scripts</c>-adjacent dump script referenced in docs/done/055-ltx-video-implementation-plan.md --
 /// generated via a one-off Python script run against the actual local checkpoint, not synthetic).
 /// This is the numeric verification step 1-4 of the plan's build order call for -- distinct from
 /// <see cref="LtxVideoTests"/>'s synthetic structural/shape tests and

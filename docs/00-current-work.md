@@ -330,7 +330,7 @@ STATUS rows). Still open, with the original entry's number:
 
 ## Ordered runway
 
-1. [01 — GGUF model coverage](01-gguf-model-coverage-plan.md) — architectures, IQ quant formats,
+1. [01 — GGUF model coverage](done/01-gguf-model-coverage-plan.md) — architectures, IQ quant formats,
    tokenizer pre-types, chat templates. **The goal, restated as work.**
 2. [02 — Qwen3.5 MoE / Gated DeltaNet](02-qwen35moe-plan.md) — a large, popular GGUF family whose
    hybrid path exists but is not fully evidenced.
@@ -390,7 +390,7 @@ independent of this).
 
 ## Priority 1 — model coverage
 
-See [01-gguf-model-coverage-plan.md](01-gguf-model-coverage-plan.md) for the audit and the ordered
+See [01-gguf-model-coverage-plan.md](done/01-gguf-model-coverage-plan.md) for the audit and the ordered
 work. The three findings that justify its position at the top:
 
 1. ~~**The architecture gate does not run on the CLI inference path.**~~ **STALE — already fixed
@@ -405,7 +405,7 @@ work. The three findings that justify its position at the top:
    its own doc comment citing the matching `ggml` `dequantize_row_iq*` reference) and are dispatched
    in `SimdKernels`'s `MatVec` switch (either a dedicated fast path or `MatVecDequantFallback`).
    Verified by reading both files directly, not assumed. This item can be removed from the plan too
-   — whoever fixed this evidently didn't update `01-gguf-model-coverage-plan.md`/this doc to match.
+   — whoever fixed this evidently didn't update `done/01-gguf-model-coverage-plan.md`/this doc to match.
 3. **DEFECT FOUND AND FIXED (2026-08-08) — Qwen3 tokenized differently from llama.cpp.** Only
    `tekken` had an explicit pre-tokenizer regex; every other byte-BPE model silently got GPT-2's,
    whatever `tokenizer.ggml.pre` declared. Measured on Qwen3-0.6B against `llama-tokenize` b8585,
@@ -714,7 +714,7 @@ severity.
   (different family) works correctly on the same image/prompt — strongly suggests one shared
   Granite-family vision-integration bug (image placeholder/embedding injection point) rather than
   two separate issues. Worth root-causing as a single Granite-vision bug.
-  **Update 2026-09-11 — investigation, not resolved.** Found that `docs/vl-migration-plan-2026-08-20.md`
+  **Update 2026-09-11 — investigation, not resolved.** Found that `docs/done/vl-migration-plan-2026-08-20.md`
   itself documents a real, verified-working end-to-end Granite4 generation on 2026-08-20
   ("Describe this image.A large, diverse group of animals living in a certain area...") —
   seemingly contradicting this session's finding. Checked for a code regression: `git log
@@ -1091,4 +1091,9 @@ names what closed; these items are what did not.
 - **MusicGen / AudioGen performance and DRY passes** (CFG as a batch-2 GEMM; a shared T5 kernel
   with Parler), plus top-p sampling. Not re-checked in the archive pass. See "Known gaps" in
   [done/062-musicgen-implementation-plan.md](done/062-musicgen-implementation-plan.md).
-
+- **CosyVoice3 ODE step count**: the default is still 10; the fewer-steps A/B (by ear plus a Whisper
+  round trip) proposed as item 2 of
+  [done/tts-performance-baseline-and-plan.md](done/tts-performance-baseline-and-plan.md) was never run.
+- **Vision timings not yet in `PerformanceLeague.md`**: Pixtral 12B and GLM-4.6V (gated GGUFs; need an
+  `HF_TOKEN` with the licence accepted), plus LLaVA-NeXT/OneVision, GLM-4V/OCR, Hunyuan-VL and Llama 4
+  vision. See [done/PerformanceLeague-expansion-plan.md](done/PerformanceLeague-expansion-plan.md).
