@@ -281,6 +281,7 @@ public sealed unsafe class KimiVisionEncoder
         int patchSize = _m.PatchSize; // 14
         int patchArea = patchSize * patchSize;
         int planeSize = width * height;
+        float[] posEmbd = ResizedPositionEmbeddings(patchesX, patchesY);
 
         for (int py = 0; py < patchesY; py++)
         {
@@ -310,9 +311,9 @@ public sealed unsafe class KimiVisionEncoder
                             }
                         }
 
-                        if (_posEmbdF32.Length > 0)
+                        if (posEmbd.Length > 0)
                         {
-                            sum += _posEmbdF32[patchIdx * _embd + d];
+                            sum += posEmbd[patchIdx * _embd + d];
                         }
 
                         output[outOffset + d] = sum;
@@ -378,10 +379,21 @@ public sealed unsafe class KimiVisionEncoder
         }
     }
 
+    /// <summary>
+    /// 2D RoPE as llama.cpp's <c>clip_graph::build_rope_2d(cur, pos_w, pos_h, theta, interleave_freq: false)</c>
+    /// (kimivl.cpp): the first half of each head is rotated with the patch COLUMN, the second half with
+    /// the patch ROW. Each half is an ordinary (mode 0, adjacent-pair) RoPE over <c>headDim/2</c> dims with
+    /// its own frequency ladder <c>theta^(-2i/(headDim/2))</c>. Found 2026-09-27 against llama-mtmd-debug:
+    /// the earlier port paired dim d with d+headDim/2 and interleaved the x/y frequencies.
+    /// </summary>
     private void Apply2dInterleavedRope(float[] q, float[] k, int patchesX, int patchesY)
     {
-        int halfDim = _headDim / 2;
-        for (int py = 0; py < patchesY; py++)
+        int half = _headDim / 2;
+        int pairs = half / 2;
+        var freqs = new float[pairs];
+        for (int i = 0; i < pairs; i++) freqs[i] = MathF.Pow(_ropeTheta, -2.0f * i / half);
+
+        Parallel.For(0, patchesY, py =>
         {
             for (int px = 0; px < patchesX; px++)
             {
@@ -389,31 +401,79 @@ public sealed unsafe class KimiVisionEncoder
                 for (int h = 0; h < _heads; h++)
                 {
                     int headOff = (p * _heads + h) * _headDim;
-                    for (int d = 0; d < halfDim; d += 2)
+                    for (int part = 0; part < 2; part++)
                     {
-                        float freqX = MathF.Pow(_ropeTheta, -2.0f * d / halfDim);
-                        float thetaX = px * freqX;
-                        float cosX = MathF.Cos(thetaX);
-                        float sinX = MathF.Sin(thetaX);
-
-                        float freqY = MathF.Pow(_ropeTheta, -2.0f * (d + 1) / halfDim);
-                        float thetaY = py * freqY;
-                        float cosY = MathF.Cos(thetaY);
-                        float sinY = MathF.Sin(thetaY);
-
-                        float q0 = q[headOff + d];
-                        float q1 = q[headOff + halfDim + d];
-                        q[headOff + d] = q0 * cosX - q1 * sinX;
-                        q[headOff + halfDim + d] = q0 * sinX + q1 * cosX;
-
-                        float k0 = k[headOff + d];
-                        float k1 = k[headOff + halfDim + d];
-                        k[headOff + d] = k0 * cosX - k1 * sinX;
-                        k[headOff + halfDim + d] = k0 * sinX + k1 * cosX;
+                        float pos = part == 0 ? px : py;
+                        int baseOff = headOff + part * half;
+                        for (int i = 0; i < pairs; i++)
+                        {
+                            float theta = pos * freqs[i];
+                            float c = MathF.Cos(theta), sn = MathF.Sin(theta);
+                            int o = baseOff + 2 * i;
+                            float q0 = q[o], q1 = q[o + 1];
+                            q[o] = q0 * c - q1 * sn; q[o + 1] = q0 * sn + q1 * c;
+                            float k0 = k[o], k1 = k[o + 1];
+                            k[o] = k0 * c - k1 * sn; k[o + 1] = k0 * sn + k1 * c;
+                        }
                     }
                 }
             }
-        }
+        });
+    }
+
+    /// <summary>
+    /// The learned position table (<c>n_per_side x n_per_side</c>) resized to the patch grid exactly as
+    /// llama.cpp's <c>resize_position_embeddings()</c> does it: <c>ggml_interpolate</c> with
+    /// <c>GGML_SCALE_MODE_BILINEAR | GGML_SCALE_FLAG_ANTIALIAS</c> (PyTorch bilinear, align_corners=False,
+    /// antialias=True: triangle filter, support widened when downscaling). Found 2026-09-27: the earlier
+    /// port indexed the raw 64x64 table with the patch index, which is only right for a 64x64 grid.
+    /// </summary>
+    private float[] ResizedPositionEmbeddings(int width, int height)
+    {
+        if (_posEmbdF32.Length == 0) return [];
+        int side = (int)Math.Round(Math.Sqrt(_posEmbdF32.Length / _embd));
+        if (width == side && height == side) return _posEmbdF32;
+
+        var dst = new float[width * height * _embd];
+        float sf0 = (float)width / side, sf1 = (float)height / side;
+        float support0 = Math.Max(1f, 1f / sf0), invScale0 = 1f / support0;
+        float support1 = Math.Max(1f, 1f / sf1), invScale1 = 1f / support1;
+        const float off = 0.5f;
+        static float Tri(float x) => Math.Max(1f - MathF.Abs(x), 0f);
+        var src = _posEmbdF32;
+        int embd = _embd;
+
+        Parallel.For(0, height, i1 =>
+        {
+            float y = (i1 + off) / sf1;
+            int yMin = Math.Max((int)(y - support1 + off), 0);
+            int yMax = Math.Min((int)(y + support1 + off), side);
+            var acc = new float[embd];
+            for (int i0 = 0; i0 < width; i0++)
+            {
+                float x = (i0 + off) / sf0;
+                int xMin = Math.Max((int)(x - support0 + off), 0);
+                int xMax = Math.Min((int)(x + support0 + off), side);
+                Array.Clear(acc);
+                float total = 0f;
+                for (int sy = yMin; sy < yMax; sy++)
+                {
+                    float wy = Tri((sy - y + off) * invScale1);
+                    for (int sx = xMin; sx < xMax; sx++)
+                    {
+                        float w = Tri((sx - x + off) * invScale0) * wy;
+                        if (w <= 0f) continue;
+                        int so = (sy * side + sx) * embd;
+                        for (int d = 0; d < embd; d++) acc[d] += src[so + d] * w;
+                        total += w;
+                    }
+                }
+                int dOff = (i1 * width + i0) * embd;
+                float inv = total > 0f ? 1f / total : 1f;
+                for (int d = 0; d < embd; d++) dst[dOff + d] = acc[d] * inv;
+            }
+        });
+        return dst;
     }
 
 }

@@ -15,7 +15,7 @@ dated evidence in the same pass.
 | 2 | ↪ merged into #11 | Stable Audio 3 Small Music + Medium still 🟡 though the rows say they match the reference | re-grade from the existing evidence, or name the open gap | minutes |
 | 3 | ⏸ RE-SCOPED (Mamba-2 port, large) | Nemotron-Nano-12B-v2-VL: `nemotron_h` text backbone crashes (per-layer `feed_forward_length` array; 0 = pure Mamba layer) | root cause already known | small |
 | 4 | ✅ DONE | dots.ocr: decode stops after one token | suspected prompt-format mismatch | small–medium |
-| 5 | 🟡 IN PROGRESS (code in, verification pending) | Kimi-VL + YoutuVL: split `attn_k_b` / `attn_v_b` MLA layout not read | known math (llama.cpp deepseek2 absorption path); unblocks two models | medium |
+| 5 | ✅ DONE (2026-09-27) | Kimi-VL + YoutuVL: split `attn_k_b` / `attn_v_b` MLA layout not read | known math (llama.cpp deepseek2 absorption path); unblocks two models | medium |
 | 6 | ⬜ TODO | PaddleOCR-VL: degenerate output | text architecture (`paddleocr`) has no validated forward pass | medium |
 | 7 | ⬜ TODO | DeepSeek-OCR / OCR2: garbled | text architecture (`deepseek2-ocr`) has no validated forward pass | medium |
 | 8 | ⬜ TODO | Step3-VL: garbled | unvalidated architecture on a Q2_K checkpoint | medium–large |
@@ -113,6 +113,23 @@ second-half perplexity vs `llama-perplexity`, then an allowlist entry, a STATUS.
 MODELS.md entry if it qualifies.
 
 ## Log
+
+- 2026-09-27 #5 DONE: Kimi-VL and Youtu-VL vision now match llama.cpp.
+  - `llama-mtmd-debug` stage fingerprints (checkerboard 224 and rainbow 448) found five encoder bugs.
+    - Youtu: patch flatten order (HWC), missing window attention, and a preprocessor resize rule
+      that gave 234 instead of 320 tokens.
+    - Kimi: the 2D RoPE layout, and the position table indexed raw instead of resized with
+      antialiased bilinear.
+  - Pinned by `KimiYoutuVisionEmbedderParityTests` (3 tests, 29 s, real weights). The Vision suite
+    has 157 tests, 0 failed.
+  - End to end on `test-1.jpeg` against `llama-server`: prompts are identical (Youtu 348 tokens,
+    Kimi 416).
+    - Youtu reads the NYT moon-landing front page, including the date, like llama.cpp.
+    - The Kimi Q2_K checkpoint misreads the page on both engines.
+  - A checkerboard cannot test Youtu: every 16x16 patch is identical, and llama.cpp's own
+    Q8_0/BF16 mmproj disagree by 3% on it. Use the rainbow pattern.
+  - `llama-mtmd-cli.exe` now exits 127 with no output on any generate call (its `--help` works);
+    `llama-server` with `--mmproj` was used as the end-to-end oracle instead.
 - 2026-09-26 #1 DONE: SD3/3.5 (GPU/Vulkan) row had Status and Confidence swapped; now
   🟢 (closed 2026-09-24) / ⚪, matching the CPU row.
 - 2026-09-26 #2 RE-SCOPED, not a re-grade: Stable Audio 3 Small Music and Medium are 🟡 for a real,

@@ -135,6 +135,22 @@ public sealed unsafe class YoutuVlVisionEncoder
         }
         var mid = new float[nP * maxIntermediate];
 
+        // Window attention (llama.cpp youtuvl.cpp + clip.cpp's shared QWEN25VL/YOUTUVL input setup):
+        // layers listed in wa_layer_indexes attend globally; every other layer only within a window of
+        // window_size/patch/merge MERGE-TILES square. llama.cpp reorders tokens window-contiguously and
+        // applies an additive mask; deriving membership from each patch's (row, col) is equivalent.
+        int[]? windowId = null;
+        if (_m.WindowSize > 0 && _m.FullAttentionLayers.Count > 0)
+        {
+            int m0 = _mergeFactor;
+            int gridWindow = Math.Max(1, _m.WindowSize / ps / m0);
+            int windowCols = (patchesX / m0 + gridWindow - 1) / gridWindow;
+            windowId = new int[nP];
+            for (int py = 0; py < patchesY; py++)
+                for (int px = 0; px < patchesX; px++)
+                    windowId[py * patchesX + px] = (py / m0 / gridWindow) * windowCols + (px / m0 / gridWindow);
+        }
+
         for (int l = 0; l < _layers; l++)
         {
             var b = _blocks[l];
@@ -150,9 +166,12 @@ public sealed unsafe class YoutuVlVisionEncoder
                 VisionOps.MatVec(normed, b.VW, vb, nP, _embd, _embd, vBuf);
 
                 // 2D M-RoPE
-                VisionOps.ApplyMRoPE(qBuf, kBuf, patchesY, patchesX, _heads, _heads, _headDim, theta: 10000.0f);
+                VisionOps.ApplyMRoPE(qBuf, kBuf, patchesX, patchesY, _heads, _heads, _headDim, theta: 10000.0f, independentSections: true);
 
-                VisionOps.Attention(qBuf, kBuf, vBuf, nP, _heads, _headDim, attnOut);
+                if (windowId is not null && !_m.FullAttentionLayers.Contains(l))
+                    VisionOps.AttentionGqaWindowed(qBuf, kBuf, vBuf, nP, _heads, _heads, _headDim, attnOut, windowId);
+                else
+                    VisionOps.Attention(qBuf, kBuf, vBuf, nP, _heads, _headDim, attnOut);
                 VisionOps.MatVec(attnOut, b.OW, ob, nP, _embd, _embd, tmp);
                 for (int i = 0; i < x.Length; i++) x[i] += tmp[i];
 
@@ -201,6 +220,10 @@ public sealed unsafe class YoutuVlVisionEncoder
         }
     }
 
+    // v.patch_embd.weight is the conv kernel flattened channel-fastest (HWC): llama.cpp youtuvl.cpp
+    // permutes each patch to (C, patch_x, patch_y) before the linear layer, so element
+    // (sy, sx, c) sits at (sy*ps + sx)*3 + c, not at the CHW offset c*ps*ps + sy*ps + sx
+    // (found 2026-09-27 against llama-mtmd-debug: patch_embd row 0 differed from the first stage).
     private void Im2ColAndEmbed(float[] chw, int imgW, int imgH, int ps, int px, int py, float[] dst)
     {
         int nP       = px * py;
@@ -222,7 +245,7 @@ public sealed unsafe class YoutuVlVisionEncoder
                         int srcY = iy * ps + sy;
                         int srcX = ix * ps + sx;
                         if (srcY < imgH && srcX < imgW)
-                            patches[dstOff + c * ps * ps + sy * ps + sx] = chw[cOff + srcY * imgW + srcX];
+                            patches[dstOff + (sy * ps + sx) * 3 + c] = chw[cOff + srcY * imgW + srcX];
                     }
                 }
             }

@@ -738,7 +738,7 @@ public static class UnifiedVisionPipeline
 
         public float[] EmbedImage(ReadOnlySpan<byte> rgb, int width, int height, out int tokenCount)
         {
-            var pre = YoutuVlImagePreprocessor.Preprocess(rgb, width, height, _model.PatchSize, _model.SpatialMergeFactor, _model.ImageSize);
+            var pre = YoutuVlImagePreprocessor.Preprocess(rgb, width, height, _model.PatchSize, _model.SpatialMergeFactor);
             return _encoder.Forward(pre.Chw, pre.TargetWidth, pre.TargetHeight, pre.PatchesX, pre.PatchesY, out tokenCount);
         }
 

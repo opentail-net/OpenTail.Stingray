@@ -16,12 +16,10 @@ public sealed class YoutuVlVisionTests
             rgb[i + 2] = 200;
         }
 
-        var pre = YoutuVlImagePreprocessor.Preprocess(rgb, w, h, patchSize: 14, mergeFactor: 2, maxDim: 980);
+        var pre = YoutuVlImagePreprocessor.Preprocess(rgb, w, h, patchSize: 16, mergeFactor: 2);
         Assert.NotNull(pre);
-        Assert.True(pre.TargetWidth > 0);
-        Assert.True(pre.TargetHeight > 0);
-        Assert.Equal(pre.TargetWidth / 14, pre.PatchesX);
-        Assert.Equal(pre.TargetHeight / 14, pre.PatchesY);
+        Assert.Equal(pre.TargetWidth / 16, pre.PatchesX);
+        Assert.Equal(pre.TargetHeight / 16, pre.PatchesY);
         Assert.Equal(3 * pre.TargetWidth * pre.TargetHeight, pre.Chw.Length);
 
         for (int i = 0; i < 100; i++)
@@ -29,5 +27,15 @@ public sealed class YoutuVlVisionTests
             Assert.False(float.IsNaN(pre.Chw[i]));
             Assert.False(float.IsInfinity(pre.Chw[i]));
         }
+    }
+
+    [Fact]
+    public void Preprocess_RoundsUpToMergeAlignment_LikeLlamaCpp()
+    {
+        // mtmd_image_preprocessor_youtuvl: 640x488 -> 640x512 (ceil to 32 px), 40x32 patches = 320
+        // tokens after the 2x2 merge; llama-server reports the same image token count for test-1.jpeg.
+        var pre = YoutuVlImagePreprocessor.Preprocess(new byte[640 * 488 * 3], 640, 488, patchSize: 16, mergeFactor: 2);
+        Assert.Equal((640, 512), (pre.TargetWidth, pre.TargetHeight));
+        Assert.Equal((40, 32), (pre.PatchesX, pre.PatchesY));
     }
 }

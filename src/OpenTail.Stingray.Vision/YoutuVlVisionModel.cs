@@ -21,6 +21,11 @@ public sealed class YoutuVlVisionModel : IDisposable
     /// <summary>Spatial merge factor (always 2 for 2Ã2 merge).</summary>
     public int SpatialMergeFactor { get; }
     public float Eps { get; }
+    /// <summary>Window-attention window edge in pixels (<c>clip.vision.window_size</c>); 0 = no window attention.</summary>
+    public int WindowSize { get; init; }
+    /// <summary>Layers that use FULL attention (<c>clip.vision.wa_layer_indexes</c>); every other layer is
+    /// windowed. Empty = all layers full attention (llama.cpp youtuvl.cpp <c>use_window_attn</c>).</summary>
+    public IReadOnlySet<int> FullAttentionLayers { get; init; } = new HashSet<int>();
 
     private bool _disposed;
 
@@ -65,7 +70,19 @@ public sealed class YoutuVlVisionModel : IDisposable
 
         return new YoutuVlVisionModel(
             gguf, projType, patchSize, imageSize, embeddingDim, projectionDim,
-            layerCount, headCount, headDim, mergeFactor, eps);
+            layerCount, headCount, headDim, mergeFactor, eps)
+        {
+            WindowSize = GetInt(gguf, "clip.vision.window_size", 0),
+            FullAttentionLayers = GetIntSet(gguf, "clip.vision.wa_layer_indexes"),
+        };
+    }
+
+    private static HashSet<int> GetIntSet(GgufModel gguf, string key)
+    {
+        var set = new HashSet<int>();
+        if (gguf.Metadata.TryGetValue(key, out var v) && v is System.Collections.IList list)
+            foreach (var o in list) set.Add(Convert.ToInt32(o));
+        return set;
     }
 
     private static int GetInt(GgufModel gguf, string key, int def)
