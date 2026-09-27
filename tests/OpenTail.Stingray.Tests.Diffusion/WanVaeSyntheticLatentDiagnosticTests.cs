@@ -34,6 +34,8 @@ public sealed class WanVaeSyntheticLatentDiagnosticTests
         {
             var p = Path.Combine(dir, "models", "wan2.1", "Wan2.1_VAE.safetensors");
             if (File.Exists(p)) return p;
+            var pNested = Path.Combine(dir, "models", "_models", "wan2.1", "Wan2.1_VAE.safetensors");
+            if (File.Exists(pNested)) return pNested;
             var parent = Directory.GetParent(dir);
             if (parent is null) break;
             dir = parent.FullName;
@@ -54,7 +56,7 @@ public sealed class WanVaeSyntheticLatentDiagnosticTests
     public void Decode_AllZeroSyntheticLatent_AtSmallSize_ChecksBoundaryDecayCoverage()
     {
         string? vaePath = FindVaePath();
-        if (vaePath is null) return;
+        if (vaePath is null) Assert.Skip("vaePath not found (checkpoint or fixture missing).");
 
         const int latH = 16, latW = 16, t = 1, c = WanVaeDecoder3D.LatentChannels;
         var zeroLatent = new float[c * t * latH * latW];
@@ -81,7 +83,7 @@ public sealed class WanVaeSyntheticLatentDiagnosticTests
     public void Decode_AllZeroSyntheticLatent_IsolatesVaeFromDiT()
     {
         string? vaePath = FindVaePath();
-        if (vaePath is null) return;
+        if (vaePath is null) Assert.Skip("vaePath not found (checkpoint or fixture missing).");
 
         const int latH = 32, latW = 32, t = 1, c = WanVaeDecoder3D.LatentChannels;
 

@@ -24,7 +24,7 @@ public sealed class Flux2SingleBlockOpsGpuTests
     public void Flux2SingleUnpackNormRope_MatchesReference(int nSeq, int numHeads, int mlpHidden)
     {
         using var backend = TryCreateVulkan();
-        if (backend is null) return;
+        if (backend is null) Assert.Skip("backend not found (checkpoint or fixture missing).");
 
         const int headDim = 128;
         int dim = numHeads * headDim;
@@ -153,7 +153,7 @@ public sealed class Flux2SingleBlockOpsGpuTests
     public void Flux2SingleConcatAttnMlp_MatchesReference(int nSeq, int dim, int mlpHidden)
     {
         using var backend = TryCreateVulkan();
-        if (backend is null) return;
+        if (backend is null) Assert.Skip("backend not found (checkpoint or fixture missing).");
 
         int rowStride = 3 * dim + 2 * mlpHidden;
         int outRowWidth = dim + mlpHidden;

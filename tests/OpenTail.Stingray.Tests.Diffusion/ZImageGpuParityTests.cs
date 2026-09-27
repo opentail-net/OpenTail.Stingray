@@ -43,7 +43,7 @@ public sealed class ZImageGpuParityTests
     public void ApplyBlockGpu_MatchesApplyBlockCpu_Numerically()
     {
         using var vulkan = TryCreateVulkan();
-        if (vulkan is null) return;
+        if (vulkan is null) Assert.Skip("vulkan not found (checkpoint or fixture missing).");
 
         // Small-but-real shapes: headDim MUST stay 128 (the real value) since it determines
         // which fused attention kernel MultiHeadAttentionTiled selects internally -- scale down

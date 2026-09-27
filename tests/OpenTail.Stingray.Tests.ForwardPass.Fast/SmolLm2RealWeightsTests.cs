@@ -21,6 +21,8 @@ public sealed class SmolLm2RealWeightsTests
         {
             var p = Path.Combine(dir, "models", fileName);
             if (File.Exists(p)) return p;
+            var pNested = Path.Combine(dir, "models", "_models", fileName);
+            if (File.Exists(pNested)) return pNested;
             var parent = Directory.GetParent(dir);
             if (parent is null) break;
             dir = parent.FullName;
@@ -32,7 +34,7 @@ public sealed class SmolLm2RealWeightsTests
     public void SmolLM2_135M_RealModelFile_LoadsAndInspectsMetadata()
     {
         string? modelPath = FindModelPath("SmolLM2-135M-Instruct-Q4_K_M.gguf");
-        if (modelPath is null) return;
+        if (modelPath is null) Assert.Skip("modelPath not found (checkpoint or fixture missing).");
 
         using var model = GgufModel.Open(modelPath);
         Assert.NotNull(model);
@@ -44,7 +46,7 @@ public sealed class SmolLm2RealWeightsTests
     public async Task SmolLM2_135M_RealModel_ExecutesPrefillAndGreedyDecode()
     {
         string? modelPath = FindModelPath("SmolLM2-135M-Instruct-Q4_K_M.gguf");
-        if (modelPath is null) return;
+        if (modelPath is null) Assert.Skip("modelPath not found (checkpoint or fixture missing).");
 
         using var model = GgufModel.Open(modelPath);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);

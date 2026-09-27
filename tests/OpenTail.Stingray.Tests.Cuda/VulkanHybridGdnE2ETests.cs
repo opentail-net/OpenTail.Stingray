@@ -54,6 +54,8 @@ public sealed class VulkanHybridGdnE2ETests
             {
                 var p = Path.Combine(dir, "models", f);
                 if (File.Exists(p)) return p;
+                var pNested = Path.Combine(dir, "models", "_models", f);
+                if (File.Exists(pNested)) return pNested;
             }
             var parent = Directory.GetParent(dir);
             if (parent is null) break;

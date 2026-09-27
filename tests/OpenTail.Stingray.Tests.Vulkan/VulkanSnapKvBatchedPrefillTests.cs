@@ -24,6 +24,8 @@ public sealed class VulkanSnapKvBatchedPrefillTests : HeavyTestBase
         {
             var p = Path.Combine(dir, "models", "SmolLM2-1.7B-Instruct-Q4_K_M.gguf");
             if (File.Exists(p)) return p;
+            var pNested = Path.Combine(dir, "models", "_models", "SmolLM2-1.7B-Instruct-Q4_K_M.gguf");
+            if (File.Exists(pNested)) return pNested;
             dir = Directory.GetParent(dir)?.FullName;
         }
         return null;

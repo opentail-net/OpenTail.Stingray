@@ -29,7 +29,7 @@ public sealed class Flux2SiluGateMulGpuTests
     public void SiluGateMul_MatchesCpuGatedFfnReference()
     {
         using var backend = TryCreateVulkan();
-        if (backend is null) return;
+        if (backend is null) Assert.Skip("backend not found (checkpoint or fixture missing).");
 
         const int nTokens = 37; // deliberately not a multiple of the workgroup size
         const int mlpHidden = 256;

@@ -109,7 +109,7 @@ public sealed class AceStepPerfBaselineDebugTest
 
         OpenTail.Stingray.Vulkan.VulkanBackend? vk = null;
         try { vk = new OpenTail.Stingray.Vulkan.VulkanBackend(); } catch { return; }
-        if (vk is null) return;
+        if (vk is null) Assert.Skip("vk not found (checkpoint or fixture missing).");
 
         using (vk)
         using (var turboLoader = SafetensorsLoader.Open(turboPath!))

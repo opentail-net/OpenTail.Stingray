@@ -29,7 +29,7 @@ public sealed class Flux2AdaLNModulateLayerNormGpuTests
     public void AdaLNModulate_IsRmsNormFalse_MatchesCpuLayerNormReference()
     {
         using var backend = TryCreateVulkan();
-        if (backend is null) return;
+        if (backend is null) Assert.Skip("backend not found (checkpoint or fixture missing).");
 
         const int nTokens = 64;
         const int dim = 128;
@@ -86,7 +86,7 @@ public sealed class Flux2AdaLNModulateLayerNormGpuTests
     public void AdaLNModulate_RmsNormAndLayerNormBranches_GenuinelyDiffer()
     {
         using var backend = TryCreateVulkan();
-        if (backend is null) return;
+        if (backend is null) Assert.Skip("backend not found (checkpoint or fixture missing).");
 
         const int nTokens = 8;
         const int dim = 32;

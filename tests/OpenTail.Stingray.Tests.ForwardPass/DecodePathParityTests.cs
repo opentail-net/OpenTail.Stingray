@@ -26,6 +26,8 @@ public sealed class DecodePathParityTests : HeavyTestBase
         {
             var candidate = Path.Combine(dir, "models", "SmolLM2-1.7B-Instruct-Q4_K_M.gguf");
             if (File.Exists(candidate)) return candidate;
+            var candidateNested = Path.Combine(dir, "models", "_models", "SmolLM2-1.7B-Instruct-Q4_K_M.gguf");
+            if (File.Exists(candidateNested)) return candidateNested;
             var parent = Directory.GetParent(dir);
             if (parent is null) break;
             dir = parent.FullName;

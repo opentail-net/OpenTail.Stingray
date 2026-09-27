@@ -24,6 +24,8 @@ public sealed class LtxVideoRealWeightsTests
         {
             var p = Path.Combine(dir, "models", fileName);
             if (File.Exists(p)) return p;
+            var pNested = Path.Combine(dir, "models", "_models", fileName);
+            if (File.Exists(pNested)) return pNested;
             var parent = Directory.GetParent(dir);
             if (parent is null) break;
             dir = parent.FullName;
@@ -35,7 +37,7 @@ public sealed class LtxVideoRealWeightsTests
     public void LtxVideo_RealModelFile_LoadsAndExposesPipeline()
     {
         string? modelPath = FindModelPath(ModelFileName);
-        if (modelPath is null) return;
+        if (modelPath is null) Assert.Skip("modelPath not found (checkpoint or fixture missing).");
 
         using var loader = SafetensorsLoader.Open(modelPath);
         Assert.NotNull(loader);
@@ -53,7 +55,7 @@ public sealed class LtxVideoRealWeightsTests
     public void LtxVideo_RealModelFile_DetectConfigMatchesKnownArchitecture()
     {
         string? modelPath = FindModelPath(ModelFileName);
-        if (modelPath is null) return;
+        if (modelPath is null) Assert.Skip("modelPath not found (checkpoint or fixture missing).");
 
         using var loader = SafetensorsLoader.Open(modelPath);
         var model = new LtxVideoModel(loader);
@@ -174,7 +176,7 @@ public sealed class LtxVideoRealWeightsTests
     public void TestLtxVideoGpuVsCpuParity()
     {
         string? modelPath = FindModelPath(ModelFileName);
-        if (modelPath is null) return;
+        if (modelPath is null) Assert.Skip("modelPath not found (checkpoint or fixture missing).");
 
         using var loader = SafetensorsLoader.Open(modelPath);
         using var cpuModel = new LtxVideoModel(loader, backend: null);

@@ -39,7 +39,7 @@ public sealed class T5GpuParityTests
     public void T5AttentionWithRelBias_IntegratedVulkanBackend_MatchesCpuReference()
     {
         using var vulkan = TryCreateVulkan();
-        if (vulkan is null) return;
+        if (vulkan is null) Assert.Skip("vulkan not found (checkpoint or fixture missing).");
 
         const int numHeads = 64;
         const int headDim = 64;
@@ -134,7 +134,7 @@ public sealed class T5GpuParityTests
     public void T5Encoder_EncodeGpu_MatchesCpuReference_Numerically()
     {
         using var vulkan = TryCreateVulkan();
-        if (vulkan is null) return;
+        if (vulkan is null) Assert.Skip("vulkan not found (checkpoint or fixture missing).");
 
         const int layers = 24;
         const int dim = 4096;

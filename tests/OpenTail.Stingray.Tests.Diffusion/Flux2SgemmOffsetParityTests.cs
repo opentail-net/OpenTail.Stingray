@@ -28,7 +28,7 @@ public sealed class Flux2SgemmOffsetParityTests
     public void SgemmF16_WithRowOffset_MatchesSubBufferAndCpu(int m, int k, int n, int rowOffset)
     {
         using var vulkan = TryCreateVulkan();
-        if (vulkan is null) return;
+        if (vulkan is null) Assert.Skip("vulkan not found (checkpoint or fixture missing).");
         using var cpu = new CpuBackend();
 
         int totalRows = rowOffset + m;
@@ -100,7 +100,7 @@ public sealed class Flux2SgemmOffsetParityTests
     public void SgemmF32_WithRowOffset_MatchesSubBufferAndCpu(int m, int k, int n, int rowOffset)
     {
         using var vulkan = TryCreateVulkan();
-        if (vulkan is null) return;
+        if (vulkan is null) Assert.Skip("vulkan not found (checkpoint or fixture missing).");
         using var cpu = new CpuBackend();
 
         int totalRows = rowOffset + m;

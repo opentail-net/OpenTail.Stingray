@@ -36,7 +36,7 @@ public sealed class UMT5GpuParityTests
     public void UMT5Encoder_EncodeGpu_MatchesCpuReference_Numerically()
     {
         using var vulkan = TryCreateVulkan();
-        if (vulkan is null) return;
+        if (vulkan is null) Assert.Skip("vulkan not found (checkpoint or fixture missing).");
 
         const int layers = 24;
         const int dim = 4096;

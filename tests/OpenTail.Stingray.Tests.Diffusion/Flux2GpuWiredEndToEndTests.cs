@@ -45,7 +45,7 @@ public sealed class Flux2GpuWiredEndToEndTests
             "FLUX.2 DiT/Mistral/VAE checkpoints not all found");
 
         using var vulkan = TryCreateVulkan();
-        if (vulkan is null) return;
+        if (vulkan is null) Assert.Skip("vulkan not found (checkpoint or fixture missing).");
 
         Environment.SetEnvironmentVariable("STINGRAY_FLUX2_GPU_SINGLE_BLOCKS", "1");
         try

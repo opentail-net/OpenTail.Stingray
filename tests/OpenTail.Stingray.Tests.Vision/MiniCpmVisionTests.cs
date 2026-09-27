@@ -57,7 +57,7 @@ public sealed class MiniCpmVisionTests
     public void MiniCpm_RealModelFile_LoadsAndValidatesMetadata()
     {
         string? modelPath = FindModelPath(ModelFileName);
-        if (modelPath is null) return;
+        if (modelPath is null) Assert.Skip("modelPath not found (checkpoint or fixture missing).");
 
         using var gguf = GgufModel.Open(modelPath);
         Assert.NotNull(gguf);

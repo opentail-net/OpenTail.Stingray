@@ -563,6 +563,8 @@ public sealed unsafe class CudaKvarnPrefillTests(ITestOutputHelper output)
         {
             var candidate = Path.Combine(dir, "models", file);
             if (File.Exists(candidate)) return candidate;
+            var candidateNested = Path.Combine(dir, "models", "_models", file);
+            if (File.Exists(candidateNested)) return candidateNested;
             var parent = Directory.GetParent(dir);
             if (parent == null) break;
             dir = parent.FullName;

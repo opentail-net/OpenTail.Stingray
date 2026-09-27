@@ -88,7 +88,7 @@ public sealed class HuggingFaceTokenizerSourceTests
     public void Encode_RealT5GemmaTokenizer_MatchesRealTransformersIds()
     {
         string? dir = FindRepoDir("models/stable-audio-3-t5gemma");
-        if (dir is null) return; // skip: needs the local T5Gemma checkpoint (tokenizer.json lives alongside the weights)
+        if (dir is null) Assert.Skip("dir not found (checkpoint or fixture missing).");
 
         var result = HuggingFaceTokenizerSource.Load(dir);
         Assert.True(result.IsUsable, string.Join("; ", result.Rejections));

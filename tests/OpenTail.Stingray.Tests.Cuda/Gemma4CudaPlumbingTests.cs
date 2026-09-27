@@ -49,6 +49,8 @@ public sealed class Gemma4CudaPlumbingTests
         {
             var p = Path.Combine(dir, "models", ModelFile);
             if (File.Exists(p)) return p;
+            var pNested = Path.Combine(dir, "models", "_models", ModelFile);
+            if (File.Exists(pNested)) return pNested;
             var parent = Directory.GetParent(dir);
             if (parent is null) break;
             dir = parent.FullName;

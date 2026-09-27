@@ -21,6 +21,8 @@ public sealed class GgufAudioAndEmbeddingRealWeightsTests
         {
             var p = Path.Combine(dir, "models", fileName);
             if (File.Exists(p)) return p;
+            var pNested = Path.Combine(dir, "models", "_models", fileName);
+            if (File.Exists(pNested)) return pNested;
             var parent = Directory.GetParent(dir);
             if (parent is null) break;
             dir = parent.FullName;
@@ -62,7 +64,7 @@ public sealed class GgufAudioAndEmbeddingRealWeightsTests
     public void BgeSmall_GGUF_RealModelFile_LoadsAndInspectsMetadata()
     {
         string? modelPath = FindModelPath("bge-small-en-v1.5-q8_0.gguf");
-        if (modelPath is null) return;
+        if (modelPath is null) Assert.Skip("modelPath not found (checkpoint or fixture missing).");
 
         using var model = GgufModel.Open(modelPath);
         Assert.NotNull(model);
@@ -74,7 +76,7 @@ public sealed class GgufAudioAndEmbeddingRealWeightsTests
     public void AllMiniLM_GGUF_RealModelFile_LoadsAndInspectsMetadata()
     {
         string? modelPath = FindModelPath("all-MiniLM-L6-v2-Q8_0.gguf");
-        if (modelPath is null) return;
+        if (modelPath is null) Assert.Skip("modelPath not found (checkpoint or fixture missing).");
 
         using var model = GgufModel.Open(modelPath);
         Assert.NotNull(model);
@@ -86,7 +88,7 @@ public sealed class GgufAudioAndEmbeddingRealWeightsTests
     public void Kokoro82M_GGUF_RealModelFile_LoadsAndInspectsMetadata()
     {
         string? modelPath = FindModelPath("kokoro-82m-q8_0.gguf");
-        if (modelPath is null) return;
+        if (modelPath is null) Assert.Skip("modelPath not found (checkpoint or fixture missing).");
 
         using var model = GgufModel.Open(modelPath);
         Assert.NotNull(model);
@@ -98,7 +100,7 @@ public sealed class GgufAudioAndEmbeddingRealWeightsTests
     public void KokoroVoice_GGUF_RealModelFile_LoadsAndInspectsMetadata()
     {
         string? modelPath = FindModelPath("kokoro-voice-af_heart.gguf");
-        if (modelPath is null) return;
+        if (modelPath is null) Assert.Skip("modelPath not found (checkpoint or fixture missing).");
 
         using var model = GgufModel.Open(modelPath);
         Assert.NotNull(model);
@@ -109,7 +111,7 @@ public sealed class GgufAudioAndEmbeddingRealWeightsTests
     public void Paraformer_GGUF_RealModelFile_LoadsAndInspectsMetadata()
     {
         string? modelPath = FindModelPath("paraformer-q8.gguf");
-        if (modelPath is null) return;
+        if (modelPath is null) Assert.Skip("modelPath not found (checkpoint or fixture missing).");
 
         using var model = GgufModel.Open(modelPath);
         Assert.NotNull(model);

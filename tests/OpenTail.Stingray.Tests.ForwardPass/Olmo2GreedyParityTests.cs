@@ -193,6 +193,8 @@ public sealed class Olmo2GreedyParityTests : HeavyTestBase
         {
             var candidate = Path.Combine(dir, "models", ModelFile);
             if (File.Exists(candidate)) return candidate;
+            var candidateNested = Path.Combine(dir, "models", "_models", ModelFile);
+            if (File.Exists(candidateNested)) return candidateNested;
             if (Directory.GetParent(dir) is not { } parent) break;
             dir = parent.FullName;
         }

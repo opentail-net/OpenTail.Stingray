@@ -23,6 +23,8 @@ public sealed class QwenVlVisionRealWeightsTests
         {
             var p = Path.Combine(dir, "models", fileName);
             if (File.Exists(p)) return p;
+            var pNested = Path.Combine(dir, "models", "_models", fileName);
+            if (File.Exists(pNested)) return pNested;
             var parent = Directory.GetParent(dir);
             if (parent is null) break;
             dir = parent.FullName;
@@ -34,7 +36,7 @@ public sealed class QwenVlVisionRealWeightsTests
     public void QwenVl_DumpTensorInventory()
     {
         string? modelPath = FindModelPath(ModelFileName);
-        if (modelPath is null) return;
+        if (modelPath is null) Assert.Skip("modelPath not found (checkpoint or fixture missing).");
 
         using var gguf = GgufModel.Open(modelPath);
         using var sw = new StreamWriter(@"C:\Git-Public\OpenTail.Stingray\qwen_tensors.txt");
@@ -49,7 +51,7 @@ public sealed class QwenVlVisionRealWeightsTests
     public void QwenVl_RealModelFile_LoadsAndValidatesMetadata()
     {
         string? modelPath = FindModelPath(ModelFileName);
-        if (modelPath is null) return;
+        if (modelPath is null) Assert.Skip("modelPath not found (checkpoint or fixture missing).");
 
         using var gguf = GgufModel.Open(modelPath);
         Assert.NotNull(gguf);
@@ -68,7 +70,7 @@ public sealed class QwenVlVisionRealWeightsTests
     public void QwenVl_RealModel_EmbedsImageEndToEnd()
     {
         string? modelPath = FindModelPath(ModelFileName);
-        if (modelPath is null) return;
+        if (modelPath is null) Assert.Skip("modelPath not found (checkpoint or fixture missing).");
 
         using var embedder = UnifiedVisionPipeline.Open(modelPath);
         Assert.NotNull(embedder);

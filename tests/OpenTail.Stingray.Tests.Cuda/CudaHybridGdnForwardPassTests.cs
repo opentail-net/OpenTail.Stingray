@@ -255,6 +255,8 @@ public sealed class CudaHybridGdnForwardPassTests
         {
             var p = Path.Combine(dir, "models", "Qwen3.6-27B-MTP-Q4_K_M.gguf");
             if (File.Exists(p)) return p;
+            var pNested = Path.Combine(dir, "models", "_models", "Qwen3.6-27B-MTP-Q4_K_M.gguf");
+            if (File.Exists(pNested)) return pNested;
             var parent = Directory.GetParent(dir);
             if (parent is null) break;
             dir = parent.FullName;

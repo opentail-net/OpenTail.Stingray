@@ -29,7 +29,7 @@ public sealed class Flux2QkvNormRopeGpuTests
     public void FusedQkvNormRope_MatchesUnfusedGpuSequence(int nTokens, int numHeads, int dstTokenOffset)
     {
         using var backend = TryCreateVulkan();
-        if (backend is null) return;
+        if (backend is null) Assert.Skip("backend not found (checkpoint or fixture missing).");
 
         const int headDim = 128;
         int dim = numHeads * headDim;

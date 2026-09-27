@@ -112,7 +112,7 @@ public sealed class MultimodalRealWeightsTests
     public void Llava_RealWeights_LoadsAndEmbedsImage()
     {
         string? path = FindModelPath("mmproj-llava-v1.5-7b-f16.gguf");
-        if (path is null) return;
+        if (path is null) Assert.Skip("path not found (checkpoint or fixture missing).");
 
         using var embedder = UnifiedVisionPipeline.Open(path);
         Assert.NotNull(embedder);
@@ -129,7 +129,7 @@ public sealed class MultimodalRealWeightsTests
     public void Pixtral_RealWeights_LoadsAndEmbedsImage()
     {
         string? path = FindModelPath("mmproj-pixtral-12b-f16.gguf");
-        if (path is null) return;
+        if (path is null) Assert.Skip("path not found (checkpoint or fixture missing).");
 
         using var embedder = UnifiedVisionPipeline.Open(path);
         Assert.NotNull(embedder);
@@ -146,7 +146,7 @@ public sealed class MultimodalRealWeightsTests
     public void HunyuanVl_RealWeights_LoadsAndEmbedsImage()
     {
         string? path = FindModelPath("mmproj-hunyuanocr-q8_0.gguf") ?? FindModelPath("mmproj-HunyuanOCR-Q8_0.gguf");
-        if (path is null) return;
+        if (path is null) Assert.Skip("path not found (checkpoint or fixture missing).");
 
         using var embedder = UnifiedVisionPipeline.Open(path);
         Assert.NotNull(embedder);
@@ -163,7 +163,7 @@ public sealed class MultimodalRealWeightsTests
     public void Step3Vl_RealWeights_LoadsAndEmbedsImage()
     {
         string? path = FindModelPath("mmproj-step3-flash-f16.gguf") ?? FindModelPath("mmproj-step3.7-flash-f16.gguf");
-        if (path is null) return;
+        if (path is null) Assert.Skip("path not found (checkpoint or fixture missing).");
 
         using var embedder = UnifiedVisionPipeline.Open(path);
         Assert.NotNull(embedder);
@@ -180,7 +180,7 @@ public sealed class MultimodalRealWeightsTests
     public void Exaone4_RealWeights_LoadsAndEmbedsImage()
     {
         string? path = FindModelPath("mmproj-exaone-4.5-q8_0.gguf") ?? FindModelPath("EXAONE-4.5-33B.mmproj-Q8_0.gguf");
-        if (path is null) return;
+        if (path is null) Assert.Skip("path not found (checkpoint or fixture missing).");
 
         using var embedder = UnifiedVisionPipeline.Open(path);
         Assert.NotNull(embedder);
@@ -197,7 +197,7 @@ public sealed class MultimodalRealWeightsTests
     public void MimoVl_RealWeights_LoadsAndEmbedsImage()
     {
         string? path = FindModelPath("mmproj-mimovl-7b-q8_0.gguf") ?? FindModelPath("MiMo-VL-7B-SFT.mmproj-Q8_0.gguf");
-        if (path is null) return;
+        if (path is null) Assert.Skip("path not found (checkpoint or fixture missing).");
 
         using var embedder = UnifiedVisionPipeline.Open(path);
         Assert.NotNull(embedder);
@@ -214,7 +214,7 @@ public sealed class MultimodalRealWeightsTests
     public void YoutuVl_RealWeights_LoadsAndEmbedsImage()
     {
         string? path = FindModelPath("mmproj-youtuvl-4b-q8_0.gguf") ?? FindModelPath("Youtu-VL-4B-Instruct.mmproj-Q8_0.gguf");
-        if (path is null) return;
+        if (path is null) Assert.Skip("path not found (checkpoint or fixture missing).");
 
         using var embedder = UnifiedVisionPipeline.Open(path);
         Assert.NotNull(embedder);
@@ -231,7 +231,7 @@ public sealed class MultimodalRealWeightsTests
     public void KimiVl_RealWeights_LoadsAndEmbedsImage()
     {
         string? path = FindModelPath("mmproj-kimivl-q8_0.gguf") ?? FindModelPath("Kimi-VL-A3B-Thinking-2506.mmproj-Q8_0.gguf");
-        if (path is null) return;
+        if (path is null) Assert.Skip("path not found (checkpoint or fixture missing).");
 
         using var embedder = UnifiedVisionPipeline.Open(path);
         Assert.NotNull(embedder);
@@ -248,7 +248,7 @@ public sealed class MultimodalRealWeightsTests
     public void Qwen2_5_Vl_RealWeights_LoadsAndEmbedsImage()
     {
         string? path = FindModelPath("mmproj-qwen2.5-vl-7b-f16.gguf");
-        if (path is null) return;
+        if (path is null) Assert.Skip("path not found (checkpoint or fixture missing).");
 
         using var embedder = UnifiedVisionPipeline.Open(path);
         Assert.NotNull(embedder);
@@ -265,7 +265,7 @@ public sealed class MultimodalRealWeightsTests
     public void MiniCpmV_RealWeights_LoadsAndEmbedsImage()
     {
         string? path = FindModelPath("mmproj-minicpm-v-2_6-f16.gguf");
-        if (path is null) return;
+        if (path is null) Assert.Skip("path not found (checkpoint or fixture missing).");
 
         using var embedder = UnifiedVisionPipeline.Open(path);
         Assert.NotNull(embedder);
@@ -282,7 +282,7 @@ public sealed class MultimodalRealWeightsTests
     public void Glm4V_RealWeights_LoadsAndEmbedsImage()
     {
         string? path = FindModelPath("mmproj-glm-4.6v-q4.gguf");
-        if (path is null) return;
+        if (path is null) Assert.Skip("path not found (checkpoint or fixture missing).");
 
         using var embedder = UnifiedVisionPipeline.Open(path);
         Assert.NotNull(embedder);
@@ -306,7 +306,7 @@ public sealed class MultimodalRealWeightsTests
     public void PaddleOcr_RealWeights_LoadsAndEmbedsImage()
     {
         string? path = FindModelPath("PaddleOCR-VL-1.6-GGUF-mmproj.gguf") ?? FindModelPath("mmproj-paddleocr-vl-1.6.gguf");
-        if (path is null) return;
+        if (path is null) Assert.Skip("path not found (checkpoint or fixture missing).");
 
         using var embedder = UnifiedVisionPipeline.Open(path);
         Assert.NotNull(embedder);
@@ -323,7 +323,7 @@ public sealed class MultimodalRealWeightsTests
     public void DotsOcr_RealWeights_LoadsAndEmbedsImage()
     {
         string? path = FindModelPath("mmproj-dots.ocr-Q8_0.gguf");
-        if (path is null) return;
+        if (path is null) Assert.Skip("path not found (checkpoint or fixture missing).");
 
         using var embedder = UnifiedVisionPipeline.Open(path);
         Assert.NotNull(embedder);
@@ -340,7 +340,7 @@ public sealed class MultimodalRealWeightsTests
     public void Granite4Vision_RealWeights_LoadsAndEmbedsImage()
     {
         string? path = FindModelPath("mmproj-granite-4.0-3b-vision-f16.gguf");
-        if (path is null) return;
+        if (path is null) Assert.Skip("path not found (checkpoint or fixture missing).");
 
         using var embedder = UnifiedVisionPipeline.Open(path);
         Assert.NotNull(embedder);
@@ -361,7 +361,7 @@ public sealed class MultimodalRealWeightsTests
         // "granite4_vision" -- routes through LlavaAdapter, not Granite4Adapter. Testing via
         // UnifiedVisionPipeline.Open so it exercises whatever the real autodetect routes to.
         string? path = FindModelPath("mmproj-granite-vision-3.2-2b-f16.gguf");
-        if (path is null) return;
+        if (path is null) Assert.Skip("path not found (checkpoint or fixture missing).");
 
         using var embedder = UnifiedVisionPipeline.Open(path);
         Assert.NotNull(embedder);
@@ -378,7 +378,7 @@ public sealed class MultimodalRealWeightsTests
     public void Llama4_RealWeights_LoadsAndEmbedsImage()
     {
         string? path = FindModelPath("mmproj-llama-4-scout-17b-16e-instruct-f16.gguf");
-        if (path is null) return;
+        if (path is null) Assert.Skip("path not found (checkpoint or fixture missing).");
 
         using var embedder = UnifiedVisionPipeline.Open(path);
         Assert.NotNull(embedder);
@@ -396,7 +396,7 @@ public sealed class MultimodalRealWeightsTests
     public void Nemotron_RealWeights_LoadsAndEmbedsImage()
     {
         string? path = FindModelPath("mmproj-nemotron-nano-12b-v2-vl-bf16.gguf");
-        if (path is null) return;
+        if (path is null) Assert.Skip("path not found (checkpoint or fixture missing).");
 
         using var embedder = UnifiedVisionPipeline.Open(path);
         Assert.NotNull(embedder);
@@ -416,7 +416,7 @@ public sealed class MultimodalRealWeightsTests
     public void Gemma4V_E4B_RealWeights_LoadsAndEmbedsImage()
     {
         string? path = FindModelPath("gemma-4-E4B-it-mmproj.gguf");
-        if (path is null) return;
+        if (path is null) Assert.Skip("path not found (checkpoint or fixture missing).");
 
         using var embedder = UnifiedVisionPipeline.Open(path);
         Assert.NotNull(embedder);

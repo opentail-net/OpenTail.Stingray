@@ -43,7 +43,7 @@ public sealed class Flux2SingleBlockGpuParityTests
         Assert.SkipUnless(modelPath != null, "models/_models/flux2-dev-Q4_K_S.gguf not found");
 
         using var backend = TryCreateVulkan();
-        if (backend is null) return;
+        if (backend is null) Assert.Skip("backend not found (checkpoint or fixture missing).");
 
         using var weights = GgufWeightLoader.Open(modelPath!);
         var p = new Flux2Params();

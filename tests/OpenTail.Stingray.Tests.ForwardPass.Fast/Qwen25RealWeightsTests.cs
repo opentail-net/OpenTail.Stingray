@@ -21,6 +21,8 @@ public sealed class Qwen25RealWeightsTests
         {
             var p = Path.Combine(dir, "models", fileName);
             if (File.Exists(p)) return p;
+            var pNested = Path.Combine(dir, "models", "_models", fileName);
+            if (File.Exists(pNested)) return pNested;
             var parent = Directory.GetParent(dir);
             if (parent is null) break;
             dir = parent.FullName;
@@ -32,7 +34,7 @@ public sealed class Qwen25RealWeightsTests
     public void Qwen25_05B_RealModelFile_LoadsAndInspectsMetadata()
     {
         string? modelPath = FindModelPath("qwen2.5-0.5b-instruct-q4_k_m.gguf");
-        if (modelPath is null) return;
+        if (modelPath is null) Assert.Skip("modelPath not found (checkpoint or fixture missing).");
 
         using var model = GgufModel.Open(modelPath);
         Assert.NotNull(model);
@@ -44,7 +46,7 @@ public sealed class Qwen25RealWeightsTests
     public async Task Qwen25_05B_RealModel_ExecutesPrefillAndGreedyDecode()
     {
         string? modelPath = FindModelPath("qwen2.5-0.5b-instruct-q4_k_m.gguf");
-        if (modelPath is null) return;
+        if (modelPath is null) Assert.Skip("modelPath not found (checkpoint or fixture missing).");
 
         using var model = GgufModel.Open(modelPath);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);

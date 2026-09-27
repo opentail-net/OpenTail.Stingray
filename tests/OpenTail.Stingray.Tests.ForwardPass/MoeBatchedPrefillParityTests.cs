@@ -35,6 +35,8 @@ public sealed class MoeBatchedPrefillParityTests : HeavyTestBase
         {
             var candidate = Path.Combine(dir, "models", "OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf");
             if (File.Exists(candidate)) return candidate;
+            var candidateNested = Path.Combine(dir, "models", "_models", "OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf");
+            if (File.Exists(candidateNested)) return candidateNested;
             var parent = Directory.GetParent(dir);
             if (parent is null) break;
             dir = parent.FullName;

@@ -109,7 +109,7 @@ public sealed class StableAudioDiTGoldenParityTests
 
         VulkanBackend? vk = null;
         try { vk = new VulkanBackend(); } catch { return; }
-        if (vk is null) return;
+        if (vk is null) Assert.Skip("vk not found (checkpoint or fixture missing).");
 
         using (vk)
         using (var st = SafetensorsLoader.OpenDirectory(ditDir))

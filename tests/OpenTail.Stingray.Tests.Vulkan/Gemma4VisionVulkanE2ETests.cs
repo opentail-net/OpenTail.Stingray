@@ -45,6 +45,8 @@ public sealed class Gemma4VisionVulkanE2ETests : HeavyTestBase
         {
             var p = Path.Combine(dir, "models", file);
             if (File.Exists(p)) return p;
+            var pNested = Path.Combine(dir, "models", "_models", file);
+            if (File.Exists(pNested)) return pNested;
             dir = Directory.GetParent(dir)?.FullName;
         }
         return null;

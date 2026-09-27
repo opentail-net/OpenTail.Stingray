@@ -38,6 +38,8 @@ public sealed class PrefillDecodeSelfConsistencyTests : HeavyTestBase, IDisposab
         {
             var candidate = Path.Combine(dir, "models", filename);
             if (File.Exists(candidate)) return candidate;
+            var candidateNested = Path.Combine(dir, "models", "_models", filename);
+            if (File.Exists(candidateNested)) return candidateNested;
             var parent = Directory.GetParent(dir);
             if (parent is null) break;
             dir = parent.FullName;

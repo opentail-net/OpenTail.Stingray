@@ -29,7 +29,7 @@ public sealed class HunyuanVideoTextConditioningTests
     public void HunyuanVideoTextConditioning_RealWeights_ProducesFiniteCroppedEmbeddings()
     {
         string? modelPath = FindModelPath(TextEncoderFileName);
-        if (modelPath is null) return;
+        if (modelPath is null) Assert.Skip("modelPath not found (checkpoint or fixture missing).");
 
         using var model = GgufModel.Open(modelPath);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
@@ -53,7 +53,7 @@ public sealed class HunyuanVideoTextConditioningTests
     public void HunyuanVideoTextConditioning_RealWeights_DifferentPromptsProduceDifferentEmbeddings()
     {
         string? modelPath = FindModelPath(TextEncoderFileName);
-        if (modelPath is null) return;
+        if (modelPath is null) Assert.Skip("modelPath not found (checkpoint or fixture missing).");
 
         using var model = GgufModel.Open(modelPath);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);

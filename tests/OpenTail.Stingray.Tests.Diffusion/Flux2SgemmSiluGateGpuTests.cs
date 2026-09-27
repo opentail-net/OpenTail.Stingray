@@ -27,7 +27,7 @@ public sealed class Flux2SgemmSiluGateGpuTests
     public void SgemmSiluGate_MatchesUnfusedGpuSequence(int M, int K, int N)
     {
         using var backend = TryCreateVulkan();
-        if (backend is null) return;
+        if (backend is null) Assert.Skip("backend not found (checkpoint or fixture missing).");
 
         var rng = new Random(42 + M * 1000 + K * 10 + N);
 

@@ -72,7 +72,7 @@ public sealed class Flux2GpuGemmLadderBenchmarkTests
     public void ProductionShapeGemmLadder_ReportsThroughput()
     {
         using var backend = TryCreateVulkan();
-        if (backend is null) return;
+        if (backend is null) Assert.Skip("backend not found (checkpoint or fixture missing).");
 
         const int d = 6144;
         const int mlpHidden = 18432; // d * 3 (Flux2Params.MlpRatio)

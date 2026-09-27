@@ -32,6 +32,8 @@ public sealed class LtxVaeStatsPresenceDiagnosticTest
         {
             var p = Path.Combine(dir, "models", fileName);
             if (File.Exists(p)) return p;
+            var pNested = Path.Combine(dir, "models", "_models", fileName);
+            if (File.Exists(pNested)) return pNested;
             var parent = Directory.GetParent(dir);
             if (parent is null) break;
             dir = parent.FullName;
@@ -43,7 +45,7 @@ public sealed class LtxVaeStatsPresenceDiagnosticTest
     public void PerChannelStatistics_TensorsArePresent_AndHaveExpectedShape()
     {
         string? modelPath = FindModelPath(ModelFileName);
-        if (modelPath is null) return;
+        if (modelPath is null) Assert.Skip("modelPath not found (checkpoint or fixture missing).");
 
         using var loader = SafetensorsLoader.Open(modelPath);
 

@@ -23,7 +23,7 @@ public sealed class Flux2GpuAttentionBenchmarkTests
     public void JointAttention_ReportsThroughputAndTiming()
     {
         using var backend = TryCreateVulkan();
-        if (backend is null) return;
+        if (backend is null) Assert.Skip("backend not found (checkpoint or fixture missing).");
 
         const int nImg = 1024;
         const int nTxt = 256;

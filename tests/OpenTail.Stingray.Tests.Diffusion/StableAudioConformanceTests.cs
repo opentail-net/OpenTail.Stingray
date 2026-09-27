@@ -27,7 +27,7 @@ public sealed class StableAudioConformanceTests
     public void StableAudioDiT_Forward_ProducesCorrectVelocityShape()
     {
         string? ditDir = FindRepoFile(DitDirRelative);
-        if (ditDir is null) return; // skip: needs local DiT weights
+        if (ditDir is null) Assert.Skip("ditDir not found (checkpoint or fixture missing).");
 
         using var st = SafetensorsLoader.OpenDirectory(ditDir);
         using var dit = StableAudioDiT.FromLoader(st);
@@ -50,7 +50,7 @@ public sealed class StableAudioConformanceTests
     public void AcousticVae_DecodesLatentsToStereoPcm()
     {
         string? ditDir = FindRepoFile(DitDirRelative);
-        if (ditDir is null) return; // skip: needs local DiT+VAE weights
+        if (ditDir is null) Assert.Skip("ditDir not found (checkpoint or fixture missing).");
 
         using var st = SafetensorsLoader.OpenDirectory(ditDir);
         using var vae = AcousticVae.FromLoader(st);

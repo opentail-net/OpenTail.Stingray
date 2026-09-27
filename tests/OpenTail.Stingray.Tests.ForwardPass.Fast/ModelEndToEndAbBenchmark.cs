@@ -30,6 +30,8 @@ public sealed class ModelEndToEndAbBenchmark(ITestOutputHelper output)
         {
             var p = Path.Combine(dir, "models", fileName);
             if (File.Exists(p)) return p;
+            var pNested = Path.Combine(dir, "models", "_models", fileName);
+            if (File.Exists(pNested)) return pNested;
             var parent = Directory.GetParent(dir);
             if (parent is null) break;
             dir = parent.FullName;
@@ -41,7 +43,7 @@ public sealed class ModelEndToEndAbBenchmark(ITestOutputHelper output)
     public async Task Benchmark_SmallModel_EndToEnd()
     {
         string? modelPath = FindModelPath("SmolLM2-135M-Instruct-Q4_K_M.gguf");
-        if (modelPath is null) return;
+        if (modelPath is null) Assert.Skip("modelPath not found (checkpoint or fixture missing).");
 
         using var model = GgufModel.Open(modelPath);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);

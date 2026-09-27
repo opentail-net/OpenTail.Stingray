@@ -42,7 +42,7 @@ public sealed class ZImageRealWeightsTests
     public void ZImage_RealModelFile_GgufLoadsAndInspectsTensors()
     {
         string? modelPath = FindModelPath(ModelFileName);
-        if (modelPath is null) return;
+        if (modelPath is null) Assert.Skip("modelPath not found (checkpoint or fixture missing).");
 
         using var model = GgufModel.Open(modelPath);
         Assert.NotNull(model);

@@ -168,7 +168,7 @@ public sealed class ChatTemplateCorpusTests
                 ["enable_thinking"] = true,
             }));
 
-        if (rendered is null) return; // template's own validation declined this input — see RenderOrFail
+        if (rendered is null) Assert.Skip("rendered not found (checkpoint or fixture missing).");
 
         int iUser1 = rendered.IndexOf(User1, StringComparison.Ordinal);
         int iAssistant1 = rendered.IndexOf(Assistant1, StringComparison.Ordinal);
@@ -215,7 +215,7 @@ public sealed class ChatTemplateCorpusTests
                 ["enable_thinking"] = true,
             }));
 
-        if (rendered is null) return; // template's own validation declined this input — see RenderOrFail
+        if (rendered is null) Assert.Skip("rendered not found (checkpoint or fixture missing).");
         Assert.False(string.IsNullOrWhiteSpace(rendered),
             $"[{fileName}, arch={architecture}] with-tools render is empty/whitespace.");
     }

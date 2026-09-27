@@ -25,7 +25,7 @@ public sealed class WanFfnWeightLoadCheckTest
     public void FfnZeroWeightAndBias_MatchDirectFileRead()
     {
         string? path = FindModelPath("wan2.1-t2v-1.3b-dit.safetensors");
-        if (path is null) return;
+        if (path is null) Assert.Skip("path not found (checkpoint or fixture missing).");
 
         using var loader = SafetensorsLoader.Open(path);
         var w = loader.ReadF32("blocks.0.ffn.0.weight");

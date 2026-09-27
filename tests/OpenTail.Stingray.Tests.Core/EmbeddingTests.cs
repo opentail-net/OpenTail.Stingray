@@ -229,7 +229,7 @@ public sealed class EmbeddingTests(ITestOutputHelper? output = null)
     public void Bench_Qwen3_Embedding_LlamaBench_Comparison()
     {
         var ggufPath = FindModelPath("models/qwen3-embedding-0.6b/qwen3-embedding-0.6b-q8_0.gguf");
-        if (ggufPath is null) return;
+        if (ggufPath is null) Assert.Skip("ggufPath not found (checkpoint or fixture missing).");
 
         using var engine = new EmbeddingEngine(modelName: ggufPath);
 

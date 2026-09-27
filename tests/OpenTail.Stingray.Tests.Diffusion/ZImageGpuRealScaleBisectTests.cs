@@ -43,7 +43,7 @@ public sealed class ZImageGpuRealScaleBisectTests
     public void Block0Parity_RealScale()
     {
         string? ditPath = FindModelPath("z_image_turbo-Q4_0.gguf");
-        if (ditPath is null) return;
+        if (ditPath is null) Assert.Skip("ditPath not found (checkpoint or fixture missing).");
 
         var p = new ZImageParams();
         int dim = p.Dim;

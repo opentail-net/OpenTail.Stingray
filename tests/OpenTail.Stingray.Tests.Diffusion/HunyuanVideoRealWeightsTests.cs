@@ -26,8 +26,12 @@ public sealed class HunyuanVideoRealWeightsTests
         {
             var p = Path.Combine(dir, "models", fileName);
             if (File.Exists(p)) return p;
+            var pUnderscore = Path.Combine(dir, "models", "_models", fileName);
+            if (File.Exists(pUnderscore)) return pUnderscore;
             var pNested = Path.Combine(dir, "models", "hunyuanvideo", fileName);
             if (File.Exists(pNested)) return pNested;
+            var pNestedNested = Path.Combine(dir, "models", "_models", "hunyuanvideo", fileName);
+            if (File.Exists(pNestedNested)) return pNestedNested;
             var parent = Directory.GetParent(dir);
             if (parent is null) break;
             dir = parent.FullName;
@@ -39,7 +43,7 @@ public sealed class HunyuanVideoRealWeightsTests
     public void HunyuanVideo_RealModelFile_LoadsAndExposesTensors()
     {
         string? modelPath = FindModelPath(ModelFileName);
-        if (modelPath is null) return;
+        if (modelPath is null) Assert.Skip("modelPath not found (checkpoint or fixture missing).");
 
         using var loader = SafetensorsLoader.Open(modelPath);
         Assert.NotNull(loader);
@@ -50,7 +54,7 @@ public sealed class HunyuanVideoRealWeightsTests
     public void HunyuanVideoPipeline_LoadRealModel_ExecutesForwardPass()
     {
         string? modelPath = FindModelPath(ModelFileName);
-        if (modelPath is null) return;
+        if (modelPath is null) Assert.Skip("modelPath not found (checkpoint or fixture missing).");
         string? vaePath = FindModelPath(VaeFileName);
 
         using var pipeline = HunyuanVideoPipeline.Load(modelPath, vaePath);

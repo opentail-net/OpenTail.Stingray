@@ -63,10 +63,10 @@ public sealed class FluxGpuVsCpuForwardBisectDebugTest
     public void ForwardGpu_MatchesForwardCpu_SingleStep_RealWeights()
     {
         var modelPath = FindFluxCheckpoint();
-        if (modelPath is null) return; // no local checkpoint -- skip silently, consistent with this repo's RealWeights convention
+        if (modelPath is null) Assert.Skip("modelPath not found (checkpoint or fixture missing).");
 
         using var vulkan = TryCreateVulkan();
-        if (vulkan is null) return; // no GPU on this machine -- skip
+        if (vulkan is null) Assert.Skip("vulkan not found (checkpoint or fixture missing).");
 
         var model = GgufModel.Open(modelPath);
         var p = FluxParams.FromMetadata(model.Metadata);

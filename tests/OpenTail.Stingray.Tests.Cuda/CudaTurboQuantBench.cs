@@ -240,6 +240,8 @@ public sealed class CudaTurboQuantBench
         {
             var c = Path.Combine(dir, "models", ModelFile);
             if (File.Exists(c)) return c;
+            var cNested = Path.Combine(dir, "models", "_models", ModelFile);
+            if (File.Exists(cNested)) return cNested;
             var p = Directory.GetParent(dir);
             if (p is null) break;
             dir = p.FullName;

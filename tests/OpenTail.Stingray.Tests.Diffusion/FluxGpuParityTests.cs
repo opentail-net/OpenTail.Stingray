@@ -21,7 +21,7 @@ public sealed class FluxGpuParityTests
     public void FluxUnpackQkv_MatchesCpuReference()
     {
         using var backend = TryCreateVulkan();
-        if (backend is null) return;
+        if (backend is null) Assert.Skip("backend not found (checkpoint or fixture missing).");
 
         const int n = 64;
         const int d = 128;
@@ -77,7 +77,7 @@ public sealed class FluxGpuParityTests
     public void FluxConcatAttnMlp_MatchesCpuReference()
     {
         using var backend = TryCreateVulkan();
-        if (backend is null) return;
+        if (backend is null) Assert.Skip("backend not found (checkpoint or fixture missing).");
 
         const int n = 32;
         const int d = 64;
@@ -123,7 +123,7 @@ public sealed class FluxGpuParityTests
     public void FluxEulerStep_MatchesCpuReference()
     {
         using var backend = TryCreateVulkan();
-        if (backend is null) return;
+        if (backend is null) Assert.Skip("backend not found (checkpoint or fixture missing).");
 
         const int len = 1024;
         const float dt = 0.25f;
@@ -165,7 +165,7 @@ public sealed class FluxGpuParityTests
     public void MultiHeadAttentionTiled128_MatchesCpuReference()
     {
         using var backend = TryCreateVulkan();
-        if (backend is null) return;
+        if (backend is null) Assert.Skip("backend not found (checkpoint or fixture missing).");
 
         const int qSeq = 32;
         const int kvSeq = 32;
@@ -213,7 +213,7 @@ public sealed class FluxGpuParityTests
     public void AdaLNModulate_MatchesCpuReference()
     {
         using var backend = TryCreateVulkan();
-        if (backend is null) return;
+        if (backend is null) Assert.Skip("backend not found (checkpoint or fixture missing).");
 
         const int nTokens = 64;
         const int dim = 128;
@@ -256,7 +256,7 @@ public sealed class FluxGpuParityTests
     public void SgemmF16_MatchesCpuReference()
     {
         using var backend = TryCreateVulkan();
-        if (backend is null) return;
+        if (backend is null) Assert.Skip("backend not found (checkpoint or fixture missing).");
 
         const int M = 48;
         const int K = 96;
@@ -317,7 +317,7 @@ public sealed class FluxGpuParityTests
     public void SgemmF16_M1_MatchesCpuReference()
     {
         using var backend = TryCreateVulkan();
-        if (backend is null) return;
+        if (backend is null) Assert.Skip("backend not found (checkpoint or fixture missing).");
 
         const int M = 1;
         const int K = 3072;

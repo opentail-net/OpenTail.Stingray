@@ -53,7 +53,7 @@ public sealed class QwenImageRealWeightsTests
     public void QwenImageModel_RealWeights_ForwardProducesHealthyVelocity()
     {
         string? modelPath = FindModelPath(ModelFileName);
-        if (modelPath is null) return;
+        if (modelPath is null) Assert.Skip("modelPath not found (checkpoint or fixture missing).");
 
         using var weights = GgufWeightLoader.Open(modelPath);
         using var model = new QwenImageModel(weights);
@@ -86,7 +86,7 @@ public sealed class QwenImageRealWeightsTests
     public void QwenImagePipeline_RealWeights_FullGenerateProducesNonDegenerateImage()
     {
         string? modelPath = FindModelPath(ModelFileName);
-        if (modelPath is null) return;
+        if (modelPath is null) Assert.Skip("modelPath not found (checkpoint or fixture missing).");
         string? vaePath = FindModelPath(VaeFileName);
 
         using var pipeline = QwenImagePipeline.Load(modelPath, vaePath);

@@ -36,7 +36,7 @@ public sealed class WanGpuParityTests
     public void WanModel_ForwardGpu_MatchesForwardCpu_Numerically()
     {
         using var vulkan = TryCreateVulkan();
-        if (vulkan is null) return; // Skip cleanly on machines without Vulkan runtime
+        if (vulkan is null) Assert.Skip("vulkan not found (checkpoint or fixture missing).");
 
         const int numLayers = 1;
         const int dim = 1536;
@@ -155,7 +155,7 @@ public sealed class WanGpuParityTests
         if (!File.Exists(ditPath)) return;
 
         using var vulkan = TryCreateVulkan();
-        if (vulkan is null) return;
+        if (vulkan is null) Assert.Skip("vulkan not found (checkpoint or fixture missing).");
 
         using var loader = SafetensorsLoader.Open(ditPath);
 

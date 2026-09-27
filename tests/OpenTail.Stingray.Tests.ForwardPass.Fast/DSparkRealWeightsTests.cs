@@ -34,7 +34,7 @@ public sealed class DSparkRealWeightsTests
     public void DSparkDraftModel_RealWeights_LoadsAndInitializesSuccessfully()
     {
         string? modelDir = FindModelDir(DSparkDirName);
-        if (modelDir is null) return;
+        if (modelDir is null) Assert.Skip("modelDir not found (checkpoint or fixture missing).");
 
         string configPath = Path.Combine(modelDir, "config.json");
         string weightsPath = Path.Combine(modelDir, "model.safetensors");

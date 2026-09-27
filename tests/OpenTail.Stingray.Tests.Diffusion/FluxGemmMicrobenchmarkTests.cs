@@ -749,7 +749,7 @@ public sealed class FluxGemmMicrobenchmarkTests(ITestOutputHelper output)
     public unsafe void CompareAttentionKernels()
     {
         using var vulkan = TryCreateVulkan();
-        if (vulkan is null) return;
+        if (vulkan is null) Assert.Skip("vulkan not found (checkpoint or fixture missing).");
 
         const int numHeads = 24;
         const int headDim = 128;

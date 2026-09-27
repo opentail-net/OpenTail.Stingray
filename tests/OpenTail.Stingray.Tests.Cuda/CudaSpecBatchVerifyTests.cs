@@ -50,6 +50,8 @@ public sealed class CudaSpecBatchVerifyTests
         {
             var p = Path.Combine(dir, "models", file);
             if (File.Exists(p)) return p;
+            var pNested = Path.Combine(dir, "models", "_models", file);
+            if (File.Exists(pNested)) return pNested;
             var parent = Directory.GetParent(dir);
             if (parent is null) break;
             dir = parent.FullName;
