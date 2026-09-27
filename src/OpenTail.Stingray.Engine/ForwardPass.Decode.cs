@@ -625,11 +625,9 @@ public sealed unsafe partial class ForwardPass
     private void FillMRopeCosSin(int slot, float* cos, float* sin, int half)
     {
         var (t, h, w) = MRopePosition(slot);
-        var sec = _hp.RopeSections!;
-        int s0 = sec[0], s1 = s0 + sec[1], s2 = s1 + (sec.Count > 2 ? sec[2] : 0);
         for (int i = 0; i < half; i++)
         {
-            int p = i < s0 ? t : i < s1 ? h : i < s2 ? w : 0;
+            int p = _hp.MRopeComponent(i) switch { 0 => t, 1 => h, 2 => w, _ => 0 };
             float a = p * MathF.Pow(_hp.RopeTheta, -2f * i / (2 * half));
             cos[i] = MathF.Cos(a);
             sin[i] = MathF.Sin(a);

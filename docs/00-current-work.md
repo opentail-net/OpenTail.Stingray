@@ -91,7 +91,7 @@ text model wants 4096), Llama 4 vision (93 GB), MobileNetV5 (no checkpoint decla
    - GPU paths;
    - untested variants: MoE Granite-H, MoE Nemotron-H, LFM2-MoE (`lfm2moe`), LFM2-VL/Audio, and the
      Nemotron-Nano-12B-v2-VL vision tower end to end; Falcon-H1 should come almost free.
-3. **Qwen3-VL**: needs IMROPE plus the `qwen3vl` text architecture (not admitted).
+3. ~~**Qwen3-VL**~~: done 2026-09-27 on CPU (IMROPE, deepstack, `qwen3vl` admitted; see STATUS). GPU image input remains.
 4. **Gemma 4 E4B vision (`gemma4v`)**: encoder implemented, no STATUS row, never parity-checked.
    The oracle now exists (`llama-mtmd-debug` stage fingerprints, as used for Kimi/Youtu).
    [2-coverage/03-gemma4-e4b-vision-plan.md](2-coverage/03-gemma4-e4b-vision-plan.md).

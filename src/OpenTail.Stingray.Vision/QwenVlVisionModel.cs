@@ -26,6 +26,17 @@ public sealed class QwenVlVisionModel : IDisposable
     public int WindowSize { get; } = 112;
     public int MergeRatio => SpatialMergeFactor;
 
+    /// <summary>Qwen3-VL (<c>qwen3vl_merger</c>): learned position grid resized to the image, GELU FFN, and
+    /// deepstack branches whose outputs are appended to each token (llama.cpp tools/mtmd/models/qwen3vl.cpp).</summary>
+    public bool IsQwen3Vl { get; }
+
+    /// <summary>Vision layers with a deepstack branch (<c>v.deepstack.{il}.*</c>), in layer order.</summary>
+    public IReadOnlyList<int> DeepstackLayers => Enumerable.Range(0, LayerCount)
+        .Where(l => Gguf.FindTensor($"v.deepstack.{l}.fc1.weight").HasValue).ToArray();
+
+    /// <summary>Width of one output token: the projection plus one projection-sized slice per deepstack layer.</summary>
+    public int OutputTokenDim => ProjectionDim * (1 + DeepstackLayers.Count);
+
     private bool _disposed;
 
     private QwenVlVisionModel(GgufModel gguf, string projectorType)
@@ -33,37 +44,23 @@ public sealed class QwenVlVisionModel : IDisposable
         Gguf = gguf;
         ProjectorType = projectorType;
 
-        // Ingest architecture metadata
-        if (gguf.Metadata.TryGetValue("clip.vision.embedding_length", out var el) && el is int elInt)
-            EmbeddingDim = elInt;
-        else if (gguf.Metadata.TryGetValue("clip.embedding_length", out var el2) && el2 is int el2Int)
-            EmbeddingDim = el2Int;
+        // Ingest architecture metadata. GGUF u32 values box as uint, so read them through GetIntWiden: an `is int`
+        // check silently kept the defaults (ProjectionDim 3584, found 2026-09-27 on Qwen3-VL-2B whose projection is 2048).
+        EmbeddingDim = GetIntWiden(gguf, "clip.vision.embedding_length", GetIntWiden(gguf, "clip.embedding_length", EmbeddingDim));
+        ProjectionDim = GetIntWiden(gguf, "clip.vision.projection_dim", GetIntWiden(gguf, "clip.projection_dim", ProjectionDim));
+        HeadCount = GetIntWiden(gguf, "clip.vision.attention.head_count", GetIntWiden(gguf, "clip.attention.head_count", HeadCount));
+        LayerCount = GetIntWiden(gguf, "clip.vision.block_count", GetIntWiden(gguf, "clip.block_count", LayerCount));
 
-        if (gguf.Metadata.TryGetValue("clip.vision.projection_dim", out var pd) && pd is int pdInt)
-            ProjectionDim = pdInt;
-        else if (gguf.Metadata.TryGetValue("clip.projection_dim", out var pd2) && pd2 is int pd2Int)
-            ProjectionDim = pd2Int;
+        IsQwen3Vl = projectorType.Contains("qwen3vl", StringComparison.OrdinalIgnoreCase);
+        PatchSize = GetIntWiden(gguf, "clip.vision.patch_size", PatchSize);
+        SpatialMergeFactor = GetIntWiden(gguf, "clip.vision.spatial_merge_size", SpatialMergeFactor);
 
-        if (gguf.Metadata.TryGetValue("clip.vision.attention.head_count", out var hc) && hc is int hcInt)
-            HeadCount = hcInt;
-        else if (gguf.Metadata.TryGetValue("clip.attention.head_count", out var hc2) && hc2 is int hc2Int)
-            HeadCount = hc2Int;
-
-        if (gguf.Metadata.TryGetValue("clip.vision.block_count", out var bc) && bc is int bcInt)
-            LayerCount = bcInt;
-        else if (gguf.Metadata.TryGetValue("clip.block_count", out var bc2) && bc2 is int bc2Int)
-            LayerCount = bc2Int;
-
-        if (projectorType.Contains("qwen2vl", StringComparison.OrdinalIgnoreCase))
+        // Qwen2-VL and Qwen3-VL use LayerNorm with bias; Qwen2.5-VL uses RMSNorm.
+        if (projectorType.Contains("qwen2vl", StringComparison.OrdinalIgnoreCase) || IsQwen3Vl)
             UseRmsNorm = false;
         else
             UseRmsNorm = true;
 
-        // GGUF's real u32 metadata values box as CLR `uint` (ReadGgufValue's UInt32 case), not
-        // `int` -- an `is int` check alone silently misses them. Using a widening helper for
-        // these two new fields rather than repeating the rest of this file's narrower `is int`
-        // pattern (which may itself be a latent, pre-existing, separate bug in every other field
-        // above -- out of scope for this windowed-attention pass, noted in docs).
         WindowAttnPattern = GetIntWiden(gguf, "clip.vision.n_wa_pattern", 0);
         WindowSize = GetIntWiden(gguf, "clip.vision.window_size", 112);
     }

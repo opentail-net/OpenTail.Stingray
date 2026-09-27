@@ -249,6 +249,15 @@ public static class ModelCompatibility
         // by LlamaMtmdVisionParityTests.PaddleOcr_Rainbow448_MatchesLlamaMtmdDebug.
         "paddleocr",
 
+        // qwen3vl -- Qwen3-VL text decoder (llama.cpp src/models/qwen3vl.cpp): the qwen3 block with IMROPE (interleaved
+        // M-RoPE sections [24,20,20,0]; for text the 4th component is 0, so pairs 61-62 never rotate) and deepstack
+        // (vision slices added after layers 0..n_deepstack-1). ADMITTED 2026-09-27. Evidence: Qwen3VL-2B-Instruct Q8_0
+        // wikitext second-half PPL at -c 2048 9.8356 vs llama-perplexity --chunks 1 9.8513 (it was 2654 with the
+        // interleaved-pair rotation the arch fell back to before). Images (CPU): LlamaMtmdVisionParityTests.Qwen3Vl_Rainbow448
+        // pins the encoder to llama-mtmd-debug, and on test-1.jpeg the answer matches llama-mtmd-cli but for one
+        // capitalisation token.
+        "qwen3vl",
+
         // deepseek2-ocr — DeepSeek-OCR2 text decoder (llama.cpp src/models/deepseek2.cpp is_ocr branch: plain MHA
         // with q/k/v, full-head NeoX RoPE, theta 1e4, then the DeepSeek MoE FFN). ADMITTED 2026-09-27 after adding
         // it to the NeoX list. Evidence (deepseek-ocr-2-Q4_K_M.gguf, CPU): wikitext [512,1024) PPL 8.7955 vs

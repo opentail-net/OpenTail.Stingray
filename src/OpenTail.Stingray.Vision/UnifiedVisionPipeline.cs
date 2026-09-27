@@ -680,7 +680,7 @@ public static class UnifiedVisionPipeline
 
         public (int Width, int Height) LastTokenGrid { get; private set; }
         public string ProjectorType => _model.ProjectorType;
-        public int EmbeddingDim => _model.ProjectionDim;
+        public int EmbeddingDim => _model.OutputTokenDim;
         public int ImageWidth => 448;
         public int ImageHeight => 448;
         public string ImageOpenMarker => "<|vision_start|>";

@@ -143,7 +143,7 @@ Timebox each at half a day, write down what was learned, and move on if blocked.
 
 ### 14. Qwen3-VL, Parakeet TDT, ACE-Step parity, CPU-only vision features
 - [ ] **14. Architectural additions & missing features**
-  - [ ] **Qwen3-VL:** Implement IMROPE plus `qwen3vl` architecture support.
+  - [x] **Qwen3-VL:** Implement IMROPE plus `qwen3vl` architecture support. DONE 2026-09-27 on CPU (see Log).
   - [ ] **Parakeet TDT:** Implement the decode head.
   - [ ] **ACE-Step 1.5 Turbo:** Validate numeric parity and add STATUS row.
   - [ ] **CPU-only vision features:** Port 2D M-RoPE image positions and deepstack to GPU/CUDA forward passes.
@@ -285,3 +285,17 @@ Timebox each at half a day, write down what was learned, and move on if blocked.
   Q8_0 (max logit 18.777 vs 18.793, same argmax). `Qwen3F16FiniteLogitsTests` pins it (3.8 s, three
   real weight loads logged). The fixing commit was not identified.
 - 2026-09-27: the user moved item 14, then item 15, ahead of 11d-f and 12-13.
+- 2026-09-27: item 14, Qwen3-VL done on CPU.
+  - Downloaded `Qwen/Qwen3-VL-2B-Instruct-GGUF` Q8_0 and its Q8_0 mmproj into `models/_models`.
+  - Text: `qwen3vl` was missing from the NeoX list and had no IMROPE. Added `RopeSectionsInterleaved` and
+    `ModelHyperparams.MRopeComponent` (ggml `ggml_mrope_cache_init` for MROPE and IMROPE). Text positions are
+    (p, p, p, 0), so pairs 61-62 never rotate. PPL 9.8356 vs llama.cpp 9.8513 (was 2654).
+  - Deepstack: reuses Granite 4.0 Vision's `DeepstackMapping` (slice k added before layer k), synthesized from
+    `n_deepstack_layers`.
+  - Vision: `QwenVlVisionModel` read every u32 key as `is int`, so it kept its defaults (projection 3584 instead
+    of 2048, patch 14 instead of 16). Qwen3-VL encoder: resized learned position grid, GELU FFN, LayerNorm with
+    bias (and `post_ln` bias), `v.patch_embd.bias`, deepstack branches.
+  - Evidence: `LlamaMtmdVisionParityTests` 14/14 (137 s, real weights), including the new `Qwen3Vl_Rainbow448`.
+    End to end on `test-1.jpeg`: same answer as `llama-mtmd-cli` except one capitalisation token. RUNNING row
+    added (2.7 GB, decode 18.9 tok/s).
+  - Remaining for the "CPU-only vision features" sub-item: M-RoPE image positions and deepstack on CUDA/Vulkan.

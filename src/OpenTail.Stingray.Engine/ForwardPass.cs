@@ -572,6 +572,22 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
             }
         }
 
+        // M-RoPE text positions are (p, p, p, 0): pairs driven by the fourth component never rotate
+        // (qwen3vl IMROPE with sections [24, 20, 20, 0] leaves pairs 61 and 62 unrotated). Copy position 0's
+        // row into those columns.
+        if (hp.RopeSections is { Count: > 0 })
+        {
+            for (int i = 0; i < _ropeHalfDim; i++)
+            {
+                if (hp.MRopeComponent(i) != 3) continue;
+                for (long pos = 1; pos < ctxLen; pos++)
+                {
+                    _ropeCosTable[pos * _ropeHalfDim + i] = _ropeCosTable[i];
+                    _ropeSinTable[pos * _ropeHalfDim + i] = _ropeSinTable[i];
+                }
+            }
+        }
+
         if (hp.RopeThetaSwa > 0f && _layerRopeDim is not null)
         {
             int swaRopeDim = maxRopeDim;

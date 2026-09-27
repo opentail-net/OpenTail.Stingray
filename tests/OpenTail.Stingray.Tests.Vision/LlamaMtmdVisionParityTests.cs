@@ -142,6 +142,34 @@ public sealed class LlamaMtmdVisionParityTests
     }
 
     [Fact]
+    public void Qwen3Vl_Rainbow448_MatchesLlamaMtmdDebug()
+    {
+        string? path = FindModel("mmproj-Qwen3VL-2B-Instruct-Q8_0.gguf");
+        Assert.SkipWhen(path is null, "mmproj-Qwen3VL-2B-Instruct-Q8_0.gguf not present");
+        using var model = QwenVlVisionModel.Open(path!);
+        float[] tokens = new QwenVlVisionEncoder(model).Forward(Rainbow(448), 448, 448, out int count);
+        Report("qwen3vl rainbow448", tokens, count, 8192);
+
+        // Each token is [projector 2048 | deepstack 5, 11, 17: 3 x 2048]. llama-mtmd-debug (-m Qwen3VL-2B-Instruct-Q8_0.gguf
+        // --mmproj mmproj-Qwen3VL-2B-Instruct-Q8_0.gguf -n 448 --image rainbow, 2026-09-27): 196 x 8192, sum 5698.778809,
+        // row 0 [-0.0491, 0.1608, 0.0508]; projector part sum 4603.576172, deepstack part 1095.208740.
+        // Measured: 5749.77, row 0 [-0.0658, 0.1500, 0.0608]; projector 4654.83, deepstack 1094.94. The deepstack rows at
+        // layers 5 and 17 match to about 0.01. The rest is gradual drift over the 24 layers: per-layer sums stay within
+        // 0.12% (layer 23: 307769 vs 307391) and post_ln within 0.07%, but the projector sum over 400k mixed-sign values
+        // amplifies it. End to end on test-1.jpeg the answer matches llama-mtmd-cli except one capitalisation token.
+        Assert.Equal(196, count);
+        Assert.Equal(196 * 8192, tokens.Length);
+        double main = 0, deep = 0;
+        for (int t = 0; t < count; t++)
+            for (int i = 0; i < 8192; i++)
+                if (i < 2048) main += tokens[t * 8192 + i]; else deep += tokens[t * 8192 + i];
+        Console.WriteLine($"[qwen3vl rainbow448] projector sum={main:F4} deepstack sum={deep:F4}");
+        AssertMatches(tokens, 5698.779, 90.0, [-0.0491f, 0.1608f, 0.0508f], 0.05f);
+        Assert.InRange(main, 4603.576 - 90, 4603.576 + 90);
+        Assert.InRange(deep, 1095.209 - 20, 1095.209 + 20);
+    }
+
+    [Fact]
     public void MimoVl_Rainbow448_MatchesLlamaMtmdDebug()
     {
         string? path = FindModel("mmproj-mimovl-7b-q8_0.gguf");

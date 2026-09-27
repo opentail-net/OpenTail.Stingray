@@ -22,6 +22,15 @@ public sealed unsafe class QwenVlVisionEncoder
     private readonly float[]? _patchBias;
     private readonly float[] _positionEmbdF32;
     private readonly float[]? _postLnW;
+    private readonly float[]? _postLnB;
+    private readonly DeepstackWeights[] _deepstack;
+
+    private sealed class DeepstackWeights
+    {
+        public int Layer;
+        public float[]? NormW, NormB, Fc1B, Fc2B;
+        public VisionTensorRef Fc1W, Fc2W;
+    }
     private readonly VisionTensorRef _mm0W;
     private readonly float[]? _mm0B;
     private readonly VisionTensorRef _mm2W;
@@ -79,9 +88,20 @@ public sealed unsafe class QwenVlVisionEncoder
         // via list-tensors (v.patch_embd.weight.1).
         _patchEmbd1WF32 = VisionOps.DequantizeToFloat32(
             VisionOps.GetTensor(gguf, "v.patch_embd.weight.1", "v.patch_embd.1.weight"));
-        _patchBias = VisionOps.GetTensorArray(gguf, "v.patch_bias");
+        _patchBias = VisionOps.GetTensorArray(gguf, "v.patch_bias", "v.patch_embd.bias");
         _positionEmbdF32 = VisionOps.DequantizeToFloat32(VisionOps.GetTensor(gguf, "v.position_embd.weight", "v.position_embd"));
         _postLnW = VisionOps.GetTensorArray(gguf, "v.post_ln.weight");
+        _postLnB = VisionOps.GetTensorArray(gguf, "v.post_ln.bias");
+        _deepstack = model.DeepstackLayers.Select(l => new DeepstackWeights
+        {
+            Layer = l,
+            NormW = VisionOps.GetTensorArray(gguf, $"v.deepstack.{l}.norm.weight"),
+            NormB = VisionOps.GetTensorArray(gguf, $"v.deepstack.{l}.norm.bias"),
+            Fc1W = VisionOps.GetTensor(gguf, $"v.deepstack.{l}.fc1.weight"),
+            Fc1B = VisionOps.GetTensorArray(gguf, $"v.deepstack.{l}.fc1.bias"),
+            Fc2W = VisionOps.GetTensor(gguf, $"v.deepstack.{l}.fc2.weight"),
+            Fc2B = VisionOps.GetTensorArray(gguf, $"v.deepstack.{l}.fc2.bias"),
+        }).ToArray();
 
         _mm0W = VisionOps.GetTensor(gguf, "mm.0.weight");
         _mm0B = VisionOps.GetTensorArray(gguf, "mm.0.bias");
@@ -92,7 +112,7 @@ public sealed unsafe class QwenVlVisionEncoder
         _blocks = new LayerWeights[_layers];
         for (int l = 0; l < _layers; l++)
         {
-            var gateTensor = gguf.FindTensor($"v.blk.{l}.ffn_gate.weight");
+            var gateTensor = gguf.FindTensor($"v.blk.{l}.ffn_gate.weight") ?? gguf.FindTensor($"v.blk.{l}.ffn_up.weight");
             int ffnDim = gateTensor.HasValue ? (int)gateTensor.Value.Dimensions[1] : 3420;
 
             _blocks[l] = new LayerWeights
@@ -180,6 +200,7 @@ public sealed unsafe class QwenVlVisionEncoder
         }
         var gateBuf = new float[numPatches * maxFfnDim];
         var upBuf = new float[numPatches * maxFfnDim];
+        var deepstackOut = new float[_deepstack.Length][];
 
         for (int l = 0; l < _layers; l++)
         {
@@ -229,18 +250,25 @@ public sealed unsafe class QwenVlVisionEncoder
                 Array.Copy(hiddenStates, normed, hiddenStates.Length);
                 ApplyNorm(normed, numPatches, _embd, ln2W, ln2B);
 
-                // SwiGLU FFN
                 int ffnDim = blk.FfnIntermediate;
-                VisionOps.MatVecAny(normed, blk.FfnGateW, ffnGateB, numPatches, _embd, ffnDim, gateBuf);
-                VisionOps.MatVecAny(normed, blk.FfnUpW, ffnUpB, numPatches, _embd, ffnDim, upBuf);
-
-                // SiLU(gate) * up
                 int ffnLen = numPatches * ffnDim;
-                for (int i = 0; i < ffnLen; i++)
+                if (blk.FfnGateW.IsValid)
                 {
-                    float g = gateBuf[i];
-                    float silu = g / (1.0f + MathF.Exp(-g));
-                    gateBuf[i] = silu * upBuf[i];
+                    // SwiGLU FFN: SiLU(gate) * up
+                    VisionOps.MatVecAny(normed, blk.FfnGateW, ffnGateB, numPatches, _embd, ffnDim, gateBuf);
+                    VisionOps.MatVecAny(normed, blk.FfnUpW, ffnUpB, numPatches, _embd, ffnDim, upBuf);
+                    for (int i = 0; i < ffnLen; i++)
+                    {
+                        float g = gateBuf[i];
+                        float silu = g / (1.0f + MathF.Exp(-g));
+                        gateBuf[i] = silu * upBuf[i];
+                    }
+                }
+                else
+                {
+                    // Qwen3-VL: GELU(up), no gate (clip.use_gelu, FFN_GELU)
+                    VisionOps.MatVecAny(normed, blk.FfnUpW, ffnUpB, numPatches, _embd, ffnDim, gateBuf);
+                    for (int i = 0; i < ffnLen; i++) gateBuf[i] = Gelu(gateBuf[i]);
                 }
 
                 // Down Projection
@@ -249,16 +277,110 @@ public sealed unsafe class QwenVlVisionEncoder
                 // Residual 2
                 for (int i = 0; i < hiddenStates.Length; i++) hiddenStates[i] += attnOut[i];
             }
+
+            for (int d = 0; d < _deepstack.Length; d++)
+                if (_deepstack[d].Layer == l)
+                    deepstackOut[d] = Deepstack(_deepstack[d], hiddenStates, patchesX, patchesY);
         }
 
         // 3. Post-Norm
-        fixed (float* postLnW = _postLnW) ApplyNorm(hiddenStates, numPatches, _embd, postLnW, null);
+        fixed (float* postLnW = _postLnW, postLnB = _postLnB) ApplyNorm(hiddenStates, numPatches, _embd, postLnW, postLnB);
 
         // 4. 2x2 Spatial Merge & Multimodal MLP Projection (5120 -> 5120 -> 3584)
         var visualTokens = new float[tokenCount * _projDim];
         ApplySpatialMergeAndMlp(hiddenStates, patchesX, patchesY, visualTokens);
+        if (_deepstack.Length == 0) return visualTokens;
 
-        return visualTokens;
+        // Qwen3-VL: each token is [projection | deepstack 0 | deepstack 1 | ...] (ggml_concat on the feature dim).
+        int width = _projDim * (1 + _deepstack.Length);
+        var wide = new float[tokenCount * width];
+        for (int t = 0; t < tokenCount; t++)
+        {
+            Array.Copy(visualTokens, t * _projDim, wide, t * width, _projDim);
+            for (int d = 0; d < _deepstack.Length; d++)
+                Array.Copy(deepstackOut[d], t * _projDim, wide, t * width + (1 + d) * _projDim, _projDim);
+        }
+        return wide;
+    }
+
+    /// <summary>ggml_gelu (tanh approximation), as the projector below uses.</summary>
+    private static float Gelu(float x) => 0.5f * x * (1.0f + MathF.Tanh(MathF.Sqrt(2.0f / MathF.PI) * (x + 0.044715f * x * x * x)));
+
+    /// <summary>
+    /// One Qwen3-VL deepstack branch on a layer's output: 2x2 merge to 4*embd per token, LayerNorm, fc1, GELU, fc2
+    /// (llama.cpp qwen3vl.cpp, layer.has_deepstack()). Tokens come out in merge-tile raster order, like the main
+    /// projector.
+    /// </summary>
+    private float[] Deepstack(DeepstackWeights w, float[] hidden, int patchesX, int patchesY)
+    {
+        int merge = _m.SpatialMergeFactor, mergedX = patchesX / merge, mergedY = patchesY / merge;
+        int n = mergedX * mergedY, dim = merge * merge * _embd;
+        var merged = new float[n * dim];
+        for (int my = 0; my < mergedY; my++)
+            for (int mx = 0; mx < mergedX; mx++)
+            {
+                int sub = 0, off = (my * mergedX + mx) * dim;
+                for (int dy = 0; dy < merge; dy++)
+                    for (int dx = 0; dx < merge; dx++)
+                        Array.Copy(hidden, ((my * merge + dy) * patchesX + mx * merge + dx) * _embd, merged, off + _embd * sub++, _embd);
+            }
+        var mid = new float[n * dim];
+        var output = new float[n * _projDim];
+        fixed (float* nw = w.NormW, nb = w.NormB, b1 = w.Fc1B, b2 = w.Fc2B)
+        {
+            LayerNorm(merged, n, dim, nw, nb);
+            VisionOps.MatVecAny(merged, w.Fc1W, b1, n, dim, dim, mid);
+            for (int i = 0; i < mid.Length; i++) mid[i] = Gelu(mid[i]);
+            VisionOps.MatVecAny(mid, w.Fc2W, b2, n, dim, _projDim, output);
+        }
+        return output;
+    }
+
+    private void LayerNorm(float[] states, int rows, int dim, float* weights, float* bias)
+    {
+        for (int p = 0; p < rows; p++)
+        {
+            int off = p * dim;
+            float mean = 0f;
+            for (int d = 0; d < dim; d++) mean += states[off + d];
+            mean /= dim;
+            float var = 0f;
+            for (int d = 0; d < dim; d++) { float diff = states[off + d] - mean; var += diff * diff; }
+            float inv = 1f / MathF.Sqrt(var / dim + _eps);
+            for (int d = 0; d < dim; d++)
+                states[off + d] = (states[off + d] - mean) * inv * (weights != null ? weights[d] : 1f) + (bias != null ? bias[d] : 0f);
+        }
+    }
+
+    /// <summary>
+    /// Qwen3-VL learned position grid (sqrt(n) x sqrt(n)) resized to the patch grid with ggml's bilinear
+    /// align-corners interpolation (clip.cpp resize_position_embeddings). Row-major (py, px), like the patches.
+    /// </summary>
+    private float[] ResizedPositionEmbedding(int patchesX, int patchesY)
+    {
+        int side = (int)MathF.Round(MathF.Sqrt(_positionEmbdF32.Length / _embd));
+        if (side == patchesX && side == patchesY) return _positionEmbdF32;
+        var output = new float[patchesX * patchesY * _embd];
+        float sfx = patchesX > 1 && side > 1 ? (float)(patchesX - 1) / (side - 1) : (float)patchesX / side;
+        float sfy = patchesY > 1 && side > 1 ? (float)(patchesY - 1) / (side - 1) : (float)patchesY / side;
+        for (int py = 0; py < patchesY; py++)
+        {
+            float y = py / sfy;
+            int y0 = Math.Clamp((int)MathF.Floor(y), 0, side - 1), y1 = Math.Clamp(y0 + 1, 0, side - 1);
+            float dy = Math.Clamp(y - y0, 0f, 1f);
+            for (int px = 0; px < patchesX; px++)
+            {
+                float x = px / sfx;
+                int x0 = Math.Clamp((int)MathF.Floor(x), 0, side - 1), x1 = Math.Clamp(x0 + 1, 0, side - 1);
+                float dx = Math.Clamp(x - x0, 0f, 1f);
+                int o = (py * patchesX + px) * _embd;
+                int a = (y0 * side + x0) * _embd, b = (y0 * side + x1) * _embd, c = (y1 * side + x0) * _embd, d = (y1 * side + x1) * _embd;
+                for (int k = 0; k < _embd; k++)
+                    output[o + k] = _positionEmbdF32[a + k] * (1 - dx) * (1 - dy) + _positionEmbdF32[b + k] * dx * (1 - dy)
+                                  + _positionEmbdF32[c + k] * (1 - dx) * dy + _positionEmbdF32[d + k] * dx * dy;
+            }
+        }
+        return output;
     }
 
     private void ExtractPatchEmbeddings(ReadOnlySpan<float> chw, int width, int height, int patchesX, int patchesY, float[] output)
@@ -266,6 +388,7 @@ public sealed unsafe class QwenVlVisionEncoder
         int patchSize = _m.PatchSize; // 14
         int patchArea = patchSize * patchSize;
         int totalPixels = width * height;
+        var positionEmbd = _m.IsQwen3Vl ? ResizedPositionEmbedding(patchesX, patchesY) : _positionEmbdF32;
 
         for (int py = 0; py < patchesY; py++)
         {
@@ -298,9 +421,9 @@ public sealed unsafe class QwenVlVisionEncoder
                             }
                         }
 
-                        if (_positionEmbdF32.Length > 0)
+                        if (positionEmbd.Length > 0)
                         {
-                            sum += _positionEmbdF32[patchIdx * _embd + d];
+                            sum += positionEmbd[patchIdx * _embd + d];
                         }
 
                         output[outOffset + d] = sum;

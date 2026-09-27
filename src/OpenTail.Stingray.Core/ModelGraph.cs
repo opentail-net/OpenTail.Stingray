@@ -54,7 +54,7 @@ public sealed record ModelHyperparams
     /// Granite 4.0 Vision deepstack (<c>{arch}.deepstack_mapping</c>, one entry per layer): a multimodal input row
     /// is <c>(1 + NumDeepstack) * EmbeddingDim</c> wide; slice 0 is the input embedding and, before layer
     /// <c>il &gt; 0</c> with <c>mapping[il] &gt;= 0</c>, slice <c>mapping[il]</c> is added to the hidden state
-    /// (llama.cpp src/models/granite.cpp). Null for every other model.
+    /// (llama.cpp src/models/granite.cpp). Qwen3-VL gets a synthesized mapping from <c>n_deepstack_layers</c>. Null otherwise.
     /// </summary>
     public IReadOnlyList<int>? DeepstackMapping { get; init; }
 
@@ -325,6 +325,32 @@ public sealed record ModelHyperparams
     /// (<c>ForwardPass.AddMRopeImage</c>); for text every section sees the same position. Null otherwise.
     /// </summary>
     public IReadOnlyList<int>? RopeSections { get; init; }
+
+    /// <summary>
+    /// True for llama.cpp's <c>LLAMA_ROPE_TYPE_IMROPE</c> (qwen3vl, qwen3vlmoe): <see cref="RopeSections"/> are
+    /// interleaved over the pairs (pair i -> t, h, w by i % 3) instead of laid out as contiguous blocks.
+    /// </summary>
+    public bool RopeSectionsInterleaved { get; init; }
+
+    /// <summary>
+    /// Which M-RoPE position component rotates dimension pair <paramref name="pair"/>: 0 = t, 1 = h, 2 = w,
+    /// 3 = the extra component, which is 0 for text tokens (llama-graph.cpp <c>llm_graph_input_pos::set_input</c>).
+    /// Mirrors ggml-cpu <c>ggml_mrope_cache_init</c> for MROPE and IMROPE.
+    /// </summary>
+    public int MRopeComponent(int pair)
+    {
+        var s = RopeSections!;
+        int s0 = s[0], s1 = s.Count > 1 ? s[1] : 0, s2 = s.Count > 2 ? s[2] : 0, s3 = s.Count > 3 ? s[3] : 0;
+        int sector = pair % Math.Max(1, s0 + s1 + s2 + s3);
+        if (RopeSectionsInterleaved)
+        {
+            if (sector % 3 == 1 && sector < 3 * s1) return 1;
+            if (sector % 3 == 2 && sector < 3 * s2) return 2;
+            if (sector % 3 == 0 && sector < 3 * s0) return 0;
+            return 3;
+        }
+        return sector < s0 ? 0 : sector < s0 + s1 ? 1 : sector < s0 + s1 + s2 ? 2 : 3;
+    }
 
     /// <summary>
     /// Number of head dims that receive RoPE rotation. Default equals HeadDim (full RoPE).
@@ -627,7 +653,7 @@ public sealed record ModelHyperparams
             "falcon" or "falcon-h1" or "grok" or "dbrx" or
             "bert" or "jina-bert-v3" or "modern-bert" or "nomic-bert" or "nomic-bert-moe" or "eurobert" or
             "stablelm" or "bitnet" or
-            "qwen" or "qwen2" or "qwen2vl" or "paddleocr" or "deepseek2-ocr" or "glm4moe" or "lfm2" or "dream" or "qwen2moe" or "qwen3" or "qwen3moe" or "qwen3-tts" or
+            "qwen" or "qwen2" or "qwen2vl" or "qwen3vl" or "qwen3vlmoe" or "paddleocr" or "deepseek2-ocr" or "glm4moe" or "lfm2" or "dream" or "qwen2moe" or "qwen3" or "qwen3moe" or "qwen3-tts" or
             "llada-moe" or "rnd1" or
             "olmo2" or "olmoe" or
             "phi2" or "phi3" or "phimoe" or
@@ -1269,14 +1295,20 @@ public sealed record ModelHyperparams
             IsNeoxRope = isNeoxRope,
             RopeDim = ropeDim,
             IsHybridSsm = isHybridSsm,
-            RopeSections = arch is "qwen2vl" or "paddleocr" ? GetIntArray(metadata, $"{arch}.rope.dimension_sections") : null,
+            RopeSections = arch is "qwen2vl" or "paddleocr" or "qwen3vl" or "qwen3vlmoe" ? GetIntArray(metadata, $"{arch}.rope.dimension_sections") : null,
+            RopeSectionsInterleaved = arch is "qwen3vl" or "qwen3vlmoe",
             LayerTypes = layerTypes,
             Gdn = gdn,
             EmbeddingScale = embeddingScale,
             // llama-graph.cpp build_inp_embd: raw embeddings are scaled unless the model has deepstack layers
             // (Granite 4.0 Vision's granite.deepstack_mapping), whose multimodal inputs arrive unscaled.
             ScaleRawEmbeddings = isGraniteFamily && !metadata.ContainsKey($"{arch}.deepstack_mapping"),
-            DeepstackMapping = GetIntArray(metadata, $"{arch}.deepstack_mapping"),
+            // Qwen3-VL (qwen3vl.cpp) adds slice il+1 after layer il for il < n_deepstack_layers, which is the same as
+            // adding slice k before layer k: the Granite mapping shape with mapping[k] = k for k in [1, n].
+            DeepstackMapping = GetIntArray(metadata, $"{arch}.deepstack_mapping")
+                ?? (arch is "qwen3vl" or "qwen3vlmoe" && GetInt(metadata, $"{arch}.n_deepstack_layers") is int nDs && nDs > 0
+                    ? Enumerable.Range(0, numLayers).Select(l => l >= 1 && l <= nDs ? l : -1).ToArray()
+                    : null),
             ResidualScale = residualScale,
             AttentionScaleOverride = attentionScaleOverride,
             LogitScale = logitScale,
