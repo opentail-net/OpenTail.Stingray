@@ -51,6 +51,17 @@ public sealed record ModelHyperparams
     public bool ScaleRawEmbeddings { get; init; }
 
     /// <summary>
+    /// Granite 4.0 Vision deepstack (<c>{arch}.deepstack_mapping</c>, one entry per layer): a multimodal input row
+    /// is <c>(1 + NumDeepstack) * EmbeddingDim</c> wide; slice 0 is the input embedding and, before layer
+    /// <c>il &gt; 0</c> with <c>mapping[il] &gt;= 0</c>, slice <c>mapping[il]</c> is added to the hidden state
+    /// (llama.cpp src/models/granite.cpp). Null for every other model.
+    /// </summary>
+    public IReadOnlyList<int>? DeepstackMapping { get; init; }
+
+    /// <summary>Number of distinct deepstack slices (0 when <see cref="DeepstackMapping"/> is null).</summary>
+    public int NumDeepstack => DeepstackMapping is null ? 0 : DeepstackMapping.Where(v => v >= 0).Distinct().Count();
+
+    /// <summary>
     /// Cap value for the final-logits softcap (<c>x = tanh(x/cap) * cap</c>).
     /// 0 disables softcapping (default for non-Gemma architectures). Gemma 4 = 30.0.
     /// </summary>
@@ -1163,6 +1174,7 @@ public sealed record ModelHyperparams
             // llama-graph.cpp build_inp_embd: raw embeddings are scaled unless the model has deepstack layers
             // (Granite 4.0 Vision's granite.deepstack_mapping), whose multimodal inputs arrive unscaled.
             ScaleRawEmbeddings = isGraniteFamily && !metadata.ContainsKey($"{arch}.deepstack_mapping"),
+            DeepstackMapping = GetIntArray(metadata, $"{arch}.deepstack_mapping"),
             ResidualScale = residualScale,
             AttentionScaleOverride = attentionScaleOverride,
             LogitScale = logitScale,

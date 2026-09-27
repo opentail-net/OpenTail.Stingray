@@ -1,3 +1,4 @@
+using System.Numerics.Tensors;
 
 namespace OpenTail.Stingray.Vision;
 
@@ -229,7 +230,11 @@ public sealed unsafe class Granite4VisionEncoder
 
         if (_posEmbdF32.Length > 0)
         {
-            for (int i = 0; i < hiddenStates.Length; i++) hiddenStates[i] += _posEmbdF32[i % _embd];
+            // One learned row per patch (granite4-vision.cpp: inp + position_embeddings). Until 2026-09-27 every
+            // patch got row 0 (index i % _embd).
+            if (_posEmbdF32.Length != hiddenStates.Length)
+                throw new NotSupportedException($"Granite 4 Vision position table has {_posEmbdF32.Length / _embd} rows, grid has {numPatches}.");
+            TensorPrimitives.Add(hiddenStates, _posEmbdF32, hiddenStates);
         }
 
         var layerOuts = new float[_layers][];
@@ -288,7 +293,10 @@ public sealed unsafe class Granite4VisionEncoder
             layerOuts[l] = snapshot;
         }
 
-        // --- Stage 1b/1c: WindowQFormer blocks, concatenated along the TOKEN axis ---
+        // --- Stage 1b/1c: WindowQFormer blocks, concatenated along the CHANNEL axis (ggml_concat dim 0):
+        // each output token is [block0 | block1 | ... | block7] = 8 x projection_dim. Block 0 is the text
+        // model's input embedding; blocks 1..7 are its deepstack slices. (Stacked along the token axis
+        // until 2026-09-27, which gave 8x the tokens and fed deepstack streams as ordinary inputs.) ---
         int imageSide = img.PatchesX;
         int windowSide = _m.WindowSide;
         int querySide = _m.QuerySide;
@@ -297,8 +305,9 @@ public sealed unsafe class Granite4VisionEncoder
         int tokensPerBlock = newSide * newSide;
         int k = _qfBlocks.Length;
 
-        tokenCount = k * tokensPerBlock;
-        var final = new float[tokenCount * _projDim];
+        tokenCount = tokensPerBlock;
+        var final = new float[tokenCount * k * _projDim];
+        var blockOut = new float[tokensPerBlock * _projDim];
 
         // Precompute the raster<->window permutation indices once per Forward call (they depend
         // only on imageSide/windowSide/querySide, which are the same for every block; only the
@@ -313,7 +322,9 @@ public sealed unsafe class Granite4VisionEncoder
             var blk = _qfBlocks[b];
             var h = layerOuts[blk.FeatureLayer];
             RunBlock(blk, h, imageSide, windowSide, querySide, n, newSide, winIdx, qwinIdx, unwinIdx,
-                final, b * tokensPerBlock * _projDim);
+                blockOut, 0);
+            for (int t = 0; t < tokensPerBlock; t++)
+                Array.Copy(blockOut, t * _projDim, final, (t * k + b) * _projDim, _projDim);
         }
 
         return final;

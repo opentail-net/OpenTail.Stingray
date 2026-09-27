@@ -19,7 +19,7 @@ dated evidence in the same pass.
 | 6 | ✅ DONE (2026-09-27) | PaddleOCR-VL: degenerate output | text architecture (`paddleocr`) has no validated forward pass | medium |
 | 7 | ✅ DONE (2026-09-27; OCR v1 untested, no checkpoint) | DeepSeek-OCR / OCR2: garbled | text architecture (`deepseek2-ocr`) has no validated forward pass | medium |
 | 8 | ✅ DONE (2026-09-27) | Step3-VL: garbled | unvalidated architecture on a Q2_K checkpoint | medium–large |
-| 9 | 🟡 HALF DONE (3.2 done; 4.0 needs deepstack) | IBM Granite Vision 3.2 / 4.0: output not image-grounded | investigation; 3.2 via LlavaAdapter, 4.0 via QFormer projector | large |
+| 9 | ✅ DONE (2026-09-27) | IBM Granite Vision 3.2 / 4.0: output not image-grounded | investigation; 3.2 via LlavaAdapter, 4.0 via QFormer projector | large |
 | 10 | ⬜ TODO | CosyVoice 2: audio only partly right | investigation | large |
 | 11 | ⬜ TODO | Stable Audio 3 Small SFX: darker than the reference | investigation | large |
 | 12 | ⬜ TODO | Chronos-Bolt / Chronos-2: no numeric reference | needs an independent oracle without new Python reference scripts | large |
@@ -113,6 +113,13 @@ second-half perplexity vs `llama-perplexity`, then an allowlist entry, a STATUS.
 MODELS.md entry if it qualifies.
 
 ## Log
+
+- 2026-09-27 #9 DONE: Granite Vision 4.0 matches llama.cpp.
+  - Prompt of 473 tokens, same answer.
+  - Encoder: per-patch positions, and the 8 QFormer streams concatenated per token.
+  - Deepstack: added to the CPU `ForwardPass`; the Vulkan/CUDA passes are a follow-up.
+  - Preprocessing: `llava_uhd` views, newline tokens, `<image>` prefix.
+  - Tests: Vision 170 / 0 failed; ForwardPass.Fast 685 / 0 failed.
 
 - 2026-09-27 #9 part 1: Granite Vision 3.2 fixed and matches llama-server token for token.
   - Fixes: feature-layer stack, anyres `llava_uhd` slicing, the model's own normalisation, no

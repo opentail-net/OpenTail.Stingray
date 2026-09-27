@@ -49,12 +49,16 @@ public sealed unsafe partial class ForwardPass
 
     public ReadOnlySpan<float> ForwardEmbedding(ReadOnlySpan<float> embedding, int position)
     {
-        if (embedding.Length != _embDim)
+        int nDs = _hp.NumDeepstack;
+        if (embedding.Length != _embDim && embedding.Length != _embDim * (1 + nDs))
             throw new ArgumentException(
-                $"embedding length {embedding.Length} != model embedding dim {_embDim}.");
+                $"embedding length {embedding.Length} != model embedding dim {_embDim}" +
+                (nDs > 0 ? $" (or {_embDim * (1 + nDs)} with {nDs} deepstack slices)." : "."));
 
         _currentPos = position;
-        embedding.CopyTo(new Span<float>(_hidden, _embDim));
+        embedding[.._embDim].CopyTo(new Span<float>(_hidden, _embDim));
+        // Deepstack slices ride along for this token only; RunTrunk adds them before their mapped layers.
+        _deepstackSlices = embedding.Length > _embDim ? embedding[_embDim..].ToArray() : null;
 
         // Note: no Gemma EmbeddingScale here (see remarks); Granite's embedding_scale does apply to raw embeddings.
         if (_hp.ScaleRawEmbeddings && _hp.EmbeddingScale != 1f)
@@ -63,8 +67,13 @@ public sealed unsafe partial class ForwardPass
         if (_hp.HasPerLayerTokenEmbd)
             BuildPerLayerProjections(0);
 
-        return RunTrunk(position, traceToken: -1);
+        try { return RunTrunk(position, traceToken: -1); }
+        finally { _deepstackSlices = null; }
     }
+
+    /// <summary>Deepstack slices 1..N of the current multimodal token (null otherwise); see
+    /// <see cref="ModelHyperparams.DeepstackMapping"/>.</summary>
+    private float[]? _deepstackSlices;
 
     /// <summary>
     /// Shared transformer trunk for <see cref="Forward"/> and <see cref="ForwardEmbedding"/>:
@@ -123,6 +132,11 @@ public sealed unsafe partial class ForwardPass
             // Gemma 4 12B global layers carry no attn_v (attention_k_eq_v): V reuses the
             // raw K projection (pre QK-norm, pre-RoPE). These layers always own their KV.
             bool kEqV = _hp.AttentionKEqV && !isSwa && _wv[layer].DataPtr is null;
+
+            // Granite 4.0 Vision deepstack: add this layer's projector slice (llama.cpp granite.cpp).
+            if (_deepstackSlices is not null && layer > 0 && _hp.DeepstackMapping![layer] is int dsIdx && dsIdx >= 1)
+                fixed (float* ds = &_deepstackSlices[(dsIdx - 1) * _embDim])
+                    SimdKernels.AddInPlace(_hidden, ds, _embDim);
 
             // Save residual
             Copy(_residual, _hidden, _embDim);

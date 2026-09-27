@@ -235,6 +235,22 @@ public sealed class LlamaMtmdVisionParityTests
         AssertMatches(tokens, -3284.434, 35.0, [0.0678f, -0.1084f, 0.0735f], 0.03f);
     }
 
+    [Fact]
+    public void GraniteVision40_Rainbow384_MatchesLlamaMtmdDebug()
+    {
+        string? path = FindModel("mmproj-granite-4.0-3b-vision-f16.gguf");
+        Assert.SkipWhen(path is null, "mmproj-granite-4.0-3b-vision-f16.gguf not present");
+        using var model = Granite4VisionModel.Open(path!);
+        float[] tokens = new Granite4VisionEncoder(model).Forward(Rainbow(384), 384, 384, 24, 24, out int count);
+        Report("granite40 rainbow384", tokens, count, 20480);
+
+        // llama-mtmd-debug (-m granite-4.0-3b-vision-Q4_K_M.gguf --mmproj mmproj-granite-4.0-3b-vision-f16.gguf -n 384
+        // --image rainbow): g4v_mmproj_out 144 x 20480 (8 QFormer blocks x 2560, concatenated per token: block 0 is the
+        // input embedding, 1..7 the deepstack slices), sum 3587.707520, row 0 [-0.5940, -0.1377, 0.9753].
+        Assert.Equal(144, count);
+        AssertMatches(tokens, 3587.708, 40.0, [-0.5940f, -0.1377f, 0.9753f], 0.03f);
+    }
+
     private static string? FindModel(string file)
     {
         var dir = new DirectoryInfo(AppContext.BaseDirectory);

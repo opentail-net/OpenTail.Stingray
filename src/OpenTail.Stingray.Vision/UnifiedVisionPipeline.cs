@@ -1154,23 +1154,46 @@ public static class UnifiedVisionPipeline
         }
 
         public string ProjectorType => _model.ProjectorType;
-        public int EmbeddingDim => _model.ProjectionDim;
+        // 8 QFormer streams x projection_dim per token: stream 0 is the input embedding, 1..7 are the text
+        // model's deepstack slices (granite.deepstack_mapping).
+        public int EmbeddingDim => _model.ProjectionDim * _model.FeatureLayers.Length;
         public int ImageWidth => _model.ImageSize;
         public int ImageHeight => _model.ImageSize;
-        // Verified against the real GGUF vocab (granite-4.0-3b-vision-Q4_K_M.gguf): the only
-        // image-related special token is "<image>" -- no "<image_pad>", no separate open/close
-        // wrapper tokens. "<image>" is itself the per-slot placeholder that gets expanded with
-        // this image's soft tokens; the old "<image_pad>"/"</image>" values never existed in this
-        // model's vocab, so every --image request silently found 0 placeholder tokens after
-        // templating. See docs/vl-migration-plan-2026-08-20.md.
-        public string ImageOpenMarker => "";
+        // mtmd (PROJECTOR_TYPE_GRANITE4_VISION): img_beg = "<image>", img_end = "" -- the "<image>" token precedes
+        // the soft tokens, replacing the media marker in the rendered template.
+        public string ImageOpenMarker => "<image>";
         public string ImageCloseMarker => "";
         public string PlaceholderMarker => "<image>";
 
+        /// <summary>
+        /// mtmd_image_preprocessor_granite: llava_uhd views (overview, then best-pinpoint 384 tiles, row-major);
+        /// every tile gets one trailing newline token, the overview only when there are no tiles. The newline
+        /// token is <c>v.image_newline</c> in all 8 stream slots (granite4-vision.cpp build_newline_row).
+        /// </summary>
         public float[] EmbedImage(ReadOnlySpan<byte> rgb, int width, int height, out int tokenCount)
         {
-            var pre = Granite4ImagePreprocessor.Preprocess(rgb, width, height, _model.ImageSize, _model.PatchSize, _model.ImageMean, _model.ImageStd);
-            return _encoder.Forward(pre.Chw, pre.TargetWidth, pre.TargetHeight, pre.PatchesX, pre.PatchesY, out tokenCount);
+            var g = _model.Gguf;
+            var pins = new List<(int W, int H)>();
+            if (VisionOps.GetTensorArrayOrMeta(g, "clip.vision.image_grid_pinpoints") is { } pp)
+                for (int i = 0; i + 1 < pp.Length; i += 2) pins.Add(((int)pp[i], (int)pp[i + 1]));
+            int side = _model.ImageSize, grid = side / _model.PatchSize;
+            var views = LlavaImagePreprocessor.PreprocessViews(rgb, width, height, side, pins, _model.ImageMean, _model.ImageStd);
+
+            float[] nl = VisionOps.GetTensorArray(g, "v.image_newline", "model.image_newline") ?? throw new InvalidOperationException("Missing v.image_newline");
+            int dim = EmbeddingDim;
+            var nlRow = new float[dim];
+            for (int o = 0; o < dim; o += nl.Length) Array.Copy(nl, 0, nlRow, o, nl.Length);
+
+            var parts = new List<float[]>();
+            tokenCount = 0;
+            for (int v = 0; v < views.Count; v++)
+            {
+                parts.Add(_encoder.Forward(views[v], side, side, grid, grid, out int n));
+                tokenCount += n;
+                bool newline = views.Count == 1 || v > 0;
+                if (newline) { parts.Add(nlRow); tokenCount++; }
+            }
+            return [.. parts.SelectMany(p => p)];
         }
 
         public float[] EmbedImageFile(string filePath, out int tokenCount)

@@ -2572,7 +2572,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         // length match against hp.EmbeddingDim; a size mismatch here is a real architecture-adapter
         // bug, not something a caller can work around).
         int embd = vision.EmbeddingDim;
-        if (embd != hp.EmbeddingDim)
+        if (embd != hp.EmbeddingDim && embd != hp.EmbeddingDim * (1 + hp.NumDeepstack))
         {
             AnsiConsole.MarkupLine(
                 $"[red]Error:[/] vision projector ({vision.ProjectorType}) outputs {embd}-dim " +
