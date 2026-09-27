@@ -107,11 +107,12 @@ restart a fourth round of kernel-level chasing on this checkpoint without new ev
     context; the attention layers' K/V storage precision (llama.cpp's default F16 KV cache vs
     ours); the dump's resolution hides where the error starts. A full-precision dump (tensor
     binary output, not the printed summary) is needed to go further.
-- [ ] **Parakeet (CTC and TDT) expands every weight to F32** (logged 2026-09-27, docs/103 item 14).
-  - `ParakeetWeights.GetTensor` dequantizes the whole checkpoint at load: the 378 MB q4_k TDT file takes 2.8 GB of RAM.
-  - Speed: 14.2 s of speech in 3.6 s (3.9x real time) vs CrispASR 1.66 s (8.6x) on the same file and machine.
-  - Fix: keep weights quantized and use the quantized matvec kernels (as the text engine does); the TDT joint could
-    also batch frames between emissions like CrispASR's `parakeet_tdt_decode_batched`. Belongs with docs/103 item 15.
+- [ ] **Parakeet (CTC and TDT) holds its weights as F32** (logged 2026-09-27, docs/103 item 14).
+  - The encoder linears are packed F32 SGEMM panels, so the 378 MB q4_k TDT file takes 2.85 GB of RAM.
+  - Speed is no longer a gap: after the 2026-09-27 pass (batched SGEMM over frames) it runs 8.7-8.9x real time vs
+    CrispASR 8.6x on the same file. Before: 3.9x.
+  - Remaining fix if RAM matters: batched quantized matmuls (int8 activations, as the text engine's prefill does)
+    so weights stay in their GGUF types.
 - [ ] **Qwen3-VL / Qwen2.5-VL / PaddleOCR image input is CPU only** (logged 2026-09-27, docs/103 item 14).
   - M-RoPE image positions (`ForwardPass.AddMRopeImage`, IMROPE for qwen3vl) and deepstack slices are applied in the
     CPU `ForwardPass` only. The CUDA and Vulkan forward passes would rotate image tokens with 1D positions and skip

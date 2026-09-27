@@ -28,10 +28,8 @@ public static class ParakeetConformerEncoder
         foreach (var layer in w.Layers)
             x = ConformerBlock(w, layer, x, posEnc, tEnc);
 
-        if (w.CtcWeight is null) return (x, null, tEnc);
-        var logits = new float[tEnc][];
-        for (int t = 0; t < tEnc; t++)
-            logits[t] = Linear(x[t], w.CtcWeight, w.CtcBias, w.HiddenDim, w.VocabSize + 1);
+        if (w.Ctc is null) return (x, null, tEnc);
+        var logits = Batched(x, w.Ctc);
 
         return (x, logits, tEnc);
     }
@@ -72,9 +70,7 @@ public static class ParakeetConformerEncoder
             flat[t] = row;
         }
 
-        var output = new float[h3][];
-        for (int t = 0; t < h3; t++)
-            output[t] = Linear(flat[t], w.PreOutWeight, w.PreOutBias, flatDim, w.HiddenDim);
+        var output = Batched(flat, w.PreOut);
 
         return (output, h3);
     }
@@ -207,17 +203,7 @@ public static class ParakeetConformerEncoder
         // FFN1 (macaron, half-step). Per-frame work is independent (dim<->ff matmuls dominate
         // cost here: T frames x 24 layers x 2 matmuls of ~1024x4096), so parallelize across
         // frames rather than leaving this as a serial loop.
-        var afterFf1 = new float[t][];
-        System.Threading.Tasks.Parallel.For(0, t, i =>
-        {
-            var normed = LayerNorm(x[i], l.NormFf1Weight, l.NormFf1Bias);
-            var h1 = Linear(normed, l.Ff1Linear1Weight, l.Ff1Linear1Bias, dim, w.FfDim);
-            SiluInPlace(h1);
-            var h2 = Linear(h1, l.Ff1Linear2Weight, l.Ff1Linear2Bias, w.FfDim, dim);
-            var row = new float[dim];
-            for (int d = 0; d < dim; d++) row[d] = x[i][d] + 0.5f * h2[d];
-            afterFf1[i] = row;
-        });
+        var afterFf1 = FeedForward(x, l.NormFf1Weight, l.NormFf1Bias, l.Ff1Linear1, l.Ff1Linear2, dim);
 
         // Self-attention (rel-pos, untied u/v, full Transformer-XL rel_shift)
         var attnOut = RelPosSelfAttention(w, l, afterFf1, posEnc, t);
@@ -240,18 +226,29 @@ public static class ParakeetConformerEncoder
         }
 
         // FFN2 (macaron, half-step), same per-frame independence as FFN1 above.
+        var afterFf2 = FeedForward(afterConv, l.NormFf2Weight, l.NormFf2Bias, l.Ff2Linear1, l.Ff2Linear2, dim);
+        var output = new float[t][];
+        System.Threading.Tasks.Parallel.For(0, t, i => output[i] = LayerNorm(afterFf2[i], l.NormOutWeight, l.NormOutBias));
+        return output;
+    }
+
+    /// <summary>Macaron half-step FFN over all frames: x + 0.5 * linear2(silu(linear1(LN(x)))). The linears run as one
+    /// batched SGEMM over the frames instead of a matvec per frame (which re-read each weight matrix T times).</summary>
+    private static float[][] FeedForward(float[][] x, float[] normW, float[] normB, PackedLinearF32 linear1, PackedLinearF32 linear2, int dim)
+    {
+        int t = x.Length;
+        var normed = new float[t][];
+        System.Threading.Tasks.Parallel.For(0, t, i => normed[i] = LayerNorm(x[i], normW, normB));
+        var h1 = Batched(normed, linear1);
+        System.Threading.Tasks.Parallel.For(0, t, i => SiluInPlace(h1[i]));
+        var h2 = Batched(h1, linear2);
         var output = new float[t][];
         System.Threading.Tasks.Parallel.For(0, t, i =>
         {
-            var normed = LayerNorm(afterConv[i], l.NormFf2Weight, l.NormFf2Bias);
-            var h1 = Linear(normed, l.Ff2Linear1Weight, l.Ff2Linear1Bias, dim, w.FfDim);
-            SiluInPlace(h1);
-            var h2 = Linear(h1, l.Ff2Linear2Weight, l.Ff2Linear2Bias, w.FfDim, dim);
             var row = new float[dim];
-            for (int d = 0; d < dim; d++) row[d] = afterConv[i][d] + 0.5f * h2[d];
-            output[i] = LayerNorm(row, l.NormOutWeight, l.NormOutBias);
+            for (int d = 0; d < dim; d++) row[d] = x[i][d] + 0.5f * h2[i][d];
+            output[i] = row;
         });
-
         return output;
     }
 
@@ -263,26 +260,16 @@ public static class ParakeetConformerEncoder
         float scale = 1f / MathF.Sqrt(headDim);
 
         // Q/K/V projection: T independent dim x dim matmuls -- parallelize across frames.
-        var q = new float[t][];
-        var k = new float[t][];
-        var v = new float[t][];
         var normed = new float[t][];
-        System.Threading.Tasks.Parallel.For(0, t, i =>
-        {
-            normed[i] = LayerNorm(x[i], l.NormAttnWeight, l.NormAttnBias);
-            q[i] = Linear(normed[i], l.AttnQWeight, l.AttnQBias, dim, dim);
-            k[i] = Linear(normed[i], l.AttnKWeight, l.AttnKBias, dim, dim);
-            v[i] = Linear(normed[i], l.AttnVWeight, l.AttnVBias, dim, dim);
-        });
+        System.Threading.Tasks.Parallel.For(0, t, i => normed[i] = LayerNorm(x[i], l.NormAttnWeight, l.NormAttnBias));
+        var q = Batched(normed, l.AttnQ);
+        var k = Batched(normed, l.AttnK);
+        var v = Batched(normed, l.AttnV);
 
         // Rel-pos projection: 2T-1 independent dim x dim matmuls, same per-layer cost class as
         // Q/K/V above -- also worth parallelizing rather than leaving serial.
         int posLen = posEnc.Length; // 2T-1
-        var r = new float[posLen][];
-        System.Threading.Tasks.Parallel.For(0, posLen, p =>
-        {
-            r[p] = LinearNoBias(posEnc[p], l.AttnPosWeight, dim, dim);
-        });
+        var r = Batched(posEnc, l.AttnPos);
 
         var output = new float[t][];
         for (int i = 0; i < t; i++) output[i] = new float[dim];
@@ -337,10 +324,7 @@ public static class ParakeetConformerEncoder
             });
         }
 
-        var projected = new float[t][];
-        for (int i = 0; i < t; i++)
-            projected[i] = Linear(output[i], l.AttnOutWeight, l.AttnOutBias, dim, dim);
-        return projected;
+        return Batched(output, l.AttnOut);
     }
 
     /// <summary>LN -> pw1(d->2d) -> GLU (first_half * sigmoid(second_half), matches ggml_siglu_swapped/PyTorch F.glu) -> depthwise conv1d (BN-folded) -> SiLU -> pw2(d->d).</summary>
@@ -351,11 +335,13 @@ public static class ParakeetConformerEncoder
         int pad = (kernel - 1) / 2;
 
         // pw1 (dim -> 2*dim matmul, T independent frames) dominates this stage's cost.
+        var normedConv = new float[t][];
+        System.Threading.Tasks.Parallel.For(0, t, i => normedConv[i] = LayerNorm(x[i], l.NormConvWeight, l.NormConvBias));
+        var pw1All = Batched(normedConv, l.ConvPw1);
         var glu = new float[t][];
         System.Threading.Tasks.Parallel.For(0, t, i =>
         {
-            var normed = LayerNorm(x[i], l.NormConvWeight, l.NormConvBias);
-            var pw1 = Linear(normed, l.ConvPw1Weight, l.ConvPw1Bias, dim, 2 * dim);
+            var pw1 = pw1All[i];
             var row = new float[dim];
             for (int d = 0; d < dim; d++)
             {
@@ -387,13 +373,8 @@ public static class ParakeetConformerEncoder
         });
 
         // pw2 (dim -> dim matmul, T independent frames).
-        var output = new float[t][];
-        System.Threading.Tasks.Parallel.For(0, t, i =>
-        {
-            SiluInPlace(dwOut[i]);
-            output[i] = Linear(dwOut[i], l.ConvPw2Weight, l.ConvPw2Bias, dim, dim);
-        });
-        return output;
+        System.Threading.Tasks.Parallel.For(0, t, i => SiluInPlace(dwOut[i]));
+        return Batched(dwOut, l.ConvPw2);
     }
 
     private static void SiluInPlace(float[] x) => DenseKernels.SiluInPlace(x);
@@ -402,6 +383,19 @@ public static class ParakeetConformerEncoder
 
     private static float[] Linear(float[] input, float[] weight, float[]? bias, int inDim, int outDim) =>
         DenseKernels.Linear(input, weight, bias, inDim, outDim);
+
+    /// <summary>All frames through one packed linear as a single batched SGEMM.</summary>
+    private static float[][] Batched(float[][] rows, PackedLinearF32 linear)
+    {
+        int m = rows.Length, inDim = linear.InDim, outDim = linear.OutDim;
+        var x = new float[m * inDim];
+        for (int r = 0; r < m; r++) rows[r].AsSpan(0, inDim).CopyTo(x.AsSpan(r * inDim, inDim));
+        var y = new float[m * outDim];
+        linear.Forward(x, y, m);
+        var output = new float[m][];
+        for (int r = 0; r < m; r++) output[r] = y.AsSpan(r * outDim, outDim).ToArray();
+        return output;
+    }
 
     private static float[] LinearNoBias(float[] input, float[] weight, int inDim, int outDim) =>
         DenseKernels.LinearNoBias(input, weight, inDim, outDim);

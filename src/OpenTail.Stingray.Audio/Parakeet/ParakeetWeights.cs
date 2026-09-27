@@ -41,17 +41,15 @@ public sealed class ParakeetWeights : IDisposable
     public float[] PreConv5Bias { get; }
     public float[] PreConv6Weight { get; }  // [1,1,256,256] pointwise
     public float[] PreConv6Bias { get; }
-    public float[] PreOutWeight { get; }    // [2560, 1024]
-    public float[] PreOutBias { get; }
+    public PackedLinearF32 PreOut { get; }
 
     // --- Mel preprocessing (shipped in checkpoint, don't recompute) ---
     public float[] MelFilterbank { get; }   // [257, 80]
     public float[] MelWindow { get; }       // [400]
 
     // --- CTC head (null for a TDT-only checkpoint such as parakeet-tdt-0.6b-v2) ---
-    public float[]? CtcWeight { get; }      // [1024, vocab+1]
-    public float[]? CtcBias { get; }
-    public bool HasCtc => CtcWeight is not null;
+    public PackedLinearF32? Ctc { get; }
+    public bool HasCtc => Ctc is not null;
 
     // --- TDT transducer head (null for a CTC checkpoint). CrispASR GGUF layout (convert-parakeet-to-gguf.py). ---
     public ParakeetTdtWeights? Tdt { get; }
@@ -93,17 +91,15 @@ public sealed class ParakeetWeights : IDisposable
         PreConv5Bias = GetTensor("encoder.pre.conv.5.bias");
         PreConv6Weight = GetTensor("encoder.pre.conv.6.weight");
         PreConv6Bias = GetTensor("encoder.pre.conv.6.bias");
-        PreOutWeight = GetTensor("encoder.pre.out.weight");
-        PreOutBias = GetTensor("encoder.pre.out.bias");
+        PreOut = Pack("encoder.pre.out", HiddenDim, -1);
 
         MelFilterbank = GetTensor("preprocessor.fb");
         MelWindow = GetTensor("preprocessor.window");
 
-        CtcWeight = TryGetTensor("ctc.weight");
-        CtcBias = TryGetTensor("ctc.bias");
+        Ctc = Model.FindTensor("ctc.weight") is null ? null : Pack("ctc", VocabSize + 1, HiddenDim);
         if (Model.FindTensor("joint.out.weight") is not null)
             Tdt = new ParakeetTdtWeights(this, p);
-        if (CtcWeight is null && Tdt is null)
+        if (Ctc is null && Tdt is null)
             throw new InvalidDataException("Parakeet GGUF has neither a CTC head (ctc.weight) nor a TDT head (joint.out.weight).");
 
         Layers = new ParakeetConformerLayer[NumLayers];
@@ -115,6 +111,22 @@ public sealed class ParakeetWeights : IDisposable
         Model.Metadata.TryGetValue(key, out var v) ? Convert.ToInt32(v) : fallback;
 
     /// <summary>Loads and dequantizes a required tensor by exact GGUF name to a flat float[] in file storage order.</summary>
+    /// <summary>
+    /// Loads <c>{stem}.weight</c> (and <c>{stem}.bias</c> if present) as a packed SGEMM linear. The F32 copy is only
+    /// temporary: holding it next to the packed panels doubled the resident weights (5.6 GB for the 378 MB q4_k TDT
+    /// file, 2026-09-27). <paramref name="inDim"/> -1 infers it from the element count.
+    /// </summary>
+    internal PackedLinearF32 Pack(string stem, int outDim, int inDim)
+    {
+        var weight = GetTensor(stem + ".weight");
+        if (inDim < 0) inDim = weight.Length / outDim;
+        var packed = new PackedLinearF32(weight, TryGetTensor(stem + ".bias"), outDim, inDim);
+        _packed.Add(packed);
+        return packed;
+    }
+
+    private readonly List<PackedLinearF32> _packed = [];
+
     public float[] GetTensor(string name)
     {
         var info = Model.FindTensor(name) ?? throw new InvalidDataException($"Parakeet GGUF missing required tensor '{name}'.");
@@ -137,6 +149,7 @@ public sealed class ParakeetWeights : IDisposable
 
     public void Dispose()
     {
+        foreach (var p in _packed) p.Dispose();
         Model.Dispose();
     }
 }
@@ -151,41 +164,31 @@ public sealed class ParakeetConformerLayer
 {
     public float[] NormFf1Weight { get; }
     public float[] NormFf1Bias { get; }
-    public float[] Ff1Linear1Weight { get; }  // [d, ff]
-    public float[]? Ff1Linear1Bias { get; }
-    public float[] Ff1Linear2Weight { get; }  // [ff, d]
-    public float[]? Ff1Linear2Bias { get; }
+    public PackedLinearF32 Ff1Linear1 { get; }
+    public PackedLinearF32 Ff1Linear2 { get; }
 
     public float[] NormAttnWeight { get; }
     public float[] NormAttnBias { get; }
-    public float[] AttnQWeight { get; }
-    public float[]? AttnQBias { get; }
-    public float[] AttnKWeight { get; }
-    public float[]? AttnKBias { get; }
-    public float[] AttnVWeight { get; }
-    public float[]? AttnVBias { get; }
-    public float[] AttnOutWeight { get; }
-    public float[]? AttnOutBias { get; }
-    public float[] AttnPosWeight { get; }
+    public PackedLinearF32 AttnQ { get; }
+    public PackedLinearF32 AttnK { get; }
+    public PackedLinearF32 AttnV { get; }
+    public PackedLinearF32 AttnOut { get; }
+    public PackedLinearF32 AttnPos { get; }
     public float[] AttnPosBiasU { get; }  // [head_dim, n_heads]
     public float[] AttnPosBiasV { get; }  // [head_dim, n_heads]
 
     public float[] NormConvWeight { get; }
     public float[] NormConvBias { get; }
-    public float[] ConvPw1Weight { get; }   // [d, 2d]
-    public float[]? ConvPw1Bias { get; }
+    public PackedLinearF32 ConvPw1 { get; }
     /// <summary>Depthwise conv weight, BatchNorm-folded at load time (raw checkpoint ships unfused BN tensors -- see docs/audio-review-progress.md).</summary>
     public float[] ConvDwWeight { get; }    // [K, d]
     public float[] ConvDwBias { get; }
-    public float[] ConvPw2Weight { get; }   // [d, d]
-    public float[]? ConvPw2Bias { get; }
+    public PackedLinearF32 ConvPw2 { get; }
 
     public float[] NormFf2Weight { get; }
     public float[] NormFf2Bias { get; }
-    public float[] Ff2Linear1Weight { get; }
-    public float[]? Ff2Linear1Bias { get; }
-    public float[] Ff2Linear2Weight { get; }
-    public float[]? Ff2Linear2Bias { get; }
+    public PackedLinearF32 Ff2Linear1 { get; }
+    public PackedLinearF32 Ff2Linear2 { get; }
 
     public float[] NormOutWeight { get; }
     public float[] NormOutBias { get; }
@@ -194,31 +197,23 @@ public sealed class ParakeetConformerLayer
     {
         NormFf1Weight = w.GetTensor($"{prefix}.norm_ff1.weight");
         NormFf1Bias = w.GetTensor($"{prefix}.norm_ff1.bias");
-        Ff1Linear1Weight = w.GetTensor($"{prefix}.ff1.linear1.weight");
-        Ff1Linear1Bias = w.TryGetTensor($"{prefix}.ff1.linear1.bias");
-        Ff1Linear2Weight = w.GetTensor($"{prefix}.ff1.linear2.weight");
-        Ff1Linear2Bias = w.TryGetTensor($"{prefix}.ff1.linear2.bias");
+        Ff1Linear1 = w.Pack($"{prefix}.ff1.linear1", w.FfDim, w.HiddenDim);
+        Ff1Linear2 = w.Pack($"{prefix}.ff1.linear2", w.HiddenDim, w.FfDim);
 
         NormAttnWeight = w.GetTensor($"{prefix}.norm_attn.weight");
         NormAttnBias = w.GetTensor($"{prefix}.norm_attn.bias");
-        AttnQWeight = w.GetTensor($"{prefix}.attn.q.weight");
-        AttnQBias = w.TryGetTensor($"{prefix}.attn.q.bias");
-        AttnKWeight = w.GetTensor($"{prefix}.attn.k.weight");
-        AttnKBias = w.TryGetTensor($"{prefix}.attn.k.bias");
-        AttnVWeight = w.GetTensor($"{prefix}.attn.v.weight");
-        AttnVBias = w.TryGetTensor($"{prefix}.attn.v.bias");
-        AttnOutWeight = w.GetTensor($"{prefix}.attn.out.weight");
-        AttnOutBias = w.TryGetTensor($"{prefix}.attn.out.bias");
-        AttnPosWeight = w.GetTensor($"{prefix}.attn.pos.weight");
+        AttnQ = w.Pack($"{prefix}.attn.q", w.HiddenDim, w.HiddenDim);
+        AttnK = w.Pack($"{prefix}.attn.k", w.HiddenDim, w.HiddenDim);
+        AttnV = w.Pack($"{prefix}.attn.v", w.HiddenDim, w.HiddenDim);
+        AttnOut = w.Pack($"{prefix}.attn.out", w.HiddenDim, w.HiddenDim);
+        AttnPos = w.Pack($"{prefix}.attn.pos", w.HiddenDim, w.HiddenDim);
         AttnPosBiasU = w.GetTensor($"{prefix}.attn.pos_bias_u");
         AttnPosBiasV = w.GetTensor($"{prefix}.attn.pos_bias_v");
 
         NormConvWeight = w.GetTensor($"{prefix}.norm_conv.weight");
         NormConvBias = w.GetTensor($"{prefix}.norm_conv.bias");
-        ConvPw1Weight = w.GetTensor($"{prefix}.conv.pw1.weight");
-        ConvPw1Bias = w.TryGetTensor($"{prefix}.conv.pw1.bias");
-        ConvPw2Weight = w.GetTensor($"{prefix}.conv.pw2.weight");
-        ConvPw2Bias = w.TryGetTensor($"{prefix}.conv.pw2.bias");
+        ConvPw1 = w.Pack($"{prefix}.conv.pw1", 2 * w.HiddenDim, w.HiddenDim);
+        ConvPw2 = w.Pack($"{prefix}.conv.pw2", w.HiddenDim, w.HiddenDim);
 
         var dwWeightRaw = w.GetTensor($"{prefix}.conv.dw.weight");  // [K, 1, d] storage order
         var dwBiasRaw = w.GetTensor($"{prefix}.conv.dw.bias");
@@ -230,10 +225,8 @@ public sealed class ParakeetConformerLayer
 
         NormFf2Weight = w.GetTensor($"{prefix}.norm_ff2.weight");
         NormFf2Bias = w.GetTensor($"{prefix}.norm_ff2.bias");
-        Ff2Linear1Weight = w.GetTensor($"{prefix}.ff2.linear1.weight");
-        Ff2Linear1Bias = w.TryGetTensor($"{prefix}.ff2.linear1.bias");
-        Ff2Linear2Weight = w.GetTensor($"{prefix}.ff2.linear2.weight");
-        Ff2Linear2Bias = w.TryGetTensor($"{prefix}.ff2.linear2.bias");
+        Ff2Linear1 = w.Pack($"{prefix}.ff2.linear1", w.FfDim, w.HiddenDim);
+        Ff2Linear2 = w.Pack($"{prefix}.ff2.linear2", w.HiddenDim, w.FfDim);
 
         NormOutWeight = w.GetTensor($"{prefix}.norm_out.weight");
         NormOutBias = w.GetTensor($"{prefix}.norm_out.bias");

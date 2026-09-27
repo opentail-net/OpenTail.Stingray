@@ -311,3 +311,12 @@ Timebox each at half a day, write down what was learned, and move on if blocked.
   - Also logged in `bugstofix.md`: M-RoPE image positions and deepstack are CPU only (Qwen-VL family on GPU).
   - Side fix: `stingray pull -q` now prefers an exact file name and skips `mmproj-*` unless asked, and treats
     HTTP 416 on an existing file as complete (both hit while fetching Qwen3-VL).
+- 2026-09-27: Parakeet TDT performance pass (asked for by the user; stopped at parity with the reference, as asked).
+  - Where the time went (scratch stage timer, 14.2 s clip, 5 runs): encoder 3.4-3.6 s of 3.5-3.7 s; mel ~50 ms,
+    TDT decode ~60 ms. Every encoder linear ran as one matvec per frame, re-reading each weight matrix ~178 times.
+  - Change: all encoder linears (FFNs, Q/K/V/out, positional, conv pointwise, subsampling, CTC) run as one
+    batched SGEMM over the frames, with weights packed once at load and the F32 copies dropped.
+  - Result, `stingray stt -m parakeet` on the same clip, 3 runs: 1.60-1.64 s, 8.7-8.9x real time (was 3.6 s, 3.9x);
+    CrispASR 8.6x. Peak RAM 2.85 GB, unchanged (a first version that kept both copies peaked at 5.6 GB).
+  - Output unchanged: TDT 4/4 clips identical to CrispASR; CTC q4_k and f16 still 2.9% WER, same words; heavy
+    encoder tests 3/3.
