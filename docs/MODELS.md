@@ -25,6 +25,7 @@ First version, 2026-09-26. Expect columns and entries to change as the list is u
 | Phi-3 mini 4k | Small, strong at reasoning, permissive licence | [Phi-3-mini-4k-instruct-q4.gguf](https://huggingface.co/microsoft/Phi-3-mini-4k-instruct-gguf/blob/main/Phi-3-mini-4k-instruct-q4.gguf) | 2.4 GB | MIT | file (compared with llama.cpp) |
 | gpt-oss 20B | OpenAI's open-weight reasoning model; needs about 16 GB | [gpt-oss-20b-MXFP4.gguf](https://huggingface.co/ggml-org/gpt-oss-20b-GGUF/blob/main/gpt-oss-20b-MXFP4.gguf) | 12.1 GB | Apache-2.0 | file (compared with llama.cpp) |
 | Granite 4.0-H 1B | Small IBM model with a hybrid Mamba-2 design and a permissive licence; CPU only for now | [granite-4.0-h-1b-Q8_0.gguf](https://huggingface.co/ibm-granite/granite-4.0-h-1b-GGUF/blob/main/granite-4.0-h-1b-Q8_0.gguf) | 1.6 GB | Apache-2.0 | file (compared with llama.cpp) |
+| LFM2 1.2B | Very small and quick, built for on-device use; CPU only for now | [LFM2-1.2B-Q8_0.gguf](https://huggingface.co/LiquidAI/LFM2-1.2B-GGUF/blob/main/LFM2-1.2B-Q8_0.gguf) | 1.2 GB | LFM Open License v1.0: free commercial use only under $10M annual revenue | file (compared with llama.cpp) |
 
 Language models download most easily with the CLI: `stingray pull -r Qwen/Qwen3-4B-GGUF` picks the
 Q4_K_M file for you.

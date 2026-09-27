@@ -27,7 +27,7 @@ dated evidence in the same pass.
 | 14 | ✅ DONE (CPU; granite-4.0-h 350M/1B admitted 2026-09-27) | New family: Mamba-2 hybrid layer + state cache, admitting IBM Granite 4.0 (`granitehybrid`, Apache-2.0, 1B-32B) first | missing family; one layer type unlocks #3, #15 and Falcon-H1 | large |
 | 15 | ✅ DONE (CPU; Nemotron Nano 12B v2 text decoder admitted 2026-09-27) | New family: NVIDIA Nemotron Nano v2 / Nemotron 3 Nano (`nemotron_h`) | missing family; reuses #14's Mamba-2 layer; also completes #3 | medium after #14 |
 | 16 | ⬜ TODO | New family: GLM-4.5 / 4.6 / 4.7 incl. Air (`glm4moe`) | missing family, currently a top open family; GLM-4 dense already runs. Air is ~60 GB at Q4 | medium |
-| 17 | ⬜ TODO | New family: Liquid LFM2 / LFM2-MoE (`lfm2`, 350M-8B, popular on-device) | missing family; skipped earlier because the LFM licence caps free commercial use at $10M revenue. **Decide the licence question first** | medium |
+| 17 | ✅ DONE (CPU; LFM2-1.2B admitted 2026-09-27) | New family: Liquid LFM2 / LFM2-MoE (`lfm2`, 350M-8B, popular on-device) | missing family. Licence decided 2026-09-27 (user): we ship the inference engine, not the weights, so the LFM licence ($10M revenue cap on free commercial use) is for whoever downloads the model to judge; we document it in STATUS/MODELS | medium |
 
 ## Current state (paused 2026-09-26)
 
@@ -113,6 +113,32 @@ second-half perplexity vs `llama-perplexity`, then an allowlist entry, a STATUS.
 MODELS.md entry if it qualifies.
 
 ## Log
+
+- 2026-09-27 #17 DONE (CPU): Liquid LFM2 (`lfm2`) admitted.
+  - **Licence:** decided by the user: we ship inference, not weights, so the LFM licence (free
+    commercial use under $10M revenue) is documented in STATUS/MODELS, not a gate.
+  - **Mixer:** new `ForwardPass.ShortConv.cs`, following llama.cpp lfm2.cpp `build_shortconv_block`:
+    - in_proj splits into b | c | x;
+    - causal depthwise conv of b*x over `shortconv.l_cache` (3) steps, no bias or activation;
+    - `y = c * conv`, then out_proj.
+    - Per-layer state is `[embDim][l_cache-1]`.
+  - **Shared plumbing:** reuses the Mamba-2 recurrent plumbing, now generalised as
+    `HasRecurrentState` (token-by-token prefill, `SupportsPartialRewind` false, `TruncateTo` guard,
+    reset).
+  - **Layer-0 traps fixed:**
+    - QK-norm presence is probed on the first layer that has `attn_q_norm` (LFM2's layer 0 is a
+      conv layer).
+    - The final norm is `token_embd_norm` (llama.cpp `LLM_TENSOR_OUTPUT_NORM_LFM2`), not
+      `output_norm`; without the fallback there was no final norm at all.
+  - **BOS:** LFM2 degenerates without BOS (repeats " is"). `admit-arch` tokenised without BOS even
+    when `add_bos_token` is true, unlike llama-server; fixed.
+  - **Evidence:** `LFM2-1.2B-Q8_0.gguf` (LiquidAI/LFM2-1.2B-GGUF).
+    - Second-half PPL 10.9195 vs `llama-perplexity` 10.9543 (0.3%).
+    - Top-5 after "The capital of France is" (with BOS) within 0.14 nats of `llama-server`.
+    - `Lfm2ParityTests` 3/3 (5.7 s): 5 + 9 confident teacher-forced positions, and state reset.
+  - **Shared test helper:** `TeacherForcedParity`, now used by the Nemotron test too, which
+    tokenises with BOS exactly as llama-server does (still 2/2).
+  - **Not covered:** LFM2-MoE (`lfm2moe`), the LFM2-VL/Audio variants, GPU, batched prefill.
 
 - 2026-09-27 #15 DONE (CPU): NVIDIA Nemotron-H (`nemotron_h`) admitted on the #14 Mamba-2 mixer.
   - **Layer kinds:** each layer is exactly one sublayer (llama.cpp nemotron-h.cpp):
