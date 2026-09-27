@@ -2,7 +2,7 @@
 namespace OpenTail.Stingray.Tests.Server.Fast;
 
 /// <summary>
-/// docs/032-multi-model-inference-runtime-plan.md Phase 7 — per-request model routing through
+/// docs/3-product-and-runtime/032-multi-model-inference-runtime-plan.md Phase 7 — per-request model routing through
 /// the real HTTP endpoints (OpenAI chat completions, Anthropic messages, Responses, /v1/models).
 /// Fake engines only (no real GGUF); the real-model end-to-end acceptance test (sidekick +
 /// reasoner, concurrent cross-model users, session isolation) lives in the heavy Tests.Server

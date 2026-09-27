@@ -4,7 +4,7 @@ namespace OpenTail.Stingray.Diffusion.AceStep.Conditioning;
 
 /// <summary>
 /// Real ACE-Step `AceStepTimbreEncoder`, transcribed from the real `diffusers`
-/// `pipelines/ace_step/modeling_ace_step.py` -- see docs/064-acestep-implementation-plan.md.
+/// `pipelines/ace_step/modeling_ace_step.py` -- see docs/2-coverage/064-acestep-implementation-plan.md.
 ///
 /// <para><b>V1 scope</b>: only the real "no reference audio" path is implemented -- a real 30s
 /// (750-frame @ 25Hz) slice of a real, self-derived `silence_latent` (see

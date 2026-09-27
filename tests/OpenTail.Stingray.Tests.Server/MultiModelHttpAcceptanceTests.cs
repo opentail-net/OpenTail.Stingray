@@ -2,7 +2,7 @@
 namespace OpenTail.Stingray.Tests.Server;
 
 /// <summary>
-/// docs/032-multi-model-inference-runtime-plan.md Phase 7 acceptance: "Users A/B → sidekick,
+/// docs/3-product-and-runtime/032-multi-model-inference-runtime-plan.md Phase 7 acceptance: "Users A/B → sidekick,
 /// Users C/D → reasoner, with same-model batching, cross-model concurrency, residency, and
 /// session isolation all verified together." Two real GGUFs (SmolLM2-1.7B and Qwen3-0.6B,
 /// standing in for a sidekick/reasoner pair) configured via

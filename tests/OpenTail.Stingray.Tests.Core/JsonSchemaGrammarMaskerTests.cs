@@ -397,7 +397,7 @@ public class JsonSchemaGrammarMaskerTests
     /// value constrained to enum ["active","pending"], a character that isn't a prefix of either is
     /// still a genuine, un-escapable dead end regardless of nesting -- '{'/'[' are ordinary string
     /// content there (a string CAN contain a literal brace), not structural, so this reproduces the
-    /// same class of defect docs/bugstofix.md described without depending on a byte sequence nesting
+    /// same class of defect docs/1-correctness/bugstofix.md described without depending on a byte sequence nesting
     /// support has since made legal. See ChoiceConstraint.cs/GrammarStateMachine.cs for the sibling
     /// "narrow grammar must fail closed rather than silently accept" pattern this guards.
     /// </summary>
@@ -523,7 +523,7 @@ public class JsonSchemaGrammarMaskerTests
     }
 
     /// <summary>
-    /// Regression for GrammarStateMachine.cs:146 (docs/bugstofix.md): '{' at a value position used
+    /// Regression for GrammarStateMachine.cs:146 (docs/1-correctness/bugstofix.md): '{' at a value position used
     /// to have no transition at all, leaving the state stuck at ValueStart with no way to enter or
     /// correctly close a nested object. Also exercises required-property enforcement at a NESTED
     /// level (not just the root), via the same PushFrame/RecordPropertyEmitted/CanEvict-style
@@ -629,7 +629,7 @@ public class JsonSchemaGrammarMaskerTests
     }
 
     /// <summary>
-    /// The exact failure scenario from docs/bugstofix.md: "letting a model emit {} for a schema
+    /// The exact failure scenario from docs/1-correctness/bugstofix.md: "letting a model emit {} for a schema
     /// requiring fields." Required-property enforcement (PushFrame/RecordPropertyEmitted/
     /// AreAllRequiredPropertiesEmitted) existed with zero callers before this fix -- nothing
     /// actually gated the closing '}' on it.
@@ -661,7 +661,7 @@ public class JsonSchemaGrammarMaskerTests
 
     /// <summary>
     /// Enum enforcement through the ACTUAL masker path (Filter()'s per-candidate-token masking),
-    /// not just the state machine directly -- docs/bugstofix.md specifically called out that no
+    /// not just the state machine directly -- docs/1-correctness/bugstofix.md specifically called out that no
     /// test exercised this. A token that cannot possibly complete to an allowed enum value must be
     /// masked; one that can (even mid-spelling) must not be.
     /// </summary>
@@ -703,7 +703,7 @@ public class JsonSchemaGrammarMaskerTests
     }
 
     /// <summary>
-    /// Regression for JsonSchemaGrammarMasker.cs:78 (docs/bugstofix.md): Filter() used to
+    /// Regression for JsonSchemaGrammarMasker.cs:78 (docs/1-correctness/bugstofix.md): Filter() used to
     /// GrammarStateMachine.Clone() once PER VOCABULARY ENTRY -- 100k+ allocations per decode step
     /// on a real tokenizer. With a single reused scratch instance (GrammarStateMachine.CopyFrom),
     /// allocated bytes should stay roughly flat regardless of vocab size rather than scaling

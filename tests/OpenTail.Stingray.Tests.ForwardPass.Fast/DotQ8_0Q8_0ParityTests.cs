@@ -2,7 +2,7 @@
 namespace OpenTail.Stingray.Tests.ForwardPass.Fast;
 
 /// <summary>
-/// docs/bugstofix.md (ModelCompatibility.cs:461, deepseek2 investigation): MatVecQ8_0 previously
+/// docs/1-correctness/bugstofix.md (ModelCompatibility.cs:461, deepseek2 investigation): MatVecQ8_0 previously
 /// dequantized the weight to F32 and dotted against the raw F32 activation, never quantizing the
 /// activation at all -- unlike every other quantized dtype's primary MatVec, and unlike ggml's real
 /// Q8_0 kernel (ggml_vec_dot_q8_0_q8_0), which always pairs a Q8_0 weight with a Q8_0-quantized

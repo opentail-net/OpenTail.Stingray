@@ -9,7 +9,7 @@ namespace OpenTail.Stingray.Tests.Diffusion.AceStep;
 /// First real-weight smoke test for ACE-Step Turbo's 24-layer DiT. Non-degeneracy receipt (finite,
 /// non-trivial, shape-correct, sensitive to real inputs), not yet a numeric golden-parity test
 /// against a real `diffusers` `AceStepTransformer1DModel` reference run. No real condition
-/// encoder exists yet (see docs/064-acestep-implementation-plan.md), so this test drives the DiT
+/// encoder exists yet (see docs/2-coverage/064-acestep-implementation-plan.md), so this test drives the DiT
 /// with a synthetic (but real-shaped) condition sequence -- sufficient to validate that the real
 /// weight loading and forward-pass math run correctly end to end without NaN/crashes.
 /// </summary>

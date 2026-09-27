@@ -1,7 +1,7 @@
 # 051 — Wiring HotSession's newly-ported capabilities into the live Server path
 
 ## Status: DONE (2026-08-27). The two items not covered here (LoRA, `OnTokenGenerated`/
-## `ToolCallParser`) are tracked as open TODOs in `docs/051-hotsession-capability-wiring-plan.md`,
+## `ToolCallParser`) are tracked as open TODOs in `docs/3-product-and-runtime/051-hotsession-capability-wiring-plan.md`,
 ## along with `Fork()` skill/instruction propagation (an open design question this work surfaced).
 
 ## Background

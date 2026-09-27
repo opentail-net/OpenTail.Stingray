@@ -10,7 +10,7 @@ namespace OpenTail.Stingray.Engine;
 // codebase currently exercises any function below. Treat every formula here as "believed
 // correct from careful reading of the reference," not "verified." This is explicitly the
 // user-requested "alpha" deliverable: a complete first-draft port to build on, not a finished
-// or trustworthy implementation. See docs/058-deepseek-full-lineage-implementation-plan.md
+// or trustworthy implementation. See docs/2-coverage/058-deepseek-full-lineage-implementation-plan.md
 // Phase 0 for the plan this belongs to.
 //
 // "deepseek4" is NOT admitted in ModelCompatibility.cs and must not be added there until this
@@ -675,7 +675,7 @@ public static class DeepSeek4Graph
     /// The "prev half" row index for slot <paramref name="r"/> (0..ratio-1) of CSA/LID overlap
     /// block <paramref name="blockIndex"/>, per this codebase's working-hypothesis reading of
     /// <c>build_overlap_compressed_kv_from_state</c> (deepseek4.cpp:524-606) documented in
-    /// docs/058-deepseek-full-lineage-implementation-plan.md's "CSA decomposition" section: the
+    /// docs/2-coverage/058-deepseek-full-lineage-implementation-plan.md's "CSA decomposition" section: the
     /// `ratio` raw-token rows immediately preceding this block. Returns -1 for a row that falls
     /// before position 0 (block 0's prev half, or any block whose prev window reaches past the
     /// start of the sequence) -- the caller substitutes the reference's synthetic zero-KV/-inf-

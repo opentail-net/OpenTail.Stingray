@@ -2,7 +2,7 @@
 > encoder gaps closed (see "Real silence_latent + timbre encoder wired" below); the 8-step DiT loop
 > runs GPU-resident, 11.52s DiT, 5.47x (c94f5fa, `PerformanceLeague.md`); and the `audiocpp_cli`
 > comparison is blocked on the separate `acestep-5Hz-lm-1.7B` LM package, not yet downloaded
-> (6dd077a, recorded in [088](088-diffusion-two-pass-quality-and-performance-master-plan.md)). Still
+> (6dd077a, recorded in [088](../done/088-diffusion-two-pass-quality-and-performance-master-plan.md)). Still
 > open: end-to-end numeric parity against that reference, and a STATUS row.
 
 # ACE-Step 1.5 Turbo implementation plan

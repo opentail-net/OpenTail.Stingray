@@ -1,3 +1,5 @@
+> **ARCHIVED 2026-09-27.** Pass 1 (quality) closed for every model (STATUS diffusion rows all 🟢). Open checkboxes carried forward to ../00-current-work.md: ACE-Step C++ head-to-head (blocked on the `acestep-5Hz-lm-1.7B` package) and an LTX-Video C++ comparison. The Qwen Image and HunyuanVideo GPU items are done (STATUS rows list Vulkan); FLUX.2 GPU work continues in ../4-performance/diffusion/093-flux2-gpu-performance-optimization-plan.md.
+
 # 088 — Diffusion/Video two-pass master plan: Quality, then Performance (2026-09-18)
 
 ## Standing instruction for whoever (or whatever `/loop` iteration) picks this up
@@ -802,7 +804,7 @@ rule 7 exists).
 > table above — re-verified against current code/`PerformanceLeague.md` today.
 > - **HunyuanVideo** (2c): no longer blocked. GPU residency landed `ecb96e4` (2026-09-26) — real
 >   GPU blocks, cosine 1.000000 parity, 18.0s->8.8s/step. See
->   [done/078-hunyuanvideo-gpu-residency-plan.md](done/078-hunyuanvideo-gpu-residency-plan.md).
+>   [done/078-hunyuanvideo-gpu-residency-plan.md](078-hunyuanvideo-gpu-residency-plan.md).
 > - **Qwen Image** (2d, Phase 1/2): the specific correctness bug this section describes (synthetic
 >   out-of-distribution parity test, cosine ~0.99, attributed to FP16 precision sensitivity at
 >   depth, never a confirmed logic bug) is still exactly as described for that synthetic test — but
@@ -891,7 +893,7 @@ attention, same general shape as FLUX.1):
       candidates individually tested and ruled out (RoPE rotation, token concat/slice, AdaLN
       modulate, QK-RMSNorm, weight orientation, BF16 dequant, Q4_K dequant, Vulkan batching
       granularity) -- root cause not found; needs a stage-by-stage GPU-vs-CPU intermediate-tensor
-      dump next, not more op-by-op review. See `docs/094-diffusion-performance-plan.md` Phase 2 for
+      dump next, not more op-by-op review. See `docs/4-performance/diffusion/094-diffusion-performance-plan.md` Phase 2 for
       the full trail. This section's own speed prediction (CPU likely wins, matching FLUX.2) may
       still be correct, but is now moot until the correctness bug is found.
 - [ ] **Phase 2 (Qwen Image) — real end-to-end Vulkan run + C++ reference comparison.** BLOCKED as

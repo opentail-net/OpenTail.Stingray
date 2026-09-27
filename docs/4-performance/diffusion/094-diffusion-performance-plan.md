@@ -1,7 +1,7 @@
 # 094 — Diffusion Stack Performance Plan (2026-09-19)
 
 > **SPLIT 2026-09-27.** Phases 0, 1, 2, 3, 4, 5, 7 and 8 are closed and moved verbatim to
-> [done/094-diffusion-performance-plan-closed-phases.md](done/094-diffusion-performance-plan-closed-phases.md); each is cited there. Open here: **Phase 6** (FLUX.1: the per-kernel
+> [done/094-diffusion-performance-plan-closed-phases.md](../../done/094-diffusion-performance-plan-closed-phases.md); each is cited there. Open here: **Phase 6** (FLUX.1: the per-kernel
 > comparison with sd.cpp and on-GPU quantized matmul are not settled by the later work: FLUX.1 GPU went
 > 173.6s -> 132.0s with register-tiled flash attention in a5daf08, and 017765c gave a measured gap
 > diagnosis) and **Phase 9** (the cross-model DRY and perf-doc consistency pass). The findings below

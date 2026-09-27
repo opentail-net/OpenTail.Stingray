@@ -10,7 +10,7 @@ namespace OpenTail.Stingray.Tests.Diffusion.AceStep;
 /// with the SAME real `turbo.safetensors` `encoder.lyric_encoder.*` weights (remapped via a real,
 /// mechanical key-rename verified with `load_state_dict(strict=False)` reporting zero missing/
 /// unexpected keys) and run on a fixed-seed synthetic input. See
-/// docs/064-acestep-implementation-plan.md's "Golden-parity" section for how the reference dump
+/// docs/2-coverage/064-acestep-implementation-plan.md's "Golden-parity" section for how the reference dump
 /// (`golden_lyric_*.bin`) was produced -- not checked into the repo, regenerate via the Python
 /// script referenced there if needed.
 /// </summary>

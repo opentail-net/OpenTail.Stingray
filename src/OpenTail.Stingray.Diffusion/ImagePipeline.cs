@@ -108,7 +108,7 @@ public sealed class ImagePipeline : IDisposable, IDiffusionPipeline
         int latW = width  / _params.VaeScaleFactor;
         int latC = _params.LatentChannels;  // 16
 
-        // TEMPORARY diagnostic instrumentation (perf-sweep Phase 12, docs/perf-sweep-plan.md) for
+        // TEMPORARY diagnostic instrumentation (perf-sweep Phase 12, docs/4-performance/perf-sweep-plan.md) for
         // FLUX.1-schnell's unexplained ~3% Vulkan speedup vs CPU -- no STINGRAY_PROFILE_DECODE-
         // equivalent exists for diffusion pipelines, so this reuses the same env var and mirrors
         // AceStepPipeline's own gated Stopwatch pattern. Remove once the real bottleneck is found.

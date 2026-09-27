@@ -3,12 +3,12 @@
 > Gated-DeltaNet path) has been validated end to end on CPU and full CUDA offload. What remains is
 > item 3 (GDN state-lifecycle conformance, including retained-session compatibility) and item 4
 > (benchmark). This family stays high on the runway because it is widely distributed on Hugging
-> Face — see [00-current-work.md](00-current-work.md).
+> Face — see [00-current-work.md](../00-current-work.md).
 >
 > **Extended 2026-08-28:** a second, larger, independent receipt — Qwen3.8-27B UD-Q3_K_XL (hybrid
 > GDN + MoE + MTP, not just dense-ish like Ornith), FULL 24-token exact greedy match against
 > llama.cpp. Also drove the IQ2_XS/IQ2_S dequant-format port — see
-> [01-gguf-model-coverage-plan.md](done/01-gguf-model-coverage-plan.md) §2 and the `qwen35` entry in
+> [01-gguf-model-coverage-plan.md](../done/01-gguf-model-coverage-plan.md) §2 and the `qwen35` entry in
 > `ModelCompatibility.cs`.
 
 # Qwen3.5 MoE / Gated DeltaNet — current work
@@ -22,5 +22,5 @@ linear-attention recurrence plus MoE.
 3. Add GDN state-lifecycle conformance tests, including retained-session compatibility.
 4. Benchmark only after correctness passes.
 
-References: [qwen35moe-tensor-layout.md](qwen35moe-tensor-layout.md) and
-[done/qwen35moe-plan-superseded.md](done/qwen35moe-plan-superseded.md).
+References: [qwen35moe-tensor-layout.md](../reference/qwen35moe-tensor-layout.md) and
+[done/qwen35moe-plan-superseded.md](../done/qwen35moe-plan-superseded.md).

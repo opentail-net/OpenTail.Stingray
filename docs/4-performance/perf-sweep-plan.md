@@ -1,12 +1,12 @@
 # PerformanceLeague sweep — phased plan
 
 > **STATUS 2026-09-27.** Phases 12 and 14 are closed and moved verbatim to
-> [done/perf-sweep-plan-closed-phases.md](done/perf-sweep-plan-closed-phases.md). Also since the phases below were written: Phase 8's item 8.2 is
+> [done/perf-sweep-plan-closed-phases.md](../done/perf-sweep-plan-closed-phases.md). Also since the phases below were written: Phase 8's item 8.2 is
 > moot (`deepseek2` admitted 2026-09-26, no `--allow-unverified-arch` needed; its perf items are open);
 > Phase 2's 35B point moved from 0.05x to 0.63x of llama.cpp prefill (2026-09-25,
-> [done/2026-09-25-hf-top-downloads-coverage-plan.md](done/2026-09-25-hf-top-downloads-coverage-plan.md)
+> [done/2026-09-25-hf-top-downloads-coverage-plan.md](../done/2026-09-25-hf-top-downloads-coverage-plan.md)
 > Phase 8); Phase 3's SmolLM2 prefill is now ~0.71-0.81x (f801243, see
-> [101-work-queue-after-coverage-plan.md](101-work-queue-after-coverage-plan.md)). The other phases were
+> [101-work-queue-after-coverage-plan.md](../done/101-work-queue-after-coverage-plan.md)). The other phases were
 > not re-verified item by item in this pass.
 
 **Read this file first on every loop firing.** Source of truth across firings (a `/loop`

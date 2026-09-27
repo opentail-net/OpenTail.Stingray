@@ -811,11 +811,11 @@ below.
 Each of these is its own full handoff doc with real, checked-by-hand architecture details — read
 the doc before starting, don't re-derive from scratch:
 
-- [ ] `docs/069-flux-vulkan-gemm-perf-handoff.md` — FLUX Vulkan GEMM/attention kernel tuning
+- [ ] `docs/4-performance/diffusion/069-flux-vulkan-gemm-perf-handoff.md` — FLUX Vulkan GEMM/attention kernel tuning
       (partially done: real 2.3-2.5× win already landed and independently verified; remaining gap
       to the 99.8s C++ reference target still open, T5-XXL GPU residency done, see docs/071).
-- [ ] `docs/071-flux-t5xxl-gpu-residency-plan.md` — done (T5-XXL GPU residency landed, committed).
-- [ ] `docs/done/072-wan21-gpu-kernel-tuning-plan.md` + `docs/073-wan21-kernel-fusion-and-qkv-plan.md` —
+- [ ] `docs/done/071-flux-t5xxl-gpu-residency-plan.md` — done (T5-XXL GPU residency landed, committed).
+- [ ] `docs/done/072-wan21-gpu-kernel-tuning-plan.md` + `docs/4-performance/diffusion/073-wan21-kernel-fusion-and-qkv-plan.md` —
       Wan DiT GPU kernel tuning (real progress landed: GPU now faster than CPU per-block; **but see
       Priority 0 above — this is now moot until Wan's real correctness bug is fixed**, since a
       faster wrong answer is not progress).
@@ -854,13 +854,13 @@ the doc before starting, don't re-derive from scratch:
       correctness item is actually closed. See docs/077's full 2026-09-14 update trail (the most
       current entries) for the complete evidence chain and the precise next diagnostic step, and
       `PerformanceLeague.md`'s LTX-Video row for the same honest status.
-- [ ] `docs/078-hunyuanvideo-gpu-residency-plan.md` — HunyuanVideo, not yet started. Real flag: the
+- [ ] `docs/done/078-hunyuanvideo-gpu-residency-plan.md` — HunyuanVideo, not yet started. Real flag: the
       `_backend` field in `HunyuanVideoModel.cs` is **dead, unused code** — don't mistake it for
       partial progress. Also needs a genuinely new RoPE kernel (split-half pairing + unequal
       16/56/56 axis split — neither existing GPU RoPE kernel matches this convention).
-- [ ] `docs/079-minimax-music3-gpu-residency-plan.md` — MiniMax-Music3's flow transformer, not yet
+- [ ] `docs/4-performance/audio/079-minimax-music3-gpu-residency-plan.md` — MiniMax-Music3's flow transformer, not yet
       started. `headDim=64`, in-context conditioning (no separate cross-attention block to port).
-- [ ] `docs/080-tts-asr-gpu-residency-checklist.md` — the broader ~30-model TTS/ASR stack
+- [ ] `docs/4-performance/audio/080-tts-asr-gpu-residency-checklist.md` — the broader ~30-model TTS/ASR stack
       checklist. Real audit already done: 26 confirmed 100% CPU, 4 with partial GPU code worth
       auditing first (F5TTS, Chatterbox, CosyVoice, Parler), 0 with confirmed real GPU residency.
 

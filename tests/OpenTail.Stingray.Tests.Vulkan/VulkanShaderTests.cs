@@ -426,7 +426,7 @@ public sealed unsafe class VulkanShaderTests : HeavyTestBase
         backend.Free(gpuOutput);
     }
 
-    // docs/084-vulkan-large-tensor-sharding-plan.md: dtypes with no raw Vulkan matvec kernel
+    // docs/4-performance/gpu/084-vulkan-large-tensor-sharding-plan.md: dtypes with no raw Vulkan matvec kernel
     // (IQ4_XS, IQ3_S, IQ3_XXS, Q3_K, Q2_K, IQ2_S, IQ4_NL, ...) now dequantize to F16 instead of
     // F32 in VulkanHybridGdnForwardPass.UploadWeight, halving their on-GPU footprint. This test
     // is synthetic (no model fixture needed) — it just verifies the new MatVecF16 shader's packed
@@ -512,7 +512,7 @@ public sealed unsafe class VulkanShaderTests : HeavyTestBase
     }
 
     /// <summary>
-    /// docs/084-vulkan-large-tensor-sharding-plan.md: IQ4_XS now has a native raw Vulkan matvec
+    /// docs/4-performance/gpu/084-vulkan-large-tensor-sharding-plan.md: IQ4_XS now has a native raw Vulkan matvec
     /// kernel (<c>MatVecIQ4XS</c>) instead of the F16-dequant-and-upload fallback, since it was
     /// the single largest source of avoidable GPU memory expansion. Verifies the GPU kernel's
     /// full weight×vector dot product — not just the per-element decode — against a CPU
@@ -602,7 +602,7 @@ public sealed unsafe class VulkanShaderTests : HeavyTestBase
     }
 
     /// <summary>
-    /// docs/084-vulkan-large-tensor-sharding-plan.md, Follow-up 7: IQ3_S now has a native raw
+    /// docs/4-performance/gpu/084-vulkan-large-tensor-sharding-plan.md, Follow-up 7: IQ3_S now has a native raw
     /// Vulkan matvec kernel (<c>MatVecIQ3S</c>) instead of the F16-dequant-and-upload fallback —
     /// the second-largest source of avoidable GPU memory expansion after IQ4_XS. Same shape as
     /// <see cref="MatVecIQ4XsMatchesCpu"/>: rows=37 (tail workgroup), cols=512 (multi-block),
@@ -669,7 +669,7 @@ public sealed unsafe class VulkanShaderTests : HeavyTestBase
         backend.Free(gpuOutput);
     }
 
-    // docs/084-vulkan-large-tensor-sharding-plan.md, Follow-up 7: boundary check mirroring
+    // docs/4-performance/gpu/084-vulkan-large-tensor-sharding-plan.md, Follow-up 7: boundary check mirroring
     // EmbedLookupQ3KBoundaryRowsMatchCpu — rows near a shard/index boundary the small 37-row
     // test above might not exercise, plus a single-block (cols=256) shape.
     [Fact]
@@ -1662,7 +1662,7 @@ public sealed unsafe class VulkanShaderTests : HeavyTestBase
         backend.Free(gpuOut);
     }
 
-    // Boundary check (docs/084-vulkan-large-tensor-sharding-plan.md Phase 4): tokens at the
+    // Boundary check (docs/4-performance/gpu/084-vulkan-large-tensor-sharding-plan.md Phase 4): tokens at the
     // first row, a middle row, and the last row of a larger synthetic table, to catch an
     // off-by-one in the per-thread (n_iter/j/half/l) index decomposition that a small vocab
     // (like the 5-row test above) wouldn't exercise across enough distinct rows/bytes.

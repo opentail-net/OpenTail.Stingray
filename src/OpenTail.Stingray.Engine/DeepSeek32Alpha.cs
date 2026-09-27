@@ -2,7 +2,7 @@ namespace OpenTail.Stingray.Engine;
 
 // ============================================================================================
 // ALPHA / UNTESTED -- DeepSeek-V3.2 ("deepseek32" GGUF architecture) implementation. Phase 1 of
-// docs/058-deepseek-full-lineage-implementation-plan.md, started immediately after Phase 0's
+// docs/2-coverage/058-deepseek-full-lineage-implementation-plan.md, started immediately after Phase 0's
 // deepseek4 (V4) work rather than waiting on a V4 checkpoint download, per user direction.
 //
 // Same status/scope caveats as DeepSeek4Alpha.cs's header apply here: ported from

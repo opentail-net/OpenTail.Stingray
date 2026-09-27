@@ -4,7 +4,7 @@ namespace OpenTail.Stingray.Tests.Core;
 
 /// <summary>
 /// ALPHA/UNTESTED-AGAINST-REAL-WEIGHTS tests for DeepSeek32Hyperparams (DeepSeek32Alpha.cs).
-/// Pure metadata-parsing checks only -- see docs/058-deepseek-full-lineage-implementation-plan.md
+/// Pure metadata-parsing checks only -- see docs/2-coverage/058-deepseek-full-lineage-implementation-plan.md
 /// Phase 1.
 /// </summary>
 public class DeepSeek32AlphaTests

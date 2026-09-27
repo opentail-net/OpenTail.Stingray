@@ -9,7 +9,7 @@ namespace OpenTail.Stingray.Diffusion.MiniMaxMusic3;
 /// Real MiniMax Music 3 flow-matching DiT (`MiniMaxMusic3Transformer1DModel`), transcribed directly
 /// from the real, already-installed `diffusers==0.40.0` source
 /// (`diffusers/models/transformers/transformer_minimax_music3.py`) -- see
-/// docs/066-minimax-music3-future-plan.md.
+/// docs/4-performance/audio/066-minimax-music3-future-plan.md.
 ///
 /// <para><b>Status: code written and real tensor names cross-checked against the checkpoint's own
 /// `diffusion_pytorch_model.safetensors.index.json` (a free, small file -- no real weight download

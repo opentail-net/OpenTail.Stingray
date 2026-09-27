@@ -4,7 +4,7 @@ namespace OpenTail.Stingray.Engine;
 // ALPHA / UNTESTED -- see DeepSeek4Alpha.cs's file header for the overall status/scope note;
 // everything there applies here too. This file is the persistent compressed-KV state cache that
 // CSA/HCA/LID (lightning indexer) attention need -- flagged in
-// docs/058-deepseek-full-lineage-implementation-plan.md as the one mechanism with no existing
+// docs/2-coverage/058-deepseek-full-lineage-implementation-plan.md as the one mechanism with no existing
 // analog anywhere in this codebase.
 //
 // IMPORTANT SCOPE NOTE, read before wiring this in: the real reference

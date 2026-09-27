@@ -220,5 +220,5 @@ phase as opportunistic, not a commitment — each of these could be a multi-hour
 
 ---
 
-*Companion to `docs/PerformanceLeague-backfill-plan.md` (the original CPU/Vulkan LLM+TTS+ASR sweep,
+*Companion to `docs/done/PerformanceLeague-backfill-plan.md` (the original CPU/Vulkan LLM+TTS+ASR sweep,
 now essentially complete) — this doc covers the README-claims-driven expansion phase.*

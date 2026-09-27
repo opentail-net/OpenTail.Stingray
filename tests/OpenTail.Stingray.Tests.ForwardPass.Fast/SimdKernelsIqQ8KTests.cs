@@ -3,7 +3,7 @@ namespace OpenTail.Stingray.Tests.ForwardPass.Fast;
 
 /// <summary>
 /// AVX2-vs-scalar equivalence for the six Q8_K-paired IQ matvec kernels added 2026-08-28
-/// (docs/05-cpu-architecture-kernel-opportunities.md) — IQ4_XS, IQ2_XS, IQ2_S, IQ3_XXS, IQ2_XXS,
+/// (docs/4-performance/cpu/05-cpu-architecture-kernel-opportunities.md) — IQ4_XS, IQ2_XS, IQ2_S, IQ3_XXS, IQ2_XXS,
 /// IQ3_S. Mirrors the same pattern <c>SimdKernelsQ8KSTests</c> already uses for Q3_K/Q4_K/Q8_0's
 /// Q8_KS-paired kernels: fill a block with random bytes (grid-index / sign / scale fields are all
 /// derived from bits that stay in range regardless of value, so random data cannot crash the

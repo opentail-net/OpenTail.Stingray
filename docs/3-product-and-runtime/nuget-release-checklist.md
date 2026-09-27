@@ -9,7 +9,7 @@ whose version differs from `<Version>`.
 
 1. Set the intended plain release version in `Directory.Build.props`, then commit the release
    candidate. Record its commit SHA and proposed `stingray-vX.Y.Z` tag.
-2. Update [CHANGELOG.md](../CHANGELOG.md): move relevant Unreleased entries into the tagged release
+2. Update [CHANGELOG.md](../../CHANGELOG.md): move relevant Unreleased entries into the tagged release
    section and state compatibility limits, especially backend/model-format scope.
 3. Run the managed release suite and package smoke test locally or on the designated release runner:
 
@@ -22,7 +22,7 @@ whose version differs from `<Version>`.
    each package's README/notices and load-bearing assembly/tool entries, restores and executes a
    fresh .NET 10 library consumer, compiles a clean ASP.NET Core Server consumer, and
    installs/runs the CLI from the locally packed feed.
-4. Complete every applicable row in [reference/release-quality-test-matrix.md](reference/release-quality-test-matrix.md).
+4. Complete every applicable row in [reference/release-quality-test-matrix.md](../reference/release-quality-test-matrix.md).
    A runner or hardware class that was not exercised remains **not run**, never a pass.
    Run `./scripts/check-test-model-coverage.ps1` alongside the managed suite and retain its
    output with the receipt. It reports the locally present/absent real-model fixtures; a normal

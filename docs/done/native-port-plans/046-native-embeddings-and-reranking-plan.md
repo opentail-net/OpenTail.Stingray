@@ -106,7 +106,7 @@ src/OpenTail.Stingray.Cli
 
 ### Phase 3: CLI Commands (`stingray embed` & `stingray rerank`) [COMPLETED]
 * Implemented `EmbedCommand.cs` and `RerankCommand.cs` in `OpenTail.Stingray.Cli`.
-* Registered commands in `Program.cs` and updated `docs/cli-option-inventory.md` (189 options across 16 commands).
+* Registered commands in `Program.cs` and updated `docs/reference/cli-option-inventory.md` (189 options across 16 commands).
 
 ### Phase 4: Server HTTP Endpoints [COMPLETED]
 * Implemented `POST /v1/embeddings` in `OpenAiEmbeddingEndpoints.cs`.

@@ -31,7 +31,7 @@ public sealed class JsonSchemaGrammarMasker : ITokenConstraint
         _stateMachine = stateMachine ?? throw new ArgumentNullException(nameof(stateMachine));
         // One reused "scratch" instance for candidate-token validation in Filter() below, instead
         // of allocating a fresh GrammarStateMachine.Clone() per vocabulary entry per decode step
-        // (previously 100k+ allocations/step -- see docs/bugstofix.md). Must share the same root
+        // (previously 100k+ allocations/step -- see docs/1-correctness/bugstofix.md). Must share the same root
         // properties as _stateMachine; GrammarStateMachine.CopyFrom resets it without allocating.
         _scratchStateMachine = new GrammarStateMachine(_stateMachine.Properties);
         _maskedLogits = new float[vocab.VocabSize];

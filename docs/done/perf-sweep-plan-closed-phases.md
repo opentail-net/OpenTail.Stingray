@@ -1,6 +1,6 @@
 # PerformanceLeague sweep: closed phases
 
-> **ARCHIVED 2026-09-27.** Moved verbatim out of [../perf-sweep-plan.md](../perf-sweep-plan.md).
+> **ARCHIVED 2026-09-27.** Moved verbatim out of [../perf-sweep-plan.md](../4-performance/perf-sweep-plan.md).
 > - **Phase 12** (FLUX.1 Vulkan speedup): answered. Per-stage profiling exists (2026-09-25 row in
 >   `PerformanceLeague.md`: CLIP 0.6s, T5 15.8s on CPU, DiT 23.5s per step, VAE 7.3s), the GPU gap was
 >   measured kernel by kernel against ggml's `test-backend-ops` (017765c), and FLUX.1 Vulkan went
@@ -8,7 +8,7 @@
 > - **Phase 14** (post-norm GPU layer split): `HybridForwardPass` gained optional pre-norm and
 >   post-norms for EXAONE 4.5 (93332cf, 69141da), matching llama-server exactly at `-g 16`, with hybrid
 >   decode 1.8-1.9 t/s and prefill 1.8 t/s measured on the iGPU (log in
->   [../101-work-queue-after-coverage-plan.md](../101-work-queue-after-coverage-plan.md)).
+>   [../101-work-queue-after-coverage-plan.md](101-work-queue-after-coverage-plan.md)).
 
 ## Phase 12 — FLUX.1-schnell's near-zero Vulkan speedup (~3%, unexplained, flagged in the doc itself)
 

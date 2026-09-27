@@ -7,7 +7,7 @@ namespace OpenTail.Stingray.Tests.Core;
 /// synthetic invariant/shape checks only -- they confirm the ported math is internally
 /// self-consistent (e.g. Sinkhorn normalization actually produces a doubly-stochastic matrix),
 /// NOT that it matches DeepSeek-V4's real behavior or the llama.cpp reference numerically. See
-/// docs/058-deepseek-full-lineage-implementation-plan.md Phase 0.
+/// docs/2-coverage/058-deepseek-full-lineage-implementation-plan.md Phase 0.
 /// </summary>
 public class DeepSeek4AlphaTests
 {

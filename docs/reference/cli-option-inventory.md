@@ -5,7 +5,7 @@
 **209 option declarations** across 19 command files — the same count the
 `StaticPlanConfigurationTests` guard enforces against source. (Reconciled 12 rows of drift, caught
 by CI failing `CliOptionInventory_DeclaredCountMatchesSource` on `main`: three new commands —
-`AdmitArchCommand`, `GenVisionScaffoldCommand` and `PullCommand`, see `docs/061-coverage-tooling.md` —
+`AdmitArchCommand`, `GenVisionScaffoldCommand` and `PullCommand`, see `docs/reference/061-coverage-tooling.md` —
 plus `ImageCommand`'s `--clip-g`. Six existing descriptions were refreshed from source. **The 12 new
 rows are unclassified**, as are 8 `ImageCommand` rows (`--control-image`, `--control-net`,
 `--control-strength`, `--init-image`, `--mask-image`, `--sampler`, `--strength`, `--video-frames`)

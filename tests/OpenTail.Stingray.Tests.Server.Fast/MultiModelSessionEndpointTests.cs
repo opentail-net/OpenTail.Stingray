@@ -2,7 +2,7 @@
 namespace OpenTail.Stingray.Tests.Server.Fast;
 
 /// <summary>
-/// docs/032-multi-model-inference-runtime-plan.md Phase 7 follow-up — multi-model
+/// docs/3-product-and-runtime/032-multi-model-inference-runtime-plan.md Phase 7 follow-up — multi-model
 /// <c>/v1/sessions/*</c> routing through the real HTTP endpoints. Fake engines only (mirrors
 /// <see cref="MultiModelEndpointTests"/>'s pattern for the stateless endpoints); the real-model
 /// end-to-end acceptance test lives in the heavy Tests.Server project.

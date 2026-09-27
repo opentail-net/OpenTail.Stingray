@@ -22,7 +22,7 @@ public static class ModelCompatibility
         // (Qwen2.5-VL-7B-Instruct's text backbone), not for real vision/multimodal generation --
         // that would need the real multi-section M-RoPE this engine does not implement.
         "qwen2vl",
-        // qwen35 — hybrid Gated-DeltaNet MoE + MTP path (docs/02-qwen35moe-plan.md). Ornith-1.0
+        // qwen35 — hybrid Gated-DeltaNet MoE + MTP path (docs/2-coverage/02-qwen35moe-plan.md). Ornith-1.0
         // 9B (dense-ish, no MoE) was the original end-to-end validation. Extended 2026-08-28 with
         // a FULL 24-of-24-token exact greedy match on Qwen3.8-27B UD-Q3_K_XL (Unsloth Dynamic
         // quant, Apache-2.0, obtained via local Ollama cache) against llama.cpp b10532-70aff2525:
@@ -63,7 +63,7 @@ public static class ModelCompatibility
         // gaps to the top logit within 0.002-0.065 of llama.cpp's -fa off run — smaller than
         // llama.cpp's own -fa on/off shift (up to 0.13). Plain RoPE instead of YaRN diverged at
         // token 14 with a different top-5, so the YaRN wiring is load-bearing. See
-        // docs/101-work-queue-after-coverage-plan.md.
+        // docs/done/101-work-queue-after-coverage-plan.md.
         "gpt-oss",
         // deepseek2 — admitted 2026-09-26 (CPU only; GPU backends have no MLA). docs/done/032's
         // "trained router margins" conclusion was wrong: two plain bugs made it emit garbage from
@@ -719,7 +719,7 @@ public static class ModelCompatibility
     // loaded, no output compared against any reference. Multiple specific pieces are known-
     // unverified or known-wrong (MQA K==V, output-side rope_ext_back, CSA's overlap-gather
     // hypothesis, Hadamard rotation entirely unimplemented) — see this file's own header and
-    // docs/058-deepseek-full-lineage-implementation-plan.md Phase 0 for the full, current list.
+    // docs/2-coverage/058-deepseek-full-lineage-implementation-plan.md Phase 0 for the full, current list.
     // Only synthetic shape/invariant/boundary unit tests exist (DeepSeek4AlphaTests.cs) — zero
     // real-weight verification. Do not admit under any circumstance until a real checkpoint
     // produces a passing greedy-parity or perplexity receipt.

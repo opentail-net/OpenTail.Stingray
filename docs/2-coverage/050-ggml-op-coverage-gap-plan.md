@@ -1,11 +1,11 @@
 # 050 — GGML Op Coverage Gap Implementation Plan
 
-Source: `docs/bugstofix.md`'s 2026-08-21 GGML op-list diff (`enum ggml_op` in
+Source: `docs/1-correctness/bugstofix.md`'s 2026-08-21 GGML op-list diff (`enum ggml_op` in
 `examples/ggml/include/ggml.h` vs. what this engine implements). Five ops/op-groups are
 genuinely missing kernel implementations, none currently blocking any admitted architecture.
 This plan adds the *kernels* (with unit tests validated against ggml's own reference semantics)
 without touching `ModelCompatibility.cs`'s allowlist — architecture admission stays gated behind
-real-GGUF greedy-parity verification, per this repo's standing rule (see `docs/bugstofix.md`'s
+real-GGUF greedy-parity verification, per this repo's standing rule (see `docs/1-correctness/bugstofix.md`'s
 IqCodebooks.cs and deepseek2 entries for precedent). Reference C implementations for all five
 live in `examples/ggml/src/ggml-cpu/ops.cpp`.
 

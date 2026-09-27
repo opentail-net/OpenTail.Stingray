@@ -288,7 +288,7 @@ public static class VoxtralTextDecoder
         /// <summary>Per-layer AdaLN-Zero gate, cached because <c>numDelayTokens</c> (and hence
         /// <see cref="TimeEmbedding"/> and every layer's <see cref="AdaGate"/> output) is constant
         /// for an entire generation -- recomputing it from scratch on every decoded token was pure
-        /// waste (perf-sweep Phase 1.3, see docs/perf-sweep-plan.md).</summary>
+        /// waste (perf-sweep Phase 1.3, see docs/4-performance/perf-sweep-plan.md).</summary>
         internal float[][]? CachedAdaScale { get; set; }
         internal int CachedNumDelayTokens { get; set; }
     }

@@ -415,7 +415,7 @@ public sealed unsafe class SimdKernelsQ8KSTests
     /// dense-FFN dtype: Q4_K/Q5_K/Q6_K (register-tiled quad kernels), F32, and Q8_0
     /// (each input independently quantized to Q8_0 then dotted via DotQ8_0_Q8_0,
     /// matching single-token MatVecQ8_0 decode as of the 2026-08-27 activation-
-    /// quantization fix — see docs/bugstofix.md). Includes a rows ≥ 64 case to
+    /// quantization fix — see docs/1-correctness/bugstofix.md). Includes a rows ≥ 64 case to
     /// exercise the Parallel.For path, and a deliberately mis-mappable token order
     /// so a swapped slot is caught.
     /// </summary>

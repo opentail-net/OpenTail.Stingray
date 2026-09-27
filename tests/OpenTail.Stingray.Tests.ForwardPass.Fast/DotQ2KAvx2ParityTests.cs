@@ -2,7 +2,7 @@
 namespace OpenTail.Stingray.Tests.ForwardPass.Fast;
 
 /// <summary>
-/// docs/bugstofix.md (ModelCompatibility.cs:461, deepseek2 investigation): <see cref="SimdKernels.DotQ2K_Q8K_Avx2"/>
+/// docs/1-correctness/bugstofix.md (ModelCompatibility.cs:461, deepseek2 investigation): <see cref="SimdKernels.DotQ2K_Q8K_Avx2"/>
 /// is a from-scratch instruction-for-instruction port of ggml's real AVX2 <c>ggml_vec_dot_q2_K_q8_K</c>,
 /// written to match its SIMD lane-accumulation order (not just its formula) exactly. This pins that
 /// the two independently-implemented paths this engine ships (<see cref="SimdKernels.DotQ2K_Q8K_Scalar"/>,

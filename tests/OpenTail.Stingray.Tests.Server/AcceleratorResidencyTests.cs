@@ -3,7 +3,7 @@ using OpenTail.Stingray.Engine;
 namespace OpenTail.Stingray.Tests.Server;
 
 /// <summary>
-/// docs/032-multi-model-inference-runtime-plan.md Phase 3, per-runtime accelerator (GPU)
+/// docs/3-product-and-runtime/032-multi-model-inference-runtime-plan.md Phase 3, per-runtime accelerator (GPU)
 /// residency tracking. <c>ModelRuntimeManagerTests</c> (Tests.Server.Fast) proves
 /// <c>ModelRuntime.IsAcceleratorResident</c>/<c>AcceleratorResidentBytesEstimate</c> against fake
 /// <c>LoadedEngine</c>s with a hand-set <c>RuntimeResolution</c> — this proves the real thing:

@@ -3,7 +3,7 @@ namespace OpenTail.Stingray.Diffusion.MiniMaxMusic3;
 /// <summary>
 /// Real intermediate checkpoint between autoregressive generation (Global + Local/depth) and Flow
 /// synthesis -- the real synthesis architecture conditions on FUSED CONTINUOUS hidden states, not
-/// on the RVQ tokens themselves (docs/066-minimax-music3-future-plan.md, "preserve hidden states
+/// on the RVQ tokens themselves (docs/4-performance/audio/066-minimax-music3-future-plan.md, "preserve hidden states
 /// correctly"). `GlobalHiddenStates[t]`/`LocalHiddenStates[t]` are the real per-frame hidden states
 /// that feed <c>MiniMaxMusic3ConditionEncoder</c>.
 /// </summary>

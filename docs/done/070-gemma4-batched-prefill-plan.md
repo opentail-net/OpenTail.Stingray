@@ -88,7 +88,7 @@ try to fix Gemma 4 by touching those flags.
       Gemma-4 checkpoint (both E4B and 12B, since they may exercise different head-dim/window
       configurations) — not just "it doesn't crash."
 - [ ] **Performance pass** (per `CLAUDE.md` rule 7): measure real prefill throughput before/after on
-      both E4B and 12B with `docs/benchmark-prompt.txt`, best-of-3, against the same llama.cpp
+      both E4B and 12B with `docs/reference/benchmark-prompt.txt`, best-of-3, against the same llama.cpp
       reference numbers already recorded in `PerformanceLeague.md` (2026-09-10 backfill: 12B
       27.81 t/s, E4B 80.50 t/s). Only keep the change if it's measurably faster — write the
       before/after numbers down, don't estimate.

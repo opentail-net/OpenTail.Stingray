@@ -4522,7 +4522,7 @@ internal static class Shaders
 
     /// <summary>
     /// Matrix-vector multiply with raw IQ4_XS dequantization (no F16-expand-then-upload
-    /// fallback needed — docs/084-vulkan-large-tensor-sharding-plan.md: IQ4_XS is the single
+    /// fallback needed — docs/4-performance/gpu/084-vulkan-large-tensor-sharding-plan.md: IQ4_XS is the single
     /// largest source of avoidable GPU-memory expansion in "UD"/dynamic-quant checkpoints like
     /// qwen35, so a native kernel here is worth more than the other IQ dtypes combined).
     ///

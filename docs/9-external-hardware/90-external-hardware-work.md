@@ -2,7 +2,7 @@
 
 This is deliberately **not** a model-acquisition queue. GGUFs, SafeTensors packages, and mmproj
 fixtures can be copied or downloaded onto this machine; work that can run on CPU or the local AMD
-Vulkan adapter remains in [00-current-work.md](00-current-work.md). This queue contains only work whose
+Vulkan adapter remains in [00-current-work.md](../00-current-work.md). This queue contains only work whose
 acceptance evidence requires hardware not present locally.
 
 ## Available locally
@@ -23,12 +23,27 @@ the exact model/configuration recorded alongside each result:
    per-layer V-cache stride correction. The 12B GGUF may be acquired locally, but CUDA and hybrid
    portions require this runner.
 3. **CUDA dense gate/up fusion.** The design review is archived in
-   [done/cuda-fused-gate-up-plan.md](done/cuda-fused-gate-up-plan.md). Do not implement it blind:
+   [done/cuda-fused-gate-up-plan.md](../done/cuda-fused-gate-up-plan.md). Do not implement it blind:
    establish an interleaved baseline first, test CUDA graphs both enabled and disabled, then retain
    the change only if it improves real prefill or decode at a representative model shape.
 4. **CUDA graph default discrepancy.** Dense and hybrid paths historically interpret
    `STINGRAY_CUDA_GRAPH` differently. Reproduce both paths on actual hardware before changing the
    default or documentation; a source-only harmonisation would be an unmeasured performance change.
+
+## Found 2026-09-26, needs CUDA or a discrete GPU
+
+Carried from [../done/101-work-queue-after-coverage-plan.md](../done/101-work-queue-after-coverage-plan.md):
+
+5. **CUDA `rope_freqs`.** `CudaForwardPass`/`CudaHybridForwardPass` apply RoPE frequency factors for
+   Gemma 4 only, so Llama-3.1-style models run unscaled RoPE on CUDA (wrong only at long context).
+   Fixed on Vulkan (full and `-g N`) on 2026-09-26. Not gated, since that would push every Llama 3.1
+   CUDA user to CPU.
+6. **CUDA partial offload for the newer architectures** (fused QKV, LayerNorm, parallel residual,
+   partial RoPE, non-gated FFN). Vulkan `-g N` covers them via `VulkanLayerSplitForwardPass`; CUDA
+   falls back to CPU with a note.
+7. **Discrete-GPU measurements** before changing any default (CLAUDE.md rule 13): speculative
+   decoding with a draft model on Vulkan (lossless, slower on the iGPU), the UMT5 GPU path vs CPU,
+   gpt-oss on Vulkan (matvec-bandwidth-bound on the iGPU).
 
 ## ARM64 runner
 

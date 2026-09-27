@@ -1,7 +1,7 @@
 # Audio re-check plan: correctness + performance (written 2026-09-24)
 
 **Status (2026-09-27): DONE.** All four phases (0-3) are checked off below and their results are
-recorded in `docs/STATUS.md`/`PerformanceLeague.md`/`docs/audio-review-new-progress.md`. The
+recorded in `docs/STATUS.md`/`PerformanceLeague.md`/`docs/done/audio-review-new-progress.md`. The
 residual known gaps listed under "Open after the re-check" (CosyVoice2 LLM drift, Stable Audio SFX,
 MeloTTS English, Parakeet WER, RVC/VibeVoice perf) are tracked as their own STATUS.md rows, not open
 items of this plan. Kept in `docs/done/` as the historical record.
@@ -106,14 +106,14 @@ dated and sourced findings. Commit per engine.
       Audio golden and real-weight tests pass with real timings (6-40s). The CPU pipeline golden cosine
       A/B is 0.4535 (old path) → 0.4594 (new), now equal to the GPU run's 0.459419; no slowdown. SDXL
       (CLIP-G heads fix) was re-checked separately: still a clean on-prompt image.
-- [x] Phase 1: correctness triage (details in `docs/audio-review-new-progress.md`)
+- [x] Phase 1: correctness triage (details in `docs/done/audio-review-new-progress.md`)
   - [x] 1.1 open 🟡 rows (2026-09-25): OmniVoice, VibeVoice ASR, VibeVoice TTS (2 real loop bugs) and
         RVC (RMVPE 3×3 fix + ported pipeline) are now 🟢, checked against the vendored reference with Whisper
         round trips. MOSS/Higgs were done 2026-09-24. Stable Audio 3: sampling schedule fixed, and small-music
         and medium match the reference; SFX darker and CFG-1 divergence remain open (🟡).
   - [x] 1.2–1.4 ⚪/🟢 checks (2026-09-25): per engine, one class at a time (a one-process heavy sweep hit 44.9 GB and was stopped). All TTS got Whisper round trips and all ASR got LibriSpeech/reference checks; see the Phase 1 summary in the progress log.
 - [x] Phase 2: performance (2026-09-25): profiled the engines behind their reference. VibeVoice ASR 40.8 → ~17.5s (EOS bug + batched ConvNeXt), VibeVoice TTS 65-72 → ~25s (parallel ConvTranspose1d + batched diffusion head), RVC 482.6 → ~19.3s (im2col GEMM convs), OmniVoice 118-129 → ~31s (batched projections). Engines already ahead of their reference (F5, CosyVoice3, Chatterbox, Kokoro, Fish) were left alone per the plan.
-- [x] Phase 3: record: README rows, PerformanceLeague rows and `docs/audio-review-new-progress.md` updated per engine as each landed.
+- [x] Phase 3: record: README rows, PerformanceLeague rows and `docs/done/audio-review-new-progress.md` updated per engine as each landed.
 
 **Open after the re-check:** CosyVoice2 LLM token drift (🟡, bisected to LLM generation); Stable Audio SFX darker + CFG-1 divergence (🟡); MeloTTS English intelligibility (zh_en checkpoint); Parakeet ~3% WER; RVC ~2.4× and VibeVoice ~1.3-1.4× behind their references. A one-process heavy sweep needs one class per process (44.9 GB otherwise).
 

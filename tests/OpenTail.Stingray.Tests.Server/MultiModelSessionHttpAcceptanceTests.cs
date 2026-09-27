@@ -2,7 +2,7 @@
 namespace OpenTail.Stingray.Tests.Server;
 
 /// <summary>
-/// docs/032-multi-model-inference-runtime-plan.md Phase 7 follow-up acceptance: the
+/// docs/3-product-and-runtime/032-multi-model-inference-runtime-plan.md Phase 7 follow-up acceptance: the
 /// "session isolation... verified together" half of the original Phase 7 acceptance line that
 /// <see cref="MultiModelHttpAcceptanceTests"/>'s own doc comment explicitly deferred (it proved
 /// isolation only at the stateless-request level, not through <c>/v1/sessions/*</c>, because a

@@ -8,7 +8,7 @@ namespace OpenTail.Stingray.Diffusion.MiniMaxMusic3;
 /// (`language_model/config.json`: `architectures: ["Qwen3ForCausalLM"]`, hidden=4096, 36 layers,
 /// 32 attention heads / 8 KV heads (GQA), head_dim=128, intermediate=12288, rope_theta=1e6,
 /// vocab=200000 -- a custom-extended vocab, not stock Qwen3-8B's 151936), predicting the
-/// semantic/CB0 RVQ token frame-by-frame. See docs/066-minimax-music3-future-plan.md.
+/// semantic/CB0 RVQ token frame-by-frame. See docs/4-performance/audio/066-minimax-music3-future-plan.md.
 ///
 /// <para><b>Zero-copy BF16 weights.</b> This is a real ~16GB bf16 checkpoint -- unlike every other
 /// MiniMax-Music3 component (which are small enough to fully materialize via
@@ -147,7 +147,7 @@ public sealed unsafe class MiniMaxMusic3GlobalModel : IDisposable
     /// embedding vector rather than a token id -- the real generation loop's `_embed_audio_frame`
     /// feedback embedding (semantic-code token embedding summed with residual-code embeddings,
     /// scaled by `numCodebooks**-0.5`) is fed directly as the next step's input, bypassing the
-    /// normal `embed_tokens` lookup-by-id (docs/066-minimax-music3-future-plan.md, "Real feedback
+    /// normal `embed_tokens` lookup-by-id (docs/4-performance/audio/066-minimax-music3-future-plan.md, "Real feedback
     /// embedding for the next frame"). Always a single new position (one audio frame per step).</summary>
     public (float[][] hiddenStates, float[] lastLogits) ForwardIncrementalWithEmbedding(float[] embeddingRow, MiniMaxMusic3GlobalKvCache cache)
     {
@@ -441,7 +441,7 @@ public sealed unsafe class MiniMaxMusic3GlobalModel : IDisposable
     /// noise, arguably worse) for ~32GB extra RAM. Reverted per this project's performance-pass
     /// rule (CLAUDE.md: only keep a change if it's measurably better). Stage timing then showed the
     /// real bottleneck is Flow-transformer synthesis (283.5s of the 356s total), not the Global LM
-    /// at all (67.2s) -- see docs/066-minimax-music3-future-plan.md's performance-pass section.</para>
+    /// at all (67.2s) -- see docs/4-performance/audio/066-minimax-music3-future-plan.md's performance-pass section.</para>
     /// </summary>
     private float[] MmapLinear(float[] x, int seqLen, int inDim, string weightName, int outDim)
     {

@@ -147,7 +147,7 @@ overridden by `clip.vision.spatial_merge_size`.
 - `scripts/download-model.ps1` — add a `"glm4v-mmproj"` preset pointing at
   `ggml-org/GLM-4.6V-GGUF`'s `mmproj-GLM-4.6V-Q8_0.gguf`.
 
-This document itself (`docs/07-glm4v-vision-plan.md`) should gain a **RESULT** addendum after
+This document itself (`docs/done/07-glm4v-vision-plan.md`) should gain a **RESULT** addendum after
 implementation, mirroring `docs/done/06-llama4-vision-plan.md`'s addendum: documenting every real
 finding vs. pre-implementation assumption listed above (metadata key, M-RoPE section mapping,
 patch-embed reshape correctness, conv2d merger behavior, performance figures, and the same

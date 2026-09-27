@@ -1,3 +1,5 @@
+> **ARCHIVED 2026-09-27.** Working log. Items 1, 2, 4-9, 11, 12, 14, 15 and 17 done; #13 done for SD3, FLUX.2 and Qwen Image. Still open, carried forward to ../00-current-work.md: #10 CosyVoice 2 and #13 HunyuanVideo (both blocked on an independent reference), #16 `glm4moe`, the follow-ups listed under #14/#15/#17 (batched prefill, rewind, GPU, MoE variants), and the Youtu-VL one-window PPL gap.
+
 # STATUS open items — fixable on this PC (plan, 2026-09-26)
 
 The STATUS status-matrix rows that are not fully green, minus what this machine cannot fix (no
@@ -402,7 +404,7 @@ MODELS.md entry if it qualifies.
   - Every vendored C++ port supports CosyVoice 3 only: `examples/cosyvoice.cpp`, `audio.cpp`
     (`include/engine/models/cosyvoice3`), CrispASR (`cosyvoice3-tts`).
   - New Python reference scripts are ruled out by project policy.
-  - Already ruled out (docs/audio-review-new-progress.md, 2026-09-25):
+  - Already ruled out (docs/done/audio-review-new-progress.md, 2026-09-25):
     - the acoustic stack (resynthesis is almost exact);
     - the LLM forward pass (teacher forcing ranks real tokens near the top, with no decay by
       position);

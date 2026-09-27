@@ -3,7 +3,7 @@ namespace OpenTail.Stingray.Diffusion.MiniMaxMusic3;
 /// <summary>
 /// Real MiniMax Music 3 autoregressive generation loop (`MiniMaxMusic3AutoregressiveStep`),
 /// transcribed directly from `diffusers/modular_pipelines/minimax_music3/encoders.py` -- see
-/// docs/066-minimax-music3-future-plan.md, "Real autoregressive generation loop, fully specified
+/// docs/4-performance/audio/066-minimax-music3-future-plan.md, "Real autoregressive generation loop, fully specified
 /// from source". Drives the real Global LM (<see cref="MiniMaxMusic3GlobalModel"/>) and Local/depth
 /// decoder (<see cref="MiniMaxMusic3RvqDepthDecoder"/>) together, frame by frame, with real
 /// classifier-free guidance at every sampling decision (semantic code AND each of the 7 residual

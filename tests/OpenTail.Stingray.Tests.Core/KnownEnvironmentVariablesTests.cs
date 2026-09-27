@@ -125,7 +125,7 @@ public sealed partial class KnownEnvironmentVariablesTests
         string? root = FindRepoRoot();
         Assert.SkipWhen(root is null, "repo layout not found — documentation scan not applicable here");
 
-        string inventory = File.ReadAllText(Path.Combine(root!, "docs", "env-var-inventory.md"));
+        string inventory = File.ReadAllText(Path.Combine(root!, "docs", "reference", "env-var-inventory.md"));
         Match count = Regex.Match(inventory, @"now contains \*\*(\d+)\*\* names");
         Assert.True(count.Success, "Environment inventory must declare its current registry count.");
         Assert.Equal(KnownEnvironmentVariables.All.Count, int.Parse(count.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture));

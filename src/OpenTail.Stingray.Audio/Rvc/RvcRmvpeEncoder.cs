@@ -458,7 +458,7 @@ public static class RvcRmvpeEncoder
 
     private static float Sigmoid(float x) => 1f / (1f + MathF.Exp(-x));
 
-    // Perf-sweep horizontal pass (docs/perf-sweep-plan.md): was a naive O(outDim*inDim) scalar
+    // Perf-sweep horizontal pass (docs/4-performance/perf-sweep-plan.md): was a naive O(outDim*inDim) scalar
     // loop, same anti-pattern found and fixed in Voxtral -- delegates to the shared SIMD/parallel
     // helper (OpenTail.Stingray.Audio.Primitives.DenseKernels).
     private static float[] LinearBias(float[] input, float[] weight, float[] bias, int inDim, int outDim) =>

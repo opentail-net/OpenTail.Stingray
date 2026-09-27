@@ -28,7 +28,7 @@ two independent ports.
 **Real caveat this project's own conventions demand before trusting that bet**: this project's
 existing Stable Audio 3 VAE (`AcousticVae`) and ACE-Step's `AutoencoderOobleck` looked similar on
 paper too (both "the VAE for a Stability-adjacent audio diffusion model") and turned out to be
-genuinely different architectures (see docs/064-acestep-implementation-plan.md) — so "Small
+genuinely different architectures (see docs/2-coverage/064-acestep-implementation-plan.md) — so "Small
 SFX/Medium share the current runtime's SAME/DiT shape" is a hypothesis to verify against real
 checkpoint tensor names first (this plan's own Phase 0), not something to build on without
 checking.

@@ -89,7 +89,7 @@ either way — don't assume either "done" or "still open" without checking:
   be checked, not assumed
 - `done/tts-performance-baseline-and-plan.md` — Turn 1 done, Turn 2 (Batched CFG & ODE step reduction)
   never appears in the doc; unclear whether it happened elsewhere and was never written back here
-  — check `PerformanceLeague.md`'s QwenTTS/CosyVoice3 rows and `docs/audio-review-new-progress.md`
+  — check `PerformanceLeague.md`'s QwenTTS/CosyVoice3 rows and `docs/done/audio-review-new-progress.md`
 - `done/PerformanceLeague-expansion-plan.md` — has some deferred items noted inline; not individually
   re-verified this session
 - `058-deepseek-full-lineage-implementation-plan.md` — last known status: Phase 0/1 alpha code

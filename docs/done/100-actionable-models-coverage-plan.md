@@ -1,4 +1,4 @@
-> **ARCHIVED 2026-09-27.** Closed: all four phases (Phi-3.5-MoE, GPT-OSS, EXAONE 4.5, DeepSeek V2-Lite) done 2026-09-26; the log is in [../101-work-queue-after-coverage-plan.md](../101-work-queue-after-coverage-plan.md). DeepSeek V3.2 / V4 stay out of scope on this hardware (STATUS rows).
+> **ARCHIVED 2026-09-27.** Closed: all four phases (Phi-3.5-MoE, GPT-OSS, EXAONE 4.5, DeepSeek V2-Lite) done 2026-09-26; the log is in [../101-work-queue-after-coverage-plan.md](101-work-queue-after-coverage-plan.md). DeepSeek V3.2 / V4 stay out of scope on this hardware (STATUS rows).
 
 # Plan: Coverage & Resolution for Target LLM Architectures (written 2026-09-26)
 
@@ -82,7 +82,7 @@ An alpha forward-pass for GPT-OSS (`GptOssForwardPass.cs`, `GptOssTensorSet.cs`,
 
 ### Problem Statement
 `EXAONE-4.5-33B` is already admitted and verified for CPU text generation (`Exaone4VerifyTemp.cs`, `docs/done/PerformanceLeague-expansion-plan.md:106`). However, two distinct issues limit its full capability:
-1. **GPU Layer Splitting Blocked:** `HybridForwardPass.cs` (Phase 14 of `docs/perf-sweep-plan.md`) hardcodes pre-norm tensor names (`blk.*.attn_norm.weight`, `blk.*.ffn_norm.weight`) without checking for post-norm tensors (`blk.*.post_attention_norm.weight`, `blk.*.post_ffw_norm.weight`). This forces EXAONE 4.5 onto CPU-only (`-g 0`).
+1. **GPU Layer Splitting Blocked:** `HybridForwardPass.cs` (Phase 14 of `docs/4-performance/perf-sweep-plan.md`) hardcodes pre-norm tensor names (`blk.*.attn_norm.weight`, `blk.*.ffn_norm.weight`) without checking for post-norm tensors (`blk.*.post_attention_norm.weight`, `blk.*.post_ffw_norm.weight`). This forces EXAONE 4.5 onto CPU-only (`-g 0`).
 2. **Vision Multimodal CLI Formatting:** `Exaone4VisionEncoder` works and emits 324 visual soft tokens (5120-dim). However, the CLI's `--image` command passes a flat string, whereas EXAONE's Jinja template expects structured multi-part message parts (`[{'type': 'image'}, {'type': 'text', ...}]`), causing the image token replacement branch to be skipped.
 
 ### Implementation Tasks

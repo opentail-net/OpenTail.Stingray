@@ -1,6 +1,6 @@
 > **STATUS 2026-09-27.** Unchanged since the entries below: DeepSeek-V3.2 and V4 are still
 > alpha code never run on real weights (STATUS rows 🔴 🔵), and
-> [102-status-open-items-plan.md](102-status-open-items-plan.md) lists both as out of scope for this
+> [102-status-open-items-plan.md](../done/102-status-open-items-plan.md) lists both as out of scope for this
 > PC. DeepSeek-V2 (`deepseek2`) itself is admitted and verified.
 
 # DeepSeek full-lineage implementation plan — V4 through V1

@@ -99,14 +99,14 @@ The solution (`OpenTail.Stingray.slnx`) is organized into four core layers:
 * **Subsystem Architecture & Layouts**: [docs/reference/OpenTail.Stingray-Design.md](docs/reference/OpenTail.Stingray-Design.md)
 * **Model Command Examples & Archive**: [docs/reference/claude-reference-archive.md](docs/reference/claude-reference-archive.md)
 * **Active Engineering Backlog**: [docs/00-current-work.md](docs/00-current-work.md)
-* **Coverage tooling** (`pull`, `admit-arch`, `gen-vision-scaffold`): [docs/061-coverage-tooling.md](docs/061-coverage-tooling.md)
+* **Coverage tooling** (`pull`, `admit-arch`, `gen-vision-scaffold`): [docs/reference/061-coverage-tooling.md](docs/reference/061-coverage-tooling.md)
 
 ---
 
 ## Coverage tooling: `pull` / `admit-arch` / `gen-vision-scaffold`
 
 Three CLI commands exist specifically to speed up this project's "run any GGUF from Hugging Face"
-goal — see [docs/061-coverage-tooling.md](docs/061-coverage-tooling.md) for full usage and how
+goal — see [docs/reference/061-coverage-tooling.md](docs/reference/061-coverage-tooling.md) for full usage and how
 each works internally. Short version:
 
 * `stingray pull -r <owner/repo>` — download a GGUF straight from a Hugging Face repo id (quant

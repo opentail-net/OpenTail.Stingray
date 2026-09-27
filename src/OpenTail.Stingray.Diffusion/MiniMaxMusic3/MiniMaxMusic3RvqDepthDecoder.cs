@@ -7,7 +7,7 @@ namespace OpenTail.Stingray.Diffusion.MiniMaxMusic3;
 /// Real MiniMax Music 3 "local" language model (`MiniMaxMusic3RVQDepthDecoder`), transcribed
 /// directly from the real, already-installed `diffusers==0.40.0` source
 /// (`diffusers/models/transformers/minimax_music3_rvq_depth_decoder.py`) -- see
-/// docs/066-minimax-music3-future-plan.md for the full archaeology.
+/// docs/4-performance/audio/066-minimax-music3-future-plan.md for the full archaeology.
 ///
 /// <para>Within each audio frame, autoregressively predicts the seven residual RVQ codebooks
 /// (c1..c7) from the global language model's hidden state plus the frame's semantic code, and

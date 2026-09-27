@@ -35,7 +35,7 @@ public static class T5Encoder
     /// <summary>Runs the full T5 encoder. `tokenIds` -&gt; embed -&gt; 24x T5 layer (self-attn + gated-GELU FFN) -&gt; final RMSNorm. Returns [t][DModel] (public API unchanged; internally batched flat, see class doc comment).
     /// <paramref name="backend"/>, when supplied, routes the Q/K/V/O and FFN projections through
     /// <see cref="CfmLinearWeight.GpuMatMul"/> (--backend vulkan; only viable now that the encoder
-    /// is batched -- see docs/052-vulkan-backend-for-tts-engines-plan.md §5).</summary>
+    /// is batched -- see docs/4-performance/audio/052-vulkan-backend-for-tts-engines-plan.md §5).</summary>
     public static float[][] Forward(T5EncoderWeights w, int[] tokenIds, IComputeBackend? backend = null)
     {
         int t = tokenIds.Length;

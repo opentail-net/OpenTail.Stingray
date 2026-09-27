@@ -93,7 +93,7 @@ three PRE-EXISTING, unrelated failures confirmed (via `git stash`, re-running ag
 baseline) to fail identically with or without this change: `PrefillWithCache_Chunked_MatchesFull`
 (the codebase's existing, already-documented deliberate-red test —
 see `docs/00-current-work.md`), `PrefillWithCache_SingleToken_MatchesForward` (flagged as a
-still-open issue in `docs/029-prefill-batch-composition-numerics-bug.md` / `docs/bugstofix.md`),
+still-open issue in `docs/029-prefill-batch-composition-numerics-bug.md` / `docs/1-correctness/bugstofix.md`),
 and `PrefillWithCache_DequantCacheOnOff_BitIdentical`. None of the three touch
 `PrefillPackedMulti`; all three are solo-`PrefillWithCache`-only, and this fix does not change
 solo `PrefillWithCache`'s behavior at all (its call sites keep the default `allowBlas: true`).

@@ -810,7 +810,7 @@ public static class Dequantize
     /// four 8-byte grid lookups, each negated per-element by a 7-bit sign field decoded through
     /// <see cref="IqCodebooks.KSignsIq2Xs"/>. The previous version ignored the per-group scale
     /// and sign bits entirely, treating every byte as a flat codebook index under one global
-    /// scale -- see docs/bugstofix.md's IqCodebooks.cs entry.
+    /// scale -- see docs/1-correctness/bugstofix.md's IqCodebooks.cs entry.
     /// </summary>
     private static void DequantIq2Xxs(ReadOnlySpan<byte> src, Span<float> dst, long elementCount)
     {
@@ -991,7 +991,7 @@ public static class Dequantize
     /// codebook per-nibble (<see cref="IqCodebooks.Iq4NlCodebook"/>), split into eight
     /// 32-element sub-groups each with its own 6-bit scale (4 bits from scales_l, 2 from
     /// scales_h). The previous version fabricated an unrelated 256-entry ±1 "grid" for this
-    /// format; see docs/bugstofix.md's IqCodebooks.cs entry.
+    /// format; see docs/1-correctness/bugstofix.md's IqCodebooks.cs entry.
     ///
     /// Block-parallel for the same reason as <see cref="DequantIq3S"/> — see its remarks.
     /// </summary>

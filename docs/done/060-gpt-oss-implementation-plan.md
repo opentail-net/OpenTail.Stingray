@@ -1,4 +1,4 @@
-> **ARCHIVED 2026-09-27.** Closed: gpt-oss admitted 2026-09-26 (6480e9d, `GptOssForwardPass`), teacher-forced against llama-server; see [../101-work-queue-after-coverage-plan.md](../101-work-queue-after-coverage-plan.md) and the STATUS row. The "PROPOSED, not started" status below is historical.
+> **ARCHIVED 2026-09-27.** Closed: gpt-oss admitted 2026-09-26 (6480e9d, `GptOssForwardPass`), teacher-forced against llama-server; see [../101-work-queue-after-coverage-plan.md](101-work-queue-after-coverage-plan.md) and the STATUS row. The "PROPOSED, not started" status below is historical.
 
 # GPT-OSS (`gpt-oss` GGUF architecture, llama.cpp class `openai_moe`) implementation plan
 
@@ -155,7 +155,7 @@ actually trained/released in — no requantization needed, unlike every DeepSeek
 project has dealt with so far) up to Q8_0 at 22.3 GB.
 [ggml-org/gpt-oss-20b-GGUF](https://huggingface.co/ggml-org/gpt-oss-20b-GGUF) — a **dramatically**
 smaller and more practical download than any DeepSeek checkpoint tackled in
-`docs/058-deepseek-full-lineage-implementation-plan.md` (99GB+ minimum there vs. 12.1GB here),
+`docs/2-coverage/058-deepseek-full-lineage-implementation-plan.md` (99GB+ minimum there vs. 12.1GB here),
 and this codebase's MXFP4 support means the checkpoint can be used AS-IS in its native format,
 not requantized.
 
@@ -371,7 +371,7 @@ strong enough evidence to make continuing toward a real receipt (Phase 5) clearl
 which was genuinely uncertain before this ran. Also worth noting for whoever continues: another
 session finished new coverage tooling in parallel this session —
 `stingray admit-arch -m <path> [--reference-tokens ids] [-p prompt]` (see
-`docs/061-coverage-tooling.md`) does tokenizer/tensor inventory plus a real bypassed forward-pass
+`docs/reference/061-coverage-tooling.md`) does tokenizer/tensor inventory plus a real bypassed forward-pass
 run and, given a captured reference token sequence, produces a pasteable `ADMIT`/`REJECT` verdict
 — check whether it can drive `GptOssForwardPass` directly or only the shared generic
 `Engine.ForwardPass` path (which gpt-oss isn't wired into) before assuming it "just works" for

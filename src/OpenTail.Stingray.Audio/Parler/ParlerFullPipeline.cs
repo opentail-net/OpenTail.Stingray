@@ -58,7 +58,7 @@ public sealed class ParlerFullPipeline : ITextToSpeechPipeline
     private readonly IComputeBackend? _backend;
 
     /// <summary><paramref name="backend"/>, when supplied, routes the T5 encoder's Q/K/V/O and FFN
-    /// projections through it (--backend vulkan; see docs/052-vulkan-backend-for-tts-engines-plan.md
+    /// projections through it (--backend vulkan; see docs/4-performance/audio/052-vulkan-backend-for-tts-engines-plan.md
     /// §5) -- the decoder/DAC codec stay CPU-only regardless (single-token-per-call autoregressive
     /// decode, a poor GPU target on any hardware, see docs/053's analysis).</summary>
     public static ParlerFullPipeline Load(string modelPath, string? tokenizerPath = null, IComputeBackend? backend = null)

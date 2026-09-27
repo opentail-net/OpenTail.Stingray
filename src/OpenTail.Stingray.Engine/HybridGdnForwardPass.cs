@@ -37,7 +37,7 @@ namespace OpenTail.Stingray.Engine;
 public sealed unsafe class HybridGdnForwardPass : IForwardPass
 {
     // TEMPORARY diagnostic instrumentation (2026-08-28) for the qwen35 hybrid-GDN CPU perf
-    // investigation (docs/05-cpu-architecture-kernel-opportunities.md) — NOT wired into
+    // investigation (docs/4-performance/cpu/05-cpu-architecture-kernel-opportunities.md) — NOT wired into
     // DecodeProfileTimers because that timer's Category enum is ForwardPass-specific (QKV/Attn/
     // OutProj/FFN/Norm/RoPE) and doesn't have a GDN-recurrence bucket. Reuses the same
     // STINGRAY_PROFILE_DECODE env var so `RunCommand`'s existing Report() call site doesn't need

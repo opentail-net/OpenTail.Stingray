@@ -9,7 +9,7 @@ namespace OpenTail.Stingray.Vision;
 /// Ported stage-by-stage from the real reference (<c>examples/llama.cpp/llama.cpp</c>,
 /// <c>tools/mtmd/models/gemma4v.cpp</c> plus the shared <c>clip_graph::build_vit</c>/
 /// <c>build_attn</c>/<c>build_ffn</c>/<c>build_mm</c> helpers in <c>tools/mtmd/clip.cpp</c>), NOT
-/// guessed from tensor names -- see <c>docs/03-gemma4-e4b-vision-plan.md</c> for the full
+/// guessed from tensor names -- see <c>docs/2-coverage/03-gemma4-e4b-vision-plan.md</c> for the full
 /// derivation and the direct verification against the real E4B mmproj
 /// (<c>models/gemma-4-E4B-it-mmproj.gguf</c>) that pinned every constant below.
 ///

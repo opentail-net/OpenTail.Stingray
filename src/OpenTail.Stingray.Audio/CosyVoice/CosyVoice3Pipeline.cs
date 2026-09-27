@@ -49,7 +49,7 @@ public sealed class CosyVoice3Pipeline : ITextToSpeechPipeline
     private readonly string? _speechTokenizerOnnxPath;
     private readonly Core.IComputeBackend? _backend;
 
-    // Perf-sweep Horizontal Pass C (docs/perf-sweep-plan.md): ExtractSpeakerEmbedding/
+    // Perf-sweep Horizontal Pass C (docs/4-performance/perf-sweep-plan.md): ExtractSpeakerEmbedding/
     // ExtractReferenceMel/ExtractPromptTokens are pure functions of referenceAudioPath alone (same
     // file content in, same result out) -- caching them per pipeline instance avoids re-running
     // two real ONNX graphs (CamPlus x-vector, CosyVoice speech tokenizer) on every single Generate
@@ -72,7 +72,7 @@ public sealed class CosyVoice3Pipeline : ITextToSpeechPipeline
     /// <summary>Loads all real CosyVoice3 weights from the single bundled GGUF file.
     /// <paramref name="backend"/>, when supplied, routes the flow-matching DiT's Sgemm-shaped
     /// projections through it (--backend vulkan option, see
-    /// docs/052-vulkan-backend-for-tts-engines-plan.md); the LLM, ConvPositionEmbedding, and
+    /// docs/4-performance/audio/052-vulkan-backend-for-tts-engines-plan.md); the LLM, ConvPositionEmbedding, and
     /// HiFTGenerator vocoder stay CPU-only regardless.</summary>
     public static CosyVoice3Pipeline Load(string ggufPath, Core.IComputeBackend? backend = null)
     {

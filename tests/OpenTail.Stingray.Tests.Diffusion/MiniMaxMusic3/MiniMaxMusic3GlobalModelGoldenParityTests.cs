@@ -17,7 +17,7 @@ namespace OpenTail.Stingray.Tests.Diffusion.MiniMaxMusic3;
 /// instead of bf16 so rounding isn't the dominant signal) showed near-exact agreement -- confirming
 /// the 34% gap was pure bf16-rounding compounding over depth, not a structural bug (every layer
 /// runs identical code, so one correct layer generalizes). See
-/// docs/066-minimax-music3-future-plan.md for the full investigation.</para>
+/// docs/4-performance/audio/066-minimax-music3-future-plan.md for the full investigation.</para>
 /// </summary>
 public sealed class MiniMaxMusic3GlobalModelGoldenParityTests
 {

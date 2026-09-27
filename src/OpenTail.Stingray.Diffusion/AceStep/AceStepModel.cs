@@ -7,7 +7,7 @@ namespace OpenTail.Stingray.Diffusion.AceStep;
 
 /// <summary>
 /// Weight bundle for ACE-Step Turbo's checkpoint components. See
-/// docs/064-acestep-implementation-plan.md for status: all real components (DiT, VAE decoder+
+/// docs/2-coverage/064-acestep-implementation-plan.md for status: all real components (DiT, VAE decoder+
 /// encoder, Qwen3 text encoder, condition encoder including its lyric and timbre sub-encoders) are
 /// now real and individually golden-parity-verified against the real `diffusers` reference. `Vae`
 /// (the decoder) and `VaeEncoder` are loaded from the same `vae.safetensors` -- the encoder is

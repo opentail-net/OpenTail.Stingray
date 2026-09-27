@@ -1,4 +1,4 @@
-> **ARCHIVED, 2026-08-15.** Resolved entries split out of [../bugstofix.md](../bugstofix.md),
+> **ARCHIVED, 2026-08-15.** Resolved entries split out of [../bugstofix.md](../1-correctness/bugstofix.md),
 > which keeps only the still-open items. Two of these (the `ForwardPass.cs:5606` batch-tier
 > divergence and the Q8-vs-F32 replay-oracle investigation) have their own full writeups already
 > archived at [031-concurrent-decode-batch-tier-divergence-bug.md](031-concurrent-decode-batch-tier-divergence-bug.md)

@@ -1,4 +1,4 @@
-> **ARCHIVED 2026-09-27.** Superseded: this pre-code draft was replaced by [../032-multi-model-inference-runtime-plan.md](../032-multi-model-inference-runtime-plan.md), which already links here as `done/024-...`. That plan is implemented through Phase 7.
+> **ARCHIVED 2026-09-27.** Superseded: this pre-code draft was replaced by [../032-multi-model-inference-runtime-plan.md](../3-product-and-runtime/032-multi-model-inference-runtime-plan.md), which already links here as `done/024-...`. That plan is implemented through Phase 7.
 
 
 ---

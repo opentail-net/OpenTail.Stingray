@@ -9,7 +9,7 @@ namespace OpenTail.Stingray.Tests.Diffusion.AceStep;
 /// First real-weight smoke test for ACE-Step's condition encoder (<see cref="AceStepConditionEncoder"/>):
 /// real `turbo.safetensors` condition-encoder tensors (text projector + 8-layer lyric encoder) plus
 /// the real Qwen3-Embedding-0.6B GGUF (both for text hidden states AND the raw token-embedding table
-/// used for lyric lookup -- see docs/064-acestep-implementation-plan.md's "Corrections and
+/// used for lyric lookup -- see docs/2-coverage/064-acestep-implementation-plan.md's "Corrections and
 /// confirmations"). Non-degeneracy receipt (finite, non-trivial, shape-correct, sensitive to its
 /// lyric input), not yet a numeric golden-parity test against a real `diffusers` reference run.
 /// </summary>

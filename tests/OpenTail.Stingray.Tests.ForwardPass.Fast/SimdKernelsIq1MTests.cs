@@ -3,7 +3,7 @@ namespace OpenTail.Stingray.Tests.ForwardPass.Fast;
 
 /// <summary>
 /// Correctness check for the IQ1_M dequantizer added 2026-08-28
-/// (docs/05-cpu-architecture-kernel-opportunities.md, Backlog A). Unlike every other IQ format
+/// (docs/4-performance/cpu/05-cpu-architecture-kernel-opportunities.md, Backlog A). Unlike every other IQ format
 /// this session, IQ1_M deliberately has no fast matvec kernel wired into
 /// <c>SimdKernels.MatVec</c>'s dispatch and no AVX2 path at all -- IQ1_S (same grid, less
 /// bookkeeping) already measured a real, repeated loss against the fallback, so writing and

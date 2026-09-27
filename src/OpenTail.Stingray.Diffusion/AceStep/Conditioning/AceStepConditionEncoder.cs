@@ -6,7 +6,7 @@ namespace OpenTail.Stingray.Diffusion.AceStep.Conditioning;
 /// <summary>
 /// Real ACE-Step condition encoder (`AceStepConditionEncoder`/`AceStepLyricEncoder`), transcribed
 /// directly from the real `modeling_acestep_v15_turbo.py` -- see
-/// docs/064-acestep-implementation-plan.md.
+/// docs/2-coverage/064-acestep-implementation-plan.md.
 ///
 /// <para><b>V1 scope</b> (matches the plan's own V1 cut): text + lyrics only, NO timbre/reference-
 /// audio conditioning. Real `AceStepConditionEncoder.forward` packs

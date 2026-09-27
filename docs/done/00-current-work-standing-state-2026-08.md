@@ -57,7 +57,7 @@ policy above for the same reason.
   detected from element count. **CUDA and Vulkan still carry the same bug** —
   `HeadNorm(..., perChannel)` was written to the same wrong assumption and needs the matching fix
   plus hardware validation. That is open work, tracked in
-  [../90-external-hardware-work.md](../90-external-hardware-work.md).
+  [../90-external-hardware-work.md](../9-external-hardware/90-external-hardware-work.md).
 - **Admitted on perplexity parity, not greedy parity.** wikitext at a matched 2048-token context:
   llama.cpp 7.4868 vs 7.3889 here (1.3%). Greedy token-for-token parity is NOT achieved and is not
   expected to be — the divergence is at a position whose top five candidates span 1.55 logits.
@@ -493,7 +493,7 @@ happened to be packed alongside it. Fixed with a new `allowBlas` parameter (defa
 real-model `ContinuousBatchingTests`) passes except three pre-existing, unrelated failures
 confirmed (via `git stash` bisection against the pre-fix baseline) to be unaffected by this
 change. Full investigation and resolution:
-[../031-concurrent-decode-batch-tier-divergence-bug.md](../031-concurrent-decode-batch-tier-divergence-bug.md).
+[../031-concurrent-decode-batch-tier-divergence-bug.md](031-concurrent-decode-batch-tier-divergence-bug.md).
 
 **Test suite.** ForwardPass discovers 1,368 tests as of the `gptneox` receipt (2026-08-08; was
 1,358 — the net growth is Granite/SmolLM3/Apertus/GptNeox parity tests added this session), runs in
@@ -516,7 +516,7 @@ another 18 minutes to redo.
 tag-triggered and CI fails if the tag and `<Version>` disagree. The `CHANGELOG.md` Unreleased
 section (Mistral/Tekken tokenizer, Jinja fixes, prefix-cache fixes) is **not** in the 1.0.3
 packages, which were built from the earlier candidate commit. See
-[../nuget-release-checklist.md](../nuget-release-checklist.md).
+[../nuget-release-checklist.md](../3-product-and-runtime/nuget-release-checklist.md).
 
 **Parked, with working implementations.** Not scheduled; revisit only if the goal changes.
 - DSpark speculative decoding — [07-dspark-plan.md](07-dspark-plan.md). Remaining:

@@ -1,8 +1,8 @@
-> **ARCHIVED 2026-09-27.** Closed: FLUX.2 is implemented and numerically matches `sd-cli` as of 2026-09-27 (e497ed8; STATUS row "FLUX.2"). GPU performance work continues in [../093-flux2-gpu-performance-optimization-plan.md](../093-flux2-gpu-performance-optimization-plan.md).
+> **ARCHIVED 2026-09-27.** Closed: FLUX.2 is implemented and numerically matches `sd-cli` as of 2026-09-27 (e497ed8; STATUS row "FLUX.2"). GPU performance work continues in [../093-flux2-gpu-performance-optimization-plan.md](../4-performance/diffusion/093-flux2-gpu-performance-optimization-plan.md).
 
 # 087 — FLUX.2 real implementation plan (tensor inventory, ready to implement)
 
-Follow-up to `docs/086-video-model-verification-plan.md` section 3: `Flux2DiT.cs` has zero
+Follow-up to `docs/done/086-video-model-verification-plan.md` section 3: `Flux2DiT.cs` has zero
 `IWeightLoader` wiring and `Flux2Pipeline.Generate` is a pure synthetic stub. This doc is the real
 tensor inventory, checked directly against the downloaded checkpoint (`models/_models/
 flux2-dev-Q4_K_S.gguf`, via `stingray list-tensors`) before any implementation — same discipline

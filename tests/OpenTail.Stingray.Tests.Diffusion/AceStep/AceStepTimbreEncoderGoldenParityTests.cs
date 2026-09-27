@@ -8,7 +8,7 @@ namespace OpenTail.Stingray.Tests.Diffusion.AceStep;
 /// Real numeric golden-parity check for <see cref="AceStepTimbreEncoder"/> against the real
 /// `diffusers.pipelines.ace_step.modeling_ace_step.AceStepTimbreEncoder` reference, loaded with the
 /// SAME real `turbo.safetensors` `encoder.timbre_encoder.*` weights (zero missing/unexpected keys)
-/// and run on a fixed-seed synthetic input. See docs/064-acestep-implementation-plan.md's
+/// and run on a fixed-seed synthetic input. See docs/2-coverage/064-acestep-implementation-plan.md's
 /// "Golden-parity check" section for how the reference dump (`golden_timbre_*.bin`) was produced.
 /// </summary>
 public sealed class AceStepTimbreEncoderGoldenParityTests

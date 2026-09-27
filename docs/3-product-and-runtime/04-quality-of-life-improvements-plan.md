@@ -1,6 +1,6 @@
 > **Reprioritized 2026-08-08 — now runway position 4.** Item 1 is now DONE (2026-08-15): both
 > inventories are name-complete against source AND fully classified row-by-row, not just via a
-> partial summary register. See [00-current-work.md](00-current-work.md) Priority 3.
+> partial summary register. See [00-current-work.md](../00-current-work.md) Priority 3.
 
 # Quality-of-life improvements — current work
 
@@ -11,7 +11,7 @@ and typed host-key classification are now in place. Environment ownership and ex
 
 1. **DONE, 2026-08-15 / 2026-09-02.** Env-var/CLI inventory reconciliation, alias dedup, and a
    dead-switch sampling check (0 of 20 sampled `bench`/`experimental` rows were dead). Split out to
-   [done/quality-of-life-improvements-plan-item1-env-var-inventories.md](done/quality-of-life-improvements-plan-item1-env-var-inventories.md)
+   [done/quality-of-life-improvements-plan-item1-env-var-inventories.md](../done/quality-of-life-improvements-plan-item1-env-var-inventories.md)
    2026-09-27.
 2. Extend effective configuration from static plan inputs to real server/loader startup values.
    Server environment precedence is centralized in `ServerEnvironmentOverrides`; `/status`
@@ -35,7 +35,7 @@ and typed host-key classification are now in place. Environment ownership and ex
    has a named lifecycle and capability gate. The proof itself is now covered by the real-GGUF,
    cross-process replay acceptance test; it is not yet a product contract.
 
-Inputs: [env-var-inventory.md](env-var-inventory.md), [reference/host-config-inventory.md](reference/host-config-inventory.md),
-and [reference/eligibility-check-inventory.md](reference/eligibility-check-inventory.md).
+Inputs: [env-var-inventory.md](../reference/env-var-inventory.md), [reference/host-config-inventory.md](../reference/host-config-inventory.md),
+and [reference/eligibility-check-inventory.md](../reference/eligibility-check-inventory.md).
 
-Historical implementation record: [done/quality-of-life-improvements-plan-2026-07.md](done/quality-of-life-improvements-plan-2026-07.md).
+Historical implementation record: [done/quality-of-life-improvements-plan-2026-07.md](../done/quality-of-life-improvements-plan-2026-07.md).

@@ -1,3 +1,5 @@
+> **ARCHIVED 2026-09-27.** Working log (audio evidence, newest first). Archived as a log, not a plan: STATUS.md cites it for dated audio evidence, and new audio findings should go into STATUS.md rows plus a log entry here. Open audio items are in ../00-current-work.md.
+
 # Audio subsystem review — NEW progress log
 
 

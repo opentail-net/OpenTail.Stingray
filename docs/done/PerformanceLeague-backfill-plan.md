@@ -33,9 +33,9 @@ isn't built here and building+validating it is a separate project, not a bench r
       methodology; also fixed a repo-wide build break (`NU1902` on `Microsoft.Build.Tasks.Git`
       10.0.301, bumped `Microsoft.SourceLink.GitHub` to 10.0.401 in `Directory.Build.props`) that
       was blocking all OT-side CLI measurement.
-- [x] OT CLI invocation confirmed: `stingray.exe -m <gguf> -f docs/benchmark-prompt.txt -n 24 -g 0
+- [x] OT CLI invocation confirmed: `stingray.exe -m <gguf> -f docs/reference/benchmark-prompt.txt -n 24 -g 0
       --temp 0 --single-turn --no-display-prompt`, reports `Prefill:`/`Decode:` t/s directly.
-      `docs/benchmark-prompt.txt` is the actual prompt file the original baseline used.
+      `docs/reference/benchmark-prompt.txt` is the actual prompt file the original baseline used.
 - [x] No new symlinks needed — every backfill so far ran directly against `models/_models/<file>`.
 
 ## Phase 1 — Qwen3 family — DONE

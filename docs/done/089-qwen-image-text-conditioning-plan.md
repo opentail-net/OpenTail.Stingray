@@ -1,4 +1,4 @@
-> **ARCHIVED 2026-09-27.** Closed: real text conditioning landed and Qwen Image closed 2026-09-19 (STATUS row "Qwen Image"). Independent numeric verification is still open and is tracked as item 13 of [../102-status-open-items-plan.md](../102-status-open-items-plan.md).
+> **ARCHIVED 2026-09-27.** Closed: real text conditioning landed and Qwen Image closed 2026-09-19 (STATUS row "Qwen Image"). Independent numeric verification is still open and is tracked as item 13 of [../102-status-open-items-plan.md](102-status-open-items-plan.md).
 
 # 089 — Qwen Image real text-conditioning implementation plan (2026-09-18)
 

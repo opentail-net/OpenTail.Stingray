@@ -70,7 +70,7 @@ DeepSeek-V2-Lite's non-"Paris" output — see `docs/done/032-deepseek2-mla-yarn-
 (added `STINGRAY_DIAGNOSTIC_ALLOW_UNSUPPORTED_ARCH`, a diagnostic-only escape hatch in
 `ModelCompatibility.ValidateForTextGeneration` that bypasses the text-generation architecture
 allowlist for local investigation of an un-admitted architecture, e.g. deepseek2, without actually
-admitting it -- see `docs/bugstofix.md`.)
+admitting it -- see `docs/1-correctness/bugstofix.md`.)
 
 **Reconciled again 2026-08-24 — `KnownEnvironmentVariables.All` now contains **170** names**
 (added `STINGRAY_AUDIO_DIAGNOSTIC_DUMP`: a pre-existing `Environment.GetEnvironmentVariable` read in
@@ -81,7 +81,7 @@ admitting it -- see `docs/bugstofix.md`.)
 (added `STINGRAY_MLA_TRACE`, a temporary diagnostic env var for the deepseek2 MLA
 ground-truth-diffing investigation, and `STINGRAY_GGML_F16_DOT`, an opt-in switch that rounds
 F16-weight matmul activations to fp16 before dotting to match ggml's `vec_dot_type=F16` pairing
-for bit-parity comparisons — see `docs/bugstofix.md` — plus one further pre-existing count drift
+for bit-parity comparisons — see `docs/1-correctness/bugstofix.md` — plus one further pre-existing count drift
 not re-diffed row-by-row here; see the note above about this test not catching table-level row
 drift).
 
@@ -306,13 +306,13 @@ dynamically composed names.
 | `STINGRAY_GDN_PREFILL_COMPUTE` | experimental | |
 | `STINGRAY_GDN_RAW_Q8_0` | experimental | |
 | `STINGRAY_GEMMA4_PROBE` | diagnostic | |
-| `STINGRAY_GGML_F16_DOT` | experimental | Opt-in: rounds F16-weight matmul activations to fp16 before dotting, matching ggml's `vec_dot_type=F16` pairing, for bit-parity comparisons against llama.cpp (see `docs/bugstofix.md`). Default off — full-F32-precision activation is more accurate. |
+| `STINGRAY_GGML_F16_DOT` | experimental | Opt-in: rounds F16-weight matmul activations to fp16 before dotting, matching ggml's `vec_dot_type=F16` pairing, for bit-parity comparisons against llama.cpp (see `docs/1-correctness/bugstofix.md`). Default off — full-F32-precision activation is more accurate. |
 | `STINGRAY_HYBRID_BATCHED_MOE` | experimental | |
 | `STINGRAY_HYBRID_PREFILL_COMPUTE` | experimental | |
 | `STINGRAY_KVARN_BATCHED_PREFILL` | experimental | |
 | `STINGRAY_KV_BF16_MIN_TOKENS` | expert | |
 | `STINGRAY_KV_STORE` | expert | |
-| `STINGRAY_MLA_TRACE` | diagnostic | Temporary: prints per-layer MLA/attention/MoE intermediate sums for ground-truth diffing against llama.cpp (see `docs/bugstofix.md`'s deepseek2 investigation). |
+| `STINGRAY_MLA_TRACE` | diagnostic | Temporary: prints per-layer MLA/attention/MoE intermediate sums for ground-truth diffing against llama.cpp (see `docs/1-correctness/bugstofix.md`'s deepseek2 investigation). |
 | `STINGRAY_MMQ_SOA` | experimental | |
 | `STINGRAY_MOE_BATCHED_PREFILL` | experimental | |
 | `STINGRAY_MOE_GPU_ROUTER` | experimental | |

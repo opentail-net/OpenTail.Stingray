@@ -3,7 +3,7 @@ namespace OpenTail.Stingray.Server;
 
 /// <summary>
 /// Canonical identity for a loadable model, used as the key <see cref="IModelRuntimeManager"/>
-/// tracks residency by (docs/032-multi-model-inference-runtime-plan.md, "ModelRuntime"). Phase 1
+/// tracks residency by (docs/3-product-and-runtime/032-multi-model-inference-runtime-plan.md, "ModelRuntime"). Phase 1
 /// resolves this from the configured model path via <see cref="Canonicalize"/> rather than
 /// treating a raw, caller-supplied path string as identity — the indirection is what lets a
 /// later phase map multiple path spellings/aliases onto one physical model without redefining

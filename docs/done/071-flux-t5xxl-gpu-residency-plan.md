@@ -27,7 +27,7 @@
 
 # FLUX T5-XXL Text Encoder GPU Residency Plan (2026-09-13)
 
-## Context — read `docs/069-flux-vulkan-gemm-perf-handoff.md` first
+## Context — read `docs/4-performance/diffusion/069-flux-vulkan-gemm-perf-handoff.md` first
 
 That doc covers the FLUX DiT's GPU-resident Vulkan path and its GEMM/attention kernel
 optimization history — it has since been committed (`git log`: `21c3fbc`, `22c55b4`, `2cb41ef`),

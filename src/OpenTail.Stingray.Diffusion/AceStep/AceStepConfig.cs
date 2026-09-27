@@ -4,7 +4,7 @@ namespace OpenTail.Stingray.Diffusion.AceStep;
 /// <summary>
 /// Real `ACE-Step/Ace-Step1.5` config, read directly from the checkpoint's own real
 /// `acestep-v15-turbo/config.json`, `vae/config.json`, and `Qwen3-Embedding-0.6B/config.json`
-/// (2026-09-03 -- see docs/064-acestep-implementation-plan.md for the full derivation, including
+/// (2026-09-03 -- see docs/2-coverage/064-acestep-implementation-plan.md for the full derivation, including
 /// the real `modeling_acestep_v15_turbo.py`/`configuration_acestep_v15.py` reference source
 /// bundled in that HF repo as `custom_code`, read directly rather than guessed).
 ///

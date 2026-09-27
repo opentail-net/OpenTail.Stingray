@@ -4,7 +4,7 @@ namespace OpenTail.Stingray.Tests.Server.Fast;
 
 /// <summary>
 /// Phase 1 coverage for <see cref="ModelRuntimeManager"/>
-/// (docs/032-multi-model-inference-runtime-plan.md). No real model/GGUF involved — the loader
+/// (docs/3-product-and-runtime/032-multi-model-inference-runtime-plan.md). No real model/GGUF involved — the loader
 /// passed to the manager is a caller-supplied delegate, exactly like
 /// <see cref="OpenTailStingrayServerOptions.EngineFactory"/> already is for the rest of the
 /// server test suite.

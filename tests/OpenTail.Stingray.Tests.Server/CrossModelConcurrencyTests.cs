@@ -3,7 +3,7 @@ using OpenTail.Stingray.Engine;
 namespace OpenTail.Stingray.Tests.Server;
 
 /// <summary>
-/// docs/032-multi-model-inference-runtime-plan.md Phase 5 acceptance: "A test with two
+/// docs/3-product-and-runtime/032-multi-model-inference-runtime-plan.md Phase 5 acceptance: "A test with two
 /// independent models demonstrates overlapping execution rather than turn-taking." Everything
 /// tested up to this point (ModelRuntimeManagerTests in Tests.Server.Fast) used fake loaders —
 /// they prove <c>ModelRuntimeManager</c> itself holds no lock across loads, but not that two
@@ -78,7 +78,7 @@ public sealed class CrossModelConcurrencyTests
     /// (non-batching) InferenceEngine's Dispose() used to run ForwardPass.Dispose() twice —
     /// once explicitly, once again via the _owned[] loop, which also contains the same
     /// ForwardPass instance — corrupting the native heap and crashing the process (fixed by an
-    /// idempotency guard in ForwardPass.Dispose(), docs/bugstofix.md → ForwardPass.cs). Real
+    /// idempotency guard in ForwardPass.Dispose(), docs/1-correctness/bugstofix.md → ForwardPass.cs). Real
     /// generation, not just construction, because the original repro went through a full
     /// generate-then-dispose cycle even though the fixed bug turned out not to need it.
     /// </summary>

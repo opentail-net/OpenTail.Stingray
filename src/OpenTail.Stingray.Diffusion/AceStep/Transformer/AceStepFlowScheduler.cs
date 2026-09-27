@@ -7,7 +7,7 @@ namespace OpenTail.Stingray.Diffusion.AceStep.Transformer;
 /// `AceStepConditionGenerationModel.generate_audio` (`infer_method="ode"` branch -- the only path
 /// used by Turbo's real hardcoded 8-step schedules; the `"sde"` branch is a real alternative in the
 /// reference but not used by any real Turbo default, so not ported here) -- see
-/// docs/064-acestep-implementation-plan.md.
+/// docs/2-coverage/064-acestep-implementation-plan.md.
 ///
 /// <para><b>Real per-step update</b>: `vt = decoder(xt, t, t)` (Turbo always calls with
 /// `timestep_r=timestep`, see <see cref="AceStepDiT"/>'s doc comment); on the FINAL step,

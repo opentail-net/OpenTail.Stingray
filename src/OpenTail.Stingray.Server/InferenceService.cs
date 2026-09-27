@@ -2,7 +2,7 @@
 namespace OpenTail.Stingray.Server;
 
 /// <summary>
-/// OpenTail-facing multi-model entry point (docs/032-multi-model-inference-runtime-plan.md
+/// OpenTail-facing multi-model entry point (docs/3-product-and-runtime/032-multi-model-inference-runtime-plan.md
 /// §"OpenTail-facing API", Phase 7). Deliberately narrower than the plan's own
 /// <c>IInferenceService.GenerateAsync(InferenceRequest, ct)</c> sketch: an endpoint needs the
 /// acquired <see cref="ModelRuntime.Loaded"/> bundle (chat template, tokenizer, grammar,

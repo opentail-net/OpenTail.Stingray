@@ -1029,7 +1029,7 @@ public sealed partial class GgufTokenizer : ITokenizer
     // EncodeByteToGpt2's output range is fixed and small (printable ASCII, extended printable,
     // and U+0100-U+0142 -- see its doc comment), so every single-char string EmitPiece needs is
     // one of at most 0x143 possibilities. Cached once instead of allocating fresh per character
-    // per call -- see docs/perf-loop-project-review-progress.md for the measurement.
+    // per call -- see docs/done/perf-loop-project-review-progress.md for the measurement.
     private static readonly string[] s_singleCharCache = BuildSingleCharCache();
     private static string[] BuildSingleCharCache()
     {

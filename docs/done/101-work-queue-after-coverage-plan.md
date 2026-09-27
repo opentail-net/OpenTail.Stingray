@@ -1,3 +1,5 @@
+> **ARCHIVED 2026-09-27.** Working log. The coverage plan (docs/done/100) is complete; SmolLM2 prefill went ~0.62x -> ~0.89x of llama.cpp; Wan UMT5/VAE and HunyuanVideo GPU work done; "GPU for LLMs" steps 1-3e done. Every open leftover is listed in ../00-current-work.md.
+
 # Work queue after the coverage plan (written 2026-09-26)
 
 Order of work (the user's direction, 2026-09-26):

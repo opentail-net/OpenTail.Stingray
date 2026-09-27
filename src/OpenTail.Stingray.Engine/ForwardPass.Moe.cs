@@ -80,7 +80,7 @@ public sealed unsafe partial class ForwardPass
             }
             sb.Append(" sum=").Append(wsum.ToString("F4", inv));
 
-            // docs/bugstofix.md (ModelCompatibility.cs:461 entry, external-consultation follow-up):
+            // docs/1-correctness/bugstofix.md (ModelCompatibility.cs:461 entry, external-consultation follow-up):
             // top-k boundary margin -- the gap between the LEAST-confident SELECTED expert and the
             // MOST-confident NOT-selected one. _routerLogits holds post-softmax probabilities at
             // this point (softmax applied above, before SelectTopK). A tiny margin here is exactly

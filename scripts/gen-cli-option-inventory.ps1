@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Regenerates the per-command option tables in docs/cli-option-inventory.md from source.
+    Regenerates the per-command option tables in docs/reference/cli-option-inventory.md from source.
 
 .DESCRIPTION
     Scans [CommandOption(...)] / [Description(...)] pairs under src/OpenTail.Stingray.Cli and
@@ -20,7 +20,7 @@ param([switch]$Check)
 $ErrorActionPreference = 'Stop'
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $cliDir = Join-Path $root 'src\OpenTail.Stingray.Cli'
-$docPath = Join-Path $root 'docs\cli-option-inventory.md'
+$docPath = Join-Path $root 'docs\reference\cli-option-inventory.md'
 
 # Command name comes from the settings class's enclosing command type, e.g. RunCommand.Settings.
 $rows = [System.Collections.Generic.List[object]]::new()
@@ -100,5 +100,5 @@ if ($Check) {
     Write-Host 'tables are current.'
     exit 0
 }
-$sb.ToString() | Set-Content -LiteralPath (Join-Path $root 'docs\cli-option-inventory.generated.md') -NoNewline
-Write-Host "wrote docs/cli-option-inventory.generated.md"
+$sb.ToString() | Set-Content -LiteralPath (Join-Path $root 'docs\reference\cli-option-inventory.generated.md') -NoNewline
+Write-Host "wrote docs/reference/cli-option-inventory.generated.md"

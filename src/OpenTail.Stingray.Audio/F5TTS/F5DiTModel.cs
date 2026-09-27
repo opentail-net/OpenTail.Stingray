@@ -27,7 +27,7 @@ public static class F5DiTModel
 
     /// <summary>Optimized forward pass accepting precomputed/cached textEmbed, rotaryCos, and rotarySin to avoid redundant recomputations across ODE steps.
     /// <paramref name="backend"/>, when supplied, routes every Sgemm-shaped op through it (--backend
-    /// vulkan, see docs/052-vulkan-backend-for-tts-engines-plan.md).</summary>
+    /// vulkan, see docs/4-performance/audio/052-vulkan-backend-for-tts-engines-plan.md).</summary>
     public static float[] ForwardVelocity(
         F5TtsWeights w,
         float[] x,

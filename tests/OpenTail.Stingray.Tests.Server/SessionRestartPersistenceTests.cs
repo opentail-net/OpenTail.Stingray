@@ -80,7 +80,7 @@ public sealed class SessionRestartPersistenceTests
     [Fact]
     public async Task ConcurrentSessions_RealCpuGguf_ContinuousBatchingKeepsSessionsIndependent()
     {
-        // docs/032-multi-model-inference-runtime-plan.md Phase 4 acceptance: "N sessions on one
+        // docs/3-product-and-runtime/032-multi-model-inference-runtime-plan.md Phase 4 acceptance: "N sessions on one
         // runtime behave exactly as today's same-model concurrency." The engine here is
         // constructed via ModelRuntimeManager.AcquireAsync (ServiceCollectionExtensions), not the
         // old direct InferenceEngineLoader.Load call — this proves that change didn't alter the

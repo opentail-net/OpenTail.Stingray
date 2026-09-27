@@ -9,7 +9,7 @@ namespace OpenTail.Stingray.Vision;
 /// <c>tools/mtmd/models/siglip.cpp</c>'s <c>PROJECTOR_TYPE_GEMMA3</c> branch plus the shared
 /// <c>clip_graph::build_vit</c>/<c>build_attn</c>/<c>build_ffn</c> helpers in
 /// <c>tools/mtmd/clip.cpp</c>), verified against the real
-/// <c>models/mmproj-gemma-3-4b-it-f16.gguf</c> -- see docs/03-gemma4-e4b-vision-plan.md's Gemma 3
+/// <c>models/mmproj-gemma-3-4b-it-f16.gguf</c> -- see docs/2-coverage/03-gemma4-e4b-vision-plan.md's Gemma 3
 /// addendum for the full derivation.
 ///
 /// <para>Genuinely simpler than the Gemma 4 E4B <c>gemma4v</c> encoder

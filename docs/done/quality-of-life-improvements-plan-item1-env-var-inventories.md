@@ -1,6 +1,6 @@
 # Quality-of-life improvements — Item 1 (env-var/CLI inventory reconciliation), DONE
 
-> **CLOSED 2026-09-02.** Split out of [04-quality-of-life-improvements-plan.md](../04-quality-of-life-improvements-plan.md)
+> **CLOSED 2026-09-02.** Split out of [04-quality-of-life-improvements-plan.md](../3-product-and-runtime/04-quality-of-life-improvements-plan.md)
 > on 2026-09-27 — this was the only fully-closed item in that doc; items 2-6 remain open there.
 
 **DONE, 2026-08-15.** Regenerated and fully classified both inventories.

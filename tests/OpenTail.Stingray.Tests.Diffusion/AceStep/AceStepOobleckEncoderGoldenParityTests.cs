@@ -9,7 +9,7 @@ namespace OpenTail.Stingray.Tests.Diffusion.AceStep;
 /// Real numeric golden-parity check for <see cref="AceStepOobleckEncoder"/> against the real
 /// `diffusers.models.autoencoders.autoencoder_oobleck.AutoencoderOobleck.encoder` reference, loaded
 /// with the SAME real `vae.safetensors` weights (zero missing/unexpected keys) and run on a
-/// fixed-seed synthetic PCM input. See docs/064-acestep-implementation-plan.md's "Golden-parity
+/// fixed-seed synthetic PCM input. See docs/2-coverage/064-acestep-implementation-plan.md's "Golden-parity
 /// check" section for how the reference dump (`golden_vae_enc_*.bin`) was produced.
 ///
 /// <para>This encoder was ported specifically to derive a real `silence_latent` self-sufficiently

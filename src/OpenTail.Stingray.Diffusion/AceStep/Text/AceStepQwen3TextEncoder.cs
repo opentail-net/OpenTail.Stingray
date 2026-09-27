@@ -4,7 +4,7 @@ namespace OpenTail.Stingray.Diffusion.AceStep.Text;
 /// <summary>
 /// Real Qwen3-Embedding-0.6B text encoding for ACE-Step's `text_hidden_states`, reusing this
 /// engine's EXISTING GGUF-based `Engine.ForwardPass` rather than a hand-written transformer --
-/// see docs/064-acestep-implementation-plan.md's "Corrections and confirmations" section for the
+/// see docs/2-coverage/064-acestep-implementation-plan.md's "Corrections and confirmations" section for the
 /// real-source-verified reasoning: the real `diffusers` ACE-Step pipeline runs the formatted text
 /// prompt through the FULL Qwen3 model with standard CAUSAL masking
 /// (`self.text_encoder(input_ids=...).last_hidden_state`), which is exactly what
@@ -28,7 +28,7 @@ namespace OpenTail.Stingray.Diffusion.AceStep.Text;
 /// checkpoint does NOT reproduce this on the identical token sequence, isolating it to the f16
 /// weight-storage/kernel path specifically, not a fundamental architecture bug in this engine's
 /// qwen3 support. This class therefore uses the Q8_0 GGUF, not f16 -- see
-/// docs/064-acestep-implementation-plan.md for the full repro (exact token IDs) and the case for
+/// docs/2-coverage/064-acestep-implementation-plan.md for the full repro (exact token IDs) and the case for
 /// treating the f16 path as a separate, real engine bug worth its own investigation later.</para>
 ///
 /// <para><b>The one piece of new math needed</b>: `Engine.ForwardPass.EnableHiddenTaps` captures

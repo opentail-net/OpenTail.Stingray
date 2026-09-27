@@ -3,7 +3,7 @@ namespace OpenTail.Stingray.Diffusion.AceStep;
 
 /// <summary>
 /// Public generation request for ACE-Step Turbo text-to-music. V1 scope only (see
-/// docs/064-acestep-implementation-plan.md): text + optional lyrics -&gt; 48kHz stereo WAV, no
+/// docs/2-coverage/064-acestep-implementation-plan.md): text + optional lyrics -&gt; 48kHz stereo WAV, no
 /// planner LM, no cover/repaint/extract/lego/complete editing modes, no reference-audio timbre
 /// conditioning. <see cref="Shift"/> must be one of the three real supported values (1, 2, or 3) --
 /// the real reference silently snaps any other value to the nearest of those three, this type

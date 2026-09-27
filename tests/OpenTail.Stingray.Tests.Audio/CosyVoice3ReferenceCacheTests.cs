@@ -1,7 +1,7 @@
 
 namespace OpenTail.Stingray.Tests.Audio;
 
-/// <summary>Perf-sweep Horizontal Pass C (docs/perf-sweep-plan.md): verifies
+/// <summary>Perf-sweep Horizontal Pass C (docs/4-performance/perf-sweep-plan.md): verifies
 /// <see cref="OpenTail.Stingray.Audio.CosyVoice.CosyVoice3Pipeline"/>'s new per-instance
 /// reference-conditioning cache (`_refCache`) -- calling <c>Generate</c> twice with the SAME
 /// `referenceAudioPath` but different target text must (a) produce byte-identical speaker

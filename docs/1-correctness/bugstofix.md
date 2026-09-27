@@ -1,12 +1,12 @@
 Resolved entries split out to
-[done/bugstofix-resolved-2026-08.md](done/bugstofix-resolved-2026-08.md), 2026-08-15 (most recently
+[done/bugstofix-resolved-2026-08.md](../done/bugstofix-resolved-2026-08.md), 2026-08-15 (most recently
 updated 2026-08-27 with the `DeepSeekMoeGraph.cs`/`MlaAttention.cs` column-major layout fixes and
 the `IqCodebooks.cs` entry, which had already been marked FIXED but was left here by mistake). This
 file keeps only what's still open.
 
 **Closed investigation moved out** (2026-08-27): the full DeepSeek-V2-Lite MLA/YaRN/MoE-routing
 investigation (`ModelCompatibility.cs:460`/`461`, originally logged 2026-08-21) is now at
-[done/032-deepseek2-mla-yarn-moe-routing-investigation.md](done/032-deepseek2-mla-yarn-moe-routing-investigation.md).
+[done/032-deepseek2-mla-yarn-moe-routing-investigation.md](../done/032-deepseek2-mla-yarn-moe-routing-investigation.md).
 tl;dr: multiple real bugs found and fixed along the way (YaRN/kq_scale, expert_weights_norm/scale,
 RMSNorm/softmax/SiLU double-precision & ggml-exp fidelity, and — the final entry — a genuine
 Q8_0 activation-quantization bug in `MatVecQ8_0` that had silently invalidated the earlier

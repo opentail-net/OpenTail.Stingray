@@ -3,7 +3,7 @@ namespace OpenTail.Stingray.Diffusion.MiniMaxMusic3;
 /// <summary>
 /// Real per-layer KV cache for <see cref="MiniMaxMusic3GlobalModel"/>'s incremental (one-token-at-
 /// a-time) decoding, matching the real `MiniMaxMusic3AutoregressiveStep` generation loop's
-/// `use_cache=True` Qwen3 forward (docs/066-minimax-music3-future-plan.md, "Real per-frame
+/// `use_cache=True` Qwen3 forward (docs/4-performance/audio/066-minimax-music3-future-plan.md, "Real per-frame
 /// generation loop"). Each layer stores one row (`[nKvHeads*headDim]`, POST rope/qk-norm) per
 /// cached position; grows by however many new tokens a given <see cref="MiniMaxMusic3GlobalModel.ForwardIncremental"/>
 /// call appends (a multi-token prompt prefill, then one token per subsequent step).

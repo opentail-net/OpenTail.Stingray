@@ -12,7 +12,7 @@ namespace OpenTail.Stingray.Tests.Diffusion.AceStep;
 /// key-rename this session verified with `load_state_dict(strict=False)` reporting zero missing
 /// and zero unexpected keys -- confirming our tensor-name understanding matches diffusers' own
 /// module shapes exactly) and run on fixed-seed synthetic inputs. See
-/// docs/064-acestep-implementation-plan.md's "Golden-parity" section for how the reference dump
+/// docs/2-coverage/064-acestep-implementation-plan.md's "Golden-parity" section for how the reference dump
 /// (`golden_dit_*.bin`) was produced -- NOT checked into the repo (gitignored scratch directory),
 /// regenerate via the Python script referenced there if needed.
 ///

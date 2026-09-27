@@ -6,7 +6,7 @@ namespace OpenTail.Stingray.Diffusion.AceStep.Transformer;
 /// Weight loader for ACE-Step Turbo's 24-layer DiT (`AceStepDiTModel`), from the real
 /// `acestep-v15-turbo/model.safetensors` (`decoder.*` prefix). Every tensor name/shape below was
 /// confirmed against the real checkpoint's own safetensors header, not assumed from the reference
-/// source alone -- see docs/064-acestep-implementation-plan.md.
+/// source alone -- see docs/2-coverage/064-acestep-implementation-plan.md.
 /// </summary>
 public sealed class AceStepDiTWeights : IDisposable
 {

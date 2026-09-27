@@ -832,7 +832,7 @@ public sealed class HybridGdnForwardPassTests : HeavyTestBase
     }
 
     /// <summary>
-    /// GDN state-lifecycle conformance (docs/02-qwen35moe-plan.md item 3): proves
+    /// GDN state-lifecycle conformance (docs/2-coverage/02-qwen35moe-plan.md item 3): proves
     /// <see cref="HybridGdnForwardPass.TruncateTo"/>'s snapshot-restore branch (which calls
     /// <see cref="GdnStateCache.RestoreFrom"/> under the hood, issue #21) reconstructs the EXACT
     /// recurrent state a real GDN checkpoint had at capture time — not merely "doesn't crash" or
