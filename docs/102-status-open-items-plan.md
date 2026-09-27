@@ -161,6 +161,22 @@ MODELS.md entry if it qualifies.
     low-memory reaper at 11:08. The Diffusion suite had logged no failures up to then; Audio,
     Vision and ForwardPass never ran. Not restarted.
 
+- 2026-09-27 #13 SD3.5 Medium now has an automated reference test too.
+  - **Test:** `Sd3SdCppParityTests` runs the real pipeline (CLIP-L/G + T5-XXL + MMDiT), one step,
+    256², CFG 4.5, empty negative prompt, committed noise injected. It compares against a
+    `sd-cli --backend cpu` fixture in `TestData/Sd3SdCppGolden` (128 KB; sd.cpp took 30 s).
+  - **Results:** 29 s CPU run and 46 s for both variants, real weights.
+
+    | Path | Cosine | Rel. L2 | Norm ratio |
+    |---|---|---|---|
+    | CPU | 0.998754 | 5.0% | 0.9961 |
+    | Vulkan | 0.998767 | not recorded | 0.9956 |
+
+  - **Threshold:** 0.998 for both. The residual is the small encoder differences (CLIP-G 0.996,
+    T5 0.998) amplified by CFG.
+  - **Where the aux files live:** in `models/sd35-medium-aux` and `models/flux1-schnell`, not
+    `models/_models`.
+
 - 2026-09-27 #13 HunyuanVideo plan (not started; waiting for the landscape sweep to free RAM).
   - **Can sd.cpp run v1?** Possibly. STATUS says the vendored sd.cpp is HunyuanVideo 1.5 only, but
     `hunyuan.hpp HunyuanVideoConfig::detect_from_weights` reads the config from the checkpoint
