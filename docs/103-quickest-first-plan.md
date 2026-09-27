@@ -158,4 +158,9 @@ Never reproduced; act only on a new sighting.
 
 ## Log
 
-- 2026-09-27: plan written. Item 7 in progress (`llama-eval-callback` running).
+- 2026-09-27: plan written. Item 1 done (99b6b53).
+- 2026-09-27: item 7 timeboxed; the layer bisection turned it into a day-scale job.
+  - The drift is spread across layers: it starts at about 0.3% after layer 0's attention and
+    compounds, with no single broken layer.
+  - Findings and the next experiment are in `bugstofix.md` (GLM entry).
+  - Moved on to item 2.

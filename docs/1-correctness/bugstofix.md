@@ -39,6 +39,21 @@ restart a fourth round of kernel-level chasing on this checkpoint without new ev
     - Our side: `StageCapture` stages `post_attn_resid` / `post_ffn_resid`.
     - Find the first layer whose last-token values drift.
   - **Memory:** llama.cpp needs about 46 GB for this file, so run it alone.
+  - **Layer bisection done 2026-09-27:** last token of the 326-token prompt.
+    - llama.cpp `llama-eval-callback` `attn_norm/ffn_inp/l_out-N` vs our `StageCapture`, via the
+      scratch harness `ZzLayerDumpTmp` (untracked).
+    - **No single broken layer.** `attn_norm-0` matches exactly (0.0000). The first difference, about
+      0.3%, appears after layer 0's attention. It then grows steadily: about 1% by layer 5, 2-5% by
+      layer 15, 5-10% in layers 20-45.
+    - **Leading hypothesis:** activation-quantisation scheme differences in every layer's
+      attention/FFN matmuls, not a logic bug:
+      - our Q5_K matvec keeps activations F32 where ggml quantises them to Q8_K (GLM's `attn_output`
+        is Q5_K in every layer);
+      - our batched prefill quantises activations per row, not ggml's per-block Q8_K, for the 325
+        cached K/V positions.
+    - **Next experiment:** dump the `attn_out` stage too (llama.cpp `kqv_out-0`) to split attention
+      from `wo`; then make the decode path use ggml's per-dtype activation scheme (Q5_K -> Q8_K) and
+      re-measure the layer-0 difference and the PPL.
 - [ ] **Dequantize.cs / IqCodebooks.cs coverage gap**: Port `iq1s_grid` (NGRID_IQ1S=2048) and decoders for `IQ1_S`/`IQ1_M` (`IQ1S_DELTA=0.125f`, distinct sign/shift scheme) and `IQ2_XS`/`IQ2_S` when needed by future GGUF models.
 - [ ] **ModelCompatibility.cs / Kernels missing op coverage** (2026-09-27: the Mamba-2 `SSM_SCAN`/`SSM_CONV` path is now implemented on CPU in `ForwardPass.Mamba2.cs` for Granite 4.0-H / Nemotron-H; Mamba-1 and GPU remain): Implement `GGML_OP_SSM_SCAN` (the selective-scan recurrence, distinct from `SSM_CONV`), `RWKV_WKV6`/`RWKV_WKV7`, and DeepSeek-V4 ops (`LIGHTNING_INDEXER`, `DSV4_HC_*`, `SOLVE_TRI`, `WIN_PART`/`WIN_UNPART`).
 - [ ] **SpeculativeDecoder.cs StepSampled/PLD bugs**: Confirmed real defect in speculative decode step sampling; currently unreachable/latent as no wired call path exercises it yet.
