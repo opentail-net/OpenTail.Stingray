@@ -34,3 +34,9 @@
 *.dylib    binary
 *.lib      binary
 *.pdb      binary
+
+# GitHub language statistics (Linguist). The scripts/*.py files are legacy numpy reference
+# oracles that STATUS.md cites as verification evidence; they are kept for that record but are
+# not part of the product, and the project adds no new Python (see CLAUDE.md). Excluding them
+# keeps the repository's language bar to what actually ships.
+*.py linguist-detectable=false
