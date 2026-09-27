@@ -7,13 +7,64 @@ namespace OpenTail.Stingray.Vision;
 /// normalised with mean = std = 0.5 (<c>clip.vision.image_mean/std</c>). Output is CHW.
 /// </summary>
 /// <remarks>
-/// llama.cpp additionally cuts 768-px tiles when either side exceeds 768 px; those are not produced here
-/// yet (see docs/102 #7), so large pages are read from the global view only.
+/// When either side exceeds 768 px, <see cref="PreprocessTiles"/> also cuts 768-px tiles (2..6, grid chosen
+/// by closest aspect ratio), fed before the global view (mtmd ov_img_first = false).
 /// </remarks>
 public static class DeepSeekOcr2ImagePreprocessor
 {
     public const int BaseSize = 1024;
+    public const int TileSize = 768;
+    private const int MinTiles = 2, MaxTiles = 6;
     private const byte PadValue = 127;
+
+    /// <summary>Row-major 768x768 CHW tiles, or an empty list when the image fits in one tile
+    /// (llama.cpp: only when width or height exceeds the tile size).</summary>
+    public static List<float[]> PreprocessTiles(ReadOnlySpan<byte> rgb, int width, int height, out int gridW, out int gridH)
+    {
+        var tiles = new List<float[]>();
+        gridW = gridH = 0;
+        if (width <= TileSize && height <= TileSize) return tiles;
+        (gridW, gridH) = ClosestGrid((float)width / height, width, height);
+        int rw = TileSize * gridW, rh = TileSize * gridH;
+        byte[] refined = PillowResize.Bicubic(rgb, width, height, rw, rh);
+        const int plane = TileSize * TileSize;
+        for (int row = 0; row < gridH; row++)
+            for (int col = 0; col < gridW; col++)
+            {
+                var chw = new float[3 * plane];
+                for (int y = 0; y < TileSize; y++)
+                    for (int x = 0; x < TileSize; x++)
+                    {
+                        int src = ((row * TileSize + y) * rw + col * TileSize + x) * 3;
+                        for (int c = 0; c < 3; c++)
+                            chw[c * plane + y * TileSize + x] = (refined[src + c] / 255f - 0.5f) / 0.5f;
+                    }
+                tiles.Add(chw);
+            }
+        return tiles;
+    }
+
+    /// <summary>mtmd_image_preprocessor_deepseekocr get_target_ratios + find_closest_aspect_ratio.</summary>
+    internal static (int W, int H) ClosestGrid(float aspect, int width, int height)
+    {
+        var ratios = new List<(int W, int H)>();
+        for (int n = MinTiles; n <= MaxTiles; n++)
+            for (int w = 1; w <= n; w++)
+                for (int h = 1; h <= n; h++)
+                    if (w * h >= MinTiles && w * h <= MaxTiles && !ratios.Contains((w, h)))
+                        ratios.Add((w, h));
+        ratios = [.. ratios.OrderBy(r => r.W * r.H)];
+        float best = float.MaxValue;
+        (int W, int H) bestRatio = (1, 1);
+        float area = (float)width * height;
+        foreach (var r in ratios)
+        {
+            float diff = MathF.Abs(aspect - (float)r.W / r.H);
+            if (diff < best) { best = diff; bestRatio = r; }
+            else if (diff == best && area > 0.5f * TileSize * TileSize * r.W * r.H) bestRatio = r;
+        }
+        return bestRatio;
+    }
 
     public static float[] PreprocessGlobalView(ReadOnlySpan<byte> rgb, int width, int height)
     {

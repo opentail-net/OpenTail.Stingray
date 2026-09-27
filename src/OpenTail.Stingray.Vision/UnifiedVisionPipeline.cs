@@ -397,7 +397,7 @@ public static class UnifiedVisionPipeline
     }
 
     /// <summary>DeepSeek-OCR2 (SAM + Qwen2 query encoder), llama.cpp deepseekocr2.cpp. The image is followed
-    /// by a plain newline text token, as mtmd's img_end for DEEPSEEKOCR/DEEPSEEKOCR2. Global view only.</summary>
+    /// by a plain newline text token, as mtmd's img_end for DEEPSEEKOCR/DEEPSEEKOCR2.</summary>
     private sealed class DeepSeekOcr2Adapter : IVisionEmbedder
     {
         private readonly GgufModel _gguf;
@@ -417,8 +417,17 @@ public static class UnifiedVisionPipeline
         public string ImageCloseMarker => "\n";
         public string PlaceholderMarker => "<image>";
 
-        public float[] EmbedImage(ReadOnlySpan<byte> rgb, int width, int height, out int tokenCount) =>
-            _encoder.EncodeGlobalView(DeepSeekOcr2ImagePreprocessor.PreprocessGlobalView(rgb, width, height), out tokenCount);
+        public float[] EmbedImage(ReadOnlySpan<byte> rgb, int width, int height, out int tokenCount)
+        {
+            // mtmd: tiles (row-major, 144 tokens each) first, then the 257-token global view.
+            var tiles = DeepSeekOcr2ImagePreprocessor.PreprocessTiles(rgb, width, height, out _, out _);
+            float[] global = _encoder.EncodeGlobalView(DeepSeekOcr2ImagePreprocessor.PreprocessGlobalView(rgb, width, height), out int nGlobal);
+            if (tiles.Count == 0) { tokenCount = nGlobal; return global; }
+            var parts = tiles.Select(_encoder.EncodeTile).ToList();
+            parts.Add(global);
+            tokenCount = parts.Sum(p => p.Length) / _encoder.EmbeddingDim;
+            return [.. parts.SelectMany(p => p)];
+        }
 
         public float[] EmbedImageFile(string filePath, out int tokenCount)
         {

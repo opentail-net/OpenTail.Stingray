@@ -188,6 +188,22 @@ public sealed class LlamaMtmdVisionParityTests
         AssertMatches(sam, -475.977, 25.0, [-0.1650f, 0.0668f, 0.0027f], 0.03f);
     }
 
+    [Fact]
+    public void DeepSeekOcr2_Rainbow768Tile_SamMatchesLlamaMtmdDebug()
+    {
+        string? path = FindModel("mmproj-deepseek-ocr-2-q8_0.gguf");
+        Assert.SkipWhen(path is null, "mmproj-deepseek-ocr-2-q8_0.gguf not present");
+        using var gguf = OpenTail.Stingray.Core.GgufModel.Open(path!);
+        float[] sam = new DeepSeekOcr2VisionEncoder(gguf).Sam(Rainbow(768), 768, out int side);
+        Report("dsocr2 tile sam_output", sam, side * side, 896);
+
+        // Same reference with -n 768 (a tile): exercises the bicubic 64->48 position-table resize and the
+        // linear 127->95 relative-position resize of the global blocks. sam_output 12 x 12 x 896, sum
+        // -277.124847, row 0 [-0.1602, 0.0755, -0.0094].
+        Assert.Equal(12, side);
+        AssertMatches(sam, -277.125, 15.0, [-0.1602f, 0.0755f, -0.0094f], 0.03f);
+    }
+
     private static string? FindModel(string file)
     {
         var dir = new DirectoryInfo(AppContext.BaseDirectory);

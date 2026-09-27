@@ -16,7 +16,9 @@ namespace OpenTail.Stingray.Vision;
 ///   query tokens to all image tokens plus earlier queries. Only the query outputs are kept.</item>
 /// <item><c>mm.model.fc</c> (896 -> 1280) and the <c>view_seperator</c> row appended: 257 tokens.</item>
 /// </list>
-/// Handles the 1024-px global view; 768-px tiles (144 queries) are not implemented yet.
+/// The 1024-px global view gives 256 query tokens + the separator; a 768-px tile gives 144 query tokens
+/// (SAM position table bicubic-resized 64 -> 48, global-attention relative-position tables linearly
+/// resized 127 -> 95, as ggml_interpolate in build_sam/get_rel_pos).
 /// </summary>
 public sealed unsafe class DeepSeekOcr2VisionEncoder
 {
@@ -32,7 +34,7 @@ public sealed unsafe class DeepSeekOcr2VisionEncoder
     private readonly SamBlock[] _sam;
     private readonly float[] _neck0, _neck1W, _neck1B, _neck2, _neck3W, _neck3B, _net2, _net3;
     private readonly QBlock[] _q;
-    private readonly float[] _query1024, _postLn, _fcB, _viewSep;
+    private readonly float[] _query1024, _query768, _postLn, _fcB, _viewSep;
     private readonly VisionTensorRef _fcW;
 
     private sealed class SamBlock
@@ -100,6 +102,7 @@ public sealed unsafe class DeepSeekOcr2VisionEncoder
             };
         }
         _query1024 = F32("v.resample_query_1024.weight");
+        _query768 = F32("v.resample_query_768.weight");
         _postLn = F32("v.post_ln.weight");
         _fcW = W("mm.model.fc.weight");
         _fcB = F32("mm.model.fc.bias");
@@ -135,6 +138,95 @@ public sealed unsafe class DeepSeekOcr2VisionEncoder
         return output;
     }
 
+    /// <summary>Encodes one 768x768 CHW tile; returns 144 x <see cref="EmbeddingDim"/> soft tokens (no separator).</summary>
+    public float[] EncodeTile(float[] chw)
+    {
+        float[] sam = Sam(chw, DeepSeekOcr2ImagePreprocessor.TileSize, out int side);   // 12 x 12 x 896
+        int nImg = side * side;
+        const int nQuery = 144;
+        if (nImg != nQuery) throw new InvalidOperationException($"DeepSeek-OCR2 tile expects 144 SAM tokens, got {nImg}.");
+        float[] queries = Qwen2Encoder(sam, nImg, _query768, nQuery);
+        var output = new float[nQuery * _projDim];
+        fixed (float* fcB = _fcB) VisionOps.MatVecAny(queries, _fcW, fcB, nQuery, _qEmbd, _projDim, output);
+        return output;
+    }
+
+    private readonly Dictionary<int, float[]> _posCache = [];
+    private readonly Dictionary<(int Layer, int Len, bool H), float[]> _relCache = [];
+
+    /// <summary>SAM position table for a g x g grid: ggml_interpolate GGML_SCALE_MODE_BICUBIC (a = -0.75,
+    /// half-pixel centres, clamped borders) from the stored 64 x 64.</summary>
+    private float[] PositionTable(int g)
+    {
+        int src = (int)Math.Round(Math.Sqrt(_posEmbd.Length / SamEmbd));
+        if (g == src) return _posEmbd;
+        lock (_posCache)
+        {
+            if (_posCache.TryGetValue(g, out var cached)) return cached;
+            var dst = new float[g * g * SamEmbd];
+            float sf = (float)g / src;
+            Parallel.For(0, g, i1 =>
+            {
+                float y = (i1 + 0.5f) / sf - 0.5f;
+                int y0 = (int)MathF.Floor(y);
+                float dy = y - y0;
+                Span<float> wy = [CubicFar(dy + 1), CubicNear(dy), CubicNear(1 - dy), CubicFar(2 - dy)];
+                Span<float> wx = stackalloc float[4];
+                for (int i0 = 0; i0 < g; i0++)
+                {
+                    float x = (i0 + 0.5f) / sf - 0.5f;
+                    int x0 = (int)MathF.Floor(x);
+                    float dx = x - x0;
+                    wx[0] = CubicFar(dx + 1); wx[1] = CubicNear(dx); wx[2] = CubicNear(1 - dx); wx[3] = CubicFar(2 - dx);
+                    int o = (i1 * g + i0) * SamEmbd;
+                    for (int r = 0; r < 4; r++)
+                    {
+                        int sy = Math.Clamp(y0 - 1 + r, 0, src - 1);
+                        for (int c4 = 0; c4 < 4; c4++)
+                        {
+                            int sx = Math.Clamp(x0 - 1 + c4, 0, src - 1);
+                            TensorPrimitives.MultiplyAdd(new ReadOnlySpan<float>(_posEmbd, (sy * src + sx) * SamEmbd, SamEmbd), wy[r] * wx[c4],
+                                new ReadOnlySpan<float>(dst, o, SamEmbd), new Span<float>(dst, o, SamEmbd));
+                        }
+                    }
+                }
+            });
+            _posCache[g] = dst;
+            return dst;
+        }
+    }
+
+    private const float CubicA = -0.75f;
+    private static float CubicNear(float x) => ((CubicA + 2) * x - (CubicA + 3)) * x * x + 1;
+    private static float CubicFar(float x) => ((CubicA * x - 5 * CubicA) * x + 8 * CubicA) * x - 4 * CubicA;
+
+    /// <summary>Relative-position table [len x 64] for a layer: the stored table when its length already is
+    /// 2*size-1, else ggml_interpolate BILINEAR along the length axis (get_rel_pos).</summary>
+    private float[] RelTable(int layer, bool h, int size)
+    {
+        float[] t = h ? _sam[layer].RelH : _sam[layer].RelW;
+        const int dh = SamEmbd / SamHeads;
+        int len = t.Length / dh, want = 2 * size - 1;
+        if (len == want) return t;
+        lock (_relCache)
+        {
+            if (_relCache.TryGetValue((layer, want, h), out var cached)) return cached;
+            var dst = new float[want * dh];
+            float sf = (float)want / len;
+            for (int i = 0; i < want; i++)
+            {
+                float x = (i + 0.5f) / sf - 0.5f;
+                int x0 = (int)MathF.Floor(x);
+                int xa = Math.Clamp(x0, 0, len - 1), xb = Math.Clamp(x0 + 1, 0, len - 1);
+                float dx = Math.Clamp(x - xa, 0f, 1f);
+                for (int c = 0; c < dh; c++)
+                    dst[i * dh + c] = t[xa * dh + c] * (1 - dx) + t[xb * dh + c] * dx;
+            }
+            _relCache[(layer, want, h)] = dst;
+            return dst;
+        }
+    }
+
     // ---------------------------------------------------------------- SAM
 
     internal float[] Sam(float[] chw, int imageSize, out int outSide)
@@ -158,10 +250,7 @@ public sealed unsafe class DeepSeekOcr2VisionEncoder
         });
         var x = new float[n * SamEmbd];
         fixed (float* b = _patchB) VisionOps.MatVec(cols, _patchW, b, n, k, SamEmbd, x);
-        if (_posEmbd.Length != x.Length)
-            throw new NotSupportedException("DeepSeek-OCR2: SAM position-table interpolation (768-px tiles) is not implemented.");
-        TensorPrimitives.Add(x, _posEmbd, x);
-        Dump("sam_pos", x);
+        TensorPrimitives.Add(x, PositionTable(g), x);
 
         var normed = new float[n * SamEmbd];
         var attnOut = new float[n * SamEmbd];
@@ -172,9 +261,9 @@ public sealed unsafe class DeepSeekOcr2VisionEncoder
             Array.Copy(x, normed, x.Length);
             fixed (float* w = blk.Ln1W, bb = blk.Ln1B) VisionOps.LayerNorm(normed, n, SamEmbd, w, bb, SamEps);
             if (Array.IndexOf(GlobalLayers, l) >= 0)
-                SamAttention(normed, g, g, blk, attnOut);
+                SamAttention(normed, g, g, blk, RelTable(l, true, g), RelTable(l, false, g), attnOut);
             else
-                SamWindowedAttention(normed, g, blk, attnOut);
+                SamWindowedAttention(normed, g, blk, RelTable(l, true, SamWindow), RelTable(l, false, SamWindow), attnOut);
             TensorPrimitives.Add(x, attnOut, x);
 
             Array.Copy(x, normed, x.Length);
@@ -183,7 +272,6 @@ public sealed unsafe class DeepSeekOcr2VisionEncoder
             VisionOps.Gelu(mid);
             fixed (float* b2 = blk.Lin2B) VisionOps.MatVecAny(mid, blk.Lin2W, b2, n, 4 * SamEmbd, SamEmbd, attnOut);
             TensorPrimitives.Add(x, attnOut, x);
-            Dump($"sam_layer_out-{l}", x);
         }
 
         // Neck + downsampling convs (channels-last, raster tokens).
@@ -193,7 +281,6 @@ public sealed unsafe class DeepSeekOcr2VisionEncoder
         ChannelLayerNorm(y, g * g, 256, _neck3W, _neck3B);
         y = Conv2d(y, g, g, 256, _net2, 512, 3, 2, 1, out int h2, out int w2);
         y = Conv2d(y, h2, w2, 512, _net3, _qEmbd, 3, 2, 1, out int h3, out _);
-        Dump("sam_output", y);
         outSide = h3;
         return y;
     }
@@ -236,19 +323,19 @@ public sealed unsafe class DeepSeekOcr2VisionEncoder
     }
 
     /// <summary>Global SAM attention over an <paramref name="gh"/> x <paramref name="gw"/> grid.</summary>
-    private static void SamAttention(float[] normed, int gh, int gw, SamBlock blk, float[] output)
+    private static void SamAttention(float[] normed, int gh, int gw, SamBlock blk, float[] relH, float[] relW, float[] output)
     {
         int n = gh * gw;
         var qkv = new float[n * 3 * SamEmbd];
         fixed (float* b = blk.QkvB) VisionOps.MatVecAny(normed, blk.QkvW, b, n, SamEmbd, 3 * SamEmbd, qkv);
         var attn = new float[n * SamEmbd];
-        AttendGrid(qkv, gh, gw, blk, attn);
+        AttendGrid(qkv, gh, gw, relH, relW, attn);
         fixed (float* ob = blk.OutB) VisionOps.MatVecAny(attn, blk.OutW, ob, n, SamEmbd, SamEmbd, output);
     }
 
     /// <summary>14x14 windowed SAM attention: the grid is zero-padded (after the norm, as ggml_pad) to a
     /// multiple of the window, padded tokens take part as keys (their q/k/v are the qkv bias).</summary>
-    private static void SamWindowedAttention(float[] normed, int g, SamBlock blk, float[] output)
+    private static void SamWindowedAttention(float[] normed, int g, SamBlock blk, float[] relH, float[] relW, float[] output)
     {
         int nw = (g + SamWindow - 1) / SamWindow;
         int gp = nw * SamWindow;
@@ -272,7 +359,7 @@ public sealed unsafe class DeepSeekOcr2VisionEncoder
             var q = new float[wn * 3 * SamEmbd];
             Array.Copy(qkv, wi * wn * 3 * SamEmbd, q, 0, q.Length);
             var o = new float[wn * SamEmbd];
-            AttendGrid(q, SamWindow, SamWindow, blk, o, parallel: false);
+            AttendGrid(q, SamWindow, SamWindow, relH, relW, o, parallel: false);
             Array.Copy(o, 0, attnWin, wi * wn * SamEmbd, o.Length);
         });
         var proj = new float[total * SamEmbd];
@@ -295,7 +382,7 @@ public sealed unsafe class DeepSeekOcr2VisionEncoder
     /// q.Rw[qx - kx + w - 1] (unscaled q in the bias terms, as ggml builds it into the attention mask).
     /// <paramref name="qkv"/> is per token [q | k | v] (3 x 768).
     /// </summary>
-    private static void AttendGrid(float[] qkv, int h, int w, SamBlock blk, float[] output, bool parallel = true)
+    private static void AttendGrid(float[] qkv, int h, int w, float[] relH, float[] relW, float[] output, bool parallel = true)
     {
         const int dh = SamEmbd / SamHeads;
         int n = h * w;
@@ -310,8 +397,8 @@ public sealed unsafe class DeepSeekOcr2VisionEncoder
             {
                 int qy = i / w, qx = i % w;
                 var qi = new ReadOnlySpan<float>(qkv, i * stride + hd * dh, dh);
-                for (int ky = 0; ky < h; ky++) rh[ky] = TensorPrimitives.Dot(qi, new ReadOnlySpan<float>(blk.RelH, (qy - ky + h - 1) * dh, dh));
-                for (int kx = 0; kx < w; kx++) rw[kx] = TensorPrimitives.Dot(qi, new ReadOnlySpan<float>(blk.RelW, (qx - kx + w - 1) * dh, dh));
+                for (int ky = 0; ky < h; ky++) rh[ky] = TensorPrimitives.Dot(qi, new ReadOnlySpan<float>(relH, (qy - ky + h - 1) * dh, dh));
+                for (int kx = 0; kx < w; kx++) rw[kx] = TensorPrimitives.Dot(qi, new ReadOnlySpan<float>(relW, (qx - kx + w - 1) * dh, dh));
                 float max = float.NegativeInfinity;
                 for (int j = 0; j < n; j++)
                 {
@@ -379,7 +466,6 @@ public sealed unsafe class DeepSeekOcr2VisionEncoder
         fixed (float* w = _postLn) VisionOps.RmsNorm(x, n, d, w, _qEps);
         var outQ = new float[nQuery * d];
         Array.Copy(x, nImg * d, outQ, 0, outQ.Length);
-        Dump("qwen2_queries", outQ);
         return outQ;
     }
 
@@ -434,13 +520,4 @@ public sealed unsafe class DeepSeekOcr2VisionEncoder
         });
     }
 
-    private static readonly bool s_dump = Environment.GetEnvironmentVariable("STINGRAY_VIS_DUMP") == "1";
-
-    private static void Dump(string name, float[] a)
-    {
-        if (!s_dump) return;
-        double sum = 0;
-        foreach (float f in a) sum += f;
-        Console.WriteLine($"[dsocr2] {name,-18} sum={sum,16:F4} [{a[0]:F4}, {a[1]:F4}, {a[2]:F4}]");
-    }
 }
