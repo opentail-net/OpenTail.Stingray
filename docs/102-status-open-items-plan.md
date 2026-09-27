@@ -149,6 +149,34 @@ MODELS.md entry if it qualifies.
     Vulkan backend too; their cosines are against that.
   - **Next:** HunyuanVideo.
 
+- 2026-09-27 #13 FLUX.2 now has an automated reference test.
+  - **Why:** part 1 marked it 🔬 from a manual comparison only.
+  - **Test:** `Flux2SdCppParityTests` runs `Generate` with real Mistral conditioning and the DiT,
+    one step, 256², guidance 3.5, with the committed noise injected. It compares against the
+    `sd-cli --backend cpu` one-step latent in `TestData/Flux2SdCppGolden` (256 KB).
+  - **Result:** cosine 0.999962, relative L2 0.9%, norm ratio 1.0014. A real 148 s run (9.7 GiB
+    of weights pre-faulted).
+  - **Fixture:** sd.cpp took 3m25s to generate it.
+  - **Landscape sweep:** the heavy test sweep started at 09:16 was killed by Claude Code's
+    low-memory reaper at 11:08. The Diffusion suite had logged no failures up to then; Audio,
+    Vision and ForwardPass never ran. Not restarted.
+
+- 2026-09-27 #13 HunyuanVideo plan (not started; waiting for the landscape sweep to free RAM).
+  - **Can sd.cpp run v1?** Possibly. STATUS says the vendored sd.cpp is HunyuanVideo 1.5 only, but
+    `hunyuan.hpp HunyuanVideoConfig::detect_from_weights` reads the config from the checkpoint
+    itself: depth, single blocks, `vector_in` dim, `guidance_in`, heads, MLP ratio and patch size.
+    So it may run our v1 DiT (`hunyuan_video_720_cfgdistill_fp8_e4m3fn.safetensors`). Untested.
+  - **Text conditioning won't match:** sd.cpp's conditioning is `LLMEmbedder`, the v1.5 recipe. It
+    can't produce v1's LLaMA-3 `hidden_states[-3]` plus CLIP-L pooled `c_vector`.
+  - **Method:** a DiT-level parity check.
+    - Patch sd.cpp locally to inject `c_crossattn` / `c_vector` from files.
+    - Feed it our own `HunyuanVideoTextConditioning` output.
+    - Inject the same noise on both sides.
+    - Compare 1-step velocity at guidance 1, then a short full run, on `--backend cpu` and
+      `vulkan0` for the noise floor.
+  - **If sd.cpp can't load the v1 checkpoint:** document it as blocked (no runnable v1 reference)
+    and move on to #14.
+
 - 2026-09-27 #13 part 1: latent-level parity against `examples/stable-diffusion.cpp` (`sd-cli`).
   - The reference is patched locally (git-ignored): `SD_DUMP_NOISE_PATH` (existing),
     `SD_DUMP_LATENT_PATH` (x_0 before VAE decode) and `SD_DUMP_COND_PATH` (cross-attention
