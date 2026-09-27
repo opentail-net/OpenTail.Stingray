@@ -63,7 +63,7 @@ public sealed class ParakeetPipeline : ISpeechToTextPipeline
 
         // 1. Extract 80-channel Log-Mel Spectrogram
         float[] mel = _melExtractor.ExtractMel(pcm16k);
-        int inMelFrames = mel.Length / ParakeetMelExtractor.NumMels;
+        int inMelFrames = mel.Length / _melExtractor.MelCount;
 
         if (inMelFrames == 0)
         {
@@ -73,14 +73,16 @@ public sealed class ParakeetPipeline : ISpeechToTextPipeline
         if (_weights == null)
             throw new InvalidOperationException("ParakeetPipeline requires real GGUF weights (use ParakeetPipeline.Load) -- no procedural fallback exists for the FastConformer encoder.");
 
-        // 2. FastConformer Acoustic Encoding (8x subsampling + conformer blocks + CTC head)
-        var (_, ctcLogits, numConformerFrames) = ParakeetConformerEncoder.Forward(_weights, mel, inMelFrames);
+        // 2. FastConformer Acoustic Encoding (8x subsampling + conformer blocks + CTC head when present)
+        var (hidden, ctcLogits, numConformerFrames) = ParakeetConformerEncoder.Forward(_weights, mel, inMelFrames);
 
-        // 3. CTC Greedy Decoding & Timestamp Alignment
-        var (fullText, _, segments) = _decoder.DecodeGreedy(
-            ctcLogits: ctcLogits,
-            numFrames: numConformerFrames,
-            timeOffset: TimeSpan.Zero);
+        // 3. Greedy decoding: TDT transducer when the checkpoint has one (no CTC head), otherwise CTC collapse.
+        var (fullText, _, segments) = ctcLogits is null
+            ? new ParakeetTdtDecoder(_tokenizer, _weights).DecodeGreedy(hidden, numConformerFrames, TimeSpan.Zero)
+            : _decoder.DecodeGreedy(
+                ctcLogits: ctcLogits,
+                numFrames: numConformerFrames,
+                timeOffset: TimeSpan.Zero);
 
         return new SpeechToTextResult(
             text: fullText,

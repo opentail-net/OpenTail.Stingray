@@ -18,6 +18,10 @@ public sealed class ParakeetMelExtractor
 {
     public const int SampleRate = 16000;
     public const int NumMels = 80;
+
+    /// <summary>Mel channels of this extractor: the shipped filterbank's row count (80 for the CTC checkpoints,
+    /// 128 for parakeet-tdt-0.6b-v2), or <see cref="NumMels"/> for the built-in fallback.</summary>
+    public int MelCount { get; }
     public const int NFft = 512;
     public const int WinLength = 400; // 25ms @ 16kHz
     public const int HopLength = 160;  // 10ms @ 16kHz
@@ -39,6 +43,7 @@ public sealed class ParakeetMelExtractor
         int wn = Math.Min(rawWindow.Length, WinLength);
         for (int i = 0; i < wn; i++) _window[lpad + i] = rawWindow[i];
         _melFb = melFilterbank;
+        MelCount = melFilterbank.Length / (NFft / 2 + 1);
     }
 
     public static ParakeetMelExtractor FromWeights(ParakeetWeights w) => new(w.MelWindow, w.MelFilterbank);
@@ -65,7 +70,7 @@ public sealed class ParakeetMelExtractor
         int t = (padded.Length - NFft) / HopLength + 1;
         if (t <= 0) return [];
 
-        var mel = new float[t * NumMels];
+        var mel = new float[t * MelCount];
         var frame = new float[NFft];
         var powerSpectrum = new float[NFft / 2 + 1];
 
@@ -77,29 +82,29 @@ public sealed class ParakeetMelExtractor
 
             SpectralKernels.ComputePowerSpectrum(frame, powerSpectrum);
 
-            for (int m = 0; m < NumMels; m++)
+            for (int m = 0; m < MelCount; m++)
             {
                 float energy = 0f;
                 int fbBase = m * powerSpectrum.Length;
                 for (int k = 0; k < powerSpectrum.Length; k++)
                     energy += powerSpectrum[k] * _melFb[fbBase + k];
 
-                mel[f * NumMels + m] = MathF.Log(energy + LogEps);
+                mel[f * MelCount + m] = MathF.Log(energy + LogEps);
             }
         }
 
         // 3. Per-feature (per-mel-band) Z-normalization across time, Bessel-corrected variance.
         int denom = t > 1 ? t - 1 : 1;
-        for (int m = 0; m < NumMels; m++)
+        for (int m = 0; m < MelCount; m++)
         {
             double sum = 0;
-            for (int f = 0; f < t; f++) sum += mel[f * NumMels + m];
+            for (int f = 0; f < t; f++) sum += mel[f * MelCount + m];
             double mean = sum / t;
 
             double sq = 0;
             for (int f = 0; f < t; f++)
             {
-                double d = mel[f * NumMels + m] - mean;
+                double d = mel[f * MelCount + m] - mean;
                 sq += d * d;
             }
             float std = MathF.Sqrt((float)(sq / denom));
@@ -107,7 +112,7 @@ public sealed class ParakeetMelExtractor
             std += 1e-5f;
 
             for (int f = 0; f < t; f++)
-                mel[f * NumMels + m] = (float)((mel[f * NumMels + m] - mean) / std);
+                mel[f * MelCount + m] = (float)((mel[f * MelCount + m] - mean) / std);
         }
 
         return mel;

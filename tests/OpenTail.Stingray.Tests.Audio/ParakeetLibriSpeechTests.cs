@@ -74,4 +74,33 @@ public sealed class ParakeetLibriSpeechTests
         Assert.True(wer <= maxWer, $"WER {wer:P1}");
     }
 
+    // CrispASR 2026-09-27, `crispasr -m parakeet-tdt-0.6b-v2-q4_k.gguf -f <clip> --gpu-backend cpu -nt`: the same GGUF,
+    // so the text (casing and punctuation included) must match exactly.
+    private static readonly Dictionary<string, string> s_crispAsrTdt = new()
+    {
+        ["librispeech_test_clean_6930-75918-0000"] = "Concord returned to its place amidst the tents.",
+        ["librispeech_test_clean_6930-75918-0001"] = "The English forwarded to the French baskets of flowers, of which they had made a plentiful provision to greet the arrival of the young princess. The French, in return, invited the English to a supper, which was to be given the next day.",
+        ["librispeech_test_other_7902-96591-0000"] = "I am from the cutter lying off the coast.",
+        ["librispeech_test_other_7902-96591-0001"] = "Don't cry, he said. I was obliged to come.",
+    };
+
+    /// <summary>Parakeet TDT 0.6B v2 (no CTC head): greedy TDT decoding, docs/103 item 14.</summary>
+    [Fact]
+    public void Tdt06bV2_LibriSpeech_MatchesCrispAsr()
+    {
+        const string file = "parakeet-tdt-0.6b-v2-q4_k.gguf";
+        string? model = Find($"models/_models/parakeet-tdt-0.6b-v2/{file}") ?? Find($"models/_models/{file}") ?? Find($"models/{file}");
+        string? clipDir = Find("examples/audio.cpp/assets/asr_validation/librispeech");
+        Assert.SkipUnless(model != null && clipDir != null, $"{file} or the LibriSpeech clips not found");
+
+        using var pipeline = OpenTail.Stingray.Audio.Parakeet.ParakeetPipeline.Load(model!);
+        foreach (var wav in Directory.GetFiles(clipDir!, "*.wav").Order())
+        {
+            var (samples, sr, _) = WavReader.ReadWav(wav);
+            if (sr != 16000) samples = AudioResampler.Resample(samples, sr, 16000);
+            var result = pipeline.Transcribe(new SpeechToTextRequest { AudioSamples = samples, SampleRate = 16000, Language = "en", Task = SpeechTask.Transcribe });
+            Console.WriteLine($"[Parakeet TDT] {Path.GetFileNameWithoutExtension(wav)}: {result.Text}");
+            Assert.Equal(s_crispAsrTdt[Path.GetFileNameWithoutExtension(wav)], result.Text);
+        }
+    }
 }

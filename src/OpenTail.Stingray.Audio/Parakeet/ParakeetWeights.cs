@@ -48,9 +48,13 @@ public sealed class ParakeetWeights : IDisposable
     public float[] MelFilterbank { get; }   // [257, 80]
     public float[] MelWindow { get; }       // [400]
 
-    // --- CTC head ---
-    public float[] CtcWeight { get; }       // [1024, vocab+1]
+    // --- CTC head (null for a TDT-only checkpoint such as parakeet-tdt-0.6b-v2) ---
+    public float[]? CtcWeight { get; }      // [1024, vocab+1]
     public float[]? CtcBias { get; }
+    public bool HasCtc => CtcWeight is not null;
+
+    // --- TDT transducer head (null for a CTC checkpoint). CrispASR GGUF layout (convert-parakeet-to-gguf.py). ---
+    public ParakeetTdtWeights? Tdt { get; }
 
     public ParakeetConformerLayer[] Layers { get; }
 
@@ -61,21 +65,23 @@ public sealed class ParakeetWeights : IDisposable
 
         Model = GgufModel.Open(ggufPath);
 
-        NumLayers = GetInt("canary_ctc.n_layers", NumLayers);
-        HiddenDim = GetInt("canary_ctc.d_model", HiddenDim);
-        NumHeads = GetInt("canary_ctc.n_heads", NumHeads);
-        HeadDim = GetInt("canary_ctc.head_dim", HiddenDim / NumHeads);
-        FfDim = GetInt("canary_ctc.ff_dim", FfDim);
-        ConvKernel = GetInt("canary_ctc.conv_kernel", ConvKernel);
-        VocabSize = GetInt("canary_ctc.vocab_size", VocabSize);
-        BlankTokenId = GetInt("canary_ctc.blank_id", BlankTokenId);
-        SubsampleFactor = GetInt("canary_ctc.subsampling_factor", SubsampleFactor);
-        SubsampleChannels = GetInt("canary_ctc.subsampling_channels", SubsampleChannels);
-        NMels = GetInt("canary_ctc.n_mels", NMels);
-        NFft = GetInt("canary_ctc.n_fft", NFft);
-        WinLength = GetInt("canary_ctc.win_length", WinLength);
-        HopLength = GetInt("canary_ctc.hop_length", HopLength);
-        SampleRate = GetInt("canary_ctc.sample_rate", SampleRate);
+        // Metadata prefix: "canary_ctc" (CTC checkpoints) or "parakeet" (CrispASR's TDT checkpoints).
+        string p = Model.Metadata.ContainsKey("parakeet.d_model") ? "parakeet" : "canary_ctc";
+        NumLayers = GetInt($"{p}.n_layers", NumLayers);
+        HiddenDim = GetInt($"{p}.d_model", HiddenDim);
+        NumHeads = GetInt($"{p}.n_heads", NumHeads);
+        HeadDim = GetInt($"{p}.head_dim", HiddenDim / NumHeads);
+        FfDim = GetInt($"{p}.ff_dim", FfDim);
+        ConvKernel = GetInt($"{p}.conv_kernel", ConvKernel);
+        VocabSize = GetInt($"{p}.vocab_size", VocabSize);
+        BlankTokenId = GetInt($"{p}.blank_id", BlankTokenId);
+        SubsampleFactor = GetInt($"{p}.subsampling_factor", SubsampleFactor);
+        SubsampleChannels = GetInt($"{p}.subsampling_channels", SubsampleChannels);
+        NMels = GetInt($"{p}.n_mels", NMels);
+        NFft = GetInt($"{p}.n_fft", NFft);
+        WinLength = GetInt($"{p}.win_length", WinLength);
+        HopLength = GetInt($"{p}.hop_length", HopLength);
+        SampleRate = GetInt($"{p}.sample_rate", SampleRate);
 
         PreConv0Weight = GetTensor("encoder.pre.conv.0.weight");
         PreConv0Bias = GetTensor("encoder.pre.conv.0.bias");
@@ -93,15 +99,19 @@ public sealed class ParakeetWeights : IDisposable
         MelFilterbank = GetTensor("preprocessor.fb");
         MelWindow = GetTensor("preprocessor.window");
 
-        CtcWeight = GetTensor("ctc.weight");
+        CtcWeight = TryGetTensor("ctc.weight");
         CtcBias = TryGetTensor("ctc.bias");
+        if (Model.FindTensor("joint.out.weight") is not null)
+            Tdt = new ParakeetTdtWeights(this, p);
+        if (CtcWeight is null && Tdt is null)
+            throw new InvalidDataException("Parakeet GGUF has neither a CTC head (ctc.weight) nor a TDT head (joint.out.weight).");
 
         Layers = new ParakeetConformerLayer[NumLayers];
         for (int i = 0; i < NumLayers; i++)
             Layers[i] = new ParakeetConformerLayer(this, $"encoder.layers.{i}", ConvKernel);
     }
 
-    private int GetInt(string key, int fallback) =>
+    internal int GetInt(string key, int fallback) =>
         Model.Metadata.TryGetValue(key, out var v) ? Convert.ToInt32(v) : fallback;
 
     /// <summary>Loads and dequantizes a required tensor by exact GGUF name to a flat float[] in file storage order.</summary>
@@ -142,9 +152,9 @@ public sealed class ParakeetConformerLayer
     public float[] NormFf1Weight { get; }
     public float[] NormFf1Bias { get; }
     public float[] Ff1Linear1Weight { get; }  // [d, ff]
-    public float[] Ff1Linear1Bias { get; }
+    public float[]? Ff1Linear1Bias { get; }
     public float[] Ff1Linear2Weight { get; }  // [ff, d]
-    public float[] Ff1Linear2Bias { get; }
+    public float[]? Ff1Linear2Bias { get; }
 
     public float[] NormAttnWeight { get; }
     public float[] NormAttnBias { get; }
@@ -163,19 +173,19 @@ public sealed class ParakeetConformerLayer
     public float[] NormConvWeight { get; }
     public float[] NormConvBias { get; }
     public float[] ConvPw1Weight { get; }   // [d, 2d]
-    public float[] ConvPw1Bias { get; }
+    public float[]? ConvPw1Bias { get; }
     /// <summary>Depthwise conv weight, BatchNorm-folded at load time (raw checkpoint ships unfused BN tensors -- see docs/audio-review-progress.md).</summary>
     public float[] ConvDwWeight { get; }    // [K, d]
     public float[] ConvDwBias { get; }
     public float[] ConvPw2Weight { get; }   // [d, d]
-    public float[] ConvPw2Bias { get; }
+    public float[]? ConvPw2Bias { get; }
 
     public float[] NormFf2Weight { get; }
     public float[] NormFf2Bias { get; }
     public float[] Ff2Linear1Weight { get; }
-    public float[] Ff2Linear1Bias { get; }
+    public float[]? Ff2Linear1Bias { get; }
     public float[] Ff2Linear2Weight { get; }
-    public float[] Ff2Linear2Bias { get; }
+    public float[]? Ff2Linear2Bias { get; }
 
     public float[] NormOutWeight { get; }
     public float[] NormOutBias { get; }
@@ -185,9 +195,9 @@ public sealed class ParakeetConformerLayer
         NormFf1Weight = w.GetTensor($"{prefix}.norm_ff1.weight");
         NormFf1Bias = w.GetTensor($"{prefix}.norm_ff1.bias");
         Ff1Linear1Weight = w.GetTensor($"{prefix}.ff1.linear1.weight");
-        Ff1Linear1Bias = w.GetTensor($"{prefix}.ff1.linear1.bias");
+        Ff1Linear1Bias = w.TryGetTensor($"{prefix}.ff1.linear1.bias");
         Ff1Linear2Weight = w.GetTensor($"{prefix}.ff1.linear2.weight");
-        Ff1Linear2Bias = w.GetTensor($"{prefix}.ff1.linear2.bias");
+        Ff1Linear2Bias = w.TryGetTensor($"{prefix}.ff1.linear2.bias");
 
         NormAttnWeight = w.GetTensor($"{prefix}.norm_attn.weight");
         NormAttnBias = w.GetTensor($"{prefix}.norm_attn.bias");
@@ -206,9 +216,9 @@ public sealed class ParakeetConformerLayer
         NormConvWeight = w.GetTensor($"{prefix}.norm_conv.weight");
         NormConvBias = w.GetTensor($"{prefix}.norm_conv.bias");
         ConvPw1Weight = w.GetTensor($"{prefix}.conv.pw1.weight");
-        ConvPw1Bias = w.GetTensor($"{prefix}.conv.pw1.bias");
+        ConvPw1Bias = w.TryGetTensor($"{prefix}.conv.pw1.bias");
         ConvPw2Weight = w.GetTensor($"{prefix}.conv.pw2.weight");
-        ConvPw2Bias = w.GetTensor($"{prefix}.conv.pw2.bias");
+        ConvPw2Bias = w.TryGetTensor($"{prefix}.conv.pw2.bias");
 
         var dwWeightRaw = w.GetTensor($"{prefix}.conv.dw.weight");  // [K, 1, d] storage order
         var dwBiasRaw = w.GetTensor($"{prefix}.conv.dw.bias");
@@ -221,9 +231,9 @@ public sealed class ParakeetConformerLayer
         NormFf2Weight = w.GetTensor($"{prefix}.norm_ff2.weight");
         NormFf2Bias = w.GetTensor($"{prefix}.norm_ff2.bias");
         Ff2Linear1Weight = w.GetTensor($"{prefix}.ff2.linear1.weight");
-        Ff2Linear1Bias = w.GetTensor($"{prefix}.ff2.linear1.bias");
+        Ff2Linear1Bias = w.TryGetTensor($"{prefix}.ff2.linear1.bias");
         Ff2Linear2Weight = w.GetTensor($"{prefix}.ff2.linear2.weight");
-        Ff2Linear2Bias = w.GetTensor($"{prefix}.ff2.linear2.bias");
+        Ff2Linear2Bias = w.TryGetTensor($"{prefix}.ff2.linear2.bias");
 
         NormOutWeight = w.GetTensor($"{prefix}.norm_out.weight");
         NormOutBias = w.GetTensor($"{prefix}.norm_out.bias");
@@ -258,5 +268,60 @@ public sealed class ParakeetConformerLayer
             foldedBias[c] = s[c] * dwBias[c] - bnMean[c] * s[c] + bnBias[c];
 
         return (foldedWeight, foldedBias);
+    }
+}
+
+/// <summary>
+/// TDT transducer head: a 2-layer LSTM prediction network over the last emitted token and a joint network
+/// <c>out(relu(enc_proj(enc_t) + pred_proj(g)))</c> whose logits are [vocab + blank | durations]
+/// (CrispASR src/parakeet.cpp, NeMo RNNTJoint with ReLU). Weights are row-major [out, in].
+/// </summary>
+public sealed class ParakeetTdtWeights
+{
+    public int PredHidden { get; }
+    public int JointHidden { get; }
+    public int PredLayers { get; }
+    public int[] Durations { get; }
+
+    public float[] Embed { get; }                 // [vocab + 1, PredHidden]; the blank row is the SOS input
+    public float[][] LstmWih { get; }             // per layer [4 * PredHidden, in], gate order i, f, g, o
+    public float[][] LstmWhh { get; }             // per layer [4 * PredHidden, PredHidden]
+    public float[][] LstmBih { get; }
+    public float[][] LstmBhh { get; }
+    public float[] JointEncWeight { get; }        // [JointHidden, d_model]
+    public float[] JointEncBias { get; }
+    public float[] JointPredWeight { get; }       // [JointHidden, PredHidden]
+    public float[] JointPredBias { get; }
+    public float[] JointOutWeight { get; }        // [vocab + 1 + durations, JointHidden]
+    public float[] JointOutBias { get; }
+    public int OutputDim => JointOutBias.Length;
+
+    internal ParakeetTdtWeights(ParakeetWeights w, string prefix)
+    {
+        PredHidden = w.GetInt($"{prefix}.pred_hidden", 640);
+        JointHidden = w.GetInt($"{prefix}.joint_hidden", 640);
+        PredLayers = w.GetInt($"{prefix}.pred_layers", 2);
+        Durations = w.Model.Metadata.TryGetValue($"{prefix}.tdt_durations", out var dv) && dv is System.Collections.IEnumerable e
+            ? e.Cast<object>().Select(Convert.ToInt32).ToArray()
+            : [0, 1, 2, 3, 4];
+
+        Embed = w.GetTensor("decoder.embed.weight");
+        LstmWih = new float[PredLayers][];
+        LstmWhh = new float[PredLayers][];
+        LstmBih = new float[PredLayers][];
+        LstmBhh = new float[PredLayers][];
+        for (int l = 0; l < PredLayers; l++)
+        {
+            LstmWih[l] = w.GetTensor($"decoder.lstm.{l}.w_ih");
+            LstmWhh[l] = w.GetTensor($"decoder.lstm.{l}.w_hh");
+            LstmBih[l] = w.GetTensor($"decoder.lstm.{l}.b_ih");
+            LstmBhh[l] = w.GetTensor($"decoder.lstm.{l}.b_hh");
+        }
+        JointEncWeight = w.GetTensor("joint.enc.weight");
+        JointEncBias = w.GetTensor("joint.enc.bias");
+        JointPredWeight = w.GetTensor("joint.pred.weight");
+        JointPredBias = w.GetTensor("joint.pred.bias");
+        JointOutWeight = w.GetTensor("joint.out.weight");
+        JointOutBias = w.GetTensor("joint.out.bias");
     }
 }

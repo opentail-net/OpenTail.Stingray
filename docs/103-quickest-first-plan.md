@@ -144,7 +144,7 @@ Timebox each at half a day, write down what was learned, and move on if blocked.
 ### 14. Qwen3-VL, Parakeet TDT, ACE-Step parity, CPU-only vision features
 - [ ] **14. Architectural additions & missing features**
   - [x] **Qwen3-VL:** Implement IMROPE plus `qwen3vl` architecture support. DONE 2026-09-27 on CPU (see Log).
-  - [ ] **Parakeet TDT:** Implement the decode head.
+  - [x] **Parakeet TDT:** Implement the decode head. DONE 2026-09-27 (see Log).
   - [ ] **ACE-Step 1.5 Turbo:** Validate numeric parity and add STATUS row.
   - [ ] **CPU-only vision features:** Port 2D M-RoPE image positions and deepstack to GPU/CUDA forward passes.
 
@@ -299,3 +299,15 @@ Timebox each at half a day, write down what was learned, and move on if blocked.
     End to end on `test-1.jpeg`: same answer as `llama-mtmd-cli` except one capitalisation token. RUNNING row
     added (2.7 GB, decode 18.9 tok/s).
   - Remaining for the "CPU-only vision features" sub-item: M-RoPE image positions and deepstack on CUDA/Vulkan.
+- 2026-09-27: item 14, Parakeet TDT done.
+  - `ParakeetTdtDecoder`: port of CrispASR `parakeet_tdt_decode` (the reference for these CrispASR-format GGUFs).
+  - Loader: `parakeet.*` metadata, optional CTC head and linear biases, TDT weights; mel count from the shipped
+    filterbank (128 for TDT v2; it was fixed at 80).
+  - Evidence: `Tdt06bV2_LibriSpeech_MatchesCrispAsr` 4/4 clips identical to `crispasr --gpu-backend cpu` on the same
+    q4_k file (8.2 s). CTC unchanged: `ParakeetLibriSpeechTests` CTC q4_k and f16 pass (26 s), heavy
+    `ParakeetConformerEncoderTests` 3/3.
+  - `stingray stt -m parakeet` added. Measured 3.9x real time, 2.8 GB; CrispASR is 2.2x faster. Logged in
+    `bugstofix.md` (weights expanded to F32).
+  - Also logged in `bugstofix.md`: M-RoPE image positions and deepstack are CPU only (Qwen-VL family on GPU).
+  - Side fix: `stingray pull -q` now prefers an exact file name and skips `mmproj-*` unless asked, and treats
+    HTTP 416 on an existing file as complete (both hit while fetching Qwen3-VL).

@@ -21,7 +21,7 @@ public sealed class SttCommand : Command<SttCommand.Settings>
         public string Task { get; init; } = "transcribe";
 
         [CommandOption("-m|--model <VARIANT>")]
-        [Description("Whisper model architecture preset: tiny (default), base, small, medium, large-v3, or turbo; or voxtral; or sensevoice / paraformer (ONNX, pass the .onnx with --model-file; its tokens file is found next to it).")]
+        [Description("Whisper model architecture preset: tiny (default), base, small, medium, large-v3, or turbo; or voxtral; or sensevoice / paraformer (ONNX, pass the .onnx with --model-file; its tokens file is found next to it); or parakeet (GGUF via --model-file: TDT or CTC, default parakeet-tdt-0.6b-v2-q4_k.gguf).")]
         public string Model { get; init; } = "tiny";
 
         [CommandOption("--model-file <PATH>")]
@@ -96,6 +96,19 @@ public sealed class SttCommand : Command<SttCommand.Settings>
                 pipeline = OpenTail.Stingray.Audio.ParaformerOnnx.ParaformerOnnxPipeline.Load(onnx, tokens);
                 modelTitle = "FunASR Paraformer (ONNX) Speech-to-Text";
             }
+        }
+        else if (variant == "parakeet")
+        {
+            string? gguf = s.ModelFile
+                ?? FindModelsFile(Path.Combine("parakeet-tdt-0.6b-v2", "parakeet-tdt-0.6b-v2-q4_k.gguf"))
+                ?? FindModelsFile("parakeet-tdt-0.6b-v2-q4_k.gguf");
+            if (gguf is null || !File.Exists(gguf))
+            {
+                Console.Error.WriteLine("Error: Parakeet GGUF not found. Pass --model-file <path-to-parakeet-*.gguf> (TDT or CTC).");
+                return 1;
+            }
+            pipeline = OpenTail.Stingray.Audio.Parakeet.ParakeetPipeline.Load(gguf);
+            modelTitle = $"NVIDIA Parakeet ({Path.GetFileNameWithoutExtension(gguf)}) Speech-to-Text";
         }
         else if (variant.Contains("voxtral"))
         {

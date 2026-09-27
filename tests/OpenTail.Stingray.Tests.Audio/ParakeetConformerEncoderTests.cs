@@ -67,6 +67,7 @@ public sealed class ParakeetConformerEncoderTests : HeavyTestBase
 
         Assert.True(tEnc > 0);
         Assert.Equal(tEnc, hidden.Length);
+        Assert.NotNull(ctcLogits);
         Assert.Equal(tEnc, ctcLogits.Length);
 
         foreach (var row in hidden)

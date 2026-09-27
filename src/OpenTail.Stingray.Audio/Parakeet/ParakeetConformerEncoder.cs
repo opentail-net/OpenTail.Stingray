@@ -18,7 +18,7 @@ public static class ParakeetConformerEncoder
     /// as produced by <see cref="ParakeetMelExtractor"/>. Returns per-frame encoder hidden
     /// states [TEnc][HiddenDim] and CTC logits [TEnc][VocabSize+1].
     /// </summary>
-    public static (float[][] Hidden, float[][] CtcLogits, int TEnc) Forward(ParakeetWeights w, float[] mel, int tMel)
+    public static (float[][] Hidden, float[][]? CtcLogits, int TEnc) Forward(ParakeetWeights w, float[] mel, int tMel)
     {
         var (sub, tEnc) = Subsample(w, mel, tMel);
 
@@ -28,6 +28,7 @@ public static class ParakeetConformerEncoder
         foreach (var layer in w.Layers)
             x = ConformerBlock(w, layer, x, posEnc, tEnc);
 
+        if (w.CtcWeight is null) return (x, null, tEnc);
         var logits = new float[tEnc][];
         for (int t = 0; t < tEnc; t++)
             logits[t] = Linear(x[t], w.CtcWeight, w.CtcBias, w.HiddenDim, w.VocabSize + 1);

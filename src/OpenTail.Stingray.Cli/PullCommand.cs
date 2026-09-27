@@ -172,7 +172,18 @@ public sealed class PullCommand : Command<PullCommand.Settings>
     {
         IEnumerable<(string Name, long? Size)> candidates = files;
         if (!string.IsNullOrEmpty(quantHint))
-            candidates = files.Where(f => f.Name.Contains(quantHint, StringComparison.OrdinalIgnoreCase));
+        {
+            // An exact file name wins. Otherwise a hint that does not ask for a projector skips mmproj-* files: the
+            // projector's name usually contains the model's, so "Qwen3VL-2B-Instruct-Q8_0" also matched
+            // "mmproj-Qwen3VL-2B-Instruct-Q8_0.gguf" and picked it (sorted first) instead of the model.
+            var exact = files.Where(f => f.Name.Equals(quantHint, StringComparison.OrdinalIgnoreCase)
+                                         || f.Name.Equals(quantHint + ".gguf", StringComparison.OrdinalIgnoreCase)).ToList();
+            var matching = files.Where(f => f.Name.Contains(quantHint, StringComparison.OrdinalIgnoreCase)).ToList();
+            var nonProjector = matching.Where(f => !f.Name.StartsWith("mmproj", StringComparison.OrdinalIgnoreCase)).ToList();
+            candidates = exact.Count > 0 ? exact
+                : !quantHint.Contains("mmproj", StringComparison.OrdinalIgnoreCase) && nonProjector.Count > 0 ? nonProjector
+                : matching;
+        }
         else if (files.Count > 1)
         {
             foreach (string preferred in s_preferredQuantOrder)
@@ -223,6 +234,13 @@ public sealed class PullCommand : Command<PullCommand.Settings>
             request.Headers.Range = new System.Net.Http.Headers.RangeHeaderValue(existing, null);
 
         using var response = http.Send(request, HttpCompletionOption.ResponseHeadersRead, ct);
+        // 416 on a Range request from the end of an existing file: nothing left to fetch. The listing gives no sizes
+        // for some repos, so the size check above cannot catch a complete file.
+        if (existing > 0 && response.StatusCode == System.Net.HttpStatusCode.RequestedRangeNotSatisfiable)
+        {
+            AnsiConsole.MarkupLine("  [dim]already complete, skipping[/]");
+            return;
+        }
         bool resumed = existing > 0 && response.StatusCode == System.Net.HttpStatusCode.PartialContent;
         if (existing > 0 && !resumed)
             existing = 0; // Server ignored the Range request; restart from scratch.

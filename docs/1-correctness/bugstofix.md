@@ -107,6 +107,17 @@ restart a fourth round of kernel-level chasing on this checkpoint without new ev
     context; the attention layers' K/V storage precision (llama.cpp's default F16 KV cache vs
     ours); the dump's resolution hides where the error starts. A full-precision dump (tensor
     binary output, not the printed summary) is needed to go further.
+- [ ] **Parakeet (CTC and TDT) expands every weight to F32** (logged 2026-09-27, docs/103 item 14).
+  - `ParakeetWeights.GetTensor` dequantizes the whole checkpoint at load: the 378 MB q4_k TDT file takes 2.8 GB of RAM.
+  - Speed: 14.2 s of speech in 3.6 s (3.9x real time) vs CrispASR 1.66 s (8.6x) on the same file and machine.
+  - Fix: keep weights quantized and use the quantized matvec kernels (as the text engine does); the TDT joint could
+    also batch frames between emissions like CrispASR's `parakeet_tdt_decode_batched`. Belongs with docs/103 item 15.
+- [ ] **Qwen3-VL / Qwen2.5-VL / PaddleOCR image input is CPU only** (logged 2026-09-27, docs/103 item 14).
+  - M-RoPE image positions (`ForwardPass.AddMRopeImage`, IMROPE for qwen3vl) and deepstack slices are applied in the
+    CPU `ForwardPass` only. The CUDA and Vulkan forward passes would rotate image tokens with 1D positions and skip
+    deepstack, so their image answers would be wrong. Text-only use on GPU is fine (text positions are 1D).
+  - Also: the GPU rope tables for `qwen3vl` do not zero pairs 61-62 (the IMROPE 4th component), which the CPU table
+    now does; that needs checking before GPU text use of `qwen3vl` is called verified.
 - [ ] **Dequantize.cs / IqCodebooks.cs coverage gap**: Port `iq1s_grid` (NGRID_IQ1S=2048) and decoders for `IQ1_S`/`IQ1_M` (`IQ1S_DELTA=0.125f`, distinct sign/shift scheme) and `IQ2_XS`/`IQ2_S` when needed by future GGUF models.
 - [ ] **ModelCompatibility.cs / Kernels missing op coverage** (2026-09-27: the Mamba-2 `SSM_SCAN`/`SSM_CONV` path is now implemented on CPU in `ForwardPass.Mamba2.cs` for Granite 4.0-H / Nemotron-H; Mamba-1 and GPU remain): Implement `GGML_OP_SSM_SCAN` (the selective-scan recurrence, distinct from `SSM_CONV`), `RWKV_WKV6`/`RWKV_WKV7`, and DeepSeek-V4 ops (`LIGHTNING_INDEXER`, `DSV4_HC_*`, `SOLVE_TRI`, `WIN_PART`/`WIN_UNPART`).
 - [ ] **SpeculativeDecoder.cs StepSampled/PLD bugs**: Confirmed real defect in speculative decode step sampling; currently unreachable/latent as no wired call path exercises it yet.

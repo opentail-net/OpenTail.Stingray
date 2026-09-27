@@ -100,7 +100,7 @@ text model wants 4096), Llama 4 vision (93 GB), MobileNetV5 (no checkpoint decla
    [2-coverage/064-acestep-implementation-plan.md](2-coverage/064-acestep-implementation-plan.md).
 6. **Qwen3.5 MoE / Gated DeltaNet**: GDN state-lifecycle conformance tests (incl. retained
    sessions), then a benchmark. [2-coverage/02-qwen35moe-plan.md](2-coverage/02-qwen35moe-plan.md).
-7. **Parakeet TDT decode head** (only CTC exists).
+7. ~~**Parakeet TDT decode head**~~: done 2026-09-27 (`ParakeetTdtDecoder`, matches CrispASR on 4/4 LibriSpeech clips).
 8. **ONNX pipelines**: SenseVoice and ONNX Paraformer work but are not wired into `stingray stt`;
     now that several ONNX pipelines exist, see whether a shared shape is worth extracting.
 9. **Gemma 1 / Gemma 2**: no `ModelGraph` branch at all (no local checkpoint to verify with).
