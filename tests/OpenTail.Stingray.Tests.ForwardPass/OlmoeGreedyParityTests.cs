@@ -8,7 +8,7 @@ namespace OpenTail.Stingray.Tests.ForwardPass;
 /// <para><b>Why this test exists.</b> `olmoe` was absent from the allowlist while the codebase
 /// plainly implements it: <c>ModelGraph</c> carries its <c>norm_topk_prob=false</c> router
 /// behaviour, the CUDA and Vulkan backends document its per-channel QK-norm shape, and
-/// `docs/cpu-performance-baseline.md` has a measured CPU baseline for it. It ran on the CLI (which
+/// `docs/done/cpu-performance-baseline.md` has a measured CPU baseline for it. It ran on the CLI (which
 /// applied no gate) and was refused by the server (which did). The gate now runs everywhere, so the
 /// architecture needed either a receipt or an explicit reason to stay out. This is the receipt.</para>
 ///
@@ -200,7 +200,7 @@ public sealed class OlmoeGreedyParityTests : HeavyTestBase
         // and a differently quantised matmul reorders a distribution that flat. The evidence that
         // the architecture is nonetheless correct is aggregate, not token-wise — wikitext
         // perplexity at a matched 2048-token context is 7.3889 here against llama.cpp's 7.4868.
-        // See docs/01-gguf-model-coverage-plan.md §1b for why `olmoe` was admitted on that basis.
+        // See docs/done/01-gguf-model-coverage-plan.md §1b for why `olmoe` was admitted on that basis.
         //
         // Two tokens is a deliberately modest claim, but it is a true one, and it is the part of
         // the reference this implementation genuinely reproduces. Asserting the full 24 would mean

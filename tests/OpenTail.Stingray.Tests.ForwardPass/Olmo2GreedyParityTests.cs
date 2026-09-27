@@ -6,7 +6,7 @@ namespace OpenTail.Stingray.Tests.ForwardPass;
 /// <see cref="ModelCompatibility"/>'s architecture allowlist.
 ///
 /// <para><b>The plan doc's original premise for this architecture was wrong, and this receipt is
-/// also the correction.</b> <c>docs/01-gguf-model-coverage-plan.md</c> §1c originally speculated
+/// also the correction.</b> <c>docs/done/01-gguf-model-coverage-plan.md</c> §1c originally speculated
 /// "olmoe, olmo2 — gate-only, code exists" — explicitly caveated there as "a hypothesis, not a
 /// finding." Checked directly against
 /// <c>examples/llama.cpp/llama.cpp/src/models/olmo2.cpp</c> before writing any code: OLMo2 is a

@@ -4,7 +4,7 @@ using OpenTail.Stingray.Vulkan;
 namespace OpenTail.Stingray.Tests.Diffusion;
 
 /// <summary>
-/// Stage 0 of docs/067-sdxl-unet-gpu-residency-plan.md: proves the actual mechanism the whole
+/// Stage 0 of docs/done/067-sdxl-unet-gpu-residency-plan.md: proves the actual mechanism the whole
 /// residency rewrite depends on, before writing any SDXL-specific code. Question: can a GPU
 /// tensor produced by one dispatch be consumed directly by a second, dependent dispatch recorded
 /// into the SAME `BeginRecord()`/`EndRecordAndSubmit()` session, with NO `Upload`/`Download` call

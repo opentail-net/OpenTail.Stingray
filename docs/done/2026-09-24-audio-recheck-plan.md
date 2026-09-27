@@ -117,4 +117,4 @@ dated and sourced findings. Commit per engine.
 
 **Open after the re-check:** CosyVoice2 LLM token drift (🟡, bisected to LLM generation); Stable Audio SFX darker + CFG-1 divergence (🟡); MeloTTS English intelligibility (zh_en checkpoint); Parakeet ~3% WER; RVC ~2.4× and VibeVoice ~1.3-1.4× behind their references. A one-process heavy sweep needs one class per process (44.9 GB otherwise).
 
-**Queued next (after Phase 3):** [`docs/done/2026-09-25-encoder-embedding-reranker-plan.md`](done/2026-09-25-encoder-embedding-reranker-plan.md), covering the BERT/XLM-R/MPNet/Nomic encoders, the rerankers, and the HF-safetensors decoder loading.
+**Queued next (after Phase 3):** [`docs/done/2026-09-25-encoder-embedding-reranker-plan.md`](../done/2026-09-25-encoder-embedding-reranker-plan.md), covering the BERT/XLM-R/MPNet/Nomic encoders, the rerankers, and the HF-safetensors decoder loading.

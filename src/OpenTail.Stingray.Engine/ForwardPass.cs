@@ -1500,7 +1500,7 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
         // CPU baseline) once that path started auto-engaging merely because libopenblas.dll was
         // present on disk. Checked first for that reason: BLAS availability is not evidence BLAS
         // is faster than this kernel for the same tensor, so it must not win the race by ordering
-        // alone. See docs/cpu-performance-baseline.md.
+        // alone. See docs/done/cpu-performance-baseline.md.
         //
         // Deliberately NOT gated on a minimum N. An "N >= 8" gate looks harmless — below it there
         // is no token amortisation to pair with the row amortisation — but it is a NUMERICS

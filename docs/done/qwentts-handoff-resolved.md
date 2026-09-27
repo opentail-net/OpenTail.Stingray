@@ -1,12 +1,12 @@
 # Archived: QwenTTS portion of the QwenTTS/CosyVoice3 handoff
 
-This is the QwenTTS half of `docs/qwentts-cosyvoice3-handoff.md`, archived 2026-08-31 because
+This is the QwenTTS half of `docs/done/qwentts-cosyvoice3-handoff.md`, archived 2026-08-31 because
 QwenTTS is now fixed and re-enabled: commit `05a4152` ("Fix QwenTTS's Talker/Code Predictor: same
 missing-tensor-source bug as CosyVoice2/3, re-enable engine") found and fixed the real root cause
 — the same missing-tensor-source defect class also affecting CosyVoice2/3 — closing the "golden
 verified, precisely localized, no fix found" blocker this doc describes below. The CosyVoice3
 portion of the original handoff remains active; see
-[../qwentts-cosyvoice3-handoff.md](../qwentts-cosyvoice3-handoff.md).
+[../qwentts-cosyvoice3-handoff.md](qwentts-cosyvoice3-handoff.md).
 
 The content below is preserved verbatim as it stood before the fix, for investigation history.
 

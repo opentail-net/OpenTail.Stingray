@@ -18,7 +18,7 @@ for what's still active.
 supplies the model's own split cascade and our merge loop does the encode. Token IDs for Qwen and
 the StarCoder/SmolLM family **change** as a result — they were wrong before, and are now
 llama.cpp-identical on every probe measured. Anything that cached token IDs or a prompt-hash across
-this change should be invalidated. See [../01-gguf-model-coverage-plan.md](../01-gguf-model-coverage-plan.md) §3.
+this change should be invalidated. See [../01-gguf-model-coverage-plan.md](01-gguf-model-coverage-plan.md) §3.
 
 **Open question — greedy decode is not bit-deterministic under CPU contention.**
 `HotSessionGreedyReplayTests.HotSession_MultiTurn_MatchesFullGreedyReplay_OnRealModel` failed once on
@@ -65,7 +65,7 @@ policy above for the same reason.
   what that claim got wrong.
 - `olmo2` remains OUT — no fixture, no receipt.
 
-See [../01-gguf-model-coverage-plan.md](../01-gguf-model-coverage-plan.md) §1b.
+See [../01-gguf-model-coverage-plan.md](01-gguf-model-coverage-plan.md) §1b.
 
 **ARCHITECTURE ADMITTED — `granite`, 2026-08-08, full 24-token exact greedy match.**
 
@@ -85,11 +85,11 @@ See [../01-gguf-model-coverage-plan.md](../01-gguf-model-coverage-plan.md) §1b.
   today silently skips the scale trio and produces wrong output — same category of gap as OLMoE's
   CUDA/Vulkan QK-norm fix, tracked the same way.
 
-See [../01-gguf-model-coverage-plan.md](../01-gguf-model-coverage-plan.md) §1d.
+See [../01-gguf-model-coverage-plan.md](01-gguf-model-coverage-plan.md) §1d.
 
 **ARCHITECTURE ADMITTED — `smollm3`, 2026-08-08, full 24-token exact greedy match.** One twist over
 the plain llama trunk (NoPE every 4th layer, reusing Llama-4's existing gate expression). See
-[../01-gguf-model-coverage-plan.md](../01-gguf-model-coverage-plan.md) §1e.
+[../01-gguf-model-coverage-plan.md](01-gguf-model-coverage-plan.md) §1e.
 
 **ARCHITECTURE ADMITTED — `apertus`, 2026-08-08, 11-token exact prefix (one full sentence), first
 new-kernel architecture built this session.** Non-gated FFN (no `ffn_gate` tensor) with xIELU
@@ -98,7 +98,7 @@ xIELU's GGUF-stored parameters are pre-softplus and need a transform that lives 
 `ggml_xielu()` wrapper, not its compute kernel (missing it produced fluent-looking garbage, not an
 error); and `PrefillCore`/`DenseFfn`'s non-gated branches disagreed by 3.3 logits at default Q8
 settings (same known int8-prefill approximation as OLMoE, amplified by xIELU's quadratic term).
-See [../01-gguf-model-coverage-plan.md](../01-gguf-model-coverage-plan.md) §1g.
+See [../01-gguf-model-coverage-plan.md](01-gguf-model-coverage-plan.md) §1g.
 
 **ARCHITECTURE ADMITTED — `gptneox`, 2026-08-09, 22-of-24-token exact match, second new-kernel
 architecture built this session.** LayerNorm-with-bias (not RMSNorm), a non-gated biased-GELU FFN,
@@ -113,7 +113,7 @@ disagreed by 261.6 on raw logit magnitude — fixed, now agrees near-exactly. Th
 from-scratch review after an earlier attempt's work was lost from `src/` mid-session by an unrelated
 out-of-band edit; the rebuild independently re-verified every claim against the real llama.cpp
 source rather than trusting the lost attempt's own (also since found to be inaccurate) writeup. See
-[../01-gguf-model-coverage-plan.md](../01-gguf-model-coverage-plan.md) §1h.
+[../01-gguf-model-coverage-plan.md](01-gguf-model-coverage-plan.md) §1h.
 
 **ARCHITECTURE ADMITTED — `falcon`, 2026-08-09, full 10-of-10-token exact match including EOS.**
 Reuses every `gptneox` mechanism unchanged (LayerNorm-with-bias, non-gated GELU FFN, fused
@@ -129,7 +129,7 @@ checkpoint on this profile with MQA (71 query heads, 1 shared KV head) — worke
 existing GQA-parametrized fused-QKV split. Full 1368-test suite regression not re-run for this
 smaller, narrower-scope change (targeted OLMoE/PrefillAttentionParityTests/Repro_Pos13Parity/
 Granite/GptNeox classes instead, all clean) — see
-[../01-gguf-model-coverage-plan.md](../01-gguf-model-coverage-plan.md) §1i.
+[../01-gguf-model-coverage-plan.md](01-gguf-model-coverage-plan.md) §1i.
 
 **ARCHITECTURE ADMITTED — `olmo2`, 2026-08-09, full 24-of-24-token exact match.** §1c's premise for
 this one was wrong — it was listed "gate-only, code exists" alongside `olmoe`; checked directly
@@ -146,7 +146,7 @@ test, not by a failing assertion: `PrefillCore`'s batched loop has no post-norm 
 `PrefillCore`) — fixed by widening `PrefillDispatch`'s existing per-layer-head-dim sequential
 fallback to cover any post-norm model. Targeted regression included `Gemma4CpuForwardPassTests`
 specifically (the code path most directly touched by the `ModelGraph.cs` refactor) — clean. See
-[../01-gguf-model-coverage-plan.md](../01-gguf-model-coverage-plan.md) §1j.
+[../01-gguf-model-coverage-plan.md](01-gguf-model-coverage-plan.md) §1j.
 
 **License policy changed, 2026-08-09 (operator decision): architecture code and checkpoint license
 are now separate concerns.** The gate itself is a string check against a GGUF's self-declared
@@ -159,7 +159,7 @@ verification evidence instead lives as a comment on the `ModelCompatibility` all
 a plan-doc section, explicitly flagged "no automated test, licence reason" with a "don't modify
 without good reason" warning (there's no regression net for that specific profile — a shared-code
 change could silently break it and nothing in CI would notice). Full policy:
-[../01-gguf-model-coverage-plan.md](../01-gguf-model-coverage-plan.md), "License policy: code vs.
+[../01-gguf-model-coverage-plan.md](01-gguf-model-coverage-plan.md), "License policy: code vs.
 checkpoint" (below the standing evidence rule).
 
 **ARCHITECTURE ADMITTED — `exaone`, 2026-08-09, full 24-of-24-token exact match — first bucket-2
@@ -170,7 +170,7 @@ already in `isNeoxRope`. The one thing worth checking: this checkpoint's top-lev
 (built for Gemma 4, detected by tensor name/shape, not architecture-gated) — zero new code needed.
 No test persists in the tree; the verification evidence (prompt tokens, reference continuation) is
 recorded as a comment on the `"exaone"` allowlist entry in `ModelCompatibility.cs` and in
-[../01-gguf-model-coverage-plan.md](../01-gguf-model-coverage-plan.md) §1k.
+[../01-gguf-model-coverage-plan.md](01-gguf-model-coverage-plan.md) §1k.
 
 **`internlm2` re-checked 2026-08-09, still NOT admitted — turned out to be blocked on the TOKENIZER
 axis, not architecture or license.** The 2026-08-08 assessment said "already fully supported, zero
@@ -191,7 +191,7 @@ residual — `starcoder2` was the first. Symptom was unambiguous: the engine's o
 disagreed with EACH OTHER (maxDiff 30.4, argmax mismatch), not just with llama.cpp — a structural-bug
 signature, not numerical noise. Fixed, regression-checked, clean. No test persists (BigCode
 OpenRAIL-M license); evidence recorded on the `"starcoder2"` allowlist entry and in
-[../01-gguf-model-coverage-plan.md](../01-gguf-model-coverage-plan.md) §1l.
+[../01-gguf-model-coverage-plan.md](01-gguf-model-coverage-plan.md) §1l.
 
 **`mistral` (classic Mistral-7B/Mixtral family) confirmed already fully covered, 2026-08-09 — zero
 new work.** These checkpoints declare `general.architecture: llama`, already admitted. The newer
@@ -213,7 +213,7 @@ fallback to cover any SWA model without per-layer head dims, reusing `RunTrunk`'
 `Attention()` windowing instead of teaching `PrefillCore` SWA masking. `logit_scale` also uses the
 OPPOSITE convention from Granite's (direct multiply, not reciprocal). No test persists (CC-BY-NC-4.0
 license); evidence recorded on the `"cohere2"` allowlist entry and in
-[../01-gguf-model-coverage-plan.md](../01-gguf-model-coverage-plan.md) §1m.
+[../01-gguf-model-coverage-plan.md](01-gguf-model-coverage-plan.md) §1m.
 
 **`ernie4_5` (dense) assessed 2026-08-09 — architecturally trivial AND genuinely Apache-2.0
 (bucket-1, not even bucket-2!), but blocked on the SAME Unigram-LM tokenizer gap as `minicpm`/
@@ -244,7 +244,7 @@ kernel. Also caught a wrong checkpoint first try (`glm-4-9b-chat-GGUF` declares 
 architecture, not `glm4`) before it wasted the receipt. Unlike every other new-kernel receipt this
 session, the parity test PERSISTS (`Glm4GreedyParityTests.cs`) since the checkpoint used
 (`THUDM/GLM-4-9B-0414`) is genuinely MIT, not registration-gated like the original GLM-4-9B-Chat
-family. See [../01-gguf-model-coverage-plan.md](../01-gguf-model-coverage-plan.md) §1n.
+family. See [../01-gguf-model-coverage-plan.md](01-gguf-model-coverage-plan.md) §1n.
 
 **Architecture queue swept for remaining candidates, 2026-08-09 — checkpoint license findings from
 before the policy change still stand as fact for the checkpoints they were about, just no longer as
@@ -262,7 +262,7 @@ sinks (a real numerical addition to the softmax), alternating sliding-window att
 expert tensors, and an OpenAI-specific SwiGLU/gating variant (five real additions, not the "MXFP4
 already dequantizes" framing implied); bitnet needs Sub-LN (an extra norm INSIDE each sublayer) AND
 a genuinely new ternary packed-weight format, two independent blockers. See
-[../01-gguf-model-coverage-plan.md](../01-gguf-model-coverage-plan.md) §1c item 6 for the full findings.
+[../01-gguf-model-coverage-plan.md](01-gguf-model-coverage-plan.md) §1c item 6 for the full findings.
 Remaining queue: `mamba`/`jamba`/`rwkv` (recurrent, a different forward-pass family entirely —
 biggest lift of anything in the plan) and re-checking `bitnet`'s own license (not yet done).
 
@@ -290,7 +290,7 @@ genuinely is consulted) would have silently taken the wrong branch — fixed by 
 `UseParallelResidual` from `blk.0.ffn_norm.weight` tensor presence for `stablelm` specifically.
 Bucket-2 (Stability AI "other" license, non-commercial/gated) — no persisted test; evidence
 recorded on the `"stablelm"` allowlist entry and in
-[../01-gguf-model-coverage-plan.md](../01-gguf-model-coverage-plan.md) §1o.
+[../01-gguf-model-coverage-plan.md](01-gguf-model-coverage-plan.md) §1o.
 
 **ARCHITECTURE ADMITTED — `hunyuan-dense`, 2026-08-09, FULL 24-of-24-token exact greedy match
 (deterministic, on a degenerate un-templated-prompt reference), bucket-2.** The only family from the
@@ -317,7 +317,7 @@ SmolLM2 fixture], `ConstrainedAndUnconstrained_Coexist_PerSequenceMasking` passe
 [load-sensitive concurrency flake]) and `Tests.Core` (480 passes, 0 failures — the new pre-tokenizer
 cascade doesn't disturb any existing pre-type). Bucket-2 (Tencent Hunyuan Community License) — no persisted test; evidence
 recorded on the `"hunyuan-dense"` allowlist entry and in
-[../01-gguf-model-coverage-plan.md](../01-gguf-model-coverage-plan.md) §1p.
+[../01-gguf-model-coverage-plan.md](01-gguf-model-coverage-plan.md) §1p.
 
 **ARCHITECTURE ADMITTED — `gpt2`, 2026-08-09, FULL 22-of-22-token exact greedy match, bucket-1
 (genuinely MIT).** With the flagship-family list fully worked through, picked by scanning every
@@ -340,7 +340,7 @@ matched FULLY with no near-tie at all — confirming the quantization explanatio
 it. Checkpoint: `openai-community/gpt2` (124M), genuinely MIT (confirmed via the HF API's
 `cardData.license`). Permanent test (bucket-1) — `Gpt2GreedyParityTests.cs` — and evidence also
 recorded on the `"gpt2"` allowlist entry and in
-[../01-gguf-model-coverage-plan.md](../01-gguf-model-coverage-plan.md) §1q.
+[../01-gguf-model-coverage-plan.md](01-gguf-model-coverage-plan.md) §1q.
 
 **ARCHITECTURE ADMITTED — `granitemoe`, 2026-08-09, FULL 24-of-24-token exact greedy match,
 bucket-1, essentially a free admission.** `llama_model_granite_moe::graph` is a type alias for
@@ -354,7 +354,7 @@ already carries the reciprocal of the raw metadata value, momentarily forgotten)
 defect. Checkpoint: `ibm-granite/granite-3.0-1b-a400m-instruct` (1B total/400M active MoE),
 genuinely Apache-2.0. Permanent test (bucket-1) — `GraniteMoeGreedyParityTests.cs` — and evidence
 also recorded on the `"granitemoe"` allowlist entry and in
-[../01-gguf-model-coverage-plan.md](../01-gguf-model-coverage-plan.md) §1r.
+[../01-gguf-model-coverage-plan.md](01-gguf-model-coverage-plan.md) §1r.
 
 **ARCHITECTURE ADMITTED — `olmo` (v1), 2026-08-09, FULL 24-of-24-token exact greedy match on the
 first real attempt, bucket-1 (genuinely Apache-2.0, AI2).** Predecessor to the already-admitted
@@ -372,7 +372,7 @@ routed to the sequential path instead via a new `unweightedNormUnsupported` flag
 Everything else (plain MHA, standard RoPE, SiLU-gated FFN, tied embeddings) was already generic.
 Checkpoint: `allenai/OLMo-1B-hf` (1.25 GB Q8_0). Permanent test (bucket-1) —
 `OlmoGreedyParityTests.cs` — and evidence also recorded on the `"olmo"` allowlist entry and in
-[../01-gguf-model-coverage-plan.md](../01-gguf-model-coverage-plan.md) §1s.
+[../01-gguf-model-coverage-plan.md](01-gguf-model-coverage-plan.md) §1s.
 
 **ARCHITECTURE ADMITTED — `starcoder` (v1), 2026-08-09, FULL 23-of-23-token exact greedy match on
 the first real attempt, bucket-2, near-zero code change.** Noticed while building `gpt2` that
@@ -382,7 +382,7 @@ widening `gpt2`'s `NoRopeLayerStep=1` gate from a single-arch check to `arch is 
 "starcoder"`. Also exercises MQA (`head_count_kv=1`) through the already-generic fused-QKV split
 (first proven on `falcon`). Checkpoint: `bigcode/starcoderbase-1b` (BigCode OpenRAIL-M — restricted
 use, not permissive) — bucket-2, no persisted test; evidence recorded on the `"starcoder"`
-allowlist entry and in [../01-gguf-model-coverage-plan.md](../01-gguf-model-coverage-plan.md) §1t.
+allowlist entry and in [../01-gguf-model-coverage-plan.md](01-gguf-model-coverage-plan.md) §1t.
 
 **`xverse` TRIED and BLOCKED, 2026-08-09 — a genuine tokenizer-axis defect, NOT an architecture
 problem.** `xverse.cpp` is a literal plain-llama clone (zero new code needed), but the checkpoint's
@@ -394,7 +394,7 @@ same input. A THIRD distinct tokenizer-axis gap, separate from the Unigram-LM is
 `minicpm`/`internlm2`/`ernie4_5` — likely a smaller, more contained fix (an existing code path
 mishandling absent scores, not a whole unimplemented algorithm). Not investigated further per the
 standing architecture-first priority; GGUF deleted, allowlist entry reverted. See
-[../01-gguf-model-coverage-plan.md](../01-gguf-model-coverage-plan.md) for the full finding.
+[../01-gguf-model-coverage-plan.md](01-gguf-model-coverage-plan.md) for the full finding.
 
 **ARCHITECTURE ADMITTED — `codeshell`, 2026-08-09, FULL 24-of-24-token exact greedy match,
 bucket-2, genuinely zero new production code.** Same LayerNorm-with-bias/fused-QKV/non-gated-GELU-
@@ -405,7 +405,7 @@ failure along the way was a wrong test assertion (assumed NORM rope, codeshell i
 not an engine defect — same "test bug, not engine bug" pattern as `granitemoe`. Checkpoint:
 `WisdomShell/CodeShell-7B` (custom license, not permissive) — bucket-2, no persisted test; evidence
 recorded on the `"codeshell"` allowlist entry and in
-[../01-gguf-model-coverage-plan.md](../01-gguf-model-coverage-plan.md) §1u.
+[../01-gguf-model-coverage-plan.md](01-gguf-model-coverage-plan.md) §1u.
 
 **`baichuan`/`orion` CHECKED and BLOCKED, 2026-08-09 — same Unigram-LM tokenizer gap as
 `minicpm`/`internlm2`/`ernie4_5`.** Checked via an HTTP range-request partial download (first 8 MB
@@ -424,7 +424,7 @@ Llama-3's pattern with the trailing whitespace alternative replaced by a cascadi
 (512, 256, ..., 1), ported directly from `llama-vocab.cpp`. Checkpoint: `yoriis/JAIS2-IT-0.3` (a
 third-party fine-tune of the gated `inceptionai/Jais-2-8B-Chat`) — bucket-2, no persisted test;
 evidence recorded on the `"jais2"` allowlist entry and in
-[../01-gguf-model-coverage-plan.md](../01-gguf-model-coverage-plan.md) §1v.
+[../01-gguf-model-coverage-plan.md](01-gguf-model-coverage-plan.md) §1v.
 
 **ARCHITECTURE ADMITTED — `maincoder`, 2026-08-09, FULL 24-of-24-token exact greedy match,
 bucket-1, genuinely zero new code.** A literal Qwen3-shaped architecture — RMSNorm, biasless GQA
@@ -436,7 +436,7 @@ checkpoint existing — deprioritized in favor of `maincoder`'s much smaller lif
 1B checkpoint. Checkpoint: `Maincode/Maincoder-1B` (1.1 GB Q8_0), genuinely Apache-2.0. Permanent
 test (bucket-1) — `MaincoderGreedyParityTests.cs` — and evidence also recorded on the
 `"maincoder"` allowlist entry and in
-[../01-gguf-model-coverage-plan.md](../01-gguf-model-coverage-plan.md) §1w.
+[../01-gguf-model-coverage-plan.md](01-gguf-model-coverage-plan.md) §1w.
 
 **`nanbeige` CHECKED and BLOCKED, 2026-08-09 — two independent problems, found only after the
 architecture work was already built and compiled clean.** Needed a genuinely new mechanism —
@@ -450,7 +450,7 @@ architectures), and (2) independently, this session's local `tools/llama.cpp` re
 doesn't even recognize `nanbeige` as an architecture — the source tree read from is newer than the
 compiled binary, so no reference exists at all right now regardless of the tokenizer. Reverted
 completely (confirmed via grep). Checkpoint deleted without
-ever being verified. See [../01-gguf-model-coverage-plan.md](../01-gguf-model-coverage-plan.md) for the
+ever being verified. See [../01-gguf-model-coverage-plan.md](01-gguf-model-coverage-plan.md) for the
 full finding and the `LoopedTensorSource` design, kept as the pattern for any future
 weight-looping architecture once both blockers clear.
 
@@ -459,7 +459,7 @@ weight-looping architecture once both blockers clear.
 previously-"unassessed" architectures (Nemotron, Seed-OSS, Hunyuan, Dots1, LFM2, Apertus): none
 were buildable-and-testable today (3 restrictive-licensed, 2 have no small checkpoint, only
 Apertus is clean on both — Apache-2.0, but only 8B/70B exist). Full plan, grouped by shared
-kernel/mechanism so the highest-leverage item is obvious: [../01-gguf-model-coverage-plan.md](../01-gguf-model-coverage-plan.md) §1f.
+kernel/mechanism so the highest-leverage item is obvious: [../01-gguf-model-coverage-plan.md](01-gguf-model-coverage-plan.md) §1f.
 
 **`minicpm` tried and NOT admitted, 2026-08-08 — tokenizer gap, not a forward-pass bug.** The only
 Apache-2.0 checkpoint available (`MiniCPM4-0.5B`) uses Unigram-LM SentencePiece (`scores` array, no

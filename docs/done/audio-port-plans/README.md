@@ -4,5 +4,5 @@
 > native CosyVoice, Qwen3-ASR, QwenTTS, Fish Speech, Parler-TTS, Orpheus and Chatterbox ports.
 > Every one of those engines now exists and has its own row in [../../STATUS.md](../../STATUS.md).
 > Open audio work is tracked in [../../audio-review-new-progress.md](../../audio-review-new-progress.md),
-> [../../qwentts-cosyvoice3-handoff.md](../../qwentts-cosyvoice3-handoff.md) and
+> [../../qwentts-cosyvoice3-handoff.md](../../done/qwentts-cosyvoice3-handoff.md) and
 > [../../102-status-open-items-plan.md](../../102-status-open-items-plan.md) (CosyVoice 2 is item 10).

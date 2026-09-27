@@ -3,7 +3,7 @@ namespace OpenTail.Stingray.Tests.Core;
 
 /// <summary>
 /// Corpus coverage for <c>tokenizer.chat_template</c> rendering across every locally available
-/// GGUF that declares one — docs/01-gguf-model-coverage-plan.md §4. The Jinja engine was hardened
+/// GGUF that declares one — docs/done/01-gguf-model-coverage-plan.md §4. The Jinja engine was hardened
 /// during the SharpInference port (several were silent-wrong-output fixes, see CHANGELOG.md), but
 /// nobody had measured how many REAL Hugging Face templates render correctly since. This is a
 /// corpus/structural test, not a byte-for-byte oracle comparison (no local ground truth for chat

@@ -61,7 +61,7 @@ $Models = @{
     # every 4th layer skips RoPE entirely. llama.cpp fixes `n_no_rope_layer_step = 4` in
     # `models/smollm3.cpp` rather than reading it from metadata, and gates on
     # `(il + 1) % step != 0` — the same expression this engine already uses for Llama-4.
-    # Acquired for the architecture-coverage programme (docs/01-gguf-model-coverage-plan.md §1c).
+    # Acquired for the architecture-coverage programme (docs/done/01-gguf-model-coverage-plan.md §1c).
     "smollm3" = @{
         Files = @("SmolLM3-3B-Q4_K_M.gguf")
         Urls  = @("https://huggingface.co/ggml-org/SmolLM3-3B-GGUF/resolve/main/SmolLM3-Q4_K_M.gguf")

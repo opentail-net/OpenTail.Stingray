@@ -11243,7 +11243,7 @@ same investigation. No subagents used.
 ## CosyVoice3 "wobbling/metallic" and "lack of full clarity" quality issue -- root-caused and fixed, 2026-09-06
 
 Long-standing CosyVoice3 quality issue (tracked in this doc's earlier CosyVoice3 sections and in
-`docs/qwentts-cosyvoice3-handoff.md`) finally root-caused via genuine numeric comparison against
+`docs/done/qwentts-cosyvoice3-handoff.md`) finally root-caused via genuine numeric comparison against
 the real `examples/audio.cpp` reference, built from source and run against real weights. Two
 sessions' worth of work, three real bugs found and fixed in total:
 

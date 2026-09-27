@@ -8,7 +8,7 @@ namespace OpenTail.Stingray.Tests.Diffusion;
 /// real `ltx-video-2b-v0.9.1.safetensors` checkpoint weights and run through its actual
 /// `decode(latents, timestep=0)` path (F=1, H=2, W=2 latent -> [3,1,64,64] pixel output). This is
 /// the real native source the checkpoint was trained with (not diffusers, which does not match this
-/// checkpoint's VAE architecture -- see docs/055-ltx-video-implementation-plan.md).
+/// checkpoint's VAE architecture -- see docs/done/055-ltx-video-implementation-plan.md).
 /// </summary>
 public sealed class LtxVaeDecoderGoldenParityTests
 {

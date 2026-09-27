@@ -336,7 +336,7 @@ public static class UnifiedVisionPipeline
         // Verified against the real GGUF vocab (dots.ocr-Q8_0.gguf, Qwen2-based tokenizer) --
         // these are NOT "<image>"/"</image>"/"<image_pad>" (that trio never existed in this
         // model's vocab, which is why every --image request against dots.ocr silently found 0
-        // placeholder tokens after templating; see docs/vl-migration-plan-2026-08-20.md).
+        // placeholder tokens after templating; see docs/done/vl-migration-plan-2026-08-20.md).
         // 2026-09-26: llama-mtmd-cli wraps dots.ocr images in <|img|> ... <|endofimg|> (ids 151666 /
         // 151667, both in this vocab); the Qwen2-VL <|vision_start|>/<|vision_end|> pair this used
         // is not what the model was trained with.

@@ -119,7 +119,7 @@ public static unsafe class SimdKernels
         // tried once BLAS was ruled out, so merely having libopenblas.dll on disk silently routed
         // every large-enough batch straight to the slower BLAS path -- the same class of bug fixed
         // in ForwardPass.MatMulBatchedCached for the Q4_K repacked-x8 path (see its comment and
-        // docs/cpu-performance-baseline.md). Only actually falls through to BLAS when these
+        // docs/done/cpu-performance-baseline.md). Only actually falls through to BLAS when these
         // decline (wrong dtype, disabled, or batch below MinBatchForQ8Prefill).
         if (MicroGemmConfig.IsEnabled && dtype == DType.Q4_K &&
             MicroGemmQ4K.TryMatMulQ4K(output, input, (byte*)weights, batchSize, rows, cols))

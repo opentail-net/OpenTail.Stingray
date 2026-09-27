@@ -454,7 +454,7 @@ public sealed class JinjaChatTemplate
         // ParseNodes returns early at an unconsumed `else` tag (it treats `if`/`for` uniformly and
         // leaves disambiguation to the caller) — without this check that `else` was left dangling
         // for the ENCLOSING ParseNodes call to trip over, which aborted the whole remaining parse
-        // rather than just this loop (see docs/01-gguf-model-coverage-plan.md §4, granite-vision).
+        // rather than just this loop (see docs/done/01-gguf-model-coverage-plan.md §4, granite-vision).
         List<INode>? elseBody = null;
         if (pos < tokens.Count && tokens[pos].Kind == TokenKind.Block && tokens[pos].Content == "else")
         {

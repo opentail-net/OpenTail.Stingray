@@ -523,7 +523,7 @@ public sealed partial class GgufTokenizer : ITokenizer
         // time in JinjaChatTemplate's parser — measured hanging past 45s with zero progress on one
         // such template. Every model load called this constructor, so that hang blocked plain
         // completion use that never touches a chat template at all. Deferring means a pathological
-        // template only costs the caller that actually renders one — see docs/01-gguf-model-coverage-plan.md
+        // template only costs the caller that actually renders one — see docs/done/01-gguf-model-coverage-plan.md
         // §1d for the Granite investigation that found this, and the follow-up to fix the parser itself.
         string? chatTemplateSource = source.ChatTemplate is { Length: > 0 } tmplStr ? tmplStr : null;
         // Seed the BOS string so the template's `{{- bos_token -}}` (Gemma, Llama, …) renders it

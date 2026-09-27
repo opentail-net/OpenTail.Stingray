@@ -56,7 +56,7 @@ that this approach works, and it documents dead ends worth not repeating.
 QwenTTS is fixed and re-enabled (commit `05a4152`, same missing-tensor-source bug class as
 CosyVoice2/3). The original investigation content (four earlier bug fixes, the golden-verification
 harness, the precisely-localized multi-position blocker, and the fix) is archived at
-[done/qwentts-handoff-resolved.md](done/qwentts-handoff-resolved.md).
+[done/qwentts-handoff-resolved.md](../done/qwentts-handoff-resolved.md).
 
 ---
 

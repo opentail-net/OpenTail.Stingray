@@ -10,21 +10,21 @@ across several iterations; the user is now closing the session, so this is the h
 Moved to `docs/done/` with an evidence-cited status banner, cross-references fixed in
 `docs/README.md`/`docs/00-current-work.md`:
 
-- `01-gguf-model-coverage-plan.md` — cross-checked against `ModelCompatibility.cs`'s live allowlist
-- `055-ltx-video-implementation-plan.md`, `077-ltx-video-gpu-residency-plan.md` — both end
+- `done/01-gguf-model-coverage-plan.md` — cross-checked against `ModelCompatibility.cs`'s live allowlist
+- `done/055-ltx-video-implementation-plan.md`, `done/077-ltx-video-gpu-residency-plan.md` — both end
   unresolved in their own text (2026-09-14) but `STATUS.md` shows LTX-Video closed 2026-09-18
-- `067-sdxl-unet-gpu-residency-plan.md`, `068-sdxl-cpu-side-overhead-plan.md` — both say
+- `done/067-sdxl-unet-gpu-residency-plan.md`, `done/068-sdxl-cpu-side-overhead-plan.md` — both say
   "complete" in their own final sections
-- `072-wan21-gpu-kernel-tuning-plan.md` — Phase 1 objective met (073 continues, stays open)
-- `074-wan21-umt5-gpu-residency-plan.md`, `075-zimage-turbo-gpu-residency-plan.md`,
-  `076-sd35-medium-gpu-residency-plan.md` — confirmed via real `*GpuWeights` classes in source
+- `done/072-wan21-gpu-kernel-tuning-plan.md` — Phase 1 objective met (073 continues, stays open)
+- `done/074-wan21-umt5-gpu-residency-plan.md`, `done/075-zimage-turbo-gpu-residency-plan.md`,
+  `done/076-sd35-medium-gpu-residency-plan.md` — confirmed via real `*GpuWeights` classes in source
   plus matching `PerformanceLeague.md` timings
-- `081-master-gpu-perf-and-accuracy-plan.md` — Priority-0 Wan correctness bug confirmed resolved
+- `done/081-master-gpu-perf-and-accuracy-plan.md` — Priority-0 Wan correctness bug confirmed resolved
   within the doc itself
-- `2026-09-24-audio-recheck-plan.md` — all 4 phases checked done
-- `vl-migration-plan-2026-08-20.md` — "migration fully closed", confirmed dead code removed
-- `qwentts-cosyvoice3-handoff.md` — superseded, both targets green in `STATUS.md`
-- `cpu-performance-baseline.md` — a completed measurement snapshot, not an open plan
+- `done/2026-09-24-audio-recheck-plan.md` — all 4 phases checked done
+- `done/vl-migration-plan-2026-08-20.md` — "migration fully closed", confirmed dead code removed
+- `done/qwentts-cosyvoice3-handoff.md` — superseded, both targets green in `STATUS.md`
+- `done/cpu-performance-baseline.md` — a completed measurement snapshot, not an open plan
 
 Annotated in place (partial, not moved): `103-front-door-design.md` (step 1 done, steps 2-4 not
 started). Also fixed the stale CosyVoice-3 pointer in `docs/00-current-work.md` and in

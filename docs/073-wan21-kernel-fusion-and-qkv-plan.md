@@ -2,7 +2,7 @@
 
 ## Context & Phase 1 Retrospective
 
-In Phase 1 (`docs/072-wan21-gpu-kernel-tuning-plan.md`), we addressed the initial performance deficit where `WanModel.ForwardGpu` ran at **1873.2 ms/block** (~1.6× slower than CPU). By converting linear projection weights to FP16 (unlocking the 611 GFLOP/s `SgemmF16` kernel), eliminating per-block dynamic memory allocations in `LayerNormGpu`, and eliminating CPU modulation dictionary lookups, runtime dropped to **738.7 ms/block** (**2.54× speedup**, beating CPU by **1.78×**).
+In Phase 1 (`docs/done/072-wan21-gpu-kernel-tuning-plan.md`), we addressed the initial performance deficit where `WanModel.ForwardGpu` ran at **1873.2 ms/block** (~1.6× slower than CPU). By converting linear projection weights to FP16 (unlocking the 611 GFLOP/s `SgemmF16` kernel), eliminating per-block dynamic memory allocations in `LayerNormGpu`, and eliminating CPU modulation dictionary lookups, runtime dropped to **738.7 ms/block** (**2.54× speedup**, beating CPU by **1.78×**).
 
 ## Objective
 

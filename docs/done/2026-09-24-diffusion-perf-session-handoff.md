@@ -128,7 +128,7 @@ time. Correctness before perf. Check images by eye. CPU first, then GPU. Scratch
 ## 7. Next after the four-model plan: audio re-check
 
 When §6 is done (all four ticked, or precisely blocked), continue straight into
-[`docs/2026-09-24-audio-recheck-plan.md`](../2026-09-24-audio-recheck-plan.md), starting with its
+[`docs/done/2026-09-24-audio-recheck-plan.md`](2026-09-24-audio-recheck-plan.md), starting with its
 Phase 0 (a regression sweep of the audio engines that share today's changed code). Same rules:
 real weights, visible timing, one heavy process at a time, and commit per engine.
 
@@ -173,7 +173,7 @@ Next steps:
    (baseline 173.6s total, 35.0s/step). Check the image visually, then commit and add a PerformanceLeague row.
    Re-check FLUX.2 (237s), Qwen GPU (159s) and SD3.5 GPU (85s) if time allows.
 6. After that, the backlog is: the block-repacked Q4_K layout; Wan2.2 dual-model GPU; the HunyuanVideo VAE colour/stripes; the audio re-check
-   (Phase 1 resumes at OmniVoice: 32 steps, guidance 2.0; see `docs/2026-09-24-audio-recheck-plan.md`).
+   (Phase 1 resumes at OmniVoice: 32 steps, guidance 2.0; see `docs/done/2026-09-24-audio-recheck-plan.md`).
 
 Housekeeping: the `Zz*ProfTmp.cs` scratch harnesses are untracked, so never commit them. `main` has unpushed commits; do not push unless asked.
 
@@ -182,4 +182,4 @@ Housekeeping: the `Zz*ProfTmp.cs` scratch harnesses are untracked, so never comm
 FLUX.1 Vulkan went from 173.6s to **132.0s** (23.5s vs 35.0s per step), with a correct image. Next, not started:
 re-measure FLUX.2 (237s), Qwen GPU (159s) and SD3.5 GPU (85s), which use the same kernel; then the §8 step-6 backlog.
 
-**Update 2026-09-25 (later)**: FLUX.2 full GPU 512²/2-step re-measured: new kernel 208.1s vs legacy 223.1s (warm, one run each; the user deprioritised further FLUX.2 runs). SD3.5 is headDim 64, not affected. Qwen/Z-Image GPU not re-measured. HunyuanVideo colour/stripe bug FIXED (missing `post_quant_conv`). Next: the audio re-check (`docs/2026-09-24-audio-recheck-plan.md`), logging to `docs/audio-review-new-progress.md`.
+**Update 2026-09-25 (later)**: FLUX.2 full GPU 512²/2-step re-measured: new kernel 208.1s vs legacy 223.1s (warm, one run each; the user deprioritised further FLUX.2 runs). SD3.5 is headDim 64, not affected. Qwen/Z-Image GPU not re-measured. HunyuanVideo colour/stripe bug FIXED (missing `post_quant_conv`). Next: the audio re-check (`docs/done/2026-09-24-audio-recheck-plan.md`), logging to `docs/audio-review-new-progress.md`.

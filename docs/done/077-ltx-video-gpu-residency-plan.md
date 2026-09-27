@@ -18,7 +18,7 @@ has ever produced a coherent image" — the rest, including repeat runs at the s
 produced garbled visual noise, and the cause is explicitly **not root-caused** as of that entry.
 `LtxVideoModel.cs`'s own class doc comment also states it is "NOT yet wired to a real T5-v1.1-XXL
 encoder... or the VAE decoder" — both deferred, per the original implementation plan
-(`docs/055-ltx-video-implementation-plan.md`).
+(`docs/done/055-ltx-video-implementation-plan.md`).
 
 **Building GPU residency on top of an unresolved correctness bug means every future GPU-vs-CPU
 parity check is comparing against a baseline that might itself be wrong** — this doubles the

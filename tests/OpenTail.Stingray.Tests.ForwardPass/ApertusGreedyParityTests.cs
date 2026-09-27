@@ -83,7 +83,7 @@ public sealed class ApertusGreedyParityTests : HeavyTestBase
     /// divergence point "cities" is not even among this engine's top-5 candidates, so this reads as
     /// a genuine Q4_K accumulation-order sensitivity at a closely-contested position rather than a
     /// near-tie, the same category of evidence the OLMoE receipt accepted (see
-    /// docs/01-gguf-model-coverage-plan.md §1b and §1f for both).
+    /// docs/done/01-gguf-model-coverage-plan.md §1b and §1f for both).
     /// </summary>
     private const string ReferencePrefix =
         " Paris, which is also the country's largest city.";
