@@ -1,3 +1,14 @@
+> **CLOSED 2026-09-27.** This doc's own success criterion (<450ms/block) is met: a fresh real run of
+> `WanModelSyntheticMicrobenchTests` today measured **352.7ms/block** on Vulkan GPU (CPU 609.0ms),
+> comfortably under the target and consistent with the 738.7ms -> 770.1ms trend this doc tracked
+> having continued further via `WanModel.ForwardGpuStep`'s single-command-buffer full-graph batching
+> (landed the same day as this doc, `9edf5f1`, and confirmed still live in `WanModel.cs`) — that
+> change amortizes per-block Vulkan dispatch/submit overhead across the whole 30-layer step rather
+> than per isolated block, which is what actually closed the gap this doc was chasing. A prior
+> doc-audit pass (2026-09-27, earlier the same day) wrongly carried this forward as "genuinely still
+> open" by citing this doc's own stale 770.1ms number instead of re-measuring — this banner is the
+> correction, verified by a real run, not by assumption (CLAUDE.md rule 7/12).
+
 # Wan 2.1 GPU Kernel Fusion & QKV Optimization Plan (Phase 2) (2026-09-13)
 
 ## Context & Phase 1 Retrospective

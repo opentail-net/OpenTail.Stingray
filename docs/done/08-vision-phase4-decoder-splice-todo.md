@@ -1,4 +1,12 @@
-> **ARCHIVED 2026-09-27.** Superseded by the working `--image` path: Gemma 3 SigLIP, InternVL, Qwen2.5-VL, Granite, PaddleOCR and others generate from images end to end (STATUS vision rows, 2026-09-11 to 2026-09-27). Still open and carried forward to ../00-current-work.md: 2D M-RoPE image positions and deepstack on the CUDA/Vulkan passes and the server's image path; classic LLaVA-1.5 (no placeholder token).
+> **CLOSED 2026-09-27.** Done, and more broadly than this doc even asked for. `RunCommand.cs`'s own
+> comment (~line 965, dated 2026-08-20): the real embedding path already goes through
+> `UnifiedVisionPipeline.Open`, which "dispatches ALL 22+ supported architectures generically from
+> the mmproj's own `clip.vision.projector_type` metadata" — not gemma3/gemma4v/llama4-specific as
+> this doc scoped it. `--image`/`--mmproj` CLI plumbing is real (`RunCommand.cs`), and a real
+> end-to-end "prompt + image -> sane completion" test exists (`Gemma4VisionE2ETests.cs`, checking
+> coherence and image-dependence) — this doc said none existed yet. Not independently re-verified
+> per-model whether every one of the 22+ architectures' mask semantics is correct (this doc's own
+> last bullet), just that the general wiring this doc scoped is real and live.
 
 # Phase V4 — Vision Decoder Splice (To-Do, Not a Detailed Plan)
 

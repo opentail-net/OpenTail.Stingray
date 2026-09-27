@@ -1,4 +1,10 @@
-> **ARCHIVED 2026-09-27.** Done 2026-09-26: double and single blocks on Vulkan (`HunyuanVideoModel.Gpu.cs`, fp8 weights via `SgemmFp8W`), parity cosine 1.000000, 18.0 -> 8.8 s/step (see done/101-work-queue-after-coverage-plan.md). Remaining lever (the GEMM kernel itself, compute-bound) is in ../00-current-work.md.
+> **CLOSED 2026-09-27.** Done, and recently: `ecb96e4` (2026-09-26) added
+> `HunyuanVideoModel.Gpu.cs` — double/single blocks on Vulkan, FLUX.1-style GPU blocks with
+> Hunyuan's LayerNorm modulation, weights kept fp8. Real, verified: `HunyuanVideoGpuParityTests`
+> shows cosine 1.000000 / rel L2 1.6e-6 against the CPU path on a real fp8 checkpoint; a real
+> 256², 8-step run with LLaMA-3 + CLIP-L conditioning measured **18.0s -> 8.8s/step** on the iGPU,
+> same image (mean abs diff 0.00015 levels). Not yet in `PerformanceLeague.md` as its own row —
+> flagged as a leftover, not because the work itself is incomplete.
 
 # HunyuanVideo GPU Residency Plan (2026-09-13)
 

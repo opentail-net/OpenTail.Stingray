@@ -1,4 +1,10 @@
-> **ARCHIVED 2026-09-27.** Implemented: STATUS row "Vision: GLM-4.6V" is 🟢/🔬 (golden-verified, cosine > 0.97, 6 bugs fixed). Nothing carried forward.
+> **CLOSED 2026-09-27.** Implemented and fully verified, past what this plan even asked for:
+> `Glm4VisionEncoder.cs`/`Glm4VisionModel.cs` exist, wired into `UnifiedVisionPipeline.cs` for
+> `glm4v`, with real test coverage (`Glm4VisionEmbedderParityTests.cs`, `tests/fixtures/glm4v`).
+> `docs/STATUS.md`'s sourced row: "Vision: GLM-4.6V | 🟢 | golden-verified (cosine > 0.97,
+> `scripts/glm4v_ref.py`) — 6 real bugs found and fixed" — this doc's own "no numerical oracle
+> exists" concern was resolved (a real reference script was built). Kept as historical
+> architecture reference.
 
 # GLM4V Vision Encoder — Implementation Plan
 

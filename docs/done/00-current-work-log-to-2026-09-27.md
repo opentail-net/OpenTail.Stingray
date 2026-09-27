@@ -368,8 +368,8 @@ constrained-choice sampling, which the deletion re-check found was implemented *
 `InferenceSession` — ported into `ContinuousBatchingEngine`'s batched decode loop
 (`HotSessionChoiceConstraintTests.cs`) rather than silently lost.
 
-**Done (2026-08-27), follow-up**: [051 — HotSession capability wiring plan](051-hotsession-capability-wiring-plan.md)
-(now in `docs/done/`; the live `docs/3-product-and-runtime/051-hotsession-capability-wiring-plan.md` holds only the
+**Done (2026-08-27), follow-up**: [051 — HotSession capability wiring plan](done/051-hotsession-capability-wiring-plan.md)
+(now in `docs/done/`; the live `docs/051-hotsession-capability-wiring-plan.md` holds only the
 remaining TODOs — LoRA, real new engine work; `OnTokenGenerated`/`ToolCallParser`, deliberately not
 wired since the Server layer already does this independently; and `Fork()` skill/instruction
 propagation, an open design question). `/v1/sessions/*` gained skills/tool-call validation
@@ -532,16 +532,15 @@ Move a document or section to [done](.) when its outcome is implemented and veri
 measured negative result closes that line of investigation. Add a banner saying what closed and what
 carried forward. Keep active documents short: decision, remaining work, acceptance evidence, links.
 
-## Gemma 4 batched-prefill (not started)
+## Gemma 4 batched-prefill (CLOSED 2026-09-27, was stale as "not started" — see below)
 
 Scoped 2026-09-10 after `PerformanceLeague.md`'s C++ backfill measured Gemma 4 CPU prefill at
-0.12-0.13x of llama.cpp on both E4B and 12B — the missing-batched-prefill gap
-(`perLayerHdUnsupported`) confirmed on a second model size, not just the original one. Real fix
-requires teaching `PrefillCoreAttention` five things it doesn't do today (per-layer head-dim
-indexing, per-layer KV-source sharing, `attention_k_eq_v`, per-head V-norm, sliding-window
-masking) — not a quick patch; a prior attempt to force the existing batched path
-(`STINGRAY_PER_LAYER_HD_PREFILL=1`) crashed with `AccessViolationException`, not just wrong output.
-See [070-gemma4-batched-prefill-plan.md](070-gemma4-batched-prefill-plan.md) for the full plan.
+0.12-0.13x of llama.cpp on both E4B and 12B. This actually landed 2026-09-16 (`65e0ff1`, `04cf856`):
+`PrefillCore` now handles per-layer head-dim indexing, per-layer KV-source sharing,
+`attention_k_eq_v`, per-head V-norm and sliding-window masking (verified in
+`ForwardPass.PrefillCore.cs` today), and Gemma-4-12B-it CPU prefill measures **1.02x** of llama.cpp
+(28.5 t/s, an 8.14x speedup) in `PerformanceLeague.md`. See
+[done/070-gemma4-batched-prefill-plan.md](070-gemma4-batched-prefill-plan.md).
 
 ## Bugs found during the 2026-09-10/11 PerformanceLeague model sweep (not started)
 
@@ -1079,13 +1078,21 @@ findings, and any partial data already gathered.
 Open leftovers from documents moved to [done](.) on 2026-09-27. Each archived document's banner
 names what closed; these items are what did not.
 
-- **Qwen3.6-35B-A3B CPU performance**: prefill 0.63x of llama.cpp after the 2026-09-25 pass, and
-  the pre-existing `HybridGdnChunkedPrefill_MatchesSequentialPrefill` failure found then (not
-  re-checked since). See Phase 8 of
+- **Qwen3.6-35B-A3B CPU performance**: prefill still 0.63x of llama.cpp (re-checked against
+  `PerformanceLeague.md`, unchanged since 2026-09-25). The
+  `HybridGdnChunkedPrefill_MatchesSequentialPrefill` failure was re-run for real with
+  `STINGRAY_RUN_HEAVY_TESTS=1` on 2026-09-27 and still fails, same failure mode: logits diverge at
+  vocab idx 142707 (seq=0.4995 vs chunk=0.0924, |diff|=0.4071 > tol 0.1025). See Phase 8 of
   [done/2026-09-25-hf-top-downloads-coverage-plan.md](2026-09-25-hf-top-downloads-coverage-plan.md).
-- **FLUX.2 GPU end-to-end timing** after `0958d6f` was never measured cleanly, and the GPU levers
-  (an int8 dot-product quantized GEMM; the empty `VulkanMatMulPathConfig` "Path 2" seam) are open.
-  See items 1-2 of §4 in
+- **FLUX.2 GPU end-to-end timing**: item 1 is now closed — `PerformanceLeague.md`'s 2026-09-25
+  "Vulkan after FlashAttention128" row measured it cleanly the day after `0958d6f` (512², 2-step,
+  full GPU: new kernel 208.1s vs legacy 223.1s, both beating the 2026-09-24 237.0s baseline).
+  Item 2, the GPU levers, is still open and verified unimplemented in code as of 2026-09-27:
+  `VulkanMatMulPath.cs`'s doc comment states outright "Path 2 ... is reserved for a true quantized
+  GEMM ... It is not implemented," and `093-flux2-gpu-performance-optimization-plan.md`'s
+  "Experiment 3 (production-shape GEMM ladder)" and its `DoubleBlockGpu` row-offset audit both have
+  no corresponding entry anywhere in `PerformanceLeague.md` — genuinely never run. See items 1-2 of
+  §4 in
   [done/2026-09-24-diffusion-perf-session-handoff.md](2026-09-24-diffusion-perf-session-handoff.md),
   next to [093-flux2-gpu-performance-optimization-plan.md](../4-performance/diffusion/093-flux2-gpu-performance-optimization-plan.md).
 - **Per-pipeline diffusion end-to-end smoke tests** with real weights, small resolution and a
@@ -1099,3 +1106,8 @@ names what closed; these items are what did not.
 - **Vision timings not yet in `PerformanceLeague.md`**: Pixtral 12B and GLM-4.6V (gated GGUFs; need an
   `HF_TOKEN` with the licence accepted), plus LLaVA-NeXT/OneVision, GLM-4V/OCR, Hunyuan-VL and Llama 4
   vision. See [done/PerformanceLeague-expansion-plan.md](PerformanceLeague-expansion-plan.md).
+- **Llama-4 Scout 17B-16E backfill never completed**: only the historical 2026-06-16 smoke-run rows
+  (`README history 0c171ed`) exist in `PerformanceLeague.md` — no real ratio-vs-llama.cpp measurement.
+  The ~93GB 2-shard download (`unsloth/Llama-4-Scout-17B-16E-Instruct-GGUF`) failed mid-transfer once
+  and was left running in the background; unknown whether it ever completed. See
+  [done/PerformanceLeague-backfill-plan.md](PerformanceLeague-backfill-plan.md).

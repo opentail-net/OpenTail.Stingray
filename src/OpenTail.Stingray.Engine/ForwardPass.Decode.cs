@@ -169,6 +169,32 @@ public sealed unsafe partial class ForwardPass
                 stageStart = System.Diagnostics.Stopwatch.GetTimestamp();
             }
 
+            // Mamba-2 mixer layer (granitehybrid): replaces the whole attention block, then joins the shared
+            // residual scale / residual add / FFN path below.
+            if (_m2 is not null && IsMamba2Layer(layer))
+            {
+                Mamba2Step(layer, _normBuf, _hidden);
+                AppendZeroKv(layer);
+                goto AfterAttentionBlock;
+            }
+
+            // LFM2 gated short-conv layer: replaces attention, then the shared residual + FFN path.
+            if (_scIn is not null && IsShortConvLayer(layer))
+            {
+                ShortConvStep(layer, _normBuf, _hidden);
+                AppendZeroKv(layer);
+                goto AfterAttentionBlock;
+            }
+
+            // Nemotron-H MLP-only layer: FFN on the attn_norm output, own residual, no attention.
+            if (_hp.HybridFfnOnlyLayer is { } ffnOnly && ffnOnly[layer])
+            {
+                AppendZeroKv(layer);
+                DenseFfn(layer);
+                SimdKernels.AddInPlace(_hidden, _residual, _embDim);
+                goto AfterFfnBlock;
+            }
+
             // Q projection always runs on the active layer's weights.
             // For per-layer head_dim models the trailing bytes of _q/_k/_v are stale
             // from a wider prior layer; zero them so subsequent Attention reads (which
@@ -357,6 +383,7 @@ public sealed unsafe partial class ForwardPass
                 namedTicks += d;
             }
 
+            AfterAttentionBlock:
             // Gemma 4: post-attention RmsNorm BEFORE the residual add.
             if (_postAttnNorm is not null)
             {
@@ -417,6 +444,9 @@ public sealed unsafe partial class ForwardPass
             StageCapture.Record("cpu", layer, StageCapture.Stages.PostAttnResidual,
                 new ReadOnlySpan<float>(_hidden, _embDim));
 
+            // Nemotron-H attention / Mamba-2 layers carry no FFN.
+            if (_hp.HybridNoFfnLayer is { } noFfn && noFfn[layer]) goto AfterFfnBlock;
+
             // Save residual for FFN
             Copy(_residual, _hidden, _embDim);
 
@@ -471,6 +501,7 @@ public sealed unsafe partial class ForwardPass
             SimdKernels.AddInPlace(_hidden, _residual, _embDim);
             }
 
+            AfterFfnBlock:
             StageCapture.Record("cpu", layer, StageCapture.Stages.PostFfnResidual,
                 new ReadOnlySpan<float>(_hidden, _embDim));
 

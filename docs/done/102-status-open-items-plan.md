@@ -1,4 +1,4 @@
-> **ARCHIVED 2026-09-27.** Working log. Items 1, 2, 4-9, 11, 12 done; #13 SD3 / FLUX.2 / Qwen Image done. Still open, carried forward to ../00-current-work.md: #10 CosyVoice 2 (blocked on an upstream reference), #13 HunyuanVideo numeric verification, #14-#17 new families (Mamba-2/granitehybrid, nemotron_h, glm4moe, lfm2), and the Youtu-VL one-window PPL gap.
+> **ARCHIVED 2026-09-27.** Working log. Items 1, 2, 4-9, 11, 12, 14, 15 and 17 done; #13 done for SD3, FLUX.2 and Qwen Image. Still open, carried forward to ../00-current-work.md: #10 CosyVoice 2 and #13 HunyuanVideo (both blocked on an independent reference), #16 `glm4moe`, the follow-ups listed under #14/#15/#17 (batched prefill, rewind, GPU, MoE variants), and the Youtu-VL one-window PPL gap.
 
 # STATUS open items — fixable on this PC (plan, 2026-09-26)
 
@@ -25,11 +25,11 @@ dated evidence in the same pass.
 | 10 | ⛔ BLOCKED (needs an upstream CosyVoice2 reference) | CosyVoice 2: audio only partly right | investigation | large |
 | 11 | ✅ DONE (2026-09-27) | Stable Audio 3 Small SFX: darker than the reference | investigation | large |
 | 12 | ✅ DONE (2026-09-27) | Chronos-Bolt / Chronos-2: no numeric reference | needs an independent oracle without new Python reference scripts | large |
-| 13 | 🟡 IN PROGRESS (SD3 + FLUX.2 done; Qwen Image, HunyuanVideo next) | 🟢-but-⚪ diffusion rows (HunyuanVideo, FLUX.2, Qwen Image, SD3 CPU): not independently verified | needs reference outputs (vendored C++ / recorded) | large |
-| 14 | ⬜ TODO | New family: Mamba-2 hybrid layer + state cache, admitting IBM Granite 4.0 (`granitehybrid`, Apache-2.0, 1B-32B) first | missing family; one layer type unlocks #3, #15 and Falcon-H1 | large |
-| 15 | ⬜ TODO | New family: NVIDIA Nemotron Nano v2 / Nemotron 3 Nano (`nemotron_h`) | missing family; reuses #14's Mamba-2 layer; also completes #3 | medium after #14 |
+| 13 | 🟡 MOSTLY DONE (SD3, FLUX.2, Qwen Image verified with automated sd.cpp tests; HunyuanVideo BLOCKED: no independent v1 reference) | 🟢-but-⚪ diffusion rows (HunyuanVideo, FLUX.2, Qwen Image, SD3 CPU): not independently verified | needs reference outputs (vendored C++ / recorded) | large |
+| 14 | ✅ DONE (CPU; granite-4.0-h 350M/1B admitted 2026-09-27) | New family: Mamba-2 hybrid layer + state cache, admitting IBM Granite 4.0 (`granitehybrid`, Apache-2.0, 1B-32B) first | missing family; one layer type unlocks #3, #15 and Falcon-H1 | large |
+| 15 | ✅ DONE (CPU; Nemotron Nano 12B v2 text decoder admitted 2026-09-27) | New family: NVIDIA Nemotron Nano v2 / Nemotron 3 Nano (`nemotron_h`) | missing family; reuses #14's Mamba-2 layer; also completes #3 | medium after #14 |
 | 16 | ⬜ TODO | New family: GLM-4.5 / 4.6 / 4.7 incl. Air (`glm4moe`) | missing family, currently a top open family; GLM-4 dense already runs. Air is ~60 GB at Q4 | medium |
-| 17 | ⬜ TODO | New family: Liquid LFM2 / LFM2-MoE (`lfm2`, 350M-8B, popular on-device) | missing family; skipped earlier because the LFM licence caps free commercial use at $10M revenue. **Decide the licence question first** | medium |
+| 17 | ✅ DONE (CPU; LFM2-1.2B admitted 2026-09-27) | New family: Liquid LFM2 / LFM2-MoE (`lfm2`, 350M-8B, popular on-device) | missing family. Licence decided 2026-09-27 (user): we ship the inference engine, not the weights, so the LFM licence ($10M revenue cap on free commercial use) is for whoever downloads the model to judge; we document it in STATUS/MODELS | medium |
 
 ## Current state (paused 2026-09-26)
 
@@ -116,6 +116,122 @@ MODELS.md entry if it qualifies.
 
 ## Log
 
+- 2026-09-27 #17 DONE (CPU): Liquid LFM2 (`lfm2`) admitted.
+  - **Licence:** decided by the user: we ship inference, not weights, so the LFM licence (free
+    commercial use under $10M revenue) is documented in STATUS/MODELS, not a gate.
+  - **Mixer:** new `ForwardPass.ShortConv.cs`, following llama.cpp lfm2.cpp `build_shortconv_block`:
+    - in_proj splits into b | c | x;
+    - causal depthwise conv of b*x over `shortconv.l_cache` (3) steps, no bias or activation;
+    - `y = c * conv`, then out_proj.
+    - Per-layer state is `[embDim][l_cache-1]`.
+  - **Shared plumbing:** reuses the Mamba-2 recurrent plumbing, now generalised as
+    `HasRecurrentState` (token-by-token prefill, `SupportsPartialRewind` false, `TruncateTo` guard,
+    reset).
+  - **Layer-0 traps fixed:**
+    - QK-norm presence is probed on the first layer that has `attn_q_norm` (LFM2's layer 0 is a
+      conv layer).
+    - The final norm is `token_embd_norm` (llama.cpp `LLM_TENSOR_OUTPUT_NORM_LFM2`), not
+      `output_norm`; without the fallback there was no final norm at all.
+  - **BOS:** LFM2 degenerates without BOS (repeats " is"). `admit-arch` tokenised without BOS even
+    when `add_bos_token` is true, unlike llama-server; fixed.
+  - **Evidence:** `LFM2-1.2B-Q8_0.gguf` (LiquidAI/LFM2-1.2B-GGUF).
+    - Second-half PPL 10.9195 vs `llama-perplexity` 10.9543 (0.3%).
+    - Top-5 after "The capital of France is" (with BOS) within 0.14 nats of `llama-server`.
+    - `Lfm2ParityTests` 3/3 (5.7 s): 5 + 9 confident teacher-forced positions, and state reset.
+  - **Shared test helper:** `TeacherForcedParity`, now used by the Nemotron test too, which
+    tokenises with BOS exactly as llama-server does (still 2/2).
+  - **Not covered:** LFM2-MoE (`lfm2moe`), the LFM2-VL/Audio variants, GPU, batched prefill.
+
+- 2026-09-27 #15 DONE (CPU): NVIDIA Nemotron-H (`nemotron_h`) admitted on the #14 Mamba-2 mixer.
+  - **Layer kinds:** each layer is exactly one sublayer (llama.cpp nemotron-h.cpp):
+    - Mamba-2 when kv=0 and ff=0 (8 B/C groups here, grouped RMSNorm over 1280 channels);
+    - NoPE attention when kv>0;
+    - non-gated ReLU² MLP when kv=0 and ff>0.
+
+    Each has its own `attn_norm` and residual.
+  - **ModelGraph:** new `HybridFfnOnlyLayer` / `HybridNoFfnLayer`. `IntermediateDim` is the max
+    of the per-layer `feed_forward_length` array (the scalar read took layer 0's 0).
+    `usesReluSquared` and NoPE are on for `nemotron_h`.
+  - **Trunk:** MLP-only layers run `DenseFfn` on the attn_norm output and skip attention;
+    attention/Mamba layers skip the FFN. Non-attention layers append a zero KV row (shared
+    `AppendZeroKv`).
+  - **Evidence:** `nemotron-nano-12b-v2-vl-Q2_K.gguf` (text decoder).
+    - Wikitext second-half [1024,+) PPL at -c 2048: 6.6332 vs `llama-perplexity --chunks 1` 6.6338.
+    - `NemotronHParityTests` (2 tests, 12.5 s, real weights) teacher-forces `llama-server`'s
+      16-token continuations and matches llama.cpp's token at all 22 positions where its top-1 margin
+      is above 1.5 nats.
+    - Free-running greedy is not pinned: Q2_K forks it at close pairs, e.g. after " Paris" llama has
+      '."' -1.471 vs '."' + newline -1.689, ours -1.175 vs -1.071.
+  - **Regression:** Granite-H 4/4, `Tests.ForwardPass.Fast` 686/686.
+  - **Not covered:**
+    - the VL model's vision tower;
+    - MoE Nemotron-H (latent MoE, sigmoid gating);
+    - GPU;
+    - batched prefill.
+  - **MODELS.md:** no entry. The tested file is a Q2_K VL build, not a text-model recommendation
+    verified as a file.
+
+- 2026-09-27 #14 DONE (CPU): Mamba-2 hybrid layer; IBM Granite 4.0-H (`granitehybrid`) admitted.
+  - **Mixer:** `ForwardPass.Mamba2.cs` follows llama.cpp `build_mamba2_layer` and the ggml CPU
+    `ssm_conv`/`ssm_scan`:
+    - in_proj splits into z / xBC / dt;
+    - causal depthwise conv over `conv_kernel` taps, bias, SiLU;
+    - `softplus(dt + dt_bias)` and `dA = exp(dt*A)`;
+    - state `s = s*dA + B*x*dt`, `y = C.s + D*x`, then `silu(z)*y`;
+    - grouped RMSNorm, then out_proj.
+  - **State:** per recurrent layer, a conv state `[convDim][k-1]` and an SSM state
+    `[heads][headDim][dState]`. Cleared by `ResetCache`; it cannot be rewound.
+  - **Layer selection:** a layer is recurrent iff its `attention.head_count_kv` entry is 0.
+    `NumKvHeads` = the max non-zero entry; `GetInt` used to take layer 0's 0.
+  - **NoPE:** `rope.scaling.finetuned=false` gives NoPE on every attention layer (via
+    `NoRopeLayerStep=1`).
+  - **Excluded from the GDN probe:** `granitehybrid` is kept out of the GDN hybrid path that the
+    `_opentailllm.is_hybrid_ssm` probe would otherwise select.
+  - **Evidence**, wikitext second-half [1024,+) PPL (-c 2048) vs `llama-perplexity --chunks 1`:
+
+    | Model | Ours | llama.cpp |
+    |---|---|---|
+    | 350M Q8_0 | 17.9003 | 17.9258 |
+    | 1B Q8_0 | 8.7639 | 8.7563 |
+
+    Tokenisation identical. `GraniteHybridGreedyParityTests` passes 4/4 with real weights (7.8 s):
+    - 350M: " Paris." + EOS.
+    - 1B short prompt: 16/16 tokens (EOS masked like `ignore_eos`).
+    - 1B longer prompt: 15 tokens, then a documented near-tie (" equivalence" -1.288 vs
+      " general" -1.352).
+    - State reset.
+  - **Perf pass, same day** (1B Q8_0, CLI, 40-token prompt + 128 decode, 3 runs each):
+    - Scan heads now run in parallel.
+    - The d_state loop is vectorised in ggml's AVX2 order: 4x8 accumulators, unfused
+      `s*dA + B*x*dt`, FMA into the sums, ggml's reduce.
+    - Decode 17.7 -> 21.6 tok/s (+22%); prefill 14.4 -> 17.1 tok/s. About 48 ms/token vs about
+      52 ms to stream 1.56 GB at roughly 30 GB/s, so decode is near the bandwidth limit.
+  - **Order sensitivity, measured:** second-half PPL moves about 0.3% with the scan's summation
+    order alone.
+
+    | Scan variant | 1B | 350M |
+    |---|---|---|
+    | Scalar | 8.7639 | 17.9003 |
+    | Threaded scalar | 8.7639 (identical) | not run |
+    | Plain SIMD | 8.7891 | 17.8688 |
+    | ggml order | 8.7833 | 17.9578 |
+    | llama.cpp (thread-count invariant) | 8.7563 | 17.9258 |
+
+    So "matches llama.cpp" here means within about 0.3%, not closer; the committed numbers are
+    the ggml-order ones.
+  - **Regression:** `Tests.ForwardPass.Fast` 686/686.
+    `GraniteGreedyParityTests`/`GraniteMoeGreedyParityTests` skipped: their checkpoints aren't
+    local. Their code path only gains the `granitehybrid` family term.
+  - **Known limits:**
+    - CPU only.
+    - Prefill runs token by token (1B 17 tok/s; llama.cpp batches it: about 110 tok/s scoring).
+      Closing that gap means Mamba-2 support in the batched `PrefillCore`, a separate, sizeable
+      item, not part of this perf pass.
+    - Recurrent layers still append a zero KV row to satisfy `PagedKvCache` (wasted memory).
+    - No partial rewind of the Mamba state: `SupportsPartialRewind` is false, so `InferenceEngine`
+      disables prefix caching; `TruncateTo` resets at 0 and throws for any other earlier length.
+    - MoE Granite-H (tiny/small) untested.
+
 - 2026-09-27 #13 part 2: Qwen Image had a missing `txt_norm`, now fixed and verified against `sd-cli`.
   - **Bug:** neither the CPU nor the GPU path applied `txt_norm`, the RMSNorm (eps 1e-6) over the
     Qwen2.5-VL conditioning before `txt_in` (`qwen_image.hpp forward_orig`). The weight is in the
@@ -150,6 +266,95 @@ MODELS.md entry if it qualifies.
   - **Caveat for part 1:** the SD3.5 and FLUX.2 references were most likely `sd-cli`'s default
     Vulkan backend too; their cosines are against that.
   - **Next:** HunyuanVideo.
+
+- 2026-09-27 #13 FLUX.2 now has an automated reference test.
+  - **Why:** part 1 marked it 🔬 from a manual comparison only.
+  - **Test:** `Flux2SdCppParityTests` runs `Generate` with real Mistral conditioning and the DiT,
+    one step, 256², guidance 3.5, with the committed noise injected. It compares against the
+    `sd-cli --backend cpu` one-step latent in `TestData/Flux2SdCppGolden` (256 KB).
+  - **Result:** cosine 0.999962, relative L2 0.9%, norm ratio 1.0014. A real 148 s run (9.7 GiB
+    of weights pre-faulted).
+  - **Fixture:** sd.cpp took 3m25s to generate it.
+  - **Landscape sweep:** the heavy test sweep started at 09:16 was killed by Claude Code's
+    low-memory reaper at 11:08. The Diffusion suite had logged no failures up to then; Audio,
+    Vision and ForwardPass never ran. Not restarted.
+
+- 2026-09-27 #13 SD3.5 Medium now has an automated reference test too.
+  - **Test:** `Sd3SdCppParityTests` runs the real pipeline (CLIP-L/G + T5-XXL + MMDiT), one step,
+    256², CFG 4.5, empty negative prompt, committed noise injected. It compares against a
+    `sd-cli --backend cpu` fixture in `TestData/Sd3SdCppGolden` (128 KB; sd.cpp took 30 s).
+  - **Results:** 29 s CPU run and 46 s for both variants, real weights.
+
+    | Path | Cosine | Rel. L2 | Norm ratio |
+    |---|---|---|---|
+    | CPU | 0.998754 | 5.0% | 0.9961 |
+    | Vulkan | 0.998767 | not recorded | 0.9956 |
+
+  - **Threshold:** 0.998 for both. The residual is the small encoder differences (CLIP-G 0.996,
+    T5 0.998) amplified by CFG.
+  - **Where the aux files live:** in `models/sd35-medium-aux` and `models/flux1-schnell`, not
+    `models/_models`.
+
+- 2026-09-27 #13 HunyuanVideo: BLOCKED on numeric parity. No independent runnable v1 reference.
+  - **Local sd.cpp patch** (`examples/stable-diffusion.cpp`, git-ignored, redo from this list):
+    - `name_conversion.cpp`: single-block `q_norm`/`k_norm` mapped to `norm.query_norm`/`key_norm.scale`.
+    - `hunyuan.hpp detect_from_weights`: v1 raw names for the head count and `qkv_bias`. It also
+      resolves the heads after the loop, because the loop could see `key_norm` before `img_in` and
+      divide the 2048 default by 128.
+    - `SD_HUNYUAN_V1`: latent 16 channels at 8x (not 1.5's 32 at 16x), and `c_vector` feeds `y` /
+      `vector_in` only, not 1.5's vision-token slot.
+    - `SD_DIT_ONLY`: skip text-encoder/VAE tensor validation.
+    - `SD_INJECT_COND_PATH` / `SD_INJECT_VEC_PATH`: conditioning from files, in both the image and
+      video paths.
+    - Noise and latent dumps in the video path.
+    - Run with `-M vid_gen --video-frames 1 --guidance 6000` (v1 embeds guidance x1000; sd.cpp's
+      time factor is 1).
+    - With all that, sd.cpp detects v1 correctly (24 heads, 20+40 blocks, qkv bias, ctx 4096,
+      vec 768, guidance) and runs.
+  - **Result:** same injected noise and our own LLaMA-3 + CLIP-L conditioning
+    (`STINGRAY_HUNYUAN_INJECT_NOISE_PATH` / `_DUMP_COND_PATH` / `_DUMP_VEC_PATH`, new).
+    - One-step velocity cosine is only 0.187, not a layout permutation.
+    - sd.cpp's x0 is noise-like: std 1.5, 0.52 correlated with the input noise.
+    - At 8 steps, 256², our VAE decodes sd.cpp's latent to pure colour noise, while ours on the same
+      noise is a clean red apple.
+  - **Conclusion:** the v1.5-only sd.cpp is missing something v1 needs. Candidates: fp8 e4m3fn
+    handling, token-refiner details, timestep conventions. Making it v1-correct would mean writing
+    v1 into the reference ourselves, which destroys its independence.
+  - **Status:** the row stays ⚪ with visual-only evidence.
+  - **To unblock:** an independent v1 reference output. Either a ComfyUI/diffusers HunyuanVideo run
+    recorded as data (noise + latent), like #10, or a C++ port that supports v1 upstream.
+
+- 2026-09-27 #13 SD3.5 Medium now has an automated reference test too.
+  - **Test:** `Sd3SdCppParityTests` runs the real pipeline (CLIP-L/G + T5-XXL + MMDiT), one step,
+    256², CFG 4.5, empty negative prompt, committed noise injected. It compares against a
+    `sd-cli --backend cpu` fixture in `TestData/Sd3SdCppGolden` (128 KB; sd.cpp took 30 s).
+  - **Results:** 29 s CPU run and 46 s for both variants, real weights.
+
+    | Path | Cosine | Rel. L2 | Norm ratio |
+    |---|---|---|---|
+    | CPU | 0.998754 | 5.0% | 0.9961 |
+    | Vulkan | 0.998767 | not recorded | 0.9956 |
+
+  - **Threshold:** 0.998 for both. The residual is the small encoder differences (CLIP-G 0.996,
+    T5 0.998) amplified by CFG.
+  - **Where the aux files live:** in `models/sd35-medium-aux` and `models/flux1-schnell`, not
+    `models/_models`.
+
+- 2026-09-27 #13 HunyuanVideo plan (not started; waiting for the landscape sweep to free RAM).
+  - **Can sd.cpp run v1?** Possibly. STATUS says the vendored sd.cpp is HunyuanVideo 1.5 only, but
+    `hunyuan.hpp HunyuanVideoConfig::detect_from_weights` reads the config from the checkpoint
+    itself: depth, single blocks, `vector_in` dim, `guidance_in`, heads, MLP ratio and patch size.
+    So it may run our v1 DiT (`hunyuan_video_720_cfgdistill_fp8_e4m3fn.safetensors`). Untested.
+  - **Text conditioning won't match:** sd.cpp's conditioning is `LLMEmbedder`, the v1.5 recipe. It
+    can't produce v1's LLaMA-3 `hidden_states[-3]` plus CLIP-L pooled `c_vector`.
+  - **Method:** a DiT-level parity check.
+    - Patch sd.cpp locally to inject `c_crossattn` / `c_vector` from files.
+    - Feed it our own `HunyuanVideoTextConditioning` output.
+    - Inject the same noise on both sides.
+    - Compare 1-step velocity at guidance 1, then a short full run, on `--backend cpu` and
+      `vulkan0` for the noise floor.
+  - **If sd.cpp can't load the v1 checkpoint:** document it as blocked (no runnable v1 reference)
+    and move on to #14.
 
 - 2026-09-27 #13 part 1: latent-level parity against `examples/stable-diffusion.cpp` (`sd-cli`).
   - The reference is patched locally (git-ignored): `SD_DUMP_NOISE_PATH` (existing),

@@ -1,3 +1,10 @@
+> **CLOSED 2026-09-27.** This is a concluded audit, not an open task list — every engine in the
+> table has a real, recorded disposition (already done, declined with a structural reason, or a
+> named future-candidate note for Whisper/Parakeet/FunASR's encoders). Spot-verified today: Orpheus
+> really does have the claimed `CudaForwardPass`/`GpuForwardPass` fallback chain in
+> `OrpheusPipeline.cs` (lines 95/114). A prior doc-audit pass wrongly listed this as "genuinely
+> still open" without checking any of it.
+
 # 053 — Vulkan `--backend` audit of the remaining audio engines (TTS + ASR)
 
 ## User instruction (same standing instruction as 052, extended to the rest of the audio stack)

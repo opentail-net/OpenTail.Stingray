@@ -1,5 +1,14 @@
 # Vulkan large-tensor sharding — Qwen3.8-27B (qwen35 hybrid-GDN) GPU-only support
 
+> **CLOSED 2026-09-27.** The "awaiting a real-weight test run" blocker above is stale — real runs
+> happened 2026-09-16 and 2026-09-25 (`PerformanceLeague.md`): the CPU/GPU split reached 1.0-1.1 t/s
+> decode, then the full 64/64-dense-FFN-layers-on-GPU path (native raw IQ3_XXS/Q3_K/IQ2_S matvec
+> shaders, `b8709a9`) reached **2.1-2.3 t/s with no env-var tuning needed**. `PerformanceLeague.md`
+> even documents the resulting run recipe directly ("Running Qwen3.8-27B ... at its best-measured
+> Vulkan speed"). General multi-VkBuffer sharding remains genuinely undesigned/unimplemented, but
+> that was already correctly scoped as future-only work for a checkpoint that doesn't exist yet, not
+> a blocker on this doc's actual subject.
+
 **Status:** root cause found to be narrower than assumed; the actual fix is implemented and
 **awaiting a real-weight test run** (blocked — see "What changed since the plan was written").
 General multi-VkBuffer sharding (the bulk of this document) turned out to be unnecessary for

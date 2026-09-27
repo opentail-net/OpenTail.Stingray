@@ -5,6 +5,17 @@
 > different things. Do not re-derive the architecture from tensor names or resurrect the historical
 > MobileNet-V5/Gemma-3n material further down this document — see the current contract immediately
 > below instead.
+>
+> **CORRECTION 2026-09-27**: Phase V4 below ("NOT STARTED, do not begin") is also stale — real code
+> landed 2026-09-01 (`88171d9`, weeks after this doc's last edit): `Gemma4VAdapter : IVisionEmbedder`
+> in `UnifiedVisionPipeline.cs`, wired for `projType == "gemma4v"`, plus real E2E test scaffolding
+> (`Gemma4VisionE2ETests.cs` and CUDA/Vulkan variants) checking coherence and image-dependence. This
+> doc's underlying point still holds, though: `docs/STATUS.md`'s sourced matrix has a golden-verified
+> 🟢 row for the SIBLING encoder-free projector, `gemma4uv` (cosine >0.9995 vs a numpy port of the
+> real llama.cpp reference) — but **no row at all for `gemma4v`**, this doc's actual subject. No
+> evidence found that `gemma4v` (the real ViT path) has ever been run against real E4B weights and
+> confirmed correct; the E2E test is model-gated and the checkpoint isn't present on this machine to
+> run it. So: further along on implementation than this doc says, still not verified/closed.
 
 # Gemma 4 E4B Multimodal (Vision) — Research & Implementation Plan
 

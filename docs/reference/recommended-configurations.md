@@ -110,6 +110,6 @@ because the CUDA/NVRTC loading path is not trim-safe.
 
 ## Saved planning profiles
 
-The example profiles under [docs/profiles](profiles) contain only static planning knobs: no paths,
+The example profiles under [docs/profiles](../profiles) contain only static planning knobs: no paths,
 prompts, credentials, or benchmark-specific tuning. A profile is an input, not proof; pair it with
 the model-specific `inspect`/ `plan` output from the actual machine.

@@ -493,7 +493,7 @@ happened to be packed alongside it. Fixed with a new `allowBlas` parameter (defa
 real-model `ContinuousBatchingTests`) passes except three pre-existing, unrelated failures
 confirmed (via `git stash` bisection against the pre-fix baseline) to be unaffected by this
 change. Full investigation and resolution:
-[../031-concurrent-decode-batch-tier-divergence-bug.md](../031-concurrent-decode-batch-tier-divergence-bug.md).
+[../031-concurrent-decode-batch-tier-divergence-bug.md](031-concurrent-decode-batch-tier-divergence-bug.md).
 
 **Test suite.** ForwardPass discovers 1,368 tests as of the `gptneox` receipt (2026-08-08; was
 1,358 — the net growth is Granite/SmolLM3/Apertus/GptNeox parity tests added this session), runs in

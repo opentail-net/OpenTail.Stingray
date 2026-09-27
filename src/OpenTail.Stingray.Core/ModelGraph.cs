@@ -355,6 +355,31 @@ public sealed record ModelHyperparams
     /// </summary>
     public GdnConfig? Gdn { get; init; }
 
+    /// <summary>Mamba-2 mixer configuration for Mamba-2 hybrids (<c>granitehybrid</c>); null otherwise.</summary>
+    public Mamba2Config? Mamba2 { get; init; }
+
+    /// <summary>Per-layer: true where the layer is a Mamba-2 mixer instead of attention (its
+    /// <c>attention.head_count_kv</c> entry is 0). Null for non-Mamba-2 models.</summary>
+    public IReadOnlyList<bool>? IsMamba2Layer { get; init; }
+
+    /// <summary>Per-layer: the layer is an MLP-only block with no attention/mixer (Nemotron-H). Null otherwise.</summary>
+    public IReadOnlyList<bool>? HybridFfnOnlyLayer { get; init; }
+
+    /// <summary>Per-layer: true where the layer is a Liquid LFM2 gated short-conv mixer instead of attention (its
+    /// <c>attention.head_count_kv</c> entry is 0). Null for other models.</summary>
+    public IReadOnlyList<bool>? IsShortConvLayer { get; init; }
+
+    /// <summary>LFM2 <c>shortconv.l_cache</c>: the conv window, current token included.</summary>
+    public int ShortConvKernel { get; init; }
+
+    /// <summary>Per-layer: the layer has no FFN after its attention/mixer (Nemotron-H's single-sublayer attention
+    /// and Mamba-2 blocks). Null otherwise.</summary>
+    public IReadOnlyList<bool>? HybridNoFfnLayer { get; init; }
+
+    /// <summary>GLM-4.5 (<c>glm4moe</c>): <c>blk.N.post_attention_norm</c> is the pre-FFN norm (applied to the
+    /// post-attention residual), not a norm on the attention output.</summary>
+    public bool PostAttnNormIsFfnNorm { get; init; }
+
     /// <summary>
     /// Number of Multi-Token Prediction (MTP) head layers stored at the end of the GGUF
     /// block stack. Read from <c>{arch}.nextn_predict_layers</c> (default 0 when absent).
@@ -512,12 +537,16 @@ public sealed record ModelHyperparams
             || (tensorSource?.FindTensor("blk.0.attn_norm.bias") is not null);
         bool hasFfnBias = metadata.ContainsKey("_opentailllm.has_ffn_bias")
             || (tensorSource?.FindTensor("blk.0.ffn_up.bias") is not null);
+        // Probe the first layer that has one: hybrids (LFM2) can start with a conv layer that has no attention.
+        string qNormProbe = "blk.0.attn_q_norm.weight";
+        for (int pl = 0; pl < 16 && tensorSource is not null; pl++)
+            if (tensorSource.FindTensor($"blk.{pl}.attn_q_norm.weight") is not null) { qNormProbe = $"blk.{pl}.attn_q_norm.weight"; break; }
         bool hasQkNorm = metadata.ContainsKey("_opentailllm.has_qk_norm")
-            || (tensorSource?.FindTensor("blk.0.attn_q_norm.weight") is not null);
+            || (tensorSource?.FindTensor(qNormProbe) is not null);
         bool perChannelQkNorm = false;
         if (hasQkNorm && tensorSource is not null)
         {
-            var qNormInfo = tensorSource.FindTensor("blk.0.attn_q_norm.weight");
+            var qNormInfo = tensorSource.FindTensor(qNormProbe);
             int numHeadsTmp = GetInt(metadata, $"{arch}.attention.head_count");
             int embDimTmp = GetInt(metadata, $"{arch}.embedding_length");
             int headDimMetaTmp = GetInt(metadata, $"{arch}.attention.key_length");
@@ -545,7 +574,7 @@ public sealed record ModelHyperparams
         // below, `(layer + 1) % step != 0`, is the same expression llama.cpp applies.
         bool isLlama4 = arch.Equals("llama4", StringComparison.OrdinalIgnoreCase);
         bool isSmolLm3 = arch.Equals("smollm3", StringComparison.OrdinalIgnoreCase);
-        bool usesReluSquared = arch == "jais2";
+        bool usesReluSquared = arch == "jais2" || arch == "nemotron_h"; // nemotron-h.cpp LLM_FFN_RELU_SQR, non-gated
         // GPT-2 has no RoPE at all — position is encoded once via a learned absolute
         // position-embedding table (ModelHyperparams consumers detect this from
         // `position_embd.weight`'s tensor presence directly, not a hyperparam flag) added to the
@@ -557,6 +586,11 @@ public sealed record ModelHyperparams
         // anywhere in the graph).
         bool isGpt2Family = arch is "gpt2" or "starcoder";
         int noRopeStep = isLlama4 || isSmolLm3 ? 4 : isGpt2Family ? 1 : 0;
+        // Granite hybrids use rope.scaling.finetuned as a RoPE on/off switch, default on (llama.cpp
+        // granite-hybrid.cpp load_arch_hparams). Granite 4.0-H ships false: NoPE on every attention layer.
+        if (arch == "granitehybrid" && !GetBool(metadata, $"{arch}.rope.scaling.finetuned", true)) noRopeStep = 1;
+        // Nemotron-H attention never applies RoPE (nemotron-h.cpp build_attention_layer).
+        if (arch == "nemotron_h") noRopeStep = 1;
         // Llama-4 uses sigmoid gating with weight-before-FFN per Meta's reference impl.
         bool useSigmoidGating = isLlama4;
         // Llama-4 uses Llama4TextL2Norm for QK-norm: pure RMS norm without learned weights.
@@ -593,7 +627,7 @@ public sealed record ModelHyperparams
             "falcon" or "falcon-h1" or "grok" or "dbrx" or
             "bert" or "jina-bert-v3" or "modern-bert" or "nomic-bert" or "nomic-bert-moe" or "eurobert" or
             "stablelm" or "bitnet" or
-            "qwen" or "qwen2" or "qwen2vl" or "paddleocr" or "deepseek2-ocr" or "dream" or "qwen2moe" or "qwen3" or "qwen3moe" or "qwen3-tts" or
+            "qwen" or "qwen2" or "qwen2vl" or "paddleocr" or "deepseek2-ocr" or "glm4moe" or "lfm2" or "dream" or "qwen2moe" or "qwen3" or "qwen3moe" or "qwen3-tts" or
             "llada-moe" or "rnd1" or
             "olmo2" or "olmoe" or
             "phi2" or "phi3" or "phimoe" or
@@ -643,6 +677,13 @@ public sealed record ModelHyperparams
         // when GDN tensors are observed.
         bool isHybridSsm = metadata.ContainsKey("_opentailllm.is_hybrid_ssm")
                         || arch == "qwen35moe";
+        // Mamba-2 hybrids also carry ssm.* tensors (so the probe above fires) but are a different recurrence:
+        // selective scan, not delta rule. A layer is recurrent iff its head_count_kv entry is 0 (llama.cpp
+        // granite-hybrid.cpp / nemotron-h.cpp is_recr_impl).
+        bool isMamba2Hybrid = arch is "granitehybrid" or "nemotron_h";
+        // Liquid LFM2: gated short-conv layers (head_count_kv 0) + attention layers (llama.cpp lfm2.cpp).
+        bool isShortConvHybrid = arch == "lfm2";
+        if (isMamba2Hybrid || isShortConvHybrid) isHybridSsm = false;
 
         // {arch}.block_count is the total block count in the file, which on MTP-enabled
         // models (qwen35 27B-MTP, qwen35moe-MTP) includes the MTP head blocks appended
@@ -654,6 +695,59 @@ public sealed record ModelHyperparams
 
         IReadOnlyList<LayerType>? layerTypes = null;
         GdnConfig? gdn = null;
+        Mamba2Config? mamba2 = null;
+        IReadOnlyList<bool>? isMamba2Layer = null;
+        IReadOnlyList<bool>? hybridFfnOnlyLayer = null;
+        IReadOnlyList<bool>? hybridNoFfnLayer = null;
+        int mamba2KvHeads = 0;
+        int mamba2MaxFf = 0;
+        IReadOnlyList<bool>? isShortConvLayer = null;
+        if (isShortConvHybrid && numLayers > 0)
+        {
+            var kvArr = GetIntArray(metadata, $"{arch}.attention.head_count_kv");
+            var sc = new bool[numLayers];
+            for (int i = 0; i < numLayers; i++)
+            {
+                int kv = kvArr is { Count: > 0 } ? kvArr[i % kvArr.Count] : GetInt(metadata, $"{arch}.attention.head_count_kv");
+                sc[i] = kv == 0;
+                mamba2KvHeads = Math.Max(mamba2KvHeads, kv);
+            }
+            isShortConvLayer = sc;
+        }
+        if (isMamba2Hybrid && numLayers > 0)
+        {
+            var kvArr = GetIntArray(metadata, $"{arch}.attention.head_count_kv");
+            var ffArr = GetIntArray(metadata, $"{arch}.feed_forward_length");
+            // Nemotron-H layers carry exactly ONE sublayer each (llama.cpp nemotron-h.cpp): Mamba-2 (kv 0, ff 0),
+            // attention (kv > 0, ff 0) or MLP only (kv 0, ff > 0), each with its own attn_norm and residual.
+            // Granite-H layers are Mamba-2 or attention, always followed by the FFN.
+            bool singleSublayer = arch == "nemotron_h";
+            var recurrent = new bool[numLayers];
+            var ffnOnly = new bool[numLayers];
+            var noFfn = new bool[numLayers];
+            for (int i = 0; i < numLayers; i++)
+            {
+                int kv = kvArr is { Count: > 0 } ? kvArr[i % kvArr.Count] : GetInt(metadata, $"{arch}.attention.head_count_kv");
+                int ff = ffArr is { Count: > 0 } ? ffArr[i % ffArr.Count] : GetInt(metadata, $"{arch}.feed_forward_length");
+                recurrent[i] = kv == 0 && (!singleSublayer || ff == 0);
+                ffnOnly[i] = singleSublayer && kv == 0 && ff > 0;
+                noFfn[i] = singleSublayer && !ffnOnly[i];
+                mamba2KvHeads = Math.Max(mamba2KvHeads, kv);
+                mamba2MaxFf = Math.Max(mamba2MaxFf, ff);
+            }
+            isMamba2Layer = recurrent;
+            if (singleSublayer)
+            {
+                hybridFfnOnlyLayer = ffnOnly;
+                hybridNoFfnLayer = noFfn;
+            }
+            mamba2 = new Mamba2Config(
+                ConvKernel: GetInt(metadata, $"{arch}.ssm.conv_kernel"),
+                InnerSize:  GetInt(metadata, $"{arch}.ssm.inner_size"),
+                StateSize:  GetInt(metadata, $"{arch}.ssm.state_size"),
+                NumHeads:   GetInt(metadata, $"{arch}.ssm.time_step_rank"),
+                NumGroups:  Math.Max(1, GetInt(metadata, $"{arch}.ssm.group_count")));
+        }
         if (isHybridSsm && numLayers > 0)
         {
             int fullAttnInterval = GetInt(metadata, $"{arch}.full_attention_interval", 4);
@@ -703,8 +797,11 @@ public sealed record ModelHyperparams
         // ONLY this post-norm, reusing the exact same llama.cpp tensor names/roles
         // (LLM_TENSOR_ATTN_POST_NORM/FFN_POST_NORM both map to blk.%d.post_attention_norm /
         // blk.%d.post_ffw_norm for both architectures) — see src/models/olmo2.cpp vs gemma4.cpp.
-        bool hasPostAttnNorm = metadata.ContainsKey("_opentailllm.has_post_attn_norm")
-            || (tensorSource?.FindTensor("blk.0.post_attention_norm.weight") is not null);
+        // GLM-4.5 (glm4moe) names its pre-FFN norm post_attention_norm (llama.cpp glm4-moe.cpp: norm(ffn_inp) then
+        // the FFN), so there it is the FFN norm, NOT a Gemma/OLMo2-style norm on the attention output.
+        bool postAttnNormIsFfnNorm = arch == "glm4moe";
+        bool hasPostAttnNorm = !postAttnNormIsFfnNorm && (metadata.ContainsKey("_opentailllm.has_post_attn_norm")
+            || (tensorSource?.FindTensor("blk.0.post_attention_norm.weight") is not null));
         bool hasPostFfwNorm = metadata.ContainsKey("_opentailllm.has_post_ffw_norm")
             || (tensorSource?.FindTensor("blk.0.post_ffw_norm.weight") is not null);
 
@@ -915,6 +1012,7 @@ public sealed record ModelHyperparams
         bool isGraniteFamily = arch.Equals("granite", StringComparison.OrdinalIgnoreCase)
             || arch.Equals("granitemoe", StringComparison.OrdinalIgnoreCase)
             || arch.Equals("granitehybrid", StringComparison.OrdinalIgnoreCase)
+            || arch.Equals("granitehybrid", StringComparison.OrdinalIgnoreCase)
             || isMiniCpm;
         if (isGraniteFamily)
         {
@@ -1097,9 +1195,11 @@ public sealed record ModelHyperparams
             NumKvHeads = GetInt(metadata, $"{arch}.attention.key_length_mla", 0) > 0
                          && GetInt(metadata, $"{arch}.attention.kv_lora_rank", 0) > 0
                 ? numHeads
+                : mamba2KvHeads > 0 ? mamba2KvHeads
                 : GetInt(metadata, $"{arch}.attention.head_count_kv",
                             GetInt(metadata, $"{arch}.attention.head_count")),
-            IntermediateDim = GetInt(metadata, $"{arch}.feed_forward_length"),
+            // Per-layer feed_forward_length arrays (Nemotron-H: 0 on non-MLP layers) collapse to their max.
+            IntermediateDim = mamba2MaxFf > 0 ? mamba2MaxFf : GetInt(metadata, $"{arch}.feed_forward_length"),
             HeadDim = headDim,
             // GPT-NeoX stores LayerNorm epsilon under attention.layer_norm_epsilon (the LayerNorm
             // key), not attention.layer_norm_rms_epsilon (the RMSNorm key other architectures use)
@@ -1128,7 +1228,9 @@ public sealed record ModelHyperparams
             LeadingDenseBlockCount = GetInt(metadata, $"{arch}.leading_dense_block_count", 0),
             KvLoraRank = GetInt(metadata, $"{arch}.attention.kv_lora_rank", 0),
             QLoraRank = GetInt(metadata, $"{arch}.attention.q_lora_rank", 0),
-            ExpertGatingFunc = GetInt(metadata, $"{arch}.expert_gating_func", 0),
+            // glm4moe defaults to sigmoid + selection bias when the key is absent (llama.cpp glm4-moe.cpp).
+            ExpertGatingFunc = GetInt(metadata, $"{arch}.expert_gating_func", arch == "glm4moe" ? 2 : 0),
+            PostAttnNormIsFfnNorm = postAttnNormIsFfnNorm,
             // Absorbed-MLA GGUFs (split attn_k_b / attn_v_b) store the latent sizes in
             // key_length / value_length (576 / 512) and the per-head sizes in *_mla (192 / 128).
             MlaVHeadDim = GetInt(metadata, $"{arch}.attention.value_length_mla", 0) is > 0 and var vMla
@@ -1198,6 +1300,12 @@ public sealed record ModelHyperparams
             LayerRopeDim = layerRopeDim,
             LayerKvHeads = layerKvHeads,
             AttentionKEqV = attentionKEqV,
+            Mamba2 = mamba2,
+            IsMamba2Layer = isMamba2Layer,
+            HybridFfnOnlyLayer = hybridFfnOnlyLayer,
+            IsShortConvLayer = isShortConvLayer,
+            ShortConvKernel = isShortConvHybrid ? GetInt(metadata, $"{arch}.shortconv.l_cache") : 0,
+            HybridNoFfnLayer = hybridNoFfnLayer,
         };
     }
 
@@ -1301,6 +1409,20 @@ public sealed class OutputLayer : ModelLayer { }
 /// Block type for one trunk layer. Hybrid models (qwen35moe) interleave the two
 /// types according to a fixed interval; pure transformer models are all-Attention.
 /// </summary>
+/// <summary>
+/// Mamba-2 mixer hyperparameters (llama.cpp <c>build_mamba2_layer</c>): <c>ssm.conv_kernel</c>, <c>ssm.inner_size</c>
+/// (d_inner), <c>ssm.state_size</c> (d_state), <c>ssm.time_step_rank</c> (number of SSM heads) and
+/// <c>ssm.group_count</c> (B/C groups). Head dim = InnerSize / NumHeads.
+/// </summary>
+public sealed record Mamba2Config(int ConvKernel, int InnerSize, int StateSize, int NumHeads, int NumGroups)
+{
+    /// <summary>Channels through the causal conv: x plus B and C.</summary>
+    public int ConvDim => InnerSize + 2 * NumGroups * StateSize;
+    /// <summary>Width of ssm_in's output: z, xBC and dt.</summary>
+    public int InProjDim => 2 * InnerSize + 2 * NumGroups * StateSize + NumHeads;
+    public int HeadDim => InnerSize / NumHeads;
+}
+
 public enum LayerType
 {
     Attention = 0,

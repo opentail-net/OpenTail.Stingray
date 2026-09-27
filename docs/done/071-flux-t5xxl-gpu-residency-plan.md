@@ -1,4 +1,29 @@
-> **ARCHIVED 2026-09-27.** Complete 2026-09-13: `T5GpuWeights`/`T5GpuWorkspace`/`EncodeGpu`, T5-XXL 77.6s -> 27.3s, parity in `T5GpuParityTests`; attention-scale fix re-verified 2026-09-14. Its "Phase 3 opportunities" are the FLUX DiT levers tracked in ../4-performance/diffusion/069-flux-vulkan-gemm-perf-handoff.md.
+> **CLOSED 2026-09-27, corrected same day.** This doc's actual subject (T5-XXL GPU residency) is
+> done — 2.84x speedup landed and verified (296.6s / 299.6s re-verify after the attention-scale
+> fix). Of the 3 "Phase 3 opportunities" listed below, re-checked individually against current code:
+> 1. **Direct quantized-GEMM dot products** (no dequant-to-FP16 materialization) — still genuinely
+>    unimplemented; `VulkanMatMulPath.cs` states outright "Path 2 ... is reserved for a true
+>    quantized GEMM ... It is not implemented."
+> 2. **Command buffer batching / fused multi-block recording** — resolved, but NOT by doing more of
+>    it: `FluxDiT.cs` (~line 209) documents that the naive "one command buffer for the whole step"
+>    version was tried, and it starved the OS GPU scheduler badly enough to freeze the desktop UI for
+>    the run's duration (real user-reported regression, `PerformanceLeague.md`'s 2026-09-13 entry).
+>    The deliberate, measured fix — chunking to 2 blocks per command buffer — is what's actually
+>    live today, a considered trade-off, not a missed optimization. I first (wrongly) listed this as
+>    still open in this same banner; it isn't.
+> 3. **GEMM wave-level tuning for M=256/M=4096** — likely still open: the 2026-09-25 win was
+>    register-tiled *flash attention* (headDim=128), a different kernel than the plain `Sgemm`
+>    tile-size tuning this item asks for. Not independently re-verified either way.
+>
+> Net: FLUX.1-schnell's overall gap has narrowed a lot since this doc's 2.97x framing —
+> `PerformanceLeague.md`'s 2026-09-25 row measures 132.0s total, ~1.32x vs the 99.8s C++ reference
+> (cited in `069`'s own banner) — largely from item 3's neighboring attention work, not from GEMM
+> tuning itself.
+>
+> **Archived, not just closed**: item 1 is already tracked in `00-current-work.md`'s FLUX.2
+> GPU-lever entry and `069`'s banner, so this doc adds nothing further as an active plan. Kept for
+> its one piece of content not recorded anywhere else — the 2026-09-14 addendum below, a real bug
+> fix (T5 attention was wrongly scaled by `1/sqrt(headDim)`; real T5 attention is unscaled).
 
 # FLUX T5-XXL Text Encoder GPU Residency Plan (2026-09-13)
 

@@ -1,5 +1,3 @@
-> **ARCHIVED 2026-09-27.** All three targets closed: HunyuanVideo 🟢 (2026-09-25), LTX-Video 🟢 (2026-09-18), FLUX.2 🟢 and numerically verified (2026-09-27); FLUX.3 closed as not a real target. Carried forward: HunyuanVideo numeric verification (backlog C2).
-
 # 086 — Video model verification plan: HunyuanVideo, LTX-Video, FLUX.2/FLUX.3
 
 Owner: autonomous session, 2026-09-18. Scope: close the three video/large-image coverage gaps
@@ -53,10 +51,9 @@ project's standing convention of diffing against `examples/*.cpp`, not reimpleme
 Status at time of writing, confirmed by direct code read (not the stale README wording):
 
 - **DiT**: real port, structurally sound (`HunyuanVideoModel.cs`), matches FLUX's dual/single-stream
-  shape. `headDim=128`, 3D RoPE split-half with FLUX's 16/56/56 axis split. Not yet GPU-resident —
-  see `docs/done/078-hunyuanvideo-gpu-residency-plan.md` for that follow-on (deliberately out of scope
-  for this pass; correctness/wiring first, GPU residency after, same ordering CLAUDE.md rule 7
-  prescribes).
+  shape. `headDim=128`, 3D RoPE split-half with FLUX's 16/56/56 axis split. GPU residency landed
+  2026-09-26 (`ecb96e4`) — see [done/078-hunyuanvideo-gpu-residency-plan.md](078-hunyuanvideo-gpu-residency-plan.md)
+  (closed 2026-09-27, real parity + timing measured). This line was stale as of that date.
 - **VAE**: real port exists, `HunyuanVaeDecoder3D.cs` (475 lines), ported directly against
   `examples/diffusers/.../autoencoder_kl_hunyuan_video.py` per `docs/054`'s spec — **and the real
   checkpoint is already downloaded**: `models/hunyuanvideo/hunyuan_video_vae_bf16.safetensors`

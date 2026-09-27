@@ -106,7 +106,12 @@ public sealed class AdmitArchCommand : Command<AdmitArchCommand.Settings>
         {
             var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
             var tokenizer = GgufTokenizer.FromGgufModel(model);
-            promptTokens = tokenizer.Encode(settings.Prompt);
+            // Match llama-server's raw completion (the reference this is compared against): BOS first when the model's
+            // metadata asks for it. Without it, BOS-dependent models (LFM2) degenerate and every verdict is wrong.
+            var ids = tokenizer.Encode(settings.Prompt).ToList();
+            if (tokenizer.AddBosToken && tokenizer.BosTokenId >= 0 && (ids.Count == 0 || ids[0] != tokenizer.BosTokenId))
+                ids.Insert(0, tokenizer.BosTokenId);
+            promptTokens = ids;
             using var backend = new CpuBackend();
             using var fwd = new ForwardPass(model, backend, hp, maxContextLength: settings.CtxSize);
 

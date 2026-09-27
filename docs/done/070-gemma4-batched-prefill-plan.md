@@ -1,4 +1,14 @@
-> **ARCHIVED 2026-09-27.** Closed 2026-09-16: `PrefillCore` gained per-layer head dims and SWA; `PerformanceLeague.md` Gemma-4-12B prefill 3.5 -> 28.5 t/s (1.02x llama.cpp), E4B 9.8 -> 49.2 t/s. Two CPU prefill correctness bugs were fixed on 2026-09-26 (see done/101-work-queue-after-coverage-plan.md, Gemma-4 finding). Leftover: the stale comment at `ForwardPass.cs` ~line 1350 still describes the old block.
+> **CLOSED 2026-09-27.** The "not started" status below is stale — this landed 2026-09-16 (`65e0ff1`,
+> `04cf856`): `PerformanceLeague.md`'s Gemma-4-12B-it row now shows **1.02x** prefill parity (28.5 t/s
+> vs llama.cpp's 27.81 t/s, up from 0.13x), an 8.14x real speedup. Verified against current code
+> today: `ForwardPass.PrefillCore.cs` genuinely implements per-layer head dim (`_layerHeadDim`),
+> KV-layer sharing (`_layerKvSrc`), sliding-window attention (`windowSize`/`isSwa`) and
+> `AttentionKEqV` — the features this doc said PrefillCore was missing. The routing check this doc's
+> "problem" section cites (`perLayerHdUnsupported`) no longer exists in `ForwardPass.cs`'s prefill
+> dispatch (removed in `65e0ff1`) — Gemma4 now takes the batched path unconditionally, gated only by
+> `moeUnsupported`/`unweightedNormUnsupported`. Note: `ForwardPass.cs`'s inline comment block near the
+> old routing site (~line 1347) still describes the pre-fix behavior and is now misleading — a
+> follow-up should update or remove it, but that is a code-comment fix, not a docs one.
 
 # Gemma 4 batched-prefill plan
 

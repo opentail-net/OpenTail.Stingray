@@ -1,4 +1,8 @@
-> **ARCHIVED 2026-09-27.** Qwen Image now matches sd-cli numerically (2026-09-27, cosine 0.99968), which settles its RoPE convention. HunyuanVideo's check folds into its numeric verification (backlog C2).
+> **CLOSED 2026-09-27.** Fix applied and verified in current source: both `HunyuanVideoRoPE.cs` and
+> `QwenImageRoPE.cs` now call `InterleavedRoPE` (not `SplitHalfRoPE`) throughout, matching this doc's
+> diagnosis. Both models produce correct output per `PerformanceLeague.md` (HunyuanVideo: recognisable
+> apple, real conditioning; Qwen Image: coherent Vulkan/CPU output, no more banding/noise), consistent
+> with this bug having been the real root cause this doc predicted.
 
 # 092 — RoPE pairing-convention audit for HunyuanVideo and Qwen Image (+ a DRY consolidation)
 

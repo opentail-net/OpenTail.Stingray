@@ -40,7 +40,7 @@ is the priority.
 | [1-correctness/](1-correctness) | Bugs in what is already claimed ([bugstofix.md](1-correctness/bugstofix.md)). Most correctness items are short enough to live in 00-current-work.md itself. |
 | [2-coverage/](2-coverage) | Model families not yet supported or half built: Qwen3.5 MoE/GDN (02), Gemma 4 E4B vision (03), GGML op kernels (050), DeepSeek V3.2/V4 (058), ACE-Step (064) |
 | [3-product-and-runtime/](3-product-and-runtime) | Front door (103), release checklist, configuration ownership (04), multi-model runtime (032), sessions (010, 051) |
-| [4-performance/](4-performance) | [perf-sweep-plan.md](4-performance/perf-sweep-plan.md) across models, then [cpu/](4-performance/cpu) (05), [gpu/](4-performance/gpu) (084, vulkan-gemm), [diffusion/](4-performance/diffusion) (069, 073, 093, 094), [audio/](4-performance/audio) (052, 053, 066, 079, 080) |
+| [4-performance/](4-performance) | [perf-sweep-plan.md](4-performance/perf-sweep-plan.md) across models, then [cpu/](4-performance/cpu) (05), [gpu/](4-performance/gpu) (vulkan-gemm), [diffusion/](4-performance/diffusion) (069, 093, 094), [audio/](4-performance/audio) (066, 079, 080) |
 | [9-external-hardware/](9-external-hardware) | Work that needs hardware this machine lacks: CUDA, ARM64, a discrete GPU |
 
 File numbers inside folders are the order the documents were written, kept so that code comments

@@ -54,8 +54,8 @@ one child process runs and persists two real SmolLM2 GGUF turns, then exits; a s
 a fresh runtime, restores the manifest/KV packs, runs a third greedy turn, and compares every
 generated segment against fresh full replay. No fake forward
 pass, in-process restore, cache-byte comparison, or cursor-only replay would meet that bar. See
-[release-quality-test-matrix.md](../release-quality-test-matrix.md).
+[release-quality-test-matrix.md](../reference/release-quality-test-matrix.md).
 
 Historical record: [session-native-inference-runtime-plan-rev1.md](session-native-inference-runtime-plan-rev1.md),
-[adr-0001-session-cache-lifecycle.md](../adr-0001-session-cache-lifecycle.md), and
+[adr-0001-session-cache-lifecycle.md](../reference/adr-0001-session-cache-lifecycle.md), and
 [milestone-0-state-topology-audit.md](milestone-0-state-topology-audit.md).

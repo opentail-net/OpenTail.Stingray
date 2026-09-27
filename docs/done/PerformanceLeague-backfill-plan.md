@@ -1,4 +1,11 @@
-> **ARCHIVED 2026-09-27.** Complete 2026-09-10 (Phases 1-8 checked); Llama-4-Scout cancelled by the user (93 GB vs 64 GB RAM); Qwen3-Coder-30B-A3B backfilled later. Nothing carried forward.
+> **CLOSED 2026-09-27.** 33/36 checklist items were already done; re-checked the 3 marked open
+> against current `PerformanceLeague.md`: **Qwen3-Coder-30B-A3B** was actually backfilled
+> (2026-09-10 rows: prefill 0.59x, decode 1.08x — beats llama.cpp), and **Z-Image-Turbo** was
+> extensively run (2026-09-11 through -20 rows, including a real GPU-residency correctness
+> investigation) — both stale "not attempted"/"still running" markers. Only **Llama-4 Scout**
+> genuinely remains open — no fresh backfill row exists, only the historical 2026-06-16 smoke-run
+> rows (`README history 0c171ed`); the ~93GB shard download this doc describes never completed with
+> a real ratio measurement. Carried forward to `00-current-work.md`.
 
 # PerformanceLeague backfill plan
 

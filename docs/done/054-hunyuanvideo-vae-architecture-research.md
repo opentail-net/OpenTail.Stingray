@@ -1,9 +1,14 @@
-> **ARCHIVED 2026-09-27.** Implemented: `src/OpenTail.Stingray.Diffusion/HunyuanVideo/HunyuanVaeDecoder3D.cs`; STATUS row "HunyuanVideo" is 🟢. Carried forward: numeric verification of HunyuanVideo against sd-cli (backlog item C2).
+> **CLOSED 2026-09-27.** Implemented per this spec: `HunyuanVaeDecoder3D.cs` (475 lines, created
+> `a991037` 2026-09-15, real bugs found and fixed against real weights through 2026-09-26) is a real
+> port against the checkpoint this doc's "Not yet resolved" section said wasn't available yet.
+> Confirmed working end-to-end (`PerformanceLeague.md`: noise -> recognisable apple, VAE 25x
+> faster, colours/stripes bug fixed via `post_quant_conv`). Kept as historical architecture
+> reference, not an open plan.
 
 # 054 — HunyuanVideo real VAE architecture (research, ready to implement)
 
 Research pass (subagent-assisted, user-authorized exception to the standing no-subagents rule for
-this one investigation), following up on [the HunyuanVideo audit](../diffusion-samples/README.md)
+this one investigation), following up on [the HunyuanVideo audit](diffusion-samples/README.md)
 that found the DiT structurally sound but blocked on a real VAE decoder. This doc is the
 implementation spec for that decoder — the next step is a direct C# port, same process as
 `WanVaeDecoder3D.cs`.

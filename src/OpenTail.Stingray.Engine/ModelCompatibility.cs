@@ -256,6 +256,34 @@ public static class ModelCompatibility
         // except one near-tie line break (two newlines vs two spaces + newline, logprob -0.63 vs -0.78 in llama.cpp).
         "deepseek2-ocr",
 
+        // granitehybrid — IBM Granite 4.0-H (Mamba-2 + NoPE attention hybrid, llama.cpp granite-hybrid.cpp +
+        // mamba-base.cpp build_mamba2_layer). ADMITTED 2026-09-27 with the new Mamba-2 mixer (ForwardPass.Mamba2.cs,
+        // CPU, token-by-token). Evidence, wikitext second-half [1024,+) PPL at -c 2048 vs llama-perplexity --chunks 1:
+        // granite-4.0-h-350m Q8_0 17.9578 vs 17.9258; granite-4.0-h-1b Q8_0 8.7833 vs 8.7563 (the recurrence moves this
+        // metric ~0.3% with summation order alone: the scalar scan gave 17.9003 / 8.7639). Tokenisation and the
+        // first greedy tokens match llama-server; a longer greedy run diverges at a near-tie (" explained" 0.140 vs
+        // " showed" 0.136 in llama.cpp).
+        "granitehybrid",
+
+        // nemotron_h — NVIDIA Nemotron-H / Nemotron Nano v2 (llama.cpp nemotron-h.cpp): every layer is exactly one of
+        // Mamba-2 (8 B/C groups), NoPE attention, or a non-gated ReLU² MLP, each with its own RMSNorm + residual.
+        // ADMITTED 2026-09-27 on the shared Mamba-2 mixer (ForwardPass.Mamba2.cs, CPU). Evidence: nemotron-nano-12b-v2-vl
+        // Q2_K text decoder, wikitext second-half [1024,+) PPL at -c 2048 6.6332 vs llama-perplexity --chunks 1 6.6338;
+        // NemotronHParityTests teacher-forces llama-server's continuation and matches its token at all 22 positions
+        // where llama.cpp's top-1 margin exceeds 1.5 nats (Q2_K forks free-running greedy at close pairs, e.g. '."' vs
+        // '."' + newline at 0.22 nats in llama.cpp, 0.10 the other way in ours).
+        "nemotron_h",
+
+        // lfm2 — Liquid LFM2 (llama.cpp lfm2.cpp): gated short-conv layers (in_proj -> b|c|x, causal depthwise conv of
+        // b*x over shortconv.l_cache steps, gate by c, out_proj) + GQA attention with QK-norm and NeoX RoPE, SwiGLU FFN
+        // on every layer; final norm stored as token_embd_norm. ADMITTED 2026-09-27 (ForwardPass.ShortConv.cs, CPU).
+        // Evidence: LFM2-1.2B Q8_0 wikitext second-half [1024,+) PPL at -c 2048 10.9195 vs llama-perplexity --chunks 1
+        // 10.9543 (0.3%); with BOS the next-token top-5 after "The capital of France is" matches llama-server to 0.14
+        // nats; Lfm2ParityTests teacher-forces llama-server continuations (14 confident positions match). The model
+        // degenerates without BOS, so admit-arch now prepends it like llama-server does. Licence: LFM Open License
+        // v1.0 (free commercial use under $10M revenue); documented, not a support gate.
+        "lfm2",
+
         // internlm2 -- ADMITTED 2026-09-01. Was blocked purely on the tokenizer axis (same as
         // minicpm/ernie4_5/baichuan): tokenizer.ggml.model=llama with tokenizer.ggml.scores
         // (92,544 entries) and no tokenizer.ggml.merges array -- already fixed by

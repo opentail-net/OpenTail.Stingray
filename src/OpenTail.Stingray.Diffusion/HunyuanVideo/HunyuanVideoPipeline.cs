@@ -176,6 +176,8 @@ public sealed class HunyuanVideoPipeline : IDiffusionPipeline
 
         // 2. Initial Gaussian noise in video latent space [16, numFrames, latH, latW]
         var latent = SampleGaussianNoise(latC * numFrames * latH * latW, seed);
+        // Parity: stable-diffusion.cpp's SD_DUMP_NOISE_PATH noise, same channel-major [16, T, h, w] layout.
+        DiffusionParityHooks.TryLoadNoise("STINGRAY_HUNYUAN_INJECT_NOISE_PATH", latent);
 
         // If initial image provided (I2V), blend into starting frame
         if (initImageRgb is not null)
@@ -205,6 +207,10 @@ public sealed class HunyuanVideoPipeline : IDiffusionPipeline
             condPooled = _clipL.Encode(_clipTokenizer.Tokenize(prompt)).pooled;
             uncondPooled = _clipL.Encode(_clipTokenizer.Tokenize(negativePrompt ?? "")).pooled;
         }
+        // Parity: feed these to the locally patched sd.cpp (SD_INJECT_COND_PATH / SD_INJECT_VEC_PATH), whose own
+        // conditioner is HunyuanVideo 1.5's and cannot produce v1's LLaMA-3 + CLIP-L conditioning (docs/102 #13).
+        DiffusionParityHooks.DumpToFile("STINGRAY_HUNYUAN_DUMP_COND_PATH", condContext);
+        if (condPooled is not null) DiffusionParityHooks.DumpToFile("STINGRAY_HUNYUAN_DUMP_VEC_PATH", condPooled);
 
         // Guidance-distilled checkpoints (guidance_in present) take the guidance scale as an
         // embedding -- diffusers passes guidance_scale * 1000 with true CFG off by default -- so
