@@ -2613,6 +2613,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         // Project every image to its soft-token block up front, in --image order.
         var blocks = new (float[] Soft, int NTok)[nImages];
         var grids = new (int W, int H)[nImages];
+        var segments = new IReadOnlyList<VisionSegment>?[nImages];
         int totalSoft = 0;
         for (int i = 0; i < nImages; i++)
         {
@@ -2630,6 +2631,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
             }
             blocks[i] = (soft, nTok);
             grids[i] = vision.LastTokenGrid;
+            segments[i] = vision.LastSegments;
             totalSoft += nTok;
             AnsiConsole.MarkupLine($"[dim]Image {i + 1}/{nImages}: {vision.ProjectorType} -> {nTok} soft tokens ({embd}-dim)[/]");
         }
@@ -2645,7 +2647,10 @@ public sealed class RunCommand : Command<RunCommand.Settings>
                           (tok.SpecialTokens.TryGetValue("<|image|>", out var ph2) ? ph2 :
                           (tok.SpecialTokens.TryGetValue("<image_soft_token>", out var ph3) ? ph3 : 258880));
 
-        var prompt = FormatPrompt(userMsg, s.SystemPrompt, enableThinking: !s_noThinking);
+        // No injected default system prompt for image prompts: llama-server (the parity reference for every
+        // vision model) renders the model's own template as-is, and Qwen3-based VLMs (Step3-VL) are not the
+        // text-only Qwen3 chat models that default was measured on.
+        var prompt = FormatPrompt(userMsg, s.SystemPrompt, enableThinking: !s_noThinking, injectDefaultSystem: false);
         var allTokens = EnsureBos(tok.Encode(prompt), tok).ToList();
         int placeholdersFound = allTokens.Count(t => t == placeholder);
         if (placeholdersFound != nImages)
@@ -2662,6 +2667,8 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         // out of bounds instead of failing.
         int markerTokens = (imgOpen >= 0 ? 1 : 0) + (imgClose >= 0 ? 1 : 0);
         markerTokens += imgCloseText.Length;
+        foreach (var seg in segments)
+            if (seg is not null) totalSoft += seg.Count(x => x.Token is not null) - markerTokens;
         int plannedPrefill = allTokens.Count + (nImages * markerTokens) + totalSoft - nImages;
         if (plannedPrefill >= maxContextLength)
         {
@@ -2682,7 +2689,26 @@ public sealed class RunCommand : Command<RunCommand.Settings>
             if (id == placeholder)
             {
                 var grid = grids[imgIdx];
+                var segs = segments[imgIdx];
                 var (soft, nTok) = blocks[imgIdx++];
+                if (segs is not null)
+                {
+                    foreach (var seg in segs)
+                    {
+                        if (seg.Token is not null)
+                        {
+                            if (!tok.SpecialTokens.TryGetValue(seg.Token, out int segTok))
+                                throw new InvalidOperationException($"Image segment marker '{seg.Token}' is not a special token of this model.");
+                            logits = fwd.Forward(segTok, pos++);
+                        }
+                        else
+                        {
+                            for (int t = seg.Start; t < seg.Start + seg.Count; t++)
+                                logits = fwd.ForwardEmbedding(soft.AsSpan(t * embd, embd), pos++);
+                        }
+                    }
+                    continue;
+                }
                 if (imgOpen >= 0) logits = fwd.Forward(imgOpen, pos++);
                 if (fwd is ForwardPass mrope && mrope.UsesMRope && grid.W * grid.H == nTok)
                     mrope.AddMRopeImage(pos, grid.W, grid.H);
@@ -3441,7 +3467,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         return withBos;
     }
 
-    private static string FormatPrompt(string userMessage, string? systemPrompt, bool enableThinking = true)
+    private static string FormatPrompt(string userMessage, string? systemPrompt, bool enableThinking = true, bool injectDefaultSystem = true)
     {
         // STINGRAY_RAW_PROMPT=1 bypasses the chat template entirely. Used for parity testing
         // against llama.cpp's --no-conversation mode (raw text completion). Not for normal use.
@@ -3458,7 +3484,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
             // tuned to operate without a system prompt and gets HIGH-confidence on
             // <|endoftext|> when one is forced (logit ~29 vs ~14 with no system).
             string? effectiveSystemPrompt = systemPrompt
-                ?? (s_arch is "qwen3" ? "You are a helpful assistant." : null);
+                ?? (injectDefaultSystem && s_arch is "qwen3" ? "You are a helpful assistant." : null);
             var messages = JinjaChatTemplate.BuildMessages(userMessage, systemContent: effectiveSystemPrompt);
             return s_jinja.Render(new Dictionary<string, object?>
             {

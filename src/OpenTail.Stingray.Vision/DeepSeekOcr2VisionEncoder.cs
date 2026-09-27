@@ -294,31 +294,9 @@ public sealed unsafe class DeepSeekOcr2VisionEncoder
     /// ((co*cin + ci)*k + ky)*k + kx). Returns [ho][wo][cout].</summary>
     private static float[] Conv2d(float[] input, int h, int w, int cin, float[] weights, int cout, int k, int stride, int pad, out int ho, out int wo)
     {
-        int oh = (h + 2 * pad - k) / stride + 1, ow = (w + 2 * pad - k) / stride + 1;
-        ho = oh; wo = ow;
-        int kk = cin * k * k;
-        var cols = new float[oh * ow * kk];
-        Parallel.For(0, oh, oy =>
-        {
-            for (int ox = 0; ox < ow; ox++)
-            {
-                int o = (oy * ow + ox) * kk;
-                for (int ky = 0; ky < k; ky++)
-                {
-                    int iy = oy * stride + ky - pad;
-                    for (int kx = 0; kx < k; kx++)
-                    {
-                        int ix = ox * stride + kx - pad;
-                        bool inside = iy >= 0 && iy < h && ix >= 0 && ix < w;
-                        int src = (iy * w + ix) * cin;
-                        for (int ci = 0; ci < cin; ci++)
-                            cols[o + (ci * k + ky) * k + kx] = inside ? input[src + ci] : 0f;
-                    }
-                }
-            }
-        });
-        var output = new float[oh * ow * cout];
-        VisionOps.MatVec(cols, weights, null, oh * ow, kk, cout, output);
+        float[] cols = VisionOps.Im2Col(input, h, w, cin, k, stride, pad, out ho, out wo);
+        var output = new float[ho * wo * cout];
+        VisionOps.MatVec(cols, weights, null, ho * wo, cin * k * k, cout, output);
         return output;
     }
 

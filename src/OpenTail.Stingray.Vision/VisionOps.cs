@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using System.Runtime.CompilerServices;
 using System.Runtime.Intrinsics;
 
@@ -110,6 +111,54 @@ public static unsafe class VisionOps
     /// covers F16 (<see cref="MatVecF16"/>'s gap). No-ops if <paramref name="weight"/> is null (a
     /// missing optional tensor), matching <see cref="MatVecF16"/>'s existing contract.
     /// </summary>
+    /// <summary>STINGRAY_VISION_GEMM=0 disables the batched GEMM paths (per-token fallback) for A/B checks.</summary>
+    private static readonly string? s_gemmEnv = Environment.GetEnvironmentVariable("STINGRAY_VISION_GEMM");
+    private static readonly bool s_gemm = s_gemmEnv is not ("0" or "noattn-nomm" or "nomm");
+    private static readonly bool s_gemmAttn = s_gemmEnv is not ("0" or "noattn-nomm" or "noattn");
+
+    /// <summary>
+    /// Rounds GEMM activations to the precision ggml's CPU dot products use for that weight type
+    /// (<c>vec_dot_type</c>), so the batched path agrees with llama.cpp as closely as the per-token path does:
+    /// Q8_0 weights -> activations quantized per 32 (<c>quantize_row_q8_0_ref</c>: d = amax/127 stored as F16,
+    /// q = roundf(x/d)); F16 weights -> activations rounded to F16. Other types keep FP32 activations. Without
+    /// this, the FP32-activation GEMM moved dots.ocr's projector output by 0.08 on a 2.6 value and Kimi-VL's
+    /// sum by 3% (2026-09-27); the per-token SimdKernels path already quantizes Q8_0 activations the same way.
+    /// Returns <paramref name="input"/> itself when no rounding applies.
+    /// </summary>
+    private static float[] RoundActivationsLikeGgml(float[] input, int nTokens, int inDim, DType wtype)
+    {
+        if (wtype == DType.Q8_0 && inDim % 32 == 0)
+        {
+            var r = new float[nTokens * inDim];
+            Parallel.For(0, nTokens * inDim / 32, b =>
+            {
+                int o = b * 32;
+                float amax = 0f;
+                for (int j = 0; j < 32; j++) amax = MathF.Max(amax, MathF.Abs(input[o + j]));
+                float d = amax / 127f;
+                float id = d != 0f ? 1f / d : 0f;
+                float dh = (float)(Half)d;
+                for (int j = 0; j < 32; j++)
+                    r[o + j] = MathF.Round(input[o + j] * id, MidpointRounding.AwayFromZero) * dh;
+            });
+            return r;
+        }
+        if (wtype == DType.Float16)
+        {
+            var r = new float[nTokens * inDim];
+            Parallel.For(0, nTokens, t =>
+            {
+                int o = t * inDim;
+                for (int j = 0; j < inDim; j++) r[o + j] = (float)(Half)input[o + j];
+            });
+            return r;
+        }
+        return input;
+    }
+
+    /// <summary>Token count from which <see cref="MatVecAny"/> uses the batched GEMM path.</summary>
+    public const int MinTokensForGemm = 16;
+
     public static void MatVecAny(
         float[] input,
         VisionTensorRef weight,
@@ -120,6 +169,29 @@ public static unsafe class VisionOps
         float[] output)
     {
         if (!weight.IsValid) return;
+
+        // Many tokens: one cache-blocked GEMM that dequantizes each weight panel once (PackedSgemmF32),
+        // instead of a full weight pass per token. Measured 2026-09-27 on Step3-VL (47 layers, F16,
+        // 4 x 1296 + 2704 patches): see docs/102 #8. Activations stay FP32 here.
+        if (s_gemm && nTokens >= MinTokensForGemm && PackedSgemmF32.CanGemmStreaming(weight.Info.DType, inDim))
+        {
+            float[] act = RoundActivationsLikeGgml(input, nTokens, inDim, weight.Info.DType);
+            fixed (float* pIn = act)
+            fixed (float* pOut = output)
+            {
+                PackedSgemmF32.GemmQuant(pOut, pIn, weight.Data, weight.Info.DType, nTokens, outDim, inDim);
+                if (bias != null)
+                {
+                    var b = new ReadOnlySpan<float>(bias, outDim);
+                    for (int t = 0; t < nTokens; t++)
+                    {
+                        var row = new Span<float>(pOut + (long)t * outDim, outDim);
+                        TensorPrimitives.Add(row, b, row);
+                    }
+                }
+            }
+            return;
+        }
 
         fixed (float* pIn = input)
         fixed (float* pOut = output)
@@ -182,6 +254,15 @@ public static unsafe class VisionOps
     /// for matmul-bound weight tensors (attention/FFN/proj), which stay on <see cref="GetTensor"/> +
     /// <see cref="MatVecAny"/> to avoid materializing GB-scale tensors off the memory-mapped file.
     /// </summary>
+    /// <summary>A float array stored as GGUF metadata (e.g. <c>clip.vision.image_mean</c>); null when absent.</summary>
+    public static float[]? GetTensorArrayOrMeta(GgufModel gguf, string key)
+    {
+        if (!gguf.Metadata.TryGetValue(key, out var v) || v is not System.Collections.IList list) return null;
+        var r = new float[list.Count];
+        for (int i = 0; i < r.Length; i++) r[i] = Convert.ToSingle(list[i]);
+        return r;
+    }
+
     public static float[]? GetTensorArray(GgufModel gguf, params string[] candidateNames)
     {
         var t = GetTensor(gguf, candidateNames);
@@ -268,6 +349,12 @@ public static unsafe class VisionOps
         float scale = 1.0f / MathF.Sqrt(headDim);
         int embd = heads * headDim;
 
+        if (s_gemmAttn && nTokens >= MinTokensForGemmAttention && PackedSgemmF32.IsSupported)
+        {
+            AttentionGemm(q, k, v, nTokens, heads, headDim, scale, output);
+            return;
+        }
+
         // Vectorized via TensorPrimitives (Dot/MultiplyAdd) instead of scalar accumulation
         // loops -- same algorithm as Gemma3VisionEncoder's hand-rolled attention (see that
         // class's doc comment: at large token counts, scalar loops here were measured as "far
@@ -330,6 +417,58 @@ public static unsafe class VisionOps
     /// Q has shape [nTokens, qHeads * headDim]. K, V have shape [nTokens, kvHeads * headDim].
     /// Output has shape [nTokens, qHeads * headDim].
     /// </summary>
+    /// <summary>Token count from which <see cref="Attention"/> uses <see cref="AttentionGemm"/>.</summary>
+    public const int MinTokensForGemmAttention = 256;
+
+    /// <summary>
+    /// Full (unmasked) multi-head attention as two GEMMs per head: S = Q_h K_h^T (scaled), a row softmax,
+    /// then O_h = P V_h, both through <see cref="PackedSgemmF32"/>. Same math as the per-pair loop in
+    /// <see cref="Attention"/>; used for large token counts, where the loop's n^2 small dot products dominate
+    /// (Step3-VL overview: 2704 patches x 47 layers, measured in docs/102 #8, 2026-09-27).
+    /// </summary>
+    public static void AttentionGemm(float[] q, float[] k, float[] v, int n, int heads, int headDim, float scale, float[] output)
+    {
+        int embd = heads * headDim;
+        var qh = new float[n * headDim];
+        var kh = new float[n * headDim];
+        var vt = new float[headDim * n];
+        var scores = new float[(long)n * n];
+        var oh = new float[n * headDim];
+        for (int h = 0; h < heads; h++)
+        {
+            int off = h * headDim;
+            Parallel.For(0, n, t =>
+            {
+                Array.Copy(q, t * embd + off, qh, t * headDim, headDim);
+                Array.Copy(k, t * embd + off, kh, t * headDim, headDim);
+                for (int d = 0; d < headDim; d++) vt[d * n + t] = v[t * embd + off + d];
+            });
+            fixed (float* pq = qh, pk = kh, pvt = vt, ps = scores, po = oh)
+            {
+                float* packedK = PackedSgemmF32.PackWeights(pk, n, headDim);
+                try { PackedSgemmF32.Gemm(ps, pq, packedK, null, n, n, headDim); }
+                finally { NativeMemory.AlignedFree(packedK); }
+
+                nint sp = (nint)ps;
+                Parallel.For(0, n, i =>
+                {
+                    var row = new Span<float>((float*)sp + (long)i * n, n);
+                    TensorPrimitives.Multiply(row, scale, row);
+                    float max = TensorPrimitives.Max(row);
+                    TensorPrimitives.Subtract(row, max, row);
+                    TensorPrimitives.Exp(row, row);
+                    float sum = TensorPrimitives.Sum(row);
+                    TensorPrimitives.Multiply(row, sum > 0f ? 1f / sum : 0f, row);
+                });
+
+                float* packedV = PackedSgemmF32.PackWeights(pvt, headDim, n);
+                try { PackedSgemmF32.Gemm(po, ps, packedV, null, n, headDim, n); }
+                finally { NativeMemory.AlignedFree(packedV); }
+            }
+            Parallel.For(0, n, t => Array.Copy(oh, t * headDim, output, t * embd + off, headDim));
+        }
+    }
+
     public static void AttentionGqa(
         float[] q,
         float[] k,
@@ -918,6 +1057,81 @@ public static unsafe class VisionOps
         int headDim,
         float theta = 10000.0f)
         => ApplyMRoPE(q, k, patchesX, patchesY, heads, heads, headDim, theta);
+
+    /// <summary>
+    /// 2D RoPE as llama.cpp's <c>clip_graph::build_rope_2d(cur, pos_w, pos_h, theta, interleave_freq: false)</c>
+    /// (Kimi-VL, Step3-VL): the first half of each head is rotated by the patch COLUMN, the second half by
+    /// the patch ROW; each half is an ordinary adjacent-pair RoPE over <c>headDim/2</c> dims with its own
+    /// ladder <c>theta^(-2i/(headDim/2))</c>. Tokens are raster order (x fastest).
+    /// </summary>
+    public static void Rope2dHalves(float[] q, float[] k, int patchesX, int patchesY, int heads, int headDim, float theta)
+    {
+        int half = headDim / 2;
+        int pairs = half / 2;
+        var freqs = new float[pairs];
+        for (int i = 0; i < pairs; i++) freqs[i] = MathF.Pow(theta, -2.0f * i / half);
+
+        Parallel.For(0, patchesY, py =>
+        {
+            for (int px = 0; px < patchesX; px++)
+            {
+                int p = py * patchesX + px;
+                for (int h = 0; h < heads; h++)
+                {
+                    int headOff = (p * heads + h) * headDim;
+                    for (int part = 0; part < 2; part++)
+                    {
+                        float pos = part == 0 ? px : py;
+                        int baseOff = headOff + part * half;
+                        for (int i = 0; i < pairs; i++)
+                        {
+                            float a = pos * freqs[i];
+                            float c = MathF.Cos(a), sn = MathF.Sin(a);
+                            int o = baseOff + 2 * i;
+                            float q0 = q[o], q1 = q[o + 1];
+                            q[o] = q0 * c - q1 * sn; q[o + 1] = q0 * sn + q1 * c;
+                            float k0 = k[o], k1 = k[o + 1];
+                            k[o] = k0 * c - k1 * sn; k[o + 1] = k0 * sn + k1 * c;
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    /// <summary>
+    /// im2col for a 2D conv over a channels-last <paramref name="h"/> x <paramref name="w"/> x <paramref name="cin"/>
+    /// grid (raster tokens). Each output row is <c>cin*k*k</c> long in (ci, ky, kx) order, matching a GGUF conv
+    /// weight <c>[kw, kh, cin, cout]</c> read as <c>cout</c> rows, so <see cref="MatVecAny"/> / <see cref="MatVec"/>
+    /// finish the conv. Zero padding.
+    /// </summary>
+    public static float[] Im2Col(float[] input, int h, int w, int cin, int k, int stride, int pad, out int ho, out int wo)
+    {
+        int oh = (h + 2 * pad - k) / stride + 1, ow = (w + 2 * pad - k) / stride + 1;
+        ho = oh; wo = ow;
+        int kk = cin * k * k;
+        var cols = new float[oh * ow * kk];
+        Parallel.For(0, oh, oy =>
+        {
+            for (int ox = 0; ox < ow; ox++)
+            {
+                int o = (oy * ow + ox) * kk;
+                for (int ky = 0; ky < k; ky++)
+                {
+                    int iy = oy * stride + ky - pad;
+                    for (int kx = 0; kx < k; kx++)
+                    {
+                        int ix = ox * stride + kx - pad;
+                        if (iy < 0 || iy >= h || ix < 0 || ix >= w) continue;
+                        int src = (iy * w + ix) * cin;
+                        for (int ci = 0; ci < cin; ci++)
+                            cols[o + (ci * k + ky) * k + kx] = input[src + ci];
+                    }
+                }
+            }
+        });
+        return cols;
+    }
 
     /// <summary>
     /// A learned square position table (<c>side x side</c> rows of <paramref name="embd"/>) resized to a

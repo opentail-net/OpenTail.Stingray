@@ -386,40 +386,8 @@ public sealed unsafe class KimiVisionEncoder
     /// its own frequency ladder <c>theta^(-2i/(headDim/2))</c>. Found 2026-09-27 against llama-mtmd-debug:
     /// the earlier port paired dim d with d+headDim/2 and interleaved the x/y frequencies.
     /// </summary>
-    private void Apply2dInterleavedRope(float[] q, float[] k, int patchesX, int patchesY)
-    {
-        int half = _headDim / 2;
-        int pairs = half / 2;
-        var freqs = new float[pairs];
-        for (int i = 0; i < pairs; i++) freqs[i] = MathF.Pow(_ropeTheta, -2.0f * i / half);
-
-        Parallel.For(0, patchesY, py =>
-        {
-            for (int px = 0; px < patchesX; px++)
-            {
-                int p = py * patchesX + px;
-                for (int h = 0; h < _heads; h++)
-                {
-                    int headOff = (p * _heads + h) * _headDim;
-                    for (int part = 0; part < 2; part++)
-                    {
-                        float pos = part == 0 ? px : py;
-                        int baseOff = headOff + part * half;
-                        for (int i = 0; i < pairs; i++)
-                        {
-                            float theta = pos * freqs[i];
-                            float c = MathF.Cos(theta), sn = MathF.Sin(theta);
-                            int o = baseOff + 2 * i;
-                            float q0 = q[o], q1 = q[o + 1];
-                            q[o] = q0 * c - q1 * sn; q[o + 1] = q0 * sn + q1 * c;
-                            float k0 = k[o], k1 = k[o + 1];
-                            k[o] = k0 * c - k1 * sn; k[o + 1] = k0 * sn + k1 * c;
-                        }
-                    }
-                }
-            }
-        });
-    }
+    private void Apply2dInterleavedRope(float[] q, float[] k, int patchesX, int patchesY) =>
+        VisionOps.Rope2dHalves(q, k, patchesX, patchesY, _heads, _headDim, _ropeTheta);
 
     private float[] ResizedPositionEmbeddings(int width, int height) =>
         VisionOps.ResizePositionEmbeddings(_posEmbdF32, _embd, width, height);

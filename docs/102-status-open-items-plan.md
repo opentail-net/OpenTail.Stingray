@@ -18,7 +18,7 @@ dated evidence in the same pass.
 | 5 | ✅ DONE (2026-09-27) | Kimi-VL + YoutuVL: split `attn_k_b` / `attn_v_b` MLA layout not read | known math (llama.cpp deepseek2 absorption path); unblocks two models | medium |
 | 6 | ✅ DONE (2026-09-27) | PaddleOCR-VL: degenerate output | text architecture (`paddleocr`) has no validated forward pass | medium |
 | 7 | ✅ DONE (2026-09-27; OCR v1 untested, no checkpoint) | DeepSeek-OCR / OCR2: garbled | text architecture (`deepseek2-ocr`) has no validated forward pass | medium |
-| 8 | ⬜ TODO | Step3-VL: garbled | unvalidated architecture on a Q2_K checkpoint | medium–large |
+| 8 | ✅ DONE (2026-09-27) | Step3-VL: garbled | unvalidated architecture on a Q2_K checkpoint | medium–large |
 | 9 | ⬜ TODO | IBM Granite Vision 3.2 / 4.0: output not image-grounded | investigation; 3.2 via LlavaAdapter, 4.0 via QFormer projector | large |
 | 10 | ⬜ TODO | CosyVoice 2: audio only partly right | investigation | large |
 | 11 | ⬜ TODO | Stable Audio 3 Small SFX: darker than the reference | investigation | large |
@@ -113,6 +113,28 @@ second-half perplexity vs `llama-perplexity`, then an allowlist entry, a STATUS.
 MODELS.md entry if it qualifies.
 
 ## Log
+
+- 2026-09-27 #8 DONE: Step3-VL encoder rewritten against `step3vl.cpp`.
+  - Fused qkv, RoPE, layer scales, QuickGELU, conv downsamplers. Parity: sum 3957.5 vs 3959.4.
+  - The slicing preprocessor and segmented image input (`IVisionEmbedder.LastSegments`) were
+    ported too. The prompt equals llama-server's (520 tokens) and the model reads the invoice.
+  - **Performance pass (flagged as extra cost, CLAUDE.md rule 11).** The first correct run took
+    10m13s per image, because every vision linear was one weight pass per token.
+    - Added `PackedSgemmF32.CanGemmStreaming` (F16 through the existing `GemmQuant` panel kernel).
+      `VisionOps.MatVecAny` takes the GEMM path at >= 16 tokens: 10m13s -> 4m25s.
+    - Added `VisionOps.AttentionGemm` (QK^T and PV as GEMMs) at >= 256 tokens: -> 2m54s-3m03s.
+    - Step3 448-px encoder alone: 64 s -> 13.4 s.
+    - GEMM activations are rounded the way ggml does (Q8_0 per-32 blocks with an F16 scale; F16).
+      Without that, FP32 activations moved Kimi's sum by 3%; with it, Kimi matches llama.cpp more
+      closely than before (-707.42 vs -707.47).
+    - `STINGRAY_VISION_GEMM=0|nomm|noattn` switches the paths off for A/B checks.
+  - dots.ocr: a new non-degenerate rainbow parity test shows layers match through 22, then drift
+    in the very large late-layer activations in every variant. Tolerances were set from that
+    measured drift; end-to-end OCR is unchanged.
+  - Re-verified end to end after the change: PaddleOCR, Qwen2.5-VL, dots.ocr and DeepSeek-OCR2
+    still read the invoice identically. The Vision suite has 168 tests, 0 failed.
+  - Remaining cost: the text prefill of image tokens is per-token (~9 t/s here). A batched
+    embedding prefill is a separate engine item.
 
 - 2026-09-27 #7 DONE: DeepSeek-OCR2 768-px tiles added (bicubic position table, linear
   relative-position tables, 144 queries, llama.cpp grid choice).

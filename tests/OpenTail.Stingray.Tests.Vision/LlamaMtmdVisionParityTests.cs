@@ -204,6 +204,21 @@ public sealed class LlamaMtmdVisionParityTests
         AssertMatches(sam, -277.125, 15.0, [-0.1602f, 0.0755f, -0.0094f], 0.03f);
     }
 
+    [Fact]
+    public void Step3Vl_Rainbow448_MatchesLlamaMtmdDebug()
+    {
+        string? path = FindModel("mmproj-step3-vl-10b-F16.gguf");
+        Assert.SkipWhen(path is null, "mmproj-step3-vl-10b-F16.gguf not present");
+        using var model = Step3VlVisionModel.Open(path!);
+        float[] tokens = new Step3VlVisionEncoder(model).Forward(Rainbow(448), 448, 448, 32, 32, out int count);
+        Report("step3vl rainbow448", tokens, count, 4096);
+
+        // llama-mtmd-debug (-m step3-vl-10b-Q2_K.gguf --mmproj mmproj-step3-vl-10b-F16.gguf -n 448 --image rainbow):
+        // projector_out 64 x 4096, sum 3959.443115, row 0 [0.1267, 2.3648, 1.1197].
+        Assert.Equal(64, count);
+        AssertMatches(tokens, 3959.443, 40.0, [0.1267f, 2.3648f, 1.1197f], 0.05f);
+    }
+
     private static string? FindModel(string file)
     {
         var dir = new DirectoryInfo(AppContext.BaseDirectory);

@@ -1,115 +1,88 @@
+using System.Numerics.Tensors;
 
 namespace OpenTail.Stingray.Vision;
 
 /// <summary>
-/// Native vision encoder for StepFun Step-3 VL (SigLIP ViT + 2-stage spatial downsamplers + linear projection).
+/// StepFun Step3-VL vision tower, ported from llama.cpp <c>tools/mtmd/models/step3vl.cpp</c> (2026-09-27):
+/// 14-px patch conv (no bias) + the learned 52x52 position table resized to the grid (antialiased
+/// bilinear), <c>pre_ln</c>, 47 pre-norm blocks (LayerNorm, fused <c>attn_qkv</c>, 2D RoPE on column/row
+/// halves, <c>ls1</c>/<c>ls2</c> layer scales, QuickGELU MLP), then two 3x3 stride-2 conv downsamplers with
+/// bias (1536 -> 3072 -> 6144, no activation) and the bias-free <c>mm.model.fc</c> projection (6144 -> 4096).
+/// A 448-px image gives 32x32 patches -> 8x8 = 64 tokens.
 /// </summary>
+/// <remarks>
+/// Rewritten 2026-09-27 against <c>llama-mtmd-debug</c>. The earlier port read separate q/k/v tensors that
+/// the GGUF does not have (it ships a fused <c>attn_qkv</c>), had no RoPE, no layer scales, a gated/GELU FFN
+/// instead of QuickGELU, and a pixel-shuffle + linear downsampler instead of the two convolutions.
+/// </remarks>
 public sealed unsafe class Step3VlVisionEncoder
 {
     private readonly Step3VlVisionModel _m;
-    private readonly int _embd;
-    private readonly int _heads;
-    private readonly int _headDim;
-    private readonly int _layers;
-    private readonly int _projDim;
+    private readonly int _embd, _heads, _headDim, _layers, _projDim;
     private readonly float _eps;
+    private readonly float[] _patchEmbdW, _posEmbd;
+    private readonly float[]? _patchEmbdB, _preLnW, _preLnB, _postLnW, _postLnB;
+    private readonly VisionTensorRef _mm0W, _mm1W, _fcW;
+    private readonly float[] _mm0B, _mm1B;
+    private readonly int _mm0Out, _mm1Out;
+    private readonly Block[] _blocks;
 
-    private readonly float[]? _patchEmbdW;
-    private readonly float[]? _patchEmbdB;
-    private readonly float[]? _posEmbd;
-    private readonly float[]? _postLnW;
-    private readonly float[]? _postLnB;
-    private readonly float[]? _mm0W;
-    private readonly float[]? _mm0B;
-    private readonly float[]? _mm1W;
-    private readonly float[]? _mm1B;
-    private readonly float[]? _mmModelProjW;
-    private readonly float[]? _mmModelProjB;
-
-    private readonly int _mm0OutDim;
-    private readonly int _mm1OutDim;
-
-    private readonly LayerWeights[] _blocks;
-
-    private sealed class LayerWeights
+    private sealed class Block
     {
-        public float[]? Ln1W, Ln1B, Ln2W, Ln2B;
-        public float[]? QW, KW, VW, OW;
-        public float[]? QB, KB, VB, OB;
-        public float[]? FfnUpW, FfnGateW, FfnDownW;
-        public float[]? FfnUpB, FfnGateB, FfnDownB;
-        public int FfnIntermediate;
+        public required float[] Ln1W, Ln1B, Ln2W, Ln2B, QkvB, OutB, UpB, DownB;
+        public float[]? Ls1, Ls2;
+        public required VisionTensorRef QkvW, OutW, UpW, DownW;
+        public int Ffn;
     }
 
-    // Real bug (found + fixed 2026-09-11 benchmarking Step3-VL-10B): the final projector tensor
-    // was looked up under a made-up name, "mm.model_proj.weight" -- confirmed against the real
-    // reference (`examples/llama.cpp/llama.cpp/tools/mtmd/clip.cpp`'s PROJECTOR_TYPE_STEP3VL case
-    // and `clip-impl.h`'s `TN_MM_PROJECTOR = "mm.model.fc.%s"`) that the real GGUF key is
-    // "mm.model.fc.weight", with NO bias tensor for this projector type. The wrong name meant this
-    // tensor was never found, silently falling back to returning `mm1Out` (width `_mm1OutDim`)
-    // from `Forward` while `_projDim` (used for this property, and for the CLI's per-token stride)
-    // still reported the metadata/hardcoded-fallback width -- a real width mismatch that sliced
-    // past the end of the actual, narrower buffer (ArgumentOutOfRangeException, no useful
-    // diagnostic). Fixed the tensor name below; this property is kept width-safe regardless (falls
-    // back to the real returned width whenever the tensor genuinely isn't present).
-    public int ProjectionDim => _mmModelProjW != null ? _projDim : _mm1OutDim;
+    public int ProjectionDim => _projDim;
 
     public Step3VlVisionEncoder(Step3VlVisionModel model)
     {
-        _m       = model;
-        _embd    = model.EmbeddingDim;
-        _heads   = model.HeadCount;
+        _m = model;
+        _embd = model.EmbeddingDim;
+        _heads = model.HeadCount;
         _headDim = model.HeadDim;
-        _layers  = model.LayerCount;
-        _projDim = model.ProjectionDim;
-        _eps     = model.Eps;
+        _layers = model.LayerCount;
+        _eps = model.Eps;
+        var g = model.Gguf;
 
-        var gguf = model.Gguf;
+        _patchEmbdW = VisionOps.LoadTensorF32(g, "v.patch_embd.weight") ?? throw new InvalidOperationException("Missing v.patch_embd.weight");
+        _patchEmbdB = VisionOps.GetTensorArray(g, "v.patch_embd.bias");
+        _posEmbd = VisionOps.LoadTensorF32(g, "v.position_embd.weight") ?? [];
+        _preLnW = VisionOps.GetTensorArray(g, "v.pre_ln.weight");
+        _preLnB = VisionOps.GetTensorArray(g, "v.pre_ln.bias");
+        _postLnW = VisionOps.GetTensorArray(g, "v.post_ln.weight");
+        _postLnB = VisionOps.GetTensorArray(g, "v.post_ln.bias");
+        _mm0W = VisionOps.GetTensor(g, "mm.0.weight");
+        _mm1W = VisionOps.GetTensor(g, "mm.1.weight");
+        _fcW = VisionOps.GetTensor(g, "mm.model.fc.weight");
+        _mm0B = VisionOps.GetTensorArray(g, "mm.0.bias") ?? throw new InvalidOperationException("Missing mm.0.bias");
+        _mm1B = VisionOps.GetTensorArray(g, "mm.1.bias") ?? throw new InvalidOperationException("Missing mm.1.bias");
+        _mm0Out = _mm0B.Length;
+        _mm1Out = _mm1B.Length;
+        _projDim = _fcW.IsValid ? (int)_fcW.Info.Dimensions[1] : model.ProjectionDim;
 
-        _patchEmbdW   = VisionOps.LoadTensorF32(gguf, "v.patch_embd.weight");
-        _patchEmbdB   = VisionOps.GetTensorArray(gguf, "v.patch_embd.bias");
-        _posEmbd      = VisionOps.LoadTensorF32(gguf, "v.position_embd.weight", "v.position_embd");
-        _postLnW      = VisionOps.GetTensorArray(gguf, "v.post_ln.weight");
-        _postLnB      = VisionOps.GetTensorArray(gguf, "v.post_ln.bias");
-        _mm0W         = VisionOps.LoadTensorF32(gguf, "mm.0.weight");
-        _mm0B         = VisionOps.GetTensorArray(gguf, "mm.0.bias");
-        _mm1W         = VisionOps.LoadTensorF32(gguf, "mm.1.weight");
-        _mm1B         = VisionOps.GetTensorArray(gguf, "mm.1.bias");
-        _mmModelProjW = VisionOps.LoadTensorF32(gguf, "mm.model.fc.weight");
-        _mmModelProjB = VisionOps.GetTensorArray(gguf, "mm.model.fc.bias");
-
-        var mm0T = gguf.FindTensor("mm.0.weight");
-        _mm0OutDim = mm0T.HasValue ? (int)mm0T.Value.Dimensions[1] : _embd * 2;
-        var mm1T = gguf.FindTensor("mm.1.weight");
-        _mm1OutDim = mm1T.HasValue ? (int)mm1T.Value.Dimensions[1] : _embd * 4;
-
-        _blocks = new LayerWeights[_layers];
+        _blocks = new Block[_layers];
         for (int l = 0; l < _layers; l++)
         {
-            var upT = gguf.FindTensor($"v.blk.{l}.ffn_up.weight");
-            _blocks[l] = new LayerWeights
+            string p = $"v.blk.{l}.";
+            var up = VisionOps.GetTensor(g, p + "ffn_up.weight");
+            _blocks[l] = new Block
             {
-                Ln1W     = VisionOps.GetTensorArray(gguf, $"v.blk.{l}.ln1.weight"),
-                Ln1B     = VisionOps.GetTensorArray(gguf, $"v.blk.{l}.ln1.bias"),
-                QW       = VisionOps.LoadTensorF32(gguf, $"v.blk.{l}.attn_q.weight"),
-                QB       = VisionOps.GetTensorArray(gguf, $"v.blk.{l}.attn_q.bias"),
-                KW       = VisionOps.LoadTensorF32(gguf, $"v.blk.{l}.attn_k.weight"),
-                KB       = VisionOps.GetTensorArray(gguf, $"v.blk.{l}.attn_k.bias"),
-                VW       = VisionOps.LoadTensorF32(gguf, $"v.blk.{l}.attn_v.weight"),
-                VB       = VisionOps.GetTensorArray(gguf, $"v.blk.{l}.attn_v.bias"),
-                OW       = VisionOps.LoadTensorF32(gguf, $"v.blk.{l}.attn_out.weight"),
-                OB       = VisionOps.GetTensorArray(gguf, $"v.blk.{l}.attn_out.bias"),
-                Ln2W     = VisionOps.GetTensorArray(gguf, $"v.blk.{l}.ln2.weight"),
-                Ln2B     = VisionOps.GetTensorArray(gguf, $"v.blk.{l}.ln2.bias"),
-                FfnUpW   = VisionOps.LoadTensorF32(gguf, $"v.blk.{l}.ffn_up.weight"),
-                FfnUpB   = VisionOps.GetTensorArray(gguf, $"v.blk.{l}.ffn_up.bias"),
-                FfnGateW = VisionOps.LoadTensorF32(gguf, $"v.blk.{l}.ffn_gate.weight"),
-                FfnGateB = VisionOps.GetTensorArray(gguf, $"v.blk.{l}.ffn_gate.bias"),
-                FfnDownW = VisionOps.LoadTensorF32(gguf, $"v.blk.{l}.ffn_down.weight"),
-                FfnDownB = VisionOps.GetTensorArray(gguf, $"v.blk.{l}.ffn_down.bias"),
-                FfnIntermediate = upT.HasValue ? (int)upT.Value.Dimensions[1] : _embd * 4,
+                Ln1W = Arr(p + "ln1.weight"), Ln1B = Arr(p + "ln1.bias"),
+                Ln2W = Arr(p + "ln2.weight"), Ln2B = Arr(p + "ln2.bias"),
+                QkvW = VisionOps.GetTensor(g, p + "attn_qkv.weight"), QkvB = Arr(p + "attn_qkv.bias"),
+                OutW = VisionOps.GetTensor(g, p + "attn_out.weight"), OutB = Arr(p + "attn_out.bias"),
+                UpW = up, UpB = Arr(p + "ffn_up.bias"),
+                DownW = VisionOps.GetTensor(g, p + "ffn_down.weight"), DownB = Arr(p + "ffn_down.bias"),
+                Ls1 = VisionOps.GetTensorArray(g, p + "ls1.weight"),
+                Ls2 = VisionOps.GetTensorArray(g, p + "ls2.weight"),
+                Ffn = (int)up.Info.Dimensions[1],
             };
         }
+
+        float[] Arr(string name) => VisionOps.GetTensorArray(g, name) ?? throw new InvalidOperationException($"Missing {name}");
     }
 
     public float[] Forward(
@@ -118,141 +91,102 @@ public sealed unsafe class Step3VlVisionEncoder
         out int tokenCount)
     {
         int ps = _m.PatchSize;
-        int nP = patchesX * patchesY;
+        int n = patchesX * patchesY;
+        int e = _embd;
 
-        var x = new float[nP * _embd];
+        var x = new float[n * e];
         Im2ColAndEmbed(chw, imgWidth, imgHeight, ps, patchesX, patchesY, x);
+        if (_posEmbd.Length > 0)
+            TensorPrimitives.Add(x, VisionOps.ResizePositionEmbeddings(_posEmbd, e, patchesX, patchesY), x);
+        if (_preLnW != null)
+            fixed (float* w = _preLnW, b = _preLnB) VisionOps.LayerNorm(x, n, e, w, b, _eps);
 
-        if (_posEmbd != null)
-        {
-            int maxP = Math.Min(nP * _embd, _posEmbd.Length);
-            for (int i = 0; i < maxP; i++) x[i] += _posEmbd[i];
-        }
-
-        var normed = new float[nP * _embd];
-        var qBuf   = new float[nP * _embd];
-        var kBuf   = new float[nP * _embd];
-        var vBuf   = new float[nP * _embd];
-        var tmp    = new float[nP * _embd];
-
-        int maxIntermediate = 0;
-        for (int l = 0; l < _layers; l++)
-        {
-            if (_blocks[l].FfnIntermediate > maxIntermediate) maxIntermediate = _blocks[l].FfnIntermediate;
-        }
-        var mid  = new float[nP * maxIntermediate];
-        var gate = new float[nP * maxIntermediate];
+        var normed = new float[n * e];
+        var qkv = new float[n * 3 * e];
+        var q = new float[n * e];
+        var k = new float[n * e];
+        var v = new float[n * e];
+        var attn = new float[n * e];
+        var tmp = new float[n * e];
+        int maxFfn = _blocks.Max(b => b.Ffn);
+        var mid = new float[n * maxFfn];
 
         for (int l = 0; l < _layers; l++)
         {
             var b = _blocks[l];
-
-            fixed (float* ln1W = b.Ln1W, ln1B = b.Ln1B, qb = b.QB, kb = b.KB, vb = b.VB, ob = b.OB,
-                   ln2W = b.Ln2W, ln2B = b.Ln2B, ffnUpB = b.FfnUpB, ffnGateB = b.FfnGateB,
-                   ffnDownB = b.FfnDownB)
+            Array.Copy(x, normed, x.Length);
+            fixed (float* w = b.Ln1W, bb = b.Ln1B) VisionOps.LayerNorm(normed, n, e, w, bb, _eps);
+            fixed (float* qb = b.QkvB) VisionOps.MatVecAny(normed, b.QkvW, qb, n, e, 3 * e, qkv);
+            for (int t = 0; t < n; t++)
             {
-                Array.Copy(x, normed, x.Length);
-                VisionOps.LayerNorm(normed, nP, _embd, ln1W, ln1B, _eps);
-
-                VisionOps.MatVec(normed, b.QW, qb, nP, _embd, _embd, qBuf);
-                VisionOps.MatVec(normed, b.KW, kb, nP, _embd, _embd, kBuf);
-                VisionOps.MatVec(normed, b.VW, vb, nP, _embd, _embd, vBuf);
-                VisionOps.Attention(qBuf, kBuf, vBuf, nP, _heads, _headDim, normed);
-                VisionOps.MatVec(normed, b.OW, ob, nP, _embd, _embd, tmp);
-                for (int i = 0; i < x.Length; i++) x[i] += tmp[i];
-
-                Array.Copy(x, normed, x.Length);
-                VisionOps.LayerNorm(normed, nP, _embd, ln2W, ln2B, _eps);
-
-                int inter = b.FfnIntermediate;
-                int interLen = nP * inter;
-                VisionOps.MatVec(normed, b.FfnUpW, ffnUpB, nP, _embd, inter, mid);
-
-                if (b.FfnGateW != null)
-                {
-                    VisionOps.MatVec(normed, b.FfnGateW, ffnGateB, nP, _embd, inter, gate);
-                    VisionOps.Silu(mid.AsSpan(0, interLen));
-                    for (int i = 0; i < interLen; i++) mid[i] *= gate[i];
-                }
-                else
-                {
-                    VisionOps.Gelu(mid.AsSpan(0, interLen));
-                }
-
-                VisionOps.MatVec(mid, b.FfnDownW, ffnDownB, nP, inter, _embd, tmp);
-                for (int i = 0; i < x.Length; i++) x[i] += tmp[i];
+                Array.Copy(qkv, t * 3 * e, q, t * e, e);
+                Array.Copy(qkv, t * 3 * e + e, k, t * e, e);
+                Array.Copy(qkv, t * 3 * e + 2 * e, v, t * e, e);
             }
-        }
+            VisionOps.Rope2dHalves(q, k, patchesX, patchesY, _heads, _headDim, _m.RopeTheta);
+            VisionOps.Attention(q, k, v, n, _heads, _headDim, attn);
+            fixed (float* ob = b.OutB) VisionOps.MatVecAny(attn, b.OutW, ob, n, e, e, tmp);
+            if (b.Ls1 != null) ScaleChannels(tmp, n, e, b.Ls1);
+            TensorPrimitives.Add(x, tmp, x);
 
+            Array.Copy(x, normed, x.Length);
+            fixed (float* w = b.Ln2W, bb = b.Ln2B) VisionOps.LayerNorm(normed, n, e, w, bb, _eps);
+            var m = new Span<float>(mid, 0, n * b.Ffn);
+            fixed (float* ub = b.UpB) VisionOps.MatVecAny(normed, b.UpW, ub, n, e, b.Ffn, mid);
+            VisionOps.QuickGelu(m);
+            fixed (float* db = b.DownB) VisionOps.MatVecAny(mid, b.DownW, db, n, b.Ffn, e, tmp);
+            if (b.Ls2 != null) ScaleChannels(tmp, n, e, b.Ls2);
+            TensorPrimitives.Add(x, tmp, x);
+        }
         if (_postLnW != null)
+            fixed (float* w = _postLnW, bb = _postLnB) VisionOps.LayerNorm(x, n, e, w, bb, _eps);
+
+        // Two 3x3 stride-2 convs with bias, no activation (step3vl.cpp downsample_0/_1).
+        float[] cols0 = VisionOps.Im2Col(x, patchesY, patchesX, e, 3, 2, 1, out int h1, out int w1);
+        var d0 = new float[h1 * w1 * _mm0Out];
+        fixed (float* b0 = _mm0B) VisionOps.MatVecAny(cols0, _mm0W, b0, h1 * w1, e * 9, _mm0Out, d0);
+        float[] cols1 = VisionOps.Im2Col(d0, h1, w1, _mm0Out, 3, 2, 1, out int h2, out int w2);
+        var d1 = new float[h2 * w2 * _mm1Out];
+        fixed (float* b1 = _mm1B) VisionOps.MatVecAny(cols1, _mm1W, b1, h2 * w2, _mm0Out * 9, _mm1Out, d1);
+
+        tokenCount = h2 * w2;
+        var output = new float[tokenCount * _projDim];
+        VisionOps.MatVecAny(d1, _fcW, null, tokenCount, _mm1Out, _projDim, output);
+        return output;
+    }
+
+    private static void ScaleChannels(float[] a, int n, int c, float[] scale)
+    {
+        for (int t = 0; t < n; t++)
         {
-            fixed (float* postLnW = _postLnW, postLnB = _postLnB) VisionOps.LayerNorm(x, nP, _embd, postLnW, postLnB, _eps);
-        }
-
-        // Projector: 2-stage spatial downsampling
-        int outX = Math.Max(1, patchesX / 2);
-        int outY = Math.Max(1, patchesY / 2);
-        tokenCount = outX * outY;
-        int mergedDim = _embd * 4;
-
-        var merged = new float[tokenCount * mergedDim];
-        VisionOps.PixelShuffle2x2(x, patchesY, patchesX, _embd, merged);
-
-        var mm0Out = new float[tokenCount * _mm0OutDim];
-        fixed (float* mm0B = _mm0B, mm1B = _mm1B, mmModelProjB = _mmModelProjB)
-        {
-            VisionOps.MatVec(merged, _mm0W, mm0B, tokenCount, mergedDim, _mm0OutDim, mm0Out);
-            VisionOps.Gelu(mm0Out);
-
-            var mm1Out = new float[tokenCount * _mm1OutDim];
-            VisionOps.MatVec(mm0Out, _mm1W, mm1B, tokenCount, _mm0OutDim, _mm1OutDim, mm1Out);
-
-            float[] proj;
-            if (_mmModelProjW != null)
-            {
-                proj = new float[tokenCount * _projDim];
-                VisionOps.MatVec(mm1Out, _mmModelProjW, mmModelProjB, tokenCount, _mm1OutDim, _projDim, proj);
-            }
-            else
-            {
-                proj = mm1Out;
-            }
-
-            return proj;
+            var row = new Span<float>(a, t * c, c);
+            TensorPrimitives.Multiply(row, scale, row);
         }
     }
 
     private void Im2ColAndEmbed(float[] chw, int imgW, int imgH, int ps, int px, int py, float[] dst)
     {
-        int nP      = px * py;
+        int nP = px * py;
         int patchDim = 3 * ps * ps;
         var patches = new float[nP * patchDim];
-
         Parallel.For(0, py, iy =>
         {
             for (int ix = 0; ix < px; ix++)
             {
-                int pIdx   = iy * px + ix;
-                int dstOff = pIdx * patchDim;
+                int dstOff = (iy * px + ix) * patchDim;
                 for (int c = 0; c < 3; c++)
                 {
                     int cOff = c * imgW * imgH;
                     for (int sy = 0; sy < ps; sy++)
-                    for (int sx = 0; sx < ps; sx++)
-                    {
-                        int srcY = iy * ps + sy;
-                        int srcX = ix * ps + sx;
-                        if (srcY < imgH && srcX < imgW)
-                            patches[dstOff + c * ps * ps + sy * ps + sx] = chw[cOff + srcY * imgW + srcX];
-                    }
+                        for (int sx = 0; sx < ps; sx++)
+                        {
+                            int srcY = iy * ps + sy, srcX = ix * ps + sx;
+                            if (srcY < imgH && srcX < imgW)
+                                patches[dstOff + c * ps * ps + sy * ps + sx] = chw[cOff + srcY * imgW + srcX];
+                        }
                 }
             }
         });
-
-        fixed (float* patchEmbdB = _patchEmbdB)
-        {
-            VisionOps.MatVec(patches, _patchEmbdW, patchEmbdB, nP, patchDim, _embd, dst);
-        }
+        fixed (float* b = _patchEmbdB) VisionOps.MatVec(patches, _patchEmbdW, b, nP, patchDim, _embd, dst);
     }
-
 }

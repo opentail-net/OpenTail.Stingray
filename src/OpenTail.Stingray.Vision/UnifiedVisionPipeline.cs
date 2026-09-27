@@ -742,19 +742,49 @@ public static class UnifiedVisionPipeline
         }
 
         public string ProjectorType => _model.ProjectorType;
-        public int EmbeddingDim => _model.ProjectionDim;
+        public int EmbeddingDim => _encoder.ProjectionDim;
         public int ImageWidth => _model.ImageSize;
         public int ImageHeight => _model.ImageSize;
-        // Verified against stepfun-ai/Step3-VL-10B's real tokenizer_config.json (fetched via HF
-        // API, not downloaded as a full model -- Qwen2.5-VL convention).
-        public string ImageOpenMarker => "<|vision_start|>";
-        public string ImageCloseMarker => "<|vision_end|>";
+        // mtmd MTMD_SLICE_TMPL_STEP3VL: markers come from LastSegments, not a single open/close pair.
+        public string ImageOpenMarker => "";
+        public string ImageCloseMarker => "";
         public string PlaceholderMarker => "<|image_pad|>";
+        public IReadOnlyList<VisionSegment>? LastSegments { get; private set; }
 
         public float[] EmbedImage(ReadOnlySpan<byte> rgb, int width, int height, out int tokenCount)
         {
-            var pre = Step3VlImagePreprocessor.Preprocess(rgb, width, height, _model.ImageSize, _model.PatchSize);
-            return _encoder.Forward(pre.Chw, pre.TargetWidth, pre.TargetHeight, pre.PatchesX, pre.PatchesY, out tokenCount);
+            var g = _model.Gguf;
+            float[] mean = VisionOps.GetTensorArrayOrMeta(g, "clip.vision.image_mean") ?? [0.48145466f, 0.4578275f, 0.40821073f];
+            float[] std = VisionOps.GetTensorArrayOrMeta(g, "clip.vision.image_std") ?? [0.26862954f, 0.26130258f, 0.27577711f];
+            int longest = g.Metadata.TryGetValue("clip.vision.preproc_image_size", out var le) ? Convert.ToInt32(le) : 3024;
+            var pre = Step3VlImagePreprocessor.Preprocess(rgb, width, height, _model.ImageSize, longest, mean, std);
+
+            // llama.cpp order: crops row by row (<patch_newline> between rows, none after the last), then the overview.
+            var parts = new List<float[]>();
+            var segs = new List<VisionSegment>();
+            int at = 0;
+            for (int i = 0; i < pre.Crops.Count; i++)
+            {
+                var v = pre.Crops[i];
+                float[] emb = _encoder.Forward(v.Chw, v.Size, v.Size, v.Size / _model.PatchSize, v.Size / _model.PatchSize, out int n);
+                segs.Add(new VisionSegment("<patch_start>", 0, 0));
+                segs.Add(new VisionSegment(null, at, n));
+                segs.Add(new VisionSegment("<patch_end>", 0, 0));
+                if ((i + 1) % pre.GridW == 0 && i + 1 < pre.Crops.Count) segs.Add(new VisionSegment("<patch_newline>", 0, 0));
+                parts.Add(emb);
+                at += n;
+            }
+            var ov = pre.Overview;
+            float[] ovEmb = _encoder.Forward(ov.Chw, ov.Size, ov.Size, ov.Size / _model.PatchSize, ov.Size / _model.PatchSize, out int nOv);
+            segs.Add(new VisionSegment("<im_start>", 0, 0));
+            segs.Add(new VisionSegment(null, at, nOv));
+            segs.Add(new VisionSegment("<im_end>", 0, 0));
+            parts.Add(ovEmb);
+            at += nOv;
+
+            LastSegments = segs;
+            tokenCount = at;
+            return [.. parts.SelectMany(p => p)];
         }
 
         public float[] EmbedImageFile(string filePath, out int tokenCount)

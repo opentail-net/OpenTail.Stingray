@@ -156,9 +156,17 @@ public static unsafe class PackedSgemmF32
         return IsSupported && bs > 1 && Kc % bs == 0 && k % bs == 0;
     }
 
+    /// <summary>
+    /// <see cref="CanGemmQuant"/> plus F16 weights (block size 1: the same per-panel dequantize path works
+    /// unchanged). Separate so existing <see cref="CanGemmQuant"/> callers keep their F16 routing; used by the
+    /// vision encoders' batched linears (2026-09-27), whose F16 mmproj weights are too large to keep an FP32 copy of.
+    /// </summary>
+    public static bool CanGemmStreaming(DType dtype, int k) =>
+        CanGemmQuant(dtype, k) || (IsSupported && dtype == DType.Float16);
+
     public static void GemmQuant(float* output, float* input, byte* weights, DType dtype, int m, int n, int k)
     {
-        if (!CanGemmQuant(dtype, k)) throw new NotSupportedException($"GemmQuant: {dtype} with k={k}");
+        if (!CanGemmStreaming(dtype, k)) throw new NotSupportedException($"GemmQuant: {dtype} with k={k}");
         if (m <= 0 || n <= 0) return;
 
         int bs = DTypeInfo.BlockSize(dtype);
