@@ -23,7 +23,7 @@ dated evidence in the same pass.
 | 10 | ⛔ BLOCKED (needs an upstream CosyVoice2 reference) | CosyVoice 2: audio only partly right | investigation | large |
 | 11 | ✅ DONE (2026-09-27) | Stable Audio 3 Small SFX: darker than the reference | investigation | large |
 | 12 | ✅ DONE (2026-09-27) | Chronos-Bolt / Chronos-2: no numeric reference | needs an independent oracle without new Python reference scripts | large |
-| 13 | 🟡 IN PROGRESS (SD3 + FLUX.2 done; Qwen Image, HunyuanVideo next) | 🟢-but-⚪ diffusion rows (HunyuanVideo, FLUX.2, Qwen Image, SD3 CPU): not independently verified | needs reference outputs (vendored C++ / recorded) | large |
+| 13 | 🟡 MOSTLY DONE (SD3, FLUX.2, Qwen Image verified with automated sd.cpp tests; HunyuanVideo BLOCKED: no independent v1 reference) | 🟢-but-⚪ diffusion rows (HunyuanVideo, FLUX.2, Qwen Image, SD3 CPU): not independently verified | needs reference outputs (vendored C++ / recorded) | large |
 | 14 | ⬜ TODO | New family: Mamba-2 hybrid layer + state cache, admitting IBM Granite 4.0 (`granitehybrid`, Apache-2.0, 1B-32B) first | missing family; one layer type unlocks #3, #15 and Falcon-H1 | large |
 | 15 | ⬜ TODO | New family: NVIDIA Nemotron Nano v2 / Nemotron 3 Nano (`nemotron_h`) | missing family; reuses #14's Mamba-2 layer; also completes #3 | medium after #14 |
 | 16 | ⬜ TODO | New family: GLM-4.5 / 4.6 / 4.7 incl. Air (`glm4moe`) | missing family, currently a top open family; GLM-4 dense already runs. Air is ~60 GB at Q4 | medium |
@@ -160,6 +160,51 @@ MODELS.md entry if it qualifies.
   - **Landscape sweep:** the heavy test sweep started at 09:16 was killed by Claude Code's
     low-memory reaper at 11:08. The Diffusion suite had logged no failures up to then; Audio,
     Vision and ForwardPass never ran. Not restarted.
+
+- 2026-09-27 #13 SD3.5 Medium now has an automated reference test too.
+  - **Test:** `Sd3SdCppParityTests` runs the real pipeline (CLIP-L/G + T5-XXL + MMDiT), one step,
+    256², CFG 4.5, empty negative prompt, committed noise injected. It compares against a
+    `sd-cli --backend cpu` fixture in `TestData/Sd3SdCppGolden` (128 KB; sd.cpp took 30 s).
+  - **Results:** 29 s CPU run and 46 s for both variants, real weights.
+
+    | Path | Cosine | Rel. L2 | Norm ratio |
+    |---|---|---|---|
+    | CPU | 0.998754 | 5.0% | 0.9961 |
+    | Vulkan | 0.998767 | not recorded | 0.9956 |
+
+  - **Threshold:** 0.998 for both. The residual is the small encoder differences (CLIP-G 0.996,
+    T5 0.998) amplified by CFG.
+  - **Where the aux files live:** in `models/sd35-medium-aux` and `models/flux1-schnell`, not
+    `models/_models`.
+
+- 2026-09-27 #13 HunyuanVideo: BLOCKED on numeric parity. No independent runnable v1 reference.
+  - **Local sd.cpp patch** (`examples/stable-diffusion.cpp`, git-ignored, redo from this list):
+    - `name_conversion.cpp`: single-block `q_norm`/`k_norm` mapped to `norm.query_norm`/`key_norm.scale`.
+    - `hunyuan.hpp detect_from_weights`: v1 raw names for the head count and `qkv_bias`. It also
+      resolves the heads after the loop, because the loop could see `key_norm` before `img_in` and
+      divide the 2048 default by 128.
+    - `SD_HUNYUAN_V1`: latent 16 channels at 8x (not 1.5's 32 at 16x), and `c_vector` feeds `y` /
+      `vector_in` only, not 1.5's vision-token slot.
+    - `SD_DIT_ONLY`: skip text-encoder/VAE tensor validation.
+    - `SD_INJECT_COND_PATH` / `SD_INJECT_VEC_PATH`: conditioning from files, in both the image and
+      video paths.
+    - Noise and latent dumps in the video path.
+    - Run with `-M vid_gen --video-frames 1 --guidance 6000` (v1 embeds guidance x1000; sd.cpp's
+      time factor is 1).
+    - With all that, sd.cpp detects v1 correctly (24 heads, 20+40 blocks, qkv bias, ctx 4096,
+      vec 768, guidance) and runs.
+  - **Result:** same injected noise and our own LLaMA-3 + CLIP-L conditioning
+    (`STINGRAY_HUNYUAN_INJECT_NOISE_PATH` / `_DUMP_COND_PATH` / `_DUMP_VEC_PATH`, new).
+    - One-step velocity cosine is only 0.187, not a layout permutation.
+    - sd.cpp's x0 is noise-like: std 1.5, 0.52 correlated with the input noise.
+    - At 8 steps, 256², our VAE decodes sd.cpp's latent to pure colour noise, while ours on the same
+      noise is a clean red apple.
+  - **Conclusion:** the v1.5-only sd.cpp is missing something v1 needs. Candidates: fp8 e4m3fn
+    handling, token-refiner details, timestep conventions. Making it v1-correct would mean writing
+    v1 into the reference ourselves, which destroys its independence.
+  - **Status:** the row stays ⚪ with visual-only evidence.
+  - **To unblock:** an independent v1 reference output. Either a ComfyUI/diffusers HunyuanVideo run
+    recorded as data (noise + latent), like #10, or a C++ port that supports v1 upstream.
 
 - 2026-09-27 #13 SD3.5 Medium now has an automated reference test too.
   - **Test:** `Sd3SdCppParityTests` runs the real pipeline (CLIP-L/G + T5-XXL + MMDiT), one step,
