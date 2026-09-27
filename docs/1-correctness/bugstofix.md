@@ -118,6 +118,11 @@ restart a fourth round of kernel-level chasing on this checkpoint without new ev
     deepstack, so their image answers would be wrong. Text-only use on GPU is fine (text positions are 1D).
   - Also: the GPU rope tables for `qwen3vl` do not zero pairs 61-62 (the IMROPE 4th component), which the CPU table
     now does; that needs checking before GPU text use of `qwen3vl` is called verified.
+- [ ] **LLaVA-NeXT / LLaVA-1.6 AnyRes tiling (llava_uhd) remains unverified with real weights** (logged 2026-09-27):
+  - Classic LLaVA-1.5 (single-tile 336x336 ViT + MLP projector) is verified against `llama-mtmd-debug` and `llama-mtmd-cli`
+    end to end (`LlamaMtmdVisionParityTests.Llava15_Rainbow336_MatchesLlamaMtmdDebug`).
+  - However, dynamic AnyRes multi-tile slicing (`llava_uhd`) is only verified for Granite Vision, not on a LLaVA-NeXT
+    or LLaVA-OneVision checkpoint. Needs an actual LLaVA-NeXT checkpoint to verify tile ordering and separators.
 - [ ] **Dequantize.cs / IqCodebooks.cs coverage gap**: Port `iq1s_grid` (NGRID_IQ1S=2048) and decoders for `IQ1_S`/`IQ1_M` (`IQ1S_DELTA=0.125f`, distinct sign/shift scheme) and `IQ2_XS`/`IQ2_S` when needed by future GGUF models.
 - [ ] **ModelCompatibility.cs / Kernels missing op coverage** (2026-09-27: the Mamba-2 `SSM_SCAN`/`SSM_CONV` path is now implemented on CPU in `ForwardPass.Mamba2.cs` for Granite 4.0-H / Nemotron-H; Mamba-1 and GPU remain): Implement `GGML_OP_SSM_SCAN` (the selective-scan recurrence, distinct from `SSM_CONV`), `RWKV_WKV6`/`RWKV_WKV7`, and DeepSeek-V4 ops (`LIGHTNING_INDEXER`, `DSV4_HC_*`, `SOLVE_TRI`, `WIN_PART`/`WIN_UNPART`).
 - [ ] **SpeculativeDecoder.cs StepSampled/PLD bugs**: Confirmed real defect in speculative decode step sampling; currently unreachable/latent as no wired call path exercises it yet.

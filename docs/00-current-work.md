@@ -60,9 +60,15 @@ updated with dated evidence in the same pass.
 10. **FunASR-Nano** has only ever been tested on a synthetic tone (repetitive output, expected);
     run it on real speech and give it a STATUS row. Separately, the local `paraformer-q8.gguf` lacks
     `pf.vocab` (bad conversion); the ONNX Paraformer path works.
-11. **Classic LLaVA-1.5** (plain 32000-token vocab, no image token): the CLI assumes a tokenizable
-    placeholder, so image splicing fails. Needs a direct-splice path like `llava-cli`. No local
-    LLaVA-1.5/1.6 checkpoint at the moment, so the `llava_uhd` changes are unverified for LLaVA too.
+11. **Classic LLaVA-1.5** (plain 32000-token vocab, no image token): **FIXED 2026-09-27**. The CLI
+    now has a direct-splice path when `PlaceholderMarker` is absent from special tokens, tokenizing
+    prompt text around the image marker and injecting soft tokens. Added Vicuna prompt formatting
+    for LLaMA-2 backbones (`USER: <image>{prompt}\nASSISTANT:`). Fixed ViT patch/CLS layout in
+    `LlavaVisionEncoder.cs` to match `llama.cpp`'s `clip_graph_llava::build` (patches at 0..575, CLS
+    at 576, extracted at 1..576 dropping row 0). Pinned by `LlamaMtmdVisionParityTests.Llava15_Rainbow336_MatchesLlamaMtmdDebug`
+    (sum -10587.12 vs -10596.39). End-to-end on `test-1.png` reads "The newspaper is the New York Times,
+    and the main headline reads \"Men Walk on Moon.\"" matching `llama-mtmd-cli`. (Note: `llava_uhd` /
+    anyres tiling remains unverified until a LLaVA-NeXT / 1.6 checkpoint is tested).
 12. **CosyVoice 2 garbled endings — BLOCKED** on an independent reference: one recorded upstream
     `inference_zero_shot` run (input token ids, generated speech tokens, ideally per-step top-k),
     checked in as data. What is already ruled out: #10 in [done/102](done/102-status-open-items-plan.md).

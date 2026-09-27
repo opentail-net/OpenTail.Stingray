@@ -248,6 +248,21 @@ public sealed class LlamaMtmdVisionParityTests
     }
 
     [Fact]
+    public void Llava15_Rainbow336_MatchesLlamaMtmdDebug()
+    {
+        string? path = FindModel("mmproj-llava-v1.5-7b-f16.gguf");
+        Assert.SkipWhen(path is null, "mmproj-llava-v1.5-7b-f16.gguf not present");
+        using var model = LlavaVisionModel.Open(path!);
+        float[] tokens = new LlavaVisionEncoder(model).Forward(Rainbow(336), 336, 336, 24, 24, out int count);
+        Report("llava15 rainbow336", tokens, count, 4096);
+
+        // llama-mtmd-debug (-m llava-v1.5-7b/ggml-model-q4_k.gguf --mmproj mmproj-llava-v1.5-7b-f16.gguf -n 336 --image rainbow):
+        // 576 x 4096, sum -10596.388672, row 0 [-0.5347, -0.0022, -0.2532].
+        Assert.Equal(576, count);
+        AssertMatches(tokens, -10596.389, 50.0, [-0.5347f, -0.0022f, -0.2532f], 0.05f);
+    }
+
+    [Fact]
     public void GraniteVision32_Rainbow384_MatchesLlamaMtmdDebug()
     {
         string? path = FindModel("mmproj-granite-vision-3.2-2b-f16.gguf");

@@ -120,7 +120,7 @@ Timebox each at half a day, write down what was learned, and move on if blocked.
   - [x] **11.c** NaN in `ForwardPass`'s f16 `qwen3` path (last layer, one position). DONE 2026-09-27: no longer reproduces; pinned by `Qwen3F16FiniteLogitsTests`.
   - [ ] **11.d** `HybridGdnChunkedPrefill_MatchesSequentialPrefill` failure with real weights.
   - [ ] **11.e** Stable Audio 3 padding masks in the APG norm.
-  - [ ] **11.f** Classic LLaVA-1.5 (missing image token in vocab).
+  - [x] **11.f** Classic LLaVA-1.5 (missing image token in vocab). DONE 2026-09-27: direct-splice path in CLI (`RunCommand.cs`) when marker absent from special tokens; Vicuna prompt format for LLaMA-2 backbone; patch/CLS ordering in `LlavaVisionEncoder.cs` (patches 0..575, CLS 576, matching llama.cpp's `clip_graph_llava::build`). Pinned by `LlamaMtmdVisionParityTests.Llava15_Rainbow336_MatchesLlamaMtmdDebug` (576x4096 soft tokens, sum -10587.12 vs -10596.39, row 0 [-0.5335, -0.0007, -0.2534] vs [-0.5347, -0.0022, -0.2532]). End-to-end answers "The newspaper is the New York Times, and the main headline reads \"Men Walk on Moon.\"" matching `llama-mtmd-cli`.
 
 ---
 

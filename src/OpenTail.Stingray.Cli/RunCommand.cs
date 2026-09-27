@@ -875,6 +875,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
             s_arch = stTensorSource.Metadata.TryGetValue("general.architecture", out var stArchVal)
                 ? (string)stArchVal : "llama";
             s_jinja = tokenizer.ChatTemplate;
+            s_hasLlama3Headers = tokenizer.SpecialTokens.ContainsKey("<|start_header_id|>");
             (s_thinkTokenId, s_endThinkTokenId) = tokenizer.ReasoningTokens;
 
             if (settings.Thinking && settings.NoThinking)
@@ -930,6 +931,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
             : settings.Auto && resolvedPlan is not null ? resolvedPlan.ContextSize : 0;
         tokenizer = GgufTokenizer.FromGgufModel(model);
         s_jinja = tokenizer.ChatTemplate;
+        s_hasLlama3Headers = tokenizer.SpecialTokens.ContainsKey("<|start_header_id|>");
 
         // Reasoning boundary tokens: ChatML <think>/</think> (Qwen3, DeepSeek-R1, SmolLM3, ...)
         // or Gemma 4's <|channel>thought … <channel|>. Resolved once on the tokenizer so the CLI,
@@ -2572,6 +2574,8 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         // length match against hp.EmbeddingDim; a size mismatch here is a real architecture-adapter
         // bug, not something a caller can work around).
         int embd = vision.EmbeddingDim;
+        if (vision.PlaceholderMarker == "<image>" || vision.ProjectorType == "mlp")
+            s_isVicuna = true;
         if (embd != hp.EmbeddingDim && embd != hp.EmbeddingDim * (1 + hp.NumDeepstack))
         {
             AnsiConsole.MarkupLine(
@@ -2643,21 +2647,87 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         int[] imgCloseText = imgClose < 0 && !string.IsNullOrEmpty(vision.ImageCloseMarker)
             ? tok.Encode(vision.ImageCloseMarker).Where(t => !tok.SpecialTokens.Values.Contains(t)).ToArray()
             : [];
-        int placeholder = tok.SpecialTokens.TryGetValue(vision.PlaceholderMarker, out var ph) ? ph :
-                          (tok.SpecialTokens.TryGetValue("<|image|>", out var ph2) ? ph2 :
-                          (tok.SpecialTokens.TryGetValue("<image_soft_token>", out var ph3) ? ph3 : 258880));
+        // Determine whether the model's placeholder is a real special token or plain text.
+        // Classic LLaVA-1.5 (llava-v1.5-*): its GGUF is a plain LLaMA-2 32K vocab — "<image>" is
+        // NOT a special token, so the previous fallback chain (<|image|> -> <image_soft_token> ->
+        // 258880) silently produced a placeholder ID that never appeared in the tokenised output,
+        // and the count check always failed with "found 0". Do not fall through to 258880 for a
+        // model whose own marker is plain text — that is a silent-failure trap (258880 is a
+        // hardcoded magic number that may appear in some other model's vocab but carries no meaning
+        // here). Instead, use the direct-splice path below (found 2026-09-27).
+        bool markerIsSpecialToken = tok.SpecialTokens.ContainsKey(vision.PlaceholderMarker);
+        int placeholder;
+        if (markerIsSpecialToken)
+        {
+            placeholder = tok.SpecialTokens[vision.PlaceholderMarker];
+        }
+        else if (tok.SpecialTokens.TryGetValue("<|image|>", out var ph2))
+        {
+            // Model has a different real special token; keep original fallback for models that
+            // reported a wrong PlaceholderMarker but genuinely have <|image|> as a special token.
+            placeholder = ph2;
+            markerIsSpecialToken = true;
+        }
+        else if (tok.SpecialTokens.TryGetValue("<image_soft_token>", out var ph3))
+        {
+            placeholder = ph3;
+            markerIsSpecialToken = true;
+        }
+        else
+        {
+            // PlaceholderMarker is plain text (not a special token). Use the direct-splice path.
+            // Do NOT fall back to 258880 here — that sentinel means nothing in this vocabulary
+            // and would produce silent zero-count failures for any model on this path.
+            placeholder = -1;  // sentinel: used only by the direct-splice builder below
+        }
 
         // No injected default system prompt for image prompts: llama-server (the parity reference for every
         // vision model) renders the model's own template as-is, and Qwen3-based VLMs (Step3-VL) are not the
         // text-only Qwen3 chat models that default was measured on.
         var prompt = FormatPrompt(userMsg, s.SystemPrompt, enableThinking: !s_noThinking, injectDefaultSystem: false);
-        var allTokens = EnsureBos(tok.Encode(prompt), tok).ToList();
-        int placeholdersFound = allTokens.Count(t => t == placeholder);
-        if (placeholdersFound != nImages)
+        List<int> allTokens;
+        if (markerIsSpecialToken)
         {
-            AnsiConsole.MarkupLine($"[red]Error:[/] expected {nImages} image placeholder token(s) ({vision.PlaceholderMarker}, {placeholder}) " +
-                $"after templating but found {placeholdersFound}; this model may not support image input.");
-            return 1;
+            // Normal path: the placeholder is a real special token that survives tokenisation;
+            // encode the whole prompt and count occurrences.
+            allTokens = EnsureBos(tok.Encode(prompt), tok).ToList();
+            int placeholdersFound = allTokens.Count(t => t == placeholder);
+            if (placeholdersFound != nImages)
+            {
+                AnsiConsole.MarkupLine($"[red]Error:[/] expected {nImages} image placeholder token(s) ({vision.PlaceholderMarker}, {placeholder}) " +
+                    $"after templating but found {placeholdersFound}; this model may not support image input.");
+                return 1;
+            }
+        }
+        else
+        {
+            // Direct-splice path (classic LLaVA-1.5 and any model whose PlaceholderMarker is plain
+            // text). llama.cpp's own mtmd splits the prompt text at the marker string, tokenises
+            // each piece separately (BOS on the first piece only), then splices the image embeddings
+            // directly between the pieces — no placeholder token ID is needed. We do the same:
+            // split on the literal marker, validate the count, and build allTokens with sentinel
+            // (-1) at each image injection point. The playback loop below already handles
+            // id == placeholder (which is -1 here) identically to the special-token path.
+            string[] textParts = prompt.Split(vision.PlaceholderMarker, StringSplitOptions.None);
+            int spliceCount = textParts.Length - 1;
+            if (spliceCount != nImages)
+            {
+                AnsiConsole.MarkupLine($"[red]Error:[/] prompt has {spliceCount} '{vision.PlaceholderMarker}' occurrence(s) " +
+                    $"after templating but {nImages} --image file(s) were given; the counts must match.");
+                return 1;
+            }
+            allTokens = [];
+            for (int pi = 0; pi < textParts.Length; pi++)
+            {
+                // Tokenise each text segment. BOS is prepended only to the first segment, matching
+                // llama.cpp's common_tokenize(add_special: true) on the first part and (add_special:
+                // false) on the remainder.
+                var segTokens = tok.Encode(textParts[pi]);
+                if (pi == 0) segTokens = EnsureBos(segTokens, tok);
+                allTokens.AddRange(segTokens);
+                if (pi < spliceCount)
+                    allTokens.Add(-1);  // sentinel: expands to the image block in the playback loop
+            }
         }
 
         // Each placeholder expands to [open] + its soft tokens + [close], so the prefill is
@@ -3205,6 +3275,8 @@ public sealed class RunCommand : Command<RunCommand.Settings>
     }
 
     private static string s_arch = "qwen2"; // set during model load
+    private static bool s_hasLlama3Headers;
+    private static bool s_isVicuna;
     // Effective "thinking off" state: --no-thinking OR a model whose recommended config
     // disables reasoning (Gemma 4 E4B-it is not a reasoning model). Set during model load.
     private static bool s_noThinking;
@@ -3509,12 +3581,22 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         }
         else if (s_arch is "llama")
         {
-            // Llama 3/3.1: <|begin_of_text|><|start_header_id|>role<|end_header_id|>\n\nmessage<|eot_id|>
-            sb.Append("<|begin_of_text|>");
-            if (systemPrompt is not null)
-                sb.Append($"<|start_header_id|>system<|end_header_id|>\n\n{systemPrompt}<|eot_id|>");
-            sb.Append($"<|start_header_id|>user<|end_header_id|>\n\n{userMessage}<|eot_id|>");
-            sb.Append("<|start_header_id|>assistant<|end_header_id|>\n\n");
+            if (s_isVicuna || !s_hasLlama3Headers)
+            {
+                // Vicuna (LLaVA-1.5): USER: {userMessage}\nASSISTANT:
+                if (systemPrompt is not null)
+                    sb.Append($"{systemPrompt}\n\n");
+                sb.Append($"USER: {userMessage}\nASSISTANT:");
+            }
+            else
+            {
+                // Llama 3/3.1: <|begin_of_text|><|start_header_id|>role<|end_header_id|>\n\nmessage<|eot_id|>
+                sb.Append("<|begin_of_text|>");
+                if (systemPrompt is not null)
+                    sb.Append($"<|start_header_id|>system<|end_header_id|>\n\n{systemPrompt}<|eot_id|>");
+                sb.Append($"<|start_header_id|>user<|end_header_id|>\n\n{userMessage}<|eot_id|>");
+                sb.Append("<|start_header_id|>assistant<|end_header_id|>\n\n");
+            }
         }
         else
         {

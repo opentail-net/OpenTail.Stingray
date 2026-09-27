@@ -306,24 +306,14 @@ public sealed unsafe class LlavaVisionEncoder
         int patchSize = _m.PatchSize;
         int patchArea = patchSize * patchSize;
         int planeSize = width * height;
-        int patchOffset = hasCls ? 1 : 0; // real clip.cpp: `patch_offset = model.class_embedding ? 1 : 0`
-
-        if (hasCls)
-        {
-            for (int d = 0; d < _embd; d++) output[d] = _clsEmbd![d];
-            if (_posEmbdF32.Length > 0)
-            {
-                for (int d = 0; d < _embd; d++) output[d] += _posEmbdF32[d];
-            }
-        }
+        int numPatches = patchesX * patchesY;
 
         Parallel.For(0, patchesY, py =>
         {
             for (int px = 0; px < patchesX; px++)
             {
                 int patchIdx = py * patchesX + px;
-                int tokenIdx = patchIdx + patchOffset;
-                int outOffset = tokenIdx * _embd;
+                int outOffset = patchIdx * _embd;
 
                 if (_patchEmbdWF32.Length > 0)
                 {
@@ -348,7 +338,7 @@ public sealed unsafe class LlavaVisionEncoder
 
                         if (_posEmbdF32.Length > 0)
                         {
-                            sum += _posEmbdF32[tokenIdx * _embd + d];
+                            sum += _posEmbdF32[patchIdx * _embd + d];
                         }
 
                         output[outOffset + d] = sum;
@@ -356,5 +346,22 @@ public sealed unsafe class LlavaVisionEncoder
                 }
             }
         });
+
+        // In llama.cpp llava.cpp (clip_graph_llava::build), inp = ggml_concat(ctx0, inp, model.class_embedding, 1).
+        // The patch embeddings occupy indices 0..numPatches-1 with position embeddings 0..numPatches-1,
+        // and class_embedding is concatenated at the end at index numPatches with position embedding numPatches.
+        if (hasCls)
+        {
+            int clsOffset = numPatches * _embd;
+            for (int d = 0; d < _embd; d++)
+            {
+                float sum = _clsEmbd![d];
+                if (_posEmbdF32.Length > 0)
+                {
+                    sum += _posEmbdF32[numPatches * _embd + d];
+                }
+                output[clsOffset + d] = sum;
+            }
+        }
     }
 }
