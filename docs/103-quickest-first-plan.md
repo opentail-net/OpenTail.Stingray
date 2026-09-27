@@ -171,3 +171,24 @@ Never reproduced; act only on a new sighting.
   - The tool asserts in clip.cpp while printing the last tensor, so its sum is not available.
 - 2026-09-27: item 3 waiting. GLM-4.7-Flash is downloading (GLM-4.5-Air REAP moved to
   `K:\_other_models` to make room); its PPL run waits for the item 2 sweep.
+- 2026-09-27: item 3 downloaded (`GLM-4.7-Flash-Q2_K.gguf`, 10.6 GB); its PPL comparison waits for the
+  item 2 sweep (both need the machine).
+  - C: free space is about 27 GB lower than the moves and downloads account for. No large new file
+    was found in the repo or the profile; possibly a pending delete held open by a process. Not
+    blocking.
+- 2026-09-27: item 5 code done, not yet committed.
+  - `stingray stt -m sensevoice|paraformer --model-file <.onnx>`; tokens are found next to the model.
+    `SenseVoicePipeline` now implements `ISpeechToTextPipeline`.
+  - CLI check: SenseVoice gives "concord returned to its place amidst the tents", identical
+    (case-insensitive) to the LibriSpeech reference transcript.
+  - Paraformer gives a fluent Mandarin transcript, ending 嗯 where sherpa-onnx's published sample text
+    (quoted from memory) ends 你; unverified which is right.
+  - The new exact-transcript test in `SenseVoiceRealWeightsTests` waits for the Audio test project to
+    be free.
+- 2026-09-27: item 6 part 1 committed (e58b58a).
+  - 162 silent `return`s in test bodies now call Assert.Skip; 141 lookups also search models/_models.
+  - ForwardPass.Fast: 14 real-weight tests that silently passed now really run, and pass.
+  - Remaining:
+    - the Audio project (after the sweep);
+    - 14 files the other agent is editing;
+    - 31 lookup helpers with other shapes (listed by `nested_models.py`).
