@@ -1077,13 +1077,21 @@ findings, and any partial data already gathered.
 Open leftovers from documents moved to [done](done) on 2026-09-27. Each archived document's banner
 names what closed; these items are what did not.
 
-- **Qwen3.6-35B-A3B CPU performance**: prefill 0.63x of llama.cpp after the 2026-09-25 pass, and
-  the pre-existing `HybridGdnChunkedPrefill_MatchesSequentialPrefill` failure found then (not
-  re-checked since). See Phase 8 of
+- **Qwen3.6-35B-A3B CPU performance**: prefill still 0.63x of llama.cpp (re-checked against
+  `PerformanceLeague.md`, unchanged since 2026-09-25). The
+  `HybridGdnChunkedPrefill_MatchesSequentialPrefill` failure was re-run for real with
+  `STINGRAY_RUN_HEAVY_TESTS=1` on 2026-09-27 and still fails, same failure mode: logits diverge at
+  vocab idx 142707 (seq=0.4995 vs chunk=0.0924, |diff|=0.4071 > tol 0.1025). See Phase 8 of
   [done/2026-09-25-hf-top-downloads-coverage-plan.md](done/2026-09-25-hf-top-downloads-coverage-plan.md).
-- **FLUX.2 GPU end-to-end timing** after `0958d6f` was never measured cleanly, and the GPU levers
-  (an int8 dot-product quantized GEMM; the empty `VulkanMatMulPathConfig` "Path 2" seam) are open.
-  See items 1-2 of §4 in
+- **FLUX.2 GPU end-to-end timing**: item 1 is now closed — `PerformanceLeague.md`'s 2026-09-25
+  "Vulkan after FlashAttention128" row measured it cleanly the day after `0958d6f` (512², 2-step,
+  full GPU: new kernel 208.1s vs legacy 223.1s, both beating the 2026-09-24 237.0s baseline).
+  Item 2, the GPU levers, is still open and verified unimplemented in code as of 2026-09-27:
+  `VulkanMatMulPath.cs`'s doc comment states outright "Path 2 ... is reserved for a true quantized
+  GEMM ... It is not implemented," and `093-flux2-gpu-performance-optimization-plan.md`'s
+  "Experiment 3 (production-shape GEMM ladder)" and its `DoubleBlockGpu` row-offset audit both have
+  no corresponding entry anywhere in `PerformanceLeague.md` — genuinely never run. See items 1-2 of
+  §4 in
   [done/2026-09-24-diffusion-perf-session-handoff.md](done/2026-09-24-diffusion-perf-session-handoff.md),
   next to [093-flux2-gpu-performance-optimization-plan.md](093-flux2-gpu-performance-optimization-plan.md).
 - **Per-pipeline diffusion end-to-end smoke tests** with real weights, small resolution and a
