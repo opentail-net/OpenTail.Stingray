@@ -362,6 +362,13 @@ public sealed record ModelHyperparams
     /// <c>attention.head_count_kv</c> entry is 0). Null for non-Mamba-2 models.</summary>
     public IReadOnlyList<bool>? IsMamba2Layer { get; init; }
 
+    /// <summary>Per-layer: the layer is an MLP-only block with no attention/mixer (Nemotron-H). Null otherwise.</summary>
+    public IReadOnlyList<bool>? HybridFfnOnlyLayer { get; init; }
+
+    /// <summary>Per-layer: the layer has no FFN after its attention/mixer (Nemotron-H's single-sublayer attention
+    /// and Mamba-2 blocks). Null otherwise.</summary>
+    public IReadOnlyList<bool>? HybridNoFfnLayer { get; init; }
+
     /// <summary>
     /// Number of Multi-Token Prediction (MTP) head layers stored at the end of the GGUF
     /// block stack. Read from <c>{arch}.nextn_predict_layers</c> (default 0 when absent).
@@ -552,7 +559,7 @@ public sealed record ModelHyperparams
         // below, `(layer + 1) % step != 0`, is the same expression llama.cpp applies.
         bool isLlama4 = arch.Equals("llama4", StringComparison.OrdinalIgnoreCase);
         bool isSmolLm3 = arch.Equals("smollm3", StringComparison.OrdinalIgnoreCase);
-        bool usesReluSquared = arch == "jais2";
+        bool usesReluSquared = arch == "jais2" || arch == "nemotron_h"; // nemotron-h.cpp LLM_FFN_RELU_SQR, non-gated
         // GPT-2 has no RoPE at all — position is encoded once via a learned absolute
         // position-embedding table (ModelHyperparams consumers detect this from
         // `position_embd.weight`'s tensor presence directly, not a hyperparam flag) added to the
@@ -567,6 +574,8 @@ public sealed record ModelHyperparams
         // Granite hybrids use rope.scaling.finetuned as a RoPE on/off switch, default on (llama.cpp
         // granite-hybrid.cpp load_arch_hparams). Granite 4.0-H ships false: NoPE on every attention layer.
         if (arch == "granitehybrid" && !GetBool(metadata, $"{arch}.rope.scaling.finetuned", true)) noRopeStep = 1;
+        // Nemotron-H attention never applies RoPE (nemotron-h.cpp build_attention_layer).
+        if (arch == "nemotron_h") noRopeStep = 1;
         // Llama-4 uses sigmoid gating with weight-before-FFN per Meta's reference impl.
         bool useSigmoidGating = isLlama4;
         // Llama-4 uses Llama4TextL2Norm for QK-norm: pure RMS norm without learned weights.
@@ -656,7 +665,7 @@ public sealed record ModelHyperparams
         // Mamba-2 hybrids also carry ssm.* tensors (so the probe above fires) but are a different recurrence:
         // selective scan, not delta rule. A layer is recurrent iff its head_count_kv entry is 0 (llama.cpp
         // granite-hybrid.cpp / nemotron-h.cpp is_recr_impl).
-        bool isMamba2Hybrid = arch is "granitehybrid";
+        bool isMamba2Hybrid = arch is "granitehybrid" or "nemotron_h";
         if (isMamba2Hybrid) isHybridSsm = false;
 
         // {arch}.block_count is the total block count in the file, which on MTP-enabled
@@ -671,18 +680,37 @@ public sealed record ModelHyperparams
         GdnConfig? gdn = null;
         Mamba2Config? mamba2 = null;
         IReadOnlyList<bool>? isMamba2Layer = null;
+        IReadOnlyList<bool>? hybridFfnOnlyLayer = null;
+        IReadOnlyList<bool>? hybridNoFfnLayer = null;
         int mamba2KvHeads = 0;
+        int mamba2MaxFf = 0;
         if (isMamba2Hybrid && numLayers > 0)
         {
             var kvArr = GetIntArray(metadata, $"{arch}.attention.head_count_kv");
+            var ffArr = GetIntArray(metadata, $"{arch}.feed_forward_length");
+            // Nemotron-H layers carry exactly ONE sublayer each (llama.cpp nemotron-h.cpp): Mamba-2 (kv 0, ff 0),
+            // attention (kv > 0, ff 0) or MLP only (kv 0, ff > 0), each with its own attn_norm and residual.
+            // Granite-H layers are Mamba-2 or attention, always followed by the FFN.
+            bool singleSublayer = arch == "nemotron_h";
             var recurrent = new bool[numLayers];
+            var ffnOnly = new bool[numLayers];
+            var noFfn = new bool[numLayers];
             for (int i = 0; i < numLayers; i++)
             {
                 int kv = kvArr is { Count: > 0 } ? kvArr[i % kvArr.Count] : GetInt(metadata, $"{arch}.attention.head_count_kv");
-                recurrent[i] = kv == 0;
+                int ff = ffArr is { Count: > 0 } ? ffArr[i % ffArr.Count] : GetInt(metadata, $"{arch}.feed_forward_length");
+                recurrent[i] = kv == 0 && (!singleSublayer || ff == 0);
+                ffnOnly[i] = singleSublayer && kv == 0 && ff > 0;
+                noFfn[i] = singleSublayer && !ffnOnly[i];
                 mamba2KvHeads = Math.Max(mamba2KvHeads, kv);
+                mamba2MaxFf = Math.Max(mamba2MaxFf, ff);
             }
             isMamba2Layer = recurrent;
+            if (singleSublayer)
+            {
+                hybridFfnOnlyLayer = ffnOnly;
+                hybridNoFfnLayer = noFfn;
+            }
             mamba2 = new Mamba2Config(
                 ConvKernel: GetInt(metadata, $"{arch}.ssm.conv_kernel"),
                 InnerSize:  GetInt(metadata, $"{arch}.ssm.inner_size"),
@@ -1137,7 +1165,8 @@ public sealed record ModelHyperparams
                 : mamba2KvHeads > 0 ? mamba2KvHeads
                 : GetInt(metadata, $"{arch}.attention.head_count_kv",
                             GetInt(metadata, $"{arch}.attention.head_count")),
-            IntermediateDim = GetInt(metadata, $"{arch}.feed_forward_length"),
+            // Per-layer feed_forward_length arrays (Nemotron-H: 0 on non-MLP layers) collapse to their max.
+            IntermediateDim = mamba2MaxFf > 0 ? mamba2MaxFf : GetInt(metadata, $"{arch}.feed_forward_length"),
             HeadDim = headDim,
             // GPT-NeoX stores LayerNorm epsilon under attention.layer_norm_epsilon (the LayerNorm
             // key), not attention.layer_norm_rms_epsilon (the RMSNorm key other architectures use)
@@ -1238,6 +1267,8 @@ public sealed record ModelHyperparams
             AttentionKEqV = attentionKEqV,
             Mamba2 = mamba2,
             IsMamba2Layer = isMamba2Layer,
+            HybridFfnOnlyLayer = hybridFfnOnlyLayer,
+            HybridNoFfnLayer = hybridNoFfnLayer,
         };
     }
 

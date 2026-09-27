@@ -696,6 +696,9 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
             bool kvShared = _layerKvSrc is not null && _layerKvSrc[i] >= 0;
             // Mamba-2 mixer layers (granitehybrid) carry ssm_* tensors instead of attn_q/k/v/output.
             bool mamba2Layer = IsMamba2Layer(i);
+            // Nemotron-H MLP-only layers have no attention tensors either; its attention/Mamba layers have no FFN.
+            bool noAttnLayer = mamba2Layer || (hp.HybridFfnOnlyLayer is { } ffo && ffo[i]);
+            bool noFfnLayer = hp.HybridNoFfnLayer is { } nf && nf[i];
             // Gemma 4 12B global layers carry no attn_v (attention_k_eq_v): V reuses
             // the K projection, so the tensor is genuinely absent.
             bool kEqVLayer = _model.FindTensor($"blk.{i}.attn_v.weight") is null
@@ -709,7 +712,7 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
             _attnNorm[i] = _model.FindTensor($"blk.{i}.attn_norm.weight") is not null
                 ? ResolveTensor($"blk.{i}.attn_norm.weight")
                 : default;
-            if (!mamba2Layer) _wo[i] = ResolveTensor($"blk.{i}.attn_output.weight");
+            if (!noAttnLayer) _wo[i] = ResolveTensor($"blk.{i}.attn_output.weight");
             // Falcon-7B has no ffn_norm tensor at all — attention and FFN read the SAME
             // LayerNorm output (src/models/falcon.cpp: "use the attn norm, not the result").
             // Reusing _attnNorm[i]'s TensorRef recomputes an identical LayerNorm a second time
@@ -728,7 +731,7 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
             // — a plain contiguous split, NOT interleaved per head — so this only needs a
             // byte-offset TensorRef into the same backing tensor per projection, with no
             // actual data copy or repacking.
-            if (mamba2Layer)
+            if (noAttnLayer)
             {
                 // No attention projections: see ForwardPass.Mamba2.cs.
             }
@@ -814,6 +817,10 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
                     _wUpShexp![i] = ResolveTensor($"blk.{i}.ffn_up_shexp.weight");
                     _wDownShexp![i] = ResolveTensor($"blk.{i}.ffn_down_shexp.weight");
                 }
+            }
+            else if (noFfnLayer)
+            {
+                // Nemotron-H attention / Mamba-2 layer: no FFN tensors.
             }
             else
             {

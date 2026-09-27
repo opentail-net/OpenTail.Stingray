@@ -21,6 +21,15 @@ public sealed unsafe partial class ForwardPass
 
     private bool IsMamba2Layer(int layer) => _hp.IsMamba2Layer is { } rec && rec[layer];
 
+    /// <summary>The paged KV cache allocates each position's block on layer 0's append and tracks positions per
+    /// layer, so layers without attention append a zero row. TODO(perf): skip the storage.</summary>
+    private void AppendZeroKv(int layer)
+    {
+        var zero = new ReadOnlySpan<float>(_m2ZeroKv, _kvCache.KvDim);
+        if (_tqKvCache != null) _tqKvCache.Append(layer, zero, zero);
+        else _kvCache.Append(layer, zero, zero);
+    }
+
     private void InitMamba2(int numLayers)
     {
         if (_hp.Mamba2 is not { } c || _hp.IsMamba2Layer is null) return;

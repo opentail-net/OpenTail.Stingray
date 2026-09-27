@@ -25,7 +25,7 @@ dated evidence in the same pass.
 | 12 | ✅ DONE (2026-09-27) | Chronos-Bolt / Chronos-2: no numeric reference | needs an independent oracle without new Python reference scripts | large |
 | 13 | 🟡 MOSTLY DONE (SD3, FLUX.2, Qwen Image verified with automated sd.cpp tests; HunyuanVideo BLOCKED: no independent v1 reference) | 🟢-but-⚪ diffusion rows (HunyuanVideo, FLUX.2, Qwen Image, SD3 CPU): not independently verified | needs reference outputs (vendored C++ / recorded) | large |
 | 14 | ✅ DONE (CPU; granite-4.0-h 350M/1B admitted 2026-09-27) | New family: Mamba-2 hybrid layer + state cache, admitting IBM Granite 4.0 (`granitehybrid`, Apache-2.0, 1B-32B) first | missing family; one layer type unlocks #3, #15 and Falcon-H1 | large |
-| 15 | ⬜ TODO | New family: NVIDIA Nemotron Nano v2 / Nemotron 3 Nano (`nemotron_h`) | missing family; reuses #14's Mamba-2 layer; also completes #3 | medium after #14 |
+| 15 | ✅ DONE (CPU; Nemotron Nano 12B v2 text decoder admitted 2026-09-27) | New family: NVIDIA Nemotron Nano v2 / Nemotron 3 Nano (`nemotron_h`) | missing family; reuses #14's Mamba-2 layer; also completes #3 | medium after #14 |
 | 16 | ⬜ TODO | New family: GLM-4.5 / 4.6 / 4.7 incl. Air (`glm4moe`) | missing family, currently a top open family; GLM-4 dense already runs. Air is ~60 GB at Q4 | medium |
 | 17 | ⬜ TODO | New family: Liquid LFM2 / LFM2-MoE (`lfm2`, 350M-8B, popular on-device) | missing family; skipped earlier because the LFM licence caps free commercial use at $10M revenue. **Decide the licence question first** | medium |
 
@@ -113,6 +113,35 @@ second-half perplexity vs `llama-perplexity`, then an allowlist entry, a STATUS.
 MODELS.md entry if it qualifies.
 
 ## Log
+
+- 2026-09-27 #15 DONE (CPU): NVIDIA Nemotron-H (`nemotron_h`) admitted on the #14 Mamba-2 mixer.
+  - **Layer kinds:** each layer is exactly one sublayer (llama.cpp nemotron-h.cpp):
+    - Mamba-2 when kv=0 and ff=0 (8 B/C groups here, grouped RMSNorm over 1280 channels);
+    - NoPE attention when kv>0;
+    - non-gated ReLU² MLP when kv=0 and ff>0.
+
+    Each has its own `attn_norm` and residual.
+  - **ModelGraph:** new `HybridFfnOnlyLayer` / `HybridNoFfnLayer`. `IntermediateDim` is the max
+    of the per-layer `feed_forward_length` array (the scalar read took layer 0's 0).
+    `usesReluSquared` and NoPE are on for `nemotron_h`.
+  - **Trunk:** MLP-only layers run `DenseFfn` on the attn_norm output and skip attention;
+    attention/Mamba layers skip the FFN. Non-attention layers append a zero KV row (shared
+    `AppendZeroKv`).
+  - **Evidence:** `nemotron-nano-12b-v2-vl-Q2_K.gguf` (text decoder).
+    - Wikitext second-half [1024,+) PPL at -c 2048: 6.6332 vs `llama-perplexity --chunks 1` 6.6338.
+    - `NemotronHParityTests` (2 tests, 12.5 s, real weights) teacher-forces `llama-server`'s
+      16-token continuations and matches llama.cpp's token at all 22 positions where its top-1 margin
+      is above 1.5 nats.
+    - Free-running greedy is not pinned: Q2_K forks it at close pairs, e.g. after " Paris" llama has
+      '."' -1.471 vs '."' + newline -1.689, ours -1.175 vs -1.071.
+  - **Regression:** Granite-H 4/4, `Tests.ForwardPass.Fast` 686/686.
+  - **Not covered:**
+    - the VL model's vision tower;
+    - MoE Nemotron-H (latent MoE, sigmoid gating);
+    - GPU;
+    - batched prefill.
+  - **MODELS.md:** no entry. The tested file is a Q2_K VL build, not a text-model recommendation
+    verified as a file.
 
 - 2026-09-27 #14 DONE (CPU): Mamba-2 hybrid layer; IBM Granite 4.0-H (`granitehybrid`) admitted.
   - **Mixer:** `ForwardPass.Mamba2.cs` follows llama.cpp `build_mamba2_layer` and the ggml CPU

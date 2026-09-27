@@ -265,6 +265,15 @@ public static class ModelCompatibility
         // " showed" 0.136 in llama.cpp).
         "granitehybrid",
 
+        // nemotron_h — NVIDIA Nemotron-H / Nemotron Nano v2 (llama.cpp nemotron-h.cpp): every layer is exactly one of
+        // Mamba-2 (8 B/C groups), NoPE attention, or a non-gated ReLU² MLP, each with its own RMSNorm + residual.
+        // ADMITTED 2026-09-27 on the shared Mamba-2 mixer (ForwardPass.Mamba2.cs, CPU). Evidence: nemotron-nano-12b-v2-vl
+        // Q2_K text decoder, wikitext second-half [1024,+) PPL at -c 2048 6.6332 vs llama-perplexity --chunks 1 6.6338;
+        // NemotronHParityTests teacher-forces llama-server's continuation and matches its token at all 22 positions
+        // where llama.cpp's top-1 margin exceeds 1.5 nats (Q2_K forks free-running greedy at close pairs, e.g. '."' vs
+        // '."' + newline at 0.22 nats in llama.cpp, 0.10 the other way in ours).
+        "nemotron_h",
+
         // internlm2 -- ADMITTED 2026-09-01. Was blocked purely on the tokenizer axis (same as
         // minicpm/ernie4_5/baichuan): tokenizer.ggml.model=llama with tokenizer.ggml.scores
         // (92,544 entries) and no tokenizer.ggml.merges array -- already fixed by

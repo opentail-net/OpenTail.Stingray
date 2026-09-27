@@ -174,13 +174,17 @@ public sealed unsafe partial class ForwardPass
             if (_m2 is not null && IsMamba2Layer(layer))
             {
                 Mamba2Step(layer, _normBuf, _hidden);
-                // The paged KV cache allocates each position's block on layer 0's append and tracks
-                // positions per layer, so recurrent layers append a zero row. TODO(perf): skip the storage.
-                if (_tqKvCache != null)
-                    _tqKvCache.Append(layer, new ReadOnlySpan<float>(_m2ZeroKv, _kvCache.KvDim), new ReadOnlySpan<float>(_m2ZeroKv, _kvCache.KvDim));
-                else
-                    _kvCache.Append(layer, new ReadOnlySpan<float>(_m2ZeroKv, _kvCache.KvDim), new ReadOnlySpan<float>(_m2ZeroKv, _kvCache.KvDim));
+                AppendZeroKv(layer);
                 goto AfterAttentionBlock;
+            }
+
+            // Nemotron-H MLP-only layer: FFN on the attn_norm output, own residual, no attention.
+            if (_hp.HybridFfnOnlyLayer is { } ffnOnly && ffnOnly[layer])
+            {
+                AppendZeroKv(layer);
+                DenseFfn(layer);
+                SimdKernels.AddInPlace(_hidden, _residual, _embDim);
+                goto AfterFfnBlock;
             }
 
             // Q projection always runs on the active layer's weights.
@@ -432,6 +436,9 @@ public sealed unsafe partial class ForwardPass
             StageCapture.Record("cpu", layer, StageCapture.Stages.PostAttnResidual,
                 new ReadOnlySpan<float>(_hidden, _embDim));
 
+            // Nemotron-H attention / Mamba-2 layers carry no FFN.
+            if (_hp.HybridNoFfnLayer is { } noFfn && noFfn[layer]) goto AfterFfnBlock;
+
             // Save residual for FFN
             Copy(_residual, _hidden, _embDim);
 
@@ -486,6 +493,7 @@ public sealed unsafe partial class ForwardPass
             SimdKernels.AddInPlace(_hidden, _residual, _embDim);
             }
 
+            AfterFfnBlock:
             StageCapture.Record("cpu", layer, StageCapture.Stages.PostFfnResidual,
                 new ReadOnlySpan<float>(_hidden, _embDim));
 
