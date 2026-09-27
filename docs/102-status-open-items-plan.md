@@ -24,7 +24,7 @@ dated evidence in the same pass.
 | 11 | ✅ DONE (2026-09-27) | Stable Audio 3 Small SFX: darker than the reference | investigation | large |
 | 12 | ✅ DONE (2026-09-27) | Chronos-Bolt / Chronos-2: no numeric reference | needs an independent oracle without new Python reference scripts | large |
 | 13 | 🟡 MOSTLY DONE (SD3, FLUX.2, Qwen Image verified with automated sd.cpp tests; HunyuanVideo BLOCKED: no independent v1 reference) | 🟢-but-⚪ diffusion rows (HunyuanVideo, FLUX.2, Qwen Image, SD3 CPU): not independently verified | needs reference outputs (vendored C++ / recorded) | large |
-| 14 | ⬜ TODO | New family: Mamba-2 hybrid layer + state cache, admitting IBM Granite 4.0 (`granitehybrid`, Apache-2.0, 1B-32B) first | missing family; one layer type unlocks #3, #15 and Falcon-H1 | large |
+| 14 | ✅ DONE (CPU; granite-4.0-h 350M/1B admitted 2026-09-27) | New family: Mamba-2 hybrid layer + state cache, admitting IBM Granite 4.0 (`granitehybrid`, Apache-2.0, 1B-32B) first | missing family; one layer type unlocks #3, #15 and Falcon-H1 | large |
 | 15 | ⬜ TODO | New family: NVIDIA Nemotron Nano v2 / Nemotron 3 Nano (`nemotron_h`) | missing family; reuses #14's Mamba-2 layer; also completes #3 | medium after #14 |
 | 16 | ⬜ TODO | New family: GLM-4.5 / 4.6 / 4.7 incl. Air (`glm4moe`) | missing family, currently a top open family; GLM-4 dense already runs. Air is ~60 GB at Q4 | medium |
 | 17 | ⬜ TODO | New family: Liquid LFM2 / LFM2-MoE (`lfm2`, 350M-8B, popular on-device) | missing family; skipped earlier because the LFM licence caps free commercial use at $10M revenue. **Decide the licence question first** | medium |
@@ -113,6 +113,47 @@ second-half perplexity vs `llama-perplexity`, then an allowlist entry, a STATUS.
 MODELS.md entry if it qualifies.
 
 ## Log
+
+- 2026-09-27 #14 DONE (CPU): Mamba-2 hybrid layer; IBM Granite 4.0-H (`granitehybrid`) admitted.
+  - **Mixer:** `ForwardPass.Mamba2.cs` follows llama.cpp `build_mamba2_layer` and the ggml CPU
+    `ssm_conv`/`ssm_scan`:
+    - in_proj splits into z / xBC / dt;
+    - causal depthwise conv over `conv_kernel` taps, bias, SiLU;
+    - `softplus(dt + dt_bias)` and `dA = exp(dt*A)`;
+    - state `s = s*dA + B*x*dt`, `y = C.s + D*x`, then `silu(z)*y`;
+    - grouped RMSNorm, then out_proj.
+  - **State:** per recurrent layer, a conv state `[convDim][k-1]` and an SSM state
+    `[heads][headDim][dState]`. Cleared by `ResetCache`; it cannot be rewound.
+  - **Layer selection:** a layer is recurrent iff its `attention.head_count_kv` entry is 0.
+    `NumKvHeads` = the max non-zero entry; `GetInt` used to take layer 0's 0.
+  - **NoPE:** `rope.scaling.finetuned=false` gives NoPE on every attention layer (via
+    `NoRopeLayerStep=1`).
+  - **Excluded from the GDN probe:** `granitehybrid` is kept out of the GDN hybrid path that the
+    `_opentailllm.is_hybrid_ssm` probe would otherwise select.
+  - **Evidence**, wikitext second-half [1024,+) PPL (-c 2048) vs `llama-perplexity --chunks 1`:
+
+    | Model | Ours | llama.cpp |
+    |---|---|---|
+    | 350M Q8_0 | 17.9003 | 17.9258 |
+    | 1B Q8_0 | 8.7639 | 8.7563 |
+
+    Tokenisation identical. `GraniteHybridGreedyParityTests` passes 4/4 with real weights (7.8 s):
+    - 350M: " Paris." + EOS.
+    - 1B short prompt: 16/16 tokens (EOS masked like `ignore_eos`).
+    - 1B longer prompt: 15 tokens, then a documented near-tie (" equivalence" -1.288 vs
+      " general" -1.352).
+    - State reset.
+  - **Regression:** `Tests.ForwardPass.Fast` 686/686.
+    `GraniteGreedyParityTests`/`GraniteMoeGreedyParityTests` skipped: their checkpoints aren't
+    local. Their code path only gains the `granitehybrid` family term.
+  - **Known limits:**
+    - CPU only.
+    - Prefill runs token by token: 350M 54 tok/s, 1B 17 tok/s scoring.
+    - Recurrent layers still append a zero KV row to satisfy `PagedKvCache` (wasted memory).
+    - No partial rewind of the Mamba state: `SupportsPartialRewind` is false, so `InferenceEngine`
+      disables prefix caching; `TruncateTo` resets at 0 and throws for any other earlier length.
+    - MoE Granite-H (tiny/small) untested.
+    - A performance pass is owed (CLAUDE.md rule 7).
 
 - 2026-09-27 #13 part 2: Qwen Image had a missing `txt_norm`, now fixed and verified against `sd-cli`.
   - **Bug:** neither the CPU nor the GPU path applied `txt_norm`, the RMSNorm (eps 1e-6) over the

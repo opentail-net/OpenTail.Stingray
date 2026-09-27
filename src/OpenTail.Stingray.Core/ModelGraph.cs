@@ -355,6 +355,13 @@ public sealed record ModelHyperparams
     /// </summary>
     public GdnConfig? Gdn { get; init; }
 
+    /// <summary>Mamba-2 mixer configuration for Mamba-2 hybrids (<c>granitehybrid</c>); null otherwise.</summary>
+    public Mamba2Config? Mamba2 { get; init; }
+
+    /// <summary>Per-layer: true where the layer is a Mamba-2 mixer instead of attention (its
+    /// <c>attention.head_count_kv</c> entry is 0). Null for non-Mamba-2 models.</summary>
+    public IReadOnlyList<bool>? IsMamba2Layer { get; init; }
+
     /// <summary>
     /// Number of Multi-Token Prediction (MTP) head layers stored at the end of the GGUF
     /// block stack. Read from <c>{arch}.nextn_predict_layers</c> (default 0 when absent).
@@ -557,6 +564,9 @@ public sealed record ModelHyperparams
         // anywhere in the graph).
         bool isGpt2Family = arch is "gpt2" or "starcoder";
         int noRopeStep = isLlama4 || isSmolLm3 ? 4 : isGpt2Family ? 1 : 0;
+        // Granite hybrids use rope.scaling.finetuned as a RoPE on/off switch, default on (llama.cpp
+        // granite-hybrid.cpp load_arch_hparams). Granite 4.0-H ships false: NoPE on every attention layer.
+        if (arch == "granitehybrid" && !GetBool(metadata, $"{arch}.rope.scaling.finetuned", true)) noRopeStep = 1;
         // Llama-4 uses sigmoid gating with weight-before-FFN per Meta's reference impl.
         bool useSigmoidGating = isLlama4;
         // Llama-4 uses Llama4TextL2Norm for QK-norm: pure RMS norm without learned weights.
@@ -643,6 +653,11 @@ public sealed record ModelHyperparams
         // when GDN tensors are observed.
         bool isHybridSsm = metadata.ContainsKey("_opentailllm.is_hybrid_ssm")
                         || arch == "qwen35moe";
+        // Mamba-2 hybrids also carry ssm.* tensors (so the probe above fires) but are a different recurrence:
+        // selective scan, not delta rule. A layer is recurrent iff its head_count_kv entry is 0 (llama.cpp
+        // granite-hybrid.cpp / nemotron-h.cpp is_recr_impl).
+        bool isMamba2Hybrid = arch is "granitehybrid";
+        if (isMamba2Hybrid) isHybridSsm = false;
 
         // {arch}.block_count is the total block count in the file, which on MTP-enabled
         // models (qwen35 27B-MTP, qwen35moe-MTP) includes the MTP head blocks appended
@@ -654,6 +669,27 @@ public sealed record ModelHyperparams
 
         IReadOnlyList<LayerType>? layerTypes = null;
         GdnConfig? gdn = null;
+        Mamba2Config? mamba2 = null;
+        IReadOnlyList<bool>? isMamba2Layer = null;
+        int mamba2KvHeads = 0;
+        if (isMamba2Hybrid && numLayers > 0)
+        {
+            var kvArr = GetIntArray(metadata, $"{arch}.attention.head_count_kv");
+            var recurrent = new bool[numLayers];
+            for (int i = 0; i < numLayers; i++)
+            {
+                int kv = kvArr is { Count: > 0 } ? kvArr[i % kvArr.Count] : GetInt(metadata, $"{arch}.attention.head_count_kv");
+                recurrent[i] = kv == 0;
+                mamba2KvHeads = Math.Max(mamba2KvHeads, kv);
+            }
+            isMamba2Layer = recurrent;
+            mamba2 = new Mamba2Config(
+                ConvKernel: GetInt(metadata, $"{arch}.ssm.conv_kernel"),
+                InnerSize:  GetInt(metadata, $"{arch}.ssm.inner_size"),
+                StateSize:  GetInt(metadata, $"{arch}.ssm.state_size"),
+                NumHeads:   GetInt(metadata, $"{arch}.ssm.time_step_rank"),
+                NumGroups:  Math.Max(1, GetInt(metadata, $"{arch}.ssm.group_count")));
+        }
         if (isHybridSsm && numLayers > 0)
         {
             int fullAttnInterval = GetInt(metadata, $"{arch}.full_attention_interval", 4);
@@ -915,6 +951,7 @@ public sealed record ModelHyperparams
         bool isGraniteFamily = arch.Equals("granite", StringComparison.OrdinalIgnoreCase)
             || arch.Equals("granitemoe", StringComparison.OrdinalIgnoreCase)
             || arch.Equals("granitehybrid", StringComparison.OrdinalIgnoreCase)
+            || arch.Equals("granitehybrid", StringComparison.OrdinalIgnoreCase)
             || isMiniCpm;
         if (isGraniteFamily)
         {
@@ -1097,6 +1134,7 @@ public sealed record ModelHyperparams
             NumKvHeads = GetInt(metadata, $"{arch}.attention.key_length_mla", 0) > 0
                          && GetInt(metadata, $"{arch}.attention.kv_lora_rank", 0) > 0
                 ? numHeads
+                : mamba2KvHeads > 0 ? mamba2KvHeads
                 : GetInt(metadata, $"{arch}.attention.head_count_kv",
                             GetInt(metadata, $"{arch}.attention.head_count")),
             IntermediateDim = GetInt(metadata, $"{arch}.feed_forward_length"),
@@ -1198,6 +1236,8 @@ public sealed record ModelHyperparams
             LayerRopeDim = layerRopeDim,
             LayerKvHeads = layerKvHeads,
             AttentionKEqV = attentionKEqV,
+            Mamba2 = mamba2,
+            IsMamba2Layer = isMamba2Layer,
         };
     }
 
@@ -1301,6 +1341,20 @@ public sealed class OutputLayer : ModelLayer { }
 /// Block type for one trunk layer. Hybrid models (qwen35moe) interleave the two
 /// types according to a fixed interval; pure transformer models are all-Attention.
 /// </summary>
+/// <summary>
+/// Mamba-2 mixer hyperparameters (llama.cpp <c>build_mamba2_layer</c>): <c>ssm.conv_kernel</c>, <c>ssm.inner_size</c>
+/// (d_inner), <c>ssm.state_size</c> (d_state), <c>ssm.time_step_rank</c> (number of SSM heads) and
+/// <c>ssm.group_count</c> (B/C groups). Head dim = InnerSize / NumHeads.
+/// </summary>
+public sealed record Mamba2Config(int ConvKernel, int InnerSize, int StateSize, int NumHeads, int NumGroups)
+{
+    /// <summary>Channels through the causal conv: x plus B and C.</summary>
+    public int ConvDim => InnerSize + 2 * NumGroups * StateSize;
+    /// <summary>Width of ssm_in's output: z, xBC and dt.</summary>
+    public int InProjDim => 2 * InnerSize + 2 * NumGroups * StateSize + NumHeads;
+    public int HeadDim => InnerSize / NumHeads;
+}
+
 public enum LayerType
 {
     Attention = 0,

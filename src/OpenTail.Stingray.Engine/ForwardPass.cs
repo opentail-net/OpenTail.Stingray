@@ -688,10 +688,14 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
         if (hp.HasPostFfwNorm) _postFfwNorm = new TensorRef[L];
         if (hp.HasLayerOutputScale) _layerOutputScale = new float[L];
 
+        InitMamba2(L);
+
         for (int i = 0; i < L; i++)
         {
             int layerHd = _layerHeadDim?[i] ?? _headDim;
             bool kvShared = _layerKvSrc is not null && _layerKvSrc[i] >= 0;
+            // Mamba-2 mixer layers (granitehybrid) carry ssm_* tensors instead of attn_q/k/v/output.
+            bool mamba2Layer = IsMamba2Layer(i);
             // Gemma 4 12B global layers carry no attn_v (attention_k_eq_v): V reuses
             // the K projection, so the tensor is genuinely absent.
             bool kEqVLayer = _model.FindTensor($"blk.{i}.attn_v.weight") is null
@@ -705,7 +709,7 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
             _attnNorm[i] = _model.FindTensor($"blk.{i}.attn_norm.weight") is not null
                 ? ResolveTensor($"blk.{i}.attn_norm.weight")
                 : default;
-            _wo[i] = ResolveTensor($"blk.{i}.attn_output.weight");
+            if (!mamba2Layer) _wo[i] = ResolveTensor($"blk.{i}.attn_output.weight");
             // Falcon-7B has no ffn_norm tensor at all — attention and FFN read the SAME
             // LayerNorm output (src/models/falcon.cpp: "use the attn norm, not the result").
             // Reusing _attnNorm[i]'s TensorRef recomputes an identical LayerNorm a second time
@@ -724,7 +728,11 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
             // — a plain contiguous split, NOT interleaved per head — so this only needs a
             // byte-offset TensorRef into the same backing tensor per projection, with no
             // actual data copy or repacking.
-            if (_model.FindTensor($"blk.{i}.attn_qkv.weight") is { } qkvInfo)
+            if (mamba2Layer)
+            {
+                // No attention projections: see ForwardPass.Mamba2.cs.
+            }
+            else if (_model.FindTensor($"blk.{i}.attn_qkv.weight") is { } qkvInfo)
             {
                 byte* qkvBase = _model.GetTensorDataPtr(qkvInfo);
                 int bytesPerRow = (_embDim / DTypeInfo.BlockSize(qkvInfo.DType))
@@ -1190,6 +1198,16 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
     /// </summary>
     public void TruncateTo(int length)
     {
+        if (_m2 is not null)
+        {
+            // The Mamba-2 state is updated destructively: only a full reset or a no-op keeps it consistent.
+            int current = _tqKvCache?.Length ?? _kvCache.Length;
+            if (length == 0) ResetMamba2State();
+            else if (length != current)
+                throw new NotSupportedException(
+                    $"ForwardPass.TruncateTo({length}): Mamba-2 recurrent state cannot be partially rewound; only 0 (reset) " +
+                    $"or the current length ({current}) is supported. SupportsPartialRewind is false for this model.");
+        }
         _mropeImages.RemoveAll(r => r.Start + r.Nx * r.Ny > length);
         if (_tqKvCache != null)
             _tqKvCache.TruncateTo(length);
@@ -1198,7 +1216,7 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
     }
 
     /// <inheritdoc />
-    public bool SupportsPartialRewind => true;
+    public bool SupportsPartialRewind => _m2 is null;
 
     /// <inheritdoc />
     /// <remarks>TurboQuant compresses KV in place once it leaves the FP32 recent window, so
@@ -1209,6 +1227,7 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
     public void ResetCache()
     {
         _mropeImages.Clear();
+        ResetMamba2State();
         if (_tqKvCache != null)
             _tqKvCache.Reset();
         else
@@ -1329,7 +1348,8 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
         // decode route. Control-only sequences are structural probes, not user prose; retaining
         // their F32 path costs negligible normal-prompt performance and removes an unsafe default
         // divergence. A mixed prompt (including the usual BOS + text) remains eligible for Q8.
-        if (IsAllControlTokenPrompt(tokens) || IsSingleDistinctTokenPrompt(tokens))
+        // Mamba-2 hybrids: the recurrent mixer is only implemented token by token (the scan is sequential).
+        if (IsAllControlTokenPrompt(tokens) || IsSingleDistinctTokenPrompt(tokens) || _m2 is not null)
         {
             ReadOnlySpan<float> logits = default;
             for (int i = 0; i < N; i++)

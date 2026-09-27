@@ -169,6 +169,20 @@ public sealed unsafe partial class ForwardPass
                 stageStart = System.Diagnostics.Stopwatch.GetTimestamp();
             }
 
+            // Mamba-2 mixer layer (granitehybrid): replaces the whole attention block, then joins the shared
+            // residual scale / residual add / FFN path below.
+            if (_m2 is not null && IsMamba2Layer(layer))
+            {
+                Mamba2Step(layer, _normBuf, _hidden);
+                // The paged KV cache allocates each position's block on layer 0's append and tracks
+                // positions per layer, so recurrent layers append a zero row. TODO(perf): skip the storage.
+                if (_tqKvCache != null)
+                    _tqKvCache.Append(layer, new ReadOnlySpan<float>(_m2ZeroKv, _kvCache.KvDim), new ReadOnlySpan<float>(_m2ZeroKv, _kvCache.KvDim));
+                else
+                    _kvCache.Append(layer, new ReadOnlySpan<float>(_m2ZeroKv, _kvCache.KvDim), new ReadOnlySpan<float>(_m2ZeroKv, _kvCache.KvDim));
+                goto AfterAttentionBlock;
+            }
+
             // Q projection always runs on the active layer's weights.
             // For per-layer head_dim models the trailing bytes of _q/_k/_v are stale
             // from a wider prior layer; zero them so subsequent Attention reads (which
@@ -357,6 +371,7 @@ public sealed unsafe partial class ForwardPass
                 namedTicks += d;
             }
 
+            AfterAttentionBlock:
             // Gemma 4: post-attention RmsNorm BEFORE the residual add.
             if (_postAttnNorm is not null)
             {
