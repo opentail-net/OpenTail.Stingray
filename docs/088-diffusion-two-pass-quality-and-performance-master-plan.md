@@ -767,7 +767,10 @@ rule 7 exists).
       132.8s/60.25s C++ ref, within noise) on the real Vulkan GPU path, verified in the same pass
       as Pass 1's correctness re-check (see 1c above) -- no regression, operator's instruction
       satisfied.
-- [ ] **LTX-Video**: no real C++ comparison possible yet (sd.cpp's own Wan-family path is blocked
+- [x] **LTX-Video** (2026-09-27 correction: the convergence bug this bullet is gated on was fixed
+      and re-verified 2026-09-18/24 — `docs/STATUS.md`'s LTX-Video row: CPU/Vulkan pixel-identical
+      output, CPU 512²/20-step down to 133.3s. Re-verify-once-fixed condition is satisfied).
+      no real C++ comparison possible yet (sd.cpp's own Wan-family path is blocked
       on audio cross-attention for this specific model) — 2.76x vs CPU baseline is the best
       available number; re-verify it still holds once Pass 1's convergence bug is fixed (a fixed
       pipeline may have a different real per-step cost if the fix touches the denoise loop itself).
@@ -794,6 +797,29 @@ rule 7 exists).
       this pass**: locate and download the real `acestep-5Hz-lm-1.7B` package (check the same HF
       org/repo the `turbo.safetensors` came from for a sibling directory) -- this is a real,
       bounded, obtainable gap now, a meaningfully narrower blocker than "no checkpoint at all."
+
+> **CORRECTION 2026-09-27**: sections 2c and 2d below are stale in the same way as the inventory
+> table above — re-verified against current code/`PerformanceLeague.md` today.
+> - **HunyuanVideo** (2c): no longer blocked. GPU residency landed `ecb96e4` (2026-09-26) — real
+>   GPU blocks, cosine 1.000000 parity, 18.0s->8.8s/step. See
+>   [done/078-hunyuanvideo-gpu-residency-plan.md](done/078-hunyuanvideo-gpu-residency-plan.md).
+> - **Qwen Image** (2d, Phase 1/2): the specific correctness bug this section describes (synthetic
+>   out-of-distribution parity test, cosine ~0.99, attributed to FP16 precision sensitivity at
+>   depth, never a confirmed logic bug) is still exactly as described for that synthetic test — but
+>   the REAL end-to-end pipeline with real conditioning now produces correct, visually-verified
+>   output: `PerformanceLeague.md`'s 2026-09-24 rows show 159.4s/161.1s on Vulkan with quantized
+>   GPU weights ("the image is visually identical to CPU and to the FP16 GPU run"). Read as: the
+>   thing that actually ships works; the strict synthetic parity assertion is a separate, narrower,
+>   still-real finding about precision at extreme depth, not a blocker on real generation.
+> - **FLUX.2** (2d, Phase 1/2): "Investigated and CLOSED — not pursued further" describes the
+>   double-block-only, FP16-weight attempt specifically. Full single-block-included GPU residency
+>   (`STINGRAY_FLUX2_GPU_SINGLE_BLOCKS=1`, confirmed live in `Flux2DiT.cs`) plus quantized
+>   (not FP16) GPU weights were built afterward and now reach 236.7s / 208.1s full-GPU at 512²
+>   2-step — see the already-closed `090`/`093`/`094` cluster. Phase 2's "MOOT... do not pursue"
+>   framing is superseded by that later work.
+>
+> None of the checkbox text below was rewritten to match — read the correction above first, then
+> treat the boxes as a historical trail, not current status.
 
 ### 2c. Blocked entirely on Pass 1 closing first — do not start until unblocked
 - [ ] **HunyuanVideo Vulkan GPU residency** — blocked on Pass 1's text-conditioning wiring landing
