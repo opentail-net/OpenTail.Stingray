@@ -24,6 +24,10 @@ dated evidence in the same pass.
 | 11 | ⬜ TODO | Stable Audio 3 Small SFX: darker than the reference | investigation | large |
 | 12 | ⬜ TODO | Chronos-Bolt / Chronos-2: no numeric reference | needs an independent oracle without new Python reference scripts | large |
 | 13 | ⬜ TODO | 🟢-but-⚪ diffusion rows (HunyuanVideo, FLUX.2, Qwen Image, SD3 CPU): not independently verified | needs reference outputs (vendored C++ / recorded) | large |
+| 14 | ⬜ TODO | New family: Mamba-2 hybrid layer + state cache, admitting IBM Granite 4.0 (`granitehybrid`, Apache-2.0, 1B-32B) first | missing family; one layer type unlocks #3, #15 and Falcon-H1 | large |
+| 15 | ⬜ TODO | New family: NVIDIA Nemotron Nano v2 / Nemotron 3 Nano (`nemotron_h`) | missing family; reuses #14's Mamba-2 layer; also completes #3 | medium after #14 |
+| 16 | ⬜ TODO | New family: GLM-4.5 / 4.6 / 4.7 incl. Air (`glm4moe`) | missing family, currently a top open family; GLM-4 dense already runs. Air is ~60 GB at Q4 | medium |
+| 17 | ⬜ TODO | New family: Liquid LFM2 / LFM2-MoE (`lfm2`, 350M-8B, popular on-device) | missing family; skipped earlier because the LFM licence caps free commercial use at $10M revenue. **Decide the licence question first** | medium |
 
 ## Current state (paused 2026-09-26)
 
@@ -95,6 +99,18 @@ Read CLAUDE.md first. Rules:
 5. README recipes (docs-as-tests, manual for now): run every command/snippet in README.md from an
    empty folder with fresh downloads. They were verified 2026-09-26 on source; the quick start also
    against NuGet 1.0.7 plus Microsoft.Extensions.Logging.Abstractions.
+
+## New-family items (#14-#17), added 2026-09-27
+
+These are popular checkpoint families with no implementation at all. The popularity judgement is
+qualitative, not from download statistics. Lower-priority missing families, not planned:
+- AI21 Jamba (SSM hybrid) and Falcon-H1 (comes almost free with #14);
+- Kimi Linear, RWKV-7, Arcee AFM, ServiceNow Apriel, Ant Ling (`bailingmoe2`);
+- MiniMax-M2 (too large for this audience).
+
+Each item is verified the usual way: `stingray admit-arch` against llama.cpp reference tokens,
+second-half perplexity vs `llama-perplexity`, then an allowlist entry, a STATUS.md row and a
+MODELS.md entry if it qualifies.
 
 ## Log
 - 2026-09-26 #1 DONE: SD3/3.5 (GPU/Vulkan) row had Status and Confidence swapped; now
