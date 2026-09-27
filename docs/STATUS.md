@@ -2,7 +2,8 @@
 
 > This was the project README until 2026-09-26. It is the detailed, per-model verification record
 > (status, confidence and dated evidence for every pipeline). For an introduction and getting
-> started, see the [README](../README.md).
+> started, see the [README](../README.md). For how to run a model to its best (command, RAM needed,
+> measured speed), see [RUNNING.md](RUNNING.md).
 
 **Local LLM inference, multimodal vision, speech, and image generation, written in C#.** No Python, no P/Invoke to llama.cpp, no
 sidecar process — the engine itself is managed .NET 10 code that runs in your process and

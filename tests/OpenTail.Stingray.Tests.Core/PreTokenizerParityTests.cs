@@ -48,6 +48,12 @@ public sealed class PreTokenizerParityTests
         // with combining-mark handling. Was unverified against a real model until this row — same
         // gap as llama-bpe above.
         { "qwen35", 248320, new[] { 8917, 220, 16, 17, 18, 19, 20, 21, 22, 23, 24, 15, 321, 220, 19, 17, 13 } },
+        // GLM-4.5 (cerebras_GLM-4.5-Air-REAP-82B-A12B-Q2_K). llama.cpp: LLAMA_VOCAB_PRE_TYPE_CHATGLM4 (= the Llama-3
+        // regex). Unmapped until 2026-09-27: the GPT-2 fallback kept digit runs whole and doubled wikitext PPL.
+        { "glm4", 151552, new[] { 9187, 220, 108714, 100461, 21, 100928, 24, 15, 323, 220, 101961, 13 } },
+        // Liquid LFM2 (LFM2-1.2B-Q8_0). llama.cpp: LLAMA_VOCAB_PRE_TYPE_LLAMA3 with ignore_merges. Also unmapped until
+        // 2026-09-27.
+        { "lfm2", 65536, new[] { 61598, 730, 10293, 26178, 24445, 525, 810, 730, 4344, 523 } },
     };
 
     [Theory]
@@ -160,6 +166,9 @@ public sealed class PreTokenizerParityTests
         {
             var models = Path.Combine(dir, "models");
             if (Directory.Exists(models)) yield return models;
+            // Most local checkpoints live one level down; without this most rows skipped on the dev machine.
+            var nested = Path.Combine(models, "_models");
+            if (Directory.Exists(nested)) yield return nested;
             if (Directory.GetParent(dir) is not { } parent) break;
             dir = parent.FullName;
         }

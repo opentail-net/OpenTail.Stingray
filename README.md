@@ -165,6 +165,8 @@ they mean the same thing.
 **[docs/MODELS.md](docs/MODELS.md)** is a short, curated list of models to start with, one table
 per task (chat, images, speech, transcription, image generation, search). Each entry links straight
 to the file on Hugging Face and shows its size, licence and whether we have tested that exact file.
+**[docs/RUNNING.md](docs/RUNNING.md)** then says how to run each one well: the command, the RAM it
+really needs and its measured speed.
 
 ## What else it can do
 

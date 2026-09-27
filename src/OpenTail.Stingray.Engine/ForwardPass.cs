@@ -1074,9 +1074,14 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
     private void PrefaultWeights()
     {
         var regions = new List<(nint, long)>();
+        var expertRegions = new List<(nint, long)>();
         void Add(TensorRef t)
         {
             if (t.DataPtr != null) regions.Add(((nint)t.DataPtr, t.Info.ByteSize));
+        }
+        void AddExperts(TensorRef t)
+        {
+            if (t.DataPtr != null) expertRegions.Add(((nint)t.DataPtr, t.Info.ByteSize));
         }
 
         Add(_embTensor); Add(_outputNorm); Add(_outputWeight);
@@ -1095,7 +1100,7 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
             if (IsMoeLayer(i))
             {
                 Add(_wGateInp![i]);
-                Add(_wGateExps![i]); Add(_wUpExps![i]); Add(_wDownExps![i]);
+                AddExperts(_wGateExps![i]); AddExperts(_wUpExps![i]); AddExperts(_wDownExps![i]);
                 if (_hp.HasSharedExpert)
                 {
                     Add(_wGateShexp![i]); Add(_wUpShexp![i]); Add(_wDownShexp![i]);
@@ -1107,7 +1112,12 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
             }
         }
 
+        // Everything every token uses is swept unconditionally; the routed experts (usually most of a MoE's bytes,
+        // of which a token touches only its top-k) only when they fit in the RAM that is free now. Otherwise they are
+        // demand-paged and the OS page cache keeps the hot ones resident.
         MmapPrefault.Run("ForwardPass", regions, MmapPrefault.RamGate.Always);
+        if (expertRegions.Count > 0)
+            MmapPrefault.Run("ForwardPass experts", expertRegions, MmapPrefault.RamGate.FitsInFreeRam);
     }
 
     public PagedKvCache Cache => _kvCache;

@@ -172,10 +172,23 @@ public static partial class PreTokenizerPatterns
                 patterns = [SingleDigit(), Gpt2()];
                 return true;
 
+            // glm4 / chatglm-bpe are llama.cpp's LLAMA_VOCAB_PRE_TYPE_CHATGLM4, whose single regex is character
+            // for character the Llama-3 one. Missing until 2026-09-27: GLM-4.5 fell back to GPT-2 and turned
+            // " 2000" into one token instead of " " + "200" + "0", doubling wikitext perplexity (docs/102 #16).
+            // lfm2 (and the other aliases below) are LLAMA_VOCAB_PRE_TYPE_LLAMA3 in llama-vocab.cpp.
             case "llama3":
+            case "llama-v3":
             case "llama-bpe":
+            case "falcon3":
+            case "falcon-h1":
+            case "pixtral":
+            case "midm-2.0":
+            case "lfm2":
+            case "jina-v5-nano":
             case "dbrx":
             case "smaug-bpe":
+            case "glm4":
+            case "chatglm-bpe":
                 patterns = [Llama3()];
                 return true;
 
@@ -224,6 +237,15 @@ public static partial class PreTokenizerPatterns
     }
 
     /// <summary>
+    /// llama.cpp's <c>ignore_merges</c> (llama-vocab.cpp, set per pre-type): a pre-tokenized piece that is already a
+    /// whole vocabulary entry is emitted as that token instead of being rebuilt by BPE merges. Merges usually
+    /// rebuild the same token, but not always, so the flag is part of the tokenization contract.
+    /// </summary>
+    public static bool IgnoresMerges(string? pre) => pre is
+        "llama3" or "llama-v3" or "llama-bpe" or "falcon3" or "falcon-h1" or "pixtral" or "midm-2.0" or "lfm2"
+        or "jina-v5-nano" or "tekken" or "minicpm5" or "youtu" or "granite-embed-multi-97m";
+
+    /// <summary>
     /// Applies a cascade to <paramref name="text"/>, returning the pieces in order. Mirrors
     /// llama.cpp's <c>unicode_regex_split</c>: every regex splits the pieces the previous one
     /// produced, and an unmatched gap is itself a piece — dropping gaps would silently discard input.
@@ -270,7 +292,8 @@ public static partial class PreTokenizerPatterns
     [
         "gpt-2", "mpt", "olmo", "jais", "trillion", "granite-docling", "exaone4",
         "smollm", "starcoder", "refact", "command-r", "codeshell", "exaone", "minerva-7b", "mellum2",
-        "llama3", "llama-bpe", "dbrx", "smaug-bpe",
+        "llama3", "llama-v3", "llama-bpe", "falcon3", "falcon-h1", "pixtral", "midm-2.0", "lfm2", "jina-v5-nano",
+        "dbrx", "smaug-bpe", "glm4", "chatglm-bpe",
         "jais-2",
         "qwen2", "stablelm2", "hunyuan", "solar-open",
         "qwen35",

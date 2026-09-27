@@ -174,4 +174,22 @@ public sealed class MmapPrefaultTests
             Environment.SetEnvironmentVariable("STINGRAY_PREFAULT", prev);
         }
     }
+
+    [Fact]
+    public void ShouldRun_FitsInFreeRam_SkipsWhenOverEightyPercentOfFree()
+    {
+        // MoE routed experts: 33 GiB of experts vs 20 GiB free right now -> leave them to demand paging.
+        Assert.False(MmapPrefault.ShouldRun(null, 33 * Gib, 20 * Gib, MmapPrefault.RamGate.FitsInFreeRam, out var reason));
+        Assert.Contains("free RAM", reason);
+        Assert.True(MmapPrefault.ShouldRun(null, 10 * Gib, 20 * Gib, MmapPrefault.RamGate.FitsInFreeRam, out _));
+        Assert.True(MmapPrefault.ShouldRun("1", 33 * Gib, 20 * Gib, MmapPrefault.RamGate.FitsInFreeRam, out _));
+    }
+
+    [Fact]
+    public void AvailablePhysicalBytes_IsPositiveAndNotAboveTotal()
+    {
+        long avail = MmapPrefault.AvailablePhysicalBytes();
+        Assert.True(avail > 0);
+        Assert.True(avail <= GC.GetGCMemoryInfo().TotalAvailableMemoryBytes + (1L << 30));
+    }
 }

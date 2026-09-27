@@ -3,7 +3,7 @@
 A short list of models worth starting with, one table per task, and where to download each. Every
 link goes to the exact file on Hugging Face. This is a recommendation list, not a coverage list:
 Stingray runs many more models (see [STATUS.md](STATUS.md)), but these are the ones we suggest
-first.
+first. [RUNNING.md](RUNNING.md) has the command, the RAM each one really needs, and its measured speed.
 
 **Columns**
 

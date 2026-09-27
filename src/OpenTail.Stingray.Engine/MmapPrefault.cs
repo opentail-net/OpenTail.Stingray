@@ -35,6 +35,13 @@ internal static unsafe partial class MmapPrefault
         /// switch). Used by the fully-CPU-resident passes, where the user has already
         /// chosen to run the whole model from RAM and prefaulting is the point.</summary>
         Always,
+
+        /// <summary>Sweep only when the region fits in ~80% of the physical memory that is free RIGHT NOW
+        /// (<see cref="AvailablePhysicalBytes"/>), not of total RAM. Used for MoE routed-expert weights: a token
+        /// touches only its top-k experts, so when they do not fit, leaving them to demand paging keeps the hot
+        /// experts in the page cache and lets the OS drop cold ones, instead of forcing the whole expert set
+        /// resident and pushing the machine into swap (GLM-4.5-Air REAP Q2_K: 33 GiB, docs/102 #16).</summary>
+        FitsInFreeRam,
     }
 
     internal readonly record struct Result(bool Ran, long Bytes, double Seconds, string Reason);
@@ -50,10 +57,11 @@ internal static unsafe partial class MmapPrefault
         if (totalBytes <= 0) { reason = "no mapped weights"; return false; }
         if (mode == "0") { reason = "disabled (STINGRAY_PREFAULT=0)"; return false; }
         if (mode == "1") { reason = "forced (STINGRAY_PREFAULT=1)"; return true; }
-        if (gate == RamGate.FitsInRam && availRamBytes > 0 && totalBytes > availRamBytes / 10 * 8)
+        if (gate is RamGate.FitsInRam or RamGate.FitsInFreeRam && availRamBytes > 0 && totalBytes > availRamBytes / 10 * 8)
         {
+            string what = gate == RamGate.FitsInFreeRam ? "free RAM" : "RAM";
             reason = $"skipped: {totalBytes >> 20} MiB mapped exceeds 80% of "
-                   + $"{availRamBytes >> 20} MiB RAM (set STINGRAY_PREFAULT=1 to force)";
+                   + $"{availRamBytes >> 20} MiB {what} (set STINGRAY_PREFAULT=1 to force)";
             return false;
         }
         reason = "auto";
@@ -73,7 +81,7 @@ internal static unsafe partial class MmapPrefault
             if (ptr != 0 && bytes > 0) total += bytes;
 
         string? mode = Environment.GetEnvironmentVariable("STINGRAY_PREFAULT");
-        long avail = GC.GetGCMemoryInfo().TotalAvailableMemoryBytes;
+        long avail = gate == RamGate.FitsInFreeRam ? AvailablePhysicalBytes() : GC.GetGCMemoryInfo().TotalAvailableMemoryBytes;
         if (!ShouldRun(mode, total, avail, gate, out string reason))
         {
             // Only announce a deliberate skip — staying silent on "nothing to do".
@@ -137,6 +145,50 @@ internal static unsafe partial class MmapPrefault
             // Ignored: the stride read below still forces residency.
         }
     }
+
+    /// <summary>Physical memory available to new allocations right now (Windows <c>GlobalMemoryStatusEx</c>
+    /// <c>ullAvailPhys</c>, which includes the reclaimable standby cache; Linux <c>MemAvailable</c>). Falls back to
+    /// the GC's total when neither is readable.</summary>
+    internal static long AvailablePhysicalBytes()
+    {
+        try
+        {
+            if (OperatingSystem.IsWindows())
+            {
+                var status = new MemoryStatusEx { Length = (uint)sizeof(MemoryStatusEx) };
+                if (GlobalMemoryStatusEx(ref status) != 0) return (long)status.AvailPhys;
+            }
+            else if (OperatingSystem.IsLinux())
+            {
+                foreach (var line in File.ReadLines("/proc/meminfo"))
+                    if (line.StartsWith("MemAvailable:", StringComparison.Ordinal)
+                        && long.TryParse(line.AsSpan(13).Trim().TrimEnd("kB").Trim(), out long kb))
+                        return kb * 1024;
+            }
+        }
+        catch
+        {
+            // Fall through to the GC's view.
+        }
+        return GC.GetGCMemoryInfo().TotalAvailableMemoryBytes;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MemoryStatusEx
+    {
+        public uint Length;
+        public uint MemoryLoad;
+        public ulong TotalPhys;
+        public ulong AvailPhys;
+        public ulong TotalPageFile;
+        public ulong AvailPageFile;
+        public ulong TotalVirtual;
+        public ulong AvailVirtual;
+        public ulong AvailExtendedVirtual;
+    }
+
+    [LibraryImport("kernel32.dll", EntryPoint = "GlobalMemoryStatusEx")]
+    private static partial int GlobalMemoryStatusEx(ref MemoryStatusEx buffer);
 
     // ── Windows: PrefetchVirtualMemory ──────────────────────────────────────
     private static void AdviseWindows(List<(nint Ptr, long Bytes)> regions)

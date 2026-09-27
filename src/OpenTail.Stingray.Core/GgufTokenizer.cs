@@ -53,6 +53,8 @@ public sealed partial class GgufTokenizer : ITokenizer
     // EncodeByteLevelBpe for why that order matters, and PreTokenizerPatterns for why it is a
     // cascade rather than one pattern.
     private readonly Regex[]? _preTokenSplit;
+    // llama.cpp ignore_merges: a pre-token that is a whole vocab entry is emitted directly (PreTokenizerPatterns.IgnoresMerges).
+    private bool _ignoreMerges;
     // Byte-level BPE merge ranks, used with _preTokenSplit. Same shape as _spmMerges but keyed on
     // GPT-2 byte-level pieces rather than the SentencePiece U+2581-prefixed ones.
     private readonly Dictionary<(string, string), int>? _byteBpeMerges;
@@ -565,6 +567,7 @@ public sealed partial class GgufTokenizer : ITokenizer
             chatTemplateEos);
         tokenizer.PreTokenizerIsKnown = knownPre;
         tokenizer._splitNewlineRuns = source.ModelFamily == "gemma4";
+        tokenizer._ignoreMerges = PreTokenizerPatterns.IgnoresMerges(source.TokenizerPre);
         tokenizer.DeclaredPreTokenizer = source.TokenizerPre;
 
         return tokenizer;
@@ -1047,6 +1050,11 @@ public sealed partial class GgufTokenizer : ITokenizer
         void EmitPiece(string raw)
         {
             string encoded = EncodeToGpt2Bytes(raw);
+            if (_ignoreMerges && _vocab.TryGetValue(encoded, out int whole) && (uint)whole < (uint)VocabSize)
+            {
+                ids.Add(whole);
+                return;
+            }
             pieces.Clear();
             foreach (char ch in encoded)
                 pieces.Add(ch < s_singleCharCache.Length ? s_singleCharCache[ch] : ch.ToString());
