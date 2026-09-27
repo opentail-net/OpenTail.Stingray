@@ -164,3 +164,10 @@ Never reproduced; act only on a new sighting.
     compounds, with no single broken layer.
   - Findings and the next experiment are in `bugstofix.md` (GLM entry).
   - Moved on to item 2.
+- 2026-09-27: item 4 done.
+  - `llama-mtmd-debug` now runs `gemma4v`. The encoder + projector match: row 0 within 0.003 on
+    rainbow 224.
+  - New test `Gemma4V_Rainbow224_MatchesLlamaMtmdDebug`; STATUS row added (encoder scope).
+  - The tool asserts in clip.cpp while printing the last tensor, so its sum is not available.
+- 2026-09-27: item 3 waiting. GLM-4.7-Flash is downloading (GLM-4.5-Air REAP moved to
+  `K:\_other_models` to make room); its PPL run waits for the item 2 sweep.

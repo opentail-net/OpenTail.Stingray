@@ -36,11 +36,9 @@ namespace OpenTail.Stingray.Vision;
 /// <c>FFN_GELU_QUICK</c> default applies) -&gt; RMSNorm(ffn_post_norm) -&gt; residual. There is no
 /// final post-layernorm for this projector (no <c>v.post_ln</c> tensor).</para>
 ///
-/// <para><b>Unverified end-to-end</b>: every constant and mechanism here is sourced from the real
-/// reference graph and the real mmproj's tensor/metadata inventory, not inferred, but there is
-/// still no working oracle on this machine to run <c>gemma4v</c> end-to-end for numerical parity
-/// (the paired text architecture <c>gemma4</c> is not admitted by the local llama.cpp build). Do
-/// not treat this as parity-verified until that comparison exists.</para>
+/// <para><b>Parity-verified 2026-09-27</b> against the vendored <c>llama-mtmd-debug</c> (which now runs
+/// <c>gemma4v</c>): rainbow 224x224, projector output row 0 within 0.003 of the reference
+/// (<c>LlamaMtmdVisionParityTests.Gemma4V_Rainbow224_MatchesLlamaMtmdDebug</c>).</para>
 /// </summary>
 public sealed unsafe class Gemma4VVisionEncoder
 {

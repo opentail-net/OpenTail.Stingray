@@ -251,6 +251,29 @@ public sealed class LlamaMtmdVisionParityTests
         AssertMatches(tokens, 3587.708, 40.0, [-0.5940f, -0.1377f, 0.9753f], 0.03f);
     }
 
+    [Fact]
+    public void Gemma4V_Rainbow224_MatchesLlamaMtmdDebug()
+    {
+        string? path = FindModel("gemma-4-E4B-it-mmproj.gguf");
+        Assert.SkipWhen(path is null, "gemma-4-E4B-it-mmproj.gguf not present");
+        using var model = Gemma4VVisionModel.Open(path!);
+        var encoder = new Gemma4VVisionEncoder(model);
+        float[] tokens = encoder.Forward(Rainbow(224));
+        int count = encoder.TokenCount;
+        Report("gemma4v rainbow224", tokens, count, 2560);
+        Console.WriteLine($"[gemma4v] row0 tail [{tokens[2556]:F4}, {tokens[2557]:F4}, {tokens[2558]:F4}, {tokens[2559]:F4}]");
+
+        // llama-mtmd-debug (-m gemma-4-E4B-it-Q4_K_M.gguf --mmproj gemma-4-E4B-it-mmproj.gguf -n 224 --image rainbow), 2026-09-27:
+        // mm.input_projection output 16 x 2560, row 0 [0.3868, -0.1127, -0.3089, ..., -0.1903, 0.2254, ?]. The tool
+        // asserts in clip.cpp while printing that last tensor, so its sum and final element are not available; the
+        // pooled + normed + clamped input to the projection sums to -539.370239.
+        // Measured 2026-09-27: row 0 [0.3864, -0.1130, -0.3097, ..., -0.1876, 0.2245, 0.5115], sum -106.2146.
+        Assert.Equal(16, count);
+        (int Index, float Ref)[] refs = [(0, 0.3868f), (1, -0.1127f), (2, -0.3089f), (2557, -0.1903f), (2558, 0.2254f)];
+        foreach (var (i, r) in refs)
+            Assert.InRange(tokens[i], r - 0.01f, r + 0.01f);
+    }
+
     private static string? FindModel(string file)
     {
         var dir = new DirectoryInfo(AppContext.BaseDirectory);
