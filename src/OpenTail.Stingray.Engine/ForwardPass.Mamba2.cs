@@ -1,3 +1,5 @@
+using System.Runtime.Intrinsics;
+using System.Runtime.Intrinsics.X86;
 using OpenTail.Stingray.Core;
 
 namespace OpenTail.Stingray.Engine;
@@ -116,7 +118,10 @@ public sealed unsafe partial class ForwardPass
         float* dtb = GetNormWeight(_m2DtB![layer]);
         float* s = _m2SsmState![layer];
         int headsPerGroup = nh / ng;
-        for (int h = 0; h < nh; h++)
+        float* yOut = _m2Y;
+        bool ggmlOrder = Fma.IsSupported && Avx.IsSupported && Sse3.IsSupported && ds % 32 == 0;
+        // Heads are independent: spread them over threads, and vectorise the d_state loop (SIMD over n).
+        Parallel.For(0, nh, h =>
         {
             float dtv = dt[h] + dtb[h];
             float sp = dtv > 20f ? dtv : MathF.Log(1f + MathF.Exp(dtv));
@@ -124,13 +129,60 @@ public sealed unsafe partial class ForwardPass
             int g = h / headsPerGroup;
             float* bg = bMat + g * ds;
             float* cg = cMat + g * ds;
+            int vw = System.Numerics.Vector<float>.Count;
+            int nVec = ds - ds % vw;
+            var vdA = new System.Numerics.Vector<float>(dA);
             for (int e = 0; e < hd; e++)
             {
                 int ii = h * hd + e;
                 float xdt = x[ii] * sp;
+                var vxdt = new System.Numerics.Vector<float>(xdt);
                 float* sRow = s + (long)ii * ds;
-                float acc = 0f;
-                for (int n = 0; n < ds; n++)
+                int n = 0;
+                float acc;
+                if (ggmlOrder)
+                {
+                    // Same arithmetic order as ggml's AVX2 ssm_scan (GGML_F32_STEP 32 = 4 accumulators x 8 lanes):
+                    // t0 = s*dA + B*x*dt unfused, sum[j] = fma(t0, C, sum[j]), then GGML_F32_VEC_REDUCE. The
+                    // recurrence is sensitive to reduction order at about the 0.3% perplexity level, so match it.
+                    var adA = Vector256.Create(dA);
+                    var axdt = Vector256.Create(xdt);
+                    Vector256<float> s0 = Vector256<float>.Zero, s1 = s0, s2 = s0, s3 = s0;
+                    for (; n + 32 <= ds; n += 32)
+                    {
+                        var t0 = Avx.Add(Avx.Multiply(Avx.LoadVector256(sRow + n), adA), Avx.Multiply(Avx.LoadVector256(bg + n), axdt));
+                        Avx.Store(sRow + n, t0);
+                        s0 = Fma.MultiplyAdd(t0, Avx.LoadVector256(cg + n), s0);
+                        var t1 = Avx.Add(Avx.Multiply(Avx.LoadVector256(sRow + n + 8), adA), Avx.Multiply(Avx.LoadVector256(bg + n + 8), axdt));
+                        Avx.Store(sRow + n + 8, t1);
+                        s1 = Fma.MultiplyAdd(t1, Avx.LoadVector256(cg + n + 8), s1);
+                        var t2 = Avx.Add(Avx.Multiply(Avx.LoadVector256(sRow + n + 16), adA), Avx.Multiply(Avx.LoadVector256(bg + n + 16), axdt));
+                        Avx.Store(sRow + n + 16, t2);
+                        s2 = Fma.MultiplyAdd(t2, Avx.LoadVector256(cg + n + 16), s2);
+                        var t3 = Avx.Add(Avx.Multiply(Avx.LoadVector256(sRow + n + 24), adA), Avx.Multiply(Avx.LoadVector256(bg + n + 24), axdt));
+                        Avx.Store(sRow + n + 24, t3);
+                        s3 = Fma.MultiplyAdd(t3, Avx.LoadVector256(cg + n + 24), s3);
+                    }
+                    s0 = Avx.Add(s0, s2);
+                    s1 = Avx.Add(s1, s3);
+                    s0 = Avx.Add(s0, s1);
+                    var h128 = Sse.Add(s0.GetLower(), s0.GetUpper());
+                    h128 = Sse3.HorizontalAdd(h128, h128);
+                    h128 = Sse3.HorizontalAdd(h128, h128);
+                    acc = h128.ToScalar();
+                }
+                else
+                {
+                    var vacc = System.Numerics.Vector<float>.Zero;
+                    for (; n < nVec; n += vw)
+                    {
+                        var v = System.Numerics.Vector.Load(sRow + n) * vdA + System.Numerics.Vector.Load(bg + n) * vxdt;
+                        System.Numerics.Vector.Store(v, sRow + n);
+                        vacc += v * System.Numerics.Vector.Load(cg + n);
+                    }
+                    acc = System.Numerics.Vector.Sum(vacc);
+                }
+                for (; n < ds; n++)
                 {
                     float v = sRow[n] * dA + bg[n] * xdt;
                     sRow[n] = v;
@@ -139,9 +191,9 @@ public sealed unsafe partial class ForwardPass
                 // y += x * D, then gate with silu(z) (ggml_swiglu_split(z, y)).
                 float y = acc + x[ii] * d[h];
                 float zv = z[ii];
-                _m2Y[ii] = y * (zv / (1f + MathF.Exp(-zv)));
+                yOut[ii] = y * (zv / (1f + MathF.Exp(-zv)));
             }
-        }
+        });
 
         // Grouped RMSNorm over d_inner / n_group channels.
         if (_m2Norm![layer].DataPtr is not null)

@@ -143,17 +143,37 @@ MODELS.md entry if it qualifies.
     - 1B longer prompt: 15 tokens, then a documented near-tie (" equivalence" -1.288 vs
       " general" -1.352).
     - State reset.
+  - **Perf pass, same day** (1B Q8_0, CLI, 40-token prompt + 128 decode, 3 runs each):
+    - Scan heads now run in parallel.
+    - The d_state loop is vectorised in ggml's AVX2 order: 4x8 accumulators, unfused
+      `s*dA + B*x*dt`, FMA into the sums, ggml's reduce.
+    - Decode 17.7 -> 21.6 tok/s (+22%); prefill 14.4 -> 17.1 tok/s. About 48 ms/token vs about
+      52 ms to stream 1.56 GB at roughly 30 GB/s, so decode is near the bandwidth limit.
+  - **Order sensitivity, measured:** second-half PPL moves about 0.3% with the scan's summation
+    order alone.
+
+    | Scan variant | 1B | 350M |
+    |---|---|---|
+    | Scalar | 8.7639 | 17.9003 |
+    | Threaded scalar | 8.7639 (identical) | not run |
+    | Plain SIMD | 8.7891 | 17.8688 |
+    | ggml order | 8.7833 | 17.9578 |
+    | llama.cpp (thread-count invariant) | 8.7563 | 17.9258 |
+
+    So "matches llama.cpp" here means within about 0.3%, not closer; the committed numbers are
+    the ggml-order ones.
   - **Regression:** `Tests.ForwardPass.Fast` 686/686.
     `GraniteGreedyParityTests`/`GraniteMoeGreedyParityTests` skipped: their checkpoints aren't
     local. Their code path only gains the `granitehybrid` family term.
   - **Known limits:**
     - CPU only.
-    - Prefill runs token by token: 350M 54 tok/s, 1B 17 tok/s scoring.
+    - Prefill runs token by token (1B 17 tok/s; llama.cpp batches it: about 110 tok/s scoring).
+      Closing that gap means Mamba-2 support in the batched `PrefillCore`, a separate, sizeable
+      item, not part of this perf pass.
     - Recurrent layers still append a zero KV row to satisfy `PagedKvCache` (wasted memory).
     - No partial rewind of the Mamba state: `SupportsPartialRewind` is false, so `InferenceEngine`
       disables prefix caching; `TruncateTo` resets at 0 and throws for any other earlier length.
     - MoE Granite-H (tiny/small) untested.
-    - A performance pass is owed (CLAUDE.md rule 7).
 
 - 2026-09-27 #13 part 2: Qwen Image had a missing `txt_norm`, now fixed and verified against `sd-cli`.
   - **Bug:** neither the CPU nor the GPU path applied `txt_norm`, the RMSNorm (eps 1e-6) over the

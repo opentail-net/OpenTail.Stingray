@@ -259,7 +259,8 @@ public static class ModelCompatibility
         // granitehybrid — IBM Granite 4.0-H (Mamba-2 + NoPE attention hybrid, llama.cpp granite-hybrid.cpp +
         // mamba-base.cpp build_mamba2_layer). ADMITTED 2026-09-27 with the new Mamba-2 mixer (ForwardPass.Mamba2.cs,
         // CPU, token-by-token). Evidence, wikitext second-half [1024,+) PPL at -c 2048 vs llama-perplexity --chunks 1:
-        // granite-4.0-h-350m Q8_0 17.9003 vs 17.9258; granite-4.0-h-1b Q8_0 8.7639 vs 8.7563. Tokenisation and the
+        // granite-4.0-h-350m Q8_0 17.9578 vs 17.9258; granite-4.0-h-1b Q8_0 8.7833 vs 8.7563 (the recurrence moves this
+        // metric ~0.3% with summation order alone: the scalar scan gave 17.9003 / 8.7639). Tokenisation and the
         // first greedy tokens match llama-server; a longer greedy run diverges at a near-tie (" explained" 0.140 vs
         // " showed" 0.136 in llama.cpp).
         "granitehybrid",
