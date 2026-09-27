@@ -235,6 +235,10 @@ public sealed class StableAudioMediumDiT : IDisposable
         return x;
     }
 
+    /// <summary>Latent tokens that are real (not padding); tokens after them have V zeroed in self-attention
+    /// (audio.cpp rf_dit.cpp apply_padding_to_v). Null = all real.</summary>
+    internal int? ValidLatentTokens { get; set; }
+
     /// <summary>Real DIFFERENTIAL self-attention: `to_qkv` widens to `5*Dim` (`q,k,v,q_diff,k_diff`,
     /// real chunk order confirmed from source). `qk_norm`/RoPE apply identically to the main and
     /// diff pairs (elementwise over head_dim). Two full attention passes share the SAME `v`; final
@@ -264,6 +268,8 @@ public sealed class StableAudioMediumDiT : IDisposable
         StableAudioAttentionKernels.PerHeadRmsNorm(k, seq, Heads, Dim, kNormW);
         StableAudioAttentionKernels.PerHeadRmsNorm(qDiff, seq, Heads, Dim, qNormW);
         StableAudioAttentionKernels.PerHeadRmsNorm(kDiff, seq, Heads, Dim, kNormW);
+        if (ValidLatentTokens is int valid && MemoryTokens + valid < seq)
+            v.AsSpan((MemoryTokens + valid) * Dim).Clear();
 
         StableAudioAttentionKernels.ApplyPartialRope(q, seq, Heads, Dim, cos, sin);
         StableAudioAttentionKernels.ApplyPartialRope(k, seq, Heads, Dim, cos, sin);

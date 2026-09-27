@@ -56,6 +56,64 @@ public static class StableAudioScheduleKernels
         return Math.Clamp(padded, effectiveSeqLen, MaxLatentLength);
     }
 
+    /// <summary>
+    /// Real classifier-free guidance with Adaptive Projected Guidance (APG), matching audio.cpp
+    /// <c>rf_dit.cpp</c> <c>build_cfg_model_output</c> and Python <c>stable-audio-tools</c> APG.
+    /// Operates in x0 space: <paramref name="condX0"/> and <paramref name="diff"/> (cond_x0 - uncond_x0).
+    /// <para>Padded tokens (indices &gt;= <paramref name="validTokens"/>) are masked out of the global
+    /// norm and dot product, and their orthogonal component is masked to 0. When <paramref name="apgScale"/>
+    /// is 1.0 (default), padded tokens receive zero CFG guidance (<c>out = condX0</c>).</para>
+    /// </summary>
+    public static void ApplyApg(
+        ReadOnlySpan<float> condX0,
+        ReadOnlySpan<float> diff,
+        float cfgScale,
+        float apgScale,
+        int validTokens,
+        int totalTokens,
+        int channels,
+        Span<float> outDenoisedX0)
+    {
+        int validCount = Math.Clamp(validTokens, 0, totalTokens) * channels;
+        int totalCount = totalTokens * channels;
+
+        if (condX0.Length < totalCount || diff.Length < totalCount || outDenoisedX0.Length < totalCount)
+            throw new ArgumentException("Input/output spans must have at least totalTokens * channels elements.");
+
+        // Global norm over valid tokens only. Reference: sqrt(norm_sq + 1e-16).
+        double normSq = 0;
+        for (int i = 0; i < validCount; i++)
+        {
+            normSq += (double)condX0[i] * condX0[i];
+        }
+
+        float invNorm = (float)(1.0 / Math.Sqrt(normSq + 1e-16));
+
+        // Global dot product over valid tokens only.
+        double dot = 0;
+        for (int i = 0; i < validCount; i++)
+        {
+            dot += (double)diff[i] * ((double)condX0[i] * invNorm);
+        }
+
+        // Valid tokens: orthogonal guidance applied
+        for (int i = 0; i < validCount; i++)
+        {
+            float v1Normalized = condX0[i] * invNorm;
+            float parallel = (float)dot * v1Normalized;
+            float orthogonal = diff[i] - parallel;
+            float cfgDiff = apgScale * orthogonal + (1.0f - apgScale) * diff[i];
+            outDenoisedX0[i] = condX0[i] + (cfgScale - 1.0f) * cfgDiff;
+        }
+
+        // Padded tokens: orthogonal is masked by 0
+        for (int i = validCount; i < totalCount; i++)
+        {
+            float cfgDiff = (1.0f - apgScale) * diff[i];
+            outDenoisedX0[i] = condX0[i] + (cfgScale - 1.0f) * cfgDiff;
+        }
+    }
+
     // Real SAMPLING schedule default (`DiffusionModel.sampling_dist_shift` when the config has no
     // `sampling_distribution_shift_options`, true for all three shipped base checkpoints):
     // `LogSNRShift(rate=0, anchor_logsnr=-6.2, logsnr_end=2.0)`, anchor_length default 2000.

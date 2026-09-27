@@ -106,6 +106,9 @@ public sealed class StableAudioMediumPipeline : IDisposable
         var (condTokens, secondsTotalRaw) = BuildConditioning(promptTokenIds, durationSeconds);
         int nCond = condTokens.Length / CondTokenDim;
         var nullCondTokens = new float[condTokens.Length];
+        int validTokens = effectiveSeqLen is int effLen
+            ? StableAudioScheduleKernels.ValidLatentTokens(effLen, seqLen, _params.LatentFrameRate)
+            : seqLen;
 
         if (_backend is IVisionOpsBackend visionOps && _backend is IImageOpsBackend imageOps)
         {
@@ -169,18 +172,12 @@ public sealed class StableAudioMediumPipeline : IDisposable
                         diff[i] = condDenoised[i] - uncondDenoised[i];
                     }
 
-                    double normSq = 0, dot = 0;
-                    for (int i = 0; i < totalLatentElements; i++) normSq += (double)condDenoised[i] * condDenoised[i];
-                    float invNorm = (float)(1.0 / (Math.Sqrt(normSq) + 1e-12));
-                    for (int i = 0; i < totalLatentElements; i++) dot += (double)diff[i] * (condDenoised[i] * invNorm);
+                    StableAudioScheduleKernels.ApplyApg(
+                        condDenoised, diff, cfgScale, 1.0f, validTokens, seqLen, _params.LatentChannels, condDenoised);
 
                     for (int i = 0; i < totalLatentElements; i++)
                     {
-                        float v1Normalized = condDenoised[i] * invNorm;
-                        float parallel = (float)dot * v1Normalized;
-                        float orthogonal = diff[i] - parallel;
-                        float cfgDenoised = condDenoised[i] + (cfgScale - 1f) * orthogonal;
-                        velocity[i] = (latentHost[i] - cfgDenoised) / t;
+                        velocity[i] = (latentHost[i] - condDenoised[i]) / t;
                         latentHost[i] += dt * velocity[i];
                     }
 
@@ -199,7 +196,10 @@ public sealed class StableAudioMediumPipeline : IDisposable
             return _vae.Decode(latentHost, seqLen);
         }
 
+        _transformer.ValidLatentTokens = effectiveSeqLen is not null ? validTokens : null;
         var latent = initialLatent;
+        StableAudioDebugHooks.Dump("noise", latent);
+        StableAudioDebugHooks.Dump("cross", condTokens);
 
         for (int step = 0; step < steps; step++)
         {
@@ -212,7 +212,8 @@ public sealed class StableAudioMediumPipeline : IDisposable
             }
             float dt = nextT - t;
 
-            var v = PredictVelocity(latent, seqLen, condTokens, nullCondTokens, nCond, secondsTotalRaw, t, cfgScale);
+            var v = PredictVelocity(latent, seqLen, condTokens, nullCondTokens, nCond, secondsTotalRaw, t, cfgScale, validTokens);
+            if (step == 0) StableAudioDebugHooks.Dump("out0", v);
 
             for (int i = 0; i < latent.Length; i++)
             {
@@ -245,7 +246,8 @@ public sealed class StableAudioMediumPipeline : IDisposable
     private float[] PredictVelocity(
         float[] latent, int seqLen,
         float[] condTokens, float[] nullCondTokens, int nCond,
-        float[] secondsTotalRaw, float sigma, float cfgScale)
+        float[] secondsTotalRaw, float sigma, float cfgScale,
+        int validTokens)
     {
         var condOutput = _transformer.Forward(latent, seqLen, condTokens, nCond, secondsTotalRaw, timestep: sigma);
         if (cfgScale == 1.0f) return condOutput;
@@ -254,28 +256,22 @@ public sealed class StableAudioMediumPipeline : IDisposable
 
         int n = latent.Length;
         var condDenoised = new float[n];
-        var uncondDenoised = new float[n];
         var diff = new float[n];
         for (int i = 0; i < n; i++)
         {
             condDenoised[i] = latent[i] - condOutput[i] * sigma;
-            uncondDenoised[i] = latent[i] - uncondOutput[i] * sigma;
-            diff[i] = condDenoised[i] - uncondDenoised[i];
+            float uncondDenoised = latent[i] - uncondOutput[i] * sigma;
+            diff[i] = condDenoised[i] - uncondDenoised;
         }
 
-        double normSq = 0, dot = 0;
-        for (int i = 0; i < n; i++) normSq += (double)condDenoised[i] * condDenoised[i];
-        float invNorm = (float)(1.0 / (Math.Sqrt(normSq) + 1e-12));
-        for (int i = 0; i < n; i++) dot += (double)diff[i] * (condDenoised[i] * invNorm);
+        var cfgDenoised = new float[n];
+        StableAudioScheduleKernels.ApplyApg(
+            condDenoised, diff, cfgScale, 1.0f, validTokens, seqLen, _params.LatentChannels, cfgDenoised);
 
         var velocity = new float[n];
         for (int i = 0; i < n; i++)
         {
-            float v1Normalized = condDenoised[i] * invNorm;
-            float parallel = (float)dot * v1Normalized;
-            float orthogonal = diff[i] - parallel;
-            float cfgDenoised = condDenoised[i] + (cfgScale - 1f) * orthogonal;
-            velocity[i] = (latent[i] - cfgDenoised) / sigma;
+            velocity[i] = (latent[i] - cfgDenoised[i]) / sigma;
         }
         return velocity;
     }
