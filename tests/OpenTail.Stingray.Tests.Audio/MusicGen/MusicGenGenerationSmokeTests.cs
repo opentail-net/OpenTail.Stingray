@@ -10,7 +10,7 @@ namespace OpenTail.Stingray.Tests.Audio.MusicGen;
 /// CFG -> EnCodec decode) run against real weights. This is a NON-DEGENERACY receipt (finite,
 /// non-silent, has real spectral content), not yet a numeric golden-parity test against an
 /// independent Python/HF reference -- no local Python/torch reference run exists for this model
-/// yet (see docs/062-musicgen-implementation-plan.md's testing-strategy section for the
+/// yet (see docs/done/062-musicgen-implementation-plan.md's testing-strategy section for the
 /// still-open golden-verification work, in particular the CFG null-condition convention this
 /// implementation guesses at). Treat a pass here as "the pipeline runs and produces real audio
 /// energy," not "the audio is musically/numerically correct."

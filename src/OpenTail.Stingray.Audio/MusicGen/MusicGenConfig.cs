@@ -3,7 +3,7 @@ namespace OpenTail.Stingray.Audio.MusicGen;
 
 /// <summary>
 /// Real `facebook/musicgen-small` config, transcribed from the real checkpoint's own
-/// `config.json` (fetched 2026-09-02 -- see docs/062-musicgen-implementation-plan.md), NOT
+/// `config.json` (fetched 2026-09-02 -- see docs/done/062-musicgen-implementation-plan.md), NOT
 /// re-derived from memory. Three components share one checkpoint file
 /// (`model.safetensors`, single-file, ~2.36GB, all F32): a `t5-base` text encoder (loaded from
 /// `t5-base`'s OWN checkpoint per HF's real `MusicgenForConditionalGeneration.from_sub_models_pretrained`

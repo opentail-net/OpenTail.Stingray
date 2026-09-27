@@ -10,7 +10,7 @@ namespace OpenTail.Stingray.Tests.Diffusion;
 /// decoder -- all wired through <see cref="StableAudioMediumPipeline"/>. Real weights, short
 /// duration to keep wall-clock low (Medium is a real, much larger 24-layer/1536-dim model, plus
 /// real CFG runs the DiT twice per step). Non-degeneracy receipt, not yet a numeric golden-parity
-/// test -- see docs/057-stable-audio-3-implementation-plan.md.
+/// test -- see docs/done/057-stable-audio-3-implementation-plan.md.
 /// </summary>
 public sealed class StableAudio3MediumPipelineTests
 {

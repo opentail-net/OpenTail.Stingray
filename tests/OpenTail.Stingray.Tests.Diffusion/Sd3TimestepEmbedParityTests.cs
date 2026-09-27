@@ -10,7 +10,7 @@ namespace OpenTail.Stingray.Tests.Diffusion;
 /// examples/diffusers/src/diffusers/models/embeddings.py's CombinedTimestepTextProjEmbeddings.
 /// This isolates the SINGLE conditioning vector every joint block's AdaLN modulation depends on --
 /// a bug here would corrupt every block uniformly, unlike a localized per-block bug, and is the
-/// first stage worth golden-verifying per docs/057-sd35-performance-handoff.md's "RESOLVED" note
+/// first stage worth golden-verifying per docs/done/057-sd35-performance-handoff.md's "RESOLVED" note
 /// (SD3.5 output is still pure noise at 20 steps; 5 previously-fixed bugs were reasoned from
 /// source, never numerically golden-verified). Does NOT require the CLIP/T5 text encoders or VAE --
 /// only the small t_embedder/y_embedder MLP weights already present in the DiT GGUF -- so this is

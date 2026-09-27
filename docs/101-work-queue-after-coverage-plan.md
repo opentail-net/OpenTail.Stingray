@@ -2,7 +2,7 @@
 
 Order of work (the user's direction, 2026-09-26):
 
-1. Finish `docs/100-actionable-models-coverage-plan.md` (Phi-3.5-MoE LongRoPE, GPT-OSS parity +
+1. Finish `docs/done/100-actionable-models-coverage-plan.md` (Phi-3.5-MoE LongRoPE, GPT-OSS parity +
    admission, EXAONE 4.5 hybrid post-norm + vision CLI, DeepSeek V2-Lite).
 2. Then the optimisation targets below (user's assessment, paraphrased).
 3. Only once 1 and 2 are 100% done: plan and implement Vulkan/GPU support for the LLM models

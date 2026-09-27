@@ -128,7 +128,7 @@ public sealed class ImagePipeline : IDisposable, IDiffusionPipeline
         // (neither reference applies an attention mask for the base FLUX pipeline). This project's
         // implementation previously encoded only the real (short, ~7-9 token) prompt length —
         // found 2026-09-13 while chasing the long-standing "repeating tiled background" artifact
-        // (docs/056-flux-tiling-artifact-handoff.md) as a genuine, previously-unexamined structural
+        // (docs/done/056-flux-tiling-artifact-handoff.md) as a genuine, previously-unexamined structural
         // divergence from both references.
         const int T5MaxSequenceLength = 256; // matches stable-diffusion.cpp's FluxCLIPEmbedder::chunk_len
         var t5TokensRaw = _t5Tok.Tokenize(prompt);

@@ -4,7 +4,7 @@ namespace OpenTail.Stingray.Diffusion.StableAudio;
 /// Real Stable Audio 3 SAME autoencoder (`SAMEEncoder`/`SAMEDecoder`/`TransformerResamplingBlock`
 /// in the real reference), transcribed directly from `stable_audio_3/models/autoencoders.py`,
 /// `pretransforms.py`, and `bottleneck.py` against the real bundled checkpoint's resolved config
-/// (see docs/057-stable-audio-3-implementation-plan.md's VAE section for the full derivation).
+/// (see docs/done/057-stable-audio-3-implementation-plan.md's VAE section for the full derivation).
 ///
 /// Hardcoded to this checkpoint's exact real shape (single `TransformerResamplingBlock` per side,
 /// `chunk_size=32`, `stride=16`, `transformer_depth=6`, `dim_heads=64`, `differential=true`,

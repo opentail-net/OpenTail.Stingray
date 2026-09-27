@@ -4,7 +4,7 @@ namespace OpenTail.Stingray.Audio.AudioGen;
 /// <summary>
 /// Weight loader for AudioGen's audio codec: a SEPARATELY-TRAINED 16kHz EnCodec for environmental
 /// sound (real native AudioCraft "compression" checkpoint, converted to safetensors -- see
-/// docs/063-audiogen-implementation-plan.md), NOT the same weights as MusicGen's 32kHz music
+/// docs/done/063-audiogen-implementation-plan.md), NOT the same weights as MusicGen's 32kHz music
 /// codec despite sharing the identical layer skeleton (see
 /// <see cref="Primitives.EncodecDecoderKernels"/>'s doc comment). Only the DECODER path is
 /// loaded.

@@ -4,7 +4,7 @@
 
 SEE "GLM4 VL research.txt" - for full research agent's report!!!!
 
-Following the Llama 4 (`llama4`) vision encoder (`docs/06-llama4-vision-plan.md`), the user
+Following the Llama 4 (`llama4`) vision encoder (`docs/done/06-llama4-vision-plan.md`), the user
 supplied the full `tools/mtmd/models/glm4v.cpp` source and asked whether GLM4V is a reasonable
 next target. Vision-encoder-only ports (no text-decoder splice, no image-token attention-mask
 wiring — the same scope as `gemma3`, `gemma4v`, and `llama4`) are the established pattern here.
@@ -140,7 +140,7 @@ overridden by `clip.vision.spatial_merge_size`.
   `ggml-org/GLM-4.6V-GGUF`'s `mmproj-GLM-4.6V-Q8_0.gguf`.
 
 This document itself (`docs/07-glm4v-vision-plan.md`) should gain a **RESULT** addendum after
-implementation, mirroring `docs/06-llama4-vision-plan.md`'s addendum: documenting every real
+implementation, mirroring `docs/done/06-llama4-vision-plan.md`'s addendum: documenting every real
 finding vs. pre-implementation assumption listed above (metadata key, M-RoPE section mapping,
 patch-embed reshape correctness, conv2d merger behavior, performance figures, and the same
 "not numerically parity-verified" caveat).

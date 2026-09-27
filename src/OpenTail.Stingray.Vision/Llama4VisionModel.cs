@@ -15,7 +15,7 @@ namespace OpenTail.Stingray.Vision;
 /// <c>clip.cpp</c>: <c>gemma4v.cpp</c> hand-rolls its own NEOX-mode rope function
 /// ("similar to build_rope_2d, but use neox ordering"), while <c>llama4.cpp</c> calls the shared
 /// <c>build_rope_2d</c> as-is, which issues <c>ggml_rope_ext</c> with mode 0 (interleaved pairs)
-/// on each half-of-head-dim slice. See docs/06-llama4-vision-plan.md.
+/// on each half-of-head-dim slice. See docs/done/06-llama4-vision-plan.md.
 /// </summary>
 /// <remarks>
 /// This type is the validated ownership and tensor-name boundary for the Llama 4 ViT, same

@@ -5,7 +5,7 @@ namespace OpenTail.Stingray.Audio.AudioGen;
 /// Real `facebook/audiogen-medium` config, extracted directly from the real checkpoint's own
 /// embedded training config (`xp.cfg`, an OmegaConf-serialized string baked into the real
 /// AudioCraft `state_dict.bin`/`compression_state_dict.bin` "Solver" checkpoints -- see
-/// docs/063-audiogen-implementation-plan.md for the full derivation), NOT re-derived from memory
+/// docs/done/063-audiogen-implementation-plan.md for the full derivation), NOT re-derived from memory
 /// or from MusicGen's numbers. AudioGen follows the exact same LM architecture MusicGen
 /// introduced (delayed multi-codebook pattern over a discrete EnCodec-token autoregressive
 /// Transformer) -- see <see cref="AudioGenConfig"/> vs `OpenTail.Stingray.Audio.MusicGen.MusicGenConfig`

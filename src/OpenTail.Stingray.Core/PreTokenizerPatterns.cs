@@ -209,7 +209,7 @@ public static partial class PreTokenizerPatterns
 
             // llama.cpp: LLAMA_VOCAB_PRE_TYPE_GPT4O and the cases folded onto it. gpt-oss
             // declares "gpt-4o" (confirmed against a real gpt-oss-20b-MXFP4.gguf's own
-            // tokenizer.ggml.pre metadata, 2026-09-02 -- docs/060-gpt-oss-implementation-plan.md).
+            // tokenizer.ggml.pre metadata, 2026-09-02 -- docs/done/060-gpt-oss-implementation-plan.md).
             case "gpt-4o":
             case "llama4":
             case "kanana2":

@@ -143,7 +143,7 @@ one is GPU-focused (fp8 upload path); the CPU angle you want is `ForwardPass.cs`
 
 4. **Verify correctness is unchanged** before touching performance further. This session found and
    fixed two real correctness bugs in FLUX.2 (missing `t * 1000` timestep pre-scaling, which made
-   the DiT timestep-blind; see `docs/087-flux2-implementation-plan.md` and
+   the DiT timestep-blind; see `docs/done/087-flux2-implementation-plan.md` and
    `docs/088-diffusion-two-pass-quality-and-performance-master-plan.md` for full detail) — after
    that fix, real output changed from pure noise to a structured periodic grid/tiling pattern (not
    yet fully coherent — a separate, still-open structural bug, likely patchify/token-ordering

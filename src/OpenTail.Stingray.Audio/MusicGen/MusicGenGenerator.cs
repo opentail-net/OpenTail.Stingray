@@ -11,7 +11,7 @@ namespace OpenTail.Stingray.Audio.MusicGen;
 /// branch (not a T5 encoding of an empty string) -- confirmed against AudioCraft's
 /// `ClassifierFreeGuidanceDropout`/`ConditionFuser` null-conditioning behavior. This is the one
 /// piece of this pipeline NOT yet golden-verified against a real independent reference run (see
-/// docs/062-musicgen-implementation-plan.md) -- worth double-checking against real HF
+/// docs/done/062-musicgen-implementation-plan.md) -- worth double-checking against real HF
 /// `MusicgenForConditionalGeneration.generate` output before trusting audio quality closely tied
 /// to guidance strength.</para>
 /// </summary>

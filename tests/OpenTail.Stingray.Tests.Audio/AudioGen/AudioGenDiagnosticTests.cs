@@ -10,7 +10,7 @@ namespace OpenTail.Stingray.Tests.Audio.AudioGen;
 /// AudioGen. Kept as evidence rather than deleted: a real Python/PyTorch numeric cross-check
 /// (using the pip-installed `audiocraft` package's own `StreamingTransformer`/`SEANetDecoder`
 /// classes with the real checkpoint weights, loaded via `importlib` to bypass the package's
-/// unavailable `av`/`xformers` dependencies -- see docs/063-audiogen-implementation-plan.md)
+/// unavailable `av`/`xformers` dependencies -- see docs/done/063-audiogen-implementation-plan.md)
 /// showed this C# port reproduces real AudioCraft behavior almost exactly at both the transformer
 /// level (matching argmax and logit statistics) and the EnCodec decoder level (matching RMS/
 /// autocorrelation to 3+ significant figures on a synthetic constant-code input), and running the

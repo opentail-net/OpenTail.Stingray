@@ -4,7 +4,7 @@ namespace OpenTail.Stingray.Tests.Core;
 
 /// <summary>
 /// ALPHA/UNTESTED-AGAINST-REAL-WEIGHTS tests for GptOssGraph (GptOssAlpha.cs). Synthetic
-/// invariant/formula checks only -- see docs/060-gpt-oss-implementation-plan.md.
+/// invariant/formula checks only -- see docs/done/060-gpt-oss-implementation-plan.md.
 /// </summary>
 public class GptOssAlphaTests
 {

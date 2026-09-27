@@ -7,7 +7,7 @@ namespace OpenTail.Stingray.Tests.Diffusion;
 /// HuggingFace `transformers`' real `T5GemmaEncoderModel`, loaded from the real
 /// `stabilityai/stable-audio-3-small-music-base`'s bundled `t5gemma-b-b-ul2/` subfolder (ungated,
 /// downloaded locally to `models/stable-audio-3-t5gemma/` -- see
-/// docs/057-stable-audio-3-implementation-plan.md). This is Stable Audio 3's real text
+/// docs/done/057-stable-audio-3-implementation-plan.md). This is Stable Audio 3's real text
 /// conditioner, not a placeholder.
 /// </summary>
 public sealed class StableAudioT5GemmaEncoderGoldenParityTests

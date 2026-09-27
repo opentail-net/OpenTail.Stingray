@@ -5,7 +5,7 @@ namespace OpenTail.Stingray.Diffusion.TextEncoders;
 /// <summary>
 /// T5Gemma (google/t5gemma-b-b-ul2) encoder-only transformer -- the real text conditioner Stable
 /// Audio 3 uses (`T5GemmaConditioner`/`T5GemmaEncoderModel` in the real reference, see
-/// docs/057-stable-audio-3-implementation-plan.md). Produces context embeddings [seq, 768].
+/// docs/done/057-stable-audio-3-implementation-plan.md). Produces context embeddings [seq, 768].
 ///
 /// Architecturally this is exactly a Gemma 2-family encoder (confirmed against the real
 /// `google/t5gemma-b-b-ul2` `config.json`'s `encoder` block, not guessed): 12 layers, hidden 768,

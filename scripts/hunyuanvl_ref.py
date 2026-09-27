@@ -5,7 +5,7 @@ perceiver projector + image-wrap-token sequence (clip.projector_type = "hunyuanv
 
 Faithfully reimplements tools/mtmd/models/hunyuanvl.cpp's build() (63 lines, read in full) plus
 the real PROJECTOR_TYPE_HUNYUANVL position-embedding bilinear-resize branch in clip.cpp
-(~lines 4809-4869) -- see docs/059-hunyuanvl-implementation-plan.md for the full real-reference
+(~lines 4809-4869) -- see docs/done/059-hunyuanvl-implementation-plan.md for the full real-reference
 citations this was derived from. Same pattern as scripts/exaone4_ref.py / scripts/glm4v_ref.py:
 real numpy port, reading the same local mmproj GGUF the C# encoder reads.
 

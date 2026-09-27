@@ -10,7 +10,7 @@ namespace OpenTail.Stingray.Diffusion.Flux2;
 /// cross-checked against an external report of BFL's real flux2/src/flux2/model.py source
 /// (not yet independently re-verified against a vendored reference under examples/ per this
 /// project's CLAUDE.md rule 8 -- do that before relying on this for numeric golden-parity work).
-/// See docs/087-flux2-implementation-plan.md for the full derivation.
+/// See docs/done/087-flux2-implementation-plan.md for the full derivation.
 /// </remarks>
 public sealed record Flux2Params
 {

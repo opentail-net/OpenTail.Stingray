@@ -36,7 +36,7 @@ public sealed record StableAudioRequest
 /// <para><b>Status, 2026-09-02</b>: the text encoder (<see cref="T5GemmaEncoder"/>), DiT
 /// (<see cref="StableAudioDiT"/>), and VAE (<see cref="AcousticVae"/>) are all real, weight-driven,
 /// golden-verified-or-verified-in-progress ports -- see
-/// docs/057-stable-audio-3-implementation-plan.md for the full status of each. All three share the
+/// docs/done/057-stable-audio-3-implementation-plan.md for the full status of each. All three share the
 /// same <see cref="IWeightLoader"/> (the real checkpoint bundles DiT + VAE weights together).</para>
 /// </summary>
 public sealed class StableAudioPipeline : IDisposable

@@ -5,7 +5,7 @@ namespace OpenTail.Stingray.Audio.AudioGen;
 /// Real AudioGen decoder-only LM forward pass, transcribed from the real `audiocraft.modules
 /// .transformer` (`StreamingTransformerLayer`/`StreamingMultiheadAttention`) and
 /// `audiocraft.models.lm` (`LMModel.forward`) source (pip-installed and read directly,
-/// 2026-09-02 -- see docs/063-audiogen-implementation-plan.md).
+/// 2026-09-02 -- see docs/done/063-audiogen-implementation-plan.md).
 ///
 /// <para><b>Real differences from MusicGen's HF-format decoder</b> (do not copy MusicGen's
 /// assumptions here): (1) self- AND cross-attention use a single FUSED `in_proj_weight`

@@ -2,7 +2,7 @@ namespace OpenTail.Stingray.Diffusion;
 
 /// <summary>
 /// Common entry point shared by every image-generation pipeline (FLUX, Z-Image, and the
-/// planned SD1.5/SDXL/SD3.5 families — see docs/to do - stable diffusion/033-native-stable-diffusion-family-port-plan.md).
+/// planned SD1.5/SDXL/SD3.5 families — see docs/done/native-port-plans/033-native-stable-diffusion-family-port-plan.md).
 /// <see cref="ImagePipeline"/> and <see cref="ZImagePipeline"/> implement this explicitly;
 /// their existing public <c>Generate(...)</c> overloads are unchanged, so callers that already
 /// use those concrete types see no behavior difference.

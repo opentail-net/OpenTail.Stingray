@@ -16,7 +16,7 @@ namespace OpenTail.Stingray.Audio.AudioGen;
 /// and the shared <see cref="Primitives.EncodecDecoderKernels"/>/<see cref="Primitives.T5EncoderKernels"/>.
 /// A further extraction of this loop itself into a shared `AudioTokenGenerator` is a reasonable
 /// next DRY step once a THIRD AudioCraft-family model needs it (see
-/// docs/063-audiogen-implementation-plan.md) -- not done speculatively here with only two real
+/// docs/done/063-audiogen-implementation-plan.md) -- not done speculatively here with only two real
 /// callers whose per-model glue (KvCache types, Step signatures) still differs enough that a
 /// premature interface would likely need reshaping anyway.</para>
 ///

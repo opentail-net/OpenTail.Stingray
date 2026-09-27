@@ -7,7 +7,7 @@ namespace OpenTail.Stingray.Tests.Diffusion;
 /// Numeric parity check of <see cref="StableAudioDiT"/> against a golden forward step dumped from
 /// the real `stable_audio_3.models.dit.DiffusionTransformer` reference, loaded with the real
 /// `stabilityai/stable-audio-3-small-music-base` checkpoint (ungated, downloaded locally to
-/// `models/stable-audio-3-small-music-base/` -- see docs/057-stable-audio-3-implementation-plan.md).
+/// `models/stable-audio-3-small-music-base/` -- see docs/done/057-stable-audio-3-implementation-plan.md).
 /// The fixture reuses the real T5Gemma golden encode's output (with real learned padding-embedding
 /// substitution applied) concatenated with a real `NumberConditioner` `seconds_total` embedding as
 /// the cross-attention context, and a small fixed-seed synthetic latent -- exercising every real
