@@ -1091,4 +1091,6 @@ names what closed; these items are what did not.
 - **MusicGen / AudioGen performance and DRY passes** (CFG as a batch-2 GEMM; a shared T5 kernel
   with Parler), plus top-p sampling. Not re-checked in the archive pass. See "Known gaps" in
   [done/062-musicgen-implementation-plan.md](done/062-musicgen-implementation-plan.md).
-
+- **CosyVoice3 ODE step count**: the default is still 10; the fewer-steps A/B (by ear plus a Whisper
+  round trip) proposed as item 2 of
+  [done/tts-performance-baseline-and-plan.md](done/tts-performance-baseline-and-plan.md) was never run.

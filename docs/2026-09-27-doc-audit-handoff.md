@@ -72,7 +72,7 @@ either way — don't assume either "done" or "still open" without checking:
 - `perf-sweep-plan.md` — large (14 phases, 32 unchecked boxes vs 28 checked) — spot-checked only
   the checkbox count, not verified individually; likely still genuinely open but each phase should
   be checked, not assumed
-- `tts-performance-baseline-and-plan.md` — Turn 1 done, Turn 2 (Batched CFG & ODE step reduction)
+- `done/tts-performance-baseline-and-plan.md` — Turn 1 done, Turn 2 (Batched CFG & ODE step reduction)
   never appears in the doc; unclear whether it happened elsewhere and was never written back here
   — check `PerformanceLeague.md`'s QwenTTS/CosyVoice3 rows and `docs/audio-review-new-progress.md`
 - `PerformanceLeague-expansion-plan.md` — has some deferred items noted inline; not individually

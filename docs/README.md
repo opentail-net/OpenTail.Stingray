@@ -47,7 +47,7 @@ the order they were written.
   [vulkan-gemm/](vulkan-gemm)
   (067, 068, 072, 074-076, 081 done — see [done/](done))
 - **Audio:** [audio-review-new-progress.md](audio-review-new-progress.md),
-  [tts-performance-baseline-and-plan.md](tts-performance-baseline-and-plan.md)
+  [tts-performance-baseline-and-plan.md](done/tts-performance-baseline-and-plan.md)
   ([qwentts-cosyvoice3-handoff.md](done/qwentts-cosyvoice3-handoff.md),
   [2026-09-24-audio-recheck-plan.md](done/2026-09-24-audio-recheck-plan.md) done — see [done/](done))
 - **Front door:** [103-front-door-design.md](103-front-door-design.md) (README and first-run design),

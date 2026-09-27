@@ -1,3 +1,8 @@
+> **STATUS 2026-09-27.** Feature-complete and user-confirmed (STATUS row "MiniMax-Music3"). The one
+> open item is the vocoder/VAE decode gap at the end of this file (29-33s vs the reference's 13.1s):
+> `MiniMaxMusic3Vocoder.cs` has not changed since 350be3c (2026-09-05), so it still stands. The
+> 2026-09-12 perf pass (64f28ca) targeted the AR loop and depth decoder, not the vocoder.
+
 # MiniMax-Music3 — future plan
 
 Status: **CORRECTED 2026-09-04 — read this before anything below.** Every section below this point
