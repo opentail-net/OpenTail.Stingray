@@ -117,7 +117,7 @@ Timebox each at half a day, write down what was learned, and move on if blocked.
 - [ ] **11. Unknown-cause set**
   - [ ] **11.a** LFM2 0.24% PPL gap (10.9277 vs 10.9543). TIMEBOXED 2026-09-27, logged in `bugstofix.md`.
   - [x] **11.b** Youtu-VL: one 1024-token window +5% PPL vs llama.cpp. DONE 2026-09-27 (`9568823`, unmapped `youtu` pre-tokenizer).
-  - [ ] **11.c** NaN in `ForwardPass`'s f16 `qwen3` path (last layer, one position). IN PROGRESS: no longer reproduces; adding a regression test.
+  - [x] **11.c** NaN in `ForwardPass`'s f16 `qwen3` path (last layer, one position). DONE 2026-09-27: no longer reproduces; pinned by `Qwen3F16FiniteLogitsTests`.
   - [ ] **11.d** `HybridGdnChunkedPrefill_MatchesSequentialPrefill` failure with real weights.
   - [ ] **11.e** Stable Audio 3 padding masks in the APG norm.
   - [ ] **11.f** Classic LLaVA-1.5 (missing image token in vocab).
@@ -280,3 +280,8 @@ Timebox each at half a day, write down what was learned, and move on if blocked.
     matched), EXAONE-4.5 1784/1784 (was 1995 tokens, diverging at token 13: " is an" is one token).
   - Four probe rows in `PreTokenizerParityTests`; they skip while both checkpoints sit on K:.
   - Every local GGUF's pre value is now mapped.
+- 2026-09-27: item 11c done. The f16 Qwen3-Embedding-0.6B NaN on the 13-token ACE-Step prompt no
+  longer reproduces: Prefill and token-by-token Forward both give finite logits, and f16 agrees with
+  Q8_0 (max logit 18.777 vs 18.793, same argmax). `Qwen3F16FiniteLogitsTests` pins it (3.8 s, three
+  real weight loads logged). The fixing commit was not identified.
+- 2026-09-27: the user moved item 14, then item 15, ahead of 11d-f and 12-13.
