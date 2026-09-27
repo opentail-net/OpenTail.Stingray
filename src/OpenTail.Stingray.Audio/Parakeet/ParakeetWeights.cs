@@ -41,14 +41,14 @@ public sealed class ParakeetWeights : IDisposable
     public float[] PreConv5Bias { get; }
     public float[] PreConv6Weight { get; }  // [1,1,256,256] pointwise
     public float[] PreConv6Bias { get; }
-    public PackedLinearF32 PreOut { get; }
+    public ParakeetLinear PreOut { get; }
 
     // --- Mel preprocessing (shipped in checkpoint, don't recompute) ---
     public float[] MelFilterbank { get; }   // [257, 80]
     public float[] MelWindow { get; }       // [400]
 
     // --- CTC head (null for a TDT-only checkpoint such as parakeet-tdt-0.6b-v2) ---
-    public PackedLinearF32? Ctc { get; }
+    public ParakeetLinear? Ctc { get; }
     public bool HasCtc => Ctc is not null;
 
     // --- TDT transducer head (null for a CTC checkpoint). CrispASR GGUF layout (convert-parakeet-to-gguf.py). ---
@@ -112,20 +112,21 @@ public sealed class ParakeetWeights : IDisposable
 
     /// <summary>Loads and dequantizes a required tensor by exact GGUF name to a flat float[] in file storage order.</summary>
     /// <summary>
-    /// Loads <c>{stem}.weight</c> (and <c>{stem}.bias</c> if present) as a packed SGEMM linear. The F32 copy is only
-    /// temporary: holding it next to the packed panels doubled the resident weights (5.6 GB for the 378 MB q4_k TDT
-    /// file, 2026-09-27). <paramref name="inDim"/> -1 infers it from the element count.
+    /// Binds <c>{stem}.weight</c> (and <c>{stem}.bias</c> if present) as a batched linear. Quantized tensors stay in
+    /// the memory-mapped GGUF and run through <see cref="SimdKernels.MatMulBatched"/>; F32/F16 tensors are packed for
+    /// the F32 SGEMM. Dequantizing everything to packed F32 took 2.85 GB for the 378 MB q4_k TDT file (2026-09-27).
+    /// <paramref name="inDim"/> -1 infers it from the tensor shape.
     /// </summary>
-    internal PackedLinearF32 Pack(string stem, int outDim, int inDim)
+    internal ParakeetLinear Pack(string stem, int outDim, int inDim)
     {
-        var weight = GetTensor(stem + ".weight");
-        if (inDim < 0) inDim = weight.Length / outDim;
-        var packed = new PackedLinearF32(weight, TryGetTensor(stem + ".bias"), outDim, inDim);
-        _packed.Add(packed);
-        return packed;
+        var info = Model.FindTensor(stem + ".weight") ?? throw new InvalidDataException($"Parakeet GGUF missing required tensor '{stem}.weight'.");
+        if (inDim < 0) inDim = (int)(info.ElementCount / outDim);
+        var linear = new ParakeetLinear(this, info, TryGetTensor(stem + ".bias"), outDim, inDim);
+        _linears.Add(linear);
+        return linear;
     }
 
-    private readonly List<PackedLinearF32> _packed = [];
+    private readonly List<ParakeetLinear> _linears = [];
 
     public float[] GetTensor(string name)
     {
@@ -149,7 +150,7 @@ public sealed class ParakeetWeights : IDisposable
 
     public void Dispose()
     {
-        foreach (var p in _packed) p.Dispose();
+        foreach (var l in _linears) l.Dispose();
         Model.Dispose();
     }
 }
@@ -164,31 +165,31 @@ public sealed class ParakeetConformerLayer
 {
     public float[] NormFf1Weight { get; }
     public float[] NormFf1Bias { get; }
-    public PackedLinearF32 Ff1Linear1 { get; }
-    public PackedLinearF32 Ff1Linear2 { get; }
+    public ParakeetLinear Ff1Linear1 { get; }
+    public ParakeetLinear Ff1Linear2 { get; }
 
     public float[] NormAttnWeight { get; }
     public float[] NormAttnBias { get; }
-    public PackedLinearF32 AttnQ { get; }
-    public PackedLinearF32 AttnK { get; }
-    public PackedLinearF32 AttnV { get; }
-    public PackedLinearF32 AttnOut { get; }
-    public PackedLinearF32 AttnPos { get; }
+    public ParakeetLinear AttnQ { get; }
+    public ParakeetLinear AttnK { get; }
+    public ParakeetLinear AttnV { get; }
+    public ParakeetLinear AttnOut { get; }
+    public ParakeetLinear AttnPos { get; }
     public float[] AttnPosBiasU { get; }  // [head_dim, n_heads]
     public float[] AttnPosBiasV { get; }  // [head_dim, n_heads]
 
     public float[] NormConvWeight { get; }
     public float[] NormConvBias { get; }
-    public PackedLinearF32 ConvPw1 { get; }
+    public ParakeetLinear ConvPw1 { get; }
     /// <summary>Depthwise conv weight, BatchNorm-folded at load time (raw checkpoint ships unfused BN tensors -- see docs/audio-review-progress.md).</summary>
     public float[] ConvDwWeight { get; }    // [K, d]
     public float[] ConvDwBias { get; }
-    public PackedLinearF32 ConvPw2 { get; }
+    public ParakeetLinear ConvPw2 { get; }
 
     public float[] NormFf2Weight { get; }
     public float[] NormFf2Bias { get; }
-    public PackedLinearF32 Ff2Linear1 { get; }
-    public PackedLinearF32 Ff2Linear2 { get; }
+    public ParakeetLinear Ff2Linear1 { get; }
+    public ParakeetLinear Ff2Linear2 { get; }
 
     public float[] NormOutWeight { get; }
     public float[] NormOutBias { get; }
@@ -316,5 +317,65 @@ public sealed class ParakeetTdtWeights
         JointPredBias = w.GetTensor("joint.pred.bias");
         JointOutWeight = w.GetTensor("joint.out.weight");
         JointOutBias = w.GetTensor("joint.out.bias");
+    }
+}
+
+/// <summary>
+/// One encoder linear over a batch of frames: <c>output[m, OutDim] = input[m, InDim] @ W^T (+ bias)</c>. Quantized
+/// weights are read in place from the memory-mapped GGUF (the frames of one utterance are quantized together, like
+/// an LLM prefill, so <c>allowQ8</c> is sound); F32/F16 weights use the packed F32 SGEMM.
+/// </summary>
+public sealed unsafe class ParakeetLinear : IDisposable
+{
+    private readonly byte* _data;
+    private readonly DType _dtype;
+    // Q4_K weights repacked into 8-row groups for the batched Q4Kx8 kernel (same size as the Q4_K data), built once.
+    private byte* _q4kx8;
+    private readonly PackedLinearF32? _packed;
+    private readonly float[]? _bias;
+
+    public int OutDim { get; }
+    public int InDim { get; }
+
+    internal ParakeetLinear(ParakeetWeights w, GgufTensorInfo info, float[]? bias, int outDim, int inDim)
+    {
+        (OutDim, InDim, _bias) = (outDim, inDim, bias);
+        // Q8_0 (the conv pointwise layers) is also packed as F32: the int8 path has no batched Q8_0 kernel and ran
+        // ~0.2 s slower per 14 s clip (CTC encoder 1.39 s vs 1.19 s, 2026-09-27) for ~290 MB saved; a batched Q8_0
+        // 4-input wrapper measured no gain.
+        if (info.DType is DType.Float32 or DType.Float16 or DType.BFloat16 or DType.Q8_0)
+            _packed = new PackedLinearF32(w.GetTensor(info.Name), bias, outDim, inDim);
+        else
+        {
+            _dtype = info.DType;
+            _data = w.Model.GetTensorDataPtr(info);
+            if (_dtype == DType.Q4_K && SimdKernels.CanRepackQ4Kx8(outDim, inDim))
+            {
+                _q4kx8 = (byte*)NativeMemory.Alloc((nuint)SimdKernels.Q4Kx8PackedBytes(outDim, inDim));
+                SimdKernels.RepackQ4KMatrix(_data, _q4kx8, outDim, inDim);
+            }
+        }
+    }
+
+    public void Forward(ReadOnlySpan<float> input, Span<float> output, int m)
+    {
+        if (_packed is not null) { _packed.Forward(input, output, m); return; }
+        fixed (float* xp = input, yp = output)
+        {
+            if (_q4kx8 == null || !SimdKernels.TryMatMulBatchedQ4Kx8(yp, _q4kx8, xp, m, OutDim, InDim))
+                SimdKernels.MatMulBatched(yp, _data, xp, m, OutDim, InDim, _dtype, allowQ8: true);
+        }
+        if (_bias is not null)
+            for (int r = 0; r < m; r++)
+            {
+                var row = output.Slice(r * OutDim, OutDim);
+                TensorPrimitives.Add(row, _bias, row);
+            }
+    }
+
+    public void Dispose()
+    {
+        _packed?.Dispose();
+        if (_q4kx8 != null) { NativeMemory.Free(_q4kx8); _q4kx8 = null; }
     }
 }

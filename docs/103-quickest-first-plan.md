@@ -320,3 +320,12 @@ Timebox each at half a day, write down what was learned, and move on if blocked.
     CrispASR 8.6x. Peak RAM 2.85 GB, unchanged (a first version that kept both copies peaked at 5.6 GB).
   - Output unchanged: TDT 4/4 clips identical to CrispASR; CTC q4_k and f16 still 2.9% WER, same words; heavy
     encoder tests 3/3.
+- 2026-09-27: Parakeet memory pass (user: continue while context is warm; stop when good enough). Stopped here.
+  - Q4_K weights now stay quantized: repacked once into 8-row groups and run through the text engine's
+    `TryMatMulBatchedQ4Kx8` batched GEMM. Q8_0 conv layers packed F32 (int8 Q8_0 path ~0.2 s slower per clip; a
+    batched Q8_0 4-input wrapper measured no gain and was reverted).
+  - NativeAOT binary, 14.2 s clip, 3 runs each: TDT 1.43 s vs CrispASR 1.66 s (1.16x), CTC 1.04 s vs 1.14 s
+    (1.10x). Peak RAM 1.1 GB (was 2.85 GB; CrispASR 0.6-0.65 GB). Load time 1.06 s -> 0.36 s.
+  - Output unchanged: TDT 4/4 identical to CrispASR, CTC 2.9% WER same words, heavy encoder tests 3/3.
+  - Note: single-shot timings from the JIT (`dotnet build`) CLI include ~1 s of JIT warm-up; the AOT binary is
+    the fair comparison.

@@ -234,7 +234,7 @@ public static class ParakeetConformerEncoder
 
     /// <summary>Macaron half-step FFN over all frames: x + 0.5 * linear2(silu(linear1(LN(x)))). The linears run as one
     /// batched SGEMM over the frames instead of a matvec per frame (which re-read each weight matrix T times).</summary>
-    private static float[][] FeedForward(float[][] x, float[] normW, float[] normB, PackedLinearF32 linear1, PackedLinearF32 linear2, int dim)
+    private static float[][] FeedForward(float[][] x, float[] normW, float[] normB, ParakeetLinear linear1, ParakeetLinear linear2, int dim)
     {
         int t = x.Length;
         var normed = new float[t][];
@@ -385,7 +385,7 @@ public static class ParakeetConformerEncoder
         DenseKernels.Linear(input, weight, bias, inDim, outDim);
 
     /// <summary>All frames through one packed linear as a single batched SGEMM.</summary>
-    private static float[][] Batched(float[][] rows, PackedLinearF32 linear)
+    private static float[][] Batched(float[][] rows, ParakeetLinear linear)
     {
         int m = rows.Length, inDim = linear.InDim, outDim = linear.OutDim;
         var x = new float[m * inDim];

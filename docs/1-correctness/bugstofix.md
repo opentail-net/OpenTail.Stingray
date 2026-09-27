@@ -107,12 +107,11 @@ restart a fourth round of kernel-level chasing on this checkpoint without new ev
     context; the attention layers' K/V storage precision (llama.cpp's default F16 KV cache vs
     ours); the dump's resolution hides where the error starts. A full-precision dump (tensor
     binary output, not the printed summary) is needed to go further.
-- [ ] **Parakeet (CTC and TDT) holds its weights as F32** (logged 2026-09-27, docs/103 item 14).
-  - The encoder linears are packed F32 SGEMM panels, so the 378 MB q4_k TDT file takes 2.85 GB of RAM.
-  - Speed is no longer a gap: after the 2026-09-27 pass (batched SGEMM over frames) it runs 8.7-8.9x real time vs
-    CrispASR 8.6x on the same file. Before: 3.9x.
-  - Remaining fix if RAM matters: batched quantized matmuls (int8 activations, as the text engine's prefill does)
-    so weights stay in their GGUF types.
+- [x] **Parakeet (CTC and TDT) held its weights as F32** (logged and resolved 2026-09-27, docs/103 item 14).
+  - Was 2.85 GB for the 378 MB q4_k TDT file. Now Q4_K weights stay quantized (repacked Q4Kx8 batched GEMM, as the
+    text engine's prefill), only the Q8_0 conv layers are packed F32: 1.1 GB peak, and faster than CrispASR on the
+    same files (TDT 1.16x, CTC 1.10x). CrispASR itself peaks at 0.6-0.65 GB; the ~290 MB of F32 conv weights are the
+    difference, kept on purpose because the int8 Q8_0 path was ~0.2 s slower per clip. Stopped here.
 - [ ] **Qwen3-VL / Qwen2.5-VL / PaddleOCR image input is CPU only** (logged 2026-09-27, docs/103 item 14).
   - M-RoPE image positions (`ForwardPass.AddMRopeImage`, IMROPE for qwen3vl) and deepstack slices are applied in the
     CPU `ForwardPass` only. The CUDA and Vulkan forward passes would rotate image tokens with 1D positions and skip
