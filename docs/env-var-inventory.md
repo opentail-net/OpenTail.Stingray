@@ -29,7 +29,13 @@ names are treated as valid, `doctor` would not have flagged it either. The warni
 `STINGRAY_MAX_QUEUE` and the dead entry is out of the registry, so the mistake is now reported with
 a closest-match suggestion.
 
-**Reconciled again 2026-09-26 — `KnownEnvironmentVariables.All` now contains **229** names**
+**Reconciled again 2026-09-27 — `KnownEnvironmentVariables.All` now contains **238** names**
+(2026-09-27: the reference-parity debug hooks from docs/102 #11/#13 — `STINGRAY_SD3_DUMP_LATENT_PATH`,
+`STINGRAY_FLUX2_INJECT_NOISE_PATH` / `_DUMP_LATENT_PATH` / `_DUMP_COND_PATH`,
+`STINGRAY_QWENIMAGE_INJECT_NOISE_PATH` / `_DUMP_LATENT_PATH`, `STINGRAY_SA3_NOISE` / `STINGRAY_SA3_DUMP`
+— and `STINGRAY_VISION_GEMM`, the `0|nomm|noattn` A/B switch for the batched vision-encoder GEMM paths.)
+
+**Reconciled 2026-09-26 — `KnownEnvironmentVariables.All` contained **229** names**
 (2026-09-26: `STINGRAY_Q6K_GEMM`, the A/B toggle for the group-paired Q6_K prefill GEMM;
 `STINGRAY_HUNYUAN_GPU`, `0` keeps HunyuanVideo's transformer blocks on the CPU with a GPU backend.)
 
