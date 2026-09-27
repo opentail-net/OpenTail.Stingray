@@ -38,10 +38,30 @@ Done: #1, #4 (#2 merged into #11). In progress: #5. Re-scoped: #3. Not started: 
 - The GPU MLA pass is only used for the legacy layout.
 
 Results so far: Kimi-VL text PPL 115.6 vs llama.cpp 114.1 (matches); first-token logprob " Paris"
--1.25 vs -1.20. Youtu-VL text PPL 14.02 vs 13.30: 5.4% high, NOT yet explained. Suspects: the Q
-LoRA path, or the YoutuVL vision encoder's `ApplyMRoPE` lacking the section reset (see #4
-follow-up). Vision end-to-end: Kimi Q2_K reads the OCR test image wrongly on BOTH llama.cpp and
-ours (checkpoint too weak), so it is not a useful test.
+-1.25 vs -1.20. Youtu-VL text: the 5.4% gap (14.02 vs 13.30) is confined to one passage and is
+not systematic (2026-09-27; all runs use a 2048-token context unless noted):
+
+| Scored window | Stingray | llama.cpp | Gap |
+|---|---|---|---|
+| wiki.test.raw [512,1024), 1024-token context | 7.2705 | 7.2839 | -0.2% |
+| wiki.test.raw [1024,2048) | 13.97 (batched) / 14.02 | 13.30 (13.2990 with f32 KV too) | +5.0% / +5.4% |
+| wiki.test.raw from byte 400000, [512,1024), 1024-token context | 25.70 | 26.24 | -2.1% |
+| wiki.test.raw from byte 400000, [1024,2048) | 21.54 | 21.36 | +0.8% |
+
+What this rules out:
+- The KV cache precision: llama.cpp gives 13.2990 with an f32 or an f16 cache.
+- The total context size: in our run, positions [512,1024) score the same whether the context
+  is 1024 or 2048 tokens.
+- A position-dependent (RoPE) bug: the second passage shows no growth with position.
+- A broken Q LoRA path, which is position- and text-independent and would show everywhere.
+
+The one +5% window is most likely a few outlier tokens. The earlier explanation (Q8_0 activation
+quantization, F16 KV) does not fit: the KV part is disproven above, and the same effects give
+0.4-1.3% on DeepSeek-V2-Lite and Kimi. To close it fully, diff per-token logprobs over
+wiki.test.raw [1024,2048) against llama-server. Verdict: Youtu-VL text is close to llama.cpp,
+with one unexplained window.
+Vision end-to-end: Kimi Q2_K reads the OCR test image wrongly on BOTH llama.cpp and ours (checkpoint
+too weak), so it is not a useful test.
 
 ## Tests for another model to run (hand-off)
 
@@ -103,3 +123,9 @@ Read CLAUDE.md first. Rules:
     38.50 EUR", identical to llama-mtmd-cli. Vision test project 154 tests green.
   - FOLLOW-UP: Exaone4, MiMo-VL and YoutuVL also call VisionOps.ApplyMRoPE without the section reset
     (now an opt-in flag). Check each against llama-mtmd-debug before switching them.
+- 2026-09-27 #5 Youtu-VL text PPL gap: not systematic. It is confined to one 1024-token window
+  (+5%). The other windows are -2.1% to +0.8% (see the table under "Current state"), llama.cpp is
+  unchanged with an f32 KV cache, and a Q LoRA or RoPE fault is ruled out. The regression suites
+  and the DeepSeek-V2-Lite check are green (run by the hand-off model, 2026-09-26; timings show
+  real weights ran). Next: the vision encoder checkerboard check (hand-off test 4).
+
