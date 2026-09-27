@@ -111,6 +111,10 @@ public sealed unsafe partial class ForwardPass
         bool profDecode = DecodeProfileTimers.Enabled;
         if (profDecode) DecodeProfileTimers.CountToken();
 
+        // Models with non-attention layers (Mamba-2, short conv, MLP-only) may have no attention at layer 0, whose
+        // append normally allocates the block: reserve it up front (idempotent within a block, no pages allocated).
+        if (HasNonAttentionLayers && _tqKvCache is null) _kvCache.ReserveBlock();
+
         // 2. Transformer layers
         for (int layer = startLayer; layer < _hp.NumLayers; layer++)
         {

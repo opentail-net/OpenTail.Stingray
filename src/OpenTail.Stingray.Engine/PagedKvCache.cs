@@ -189,6 +189,17 @@ public sealed unsafe class PagedKvCache : IRewindableSequenceKvCache, IPersistab
     private readonly NativePagePool _pool;
     private float*[][] Pool => _pool.Pages;
 
+    /// <summary>Diagnostic: pages actually allocated for <paramref name="layer"/> (a layer that never writes, such as
+    /// a Mamba-2 or short-conv layer, has none), and the bytes one page takes.</summary>
+    internal int AllocatedPages(int layer)
+    {
+        int n = 0;
+        foreach (var p in Pool[layer]) if (p != null) n++;
+        return n;
+    }
+
+    internal long PageBytes => (long)_pageBytes;
+
     // A forked cache reads these leading, page-aligned blocks from a retained source pool.
     // Writes to one of those blocks first materialise a private copy (copy-on-write).
     private NativePagePool? _sharedPrefixPool;

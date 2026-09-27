@@ -62,6 +62,35 @@ public sealed class GraniteHybridGreedyParityTests : HeavyTestBase
         Assert.Equal(first, second);
     }
 
+    /// <summary>Layers without attention must not allocate KV pages (docs/103 item 9): only the attention layers own
+    /// pages after a prefill, and the output is unchanged (the greedy tests above still pass).</summary>
+    [Fact]
+    public void Granite4H_MambaLayers_AllocateNoKvPages()
+    {
+        var path = FindModel(Model1B);
+        Assert.SkipWhen(path is null, $"{Model1B} is required.");
+        using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path!);
+        var model = modelHandle.Model;
+        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var tokens = GgufTokenizer.FromGgufModel(model).Encode(EinsteinPrompt);
+
+        using var backend = new CpuBackend();
+        using var fwd = new Engine.ForwardPass(model, backend, hp, maxContextLength: 2048);
+        fwd.Prefill(tokens);
+
+        int attnLayers = 0;
+        long used = 0;
+        for (int l = 0; l < hp.NumLayers; l++)
+        {
+            int pages = fwd.Cache.AllocatedPages(l);
+            if (hp.IsMamba2Layer![l]) Assert.Equal(0, pages);
+            else { Assert.True(pages > 0, $"attention layer {l} has no KV pages"); attnLayers++; }
+            used += pages * fwd.Cache.PageBytes;
+        }
+        long allLayers = (long)hp.NumLayers * fwd.Cache.AllocatedPages(Array.FindIndex(hp.IsMamba2Layer!.ToArray(), r => !r)) * fwd.Cache.PageBytes;
+        Console.WriteLine($"[granite4h kv] {attnLayers}/{hp.NumLayers} attention layers own pages: {used / 1024} KiB vs {allLayers / 1024} KiB if every layer stored KV");
+    }
+
     private const int EndOfText = 100257; // <|end_of_text|>
 
     private static void AssertGreedy(string modelFile, string prompt, int expectedPromptLen, int[] expected, bool maskEos = false)

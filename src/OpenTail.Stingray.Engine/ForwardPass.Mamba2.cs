@@ -31,11 +31,21 @@ public sealed unsafe partial class ForwardPass
         new Span<float>(_m2ZeroKv, n).Clear();
     }
 
+    /// <summary>True when some layers carry no attention (Mamba-2, short conv, MLP-only), so the paged cache's block
+    /// has to be reserved per token instead of being allocated by layer 0's append.</summary>
+    private bool HasNonAttentionLayers => HasRecurrentState || _hp.HybridFfnOnlyLayer is not null;
+
+    /// <summary>
+    /// Bookkeeping for a layer without attention. With the paged cache nothing is stored: <see cref="RunTrunk"/>
+    /// reserves the block (<see cref="PagedKvCache.ReserveBlock"/>) and pages are allocated per layer on first
+    /// write, so these layers never allocate KV memory (docs/103 item 9; until 2026-09-27 each wrote a zero row).
+    /// The TurboQuant cache has no reserve path, so it still gets a zero row.
+    /// </summary>
     private void AppendZeroKv(int layer)
     {
+        if (_tqKvCache is null) return;
         var zero = new ReadOnlySpan<float>(_m2ZeroKv, _kvCache.KvDim);
-        if (_tqKvCache != null) _tqKvCache.Append(layer, zero, zero);
-        else _kvCache.Append(layer, zero, zero);
+        _tqKvCache.Append(layer, zero, zero);
     }
 
     private void InitMamba2(int numLayers)

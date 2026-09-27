@@ -233,3 +233,13 @@ Timebox each at half a day, write down what was learned, and move on if blocked.
   - The Gemma-3 / Qwen3.8 concatenation warnings no longer appear in the template corpus run.
   - The real remaining gap was `tojson` formatting; it now matches llama.cpp's `/apply-template`
     byte for byte on Qwen3's template with tools.
+- 2026-09-27: item 9 done.
+  - Layers without attention (Mamba-2, short conv, MLP-only) no longer store zero KV rows.
+    `RunTrunk` reserves the block and pages are allocated per layer only on first write (same
+    mechanism as the Qwen3.5 GDN hybrid).
+  - Measured on Granite 4.0-H 1B after the same prompt: 4/40 layers own pages, 512 KiB vs 5,120 KiB
+    before (`Granite4H_MambaLayers_AllocateNoKvPages`).
+  - Granite-H 5/5, Nemotron-H 2/2, LFM2 3/3 parity tests unchanged.
+- 2026-09-27: item 3 not done yet.
+  - GLM-4.7-Flash second-half PPL 8.1757 (batched) vs llama.cpp 8.0997: 0.94%, above the ~0.3% bar.
+  - Sequential re-run in progress to separate a batched-path effect.
