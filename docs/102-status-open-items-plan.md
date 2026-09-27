@@ -22,7 +22,7 @@ dated evidence in the same pass.
 | 9 | ✅ DONE (2026-09-27) | IBM Granite Vision 3.2 / 4.0: output not image-grounded | investigation; 3.2 via LlavaAdapter, 4.0 via QFormer projector | large |
 | 10 | ⛔ BLOCKED (needs an upstream CosyVoice2 reference) | CosyVoice 2: audio only partly right | investigation | large |
 | 11 | ✅ DONE (2026-09-27) | Stable Audio 3 Small SFX: darker than the reference | investigation | large |
-| 12 | ⬜ TODO | Chronos-Bolt / Chronos-2: no numeric reference | needs an independent oracle without new Python reference scripts | large |
+| 12 | ✅ DONE (2026-09-27) | Chronos-Bolt / Chronos-2: no numeric reference | needs an independent oracle without new Python reference scripts | large |
 | 13 | ⬜ TODO | 🟢-but-⚪ diffusion rows (HunyuanVideo, FLUX.2, Qwen Image, SD3 CPU): not independently verified | needs reference outputs (vendored C++ / recorded) | large |
 | 14 | ⬜ TODO | New family: Mamba-2 hybrid layer + state cache, admitting IBM Granite 4.0 (`granitehybrid`, Apache-2.0, 1B-32B) first | missing family; one layer type unlocks #3, #15 and Falcon-H1 | large |
 | 15 | ⬜ TODO | New family: NVIDIA Nemotron Nano v2 / Nemotron 3 Nano (`nemotron_h`) | missing family; reuses #14's Mamba-2 layer; also completes #3 | medium after #14 |
@@ -113,6 +113,15 @@ second-half perplexity vs `llama-perplexity`, then an allowlist entry, a STATUS.
 MODELS.md entry if it qualifies.
 
 ## Log
+
+- 2026-09-27 #12 DONE: both Chronos models now have an independent numeric oracle, community ONNX
+  exports run through ONNX Runtime from C# (no Python).
+  - Chronos-2 matches `OpenSTEF/chronos-2-onnx`: 2.5e-4 abs on values up to 45.7; multivariate
+    group 1.7e-4.
+  - The Chronos-Bolt encoder matches `light-curve/chronos-bolt-small`: 1.0e-6.
+  - Downloads live in `models/_models/hf/OpenSTEF__chronos-2-onnx` and
+    `models/_models/hf/light-curve__chronos-bolt-small`.
+  - Note: the Chronos-2 export fixes the horizon at 42 x 16 = 672, so the test predicts 672 steps.
 
 - 2026-09-27 #11 DONE: Stable Audio 3 (all three checkpoints) matches the vendored audio.cpp reference
   latent for latent.

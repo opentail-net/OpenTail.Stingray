@@ -28,6 +28,7 @@
     <InternalsVisibleTo Include="OpenTail.Stingray.Tests.Cuda" />
     <InternalsVisibleTo Include="OpenTail.Stingray.Tests.Vulkan" />
     <InternalsVisibleTo Include="OpenTail.Stingray.Tests.Vulkan.Fast" />
+    <InternalsVisibleTo Include="OpenTail.Stingray.Tests.Embeddings" />
     <InternalsVisibleTo Include="OpenTail.Stingray.Sessions" />
   </ItemGroup>
 

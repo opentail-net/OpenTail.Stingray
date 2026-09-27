@@ -62,6 +62,25 @@ public sealed class ChronosBoltModel : IDisposable
     /// <paramref name="context"/> (NaN = missing; only the last <see cref="ContextLength"/> values are used).</summary>
     public float[] Forward(ReadOnlySpan<float> context)
     {
+        var (hidden, len, keyMask, norm) = Encode(context);
+        var dec = _t5.StartDecoder(hidden, len, 1, keyMask).Step([_t5.Config.DecoderStartTokenId]);
+        var q = _outPatch.Forward(dec, 1);
+        norm.InverseInPlace(q);
+        return q;
+    }
+
+    /// <summary>Encoder hidden states for the context's patches only ([patches, d_model], REG token excluded), as the
+    /// light-curve ONNX export's <c>sequence</c> output. Used by the ONNX parity test.</summary>
+    internal float[] EncodeHidden(ReadOnlySpan<float> context, out int patches)
+    {
+        var (hidden, len, _, _) = Encode(context);
+        patches = _regEmbedding.Length > 0 ? len - 1 : len;
+        return hidden[..(patches * _t5.Config.DModel)];
+    }
+
+    /// <summary>Instance norm + patching + input embedding + T5 encoder (shared by <see cref="Forward"/>).</summary>
+    private (float[] Hidden, int Len, bool[] KeyMask, ChronosInstanceNorm Norm) Encode(ReadOnlySpan<float> context)
+    {
         if (context.Length > ContextLength) context = context[^ContextLength..];
         int d = _t5.Config.DModel, n = context.Length;
 
@@ -96,10 +115,7 @@ public sealed class ChronosBoltModel : IDisposable
         }
 
         var hidden = _t5.EncodeEmbeddings(embeds, len, keyMask);
-        var dec = _t5.StartDecoder(hidden, len, 1, keyMask).Step([_t5.Config.DecoderStartTokenId]);
-        var q = _outPatch.Forward(dec, 1);
-        norm.InverseInPlace(q);
-        return q;
+        return (hidden, len, keyMask, norm);
     }
 
     /// <summary>Quantile forecasts [Quantiles.Length, <paramref name="predictionLength"/>] (as <c>ChronosBoltPipeline.predict</c>).</summary>
