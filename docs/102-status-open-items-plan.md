@@ -20,7 +20,7 @@ dated evidence in the same pass.
 | 7 | ✅ DONE (2026-09-27; OCR v1 untested, no checkpoint) | DeepSeek-OCR / OCR2: garbled | text architecture (`deepseek2-ocr`) has no validated forward pass | medium |
 | 8 | ✅ DONE (2026-09-27) | Step3-VL: garbled | unvalidated architecture on a Q2_K checkpoint | medium–large |
 | 9 | ✅ DONE (2026-09-27) | IBM Granite Vision 3.2 / 4.0: output not image-grounded | investigation; 3.2 via LlavaAdapter, 4.0 via QFormer projector | large |
-| 10 | ⬜ TODO | CosyVoice 2: audio only partly right | investigation | large |
+| 10 | ⛔ BLOCKED (needs an upstream CosyVoice2 reference) | CosyVoice 2: audio only partly right | investigation | large |
 | 11 | ⬜ TODO | Stable Audio 3 Small SFX: darker than the reference | investigation | large |
 | 12 | ⬜ TODO | Chronos-Bolt / Chronos-2: no numeric reference | needs an independent oracle without new Python reference scripts | large |
 | 13 | ⬜ TODO | 🟢-but-⚪ diffusion rows (HunyuanVideo, FLUX.2, Qwen Image, SD3 CPU): not independently verified | needs reference outputs (vendored C++ / recorded) | large |
@@ -113,6 +113,24 @@ second-half perplexity vs `llama-perplexity`, then an allowlist entry, a STATUS.
 MODELS.md entry if it qualifies.
 
 ## Log
+
+- 2026-09-27 #10 BLOCKED: CosyVoice2's garbled endings need an independent reference that is not
+  available here.
+  - Every vendored C++ port supports CosyVoice 3 only: `examples/cosyvoice.cpp`, `audio.cpp`
+    (`include/engine/models/cosyvoice3`), CrispASR (`cosyvoice3-tts`).
+  - New Python reference scripts are ruled out by project policy.
+  - Already ruled out (docs/audio-review-new-progress.md, 2026-09-25):
+    - the acoustic stack (resynthesis is almost exact);
+    - the LLM forward pass (teacher forcing ranks real tokens near the top, with no decay by
+      position);
+    - the repetition penalty.
+  - What would unblock it: one recorded run of upstream CosyVoice2-0.5B `inference_zero_shot`
+    (made on any machine and checked in as data, not as a script), for the fixed test text,
+    prompt wav and seed, giving:
+    - the LLM input token ids (sos/eos, text, task_id, prompt speech tokens);
+    - the generated speech-token sequence;
+    - ideally the per-step top-k log-probs.
+  - Diffing our generation against that pinpoints the step where the two diverge.
 
 - 2026-09-27 #9 DONE: Granite Vision 4.0 matches llama.cpp.
   - Prompt of 473 tokens, same answer.
