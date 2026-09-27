@@ -1,3 +1,11 @@
+> **ARCHIVED 2026-09-27.** Closed: every step below was done. The bounded `QuantizedWeightCache`
+> (repacked Q4_K_X8 SIMD matmuls, no per-call FP32 dequant) landed in c1cc771 (2026-09-19) and
+> `Flux2DiT.LinearNoBias` routes through it; `GetWeight` now only serves small tensors and GPU upload.
+> Measured: dequant 0.00s of a 94.99s 512² forward (`Flux2PerfTraceSingleForwardTests`), and the
+> 512²/20-step run that was killed after 30+ min completed in 2341.5s (`PerformanceLeague.md`,
+> 2026-09-18/19 rows). The sibling propagation is done too: `QwenImageModel`, `HunyuanVideoModel`,
+> `WanModel` and `LtxVideoModel` all route their linears through the same cache.
+
 # 090 — FLUX.2 (and sibling diffusion models) CPU performance handoff
 
 **Audience**: an AI agent picking this up fresh, with no memory of the investigation that produced

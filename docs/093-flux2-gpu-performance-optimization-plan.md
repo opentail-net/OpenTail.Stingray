@@ -1,3 +1,9 @@
+> **STATUS 2026-09-27 (checkboxes below not updated at the time).** Done since this was written:
+> Phase 3's weight-representation change (Q4_K weights kept quantized on the GPU, full-GPU 512²
+> 2-step 298.4s -> 237s, parity in `VulkanSgemmQuantParityTests`; 43307bc, 2026-09-24) and the
+> img/txt AdaLN/ScaleGateAdd dual-stream dispatch (fcca2f7, 2026-09-20). Still open: Experiment 3
+> (production-shape GEMM ladder) and the row-offset audit of `DoubleBlockGpu`.
+
 # 093 — FLUX.2 GPU double-block performance optimization plan
 
 **Status, 2026-09-19: plan drafted from an external second-opinion review (ChatGPT), cross-checked

@@ -60,7 +60,7 @@ Also spot-checked and confirmed still genuinely open (no action taken, no need t
 These are the docs this audit had not yet reached when the session paused. None have been verified
 either way — don't assume either "done" or "still open" without checking:
 
-- `090-flux2-cpu-perf-handoff.md`, `093-flux2-gpu-performance-optimization-plan.md`,
+- `done/090-flux2-cpu-perf-handoff.md`, `093-flux2-gpu-performance-optimization-plan.md`,
   `094-diffusion-performance-plan.md` — **in progress when paused**: `Flux2DiT.cs` still has a
   `GetWeight` method (line 112) that 090 flags as the anti-pattern to fix (naive per-call weight
   fetch instead of the packed-panel approach other models use), but `Flux2GpuWeights.cs` *does*
