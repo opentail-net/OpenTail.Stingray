@@ -1,3 +1,9 @@
+> **CLOSED 2026-09-27.** Fix applied and verified in current source: both `HunyuanVideoRoPE.cs` and
+> `QwenImageRoPE.cs` now call `InterleavedRoPE` (not `SplitHalfRoPE`) throughout, matching this doc's
+> diagnosis. Both models produce correct output per `PerformanceLeague.md` (HunyuanVideo: recognisable
+> apple, real conditioning; Qwen Image: coherent Vulkan/CPU output, no more banding/noise), consistent
+> with this bug having been the real root cause this doc predicted.
+
 # 092 — RoPE pairing-convention audit for HunyuanVideo and Qwen Image (+ a DRY consolidation)
 
 **Audience**: an AI agent picking this up fresh. Read this whole file before touching code.
