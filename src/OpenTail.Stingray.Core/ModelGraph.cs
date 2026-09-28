@@ -617,6 +617,11 @@ public sealed record ModelHyperparams
         if (arch == "granitehybrid" && !GetBool(metadata, $"{arch}.rope.scaling.finetuned", true)) noRopeStep = 1;
         // Nemotron-H attention never applies RoPE (nemotron-h.cpp build_attention_layer).
         if (arch == "nemotron_h") noRopeStep = 1;
+        // jais (v1) uses ALiBi position encoding, not RoPE — jais.cpp never calls inp_pos/ggml_rope_ext;
+        // positional bias is added to each attention head's scores as a head-specific slope multiplied by
+        // relative distance. ALiBi is not yet implemented in this engine, so positional encoding will be
+        // absent, but suppressing RoPE here at least avoids applying the WRONG positional signal.
+        if (arch == "jais") noRopeStep = 1;
         // Llama-4 uses sigmoid gating with weight-before-FFN per Meta's reference impl.
         bool useSigmoidGating = isLlama4;
         // Llama-4 uses Llama4TextL2Norm for QK-norm: pure RMS norm without learned weights.

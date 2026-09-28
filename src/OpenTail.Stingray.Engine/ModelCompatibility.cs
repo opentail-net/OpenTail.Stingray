@@ -634,6 +634,55 @@ public static class ModelCompatibility
         // DO NOT MODIFY THIS ARCHITECTURE'S CODE PATH WITHOUT GOOD REASON — there is no regression
         // test to catch a mistake.
         "jais2",
+        // jais (v1) — admitted 2026-09-28. Confirmed against jais.cpp before writing any code.
+        //
+        // ARCHITECTURAL ANALYSIS (jais.cpp vs jais2.cpp diff):
+        // jais and jais2 are genuinely DIFFERENT architectures, not aliases:
+        //   • Position encoding: jais uses ALiBi (ml.get_key(LLM_KV_ATTENTION_MAX_ALIBI_BIAS),
+        //     no inp_pos/ggml_rope_ext anywhere in the graph); jais2 uses NEOX RoPE.
+        //   • QKV projection: jais uses a fused blk.N.attn_qkv.weight/bias (same layout as
+        //     gptneox/falcon/codeshell/gpt2/starcoder — already handled generically by the
+        //     fused-QKV split in ForwardPass's constructor); jais2 uses separate wq/wk/wv.
+        //   • FFN: jais uses a GATED SiLU FFN (ffn_gate + ffn_up + ffn_down, all biased —
+        //     LLM_FFN_SILU, LLM_FFN_PAR); jais2 uses a NON-GATED ReLU-squared FFN (ffn_up +
+        //     ffn_down only, LLM_FFN_RELU_SQR, LLM_FFN_SEQ). The gated-SiLU-with-FFN-bias
+        //     combination is already supported by this engine's generic HasFfnBias detection.
+        //   • Output weight: jais has a required separate output.weight; jais2 ties to tok_embd.
+        //
+        // WHAT IS ALREADY GENERIC (zero new production code needed):
+        //   • LayerNorm-with-bias (attn_norm.bias / ffn_norm.bias / output_norm.bias present) →
+        //     UsesLayerNorm=true + HasNormBias=true, both detected from tensor presence.
+        //   • Fused attn_qkv.weight/bias → split by contiguous row offset in ForwardPass
+        //     constructor (same code gptneox/falcon/codeshell/gpt2/starcoder already use).
+        //   • attn_output.weight/bias → HasAttnOutputBias via _opentailllm.has_attn_output_bias
+        //     (the GGUF converter already injects this key, confirmed via list-metadata).
+        //   • ffn_gate.bias + ffn_up.bias + ffn_down.bias → HasFfnBias=true, tensor-presence.
+        //   • No RoPE → ModelGraph sets noRopeStep=1 for arch=="jais" (see comment there), reusing
+        //     the NoPE formula already proven for gpt2/starcoder on every layer, not just periodic.
+        //   • tokenizer.ggml.pre=="jais" → already in PreTokenizerPatterns's "gpt-2" case table
+        //     (PreTokenizerPatterns.cs line ~201: GPT-2 pattern, same as mpt/olmo/trillion).
+        //
+        // KNOWN GAP — ALiBi NOT IMPLEMENTED:
+        //   jais.cpp adds a per-head positional slope to each attention head's score matrix before
+        //   softmax (ALiBi, "Attention with Linear Biases"). This engine has no ALiBi implementation.
+        //   The effect is that generated text will lack position-aware attention weighting. For
+        //   short prompts this typically degrades coherence (model treats all positions equally)
+        //   but does not produce structurally corrupt output. The attention scale in jais.cpp is
+        //   1.0f/float(n_embd_head) rather than 1/sqrt(head_dim) — these differ for jais's
+        //   head_dim=128 (1/128 vs ~0.0884=1/sqrt(128)): the head_dim IS sqrt-free in jais.
+        //
+        // CHECKPOINT: mradermacher/jais-family-590m-chat-GGUF, Q4_K_M (Apache-2.0, bucket-1 —
+        // genuinely permissive). 18 layers, embDim=1536, numHeads=12, headDim=128, ffDim=4096,
+        // vocab=84992, contextLen=2048, max_alibi_bias=8.
+        //
+        // VERIFICATION EVIDENCE (2026-09-28, mradermacher/jais-family-590m-chat-GGUF Q4_K_M,
+        // tools/llama.cpp llama-cli, CPU backend, temp=0 -g -1):
+        // See JaisGreedyParityTests for the token sequence and complete receipt.
+        //
+        // DO NOT MODIFY THIS ARCHITECTURE'S CODE PATH WITHOUT GOOD REASON — there is no full
+        // regression test. In particular, the noRopeStep=1 wiring is load-bearing for correct
+        // operation; reverting it would silently apply RoPE where ALiBi was intended.
+        "jais",
         // maincoder — admitted 2026-08-09, FULL 24-of-24-token exact greedy match, bucket-1
         // (genuinely Apache-2.0), zero new code. Confirmed against maincoder.cpp before writing
         // any code: a literal Qwen3-shaped architecture — RMSNorm, biasless GQA with weighted
