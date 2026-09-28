@@ -118,7 +118,7 @@ Timebox each at half a day, write down what was learned, and move on if blocked.
   - [ ] **11.a** LFM2 0.24% PPL gap (10.9277 vs 10.9543). TIMEBOXED 2026-09-27, logged in `bugstofix.md`.
   - [x] **11.b** Youtu-VL: one 1024-token window +5% PPL vs llama.cpp. DONE 2026-09-27 (`9568823`, unmapped `youtu` pre-tokenizer).
   - [x] **11.c** NaN in `ForwardPass`'s f16 `qwen3` path (last layer, one position). DONE 2026-09-27: no longer reproduces; pinned by `Qwen3F16FiniteLogitsTests`.
-  - [ ] **11.d** `HybridGdnChunkedPrefill_MatchesSequentialPrefill` failure with real weights.
+  - [x] **11.d** `HybridGdnChunkedPrefill_MatchesSequentialPrefill` failure with real weights. DONE 2026-09-28: not an engine bug; the test's per-logit bound assumed only the recurrence reordered sums (see Log).
   - [x] **11.e** Stable Audio 3 padding masks in the APG norm. DONE 2026-09-28 (see Log).
   - [x] **11.f** Classic LLaVA-1.5 (missing image token in vocab). DONE 2026-09-27: direct-splice path in CLI (`RunCommand.cs`) when marker absent from special tokens; Vicuna prompt format for LLaMA-2 backbone (`!s_hasLlama3Headers` alone, removing `s_isVicuna` so LLaMA-3 VLMs aren't hijacked into Vicuna; pinned by `LlamaPromptFormatRuleTests`); patch/CLS ordering in `LlavaVisionEncoder.cs` (patches 0..575, CLS 576, matching llama.cpp's `clip_graph_llava::build`). Pinned by `LlamaMtmdVisionParityTests.Llava15_Rainbow336_MatchesLlamaMtmdDebug` (576x4096 soft tokens, sum -10587.12 vs -10596.39, row 0 [-0.5335, -0.0007, -0.2534] vs [-0.5347, -0.0022, -0.2532]). End-to-end answers "The newspaper is the New York Times, and the main headline reads \"Men Walk on Moon.\"" matching `llama-mtmd-cli`. Tested two images, count mismatch, no-marker prepend, context overflow, Qwen3-VL regression, and Vulkan GPU offload (-g -1).
 
@@ -448,3 +448,14 @@ Timebox each at half a day, write down what was learned, and move on if blocked.
     `AudioGenGenerationSmokeTests` 3/3 pass.
   - Item 15 closed for this machine (2026-09-28). Vulkan matvec re-measured (PerformanceLeague): Q4_K 42-44 GB/s at every
     shape, Q6_K 36-38 GB/s. The GPU-only sub-items moved to 18. Next: item 16.
+- 2026-09-28: item 11.d closed.
+  - Reproduced on the local Qwen3.6-35B-A3B UD-Q6_K via `STINGRAY_HYBRID_GDN_MODEL`: same argmax, cosine 0.99980, one
+    tail logit off by 0.41 (tolerance 0.1025).
+  - Isolation (scratch test, 97 tokens): int8 prefill on/off and batched MoE on/off leave it at 0.39-0.41; replacing the
+    chunked recurrence with the exact sequential scan inside the chunked path leaves it at 0.42-0.46 (cosine 0.99980).
+    So the chunk algorithm is not the source: it is the batched path's different summation order (projections, MoE)
+    amplified by 40 layers of top-k routing. Kernel-level chunked vs sequential is pinned by `GdnKernelsTests`.
+  - The test now asserts argmax equality and logit cosine >= 0.9995, with the evidence in its doc comment. Passes (40 s).
+  - Found on the way: `AceStepPrecomputeSilenceTests` overwrites the checked-in `src/.../AceStep/silence_*.bin` and the
+    runtime copies in `models/acestep-v15/` (it regenerated them with today's GEMM conv, a few ULP different). Restored
+    both from git; the test is a generator, not a check, and should not run in ordinary test passes (logged in bugstofix).

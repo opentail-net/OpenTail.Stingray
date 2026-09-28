@@ -122,6 +122,10 @@ restart a fourth round of kernel-level chasing on this checkpoint without new ev
     deepstack, so their image answers would be wrong. Text-only use on GPU is fine (text positions are 1D).
   - Also: the GPU rope tables for `qwen3vl` do not zero pairs 61-62 (the IMROPE 4th component), which the CPU table
     now does; that needs checking before GPU text use of `qwen3vl` is called verified.
+- [ ] **`AceStepPrecomputeSilenceTests` rewrites checked-in files** (found 2026-09-28): running it overwrites
+  `src/OpenTail.Stingray.Diffusion/AceStep/silence_latent.bin` / `silence_timbre.bin` and the runtime copies in
+  `models/acestep-v15/` (which `AceStepPipeline` reads first). It is a generator; make it opt-in (env gate) or write to a
+  scratch path so ordinary test runs cannot change shipped data.
 - [ ] **LLaVA-NeXT / LLaVA-1.6 AnyRes tiling (llava_uhd) remains unverified with real weights** (logged 2026-09-27):
   - Classic LLaVA-1.5 (single-tile 336x336 ViT + MLP projector) is verified against `llama-mtmd-debug` and `llama-mtmd-cli`
     end to end (`LlamaMtmdVisionParityTests.Llava15_Rainbow336_MatchesLlamaMtmdDebug`).

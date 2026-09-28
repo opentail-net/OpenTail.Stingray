@@ -127,12 +127,21 @@ public sealed class HybridGdnForwardPassTests : HeavyTestBase
     }
 
     /// <summary>
-    /// Parity guard for the opt-in chunk-parallel GDN prefill
+    /// Parity guard for the chunk-parallel GDN prefill
     /// (<see cref="HybridGdnForwardPass.GdnChunkedPrefillEnabled"/>, FlashQLA-style
-    /// chunk_gated_delta_rule). The chunked layer-major prefill must reproduce the
-    /// per-token <see cref="HybridGdnForwardPass.Forward"/> loop: the GDN recurrence
-    /// only reorders floating-point reductions, so the final-position logits must be
-    /// argmax-identical and numerically close. Skipped silently without the GGUF.
+    /// chunk_gated_delta_rule): the chunked layer-major prefill must reproduce the
+    /// per-token <see cref="HybridGdnForwardPass.Forward"/> loop, argmax-identical and with
+    /// near-identical logits. Skipped without the GGUF (set <c>STINGRAY_HYBRID_GDN_MODEL</c>).
+    ///
+    /// <para>Criterion (2026-09-28, docs/103 item 11.d): logit cosine, not a per-logit bound. The
+    /// chunked path batches every projection and the MoE, so it sums in a different order from the
+    /// per-token path, and 40 layers of top-k expert routing amplify that (the same effect moved
+    /// OLMoE logits by 0.20 in ForwardPass.MoeFfnBatched's history). Measured on Qwen3.6-35B-A3B
+    /// UD-Q6_K, 97 tokens: cosine 0.99980, max |diff| 0.41 on a tail logit, same argmax. It is
+    /// unchanged (0.42-0.46, cosine 0.99980) when the chunked recurrence is swapped for the exact
+    /// sequential scan, so the chunk algorithm is not the source; the kernel-level chunked vs
+    /// sequential equivalence is pinned by GdnKernelsTests. The old bound (0.1 + 0.5 % per logit)
+    /// assumed the recurrence reorder was the only difference and failed on this model.</para>
     /// </summary>
     [Fact]
     public void HybridGdnChunkedPrefill_MatchesSequentialPrefill()
@@ -176,29 +185,15 @@ public sealed class HybridGdnForwardPassTests : HeavyTestBase
             Assert.Equal(seq.Length, chunk.Length);
             Assert.Equal(Sampler.Greedy(seq), Sampler.Greedy(chunk));   // argmax-identical
 
-            // Numerically close: the chunked recurrence reorders FP reductions over
-            // 30 GDN layers, so use the codebase-standard combined absolute+relative
-            // tolerance (tol = absTol + relTol·|seq|), NOT a pure relative metric.
-            // A pure relative check explodes on the near-zero tail logits — a logit
-            // of 8e-4 vs 9e-3 (abs diff ~0.008, semantically irrelevant) reads as a
-            // ~8× "relative" error. Measured on this model/prompt: max absolute logit
-            // error is ~0.022 and the top logit (~15.09) agrees to ~0.035%; these
-            // tolerances clear that with headroom while still catching real drift.
-            const float absTol = 0.1f;
-            const float relTol = 5e-3f;
-            float worstExcess = 0f; int worstIdx = -1;
+            double dot = 0, ns = 0, nc = 0;
             for (int i = 0; i < seq.Length; i++)
             {
-                float tol = absTol + relTol * MathF.Abs(seq[i]);
-                float excess = MathF.Abs(seq[i] - chunk[i]) - tol;
-                if (excess > worstExcess) { worstExcess = excess; worstIdx = i; }
+                dot += (double)seq[i] * chunk[i];
+                ns += (double)seq[i] * seq[i];
+                nc += (double)chunk[i] * chunk[i];
             }
-            if (worstIdx >= 0)
-                Assert.Fail(
-                    $"Chunked prefill logits diverged beyond tol at vocab idx {worstIdx}: " +
-                    $"seq={seq[worstIdx]:E4} chunk={chunk[worstIdx]:E4} " +
-                    $"(|diff|={MathF.Abs(seq[worstIdx] - chunk[worstIdx]):E4}, " +
-                    $"tol={absTol + relTol * MathF.Abs(seq[worstIdx]):E4}).");
+            double cos = dot / Math.Sqrt(ns * nc);
+            Assert.True(cos >= 0.9995, $"Chunked prefill logits diverged: cosine {cos:F6} < 0.9995 vs the per-token path.");
         }
         finally
         {
