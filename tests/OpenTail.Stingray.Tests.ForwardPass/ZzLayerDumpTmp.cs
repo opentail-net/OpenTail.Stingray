@@ -24,7 +24,7 @@ public sealed class ZzLayerDumpTmp
         using var w = new StreamWriter(Environment.GetEnvironmentVariable("ZZ_OUT")!);
         foreach (var (_, layer, stage, data) in Engine.StageCapture.Records)
         {
-            if (stage is not ("post_attn_resid" or "post_ffn_resid" or "attn_norm" or "o_proj")) continue;
+            if (stage is not ("post_attn_resid" or "post_ffn_resid" or "attn_norm" or "attn_out" or "o_proj")) continue;
             int n = data.Length;
             w.WriteLine($"{layer} {stage} {data[0]:F4} {data[1]:F4} {data[2]:F4} ... {data[n - 3]:F4} {data[n - 2]:F4} {data[n - 1]:F4}");
         }

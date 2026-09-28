@@ -82,12 +82,13 @@ sources, but work proceeds in the order below.
 ## A few hours, cause already narrowed
 
 ### 7. GLM-4.5 (`glm4moe`) 1.9% perplexity gap
-- [ ] **7. GLM-4.5 (`glm4moe`) 1.9% perplexity gap** (TIMEBOXED 2026-09-27: logged in `bugstofix.md`)
+- [ ] **7. GLM-4.5 (`glm4moe`) 1.9% perplexity gap** (day-scale job, continued 2026-09-28: divergence now pinned to layer 0's `wo` projection specifically)
   - [x] Profile layer bisection: drift starts at ~0.3% after layer 0's attention and compounds across layers rather than a single broken layer.
   - [x] Document findings and next experiment into `bugstofix.md` (GLM entry); timebox to day-scale job.
   - [x] `llama-eval-callback` on 326-token wikitext prompt for tensors `ffn_inp-N` / `l_out-N`.
   - [x] `StageCapture` stages `post_attn_resid` / `post_ffn_resid` on matching token IDs.
-  - [ ] Compare layer-by-layer values and isolate cumulative drift cause.
+  - [x] **2026-09-28:** split layer 0's attention into pre-`wo` (`kqv_out`/`attn_out`) and post-`wo` (`node_26`/`o_proj`) and compared each independently against `llama-eval-callback` on the real checkpoint. Pre-`wo` matches exactly (RoPE, QK score, softmax all ruled out); the divergence (~2e-4, above the print-resolution noise floor) first appears exactly at `wo`, the model's first Q5_K-quantized matmul. Directly supports the standing activation-quantization hypothesis (F32 vs ggml's Q8_K) rather than an attention-math bug. See `bugstofix.md`'s GLM-4.5 entry for the full numbers and method.
+  - [ ] Implement and measure: make the decode path's Q5_K matvec use ggml's per-block Q8_K activation quantization instead of F32, re-measure the layer-0 `wo` difference and the full PPL. Not started -- this touches a kernel shared by every Q5_K-quantized model in this codebase, so it needs a broad regression check before landing, not a quick patch.
   - [ ] **Done when:** second-half PPL within ~0.3% of llama.cpp's 8.6125; allowlist entry, STATUS, RUNNING, and MODELS rows added.
 
 ### 8. Jinja chat-template gaps

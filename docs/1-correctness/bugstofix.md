@@ -118,6 +118,32 @@ restart a fourth round of kernel-level chasing on this checkpoint without new ev
       decimals, so a "0.0001" difference on values near 0.02 is print resolution, not drift. The
       GLM "0.3% after layer 0's attention" may be the same artefact; only differences well above
       1e-4 absolute count.
+    - **Layer-0 `attn_out`/`wo` split done, 2026-09-28** (the next experiment named above): compared
+      `kqv_out-0` (pre-`wo`, raw attention output) and `node_26`/`ffn_inp-0` (post-`wo`) between
+      `llama-eval-callback` and our own `StageCapture` `attn_out`/`o_proj` stages, same real
+      checkpoint (`K:\_other_models\cerebras_GLM-4.5-Air-REAP-82B-A12B-Q2_K.gguf`), same 326-token
+      wikitext prompt, last-token row (position 325). Method: our own `ZzLayerDumpTmp.cs` (now also
+      captures `attn_out`) + a new `ZzMakeGlmIdsTmp.cs` scratch harness to tokenize the exact same
+      first-1400-bytes prompt with our own tokenizer (already confirmed matching `llama-tokenize`
+      exactly).
+      - `kqv_out-0`/`attn_out` (raw attention, pre-`wo`): **exact match** — `...0.0009, 0.0004,
+        0.0026` (ref) vs `...0.0009, 0.0004, 0.0027` (ours), a last-digit difference consistent with
+        print rounding, not drift.
+      - `node_26`/`o_proj` (post-`wo`, the FIRST Q5_K-quantized matmul in the whole model):
+        `-0.0045, 0.0024, -0.0140, ..., -0.0029, 0.0092, 0.0037` (ref) vs `-0.0047, 0.0024, -0.0139,
+        ..., -0.0030, 0.0093, 0.0038` (ours) — a ~2e-4 difference, small but above the LFM2 caveat's
+        1e-4 noise floor.
+      - **Conclusion: the divergence's exact origin is now pinned to layer 0's `wo` projection
+        specifically, not attention math in general.** RoPE, the QK score computation, and the
+        softmax are all now ruled out (their output, `kqv_out`, matches). This is the first
+        Q5_K-quantized matmul in the entire model, directly supporting the standing hypothesis
+        (ggml quantizes activations to Q8_K for this matmul; we keep them F32) rather than
+        something specific to attention.
+      - **Not yet done:** the actual fix (making the decode path's Q5_K matvec use ggml's per-block
+        Q8_K activation quantization instead of F32) has NOT been implemented or attempted. This is
+        real new engineering work on a widely-shared kernel path (`SimdKernels`'s Q5_K matvec is used
+        by every Q5_K-quantized model in this codebase, not just GLM), so it needs care and a broad
+        regression check before landing, not a quick patch. Scoped but not started.
 - [ ] **GLM-4.7-Flash (`deepseek2`) perplexity 0.9-1.4% worse than llama.cpp; not at parity** (logged 2026-09-27; `docs/103-quickest-first-plan.md` item 3).
   - **Checkpoint:** `GLM-4.7-Flash-Q2_K.gguf` (10.6 GB).
   - **Result:** wikitext second-half PPL at -c 2048: ours 8.1757 batched prefill, 8.2100 sequential;
