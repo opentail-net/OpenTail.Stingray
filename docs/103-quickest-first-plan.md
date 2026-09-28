@@ -403,3 +403,9 @@ Timebox each at half a day, write down what was learned, and move on if blocked.
   - Qwen3.6-35B-A3B prefill: the chunked GDN recurrence ran its 32 heads serially. Parallel over heads (bit-identical):
     recurrence 4453 -> 649 ms, prefill 32.1-32.7 -> 42.4-42.9 t/s (515 tokens, 3 alternating runs each, greedy output
     identical), llama.cpp 65.42 -> 0.50x to 0.65x. Now MoE is 55 % of prefill. PerformanceLeague row added.
+  - Qwen3.6-35B-A3B, second step: the GDN pre-recurrence per-token loop (1065 ms of 515 tokens) now runs tokens in
+    parallel (conv1d from a contiguous [state; chunk] window). Prefill 41.4-42.7 -> 45.9-47.0 t/s = 0.71x llama.cpp,
+    greedy output identical. Also measured: GDN input projections (Q8_0) 1683 ms at ~460 GFLOP/s, ssm-out 543 ms, MoE 55 %.
+  - 11.d reproduces on the local Q6_K via the new `STINGRAY_HYBRID_GDN_MODEL` test override: argmax matches, but vocab
+    142707 is 0.49947 (sequential) vs 0.092426 (chunked), |diff| 0.407 > tol 0.1025. Identical numbers with the pre-session
+    GDN code, so today's parallel changes did not cause or change it.

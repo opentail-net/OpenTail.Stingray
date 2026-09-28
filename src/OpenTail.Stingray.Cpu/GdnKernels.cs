@@ -1,5 +1,6 @@
 using System.Numerics.Tensors;
 using System.Runtime.InteropServices;
+using System.Runtime.Intrinsics;
 namespace OpenTail.Stingray.Cpu;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -243,6 +244,32 @@ public static class GdnKernels
             ReadOnlySpan<float> sk = state.Slice(k * channels, channels);
             for (int c = 0; c < channels; c++)
                 output[c] += wk[c] * sk[c];
+        }
+    }
+
+    /// <summary>
+    /// One causal depthwise conv1d output from a contiguous input window: <paramref name="window"/> is
+    /// <c>[kernel, channels]</c> oldest-first, its last row the current token (for a chunk, lay the conv
+    /// state's <c>kernel-1</c> rows in front of the chunk's inputs and pass <c>base + t*channels</c>).
+    /// Same arithmetic as <see cref="Conv1dStep"/> (current tap first, then taps 0..K-2, multiply then add,
+    /// unfused), so the result is bit-identical to <see cref="CausalDepthwiseConv1dDecode"/>. Tokens are
+    /// independent, which lets a chunk run in parallel.
+    /// </summary>
+    public static unsafe void Conv1dStepFromWindow(float* window, float* weight, float* output, int channels, int kernel)
+    {
+        float* wCur = weight + (long)(kernel - 1) * channels;
+        float* xCur = window + (long)(kernel - 1) * channels;
+        int c = 0;
+        for (; c + 8 <= channels; c += 8)
+            Vector256.Store(Vector256.Load(wCur + c) * Vector256.Load(xCur + c), output + c);
+        for (; c < channels; c++) output[c] = wCur[c] * xCur[c];
+        for (int k = 0; k < kernel - 1; k++)
+        {
+            float* wk = weight + (long)k * channels, sk = window + (long)k * channels;
+            c = 0;
+            for (; c + 8 <= channels; c += 8)
+                Vector256.Store(Vector256.Load(output + c) + Vector256.Load(wk + c) * Vector256.Load(sk + c), output + c);
+            for (; c < channels; c++) output[c] += wk[c] * sk[c];
         }
     }
 

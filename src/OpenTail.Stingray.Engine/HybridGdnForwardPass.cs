@@ -929,42 +929,55 @@ public sealed unsafe class HybridGdnForwardPass : IForwardPass
         var bRef = _ssmBeta[layer];
 
         // Input projections batched over all n tokens (weights streamed once; int8 batched path, like the MoE and
-        // dense batched prefill); z goes straight into gZ. The causal conv then threads its state in token order.
-        float* qkvAll = Alloc(n * convCh);
+        // dense batched prefill); z goes straight into gZ. The projection lands after kernel-1 rows holding the conv
+        // state, so each token's causal conv reads a contiguous window and the per-token stages run in parallel
+        // (each token does exactly what the sequential loop did, so results are bit-identical).
+        int kernel = _gdnConvKernel;
+        int hist = kernel - 1;
+        float* qkvAll = Alloc((n + hist) * convCh);
         try
         {
-        BatchedProjection(qkvAll, _wQkv[layer], nrm, n, convCh, e);
+        float* qkvIn = qkvAll + (long)hist * convCh;
+        new ReadOnlySpan<float>(convState, hist * convCh).CopyTo(new Span<float>(qkvAll, hist * convCh));
+        BatchedProjection(qkvIn, _wQkv[layer], nrm, n, convCh, e);
         BatchedProjection(gZ, _wZGate[layer], nrm, n, valueDim, e);
-        for (int t = 0; t < n; t++)
+
+        float* convW = _ssmConv1d[layer];
+        const int TokensPerJob = 8;
+        Parallel.For(0, (n + TokensPerJob - 1) / TokensPerJob, job =>
         {
-            float* normIn = nrm + (long)t * e;
+            float* conv = (float*)NativeMemory.Alloc((nuint)(convCh * sizeof(float)));
+            try
+            {
+                int end = Math.Min(n, (job + 1) * TokensPerJob);
+                for (int t = job * TokensPerJob; t < end; t++)
+                {
+                    float* normIn = nrm + (long)t * e;
+                    GdnKernels.Conv1dStepFromWindow(qkvAll + (long)t * convCh, convW, conv, convCh, kernel);
+                    GdnKernels.SiLu(new Span<float>(conv, convCh), new ReadOnlySpan<float>(conv, convCh));
 
-            GdnKernels.CausalDepthwiseConv1dDecode(
-                new ReadOnlySpan<float>(qkvAll + (long)t * convCh, convCh),
-                new Span<float>(convState, convStateLen),
-                new ReadOnlySpan<float>(_ssmConv1d[layer], _gdnConvKernel * convCh),
-                new Span<float>(_qkvConv, convCh),
-                convCh, _gdnConvKernel);
+                    var qPre = new Span<float>(conv, keyDim);
+                    var kPre = new Span<float>(conv + keyDim, keyDim);
+                    new ReadOnlySpan<float>(conv + 2 * keyDim, valueDim)
+                        .CopyTo(new Span<float>(gV + (long)t * valueDim, valueDim));
 
-            GdnKernels.SiLu(new Span<float>(_qkvConv, convCh), new ReadOnlySpan<float>(_qkvConv, convCh));
+                    GdnKernels.L2NormPerHead(qPre, _gdnNumKHeads, hd, eps: 1e-6f);
+                    GdnKernels.L2NormPerHead(kPre, _gdnNumKHeads, hd, eps: 1e-6f);
+                    GdnKernels.TileHeads(qPre, new Span<float>(gQ + (long)t * valueDim, valueDim),
+                        _gdnNumKHeads, _gdnKvRepeat, hd);
+                    GdnKernels.TileHeads(kPre, new Span<float>(gK + (long)t * valueDim, valueDim),
+                        _gdnNumKHeads, _gdnKvRepeat, hd);
 
-            var qPre = new Span<float>(_qkvConv, keyDim);
-            var kPre = new Span<float>(_qkvConv + keyDim, keyDim);
-            new ReadOnlySpan<float>(_qkvConv + 2 * keyDim, valueDim)
-                .CopyTo(new Span<float>(gV + (long)t * valueDim, valueDim));
-
-            GdnKernels.L2NormPerHead(qPre, _gdnNumKHeads, hd, eps: 1e-6f);
-            GdnKernels.L2NormPerHead(kPre, _gdnNumKHeads, hd, eps: 1e-6f);
-            GdnKernels.TileHeads(qPre, new Span<float>(gQ + (long)t * valueDim, valueDim),
-                _gdnNumKHeads, _gdnKvRepeat, hd);
-            GdnKernels.TileHeads(kPre, new Span<float>(gK + (long)t * valueDim, valueDim),
-                _gdnNumKHeads, _gdnKvRepeat, hd);
-
-            SimdKernels.MatVecDual(
-                gA + (long)t * hv, aRef.DataPtr,
-                gB + (long)t * hv, bRef.DataPtr,
-                normIn, hv, e, aRef.DType, bRef.DType);
-        }
+                    SimdKernels.MatVecDual(
+                        gA + (long)t * hv, aRef.DataPtr,
+                        gB + (long)t * hv, bRef.DataPtr,
+                        normIn, hv, e, aRef.DType, bRef.DType);
+                }
+            }
+            finally { NativeMemory.Free(conv); }
+        });
+        // The conv state is now the last kernel-1 inputs (state rows included when n < kernel-1).
+        new ReadOnlySpan<float>(qkvAll + (long)n * convCh, hist * convCh).CopyTo(new Span<float>(convState, hist * convCh));
 
         // One batched recurrence over all n tokens.
         long tRec = PrefillProfileTimers.Enabled ? Stopwatch.GetTimestamp() : 0;

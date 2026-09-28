@@ -21,6 +21,9 @@ public sealed class HybridGdnForwardPassTests : HeavyTestBase
     /// </summary>
     private static string? FindHybridModelPath()
     {
+        // STINGRAY_HYBRID_GDN_MODEL: explicit qwen35moe GGUF (e.g. a checkpoint kept off the repo drive).
+        if (Environment.GetEnvironmentVariable("STINGRAY_HYBRID_GDN_MODEL") is { Length: > 0 } envPath && File.Exists(envPath))
+            return envPath;
         string[] absoluteCandidates =
         {
             @"E:\models\Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
