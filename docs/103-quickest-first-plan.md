@@ -153,14 +153,14 @@ Timebox each at half a day, write down what was learned, and move on if blocked.
   - [x] SmolLM2 prefill (0.89x llama.cpp) and Qwen3.6-35B prefill (0.63x). DONE 2026-09-28: Qwen3.6-35B ~0.96x (and Qwen3-Coder-30B 0.57x -> 0.75x); SmolLM2 unchanged at 0.89x, remaining gap is inside the already-tuned Q4_K/Q6_K GEMMs (see Log).
   - [x] Batched image-token prefill in VLMs. DONE 2026-09-28 on CPU (Qwen3-VL 20 -> 78-86 tok/s); Vulkan still per token.
   - [x] Vulkan batched prefill and matvec bandwidth. Matvec re-measured 2026-09-28: Q4_K 42-44 GB/s at all shapes (~85% of DDR4 peak; closed), Q6_K 36-38 GB/s (~72%, open). Batched prefill: moved to 18 (discrete GPU needed).
-  - [x] FLUX.1 / FLUX.2 GPU double-block GEMM & fusion. Moved to 18 (discrete GPU needed).
+  - [x] FLUX.1 / FLUX.2 GPU double-block GEMM & fusion. Deferred to backlog 2026-09-28 (item 18). Remaining kernel work (`MultiHeadAttentionTiled` at 88 GFLOP/s, 3.7 s of the 21.6 s double-block loop; the `DoubleBlockGpu` row-offset audit; utility dispatches) is measurable on the iGPU as kernel A vs kernel B, but the GEMMs already run at 600-643 GFLOP/s (093) and take about 16.5 s of the loop, so even a much faster attention leaves the GPU near 18-19 s against the CPU's 17.1 s. It only pays off on a discrete GPU, where attention would become the bottleneck.
   - [x] MiniMax vocoder, MusicGen/AudioGen, CosyVoice3 ODE steps. DONE 2026-09-28: MiniMax vocoder 1.9x, AudioGen 3.3x, MusicGen 2.4x (plus ACE-Step VAE 13.5x). CosyVoice3 left as is: CFG branches already run concurrently on GEMM-sized batches and it is 1.58x faster than audio.cpp.
   - [x] TTS/ASR GPU residency. Moved to 18 (discrete GPU needed).
 
 ### 16. Product items
 - [ ] **16. Product items**
   - [x] `stingray setup` and first-run experience, front-door step 2. DONE 2026-09-28: catalog (3 entries), model home, SHA-checked resumable installs, `setup`, `models`. Steps 3-4 (path-free task commands, C# facade, docs-as-tests) remain in the front-door design doc.
-  - [ ] Qwen2.5-0.5B (the catalog's default chat model) CPU speed: decode 23 vs llama.cpp 98 tok/s, prompt 80 vs 379 (0.24x / 0.21x, 2026-09-28). Found while measuring the catalog; much worse than SmolLM2-1.7B's 0.89x.
+  - [x] Qwen2.5-0.5B (the catalog's default chat model) CPU speed: decode 23 vs llama.cpp 98 tok/s, prompt 80 vs 379 (0.24x / 0.21x, 2026-09-28). Found while measuring the catalog; much worse than SmolLM2-1.7B's 0.89x. DONE 2026-09-28 (dbdbe2a): int8 Q5_0 kernels, decode 28 -> 66 tok/s (0.29x -> 0.67x), prefill 35 -> ~318 tok/s (~0.84x), perplexity unchanged (11.98 vs llama.cpp 12.01). Decode is still 0.67x of llama.cpp. Numbers in `PerformanceLeague.md`.
   - [ ] Configuration ownership.
   - [ ] Multi-model runtime phases.
   - [ ] Session `Fork()` context isolation.
@@ -180,7 +180,7 @@ Timebox each at half a day, write down what was learned, and move on if blocked.
   - [ ] **Pixtral 12B / GLM-4.6V timings:** blocked on `HF_TOKEN` with accepted license.
   - [ ] **Llama-4 Scout:** blocked on ~93 GB disk space.
   - [ ] **CUDA items:** (`rope_freqs` for Llama-3.1-style models; M-RoPE image positions + deepstack in `CudaForwardPass`, done for Vulkan 2026-09-28) blocked on CUDA GPU.
-  - [ ] **Discrete-GPU performance items** (from 15, 2026-09-28): Vulkan batched prefill, FLUX.1/FLUX.2 double-block GEMM and fusion, TTS/ASR GPU residency. This machine's iGPU shares DRAM with the CPU and trails it on prefill-shaped work, so a result here would not say whether the GPU code is good (CLAUDE.md rule 13). Blocked on a machine with a discrete GPU.
+  - [ ] **Discrete-GPU performance items** (from 15, 2026-09-28): Vulkan batched prefill, FLUX.1/FLUX.2 double-block GEMM and fusion (attention shader and audits: measurable on the iGPU but only pays off on a discrete GPU, see item 15), TTS/ASR GPU residency. This machine's iGPU shares DRAM with the CPU and trails it on prefill-shaped work, so a result here would not say whether the GPU code is good (CLAUDE.md rule 13). Blocked on a machine with a discrete GPU.
 
 ---
 

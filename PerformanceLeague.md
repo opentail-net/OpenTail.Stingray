@@ -164,6 +164,17 @@ weren't measured.
 | SmolLM2-360M-Instruct Q4_K_M | prefill (554 tok) | Vulkan iGPU | 28.3 t/s | — | — | 2026-09-13 | new coverage; no llama.cpp Vulkan ref. Worse than CPU (28.3 vs 369.5 t/s) |
 | SmolLM2-360M-Instruct Q4_K_M | decode (554 tok prompt, 24 tok gen) | Vulkan iGPU | 26.4 t/s | — | — | 2026-09-13 | new coverage; close to/slightly above CPU decode (26.4 vs 26.0 t/s) |
 
+## Qwen2.5-0.5B-Instruct (CPU, Q4_K_M) — int8 Q5_0 kernel (103 item 16)
+
+| Model | Scenario | Backend | C# (OT, t/s) | C++ (llama.cpp, t/s) | Ratio | Performance Check | Source |
+|---|---|---|---:|---:|---:|---|---|
+| Qwen2.5-0.5B-Instruct Q4_K_M, before (32058aa) | decode (51 tok prompt, 128 tok gen) | CPU (`-g 0`) | 28.2 (27.7-28.8) | 98 | **0.29x** | 2026-09-28 | stingray CLI, 4 alternating runs; llama.cpp figure is from the 103 item 16 entry (different prompt), not re-run here |
+| Qwen2.5-0.5B-Instruct Q4_K_M, after (dbdbe2a) | decode (51 tok prompt, 128 tok gen) | CPU (`-g 0`) | **65.7 (62.9-69.1)** | 98 | **0.67x** | 2026-09-28 | same runs; **2.3x** over before. Int8 Q5_0 decode kernel in `SimdKernels.cs`. |
+| Qwen2.5-0.5B-Instruct Q4_K_M, before (32058aa) | prefill (661 tok) | CPU (`-g 0`) | 35.3 (34.4-36.1) | 379 | **0.09x** | 2026-09-28 | 4 alternating runs; llama.cpp prompt length differs, ratio approximate |
+| Qwen2.5-0.5B-Instruct Q4_K_M, after (dbdbe2a) | prefill (661 tok) | CPU (`-g 0`) | **~318 (269-340)** | 379 | **~0.84x** | 2026-09-28 | same runs; **~9x** over before. Batched Q5_0 kernel. Run-to-run spread is wide (269-340), treat the ratio as approximate. |
+| Qwen2.5-0.5B-Instruct Q4_K_M, before and after | prefill (661 tok) | Vulkan iGPU (`-g -1`) | 25.7-26.7 both | — | — | 2026-09-28 | Identical on both builds: the GPU path never runs the CPU Q5_0 kernel. Whether iGPU memory bandwidth is the limit is untested (CLAUDE.md rule 13). |
+| Qwen2.5-0.5B-Instruct Q4_K_M | perplexity, 2048 ctx | CPU | 11.98 (per-token), 11.91 (batched) | 12.01 | — | 2026-09-28 | Accuracy unchanged by the kernel change (before: 11.98 / 11.95). |
+
 > **Small-model-decode-weakness pattern, now confirmed across two independent architecture
 > families** (Qwen2.5 and SmolLM2/Llama): decode ratio at the smallest sizes (0.125-0.31x at
 > 135M-500M) is dramatically worse than at 1.5-3B (0.58-0.79x), which is itself worse than the
