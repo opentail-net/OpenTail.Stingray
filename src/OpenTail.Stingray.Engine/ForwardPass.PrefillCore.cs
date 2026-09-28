@@ -19,6 +19,7 @@ public sealed unsafe partial class ForwardPass
         // long enough that eviction would actually drop something. On short
         // prompts the scoring cost outweighs the savings.
         bool snapKvActive = _snapKvCfg.Enabled
+                         && !HasNonAttentionLayers
                          && startPos == 0
                          && N > _snapKvCfg.Budget
                          && N > _snapKvCfg.Window;
@@ -104,6 +105,11 @@ public sealed unsafe partial class ForwardPass
                         BuildPerLayerProjectionsBatched(tokens[n], batchHidden + (long)n * _embDim, batchPleProj + (long)n * stackedPleDim);
                 }
 
+                // Models with layers that carry no attention (Mamba-2, short conv, MLP-only) may not append at layer 0,
+                // whose append normally allocates each block: reserve the chunk's blocks up front (no pages allocated).
+                if (HasNonAttentionLayers)
+                    for (int n = 0; n < N; n++) cache.ReserveBlockAt(startPos + n);
+
                 // 2. Process layer-by-layer
                 for (int layer = 0; layer < _hp.NumLayers; layer++)
                 {
@@ -155,6 +161,31 @@ public sealed unsafe partial class ForwardPass
                         long d = System.Diagnostics.Stopwatch.GetTimestamp() - pStage;
                         PrefillProfileTimers.Add(PrefillProfileTimers.Category.RmsNorm, d);
                         pNamedTicks += d;
+                    }
+
+                    // Recurrent mixer layers (Mamba-2 / LFM2 short conv) replace the attention block: batched
+                    // projections, conv and scan in token order, output into batchNorm like the attention output
+                    // projection. MLP-only layers (Nemotron-H) skip the mixer and run the FFN on the attn-norm output.
+                    if (_m2 is not null && IsMamba2Layer(layer))
+                    {
+                        pStage = profPrefill ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
+                        Mamba2Prefill(layer, batchNorm, batchAttnOut, N);
+                        Copy(batchNorm, batchAttnOut, N * _embDim);
+                        if (profPrefill) { long d = System.Diagnostics.Stopwatch.GetTimestamp() - pStage; PrefillProfileTimers.Add(PrefillProfileTimers.Category.Attention, d); pNamedTicks += d; }
+                        goto AfterMixer;
+                    }
+                    if (_scIn is not null && IsShortConvLayer(layer))
+                    {
+                        pStage = profPrefill ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
+                        ShortConvPrefill(layer, batchNorm, batchAttnOut, N);
+                        Copy(batchNorm, batchAttnOut, N * _embDim);
+                        if (profPrefill) { long d = System.Diagnostics.Stopwatch.GetTimestamp() - pStage; PrefillProfileTimers.Add(PrefillProfileTimers.Category.Attention, d); pNamedTicks += d; }
+                        goto AfterMixer;
+                    }
+                    if (_hp.HybridFfnOnlyLayer is { } ffnOnlyLayers && ffnOnlyLayers[layer])
+                    {
+                        pStage = profPrefill ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
+                        goto FfnCompute;
                     }
 
                     pStage = profPrefill ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
@@ -408,6 +439,7 @@ public sealed unsafe partial class ForwardPass
                         pNamedTicks += d;
                     }
 
+                AfterMixer:
                     // Gemma 4: post-attention RmsNorm before the residual add.
                     if (_postAttnNorm is not null)
                     {
@@ -439,6 +471,9 @@ public sealed unsafe partial class ForwardPass
                     // output projection above) and batchResidual still holds inpL, untouched
                     // since the attn-norm step at the top of this layer. Stashed into
                     // batchHidden and combined with the FFN output below.
+
+                    // Nemotron-H attention / Mamba-2 layers carry no FFN (RunTrunk's HybridNoFfnLayer skip).
+                    if (_hp.HybridNoFfnLayer is { } noFfnLayers && noFfnLayers[layer]) goto AfterFfn;
 
                     // FFN norm: sequential reads batchHidden (attn_out + inpL); parallel (GPT-
                     // NeoX) reads batchResidual (inpL) directly — a SEPARATE LayerNorm from the
@@ -480,6 +515,7 @@ public sealed unsafe partial class ForwardPass
                         pStage = System.Diagnostics.Stopwatch.GetTimestamp();
                     }
 
+                FfnCompute:
                     // Where this layer's FFN output lands: dense reuses batchNorm in place,
                     // MoE needs its own buffer (see batchMoeOut's declaration). Per-LAYER check
                     // (not the model-level batchedMoe) so DeepSeek-V2's leading dense block(s)
@@ -602,6 +638,7 @@ public sealed unsafe partial class ForwardPass
                         }
                     }
 
+                AfterFfn:
                     // Gemma 4: Per-layer embedding injection (PLE)
                     if (_hp.HasPerLayerTokenEmbd)
                     {

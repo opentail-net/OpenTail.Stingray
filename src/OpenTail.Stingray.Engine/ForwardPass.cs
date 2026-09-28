@@ -1389,7 +1389,7 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
         // their F32 path costs negligible normal-prompt performance and removes an unsafe default
         // divergence. A mixed prompt (including the usual BOS + text) remains eligible for Q8.
         // Mamba-2 hybrids: the recurrent mixer is only implemented token by token (the scan is sequential).
-        if (IsAllControlTokenPrompt(tokens) || IsSingleDistinctTokenPrompt(tokens) || HasRecurrentState)
+        if (IsAllControlTokenPrompt(tokens) || IsSingleDistinctTokenPrompt(tokens) || !RecurrentBatchedPrefillApplies)
         {
             ReadOnlySpan<float> logits = default;
             for (int i = 0; i < N; i++)

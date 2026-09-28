@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using OpenTail.Stingray.Core;
 
 namespace OpenTail.Stingray.Engine;
@@ -18,6 +19,15 @@ public sealed unsafe partial class ForwardPass
     /// <summary>True when any layer keeps recurrent state (Mamba-2 or short conv): prefill runs token by token and
     /// the cache cannot be partially rewound.</summary>
     private bool HasRecurrentState => _m2 is not null || _scIn is not null;
+
+    /// <summary>Batched prefill for models with Mamba-2 / short-conv layers (docs/103 item 12): projections batched over
+    /// the chunk, conv and scan in token order. <c>STINGRAY_RECURRENT_BATCHED_PREFILL=0</c> restores the per-token prefill.</summary>
+    public static bool RecurrentBatchedPrefillEnabled { get; set; } =
+        Environment.GetEnvironmentVariable("STINGRAY_RECURRENT_BATCHED_PREFILL") != "0";
+
+    /// <summary>True when the batched trunk can run this model: no recurrent state, or the batched recurrent path is on
+    /// (not with the TurboQuant cache, whose sibling trunk has no recurrent layers).</summary>
+    private bool RecurrentBatchedPrefillApplies => !HasRecurrentState || (RecurrentBatchedPrefillEnabled && _tqKvCache is null);
 
     private void InitShortConv(int numLayers)
     {
@@ -55,25 +65,61 @@ public sealed unsafe partial class ForwardPass
     /// gate by c, out_proj. <paramref name="output"/> receives the mixer output before the residual add.</summary>
     private void ShortConvStep(int layer, float* input, float* output)
     {
-        int d = _embDim, k = _scKernel, km1 = k - 1;
+        int d = _embDim;
         FusedMatVec(_scBcx, _scIn![layer], input, 3 * d, d);
-        float* b = _scBcx, c = _scBcx + d, x = _scBcx + 2 * d;
-        float* w = GetNormWeight(_scConv![layer]);
-        float* st = _scState![layer];
-        for (int ch = 0; ch < d; ch++)
-        {
-            float bx = b[ch] * x[ch];
-            float* sc = st + ch * km1;
-            float* wc = w + ch * k;
-            float sum = 0f;
-            for (int j = 0; j < km1; j++) sum += sc[j] * wc[j];
-            sum += bx * wc[km1];
-            for (int j = 0; j + 1 < km1; j++) sc[j] = sc[j + 1];
-            sc[km1 - 1] = bx;
-            _scY[ch] = c[ch] * sum;
-        }
+        ShortConvMix(layer, _scBcx, 1, _scY);
         FusedMatVec(output, _scOut![layer], _scY, d, d);
         // Mixer output, comparable with llama.cpp's `conv.out_proj` (and `o_proj` for attention layers).
         StageCapture.Record("cpu", layer, StageCapture.Stages.OProj, new ReadOnlySpan<float>(output, d));
+    }
+
+    /// <summary>Batched-prefill short-conv mixer for <paramref name="n"/> consecutive tokens: in_proj and out_proj as
+    /// batched matmuls over [n, embDim] rows, the conv in token order through <see cref="ShortConvMix"/> (docs/103
+    /// item 12).</summary>
+    private void ShortConvPrefill(int layer, float* input, float* output, int n)
+    {
+        int d = _embDim;
+        float* bcx = Alloc(n * 3 * d);
+        float* y = Alloc(n * d);
+        try
+        {
+            MatMulBatchedCached(bcx, in _scIn![layer], input, n, 3 * d, d);
+            ShortConvMix(layer, bcx, n, y);
+            MatMulBatchedCached(output, in _scOut![layer], y, n, d, d);
+        }
+        finally
+        {
+            NativeMemory.Free(bcx);
+            NativeMemory.Free(y);
+        }
+    }
+
+    /// <summary>The short-conv mixer between the projections for <paramref name="n"/> tokens in order:
+    /// <paramref name="bcx"/> rows are [b | c | x] ([n, 3*embDim]), <paramref name="y"/> receives c * conv(b*x)
+    /// ([n, embDim]). Each channel walks the tokens in order with exactly the one-token arithmetic (n = 1 is the decode
+    /// step); channels are independent.</summary>
+    private void ShortConvMix(int layer, float* bcx, int n, float* y)
+    {
+        int d = _embDim, k = _scKernel, km1 = k - 1;
+        float* w = GetNormWeight(_scConv![layer]);
+        float* st = _scState![layer];
+        void Channel(int ch)
+        {
+            float* sc = st + ch * km1;
+            float* wc = w + ch * k;
+            for (int t = 0; t < n; t++)
+            {
+                float* row = bcx + (long)t * 3 * d;
+                float bx = row[ch] * row[2 * d + ch];
+                float sum = 0f;
+                for (int j = 0; j < km1; j++) sum += sc[j] * wc[j];
+                sum += bx * wc[km1];
+                for (int j = 0; j + 1 < km1; j++) sc[j] = sc[j + 1];
+                sc[km1 - 1] = bx;
+                y[(long)t * d + ch] = row[d + ch] * sum;
+            }
+        }
+        if (n == 1) for (int ch = 0; ch < d; ch++) Channel(ch);
+        else Parallel.For(0, d, Channel);
     }
 }

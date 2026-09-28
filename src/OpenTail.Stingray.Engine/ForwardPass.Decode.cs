@@ -87,7 +87,7 @@ public sealed unsafe partial class ForwardPass
             throw new ArgumentException($"embedding width {width} != model embedding dim {_embDim}" +
                 (nDs > 0 ? $" (or {_embDim * (1 + nDs)} with {nDs} deepstack slices)." : "."));
 
-        bool batched = count > 1 && !HasRecurrentState && _layerHeadDim is null && !_usesUnweightedNorm
+        bool batched = count > 1 && RecurrentBatchedPrefillApplies && _layerHeadDim is null && !_usesUnweightedNorm
             && _tqKvCache == null && !_hp.HasPerLayerTokenEmbd && (!_hp.IsMoE || MoeBatchedPrefillSupported);
         if (!batched)
         {

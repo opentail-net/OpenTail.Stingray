@@ -221,6 +221,7 @@ public static class KnownEnvironmentVariables
         "STINGRAY_QWEN_GPU_FP16",
         "STINGRAY_RAW_PROMPT",
         "STINGRAY_RERANK_MODEL",
+        "STINGRAY_RECURRENT_BATCHED_PREFILL",
         "STINGRAY_RVC_PROFILE",
         "STINGRAY_RVC_TRACE",
         "STINGRAY_SA3_DUMP",
