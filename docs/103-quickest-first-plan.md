@@ -362,7 +362,7 @@ Timebox each at half a day, write down what was learned, and move on if blocked.
     - `StableAudio3MediumPipelineTests`: 1/1 passed (35.0s).
 - 2026-09-28: item 14, ACE-Step 1.5 Turbo parity against audio.cpp.
   - Reference: `audio-cpp/audio.cpp-gguf` `ACE-Step1.5-GGUF/turbo/ace-step-1.5-turbo-q8_0.gguf` (6,185,460,032 bytes,
-    in `K:\_other_models\ACE-Step1.5-GGUF	urbo\` because C: would not free space, see handover 104). Run with the planner off
+    in `K:\_other_models\ACE-Step1.5-GGUF\turbo\` because C: would not free space, see handover 104). Run with the planner off
     (`--request-option thinking=false use_cot_metas=false use_cot_caption=false use_cot_language=false`), `--lyrics "[Instrumental]"`,
     10 s, and `noise_file=` a shared frame-major [250, 64] f32 noise. audio.cpp patched locally (examples/ is gitignored) to dump
     `encoder_hidden`, `context_latents`, `final_latent` under `ACESTEP_DUMP_DIR`. Ours: new `STINGRAY_ACESTEP_NOISE` / `STINGRAY_ACESTEP_DUMP`.
