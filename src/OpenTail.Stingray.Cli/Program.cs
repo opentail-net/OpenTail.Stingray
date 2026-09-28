@@ -63,6 +63,10 @@ app.Configure(config =>
         .WithDescription("Generate dense semantic vector embeddings for text with pooling and Matryoshka support.");
     config.AddCommand<RerankCommand>("rerank")
         .WithDescription("Score and rerank candidate documents by relevance against a search query.");
+    config.AddCommand<SetupCommand>("setup")
+        .WithDescription("Download a recommended, checksum-verified model for a task, e.g. `stingray setup chat` (chat, speak, transcribe)");
+    config.AddCommand<ModelsCommand>("models")
+        .WithDescription("Show which tasks have a model installed, and the command that fixes each gap");
     config.AddCommand<PullCommand>("pull")
         .WithDescription("Download a GGUF model from Hugging Face by repo id, e.g. `stingray pull -r bartowski/Qwen2.5-7B-Instruct-GGUF`");
     config.AddCommand<AdmitArchCommand>("admit-arch")

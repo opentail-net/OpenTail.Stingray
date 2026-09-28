@@ -18,6 +18,12 @@ public sealed class CommandOptionAttribute(string template) : Attribute
 {
     /// <summary>The raw template, e.g. <c>"-m|--model &lt;PATH&gt;"</c>.</summary>
     public string Template { get; } = template;
+
+    /// <summary>
+    /// When true, a bare argument (one not starting with <c>-</c>) also binds here, so
+    /// <c>setup chat</c> works as well as <c>setup --task chat</c>. At most one per command.
+    /// </summary>
+    public bool Positional { get; init; }
 }
 
 /// <summary>Base class for a command's parsed options.</summary>

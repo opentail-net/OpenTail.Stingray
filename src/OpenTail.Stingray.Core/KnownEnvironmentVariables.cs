@@ -154,6 +154,7 @@ public static class KnownEnvironmentVariables
         "STINGRAY_MMPROJ",
         "STINGRAY_MMQ_SOA",
         "STINGRAY_MODEL",
+        "STINGRAY_MODEL_HOME",
         "STINGRAY_MODEL_RESIDENCY_MODE",
         "STINGRAY_MOE_BATCHED_PREFILL",
         "STINGRAY_MOE_GPU_PREFILL",

@@ -160,6 +160,18 @@ stingray stt -m base --model-file ggml-base.bin -i hello.wav
 Add `-g -1` to run a language model on the GPU. Flag names follow llama.cpp's `llama-cli` where
 they mean the same thing.
 
+Built from source (not yet in the published package), `stingray setup` fetches the recommended
+model for a task into a per-user folder (`%LOCALAPPDATA%\stingray\models`, or
+`~/.cache/stingray/models`; set `STINGRAY_MODEL_HOME` to move it), checks each file's SHA-256 and
+prints the command to run it. `stingray models` shows which tasks are ready:
+
+```bash
+stingray setup chat          # Qwen2.5 0.5B Instruct, 469 MB
+stingray setup speak         # Piper en_US-lessac-medium, 60 MB (asks you to accept the voice data licence)
+stingray setup transcribe    # Whisper base, 141 MB
+stingray models
+```
+
 ## Finding models
 
 **[docs/MODELS.md](docs/MODELS.md)** is a short, curated list of models to start with, one table
@@ -203,9 +215,9 @@ A GPU is optional: any Vulkan-capable card, or NVIDIA with CUDA 12.
 
 ## What's next
 
-A guided "front door" is being designed in [docs/103](docs/3-product-and-runtime/103-front-door-design.md): a small
-catalog of verified models per task, `stingray setup <task>` to fetch them, task commands that need
-no file paths, and a one-line C# API.
+A guided "front door" is under way in [docs/103](docs/3-product-and-runtime/103-front-door-design.md). Done: a small
+catalog of verified models per task and `stingray setup <task>` / `stingray models`. Next: task
+commands that need no file paths, and a one-line C# API.
 
 ## Building from source
 

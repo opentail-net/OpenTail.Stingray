@@ -29,7 +29,8 @@ names are treated as valid, `doctor` would not have flagged it either. The warni
 `STINGRAY_MAX_QUEUE` and the dead entry is out of the registry, so the mistake is now reported with
 a closest-match suggestion.
 
-**Reconciled again 2026-09-27 — `KnownEnvironmentVariables.All` now contains **242** names**
+**Reconciled again 2026-09-27 — `KnownEnvironmentVariables.All` now contains **246** names**
+(2026-09-28: `STINGRAY_MODEL_HOME`, the `stingray setup` model home, docs/103 item 16; plus three added earlier the same day without a count update: `STINGRAY_RECURRENT_BATCHED_PREFILL` (item 12 fallback switch) and the ACE-Step parity hooks `STINGRAY_ACESTEP_DUMP` / `STINGRAY_ACESTEP_NOISE` (item 14).)
 (2026-09-27: the reference-parity debug hooks from docs/102 #11/#13 — `STINGRAY_SD3_DUMP_LATENT_PATH`,
 `STINGRAY_FLUX2_INJECT_NOISE_PATH` / `_DUMP_LATENT_PATH` / `_DUMP_COND_PATH`,
 `STINGRAY_QWENIMAGE_INJECT_NOISE_PATH` / `_DUMP_LATENT_PATH` / `_DUMP_COND_PATH`, `STINGRAY_HUNYUAN_INJECT_NOISE_PATH` / `_DUMP_COND_PATH` / `_DUMP_VEC_PATH`, `STINGRAY_SA3_NOISE` / `STINGRAY_SA3_DUMP`
@@ -393,6 +394,7 @@ dynamically composed names.
 | `STINGRAY_MAX_CONCURRENT` | stable | Mirrors `OpenTailStingrayServerOptions.MaxConcurrentRequests`. |
 | `STINGRAY_MAX_QUEUE` | stable | Mirrors `OpenTailStingrayServerOptions.MaxQueuedRequests`. See the `STINGRAY_MAX_QUEUED_REQUESTS` dead-name note above. |
 | `STINGRAY_MODEL` | stable | Mirrors `OpenTailStingrayServerOptions.ModelPath`. |
+| `STINGRAY_MODEL_HOME` | stable | Where `stingray setup` stores catalog models (`ModelHome`); default `%LOCALAPPDATA%\stingray\models` / `~/.cache/stingray/models`. |
 | `STINGRAY_NO_THINKING` | stable | Mirrors `OpenTailStingrayServerOptions.DisableThinking`. |
 | `STINGRAY_PREFIX_CACHE_MB` | expert | Mirrors `OpenTailStingrayServerOptions.PrefixCacheMb`. |
 | `STINGRAY_PRESERVE_THINKING` | stable | Mirrors `OpenTailStingrayServerOptions.PreserveThinking`. |

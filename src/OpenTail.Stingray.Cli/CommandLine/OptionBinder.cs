@@ -23,6 +23,7 @@ internal static class OptionBinder
 
         // Repeatable options accumulate across occurrences before being written once.
         var accumulated = new Dictionary<OptionModel, List<object?>>();
+        OptionModel? positional = options.FirstOrDefault(o => o.IsPositional);
 
         for (int i = 0; i < args.Length; i++)
         {
@@ -38,8 +39,19 @@ internal static class OptionBinder
 
             if (arg[0] != '-')
             {
-                error = $"unexpected argument '{arg}'.";
-                return false;
+                if (positional is null)
+                {
+                    error = $"unexpected argument '{arg}'.";
+                    return false;
+                }
+                if (!positional.TryConvert(arg, out object? positionalValue, out string? positionalError))
+                {
+                    error = positionalError;
+                    return false;
+                }
+                positional.Property.SetValue(settings, positionalValue);
+                positional = null; // Only the first bare argument binds; a second is an error.
+                continue;
             }
 
             // Split "--name=value" into name and inline value.

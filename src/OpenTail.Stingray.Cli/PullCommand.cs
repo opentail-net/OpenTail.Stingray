@@ -1,4 +1,5 @@
 using System.Net.Http;
+using OpenTail.Stingray.Core.Catalog;
 
 namespace OpenTail.Stingray.Cli;
 
@@ -68,7 +69,7 @@ public sealed class PullCommand : Command<PullCommand.Settings>
         if (settings.ListOnly)
         {
             foreach (var (name, size) in files.OrderBy(f => f.Name, StringComparer.OrdinalIgnoreCase))
-                AnsiConsole.MarkupLine($"  {Markup.Escape(name)}  {(size is { } s ? FormatBytes(s) : "?")}");
+                AnsiConsole.MarkupLine($"  {Markup.Escape(name)}  {(size is { } s ? ConsoleDownloadProgress.FormatBytes(s) : "?")}");
             return 0;
         }
 
@@ -95,7 +96,7 @@ public sealed class PullCommand : Command<PullCommand.Settings>
                 continue;
             }
             string url = $"https://huggingface.co/{repo}/resolve/main/{Uri.EscapeDataString(name).Replace("%2F", "/")}?download=true";
-            AnsiConsole.MarkupLine($"[bold]Downloading[/] {Markup.Escape(name)} {(size is { } s ? $"({FormatBytes(s)})" : "")}");
+            AnsiConsole.MarkupLine($"[bold]Downloading[/] {Markup.Escape(name)} {(size is { } s ? $"({ConsoleDownloadProgress.FormatBytes(s)})" : "")}");
             try
             {
                 DownloadWithResume(http, url, destPath, size, cancellation);
@@ -212,71 +213,15 @@ public sealed class PullCommand : Command<PullCommand.Settings>
     }
 
     /// <summary>
-    /// Streams the download to <paramref name="destPath"/>. If a same-sized or larger partial file
-    /// already exists it is treated as complete and skipped (best-effort — HF resolve URLs don't
-    /// reliably echo a stable ETag across CDN nodes, so this is a size check, not a hash check);
-    /// otherwise any partial bytes present are used as a Range-resume starting offset.
+    /// Downloads via <see cref="ModelDownloader.DownloadAsync"/> (resumes a partial file; an existing file of the
+    /// listed size counts as complete, a size check rather than a hash check) with console progress.
     /// </summary>
     private static void DownloadWithResume(HttpClient http, string url, string destPath, long? expectedSize, CancellationToken ct)
     {
-        long existing = File.Exists(destPath) ? new FileInfo(destPath).Length : 0;
-        if (existing > 0 && expectedSize is { } exp && existing >= exp)
-        {
+        var printer = new ConsoleDownloadProgress();
+        var outcome = ModelDownloader.DownloadAsync(http, url, destPath, expectedSize, printer.Report, ct).GetAwaiter().GetResult();
+        printer.Finish();
+        if (outcome == DownloadOutcome.AlreadyComplete)
             AnsiConsole.MarkupLine("  [dim]already present, skipping[/]");
-            return;
-        }
-
-        using var request = new HttpRequestMessage(HttpMethod.Get, url);
-        string? token = Environment.GetEnvironmentVariable("HF_TOKEN");
-        if (!string.IsNullOrEmpty(token))
-            request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
-        if (existing > 0)
-            request.Headers.Range = new System.Net.Http.Headers.RangeHeaderValue(existing, null);
-
-        using var response = http.Send(request, HttpCompletionOption.ResponseHeadersRead, ct);
-        // 416 on a Range request from the end of an existing file: nothing left to fetch. The listing gives no sizes
-        // for some repos, so the size check above cannot catch a complete file.
-        if (existing > 0 && response.StatusCode == System.Net.HttpStatusCode.RequestedRangeNotSatisfiable)
-        {
-            AnsiConsole.MarkupLine("  [dim]already complete, skipping[/]");
-            return;
-        }
-        bool resumed = existing > 0 && response.StatusCode == System.Net.HttpStatusCode.PartialContent;
-        if (existing > 0 && !resumed)
-            existing = 0; // Server ignored the Range request; restart from scratch.
-        response.EnsureSuccessStatusCode();
-
-        long? total = response.Content.Headers.ContentLength is { } cl ? cl + existing : expectedSize;
-        using var contentStream = response.Content.ReadAsStream(ct);
-        using var fileStream = new FileStream(destPath, resumed ? FileMode.Append : FileMode.Create, FileAccess.Write);
-
-        byte[] buffer = new byte[1024 * 1024];
-        long downloaded = existing;
-        int lastPercent = -1;
-        int read;
-        while ((read = contentStream.Read(buffer, 0, buffer.Length)) > 0)
-        {
-            ct.ThrowIfCancellationRequested();
-            fileStream.Write(buffer, 0, read);
-            downloaded += read;
-            if (total is { } t and > 0)
-            {
-                int percent = (int)(downloaded * 100 / t);
-                if (percent != lastPercent && percent % 5 == 0)
-                {
-                    Console.Write($"\r  {percent,3}%  {FormatBytes(downloaded)} / {FormatBytes(t)}   ");
-                    lastPercent = percent;
-                }
-            }
-        }
-        Console.WriteLine();
-    }
-
-    private static string FormatBytes(long bytes)
-    {
-        if (bytes < 1024) return $"{bytes} B";
-        if (bytes < 1024L * 1024) return $"{bytes / 1024.0:F1} KiB";
-        if (bytes < 1024L * 1024 * 1024) return $"{bytes / (1024.0 * 1024):F1} MiB";
-        return $"{bytes / (1024.0 * 1024 * 1024):F2} GiB";
     }
 }

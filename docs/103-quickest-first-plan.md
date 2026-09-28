@@ -159,7 +159,8 @@ Timebox each at half a day, write down what was learned, and move on if blocked.
 
 ### 16. Product items
 - [ ] **16. Product items**
-  - [ ] `stingray setup` and first-run experience.
+  - [x] `stingray setup` and first-run experience, front-door step 2. DONE 2026-09-28: catalog (3 entries), model home, SHA-checked resumable installs, `setup`, `models`. Steps 3-4 (path-free task commands, C# facade, docs-as-tests) remain in the front-door design doc.
+  - [ ] Qwen2.5-0.5B (the catalog's default chat model) CPU speed: decode 23 vs llama.cpp 98 tok/s, prompt 80 vs 379 (0.24x / 0.21x, 2026-09-28). Found while measuring the catalog; much worse than SmolLM2-1.7B's 0.89x.
   - [ ] Configuration ownership.
   - [ ] Multi-model runtime phases.
   - [ ] Session `Fork()` context isolation.
@@ -488,3 +489,17 @@ Timebox each at half a day, write down what was learned, and move on if blocked.
     8.9595 vs llama.cpp 8.7030. Ruled out: parallel experts/routing (serial identical), expert kernels (exact match on
     real weights). Logged in bugstofix with the next step. Not in the allowlist.
   - Nemotron-H MoE: no local checkpoint; Granite 4.0-H tiny: not local (small done above).
+- 2026-09-28 (third session): item 16, front-door step 2.
+  - Catalog entries were sourced by hash: the README quick start's local files match the HF tree API's lfs sha256
+    (`qwen2.5-0.5b-instruct-q4_k_m.gguf`, `en_US-lessac-medium.onnx`, `ggml-base.bin`); the non-LFS `.onnx.json` was hashed
+    after download. The local `bge-small-en-v1.5-q8_0.gguf` does NOT match CompendiumLabs' file of that name, so embed is
+    not in the catalog yet.
+  - `Core/Catalog`: `ModelCatalog` (static table, AOT-safe), `ModelHome` (`STINGRAY_MODEL_HOME`, flat layout so a Piper
+    `.onnx.json` sits beside its `.onnx`), `ModelInstaller` (`.part` download, resume, SHA-256, then rename; mismatch
+    deletes the partial), `ModelDownloader` (now also used by `pull`). CLI: `setup <task|id> [--yes] [--accept-licence]`,
+    `models [task]`; the option binder gained `Positional = true` so `setup chat` works.
+  - Real run into a scratch home: speak resumed from a 50 MB partial and verified; transcribe downloaded 141 MB and
+    verified; chat re-hashed a copied file. Each printed run command worked; Whisper transcribed the Piper clip word-exact.
+    `ModelCatalogTests` (local HTTP stub) cover resume and hash mismatch. Core 699 passed / 48 skipped, CLI 374 / 1 skipped.
+  - Found: Qwen2.5-0.5B CPU is 0.24x llama.cpp on decode (logged under 16 above).
+

@@ -27,6 +27,9 @@ internal sealed class OptionModel
     /// <summary>True when the option may be repeated, accumulating into an array.</summary>
     internal required bool IsRepeatable { get; init; }
 
+    /// <summary>True when a bare argument binds to this option (<see cref="CommandOptionAttribute.Positional"/>).</summary>
+    internal bool IsPositional { get; init; }
+
     /// <summary>Longest alias, used as the display name in help.</summary>
     internal string DisplayName => Aliases.OrderByDescending(a => a.Length).First();
 
@@ -83,6 +86,7 @@ internal sealed class OptionModel
                     // A bool with no placeholder is a switch; "--flag <BOOL>" wants an explicit value.
                     IsFlag       = target == typeof(bool) && placeholder is null,
                     IsRepeatable = repeatable,
+                    IsPositional = attr.Positional,
                 });
             }
 

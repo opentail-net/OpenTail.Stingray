@@ -29,7 +29,7 @@ foreach ($file in Get-ChildItem -Path $cliDir -Filter *.cs -Recurse |
     $lines = Get-Content -LiteralPath $file.FullName
     $command = [IO.Path]::GetFileNameWithoutExtension($file.Name)
     for ($i = 0; $i -lt $lines.Count; $i++) {
-        $m = [regex]::Match($lines[$i], '\[CommandOption\("([^"]+)"\)\]')
+        $m = [regex]::Match($lines[$i], '\[CommandOption\("([^"]+)"[^\]]*\)\]')
         if (-not $m.Success) { continue }
         # Longest alias is the readable one; Spectre lists them short-first.
         $names = $m.Groups[1].Value -split '\|'
