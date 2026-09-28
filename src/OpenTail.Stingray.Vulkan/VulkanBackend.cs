@@ -1597,6 +1597,7 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
     private ComputePipeline? _ropeNeoxPipeline;
     private ComputePipeline? _ropeNeoxBatchedPipeline;
     private ComputePipeline? _ropeNeoxWithFactorsPipeline;
+    private ComputePipeline? _ropeNeoxPairPosPipeline;
     private ComputePipeline? _softmaxPipeline;
     private ComputePipeline? _sigmoidPipeline;
     private ComputePipeline? _matVecQ4KPipeline;
@@ -2730,6 +2731,19 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
     /// global (non-SWA) layers apply <c>rope_freqs.weight</c> here to mask the high-frequency tail,
     /// while SWA layers use the plain <see cref="RoPE"/>. Computes cos/sin in-shader (no tables).
     /// </summary>
+    /// <summary>
+    /// NEOX RoPE where pair i rotates by <paramref name="pairPositions"/>[i] (head_dim/2 floats): M-RoPE for
+    /// Qwen-VL image tokens and the text after them. See <see cref="Shaders.RoPENeoxPairPos"/>.
+    /// </summary>
+    public void RoPEPairPositions(Tensor x, int headDim, float ropeTheta, Tensor pairPositions)
+    {
+        _ropeNeoxPairPosPipeline ??= new ComputePipeline(this, Shaders.RoPENeoxPairPos, 2, pushConstantSize: sizeof(RoPEParams));
+        uint numHeads = (uint)(x.ElementCount / headDim);
+        uint totalPairs = numHeads * (uint)(headDim / 2);
+        var p = new RoPEParams { numHeads = numHeads, headDim = (uint)headDim, position = 0, theta = ropeTheta };
+        DispatchOrRecord(_ropeNeoxPairPosPipeline, [GetBuffer(x), GetBuffer(pairPositions)], (totalPairs + 255) / 256, &p);
+    }
+
     public void RoPEWithFactors(Tensor x, int position, int headDim, float ropeTheta, Tensor freqFactors)
     {
         _ropeNeoxWithFactorsPipeline ??= new ComputePipeline(this, Shaders.RoPENeoxWithFactors, 2, pushConstantSize: sizeof(RoPEParams));
@@ -5120,6 +5134,7 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
         _ropeNeoxPipeline?.Dispose();
         _ropeNeoxBatchedPipeline?.Dispose();
         _ropeNeoxWithFactorsPipeline?.Dispose();
+        _ropeNeoxPairPosPipeline?.Dispose();
         _softmaxPipeline?.Dispose();
         _sigmoidPipeline?.Dispose();
         _matVecQ4KPipeline?.Dispose();

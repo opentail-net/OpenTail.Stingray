@@ -1792,6 +1792,51 @@ internal static class Shaders
         """;
 
     /// <summary>
+    /// RoPE NEOX with a per-pair position (M-RoPE: Qwen2-VL / Qwen2.5-VL / Qwen3-VL image tokens, where each
+    /// pair's section uses the token's t, h or w position). Identical to <see cref="RoPENeox"/> except the
+    /// angle uses <c>pair_pos[i]</c> (binding 1, size head_dim/2) instead of the push-constant position.
+    /// Mirrors the CPU <c>ForwardPass.FillMRopeCosSin</c> (ggml rope_multi: sections do not reset the ladder).
+    /// Push constants: { uint num_heads, uint head_dim, int position (unused), float theta }.
+    /// </summary>
+    internal const string RoPENeoxPairPos = """
+        #version 450
+        layout(local_size_x = 256) in;
+
+        layout(binding = 0) buffer X { float x_data[]; };
+        layout(binding = 1) readonly buffer PairPos { float pair_pos[]; };
+
+        layout(push_constant) uniform Params {
+            uint num_heads;
+            uint head_dim;
+            int position;
+            float theta;
+        };
+
+        void main() {
+            uint pair_idx = gl_GlobalInvocationID.x;
+            uint half_dim = head_dim / 2;
+            uint total_pairs = num_heads * half_dim;
+            if (pair_idx >= total_pairs) return;
+
+            uint h = pair_idx / half_dim;
+            uint i = pair_idx % half_dim;
+
+            float freq = 1.0 / pow(theta, 2.0 * float(i) / float(head_dim));
+            float angle = pair_pos[i] * freq;
+            float cos_a = cos(angle);
+            float sin_a = sin(angle);
+
+            uint head_base = h * head_dim;
+            uint a_idx = head_base + i;
+            uint b_idx = head_base + i + half_dim;
+            float x0 = x_data[a_idx];
+            float x1 = x_data[b_idx];
+            x_data[a_idx] = x0 * cos_a - x1 * sin_a;
+            x_data[b_idx] = x0 * sin_a + x1 * cos_a;
+        }
+        """;
+
+    /// <summary>
     /// RoPE NEOX with per-half-dim freq_factors (Gemma 4 global / non-SWA layers). Identical to
     /// <see cref="RoPENeox"/> except each pair's frequency is divided by <c>freq_factors[i]</c>
     /// (binding 1, size head_dim/2), masking the high-frequency tail to ~identity for long

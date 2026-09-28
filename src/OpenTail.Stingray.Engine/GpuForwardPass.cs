@@ -58,6 +58,15 @@ public sealed unsafe class GpuForwardPass : IForwardPass
     private readonly bool _xielu;
     // GPT-2 learned absolute position table (F32 in VRAM) and a one-row gather target.
     private readonly Tensor? _gpuPosEmbd, _posRow;
+    // M-RoPE (qwen2vl / qwen3vl): per-token pair positions ([headDim/2] floats) for RoPEPairPositions, uploaded
+    // before each token; null for every other model. Mirrors ForwardPass (MRopeImageLayout).
+    private readonly Tensor? _mropePairPos;
+    private readonly float[]? _mropePairPosHost;
+    private readonly MRopeImageLayout _mropeImages = new();
+    // Deepstack (Qwen3-VL, Granite 4.0 Vision): one [embDim] tensor per slice of the current multimodal token,
+    // added before its mapped layer (ForwardPass.Decode RunTrunk). Null when the model has none.
+    private readonly Tensor[]? _deepstack;
+    private bool _deepstackActive;
     private readonly bool _partialRope;
     private readonly Tensor _wOutput;
 
@@ -91,6 +100,7 @@ public sealed unsafe class GpuForwardPass : IForwardPass
     /// </summary>
     public void TruncateTo(int length)
     {
+        _mropeImages.TruncateTo(length);
         _kvLength = length;
         _tqCompressedLen = Math.Min(_tqCompressedLen, length);
         _kvCache.TruncateTo(length);
@@ -1163,6 +1173,19 @@ public sealed unsafe class GpuForwardPass : IForwardPass
             _posRow = _gpu.Upload(new float[_embDim], TensorShape.D1(_embDim));
         }
         _partialRope = hp.RopeDim > 0 && hp.RopeDim < _headDim;
+        if (hp.RopeSections is { Count: > 0 })
+        {
+            if (!hp.IsNeoxRope || _partialRope)
+                throw new NotSupportedException("M-RoPE on Vulkan is implemented for full NEOX RoPE only.");
+            _mropePairPosHost = new float[_headDim / 2];
+            _mropePairPos = _gpu.Upload(_mropePairPosHost, TensorShape.D1(_mropePairPosHost.Length));
+        }
+        if (hp.NumDeepstack > 0)
+        {
+            _deepstack = new Tensor[hp.NumDeepstack];
+            for (int i = 0; i < _deepstack.Length; i++)
+                _deepstack[i] = _gpu.Upload(new float[_embDim], TensorShape.D1(_embDim));
+        }
         _wOutput = model.FindTensor("output.weight") is not null
             ? UploadWeight("output.weight")
             : _gpuEmbedding;
@@ -1241,6 +1264,8 @@ public sealed unsafe class GpuForwardPass : IForwardPass
         // has no L2 path (it would silently skip the norm), and the Debug.Assert that guards it is
         // stripped in Release — so don't rely on the L2⟹Llama4⟹MoE coupling, exclude it directly.
         if (_isMoE || _isGemma4 || _hp.UseL2QkNorm) return false;
+        // M-RoPE: positions are per pair and shift after images; only the per-token trunk applies them.
+        if (_mropePairPos is not null) return false;
         if (_residentLayers < _hp.NumLayers) return false;   // layer split: per-token trunk only
 
         bool IsBatchable(Tensor w) =>
@@ -1261,6 +1286,7 @@ public sealed unsafe class GpuForwardPass : IForwardPass
 
     public void ResetCache()
     {
+        _mropeImages.Clear();
         _kvLength = 0;
         _tqCompressedLen = 0;
         _fp32WriteIdx = 0;
@@ -1518,6 +1544,9 @@ public sealed unsafe class GpuForwardPass : IForwardPass
         if (_isGemma4)
             return ForwardGemma4(token, position);
 
+        _deepstackActive = false;
+        UploadMRopePairPositions(position);
+
         // Record ALL dispatches into ONE command buffer
         _gpu.BeginRecord();
 
@@ -1592,6 +1621,13 @@ public sealed unsafe class GpuForwardPass : IForwardPass
             float layerRopeTheta = isSwa && _ropeThetaSwa > 0f ? _ropeThetaSwa : _hp.RopeTheta;
             uint window = isSwa ? (uint)_hp.SlidingWindowSize : 0u;
 
+            // Deepstack: add this layer's slice of the current multimodal token (ForwardPass.Decode RunTrunk).
+            if (_deepstackActive && layer > 0 && _hp.DeepstackMapping![layer] is int dsIdx && dsIdx >= 1)
+            {
+                _gpu.AddInPlace(_hidden, _deepstack![dsIdx - 1]);
+                _gpu.RecordBarrier();
+            }
+
             // Copy hidden → residual + RmsNorm (barrier after both)
             CopyBuffer(_residual, _hidden);
             _gpu.RecordBarrier();
@@ -1638,7 +1674,13 @@ public sealed unsafe class GpuForwardPass : IForwardPass
                 if (useRoPE)
                 {
                     // RoPE on Q and K
-                    if (_partialRope)
+                    if (_mropePairPos is not null)
+                    {
+                        // M-RoPE: per-pair (t, h, w) positions uploaded for this token.
+                        _gpu.RoPEPairPositions(_q, _headDim, layerRopeTheta, _mropePairPos);
+                        _gpu.RoPEPairPositions(_k, _headDim, layerRopeTheta, _mropePairPos);
+                    }
+                    else if (_partialRope)
                     {
                         // StableLM / GPT-NeoX: rotate only the first rope.dimension_count dims.
                         _gpu.RoPEPartial(_q, position, _headDim, _hp.RopeDim, layerRopeTheta, neox: true);
@@ -1946,6 +1988,8 @@ public sealed unsafe class GpuForwardPass : IForwardPass
     internal void ForwardHidden(int token, int position, Span<float> hiddenOut)
     {
         if (_isGemma4) { ForwardGemma4Hidden(token, position, hiddenOut); return; }
+        _deepstackActive = false;
+        UploadMRopePairPositions(position);
         _gpu.BeginRecord();
         DispatchEmbedLookup(token);
         _gpu.RecordBarrier();
@@ -2070,6 +2114,25 @@ public sealed unsafe class GpuForwardPass : IForwardPass
     /// </remarks>
     public bool SupportsEmbeddingInput => true;
 
+    /// <summary>True when this model uses M-RoPE sections; register images with <see cref="AddMRopeImage"/>.</summary>
+    public bool UsesMRope => _mropePairPos is not null;
+
+    /// <summary>Registers an image whose <paramref name="nx"/> x <paramref name="ny"/> soft tokens occupy KV
+    /// slots starting at <paramref name="startSlot"/>. Call before feeding them (see <see cref="ForwardPass.AddMRopeImage"/>).</summary>
+    public void AddMRopeImage(int startSlot, int nx, int ny)
+    {
+        if (!UsesMRope || nx <= 0 || ny <= 0) return;
+        _mropeImages.Add(startSlot, nx, ny);
+    }
+
+    /// <summary>Uploads this token's M-RoPE pair positions. Must run outside a recording.</summary>
+    private void UploadMRopePairPositions(int position)
+    {
+        if (_mropePairPos is null) return;
+        _mropeImages.FillPairPositions(_hp, position, _mropePairPosHost);
+        UploadToExisting(_mropePairPos, _mropePairPosHost);
+    }
+
     /// <summary>
     /// Forward one position from a PRECOMPUTED embedding (a vision soft token) instead of a
     /// token-table lookup. The Vulkan mirror of <see cref="ForwardPass.ForwardEmbedding"/>:
@@ -2080,9 +2143,18 @@ public sealed unsafe class GpuForwardPass : IForwardPass
     /// </summary>
     public ReadOnlySpan<float> ForwardEmbedding(ReadOnlySpan<float> embedding, int position)
     {
-        if (embedding.Length != _embDim)
+        int nDs = _deepstack?.Length ?? 0;
+        if (embedding.Length != _embDim && embedding.Length != _embDim * (1 + nDs))
             throw new ArgumentException(
-                $"embedding length {embedding.Length} != model embedding dim {_embDim}.");
+                $"embedding length {embedding.Length} != model embedding dim {_embDim}" +
+                (nDs > 0 ? $" (or {_embDim * (1 + nDs)} with {nDs} deepstack slices)." : "."));
+        // Deepstack slices ride along for this token only; RunStandardLayers adds them before their mapped layers.
+        _deepstackActive = embedding.Length > _embDim;
+        if (_deepstackActive)
+            for (int i = 0; i < nDs; i++)
+                UploadToExisting(_deepstack![i], embedding.Slice((i + 1) * _embDim, _embDim));
+        embedding = embedding[.._embDim];
+        UploadMRopePairPositions(position);
 
         // 1. Upload the precomputed embedding into _hidden. No sqrt(d) scale.
         // Granite family: llama.cpp scales raw embeddings by f_embedding_scale too (ModelHyperparams.ScaleRawEmbeddings).
@@ -3958,6 +4030,8 @@ public sealed unsafe class GpuForwardPass : IForwardPass
         }
         _gpu.Free(_wOutputNorm);
         if (_gpuPosEmbd is not null) { _gpu.Free(_gpuPosEmbd); _gpu.Free(_posRow!); }
+        if (_mropePairPos is not null) _gpu.Free(_mropePairPos);
+        if (_deepstack is not null) foreach (var t in _deepstack) _gpu.Free(t);
         if (_ropeFactors is not null) _gpu.Free(_ropeFactors);
         if (_wOutput.Handle != _gpuEmbedding.Handle)
             _gpu.Free(_wOutput);

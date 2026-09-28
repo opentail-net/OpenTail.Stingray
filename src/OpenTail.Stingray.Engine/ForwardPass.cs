@@ -1247,7 +1247,7 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
                     $"ForwardPass.TruncateTo({length}): recurrent (Mamba-2 / short-conv) state cannot be partially rewound; only 0 (reset) " +
                     $"or the current length ({current}) is supported. SupportsPartialRewind is false for this model.");
         }
-        _mropeImages.RemoveAll(r => r.Start + r.Nx * r.Ny > length);
+        _mropeImages.TruncateTo(length);
         if (_tqKvCache != null)
             _tqKvCache.TruncateTo(length);
         else

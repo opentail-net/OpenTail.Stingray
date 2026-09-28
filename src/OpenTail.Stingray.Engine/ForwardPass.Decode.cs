@@ -583,12 +583,8 @@ public sealed unsafe partial class ForwardPass
         return SkipOutputProjection ? ReadOnlySpan<float>.Empty : new ReadOnlySpan<float>(_logits, _hp.VocabSize);
     }
 
-    // -- M-RoPE image positions (qwen2vl / paddleocr text decoders) --
-    // llama.cpp (mtmd_image_tokens_get_decoder_pos, MTMD_POS_TYPE_MROPE) gives image token i of an
-    // nx x ny grid the position (t, row, col) = (p0, p0 + i / nx, p0 + i % nx) and advances the
-    // sequence by max(nx, ny), not nx*ny, so later text sits at slot - (nx*ny - max(nx, ny)).
-    // KV slots stay contiguous; only the RoPE angles change. CPU ForwardPass only (2026-09-27).
-    private readonly List<(int Start, int Nx, int Ny)> _mropeImages = [];
+    // -- M-RoPE image positions (qwen2vl / qwen3vl / paddleocr text decoders); see MRopeImageLayout --
+    private readonly MRopeImageLayout _mropeImages = new();
 
     /// <summary>True when this model uses M-RoPE sections, so image tokens should be registered with
     /// <see cref="AddMRopeImage"/> before they are fed.</summary>
@@ -599,24 +595,7 @@ public sealed unsafe partial class ForwardPass
     public void AddMRopeImage(int startSlot, int nx, int ny)
     {
         if (!UsesMRope || nx <= 0 || ny <= 0) return;
-        _mropeImages.RemoveAll(r => r.Start >= startSlot);
-        _mropeImages.Add((startSlot, nx, ny));
-    }
-
-    /// <summary>(t, h, w) M-RoPE position of a KV slot; all three are equal for text tokens.</summary>
-    private (int T, int H, int W) MRopePosition(int slot)
-    {
-        int shift = 0;
-        foreach (var (start, nx, ny) in _mropeImages)
-        {
-            int n = nx * ny;
-            if (slot >= start + n) { shift += n - Math.Max(nx, ny); continue; }
-            if (slot < start) break;
-            int p0 = start - shift, i = slot - start;
-            return (p0, p0 + i / nx, p0 + i % nx);
-        }
-        int p = slot - shift;
-        return (p, p, p);
+        _mropeImages.Add(startSlot, nx, ny);
     }
 
     /// <summary>Fills <paramref name="cos"/>/<paramref name="sin"/> (<paramref name="half"/> pairs) for an
@@ -624,11 +603,11 @@ public sealed unsafe partial class ForwardPass
     /// theta^(-2i/ropeDim) (ggml rope_multi, MROPE: sections do not reset the ladder).</summary>
     private void FillMRopeCosSin(int slot, float* cos, float* sin, int half)
     {
-        var (t, h, w) = MRopePosition(slot);
+        Span<float> pairPos = stackalloc float[half];
+        _mropeImages.FillPairPositions(_hp, slot, pairPos);
         for (int i = 0; i < half; i++)
         {
-            int p = _hp.MRopeComponent(i) switch { 0 => t, 1 => h, 2 => w, _ => 0 };
-            float a = p * MathF.Pow(_hp.RopeTheta, -2f * i / (2 * half));
+            float a = pairPos[i] * MathF.Pow(_hp.RopeTheta, -2f * i / (2 * half));
             cos[i] = MathF.Cos(a);
             sin[i] = MathF.Sin(a);
         }

@@ -112,7 +112,11 @@ restart a fourth round of kernel-level chasing on this checkpoint without new ev
     text engine's prefill), only the Q8_0 conv layers are packed F32: 1.1 GB peak, and faster than CrispASR on the
     same files (TDT 1.16x, CTC 1.10x). CrispASR itself peaks at 0.6-0.65 GB; the ~290 MB of F32 conv weights are the
     difference, kept on purpose because the int8 Q8_0 path was ~0.2 s slower per clip. Stopped here.
-- [ ] **Qwen3-VL / Qwen2.5-VL / PaddleOCR image input is CPU only** (logged 2026-09-27, docs/103 item 14).
+- [ ] **Qwen3-VL / Qwen2.5-VL / PaddleOCR image input: CUDA and Vulkan hybrid still lack it** (logged 2026-09-27, docs/103 item 14).
+  - 2026-09-28: full Vulkan offload (`GpuForwardPass`) now applies per-pair M-RoPE positions and deepstack, which also covers
+    the IMROPE pairs 61-62 for text (M-RoPE models take the per-token trunk). Verified by `Qwen3VlVulkanMRopeParityTests`
+    (cosine 0.9995 vs CPU). The CLI now refuses image input for M-RoPE models on any other pass instead of answering wrongly.
+    Remaining: CUDA (`CudaForwardPass`, no CUDA GPU here), Vulkan hybrid / layer split.
   - M-RoPE image positions (`ForwardPass.AddMRopeImage`, IMROPE for qwen3vl) and deepstack slices are applied in the
     CPU `ForwardPass` only. The CUDA and Vulkan forward passes would rotate image tokens with 1D positions and skip
     deepstack, so their image answers would be wrong. Text-only use on GPU is fine (text positions are 1D).

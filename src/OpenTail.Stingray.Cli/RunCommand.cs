@@ -2545,6 +2545,15 @@ public sealed class RunCommand : Command<RunCommand.Settings>
             return 1;
         }
 
+        // M-RoPE image positions (Qwen2-VL family) are applied by the CPU ForwardPass and the full Vulkan
+        // GpuForwardPass only; anything else would rotate image tokens with 1D positions and answer wrongly.
+        if (hp.RopeSections is { Count: > 0 } && fwd is not (ForwardPass or GpuForwardPass))
+        {
+            AnsiConsole.MarkupLine("[red]Error:[/] image input for this model (M-RoPE) runs on CPU ([yellow]-g 0[/]) " +
+                "or full Vulkan offload ([yellow]-g -1 --backend vulkan[/]) only.");
+            return 1;
+        }
+
         var imagePaths = s.ImagePaths!;
         int nImages = imagePaths.Length;
 
@@ -2778,8 +2787,11 @@ public sealed class RunCommand : Command<RunCommand.Settings>
                     continue;
                 }
                 if (imgOpen >= 0) logits = fwd.Forward(imgOpen, pos++);
-                if (fwd is ForwardPass mrope && mrope.UsesMRope && grid.W * grid.H == nTok)
-                    mrope.AddMRopeImage(pos, grid.W, grid.H);
+                if (grid.W * grid.H == nTok)
+                {
+                    if (fwd is ForwardPass cpuMrope && cpuMrope.UsesMRope) cpuMrope.AddMRopeImage(pos, grid.W, grid.H);
+                    else if (fwd is GpuForwardPass gpuMrope && gpuMrope.UsesMRope) gpuMrope.AddMRopeImage(pos, grid.W, grid.H);
+                }
                 for (int t = 0; t < nTok; t++)
                     logits = fwd.ForwardEmbedding(soft.AsSpan(t * embd, embd), pos++);
                 if (imgClose >= 0) logits = fwd.Forward(imgClose, pos++);

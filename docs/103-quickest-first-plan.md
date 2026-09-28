@@ -146,7 +146,7 @@ Timebox each at half a day, write down what was learned, and move on if blocked.
   - [x] **Qwen3-VL:** Implement IMROPE plus `qwen3vl` architecture support. DONE 2026-09-27 on CPU (see Log).
   - [x] **Parakeet TDT:** Implement the decode head. DONE 2026-09-27 (see Log).
   - [x] **ACE-Step 1.5 Turbo:** Validate numeric parity and add STATUS row. DONE 2026-09-28 (see Log): missing `<|endoftext|>` fixed; latent cosine 0.994 vs audio.cpp q8_0.
-  - [ ] **CPU-only vision features:** Port 2D M-RoPE image positions and deepstack to GPU/CUDA forward passes.
+  - [x] **CPU-only vision features:** Port 2D M-RoPE image positions and deepstack to GPU/CUDA forward passes. Vulkan DONE 2026-09-28; CUDA moved to item 18 (no CUDA GPU).
 
 ### 15. Performance items
 - [ ] **15. Performance items** (Measure first, keep only measured wins per CLAUDE.md rule 7):
@@ -178,7 +178,7 @@ Timebox each at half a day, write down what was learned, and move on if blocked.
   - [ ] **HunyuanVideo** numeric check: blocked on independent v1 output (noise + latent).
   - [ ] **Pixtral 12B / GLM-4.6V timings:** blocked on `HF_TOKEN` with accepted license.
   - [ ] **Llama-4 Scout:** blocked on ~93 GB disk space.
-  - [ ] **CUDA items:** (`rope_freqs` for Llama-3.1-style models) blocked on CUDA GPU.
+  - [ ] **CUDA items:** (`rope_freqs` for Llama-3.1-style models; M-RoPE image positions + deepstack in `CudaForwardPass`, done for Vulkan 2026-09-28) blocked on CUDA GPU.
 
 ---
 
@@ -380,3 +380,18 @@ Timebox each at half a day, write down what was learned, and move on if blocked.
   - Speed (RUNNING.md): 10 s of audio in 99-102 s, of which VAE decode 88-90 s; audio.cpp does the whole thing in 37 s on CPU.
     Candidate for item 15.
   - Time taken: about 1.5 hours.
+- 2026-09-28: item 14, M-RoPE image positions and deepstack on Vulkan (the last item-14 sub-item that this machine can test).
+  - New `RoPENeoxPairPos` shader / `VulkanBackend.RoPEPairPositions`: NEOX RoPE with a per-pair position buffer.
+    `MRopeImageLayout` (new, shared by `ForwardPass` and `GpuForwardPass`) holds the image registry and fills the
+    per-pair (t, h, w, 0) positions. `GpuForwardPass` uploads them per token, takes the per-token trunk for M-RoPE
+    models (so text also gets the unrotated IMROPE pairs 61-62), and accepts 8192-wide deepstack rows in
+    `ForwardEmbedding`, adding each slice before its mapped layer. CLI registers images on the GPU pass and now refuses
+    image input for M-RoPE models on passes without it (CUDA, Vulkan hybrid) instead of answering wrongly.
+  - Evidence: `Qwen3VlVulkanMRopeParityTests` (heavy, 29 s, real weights): final logits Vulkan vs CPU cosine 0.999504,
+    same top token; controls: without image registration 0.993721, without deepstack 0.994323. CLI real image
+    (AMD block diagram PNG, 784 image tokens) gives a coherent, image-grounded answer on Vulkan (it previously threw on
+    the 8192-wide rows). Regression: `VulkanArchLogitParityTests` 18/18 (207 s), `VulkanCpuLogitParityTests` 1/1,
+    `VulkanPrecompiledShaderTests` 3/3, `ForwardPass.Fast` 703 (1 skipped), `Tests.Cli` 371 (1 skipped).
+  - Qwen3-VL files had disappeared from `models/_models`; re-fetched with `stingray pull` to `K:\_other_models\qwen3vl`
+    (tests find them via `STINGRAY_QWEN3VL_DIR`). `test-1.jpeg` is gone too.
+  - CUDA left for item 18 (no CUDA GPU). Time taken: about 1.5 hours.
