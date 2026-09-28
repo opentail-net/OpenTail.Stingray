@@ -127,11 +127,11 @@ Timebox each at half a day, write down what was learned, and move on if blocked.
 ## A day or more
 
 ### 12. Batched prompt processing for the recurrent families
-- [ ] **12. Batched prompt processing for the recurrent families**
-  - [ ] Add Mamba-2 and short-conv layers to `PrefillCore` for Granite 4.0-H, Nemotron-H, and LFM2.
-  - [ ] Batch the projections while keeping scan and conv sequential over tokens.
-  - [ ] Verify parity tests remain unchanged.
-  - [ ] Measure prompt tok/s and record in `RUNNING.md`.
+- [x] **12. Batched prompt processing for the recurrent families** DONE 2026-09-28 (see Log)
+  - [x] Add Mamba-2 and short-conv layers to `PrefillCore` for Granite 4.0-H, Nemotron-H, and LFM2.
+  - [x] Batch the projections while keeping scan and conv sequential over tokens.
+  - [x] Verify parity tests remain unchanged.
+  - [x] Measure prompt tok/s and record in `RUNNING.md`.
   - [ ] **Done when:** parity tests unchanged; prompt tok/s measured and recorded in RUNNING.md.
 
 ### 13. MoE variants of the recurrent families
@@ -459,3 +459,17 @@ Timebox each at half a day, write down what was learned, and move on if blocked.
   - Found on the way: `AceStepPrecomputeSilenceTests` overwrites the checked-in `src/.../AceStep/silence_*.bin` and the
     runtime copies in `models/acestep-v15/` (it regenerated them with today's GEMM conv, a few ULP different). Restored
     both from git; the test is a generator, not a check, and should not run in ordinary test passes (logged in bugstofix).
+- 2026-09-28: item 12 done, batched prefill for the recurrent families.
+  - `Mamba2Step` / `ShortConvStep` split into in_proj + `Mamba2Mix` / `ShortConvMix` + out_proj; the `Mix` functions
+    take n tokens (conv per channel and scan per head, each walking the tokens in order, so every token sees the
+    one-token arithmetic). Decode is bit-identical (greedy output hash equal to the previous build, Granite 1B and LFM2).
+  - `PrefillCore` runs them with batched projections (`Mamba2Prefill` / `ShortConvPrefill`), reserves the chunk's
+    cache blocks up front, sends Nemotron-H MLP-only layers straight to the FFN and skips the FFN on its no-FFN
+    layers (the first batched Nemotron run crashed there). SnapKV stays off for these models; TurboQuant keeps the
+    per-token path. `STINGRAY_RECURRENT_BATCHED_PREFILL=0` switches back.
+  - Prompt (CLI, ~510-580 tokens, per-token -> batched): Granite 4.0-H 350M 72 -> 245, 1B 21 -> 63, LFM2 1.2B 30 -> 101,
+    Nemotron Nano 12B v2 Q2_K 6.7 -> 11.7 tok/s (Q2_K has no int8 prefill tier).
+  - Quality: wikitext -c 2048 `[1024,+)` bucket, per-token vs batched: LFM2 10.9277 vs 10.9219, Granite 1B 8.7833 vs
+    8.7741. Parity tests unchanged: `GraniteHybridGreedyParityTests` 5/5, `Lfm2ParityTests` 3/3, `NemotronHParityTests`
+    2/2 (real weights), ForwardPass.Fast 703.
+  - Time taken: about 2 hours.
