@@ -1,3 +1,4 @@
+using OpenTail.Stingray.Audio.Primitives;
 
 namespace OpenTail.Stingray.Audio.MusicGen;
 
@@ -23,6 +24,37 @@ public sealed class MusicGenTransformerWeights
     public CfmLinearWeight[] LmHeads { get; } = new CfmLinearWeight[MusicGenConfig.NumCodebooks]; // [codebook]: hidden -> CodebookSize (2048, no pad row)
 
     /// <summary>Real `MusicgenForConditionalGeneration.enc_to_dec_proj`: projects the T5 text encoder's 768-dim output up to the decoder's 1024-dim hidden size BEFORE cross-attention ever sees it. Easy to miss since it lives outside both `decoder.*` and `text_encoder.*` (top-level `enc_to_dec_proj.{weight,bias}`) -- found via a real array-length crash when cross-attention K/V projection was first wired to consume raw 768-dim T5 output.</summary>
+    /// <summary>This model as the shared audiocraft LM decoder (built on first use).</summary>
+    internal AudiocraftLmModel Lm => _lm ??= new AudiocraftLmModel
+    {
+        Hidden = MusicGenConfig.DecoderHiddenSize,
+        NumHeads = MusicGenConfig.DecoderNumHeads,
+        HeadDim = MusicGenConfig.DecoderHeadDim,
+        FfnDim = MusicGenConfig.DecoderFfnDim,
+        TextDim = MusicGenConfig.TextDModel,
+        CodebookSize = MusicGenConfig.CodebookSize,
+        Layers = [.. Layers.Select(l => new AudiocraftLmLayer
+        {
+            SelfQ = l.SelfAttnQWeight, SelfK = l.SelfAttnKWeight, SelfV = l.SelfAttnVWeight, SelfO = l.SelfAttnOWeight,
+            SelfNormWeight = l.SelfAttnLayerNormWeight, SelfNormBias = l.SelfAttnLayerNormBias,
+            CrossQ = l.CrossAttnQWeight, CrossK = l.CrossAttnKWeight, CrossV = l.CrossAttnVWeight, CrossO = l.CrossAttnOWeight,
+            CrossNormWeight = l.CrossAttnLayerNormWeight, CrossNormBias = l.CrossAttnLayerNormBias,
+            Fc1 = l.Fc1Weight, Fc2 = l.Fc2Weight, FfnNormWeight = l.FinalLayerNormWeight, FfnNormBias = l.FinalLayerNormBias,
+        })],
+        EmbedTokens = EmbedTokens,
+        OutNormWeight = FinalLayerNormWeight,
+        OutNormBias = FinalLayerNormBias,
+        LmHeads = LmHeads,
+        TextProj = EncToDecProjWeight,
+        TextProjBias = EncToDecProjBias,
+        AddPosition = (x, pos) =>
+        {
+            int hidden = MusicGenConfig.DecoderHiddenSize;
+            for (int d = 0; d < hidden; d++) x[d] += EmbedPositions[pos * hidden + d];
+        },
+    };
+    private AudiocraftLmModel? _lm;
+
     public CfmLinearWeight EncToDecProjWeight { get; }
     public float[] EncToDecProjBias { get; }
 

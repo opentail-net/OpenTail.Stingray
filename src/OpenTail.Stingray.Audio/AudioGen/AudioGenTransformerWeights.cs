@@ -1,3 +1,4 @@
+using OpenTail.Stingray.Audio.Primitives;
 
 namespace OpenTail.Stingray.Audio.AudioGen;
 
@@ -24,6 +25,33 @@ public sealed class AudioGenTransformerWeights
     public CfmLinearWeight[] LmHeads { get; } = new CfmLinearWeight[AudioGenConfig.NumCodebooks]; // hidden -> CodebookSize, no bias (bias_proj=false)
 
     /// <summary>Real `condition_provider.conditioners.description.output_proj`: projects T5-large's 1024-dim output up to the transformer's 1536-dim hidden size, WITH bias (unlike MusicGen's bias-free `enc_to_dec_proj`).</summary>
+    /// <summary>This model as the shared audiocraft LM decoder (built on first use).</summary>
+    internal AudiocraftLmModel Lm => _lm ??= new AudiocraftLmModel
+    {
+        Hidden = AudioGenConfig.HiddenSize,
+        NumHeads = AudioGenConfig.NumHeads,
+        HeadDim = AudioGenConfig.HeadDim,
+        FfnDim = AudioGenConfig.FfnDim,
+        TextDim = AudioGenConfig.TextDModel,
+        CodebookSize = AudioGenConfig.CodebookSize,
+        Layers = [.. Layers.Select(l => new AudiocraftLmLayer
+        {
+            SelfQ = l.SelfAttnQWeight, SelfK = l.SelfAttnKWeight, SelfV = l.SelfAttnVWeight, SelfO = l.SelfAttnOutProjWeight,
+            SelfNormWeight = l.Norm1Weight, SelfNormBias = l.Norm1Bias,
+            CrossQ = l.CrossAttnQWeight, CrossK = l.CrossAttnKWeight, CrossV = l.CrossAttnVWeight, CrossO = l.CrossAttnOutProjWeight,
+            CrossNormWeight = l.NormCrossWeight, CrossNormBias = l.NormCrossBias,
+            Fc1 = l.Linear1Weight, Fc2 = l.Linear2Weight, FfnNormWeight = l.Norm2Weight, FfnNormBias = l.Norm2Bias,
+        })],
+        EmbedTokens = EmbedTokens,
+        OutNormWeight = OutNormWeight,
+        OutNormBias = OutNormBias,
+        LmHeads = LmHeads,
+        TextProj = OutputProjWeight,
+        TextProjBias = OutputProjBias,
+        AddPosition = (x, pos) => AudioGenTransformer.AddSinusoidalPositionEmbedding(x, pos, AudioGenConfig.HiddenSize),
+    };
+    private AudiocraftLmModel? _lm;
+
     public CfmLinearWeight OutputProjWeight { get; }
     public float[] OutputProjBias { get; }
 

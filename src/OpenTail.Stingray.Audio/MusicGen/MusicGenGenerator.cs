@@ -71,12 +71,16 @@ public sealed class MusicGenGenerator
         {
             var column = DelayPattern.InputColumnForStep(codebooks, step, generatedSoFar, MusicGenConfig.PadTokenId);
 
-            var condLogits = MusicGenTransformer.Step(_transformerWeights, column, condCache);
+            // CFG: both branches in one batched step, so the decoder weights stream once per step.
+            var branchLogits = useCfg
+                ? MusicGenTransformer.StepBatch(_transformerWeights, column, [condCache, uncondCache!])
+                : [MusicGenTransformer.Step(_transformerWeights, column, condCache)];
+            var condLogits = branchLogits[0];
             float[][] logits = condLogits;
 
             if (useCfg)
             {
-                var uncondLogits = MusicGenTransformer.Step(_transformerWeights, column, uncondCache!);
+                var uncondLogits = branchLogits[1];
                 logits = new float[codebooks][];
                 for (int q = 0; q < codebooks; q++)
                 {

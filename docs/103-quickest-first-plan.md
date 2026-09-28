@@ -440,3 +440,8 @@ Timebox each at half a day, write down what was learned, and move on if blocked.
     Tests.Audio 512 (428 skipped without heavy) pass.
   - AudioGen CFG: both guidance branches in one batched decoder step (`AudioGenTransformer.StepBatch`; `Step` is its B = 1
     case). 3 s: 30.0 -> 19.0 s (62.0 at the start of the day), greedy PCM SHA-256 unchanged.
+  - DRY: MusicGen and AudioGen transformers were near-copies; both are now thin wrappers over
+    `Primitives/AudiocraftLmKernels` (public API unchanged), so MusicGen gets the batched CFG step too. MusicGen-small 3 s:
+    9.55 -> 6.98 s (16.7 at the start of the day). PCM SHA-256 unchanged for both; `MusicGenDecoderGoldenParityTests`,
+    `AudioGenDecoderGoldenParityTests`, `AudioGenEndToEndGoldenParityTests`, `AudioGenDiagnosticTests` 7/7,
+    `AudioGenGenerationSmokeTests` 3/3 pass.
