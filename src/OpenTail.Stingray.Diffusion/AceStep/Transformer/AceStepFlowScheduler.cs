@@ -75,6 +75,13 @@ public static class AceStepFlowScheduler
             xt[t] = row;
         }
 
+        // Parity hook: start from a reference's initial noise (frame-major [frames, 64], the layout of
+        // audio.cpp's `noise_file` request option), so both sides denoise the same latent.
+        var injected = new float[latentFrames * acousticDim];
+        if (DiffusionParityHooks.TryLoadNoise("STINGRAY_ACESTEP_NOISE", injected))
+            for (int t = 0; t < latentFrames; t++)
+                Array.Copy(injected, t * acousticDim, xt[t], 0, acousticDim);
+
         int numSteps = schedule.Length;
 
         if (backend is IVisionOpsBackend visionOps && backend is IImageOpsBackend imageOps)

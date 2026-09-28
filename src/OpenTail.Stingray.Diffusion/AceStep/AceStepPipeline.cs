@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Diffusion.AceStep.Conditioning;
 using OpenTail.Stingray.Diffusion.AceStep.Transformer;
@@ -110,6 +111,17 @@ public sealed class AceStepPipeline : IDisposable
         // AceStepFlowScheduler returns [t][acousticDim] (time-major); AceStepOobleckDecoder.Decode
         // wants [acousticDim, t] flat channel-major -- transpose.
         int acousticDim = AceStepConfig.AudioAcousticHiddenDim;
+        // Parity hook: STINGRAY_ACESTEP_DUMP names a directory for raw f32 dumps, named like audio.cpp's
+        // ACESTEP_DUMP_DIR ones (row-major [rows, width]).
+        if (Environment.GetEnvironmentVariable("STINGRAY_ACESTEP_DUMP") is { Length: > 0 } dumpDir)
+        {
+            static void Dump(string dir, string name, float[][] rows) =>
+                File.WriteAllBytes(Path.Combine(dir, name + ".f32"), MemoryMarshal.AsBytes(rows.SelectMany(r => r).ToArray().AsSpan()).ToArray());
+            Dump(dumpDir, "encoder_hidden", condition);
+            Dump(dumpDir, "src_latents", srcLatents);
+            Dump(dumpDir, "final_latent", latentRows);
+        }
+
         var latentFlat = new float[acousticDim * latentFrames];
         for (int t = 0; t < latentFrames; t++)
             for (int c = 0; c < acousticDim; c++)

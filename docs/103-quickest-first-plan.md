@@ -145,7 +145,7 @@ Timebox each at half a day, write down what was learned, and move on if blocked.
 - [ ] **14. Architectural additions & missing features**
   - [x] **Qwen3-VL:** Implement IMROPE plus `qwen3vl` architecture support. DONE 2026-09-27 on CPU (see Log).
   - [x] **Parakeet TDT:** Implement the decode head. DONE 2026-09-27 (see Log).
-  - [ ] **ACE-Step 1.5 Turbo:** Validate numeric parity and add STATUS row.
+  - [x] **ACE-Step 1.5 Turbo:** Validate numeric parity and add STATUS row. DONE 2026-09-28 (see Log): missing `<|endoftext|>` fixed; latent cosine 0.994 vs audio.cpp q8_0.
   - [ ] **CPU-only vision features:** Port 2D M-RoPE image positions and deepstack to GPU/CUDA forward passes.
 
 ### 15. Performance items
@@ -360,3 +360,23 @@ Timebox each at half a day, write down what was learned, and move on if blocked.
     - `StableAudioConformanceTests`: 3/3 passed (13.5s).
     - `StableAudio3SmallSfxTests`: 1/1 passed (17.1s).
     - `StableAudio3MediumPipelineTests`: 1/1 passed (35.0s).
+- 2026-09-28: item 14, ACE-Step 1.5 Turbo parity against audio.cpp.
+  - Reference: `audio-cpp/audio.cpp-gguf` `ACE-Step1.5-GGUF/turbo/ace-step-1.5-turbo-q8_0.gguf` (6,185,460,032 bytes,
+    in `K:\_other_models\ACE-Step1.5-GGUF	urbo\` because C: would not free space, see handover 104). Run with the planner off
+    (`--request-option thinking=false use_cot_metas=false use_cot_caption=false use_cot_language=false`), `--lyrics "[Instrumental]"`,
+    10 s, and `noise_file=` a shared frame-major [250, 64] f32 noise. audio.cpp patched locally (examples/ is gitignored) to dump
+    `encoder_hidden`, `context_latents`, `final_latent` under `ACESTEP_DUMP_DIR`. Ours: new `STINGRAY_ACESTEP_NOISE` / `STINGRAY_ACESTEP_DUMP`.
+  - Before: condition sequence 77 vs 79 tokens, final latent cosine 0.937, waveform 0.61. Row alignment showed one missing token
+    at the end of both the lyric and the caption sequence: the Qwen3-Embedding tokenizer post-processor appends `<|endoftext|>`
+    (audio.cpp `tokenize_text` too); ours did not. Fixed in `AceStepQwen3TextEncoder.Tokenize`/`Encode`, pinned by
+    `Tokenize_RealWeights_AppendsEndOfTextLikeReferenceTokenizer`.
+  - After, f16 text encoder: condition 0.997, final latent 0.982. With the q8_0 text encoder (same quantisation as the reference):
+    condition 0.99896, final latent 0.994, waveform 0.945. Remaining gap is consistent with the reference's q8_0 DiT against our
+    bf16; closing it needs the 10.1 GB bf16 bundle (no disk for it now).
+  - VAE: ours decoding the reference latent matches the reference waveform to 0.99999. The 35% RMS difference seen first is
+    `WavWriter` peak-normalising a 1.39 peak to 0.95 where audio.cpp hard-clips (215 samples).
+  - Tests: `AceStepQwen3TextEncoderTests` 2/2 (2.4 s), `AceStepConditionEncoderTests` 1/1, `AceStepPipelineEndToEndTests` 1/1 (26.7 s),
+    `AceStepDiTTests` 2/2, `AceStepFlowSchedulerTests` 5/5, `AceStepOobleckDecoderTests` 1/1.
+  - Speed (RUNNING.md): 10 s of audio in 99-102 s, of which VAE decode 88-90 s; audio.cpp does the whole thing in 37 s on CPU.
+    Candidate for item 15.
+  - Time taken: about 1.5 hours.

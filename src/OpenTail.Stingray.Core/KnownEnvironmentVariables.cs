@@ -31,6 +31,8 @@ public static class KnownEnvironmentVariables
     /// <summary>Names read anywhere in the engine. Ordinal comparison â these are case-sensitive on Unix.</summary>
     public static readonly FrozenSet<string> All = new[]
     {
+        "STINGRAY_ACESTEP_DUMP",
+        "STINGRAY_ACESTEP_NOISE",
         "STINGRAY_ACT_SOA",
         "STINGRAY_ACT_SOA_CPA",
         "STINGRAY_ASR_PROFILE",

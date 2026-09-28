@@ -33,6 +33,26 @@ public sealed class AceStepQwen3TextEncoderTests
         return null;
     }
 
+    /// <summary>
+    /// The Qwen3-Embedding tokenizer's post-processor appends `&lt;|endoftext|&gt;` to every sequence, and audio.cpp's
+    /// ACE-Step `tokenize_text` does the same. Without it the condition sequence was 2 tokens short of audio.cpp's
+    /// (77 vs 79) and the final latent diverged (cos 0.937 vs 0.994 with it; 2026-09-28, docs/103 item 14).
+    /// The instrumental lyric prompt is 15 tokens in audio.cpp's condition dump.
+    /// </summary>
+    [Fact]
+    public void Tokenize_RealWeights_AppendsEndOfTextLikeReferenceTokenizer()
+    {
+        string? ggufPath = FindRepoFile("models/qwen3-embedding-0.6b/qwen3-embedding-0.6b-q8_0.gguf");
+        Assert.SkipUnless(ggufPath != null, "models/qwen3-embedding-0.6b/qwen3-embedding-0.6b-q8_0.gguf not found");
+
+        using var encoder = new AceStepQwen3TextEncoder(ggufPath!);
+        int[] ids = encoder.Tokenize("# Languages\nen\n\n# Lyric\n[Instrumental]<|endoftext|>");
+
+        Assert.Equal(15, ids.Length);
+        Assert.Equal(151643, ids[^1]);
+        Assert.Equal(151643, ids[^2]);
+    }
+
     [Fact]
     public void Encode_RealWeights_ProducesNonDegenerateHiddenStates()
     {

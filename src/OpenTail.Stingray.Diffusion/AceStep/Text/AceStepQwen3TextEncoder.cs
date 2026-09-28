@@ -72,7 +72,11 @@ public sealed class AceStepQwen3TextEncoder : IDisposable
     }
 
     /// <summary>Tokenizes real text with this encoder's own real Qwen3 tokenizer -- exposed for callers (e.g. ACE-Step's lyric path) that need raw token IDs without running a full forward pass.</summary>
-    public int[] Tokenize(string text) => _tokenizer.Encode(text).ToArray();
+    /// <remarks>Appends `&lt;|endoftext|&gt;` like the Qwen3-Embedding `tokenizer.json` post-processor (`TemplateProcessing`
+    /// single = `$A &lt;|endoftext|&gt;`), which ACE-Step's own tokenizer calls apply; audio.cpp's `tokenize_text` does the same.</remarks>
+    public int[] Tokenize(string text) => [.. _tokenizer.Encode(text), EndOfTextId];
+
+    private int EndOfTextId => _tokenizer.SpecialTokens.TryGetValue("<|endoftext|>", out int id) ? id : _tokenizer.PadTokenId;
 
     /// <summary>Real Qwen3 `token_embd.weight` (flat, row-major `[vocab, hiddenSize]`) -- exposed for ACE-Step's real lyric path, which embeds lyric tokens via a raw lookup (NOT a full Qwen3 forward pass, confirmed from the real `diffusers` ACE-Step pipeline). Loaded lazily since not every caller needs it.</summary>
     public float[] TokenEmbeddingTable => _tokenEmbeddingTable.Value;
@@ -80,7 +84,7 @@ public sealed class AceStepQwen3TextEncoder : IDisposable
     /// <summary>Tokenizes and encodes real text through the full causal Qwen3 model, applying the final RMSNorm to each position's tap to match real `last_hidden_state`. Returns `[t][hiddenSize]`.</summary>
     public float[][] Encode(string text)
     {
-        var tokenIds = _tokenizer.Encode(text).ToArray();
+        var tokenIds = Tokenize(text);
 
         using var forward = new Engine.ForwardPass(_model, _backend, _hp);
         forward.EnableHiddenTaps([_hp.NumLayers - 1]);
