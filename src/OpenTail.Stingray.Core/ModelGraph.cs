@@ -1280,8 +1280,10 @@ public sealed record ModelHyperparams
             // previous version of this line defaulted to TRUE for every non-olmoe architecture
             // (including deepseek2) when the key was absent -- backwards from llama.cpp's own
             // default, and the reason this fix didn't unblock deepseek2 on first attempt.
-            // phimoe: phi3.cpp's build_moe_ffn passes norm_w = true unconditionally.
-            NormalizeMoeTopKWeights = arch is "qwen3moe" or "phimoe" ? true
+            // phimoe: phi3.cpp's build_moe_ffn passes norm_w = true unconditionally; so do granite.cpp
+            // (granitemoe) and granite-hybrid.cpp (Granite 4.0-H tiny/small MoE; without it the small
+            // model's wikitext PPL was 157 vs llama.cpp 9.41, 2026-09-28).
+            NormalizeMoeTopKWeights = arch is "qwen3moe" or "phimoe" or "granitemoe" or "granitehybrid" ? true
                 : arch.Equals("olmoe", StringComparison.OrdinalIgnoreCase) ? false
                 : GetBool(metadata, $"{arch}.expert_weights_norm", false),
             // llama.cpp's LLM_KV_EXPERT_WEIGHTS_SCALE ("routed_scaling_factor" in DeepSeek-V2/V3's

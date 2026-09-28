@@ -112,6 +112,10 @@ restart a fourth round of kernel-level chasing on this checkpoint without new ev
     text engine's prefill), only the Q8_0 conv layers are packed F32: 1.1 GB peak, and faster than CrispASR on the
     same files (TDT 1.16x, CTC 1.10x). CrispASR itself peaks at 0.6-0.65 GB; the ~290 MB of F32 conv weights are the
     difference, kept on purpose because the int8 Q8_0 path was ~0.2 s slower per clip. Stopped here.
+- [ ] **Granite 4.0-H small (MoE) +1.2% PPL vs llama.cpp** (logged 2026-09-28, docs/103 item 13): `granite-4.0-h-small-Q2_K`,
+  wikitext -c 2048 `[1024,+)` 26.4155 (batched) / 26.5483 (per token) vs `llama-perplexity --chunks 1` 26.1080; at -c 512
+  9.3505 vs 9.4103 (ours lower). The large error (157) was missing top-k renormalisation, fixed. Not yet bisected; Q2_K
+  only locally (a Q4 file would separate quantisation noise from a real difference).
 - [ ] **Qwen3-VL / Qwen2.5-VL / PaddleOCR image input: CUDA and Vulkan hybrid still lack it** (logged 2026-09-27, docs/103 item 14).
   - 2026-09-28: full Vulkan offload (`GpuForwardPass`) now applies per-pair M-RoPE positions and deepstack, which also covers
     the IMROPE pairs 61-62 for text (M-RoPE models take the per-token trunk). Verified by `Qwen3VlVulkanMRopeParityTests`

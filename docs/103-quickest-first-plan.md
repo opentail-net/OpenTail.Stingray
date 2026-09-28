@@ -136,7 +136,7 @@ Timebox each at half a day, write down what was learned, and move on if blocked.
 
 ### 13. MoE variants of the recurrent families
 - [ ] **13. MoE variants of the recurrent families**
-  - [ ] Admit Granite 4.0-H tiny/small (MoE) with PPL parity.
+  - [x] Admit Granite 4.0-H tiny/small (MoE) with PPL parity. Small DONE 2026-09-28 (top-k renormalisation fix; +1.2% residual at -c 2048 logged).
   - [ ] Admit Nemotron-H MoE (latent MoE, sigmoid gating) with PPL parity.
   - [ ] Admit LFM2-MoE (`lfm2moe`) with PPL parity.
   - [ ] **Done when:** each variant admitted with PPL parity against reference.
@@ -473,3 +473,11 @@ Timebox each at half a day, write down what was learned, and move on if blocked.
     8.7741. Parity tests unchanged: `GraniteHybridGreedyParityTests` 5/5, `Lfm2ParityTests` 3/3, `NemotronHParityTests`
     2/2 (real weights), ForwardPass.Fast 703.
   - Time taken: about 2 hours.
+- 2026-09-28: item 13, Granite 4.0-H small (MoE).
+  - `granite-4.0-h-small-Q2_K` (already present) loaded but answered in fragments; wikitext -c 512 PPL 157 vs llama.cpp
+    9.41, identical on the per-token and batched paths (so not item 12). llama.cpp's granite-hybrid.cpp (and granite.cpp
+    for granitemoe) call build_moe_ffn with norm_w = true; ours only renormalised top-k for qwen3moe/phimoe. Fixed in
+    `ModelGraph` for granitehybrid and granitemoe.
+  - After: -c 512 9.3505 vs 9.4103; -c 2048 `[1024,+)` 26.4155 (per token 26.5483) vs 26.1080 (+1.2%, logged in
+    bugstofix). Chat answer correct. Prompt 9.8 tok/s, decode 7.4 tok/s (42-token prompt).
+  - Tiny not local; Nemotron-H MoE not local; LFM2-MoE next.
