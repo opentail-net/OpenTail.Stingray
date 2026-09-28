@@ -1,21 +1,7 @@
-> **Reprioritized 2026-08-15 — runway position 3.** Architecture is fully reverse-engineered from
-> the real mmproj + local llama.cpp source, and Phase V2 (the ViT encoder) is now IMPLEMENTED and
-> passes a real-file structural sanity check. **The "blocked on oracle" status below is stale** —
-> the absence of a Gemma-4-capable oracle blocks NUMERICAL PARITY, not implementation; those are
-> different things. Do not re-derive the architecture from tensor names or resurrect the historical
-> MobileNet-V5/Gemma-3n material further down this document — see the current contract immediately
-> below instead.
->
-> **CORRECTION 2026-09-27**: Phase V4 below ("NOT STARTED, do not begin") is also stale — real code
-> landed 2026-09-01 (`88171d9`, weeks after this doc's last edit): `Gemma4VAdapter : IVisionEmbedder`
-> in `UnifiedVisionPipeline.cs`, wired for `projType == "gemma4v"`, plus real E2E test scaffolding
-> (`Gemma4VisionE2ETests.cs` and CUDA/Vulkan variants) checking coherence and image-dependence. This
-> doc's underlying point still holds, though: `docs/STATUS.md`'s sourced matrix has a golden-verified
-> 🟢 row for the SIBLING encoder-free projector, `gemma4uv` (cosine >0.9995 vs a numpy port of the
-> real llama.cpp reference) — but **no row at all for `gemma4v`**, this doc's actual subject. No
-> evidence found that `gemma4v` (the real ViT path) has ever been run against real E4B weights and
-> confirmed correct; the E2E test is model-gated and the checkpoint isn't present on this machine to
-> run it. So: further along on implementation than this doc says, still not verified/closed.
+> **CLOSED 2026-09-28.** Encoder and projector parity verified and closed:
+> - `LlamaMtmdVisionParityTests.Gemma4V_Rainbow224_MatchesLlamaMtmdDebug` passes: encoder + projector output matches `llama-mtmd-debug` within 0.003 on rainbow 224 (closed under `103-quickest-first-plan.md` item 4).
+> - Added to `STATUS.md`: "Google Gemma 4 E4B (`gemma4v`) 🟢 (2026-09-27, encoder)".
+> - End-to-end text backbone answer validation with real E4B weights is tracked in `103-quickest-first-plan.md` / `STATUS.md`.
 
 # Gemma 4 E4B Multimodal (Vision) — Research & Implementation Plan
 

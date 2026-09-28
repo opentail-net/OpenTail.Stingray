@@ -1,7 +1,6 @@
-> **STATUS 2026-09-27.** Feature-complete and user-confirmed (STATUS row "MiniMax-Music3"). The one
-> open item is the vocoder/VAE decode gap at the end of this file (29-33s vs the reference's 13.1s):
-> `MiniMaxMusic3Vocoder.cs` has not changed since 350be3c (2026-09-05), so it still stands. The
-> 2026-09-12 perf pass (64f28ca) targeted the AR loop and depth decoder, not the vocoder.
+> **STATUS 2026-09-28 (DONE).** Feature-complete and user-confirmed. The remaining vocoder/VAE
+> decode gap was closed 2026-09-28 via shared `Primitives/Conv1dGemm` tiled GEMM conv kernels
+> (decode 8.66-9.14s -> 4.57-4.64s vs reference 13.1s; docs/103 item 15). Moved to docs/done/.
 
 # MiniMax-Music3 — future plan
 

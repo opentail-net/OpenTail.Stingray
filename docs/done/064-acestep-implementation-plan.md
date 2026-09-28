@@ -1,9 +1,6 @@
-> **STATUS 2026-09-27.** V1 works end to end. Since the sections below: the `silence_latent` and timbre
-> encoder gaps closed (see "Real silence_latent + timbre encoder wired" below); the 8-step DiT loop
-> runs GPU-resident, 11.52s DiT, 5.47x (c94f5fa, `PerformanceLeague.md`); and the `audiocpp_cli`
-> comparison is blocked on the separate `acestep-5Hz-lm-1.7B` LM package, not yet downloaded
-> (6dd077a, recorded in [088](../done/088-diffusion-two-pass-quality-and-performance-master-plan.md)). Still
-> open: end-to-end numeric parity against that reference, and a STATUS row.
+> **STATUS 2026-09-28 (DONE).** Numeric parity verified against audio.cpp q8_0 reference
+> (latent cosine 0.994, waveform 0.99999, <|endoftext|> gap closed; docs/103 item 14).
+> VAE decode accelerated 13.5x via Conv1dGemm (docs/103 item 15). Moved to docs/done/.
 
 # ACE-Step 1.5 Turbo implementation plan
 
@@ -591,5 +588,5 @@ framing already matched reality.
 - [x] 5. **DONE**: Text encoder integration via Qwen3 (`ForwardPass`/GGUF `"qwen3"` path).
 - [x] 6. **DONE**: Build outward per golden-test ladder: complete V1 end-to-end pipeline (`AceStepPipeline.Generate()`) producing finite, non-silent 48kHz stereo WAV.
 - [x] 7. **DONE**: GPU residency: 8-step DiT loop running GPU-resident (11.52s DiT, 5.47x in `PerformanceLeague.md`).
-- [ ] 8. End-to-end numeric parity against `audiocpp_cli` reference (blocked on `acestep-5Hz-lm-1.7B` LM package).
-- [ ] 9. Add STATUS matrix row with verification receipts.
+- [x] 8. **DONE 2026-09-28**: End-to-end numeric parity against `audio.cpp` reference (latent cosine 0.994 vs audio.cpp q8_0, waveform 0.99999 match; docs/103 item 14).
+- [x] 9. **DONE 2026-09-28**: Add STATUS matrix row with verification receipts.

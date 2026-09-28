@@ -416,6 +416,16 @@ public static unsafe class SimdKernels
                 scratchBytesPerToken = Q8_0ScratchBytes(cols);
                 bytesPerRow = (cols / 32) * 18;
                 return true;
+            case DType.Q5_0:
+                // Pairs with Q8_0 like Q4_0. Without this, Q5_0 prefill took the F32 dequant cache
+                // (a one-off full-matrix dequantize on the first prompt plus 4 bytes per weight of RAM).
+                quantize = QuantizeRowToQ8_0;
+                dot8 = null;
+                dot4 = DotQ5_0_Q8_0_4In;
+                dot1 = DotQ5_0_Q8_0;
+                scratchBytesPerToken = Q8_0ScratchBytes(cols);
+                bytesPerRow = (cols / 32) * 22;
+                return true;
             default:
                 // Q8_0 has single-input Q8 dots only (no _4In/_2In); Q5_K, Q2_K, Float32 have
                 // no int8 dot at all. All fall back to the existing per-token loop.
@@ -921,15 +931,14 @@ public static unsafe class SimdKernels
             // add more per-element overhead than the vectorized reduction recovers — the same
             // class of result as Q5_0/Q5_1 below, not chased further here. Falls through to
             // MatVecDequantFallback via `default`.
-            // DType.Q5_0 deliberately NOT wired here: measured ~0.94-0.97x vs
-            // MatVecDequantFallback (median of 7 trials, rows=17408/cols=5120) — a real, stable
-            // negative result, not noise (re-measured after fixing the Q1_0/Q2_0 kernels' similar
-            // redundant-scalar-read issue, no improvement). The kernel (MatVecQ5_0/DotQ5_0_Q8_0)
-            // is correct and equivalence-tested but not dispatched to; see docs/05's Backlog B for
-            // the honest numbers and what a real fix would need (Q5_0's per-element unpack does
-            // more scalar work per element than the three formats that DID win — likely needs a
-            // vectorized bit-extraction, not just the "batch the scalar reads" fix that worked for
-            // Q1_0/Q2_0). Falls through to MatVecDequantFallback via `default`.
+            // Q5_0: wired 2026-09-28 after DotQ5_0_Q8_0_Avx2 was rewritten as a port of ggml's
+            // kernel (vectorised fifth-bit expansion). The earlier scalar-unpack version measured
+            // ~0.95x of MatVecDequantFallback and was left unwired. Qwen2.5 GGUFs (896/1536-wide,
+            // not a multiple of 256) are mostly Q5_0 even in their "Q4_K_M" files. allowQ8: false
+            // (callers that need F32 activations) keeps the dequantize fallback, as before.
+            case DType.Q5_0 when allowQ8:
+                MatVecQ5_0(output, weights, input, rows, cols);
+                break;
             case DType.Q1_0:
                 MatVecQ1_0(output, weights, input, rows, cols);
                 break;
@@ -5504,37 +5513,112 @@ public static unsafe class SimdKernels
 
     public static float DotQ5_0_Q8_0(byte* row, byte* scratch, int cols)
     {
-        if (Avx2.IsSupported && Avx.IsSupported)
+        if (Avx2.IsSupported && Fma.IsSupported)
             return DotQ5_0_Q8_0_Avx2(row, scratch, cols);
         return DotQ5_0_Q8_0_Scalar(row, scratch, cols);
     }
 
+    /// <summary>
+    /// Port of ggml's <c>ggml_vec_dot_q5_0_q8_0</c> AVX2 path (examples/ggml/src/ggml-cpu/arch/x86/quants.c).
+    /// The fifth bit is expanded for all 32 weights at once (<see cref="BytesFromBits32"/>) and OR-ed
+    /// in as 0xF0 where it is clear, which yields the signed value nibble - 16 directly; the earlier
+    /// version unpacked each weight with scalar shifts into a stack buffer and lost to the dequantize
+    /// fallback. Per-block int sums are converted to float and accumulated with one FMA per block.
+    /// </summary>
     private static float DotQ5_0_Q8_0_Avx2(byte* row, byte* scratch, int cols)
     {
         int numBlocks = cols / 32;
-        float accum = 0f;
-        sbyte* wbuf = stackalloc sbyte[32];
+        var acc = Vector256<float>.Zero;
+        var lowMask = Vector256.Create((byte)0x0F);
+        var hiFill = Vector256.Create((byte)0xF0);
+
+        for (int b = 0; b < numBlocks; b++)
+        {
+            byte* blk = row + b * 22;
+            byte* q8Chunk = scratch + b * 36;
+            float dW = HalfToFloat(blk[0], blk[1]);
+            float d = dW * *(float*)q8Chunk;
+
+            // Low 16 bytes: low nibbles (weights 0..15); high 16 bytes: high nibbles (16..31).
+            var q128 = Sse2.LoadVector128(blk + 6);
+            var qx = Vector256.Create(q128, Sse2.ShiftRightLogical(q128.AsUInt16(), 4).AsByte()) & lowMask;
+            var bitSet = BytesFromBits32(Unsafe.ReadUnaligned<uint>(blk + 2));
+            qx |= Avx2.AndNot(bitSet, hiFill);
+
+            var w = qx.AsSByte();
+            var y = Avx.LoadVector256((sbyte*)(q8Chunk + 4));
+            var p16 = Avx2.MultiplyAddAdjacent(Avx2.Abs(w), Avx2.Sign(y, w));
+            var p32 = Avx2.MultiplyAddAdjacent(p16, Vector256.Create((short)1));
+            acc = Fma.MultiplyAdd(Avx.ConvertToVector256Single(p32), Vector256.Create(d), acc);
+        }
+        return Vector256.Sum(acc);
+    }
+
+    /// <summary>
+    /// Four Q8_0 activation rows against one Q5_0 weight row: the weight block is unpacked once and
+    /// reused for all four. Per output this is the same arithmetic, in the same order, as
+    /// <see cref="DotQ5_0_Q8_0_Avx2"/>, so a token's result does not depend on whether it was dotted
+    /// alone or in a group of four (decode, chunked and unchunked prefill agree bit for bit).
+    /// </summary>
+    public static void DotQ5_0_Q8_0_4In(byte* row, byte* s0, byte* s1, byte* s2, byte* s3, int cols,
+        out float o0, out float o1, out float o2, out float o3)
+    {
+        if (!Avx2.IsSupported || !Fma.IsSupported)
+        {
+            o0 = DotQ5_0_Q8_0_Scalar(row, s0, cols);
+            o1 = DotQ5_0_Q8_0_Scalar(row, s1, cols);
+            o2 = DotQ5_0_Q8_0_Scalar(row, s2, cols);
+            o3 = DotQ5_0_Q8_0_Scalar(row, s3, cols);
+            return;
+        }
+
+        int numBlocks = cols / 32;
+        var acc0 = Vector256<float>.Zero; var acc1 = Vector256<float>.Zero;
+        var acc2 = Vector256<float>.Zero; var acc3 = Vector256<float>.Zero;
+        var lowMask = Vector256.Create((byte)0x0F);
+        var hiFill = Vector256.Create((byte)0xF0);
 
         for (int b = 0; b < numBlocks; b++)
         {
             byte* blk = row + b * 22;
             float dW = HalfToFloat(blk[0], blk[1]);
-            uint qh = (uint)(blk[2] | (blk[3] << 8) | (blk[4] << 16) | (blk[5] << 24));
-            byte* qs = blk + 6;
-            for (int j = 0; j < 16; j++)
-            {
-                int xh0 = (int)((qh >> j) & 1) << 4;
-                int xh1 = (int)((qh >> (j + 16)) & 1) << 4;
-                wbuf[j] = (sbyte)(((qs[j] & 0xF) | xh0) - 16);
-                wbuf[j + 16] = (sbyte)(((qs[j] >> 4) | xh1) - 16);
-            }
+            var q128 = Sse2.LoadVector128(blk + 6);
+            var qx = Vector256.Create(q128, Sse2.ShiftRightLogical(q128.AsUInt16(), 4).AsByte()) & lowMask;
+            qx |= Avx2.AndNot(BytesFromBits32(Unsafe.ReadUnaligned<uint>(blk + 2)), hiFill);
+            var w = qx.AsSByte();
+            var ax = Avx2.Abs(w);
 
-            byte* q8Chunk = scratch + b * 36;
-            float dA = *(float*)q8Chunk;
-            var sumVec = DotSignedBytesVsQ8_0Chunk(wbuf, q8Chunk);
-            accum += dW * dA * HSumI32_256(sumVec);
+            int off = b * 36;
+            acc0 = Q5BlockFma(ax, w, dW, s0 + off, acc0);
+            acc1 = Q5BlockFma(ax, w, dW, s1 + off, acc1);
+            acc2 = Q5BlockFma(ax, w, dW, s2 + off, acc2);
+            acc3 = Q5BlockFma(ax, w, dW, s3 + off, acc3);
         }
-        return accum;
+        o0 = Vector256.Sum(acc0); o1 = Vector256.Sum(acc1);
+        o2 = Vector256.Sum(acc2); o3 = Vector256.Sum(acc3);
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        static Vector256<float> Q5BlockFma(Vector256<byte> ax, Vector256<sbyte> w, float dW, byte* q8Chunk, Vector256<float> acc)
+        {
+            float d = dW * *(float*)q8Chunk;
+            var y = Avx.LoadVector256((sbyte*)(q8Chunk + 4));
+            var p16 = Avx2.MultiplyAddAdjacent(ax, Avx2.Sign(y, w));
+            var p32 = Avx2.MultiplyAddAdjacent(p16, Vector256.Create((short)1));
+            return Fma.MultiplyAdd(Avx.ConvertToVector256Single(p32), Vector256.Create(d), acc);
+        }
+    }
+
+    /// <summary>
+    /// ggml's <c>bytes_from_bits_32</c>: byte i of the result is 0xFF when bit i of
+    /// <paramref name="bits"/> is set, else 0.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static Vector256<byte> BytesFromBits32(uint bits)
+    {
+        var shuffle = Vector256.Create(0x0000000000000000UL, 0x0101010101010101UL, 0x0202020202020202UL, 0x0303030303030303UL).AsByte();
+        var bytes = Avx2.Shuffle(Vector256.Create(bits).AsByte(), shuffle);
+        bytes |= Vector256.Create(0x7fbfdfeff7fbfdfeUL).AsByte();
+        return Avx2.CompareEqual(bytes, Vector256<byte>.AllBitsSet);
     }
 
     /// <summary>Scalar reference for <see cref="DotQ5_0_Q8_0_Avx2"/>; also the non-AVX2 fallback.</summary>

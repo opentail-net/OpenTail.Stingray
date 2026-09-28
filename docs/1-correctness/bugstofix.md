@@ -18,6 +18,13 @@ restart a fourth round of kernel-level chasing on this checkpoint without new ev
 
 ## Tracked items
 
+- [ ] **Granite 4.0 3B Vision (`granite4-vision`) outputs empty decode / early EOS** (found 2026-09-28 during RUNNING.md verification).
+  - **Failure:** Running `stingray -m models/_models/granite-4.0-3b-vision-Q4_K_M.gguf --mmproj models/_models/mmproj-granite-4.0-3b-vision-f16.gguf --image photo.png -p "Describe this picture."` projects 145 soft tokens (20480-dim across 8 deepstack streams) successfully at 44.3 t/s, but generation terminates after 0 to 3 tokens (e.g. single period) instead of generating text.
+  - **Suspect:** Multi-stream deepstack injection mapping into the text model's layers or chat prompt template delimiter handling.
+  - **Control:** `granite-vision-3.2-2b` (which uses standard MLP projector) generates full, rich descriptions without issue.
+- [ ] **GGUF `jais` architecture rejected** (found 2026-09-28 during RUNNING.md verification).
+  - **Failure:** `stingray -m "models/_models/jais-family-590m-chat.Q4_K_M.gguf"` throws `NotSupportedException`: GGUF architecture 'jais' is not supported for text generation (supported list includes `jais2`, but `jais` v1 is unmapped/unsupported).
+  - **Next step:** Check differences between `jais` and `jais2` in llama.cpp to evaluate if `jais` can be safely mapped or alias-admitted.
 - [ ] **FunASR GGUF Paraformer pipeline returns an empty transcript on real speech** (found 2026-09-27, `docs/103` item 10).
   - **Failure:** `FunAsrPipeline.Load("models/_models/paraformer-q8.gguf")` on
     `docs/audio-samples/paraformer-zh-test-0.wav` (real Mandarin) produces `''`.

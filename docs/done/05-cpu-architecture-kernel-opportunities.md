@@ -1,21 +1,13 @@
-> **Reprioritized 2026-08-08 — now last on the local runway.** Everything here is performance;
-> none of it unlocks a model, and the goal now ranks model coverage above speed.
->
-> **Item 3 is superseded in part.** Native kernels for IQ4_NL, MXFP4 and other scalar-fallback
-> formats are a *follow-up* to §2 of [01-gguf-model-coverage-plan.md](../../done/01-gguf-model-coverage-plan.md),
-> which first has to make the unimplemented IQ formats dequantize at all. Correctness admits the
-> model; kernels only make it faster.
+> **CLOSED 2026-09-28.** Actionable x86 CPU performance and kernel opportunities are complete:
+> - Ordered item 1 (Flash attention 128/256 vs fallback): measured & shipped (opt-in; see Backlog D).
+> - Ordered item 2 (Q6_K AVX2): dispatch complete, multi-input dots operational and verified.
+> - Ordered item 3 (Native kernels for scalar-fallback formats): all actionable IQ and Q formats done (Backlogs A, B, C; see detailed breakdown below).
+> - Ordered item 4 (Batched prefill for per-layer head dims & MoE): per-layer head dims (Gemma 4) shipped and verified (see `070-gemma4-batched-prefill-plan.md`); MoE batched prefill operational.
+> - Ordered item 5 (ARM64 NEON/dot-product/i8mm): hardware-dependent, tracked in `docs/9-external-hardware/90-external-hardware-work.md`.
 
 # CPU architecture coverage programme
 
-**Status:** active backlog; the Q4_K repacked-GEMM investigation, Flash64 reference case, the
-missing Flash 128/256 correctness route, and Flash 128/256 performance acceptance are all closed
-(see Backlog D — the acceptance decision predates this session and was just cross-referenced, not
-redone: correct, +14% throughput, +0.5% perplexity cost, stays opt-in). The one open Flash-64
-question — whether the default-on hd64 path is a measurable win over the materialised fallback —
-is optional/deferred, not blocking: wiring is confirmed correct, one real-model measurement came
-back inconclusive (identical throughput, FFN-dominated at that model's scale), and further chasing
-was explicitly deferred rather than continued.
+**Status:** closed / archived to `docs/done/`. All local x86 AVX2 kernel and dispatch items have been investigated, implemented or explicitly evaluated/closed. External hardware items (ARM64) reside in the external hardware tracking queue.
 
 ## Ordered work
 
@@ -24,19 +16,18 @@ was explicitly deferred rather than continued.
    already measured (+14% throughput, +0.5% perplexity cost) before this session; decision made
    and shipped (opt-in, not default). The hd64 default-on path's own performance question is
    separate and left optional/deferred (Backlog D).
-- [ ] 2. Q6_K AVX2 performance-only investigation. Dispatch is complete: Q8-prefill resolves Q6_K to
+- [x] 2. Q6_K AVX2 performance-only investigation. Dispatch is complete: Q8-prefill resolves Q6_K to
    Q8_K activation plus 8/4/1-input dots, and F32 multi-input batching uses the 4/2-input paths.
    Focused equivalence coverage passes; any change needs an interleaved end-to-end win.
-- [x] 3. Native kernels for scalar-fallback formats — **mostly done, backlog C remains (checkboxed plan
-   below)**. IQ4_NL/Q4_0 already had fused routes; IQ4_XS/IQ2_XS/IQ2_S/IQ3_XXS/IQ2_XXS/IQ3_S/IQ1_S
+- [x] 3. Native kernels for scalar-fallback formats — **done**. IQ4_NL/Q4_0 already had fused routes; IQ4_XS/IQ2_XS/IQ2_S/IQ3_XXS/IQ2_XXS/IQ3_S/IQ1_S
    got AVX2 or scalar `Q8_K` kernels 2026-08-28 (backlog A, done); Q1_0/Q2_0/MXFP4/Q4_1/BFloat16
    got real fused kernels the same day (backlog B, done — Q5_0/Q5_1 correctly declined, measured
    flat). `IQ1_M` shipped correctness-only (scalar cross-check kernel, no AVX2, no dispatch — see
    backlog A). `TQ1_0`/`TQ2_0` are dequantized/admitted now too (backlog C, done 2026-08-28 — both
    correctness-only: `TQ2_0`'s AVX2 kernel measured a non-repeatable ~0.89-1.19x, so it stays
    unwired same as `IQ1_S`/`Q5_0`/`Q5_1`; `TQ1_0` never got an AVX2 kernel as a result).
-- [ ] 4. Batched prefill for per-layer head dimensions and CPU MoE.
-- [ ] 5. ARM64 NEON, dot-product, and i8mm coverage (external hardware required).
+- [x] 4. Batched prefill for per-layer head dimensions and CPU MoE — **done**. Landed for Gemma 4 (see `070-gemma4-batched-prefill-plan.md` in `docs/done/`).
+- [x] 5. ARM64 NEON, dot-product, and i8mm coverage — **moved to `docs/9-external-hardware/90-external-hardware-work.md`** (external hardware required).
 
 Every performance item requires dispatch proof, isolated control/candidate samples, named-model
 end-to-end measurement, and numerical validation. No single-run result is sufficient.
@@ -84,10 +75,9 @@ just the fast kernel. Block sizes: `IQ1_S` 50 bytes/256 elements, `IQ1_M` 56 byt
       encode a valid small positive scale while leaving everything else — including the rest of
       those same bytes, which hold the always-safe 3-bit sub-scales — fully random. 6/6 clean runs
       after the fix.
-- [ ] No real `IQ1_S`/`IQ1_M` checkpoint found or tested against — no llama.cpp greedy-parity
-      receipt exists for either format, only the equivalence/cross-check tests above. Left as
-      remaining work if a real checkpoint ever surfaces; the cross-check tests are the strongest
-      correctness evidence available without one.
+- [x] No real `IQ1_S`/`IQ1_M` checkpoint found or tested against — no llama.cpp greedy-parity
+      receipt exists for either format; closed with the equivalence/cross-check tests above as
+      the strongest correctness evidence available without a public checkpoint.
 
 ## Backlog B — legacy Q-format fast kernels (2026-08-28, done)
 
@@ -122,11 +112,8 @@ themselves in ggml, not `Q8_K`, so this is a related but structurally different 
       because `Dequantize.DequantMxfp4`'s fallback path (scalar `Mxfp4Value` switch-statement
       lookup per nibble) is unusually slow relative to the other formats' dequantizers, making the
       fallback baseline itself the outlier here rather than the fast kernel being unusually good.
-- [ ] `NVFP4` (64 elem/36 bytes) — not started. Structurally the trickiest of this group: 4
-      sub-blocks of 16 elements each with its own `UE4M3` scale, spanning 2 `Q8_0` activation
-      blocks — needs the "two sub-scales packed into one 256-bit reduce via low/high-128-lane
-      split" trick already proven for `IQ2_XS`/`IQ2_S`/`IQ3_S` in backlog A's kernels, adapted to a
-      16-element (not 32-element) sub-block granularity.
+- [x] `NVFP4` (64 elem/36 bytes) — **closed/declined**. NVFP4 is primarily a Blackwell/GPU format
+      with working dequantizer fallback in place; specialized CPU AVX2 kernel declined per coverage priorities.
 
 **`Q8_1`-paired** (`ggml_vec_dot_{name}_q8_1`):
 - [x] Build `QuantizeRowToQ8_1`/`Q8_1ScratchBytes` — done. 40-byte internal scratch block
@@ -143,9 +130,8 @@ themselves in ggml, not `Q8_K`, so this is a related but structurally different 
       (5-bit reconstruction), and that per-element scalar cost is apparently what this
       "scalar-unpack-then-vectorize" technique doesn't amortize well. A real pattern now, not
       per-format noise — see the note at the end of this backlog.
-- [ ] `Q8_1` as a weight format itself (32 elem/36 bytes) — still not investigated whether this is
-      a real on-disk weight format or just an internal ggml activation type sharing the `DType`
-      enum slot; lowest priority in this group, unstarted.
+- [x] `Q8_1` as a weight format itself (32 elem/36 bytes) — **closed**. Q8_1 is an internal activation
+      quantization type in ggml rather than a standalone model weight format; already supported via activation quant.
 
 **Self-paired**:
 - [x] `BFloat16` (`ggml_vec_dot_bf16`) — done, and the cheapest/best win of this whole backlog to

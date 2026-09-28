@@ -1,0 +1,32 @@
+[Stage 1] Cond Tokens (12): [289, 4062, 34463, 369, 289, 129805, 8338, 275, 7821, 15557, 31501, 1]
+[Stage 1] Uncond Tokens (2): [273, 1]
+[Stage 2] Cond UMT5 Stats: mean=-0.0002, std=0.0766, norm=16.97, range=[-0.783, 0.949]
+[Stage 2] Uncond UMT5 Stats: mean=-0.0001, std=0.0326, norm=2.95, range=[-0.812, 0.952]
+[Stage 3] DiT Config: Dim=1536, Heads=12, HeadDim=128, FfnDim=8960, Layers=30
+[Stage 4: CrossKV Cond Block 0] K stats: mean=0.0114, std=0.9577, norm=130.03
+[Stage 4: CrossKV Cond Block 0] V stats: mean=0.0004, std=0.1478, norm=20.06
+[Stage 4: CrossKV Cond Block 15] K stats: mean=0.0143, std=1.0608, norm=144.03
+[Stage 5: Timestep 1000] Sinusoidal stats: mean=0.1991, std=0.6785, norm=11.31
+[Stage 6: Latent Init] mean=0.0096, std=1.0047, norm=128.60
+[Stage 6: Cond Velocity t=1000] mean=-0.0564, std=1.1235, norm=143.98, range=[-4.300, 3.908]
+[Stage 4: CrossKV Uncond Block 0] K stats: mean=0.0148, std=0.9731, norm=53.94
+[Stage 4: KV Signal] Cond K0 norm=130.03 vs Uncond K0 norm=53.94 (ratio=0.415)
+[Stage 6: Uncond Velocity t=1000] mean=-0.0942, std=1.1245, norm=144.44
+[Stage 6: CFG Signal (Cond - Uncond)] norm=16.4695, std=0.122996, maxAbs=0.435852
+[Stage 6: CFG Signal Ratio] Diff norm / Cond norm = 11.44 %
+[Stage 1] Cond Tokens (12): [289, 4062, 34463, 369, 289, 129805, 8338, 275, 7821, 15557, 31501, 1]
+[Stage 1] Uncond Tokens (2): [273, 1]
+[Stage 2] Cond UMT5 Stats: mean=-0.0002, std=0.0766, norm=16.97, range=[-0.783, 0.949]
+[Stage 2] Uncond UMT5 Stats: mean=-0.0001, std=0.0326, norm=2.95, range=[-0.812, 0.952]
+[Stage 3] DiT Config: Dim=1536, Heads=12, HeadDim=128, FfnDim=8960, Layers=30
+[Stage 4: CrossKV Cond Block 0] K stats: mean=0.0114, std=0.9577, norm=130.03
+[Stage 4: CrossKV Cond Block 0] V stats: mean=0.0004, std=0.1478, norm=20.06
+[Stage 4: CrossKV Cond Block 15] K stats: mean=0.0143, std=1.0608, norm=144.03
+[Stage 5: Timestep 1000] Sinusoidal stats: mean=0.1991, std=0.6785, norm=11.31
+[Stage 6: Latent Init] mean=0.0096, std=1.0047, norm=128.60
+[Stage 6: Cond Velocity t=1000] mean=-0.0564, std=1.1235, norm=143.98, range=[-4.300, 3.908]
+[Stage 4: CrossKV Uncond Block 0] K stats: mean=0.0148, std=0.9731, norm=53.94
+[Stage 4: KV Signal] Cond K0 norm=130.03 vs Uncond K0 norm=53.94 (ratio=0.415)
+[Stage 6: Uncond Velocity t=1000] mean=-0.0942, std=1.1245, norm=144.44
+[Stage 6: CFG Signal (Cond - Uncond)] norm=16.4695, std=0.122996, maxAbs=0.435852
+[Stage 6: CFG Signal Ratio] Diff norm / Cond norm = 11.44 %

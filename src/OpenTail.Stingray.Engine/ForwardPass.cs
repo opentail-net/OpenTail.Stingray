@@ -1624,6 +1624,8 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
         {
             if (w.DType == DType.Q4_K && GetRepackedQ4Kx8(in w, rows, cols) != null) return false;
             if (w.DType == DType.Q6_K && N >= SimdKernels.MinBatchForQ8Prefill) return false;
+            // Int8 batched path (TryMatMulBatchedQ8) beats a one-off F32 copy of the matrix.
+            if (w.DType == DType.Q5_0) return false;
         }
         return true;
     }

@@ -112,6 +112,76 @@ public sealed unsafe class SimdKernelsLegacyQ8_0Tests
             (row, s, c) => SimdKernels.DotQ5_0_Q8_0((byte*)row, (byte*)s, c),
             (row, s, c) => SimdKernels.DotQ5_0_Q8_0_Scalar((byte*)row, (byte*)s, c));
 
+    /// <summary>
+    /// The batched-prefill 4-input Q5_0 dot must equal the single-input dot bit for bit, so a
+    /// token's result does not depend on how prefill grouped it (or whether it was decoded alone).
+    /// </summary>
+    [Fact]
+    public void DotQ5_0_Q8_0_4InBitwiseMatchesSingle()
+    {
+        const int cols = 896; // Qwen2.5-0.5B width: 28 blocks, not a multiple of 256.
+        var rng = new Random(0x5A0);
+        byte[] w = BuildMatrix(3, cols, 32, 22, rng, e8m0Scale: false);
+        int sb = SimdKernels.Q8_0ScratchBytes(cols);
+        var scratch = new byte[4 * sb];
+        var input = new float[4 * cols];
+        for (int i = 0; i < input.Length; i++) input[i] = (float)(rng.NextDouble() * 2 - 1);
+
+        fixed (byte* wp = w)
+        fixed (byte* sp = scratch)
+        fixed (float* ip = input)
+        {
+            for (int t = 0; t < 4; t++) SimdKernels.QuantizeRowToQ8_0(ip + t * cols, cols, sp + t * sb);
+            for (int r = 0; r < 3; r++)
+            {
+                byte* row = wp + r * (cols / 32) * 22;
+                SimdKernels.DotQ5_0_Q8_0_4In(row, sp, sp + sb, sp + 2 * sb, sp + 3 * sb, cols,
+                    out float o0, out float o1, out float o2, out float o3);
+                float[] four = [o0, o1, o2, o3];
+                for (int t = 0; t < 4; t++)
+                    Assert.Equal(BitConverter.SingleToInt32Bits(SimdKernels.DotQ5_0_Q8_0(row, sp + t * sb, cols)),
+                        BitConverter.SingleToInt32Bits(four[t]));
+            }
+        }
+    }
+
+    /// <summary>
+    /// <c>MatVec</c> now dispatches Q5_0 to the int8 kernel. Its result must stay close to the F32
+    /// dequantize-then-dot reference (the old path); the difference is the Q8_0 activation rounding
+    /// ggml also applies. <c>allowQ8: false</c> must still give the old F32 path exactly.
+    /// </summary>
+    [Fact]
+    public void MatVecQ5_0MatchesDequantizeReference()
+    {
+        const int rows = 96, cols = 896; // rows >= 64 takes the parallel branch
+        var rng = new Random(0x5A1);
+        byte[] w = BuildMatrix(rows, cols, 32, 22, rng, e8m0Scale: false);
+        var input = new float[cols];
+        for (int i = 0; i < cols; i++) input[i] = (float)(rng.NextDouble() * 2 - 1);
+        var q8 = new float[rows];
+        var f32 = new float[rows];
+        var reference = new float[rows];
+
+        fixed (byte* wp = w)
+        fixed (float* ip = input, q8p = q8, fp = f32, rp = reference)
+        {
+            SimdKernels.MatVec(q8p, wp, ip, rows, cols, DType.Q5_0);
+            SimdKernels.MatVec(fp, wp, ip, rows, cols, DType.Q5_0, allowQ8: false);
+            SimdKernels.MatVecDequantFallback(rp, wp, ip, rows, cols, DType.Q5_0);
+        }
+
+        double num = 0, den = 0;
+        for (int r = 0; r < rows; r++)
+        {
+            Assert.Equal(BitConverter.SingleToInt32Bits(reference[r]), BitConverter.SingleToInt32Bits(f32[r]));
+            num += (q8[r] - reference[r]) * (double)(q8[r] - reference[r]);
+            den += reference[r] * (double)reference[r];
+        }
+        double relErr = Math.Sqrt(num / den);
+        Console.WriteLine($"Q5_0 int8 MatVec vs F32 reference: relative L2 error {relErr:E2}");
+        Assert.True(relErr < 1e-2, $"relative L2 error {relErr:E3}");
+    }
+
     [Fact]
     public void DotQ1_0_Q8_0_Avx2MatchesScalar() =>
         AssertAvx2MatchesScalar("Q1_0", 128, 18, e8m0Scale: false,

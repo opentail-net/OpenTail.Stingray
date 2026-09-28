@@ -1,8 +1,12 @@
 # 051 — Wiring HotSession's newly-ported capabilities into the live Server path
 
-## Status: DONE (2026-08-27). The two items not covered here (LoRA, `OnTokenGenerated`/
-## `ToolCallParser`) are tracked as open TODOs in `docs/3-product-and-runtime/051-hotsession-capability-wiring-plan.md`,
-## along with `Fork()` skill/instruction propagation (an open design question this work surfaced).
+## Status: DONE (2026-08-27; closed 2026-09-28).
+## The core capabilities (skills/tool validation, skill-instructions-as-prompt, Metrics/Metadata/FinishReason/ToolCalls/AllowedChoices,
+## checkpoint/rollback, session tree, suspend/resume) are ported and verified.
+## The three remaining items are explicitly concluded:
+## 1. Fork() skill/instruction propagation: deferred until a concrete consensus/voting caller requests shared tool authorization.
+## 2. OnTokenGenerated / ToolCallParser: declined (already handled directly and better at the Server layer).
+## 3. LoRA: distinct engine-level sub-batching project, tracked separately if demanded.
 
 ## Background
 

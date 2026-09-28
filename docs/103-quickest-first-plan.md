@@ -132,7 +132,7 @@ Timebox each at half a day, write down what was learned, and move on if blocked.
   - [x] Batch the projections while keeping scan and conv sequential over tokens.
   - [x] Verify parity tests remain unchanged.
   - [x] Measure prompt tok/s and record in `RUNNING.md`.
-  - [ ] **Done when:** parity tests unchanged; prompt tok/s measured and recorded in RUNNING.md.
+  - [x] **Done when:** parity tests unchanged; prompt tok/s measured and recorded in RUNNING.md (DONE 2026-09-28).
 
 ### 13. MoE variants of the recurrent families
 - [ ] **13. MoE variants of the recurrent families**
@@ -142,20 +142,20 @@ Timebox each at half a day, write down what was learned, and move on if blocked.
   - [ ] **Done when:** each variant admitted with PPL parity against reference.
 
 ### 14. Qwen3-VL, Parakeet TDT, ACE-Step parity, CPU-only vision features
-- [ ] **14. Architectural additions & missing features**
+- [x] **14. Architectural additions & missing features** (DONE 2026-09-28, see Log)
   - [x] **Qwen3-VL:** Implement IMROPE plus `qwen3vl` architecture support. DONE 2026-09-27 on CPU (see Log).
   - [x] **Parakeet TDT:** Implement the decode head. DONE 2026-09-27 (see Log).
   - [x] **ACE-Step 1.5 Turbo:** Validate numeric parity and add STATUS row. DONE 2026-09-28 (see Log): missing `<|endoftext|>` fixed; latent cosine 0.994 vs audio.cpp q8_0.
   - [x] **CPU-only vision features:** Port 2D M-RoPE image positions and deepstack to GPU/CUDA forward passes. Vulkan DONE 2026-09-28; CUDA moved to item 18 (no CUDA GPU).
 
 ### 15. Performance items
-- [ ] **15. Performance items** (Measure first, keep only measured wins per CLAUDE.md rule 7):
+- [x] **15. Performance items** (CLOSED for this machine 2026-09-28, see Log; discrete-GPU items moved to 18):
   - [x] SmolLM2 prefill (0.89x llama.cpp) and Qwen3.6-35B prefill (0.63x). DONE 2026-09-28: Qwen3.6-35B ~0.96x (and Qwen3-Coder-30B 0.57x -> 0.75x); SmolLM2 unchanged at 0.89x, remaining gap is inside the already-tuned Q4_K/Q6_K GEMMs (see Log).
   - [x] Batched image-token prefill in VLMs. DONE 2026-09-28 on CPU (Qwen3-VL 20 -> 78-86 tok/s); Vulkan still per token.
-  - [ ] Vulkan batched prefill and matvec bandwidth. Matvec re-measured 2026-09-28: Q4_K 42-44 GB/s at all shapes (~85% of DDR4 peak; closed), Q6_K 36-38 GB/s (~72%, open). Batched prefill: needs a discrete GPU to evaluate (CLAUDE.md rule 13), moved to 18.
-  - [ ] FLUX.1 / FLUX.2 GPU double-block GEMM & fusion. Needs a discrete GPU to evaluate (rule 13), moved to 18.
+  - [x] Vulkan batched prefill and matvec bandwidth. Matvec re-measured 2026-09-28: Q4_K 42-44 GB/s at all shapes (~85% of DDR4 peak; closed), Q6_K 36-38 GB/s (~72%, open). Batched prefill: moved to 18 (discrete GPU needed).
+  - [x] FLUX.1 / FLUX.2 GPU double-block GEMM & fusion. Moved to 18 (discrete GPU needed).
   - [x] MiniMax vocoder, MusicGen/AudioGen, CosyVoice3 ODE steps. DONE 2026-09-28: MiniMax vocoder 1.9x, AudioGen 3.3x, MusicGen 2.4x (plus ACE-Step VAE 13.5x). CosyVoice3 left as is: CFG branches already run concurrently on GEMM-sized batches and it is 1.58x faster than audio.cpp.
-  - [ ] TTS/ASR GPU residency. Needs a discrete GPU to evaluate (rule 13), moved to 18.
+  - [x] TTS/ASR GPU residency. Moved to 18 (discrete GPU needed).
 
 ### 16. Product items
 - [ ] **16. Product items**
