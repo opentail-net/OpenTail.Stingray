@@ -71,6 +71,35 @@ public sealed unsafe partial class ForwardPass
         finally { _deepstackSlices = null; }
     }
 
+    /// <summary>
+    /// Feeds <paramref name="count"/> precomputed embedding rows (vision soft tokens, each <see cref="_embDim"/> wide or
+    /// with deepstack slices appended) at positions <paramref name="startPos"/>.., like that many
+    /// <see cref="ForwardEmbedding"/> calls, and returns the last row's logits. Runs the batched <see cref="PrefillCore"/>
+    /// trunk where it applies (register M-RoPE images first, as for ForwardEmbedding); configurations the batched trunk
+    /// excludes take the per-row path.
+    /// </summary>
+    public ReadOnlySpan<float> PrefillEmbeddings(ReadOnlySpan<float> rows, int count, int startPos)
+    {
+        if (count <= 0 || rows.Length % count != 0) throw new ArgumentException("rows must hold count equal-width rows.");
+        int width = rows.Length / count;
+        int nDs = _hp.NumDeepstack;
+        if (width != _embDim && width != _embDim * (1 + nDs))
+            throw new ArgumentException($"embedding width {width} != model embedding dim {_embDim}" +
+                (nDs > 0 ? $" (or {_embDim * (1 + nDs)} with {nDs} deepstack slices)." : "."));
+
+        bool batched = count > 1 && !HasRecurrentState && _layerHeadDim is null && !_usesUnweightedNorm
+            && _tqKvCache == null && !_hp.HasPerLayerTokenEmbd && (!_hp.IsMoE || MoeBatchedPrefillSupported);
+        if (!batched)
+        {
+            ReadOnlySpan<float> logits = default;
+            for (int i = 0; i < count; i++)
+                logits = ForwardEmbedding(rows.Slice(i * width, width), startPos + i);
+            return logits;
+        }
+        fixed (float* p = rows)
+            return PrefillCore(new int[count], _kvCache, startPos, embeddingRows: p, embeddingWidth: width);
+    }
+
     /// <summary>Deepstack slices 1..N of the current multimodal token (null otherwise); see
     /// <see cref="ModelHyperparams.DeepstackMapping"/>.</summary>
     private float[]? _deepstackSlices;

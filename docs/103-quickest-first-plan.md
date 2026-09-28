@@ -420,3 +420,8 @@ Timebox each at half a day, write down what was learned, and move on if blocked.
     tokens in parallel. Qwen3-Coder-30B-A3B Q4_K_M, 507 tokens: 48.9-53.1 -> 66.7-69.3 t/s = 0.57x -> 0.75x llama.cpp
     (89.27), output identical. Tests: `MoeBatchedPrefillParityTests` 3/3, `OlmoeGreedyParityTests` 2 (+1 skip),
     `PhiMoeGreedyParityTests` 2/2 (real weights), ForwardPass.Fast 703.
+  - Batched image-token prefill (item 15, second sub-item), CPU: `ForwardPass.PrefillEmbeddings` feeds precomputed rows
+    through `PrefillCore` (M-RoPE via the registered images, deepstack slices added per layer), with a per-row fallback for
+    configurations the batched trunk excludes; the CLI image path uses it. Qwen3-VL 2B, 784-token image: prefill
+    19.8-20.1 -> 78.2-85.8 t/s, wall 63 -> 32-35 s. Batched vs per-token logits cosine 0.9994, same top token (new test in
+    `Qwen3VlVulkanMRopeParityTests`). Vulkan still feeds image tokens one by one (M-RoPE models take its per-token trunk).

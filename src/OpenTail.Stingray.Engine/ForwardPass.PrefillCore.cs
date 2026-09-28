@@ -8,8 +8,10 @@ public sealed unsafe partial class ForwardPass
 {
     private ReadOnlySpan<float> PrefillCore(IReadOnlyList<int> tokens, PagedKvCache cache, int startPos,
         PositionLogitsCallback? onAllPositionLogits = null, Predicate<int>? positionFilter = null,
-        Span<float> outAllHiddenStates = default)
+        Span<float> outAllHiddenStates = default, float* embeddingRows = null, int embeddingWidth = 0)
     {
+        // embeddingRows (PrefillEmbeddings): N precomputed input rows of embeddingWidth floats (vision soft tokens)
+        // replace the token lookup; floats past _embDim are deepstack slices, added before their mapped layers.
         int N = tokens.Count;
 
         // SnapKV gating (issue #51): only run eviction when this is a fresh
@@ -31,16 +33,27 @@ public sealed unsafe partial class ForwardPass
         var batchResidual = (float*)NativeMemory.AllocZeroed((nuint)((long)N * _embDim * sizeof(float)));
         try
         {
-            // 1. Embed all tokens
-            for (int n = 0; n < N; n++)
-                EmbedTokenInto(tokens[n], batchHidden + (long)n * _embDim, startPos + n);
-
-            // Gemma 4 always takes the sequential Forward() path (perLayerHdUnsupported), so
-            // this batched trunk previously never needed to apply EmbeddingScale — Granite and
-            // MiniCPM are the first dense architectures to reach PrefillCore with it set.
-            if (_hp.EmbeddingScale != 1f)
+            // 1. Embed all tokens (or take the precomputed rows, scaled exactly as ForwardEmbedding does)
+            if (embeddingRows is not null)
+            {
                 for (int n = 0; n < N; n++)
-                    SimdKernels.ScaleInPlace(batchHidden + (long)n * _embDim, _hp.EmbeddingScale, _embDim);
+                    Copy(batchHidden + (long)n * _embDim, embeddingRows + (long)n * embeddingWidth, _embDim);
+                if (_hp.ScaleRawEmbeddings && _hp.EmbeddingScale != 1f)
+                    for (int n = 0; n < N; n++)
+                        SimdKernels.ScaleInPlace(batchHidden + (long)n * _embDim, _hp.EmbeddingScale, _embDim);
+            }
+            else
+            {
+                for (int n = 0; n < N; n++)
+                    EmbedTokenInto(tokens[n], batchHidden + (long)n * _embDim, startPos + n);
+
+                // Gemma 4 always takes the sequential Forward() path (perLayerHdUnsupported), so
+                // this batched trunk previously never needed to apply EmbeddingScale — Granite and
+                // MiniCPM are the first dense architectures to reach PrefillCore with it set.
+                if (_hp.EmbeddingScale != 1f)
+                    for (int n = 0; n < N; n++)
+                        SimdKernels.ScaleInPlace(batchHidden + (long)n * _embDim, _hp.EmbeddingScale, _embDim);
+            }
 
             // Temp buffers for batched operations
             // Temp buffers for batched operations
@@ -112,6 +125,12 @@ public sealed unsafe partial class ForwardPass
 
                     long pLayerStart = profPrefill ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
                     long pNamedTicks = 0;
+
+                    // Deepstack (Qwen3-VL, Granite 4.0 Vision): add this layer's slice to every row, as RunTrunk does.
+                    if (embeddingWidth > _embDim && layer > 0 && _hp.DeepstackMapping![layer] is int dsIdx && dsIdx >= 1)
+                        for (int n = 0; n < N; n++)
+                            SimdKernels.AddInPlace(batchHidden + (long)n * _embDim,
+                                embeddingRows + (long)n * embeddingWidth + (long)dsIdx * _embDim, _embDim);
 
                     cache.TruncateTo(startPos);
                     // Post-norm-only models (OLMo2, EXAONE 4) have no attn_norm tensor: attention

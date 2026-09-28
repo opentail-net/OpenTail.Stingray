@@ -82,6 +82,61 @@ public sealed class Qwen3VlVulkanMRopeParityTests : HeavyTestBase
         return best;
     }
 
+    /// <summary>
+    /// CPU batched image prefill (<see cref="Engine.ForwardPass.PrefillEmbeddings"/>: one PrefillCore pass over the soft
+    /// tokens, M-RoPE positions and deepstack included) against the per-token <c>ForwardEmbedding</c> loop. The batched
+    /// trunk quantises activations to int8 for its GEMMs (as text prefill does), so it is compared by top token and
+    /// logit cosine, then checked to still depend on the image registration.
+    /// </summary>
+    [Fact]
+    public void Qwen3Vl_BatchedImagePrefill_MatchesPerTokenCpu()
+    {
+        var textPath = Find("Qwen3VL-2B-Instruct-Q8_0.gguf");
+        var mmprojPath = Find("mmproj-Qwen3VL-2B-Instruct-Q8_0.gguf");
+        Assert.SkipWhen(textPath is null || mmprojPath is null, "Qwen3-VL 2B Q8_0 + mmproj not present");
+
+        using var model = GgufModel.Open(textPath!);
+        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var tok = GgufTokenizer.FromGgufModel(model);
+        using var vision = UnifiedVisionPipeline.Open(mmprojPath!);
+        const int size = 448;
+        float[] soft = vision.EmbedImage(QuadrantImage(size), size, size, out int nTok);
+        var grid = vision.LastTokenGrid;
+        int embd = vision.EmbeddingDim;
+        int[] prefix = [.. tok.Encode("<|im_start|>user\n<|vision_start|>")];
+        int[] suffix = [.. tok.Encode("<|vision_end|>Which colour is in the top-left corner?<|im_end|>\n<|im_start|>assistant\n")];
+
+        float[] RunBatched(Engine.ForwardPass f, bool register)
+        {
+            int pos = 0;
+            foreach (int t in prefix) f.Forward(t, pos++);
+            if (register) f.AddMRopeImage(pos, grid.Width, grid.Height);
+            f.PrefillEmbeddings(soft.AsSpan(0, nTok * embd), nTok, pos);
+            pos += nTok;
+            ReadOnlySpan<float> l = default;
+            foreach (int t in suffix) l = f.Forward(t, pos++);
+            return l.ToArray();
+        }
+
+        float[] perToken, batched, batchedNoMRope;
+        using var backend = new CpuBackend();
+        using (var cpu = new Engine.ForwardPass(model, backend, hp, maxContextLength: 1024))
+        {
+            perToken = RunPrompt(cpu, prefix, soft, nTok, embd, grid, suffix, registerImage: true);
+            cpu.ResetCache();
+            batched = RunBatched(cpu, register: true);
+            cpu.ResetCache();
+            batchedNoMRope = RunBatched(cpu, register: false);
+        }
+
+        double cos = Cosine(perToken, batched), cosControl = Cosine(perToken, batchedNoMRope);
+        _out.WriteLine($"grid {grid.Width}x{grid.Height} ({nTok} tokens); cos(per-token, batched) = {cos:F6}, top {ArgMax(perToken)} vs {ArgMax(batched)}; " +
+            $"batched without M-RoPE: cos {cosControl:F6}");
+        Assert.Equal(ArgMax(perToken), ArgMax(batched));
+        Assert.True(cos > 0.999, $"cos(per-token, batched) = {cos:F6}");
+        Assert.True(cos - cosControl > 1e-3, $"batched control without M-RoPE ({cosControl:F6}) is not clearly worse");
+    }
+
     [Fact]
     public void Qwen3Vl_ImageLogits_VulkanMatchesCpu_WithMRopeAndDeepstack()
     {

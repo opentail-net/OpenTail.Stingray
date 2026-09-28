@@ -2792,8 +2792,17 @@ public sealed class RunCommand : Command<RunCommand.Settings>
                     if (fwd is ForwardPass cpuMrope && cpuMrope.UsesMRope) cpuMrope.AddMRopeImage(pos, grid.W, grid.H);
                     else if (fwd is GpuForwardPass gpuMrope && gpuMrope.UsesMRope) gpuMrope.AddMRopeImage(pos, grid.W, grid.H);
                 }
-                for (int t = 0; t < nTok; t++)
-                    logits = fwd.ForwardEmbedding(soft.AsSpan(t * embd, embd), pos++);
+                if (fwd is ForwardPass cpuBatch)
+                {
+                    // One batched prefill for the whole image instead of nTok single-token passes.
+                    logits = cpuBatch.PrefillEmbeddings(soft.AsSpan(0, nTok * embd), nTok, pos);
+                    pos += nTok;
+                }
+                else
+                {
+                    for (int t = 0; t < nTok; t++)
+                        logits = fwd.ForwardEmbedding(soft.AsSpan(t * embd, embd), pos++);
+                }
                 if (imgClose >= 0) logits = fwd.Forward(imgClose, pos++);
                 foreach (int ct in imgCloseText) logits = fwd.Forward(ct, pos++);
             }
