@@ -412,3 +412,7 @@ Timebox each at half a day, write down what was learned, and move on if blocked.
   - Qwen3.6-35B-A3B, third step: chunked-prefill attention batched over (head, token) instead of one head-parallel
     attention per token. 45.9-47.0 -> 47.9-48.9 t/s = 0.74x (from 0.50x at the start of the session). Bit-identical.
     Remaining: MoE 64 % of prefill (6.7 s of 10.5 s).
+  - Qwen3.6-35B-A3B, fourth step: MoE prefill ran its 256 experts serially (six fork/joins each on ~16 tokens) and the
+    router per token serially. Experts in parallel (5645 -> ~2860 ms) and router over tokens (580 -> 156 ms):
+    46.4-48.1 -> 62.3-63.2 t/s in alternating runs = ~0.96x llama.cpp (65.42). Output identical. This sub-item of 15 is
+    at parity; the dense `ForwardPass` MoE path should be checked for the same serial expert loop.

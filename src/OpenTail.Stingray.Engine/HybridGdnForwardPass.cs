@@ -2920,14 +2920,21 @@ public sealed unsafe class HybridGdnForwardPass : IForwardPass
             down = Alloc(n * e);
             partial = (float*)NativeMemory.Alloc((nuint)(pairs * e * sizeof(float)));
 
-            // 1. Route (identical to MoeFfnCore).
-            for (int t = 0; t < n; t++)
-            {
-                FusedMatVec(router, _wGateInp[layer], normIn + (long)t * e, numExperts, e);
-                SimdKernels.SoftmaxInPlace(router, numExperts);
-                SelectTopK(router, numExperts, na, sel.AsSpan(t * na, na), wts.AsSpan(t * na, na),
-                    normalize: _hp.NormalizeMoeTopKWeights);
-            }
+            // 1. Route (identical to MoeFfnCore), tokens in parallel: each token's router row is computed and ranked
+            //    exactly as before, into its own sel/wts slice.
+            var gateInp = _wGateInp[layer];
+            bool normTopK = _hp.NormalizeMoeTopKWeights;
+            Parallel.For(0, n, s_moeParallelOpts,
+                () => (nint)NativeMemory.Alloc((nuint)(numExperts * sizeof(float))),
+                (t, _, rbuf) =>
+                {
+                    float* r = (float*)rbuf;
+                    FusedMatVec(r, gateInp, normIn + (long)t * e, numExperts, e);
+                    SimdKernels.SoftmaxInPlace(r, numExperts);
+                    SelectTopK(r, numExperts, na, sel.AsSpan(t * na, na), wts.AsSpan(t * na, na), normalize: normTopK);
+                    return rbuf;
+                },
+                rbuf => NativeMemory.Free((void*)rbuf));
 
             // 2. CSR buckets of (token, slot) by expert.
             var start = new int[numExperts + 1];
@@ -2944,22 +2951,39 @@ public sealed unsafe class HybridGdnForwardPass : IForwardPass
             int bprG = (e / DTypeInfo.BlockSize(gateExps.DType)) * DTypeInfo.BytesPerBlock(gateExps.DType);
             int bprU = (e / DTypeInfo.BlockSize(upExps.DType)) * DTypeInfo.BytesPerBlock(upExps.DType);
             int bprD = (expertDim / DTypeInfo.BlockSize(downExps.DType)) * DTypeInfo.BytesPerBlock(downExps.DType);
-            for (int x = 0; x < numExperts; x++)
-            {
-                int p0 = start[x], cnt = start[x + 1] - p0;
-                if (cnt == 0) continue;
-                for (int i = 0; i < cnt; i++)
-                    Copy(gathered + (long)i * e, normIn + (long)(slotOf[p0 + i] / na) * e, e);
-                SimdKernels.MatMulBatched(gate, gateExps.DataPtr + (long)x * expertDim * bprG, gathered,
-                    cnt, expertDim, e, gateExps.DType, allowQ8: true);
-                SimdKernels.MatMulBatched(up, upExps.DataPtr + (long)x * expertDim * bprU, gathered,
-                    cnt, expertDim, e, upExps.DType, allowQ8: true);
-                SimdKernels.SiLuMul(gate, up, cnt * expertDim);
-                SimdKernels.MatMulBatched(down, downExps.DataPtr + (long)x * e * bprD, gate,
-                    cnt, e, expertDim, downExps.DType, allowQ8: true);
-                for (int i = 0; i < cnt; i++)
-                    Copy(partial + (long)slotOf[p0 + i] * e, down + (long)i * e, e);
-            }
+            // Experts run in parallel (each expert's matmuls as before, on per-worker buffers sized for the largest
+            // bucket): ~16 tokens per expert made every inner matmul too small to pay its own fork/join. Each
+            // expert writes only its own (token, slot) partial rows, and runs the same kernels on the same
+            // operands, so the output is unchanged.
+            int maxCnt = 0;
+            for (int x = 0; x < numExperts; x++) maxCnt = Math.Max(maxCnt, start[x + 1] - start[x]);
+            byte* gateBase = gateExps.DataPtr, upBase = upExps.DataPtr, downBase = downExps.DataPtr;
+            DType gateDt = gateExps.DType, upDt = upExps.DType, downDt = downExps.DType;
+            float* partialP = partial;
+            Parallel.For(0, numExperts, s_moeParallelOpts,
+                () => (nint)NativeMemory.Alloc((nuint)((long)maxCnt * (Math.Max(e, expertDim) + 2L * expertDim + e) * sizeof(float))),
+                (x, _, buf) =>
+                {
+                    int p0 = start[x], cnt = start[x + 1] - p0;
+                    if (cnt == 0) return buf;
+                    float* gth = (float*)buf;
+                    float* gt = gth + (long)maxCnt * Math.Max(e, expertDim);
+                    float* upx = gt + (long)maxCnt * expertDim;
+                    float* dn = upx + (long)maxCnt * expertDim;
+                    for (int i = 0; i < cnt; i++)
+                        Copy(gth + (long)i * e, normIn + (long)(slotOf[p0 + i] / na) * e, e);
+                    SimdKernels.MatMulBatched(gt, gateBase + (long)x * expertDim * bprG, gth,
+                        cnt, expertDim, e, gateDt, allowQ8: true);
+                    SimdKernels.MatMulBatched(upx, upBase + (long)x * expertDim * bprU, gth,
+                        cnt, expertDim, e, upDt, allowQ8: true);
+                    SimdKernels.SiLuMul(gt, upx, cnt * expertDim);
+                    SimdKernels.MatMulBatched(dn, downBase + (long)x * e * bprD, gt,
+                        cnt, e, expertDim, downDt, allowQ8: true);
+                    for (int i = 0; i < cnt; i++)
+                        Copy(partialP + (long)slotOf[p0 + i] * e, dn + (long)i * e, e);
+                    return buf;
+                },
+                buf => NativeMemory.Free((void*)buf));
 
             // 4. Weighted reduce per token in top-k slot order.
             for (int t = 0; t < n; t++)
