@@ -326,6 +326,30 @@ public sealed class CfmLinearWeight
                 nint wAddr = (nint)pW;
                 nint bAddr = (nint)bias;
 
+                // Few rows (single-token decode: t == 1): parallelizing over t left the whole matrix on one thread
+                // (AudioGen's 1.5B decoder ran single-threaded, 2026-09-28). Split the output rows instead; every
+                // output is the same Dot on the same operands, so results are unchanged.
+                if (t < 4 && outDim >= 128)
+                {
+                    const int RowBlock = 32;
+                    int blocks = (outDim + RowBlock - 1) / RowBlock;
+                    System.Threading.Tasks.Parallel.For(0, t * blocks, job =>
+                    {
+                        int ti = job / blocks, o0 = (job % blocks) * RowBlock, o1 = Math.Min(outDim, o0 + RowBlock);
+                        float* inRow = (float*)inAddr + (nuint)ti * (nuint)inDim;
+                        float* outRow = (float*)outAddr + (nuint)ti * (nuint)outDim;
+                        ushort* wBase = (ushort*)wAddr;
+                        float* b = (float*)bAddr;
+                        for (int o = o0; o < o1; o++)
+                        {
+                            float val = F16CNative.Dot(inRow, wBase + (nuint)o * (nuint)inDim, inDim);
+                            if (b != null) val += b[o];
+                            outRow[o] = val;
+                        }
+                    });
+                    return;
+                }
+
                 System.Threading.Tasks.Parallel.For(0, t, ti =>
                 {
                     float* inRow = (float*)inAddr + (nuint)ti * (nuint)inDim;

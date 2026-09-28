@@ -433,3 +433,8 @@ Timebox each at half a day, write down what was learned, and move on if blocked.
   - MiniMax vocoder (item 15, audio sub-item): the GEMM conv kernels moved to a shared `Primitives/Conv1dGemm` used by the
     ACE-Step Oobleck decoder and the MiniMax-Music3 vocoder. Vocoder decode 8.66-9.14 -> 4.57-4.64 s (200 frames), max abs
     diff 7e-7 vs the old kernels; the ACE-Step decode is byte-identical before/after the extraction.
+  - MusicGen/AudioGen (item 15, audio sub-item): `CfmLinearWeight.MatMul` split F16 matmuls over input rows only, so
+    t = 1 decode steps ran single-threaded. Small-t calls now split output rows (bit-identical: AudioGen greedy PCM SHA-256
+    equal). AudioGen-medium 3 s: 62.0 -> 30.0 s; MusicGen-small 3 s: 16.7 -> 9.5 s. Also benefits every other
+    `CfmLinearWeight` caller with small batches (MiniMax RVQ depth decoder, CosyVoice/Chatterbox CFM, F5, QwenASR, T5).
+    Tests.Audio 512 (428 skipped without heavy) pass.
