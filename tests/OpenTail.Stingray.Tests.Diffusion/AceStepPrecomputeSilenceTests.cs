@@ -27,6 +27,9 @@ public sealed class AceStepPrecomputeSilenceTests
     {
         string? turboPath = FindRepoFile("models/acestep-v15/turbo.safetensors");
         string? vaePath = FindRepoFile("models/acestep-v15/vae.safetensors");
+        // Generator, not a check: it overwrites the shipped silence_*.bin (src/ and models/acestep-v15/). Opt in explicitly.
+        Assert.SkipUnless(Environment.GetEnvironmentVariable("STINGRAY_ACESTEP_PRECOMPUTE") == "1",
+            "regenerates checked-in silence_*.bin; set STINGRAY_ACESTEP_PRECOMPUTE=1 to run");
         Assert.SkipUnless(turboPath != null, "turbo.safetensors not found");
         Assert.SkipUnless(vaePath != null, "vae.safetensors not found");
 
