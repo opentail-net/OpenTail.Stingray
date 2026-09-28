@@ -137,8 +137,8 @@ Timebox each at half a day, write down what was learned, and move on if blocked.
 ### 13. MoE variants of the recurrent families
 - [ ] **13. MoE variants of the recurrent families**
   - [x] Admit Granite 4.0-H tiny/small (MoE) with PPL parity. Small DONE 2026-09-28 (top-k renormalisation fix; +1.2% residual at -c 2048 logged).
-  - [ ] Admit Nemotron-H MoE (latent MoE, sigmoid gating) with PPL parity.
-  - [ ] Admit LFM2-MoE (`lfm2moe`) with PPL parity.
+  - [ ] Admit Nemotron-H MoE (latent MoE, sigmoid gating) with PPL parity. No local checkpoint (2026-09-28); not downloaded (C: has no free space, K: ~10 GB).
+  - [ ] Admit LFM2-MoE (`lfm2moe`) with PPL parity. BLOCKED 2026-09-28 (timeboxed): PPL +6.3% and per-token vs batched disagree by 9%; see bugstofix.
   - [ ] **Done when:** each variant admitted with PPL parity against reference.
 
 ### 14. Qwen3-VL, Parakeet TDT, ACE-Step parity, CPU-only vision features
@@ -481,3 +481,10 @@ Timebox each at half a day, write down what was learned, and move on if blocked.
   - After: -c 512 9.3505 vs 9.4103; -c 2048 `[1024,+)` 26.4155 (per token 26.5483) vs 26.1080 (+1.2%, logged in
     bugstofix). Chat answer correct. Prompt 9.8 tok/s, decode 7.4 tok/s (42-token prompt).
   - Tiny not local; Nemotron-H MoE not local; LFM2-MoE next.
+- 2026-09-28: item 13, LFM2-MoE (`LFM2-8B-A1B-Q4_K_M`), timeboxed and not admitted.
+  - Wired `lfm2moe` into `ModelGraph` like `lfm2` (short-conv layers, NeoX RoPE) plus top-k renormalisation (llama.cpp
+    lfm2.cpp passes norm_w = true); sigmoid gating with `exp_probs_b` already follows the DeepSeek path. Runs cleanly
+    (`admit-arch`), but wikitext PPL is +6.3% at -c 2048 (15.8076 vs 14.8639), and at -c 512 per token 8.1860 vs batched
+    8.9595 vs llama.cpp 8.7030. Ruled out: parallel experts/routing (serial identical), expert kernels (exact match on
+    real weights). Logged in bugstofix with the next step. Not in the allowlist.
+  - Nemotron-H MoE: no local checkpoint; Granite 4.0-H tiny: not local (small done above).

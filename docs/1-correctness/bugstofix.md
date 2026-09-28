@@ -112,6 +112,14 @@ restart a fourth round of kernel-level chasing on this checkpoint without new ev
     text engine's prefill), only the Q8_0 conv layers are packed F32: 1.1 GB peak, and faster than CrispASR on the
     same files (TDT 1.16x, CTC 1.10x). CrispASR itself peaks at 0.6-0.65 GB; the ~290 MB of F32 conv weights are the
     difference, kept on purpose because the int8 Q8_0 path was ~0.2 s slower per clip. Stopped here.
+- [ ] **LFM2-MoE (`lfm2moe`) not admitted: PPL off and per-token vs batched disagree** (logged 2026-09-28, docs/103 item 13):
+  `LFM2-8B-A1B-Q4_K_M`, wikitext `[256,1024)` at -c 512: per token 8.1860, batched 8.9595, `llama-perplexity --chunks 1`
+  8.7030; at -c 2048 batched 15.8076 vs 14.8639 (+6.3%). Arch wiring is in `ModelGraph` (NeoX, short-conv layers,
+  sigmoid gating with `exp_probs_b` as DeepSeek, top-k renormalised as llama.cpp lfm2.cpp norm_w = true) but the arch is
+  NOT in the allowlist. Ruled out: parallel expert execution and parallel routing (serial gives identical numbers), and
+  the expert matmul kernels (batched vs per-row MatVec on the real blk.2 Q4_K/Q6_K expert weights: relative error 0 at
+  n = 1..64). Dense LFM2 1.2B and Granite hybrids agree per-token vs batched within 0.1-0.5%, so the 9% spread is specific
+  to this model. Next step: per-layer hidden-state comparison, batched vs per-token vs llama-eval-callback.
 - [ ] **Granite 4.0-H small (MoE) +1.2% PPL vs llama.cpp** (logged 2026-09-28, docs/103 item 13): `granite-4.0-h-small-Q2_K`,
   wikitext -c 2048 `[1024,+)` 26.4155 (batched) / 26.5483 (per token) vs `llama-perplexity --chunks 1` 26.1080; at -c 512
   9.3505 vs 9.4103 (ours lower). The large error (157) was missing top-k renormalisation, fixed. Not yet bisected; Q2_K

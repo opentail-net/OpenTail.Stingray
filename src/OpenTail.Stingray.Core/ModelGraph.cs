@@ -653,7 +653,7 @@ public sealed record ModelHyperparams
             "falcon" or "falcon-h1" or "grok" or "dbrx" or
             "bert" or "jina-bert-v3" or "modern-bert" or "nomic-bert" or "nomic-bert-moe" or "eurobert" or
             "stablelm" or "bitnet" or
-            "qwen" or "qwen2" or "qwen2vl" or "qwen3vl" or "qwen3vlmoe" or "paddleocr" or "deepseek2-ocr" or "glm4moe" or "lfm2" or "dream" or "qwen2moe" or "qwen3" or "qwen3moe" or "qwen3-tts" or
+            "qwen" or "qwen2" or "qwen2vl" or "qwen3vl" or "qwen3vlmoe" or "paddleocr" or "deepseek2-ocr" or "glm4moe" or "lfm2" or "lfm2moe" or "dream" or "qwen2moe" or "qwen3" or "qwen3moe" or "qwen3-tts" or
             "llada-moe" or "rnd1" or
             "olmo2" or "olmoe" or
             "phi2" or "phi3" or "phimoe" or
@@ -708,7 +708,7 @@ public sealed record ModelHyperparams
         // granite-hybrid.cpp / nemotron-h.cpp is_recr_impl).
         bool isMamba2Hybrid = arch is "granitehybrid" or "nemotron_h";
         // Liquid LFM2: gated short-conv layers (head_count_kv 0) + attention layers (llama.cpp lfm2.cpp).
-        bool isShortConvHybrid = arch == "lfm2";
+        bool isShortConvHybrid = arch is "lfm2" or "lfm2moe";
         if (isMamba2Hybrid || isShortConvHybrid) isHybridSsm = false;
 
         // {arch}.block_count is the total block count in the file, which on MTP-enabled
@@ -1283,7 +1283,7 @@ public sealed record ModelHyperparams
             // phimoe: phi3.cpp's build_moe_ffn passes norm_w = true unconditionally; so do granite.cpp
             // (granitemoe) and granite-hybrid.cpp (Granite 4.0-H tiny/small MoE; without it the small
             // model's wikitext PPL was 157 vs llama.cpp 9.41, 2026-09-28).
-            NormalizeMoeTopKWeights = arch is "qwen3moe" or "phimoe" or "granitemoe" or "granitehybrid" ? true
+            NormalizeMoeTopKWeights = arch is "qwen3moe" or "phimoe" or "granitemoe" or "granitehybrid" or "lfm2moe" ? true
                 : arch.Equals("olmoe", StringComparison.OrdinalIgnoreCase) ? false
                 : GetBool(metadata, $"{arch}.expert_weights_norm", false),
             // llama.cpp's LLM_KV_EXPERT_WEIGHTS_SCALE ("routed_scaling_factor" in DeepSeek-V2/V3's
