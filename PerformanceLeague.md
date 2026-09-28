@@ -140,10 +140,12 @@ weren't measured.
 
 | Shape | Achieved | % of ceiling | Performance Check |
 |---|---:|---:|---|
-| QKV/O 2048×2048 | 19.43 GB/s | 55% | 2026-08 |
+| QKV/O 2048×2048 | 19.43 GB/s | 55% | 2026-08 (stale: **42.6 GB/s** on 2026-09-28, see below) |
 | gate/up 8192×2048 | 30.52 GB/s | 86% | 2026-08 |
 | down 2048×8192 | 28.98 GB/s | 82% | 2026-08 |
 | Q6_K (large shapes) | 31.5–32.3 GB/s | 89–91% | 2026-08 |
+
+> **2026-09-28 re-measure** (`VulkanBackend.MatMul`, 50 recorded matvecs per submit, best of 5, random weights): Q4_K 2048×2048 42.6 GB/s, 8192×2048 44.2, 2048×8192 42.5, 4096×4096 43.2; Q6_K 36.0 / 37.3 / 37.9 / 37.9 GB/s. Q4_K is now shape-independent at ~83-86% of dual-channel DDR4-3200's 51.2 GB/s theoretical peak (the 35.5 GB/s "ceiling" above was an under-estimate). Q6_K (~72%) is the remaining matvec gap. iGPU numbers, CLAUDE.md rule 13.
 
 ---
 

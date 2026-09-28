@@ -150,12 +150,12 @@ Timebox each at half a day, write down what was learned, and move on if blocked.
 
 ### 15. Performance items
 - [ ] **15. Performance items** (Measure first, keep only measured wins per CLAUDE.md rule 7):
-  - [ ] SmolLM2 prefill (0.89x llama.cpp) and Qwen3.6-35B prefill (0.63x).
-  - [ ] Batched image-token prefill in VLMs.
-  - [ ] Vulkan batched prefill and matvec bandwidth.
-  - [ ] FLUX.1 / FLUX.2 GPU double-block GEMM & fusion.
-  - [ ] MiniMax vocoder, MusicGen/AudioGen, CosyVoice3 ODE steps.
-  - [ ] TTS/ASR GPU residency.
+  - [x] SmolLM2 prefill (0.89x llama.cpp) and Qwen3.6-35B prefill (0.63x). DONE 2026-09-28: Qwen3.6-35B ~0.96x (and Qwen3-Coder-30B 0.57x -> 0.75x); SmolLM2 unchanged at 0.89x, remaining gap is inside the already-tuned Q4_K/Q6_K GEMMs (see Log).
+  - [x] Batched image-token prefill in VLMs. DONE 2026-09-28 on CPU (Qwen3-VL 20 -> 78-86 tok/s); Vulkan still per token.
+  - [ ] Vulkan batched prefill and matvec bandwidth. Matvec re-measured 2026-09-28: Q4_K 42-44 GB/s at all shapes (~85% of DDR4 peak; closed), Q6_K 36-38 GB/s (~72%, open). Batched prefill: needs a discrete GPU to evaluate (CLAUDE.md rule 13), moved to 18.
+  - [ ] FLUX.1 / FLUX.2 GPU double-block GEMM & fusion. Needs a discrete GPU to evaluate (rule 13), moved to 18.
+  - [x] MiniMax vocoder, MusicGen/AudioGen, CosyVoice3 ODE steps. DONE 2026-09-28: MiniMax vocoder 1.9x, AudioGen 3.3x, MusicGen 2.4x (plus ACE-Step VAE 13.5x). CosyVoice3 left as is: CFG branches already run concurrently on GEMM-sized batches and it is 1.58x faster than audio.cpp.
+  - [ ] TTS/ASR GPU residency. Needs a discrete GPU to evaluate (rule 13), moved to 18.
 
 ### 16. Product items
 - [ ] **16. Product items**
@@ -179,6 +179,7 @@ Timebox each at half a day, write down what was learned, and move on if blocked.
   - [ ] **Pixtral 12B / GLM-4.6V timings:** blocked on `HF_TOKEN` with accepted license.
   - [ ] **Llama-4 Scout:** blocked on ~93 GB disk space.
   - [ ] **CUDA items:** (`rope_freqs` for Llama-3.1-style models; M-RoPE image positions + deepstack in `CudaForwardPass`, done for Vulkan 2026-09-28) blocked on CUDA GPU.
+  - [ ] **Discrete-GPU performance items** (from 15, 2026-09-28): Vulkan batched prefill, FLUX.1/FLUX.2 double-block GEMM and fusion, TTS/ASR GPU residency. This machine's iGPU shares DRAM with the CPU and trails it on prefill-shaped work, so a result here would not say whether the GPU code is good (CLAUDE.md rule 13). Blocked on a machine with a discrete GPU.
 
 ---
 
@@ -445,3 +446,5 @@ Timebox each at half a day, write down what was learned, and move on if blocked.
     9.55 -> 6.98 s (16.7 at the start of the day). PCM SHA-256 unchanged for both; `MusicGenDecoderGoldenParityTests`,
     `AudioGenDecoderGoldenParityTests`, `AudioGenEndToEndGoldenParityTests`, `AudioGenDiagnosticTests` 7/7,
     `AudioGenGenerationSmokeTests` 3/3 pass.
+  - Item 15 closed for this machine (2026-09-28). Vulkan matvec re-measured (PerformanceLeague): Q4_K 42-44 GB/s at every
+    shape, Q6_K 36-38 GB/s. The GPU-only sub-items moved to 18. Next: item 16.
