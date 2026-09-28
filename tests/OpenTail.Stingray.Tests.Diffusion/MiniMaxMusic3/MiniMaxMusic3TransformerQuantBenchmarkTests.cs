@@ -9,7 +9,7 @@ namespace OpenTail.Stingray.Tests.Diffusion.MiniMaxMusic3;
 /// Benchmarks and validates Q8_0 8-bit quantization of the 36-layer MiniMax-Music3 Flow DiT
 /// against the full-precision FP32 baseline on real weights.
 /// </summary>
-public sealed class MiniMaxMusic3TransformerQuantBenchmarkTests
+public sealed class MiniMaxMusic3TransformerQuantBenchmarkTests : HeavyTestBase
 {
     private static string? FindRepoDir(string relativePath)
     {

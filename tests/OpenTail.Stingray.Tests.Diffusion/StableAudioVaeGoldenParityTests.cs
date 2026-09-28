@@ -14,7 +14,7 @@ namespace OpenTail.Stingray.Tests.Diffusion;
 /// disabled when generating the fixture to keep the comparison deterministic -- see
 /// <see cref="AcousticVae"/>'s class doc for why this is a safe, tiny-magnitude simplification.
 /// </summary>
-public sealed class StableAudioVaeGoldenParityTests
+public sealed class StableAudioVaeGoldenParityTests : HeavyTestBase
 {
     private const string DitDirRelative = "models/stable-audio-3-small-music-base";
     private const int LatentSeqLen = 4;

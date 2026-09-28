@@ -20,7 +20,7 @@ namespace OpenTail.Stingray.Tests.Diffusion;
 /// (first-ever dispatch on a backend vs a later one), or (c) genuine GPU non-determinism between
 /// runs of the identical computation.
 /// </summary>
-public sealed class QwenImageBlock29ReproDiagnosticTests
+public sealed class QwenImageBlock29ReproDiagnosticTests : HeavyTestBase
 {
     private const int BlockIndex = 29;
 

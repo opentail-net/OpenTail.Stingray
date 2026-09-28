@@ -11,7 +11,7 @@ namespace OpenTail.Stingray.Tests.Diffusion;
 /// finding (2026-09-01) starting from the one real path (F&gt;1 decode) the existing golden suite
 /// never actually exercised.
 /// </summary>
-public sealed class LtxVaeDecoderMultiFrameGoldenTests
+public sealed class LtxVaeDecoderMultiFrameGoldenTests : HeavyTestBase
 {
     private const string ModelFileName = "ltx-video-2b-v0.9.1.safetensors";
 

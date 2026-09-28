@@ -19,7 +19,7 @@ namespace OpenTail.Stingray.Tests.Diffusion;
 /// GPU wins. A real precedent (MiniMax-Music3's DiT) measured this same iGPU 2.5x SLOWER than CPU
 /// due to per-call dispatch overhead. This test's job is to measure, not to confirm an assumption.
 /// </summary>
-public sealed class Flux2DoubleBlockGpuBenchmarkTests
+public sealed class Flux2DoubleBlockGpuBenchmarkTests : HeavyTestBase
 {
     private const string ModelFileName = "flux2-dev-Q4_K_S.gguf";
 

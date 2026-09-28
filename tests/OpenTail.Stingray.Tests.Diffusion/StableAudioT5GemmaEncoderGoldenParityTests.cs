@@ -10,7 +10,7 @@ namespace OpenTail.Stingray.Tests.Diffusion;
 /// docs/done/057-stable-audio-3-implementation-plan.md). This is Stable Audio 3's real text
 /// conditioner, not a placeholder.
 /// </summary>
-public sealed class StableAudioT5GemmaEncoderGoldenParityTests
+public sealed class StableAudioT5GemmaEncoderGoldenParityTests : HeavyTestBase
 {
     private const string EncoderDirRelative = "models/stable-audio-3-t5gemma";
 

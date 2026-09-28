@@ -16,7 +16,7 @@ namespace OpenTail.Stingray.Tests.Diffusion.AceStep;
 /// (encode true silence through it) rather than needing an external asset -- see
 /// <see cref="AceStepOobleckEncoder"/>'s doc comment.</para>
 /// </summary>
-public sealed class AceStepOobleckEncoderGoldenParityTests
+public sealed class AceStepOobleckEncoderGoldenParityTests : HeavyTestBase
 {
     private static string? FindRepoFile(string relativePath)
     {

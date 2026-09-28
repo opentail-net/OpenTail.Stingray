@@ -8,7 +8,7 @@ namespace OpenTail.Stingray.Tests.Diffusion;
 /// standard Linear-layer bias-add for a GPU-resident [N,D] Lin()/GEMM output, distinct from
 /// AddChannelBroadcastInPlace's transposed [C,H,W] channel broadcast.
 /// </summary>
-public sealed class AddRowBroadcastGpuParityTests
+public sealed class AddRowBroadcastGpuParityTests : HeavyTestBase
 {
     [Theory]
     [InlineData(4, 8)]      // small

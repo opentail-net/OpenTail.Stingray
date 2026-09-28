@@ -11,7 +11,7 @@ namespace OpenTail.Stingray.Tests.Diffusion;
 /// degeneracy receipt (finite, non-silent, correctly-shaped audio), not yet a numeric golden-parity
 /// test.
 /// </summary>
-public sealed class StableAudio3MediumVaeTests
+public sealed class StableAudio3MediumVaeTests : HeavyTestBase
 {
     private static string? FindRepoDir(string relativePath)
     {

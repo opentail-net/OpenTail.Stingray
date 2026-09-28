@@ -10,7 +10,7 @@ namespace OpenTail.Stingray.Tests.Diffusion;
 /// quality) -- this only confirms the real mechanism wires up correctly end-to-end and produces
 /// finite, non-degenerate output.
 /// </summary>
-public sealed class Flux2MistralHiddenTapsTests
+public sealed class Flux2MistralHiddenTapsTests : HeavyTestBase
 {
     private const string ModelFileName = "Mistral-Small-3.2-24B-Instruct-2506-Q4_K_S.gguf";
 

@@ -16,7 +16,7 @@ namespace OpenTail.Stingray.Tests.Diffusion;
 /// weights in every joint-attention block while every existing CPU test (which never exercises
 /// `DequantQ5_K` for this large matrix, only the fused kernel) stays green.
 /// </summary>
-public sealed class Sd3Q5KDequantCrossCheckTests
+public sealed class Sd3Q5KDequantCrossCheckTests : HeavyTestBase
 {
     private readonly ITestOutputHelper _output;
 

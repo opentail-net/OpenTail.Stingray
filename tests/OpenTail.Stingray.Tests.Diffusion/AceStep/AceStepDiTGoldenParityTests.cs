@@ -23,7 +23,7 @@ namespace OpenTail.Stingray.Tests.Diffusion.AceStep;
 /// reference comparison against the actual `diffusers` source, not just "does it run" testing,
 /// would catch.</para>
 /// </summary>
-public sealed class AceStepDiTGoldenParityTests
+public sealed class AceStepDiTGoldenParityTests : HeavyTestBase
 {
     private static string? FindRepoFile(string relativePath)
     {

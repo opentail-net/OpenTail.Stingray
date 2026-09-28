@@ -1,7 +1,7 @@
 
 namespace OpenTail.Stingray.Tests.Diffusion;
 
-public sealed class Sd15PipelineTests
+public sealed class Sd15PipelineTests : HeavyTestBase
 {
     private const string ModelFileName = "v1-5-pruned-emaonly.safetensors";
 

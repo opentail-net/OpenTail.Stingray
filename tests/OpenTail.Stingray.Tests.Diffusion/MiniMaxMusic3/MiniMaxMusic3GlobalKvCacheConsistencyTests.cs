@@ -14,7 +14,7 @@ namespace OpenTail.Stingray.Tests.Diffusion.MiniMaxMusic3;
 /// check (that's already covered by <c>MiniMaxMusic3GlobalModelGoldenParityTests</c>). See
 /// docs/4-performance/audio/066-minimax-music3-future-plan.md.
 /// </summary>
-public sealed class MiniMaxMusic3GlobalKvCacheConsistencyTests
+public sealed class MiniMaxMusic3GlobalKvCacheConsistencyTests : HeavyTestBase
 {
     private static string? FindRepoDir(string relativePath)
     {

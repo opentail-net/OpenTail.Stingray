@@ -12,7 +12,7 @@ namespace OpenTail.Stingray.Tests.Diffusion.MiniMaxMusic3;
 /// check needs the real Qwen2Tokenizer vocab for this checkpoint plus a real diffusers reference
 /// generation run -- not yet built, see docs/4-performance/audio/066-minimax-music3-future-plan.md.
 /// </summary>
-public sealed class MiniMaxMusic3AutoregressiveGeneratorSmokeTests
+public sealed class MiniMaxMusic3AutoregressiveGeneratorSmokeTests : HeavyTestBase
 {
     private static string? FindRepoFile(string relativePath)
     {

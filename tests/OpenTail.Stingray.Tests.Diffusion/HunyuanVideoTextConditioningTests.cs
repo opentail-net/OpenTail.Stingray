@@ -7,7 +7,7 @@ namespace OpenTail.Stingray.Tests.Diffusion;
 /// llava-llama-3-8b-v1_1 checkpoint, independent of the VAE (not yet downloaded -- see docs/088's
 /// HunyuanVideo item; this test only exercises the text-encoder half of the pipeline).
 /// </summary>
-public sealed class HunyuanVideoTextConditioningTests
+public sealed class HunyuanVideoTextConditioningTests : HeavyTestBase
 {
     private const string TextEncoderFileName = "llava-llama-3-8b-v1_1-int4.gguf";
 

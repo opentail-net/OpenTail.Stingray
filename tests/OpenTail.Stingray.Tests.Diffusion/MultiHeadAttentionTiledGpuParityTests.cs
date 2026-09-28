@@ -15,7 +15,7 @@ namespace OpenTail.Stingray.Tests.Diffusion;
 /// attention: qSeq==kvSeq; cross-attention: kvSeq=77, the fixed CLIP context length), plus a
 /// qSeq=4096 case exercising multiple 32-row K/V tiles (SDXL's largest self-attention hw).
 /// </summary>
-public sealed class MultiHeadAttentionTiledGpuParityTests
+public sealed class MultiHeadAttentionTiledGpuParityTests : HeavyTestBase
 {
     private static float[] RandomTensor(int n, int seed)
     {

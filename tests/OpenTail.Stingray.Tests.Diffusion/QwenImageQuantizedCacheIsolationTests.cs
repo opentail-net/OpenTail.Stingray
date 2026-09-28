@@ -9,7 +9,7 @@ namespace OpenTail.Stingray.Tests.Diffusion;
 /// conditioning, tiny resolution, 1 step) to get a fast pass/fail/crash signal without waiting
 /// through a full real-conditioning multi-step run.
 /// </summary>
-public sealed class QwenImageQuantizedCacheIsolationTests
+public sealed class QwenImageQuantizedCacheIsolationTests : HeavyTestBase
 {
     private static string? FindModelPath(string fileName)
     {

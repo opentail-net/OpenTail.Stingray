@@ -10,7 +10,7 @@ namespace OpenTail.Stingray.Tests.Diffusion;
 /// seed 42, real <c>flux2-dev-Q4_K_S.gguf</c>. The conditioning (512 x 15360, ~31 MB) is not committed: this test
 /// encodes the prompt with the real Mistral checkpoint, so it also covers <see cref="Flux2TextConditioning"/>.
 /// </summary>
-public sealed class Flux2SdCppParityTests
+public sealed class Flux2SdCppParityTests : HeavyTestBase
 {
     private static string? FindRepoPath(params string[] parts)
     {

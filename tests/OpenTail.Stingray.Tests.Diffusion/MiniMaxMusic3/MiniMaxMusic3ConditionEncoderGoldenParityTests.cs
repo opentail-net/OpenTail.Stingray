@@ -10,7 +10,7 @@ namespace OpenTail.Stingray.Tests.Diffusion.MiniMaxMusic3;
 /// `condition_encoder/diffusion_pytorch_model.safetensors` weights (zero missing/unexpected keys)
 /// and run on a fixed-seed synthetic input. See docs/4-performance/audio/066-minimax-music3-future-plan.md.
 /// </summary>
-public sealed class MiniMaxMusic3ConditionEncoderGoldenParityTests
+public sealed class MiniMaxMusic3ConditionEncoderGoldenParityTests : HeavyTestBase
 {
     private static string? FindRepoFile(string relativePath)
     {

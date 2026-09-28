@@ -14,7 +14,7 @@ namespace OpenTail.Stingray.Tests.Diffusion;
 /// mechanism (RoPE partial rotary, QK-RMSNorm, 6-way AdaLN, cross-attn V-zeroing, SwiGLU FFN,
 /// memory tokens) at a size small enough to keep the reference-generation script fast.
 /// </summary>
-public sealed class StableAudioDiTGoldenParityTests
+public sealed class StableAudioDiTGoldenParityTests : HeavyTestBase
 {
     private const string DitDirRelative = "models/stable-audio-3-small-music-base";
     private const int SeqLen = 8;

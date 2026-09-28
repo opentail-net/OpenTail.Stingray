@@ -13,7 +13,7 @@ namespace OpenTail.Stingray.Tests.Diffusion.AceStep;
 /// confirmations"). Non-degeneracy receipt (finite, non-trivial, shape-correct, sensitive to its
 /// lyric input), not yet a numeric golden-parity test against a real `diffusers` reference run.
 /// </summary>
-public sealed class AceStepConditionEncoderTests
+public sealed class AceStepConditionEncoderTests : HeavyTestBase
 {
     private static string? FindRepoFile(string relativePath)
     {

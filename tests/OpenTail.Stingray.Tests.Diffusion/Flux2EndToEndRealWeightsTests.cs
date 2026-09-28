@@ -7,7 +7,7 @@ namespace OpenTail.Stingray.Tests.Diffusion;
 /// performance benchmark -- CPU-only DiT alone is ~68s/step at 512x512, so this test uses a
 /// small size and few steps to stay a reasonable smoke-test duration).
 /// </summary>
-public sealed class Flux2EndToEndRealWeightsTests
+public sealed class Flux2EndToEndRealWeightsTests : HeavyTestBase
 {
     private static string? FindModelPath(string fileName)
     {

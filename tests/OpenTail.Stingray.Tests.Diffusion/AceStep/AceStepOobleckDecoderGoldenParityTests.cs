@@ -14,7 +14,7 @@ namespace OpenTail.Stingray.Tests.Diffusion.AceStep;
 /// reference dump (`golden_vae_*.bin`) was produced -- not checked into the repo, regenerate via
 /// the Python script referenced there if needed.
 /// </summary>
-public sealed class AceStepOobleckDecoderGoldenParityTests
+public sealed class AceStepOobleckDecoderGoldenParityTests : HeavyTestBase
 {
     private static string? FindRepoFile(string relativePath)
     {

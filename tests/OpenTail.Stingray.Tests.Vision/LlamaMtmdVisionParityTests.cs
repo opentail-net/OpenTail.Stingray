@@ -6,7 +6,7 @@ namespace OpenTail.Stingray.Tests.Vision;
 /// (224x224 checkerboard, all three channels <c>(x+y)%2 ? 0 : 1</c>, fed straight to the encoder).
 /// Golden values are the last projector stage's sum and row-0 corner, recorded 2026-09-27.
 /// </summary>
-public sealed class LlamaMtmdVisionParityTests
+public sealed class LlamaMtmdVisionParityTests : HeavyTestBase
 {
     private static float[] Checkerboard(int n)
     {

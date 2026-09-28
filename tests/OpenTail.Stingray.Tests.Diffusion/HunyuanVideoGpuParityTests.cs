@@ -11,7 +11,7 @@ namespace OpenTail.Stingray.Tests.Diffusion;
 /// context. Both paths multiply the identical decoded weights; differences are fp32 accumulation
 /// order across 60 blocks. Skips (visibly) when the checkpoint or a Vulkan device is absent.
 /// </summary>
-public sealed class HunyuanVideoGpuParityTests
+public sealed class HunyuanVideoGpuParityTests : HeavyTestBase
 {
     private readonly ITestOutputHelper _out;
     public HunyuanVideoGpuParityTests(ITestOutputHelper output) => _out = output;

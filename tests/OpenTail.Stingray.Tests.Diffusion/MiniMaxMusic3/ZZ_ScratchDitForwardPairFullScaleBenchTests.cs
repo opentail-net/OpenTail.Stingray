@@ -13,7 +13,7 @@ namespace OpenTail.Stingray.Tests.Diffusion.MiniMaxMusic3;
 /// minimaxmusic.cpp C++ reference's own measured 34.3s/step at the identical T=689 scale
 /// (docs/066, 2026-09-05). NOT a golden-parity check. Delete once superseded.
 /// </summary>
-public sealed class ZZ_ScratchDitForwardPairFullScaleBenchTests
+public sealed class ZZ_ScratchDitForwardPairFullScaleBenchTests : HeavyTestBase
 {
     private static string? FindRepoDir(string relativePath)
     {

@@ -11,7 +11,7 @@ namespace OpenTail.Stingray.Tests.Diffusion.MiniMaxMusic3;
 /// keys) and run on a fixed-seed synthetic latent. See docs/4-performance/audio/066-minimax-music3-future-plan.md for
 /// the archaeology; reference dump (`minimax_vocoder_*.bin`) not checked into the repo.
 /// </summary>
-public sealed class MiniMaxMusic3VocoderGoldenParityTests
+public sealed class MiniMaxMusic3VocoderGoldenParityTests : HeavyTestBase
 {
     private static string? FindRepoFile(string relativePath)
     {

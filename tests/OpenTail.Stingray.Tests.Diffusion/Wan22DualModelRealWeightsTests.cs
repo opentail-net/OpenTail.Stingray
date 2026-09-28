@@ -22,7 +22,7 @@ namespace OpenTail.Stingray.Tests.Diffusion;
 /// values exactly. No guessing needed; this test constructs a real <see cref="WanModel"/> directly.
 /// </para>
 /// </summary>
-public sealed class Wan22DualModelRealWeightsTests
+public sealed class Wan22DualModelRealWeightsTests : HeavyTestBase
 {
     private readonly ITestOutputHelper _output;
 

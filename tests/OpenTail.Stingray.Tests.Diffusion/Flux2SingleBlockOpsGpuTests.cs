@@ -10,7 +10,7 @@ namespace OpenTail.Stingray.Tests.Diffusion;
 ///   1. <see cref="VulkanBackend.Flux2SingleUnpackNormRope"/>
 ///   2. <see cref="VulkanBackend.Flux2SingleConcatAttnMlp"/>
 /// </summary>
-public sealed class Flux2SingleBlockOpsGpuTests
+public sealed class Flux2SingleBlockOpsGpuTests : HeavyTestBase
 {
     private static VulkanBackend? TryCreateVulkan()
     {

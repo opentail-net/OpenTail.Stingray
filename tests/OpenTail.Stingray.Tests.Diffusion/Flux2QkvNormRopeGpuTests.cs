@@ -13,7 +13,7 @@ namespace OpenTail.Stingray.Tests.Diffusion;
 /// Verifies bit-parity for Q, K, and V across both dstTokenOffset=0 (text-stream layout)
 /// and dstTokenOffset > 0 (image-stream layout).
 /// </summary>
-public sealed class Flux2QkvNormRopeGpuTests
+public sealed class Flux2QkvNormRopeGpuTests : HeavyTestBase
 {
     private static VulkanBackend? TryCreateVulkan()
     {

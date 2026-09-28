@@ -11,7 +11,7 @@ namespace OpenTail.Stingray.Tests.Diffusion.AceStep;
 /// numeric golden-parity test against a real `diffusers` `AutoencoderOobleck.decode` reference
 /// run.
 /// </summary>
-public sealed class AceStepOobleckDecoderTests
+public sealed class AceStepOobleckDecoderTests : HeavyTestBase
 {
     private static string? FindRepoFile(string relativePath)
     {

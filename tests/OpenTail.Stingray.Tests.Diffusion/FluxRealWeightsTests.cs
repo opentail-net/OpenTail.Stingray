@@ -6,7 +6,7 @@ using Xunit;
 
 namespace OpenTail.Stingray.Tests.Diffusion;
 
-public sealed class FluxRealWeightsTests
+public sealed class FluxRealWeightsTests : HeavyTestBase
 {
     private static string? FindRepoFile(string relativePath)
     {

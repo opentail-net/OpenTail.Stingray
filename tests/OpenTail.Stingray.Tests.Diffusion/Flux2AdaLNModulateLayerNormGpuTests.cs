@@ -17,7 +17,7 @@ namespace OpenTail.Stingray.Tests.Diffusion;
 /// test in this codebase before this one. This closes that gap BEFORE any FLUX.2 double-block GPU
 /// forward pass is built on top of it (per docs/091's revised implementation order).
 /// </summary>
-public sealed class Flux2AdaLNModulateLayerNormGpuTests
+public sealed class Flux2AdaLNModulateLayerNormGpuTests : HeavyTestBase
 {
     private static VulkanBackend? TryCreateVulkan()
     {

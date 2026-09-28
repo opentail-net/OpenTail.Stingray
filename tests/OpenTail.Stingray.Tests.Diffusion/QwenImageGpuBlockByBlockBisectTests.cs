@@ -13,7 +13,7 @@ namespace OpenTail.Stingray.Tests.Diffusion;
 /// both paths and report the first block where the two diverge meaningfully, instead of continuing
 /// to guess at op-level candidates.
 /// </summary>
-public sealed class QwenImageGpuBlockByBlockBisectTests
+public sealed class QwenImageGpuBlockByBlockBisectTests : HeavyTestBase
 {
     private readonly ITestOutputHelper _output;
 

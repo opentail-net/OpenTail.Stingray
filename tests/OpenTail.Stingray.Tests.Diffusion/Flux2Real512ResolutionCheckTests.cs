@@ -11,7 +11,7 @@ namespace OpenTail.Stingray.Tests.Diffusion;
 /// the model's real production resolution class, to see whether the grid artifact is a genuine
 /// remaining bug or an under-resolution artifact like LTX-Video's was.
 /// </summary>
-public sealed class Flux2Real512ResolutionCheckTests
+public sealed class Flux2Real512ResolutionCheckTests : HeavyTestBase
 {
     private static string? FindModelPath(string fileName)
     {

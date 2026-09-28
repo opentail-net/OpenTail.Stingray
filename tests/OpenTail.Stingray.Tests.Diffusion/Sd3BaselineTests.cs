@@ -5,7 +5,7 @@ using Xunit;
 
 namespace OpenTail.Stingray.Tests.Diffusion;
 
-public sealed class Sd3BaselineTests
+public sealed class Sd3BaselineTests : HeavyTestBase
 {
     private readonly ITestOutputHelper _output;
 

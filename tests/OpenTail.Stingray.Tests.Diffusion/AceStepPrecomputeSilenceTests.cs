@@ -6,7 +6,7 @@ using Xunit;
 
 namespace OpenTail.Stingray.Tests.Diffusion;
 
-public sealed class AceStepPrecomputeSilenceTests
+public sealed class AceStepPrecomputeSilenceTests : HeavyTestBase
 {
     private static string? FindRepoFile(string relativePath)
     {

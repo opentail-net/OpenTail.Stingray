@@ -19,7 +19,7 @@ namespace OpenTail.Stingray.Tests.Diffusion;
 /// Upload/Download inside the session (that remains the open Stage-0 fallback decision in the
 /// plan if a future stage needs it).
 /// </summary>
-public sealed class GpuResidencyStage0PocTests
+public sealed class GpuResidencyStage0PocTests : HeavyTestBase
 {
     [Fact]
     public void TwoChainedSgemmDispatches_RecordedInOneSession_MatchImmediatePerOpBaseline()

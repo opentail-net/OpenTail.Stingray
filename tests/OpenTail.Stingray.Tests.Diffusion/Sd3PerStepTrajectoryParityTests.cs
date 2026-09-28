@@ -16,7 +16,7 @@ namespace OpenTail.Stingray.Tests.Diffusion;
 /// dumping latent (x) mean/std/maxabs after every step to find exactly where CPU and GPU first
 /// diverge in the real trajectory.
 /// </summary>
-public sealed class Sd3PerStepTrajectoryParityTests
+public sealed class Sd3PerStepTrajectoryParityTests : HeavyTestBase
 {
     private readonly ITestOutputHelper _output;
 

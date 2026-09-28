@@ -10,7 +10,7 @@ namespace OpenTail.Stingray.Tests.Diffusion;
 /// the real native source the checkpoint was trained with (not diffusers, which does not match this
 /// checkpoint's VAE architecture -- see docs/done/055-ltx-video-implementation-plan.md).
 /// </summary>
-public sealed class LtxVaeDecoderGoldenParityTests
+public sealed class LtxVaeDecoderGoldenParityTests : HeavyTestBase
 {
     private const string ModelFileName = "ltx-video-2b-v0.9.1.safetensors";
 

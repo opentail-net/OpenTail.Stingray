@@ -8,7 +8,7 @@ namespace OpenTail.Stingray.Tests.Diffusion;
 /// multi-step generation (which currently takes 30+ minutes and was killed as unusable for
 /// iteration). Set <c>STINGRAY_FLUX2_PERF_TRACE=1</c> to enable the trace and print the split.
 /// </summary>
-public sealed class Flux2PerfTraceSingleForwardTests
+public sealed class Flux2PerfTraceSingleForwardTests : HeavyTestBase
 {
     private static string? FindModelPath(string fileName)
     {

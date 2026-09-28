@@ -14,7 +14,7 @@ namespace OpenTail.Stingray.Tests.Diffusion;
 /// dequant check could not exercise -- same structural blind spot as the original Q4_K check) to
 /// determine whether Q5_K has its own real, separate large-magnitude precision bug.
 /// </summary>
-public sealed class Sd3Q5KLargeMagnitudeParityTests
+public sealed class Sd3Q5KLargeMagnitudeParityTests : HeavyTestBase
 {
     private readonly ITestOutputHelper _output;
 

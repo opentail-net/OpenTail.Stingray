@@ -13,7 +13,7 @@ namespace OpenTail.Stingray.Tests.Diffusion;
 /// iGPU is that CPU currently wins end-to-end (docs/091/PerformanceLeague.md) -- this test proves
 /// the GPU path is wired and correct so it can be measured and improved further.
 /// </summary>
-public sealed class Flux2GpuWiredEndToEndTests
+public sealed class Flux2GpuWiredEndToEndTests : HeavyTestBase
 {
     private static string? FindModelPath(string fileName)
     {

@@ -6,7 +6,7 @@ using Xunit;
 
 namespace OpenTail.Stingray.Tests.Diffusion;
 
-public sealed class DiffusionBackendResolverTests
+public sealed class DiffusionBackendResolverTests : HeavyTestBase
 {
     [Fact]
     public void Resolve_ExplicitBackend_ReturnsExplicitAndDoesNotOwn()

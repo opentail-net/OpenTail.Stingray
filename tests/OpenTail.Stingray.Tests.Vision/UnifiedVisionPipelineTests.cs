@@ -1,7 +1,7 @@
 
 namespace OpenTail.Stingray.Tests.Vision;
 
-public sealed class UnifiedVisionPipelineTests
+public sealed class UnifiedVisionPipelineTests : HeavyTestBase
 {
     private static string? ResolveModelPath(string relativePath)
     {

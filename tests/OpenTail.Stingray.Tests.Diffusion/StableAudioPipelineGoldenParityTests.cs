@@ -37,7 +37,7 @@ namespace OpenTail.Stingray.Tests.Diffusion;
 /// combination. A real end-to-end listening/quality check at realistic (multi-second) durations,
 /// not exercising this specific instability, remains a real gap -- see the plan doc.</para>
 /// </summary>
-public sealed class StableAudioPipelineGoldenParityTests
+public sealed class StableAudioPipelineGoldenParityTests : HeavyTestBase
 {
     private const string DitDirRelative = "models/stable-audio-3-small-music-base";
     private const string T5GemmaDirRelative = "models/stable-audio-3-t5gemma";

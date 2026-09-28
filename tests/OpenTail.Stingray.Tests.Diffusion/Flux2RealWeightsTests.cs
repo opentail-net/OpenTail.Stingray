@@ -10,7 +10,7 @@ namespace OpenTail.Stingray.Tests.Diffusion;
 /// synthetic here) -- matches the same "structurally sound, not yet coherent" milestone
 /// HunyuanVideo/Qwen Image reached before their own text-conditioning wiring landed.
 /// </summary>
-public sealed class Flux2RealWeightsTests
+public sealed class Flux2RealWeightsTests : HeavyTestBase
 {
     private const string ModelFileName = "flux2-dev-Q4_K_S.gguf";
 

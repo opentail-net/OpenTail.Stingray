@@ -1,7 +1,7 @@
 
 namespace OpenTail.Stingray.Tests.Vision;
 
-public sealed class MiniCpmVisionRealWeightsTests
+public sealed class MiniCpmVisionRealWeightsTests : HeavyTestBase
 {
     private const string ModelFileName = "mmproj-minicpm-v-2_6-f16.gguf";
 

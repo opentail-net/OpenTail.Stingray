@@ -1,7 +1,7 @@
 
 namespace OpenTail.Stingray.Tests.Diffusion;
 
-public sealed class ZImageRealWeightsTests
+public sealed class ZImageRealWeightsTests : HeavyTestBase
 {
     private const string ModelFileName = "z_image_turbo-Q4_0.gguf";
 

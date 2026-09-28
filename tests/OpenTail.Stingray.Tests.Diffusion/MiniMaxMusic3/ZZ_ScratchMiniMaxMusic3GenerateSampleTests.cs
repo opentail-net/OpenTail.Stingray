@@ -13,7 +13,7 @@ namespace OpenTail.Stingray.Tests.Diffusion.MiniMaxMusic3;
 /// smoke tests' own caveats -- the AR loop/scheduler glue isn't numerically verified against a real
 /// reference yet). Delete once superseded by a real regression/sample-generation tool.
 /// </summary>
-public sealed class ZZ_ScratchMiniMaxMusic3GenerateSampleTests
+public sealed class ZZ_ScratchMiniMaxMusic3GenerateSampleTests : HeavyTestBase
 {
     private static string? FindRepoFile(string relativePath)
     {

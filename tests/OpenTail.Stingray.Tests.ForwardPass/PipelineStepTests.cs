@@ -7,14 +7,15 @@ namespace OpenTail.Stingray.Tests.ForwardPass;
 /// SIMD kernel tests run without a model; pipeline tests require model files.
 /// Run with: dotnet test --filter "FullyQualifiedName~PipelineStepTests"
 /// </summary>
-public sealed class PipelineStepTests : HeavyTestBase, IDisposable
+public sealed class PipelineStepTests : HeavyTestBase
 {
     private readonly List<IntPtr> _allocations = [];
 
-    public unsafe void Dispose()
+    public override unsafe void Dispose()
     {
         foreach (var p in _allocations)
             NativeMemory.AlignedFree((void*)p);
+        base.Dispose();
     }
 
     private unsafe float* AllocFloats(int count)

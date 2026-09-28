@@ -2,7 +2,7 @@ using OpenTail.Stingray.Diffusion.SDXL;
 
 namespace OpenTail.Stingray.Tests.Diffusion;
 
-public sealed class SdxlRealWeightsTests
+public sealed class SdxlRealWeightsTests : HeavyTestBase
 {
     private const string ModelFileName = "sd_xl_turbo_1.0_fp16.safetensors";
 

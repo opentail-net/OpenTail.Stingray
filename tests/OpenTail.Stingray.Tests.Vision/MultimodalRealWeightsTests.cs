@@ -1,7 +1,7 @@
 
 namespace OpenTail.Stingray.Tests.Vision;
 
-public sealed class MultimodalRealWeightsTests
+public sealed class MultimodalRealWeightsTests : HeavyTestBase
 {
     private static string? FindModelPath(string fileName)
     {

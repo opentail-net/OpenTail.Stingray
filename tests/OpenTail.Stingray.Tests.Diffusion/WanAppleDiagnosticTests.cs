@@ -6,7 +6,7 @@ using Xunit;
 
 namespace OpenTail.Stingray.Tests.Diffusion;
 
-public sealed class WanAppleDiagnosticTests
+public sealed class WanAppleDiagnosticTests : HeavyTestBase
 {
     private readonly ITestOutputHelper _output;
 

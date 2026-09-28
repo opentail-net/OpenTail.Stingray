@@ -10,7 +10,7 @@ namespace OpenTail.Stingray.Tests.Vision;
 /// of the timm weights, so it shares the ONNX-verified block code and is checked by top-5 on real photos
 /// (<c>examples/flux/assets/cup.png</c>: a paper coffee cup in sand; CogVideo example photos).
 /// </summary>
-public sealed class TimmEfficientNetClassifierTests
+public sealed class TimmEfficientNetClassifierTests : HeavyTestBase
 {
     private static string? Find(string rel)
     {

@@ -11,7 +11,7 @@ namespace OpenTail.Stingray.Tests.Diffusion.AceStep;
 /// and run on a fixed-seed synthetic input. See docs/2-coverage/064-acestep-implementation-plan.md's
 /// "Golden-parity check" section for how the reference dump (`golden_timbre_*.bin`) was produced.
 /// </summary>
-public sealed class AceStepTimbreEncoderGoldenParityTests
+public sealed class AceStepTimbreEncoderGoldenParityTests : HeavyTestBase
 {
     private static string? FindRepoFile(string relativePath)
     {

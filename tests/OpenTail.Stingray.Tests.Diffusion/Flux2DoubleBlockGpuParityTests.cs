@@ -16,7 +16,7 @@ namespace OpenTail.Stingray.Tests.Diffusion;
 /// correctness of the double-block math itself, not end-to-end timing (that's a separate,
 /// not-yet-done step per docs/091's implementation order).
 /// </summary>
-public sealed class Flux2DoubleBlockGpuParityTests
+public sealed class Flux2DoubleBlockGpuParityTests : HeavyTestBase
 {
     private const string ModelFileName = "flux2-dev-Q4_K_S.gguf";
 

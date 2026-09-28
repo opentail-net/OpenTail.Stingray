@@ -10,7 +10,7 @@ namespace OpenTail.Stingray.Tests.Diffusion;
 /// (zeros, smooth gradient, N(0,1) noise) and dumps per-frame stats + PNGs for visual comparison.
 /// See docs/done/081-master-gpu-perf-and-accuracy-plan.md Priority 0, "2026-09-14 update".
 /// </summary>
-public sealed class WanVaeOnlyIsolationTests
+public sealed class WanVaeOnlyIsolationTests : HeavyTestBase
 {
     private readonly ITestOutputHelper _output;
 

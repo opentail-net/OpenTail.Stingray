@@ -11,7 +11,7 @@ namespace OpenTail.Stingray.Tests.Diffusion;
 /// prompt/duration/steps/seed as the originals for a direct before/after listening comparison.
 /// Delete once the comparison is done.
 /// </summary>
-public sealed class ZZ_ScratchStableAudioScheduleFixRegenTests
+public sealed class ZZ_ScratchStableAudioScheduleFixRegenTests : HeavyTestBase
 {
     private static string? FindRepoDir(string relativePath)
     {

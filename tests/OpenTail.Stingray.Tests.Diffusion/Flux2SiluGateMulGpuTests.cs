@@ -15,7 +15,7 @@ namespace OpenTail.Stingray.Tests.Diffusion;
 /// the SECOND half (`u2`) is the value, and the output is <c>silu(u1) * u2</c>, `[nTokens,
 /// mlpHidden]`. Confirmed against `examples/flux2/src/flux2/model.py`'s real `SiLUActivation`.
 /// </summary>
-public sealed class Flux2SiluGateMulGpuTests
+public sealed class Flux2SiluGateMulGpuTests : HeavyTestBase
 {
     private static VulkanBackend? TryCreateVulkan()
     {

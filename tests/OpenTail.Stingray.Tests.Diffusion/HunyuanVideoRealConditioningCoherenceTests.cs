@@ -8,7 +8,7 @@ namespace OpenTail.Stingray.Tests.Diffusion;
 /// against the earlier zero-conditioning sample
 /// (`hunyuanvideo_red-apple-on-white-table_256x256_4steps_zero-cond_2026-09-18.png`).
 /// </summary>
-public sealed class HunyuanVideoRealConditioningCoherenceTests
+public sealed class HunyuanVideoRealConditioningCoherenceTests : HeavyTestBase
 {
     private static string? FindModelPath(string fileName)
     {

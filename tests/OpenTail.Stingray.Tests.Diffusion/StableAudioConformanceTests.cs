@@ -2,7 +2,7 @@ using OpenTail.Stingray.Diffusion.StableAudio;
 
 namespace OpenTail.Stingray.Tests.Diffusion;
 
-public sealed class StableAudioConformanceTests
+public sealed class StableAudioConformanceTests : HeavyTestBase
 {
     private const string DitDirRelative = "models/stable-audio-3-small-music-base";
 

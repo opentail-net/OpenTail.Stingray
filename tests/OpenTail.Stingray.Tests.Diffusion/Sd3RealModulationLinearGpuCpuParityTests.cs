@@ -16,7 +16,7 @@ namespace OpenTail.Stingray.Tests.Diffusion;
 /// whether the real tensor's specific values (not exercised by random synthetic data or the 8
 /// one-hot-column dequant samples) are the actual cause.
 /// </summary>
-public sealed class Sd3RealModulationLinearGpuCpuParityTests
+public sealed class Sd3RealModulationLinearGpuCpuParityTests : HeavyTestBase
 {
     private readonly ITestOutputHelper _output;
 

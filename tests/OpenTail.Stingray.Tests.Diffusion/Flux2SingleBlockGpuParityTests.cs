@@ -12,7 +12,7 @@ namespace OpenTail.Stingray.Tests.Diffusion;
 /// (<see cref="Flux2DiT.ApplySingleBlockReal"/>) and the new GPU path
 /// (<see cref="Flux2DiT.SingleBlockGpu"/>), using real weights from the checkpoint.
 /// </summary>
-public sealed class Flux2SingleBlockGpuParityTests
+public sealed class Flux2SingleBlockGpuParityTests : HeavyTestBase
 {
     private const string ModelFileName = "flux2-dev-Q4_K_S.gguf";
 

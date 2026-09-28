@@ -8,7 +8,7 @@ namespace OpenTail.Stingray.Tests.Vision;
 /// ONNX export of the same weights (text_embeds, image_embeds, logits_per_image on identical ids and pixels), plus the
 /// tokenizer on the HF docs' "a photo of a cat" ids and zero-shot labels on real photos.
 /// </summary>
-public sealed class ClipModelTests
+public sealed class ClipModelTests : HeavyTestBase
 {
     private static string? Find(string rel)
     {

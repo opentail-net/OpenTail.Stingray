@@ -15,7 +15,7 @@ namespace OpenTail.Stingray.Tests.Diffusion;
 /// (no Sgemm, no weight upload, no real checkpoint involved at all), so any mismatch can only come
 /// from the LayerNorm/affine math itself, not anything upstream.
 /// </summary>
-public sealed class Sd3AdaLNModulateGpuCpuParityTests
+public sealed class Sd3AdaLNModulateGpuCpuParityTests : HeavyTestBase
 {
     private readonly ITestOutputHelper _output;
 

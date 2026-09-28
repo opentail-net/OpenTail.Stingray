@@ -29,7 +29,7 @@ namespace OpenTail.Stingray.Tests.Diffusion;
 /// disagree" observation, which the original investigation flagged as two separate facts without
 /// testing whether they're causally linked.
 /// </summary>
-public sealed class QwenImageAdaLnPrecisionTests
+public sealed class QwenImageAdaLnPrecisionTests : HeavyTestBase
 {
     private static VulkanBackend? TryCreateVulkan()
     {

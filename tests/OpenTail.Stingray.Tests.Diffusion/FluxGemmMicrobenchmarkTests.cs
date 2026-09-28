@@ -6,7 +6,7 @@ using Xunit;
 
 namespace OpenTail.Stingray.Tests.Diffusion;
 
-public sealed class FluxGemmMicrobenchmarkTests(ITestOutputHelper output)
+public sealed class FluxGemmMicrobenchmarkTests(ITestOutputHelper output) : HeavyTestBase
 {
     private readonly ITestOutputHelper _output = output;
 

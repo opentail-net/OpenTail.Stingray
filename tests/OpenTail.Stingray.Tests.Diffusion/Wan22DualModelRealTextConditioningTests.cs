@@ -17,7 +17,7 @@ namespace OpenTail.Stingray.Tests.Diffusion;
 /// fixed 2026-09-14 per docs/081's own writeup -- reusing that exact convention here, not
 /// reinventing it).
 /// </summary>
-public sealed class Wan22DualModelRealTextConditioningTests
+public sealed class Wan22DualModelRealTextConditioningTests : HeavyTestBase
 {
     private readonly ITestOutputHelper _output;
 

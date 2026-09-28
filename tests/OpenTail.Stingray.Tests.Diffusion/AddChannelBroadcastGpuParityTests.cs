@@ -8,7 +8,7 @@ namespace OpenTail.Stingray.Tests.Diffusion;
 /// layer) -- added specifically for SDXL ResBlock's timestep-embedding injection, which broadcasts
 /// a per-channel [C] vector additively across every spatial position of a [C,H,W] tensor.
 /// </summary>
-public sealed class AddChannelBroadcastGpuParityTests
+public sealed class AddChannelBroadcastGpuParityTests : HeavyTestBase
 {
     [Theory]
     [InlineData(4, 16)]     // small

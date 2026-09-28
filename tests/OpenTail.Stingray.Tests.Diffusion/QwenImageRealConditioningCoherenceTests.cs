@@ -6,7 +6,7 @@ namespace OpenTail.Stingray.Tests.Diffusion;
 /// encoder) with `guidance=1.0` (which skips CFG entirely), so it never actually exercised real
 /// conditioning. This test uses the 3-arg `Load` (real text encoder) with real CFG guidance.
 /// </summary>
-public sealed class QwenImageRealConditioningCoherenceTests
+public sealed class QwenImageRealConditioningCoherenceTests : HeavyTestBase
 {
     private static string? FindModelPath(string fileName)
     {

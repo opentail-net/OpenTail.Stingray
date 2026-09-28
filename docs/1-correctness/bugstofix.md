@@ -18,6 +18,14 @@ restart a fourth round of kernel-level chasing on this checkpoint without new ev
 
 ## Tracked items
 
+- [ ] **`PrefillDecodeSelfConsistencyTests.F32Prefill_MatchesTokenByTokenDecode` fails standalone** (found 2026-09-28 while re-verifying the PersonaPlex zero-copy-Q8 memory fix; unrelated to that change).
+  - **Failure:** `dotnet test tests/OpenTail.Stingray.Tests.ForwardPass.exe -class OpenTail.Stingray.Tests.ForwardPass.PrefillDecodeSelfConsistencyTests` fails even run alone, single-process, with `STINGRAY_RUN_HEAVY_TESTS=1` — not a concurrency artifact from the mutex/sweep work done the same day.
+  - **Context:** pins the invariant that whole-prompt `Prefill(t0..tN)` agrees with `Prefill(t0)` followed by `Forward(t1..tN)` token-by-token, on `SmolLM2-1.7B-Instruct-Q4_K_M.gguf`.
+  - **Next step:** not investigated yet — needs a look at whether prefill's batched Q8 activation path (`SimdKernels.MatMulBatched` with `allowQ8`) has drifted from the per-token `MatVec` decode path.
+- [ ] **`docs/sweep-tests-memory-report.md`'s per-test "why" narratives were mostly noise** (found 2026-09-28).
+  - **What happened:** the memory sweep report attributed the top-10 memory ranking's 7 PersonaPlex entries to per-test specifics (Mimi codec held in both directions, KV-cache growth, frame count, voice-prompt extraction). The real, shared driver was `PersonaPlexLmTensorSource` eagerly dequantizing the whole 7B Q8_0 checkpoint to fp32 (~28 GB) on every test — fixed same day (zero-copy Q8_0 views, ~11.17 GiB, ~2.2x faster decode too; see `docs/done/audio-review-new-progress.md`'s PersonaPlex 7B entry, `PerformanceLeague.md`).
+  - **Why it matters:** the report's rank-by-rank analysis is still useful for the non-PersonaPlex entries (`HunyuanVideoGpuParityTests`, `ZImageGpuRealScaleBisectTests`, `Sd3PerStepTrajectoryParityTests` — genuine double-load-pattern costs), but its 7 PersonaPlex explanations should not be trusted as the real cause without re-deriving them against the now-much-lower baseline.
+  - **Next step:** none required — informational, so a future reader of that report doesn't take its PersonaPlex reasoning at face value.
 - [ ] **Granite 4.0 3B Vision (`granite4-vision`) outputs empty decode / early EOS** (found 2026-09-28 during RUNNING.md verification).
   - **Failure:** Running `stingray -m models/_models/granite-4.0-3b-vision-Q4_K_M.gguf --mmproj models/_models/mmproj-granite-4.0-3b-vision-f16.gguf --image photo.png -p "Describe this picture."` projects 145 soft tokens (20480-dim across 8 deepstack streams) successfully at 44.3 t/s, but generation terminates after 0 to 3 tokens (e.g. single period) instead of generating text.
   - **Suspect:** Multi-stream deepstack injection mapping into the text model's layers or chat prompt template delimiter handling.

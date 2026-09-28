@@ -13,7 +13,7 @@ namespace OpenTail.Stingray.Tests.Diffusion;
 /// Noise floor: sd.cpp's own CPU and Vulkan backends differ by cosine 0.9984 (relative L2 6.6%) on this step.
 /// Ours was 0.9933 before the <c>txt_norm</c> fix and is 0.99968 after it.
 /// </remarks>
-public sealed class QwenImageSdCppParityTests
+public sealed class QwenImageSdCppParityTests : HeavyTestBase
 {
     private const int LatH = 32, LatW = 32;
 

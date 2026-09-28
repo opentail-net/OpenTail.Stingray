@@ -31,7 +31,7 @@ namespace OpenTail.Stingray.Tests.Diffusion;
 /// ruled out and the next candidate (attention kernel reduction order, per Phase 3) becomes the
 /// leading hypothesis.
 /// </summary>
-public sealed class QwenImageBlock29Fp32IsolationTests
+public sealed class QwenImageBlock29Fp32IsolationTests : HeavyTestBase
 {
     private const int BlockIndex = 29;
 

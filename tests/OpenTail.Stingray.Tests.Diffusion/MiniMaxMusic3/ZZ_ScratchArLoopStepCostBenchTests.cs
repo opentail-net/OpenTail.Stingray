@@ -14,7 +14,7 @@ namespace OpenTail.Stingray.Tests.Diffusion.MiniMaxMusic3;
 /// reference, so the AR loop is the next real suspect for the ~100s+ gap against that reference's
 /// 168.3s AR-loop total (docs/066, 2026-09-05). NOT a golden-parity check. Delete once superseded.
 /// </summary>
-public sealed class ZZ_ScratchArLoopStepCostBenchTests
+public sealed class ZZ_ScratchArLoopStepCostBenchTests : HeavyTestBase
 {
     private static string? FindRepoDir(string relativePath)
     {

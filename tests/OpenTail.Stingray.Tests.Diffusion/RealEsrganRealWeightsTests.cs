@@ -1,7 +1,7 @@
 
 namespace OpenTail.Stingray.Tests.Diffusion;
 
-public sealed class RealEsrganRealWeightsTests
+public sealed class RealEsrganRealWeightsTests : HeavyTestBase
 {
     private const string ModelFileName = "RealESRGAN_x4plus.safetensors";
 

@@ -7,7 +7,7 @@ namespace OpenTail.Stingray.Tests.Diffusion;
 /// Correctness checks for the 4 new GPU primitives added for docs/067's Stage 3a
 /// (SpatialTransformer residency): LayerNormGpu, GeGlu, PermuteChwToHwc, PermuteHwcToChw.
 /// </summary>
-public sealed class SpatialTransformerGpuPrimitivesParityTests
+public sealed class SpatialTransformerGpuPrimitivesParityTests : HeavyTestBase
 {
     [Theory]
     [InlineData(1, 8)]

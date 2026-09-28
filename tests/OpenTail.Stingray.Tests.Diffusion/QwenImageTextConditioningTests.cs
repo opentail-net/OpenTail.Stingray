@@ -7,7 +7,7 @@ namespace OpenTail.Stingray.Tests.Diffusion;
 /// `IForwardPass.ExtractHiddenStates` mechanism confirmed suitable for Qwen Image's text
 /// conditioning (final layer only, unlike FLUX.2's multi-layer Mistral recipe).
 /// </summary>
-public sealed class QwenImageTextConditioningTests
+public sealed class QwenImageTextConditioningTests : HeavyTestBase
 {
     private static string? FindModelPath(string fileName)
     {

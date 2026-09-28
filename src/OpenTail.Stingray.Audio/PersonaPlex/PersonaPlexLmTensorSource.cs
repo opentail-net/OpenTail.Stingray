@@ -40,6 +40,7 @@ public sealed unsafe class PersonaPlexLmTensorSource : IModelTensorSource, IDisp
     private readonly RvcPackedTensorSource _source;
     private readonly Dictionary<string, GgufTensorInfo> _byName = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Func<float[]>> _materializers = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, (string SourceKey, long ByteOffset)> _rawViews = new(StringComparer.Ordinal);
     private readonly List<nint> _ownedPointers = [];
     private readonly Dictionary<string, nint> _resolvedPointers = new(StringComparer.Ordinal);
     private readonly List<GgufTensorInfo> _tensors;
@@ -85,15 +86,15 @@ public sealed unsafe class PersonaPlexLmTensorSource : IModelTensorSource, IDisp
             MapMaterialized2D(inProjKey + "#q", b + "attn_q.weight", qkvOut, hiddenDim,
                 () => SplitRows(source.GetTensor(inProjKey), hiddenDim, 0, qkvOut));
             MapMaterialized2D(inProjKey + "#k", b + "attn_k.weight", qkvOut, hiddenDim,
-                () => SplitRows(source.GetTensor(inProjKey), hiddenDim, qkvOut, qkvOut));
+                () => SplitRows(source.GetTensor(inProjKey), hiddenDim, qkvOut, qkvOut), qkvOut);
             MapMaterialized2D(inProjKey + "#v", b + "attn_v.weight", qkvOut, hiddenDim,
-                () => SplitRows(source.GetTensor(inProjKey), hiddenDim, 2 * qkvOut, qkvOut));
+                () => SplitRows(source.GetTensor(inProjKey), hiddenDim, 2 * qkvOut, qkvOut), 2 * qkvOut);
 
             string gateUpKey = p + "gating.linear_in.weight";
             MapMaterialized2D(gateUpKey + "#gate", b + "ffn_gate.weight", ffDim, hiddenDim,
                 () => SplitRows(source.GetTensor(gateUpKey), hiddenDim, 0, ffDim));
             MapMaterialized2D(gateUpKey + "#up", b + "ffn_up.weight", ffDim, hiddenDim,
-                () => SplitRows(source.GetTensor(gateUpKey), hiddenDim, ffDim, ffDim));
+                () => SplitRows(source.GetTensor(gateUpKey), hiddenDim, ffDim, ffDim), ffDim);
         }
 
         _tensors = [.. _byName.Values];
@@ -137,9 +138,24 @@ public sealed unsafe class PersonaPlexLmTensorSource : IModelTensorSource, IDisp
         return output;
     }
 
-    private void MapMaterialized2D(string key, string canonicalName, int outDim, int inDim, Func<float[]> materialize)
+    // Block-quantized (Q8_0/Q4_K/...) 2D weights are served as zero-copy views into the mmap'd
+    // checkpoint under their real DType, exactly like every other GGUF-loaded model, instead of being
+    // dequantized to a ~4x larger FP32 copy (the 7B Q8_0 checkpoint peaked at ~42GB that way). Block
+    // quantization runs along a row, so the packed QKV / gate-up "splits" are just contiguous
+    // row ranges of the quantized bytes -- no dequantize, no copy. Anything not block-quantized (or
+    // whose row length isn't block-aligned) falls back to the FP32 materializer.
+    private void MapMaterialized2D(string key, string canonicalName, int outDim, int inDim, Func<float[]> materialize, int rowOffset = 0)
     {
-        if (!_source.HasTensor(key.Split('#')[0])) return;
+        string sourceKey = key.Split('#')[0];
+        if (!_source.HasTensor(sourceKey)) return;
+        var rawType = _source.GetRawInfo(sourceKey).DType;
+        int blockSize = DTypeInfo.BlockSize(rawType);
+        if (rawType != DType.Float32 && blockSize > 1 && inDim % blockSize == 0)
+        {
+            _byName[canonicalName] = new GgufTensorInfo(canonicalName, 2, [inDim, outDim], rawType, DataOffset: 0);
+            _rawViews[canonicalName] = (sourceKey, DTypeInfo.ByteSize(inDim, rawType) * rowOffset);
+            return;
+        }
         _byName[canonicalName] = new GgufTensorInfo(canonicalName, 2, [inDim, outDim], DType.Float32, DataOffset: 0);
         _materializers[canonicalName] = materialize;
     }
@@ -159,12 +175,17 @@ public sealed unsafe class PersonaPlexLmTensorSource : IModelTensorSource, IDisp
     public ReadOnlySpan<byte> GetTensorData(GgufTensorInfo tensor)
     {
         byte* pointer = GetTensorDataPtr(tensor);
-        return new ReadOnlySpan<byte>(pointer, checked((int)(tensor.ElementCount * sizeof(float))));
+        long byteSize = tensor.DType == DType.Float32
+            ? tensor.ElementCount * sizeof(float)
+            : DTypeInfo.ByteSize(tensor.ElementCount, tensor.DType);
+        return new ReadOnlySpan<byte>(pointer, checked((int)byteSize));
     }
 
     public byte* GetTensorDataPtr(GgufTensorInfo tensor)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
+        if (_rawViews.TryGetValue(tensor.Name, out var view))
+            return _source.GetRawDataPtr(view.SourceKey) + view.ByteOffset;
         if (_resolvedPointers.TryGetValue(tensor.Name, out nint cached))
             return (byte*)cached;
 

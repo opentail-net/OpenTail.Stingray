@@ -13,7 +13,7 @@ namespace OpenTail.Stingray.Tests.Diffusion;
 /// 2. The CPU backend reference Sgemm with the same row offset.
 /// Tested for both Float32 weights (SgemmF32) and Float16 weights (SgemmF16).
 /// </summary>
-public sealed class Flux2SgemmOffsetParityTests
+public sealed class Flux2SgemmOffsetParityTests : HeavyTestBase
 {
     private static VulkanBackend? TryCreateVulkan()
     {

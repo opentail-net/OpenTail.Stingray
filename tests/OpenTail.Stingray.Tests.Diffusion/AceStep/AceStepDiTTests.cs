@@ -13,7 +13,7 @@ namespace OpenTail.Stingray.Tests.Diffusion.AceStep;
 /// with a synthetic (but real-shaped) condition sequence -- sufficient to validate that the real
 /// weight loading and forward-pass math run correctly end to end without NaN/crashes.
 /// </summary>
-public sealed class AceStepDiTTests
+public sealed class AceStepDiTTests : HeavyTestBase
 {
     private static string? FindRepoFile(string relativePath)
     {

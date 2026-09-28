@@ -1,7 +1,7 @@
 
 namespace OpenTail.Stingray.Tests.Vision;
 
-public sealed class QwenVlVisionRealWeightsTests
+public sealed class QwenVlVisionRealWeightsTests : HeavyTestBase
 {
     private const string ModelFileName = "mmproj-qwen2.5-vl-7b-f16.gguf";
 

@@ -11,7 +11,7 @@ using Xunit;
 
 namespace OpenTail.Stingray.Tests.Diffusion;
 
-public sealed class GenerateAudioDiffusionSamplesTests
+public sealed class GenerateAudioDiffusionSamplesTests : HeavyTestBase
 {
     private static string? FindRepoDir(string relativePath)
     {

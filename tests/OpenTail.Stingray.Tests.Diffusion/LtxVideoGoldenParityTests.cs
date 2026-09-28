@@ -12,7 +12,7 @@ namespace OpenTail.Stingray.Tests.Diffusion;
 /// <see cref="LtxVideoTests"/>'s synthetic structural/shape tests and
 /// <see cref="LtxVideoRealWeightsTests"/>'s config-detection check.
 /// </summary>
-public sealed class LtxVideoGoldenParityTests
+public sealed class LtxVideoGoldenParityTests : HeavyTestBase
 {
     private const string ModelFileName = "ltx-video-2b-v0.9.1.safetensors";
 

@@ -13,7 +13,7 @@ namespace OpenTail.Stingray.Tests.Diffusion;
 /// checkpoint, the exact bug class already tested (and ruled out) for Qwen Image's Q4_K/BF16 and
 /// SD3.5's Q5_K tensors this session, but never checked for Q4_0 specifically.
 /// </summary>
-public sealed class ZImageQ4_0DequantCrossCheckTests
+public sealed class ZImageQ4_0DequantCrossCheckTests : HeavyTestBase
 {
     private readonly ITestOutputHelper _output;
 

@@ -9,7 +9,7 @@ namespace OpenTail.Stingray.Tests.Diffusion;
 /// after ONE Euler step (sigma 1 -> 0, so the combined velocity = noise - latent) for "a red apple on a wooden table",
 /// 256², CFG 4.5 with an empty negative prompt, seed 42, real <c>sd3.5_medium-Q4_K_M.gguf</c>.
 /// </summary>
-public sealed class Sd3SdCppParityTests
+public sealed class Sd3SdCppParityTests : HeavyTestBase
 {
     private static string? FindRepoPath(params string[] parts)
     {

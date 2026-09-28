@@ -18,7 +18,7 @@ namespace OpenTail.Stingray.Tests.Diffusion;
 /// Music fixtures, so this test's job is only to confirm the SFX checkpoint's own real weights load
 /// and produce sane output, not to re-verify math already covered.
 /// </summary>
-public sealed class StableAudio3SmallSfxTests
+public sealed class StableAudio3SmallSfxTests : HeavyTestBase
 {
     private const string DitDirRelative = "models/stable-audio-3-small-sfx-base";
     private const string T5GemmaDirRelative = "models/stable-audio-3-t5gemma";

@@ -5,7 +5,7 @@ using Xunit;
 
 namespace OpenTail.Stingray.Tests.Diffusion;
 
-public sealed class WanModelSyntheticMicrobenchTests
+public sealed class WanModelSyntheticMicrobenchTests : HeavyTestBase
 {
     private readonly ITestOutputHelper _output;
 

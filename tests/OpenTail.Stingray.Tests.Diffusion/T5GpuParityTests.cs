@@ -8,7 +8,7 @@ using Xunit;
 
 namespace OpenTail.Stingray.Tests.Diffusion;
 
-public sealed class T5GpuParityTests
+public sealed class T5GpuParityTests : HeavyTestBase
 {
     private sealed class SyntheticWeightLoader : IWeightLoader
     {

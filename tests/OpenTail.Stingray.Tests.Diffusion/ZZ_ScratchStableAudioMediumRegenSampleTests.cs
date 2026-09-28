@@ -11,7 +11,7 @@ namespace OpenTail.Stingray.Tests.Diffusion;
 /// docs/diffusion-samples/sa3_medium_piano-arpeggio_4s.wav for a direct before/after listening
 /// comparison. Delete once the comparison is done.
 /// </summary>
-public sealed class ZZ_ScratchStableAudioMediumRegenSampleTests
+public sealed class ZZ_ScratchStableAudioMediumRegenSampleTests : HeavyTestBase
 {
     private static string? FindRepoDir(string relativePath)
     {

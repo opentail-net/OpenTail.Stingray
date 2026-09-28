@@ -18,7 +18,7 @@ namespace OpenTail.Stingray.Tests.Diffusion;
 /// scale, against the real CPU reference (<see cref="DiffusionOps.AdaLNModulate"/>) and a float64
 /// ground truth.
 /// </summary>
-public sealed class Flux2AdaLNModulateDualGpuCpuParityTests
+public sealed class Flux2AdaLNModulateDualGpuCpuParityTests : HeavyTestBase
 {
     private static VulkanBackend? TryCreateVulkan()
     {

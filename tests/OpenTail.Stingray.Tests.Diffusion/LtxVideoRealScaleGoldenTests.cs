@@ -11,7 +11,7 @@ namespace OpenTail.Stingray.Tests.Diffusion;
 /// precision -- testing the hypothesis that a scale-dependent bug (RoPE continuous-coordinate grid,
 /// attention numerics with more tokens) only shows up at real generation size.
 /// </summary>
-public sealed class LtxVideoRealScaleGoldenTests
+public sealed class LtxVideoRealScaleGoldenTests : HeavyTestBase
 {
     private const string ModelFileName = "ltx-video-2b-v0.9.1.safetensors";
 

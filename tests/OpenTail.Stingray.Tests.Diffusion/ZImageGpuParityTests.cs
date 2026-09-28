@@ -14,7 +14,7 @@ namespace OpenTail.Stingray.Tests.Diffusion;
 /// structurally real weights, real shapes, real math), the same technique this whole session's
 /// other GPU-residency work has relied on as its first correctness check.
 /// </summary>
-public sealed class ZImageGpuParityTests
+public sealed class ZImageGpuParityTests : HeavyTestBase
 {
     private sealed class SyntheticWeightLoader : IWeightLoader
     {

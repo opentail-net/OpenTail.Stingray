@@ -20,7 +20,7 @@ namespace OpenTail.Stingray.Tests.Diffusion;
 /// docs/done/086-video-model-verification-plan.md for the full tensor-shape evidence and reference
 /// cross-check.
 /// </summary>
-public sealed class QwenImageRealWeightsTests
+public sealed class QwenImageRealWeightsTests : HeavyTestBase
 {
     private const string ModelFileName = "qwen-image-Q3_K_S.gguf";
     private const string VaeFileName = "qwen_image_vae.safetensors";

@@ -556,3 +556,44 @@ is 8.2s, so RVC is now ~1.9× behind (was ~2.4×).
   output channel). ConvTranspose1d is now one packed GEMM over all input frames plus overlap-add: 1.26 → ~0.2s. Output vs
   pre-change cosine 1.000000 (maxAbs 3.0e-4, unchanged); `RvcSynthesizerEncoderForwardTests` passes. **RVC: 19.4s → 8.6–9.0s
   today vs the reference's 8.2s.** What's left is mostly the resblock GEMMs, near this CPU's throughput.
+
+## PersonaPlex 7B -- real-weight test suite was eagerly fp32-dequantizing the whole checkpoint: 42 GB → 11 GB RAM, ~2.2x faster decode, 2026-09-28
+
+A resumable per-class memory sweep (`scripts/sweep-tests.ps1`, `docs/sweep-tests-memory-report.md`) found the
+PersonaPlex `personaplex-7b-v1-q8_0.gguf` real-weight test cluster dominating the top-10 memory ranking (7 of 10
+entries, 37-45 GB peak each). Root cause, not what the memory report's per-test narratives suggested (Mimi codec,
+KV cache growth, frame count): `PersonaPlexLmTensorSource` dequantized every q/k/v/gate/up weight from the real
+on-disk Q8_0 to a `float[]`, splitting the packed QKV/gate-up tensors via a second full-array copy (`SplitRows`),
+then copying a third time into a native buffer in `GetTensorDataPtr` -- the same eager-fp32-materialize pattern
+already fixed for VibeVoice's LLM bridge (see `VibeVoiceLlmTensorSource`'s real-DType passthrough, same session).
+Since Q8_0 quantizes along a row, the packed QKV/gate-up "splits" are just contiguous row-ranges of the on-disk
+bytes -- `MapMaterialized2D` now serves these as zero-copy views (`GetRawDataPtr` + a byte offset) into the mmap'd
+checkpoint under the real Q8_0 `DType`, exactly like every other GGUF-loaded model in this codebase, with no
+dequantize and no copy. `token_embd.weight`/`output.weight` stay FP32 (untouched -- those two aren't the bulk of
+the parameters and nothing needed them raw).
+
+Measured, not assumed (CLAUDE.md rule 7): pre-fault footprint dropped from the implied ~28 GB fp32 weight set to
+**11.17 GiB** (matches the real Q8_0 on-disk size). Per-decode-step timing (8 samples/run, median, 3 runs each
+side, same prompt, isolated via `git stash` of just this one file so only the tensor-source code differs): old
+path medians 653.3 / 671.6 / 657.0 ms (~660 ms avg) vs new path 306.6 / 298.8 / 297.9 ms (~301 ms avg) -- **~2.2x
+faster**, not just a memory win, plausibly from Q8_0 matmul moving ~4x less memory per weight read on a
+bandwidth-bound CPU decode step. All 6 real-weight PersonaPlex classes re-run against the actual checkpoint after
+the change: all pass, no numeric regressions (`PersonaPlexGeneratorRealWeightsTests`,
+`PersonaPlexFullPipelineRealWeightsTests`, `PersonaPlexVoicePromptRealWeightsTests`,
+`PersonaPlexDelayedPipelineRealWeightsTests`, `PersonaPlexLiveDuplexRealWeightsTests`,
+`PersonaPlexLmTensorSourceRealWeightsTests`).
+
+Also added while investigating: `HeavyTestBase` (Audio/ForwardPass/Vulkan/Sessions, and newly Diffusion/Vision,
+which had none before) now holds a machine-wide named `Mutex` for its whole lifetime, so two heavy-test processes
+launched independently (two manual `dotnet test` runs, or a CI matrix running two heavy suites concurrently) wait
+their turn instead of each holding 10+ GB of real weights at once -- the existing `xunit.runner.json`
+`parallelizeAssembly=false` only serializes within one process, not across them. Diffusion/Vision's ~178/52 bare
+test classes were split by whether they actually load a real checkpoint (134/178 and 9/52 respectively) before
+gating, so synthetic-weight unit tests keep running in normal/fast iteration rather than silently requiring
+`STINGRAY_RUN_HEAVY_TESTS=1`.
+
+Not yet done: the same zero-copy-Q8 technique applied to any other bridge class with the same eager-fp32 pattern
+(only PersonaPlex and the earlier VibeVoice fix have it so far); `PersonaPlexGenerateWavDebugTest`'s own opt-in
+gate (it's a 50-frame, 134s listening harness, not a check, currently gated by nothing but `HeavyTestBase`);
+`PrefillDecodeSelfConsistencyTests.F32Prefill_MatchesTokenByTokenDecode` fails standalone -- pre-existing, found
+while re-running the heavy suite, unrelated to this change, not investigated.

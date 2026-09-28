@@ -2,7 +2,7 @@ using OpenTail.Stingray.Diffusion.ControlNet;
 
 namespace OpenTail.Stingray.Tests.Diffusion;
 
-public sealed class ControlNetTests
+public sealed class ControlNetTests : HeavyTestBase
 {
     private sealed class MockWeightLoader : IWeightLoader
     {

@@ -12,7 +12,7 @@ namespace OpenTail.Stingray.Tests.Diffusion.AceStep;
 /// scheduler's own denoising loop, timestep-schedule selection, and ProjIn/Forward/ProjOut wiring
 /// across real repeated steps). Non-degeneracy receipt, not yet a numeric golden-parity test.
 /// </summary>
-public sealed class AceStepFlowSchedulerTests
+public sealed class AceStepFlowSchedulerTests : HeavyTestBase
 {
     private static string? FindRepoFile(string relativePath)
     {

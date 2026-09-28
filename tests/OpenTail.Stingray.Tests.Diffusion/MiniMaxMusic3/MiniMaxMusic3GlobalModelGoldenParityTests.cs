@@ -19,7 +19,7 @@ namespace OpenTail.Stingray.Tests.Diffusion.MiniMaxMusic3;
 /// runs identical code, so one correct layer generalizes). See
 /// docs/4-performance/audio/066-minimax-music3-future-plan.md for the full investigation.</para>
 /// </summary>
-public sealed class MiniMaxMusic3GlobalModelGoldenParityTests
+public sealed class MiniMaxMusic3GlobalModelGoldenParityTests : HeavyTestBase
 {
     private static string? FindRepoDir(string relativePath)
     {

@@ -8,7 +8,7 @@ namespace OpenTail.Stingray.Tests.Diffusion;
 /// IImageOpsBackend.Upsample2xGpu, verifying identical semantics (coordinate mapping, channel
 /// layout, edge behavior) before treating the swap as "just wiring" in VaeDecoder's residency work.
 /// </summary>
-public sealed class Upsample2xGpuParityTests
+public sealed class Upsample2xGpuParityTests : HeavyTestBase
 {
     [Theory]
     [InlineData(4, 8, 8)]     // small

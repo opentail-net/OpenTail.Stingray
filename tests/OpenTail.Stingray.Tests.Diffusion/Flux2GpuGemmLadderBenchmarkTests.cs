@@ -17,7 +17,7 @@ namespace OpenTail.Stingray.Tests.Diffusion;
 /// counts, all 4 weight-matrix shapes), using the same <c>Sgemm</c> dispatch and FP16 weight
 /// upload path production code actually uses -- not a generic square-matrix microbenchmark.
 /// </summary>
-public sealed class Flux2GpuGemmLadderBenchmarkTests
+public sealed class Flux2GpuGemmLadderBenchmarkTests : HeavyTestBase
 {
     private static VulkanBackend? TryCreateVulkan()
     {

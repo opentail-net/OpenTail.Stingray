@@ -16,7 +16,7 @@ namespace OpenTail.Stingray.Tests.Diffusion;
 /// with per-block capture, to find the first block where they diverge -- same technique already
 /// proven for Qwen Image's own GPU bug this session.
 /// </summary>
-public sealed class ZImageGpuRealScaleBisectTests
+public sealed class ZImageGpuRealScaleBisectTests : HeavyTestBase
 {
     private readonly ITestOutputHelper _output;
 

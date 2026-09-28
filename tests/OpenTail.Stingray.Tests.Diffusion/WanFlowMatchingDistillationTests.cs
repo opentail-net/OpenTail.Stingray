@@ -9,7 +9,7 @@ namespace OpenTail.Stingray.Tests.Diffusion;
 /// Verifies 4-step Flow-Matching Distillation for Wan 2.1 on GPU.
 /// Compares standard 20-step CFG sampling (40 evaluations) against 4-step distilled sampling (4 evaluations).
 /// </summary>
-public sealed class WanFlowMatchingDistillationTests
+public sealed class WanFlowMatchingDistillationTests : HeavyTestBase
 {
     private readonly ITestOutputHelper _output;
 

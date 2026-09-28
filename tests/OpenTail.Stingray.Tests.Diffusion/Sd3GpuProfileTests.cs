@@ -17,7 +17,7 @@ namespace OpenTail.Stingray.Tests.Diffusion;
 /// before the CLR starts, since VulkanBackend's counters are gated by a `static readonly` field
 /// read once at class load).
 /// </summary>
-public sealed class Sd3GpuProfileTests
+public sealed class Sd3GpuProfileTests : HeavyTestBase
 {
     private readonly ITestOutputHelper _output;
 

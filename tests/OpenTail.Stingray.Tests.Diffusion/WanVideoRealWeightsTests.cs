@@ -1,7 +1,7 @@
 
 namespace OpenTail.Stingray.Tests.Diffusion;
 
-public sealed class WanVideoRealWeightsTests
+public sealed class WanVideoRealWeightsTests : HeavyTestBase
 {
     private const string ModelFileName = "Wan2.1-T2V-1.3B-Q4_0.gguf";
 

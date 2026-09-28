@@ -22,7 +22,7 @@ namespace OpenTail.Stingray.Tests.Diffusion;
 /// external second-opinion review's point that cosine alone can be a misleading single metric on
 /// rows dominated by a huge common-magnitude residual component.
 /// </summary>
-public sealed class QwenImageBlockSweepIsolationTests
+public sealed class QwenImageBlockSweepIsolationTests : HeavyTestBase
 {
     private static readonly int[] TargetBlocks = { 10, 20, 28, 29, 30, 50 };
 

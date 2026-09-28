@@ -3,7 +3,7 @@ using OpenTail.Stingray.Diffusion.LTXVideo;
 
 namespace OpenTail.Stingray.Tests.Diffusion;
 
-public sealed class LtxVideoBenchmarkTests
+public sealed class LtxVideoBenchmarkTests : HeavyTestBase
 {
     private const string ModelFileName = "ltx-video-2b-v0.9.1.safetensors";
 

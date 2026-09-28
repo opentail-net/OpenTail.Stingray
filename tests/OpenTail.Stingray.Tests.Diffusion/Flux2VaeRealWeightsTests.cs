@@ -9,7 +9,7 @@ namespace OpenTail.Stingray.Tests.Diffusion;
 /// input, no real DiT output yet) -- matches the "structurally sound, not yet coherent" milestone
 /// this session's other FLUX.2 real-weight tests reached.
 /// </summary>
-public sealed class Flux2VaeRealWeightsTests
+public sealed class Flux2VaeRealWeightsTests : HeavyTestBase
 {
     private const string ModelFileName = "flux2-vae.safetensors";
 

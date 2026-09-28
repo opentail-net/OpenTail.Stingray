@@ -12,7 +12,7 @@ namespace OpenTail.Stingray.Tests.Diffusion.MiniMaxMusic3;
 /// exercises the full pipeline shape end-to-end; delete once a real golden/regression test
 /// supersedes it.
 /// </summary>
-public sealed class ZZ_ScratchMiniMaxMusic3PipelineSmokeTests
+public sealed class ZZ_ScratchMiniMaxMusic3PipelineSmokeTests : HeavyTestBase
 {
     private static string? FindRepoFile(string relativePath)
     {

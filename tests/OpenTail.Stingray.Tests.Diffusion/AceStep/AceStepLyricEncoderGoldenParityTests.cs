@@ -14,7 +14,7 @@ namespace OpenTail.Stingray.Tests.Diffusion.AceStep;
 /// (`golden_lyric_*.bin`) was produced -- not checked into the repo, regenerate via the Python
 /// script referenced there if needed.
 /// </summary>
-public sealed class AceStepLyricEncoderGoldenParityTests
+public sealed class AceStepLyricEncoderGoldenParityTests : HeavyTestBase
 {
     private static string? FindRepoFile(string relativePath)
     {

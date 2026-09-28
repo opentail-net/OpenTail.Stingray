@@ -5,7 +5,7 @@ using Xunit;
 
 namespace OpenTail.Stingray.Tests.Diffusion;
 
-public sealed class UMT5GpuParityTests
+public sealed class UMT5GpuParityTests : HeavyTestBase
 {
     private sealed class SyntheticWeightLoader : IWeightLoader
     {

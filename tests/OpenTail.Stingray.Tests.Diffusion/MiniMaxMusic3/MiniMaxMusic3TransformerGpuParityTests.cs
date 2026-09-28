@@ -10,7 +10,7 @@ namespace OpenTail.Stingray.Tests.Diffusion.MiniMaxMusic3;
 /// when offloading GEMM projections to GPU via <see cref="IComputeBackend"/> (Vulkan).
 /// Compares GPU output against CPU baseline.
 /// </summary>
-public sealed class MiniMaxMusic3TransformerGpuParityTests
+public sealed class MiniMaxMusic3TransformerGpuParityTests : HeavyTestBase
 {
     private static VulkanBackend CreateBackendOrSkip()
     {

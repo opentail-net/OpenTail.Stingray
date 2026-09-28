@@ -13,7 +13,7 @@ namespace OpenTail.Stingray.Tests.Diffusion;
 /// <c>FluxGpuVsCpuForwardBisectDebugTest</c>) -- run this and inspect the real cosine/maxDiff
 /// numbers BEFORE trusting any timing number for this GPU path.
 /// </summary>
-public sealed class QwenImageGpuParityTests
+public sealed class QwenImageGpuParityTests : HeavyTestBase
 {
     private readonly ITestOutputHelper _output;
 

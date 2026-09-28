@@ -18,7 +18,7 @@ namespace OpenTail.Stingray.Tests.Diffusion.MiniMaxMusic3;
 /// memory-bandwidth/dispatch-count optimization, not a numeric one, so a divergence bigger than
 /// float-reordering noise here is still a real bug.
 /// </summary>
-public sealed class MiniMaxMusic3RvqDepthDecoderStepPairParityTests
+public sealed class MiniMaxMusic3RvqDepthDecoderStepPairParityTests : HeavyTestBase
 {
     private static string? FindRepoFile(string relativePath)
     {

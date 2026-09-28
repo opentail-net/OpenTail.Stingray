@@ -17,7 +17,7 @@ namespace OpenTail.Stingray.Tests.Diffusion.AceStep;
 /// quant's layer-27 output on this exact real prompt during this test's development, and why Q8_0
 /// avoids it.</para>
 /// </summary>
-public sealed class AceStepQwen3TextEncoderTests
+public sealed class AceStepQwen3TextEncoderTests : HeavyTestBase
 {
     private static string? FindRepoFile(string relativePath)
     {

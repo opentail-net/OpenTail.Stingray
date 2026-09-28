@@ -16,7 +16,7 @@ namespace OpenTail.Stingray.Tests.Diffusion;
 /// to docs/diffusion-samples/ for visual inspection, same pattern as other real-weight probes in
 /// this project. Requires the real Wan VAE checkpoint locally; no-ops (returns) if absent.
 /// </summary>
-public sealed class WanVaeSyntheticLatentDiagnosticTests
+public sealed class WanVaeSyntheticLatentDiagnosticTests : HeavyTestBase
 {
     private static string? FindVaePath()
     {

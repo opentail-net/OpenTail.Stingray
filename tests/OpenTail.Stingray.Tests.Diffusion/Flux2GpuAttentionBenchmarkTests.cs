@@ -11,7 +11,7 @@ namespace OpenTail.Stingray.Tests.Diffusion;
 /// Production shape: 1280 total tokens (1024 img + 256 txt), 48 heads, headDim=128, dim=6144.
 /// Measures wall-clock time for this single dispatch in isolation across several timed trials.
 /// </summary>
-public sealed class Flux2GpuAttentionBenchmarkTests
+public sealed class Flux2GpuAttentionBenchmarkTests : HeavyTestBase
 {
     private static VulkanBackend? TryCreateVulkan()
     {

@@ -8,7 +8,7 @@ namespace OpenTail.Stingray.Tests.Vision;
 /// and sum. Pins the 2026-09-26 fixes (fused attn_qkv, SwiGLU gate, mm.post_norm, vision M-RoPE
 /// section reset, erf GELU): before them the model ignored the image (1-token stop).
 /// </summary>
-public sealed class DotsocrVisionEmbedderParityTests
+public sealed class DotsocrVisionEmbedderParityTests : HeavyTestBase
 {
     [Fact]
     public void Checkerboard224_MatchesLlamaMtmdDebug()

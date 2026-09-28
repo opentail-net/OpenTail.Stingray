@@ -12,7 +12,7 @@ namespace OpenTail.Stingray.Tests.Diffusion;
 /// the separate TI2V-5B variant uses a different, higher-compression VAE), so this is expected to
 /// be compatible, not verified against a written spec inside this repo.
 /// </summary>
-public sealed class Wan22DualModelGenerateSmokeTests
+public sealed class Wan22DualModelGenerateSmokeTests : HeavyTestBase
 {
     private readonly ITestOutputHelper _output;
 

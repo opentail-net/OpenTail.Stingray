@@ -12,7 +12,7 @@ namespace OpenTail.Stingray.Tests.Diffusion;
 /// regression). Real random data, several shapes matching this codebase's actual usage
 /// (self-attention: qSeq==kvSeq; cross-attention: kvSeq=77, the fixed CLIP context length).
 /// </summary>
-public sealed class MultiHeadAttentionGpuParityTests
+public sealed class MultiHeadAttentionGpuParityTests : HeavyTestBase
 {
     private static float[] RandomTensor(int n, int seed)
     {

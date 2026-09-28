@@ -16,7 +16,7 @@ namespace OpenTail.Stingray.Tests.Diffusion;
 /// for Qwen Image's Q3_K -- but that Q5_K check covered a DIFFERENT tensor/quant-type combination
 /// than this one, so it does not by itself clear Q4_K/adaLN_modulation specifically.
 /// </summary>
-public sealed class Sd3AdaLNQ4KDequantCrossCheckTests
+public sealed class Sd3AdaLNQ4KDequantCrossCheckTests : HeavyTestBase
 {
     private readonly ITestOutputHelper _output;
 

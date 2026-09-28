@@ -8,7 +8,7 @@ using Xunit;
 
 namespace OpenTail.Stingray.Tests.Diffusion;
 
-public sealed class Sd15GpuParityTests
+public sealed class Sd15GpuParityTests : HeavyTestBase
 {
     private readonly ITestOutputHelper _output;
 

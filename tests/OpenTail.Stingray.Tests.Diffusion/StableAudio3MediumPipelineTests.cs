@@ -12,7 +12,7 @@ namespace OpenTail.Stingray.Tests.Diffusion;
 /// real CFG runs the DiT twice per step). Non-degeneracy receipt, not yet a numeric golden-parity
 /// test -- see docs/done/057-stable-audio-3-implementation-plan.md.
 /// </summary>
-public sealed class StableAudio3MediumPipelineTests
+public sealed class StableAudio3MediumPipelineTests : HeavyTestBase
 {
     private static string? FindRepoDir(string relativePath)
     {

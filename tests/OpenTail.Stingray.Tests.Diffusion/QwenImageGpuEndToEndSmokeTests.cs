@@ -13,7 +13,7 @@ namespace OpenTail.Stingray.Tests.Diffusion;
 /// zero-conditioning like <c>QwenImageRealWeightsTests</c>'s own CPU equivalent, not a real prompt,
 /// so a real text encoder pass isn't required.
 /// </summary>
-public sealed class QwenImageGpuEndToEndSmokeTests
+public sealed class QwenImageGpuEndToEndSmokeTests : HeavyTestBase
 {
     private readonly ITestOutputHelper _output;
 

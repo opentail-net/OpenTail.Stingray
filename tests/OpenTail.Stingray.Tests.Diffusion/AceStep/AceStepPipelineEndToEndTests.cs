@@ -16,7 +16,7 @@ namespace OpenTail.Stingray.Tests.Diffusion.AceStep;
 /// 48kHz-stereo-shape-correct), not yet a numeric golden-parity test against a real `diffusers`
 /// end-to-end reference run -- see docs/2-coverage/064-acestep-implementation-plan.md.
 /// </summary>
-public sealed class AceStepPipelineEndToEndTests
+public sealed class AceStepPipelineEndToEndTests : HeavyTestBase
 {
     private static string? FindRepoFile(string relativePath)
     {

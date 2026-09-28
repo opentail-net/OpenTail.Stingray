@@ -5,7 +5,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using ForwardPass = OpenTail.Stingray.Engine.ForwardPass;
 
-public sealed class SafetensorsDifferentialFixtureTests : HeavyTestBase, IDisposable
+public sealed class SafetensorsDifferentialFixtureTests : HeavyTestBase
 {
     private readonly string _tempDir;
 
@@ -15,12 +15,13 @@ public sealed class SafetensorsDifferentialFixtureTests : HeavyTestBase, IDispos
         Directory.CreateDirectory(_tempDir);
     }
 
-    public void Dispose()
+    public override void Dispose()
     {
         if (Directory.Exists(_tempDir))
         {
             try { Directory.Delete(_tempDir, recursive: true); } catch { }
         }
+        base.Dispose();
     }
 
     [Fact]

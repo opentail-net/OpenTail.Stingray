@@ -13,7 +13,7 @@ namespace OpenTail.Stingray.Tests.Diffusion;
 /// receipt (finite, non-degenerate, timestep-sensitive output), not yet a numeric golden-parity
 /// test against a real Python reference run.
 /// </summary>
-public sealed class StableAudio3MediumDiTTests
+public sealed class StableAudio3MediumDiTTests : HeavyTestBase
 {
     private static string? FindRepoDir(string relativePath)
     {

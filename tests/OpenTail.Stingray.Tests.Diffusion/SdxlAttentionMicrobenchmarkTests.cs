@@ -7,7 +7,7 @@ using Xunit;
 
 namespace OpenTail.Stingray.Tests.Diffusion;
 
-public sealed class SdxlAttentionMicrobenchmarkTests
+public sealed class SdxlAttentionMicrobenchmarkTests : HeavyTestBase
 {
     private readonly ITestOutputHelper _output;
 

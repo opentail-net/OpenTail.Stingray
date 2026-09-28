@@ -12,7 +12,7 @@ namespace OpenTail.Stingray.Tests.Diffusion;
 /// architecture family this project already built for FLUX -- LTX just needed the real weights
 /// wired up, per docs/done/055-ltx-video-implementation-plan.md step 6.
 /// </summary>
-public sealed class LtxT5EncoderGoldenParityTests
+public sealed class LtxT5EncoderGoldenParityTests : HeavyTestBase
 {
     private const string TextEncoderDirRelative = "models/ltx-t5/text_encoder";
     private const string TokenizerJsonRelative = "models/ltx-t5/tokenizer/tokenizer.json";

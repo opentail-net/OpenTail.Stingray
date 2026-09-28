@@ -4,7 +4,7 @@ using Xunit;
 
 namespace OpenTail.Stingray.Tests.Diffusion.MiniMaxMusic3;
 
-public sealed class MiniMaxMusic3GlobalModelStepPairParityTests
+public sealed class MiniMaxMusic3GlobalModelStepPairParityTests : HeavyTestBase
 {
     private static string? FindRepoDir(string relativePath)
     {

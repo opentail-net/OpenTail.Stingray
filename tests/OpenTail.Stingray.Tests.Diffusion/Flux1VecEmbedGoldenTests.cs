@@ -21,7 +21,7 @@ namespace OpenTail.Stingray.Tests.Diffusion;
 /// a synthetic deterministic vector (seed 42) -- this isolates the embedding-MLP math only, not
 /// the CLIP text encoder, same deliberate scope limit as SD3.5's own analogous script.
 /// </summary>
-public sealed class Flux1VecEmbedGoldenTests
+public sealed class Flux1VecEmbedGoldenTests : HeavyTestBase
 {
     private const string ModelFileName = "flux1-schnell-Q4_K_S.gguf";
 

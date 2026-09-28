@@ -2,7 +2,7 @@ using OpenTail.Stingray.Diffusion.HunyuanVideo;
 
 namespace OpenTail.Stingray.Tests.Diffusion;
 
-public sealed class HunyuanVideoRealWeightsTests
+public sealed class HunyuanVideoRealWeightsTests : HeavyTestBase
 {
     private const string ModelFileName = "hunyuan_video_720_cfgdistill_fp8_e4m3fn.safetensors";
     private const string VaeFileName = "hunyuan_video_vae_bf16.safetensors";

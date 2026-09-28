@@ -9,7 +9,7 @@ namespace OpenTail.Stingray.Tests.Diffusion;
 /// Correctness and parity checks for FLUX GPU compute primitives:
 /// Flux2DRoPE, FluxUnpackQkv, FluxUnpackSingleLin1, FluxConcatAttnMlp, FluxConcatTxtImg, FluxSliceImg, FluxEulerStep.
 /// </summary>
-public sealed class FluxGpuParityTests
+public sealed class FluxGpuParityTests : HeavyTestBase
 {
     private static VulkanBackend? TryCreateVulkan()
     {

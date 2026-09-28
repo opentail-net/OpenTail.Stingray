@@ -11,7 +11,7 @@ namespace OpenTail.Stingray.Tests.Diffusion;
 ///   2. <c>Sgemm</c> (multiplies [M, K] with [N, K] weights to produce [M, N])
 /// Verifies bit-level convergence across synthetic and production shapes.
 /// </summary>
-public sealed class Flux2SgemmSiluGateGpuTests
+public sealed class Flux2SgemmSiluGateGpuTests : HeavyTestBase
 {
     private static VulkanBackend? TryCreateVulkan()
     {

@@ -23,13 +23,17 @@ namespace OpenTail.Stingray.Tests.ForwardPass;
 /// <see cref="MatMulBatchedQ8EquivalenceTests"/> documents.
 /// </para>
 /// </summary>
-public sealed class PrefillDecodeSelfConsistencyTests : HeavyTestBase, IDisposable
+public sealed class PrefillDecodeSelfConsistencyTests : HeavyTestBase
 {
     private const string ModelFile = "SmolLM2-1.7B-Instruct-Q4_K_M.gguf";
 
     private readonly bool _savedQ8Gate = SimdKernels.Q8PrefillEnabled;
 
-    public void Dispose() => SimdKernels.Q8PrefillEnabled = _savedQ8Gate;
+    public override void Dispose()
+    {
+        SimdKernels.Q8PrefillEnabled = _savedQ8Gate;
+        base.Dispose();
+    }
 
     private static string? FindModelPath(string filename)
     {

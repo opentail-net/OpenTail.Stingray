@@ -17,7 +17,7 @@ namespace OpenTail.Stingray.Tests.Diffusion;
 /// projection two ways (once via <c>ReadF32</c>+naive dot product, once via
 /// <c>QuantizedWeightCache.Linear</c>'s real fused path) and diffs them directly.
 /// </summary>
-public sealed class QwenImageQ3KDequantCrossCheckTests
+public sealed class QwenImageQ3KDequantCrossCheckTests : HeavyTestBase
 {
     private readonly ITestOutputHelper _output;
 

@@ -17,7 +17,7 @@ namespace OpenTail.Stingray.Tests.Diffusion;
 /// random weight matrix and input vector, comparing the GPU M=1 matvec path against a naive CPU
 /// dot product -- no quantization, no real checkpoint, no AdaLN, isolating the GEMM math alone.
 /// </summary>
-public sealed class Sd3ModulationSgemmGpuCpuParityTests
+public sealed class Sd3ModulationSgemmGpuCpuParityTests : HeavyTestBase
 {
     private readonly ITestOutputHelper _output;
 

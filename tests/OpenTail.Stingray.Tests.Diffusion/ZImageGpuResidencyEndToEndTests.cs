@@ -14,7 +14,7 @@ namespace OpenTail.Stingray.Tests.Diffusion;
 /// (PerformanceLeague.md, 2026-09-13): 183.6s Vulkan, 256x256/4 steps, the SAME real coherent
 /// red-apple config the 2026-09-12 sign-convention fix verified.
 /// </summary>
-public sealed class ZImageGpuResidencyEndToEndTests
+public sealed class ZImageGpuResidencyEndToEndTests : HeavyTestBase
 {
     private readonly ITestOutputHelper _output;
 

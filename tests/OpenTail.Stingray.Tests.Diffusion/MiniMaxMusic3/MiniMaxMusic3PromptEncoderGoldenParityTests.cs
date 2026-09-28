@@ -10,7 +10,7 @@ namespace OpenTail.Stingray.Tests.Diffusion.MiniMaxMusic3;
 /// the real `transformers.Qwen2Tokenizer` loaded from this checkpoint's own real
 /// `tokenizer/tokenizer.json`. See docs/4-performance/audio/066-minimax-music3-future-plan.md.
 /// </summary>
-public sealed class MiniMaxMusic3PromptEncoderGoldenParityTests
+public sealed class MiniMaxMusic3PromptEncoderGoldenParityTests : HeavyTestBase
 {
     private sealed record Case(string Prompt, string Lyrics, string Cleaned, string Normalized, string Text, int[] Ids);
 

@@ -1,7 +1,7 @@
 
 namespace OpenTail.Stingray.Tests.Diffusion;
 
-public sealed class FluxVaeRealWeightsTests
+public sealed class FluxVaeRealWeightsTests : HeavyTestBase
 {
     private const string ModelFileName = "ae.safetensors";
 

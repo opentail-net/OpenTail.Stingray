@@ -17,7 +17,7 @@ namespace OpenTail.Stingray.Tests.Diffusion;
 /// generation (256x256, 30 steps, real T5 prompt) producing pure noise despite every other stage
 /// checking out.
 /// </summary>
-public sealed class LtxVideoTrajectoryGoldenTests
+public sealed class LtxVideoTrajectoryGoldenTests : HeavyTestBase
 {
     private const string ModelFileName = "ltx-video-2b-v0.9.1.safetensors";
 

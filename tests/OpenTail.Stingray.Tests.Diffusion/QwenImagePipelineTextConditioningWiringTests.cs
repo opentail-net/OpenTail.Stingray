@@ -7,7 +7,7 @@ namespace OpenTail.Stingray.Tests.Diffusion;
 /// `QwenImageRealWeightsTests`), just confirms the additive wiring (new fields, new constructor
 /// overload, Dispose ordering) doesn't crash on real checkpoints.
 /// </summary>
-public sealed class QwenImagePipelineTextConditioningWiringTests
+public sealed class QwenImagePipelineTextConditioningWiringTests : HeavyTestBase
 {
     private static string? FindModelPath(string fileName)
     {
