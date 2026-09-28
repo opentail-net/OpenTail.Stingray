@@ -70,7 +70,7 @@ public sealed class PiperFlowTests : HeavyTestBase
         string? flowNoisePath = FindRepoFile("scratch-llamacpp-ref/piper_golden_flow/RandomNormalLike_output_0.npy");
         string? zpPath = FindRepoFile("scratch-llamacpp-ref/piper_golden_flow/Add_output_0.npy");
         string? flowOutPath = FindRepoFile("scratch-llamacpp-ref/piper_golden_flow/flow_flows.0_Concat_output_0.npy");
-        if (modelPath is null || sdpNoisePath is null || ceilPath is null || flowNoisePath is null || zpPath is null || flowOutPath is null) return;
+        Assert.SkipUnless(modelPath is not null && sdpNoisePath is not null && ceilPath is not null && flowNoisePath is not null && zpPath is not null && flowOutPath is not null, "modelPath, sdpNoisePath, ceilPath, flowNoisePath, zpPath, flowOutPath not found");
 
         var weights = new PiperOnnxWeights(modelPath);
 

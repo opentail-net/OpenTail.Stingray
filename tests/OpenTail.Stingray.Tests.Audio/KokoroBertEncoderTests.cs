@@ -55,7 +55,7 @@ public sealed class KokoroBertEncoderTests : HeavyTestBase
         string? modelPath = FindRepoFile("models/kokoro-82m-q8_0.gguf");
         string? goldenEmb = FindRepoFile("scratch-llamacpp-ref/kokoro_golden_bert/encoder_bert_embeddings_LayerNorm_LayerNormalization_output_0.npy");
         string? goldenFinal = FindRepoFile("scratch-llamacpp-ref/kokoro_golden_bert/encoder_bert_encoder_albert_layer_groups.0_albert_layers.0_full_layer_layer_norm_11_LayerNormalization_output_0.npy");
-        if (modelPath is null || goldenEmb is null || goldenFinal is null) return;
+        Assert.SkipUnless(modelPath is not null && goldenEmb is not null && goldenFinal is not null, "modelPath, goldenEmb, goldenFinal not found");
 
         using var weights = new KokoroWeights(modelPath);
 

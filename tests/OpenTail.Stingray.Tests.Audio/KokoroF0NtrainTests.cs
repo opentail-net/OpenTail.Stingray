@@ -69,7 +69,7 @@ public sealed class KokoroF0NtrainTests : HeavyTestBase
         string? enPath = FindRepoFile("scratch-llamacpp-ref/kokoro_golden_f0n/encoder_MatMul_output_0.npy");
         string? goldenF0Path = FindRepoFile("scratch-llamacpp-ref/kokoro_golden_f0n/encoder_F0_proj_Conv_output_0.npy");
         string? goldenNPath = FindRepoFile("scratch-llamacpp-ref/kokoro_golden_f0n/encoder_N_proj_Conv_output_0.npy");
-        if (modelPath is null || enPath is null || goldenF0Path is null || goldenNPath is null) return;
+        Assert.SkipUnless(modelPath is not null && enPath is not null && goldenF0Path is not null && goldenNPath is not null, "modelPath, enPath, goldenF0Path, goldenNPath not found");
 
         using var weights = new KokoroWeights(modelPath);
 

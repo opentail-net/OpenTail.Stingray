@@ -30,7 +30,7 @@ public sealed class HunyuanVideoRealConditioningCoherenceTests : HeavyTestBase
         string? modelPath = FindModelPath("hunyuan_video_720_cfgdistill_fp8_e4m3fn.safetensors");
         string? vaePath = FindModelPath("hunyuan_video_vae_bf16.safetensors");
         string? textEncoderPath = FindModelPath("llava-llama-3-8b-v1_1-int4.gguf");
-        if (modelPath is null || vaePath is null || textEncoderPath is null) return;
+        Assert.SkipUnless(modelPath is not null && vaePath is not null && textEncoderPath is not null, "modelPath, vaePath, textEncoderPath not found");
 
         using var pipeline = HunyuanVideoPipeline.Load(modelPath, textEncoderPath, vaePath);
 

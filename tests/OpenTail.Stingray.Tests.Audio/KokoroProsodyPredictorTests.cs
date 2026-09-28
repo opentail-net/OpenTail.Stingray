@@ -67,7 +67,7 @@ public sealed class KokoroProsodyPredictorTests : HeavyTestBase
         string? modelPath = FindRepoFile("models/kokoro-82m-q8_0.gguf");
         string? goldenDPath = FindRepoFile("scratch-llamacpp-ref/kokoro_golden_durenc/encoder_predictor_text_encoder_Concat_4_output_0.npy");
         string? goldenDurSumPath = FindRepoFile("scratch-llamacpp-ref/kokoro_golden_durenc/encoder_predictor_ReduceSum_output_0.npy");
-        if (modelPath is null || goldenDPath is null || goldenDurSumPath is null) return;
+        Assert.SkipUnless(modelPath is not null && goldenDPath is not null && goldenDurSumPath is not null, "modelPath, goldenDPath, goldenDurSumPath not found");
 
         using var weights = new KokoroWeights(modelPath);
 

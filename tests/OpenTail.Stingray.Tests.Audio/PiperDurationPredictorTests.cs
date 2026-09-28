@@ -69,7 +69,7 @@ public sealed class PiperDurationPredictorTests : HeavyTestBase
         string? modelPath = FindRepoFile("models/en_US-lessac-medium.onnx");
         string? noisePath = FindRepoFile("scratch-llamacpp-ref/piper_golden_sdp/dp_RandomNormalLike_output_0.npy");
         string? logwPath = FindRepoFile("scratch-llamacpp-ref/piper_golden_sdp/dp_Split_output_0.npy");
-        if (modelPath is null || noisePath is null || logwPath is null) return;
+        Assert.SkipUnless(modelPath is not null && noisePath is not null && logwPath is not null, "modelPath, noisePath, logwPath not found");
 
         var weights = new PiperOnnxWeights(modelPath);
 

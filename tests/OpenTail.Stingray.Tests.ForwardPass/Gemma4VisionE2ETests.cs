@@ -39,7 +39,7 @@ public sealed class Gemma4VisionE2ETests : HeavyTestBase
     {
         var textPath = Find(TextModel);
         var mmprojPath = Find(Mmproj);
-        if (textPath is null || mmprojPath is null) return;   // model-gated
+        Assert.SkipUnless(textPath is not null && mmprojPath is not null, "textPath, mmprojPath not found");   // model-gated
 
         using var modelHandle = SharedModelCacheFixture.Instance.Acquire(textPath);
         var model = modelHandle.Model;

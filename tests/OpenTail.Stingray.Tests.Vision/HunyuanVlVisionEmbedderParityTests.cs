@@ -24,7 +24,7 @@ public class HunyuanVlVisionEmbedderParityTests
     {
         var mmproj = VisionTestPaths.FindHunyuanVlMmproj();
         var fx = VisionTestPaths.FindFixtureDir("hunyuanvl");
-        if (mmproj is null || fx is null) return;
+        Assert.SkipUnless(mmproj is not null && fx is not null, "mmproj, fx not found");
         var inPath = Path.Combine(fx, "input_chw.f32");
         var outPath = Path.Combine(fx, "output.f32");
         var metaPath = Path.Combine(fx, "meta.json");

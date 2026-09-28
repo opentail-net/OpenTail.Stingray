@@ -95,7 +95,7 @@ public sealed class LtxVideoRealWeightsTests : HeavyTestBase
         string? modelPath = FindModelPath(ModelFileName);
         string? textEncoderDir = FindRepoFile("models/ltx-t5/text_encoder");
         string? tokenizerJsonPath = FindRepoFile("models/ltx-t5/tokenizer/tokenizer.json");
-        if (modelPath is null || textEncoderDir is null || tokenizerJsonPath is null) return;
+        Assert.SkipUnless(modelPath is not null && textEncoderDir is not null && tokenizerJsonPath is not null, "modelPath, textEncoderDir, tokenizerJsonPath not found");
 
         using var pipeline = LtxVideoPipeline.Load(
             modelPath,
@@ -128,7 +128,7 @@ public sealed class LtxVideoRealWeightsTests : HeavyTestBase
         string? modelPath = FindModelPath(ModelFileName);
         string? textEncoderDir = FindRepoFile("models/ltx-t5/text_encoder");
         string? tokenizerJsonPath = FindRepoFile("models/ltx-t5/tokenizer/tokenizer.json");
-        if (modelPath is null || textEncoderDir is null || tokenizerJsonPath is null) return;
+        Assert.SkipUnless(modelPath is not null && textEncoderDir is not null && tokenizerJsonPath is not null, "modelPath, textEncoderDir, tokenizerJsonPath not found");
 
         using var vulkan = new OpenTail.Stingray.Vulkan.VulkanBackend();
         using var pipeline = LtxVideoPipeline.Load(

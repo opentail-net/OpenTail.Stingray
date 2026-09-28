@@ -62,7 +62,7 @@ public sealed class WhisperRealWeightsTests : HeavyTestBase
     {
         string? modelPath = FindModelPath(modelFileName);
         string? wavPath = FindRepoFile("examples/whisper.cpp/samples/jfk.wav");
-        if (modelPath is null || wavPath is null) return;
+        Assert.SkipUnless(modelPath is not null && wavPath is not null, "modelPath, wavPath not found");
 
         using var pipeline = WhisperPipeline.Load(modelPath);
         var (samples, sampleRate, _) = WavReader.ReadWav(wavPath);

@@ -134,7 +134,7 @@ public sealed class DSparkE2ETests : HeavyTestBase
         if (Environment.GetEnvironmentVariable("STINGRAY_SKIP_E2E") == "1") return;
         var ggufPath = FindTargetGguf();
         var headDir = FindDSparkHeadDir();
-        if (ggufPath is null || headDir is null) return;
+        Assert.SkipUnless(ggufPath is not null && headDir is not null, "ggufPath, headDir not found");
 
         using var modelHandle = SharedModelCacheFixture.Instance.Acquire(ggufPath);
         var model = modelHandle.Model;

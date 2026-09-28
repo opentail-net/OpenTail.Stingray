@@ -57,7 +57,7 @@ public sealed class MeloGeneratorTests : HeavyTestBase
         string? modelPath = FindRepoFile("models/melotts-zh_en.onnx");
         string? zPath = FindRepoFile("scratch-llamacpp-ref/melo_golden_generator/flow_flows.0_Concat_output_0.npy");
         string? yPath = FindRepoFile("scratch-llamacpp-ref/melo_golden_generator/y.npy");
-        if (modelPath is null || zPath is null || yPath is null) return;
+        Assert.SkipUnless(modelPath is not null && zPath is not null && yPath is not null, "modelPath, zPath, yPath not found");
 
         var weights = new MeloOnnxWeights(modelPath);
 

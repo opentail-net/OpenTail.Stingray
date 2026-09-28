@@ -61,7 +61,7 @@ public sealed class MeloLengthRegulatorTests : HeavyTestBase
         string? durPath = FindRepoFile("scratch-llamacpp-ref/melo_golden_lengthreg/Ceil_output_0.npy");
         string? noisePath = FindRepoFile("scratch-llamacpp-ref/melo_golden_lengthreg/RandomNormalLike_output_0.npy");
         string? zpPath = FindRepoFile("scratch-llamacpp-ref/melo_golden_lengthreg/Add_2_output_0.npy");
-        if (modelPath is null || durPath is null || noisePath is null || zpPath is null) return;
+        Assert.SkipUnless(modelPath is not null && durPath is not null && noisePath is not null && zpPath is not null, "modelPath, durPath, noisePath, zpPath not found");
 
         var weights = new MeloOnnxWeights(modelPath);
 

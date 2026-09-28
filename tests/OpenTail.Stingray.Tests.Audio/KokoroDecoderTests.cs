@@ -76,7 +76,7 @@ public sealed class KokoroDecoderTests : HeavyTestBase
         string? nPath = FindRepoFile("scratch-llamacpp-ref/kokoro_golden_decoder/encoder_N_proj_Conv_output_0.npy");
         string? stylePath = FindRepoFile("scratch-llamacpp-ref/kokoro_golden_decoder/style.npy");
         string? waveformPath = FindRepoFile("scratch-llamacpp-ref/kokoro_golden_decoder/waveform.npy");
-        if (modelPath is null || asrPath is null || f0Path is null || nPath is null || stylePath is null || waveformPath is null) return;
+        Assert.SkipUnless(modelPath is not null && asrPath is not null && f0Path is not null && nPath is not null && stylePath is not null && waveformPath is not null, "modelPath, asrPath, f0Path, nPath, stylePath, waveformPath not found");
 
         using var weights = new KokoroWeights(modelPath);
 

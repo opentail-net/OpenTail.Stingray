@@ -65,7 +65,7 @@ public sealed class VocosVocoderTests : HeavyTestBase
     {
         string? modelPath = FindRepoFile("models/vocos-mel-24khz.safetensors");
         string? dir = FindRepoFile("scratch-llamacpp-ref/vocos_golden_decode/audio_out.npy");
-        if (modelPath is null || dir is null) return;
+        Assert.SkipUnless(modelPath is not null && dir is not null, "modelPath, dir not found");
         string baseDir = Path.GetDirectoryName(dir)!;
 
         var weights = new VocosWeights(modelPath);

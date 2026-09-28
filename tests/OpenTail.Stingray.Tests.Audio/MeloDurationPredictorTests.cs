@@ -68,7 +68,7 @@ public sealed class MeloDurationPredictorTests : HeavyTestBase
         string? noisePath = FindRepoFile("scratch-llamacpp-ref/melo_golden_durpred/sdp_RandomNormalLike_output_0.npy");
         string? sdpLogwPath = FindRepoFile("scratch-llamacpp-ref/melo_golden_durpred/sdp_Split_output_0.npy");
         string? dpLogwPath = FindRepoFile("scratch-llamacpp-ref/melo_golden_durpred/dp_proj_Conv_output_0.npy");
-        if (modelPath is null || noisePath is null || sdpLogwPath is null || dpLogwPath is null) return;
+        Assert.SkipUnless(modelPath is not null && noisePath is not null && sdpLogwPath is not null && dpLogwPath is not null, "modelPath, noisePath, sdpLogwPath, dpLogwPath not found");
 
         var weights = new MeloOnnxWeights(modelPath);
 

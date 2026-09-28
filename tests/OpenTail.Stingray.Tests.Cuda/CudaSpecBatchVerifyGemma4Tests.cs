@@ -309,7 +309,7 @@ public sealed class CudaSpecBatchVerifyGemma4Tests
         Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
         var targetPath = FindFirst(TargetCandidates);
         var draftPath = FindFirst(DraftCandidates);
-        if (targetPath is null || draftPath is null) return;
+        Assert.SkipUnless(targetPath is not null && draftPath is not null, "targetPath, draftPath not found");
 
         const int DecodeTokens = 32;
 

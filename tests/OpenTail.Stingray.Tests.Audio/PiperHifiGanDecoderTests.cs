@@ -68,7 +68,7 @@ public sealed class PiperHifiGanDecoderTests : HeavyTestBase
         string? modelPath = FindRepoFile("models/en_US-lessac-medium.onnx");
         string? flowOutPath = FindRepoFile("scratch-llamacpp-ref/piper_golden_flow/flow_flows.0_Concat_output_0.npy");
         string? goldenWavPath = FindRepoFile("scratch-llamacpp-ref/piper_golden_flow/output.npy");
-        if (modelPath is null || flowOutPath is null || goldenWavPath is null) return;
+        Assert.SkipUnless(modelPath is not null && flowOutPath is not null && goldenWavPath is not null, "modelPath, flowOutPath, goldenWavPath not found");
 
         var weights = new PiperOnnxWeights(modelPath);
 

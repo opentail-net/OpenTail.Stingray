@@ -84,7 +84,7 @@ public sealed class AceStepFlowSchedulerTests : HeavyTestBase
 
         OpenTail.Stingray.Vulkan.VulkanBackend? vk = null;
         try { vk = new OpenTail.Stingray.Vulkan.VulkanBackend(); } catch { return; }
-        if (vk is null) return;
+        Assert.SkipUnless(vk is not null, "vk not found");
 
         using (vk)
         using (var loader = SafetensorsLoader.Open(turboPath!))

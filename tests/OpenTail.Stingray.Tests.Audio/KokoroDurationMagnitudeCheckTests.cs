@@ -37,7 +37,7 @@ public sealed class KokoroDurationMagnitudeCheckTests
     {
         string? modelPath = FindRepoFile("models/kokoro-82m-q8_0.gguf");
         string? goldenDurSumPath = FindRepoFile("scratch-llamacpp-ref/kokoro_golden_durenc/encoder_predictor_ReduceSum_output_0.npy");
-        if (modelPath is null || goldenDurSumPath is null) return;
+        Assert.SkipUnless(modelPath is not null && goldenDurSumPath is not null, "modelPath, goldenDurSumPath not found");
 
         using var weights = new KokoroWeights(modelPath);
         int[] inputIds = [0, 50, 83, 54, 156, 57, 135, 3, 16, 65, 156, 0];

@@ -216,7 +216,7 @@ public sealed class CudaSpecBatchVerifyTests
         Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
         var targetPath = FindModelPath(TargetModelFile);
         var draftPath = FindModelPath(DraftModelFile);
-        if (targetPath is null || draftPath is null) return;
+        Assert.SkipUnless(targetPath is not null && draftPath is not null, "targetPath, draftPath not found");
 
         const int DecodeTokens = 48;
 

@@ -59,7 +59,7 @@ public sealed class StableAudioT5GemmaEncoderGoldenParityTests : HeavyTestBase
     {
         string? encoderDir = FindRepoFile(EncoderDirRelative);
         string? goldenDir = FindGoldenDir();
-        if (encoderDir is null || goldenDir is null) return; // skip: needs local T5Gemma weights + fixtures
+        Assert.SkipUnless(encoderDir is not null && goldenDir is not null, "encoderDir, goldenDir not found"); // skip: needs local T5Gemma weights + fixtures
 
         using var st = SafetensorsLoader.OpenDirectory(encoderDir);
         using var encoder = T5GemmaEncoder.FromLoader(st);

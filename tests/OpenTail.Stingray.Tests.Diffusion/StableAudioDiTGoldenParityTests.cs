@@ -74,7 +74,7 @@ public sealed class StableAudioDiTGoldenParityTests : HeavyTestBase
     {
         string? ditDir = FindRepoFile(DitDirRelative);
         string? goldenDir = FindGoldenDir();
-        if (ditDir is null || goldenDir is null) return; // skip: needs local DiT weights + fixtures
+        Assert.SkipUnless(ditDir is not null && goldenDir is not null, "ditDir, goldenDir not found"); // skip: needs local DiT weights + fixtures
 
         using var st = SafetensorsLoader.OpenDirectory(ditDir);
         using var dit = StableAudioDiT.FromLoader(st);
@@ -105,7 +105,7 @@ public sealed class StableAudioDiTGoldenParityTests : HeavyTestBase
     {
         string? ditDir = FindRepoFile(DitDirRelative);
         string? goldenDir = FindGoldenDir();
-        if (ditDir is null || goldenDir is null) return;
+        Assert.SkipUnless(ditDir is not null && goldenDir is not null, "ditDir, goldenDir not found");
 
         VulkanBackend? vk = null;
         try { vk = new VulkanBackend(); } catch { return; }

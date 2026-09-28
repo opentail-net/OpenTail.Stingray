@@ -89,7 +89,7 @@ public sealed class LtxVideoGoldenParityTests : HeavyTestBase
     {
         string? modelPath = FindModelPath(ModelFileName);
         string? goldenDir = FindGoldenDir();
-        if (modelPath is null || goldenDir is null) return; // skip: needs local checkpoint + fixtures
+        Assert.SkipUnless(modelPath is not null && goldenDir is not null, "modelPath, goldenDir not found"); // skip: needs local checkpoint + fixtures
 
         using var loader = SafetensorsLoader.Open(modelPath);
         var model = new LtxVideoModel(loader);

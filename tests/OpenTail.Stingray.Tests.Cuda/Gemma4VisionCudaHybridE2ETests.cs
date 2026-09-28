@@ -89,7 +89,7 @@ public sealed class Gemma4VisionCudaHybridE2ETests : IDisposable
         Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
         var textPath = Find(TextModel);
         var mmprojPath = Find(Mmproj);
-        if (textPath is null || mmprojPath is null) return;      // model-gated
+        Assert.SkipUnless(textPath is not null && mmprojPath is not null, "textPath, mmprojPath not found");      // model-gated
 
         using var model = GgufModel.Open(textPath);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);

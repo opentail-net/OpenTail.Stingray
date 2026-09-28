@@ -100,7 +100,7 @@ public sealed class StableAudioPipelineGoldenParityTests : HeavyTestBase
         string? ditDir = FindRepoDir(DitDirRelative);
         string? t5gemmaDir = FindRepoDir(T5GemmaDirRelative);
         string? goldenDir = FindGoldenDir();
-        if (ditDir is null || t5gemmaDir is null || goldenDir is null) return; // skip: needs local weights + fixtures
+        Assert.SkipUnless(ditDir is not null && t5gemmaDir is not null && goldenDir is not null, "ditDir, t5gemmaDir, goldenDir not found"); // skip: needs local weights + fixtures
 
         var latent0 = ReadFloats(Path.Combine(goldenDir, "latent0.bin"));
         var goldenPcm = ReadFloats(Path.Combine(goldenDir, "pcm.bin"));
@@ -128,7 +128,7 @@ public sealed class StableAudioPipelineGoldenParityTests : HeavyTestBase
         string? ditDir = FindRepoDir(DitDirRelative);
         string? t5gemmaDir = FindRepoDir(T5GemmaDirRelative);
         string? goldenDir = FindGoldenDir();
-        if (ditDir is null || t5gemmaDir is null || goldenDir is null) return;
+        Assert.SkipUnless(ditDir is not null && t5gemmaDir is not null && goldenDir is not null, "ditDir, t5gemmaDir, goldenDir not found");
 
         OpenTail.Stingray.Vulkan.VulkanBackend? vk = null;
         try { vk = new OpenTail.Stingray.Vulkan.VulkanBackend(); } catch { return; }

@@ -11,7 +11,7 @@ public sealed class Flash64SchedulingTests : HeavyTestBase
     public void TileJobs_MatchHeadJobs_BitExactly()
     {
         string? path = FindModelPath();
-        if (path is null || !Avx2.IsSupported || !Fma.IsSupported) return;
+        Assert.SkipUnless(path is not null && Avx2.IsSupported && Fma.IsSupported, "model not found or AVX2/FMA unsupported");
 
         using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
         var model = modelHandle.Model;
@@ -43,7 +43,7 @@ public sealed class Flash64SchedulingTests : HeavyTestBase
     public void TileJobs_ChunkedPrefill_MatchesSingleCall()
     {
         string? path = FindModelPath();
-        if (path is null || !Avx2.IsSupported || !Fma.IsSupported) return;
+        Assert.SkipUnless(path is not null && Avx2.IsSupported && Fma.IsSupported, "model not found or AVX2/FMA unsupported");
 
         using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
         var model = modelHandle.Model;
@@ -95,7 +95,7 @@ public sealed class Flash64SchedulingTests : HeavyTestBase
     public void Flash128_MatchesMaterialisedAttention()
     {
         string? path = FindModelPath("Qwen3-8B-Q4_K_M.gguf");
-        if (path is null || !Avx2.IsSupported || !Fma.IsSupported) return;
+        Assert.SkipUnless(path is not null && Avx2.IsSupported && Fma.IsSupported, "model not found or AVX2/FMA unsupported");
 
         using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
         var model = modelHandle.Model;

@@ -24,7 +24,7 @@ public sealed class WanQuantizationRooflineMicrobenchTests : HeavyTestBase
     public void WanMatrixShapes_SgemmF16_RooflineScalingAcrossBatchSizes()
     {
         using var vk = TryCreateVulkan();
-        if (vk == null) return;
+        Assert.SkipUnless(vk != null, "vk not found");
 
         const int dim = 1536;
         int[] tokenCounts = [16, 64, 128, 256, 512, 1024, 2048];
@@ -85,7 +85,7 @@ public sealed class WanQuantizationRooflineMicrobenchTests : HeavyTestBase
     public void WanFullBlock_SgemmF16_Scaling_Vs_TokenCount()
     {
         using var vk = TryCreateVulkan();
-        if (vk == null) return;
+        Assert.SkipUnless(vk != null, "vk not found");
 
         const int dim = 1536;
         const int ffnDim = 8960;
@@ -156,7 +156,7 @@ public sealed class WanQuantizationRooflineMicrobenchTests : HeavyTestBase
     public void WanQuantization_DequantQ4KM_ThroughputAndVramBenchmark()
     {
         using var vk = TryCreateVulkan();
-        if (vk == null) return;
+        Assert.SkipUnless(vk != null, "vk not found");
 
         // Wan 2.1 1-Block linear weight count: ~41.68M parameters
         // 41,680,896 params / 256 = 162,816 Q4_K blocks

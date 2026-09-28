@@ -88,7 +88,7 @@ public sealed class StableAudioVaeGoldenParityTests : HeavyTestBase
     {
         string? ditDir = FindRepoFile(DitDirRelative);
         string? goldenDir = FindGoldenDir();
-        if (ditDir is null || goldenDir is null) return; // skip: needs local VAE weights + fixtures
+        Assert.SkipUnless(ditDir is not null && goldenDir is not null, "ditDir, goldenDir not found"); // skip: needs local VAE weights + fixtures
 
         using var st = SafetensorsLoader.OpenDirectory(ditDir);
         using var vae = AcousticVae.FromLoader(st);
@@ -121,7 +121,7 @@ public sealed class StableAudioVaeGoldenParityTests : HeavyTestBase
     {
         string? ditDir = FindRepoFile(DitDirRelative);
         string? goldenDir = FindGoldenDir();
-        if (ditDir is null || goldenDir is null) return; // skip: needs local VAE weights + fixtures
+        Assert.SkipUnless(ditDir is not null && goldenDir is not null, "ditDir, goldenDir not found"); // skip: needs local VAE weights + fixtures
 
         using var st = SafetensorsLoader.OpenDirectory(ditDir);
         using var vae = AcousticVae.FromLoader(st);

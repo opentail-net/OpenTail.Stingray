@@ -70,7 +70,7 @@ public sealed class LtxT5EncoderGoldenParityTests : HeavyTestBase
     {
         string? tokenizerJson = FindRepoFile(TokenizerJsonRelative);
         string? goldenDir = FindGoldenDir();
-        if (tokenizerJson is null || goldenDir is null) return; // skip: needs local T5 tokenizer + fixtures
+        Assert.SkipUnless(tokenizerJson is not null && goldenDir is not null, "tokenizerJson, goldenDir not found"); // skip: needs local T5 tokenizer + fixtures
 
         var idsBytes = File.ReadAllBytes(Path.Combine(goldenDir, "ids.bin"));
         var goldenIds = new int[idsBytes.Length / 4];
@@ -87,7 +87,7 @@ public sealed class LtxT5EncoderGoldenParityTests : HeavyTestBase
     {
         string? textEncoderDir = FindRepoFile(TextEncoderDirRelative);
         string? goldenDir = FindGoldenDir();
-        if (textEncoderDir is null || goldenDir is null) return; // skip: needs local T5 weights + fixtures
+        Assert.SkipUnless(textEncoderDir is not null && goldenDir is not null, "textEncoderDir, goldenDir not found"); // skip: needs local T5 weights + fixtures
 
         // T5Encoder's sharded-safetensors loading goes through SafetensorsLoader.OpenDirectory,
         // which reads the real `model.safetensors.index.json` HF shards this checkpoint uses.

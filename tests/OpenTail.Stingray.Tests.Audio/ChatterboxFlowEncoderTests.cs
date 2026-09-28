@@ -29,7 +29,7 @@ public sealed class ChatterboxFlowEncoderTests : HeavyTestBase
     {
         string? t3Path = FindRepoFile("models/chatterbox-turbo-t3-q4_k.gguf");
         string? s3GenPath = FindRepoFile("models/chatterbox-turbo-s3gen-q4_k.gguf");
-        if (t3Path is null || s3GenPath is null) return;
+        Assert.SkipUnless(t3Path is not null && s3GenPath is not null, "t3Path, s3GenPath not found");
 
         using var t3Weights = new ChatterboxWeights(t3Path);
         using var s3Weights = new ChatterboxS3GenWeights(s3GenPath);

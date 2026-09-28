@@ -30,14 +30,15 @@ sources, but work proceeds in the order below.
   - [x] **Done when:** committed.
 
 ### 2. Rerun the real-weight landscape sweep
-- [ ] **2. Rerun the real-weight landscape sweep** (STOPPED 2026-09-27: the memory reaper killed it twice, partway through Audio; not restarted. See Log)
-  - [ ] Run `STINGRAY_RUN_HEAVY_TESTS=1` for Diffusion suite with its own log (no other heavy runs).
-  - [ ] Run `STINGRAY_RUN_HEAVY_TESTS=1` for Audio suite with its own log.
-  - [ ] Run `STINGRAY_RUN_HEAVY_TESTS=1` for Vision suite with its own log.
-  - [ ] Run `STINGRAY_RUN_HEAVY_TESTS=1` for ForwardPass suite with its own log.
-  - [ ] Read failures and flag any real-weight test class that finishes in under ~0.4s (silent no-op, CLAUDE.md rule 12).
-  - [ ] **Done when:** every suite has a complete log. Each failure is either fixed or entered in `bugstofix.md`.
-  - *Estimate:* little effort from developer, hours of machine time. (2026-09-27 attempt killed by memory reaper after Diffusion).
+- [x] **2. Rerun the real-weight landscape sweep** (DONE 2026-09-28, `scripts/sweep-tests.ps1`; the 2026-09-27 memory-reaper stall's root cause found and fixed same day — see Log)
+  - [x] Built a resumable, one-class-per-process harness (`scripts/sweep-tests.ps1`, commit `4202bff`) specifically because the whole-suite run kept getting reaper-killed with no record of where it stopped.
+  - [x] Found and fixed the actual driver of the reaper kills: `PersonaPlexLmTensorSource` eagerly dequantized the whole 7B Q8_0 checkpoint to fp32 on every PersonaPlex real-weight test (peaked 37-45 GB each, 7 of the memory sweep's top-10). Zero-copy Q8_0 fix: 28 GB -> 11.17 GiB, ~2.2x faster decode too. See `docs/done/audio-review-new-progress.md`'s PersonaPlex 7B entry.
+  - [x] Added a cross-process mutex to `HeavyTestBase` (now present in Diffusion/Vision too, which had none before) so concurrent heavy-test processes can't stack memory regardless of how they're launched.
+  - [x] Ran `STINGRAY_RUN_HEAVY_TESTS=1` for Diffusion, Audio, Vision, ForwardPass via the harness: 649 classes resumed/run to completion, no reaper kill.
+  - [x] Read failures and logged them in `bugstofix.md` (new entry, "Real-weight landscape sweep rerun"): a WanTests tolerance failure, an 8-class FunASR cluster sharing one root cause (the already-tracked wrong-checkpoint trap), a QwenASR empty-transcript failure, a MeloTTS stub-file failure, a Parler near-miss, a QwenTTS NaN, 4 vision-embedder parity misses (Llava's cosine is negative), and 2 ForwardPass value-mismatches — triaged, not root-caused (see that entry for detail and log paths).
+  - [x] Flagged any quick real-weight pass under ~0.4s as a possible silent no-op (CLAUDE.md rule 12) — see the sweep's own `-Summary` output; none of the flagged ones looked like a NEW no-op beyond the already-known pattern.
+  - **Caveat:** the harness resumes from cached `state.jsonl`, so the PersonaPlex classes it reports as "done" are stale (pre-fix) entries from earlier the same day, not a fresh re-verification under the fix — see the new bugstofix entry for detail. The PersonaPlex numbers actually trusted are from direct, independent re-runs, not this sweep.
+  - *Estimate:* little effort from developer, hours of machine time. (2026-09-27 attempt killed by memory reaper after Diffusion; 2026-09-28 rerun completed once the actual memory driver was fixed rather than just retried).
 
 ---
 
@@ -68,13 +69,13 @@ sources, but work proceeds in the order below.
   - [x] **Done when:** `stingray stt` transcribes a real clip with each, matching existing pipeline output.
 
 ### 6. Finish the silent-no-op test sweep
-- [ ] **6. Finish the silent-no-op test sweep** (MOSTLY DONE 2026-09-27; leftovers below)
+- [x] **6. Finish the silent-no-op test sweep** (DONE 2026-09-28)
   - [x] Point real-weight tests at `models/_models` as well as `models/` (Part 1 committed in `e58b58a`: 162 silent returns converted to `Assert.Skip`, 141 lookups updated).
   - [x] Verify `ForwardPass.Fast`: 14 previously silent real-weight tests now run and pass.
   - [x] Sweep remaining silent returns in the Audio project (46 files, `4874ea4`).
-  - [ ] Sweep remaining 14 files under active edit.
-  - [ ] Sweep 31 lookup helpers with non-standard shapes (listed by `nested_models.py`).
-  - [ ] **Done when:** grep finds no remaining silent returns in real-weight tests, and test runs report skips as skips.
+  - [x] Sweep the remaining 52 files/62 occurrences (`nested_models.py` no longer exists -- rebuilt the file list directly via grep for `if (X is null || ...) return;` at the top of a test body, converted each to `Assert.SkipUnless(negated-condition, "reason")`). Excluded 7 `Zz*Tmp.cs` scratch/debug files (not real regression tests, same judgment as the Diffusion `ZZ_Scratch*` files elsewhere) and 2 occurrences in `VisionOpsBenchmarkTests.cs` that are unsafe pointer null-guards inside private helpers, not test-skip gates -- converting those would have been a real behavior change, not a no-op fix.
+  - [x] Verified: all 6 touched projects (Diffusion/Audio/Vision/ForwardPass/Vulkan/Cuda) build clean, 0 warnings; `ChatterboxCfmDecoderTests` (model present) now genuinely runs for real (11.1s, not a silent pass); `Flash64SchedulingTests` (AVX2/FMA + model-path gate) now reports 3 visible `[SKIP]`s with real reasons instead of silently passing.
+  - [x] **Done when:** grep finds no remaining silent returns in real-weight tests, and test runs report skips as skips. -- confirmed: only the 7 excluded scratch files and the 1 excluded false-positive file still match the pattern.
 
 ---
 

@@ -25,7 +25,7 @@ public class Qwen25VlVisionEmbedderParityTests
     {
         var mmproj = VisionTestPaths.FindQwen25VlMmproj();
         var fx = VisionTestPaths.FindFixtureDir("qwen25vl");
-        if (mmproj is null || fx is null) return;
+        Assert.SkipUnless(mmproj is not null && fx is not null, "mmproj, fx not found");
         var inPath = Path.Combine(fx, "input_chw.f32");
         var outPath = Path.Combine(fx, "output.f32");
         var metaPath = Path.Combine(fx, "meta.json");

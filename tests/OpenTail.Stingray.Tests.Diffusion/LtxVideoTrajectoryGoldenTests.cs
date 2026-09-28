@@ -96,7 +96,7 @@ public sealed class LtxVideoTrajectoryGoldenTests : HeavyTestBase
     {
         string? modelPath = FindModelPath(ModelFileName);
         string? goldenDir = FindGoldenDir();
-        if (modelPath is null || goldenDir is null) return;
+        Assert.SkipUnless(modelPath is not null && goldenDir is not null, "modelPath, goldenDir not found");
 
         using var loader = SafetensorsLoader.Open(modelPath);
         var model = new LtxVideoModel(loader);

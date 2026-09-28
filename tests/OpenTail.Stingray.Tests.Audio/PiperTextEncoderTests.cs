@@ -64,7 +64,7 @@ public sealed class PiperTextEncoderTests : HeavyTestBase
     {
         string? modelPath = FindRepoFile("models/en_US-lessac-medium.onnx");
         string? goldenPath = FindRepoFile("scratch-llamacpp-ref/piper_golden_textenc/enc_p_proj_Conv_output_0.npy");
-        if (modelPath is null || goldenPath is null) return;
+        Assert.SkipUnless(modelPath is not null && goldenPath is not null, "modelPath, goldenPath not found");
 
         var weights = new PiperOnnxWeights(modelPath);
 

@@ -52,7 +52,7 @@ public sealed class KokoroTextEncoderTests : HeavyTestBase
     {
         string? modelPath = FindRepoFile("models/kokoro-82m-q8_0.gguf");
         string? golden = FindRepoFile("scratch-llamacpp-ref/kokoro_golden_textenc/encoder_text_encoder_Transpose_2_output_0.npy");
-        if (modelPath is null || golden is null) return;
+        Assert.SkipUnless(modelPath is not null && golden is not null, "modelPath, golden not found");
 
         using var weights = new KokoroWeights(modelPath);
 

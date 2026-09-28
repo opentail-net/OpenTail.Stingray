@@ -77,7 +77,7 @@ public sealed class StableAudioConformanceTests : HeavyTestBase
     {
         string? ditDir = FindRepoFile(DitDirRelative);
         string? t5gemmaDir = FindRepoFile("models/stable-audio-3-t5gemma");
-        if (ditDir is null || t5gemmaDir is null) return; // skip: needs local weights
+        Assert.SkipUnless(ditDir is not null && t5gemmaDir is not null, "ditDir, t5gemmaDir not found"); // skip: needs local weights
 
         using var ditWeights = SafetensorsLoader.OpenDirectory(ditDir);
         using var textEncoderWeights = SafetensorsLoader.OpenDirectory(t5gemmaDir);

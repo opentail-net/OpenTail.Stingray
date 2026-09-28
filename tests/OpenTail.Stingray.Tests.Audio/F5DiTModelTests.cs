@@ -87,7 +87,7 @@ public sealed class F5DiTModelTests : HeavyTestBase
     {
         string? modelPath = FindRepoFile("models/f5tts_base.safetensors");
         string? dir = FindRepoFile("scratch-llamacpp-ref/f5_golden_dit/velocity.npy");
-        if (modelPath is null || dir is null) return;
+        Assert.SkipUnless(modelPath is not null && dir is not null, "modelPath, dir not found");
         string baseDir = Path.GetDirectoryName(dir)!;
 
         var weights = new F5TtsWeights(modelPath);
@@ -124,7 +124,7 @@ public sealed class F5DiTModelTests : HeavyTestBase
     {
         string? modelPath = FindRepoFile("models/f5tts_base.safetensors");
         string? dir = FindRepoFile("scratch-llamacpp-ref/f5_golden_dit/velocity.npy");
-        if (modelPath is null || dir is null) return;
+        Assert.SkipUnless(modelPath is not null && dir is not null, "modelPath, dir not found");
         string baseDir = Path.GetDirectoryName(dir)!;
 
         var weights = new F5TtsWeights(modelPath);

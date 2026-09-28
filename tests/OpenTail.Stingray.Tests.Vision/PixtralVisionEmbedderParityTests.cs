@@ -31,7 +31,7 @@ public class PixtralVisionEmbedderParityTests
     {
         var mmproj = VisionTestPaths.FindPixtralMmproj();
         var fx = VisionTestPaths.FindFixtureDir("pixtral");
-        if (mmproj is null || fx is null) return;   // gated on model + generated golden
+        Assert.SkipUnless(mmproj is not null && fx is not null, "mmproj, fx not found");   // gated on model + generated golden
         var inPath = Path.Combine(fx, "input_chw.f32");
         var outPath = Path.Combine(fx, "output.f32");
         var metaPath = Path.Combine(fx, "meta.json");
