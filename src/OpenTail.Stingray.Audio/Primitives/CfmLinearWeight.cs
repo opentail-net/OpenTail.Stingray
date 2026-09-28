@@ -333,18 +333,22 @@ public sealed class CfmLinearWeight
                 {
                     const int RowBlock = 32;
                     int blocks = (outDim + RowBlock - 1) / RowBlock;
-                    System.Threading.Tasks.Parallel.For(0, t * blocks, job =>
+                    // Rows inside the block loop: each weight row is fetched once and reused, from cache, for every
+                    // input row (CFG's two branches, batched by the caller, share one weight stream).
+                    System.Threading.Tasks.Parallel.For(0, blocks, blk =>
                     {
-                        int ti = job / blocks, o0 = (job % blocks) * RowBlock, o1 = Math.Min(outDim, o0 + RowBlock);
-                        float* inRow = (float*)inAddr + (nuint)ti * (nuint)inDim;
-                        float* outRow = (float*)outAddr + (nuint)ti * (nuint)outDim;
+                        int o0 = blk * RowBlock, o1 = Math.Min(outDim, o0 + RowBlock);
                         ushort* wBase = (ushort*)wAddr;
                         float* b = (float*)bAddr;
                         for (int o = o0; o < o1; o++)
                         {
-                            float val = F16CNative.Dot(inRow, wBase + (nuint)o * (nuint)inDim, inDim);
-                            if (b != null) val += b[o];
-                            outRow[o] = val;
+                            ushort* wRow = wBase + (nuint)o * (nuint)inDim;
+                            for (int ti = 0; ti < t; ti++)
+                            {
+                                float val = F16CNative.Dot((float*)inAddr + (nuint)ti * (nuint)inDim, wRow, inDim);
+                                if (b != null) val += b[o];
+                                ((float*)outAddr)[(nuint)ti * (nuint)outDim + (nuint)o] = val;
+                            }
                         }
                     });
                     return;

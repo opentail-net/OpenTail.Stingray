@@ -83,39 +83,50 @@ public static class AudioGenTransformer
     }
 
     /// <summary>Runs one decode step: `tokenColumn[codebook]` -&gt; summed embedding + sinusoidal position -&gt; N decoder layers (growing <paramref name="cache"/>) -&gt; final norm -&gt; per-codebook logits. Returns `[codebook][CodebookSize]`.</summary>
-    public static unsafe float[][] Step(AudioGenTransformerWeights w, int[] tokenColumn, KvCache cache)
+    public static float[][] Step(AudioGenTransformerWeights w, int[] tokenColumn, KvCache cache) =>
+        StepBatch(w, tokenColumn, [cache])[0];
+
+    /// <summary>
+    /// <see cref="Step"/> for several sequences that share the token column and position (classifier-free guidance's
+    /// conditional and unconditional branches): every projection runs as one B-row matmul, so each weight is streamed
+    /// once per step instead of once per branch, while each sequence attends over its own <paramref name="caches"/>
+    /// entry. Per-row arithmetic is the same as running <see cref="Step"/> on each cache. Returns `[b][codebook][CodebookSize]`.
+    /// </summary>
+    public static unsafe float[][][] StepBatch(AudioGenTransformerWeights w, int[] tokenColumn, KvCache[] caches)
     {
         int hidden = AudioGenConfig.HiddenSize;
-        var x = new float[hidden];
+        int b = caches.Length;
+        var x0 = new float[hidden];
         for (int q = 0; q < AudioGenConfig.NumCodebooks; q++)
         {
             int tok = tokenColumn[q];
             var table = w.EmbedTokens[q];
-            for (int d = 0; d < hidden; d++) x[d] += table[tok * hidden + d];
+            for (int d = 0; d < hidden; d++) x0[d] += table[tok * hidden + d];
         }
 
-        int pos = cache.Position;
-        AddSinusoidalPositionEmbedding(x, pos, hidden);
+        int pos = caches[0].Position;
+        AddSinusoidalPositionEmbedding(x0, pos, hidden);
+        var x = new float[b * hidden];
+        for (int i = 0; i < b; i++) Array.Copy(x0, 0, x, i * hidden, hidden);
 
-        foreach (var (layer, li) in w.Layers.Select((l, i) => (l, i)))
-            x = DecoderLayer(x, layer, li, cache);
+        for (int li = 0; li < w.Layers.Length; li++)
+            x = DecoderLayer(x, b, w.Layers[li], li, caches);
 
-        var normed = new float[hidden];
-        LayerNorm(x, w.OutNormWeight, w.OutNormBias, normed);
-
-        var logits = new float[AudioGenConfig.NumCodebooks][];
-        fixed (float* np = normed)
+        var normed = LayerNormRows(x, b, w.OutNormWeight, w.OutNormBias);
+        var logits = new float[b][][];
+        for (int i = 0; i < b; i++) logits[i] = new float[AudioGenConfig.NumCodebooks][];
+        var l = new float[b * AudioGenConfig.CodebookSize];
+        fixed (float* np = normed, lp = l)
         {
             for (int q = 0; q < AudioGenConfig.NumCodebooks; q++)
             {
-                var l = new float[AudioGenConfig.CodebookSize];
-                fixed (float* lp = l)
-                    w.LmHeads[q].MatMul(np, 1, lp);
-                logits[q] = l;
+                w.LmHeads[q].MatMul(np, b, lp);
+                for (int i = 0; i < b; i++)
+                    logits[i][q] = l.AsSpan(i * AudioGenConfig.CodebookSize, AudioGenConfig.CodebookSize).ToArray();
             }
         }
 
-        cache.Position++;
+        foreach (var c in caches) c.Position++;
         return logits;
     }
 
@@ -133,66 +144,72 @@ public static class AudioGenTransformer
         }
     }
 
-    private static unsafe float[] DecoderLayer(float[] x, AudioGenDecoderLayerWeights lw, int layerIndex, KvCache cache)
+    private static float[] LayerNormRows(float[] x, int b, float[] weight, float[] bias)
     {
         int hidden = AudioGenConfig.HiddenSize;
+        var output = new float[b * hidden];
+        for (int i = 0; i < b; i++)
+            LayerNorm(x.AsSpan(i * hidden, hidden), weight, bias, output.AsSpan(i * hidden, hidden));
+        return output;
+    }
 
-        var normed1 = new float[hidden];
-        LayerNorm(x, lw.Norm1Weight, lw.Norm1Bias, normed1);
-        var selfOut = SelfAttention(normed1, lw, layerIndex, cache);
-        var afterSelf = new float[hidden];
+    private static float[] DecoderLayer(float[] x, int b, AudioGenDecoderLayerWeights lw, int layerIndex, KvCache[] caches)
+    {
+        var selfOut = SelfAttention(LayerNormRows(x, b, lw.Norm1Weight, lw.Norm1Bias), b, lw, layerIndex, caches);
+        var afterSelf = new float[x.Length];
         TensorPrimitives.Add(x, selfOut, afterSelf);
 
-        var normedCross = new float[hidden];
-        LayerNorm(afterSelf, lw.NormCrossWeight, lw.NormCrossBias, normedCross);
-        var crossOut = CrossAttention(normedCross, lw, layerIndex, cache);
-        var afterCross = new float[hidden];
+        var crossOut = CrossAttention(LayerNormRows(afterSelf, b, lw.NormCrossWeight, lw.NormCrossBias), b, lw, layerIndex, caches);
+        var afterCross = new float[x.Length];
         TensorPrimitives.Add(afterSelf, crossOut, afterCross);
 
-        var normed2 = new float[hidden];
-        LayerNorm(afterCross, lw.Norm2Weight, lw.Norm2Bias, normed2);
-        var ffnOut = Ffn(normed2, lw);
-        var output = new float[hidden];
+        var ffnOut = Ffn(LayerNormRows(afterCross, b, lw.Norm2Weight, lw.Norm2Bias), b, lw);
+        var output = new float[x.Length];
         TensorPrimitives.Add(afterCross, ffnOut, output);
         return output;
     }
 
-    private static unsafe float[] SelfAttention(float[] x, AudioGenDecoderLayerWeights lw, int layerIndex, KvCache cache)
+    private static unsafe float[] SelfAttention(float[] x, int b, AudioGenDecoderLayerWeights lw, int layerIndex, KvCache[] caches)
     {
         int hidden = AudioGenConfig.HiddenSize;
         int nHeads = AudioGenConfig.NumHeads;
         int headDim = AudioGenConfig.HeadDim;
         float scale = 1f / MathF.Sqrt(headDim);
 
-        var q = new float[hidden];
-        var k = new float[hidden];
-        var v = new float[hidden];
+        var q = new float[b * hidden];
+        var k = new float[b * hidden];
+        var v = new float[b * hidden];
         fixed (float* xp = x, qp = q, kp = k, vp = v)
         {
-            lw.SelfAttnQWeight.MatMul(xp, 1, qp);
-            lw.SelfAttnKWeight.MatMul(xp, 1, kp);
-            lw.SelfAttnVWeight.MatMul(xp, 1, vp);
+            lw.SelfAttnQWeight.MatMul(xp, b, qp);
+            lw.SelfAttnKWeight.MatMul(xp, b, kp);
+            lw.SelfAttnVWeight.MatMul(xp, b, vp);
         }
 
-        cache.SelfK[layerIndex].Add(k);
-        cache.SelfV[layerIndex].Add(v);
-        int histLen = cache.SelfK[layerIndex].Count;
-
-        var context = new float[hidden];
-        Parallel.For(0, nHeads, h =>
+        for (int i = 0; i < b; i++)
         {
-            int off = h * headDim;
+            caches[i].SelfK[layerIndex].Add(k.AsSpan(i * hidden, hidden).ToArray());
+            caches[i].SelfV[layerIndex].Add(v.AsSpan(i * hidden, hidden).ToArray());
+        }
+
+        var context = new float[b * hidden];
+        Parallel.For(0, b * nHeads, job =>
+        {
+            int i = job / nHeads, h = job % nHeads;
+            var cache = caches[i];
+            int histLen = cache.SelfK[layerIndex].Count;
+            int qOff = i * hidden + h * headDim, off = h * headDim;
             var scores = new float[histLen];
             for (int j = 0; j < histLen; j++)
             {
                 var kj = cache.SelfK[layerIndex][j];
                 float dot = 0f;
-                for (int d = 0; d < headDim; d++) dot += q[off + d] * kj[off + d];
+                for (int d = 0; d < headDim; d++) dot += q[qOff + d] * kj[off + d];
                 scores[j] = dot * scale;
             }
             SoftmaxInPlace(scores);
 
-            var ctxSpan = context.AsSpan(off, headDim);
+            var ctxSpan = context.AsSpan(qOff, headDim);
             for (int j = 0; j < histLen; j++)
             {
                 float s = scores[j];
@@ -201,42 +218,43 @@ public static class AudioGenTransformer
             }
         });
 
-        var output = new float[hidden];
+        var output = new float[b * hidden];
         fixed (float* cp = context, op = output)
-            lw.SelfAttnOutProjWeight.MatMul(cp, 1, op);
+            lw.SelfAttnOutProjWeight.MatMul(cp, b, op);
         return output;
     }
 
-    private static unsafe float[] CrossAttention(float[] x, AudioGenDecoderLayerWeights lw, int layerIndex, KvCache cache)
+    private static unsafe float[] CrossAttention(float[] x, int b, AudioGenDecoderLayerWeights lw, int layerIndex, KvCache[] caches)
     {
         int hidden = AudioGenConfig.HiddenSize;
         int nHeads = AudioGenConfig.NumHeads;
         int headDim = AudioGenConfig.HeadDim;
         float scale = 1f / MathF.Sqrt(headDim);
 
-        var q = new float[hidden];
+        var q = new float[b * hidden];
         fixed (float* xp = x, qp = q)
-            lw.CrossAttnQWeight.MatMul(xp, 1, qp);
+            lw.CrossAttnQWeight.MatMul(xp, b, qp);
 
-        var crossK = cache.CrossK![layerIndex];
-        var crossV = cache.CrossV![layerIndex];
-        int crossLen = cache.CrossLen;
-
-        var context = new float[hidden];
-        Parallel.For(0, nHeads, h =>
+        var context = new float[b * hidden];
+        Parallel.For(0, b * nHeads, job =>
         {
-            int off = h * headDim;
+            int i = job / nHeads, h = job % nHeads;
+            var cache = caches[i];
+            var crossK = cache.CrossK![layerIndex];
+            var crossV = cache.CrossV![layerIndex];
+            int crossLen = cache.CrossLen;
+            int qOff = i * hidden + h * headDim, off = h * headDim;
             var scores = new float[crossLen];
             for (int j = 0; j < crossLen; j++)
             {
                 float dot = 0f;
                 int kBase = j * hidden + off;
-                for (int d = 0; d < headDim; d++) dot += q[off + d] * crossK[kBase + d];
+                for (int d = 0; d < headDim; d++) dot += q[qOff + d] * crossK[kBase + d];
                 scores[j] = dot * scale;
             }
             SoftmaxInPlace(scores);
 
-            var ctxSpan = context.AsSpan(off, headDim);
+            var ctxSpan = context.AsSpan(qOff, headDim);
             for (int j = 0; j < crossLen; j++)
             {
                 float s = scores[j];
@@ -245,26 +263,26 @@ public static class AudioGenTransformer
             }
         });
 
-        var output = new float[hidden];
+        var output = new float[b * hidden];
         fixed (float* cp = context, op = output)
-            lw.CrossAttnOutProjWeight.MatMul(cp, 1, op);
+            lw.CrossAttnOutProjWeight.MatMul(cp, b, op);
         return output;
     }
 
     /// <summary>Real `fc1 -> GELU -> fc2` (`linear1`/`linear2`), no bias (`bias_ff: false`).</summary>
-    private static unsafe float[] Ffn(float[] x, AudioGenDecoderLayerWeights lw)
+    private static unsafe float[] Ffn(float[] x, int b, AudioGenDecoderLayerWeights lw)
     {
         int hidden = AudioGenConfig.HiddenSize;
         int ffn = AudioGenConfig.FfnDim;
-        var mid = new float[ffn];
+        var mid = new float[b * ffn];
         fixed (float* xp = x, mp = mid)
-            lw.Linear1Weight.MatMul(xp, 1, mp);
+            lw.Linear1Weight.MatMul(xp, b, mp);
 
         for (int i = 0; i < mid.Length; i++) mid[i] = Gelu(mid[i]);
 
-        var output = new float[hidden];
+        var output = new float[b * hidden];
         fixed (float* mp = mid, op = output)
-            lw.Linear2Weight.MatMul(mp, 1, op);
+            lw.Linear2Weight.MatMul(mp, b, op);
         return output;
     }
 

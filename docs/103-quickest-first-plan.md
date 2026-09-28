@@ -438,3 +438,5 @@ Timebox each at half a day, write down what was learned, and move on if blocked.
     equal). AudioGen-medium 3 s: 62.0 -> 30.0 s; MusicGen-small 3 s: 16.7 -> 9.5 s. Also benefits every other
     `CfmLinearWeight` caller with small batches (MiniMax RVQ depth decoder, CosyVoice/Chatterbox CFM, F5, QwenASR, T5).
     Tests.Audio 512 (428 skipped without heavy) pass.
+  - AudioGen CFG: both guidance branches in one batched decoder step (`AudioGenTransformer.StepBatch`; `Step` is its B = 1
+    case). 3 s: 30.0 -> 19.0 s (62.0 at the start of the day), greedy PCM SHA-256 unchanged.
