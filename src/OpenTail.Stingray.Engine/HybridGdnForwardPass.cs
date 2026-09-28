@@ -2018,6 +2018,94 @@ public sealed unsafe class HybridGdnForwardPass : IForwardPass
         ApplySigmoidGate(_attnOut, _gate, qDim);
     }
 
+    /// <summary>
+    /// <see cref="AttnCoreAt"/> for a whole chunk, with the same per-token and per-(head, token) arithmetic:
+    /// de-interleave, Q/K RMSNorm and RoPE run over tokens in parallel, K/V are appended in position order, then
+    /// every (head, token) pair attends over 0..its position in parallel (all of the chunk's K/V is in the cache by
+    /// then, and token t reads only positions up to startPos + t), and the sigmoid gate is applied. Bit-identical
+    /// to calling <see cref="AttnCoreAt"/> token by token; the per-token loop spent most of its time in the
+    /// thread-pool handoff of one small head-parallel attention per token.
+    /// </summary>
+    private void AttnCoreChunked(int layer, int n, int startPos, float* qg, float* kAll, float* vAll, float* ao)
+    {
+        int hd = _headDim, nh = _numHeads, nkv = _numKvHeads;
+        int qDim = nh * hd, kvDim = nkv * hd, twoHd = hd * 2;
+        float* qAll = Alloc(n * qDim);
+        float* gAll = Alloc(n * qDim);
+        try
+        {
+            float* qNormW = _qNorm[layer], kNormW = _kNorm[layer];
+            float eps = _hp.RmsNormEps;
+            Parallel.For(0, n, t =>
+            {
+                float* src = qg + (long)t * qDim * 2;
+                float* q = qAll + (long)t * qDim, g = gAll + (long)t * qDim, k = kAll + (long)t * kvDim;
+                for (int h = 0; h < nh; h++)
+                {
+                    new ReadOnlySpan<float>(src + h * twoHd, hd).CopyTo(new Span<float>(q + h * hd, hd));
+                    new ReadOnlySpan<float>(src + h * twoHd + hd, hd).CopyTo(new Span<float>(g + h * hd, hd));
+                }
+                PerHeadRmsNorm(q, qNormW, nh, hd, eps);
+                PerHeadRmsNorm(k, kNormW, nkv, hd, eps);
+                float* cos = _ropeCosTable + (long)(startPos + t) * _ropeHalfDim;
+                float* sin = _ropeSinTable + (long)(startPos + t) * _ropeHalfDim;
+                SimdKernels.ApplyRoPECachedNeoxPartial(q, cos, sin, nh, hd, _ropeDim);
+                SimdKernels.ApplyRoPECachedNeoxPartial(k, cos, sin, nkv, hd, _ropeDim);
+            });
+            for (int t = 0; t < n; t++)
+                _kvCache.AppendAt(layer, startPos + t,
+                    new ReadOnlySpan<float>(kAll + (long)t * kvDim, kvDim),
+                    new ReadOnlySpan<float>(vAll + (long)t * kvDim, kvDim));
+
+            float scale = 1.0f / MathF.Sqrt(hd);
+            int hpkg = _headsPerKvGroup;
+            var cache = _kvCache;
+            int maxSeq = startPos + n;
+            Parallel.For(0, nh * n,
+                () => (nint)NativeMemory.Alloc((nuint)(maxSeq * sizeof(float))),
+                (job, _, scratch) =>
+                {
+                    int h = job % nh, t = job / nh;
+                    int kvHead = h / hpkg;
+                    int seqLen = startPos + t + 1;
+                    float* qHead = qAll + (long)t * qDim + h * hd;
+                    float* outHead = ao + (long)t * qDim + h * hd;
+                    float* headScores = (float*)scratch;
+                    for (int i = 0; i < seqLen; i++)
+                        headScores[i] = SimdKernels.DotF32(qHead, cache.KeyAt(layer, i) + kvHead * hd, hd) * scale;
+                    SimdKernels.SoftmaxInPlace(headScores, seqLen);
+                    for (int d = 0; d < hd; d++) outHead[d] = 0;
+                    for (int i = 0; i < seqLen; i++)
+                    {
+                        float* vVec = cache.ValueAtHead(layer, i, kvHead);
+                        float w = headScores[i];
+                        if (Fma.IsSupported && hd >= 8)
+                        {
+                            var wv = Vector256.Create(w);
+                            int d = 0;
+                            for (; d + 8 <= hd; d += 8)
+                                Avx.Store(outHead + d, Fma.MultiplyAdd(wv, Avx.LoadVector256(vVec + d), Avx.LoadVector256(outHead + d)));
+                            for (; d < hd; d++) outHead[d] += w * vVec[d];
+                        }
+                        else
+                        {
+                            for (int d = 0; d < hd; d++) outHead[d] += w * vVec[d];
+                        }
+                    }
+                    return scratch;
+                },
+                scratch => NativeMemory.Free((void*)scratch));
+
+            for (int t = 0; t < n; t++)
+                ApplySigmoidGate(ao + (long)t * qDim, gAll + (long)t * qDim, qDim);
+        }
+        finally
+        {
+            NativeMemory.Free(qAll);
+            NativeMemory.Free(gAll);
+        }
+    }
+
     /// <summary>Batch at or above which chunked-prefill projections use <see cref="PackedSgemmF32.GemmQuant"/>
     /// (dequantize-on-the-fly packed F32 GEMM) instead of <see cref="SimdKernels.MatMulBatched"/>.</summary>
     private const int MinBatchForGemmQuant = 64;
@@ -2049,14 +2137,7 @@ public sealed unsafe class HybridGdnForwardPass : IForwardPass
             BatchedProjection(qg, _wQGate[layer], nrm, n, qDim * 2, e);
             BatchedProjection(kAll, _wK[layer], nrm, n, kvDim, e);
             BatchedProjection(vAll, _wV[layer], nrm, n, kvDim, e);
-            for (int t = 0; t < n; t++)
-            {
-                Copy(_qGate, qg + (long)t * qDim * 2, qDim * 2);
-                Copy(_k, kAll + (long)t * kvDim, kvDim);
-                Copy(_v, vAll + (long)t * kvDim, kvDim);
-                AttnCoreAt(layer, position: startPos + t, kvPosition: startPos + t);
-                Copy(ao + (long)t * qDim, _attnOut, qDim);
-            }
+            AttnCoreChunked(layer, n, startPos, qg, kAll, vAll, ao);
             BatchedProjection(hid, _wO[layer], ao, n, e, qDim);
         }
         finally

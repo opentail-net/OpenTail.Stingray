@@ -409,3 +409,6 @@ Timebox each at half a day, write down what was learned, and move on if blocked.
   - 11.d reproduces on the local Q6_K via the new `STINGRAY_HYBRID_GDN_MODEL` test override: argmax matches, but vocab
     142707 is 0.49947 (sequential) vs 0.092426 (chunked), |diff| 0.407 > tol 0.1025. Identical numbers with the pre-session
     GDN code, so today's parallel changes did not cause or change it.
+  - Qwen3.6-35B-A3B, third step: chunked-prefill attention batched over (head, token) instead of one head-parallel
+    attention per token. 45.9-47.0 -> 47.9-48.9 t/s = 0.74x (from 0.50x at the start of the session). Bit-identical.
+    Remaining: MoE 64 % of prefill (6.7 s of 10.5 s).
