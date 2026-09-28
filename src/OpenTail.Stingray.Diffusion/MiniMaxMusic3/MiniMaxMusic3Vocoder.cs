@@ -1,3 +1,4 @@
+using OpenTail.Stingray.Diffusion.Primitives;
 using System.Runtime.Intrinsics;
 
 namespace OpenTail.Stingray.Diffusion.MiniMaxMusic3;
@@ -220,6 +221,9 @@ public static class MiniMaxMusic3Vocoder
 
     private static unsafe float[] FullConv1d(float[] x, int inCh, int outCh, int t, float[] weight, float[]? bias, int kernel, int dilation, int padding)
     {
+        // Large inputs: tiled GEMM (shared with the ACE-Step Oobleck decoder), see Conv1dGemm.
+        if (Conv1dGemm.Applies(t, outCh))
+            return Conv1dGemm.Conv1d(x, inCh, outCh, t, weight, bias, kernel, dilation, padding);
         int rowLen = inCh * kernel;
         var output = new float[outCh * t];
 
@@ -273,6 +277,8 @@ public static class MiniMaxMusic3Vocoder
 
     private static unsafe (float[] Data, int T) ConvTranspose1d(float[] x, int inCh, int outCh, int t, float[] weight, float[] bias, int kernel, int stride, int padding)
     {
+        if (Conv1dGemm.Applies(t, outCh))
+            return Conv1dGemm.ConvTranspose1d(x, inCh, outCh, t, weight, bias, kernel, stride, padding);
         int outT = (t - 1) * stride - 2 * padding + kernel;
         var output = new float[outCh * outT];
 

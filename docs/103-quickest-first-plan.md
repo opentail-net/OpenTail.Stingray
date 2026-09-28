@@ -430,3 +430,6 @@ Timebox each at half a day, write down what was learned, and move on if blocked.
     around `PackedSgemmF32.Gemm`). Decode 88-90 -> 6.5 s, full 10 s generation 99-102 -> 17.3-17.8 s (audio.cpp CPU 37 s).
     Output within 1 int16 LSB of the old kernels on audio.cpp's latent. `AceStepOobleckDecoderTests`, E2E and
     `AceStepPrecomputeSilenceTests` pass; the two diffusers golden-parity tests skip (fixtures not on disk).
+  - MiniMax vocoder (item 15, audio sub-item): the GEMM conv kernels moved to a shared `Primitives/Conv1dGemm` used by the
+    ACE-Step Oobleck decoder and the MiniMax-Music3 vocoder. Vocoder decode 8.66-9.14 -> 4.57-4.64 s (200 frames), max abs
+    diff 7e-7 vs the old kernels; the ACE-Step decode is byte-identical before/after the extraction.
