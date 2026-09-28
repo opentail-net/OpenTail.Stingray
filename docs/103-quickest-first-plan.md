@@ -425,3 +425,8 @@ Timebox each at half a day, write down what was learned, and move on if blocked.
     configurations the batched trunk excludes; the CLI image path uses it. Qwen3-VL 2B, 784-token image: prefill
     19.8-20.1 -> 78.2-85.8 t/s, wall 63 -> 32-35 s. Batched vs per-token logits cosine 0.9994, same top token (new test in
     `Qwen3VlVulkanMRopeParityTests`). Vulkan still feeds image tokens one by one (M-RoPE models take its per-token trunk).
+  - ACE-Step VAE decode (found under item 14; taken before the GPU-only sub-items of 15, whose iGPU measurements settle
+    little here, CLAUDE.md rule 13): Oobleck `FullConv1d` and `ConvTranspose1d` rewritten as tiled GEMM (im2col / col2im
+    around `PackedSgemmF32.Gemm`). Decode 88-90 -> 6.5 s, full 10 s generation 99-102 -> 17.3-17.8 s (audio.cpp CPU 37 s).
+    Output within 1 int16 LSB of the old kernels on audio.cpp's latent. `AceStepOobleckDecoderTests`, E2E and
+    `AceStepPrecomputeSilenceTests` pass; the two diffusers golden-parity tests skip (fixtures not on disk).
