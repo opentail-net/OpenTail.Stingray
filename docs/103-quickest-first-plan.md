@@ -416,3 +416,7 @@ Timebox each at half a day, write down what was learned, and move on if blocked.
     router per token serially. Experts in parallel (5645 -> ~2860 ms) and router over tokens (580 -> 156 ms):
     46.4-48.1 -> 62.3-63.2 t/s in alternating runs = ~0.96x llama.cpp (65.42). Output identical. This sub-item of 15 is
     at parity; the dense `ForwardPass` MoE path should be checked for the same serial expert loop.
+  - Dense `ForwardPass` MoE had the same serial expert loop: both passes now share `MoeBatchedExperts` (DRY) and route
+    tokens in parallel. Qwen3-Coder-30B-A3B Q4_K_M, 507 tokens: 48.9-53.1 -> 66.7-69.3 t/s = 0.57x -> 0.75x llama.cpp
+    (89.27), output identical. Tests: `MoeBatchedPrefillParityTests` 3/3, `OlmoeGreedyParityTests` 2 (+1 skip),
+    `PhiMoeGreedyParityTests` 2/2 (real weights), ForwardPass.Fast 703.

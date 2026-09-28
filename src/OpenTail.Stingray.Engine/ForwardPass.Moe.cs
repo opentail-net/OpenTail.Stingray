@@ -480,19 +480,21 @@ public sealed unsafe partial class ForwardPass
         EnsureMoeBatchScratch(n);
 
         // ── 1. Route every token (per-token F32, identical to the sequential path) ──────────
-        for (int t = 0; t < n; t++)
+        // Tokens in parallel: each writes only its own router row and sel/wts slice.
+        float* routerRows = _moeBatchRouter, normRows = batchNorm, wtsAll = _moeBatchWts;
+        int* selAll = _moeBatchSel;
+        Parallel.For(0, n, t =>
         {
-            float* logits = _moeBatchRouter + (long)t * numExperts;
-            FusedMatVec(logits, _wGateInp![layer], batchNorm + (long)t * _embDim, numExperts, _embDim);
-
-            var wts = new Span<float>(_moeBatchWts + (long)t * na, na);
-            RouteExperts(layer, logits, numExperts, new Span<int>(_moeBatchSel + (long)t * na, na), wts);
-
-            if (s_mlaTrace && t == 0)
-            {
-                var sel = new Span<int>(_moeBatchSel, na);
-                Console.Error.WriteLine($"[MLA-TRACE] L{layer} tok0 experts=[{string.Join(",", sel.ToArray())}] weights=[{string.Join(",", wts.ToArray().Select(w => w.ToString("F4")))}]");
-            }
+            float* logits = routerRows + (long)t * numExperts;
+            FusedMatVec(logits, _wGateInp![layer], normRows + (long)t * _embDim, numExperts, _embDim);
+            RouteExperts(layer, logits, numExperts, new Span<int>(selAll + (long)t * na, na),
+                new Span<float>(wtsAll + (long)t * na, na));
+        });
+        if (s_mlaTrace)
+        {
+            var sel = new Span<int>(_moeBatchSel, na);
+            var wts = new Span<float>(_moeBatchWts, na);
+            Console.Error.WriteLine($"[MLA-TRACE] L{layer} tok0 experts=[{string.Join(",", sel.ToArray())}] weights=[{string.Join(",", wts.ToArray().Select(w => w.ToString("F4")))}]");
         }
 
         // ── 2. Bucket the (token, slot) pairs by expert, CSR-style ─────────────────────────
@@ -520,46 +522,13 @@ public sealed unsafe partial class ForwardPass
         int bprUp = RowBytes(upExps.DType, _embDim);
         int bprDown = RowBytes(downExps.DType, expertDim);
 
-        for (int e = 0; e < numExperts; e++)
-        {
-            int p0 = expStart[e], p1 = expStart[e + 1];
-            int cnt = p1 - p0;
-            if (cnt == 0) continue;
-
-            for (int i = 0; i < cnt; i++)
-                Copy(_moeBatchGathered + (long)i * _embDim,
-                     batchNorm + (long)_moeExpTokI[p0 + i] * _embDim, _embDim);
-
-            SimdKernels.MatMulBatched(_moeBatchGate,
-                gateExps.DataPtr + (long)e * expertDim * bprGate, _moeBatchGathered,
-                cnt, expertDim, _embDim, gateExps.DType, allowQ8: true);
-            SimdKernels.MatMulBatched(_moeBatchUp,
-                upExps.DataPtr + (long)e * expertDim * bprUp, _moeBatchGathered,
-                cnt, expertDim, _embDim, upExps.DType, allowQ8: true);
-
-            // Llama-4 sigmoid gating scales the FFN input rather than its output, exactly as
-            // MoeFfn does; the reduce below then uses a weight of 1 for those models.
-            if (_hp.UseSigmoidGating)
-                for (int i = 0; i < cnt; i++)
-                {
-                    float w = _moeBatchWts[(long)_moeExpTokI[p0 + i] * na + _moeExpTokK[p0 + i]];
-                    SimdKernels.ScaleInPlace(_moeBatchGate + (long)i * expertDim, w, expertDim);
-                    SimdKernels.ScaleInPlace(_moeBatchUp + (long)i * expertDim, w, expertDim);
-                }
-
-            // The bucket's rows are contiguous, so one SiLuMul covers the whole batch.
-            SimdKernels.SiLuMul(_moeBatchGate, _moeBatchUp, cnt * expertDim);
-
-            // Down projection into a scratch batch, then scattered UNWEIGHTED into
-            // (token, slot) order — the weighting happens in phase 4.
-            SimdKernels.MatMulBatched(_moeBatchGathered,
-                downExps.DataPtr + (long)e * _embDim * bprDown, _moeBatchGate,
-                cnt, _embDim, expertDim, downExps.DType, allowQ8: true);
-
-            for (int i = 0; i < cnt; i++)
-                Copy(_moeBatchDown + ((long)_moeExpTokI[p0 + i] * na + _moeExpTokK[p0 + i]) * _embDim,
-                     _moeBatchGathered + (long)i * _embDim, _embDim);
-        }
+        var pairOf = new int[pairs];
+        for (long p = 0; p < pairs; p++) pairOf[p] = _moeExpTokI[p] * na + _moeExpTokK[p];
+        fixed (int* pairP = pairOf)
+            MoeBatchedExperts.Run(numExperts, expStart, pairP, na, batchNorm, _embDim, expertDim,
+                gateExps.DataPtr, gateExps.DType, bprGate, upExps.DataPtr, upExps.DType, bprUp,
+                downExps.DataPtr, downExps.DType, bprDown,
+                inputScale: _hp.UseSigmoidGating ? _moeBatchWts : null, _moeBatchDown);
 
         // ── 4. Reduce per token, in TOP-K SLOT ORDER ──────────────────────────────────────
         // Not expert order, which is what the CSR loop above naturally produces. FP32 addition

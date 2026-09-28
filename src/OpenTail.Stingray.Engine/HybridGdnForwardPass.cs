@@ -2951,39 +2951,10 @@ public sealed unsafe class HybridGdnForwardPass : IForwardPass
             int bprG = (e / DTypeInfo.BlockSize(gateExps.DType)) * DTypeInfo.BytesPerBlock(gateExps.DType);
             int bprU = (e / DTypeInfo.BlockSize(upExps.DType)) * DTypeInfo.BytesPerBlock(upExps.DType);
             int bprD = (expertDim / DTypeInfo.BlockSize(downExps.DType)) * DTypeInfo.BytesPerBlock(downExps.DType);
-            // Experts run in parallel (each expert's matmuls as before, on per-worker buffers sized for the largest
-            // bucket): ~16 tokens per expert made every inner matmul too small to pay its own fork/join. Each
-            // expert writes only its own (token, slot) partial rows, and runs the same kernels on the same
-            // operands, so the output is unchanged.
-            int maxCnt = 0;
-            for (int x = 0; x < numExperts; x++) maxCnt = Math.Max(maxCnt, start[x + 1] - start[x]);
-            byte* gateBase = gateExps.DataPtr, upBase = upExps.DataPtr, downBase = downExps.DataPtr;
-            DType gateDt = gateExps.DType, upDt = upExps.DType, downDt = downExps.DType;
-            float* partialP = partial;
-            Parallel.For(0, numExperts, s_moeParallelOpts,
-                () => (nint)NativeMemory.Alloc((nuint)((long)maxCnt * (Math.Max(e, expertDim) + 2L * expertDim + e) * sizeof(float))),
-                (x, _, buf) =>
-                {
-                    int p0 = start[x], cnt = start[x + 1] - p0;
-                    if (cnt == 0) return buf;
-                    float* gth = (float*)buf;
-                    float* gt = gth + (long)maxCnt * Math.Max(e, expertDim);
-                    float* upx = gt + (long)maxCnt * expertDim;
-                    float* dn = upx + (long)maxCnt * expertDim;
-                    for (int i = 0; i < cnt; i++)
-                        Copy(gth + (long)i * e, normIn + (long)(slotOf[p0 + i] / na) * e, e);
-                    SimdKernels.MatMulBatched(gt, gateBase + (long)x * expertDim * bprG, gth,
-                        cnt, expertDim, e, gateDt, allowQ8: true);
-                    SimdKernels.MatMulBatched(upx, upBase + (long)x * expertDim * bprU, gth,
-                        cnt, expertDim, e, upDt, allowQ8: true);
-                    SimdKernels.SiLuMul(gt, upx, cnt * expertDim);
-                    SimdKernels.MatMulBatched(dn, downBase + (long)x * e * bprD, gt,
-                        cnt, e, expertDim, downDt, allowQ8: true);
-                    for (int i = 0; i < cnt; i++)
-                        Copy(partialP + (long)slotOf[p0 + i] * e, dn + (long)i * e, e);
-                    return buf;
-                },
-                buf => NativeMemory.Free((void*)buf));
+            fixed (int* startP = start, slotP = slotOf)
+                MoeBatchedExperts.Run(numExperts, startP, slotP, na, normIn, e, expertDim,
+                    gateExps.DataPtr, gateExps.DType, bprG, upExps.DataPtr, upExps.DType, bprU,
+                    downExps.DataPtr, downExps.DType, bprD, inputScale: null, partial);
 
             // 4. Weighted reduce per token in top-k slot order.
             for (int t = 0; t < n; t++)
