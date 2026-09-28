@@ -1,0 +1,20 @@
+{
+  "mcpServers": {
+    "opentail-mcp": {
+      "type": "stdio",
+      "command": "C:/git/opentail/extensions/opentail-mcp/Host/bin/Release/net10.0/opentail-mcp.exe",
+      "args": [
+        "--workspace", "C:/git/opentail/extensions/opentail-mcp"
+      ]
+    },
+    "opentail-core-mcp": {
+      "type": "stdio",
+      "command": "C:/git/opentail/opentail/OpenTail.Mcp/bin/Release/net10.0/opentail-core-mcp.exe",
+      "args": [
+        "--workspace", "C:/git/opentail/opentail",
+        "--db-path", "C:/git/opentail/opentail.db",
+        "--allow-writes"
+      ]
+    }
+  }
+}

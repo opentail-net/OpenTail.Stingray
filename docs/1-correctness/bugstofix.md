@@ -22,6 +22,9 @@ restart a fourth round of kernel-level chasing on this checkpoint without new ev
   - **Failure:** Running `stingray -m models/_models/granite-4.0-3b-vision-Q4_K_M.gguf --mmproj models/_models/mmproj-granite-4.0-3b-vision-f16.gguf --image photo.png -p "Describe this picture."` projects 145 soft tokens (20480-dim across 8 deepstack streams) successfully at 44.3 t/s, but generation terminates after 0 to 3 tokens (e.g. single period) instead of generating text.
   - **Suspect:** Multi-stream deepstack injection mapping into the text model's layers or chat prompt template delimiter handling.
   - **Control:** `granite-vision-3.2-2b` (which uses standard MLP projector) generates full, rich descriptions without issue.
+- [ ] **GGUF `audiocpp` architecture rejected for text generation** (found 2026-09-28 during RUNNING.md verification).
+  - **Failure:** Running `stingray -m models/Voxtral-Mini-4B-Realtime-2602-GGUF/voxtral-mini-4b-realtime-2602-q8_0.gguf` throws `NotSupportedException: GGUF architecture 'audiocpp' is not supported for text generation by OpenTail.Stingray`.
+  - **Context:** `voxtral-mini-4b-realtime` in GGUF format uses the `audiocpp` architecture identifier. Currently `VoxtralPipeline` only supports safetensors format (`models/_models/voxtral-mini-realtime/model.safetensors`).
 - [ ] **GGUF `jais` architecture rejected** (found 2026-09-28 during RUNNING.md verification).
   - **Failure:** `stingray -m "models/_models/jais-family-590m-chat.Q4_K_M.gguf"` throws `NotSupportedException`: GGUF architecture 'jais' is not supported for text generation (supported list includes `jais2`, but `jais` v1 is unmapped/unsupported).
   - **Next step:** Check differences between `jais` and `jais2` in llama.cpp to evaluate if `jais` can be safely mapped or alias-admitted.
