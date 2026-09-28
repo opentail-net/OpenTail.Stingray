@@ -144,6 +144,13 @@ restart a fourth round of kernel-level chasing on this checkpoint without new ev
         real new engineering work on a widely-shared kernel path (`SimdKernels`'s Q5_K matvec is used
         by every Q5_K-quantized model in this codebase, not just GLM), so it needs care and a broad
         regression check before landing, not a quick patch. Scoped but not started.
+      - **Full implementation plan (2026-09-28), ready to hand off:**
+        [docs/1-correctness/glm45-q5k-activation-quant-plan.md](glm45-q5k-activation-quant-plan.md) —
+        exact function to add (`DotQ5K_Q8K`, mirroring the existing `DotQ8_0_Q8K` shape), the real
+        ggml reference to port from, the feature-gate wiring, the verification steps (isolated
+        kernel test → re-run the layer-0 bisection harness already built for this → full PPL →
+        broad Q5_K regression pass), and the constraints to follow. Start there instead of
+        re-deriving the approach from this entry.
 - [ ] **GLM-4.7-Flash (`deepseek2`) perplexity 0.9-1.4% worse than llama.cpp; not at parity** (logged 2026-09-27; `docs/103-quickest-first-plan.md` item 3).
   - **Checkpoint:** `GLM-4.7-Flash-Q2_K.gguf` (10.6 GB).
   - **Result:** wikitext second-half PPL at -c 2048: ours 8.1757 batched prefill, 8.2100 sequential;
