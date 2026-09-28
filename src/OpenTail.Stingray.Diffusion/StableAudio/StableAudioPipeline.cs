@@ -26,6 +26,12 @@ public sealed record StableAudioRequest
     /// Set to 1.0 to disable CFG entirely (skips the extra unconditioned forward pass).</summary>
     public float CfgScale { get; init; } = 6.0f;
 
+    /// <summary>CFG guidance schedule: "flat" (default/constant) | "cosine" (smooth decay to 1.0) | "linear".</summary>
+    public string GuidanceSchedule { get; init; } = "flat";
+
+    /// <summary>CFG rescale factor (0.0 to 1.0, e.g. 0.7) to prevent latent explosion and clipping.</summary>
+    public float Rescale { get; init; } = 0.0f;
+
     public required string OutputPath { get; init; }
     public Action<int, int>? Progress { get; init; }
 }
@@ -106,7 +112,8 @@ public sealed class StableAudioPipeline : IDisposable
 
         float[] pcm = GenerateFromLatent(
             latent, seqLen, promptTokenIds, duration,
-            Math.Max(1, request.Steps), request.CfgScale, request.Progress, effectiveSeqLen);
+            Math.Max(1, request.Steps), request.CfgScale, request.Progress, effectiveSeqLen,
+            request.GuidanceSchedule, request.Rescale);
 
         // Real `generate_diffusion_cond` trims the padded-headroom decode back to the requested
         // duration's real sample count before returning/writing.
@@ -137,7 +144,8 @@ public sealed class StableAudioPipeline : IDisposable
     /// </summary>
     internal float[] GenerateFromLatent(
         float[] initialLatent, int seqLen, int[] promptTokenIds, float durationSeconds,
-        int steps, float cfgScale, Action<int, int>? progress = null, int? effectiveSeqLen = null)
+        int steps, float cfgScale, Action<int, int>? progress = null, int? effectiveSeqLen = null,
+        string guidanceSchedule = "flat", float rescale = 0.0f)
     {
         var (condTokens, secondsTotalRaw) = BuildConditioning(promptTokenIds, durationSeconds);
         int nCond = condTokens.Length / CondTokenDim;
@@ -209,8 +217,34 @@ public sealed class StableAudioPipeline : IDisposable
                         diff[i] = condDenoised[i] - uncondDenoised[i];
                     }
 
+                    float stepCfg = guidanceSchedule.ToLowerInvariant() switch
+                    {
+                        "cosine" => 1.0f + (cfgScale - 1.0f) * MathF.Sin(Math.Clamp(t, 0f, 1f) * MathF.PI * 0.5f),
+                        "linear" => 1.0f + (cfgScale - 1.0f) * Math.Clamp(t, 0f, 1f),
+                        _ => cfgScale
+                    };
+
+                    float[]? origCond = rescale > 0f ? (float[])condDenoised.Clone() : null;
+
                     StableAudioScheduleKernels.ApplyApg(
-                        condDenoised, diff, cfgScale, 1.0f, validTokens, seqLen, _params.LatentChannels, condDenoised);
+                        condDenoised, diff, stepCfg, 1.0f, validTokens, seqLen, _params.LatentChannels, condDenoised);
+
+                    if (origCond is not null)
+                    {
+                        double condNorm = 0, guidedNorm = 0;
+                        int validCount = validTokens * _params.LatentChannels;
+                        for (int i = 0; i < validCount; i++)
+                        {
+                            condNorm += (double)origCond[i] * origCond[i];
+                            guidedNorm += (double)condDenoised[i] * condDenoised[i];
+                        }
+                        if (guidedNorm > 1e-12)
+                        {
+                            float factor = (float)(Math.Sqrt(condNorm) / Math.Sqrt(guidedNorm));
+                            float scale = rescale * factor + (1.0f - rescale);
+                            for (int i = 0; i < validCount; i++) condDenoised[i] *= scale;
+                        }
+                    }
 
                     for (int i = 0; i < totalLatentElements; i++)
                     {
@@ -248,7 +282,14 @@ public sealed class StableAudioPipeline : IDisposable
             }
             float dt = nextT - t;
 
-            var v = PredictVelocity(latent, seqLen, condTokens, nullCondTokens, nCond, secondsTotalRaw, t, cfgScale, validTokens);
+            float stepCfg = guidanceSchedule.ToLowerInvariant() switch
+            {
+                "cosine" => 1.0f + (cfgScale - 1.0f) * MathF.Sin(Math.Clamp(t, 0f, 1f) * MathF.PI * 0.5f),
+                "linear" => 1.0f + (cfgScale - 1.0f) * Math.Clamp(t, 0f, 1f),
+                _ => cfgScale
+            };
+
+            var v = PredictVelocity(latent, seqLen, condTokens, nullCondTokens, nCond, secondsTotalRaw, t, stepCfg, validTokens, rescale);
             if (step == 0) StableAudioDebugHooks.Dump("out0", v);
 
             for (int i = 0; i < latent.Length; i++)
@@ -294,7 +335,7 @@ public sealed class StableAudioPipeline : IDisposable
         float[] latent, int seqLen,
         float[] condTokens, float[] nullCondTokens, int nCond,
         float[] secondsTotalRaw, float sigma, float cfgScale,
-        int validTokens)
+        int validTokens, float rescale = 0.0f)
     {
         var condOutput = _transformer.Forward(latent, seqLen, condTokens, nCond, secondsTotalRaw, timestep: sigma);
         if (cfgScale == 1.0f) return condOutput;
@@ -314,6 +355,23 @@ public sealed class StableAudioPipeline : IDisposable
         var cfgDenoised = new float[n];
         StableAudioScheduleKernels.ApplyApg(
             condDenoised, diff, cfgScale, 1.0f, validTokens, seqLen, _params.LatentChannels, cfgDenoised);
+
+        if (rescale > 0.0f)
+        {
+            double condNorm = 0, guidedNorm = 0;
+            int validCount = validTokens * _params.LatentChannels;
+            for (int i = 0; i < validCount; i++)
+            {
+                condNorm += (double)condDenoised[i] * condDenoised[i];
+                guidedNorm += (double)cfgDenoised[i] * cfgDenoised[i];
+            }
+            if (guidedNorm > 1e-12)
+            {
+                float factor = (float)(Math.Sqrt(condNorm) / Math.Sqrt(guidedNorm));
+                float scale = rescale * factor + (1.0f - rescale);
+                for (int i = 0; i < validCount; i++) cfgDenoised[i] *= scale;
+            }
+        }
 
         var velocity = new float[n];
         for (int i = 0; i < n; i++)
