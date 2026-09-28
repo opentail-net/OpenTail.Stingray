@@ -1,4 +1,5 @@
 using System.Numerics.Tensors;
+using System.Runtime.InteropServices;
 namespace OpenTail.Stingray.Cpu;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -582,144 +583,150 @@ public static class GdnKernels
         float readoutScale = 1.0f / MathF.Sqrt((float)d);
         int C = chunkSize;
 
-        // Per-chunk scratch, allocated once per call and reused across heads/chunks.
-        //   cum/g/bScal: per-token scalars (≤ C). stackalloc'd for the common
-        //     small-chunk case (no heap traffic / bounds checks on the hot scan);
-        //     a caller passing an atypically large chunkSize falls back to the heap
-        //     so the stack can't overflow (the GPU sibling pins GDN_CHUNK at 64).
+        // Heads are independent (each owns its d×d state slice and its output columns), so they run in
+        // parallel. Every head keeps its own scratch and performs exactly the operations of the former
+        // sequential head loop, in the same order, so results are bit-identical to it.
+        //   cum/g/bScal: per-token scalars (≤ C).
         //   u   : pseudo-values U, row-major [C, d]
         //   proj: batched state projection S0ᵀK then (reused) S0ᵀQ, row-major [C, d]
-        //         (both too large for the stack — always heap).
-        const int stackChunkCap = 256;
-        Span<double> cumSpan = C <= stackChunkCap ? stackalloc double[C] : new double[C];
-        Span<float> gSpan = C <= stackChunkCap ? stackalloc float[C] : new float[C];
-        Span<float> bSpan = C <= stackChunkCap ? stackalloc float[C] : new float[C];
-        float[] u = new float[C * d];
-        float[] proj = new float[C * d];
-
-        fixed (double* cum = cumSpan)
-        fixed (float* gP = gSpan, bP = bSpan)
-        fixed (float* qP = q, kP = k, vP = v, zP = z, normP = normWeight,
-                      statePtr = state, outPtr = output,
-                      uP = u, projP = proj)
+        fixed (float* qp = q, kp = k, vp = v, zp = z, np = normWeight, sp = state, op = output,
+                      ap = alphaIn, bp = beta, sa = ssmA, dtb = dtBias)
         {
-            for (int h = 0; h < hv; h++)
+            float* qP = qp, kP = kp, vP = vp, zP = zp, normP = np, statePtr = sp, outPtr = op;
+            float* alphaP = ap, betaP = bp, ssmAP = sa, dtBiasP = dtb;
+            Parallel.For(0, hv, h =>
             {
-                float* S = statePtr + (long)h * dd;
-                float ssmAh = ssmA[h];
-                float dtBiasH = dtBias[h];
-
-                for (int c0 = 0; c0 < tokens; c0 += C)
+                double* cum = (double*)NativeMemory.Alloc((nuint)(C * sizeof(double)));
+                float* gP = (float*)NativeMemory.Alloc((nuint)(C * sizeof(float)));
+                float* bP = (float*)NativeMemory.Alloc((nuint)(C * sizeof(float)));
+                float* uP = (float*)NativeMemory.Alloc((nuint)((long)C * d * sizeof(float)));
+                float* projP = (float*)NativeMemory.Alloc((nuint)((long)C * d * sizeof(float)));
+                try
                 {
-                    int cN = Math.Min(C, tokens - c0);
+                    float* S = statePtr + (long)h * dd;
+                    float ssmAh = ssmAP[h];
+                    float dtBiasH = dtBiasP[h];
 
-                    // ── Per-token scalars: cumulative log-decay, g_t, b_t. ────
-                    double run = 0.0;
-                    for (int t = 0; t < cN; t++)
+                    for (int c0 = 0; c0 < tokens; c0 += C)
                     {
-                        int gt = c0 + t;
-                        float alphaX = alphaIn[gt * perTokScalar + h] + dtBiasH;
-                        float dt = alphaX >= 20.0f ? alphaX : MathF.Log(1.0f + MathF.Exp(alphaX));
-                        run += (double)dt * ssmAh;     // log a_t (≤ 0)
-                        cum[t] = run;
-                        gP[t] = (float)Math.Exp(run);
-                        bP[t] = 1.0f / (1.0f + MathF.Exp(-beta[gt * perTokScalar + h]));
-                    }
+                        int cN = Math.Min(C, tokens - c0);
 
-                    // ── Batched S0ᵀK → proj[t,:] (read S0 once, stream over rows). ──
-                    //   proj[t,j] = Σ_i K_t[i]·S0[i,j].  Outer i keeps the S0 row hot.
-                    new Span<float>(projP, cN * d).Clear();
-                    for (int i = 0; i < d; i++)
-                    {
-                        float* s0row = S + (long)i * d;
+                        // ── Per-token scalars: cumulative log-decay, g_t, b_t. ────
+                        double run = 0.0;
                         for (int t = 0; t < cN; t++)
                         {
-                            float ki = qkAt(kP, c0 + t, h, i, hv, d);
-                            if (ki != 0f) AxpyF32(projP + (long)t * d, s0row, ki, d);
-                        }
-                    }
-
-                    // ── Forward substitution: u_t = rhs_t − Σ_{s<t} A[t,s] u_s. ──
-                    for (int t = 0; t < cN; t++)
-                    {
-                        float* kt = kP + ((long)(c0 + t) * hv + h) * d;
-                        float* vt = vP + ((long)(c0 + t) * hv + h) * d;
-                        float* ut = uP + (long)t * d;
-                        float bt = bP[t], gT = gP[t];
-                        float* pkt = projP + (long)t * d;
-
-                        for (int j = 0; j < d; j++) ut[j] = bt * (vt[j] - gT * pkt[j]);
-
-                        for (int s = 0; s < t; s++)
-                        {
-                            float* ks = kP + ((long)(c0 + s) * hv + h) * d;
-                            float kdot = SimdKernels.DotF32(ks, kt, d);
-                            float a = bt * (float)Math.Exp(cum[t] - cum[s]) * kdot;
-                            if (a != 0f) AxpyF32(ut, uP + (long)s * d, -a, d);
-                        }
-                    }
-
-                    // ── Batched S0ᵀQ → proj[t,:] (reuse the buffer; K no longer needed). ──
-                    new Span<float>(projP, cN * d).Clear();
-                    for (int i = 0; i < d; i++)
-                    {
-                        float* s0row = S + (long)i * d;
-                        for (int t = 0; t < cN; t++)
-                        {
-                            float qi = qkAt(qP, c0 + t, h, i, hv, d);
-                            if (qi != 0f) AxpyF32(projP + (long)t * d, s0row, qi, d);
-                        }
-                    }
-
-                    // ── Outputs + per-head RMSNorm + SiLU(z) gate. ────────────
-                    for (int t = 0; t < cN; t++)
-                    {
-                        float* qt = qP + ((long)(c0 + t) * hv + h) * d;
-                        float* oh = outPtr + ((long)(c0 + t) * hv + h) * d;
-                        float gT = gP[t];
-                        float* pqt = projP + (long)t * d;
-
-                        for (int j = 0; j < d; j++) oh[j] = gT * pqt[j];
-
-                        for (int s = 0; s <= t; s++)
-                        {
-                            float* ks = kP + ((long)(c0 + s) * hv + h) * d;
-                            float kqdot = SimdKernels.DotF32(ks, qt, d);
-                            float r = (float)Math.Exp(cum[t] - cum[s]) * kqdot;
-                            if (r != 0f) AxpyF32(oh, uP + (long)s * d, r, d);
+                            int gt = c0 + t;
+                            float alphaX = alphaP[gt * perTokScalar + h] + dtBiasH;
+                            float dt = alphaX >= 20.0f ? alphaX : MathF.Log(1.0f + MathF.Exp(alphaX));
+                            run += (double)dt * ssmAh;     // log a_t (≤ 0)
+                            cum[t] = run;
+                            gP[t] = (float)Math.Exp(run);
+                            bP[t] = 1.0f / (1.0f + MathF.Exp(-betaP[gt * perTokScalar + h]));
                         }
 
-                        for (int j = 0; j < d; j++) oh[j] *= readoutScale;
-
-                        double sumSq = 0.0;
-                        for (int j = 0; j < d; j++) { float ov = oh[j]; sumSq += (double)ov * ov; }
-                        float scale = 1.0f / MathF.Sqrt((float)(sumSq / d) + normEps);
-                        float* zt = zP + ((long)(c0 + t) * hv + h) * d;
-                        for (int j = 0; j < d; j++)
-                        {
-                            float normed = oh[j] * scale * normP[j];
-                            float zv = zt[j];
-                            float silu = zv / (1.0f + MathF.Exp(-zv));
-                            oh[j] = normed * silu;
-                        }
-                    }
-
-                    // ── Carry state out: S_new = g_{C-1}·S0 + Σ_s r_s·(k_s ⊗ u_s). ──
-                    float gLast = gP[cN - 1];
-                    for (int idx = 0; idx < dd; idx++) S[idx] *= gLast;
-                    for (int s = 0; s < cN; s++)
-                    {
-                        float* ks = kP + ((long)(c0 + s) * hv + h) * d;
-                        float* us = uP + (long)s * d;
-                        float rs = (float)Math.Exp(cum[cN - 1] - cum[s]);
+                        // ── Batched S0ᵀK → proj[t,:] (read S0 once, stream over rows). ──
+                        //   proj[t,j] = Σ_i K_t[i]·S0[i,j].  Outer i keeps the S0 row hot.
+                        new Span<float>(projP, cN * d).Clear();
                         for (int i = 0; i < d; i++)
                         {
-                            float coeff = rs * ks[i];
-                            if (coeff != 0f) AxpyF32(S + (long)i * d, us, coeff, d);
+                            float* s0row = S + (long)i * d;
+                            for (int t = 0; t < cN; t++)
+                            {
+                                float ki = qkAt(kP, c0 + t, h, i, hv, d);
+                                if (ki != 0f) AxpyF32(projP + (long)t * d, s0row, ki, d);
+                            }
+                        }
+
+                        // ── Forward substitution: u_t = rhs_t − Σ_{s<t} A[t,s] u_s. ──
+                        for (int t = 0; t < cN; t++)
+                        {
+                            float* kt = kP + ((long)(c0 + t) * hv + h) * d;
+                            float* vt = vP + ((long)(c0 + t) * hv + h) * d;
+                            float* ut = uP + (long)t * d;
+                            float bt = bP[t], gT = gP[t];
+                            float* pkt = projP + (long)t * d;
+
+                            for (int j = 0; j < d; j++) ut[j] = bt * (vt[j] - gT * pkt[j]);
+
+                            for (int s = 0; s < t; s++)
+                            {
+                                float* ks = kP + ((long)(c0 + s) * hv + h) * d;
+                                float kdot = SimdKernels.DotF32(ks, kt, d);
+                                float a = bt * (float)Math.Exp(cum[t] - cum[s]) * kdot;
+                                if (a != 0f) AxpyF32(ut, uP + (long)s * d, -a, d);
+                            }
+                        }
+
+                        // ── Batched S0ᵀQ → proj[t,:] (reuse the buffer; K no longer needed). ──
+                        new Span<float>(projP, cN * d).Clear();
+                        for (int i = 0; i < d; i++)
+                        {
+                            float* s0row = S + (long)i * d;
+                            for (int t = 0; t < cN; t++)
+                            {
+                                float qi = qkAt(qP, c0 + t, h, i, hv, d);
+                                if (qi != 0f) AxpyF32(projP + (long)t * d, s0row, qi, d);
+                            }
+                        }
+
+                        // ── Outputs + per-head RMSNorm + SiLU(z) gate. ────────────
+                        for (int t = 0; t < cN; t++)
+                        {
+                            float* qt = qP + ((long)(c0 + t) * hv + h) * d;
+                            float* oh = outPtr + ((long)(c0 + t) * hv + h) * d;
+                            float gT = gP[t];
+                            float* pqt = projP + (long)t * d;
+
+                            for (int j = 0; j < d; j++) oh[j] = gT * pqt[j];
+
+                            for (int s = 0; s <= t; s++)
+                            {
+                                float* ks = kP + ((long)(c0 + s) * hv + h) * d;
+                                float kqdot = SimdKernels.DotF32(ks, qt, d);
+                                float r = (float)Math.Exp(cum[t] - cum[s]) * kqdot;
+                                if (r != 0f) AxpyF32(oh, uP + (long)s * d, r, d);
+                            }
+
+                            for (int j = 0; j < d; j++) oh[j] *= readoutScale;
+
+                            double sumSq = 0.0;
+                            for (int j = 0; j < d; j++) { float ov = oh[j]; sumSq += (double)ov * ov; }
+                            float scale = 1.0f / MathF.Sqrt((float)(sumSq / d) + normEps);
+                            float* zt = zP + ((long)(c0 + t) * hv + h) * d;
+                            for (int j = 0; j < d; j++)
+                            {
+                                float normed = oh[j] * scale * normP[j];
+                                float zv = zt[j];
+                                float silu = zv / (1.0f + MathF.Exp(-zv));
+                                oh[j] = normed * silu;
+                            }
+                        }
+
+                        // ── Carry state out: S_new = g_{C-1}·S0 + Σ_s r_s·(k_s ⊗ u_s). ──
+                        float gLast = gP[cN - 1];
+                        for (int idx = 0; idx < dd; idx++) S[idx] *= gLast;
+                        for (int s = 0; s < cN; s++)
+                        {
+                            float* ks = kP + ((long)(c0 + s) * hv + h) * d;
+                            float* us = uP + (long)s * d;
+                            float rs = (float)Math.Exp(cum[cN - 1] - cum[s]);
+                            for (int i = 0; i < d; i++)
+                            {
+                                float coeff = rs * ks[i];
+                                if (coeff != 0f) AxpyF32(S + (long)i * d, us, coeff, d);
+                            }
                         }
                     }
                 }
-            }
+                finally
+                {
+                    NativeMemory.Free(cum);
+                    NativeMemory.Free(gP);
+                    NativeMemory.Free(bP);
+                    NativeMemory.Free(uP);
+                    NativeMemory.Free(projP);
+                }
+            });
         }
     }
 

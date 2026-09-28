@@ -395,3 +395,11 @@ Timebox each at half a day, write down what was learned, and move on if blocked.
   - Qwen3-VL files had disappeared from `models/_models`; re-fetched with `stingray pull` to `K:\_other_models\qwen3vl`
     (tests find them via `STINGRAY_QWEN3VL_DIR`). `test-1.jpeg` is gone too.
   - CUDA left for item 18 (no CUDA GPU). Time taken: about 1.5 hours.
+- 2026-09-28: item 15, performance.
+  - SmolLM2-1.7B prefill re-measured: 222-232 t/s (4 runs, 1252-token prompt) vs `llama-bench -p 1252 -t 16` 255.7 = 0.89x,
+    unchanged. Profile: FFN 62 %, QKV 19 %, attention 7 % (Flash-64; ~154 GFLOP in 396 ms, ~390 GFLOP/s, not the gap),
+    out-proj 6 %, RoPE+KV append 3 %. The remaining ~11 % is inside the Q4_K/Q6_K GEMM kernels that already had three
+    tuning rounds (docs/done/101); not continued this session.
+  - Qwen3.6-35B-A3B prefill: the chunked GDN recurrence ran its 32 heads serially. Parallel over heads (bit-identical):
+    recurrence 4453 -> 649 ms, prefill 32.1-32.7 -> 42.4-42.9 t/s (515 tokens, 3 alternating runs each, greedy output
+    identical), llama.cpp 65.42 -> 0.50x to 0.65x. Now MoE is 55 % of prefill. PerformanceLeague row added.
