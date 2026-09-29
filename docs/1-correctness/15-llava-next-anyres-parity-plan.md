@@ -29,15 +29,19 @@ pinpoints to `PreprocessViews(...)`.
 This implementation was proven indirectly while fixing Granite Vision 3.2, but no real LLaVA-NeXT or
 LLaVA-OneVision checkpoint has exercised the LLaVA adapter's AnyRes path end to end. The purpose of
 this item is to prove or disprove the existing LLaVA AnyRes implementation against a real
-LLaVA-NeXT/OneVision checkpoint before changing it. Do not assume Granite verification is sufficient.
+LLaVA-NeXT checkpoint before changing it. Include LLaVA-OneVision only if the selected GGUF/mmproj is
+demonstrably handled by the existing `LlavaAdapter`/`LlavaVisionModel` path. Otherwise, treat it as a
+separate compatibility problem rather than expanding item 15. Do not assume Granite verification is
+sufficient.
 
 ## 1. Scope
 
 ### In scope
 
-Verify the complete AnyRes path for at least one real LLaVA-NeXT checkpoint. Preferably also run a
-LLaVA-OneVision checkpoint if it uses the same adapter path and can be obtained without excessive
-model size. Cover:
+Verify the complete AnyRes path for at least one real LLaVA-NeXT checkpoint. Optionally include a
+LLaVA-OneVision checkpoint only when the selected GGUF/mmproj is demonstrably handled by the existing
+`LlavaAdapter`/`LlavaVisionModel` path and can be obtained without excessive model size. If it takes a
+different adapter/model path, track that as a separate compatibility problem. Cover:
 
 - `clip.vision.image_grid_pinpoints`;
 - best-resolution selection;
@@ -91,7 +95,8 @@ image with visually distinct quadrants so tile swaps are obvious.
 
 ## 4. Phase 2 — Verify exact resize/pad semantics
 
-The current implementation deliberately differs between:
+The following are semantics currently implemented by Stingray, not yet established as correct for the
+selected checkpoint. Verify each against the selected llama.cpp/reference path:
 
 - Overview: `ResizeBilinear(..., imageSize, imageSize)` with `PAD_NONE`.
 - Refined/tiled image: `ResizePadCeil(..., bestW, bestH, ResizeBicubic, black)` followed by tile
@@ -120,7 +125,7 @@ newline/separator embedding, a learned view separator, or another per-view marke
 
 Verify:
 
-`number of views × tokens per view + separator tokens = actual injected soft-token count`
+`sum(tokens in each view) + separator/view-marker tokens = actual injected soft-token count`
 
 Reproduce the reference exactly. Do not add a separator merely because another LLaVA-style model
 uses one.
@@ -151,7 +156,7 @@ first/last image-token positions, first following text-token position, generated
 output. First establish that the same multimodal sequence reaches the decoder; prose similarity is
 not the initial acceptance signal.
 
-## 10. Phase 8 — Two-image/asymmetric-image controls
+## 10. Phase 8 — Asymmetric/single-view controls
 
 After one real AnyRes image works, add adversarial controls:
 
@@ -160,8 +165,8 @@ After one real AnyRes image works, add adversarial controls:
 - Distinct quadrants: every tile has visibly different content.
 - Small image: requires no AnyRes and should use the single overview path.
 
-These distinguish resolution-selection, tile-count, row/column-order, padding, and single/multi-view
-transition errors.
+These asymmetric/single-view controls distinguish resolution-selection, tile-count,
+row/column-order, padding, and single/multi-view transition errors.
 
 ## 11. Phase 9 — Compare token counts against llama.cpp
 
@@ -194,10 +199,11 @@ encoder.
 ## 13. Phase 11 — Real-weight regression test
 
 Add a dedicated real-weight AnyRes test, for example
-`LlamaMtmdVisionParityTests.LlavaNext_AnyRes_Rainbow...`. Pin at least selected resolution, view
-count, token count, total embedding length, embedding sum, first-row values, and an end-to-end image
-answer where practical. Keep the existing LLaVA-1.5 test untouched as the single-tile control. The
-regression must prevent silent fallback to single-tile-only behavior.
+`LlamaMtmdVisionParityTests.LlavaNext_AnyRes_Rainbow...`. Pin at least selected resolution `(W,H)`,
+resulting tile grid `(columns × rows)`, view count, token count, total embedding length, embedding sum,
+first-row values, and an end-to-end image answer where practical. Keep the existing LLaVA-1.5 test
+untouched as the single-tile control. The regression must prevent silent fallback to
+single-tile-only behavior.
 
 ## 14. Phase 12 — Only then consider code changes
 
