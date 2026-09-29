@@ -28,6 +28,7 @@ Do not combine these into one `d377049` regression hypothesis.
 | `7a68185` | It is an ancestor of `d377049`; its commit message says the Fast-AR Q4 golden cosine of about 0.44 was already present on clean HEAD before the performance commit. |
 | `bd2a612` | Adds the real eight-layer `quantizer.post_module` transformer to codec decoding. Its message says the old codec golden skipped that transformer and became stale. Using the same reference-generated codes, the corrected C# codec reached 0.9999999 cosine against the reference. |
 | `a7e720` | Records the remaining suite failures as the pre-existing Q4_K_M Fast-AR precision limitation and stale codec oracle, and reports successful real end-to-end listening verification. |
+| `ce6a914` → `d377049` | `ce6a914` is the direct parent of `d377049` (verify the relationship before running the A/B). The preceding broad performance commit contains numerical optimizations already present at `ce6a914`; do not attribute those changes to `d377049`. The Fish Speech-specific delta in `d377049` includes codec SIMD substitutions and the Fast-AR `computeLogits:false` fast path. |
 | Current Fast-AR tests | Include the Q4 external golden, a Q8_0 external golden, and `ForwardStep_MatchesForward_ForSamePrefix`. These controls test different claims; do not treat them as interchangeable. |
 | Current `FishSpeechWeights` | Dequantizes loaded weights and normalizes the Fast-AR matrices to Q8_0 at load time. For a Q4_K_M checkpoint, the tested path is therefore approximately original weights → Q4_K_M → dequantized values → Q8_0 → inference. |
 
@@ -53,6 +54,42 @@ If any test cannot run at the historical revision because its fixture or method 
 record that limitation and run the closest equivalent without presenting it as the same test. Do not
 infer causation merely because the current result differs from a historical one; compare the exact
 paths and inputs.
+
+### Explicit causal A/B: `ce6a914` → `d377049`
+
+The `7a68185` comparison establishes that the reported Fast-AR Q4 mismatch predates `d377049`; it is
+not the direct A/B for changes introduced by `d377049`. For causal attribution, run matching tests
+from clean worktrees at `ce6a914` and `d377049`, after verifying the exact parent/commit relationship.
+Use identical checkpoint files, deterministic inputs, runtime settings, and reference artifacts; log
+both full commit hashes and all metric provenance.
+
+Attribute only deltas actually introduced by `d377049` to this comparison. The `TensorPrimitives`
+Fast-AR `Layer`/`LayerStep` numerical changes predate this commit and must not be listed as
+`d377049` regressions. The relevant Fast-AR delta here is the new optional `computeLogits` path that
+skips final RMSNorm/output projection at position 0. The codec SIMD replacements are also in the
+commit delta and should be assessed only against the corrected full-path codec oracle from Phase 1.
+
+Run the actual production cache sequence for both Q8_0 and Q4_K_M checkpoints at each revision:
+
+```text
+Reset()
+ForwardStep(hidden, computeLogits: false)           // position 0: populate KV cache only
+ForwardStep(semanticEmbedding)                       // logits for codebook 1
+ForwardStep(codebook1Embedding)                      // logits for codebook 2
+...
+ForwardStep(codebook8Embedding)                      // logits for codebook 9
+```
+
+Use the actual codebook count from the checkpoint and compare logits at each prediction position
+where both revisions produce them. Also compare the resulting deterministic code sequence when the
+same sampling/selection procedure applies. The initial hidden-state call must explicitly use
+`computeLogits: false`; calling `ForwardStep(hidden)` with the default `true` does not exercise the
+new skip-logits optimization and is insufficient as acceptance for this A/B. Keep this production-
+sequence test distinct from the original full-prefix `Forward` golden and from generic
+`ForwardStep` self-consistency. Since `ce6a914` predates the `computeLogits` parameter, its equivalent
+baseline call necessarily computes and discards position-0 logits; keep the cache reset, inputs, and
+all subsequent prediction positions identical, and compare the logits produced after the semantic
+and codebook embeddings.
 
 ## Phase 1 — Repair the codec oracle before changing codec math
 
@@ -107,9 +144,13 @@ Add Q4_K_M coverage to the cached-path self-consistency check. Keep both cases:
 - Q8_0 `Forward` ↔ `ForwardStep`;
 - Q4_K_M `Forward` ↔ `ForwardStep`.
 
-The existing `ForwardStep_MatchesForward_ForSamePrefix` uses only `s2-pro-q8_0.gguf`; add an
-equivalent deterministic case using `s2-pro-q4_k_m.gguf`, so the production checkpoint's effective
-weight path is also covered. Establish characterization metrics before judging code changes.
+The existing `ForwardStep_MatchesForward_ForSamePrefix` uses only `s2-pro-q8_0.gguf` and calls
+`ForwardStep(hidden)` with the default `computeLogits: true`. That does not exercise the production
+position-0 optimization. Add Q8_0 and Q4_K_M checks that both reproduce the production sequence above,
+including the initial `computeLogits: false` call, then compare the predicted-position outputs with
+the corresponding `Forward` result. This covers the actual S2 Pro checkpoint's effective weight path
+and the optimization introduced by `d377049`. Establish characterization metrics before judging
+code changes.
 
 Keep the Q8_0 external-logit comparison as the higher-precision numerical control. Do not silently
 loosen the Q4 cosine threshold while leaving its full-precision comparison semantics unchanged.
@@ -123,12 +164,14 @@ exact cosine alongside the commit, checkpoint file/hash and quantization, determ
 comparison path. After that reproduction, use the exact sourced value in current results; retain the
 two approximate numbers only as historical context for why reconciliation is needed.
 
-## Phase 3 — Inspect `d377049` only if a valid test shows a regression
+## Phase 3 — Inspect the `ce6a914` → `d377049` delta only if a valid test shows a regression
 
 Proceed here only if the regenerated codec oracle fails, the Q8_0 higher-precision control still
 fails after its checkpoint/conversion path is checked, or the Q4 quantization-aware comparison or
-either Q8_0/Q4 `Forward`-versus-`ForwardStep` self-consistency test demonstrates a new degradation at
-the current revision relative to `7a68185`.
+either Q8_0/Q4 production-sequence self-consistency test demonstrates a new degradation. For a
+regression attributed to `d377049`, require the direct `ce6a914` vs `d377049` A/B to reproduce the
+difference on the affected execution path; the `7a68185` comparison is historical classification,
+not the commit's causal control.
 
 Trace only the failing execution path. The failing external
 `FishSpeechFastAr.Forward_RealWeights_MatchesGoldenOracle` test exercises `Forward`/`Layer`, not the
@@ -145,8 +188,8 @@ revert or bisect the whole commit before narrowing the responsible path.
 | Codec `TensorPrimitives.MultiplyAdd` in transposed convolution | High-priority comparison on corrected same-code codec reference. |
 | Codec in-place `TensorPrimitives.Add` | Check only if the corrected codec comparison points to residual accumulation. |
 | FullConv1d allocation/parallel threshold; code-loop ordering; ArrayPool changes | Lower numerical risk; inspect only when evidence traces to those paths. |
-| Fast-AR `TensorPrimitives.Dot` / `MultiplyAdd` / `Add` in `Layer` | Relevant to the ordinary external `Forward` oracle; isolate only if a valid higher-precision or quantization-aware comparison fails. |
-| Fast-AR `MatVecDual`, `SiLuMul`, `SumOfSquares` in `LayerStep` | Relevant to cached `ForwardStep`; validate against `Forward` with both Q8_0 and Q4_K_M weights, not the ordinary external `Forward` golden. |
+| Fast-AR `computeLogits:false` at initial hidden position | Introduced in `d377049`; validate only with the exact production sequence and both Q8_0/Q4_K_M checkpoint inputs, comparing at `ce6a914` vs `d377049`. |
+| Fast-AR `TensorPrimitives.Dot` / `MultiplyAdd` / `Add` in `Layer`, `MatVecDual`, `SiLuMul`, `SumOfSquares` in `LayerStep` | Present before `d377049`; do not attribute these changes to it. They may be examined only under a separate causal comparison if new evidence points to them. |
 
 Use one numerical change per experiment, record raw metrics, and preserve the unmodified comparison
 control.
@@ -162,8 +205,11 @@ The final coverage should prove each claim with an appropriate test:
 - **Fast-AR Q4_K_M:** same-effective-path reference if available; otherwise a documented
   quantization-aware characterization with deterministic inputs; do not use an absolute cosine
   threshold against the full-precision oracle when no exact effective-path reference exists.
-- **Cached Fast-AR:** retain Q8_0 `ForwardStep_MatchesForward_ForSamePrefix` and add the corresponding
-  Q4_K_M case as optimized-path self-consistency coverage; do not call either external parity.
+- **Cached Fast-AR:** test Q8_0 and Q4_K_M `ForwardStep` against `Forward` using the production
+  position sequence, including `Reset()` and `ForwardStep(hidden, computeLogits: false)` before the
+  semantic embedding. This must exercise the actual `d377049` skip-logits optimization; generic calls
+  with the default `computeLogits: true` are insufficient. These are optimized-path self-consistency
+  checks, not external parity.
 - **End-to-end:** retain a real S2 Pro listening/reference check after any implementation fix; the
   earlier listening verification is positive evidence but does not replace numeric stage tests.
 
@@ -187,6 +233,10 @@ the time; do not rewrite it to imply that the historical suspicion was already d
 - Do not treat the Q8_0 external golden, Q4 quantization-aware validation, and ForwardStep
   self-consistency as interchangeable tests.
 - Do not attribute a failure in `Forward` to an optimization used only by `ForwardStep`.
+- Do not claim coverage of `d377049`'s skip-logits optimization if the test calls
+  `ForwardStep(hidden)` with `computeLogits` left at its default `true`.
+- Do not attribute the pre-existing `TensorPrimitives` Fast-AR layer optimizations to `d377049`; use
+  the explicit `ce6a914` → `d377049` A/B for causality.
 - Do not change test thresholds without correcting the reference semantics and recording the basis.
 - Do not weaken or delete a valid test merely because it fails; replace only invalid or mis-scoped
   expectations with a test that proves the intended claim.
@@ -195,7 +245,8 @@ the time; do not rewrite it to imply that the historical suspicion was already d
 
 This correctness-test reconciliation is complete when:
 
-1. Current-versus-`7a68185` outcomes clearly classify which reported failures predate `d377049`.
+1. Current-versus-`7a68185` outcomes clearly classify which reported failures predate `d377049`, and
+   the direct `ce6a914` → `d377049` A/B is recorded for causal assessment.
 2. The codec test uses a reference generated with the complete `quantizer.post_module` path and passes
    on identical codes with documented raw PCM metrics.
 3. Q8_0 Fast-AR's higher-precision control and checkpoint conversion path are measured; any remaining
@@ -203,7 +254,8 @@ This correctness-test reconciliation is complete when:
 4. Q4_K_M Fast-AR has a same-effective-path reference if one exists; otherwise it has documented
    quantization-aware characterization and does not present a full-precision cosine threshold as
    universal correctness proof.
-5. Cached `ForwardStep` passes self-consistency with both Q8_0 and Q4_K_M weights, and end-to-end
-   listening is recorded independently.
+5. Cached `ForwardStep` passes self-consistency with both Q8_0 and Q4_K_M weights using the actual
+   production sequence and initial `computeLogits: false` call; end-to-end listening is recorded
+   independently.
 6. `bugstofix.md` and `STATUS.md` no longer label `d377049` the leading suspect without new evidence;
    remaining test debt and product status are accurately described.
