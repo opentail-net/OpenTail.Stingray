@@ -1,8 +1,8 @@
 # Plan: Q8_K activation quantization for the Q5_K decode matvec (GLM-4.5 PPL gap)
 
-**Context:** `docs/103-quickest-first-plan.md` item 7 / `docs/1-correctness/bugstofix.md`'s
-"GLM-4.5 (`glm4moe`) 1.9% perplexity gap" entry. Read both before starting — they carry the full
-diagnostic history and the exact numbers this plan continues from. Do not re-run the earlier
+**Entry in:** `docs/1-correctness/bugstofix.md`, item **09** (GLM-4.5 `glm4moe` perplexity gap).
+Also tracked as item 7 in `docs/103-quickest-first-plan.md`. Read both before starting — they carry
+the full diagnostic history and exact numbers this plan continues from. Do not re-run the earlier
 diagnostic steps (layer bisection, print-resolution caveat, etc.) — they are already done and their
 conclusions are trusted.
 

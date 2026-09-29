@@ -1,8 +1,8 @@
 # Plan: Fish Speech S2 Pro correctness-test reconciliation
 
-**Context:** `docs/1-correctness/bugstofix.md`'s Fish Speech S2 Pro entry and the 2026-09-27
-`docs/103-quickest-first-plan.md` Audio sweep. This is first a test/oracle reconciliation task, not a
-presumed product regression in `d377049`.
+**Entry in:** `docs/1-correctness/bugstofix.md`, item **08** (Fish Speech S2 Pro correctness-test
+reconciliation). Also informed by the 2026-09-27 `docs/103-quickest-first-plan.md` Audio sweep. This
+is first a test/oracle reconciliation task, not a presumed product regression in `d377049`.
 
 ## Goal and scope
 

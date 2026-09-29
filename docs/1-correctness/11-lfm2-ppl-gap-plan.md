@@ -1,7 +1,7 @@
 # LFM2 PPL gap â resolution plan
 
 **Logged:** 2026-09-27 (`docs/103-quickest-first-plan.md` item 11a; timeboxed out).  
-**Entry in:** `docs/1-correctness/bugstofix.md`, item "LFM2 (`lfm2`) perplexity 0.24% worse than llama.cpp".  
+**Entry in:** `docs/1-correctness/bugstofix.md`, item **11** (LFM2 `lfm2` perplexity gap).  
 **Checkpoint:** `LFM2-1.2B-Q8_0.gguf`.  
 **Numbers (bugstofix.md):** our PPL 10.9543 vs `llama-perplexity --chunks 1` 10.9277 (wikitext second-half, -c 2048).
 

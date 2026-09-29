@@ -1,7 +1,7 @@
 # Granite 4.0 3B Vision â early EOS / empty decode plan
 
 **Bug logged:** 2026-09-28 (RUNNING.md verification).  
-**Entry in:** `docs/1-correctness/bugstofix.md`.  
+**Entry in:** `docs/1-correctness/bugstofix.md`, item **04**.  
 **Model:** `granite-4.0-3b-vision-Q4_K_M.gguf` + `mmproj-granite-4.0-3b-vision-f16.gguf`.  
 **Projector type:** `granite4-vision` (WindowQFormer deepstack).
 

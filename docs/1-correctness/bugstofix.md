@@ -188,7 +188,8 @@ restart a fourth round of kernel-level chasing on this checkpoint without new ev
   NOT in the allowlist. Ruled out: parallel expert execution and parallel routing (serial gives identical numbers), and
   the expert matmul kernels (batched vs per-row MatVec on the real blk.2 Q4_K/Q6_K expert weights: relative error 0 at
   n = 1..64). Dense LFM2 1.2B and Granite hybrids agree per-token vs batched within 0.1-0.5%, so the 9% spread is specific
-  to this model. Next step: per-layer hidden-state comparison, batched vs per-token vs llama-eval-callback.
+  to this model. Next step: follow [12-LFM2-MoE batched/per-token parity plan](12-lfm2moe-batched-per-token-parity-plan.md) for
+  matched-token evaluation, per-layer/router/expert/state localization, the minimal fix, regression tests, and allowlist admission only after parity.
 - [ ] **13. Granite 4.0-H small (MoE) +1.2% PPL vs llama.cpp** (logged 2026-09-28, docs/103 item 13): `granite-4.0-h-small-Q2_K`,
   wikitext -c 2048 `[1024,+)` 26.4155 (batched) / 26.5483 (per token) vs `llama-perplexity --chunks 1` 26.1080; at -c 512
   9.3505 vs 9.4103 (ours lower). The large error (157) was missing top-k renormalisation, fixed. Not yet bisected; Q2_K
