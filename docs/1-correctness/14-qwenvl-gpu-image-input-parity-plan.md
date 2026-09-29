@@ -82,8 +82,9 @@ The Qwen3-VL decoder additionally receives vision deepstack slices through
 `ModelHyperparams.DeepstackMapping`. Add those slices at their mapped transformer layers in the same
 order as the CPU implementation.
 
-**The CPU path is the semantic reference.** The full Vulkan path is the second implementation already
-proven against it.
+**CPU `ForwardPass` is the implementation reference for backend parity; llama.cpp is the external
+numerical/functional reference where available.** The full Vulkan path is the second implementation
+already proven against the CPU reference.
 
 ## Phase 0 — Freeze current baselines
 
@@ -155,7 +156,10 @@ Preserve the existing ordinary-RoPE path unchanged.
 Qwen3-VL image embeddings can contain `[embedding][deepstack slice 1][deepstack slice 2]...`. CUDA
 currently accepts only the ordinary embedding width at its `ForwardEmbedding` seam. Extend it so both
 `width = embDim` and `width = embDim × (1 + NumDeepstack)` match `ForwardPass` and `GpuForwardPass`
-semantics.
+semantics. Update the `IForwardPass.ForwardEmbedding` contract/documentation at the same time: ordinary
+soft-token input has width `EmbeddingDim`; when deepstack slices accompany the token, multimodal input
+has width `EmbeddingDim × (1 + NumDeepstack)`. The interface documentation and every implementation
+must agree on this contract.
 
 Inject each deepstack slice at the exact layer from `ModelHyperparams.DeepstackMapping`, in the same
 order as CPU and full Vulkan. Do not invent a CUDA-specific deepstack mapping.
@@ -187,7 +191,10 @@ not reconstruct positions separately in the wrapper.
 ## Phase 8 — Vulkan layer-split embedding/deepstack seam
 
 `VulkanLayerSplitForwardPass` currently exposes ordinary token forwarding only. For vision input add
-the `ForwardEmbedding(...)` equivalent and preserve deepstack slices across the layer boundary.
+the `ForwardEmbedding(...)` equivalent and preserve deepstack slices across the layer boundary. This
+is a dedicated multimodal-forward path, not merely a forwarding overload: carry the injected embedding
+and deepstack state through the GPU prefix and into the CPU continuation. Do not call
+`GpuForwardPass.ForwardEmbedding()` and then attempt to recover the CPU state afterward.
 
 ```text
 vision encoder → embedding + deepstack → GpuForwardPass [0, N) → hidden state
@@ -214,10 +221,15 @@ primarily exercise M-RoPE state propagation.
 
 `RunCommand` currently rejects image input for M-RoPE models when the selected pass is not
 `ForwardPass` or `GpuForwardPass`. This was correct when those were the only safe implementations.
-Once new paths exist, replace the type-specific restriction with a capability check. Allow image plus
-M-RoPE only if the selected pass supports embedding input, M-RoPE image registration, and required
-deepstack semantics. Do not maintain a CLI mapping from model names to backend eligibility; capability
-belongs to the forward pass so future M-RoPE models do not repeat this issue.
+Once new paths exist, replace the type-specific restriction with a small M-RoPE capability seam,
+rather than testing concrete forward-pass types in the CLI. Prefer an `IMRopeForwardPass` interface
+containing `bool UsesMRope` and `void AddMRopeImage(int startSlot, int nx, int ny)`, instead of adding
+backend-specific methods to `IForwardPass`.
+
+When image input is used with an M-RoPE decoder, the CLI must require both `IForwardPass.SupportsEmbeddingInput`
+and the M-RoPE registration capability, plus support for any required deepstack semantics. Do not
+maintain a CLI mapping from model names to backend eligibility; capability belongs to the forward pass
+so future M-RoPE models do not repeat this issue.
 
 ## Phase 11 — End-to-end backend matrix
 

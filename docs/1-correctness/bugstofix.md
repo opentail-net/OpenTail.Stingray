@@ -215,6 +215,7 @@ restart a fourth round of kernel-level chasing on this checkpoint without new ev
     end to end (`LlamaMtmdVisionParityTests.Llava15_Rainbow336_MatchesLlamaMtmdDebug`).
   - However, dynamic AnyRes multi-tile slicing (`llava_uhd`) is only verified for Granite Vision, not on a LLaVA-NeXT
     or LLaVA-OneVision checkpoint. Needs an actual LLaVA-NeXT checkpoint to verify tile ordering and separators.
+  - **Plan:** [15-LLaVA-NeXT / OneVision AnyRes parity](15-llava-next-anyres-parity-plan.md) — validate checkpoint metadata, preprocessing and view composition against llama.cpp, then prove prompt expansion and end-to-end real-weight parity before changing code.
 - [ ] **16. Dequantize.cs / IqCodebooks.cs coverage gap**: Port `iq1s_grid` (NGRID_IQ1S=2048) and decoders for `IQ1_S`/`IQ1_M` (`IQ1S_DELTA=0.125f`, distinct sign/shift scheme) and `IQ2_XS`/`IQ2_S` when needed by future GGUF models.
 - [ ] **17. ModelCompatibility.cs / Kernels missing op coverage** (2026-09-27: the Mamba-2 `SSM_SCAN`/`SSM_CONV` path is now implemented on CPU in `ForwardPass.Mamba2.cs` for Granite 4.0-H / Nemotron-H; Mamba-1 and GPU remain): Implement `GGML_OP_SSM_SCAN` (the selective-scan recurrence, distinct from `SSM_CONV`), `RWKV_WKV6`/`RWKV_WKV7`, and DeepSeek-V4 ops (`LIGHTNING_INDEXER`, `DSV4_HC_*`, `SOLVE_TRI`, `WIN_PART`/`WIN_UNPART`).
 - [ ] **18. SpeculativeDecoder.cs StepSampled/PLD bugs**: Confirmed real defect in speculative decode step sampling; currently unreachable/latent as no wired call path exercises it yet.
