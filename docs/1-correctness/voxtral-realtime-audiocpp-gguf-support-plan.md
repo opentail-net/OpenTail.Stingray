@@ -92,7 +92,8 @@ alone or silently accept duplicate/malformed name entries.
 
 ### 1.2 Canonical tensor inventory
 
-Resolve and record a complete inventory for at least:
+Resolve and record a complete inventory of every tensor consumed by the Voxtral implementation,
+including:
 
 - `audio_tower.*`;
 - `multi_modal_projector.*`;
@@ -124,9 +125,10 @@ Q/K/V/O and FFN matrices, projector matrices, decoder Q/K/V/O and FFN matrices, 
 weights, norms, and biases. This determines whether raw native Q8_0 access can be used by the current
 matvec kernels or a conversion is required.
 
-**Phase 1 acceptance:** a reproducible mapping from packed storage to the canonical Voxtral tensor
-inventory, and an exact embedded-resource inventory. No tensor name, orientation, dtype, or sidecar
-requirement is guessed.
+**Phase 1 acceptance:** a reproducible mapping from packed storage to the complete set of tensors
+consumed by the Voxtral implementation, and an exact embedded-resource inventory. No tensor name,
+orientation, dtype, or sidecar requirement is guessed; do not declare the mapping complete until every
+consumed tensor is accounted for.
 
 ## Phase 2 — Reuse the existing packed-GGUF infrastructure
 
@@ -143,8 +145,10 @@ Do not implement a second `audiocpp` metadata parser.
 
 ## Phase 3 — Introduce a format bridge for Voxtral weights
 
-The weight-access boundary should allow SafeTensors and packed GGUF to produce the same logical
-`VoxtralAudioEncoderWeights` and `VoxtralTextDecoderWeights`, which then feed the same inference code:
+The weight-access boundary should allow SafeTensors and packed GGUF to populate the same canonical
+`VoxtralAudioEncoderWeights` and `VoxtralTextDecoderWeights` contracts, which then feed the same
+inference code. This means matching tensor semantics and dimensions, not necessarily identical
+quantized values:
 
 ```text
 SafeTensors loader ──┐
@@ -171,6 +175,14 @@ source dtype, orientation, and kernel layout are compatible. Use existing quanti
 conversion is genuinely required. Do not widen the engine API or materialize multi-gigabyte F32
 intermediates to solve Voxtral.
 
+The current Voxtral weight classes store quantized matrices in owned `byte[]` fields, and the
+SafeTensors path currently creates those arrays by reading F32 and quantizing. For GGUF Q8_0 matrices,
+the first implementation may copy the native Q8_0 tensor bytes into owned `byte[]` storage when that
+is the smallest safe change. Do not route native Q8_0 through F32 and requantize it. Direct
+memory-mapped Q8_0 pointers are preferable only if the existing weight ownership and pipeline
+lifetime model can support them cleanly; do not redesign all Voxtral weight classes solely to eliminate
+this copy.
+
 ### Validate tensor contracts
 
 For each required tensor validate canonical/source name, element count, dimensions, orientation, and
@@ -188,9 +200,11 @@ SafeTensors loader and in the original issue notes. Pay particular attention to 
 the existing loader expects selected Q/V/O and FFN biases while K has no bias; verify that the packed
 GGUF matches this contract rather than guessing from architecture conventions.
 
-**Acceptance:** both formats produce logically equivalent audio-tower and projector tensors with
-verified dimensions/orientation and an explicitly recorded storage/conversion path. No audio-tower
-formula changes in this phase.
+**Acceptance:** both formats produce tensors with the same canonical semantics and verified
+dimensions/orientation, with each format's storage and conversion path explicitly recorded. GGUF
+Q8_0 and SafeTensors F32 followed by Stingray Q8_0 quantization may have different quantized block
+representations; measure and report those differences rather than assuming byte identity. No
+audio-tower formula changes in this phase.
 
 ## Phase 5 — Bridge the text-decoder weights
 
@@ -201,7 +215,9 @@ embedding, final norm, per-layer input/post-attention norms, Q/K/V/O, gate/up/do
 Preserve the existing Q8_0-oriented matvec semantics. Where the GGUF has native Q8_0 matrices,
 prefer a compatible raw representation or only the minimum required copy; avoid a multi-gigabyte F32
 round trip. Preserve tied embedding/output behavior exactly and validate vocabulary size and matrix
-orientation.
+orientation. Compare canonical tensor semantics and dimensions; measure quantized representation
+differences between the GGUF's native Q8_0 and SafeTensors-to-Stingray-Q8_0 paths rather than
+assuming byte identity.
 
 ## Phase 6 — Load the embedded Tekken vocabulary safely
 
@@ -235,9 +251,10 @@ VoxtralPipeline.Load(safetensorsDirectory)
 VoxtralPipeline.LoadGguf(ggufPath)
 ```
 
-or a single verified dispatching `Load`. Both paths must construct the same logical audio weights,
-text weights, and `TekkenVocab` and then use the existing `Transcribe` implementation. Do not add a
-second GGUF transcription implementation or make the inference method inspect file formats.
+or a single verified dispatching `Load`. Both paths must populate the same canonical audio-weight,
+text-weight, and `TekkenVocab` contracts and then use the existing `Transcribe` implementation.
+Quantized values may differ by source/conversion path as specified above. Do not add a second GGUF
+transcription implementation or make the inference method inspect file formats.
 
 The GGUF loader must verify that the file is the expected Voxtral package, not merely an arbitrary
 `audiocpp` file. Validate enough architecture metadata, canonical tensor inventory/shapes, expected
@@ -296,10 +313,12 @@ errors rather than incidental kernel exceptions.
 ### 11.2 Representative tensor parity
 
 Compare SafeTensors and GGUF materializations for audio convolution, audio attention, audio FFN,
-projector, text embedding, text attention, text FFN, AdaLN weights, and final norm. Report shape,
-storage dtype, conversion path, min/max/mean/RMS, and max absolute difference in a common comparison
-representation. For quantized tensors, report the on-disk bytes/dtype separately; do not claim raw
-byte parity with SafeTensors F32 weights.
+projector, text embedding, text attention, text FFN, AdaLN weights, and final norm. The invariant is
+the same canonical tensor semantics and dimensions, not identical quantized representations. Report
+shape, storage dtype, conversion path, min/max/mean/RMS, and max absolute difference in a common
+comparison representation. For quantized tensors, report on-disk bytes/dtype separately and measure
+the differences between native GGUF Q8_0 and SafeTensors F32 quantized by Stingray; do not claim raw
+byte parity.
 
 ### 11.3 Audio-stage and end-to-end parity
 
@@ -308,9 +327,12 @@ output before comparing decoder results. Then compare prefill logits, first gene
 subsequent token IDs, and the final transcript. Report stage shapes and raw metrics so any divergence
 can be localized; do not change inference math to mask storage conversion differences.
 
-Run both SafeTensors and GGUF pipelines against the same audio/reference. Require the GGUF route to
-match the existing exact transcript and appropriate numerical controls, unless a known quantization
-difference is measured and justified separately.
+Require the Q8_0 GGUF route to match the existing exact transcript and use Q8_0 as a higher-precision
+control, not as a near-lossless oracle. Measure and report known quantization and conversion-path
+differences separately from inference-math errors. Record revision, input, and checkpoint alongside
+comparison metrics so results have clear provenance. Q8_0 is the scope for closing this bug. Q4_K is a
+separate coverage extension after Q8_0 support is validated; upstream transcript results are not
+evidence of Stingray behavior and must not substitute for its own tests.
 
 ### 11.4 Memory and lifetime
 
