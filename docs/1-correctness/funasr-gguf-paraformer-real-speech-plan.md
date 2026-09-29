@@ -172,11 +172,16 @@ Reference rules:
 
 1. Locate and reuse the existing `scratch-llamacpp-ref/funasr_golden_*.py` oracle machinery if it is
    available; extend it to accept the WAV rather than creating a second implementation.
-2. Otherwise use an already available, real FunASR/PyTorch reference implementation in the current
-   environment, after confirming its checkpoint/configuration corresponds to this Paraformer family.
-3. Do not write an independent Python reimplementation. Do not treat the local `paraformer.cpp`
+2. Verify that the reference frontend is the same production preprocessing path intended for this
+   model: PCM convention/scaling, framing, LFR, and CMVN must be confirmed, not inferred from
+   synthetic/controlled fixtures that passed existing goldens. The reference must process this real
+   WAV through that path.
+3. Otherwise use an already available, real FunASR/PyTorch reference implementation in the current
+   environment, after confirming its checkpoint/configuration and frontend correspond to this
+   Paraformer family.
+4. Do not write an independent Python reimplementation. Do not treat the local `paraformer.cpp`
    encoder as authoritative for FSMN behavior; its memory addition is disabled.
-4. If no trustworthy real-audio reference is available, record that blocker and establish how to
+5. If no trustworthy real-audio reference is available, record that blocker and establish how to
    obtain one before changing stage mathematics. Do not substitute a synthetic golden or the ONNX
    transcript for tensor-level reference parity.
 
@@ -304,21 +309,24 @@ FunASR tests:
 Re-run the relevant FunASR test set and record that the real Paraformer file was selected. Keep the
 inference correctness result separate from these test-discovery results.
 
-## Hypotheses — investigate in evidence order
+## Investigation order — not a probability ranking
 
-1. **Predictor/CIF output is zero or unusable (high).** Directly explains a zero-token early return;
-   compare encoder output and alpha/token counts first.
-2. **Real-audio frontend mismatch (high).** Synthetic frontend fixture is short; check PCM scaling,
-   framing/boundaries, LFR padding, and CMVN against the reference.
-3. **Real-audio encoder composition or sequence-length issue (medium-high).** The existing encoder
-   golden is only 10 frames; inspect long-sequence boundaries, FSMN temporal handling, and the special
-   input layer.
-4. **Decoder receives incorrect acoustic embeddings or context (medium).** Use the four-arm decoder
-experiment if token count is correct.
-5. **Tokenizer strips valid output (low).** Prove from raw decoder IDs before changing the tokenizer.
-6. **Audio loading/scaling issue (low-medium).** Record sample rate, channels, PCM range, and RMS.
-The ONNX control lowers this probability but does not prove identical audio values reach both
-frontends.
+This order structures the comparisons; it does not claim that an earlier item is more likely. Let
+the real-audio diagnostics and reference comparisons identify the first divergence before focusing
+on any stage.
+
+1. **Frontend and real-audio composition:** verify WAV loading, PCM convention/scaling,
+   framing/boundaries, LFR padding, and CMVN against the production reference path.
+2. **Encoder and long-sequence behavior:** the existing encoder golden is only 10 frames; inspect
+   sequence-length assumptions, FSMN temporal boundaries, padding, and the special input layer.
+3. **Predictor/CIF:** compare encoder inputs, alpha sequences, fire/token counts, and emitted
+   embeddings; the existing predictor golden does not establish real-audio behavior.
+4. **Decoder:** if predictor outputs agree, use the four-arm experiment to isolate acoustic
+   embeddings, context, and decoder computation.
+5. **Tokenizer:** only investigate after inspecting raw decoder IDs and their vocabulary mapping.
+
+The ONNX control establishes that the clip is transcribable, but does not prove identical PCM or
+frontend features reach both pipelines.
 
 ## What not to do
 

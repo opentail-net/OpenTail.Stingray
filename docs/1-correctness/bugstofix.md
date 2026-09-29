@@ -67,17 +67,14 @@ restart a fourth round of kernel-level chasing on this checkpoint without new ev
     `general.name = Fun-ASR-Nano-2512`, `general.architecture = audiocpp`. The real Paraformer GGUF is
     `models/_models/paraformer-q8.gguf` (237 MB). Tests that look up "paraformer-q8.gguf" in
     `models/` first load the wrong model; rename or move the Nano file.
-- [ ] **Fish Speech S2 Pro golden parity fails** (found 2026-09-27 by the `docs/103` item 2 landscape sweep).
-  - **Failures:**
-    - `FishSpeechCodecTests.Decode_RealWeights_MatchesGoldenPcmOutput`: PCM cosine 0.052 vs golden.
-    - `FishSpeechFastArTests.Forward_RealWeights_MatchesGoldenOracle`: fast-AR logits cosine 0.44 vs golden.
-  - **Checkpoint:** `models/s2-pro-q4_k_m.gguf`.
-  - **Leading suspect:** `d377049` (2026-09-05, "perf(audio): optimize FishSpeech S2 Pro Codec and Fast-AR
-    pipeline"). It is the last change to both the Fish Speech sources and these tests. The STATUS
-    row's 🟢 comes from a listening check on 2026-08-29, before that commit.
-  - **Next step:** run both tests at `7a68185` (the commit before d377049) in a worktree. If they pass
-    there, bisect d377049's hunks.
-  - **Until fixed:** the STATUS row should not be treated as current.
+- [ ] **Fish Speech S2 Pro correctness-test reconciliation: stale codec oracle and Q4 Fast-AR precision** (found 2026-09-27 by the `docs/103` item 2 landscape sweep).
+  - **Observed test failures:**
+    - `FishSpeechCodecTests.Decode_RealWeights_MatchesGoldenPcmOutput`: PCM cosine 0.052 vs the old golden.
+    - `FishSpeechFastArTests.Forward_RealWeights_MatchesGoldenOracle`: fast-AR logits cosine 0.44 vs the full-precision golden using `models/s2-pro-q4_k_m.gguf`.
+  - **The history does not support `d377049` as the origin of these failures:** `7a68185` is an ancestor of `d377049`, and its commit message already records the Fast-AR cosine 0.44 failure as pre-existing. `bd2a612` added the real `quantizer.post_module` transformer; its message says the codec golden predates and omits that transformer. With identical reference-generated codes, the corrected C# codec reached 0.9999999 cosine against the reference. `a7e720` subsequently describes the remaining suite failures as the Q4_K_M Fast-AR precision limitation and stale codec oracle, and reports successful real end-to-end listening verification.
+  - **Fast-AR test scope:** `FishSpeechWeights` normalizes Fast-AR weights to Q8_0 at load time. The Q4 checkpoint path therefore includes Q4_K_M dequantization followed by Q8_0 quantization; a 0.44 cosine against original full-precision logits is not alone proof of incorrect math. Existing Q8_0 external-golden and `ForwardStep_MatchesForward_ForSamePrefix` tests are useful controls, but test different claims.
+  - **Next step:** follow [`fish-speech-s2-pro-golden-reconciliation-plan.md`](fish-speech-s2-pro-golden-reconciliation-plan.md): classify current vs `7a68185`, regenerate the codec golden with the full post-module reference path, establish precision-appropriate Q8_0/Q4 Fast-AR tests, and inspect individual `d377049` changes only if a valid comparison demonstrates a regression.
+  - **Status:** retain the conservative 🟡 rating until permanent, correctly scoped regression coverage is in place. The numeric golden failures are test/oracle issues to reconcile, not established evidence of a current end-to-end audio defect.
 - [ ] **GLM-4.5 (`glm4moe`) perplexity 1.9% worse than llama.cpp; not admitted** (logged 2026-09-27; `docs/done/102-status-open-items-plan.md` #16).
   - **Checkpoint:** `cerebras_GLM-4.5-Air-REAP-82B-A12B-Q2_K.gguf`. It mixes quant types: attn_q
     Q2_K, attn_output Q5_K, expert gate/up Q2_K, expert down IQ4_NL.
