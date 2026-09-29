@@ -18,7 +18,10 @@ Observed on WikiText `[256,1024)`:
 | Stingray batched, `-c 2048` | 15.8076 |
 | llama.cpp, corresponding `-c 2048` | 14.8639 |
 
-The batched/per-token discrepancy is too large to treat as ordinary floating-point variation.
+The batched/per-token discrepancy is too large to treat as ordinary floating-point variation. The
+per-token result is not presumed correct merely because it is the existing control: neither Stingray
+execution mode is the oracle. llama.cpp is the external numerical reference, and the investigation
+must explain how each Stingray path compares against it.
 
 Current implementation already contains LFM2-style graph wiring:
 
@@ -67,9 +70,14 @@ Record the existing results exactly before changing inference code. For the fixe
 
 Do not rely solely on displayed PPL values. The debugging harness must evaluate exactly the same target token positions through all three paths: Stingray per-token, Stingray batched, and llama.cpp evaluation callback. Use the same input/target tokens and chunk boundaries.
 
+Neither Stingray execution mode is assumed correct. Per-token is a control path, not a reference
+implementation; llama.cpp is the external numerical oracle. The investigation must explain why each
+Stingray path differs from that reference rather than using agreement with the per-token path alone as
+proof of correctness.
+
 ## Phase 1 — Make the PPL comparison apples-to-apples
 
-Before debugging model arithmetic, verify that all three evaluators score the same thing. Confirm identical tokenization, `[256,1024)` token range, context length, target-token count, initial recurrent/short-conv state, position numbering, BOS/prefix handling, chunk reset behavior, logits-to-NLL calculation, and absence of sampling/generation logic.
+Before debugging model arithmetic, verify that all three evaluators score the same thing. Confirm identical tokenization, `[256,1024)` token range, context length, target-token count, initial recurrent/short-conv state, position numbering, BOS/prefix handling, chunk reset behavior, logits-to-NLL calculation, and absence of sampling/generation logic. For every comparison, capture the initial per-layer short-convolution state and prove that per-token and batched evaluation start from identical state; do not attribute downstream divergence to MoE until the shared recurrent state is established as identical.
 
 For the first diagnostic comparison, calculate PPL directly from captured logits rather than relying on three independent PPL implementations. For each scored token, record:
 
@@ -80,6 +88,14 @@ For the first diagnostic comparison, calculate PPL directly from captured logits
 - `llama_reference_logit[target_token]`.
 
 Derive PPL from those identical observations. Establish evaluation equivalence before broad model changes.
+
+### 1.1 Small deterministic reproducer
+
+Before using the full WikiText slice as the primary debugging instrument, find the smallest
+deterministic token sequence and batch width for which batched and per-token logits diverge. Use that
+same sequence, initial model state, and positions for all internal tracing and the llama.cpp comparison
+where practical. Retain the fixed WikiText evaluation as the baseline and final PPL regression, not
+the first-line debugging loop.
 
 ## Phase 2 — Add per-layer hidden-state instrumentation
 
@@ -115,7 +131,7 @@ If router IDs and weights are identical but the MoE output differs, compare expe
 
 ## Phase 4 — Compare the actual expert path
 
-The expert kernels have been isolated on fixed inputs, so compare them using real model activations. For each selected expert and identical token/expert ID, compare:
+The isolated MatVec comparison has already shown that the underlying expert matmul primitive agrees on fixed real-weight inputs. Do not treat this as proof that `MoeBatchedExperts.Run` is correct. Compare the complete batched expert path using actual LFM2-MoE activations, expert IDs, bucket positions, and outputs. For each selected expert and identical token/expert ID, compare:
 
 `expert_input → gate projection → activation → up/down projection → expert_output`
 
@@ -127,7 +143,7 @@ If the first divergence occurs before or around a short-convolution layer, inspe
 
 ## Phase 6 — Compare batched and per-token at progressively larger widths
 
-Once the first divergence is known, reduce it to the smallest reproducible case. Test widths 1, 2, 4, 8, 16, 32, and 64; at each width compare the first divergent layer/token. Failure only for `n > 1` isolates batched execution; width-specific behavior can reveal vector-width/tail bugs; shifting divergence positions can expose state/indexing errors. Retain the expert-kernel result as a control so this tests routed execution, not the MatVec primitive again.
+Once the first divergence is known, reduce it to the smallest reproducible case. Test widths 1, 2, 4, 8, 16, 32, and 64; at each width compare the first divergent layer/token. Failure only for `n > 1` isolates batched execution; width-specific behavior can reveal vector-width/tail bugs; shifting divergence positions can expose state/indexing errors. Retain the expert-matmul result as a control so this tests the complete routed execution, not the MatVec primitive again.
 
 ## Phase 7 — Compare against llama.cpp at the same internal boundary
 
@@ -179,7 +195,8 @@ Validate the real `LFM2-8B-A1B-Q4_K_M` checkpoint with normal `stingray -m ...` 
 The issue is complete when:
 
 - `lfm2moe` is correctly recognized by the model graph;
-- per-token and batched execution agree on deterministic inputs;
+- per-token and batched execution converge to the same numerical result on deterministic inputs independent of batch width;
+- both execution modes are separately validated against llama.cpp; agreement between the two Stingray modes alone is insufficient;
 - the first known divergence is identified and fixed rather than hidden by tolerance changes;
 - router expert IDs and mixture weights agree with the reference;
 - MoE outputs agree within the established numerical envelope;
