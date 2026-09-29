@@ -43,6 +43,7 @@ restart a fourth round of kernel-level chasing on this checkpoint without new ev
   - **Failure:** Running `stingray -m models/_models/granite-4.0-3b-vision-Q4_K_M.gguf --mmproj models/_models/mmproj-granite-4.0-3b-vision-f16.gguf --image photo.png -p "Describe this picture."` projects 145 soft tokens (20480-dim across 8 deepstack streams) successfully at 44.3 t/s, but generation terminates after 0 to 3 tokens (e.g. single period) instead of generating text.
   - **Suspect:** Multi-stream deepstack injection mapping into the text model's layers or chat prompt template delimiter handling.
   - **Control:** `granite-vision-3.2-2b` (which uses standard MLP projector) generates full, rich descriptions without issue.
+  - **Investigation plan:** [Granite 4.0 3B Vision early-EOS plan](granite4-vision-early-eos-plan.md) — reproduces the failure and traces the image-embedding path through the text model to the first divergent output.
 - [ ] **GGUF `audiocpp` architecture rejected for text generation** (found 2026-09-28 during RUNNING.md verification).
   - **Failure:** Running `stingray -m models/Voxtral-Mini-4B-Realtime-2602-GGUF/voxtral-mini-4b-realtime-2602-q8_0.gguf` throws `NotSupportedException: GGUF architecture 'audiocpp' is not supported for text generation by OpenTail.Stingray`.
   - **Context:** `voxtral-mini-4b-realtime` in GGUF format uses the `audiocpp` architecture identifier. Currently `VoxtralPipeline` only supports safetensors format (`models/_models/voxtral-mini-realtime/model.safetensors`).
@@ -61,8 +62,7 @@ restart a fourth round of kernel-level chasing on this checkpoint without new ev
     "对我做了介绍啊那么我想说的是呢大家如果对我的研究感兴趣呢嗯", so the audio is fine.
   - **Why it looked healthy:** its only end-to-end test feeds a 440 Hz tone, where empty output is
     expected. The stage goldens (encoder/adaptor/decoder) pass on their own.
-  - **Next step:** feed the real clip through each stage and compare with the goldens' reference
-    path, to find which stage returns nothing useful.
+  - **Investigation plan:** [FunASR GGUF Paraformer real-speech plan](funasr-gguf-paraformer-real-speech-plan.md) — first eliminate the wrong-checkpoint lookup trap, then compare real-WAV stages against the production reference path and stop at the first divergence.
   - **Related trap:** `models/paraformer-q8.gguf` (1.0 GB) is not a Paraformer. Its metadata says
     `general.name = Fun-ASR-Nano-2512`, `general.architecture = audiocpp`. The real Paraformer GGUF is
     `models/_models/paraformer-q8.gguf` (237 MB). Tests that look up "paraformer-q8.gguf" in
@@ -173,6 +173,7 @@ restart a fourth round of kernel-level chasing on this checkpoint without new ev
     context; the attention layers' K/V storage precision (llama.cpp's default F16 KV cache vs
     ours); the dump's resolution hides where the error starts. A full-precision dump (tensor
     binary output, not the printed summary) is needed to go further.
+  - **Investigation plan:** [LFM2 PPL gap resolution plan](lfm2-ppl-gap-plan.md) — freezes the canonical benchmark first, then continues the measured parity investigation.
 - [x] **Parakeet (CTC and TDT) held its weights as F32** (logged and resolved 2026-09-27, docs/103 item 14).
   - Was 2.85 GB for the 378 MB q4_k TDT file. Now Q4_K weights stay quantized (repacked Q4Kx8 batched GEMM, as the
     text engine's prefill), only the Q8_0 conv layers are packed F32: 1.1 GB peak, and faster than CrispASR on the
