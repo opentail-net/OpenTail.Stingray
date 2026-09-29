@@ -237,7 +237,7 @@ This:
 - Does NOT regress any non-deepstack VLM (`NumDeepstack == 0`)
 - Does NOT require understanding why the batched path is numerically different
 
-Document with a `// TODO: validate batched deepstack prefill, see granite4-vision-early-eos-plan.md`
+Document with a `// TODO: validate batched deepstack prefill, see 04-granite4-vision-early-eos-plan.md`
 comment.
 
 ---
