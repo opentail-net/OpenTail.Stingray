@@ -89,9 +89,10 @@ real, correct algorithm — read the actual C++ before "fixing" anything.
 - `SimdKernels.DotQ5K` is called from multiple places (`grep -rn "SimdKernels.DotQ5K\b" src`):
   `ForwardPass.Moe.cs`, `HybridGdnForwardPass.cs`, `VulkanHybridGdnForwardPass.cs`,
   `CudaHybridGdnForwardPass.cs`, plus `MatVecQ5K` and the paired-dot variants inside
-  `SimdKernels.cs` itself. Do not blanket-replace every call site — GLM-4.5-Air is a MoE model, so
-  its Q5_K weights are likely being hit through `ForwardPass.Moe.cs`'s dispatch (confirm this by
-  checking which of these call sites is actually on GLM-4.5's hot path before touching the others).
+  `SimdKernels.cs` itself. Do not infer the relevant dispatch from GLM-4.5-Air being a MoE model.
+  Before editing, identify the exact function used for layer-0 attention output projection (`wo`),
+  trace its call to `DotQ5K`, and record the call-site path. Modify only the confirmed path; do not
+  blanket-replace other call sites.
 - Add a feature gate, following the existing precedent (`SimdKernels.Q8PrefillEnabled`, a
   process-wide static bool, referenced in `PrefillDecodeSelfConsistencyTests.cs` for how a similar
   gate is tested/saved/restored). Something like `SimdKernels.Q5KDecodeQ8KActivations` (name it
@@ -103,17 +104,39 @@ real, correct algorithm — read the actual C++ before "fixing" anything.
 
 ### Step 4 — Verify the kernel math in isolation before touching real weights
 
-- Before running anything on the 82B checkpoint, write a small correctness test comparing
-  `DotQ5K_Q8K` against `DotQ5K` on synthetic (random but seeded) Q5_K-encoded weight rows and random
-  float activations, at a few `cols` sizes (the existing `SimdKernelsQ3KQ8KTests.cs` and
-  `SimdKernelsQ8KSTests.cs` show the established pattern for this kind of kernel test in this
-  project — follow it). Expect **not** bit-identical to `DotQ5K` (that's the whole point — Q8_K
-  activations are quantized, F32 activations aren't) but expect them within a small, quantifiable
-  relative tolerance (a fraction of a percent) for reasonable input magnitudes. If they disagree
-  wildly, the kernel math is wrong — fix it here, in isolation, before spending any time on the
-  46GB real-checkpoint reload cycle.
+- Before running anything on the 82B checkpoint, write a correctness test comparing
+  `DotQ5K_Q8K` against a direct scalar translation of ggml's `ggml_vec_dot_q5_K_q8_K` reference
+  formula. Both sides must consume the same encoded Q5_K row and the same Q8_K-encoded activation
+  buffer. Do not use `DotQ5K` as the correctness oracle: it computes the F32-activation path and is
+  useful only for measuring activation-quantization error.
+- Use synthetic, seeded Q5_K rows and float activations at a few `cols` sizes (the existing
+  `SimdKernelsQ3KQ8KTests.cs` and `SimdKernelsQ8KSTests.cs` show the established test pattern). For
+  each seeded vector report F32 `DotQ5K`, Q8_K `DotQ5K_Q8K`, absolute error, and relative error; run
+  enough seeds to establish and record the empirically observed error range rather than asserting a
+  universal tolerance. Separately assert that the Q8_K kernel matches the scalar ggml translation
+  within a numeric tolerance justified by floating-point accumulation/order differences. State the
+  bound before evaluating results and report max absolute and relative error; do not choose a bound
+  after seeing the output. Synthetic tests establish kernel correctness and characterize
+  quantization error; add captured real GLM activation rows as a later, stronger validation when
+  available.
+- If the kernel disagrees with the scalar ggml translation, fix it here, in isolation, before
+  spending any time on the 46GB real-checkpoint reload cycle.
 
-### Step 5 — Re-run the layer-0 bisection to confirm convergence
+### Step 5 — Run the focused four-arm comparison and verify layer 0
+
+Use the following small matrix to separate the GLM hypothesis from generic Q5_K behavior:
+
+| Model/path | Activation | Purpose |
+| --- | --- | --- |
+| GLM-4.5 | F32 (gate off) | Existing baseline |
+| GLM-4.5 | Q8_K (gate on) | Proposed fix |
+| Small known Q5_K model | F32 (gate off) | Regression baseline |
+| Small known Q5_K model | Q8_K (gate on) | Generic behavior check |
+
+For GLM-4.5, capture layer-0 `wo`, the first few logits, and (in Step 6) PPL in both activation
+modes. Compare the layer output and logits against the corresponding reference outputs where
+available, and compare gate-on/off results directly. Record raw values; the rounded callback output
+is not an adequate measurement.
 
 Reuse the exact harness already built for this (don't rewrite it):
 
@@ -130,10 +153,11 @@ Reuse the exact harness already built for this (don't rewrite it):
 - Compare the new `o_proj`/layer-0 output against the reference `node_26`/`ffn_inp-0` values already
   captured in this investigation (see the bugstofix entry for the exact reference numbers — no need
   to re-run `llama-eval-callback` unless you want a fresh capture; the reference values don't
-  change). **Goal:** the ~2e-4 gap should shrink to something consistent with pure print-rounding
-  noise (i.e., at or below the ~1e-4 floor). If it doesn't shrink at all, the kernel fix isn't
-  addressing the real cause — stop and report that finding rather than proceeding to the full PPL
-  run.
+  change). Compare raw values and report `max_abs`, `mean_abs`, RMS, relative L2, and cosine for F32
+  and Q8_K against the reference, plus the change between activation modes. The ~1e-4 print-rounding
+  floor is context only, not an acceptance criterion. If Q8_K does not reduce the layer-0 relative
+  L2 error against the reference compared with F32, stop and report that finding rather than
+  proceeding to the full PPL run.
 
 ### Step 6 — Full PPL re-measurement (only if Step 5 shows convergence)
 
@@ -143,25 +167,27 @@ Reuse the exact harness already built for this (don't rewrite it):
 - Command: whatever this project's existing PPL command is for this checkpoint at `-c 2048`,
   second-half wikitext (see `docs/1-correctness/bugstofix.md`'s GLM-4.5 entry for the exact prior
   invocation, or `src/OpenTail.Stingray.Cli`'s `perplexity` command's own `--help`).
-  Run with the gate ON.
-- **Target:** within ~0.3% of `llama-perplexity`'s 8.6125 (per the "Done when" in
-  `docs/103-quickest-first-plan.md` item 7). Write the actual measured number down, dated, whatever
-  it is — do not round up to "close enough" if it isn't.
+- Run both GLM activation modes under the same conditions and record each measured PPL, the
+  reference PPL (8.6125), and the absolute/relative gap. Within ~0.3% of the reference is a target,
+  not proof that the kernel hypothesis is correct or incorrect. The primary hypothesis test is
+  whether Q8_K activation quantization reproduces the ggml reference `wo` computation; then assess
+  whether the whole-model PPL gap shrinks correspondingly. Record the actual numbers and date them,
+  regardless of outcome.
 
-### Step 7 — Broad regression pass (required before this is considered done)
+### Step 7 — Focused and then broader regression pass
 
 `DotQ5K`/`MatVecQ5K` is a shared kernel, not GLM-specific — other checkpoints in this codebase
 decode through Q5_K too. Even though the new path is gated off by default, **if this fix works and
 you flip the gate on by default**, every model using Q5_K needs to be re-verified, not just GLM-4.5.
 
-- Find every real-weight test/checkpoint that exercises a Q5_K-quantized model in the decode path
-  (start from `grep -rln "Q5_K" tests --include=*.cs`, then narrow to ones that actually load a real
-  checkpoint rather than synthetic weights — same triage method used in this session's Diffusion/
-  Vision `HeavyTestBase` gating work, see `docs/103-quickest-first-plan.md` item 6's commit history
-  for that method if useful context).
-- Re-run each with the gate on, compare against its existing golden/parity expectations. Any
-  regression is a real finding — log it, don't silently revert the whole change; the gate lets you
-  ship it off-by-default while a regression is investigated separately if needed.
+- Immediate scope: run the GLM-4.5 gate-on/gate-off arms and one small known Q5_K model gate-on/gate-off
+  from the Step 5 matrix, comparing existing golden/parity expectations as well as the recorded
+  GLM layer-0, logits, and PPL results. Any regression is a real finding — log it rather than
+  silently reverting the change.
+- Deferred until the new implementation is proven: inventory and re-run the wider set of real-weight
+  Q5_K checkpoints (start from `grep -rln "Q5_K" tests --include=*.cs`, then narrow to tests that
+  actually load real checkpoints) with the gate on, comparing against existing golden/parity
+  expectations. Keep the gate off by default while this broader validation is outstanding.
 - Existing kernel-level tests to re-run as-is (should still pass unchanged, since they test the old
   `DotQ5K` path specifically): `SimdKernelsQ8KSTests.cs`, `SimdKernelsQ3KQ8KTests.cs`.
 
