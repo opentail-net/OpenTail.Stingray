@@ -18,7 +18,7 @@ restart a fourth round of kernel-level chasing on this checkpoint without new ev
 
 ## Tracked items
 
-- [ ] **Real-weight landscape sweep rerun (`docs/103-quickest-first-plan.md` item 2): 649 classes resumed/run, several new real failures found** (2026-09-28, `scripts/sweep-tests.ps1`, default `-Suites Diffusion,Audio,Vision,ForwardPass`).
+- [ ] **01. Real-weight landscape sweep rerun (`docs/103-quickest-first-plan.md` item 2): 649 classes resumed/run, several new real failures found** (2026-09-28, `scripts/sweep-tests.ps1`, default `-Suites Diffusion,Audio,Vision,ForwardPass`).
   - **Caveat on the sweep's own memory data:** the harness resumes from `%TEMP%\stingray-sweep\state.jsonl` and skips any class already marked "done" — the PersonaPlex entries in that file were timestamped `17:57` the same day, from *before* the zero-copy-Q8 fix (see PersonaPlex 7B entry below) landed later in the session, so this run did not re-execute or re-verify them. Its "Top 10 by peak memory" list is stale pre-fix data, not a regression. The PersonaPlex 7B entry's own numbers (11.17 GiB, ~301ms/decode-step) are the current, real ones, independently re-verified by direct class runs, not by this sweep.
   - **`WanTests` (Diffusion), exit=1, failed=4:** `Assert.Equal() Failure: Values are not within tolerance 9.99999997E-07` (several facts) plus one `Values differ`. Not investigated further.
   - **FunASR cluster, 8 classes, all the SAME root cause:** `FunAsrEncoderTests`, `FunAsrWeightsTests` (3 facts), `FunAsrPredictorTests`, `FunAsrRealDecoderTests`, `FunAsrRealMelExtractorTests`, `FunAsrNanoDecoderGoldenTests`, `Fast.FunAsrPerfBenchTests`, `Fast.FunAsrRealWeightsTests` — all throw `System.IO.InvalidDataException: Paraformer GGUF missing 'pf.vocab' metadata`. This is almost certainly the SAME wrong-file trap already logged in the "FunASR GGUF Paraformer pipeline returns an empty transcript" entry below: `models/paraformer-q8.gguf` (1.0 GB, `general.name=Fun-ASR-Nano-2512`, `general.architecture=audiocpp`) is not a Paraformer; the real one is `models/_models/paraformer-q8.gguf` (237 MB). These tests are presumably finding the wrong file by the same bare-filename lookup. Fixing the rename/move already proposed in that entry should very likely clear all 8 at once — not independently confirmed.
@@ -31,25 +31,25 @@ restart a fourth round of kernel-level chasing on this checkpoint without new ev
   - **Already tracked, not new:** `FishSpeechCodecTests`/`FishSpeechFastArTests` (see the Fish Speech entry below) and `PrefillDecodeSelfConsistencyTests` (see its own entry above).
   - **Next step:** none of the new failures above have been root-caused; this entry is the raw triage from the sweep, following the standing rule to document precisely and move to the next item rather than block the whole session on one. Full logs/xUnit XML per class are in `%TEMP%\stingray-sweep\logs\<Suite>\<Class>.log`.
 
-- [ ] **`PrefillDecodeSelfConsistencyTests.F32Prefill_MatchesTokenByTokenDecode` fails standalone** (found 2026-09-28 while re-verifying the PersonaPlex zero-copy-Q8 memory fix; unrelated to that change).
+- [ ] **02. `PrefillDecodeSelfConsistencyTests.F32Prefill_MatchesTokenByTokenDecode` fails standalone** (found 2026-09-28 while re-verifying the PersonaPlex zero-copy-Q8 memory fix; unrelated to that change).
   - **Failure:** `dotnet test tests/OpenTail.Stingray.Tests.ForwardPass.exe -class OpenTail.Stingray.Tests.ForwardPass.PrefillDecodeSelfConsistencyTests` fails even run alone, single-process, with `STINGRAY_RUN_HEAVY_TESTS=1` — not a concurrency artifact from the mutex/sweep work done the same day.
   - **Context:** pins the invariant that whole-prompt `Prefill(t0..tN)` agrees with `Prefill(t0)` followed by `Forward(t1..tN)` token-by-token, on `SmolLM2-1.7B-Instruct-Q4_K_M.gguf`.
   - **Next step:** not investigated yet — needs a look at whether prefill's batched Q8 activation path (`SimdKernels.MatMulBatched` with `allowQ8`) has drifted from the per-token `MatVec` decode path.
-- [ ] **`docs/sweep-tests-memory-report.md`'s per-test "why" narratives were mostly noise** (found 2026-09-28).
+- [ ] **03. `docs/sweep-tests-memory-report.md`'s per-test "why" narratives were mostly noise** (found 2026-09-28).
   - **What happened:** the memory sweep report attributed the top-10 memory ranking's 7 PersonaPlex entries to per-test specifics (Mimi codec held in both directions, KV-cache growth, frame count, voice-prompt extraction). The real, shared driver was `PersonaPlexLmTensorSource` eagerly dequantizing the whole 7B Q8_0 checkpoint to fp32 (~28 GB) on every test — fixed same day (zero-copy Q8_0 views, ~11.17 GiB, ~2.2x faster decode too; see `docs/done/audio-review-new-progress.md`'s PersonaPlex 7B entry, `PerformanceLeague.md`).
   - **Why it matters:** the report's rank-by-rank analysis is still useful for the non-PersonaPlex entries (`HunyuanVideoGpuParityTests`, `ZImageGpuRealScaleBisectTests`, `Sd3PerStepTrajectoryParityTests` — genuine double-load-pattern costs), but its 7 PersonaPlex explanations should not be trusted as the real cause without re-deriving them against the now-much-lower baseline.
   - **Next step:** none required — informational, so a future reader of that report doesn't take its PersonaPlex reasoning at face value.
-- [ ] **Granite 4.0 3B Vision (`granite4-vision`) outputs empty decode / early EOS** (found 2026-09-28 during RUNNING.md verification).
+- [ ] **04. Granite 4.0 3B Vision (`granite4-vision`) outputs empty decode / early EOS** (found 2026-09-28 during RUNNING.md verification).
   - **Failure:** Running `stingray -m models/_models/granite-4.0-3b-vision-Q4_K_M.gguf --mmproj models/_models/mmproj-granite-4.0-3b-vision-f16.gguf --image photo.png -p "Describe this picture."` projects 145 soft tokens (20480-dim across 8 deepstack streams) successfully at 44.3 t/s, but generation terminates after 0 to 3 tokens (e.g. single period) instead of generating text.
   - **Suspect:** Multi-stream deepstack injection mapping into the text model's layers or chat prompt template delimiter handling.
   - **Control:** `granite-vision-3.2-2b` (which uses standard MLP projector) generates full, rich descriptions without issue.
-  - **Investigation plan:** [Granite 4.0 3B Vision early-EOS plan](granite4-vision-early-eos-plan.md) — reproduces the failure and traces the image-embedding path through the text model to the first divergent output.
-- [ ] **Voxtral Realtime audio.cpp GGUF is not supported by the dedicated STT entry point** (found 2026-09-28 during RUNNING.md verification).
+  - **Investigation plan:** [Granite 4.0 3B Vision early-EOS plan](04-granite4-vision-early-eos-plan.md) — reproduces the failure and traces the image-embedding path through the text model to the first divergent output.
+- [ ] **05. Voxtral Realtime audio.cpp GGUF is not supported by the dedicated STT entry point** (found 2026-09-28 during RUNNING.md verification).
   - **Expected behavior, not a defect:** generic `stingray -m <Voxtral GGUF> -p "..."` rejects `general.architecture=audiocpp` before inference. Do not add `audiocpp` to the generic text-generation architecture allowlist.
   - **Actual gap:** `SttCommand -m voxtral --model-file <GGUF>` currently resolves a SafeTensors directory, while `VoxtralPipeline.Load` requires `model.safetensors` and filesystem `tekken.json`. The dedicated Voxtral ASR path does not yet load the self-contained audio.cpp-packed GGUF.
   - **Checkpoint:** `mistral-experimental/AudioCPP-Voxtral-Mini-4B-Realtime-2602-GGUF`; use the exact local GGUF as source of truth for metadata, packed tensors, dtypes, and embedded files.
-  - **Plan:** [Voxtral Realtime audio.cpp GGUF support](voxtral-realtime-audiocpp-gguf-support-plan.md) — inventory the real package, bridge it to the existing Voxtral weight/inference path, route `stt` by checkpoint format, and retain the generic text-generation rejection.
-- [ ] **GGUF `jais` architecture rejected; admission landed but output is degenerate — real blocker is ALiBi, not an allowlist gap** (found 2026-09-28 during RUNNING.md verification; investigated further same day, in-progress).
+  - **Plan:** [Voxtral Realtime audio.cpp GGUF support](05-voxtral-realtime-audiocpp-gguf-support-plan.md) — inventory the real package, bridge it to the existing Voxtral weight/inference path, route `stt` by checkpoint format, and retain the generic text-generation rejection.
+- [ ] **06. GGUF `jais` architecture rejected; admission landed but output is degenerate — real blocker is ALiBi, not an allowlist gap** (found 2026-09-28 during RUNNING.md verification; investigated further same day, in-progress).
   - **Failure (original):** `stingray -m "models/_models/jais-family-590m-chat.Q4_K_M.gguf"` threw `NotSupportedException`: GGUF architecture 'jais' is not supported for text generation (supported list includes `jais2`, but `jais` v1 was unmapped).
   - **Checkpoint:** `mradermacher/jais-family-590m-chat-GGUF`, Q4_K_M (`K:\_other_models\jais-family-590m-chat.Q4_K_M.gguf`, 480 MiB — was missing from every model dir on this machine, which is what stalled the first attempt at this; downloaded via `stingray pull` and kept on K: per this project's disk-space rule, not `models/_models`).
   - **Structural diff confirmed against the real reference** (`examples/llama.cpp/llama.cpp/src/models/jais.cpp` vs `jais2.cpp`): fused `attn_qkv` (vs jais2's separate wq/wk/wv), gated-SiLU-with-bias FFN (vs jais2's non-gated ReLU²), separate untied `output.weight` (vs jais2's tied embeddings), and — the one real gap — **ALiBi position encoding, not RoPE** (`jais.attention.max_alibi_bias` metadata key; `jais.cpp` never calls `inp_pos`/`ggml_rope_ext`). Everything except ALiBi was already generic in this engine (fused-QKV split, `HasFfnBias`, `HasAttnOutputBias`, `HasNormBias`/`UsesLayerNorm` — all tensor-presence-detected, same as gptneox/falcon/codeshell).
@@ -57,27 +57,27 @@ restart a fourth round of kernel-level chasing on this checkpoint without new ev
   - **Admission landed (`ModelGraph.cs` sets `noRopeStep=1` for `arch=="jais"`; `ModelCompatibility.cs` allowlists `"jais"`), but real-weight verification shows it doesn't work:** running the actual checkpoint from K: produces degenerate, incoherent output — repeated-token loops (`ex ex ex`, `temporarily temporarily temporarily`, `endendendenden`) mixing English/Arabic word salad, not the "coherent but positionally degraded" text the admission's doc comment predicted. This is stronger evidence of a real missing feature, not a cosmetic gap — **do not check this item off or trust the doc comment's optimistic framing until ALiBi is actually implemented and re-verified.**
   - **What ALiBi actually needs:** a per-attention-head linear bias added to each raw QK score before softmax (`score[i][j] += slope[head] * (j - i)` for causal, roughly; slopes are a fixed geometric sequence derived from `numHeads` and `max_alibi_bias`, see ggml's `ggml_soft_max_ext`/`ggml_alibi` or `jais.cpp`'s own call for the exact formula — don't guess it from memory, read the real reference). **Concrete call sites in this engine that would each need it** (found via `ForwardPass.Attention.cs`): the score computation immediately before every `SimdKernels.SoftmaxInPlace(...)` call — there are at least 3 separate paths (a plain per-token path around line 37/40, a batched-prefill path around line 271/290, and a windowed/KV-shared path around line 417/428) that all independently compute `headScores[i] = ... * scale` then softmax; all three need the bias added at the same point, or a shared helper needs to grow an optional bias parameter used by all of them. `_hp.AttentionScaleOverride`/`_layerHeadDim` near line 112 show where per-model attention-scale plumbing already exists, so ALiBi's per-head slope likely belongs alongside it as a new `ModelHyperparams` field.
   - **Decision needed before implementing:** ALiBi is real, new engine work (attention math, not just a tensor-mapping/allowlist change), and jais v1 is a small, low-priority 590M checkpoint. Worth confirming with the user whether this is worth doing before investing in it, versus leaving the entry open/parked.
-- [ ] **FunASR GGUF Paraformer pipeline returns an empty transcript on real speech** (found 2026-09-27, `docs/103` item 10).
+- [ ] **07. FunASR GGUF Paraformer pipeline returns an empty transcript on real speech** (found 2026-09-27, `docs/103` item 10).
   - **Failure:** `FunAsrPipeline.Load("models/_models/paraformer-q8.gguf")` on
     `docs/audio-samples/paraformer-zh-test-0.wav` (real Mandarin) produces `''`.
   - **Control:** the ONNX Paraformer on the same clip gives
     "对我做了介绍啊那么我想说的是呢大家如果对我的研究感兴趣呢嗯", so the audio is fine.
   - **Why it looked healthy:** its only end-to-end test feeds a 440 Hz tone, where empty output is
     expected. The stage goldens (encoder/adaptor/decoder) pass on their own.
-  - **Investigation plan:** [FunASR GGUF Paraformer real-speech plan](funasr-gguf-paraformer-real-speech-plan.md) — first eliminate the wrong-checkpoint lookup trap, then compare real-WAV stages against the production reference path and stop at the first divergence.
+  - **Investigation plan:** [FunASR GGUF Paraformer real-speech plan](07-funasr-gguf-paraformer-real-speech-plan.md) — first eliminate the wrong-checkpoint lookup trap, then compare real-WAV stages against the production reference path and stop at the first divergence.
   - **Related trap:** `models/paraformer-q8.gguf` (1.0 GB) is not a Paraformer. Its metadata says
     `general.name = Fun-ASR-Nano-2512`, `general.architecture = audiocpp`. The real Paraformer GGUF is
     `models/_models/paraformer-q8.gguf` (237 MB). Tests that look up "paraformer-q8.gguf" in
     `models/` first load the wrong model; rename or move the Nano file.
-- [ ] **Fish Speech S2 Pro correctness-test reconciliation: stale codec oracle and Q4 Fast-AR precision** (found 2026-09-27 by the `docs/103` item 2 landscape sweep).
+- [ ] **08. Fish Speech S2 Pro correctness-test reconciliation: stale codec oracle and Q4 Fast-AR precision** (found 2026-09-27 by the `docs/103` item 2 landscape sweep).
   - **Observed test failures:**
     - `FishSpeechCodecTests.Decode_RealWeights_MatchesGoldenPcmOutput`: PCM cosine 0.052 vs the old golden.
     - `FishSpeechFastArTests.Forward_RealWeights_MatchesGoldenOracle`: fast-AR logits cosine 0.44 vs the full-precision golden using `models/s2-pro-q4_k_m.gguf`.
   - **The history does not support `d377049` as the origin of these failures:** `7a68185` is an ancestor of `d377049`, and its commit message already records the Fast-AR cosine 0.44 failure as pre-existing. `bd2a612` added the real `quantizer.post_module` transformer; its message says the codec golden predates and omits that transformer. With identical reference-generated codes, the corrected C# codec reached 0.9999999 cosine against the reference. `a7e720` subsequently describes the remaining suite failures as the Q4_K_M Fast-AR precision limitation and stale codec oracle, and reports successful real end-to-end listening verification.
   - **Fast-AR test scope:** `FishSpeechWeights` normalizes Fast-AR weights to Q8_0 at load time. The Q4 checkpoint path therefore includes Q4_K_M dequantization followed by Q8_0 quantization; a 0.44 cosine against original full-precision logits is not alone proof of incorrect math. Existing Q8_0 external-golden and `ForwardStep_MatchesForward_ForSamePrefix` tests are useful controls, but test different claims.
-  - **Next step:** follow [`fish-speech-s2-pro-golden-reconciliation-plan.md`](fish-speech-s2-pro-golden-reconciliation-plan.md): classify current vs `7a68185`, regenerate the codec golden with the full post-module reference path, establish precision-appropriate Q8_0/Q4 Fast-AR tests, and inspect individual `d377049` changes only if a valid comparison demonstrates a regression.
+  - **Next step:** follow [`08-fish-speech-s2-pro-golden-reconciliation-plan.md`](08-fish-speech-s2-pro-golden-reconciliation-plan.md): classify current vs `7a68185`, regenerate the codec golden with the full post-module reference path, establish precision-appropriate Q8_0/Q4 Fast-AR tests, and inspect individual `d377049` changes only if a valid comparison demonstrates a regression.
   - **Status:** retain the conservative 🟡 rating until permanent, correctly scoped regression coverage is in place. The numeric golden failures are test/oracle issues to reconcile, not established evidence of a current end-to-end audio defect.
-- [ ] **GLM-4.5 (`glm4moe`) perplexity 1.9% worse than llama.cpp; not admitted** (logged 2026-09-27; `docs/done/102-status-open-items-plan.md` #16).
+- [ ] **09. GLM-4.5 (`glm4moe`) perplexity 1.9% worse than llama.cpp; not admitted** (logged 2026-09-27; `docs/done/102-status-open-items-plan.md` #16).
   - **Checkpoint:** `cerebras_GLM-4.5-Air-REAP-82B-A12B-Q2_K.gguf`. It mixes quant types: attn_q
     Q2_K, attn_output Q5_K, expert gate/up Q2_K, expert down IQ4_NL.
   - **Result:** wikitext second-half PPL at -c 2048 is 8.7753 vs `llama-perplexity` 8.6125.
@@ -144,13 +144,13 @@ restart a fourth round of kernel-level chasing on this checkpoint without new ev
         by every Q5_K-quantized model in this codebase, not just GLM), so it needs care and a broad
         regression check before landing, not a quick patch. Scoped but not started.
       - **Full implementation plan (2026-09-28), ready to hand off:**
-        [docs/1-correctness/glm45-q5k-activation-quant-plan.md](glm45-q5k-activation-quant-plan.md) —
+        [docs/1-correctness/09-glm45-q5k-activation-quant-plan.md](09-glm45-q5k-activation-quant-plan.md) —
         exact function to add (`DotQ5K_Q8K`, mirroring the existing `DotQ8_0_Q8K` shape), the real
         ggml reference to port from, the feature-gate wiring, the verification steps (isolated
         kernel test → re-run the layer-0 bisection harness already built for this → full PPL →
         broad Q5_K regression pass), and the constraints to follow. Start there instead of
         re-deriving the approach from this entry.
-- [ ] **GLM-4.7-Flash (`deepseek2`) perplexity 0.9-1.4% worse than llama.cpp; not at parity** (logged 2026-09-27; `docs/103-quickest-first-plan.md` item 3).
+- [ ] **10. GLM-4.7-Flash (`deepseek2`) perplexity 0.9-1.4% worse than llama.cpp; not at parity** (logged 2026-09-27; `docs/103-quickest-first-plan.md` item 3).
   - **Checkpoint:** `GLM-4.7-Flash-Q2_K.gguf` (10.6 GB).
   - **Result:** wikitext second-half PPL at -c 2048: ours 8.1757 batched prefill, 8.2100 sequential;
     `llama-perplexity --chunks 1` 8.0997.
@@ -159,7 +159,7 @@ restart a fourth round of kernel-level chasing on this checkpoint without new ev
     prefill path is not the cause.
   - **Next step:** same layer bisection as GLM-4.5, but only trust differences well above the
     4-decimal print resolution of `llama-eval-callback`.
-- [ ] **LFM2 (`lfm2`) perplexity 0.24% worse than llama.cpp** (logged 2026-09-27; `docs/103-quickest-first-plan.md` item 11a; timeboxed out).
+- [ ] **11. LFM2 (`lfm2`) perplexity 0.24% worse than llama.cpp** (logged 2026-09-27; `docs/103-quickest-first-plan.md` item 11a; timeboxed out).
   - **Checkpoint:** `LFM2-1.2B-Q8_0.gguf`. PPL 10.9543 vs `llama-perplexity` 10.9277. Admitted anyway
     (greedy and teacher-forced parity tests pass).
   - **Layer bisection:** 338-token wikitext prompt (with BOS), last token, `llama-eval-callback` vs
@@ -175,13 +175,13 @@ restart a fourth round of kernel-level chasing on this checkpoint without new ev
     context; the attention layers' K/V storage precision (llama.cpp's default F16 KV cache vs
     ours); the dump's resolution hides where the error starts. A full-precision dump (tensor
     binary output, not the printed summary) is needed to go further.
-  - **Investigation plan:** [LFM2 PPL gap resolution plan](lfm2-ppl-gap-plan.md) — freezes the canonical benchmark first, then continues the measured parity investigation.
+  - **Investigation plan:** [LFM2 PPL gap resolution plan](11-lfm2-ppl-gap-plan.md) — freezes the canonical benchmark first, then continues the measured parity investigation.
 - [x] **Parakeet (CTC and TDT) held its weights as F32** (logged and resolved 2026-09-27, docs/103 item 14).
   - Was 2.85 GB for the 378 MB q4_k TDT file. Now Q4_K weights stay quantized (repacked Q4Kx8 batched GEMM, as the
     text engine's prefill), only the Q8_0 conv layers are packed F32: 1.1 GB peak, and faster than CrispASR on the
     same files (TDT 1.16x, CTC 1.10x). CrispASR itself peaks at 0.6-0.65 GB; the ~290 MB of F32 conv weights are the
     difference, kept on purpose because the int8 Q8_0 path was ~0.2 s slower per clip. Stopped here.
-- [ ] **LFM2-MoE (`lfm2moe`) not admitted: PPL off and per-token vs batched disagree** (logged 2026-09-28, docs/103 item 13):
+- [ ] **12. LFM2-MoE (`lfm2moe`) not admitted: PPL off and per-token vs batched disagree** (logged 2026-09-28, docs/103 item 13):
   `LFM2-8B-A1B-Q4_K_M`, wikitext `[256,1024)` at -c 512: per token 8.1860, batched 8.9595, `llama-perplexity --chunks 1`
   8.7030; at -c 2048 batched 15.8076 vs 14.8639 (+6.3%). Arch wiring is in `ModelGraph` (NeoX, short-conv layers,
   sigmoid gating with `exp_probs_b` as DeepSeek, top-k renormalised as llama.cpp lfm2.cpp norm_w = true) but the arch is
@@ -189,11 +189,11 @@ restart a fourth round of kernel-level chasing on this checkpoint without new ev
   the expert matmul kernels (batched vs per-row MatVec on the real blk.2 Q4_K/Q6_K expert weights: relative error 0 at
   n = 1..64). Dense LFM2 1.2B and Granite hybrids agree per-token vs batched within 0.1-0.5%, so the 9% spread is specific
   to this model. Next step: per-layer hidden-state comparison, batched vs per-token vs llama-eval-callback.
-- [ ] **Granite 4.0-H small (MoE) +1.2% PPL vs llama.cpp** (logged 2026-09-28, docs/103 item 13): `granite-4.0-h-small-Q2_K`,
+- [ ] **13. Granite 4.0-H small (MoE) +1.2% PPL vs llama.cpp** (logged 2026-09-28, docs/103 item 13): `granite-4.0-h-small-Q2_K`,
   wikitext -c 2048 `[1024,+)` 26.4155 (batched) / 26.5483 (per token) vs `llama-perplexity --chunks 1` 26.1080; at -c 512
   9.3505 vs 9.4103 (ours lower). The large error (157) was missing top-k renormalisation, fixed. Not yet bisected; Q2_K
   only locally (a Q4 file would separate quantisation noise from a real difference).
-- [ ] **Qwen3-VL / Qwen2.5-VL / PaddleOCR image input: CUDA and Vulkan hybrid still lack it** (logged 2026-09-27, docs/103 item 14).
+- [ ] **14. Qwen3-VL / Qwen2.5-VL / PaddleOCR image input: CUDA and Vulkan hybrid still lack it** (logged 2026-09-27, docs/103 item 14).
   - 2026-09-28: full Vulkan offload (`GpuForwardPass`) now applies per-pair M-RoPE positions and deepstack, which also covers
     the IMROPE pairs 61-62 for text (M-RoPE models take the per-token trunk). Verified by `Qwen3VlVulkanMRopeParityTests`
     (cosine 0.9995 vs CPU). The CLI now refuses image input for M-RoPE models on any other pass instead of answering wrongly.
@@ -207,14 +207,14 @@ restart a fourth round of kernel-level chasing on this checkpoint without new ev
   `src/OpenTail.Stingray.Diffusion/AceStep/silence_latent.bin` / `silence_timbre.bin` and the runtime copies in
   `models/acestep-v15/` (which `AceStepPipeline` reads first). It is a generator; make it opt-in (env gate) or write to a
   scratch path so ordinary test runs cannot change shipped data.
-- [ ] **LLaVA-NeXT / LLaVA-1.6 AnyRes tiling (llava_uhd) remains unverified with real weights** (logged 2026-09-27):
+- [ ] **15. LLaVA-NeXT / LLaVA-1.6 AnyRes tiling (llava_uhd) remains unverified with real weights** (logged 2026-09-27):
   - Classic LLaVA-1.5 (single-tile 336x336 ViT + MLP projector) is verified against `llama-mtmd-debug` and `llama-mtmd-cli`
     end to end (`LlamaMtmdVisionParityTests.Llava15_Rainbow336_MatchesLlamaMtmdDebug`).
   - However, dynamic AnyRes multi-tile slicing (`llava_uhd`) is only verified for Granite Vision, not on a LLaVA-NeXT
     or LLaVA-OneVision checkpoint. Needs an actual LLaVA-NeXT checkpoint to verify tile ordering and separators.
-- [ ] **Dequantize.cs / IqCodebooks.cs coverage gap**: Port `iq1s_grid` (NGRID_IQ1S=2048) and decoders for `IQ1_S`/`IQ1_M` (`IQ1S_DELTA=0.125f`, distinct sign/shift scheme) and `IQ2_XS`/`IQ2_S` when needed by future GGUF models.
-- [ ] **ModelCompatibility.cs / Kernels missing op coverage** (2026-09-27: the Mamba-2 `SSM_SCAN`/`SSM_CONV` path is now implemented on CPU in `ForwardPass.Mamba2.cs` for Granite 4.0-H / Nemotron-H; Mamba-1 and GPU remain): Implement `GGML_OP_SSM_SCAN` (the selective-scan recurrence, distinct from `SSM_CONV`), `RWKV_WKV6`/`RWKV_WKV7`, and DeepSeek-V4 ops (`LIGHTNING_INDEXER`, `DSV4_HC_*`, `SOLVE_TRI`, `WIN_PART`/`WIN_UNPART`).
-- [ ] **SpeculativeDecoder.cs StepSampled/PLD bugs**: Confirmed real defect in speculative decode step sampling; currently unreachable/latent as no wired call path exercises it yet.
+- [ ] **16. Dequantize.cs / IqCodebooks.cs coverage gap**: Port `iq1s_grid` (NGRID_IQ1S=2048) and decoders for `IQ1_S`/`IQ1_M` (`IQ1S_DELTA=0.125f`, distinct sign/shift scheme) and `IQ2_XS`/`IQ2_S` when needed by future GGUF models.
+- [ ] **17. ModelCompatibility.cs / Kernels missing op coverage** (2026-09-27: the Mamba-2 `SSM_SCAN`/`SSM_CONV` path is now implemented on CPU in `ForwardPass.Mamba2.cs` for Granite 4.0-H / Nemotron-H; Mamba-1 and GPU remain): Implement `GGML_OP_SSM_SCAN` (the selective-scan recurrence, distinct from `SSM_CONV`), `RWKV_WKV6`/`RWKV_WKV7`, and DeepSeek-V4 ops (`LIGHTNING_INDEXER`, `DSV4_HC_*`, `SOLVE_TRI`, `WIN_PART`/`WIN_UNPART`).
+- [ ] **18. SpeculativeDecoder.cs StepSampled/PLD bugs**: Confirmed real defect in speculative decode step sampling; currently unreachable/latent as no wired call path exercises it yet.
 - [x] **DeepSeekMoeGraph.cs:172 ExpertOffsets off-by-index**: Resolved 2026-08-27 (moved to `docs/done/bugstofix-resolved-2026-08.md`).
 - [x] **KvMemoryGovernor TOCTOU race & InferenceSession unguarded Fork() on CUDA**: Moot / resolved 2026-08-27 when superseded session types were removed.
 
