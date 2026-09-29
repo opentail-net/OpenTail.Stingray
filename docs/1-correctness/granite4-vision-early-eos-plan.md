@@ -10,14 +10,14 @@
 ## Failure description
 
 Prefill succeeds (145 soft tokens, 20480-dim = 8 streams Ã 2560, at 44.3 t/s).  
-Decoding stops after 0â3 tokens (e.g. a single period `.`). This is the EOS or an EOG token being
-generated at position 1â3 of decode, not a crash.
+Decoding stops after 0â3 tokens (e.g. a single period `.`). The decoder is behaving
+correctly given the logits it receives â the fault must lie in how those logits are produced.
 
 **Control:** `granite-vision-3.2-2b` (standard MLP projector, no deepstack) works.
 
 ---
 
-## Critical timeline â what changed between âworkingâ and âbrokenâ
+## Critical timeline
 
 | Date | Commit | What it did |
 |---|---|---|
@@ -25,265 +25,254 @@ generated at position 1â3 of decode, not a crash.
 | 2026-09-28 | `31d3846b` | Batched CPU image prefill: replaced the per-token `ForwardEmbedding()` loop with `PrefillEmbeddings()` â `PrefillCore()` for CPU. |
 | 2026-09-28 | RUNNING.md verification | Granite 4.0 Vision now produces empty / early-EOS output. |
 
-`31d3846b` is therefore the **primary regression vector**. This is not a Granite encoder bug â the
-encoder (44.3 t/s, 145 tokens, 20480-dim) is working. It is a post-projector prefill bug.
+`31d3846b` is the **primary regression vector**. The encoder (44.3 t/s, 145 tokens, 20480-dim)
+is working; the regression is downstream in how those embeddings are fed through the text model.
 
 ---
 
 ## What the pipeline does for granite4-vision
 
-1. **Encoder output:** `Granite4Adapter.EmbedImage` produces `nTok Ã 20480` floats
-   (8 QFormer blocks Ã 2560-dim, concatenated along the feature axis).
-2. **Injection point before `31d3846b`:** per-token `ForwardEmbedding()` loop, one call per soft token;
-   `ForwardEmbedding` splits: first 2560 â `_hidden`, remainder â `_deepstackSlices`; `RunTrunk` injects
-   per-layer.
-3. **Injection point after `31d3846b` (CPU path):** `PrefillEmbeddings()` â `PrefillCore()` with
-   `embeddingRows` pointing to the full 20480-wide buffer. `PrefillCore`:
-   - Copies only `_embDim = 2560` floats per row into `batchHidden` (line 40â41) â correct.
-   - At each mapped layer, reads `embeddingRows + n * embeddingWidth + dsIdx * _embDim` â
-     mathematically correct.
-4. **DeepstackMapping:** read from GGUF as `{arch}.deepstack_mapping` where `arch` is the text
-   backbone's `general.architecture` string.
-5. **`ScaleRawEmbeddings`:** set to `isGraniteFamily && !metadata.ContainsKey($"{arch}.deepstack_mapping")`
-   (ModelGraph.cs:1312), so it is **false** for Granite 4.0 Vision. `PrefillCore` therefore does NOT
-   scale the raw embedding rows. `ForwardEmbedding` also does not scale them (`if (_hp.ScaleRawEmbeddings)`).
-   Both paths should agree on this.
-6. **`RecurrentBatchedPrefillApplies`:** `true` for Granite 4.0 (no short-conv, no Mamba-2), so the
-   `batched` flag in `PrefillEmbeddings` is `true` when `nTok > 1`, and all 145 image tokens
-   are sent through `PrefillCore`.
+1. `Granite4Adapter.EmbedImage` produces `nTok Ã 20480` floats (8 QFormer blocks Ã 2560-dim).
+2. **Before `31d3846b` (per-token path):** `ForwardEmbedding()` called once per soft token;
+   splits 20480-wide row into first 2560 floats (`_hidden`) + remaining 7 slices (`_deepstackSlices`);
+   `RunTrunk` adds each slice at its mapped layer.
+3. **After `31d3846b` (CPU batch path):** `PrefillEmbeddings()` â `PrefillCore()` with the
+   full 20480-wide `embeddingRows` buffer. `PrefillCore` copies only the first 2560 floats
+   into `batchHidden` per row (line 40â41), then adds the relevant deepstack slice at each
+   mapped layer (line 136â139). Mathematically identical to the per-token path on paper.
+4. **Width guard:** `PrefillEmbeddings` validates `width == _embDim || width == _embDim * (1 + nDs)`,
+   throwing on mismatch â a wrong width cannot produce silent EOS.
+5. **`NumDeepstack` check:** the same guard means: if prefill succeeded, `NumDeepstack == 7`
+   is confirmed and `DeepstackMapping` is non-null. H3-style null-mapping scenarios would have
+   thrown before any tokens were processed.
+6. **`ScaleRawEmbeddings`:** `false` for Granite 4.0 Vision (ModelGraph.cs:1312:
+   `isGraniteFamily && !metadata.ContainsKey($"{arch}.deepstack_mapping")`). Both paths
+   correctly skip the 12Ã embedding scale for vision soft tokens.
 
 ---
 
-## Hypotheses, ordered by current confidence
+## Hypotheses
 
-### H1 (HIGH) â Batched PrefillCore regression introduced by `31d3846b`
+### H1 (HIGH) â Batched PrefillCore introduces numerical divergence for deepstack models
 
-This is the primary suspect. The `PrefillEmbeddings` â `PrefillCore` batched path was not
-tested for granite4-vision before committing. The Qwen3-VL validation noted in the commit only
-checked `cosine â 0.9994` against the per-token path â acceptable for a standard VLM, but
-not necessarily acceptable when the first generated token's logits sit near an EOS/EOG
-decision boundary.
+The batched trunk uses `STINGRAY_CPU_PREFILL_Q8` int8-quantized QK/V matmuls for inter-token
+attention. The per-token path uses F32 throughout. This difference is compounded over 145 tokens
+Ã 28 layers, and the deepstack injection adds 7 additional residual contributions to each layer.
+The Qwen3-VL validation of `31d3846b` accepted `cosine â 0.9994` â acceptable for text
+generation but potentially inadequate for a multimodal boundary where one logit decides whether
+generation starts.
 
-The `PrefillCore` deepstack injection (lines 136â139 of `ForwardPass.PrefillCore.cs`) is
-mathematically identical to the `RunTrunk` per-token path on paper, but the **batched trunk
-may use different int8 activation quantization** for the QK/V matmuls between image tokens
-(the `STINGRAY_CPU_PREFILL_Q8` path). That numerical difference, compounded over 28 layers
-and 145 image tokens, could shift the post-image logit distribution enough to make EOS/EOG
-highly probable.
+Resulting symptom: post-image logits are corrupted enough that EOS or `.` becomes top-1,
+and decode terminates after 0â3 tokens. The model itself is not broken; the logits it receives
+from the batched prefill are wrong.
 
-**Immediate diagnostic (no code change):** force the Granite deepstack case back through the
-old per-token route by adding `|| _hp.NumDeepstack > 0` to the batched exclusion in `PrefillEmbeddings`:
+### H2 (HIGH) â Batched/deepstack interaction: a specific numerical failure in PrefillCore
 
+Even if the int8 path is correct in isolation, the **interaction** between batched causal
+attention across 145 image tokens and the 7 deepstack additions (each adding to a batch of
+145 hidden states at once) may accumulate error differently than 145 independent single-token
+trunk calls. The deepstack additions happen once-per-layer on the whole batch rather than once-
+per-token, which changes the accumulation order. This is a plausible mechanism distinct from
+pure int8 quantization.
+
+**Three-variant experiment (see Step 1.3)** distinguishes H1 from H2.
+
+### H3 (MEDIUM) â Deepstack mapping values or layer assignments are incorrect
+
+If the GGUF `deepstack_mapping` values are 0-indexed (e.g. 0..7 instead of 1..7), the
+condition `dsIdx >= 1` would incorrectly skip index 0 and address wrong slice offsets for
+indices 1..7. This would produce wrong hidden states at every mapped layer. It does not
+directly cause EOS but could bias logits toward EOG-family tokens. This would be a pre-existing
+bug (present before `31d3846b`) rather than a regression, and is lower priority given
+the September 27 success report.
+
+**Sanity check:** print actual `hp.DeepstackMapping` values before the prefill and compare
+against the raw GGUF metadata (`stingray list-metadata | findstr deepstack`).
+
+### H4 (MEDIUM) â Chat template rendering produces wrong post-image logit context
+
+> **Correction from earlier version of this plan:** a pre-existing EOG token in the rendered
+> prompt template does NOT directly cause `DecodeLoop` to terminate â the loop only checks
+> newly generated tokens. The real mechanism is different: if the chat template produces the
+> wrong conversational context (wrong role delimiters, wrong turn structure), the model's prior
+> distribution over the first generated token shifts toward EOG. This would be independent of
+> `31d3846b` and would also affect the per-token path.
+
+Since Granite 4 Vision worked with the same template on 2026-09-27, this is a lower-priority
+hypothesis. Primarily useful to check via Step 5 (text-only control) and Step 3 (first decode
+step instrument).
+
+### H5 (LOW) â Stop/EOG handling incorrectly marks the first token as EOG
+
+The first generated token is non-EOG (`.` or similar) but decode terminates anyway. This would
+mean `GgufTokenizer.EogTokenIds` incorrectly includes `.`'s token ID. Very unlikely given the
+control test (`granite-vision-3.2-2b` decodes normally on the same stack).
+
+### H6 (VERY LOW) â Granite 4.0 Vision encoder/projector output is wrong
+
+The encoder's output is already parity-tested against `llama-mtmd-cli` (144Ã20480 structure,
+8-stream layout). The September 27 fix specifically addressed QFormer stream packing and
+deepstack architecture. Reopening this without new evidence from the A/B experiments would
+be premature.
+
+---
+
+## Investigation steps (ordered: cheapest decisive first)
+
+### Step 1 â Per-token A/B gate â the decisive experiment (~20 min)
+
+This is the single most important experiment. Run three variants:
+
+| Variant | Code change | Purpose |
+|---|---|---|
+| A: Per-token + deepstack ON | Add `&& _hp.NumDeepstack == 0` to `batched` condition | Known-good baseline |
+| B: Batched + deepstack ON | Current HEAD (no change) | Current failure |
+| C: Batched + deepstack OFF | Skip deepstack additions in `PrefillCore` (zero them) | Isolates deepstack interaction |
+
+Variant A is the critical gate:
 ```csharp
+// ForwardPass.Decode.cs PrefillEmbeddings, diagnostic only:
 bool batched = count > 1 && RecurrentBatchedPrefillApplies && _layerHeadDim is null
     && !_usesUnweightedNorm && _tqKvCache == null && !_hp.HasPerLayerTokenEmbd
-    && _hp.NumDeepstack == 0           // <- diagnostic gate
+    && _hp.NumDeepstack == 0   // <- diagnostic: force per-token for deepstack models
     && (!_hp.IsMoE || MoeBatchedPrefillSupported);
 ```
 
-This is the cheapest, most decisive experiment. Run the exact failing command. If Granite 4
-Vision starts producing full text descriptions, `31d3846b` is confirmed as the regression.
+**Decision matrix:**
 
-### H2 (MEDIUM) â `embeddingWidth` passed as 0 or wrong to `PrefillCore`
+| A result | B result | C result | Interpretation |
+|---|---|---|---|
+| Full description | Early EOS | Full description | **`31d3846b` regression, deepstack interaction is the cause.** |
+| Full description | Early EOS | Early EOS | **`31d3846b` regression, pure batched arithmetic is the cause.** |
+| Early EOS | Early EOS | Early EOS | Not a batching regression; investigate H4 (template) and H3 (mapping). |
+| Early EOS | Full description | ? | Per-token path itself is broken; check H3 (wrong mapping values). |
 
-`PrefillEmbeddings` calls `PrefillCore(..., embeddingRows: p, embeddingWidth: width)` where
-`width = rows.Length / count` = total floats / nTok. For granite4 this is `145 * 20480 / 145`
-= 20480 â correct. But if `rows.Length` is anything other than `nTok * embd`, the slice math
-would produce wrong offsets. Verify `width == 20480` with a one-line diagnostic.
-
-### H3 (MEDIUM) â DeepstackMapping is null (wrong GGUF architecture key)
-
-`ModelGraph.cs:1315` reads `{arch}.deepstack_mapping` where `arch` = the text GGUF's
-`general.architecture`. If the key in this GGUF uses a different arch prefix
-(e.g. `granite3` vs `granite` vs `granite3moe`), `DeepstackMapping` is null and
-`NumDeepstack = 0`. Then `ForwardEmbedding` receives a 20480-wide row but only copies 2560
-floats â the remaining 7 deepstack slices are silently dropped. Generation might still work
-but would produce qualitatively wrong output (7 visual streams not injected). However this
-would be a prefill error, not an EOS trigger, so it is lower priority for explaining the specific
-early-EOS symptom.
-
-**Also note:** `ScaleRawEmbeddings` (ModelGraph.cs:1312) is `isGraniteFamily && !metadata.ContainsKey(...)`.
-If `deepstack_mapping` is NOT in the metadata (H3 is true), then `ScaleRawEmbeddings = true`,
-meaning every image soft token would be multiplied by `EmbeddingScale` (e.g. 12.0). This would
-cause catastrophically large activations and almost certainly trigger early EOS. **This makes H3
-acutely important as a secondary check.**
-
-### H4 (MEDIUM) â Chat template injects an EOG token in the assistant prefix
-
-Granite's Jinja template is complex (it caused the parser to hang at one point).
-The assistant-turn opening may include an EOG/EOS-family token that arrives as the last token
-before decode, causing immediate termination. This would appear as `EOS = first generated token`,
-not `EOS = second generated token`.
-
-This was probably not introduced by `31d3846b` (it's a tokenizer/template issue), but it's
-the easiest to test: run `--raw-prompt` or a text-only prompt and see if text decodes normally.
-The pre-`31d3846b` success already rules out a pure template bug, so this is lower priority.
-
-### H5 (LOW) â Off-by-one in deepstack injection indices
-
-If the GGUF mapping stores 0-indexed values (0..7) and the code condition `dsIdx >= 1` (with
-`(dsIdx-1) * _embDim` offset) skips the zeroth stream, all 7 injections would address wrong
-slices. This would not cause immediate EOS but would produce wrong hidden states.
-
----
-
-## Investigation steps (ordered by value / cost)
-
-### Step 1 â Per-token A/B gate: the decisive experiment (~15 min)
-
-Add `&& _hp.NumDeepstack == 0` to the `batched` condition in `PrefillEmbeddings`. Run:
-
-```
-stingray -m models/_models/granite-4.0-3b-vision-Q4_K_M.gguf \
-  --mmproj models/_models/mmproj-granite-4.0-3b-vision-f16.gguf \
-  --image photo.png -p "Describe this picture."
-```
-
-Expected result matrix:
-
-| Per-token result | Interpretation |
-|---|---|
-| Full description (> 10 tokens) | **`31d3846b` regression confirmed.** Proceed to Step 6 for the real fix. |
-| Still 0â3 tokens | Batched path not the primary cause. Proceed to Step 2 (arch key / mapping). |
-| 0â3 tokens but different token(s) | Partial; check both H3 and H1 in parallel. |
+The first outcome (A works, B fails, C works) is the most useful: it confirms the batched
+causal attention across 145 image tokens is the problem, not the deepstack injection itself.
 
 ### Step 2 â Capture post-image logits from both paths (~20 min)
 
-Immediately after the image prefill and before the first decode step, print:
-- Top-10 token IDs and strings
-- EOS/EOG logit (check `tok.EogTokenIds`)
+Immediately after the last image soft token is processed, before the first text token, print:
+- Top-10 token IDs and strings (for both A and B)
+- EOS / EOG logit (`tok.EogTokenIds`)
 - `.` period token logit
 - Top-1 minus top-2 margin
-- Logit cosine between per-token and batched paths
+- Logit cosine(A, B)
+- Max absolute logit delta
 
-This tells us whether the EOS/`.` is the consequence of corrupted post-image logits or of correct
-logits + bad decode-loop stop handling. If EOS = top-1 on the batched path but top-25 on the
-per-token path, the problem is fully inside the batched prefill arithmetic.
+This answers: is the EOS the **consequence of wrong post-image logits** (H1/H2) or does the
+logit distribution look correct but something still stops decode (H4/H5)?
 
-### Step 3 â Verify `hp.NumDeepstack` and `embeddingWidth` (~10 min)
+If `EOS = top-1` on B but `EOS = top-25` on A, the fault is entirely inside the batched
+prefill arithmetic.
 
-Add diagnostics before `PrefillEmbeddings` in `RunImagePrompt`:
-```csharp
-Console.Error.WriteLine($"[granite4-diag] NumDeepstack={hp.NumDeepstack} embDim={hp.EmbeddingDim} embd={embd}");
+### Step 3 â First 5 decode steps instrument (~15 min)
+
+In `DecodeLoop` (or equivalent), for the first 5 generated positions print:
 ```
-
-Expected: `NumDeepstack=7`, `embDim=2560`, `embd=20480`.
-
-If `NumDeepstack=0`, H3 is confirmed as a concurrent bug. Proceed to Step 4.
-
-### Step 4 â Read the GGUF arch key for deepstack_mapping (~10 min)
-
-Run `stingray list-metadata --model models/_models/granite-4.0-3b-vision-Q4_K_M.gguf | findstr deepstack`
-and also check `general.architecture`. Compare the key prefix against what
-`ModelGraph.cs:1315` expects (`{arch}.deepstack_mapping`). If the GGUF uses `granite3.deepstack_mapping`
-but `arch` is `granite`, the lookup silently returns null.
-
-### Step 5 â Text-only Granite control (~5 min)
-
-Run the same text model without `--mmproj`:
-```
-stingray -m models/_models/granite-4.0-3b-vision-Q4_K_M.gguf -p "Count to 5."
-```
-If this also gives 0â3 tokens, there is a separate Granite text-model bug (template EOG, H4).
-If this produces normal output, the fault is isolated to the vision path.
-
-### Step 6 â Deepstack hidden-state trace (~1 h, only if Steps 1â3 are inconclusive)
-
-For one image token (token index 72 = midpoint of 145), log the hidden-state L2-norm at:
-- Before deepstack injection at each mapped layer
-- After deepstack injection
-- After FFN at the same layer
-
-Compare per-token vs batched. The first layer where the norms diverge identifies the
-specific computation that differs.
-
-### Step 7 â First-decode-step instrument (~15 min)
-
-In `DecodeLoop`, print for the first 5 positions:
-```
-position | chosen token ID | token string | is EOG? | top-5 alternatives | EogTokenIds
+position | token ID | token string | is_eog | top-5 alternatives and logits
 ```
 
 This disambiguates:
-- Case A: first token is already an EOG â post-image logits are corrupted (confirmed H1)
-- Case B: first token is `.`, second token is EOG â model state plausibly generated `.` as start of a sentence, then EOG'd; bad prefill slightly more likely than template
-- Case C: decode loop exits despite non-EOG tokens â stop-token detection bug (very unlikely)
+- **Case A:** first token is already an EOG/EOS â post-image logits are bad (confirms H1/H2)
+- **Case B:** first token is `.`, second is EOG â model generated `.` then ended turn; bad
+  prefill context is still the likely cause
+- **Case C:** first N tokens are ordinary words, decoder exits anyway â investigate H5
+  (stop handling); very unlikely
+
+### Step 4 â Sanity-check DeepstackMapping values (~10 min)
+
+Note: given the prefill succeeded (145 tokens processed without exception), `NumDeepstack == 7`
+and `DeepstackMapping != null` are already confirmed by the width guard. This step is only
+about verifying the VALUES are correct (not zero-indexed), not the null question.
+
+Before the prefill in `RunImagePrompt`:
+```csharp
+Console.Error.WriteLine($"[granite4-diag] NumDeepstack={hp.NumDeepstack}");
+Console.Error.WriteLine($"[granite4-diag] Mapping[0..9]={string.Join(',', hp.DeepstackMapping!.Take(10))}");
+```
+
+Expected: `NumDeepstack=7`; mapping values in range 1..7 for the mapped layers
+(not 0-indexed 0..6). Also run `stingray list-metadata` on the text GGUF and compare the raw
+`{arch}.deepstack_mapping` values.
+
+### Step 5 â Text-only Granite control (~5 min)
+
+```
+stingray -m models/_models/granite-4.0-3b-vision-Q4_K_M.gguf -p "Count to 5."
+```
+
+If this also terminates early, there is a separate Granite template/text bug (H4, H5) that is
+independent of vision. If it produces normal output, the fault is isolated to the vision path
+and the batched prefill is the prime suspect.
+
+### Step 6 â Deepstack hidden-state trace (~1 h, only if Steps 1â3 are inconclusive)
+
+For one image token (token index 72 = midpoint), log the hidden-state L2-norm at:
+- After `batchHidden` init (after the initial copy, before layer 0)
+- Before and after each deepstack injection at its mapped layer
+- After the FFN at the same layer
+
+Compare per-token vs batched. First divergence layer identifies the specific operation
+that differs.
 
 ---
 
-## Immediate fix (if Step 1 confirms H1)
+## Immediate fix (if Step 1 Variant A restores normal output)
 
-The safest and fastest fix is to fall back to per-token `ForwardEmbedding` for any model with
-`_hp.NumDeepstack > 0`. This restores the behaviour proven to work at commit `0e7c406e`:
+Fall back to per-token `ForwardEmbedding` for any model with `_hp.NumDeepstack > 0`.
+This restores the behaviour proven to work at commit `0e7c406e`:
 
 ```csharp
 // ForwardPass.Decode.cs, PrefillEmbeddings
 bool batched = count > 1 && RecurrentBatchedPrefillApplies && _layerHeadDim is null
     && !_usesUnweightedNorm && _tqKvCache == null && !_hp.HasPerLayerTokenEmbd
-    && _hp.NumDeepstack == 0           // deepstack batched path not yet validated
+    && _hp.NumDeepstack == 0   // deepstack batched path not yet validated; see bugstofix entry
     && (!_hp.IsMoE || MoeBatchedPrefillSupported);
 ```
 
 This:
-- Restores Granite 4.0 Vision to correct operation immediately
-- Keeps Qwen3-VL on the per-token path (Qwen3-VL also uses deepstack, so this is conservative)
-- Does NOT regress any non-deepstack VLM (they have `NumDeepstack == 0`)
+- Restores Granite 4.0 Vision immediately
+- Also conservatively falls back for Qwen3-VL (also uses deepstack) until validated
+- Does NOT regress any non-deepstack VLM (`NumDeepstack == 0`)
 - Does NOT require understanding why the batched path is numerically different
 
-Document it with a comment: `// TODO: validate batched deepstack prefill against per-token path and re-enable`.
-
----
-
-## Secondary fix (if Step 3/4 confirms H3 concurrent with H1)
-
-If `DeepstackMapping` is null because the GGUF arch key doesn't match:
-
-```csharp
-// ModelGraph.cs
-DeepstackMapping = GetIntArray(metadata, $"{arch}.deepstack_mapping")
-    // fall-through aliases: granite4 checkpoints may ship under different arch strings
-    ?? GetIntArray(metadata, "granite.deepstack_mapping")
-    ?? GetIntArray(metadata, "granite4.deepstack_mapping")
-    ?? GetIntArray(metadata, "granite3.deepstack_mapping")
-    ?? /* Qwen3-VL synthesized mapping */ ...
-```
-
-Also fix `ScaleRawEmbeddings` to check all the alias keys:
-```csharp
-ScaleRawEmbeddings = isGraniteFamily
-    && !metadata.Keys.Any(k => k.EndsWith(".deepstack_mapping"));
-```
+Document with a `// TODO: validate batched deepstack prefill, see granite4-vision-early-eos-plan.md`
+comment.
 
 ---
 
 ## Making batched deepstack prefill correct (longer-term, after correctness is restored)
 
-Once the per-token fallback is in place, investigate whether `PrefillCore`'s batched path
-can be brought back for deepstack models. The requirement is:
+Once the per-token fallback is in place:
 
-1. Same top greedy token as per-token path
-2. Same first 10 greedy continuation tokens
-3. No premature EOS/EOG
-4. Logit cosine â¥ 0.9999 (higher bar than text-prefill because one wrong logit ends generation)
+1. **Identify the specific numerical mechanism** using Steps 2â6 above.
+2. **Fix candidates (in order of invasiveness):**
+   - Disable `STINGRAY_CPU_PREFILL_Q8` int8 activation quantization when `embeddingRows != null`
+     (vision input already has no token-embedding quantization to match)
+   - Pre-scale or adjust the deepstack slices before the batched injection
+   - Accept the numerical difference and tighten the parity criterion
+3. **Re-enable gated by a greedy parity test** (see Regression test below).
 
-Likely causes of numerical divergence between the paths:
-- `STINGRAY_CPU_PREFILL_Q8` activates int8 quantized QK/V matmuls in `PrefillCore`; the per-token
-  path uses F32. For 145 image tokens this creates a compounded quantization error.
-- The batched causal attention processes all 145 positions simultaneously, accumulating in a
-  different order than 145 sequential single-token calls.
+---
 
-Fix candidates:
-- Disable `STINGRAY_CPU_PREFILL_Q8` activation quantization for deepstack embeddings (narrower change)
-- Make `PrefillCore` use F32 matmuls for vision-embedding inputs (controlled by `embeddingRows != null`)
+## Regression test (before re-enabling batched deepstack)
 
-Add a real end-to-end regression test before re-enabling:
+Machine-testable criterion â NOT "matches the image content" (subjective):
+
 ```
 Granite4VisionBatchedPrefillParityTest:
-  - Load real checkpoint + mmproj
-  - Encode deterministic image
-  - Run per-token path â reference logits and first N greedy tokens
-  - Run batched path â assert same top token, same N greedy tokens, cosine â¥ 0.9999
+  1. Load real checkpoint + mmproj
+  2. Encode one deterministic image
+  3. Run per-token path â first N greedy tokens (reference)
+  4. Run batched path â first N greedy tokens
+  5. Assert: same top-1 token at position 0
+  6. Assert: same first 10 greedy tokens
+  7. Assert: no EOG/EOS token within the first 10 positions
+  8. Assert: logit cosine(per-token, batched) â¥ 0.9999 at position 0
 ```
+
+Separately, a human smoke test verifies that the actual generated description is sensible.
 
 ---
 
@@ -292,28 +281,33 @@ Granite4VisionBatchedPrefillParityTest:
 | File | Change |
 |---|---|
 | `src/OpenTail.Stingray.Engine/ForwardPass.Decode.cs` | Add `_hp.NumDeepstack == 0` to `batched` condition in `PrefillEmbeddings` |
-| `src/OpenTail.Stingray.Core/ModelGraph.cs` | Possible: arch key alias for `deepstack_mapping` and `ScaleRawEmbeddings` |
-| `tests/â¦/Granite4VisionParityTests.cs` | New: batched vs per-token parity gate |
+| `tests/â¦/Granite4VisionParityTests.cs` | New: batched vs per-token parity test |
 
 ---
 
 ## What NOT to do
 
 - **Do not touch `Granite4VisionEncoder`, `Granite4ImagePreprocessor`, or the QFormer code.**
-  The encoder produced 145 tokens at 44.3 t/s without error; the parity tests from `0e7c406e`
-  already confirmed the projector output against `llama-mtmd-cli`. The regression is downstream.
-- **Do not change `<image>` marker handling.** The `PlaceholderMarker` / `ImageOpenMarker` logic
-  was fixed and documented. Reopening it risks introducing a second bug while chasing the first.
-- **Do not disable batched prefill for all VLMs.** Only deepstack models need the exclusion.
-- **Do not assume the Qwen3-VL cosine â0.9994 tolerance applies here.** For a model where one
-  token decides whether generation starts, the tolerance must be much tighter.
+  The encoder produced 145 tokens at 44.3 t/s; the LlamaMtmdVisionParityTests already confirmed
+  the 144Ã20480 8-stream output structure. The regression is downstream.
+- **Do not check for EOG tokens embedded in the rendered prompt** as a direct stop causeÂ â `DecodeLoop` only checks newly generated tokens, not prefill tokens.
+- **Do not assume wrong `embeddingWidth` can cause silent EOS.** The width guard in
+  `PrefillEmbeddings` (line 86â88) throws on mismatch; the successful 145-token prefill
+  confirms the width was 20480.
+- **Do not assume null `DeepstackMapping` can cause silent EOS.** Same guard: if
+  `NumDeepstack == 0`, the 20480-wide rows would throw at the width check. The successful
+  prefill confirms the mapping is loaded.
+- **Do not disable batched prefill for all VLMs.** Only deepstack models need the exclusion;
+  non-deepstack VLMs retain the `31d3846b` performance improvement.
+- **Do not accept `cosine â¥ 0.9994` as the parity bar for deepstack vision models.** That
+  tolerance is from the Qwen3-VL text-prefill validation and is not adequate when one logit
+  decides whether generation starts.
 
 ---
 
 ## Success criterion
 
-The bug is closed when:
-1. `stingray -m granite-4.0-3b-vision-Q4_K_M.gguf --mmproj mmproj-... --image photo.png -p "Describe this picture."` produces a multi-sentence image description (> 10 tokens) matching the image content.
-2. A regression test (`Granite4VisionBatchedPrefillParityTest` or similar) gates against re-introduction.
-3. `docs/STATUS.md` and `RUNNING.md` are updated with the current command and confirmed behaviour.
-4. The batched exclusion for deepstack models is documented with a `// TODO: validate and re-enable` comment.
+1. `stingray -m granite-4.0-3b-vision-Q4_K_M.gguf --mmproj mmproj-... --image photo.png -p "Describe this picture."` produces > 10 tokens, with no EOG/EOS in the first 10 positions, and the same first greedy token as `llama-mtmd-cli` on the same inputs.
+2. `GraniteVision4BatcedPrefillParityTest` passes (same top-1 token, same first 10 greedy tokens, logit cosine â¥ 0.9999).
+3. `RUNNING.md` command updated and confirmed.
+4. The `NumDeepstack == 0` exclusion is documented with a `// TODO` comment referencing this plan.
