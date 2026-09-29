@@ -58,6 +58,7 @@ Do not redesign MoE execution, introduce parallel expert execution as part of th
 Record the existing results exactly before changing inference code. For the fixed WikiText token slice `[256,1024)`, record:
 
 - per-token PPL at `-c 512`;
+- per-token PPL at `-c 2048`;
 - batched PPL at `-c 512`;
 - llama.cpp PPL/reference;
 - batched PPL at `-c 2048`;
@@ -122,7 +123,7 @@ For each stage record max absolute difference, maximum relative difference, cosi
 
 Existing work has ruled out serial versus parallel expert execution, serial versus parallel routing, and the isolated expert MatVec kernels on real Q4_K/Q6_K weights. Preserve those findings as established controls rather than repeating them. Compare the actual routed values in the real model for every MoE token:
 
-- Compare all 32 router scores before top-k selection.
+- Compare all 32 unbiased sigmoid probabilities and all 32 selection scores after `exp_probs_b`, then compare the selected expert IDs and final mixture weights.
 - Verify `exp_probs_b` is applied at the same stage as the reference. Distinguish its effect on expert selection from the original sigmoid probabilities used as mixture weights; do not apply bias to final mixture weights if the reference only uses it for selection.
 - Compare selected expert IDs, selection order, score values, and near-ties.
 - Verify selected sigmoid probabilities are renormalized identically; record `sum(selected_weights)` per token.
@@ -147,7 +148,7 @@ Once the first divergence is known, reduce it to the smallest reproducible case.
 
 ## Phase 7 — Compare against llama.cpp at the same internal boundary
 
-Use the llama.cpp evaluation callback as external reference, not only final PPL. For a short deterministic sequence, compare hidden state after layers where accessible, router outputs, selected experts, expert weights, and final logits. Classify the first divergence:
+Use the llama.cpp evaluation callback as external reference, not only final PPL. Use llama.cpp internal tensors where accessible; otherwise use the evaluation callback and final logits as the external oracle. Do not make access to every intermediate llama.cpp hidden state a prerequisite for progress. For a short deterministic sequence, compare hidden state after layers where accessible, router outputs, selected experts, expert weights, and final logits. Classify the first divergence:
 
 - Stingray per-token equals llama.cpp, batched differs: focus on Stingray batched execution.
 - Stingray batched equals per-token, both differ from llama.cpp: focus on common Stingray graph/math.
@@ -160,7 +161,7 @@ Make the smallest correctness fix. Do not combine it with performance optimizati
 
 ## Phase 9 — Reconcile PPL
 
-After internal parity is established, rerun WikiText `[256,1024)` at `-c 512` and `-c 2048` for Stingray per-token, Stingray batched, and llama.cpp. The key regression is per-token approximately equal to batched under identical evaluation semantics. Compare llama.cpp using identical logits/token sets. Do not demand byte-identical logits where operation ordering or quantization paths legitimately differ; require no large systematic drift, target-token logits within the established numerical envelope, expected top-ranked-token agreement, and PPL consistent with the reference evaluation. Use dense LFM2's working batched/per-token agreement as practical numerical control.
+After internal parity is established, rerun WikiText `[256,1024)` at `-c 512` and `-c 2048` for Stingray per-token, Stingray batched, and llama.cpp. Record both per-token and batched results at each context length so context-length sensitivity in each execution path can be distinguished. Per-token and batched execution must converge to the same numerical result on the same token sequence and initial model state, independent of batch width, before either mode is considered validated. Agreement between the two Stingray paths alone is insufficient to establish correctness; compare both against llama.cpp using identical logits/token sets. Do not demand byte-identical logits where operation ordering or quantization paths legitimately differ; require no large systematic drift, target-token logits within the established numerical envelope, expected top-ranked-token agreement, and PPL consistent with the reference evaluation. Use dense LFM2's working batched/per-token agreement as a practical numerical control, not as a replacement for llama.cpp reference comparison.
 
 ## Phase 10 — Add regression tests
 

@@ -194,6 +194,7 @@ restart a fourth round of kernel-level chasing on this checkpoint without new ev
   wikitext -c 2048 `[1024,+)` 26.4155 (batched) / 26.5483 (per token) vs `llama-perplexity --chunks 1` 26.1080; at -c 512
   9.3505 vs 9.4103 (ours lower). The large error (157) was missing top-k renormalisation, fixed. Not yet bisected; Q2_K
   only locally (a Q4 file would separate quantisation noise from a real difference).
+  - **Plan:** [13-Granite 4.0-H small MoE PPL parity](13-granite4-h-small-moe-ppl-parity-plan.md) — freezes the comparable PPL baseline, validates metadata, localizes Mamba-2/MoE/quantization effects, and records the correctness receipt without reopening admission.
 - [ ] **14. Qwen3-VL / Qwen2.5-VL / PaddleOCR image input: CUDA and Vulkan hybrid still lack it** (logged 2026-09-27, docs/103 item 14).
   - 2026-09-28: full Vulkan offload (`GpuForwardPass`) now applies per-pair M-RoPE positions and deepstack, which also covers
     the IMROPE pairs 61-62 for text (M-RoPE models take the per-token trunk). Verified by `Qwen3VlVulkanMRopeParityTests`
