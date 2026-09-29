@@ -114,6 +114,35 @@ preconfirmed conclusions:
 The absence of a GGML op enum or a same-named Stingray method does not prove the operation itself is
 absent from Stingray.
 
+### Re-audit result (2026-10-02; authoritative over the historical initial statuses above)
+
+References were checked at llama.cpp `63c5ef5ad47490d7dcd86d9f83c3d4304d75dc84` and vendored ggml
+`8c63e70982c95ceb862e3a1073a2c1beef75d60a` (v0.20.2). Categories below describe the current
+Stingray implementation against the requested GGML operator contract: **A** absent, **B** partial
+or specialized equivalent, **C** implemented and tested for the requested scope, **D** present but
+unverified or known risky. A passing primitive test does not verify an architecture graph or real
+model behavior.
+
+| GGML op | Class | Current Stingray evidence and remaining gap |
+| --- | --- | --- |
+| `SSM_SCAN` | **B** | Scalar-A Mamba-2 scan is inline in `ForwardPass.Mamba2.cs`, used by admitted Granite-H/Nemotron-H, with parity fixtures in `GraniteHybridGreedyParityTests` and `NemotronHParityTests`. This is not a reusable implementation of the full GGML contract (including `ids`, `K`, and general A layouts); do not duplicate or rewrite the working path. |
+| `RWKV_WKV6` | **A** | No Stingray WKV6 kernel or architecture graph found. Reference CPU implementation is `examples/ggml/src/ggml-cpu/ops.cpp` (`ggml_compute_forward_rwkv_wkv6_f32`); llama.cpp call sites include `src/models/rwkv6-base.cpp`. No RWKV real-weight parity evidence; architecture remains unadmitted. |
+| `RWKV_WKV7` | **A** | No Stingray WKV7 kernel or architecture graph found. Reference CPU implementation is `ops.cpp` (`ggml_compute_forward_rwkv_wkv7_f32`); llama.cpp call site is `src/models/rwkv7-base.cpp`. No RWKV real-weight parity evidence; architecture remains unadmitted. |
+| `LIGHTNING_INDEXER` | **B** | `DeepSeek4Graph.LightningIndexerScore` implements per-key/head dot → ReLU → prescaled weight sum → additive mask for a single query. The graph supplies scale/mask and selects top-k. It is not a general port of ggml's tensor/broadcast contract, including F16 mask and K dtype conversion; DeepSeek-V4 graph remains unverified. |
+| `DSV4_HC_COMB` | **D** | `HyperConnectionGate`/`HyperConnectionSinkhorn` now match ggml flat `[dst,src]` storage, softmax/normalization axes and order, and configured `n_iter`; scalar oracle tests cover iteration counts 1 and 3. Gate/graph remain alpha and unverified against real weights. |
+| `DSV4_HC_PRE` | **B** | `HyperConnectionMixDown` matches the stream-weighted reduction for the eager single-token path. Gate construction is in `HyperConnectionGate`; tensor batching/broadcast and full graph behavior have no real-weight verification. |
+| `DSV4_HC_POST` | **B** | `HyperConnectionMixUp` matches the eager single-token formula and now indexes the ggml flat `[dst,src]` matrix as `dst + hc*src`; asymmetric tests cover the axis convention. Full graph remains alpha/unverified. |
+| `SOLVE_TRI` | **A** | No reusable generic triangular solve found. `GdnKernels` contains a specialized chunked GDN forward-substitution for its derived intra-chunk system, not a generic GGML `A X = B` primitive. Reference is `ops.cpp` (`ggml_compute_forward_solve_tri_f32`). |
+| `WIN_PART` | **B** | `DeepSeekOcr2VisionEncoder.SamWindowedAttention` manually zero-pads and gathers windows; DeepSeek OCR2 has Rainbow-pattern reference fixtures. No standalone reusable GGML operation/test. Fixtures use synthetic Rainbow input, not real-image preprocessing. |
+| `WIN_UNPART` | **B** | The same vision path scatters window outputs back over the non-padding region. It has output parity fixtures as part of the SAM encoder, but no isolated operation test; Rainbow fixtures do not validate production preprocessing on real images. |
+
+Focused `DeepSeek4AlphaTests` ran on 2026-10-02: 32 passed, including Sinkhorn scalar-oracle cases,
+configured-iteration wiring, and asymmetric HC mix-up coverage. The two DeepSeek OCR2 SAM reference tests were attempted
+but skipped by the test harness because `STINGRAY_RUN_HEAVY_TESTS=1` was not set; they are not counted
+as verified in this audit. No GGML enum-equivalence, synthetic unit test, or existing parity fixture
+changes the `ModelCompatibility` admission gate. No new RWKV, generic solve, or window primitive is
+authorized solely by this matrix; pursue them only with a scoped target and independent scalar tests.
+
 ## 4. Phase 1 — Generalize and verify `SSM_SCAN`
 
 ### 4.1 Current implementation control

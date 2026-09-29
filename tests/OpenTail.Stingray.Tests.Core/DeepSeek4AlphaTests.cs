@@ -46,19 +46,32 @@ public class DeepSeek4AlphaTests
     }
 
     [Fact]
-    public void HyperConnectionSinkhorn_SingleIteration_StillRowNormalizedAfterSoftmax()
+    public void HyperConnectionSinkhorn_SingleIteration_MatchesReferenceNormalizationAxis()
     {
-        // With iterations=1 only norm_cols runs after the row-softmax+eps step (deepseek4.cpp:
-        // 340-344) -- rows are NOT guaranteed to sum to 1 in this case, only columns are. This
-        // test pins that asymmetry so a future "helpful" refactor that makes both axes always
-        // sum to 1 gets caught as a behavior change, not silently accepted.
-        float[] comb = [1f, 0f, 0f, 1f];
-        DeepSeek4Graph.HyperConnectionSinkhorn(comb, hc: 2, iterations: 1, eps: 1e-6f);
+        float[] actual = [1f, -0.5f, 0.25f, 1.5f];
+        float[] expected = (float[])actual.Clone();
+        const float eps = 1e-6f;
 
-        float col0 = comb[0] + comb[2];
-        float col1 = comb[1] + comb[3];
-        Assert.True(Math.Abs(col0 - 1f) < 1e-3f);
-        Assert.True(Math.Abs(col1 - 1f) < 1e-3f);
+        for (int src = 0; src < 2; src++)
+        {
+            int offset = src * 2;
+            float max = MathF.Max(expected[offset], expected[offset + 1]);
+            float a = MathF.Exp(expected[offset] - max);
+            float b = MathF.Exp(expected[offset + 1] - max);
+            float sum = a + b;
+            expected[offset] = a / sum + eps;
+            expected[offset + 1] = b / sum + eps;
+        }
+        for (int dst = 0; dst < 2; dst++)
+        {
+            float sum = eps + expected[dst] + expected[2 + dst];
+            expected[dst] /= sum;
+            expected[2 + dst] /= sum;
+        }
+
+        DeepSeek4Graph.HyperConnectionSinkhorn(actual, hc: 2, iterations: 1, eps);
+
+        for (int i = 0; i < actual.Length; i++) Assert.Equal(expected[i], actual[i], 6);
     }
 
     [Theory]
@@ -99,6 +112,25 @@ public class DeepSeek4AlphaTests
     }
 
     [Fact]
+    public void HyperConnectionGate_UsesConfiguredSinkhornIterationCount()
+    {
+        const int hc = 2;
+        const float eps = 1e-6f;
+        float[] base_ = [0f, 0f, 0f, 0f, 1f, -0.5f, 0.25f, 1.5f];
+        float[] comb = new float[hc * hc];
+        DeepSeek4Graph.HyperConnectionGate(
+            flatNormed: [0f, 0f], hc, embedDim: 1,
+            hcFn: new float[2 * 8], scale: new float[3], base_, eps,
+            sinkhornIterations: 3,
+            pre: new float[hc], post: new float[hc], comb);
+
+        float[] expected = [base_[4], base_[5], base_[6], base_[7]];
+        DeepSeek4Graph.HyperConnectionSinkhorn(expected, hc, iterations: 3, eps);
+
+        for (int i = 0; i < comb.Length; i++) Assert.Equal(expected[i], comb[i], 6);
+    }
+
+    [Fact]
     public void HyperConnectionMixDown_WeightedSumMatchesManualComputation()
     {
         // hc=2, embedDim=3.
@@ -114,7 +146,7 @@ public class DeepSeek4AlphaTests
     }
 
     [Fact]
-    public void HyperConnectionMixUp_RoundTripsMixDownWhenCombIsIdentity()
+    public void HyperConnectionMixUp_UsesGgmlDstSrcMatrixLayout()
     {
         // ggml's [dst, src] layout is dst + hc*src. Use asymmetric weights so a transposed
         // lookup cannot accidentally pass.

@@ -1,5 +1,13 @@
 # 050 — GGML Op Coverage Gap Implementation Plan
 
+> **Superseded for current status and implementation decisions (2026-10-02).** This document is a
+> historical plan based on an older op-list diff; its statements that all listed families lack
+> implementations and its proposed blanket kernel files are not current. Use
+> [17-ggml-op-coverage-verification-plan.md](../1-correctness/17-ggml-op-coverage-verification-plan.md)
+> as the authoritative, source-pinned coverage matrix. In particular, Mamba-2 scan, DeepSeek helper
+> operations, and SAM window partitioning have existing specialized paths; do not duplicate them
+> without a demonstrated contract gap. Architecture admission remains fail-closed.
+
 Source: `docs/1-correctness/bugstofix.md`'s 2026-08-21 GGML op-list diff (`enum ggml_op` in
 `examples/ggml/include/ggml.h` vs. what this engine implements). Five ops/op-groups are
 genuinely missing kernel implementations, none currently blocking any admitted architecture.
