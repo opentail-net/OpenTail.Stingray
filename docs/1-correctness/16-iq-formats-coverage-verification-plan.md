@@ -90,11 +90,13 @@ layouts differ.
 
 ## 4. Phase 2 — Verify the real codebooks
 
-Compare current literals against the vendored/current ggml reference used by the repository. Verify
-entry counts, complete contents, signedness interpretation, byte packing order, `IQ1S_DELTA = 0.125f`,
-`IQ2_XS` sign-mask tables used alongside its grid, and `IQ2_S`'s distinct `qh`/`qs` index construction.
-Do not reconstruct tables from a mathematical formula. A one-off comparison script is acceptable;
-do not add permanent tooling unless it has ongoing value.
+Compare current literals against the vendored reference at `examples/ggml/llama.cpp` used by this
+repository, rather than an unrelated or moving upstream revision. Record the checked-out reference
+revision with the verification result, especially if it differs from the revision used by any
+compiled llama.cpp artifact. Verify entry counts, complete contents, signedness interpretation, byte
+packing order, `IQ1S_DELTA = 0.125f`, `IQ2_XS` sign-mask tables used alongside its grid, and `IQ2_S`'s
+distinct `qh`/`qs` index construction. Do not reconstruct tables from a mathematical formula. A
+one-off comparison script is acceptable; do not add permanent tooling unless it has ongoing value.
 
 ## 5. Phase 3 — Verify `IQ1_S` semantics
 
@@ -196,9 +198,11 @@ unimplemented.
 
 ## 14. Phase 12 — Close item 16 cleanly
 
-Once the audit passes, remove item 16 from the open section of `docs/1-correctness/bugstofix.md` and
-move its completion evidence into the appropriate `docs/done/` record, following repository
-conventions. The closure must state:
+Once the audit passes, remove item 16 from the open section of `docs/1-correctness/bugstofix.md`.
+Link the existing implementation evidence in `docs/done/01-gguf-model-coverage-plan.md` and
+`docs/done/05-cpu-architecture-kernel-opportunities.md` from the closure entry rather than recreating
+the historical implementation record. Add a new `docs/done/` record only if current verification
+produces genuinely new evidence. The closure must state:
 
 - `IQ1_S`, `IQ1_M`, `IQ2_XS`, and `IQ2_S` are implemented;
 - codebooks are present and reference-derived;
@@ -206,7 +210,8 @@ conventions. The closure must state:
 - automated correctness coverage is present;
 - real-weight Qwen3.8 receipt covers `IQ2_XS` / `IQ2_S`;
 - `IQ1_S` / `IQ1_M` have no real-weight receipt yet but have independent formula cross-checks;
-- no known implementation gap remains.
+- no known implementation gap remains; the only remaining evidence limitation is the lack of a
+  tractable real-weight `IQ1_S` / `IQ1_M` end-to-end receipt.
 
 ## Success criteria
 
@@ -215,7 +220,9 @@ Item 16 is complete when the required real ggml tables are present; all four for
 checked; CPU matvec dispatch reaches a valid implementation; IQ1_S/IQ1_M independent cross-checks and
 IQ2_XS/IQ2_S kernel tests pass; the Qwen3.8-27B receipt remains valid for IQ2_XS/IQ2_S; the lack of
 real-weight IQ1_S/IQ1_M coverage is stated honestly; stale current documentation is corrected; and
-item 16 is removed from the open correctness backlog or explicitly marked closed.
+item 16 is removed from the open correctness backlog or explicitly marked closed. No known
+implementation gap remains; the only remaining evidence limitation is the lack of a tractable
+real-weight IQ1_S/IQ1_M end-to-end receipt.
 
 ## Key rule
 

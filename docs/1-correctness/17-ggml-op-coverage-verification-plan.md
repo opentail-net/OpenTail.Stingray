@@ -1,0 +1,360 @@
+# Plan: GGML op coverage — SSM_SCAN, RWKV6/7, DeepSeek-V4, SOLVE_TRI, and WIN_PART/UNPART
+
+**Entry in:** `docs/1-correctness/bugstofix.md`, item **17**.
+
+## 0. Current state — re-audit before implementing
+
+The original op-list investigation identified five genuine coverage groups:
+
+1. `GGML_OP_SSM_SCAN`;
+2. `GGML_OP_RWKV_WKV6` / `GGML_OP_RWKV_WKV7`;
+3. `GGML_OP_LIGHTNING_INDEXER` / `GGML_OP_DSV4_HC_COMB` / `DSV4_HC_PRE` / `DSV4_HC_POST`;
+4. `GGML_OP_SOLVE_TRI`;
+5. `GGML_OP_WIN_PART` / `GGML_OP_WIN_UNPART`.
+
+The repository has moved since that investigation.
+
+### Already present (verify against current source; do not duplicate)
+
+Mamba-2 selective scan is implemented on CPU in
+`src/OpenTail.Stingray.Engine/ForwardPass.Mamba2.cs`. The current path performs:
+
+```text
+in_proj → causal depthwise SSM_CONV → selective SSM scan → D skip
+		→ SiLU gate → grouped RMSNorm → out_proj
+```
+
+and is used by Granite 4.0-H / Nemotron-H.
+
+DeepSeek-4 also contains engine-level implementations including
+`DeepSeek4Graph.LightningIndexerScore`, `DeepSeek4Graph.SelectTopKIndices`,
+`DeepSeek4Graph.HyperConnectionSinkhorn`, and corresponding calls from `DeepSeek4ForwardPass`.
+
+Do not blindly create duplicate implementations merely because corresponding GGML enum names remain
+absent. The goal is to close genuine kernel/architecture coverage gaps while preserving existing
+working code.
+
+## 1. Objective
+
+Establish reusable CPU implementations for every genuinely missing operation required by targeted
+model families, while keeping architecture admission fail-closed until real-weight verification
+exists. Establish:
+
+- Mamba selective-scan coverage beyond the current Granite/Nemotron-specific Mamba-2 path;
+- RWKV6 and RWKV7 recurrent-attention kernels;
+- any genuinely missing DeepSeek-V4 kernel semantics;
+- a reusable triangular solve;
+- window partition/unpartition primitives only when justified by an actual target model;
+- deterministic scalar-reference tests for every new primitive;
+- no accidental duplication of working DeepSeek/Mamba logic;
+- no premature `ModelCompatibility` architecture-admission changes.
+
+## 2. Scope
+
+### In scope
+
+- `GGML_OP_SSM_SCAN`;
+- Mamba-1 / additional Mamba-family CPU reuse of selective scan;
+- Mamba-2 kernel extraction/generalization where useful;
+- `GGML_OP_RWKV_WKV6` and `GGML_OP_RWKV_WKV7`;
+- genuinely missing DeepSeek-V4 `LIGHTNING_INDEXER` semantics;
+- genuinely missing `DSV4_HC_*` semantics;
+- `GGML_OP_SOLVE_TRI`;
+- `GGML_OP_WIN_PART` and `GGML_OP_WIN_UNPART`;
+- scalar/reference tests;
+- architecture-specific graph wiring where a real target requires it;
+- documentation/status reconciliation.
+
+### Explicitly not in scope
+
+- blindly rewriting the existing Mamba-2 mixer;
+- replacing tested `DeepSeek4Graph` helpers without evidence;
+- CUDA/Vulkan implementations;
+- performance tuning before correctness;
+- admitting new architectures before real-weight parity;
+- full DeepSeek-V4 completion as a side effect of implementing these primitives;
+- unrelated ggml ops.
+
+## 3. Phase 0 — Refresh the op-gap inventory
+
+Before changing code, compare current vendored ggml/llama.cpp implementation against current Stingray
+code. Use:
+
+```text
+examples/ggml/include/ggml.h
+examples/ggml/src/ggml-cpu/ops.cpp
+examples/ggml/src/ggml-cpu/ggml-cpu.c
+examples/llama.cpp/llama.cpp/src/models/
+```
+
+Classify each requested operation exactly once:
+
+- **A.** Completely absent.
+- **B.** Partially implemented under a different engine-level name.
+- **C.** Implemented and tested already.
+- **D.** Implemented but unverified / known risky.
+
+Do not use the historical August op-list as source of truth when current code disagrees. Produce an
+internal matrix and verify each proposed equivalent; these statuses are investigation targets, not
+preconfirmed conclusions:
+
+| GGML op | Candidate Stingray equivalent | Initial status to verify | Possible remaining work |
+| --- | --- | --- | --- |
+| `SSM_SCAN` | Inline scan in `ForwardPass.Mamba2.cs` | Partial/generalization | Extract/reuse/verify |
+| `RWKV_WKV6` | None identified yet | Missing | Kernel + graph |
+| `RWKV_WKV7` | None identified yet | Missing | Kernel + graph |
+| `LIGHTNING_INDEXER` | `DeepSeek4Graph.LightningIndexerScore` | Partial | Validate op contract |
+| `DSV4_HC_COMB` | `HyperConnectionSinkhorn` / related helpers | Partial | Validate exact semantics |
+| `DSV4_HC_PRE` | DeepSeek4 graph logic | Partial | Validate exact semantics |
+| `DSV4_HC_POST` | DeepSeek4 graph logic | Partial | Validate exact semantics |
+| `SOLVE_TRI` | None identified yet | Missing | Generic primitive |
+| `WIN_PART` | None identified yet | Missing | Primitive when justified |
+| `WIN_UNPART` | None identified yet | Missing | Primitive when justified |
+
+The absence of a GGML op enum or a same-named Stingray method does not prove the operation itself is
+absent from Stingray.
+
+## 4. Phase 1 — Generalize and verify `SSM_SCAN`
+
+### 4.1 Current implementation control
+
+Treat current Mamba-2 implementation in `src/OpenTail.Stingray.Engine/ForwardPass.Mamba2.cs` as the
+primary working control; do not rewrite it first. Compare line by line with llama.cpp's Mamba-2
+`ssm_scan` path. The implementation handles scalar-A Mamba-2 recurrence over state dimension, head,
+token, grouped B/C projections, per-token `dt`, per-head `A`, and D skip.
+
+### 4.2 Extract reusable kernel only after parity is understood
+
+Move recurrence into a reusable CPU kernel only if doing so preserves current Granite/Nemotron
+behavior exactly. A sensible destination is `src/OpenTail.Stingray.Cpu/SsmKernels.cs`, rather than
+expanding `GdnKernels.cs`: GDN and classical Mamba SSM are different recurrences despite both carrying
+state. Expose the minimum generic primitive required by the model graph, not the entire Mamba-2 mixer.
+
+### 4.3 Preserve state semantics
+
+Explicitly account for state persistence across tokens, reset at sequence start, batch/sequence
+separation, token-order dependence, state writes after every timestep, and no accidental sharing
+between heads or sessions. Recurrence stays sequential along token/time even where head/state axes can
+be parallelized.
+
+### 4.4 Mamba-1 compatibility
+
+Determine whether the reusable kernel covers Mamba-1 selective scan directly or whether tensor
+shapes/parameters require a separate wrapper. Do not assume Mamba-1 equals the Mamba-2 scalar-A branch.
+If mathematically reusable, add a thin architecture-specific adapter rather than a duplicate
+recurrence.
+
+### 4.5 Tests
+
+Create a deterministic scalar reference with tiny dimensions, for example state size 4, inner size 8,
+six tokens, and two sequences. Verify zero/non-zero initial state, multiple timesteps, state carry,
+sequence independence, reset, positive/negative `A`, varying `dt`, and batched versus one-token-at-a-
+time execution. Compare the production kernel to an independently written scalar reference that does
+not call production code.
+
+## 5. Phase 2 — RWKV WKV6
+
+Create a dedicated recurrent-attention kernel rather than putting it in `GdnKernels.cs`. Suggested
+location: `src/OpenTail.Stingray.Cpu/RwkvKernels.cs`. Reference
+`ggml_compute_forward_rwkv_wkv6_f32` in current vendored ggml CPU source.
+
+Before implementation, document exact reference tensor shapes and axis ordering: recurrent state,
+key/value, receptance, time-first tensor, time-decay tensor, update ordering, output calculation, and
+batch/sequence behavior. Do not rely on a verbal description such as "time decay".
+
+### Test
+
+Use a small hand-constructed scalar recurrence and independently calculate `state(t)`, `output(t)`,
+and `state(t+1)` for several timesteps. Test zero initial state and non-zero carried state. Kernel and
+scalar oracle must agree within appropriate tolerance. Do not use AVX2 as the only correctness oracle.
+
+## 6. Phase 3 — RWKV WKV7
+
+Implement WKV7 separately after WKV6 layout conventions are understood. Reference
+`ggml_compute_forward_rwkv_wkv7_f32`. Treat WKV7 as its own recurrence; do not merely parameterize
+WKV6.
+
+Verify `r`, `w`, `k`, `v`, `a`, and `b` axis ordering; recurrent state shape; update ordering; output
+timing; sequence reset; and batching.
+
+### Test
+
+Use an independently written scalar WKV7 reference with small dimensions and at least two timesteps.
+Add edge cases distinguishing update-before-read from read-before-update, element-wise decay, and
+rank/update ordering. Wrong state-update order must fail.
+
+## 7. Phase 4 — Validate existing DeepSeek-V4 indexer semantics
+
+Do not create `Dsv4Kernels.cs` automatically. Compare `DeepSeek4Graph.LightningIndexerScore` directly
+against the exact current ggml `LIGHTNING_INDEXER` operation. Verify query/key dimensions, head and
+weight broadcasting, masking, causal behavior, activation, output shape, batch/head ordering, and
+numerical scale.
+
+Existing helper tests are controls, not sufficient proof merely because synthetic invariants pass. If
+the helper exactly matches the op, keep it and document it as the Stingray implementation. Add a new
+CPU kernel only if an existing helper demonstrably lacks required semantics or needs generalization
+for another graph.
+
+## 8. Phase 5 — Validate `DSV4_HC_COMB`
+
+Compare existing DeepSeek4 hyper-connection combination logic, including Sinkhorn normalization,
+against `ggml_compute_forward_dsv4_hc_comb_f32` and the current DeepSeek4 reference graph. Check
+source/destination stream-axis convention, scale/base transforms, epsilon placement, number of Sinkhorn
+iterations, alternating normalization axes, output normalization, and matrix shape across
+hyper-connection counts.
+
+Resolve the documented potential mismatch: one path has historically hard-coded one Sinkhorn
+iteration despite configurable iteration-count metadata. Establish the exact reference contract before
+calling this complete.
+
+### Tests
+
+Construct matrices where row and column normalization differ visibly. Verify exact iteration count,
+row/column normalization, epsilon handling, and deterministic output against an independent scalar
+implementation. Test `hc = 1`, `hc = 2`, `hc = 4`, and at least one larger synthetic case.
+
+## 9. Phase 6 — Validate `DSV4_HC_PRE` and `DSV4_HC_POST`
+
+Determine whether current `DeepSeek4Graph` / `DeepSeek4ForwardPass` code implements these operations
+exactly. For `HC_PRE`, verify stream-axis reduction, weights, broadcast dimensions, and output layout.
+For `HC_POST`, verify residual path, post gating, combination matrix, broadcast order, and output
+stream ordering.
+
+Do not build new kernels if existing graph helpers are semantically identical. If a helper is only
+approximately equivalent, replace it with the smallest exact implementation.
+
+### Tests
+
+Use tiny tensors with deliberately distinct values per stream and asymmetric dimensions, so axis swaps
+and transpositions are immediately visible.
+
+## 10. Phase 7 — `SOLVE_TRI`
+
+Implement a small generic lower-triangular solve primitive, in
+`src/OpenTail.Stingray.Cpu/SimdKernels.cs` or a dedicated linear-algebra helper if cleaner. Use current
+ggml as the contract; do not implement a general LAPACK replacement.
+
+Match supported scope exactly: lower-triangular matrix, RHS matrix/vector, non-unit diagonal,
+supported dtype combinations, and output layout.
+
+### Tests
+
+Construct a lower-triangular 3×3 system with one RHS and verify `A × X ≈ B`. Also test multiple RHS
+columns, larger matrices, negative values, non-unit diagonals, and near-zero but non-zero diagonals.
+Where practical, compare against independently calculated forward substitution rather than only the
+matrix product.
+
+## 11. Phase 8 — `WIN_PART` / `WIN_UNPART`
+
+This is the lowest-priority group. Do not implement merely because ggml contains the enum. First
+identify a concrete target model that consumes these operations. The current repo has no admitted
+SAM/Swin-style vision architecture requiring them, so this is future model coverage rather than a
+current correctness blocker.
+
+If justified by a real target, implement in `src/OpenTail.Stingray.Vision/` with a small dedicated
+window-partition utility.
+
+### `WIN_PART`
+
+Verify channel layout, height/width layout, window dimensions, window count, row/column order, edge
+padding, and output tensor ordering.
+
+### `WIN_UNPART`
+
+Verify it exactly inverts `WIN_PART` over the non-padding region.
+
+### Tests
+
+Use asymmetric tensor dimensions `C=3`, `H=5`, `W=7`, window size 4, and fill every element with a
+unique value. Partition then unpartition must round-trip exactly; also test dimensions divisible by the
+window size. Do not add `GET_REL_POS` / `ADD_REL_POS` unless a selected real target requires them.
+
+## 12. Phase 9 — Wire kernels into architecture graphs only after primitive tests pass
+
+Kernel correctness and graph correctness are separate gates:
+
+```text
+primitive kernel → architecture-specific graph → small synthetic graph test
+				 → real GGUF → reference parity → only then admission
+```
+
+Do not use a failing real model to establish a new primitive's mathematics when a tiny synthetic
+reference isolates it. Add Mamba/RWKV graph plumbing only after recurrence tests pass. Integrate
+validated DeepSeek-V4 primitives into `DeepSeek4ForwardPass` one operation at a time.
+
+## 13. Phase 10 — Real-weight verification strategy
+
+Evidence requirements differ by family.
+
+### Mamba
+
+Use the smallest practical real Mamba/Mamba-2 GGUF to verify tokenization, state initialization, first
+and subsequent recurrent tokens, prefill versus decode, and greedy sequence against llama.cpp. Existing
+Granite/Nemotron Mamba-2 is the control and must retain behavior.
+
+### RWKV6 / RWKV7
+
+Use tractable real checkpoints. Establish prompt tokenization equality, capture reference greedy
+continuation, compare token by token, and verify state reset between independent prompts. Do not admit
+on kernel unit tests alone.
+
+### DeepSeek-V4
+
+The repository documents DeepSeek-V4 as blocked by model size: smallest cited quant is roughly 99 GB,
+exceeding the current machine's practical 64 GB RAM envelope. Do not require a real-weight receipt to
+validate individual kernels. Use exact ggml/reference-derived primitive tests and synthetic graph
+tests. Keep `deepseek4` unadmitted until a tractable real checkpoint can be executed and compared.
+
+### Window attention
+
+Do not admit an architecture solely because `WIN_PART` / `WIN_UNPART` utility tests pass. A real
+target model must exist first.
+
+## 14. Phase 11 — Performance only after correctness
+
+Begin with scalar correctness paths, deterministic tests, simple layouts, and no speculative
+vectorization. Only after parity consider AVX2, `Vector<T>`, FMA, parallelism, and cache-aware tiling.
+Do not parallelize recurrent kernels across timesteps; parallelize only independent heads/channels/
+sequences where reference semantics permit it. Correct state ordering takes priority over throughput.
+
+## 15. Phase 12 — Documentation and admission cleanup
+
+Once evidence is complete, update `docs/1-correctness/bugstofix.md` to describe actual remaining gaps;
+do not claim `SSM_SCAN` is entirely absent when Mamba-2 has a working CPU scan, or that DeepSeek-V4
+indexer/hyper-connections are entirely absent when helpers exist.
+
+Update `docs/2-coverage/050-ggml-op-coverage-gap-plan.md` or make this item-17 plan authoritative;
+do not leave conflicting current documents. Change `docs/STATUS.md` architecture status only after
+real-weight verification. Primitive completion is not model-family support.
+
+## Success criteria
+
+Item 17 is complete only when every operation still classified as genuinely missing has an
+implementation matching current ggml, an independent scalar oracle, deterministic normal/boundary
+shape tests, recurrent state/reset tests where applicable, correct CPU graph integration where
+required, and no duplicate implementation where existing Stingray code already matches.
+
+For architectures that fit the environment, require at least one real Mamba-family checkpoint,
+RWKV6 checkpoint, and RWKV7 checkpoint with reference-consistent greedy output. For DeepSeek-V4,
+reference-validate requested primitives and graph-integrate where practical, but keep the architecture
+unadmitted until a real-weight receipt is feasible. For `WIN_PART` / `WIN_UNPART`, require exact
+round-trip tests and do not admit an architecture without a real target. Keep `ModelCompatibility`
+fail-closed until corresponding architecture evidence exists.
+
+## Key rules
+
+1. **Re-audit before coding.** The repository already implements some operations from the historical gap.
+2. **Do not duplicate working code.** Mamba-2 scan and DeepSeek4 helpers are controls, not disposable code.
+3. **Primitive correctness comes before architecture admission.**
+4. **No real-weight evidence means no allowlist entry.**
+5. **Do not require a 99 GB+ DeepSeek-V4 checkpoint merely to prove a CPU primitive.**
+6. **Do not turn `WIN_PART` / `WIN_UNPART` into a vision architecture project without a concrete target.**
+7. **Keep recurrent state semantics explicit:** correct one-token recurrence can still have faulty lifecycle, sequence isolation, or reset behavior.
+8. **Use current vendored ggml/llama.cpp source as the numerical contract, not remembered formulas or older reference versions.**
+
+Preferred debugging order:
+
+```text
+current source audit → exact ggml contract → standalone scalar reference → kernel → kernel tests
+					 → architecture graph → small graph test → real GGUF → llama.cpp parity → admission
+```
