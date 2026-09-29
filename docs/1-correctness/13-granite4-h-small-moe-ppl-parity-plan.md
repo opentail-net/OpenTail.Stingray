@@ -263,7 +263,9 @@ layers and final logits.
 
 If evidence shows that the remaining PPL gap is entirely explained by legitimate floating-point
 ordering or quantization behavior, do not manufacture a code change simply to reduce the percentage.
-Document the measured cause instead.
+A numerically explained gap does not require forcing PPL equality: document the measured cause and
+magnitude, and state whether it is consistent with the project's existing Granite-H numerical
+envelope. Do not assume that a known ~0.3% summation-order effect by itself explains a ~1.2% gap.
 
 ## Phase 11 — Re-run the full PPL matrix
 

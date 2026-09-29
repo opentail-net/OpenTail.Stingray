@@ -196,6 +196,7 @@ restart a fourth round of kernel-level chasing on this checkpoint without new ev
   only locally (a Q4 file would separate quantisation noise from a real difference).
   - **Plan:** [13-Granite 4.0-H small MoE PPL parity](13-granite4-h-small-moe-ppl-parity-plan.md) — freezes the comparable PPL baseline, validates metadata, localizes Mamba-2/MoE/quantization effects, and records the correctness receipt without reopening admission.
 - [ ] **14. Qwen3-VL / Qwen2.5-VL / PaddleOCR image input: CUDA and Vulkan hybrid still lack it** (logged 2026-09-27, docs/103 item 14).
+  - **Plan:** [14-Qwen VL GPU image-input parity](14-qwenvl-gpu-image-input-parity-plan.md) — verifies full Vulkan per model, adds CUDA M-RoPE/deepstack and Vulkan layer-split support, and gates CLI routing on forward-pass capability.
   - 2026-09-28: full Vulkan offload (`GpuForwardPass`) now applies per-pair M-RoPE positions and deepstack, which also covers
     the IMROPE pairs 61-62 for text (M-RoPE models take the per-token trunk). Verified by `Qwen3VlVulkanMRopeParityTests`
     (cosine 0.9995 vs CPU). The CLI now refuses image input for M-RoPE models on any other pass instead of answering wrongly.
