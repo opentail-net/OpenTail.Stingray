@@ -294,6 +294,7 @@ public static class DeepSeek4Graph
     /// <paramref name="hc"/>*<paramref name="hc"/> combine block in place; the reference's
     /// dst/src axis convention is: row = destination stream, column = source stream
     /// (dsv4_hc_sinkhorn's own comment, deepseek4.cpp:317-318).
+    /// The flat buffer uses ggml layout [dst, src], index dst + hc * src.
     ///
     /// Sanity check for whoever re-verifies this against real weights: after this returns, both
     /// row sums and column sums of <paramref name="comb"/> should be close to 1 (doubly
@@ -303,7 +304,7 @@ public static class DeepSeek4Graph
     /// </summary>
     public static void HyperConnectionSinkhorn(Span<float> comb, int hc, int iterations, float eps)
     {
-        // comb is [hc, hc] row-major: comb[dst * hc + src].
+        // ggml lays out [dst, src] with dst as the contiguous axis: comb[dst + hc * src].
 
         // 1. Row softmax over the DESTINATION axis (deepseek4.cpp:319, ggml_soft_max(comb) --
         //    ggml's soft_max normalizes along ne[0], the fastest-varying/row axis, which here is
@@ -316,13 +317,13 @@ public static class DeepSeek4Graph
             comb[i] += eps;
         }
 
-        // 3. norm_cols first (deepseek4.cpp:340), then (iterations - 1) rounds of norm_rows +
-        //    norm_cols (deepseek4.cpp:341-344).
-        NormalizeColumns(comb, hc, eps);
+        // 3. norm_rows first (deepseek4.cpp:340), then (iterations - 1) rounds of norm_cols +
+        //    norm_rows (deepseek4.cpp:341-344).
+        NormalizeRows(comb, hc, eps);
         for (int i = 1; i < iterations; i++)
         {
-            NormalizeRows(comb, hc, eps);
             NormalizeColumns(comb, hc, eps);
+            NormalizeRows(comb, hc, eps);
         }
     }
 
@@ -347,21 +348,22 @@ public static class DeepSeek4Graph
 
     private static void NormalizeRows(Span<float> comb, int hc, float eps)
     {
-        for (int r = 0; r < hc; r++)
+        for (int dst = 0; dst < hc; dst++)
         {
             float sum = eps;
-            for (int c = 0; c < hc; c++) sum += comb[r * hc + c];
-            for (int c = 0; c < hc; c++) comb[r * hc + c] /= sum;
+            for (int src = 0; src < hc; src++) sum += comb[dst + hc * src];
+            for (int src = 0; src < hc; src++) comb[dst + hc * src] /= sum;
         }
     }
 
     private static void NormalizeColumns(Span<float> comb, int hc, float eps)
     {
-        for (int c = 0; c < hc; c++)
+        for (int src = 0; src < hc; src++)
         {
             float sum = eps;
-            for (int r = 0; r < hc; r++) sum += comb[r * hc + c];
-            for (int r = 0; r < hc; r++) comb[r * hc + c] /= sum;
+            int offset = src * hc;
+            for (int dst = 0; dst < hc; dst++) sum += comb[offset + dst];
+            for (int dst = 0; dst < hc; dst++) comb[offset + dst] /= sum;
         }
     }
 
@@ -408,10 +410,12 @@ public static class DeepSeek4Graph
     /// <paramref name="scale"/>/<paramref name="base_"/> are the 3-entry-scale /
     /// (2*hc + hc*hc)-entry-bias affine parameters (hc_attn_scale/hc_attn_base or
     /// hc_ffn_scale/hc_ffn_base or hc_head_scale/hc_head_base, per call site).
+    /// <paramref name="sinkhornIterations"/> is the GGML operator's configured n_iter, not a fixed default.
     /// </summary>
     public static void HyperConnectionGate(
         ReadOnlySpan<float> flatNormed, int hc, int embedDim,
         ReadOnlySpan<float> hcFn, ReadOnlySpan<float> scale, ReadOnlySpan<float> base_, float eps,
+        int sinkhornIterations,
         Span<float> pre, Span<float> post, Span<float> comb)
     {
         int mixDim = (2 + hc) * hc;
@@ -453,7 +457,7 @@ public static class DeepSeek4Graph
             float v = mixes[2 * hc + i] * scale[2] + base_[2 * hc + i];
             comb[i] = v;
         }
-        HyperConnectionSinkhorn(comb, hc, /* iterations, caller-supplied via a separate overload if needed */ 1, eps);
+        HyperConnectionSinkhorn(comb, hc, sinkhornIterations, eps);
     }
 
     private static float Sigmoid(float x) => 1f / (1f + MathF.Exp(-x));
@@ -509,7 +513,7 @@ public static class DeepSeek4Graph
             for (int src = 0; src < hc; src++)
             {
                 ReadOnlySpan<float> resSrc = residual.Slice(src * embedDim, embedDim);
-                float c = comb[dst * hc + src];
+                float c = comb[dst + hc * src];
                 for (int d = 0; d < embedDim; d++)
                 {
                     outDst[d] += resSrc[d] * c;

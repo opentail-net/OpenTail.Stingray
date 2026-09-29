@@ -372,9 +372,9 @@ format, so there's no real-model before/after number for these two — verified 
 `SimdKernelsIqQ8KTests.cs` (AVX2-vs-internal-scalar equivalence, mirroring
 `SimdKernelsQ8KSTests`'s existing pattern for `Q3_K`/`Q4_K`/`Q8_0`), covering **all six** Q8_K-paired
 IQ kernels now, not just the two new ones — 648/648 tests pass (640 pass, 8 skip), stable across
-repeated runs. `IsSupportedWeightDType` now has a fast kernel for every IQ format it admits except
-`IQ1_S`/`IQ1_M` (still unimplemented at any level — see
-[01-gguf-model-coverage-plan.md](../../done/01-gguf-model-coverage-plan.md) §2).
+repeated runs. `IQ1_S`/`IQ1_M` are implemented and admitted, but intentionally use
+`MatVecDequantFallback` rather than a dispatched fast kernel; see Backlog A and
+[01-gguf-model-coverage-plan.md](01-gguf-model-coverage-plan.md) §2.
 
 **~10-12x still remains unexplained** (llama.cpp reference: ~494ms/token decode on this same
 checkpoint/machine, CPU-only, vs. Stingray's ~5600ms/token after this fix). Candidates for the next

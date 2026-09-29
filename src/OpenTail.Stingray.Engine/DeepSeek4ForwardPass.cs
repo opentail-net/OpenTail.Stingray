@@ -208,11 +208,8 @@ public sealed unsafe class DeepSeek4ForwardPass : IForwardPass
         DeepSeek4Graph.HyperConnectionGate(
             flatNormed, _hc, _embedDim,
             AsFloatSpan(layer.HcAttnFn), AsFloatSpan(layer.HcAttnScale), AsFloatSpan(layer.HcAttnBase),
-            _hp.HyperConnectionEpsilon, pre, post, comb);
-        // HyperConnectionGate's internal Sinkhorn call uses iterations=1 hardcoded (see its own
-        // doc comment) -- re-derive with hp.HyperConnectionSinkhornIterations once this is
-        // exercised for real; not fixed in this pass to avoid changing DeepSeek4Graph's already-
-        // tested public signature under time pressure.
+            _hp.HyperConnectionEpsilon, _hp.HyperConnectionSinkhornIterations, pre, post, comb);
+        // HyperConnectionGate now respects DeepSeek4Hyperparams.HyperConnectionSinkhornIterations.
 
         var cur = new float[_embedDim];
         DeepSeek4Graph.HyperConnectionMixDown(inpL, pre, _hc, _embedDim, cur);
@@ -248,7 +245,7 @@ public sealed unsafe class DeepSeek4ForwardPass : IForwardPass
         DeepSeek4Graph.HyperConnectionGate(
             flatNormed, _hc, _embedDim,
             AsFloatSpan(layer.HcFfnFn), AsFloatSpan(layer.HcFfnScale), AsFloatSpan(layer.HcFfnBase),
-            _hp.HyperConnectionEpsilon, pre, post, comb);
+            _hp.HyperConnectionEpsilon, _hp.HyperConnectionSinkhornIterations, pre, post, comb);
 
         var cur = new float[_embedDim];
         DeepSeek4Graph.HyperConnectionMixDown(inpL, pre, _hc, _embedDim, cur);

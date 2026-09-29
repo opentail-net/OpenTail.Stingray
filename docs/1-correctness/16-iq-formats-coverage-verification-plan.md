@@ -90,13 +90,14 @@ layouts differ.
 
 ## 4. Phase 2 — Verify the real codebooks
 
-Compare current literals against the vendored reference at `examples/ggml/llama.cpp` used by this
-repository, rather than an unrelated or moving upstream revision. Record the checked-out reference
-revision with the verification result, especially if it differs from the revision used by any
-compiled llama.cpp artifact. Verify entry counts, complete contents, signedness interpretation, byte
-packing order, `IQ1S_DELTA = 0.125f`, `IQ2_XS` sign-mask tables used alongside its grid, and `IQ2_S`'s
-distinct `qh`/`qs` index construction. Do not reconstruct tables from a mathematical formula. A
-one-off comparison script is acceptable; do not add permanent tooling unless it has ongoing value.
+Compare current literals against the vendored ggml checkout under `examples/ggml` (especially
+`src/ggml-common.h` and `src/ggml-quants.c`), rather than an unrelated or moving upstream revision.
+Record the checked-out reference revision with the verification result, especially if it differs from
+the revision used by any compiled llama.cpp artifact. Verify entry counts, complete contents,
+signedness interpretation, byte packing order, `IQ1S_DELTA = 0.125f`, `IQ2_XS` sign-mask tables
+used alongside its grid, and `IQ2_S`'s distinct `qh`/`qs` index construction. Do not reconstruct
+tables from a mathematical formula. A one-off comparison script is acceptable; do not add permanent
+tooling unless it has ongoing value.
 
 ## 5. Phase 3 — Verify `IQ1_S` semantics
 
@@ -147,9 +148,9 @@ GGUF tensor dtype → ModelCompatibility.IsSupportedWeightDType → tensor loadi
 ```
 
 Confirm none of the four formats is admitted but fails later because its matmul path is absent.
-Distinguish the existing routes: `IQ1_S` has a scalar path and Q8_K-paired AVX2 path; `IQ1_M` has a
-correctness path and is not an AVX2 performance project here; `IQ2_XS` / `IQ2_S` have scalar/AVX2
-coverage. Do not expand item 16 into performance work.
+Distinguish the existing routes: `IQ1_S` / `IQ1_M` use `MatVecDequantFallback`; their Q8_K-paired
+dot routines are correctness oracles, not dispatched matvec paths. `IQ2_XS` / `IQ2_S` have
+dedicated scalar/AVX2 matvec kernels. Do not expand item 16 into performance work.
 
 ## 10. Phase 8 — Existing real-weight evidence
 

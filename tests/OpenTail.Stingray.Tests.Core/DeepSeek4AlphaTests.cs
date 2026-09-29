@@ -61,6 +61,43 @@ public class DeepSeek4AlphaTests
         Assert.True(Math.Abs(col1 - 1f) < 1e-3f);
     }
 
+    [Theory]
+    [InlineData(1)]
+    [InlineData(3)]
+    public void HyperConnectionSinkhorn_MatchesGgmlFlatDstSrcReference(int iterations)
+    {
+        float[] actual = [0.3f, -0.7f, 1.2f, 0.05f, -0.4f, 0.9f, -0.1f, 0.6f,
+            0.2f, 0.2f, -0.3f, 1.1f, -0.6f, 0.4f, 0.8f, -0.2f];
+        float[] expected = (float[])actual.Clone();
+        const int hc = 4;
+        const float eps = 1e-6f;
+
+        for (int src = 0; src < hc; src++)
+        {
+            float max = float.NegativeInfinity;
+            for (int dst = 0; dst < hc; dst++) max = MathF.Max(max, expected[dst + hc * src]);
+            float sum = 0f;
+            for (int dst = 0; dst < hc; dst++)
+            {
+                int i = dst + hc * src;
+                expected[i] = MathF.Exp(expected[i] - max);
+                sum += expected[i];
+            }
+            for (int dst = 0; dst < hc; dst++) expected[dst + hc * src] = expected[dst + hc * src] / sum + eps;
+        }
+
+        NormalizeReferenceRows(expected, hc, eps);
+        for (int i = 1; i < iterations; i++)
+        {
+            NormalizeReferenceColumns(expected, hc, eps);
+            NormalizeReferenceRows(expected, hc, eps);
+        }
+
+        DeepSeek4Graph.HyperConnectionSinkhorn(actual, hc, iterations, eps);
+
+        for (int i = 0; i < actual.Length; i++) Assert.Equal(expected[i], actual[i], 6);
+    }
+
     [Fact]
     public void HyperConnectionMixDown_WeightedSumMatchesManualComputation()
     {
@@ -79,26 +116,42 @@ public class DeepSeek4AlphaTests
     [Fact]
     public void HyperConnectionMixUp_RoundTripsMixDownWhenCombIsIdentity()
     {
-        // If comb is the identity matrix (each stream only mixes from itself) and post==1 for the
-        // shared x contribution, mixUp's src-loop term for dst==src should reproduce residual
-        // exactly and the x-broadcast term should add x*post on top -- a cheap way to confirm the
-        // dst/src axis convention documented on HyperConnectionMixUp is applied consistently with
-        // itself (not necessarily with the reference, which needs real weights to confirm).
+        // ggml's [dst, src] layout is dst + hc*src. Use asymmetric weights so a transposed
+        // lookup cannot accidentally pass.
         int hc = 2, embedDim = 2;
         float[] x = [100f, 200f];
         float[] residual = [1f, 2f, /* stream1 */ 3f, 4f];
         float[] post = [1f, 1f];
-        float[] comb = [1f, 0f, 0f, 1f]; // identity: dst==src only
+        float[] comb = [0.1f, 0.2f, 0.3f, 0.4f]; // index dst + 2*src
         var result = new float[hc * embedDim];
 
         DeepSeek4Graph.HyperConnectionMixUp(x, residual, post, comb, hc, embedDim, result);
 
-        // stream 0: x*post[0] + residual(stream0)*comb[0,0] + residual(stream1)*comb[0,1]
-        Assert.Equal(100f + 1f, result[0], 3);
-        Assert.Equal(200f + 2f, result[1], 3);
-        // stream 1: x*post[1] + residual(stream0)*comb[1,0] + residual(stream1)*comb[1,1]
-        Assert.Equal(100f + 3f, result[2], 3);
-        Assert.Equal(200f + 4f, result[3], 3);
+        // dst 0: x + residual0*0.1 + residual1*0.3; dst 1: x + residual0*0.2 + residual1*0.4.
+        Assert.Equal(100f + 1f * 0.1f + 3f * 0.3f, result[0], 3);
+        Assert.Equal(200f + 2f * 0.1f + 4f * 0.3f, result[1], 3);
+        Assert.Equal(100f + 1f * 0.2f + 3f * 0.4f, result[2], 3);
+        Assert.Equal(200f + 2f * 0.2f + 4f * 0.4f, result[3], 3);
+    }
+
+    private static void NormalizeReferenceRows(float[] comb, int hc, float eps)
+    {
+        for (int dst = 0; dst < hc; dst++)
+        {
+            float sum = eps;
+            for (int src = 0; src < hc; src++) sum += comb[dst + hc * src];
+            for (int src = 0; src < hc; src++) comb[dst + hc * src] /= sum;
+        }
+    }
+
+    private static void NormalizeReferenceColumns(float[] comb, int hc, float eps)
+    {
+        for (int src = 0; src < hc; src++)
+        {
+            float sum = eps;
+            for (int dst = 0; dst < hc; dst++) sum += comb[dst + hc * src];
+            for (int dst = 0; dst < hc; dst++) comb[dst + hc * src] /= sum;
+        }
     }
 
     [Fact]

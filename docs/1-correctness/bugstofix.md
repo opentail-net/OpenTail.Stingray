@@ -16,6 +16,14 @@ checkpoint+prompt; the router's top-6-of-64 routing decisions are chronically ne
 property of the trained weights, not of numerical precision. Investigation closed; do not
 restart a fourth round of kernel-level chasing on this checkpoint without new evidence.
 
+**Closed item 16 — IQ1_S / IQ1_M / IQ2_XS / IQ2_S coverage verification.** All four formats are
+implemented, reference-table verified, admitted, and have valid CPU matvec routes. IQ2_XS/IQ2_S are
+also covered by the existing Qwen3.8-27B 24-of-24 exact greedy receipt. IQ1_S/IQ1_M have independent
+formula cross-checks but no tractable real-weight receipt; this is an evidence limitation, not an
+implementation gap. See the [verification receipt](../done/16-iq-formats-coverage-verification.md),
+[GGUF model coverage history](../done/01-gguf-model-coverage-plan.md), and
+[CPU implementation record](../done/05-cpu-architecture-kernel-opportunities.md).
+
 ## Tracked items
 
 - [ ] **01. Real-weight landscape sweep rerun (`docs/103-quickest-first-plan.md` item 2): 649 classes resumed/run, several new real failures found** (2026-09-28, `scripts/sweep-tests.ps1`, default `-Suites Diffusion,Audio,Vision,ForwardPass`).
@@ -216,7 +224,6 @@ restart a fourth round of kernel-level chasing on this checkpoint without new ev
   - However, dynamic AnyRes multi-tile slicing (`llava_uhd`) is only verified for Granite Vision, not on a LLaVA-NeXT
     or LLaVA-OneVision checkpoint. Needs an actual LLaVA-NeXT checkpoint to verify tile ordering and separators.
   - **Plan:** [15-LLaVA-NeXT / OneVision AnyRes parity](15-llava-next-anyres-parity-plan.md) — validate checkpoint metadata, preprocessing and view composition against llama.cpp, then prove prompt expansion and end-to-end real-weight parity before changing code.
-- [ ] **16. IQ1_S / IQ1_M / IQ2_XS / IQ2_S coverage verification and stale-backlog cleanup**: These formats appear implemented, admitted, and covered by CPU correctness paths; verify source tables, dequantization semantics, dispatch, tests, and real-weight evidence before closing this stale implementation-gap entry. IQ1_S/IQ1_M currently lack a real-weight receipt. Follow [16-IQ format coverage verification plan](16-iq-formats-coverage-verification-plan.md); do not reimplement without a concrete defect.
 - [ ] **17. GGML op coverage re-audit: SSM_SCAN, RWKV6/7, DeepSeek-V4, SOLVE_TRI, WIN_PART/UNPART**: The historical gap list includes operations that may already have engine-level equivalents, including Mamba-2 selective scan and DeepSeek-V4 helpers. Re-audit current vendored ggml and Stingray code before implementing; retain fail-closed architecture admission until real-weight parity. Follow [17-GGML op coverage verification plan](17-ggml-op-coverage-verification-plan.md).
 - [ ] **18. SpeculativeDecoder.cs StepSampled/PLD bugs**: Confirmed real defect in speculative decode step sampling; currently unreachable/latent as no wired call path exercises it yet.
 - [x] **DeepSeekMoeGraph.cs:172 ExpertOffsets off-by-index**: Resolved 2026-08-27 (moved to `docs/done/bugstofix-resolved-2026-08.md`).
