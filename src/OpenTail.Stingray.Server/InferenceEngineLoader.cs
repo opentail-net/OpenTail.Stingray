@@ -482,10 +482,8 @@ public static class InferenceEngineLoader
     // ── Backend dispatch ─────────────────────────────────────────────────────
 
     /// <summary>
-    /// Translate <see cref="OpenTailStingrayServerOptions.PrefillDequantCacheMb"/> (MiB, nullable)
-    /// into the <see cref="ForwardPass"/> constructor's byte budget: <c>null</c> → defer to the
-    /// <c>STINGRAY_PREFILL_DEQUANT_MB</c> env / auto-sizing; <c>0</c> → off; negative → unlimited;
-    /// positive → that many MiB (saturating, never overflowing).
+    /// Translate the legacy <see cref="OpenTailStingrayServerOptions.PrefillDequantCacheMb"/>
+    /// setting for compatibility. The ForwardPass currently keeps this cache dormant.
     /// </summary>
     private static long DequantCacheBytes(long? mb) =>
         mb is null ? long.MinValue : ForwardPass.MbToBudgetBytes(mb.Value);

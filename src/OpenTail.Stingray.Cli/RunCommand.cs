@@ -186,7 +186,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         public int MinBatchBlas { get; init; }
 
         [CommandOption("--prefill-dequant-cache-mb")]
-        [Description("Dequant-once BLAS weight-cache budget in MiB for CPU prefill (issue #189): caches the F32 dequant per projection weight so chunked prefill re-pays no dequant (bit-identical). Auto (env STINGRAY_PREFILL_DEQUANT_MB / fit-25%-RAM) by default; 0 = off, negative = unlimited. CPU only.")]
+        [Description("Legacy dequant-once BLAS weight-cache setting (issue #189). Currently dormant because the CPU prefill kernels do not use the OpenBLAS route; this option does not change inference math. CPU only.")]
         [DefaultValue(long.MinValue)]
         public long PrefillDequantCacheMb { get; init; }
 

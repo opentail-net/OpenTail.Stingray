@@ -60,7 +60,8 @@ public sealed class QwenAsrRealWeightsTests : HeavyTestBase
         int durationSec = 2;
         var pcm = new float[sampleRate * durationSec];
 
-        // Synthesize a speech-frequency carrier tone + harmonics
+        // A synthetic tone exercises the end-to-end path but is not speech, so an empty
+        // transcript and segment list are valid model outputs.
         for (int i = 0; i < pcm.Length; i++)
         {
             float t = (float)i / sampleRate;
@@ -83,6 +84,6 @@ public sealed class QwenAsrRealWeightsTests : HeavyTestBase
         Assert.Equal("en", result.Language);
         Assert.True(result.Duration.TotalSeconds >= 1.9);
         Assert.NotNull(result.Segments);
-        Assert.NotEmpty(result.Segments);
+        Assert.NotNull(result.Text);
     }
 }

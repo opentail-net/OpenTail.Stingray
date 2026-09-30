@@ -38,9 +38,9 @@ public sealed class WanTests
         original[(1 * numFrames + 0) * latH * latW + 0 * latW + 0] = 42.0f;
 
         var packed = WanModel.PackLatents(original, numFrames, latH, latW);
-        // Pixel-major layout: slot = (dy*2+dx)*OutChannels + c
-        // channel 1, dy=0, dx=0 -> slot = (0*2+0)*16 + 1 = 1
-        Assert.Equal(42.0f, packed[1]);
+        // Conv3D input channels are outermost: slot = c*4 + dy*2 + dx.
+        // channel 1, dy=0, dx=0 -> slot = 1*4 = 4.
+        Assert.Equal(42.0f, packed[4]);
     }
 
     [Fact]
@@ -52,8 +52,8 @@ public sealed class WanTests
         int totalTokens = numFrames * (latH / 2) * (latW / 2);
 
         var packed = new float[totalTokens * 64];
-        // Pixel-major layout: slot = (dy*2+dx)*OutChannels + c
-        // Token (0, 0): c=3, dy=1, dx=0 -> slot = (1*2+0)*16 + 3 = 35
+        // Linear head output uses spatial outermost: slot = (dy*2+dx)*OutChannels + c.
+        // Token (0, 0): c=3, dy=1, dx=0 -> slot = (1*2+0)*16 + 3 = 35.
         packed[35] = 99.0f;
 
         var unpacked = WanModel.UnpackLatents(packed, numFrames, latH, latW);
@@ -65,7 +65,7 @@ public sealed class WanTests
     [InlineData(1, 4, 4)]
     [InlineData(1, 16, 16)]
     [InlineData(3, 8, 8)]
-    public void Wan_PackAndUnpackLatents_IsLosslessIdentity(int numFrames, int latH, int latW)
+    public void Wan_PackLatents_UsesConv3DChannelOuterOrder(int numFrames, int latH, int latW)
     {
         int channels = 16;
         int totalElements = channels * numFrames * latH * latW;
@@ -78,19 +78,47 @@ public sealed class WanTests
         int patchH = latH / 2;
         int patchW = latW / 2;
         int expectedTokens = numFrames * patchH * patchW;
-        int expectedChannels = WanModel.InChannels; // 64
-        Assert.Equal(expectedTokens * expectedChannels, packed.Length);
+        Assert.Equal(expectedTokens * WanModel.InChannels, packed.Length);
+
+        for (int f = 0; f < numFrames; f++)
+        for (int ph = 0; ph < patchH; ph++)
+        for (int pw = 0; pw < patchW; pw++)
+        for (int c = 0; c < channels; c++)
+        for (int dy = 0; dy < 2; dy++)
+        for (int dx = 0; dx < 2; dx++)
+        {
+            int token = (f * patchH + ph) * patchW + pw;
+            int source = ((c * numFrames + f) * latH + ph * 2 + dy) * latW + pw * 2 + dx;
+            int slot = token * WanModel.InChannels + c * 4 + dy * 2 + dx;
+            Assert.Equal(original[source], packed[slot]);
+        }
+    }
+
+    [Theory]
+    [InlineData(1, 4, 4)]
+    [InlineData(1, 16, 16)]
+    [InlineData(3, 8, 8)]
+    public void Wan_UnpackLatents_UsesLinearSpatialOuterOrder(int numFrames, int latH, int latW)
+    {
+        int patchH = latH / 2;
+        int patchW = latW / 2;
+        int tokenCount = numFrames * patchH * patchW;
+        var packed = new float[tokenCount * WanModel.InChannels];
+        for (int i = 0; i < packed.Length; i++) packed[i] = i + 1;
 
         var unpacked = WanModel.UnpackLatents(packed, numFrames, latH, latW);
-        Assert.Equal(original.Length, unpacked.Length);
-
-        for (int i = 0; i < original.Length; i++)
-            Assert.Equal(original[i], unpacked[i], tolerance: 1e-6f);
-
-        var repacked = WanModel.PackLatents(unpacked, numFrames, latH, latW);
-        Assert.Equal(packed.Length, repacked.Length);
-        for (int i = 0; i < packed.Length; i++)
-            Assert.Equal(packed[i], repacked[i], tolerance: 1e-6f);
+        for (int f = 0; f < numFrames; f++)
+        for (int ph = 0; ph < patchH; ph++)
+        for (int pw = 0; pw < patchW; pw++)
+        for (int dy = 0; dy < 2; dy++)
+        for (int dx = 0; dx < 2; dx++)
+        for (int c = 0; c < WanModel.OutChannels; c++)
+        {
+            int token = (f * patchH + ph) * patchW + pw;
+            int slot = token * WanModel.InChannels + (dy * 2 + dx) * WanModel.OutChannels + c;
+            int destination = ((c * numFrames + f) * latH + ph * 2 + dy) * latW + pw * 2 + dx;
+            Assert.Equal(packed[slot], unpacked[destination]);
+        }
     }
 
     [Fact]

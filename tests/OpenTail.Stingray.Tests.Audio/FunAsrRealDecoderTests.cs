@@ -35,8 +35,8 @@ public sealed class FunAsrRealDecoderTests : HeavyTestBase
     [Fact]
     public void Forward_RealWeights_MatchesGoldenDecoderLogitsAndArgmax()
     {
-        string? modelPath = FindRepoFile("models/paraformer-q8.gguf");
-        Assert.SkipUnless(modelPath != null, "models/paraformer-q8.gguf not found");
+        string? modelPath = FindRepoFile("models/_models/paraformer-q8.gguf");
+        Assert.SkipUnless(modelPath != null, "models/_models/paraformer-q8.gguf not found");
         string? encInPath = FindRepoFile("scratch-llamacpp-ref/funasr_golden_encoder_input.txt");
         string? logitsPath = FindRepoFile("scratch-llamacpp-ref/funasr_golden_decoder_logits.txt");
         string? tokenIdsPath = FindRepoFile("scratch-llamacpp-ref/funasr_golden_decoder_tokenids.txt");

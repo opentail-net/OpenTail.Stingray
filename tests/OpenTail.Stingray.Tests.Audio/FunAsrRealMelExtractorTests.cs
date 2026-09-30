@@ -36,8 +36,8 @@ public sealed class FunAsrRealMelExtractorTests : HeavyTestBase
     [Fact]
     public void Extract_RealWeights_MatchesGoldenFrontendOutput()
     {
-        string? modelPath = FindRepoFile("models/paraformer-q8.gguf");
-        Assert.SkipUnless(modelPath != null, "models/paraformer-q8.gguf not found");
+        string? modelPath = FindRepoFile("models/_models/paraformer-q8.gguf");
+        Assert.SkipUnless(modelPath != null, "models/_models/paraformer-q8.gguf not found");
         string? pcmPath = FindRepoFile("scratch-llamacpp-ref/funasr_golden_frontend_pcm.txt");
         string? featsPath = FindRepoFile("scratch-llamacpp-ref/funasr_golden_frontend_feats.txt");
         Assert.SkipUnless(pcmPath != null && featsPath != null,

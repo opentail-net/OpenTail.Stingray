@@ -1021,11 +1021,11 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
         }
 
         // ── Dequant-once BLAS weight cache budget (issue #189) ──────────────────────
-        // Only dense models route batched prefill through MatMulBatched: MoE uses its own
-        // expert path and Gemma 4 per-layer head_dim falls back to sequential Forward, so
-        // neither would ever consult the cache. And without OpenBLAS the batched path stays
-        // on the fused register-dequant MatVec, where a separate F32 cache is a net loss.
-        bool cacheable = SimdKernels.BlasAvailable && !_hp.IsMoE && _layerHeadDim is null;
+        // MatMulBatched's quantized and F32 tiers return before its OpenBLAS fallback, so
+        // diverting dense projections into MatMulBatchedF32 changes inference numerics even
+        // when OpenBLAS happens to be loaded. Keep the legacy cache dormant until a cache route
+        // preserves the selected kernel and its accumulation behavior.
+        bool cacheable = false;
         long fullF32Bytes = 0;
         if (cacheable)
         {
@@ -1047,14 +1047,10 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
     }
 
     /// <summary>
-    /// Resolve the issue #189 dequant-cache byte budget. <paramref name="requested"/> is the
-    /// programmatic override in <i>bytes</i> (<c>long.MinValue</c> = resolve from the
-    /// <c>STINGRAY_PREFILL_DEQUANT_MB</c> env var); for both sources <c>0</c> = off,
-    /// negative = unlimited, positive = explicit budget. The env "auto" default (unset or
-    /// <c>auto</c>) enables the cache only when a full F32 copy of the projection weights
-    /// fits within a quarter of available RAM (as reported by <see cref="GC.GetGCMemoryInfo"/>,
-    /// which reflects the container/cgroup limit when the runtime detects one), mirroring the
-    /// engine's KV-budget auto-sizing.
+    /// Resolve the legacy issue #189 cache budget. The normal CPU prefill kernels cannot use
+    /// the F32 BLAS cache without changing inference math, so <paramref name="cacheable"/> is
+    /// currently false and all budget sources resolve to zero. Parsing remains for compatibility
+    /// if a numerically equivalent cache route is implemented later.
     /// </summary>
     private static long ResolveDequantCacheBudget(long requested, long fullF32Bytes, bool cacheable)
     {

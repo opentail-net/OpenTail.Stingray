@@ -7,8 +7,8 @@ public sealed class FunAsrPerfBenchTests : HeavyTestBase
     [Fact]
     public void Bench_Transcribe_LongerAudio()
     {
-        string? modelPath = FindModelPath("paraformer-q8.gguf");
-        Assert.SkipUnless(modelPath != null, "models/paraformer-q8.gguf not found");
+        string? modelPath = FindModelPath("_models/paraformer-q8.gguf");
+        Assert.SkipUnless(modelPath != null, "models/_models/paraformer-q8.gguf not found");
 
         using var pipeline = FunAsrPipeline.Load(modelPath!);
 

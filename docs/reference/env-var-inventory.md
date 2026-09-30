@@ -218,7 +218,7 @@ dynamically composed names.
 | Variable | Class | Notes |
 |---|---|---|
 | `STINGRAY_PREFILL_CHUNK` | expert | Mirrors `OpenTailStingrayServerOptions.PrefillChunkTokens`. |
-| `STINGRAY_PREFILL_DEQUANT_MB` | expert | Mirrors `OpenTailStingrayServerOptions.PrefillDequantCacheMb`. |
+| `STINGRAY_PREFILL_DEQUANT_MB` | expert | Legacy setting mirroring `OpenTailStingrayServerOptions.PrefillDequantCacheMb`; currently dormant with the CPU prefill kernels. |
 
 ## OpenTail.Stingray.Cli, OpenTail.Stingray.Engine, OpenTail.Stingray.Server, OpenTail.Stingray.Server.Host, OpenTail.Stingray.Vulkan
 

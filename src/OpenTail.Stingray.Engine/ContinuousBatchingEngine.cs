@@ -226,9 +226,8 @@ public sealed class ContinuousBatchingEngine : IInferenceEngine, IContinuousBatc
         _endThinkTokenId = endThinkTokenId;
         _thinkingEnabled = thinkTokenId >= 0 && endThinkTokenId >= 0;
 
-        // -1 = auto (issue #189): a small chunk minimizes decode stall but normally collapses
-        // prefill throughput (per-chunk weight re-dequant); pick it only when the dequant-once
-        // cache covers the model so small chunks re-pay no dequant. Otherwise keep 256.
+        // -1 = auto. Keep the larger chunk while the legacy dequant cache is dormant; small
+        // chunks would repeatedly traverse the weights without a cache to amortize that work.
         _prefillChunkTokens = prefillChunkTokens >= 0
             ? prefillChunkTokens
             : (fwd.PrefillDequantCacheActive ? 64 : 256);

@@ -551,10 +551,16 @@ public sealed class SpeculativeDecoder
                 : Sampler.SampleFromProbs(pDist, rng);
             break;
         }
+        if (usedPld)
+            _pldAccepted += accepted;
+        else if (_draft is not null)
+            _draftAccepted += accepted;
         if (correction < 0)
         {
             // All k−1 drafts accepted: bonus token sampled from the final verify position.
-            correction = Sampler.SampleWithDistribution(batch[k - 1], sampling, pDist, rng);
+            // PLD can return fewer than k-1 proposals, so verify only the positions
+            // represented by tokens and take the bonus from the final verified row.
+            correction = Sampler.SampleWithDistribution(batch[tokens.Length - 1], sampling, pDist, rng);
         }
 
         _totalAccepted += accepted;
@@ -564,12 +570,24 @@ public sealed class SpeculativeDecoder
         _phaseSw.Restart();
         int newPos = P + 1 + accepted;
         _target.TruncateTo(newPos);
-        if (accepted == k - 1)
-            // Full accept: the draft never forwarded tokens[k-1] (its cache is at P+k-1). Sync it
-            // so the next chain starts at newPos. (Identical to Step's full-accept branch.)
-            _draft!.Forward(tokens[^1], P + k - 1);
-        else
-            _draft!.TruncateTo(newPos);
+        if (usedPld)
+        {
+            for (int i = 1; i <= accepted; i++) _lookup!.Append(tokens[i]);
+            if (_draft is not null)
+            {
+                var acceptedSlice = new int[1 + accepted];
+                Array.Copy(tokens, 0, acceptedSlice, 0, 1 + accepted);
+                _draft.Prefill(acceptedSlice, P);
+            }
+        }
+        else if (_draft is not null)
+        {
+            if (accepted == tokens.Length - 1)
+                // The draft cache is one token short after full acceptance.
+                _draft.Forward(tokens[^1], P + tokens.Length - 1);
+            else
+                _draft.TruncateTo(newPos);
+        }
         CommitMs += _phaseSw.Elapsed.TotalMilliseconds;
 
         // ── Update state ──────────────────────────────────────────────────────────

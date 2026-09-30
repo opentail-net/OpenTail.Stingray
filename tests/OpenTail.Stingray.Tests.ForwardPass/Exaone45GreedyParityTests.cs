@@ -27,7 +27,8 @@ public sealed class Exaone45GreedyParityTests : HeavyTestBase
     [Fact]
     public void Exaone45_LongPrompt_GreedyMatchesLlamaServer()
     {
-        AssertGreedy(LongPrompt, 196,
+        // llama-tokenize.exe with this GGUF reports 157 tokens for this exact prompt.
+        AssertGreedy(LongPrompt, 157,
             [8394, 12958, 375, 115476, 39623, 6791, 373, 12229, 925, 19848, 956, 9625, 2418, 118534, 373, 1224]);
     }
 

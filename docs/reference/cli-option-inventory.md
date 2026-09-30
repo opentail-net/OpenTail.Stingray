@@ -282,7 +282,7 @@ hoc at each read site rather than in one place.
 | `--no-thinking` | stable | Disable reasoning mode (sets enable_thinking=false in the chat template) |
 | `--no-warmup` | stable | (llama.cpp compat) No effect — OpenTail has no separate warmup step. Accepted with a warning. |
 | `--numa <MODE>` | stable | (llama.cpp compat) Not implemented in OpenTail.Stingray. |
-| `--prefill-dequant-cache-mb` | expert | Dequant-once BLAS weight-cache budget in MiB for CPU prefill (issue #189): caches the F32 dequant per projection weight so chunked prefill re-pays no dequant (bit-identical). Auto (env STINGRAY_PREFILL_DEQUANT_MB / fit-25%-RAM) by default; 0 = off, negative = unlimited. CPU only. |
+| `--prefill-dequant-cache-mb` | expert | Legacy dequant-once BLAS weight-cache setting (issue #189). Currently dormant because CPU prefill uses quantized kernels and does not reach the OpenBLAS route; this option does not change inference math. CPU only. |
 | `--presence-penalty <P>` | stable | Subtract once from logits of tokens already generated (0 = disabled). |
 | `--prompt` | stable | Input prompt (default: interactive chat) |
 | `--repeat-last-n` | stable | Number of recent tokens the repetition penalty considers (default: 64; 0 = disabled; -1 = full context). Mirrors llama.cpp's --repeat-last-n. |

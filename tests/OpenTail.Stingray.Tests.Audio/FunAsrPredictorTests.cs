@@ -36,8 +36,8 @@ public sealed class FunAsrPredictorTests : HeavyTestBase
     [Fact]
     public void Predict_RealWeights_MatchesGoldenAlphasAndEmbeds()
     {
-        string? modelPath = FindRepoFile("models/paraformer-q8.gguf");
-        Assert.SkipUnless(modelPath != null, "models/paraformer-q8.gguf not found");
+        string? modelPath = FindRepoFile("models/_models/paraformer-q8.gguf");
+        Assert.SkipUnless(modelPath != null, "models/_models/paraformer-q8.gguf not found");
         string? encInPath = FindRepoFile("scratch-llamacpp-ref/funasr_golden_encoder_input.txt");
         string? alphasPath = FindRepoFile("scratch-llamacpp-ref/funasr_golden_predictor_alphas.txt");
         string? embedsPath = FindRepoFile("scratch-llamacpp-ref/funasr_golden_predictor_embeds.txt");

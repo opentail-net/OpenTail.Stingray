@@ -313,33 +313,23 @@ public sealed class ContinuousBatchingTests : HeavyTestBase
     [Fact]
     public void PrefillWithCache_DequantCacheOnOff_BitIdentical()
     {
-        // Issue #189: the dequant-once weight cache must be transparent — chunked prefill with
-        // the cache active produces bit-for-bit the same logits as with it off (same F32
-        // dequant feeds the same SGEMM, just sourced from the cache on reuse).
+        // Issue #189: requesting the legacy dequant cache must not divert inference from its
+        // selected quantized CPU kernels to F32 matmul. The legacy cache route is dormant because
+        // the normal MatMulBatched path no longer reaches OpenBLAS.
         var path = FindModelPath();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
-        // The cache only diverts the OpenBLAS SGEMM path; without BLAS both runs are identical
-        // by construction and the test proves nothing.
-        Assert.SkipUnless(SimdKernels.BlasAvailable, "OpenBLAS not present in this environment");
-
         using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
         var model = modelHandle.Model;
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
         using var backend = new CpuBackend();
 
-        // 48 tokens prefilled in 16-token chunks: each chunk is at/above MinBatchForBlas so the
-        // SGEMM+cache path runs, and chunks 2-3 read weights the cache filled during chunk 1.
+        // 48 tokens prefilled in 16-token chunks, with the legacy cache requested for one run.
         int[] tokens = [1, 2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47,
                         53, 59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127,
                         131, 137, 139, 149, 151, 157, 163, 167, 173, 179, 181, 191, 193, 197, 199, 211];
 
-        // The perf-loop-42 repacked Q4K×8 path (MatMulBatchedCached, ForwardPass.cs) sits ahead
-        // of the plain BLAS fallback and is gated only on SimdKernels.Q8PrefillEnabled -- NOT on
-        // the dequant cache being off. Left at its default (on), the "cache off" run below would
-        // silently take that path instead of the BLAS-without-cache path this test means to
-        // compare against, and it is explicitly documented as "not byte-exact with the F32 path"
-        // (SimdKernels.TryMatMulBatchedQ8). Pin it off for both runs so the only variable is the
-        // dequant cache itself, which is what this test is actually about.
+        // Pin the optional quantized prefill route off in both runs. This isolates the effect of
+        // the legacy cache request while preserving the same underlying MatVec route.
         bool savedQ8Prefill = SimdKernels.Q8PrefillEnabled;
         SimdKernels.Q8PrefillEnabled = false;
         float[] cacheOff, cacheOn;

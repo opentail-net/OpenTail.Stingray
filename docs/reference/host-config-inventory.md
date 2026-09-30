@@ -55,7 +55,7 @@ parallel mechanism.
 | `MaxQueuedRequests` | `int` | | Maximum number of requests allowed to wait behind the active inference batch. Together with , this bounds the server's generation work-in-flight at MaxBatchSize + MaxQueuedReque... |
 | `MaxConcurrentRequests` | `int?` | | Maximum number of generation requests allowed in flight at once before the server fast-rejects with HTTP 429 (issue #109). null (default) keeps the legacy behaviour: the single-... |
 | `PrefillChunkTokens` | `int` | | Prompt tokens prefilled per batcher iteration under continuous batching (issue #183 Gap 1). Active sequences advance one decode step between chunks, so a long inbound prompt no ... |
-| `PrefillDequantCacheMb` | `long?` | | Dequant-once BLAS weight-cache budget in MiB (issue #189). The CPU batched-prefill path re-dequantizes each projection weight to F32 on every call, so small prefill chunks re-pa... |
+| `PrefillDequantCacheMb` | `long?` | | Legacy setting for the dequant-once BLAS weight cache (issue #189). Currently dormant because normal CPU prefill does not use the OpenBLAS path; changing this value does not alter inference math. |
 | `KvBudgetMb` | `long` | | KV-cache memory budget in MiB gating request admission under continuous batching (issue #183 Gap 3). Each admitted sequence reserves promptTokens + max_tokens worth of KV; when ... |
 | `PrefixCacheMb` | `long` | | Retained KV-prefix cache budget in MiB for CPU continuous batching. Prefixes are exact canonical token prefixes rounded down to 16-token pages, shared copy-on-write with new req... |
 | `MoeWarmPin` | `int?` | | Pin the top-N hottest experts per layer after warmup. null = disabled (frequency-aware SLRU eviction is sufficient on its own). Mirrors --moe-warmpin / STINGRAY_MOE_WARMPIN. |
