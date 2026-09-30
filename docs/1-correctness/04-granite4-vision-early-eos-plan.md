@@ -25,8 +25,10 @@ correctly given the logits it receives â the fault must lie in how those lo
 | 2026-09-28 | `31d3846b` | Batched CPU image prefill: replaced the per-token `ForwardEmbedding()` loop with `PrefillEmbeddings()` â `PrefillCore()` for CPU. |
 | 2026-09-28 | RUNNING.md verification | Granite 4.0 Vision now produces empty / early-EOS output. |
 
-`31d3846b` is the **primary regression vector**. The encoder (44.3 t/s, 145 tokens, 20480-dim)
-is working; the regression is downstream in how those embeddings are fed through the text model.
+`31d3846b` is a **candidate change to test, not an established cause**. Earlier repository notes
+(`docs/done/00-current-work-log-to-2026-09-27.md`, 2026-09-11) report non-image-grounded output
+from real Granite vision runs, which predates this change. The reported symptoms and test inputs
+also differ. Reproduce a fixed real-input baseline before classifying this as a regression.
 
 ---
 

@@ -81,15 +81,15 @@ sources, but work proceeds in the order below.
 
 ## A few hours, cause already narrowed
 
-### 7. GLM-4.5 (`glm4moe`) 1.9% perplexity gap
-- [ ] **7. GLM-4.5 (`glm4moe`) 1.9% perplexity gap** (day-scale job, continued 2026-09-28: divergence now pinned to layer 0's `wo` projection specifically)
+### 7. GLM-4.5 (`glm4moe`) Q5_K×Q8_K kernel and gated decode path
+- [x] **7. GLM-4.5 (`glm4moe`) Q5_K×Q8_K kernel and gated decode path** (implementation and synthetic-validation scope complete; real-weight evaluation split to item 19)
   - [x] Profile layer bisection: drift starts at ~0.3% after layer 0's attention and compounds across layers rather than a single broken layer.
   - [x] Document findings and next experiment into `bugstofix.md` (GLM entry); timebox to day-scale job.
   - [x] `llama-eval-callback` on 326-token wikitext prompt for tensors `ffn_inp-N` / `l_out-N`.
   - [x] `StageCapture` stages `post_attn_resid` / `post_ffn_resid` on matching token IDs.
-  - [x] **2026-09-28:** split layer 0's attention into pre-`wo` (`kqv_out`/`attn_out`) and post-`wo` (`node_26`/`o_proj`) and compared each independently against `llama-eval-callback` on the real checkpoint. Pre-`wo` matches exactly (RoPE, QK score, softmax all ruled out); the divergence (~2e-4, above the print-resolution noise floor) first appears exactly at `wo`, the model's first Q5_K-quantized matmul. Directly supports the standing activation-quantization hypothesis (F32 vs ggml's Q8_K) rather than an attention-math bug. See `bugstofix.md`'s GLM-4.5 entry for the full numbers and method.
-  - [ ] Implement and measure: make the decode path's Q5_K matvec use ggml's per-block Q8_K activation quantization instead of F32, re-measure the layer-0 `wo` difference and the full PPL. Not started -- this touches a kernel shared by every Q5_K-quantized model in this codebase, so it needs a broad regression check before landing, not a quick patch.
-  - [ ] **Done when:** second-half PPL within ~0.3% of llama.cpp's 8.6125; allowlist entry, STATUS, RUNNING, and MODELS rows added.
+  - [x] **2026-09-28:** split layer 0's attention into pre-`wo` (`kqv_out`/`attn_out`) and post-`wo` (`node_26`/`o_proj`) and compared each independently against `llama-eval-callback` on the real checkpoint. Pre-`wo` matches exactly (RoPE, QK score, softmax all ruled out); the divergence (~2e-4, above the print-resolution noise floor) first appears exactly at `wo`, the model's first Q5_K-quantized matmul. Directly supports the standing activation-quantization hypothesis (F32 vs ggml's Q8_K) rather than an attention-math bug. See the [archived implementation record](done/09-glm45-q5k-activation-implementation.md) for the full numbers and method.
+  - [x] Implement a separate ggml-formula Q5_K×Q8_K dot path and a default-off gate only for the CPU decode attention output projection. Synthetic seeded tests compare dispatched and scalar paths against an independent scalar translation for cols 256–4096 (8 seeds each); all pass the predeclared `2e-4 + 2e-5 × |reference|` bound. The existing Q5_K paired-dot and Q8_K-related suites remain green (18 Q8KS, 4 Q3K×Q8K tests).
+  - [x] **Done when:** the kernel passes the independent scalar oracle and focused Q5_K/Q8_K regression suites, with the experimental decode gate left off by default.
 
 ### 8. Jinja chat-template gaps
 - [x] **8. Jinja chat-template gaps** (DONE 2026-09-27, `4ed6866`: the real gap was `tojson` formatting)
@@ -184,6 +184,15 @@ Timebox each at half a day, write down what was learned, and move on if blocked.
   - [ ] **CUDA items:** (`rope_freqs` for Llama-3.1-style models; M-RoPE image positions + deepstack in `CudaForwardPass`, done for Vulkan 2026-09-28) blocked on CUDA GPU.
   - [ ] **Discrete-GPU performance items** (from 15, 2026-09-28): Vulkan batched prefill, FLUX.1/FLUX.2 double-block GEMM and fusion (attention shader and audits: measurable on the iGPU but only pays off on a discrete GPU, see item 15), TTS/ASR GPU residency. This machine's iGPU shares DRAM with the CPU and trails it on prefill-shaped work, so a result here would not say whether the GPU code is good (CLAUDE.md rule 13). Blocked on a machine with a discrete GPU.
 
+## Follow-up validation
+
+### 19. GLM-4.5 real-weight Q5_K×Q8_K validation
+- [ ] **19. GLM-4.5 real-weight Q5_K×Q8_K validation** (implementation is complete under item 7; this remains the correctness/admission gate)
+  - [ ] On the real `cerebras_GLM-4.5-Air-REAP-82B-A12B-Q2_K.gguf` checkpoint and matching 326-token prompt, compare gate-off and `ZZ_Q5K_Q8K=1` layer-0 `o_proj` against the existing llama.cpp reference using raw values and record max-abs, mean-abs, RMS, relative-L2, and cosine metrics.
+  - [ ] If the layer-0 relative-L2 error improves, measure both gate modes' second-half wikitext PPL at `-c 2048` against the unchanged llama.cpp reference 8.6125; record exact command, memory, and measured values.
+  - [ ] Run one small real-weight Q5_K gate-on/off regression, then the broader real-weight Q5_K inventory before considering a default change.
+  - [ ] **Done when:** real-weight evidence is recorded; only if PPL is within ~0.3% of llama.cpp should GLM-4.5 admission and STATUS/RUNNING/MODELS updates be considered. Keep the gate off by default until then. See the [closed implementation record](done/09-glm45-q5k-activation-implementation.md) and [the detailed plan](1-correctness/09-glm45-q5k-activation-quant-plan.md).
+
 ---
 
 ## Log
@@ -192,7 +201,7 @@ Timebox each at half a day, write down what was learned, and move on if blocked.
 - 2026-09-27: item 7 timeboxed; the layer bisection turned it into a day-scale job.
   - The drift is spread across layers: it starts at about 0.3% after layer 0's attention and
     compounds, with no single broken layer.
-  - Findings and the next experiment are in `bugstofix.md` (GLM entry).
+  - Findings and the implementation are now in the [closed GLM-4.5 implementation record](done/09-glm45-q5k-activation-implementation.md); remaining validation is item 19 above.
   - Moved on to item 2.
 - 2026-09-27: item 4 done.
   - `llama-mtmd-debug` now runs `gemma4v`. The encoder + projector match: row 0 within 0.003 on

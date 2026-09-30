@@ -2813,12 +2813,54 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         }
         var prefillMs = sw.Elapsed.TotalMilliseconds;
 
+        bool graniteDiagnostic = vision.ProjectorType.Contains("granite4", StringComparison.OrdinalIgnoreCase)
+            && Environment.GetEnvironmentVariable("STINGRAY_GRANITE4_DIAG") == "1";
+        if (graniteDiagnostic)
+        {
+            Span<int> topIds = stackalloc int[10];
+            Span<float> topValues = stackalloc float[10];
+            int topCount = 0;
+            for (int i = 0; i < logits.Length; i++)
+            {
+                float value = logits[i];
+                if (topCount == topIds.Length && value <= topValues[topCount - 1]) continue;
+                int insert = Math.Min(topCount, topIds.Length - 1);
+                while (insert > 0 && value > topValues[insert - 1])
+                {
+                    topValues[insert] = topValues[insert - 1];
+                    topIds[insert] = topIds[insert - 1];
+                    insert--;
+                }
+                topValues[insert] = value;
+                topIds[insert] = i;
+                if (topCount < topIds.Length) topCount++;
+            }
+            var top = new System.Text.StringBuilder(256);
+            for (int i = 0; i < topCount; i++)
+            {
+                if (i > 0) top.Append(" | ");
+                top.Append(topIds[i]).Append('(').Append($"{topValues[i]:F4}")
+                    .Append(",'").Append(tok.Decode([topIds[i]])).Append('\'');
+            }
+            float eogLogit = float.NegativeInfinity;
+            foreach (int id in tok.EogTokenIds)
+                if (id >= 0 && id < logits.Length && logits[id] > eogLogit)
+                    eogLogit = logits[id];
+            var periodTokens = tok.Encode(".");
+            float periodLogit = periodTokens.Count == 0 ? float.NaN : logits[periodTokens[0]];
+            float margin = topCount > 1 ? topValues[0] - topValues[1] : float.NaN;
+            Console.Error.WriteLine($"[GRANITE4-DIAG] prefill={Environment.GetEnvironmentVariable("STINGRAY_GRANITE4_PREFILL") ?? "current"} " +
+                $"deepstack={hp.NumDeepstack} mapping=[{string.Join(',', hp.DeepstackMapping ?? [])}] " +
+                $"top1-top2={margin:F6} eog-max={eogLogit:F6} period={periodLogit:F6} top10={top}");
+        }
+
         if (!s.NoDisplayPrompt)
             Console.Write(s.Prompt);
 
         sw.Restart();
         var (generated, totalDecoded) =
-            DecodeLoop(fwd.Forward, logits, pos, tok, sp, rng, s.VerbosePrompt, s.HideThinking, s.MaxThinkingTokens, repeatLastN: s.RepeatLastN);
+            DecodeLoop(fwd.Forward, logits, pos, tok, sp, rng, s.VerbosePrompt, s.HideThinking, s.MaxThinkingTokens,
+                repeatLastN: s.RepeatLastN, graniteDiagnostic: graniteDiagnostic);
         var decodeMs = sw.Elapsed.TotalMilliseconds;
 
         Console.WriteLine();
@@ -3066,7 +3108,8 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         List<int>? captureTokens = null,
         Action<string>? sink = null,
         CancellationToken cancellation = default,
-        int repeatLastN = 64)
+        int repeatLastN = 64,
+        bool graniteDiagnostic = false)
     {
         var logits = initialLogits;
         int generated = 0;
@@ -3128,9 +3171,9 @@ public sealed class RunCommand : Command<RunCommand.Settings>
                     ? Sampler.Greedy(sampleLogits)
                     : Sampler.Sample(sampleLogits, spWithHistory, rng);
             }
-            if (verbosePromptLogging)
+            if (verbosePromptLogging || graniteDiagnostic && i < 5)
             {
-                Console.Error.WriteLine($"[DBG] tok={i} next={next}('{tok.Decode([next])}') stop={sp.StopTokenIds.Contains(next)} top5:{FormatTopLogits(logits, 5)}");
+                Console.Error.WriteLine($"[{(graniteDiagnostic ? "GRANITE4-DIAG" : "DBG")}] tok={i} next={next}('{tok.Decode([next])}') stop={sp.StopTokenIds.Contains(next)} top5:{FormatTopLogits(logits, 5)}");
             }
             if (i == 0 && Environment.GetEnvironmentVariable("STINGRAY_DBG_TOKEN_RANK") is { } watchTokStr
                 && int.TryParse(watchTokStr, out int watchTok) && watchTok < logits.Length)

@@ -4,6 +4,9 @@ updated 2026-08-27 with the `DeepSeekMoeGraph.cs`/`MlaAttention.cs` column-major
 the `IqCodebooks.cs` entry, which had already been marked FIXED but was left here by mistake). This
 file keeps only what's still open.
 
+**Closed implementation scope — GLM-4.5 Q5_K×Q8_K:** [archived here](../done/09-glm45-q5k-activation-implementation.md).
+The GLM PPL gap is not resolved and the model is not admitted; gate-on real-weight validation is tracked separately as [docs/103 item 19](../103-quickest-first-plan.md).
+
 **Closed investigation moved out** (2026-08-27): the full DeepSeek-V2-Lite MLA/YaRN/MoE-routing
 investigation (`ModelCompatibility.cs:460`/`461`, originally logged 2026-08-21) is now at
 [done/032-deepseek2-mla-yarn-moe-routing-investigation.md](../done/032-deepseek2-mla-yarn-moe-routing-investigation.md).
@@ -49,9 +52,11 @@ implementation gap. See the [verification receipt](../done/16-iq-formats-coverag
   - **Next step:** none required — informational, so a future reader of that report doesn't take its PersonaPlex reasoning at face value.
 - [ ] **04. Granite 4.0 3B Vision (`granite4-vision`) outputs empty decode / early EOS** (found 2026-09-28 during RUNNING.md verification).
   - **Failure:** Running `stingray -m models/_models/granite-4.0-3b-vision-Q4_K_M.gguf --mmproj models/_models/mmproj-granite-4.0-3b-vision-f16.gguf --image photo.png -p "Describe this picture."` projects 145 soft tokens (20480-dim across 8 deepstack streams) successfully at 44.3 t/s, but generation terminates after 0 to 3 tokens (e.g. single period) instead of generating text.
-  - **Suspect:** Multi-stream deepstack injection mapping into the text model's layers or chat prompt template delimiter handling.
+  - **Status (2026-09-28):** Not reproduced in this workspace; the text checkpoint and mmproj are absent. Historical notes in `docs/done/00-current-work-log-to-2026-09-27.md` record non-image-grounded Granite vision outputs on 2026-09-11, predating the batched-prefill change, so its causal role and a known-good per-token baseline are unverified.
+  - **Investigation order:** First compare per-token + deepstack, batched + deepstack, and batched without deepstack on the same real image/checkpoint/prompt. Before interpreting the results, verify production image preprocessing against llama.cpp for those actual image bytes; synthetic Rainbow encoder coverage is not sufficient.
+  - **Diagnostic hooks:** `STINGRAY_GRANITE4_PREFILL=current|per-token|batched-no-deepstack` and `STINGRAY_GRANITE4_DIAG=1` are opt-in and default-neutral. They report first-logit/token evidence; no fix or production fallback has been applied.
   - **Control:** `granite-vision-3.2-2b` (which uses standard MLP projector) generates full, rich descriptions without issue.
-  - **Investigation plan:** [Granite 4.0 3B Vision early-EOS plan](04-granite4-vision-early-eos-plan.md) — reproduces the failure and traces the image-embedding path through the text model to the first divergent output.
+  - **Investigation plan:** [Granite 4.0 3B Vision early-EOS plan](04-granite4-vision-early-eos-plan.md) — documents the experiment and current asset blocker; the fixed-input A/B and reference preprocessing comparison remain open.
 - [ ] **05. Voxtral Realtime audio.cpp GGUF is not supported by the dedicated STT entry point** (found 2026-09-28 during RUNNING.md verification).
   - **Expected behavior, not a defect:** generic `stingray -m <Voxtral GGUF> -p "..."` rejects `general.architecture=audiocpp` before inference. Do not add `audiocpp` to the generic text-generation architecture allowlist.
   - **Actual gap:** `SttCommand -m voxtral --model-file <GGUF>` currently resolves a SafeTensors directory, while `VoxtralPipeline.Load` requires `model.safetensors` and filesystem `tekken.json`. The dedicated Voxtral ASR path does not yet load the self-contained audio.cpp-packed GGUF.
@@ -85,86 +90,14 @@ implementation gap. See the [verification receipt](../done/16-iq-formats-coverag
   - **Fast-AR test scope:** `FishSpeechWeights` normalizes Fast-AR weights to Q8_0 at load time. The Q4 checkpoint path therefore includes Q4_K_M dequantization followed by Q8_0 quantization; a 0.44 cosine against original full-precision logits is not alone proof of incorrect math. Existing Q8_0 external-golden and `ForwardStep_MatchesForward_ForSamePrefix` tests are useful controls, but test different claims.
   - **Next step:** follow [`08-fish-speech-s2-pro-golden-reconciliation-plan.md`](08-fish-speech-s2-pro-golden-reconciliation-plan.md): classify current vs `7a68185`, regenerate the codec golden with the full post-module reference path, establish precision-appropriate Q8_0/Q4 Fast-AR tests, and inspect individual `d377049` changes only if a valid comparison demonstrates a regression.
   - **Status:** retain the conservative 🟡 rating until permanent, correctly scoped regression coverage is in place. The numeric golden failures are test/oracle issues to reconcile, not established evidence of a current end-to-end audio defect.
-- [ ] **09. GLM-4.5 (`glm4moe`) perplexity 1.9% worse than llama.cpp; not admitted** (logged 2026-09-27; `docs/done/102-status-open-items-plan.md` #16).
-  - **Checkpoint:** `cerebras_GLM-4.5-Air-REAP-82B-A12B-Q2_K.gguf`. It mixes quant types: attn_q
-    Q2_K, attn_output Q5_K, expert gate/up Q2_K, expert down IQ4_NL.
-  - **Result:** wikitext second-half PPL at -c 2048 is 8.7753 vs `llama-perplexity` 8.6125.
-  - **Already fixed:** a tokenizer bug (`glm4` pre-type unmapped, commit 4349db3) that made it 37%.
-  - **Ruled out:**
-    - tokenisation: a 20 KB sample matches `llama-tokenize` exactly;
-    - RoPE: the partial NeoX table is built over `rope.dimension_count`=64;
-    - batched vs sequential MoE prefill: identical PPL;
-    - IQ4_NL dequant and codebook: identical to ggml.
-  - **Symptom:** the error grows with position. Next-token log-probs vs `llama-server` given the same
-    ids differ by about 0.01 nats at 5 tokens, about 0.1 at 23, and up to 0.85 at 326, with the same
-    top-5 order. So look at what accumulates over context: attention over many keys, or
-    sigmoid+bias routing drifting as the hidden state drifts.
-  - **Next step:** compare per-layer hidden states for the last token of the 326-token wikitext
-    prompt (first 1400 bytes of `scripts/kvarn-gate/wiki.test.raw`).
-    - llama.cpp side: `examples/llama.cpp/llama.cpp/build-eval/bin/llama-eval-callback.exe`, tensors
-      `ffn_inp-N` / `l_out-N`.
-    - Our side: `StageCapture` stages `post_attn_resid` / `post_ffn_resid`.
-    - Find the first layer whose last-token values drift.
-  - **Memory:** llama.cpp needs about 46 GB for this file, so run it alone.
-  - **Layer bisection done 2026-09-27:** last token of the 326-token prompt.
-    - llama.cpp `llama-eval-callback` `attn_norm/ffn_inp/l_out-N` vs our `StageCapture`, via the
-      scratch harness `ZzLayerDumpTmp` (untracked).
-    - **No single broken layer.** `attn_norm-0` matches exactly (0.0000). The first difference, about
-      0.3%, appears after layer 0's attention. It then grows steadily: about 1% by layer 5, 2-5% by
-      layer 15, 5-10% in layers 20-45.
-    - **Leading hypothesis:** activation-quantisation scheme differences in every layer's
-      attention/FFN matmuls, not a logic bug:
-      - our Q5_K matvec keeps activations F32 where ggml quantises them to Q8_K (GLM's `attn_output`
-        is Q5_K in every layer);
-      - our batched prefill quantises activations per row, not ggml's per-block Q8_K, for the 325
-        cached K/V positions.
-    - **Next experiment:** dump the `attn_out` stage too (llama.cpp `kqv_out-0`) to split attention
-      from `wo`; then make the decode path use ggml's per-dtype activation scheme (Q5_K -> Q8_K) and
-      re-measure the layer-0 difference and the PPL.
-    - **Caveat found 2026-09-27 (LFM2 bisection):** `llama-eval-callback` prints values to 4
-      decimals, so a "0.0001" difference on values near 0.02 is print resolution, not drift. The
-      GLM "0.3% after layer 0's attention" may be the same artefact; only differences well above
-      1e-4 absolute count.
-    - **Layer-0 `attn_out`/`wo` split done, 2026-09-28** (the next experiment named above): compared
-      `kqv_out-0` (pre-`wo`, raw attention output) and `node_26`/`ffn_inp-0` (post-`wo`) between
-      `llama-eval-callback` and our own `StageCapture` `attn_out`/`o_proj` stages, same real
-      checkpoint (`K:\_other_models\cerebras_GLM-4.5-Air-REAP-82B-A12B-Q2_K.gguf`), same 326-token
-      wikitext prompt, last-token row (position 325). Method: our own `ZzLayerDumpTmp.cs` (now also
-      captures `attn_out`) + a new `ZzMakeGlmIdsTmp.cs` scratch harness to tokenize the exact same
-      first-1400-bytes prompt with our own tokenizer (already confirmed matching `llama-tokenize`
-      exactly).
-      - `kqv_out-0`/`attn_out` (raw attention, pre-`wo`): **exact match** — `...0.0009, 0.0004,
-        0.0026` (ref) vs `...0.0009, 0.0004, 0.0027` (ours), a last-digit difference consistent with
-        print rounding, not drift.
-      - `node_26`/`o_proj` (post-`wo`, the FIRST Q5_K-quantized matmul in the whole model):
-        `-0.0045, 0.0024, -0.0140, ..., -0.0029, 0.0092, 0.0037` (ref) vs `-0.0047, 0.0024, -0.0139,
-        ..., -0.0030, 0.0093, 0.0038` (ours) — a ~2e-4 difference, small but above the LFM2 caveat's
-        1e-4 noise floor.
-      - **Conclusion: the divergence's exact origin is now pinned to layer 0's `wo` projection
-        specifically, not attention math in general.** RoPE, the QK score computation, and the
-        softmax are all now ruled out (their output, `kqv_out`, matches). This is the first
-        Q5_K-quantized matmul in the entire model, directly supporting the standing hypothesis
-        (ggml quantizes activations to Q8_K for this matmul; we keep them F32) rather than
-        something specific to attention.
-      - **Not yet done:** the actual fix (making the decode path's Q5_K matvec use ggml's per-block
-        Q8_K activation quantization instead of F32) has NOT been implemented or attempted. This is
-        real new engineering work on a widely-shared kernel path (`SimdKernels`'s Q5_K matvec is used
-        by every Q5_K-quantized model in this codebase, not just GLM), so it needs care and a broad
-        regression check before landing, not a quick patch. Scoped but not started.
-      - **Full implementation plan (2026-09-28), ready to hand off:**
-        [docs/1-correctness/09-glm45-q5k-activation-quant-plan.md](09-glm45-q5k-activation-quant-plan.md) —
-        exact function to add (`DotQ5K_Q8K`, mirroring the existing `DotQ8_0_Q8K` shape), the real
-        ggml reference to port from, the feature-gate wiring, the verification steps (isolated
-        kernel test → re-run the layer-0 bisection harness already built for this → full PPL →
-        broad Q5_K regression pass), and the constraints to follow. Start there instead of
-        re-deriving the approach from this entry.
 - [ ] **10. GLM-4.7-Flash (`deepseek2`) perplexity 0.9-1.4% worse than llama.cpp; not at parity** (logged 2026-09-27; `docs/103-quickest-first-plan.md` item 3).
   - **Checkpoint:** `GLM-4.7-Flash-Q2_K.gguf` (10.6 GB).
   - **Result:** wikitext second-half PPL at -c 2048: ours 8.1757 batched prefill, 8.2100 sequential;
     `llama-perplexity --chunks 1` 8.0997.
-  - **Pattern:** same as the GLM-4.5 entry above. The generation is coherent and the top-k order
-    matches; the gap is diffuse, not one broken op. Sequential is worse than batched, so the batched
-    prefill path is not the cause.
+  - **Pattern:** same diffuse PPL-gap pattern as the GLM-4.5 investigation (implementation record
+    [archived here](../done/09-glm45-q5k-activation-implementation.md)). The generation is coherent
+    and the top-k order matches; sequential is worse than batched, so the batched prefill path is
+    not the cause.
   - **Next step:** same layer bisection as GLM-4.5, but only trust differences well above the
     4-decimal print resolution of `llama-eval-callback`.
 - [ ] **11. LFM2 (`lfm2`) perplexity 0.24% worse than llama.cpp** (logged 2026-09-27; `docs/103-quickest-first-plan.md` item 11a; timeboxed out).

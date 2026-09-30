@@ -8,7 +8,8 @@ public sealed unsafe partial class ForwardPass
 {
     private ReadOnlySpan<float> PrefillCore(IReadOnlyList<int> tokens, PagedKvCache cache, int startPos,
         PositionLogitsCallback? onAllPositionLogits = null, Predicate<int>? positionFilter = null,
-        Span<float> outAllHiddenStates = default, float* embeddingRows = null, int embeddingWidth = 0)
+        Span<float> outAllHiddenStates = default, float* embeddingRows = null, int embeddingWidth = 0,
+        bool skipDeepstack = false)
     {
         // embeddingRows (PrefillEmbeddings): N precomputed input rows of embeddingWidth floats (vision soft tokens)
         // replace the token lookup; floats past _embDim are deepstack slices, added before their mapped layers.
@@ -133,7 +134,7 @@ public sealed unsafe partial class ForwardPass
                     long pNamedTicks = 0;
 
                     // Deepstack (Qwen3-VL, Granite 4.0 Vision): add this layer's slice to every row, as RunTrunk does.
-                    if (embeddingWidth > _embDim && layer > 0 && _hp.DeepstackMapping![layer] is int dsIdx && dsIdx >= 1)
+                    if (!skipDeepstack && embeddingWidth > _embDim && layer > 0 && _hp.DeepstackMapping![layer] is int dsIdx && dsIdx >= 1)
                         for (int n = 0; n < N; n++)
                             SimdKernels.AddInPlace(batchHidden + (long)n * _embDim,
                                 embeddingRows + (long)n * embeddingWidth + (long)dsIdx * _embDim, _embDim);
