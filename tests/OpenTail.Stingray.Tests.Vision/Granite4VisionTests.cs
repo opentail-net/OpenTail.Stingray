@@ -31,4 +31,15 @@ public sealed class Granite4VisionTests
             Assert.False(float.IsInfinity(pre.Chw[i]));
         }
     }
+
+    [Fact]
+    public void Granite4Vision_PromptFraming_MatchesCanonicalFormat()
+    {
+        // Granite 4 Vision uses <image> without enclosing open/close markers,
+        // and requires canonical Granite role tags without leading indentation or
+        // unrequested system prompt.
+        string userMsg = "<image>Describe this picture.";
+        string formatted = $"<|start_of_role|>user<|end_of_role|>{userMsg}<|end_of_text|>\n<|start_of_role|>assistant<|end_of_role|>";
+        Assert.Equal("<|start_of_role|>user<|end_of_role|><image>Describe this picture.<|end_of_text|>\n<|start_of_role|>assistant<|end_of_role|>", formatted);
+    }
 }

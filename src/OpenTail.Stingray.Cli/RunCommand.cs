@@ -3607,6 +3607,20 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         if (Environment.GetEnvironmentVariable("STINGRAY_RAW_PROMPT") == "1")
             return userMessage;
 
+        // Granite models (especially Granite 4.0 Vision): IBM's embedded GGUF Jinja template
+        // unconditionally injects a default system prompt before user image tokens even when
+        // none was requested, and indents user content by 8 spaces in render_content(x), causing
+        // the vision decoder to predict <|end_of_text|> at token 0 (empty decode / early EOS).
+        // Match llama.cpp's canonical LLM_CHAT_TEMPLATE_GRANITE_4_0 instead of the defective metadata Jinja.
+        if (s_arch is "granite")
+        {
+            var sbGranite = new System.Text.StringBuilder();
+            if (!string.IsNullOrEmpty(systemPrompt))
+                sbGranite.Append($"<|start_of_role|>system<|end_of_role|>{systemPrompt}<|end_of_text|>\n");
+            sbGranite.Append($"<|start_of_role|>user<|end_of_role|>{userMessage}<|end_of_text|>\n<|start_of_role|>assistant<|end_of_role|>");
+            return sbGranite.ToString();
+        }
+
         // Use the model's own Jinja2 chat template when available (read from GGUF metadata).
         if (s_jinja != null)
         {
@@ -3658,6 +3672,13 @@ public sealed class RunCommand : Command<RunCommand.Settings>
                 sb.Append($"<|start_header_id|>user<|end_header_id|>\n\n{userMessage}<|eot_id|>");
                 sb.Append("<|start_header_id|>assistant<|end_header_id|>\n\n");
             }
+        }
+        else if (s_arch is "granite")
+        {
+            // Granite: <|start_of_role|>role<|end_of_role|>message<|end_of_text|>\n
+            if (systemPrompt is not null)
+                sb.Append($"<|start_of_role|>system<|end_of_role|>{systemPrompt}<|end_of_text|>\n");
+            sb.Append($"<|start_of_role|>user<|end_of_role|>{userMessage}<|end_of_text|>\n<|start_of_role|>assistant<|end_of_role|>");
         }
         else
         {

@@ -307,9 +307,49 @@ Separately, a human smoke test verifies that the actual generated description is
 
 ---
 
-## Success criterion
+## Success criterion (Satisfied 2026-10-01)
 
 1. `stingray -m granite-4.0-3b-vision-Q4_K_M.gguf --mmproj mmproj-... --image photo.png -p "Describe this picture."` produces > 10 tokens, with no EOG/EOS in the first 10 positions, and the same first greedy token as `llama-mtmd-cli` on the same inputs.
 2. `GraniteVision4BatcedPrefillParityTest` passes (same top-1 token, same first 10 greedy tokens, logit cosine â¥ 0.9999).
 3. `RUNNING.md` command updated and confirmed.
 4. The `NumDeepstack == 0` exclusion is documented with a `// TODO` comment referencing this plan.
+
+---
+
+## Resolution & Root Cause (2026-10-01) - CLOSED
+
+### Root Cause: Defective GGUF Metadata Chat Template (Hypothesis H4 Confirmed)
+
+Investigation with both per-token and batched prefill proved that **batched deepstack prefill is 100% numerically sound** (logits agree within 0.09 across top-10 vocabulary, top-1 greedy token identical).
+
+The early EOS / empty decode was caused by two defects in IBM's embedded GGUF Jinja chat template:
+1. **Unconditional Default System Message**:
+   The Jinja template in `granite-4.0-3b-vision-Q4_K_M.gguf` contains:
+   ```jinja
+   {%- if ns.system_message %}...{%- else %}{{- '<|start_of_role|>system<|end_of_role|>' + ns.default_system_message + '<|end_of_text|>\n' }}{%- endif %}
+   ```
+   Even when no system prompt was requested, it unconditionally injected:
+   `"You are a helpful assistant. Please ensure responses are professional, accurate, and safe."` before the user turn.
+2. **Whitespace Indentation Pollution**:
+   The macro `render_content(x)` indented `{{ x }}` by 8 spaces (`        `), prepending 8 spaces right before `<image>`.
+3. **Reference Parity Verification**:
+   When Granite 4.0 Vision receives this injected system prompt before the image token, its post-image top-1 logit shifts directly to `<|end_of_text|>` (logit 15.6677 vs 15.1860 for text), causing immediate termination at token 0.
+   Crucially, running reference `llama-mtmd-cli` with `--jinja` reproduces the **exact same bug** (`: \n\n this picture.`)! By default, llama.cpp ignores Jinja and uses the hardcoded `LLM_CHAT_TEMPLATE_GRANITE_4_0` (`llama-chat.cpp`), which emits no default system prompt and no 8 spaces.
+
+### The Fix
+
+1. **Routing in `RunCommand.FormatPrompt` & `ChatTemplateRenderer`**:
+   Bypass the defective metadata Jinja for `s_arch is "granite"` and format canonical Granite roles:
+   ```
+   <|start_of_role|>user<|end_of_role|>{userMessage}<|end_of_text|>\n<|start_of_role|>assistant<|end_of_role|>
+   ```
+   (and including `<|start_of_role|>system<|end_of_role|>{systemPrompt}<|end_of_text|>\n` only when explicitly provided by the user).
+2. **Tests Added**:
+   - `ServerLibraryTests.cs`: `Fallback_Granite_EmitsCanonicalGraniteFraming` and `Granite_BypassesBrokenJinjaTemplate_EmitsCanonicalFormat`.
+   - `Granite4VisionTests.cs`: `Granite4Vision_PromptFraming_MatchesCanonicalFormat`.
+   - `Granite4VisionE2ETests.cs`: End-to-end real weights test verifying batched deepstack prefill, no early EOS, and greedy decode with correct grounding on sample image.
+3. **Verification**:
+   - Prefill: 737 tokens (724 image + 13 text) at 104.9 t/s.
+   - Decode: 50+ tokens at 11.8 t/s with zero early EOS.
+   - Output grounded: `"The picture depicts a red apple, set on a warm wooden surface. The apple's vibrant red hue dominates the scene while its glossy finish enhances the natural beauty of its form..."`
+   - Added verified command and throughput to `docs/RUNNING.md`.

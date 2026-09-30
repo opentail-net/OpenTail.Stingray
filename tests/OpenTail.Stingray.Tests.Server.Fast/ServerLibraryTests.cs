@@ -255,6 +255,34 @@ public sealed class ChatTemplateRendererTests
     }
 
     [Fact]
+    public void Fallback_Granite_EmitsCanonicalGraniteFraming()
+    {
+        var r = new ChatTemplateRenderer("granite");
+        var promptWithoutSys = r.Format([("user", "hi")]);
+        Assert.Equal("<|start_of_role|>user<|end_of_role|>hi<|end_of_text|>\n<|start_of_role|>assistant<|end_of_role|>", promptWithoutSys);
+
+        var promptWithSys = r.Format([("system", "be brief"), ("user", "hi")]);
+        Assert.Equal("<|start_of_role|>system<|end_of_role|>be brief<|end_of_text|>\n<|start_of_role|>user<|end_of_role|>hi<|end_of_text|>\n<|start_of_role|>assistant<|end_of_role|>", promptWithSys);
+
+        var promptNoGen = r.Format([("user", "hi")], addGenerationPrompt: false);
+        Assert.Equal("<|start_of_role|>user<|end_of_role|>hi<|end_of_text|>\n", promptNoGen);
+    }
+
+    [Fact]
+    public void Granite_BypassesBrokenJinjaTemplate_EmitsCanonicalFormat()
+    {
+        // Granite GGUF metadata often includes defective Jinja that unconditionally injects
+        // a default system prompt and indents content by 8 spaces. Verify ChatTemplateRenderer
+        // ignores the broken Jinja and formats canonical Granite roles.
+        var brokenJinja = new JinjaChatTemplate("BROKEN JINJA {{ messages[0].content }}");
+        var r = new ChatTemplateRenderer("granite", brokenJinja);
+        var prompt = r.Format([("user", "hi")]);
+
+        Assert.DoesNotContain("BROKEN JINJA", prompt);
+        Assert.Equal("<|start_of_role|>user<|end_of_role|>hi<|end_of_text|>\n<|start_of_role|>assistant<|end_of_role|>", prompt);
+    }
+
+    [Fact]
     public void Fallback_UnknownArch_FallsThroughToChatML()
     {
         // Any non-llama/llama4 arch falls into the ChatML branch (default for

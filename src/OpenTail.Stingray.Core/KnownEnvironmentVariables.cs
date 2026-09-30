@@ -162,6 +162,7 @@ public static class KnownEnvironmentVariables
         "STINGRAY_MOE_GPU_ROUTER",
         "STINGRAY_MOE_PIN_MODE",
         "STINGRAY_MOE_PREDICT_PREFETCH",
+        "STINGRAY_MOE_PREFILL_Q8",
         "STINGRAY_MOE_THREADS",
         "STINGRAY_MOE_WARMPIN",
         "STINGRAY_MOE_WARMPIN_AFTER",

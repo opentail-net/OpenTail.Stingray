@@ -87,16 +87,8 @@ public sealed unsafe partial class ForwardPass
             throw new ArgumentException($"embedding width {width} != model embedding dim {_embDim}" +
                 (nDs > 0 ? $" (or {_embDim * (1 + nDs)} with {nDs} deepstack slices)." : "."));
 
-        string? diagnosticPrefill = nDs > 0
-            ? Environment.GetEnvironmentVariable("STINGRAY_GRANITE4_PREFILL")
-            : null;
-        if (diagnosticPrefill is not (null or "current" or "per-token" or "batched-no-deepstack"))
-            throw new ArgumentException(
-                "STINGRAY_GRANITE4_PREFILL must be current, per-token, or batched-no-deepstack.");
-
         bool batched = count > 1 && RecurrentBatchedPrefillApplies && _layerHeadDim is null && !_usesUnweightedNorm
-            && _tqKvCache == null && !_hp.HasPerLayerTokenEmbd && (!_hp.IsMoE || MoeBatchedPrefillSupported)
-            && diagnosticPrefill != "per-token";
+            && _tqKvCache == null && !_hp.HasPerLayerTokenEmbd && (!_hp.IsMoE || MoeBatchedPrefillSupported);
         if (!batched)
         {
             ReadOnlySpan<float> logits = default;
@@ -106,8 +98,7 @@ public sealed unsafe partial class ForwardPass
         }
         fixed (float* p = rows)
             return PrefillCore(new int[count], _kvCache, startPos,
-                embeddingRows: p, embeddingWidth: width,
-                skipDeepstack: diagnosticPrefill == "batched-no-deepstack");
+                embeddingRows: p, embeddingWidth: width);
     }
 
     /// <summary>Deepstack slices 1..N of the current multimodal token (null otherwise); see

@@ -193,6 +193,13 @@ public sealed class ChatTemplateRenderer
         bool enableThinking = true,
         bool addGenerationPrompt = true)
     {
+        // Granite models: IBM's embedded GGUF Jinja template unconditionally injects a default
+        // system prompt even when none was requested, and indents user content by 8 spaces in
+        // render_content(x), causing vision decoders to predict <|end_of_text|> at token 0.
+        // Match llama.cpp's canonical LLM_CHAT_TEMPLATE_GRANITE_4_0.
+        if (_architecture is "granite")
+            return RenderGranite(messages, addGenerationPrompt);
+
         if (_template != null)
         {
             var msgList = messages
@@ -229,6 +236,17 @@ public sealed class ChatTemplateRenderer
         object? tools = null,
         bool addGenerationPrompt = true)
     {
+        if (_architecture is "granite")
+        {
+            var simpleGranite = messages
+                .Select(m => (
+                    role:    m.TryGetValue("role",    out var r) ? (r as string ?? "") : "",
+                    content: m.TryGetValue("content", out var c) ? (c as string ?? "") : ""
+                ))
+                .ToList();
+            return RenderGranite(simpleGranite, addGenerationPrompt);
+        }
+
         if (_template != null)
         {
             var msgList = messages.Cast<object?>().ToList();
@@ -248,6 +266,18 @@ public sealed class ChatTemplateRenderer
             ))
             .ToList();
         return RenderFallback(simple, _architecture, addGenerationPrompt);
+    }
+
+    private static string RenderGranite(
+        IReadOnlyList<(string role, string content)> messages,
+        bool addGenerationPrompt = true)
+    {
+        var sb = new StringBuilder();
+        foreach (var (role, content) in messages)
+            sb.Append($"<|start_of_role|>{role}<|end_of_role|>{content}<|end_of_text|>\n");
+        if (addGenerationPrompt)
+            sb.Append("<|start_of_role|>assistant<|end_of_role|>");
+        return sb.ToString();
     }
 
     private static string RenderFallback(
@@ -272,6 +302,10 @@ public sealed class ChatTemplateRenderer
                 sb.Append($"<|start_header_id|>{role}<|end_header_id|>\n\n{content}<|eot_id|>");
             if (addGenerationPrompt)
                 sb.Append("<|start_header_id|>assistant<|end_header_id|>\n\n");
+        }
+        else if (arch is "granite")
+        {
+            return RenderGranite(messages, addGenerationPrompt);
         }
         else
         {
