@@ -29,20 +29,22 @@ implementation gap. See the [verification receipt](../done/16-iq-formats-coverag
 
 ## Tracked items
 
-- [ ] **01. Real-weight landscape sweep rerun (`docs/103-quickest-first-plan.md` item 2): 649 classes resumed/run, several new real failures found** (2026-09-28, `scripts/sweep-tests.ps1`, default `-Suites Diffusion,Audio,Vision,ForwardPass`).
+- [x] **01. Real-weight landscape sweep rerun (`docs/103-quickest-first-plan.md` item 2): 649 classes resumed/run; all 22 historical failed class entries now have current dispositions** (2026-09-28 sweep, triage completed 2026-09-30). **Collective plan:** [01 real-weight landscape sweep rerun and failure triage](01-real-weight-landscape-sweep-rerun-plan.md). Closure means every historical red is accounted for; it does not mean every independent correctness investigation is resolved. The detailed matrix records fixed/stale/verified results, item-02/item-07 duplicates, two checkpoint blockers, and deferred reproducible defects.
   - **Caveat on the sweep's own memory data:** the harness resumes from `%TEMP%\stingray-sweep\state.jsonl` and skips any class already marked "done" — the PersonaPlex entries in that file were timestamped `17:57` the same day, from *before* the zero-copy-Q8 fix (see PersonaPlex 7B entry below) landed later in the session, so this run did not re-execute or re-verify them. Its "Top 10 by peak memory" list is stale pre-fix data, not a regression. The PersonaPlex 7B entry's own numbers (11.17 GiB, ~301ms/decode-step) are the current, real ones, independently re-verified by direct class runs, not by this sweep.
   - [x] **Wan layout test failures:** four tests assumed encoder and decoder share one patch-channel order. Updated them to check the Conv3D channel-outer packing and Linear spatial-outer unpacking independently. All four pass; model code is unchanged.
-  - [x] **FunASR model lookup:** Paraformer-specific tests now resolve `models/_models/paraformer-q8.gguf`; Nano-specific tests retain the root Nano checkpoint path.
-  - [ ] **FunASR Nano decoder golden:** confirmed the failing test loads the root Nano GGUF (not the Paraformer asset). Reproduced output `[33108,33108,33108,33108,33108]` vs expected `[56568,1773,151645]`; the text-only diagnostic repeats the same token, so the failure is in the text LLM path rather than audio conditioning. Disabling Q8 prefill does not change it. The remaining scope is GGUF tensor-source/ForwardPass wiring or a checkpoint/reference mismatch; see the detailed 2026-09-06 isolation in `docs/done/audio-review-old-progress-DO-NOT-BOTHER-READING.md`.
-  - [ ] **FunASR real-speech transcript:** Paraformer still returns an empty transcript for `docs/audio-samples/paraformer-zh-test-0.wav`; the correct 237 MB Paraformer checkpoint is absent, so real-audio diagnosis remains blocked on that asset.
+  - [x] **FunASR model identity/lookup:** added architecture-validated Nano (`audiocpp`, `general.name` prefix `Fun-ASR-Nano-2512`) and Paraformer (`paraformer`, `pf.vocab`) checkpoint discovery and applied it to real-weight tests. Both local GGUFs were selected by metadata; Paraformer inspection and Nano encoder golden tests pass. See the collective plan.
+  - [x] **FunASR synthetic-tone smoke assertion:** the Paraformer test now checks result structure, language, and duration instead of requiring a segment from a pure tone, which produced no segments with real weights.
+  - [ ] **FunASR Nano decoder golden (deferred):** current verified-Nano run emits `[33108,33108,33108,33108,33108]` vs expected `[56568,1773,151645]`; the text-only diagnostic repeats the same token. First-divergence layer/stat capture remains open; see the detailed 2026-09-06 isolation in `docs/done/audio-review-old-progress-DO-NOT-BOTHER-READING.md` and the collective plan.
+  - [ ] **FunASR real-speech transcript (item 07):** the verified Paraformer GGUF and WAV are present. The GGUF returns empty text while the ONNX real-weight path recognizes speech. Stage-by-stage comparison remains in [item 07](07-funasr-gguf-paraformer-real-speech-plan.md); the synthetic-tone test is not ASR evidence.
   - [x] **Qwen ASR smoke test:** the fixture supplies a synthetic tone, not speech, so an empty transcript and segment list are valid. Updated it to assert result structure and duration. Real-speech behavior remains unverified.
-  - [ ] **MeloTTS fixture integrity:** `MeloTTS ONNX model file must be > 50MB`; the checkpoint in this workspace appears incomplete. Verify with a complete model.
-  - [ ] **Parler decoder parity:** cosine `0.9896934984794502` falls below the golden threshold; determine whether this is a model/math issue or a stale/tight oracle. Required weights are absent here.
-  - [ ] **Qwen TTS Code Predictor:** real-weight forward pass produced non-finite logits. The required checkpoint is absent here.
-  - [ ] **Exaone4 vision embedder parity:** minimum per-token cosine `0.825`; investigate against the reference. Required model/fixture is absent here.
-  - [ ] **Llava vision embedder parity:** minimum per-token cosine `-0.21`; investigate the severe mismatch against the reference. Required model/fixture is absent here.
-  - [ ] **MimoVL vision embedder parity:** minimum per-token cosine `0.249`; investigate against the reference. Required model/fixture is absent here.
-  - [ ] **Qwen2.5-VL vision embedder parity:** minimum per-token cosine `0.283`; investigate against the reference. Required model/fixture is absent here.
+  - [x] **MeloTTS fixture integrity:** the complete `_models/melotts-zh_en.onnx` checkpoint is 170,429,550 bytes and loads/generates successfully. The test now skips the empty root placeholder and finds the real checkpoint; hash and direct-run result are in the collective plan.
+  - [ ] **Parler decoder parity (deferred):** verified checkpoint reproduces Q8 cosine `0.9896934984794502` against the existing `>0.99` gate. An F32 control now produces NaN in the FFN/GELU, so quantization is not yet isolated and the threshold remains unchanged; details in the collective plan.
+  - [x] **Qwen TTS Code Predictor historical red:** non-finite output does not reproduce with the identity-checked `_models` Talker checkpoint; current class passes 1/1. See the collective plan for path/hash.
+  - [ ] **Exaone4 vision embedder parity (asset-blocked):** NumPy fixture minimum per-token cosine `0.825`; matching EXAONE-4.5-33B main checkpoint is absent. The available MTMD aggregate gate is recorded in the plan; real-input preprocessing cannot be reconciled here.
+  - [ ] **Llava vision embedder parity (asset-blocked):** NumPy fixture minimum per-token cosine `-0.21`; matching LLaVA 1.5 7B main checkpoint is absent. The available LLaVA 3 model is not a substitute.
+  - [ ] **MimoVL vision embedder parity (deferred):** NumPy fixture minimum per-token cosine `0.249`; current C# aggregate agrees with a fresh MTMD reference within the existing gate. Per-token and real-input preprocessing reconciliation remains open.
+  - [ ] **Qwen2.5-VL vision embedder parity (deferred):** NumPy fixture minimum per-token cosine `0.283`; current C# aggregate agrees with a fresh MTMD reference within the existing gate. Per-token and real-input preprocessing reconciliation remains open.
+  - [x] **Continuous batching historical mismatch:** the exact method was `PrefillWithCache_DequantCacheOnOff_BitIdentical`, and belongs to item 02. Current class passes 12/12 after fixing async test mutex ownership; historical/current evidence is in the collective plan.
   - [x] **Exaone45 long-prompt parity fixture:** corrected stale expected token count from `196` to `157`; verified with llama.cpp tokenizer and reran long-prompt generation parity successfully (2026-09-30).
   - [x] **Dequant-cache prefill parity:** fixed by disabling the F32 diversion that changed inference math. The exact cache-on/off regression passes with OpenBLAS loaded; see item 02 for the related prefill/decode failure.
   - **Already tracked separately:** `FishSpeechCodecTests`/`FishSpeechFastArTests` (see the Fish Speech entry below). Full sweep logs/XML remain under `%TEMP%\stingray-sweep\logs\<Suite>\<Class>.log`.
@@ -137,11 +139,17 @@ implementation gap. See the [verification receipt](../done/16-iq-formats-coverag
   n = 1..64). Dense LFM2 1.2B and Granite hybrids agree per-token vs batched within 0.1-0.5%, so the 9% spread is specific
   to this model. Next step: follow [12-LFM2-MoE batched/per-token parity plan](12-lfm2moe-batched-per-token-parity-plan.md) for
   matched-token evaluation, per-layer/router/expert/state localization, the minimal fix, regression tests, and allowlist admission only after parity.
-- [ ] **13. Granite 4.0-H small (MoE) +1.2% PPL vs llama.cpp** (logged 2026-09-28, docs/103 item 13): `granite-4.0-h-small-Q2_K`,
-  wikitext -c 2048 `[1024,+)` 26.4155 (batched) / 26.5483 (per token) vs `llama-perplexity --chunks 1` 26.1080; at -c 512
-  9.3505 vs 9.4103 (ours lower). The large error (157) was missing top-k renormalisation, fixed. Not yet bisected; Q2_K
-  only locally (a Q4 file would separate quantisation noise from a real difference).
-  - **Plan:** [13-Granite 4.0-H small MoE PPL parity](13-granite4-h-small-moe-ppl-parity-plan.md) — freezes the comparable PPL baseline, validates metadata, localizes Mamba-2/MoE/quantization effects, and records the correctness receipt without reopening admission.
+- [ ] **13. Granite 4.0-H small (MoE) PPL parity** (logged 2026-09-28, docs/103 item 13): `granite-4.0-h-small-Q2_K`,
+  wikitext -c 2048 `[1024,+)` 26.4155 (old Q8 batched default) / 26.5483 (per token) vs
+  `llama-perplexity --chunks 1` 26.1080; at -c 512 9.3505 vs 9.4103 (ours lower). The large error (157) was missing
+  top-k renormalisation, fixed. Investigation found Q8 activation quantization in the batched MoE expert-down path caused
+  all batched/per-token NLL differences; batched MoE now defaults to the exact path and matches per-token NLL. The
+  remaining reference gap and Q2_K-only local coverage remain open.
+  - **Part 1 — parity:** [13-Granite 4.0-H small MoE PPL parity](13-granite4-h-small-moe-ppl-parity-plan.md) — verify the
+    default change, compare against llama.cpp, and add the same-model Q4_K_M receipt when available.
+  - **Part 2 — MoE Q8 evaluation:** Measure batched MoE Q8 quality and throughput on Granite 4 H Small and representative
+    MoE models, compare identical per-token NLL/logit outputs and corpus PPL, then decide whether any model/weight-dtype
+    cases justify opting in. `STINGRAY_MOE_PREFILL_Q8=1` is an explicit experiment switch; exact parity remains the default.
 - [ ] **14. Qwen3-VL / Qwen2.5-VL / PaddleOCR image input: CUDA and Vulkan hybrid still lack it** (logged 2026-09-27, docs/103 item 14).
   - **Plan:** [14-Qwen VL GPU image-input parity](14-qwenvl-gpu-image-input-parity-plan.md) — verifies full Vulkan per model, adds CUDA M-RoPE/deepstack and Vulkan layer-split support, and gates CLI routing on forward-pass capability.
   - 2026-09-28: full Vulkan offload (`GpuForwardPass`) now applies per-pair M-RoPE positions and deepstack, which also covers

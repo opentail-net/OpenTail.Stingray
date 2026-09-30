@@ -464,12 +464,11 @@ public sealed unsafe partial class ForwardPass
     /// sequential paths would not merely round differently, they would run different experts.
     /// The router is ~0.3% of this FFN's MACs, so there is nothing to win by risking that.</para>
     ///
-    /// <para>The expert GEMMs do take the int8 batched path (<c>allowQ8: true</c>) — the same one
-    /// the dense batched prefill has used since the Q8-prefill ship, and admissible for the same
-    /// reason: the rows are positions within one prompt. That is the only source of divergence
-    /// from the sequential F32 trunk — the same class the dense batched path already carries.
-    /// With <c>Q8PrefillEnabled</c> off this path is bit-identical to sequential, which
-    /// MoeBatchedPrefillParityTests pins.</para>
+    /// <para>The expert GEMMs use the exact F32 batched path by default. The Q8 approximation can
+    /// be explicitly enabled with <c>STINGRAY_MOE_PREFILL_Q8=1</c> (and the global
+    /// <c>STINGRAY_CPU_PREFILL_Q8</c> gate on) for a measured speed/quality comparison. Granite
+    /// 4 H Small demonstrated that Q8 changes the MoE output and corpus NLL, so its parity impact
+    /// is tracked separately in bugstofix item 13 part 2.</para>
     /// </summary>
     private void MoeFfnBatched(int layer, float* batchNorm, float* batchOut, int n)
     {

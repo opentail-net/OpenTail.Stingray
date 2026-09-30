@@ -17,9 +17,9 @@ public sealed class QwenTtsCodePredictorForwardPassTests : HeavyTestBase
         for (int i = 0; i < 8; i++)
         {
             var p = Path.Combine(dir, "models", fileName);
-            if (File.Exists(p)) return p;
+            if (File.Exists(p) && new FileInfo(p).Length > 50L * 1024 * 1024) return p;
             var pNested = Path.Combine(dir, "models", "_models", fileName);
-            if (File.Exists(pNested)) return pNested;
+            if (File.Exists(pNested) && new FileInfo(pNested).Length > 50L * 1024 * 1024) return pNested;
             var parent = Directory.GetParent(dir);
             if (parent is null) break;
             dir = parent.FullName;
@@ -34,6 +34,12 @@ public sealed class QwenTtsCodePredictorForwardPassTests : HeavyTestBase
         Assert.SkipUnless(modelPath != null, "models/qwen-talker-0.6b-base-Q8_0.gguf not found");
 
         using var model = GgufModel.Open(modelPath!);
+        string architecture = model.Metadata.TryGetValue("general.architecture", out var architectureValue)
+            ? Convert.ToString(architectureValue) ?? "<missing>" : "<missing>";
+        string name = model.Metadata.TryGetValue("general.name", out var nameValue)
+            ? Convert.ToString(nameValue) ?? "<missing>" : "<missing>";
+        Console.WriteLine($"[QwenTtsCodePredictor] path={modelPath} bytes={new FileInfo(modelPath!).Length} architecture={architecture} name={name}");
+        Assert.Contains("Qwen3-TTS", name, StringComparison.OrdinalIgnoreCase);
         var tensorSource = new QwenTtsCodePredictorTensorSource(model, numLayers: 5);
         var hp = ModelHyperparams.FromGgufMetadata(tensorSource.Metadata, tensorSource);
 

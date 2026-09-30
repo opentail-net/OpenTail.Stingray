@@ -41,8 +41,8 @@ public sealed class FunAsrNanoDecoderGoldenTests : HeavyTestBase
     [Fact]
     public void Decode_RealAudioEmbeddingsFromFixture_MatchesRealGreedyTokenIds()
     {
-        string? modelPath = FindRepoFile("models/paraformer-q8.gguf");
-        Assert.SkipUnless(modelPath != null, "models/paraformer-q8.gguf not found");
+        string? modelPath = FunAsrGgufTestModelLocator.FindNanoModelPath();
+        Assert.SkipUnless(modelPath != null, "Fun-ASR-Nano-2512 GGUF (architecture=audiocpp) not found");
         string? jsonPath = FindRepoFile("examples/audio.cpp/tests/fun_asr_nano/decoder_reference.json");
         string? binPath = FindRepoFile("examples/audio.cpp/tests/fun_asr_nano/decoder_reference.bin");
         Assert.SkipUnless(jsonPath != null && binPath != null, "decoder_reference.{json,bin} not found");

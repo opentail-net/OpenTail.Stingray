@@ -65,6 +65,12 @@ public sealed class ParlerDecoderWeights
     public float[][] LmHeads { get; } = new float[NumCodebooks][];
 
     public ParlerDecoderWeights(SafetensorsLoader loader)
+        : this(loader, quantizeLargeMatricesToQ8: true)
+    {
+    }
+
+    /// <summary>Loads the safetensors checkpoint with an optional F32 control for decoder parity diagnostics.</summary>
+    public ParlerDecoderWeights(SafetensorsLoader loader, bool quantizeLargeMatricesToQ8)
     {
         for (int cb = 0; cb < NumCodebooks; cb++)
         {
@@ -86,25 +92,31 @@ public sealed class ParlerDecoderWeights
             string p = $"decoder.model.decoder.layers.{i}";
             Layers[i] = new ParlerDecoderLayerWeights
             {
-                SelfAttnQWeight = Q8_0WeightQuantizer.QuantizeRef(loader.ReadF32($"{p}.self_attn.q_proj.weight"), HiddenDim, HiddenDim),
-                SelfAttnKWeight = Q8_0WeightQuantizer.QuantizeRef(loader.ReadF32($"{p}.self_attn.k_proj.weight"), HiddenDim, HiddenDim),
-                SelfAttnVWeight = Q8_0WeightQuantizer.QuantizeRef(loader.ReadF32($"{p}.self_attn.v_proj.weight"), HiddenDim, HiddenDim),
-                SelfAttnOutWeight = Q8_0WeightQuantizer.QuantizeRef(loader.ReadF32($"{p}.self_attn.out_proj.weight"), HiddenDim, HiddenDim),
+                SelfAttnQWeight = LoadMatrix(loader, $"{p}.self_attn.q_proj.weight", HiddenDim, HiddenDim, quantizeLargeMatricesToQ8),
+                SelfAttnKWeight = LoadMatrix(loader, $"{p}.self_attn.k_proj.weight", HiddenDim, HiddenDim, quantizeLargeMatricesToQ8),
+                SelfAttnVWeight = LoadMatrix(loader, $"{p}.self_attn.v_proj.weight", HiddenDim, HiddenDim, quantizeLargeMatricesToQ8),
+                SelfAttnOutWeight = LoadMatrix(loader, $"{p}.self_attn.out_proj.weight", HiddenDim, HiddenDim, quantizeLargeMatricesToQ8),
                 SelfAttnLayerNormWeight = loader.ReadF32($"{p}.self_attn_layer_norm.weight"),
                 SelfAttnLayerNormBias = loader.ReadF32($"{p}.self_attn_layer_norm.bias"),
-                CrossAttnQWeight = Q8_0WeightQuantizer.QuantizeRef(loader.ReadF32($"{p}.encoder_attn.q_proj.weight"), HiddenDim, HiddenDim),
-                CrossAttnKWeight = Q8_0WeightQuantizer.QuantizeRef(loader.ReadF32($"{p}.encoder_attn.k_proj.weight"), HiddenDim, HiddenDim),
-                CrossAttnVWeight = Q8_0WeightQuantizer.QuantizeRef(loader.ReadF32($"{p}.encoder_attn.v_proj.weight"), HiddenDim, HiddenDim),
-                CrossAttnOutWeight = Q8_0WeightQuantizer.QuantizeRef(loader.ReadF32($"{p}.encoder_attn.out_proj.weight"), HiddenDim, HiddenDim),
+                CrossAttnQWeight = LoadMatrix(loader, $"{p}.encoder_attn.q_proj.weight", HiddenDim, HiddenDim, quantizeLargeMatricesToQ8),
+                CrossAttnKWeight = LoadMatrix(loader, $"{p}.encoder_attn.k_proj.weight", HiddenDim, HiddenDim, quantizeLargeMatricesToQ8),
+                CrossAttnVWeight = LoadMatrix(loader, $"{p}.encoder_attn.v_proj.weight", HiddenDim, HiddenDim, quantizeLargeMatricesToQ8),
+                CrossAttnOutWeight = LoadMatrix(loader, $"{p}.encoder_attn.out_proj.weight", HiddenDim, HiddenDim, quantizeLargeMatricesToQ8),
                 CrossAttnLayerNormWeight = loader.ReadF32($"{p}.encoder_attn_layer_norm.weight"),
                 CrossAttnLayerNormBias = loader.ReadF32($"{p}.encoder_attn_layer_norm.bias"),
-                Fc1Weight = Q8_0WeightQuantizer.QuantizeRef(loader.ReadF32($"{p}.fc1.weight"), FfnDim, HiddenDim),
-                Fc2Weight = Q8_0WeightQuantizer.QuantizeRef(loader.ReadF32($"{p}.fc2.weight"), HiddenDim, FfnDim),
+                Fc1Weight = LoadMatrix(loader, $"{p}.fc1.weight", FfnDim, HiddenDim, quantizeLargeMatricesToQ8),
+                Fc2Weight = LoadMatrix(loader, $"{p}.fc2.weight", HiddenDim, FfnDim, quantizeLargeMatricesToQ8),
                 FinalLayerNormWeight = loader.ReadF32($"{p}.final_layer_norm.weight"),
                 FinalLayerNormBias = loader.ReadF32($"{p}.final_layer_norm.bias"),
             };
         }
     }
+
+    private static IQuantWeightRef LoadMatrix(SafetensorsLoader loader, string name, int rows, int columns,
+        bool quantizeToQ8) =>
+        quantizeToQ8
+            ? Q8_0WeightQuantizer.QuantizeRef(loader.ReadF32(name), rows, columns)
+            : new F32WeightRef(loader.ReadF32(name));
 
     /// <summary>
     /// Real GGUF loader, for the community `ecyht2/parler-tts-mini-v1-GGUF` conversion of the

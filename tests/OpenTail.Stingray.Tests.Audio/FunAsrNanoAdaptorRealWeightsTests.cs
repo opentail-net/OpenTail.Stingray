@@ -23,8 +23,8 @@ public sealed class FunAsrNanoAdaptorRealWeightsTests : HeavyTestBase
     [Fact]
     public void Forward_RealCheckpoint_RealAudio_ProducesFiniteNonDegenerateOutput()
     {
-        string? modelPath = FindRepoFile("models/paraformer-q8.gguf");
-        Assert.SkipUnless(modelPath != null, "models/paraformer-q8.gguf not found");
+        string? modelPath = FunAsrGgufTestModelLocator.FindNanoModelPath();
+        Assert.SkipUnless(modelPath != null, "Fun-ASR-Nano-2512 GGUF (architecture=audiocpp) not found");
         string? audioPath = FindRepoFile("examples/audio.cpp/assets/resources/a.wav");
         Assert.SkipUnless(audioPath != null, "reference a.wav not found");
 

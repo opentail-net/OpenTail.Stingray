@@ -43,8 +43,8 @@ public sealed class FunAsrNanoEndToEndTests : HeavyTestBase
     [Fact]
     public void Transcribe_RealAudio_RealWeights_ProducesNonDegenerateText()
     {
-        string? modelPath = FindRepoFile("models/paraformer-q8.gguf");
-        Assert.SkipUnless(modelPath != null, "models/paraformer-q8.gguf not found");
+        string? modelPath = FunAsrGgufTestModelLocator.FindNanoModelPath();
+        Assert.SkipUnless(modelPath != null, "Fun-ASR-Nano-2512 GGUF (architecture=audiocpp) not found");
         string? audioPath = FindRepoFile("examples/audio.cpp/assets/resources/a.wav");
         Assert.SkipUnless(audioPath != null, "reference a.wav not found");
         string? tokenizerDir = FindRepoDir("models/_models/fun-asr-nano-hf-tokenizer");

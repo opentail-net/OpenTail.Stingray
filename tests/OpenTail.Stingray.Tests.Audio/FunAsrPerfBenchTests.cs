@@ -1,4 +1,6 @@
 
+using OpenTail.Stingray.Tests.Audio;
+
 namespace OpenTail.Stingray.Tests.Audio.Fast;
 
 /// <summary>TEMPORARY, throwaway A/B timing bench for the encoder/decoder parallelization pass -- not part of the permanent suite, delete after use.</summary>
@@ -7,8 +9,8 @@ public sealed class FunAsrPerfBenchTests : HeavyTestBase
     [Fact]
     public void Bench_Transcribe_LongerAudio()
     {
-        string? modelPath = FindModelPath("_models/paraformer-q8.gguf");
-        Assert.SkipUnless(modelPath != null, "models/_models/paraformer-q8.gguf not found");
+        string? modelPath = FunAsrGgufTestModelLocator.FindParaformerModelPath();
+        Assert.SkipUnless(modelPath != null, "Paraformer GGUF (architecture=paraformer, pf.vocab present) not found");
 
         using var pipeline = FunAsrPipeline.Load(modelPath!);
 
@@ -40,21 +42,5 @@ public sealed class FunAsrPerfBenchTests : HeavyTestBase
                      $"samples_ms=[{string.Join(", ", Array.ConvertAll(times, t => t.ToString("F1")))}]\n" +
                      $"mean_ms={mean:F2} median_ms={times[n / 2]:F2}\n";
         File.WriteAllText(Path.Combine(Path.GetTempPath(), "funasr_bench_result.txt"), report);
-    }
-
-    private static string? FindModelPath(string fileName)
-    {
-        var dir = Directory.GetCurrentDirectory();
-        for (int i = 0; i < 8; i++)
-        {
-            var p = Path.Combine(dir, "models", fileName);
-            if (File.Exists(p)) return p;
-            var pNested = Path.Combine(dir, "models", "_models", fileName);
-            if (File.Exists(pNested)) return pNested;
-            var parent = Directory.GetParent(dir);
-            if (parent is null) break;
-            dir = parent.FullName;
-        }
-        return null;
     }
 }

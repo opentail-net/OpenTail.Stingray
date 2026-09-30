@@ -40,6 +40,48 @@ top-k-renormalization work unless the evidence localizes the remaining discrepan
 The goal is to explain the remaining PPL difference, not to force the number to match by loosening
 tolerances or changing numerics blindly.
 
+## Investigation log — batched-path isolation (2026-09-30)
+
+Reproduced the Q2_K `-c 2048` per-token and batched runs on the same `wiki.test.raw` input. The
+per-token run scored 2,047 targets with mean NLL 2.820555 (PPL 16.7862); its `[1024,+)` bucket was
+26.5483. The default batched run's `[1024,+)` bucket was 26.4155, matching the historical result
+above. The batched/per-token NLL dumps have the same target IDs, but all 2,047 NLL values differ;
+their mean absolute difference is 0.190758 and the maximum is 4.772240. The near-equal overall
+means therefore hide substantial per-position changes.
+
+Two environment-switch controls also matched the per-token NLL dump exactly at all 2,047 positions:
+
+- `STINGRAY_RECURRENT_BATCHED_PREFILL=0` with `--batched`;
+- `STINGRAY_MOE_BATCHED_PREFILL=0` with `--batched`.
+
+These controls do **not** isolate the corresponding component. In `ForwardPass.PrefillDispatch`,
+disabling recurrent batched prefill selects the whole per-token loop. Disabling MoE batched prefill
+makes the MoE configuration unsupported for the batched trunk and also selects the whole per-token
+loop. These controls alone only established that the divergence was in the combined batched trunk;
+the follow-up captures below isolate the first divergent subpath.
+
+Follow-up isolation completed the layer and precision boundary:
+
+- At layer 0, batched and per-token Mamba `o_proj` outputs matched exactly for every one of the
+  first 32 tokens. The FFN norm inputs also matched exactly, while the MoE FFN outputs differed at
+  every element (maximum absolute difference 0.100301). The first divergence is therefore inside
+  the batched MoE FFN, after its router input; it is not Mamba-2 recurrence.
+- With `STINGRAY_CPU_PREFILL_Q8=0` and the batched trunk still enabled, layer-0 MoE FFN outputs
+  matched the per-token path exactly for the same 32 tokens.
+- On the full 2,047-target run, disabling Q8 prefill made every batched NLL exactly equal to the
+  per-token NLL. The `[1024,+)` PPL became 26.5483. Default Q8 batched execution remains 26.4155;
+  llama.cpp is 26.1080. Thus Q8 activation quantization fully explains the batched/per-token delta,
+  but disabling it moves this metric farther from llama.cpp, so this evidence alone does not justify
+  changing the default Q8 path.
+- For the first 255 targets, chunk widths 16 and 256 produced bit-identical NLLs. Raising
+  `STINGRAY_MIN_BATCH_BLAS` to 999999 also produced bit-identical NLLs to default batched execution.
+  The observed difference is not a chunk-boundary effect and does not depend on OpenBLAS.
+
+The engine/reference gap must still be assessed against activation and weight quantization. Following
+the exact-parity result, batched MoE now keeps Q8 disabled by default; `STINGRAY_MOE_PREFILL_Q8=1`
+opts into the approximation for follow-up measurements (and still requires the global CPU Q8 gate).
+The broad MoE-specific Q8 speed/quality matrix is tracked as part 2 of bugstofix item 13.
+
 ## Goals
 
 1. Establish an apples-to-apples PPL comparison.

@@ -34,8 +34,8 @@ public sealed class FunAsrWeightsTests : HeavyTestBase
     [Fact]
     public void Weights_LoadRealTensors_ExpectedRealShapesAndCounts()
     {
-        string? path = FindRepoFile("models/_models/paraformer-q8.gguf");
-        Assert.SkipUnless(path != null, "models/_models/paraformer-q8.gguf not found");
+        string? path = FunAsrGgufTestModelLocator.FindParaformerModelPath();
+        Assert.SkipUnless(path != null, "Paraformer GGUF (architecture=paraformer, pf.vocab present) not found");
 
         using var w = new FunAsrWeights(path!);
 
@@ -99,8 +99,8 @@ public sealed class FunAsrWeightsTests : HeavyTestBase
     [Fact]
     public void Vocab_RealTokens_MatchDirectlyInspectedValues()
     {
-        string? path = FindRepoFile("models/_models/paraformer-q8.gguf");
-        Assert.SkipUnless(path != null, "models/_models/paraformer-q8.gguf not found");
+        string? path = FunAsrGgufTestModelLocator.FindParaformerModelPath();
+        Assert.SkipUnless(path != null, "Paraformer GGUF (architecture=paraformer, pf.vocab present) not found");
 
         using var w = new FunAsrWeights(path!);
 
@@ -116,8 +116,8 @@ public sealed class FunAsrWeightsTests : HeavyTestBase
     [Fact]
     public void Tokenizer_Decode_RealVocab_JoinsCjkAndBpeContinuationsCorrectly()
     {
-        string? path = FindRepoFile("models/_models/paraformer-q8.gguf");
-        Assert.SkipUnless(path != null, "models/_models/paraformer-q8.gguf not found");
+        string? path = FunAsrGgufTestModelLocator.FindParaformerModelPath();
+        Assert.SkipUnless(path != null, "Paraformer GGUF (architecture=paraformer, pf.vocab present) not found");
 
         using var w = new FunAsrWeights(path!);
         var tokenizer = new FunAsrTokenizer(w);

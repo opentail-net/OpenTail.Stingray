@@ -39,8 +39,8 @@ public sealed class FunAsrEncoderTests : HeavyTestBase
     [Fact]
     public void Forward_RealWeights_MatchesGoldenEncoderOutput()
     {
-        string? modelPath = FindRepoFile("models/_models/paraformer-q8.gguf");
-        Assert.SkipUnless(modelPath != null, "models/_models/paraformer-q8.gguf not found");
+        string? modelPath = FunAsrGgufTestModelLocator.FindParaformerModelPath();
+        Assert.SkipUnless(modelPath != null, "Paraformer GGUF (architecture=paraformer, pf.vocab present) not found");
         string? inPath = FindRepoFile("scratch-llamacpp-ref/funasr_golden_encoder_input.txt");
         string? outPath = FindRepoFile("scratch-llamacpp-ref/funasr_golden_encoder_output.txt");
         Assert.SkipUnless(inPath != null && outPath != null, "golden encoder input/output not found (re-run scratch-llamacpp-ref/funasr_golden_encoder.py)");

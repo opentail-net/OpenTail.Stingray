@@ -17,6 +17,11 @@ namespace OpenTail.Stingray.Engine;
 /// </summary>
 internal static unsafe class MoeBatchedExperts
 {
+    // Exact batched/per-token parity is the default. Re-enable this approximation only for an
+    // explicit MoE-Q8 investigation; SimdKernels.Q8PrefillEnabled must also be on.
+    private static readonly bool s_q8PrefillEnabled =
+        Environment.GetEnvironmentVariable("STINGRAY_MOE_PREFILL_Q8") == "1";
+
     /// <param name="expStart">CSR offsets, <paramref name="numExperts"/> + 1 entries.</param>
     /// <param name="pairOf">Per bucket entry, the pair index <c>token * numActive + slot</c>.</param>
     /// <param name="inputScale">Optional per-pair scale applied to the gate and up rows before SiLU·mul (Llama-4 sigmoid
@@ -49,10 +54,16 @@ internal static unsafe class MoeBatchedExperts
                     new ReadOnlySpan<float>(normIn + (long)(pairOf[p0 + i] / numActive) * embDim, embDim)
                         .CopyTo(new Span<float>(gathered + (long)i * embDim, embDim));
 
+                // Q8 enables faster batched dot kernels for supported expert dtypes, but it is
+                // approximate: Granite 4 H Small Q2_K showed different PPL and token NLLs when its
+                // Q3_K expert-down projection used Q8. Keep this off by default for exact
+                // batched/per-token parity. Set STINGRAY_MOE_PREFILL_Q8=1 to measure the MoE
+                // speed/quality tradeoff (the general CPU prefill Q8 speed receipt is not MoE-
+                // specific; see docs/1-correctness/13-granite4-h-small-moe-ppl-parity-plan.md).
                 SimdKernels.MatMulBatched(gate, gateBase + (long)x * expertDim * bprGate, gathered,
-                    cnt, expertDim, embDim, gateDt, allowQ8: true);
+                    cnt, expertDim, embDim, gateDt, allowQ8: s_q8PrefillEnabled);
                 SimdKernels.MatMulBatched(up, upBase + (long)x * expertDim * bprUp, gathered,
-                    cnt, expertDim, embDim, upDt, allowQ8: true);
+                    cnt, expertDim, embDim, upDt, allowQ8: s_q8PrefillEnabled);
 
                 if (inputScale is not null)
                     for (int i = 0; i < cnt; i++)
@@ -65,7 +76,7 @@ internal static unsafe class MoeBatchedExperts
                 // The bucket's rows are contiguous, so one SiLuMul covers the whole batch.
                 SimdKernels.SiLuMul(gate, up, cnt * expertDim);
                 SimdKernels.MatMulBatched(down, downBase + (long)x * embDim * bprDown, gate,
-                    cnt, embDim, expertDim, downDt, allowQ8: true);
+                    cnt, embDim, expertDim, downDt, allowQ8: s_q8PrefillEnabled);
 
                 for (int i = 0; i < cnt; i++)
                     new ReadOnlySpan<float>(down + (long)i * embDim, embDim)

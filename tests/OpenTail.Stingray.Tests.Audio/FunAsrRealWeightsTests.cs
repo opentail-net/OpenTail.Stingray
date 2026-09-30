@@ -1,4 +1,3 @@
-
 namespace OpenTail.Stingray.Tests.Audio.Fast;
 
 public sealed class FunAsrRealWeightsTests : HeavyTestBase
@@ -31,14 +30,13 @@ public sealed class FunAsrRealWeightsTests : HeavyTestBase
     }
 
     [Fact]
-    public void Paraformer_GgufRealModelFile_LoadsAndTranscribes()
+    public void Paraformer_GgufRealModelFile_HandlesSyntheticNonSpeechAudio()
     {
-        string? modelPath = FindModelPath("paraformer-q8.gguf");
-        if (modelPath is null) Assert.Skip("modelPath not found (checkpoint or fixture missing).");
+        string? modelPath = FunAsrGgufTestModelLocator.FindParaformerModelPath();
+        Assert.SkipUnless(modelPath is not null, "Paraformer GGUF (architecture=paraformer, pf.vocab present) not found.");
 
-        using var pipeline = FunAsrPipeline.Load(modelPath);
+        using var pipeline = FunAsrPipeline.Load(modelPath!);
         Assert.NotNull(pipeline);
-        Assert.Equal("Alibaba-FunASR-Nano", pipeline.Architecture);
 
         // Run transcription
         float[] audio = new float[16000 * 2];
@@ -54,17 +52,12 @@ public sealed class FunAsrRealWeightsTests : HeavyTestBase
             Language = "zh"
         });
 
-        // NOTE: this test's audio is a pure 440Hz sine tone, not real speech. The real
-        // Paraformer model (see docs/audio-review-progress.md's FunASR section -- all four
-        // stages now wired to real, golden-verified weights) can legitimately predict only
-        // special tokens (<blank>/<s>/</s>/<unk>, all stripped by FunAsrTokenizer.Decode) for
-        // non-speech audio, producing an empty transcript with a real (non-crashing, non-empty
-        // Segments) result -- this is plausible real-model behavior, not a bug, unlike the old
-        // fake pipeline which guaranteed non-empty placeholder text regardless of audio content.
-        // Only assert the pipeline runs end-to-end without crashing and returns a structurally
-        // valid result; do not assert non-empty text for non-speech input.
+        // A pure tone is not a speech-quality requirement. Real weights may emit only special
+        // tokens for this input, resulting in an empty transcript and no segments.
         Assert.NotNull(res);
-        Assert.NotEmpty(res.Segments);
+        Assert.Equal("zh", res.Language);
+        Assert.Equal(TimeSpan.FromSeconds(2), res.Duration);
+        Assert.NotNull(res.Segments);
     }
 
     [Fact]

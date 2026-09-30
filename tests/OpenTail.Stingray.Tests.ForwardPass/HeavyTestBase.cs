@@ -17,7 +17,8 @@ namespace OpenTail.Stingray.Tests.ForwardPass;
 public abstract class HeavyTestBase : IDisposable
 {
     private static readonly Mutex Gate = new(initiallyOwned: false, @"Global\OpenTailStingray.HeavyTests");
-    private bool _ownsGate;
+    private readonly ManualResetEventSlim _releaseGate = new(false);
+    private readonly Thread? _gateOwnerThread;
 
     protected HeavyTestBase()
     {
@@ -25,16 +26,37 @@ public abstract class HeavyTestBase : IDisposable
             Environment.GetEnvironmentVariable("STINGRAY_RUN_HEAVY_TESTS") == "1",
             "Heavy/serial suite skipped by default for fast local iteration. Set STINGRAY_RUN_HEAVY_TESTS=1 to run it.");
 
-        // Wait for any other heavy-test process (any suite) to finish before loading real weights.
-        // Abandoned-mutex is fine here — it just means a previous holder crashed/was killed; treat
-        // that as "the gate is free now" rather than propagating the exception.
-        try { _ownsGate = Gate.WaitOne(TimeSpan.FromHours(2)); }
-        catch (AbandonedMutexException) { _ownsGate = true; }
+        // A Mutex is thread-affine. Async test methods resume on another worker thread, so the
+        // test instance cannot release a mutex acquired on its constructor thread. Keep a small
+        // owner thread alive for the class lifetime and signal it from Dispose instead.
+        using var acquired = new ManualResetEventSlim(false);
+        _gateOwnerThread = new Thread(() =>
+        {
+            bool ownsGate;
+            // An abandoned mutex means the previous process died; this thread now owns it.
+            try { ownsGate = Gate.WaitOne(TimeSpan.FromHours(2)); }
+            catch (AbandonedMutexException) { ownsGate = true; }
+
+            acquired.Set();
+            if (!ownsGate)
+                return;
+
+            _releaseGate.Wait();
+            Gate.ReleaseMutex();
+        })
+        {
+            IsBackground = true,
+            Name = "OpenTail Stingray heavy-test gate owner",
+        };
+        _gateOwnerThread.Start();
+        acquired.Wait();
     }
 
     public virtual void Dispose()
     {
-        if (_ownsGate) { Gate.ReleaseMutex(); _ownsGate = false; }
+        _releaseGate.Set();
+        _gateOwnerThread?.Join();
+        _releaseGate.Dispose();
         GC.SuppressFinalize(this);
     }
 }

@@ -7,20 +7,32 @@ namespace OpenTail.Stingray.Tests.ForwardPass;
 /// </summary>
 public sealed class ContinuousBatchingTests : HeavyTestBase
 {
+    private static string? s_reportedModelPath;
+
     private static string? FindModelPath(string filename = "SmolLM2-1.7B-Instruct-Q4_K_M.gguf")
     {
         var dir = Directory.GetCurrentDirectory();
         for (int i = 0; i < 8; i++)
         {
             var candidate = Path.Combine(dir, "models", filename);
-            if (File.Exists(candidate)) return candidate;
+            if (File.Exists(candidate)) return ReportModelPath(candidate);
             var candidateNested = Path.Combine(dir, "models", "_models", filename);
-            if (File.Exists(candidateNested)) return candidateNested;
+            if (File.Exists(candidateNested)) return ReportModelPath(candidateNested);
             var parent = Directory.GetParent(dir);
             if (parent == null) break;
             dir = parent.FullName;
         }
         return null;
+    }
+
+    private static string ReportModelPath(string path)
+    {
+        if (!string.Equals(s_reportedModelPath, path, StringComparison.OrdinalIgnoreCase))
+        {
+            s_reportedModelPath = path;
+            Console.WriteLine($"[ContinuousBatchingFixture] path={path} bytes={new FileInfo(path).Length}");
+        }
+        return path;
     }
 
     // ── PrefillWithCache ──────────────────────────────────────────────

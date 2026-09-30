@@ -110,12 +110,14 @@ public sealed class GgufAudioAndEmbeddingRealWeightsTests
     [Fact]
     public void Paraformer_GGUF_RealModelFile_LoadsAndInspectsMetadata()
     {
-        string? modelPath = FindModelPath("paraformer-q8.gguf");
+        string? modelPath = FindModelPath("_models/paraformer-q8.gguf");
         if (modelPath is null) Assert.Skip("modelPath not found (checkpoint or fixture missing).");
 
         using var model = GgufModel.Open(modelPath);
         Assert.NotNull(model);
         Assert.True(model.Tensors.Count > 0, "Paraformer GGUF must contain tensors");
         Assert.True(model.Metadata.Count > 0, "Paraformer GGUF must contain metadata");
+        Assert.Equal("paraformer", Convert.ToString(model.Metadata["general.architecture"]));
+        Assert.True(model.Metadata.ContainsKey("pf.vocab"), "Paraformer GGUF must contain pf.vocab");
     }
 }

@@ -3,8 +3,7 @@ namespace OpenTail.Stingray.Tests.Audio;
 
 /// <summary>Real structural validation for the full Fun-ASR-Nano-2512 SAN-M encoder stack (stem +
 /// 49 main layers + norm + 20 timestamp-prediction layers + norm) against the real downloaded
-/// checkpoint (`models/paraformer-q8.gguf`, despite the filename this IS the current
-/// Fun-ASR-Nano-2512 architecture -- see docs/audio-review-progress.md) and real audio, reusing
+/// checkpoint validated as Fun-ASR-Nano-2512 by GGUF metadata and real audio, reusing
 /// the already-correct <see cref="FunAsrRealMelExtractor"/> frontend.</summary>
 public sealed class FunAsrNanoEncoderRealWeightsTests : HeavyTestBase
 {
@@ -25,8 +24,8 @@ public sealed class FunAsrNanoEncoderRealWeightsTests : HeavyTestBase
     [Fact]
     public void Forward_RealCheckpoint_RealAudio_ProducesFiniteNonDegenerateOutput()
     {
-        string? modelPath = FindRepoFile("models/paraformer-q8.gguf");
-        Assert.SkipUnless(modelPath != null, "models/paraformer-q8.gguf not found");
+        string? modelPath = FunAsrGgufTestModelLocator.FindNanoModelPath();
+        Assert.SkipUnless(modelPath != null, "Fun-ASR-Nano-2512 GGUF (architecture=audiocpp) not found");
         string? audioPath = FindRepoFile("examples/audio.cpp/assets/resources/a.wav");
         Assert.SkipUnless(audioPath != null, "reference a.wav not found");
 

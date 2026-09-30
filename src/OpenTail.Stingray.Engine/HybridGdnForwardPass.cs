@@ -2899,10 +2899,11 @@ public sealed unsafe class HybridGdnForwardPass : IForwardPass
     /// addition order matters; same reasoning as ForwardPass.MoeFfnBatched). (5) Shared expert batched over all tokens,
     /// scaled per token by sigmoid(ffn_gate_inp_shexp · x) as in qwen35moe.</para>
     ///
-    /// <para>The expert matmuls take the int8 batched path (<c>allowQ8: true</c>), as the dense and MoE batched prefill in
-    /// ForwardPass do: rows are positions of one prompt. That is the divergence from the per-token path (which is
-    /// itself already not bit-exact with the per-token GDN scan once chunked prefill is on); MTP models never reach
-    /// here because they keep the exact per-token scan.</para>
+    /// <para>The expert matmuls use the exact F32 batched path by default, matching
+    /// <see cref="ForwardPass.MoeFfnBatched"/>. Q8 activation quantization is available only as an explicit
+    /// <c>STINGRAY_MOE_PREFILL_Q8=1</c> experiment (also requires the global CPU Q8 gate); Granite 4 H Small showed
+    /// that it changes MoE outputs and corpus NLL. Its speed/quality tradeoff remains under investigation in
+    /// bugstofix item 13 part 2.</para>
     /// </summary>
     private void MoeFfnBatchedPrefill(int layer, float* normIn, float* hiddenOut, int n)
     {
