@@ -65,4 +65,13 @@ public sealed class RvcPackedTensorSource
             throw new InvalidDataException($"RVC packed GGUF missing required tensor '{realName}'.");
         return _model.GetTensorDataPtr(info);
     }
+
+    /// <summary>Copies the raw, un-dequantized on-disk tensor bytes (e.g. Q8_0) into an owned
+    /// byte array.</summary>
+    public byte[] GetRawBytes(string realName)
+    {
+        if (!_byRealName.TryGetValue(realName, out var info))
+            throw new InvalidDataException($"RVC packed GGUF missing required tensor '{realName}'.");
+        return _model.GetTensorData(info).ToArray();
+    }
 }

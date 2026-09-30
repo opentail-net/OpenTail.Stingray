@@ -112,16 +112,18 @@ public sealed class SttCommand : Command<SttCommand.Settings>
         }
         else if (variant.Contains("voxtral"))
         {
-            string? checkpointDir = ResolveVoxtralDir(s.ModelFile);
-            if (checkpointDir is null || !File.Exists(Path.Combine(checkpointDir, "model.safetensors")))
+            string? modelPath = ResolveVoxtralPath(s.ModelFile);
+            if (modelPath is null || (!File.Exists(modelPath) && !File.Exists(Path.Combine(modelPath, "model.safetensors"))))
             {
                 Console.Error.WriteLine(
-                    "Error: Voxtral checkpoint not found. Looked in models/_models/voxtral-mini-realtime and models/voxtral-mini-realtime. " +
-                    "Pass --model-file <path-to-voxtral-dir-or-model.safetensors>.");
+                    "Error: Voxtral checkpoint not found. Looked for Voxtral GGUF and SafeTensors in models/ and models/_models/. " +
+                    "Pass --model-file <path-to-voxtral-gguf, dir, or model.safetensors>.");
                 return 1;
             }
-            pipeline = VoxtralPipeline.Load(checkpointDir);
-            modelTitle = "Voxtral-Mini-4B-Realtime Native Speech-to-Text";
+            pipeline = VoxtralPipeline.Load(modelPath);
+            modelTitle = modelPath.EndsWith(".gguf", StringComparison.OrdinalIgnoreCase)
+                ? "Voxtral-Mini-4B-Realtime Native GGUF Speech-to-Text"
+                : "Voxtral-Mini-4B-Realtime Native Speech-to-Text";
         }
         else
         {
@@ -263,12 +265,18 @@ public sealed class SttCommand : Command<SttCommand.Settings>
         return null;
     }
 
-    private static string? ResolveVoxtralDir(string? modelFile)
+    private static string? ResolveVoxtralPath(string? modelFile)
     {
         if (!string.IsNullOrWhiteSpace(modelFile))
         {
             if (File.Exists(modelFile))
-                return Path.GetDirectoryName(Path.GetFullPath(modelFile));
+            {
+                if (modelFile.EndsWith(".gguf", StringComparison.OrdinalIgnoreCase))
+                    return Path.GetFullPath(modelFile);
+                if (modelFile.EndsWith(".safetensors", StringComparison.OrdinalIgnoreCase))
+                    return Path.GetDirectoryName(Path.GetFullPath(modelFile));
+                return Path.GetFullPath(modelFile);
+            }
             if (Directory.Exists(modelFile))
                 return Path.GetFullPath(modelFile);
         }
@@ -276,6 +284,12 @@ public sealed class SttCommand : Command<SttCommand.Settings>
         var dir = new DirectoryInfo(Directory.GetCurrentDirectory());
         for (int i = 0; i < 8 && dir is not null; i++)
         {
+            string gguf1 = Path.Combine(dir.FullName, "models", "Voxtral-Mini-4B-Realtime-2602-GGUF", "voxtral-mini-4b-realtime-2602-q8_0.gguf");
+            if (File.Exists(gguf1)) return gguf1;
+
+            string gguf2 = Path.Combine(dir.FullName, "models", "_models", "voxtral-mini-4b-realtime-2602-q8_0.gguf");
+            if (File.Exists(gguf2)) return gguf2;
+
             string candidate1 = Path.Combine(dir.FullName, "models", "_models", "voxtral-mini-realtime");
             if (Directory.Exists(candidate1) && File.Exists(Path.Combine(candidate1, "model.safetensors")))
                 return candidate1;

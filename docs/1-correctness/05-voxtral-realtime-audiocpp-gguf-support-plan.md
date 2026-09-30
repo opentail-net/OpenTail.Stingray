@@ -1,7 +1,7 @@
 # Plan: Voxtral Realtime audio.cpp GGUF support
 
 **Entry in:** `docs/1-correctness/bugstofix.md`, item **05** (Voxtral Realtime audio.cpp GGUF support).
-Found during the 2026-09-28 `RUNNING.md` verification.
+Found during the 2026-09-28 `RUNNING.md` verification. **Resolved 2026-09-30.**
 
 This is primarily a **Voxtral ASR format and entry-point coverage gap**, not a generic text-generation
 architecture-admission bug.

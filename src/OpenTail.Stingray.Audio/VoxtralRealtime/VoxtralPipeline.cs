@@ -37,20 +37,30 @@ public sealed class VoxtralPipeline : ISpeechToTextPipeline
     private readonly VoxtralTextDecoderWeights _textWeights;
     private readonly VoxtralMelExtractor _melExtractor;
     private readonly TekkenVocab _vocab;
+    private readonly IDisposable? _resource;
 
-    private VoxtralPipeline(VoxtralAudioEncoderWeights audioWeights, VoxtralTextDecoderWeights textWeights, TekkenVocab vocab)
+    private VoxtralPipeline(VoxtralAudioEncoderWeights audioWeights, VoxtralTextDecoderWeights textWeights, TekkenVocab vocab, IDisposable? resource = null)
     {
         _audioWeights = audioWeights;
         _textWeights = textWeights;
         _melExtractor = new VoxtralMelExtractor();
         _vocab = vocab;
+        _resource = resource;
     }
 
     /// <summary>Loads real weights from a checkpoint directory containing
     /// <c>model.safetensors</c> and <c>tekken.json</c> (the real Voxtral-Mini-4B-Realtime release
-    /// layout, e.g. <c>models/_models/voxtral-mini-realtime/</c>).</summary>
-    public static VoxtralPipeline Load(string checkpointDir)
+    /// layout, e.g. <c>models/_models/voxtral-mini-realtime/</c>), or delegates to <see cref="LoadGguf"/>
+    /// if the path points to a <c>.gguf</c> file.</summary>
+    public static VoxtralPipeline Load(string checkpointPathOrDir)
     {
+        if (File.Exists(checkpointPathOrDir) && checkpointPathOrDir.EndsWith(".gguf", StringComparison.OrdinalIgnoreCase))
+            return LoadGguf(checkpointPathOrDir);
+
+        string checkpointDir = Directory.Exists(checkpointPathOrDir)
+            ? checkpointPathOrDir
+            : Path.GetDirectoryName(checkpointPathOrDir) ?? checkpointPathOrDir;
+
         string safetensorsPath = Path.Combine(checkpointDir, "model.safetensors");
         string tekkenPath = Path.Combine(checkpointDir, "tekken.json");
         if (!File.Exists(safetensorsPath))
@@ -63,6 +73,65 @@ public sealed class VoxtralPipeline : ISpeechToTextPipeline
         var textWeights = new VoxtralTextDecoderWeights(loader);
         var vocab = TekkenVocab.Load(tekkenPath);
         return new VoxtralPipeline(audioWeights, textWeights, vocab);
+    }
+
+    /// <summary>Loads real weights and embedded vocabulary from a self-contained audio.cpp-packed
+    /// Voxtral GGUF checkpoint (e.g. <c>models/Voxtral-Mini-4B-Realtime-2602-GGUF/voxtral-mini-4b-realtime-2602-q8_0.gguf</c>).</summary>
+    public static VoxtralPipeline LoadGguf(string ggufPath)
+    {
+        if (!File.Exists(ggufPath))
+            throw new FileNotFoundException($"Voxtral GGUF not found: {ggufPath}");
+
+        var model = Core.GgufModel.Open(ggufPath);
+        try
+        {
+            if (!model.Metadata.TryGetValue("general.architecture", out var archObj) || (string)archObj != "audiocpp")
+                throw new InvalidDataException($"Expected GGUF with general.architecture='audiocpp', but got '{model.Metadata.GetValueOrDefault("general.architecture")}'.");
+
+            if (!model.Metadata.TryGetValue("audiocpp.model_spec.family", out var famObj) || (string)famObj != "voxtral_realtime")
+            {
+                if (!model.Metadata.TryGetValue("general.name", out var nameObj) || !((string)nameObj).Contains("Voxtral", StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidDataException($"Expected Voxtral GGUF package (audiocpp.model_spec.family='voxtral_realtime'), but got family='{famObj}' name='{model.Metadata.GetValueOrDefault("general.name")}'.");
+            }
+
+            if (!model.Metadata.TryGetValue("audiocpp.embedded_files.names", out var embNamesObj) || embNamesObj is not object[] embNames)
+                throw new InvalidDataException("Voxtral packed GGUF missing 'audiocpp.embedded_files.names' metadata.");
+
+            var embOffsets = (object[])model.Metadata["audiocpp.embedded_files.offsets"];
+            byte[] dataBytes = model.Metadata["audiocpp.embedded_files.data"] switch
+            {
+                byte[] bArr => bArr,
+                object[] oArr => oArr.Select(o => (byte)Convert.ToInt64(o)).ToArray(),
+                _ => throw new InvalidDataException("Voxtral packed GGUF 'audiocpp.embedded_files.data' format unrecognized.")
+            };
+
+            byte[]? tekkenBytes = null;
+            for (int i = 0; i < embNames.Length; i++)
+            {
+                if (string.Equals((string)embNames[i], "tekken.json", StringComparison.OrdinalIgnoreCase))
+                {
+                    long start = Convert.ToInt64(embOffsets[i]);
+                    long end = i + 1 < embOffsets.Length ? Convert.ToInt64(embOffsets[i + 1]) : dataBytes.Length;
+                    tekkenBytes = dataBytes[(int)start..(int)end];
+                    break;
+                }
+            }
+
+            if (tekkenBytes is null)
+                throw new InvalidDataException("Voxtral packed GGUF does not contain embedded 'tekken.json'.");
+
+            var vocab = TekkenVocab.Load(tekkenBytes);
+            var source = new Rvc.RvcPackedTensorSource(model);
+            var audioWeights = new VoxtralAudioEncoderWeights(source);
+            var textWeights = new VoxtralTextDecoderWeights(source);
+
+            return new VoxtralPipeline(audioWeights, textWeights, vocab, model);
+        }
+        catch
+        {
+            model.Dispose();
+            throw;
+        }
     }
 
     public SpeechToTextResult Transcribe(SpeechToTextRequest request)
@@ -162,7 +231,10 @@ public sealed class VoxtralPipeline : ISpeechToTextPipeline
         return best;
     }
 
-    public void Dispose() { }
+    public void Dispose()
+    {
+        _resource?.Dispose();
+    }
 }
 
 /// <summary>Real tekken.json vocabulary decode: id &lt; 1000 -> special_tokens[id].token_str,
@@ -184,7 +256,12 @@ public sealed class TekkenVocab
 
     public static TekkenVocab Load(string tekkenPath)
     {
-        using var doc = System.Text.Json.JsonDocument.Parse(File.ReadAllText(tekkenPath));
+        return Load(File.ReadAllBytes(tekkenPath));
+    }
+
+    public static TekkenVocab Load(ReadOnlySpan<byte> utf8Json)
+    {
+        using var doc = System.Text.Json.JsonDocument.Parse(utf8Json.ToArray());
         var root = doc.RootElement;
 
         var specialByRank = new Dictionary<int, string>();

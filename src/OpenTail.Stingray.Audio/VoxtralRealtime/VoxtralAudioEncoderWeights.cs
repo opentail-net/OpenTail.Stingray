@@ -73,6 +73,39 @@ public sealed class VoxtralAudioEncoderWeights
         Projector2Weight = VoxtralTextDecoderWeights.QuantizeQ8_0(loader.ReadF32("multi_modal_projector.linear_2.weight"), TextHiddenSize);
     }
 
+    public VoxtralAudioEncoderWeights(Rvc.RvcPackedTensorSource source)
+    {
+        Conv1Weight = source.GetTensor("audio_tower.embedder.conv1.weight");
+        Conv1Bias = source.GetTensor("audio_tower.embedder.conv1.bias");
+        Conv2Weight = source.GetTensor("audio_tower.embedder.conv2.weight");
+        Conv2Bias = source.GetTensor("audio_tower.embedder.conv2.bias");
+
+        for (int i = 0; i < NumLayers; i++)
+        {
+            string p = $"audio_tower.layers.{i}";
+            Layers[i] = new VoxtralAudioLayerWeights
+            {
+                AttnNorm = source.GetTensor($"{p}.self_attn_layer_norm.weight"),
+                QWeight = source.GetRawBytes($"{p}.self_attn.q_proj.weight"),
+                QBias = source.GetTensor($"{p}.self_attn.q_proj.bias"),
+                KWeight = source.GetRawBytes($"{p}.self_attn.k_proj.weight"),
+                VWeight = source.GetRawBytes($"{p}.self_attn.v_proj.weight"),
+                VBias = source.GetTensor($"{p}.self_attn.v_proj.bias"),
+                OWeight = source.GetRawBytes($"{p}.self_attn.o_proj.weight"),
+                OBias = source.GetTensor($"{p}.self_attn.o_proj.bias"),
+                FinalNorm = source.GetTensor($"{p}.final_layer_norm.weight"),
+                GateWeight = source.GetRawBytes($"{p}.mlp.gate_proj.weight"),
+                UpWeight = source.GetRawBytes($"{p}.mlp.up_proj.weight"),
+                DownWeight = source.GetRawBytes($"{p}.mlp.down_proj.weight"),
+                DownBias = source.GetTensor($"{p}.mlp.down_proj.bias"),
+            };
+        }
+
+        NormWeight = source.GetTensor("audio_tower.norm.weight");
+        Projector1Weight = source.GetRawBytes("multi_modal_projector.linear_1.weight");
+        Projector2Weight = source.GetRawBytes("multi_modal_projector.linear_2.weight");
+    }
+
     private VoxtralAudioEncoderWeights(Func<int, float[]> rand)
     {
         Conv1Weight = rand(HiddenSize * NumMelBins * 3);

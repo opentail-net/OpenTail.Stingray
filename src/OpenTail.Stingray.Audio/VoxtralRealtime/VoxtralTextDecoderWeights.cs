@@ -65,6 +65,31 @@ public sealed class VoxtralTextDecoderWeights
         NormWeight = loader.ReadF32("language_model.model.norm.weight");
     }
 
+    public VoxtralTextDecoderWeights(Rvc.RvcPackedTensorSource source)
+    {
+        EmbedTokensWeight = source.GetTensor("language_model.model.embed_tokens.weight");
+        EmbedTokensWeightQ8_0 = QuantizeQ8_0(EmbedTokensWeight, HiddenSize);
+        for (int i = 0; i < NumLayers; i++)
+        {
+            string p = $"language_model.model.layers.{i}";
+            Layers[i] = new VoxtralTextLayerWeights
+            {
+                InputNorm = source.GetTensor($"{p}.input_layernorm.weight"),
+                QWeight = source.GetRawBytes($"{p}.self_attn.q_proj.weight"),
+                KWeight = source.GetRawBytes($"{p}.self_attn.k_proj.weight"),
+                VWeight = source.GetRawBytes($"{p}.self_attn.v_proj.weight"),
+                OWeight = source.GetRawBytes($"{p}.self_attn.o_proj.weight"),
+                PostNorm = source.GetTensor($"{p}.post_attention_layernorm.weight"),
+                GateWeight = source.GetRawBytes($"{p}.mlp.gate_proj.weight"),
+                UpWeight = source.GetRawBytes($"{p}.mlp.up_proj.weight"),
+                DownWeight = source.GetRawBytes($"{p}.mlp.down_proj.weight"),
+                Ada1Weight = source.GetRawBytes($"{p}.ada_rms_norm.linear1.weight"),
+                Ada2Weight = source.GetRawBytes($"{p}.ada_rms_norm.linear2.weight"),
+            };
+        }
+        NormWeight = source.GetTensor("language_model.model.norm.weight");
+    }
+
     /// <summary>Quantizes a row-major <c>[rows, cols]</c> F32 matrix to Q8_0 (34 bytes/32-element
     /// block per row), using the perf-sweep-verified <see
     /// cref="OpenTail.Stingray.Core.FastVectorTypeConverter.ConvertF32ToQ8_0"/>.</summary>

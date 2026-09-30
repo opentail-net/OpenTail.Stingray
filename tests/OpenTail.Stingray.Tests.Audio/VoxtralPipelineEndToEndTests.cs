@@ -50,4 +50,31 @@ public sealed class VoxtralPipelineEndToEndTests : HeavyTestBase
         Assert.Single(result.Segments);
         Assert.Equal("Voxtral-Mini-4B-Realtime", pipeline.Architecture);
     }
+
+    [Fact]
+    public void Transcribe_RealAudio_Gguf_MatchesReferenceTranscript()
+    {
+        string? ggufPath = FindRepoFile("models/Voxtral-Mini-4B-Realtime-2602-GGUF/voxtral-mini-4b-realtime-2602-q8_0.gguf");
+        Assert.SkipUnless(ggufPath != null, "Voxtral GGUF checkpoint not found");
+        string? audioPath = FindRepoFile("examples/audio.cpp/assets/resources/a.wav");
+        Assert.SkipUnless(audioPath != null, "reference a.wav not found");
+
+        var (samples, sr, _) = OpenTail.Stingray.Audio.WavReader.ReadWav(audioPath!);
+        if (sr != 16000) samples = OpenTail.Stingray.Audio.AudioResampler.Resample(samples, sr, 16000);
+
+        using var pipeline = OpenTail.Stingray.Audio.VoxtralRealtime.VoxtralPipeline.LoadGguf(ggufPath!);
+        var result = pipeline.Transcribe(new OpenTail.Stingray.Audio.SpeechToTextRequest
+        {
+            AudioSamples = samples,
+            SampleRate = 16000,
+            Temperature = 0f,
+        });
+
+        const string referenceText = "This little work was finished in the year 1803, and intended for immediate publication.";
+        Console.Error.WriteLine($"[VoxtralPipeline.GGUF] text=\"{result.Text}\"");
+        Console.Error.WriteLine($"[VoxtralPipeline.GGUF] reference_text=\"{referenceText}\"");
+        Assert.Equal(referenceText, result.Text);
+        Assert.Single(result.Segments);
+        Assert.Equal("Voxtral-Mini-4B-Realtime", pipeline.Architecture);
+    }
 }
