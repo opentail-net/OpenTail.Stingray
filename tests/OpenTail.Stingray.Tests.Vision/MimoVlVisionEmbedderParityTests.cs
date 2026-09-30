@@ -29,7 +29,9 @@ public class MimoVlVisionEmbedderParityTests
         var inPath = Path.Combine(fx, "input_chw.f32");
         var outPath = Path.Combine(fx, "output.f32");
         var metaPath = Path.Combine(fx, "meta.json");
-        if (!File.Exists(inPath) || !File.Exists(outPath) || !File.Exists(metaPath)) return;
+        Assert.SkipUnless(File.Exists(inPath), $"MimoVL input fixture missing: {inPath}");
+        Assert.SkipUnless(File.Exists(outPath), $"MimoVL output fixture missing: {outPath}");
+        Assert.SkipUnless(File.Exists(metaPath), $"MimoVL metadata fixture missing: {metaPath}");
 
         using var doc = JsonDocument.Parse(File.ReadAllText(metaPath));
         int H = doc.RootElement.GetProperty("H").GetInt32();

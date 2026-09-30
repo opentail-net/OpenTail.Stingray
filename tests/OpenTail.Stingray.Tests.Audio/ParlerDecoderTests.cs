@@ -72,8 +72,15 @@ public sealed class ParlerDecoderTests : HeavyTestBase
         for (int i = 0; i < golden.Length; i++) golden[i] = float.Parse(goldenParts[i]);
 
         using var loader = SafetensorsLoader.Open(modelPath!);
-        double f32Cosine = RunAndCompare(loader, quantize: false, t, codebookIds, goldenT, goldenDim, golden);
-        Console.WriteLine($"[ParlerDecoderGolden] F32 control cosine={f32Cosine:R} (NaN means non-finite/failed forward)");
+        try
+        {
+            double f32Cosine = RunAndCompare(loader, quantize: false, t, codebookIds, goldenT, goldenDim, golden);
+            Console.WriteLine($"[ParlerDecoderGolden] F32 control cosine={f32Cosine:R}");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[ParlerDecoderGolden] F32 control failed with the first reported decoder-layer boundary: {ex}");
+        }
 
         double q8Cosine = RunAndCompare(loader, quantize: true, t, codebookIds, goldenT, goldenDim, golden);
         Console.WriteLine($"[ParlerDecoderGolden] Q8_0 cosine={q8Cosine:R}");
@@ -95,19 +102,7 @@ public sealed class ParlerDecoderTests : HeavyTestBase
             encoderHidden[i] = row;
         }
 
-        float[][] output;
-        try
-        {
-            output = ParlerDecoder.Forward(weights, inputEmbeds, encoderHidden);
-        }
-        catch (ArithmeticException) when (!quantize)
-        {
-            return double.NaN;
-        }
-        catch (AggregateException ex) when (!quantize && ex.Flatten().InnerExceptions.Any(e => e is ArithmeticException))
-        {
-            return double.NaN;
-        }
+        var output = ParlerDecoder.Forward(weights, inputEmbeds, encoderHidden, diagnoseFiniteStages: !quantize);
         Assert.Equal(goldenT, output.Length);
         Assert.Equal(goldenDim, output[0].Length);
         double dot = 0, normA = 0, normB = 0;

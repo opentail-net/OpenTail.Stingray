@@ -23,7 +23,7 @@ from the wrong checkpoint is not evidence about Paraformer.
 
 | Finding | Status |
 | --- | --- |
-| Correct real Paraformer GGUF | `models/_models/paraformer-q8.gguf`, about 237 MB; metadata includes `general.architecture=paraformer` and `pf.vocab`. |
+| Correct real Paraformer GGUF | Present: `models/_models/paraformer-q8.gguf`, 236,929,024 bytes; metadata includes `general.architecture=paraformer` and 8,404 entries in `pf.vocab`. |
 | Conflicting wrong file | `models/paraformer-q8.gguf`, about 1.0 GB; metadata identifies `general.name=Fun-ASR-Nano-2512`, `general.architecture=audiocpp`. |
 | Real Mandarin WAV | `docs/audio-samples/paraformer-zh-test-0.wav`. |
 | ONNX control on same WAV | Produces fluent Mandarin: `对我做了介绍啊那么我想说的是呢大家如果对我的研究感兴趣呢嗯`. |
@@ -56,16 +56,23 @@ Do this before relying on any real-weight test result.
 - Make `FunAsrWeights` reject a checkpoint unless `general.architecture` is exactly `paraformer` and
   `pf.vocab` exists with the expected type. Fail with a clear error that reports the actual
   architecture and missing/invalid metadata.
-- The current `FunAsrPipeline.Architecture` property reports the constant
-  `Alibaba-FunASR-Nano`, even for the Paraformer GGUF path. Audit this identity reporting and tests;
-  do not use that property as proof of the loaded GGUF architecture. Make the reported identity
-  accurate if its public/API contract is intended to describe the active model.
+- `FunAsrPipeline.Architecture` previously reported the constant `Alibaba-FunASR-Nano`, even for
+  Paraformer. Fixed 2026-09-30: a loaded GGUF now reports its `general.architecture`; the real
+  Paraformer test asserts `paraformer`. A pipeline without loaded GGUF weights reports the generic
+  `Alibaba-FunASR` identity and must not be used as checkpoint validation.
 - For the immediate Paraformer real-weight run, use the explicit
   `models/_models/paraformer-q8.gguf` path or an architecture-validating lookup helper.
 
 **Acceptance:** no Paraformer test can fail with `Paraformer GGUF missing 'pf.vocab'` because it
 silently selected the Nano file. Re-run the relevant FunASR tests and record the actual path,
 `general.architecture`, `general.name`, and presence of `pf.vocab` for the loaded checkpoint.
+
+**Current status (2026-09-30):** asset state is resolved, not blocked. Direct `FunAsrRealWeightsTests`
+run passes 3/3 and logs `models/_models/paraformer-q8.gguf`, 236,929,024 bytes,
+`architecture=paraformer`, `pf.vocab=8404`; model name is absent from this checkpoint's metadata.
+The real Mandarin WAV remains a reproducible empty-transcript failure against the same WAV's ONNX
+control. Next action is the ordered PCM→frontend→encoder→CIF→decoder→tokenizer trace below, stopping
+at the first divergent stage.
 
 ## Phase 1 — Freeze the exact real-speech failure
 

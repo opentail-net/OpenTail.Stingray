@@ -29,7 +29,9 @@ public class Qwen25VlVisionEmbedderParityTests
         var inPath = Path.Combine(fx, "input_chw.f32");
         var outPath = Path.Combine(fx, "output.f32");
         var metaPath = Path.Combine(fx, "meta.json");
-        if (!File.Exists(inPath) || !File.Exists(outPath) || !File.Exists(metaPath)) return;
+        Assert.SkipUnless(File.Exists(inPath), $"Qwen2.5-VL input fixture missing: {inPath}");
+        Assert.SkipUnless(File.Exists(outPath), $"Qwen2.5-VL output fixture missing: {outPath}");
+        Assert.SkipUnless(File.Exists(metaPath), $"Qwen2.5-VL metadata fixture missing: {metaPath}");
 
         using var doc = JsonDocument.Parse(File.ReadAllText(metaPath));
         int H = doc.RootElement.GetProperty("H").GetInt32();

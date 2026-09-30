@@ -130,12 +130,12 @@ Update item 01 in `bugstofix.md` with a dated closure note and exactly one dispo
 
 - [x] Every historical item from the sweep is enumerated, including failures missing from the current tracker.
 - [x] Every item has exactly one final disposition and supporting current evidence or an explicit asset/environment blocker.
-- [x] FunASR tests cannot silently load the wrong architecture under a shared filename.
-- [x] Nano decoder has a reproduced exact-token mismatch and a specific evidence-backed defer reason.
+- [x] FunASR tests cannot silently load the wrong architecture under a shared filename; runtime pipeline identity also reports the loaded GGUF architecture.
+- [ ] Nano decoder has a reproduced exact-token mismatch, but first-divergence evidence is not yet captured.
 - [x] QwenTTS historical non-finite result is non-reproducing with the intended, identity-checked checkpoint.
 - [x] Continuous batching's historical exact invariant is identified and assigned to item 02; current class passes.
-- [x] Four vision outcomes are reconciled as far as available checkpoints and reference paths allow; unavailable exact checkpoints and preprocessing gaps are explicitly recorded.
-- [x] Parler's historical cosine reproduces on the verified checkpoint; the F32 control currently becomes non-finite in the FFN, so precision is not established and the issue is explicitly deferred.
+- [x] Four vision outcomes are reconciled as far as available checkpoints and reference paths allow; remaining oracle/preprocessing gaps have explicit next experiments. Missing fixture files now skip visibly instead of passing silently.
+- [x] Parler's historical cosine reproduces on the verified checkpoint; stage instrumentation localizes the F32 first non-finite to layer 6 self-attention probabilities, so precision is not established and the issue remains deferred.
 - [x] MeloTTS is exercised using the verified complete ONNX model; placeholder lookup was fixed.
 - [x] Stale sweep cache entries cannot masquerade as current runs after the identity hardening change.
 - [x] `bugstofix.md` links this plan and records the dispositions.
@@ -166,7 +166,7 @@ Update item 01 in `bugstofix.md` with a dated closure note and exactly one dispo
 | `Audio.FunAsrRealDecoderTests` | Correct Paraformer selected; still `IndexOutOfRangeException` in `FunAsrKernels.FsmnDepthwiseConv`. | **DEFERRED** (item 07) |
 | `Audio.FunAsrRealMelExtractorTests` | Current correct-model run passes. | **FIXED** (lookup) |
 | `Audio.FunAsrWeightsTests` | Current correct-model run 3/3 passes; validates architecture-specific `pf.vocab` length 8404. | **FIXED** (lookup/identity) |
-| `Audio.ParlerDecoderTests` | Current direct command: `$env:STINGRAY_RUN_HEAVY_TESTS='1'; .\tests\OpenTail.Stingray.Tests.Audio\bin\Release\net10.0\OpenTail.Stingray.Tests.Audio.exe -class OpenTail.Stingray.Tests.Audio.ParlerDecoderTests`. Verified `_models` safetensors, 3,511,490,560 bytes, SHA-256 `BC430EB6752B96FFB3F67036D1A6E207FBD031575A775716FFA64EF1EEB03692`. Q8 cosine remains `0.9896934984794502` vs old `>0.99` gate. F32 control returns NaN due to an arithmetic exception in FFN/GELU. No tolerance relaxation is justified. | **DEFERRED** (first-divergence/precision investigation required) |
+| `Audio.ParlerDecoderTests` | Current direct command: `$env:STINGRAY_RUN_HEAVY_TESTS='1'; .\tests\OpenTail.Stingray.Tests.Audio\bin\Release\net10.0\OpenTail.Stingray.Tests.Audio.exe -class OpenTail.Stingray.Tests.Audio.ParlerDecoderTests`. Verified `_models` safetensors, 3,511,490,560 bytes, SHA-256 `BC430EB6752B96FFB3F67036D1A6E207FBD031575A775716FFA64EF1EEB03692`. Q8 cosine remains `0.9896934984794502` vs old `>0.99` gate. F32 first becomes non-finite at layer 6 self-attention probabilities, head 6, token 1, index 0; Q/K/V and pre-softmax scores are finite. | **DEFERRED** (attention-score/softmax numerical bisection required) |
 | `Audio.QwenTtsCodePredictorForwardPassTests` | Current direct class 1/1 passes using `_models/qwen-talker-0.6b-base-Q8_0.gguf`, 992,615,488 bytes, SHA-256 `D54DBAF10591421FA764ED630D764EFA717AE40CD959BD48C66D4EB1AF226426`; output finite. | **STALE** (historical wrong/missing model selection) |
 | `Vision.Exaone4VisionEmbedderParityTests` | Main checkpoint is now confirmed at `K:\_other_models\EXAONE-4.5-33B-Q4_K_M.gguf`, 20,047,839,424 bytes, SHA-256 `5BA3839B67DCEE5618EA7B2206CEDC8F9E2EC90FBCEC3C95A8CC8B33967F6BAF`. Current NumPy fixture test still fails (minimum token cosine 0.825366). Fresh `llama-mtmd-debug` run with this exact model and `mmproj-exaone-4.5-q8_0.gguf` produced the rainbow448 projector output (256×5120, sum 1411.853271). C# `LlamaMtmdVisionParityTests.Exaone45_Rainbow448_MatchesLlamaMtmdDebug` passes with sum 1409.8544 and row0 `[0.2004,0.0131,-0.2530]`, within the recorded aggregate gate. Real-image preprocessing comparison remains open. | **DEFERRED** |
 | `Vision.LlavaVisionEmbedderParityTests` | NumPy fixture still fails (minimum token cosine -0.210073). Matching LLaVA 1.5 7B main GGUF absent; available LLaVA-3 checkpoint is not a substitute. | **ASSET-BLOCKED** |
@@ -183,5 +183,37 @@ Update item 01 in `bugstofix.md` with a dated closure note and exactly one dispo
 - **Vision references:** fresh `llama-mtmd-debug` binary SHA-256 `94874105ADDE0C2662F89D7B0451E8C7F9FCF496807D60167B5F4AD904297435`. Full MimoVL and Qwen2.5-VL checkpoints/projectors are present and their synthetic Rainbow448 reference runs exit successfully. The EXAONE main model is available on `K:\_other_models` and its fresh rainbow448 reference plus current C# aggregate gate now pass as detailed above. The original EXAONE NumPy fixture still fails. These checks do not establish real-image preprocessing equivalence or NumPy-oracle freshness. LLaVA 1.5 exact main weights remain unavailable.
 - **Sweep cache:** `scripts/sweep-tests.ps1` now keys reusable completion on commit, test host executable identity, test assembly path/hash/timestamp, suite/class, plus stdout-reported model path/size/hash when available. Legacy rows without identity are rerun. Verified with a scratch state: first invocation reran the class and captured SmolLM2 asset hash `77665EA4815999596525C636FBEB56BA8B080B46AE85EFEF4F0D986A139834D7`; the next same-identity invocation reused it. ISO timestamps are normalized after JSON round-trip. Asset identity is available only when a test emits its asset path, so the cache cannot claim a model hash for silent asset consumers.
 - **Other closures:** Wan class 11/11 pass. Qwen ASR 2/2 pass. `PrefillDecodeSelfConsistencyTests` 10/10 pass. Melo and Qwen TTS exact checkpoint identity and current run results are above. Qwen ASR's synthetic tone is not treated as speech-quality evidence.
+- **Feedback review fixes (2026-09-30):** three vision parity tests now use explicit missing-file skips; the verified Paraformer asset contradiction in item 07 is corrected; `FunAsrPipeline.Architecture` now reports `general.architecture` for a loaded GGUF and `FunAsrRealWeightsTests` asserts `paraformer`. Audio/Vision Release builds succeed; FunASR real-weight class passes 3/3. The remaining deferred queue below states the first decisive experiment and stop condition for each item.
+- **Parler diagnostic refinement (2026-09-30):** the F32 control no longer converts a whole-forward arithmetic exception to NaN. Optional finite-stage diagnostics identify the first non-finite at layer 6 self-attention probabilities. Q8 golden remains below its original threshold; this does not yet attribute the cosine gap to quantization.
 
 The classifications above close the historical sweep triage, not every separate unresolved correctness issue. Deferred items retain an explicit owner/follow-up; asset-blocked rows must be reopened when the matching checkpoints become available. No numerical threshold was lowered in this rerun.
+
+## Remaining deferred investigations: decisive next experiments
+
+A deferred item stays open only with a next experiment that distinguishes hypotheses. Stop at the first divergence; do not investigate downstream stages until upstream inputs match.
+
+| Work item | First decisive experiment | Stop condition / next decision |
+| --- | --- | --- |
+| FunASR Nano decoder | With the verified Nano GGUF and existing prompt, compare GGUF metadata/hyperparameters, input IDs and selected embedding rows (`151644`, `8948`, `198`, audio IDs) against the existing decoder reference. Then compare embedding, layer 0 post-attention residual, layer 0 post-FFN residual and successive layer outputs for text-only and audio-spliced arms. | Stop at the first mismatching boundary; drill into norm/QKV/RoPE/attention/FFN only within that layer. Do not call this explained until the first divergence and exact checkpoint/reference identity are recorded. |
+| FunASR Paraformer real speech (item 07) | Confirm the current GGUF/WAV identity, then capture one compact stage trace: PCM stats → logmel/LFR/CMVN → encoder → CIF alpha/token count → acoustic embeddings → decoder logits/raw IDs → tokenizer. Compare each stage against the trusted ONNX/reference path for the same WAV. | Stop and fix/understand the first divergent stage; do not instrument downstream stages until the previous boundary matches. The GGUF is present; this is not asset-blocked. |
+| Parler decoder | F32 instrumentation now stops at layer 6 self-attention probabilities, head 6/token 1/index 0; Q/K/V and pre-softmax scores are finite. Capture score min/max and the exact softmax inputs/outputs for that head/token, then bisect dot accumulation and softmax against NumPy. | Stop at the first differing score/probability. Do not proceed to FFN or attribute Q8 error until the F32 attention boundary is understood. Once F32 completes, compare F32 to NumPy, then Q8 to F32/reference; keep the `>0.99` gate unchanged. |
+| EXAONE, MimoVL, Qwen2.5-VL vision oracle reconciliation | Feed an identical saved CHW tensor to each existing Python reference implementation, llama.cpp/MTMD, and C#. Start with each model's exact existing fixture tensor; report token count, sum, first/last row, per-token cosine, maxAbs and meanAbs. Extend the existing references to accept that tensor if needed; do not create a separate implementation. | Python≈MTMD≈C# means the checked-in fixture is stale and can be regenerated after provenance is recorded. Python≈MTMD but C# differs means an engine issue. If Python differs from MTMD, resolve oracle semantics first. Only after the synthetic tensor is reconciled compare same real image bytes through production and MTMD preprocessing. |
+| LLaVA 1.5 vision | Obtain the exact LLaVA-1.5 7B main GGUF used by the oracle; keep the unrelated LLaVA-3 checkpoint out of this comparison. | Remains **ASSET-BLOCKED** until that exact checkpoint exists; then use the same tensor three-way procedure. |
+
+### Immediate test-harness correction
+
+`Exaone4VisionEmbedderParityTests`, `MimoVlVisionEmbedderParityTests`, and
+`Qwen25VlVisionEmbedderParityTests` previously returned normally (and therefore passed) if a
+fixture directory existed but one of its three files was absent. Those branches now explicitly skip
+with the missing file's path. Both Audio and Vision Release test projects build successfully after
+the correction. The existing fixtures remain present, so these runs exercise the numerical tests;
+the missing-file behavior is established directly by the explicit `Assert.SkipUnless` checks.
+
+### FunASR identity note
+
+The 2026-09-30 real Paraformer checkpoint is present at `models/_models/paraformer-q8.gguf`,
+236,929,024 bytes, architecture `paraformer`, 8,404 `pf.vocab` entries. The WAV is also present.
+The earlier tracker sentence claiming the checkpoint was absent was stale and is corrected.
+`FunAsrPipeline.Architecture` now reports the loaded GGUF's `general.architecture` (and the
+real-weight test asserts `paraformer`) instead of always claiming Nano. The real-speech empty
+transcript remains open; the immediate experiment is the ordered stage trace above.

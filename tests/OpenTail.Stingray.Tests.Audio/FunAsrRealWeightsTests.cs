@@ -37,6 +37,7 @@ public sealed class FunAsrRealWeightsTests : HeavyTestBase
 
         using var pipeline = FunAsrPipeline.Load(modelPath!);
         Assert.NotNull(pipeline);
+        Assert.Equal("paraformer", pipeline.Architecture);
 
         // Run transcription
         float[] audio = new float[16000 * 2];

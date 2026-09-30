@@ -7,7 +7,16 @@ namespace OpenTail.Stingray.Audio.FunASR;
 /// </summary>
 public sealed class FunAsrPipeline : ISpeechToTextPipeline
 {
-    public string Architecture => "Alibaba-FunASR-Nano";
+    public string Architecture
+    {
+        get
+        {
+            if (_weights is null) return "Alibaba-FunASR";
+            return _weights.Model.Metadata.TryGetValue("general.architecture", out var architecture)
+                ? Convert.ToString(architecture) ?? "Alibaba-FunASR (unknown architecture)"
+                : "Alibaba-FunASR (unknown architecture)";
+        }
+    }
     public int SampleRate => 16000;
 
     private readonly FunAsrMelExtractor _melExtractor;

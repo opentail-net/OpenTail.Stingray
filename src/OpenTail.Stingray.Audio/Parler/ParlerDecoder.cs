@@ -61,11 +61,22 @@ public static class ParlerDecoder
     }
 
     /// <summary>Runs the full decoder trunk over a sequence of already-composed input embeddings, cross-attending to the real T5 encoder output. Returns per-position hidden states [T, HiddenDim] (post final LayerNorm).</summary>
-    public static float[][] Forward(ParlerDecoderWeights w, float[][] inputEmbeds, float[][] encoderHidden)
+    public static float[][] Forward(ParlerDecoderWeights w, float[][] inputEmbeds, float[][] encoderHidden,
+        bool diagnoseFiniteStages = false)
     {
         var x = inputEmbeds;
-        foreach (var layer in w.Layers)
-            x = DecoderLayer(x, encoderHidden, layer);
+        if (diagnoseFiniteStages) EnsureFinite(x, "input embeddings", -1);
+        for (int layerIndex = 0; layerIndex < w.Layers.Length; layerIndex++)
+        {
+            try
+            {
+                x = DecoderLayer(x, encoderHidden, w.Layers[layerIndex], layerIndex, diagnoseFiniteStages);
+            }
+            catch (Exception ex) when (ex is not InvalidOperationException)
+            {
+                throw new InvalidOperationException($"Parler decoder layer {layerIndex} failed.", ex);
+            }
+        }
 
         int t = x.Length;
         var output = new float[t][];
@@ -209,13 +220,16 @@ public static class ParlerDecoder
         return result;
     }
 
-    private static float[][] DecoderLayer(float[][] x, float[][] encoderHidden, ParlerDecoderLayerWeights lw)
+    private static float[][] DecoderLayer(float[][] x, float[][] encoderHidden, ParlerDecoderLayerWeights lw,
+        int layerIndex = -1, bool diagnoseFiniteStages = false)
     {
         int t = x.Length;
 
         var normed1 = new float[t][];
         Parallel.For(0, t, i => normed1[i] = LayerNorm(x[i], lw.SelfAttnLayerNormWeight, lw.SelfAttnLayerNormBias));
-        var selfAttnOut = SelfAttentionCausal(normed1, lw);
+        if (diagnoseFiniteStages) EnsureFinite(normed1, "self-attention norm", layerIndex);
+        var selfAttnOut = SelfAttentionCausal(normed1, lw, layerIndex, diagnoseFiniteStages);
+        if (diagnoseFiniteStages) EnsureFinite(selfAttnOut, "self-attention output", layerIndex);
 
         var afterSelf = new float[t][];
         Parallel.For(0, t, i =>
@@ -224,10 +238,13 @@ public static class ParlerDecoder
             for (int d = 0; d < ParlerDecoderWeights.HiddenDim; d++) row[d] = x[i][d] + selfAttnOut[i][d];
             afterSelf[i] = row;
         });
+        if (diagnoseFiniteStages) EnsureFinite(afterSelf, "self-attention residual", layerIndex);
 
         var normed2 = new float[t][];
         Parallel.For(0, t, i => normed2[i] = LayerNorm(afterSelf[i], lw.CrossAttnLayerNormWeight, lw.CrossAttnLayerNormBias));
+        if (diagnoseFiniteStages) EnsureFinite(normed2, "cross-attention norm", layerIndex);
         var crossAttnOut = CrossAttention(normed2, encoderHidden, lw);
+        if (diagnoseFiniteStages) EnsureFinite(crossAttnOut, "cross-attention output", layerIndex);
 
         var afterCross = new float[t][];
         Parallel.For(0, t, i =>
@@ -236,10 +253,12 @@ public static class ParlerDecoder
             for (int d = 0; d < ParlerDecoderWeights.HiddenDim; d++) row[d] = afterSelf[i][d] + crossAttnOut[i][d];
             afterCross[i] = row;
         });
+        if (diagnoseFiniteStages) EnsureFinite(afterCross, "cross-attention residual", layerIndex);
 
         var normed3 = new float[t][];
         Parallel.For(0, t, i => normed3[i] = LayerNorm(afterCross[i], lw.FinalLayerNormWeight, lw.FinalLayerNormBias));
-        var ffnOut = Ffn(normed3, lw);
+        if (diagnoseFiniteStages) EnsureFinite(normed3, "FFN norm", layerIndex);
+        var ffnOut = Ffn(normed3, lw, layerIndex, diagnoseFiniteStages);
 
         var output = new float[t][];
         Parallel.For(0, t, i =>
@@ -248,11 +267,13 @@ public static class ParlerDecoder
             for (int d = 0; d < ParlerDecoderWeights.HiddenDim; d++) row[d] = afterCross[i][d] + ffnOut[i][d];
             output[i] = row;
         });
+        if (diagnoseFiniteStages) EnsureFinite(output, "FFN residual", layerIndex);
         return output;
     }
 
     /// <summary>Real causal self-attention: full MHA (no GQA), standard `1/sqrt(headDim)` scaling, no RoPE.</summary>
-    private static float[][] SelfAttentionCausal(float[][] x, ParlerDecoderLayerWeights lw)
+    private static float[][] SelfAttentionCausal(float[][] x, ParlerDecoderLayerWeights lw,
+        int layerIndex = -1, bool diagnoseFiniteStages = false)
     {
         int t = x.Length;
         int dim = ParlerDecoderWeights.HiddenDim;
@@ -267,6 +288,12 @@ public static class ParlerDecoder
             k[i] = LinearQ8_0(x[i], lw.SelfAttnKWeight, dim, dim);
             v[i] = LinearQ8_0(x[i], lw.SelfAttnVWeight, dim, dim);
         });
+        if (diagnoseFiniteStages)
+        {
+            EnsureFinite(q, "self-attention Q", layerIndex);
+            EnsureFinite(k, "self-attention K", layerIndex);
+            EnsureFinite(v, "self-attention V", layerIndex);
+        }
 
         var context = new float[t][];
         for (int i = 0; i < t; i++) context[i] = new float[dim];
@@ -280,16 +307,20 @@ public static class ParlerDecoder
             {
                 for (int j = 0; j <= i; j++) // causal
                     scores[j] = Dot(q[i], k[j], off, HeadDim) * scale;
+                if (diagnoseFiniteStages) EnsureFinite(scores.AsSpan(0, i + 1), $"self-attention scores head {h}", layerIndex, i);
                 SoftmaxInPlace(scores, i + 1);
+                if (diagnoseFiniteStages) EnsureFinite(scores.AsSpan(0, i + 1), $"self-attention probabilities head {h}", layerIndex, i);
 
                 var ctxSpan = context[i].AsSpan(off, HeadDim);
                 for (int j = 0; j <= i; j++)
                     TensorPrimitives.MultiplyAdd(v[j].AsSpan(off, HeadDim), scores[j], ctxSpan, ctxSpan);
             }
         });
+        if (diagnoseFiniteStages) EnsureFinite(context, "self-attention context", layerIndex);
 
         var output = new float[t][];
         Parallel.For(0, t, i => output[i] = LinearQ8_0(context[i], lw.SelfAttnOutWeight, dim, dim));
+        if (diagnoseFiniteStages) EnsureFinite(output, "self-attention O projection", layerIndex);
         return output;
     }
 
@@ -337,17 +368,46 @@ public static class ParlerDecoder
     }
 
     /// <summary>Real plain (non-gated) FFN: `fc2(gelu(fc1(x)))`, no bias.</summary>
-    private static float[][] Ffn(float[][] x, ParlerDecoderLayerWeights lw)
+    private static float[][] Ffn(float[][] x, ParlerDecoderLayerWeights lw, int layerIndex = -1,
+        bool diagnoseFiniteStages = false)
     {
         int t = x.Length;
         var output = new float[t][];
         Parallel.For(0, t, i =>
         {
             var h = LinearQ8_0(x[i], lw.Fc1Weight, ParlerDecoderWeights.HiddenDim, ParlerDecoderWeights.FfnDim);
+            if (diagnoseFiniteStages) EnsureFinite(h, "FFN fc1", layerIndex, i);
             for (int d = 0; d < h.Length; d++) h[d] = Gelu(h[d]);
+            if (diagnoseFiniteStages) EnsureFinite(h, "FFN GELU", layerIndex, i);
             output[i] = LinearQ8_0(h, lw.Fc2Weight, ParlerDecoderWeights.FfnDim, ParlerDecoderWeights.HiddenDim);
+            if (diagnoseFiniteStages) EnsureFinite(output[i], "FFN fc2", layerIndex, i);
         });
         return output;
+    }
+
+    private static void EnsureFinite(float[][] values, string stage, int layerIndex)
+    {
+        for (int token = 0; token < values.Length; token++) EnsureFinite(values[token], stage, layerIndex, token);
+    }
+
+    private static void EnsureFinite(float[] values, string stage, int layerIndex, int token = -1)
+    {
+        for (int i = 0; i < values.Length; i++)
+        {
+            if (float.IsFinite(values[i])) continue;
+            throw new InvalidOperationException(
+                $"Parler non-finite value at layer {layerIndex}, stage {stage}, token {token}, index {i}: {values[i]}");
+        }
+    }
+
+    private static void EnsureFinite(ReadOnlySpan<float> values, string stage, int layerIndex, int token)
+    {
+        for (int i = 0; i < values.Length; i++)
+        {
+            if (float.IsFinite(values[i])) continue;
+            throw new InvalidOperationException(
+                $"Parler non-finite value at layer {layerIndex}, stage {stage}, token {token}, index {i}: {values[i]}");
+        }
     }
 
     /// <summary>Real (exact, erf-based) GELU -- HF's default "gelu" activation, NOT the tanh approximation ("gelu_new") T5 uses.</summary>
