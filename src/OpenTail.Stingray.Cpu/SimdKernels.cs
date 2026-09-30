@@ -345,6 +345,12 @@ public static unsafe class SimdKernels
         Environment.GetEnvironmentVariable("STINGRAY_CPU_PREFILL_Q8") != "0";
 
     /// <summary>
+    /// Use Q8_K activations for Q5_K attention output projections in the CPU decode path.
+    /// Defaults off until real-weight parity and broader Q5_K validation are complete.
+    /// </summary>
+    public static bool Q5KDecodeQ8KActivations { get; set; }
+
+    /// <summary>
     /// Smallest batch that takes the int8 path when <see cref="Q8PrefillEnabled"/> is on.
     ///
     /// <para>This is a <b>numerics boundary, not just a performance knob</b>: batches below it run
@@ -3208,6 +3214,187 @@ public static unsafe class SimdKernels
         return acc;
     }
 
+    /// <summary>
+    /// Q5_K dot product with a pre-quantized Q8_K activation row, matching ggml's
+    /// <c>ggml_vec_dot_q5_K_q8_K</c> integer-domain computation.
+    /// </summary>
+    public static float DotQ5K_Q8K(byte* row, byte* q8kScratch, int cols)
+    {
+        if (Avx2.IsSupported)
+            return DotQ5K_Q8K_Avx2(row, q8kScratch, cols);
+
+        return DotQ5K_Q8K_Scalar(row, q8kScratch, cols);
+    }
+
+    /// <summary>Quantize the input to Q8_K and dot it with one Q5_K row.</summary>
+    public static float DotQ5K_Q8K(byte* row, float* input, int cols)
+    {
+        int scratchBytes = Q8KScratchBytes(cols);
+        if (scratchBytes <= 4096)
+        {
+            byte* scratch = stackalloc byte[scratchBytes];
+            QuantizeRowToQ8K(input, cols, scratch);
+            return DotQ5K_Q8K(row, scratch, cols);
+        }
+
+        byte* heapScratch = (byte*)NativeMemory.Alloc((nuint)scratchBytes);
+        if (heapScratch == null)
+            throw new OutOfMemoryException();
+
+        try
+        {
+            QuantizeRowToQ8K(input, cols, heapScratch);
+            return DotQ5K_Q8K(row, heapScratch, cols);
+        }
+        finally
+        {
+            NativeMemory.Free(heapScratch);
+        }
+    }
+
+    internal static float DotQ5K_Q8K_Scalar(byte* row, byte* q8kScratch, int cols)
+    {
+        int numBlocks = cols / 256;
+        float* dArr = (float*)q8kScratch;
+        sbyte* qsArr = (sbyte*)(q8kScratch + numBlocks * 4);
+        short* bsumsArr = (short*)(q8kScratch + numBlocks * 4 + numBlocks * 256);
+        float* sums = stackalloc float[8];
+        int* aux32 = stackalloc int[8];
+        for (int lane = 0; lane < 8; lane++)
+            sums[lane] = 0f;
+
+        float sumf = 0f;
+        for (int b = 0; b < numBlocks; b++)
+        {
+            byte* x = row + b * 176;
+            float d = HalfToFloat(x[0], x[1]) * dArr[b];
+            float dmin = HalfToFloat(x[2], x[3]) * dArr[b];
+            byte* scalesMins = x + 4;
+            byte* qh = x + 16;
+            byte* ql = x + 48;
+            sbyte* q8 = qsArr + b * 256;
+            short* bsums = bsumsArr + b * 16;
+
+            int minSum = 0;
+            for (int sub = 0; sub < 8; sub++)
+            {
+                GetScaleMinK4(sub, scalesMins, out _, out byte min);
+                minSum += min * (bsums[sub * 2] + bsums[sub * 2 + 1]);
+            }
+
+            int qlOffset = 0;
+            int scaleIndex = 0;
+            byte bitLo = 1, bitHi = 2;
+            for (int lane = 0; lane < 8; lane++)
+                aux32[lane] = 0;
+
+            for (int chunk = 0; chunk < 4; chunk++)
+            {
+                GetScaleMinK4(scaleIndex, scalesMins, out byte scaleLo, out _);
+                GetScaleMinK4(scaleIndex + 1, scalesMins, out byte scaleHi, out _);
+                int baseOffset = chunk * 64;
+
+                for (int i = 0; i < 32; i++)
+                {
+                    int q5Lo = (ql[qlOffset + i] & 0x0F) + ((qh[i] & bitLo) != 0 ? 16 : 0);
+                    int q5Hi = (ql[qlOffset + i] >> 4) + ((qh[i] & bitHi) != 0 ? 16 : 0);
+                    int lane = i & 7;
+                    aux32[lane] += scaleLo * q5Lo * q8[baseOffset + i];
+                    aux32[lane] += scaleHi * q5Hi * q8[baseOffset + 32 + i];
+                }
+
+                qlOffset += 32;
+                scaleIndex += 2;
+                bitLo <<= 2;
+                bitHi <<= 2;
+            }
+
+            for (int lane = 0; lane < 8; lane++)
+                sums[lane] += d * aux32[lane];
+            sumf -= dmin * minSum;
+        }
+
+        for (int lane = 0; lane < 8; lane++)
+            sumf += sums[lane];
+        return sumf;
+    }
+
+    private static float DotQ5K_Q8K_Avx2(byte* row, byte* q8kScratch, int cols)
+    {
+        int numBlocks = cols / 256;
+        float* dArr = (float*)q8kScratch;
+        sbyte* qsArr = (sbyte*)(q8kScratch + numBlocks * 4);
+        short* bsumsArr = (short*)(q8kScratch + numBlocks * 4 + numBlocks * 256);
+        var nibbleMask = Vector128.Create((byte)0x0F);
+        var highBit = Vector128.Create((byte)16);
+        float sum = 0f;
+
+        for (int b = 0; b < numBlocks; b++)
+        {
+            byte* x = row + b * 176;
+            float d = HalfToFloat(x[0], x[1]) * dArr[b];
+            float dmin = HalfToFloat(x[2], x[3]) * dArr[b];
+            byte* scalesMins = x + 4;
+            byte* qh = x + 16;
+            byte* ql = x + 48;
+            sbyte* q8 = qsArr + b * 256;
+            short* bsums = bsumsArr + b * 16;
+
+            int minSum = 0;
+            for (int sub = 0; sub < 8; sub++)
+            {
+                GetScaleMinK4(sub, scalesMins, out _, out byte min);
+                minSum += min * (bsums[sub * 2] + bsums[sub * 2 + 1]);
+            }
+
+            int weightedDot = 0;
+            int qlOffset = 0;
+            int scaleIndex = 0;
+            byte bitLo = 1, bitHi = 2;
+            for (int chunk = 0; chunk < 4; chunk++)
+            {
+                GetScaleMinK4(scaleIndex, scalesMins, out byte scaleLo, out _);
+                GetScaleMinK4(scaleIndex + 1, scalesMins, out byte scaleHi, out _);
+                int baseOffset = chunk * 64;
+                var bitLoVec = Vector128.Create(bitLo);
+                var bitHiVec = Vector128.Create(bitHi);
+
+                for (int i = 0; i < 32; i += 16)
+                {
+                    var packed = Sse2.LoadVector128(ql + qlOffset + i);
+                    var highBits = Sse2.LoadVector128(qh + i);
+                    var lowHighMask = Sse2.CompareEqual(Sse2.And(highBits, bitLoVec), Vector128<byte>.Zero);
+                    var highHighMask = Sse2.CompareEqual(Sse2.And(highBits, bitHiVec), Vector128<byte>.Zero);
+
+                    var q5Lo = Sse2.Add(Sse2.And(packed, nibbleMask), Sse2.AndNot(lowHighMask, highBit));
+                    var q5Hi = Sse2.Add(
+                        Sse2.And(Sse2.ShiftRightLogical(packed.AsUInt16(), 4).AsByte(), nibbleMask),
+                        Sse2.AndNot(highHighMask, highBit));
+
+                    var q5Lo16 = Avx2.ConvertToVector256Int16(q5Lo);
+                    var q5Hi16 = Avx2.ConvertToVector256Int16(q5Hi);
+                    var q8Lo16 = Avx2.ConvertToVector256Int16(Sse2.LoadVector128(q8 + baseOffset + i).AsSByte());
+                    var q8Hi16 = Avx2.ConvertToVector256Int16(Sse2.LoadVector128(q8 + baseOffset + 32 + i).AsSByte());
+                    var scaleLoVec = Vector256.Create((int)scaleLo);
+                    var scaleHiVec = Vector256.Create((int)scaleHi);
+                    var loPairs = Avx2.MultiplyLow(Avx2.MultiplyAddAdjacent(q5Lo16, q8Lo16), scaleLoVec);
+                    var hiPairs = Avx2.MultiplyLow(Avx2.MultiplyAddAdjacent(q5Hi16, q8Hi16), scaleHiVec);
+                    for (int lane = 0; lane < 8; lane++)
+                        weightedDot += loPairs.GetElement(lane) + hiPairs.GetElement(lane);
+                }
+
+                qlOffset += 32;
+                scaleIndex += 2;
+                bitLo <<= 2;
+                bitHi <<= 2;
+            }
+
+            sum += d * weightedDot - dmin * minSum;
+        }
+
+        return sum;
+    }
+
     // ================================================================
     //  Q5_K Fused MatVec
     // ================================================================
@@ -3228,6 +3415,50 @@ public static unsafe class SimdKernels
         {
             for (int i = 0; i < rows; i++)
                 output[i] = DotQ5K(weights + (long)i * bytesPerRow, input, cols);
+        }
+    }
+
+    public static void MatVecQ5K_Q8K(float* output, byte* weights, float* input, int rows, int cols)
+    {
+        int scratchBytes = Q8KScratchBytes(cols);
+        if (scratchBytes <= 4096)
+        {
+            byte* scratch = stackalloc byte[scratchBytes];
+            QuantizeRowToQ8K(input, cols, scratch);
+            MatVecQ5K_Q8KPrequantized(output, weights, scratch, rows, cols);
+            return;
+        }
+
+        byte* heapScratch = (byte*)NativeMemory.Alloc((nuint)scratchBytes);
+        if (heapScratch == null)
+            throw new OutOfMemoryException();
+
+        try
+        {
+            QuantizeRowToQ8K(input, cols, heapScratch);
+            MatVecQ5K_Q8KPrequantized(output, weights, heapScratch, rows, cols);
+        }
+        finally
+        {
+            NativeMemory.Free(heapScratch);
+        }
+    }
+
+    private static void MatVecQ5K_Q8KPrequantized(float* output, byte* weights, byte* scratch, int rows, int cols)
+    {
+        int bytesPerRow = (cols / 256) * 176;
+        if (rows >= MinRowsForParallel)
+        {
+            var w = weights; var s = scratch; var outp = output; int c = cols;
+            Parallel.For(0, rows, s_parallelOpts, i =>
+            {
+                outp[i] = DotQ5K_Q8K(w + (long)i * bytesPerRow, s, c);
+            });
+        }
+        else
+        {
+            for (int i = 0; i < rows; i++)
+                output[i] = DotQ5K_Q8K(weights + (long)i * bytesPerRow, scratch, cols);
         }
     }
 

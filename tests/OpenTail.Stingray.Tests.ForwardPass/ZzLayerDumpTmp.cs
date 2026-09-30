@@ -8,26 +8,36 @@ public sealed class ZzLayerDumpTmp
     public void Dump()
     {
         if (Environment.GetEnvironmentVariable("ZZ_DUMP") != "1") return;
-        using var model = GgufModel.Open(Environment.GetEnvironmentVariable("ZZ_MODEL")!);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
-        var ids = File.ReadAllText(Environment.GetEnvironmentVariable("ZZ_IDS_FILE")!).Split(',').Select(int.Parse).ToList();
-
-        using var backend = new CpuBackend();
-        using var fwd = new Engine.ForwardPass(model, backend, hp, maxContextLength: 1024);
-        if (ids.Count > 1) fwd.Prefill(ids.Take(ids.Count - 1).ToList());
-
-        Engine.StageCapture.Records.Clear();
-        Engine.StageCapture.Enabled = true;
-        fwd.Forward(ids[^1], ids.Count - 1);
-        Engine.StageCapture.Enabled = false;
-
-        using var w = new StreamWriter(Environment.GetEnvironmentVariable("ZZ_OUT")!);
-        foreach (var (_, layer, stage, data) in Engine.StageCapture.Records)
+        bool previousQ5KDecodeQ8K = OpenTail.Stingray.Cpu.SimdKernels.Q5KDecodeQ8KActivations;
+        OpenTail.Stingray.Cpu.SimdKernels.Q5KDecodeQ8KActivations = Environment.GetEnvironmentVariable("ZZ_Q5K_Q8K") == "1";
+        try
         {
-            if (stage is not ("post_attn_resid" or "post_ffn_resid" or "attn_norm" or "attn_out" or "o_proj")) continue;
-            int n = data.Length;
-            w.WriteLine($"{layer} {stage} {data[0]:F4} {data[1]:F4} {data[2]:F4} ... {data[n - 3]:F4} {data[n - 2]:F4} {data[n - 1]:F4}");
+            using var model = GgufModel.Open(Environment.GetEnvironmentVariable("ZZ_MODEL")!);
+            var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+            var ids = File.ReadAllText(Environment.GetEnvironmentVariable("ZZ_IDS_FILE")!).Split(',').Select(int.Parse).ToList();
+
+            using var backend = new CpuBackend();
+            using var fwd = new Engine.ForwardPass(model, backend, hp, maxContextLength: 1024);
+            if (ids.Count > 1) fwd.Prefill(ids.Take(ids.Count - 1).ToList());
+
+            Engine.StageCapture.Records.Clear();
+            Engine.StageCapture.Enabled = true;
+            fwd.Forward(ids[^1], ids.Count - 1);
+            Engine.StageCapture.Enabled = false;
+
+            using var w = new StreamWriter(Environment.GetEnvironmentVariable("ZZ_OUT")!);
+            foreach (var (_, layer, stage, data) in Engine.StageCapture.Records)
+            {
+                if (stage is not ("post_attn_resid" or "post_ffn_resid" or "attn_norm" or "attn_out" or "o_proj")) continue;
+                int n = data.Length;
+                w.WriteLine($"{layer} {stage} {data[0]:F4} {data[1]:F4} {data[2]:F4} ... {data[n - 3]:F4} {data[n - 2]:F4} {data[n - 1]:F4}");
+            }
         }
-        Engine.StageCapture.Reset();
+        finally
+        {
+            Engine.StageCapture.Enabled = false;
+            Engine.StageCapture.Reset();
+            OpenTail.Stingray.Cpu.SimdKernels.Q5KDecodeQ8KActivations = previousQ5KDecodeQ8K;
+        }
     }
 }

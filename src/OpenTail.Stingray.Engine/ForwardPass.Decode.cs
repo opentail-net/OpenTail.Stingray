@@ -403,7 +403,10 @@ public sealed unsafe partial class ForwardPass
             }
             else
             {
-                FusedMatVec(_hidden, _wo[layer], _attnOut, _embDim, qDimL);
+                if (SimdKernels.Q5KDecodeQ8KActivations && _wo[layer].DType == DType.Q5_K)
+                    SimdKernels.MatVecQ5K_Q8K(_hidden, _wo[layer].DataPtr, _attnOut, _embDim, qDimL);
+                else
+                    FusedMatVec(_hidden, _wo[layer], _attnOut, _embDim, qDimL);
             }
             if (_hasAttnOutputBias)
                 SimdKernels.AddInPlace(_hidden, _bo[layer], _embDim);
