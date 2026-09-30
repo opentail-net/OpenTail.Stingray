@@ -45,6 +45,8 @@ public sealed class SttCommand : Command<SttCommand.Settings>
         public string? OutputPath { get; init; }
     }
 
+    internal int ExecuteInternal(Settings s, CancellationToken cancellation = default) => Execute(s, cancellation);
+
     protected override int Execute(Settings s, CancellationToken cancellation)
     {
         if (string.IsNullOrWhiteSpace(s.InputPath))
@@ -265,7 +267,7 @@ public sealed class SttCommand : Command<SttCommand.Settings>
         return null;
     }
 
-    private static string? ResolveVoxtralPath(string? modelFile)
+    internal static string? ResolveVoxtralPath(string? modelFile)
     {
         if (!string.IsNullOrWhiteSpace(modelFile))
         {

@@ -65,7 +65,7 @@ public sealed class VoxtralTextDecoderWeights
         NormWeight = loader.ReadF32("language_model.model.norm.weight");
     }
 
-    public VoxtralTextDecoderWeights(Rvc.RvcPackedTensorSource source)
+    public VoxtralTextDecoderWeights(AudioCppPackedTensorSource source)
     {
         EmbedTokensWeight = source.GetTensor("language_model.model.embed_tokens.weight");
         EmbedTokensWeightQ8_0 = QuantizeQ8_0(EmbedTokensWeight, HiddenSize);
@@ -75,16 +75,16 @@ public sealed class VoxtralTextDecoderWeights
             Layers[i] = new VoxtralTextLayerWeights
             {
                 InputNorm = source.GetTensor($"{p}.input_layernorm.weight"),
-                QWeight = source.GetRawBytes($"{p}.self_attn.q_proj.weight"),
-                KWeight = source.GetRawBytes($"{p}.self_attn.k_proj.weight"),
-                VWeight = source.GetRawBytes($"{p}.self_attn.v_proj.weight"),
-                OWeight = source.GetRawBytes($"{p}.self_attn.o_proj.weight"),
+                QWeight = source.GetRawBytes($"{p}.self_attn.q_proj.weight", Core.DType.Q8_0),
+                KWeight = source.GetRawBytes($"{p}.self_attn.k_proj.weight", Core.DType.Q8_0),
+                VWeight = source.GetRawBytes($"{p}.self_attn.v_proj.weight", Core.DType.Q8_0),
+                OWeight = source.GetRawBytes($"{p}.self_attn.o_proj.weight", Core.DType.Q8_0),
                 PostNorm = source.GetTensor($"{p}.post_attention_layernorm.weight"),
-                GateWeight = source.GetRawBytes($"{p}.mlp.gate_proj.weight"),
-                UpWeight = source.GetRawBytes($"{p}.mlp.up_proj.weight"),
-                DownWeight = source.GetRawBytes($"{p}.mlp.down_proj.weight"),
-                Ada1Weight = source.GetRawBytes($"{p}.ada_rms_norm.linear1.weight"),
-                Ada2Weight = source.GetRawBytes($"{p}.ada_rms_norm.linear2.weight"),
+                GateWeight = source.GetRawBytes($"{p}.mlp.gate_proj.weight", Core.DType.Q8_0),
+                UpWeight = source.GetRawBytes($"{p}.mlp.up_proj.weight", Core.DType.Q8_0),
+                DownWeight = source.GetRawBytes($"{p}.mlp.down_proj.weight", Core.DType.Q8_0),
+                Ada1Weight = source.GetRawBytes($"{p}.ada_rms_norm.linear1.weight", Core.DType.Q8_0),
+                Ada2Weight = source.GetRawBytes($"{p}.ada_rms_norm.linear2.weight", Core.DType.Q8_0),
             };
         }
         NormWeight = source.GetTensor("language_model.model.norm.weight");

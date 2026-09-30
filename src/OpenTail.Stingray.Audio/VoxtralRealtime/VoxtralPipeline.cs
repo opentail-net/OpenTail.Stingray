@@ -95,15 +95,35 @@ public sealed class VoxtralPipeline : ISpeechToTextPipeline
             }
 
             if (!model.Metadata.TryGetValue("audiocpp.embedded_files.names", out var embNamesObj) || embNamesObj is not object[] embNames)
-                throw new InvalidDataException("Voxtral packed GGUF missing 'audiocpp.embedded_files.names' metadata.");
+                throw new InvalidDataException("Voxtral packed GGUF missing 'audiocpp.embedded_files.names' metadata array.");
 
-            var embOffsets = (object[])model.Metadata["audiocpp.embedded_files.offsets"];
-            byte[] dataBytes = model.Metadata["audiocpp.embedded_files.data"] switch
+            if (!model.Metadata.TryGetValue("audiocpp.embedded_files.offsets", out var embOffsetsObj) || embOffsetsObj is not object[] embOffsets)
+                throw new InvalidDataException("Voxtral packed GGUF missing 'audiocpp.embedded_files.offsets' metadata array.");
+
+            if (embOffsets.Length != embNames.Length && embOffsets.Length != embNames.Length + 1)
+                throw new InvalidDataException($"audiocpp.embedded_files.offsets length ({embOffsets.Length}) must be equal to names length ({embNames.Length}) or names length + 1.");
+
+            if (!model.Metadata.TryGetValue("audiocpp.embedded_files.data", out var embDataObj))
+                throw new InvalidDataException("Voxtral packed GGUF missing 'audiocpp.embedded_files.data' metadata.");
+
+            byte[] dataBytes = embDataObj switch
             {
                 byte[] bArr => bArr,
                 object[] oArr => oArr.Select(o => (byte)Convert.ToInt64(o)).ToArray(),
                 _ => throw new InvalidDataException("Voxtral packed GGUF 'audiocpp.embedded_files.data' format unrecognized.")
             };
+
+            // Validate offsets monotonicity and bounds
+            long prevOffset = 0;
+            for (int i = 0; i < embOffsets.Length; i++)
+            {
+                long off = Convert.ToInt64(embOffsets[i]);
+                if (off < 0 || off > dataBytes.Length)
+                    throw new InvalidDataException($"audiocpp.embedded_files offset at index {i} ({off}) is out of bounds [0, {dataBytes.Length}].");
+                if (off < prevOffset)
+                    throw new InvalidDataException($"audiocpp.embedded_files offsets are not monotonically non-decreasing: index {i} has offset {off} < {prevOffset}.");
+                prevOffset = off;
+            }
 
             byte[]? tekkenBytes = null;
             for (int i = 0; i < embNames.Length; i++)
@@ -112,6 +132,8 @@ public sealed class VoxtralPipeline : ISpeechToTextPipeline
                 {
                     long start = Convert.ToInt64(embOffsets[i]);
                     long end = i + 1 < embOffsets.Length ? Convert.ToInt64(embOffsets[i + 1]) : dataBytes.Length;
+                    if (start > end || end > dataBytes.Length)
+                        throw new InvalidDataException($"audiocpp.embedded_files range for 'tekken.json' [{start}..{end}] is invalid for buffer of size {dataBytes.Length}.");
                     tekkenBytes = dataBytes[(int)start..(int)end];
                     break;
                 }
@@ -121,7 +143,7 @@ public sealed class VoxtralPipeline : ISpeechToTextPipeline
                 throw new InvalidDataException("Voxtral packed GGUF does not contain embedded 'tekken.json'.");
 
             var vocab = TekkenVocab.Load(tekkenBytes);
-            var source = new Rvc.RvcPackedTensorSource(model);
+            var source = new AudioCppPackedTensorSource(model);
             var audioWeights = new VoxtralAudioEncoderWeights(source);
             var textWeights = new VoxtralTextDecoderWeights(source);
 

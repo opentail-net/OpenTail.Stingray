@@ -73,7 +73,7 @@ public sealed class VoxtralAudioEncoderWeights
         Projector2Weight = VoxtralTextDecoderWeights.QuantizeQ8_0(loader.ReadF32("multi_modal_projector.linear_2.weight"), TextHiddenSize);
     }
 
-    public VoxtralAudioEncoderWeights(Rvc.RvcPackedTensorSource source)
+    public VoxtralAudioEncoderWeights(AudioCppPackedTensorSource source)
     {
         Conv1Weight = source.GetTensor("audio_tower.embedder.conv1.weight");
         Conv1Bias = source.GetTensor("audio_tower.embedder.conv1.bias");
@@ -86,24 +86,24 @@ public sealed class VoxtralAudioEncoderWeights
             Layers[i] = new VoxtralAudioLayerWeights
             {
                 AttnNorm = source.GetTensor($"{p}.self_attn_layer_norm.weight"),
-                QWeight = source.GetRawBytes($"{p}.self_attn.q_proj.weight"),
+                QWeight = source.GetRawBytes($"{p}.self_attn.q_proj.weight", Core.DType.Q8_0),
                 QBias = source.GetTensor($"{p}.self_attn.q_proj.bias"),
-                KWeight = source.GetRawBytes($"{p}.self_attn.k_proj.weight"),
-                VWeight = source.GetRawBytes($"{p}.self_attn.v_proj.weight"),
+                KWeight = source.GetRawBytes($"{p}.self_attn.k_proj.weight", Core.DType.Q8_0),
+                VWeight = source.GetRawBytes($"{p}.self_attn.v_proj.weight", Core.DType.Q8_0),
                 VBias = source.GetTensor($"{p}.self_attn.v_proj.bias"),
-                OWeight = source.GetRawBytes($"{p}.self_attn.o_proj.weight"),
+                OWeight = source.GetRawBytes($"{p}.self_attn.o_proj.weight", Core.DType.Q8_0),
                 OBias = source.GetTensor($"{p}.self_attn.o_proj.bias"),
                 FinalNorm = source.GetTensor($"{p}.final_layer_norm.weight"),
-                GateWeight = source.GetRawBytes($"{p}.mlp.gate_proj.weight"),
-                UpWeight = source.GetRawBytes($"{p}.mlp.up_proj.weight"),
-                DownWeight = source.GetRawBytes($"{p}.mlp.down_proj.weight"),
+                GateWeight = source.GetRawBytes($"{p}.mlp.gate_proj.weight", Core.DType.Q8_0),
+                UpWeight = source.GetRawBytes($"{p}.mlp.up_proj.weight", Core.DType.Q8_0),
+                DownWeight = source.GetRawBytes($"{p}.mlp.down_proj.weight", Core.DType.Q8_0),
                 DownBias = source.GetTensor($"{p}.mlp.down_proj.bias"),
             };
         }
 
         NormWeight = source.GetTensor("audio_tower.norm.weight");
-        Projector1Weight = source.GetRawBytes("multi_modal_projector.linear_1.weight");
-        Projector2Weight = source.GetRawBytes("multi_modal_projector.linear_2.weight");
+        Projector1Weight = source.GetRawBytes("multi_modal_projector.linear_1.weight", Core.DType.Q8_0);
+        Projector2Weight = source.GetRawBytes("multi_modal_projector.linear_2.weight", Core.DType.Q8_0);
     }
 
     private VoxtralAudioEncoderWeights(Func<int, float[]> rand)
