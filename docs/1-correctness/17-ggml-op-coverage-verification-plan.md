@@ -1,6 +1,11 @@
-# Plan: GGML op coverage — SSM_SCAN, RWKV6/7, DeepSeek-V4, SOLVE_TRI, and WIN_PART/UNPART
+# GGML op coverage verification — SSM_SCAN, RWKV6/7, DeepSeek-V4, SOLVE_TRI, and WIN_PART/UNPART
 
-**Entry in:** `docs/1-correctness/bugstofix.md`, item **17**.
+**Status: CLOSED 2026-10-02 as a source-pinned coverage re-audit.** This report classifies current
+implementations and records which capabilities remain future work; it does not claim that every
+listed GGML op or architecture is implemented. The remaining RWKV6, RWKV7, and generic `SOLVE_TRI`
+gaps are tracked separately as items 19, 20, and 21 in `bugstofix.md`.
+
+**Original entry:** `docs/1-correctness/bugstofix.md`, item **17**.
 
 ## 0. Current state — re-audit before implementing
 
@@ -356,19 +361,19 @@ Update `docs/2-coverage/050-ggml-op-coverage-gap-plan.md` or make this item-17 p
 do not leave conflicting current documents. Change `docs/STATUS.md` architecture status only after
 real-weight verification. Primitive completion is not model-family support.
 
-## Success criteria
+## Audit closure scope
 
-Item 17 is complete only when every operation still classified as genuinely missing has an
-implementation matching current ggml, an independent scalar oracle, deterministic normal/boundary
-shape tests, recurrent state/reset tests where applicable, correct CPU graph integration where
-required, and no duplicate implementation where existing Stingray code already matches.
+This item is complete when the requested ops have been re-audited against pinned current ggml and
+llama.cpp sources, existing Stingray equivalents and their limits have been classified, confirmed
+DeepSeek HC contract defects from the audit are fixed and tested, conflicting historical coverage
+claims are reconciled, and architecture admission remains fail-closed. This audit is now closed on
+that basis. Closure does **not** mean every op is implemented or every target architecture is
+supported.
 
-For architectures that fit the environment, require at least one real Mamba-family checkpoint,
-RWKV6 checkpoint, and RWKV7 checkpoint with reference-consistent greedy output. For DeepSeek-V4,
-reference-validate requested primitives and graph-integrate where practical, but keep the architecture
-unadmitted until a real-weight receipt is feasible. For `WIN_PART` / `WIN_UNPART`, require exact
-round-trip tests and do not admit an architecture without a real target. Keep `ModelCompatibility`
-fail-closed until corresponding architecture evidence exists.
+Remaining concrete capabilities are separate future items: RWKV6 (item 19), RWKV7 (item 20), and a
+generic `SOLVE_TRI` primitive (item 21). Mamba-1/general SSM_SCAN reuse and isolated reusable window
+primitives remain deferred until a concrete target justifies them. DeepSeek-V4 helper/graph code stays
+alpha and unadmitted without real-weight verification. `ModelCompatibility` remains fail-closed.
 
 ## Key rules
 
