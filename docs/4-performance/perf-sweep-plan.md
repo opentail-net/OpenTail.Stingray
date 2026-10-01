@@ -656,19 +656,21 @@ Real, moderate, affects some of the most mainstream dense chat models this engin
 Q4_K_M`: prefill 0.99x parity, decode **0.71x**. Unlike Phase 6, prefill is already at genuine
 parity here — this is a decode-specific gap on otherwise-excellent dense models.
 
-- [ ] 7.1 Real `STINGRAY_PROFILE_DECODE=1` profile on `Mistral-7B-Instruct-v0.3-Q4_K_M.gguf`
+- [x] 7.1 (done 2026-10-01, see result below) Real `STINGRAY_PROFILE_DECODE=1` profile on `Mistral-7B-Instruct-v0.3-Q4_K_M.gguf`
       decode (real weights) — get the QKV/Attention/OutProj/FFN/RmsNorm/RoPE split, same
       methodology as Phase 3.1, at this dense 7B size (not MoE, not tiny) to see whether the same
       shape/threading question applies or whether it's a different bottleneck at this size
       (e.g. KV-cache read bandwidth, since decode at 571-token context reads the full KV cache
       every step).
-- [ ] 7.2 Compare against Qwen3-8B's decode ratio (0.82x, close to parity) and the same model's
+- [x] 7.2 (done 2026-10-01) Compare against Qwen3-8B's decode ratio (0.82x, close to parity) and the same model's
       DRAM-bandwidth note in `PerformanceLeague.md` ("6.8 t/s = 34.2 GB/s = 93% of the measured
       36.8 GB/s DRAM ceiling") — if Mistral-7B/Ministral-8B are ALSO near the DRAM ceiling, the
       0.69-0.71x gap vs llama.cpp may be a real algorithmic/dequant-efficiency difference at
       matched bandwidth utilization, not a wasted-cycles bug. Measure before concluding either way.
 - [ ] 7.3 Implement + verify + re-benchmark if a real, actionable gap is found.
 
+
+**Phase 7 measured result (2026-10-01, Mistral-7B Q4_K_M, CPU, real weights, 3 runs):** decode 7.4-7.5 t/s vs llama-bench 9.34 t/s (0.80x; 8.58 t/s and 0.87x if llama.cpp is also given 16 threads). Profile split: FFN 72.7%, QKV 14.9%, output projection 10.1%, attention 1.7%, RmsNorm+RoPE+misc 0.6%, so it is not KV bandwidth or any non-matvec overhead. Thread sweep: Stingray 8 thr 6.0 t/s, 12 thr 7.6, 16 thr 7.5; llama.cpp peaks at 8 threads. Per parameter, QKV and out-proj cost ~3.2 ms/Gparam against ~2.2 for the FFN, so the smaller matrices stream about 1.45x less efficiently; bringing them to FFN efficiency would be worth ~8% decode (~0.87x), and the rest of the gap is lower per-thread bandwidth in the Q4_K matvec generally. Real lead, not yet implemented (needs its own measured pass). Recorded in PerformanceLeague.md.
 ## Phase 8 — DeepSeek-V2-Lite-Chat (`deepseek2`, prefill 0.49x)
 
 Major, widely-used open MoE family. Note: this checkpoint has an already-accepted, separately
