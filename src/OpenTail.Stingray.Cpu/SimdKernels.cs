@@ -1600,7 +1600,19 @@ public static unsafe class SimdKernels
                 QuantizeRowToQ8_0(input2, cols, sc2);
                 QuantizeRowToQ8_0(input3, cols, sc3);
 
-                if (rows >= MinRowsForParallel)
+                if (Avx2.IsSupported && Fma.IsSupported)
+                {
+                    // One pass over each weight row for all four tokens (bit-identical per token).
+                    var w = weights; var s0 = sc0; var s1 = sc1; var s2 = sc2; var s3 = sc3;
+                    var o0 = output0; var o1 = output1; var o2 = output2; var o3 = output3; int nb = cols / 32;
+                    if (rows >= MinRowsForParallel)
+                        Parallel.For(0, rows, s_parallelOpts, r =>
+                            DotQ8_0_Q8_0_4In_Avx2(w + (long)r * bpr, s0, s1, s2, s3, nb, out o0[r], out o1[r], out o2[r], out o3[r]));
+                    else
+                        for (int r = 0; r < rows; r++)
+                            DotQ8_0_Q8_0_4In_Avx2(w + (long)r * bpr, s0, s1, s2, s3, nb, out o0[r], out o1[r], out o2[r], out o3[r]);
+                }
+                else if (rows >= MinRowsForParallel)
                 {
                     var w = weights; var s0 = sc0; var s1 = sc1; var s2 = sc2; var s3 = sc3;
                     var o0 = output0; var o1 = output1; var o2 = output2; var o3 = output3; int c = cols;
@@ -6532,6 +6544,46 @@ public static unsafe class SimdKernels
             acc = Fma.MultiplyAdd(Vector256.Create(d), q, acc);
         }
         return HSum256(acc);
+    }
+
+    /// <summary>
+    /// Four <see cref="DotQ8_0_Q8_0_Avx2"/> dots against one weight row in a single pass: each weight
+    /// block, its fp16 scale and |w| are loaded once, and the four tokens run as independent FMA
+    /// chains instead of one serial chain each. Every token's operations and their order are exactly
+    /// those of the single dot, so each result is bit-identical to it (pinned by
+    /// <c>SimdKernelsQ8KSTests.MatVec4In_BitwiseMatchesSingleMatVec</c>).
+    /// </summary>
+    internal static void DotQ8_0_Q8_0_4In_Avx2(byte* row, byte* s0, byte* s1, byte* s2, byte* s3, int numBlocks,
+        out float r0, out float r1, out float r2, out float r3)
+    {
+        const int bytesPerBlock = 34;
+        var acc0 = Vector256<float>.Zero; var acc1 = Vector256<float>.Zero;
+        var acc2 = Vector256<float>.Zero; var acc3 = Vector256<float>.Zero;
+        var ones16 = Vector256.Create((short)1);
+
+        for (int b = 0; b < numBlocks; b++)
+        {
+            byte* wb = row + b * bytesPerBlock;
+            int so = b * 36;
+            float dw = HalfToFloat(wb[0], wb[1]);
+            var qw = Vector256.LoadUnsafe(ref *(wb + 2)).AsSByte();
+            var ax = Avx2.Abs(qw);
+
+            var q0 = Avx.ConvertToVector256Single(Avx2.MultiplyAddAdjacent(Avx2.MultiplyAddAdjacent(ax,
+                Avx2.Sign(Vector256.LoadUnsafe(ref *(s0 + so + 4)).AsSByte(), qw)), ones16));
+            var q1 = Avx.ConvertToVector256Single(Avx2.MultiplyAddAdjacent(Avx2.MultiplyAddAdjacent(ax,
+                Avx2.Sign(Vector256.LoadUnsafe(ref *(s1 + so + 4)).AsSByte(), qw)), ones16));
+            var q2 = Avx.ConvertToVector256Single(Avx2.MultiplyAddAdjacent(Avx2.MultiplyAddAdjacent(ax,
+                Avx2.Sign(Vector256.LoadUnsafe(ref *(s2 + so + 4)).AsSByte(), qw)), ones16));
+            var q3 = Avx.ConvertToVector256Single(Avx2.MultiplyAddAdjacent(Avx2.MultiplyAddAdjacent(ax,
+                Avx2.Sign(Vector256.LoadUnsafe(ref *(s3 + so + 4)).AsSByte(), qw)), ones16));
+
+            acc0 = Fma.MultiplyAdd(Vector256.Create(dw * *(float*)(s0 + so)), q0, acc0);
+            acc1 = Fma.MultiplyAdd(Vector256.Create(dw * *(float*)(s1 + so)), q1, acc1);
+            acc2 = Fma.MultiplyAdd(Vector256.Create(dw * *(float*)(s2 + so)), q2, acc2);
+            acc3 = Fma.MultiplyAdd(Vector256.Create(dw * *(float*)(s3 + so)), q3, acc3);
+        }
+        r0 = HSum256(acc0); r1 = HSum256(acc1); r2 = HSum256(acc2); r3 = HSum256(acc3);
     }
 
     // ================================================================
