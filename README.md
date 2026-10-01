@@ -29,6 +29,7 @@ That answer came from a 469 MB model running on an ordinary desktop CPU, in abou
 - **Checked against the reference implementations.** Language models are compared token by token
   with llama.cpp. What is verified, and how, is recorded model by model in
   [docs/STATUS.md](docs/STATUS.md).
+
 **New here? [What can I do with Stingray?](docs/WHAT-YOU-CAN-DO.md)** is a one-page tour of every task it
 handles, what you need and where the limits are. If something goes wrong, see
 [troubleshooting](docs/TROUBLESHOOTING.md).
