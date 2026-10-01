@@ -4,9 +4,10 @@ using OpenTail.Stingray.Core;
 namespace OpenTail.Stingray.Tests.ForwardPass;
 
 /// <summary>
-/// LFM2-MoE's batched recurrent/attention path remains opt-in until its real-weight numerical drift
-/// is explained. The safe prefill entry point must therefore produce bit-identical logits to the
-/// token-by-token path on the WikiText prefix that exposed the first attention-layer divergence.
+/// LFM2-MoE batched prefill vs token-by-token on the WikiText prefix. The attention-layer drift seen
+/// at 256+ tokens is the 64-wide flash attention's online softmax (not bit-identical by design);
+/// with <c>STINGRAY_PREFILL_ATTN_FLASH64=0</c> the batched trunk is bit-identical, which the second
+/// test pins.
 /// </summary>
 public sealed class Lfm2MoeBatchedPrefillParityTests : HeavyTestBase
 {
@@ -65,6 +66,67 @@ public sealed class Lfm2MoeBatchedPrefillParityTests : HeavyTestBase
         }
         finally
         {
+            Engine.ForwardPass.RecurrentBatchedPrefillEnabled = prevRecurrent;
+            Engine.ForwardPass.Lfm2MoeBatchedPrefillEnabled = prevLfm2Batch;
+            SimdKernels.Q8PrefillEnabled = prevQ8;
+            Engine.MoeBatchedExperts.Q8PrefillEnabled = prevMoeQ8;
+            SimdKernels.MinBatchForBlas = prevBlas;
+        }
+    }
+
+    [Fact]
+    public void Lfm2Moe_BatchedPrefillWithoutFlash64_MatchesTokenByTokenLogits()
+    {
+        string? modelPath = FindModel();
+        Assert.SkipUnless(modelPath is not null, "LFM2-8B-A1B-Q4_K_M.gguf is required.");
+
+        string repoRoot = FindRepoRoot();
+        string corpusPath = Path.Combine(repoRoot, "scripts", "kvarn-gate", "wiki.test.raw");
+        Assert.SkipUnless(File.Exists(corpusPath), "scripts/kvarn-gate/wiki.test.raw is required.");
+
+        using var modelHandle = SharedModelCacheFixture.Instance.Acquire(modelPath!);
+        var model = modelHandle.Model;
+        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+
+        var tokenizer = GgufTokenizer.FromGgufModel(model);
+        var tokens = tokenizer.Encode(File.ReadAllText(corpusPath)).ToList();
+        if (tokenizer.AddBosToken && tokenizer.BosTokenId >= 0
+            && (tokens.Count == 0 || tokens[0] != tokenizer.BosTokenId))
+            tokens.Insert(0, tokenizer.BosTokenId);
+        int[] prefix = tokens.Take(256).ToArray();
+
+        bool prevRecurrent = Engine.ForwardPass.RecurrentBatchedPrefillEnabled;
+        bool prevLfm2Batch = Engine.ForwardPass.Lfm2MoeBatchedPrefillEnabled;
+        bool prevQ8 = SimdKernels.Q8PrefillEnabled;
+        bool prevMoeQ8 = Engine.MoeBatchedExperts.Q8PrefillEnabled;
+        int prevBlas = SimdKernels.MinBatchForBlas;
+        string? prevFlash64 = Environment.GetEnvironmentVariable("STINGRAY_PREFILL_ATTN_FLASH64");
+        try
+        {
+            Environment.SetEnvironmentVariable("STINGRAY_PREFILL_ATTN_FLASH64", "0");
+            Engine.ForwardPass.RecurrentBatchedPrefillEnabled = true;
+            Engine.ForwardPass.Lfm2MoeBatchedPrefillEnabled = true;
+            SimdKernels.Q8PrefillEnabled = false;
+            Engine.MoeBatchedExperts.Q8PrefillEnabled = false;
+            SimdKernels.MinBatchForBlas = int.MaxValue;
+
+            using var backend = new CpuBackend();
+            using var batchedPrefill = new Engine.ForwardPass(model, backend, hp, maxContextLength: prefix.Length + 1);
+            using var tokenByToken = new Engine.ForwardPass(model, backend, hp, maxContextLength: prefix.Length + 1);
+
+            batchedPrefill.PrefillWithPerPositionLogits(prefix, 0, (position, logits) =>
+            {
+                var expected = tokenByToken.Forward(prefix[position], position);
+                for (int i = 0; i < logits.Length; i++)
+                {
+                    if (BitConverter.SingleToInt32Bits(expected[i]) != BitConverter.SingleToInt32Bits(logits[i]))
+                        Assert.Fail($"Position {position}, logit {i} differs: token-by-token {expected[i]:R}, batched {logits[i]:R}.");
+                }
+            });
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("STINGRAY_PREFILL_ATTN_FLASH64", prevFlash64);
             Engine.ForwardPass.RecurrentBatchedPrefillEnabled = prevRecurrent;
             Engine.ForwardPass.Lfm2MoeBatchedPrefillEnabled = prevLfm2Batch;
             SimdKernels.Q8PrefillEnabled = prevQ8;

@@ -135,7 +135,7 @@ implementation gap. See the [verification receipt](../done/16-iq-formats-coverag
     text engine's prefill), only the Q8_0 conv layers are packed F32: 1.1 GB peak, and faster than CrispASR on the
     same files (TDT 1.16x, CTC 1.10x). CrispASR itself peaks at 0.6-0.65 GB; the ~290 MB of F32 conv weights are the
     difference, kept on purpose because the int8 Q8_0 path was ~0.2 s slower per clip. Stopped here.
-- [ ] **12. LFM2-MoE (`lfm2moe`) not admitted; reference parity still open** (logged 2026-09-28, docs/103 item 13): the
+- [x] **12. LFM2-MoE (`lfm2moe`) batched/per-token parity and admission — CLOSED 2026-10-01** (logged 2026-09-28, docs/103 item 13): the
   earlier Q8-on measurements were per-token 8.1860 vs batched 8.9595 at `-c 512`, and batched 15.8076 vs llama.cpp
   14.8639 at `-c 2048`. After global CPU Q8 became opt-in, the fresh Q4_K_M baseline showed a smaller but real batched
   drift: with Q8 off and OpenBLAS excluded, `[256,1024)` PPL at `-c 1024` was 7.5275 batched vs 7.6135 per-token, and
@@ -147,7 +147,7 @@ implementation gap. See the [verification receipt](../done/16-iq-formats-coverag
     (1,023/2,047 targets, zero changed values; PPL `[256,1024)` 7.6135 and `[1024,+)` 14.2242).
   - **Coverage:** `Lfm2MoeBatchedPrefillParityTests` compares every full-vocabulary logit on a real WikiText prefix and
     asserts bit equality against token-by-token execution. Release build and real-weight test passed 2026-10-01.
-  - **Still open:** reconcile PPL against llama.cpp using identical tokens/evaluation semantics, explain the experimental
+  - **Resolved 2026-10-01:** root cause was flash-64 attention (online softmax), not a batched-path bug: with `STINGRAY_PREFILL_ATTN_FLASH64=0` batched == per-token bit-for-bit. PPL [512,1024) 7.3425 (per-token) / 7.2882 (batched, flash) vs llama.cpp 7.9130 ± 1.09. Batched default restored (`STINGRAY_LFM2_MOE_BATCHED_PREFILL=0` opts out) and `lfm2moe` admitted; see the plan's Resolution section. (Superseded text follows.) Was open: reconcile PPL against llama.cpp using identical tokens/evaluation semantics, explain the experimental
     attention difference, and admit `lfm2moe` only after that reference check. See [12-LFM2-MoE batched/per-token
     parity plan](12-lfm2moe-batched-per-token-parity-plan.md).
 - [ ] **13. Granite 4.0-H small (MoE) PPL parity** (logged 2026-09-28, docs/103 item 13): `granite-4.0-h-small-Q2_K`,

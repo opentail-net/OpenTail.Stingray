@@ -26,13 +26,15 @@ public sealed unsafe partial class ForwardPass
         Environment.GetEnvironmentVariable("STINGRAY_RECURRENT_BATCHED_PREFILL") != "0";
 
     /// <summary>
-    /// LFM2-MoE's batched attention path is experimental: on the real Q4_K_M checkpoint, layer 2
-    /// diverges from token-by-token execution at position 1 and the error grows through later
-    /// layers. Keep the exact path as the default until that numerical gap is explained; set
-    /// <c>STINGRAY_LFM2_MOE_BATCHED_PREFILL=1</c> to opt into the batched recurrent trunk.
+    /// LFM2-MoE batched recurrent trunk. The batched/per-token drift seen on the real Q4_K_M checkpoint
+    /// (2026-10-01) was the 64-wide flash attention's online softmax at 256+ tokens, which is not
+    /// bit-identical by design; with <c>STINGRAY_PREFILL_ATTN_FLASH64=0</c> the batched trunk matches
+    /// token-by-token bit-for-bit (PPL [512,1024): 7.3425 both vs 7.2882 with flash, llama.cpp
+    /// 7.9130 ± 1.09). On by default (~2.3x faster prefill); set
+    /// <c>STINGRAY_LFM2_MOE_BATCHED_PREFILL=0</c> for the exact per-token trunk.
     /// </summary>
     public static bool Lfm2MoeBatchedPrefillEnabled { get; set; } =
-        Environment.GetEnvironmentVariable("STINGRAY_LFM2_MOE_BATCHED_PREFILL") == "1";
+        Environment.GetEnvironmentVariable("STINGRAY_LFM2_MOE_BATCHED_PREFILL") != "0";
 
     /// <summary>True when the batched trunk can run this model: no recurrent state, or the batched recurrent path is on
     /// (not with the TurboQuant cache, whose sibling trunk has no recurrent layers).</summary>

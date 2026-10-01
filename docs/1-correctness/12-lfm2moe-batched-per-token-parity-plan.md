@@ -70,6 +70,26 @@ Build and the real-weight test passed on 2026-10-01. This closes only batched/pe
 the safe default: same-semantics llama.cpp comparison, explanation of the experimental attention
 drift, PPL/reference reconciliation, and architecture admission remain open.
 
+## Resolution — 2026-10-01 (root cause: flash-64 attention, not a batched-path bug)
+
+The "attention layer 2 drift" only appears when `startPos + N >= 256`, where `PrefillCoreAttention` switches to
+`PrefillFlashAttention64` (online softmax, deliberately not bit-identical to the materialised path; see the comment in
+`ForwardPass.Attention.cs`). With `STINGRAY_PREFILL_ATTN_FLASH64=0`, Q8 off and OpenBLAS excluded, the batched LFM2-MoE
+trunk matches token-by-token **bit-for-bit** on all 256 prefix positions (full-vocab logits), and at `-c 1024` the NLL
+dump is identical (`[256,1024)` PPL 7.6135 both). With flash-64 on, batched `[256,1024)` PPL is 7.5275: the usual flash
+envelope, amplified into per-token NLL differences by top-k router flips.
+
+Reference check (identical file/window, `-c 1024`, CPU). `llama-perplexity --chunks 1` scores the second half
+`[512,1024)`: llama.cpp 7.9130 ± 1.09; Stingray per-token 7.3425, batched without flash 7.3425, batched with flash
+7.2882 (all within 0.6 SE; nothing systematic). Greedy chat generation of "The capital of France is" gives a correct
+answer; llama-completion's raw continuation also starts "Paris".
+
+Actions: `Lfm2MoeBatchedPrefillEnabled` is **on by default again** (`STINGRAY_LFM2_MOE_BATCHED_PREFILL=0` opts out; 27 →
+72 tok/s on the 1024-token run), `lfm2moe` is admitted in `ModelCompatibility`, and the trace test became
+`Lfm2Moe_BatchedPrefillWithoutFlash64_MatchesTokenByTokenLogits` (bit-equality assertion). Not done: per-position NLL
+pairing against llama.cpp (no per-token dump tool here; the PPL agreement is the available evidence), and the earlier
+`-c 2048` 14.2242 vs 14.8639 gap is within the same standard-error envelope but was not re-run.
+
 ### Important distinction
 
 Do not solve this by simply adding `lfm2moe` to `ModelCompatibility`. The architecture must first be demonstrated numerically correct. Admission is the final step, not the first.

@@ -293,6 +293,14 @@ public static class ModelCompatibility
         // v1.0 (free commercial use under $10M revenue); documented, not a support gate.
         "lfm2",
 
+        // lfm2moe -- Liquid LFM2-MoE (llama.cpp lfm2.cpp, MoE FFN: sigmoid gating + exp_probs_b selection bias, top-k
+        // renormalised). ADMITTED 2026-10-01. LFM2-8B-A1B-Q4_K_M: batched prefill matches token-by-token bit-for-bit with
+        // STINGRAY_PREFILL_ATTN_FLASH64=0 (the earlier "drift" was flash-64's online softmax, not a bug); wikitext
+        // [512,1024) PPL at -c 1024 is 7.3425 per-token / 7.2882 batched-flash vs llama-perplexity 7.9130 +/- 1.09
+        // (<0.6 SE); greedy "The capital of France is" continuation matches llama-completion.
+        // docs/1-correctness/12-lfm2moe-batched-per-token-parity-plan.md.
+        "lfm2moe",
+
         // internlm2 -- ADMITTED 2026-09-01. Was blocked purely on the tokenizer axis (same as
         // minicpm/ernie4_5/baichuan): tokenizer.ggml.model=llama with tokenizer.ggml.scores
         // (92,544 entries) and no tokenizer.ggml.merges array -- already fixed by
