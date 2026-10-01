@@ -54,11 +54,11 @@ even if it happens to load.
 
 ## What does not work yet
 
-- **Some architectures are not supported:** Gemma 1/2, RWKV, Jamba, pure Mamba, Llama 4 vision,
+- **Some architectures are not supported:** Gemma 1/2, Jamba, pure Mamba, Llama 4 vision,
   DeepSeek-V3.2/V4 (alpha code, never run) and GLM-4.5-class `glm4moe` models. See the open list in
   [00-current-work.md](00-current-work.md).
-- **Known partial results:** DeepSeek-V2-Lite currently fails a greedy-parity check that used to
-  pass ([bugstofix #23](1-correctness/bugstofix.md)); CosyVoice 2 can garble the end of a sentence;
+- **Known partial results:** DeepSeek-V2-Lite matches llama.cpp's greedy output with
+  `STINGRAY_CPU_PREFILL_Q8=1`; with the default F32 prefill it departs at token 9 on the test prompt; CosyVoice 2 can garble the end of a sentence;
   MiMo-VL is partial.
 - **Music, voice conversion and time-series models are library-only,** with no command-line entry.
 - **Speculative decoding does not speed up this CPU** (it lacks the instructions it needs).

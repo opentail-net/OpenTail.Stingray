@@ -35,14 +35,15 @@ last. Closed sections are one-line pointers into [done/perf-sweep-plan-closed-ph
 1. Phase 5: re-scan `PerformanceLeague.md` for uncovered rows (one pass, no code).
 2. Horizontal Pass A, item A.5: one manual file review plus one scoped fix.
 3. Phase 11: Citrinet-ASR, per-stage profile of a small, fast pipeline.
-4. Phase 10: VLM text decode, profile first (10.2), then the Vulkan regression (10.3).
-5. Phase 1: Voxtral Q8_0 weights (a known, large lever with a plateau declared).
-6. Phase 8: DeepSeek-V2-Lite prefill (0.49x), profile first.
-7. Phase 9: worst-RTF TTS/audio-generation pipelines (large, no numeric golden for some).
-8. Phase 3: small-model decode (a blanket threading fix already failed and was reverted; needs per-function work).
-9. Phase 2: Qwen3.6 hybrid-GDN decode (plateau declared; remaining angle is architectural).
-10. Phase 6: Gemma batched prefill (a multi-feature project).
-11. Phases 4 and 13: iGPU dispatch overhead (uncertain; the premise needs a discrete GPU to re-test).
+4. Phase 16: RWKV6/RWKV7 prefill (0.21-0.25x), new self-contained code; profile first (added 2026-10-01).
+5. Phase 10: VLM text decode, profile first (10.2), then the Vulkan regression (10.3).
+6. Phase 1: Voxtral Q8_0 weights (a known, large lever with a plateau declared).
+7. Phase 8: DeepSeek-V2-Lite prefill (0.49x), profile first.
+8. Phase 9: worst-RTF TTS/audio-generation pipelines (large, no numeric golden for some).
+9. Phase 3: small-model decode (a blanket threading fix already failed and was reverted; needs per-function work).
+10. Phase 2: Qwen3.6 hybrid-GDN decode (plateau declared; remaining angle is architectural).
+11. Phase 6: Gemma batched prefill (a multi-feature project).
+12. Phases 4 and 13: iGPU dispatch overhead (uncertain; the premise needs a discrete GPU to re-test).
 
 ---
 
@@ -250,6 +251,21 @@ a real, working ASR pipeline, worse than the Whisper Tiny row already queued in 
 - [ ] 11.3 Implement + re-verify the exact-transcript-match correctness this pipeline already has
       (do not regress it) + re-benchmark (3+ runs, this pipeline is fast enough to afford more
       samples than the slow TTS/diffusion pipelines elsewhere in this doc) + record.
+
+## Phase 16 — RWKV6/RWKV7 prefill (0.21-0.25x; decode already 0.83-0.85x)
+
+Added 2026-10-01 with the `rwkv6`/`rwkv7` admissions (code: `RwkvForwardPassBase`, `Rwkv6ForwardPass`,
+`Rwkv7ForwardPass`). Prefill already runs batched: one matmul per projection over chunks of up to 256
+tokens, with only the WKV recurrence stepping token by token. That took RWKV7 Q8_0 from 17.5-19.8 to
+38.7-39.7 t/s over 605 tokens (same-day A/B, idle machine). llama.cpp pp512 is 185 t/s (16 thr). Measured
+before profiling: the int8 prefill tier (`STINGRAY_CPU_PREFILL_Q8=1`) and BLAS on/off did not help
+(29-32 t/s, those two runs under background load, so only indicative).
+
+- [ ] 16.1 Per-stage profile of a ~600-token prefill: batched matmuls vs the per-token WKV step, group
+      norm, lerps and LayerNorms (all scalar loops today). An env-gated stage timer is enough; the
+      2026-10-01 attempt was abandoned because another process was loading the CPU.
+- [ ] 16.2 Fix the biggest stage, re-verify `Rwkv6/Rwkv7GreedyParityTests` and `RwkvRecurrentStateTests`,
+      re-benchmark (3 alternated runs vs the current build), update the League rows.
 
 ## Phase 10 — Vision-Language Model decode weakness (~0.48x pattern, worst point 0.41x prefill)
 

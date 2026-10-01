@@ -52,9 +52,9 @@ updated with dated evidence in the same pass.
     an upstream C++ port with v1 support. The row stays ⚪ with visual-only evidence. #13 in
     [done/102](done/102-status-open-items-plan.md) lists the local sd.cpp patch.
 14. **Remaining open items in [1-correctness/bugstofix.md](1-correctness/bugstofix.md)**: #22 stale
-    numpy-golden vision parity tests (4 failing in the Vision run), #23 DeepSeek-V2-Lite greedy parity
-    regression (diverges at generated token 9; bisect from 113734d2), #15 LLaVA-NeXT/OneVision residuals
-    (pixel-level and per-view embedding parity unverified), #19/#20 RWKV6/RWKV7 (deferred, targets chosen).
+    numpy-golden vision parity tests (4 failing in the Vision run) and #15 LLaVA-NeXT/OneVision residuals
+    (pixel-level and per-view embedding parity unverified). Closed 2026-10-01: #19/#20 (RWKV6/RWKV7 admitted)
+    and #23 (DeepSeek-V2-Lite receipt; one decision left: whether F32 prefill stays its default).
     Also: Apertus greedy re-check vs `llama-server --no-jinja`.
 15. **Stable Audio 3 Small quality**: our local SA3 checkpoints are the `-base` (pre-trained) models, which sound    worse than the post-trained releases. Waiting on the user's listening verdict on the audio.cpp post-trained    clips (`docs/audio-samples/sa3_small_*_POSTTRAINED_*`); if better, add GGUF loading (or gated safetensors via    `HF_TOKEN`) and an opt-in `pingpong` sampler (8 steps, CFG 1.0). Detail: [done/104](done/104-handover-2026-09-28.md) §2.
 
@@ -77,9 +77,9 @@ text model wants 4096), Llama 4 vision (93 GB), MobileNetV5 (no checkpoint decla
     now that several ONNX pipelines exist, see whether a shared shape is worth extracting.
 9. **Gemma 1 / Gemma 2**: no `ModelGraph` branch at all (no local checkpoint to verify with).
 10. **Newer LTX families** (LTX-2.3 / 2.5), a later campaign.
-11. **Missing GGML op kernels**: RWKV6 / RWKV7 only, [1-correctness/bugstofix.md](1-correctness/bugstofix.md)
-    #19 / #20 (deferred; the rest of the old op gap is closed, see [done/17](done/17-ggml-op-coverage-verification-plan.md)).
-12. **Lower priority, not planned**: AI21 Jamba, Kimi Linear, RWKV-7, Arcee AFM, ServiceNow
+11. **Missing GGML op kernels**: none left; RWKV6 / RWKV7 closed 2026-10-01 (see
+    [done/bugstofix-resolved-2026-10.md](done/bugstofix-resolved-2026-10.md); the rest of the old op gap: [done/17](done/17-ggml-op-coverage-verification-plan.md)).
+12. **Lower priority, not planned**: AI21 Jamba, Kimi Linear, Arcee AFM, ServiceNow
     Apriel, Ant Ling (`bailingmoe2`), MiniMax-M2 (too large); DeepSeek-OCR v1 (no checkpoint).
 13. **Out of scope for this PC**: DeepSeek-V3.2 / V4, alpha code never run on real weights.
     [2-coverage/058-deepseek-full-lineage-implementation-plan.md](2-coverage/058-deepseek-full-lineage-implementation-plan.md).
