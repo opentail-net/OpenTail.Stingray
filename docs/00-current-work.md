@@ -70,8 +70,7 @@ updated with dated evidence in the same pass.
     [done/102](done/102-status-open-items-plan.md) lists the local sd.cpp patch.
 14. **Small, known leftovers**: [1-correctness/bugstofix.md](1-correctness/bugstofix.md)
     (`SpeculativeDecoder` StepSampled/PLD latent defect, dtype/op drift notes); Apertus greedy
-    re-check vs `llama-server --no-jinja`; the stale Gemma 4 prefill comment at `ForwardPass.cs`
-    ~line 1350 (batched prefill has supported per-layer head dims since 2026-09-16).
+    re-check vs `llama-server --no-jinja`.
 
 Not fixable on this machine (kept 🔴 in STATUS): MiMo-VL (upstream mmproj projects to 3584, the
 text model wants 4096), Llama 4 vision (93 GB), MobileNetV5 (no checkpoint declares the projector).

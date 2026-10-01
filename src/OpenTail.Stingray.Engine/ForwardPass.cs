@@ -1400,26 +1400,21 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
         // MoeBatchedPrefillSupported admits the model; the configurations it excludes (TurboQuant
         // cache, router/norm traces, Gemma-family post-layer transforms) still prefill per token.
         //
-        // Per-layer head-dim models (Gemma 4) ALWAYS fall back to sequential Forward here, and not
-        // because of unimplemented strides — issue #351 plumbed per-layer qDim/kvDim through the
-        // batched blocks (buffers sized from _maxHeadDim, RoPE/Q-K-norm via ApplyRopeLayer,
-        // PrefillCoreAttention deriving headDim per layer). Gemma4 needs real features PrefillCore
-        // doesn't implement at all: per-layer KV head count (MQA/GQA mix), KV-layer sharing across
-        // layers (_layerKvSrc), attention_k_eq_v, a per-head V norm before the cache write, and —
-        // the actual blocker — sliding-window attention, which PrefillCoreAttention has no
-        // windowSize parameter for. SnapKV eviction also isn't covered (SnapKvSelector assumes one
-        // model-wide head dim), so per-layer models with SnapKV active take this path too.
+        // Per-layer head-dim models (Gemma 4) take the batched path since 2026-09-16: PrefillCore now
+        // handles per-layer qDim/kvDim (buffers sized from _maxHeadDim, RoPE/Q-K-norm via
+        // ApplyRopeLayer, PrefillCoreAttention deriving headDim per layer), per-layer KV head counts,
+        // KV-layer sharing (_layerKvSrc), attention_k_eq_v, the per-head V norm and sliding-window
+        // attention. This guard only excludes the configurations listed below (unsupported MoE,
+        // unweighted norm); SnapKV eviction is the remaining per-layer-model gap (SnapKvSelector
+        // assumes one model-wide head dim).
         //
-        // Note for onAllPositionLogits callers: this fallback never calls MatMulBatched, so it
-        // cannot exercise Q8PrefillEnabled — a caller diagnosing that path specifically should
-        // confirm the model isn't MoE / doesn't have per-layer head dims first.
+        // Note for onAllPositionLogits callers: the sequential fallback never calls MatMulBatched, so
+        // it cannot exercise Q8PrefillEnabled — a caller diagnosing that path specifically should
+        // confirm the model isn't taking the fallback first.
         //
-        // STINGRAY_PER_LAYER_HD_PREFILL=1 used to force the batched path anyway, to make the
-        // remaining work measurable. Measured (2026-08-07): forcing it doesn't just produce wrong
-        // output, it produces an AccessViolationException — the batched path indexes KV at the
-        // model-wide head dim (512) on layers that actually carry 256, walking off the buffer end.
-        // A path that corrupts memory can't be timed, so the flag now fails fast with an
-        // explanation instead of forcing a route that was never bounds-safe.
+        // STINGRAY_PER_LAYER_HD_PREFILL=1 (ForwardPass.Moe.cs) is a historical force-flag from before
+        // that plumbing existed; it failed fast then because the batched path indexed KV at the
+        // model-wide head dim on layers carrying a smaller one.
         //
         // Earlier framings of this routing decision (superseded, kept for the per-layer plumbing
         // history): docs/reference/forwardpass-investigation-log.md
