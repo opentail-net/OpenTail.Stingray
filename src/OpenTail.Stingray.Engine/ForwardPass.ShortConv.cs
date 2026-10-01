@@ -25,9 +25,21 @@ public sealed unsafe partial class ForwardPass
     public static bool RecurrentBatchedPrefillEnabled { get; set; } =
         Environment.GetEnvironmentVariable("STINGRAY_RECURRENT_BATCHED_PREFILL") != "0";
 
+    /// <summary>
+    /// LFM2-MoE's batched attention path is experimental: on the real Q4_K_M checkpoint, layer 2
+    /// diverges from token-by-token execution at position 1 and the error grows through later
+    /// layers. Keep the exact path as the default until that numerical gap is explained; set
+    /// <c>STINGRAY_LFM2_MOE_BATCHED_PREFILL=1</c> to opt into the batched recurrent trunk.
+    /// </summary>
+    public static bool Lfm2MoeBatchedPrefillEnabled { get; set; } =
+        Environment.GetEnvironmentVariable("STINGRAY_LFM2_MOE_BATCHED_PREFILL") == "1";
+
     /// <summary>True when the batched trunk can run this model: no recurrent state, or the batched recurrent path is on
     /// (not with the TurboQuant cache, whose sibling trunk has no recurrent layers).</summary>
-    private bool RecurrentBatchedPrefillApplies => !HasRecurrentState || (RecurrentBatchedPrefillEnabled && _tqKvCache is null);
+    private bool RecurrentBatchedPrefillApplies => !HasRecurrentState ||
+        (RecurrentBatchedPrefillEnabled
+            && (!(_hp.IsMoE && _hp.IsShortConvLayer is not null) || Lfm2MoeBatchedPrefillEnabled)
+            && _tqKvCache is null);
 
     private void InitShortConv(int numLayers)
     {

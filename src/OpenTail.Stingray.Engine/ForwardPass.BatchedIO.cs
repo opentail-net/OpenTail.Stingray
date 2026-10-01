@@ -755,6 +755,7 @@ public sealed unsafe partial class ForwardPass
             for (int i = 0; i < _hp.NumLayers; i++)
             {
                 if (_bFfnUp![i] != null) NativeMemory.Free(_bFfnUp[i]);
+                if (_bFfnGate![i] != null) NativeMemory.Free(_bFfnGate[i]);
                 if (_bFfnDown![i] != null) NativeMemory.Free(_bFfnDown[i]);
             }
         }

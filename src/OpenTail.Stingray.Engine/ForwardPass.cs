@@ -203,6 +203,8 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
     private readonly float* _bOutput;
     private readonly bool _hasFfnBias;
     private readonly float*[]? _bFfnUp;
+    // Gated-FFN gate bias (jais); a layer's entry stays null when the checkpoint has no ffn_gate.bias.
+    private readonly float*[]? _bFfnGate;
     private readonly float*[]? _bFfnDown;
 
     // Partial-RoPE width: leading _ropeDim channels of each head are rotated, the rest pass
@@ -636,6 +638,7 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
         {
             _bFfnUp = new float*[L];
             _bFfnDown = new float*[L];
+            _bFfnGate = new float*[L];
         }
 
         // GPT-NeoX/Pythia partial RoPE (rope.dimension_count < headDim): rotate only the
@@ -937,6 +940,8 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
             if (_hasFfnBias)
             {
                 _bFfnUp![i] = LoadBias($"blk.{i}.ffn_up.bias", _intermDim);
+                if (_model.FindTensor($"blk.{i}.ffn_gate.bias") is not null)
+                    _bFfnGate![i] = LoadBias($"blk.{i}.ffn_gate.bias", _intermDim);
                 _bFfnDown![i] = LoadBias($"blk.{i}.ffn_down.bias", _embDim);
             }
 

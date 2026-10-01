@@ -578,6 +578,18 @@ public sealed unsafe partial class ForwardPass
                     {
                         MatMulBatchedDualCached(batchFfnGate, in _wGate[layer], batchFfnUp, in _wUp[layer], batchNorm, N, _intermDim, _embDim);
 
+                        // Gated FFN with biases (jais): bias goes before the activation.
+                        if (_hasFfnBias)
+                        {
+                            for (int n = 0; n < N; n++)
+                            {
+                                if (_bFfnGate is not null && _bFfnGate[layer] != null)
+                                    SimdKernels.AddInPlace(batchFfnGate + (long)n * _intermDim, _bFfnGate[layer], _intermDim);
+                                if (_bFfnUp is not null && _bFfnUp[layer] != null)
+                                    SimdKernels.AddInPlace(batchFfnUp + (long)n * _intermDim, _bFfnUp[layer], _intermDim);
+                            }
+                        }
+
                         if (_hp.FfnActivation == FfnActivation.GeluApprox)
                         {
                             for (int n = 0; n < N; n++)
@@ -596,6 +608,11 @@ public sealed unsafe partial class ForwardPass
                         }
 
                         MatMulBatchedCached(batchNorm, in _wDown[layer], batchFfnGate, N, _embDim, _intermDim);
+                        if (_hasFfnBias && _bFfnDown is not null && _bFfnDown[layer] != null)
+                        {
+                            for (int n = 0; n < N; n++)
+                                SimdKernels.AddInPlace(batchNorm + (long)n * _embDim, _bFfnDown[layer], _embDim);
+                        }
                     }
                     if (profPrefill)
                     {

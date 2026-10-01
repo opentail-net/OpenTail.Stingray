@@ -35,6 +35,41 @@ Current implementation already contains LFM2-style graph wiring:
 
 The architecture is nevertheless not admitted by the generic model compatibility allowlist.
 
+## Investigation log — attention divergence and safe default (2026-10-01)
+
+Downloaded the official `LiquidAI/LFM2-8B-A1B-GGUF` Q4_K_M checkpoint to
+`models/_models/LFM2-8B-A1B-Q4_K_M.gguf` (5,044,779,712 bytes; the Hugging Face file page reports
+SHA-256 `d2185b22630fc68043dac7182f12e86e5ad14990229a90b6c9ad3f4421ddaf82`). With CPU Q8 off
+and `STINGRAY_MIN_BATCH_BLAS=999999`, the first 1,024 WikiText tokens reproduced a smaller but
+position-wise batched/per-token gap: `[256,1024)` PPL 7.5275 batched versus 7.6135 per-token; all
+768 target NLLs differed (mean absolute delta 0.079244, maximum 1.601762). At `-c 2048`,
+`[1024,+)` PPL was 14.3531 batched versus 14.2242 per-token. Chunk sizes 16, 64, and 256 also
+changed NLLs at every target in `[256,1024)`, confirming that the experimental path's result
+depends on batch shape.
+
+Captured every layer output for the actual 256-token WikiText prefix with both Q8 gates off and
+OpenBLAS excluded (`MinBatchForBlas = int.MaxValue`). Short-convolution layers 0 and 1 matched
+bit-for-bit. The first difference was attention layer 2 at token position 1 (maximum absolute
+layer-output delta 0.0002494); by layer 23 the maximum delta was 1.357519. This locates the
+divergence in the batched attention path, not short-convolution state or expert kernels.
+
+Until that arithmetic difference is explained against llama.cpp, LFM2-MoE no longer uses the
+experimental recurrent batched trunk by default. `STINGRAY_LFM2_MOE_BATCHED_PREFILL=1` opts back
+in. The separate `STINGRAY_RECURRENT_BATCHED_PREFILL=0` switch still disables recurrent batching
+for all applicable models. With the LFM2-MoE safe default and both Q8 overrides unset, batched CLI
+perplexity at `-c 1024` and `-c 2048` produced NLL dumps exactly equal to token-by-token execution
+(1,023/2,047 targets; zero changed values; maximum absolute NLL delta 0). The corresponding
+`[256,1024)` PPL is 7.6135 and `[1024,+)` PPL is 14.2242. At `-c 2048`, throughput was 27.30 tok/s
+versus 73.62 tok/s in the experimental batch-256 run; the explicit opt-in retains that performance
+while the correctness work continues.
+
+Added `Lfm2MoeBatchedPrefillParityTests` against the real checkpoint and WikiText prefix. It forces
+the experimental gate off while the general recurrent-batching switch stays on, then asserts
+bit-identical full-vocabulary logits for every position against independent token-by-token passes.
+Build and the real-weight test passed on 2026-10-01. This closes only batched/per-token parity under
+the safe default: same-semantics llama.cpp comparison, explanation of the experimental attention
+drift, PPL/reference reconciliation, and architecture admission remain open.
+
 ### Important distinction
 
 Do not solve this by simply adding `lfm2moe` to `ModelCompatibility`. The architecture must first be demonstrated numerically correct. Admission is the final step, not the first.

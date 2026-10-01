@@ -83,6 +83,22 @@ public sealed record ModelHyperparams
     public float AttentionScaleOverride { get; init; }
 
     /// <summary>
+    /// ALiBi <c>{arch}.attention.max_alibi_bias</c> (jais = 8). 0 = no ALiBi. When &gt; 0 every attention head adds
+    /// <c>slope_h * (keyPos - queryPos)</c> to its raw scores (ggml_soft_max_ext's <c>max_bias</c>; slopes via
+    /// <see cref="AlibiSlope"/>) and the model uses no RoPE.
+    /// </summary>
+    public float AlibiMaxBias { get; init; }
+
+    /// <summary>ggml_soft_max_ext's per-head ALiBi slope: <c>m0^(h+1)</c> for the first power-of-two block of heads, <c>m1^(2*(h-n)+1)</c> after.</summary>
+    public static float AlibiSlope(float maxBias, int numHeads, int head)
+    {
+        int nLog2 = 1 << (int)MathF.Floor(MathF.Log2(numHeads));
+        float m0 = MathF.Pow(2f, -maxBias / nLog2);
+        float m1 = MathF.Pow(2f, -(maxBias / 2f) / nLog2);
+        return head < nLog2 ? MathF.Pow(m0, head + 1) : MathF.Pow(m1, 2 * (head - nLog2) + 1);
+    }
+
+    /// <summary>
     /// Scalar multiplier applied to the final logits after the output projection.
     /// Granite/MiniCPM declare a GGUF <c>{arch}.logit_scale</c> that llama.cpp DIVIDES
     /// by (<c>ggml_scale(cur, 1/f_logit_scale)</c>), so this field already carries the
@@ -619,8 +635,7 @@ public sealed record ModelHyperparams
         if (arch == "nemotron_h") noRopeStep = 1;
         // jais (v1) uses ALiBi position encoding, not RoPE — jais.cpp never calls inp_pos/ggml_rope_ext;
         // positional bias is added to each attention head's scores as a head-specific slope multiplied by
-        // relative distance. ALiBi is not yet implemented in this engine, so positional encoding will be
-        // absent, but suppressing RoPE here at least avoids applying the WRONG positional signal.
+        // relative distance (ModelHyperparams.AlibiMaxBias, applied in ForwardPass.Attention*).
         if (arch == "jais") noRopeStep = 1;
         // Llama-4 uses sigmoid gating with weight-before-FFN per Meta's reference impl.
         bool useSigmoidGating = isLlama4;
@@ -810,6 +825,7 @@ public sealed record ModelHyperparams
         float embeddingScale = 1f;
         float residualScale = 1f;
         float attentionScaleOverride = 0f;
+        float alibiMaxBias = GetFloat(metadata, $"{arch}.attention.max_alibi_bias");
         float logitScale = 1f;
         bool hasPerLayerTokenEmbd = false;
         bool hasLayerOutputScale = false;
@@ -1120,6 +1136,8 @@ public sealed record ModelHyperparams
             float mscale = attnFactorOrg * (1f + 0.1f * logMul * MathF.Log(factor));
             attentionScaleOverride = mscale * mscale / MathF.Sqrt(headDim);
         }
+        // jais.cpp: kq_scale = 1/n_embd_head (not 1/sqrt).
+        if (arch == "jais" && headDim > 0) attentionScaleOverride = 1f / headDim;
 
         // xIELU non-gated FFN (Apertus): detected from tensor inventory (no ffn_gate weight),
         // same style as HasAttnBias/HasQkNorm — not gated on architecture string, since the
@@ -1318,6 +1336,7 @@ public sealed record ModelHyperparams
                     : null),
             ResidualScale = residualScale,
             AttentionScaleOverride = attentionScaleOverride,
+            AlibiMaxBias = alibiMaxBias,
             LogitScale = logitScale,
             XieluAlphaN = xieluAlphaN,
             XieluAlphaP = xieluAlphaP,

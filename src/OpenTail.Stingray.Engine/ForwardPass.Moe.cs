@@ -42,11 +42,19 @@ public sealed unsafe partial class ForwardPass
 
         SimdKernels.MatVecDual(_ffnGate, _wGate[layer].DataPtr, _ffnUp, _wUp[layer].DataPtr,
             _normBuf, _intermDim, _embDim, _wGate[layer].DType, _wUp[layer].DType);
+        // Gated FFN with biases (jais): act(Wg x + bg) * (Wu x + bu), then Wd h + bd.
+        if (_hasFfnBias)
+        {
+            if (_bFfnGate is not null && _bFfnGate[layer] != null) SimdKernels.AddInPlace(_ffnGate, _bFfnGate[layer], _intermDim);
+            if (_bFfnUp is not null && _bFfnUp[layer] != null) SimdKernels.AddInPlace(_ffnUp, _bFfnUp[layer], _intermDim);
+        }
         if (_hp.FfnActivation == FfnActivation.GeluApprox)
             SimdKernels.GeluTanhMul(_ffnGate, _ffnUp, _ffnGate, _intermDim);
         else
             SimdKernels.SiLuMul(_ffnGate, _ffnUp, _intermDim);
         FusedMatVec(_hidden, _wDown[layer], _ffnGate, _embDim, _intermDim);
+        if (_hasFfnBias && _bFfnDown is not null && _bFfnDown[layer] != null)
+            SimdKernels.AddInPlace(_hidden, _bFfnDown[layer], _embDim);
     }
 
     // ================================================================

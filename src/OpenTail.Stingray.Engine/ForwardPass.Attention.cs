@@ -157,7 +157,7 @@ public sealed unsafe partial class ForwardPass
         // Full investigation (ruled-out hypotheses, the parity and perplexity measurements, the
         // superseded reasoning that preceded them): docs/reference/forwardpass-investigation-log.md
         // #flash-128256-wide-attention-heads--perplexity-investigation
-        if (enableFlash64 && startPos + N >= 256 && _layerHeadDim is null && windowSize <= 0
+        if (enableFlash64 && startPos + N >= 256 && _layerHeadDim is null && windowSize <= 0 && _hp.AlibiMaxBias <= 0f
             && (headDim == 64 || (Flash64WideHeadDimsEnabled && headDim is 128 or 256)) &&
             Avx2.IsSupported && Fma.IsSupported)
         {
@@ -201,6 +201,7 @@ public sealed unsafe partial class ForwardPass
         Parallel.For(0, numHeads, h =>
         {
             int kvHead = h / hpkg;
+            float alibiSlope = _hp.AlibiMaxBias > 0f ? ModelHyperparams.AlibiSlope(_hp.AlibiMaxBias, numHeads, h) : 0f;
             int maxSeqLen = startPos + N;
             // Size the scratch to the sequence actually being prefilled, not to ctxLen. Every index
             // written below is `i < endSeq`, and endSeq = min(startPos + nBase + t + 1, cache.Length)
@@ -267,8 +268,12 @@ public sealed unsafe partial class ForwardPass
                             int endSeq = Math.Min(startPos + nBase + t + 1, cache.Length);
                             int startSeq = windowSize > 0 ? Math.Max(0, endSeq - windowSize) : 0;
                             if (i >= startSeq && i < endSeq)
-                                scores[(long)t * stride + i] = SimdKernels.DotF32(
+                            {
+                                float sc = SimdKernels.DotF32(
                                     batchQ + (long)(nBase + t) * qDim + h * headDim, kVec, headDim) * scale;
+                                if (alibiSlope != 0f) sc += alibiSlope * (i - (startPos + nBase + t));
+                                scores[(long)t * stride + i] = sc;
+                            }
                         }
                     }
 
@@ -393,6 +398,7 @@ public sealed unsafe partial class ForwardPass
         Parallel.For(0, numHeads, h =>
         {
             int kvHead = h / hpkg;
+            float alibiSlope = _hp.AlibiMaxBias > 0f ? ModelHyperparams.AlibiSlope(_hp.AlibiMaxBias, numHeads, h) : 0f;
             int maxSeqLen = startPos + N;
             int stride = maxSeqLen;
             float* scores = (float*)NativeMemory.AllocZeroed(
@@ -413,8 +419,12 @@ public sealed unsafe partial class ForwardPass
                             int endSeq = Math.Min(startPos + nBase + t + 1, cache.Length);
                             int startSeq = windowSize > 0 ? Math.Max(0, endSeq - windowSize) : 0;
                             if (i >= startSeq && i < endSeq)
-                                scores[(long)t * stride + i] = SimdKernels.DotF32Bf16(
+                            {
+                                float sc = SimdKernels.DotF32Bf16(
                                     batchQ + (long)(nBase + t) * qDim + h * headDim, kVec, headDim) * scale;
+                                if (alibiSlope != 0f) sc += alibiSlope * (i - (startPos + nBase + t));
+                                scores[(long)t * stride + i] = sc;
+                            }
                         }
                     }
 
@@ -1157,6 +1167,13 @@ public sealed unsafe partial class ForwardPass
             float* headScores = scores + (long)h * ctxLen;
 
             int scoreLen = scoreLenAll;
+
+            if (_hp.AlibiMaxBias > 0f)
+            {
+                // ALiBi: slope_h * (keyPos - queryPos); the query is the last scored slot.
+                float slope = ModelHyperparams.AlibiSlope(_hp.AlibiMaxBias, numHeadsLocal, h);
+                for (int i = 0; i < scoreLen; i++) headScores[i] += slope * (i - (scoreLen - 1));
+            }
 
             SimdKernels.SoftmaxInPlace(headScores, scoreLen);
 
