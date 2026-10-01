@@ -34,7 +34,7 @@ implementation gap. See the [verification receipt](../done/16-iq-formats-coverag
   - [x] **Wan layout test failures:** four tests assumed encoder and decoder share one patch-channel order. Updated them to check the Conv3D channel-outer packing and Linear spatial-outer unpacking independently. All four pass; model code is unchanged.
   - [x] **FunASR model identity/lookup:** added architecture-validated Nano (`audiocpp`, `general.name` prefix `Fun-ASR-Nano-2512`) and Paraformer (`paraformer`, `pf.vocab`) checkpoint discovery and applied it to real-weight tests. Both local GGUFs were selected by metadata; Paraformer inspection and Nano encoder golden tests pass. See the collective plan.
   - [x] **FunASR synthetic-tone smoke assertion:** the Paraformer test now checks result structure, language, and duration instead of requiring a segment from a pure tone, which produced no segments with real weights.
-  - [ ] **FunASR Nano decoder golden (deferred):** current verified-Nano run emits `[33108,33108,33108,33108,33108]` vs expected `[56568,1773,151645]`; the text-only diagnostic repeats the same token. First-divergence layer/stat capture remains open; see the detailed 2026-09-06 isolation in `docs/done/audio-review-old-progress-DO-NOT-BOTHER-READING.md` and the collective plan.
+  - [x] **FunASR Nano decoder golden — FIXED 2026-10-01:** the synthesized-metadata Nano LLM tensor sources never set `_opentailllm.has_qk_norm`, so `ModelHyperparams.FromGgufMetadata` reported `HasQkNorm=False` and Qwen3's per-head q_norm/k_norm were silently skipped (step-0 logits cos 0.87 vs the audio.cpp reference, repeated token `33108`). Fixed in `FunAsrNanoLlmTensorSource`/`FunAsrNanoLlmGgufTensorSource`; a naive float Qwen3 forward over the same weights had matched the reference (cos 1.0000), isolating the engine-side cause. Second test-side bug: the tied lm_head also scores the appended audio-embedding rows, so argmax/sampling is now restricted to the 151936 text tokens. `FunAsrNanoDecoderGoldenTests` emits `[56568,1773,151645]` exactly; `FunAsrNanoEndToEndTests` now transcribes the real clip to `This little work was finished in the year 1803, and intended for immediate publication.`
   - [ ] **FunASR real-speech transcript (item 07):** the verified Paraformer GGUF and WAV are present. The GGUF returns empty text while the ONNX real-weight path recognizes speech. Stage-by-stage comparison remains in [item 07](07-funasr-gguf-paraformer-real-speech-plan.md); the synthetic-tone test is not ASR evidence.
   - [x] **Qwen ASR smoke test:** the fixture supplies a synthetic tone, not speech, so an empty transcript and segment list are valid. Updated it to assert result structure and duration. Real-speech behavior remains unverified.
   - [x] **MeloTTS fixture integrity:** the complete `_models/melotts-zh_en.onnx` checkpoint is 170,429,550 bytes and loads/generates successfully. The test now skips the empty root placeholder and finds the real checkpoint; hash and direct-run result are in the collective plan.
@@ -131,15 +131,21 @@ implementation gap. See the [verification receipt](../done/16-iq-formats-coverag
     text engine's prefill), only the Q8_0 conv layers are packed F32: 1.1 GB peak, and faster than CrispASR on the
     same files (TDT 1.16x, CTC 1.10x). CrispASR itself peaks at 0.6-0.65 GB; the ~290 MB of F32 conv weights are the
     difference, kept on purpose because the int8 Q8_0 path was ~0.2 s slower per clip. Stopped here.
-- [ ] **12. LFM2-MoE (`lfm2moe`) not admitted: PPL off and per-token vs batched disagree** (logged 2026-09-28, docs/103 item 13):
-  `LFM2-8B-A1B-Q4_K_M`, wikitext `[256,1024)` at -c 512: per token 8.1860, batched 8.9595, `llama-perplexity --chunks 1`
-  8.7030; at -c 2048 batched 15.8076 vs 14.8639 (+6.3%). Arch wiring is in `ModelGraph` (NeoX, short-conv layers,
-  sigmoid gating with `exp_probs_b` as DeepSeek, top-k renormalised as llama.cpp lfm2.cpp norm_w = true) but the arch is
-  NOT in the allowlist. Ruled out: parallel expert execution and parallel routing (serial gives identical numbers), and
-  the expert matmul kernels (batched vs per-row MatVec on the real blk.2 Q4_K/Q6_K expert weights: relative error 0 at
-  n = 1..64). Dense LFM2 1.2B and Granite hybrids agree per-token vs batched within 0.1-0.5%, so the 9% spread is specific
-  to this model. Next step: follow [12-LFM2-MoE batched/per-token parity plan](12-lfm2moe-batched-per-token-parity-plan.md) for
-  matched-token evaluation, per-layer/router/expert/state localization, the minimal fix, regression tests, and allowlist admission only after parity.
+- [ ] **12. LFM2-MoE (`lfm2moe`) not admitted; reference parity still open** (logged 2026-09-28, docs/103 item 13): the
+  earlier Q8-on measurements were per-token 8.1860 vs batched 8.9595 at `-c 512`, and batched 15.8076 vs llama.cpp
+  14.8639 at `-c 2048`. After global CPU Q8 became opt-in, the fresh Q4_K_M baseline showed a smaller but real batched
+  drift: with Q8 off and OpenBLAS excluded, `[256,1024)` PPL at `-c 1024` was 7.5275 batched vs 7.6135 per-token, and
+  `[1024,+)` at `-c 2048` was 14.3531 vs 14.2242. Chunk widths 16/64/256 changed all NLLs in `[256,1024)`.
+  - **Isolation/fix, 2026-10-01:** On the actual 256-token WikiText prefix, conv layers 0/1 matched exactly; the first
+    batched-vs-token difference was attention layer 2 at position 1 (max delta 0.0002494), growing to max 1.3575 by
+    layer 23. LFM2-MoE recurrent batching is now opt-in via `STINGRAY_LFM2_MOE_BATCHED_PREFILL=1`; unset defaults to
+    the sequential trunk. Batched CLI runs at `-c 1024` and `-c 2048` then had NLL dumps exactly equal to token-by-token
+    (1,023/2,047 targets, zero changed values; PPL `[256,1024)` 7.6135 and `[1024,+)` 14.2242).
+  - **Coverage:** `Lfm2MoeBatchedPrefillParityTests` compares every full-vocabulary logit on a real WikiText prefix and
+    asserts bit equality against token-by-token execution. Release build and real-weight test passed 2026-10-01.
+  - **Still open:** reconcile PPL against llama.cpp using identical tokens/evaluation semantics, explain the experimental
+    attention difference, and admit `lfm2moe` only after that reference check. See [12-LFM2-MoE batched/per-token
+    parity plan](12-lfm2moe-batched-per-token-parity-plan.md).
 - [ ] **13. Granite 4.0-H small (MoE) PPL parity** (logged 2026-09-28, docs/103 item 13): `granite-4.0-h-small-Q2_K`,
   wikitext -c 2048 `[1024,+)` 26.4155 (old Q8 batched default) / 26.5483 (per token) vs
   `llama-perplexity --chunks 1` 26.1080; at -c 512 9.3505 vs 9.4103 (ours lower). The large error (157) was missing

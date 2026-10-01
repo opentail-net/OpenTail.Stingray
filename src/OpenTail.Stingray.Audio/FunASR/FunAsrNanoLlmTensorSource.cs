@@ -70,6 +70,9 @@ public sealed unsafe class FunAsrNanoLlmTensorSource : IModelTensorSource, IDisp
             ["qwen3.vocab_size"] = vocabSize,
             ["qwen3.context_length"] = 40960,
         };
+        // ModelHyperparams.FromGgufMetadata reads QK-norm presence from metadata only; without this flag
+        // Qwen3's per-head q_norm/k_norm are silently skipped (decoder logits cos ~0.87 vs reference).
+        if (_byName.ContainsKey("blk.0.attn_q_norm.weight")) _metadata["_opentailllm.has_qk_norm"] = true;
     }
 
     private void MapIfPresent(string sourceName, string canonicalName)

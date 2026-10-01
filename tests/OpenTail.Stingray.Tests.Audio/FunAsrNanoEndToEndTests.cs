@@ -111,7 +111,7 @@ public sealed class FunAsrNanoEndToEndTests : HeavyTestBase
         const int maxNewTokens = 64;
         for (int step = 0; step < maxNewTokens; step++)
         {
-            int nextToken = OpenTail.Stingray.Engine.Sampler.Sample(logits, sampleParams, rng);
+            int nextToken = OpenTail.Stingray.Engine.Sampler.Sample(logits[..151936], sampleParams, rng); // text vocab only: audio rows appended past it are not tokens
             if (nextToken == eosTokenId) break;
             emitted.Add(nextToken);
             logits = fwd.Forward(nextToken, position);

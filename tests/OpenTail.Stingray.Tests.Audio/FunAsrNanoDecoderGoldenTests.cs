@@ -93,7 +93,7 @@ public sealed class FunAsrNanoDecoderGoldenTests : HeavyTestBase
         int position = prompt.Length;
         for (int step = 0; step < expectedTokenIds.Length + 2; step++)
         {
-            int nextToken = ArgMax(logits);
+            int nextToken = ArgMax(logits[..TextVocab]);
             emitted.Add(nextToken);
             if (nextToken == eosTokenId) break;
             logits = fwd.Forward(nextToken, position);
@@ -111,7 +111,7 @@ public sealed class FunAsrNanoDecoderGoldenTests : HeavyTestBase
         int position2 = textOnlyPrompt.Length;
         for (int step = 0; step < 5; step++)
         {
-            int nextToken = ArgMax(logits2);
+            int nextToken = ArgMax(logits2[..TextVocab]);
             emitted2.Add(nextToken);
             if (nextToken == eosTokenId) break;
             logits2 = fwd.Forward(nextToken, position2);
@@ -121,6 +121,10 @@ public sealed class FunAsrNanoDecoderGoldenTests : HeavyTestBase
 
         Assert.Equal(expectedTokenIds, emitted);
     }
+
+    // The tied lm_head also scores the spliced audio-embedding rows appended past the text vocab; the
+    // reference only ever ranks the 151936 text tokens.
+    private const int TextVocab = 151936;
 
     private static int ArgMax(ReadOnlySpan<float> logits)
     {
