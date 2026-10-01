@@ -350,7 +350,8 @@ public static unsafe class SimdKernels
     /// Use Q8_K activations for Q5_K attention output projections in the CPU decode path.
     /// Defaults off until real-weight parity and broader Q5_K validation are complete.
     /// </summary>
-    public static bool Q5KDecodeQ8KActivations { get; set; }
+    public static bool Q5KDecodeQ8KActivations { get; set; } =
+        Environment.GetEnvironmentVariable("STINGRAY_Q5K_DECODE_Q8K") == "1";
 
     /// <summary>
     /// Smallest batch that takes the int8 path when <see cref="Q8PrefillEnabled"/> is on.

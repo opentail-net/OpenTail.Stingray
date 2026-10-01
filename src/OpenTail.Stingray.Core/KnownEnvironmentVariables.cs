@@ -61,6 +61,7 @@ public static class KnownEnvironmentVariables
         "STINGRAY_CPU_MICRO_GEMM",
         "STINGRAY_CPU_MOE",
         "STINGRAY_CPU_PREFILL_Q8",
+        "STINGRAY_Q5K_DECODE_Q8K",
         "STINGRAY_CPU_KPACK_SIMD",
         "STINGRAY_CPU_VNNI",
         "STINGRAY_CPU_THREADS",

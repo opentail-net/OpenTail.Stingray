@@ -18,4 +18,4 @@
 
 ## Still open
 
-No gate-on/off real-checkpoint layer-0 comparison, small real-Q5_K model run, or GLM PPL remeasurement has been performed. The gate stays off, and GLM-4.5 remains unadmitted. Complete the raw layer-0 comparison, conditional PPL run, and real-weight regressions under [item 19](../103-quickest-first-plan.md) using the [detailed experiment plan](../1-correctness/09-glm45-q5k-activation-quant-plan.md).
+**Update 2026-10-01:** gate-on/off PPL on the real checkpoint was measured (`STINGRAY_Q5K_DECODE_Q8K=1`): `[1024,+)` 8.7753 -> 8.5956 vs llama.cpp 8.6125, paired per-token rms vs llama.cpp 0.328 -> 0.207; see item 19 in docs/103. Still not done: layer-0 raw comparison and the small-Q5_K regression. The gate stays off, and GLM-4.5 remains unadmitted. Complete the raw layer-0 comparison, conditional PPL run, and real-weight regressions under [item 19](../103-quickest-first-plan.md) using the [detailed experiment plan](../1-correctness/09-glm45-q5k-activation-quant-plan.md).
