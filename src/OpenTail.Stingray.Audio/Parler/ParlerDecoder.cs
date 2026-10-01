@@ -454,7 +454,8 @@ public static class ParlerDecoder
 
     private static void SoftmaxInPlace(Span<float> scores)
     {
-        TensorPrimitives.SoftMax(scores, scores);
+        // Max-subtracted: TensorPrimitives.SoftMax yields inf/inf = NaN on large scores (see DenseKernels.SoftmaxInPlace).
+        DenseKernels.SoftmaxInPlace(scores);
     }
 
     private static void SoftmaxInPlace(float[] scores, int count) =>

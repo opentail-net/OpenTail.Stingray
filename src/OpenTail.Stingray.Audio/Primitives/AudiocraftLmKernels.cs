@@ -209,7 +209,7 @@ internal static class AudiocraftLmKernels
                 for (int d = 0; d < headDim; d++) dot += q[qOff + d] * kj[off + d];
                 scores[j] = dot * scale;
             }
-            TensorPrimitives.SoftMax(scores, scores);
+            DenseKernels.SoftmaxInPlace(scores); // max-subtracted (TensorPrimitives.SoftMax can overflow to NaN)
 
             var ctxSpan = context.AsSpan(qOff, headDim);
             for (int j = 0; j < histLen; j++)
@@ -252,7 +252,7 @@ internal static class AudiocraftLmKernels
                 for (int d = 0; d < headDim; d++) dot += q[qOff + d] * crossK[kBase + d];
                 scores[j] = dot * scale;
             }
-            TensorPrimitives.SoftMax(scores, scores);
+            DenseKernels.SoftmaxInPlace(scores); // max-subtracted (TensorPrimitives.SoftMax can overflow to NaN)
 
             var ctxSpan = context.AsSpan(qOff, headDim);
             for (int j = 0; j < crossLen; j++)
