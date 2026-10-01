@@ -347,7 +347,9 @@ public static unsafe class SimdKernels
         Environment.GetEnvironmentVariable("STINGRAY_CPU_PREFILL_Q8") == "1";
 
     /// <summary>
-    /// Use Q8_K activations for Q5_K attention output projections in the CPU decode path.
+    /// Use Q8_K activations (as ggml_vec_dot_q5_K_q8_K does) for every Q5_K matvec in the CPU decode path:
+    /// single, dual, 2-input and 4-input dispatch plus the decode attention-output call site, and for Q5_1 matvecs
+    /// (Q8_1 activations, <c>ggml_vec_dot_q5_1_q8_1</c>) and the folded MoE expert dot.
     /// Defaults off until real-weight parity and broader Q5_K validation are complete.
     /// </summary>
     public static bool Q5KDecodeQ8KActivations { get; set; } =
@@ -960,6 +962,11 @@ public static unsafe class SimdKernels
             case DType.Q4_1:
                 MatVecQ4_1(output, weights, input, rows, cols);
                 break;
+            // Q5_1 with Q8_1 activations (ggml parity, ggml_vec_dot_q5_1_q8_1) is wired only behind
+            // Q5KDecodeQ8KActivations, because the speed result below means it is not worth the default.
+            case DType.Q5_1 when Q5KDecodeQ8KActivations:
+                MatVecQ5_1(output, weights, input, rows, cols);
+                break;
             // DType.Q5_1 deliberately NOT wired here: same honest negative result as Q5_0 above
             // (~0.84-1.03x vs MatVecDequantFallback across 4 runs, essentially a wash — both are
             // 5-bit-split formats needing a qh side-channel bit per element). The kernel
@@ -1095,6 +1102,12 @@ public static unsafe class SimdKernels
             }
             case DType.Q5_K:
             {
+                if (Q5KDecodeQ8KActivations)
+                {
+                    MatVecQ5K_Q8K(output1, weights1, input, rows, cols);
+                    MatVecQ5K_Q8K(output2, weights2, input, rows, cols);
+                    break;
+                }
                 int bpr = (cols / 256) * 176;
                 if (rows >= MinRowsForParallel)
                 {
@@ -1296,6 +1309,12 @@ public static unsafe class SimdKernels
             }
             case DType.Q5_K:
             {
+                if (Q5KDecodeQ8KActivations)
+                {
+                    MatVecQ5K_Q8K(output1, weights, input1, rows, cols);
+                    MatVecQ5K_Q8K(output2, weights, input2, rows, cols);
+                    break;
+                }
                 int bpr = (cols / 256) * 176;
                 if (rows >= MinRowsForParallel)
                 {
@@ -1495,6 +1514,14 @@ public static unsafe class SimdKernels
             }
             case DType.Q5_K:
             {
+                if (Q5KDecodeQ8KActivations)
+                {
+                    MatVecQ5K_Q8K(output0, weights, input0, rows, cols);
+                    MatVecQ5K_Q8K(output1, weights, input1, rows, cols);
+                    MatVecQ5K_Q8K(output2, weights, input2, rows, cols);
+                    MatVecQ5K_Q8K(output3, weights, input3, rows, cols);
+                    break;
+                }
                 int bpr = (cols / 256) * 176;
                 if (rows >= MinRowsForParallel)
                 {
@@ -3404,6 +3431,12 @@ public static unsafe class SimdKernels
 
     public static void MatVecQ5K(float* output, byte* weights, float* input, int rows, int cols)
     {
+        if (Q5KDecodeQ8KActivations)
+        {
+            MatVecQ5K_Q8K(output, weights, input, rows, cols);
+            return;
+        }
+
         int bytesPerRow = (cols / 256) * 176;
 
         if (rows >= MinRowsForParallel)

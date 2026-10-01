@@ -203,7 +203,7 @@ public sealed unsafe partial class ForwardPass
         bool sigGating = _hp.UseSigmoidGating;
 
         // Activations are quantized exactly as SimdKernels.MatVec quantizes them for each dtype
-        // (Q4_K -> Q8_KS, Q3_K/Q6_K -> Q8_K, Q8_0 -> Q8_0; Q5_K/F32 stay F32), once per input
+        // (Q4_K -> Q8_KS, Q3_K/Q6_K -> Q8_K, Q8_0 -> Q8_0; Q5_K stays F32 unless STINGRAY_Q5K_DECODE_Q8K; F32 stays F32), once per input
         // row, so folded decode is bit-identical to per-expert MatVec and to the batched MoE
         // prefill's per-token tier — and matches ggml, which quantizes activations the same way.
         // (The first version of this path dotted F32 activations, silently diverging from both.)
@@ -287,6 +287,7 @@ public sealed unsafe partial class ForwardPass
     {
         DType.Q4_K => SimdKernels.Q8KSScratchBytes(cols),
         DType.Q3_K or DType.Q6_K => SimdKernels.Q8KScratchBytes(cols),
+        DType.Q5_K when SimdKernels.Q5KDecodeQ8KActivations => SimdKernels.Q8KScratchBytes(cols),
         DType.Q8_0 => SimdKernels.Q8_0ScratchBytes(cols),
         _ => 0,
     };
@@ -297,6 +298,7 @@ public sealed unsafe partial class ForwardPass
         {
             case DType.Q4_K: SimdKernels.QuantizeRowToQ8KS(input, cols, scratch); break;
             case DType.Q3_K or DType.Q6_K: SimdKernels.QuantizeRowToQ8K(input, cols, scratch); break;
+            case DType.Q5_K when SimdKernels.Q5KDecodeQ8KActivations: SimdKernels.QuantizeRowToQ8K(input, cols, scratch); break;
             case DType.Q8_0: SimdKernels.QuantizeRowToQ8_0(input, cols, scratch); break;
         }
     }
@@ -307,7 +309,9 @@ public sealed unsafe partial class ForwardPass
         {
             DType.Q3_K    => SimdKernels.DotQ3K_Q8K(row, act, cols),
             DType.Q4_K    => SimdKernels.DotQ4K_Q8KS(row, act, cols),
-            DType.Q5_K    => SimdKernels.DotQ5K(row, input, cols),
+            DType.Q5_K    => SimdKernels.Q5KDecodeQ8KActivations
+                ? SimdKernels.DotQ5K_Q8K(row, act, cols)
+                : SimdKernels.DotQ5K(row, input, cols),
             DType.Q6_K    => SimdKernels.DotQ6K_Q8K(row, act, cols),
             DType.Q8_0    => SimdKernels.DotQ8_0_Q8_0(row, act, cols),
             DType.Float32 => SimdKernels.DotF32((float*)row, input, cols),

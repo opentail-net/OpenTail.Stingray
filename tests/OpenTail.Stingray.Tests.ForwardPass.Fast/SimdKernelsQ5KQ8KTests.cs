@@ -141,4 +141,84 @@ public sealed unsafe class SimdKernelsQ5KQ8KTests
             }
         }
     }
+
+    [Fact]
+    public void Q5KDecodeGate_RoutesEveryMatVecShapeThroughQ8K_AndOffKeepsF32()
+    {
+        const int rows = 24, cols = 512;
+        var random = new Random(20261001);
+        int bpr = (cols / 256) * 176;
+        var w1 = new byte[rows * bpr];
+        var w2 = new byte[rows * bpr];
+        for (int r = 0; r < rows; r++)
+        {
+            BuildQ5KRow(cols, random).CopyTo(w1, r * bpr);
+            BuildQ5KRow(cols, random).CopyTo(w2, r * bpr);
+        }
+        var inputs = new float[4][];
+        for (int k = 0; k < 4; k++)
+        {
+            inputs[k] = new float[cols];
+            for (int i = 0; i < cols; i++) inputs[k][i] = (float)(random.NextDouble() * 2.0 - 1.0);
+        }
+
+        bool saved = SimdKernels.Q5KDecodeQ8KActivations;
+        try
+        {
+            var q8k = new float[4][];
+            var f32 = new float[4][];
+            var outs = new float[8][];
+            for (int k = 0; k < 4; k++) { q8k[k] = new float[rows]; f32[k] = new float[rows]; }
+            for (int k = 0; k < 8; k++) outs[k] = new float[rows];
+            var q8kW2 = new float[rows];
+
+            fixed (byte* p1 = w1) fixed (byte* p2 = w2)
+            fixed (float* i0 = inputs[0]) fixed (float* i1 = inputs[1]) fixed (float* i2 = inputs[2]) fixed (float* i3 = inputs[3])
+            fixed (float* e0 = q8k[0]) fixed (float* e1 = q8k[1]) fixed (float* e2 = q8k[2]) fixed (float* e3 = q8k[3]) fixed (float* e2w = q8kW2)
+            fixed (float* f0 = f32[0])
+            fixed (float* o0 = outs[0]) fixed (float* o1 = outs[1]) fixed (float* o2 = outs[2]) fixed (float* o3 = outs[3]) fixed (float* o4 = outs[4])
+            {
+                // Expected: the explicit Q8_K matvec, once per (weights, input).
+                SimdKernels.MatVecQ5K_Q8K(e0, p1, i0, rows, cols);
+                SimdKernels.MatVecQ5K_Q8K(e1, p1, i1, rows, cols);
+                SimdKernels.MatVecQ5K_Q8K(e2, p1, i2, rows, cols);
+                SimdKernels.MatVecQ5K_Q8K(e3, p1, i3, rows, cols);
+                SimdKernels.MatVecQ5K_Q8K(e2w, p2, i0, rows, cols);
+
+                SimdKernels.Q5KDecodeQ8KActivations = true;
+                SimdKernels.MatVec(o0, p1, i0, rows, cols, DType.Q5_K);
+                AssertBits(q8k[0], outs[0]);
+
+                SimdKernels.MatVecDual(o0, p1, o1, p2, i0, rows, cols, DType.Q5_K, DType.Q5_K);
+                AssertBits(q8k[0], outs[0]);
+                AssertBits(q8kW2, outs[1]);
+
+                SimdKernels.MatVec2In(o0, o1, p1, i0, i1, rows, cols, DType.Q5_K);
+                AssertBits(q8k[0], outs[0]);
+                AssertBits(q8k[1], outs[1]);
+
+                SimdKernels.MatVec4In(o0, o1, o2, o3, p1, i0, i1, i2, i3, rows, cols, DType.Q5_K);
+                for (int k = 0; k < 4; k++) AssertBits(q8k[k], outs[k]);
+
+                // Off: unchanged F32-activation path, row by row.
+                SimdKernels.Q5KDecodeQ8KActivations = false;
+                SimdKernels.MatVec(o4, p1, i0, rows, cols, DType.Q5_K);
+                for (int r = 0; r < rows; r++)
+                    Assert.Equal(BitConverter.SingleToInt32Bits(SimdKernels.DotQ5K(p1 + (long)r * bpr, i0, cols)),
+                        BitConverter.SingleToInt32Bits(outs[4][r]));
+                Assert.NotEqual(0, rows - Enumerable.Range(0, rows).Count(r =>
+                    BitConverter.SingleToInt32Bits(outs[4][r]) == BitConverter.SingleToInt32Bits(q8k[0][r])));
+            }
+        }
+        finally
+        {
+            SimdKernels.Q5KDecodeQ8KActivations = saved;
+        }
+    }
+
+    private static void AssertBits(float[] expected, float[] actual)
+    {
+        for (int r = 0; r < expected.Length; r++)
+            Assert.Equal(BitConverter.SingleToInt32Bits(expected[r]), BitConverter.SingleToInt32Bits(actual[r]));
+    }
 }
