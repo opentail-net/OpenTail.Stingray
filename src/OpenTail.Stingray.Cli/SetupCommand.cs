@@ -35,7 +35,7 @@ public sealed class SetupCommand : Command<SetupCommand.Settings>
         var entry = ModelCatalog.Find(settings.Target);
         if (entry is null)
         {
-            AnsiConsole.MarkupLine($"[red]Error:[/] '{Markup.Escape(settings.Target)}' is neither a task ({string.Join(", ", ModelCatalog.Tasks)}) nor a catalog id.");
+            AnsiConsole.ErrorLine($"[red]Error:[/] '{Markup.Escape(settings.Target)}' is neither a task ({string.Join(", ", ModelCatalog.Tasks)}) nor a catalog id.");
             AnsiConsole.MarkupLine("Run [yellow]stingray models[/] to see the catalog, or [yellow]stingray pull -r <repo>[/] for any other GGUF.");
             return 1;
         }
@@ -86,7 +86,7 @@ public sealed class SetupCommand : Command<SetupCommand.Settings>
         catch (Exception ex) when (ex is IOException or HttpRequestException or TaskCanceledException)
         {
             printer?.Finish();
-            AnsiConsole.MarkupLine($"[red]Error:[/] {Markup.Escape(ex.Message)}");
+            AnsiConsole.ErrorLine($"[red]Error:[/] {Markup.Escape(ex.Message)}");
             if (ex is not ModelHashMismatchException)
                 AnsiConsole.MarkupLine("Partial downloads are kept; rerun the same command to resume.");
             return 1;

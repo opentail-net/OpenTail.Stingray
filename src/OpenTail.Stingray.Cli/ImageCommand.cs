@@ -219,14 +219,14 @@ public sealed class ImageCommand : Command<ImageCommand.Settings>
         var modelPath = ResolveModelPath(s.ModelPath);
         if (modelPath is null)
         {
-            AnsiConsole.MarkupLine("[red]Error:[/] No diffusion model found. Use [yellow]-m <path>[/]");
+            AnsiConsole.ErrorLine("[red]Error:[/] No diffusion model found. Use [yellow]-m <path>[/]");
             PrintModelDownloadHint();
             return 1;
         }
 
         if (string.IsNullOrWhiteSpace(s.Prompt))
         {
-            AnsiConsole.MarkupLine("[red]Error:[/] Prompt required. Use [yellow]-p \"your prompt\"[/]");
+            AnsiConsole.ErrorLine("[red]Error:[/] Prompt required. Use [yellow]-p \"your prompt\"[/]");
             return 1;
         }
 
@@ -235,7 +235,7 @@ public sealed class ImageCommand : Command<ImageCommand.Settings>
         try { deviceIndex = GpuDevice.Resolve(s.Device, out deviceNone); }
         catch (InvalidOperationException ex)
         {
-            AnsiConsole.MarkupLine($"[red]Error:[/] {Markup.Escape(ex.Message)}");
+            AnsiConsole.ErrorLine($"[red]Error:[/] {Markup.Escape(ex.Message)}");
             return 1;
         }
 
@@ -403,7 +403,7 @@ public sealed class ImageCommand : Command<ImageCommand.Settings>
         }
         catch (Exception ex)
         {
-            AnsiConsole.MarkupLine($"[red]Error:[/] {Markup.Escape(ex.Message)}");
+            AnsiConsole.ErrorLine($"[red]Error:[/] {Markup.Escape(ex.Message)}");
             return 1;
         }
 
@@ -580,7 +580,7 @@ public sealed class ImageCommand : Command<ImageCommand.Settings>
         }
         catch (Exception ex)
         {
-            AnsiConsole.MarkupLine($"[red]Error:[/] {Markup.Escape(ex.ToString())}");
+            AnsiConsole.ErrorLine($"[red]Error:[/] {Markup.Escape(ex.ToString())}");
             return 1;
         }
 
@@ -594,7 +594,7 @@ public sealed class ImageCommand : Command<ImageCommand.Settings>
         string? sdCli = FindSdCli(s.SdCliPath);
         if (sdCli is null)
         {
-            AnsiConsole.MarkupLine("[red]Error:[/] sd-cli not found. Set [yellow]STINGRAY_SDCPP[/] or place binary in [cyan]tools/sd-cli.exe[/].");
+            AnsiConsole.ErrorLine("[red]Error:[/] sd-cli not found. Set [yellow]STINGRAY_SDCPP[/] or place binary in [cyan]tools/sd-cli.exe[/].");
             AnsiConsole.MarkupLine("Download: [link]https://github.com/leejet/stable-diffusion.cpp/releases[/]");
             return 1;
         }
@@ -602,7 +602,7 @@ public sealed class ImageCommand : Command<ImageCommand.Settings>
         var modelPath = ResolveModelPath(s.ModelPath);
         if (modelPath is null || string.IsNullOrWhiteSpace(s.Prompt))
         {
-            AnsiConsole.MarkupLine("[red]Error:[/] Model (-m) and prompt (-p) are required.");
+            AnsiConsole.ErrorLine("[red]Error:[/] Model (-m) and prompt (-p) are required.");
             return 1;
         }
 
@@ -617,7 +617,7 @@ public sealed class ImageCommand : Command<ImageCommand.Settings>
         var psi = new ProcessStartInfo(sdCli, args) { UseShellExecute = false,
             RedirectStandardOutput = true, RedirectStandardError = true };
         using var proc = Process.Start(psi);
-        if (proc is null) { AnsiConsole.MarkupLine("[red]Error:[/] Failed to launch sd-cli."); return 1; }
+        if (proc is null) { AnsiConsole.ErrorLine("[red]Error:[/] Failed to launch sd-cli."); return 1; }
 
         proc.BeginOutputReadLine();
         proc.BeginErrorReadLine();
@@ -626,7 +626,7 @@ public sealed class ImageCommand : Command<ImageCommand.Settings>
 
         if (proc.ExitCode != 0)
         {
-            AnsiConsole.MarkupLine($"[red]Error:[/] sd-cli exited with code {proc.ExitCode}.");
+            AnsiConsole.ErrorLine($"[red]Error:[/] sd-cli exited with code {proc.ExitCode}.");
             return proc.ExitCode;
         }
         AnsiConsole.MarkupLine($"[green]✓[/] Image saved: [cyan]{Markup.Escape(Path.GetFullPath(output))}[/]");
@@ -657,14 +657,14 @@ public sealed class ImageCommand : Command<ImageCommand.Settings>
     private static bool RequireFile(string? path, string flag, string example)
     {
         if (!string.IsNullOrWhiteSpace(path) && File.Exists(path)) return true;
-        AnsiConsole.MarkupLine($"[red]Error:[/] Missing [yellow]{flag} <path>[/] (e.g. [cyan]{example}[/])");
+        AnsiConsole.ErrorLine($"[red]Error:[/] Missing [yellow]{flag} <path>[/] (e.g. [cyan]{example}[/])");
         return false;
     }
 
     private static bool RequirePathExists(string? path, string flag, string example)
     {
         if (!string.IsNullOrWhiteSpace(path) && (File.Exists(path) || Directory.Exists(path))) return true;
-        AnsiConsole.MarkupLine($"[red]Error:[/] Missing [yellow]{flag} <path>[/] (e.g. [cyan]{example}[/])");
+        AnsiConsole.ErrorLine($"[red]Error:[/] Missing [yellow]{flag} <path>[/] (e.g. [cyan]{example}[/])");
         return false;
     }
 
@@ -867,7 +867,7 @@ public sealed class ImageCommand : Command<ImageCommand.Settings>
         }
         catch (Exception ex)
         {
-            AnsiConsole.MarkupLine($"[red]Error:[/] {Markup.Escape(ex.Message)}");
+            AnsiConsole.ErrorLine($"[red]Error:[/] {Markup.Escape(ex.Message)}");
             return 1;
         }
         finally
@@ -947,7 +947,7 @@ public sealed class ImageCommand : Command<ImageCommand.Settings>
         }
         catch (Exception ex)
         {
-            AnsiConsole.MarkupLine($"[red]Error:[/] {Markup.Escape(ex.Message)}");
+            AnsiConsole.ErrorLine($"[red]Error:[/] {Markup.Escape(ex.Message)}");
             return 1;
         }
         finally
@@ -1076,7 +1076,7 @@ public sealed class ImageCommand : Command<ImageCommand.Settings>
         }
         catch (Exception ex)
         {
-            AnsiConsole.MarkupLine($"[red]Error:[/] {Markup.Escape(ex.Message)}");
+            AnsiConsole.ErrorLine($"[red]Error:[/] {Markup.Escape(ex.Message)}");
             return 1;
         }
         finally
@@ -1170,7 +1170,7 @@ public sealed class ImageCommand : Command<ImageCommand.Settings>
         }
         catch (Exception ex)
         {
-            AnsiConsole.MarkupLine($"[red]Error:[/] {Markup.Escape(ex.Message)}");
+            AnsiConsole.ErrorLine($"[red]Error:[/] {Markup.Escape(ex.Message)}");
             return 1;
         }
         finally
@@ -1276,7 +1276,7 @@ public sealed class ImageCommand : Command<ImageCommand.Settings>
         }
         catch (Exception ex)
         {
-            AnsiConsole.MarkupLine($"[red]Error:[/] {Markup.Escape(ex.Message)}");
+            AnsiConsole.ErrorLine($"[red]Error:[/] {Markup.Escape(ex.Message)}");
             return 1;
         }
         finally
@@ -1416,7 +1416,7 @@ public sealed class ImageCommand : Command<ImageCommand.Settings>
         }
         catch (Exception ex)
         {
-            AnsiConsole.MarkupLine($"[red]Error:[/] {Markup.Escape(ex.Message)}");
+            AnsiConsole.ErrorLine($"[red]Error:[/] {Markup.Escape(ex.Message)}");
             return 1;
         }
         finally

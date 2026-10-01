@@ -549,7 +549,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         ExecutionPlan? resolvedPlan = null;
         if (settings.Explain && !settings.Auto)
         {
-            AnsiConsole.MarkupLine("[red]Error:[/] --explain requires --auto so the displayed plan is the plan that will execute.");
+            AnsiConsole.ErrorLine("[red]Error:[/] --explain requires --auto so the displayed plan is the plan that will execute.");
             return 1;
         }
 
@@ -602,7 +602,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException
                                           or System.Security.SecurityException or NotSupportedException)
             {
-                AnsiConsole.MarkupLine($"[red]Error reading prompt file:[/] {Markup.Escape(ex.Message)}");
+                AnsiConsole.ErrorLine($"[red]Error reading prompt file:[/] {Markup.Escape(ex.Message)}");
                 return 1;
             }
         }
@@ -634,7 +634,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         }
         catch (InvalidOperationException ex)
         {
-            AnsiConsole.MarkupLine($"[red]Error:[/] {Markup.Escape(ex.Message)}");
+            AnsiConsole.ErrorLine($"[red]Error:[/] {Markup.Escape(ex.Message)}");
             return 1;
         }
         // `is > 0`, not `!= 0`. NGpuLayers became int? so the planner could tell "unset" from an
@@ -675,7 +675,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         // before any forward pass is built, so the engine constructor sees the override.
         if (!TryApplyCpuMoeFlags(settings.CpuMoe, settings.NCpuMoe, out string? cpuMoeError))
         {
-            AnsiConsole.MarkupLine($"[red]Error:[/] {Markup.Escape(cpuMoeError!)}");
+            AnsiConsole.ErrorLine($"[red]Error:[/] {Markup.Escape(cpuMoeError!)}");
             return 1;
         }
 
@@ -704,7 +704,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         }
         if (modelPath is null || (!File.Exists(modelPath) && !Directory.Exists(modelPath)))
         {
-            AnsiConsole.MarkupLine("[red]Error:[/] No model file or package directory found. Use [yellow]-m <path>[/]");
+            AnsiConsole.ErrorLine("[red]Error:[/] No model file or package directory found. Use [yellow]-m <path>[/]");
             return 1;
         }
 
@@ -743,7 +743,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
             using var onnxSession = OnnxModelSession.TryLoad(modelPath);
             if (onnxSession == null)
             {
-                AnsiConsole.MarkupLine("[red]Error:[/] Could not load ONNX model file. Ensure onnxruntime.dll is available.");
+                AnsiConsole.ErrorLine("[red]Error:[/] Could not load ONNX model file. Ensure onnxruntime.dll is available.");
                 return 1;
             }
 
@@ -800,7 +800,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
             var pkgReport = ModelPackageInspector.Inspect(modelPath);
             if (!pkgReport.IsSupported)
             {
-                AnsiConsole.MarkupLine("[red]Error:[/] SafeTensors package not supported:");
+                AnsiConsole.ErrorLine("[red]Error:[/] SafeTensors package not supported:");
                 foreach (var r in pkgReport.Rejections)
                     AnsiConsole.MarkupLine($"  [red]·[/] {Markup.Escape(r.Detail)}");
                 AnsiConsole.MarkupLine("[dim]GGUF is the recommended deployment format for quantized models.[/]");
@@ -811,30 +811,30 @@ public sealed class RunCommand : Command<RunCommand.Settings>
             // Explicit errors — the user must know why, not receive a cryptic exception.
             if (effNGpuLayers != 0)
             {
-                AnsiConsole.MarkupLine("[red]Error:[/] GPU offload ([yellow]--ngl[/] / [yellow]-g[/]) is not yet supported for SafeTensors packages. " +
+                AnsiConsole.ErrorLine("[red]Error:[/] GPU offload ([yellow]--ngl[/] / [yellow]-g[/]) is not yet supported for SafeTensors packages. " +
                     "Run on CPU (omit [yellow]-g[/] or pass [yellow]-g 0[/]), or convert to GGUF for GPU execution.");
                 return 1;
             }
             if (settings.TurboQuant)
             {
-                AnsiConsole.MarkupLine("[red]Error:[/] [yellow]--tq[/] (TurboQuant) is not supported for SafeTensors packages. " +
+                AnsiConsole.ErrorLine("[red]Error:[/] [yellow]--tq[/] (TurboQuant) is not supported for SafeTensors packages. " +
                     "Only GGUF models support KV-cache quantization via this flag.");
                 return 1;
             }
             if (settings.DraftModelPath is not null || settings.DraftLookup)
             {
-                AnsiConsole.MarkupLine("[red]Error:[/] Speculative decoding ([yellow]--draft-model[/] / [yellow]--draft-lookup[/]) " +
+                AnsiConsole.ErrorLine("[red]Error:[/] Speculative decoding ([yellow]--draft-model[/] / [yellow]--draft-lookup[/]) " +
                     "is not supported for SafeTensors packages.");
                 return 1;
             }
             if (settings.DSparkModelPath is not null)
             {
-                AnsiConsole.MarkupLine("[red]Error:[/] DSpark ([yellow]--dspark-model[/]) is not supported for SafeTensors packages.");
+                AnsiConsole.ErrorLine("[red]Error:[/] DSpark ([yellow]--dspark-model[/]) is not supported for SafeTensors packages.");
                 return 1;
             }
             if (settings.ImagePaths is { Length: > 0 })
             {
-                AnsiConsole.MarkupLine("[red]Error:[/] [yellow]--image[/] (multimodal input) is not supported for SafeTensors packages.");
+                AnsiConsole.ErrorLine("[red]Error:[/] [yellow]--image[/] (multimodal input) is not supported for SafeTensors packages.");
                 return 1;
             }
 
@@ -845,7 +845,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
             }
             catch (Exception ex)
             {
-                AnsiConsole.MarkupLine($"[red]Error:[/] Failed to open SafeTensors package: {Markup.Escape(ex.Message)}");
+                AnsiConsole.ErrorLine($"[red]Error:[/] Failed to open SafeTensors package: {Markup.Escape(ex.Message)}");
                 return 1;
             }
 
@@ -854,7 +854,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
             {
                 stTensorSource.Dispose();
                 stTensorSource = null;
-                AnsiConsole.MarkupLine("[red]Error:[/] Failed to load tokenizer:");
+                AnsiConsole.ErrorLine("[red]Error:[/] Failed to load tokenizer:");
                 foreach (var r in tokResult.Rejections)
                     AnsiConsole.MarkupLine($"  [red]·[/] {Markup.Escape(r.Detail)}");
                 return 1;
@@ -975,25 +975,25 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         {
             if (settings.MmprojPath is not { Length: > 0 })
             {
-                AnsiConsole.MarkupLine("[red]Error:[/] --image requires --mmproj <mmproj.gguf> (the multimodal projector).");
+                AnsiConsole.ErrorLine("[red]Error:[/] --image requires --mmproj <mmproj.gguf> (the multimodal projector).");
                 return 1;
             }
             if (!File.Exists(settings.MmprojPath))
             {
-                AnsiConsole.MarkupLine($"[red]Error:[/] mmproj file not found: {Markup.Escape(settings.MmprojPath)}");
+                AnsiConsole.ErrorLine($"[red]Error:[/] mmproj file not found: {Markup.Escape(settings.MmprojPath)}");
                 return 1;
             }
             foreach (var imgPath in imagePaths)
             {
                 if (!File.Exists(imgPath))
                 {
-                    AnsiConsole.MarkupLine($"[red]Error:[/] image file not found: {Markup.Escape(imgPath)}");
+                    AnsiConsole.ErrorLine($"[red]Error:[/] image file not found: {Markup.Escape(imgPath)}");
                     return 1;
                 }
             }
             if (settings.Prompt is not { Length: > 0 })
             {
-                AnsiConsole.MarkupLine("[red]Error:[/] --image requires a text prompt ([yellow]-p \"...\"[/]); interactive image chat is not supported yet.");
+                AnsiConsole.ErrorLine("[red]Error:[/] --image requires a text prompt ([yellow]-p \"...\"[/]); interactive image chat is not supported yet.");
                 return 1;
             }
         }
@@ -1005,12 +1005,12 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         // GDN state are not supported because the rank-1 recurrence is destructive.
         if (hp.IsHybridSsm && settings.TurboQuant)
         {
-            AnsiConsole.MarkupLine("[red]Error:[/] TurboQuant is not supported for hybrid GDN models (no KV cache on GDN layers).");
+            AnsiConsole.ErrorLine("[red]Error:[/] TurboQuant is not supported for hybrid GDN models (no KV cache on GDN layers).");
             return 1;
         }
         if (hp.IsHybridSsm && (settings.DraftModelPath is not null || settings.DraftLookup))
         {
-            AnsiConsole.MarkupLine("[red]Error:[/] Speculative decoding is not supported for hybrid GDN models (GDN state is destructively updated and cannot be rewound).");
+            AnsiConsole.ErrorLine("[red]Error:[/] Speculative decoding is not supported for hybrid GDN models (GDN state is destructively updated and cannot be rewound).");
             return 1;
         }
 
@@ -1049,7 +1049,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         {
             if (settings.TurboQuant || settings.DraftModelPath is not null || settings.DraftLookup)
             {
-                AnsiConsole.MarkupLine("[red]Error:[/] gpt-oss runs on its own CPU forward pass, which supports neither TurboQuant nor speculative decoding.");
+                AnsiConsole.ErrorLine("[red]Error:[/] gpt-oss runs on its own CPU forward pass, which supports neither TurboQuant nor speculative decoding.");
                 return 1;
             }
             var gptOssHp = GptOssHyperparams.FromModel(model);
@@ -1117,7 +1117,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
                 tqQuantizer = TqQuantizer.KVarN;
                 break;
             default:
-                AnsiConsole.MarkupLine($"[red]Error:[/] Unknown --tq-mode value '{Markup.Escape(settings.TqModeStr)}'. Expected one of: auto, lloydmax, kvarn.");
+                AnsiConsole.ErrorLine($"[red]Error:[/] Unknown --tq-mode value '{Markup.Escape(settings.TqModeStr)}'. Expected one of: auto, lloydmax, kvarn.");
                 return 1;
         }
         if (tqModeIsAuto && settings.TurboQuant)
@@ -1147,12 +1147,12 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         {
             if (!settings.TurboQuant)
             {
-                AnsiConsole.MarkupLine("[red]Error:[/] --tq-mode kvarn requires [yellow]--tq[/].");
+                AnsiConsole.ErrorLine("[red]Error:[/] --tq-mode kvarn requires [yellow]--tq[/].");
                 return 1;
             }
             if (SnapKvConfig.FromEnvironment().Enabled)
             {
-                AnsiConsole.MarkupLine("[red]Error:[/] --tq-mode kvarn does not compose with SnapKV eviction yet (issue #180 follow-up); unset [yellow]STINGRAY_SNAPKV_BUDGET[/].");
+                AnsiConsole.ErrorLine("[red]Error:[/] --tq-mode kvarn does not compose with SnapKV eviction yet (issue #180 follow-up); unset [yellow]STINGRAY_SNAPKV_BUDGET[/].");
                 return 1;
             }
             if (effNGpuLayers != 0)
@@ -1161,17 +1161,17 @@ public sealed class RunCommand : Command<RunCommand.Settings>
                 string kvarnBackend = (settings.Backend ?? "auto").Trim().ToLowerInvariant();
                 if (kvarnBackend == "vulkan")
                 {
-                    AnsiConsole.MarkupLine("[red]Error:[/] --tq-mode kvarn is not supported on the Vulkan backend; use [yellow]--backend cuda -g -1[/] (full offload) or [yellow]-g 0[/] (CPU).");
+                    AnsiConsole.ErrorLine("[red]Error:[/] --tq-mode kvarn is not supported on the Vulkan backend; use [yellow]--backend cuda -g -1[/] (full offload) or [yellow]-g 0[/] (CPU).");
                     return 1;
                 }
                 if (!CudaBackend.IsAvailable())
                 {
-                    AnsiConsole.MarkupLine("[red]Error:[/] --tq-mode kvarn with GPU offload requires a CUDA device (issue #180 Task 5a); use [yellow]-g 0[/] for the CPU path.");
+                    AnsiConsole.ErrorLine("[red]Error:[/] --tq-mode kvarn with GPU offload requires a CUDA device (issue #180 Task 5a); use [yellow]-g 0[/] for the CPU path.");
                     return 1;
                 }
                 if (hp.IsMoE)
                 {
-                    AnsiConsole.MarkupLine("[red]Error:[/] --tq-mode kvarn on CUDA supports dense models only (issue #180 Task 5a); use [yellow]-g 0[/] for MoE.");
+                    AnsiConsole.ErrorLine("[red]Error:[/] --tq-mode kvarn on CUDA supports dense models only (issue #180 Task 5a); use [yellow]-g 0[/] for MoE.");
                     return 1;
                 }
             }
@@ -1188,18 +1188,18 @@ public sealed class RunCommand : Command<RunCommand.Settings>
             {
                 if (!TqSupport.IsKVarNHeadDim(headDim))
                 {
-                    AnsiConsole.MarkupLine($"[red]Error:[/] --tq-mode kvarn requires a power-of-2 head dimension in [[8, 1024]]; this model has head dim {headDim}.");
+                    AnsiConsole.ErrorLine($"[red]Error:[/] --tq-mode kvarn requires a power-of-2 head dimension in [[8, 1024]]; this model has head dim {headDim}.");
                     return 1;
                 }
                 if (effNGpuLayers != 0 && headDim > TqSupport.KVarNCudaMaxHeadDim)
                 {
-                    AnsiConsole.MarkupLine($"[red]Error:[/] --tq-mode kvarn on CUDA requires head dim ≤ 256 (shared-memory WHT cap); this model has head dim {headDim}. Use [yellow]-g 0[/] for the CPU path.");
+                    AnsiConsole.ErrorLine($"[red]Error:[/] --tq-mode kvarn on CUDA requires head dim ≤ 256 (shared-memory WHT cap); this model has head dim {headDim}. Use [yellow]-g 0[/] for the CPU path.");
                     return 1;
                 }
             }
             else if (!TqSupport.IsLloydMaxHeadDim(headDim))
             {
-                AnsiConsole.MarkupLine($"[red]Error:[/] TurboQuant requires head dimension 128 or 256; this model has head dim {headDim}. Remove [yellow]--tq[/] to run without KV compression.");
+                AnsiConsole.ErrorLine($"[red]Error:[/] TurboQuant requires head dimension 128 or 256; this model has head dim {headDim}. Remove [yellow]--tq[/] to run without KV compression.");
                 return 1;
             }
         }
@@ -1241,7 +1241,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
                         && CudaBackend.IsAvailable();
                     break;
                 default:
-                    AnsiConsole.MarkupLine($"[red]Error:[/] Unknown --backend value '{settings.Backend}'. Expected one of: auto, vulkan, cuda.");
+                    AnsiConsole.ErrorLine($"[red]Error:[/] Unknown --backend value '{settings.Backend}'. Expected one of: auto, vulkan, cuda.");
                     return 1;
             }
             if (wantCuda && settings.TurboQuant && tqQuantizer == TqQuantizer.LloydMax
@@ -1420,7 +1420,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
                         // instead, pointing at the CPU KVarN path that does support it.
                         if (!TqSupport.IsLloydMaxHeadDim(hp.HeadDim))
                         {
-                            AnsiConsole.MarkupLine(
+                            AnsiConsole.ErrorLine(
                                 $"[red]Error:[/] --tq with head dim {hp.HeadDim} requires KVarN (Lloyd-Max has no " +
                                 $"codebook for this head dim), but KVarN needs full CUDA offload and only " +
                                 $"{cudaGpuLayers}/{hp.NumLayers} layers fit this GPU. Use [yellow]-g 0[/] for the CPU KVarN path.");
@@ -1436,7 +1436,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
                     }
                     else
                     {
-                        AnsiConsole.MarkupLine(
+                        AnsiConsole.ErrorLine(
                             $"[red]Error:[/] --tq-mode kvarn requires full CUDA offload, but only " +
                             $"{cudaGpuLayers}/{hp.NumLayers} layers fit this GPU. Use [yellow]-g 0[/] for the CPU path.");
                         return 1;
@@ -1648,7 +1648,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         {
             if (!File.Exists(toolsPath))
             {
-                AnsiConsole.MarkupLine($"[red]Error:[/] tools file not found: {Markup.Escape(toolsPath)}");
+                AnsiConsole.ErrorLine($"[red]Error:[/] tools file not found: {Markup.Escape(toolsPath)}");
                 return 1;
             }
             try
@@ -1659,7 +1659,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
                                           or System.Security.SecurityException or NotSupportedException
                                           or JsonException or FormatException)
             {
-                AnsiConsole.MarkupLine($"[red]Error:[/] could not parse --tools file: {Markup.Escape(ex.Message)}");
+                AnsiConsole.ErrorLine($"[red]Error:[/] could not parse --tools file: {Markup.Escape(ex.Message)}");
                 return 1;
             }
             AnsiConsole.MarkupLine($"[dim]Loaded {toolSchemas.Count} tool(s) from {Markup.Escape(Path.GetFileName(toolsPath))}.[/]");
@@ -1693,7 +1693,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
                 out ITokenConstraint? jsonSchemaConstraint, out string? jsonSchemaError,
                 ordered: settings.JsonSchemaOrdered))
         {
-            AnsiConsole.MarkupLine($"[red]Error:[/] {Markup.Escape(jsonSchemaError!)}");
+            AnsiConsole.ErrorLine($"[red]Error:[/] {Markup.Escape(jsonSchemaError!)}");
             return 1;
         }
         if (jsonSchemaConstraint is not null)
@@ -1718,7 +1718,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
             string trimmed = tmplOverride.Trim();
             if (!trimmed.Contains("{{", StringComparison.Ordinal) && !trimmed.Contains("{%", StringComparison.Ordinal))
             {
-                AnsiConsole.MarkupLine($"[red]Error:[/] --chat-template '{Markup.Escape(trimmed)}' is not Jinja source. " +
+                AnsiConsole.ErrorLine($"[red]Error:[/] --chat-template '{Markup.Escape(trimmed)}' is not Jinja source. " +
                     "Named shortcuts are not supported: pass the model's raw Jinja2 template, or omit the flag to use " +
                     "the one embedded in the model.");
                 return 1;
@@ -1732,7 +1732,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         if (settings.LogitBias is { Length: > 0 } biasEntries
             && !TryParseLogitBias(biasEntries, out logitBiasMap, out string? biasError))
         {
-            AnsiConsole.MarkupLine($"[red]Error:[/] --logit-bias: {Markup.Escape(biasError!)}");
+            AnsiConsole.ErrorLine($"[red]Error:[/] --logit-bias: {Markup.Escape(biasError!)}");
             return 1;
         }
 
@@ -1793,7 +1793,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
             bool hasBias = sp.LogitBias is { Count: > 0 };
             if (settings.DraftModelPath is not null && settings.DraftLookup)
             {
-                AnsiConsole.MarkupLine("[red]Error:[/] --draft-model and --draft-lookup are mutually exclusive.");
+                AnsiConsole.ErrorLine("[red]Error:[/] --draft-model and --draft-lookup are mutually exclusive.");
                 return 1;
             }
             if (nGpuLayers != 0 && !gpuSpecTarget)
@@ -1843,7 +1843,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
             }
             else if (!File.Exists(settings.DraftModelPath))
             {
-                AnsiConsole.MarkupLine($"[red]Error:[/] Draft model not found: {settings.DraftModelPath}");
+                AnsiConsole.ErrorLine($"[red]Error:[/] Draft model not found: {settings.DraftModelPath}");
                 return 1;
             }
             else
@@ -1927,19 +1927,19 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         {
             if (settings.DSparkModelPath is null)
             {
-                AnsiConsole.MarkupLine("[red]Error:[/] --spec-type dspark requires --dspark-model <path-to-model.safetensors>.");
+                AnsiConsole.ErrorLine("[red]Error:[/] --spec-type dspark requires --dspark-model <path-to-model.safetensors>.");
                 return 1;
             }
             if (settings.DraftModelPath is not null || settings.DraftLookup)
             {
-                AnsiConsole.MarkupLine("[red]Error:[/] --dspark-model and --draft-model/--draft-lookup are mutually exclusive.");
+                AnsiConsole.ErrorLine("[red]Error:[/] --dspark-model and --draft-model/--draft-lookup are mutually exclusive.");
                 return 1;
             }
             if (sp.SpecType == SpecType.Mtp)
             {
                 // An explicit conflicting --spec-type must not be silently outranked
                 // by the presence of --dspark-model.
-                AnsiConsole.MarkupLine("[red]Error:[/] --spec-type mtp conflicts with --dspark-model; pick one.");
+                AnsiConsole.ErrorLine("[red]Error:[/] --spec-type mtp conflicts with --dspark-model; pick one.");
                 return 1;
             }
             if (settings.DSparkMinConfidence > 1f)
@@ -1947,7 +1947,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
                 // Same [0,1] contract the --spec-draft-p-min validation enforces;
                 // a threshold above any sigmoid output would silently disable all
                 // drafting instead of doing what the user meant.
-                AnsiConsole.MarkupLine($"[red]Error:[/] --dspark-min-confidence={settings.DSparkMinConfidence} must be in [0, 1].");
+                AnsiConsole.ErrorLine($"[red]Error:[/] --dspark-min-confidence={settings.DSparkMinConfidence} must be in [0, 1].");
                 return 1;
             }
 
@@ -2077,7 +2077,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
     {
         int window = Math.Min(target.MaxSeqLen, draft?.MaxSeqLen ?? int.MaxValue);
         if (promptTokens + lookahead + 1 < window) return false;
-        AnsiConsole.MarkupLine(
+        AnsiConsole.ErrorLine(
             $"[red]Error:[/] prompt ({promptTokens} tokens) + lookahead ({lookahead}) does not fit the " +
             $"speculative context window ({window} tokens" +
             (draft is not null && draft.MaxSeqLen < target.MaxSeqLen
@@ -2244,13 +2244,13 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         if (Directory.Exists(stPath)) stPath = Path.Combine(stPath, "model.safetensors");
         if (!File.Exists(stPath))
         {
-            AnsiConsole.MarkupLine($"[red]Error:[/] DSpark model not found: {stPath}");
+            AnsiConsole.ErrorLine($"[red]Error:[/] DSpark model not found: {stPath}");
             return 1;
         }
         string cfgPath = Path.Combine(Path.GetDirectoryName(Path.GetFullPath(stPath))!, "config.json");
         if (!File.Exists(cfgPath))
         {
-            AnsiConsole.MarkupLine($"[red]Error:[/] DSpark config.json not found next to the safetensors: {cfgPath}");
+            AnsiConsole.ErrorLine($"[red]Error:[/] DSpark config.json not found next to the safetensors: {cfgPath}");
             return 1;
         }
 
@@ -2258,7 +2258,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         if (cfg.VocabSize != hp.VocabSize || cfg.NumTargetLayers != hp.NumLayers
             || cfg.HiddenSize != hp.EmbeddingDim)
         {
-            AnsiConsole.MarkupLine(
+            AnsiConsole.ErrorLine(
                 $"[red]Error:[/] DSpark head/target mismatch — head expects vocab {cfg.VocabSize}, " +
                 $"{cfg.NumTargetLayers} target layers, hidden {cfg.HiddenSize}; target has " +
                 $"vocab {hp.VocabSize}, {hp.NumLayers} layers, hidden {hp.EmbeddingDim}. " +
@@ -2273,7 +2273,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         }
         catch (ArgumentException ex)
         {
-            AnsiConsole.MarkupLine($"[red]Error:[/] {ex.Message}");
+            AnsiConsole.ErrorLine($"[red]Error:[/] {ex.Message}");
             return 1;
         }
 
@@ -2336,7 +2336,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         int window = Math.Min(target.MaxSeqLen, draft.MaxContext);
         if (tokens.Count + cfg.BlockSize + 1 >= window)
         {
-            AnsiConsole.MarkupLine(
+            AnsiConsole.ErrorLine(
                 $"[red]Error:[/] prompt ({tokens.Count} tokens) + DSpark block ({cfg.BlockSize}) " +
                 $"does not fit the context window ({window} tokens" +
                 (draft.MaxContext < target.MaxSeqLen ? ", limited by the draft head's RoPE window" : "") +
@@ -2431,7 +2431,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         // prompt after wiring --ctx-size would be an unsafe write, not a harmless truncation.
         if (tokens.Count >= maxContextLength)
         {
-            AnsiConsole.MarkupLine(
+            AnsiConsole.ErrorLine(
                 $"[red]Error:[/] prompt has {tokens.Count} tokens but the active context is " +
                 $"{maxContextLength}; shorten the prompt or raise [yellow]--ctx-size[/] so at least one token can be generated.");
             return 1;
@@ -2470,7 +2470,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         bool useMtp = ResolveCliMtp(mtpFwd, sp, s_noThinking, out string? mtpReject);
         if (mtpReject != null)
         {
-            AnsiConsole.MarkupLine($"[red]Error:[/] {Markup.Escape(mtpReject)}");
+            AnsiConsole.ErrorLine($"[red]Error:[/] {Markup.Escape(mtpReject)}");
             return 1;
         }
 
@@ -2539,7 +2539,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
     {
         if (!fwd.SupportsEmbeddingInput)
         {
-            AnsiConsole.MarkupLine("[red]Error:[/] the selected backend does not support image embedding input. " +
+            AnsiConsole.ErrorLine("[red]Error:[/] the selected backend does not support image embedding input. " +
                 "Image input runs on CPU ([yellow]-g 0[/]), full CUDA offload ([yellow]-g -1[/]), or CUDA " +
                 "partial-offload ([yellow]-g N[/]); the Vulkan partial-offload hybrid is not supported yet.");
             return 1;
@@ -2549,7 +2549,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         // GpuForwardPass only; anything else would rotate image tokens with 1D positions and answer wrongly.
         if (hp.RopeSections is { Count: > 0 } && fwd is not (ForwardPass or GpuForwardPass))
         {
-            AnsiConsole.MarkupLine("[red]Error:[/] image input for this model (M-RoPE) runs on CPU ([yellow]-g 0[/]) " +
+            AnsiConsole.ErrorLine("[red]Error:[/] image input for this model (M-RoPE) runs on CPU ([yellow]-g 0[/]) " +
                 "or full Vulkan offload ([yellow]-g -1 --backend vulkan[/]) only.");
             return 1;
         }
@@ -2564,7 +2564,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         }
         catch (NotSupportedException ex)
         {
-            AnsiConsole.MarkupLine($"[red]Error:[/] {Markup.Escape(ex.Message)}");
+            AnsiConsole.ErrorLine($"[red]Error:[/] {Markup.Escape(ex.Message)}");
             return 1;
         }
         using var __ = vision; // matches this method's existing risk tolerance: other early
@@ -2585,7 +2585,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         int embd = vision.EmbeddingDim;
         if (embd != hp.EmbeddingDim && embd != hp.EmbeddingDim * (1 + hp.NumDeepstack))
         {
-            AnsiConsole.MarkupLine(
+            AnsiConsole.ErrorLine(
                 $"[red]Error:[/] vision projector ({vision.ProjectorType}) outputs {embd}-dim " +
                 $"embeddings but the text backbone expects {hp.EmbeddingDim}-dim input — this " +
                 $"checkpoint's vision adapter has a real dimension mismatch and cannot be used " +
@@ -2616,7 +2616,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         }
         else
         {
-            AnsiConsole.MarkupLine($"[red]Error:[/] prompt has {markerCount} '{ImageMarker}' marker(s) but " +
+            AnsiConsole.ErrorLine($"[red]Error:[/] prompt has {markerCount} '{ImageMarker}' marker(s) but " +
                 $"{nImages} --image file(s) were given; the counts must match (or omit markers to prepend the images).");
             return 1;
         }
@@ -2637,7 +2637,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
             catch (Exception ex) when (ex is IOException or NotSupportedException or InvalidDataException
                                           or UnauthorizedAccessException or System.Security.SecurityException)
             {
-                AnsiConsole.MarkupLine($"[red]Error reading image[/] {Markup.Escape(imagePaths[i])}: {Markup.Escape(ex.Message)}");
+                AnsiConsole.ErrorLine($"[red]Error reading image[/] {Markup.Escape(imagePaths[i])}: {Markup.Escape(ex.Message)}");
                 return 1;
             }
             blocks[i] = (soft, nTok);
@@ -2701,7 +2701,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
             int placeholdersFound = allTokens.Count(t => t == placeholder);
             if (placeholdersFound != nImages)
             {
-                AnsiConsole.MarkupLine($"[red]Error:[/] expected {nImages} image placeholder token(s) ({vision.PlaceholderMarker}, {placeholder}) " +
+                AnsiConsole.ErrorLine($"[red]Error:[/] expected {nImages} image placeholder token(s) ({vision.PlaceholderMarker}, {placeholder}) " +
                     $"after templating but found {placeholdersFound}; this model may not support image input.");
                 return 1;
             }
@@ -2719,7 +2719,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
             int spliceCount = textParts.Length - 1;
             if (spliceCount != nImages)
             {
-                AnsiConsole.MarkupLine($"[red]Error:[/] prompt has {spliceCount} '{vision.PlaceholderMarker}' occurrence(s) " +
+                AnsiConsole.ErrorLine($"[red]Error:[/] prompt has {spliceCount} '{vision.PlaceholderMarker}' occurrence(s) " +
                     $"after templating but {nImages} --image file(s) were given; the counts must match.");
                 return 1;
             }
@@ -2749,7 +2749,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         int plannedPrefill = allTokens.Count + (nImages * markerTokens) + totalSoft - nImages;
         if (plannedPrefill >= maxContextLength)
         {
-            AnsiConsole.MarkupLine(
+            AnsiConsole.ErrorLine(
                 $"[red]Error:[/] prompt plus images expand to {plannedPrefill} tokens ({totalSoft} image) " +
                 $"but the active context is {maxContextLength}; use fewer/smaller images or raise " +
                 $"[yellow]--ctx-size[/] so at least one token can be generated.");
@@ -3070,7 +3070,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
             // far larger, so prefilling past it would be an out-of-bounds write.
             if (tokens.Count >= maxContextLength)
             {
-                AnsiConsole.MarkupLine(
+                AnsiConsole.ErrorLine(
                     $"[red]Error:[/] message is {tokens.Count} tokens but the active context is " +
                     $"{maxContextLength}; shorten it or restart with a larger [yellow]--ctx-size[/].");
                 continue;

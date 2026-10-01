@@ -48,7 +48,7 @@ public sealed class AdmitArchCommand : Command<AdmitArchCommand.Settings>
     {
         if (string.IsNullOrEmpty(settings.ModelPath) || !File.Exists(settings.ModelPath))
         {
-            AnsiConsole.MarkupLine("[red]Error:[/] No model file found. Use [yellow]-m <path>[/]");
+            AnsiConsole.ErrorLine("[red]Error:[/] No model file found. Use [yellow]-m <path>[/]");
             return 1;
         }
 
@@ -166,7 +166,7 @@ public sealed class AdmitArchCommand : Command<AdmitArchCommand.Settings>
         }
         catch (FormatException)
         {
-            AnsiConsole.MarkupLine("[red]Error:[/] --reference-tokens must be a comma-separated list of integers.");
+            AnsiConsole.ErrorLine("[red]Error:[/] --reference-tokens must be a comma-separated list of integers.");
             return 1;
         }
 

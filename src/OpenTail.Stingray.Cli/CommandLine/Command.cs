@@ -67,13 +67,13 @@ public abstract class Command<
 
         if (!OptionBinder.TryBind(settings, OptionModel.Describe<TSettings>(), args, out string? error))
         {
-            Terminal.AnsiConsole.MarkupLine($"[red]Error:[/] {Terminal.Markup.Escape(error!)}");
+            Terminal.AnsiConsole.ErrorLine($"[red]Error:[/] {Terminal.Markup.Escape(error!)}");
             return 1;
         }
 
         if (settings.Validate() is { } validationError)
         {
-            Terminal.AnsiConsole.MarkupLine($"[red]Error:[/] {Terminal.Markup.Escape(validationError)}");
+            Terminal.AnsiConsole.ErrorLine($"[red]Error:[/] {Terminal.Markup.Escape(validationError)}");
             return 1;
         }
 

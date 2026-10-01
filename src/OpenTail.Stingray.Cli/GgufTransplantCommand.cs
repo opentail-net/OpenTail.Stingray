@@ -53,12 +53,12 @@ public sealed unsafe class GgufTransplantCommand : Command<GgufTransplantCommand
         if (settings.BasePath is null || settings.DonorPath is null || settings.TensorPattern is null
             || (settings.OutPath is null && !settings.DryRun))
         {
-            AnsiConsole.MarkupLine("[red]Error:[/] --base, --donor, --tensors and -o/--out are required (-o optional with --dry-run).");
-            return 1;
+            AnsiConsole.ErrorLine("[red]Error:[/] --base, --donor, --tensors and -o/--out are required (-o optional with --dry-run).");
+            return ExitCodes.Usage;
         }
         if (!File.Exists(settings.BasePath) || !File.Exists(settings.DonorPath))
         {
-            AnsiConsole.MarkupLine("[red]Error:[/] base or donor file not found.");
+            AnsiConsole.ErrorLine("[red]Error:[/] base or donor file not found.");
             return 1;
         }
         string? outPath = settings.OutPath is null ? null : Path.GetFullPath(settings.OutPath);
@@ -67,12 +67,12 @@ public sealed unsafe class GgufTransplantCommand : Command<GgufTransplantCommand
             if (string.Equals(outPath, Path.GetFullPath(settings.BasePath), StringComparison.OrdinalIgnoreCase)
                 || string.Equals(outPath, Path.GetFullPath(settings.DonorPath), StringComparison.OrdinalIgnoreCase))
             {
-                AnsiConsole.MarkupLine("[red]Error:[/] the output must not be the base or donor file.");
+                AnsiConsole.ErrorLine("[red]Error:[/] the output must not be the base or donor file.");
                 return 1;
             }
             if (File.Exists(outPath) && !settings.Force && !settings.DryRun)
             {
-                AnsiConsole.MarkupLine($"[red]Error:[/] {Markup.Escape(outPath)} exists; pass --force to overwrite.");
+                AnsiConsole.ErrorLine($"[red]Error:[/] {Markup.Escape(outPath)} exists; pass --force to overwrite.");
                 return 1;
             }
         }
@@ -81,8 +81,8 @@ public sealed unsafe class GgufTransplantCommand : Command<GgufTransplantCommand
         try { pattern = new Regex(settings.TensorPattern, RegexOptions.CultureInvariant); }
         catch (ArgumentException ex)
         {
-            AnsiConsole.MarkupLine($"[red]Error:[/] invalid --tensors regex: {Markup.Escape(ex.Message)}");
-            return 1;
+            AnsiConsole.ErrorLine($"[red]Error:[/] invalid --tensors regex: {Markup.Escape(ex.Message)}");
+            return ExitCodes.Usage;
         }
 
         using var baseModel = GgufModel.Open(settings.BasePath);
@@ -90,7 +90,7 @@ public sealed unsafe class GgufTransplantCommand : Command<GgufTransplantCommand
         var baseTensors = baseModel.Tensors;
         if (baseTensors.Any(t => t.ShardIndex != 0))
         {
-            AnsiConsole.MarkupLine("[red]Error:[/] sharded base checkpoints are not supported.");
+            AnsiConsole.ErrorLine("[red]Error:[/] sharded base checkpoints are not supported.");
             return 1;
         }
 
@@ -103,12 +103,12 @@ public sealed unsafe class GgufTransplantCommand : Command<GgufTransplantCommand
             if (!pattern.IsMatch(t.Name)) { plan.Add((t, false, t)); continue; }
             if (!donorByName.TryGetValue(t.Name, out var d))
             {
-                AnsiConsole.MarkupLine($"[red]Error:[/] donor has no tensor named {Markup.Escape(t.Name)}.");
+                AnsiConsole.ErrorLine($"[red]Error:[/] donor has no tensor named {Markup.Escape(t.Name)}.");
                 return 1;
             }
             if (!d.Dimensions.Take(d.NDimensions).SequenceEqual(t.Dimensions.Take(t.NDimensions)))
             {
-                AnsiConsole.MarkupLine($"[red]Error:[/] dimension mismatch for {Markup.Escape(t.Name)}.");
+                AnsiConsole.ErrorLine($"[red]Error:[/] dimension mismatch for {Markup.Escape(t.Name)}.");
                 return 1;
             }
             plan.Add((new GgufTensorInfo(t.Name, d.NDimensions, d.Dimensions, d.DType, 0), true, d));
@@ -117,7 +117,7 @@ public sealed unsafe class GgufTransplantCommand : Command<GgufTransplantCommand
         int replaced = plan.Count(p => p.FromDonor);
         if (replaced == 0)
         {
-            AnsiConsole.MarkupLine("[red]Error:[/] --tensors matched no base tensors.");
+            AnsiConsole.ErrorLine("[red]Error:[/] --tensors matched no base tensors.");
             return 1;
         }
 
@@ -135,14 +135,14 @@ public sealed unsafe class GgufTransplantCommand : Command<GgufTransplantCommand
         long kvEnd = baseModel.Shard0TensorInfoEndOffset - infoBytes;
         if (kvEnd < 24 || kvEnd > baseModel.Shard0TensorInfoEndOffset)
         {
-            AnsiConsole.MarkupLine("[red]Error:[/] could not derive the end of the KV section from the base file.");
+            AnsiConsole.ErrorLine("[red]Error:[/] could not derive the end of the KV section from the base file.");
             return 1;
         }
         byte[] head = new byte[kvEnd];
         using (var fs = File.OpenRead(settings.BasePath)) fs.ReadExactly(head, 0, head.Length);
         if (Encoding.ASCII.GetString(head, 0, 4) != "GGUF" || BitConverter.ToUInt64(head, 8) != (ulong)baseTensors.Count)
         {
-            AnsiConsole.MarkupLine("[red]Error:[/] base header sanity check failed (magic / tensor count).");
+            AnsiConsole.ErrorLine("[red]Error:[/] base header sanity check failed (magic / tensor count).");
             return 1;
         }
 
@@ -186,7 +186,7 @@ public sealed unsafe class GgufTransplantCommand : Command<GgufTransplantCommand
         using var result = GgufModel.Open(outPath!);
         if (result.Tensors.Count != plan.Count)
         {
-            AnsiConsole.MarkupLine($"[red]Verification failed:[/] output has {result.Tensors.Count} tensors, expected {plan.Count}.");
+            AnsiConsole.ErrorLine($"[red]Verification failed:[/] output has {result.Tensors.Count} tensors, expected {plan.Count}.");
             return 1;
         }
         for (int i = 0; i < plan.Count; i++)
@@ -196,7 +196,7 @@ public sealed unsafe class GgufTransplantCommand : Command<GgufTransplantCommand
             if (written is null || written.Value.DType != info.DType || written.Value.ByteSize != source.ByteSize
                 || !BytesEqual(result.GetTensorDataPtr(written.Value), (fromDonor ? donor : baseModel).GetTensorDataPtr(source), source.ByteSize))
             {
-                AnsiConsole.MarkupLine($"[red]Verification failed:[/] tensor {Markup.Escape(info.Name)} differs from its source.");
+                AnsiConsole.ErrorLine($"[red]Verification failed:[/] tensor {Markup.Escape(info.Name)} differs from its source.");
                 return 1;
             }
         }

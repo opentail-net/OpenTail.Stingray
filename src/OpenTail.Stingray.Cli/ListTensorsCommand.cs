@@ -35,7 +35,7 @@ public sealed class ListTensorsCommand : Command<ListTensorsCommand.Settings>
         var modelPath = settings.ModelPath;
         if (modelPath is null || !File.Exists(modelPath))
         {
-            AnsiConsole.MarkupLine("[red]Error:[/] No model file found. Use [yellow]-m <path>[/]");
+            AnsiConsole.ErrorLine("[red]Error:[/] No model file found. Use [yellow]-m <path>[/]");
             return 1;
         }
 
@@ -44,7 +44,7 @@ public sealed class ListTensorsCommand : Command<ListTensorsCommand.Settings>
             using var onnx = OnnxModelSession.TryLoad(modelPath);
             if (onnx == null)
             {
-                AnsiConsole.MarkupLine("[red]Error:[/] Could not load ONNX model file. Ensure onnxruntime.dll is available.");
+                AnsiConsole.ErrorLine("[red]Error:[/] Could not load ONNX model file. Ensure onnxruntime.dll is available.");
                 return 1;
             }
 

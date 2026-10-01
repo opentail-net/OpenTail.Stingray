@@ -184,38 +184,38 @@ public sealed class PerplexityCommand : Command<PerplexityCommand.Settings>
         if (!TryValidateFlags(settings.TurboQuant, settings.TqModeStr, settings.TqWindow,
                 settings.NGpuLayers, out TqQuantizer quantizer, out bool tqModeIsAuto, out string? flagError))
         {
-            AnsiConsole.MarkupLine($"[red]Error:[/] {Markup.Escape(flagError!)}");
+            AnsiConsole.ErrorLine($"[red]Error:[/] {Markup.Escape(flagError!)}");
             return 1;
         }
         if (!tqModeIsAuto && settings.TurboQuant && quantizer == TqQuantizer.KVarN && SnapKvConfig.FromEnvironment().Enabled)
         {
-            AnsiConsole.MarkupLine("[red]Error:[/] --tq-mode kvarn does not compose with SnapKV eviction yet (issue #180 follow-up); unset [yellow]STINGRAY_SNAPKV_BUDGET[/].");
+            AnsiConsole.ErrorLine("[red]Error:[/] --tq-mode kvarn does not compose with SnapKV eviction yet (issue #180 follow-up); unset [yellow]STINGRAY_SNAPKV_BUDGET[/].");
             return 1;
         }
         if (settings.Batched && settings.TurboQuant)
         {
-            AnsiConsole.MarkupLine("[red]Error:[/] --batched does not support --tq yet (ForwardPass.PrefillWithPerPositionLogits does not extend the TurboQuant batched path, PrefillCoreTq).");
+            AnsiConsole.ErrorLine("[red]Error:[/] --batched does not support --tq yet (ForwardPass.PrefillWithPerPositionLogits does not extend the TurboQuant batched path, PrefillCoreTq).");
             return 1;
         }
         if (settings.Batched && settings.NGpuLayers == -1)
         {
-            AnsiConsole.MarkupLine("[red]Error:[/] --batched only exercises the CPU batched-prefill path (that's the point -- it's what STINGRAY_CPU_PREFILL_Q8 gates); use [yellow]-g 0[/].");
+            AnsiConsole.ErrorLine("[red]Error:[/] --batched only exercises the CPU batched-prefill path (that's the point -- it's what STINGRAY_CPU_PREFILL_Q8 gates); use [yellow]-g 0[/].");
             return 1;
         }
         if (settings.Batched && settings.BatchChunkSize < SimdKernels.MinBatchForQ8Prefill)
         {
-            AnsiConsole.MarkupLine($"[red]Error:[/] --batch-chunk-size must be >= {SimdKernels.MinBatchForQ8Prefill} (SimdKernels.MinBatchForQ8Prefill); got {settings.BatchChunkSize}. A smaller chunk would silently fall back to the per-token path and not test what --batched is for.");
+            AnsiConsole.ErrorLine($"[red]Error:[/] --batch-chunk-size must be >= {SimdKernels.MinBatchForQ8Prefill} (SimdKernels.MinBatchForQ8Prefill); got {settings.BatchChunkSize}. A smaller chunk would silently fall back to the per-token path and not test what --batched is for.");
             return 1;
         }
 
         if (settings.TextFile is not { Length: > 0 } textFile)
         {
-            AnsiConsole.MarkupLine("[red]Error:[/] No text file given. Use [yellow]-f <corpus.txt>[/]");
+            AnsiConsole.ErrorLine("[red]Error:[/] No text file given. Use [yellow]-f <corpus.txt>[/]");
             return 1;
         }
         if (!File.Exists(textFile))
         {
-            AnsiConsole.MarkupLine($"[red]Error:[/] text file not found: {Markup.Escape(textFile)}");
+            AnsiConsole.ErrorLine($"[red]Error:[/] text file not found: {Markup.Escape(textFile)}");
             return 1;
         }
         string text;
@@ -226,19 +226,19 @@ public sealed class PerplexityCommand : Command<PerplexityCommand.Settings>
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException
                                       or System.Security.SecurityException or NotSupportedException)
         {
-            AnsiConsole.MarkupLine($"[red]Error reading text file:[/] {Markup.Escape(ex.Message)}");
+            AnsiConsole.ErrorLine($"[red]Error reading text file:[/] {Markup.Escape(ex.Message)}");
             return 1;
         }
 
         var modelPath = settings.ModelPath;
         if (modelPath is null || !File.Exists(modelPath))
         {
-            AnsiConsole.MarkupLine("[red]Error:[/] No model file found. Use [yellow]-m <path>[/]");
+            AnsiConsole.ErrorLine("[red]Error:[/] No model file found. Use [yellow]-m <path>[/]");
             return 1;
         }
         if (settings.CtxSize < 2)
         {
-            AnsiConsole.MarkupLine($"[red]Error:[/] -c must be >= 2 (need at least one prediction); got {settings.CtxSize}.");
+            AnsiConsole.ErrorLine($"[red]Error:[/] -c must be >= 2 (need at least one prediction); got {settings.CtxSize}.");
             return 1;
         }
 
@@ -270,24 +270,24 @@ public sealed class PerplexityCommand : Command<PerplexityCommand.Settings>
             {
                 if (!TqSupport.IsKVarNHeadDim(headDim))
                 {
-                    AnsiConsole.MarkupLine($"[red]Error:[/] --tq-mode kvarn requires a power-of-2 head dimension in [[8, 1024]]; this model has head dim {headDim}.");
+                    AnsiConsole.ErrorLine($"[red]Error:[/] --tq-mode kvarn requires a power-of-2 head dimension in [[8, 1024]]; this model has head dim {headDim}.");
                     return 1;
                 }
                 if (settings.NGpuLayers == -1 && headDim > TqSupport.KVarNCudaMaxHeadDim)
                 {
-                    AnsiConsole.MarkupLine($"[red]Error:[/] --tq-mode kvarn on CUDA requires head dim ≤ 256 (shared-memory WHT cap); this model has head dim {headDim}. Use [yellow]-g 0[/].");
+                    AnsiConsole.ErrorLine($"[red]Error:[/] --tq-mode kvarn on CUDA requires head dim ≤ 256 (shared-memory WHT cap); this model has head dim {headDim}. Use [yellow]-g 0[/].");
                     return 1;
                 }
             }
             else if (!TqSupport.IsLloydMaxHeadDim(headDim))
             {
-                AnsiConsole.MarkupLine($"[red]Error:[/] TurboQuant requires head dimension 128 or 256; this model has head dim {headDim}.");
+                AnsiConsole.ErrorLine($"[red]Error:[/] TurboQuant requires head dimension 128 or 256; this model has head dim {headDim}.");
                 return 1;
             }
         }
         if (settings.NGpuLayers == -1 && settings.TurboQuant && quantizer == TqQuantizer.KVarN && hp.IsMoE)
         {
-            AnsiConsole.MarkupLine("[red]Error:[/] --tq-mode kvarn on CUDA supports dense models only (issue #180 Task 5a); use [yellow]-g 0[/] for MoE.");
+            AnsiConsole.ErrorLine("[red]Error:[/] --tq-mode kvarn on CUDA supports dense models only (issue #180 Task 5a); use [yellow]-g 0[/] for MoE.");
             return 1;
         }
         // MoE models DO route through PrefillCore now (MoeFfnBatched), so --batched is the only
@@ -315,7 +315,7 @@ public sealed class PerplexityCommand : Command<PerplexityCommand.Settings>
         int n = Math.Min(tokens.Count, ctx);
         if (n < 2)
         {
-            AnsiConsole.MarkupLine($"[red]Error:[/] corpus tokenized to {tokens.Count} token(s); need at least 2.");
+            AnsiConsole.ErrorLine($"[red]Error:[/] corpus tokenized to {tokens.Count} token(s); need at least 2.");
             return 1;
         }
         if (tokens.Count < ctx)
@@ -345,7 +345,7 @@ public sealed class PerplexityCommand : Command<PerplexityCommand.Settings>
             bool haveCuda = !wantVulkan && CudaBackend.IsAvailable();
             if (hp.IsHybridSsm)
             {
-                AnsiConsole.MarkupLine("[red]Error:[/] -g -1 perplexity does not cover hybrid GDN models; use [yellow]-g 0[/].");
+                AnsiConsole.ErrorLine("[red]Error:[/] -g -1 perplexity does not cover hybrid GDN models; use [yellow]-g 0[/].");
                 return 1;
             }
 
@@ -372,7 +372,7 @@ public sealed class PerplexityCommand : Command<PerplexityCommand.Settings>
                 try { vulkanBackend = new VulkanBackend(); }
                 catch (Exception ex)
                 {
-                    AnsiConsole.MarkupLine("[red]Error:[/] -g -1 requires a CUDA or Vulkan device; " +
+                    AnsiConsole.ErrorLine("[red]Error:[/] -g -1 requires a CUDA or Vulkan device; " +
                         $"Vulkan initialisation failed ({Markup.Escape(ex.Message)}). Use [yellow]-g 0[/] for the CPU path.");
                     return 1;
                 }
@@ -407,7 +407,7 @@ public sealed class PerplexityCommand : Command<PerplexityCommand.Settings>
             // wikitext where llama.cpp gives ~4.1k.
             if (settings.Batched || settings.TurboQuant)
             {
-                AnsiConsole.MarkupLine("[red]Error:[/] gpt-oss perplexity supports neither --batched nor --tq.");
+                AnsiConsole.ErrorLine("[red]Error:[/] gpt-oss perplexity supports neither --batched nor --tq.");
                 return 1;
             }
             fwd = new GptOssForwardPass(model, GptOssHyperparams.FromModel(model));
@@ -419,7 +419,7 @@ public sealed class PerplexityCommand : Command<PerplexityCommand.Settings>
             // fall through to ForwardPass and die on the first missing attention tensor.
             if (settings.Batched || settings.TurboQuant)
             {
-                AnsiConsole.MarkupLine("[red]Error:[/] hybrid GDN perplexity supports neither --batched nor --tq.");
+                AnsiConsole.ErrorLine("[red]Error:[/] hybrid GDN perplexity supports neither --batched nor --tq.");
                 return 1;
             }
             cpuBackend = new CpuBackend();
@@ -530,7 +530,7 @@ public sealed class PerplexityCommand : Command<PerplexityCommand.Settings>
 
         if (scored == 0)
         {
-            AnsiConsole.MarkupLine("[red]Error:[/] no positions produced finite NLL — the forward pass emitted NaN/Inf logits throughout.");
+            AnsiConsole.ErrorLine("[red]Error:[/] no positions produced finite NLL — the forward pass emitted NaN/Inf logits throughout.");
             return 1;
         }
 

@@ -80,7 +80,7 @@ internal sealed class CommandApp<
         }
         catch (OperationCanceledException)
         {
-            return 130;     // 128 + SIGINT, the conventional shell exit code.
+            return ExitCodes.Interrupted;     // 128 + SIGINT, the conventional shell exit code.
         }
         finally
         {

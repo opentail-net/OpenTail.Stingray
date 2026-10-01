@@ -115,6 +115,27 @@ public sealed class CommandAppTests
         }
     }
 
+    /// <summary>Run the app with stdout and stderr captured separately (errors belong on stderr).</summary>
+    private static (int Exit, string Output, string Error) RunWithStreams(CommandApp<RootCommand> app, params string[] args)
+    {
+        var originalOut = Console.Out;
+        var originalErr = Console.Error;
+        var outBuffer = new StringWriter();
+        var errBuffer = new StringWriter();
+        Console.SetOut(outBuffer);
+        Console.SetError(errBuffer);
+        try
+        {
+            int exit = app.Run(args);
+            return (exit, outBuffer.ToString(), errBuffer.ToString());
+        }
+        finally
+        {
+            Console.SetOut(originalOut);
+            Console.SetError(originalErr);
+        }
+    }
+
     // ── Dispatch ────────────────────────────────────────────────────────────
 
     [Fact]
@@ -162,10 +183,11 @@ public sealed class CommandAppTests
     public void FailedValidation_ReportsTheMessageAndDoesNotRunTheCommand()
     {
         var app = BuildApp();
-        var (exit, output) = Run(app, "failing", "--value", "bad");
+        var (exit, output, error) = RunWithStreams(app, "failing", "--value", "bad");
         Assert.Equal(1, exit);
         Assert.Null(Recorder.LastCommand);
-        Assert.Contains("must not be 'bad'", output, StringComparison.Ordinal);
+        Assert.Contains("must not be 'bad'", error, StringComparison.Ordinal);   // errors go to stderr
+        Assert.DoesNotContain("must not be", output, StringComparison.Ordinal);       // and stdout stays clean
     }
 
     [Fact]
@@ -181,10 +203,11 @@ public sealed class CommandAppTests
     public void BindingError_ReportsAndDoesNotRunTheCommand()
     {
         var app = BuildApp();
-        var (exit, output) = Run(app, "--nope");
+        var (exit, output, error) = RunWithStreams(app, "--nope");
         Assert.Equal(1, exit);
         Assert.Null(Recorder.LastCommand);
-        Assert.Contains("--nope", output, StringComparison.Ordinal);
+        Assert.Contains("--nope", error, StringComparison.Ordinal);
+        Assert.DoesNotContain("--nope", output, StringComparison.Ordinal);
     }
 
     // ── Version ─────────────────────────────────────────────────────────────

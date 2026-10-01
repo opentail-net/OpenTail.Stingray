@@ -48,12 +48,12 @@ public sealed class GenVisionScaffoldCommand : Command<GenVisionScaffoldCommand.
     {
         if (string.IsNullOrEmpty(settings.MmprojPath) || !File.Exists(settings.MmprojPath))
         {
-            AnsiConsole.MarkupLine("[red]Error:[/] mmproj file not found. Use [yellow]-m <path>[/]");
+            AnsiConsole.ErrorLine("[red]Error:[/] mmproj file not found. Use [yellow]-m <path>[/]");
             return 1;
         }
         if (string.IsNullOrWhiteSpace(settings.Arch))
         {
-            AnsiConsole.MarkupLine("[red]Error:[/] give a short architecture name with [yellow]-a <name>[/] (e.g. step3vl)");
+            AnsiConsole.ErrorLine("[red]Error:[/] give a short architecture name with [yellow]-a <name>[/] (e.g. step3vl)");
             return 1;
         }
         string arch = settings.Arch.Trim();

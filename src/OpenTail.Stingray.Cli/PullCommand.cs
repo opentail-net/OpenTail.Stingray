@@ -41,7 +41,7 @@ public sealed class PullCommand : Command<PullCommand.Settings>
         string repo = NormalizeRepo(settings.Repo);
         if (string.IsNullOrWhiteSpace(repo))
         {
-            AnsiConsole.MarkupLine("[red]Error:[/] give a Hugging Face repo id, e.g. `stingray pull bartowski/Qwen2.5-7B-Instruct-GGUF`");
+            AnsiConsole.ErrorLine("[red]Error:[/] give a Hugging Face repo id, e.g. `stingray pull bartowski/Qwen2.5-7B-Instruct-GGUF`");
             return 1;
         }
 
@@ -55,14 +55,14 @@ public sealed class PullCommand : Command<PullCommand.Settings>
         }
         catch (Exception ex) when (ex is HttpRequestException or JsonException or TaskCanceledException)
         {
-            AnsiConsole.MarkupLine($"[red]Error:[/] could not fetch repo listing for '{Markup.Escape(repo)}': {Markup.Escape(ex.Message)}");
+            AnsiConsole.ErrorLine($"[red]Error:[/] could not fetch repo listing for '{Markup.Escape(repo)}': {Markup.Escape(ex.Message)}");
             AnsiConsole.MarkupLine("If this repo is gated, accept its terms on huggingface.co first and set HF_TOKEN — anonymous access is used otherwise.");
             return 1;
         }
 
         if (files.Count == 0)
         {
-            AnsiConsole.MarkupLine($"[red]Error:[/] no .gguf files found in [yellow]{Markup.Escape(repo)}[/].");
+            AnsiConsole.ErrorLine($"[red]Error:[/] no .gguf files found in [yellow]{Markup.Escape(repo)}[/].");
             return 1;
         }
 
@@ -76,7 +76,7 @@ public sealed class PullCommand : Command<PullCommand.Settings>
         var selected = SelectFiles(files, settings.Quant);
         if (selected.Count == 0)
         {
-            AnsiConsole.MarkupLine($"[red]Error:[/] no .gguf file matched --quant '{Markup.Escape(settings.Quant ?? "")}'.");
+            AnsiConsole.ErrorLine($"[red]Error:[/] no .gguf file matched --quant '{Markup.Escape(settings.Quant ?? "")}'.");
             AnsiConsole.MarkupLine("Available files:");
             foreach (var (name, _) in files) AnsiConsole.MarkupLine($"  {Markup.Escape(name)}");
             return 1;
@@ -103,7 +103,7 @@ public sealed class PullCommand : Command<PullCommand.Settings>
             }
             catch (Exception ex) when (ex is IOException or HttpRequestException or TaskCanceledException)
             {
-                AnsiConsole.MarkupLine($"[red]Error:[/] download failed: {Markup.Escape(ex.Message)}");
+                AnsiConsole.ErrorLine($"[red]Error:[/] download failed: {Markup.Escape(ex.Message)}");
                 AnsiConsole.MarkupLine($"Partial file kept at {Markup.Escape(destPath)} — rerun `pull` to resume.");
                 return 1;
             }

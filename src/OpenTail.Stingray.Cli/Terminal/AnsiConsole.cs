@@ -26,6 +26,22 @@ public static class AnsiConsole
     public static void MarkupLine(string markup) =>
         Console.Out.WriteLine(MarkupRenderer.Render(markup, ColorEnabled));
 
+    /// <summary>Whether to emit ANSI styling on stderr (independent of whether stdout is redirected).</summary>
+    internal static bool ErrorColorEnabled { get; } = DetectErrorColor();
+
+    private static bool DetectErrorColor()
+    {
+        if (Console.IsErrorRedirected) return false;
+        if (!string.IsNullOrEmpty(Environment.GetEnvironmentVariable("NO_COLOR"))) return false;
+        if (string.Equals(Environment.GetEnvironmentVariable("TERM"), "dumb", StringComparison.OrdinalIgnoreCase))
+            return false;
+        return true;
+    }
+
+    /// <summary>Render markup to STDERR with a newline. Use for errors so scripts can separate them from results on stdout.</summary>
+    public static void ErrorLine(string markup) =>
+        Console.Error.WriteLine(MarkupRenderer.Render(markup, ErrorColorEnabled));
+
     /// <summary>Render markup without a trailing newline.</summary>
     public static void Markup(string markup) =>
         Console.Out.Write(MarkupRenderer.Render(markup, ColorEnabled));

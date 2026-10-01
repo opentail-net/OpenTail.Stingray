@@ -93,7 +93,7 @@ public sealed class ShowTemplateCommand : Command<ShowTemplateCommand.Settings>
             // Template rendering is the point of this command, so a failure here IS the finding:
             // it means the model ships a template this engine cannot execute.
             Console.Error.WriteLine($"show-template: {ex.GetType().Name}: {ex.Message}");
-            return 2;
+            return ExitCodes.Unsupported;
         }
     }
 }

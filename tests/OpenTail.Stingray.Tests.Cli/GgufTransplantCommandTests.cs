@@ -123,10 +123,10 @@ public sealed class GgufTransplantCommandTests : IDisposable
         var (b, d) = MakePair(donorADims: [2, 4]);
         string o = Path.Combine(_dir, "out.gguf");
 
-        var (exit, stdout, _) = Run("--base", b, "--donor", d, "--tensors", "^a$", "-o", o);
+        var (exit, _, stderr) = Run("--base", b, "--donor", d, "--tensors", "^a$", "-o", o);
 
         Assert.NotEqual(0, exit);
-        Assert.Contains("dimension mismatch", stdout, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("dimension mismatch", stderr, StringComparison.OrdinalIgnoreCase);
         Assert.False(File.Exists(o));
     }
 

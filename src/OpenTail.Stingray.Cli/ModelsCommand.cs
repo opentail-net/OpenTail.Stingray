@@ -25,7 +25,7 @@ public sealed class ModelsCommand : Command<ModelsCommand.Settings>
             var options = ModelCatalog.ForTask(task).ToList();
             if (options.Count == 0)
             {
-                AnsiConsole.MarkupLine($"[red]Error:[/] unknown task '{Markup.Escape(task)}'. Tasks: {string.Join(", ", ModelCatalog.Tasks)}.");
+                AnsiConsole.ErrorLine($"[red]Error:[/] unknown task '{Markup.Escape(task)}'. Tasks: {string.Join(", ", ModelCatalog.Tasks)}.");
                 return 1;
             }
             for (int i = 0; i < options.Count; i++)
