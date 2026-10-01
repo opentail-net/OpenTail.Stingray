@@ -2,7 +2,7 @@
 
 **Generated:** by `scripts/gen-cli-option-inventory.ps1`, which scans `[CommandOption]` /
 `[Description]` pairs under `src/OpenTail.Stingray.Cli`. Last regenerated **2026-09-28**, recording
-**214 option declarations** across 21 command files — the same count the
+**220 option declarations** across 22 command files — the same count the
 `StaticPlanConfigurationTests` guard enforces against source. (Reconciled 12 rows of drift, caught
 by CI failing `CliOptionInventory_DeclaredCountMatchesSource` on `main`: three new commands —
 `AdmitArchCommand`, `GenVisionScaffoldCommand` and `PullCommand`, see `docs/reference/061-coverage-tooling.md` —
@@ -10,7 +10,7 @@ plus `ImageCommand`'s `--clip-g`. Six existing descriptions were refreshed from 
 rows are unclassified**, as are 8 `ImageCommand` rows (`--control-image`, `--control-net`,
 `--control-strength`, `--init-image`, `--mask-image`, `--sampler`, `--strength`, `--video-frames`)
 that were already blank; they need the classification pass described below. 2026-09-28: `ModelsCommand` and
-`SetupCommand` added, docs/103 item 16; the script's attribute regex now also matches named arguments such as
+`SetupCommand` added, docs/103 item 16; 2026-10-01: `GgufTransplantCommand` (6 rows, classified `expert`; docs/1-correctness/08); the script's attribute regex now also matches named arguments such as
 `Positional = true`.)
 
 The tables below are no longer hand-maintained. Regenerate with the script rather than editing rows
@@ -109,6 +109,17 @@ hoc at each read site rather than in one place.
 |---|---|---|
 | `--arch <NAME>` |  | Short architecture name, e.g. step3vl (used for the class/file name) |
 | `--mmproj <PATH>` |  | mmproj GGUF for the new architecture |
+
+## GgufTransplantCommand
+
+| Option | Class | Description |
+|---|---|---|
+| `--base` | expert | GGUF whose header, metadata and (non-replaced) tensors are kept |
+| `--donor` | expert | GGUF supplying the replacement tensors (same tensor names and dimensions as the base) |
+| `--dry-run` | expert | Print the replacement plan and the resulting size, write nothing |
+| `--force` | expert | Overwrite the output if it exists |
+| `--out` | expert | Output GGUF path (must not be the base or donor; must not exist unless --force) |
+| `--tensors` | expert | Regex matched against base tensor names; matching tensors are taken from the donor |
 
 ## ImageCommand
 
@@ -282,7 +293,7 @@ hoc at each read site rather than in one place.
 | `--no-thinking` | stable | Disable reasoning mode (sets enable_thinking=false in the chat template) |
 | `--no-warmup` | stable | (llama.cpp compat) No effect — OpenTail has no separate warmup step. Accepted with a warning. |
 | `--numa <MODE>` | stable | (llama.cpp compat) Not implemented in OpenTail.Stingray. |
-| `--prefill-dequant-cache-mb` | expert | Legacy dequant-once BLAS weight-cache setting (issue #189). Currently dormant because CPU prefill uses quantized kernels and does not reach the OpenBLAS route; this option does not change inference math. CPU only. |
+| `--prefill-dequant-cache-mb` | expert | Legacy dequant-once BLAS weight-cache setting (issue #189). Currently dormant because the CPU prefill kernels do not use the OpenBLAS route; this option does not change inference math. CPU only. |
 | `--presence-penalty <P>` | stable | Subtract once from logits of tokens already generated (0 = disabled). |
 | `--prompt` | stable | Input prompt (default: interactive chat) |
 | `--repeat-last-n` | stable | Number of recent tokens the repetition penalty considers (default: 64; 0 = disabled; -1 = full context). Mirrors llama.cpp's --repeat-last-n. |
@@ -365,8 +376,8 @@ hoc at each read site rather than in one place.
 |---|---|---|
 | `--input <PATH>` | stable | Input 16kHz WAV audio file path for Speech-to-Text transcription or translation. |
 | `--language <LANG>` | stable | Spoken language code (e.g. en, es, fr, de, zh, ja). Default: auto/en. |
-| `--model <VARIANT>` | stable | Whisper model architecture preset: tiny (default), base, small, medium, large-v3, or turbo; or voxtral. |
-| `--model-file <PATH>` | stable | Path to a whisper.cpp GGML .bin checkpoint with real weights, or a voxtral model directory. If omitted, searched for under ./models. |
+| `--model <VARIANT>` | stable | Whisper model architecture preset: tiny (default), base, small, medium, large-v3, or turbo; or voxtral; or sensevoice / paraformer (ONNX, pass the .onnx with --model-file; its tokens file is found next to it); or parakeet (GGUF via --model-file: TDT or CTC, default parakeet-tdt-0.6b-v2-q4_k.gguf). |
+| `--model-file <PATH>` | stable | Path to a whisper.cpp GGML .bin checkpoint with real weights, a voxtral model directory, or a SenseVoice / Paraformer .onnx file. If omitted, searched for under ./models. |
 | `--no-timestamps` | stable | Disable timestamp-aligned subtitle segment generation. |
 | `--output <PATH>` | stable | Optional output file path to write the transcribed text or subtitle segments. |
 | `--task <TASK>` | stable | ASR task: 'transcribe' (default) or 'translate' (translate to English). |
