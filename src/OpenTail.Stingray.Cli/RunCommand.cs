@@ -899,6 +899,299 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         return true;
     }
 
+    /// <summary>
+    /// The loaded engine state the generation modes read, bundled so a mode can live in its own method instead of in the middle
+    /// of <see cref="Execute"/>. Built once the backend is configured; modes treat it as read-only.
+    /// </summary>
+    private sealed record RunEngine(
+        GgufModel? Model, ModelHyperparams Hp, GgufTokenizer Tokenizer, int CtxSize, int NGpuLayers, int GpuDeviceIndex,
+        ForwardPass? Fwd, HybridGdnForwardPass? HybridFwd, GptOssForwardPass? GptOssFwd, IForwardPass? MtpFwd,
+        IDisposable? GpuBackend, IDisposable? GpuFwd,
+        Func<int, int, ReadOnlySpan<float>> Forward, Func<IReadOnlyList<int>, ReadOnlySpan<float>> Prefill, Action ResetCache);
+
+    /// <summary>
+    /// Speculative decoding (<c>--draft-model</c> / <c>--draft-lookup</c>). Returns null when speculation was not requested (or was
+    /// dropped because a grammar constraint is active), so the caller continues to normal generation; otherwise the run's exit code.
+    /// Speculative decoding path (requires --draft-model and --temp 0). Supported
+    /// targets: pure CPU (-g 0) and full CUDA offload of a dense model (issue #207 —
+    /// packed k-token verify via CudaForwardPass.BatchVerify). Vulkan and the partial-
+    /// offload hybrids fall back to normal generation: without a batched verify,
+    /// speculation costs k sequential target forwards per step and is never a win.
+    /// </summary>
+    private static int? TryRunSpeculative(Settings settings, RunEngine e, SamplingParams sp, Random rng)
+    {
+        var ctxSize = e.CtxSize; var forward = e.Forward; var fwd = e.Fwd; var gptOssFwd = e.GptOssFwd;
+        var gpuBackend = e.GpuBackend; var gpuDeviceIndex = e.GpuDeviceIndex; var gpuFwd = e.GpuFwd;
+        var hybridFwd = e.HybridFwd; var model = e.Model; var nGpuLayers = e.NGpuLayers; var tokenizer = e.Tokenizer;
+
+        bool specRequested = settings.DraftModelPath is not null || settings.DraftLookup;
+        if (specRequested && sp.Constraint is not null)
+        {
+            // Any active constraint (--tool-grammar and/or --json-schema/--json-schema-file, issue
+            // #423 follow-up) masks one token at a time against running grammar state; a multi-token
+            // speculative verify can't honor it. Drop speculation so the constraint actually applies
+            // (the standard decode path below reads sp.Constraint).
+            AnsiConsole.MarkupLine("[yellow]Warning:[/] --tool-grammar/--json-schema is not applied with speculative decoding (--draft-model/--draft-lookup); generating without speculation so the constraint takes effect.");
+            specRequested = false;
+        }
+        if (specRequested)
+        {
+            bool cudaSpecTarget = gpuFwd is CudaForwardPass { SupportsBatchVerify: true };
+            // Vulkan full-offload of a dense Q4_K/Q6_K model exposes the same weight-amortized
+            // BatchVerify (issue #308). gemma4/TurboQuant report SupportsBatchVerify=false (no spec);
+            // MoE/bias models report true but stay on the bit-exact K-loop fallback (still lossless,
+            // just not weight-amortized). --draft-LOOKUP only on Vulkan; --draft-model (needs a 2nd
+            // GpuForwardPass + VRAM mgmt) is a CUDA-only follow-up.
+            bool vulkanSpecTarget = gpuFwd is GpuForwardPass { SupportsBatchVerify: true };
+            bool gpuSpecTarget = cudaSpecTarget || vulkanSpecTarget;
+            // Sampled speculative decoding (issue #178): temp>0 now drives distribution-preserving
+            // spec sampling on the model-draft path (greedy at temp 0 stays byte-stable). Gated to
+            // model drafts (lookup proposals expose no q), to non-penalized/-biased sampling (draft
+            // and target must agree on the distribution), and bypassable via STINGRAY_SPEC_SAMPLE=0.
+            bool sampledSpec = settings.Temperature > 0f;
+            bool specSampleDisabled = Environment.GetEnvironmentVariable("STINGRAY_SPEC_SAMPLE") == "0";
+            bool hasPenalty = sp.RepetitionPenalty != 1f && sp.PreviousTokens is { Count: > 0 };
+            bool hasBias = sp.LogitBias is { Count: > 0 };
+            if (settings.DraftModelPath is not null && settings.DraftLookup)
+            {
+                AnsiConsole.ErrorLine("[red]Error:[/] --draft-model and --draft-lookup are mutually exclusive.");
+                return 1;
+            }
+            if (nGpuLayers != 0 && !gpuSpecTarget)
+            {
+                AnsiConsole.MarkupLine("[yellow]Warning:[/] Speculative decoding requires pure CPU (-g 0), full CUDA offload of a dense or Gemma-4 model, or full Vulkan offload of a dense Q4_K/Q6_K model (--draft-lookup). Falling back to normal generation.");
+            }
+            else if (sampledSpec && settings.DraftLookup)
+            {
+                AnsiConsole.MarkupLine("[yellow]Warning:[/] --draft-lookup supports greedy (--temp 0) only; sampled speculative decoding needs --draft-model. Falling back to normal generation.");
+            }
+            else if (sampledSpec && specSampleDisabled)
+            {
+                AnsiConsole.MarkupLine("[yellow]Note:[/] STINGRAY_SPEC_SAMPLE=0 — sampled speculative decoding disabled; using normal sampled generation.");
+            }
+            else if (sampledSpec && (hasPenalty || hasBias))
+            {
+                AnsiConsole.MarkupLine("[yellow]Warning:[/] sampled speculative decoding does not yet support --repeat-penalty / logit bias (draft and target must share the same distribution); falling back to normal generation.");
+            }
+            else if (settings.DraftLookup)
+            {
+                // Prompt-lookup drafting (issue #207): no draft model — proposals come from
+                // n-gram matches against prompt + generated history, verified by the same
+                // batched-verify step. Floor is ~baseline (no match → plain decode step).
+                try
+                {
+                    // gpuFwd is the CudaForwardPass or GpuForwardPass (both IForwardPass) on a GPU
+                    // spec target; fall back to the CPU pass otherwise.
+                    IForwardPass lookupTarget = gpuSpecTarget ? (IForwardPass)gpuFwd! : fwd!;
+                    AnsiConsole.MarkupLine($"[dim]Speculative decoding: prompt-lookup (n-gram) drafting | Lookahead k={settings.SpecLookahead}[/]");
+                    if (settings.Prompt is not null)
+                        return RunSpeculativeSinglePrompt(settings, lookupTarget, null, tokenizer, sp, rng);
+                    return RunSpeculativeInteractive(settings, lookupTarget, null, tokenizer, sp, rng);
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine(ex);
+                    return 1;
+                }
+                finally
+                {
+                    gpuFwd?.Dispose();
+                    gpuBackend?.Dispose();
+                    fwd?.Dispose();
+                    hybridFwd?.Dispose();
+                    gptOssFwd?.Dispose();
+                }
+            }
+            else if (!File.Exists(settings.DraftModelPath))
+            {
+                AnsiConsole.ErrorLine($"[red]Error:[/] Draft model not found: {settings.DraftModelPath}");
+                return 1;
+            }
+            else
+            {
+                try
+                {
+                    AnsiConsole.MarkupLine($"[dim]Loading draft model:[/] {settings.DraftModelPath}");
+                    using var draftModel = GgufModel.Open(settings.DraftModelPath);
+                    var draftHp = ModelHyperparams.FromGgufMetadata(draftModel.Metadata, draftModel);
+                    if (cudaSpecTarget)
+                    {
+                        var target = (CudaForwardPass)gpuFwd!;
+                        // The draft gets its OWN CudaBackend: graph capture state is one
+                        // exec graph per backend instance, so sharing the target's backend
+                        // would have the draft's decode graph clobber the target's.
+                        //
+                        // Clamp the draft's context: the decoder advances both passes in
+                        // lockstep, so the draft never sees a position past the target's
+                        // window — and unless the user pinned -c explicitly, cap it at 4096
+                        // (the decode runners bound generation by BOTH windows, so a smaller
+                        // draft ring only caps session length, never indexes out of range).
+                        // Passing 0 would size the draft's KV from the VRAM left AFTER the
+                        // target loaded — measured on the 12 GB 4070 Ti: the 0.6B draft
+                        // grabbed a 34K-ctx / ~7 GB ring next to the 8B target (decode
+                        // 75 → 13 t/s, WDDM paging); even a target-matched 12K fp32 ring
+                        // (~2.8 GB) left so little headroom that the draft's weights paged
+                        // in and out every step (draft forward 2.9 → ~15 ms, decode 34 t/s).
+                        int draftCtx = ctxSize > 0 ? target.MaxSeqLen : Math.Min(target.MaxSeqLen, 4096);
+                        using var draftCuda = CudaBackend.Create();
+                        using var draftFwd = new CudaForwardPass(draftModel, draftCuda, draftHp, draftCtx);
+                        AnsiConsole.MarkupLine($"[dim]Draft model: {draftHp.NumLayers}L, {draftHp.EmbeddingDim}d ([green]CUDA[/]) | Lookahead k={settings.SpecLookahead}[/]");
+                        if (settings.Prompt is not null)
+                            return RunSpeculativeSinglePrompt(settings, target, draftFwd, tokenizer, sp, rng);
+                        return RunSpeculativeInteractive(settings, target, draftFwd, tokenizer, sp, rng);
+                    }
+                    else if (vulkanSpecTarget)
+                    {
+                        var target = (GpuForwardPass)gpuFwd!;
+                        // The draft gets its own VulkanBackend (its own command buffer and
+                        // pipelines) and the same context clamp as the CUDA branch above.
+                        int draftCtx = ctxSize > 0 ? target.MaxSeqLen : Math.Min(target.MaxSeqLen, 4096);
+                        using var draftVk = new VulkanBackend(gpuDeviceIndex);
+                        using var draftFwd = new GpuForwardPass(draftModel, draftVk, draftHp, draftCtx);
+                        AnsiConsole.MarkupLine($"[dim]Draft model: {draftHp.NumLayers}L, {draftHp.EmbeddingDim}d ([green]Vulkan[/]) | Lookahead k={settings.SpecLookahead}[/]");
+                        if (settings.Prompt is not null)
+                            return RunSpeculativeSinglePrompt(settings, target, draftFwd, tokenizer, sp, rng);
+                        return RunSpeculativeInteractive(settings, target, draftFwd, tokenizer, sp, rng);
+                    }
+                    else
+                    {
+                        using var draftCpuBackend = new CpuBackend();
+                        using var draftFwd = new ForwardPass(draftModel, draftCpuBackend, draftHp);
+                        AnsiConsole.MarkupLine($"[dim]Draft model: {draftHp.NumLayers}L, {draftHp.EmbeddingDim}d ([blue]CPU[/]) | Lookahead k={settings.SpecLookahead}[/]");
+                        if (settings.Prompt is not null)
+                            return RunSpeculativeSinglePrompt(settings, fwd!, draftFwd, tokenizer, sp, rng);
+                        return RunSpeculativeInteractive(settings, fwd!, draftFwd, tokenizer, sp, rng);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine(ex);
+                    return 1;
+                }
+                finally
+                {
+                    gpuFwd?.Dispose();
+                    gpuBackend?.Dispose();
+                    fwd?.Dispose();
+                    hybridFwd?.Dispose();
+                    gptOssFwd?.Dispose();
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// DSpark block-speculative decoding (<c>--dspark-model</c>). Returns null when DSpark was not requested or its placement is
+    /// off, so the caller continues to normal generation; otherwise the run's exit code. Original notes:
+    /// DSpark block-speculative decoding (docs/dspark-plan.md, PR #413): a DeepSpec
+    /// draft head conditioned on target hidden-state taps. Greedy-only and CPU-target
+    /// for now (spec Phases 1–3; the CUDA draft path is Phase 4). Placement Off (auto
+    /// or explicit) falls through to normal generation rather than erroring.
+    /// </summary>
+    private static int? TryRunDSpark(Settings settings, RunEngine e, SamplingParams sp)
+    {
+        var ctxSize = e.CtxSize; var fwd = e.Fwd; var gptOssFwd = e.GptOssFwd; var gpuBackend = e.GpuBackend; var gpuFwd = e.GpuFwd;
+        var hp = e.Hp; var hybridFwd = e.HybridFwd; var model = e.Model; var nGpuLayers = e.NGpuLayers; var tokenizer = e.Tokenizer;
+
+        bool dsparkRequested = settings.DSparkModelPath is not null || sp.SpecType == SpecType.DSpark;
+        if (dsparkRequested)
+        {
+            if (settings.DSparkModelPath is null)
+            {
+                AnsiConsole.ErrorLine("[red]Error:[/] --spec-type dspark requires --dspark-model <path-to-model.safetensors>.");
+                return 1;
+            }
+            if (settings.DraftModelPath is not null || settings.DraftLookup)
+            {
+                AnsiConsole.ErrorLine("[red]Error:[/] --dspark-model and --draft-model/--draft-lookup are mutually exclusive.");
+                return 1;
+            }
+            if (sp.SpecType == SpecType.Mtp)
+            {
+                // An explicit conflicting --spec-type must not be silently outranked
+                // by the presence of --dspark-model.
+                AnsiConsole.ErrorLine("[red]Error:[/] --spec-type mtp conflicts with --dspark-model; pick one.");
+                return 1;
+            }
+            if (settings.DSparkMinConfidence > 1f)
+            {
+                // Same [0,1] contract the --spec-draft-p-min validation enforces;
+                // a threshold above any sigmoid output would silently disable all
+                // drafting instead of doing what the user meant.
+                AnsiConsole.ErrorLine($"[red]Error:[/] --dspark-min-confidence={settings.DSparkMinConfidence} must be in [0, 1].");
+                return 1;
+            }
+
+            // Supported targets: pure CPU (-g 0) and dense full CUDA offload (-g -1,
+            // Phase 4). Vulkan and the partial-offload hybrids fall back — no tap
+            // capture there yet.
+            IForwardPass? dsparkTarget = null;
+            CudaBackend? dsparkCuda = null;
+            if (nGpuLayers == 0 && fwd is not null)
+            {
+                dsparkTarget = fwd;
+            }
+            else if (gpuFwd is CudaForwardPass cudaTarget && gpuBackend is CudaBackend cudaBk)
+            {
+                dsparkTarget = cudaTarget;
+                dsparkCuda = cudaBk;
+            }
+
+            string? dsparkReject = null;
+            if (sp.SpecType == SpecType.None)
+                dsparkReject = "--spec-type none explicitly disables speculation";
+            else if (sp.Constraint is not null)
+                dsparkReject = "--tool-grammar/--json-schema is active (a multi-token verify can't honor a token-level constraint)";
+            else if (settings.ToolsPath is not null)
+                dsparkReject = "--tools capture is not wired on the DSpark path (same restriction as MTP)";
+            else if (settings.Temperature > 0f)
+                dsparkReject = "DSpark is greedy-only for now; pass --temp 0";
+            else if (dsparkTarget is null)
+                dsparkReject = "DSpark requires a pure CPU target (-g 0) or dense full CUDA offload (-g -1); Vulkan and partial-offload hybrids have no tap capture";
+            else if (!dsparkTarget.SupportsHiddenTaps)
+                dsparkReject = "the target pass can't capture hidden taps (SnapKV eviction, TurboQuant KV, MoE, or Gemma-4 transforms active)";
+
+            if (dsparkReject is not null)
+            {
+                AnsiConsole.MarkupLine($"[yellow]Warning:[/] DSpark disabled — {dsparkReject}. Falling back to normal generation.");
+            }
+            else if (settings.Prompt is null)
+            {
+                AnsiConsole.MarkupLine("[yellow]Warning:[/] DSpark is wired for single-prompt runs only (like MTP); interactive mode falls back to normal generation.");
+            }
+            else
+            {
+                int rc;
+                try
+                {
+                    // DSpark is refused for SafeTensors packages above, so this is only ever
+                    // reached on the GGUF path where `model` is assigned.
+                    rc = TryRunDSparkSinglePrompt(settings, model!, hp, dsparkTarget!, dsparkCuda,
+                        tokenizer, sp, ctxSize);
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine(ex);
+                    rc = 1;
+                }
+                if (rc >= 0)
+                {
+                    gpuFwd?.Dispose();
+                    gpuBackend?.Dispose();
+                    fwd?.Dispose();
+                    hybridFwd?.Dispose();
+                    gptOssFwd?.Dispose();
+                    return rc;
+                }
+                // rc < 0: placement said Off — fall through to normal generation.
+            }
+        }
+
+        return null;
+    }
+
     protected override int Execute(Settings settings, CancellationToken cancellation)
     {
         if (!TryPrepare(settings, out var prologue, out int prologueExit))
@@ -1830,263 +2123,15 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         };
         var rng = settings.Seed >= 0 ? new Random(settings.Seed) : new Random();
 
-        // Speculative decoding path (requires --draft-model and --temp 0). Supported
-        // targets: pure CPU (-g 0) and full CUDA offload of a dense model (issue #207 —
-        // packed k-token verify via CudaForwardPass.BatchVerify). Vulkan and the partial-
-        // offload hybrids fall back to normal generation: without a batched verify,
-        // speculation costs k sequential target forwards per step and is never a win.
-        bool specRequested = settings.DraftModelPath is not null || settings.DraftLookup;
-        if (specRequested && sp.Constraint is not null)
-        {
-            // Any active constraint (--tool-grammar and/or --json-schema/--json-schema-file, issue
-            // #423 follow-up) masks one token at a time against running grammar state; a multi-token
-            // speculative verify can't honor it. Drop speculation so the constraint actually applies
-            // (the standard decode path below reads sp.Constraint).
-            AnsiConsole.MarkupLine("[yellow]Warning:[/] --tool-grammar/--json-schema is not applied with speculative decoding (--draft-model/--draft-lookup); generating without speculation so the constraint takes effect.");
-            specRequested = false;
-        }
-        if (specRequested)
-        {
-            bool cudaSpecTarget = gpuFwd is CudaForwardPass { SupportsBatchVerify: true };
-            // Vulkan full-offload of a dense Q4_K/Q6_K model exposes the same weight-amortized
-            // BatchVerify (issue #308). gemma4/TurboQuant report SupportsBatchVerify=false (no spec);
-            // MoE/bias models report true but stay on the bit-exact K-loop fallback (still lossless,
-            // just not weight-amortized). --draft-LOOKUP only on Vulkan; --draft-model (needs a 2nd
-            // GpuForwardPass + VRAM mgmt) is a CUDA-only follow-up.
-            bool vulkanSpecTarget = gpuFwd is GpuForwardPass { SupportsBatchVerify: true };
-            bool gpuSpecTarget = cudaSpecTarget || vulkanSpecTarget;
-            // Sampled speculative decoding (issue #178): temp>0 now drives distribution-preserving
-            // spec sampling on the model-draft path (greedy at temp 0 stays byte-stable). Gated to
-            // model drafts (lookup proposals expose no q), to non-penalized/-biased sampling (draft
-            // and target must agree on the distribution), and bypassable via STINGRAY_SPEC_SAMPLE=0.
-            bool sampledSpec = settings.Temperature > 0f;
-            bool specSampleDisabled = Environment.GetEnvironmentVariable("STINGRAY_SPEC_SAMPLE") == "0";
-            bool hasPenalty = sp.RepetitionPenalty != 1f && sp.PreviousTokens is { Count: > 0 };
-            bool hasBias = sp.LogitBias is { Count: > 0 };
-            if (settings.DraftModelPath is not null && settings.DraftLookup)
-            {
-                AnsiConsole.ErrorLine("[red]Error:[/] --draft-model and --draft-lookup are mutually exclusive.");
-                return 1;
-            }
-            if (nGpuLayers != 0 && !gpuSpecTarget)
-            {
-                AnsiConsole.MarkupLine("[yellow]Warning:[/] Speculative decoding requires pure CPU (-g 0), full CUDA offload of a dense or Gemma-4 model, or full Vulkan offload of a dense Q4_K/Q6_K model (--draft-lookup). Falling back to normal generation.");
-            }
-            else if (sampledSpec && settings.DraftLookup)
-            {
-                AnsiConsole.MarkupLine("[yellow]Warning:[/] --draft-lookup supports greedy (--temp 0) only; sampled speculative decoding needs --draft-model. Falling back to normal generation.");
-            }
-            else if (sampledSpec && specSampleDisabled)
-            {
-                AnsiConsole.MarkupLine("[yellow]Note:[/] STINGRAY_SPEC_SAMPLE=0 — sampled speculative decoding disabled; using normal sampled generation.");
-            }
-            else if (sampledSpec && (hasPenalty || hasBias))
-            {
-                AnsiConsole.MarkupLine("[yellow]Warning:[/] sampled speculative decoding does not yet support --repeat-penalty / logit bias (draft and target must share the same distribution); falling back to normal generation.");
-            }
-            else if (settings.DraftLookup)
-            {
-                // Prompt-lookup drafting (issue #207): no draft model — proposals come from
-                // n-gram matches against prompt + generated history, verified by the same
-                // batched-verify step. Floor is ~baseline (no match → plain decode step).
-                try
-                {
-                    // gpuFwd is the CudaForwardPass or GpuForwardPass (both IForwardPass) on a GPU
-                    // spec target; fall back to the CPU pass otherwise.
-                    IForwardPass lookupTarget = gpuSpecTarget ? (IForwardPass)gpuFwd! : fwd!;
-                    AnsiConsole.MarkupLine($"[dim]Speculative decoding: prompt-lookup (n-gram) drafting | Lookahead k={settings.SpecLookahead}[/]");
-                    if (settings.Prompt is not null)
-                        return RunSpeculativeSinglePrompt(settings, lookupTarget, null, tokenizer, sp, rng);
-                    return RunSpeculativeInteractive(settings, lookupTarget, null, tokenizer, sp, rng);
-                }
-                catch (Exception ex)
-                {
-                    Console.Error.WriteLine(ex);
-                    return 1;
-                }
-                finally
-                {
-                    gpuFwd?.Dispose();
-                    gpuBackend?.Dispose();
-                    fwd?.Dispose();
-                    hybridFwd?.Dispose();
-                    gptOssFwd?.Dispose();
-                }
-            }
-            else if (!File.Exists(settings.DraftModelPath))
-            {
-                AnsiConsole.ErrorLine($"[red]Error:[/] Draft model not found: {settings.DraftModelPath}");
-                return 1;
-            }
-            else
-            {
-                try
-                {
-                    AnsiConsole.MarkupLine($"[dim]Loading draft model:[/] {settings.DraftModelPath}");
-                    using var draftModel = GgufModel.Open(settings.DraftModelPath);
-                    var draftHp = ModelHyperparams.FromGgufMetadata(draftModel.Metadata, draftModel);
-                    if (cudaSpecTarget)
-                    {
-                        var target = (CudaForwardPass)gpuFwd!;
-                        // The draft gets its OWN CudaBackend: graph capture state is one
-                        // exec graph per backend instance, so sharing the target's backend
-                        // would have the draft's decode graph clobber the target's.
-                        //
-                        // Clamp the draft's context: the decoder advances both passes in
-                        // lockstep, so the draft never sees a position past the target's
-                        // window — and unless the user pinned -c explicitly, cap it at 4096
-                        // (the decode runners bound generation by BOTH windows, so a smaller
-                        // draft ring only caps session length, never indexes out of range).
-                        // Passing 0 would size the draft's KV from the VRAM left AFTER the
-                        // target loaded — measured on the 12 GB 4070 Ti: the 0.6B draft
-                        // grabbed a 34K-ctx / ~7 GB ring next to the 8B target (decode
-                        // 75 → 13 t/s, WDDM paging); even a target-matched 12K fp32 ring
-                        // (~2.8 GB) left so little headroom that the draft's weights paged
-                        // in and out every step (draft forward 2.9 → ~15 ms, decode 34 t/s).
-                        int draftCtx = ctxSize > 0 ? target.MaxSeqLen : Math.Min(target.MaxSeqLen, 4096);
-                        using var draftCuda = CudaBackend.Create();
-                        using var draftFwd = new CudaForwardPass(draftModel, draftCuda, draftHp, draftCtx);
-                        AnsiConsole.MarkupLine($"[dim]Draft model: {draftHp.NumLayers}L, {draftHp.EmbeddingDim}d ([green]CUDA[/]) | Lookahead k={settings.SpecLookahead}[/]");
-                        if (settings.Prompt is not null)
-                            return RunSpeculativeSinglePrompt(settings, target, draftFwd, tokenizer, sp, rng);
-                        return RunSpeculativeInteractive(settings, target, draftFwd, tokenizer, sp, rng);
-                    }
-                    else if (vulkanSpecTarget)
-                    {
-                        var target = (GpuForwardPass)gpuFwd!;
-                        // The draft gets its own VulkanBackend (its own command buffer and
-                        // pipelines) and the same context clamp as the CUDA branch above.
-                        int draftCtx = ctxSize > 0 ? target.MaxSeqLen : Math.Min(target.MaxSeqLen, 4096);
-                        using var draftVk = new VulkanBackend(gpuDeviceIndex);
-                        using var draftFwd = new GpuForwardPass(draftModel, draftVk, draftHp, draftCtx);
-                        AnsiConsole.MarkupLine($"[dim]Draft model: {draftHp.NumLayers}L, {draftHp.EmbeddingDim}d ([green]Vulkan[/]) | Lookahead k={settings.SpecLookahead}[/]");
-                        if (settings.Prompt is not null)
-                            return RunSpeculativeSinglePrompt(settings, target, draftFwd, tokenizer, sp, rng);
-                        return RunSpeculativeInteractive(settings, target, draftFwd, tokenizer, sp, rng);
-                    }
-                    else
-                    {
-                        using var draftCpuBackend = new CpuBackend();
-                        using var draftFwd = new ForwardPass(draftModel, draftCpuBackend, draftHp);
-                        AnsiConsole.MarkupLine($"[dim]Draft model: {draftHp.NumLayers}L, {draftHp.EmbeddingDim}d ([blue]CPU[/]) | Lookahead k={settings.SpecLookahead}[/]");
-                        if (settings.Prompt is not null)
-                            return RunSpeculativeSinglePrompt(settings, fwd!, draftFwd, tokenizer, sp, rng);
-                        return RunSpeculativeInteractive(settings, fwd!, draftFwd, tokenizer, sp, rng);
-                    }
-                }
-                catch (Exception ex)
-                {
-                    Console.Error.WriteLine(ex);
-                    return 1;
-                }
-                finally
-                {
-                    gpuFwd?.Dispose();
-                    gpuBackend?.Dispose();
-                    fwd?.Dispose();
-                    hybridFwd?.Dispose();
-                    gptOssFwd?.Dispose();
-                }
-            }
-        }
+        // Speculative decoding (--draft-model / --draft-lookup): see TryRunSpeculative.
+        var engine = new RunEngine(model, hp, tokenizer, ctxSize, nGpuLayers, gpuDeviceIndex, fwd, hybridFwd, gptOssFwd, mtpFwd,
+                                   gpuBackend, gpuFwd, forward, prefill, resetCache);
+        if (TryRunSpeculative(settings, engine, sp, rng) is int specExit)
+            return specExit;
 
-        // DSpark block-speculative decoding (docs/dspark-plan.md, PR #413): a DeepSpec
-        // draft head conditioned on target hidden-state taps. Greedy-only and CPU-target
-        // for now (spec Phases 1–3; the CUDA draft path is Phase 4). Placement Off (auto
-        // or explicit) falls through to normal generation rather than erroring.
-        bool dsparkRequested = settings.DSparkModelPath is not null || sp.SpecType == SpecType.DSpark;
-        if (dsparkRequested)
-        {
-            if (settings.DSparkModelPath is null)
-            {
-                AnsiConsole.ErrorLine("[red]Error:[/] --spec-type dspark requires --dspark-model <path-to-model.safetensors>.");
-                return 1;
-            }
-            if (settings.DraftModelPath is not null || settings.DraftLookup)
-            {
-                AnsiConsole.ErrorLine("[red]Error:[/] --dspark-model and --draft-model/--draft-lookup are mutually exclusive.");
-                return 1;
-            }
-            if (sp.SpecType == SpecType.Mtp)
-            {
-                // An explicit conflicting --spec-type must not be silently outranked
-                // by the presence of --dspark-model.
-                AnsiConsole.ErrorLine("[red]Error:[/] --spec-type mtp conflicts with --dspark-model; pick one.");
-                return 1;
-            }
-            if (settings.DSparkMinConfidence > 1f)
-            {
-                // Same [0,1] contract the --spec-draft-p-min validation enforces;
-                // a threshold above any sigmoid output would silently disable all
-                // drafting instead of doing what the user meant.
-                AnsiConsole.ErrorLine($"[red]Error:[/] --dspark-min-confidence={settings.DSparkMinConfidence} must be in [0, 1].");
-                return 1;
-            }
-
-            // Supported targets: pure CPU (-g 0) and dense full CUDA offload (-g -1,
-            // Phase 4). Vulkan and the partial-offload hybrids fall back — no tap
-            // capture there yet.
-            IForwardPass? dsparkTarget = null;
-            CudaBackend? dsparkCuda = null;
-            if (nGpuLayers == 0 && fwd is not null)
-            {
-                dsparkTarget = fwd;
-            }
-            else if (gpuFwd is CudaForwardPass cudaTarget && gpuBackend is CudaBackend cudaBk)
-            {
-                dsparkTarget = cudaTarget;
-                dsparkCuda = cudaBk;
-            }
-
-            string? dsparkReject = null;
-            if (sp.SpecType == SpecType.None)
-                dsparkReject = "--spec-type none explicitly disables speculation";
-            else if (sp.Constraint is not null)
-                dsparkReject = "--tool-grammar/--json-schema is active (a multi-token verify can't honor a token-level constraint)";
-            else if (settings.ToolsPath is not null)
-                dsparkReject = "--tools capture is not wired on the DSpark path (same restriction as MTP)";
-            else if (settings.Temperature > 0f)
-                dsparkReject = "DSpark is greedy-only for now; pass --temp 0";
-            else if (dsparkTarget is null)
-                dsparkReject = "DSpark requires a pure CPU target (-g 0) or dense full CUDA offload (-g -1); Vulkan and partial-offload hybrids have no tap capture";
-            else if (!dsparkTarget.SupportsHiddenTaps)
-                dsparkReject = "the target pass can't capture hidden taps (SnapKV eviction, TurboQuant KV, MoE, or Gemma-4 transforms active)";
-
-            if (dsparkReject is not null)
-            {
-                AnsiConsole.MarkupLine($"[yellow]Warning:[/] DSpark disabled — {dsparkReject}. Falling back to normal generation.");
-            }
-            else if (settings.Prompt is null)
-            {
-                AnsiConsole.MarkupLine("[yellow]Warning:[/] DSpark is wired for single-prompt runs only (like MTP); interactive mode falls back to normal generation.");
-            }
-            else
-            {
-                int rc;
-                try
-                {
-                    // DSpark is refused for SafeTensors packages above, so this is only ever
-                    // reached on the GGUF path where `model` is assigned.
-                    rc = TryRunDSparkSinglePrompt(settings, model!, hp, dsparkTarget!, dsparkCuda,
-                        tokenizer, sp, ctxSize);
-                }
-                catch (Exception ex)
-                {
-                    Console.Error.WriteLine(ex);
-                    rc = 1;
-                }
-                if (rc >= 0)
-                {
-                    gpuFwd?.Dispose();
-                    gpuBackend?.Dispose();
-                    fwd?.Dispose();
-                    hybridFwd?.Dispose();
-                    gptOssFwd?.Dispose();
-                    return rc;
-                }
-                // rc < 0: placement said Off — fall through to normal generation.
-            }
-        }
+        // DSpark block-speculative decoding (--dspark-model): see TryRunDSpark.
+        if (TryRunDSpark(settings, engine, sp) is int dsparkExit)
+            return dsparkExit;
 
         try
         {
