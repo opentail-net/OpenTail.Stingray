@@ -96,7 +96,7 @@ text model wants 4096), Llama 4 vision (93 GB), MobileNetV5 (no checkpoint decla
 4. **Sessions**: `Fork()` skill/instruction propagation (design question, wait for a real caller),
    per-session LoRA in the batched engine, and forward-pass context isolation for forks
    (`IForwardPass.CreateContext` still returns `this`).
-   [051](3-product-and-runtime/051-hotsession-capability-wiring-plan.md),
+   [051](done/051-hotsession-capability-wiring-plan.md),
    [010](3-product-and-runtime/010-forward-pass-context-isolation-for-session-forking-plan.md).
 5. **Releases**: follow [3-product-and-runtime/nuget-release-checklist.md](3-product-and-runtime/nuget-release-checklist.md).
 6. **Parked** (useful as is, does not move the goal): DSpark speculative decoding, SafeTensors
@@ -109,14 +109,13 @@ numerical validation; no single-run result counts. An iGPU loss is not evidence 
 (CLAUDE.md rule 13). Do not reopen the closed Q4_K repacked-GEMM investigation. The cross-model
 sweep is [4-performance/perf-sweep-plan.md](4-performance/perf-sweep-plan.md).
 
-**CPU, LLM** ([4-performance/cpu/](4-performance/cpu))
+**CPU, LLM** (the closed CPU kernel programme is [done/05](done/05-cpu-architecture-kernel-opportunities.md))
 1. SmolLM2 prefill at ~0.89x of llama.cpp: the Q4_K Path-2 GEMM is 65% of trunk time; then RoPE
    (scalar, ~3%) and attention (~6%). History: "SmolLM2 prefill" in
    [done/101](done/101-work-queue-after-coverage-plan.md).
 2. Qwen3.6-35B-A3B prefill at 0.63x of llama.cpp (Phase 8 of
    [done/2026-09-25-hf-top-downloads-coverage-plan.md](done/2026-09-25-hf-top-downloads-coverage-plan.md)).
 3. Image-token prefill in VLMs runs per token (~9 t/s here); a batched embedding prefill.
-4. The CPU kernel programme: [4-performance/cpu/05-cpu-architecture-kernel-opportunities.md](4-performance/cpu/05-cpu-architecture-kernel-opportunities.md).
 
 **GPU, LLM** ([4-performance/gpu/](4-performance/gpu))
 5. Batched prefill for the Vulkan layer split (`VulkanLayerSplitForwardPass` prefills per token).
@@ -138,9 +137,9 @@ sweep is [4-performance/perf-sweep-plan.md](4-performance/perf-sweep-plan.md).
 12. LTX-Video has no C++ comparison yet (sd.cpp's path for it is blocked).
 
 **Audio** ([4-performance/audio/](4-performance/audio))
-13. MiniMax-Music3 vocoder decode 29-33 s vs the reference's 13.1 s
-    ([066](4-performance/audio/066-minimax-music3-future-plan.md)); flow-transformer GPU residency
-    ([079](4-performance/audio/079-minimax-music3-gpu-residency-plan.md)).
+13. MiniMax-Music3 flow-transformer GPU residency, which matters only on a real GPU (the vocoder gap
+    closed 2026-09-28, [done/066](done/066-minimax-music3-future-plan.md)):
+    [079](4-performance/audio/079-minimax-music3-gpu-residency-plan.md).
 14. MusicGen / AudioGen performance and DRY passes (CFG as a batch-2 GEMM, a T5 kernel shared with
     Parler) plus top-p sampling. "Known gaps" in [done/062](done/062-musicgen-implementation-plan.md).
 15. CosyVoice3 ODE step count: the fewer-steps A/B (by ear plus a Whisper round trip) was never run;
