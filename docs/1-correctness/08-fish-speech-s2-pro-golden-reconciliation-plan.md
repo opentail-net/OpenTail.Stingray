@@ -324,3 +324,15 @@ needs a small tensor-transplant tool (copy the Q4_K_M GGUF, substituting those t
 two files share tensor names). Caveats: one input at one position; the slow-AR stage's Q4_K_M sensitivity was not
 measured; the C# loader already renormalizes Fast-AR matrices to Q8_0 at load, so a transplanted file would load
 unchanged.
+
+**Built and validated (2026-10-01).** New CLI command `stingray gguf-transplant --base <gguf> --donor <gguf> --tensors <regex> -o <out>`
+(`src/OpenTail.Stingray.Cli/GgufTransplantCommand.cs`) copies the base file's header and KV section verbatim, re-emits the
+tensor infos with the donor's dtype for matching tensors, and verifies the output byte-for-byte against its sources. Run with
+`--tensors '^fast_layers\.\d+\.(attention\.wo|feed_forward\.w3)\.weight$'`, base `s2-pro-q4_k_m.gguf`, donor `s2-pro-q8_0.gguf`
+it produced `E:\_models\s2-pro-mixed\s2-pro-q4_k_m-fastar-wo-w3-q8_0.gguf`: 8 tensors Q4_K -> Q8_0, **+67.5 MiB (3.57 -> 3.64 GB)**,
+813 tensors verified. C# Fast-AR on it (`Forward_Q4KMWithQ8WoW3_MatchesDequantizedPathOracle_AndRecoversOriginal`, opt-in via
+`STINGRAY_S2_MIXED_GGUF`): vs the float reference on its own dequantized tensors cosine 0.99988 (top-1 agrees, top-10 10/10);
+vs the ORIGINAL weights **cosine 0.9670, top-1 agrees, top-10 9/10** (pure Q4_K_M: 0.4406; pure Q8_0 vs original 0.9995 in float
+math). End-to-end `stingray tts -e fish` on the mixed file generated 1.95 s of audio in 19.6 s (not listened to). Still unmeasured:
+slow-AR Q4_K_M sensitivity, and any listening comparison. The command has no unit test of its own; its built-in byte-for-byte verify
+is the check.

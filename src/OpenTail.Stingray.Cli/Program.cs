@@ -39,6 +39,8 @@ app.Configure(config =>
         .WithDescription("List GGUF model files on disk, optionally opening each index (--deep)");
     config.AddCommand<ListTensorsCommand>("list-tensors")
         .WithDescription("Print the tensor index (name, dtype, shape, bytes) from a model file");
+    config.AddCommand<GgufTransplantCommand>("gguf-transplant")
+        .WithDescription("Build a mixed-precision GGUF by copying a base checkpoint and taking selected tensors (regex) from a donor checkpoint; verifies the result byte-for-byte");
     config.AddCommand<StaticPlanCommand>("plan")
         .WithDescription("Read-only GGUF compatibility, hardware availability, and placement plan report");
     config.AddCommand<InspectCommand>("inspect")

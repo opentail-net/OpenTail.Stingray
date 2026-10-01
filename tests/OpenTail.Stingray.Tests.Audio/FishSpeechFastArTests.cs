@@ -13,6 +13,7 @@ public sealed class FishSpeechFastArTests : HeavyTestBase
 {
     private static string? FindModelPath(string fileName)
     {
+        if (Path.IsPathRooted(fileName)) return File.Exists(fileName) ? fileName : null;
         var dir = Directory.GetCurrentDirectory();
         for (int i = 0; i < 8; i++)
         {
@@ -239,5 +240,27 @@ public sealed class FishSpeechFastArTests : HeavyTestBase
         Assert.True(m.Cosine > 0.995, $"cosine {m.Cosine} vs the Q4_K_M-dequantized float reference");
         Assert.True(m.Top1Agrees, "top-1 token differs from the Q4_K_M-dequantized float reference");
         Assert.True(m.Top10Overlap >= 9, $"top-10 overlap {m.Top10Overlap} < 9 vs the Q4_K_M-dequantized float reference");
+    }
+
+    /// <summary>
+    /// Mixed-precision recipe from docs/1-correctness/08 (Q4_K_M with Fast-AR <c>wo</c> and <c>w3</c> taken from Q8_0, built with
+    /// <c>stingray gguf-transplant</c>). Opt-in: set <c>STINGRAY_S2_MIXED_GGUF</c> to the file (it is not in the repo). Checks both that the C#
+    /// path is correct for the mixed weights (vs the float reference on the mixed file's dequantized tensors) and that the recipe recovers
+    /// most of the distance to the ORIGINAL weights that pure Q4_K_M loses (cosine 0.44 -> ~0.97).
+    /// </summary>
+    [Fact]
+    public void Forward_Q4KMWithQ8WoW3_MatchesDequantizedPathOracle_AndRecoversOriginal()
+    {
+        string? mixed = Environment.GetEnvironmentVariable("STINGRAY_S2_MIXED_GGUF");
+        Assert.SkipUnless(!string.IsNullOrEmpty(mixed) && File.Exists(mixed),
+            "set STINGRAY_S2_MIXED_GGUF to a gguf-transplant output (Q4_K_M + Q8_0 fast-AR wo/w3)");
+
+        var path = RunFastArAgainst(mixed!, "_mixedpath");
+        Assert.True(path.Cosine > 0.995, $"cosine {path.Cosine} vs the mixed file's dequantized float reference");
+        Assert.True(path.Top1Agrees, "top-1 differs from the mixed file's dequantized float reference");
+
+        var original = RunFastArAgainst(mixed!, "");
+        Assert.True(original.Cosine > 0.90, $"cosine {original.Cosine} vs the ORIGINAL weights; the recipe should recover ~0.97 (pure Q4_K_M: 0.44)");
+        Assert.True(original.Top1Agrees, "top-1 differs from the original weights");
     }
 }
