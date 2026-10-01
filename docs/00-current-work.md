@@ -70,7 +70,7 @@ text model wants 4096), Llama 4 vision (93 GB), MobileNetV5 (no checkpoint decla
 
 ## 2. Model coverage
 
-1. **GLM-4.5 / 4.6 / 4.7 incl. Air (`glm4moe`)**: a top open family; GLM-4 dense already runs.
+1. ~~**GLM-4.5 / 4.6 / 4.7 incl. Air (`glm4moe`)**~~: done (GLM-4.5-Air REAP 82B Q2_K and GLM-4.7-Flash run on real weights, PPL within ~0.2% / ~1.3% of llama.cpp; see STATUS). Not an open item.
 2. **Recurrent-state families, follow-ups** (Granite 4.0-H, Nemotron-H and LFM2 were admitted on
    CPU on 2026-09-27; #14, #15, #17 in [done/102](done/102-status-open-items-plan.md)):
    - Mamba-2 / short-conv support in the batched `PrefillCore` (prefill is token by token: Granite
@@ -78,7 +78,7 @@ text model wants 4096), Llama 4 vision (93 GB), MobileNetV5 (no checkpoint decla
    - partial rewind of the recurrent state (`SupportsPartialRewind` is false, so the server's
      prefix cache is off for these models), and no zero KV rows for recurrent layers;
    - GPU paths;
-   - untested variants: MoE Granite-H, MoE Nemotron-H, LFM2-MoE (`lfm2moe`), LFM2-VL/Audio, and the
+   - untested variants: MoE Nemotron-H, LFM2-MoE (MoE Granite-H was fixed 2026-09-28, see STATUS), LFM2-VL/Audio, and the
      Nemotron-Nano-12B-v2-VL vision tower end to end; Falcon-H1 should come almost free.
 3. ~~**Qwen3-VL**~~: done 2026-09-27 on CPU (IMROPE, deepstack, `qwen3vl` admitted; see STATUS). GPU image input remains.
 4. **Gemma 4 E4B vision (`gemma4v`)**: encoder implemented, no STATUS row, never parity-checked.
