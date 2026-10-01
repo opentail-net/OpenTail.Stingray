@@ -1318,3 +1318,19 @@ Source documents: `docs/done/perf-loop-progress.md`, `docs/done/cpu-performance-
 `examples/audio.cpp/build/bin/audiocpp_cli.exe` (F5-TTS re-verification run).*
 
 *Reproducibility: All runs can be replicated with `.\scripts\bench-cpp.ps1 -Suite Tts`, `.\scripts\bench-cpp.ps1 -Suite Align`, `.\scripts\bench-cpp.ps1 -Suite Whisper`, or `.\scripts\bench-cpp.ps1 -Suite All`. The 2026-09-10 LLM backfill commands: `tools/llama.cpp/llama-bench.exe -m <gguf> -p <n>[,<n>...] -n <n> -t 6 -ngl 0 -r 3` and `src/OpenTail.Stingray.Cli/bin/Release/net10.0/stingray.exe -m <gguf> -f docs/reference/benchmark-prompt.txt -n 24 -g 0 --temp 0 --single-turn --no-display-prompt`, best-of-3 each.*
+
+---
+
+## Opt-in numerics gates (C# A/B on one machine, not vs llama.cpp)
+
+Switches that trade speed for closer agreement with llama.cpp's arithmetic. No C++ reference ratio applies; these are
+gate-off vs gate-on medians, run alone and alternating (5 runs each), CPU, Release, 96-token greedy decode.
+
+| Gate | Model | Gate off (t/s) | Gate on (t/s) | Change | Check (date) |
+| --- | --- | ---: | ---: | ---: | --- |
+| `STINGRAY_Q5K_DECODE_Q8K=1` (Q8_K activations for every Q5_K decode matvec) | SmolLM2-1.7B-Instruct Q5_K_M | 21.0 | 13.3 | -37% | 2026-10-01 |
+| same | phi-2 Q4_K_M (32 Q5_K tensors) | 11.7 | 9.8 | -16% | 2026-10-01 |
+
+Fidelity side of the trade (paired per-token NLL vs llama.cpp, rms off -> on): GLM-4.5 0.328 -> 0.204, phi-2 0.121 -> 0.091,
+Phi-3-mini 0.127 -> 0.112, jais-590M 0.205 -> 0.169, Ornith-9B 0.066 -> 0.063, SmolLM2 0.142 -> 0.148. See
+`docs/103-quickest-first-plan.md` item 19. The gate stays off by default.

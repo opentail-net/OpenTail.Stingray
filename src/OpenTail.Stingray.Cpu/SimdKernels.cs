@@ -350,7 +350,8 @@ public static unsafe class SimdKernels
     /// Use Q8_K activations (as ggml_vec_dot_q5_K_q8_K does) for every Q5_K matvec in the CPU decode path:
     /// single, dual, 2-input and 4-input dispatch plus the decode attention-output call site, and for Q5_1 matvecs
     /// (Q8_1 activations, <c>ggml_vec_dot_q5_1_q8_1</c>) and the folded MoE expert dot.
-    /// Defaults off until real-weight parity and broader Q5_K validation are complete.
+    /// Default off: measured 2026-10-01 to improve paired-NLL fidelity vs llama.cpp on 5 of 6 Q5_K models but to cost
+    /// decode speed (SmolLM2 -37%, phi-2 -16%); see docs/103 item 19.
     /// </summary>
     public static bool Q5KDecodeQ8KActivations { get; set; } =
         Environment.GetEnvironmentVariable("STINGRAY_Q5K_DECODE_Q8K") == "1";

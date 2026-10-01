@@ -9,11 +9,11 @@ State key: 🔴 open defect · 🟡 open investigation · 🔵 blocked on an ass
 
 | # | Area | State | Next action | Latest evidence |
 | --- | --- | --- | --- | --- |
-| 09 | GLM-4.5 Q5_K activations | 🟡 | 19b: broader Q5_K inventory with the gate on, plus a gate-on/off speed measurement (default stays off) | Paired NLL vs llama.cpp: PPL `[1024,+)` 8.7753 → 8.6200 (llama.cpp 8.6125) with `STINGRAY_Q5K_DECODE_Q8K=1`; neutral on SmolLM2 Q5_K_M. `docs/103` item 19 |
 | 15 | LLaVA-NeXT AnyRes | 🔵 | Needs the real checkpoint and a reference | Plan written, correctly deferred |
 | 19 | RWKV6 CPU | ⚪ | Only against a concrete model target | `17-ggml-op-coverage-verification-plan.md` |
 | 20 | RWKV7 CPU | ⚪ | Same | same |
 | 21 | Generic `SOLVE_TRI` | ⚪ | Only when a concrete consumer exists | same |
+| 09 | GLM-4.5 Q5_K activations | 🟢 closed 2026-10-01 | None; the gate stays an opt-in (`STINGRAY_Q5K_DECODE_Q8K`). A faster `DotQ5K_Q8K` would change the trade-off | Paired NLL vs llama.cpp: better rms on 5 of 6 Q5_K models (GLM-4.5 0.328 -> 0.204; SmolLM2 slightly worse); decode speed cost: SmolLM2 -37%, phi-2 -16%. `docs/103` item 19 |
 | 12 | LFM2-MoE parity and admission | 🟢 | — | Flash-64 attention, not a bug; `lfm2moe` admitted 2026-10-01 |
 | 07 | FunASR Paraformer / Nano | 🟢 | — | Real Mandarin clip matches ONNX control; three stacked causes fixed 2026-10-01 |
 | 06 | Jais v1 | 🟢 | — | ALiBi + gated-FFN bias; PPL 36.94 vs llama.cpp 37.60 ± 5.74 |
@@ -28,7 +28,7 @@ State key: 🔴 open defect · 🟡 open investigation · 🔵 blocked on an ass
 **Cross-cutting finding (2026-10-01):** on Q2_K/Q3_K-heavy MoE models (GLM-4.5, GLM-4.7-Flash,
 Granite-H small) Stingray scores ~0.014 nats/token worse than llama.cpp (pooled +0.0144, SE 0.0045,
 3.2 SE; dense models sit at about −0.007). It is small and not yet explained (items 10 and 13 are closed
-as characterized; item 09 stays open for its inventory and speed work): items 09, 10 and 13
+as characterized; item 09 closed with the Q5_K gate kept opt-in): items 09, 10 and 13
 are three views of it.
 
 **Archive pointers:** [resolved entries](../done/bugstofix-resolved-2026-08.md) ·
