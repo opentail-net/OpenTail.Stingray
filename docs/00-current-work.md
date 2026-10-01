@@ -46,7 +46,6 @@ updated with dated evidence in the same pass.
 4. **`HybridGdnChunkedPrefill_MatchesSequentialPrefill` fails**, re-run with real weights on
    2026-09-27 and still failing: logits diverge at vocab idx 142707 (sequential 0.4995 vs chunked
    0.0924, tolerance 0.1025). See Phase 8 of [done/2026-09-25-hf-top-downloads-coverage-plan.md](done/2026-09-25-hf-top-downloads-coverage-plan.md).
-5. **NaN in `ForwardPass`'s f16 `qwen3` path** (last layer, one position; Q8_0 is fine). Not root-caused.
 6. **CPU greedy-decode non-determinism**: two sightings under CPU contention, neither reproduced.
 7. **Jinja chat-template gaps** (string concatenation inside a conditional) on Gemma-3-4B-it and
    Qwen3.8-27B, logged as warnings. Parenthesised ternaries (65e0ff1) and dict literals
@@ -55,9 +54,6 @@ updated with dated evidence in the same pass.
 9. **Youtu-VL text**: one 1024-token wikitext window is +5% PPL vs llama.cpp (others −2.1% to
     +0.8%). Diff per-token log-probs over wiki.test.raw [1024,2048) against `llama-server`.
     #5 in [done/102](done/102-status-open-items-plan.md).
-10. **FunASR-Nano** has only ever been tested on a synthetic tone (repetitive output, expected);
-    run it on real speech and give it a STATUS row. Separately, the local `paraformer-q8.gguf` lacks
-    `pf.vocab` (bad conversion); the ONNX Paraformer path works.
 11. **Classic LLaVA-1.5** (plain 32000-token vocab, no image token): **FIXED 2026-09-27**. The CLI
     now has a direct-splice path when `PlaceholderMarker` is absent from special tokens, tokenizing
     prompt text around the image marker and injecting soft tokens. Added Vicuna prompt formatting
