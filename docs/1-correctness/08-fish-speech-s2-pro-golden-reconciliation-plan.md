@@ -295,3 +295,32 @@ repaired oracles pass at the current revision, so there is no regression evidenc
 Practical note: Q4_K_M Fast-AR logits are about 0.49 cosine from the original model's (top-1 differs on this
 input). That is a property of this checkpoint's quantization (Q4_K on `fast_embeddings`/`wo`/`w1`/`w3`), not of the
 engine; if Fast-AR quality matters, prefer the Q8_0 checkpoint.
+
+### Follow-up: which Fast-AR tensors carry the Q4_K_M loss (2026-10-01)
+
+Ablation with the same float reference math (`scratch-llamacpp-ref/fish_fastar_q4_ablation.py`, gitignored; swaps
+tensor groups between the original BF16 weights and the Q4_K_M/Q8_0 GGUFs dequantized), one deterministic Fast-AR
+position, KL(original || variant) at T=1:
+
+| Variant | KL (nats) | cosine | argmax | top-10 overlap |
+| --- | ---: | ---: | --- | ---: |
+| Pure Q4_K_M | 0.978 | 0.489 | 324 -> 497 | 8 |
+| Original, only `wo` taken from Q4_K_M | 0.471 | 0.937 | 324 -> 497 | — |
+| Original, only `w3` from Q4_K_M | 0.193 | 0.969 | agrees | — |
+| Original, only one of `emb`/`wqkv`/`w1`/`w2`/`out`/norms from Q4_K_M | 0.0007-0.042 | >= 0.9965 | agrees | — |
+| Q4_K_M with `wo` from Q8_0 | 0.385 | 0.832 | agrees | 8 |
+| **Q4_K_M with `wo` + `w3` from Q8_0** | **0.079** | 0.966 | agrees | 9 |
+| Q4_K_M with `wo`+`w3`+`wqkv` from Q8_0 | 0.029 | 0.979 | agrees | 9 |
+| Q4_K_M with `wo`+`w3`+`wqkv`+`emb`+`w1` from Q8_0 | 0.021 | 0.9992 | agrees | 10 |
+| Pure Q8_0 | 0.007 | 0.9995 | agrees | 10 |
+
+The loss is concentrated in the Fast-AR attention output projection `wo` (Q4_K) and the FFN up-projection `w3`
+(Q4_K); errors compound across layers (restoring only layer 0 cuts KL to 0.42, only layer 3 barely helps).
+**Recipe:** keep everything Q4_K_M but store `fast_layers.*.attention.wo.weight` and
+`fast_layers.*.feed_forward.w3.weight` as Q8_0 (about +71 MB over the 3.57 GB file; adding `wqkv` Q6_K -> Q8_0 is
++15 MB more) to recover about 92% of the KL gap (0.98 -> 0.08). Not built: `llama-quantize` rejects the
+`fish-speech` architecture ("unknown model architecture"), and this repo has no GGUF quantizer, so producing the file
+needs a small tensor-transplant tool (copy the Q4_K_M GGUF, substituting those tensors from `s2-pro-q8_0.gguf`; the
+two files share tensor names). Caveats: one input at one position; the slow-AR stage's Q4_K_M sensitivity was not
+measured; the C# loader already renormalizes Fast-AR matrices to Q8_0 at load, so a transplanted file would load
+unchanged.
