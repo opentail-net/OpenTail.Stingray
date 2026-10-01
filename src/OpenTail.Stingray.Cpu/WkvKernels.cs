@@ -1,3 +1,6 @@
+using System.Runtime.Intrinsics;
+using System.Runtime.Intrinsics.X86;
+
 namespace OpenTail.Stingray.Cpu;
 
 /// <summary>
@@ -39,6 +42,69 @@ public static unsafe class WkvKernels
                     result += nv * rh[j];
                 }
                 y[off + i] = result;
+            }
+        }
+    }
+
+    /// <summary>
+    /// One head of <see cref="Wkv7Step"/>, vectorized over the key index j (AVX2 when available,
+    /// else the scalar loop). The two reductions (<c>sa_i</c> and <c>y_i</c>) are summed in 8-wide
+    /// lanes, so results differ from the scalar step in the last bits; the update itself is
+    /// element-wise and unchanged. Every pointer is the head's own slice (state: hs × hs).
+    /// </summary>
+    public static void Wkv7StepHead(float* s, float* r, float* w, float* k, float* v, float* a, float* b,
+        float* y, int hs)
+    {
+        if (!Avx2.IsSupported || hs % 8 != 0)
+        {
+            Wkv7Step(s, r, w, k, v, a, b, y, 1, hs);
+            return;
+        }
+        for (int i = 0; i < hs; i++)
+        {
+            float* row = s + i * hs;
+            var saV = Vector256<float>.Zero;
+            for (int j = 0; j < hs; j += 8)
+                saV += Vector256.Load(a + j) * Vector256.Load(row + j);
+            var sa = Vector256.Create(Vector256.Sum(saV));
+            var vi = Vector256.Create(v[i]);
+            var acc = Vector256<float>.Zero;
+            for (int j = 0; j < hs; j += 8)
+            {
+                var nv = Vector256.Load(row + j) * Vector256.Load(w + j)
+                         + vi * Vector256.Load(k + j)
+                         + sa * Vector256.Load(b + j);
+                nv.Store(row + j);
+                acc += nv * Vector256.Load(r + j);
+            }
+            y[i] = Vector256.Sum(acc);
+        }
+    }
+
+    /// <summary>
+    /// One head of <see cref="Wkv6Step"/>, vectorized over the value index j. Same arithmetic per
+    /// element as the scalar step (the sum over i is accumulated in the same order), so results are
+    /// identical. Every pointer is the head's own slice.
+    /// </summary>
+    public static void Wkv6StepHead(float* s, float* r, float* w, float* k, float* v, float* u, float* y, int hs)
+    {
+        if (!Avx2.IsSupported || hs % 8 != 0)
+        {
+            Wkv6Step(s, r, w, k, v, u, y, 1, hs);
+            return;
+        }
+        for (int j = 0; j < hs; j += 8) Vector256<float>.Zero.Store(y + j);
+        for (int i = 0; i < hs; i++)
+        {
+            float* row = s + i * hs;
+            var ki = Vector256.Create(k[i]); var ri = Vector256.Create(r[i]);
+            var ui = Vector256.Create(u[i]); var wi = Vector256.Create(w[i]);
+            for (int j = 0; j < hs; j += 8)
+            {
+                var kv = Vector256.Load(v + j) * ki;
+                var prev = Vector256.Load(row + j);
+                (Vector256.Load(y + j) + (kv * ui + prev) * ri).Store(y + j);
+                (prev * wi + kv).Store(row + j);
             }
         }
     }

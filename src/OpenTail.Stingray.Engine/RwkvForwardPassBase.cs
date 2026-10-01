@@ -1,3 +1,4 @@
+using System.Numerics.Tensors;
 using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Cpu;
 
@@ -94,6 +95,16 @@ public abstract unsafe class RwkvForwardPassBase : IForwardPass
     }
 
     protected static float Sigmoid(float x) => 1f / (1f + MathF.Exp(-x));
+
+    /// <summary>A span over <paramref name="len"/> floats at <paramref name="p"/>, for TensorPrimitives.</summary>
+    protected static Span<float> Sp(float* p, int len) => new(p, len);
+
+    /// <summary>Adds the D-wide vector <paramref name="bias"/> to each of <paramref name="n"/> rows.</summary>
+    protected void AddRowVector(float* rows, float* bias, int n)
+    {
+        var bs = new ReadOnlySpan<float>(bias, D);
+        for (int t = 0; t < n; t++) TensorPrimitives.Add(Sp(rows + t * D, D), bs, Sp(rows + t * D, D));
+    }
 
     /// <summary>LayerNorm (weight + bias) of each of <paramref name="n"/> rows.</summary>
     protected void LayerNormRows(float* dst, float* src, in DeepSeek4TensorRef weight, in DeepSeek4TensorRef bias, int n)

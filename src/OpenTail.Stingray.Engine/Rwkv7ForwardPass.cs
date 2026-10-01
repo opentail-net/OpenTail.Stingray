@@ -1,3 +1,4 @@
+using System.Numerics.Tensors;
 using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Cpu;
 
@@ -89,11 +90,13 @@ public sealed unsafe class Rwkv7ForwardPass : RwkvForwardPassBase
 
             int nw = (int)L.W1.Info.Dimensions[1];
             MatMul(lora, L.W1, xw, n);
-            for (int i = 0; i < n * nw; i++) lora[i] = MathF.Tanh(lora[i]);
+            TensorPrimitives.Tanh(Sp(lora, n * nw), Sp(lora, n * nw));
             MatMul(w, L.W2, lora, n);
             float* w0 = (float*)L.W0.DataPtr;
-            for (int t = 0; t < n; t++)
-                for (int i = 0; i < d; i++) w[t * d + i] = MathF.Exp(DecayScale * Sigmoid(w[t * d + i] + w0[i]));
+            AddRowVector(w, w0, n);
+            TensorPrimitives.Sigmoid(Sp(w, n * d), Sp(w, n * d));
+            TensorPrimitives.Multiply(Sp(w, n * d), DecayScale, Sp(w, n * d));
+            TensorPrimitives.Exp(Sp(w, n * d), Sp(w, n * d));
 
             MatMul(k, L.Key, xk, n);
             MatMul(v, L.Value, xv, n);
@@ -106,12 +109,10 @@ public sealed unsafe class Rwkv7ForwardPass : RwkvForwardPassBase
                 MatMul(lora, L.V1!.Value, xv, n);
                 MatMul(cur, L.V2!.Value, lora, n);
                 float* v0 = (float*)L.V0!.Value.DataPtr;
-                for (int t = 0; t < n; t++)
-                    for (int i = 0; i < d; i++)
-                    {
-                        int o = t * d + i;
-                        v[o] += (vFirst[o] - v[o]) * Sigmoid(cur[o] + v0[i]);
-                    }
+                AddRowVector(cur, v0, n);
+                TensorPrimitives.Sigmoid(Sp(cur, n * d), Sp(cur, n * d));
+                TensorPrimitives.Subtract(Sp(vFirst, n * d), Sp(v, n * d), Sp(sx, n * d));       // sx is free here
+                TensorPrimitives.MultiplyAdd(Sp(sx, n * d), Sp(cur, n * d), Sp(v, n * d), Sp(v, n * d));
             }
 
             bool hasGate = L.G1 is not null && L.G2 is not null;
@@ -119,65 +120,67 @@ public sealed unsafe class Rwkv7ForwardPass : RwkvForwardPassBase
             {
                 int ng = (int)L.G1!.Value.Info.Dimensions[1];
                 MatMul(lora, L.G1.Value, xg, n);
-                for (int i = 0; i < n * ng; i++) lora[i] = Sigmoid(lora[i]);
+                TensorPrimitives.Sigmoid(Sp(lora, n * ng), Sp(lora, n * ng));
                 MatMul(g, L.G2!.Value, lora, n);
             }
 
             MatMul(lora, L.A1, xaa, n);
             MatMul(a, L.A2, lora, n);
             float* a0 = (float*)L.A0.DataPtr;
-            for (int t = 0; t < n; t++)
-                for (int i = 0; i < d; i++) a[t * d + i] = Sigmoid(a[t * d + i] + a0[i]);
+            AddRowVector(a, a0, n);
+            TensorPrimitives.Sigmoid(Sp(a, n * d), Sp(a, n * d));
 
+            // Everything from here to the output projection is head-local, so heads run in parallel
+            // and each walks the chunk's tokens in order through its own slice of the WKV state.
             float* kkW = (float*)L.KK.DataPtr, kaW = (float*)L.KA.DataPtr, rkW = (float*)L.RK.DataPtr;
-            for (int t = 0; t < n; t++)
+            float* lnW = (float*)L.LnW.DataPtr, lnB = (float*)L.LnB.DataPtr;
+            float* pk = k, pa = a, pkk = kk, pb = b, py = y, pr = r, pv = v, pw = w, pg = g, pState = state;
+            Parallel.For(0, Heads, h =>
             {
-                float* kt = k + t * d, at = a + t * d, kkt = kk + t * d, bt = b + t * d;
-                // kk = l2_norm(k * k_k) per head (ggml_l2_norm eps 1e-12: x / max(‖x‖, eps)).
-                for (int i = 0; i < d; i++) kkt[i] = kt[i] * kkW[i];
-                for (int h = 0; h < Heads; h++)
+                int o = h * hs;
+                float* sh = pState + (long)h * hs * hs;
+                for (int t = 0; t < n; t++)
                 {
-                    float* kh = kkt + h * hs;
+                    int to = t * d + o;
+                    float* kt = pk + to, at = pa + to, kkt = pkk + to, bt = pb + to;
+                    float* yt = py + to, rt = pr + to, vt = pv + to;
+                    // kk = l2_norm(k * k_k) per head (ggml_l2_norm eps 1e-12: x / max(‖x‖, eps)).
                     float ss = 0f;
-                    for (int j = 0; j < hs; j++) ss += kh[j] * kh[j];
+                    for (int j = 0; j < hs; j++) { kkt[j] = kt[j] * kkW[o + j]; ss += kkt[j] * kkt[j]; }
                     float scale = 1f / MathF.Max(MathF.Sqrt(ss), 1e-12f);
-                    for (int j = 0; j < hs; j++) kh[j] *= scale;
-                }
-                // k = k + (a*ka - ka), ka = k * k_a; WKV7 a' = -kk, b' = kk * a.
-                for (int i = 0; i < d; i++)
-                {
-                    float ka = kt[i] * kaW[i];
-                    kt[i] = kt[i] + (at[i] * ka - ka);
-                    bt[i] = kkt[i] * at[i];
-                    kkt[i] = -kkt[i];
-                }
+                    // k = k + (a*ka - ka), ka = k * k_a; WKV7 a' = -kk, b' = kk * a.
+                    for (int j = 0; j < hs; j++)
+                    {
+                        float kkj = kkt[j] * scale;
+                        float ka = kt[j] * kaW[o + j];
+                        kt[j] = kt[j] + (at[j] * ka - ka);
+                        bt[j] = kkj * at[j];
+                        kkt[j] = -kkj;
+                    }
 
-                float* yt = y + t * d, rt = r + t * d, vt = v + t * d;
-                WkvKernels.Wkv7Step(state, rt, w + t * d, kt, vt, kkt, bt, yt, Heads, hs);
+                    WkvKernels.Wkv7StepHead(sh, rt, pw + to, kt, vt, kkt, bt, yt, hs);
 
-                // Group norm, then + v · Σ_head(k · r · r_k).
-                GroupNorm(yt, L.LnW, L.LnB);
-                for (int h = 0; h < Heads; h++)
-                {
-                    int o = h * hs;
+                    // Group norm, then + v · Σ(k · r · r_k), then the gate.
+                    SimdKernels.LayerNorm(yt, yt, lnW + o, lnB + o, hs, GroupNormEps);
                     float rk = 0f;
-                    for (int j = 0; j < hs; j++) rk += kt[o + j] * rt[o + j] * rkW[o + j];
-                    for (int j = 0; j < hs; j++) yt[o + j] += vt[o + j] * rk;
+                    for (int j = 0; j < hs; j++) rk += kt[j] * rt[j] * rkW[o + j];
+                    for (int j = 0; j < hs; j++) yt[j] += vt[j] * rk;
+                    if (hasGate)
+                        for (int j = 0; j < hs; j++) yt[j] *= pg[to + j];
                 }
-                if (hasGate)
-                    for (int i = 0; i < d; i++) yt[i] *= g[t * d + i];
-            }
+            });
             MatMul(cur, L.Output, y, n);
-            for (int i = 0; i < n * d; i++) x[i] += cur[i];      // x is now ffn_inp
+            TensorPrimitives.Add(Sp(x, n * d), Sp(cur, n * d), Sp(x, n * d));      // x is now ffn_inp
 
             // ── channel mix ── (xa reused as ffn_norm)
             LayerNormRows(xa, x, L.FfnNormW, L.FfnNormB, n);
             TokenShiftLerp(sx, xa, ffnShift, (float*)L.CmLerpK.DataPtr, null, n);
             SaveShift(xa, n, FfnShift[il]);
             MatMul(ffnK, L.CmKey, sx, n);
-            for (int i = 0; i < n * FfnDim; i++) { float t = MathF.Max(ffnK[i], 0f); ffnK[i] = t * t; }
+            TensorPrimitives.Max(Sp(ffnK, n * FfnDim), 0f, Sp(ffnK, n * FfnDim));
+            TensorPrimitives.Multiply(Sp(ffnK, n * FfnDim), Sp(ffnK, n * FfnDim), Sp(ffnK, n * FfnDim));
             MatMul(cur, L.CmValue, ffnK, n);
-            for (int i = 0; i < n * d; i++) x[i] += cur[i];
+            TensorPrimitives.Add(Sp(x, n * d), Sp(cur, n * d), Sp(x, n * d));
         }
     }
 }

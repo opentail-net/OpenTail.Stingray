@@ -1,3 +1,4 @@
+using System.Numerics.Tensors;
 using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Cpu;
 
@@ -101,7 +102,7 @@ public sealed unsafe class Rwkv6ForwardPass : RwkvForwardPassBase
             // ddd_m = W2[m] · xxx_m, and x_m = (prev - xa) * (lerp_m + ddd_m) + xa for m = w, k, v, r, g.
             TokenShiftLerp(xx, xa, attShift, (float*)L.LerpX.DataPtr, null, n);
             MatMul(lw, L.W1, xx, n);
-            for (int i = 0; i < n * 5 * md; i++) lw[i] = MathF.Tanh(lw[i]);
+            TensorPrimitives.Tanh(Sp(lw, n * 5 * md), Sp(lw, n * 5 * md));
             var w2 = L.W2;                                          // [md, d, 5]
             long w2BlockBytes = (long)d * md / DTypeInfo.BlockSize(w2.DType) * DTypeInfo.BytesPerBlock(w2.DType);
             for (int m = 0; m < 5; m++)
@@ -121,26 +122,38 @@ public sealed unsafe class Rwkv6ForwardPass : RwkvForwardPassBase
             MatMul(k, L.Key, xk, n); AddBias(k, L.KeyB, n, d);
             MatMul(v, L.Value, xv, n); AddBias(v, L.ValueB, n, d);
             MatMul(g, L.Gate, xg, n);
-            for (int i = 0; i < n * d; i++) g[i] *= Sigmoid(g[i]);         // SiLU
+            TensorPrimitives.Sigmoid(Sp(g, n * d), Sp(cur, n * d));                     // SiLU: g * sigmoid(g)
+            TensorPrimitives.Multiply(Sp(g, n * d), Sp(cur, n * d), Sp(g, n * d));
 
             // w = exp(-exp(decay_w2 · tanh(decay_w1 · xw) + decay))
             MatMul(dw, L.DecayW1, xw, n);
-            for (int i = 0; i < n * _decayDim; i++) dw[i] = MathF.Tanh(dw[i]);
+            TensorPrimitives.Tanh(Sp(dw, n * _decayDim), Sp(dw, n * _decayDim));
             MatMul(w, L.DecayW2, dw, n);
             float* decay = (float*)L.Decay.DataPtr;
-            for (int t = 0; t < n; t++)
-                for (int i = 0; i < d; i++) w[t * d + i] = MathF.Exp(-MathF.Exp(w[t * d + i] + decay[i]));
+            AddRowVector(w, decay, n);
+            TensorPrimitives.Exp(Sp(w, n * d), Sp(w, n * d));
+            TensorPrimitives.Negate(Sp(w, n * d), Sp(w, n * d));
+            TensorPrimitives.Exp(Sp(w, n * d), Sp(w, n * d));
 
-            float* u = (float*)L.First.DataPtr;
-            for (int t = 0; t < n; t++)
+            // Head-local from here to the output projection: heads in parallel, tokens in order.
+            float* u = (float*)L.First.DataPtr, lnW = (float*)L.LnW.DataPtr, lnB = (float*)L.LnB.DataPtr;
+            float* pr = r, pw = w, pk = k, pv = v, py = y, pg = g, pState = state;
+            int hs = HeadSize;
+            Parallel.For(0, Heads, h =>
             {
-                float* yt = y + t * d;
-                WkvKernels.Wkv6Step(state, r + t * d, w + t * d, k + t * d, v + t * d, u, yt, Heads, HeadSize);
-                GroupNorm(yt, L.LnW, L.LnB);
-                for (int i = 0; i < d; i++) yt[i] *= g[t * d + i];
-            }
+                int o = h * hs;
+                float* sh = pState + (long)h * hs * hs;
+                for (int t = 0; t < n; t++)
+                {
+                    int to = t * d + o;
+                    float* yt = py + to;
+                    WkvKernels.Wkv6StepHead(sh, pr + to, pw + to, pk + to, pv + to, u + o, yt, hs);
+                    SimdKernels.LayerNorm(yt, yt, lnW + o, lnB + o, hs, GroupNormEps);
+                    for (int j = 0; j < hs; j++) yt[j] *= pg[to + j];
+                }
+            });
             MatMul(cur, L.Output, y, n);
-            for (int i = 0; i < n * d; i++) x[i] += cur[i];      // x is now ffn_inp
+            TensorPrimitives.Add(Sp(x, n * d), Sp(cur, n * d), Sp(x, n * d));      // x is now ffn_inp
 
             // ── channel mix ── (xa reused as ffn_norm; xx and r reused as the k / r lerps)
             LayerNormRows(xa, x, L.FfnNormW, L.FfnNormB, n);
@@ -149,12 +162,14 @@ public sealed unsafe class Rwkv6ForwardPass : RwkvForwardPassBase
             SaveShift(xa, n, FfnShift[il]);
             MatMul(r, L.CmReceptance, y, n);
             MatMul(ffnK, L.CmKey, xx, n);
-            for (int i = 0; i < n * FfnDim; i++) { float t = MathF.Max(ffnK[i], 0f); ffnK[i] = t * t; }
+            TensorPrimitives.Max(Sp(ffnK, n * FfnDim), 0f, Sp(ffnK, n * FfnDim));
+            TensorPrimitives.Multiply(Sp(ffnK, n * FfnDim), Sp(ffnK, n * FfnDim), Sp(ffnK, n * FfnDim));
             MatMul(cur, L.CmValue, ffnK, n);
-            for (int i = 0; i < n * d; i++) x[i] += Sigmoid(r[i]) * cur[i];
+            TensorPrimitives.Sigmoid(Sp(r, n * d), Sp(r, n * d));
+            TensorPrimitives.MultiplyAdd(Sp(r, n * d), Sp(cur, n * d), Sp(x, n * d), Sp(x, n * d));
 
             if (_rescaleEvery != 0 && (il + 1) % _rescaleEvery == 0)
-                for (int i = 0; i < n * d; i++) x[i] *= 0.5f;
+                TensorPrimitives.Multiply(Sp(x, n * d), 0.5f, Sp(x, n * d));
         }
     }
 }
