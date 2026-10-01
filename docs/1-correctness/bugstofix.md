@@ -143,8 +143,10 @@ implementation gap. See the [verification receipt](../done/16-iq-formats-coverag
   top-k renormalisation, fixed. Investigation found Q8 activation quantization in the batched MoE expert-down path caused
   all batched/per-token NLL differences; CPU Q8 prefill now defaults off so the batched path matches per-token NLL. The
   remaining reference gap and Q2_K-only local coverage remain open.
-  - **Part 1 — parity:** [13-Granite 4.0-H small MoE PPL parity](13-granite4-h-small-moe-ppl-parity-plan.md) — verify the
-    default change, compare against llama.cpp, and add the same-model Q4_K_M receipt when available.
+  - **Part 1 — parity:** [13-Granite 4.0-H small MoE PPL parity](13-granite4-h-small-moe-ppl-parity-plan.md) — default-off
+    verification completed 2026-10-01: unset Q8 overrides produced NLLs identical to per-token at all
+    2,047 targets (max delta 0), `[1024,+)` PPL 26.5483. Still compare against llama.cpp and add the
+    same-model Q4_K_M receipt when available.
   - **Part 2 — MoE Q8 evaluation:** Measure batched MoE Q8 quality and throughput on Granite 4 H Small and representative
     MoE models, compare identical per-token NLL/logit outputs and corpus PPL, then decide whether any model/weight-dtype
     cases justify opting in. `STINGRAY_CPU_PREFILL_Q8=1` opts into general CPU Q8 prefill; MoE additionally requires

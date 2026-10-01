@@ -169,7 +169,7 @@ dynamically composed names.
 
 | Variable | Class | Notes |
 |---|---|---|
-| `STINGRAY_CPU_PREFILL_Q8` | experimental | Default-ON int8 batched-prefill dispatch tier; `=0` opts out. |
+| `STINGRAY_CPU_PREFILL_Q8` | experimental | Default-OFF (since 2026-10-01, exact parity) int8 batched-prefill dispatch tier (~+47% prefill); `=1` opts in. MoE batched experts additionally need `STINGRAY_MOE_PREFILL_Q8=1`. |
 | `STINGRAY_PREFILL_ATTN_WIDE_HEADS` | experimental | `1` admits head dims 128/256 to the Flash-64 prefill path. **Off by default by decision, not by omission**: the wikitext-2 gate measured +0.52% perplexity for +14% prefill throughput (6.0579 -> 6.0896), which is worse than the exact sequential path and two orders of magnitude above the ~0% precedent set by the Q4Kx8 repack. A real speed/quality trade for the model owner to opt into, not a default. |
 | `STINGRAY_PREFILL_ATTN_KV_OUTER` | expert | `0` restores the per-query-tile prefill-attention schedule. The KV-outer reorder packs each KV tile once per group of query tiles and is ON by default: measured +1.6% alone and +4.0% with `STINGRAY_CPU_KPACK_SIMD`, bit-exactness pinned by `Flash64KvOuterTests`. |
 | `STINGRAY_PREFILL_ATTN_KV_OUTER_TILES` | experimental | Query tiles held live per KV pack in the reorder above (default 8 = 512 queries, ~256 KB scratch at headDim 64). Trades footprint for K-pack reuse; proven not to change results. |

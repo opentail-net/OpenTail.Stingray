@@ -236,7 +236,12 @@ public sealed class ChatTemplateRenderer
         object? tools = null,
         bool addGenerationPrompt = true)
     {
-        if (_architecture is "granite")
+        // Tool schemas, tool_calls and role="tool" messages need the model's own template, so
+        // only plain chat bypasses it.
+        bool plainChat = tools is null
+            && !messages.Any(m => m.ContainsKey("tool_calls")
+                || (m.TryGetValue("role", out var rl) && rl as string is "tool"));
+        if (_architecture is "granite" && (plainChat || _template is null))
         {
             var simpleGranite = messages
                 .Select(m => (

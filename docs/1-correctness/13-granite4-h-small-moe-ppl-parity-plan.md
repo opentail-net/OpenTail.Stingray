@@ -82,6 +82,17 @@ the exact-parity result, CPU Q8 prefill now defaults off; `STINGRAY_CPU_PREFILL_
 general approximation, and batched MoE additionally requires `STINGRAY_MOE_PREFILL_Q8=1`. The broad
 MoE-specific Q8 speed/quality matrix is tracked as part 2 of bugstofix item 13.
 
+### Default-off verification — 2026-10-01
+
+Rebuilt the Release CLI, unset both Q8 environment variables, and reran the same Q2_K Granite
+perplexity command with `-c 2048 --batched --batch-chunk-size 256`. It scored 2,047 targets and
+reported mean NLL 2.820555, overall PPL 16.7862, and `[1024,+)` PPL 26.5483. Compared with the
+saved per-token NLL dump, all 2,047 target IDs and NLL values are identical (zero changed values;
+maximum absolute NLL delta 0). This verifies the default setting restores exact batched/per-token
+NLL parity on this reproduction. The earlier Q8-on result remains closer to llama.cpp's `[1024,+)`
+PPL 26.1080, so the model/reference discrepancy is still open and the Q8 speed/quality tradeoff is
+tracked separately in part 2.
+
 ## Goals
 
 1. Establish an apples-to-apples PPL comparison.
