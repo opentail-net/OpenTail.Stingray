@@ -8,7 +8,7 @@ public sealed class FunAsrPipelineTests
     public void FunAsr_Transcribe_ProducesValidTokensAndText()
     {
         using var pipeline = new FunAsrPipeline();
-        Assert.Equal("Alibaba-FunASR-Nano", pipeline.Architecture);
+        Assert.Equal("Alibaba-FunASR", pipeline.Architecture);
         Assert.Equal(16000, pipeline.SampleRate);
 
         // Generate 2 seconds of 16kHz sine wave audio
