@@ -35,7 +35,7 @@ last. Closed sections are one-line pointers into [done/perf-sweep-plan-closed-ph
 1. Phase 5: re-scan `PerformanceLeague.md` for uncovered rows (one pass, no code).
 2. Horizontal Pass A, item A.5: one manual file review plus one scoped fix.
 3. Phase 11: Citrinet-ASR, per-stage profile of a small, fast pipeline.
-4. Phase 16: RWKV6/RWKV7 prefill (0.21-0.25x), new self-contained code; profile first (added 2026-10-01).
+4. Phase 16: RWKV6/RWKV7 prefill: done 2026-10-02 (~0.45x; the rest is the Q8_0 GEMM gap).
 5. Phase 10: VLM text decode, profile first (10.2), then the Vulkan regression (10.3).
 6. Phase 1: Voxtral Q8_0 weights (a known, large lever with a plateau declared).
 7. Phase 8: DeepSeek-V2-Lite prefill (0.49x), profile first.
@@ -283,7 +283,7 @@ a real, working ASR pipeline, worse than the Whisper Tiny row already queued in 
       (do not regress it) + re-benchmark (3+ runs, this pipeline is fast enough to afford more
       samples than the slow TTS/diffusion pipelines elsewhere in this doc) + record.
 
-## Phase 16 — RWKV6/RWKV7 prefill (0.21-0.25x; decode already 0.83-0.85x)
+## Phase 16 — RWKV6/RWKV7 prefill — DONE 2026-10-02 (0.21x -> ~0.45x prefill, decode 0.94-0.95x; rest is Q8_0 GEMM)
 
 Added 2026-10-01 with the `rwkv6`/`rwkv7` admissions (code: `RwkvForwardPassBase`, `Rwkv6ForwardPass`,
 `Rwkv7ForwardPass`). Prefill already runs batched: one matmul per projection over chunks of up to 256
@@ -293,10 +293,16 @@ to 60-61 t/s over 580 tokens. llama.cpp pp512 is 185 t/s (16 thr). Measured
 before profiling: the int8 prefill tier (`STINGRAY_CPU_PREFILL_Q8=1`) and BLAS on/off did not help
 (29-32 t/s, those two runs under background load, so only indicative).
 
-- [ ] 16.1 Per-stage profile of a ~600-token prefill: batched matmuls vs the per-token WKV step, group
+- [x] 16.1 (done 2026-10-02) 587-token RWKV7 prefill: matmuls 60%, the other 40% (4.0 s) a single-threaded scalar
+      per-token block, dominated by the WKV7 state update (~12M MACs/token). Original text: per-stage profile of a ~600-token prefill: batched matmuls vs the per-token WKV step, group
       norm, lerps and LayerNorms (all scalar loops today). An env-gated stage timer is enough; the
       2026-10-01 attempt was abandoned because another process was loading the CPU.
-- [ ] 16.2 Fix the biggest stage, re-verify `Rwkv6/Rwkv7GreedyParityTests` and `RwkvRecurrentStateTests`,
+- [x] 16.2 (done 2026-10-02, ad0c3851) Heads now run in parallel (each walks the chunk's tokens through its own
+      state slice) with AVX2 head steps, and the element-wise ops use TensorPrimitives: non-matmul time 4.0 -> 0.7 s.
+      CLI A/B: RWKV7 prefill 56.6-57.1 -> 69.9-80.3 t/s, decode 18.7-19.2 -> 22.1-22.3 (0.95x); RWKV6 prefill
+      63.6-64.5 -> 78.3-79.1, decode 19.4-19.8 -> 21.5-21.9 (0.94x). Parity unchanged or better. What is left
+      (~0.45x prefill) is ~89% Q8_0 GEMM, i.e. the same kernel-throughput gap as small Q8_0 transformers (5.2).
+      Original text: fix the biggest stage, re-verify `Rwkv6/Rwkv7GreedyParityTests` and `RwkvRecurrentStateTests`,
       re-benchmark (3 alternated runs vs the current build), update the League rows.
 
 ## Phase 10 — Vision-Language Model decode weakness (~0.48x pattern, worst point 0.41x prefill)
