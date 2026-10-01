@@ -238,3 +238,19 @@ Preferred debugging order:
 `real checkpoint → metadata → views → pixels → per-view embeddings → combined soft tokens → prompt token sequence → decoder output`
 
 Do not change the established LLaVA-1.5 path while doing this investigation.
+
+## Interim result — first real-checkpoint run (2026-10-01)
+
+Checkpoint downloaded to `E:\_models\llava-1.6-mistral-7b` (`llava-v1.6-mistral-7b.Q5_K_M.gguf` + `mmproj-model-f16.gguf`; arch `llama` + `clip`,
+projector `mlp`, `image_grid_pinpoints` [336,672,672,336,… (10 items)]). Test image: a generated 800×600 PNG (red / green / blue / gold quadrants,
+white disc with "ABC" in the middle), prompt "What colour is each corner of this image, and what is written in the middle? Answer briefly.",
+greedy, CPU, both engines.
+
+| | image encodes | injected image tokens | answer |
+| --- | --- | --- | --- |
+| `llama-mtmd-cli` | 5 (log: "done = 1..5" of 7 chunks, the other 2 are text) | — (not printed) | "a pixelated representation of a flag with a red background and a yellow, green, and blue corner. In the middle … a white circle with the letters "ABC"" |
+| Stingray `run --image` | 5 views | 2,880 (5 × 576) | "a pixelated representation of a flag with red, yellow, green, and blue colors. In the middle of the flag is the text "ABC" in white letters" |
+
+So the **view count agrees (overview + 2×2 tiles) and both read the middle text correctly**; the wording differs, so this is NOT yet an identical-output pass.
+Open: Stingray printed the raw prompt (no `[INST]` framing visible) while `llama-mtmd-cli` applies the model's chat template, so the comparison is not
+yet apples-to-apples; Phases 1-5 (pinpoint selection, resize/pad, tile order, separators, per-view embedding parity via `llama-mtmd-debug`) are still to do.
