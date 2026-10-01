@@ -47,9 +47,6 @@ updated with dated evidence in the same pass.
    2026-09-27 and still failing: logits diverge at vocab idx 142707 (sequential 0.4995 vs chunked
    0.0924, tolerance 0.1025). See Phase 8 of [done/2026-09-25-hf-top-downloads-coverage-plan.md](done/2026-09-25-hf-top-downloads-coverage-plan.md).
 6. **CPU greedy-decode non-determinism**: two sightings under CPU contention, neither reproduced.
-7. **Jinja chat-template gaps** (string concatenation inside a conditional) on Gemma-3-4B-it and
-   Qwen3.8-27B, logged as warnings. Parenthesised ternaries (65e0ff1) and dict literals
-   (2026-09-12) were fixed since; re-run both templates and check whether the warnings remain.
 8. **Stable Audio 3 APG padding masks**: **FIXED 2026-09-28**. Padded tokens masked from APG norm and dot product, orthogonal projection zeroed on padded tokens (`ApplyApg`), epsilon moved inside sqrt, and `ValidLatentTokens` / self-attention V-zeroing wired to `StableAudioMediumDiT`. Step 0 velocity cosine 0.999949; padded token final latent cosine 0.9999998 against `audiocpp_cli`. Attention masking over the padded tail remains a known gap. #11 in [done/102](done/102-status-open-items-plan.md).
 9. **Youtu-VL text**: one 1024-token wikitext window is +5% PPL vs llama.cpp (others −2.1% to
     +0.8%). Diff per-token log-probs over wiki.test.raw [1024,2048) against `llama-server`.
