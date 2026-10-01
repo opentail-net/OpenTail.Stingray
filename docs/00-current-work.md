@@ -79,7 +79,12 @@ text model wants 4096), Llama 4 vision (93 GB), MobileNetV5 (no checkpoint decla
 
 ## 2. Model coverage
 
-1. ~~**GLM-4.5 / 4.6 / 4.7 incl. Air (`glm4moe`)**~~: done (GLM-4.5-Air REAP 82B Q2_K and GLM-4.7-Flash run on real weights, PPL within ~0.2% / ~1.3% of llama.cpp; see STATUS). Not an open item.
+1. **GLM-4.5 / 4.6 / 4.7 incl. Air (`glm4moe`): implemented, NOT admitted.** `glm4moe` is absent from
+   `ModelCompatibility`'s allowlist, so the engine rejects it unless
+   `STINGRAY_DIAGNOSTIC_ALLOW_UNSUPPORTED_ARCH=1`. Real-weight evidence exists (GLM-4.5-Air REAP 82B Q2_K,
+   paired PPL 8.7753 default / 8.5956 with `STINGRAY_Q5K_DECODE_Q8K=1` vs llama.cpp 8.6125; bugstofix 09),
+   but admission is gated on `docs/103` item 19 and a greedy-token receipt. GLM-4.7-Flash is `deepseek2`
+   and already admitted (paired +1.3% PPL, characterized).
 2. **Recurrent-state families, follow-ups** (Granite 4.0-H, Nemotron-H and LFM2 were admitted on
    CPU on 2026-09-27; #14, #15, #17 in [done/102](done/102-status-open-items-plan.md)):
    - Mamba-2 / short-conv support in the batched `PrefillCore` (prefill is token by token: Granite
