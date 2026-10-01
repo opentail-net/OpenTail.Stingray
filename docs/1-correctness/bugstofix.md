@@ -11,7 +11,6 @@ State key: 🔴 open defect · 🟡 open investigation · 🔵 blocked on an ass
 | --- | --- | --- | --- | --- |
 | 09 | GLM-4.5 Q5_K activations | 🟡 | 19b: broader Q5_K inventory with the gate on, plus a gate-on/off speed measurement (default stays off) | Paired NLL vs llama.cpp: PPL `[1024,+)` 8.7753 → 8.6200 (llama.cpp 8.6125) with `STINGRAY_Q5K_DECODE_Q8K=1`; neutral on SmolLM2 Q5_K_M. `docs/103` item 19 |
 | 08 | Fish Speech S2 Pro oracle | 🔵 | Repair codec oracle (needs the original PyTorch checkpoint) and decide what the Q4 Fast-AR test should assert | Q8 Fast-AR cosine 0.997, Q4 0.44 with near-identical dequantized tensors: a test-contract question, not an engine defect |
-| 14 | Qwen-VL image input on CUDA / Vulkan hybrid | 🔵 | Needs a CUDA GPU (none on this machine) | CPU and full Vulkan done; CLI fails closed on unsupported backends |
 | 15 | LLaVA-NeXT AnyRes | 🔵 | Needs the real checkpoint and a reference | Plan written, correctly deferred |
 | 19 | RWKV6 CPU | ⚪ | Only against a concrete model target | `17-ggml-op-coverage-verification-plan.md` |
 | 20 | RWKV7 CPU | ⚪ | Same | same |
@@ -20,6 +19,7 @@ State key: 🔴 open defect · 🟡 open investigation · 🔵 blocked on an ass
 | 07 | FunASR Paraformer / Nano | 🟢 | — | Real Mandarin clip matches ONNX control; three stacked causes fixed 2026-10-01 |
 | 06 | Jais v1 | 🟢 | — | ALiBi + gated-FFN bias; PPL 36.94 vs llama.cpp 37.60 ± 5.74 |
 | 11 | LFM2 PPL "gap" | 🟢 | — | Labels were swapped; no gap |
+| 14 | Qwen-VL image input on CUDA / Vulkan hybrid | 🟢 closed, not a bug | None; reopen if CUDA hardware becomes available | CPU and full Vulkan done; CLI fails closed on unsupported backends. CUDA/hybrid are unimplemented and untested (no GPU to verify), not broken |
 | 10 / 13 | GLM-4.7-Flash and Granite-H small PPL | 🟢 characterized | None; reopen only if the router-level investigation is wanted | Paired dNLL +0.0127 (2.2 SE) and +0.0171 (1.8 SE); small systematic offset on Q2_K-heavy MoE models, kernels/KV precision ruled out; not an engine defect |
 | 03 | Sweep memory report narratives | 🟢 | — | Informational; PersonaPlex explanations in that report should not be trusted |
 | 04 / 05 | Granite Vision EOS; Voxtral GGUF | 🟢 | — | Closed 2026-10-01 / 2026-09-30 |
@@ -179,7 +179,7 @@ are three views of it.
     MoE models, compare identical per-token NLL/logit outputs and corpus PPL, then decide whether any model/weight-dtype
     cases justify opting in. `STINGRAY_CPU_PREFILL_Q8=1` opts into general CPU Q8 prefill; MoE additionally requires
     `STINGRAY_MOE_PREFILL_Q8=1`. Exact numerical parity remains the default.
-- [ ] **14. Qwen3-VL / Qwen2.5-VL / PaddleOCR image input: CUDA and Vulkan hybrid still lack it** (logged 2026-09-27, docs/103 item 14).
+- [x] **14. Qwen3-VL / Qwen2.5-VL / PaddleOCR image input on CUDA and Vulkan hybrid — CLOSED 2026-10-01 as not-a-bug / not verifiable here: needs a CUDA GPU the project does not have; CPU and full Vulkan work and the CLI fails closed on backends that lack M-RoPE/deepstack. The CUDA and hybrid paths are unimplemented and untested, not broken** (logged 2026-09-27, docs/103 item 14).
   - **Plan:** [14-Qwen VL GPU image-input parity](14-qwenvl-gpu-image-input-parity-plan.md) — verifies full Vulkan per model, adds CUDA M-RoPE/deepstack and Vulkan layer-split support, and gates CLI routing on forward-pass capability.
   - 2026-09-28: full Vulkan offload (`GpuForwardPass`) now applies per-pair M-RoPE positions and deepstack, which also covers
     the IMROPE pairs 61-62 for text (M-RoPE models take the per-token trunk). Verified by `Qwen3VlVulkanMRopeParityTests`
