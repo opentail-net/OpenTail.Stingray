@@ -110,7 +110,9 @@ implementation gap. See the [verification receipt](../done/16-iq-formats-coverag
     not the cause.
   - **Next step:** same layer bisection as GLM-4.5, but only trust differences well above the
     4-decimal print resolution of `llama-eval-callback`.
-- [ ] **11. LFM2 (`lfm2`) perplexity 0.24% worse than llama.cpp** (logged 2026-09-27; `docs/103-quickest-first-plan.md` item 11a; timeboxed out).
+- [x] **11. LFM2 (`lfm2`) perplexity "0.24% worse than llama.cpp" — NOT A GAP, labels were swapped (re-measured 2026-10-01)**
+  - **Re-measurement:** `llama-perplexity -m LFM2-1.2B-Q8_0.gguf -f scripts/kvarn-gate/wiki.test.raw -c 2048 --chunks 1` prints `Final estimate: PPL = 10.9543 +/- 0.95715` with both `-ctk/-ctv f16` and `f32` (identical, so KV precision is not a factor); `stingray perplexity` on the same file/context scores `[1024,+)` PPL **10.9277**. So 10.9277 is Stingray's number and 10.9543 is llama.cpp's: Stingray is 0.24% *lower*, inside the +/-0.96 standard error. The earlier logged direction (ours 10.9543 vs llama.cpp 10.9277) was transposed. The layer-bisection notes below are kept as history, not an open defect.
+  - **Original (mislabeled) report:**  (logged 2026-09-27; `docs/103-quickest-first-plan.md` item 11a; timeboxed out).
   - **Checkpoint:** `LFM2-1.2B-Q8_0.gguf`. PPL 10.9543 vs `llama-perplexity` 10.9277. Admitted anyway
     (greedy and teacher-forced parity tests pass).
   - **Layer bisection:** 338-token wikitext prompt (with BOS), last token, `llama-eval-callback` vs

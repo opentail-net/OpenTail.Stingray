@@ -117,7 +117,7 @@ sources, but work proceeds in the order below.
 Timebox each at half a day, write down what was learned, and move on if blocked.
 
 - [ ] **11. Unknown-cause set**
-  - [ ] **11.a** LFM2 0.24% PPL gap (10.9277 vs 10.9543). TIMEBOXED 2026-09-27, logged in `bugstofix.md`.
+  - [x] **11.a** LFM2 0.24% PPL gap (10.9277 vs 10.9543). CLOSED 2026-10-01: not a gap, the labels were swapped. llama.cpp = 10.9543 (F16 and F32 KV identical), Stingray = 10.9277 (0.24% lower, inside +/-0.96 SE). See `bugstofix.md` item 11.
   - [x] **11.b** Youtu-VL: one 1024-token window +5% PPL vs llama.cpp. DONE 2026-09-27 (`9568823`, unmapped `youtu` pre-tokenizer).
   - [x] **11.c** NaN in `ForwardPass`'s f16 `qwen3` path (last layer, one position). DONE 2026-09-27: no longer reproduces; pinned by `Qwen3F16FiniteLogitsTests`.
   - [x] **11.d** `HybridGdnChunkedPrefill_MatchesSequentialPrefill` failure with real weights. DONE 2026-09-28: not an engine bug; the test's per-logit bound assumed only the recurrence reordered sums (see Log).
