@@ -108,6 +108,7 @@ implementation gap. See the [verification receipt](../done/16-iq-formats-coverag
     [archived here](../done/09-glm45-q5k-activation-implementation.md)). The generation is coherent
     and the top-k order matches; sequential is worse than batched, so the batched prefill path is
     not the cause.
+  - **Statistical context (2026-10-01):** re-running `llama-perplexity -c 2048 --chunks 1` prints `PPL = 8.0997 +/- 0.67346` (the K: copy of the same Q2_K). Our 8.1757 is 0.076 above that, i.e. 0.11 standard errors: **not distinguishable from llama.cpp** with an unpaired single-window PPL. A real >1% claim needs paired per-token NLL (ours via `--dump-nll`, llama.cpp side via a logits/`llama-server` dump), so treat this row as an unproven gap rather than a defect.
   - **Next step:** same layer bisection as GLM-4.5, but only trust differences well above the
     4-decimal print resolution of `llama-eval-callback`.
 - [x] **11. LFM2 (`lfm2`) perplexity "0.24% worse than llama.cpp" — NOT A GAP, labels were swapped (re-measured 2026-10-01)**
@@ -159,6 +160,7 @@ implementation gap. See the [verification receipt](../done/16-iq-formats-coverag
     verification completed 2026-10-01: unset Q8 overrides produced NLLs identical to per-token at all
     2,047 targets (max delta 0), `[1024,+)` PPL 26.5483. Still compare against llama.cpp and add the
     same-model Q4_K_M receipt when available.
+  - **Statistical context (2026-10-01):** `llama-perplexity -c 2048 --chunks 1` on this same Q2_K prints `PPL = 26.1080 +/- 2.63444`; our exact-parity 26.5483 is 0.44 above, i.e. 0.17 standard errors. A single 1,024-token window cannot resolve a ~2% difference; only paired per-token NLL can (llama.cpp's CPU path also quantizes activations to Q8_K for K-quant dots, which is itself a plausible ~1-2% NLL-level difference vs our exact F32-activation default).
   - **Part 2 — MoE Q8 evaluation:** Measure batched MoE Q8 quality and throughput on Granite 4 H Small and representative
     MoE models, compare identical per-token NLL/logit outputs and corpus PPL, then decide whether any model/weight-dtype
     cases justify opting in. `STINGRAY_CPU_PREFILL_Q8=1` opts into general CPU Q8 prefill; MoE additionally requires
