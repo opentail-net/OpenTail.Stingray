@@ -3056,6 +3056,32 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         return 0;
     }
 
+    /// <summary>
+    /// <c>--verbose-prompt</c>: the log-probabilities of the K most likely first tokens, so two engines' distributions can be
+    /// compared numerically (a sampled token or an answer's wording hides differences that a top-K list shows).
+    /// </summary>
+    private static void PrintTopLogProbs(ReadOnlySpan<float> logits, GgufTokenizer tok, int k)
+    {
+        double max = double.NegativeInfinity;
+        for (int i = 0; i < logits.Length; i++) if (logits[i] > max) max = logits[i];
+        double sum = 0;
+        for (int i = 0; i < logits.Length; i++) sum += Math.Exp(logits[i] - max);
+        double logZ = max + Math.Log(sum);
+
+        var top = new List<(int Id, float Logit)>(k + 1);
+        for (int i = 0; i < logits.Length; i++)
+        {
+            float v = logits[i];
+            if (top.Count == k && v <= top[^1].Logit) continue;
+            int at = top.Count;
+            while (at > 0 && v > top[at - 1].Logit) at--;
+            top.Insert(at, (i, v));
+            if (top.Count > k) top.RemoveAt(k);
+        }
+        foreach (var (id, logit) in top)
+            Console.Error.WriteLine($"[DBG-TOPK] id={id} '{tok.Decode([id]).Replace("\n", "\n")}' logprob={logit - logZ:F4}");
+    }
+
     /// <summary>Count non-overlapping occurrences of <paramref name="needle"/> in <paramref name="haystack"/>.</summary>
     private static int CountOccurrences(string haystack, string needle)
     {
@@ -3355,6 +3381,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
                     ? Sampler.Greedy(sampleLogits)
                     : Sampler.Sample(sampleLogits, spWithHistory, rng);
             }
+            if (verbosePromptLogging && i == 0) PrintTopLogProbs(logits, tok, 10);
             if (verbosePromptLogging || graniteDiagnostic && i < 5)
             {
                 Console.Error.WriteLine($"[{(graniteDiagnostic ? "GRANITE4-DIAG" : "DBG")}] tok={i} next={next}('{tok.Decode([next])}') stop={sp.StopTokenIds.Contains(next)} top5:{FormatTopLogits(logits, 5)}");

@@ -40,6 +40,20 @@ public static class LlavaImagePreprocessor
         return views;
     }
 
+    /// <summary>
+    /// Reorders <see cref="PreprocessViews"/> output (overview first, then row-major slices) into the order mtmd feeds an MLP-projector
+    /// image: slices first, overview LAST (<c>ov_img_first = false</c> in tools/mtmd/mtmd.cpp; Granite-4 vision sets it true and does
+    /// not use this). A single view (no slicing) is returned unchanged.
+    /// </summary>
+    public static List<float[]> OverviewLast(List<float[]> viewsOverviewFirst)
+    {
+        if (viewsOverviewFirst.Count <= 1) return viewsOverviewFirst;
+        var ordered = new List<float[]>(viewsOverviewFirst.Count);
+        for (int i = 1; i < viewsOverviewFirst.Count; i++) ordered.Add(viewsOverviewFirst[i]);
+        ordered.Add(viewsOverviewFirst[0]);
+        return ordered;
+    }
+
     /// <summary>mtmd llava_uhd select_best_resolution: most effective pixels, then least waste.</summary>
     internal static (int W, int H) SelectBestResolution(int w, int h, IReadOnlyList<(int W, int H)> candidates)
     {

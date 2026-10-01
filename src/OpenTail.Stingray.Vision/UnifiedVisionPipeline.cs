@@ -545,7 +545,10 @@ public static class UnifiedVisionPipeline
                 for (int i = 0; i + 1 < pp.Length; i += 2) pins.Add(((int)pp[i], (int)pp[i + 1]));
             int side = _model.ImageSize, grid = side / _model.PatchSize;
 
-            var views = LlavaImagePreprocessor.PreprocessViews(rgb, width, height, side, pins, mean, std);
+            // mtmd (MLP projector, no slice template, ov_img_first = false) feeds the slices row-major and the overview image LAST.
+            // Verified 2026-10-01 against llama-server on a real LLaVA-1.6 checkpoint (docs/1-correctness/15): overview-first gave a mean
+            // first-token log-prob gap of 0.22 vs llama.cpp, overview-last 0.07.
+            var views = LlavaImagePreprocessor.OverviewLast(LlavaImagePreprocessor.PreprocessViews(rgb, width, height, side, pins, mean, std));
             var parts = new List<float[]>(views.Count);
             tokenCount = 0;
             foreach (var chw in views)
