@@ -228,7 +228,7 @@ internal static class RepackedGemm
                 for (int m = mStart; m < mEnd; m++)
                 {
                     byte* actPtr = activationBase + m * bytesPerActRow;
-                    float* outPtr = output + m * lda + g * 8;
+                    float* outPtr = output + (long)m * lda + g * 8;
                     GemvQ4K8x8Q8K(outPtr, groupPtr, actPtr, blocksPerRow);
                 }
             }

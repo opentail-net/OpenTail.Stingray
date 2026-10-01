@@ -220,7 +220,7 @@ public static unsafe class SimdKernels
             }
 
             for (int n = 0; n < batchSize; n++)
-                MatVec(output + n * rows, weights, input + n * cols, rows, cols, dtype, !floatActivations);
+                MatVec(output + (long)n * rows, weights, input + (long)n * cols, rows, cols, dtype, !floatActivations);
             return;
         }
 
@@ -7154,7 +7154,7 @@ public static unsafe class SimdKernels
         long bytesPerRow = Q8KScratchBytes(cols);
         Parallel.For(0, batchSize, n =>
         {
-            QuantizeRowToQ8K(input + n * cols, cols, scratchBase + n * bytesPerRow);
+            QuantizeRowToQ8K(input + (long)n * cols, cols, scratchBase + (long)n * bytesPerRow);
         });
     }
 

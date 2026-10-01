@@ -141,7 +141,7 @@ public static unsafe class Q6KPrefillGemm
 
             for (int r = r0; r < r1; r++)
             {
-                byte* row = weights + r * bytesPerRow;
+                byte* row = weights + (long)r * bytesPerRow;
                 for (int t = 0; t < nt; t++) acc[t] = Vector256<float>.Zero;
 
                 for (int b = 0; b < nb; b++)
