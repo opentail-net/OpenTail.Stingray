@@ -60,11 +60,14 @@ updated with dated evidence in the same pass.
 12. **CosyVoice 2 garbled endings — BLOCKED** on an independent reference: one recorded upstream
     `inference_zero_shot` run (input token ids, generated speech tokens, ideally per-step top-k),
     checked in as data. What is already ruled out: #10 in [done/102](done/102-status-open-items-plan.md).
-13. **HunyuanVideo numeric verification — BLOCKED**: the vendored sd.cpp supports HunyuanVideo
-    1.5 only; patched to load v1 it produces noise (1-step velocity cosine 0.187), so it is not an
-    independent reference. Needs one v1 reference run (ComfyUI or diffusers) recorded as data, or
-    an upstream C++ port with v1 support. The row stays ⚪ with visual-only evidence. #13 in
-    [done/102](done/102-status-open-items-plan.md) lists the local sd.cpp patch.
+13. **HunyuanVideo numeric verification — OPEN, not blocked**: the vendored sd.cpp supports
+    HunyuanVideo 1.5 only; patched to load v1 it produces noise (1-step velocity cosine 0.187), so it is
+    not an independent reference. An independent v1 reference exists: diffusers' first-party
+    `HunyuanVideoPipeline` (also city96's v1 GGUF via ComfyUI-GGUF). Next step: one diffusers CPU run
+    (256², 1 frame, fixed noise; bf16 transformer ~26 GB) recorded as checked-in data (noise,
+    conditioning, 1-step velocity, 8-step latent), as done for #10; keep the script in the scratchpad
+    (no new Python reference scripts in the repo). Then compare `HunyuanVideoModel` against it. The row
+    stays ⚪ until then. #13 in [done/102](done/102-status-open-items-plan.md) lists the local sd.cpp patch.
 14. **Dashboard of what is still open**: [1-correctness/bugstofix.md](1-correctness/bugstofix.md) is the
     source of truth (open: 15, 19, 20, 21).
 15. **Small, known leftovers**: [1-correctness/bugstofix.md](1-correctness/bugstofix.md)
