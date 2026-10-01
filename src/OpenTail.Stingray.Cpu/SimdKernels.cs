@@ -1024,14 +1024,14 @@ public static unsafe class SimdKernels
                     int numThreads = Math.Min(s_parallelOpts.MaxDegreeOfParallelism, (rows + 63) / 64);
                     if (rows >= MinRowsForParallel && numThreads > 1)
                     {
-                        int chunkSize = (rows + numThreads - 1) / numThreads;
+                        // Dynamically balanced 2-row chunks; see MatVecQ4K. Gate+up on Mistral-7B
+                        // (32 layers, real weights): 57.5-62.9 ms static vs 53.3-53.7 ms here.
                         var w1 = weights1; var w2 = weights2; var s = scratch;
                         var o1 = output1; var o2 = output2; int c = cols;
-                        Parallel.For(0, numThreads, s_parallelOpts, t =>
+                        Parallel.For(0, (rows + 1) / 2, s_parallelOpts, p =>
                         {
-                            int start = t * chunkSize;
-                            int end = Math.Min(rows, start + chunkSize);
-                            for (int r = start; r < end; r++)
+                            int end = Math.Min(rows, 2 * p + 2);
+                            for (int r = 2 * p; r < end; r++)
                             {
                                 DotQ4K_Q8KS_2Row(w1 + (long)r * bpr, w2 + (long)r * bpr, s, c, out o1[r], out o2[r]);
                             }
@@ -2019,34 +2019,26 @@ public static unsafe class SimdKernels
             int numThreads = Math.Min(s_parallelOpts.MaxDegreeOfParallelism, (rows + 63) / 64);
             if (rows >= MinRowsForParallel && numThreads > 1)
             {
-                int chunkSize = (rows + numThreads - 1) / numThreads;
+                // One row PAIR per iteration, balanced dynamically by Parallel.For, not one static
+                // chunk per thread: with static chunks the slowest thread (SMT sibling contention,
+                // OS noise) sets the pace of every matvec. Measured 2026-10-01 on Mistral-7B Q4_K_M
+                // decode (Ryzen 5700G, 16 thr): 7.5 -> 8.5 t/s; SmolLM2-1.7B ~24 -> ~29, Qwen3-8B
+                // ~6.8 -> ~7.6. 2-row chunks beat 4 (8.3) and 8 (8.0). Pairs start on even rows, so
+                // the 2Row/1Row split and therefore the results are unchanged.
                 var w = weights; var s = scratch; var outp = output; var b = bias; int c = cols;
-                Parallel.For(0, numThreads, s_parallelOpts, t =>
+                Parallel.For(0, (rows + 1) / 2, s_parallelOpts, p =>
                 {
-                    int start = t * chunkSize;
-                    int end = Math.Min(rows, start + chunkSize);
-                    int r = start;
-                    if (b != null)
+                    int r = 2 * p;
+                    if (r + 1 < rows)
                     {
-                        for (; r + 2 <= end; r += 2)
-                        {
-                            DotQ4K_Q8KS_2Row(w + (long)r * bytesPerRow, w + (long)(r + 1) * bytesPerRow,
-                                             s, c, out float o0, out float o1);
-                            outp[r] = o0 + b[r]; outp[r + 1] = o1 + b[r + 1];
-                        }
-                        for (; r < end; r++)
-                            outp[r] = DotQ4K_Q8KS(w + (long)r * bytesPerRow, s, c) + b[r];
+                        DotQ4K_Q8KS_2Row(w + (long)r * bytesPerRow, w + (long)(r + 1) * bytesPerRow,
+                                         s, c, out float o0, out float o1);
+                        if (b != null) { o0 += b[r]; o1 += b[r + 1]; }
+                        outp[r] = o0; outp[r + 1] = o1;
                     }
                     else
                     {
-                        for (; r + 2 <= end; r += 2)
-                        {
-                            DotQ4K_Q8KS_2Row(w + (long)r * bytesPerRow, w + (long)(r + 1) * bytesPerRow,
-                                             s, c, out float o0, out float o1);
-                            outp[r] = o0; outp[r + 1] = o1;
-                        }
-                        for (; r < end; r++)
-                            outp[r] = DotQ4K_Q8KS(w + (long)r * bytesPerRow, s, c);
+                        outp[r] = DotQ4K_Q8KS(w + (long)r * bytesPerRow, s, c) + (b != null ? b[r] : 0f);
                     }
                 });
                 return;
