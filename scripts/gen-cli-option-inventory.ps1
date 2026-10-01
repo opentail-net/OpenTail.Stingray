@@ -92,13 +92,30 @@ $normalise = { param($t) ($t -replace "`r`n", "`n").TrimEnd() }
 $expected = & $normalise $sb.ToString()
 $actual   = & $normalise $doc
 
+# The doc is a hand-written preamble followed by the generated per-command tables, which start at the first
+# command heading. The preamble also declares the option and command-file counts (test-guarded), so those are
+# refreshed here too: nobody has to merge a separate generated file by hand.
+$groups = @($rows | Group-Object Command | Sort-Object Name)
+$firstHeading = "## $($groups[0].Name)"
+$tableStart = $doc.IndexOf($firstHeading, [StringComparison]::Ordinal)
+if ($tableStart -lt 0) { throw "could not find '$firstHeading' in $docPath; the doc layout changed" }
+$preamble = $doc.Substring(0, $tableStart)
+$countSentence = "**$($rows.Count) option declarations** across $($groups.Count) command files"
+$countPattern = '\*\*\d+ option declarations\*\* across \d+ command files'
+
 if ($Check) {
-    if (-not $actual.Contains($expected)) {
-        Write-Host 'cli-option-inventory.md tables are stale - run scripts/gen-cli-option-inventory.ps1'
+    $tablesCurrent = $actual.Contains($expected)
+    $countCurrent = $preamble.Contains($countSentence)
+    if (-not $tablesCurrent -or -not $countCurrent) {
+        Write-Host "cli-option-inventory.md is stale (tables current: $tablesCurrent, count sentence current: $countCurrent) - run scripts/gen-cli-option-inventory.ps1"
         exit 1
     }
-    Write-Host 'tables are current.'
+    Write-Host 'tables and count are current.'
     exit 0
 }
-$sb.ToString() | Set-Content -LiteralPath (Join-Path $root 'docs\reference\cli-option-inventory.generated.md') -NoNewline
-Write-Host "wrote docs/reference/cli-option-inventory.generated.md"
+
+$eol = if ($doc.Contains("`r`n")) { "`r`n" } else { "`n" }
+$newPreamble = [regex]::Replace($preamble, $countPattern, $countSentence)
+$newTables = ($sb.ToString() -replace "`r?`n", $eol)
+Set-Content -LiteralPath $docPath -Value ($newPreamble + $newTables) -NoNewline
+Write-Host "updated docs/reference/cli-option-inventory.md in place ($($rows.Count) options, $($groups.Count) commands)"

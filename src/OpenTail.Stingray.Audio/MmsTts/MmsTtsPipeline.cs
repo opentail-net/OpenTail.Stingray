@@ -183,7 +183,7 @@ public sealed class MmsTtsPipeline : ITextToSpeechPipeline
         if (string.IsNullOrWhiteSpace(request.Text))
             return new AudioGenerationResult([], DefaultSampleRate);
 
-        float[] samples = Generate(request.Text, speakingRate: request.Speed > 0 ? _config.SpeakingRate * request.Speed : null);
+        float[] samples = Generate(request.Text, seed: request.Seed, speakingRate: request.Speed > 0 ? _config.SpeakingRate * request.Speed : null);
         var result = new AudioGenerationResult(samples, DefaultSampleRate);
         if (!string.IsNullOrEmpty(request.OutputPath))
             result.SaveWav(request.OutputPath);

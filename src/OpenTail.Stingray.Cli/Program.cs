@@ -58,7 +58,7 @@ app.Configure(config =>
     config.AddCommand<ImageCommand>("image")
         .WithDescription("Generate an image from a text prompt using a native FLUX or Z-Image-Turbo diffusion pipeline (VAE + CLIP-L + T5-XXL + DiT GGUF). See 'opentail-llm-cli image --help' for required model paths.");
     config.AddCommand<TtsCommand>("tts")
-        .WithDescription("Synthesize high-quality speech audio from text using native Kokoro-82M TTS.");
+        .WithDescription("Synthesize speech audio from text with a native TTS engine (Kokoro by default; see --engine for the full list).");
     config.AddCommand<SttCommand>("stt")
         .WithDescription("Transcribe or translate speech audio into text and timestamps using native OpenAI Whisper.");
     config.AddCommand<EmbedCommand>("embed")

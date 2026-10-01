@@ -67,7 +67,7 @@ public sealed class QwenTtsPipeline : ITextToSpeechPipeline
 
     public AudioGenerationResult Generate(AudioGenerationRequest request)
     {
-        var pcm = Generate(request.Text);
+        var pcm = Generate(request.Text, seed: request.Seed ?? 42);
         var result = new AudioGenerationResult(pcm, DefaultSampleRate);
         if (!string.IsNullOrEmpty(request.OutputPath))
         {

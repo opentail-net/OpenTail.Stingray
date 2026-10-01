@@ -29,6 +29,10 @@ public record AudioGenerationRequest
     public string? ReferenceAudioPath { get; init; }
     public string? ReferenceText { get; init; }
     public Action<int, int>? Progress { get; init; }
+
+    /// <summary>RNG seed for engines that sample (Fish Speech, Parler, Qwen-TTS, XTTS, MMS, CosyVoice). Null keeps each engine's own default
+    /// (some are fixed-seed, others random). Engines without a sampling step ignore it.</summary>
+    public int? Seed { get; init; }
 }
 
 /// <summary>

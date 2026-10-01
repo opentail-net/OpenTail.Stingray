@@ -181,7 +181,7 @@ public sealed class XttsPipeline : ITextToSpeechPipeline
         if (string.IsNullOrEmpty(request.ReferenceAudioPath) || !File.Exists(request.ReferenceAudioPath))
             throw new InvalidOperationException("XTTS-v2 requires a reference audio clip via AudioGenerationRequest.ReferenceAudioPath (voice cloning only, no built-in speaker bank).");
 
-        float[] samples = Generate(request.Text, request.ReferenceAudioPath);
+        float[] samples = Generate(request.Text, request.ReferenceAudioPath, seed: request.Seed);
         var result = new AudioGenerationResult(samples, DefaultSampleRate);
         if (!string.IsNullOrEmpty(request.OutputPath))
             result.SaveWav(request.OutputPath);

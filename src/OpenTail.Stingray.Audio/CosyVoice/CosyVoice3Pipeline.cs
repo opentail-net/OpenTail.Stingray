@@ -28,7 +28,7 @@ public sealed class CosyVoice3Pipeline : ITextToSpeechPipeline
 
     public AudioGenerationResult Generate(AudioGenerationRequest request)
     {
-        var pcm = Generate(request.Text, referenceAudioPath: request.ReferenceAudioPath, referenceText: request.ReferenceText);
+        var pcm = Generate(request.Text, seed: request.Seed, referenceAudioPath: request.ReferenceAudioPath, referenceText: request.ReferenceText);
         var result = new AudioGenerationResult(pcm, DefaultSampleRate);
         if (!string.IsNullOrEmpty(request.OutputPath))
         {

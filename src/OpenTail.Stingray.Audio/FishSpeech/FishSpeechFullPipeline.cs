@@ -47,7 +47,7 @@ public sealed class FishSpeechFullPipeline : ITextToSpeechPipeline
 
     public AudioGenerationResult Generate(AudioGenerationRequest request)
     {
-        var pcm = Synthesize(request.Text);
+        var pcm = Synthesize(request.Text, seed: request.Seed);
         var result = new AudioGenerationResult(pcm, DefaultSampleRate);
         if (!string.IsNullOrEmpty(request.OutputPath))
         {

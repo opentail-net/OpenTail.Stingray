@@ -99,7 +99,7 @@ public sealed class ParlerFullPipeline : ITextToSpeechPipeline
 
     public AudioGenerationResult Generate(AudioGenerationRequest request)
     {
-        var pcm = Synthesize(request.Text);
+        var pcm = Synthesize(request.Text, seed: request.Seed ?? -1);
         var result = new AudioGenerationResult(pcm, DefaultSampleRate);
         if (!string.IsNullOrEmpty(request.OutputPath))
         {

@@ -2,7 +2,7 @@
 
 **Generated:** by `scripts/gen-cli-option-inventory.ps1`, which scans `[CommandOption]` /
 `[Description]` pairs under `src/OpenTail.Stingray.Cli`. Last regenerated **2026-09-28**, recording
-**220 option declarations** across 22 command files — the same count the
+**221 option declarations** across 22 command files — the same count the
 `StaticPlanConfigurationTests` guard enforces against source. (Reconciled 12 rows of drift, caught
 by CI failing `CliOptionInventory_DeclaredCountMatchesSource` on `main`: three new commands —
 `AdmitArchCommand`, `GenVisionScaffoldCommand` and `PullCommand`, see `docs/reference/061-coverage-tooling.md` —
@@ -389,13 +389,14 @@ hoc at each read site rather than in one place.
 | Option | Class | Description |
 |---|---|---|
 | `--backend <BACKEND>` | stable | Compute backend: auto (default), vulkan, or cpu. |
-| `--engine <ENGINE>` | stable | TTS architecture engine: kokoro (default), piper, f5tts, chatterbox, or melo. |
+| `--engine <ENGINE>` | stable | TTS engine: kokoro (default), piper, f5tts, chatterbox, melo, cosyvoice, parler, qwentts, fishspeech, orpheus, mms, xtts. |
 | `--model <PATH>` | stable | Custom model checkpoint path (.gguf, .onnx, or .safetensors). |
 | `--nfe <NFE>` | stable | Number of Function Evaluations / ODE solver steps for Flow-Matching DiT (default: 32). |
 | `--output <PATH>` | stable | Output destination path (.wav). Default: speech.wav. |
 | `--prompt <TEXT>` | stable | Input text to synthesize into speech audio. |
 | `--ref-audio <PATH>` | stable | Reference audio path (.wav) for Zero-Shot Voice Cloning (F5-TTS). |
 | `--ref-text <TEXT>` | stable | Reference audio transcript text for Zero-Shot Voice Cloning (F5-TTS). |
+| `--seed <N>` | stable | RNG seed for engines that sample (fishspeech, parler, qwentts, xtts, mms, cosyvoice) so two runs are comparable. Default: each engine's own default (fishspeech, xtts and mms are random). Other engines ignore it. |
 | `--speed <SPEED>` | stable | Speech generation speed multiplier. Default: 1.0. |
 | `--vocab <PATH>` | stable | Custom vocabulary / token file path (F5-TTS vocab.txt). |
 | `--voice <VOICE>` | stable | Voice persona style preset (e.g. af_heart, af_bella, resemble_default, EN-US, EN-BR, ZH). Default: af_heart. |

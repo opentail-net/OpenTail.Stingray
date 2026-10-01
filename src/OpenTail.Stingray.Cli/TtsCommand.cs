@@ -23,7 +23,7 @@ public sealed class TtsCommand : Command<TtsCommand.Settings>
         public string? Text { get; init; }
 
         [CommandOption("-e|--engine <ENGINE>")]
-        [Description("TTS architecture engine: kokoro (default), piper, f5tts, chatterbox, or melo.")]
+        [Description("TTS engine: kokoro (default), piper, f5tts, chatterbox, melo, cosyvoice, parler, qwentts, fishspeech, orpheus, mms, xtts.")]
         public string Engine { get; init; } = "kokoro";
 
         [CommandOption("-v|--voice <VOICE>")]
@@ -62,21 +62,54 @@ public sealed class TtsCommand : Command<TtsCommand.Settings>
         [Description("Number of Function Evaluations / ODE solver steps for Flow-Matching DiT (default: 32).")]
         public int Nfe { get; init; } = 32;
 
+        [CommandOption("--seed <N>")]
+        [Description("RNG seed for engines that sample (fishspeech, parler, qwentts, xtts, mms, cosyvoice) so two runs are comparable. Default: each engine's own default (fishspeech, xtts and mms are random). Other engines ignore it.")]
+        public int? Seed { get; init; }
+
         [CommandOption("-g|--gpu|--backend <BACKEND>")]
         [Description("Compute backend: auto (default), vulkan, or cpu.")]
         public string Backend { get; init; } = "auto";
     }
+
+    // Default checkpoint locations, searched when --model is not given. Preference order matters: for Fish Speech the
+    // Q8_0 file comes first because its Fast-AR stage is essentially the original model while Q4_K_M is a materially
+    // different distribution (docs/1-correctness/08, 2026-10-01).
+    private static readonly ModelSearch KokoroSearch = new("Kokoro", "a Kokoro .gguf checkpoint", "models/kokoro-82m-q8_0.gguf",
+        ["models/kokoro-82m-q8_0.gguf", "models/kokoro-82m.gguf"]);
+    private static readonly ModelSearch ChatterboxSearch = new("Chatterbox", "a Chatterbox T3 .gguf checkpoint", "models/chatterbox-turbo-t3-q4_k.gguf",
+        ["models/chatterbox-turbo-t3-q4_k.gguf", "models/chatterbox-turbo-t3.gguf", "models/chatterbox_t3.gguf"]);
+    private static readonly ModelSearch CosyVoiceSearch = new("CosyVoice3", "a CosyVoice .gguf checkpoint", "models/cosyvoice3/CosyVoice3-2512_F16.gguf",
+        ["models/cosyvoice3/CosyVoice3-2512_F16.gguf", "models/cosyvoice3/CosyVoice3-2512.gguf"]);
+    private static readonly ModelSearch ParlerSearch = new("Parler-TTS", "a Parler .safetensors or .gguf checkpoint", "models/parler-tts-mini-v1.safetensors",
+        ["models/parler-tts-mini-v1.safetensors", "models/parler-tts-mini-v1-Q8_0.gguf", "models/Parler_TTS_mini.gguf"]);
+    private static readonly ModelSearch QwenTtsSearch = new("Qwen-Talker", "a QwenTalker .gguf checkpoint", "models/qwen-talker-0.6b-base-Q8_0.gguf",
+        ["models/qwen-talker-0.6b-base-Q8_0.gguf", "models/qwen-talker-0.6b.gguf"]);
+    private static readonly ModelSearch FishSpeechSearch = new("Fish-Speech (S2-Pro)", "an s2-pro .gguf checkpoint", "models/s2-pro-q8_0.gguf",
+        ["models/s2-pro-q8_0.gguf", "models/s2-pro-q4_k_m.gguf"]);
+    private static readonly ModelSearch OrpheusSearch = new("Orpheus", "an Orpheus .gguf checkpoint", "models/orpheus-3b-0.1-ft.Q4_K_M.gguf",
+        ["models/orpheus-3b-0.1-ft.Q4_K_M.gguf", "models/orpheus-3b.gguf"]);
+    private static readonly ModelSearch MmsTtsSearch = new("MMS-TTS", "an MMS-TTS checkpoint directory", "models/mms-tts-eng",
+        ["models/mms-tts-eng"], DirMarker: "model.safetensors",
+        Extra: "The directory must contain config.json/vocab.json/model.safetensors (from huggingface.co/facebook/mms-tts-<lang>).");
+    private static readonly ModelSearch XttsSearch = new("XTTS-v2", "an XTTS-v2 checkpoint directory", "models/xtts-v2",
+        ["models/xtts-v2"], DirMarker: "model.safetensors",
+        Extra: "The directory must contain vocab.json/model.safetensors/mel_stats.safetensors (converted from huggingface.co/coqui/XTTS-v2's model.pth via scratch-llamacpp-ref/xtts_convert_to_safetensors.py). XTTS-v2 also requires --ref-audio (a real voice-cloning source clip).");
 
     protected override int Execute(Settings s, CancellationToken cancellation)
     {
         if (string.IsNullOrWhiteSpace(s.Text))
         {
             Console.Error.WriteLine("Error: --text (-t) is required for text-to-speech generation.");
-            return 1;
+            return ExitCodes.Usage;
         }
 
-        ITextToSpeechPipeline pipeline;
-        string engine = s.Engine.ToLowerInvariant();
+        string? engine = TtsEngines.Canonical(s.Engine);
+        if (engine is null)
+        {
+            Console.Error.WriteLine($"Error: unknown TTS engine '{s.Engine}'. Supported: {TtsEngines.Names}.");
+            return ExitCodes.Usage;
+        }
+
         bool allowGpu = s.Backend.ToLowerInvariant() is not ("cpu" or "0");
 
         // Explicit opt-in only ("vulkan", not "auto") -- the CFM UNet's real, measured Vulkan
@@ -96,6 +129,7 @@ public sealed class TtsCommand : Command<TtsCommand.Settings>
             }
         }
 
+        ITextToSpeechPipeline pipeline;
         try
         {
             pipeline = engine switch
@@ -110,42 +144,47 @@ public sealed class TtsCommand : Command<TtsCommand.Settings>
                         s.ModelPath.EndsWith(".onnx", StringComparison.OrdinalIgnoreCase) && File.Exists(s.ModelPath + ".json")
                             ? s.ModelPath + ".json" : s.ModelPath)
                     : throw new ArgumentException("--model (-m) is required for the piper engine (the voice's .onnx, with its .onnx.json beside it)."),
-                "f5" or "f5tts" or "f5-tts" => s.ModelPath is not null
+                "f5tts" => s.ModelPath is not null
                     ? F5TtsPipeline.Load(s.ModelPath, backend: gpuBackend)
                     : throw new ArgumentException("--model (-m) is required for the f5tts engine (path to .safetensors model file)."),
-                "chatterbox" or "chatterbox-turbo" =>
-                    ChatterboxPipeline.Load(s.ModelPath ?? ResolveChatterboxModelPath(), backend: gpuBackend),
-                "melo" or "melotts" => s.ModelPath is not null
+                "chatterbox" => ChatterboxPipeline.Load(s.ModelPath ?? ModelPathResolver.Resolve(ChatterboxSearch), backend: gpuBackend),
+                "melo" => s.ModelPath is not null
                     ? MeloPipeline.Load(s.ModelPath)
                     : throw new ArgumentException("--model (-m) is required for the melo engine (path to model file)."),
-                "cosyvoice" or "cosyvoice3" or "cosy" =>
-                    CosyVoice3Pipeline.Load(s.ModelPath ?? ResolveCosyVoiceModelPath(), backend: gpuBackend),
-                "parler" or "parler-tts" or "parlertts" =>
-                    ParlerFullPipeline.Load(s.ModelPath ?? ResolveParlerModelPath(), backend: gpuBackend),
-                "qwen" or "qwentts" or "qwen-tts" or "qwen-talker" =>
-                    QwenTtsPipeline.Load(s.ModelPath ?? ResolveQwenTtsModelPath()),
-                "fish" or "fishspeech" or "fish-speech" or "s2" or "s2-pro" =>
-                    FishSpeechFullPipeline.Load(s.ModelPath ?? ResolveFishSpeechModelPath()),
-                "orpheus" or "orpheus-tts" or "orpheustts" =>
-                    OrpheusPipeline.Load(s.ModelPath ?? ResolveOrpheusModelPath(), allowGpu: allowGpu),
-                "mms" or "mms-tts" or "mmstts" =>
-                    MmsTtsPipeline.Load(s.ModelPath ?? ResolveMmsTtsModelPath()),
-                "xtts" or "xtts-v2" or "xttsv2" =>
-                    XttsPipeline.Load(s.ModelPath ?? ResolveXttsModelPath()),
-                _ => throw new ArgumentException($"Unknown TTS engine: '{s.Engine}'. Supported: kokoro, piper, f5tts, chatterbox, melo, cosyvoice, parler, qwentts, fishspeech, orpheus, mms, xtts.")
+                "cosyvoice" => CosyVoice3Pipeline.Load(s.ModelPath ?? ModelPathResolver.Resolve(CosyVoiceSearch), backend: gpuBackend),
+                "parler" => ParlerFullPipeline.Load(s.ModelPath ?? ModelPathResolver.Resolve(ParlerSearch), backend: gpuBackend),
+                "qwentts" => QwenTtsPipeline.Load(s.ModelPath ?? ModelPathResolver.Resolve(QwenTtsSearch)),
+                "fishspeech" => FishSpeechFullPipeline.Load(s.ModelPath ?? ModelPathResolver.Resolve(FishSpeechSearch)),
+                "orpheus" => OrpheusPipeline.Load(s.ModelPath ?? ModelPathResolver.Resolve(OrpheusSearch), allowGpu: allowGpu),
+                "mms" => MmsTtsPipeline.Load(s.ModelPath ?? ModelPathResolver.Resolve(MmsTtsSearch)),
+                "xtts" => XttsPipeline.Load(s.ModelPath ?? ModelPathResolver.Resolve(XttsSearch)),
+                _ => throw new ArgumentException($"Unknown TTS engine: '{s.Engine}'. Supported: {TtsEngines.Names}.")
             };
+        }
+        catch (ArgumentException ex)
+        {
+            // A missing/invalid model path or option is a usage problem the user can fix by changing the invocation.
+            Console.Error.WriteLine($"Error initializing TTS pipeline '{s.Engine}': {ex.Message}");
+            return ExitCodes.Usage;
         }
         catch (Exception ex)
         {
             Console.Error.WriteLine($"Error initializing TTS pipeline '{s.Engine}': {ex.Message}");
-            return 1;
+            return ExitCodes.Failure;
         }
+
+        if (s.Seed is not null && !TtsEngines.HonorsSeed(engine))
+            Console.Error.WriteLine($"Note: --seed has no effect on the '{engine}' engine.");
 
         using (pipeline)
         {
             Console.WriteLine($"{pipeline.Architecture} Native Text-to-Speech");
             Console.WriteLine($"Voice:    {s.Voice}");
             Console.WriteLine($"Speed:    {s.Speed:F2}x");
+            if (s.Seed is not null)
+            {
+                Console.WriteLine($"Seed:     {s.Seed}");
+            }
             if (!string.IsNullOrEmpty(s.ReferenceAudioPath))
             {
                 Console.WriteLine($"Ref Audio: {s.ReferenceAudioPath} (Zero-Shot Voice Cloning)");
@@ -161,7 +200,8 @@ public sealed class TtsCommand : Command<TtsCommand.Settings>
                 Speed = s.Speed,
                 OutputPath = s.OutputPath,
                 ReferenceAudioPath = s.ReferenceAudioPath,
-                ReferenceText = s.ReferenceText
+                ReferenceText = s.ReferenceText,
+                Seed = s.Seed,
             };
 
             var result = pipeline.Generate(req);
@@ -171,7 +211,7 @@ public sealed class TtsCommand : Command<TtsCommand.Settings>
             double rtf = sw.Elapsed.TotalSeconds / Math.Max(0.001, audioDuration);
 
             Console.WriteLine($"Generated {audioDuration:F2}s audio in {sw.Elapsed.TotalSeconds:F2}s ({rtf:F2}x RTF) -> {s.OutputPath}");
-            return 0;
+            return ExitCodes.Success;
         }
     }
 
@@ -182,22 +222,8 @@ public sealed class TtsCommand : Command<TtsCommand.Settings>
     /// falling back to it from a bare `stingray tts` invocation with no `-m` produced audible
     /// garbage noise with no error -- always require a real model path, explicit or auto-resolved.
     /// </summary>
-    private static string ResolveKokoroModelPath(string? given)
-    {
-        if (given is not null)
-        {
-            if (!File.Exists(given))
-                throw new ArgumentException($"Kokoro model file not found: '{given}'.");
-            return given;
-        }
-
-        foreach (var c in new[] { "models/kokoro-82m-q8_0.gguf", "models/kokoro-82m.gguf" })
-            if (File.Exists(c)) return c;
-
-        throw new ArgumentException(
-            "No Kokoro model found. Pass --model (-m) with a path to a Kokoro .gguf checkpoint " +
-            "(e.g. models/kokoro-82m-q8_0.gguf), or place one at that default path.");
-    }
+    private static string ResolveKokoroModelPath(string? given) =>
+        given is not null ? ModelPathResolver.RequireExisting("Kokoro", given) : ModelPathResolver.Resolve(KokoroSearch);
 
     private static string? ResolveKokoroVoicesDir(string? modelPath)
     {
@@ -224,88 +250,5 @@ public sealed class TtsCommand : Command<TtsCommand.Settings>
             $"Warning: no real voice file for '{voice}' at '{candidate}' -- using a procedural " +
             "placeholder style vector instead of that voice's real trained identity.");
         return null;
-    }
-
-    private static string ResolveCosyVoiceModelPath()
-    {
-        foreach (var c in new[] { "models/cosyvoice3/CosyVoice3-2512_F16.gguf", "models/cosyvoice3/CosyVoice3-2512.gguf" })
-            if (File.Exists(c)) return c;
-
-        throw new ArgumentException(
-            "No CosyVoice3 model found. Pass --model (-m) with a path to a CosyVoice .gguf checkpoint " +
-            "(e.g. models/cosyvoice3/CosyVoice3-2512_F16.gguf), or place one at that default path.");
-    }
-
-    private static string ResolveMmsTtsModelPath()
-    {
-        foreach (var c in new[] { "models/mms-tts-eng" })
-            if (Directory.Exists(c) && File.Exists(Path.Combine(c, "model.safetensors"))) return c;
-
-        throw new ArgumentException(
-            "No MMS-TTS model found. Pass --model (-m) with a path to an MMS-TTS checkpoint directory " +
-            "(containing config.json/vocab.json/model.safetensors, e.g. models/mms-tts-eng, from " +
-            "huggingface.co/facebook/mms-tts-<lang>), or place one at that default path.");
-    }
-
-    private static string ResolveXttsModelPath()
-    {
-        foreach (var c in new[] { "models/xtts-v2" })
-            if (Directory.Exists(c) && File.Exists(Path.Combine(c, "model.safetensors"))) return c;
-
-        throw new ArgumentException(
-            "No XTTS-v2 model found. Pass --model (-m) with a path to an XTTS-v2 checkpoint directory " +
-            "(containing vocab.json/model.safetensors/mel_stats.safetensors, converted from " +
-            "huggingface.co/coqui/XTTS-v2's model.pth via scratch-llamacpp-ref/xtts_convert_to_safetensors.py), " +
-            "or place one at that default path. XTTS-v2 also requires --ref-audio (a real voice-cloning source clip).");
-    }
-
-    private static string ResolveParlerModelPath()
-    {
-        foreach (var c in new[] { "models/parler-tts-mini-v1.safetensors", "models/parler-tts-mini-v1-Q8_0.gguf", "models/Parler_TTS_mini.gguf" })
-            if (File.Exists(c)) return c;
-
-        throw new ArgumentException(
-            "No Parler-TTS model found. Pass --model (-m) with a path to a Parler .safetensors or .gguf checkpoint " +
-            "(e.g. models/parler-tts-mini-v1.safetensors), or place one at that default path.");
-    }
-
-    private static string ResolveQwenTtsModelPath()
-    {
-        foreach (var c in new[] { "models/qwen-talker-0.6b-base-Q8_0.gguf", "models/qwen-talker-0.6b.gguf" })
-            if (File.Exists(c)) return c;
-
-        throw new ArgumentException(
-            "No Qwen-Talker model found. Pass --model (-m) with a path to a QwenTalker .gguf checkpoint " +
-            "(e.g. models/qwen-talker-0.6b-base-Q8_0.gguf), or place one at that default path.");
-    }
-
-    private static string ResolveFishSpeechModelPath()
-    {
-        foreach (var c in new[] { "models/s2-pro-q4_k_m.gguf", "models/s2-pro-q8_0.gguf" })
-            if (File.Exists(c)) return c;
-
-        throw new ArgumentException(
-            "No Fish-Speech (S2-Pro) model found. Pass --model (-m) with a path to an s2-pro .gguf checkpoint " +
-            "(e.g. models/s2-pro-q4_k_m.gguf), or place one at that default path.");
-    }
-
-    private static string ResolveChatterboxModelPath()
-    {
-        foreach (var c in new[] { "models/chatterbox-turbo-t3-q4_k.gguf", "models/chatterbox-turbo-t3.gguf", "models/chatterbox_t3.gguf" })
-            if (File.Exists(c)) return c;
-
-        throw new ArgumentException(
-            "No Chatterbox model found. Pass --model (-m) with a path to a Chatterbox T3 .gguf checkpoint " +
-            "(e.g. models/chatterbox-turbo-t3-q4_k.gguf), or place one at that default path.");
-    }
-
-    private static string ResolveOrpheusModelPath()
-    {
-        foreach (var c in new[] { "models/orpheus-3b-0.1-ft.Q4_K_M.gguf", "models/orpheus-3b.gguf" })
-            if (File.Exists(c)) return c;
-
-        throw new ArgumentException(
-            "No Orpheus model found. Pass --model (-m) with a path to an Orpheus .gguf checkpoint " +
-            "(e.g. models/orpheus-3b-0.1-ft.Q4_K_M.gguf), or place one at that default path.");
     }
 }
