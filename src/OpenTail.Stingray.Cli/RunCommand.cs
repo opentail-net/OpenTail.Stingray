@@ -905,7 +905,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
     /// </summary>
     private sealed record RunEngine(
         GgufModel? Model, ModelHyperparams Hp, GgufTokenizer Tokenizer, int CtxSize, int NGpuLayers, int GpuDeviceIndex,
-        ForwardPass? Fwd, HybridGdnForwardPass? HybridFwd, GptOssForwardPass? GptOssFwd, IForwardPass? MtpFwd,
+        ForwardPass? Fwd, HybridGdnForwardPass? HybridFwd, IForwardPass? StandaloneFwd, IForwardPass? MtpFwd,
         IDisposable? GpuBackend, IDisposable? GpuFwd,
         Func<int, int, ReadOnlySpan<float>> Forward, Func<IReadOnlyList<int>, ReadOnlySpan<float>> Prefill, Action ResetCache);
 
@@ -920,7 +920,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
     /// </summary>
     private static int? TryRunSpeculative(Settings settings, RunEngine e, SamplingParams sp, Random rng)
     {
-        var ctxSize = e.CtxSize; var forward = e.Forward; var fwd = e.Fwd; var gptOssFwd = e.GptOssFwd;
+        var ctxSize = e.CtxSize; var forward = e.Forward; var fwd = e.Fwd; var standaloneFwd = e.StandaloneFwd;
         var gpuBackend = e.GpuBackend; var gpuDeviceIndex = e.GpuDeviceIndex; var gpuFwd = e.GpuFwd;
         var hybridFwd = e.HybridFwd; var model = e.Model; var nGpuLayers = e.NGpuLayers; var tokenizer = e.Tokenizer;
 
@@ -999,7 +999,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
                     gpuBackend?.Dispose();
                     fwd?.Dispose();
                     hybridFwd?.Dispose();
-                    gptOssFwd?.Dispose();
+                    standaloneFwd?.Dispose();
                 }
             }
             else if (!File.Exists(settings.DraftModelPath))
@@ -1074,7 +1074,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
                     gpuBackend?.Dispose();
                     fwd?.Dispose();
                     hybridFwd?.Dispose();
-                    gptOssFwd?.Dispose();
+                    standaloneFwd?.Dispose();
                 }
             }
         }
@@ -1092,7 +1092,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
     /// </summary>
     private static int? TryRunDSpark(Settings settings, RunEngine e, SamplingParams sp)
     {
-        var ctxSize = e.CtxSize; var fwd = e.Fwd; var gptOssFwd = e.GptOssFwd; var gpuBackend = e.GpuBackend; var gpuFwd = e.GpuFwd;
+        var ctxSize = e.CtxSize; var fwd = e.Fwd; var standaloneFwd = e.StandaloneFwd; var gpuBackend = e.GpuBackend; var gpuFwd = e.GpuFwd;
         var hp = e.Hp; var hybridFwd = e.HybridFwd; var model = e.Model; var nGpuLayers = e.NGpuLayers; var tokenizer = e.Tokenizer;
 
         bool dsparkRequested = settings.DSparkModelPath is not null || sp.SpecType == SpecType.DSpark;
@@ -1182,7 +1182,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
                     gpuBackend?.Dispose();
                     fwd?.Dispose();
                     hybridFwd?.Dispose();
-                    gptOssFwd?.Dispose();
+                    standaloneFwd?.Dispose();
                     return rc;
                 }
                 // rc < 0: placement said Off — fall through to normal generation.
@@ -1335,7 +1335,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
     /// <summary>What <see cref="TryConfigureBackend"/> reads: the loaded model and the state decided before backend selection.</summary>
     private sealed record BackendInputs(
         GgufModel? Model, ModelHyperparams Hp, int CtxSize, int NGpuLayers, int GpuDeviceIndex,
-        ForwardPass? Fwd, HybridGdnForwardPass? HybridFwd, GptOssForwardPass? GptOssFwd, IForwardPass? MtpFwd,
+        ForwardPass? Fwd, HybridGdnForwardPass? HybridFwd, IForwardPass? StandaloneFwd, IForwardPass? MtpFwd,
         IDisposable? GpuBackend, IDisposable? GpuFwd, bool TqModeIsAuto, TqQuantizer TqQuantizer);
 
     /// <summary>What <see cref="TryConfigureBackend"/> decided: the forward/prefill/reset delegates and the GPU objects that must be disposed.</summary>
@@ -1359,7 +1359,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
     {
         var model = inp.Model!;   // always non-null here: the SafeTensors path never reaches backend selection
         var hp = inp.Hp; var ctxSize = inp.CtxSize; var nGpuLayers = inp.NGpuLayers; var gpuDeviceIndex = inp.GpuDeviceIndex;
-        var fwd = inp.Fwd; var hybridFwd = inp.HybridFwd; var gptOssFwd = inp.GptOssFwd; var mtpFwd = inp.MtpFwd;
+        var fwd = inp.Fwd; var hybridFwd = inp.HybridFwd; var standaloneFwd = inp.StandaloneFwd; var mtpFwd = inp.MtpFwd;
         var gpuBackend = inp.GpuBackend; var gpuFwd = inp.GpuFwd; var tqModeIsAuto = inp.TqModeIsAuto; var tqQuantizer = inp.TqQuantizer;
         Func<int, int, ReadOnlySpan<float>> forward;
         Func<IReadOnlyList<int>, ReadOnlySpan<float>> prefill;
@@ -1414,12 +1414,12 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         if (nGpuLayers == 0)
         {
             // CPU only
-            if (gptOssFwd is not null)
+            if (standaloneFwd is not null)
             {
-                forward = gptOssFwd.Forward;
-                prefill = tokens => gptOssFwd.Prefill(tokens);
-                resetCache = gptOssFwd.ResetCache;
-                AnsiConsole.MarkupLine("[dim]Backend: [blue]CPU[/] (gpt-oss)[/]");
+                forward = standaloneFwd.Forward;
+                prefill = tokens => standaloneFwd.Prefill(tokens);
+                resetCache = standaloneFwd.ResetCache;
+                AnsiConsole.MarkupLine($"[dim]Backend: [blue]CPU[/] ({Markup.Escape(s_arch)})[/]");
             }
             else if (gpuFwd is IForwardPass archGpu)
             {
@@ -1804,9 +1804,9 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         GgufModel? model = null;
         ForwardPass? fwd = null;
         HybridGdnForwardPass? hybridFwd = null;
-        // Architecture-specific CPU forward pass for gpt-oss (attention sinks, SWA, biased MoE,
-        // OAI SwiGLU, YaRN) — the generic ForwardPass does not model any of these.
-        GptOssForwardPass? gptOssFwd = null;
+        // Architecture-specific CPU forward pass (gpt-oss: sinks, SWA, biased MoE, OAI SwiGLU, YaRN;
+        // rwkv7: recurrent, no KV cache) — the generic ForwardPass models none of these.
+        IForwardPass? standaloneFwd = null;
         IForwardPass? mtpFwd = null;
         IDisposable? gpuBackend = null;
         IDisposable? gpuFwd = null;
@@ -1998,7 +1998,19 @@ public sealed class RunCommand : Command<RunCommand.Settings>
             effNGpuLayers = 0;
         }
 
-        if (s_arch == "gpt-oss")
+        if (s_arch == "rwkv7")
+        {
+            if (settings.TurboQuant || settings.DraftModelPath is not null || settings.DraftLookup)
+            {
+                AnsiConsole.ErrorLine("[red]Error:[/] rwkv7 is recurrent (no KV cache) and supports neither TurboQuant nor speculative decoding.");
+                return 1;
+            }
+            if (effNGpuLayers != 0)
+                AnsiConsole.MarkupLine("[yellow]Note:[/] rwkv7 has no GPU forward pass yet; running on CPU.");
+            effNGpuLayers = 0;
+            standaloneFwd = new Rwkv7ForwardPass(model, Rwkv7Hyperparams.FromModel(model));
+        }
+        else if (s_arch == "gpt-oss")
         {
             if (settings.TurboQuant || settings.DraftModelPath is not null || settings.DraftLookup)
             {
@@ -2024,7 +2036,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
             }
             else
             {
-                gptOssFwd = new GptOssForwardPass(model, gptOssHp);
+                standaloneFwd = new GptOssForwardPass(model, gptOssHp);
             }
         }
         else if (hp.IsHybridSsm && effNGpuLayers == 0)
@@ -2166,7 +2178,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
 
         // Backend selection and forward-pass construction (CPU / CUDA / Vulkan / hybrid): see TryConfigureBackend.
         if (!TryConfigureBackend(settings,
-                new BackendInputs(model, hp, ctxSize, nGpuLayers, gpuDeviceIndex, fwd, hybridFwd, gptOssFwd, mtpFwd, gpuBackend, gpuFwd, tqModeIsAuto, tqQuantizer),
+                new BackendInputs(model, hp, ctxSize, nGpuLayers, gpuDeviceIndex, fwd, hybridFwd, standaloneFwd, mtpFwd, gpuBackend, gpuFwd, tqModeIsAuto, tqQuantizer),
                 out var backend, out int backendExit))
             return backendExit;
         forward = backend.Forward;
@@ -2191,7 +2203,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
             return samplingExit;
 
         // Speculative decoding (--draft-model / --draft-lookup): see TryRunSpeculative.
-        var engine = new RunEngine(model, hp, tokenizer, ctxSize, nGpuLayers, gpuDeviceIndex, fwd, hybridFwd, gptOssFwd, mtpFwd,
+        var engine = new RunEngine(model, hp, tokenizer, ctxSize, nGpuLayers, gpuDeviceIndex, fwd, hybridFwd, standaloneFwd, mtpFwd,
                                    gpuBackend, gpuFwd, forward, prefill, resetCache);
         if (TryRunSpeculative(settings, engine, sp, rng) is int specExit)
             return specExit;
@@ -2202,7 +2214,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
 
         try
         {
-            IForwardPass activeForwardPass = (gpuFwd as IForwardPass) ?? (fwd as IForwardPass) ?? (hybridFwd as IForwardPass) ?? gptOssFwd
+            IForwardPass activeForwardPass = (gpuFwd as IForwardPass) ?? (fwd as IForwardPass) ?? (hybridFwd as IForwardPass) ?? standaloneFwd
                 ?? throw new InvalidOperationException("No forward pass was configured.");
             if (settings.ImagePaths is { Length: > 0 })
                 return RunImagePrompt(settings, activeForwardPass, tokenizer, hp, sp, rng,
@@ -2224,7 +2236,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
             gpuBackend?.Dispose();
             fwd?.Dispose();
             hybridFwd?.Dispose();
-            gptOssFwd?.Dispose();
+            standaloneFwd?.Dispose();
             // Package-path resources: null in the GGUF path. Disposed after fwd so that
             // ForwardPass finishes reading tensor data before the memory maps are closed.
             cpuBackend?.Dispose();

@@ -600,6 +600,18 @@ public static class InferenceEngineLoader
             nGpuLayers = 0;
         }
 
+        // rwkv7 is recurrent (no KV cache) and runs only on its own CPU forward pass.
+        if (arch == "rwkv7")
+        {
+            if (turboQuant)
+                throw new InvalidOperationException("TurboQuant is not supported for rwkv7 (no KV cache).");
+            if (backend != ServerBackend.Cpu)
+                Console.Error.WriteLine("[InferenceEngineLoader] rwkv7 has no GPU forward pass yet; running on CPU.");
+            var rwkv = new Rwkv7ForwardPass(model, Rwkv7Hyperparams.FromModel(model));
+            owned.Add(rwkv);
+            return (rwkv, BatchingSupported: false, GpuWeightBytesExact: null);
+        }
+
         // gpt-oss runs only on its own CPU forward pass (sinks, SWA, biased MoE, OAI SwiGLU, YaRN).
         if (arch == "gpt-oss")
         {
