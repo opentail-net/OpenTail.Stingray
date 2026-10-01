@@ -93,6 +93,25 @@ NLL parity on this reproduction. The earlier Q8-on result remains closer to llam
 PPL 26.1080, so the model/reference discrepancy is still open and the Q8 speed/quality tradeoff is
 tracked separately in part 2.
 
+### Dense-model prefill cost of the default-off change — measured 2026-10-01
+
+The default flip is global (`SimdKernels.Q8PrefillEnabled`), so it also slows every dense model, where no
+parity problem was found. Measured with the Release CLI on `SmolLM2-1.7B-Instruct-Q4_K_M.gguf`, a 2,194-token
+prompt (first 6,000 characters of `docs/STATUS.md`), `-n 1 --temp 0 -g 0`, alternating runs, no other heavy job
+running (top CPU processes were IDE/browser only), 3 samples each:
+
+| `STINGRAY_CPU_PREFILL_Q8` | prefill t/s (3 runs) | mean |
+| --- | --- | --- |
+| unset (new default, off) | 81.2, 81.1, 80.7 | **81.0** |
+| `=1` (previous default) | 227.8, 223.3, 221.6 | **224.2** |
+
+Default-off therefore costs about **2.8x** dense CPU prefill throughput (decode unchanged, ~9 t/s), not the
+~47% quoted in the old `SimdKernels.Q8PrefillEnabled` comment (that figure is stale). Earlier measurements put
+dense-model perplexity impact of the Q8 path at noise level (-0.14%..-0.4%, `docs/done/03-cpu-prefill-plan.md`).
+MoE batched experts already have their own opt-in gate (`STINGRAY_MOE_PREFILL_Q8`, default off), so a
+narrower default (Q8 prefill on for dense, off for MoE/hybrid architectures) would keep the Granite fix while
+restoring dense speed. **Decision needed from the owner**; not changed here.
+
 ## Goals
 
 1. Establish an apples-to-apples PPL comparison.
