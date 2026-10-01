@@ -29,7 +29,7 @@ names are treated as valid, `doctor` would not have flagged it either. The warni
 `STINGRAY_MAX_QUEUE` and the dead entry is out of the registry, so the mistake is now reported with
 a closest-match suggestion.
 
-**Reconciled again 2026-09-27 — `KnownEnvironmentVariables.All` now contains **246** names**
+**Reconciled again 2026-09-27 — `KnownEnvironmentVariables.All` now contains **250** names**
 (2026-09-28: `STINGRAY_MODEL_HOME`, the `stingray setup` model home, docs/103 item 16; plus three added earlier the same day without a count update: `STINGRAY_RECURRENT_BATCHED_PREFILL` (item 12 fallback switch) and the ACE-Step parity hooks `STINGRAY_ACESTEP_DUMP` / `STINGRAY_ACESTEP_NOISE` (item 14).)
 (2026-09-27: the reference-parity debug hooks from docs/102 #11/#13 — `STINGRAY_SD3_DUMP_LATENT_PATH`,
 `STINGRAY_FLUX2_INJECT_NOISE_PATH` / `_DUMP_LATENT_PATH` / `_DUMP_COND_PATH`,
@@ -307,6 +307,8 @@ dynamically composed names.
 | `STINGRAY_GDN_PREFILL_COMPUTE` | experimental | |
 | `STINGRAY_GDN_RAW_Q8_0` | experimental | |
 | `STINGRAY_GEMMA4_PROBE` | diagnostic | |
+| `STINGRAY_GRANITE4_DIAG` | diagnostic | `=1` prints a `[GRANITE4-DIAG]` first-token logit summary (top-10, EOG margin) after Granite 4 Vision prefill in the CLI. |
+| `STINGRAY_GRANITE4_PREFILL` | diagnostic | Only echoed in the `[GRANITE4-DIAG]` line; the engine-side prefill selector it once drove was removed with the item-04 fix. |
 | `STINGRAY_GGML_F16_DOT` | experimental | Opt-in: rounds F16-weight matmul activations to fp16 before dotting, matching ggml's `vec_dot_type=F16` pairing, for bit-parity comparisons against llama.cpp (see `docs/1-correctness/bugstofix.md`). Default off — full-F32-precision activation is more accurate. |
 | `STINGRAY_HYBRID_BATCHED_MOE` | experimental | |
 | `STINGRAY_HYBRID_PREFILL_COMPUTE` | experimental | |

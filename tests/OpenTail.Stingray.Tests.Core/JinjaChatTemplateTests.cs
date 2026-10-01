@@ -585,5 +585,21 @@ public sealed class JinjaChatTemplateTests
 
         Assert.Equal("[INTRO] HelloWorld", Render(tmpl, ctx));
     }
-}
 
+    /// <summary>Qwen3.8's reasoning-effort gate: a tuple literal as the right operand of <c>not in</c>.</summary>
+    [Fact]
+    public void TupleLiteral_NotIn_QwenReasoningEffortShape() =>
+        Assert.Equal("default", Render("{% set e = 'bogus' %}{% if e not in ('xhigh', 'medium', 'low') %}default{% else %}{{ e }}{% endif %}"));
+
+    [Fact]
+    public void TupleLiteral_In_MatchesMember() =>
+        Assert.Equal("medium", Render("{% set e = 'medium' %}{% if e not in ('xhigh', 'medium', 'low') %}default{% else %}{{ e }}{% endif %}"));
+
+    [Fact]
+    public void TupleLiteral_SingleItemTrailingComma_AndEmpty()
+    {
+        Assert.Equal("yes", Render("{% if 'a' in ('a',) %}yes{% else %}no{% endif %}"));
+        Assert.Equal("no", Render("{% if 'a' in () %}yes{% else %}no{% endif %}"));
+        Assert.Equal("3", Render("{{ (1 + 2) }}")); // plain parentheses still group
+    }
+}

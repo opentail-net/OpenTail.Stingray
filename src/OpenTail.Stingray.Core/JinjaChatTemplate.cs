@@ -796,8 +796,26 @@ public sealed class JinjaChatTemplate
             if (c == '(')
             {
                 Pos++;
+                Skip();
+                // Empty tuple `()`.
+                if (Pos < _s.Length && _s[Pos] == ')') { Pos++; return new ListExpr([]); }
                 var inner = ParseTernary();
-                Skip(); ExpectChar(')');
+                Skip();
+                // Tuple literal `(a, b, ...)` / `(a,)` (e.g. `x not in ('xhigh', 'medium', 'low')`):
+                // modelled as a list, which is all membership tests and iteration need.
+                if (Pos < _s.Length && _s[Pos] == ',')
+                {
+                    var items = new List<IExpr> { inner };
+                    while (Pos < _s.Length && _s[Pos] == ',')
+                    {
+                        Pos++; Skip();
+                        if (Pos < _s.Length && _s[Pos] == ')') break; // trailing comma
+                        items.Add(ParseTernary()); Skip();
+                    }
+                    ExpectChar(')');
+                    return new ListExpr(items);
+                }
+                ExpectChar(')');
                 return inner;
             }
 
