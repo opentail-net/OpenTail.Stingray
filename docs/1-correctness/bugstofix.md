@@ -9,10 +9,10 @@ State key: 🔴 open defect · 🟡 open investigation · 🔵 blocked on an ass
 
 | # | Area | State | Next action | Latest evidence |
 | --- | --- | --- | --- | --- |
-| 15 | LLaVA-NeXT AnyRes | 🔵 | Needs the real checkpoint and a reference | Plan written, correctly deferred |
-| 19 | RWKV6 CPU | ⚪ | Only against a concrete model target | `17-ggml-op-coverage-verification-plan.md` |
-| 20 | RWKV7 CPU | ⚪ | Same | same |
-| 21 | Generic `SOLVE_TRI` | ⚪ | Only when a concrete consumer exists | same |
+| 15 | LLaVA-NeXT AnyRes | 🟡 | Checkpoint obtained 2026-10-01 (`E:_modelslava-1.6-mistral-7b`: Q5_K_M + mmproj with `image_grid_pinpoints`); compare Stingray vs `llama-mtmd-cli` on real images | Plan: `15-llava-next-anyres-parity-plan.md` |
+| 19 | RWKV6 CPU | ⚪ | Target chosen: `E:_modelswkv6-world-1b6` (Finch 1.6B, Q8_0 + Q4_K_S, arch `rwkv6`). Implementation project: scalar WKV6 oracle, graph, parity vs llama.cpp | `17-ggml-op-coverage-verification-plan.md` |
+| 20 | RWKV7 CPU | ⚪ | Target chosen: `E:_modelswkv7-goose-world3-1b5` (Goose World3 1.5B, Q8_0 + Q4_K_S, arch `rwkv7`). Same shape of project | same |
+| 21 | Generic `SOLVE_TRI` | ⚪ | Consumer available: `E:_modelsqwen35-0.8b` (Qwen3.5-0.8B, Gated DeltaNet, Q8_0 + BF16) already runs through the specialized solve; a generic primitive is justified only if a second consumer appears | same |
 | 09 | GLM-4.5 Q5_K activations | 🟢 closed 2026-10-01 | None; the gate stays an opt-in (`STINGRAY_Q5K_DECODE_Q8K`). A faster `DotQ5K_Q8K` would change the trade-off | Paired NLL vs llama.cpp: better rms on 5 of 6 Q5_K models (GLM-4.5 0.328 -> 0.204; SmolLM2 slightly worse); decode speed cost: SmolLM2 -37%, phi-2 -16%. `docs/103` item 19 |
 | 12 | LFM2-MoE parity and admission | 🟢 | — | Flash-64 attention, not a bug; `lfm2moe` admitted 2026-10-01 |
 | 07 | FunASR Paraformer / Nano | 🟢 | — | Real Mandarin clip matches ONNX control; three stacked causes fixed 2026-10-01 |
