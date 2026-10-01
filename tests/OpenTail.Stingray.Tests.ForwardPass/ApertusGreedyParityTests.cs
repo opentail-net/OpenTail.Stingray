@@ -170,7 +170,7 @@ public sealed class ApertusGreedyParityTests : HeavyTestBase
             $"prefill/decode disagree on argmax: stepwise {argmaxStep} "
             + $"({tokenizer.Decode([argmaxStep])!.Replace("\n", "\\n")}) vs single-pass {argmaxFull} "
             + $"({tokenizer.Decode([argmaxFull])!.Replace("\n", "\\n")}), maxDiff {maxDiff:F4}");
-        // Bound measured, not guessed: with STINGRAY_CPU_PREFILL_Q8 at its default (on), this
+        // Bound measured, not guessed: with STINGRAY_CPU_PREFILL_Q8=1, this
         // model shows maxDiff ~3.3 — larger than OLMoE's 0.7137 int8-prefill gap, and with
         // STINGRAY_CPU_PREFILL_Q8=0 it drops to a clean pass (confirmed directly, not inferred).
         // Same known approximation, just amplified: xIELU's positive branch is alphaP*x^2 with
@@ -179,7 +179,7 @@ public sealed class ApertusGreedyParityTests : HeavyTestBase
         // the down-projection, where OLMoE's SiLU has no such amplifying term.
         Assert.True(maxDiff < 5.0f,
             $"prefill/decode logits diverge by {maxDiff:F4}, beyond the int8 prefill approximation "
-            + "(measured ~3.3 on this model with STINGRAY_CPU_PREFILL_Q8 at its default).");
+            + "(measured ~3.3 on this model with STINGRAY_CPU_PREFILL_Q8=1).");
     }
 
     private static string? FindModel()

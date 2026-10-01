@@ -299,20 +299,21 @@ public static unsafe class SimdKernels
     /// <summary>
     /// Whether the int8 (Q8_K/Q8_KS) batched-prefill path in <see cref="MatMulBatched"/> is live.
     ///
-    /// <para><b>Default on.</b> Quantizing the activation rows lets each weight row be read once
+    /// <para><b>Default off.</b> Q8 activation prefill is an approximation and may change model
+    /// logits or token NLLs versus the sequential F32 path. Exact numerical parity is the default;
+    /// opt in with <c>STINGRAY_CPU_PREFILL_Q8=1</c> when the measured speed/quality tradeoff is
+    /// acceptable for the workload. Quantizing activation rows lets each weight row be read once
     /// and dotted against 8 tokens per call (the <c>_8In</c>/<c>_4In</c> kernels) instead of once
     /// per token — worth ~+47% end-to-end prefill throughput on the reference box, and the same
-    /// technique llama.cpp uses for its own prefill GEMM. Opt out with
-    /// <c>STINGRAY_CPU_PREFILL_Q8=0</c>.</para>
+    /// technique llama.cpp uses for its own prefill GEMM.</para>
     ///
     /// <para>The Q8 dots are NOT byte-exact with the F32 dots decode uses (docs/cpu-prefill-plan.md
     /// §10), so prefill's numerics differ slightly from decode's on a dense model. That gap was the
     /// stated blocker on defaulting this on, and it has since been measured rather than assumed:
-    /// perplexity moves by −0.14% on a diverse 5-topic 2047-token corpus and −0.4% on the original
-    /// single-document corpus (both slightly *better* with the gate on, i.e. noise-level, not a
-    /// regression), and greedy generation is 100% bit-identical across two real prompts. Suites
-    /// that pin the F32 path's exact-equality contract set this to <c>false</c> explicitly rather
-    /// than relying on the ambient default.</para>
+    /// perplexity moved by −0.14% on a diverse 5-topic 2047-token corpus and −0.4% on the original
+    /// single-document corpus (both slightly *better* with the gate on, a direction not evidence
+    /// of higher accuracy), while Granite 4 H Small showed a larger per-token NLL difference. The
+    /// broad performance result is not sufficient to make approximation the default.</para>
     ///
     /// <para>All-control-token prompts are an explicit exception: <see cref="Engine.ForwardPass"/>
     /// detects that structural GGUF input and uses its sequential F32 path even while this gate is
@@ -342,7 +343,7 @@ public static unsafe class SimdKernels
         Environment.GetEnvironmentVariable("STINGRAY_BATCHED_MATVEC_TIER") != "0";
 
     public static bool Q8PrefillEnabled { get; set; } =
-        Environment.GetEnvironmentVariable("STINGRAY_CPU_PREFILL_Q8") != "0";
+        Environment.GetEnvironmentVariable("STINGRAY_CPU_PREFILL_Q8") == "1";
 
     /// <summary>
     /// Use Q8_K activations for Q5_K attention output projections in the CPU decode path.

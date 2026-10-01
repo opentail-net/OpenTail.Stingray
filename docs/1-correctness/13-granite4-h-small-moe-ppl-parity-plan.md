@@ -78,9 +78,9 @@ Follow-up isolation completed the layer and precision boundary:
   The observed difference is not a chunk-boundary effect and does not depend on OpenBLAS.
 
 The engine/reference gap must still be assessed against activation and weight quantization. Following
-the exact-parity result, batched MoE now keeps Q8 disabled by default; `STINGRAY_MOE_PREFILL_Q8=1`
-opts into the approximation for follow-up measurements (and still requires the global CPU Q8 gate).
-The broad MoE-specific Q8 speed/quality matrix is tracked as part 2 of bugstofix item 13.
+the exact-parity result, CPU Q8 prefill now defaults off; `STINGRAY_CPU_PREFILL_Q8=1` opts into the
+general approximation, and batched MoE additionally requires `STINGRAY_MOE_PREFILL_Q8=1`. The broad
+MoE-specific Q8 speed/quality matrix is tracked as part 2 of bugstofix item 13.
 
 ## Goals
 

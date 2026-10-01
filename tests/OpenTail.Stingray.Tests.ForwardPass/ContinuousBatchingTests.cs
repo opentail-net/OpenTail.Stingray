@@ -276,7 +276,7 @@ public sealed class ContinuousBatchingTests : HeavyTestBase
 
         // This test's purpose (issue #183 Gap 1) is chunked-continuation MECHANICS: cache
         // position tracking and attention scope across successive startPos calls, not the
-        // numerics of any one matmul kernel. Left at its default (on), Q8PrefillEnabled's
+        // numerics of any one matmul kernel. When enabled, Q8PrefillEnabled's
         // repacked Q4K×8 path (perf-loop iteration 42, MatMulBatchedCached in ForwardPass.cs)
         // groups tokens into 8-row batches for a single N=13 call but falls fully to its
         // ragged single-token kernel for three N=5/5/3 chunk calls -- different SIMD

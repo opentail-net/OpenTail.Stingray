@@ -141,13 +141,14 @@ implementation gap. See the [verification receipt](../done/16-iq-formats-coverag
   wikitext -c 2048 `[1024,+)` 26.4155 (old Q8 batched default) / 26.5483 (per token) vs
   `llama-perplexity --chunks 1` 26.1080; at -c 512 9.3505 vs 9.4103 (ours lower). The large error (157) was missing
   top-k renormalisation, fixed. Investigation found Q8 activation quantization in the batched MoE expert-down path caused
-  all batched/per-token NLL differences; batched MoE now defaults to the exact path and matches per-token NLL. The
+  all batched/per-token NLL differences; CPU Q8 prefill now defaults off so the batched path matches per-token NLL. The
   remaining reference gap and Q2_K-only local coverage remain open.
   - **Part 1 — parity:** [13-Granite 4.0-H small MoE PPL parity](13-granite4-h-small-moe-ppl-parity-plan.md) — verify the
     default change, compare against llama.cpp, and add the same-model Q4_K_M receipt when available.
   - **Part 2 — MoE Q8 evaluation:** Measure batched MoE Q8 quality and throughput on Granite 4 H Small and representative
     MoE models, compare identical per-token NLL/logit outputs and corpus PPL, then decide whether any model/weight-dtype
-    cases justify opting in. `STINGRAY_MOE_PREFILL_Q8=1` is an explicit experiment switch; exact parity remains the default.
+    cases justify opting in. `STINGRAY_CPU_PREFILL_Q8=1` opts into general CPU Q8 prefill; MoE additionally requires
+    `STINGRAY_MOE_PREFILL_Q8=1`. Exact numerical parity remains the default.
 - [ ] **14. Qwen3-VL / Qwen2.5-VL / PaddleOCR image input: CUDA and Vulkan hybrid still lack it** (logged 2026-09-27, docs/103 item 14).
   - **Plan:** [14-Qwen VL GPU image-input parity](14-qwenvl-gpu-image-input-parity-plan.md) — verifies full Vulkan per model, adds CUDA M-RoPE/deepstack and Vulkan layer-split support, and gates CLI routing on forward-pass capability.
   - 2026-09-28: full Vulkan offload (`GpuForwardPass`) now applies per-pair M-RoPE positions and deepstack, which also covers

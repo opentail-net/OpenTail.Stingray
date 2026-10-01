@@ -182,7 +182,7 @@ public sealed class GptNeoxGreedyParityTests : HeavyTestBase
     /// batched path could go unexercised by a short-prompt test while its single-token path was
     /// fine, silently shipping a broken batched prefill. On this checkpoint the two paths agree
     /// EXACTLY (maxDiff 0.0000, measured directly) — stronger than Apertus's ~3.3 int8-prefill gap,
-    /// because this test's default STINGRAY_CPU_PREFILL_Q8 run happened to size-match cleanly here;
+    /// because the STINGRAY_CPU_PREFILL_Q8=1 run happened to size-match cleanly here;
     /// the assertion bound below is kept at the Apertus/OLMoE precedent (5.0) rather than tightened
     /// to the measured value, since the exact margin can shift with unrelated CPU-kernel tuning.
     /// </summary>

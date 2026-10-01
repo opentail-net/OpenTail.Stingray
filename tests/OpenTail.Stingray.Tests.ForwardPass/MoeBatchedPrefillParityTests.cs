@@ -13,15 +13,16 @@ namespace OpenTail.Stingray.Tests.ForwardPass;
 /// <see cref="Engine.ForwardPass.MoeBatchedPrefillEnabled"/> off — because that is what
 /// production did and what every other MoE result on this model was measured against.</para>
 ///
-/// <para><b>Two arms, deliberately.</b> With <c>Q8PrefillEnabled</c> pinned off the expert GEMMs
+/// <para><b>Two arms, deliberately.</b> With the MoE-specific Q8 gate pinned off the expert GEMMs
 /// fall back to the same F32 fused MatVec the sequential path uses, and the batched path is then
 /// BIT-IDENTICAL to sequential — nothing about bucketing tokens by expert changes the arithmetic,
 /// provided the per-token reduce runs in top-k slot order. That exactness is worth asserting as
 /// exactness: an earlier revision reduced in expert order instead and moved the final logits by
-/// up to 0.20, which a tolerance-based test would have waved through. With the int8 path on
-/// (production's default) activations are additionally quantised per block, so that arm can only
-/// assert argmax stability. Conflating the two would let a real bucketing bug hide inside the
-/// quantisation budget, so the strict arm is checked separately and first.</para>
+/// up to 0.20, which a tolerance-based test would have waved through. With the int8 path on,
+/// activations are additionally quantised per block, so that arm can only assert argmax stability.
+/// Conflating the two would let a real bucketing bug hide inside the quantisation budget, so the
+/// strict arm is checked separately and first. The Q8 arm is explicitly opt-in through
+/// <c>MoeBatchedExperts.Q8PrefillEnabled</c>.</para>
 ///
 /// <para>Skipped silently when the MoE model is not on disk; a failure inside prefill must FAIL.</para>
 /// </summary>
@@ -78,7 +79,8 @@ public sealed class MoeBatchedPrefillParityTests : HeavyTestBase
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         bool prevQ8 = SimdKernels.Q8PrefillEnabled;
-        // Each expert's batched GEMM (MatMulBatched, allowQ8: true) still runs its bucket size
+        bool prevMoeQ8 = Engine.MoeBatchedExperts.Q8PrefillEnabled;
+        // Each expert's batched GEMM can still run its bucket size
         // through the ordinary batch-size gate: >= MinBatchForBlas routes to OpenBLAS sgemm
         // regardless of Q8PrefillEnabled. On a machine with OpenBLAS actually loaded, 96 tokens
         // over 64 experts can easily bucket >=16 tokens onto a single expert, and BLAS's summation
@@ -87,6 +89,7 @@ public sealed class MoeBatchedPrefillParityTests : HeavyTestBase
         // regardless of what's installed on the machine running it.
         int prevMinBatchForBlas = SimdKernels.MinBatchForBlas;
         SimdKernels.Q8PrefillEnabled = false;
+        Engine.MoeBatchedExperts.Q8PrefillEnabled = false;
         SimdKernels.MinBatchForBlas = int.MaxValue;
         try
         {
@@ -114,13 +117,14 @@ public sealed class MoeBatchedPrefillParityTests : HeavyTestBase
         finally
         {
             SimdKernels.Q8PrefillEnabled = prevQ8;
+            Engine.MoeBatchedExperts.Q8PrefillEnabled = prevMoeQ8;
             SimdKernels.MinBatchForBlas = prevMinBatchForBlas;
         }
     }
 
     /// <summary>
-    /// Production arm: the int8 expert GEMMs the batched path actually uses, against the F32
-    /// sequential trunk. This is a quantisation-error budget, not a parity proof — its job is to
+    /// Explicit-Q8 arm: the int8 expert GEMMs against the F32 sequential trunk. This is a
+    /// quantisation-error budget, not a parity proof — its job is to
     /// catch a batched path that has drifted far enough to pick a different next token, which is
     /// the level at which the divergence stops being a rounding question.
     /// </summary>
@@ -136,12 +140,24 @@ public sealed class MoeBatchedPrefillParityTests : HeavyTestBase
         if (!hp.IsMoE) return;
         using var backend = new CpuBackend();
 
-        int[] tokens = MakeTokens(96);
-        float[] seq = PrefillLogits(model, backend, hp, tokens, batchedMoe: false);
-        float[] bat = PrefillLogits(model, backend, hp, tokens, batchedMoe: true);
+        bool prevQ8 = SimdKernels.Q8PrefillEnabled;
+        bool prevMoeQ8 = Engine.MoeBatchedExperts.Q8PrefillEnabled;
+        SimdKernels.Q8PrefillEnabled = true;
+        Engine.MoeBatchedExperts.Q8PrefillEnabled = true;
+        try
+        {
+            int[] tokens = MakeTokens(96);
+            float[] seq = PrefillLogits(model, backend, hp, tokens, batchedMoe: false);
+            float[] bat = PrefillLogits(model, backend, hp, tokens, batchedMoe: true);
 
-        Assert.Equal(seq.Length, bat.Length);
-        Assert.Equal(Sampler.Greedy(seq), Sampler.Greedy(bat));
+            Assert.Equal(seq.Length, bat.Length);
+            Assert.Equal(Sampler.Greedy(seq), Sampler.Greedy(bat));
+        }
+        finally
+        {
+            SimdKernels.Q8PrefillEnabled = prevQ8;
+            Engine.MoeBatchedExperts.Q8PrefillEnabled = prevMoeQ8;
+        }
     }
 
     /// <summary>

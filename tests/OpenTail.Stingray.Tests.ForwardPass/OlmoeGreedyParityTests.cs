@@ -106,7 +106,7 @@ public sealed class OlmoeGreedyParityTests : HeavyTestBase
     /// earlier inference — "tokens 0-1 match so it must be decode state" — and moves the remaining
     /// OLMoE defect into shared per-layer arithmetic that both paths run.</para>
     ///
-    /// <para><b>Incidental measurement worth keeping:</b> with Q8 prefill at its default (on), the
+    /// <para><b>Incidental measurement worth keeping:</b> with Q8 prefill explicitly enabled, the
     /// same comparison shows a maxDiff of <b>0.7137</b> logits on this model. That is the cost of
     /// the int8 activation approximation, not an inconsistency — the argmax is unchanged. It is
     /// also why the bound below is stated against the argmax rather than a tight epsilon: the
@@ -155,7 +155,7 @@ public sealed class OlmoeGreedyParityTests : HeavyTestBase
 
         // Argmax is the load-bearing assertion: it is what greedy decoding consumes, and it holds
         // with the Q8 prefill gate in either state. The magnitude bound is deliberately set above
-        // the measured 0.7137 Q8 gap so this passes at default settings while still catching a
+        // the measured 0.7137 Q8 gap so this passes with Q8 enabled while still catching a
         // structural divergence — the OLMoE parity gap is 1.55 logits.
         Assert.True(argmaxStep == argmaxFull,
             $"prefill/decode disagree on argmax: stepwise {argmaxStep} "
@@ -163,7 +163,7 @@ public sealed class OlmoeGreedyParityTests : HeavyTestBase
             + $"({tokenizer.Decode([argmaxFull])!.Replace("\n", "\\n")}), maxDiff {maxDiff:F4}");
         Assert.True(maxDiff < 1.0f,
             $"prefill/decode logits diverge by {maxDiff:F4}, beyond the int8 prefill approximation "
-            + "(measured 0.7137 on this model with STINGRAY_CPU_PREFILL_Q8 at its default).");
+            + "(measured 0.7137 on this model with STINGRAY_CPU_PREFILL_Q8=1).");
     }
 
     [Fact]
