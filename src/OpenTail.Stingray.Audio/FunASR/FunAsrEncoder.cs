@@ -38,6 +38,34 @@ public static class FunAsrEncoder
         return output;
     }
 
+    /// <summary>Real `SANMEncoder.forward` input preparation (funasr/models/sanm/encoder.py:409-428):
+    /// <c>x * sqrt(output_size)</c> then <c>SinusoidalPositionEncoder</c> (funasr/models/transformer/embedding.py):
+    /// positions start at 1, <c>inv_timescale_i = exp(-i * ln(10000) / (depth/2 - 1))</c>, sin over the first
+    /// half of the channels and cos over the second. <see cref="Forward"/> expects this already applied
+    /// (the encoder golden feeds it directly).</summary>
+    public static float[][] PrepareInput(float[][] features, int outputSize)
+    {
+        int t = features.Length;
+        float scale = MathF.Sqrt(outputSize);
+        var output = new float[t][];
+        for (int k = 1; k <= t; k++)
+        {
+            var src = features[k - 1];
+            int dim = src.Length;
+            int half = dim / 2;
+            double increment = Math.Log(10000.0) / (half - 1);
+            var row = new float[dim];
+            for (int i = 0; i < half; i++)
+            {
+                double angle = k * Math.Exp(i * -increment);
+                row[i] = src[i] * scale + (float)Math.Sin(angle);
+                row[i + half] = src[i + half] * scale + (float)Math.Cos(angle);
+            }
+            output[k - 1] = row;
+        }
+        return output;
+    }
+
     private static float[][] EncoderLayer(float[][] x, FunAsrEncoderLayerWeights lw, int heads, int inSize, int size)
     {
         int t = x.Length;

@@ -114,7 +114,7 @@ public sealed class FunAsrPipeline : ISpeechToTextPipeline
         if (features.Length == 0)
             return new SpeechToTextResult(string.Empty, language, totalDuration, []);
 
-        var encoderOut = FunAsrEncoder.Forward(_weights, features);
+        var encoderOut = FunAsrEncoder.Forward(_weights, FunAsrEncoder.PrepareInput(features, _weights.EncoderDim));
         var (acousticEmbeds, tokenCount) = FunAsrPredictor.Predict(_weights, encoderOut);
         if (tokenCount == 0)
             return new SpeechToTextResult(string.Empty, language, totalDuration, []);

@@ -58,6 +58,10 @@ public static class FunAsrKernels
 
     public static void SoftmaxInPlace(float[] scores)
     {
+        // Max-subtracted: TensorPrimitives.SoftMax overflows to inf/inf = NaN on the large
+        // attention scores real Paraformer speech produces (|q.k| in the thousands, deep encoder layers).
+        float max = TensorPrimitives.Max(scores);
+        TensorPrimitives.Subtract(scores, max, scores);
         TensorPrimitives.SoftMax(scores, scores);
     }
 
@@ -73,14 +77,15 @@ public static class FunAsrKernels
 
         Parallel.For(0, c, ch =>
         {
-            int wBase = ch * kernel;
+            // GGUF stores fsmn_block.weight as ne=[C, kernel] (list-tensors shows [512, 11]): the CHANNEL axis is
+            // contiguous, i.e. memory index = k * C + ch (not torch's [C,1,k] ch * kernel + k).
             for (int ti = 0; ti < t; ti++)
             {
                 float sum = 0f;
                 for (int kk = 0; kk < kernel; kk++)
                 {
                     int srcT = ti - left + kk;
-                    if ((uint)srcT < (uint)t) sum += x[srcT][ch] * fsmnWeight[wBase + kk];
+                    if ((uint)srcT < (uint)t) sum += x[srcT][ch] * fsmnWeight[kk * c + ch];
                 }
                 output[ti][ch] = sum + x[ti][ch];
             }
