@@ -44,7 +44,7 @@ updated with dated evidence in the same pass.
 6. **CPU greedy-decode non-determinism**: two sightings under CPU contention, neither reproduced.
 8. **Stable Audio 3 APG padding masks**: **FIXED 2026-09-28**. Padded tokens masked from APG norm and dot product, orthogonal projection zeroed on padded tokens (`ApplyApg`), epsilon moved inside sqrt, and `ValidLatentTokens` / self-attention V-zeroing wired to `StableAudioMediumDiT`. Step 0 velocity cosine 0.999949; padded token final latent cosine 0.9999998 against `audiocpp_cli`. Attention masking over the padded tail remains a known gap. #11 in [done/102](done/102-status-open-items-plan.md).
 9. **Youtu-VL text**: one 1024-token wikitext window is +5% PPL vs llama.cpp (others −2.1% to
-    +0.8%). Diff per-token log-probs over wiki.test.raw [1024,2048) against `llama-server`.
+    +0.8%; whole-file 115.6 vs 114.1, +1.3%, in STATUS). Still the only unexplained window. Diff per-token log-probs over wiki.test.raw [1024,2048) against `llama-server`.
     #5 in [done/102](done/102-status-open-items-plan.md).
 11. **Classic LLaVA-1.5** (plain 32000-token vocab, no image token): **FIXED 2026-09-27**. The CLI
     now has a direct-splice path when `PlaceholderMarker` is absent from special tokens, tokenizing
@@ -114,8 +114,8 @@ text model wants 4096), Llama 4 vision (93 GB), MobileNetV5 (no checkpoint decla
 
 ## 3. Product and runtime
 
-1. **Front door, steps 2-4**: `stingray setup`, a starter manifest, a model home, README recipes
-   around task commands. [3-product-and-runtime/103-front-door-design.md](3-product-and-runtime/103-front-door-design.md).
+1. **Front door, steps 3-4**: a starter manifest and README recipes around task commands. Step 2 is done
+   2026-09-28 (`stingray setup`, `stingray models`, `ModelHome`, three-entry checksum-verified catalog). [3-product-and-runtime/103-front-door-design.md](3-product-and-runtime/103-front-door-design.md).
 2. **Configuration ownership**: source-tracked effective configuration beyond the static planning
    knobs, and an owner decision per obsolete-looking switch.
    [3-product-and-runtime/04-quality-of-life-improvements-plan.md](3-product-and-runtime/04-quality-of-life-improvements-plan.md).
@@ -139,7 +139,12 @@ numerical validation; no single-run result counts. An iGPU loss is not evidence 
 sweep is [4-performance/perf-sweep-plan.md](4-performance/perf-sweep-plan.md).
 
 **CPU, LLM**
-1. SmolLM2 prefill at ~0.89x of llama.cpp: the Q4_K Path-2 GEMM is 65% of trunk time; then RoPE
+1. **CPU Q8 prefill is default-off since 2026-10-01** (exact numerical parity with llama.cpp, found on Granite-H
+   small MoE). Cost measured on SmolLM2-1.7B Q4_K_M, 2,194-token prompt, 3 runs each: 81.0 t/s default vs
+   224.2 t/s with `STINGRAY_CPU_PREFILL_Q8=1` (2.8x). Every dense model pays this; the 0.89x-of-llama.cpp
+   figure below predates the flip and is stale until re-measured. Open: a Q8 prefill that keeps parity,
+   or a per-architecture default ([1-correctness/13](1-correctness/13-granite4-h-small-moe-ppl-parity-plan.md)).
+   Older note, SmolLM2 prefill at ~0.89x of llama.cpp: the Q4_K Path-2 GEMM is 65% of trunk time; then RoPE
    (scalar, ~3%) and attention (~6%). History: "SmolLM2 prefill" in
    [done/101](done/101-work-queue-after-coverage-plan.md).
 2. Qwen3.6-35B-A3B prefill at 0.63x of llama.cpp (Phase 8 of
