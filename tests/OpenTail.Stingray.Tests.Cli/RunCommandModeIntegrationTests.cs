@@ -207,6 +207,55 @@ public sealed class RunCommandModeIntegrationTests : IDisposable
         Assert.Contains("32L", r.Out, StringComparison.Ordinal);   // the hybrid trunk loaded with its real depth
     }
 
+    // ── tools / template / bias handling (the setup between loading the model and generating) ──────────────────────────
+
+    [Fact]
+    public void Tools_FileIsLoadedAndAdvertised()
+    {
+        string tools = Path.Combine(_tmp, "tools.json");
+        File.WriteAllText(tools, """[{"type":"function","function":{"name":"get_weather","description":"Weather for a city","parameters":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}}}]""");
+        var r = Run("-m", SmolGguf(), "-p", "What is the weather in Paris?", "--temp", "0", "-n", "8", "-g", "0", "--tools", tools);
+        AssertCleanSuccess(r);
+        Assert.Contains("Loaded 1 tool(s) from tools.json", r.Out, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Tools_MissingFile_FailsCleanlyOnStderr()
+    {
+        var r = Run("-m", SmolGguf(), "-p", "hi", "-n", "4", "-g", "0", "--tools", Path.Combine(_tmp, "nope.json"));
+        Assert.Equal(1, r.Exit);
+        Assert.Contains("tools file not found", r.Err, StringComparison.Ordinal);
+        Assert.DoesNotContain("Unhandled exception", r.All, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ChatTemplateShortcut_IsRefused_NotApproximated()
+    {
+        var r = Run("-m", SmolGguf(), "-p", "hi", "-n", "4", "-g", "0", "--chat-template", "chatml");
+        Assert.Equal(1, r.Exit);
+        Assert.Contains("is not Jinja source", r.Err, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void LogitBias_InvalidEntry_FailsCleanly()
+    {
+        var r = Run("-m", SmolGguf(), "-p", "hi", "-n", "4", "-g", "0", "--logit-bias", "not-a-bias");
+        Assert.Equal(1, r.Exit);
+        Assert.Contains("--logit-bias", r.Err, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void EscapeFlag_ExpandsEscapeSequencesInThePrompt()
+    {
+        // The argument is the 16 characters `Count to five:\n` (backslash, n). With -e it becomes a real newline before the model sees it.
+        var plain = Run("-m", SmolGguf(), "-p", "Count to five:" + "\\" + "n", "--temp", "0", "-n", "12", "-g", "0", "-e");
+        AssertCleanSuccess(plain);
+        // Only the echoed prompt + generation (after the "Model loaded" banner), not the "Loading model: C:\..." path line.
+        string generated = plain.Out[plain.Out.IndexOf("Model loaded", StringComparison.Ordinal)..].Split("Prefill:")[0];
+        Assert.DoesNotContain("\\n", generated, StringComparison.Ordinal);                                 // no literal backslash-n survives
+        Assert.Contains("Count to five:\n", generated.Replace("\r\n", "\n"), StringComparison.Ordinal);   // a real newline follows the prompt
+    }
+
     // ── SafeTensors package ─────────────────────────────────────────────────────────────────────────────────────────
 
     [Fact]

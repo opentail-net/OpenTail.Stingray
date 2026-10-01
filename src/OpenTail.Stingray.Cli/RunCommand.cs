@@ -1192,6 +1192,146 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         return null;
     }
 
+    /// <summary>
+    /// Everything between "the model is loaded" and "generation starts" that depends only on the arguments and the tokenizer:
+    /// <c>--tools</c> / <c>--tool-grammar</c>, <c>--json-schema</c>, <c>-e</c> prompt escapes, the <c>--chat-template</c> override,
+    /// <c>--logit-bias</c>, then the sampling parameters and the RNG. Sets the tool / template statics the decode loop reads.
+    /// Extracted verbatim from <see cref="Execute"/>; false means a clean failure already reported on stderr.
+    /// </summary>
+    private static bool TryBuildSampling(Settings settings, GgufTokenizer tokenizer,
+                                         out SamplingParams samplingParams, out Random random, out int exitCode)
+    {
+        // ── Tool calling (optional) ───────────────────────────────────────────────
+        // --tools advertises OpenAI-format tool definitions to the model via its chat template;
+        // --tool-grammar additionally constrains the argument bytes to the supplied JSON Schemas
+        // (issue #374) for families with constraint support. Both are single-prompt features.
+        // Shared by --json-schema/--json-schema-file below (issue #423 follow-up) -- constructing
+        // this is free even when unused (the expensive per-token byte table builds lazily).
+        var grammarVocab = new GrammarVocabulary(tokenizer);
+        List<ToolSchema>? toolSchemas = null;
+        ITokenConstraint? toolConstraint = null;
+        int[] toolBoundaryStops = [];
+        s_tools = null;   // reset: this run advertises tools only if --tools is given (no leak across in-process runs)
+        if (settings.ToolsPath is { Length: > 0 } toolsPath)
+        {
+            if (!File.Exists(toolsPath))
+            {
+                AnsiConsole.ErrorLine($"[red]Error:[/] tools file not found: {Markup.Escape(toolsPath)}");
+                { samplingParams = null!; random = null!; exitCode = ExitCodes.Failure; return false; }
+            }
+            try
+            {
+                (s_tools, toolSchemas) = LoadTools(toolsPath);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException
+                                          or System.Security.SecurityException or NotSupportedException
+                                          or JsonException or FormatException)
+            {
+                AnsiConsole.ErrorLine($"[red]Error:[/] could not parse --tools file: {Markup.Escape(ex.Message)}");
+                { samplingParams = null!; random = null!; exitCode = ExitCodes.Failure; return false; }
+            }
+            AnsiConsole.MarkupLine($"[dim]Loaded {toolSchemas.Count} tool(s) from {Markup.Escape(Path.GetFileName(toolsPath))}.[/]");
+
+            var adapter = ToolCallAdapterRegistry.Get(s_arch);
+
+            // Halt right after the tool call(s) instead of running into a hallucinated trailing
+            // turn (issue #304): add the adapter's tool-boundary markers (Gemma 4: <|tool_response>)
+            // to the stop set, resolved against the vocab.
+            toolBoundaryStops = adapter.ToolBoundaryStopMarkers
+                .Select(m => tokenizer.SpecialTokens.TryGetValue(m, out int id) ? id : -1)
+                .Where(id => id > 0)
+                .Distinct()
+                .ToArray();
+
+            if (settings.ToolGrammar)
+            {
+                toolConstraint = adapter.BuildArgumentConstraint(toolSchemas, grammarVocab);
+                AnsiConsole.MarkupLine(toolConstraint is not null
+                    ? "[dim]Tool-call arguments are grammar-constrained (issue #374).[/]"
+                    : $"[yellow]Warning:[/] --tool-grammar has no effect for arch '{s_arch}' (no constraint support, or no supplied tool is constrainable); arguments generate unconstrained.");
+            }
+        }
+        else if (settings.ToolGrammar)
+        {
+            AnsiConsole.MarkupLine("[yellow]Warning:[/] --tool-grammar requires --tools (a schema to constrain against); ignoring.");
+        }
+
+        // ── JSON-Schema-constrained output (issue #423 follow-up) ─────────────────
+        if (!TryLoadJsonSchemaConstraint(settings.JsonSchema, settings.JsonSchemaFile, grammarVocab,
+                out ITokenConstraint? jsonSchemaConstraint, out string? jsonSchemaError,
+                ordered: settings.JsonSchemaOrdered))
+        {
+            AnsiConsole.ErrorLine($"[red]Error:[/] {Markup.Escape(jsonSchemaError!)}");
+            { samplingParams = null!; random = null!; exitCode = ExitCodes.Failure; return false; }
+        }
+        if (jsonSchemaConstraint is not null)
+        {
+            AnsiConsole.MarkupLine("[dim]Response is constrained to the supplied JSON schema.[/]");
+            if (toolConstraint is not null)
+                AnsiConsole.MarkupLine(
+                    "[yellow]Warning:[/] --json-schema/--json-schema-file combined with --tool-grammar likely " +
+                    "makes tool calls unreachable (the schema constrains the whole response from the first " +
+                    "token) — use one or the other.");
+        }
+
+        // -e/--escape: expand escape sequences in the prompt before it is templated or tokenized.
+        if (settings.Escape && settings.Prompt is not null)
+            settings.Prompt = ProcessEscapeSequences(settings.Prompt);
+
+        // --chat-template: raw Jinja only. Named shortcuts are refused rather than approximated —
+        // a hand-written chatml/llama3 template loads, runs, and degrades output with no error,
+        // which is the worst failure mode available here.
+        if (settings.ChatTemplateOverride is { Length: > 0 } tmplOverride)
+        {
+            string trimmed = tmplOverride.Trim();
+            if (!trimmed.Contains("{{", StringComparison.Ordinal) && !trimmed.Contains("{%", StringComparison.Ordinal))
+            {
+                AnsiConsole.ErrorLine($"[red]Error:[/] --chat-template '{Markup.Escape(trimmed)}' is not Jinja source. " +
+                    "Named shortcuts are not supported: pass the model's raw Jinja2 template, or omit the flag to use " +
+                    "the one embedded in the model.");
+                { samplingParams = null!; random = null!; exitCode = ExitCodes.Failure; return false; }
+            }
+            s_jinja = new JinjaChatTemplate(trimmed);
+            AnsiConsole.MarkupLine("[dim]Chat template overridden via --chat-template.[/]");
+        }
+
+        // --logit-bias: TOKEN_ID+BIAS / TOKEN_ID-BIAS entries into a bias map.
+        IReadOnlyDictionary<int, float>? logitBiasMap = null;
+        if (settings.LogitBias is { Length: > 0 } biasEntries
+            && !TryParseLogitBias(biasEntries, out logitBiasMap, out string? biasError))
+        {
+            AnsiConsole.ErrorLine($"[red]Error:[/] --logit-bias: {Markup.Escape(biasError!)}");
+            { samplingParams = null!; random = null!; exitCode = ExitCodes.Failure; return false; }
+        }
+
+        var sp = new SamplingParams
+        {
+            Temperature = settings.Temperature,
+            TopK = settings.TopK,
+            TopP = settings.TopP,
+            MinP = settings.MinP,
+            MaxNewTokens = settings.NPredict,
+            StopTokenIds = toolBoundaryStops.Length > 0
+                ? [.. BuildStopTokenIds(tokenizer), .. toolBoundaryStops]
+                : [.. BuildStopTokenIds(tokenizer)],
+            RepetitionPenalty = settings.RepPenalty,
+            PresencePenalty = settings.PresencePenalty ?? 0f,
+            FrequencyPenalty = settings.FrequencyPenalty ?? 0f,
+            LogitBias = logitBiasMap,
+            SpecType = ParseSpecType(settings.SpecTypeStr),
+            SpecDraftNMax = settings.SpecDraftNMax,
+            SpecDraftNMin = settings.SpecDraftNMin,
+            SpecDraftPMin = settings.SpecDraftPMin,
+            Constraint = TokenConstraints.Combine(jsonSchemaConstraint, toolConstraint),
+        };
+        var rng = settings.Seed >= 0 ? new Random(settings.Seed) : new Random();
+
+        samplingParams = sp;
+        random = rng;
+        exitCode = ExitCodes.Success;
+        return true;
+    }
+
     protected override int Execute(Settings settings, CancellationToken cancellation)
     {
         if (!TryPrepare(settings, out var prologue, out int prologueExit))
@@ -1998,130 +2138,9 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         AnsiConsole.MarkupLine($"[dim]Model loaded in {sw.Elapsed.TotalSeconds:F1}s — " +
             $"{hp.NumLayers}L, {hp.EmbeddingDim}d, headDim={hp.HeadDim}, {hp.VocabSize} vocab, ctx={activeContextLength}[/]");
 
-        // ── Tool calling (optional) ───────────────────────────────────────────────
-        // --tools advertises OpenAI-format tool definitions to the model via its chat template;
-        // --tool-grammar additionally constrains the argument bytes to the supplied JSON Schemas
-        // (issue #374) for families with constraint support. Both are single-prompt features.
-        // Shared by --json-schema/--json-schema-file below (issue #423 follow-up) -- constructing
-        // this is free even when unused (the expensive per-token byte table builds lazily).
-        var grammarVocab = new GrammarVocabulary(tokenizer);
-        List<ToolSchema>? toolSchemas = null;
-        ITokenConstraint? toolConstraint = null;
-        int[] toolBoundaryStops = [];
-        s_tools = null;   // reset: this run advertises tools only if --tools is given (no leak across in-process runs)
-        if (settings.ToolsPath is { Length: > 0 } toolsPath)
-        {
-            if (!File.Exists(toolsPath))
-            {
-                AnsiConsole.ErrorLine($"[red]Error:[/] tools file not found: {Markup.Escape(toolsPath)}");
-                return 1;
-            }
-            try
-            {
-                (s_tools, toolSchemas) = LoadTools(toolsPath);
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException
-                                          or System.Security.SecurityException or NotSupportedException
-                                          or JsonException or FormatException)
-            {
-                AnsiConsole.ErrorLine($"[red]Error:[/] could not parse --tools file: {Markup.Escape(ex.Message)}");
-                return 1;
-            }
-            AnsiConsole.MarkupLine($"[dim]Loaded {toolSchemas.Count} tool(s) from {Markup.Escape(Path.GetFileName(toolsPath))}.[/]");
-
-            var adapter = ToolCallAdapterRegistry.Get(s_arch);
-
-            // Halt right after the tool call(s) instead of running into a hallucinated trailing
-            // turn (issue #304): add the adapter's tool-boundary markers (Gemma 4: <|tool_response>)
-            // to the stop set, resolved against the vocab.
-            toolBoundaryStops = adapter.ToolBoundaryStopMarkers
-                .Select(m => tokenizer.SpecialTokens.TryGetValue(m, out int id) ? id : -1)
-                .Where(id => id > 0)
-                .Distinct()
-                .ToArray();
-
-            if (settings.ToolGrammar)
-            {
-                toolConstraint = adapter.BuildArgumentConstraint(toolSchemas, grammarVocab);
-                AnsiConsole.MarkupLine(toolConstraint is not null
-                    ? "[dim]Tool-call arguments are grammar-constrained (issue #374).[/]"
-                    : $"[yellow]Warning:[/] --tool-grammar has no effect for arch '{s_arch}' (no constraint support, or no supplied tool is constrainable); arguments generate unconstrained.");
-            }
-        }
-        else if (settings.ToolGrammar)
-        {
-            AnsiConsole.MarkupLine("[yellow]Warning:[/] --tool-grammar requires --tools (a schema to constrain against); ignoring.");
-        }
-
-        // ── JSON-Schema-constrained output (issue #423 follow-up) ─────────────────
-        if (!TryLoadJsonSchemaConstraint(settings.JsonSchema, settings.JsonSchemaFile, grammarVocab,
-                out ITokenConstraint? jsonSchemaConstraint, out string? jsonSchemaError,
-                ordered: settings.JsonSchemaOrdered))
-        {
-            AnsiConsole.ErrorLine($"[red]Error:[/] {Markup.Escape(jsonSchemaError!)}");
-            return 1;
-        }
-        if (jsonSchemaConstraint is not null)
-        {
-            AnsiConsole.MarkupLine("[dim]Response is constrained to the supplied JSON schema.[/]");
-            if (toolConstraint is not null)
-                AnsiConsole.MarkupLine(
-                    "[yellow]Warning:[/] --json-schema/--json-schema-file combined with --tool-grammar likely " +
-                    "makes tool calls unreachable (the schema constrains the whole response from the first " +
-                    "token) — use one or the other.");
-        }
-
-        // -e/--escape: expand escape sequences in the prompt before it is templated or tokenized.
-        if (settings.Escape && settings.Prompt is not null)
-            settings.Prompt = ProcessEscapeSequences(settings.Prompt);
-
-        // --chat-template: raw Jinja only. Named shortcuts are refused rather than approximated —
-        // a hand-written chatml/llama3 template loads, runs, and degrades output with no error,
-        // which is the worst failure mode available here.
-        if (settings.ChatTemplateOverride is { Length: > 0 } tmplOverride)
-        {
-            string trimmed = tmplOverride.Trim();
-            if (!trimmed.Contains("{{", StringComparison.Ordinal) && !trimmed.Contains("{%", StringComparison.Ordinal))
-            {
-                AnsiConsole.ErrorLine($"[red]Error:[/] --chat-template '{Markup.Escape(trimmed)}' is not Jinja source. " +
-                    "Named shortcuts are not supported: pass the model's raw Jinja2 template, or omit the flag to use " +
-                    "the one embedded in the model.");
-                return 1;
-            }
-            s_jinja = new JinjaChatTemplate(trimmed);
-            AnsiConsole.MarkupLine("[dim]Chat template overridden via --chat-template.[/]");
-        }
-
-        // --logit-bias: TOKEN_ID+BIAS / TOKEN_ID-BIAS entries into a bias map.
-        IReadOnlyDictionary<int, float>? logitBiasMap = null;
-        if (settings.LogitBias is { Length: > 0 } biasEntries
-            && !TryParseLogitBias(biasEntries, out logitBiasMap, out string? biasError))
-        {
-            AnsiConsole.ErrorLine($"[red]Error:[/] --logit-bias: {Markup.Escape(biasError!)}");
-            return 1;
-        }
-
-        var sp = new SamplingParams
-        {
-            Temperature = settings.Temperature,
-            TopK = settings.TopK,
-            TopP = settings.TopP,
-            MinP = settings.MinP,
-            MaxNewTokens = settings.NPredict,
-            StopTokenIds = toolBoundaryStops.Length > 0
-                ? [.. BuildStopTokenIds(tokenizer), .. toolBoundaryStops]
-                : [.. BuildStopTokenIds(tokenizer)],
-            RepetitionPenalty = settings.RepPenalty,
-            PresencePenalty = settings.PresencePenalty ?? 0f,
-            FrequencyPenalty = settings.FrequencyPenalty ?? 0f,
-            LogitBias = logitBiasMap,
-            SpecType = ParseSpecType(settings.SpecTypeStr),
-            SpecDraftNMax = settings.SpecDraftNMax,
-            SpecDraftNMin = settings.SpecDraftNMin,
-            SpecDraftPMin = settings.SpecDraftPMin,
-            Constraint = TokenConstraints.Combine(jsonSchemaConstraint, toolConstraint),
-        };
-        var rng = settings.Seed >= 0 ? new Random(settings.Seed) : new Random();
+        // Tools, JSON schema, prompt/template overrides, logit bias and the sampling parameters: see TryBuildSampling.
+        if (!TryBuildSampling(settings, tokenizer, out var sp, out var rng, out int samplingExit))
+            return samplingExit;
 
         // Speculative decoding (--draft-model / --draft-lookup): see TryRunSpeculative.
         var engine = new RunEngine(model, hp, tokenizer, ctxSize, nGpuLayers, gpuDeviceIndex, fwd, hybridFwd, gptOssFwd, mtpFwd,
