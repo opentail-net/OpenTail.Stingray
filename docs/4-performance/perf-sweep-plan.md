@@ -126,8 +126,21 @@ a re-attempt candidate without per-function analysis. #7 is a disambiguation tas
       tried — that risk applies here too without new evidence. Real per-stage profiling (mirroring
       Phase 3.1's `STINGRAY_PROFILE_DECODE=1` methodology) would be the correct next step if
       revisited, not a blind retry of an already-reverted fix class.
-- [ ] 5.2 Re-scan `PerformanceLeague.md` for any row below 0.5x not covered by Phases 1-4 and add
-      it here before declaring the sweep done.
+- [x] 5.2 (done 2026-10-01) Re-scanned `PerformanceLeague.md` for rows below 0.5x. Covered already: small-model
+      decode (Phase 3), hybrid GDN (2), Gemma prefill (6), RWKV prefill (16), DeepSeek2 prefill (8), Voxtral (1),
+      VLMs (10), Whisper Tiny (5.1). Bold sub-0.5 values on Whisper Base/Small, Parakeet and Qwen3-ASR are RTFs,
+      not ratios (Base/Small 0.83x, Parakeet 1.03-1.16x; Qwen3-ASR has no C++ reference). Two uncovered rows:
+      - **Qwen3-Embedding-0.6B Q8_0 prompt, 0.14-0.16x (2026-09-17)**: fixed. Cause: Q8_0 weights get no help from
+        the int8 prefill tier, and `MatVec4In` ran four separate serial-FMA dots per weight row. New fused
+        `DotQ8_0_Q8_0_4In_Avx2` (bit-identical per token, so on by default): Qwen3-0.6B Q8_0 prefill 113-124 ->
+        158-184 t/s, embedding 605 tokens 4.65-4.89 s -> 3.39-3.57 s (~0.50x of llama-bench `-embd 1` pp512 at 16
+        thr, 350 t/s), RWKV7 Q8_0 prefill 42-43 -> 60-61 t/s. 66daf1c2.
+      - **SmolLM2-1.7B prefill, 0.24-0.33x (2026-08/09)** and small K-quant prefill generally: the CPU int8 prefill
+        tier (`STINGRAY_CPU_PREFILL_Q8`) was turned OFF by default on 2026-10-01 (7791e3c9, exact-numerics policy).
+        Measured today on Qwen2.5-0.5B Q4_K_M (633 tok): 141-143 t/s off vs 260-308 t/s on, i.e. the default
+        halves K-quant prefill. Whether to restore it is a policy decision, not a perf bug; note it also brings
+        DeepSeek-V2-Lite back to token-exact llama.cpp parity (bugstofix #23). Remaining Q8_0 gap vs llama.cpp
+        (~0.4x on Qwen3-0.6B: 158-184 vs 443 t/s) is GEMM-kernel throughput (llama.cpp uses repacked tiles).
 
 ---
 
@@ -257,7 +270,8 @@ a real, working ASR pipeline, worse than the Whisper Tiny row already queued in 
 Added 2026-10-01 with the `rwkv6`/`rwkv7` admissions (code: `RwkvForwardPassBase`, `Rwkv6ForwardPass`,
 `Rwkv7ForwardPass`). Prefill already runs batched: one matmul per projection over chunks of up to 256
 tokens, with only the WKV recurrence stepping token by token. That took RWKV7 Q8_0 from 17.5-19.8 to
-38.7-39.7 t/s over 605 tokens (same-day A/B, idle machine). llama.cpp pp512 is 185 t/s (16 thr). Measured
+38.7-39.7 t/s over 605 tokens (same-day A/B, idle machine), and the fused Q8_0 4-input dot (66daf1c2)
+to 60-61 t/s over 580 tokens. llama.cpp pp512 is 185 t/s (16 thr). Measured
 before profiling: the int8 prefill tier (`STINGRAY_CPU_PREFILL_Q8=1`) and BLAS on/off did not help
 (29-32 t/s, those two runs under background load, so only indicative).
 
