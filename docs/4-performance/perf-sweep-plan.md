@@ -233,7 +233,14 @@ worst TTS/ASR rows (PersonaPlex ~262x RTF, HiggsAudio 13.64x, OmniVoice ~13.45x)
           measured (negligible expected impact), 1 new-coverage-only. This is the honest,
           complete picture across all affected pipelines — exactly the audit the user asked for
           after A.4 was closed too early the first time.
-- [ ] A.5 Follow-up: manually review `MossTtsGlobalTransformer.cs` (flagged CHECK-MANUALLY, not
+- [x] A.5 (done 2026-10-01: both reviewed, neither is the Voxtral bug, no change made) `MossTtsGlobalTransformer.cs`:
+      every linear already goes through `SimdKernels.MatVecF32` and LayerNorm through `SimdKernels.LayerNorm`;
+      leftover inefficiencies are not scalar matvecs (`LinearBatched` nests `Parallel.For` over tokens around an
+      already-parallel matvec instead of the batched F32 GEMM; the attention context is accumulated with a scalar
+      headDim loop), worth doing only if MOSS-TTS gets a League row. `MeloRelativeEncoder.LinearVec` is the
+      speaker-embedding projection, run once per encoder/flow layer per utterance (~50k MACs each), already
+      parallelized; a transposed-weight kernel would not move any measured number. Original item text:
+      manually review `MossTtsGlobalTransformer.cs` (flagged CHECK-MANUALLY, not
       yet classified) and separately design a correct fix for `MeloRelativeEncoder.cs`'s
       transposed-weight case (needs either a transposing `MatVecF32` variant or a one-time weight
       transpose at load time — verify either approach against a real golden reference before
@@ -256,12 +263,23 @@ a real, working ASR pipeline, worse than the Whisper Tiny row already queued in 
       channels in every branch (depthwise, pointwise-1x1, general), and the pointwise 1x1 fast
       path already uses `TensorPrimitives.MultiplyAdd` (real SIMD). **No naive-unwired-SIMD bug
       found** — this is NOT a repeat of Voxtral's bug class.
-- [ ] 11.2 Given 11.1 found no quick pattern-match win, real per-stage profiling (mirroring Phase
+- [x] 11.2 (done 2026-10-01) **The 0.20x was apples-to-oranges.** It set our single cold run (0.872 s, mostly .NET
+      JIT) against audio.cpp's whole-process time (171 ms); audio.cpp's own `--metrics` inference wall is
+      31-39 ms (8 thr; 39-41 at 16). Warm, ours is ~60-70 ms (mel 10.8 ms + encoder 49-59 ms, 20 reps,
+      `CitrinetAsrRealWeightsTests` pipeline), i.e. **~0.6x warm**; cold first call 570-850 ms is JIT (NativeAOT
+      territory, not kernels). Encoder split by conv kind (instrumented, excl. first run): pointwise 1x1 ~2/3,
+      depthwise ~1/4, general (3 calls) the rest; ~235 conv calls of ~0.2 ms each, each with its own
+      `Parallel.For` and fresh `float[][]` allocations, so it is dispatch/allocation-bound, not FLOP-bound.
+      Original text: given 11.1 found no quick pattern-match win, real per-stage profiling (mirroring Phase
       3.1/9.1b's `Stopwatch`-around-stages methodology) is the correct next step to find where the
       ~0.20x gap actually comes from (mel extraction? which Jasper block? the CTC decode head?) —
       NOT attempted this pass given the small absolute times involved (872ms total) make coarse
       instrumentation noisy; would need enough repetitions to trust a split, as originally noted.
-- [ ] 11.3 Implement + re-verify the exact-transcript-match correctness this pipeline already has
+- [ ] 11.3 (2026-10-01 attempt reverted) A register-tiled pointwise kernel (4 out-ch x 16 frames, bit-identical:
+      same logits hash) was NOT faster warm (52-56 vs 48.6-49.2 ms encoder), only cold (232-271 vs 572-670 ms
+      first call, i.e. JIT). Next angle if revisited: remove per-conv allocation and per-call `Parallel.For` (one
+      parallel region per block, preallocated ping-pong buffers), then re-measure. Original text: implement +
+      re-verify the exact-transcript-match correctness this pipeline already has
       (do not regress it) + re-benchmark (3+ runs, this pipeline is fast enough to afford more
       samples than the slow TTS/diffusion pipelines elsewhere in this doc) + record.
 
