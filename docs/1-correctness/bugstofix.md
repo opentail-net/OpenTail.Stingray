@@ -9,7 +9,7 @@ State key: 🔴 open defect · 🟡 open investigation · 🔵 blocked on an ass
 
 | # | Area | State | Next action | Latest evidence |
 | --- | --- | --- | --- | --- |
-| 15 | LLaVA-NeXT AnyRes | 🟡 | Checkpoint obtained 2026-10-01 (`E:/_models/llava-1.6-mistral-7b`: Q5_K_M + mmproj with `image_grid_pinpoints`); compare Stingray vs `llama-mtmd-cli` on real images | Plan: `15-llava-next-anyres-parity-plan.md` |
+| 15 | LLaVA-NeXT AnyRes | 🟢 | 2026-10-01: geometry, token counts and separators match llama.cpp; view-order defect found and fixed (overview now last, as mtmd); first-token top-9 agree on 2 images. Unverified: pixel-level resize, per-view embeddings, OneVision | Plan: `15-llava-next-anyres-parity-plan.md` (Resolution) |
 | 19 | RWKV6 CPU | ⚪ | Target chosen: `E:/_models/rwkv6-world-1b6` (Finch 1.6B, Q8_0 + Q4_K_S, arch `rwkv6`). Implementation project: scalar WKV6 oracle, graph, parity vs llama.cpp | `17-ggml-op-coverage-verification-plan.md` |
 | 20 | RWKV7 CPU | ⚪ | Target chosen: `E:/_models/rwkv7-goose-world3-1b5` (Goose World3 1.5B, Q8_0 + Q4_K_S, arch `rwkv7`). Same shape of project | same |
 | 21 | Generic `SOLVE_TRI` | ⚪ | Consumer available: `E:/_models/qwen35-0.8b` (Qwen3.5-0.8B, Gated DeltaNet, Q8_0 + BF16) already runs through the specialized solve; a generic primitive is justified only if a second consumer appears | same |

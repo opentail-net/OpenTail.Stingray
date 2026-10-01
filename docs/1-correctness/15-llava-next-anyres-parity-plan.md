@@ -254,3 +254,18 @@ greedy, CPU, both engines.
 So the **view count agrees (overview + 2×2 tiles) and both read the middle text correctly**; the wording differs, so this is NOT yet an identical-output pass.
 Open: Stingray printed the raw prompt (no `[INST]` framing visible) while `llama-mtmd-cli` applies the model's chat template, so the comparison is not
 yet apples-to-apples; Phases 1-5 (pinpoint selection, resize/pad, tile order, separators, per-view embedding parity via `llama-mtmd-debug`) are still to do.
+
+## Resolution (2026-10-01)
+
+Phase results against `llama-server` on the real LLaVA-1.6-mistral-7b checkpoint (paired first-token log-probs, `--verbose-prompt` top-10):
+
+| Phase | Result |
+| --- | --- |
+| Geometry (best-resolution pick, grid, tile offsets) | ✅ matches the `llama-mtmd-debug` log (800×800 → 672×672, 2×2, slices (0,0),(336,0),(0,336),(336,336)); pinned by `LlavaImagePreprocessorGeometryTests` (16 tests) |
+| Separators / marker tokens | ✅ none (token counts agree exactly: 1759 for 672×336, 2909 for 800×600) |
+| **View order** | 🔧 **real defect, fixed.** Stingray fed the overview first; mtmd (`ov_img_first = false`) feeds slices row-major and the overview LAST. 672×336: mean first-token \|Δlogprob\| 0.22 → 0.07; 800×600: top-9 identical order, mean gap ~0.05 |
+| Granite Vision 3.2 (shares the adapter) | kept overview-first: it matched llama-server token-for-token in that order on 2026-09-27 (2242-token invoice). The adapter switches on the presence of `clip.vision.feature_layer`. The 2026-10-01 re-check against a fresh server was inconclusive (prompt template differs: 30 vs 70 text tokens, garbage in both orders), so the 09-27 evidence stands |
+| Pixel-level resize/pad parity, per-view embedding parity | ⚪ unverified: `llama-mtmd-debug preproc` prints geometry only, there is no oracle for pixels or per-view embeddings |
+| LLaVA-OneVision | ⚪ not covered |
+
+Residual gap (~0.05–0.07 mean log-prob) is consistent with resize/embedding rounding but cannot be attributed without a pixel oracle.

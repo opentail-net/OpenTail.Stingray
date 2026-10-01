@@ -548,7 +548,10 @@ public static class UnifiedVisionPipeline
             // mtmd (MLP projector, no slice template, ov_img_first = false) feeds the slices row-major and the overview image LAST.
             // Verified 2026-10-01 against llama-server on a real LLaVA-1.6 checkpoint (docs/1-correctness/15): overview-first gave a mean
             // first-token log-prob gap of 0.22 vs llama.cpp, overview-last 0.07.
-            var views = LlavaImagePreprocessor.OverviewLast(LlavaImagePreprocessor.PreprocessViews(rgb, width, height, side, pins, mean, std));
+            // Granite Vision 3.2 (explicit clip.vision.feature_layer) was verified token-for-token against llama-server with the
+            // overview FIRST (2026-09-27, 2242-token invoice), so it keeps that order; plain LLaVA-1.6 uses overview-last.
+            var views = LlavaImagePreprocessor.PreprocessViews(rgb, width, height, side, pins, mean, std);
+            if (!g.Metadata.ContainsKey("clip.vision.feature_layer")) views = LlavaImagePreprocessor.OverviewLast(views);
             var parts = new List<float[]>(views.Count);
             tokenCount = 0;
             foreach (var chw in views)
