@@ -31,7 +31,8 @@ That answer came from a 469 MB model running on an ordinary desktop CPU, in abou
   [docs/STATUS.md](docs/STATUS.md).
 
 **New here? [What can I do with Stingray?](docs/WHAT-YOU-CAN-DO.md)** is a one-page tour of every task it
-handles, what you need and where the limits are. If something goes wrong, see
+handles, what you need and where the limits are, and the [task guides](docs/guides/README.md) show how to do
+each one. If something goes wrong, see
 [troubleshooting](docs/TROUBLESHOOTING.md).
 
 ## Quick start: chat from C#

@@ -67,7 +67,7 @@ even if it happens to load.
 
 ## Where next
 
-1. **First run:** the [README](../README.md) quick start, or `stingray setup chat`.
+1. **First run:** the [README](../README.md) quick start, or `stingray setup chat`. Then the [task guides](guides/README.md): chat, vision, structured output and tools, speech, search, images and video, serving.
 2. **Pick a model:** [MODELS.md](MODELS.md). It is short and curated.
 3. **Run it properly:** [RUNNING.md](RUNNING.md) has the command, memory and speed for each model.
 4. **Check it is verified:** [STATUS.md](STATUS.md).

@@ -8,6 +8,7 @@ first, then the engineering backlog, grouped by theme in priority order.
 | I want to… | Read |
 |---|---|
 | See everything I can do, in plain language | [WHAT-YOU-CAN-DO.md](WHAT-YOU-CAN-DO.md) |
+| Do a specific task step by step (chat, vision, speech, images, serving) | [guides/](guides/README.md) |
 | Fix a problem (slow, out of memory, wrong output, will not load) | [TROUBLESHOOTING.md](TROUBLESHOOTING.md) |
 | Pick and download a model | [MODELS.md](MODELS.md) |
 | Know what works today, and how well it was checked | [STATUS.md](STATUS.md) |
