@@ -67,15 +67,25 @@ public sealed class FishSpeechCodecTests : HeavyTestBase
 
         Assert.Equal(goldenLen, pcm.Length);
 
-        double dot = 0, normA = 0, normB = 0;
+        double dot = 0, normA = 0, normB = 0, sqErr = 0, maxAbs = 0;
         for (int i = 0; i < goldenLen; i++)
         {
             dot += pcm[i] * golden[i];
             normA += pcm[i] * pcm[i];
             normB += golden[i] * golden[i];
+            double e = pcm[i] - golden[i];
+            sqErr += e * e;
+            maxAbs = Math.Max(maxAbs, Math.Abs(e));
         }
         double cosine = dot / (Math.Sqrt(normA) * Math.Sqrt(normB));
-        Assert.True(cosine > 0.99, $"cosine similarity {cosine} too low vs golden Fish Speech codec PCM output");
+        double rmsErr = Math.Sqrt(sqErr / goldenLen);
+        Console.WriteLine($"[FishCodec golden] len={goldenLen} cosine={cosine:R} maxAbsErr={maxAbs:E3} rmsErr={rmsErr:E3} goldenRms={Math.Sqrt(normB / goldenLen):E3}");
+        // Golden is the REAL fish-speech DAC (modded_dac.py + codec.pth, incl. the 8-layer quantizer.post_module
+        // transformer) run in PyTorch float32; the C# codec here loads the Q4_K_M GGUF. Measured 2026-10-01:
+        // cosine 0.9999969, maxAbsErr 1.15e-3, rmsErr 1.8e-4 (0.26% of golden RMS). Bounds leave ~3x margin.
+        Assert.True(cosine > 0.9999, $"cosine similarity {cosine} too low vs golden Fish Speech codec PCM output");
+        Assert.True(maxAbs < 4e-3, $"max abs error {maxAbs} too high vs golden Fish Speech codec PCM output");
+        Assert.True(rmsErr < 6e-4, $"rms error {rmsErr} too high vs golden Fish Speech codec PCM output");
     }
 
     /// <summary>

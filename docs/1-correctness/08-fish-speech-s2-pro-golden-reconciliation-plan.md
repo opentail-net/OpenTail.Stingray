@@ -259,3 +259,39 @@ This correctness-test reconciliation is complete when:
    independently.
 6. `bugstofix.md` and `STATUS.md` no longer label `d377049` the leading suspect without new evidence;
    remaining test debt and product status are accurately described.
+
+## Resolution — 2026-10-01 (oracles repaired; no engine defect found)
+
+Downloaded the original `fishaudio/s2-pro` (11 GB: `codec.pth`, two BF16 safetensors shards; not gated,
+licence "other") to `E:\_models\s2-pro-original`. Both references are now generated from the real full-precision
+weights; the scripts (`scratch-llamacpp-ref/fish_speech_codec_golden.py`, `fish_speech_fastar_golden.py`) are
+gitignored local oracles, as before, with the older versions kept beside them as `*_OLD*`.
+
+**Phase 1 — codec.** The old golden was a numpy transcription over the dequantized Q4_K_M GGUF that applied
+`quantizer.post_module` as a bare RMSNorm (skipping the eight-layer `WindowLimitedTransformer`). The new golden
+runs the real fish-speech `DAC` (upstream `modded_dac.py`/`rvq.py`, byte-identical to the vendored copies, config
+from `modded_dac_vq.yaml`) with `codec.pth` through `DAC.from_indices` in PyTorch (0 missing keys; the only
+"unexpected" keys are the non-persistent `freqs_cis`/`causal_mask` buffers). Same deterministic codes. C# codec vs
+this golden (`FishSpeechCodecTests.Decode_RealWeights_MatchesGoldenPcmOutput`): length 4096 matches, **cosine
+0.9999969, max abs error 1.154e-3, RMS error 1.814e-4 (0.26% of golden RMS 7.08e-2)**; the test now asserts
+cosine > 0.9999, maxAbs < 4e-3, rmsErr < 6e-4. The old 0.052 cosine was the stale oracle.
+
+**Phase 2 — Fast-AR.** `fish_speech_fastar_golden.py` now reads the local safetensors shard (default; reproduces
+the old golden to relative L2 1.6e-8) or, with `FASTAR_GGUF=<gguf> FASTAR_TAG=<tag>`, the same float math on a
+GGUF's tensors dequantized to float32 (the exact effective path for a quantized checkpoint). Pure-Python results,
+no C# involved: original BF16 vs Q8_0-dequantized cosine 0.99955 (argmax agrees); original vs **Q4_K_M-dequantized
+cosine 0.489**, relative L2 0.888, argmax flips (324 vs 497), top-10 overlap 8/10. So the Q4_K_M weights are far
+from the original through exact float math, independent of this engine. C# vs the matching dequantized-path
+reference: **Q4_K_M cosine 0.99836, relL2 5.7%, top-1 agrees, top-10 10/10; Q8_0 cosine 0.99892, relL2 5.6%,
+top-1 agrees, top-10 9/10.** New tests `Forward_Q4KMWeights_MatchesDequantizedPathOracle` and
+`Forward_Q8_0Weights_MatchesDequantizedPathOracle` assert these (cosine > 0.995 plus top-1 agreement). The old
+Q4-vs-original test is now `Forward_Q4KM_vs_FullPrecision_CharacterizesQuantizationLoss` (C# measured 0.4406;
+asserts only 0.30-0.70, no correctness claim). `ForwardStep_MatchesForward_ForSamePrefix` and the Q8_0-vs-original
+golden still pass.
+
+**Phase 3 (`ce6a914` → `d377049` A/B):** not run. Its trigger was a valid test showing a regression; both
+repaired oracles pass at the current revision, so there is no regression evidence to attribute.
+
+Practical note: Q4_K_M Fast-AR logits are about 0.49 cosine from the original model's (top-1 differs on this
+input). That is a property of this checkpoint's quantization (Q4_K on `fast_embeddings`/`wo`/`w1`/`w3`), not of the
+engine; if Fast-AR quality matters, prefer the Q8_0 checkpoint.

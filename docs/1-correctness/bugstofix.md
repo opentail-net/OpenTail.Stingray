@@ -10,7 +10,6 @@ State key: 🔴 open defect · 🟡 open investigation · 🔵 blocked on an ass
 | # | Area | State | Next action | Latest evidence |
 | --- | --- | --- | --- | --- |
 | 09 | GLM-4.5 Q5_K activations | 🟡 | 19b: broader Q5_K inventory with the gate on, plus a gate-on/off speed measurement (default stays off) | Paired NLL vs llama.cpp: PPL `[1024,+)` 8.7753 → 8.6200 (llama.cpp 8.6125) with `STINGRAY_Q5K_DECODE_Q8K=1`; neutral on SmolLM2 Q5_K_M. `docs/103` item 19 |
-| 08 | Fish Speech S2 Pro oracle | 🔵 | Repair codec oracle (needs the original PyTorch checkpoint) and decide what the Q4 Fast-AR test should assert | Q8 Fast-AR cosine 0.997, Q4 0.44 with near-identical dequantized tensors: a test-contract question, not an engine defect |
 | 15 | LLaVA-NeXT AnyRes | 🔵 | Needs the real checkpoint and a reference | Plan written, correctly deferred |
 | 19 | RWKV6 CPU | ⚪ | Only against a concrete model target | `17-ggml-op-coverage-verification-plan.md` |
 | 20 | RWKV7 CPU | ⚪ | Same | same |
@@ -19,6 +18,7 @@ State key: 🔴 open defect · 🟡 open investigation · 🔵 blocked on an ass
 | 07 | FunASR Paraformer / Nano | 🟢 | — | Real Mandarin clip matches ONNX control; three stacked causes fixed 2026-10-01 |
 | 06 | Jais v1 | 🟢 | — | ALiBi + gated-FFN bias; PPL 36.94 vs llama.cpp 37.60 ± 5.74 |
 | 11 | LFM2 PPL "gap" | 🟢 | — | Labels were swapped; no gap |
+| 08 | Fish Speech S2 Pro oracles | 🟢 | None; prefer the Q8_0 checkpoint if Fast-AR quality matters | Codec cosine 0.9999969 vs real-DAC golden; Q4_K_M/Q8_0 Fast-AR vs dequantized-path reference 0.9984/0.9989; Q4 vs original 0.49 is quantization (pure float math gives the same) |
 | 14 | Qwen-VL image input on CUDA / Vulkan hybrid | 🟢 closed, not a bug | None; reopen if CUDA hardware becomes available | CPU and full Vulkan done; CLI fails closed on unsupported backends. CUDA/hybrid are unimplemented and untested (no GPU to verify), not broken |
 | 10 / 13 | GLM-4.7-Flash and Granite-H small PPL | 🟢 characterized | None; reopen only if the router-level investigation is wanted | Paired dNLL +0.0127 (2.2 SE) and +0.0171 (1.8 SE); small systematic offset on Q2_K-heavy MoE models, kernels/KV precision ruled out; not an engine defect |
 | 03 | Sweep memory report narratives | 🟢 | — | Informational; PersonaPlex explanations in that report should not be trusted |
@@ -103,7 +103,7 @@ are three views of it.
     `models/_models/paraformer-q8.gguf` (237 MB). Tests that look up "paraformer-q8.gguf" in
     `models/` first load the wrong model; rename or move the Nano file.
   - **Lookup/identity fix (2026-09-30):** the Paraformer encoder, predictor, decoder, mel-extractor, weights, and perf tests select `models/_models/paraformer-q8.gguf` by validated GGUF architecture and `pf.vocab`; Nano-specific tests select the root Nano GGUF. Both Paraformer GGUF and WAV are present. `FunAsrPipeline.Architecture` reports the loaded GGUF architecture and the real-weight test asserts `paraformer`. The empty-transcript inference issue remains open for stage-by-stage diagnosis; it is not asset-blocked.
-- [ ] **08. Fish Speech S2 Pro correctness-test reconciliation: stale codec oracle and Q4 Fast-AR precision** (found 2026-09-27 by the `docs/103` item 2 landscape sweep).
+- [x] **08. Fish Speech S2 Pro correctness-test reconciliation — CLOSED 2026-10-01: oracles repaired from the original fishaudio/s2-pro weights; no engine defect (codec cosine 0.9999969; Q4_K_M and Q8_0 Fast-AR match their dequantized-path references at 0.998/0.999; the Q4 gap to the original is quantization)** (found 2026-09-27 by the `docs/103` item 2 landscape sweep).
   - **Observed test failures:**
     - `FishSpeechCodecTests.Decode_RealWeights_MatchesGoldenPcmOutput`: PCM cosine 0.052 vs the old golden.
     - `FishSpeechFastArTests.Forward_RealWeights_MatchesGoldenOracle`: fast-AR logits cosine 0.44 vs the full-precision golden using `models/s2-pro-q4_k_m.gguf`.
