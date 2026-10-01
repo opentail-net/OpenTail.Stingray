@@ -1,30 +1,41 @@
-Resolved entries split out to
-[done/bugstofix-resolved-2026-08.md](../done/bugstofix-resolved-2026-08.md), 2026-08-15 (most recently
-updated 2026-08-27 with the `DeepSeekMoeGraph.cs`/`MlaAttention.cs` column-major layout fixes and
-the `IqCodebooks.cs` entry, which had already been marked FIXED but was left here by mistake). This
-file keeps only what's still open.
+# Correctness backlog — status dashboard
 
-**Closed implementation scope — GLM-4.5 Q5_K×Q8_K:** [archived here](../done/09-glm45-q5k-activation-implementation.md).
-The GLM PPL gap is not resolved and the model is not admitted; gate-on real-weight validation is tracked separately as [docs/103 item 19](../103-quickest-first-plan.md).
+Last updated 2026-10-01. **This table is the source of truth for current state; everything under
+"Tracked items" is the evidence behind it.** A line that says "historically failed" below is *not* a
+statement that something is broken today: check the **State** column first.
 
-**Closed investigation moved out** (2026-08-27): the full DeepSeek-V2-Lite MLA/YaRN/MoE-routing
-investigation (`ModelCompatibility.cs:460`/`461`, originally logged 2026-08-21) is now at
-[done/032-deepseek2-mla-yarn-moe-routing-investigation.md](../done/032-deepseek2-mla-yarn-moe-routing-investigation.md).
-tl;dr: multiple real bugs found and fixed along the way (YaRN/kq_scale, expert_weights_norm/scale,
-RMSNorm/softmax/SiLU double-precision & ggml-exp fidelity, and — the final entry — a genuine
-Q8_0 activation-quantization bug in `MatVecQ8_0` that had silently invalidated the earlier
-"native Q8_0" measurement). None of them individually or together produce "Paris" from this
-checkpoint+prompt; the router's top-6-of-64 routing decisions are chronically near-tied
-(median margin ~0.002) regardless of quantization level (Q2_K through native Q8_0), which is a
-property of the trained weights, not of numerical precision. Investigation closed; do not
-restart a fourth round of kernel-level chasing on this checkpoint without new evidence.
+State key: 🔴 open defect · 🟡 open investigation · 🔵 blocked on an asset or hardware ·
+⚪ deferred (no concrete model target) · 🟢 closed/verified · ℹ️ informational.
 
-**Closed item 16 — IQ1_S / IQ1_M / IQ2_XS / IQ2_S coverage verification.** All four formats are
-implemented, reference-table verified, admitted, and have valid CPU matvec routes. IQ2_XS/IQ2_S are
-also covered by the existing Qwen3.8-27B 24-of-24 exact greedy receipt. IQ1_S/IQ1_M have independent
-formula cross-checks but no tractable real-weight receipt; this is an evidence limitation, not an
-implementation gap. See the [verification receipt](../done/16-iq-formats-coverage-verification.md),
-[GGUF model coverage history](../done/01-gguf-model-coverage-plan.md), and
+| # | Area | State | Next action | Latest evidence |
+| --- | --- | --- | --- | --- |
+| 09 | GLM-4.5 Q5_K activations | 🟡 | 19b: broader Q5_K inventory with the gate on, plus a gate-on/off speed measurement (default stays off) | Paired NLL vs llama.cpp: PPL `[1024,+)` 8.7753 → 8.6200 (llama.cpp 8.6125) with `STINGRAY_Q5K_DECODE_Q8K=1`; neutral on SmolLM2 Q5_K_M. `docs/103` item 19 |
+| 10 | GLM-4.7-Flash (`deepseek2`) PPL | 🟡 | Test non-absorbed MLA and MoE routing numerics against llama.cpp (only if worth a router-level investigation) | Paired dNLL +0.0127 (2.2 SE), ~1.3% PPL; kernels, KV precision, Q8_K quantizer ruled out |
+| 13 | Granite 4.0-H small PPL | 🟡 | Same as 10 (shares the Q2_K-heavy MoE offset); Mamba-2 summation order | Paired dNLL +0.0171 (1.8 SE); batched == per-token with Q8 default-off |
+| 08 | Fish Speech S2 Pro oracle | 🔵 | Repair codec oracle (needs the original PyTorch checkpoint) and decide what the Q4 Fast-AR test should assert | Q8 Fast-AR cosine 0.997, Q4 0.44 with near-identical dequantized tensors: a test-contract question, not an engine defect |
+| 14 | Qwen-VL image input on CUDA / Vulkan hybrid | 🔵 | Needs a CUDA GPU (none on this machine) | CPU and full Vulkan done; CLI fails closed on unsupported backends |
+| 15 | LLaVA-NeXT AnyRes | 🔵 | Needs the real checkpoint and a reference | Plan written, correctly deferred |
+| 19 | RWKV6 CPU | ⚪ | Only against a concrete model target | `17-ggml-op-coverage-verification-plan.md` |
+| 20 | RWKV7 CPU | ⚪ | Same | same |
+| 21 | Generic `SOLVE_TRI` | ⚪ | Only when a concrete consumer exists | same |
+| 03 | Sweep memory report narratives | ℹ️ | None (informational) | PersonaPlex explanations in that report should not be trusted |
+| 12 | LFM2-MoE parity and admission | 🟢 | — | Flash-64 attention, not a bug; `lfm2moe` admitted 2026-10-01 |
+| 07 | FunASR Paraformer / Nano | 🟢 | — | Real Mandarin clip matches ONNX control; three stacked causes fixed 2026-10-01 |
+| 06 | Jais v1 | 🟢 | — | ALiBi + gated-FFN bias; PPL 36.94 vs llama.cpp 37.60 ± 5.74 |
+| 11 | LFM2 PPL "gap" | 🟢 | — | Labels were swapped; no gap |
+| 04 / 05 | Granite Vision EOS; Voxtral GGUF | 🟢 | — | Closed 2026-10-01 / 2026-09-30 |
+| 01 / 02 / 16 / 17 / 18 | Sweep rerun; prefill self-consistency; IQ formats; ggml op audit; speculative decoder | 🟢 | — | See each item below |
+
+**Cross-cutting finding (2026-10-01):** on Q2_K/Q3_K-heavy MoE models (GLM-4.5, GLM-4.7-Flash,
+Granite-H small) Stingray scores ~0.014 nats/token worse than llama.cpp (pooled +0.0144, SE 0.0045,
+3.2 SE; dense models sit at about −0.007). It is small and not yet explained: items 09, 10 and 13
+are three views of it.
+
+**Archive pointers:** [resolved entries](../done/bugstofix-resolved-2026-08.md) ·
+[GLM-4.5 Q5_K×Q8_K implementation](../done/09-glm45-q5k-activation-implementation.md) ·
+[DeepSeek-V2-Lite MLA/YaRN/MoE-routing investigation (closed; do not restart without new evidence)](../done/032-deepseek2-mla-yarn-moe-routing-investigation.md) ·
+[IQ formats verification receipt (item 16)](../done/16-iq-formats-coverage-verification.md) ·
+[GGUF model coverage history](../done/01-gguf-model-coverage-plan.md) ·
 [CPU implementation record](../done/05-cpu-architecture-kernel-opportunities.md).
 
 ## Tracked items
