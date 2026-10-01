@@ -49,7 +49,7 @@ public sealed class SetupCommand : Command<SetupCommand.Settings>
         {
             if (!interactive)
             {
-                AnsiConsole.MarkupLine("[red]This licence needs an explicit yes.[/] Read it, then rerun with [yellow]--accept-licence[/].");
+                AnsiConsole.ErrorLine("[red]This licence needs an explicit yes.[/] Read it, then rerun with [yellow]--accept-licence[/].");
                 return 1;
             }
             if (!Confirm("Do you accept this licence?", defaultYes: false))

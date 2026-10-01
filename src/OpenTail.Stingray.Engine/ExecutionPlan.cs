@@ -93,6 +93,21 @@ public sealed record ExecutionPlan(
     {
     }
 
+    /// <summary>
+    /// Translates a plan's <see cref="KvDtype"/> into the vocabulary <c>STINGRAY_KV_DTYPE</c> (and <c>--kv-type</c>) accepts.
+    /// The plan stores <c>DType.ToString().ToLowerInvariant()</c> ("float32", "bfloat16", "q8_0") while the engine parses
+    /// "fp32", "bf16", "q8_0"; writing the plan value straight into the environment made <c>run --auto</c> throw
+    /// "STINGRAY_KV_DTYPE must be 'fp32', 'bf16', or 'q8_0' (got 'float32')". Unrecognised values pass through unchanged
+    /// so the engine still reports them.
+    /// </summary>
+    public static string KvDtypeToEnvValue(string planKvDtype) => planKvDtype.Trim().ToLowerInvariant() switch
+    {
+        "float32" or "f32" or "fp32" => "fp32",
+        "bfloat16" or "bf16" => "bf16",
+        "q8_0" or "q8" => "q8_0",
+        _ => planKvDtype,
+    };
+
     public string CompactSummary()
     {
         string backendUpper = Backend.ToUpperInvariant();

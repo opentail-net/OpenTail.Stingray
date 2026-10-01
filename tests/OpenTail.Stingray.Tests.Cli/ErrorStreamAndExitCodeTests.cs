@@ -46,11 +46,19 @@ public sealed class ErrorStreamAndExitCodeTests
         var offenders = Directory.EnumerateFiles(Path.Combine(root, "src", "OpenTail.Stingray.Cli"), "*.cs", SearchOption.AllDirectories)
             .Where(p => !p.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}"))
             .SelectMany(p => File.ReadAllText(p).Split('\n').Select((line, i) => (Path: p, Line: i + 1, Text: line)))
-            .Where(x => x.Text.Contains("AnsiConsole.MarkupLine(", StringComparison.Ordinal) && x.Text.Contains("[red]Error", StringComparison.Ordinal))
+            .Where(x => x.Text.Contains("AnsiConsole.MarkupLine(", StringComparison.Ordinal) && x.Text.Contains("[red]", StringComparison.Ordinal)
+                         && !IsRedReportLine(x.Text))
             .Select(x => $"{Path.GetFileName(x.Path)}:{x.Line}")
             .ToList();
         Assert.True(offenders.Count == 0, "errors written to stdout: " + string.Join(", ", offenders));
     }
+
+    // Red text that is part of a REPORT (a verdict or a status table), not an error: these stay on stdout.
+    private static bool IsRedReportLine(string line) =>
+        line.Contains("[red]REJECT:", StringComparison.Ordinal)
+        || line.Contains("[red]NOT SUPPORTED", StringComparison.Ordinal)
+        || line.Contains("[red]-[/]", StringComparison.Ordinal)
+        || line.Contains("non-finite NLL", StringComparison.Ordinal);
 
     [Fact]
     public void GgufTransplant_MissingArguments_ReturnsTheUsageExitCode()

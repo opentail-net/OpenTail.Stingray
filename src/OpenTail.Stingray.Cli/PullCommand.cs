@@ -92,7 +92,7 @@ public sealed class PullCommand : Command<PullCommand.Settings>
             string destPath = Path.GetFullPath(Path.Combine(outRoot, name));
             if (Path.IsPathRooted(name) || !destPath.StartsWith(outRoot + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
             {
-                AnsiConsole.MarkupLine($"[red]Skipping {Markup.Escape(name)}:[/] it would be written outside {Markup.Escape(outRoot)}.");
+                AnsiConsole.ErrorLine($"[red]Skipping {Markup.Escape(name)}:[/] it would be written outside {Markup.Escape(outRoot)}.");
                 continue;
             }
             string url = $"https://huggingface.co/{repo}/resolve/main/{Uri.EscapeDataString(name).Replace("%2F", "/")}?download=true";

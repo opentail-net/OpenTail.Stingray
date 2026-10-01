@@ -22,7 +22,7 @@ public static class InferenceEngineLoader
         opts.ModelPath = plan.ModelPath;
         opts.NGpuLayers = plan.GpuLayers;
         opts.ContextSize = plan.ContextSize;
-        opts.KvType = plan.KvDtype;
+        opts.KvType = ExecutionPlan.KvDtypeToEnvValue(plan.KvDtype);
         opts.Backend = plan.Backend.ToLowerInvariant() switch
         {
             "vulkan" => ServerBackend.Vulkan,

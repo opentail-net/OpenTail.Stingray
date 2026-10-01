@@ -544,13 +544,28 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         }
     }
 
-    protected override int Execute(Settings settings, CancellationToken cancellation)
+    /// <summary>What the argument-handling prologue decided, handed to the model-loading phase.</summary>
+    /// <param name="ResolvedPlan">The <c>--auto</c> execution plan, if one was built.</param>
+    /// <param name="GpuDeviceIndex">Resolved <c>--device</c> index (-1 = auto).</param>
+    /// <param name="DeviceNone">True when <c>--device none/cpu</c> forces the CPU path.</param>
+    /// <param name="EffNGpuLayers">GPU layers after applying device, explicit flag and plan precedence.</param>
+    /// <param name="ModelPath">The model file or package directory to load (explicit, or the default search).</param>
+    private sealed record RunPrologue(ExecutionPlan? ResolvedPlan, int GpuDeviceIndex, bool DeviceNone, int EffNGpuLayers, string ModelPath);
+
+    /// <summary>
+    /// Everything <c>run</c> does with its arguments before a model is touched: <c>--auto</c> planning, <c>--file</c>
+    /// prompt loading, thread/BLAS/device settings, the MoE and KV-cache environment overrides, and locating the model.
+    /// Extracted verbatim from the head of <see cref="Execute"/> so that method is the model-loading and generation
+    /// phases only; <c>RunCommandPrologueTests</c> pins the early-exit behaviour. Returns false with an exit code when
+    /// the arguments cannot be honoured.
+    /// </summary>
+    private static bool TryPrepare(Settings settings, out RunPrologue prologue, out int exitCode)
     {
         ExecutionPlan? resolvedPlan = null;
         if (settings.Explain && !settings.Auto)
         {
             AnsiConsole.ErrorLine("[red]Error:[/] --explain requires --auto so the displayed plan is the plan that will execute.");
-            return 1;
+            { prologue = null!; exitCode = ExitCodes.Failure; return false; }
         }
 
         if (settings.Auto && !string.IsNullOrEmpty(settings.ModelPath) && File.Exists(settings.ModelPath))
@@ -590,8 +605,8 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         {
             if (!File.Exists(promptFile))
             {
-                AnsiConsole.MarkupLine($"[red]Prompt file not found:[/] {Markup.Escape(promptFile)}");
-                return 1;
+                AnsiConsole.ErrorLine($"[red]Prompt file not found:[/] {Markup.Escape(promptFile)}");
+                { prologue = null!; exitCode = ExitCodes.Failure; return false; }
             }
             // Read failures (locked file, permissions, bad path) should fail loud + clean, not
             // throw a stack trace; Escape the message since paths can carry Spectre markup chars.
@@ -603,7 +618,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
                                           or System.Security.SecurityException or NotSupportedException)
             {
                 AnsiConsole.ErrorLine($"[red]Error reading prompt file:[/] {Markup.Escape(ex.Message)}");
-                return 1;
+                { prologue = null!; exitCode = ExitCodes.Failure; return false; }
             }
         }
 
@@ -635,7 +650,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         catch (InvalidOperationException ex)
         {
             AnsiConsole.ErrorLine($"[red]Error:[/] {Markup.Escape(ex.Message)}");
-            return 1;
+            { prologue = null!; exitCode = ExitCodes.Failure; return false; }
         }
         // `is > 0`, not `!= 0`. NGpuLayers became int? so the planner could tell "unset" from an
         // explicit "-g 0"; under the old int/default-0 shape `!= 0` meant "user asked for GPU
@@ -676,7 +691,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         if (!TryApplyCpuMoeFlags(settings.CpuMoe, settings.NCpuMoe, out string? cpuMoeError))
         {
             AnsiConsole.ErrorLine($"[red]Error:[/] {Markup.Escape(cpuMoeError!)}");
-            return 1;
+            { prologue = null!; exitCode = ExitCodes.Failure; return false; }
         }
 
         // GPU op-offload of the CPU-MoE routed prefill (default on in the engine, #390). An explicit
@@ -690,7 +705,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         // works. The CudaForwardPass constructor validates the value (fp32|bf16|q8_0).
         string? effectiveKvType = settings.KvType is { Length: > 0 }
             ? settings.KvType
-            : settings.Auto ? resolvedPlan?.KvDtype : null;
+            : settings.Auto && resolvedPlan is not null ? ExecutionPlan.KvDtypeToEnvValue(resolvedPlan.KvDtype) : null;
         if (effectiveKvType is { Length: > 0 })
             Environment.SetEnvironmentVariable("STINGRAY_KV_DTYPE", effectiveKvType);
         if (!string.IsNullOrEmpty(settings.ExpertStatsPath))
@@ -705,8 +720,23 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         if (modelPath is null || (!File.Exists(modelPath) && !Directory.Exists(modelPath)))
         {
             AnsiConsole.ErrorLine("[red]Error:[/] No model file or package directory found. Use [yellow]-m <path>[/]");
-            return 1;
+            { prologue = null!; exitCode = ExitCodes.Failure; return false; }
         }
+
+        prologue = new RunPrologue(resolvedPlan, gpuDeviceIndex, deviceNone, effNGpuLayers, modelPath);
+        exitCode = ExitCodes.Success;
+        return true;
+    }
+
+    protected override int Execute(Settings settings, CancellationToken cancellation)
+    {
+        if (!TryPrepare(settings, out var prologue, out int prologueExit))
+            return prologueExit;
+        ExecutionPlan? resolvedPlan = prologue.ResolvedPlan;
+        int gpuDeviceIndex = prologue.GpuDeviceIndex;
+        bool deviceNone = prologue.DeviceNone;
+        int effNGpuLayers = prologue.EffNGpuLayers;
+        string modelPath = prologue.ModelPath;
 
         AnsiConsole.MarkupLine($"[dim]Loading model:[/] {modelPath}");
         var sw = Stopwatch.StartNew();
@@ -802,8 +832,8 @@ public sealed class RunCommand : Command<RunCommand.Settings>
             {
                 AnsiConsole.ErrorLine("[red]Error:[/] SafeTensors package not supported:");
                 foreach (var r in pkgReport.Rejections)
-                    AnsiConsole.MarkupLine($"  [red]·[/] {Markup.Escape(r.Detail)}");
-                AnsiConsole.MarkupLine("[dim]GGUF is the recommended deployment format for quantized models.[/]");
+                    AnsiConsole.ErrorLine($"  [red]·[/] {Markup.Escape(r.Detail)}");
+                AnsiConsole.ErrorLine("[dim]GGUF is the recommended deployment format for quantized models.[/]");
                 return 1;
             }
 
@@ -856,7 +886,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
                 stTensorSource = null;
                 AnsiConsole.ErrorLine("[red]Error:[/] Failed to load tokenizer:");
                 foreach (var r in tokResult.Rejections)
-                    AnsiConsole.MarkupLine($"  [red]·[/] {Markup.Escape(r.Detail)}");
+                    AnsiConsole.ErrorLine($"  [red]·[/] {Markup.Escape(r.Detail)}");
                 return 1;
             }
 
