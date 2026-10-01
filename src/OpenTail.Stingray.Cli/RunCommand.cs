@@ -1332,6 +1332,454 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         return true;
     }
 
+    /// <summary>What <see cref="TryConfigureBackend"/> reads: the loaded model and the state decided before backend selection.</summary>
+    private sealed record BackendInputs(
+        GgufModel? Model, ModelHyperparams Hp, int CtxSize, int NGpuLayers, int GpuDeviceIndex,
+        ForwardPass? Fwd, HybridGdnForwardPass? HybridFwd, GptOssForwardPass? GptOssFwd, IForwardPass? MtpFwd,
+        IDisposable? GpuBackend, IDisposable? GpuFwd, bool TqModeIsAuto, TqQuantizer TqQuantizer);
+
+    /// <summary>What <see cref="TryConfigureBackend"/> decided: the forward/prefill/reset delegates and the GPU objects that must be disposed.</summary>
+    private sealed record BackendSetup(
+        Func<int, int, ReadOnlySpan<float>> Forward, Func<IReadOnlyList<int>, ReadOnlySpan<float>> Prefill, Action ResetCache,
+        IDisposable? GpuBackend, IDisposable? GpuFwd, IForwardPass? MtpFwd, int NGpuLayers, TqQuantizer TqQuantizer);
+
+    /// <summary>
+    /// Backend selection and forward-pass construction for a GGUF model: CPU (generic, hybrid-SSM, gpt-oss), full CUDA offload,
+    /// full Vulkan offload, and the CPU+GPU hybrids, including TurboQuant cache wiring and the multi-token-prediction head.
+    /// Extracted verbatim from <see cref="Execute"/>; inputs are copied into same-named locals (so the lambdas inside capture
+    /// ordinary locals) and the results copied out through <paramref name="setup"/>. False means a clean failure already
+    /// reported on stderr. Original notes:
+    /// Resolve which GPU backend to use when -g is non-zero. CUDA is preferred only
+    /// when the user explicitly opted in (--backend cuda) or auto-detection finds it
+    /// and Vulkan is not the explicit choice. The CUDA forward pass currently covers
+    /// dense (non-MoE) models with all layers on GPU; MoE and hybrid -g N stay on the
+    /// Vulkan path.
+    /// </summary>
+    private static bool TryConfigureBackend(Settings settings, BackendInputs inp, out BackendSetup setup, out int exitCode)
+    {
+        var model = inp.Model!;   // always non-null here: the SafeTensors path never reaches backend selection
+        var hp = inp.Hp; var ctxSize = inp.CtxSize; var nGpuLayers = inp.NGpuLayers; var gpuDeviceIndex = inp.GpuDeviceIndex;
+        var fwd = inp.Fwd; var hybridFwd = inp.HybridFwd; var gptOssFwd = inp.GptOssFwd; var mtpFwd = inp.MtpFwd;
+        var gpuBackend = inp.GpuBackend; var gpuFwd = inp.GpuFwd; var tqModeIsAuto = inp.TqModeIsAuto; var tqQuantizer = inp.TqQuantizer;
+        Func<int, int, ReadOnlySpan<float>> forward;
+        Func<IReadOnlyList<int>, ReadOnlySpan<float>> prefill;
+        Action resetCache;
+
+        bool wantCuda = false;
+        string backendStr = (settings.Backend ?? "auto").Trim().ToLowerInvariant();
+        if (nGpuLayers != 0)
+        {
+            switch (backendStr)
+            {
+                case "cuda":
+                    wantCuda = true;
+                    break;
+                case "vulkan":
+                    wantCuda = false;
+                    break;
+                case "auto":
+                case "":
+                    // Auto: pick CUDA when available. CudaForwardPass handles full-offload
+                    // (dense + MoE); CudaHybridForwardPass handles partial-offload (dense or
+                    // MoE; routed experts stream through the CudaExpertSlotManager SLRU).
+                    // TQ on CUDA requires head_dim ∈ {128, 256}; KVarN pow2 in [8, 256]
+                    // (already validated above, so kvarn implies CUDA-compatible here).
+                    bool tqHeadDimOk = tqQuantizer == TqQuantizer.KVarN
+                        || hp.HeadDim is 128 or 256;
+                    wantCuda = (!settings.TurboQuant || tqHeadDimOk)
+                        && CudaBackend.IsAvailable();
+                    break;
+                default:
+                    AnsiConsole.ErrorLine($"[red]Error:[/] Unknown --backend value '{settings.Backend}'. Expected one of: auto, vulkan, cuda.");
+                    { setup = null!; exitCode = ExitCodes.Failure; return false; }
+            }
+            if (wantCuda && settings.TurboQuant && tqQuantizer == TqQuantizer.LloydMax
+                && hp.HeadDim is not 128 and not 256)
+            {
+                AnsiConsole.MarkupLine($"[yellow]Note:[/] --backend cuda TurboQuant requires head_dim ∈ {{128, 256}} (model head_dim={hp.HeadDim}); falling back to Vulkan.");
+                wantCuda = false;
+            }
+        }
+
+        // The CUDA passes lack features only the full Vulkan pass has (fused QKV, LayerNorm,
+        // parallel residual, non-gated FFN, ...). A Vulkan -g N split of such a model runs
+        // VulkanLayerSplitForwardPass instead of HybridForwardPass (see the Vulkan branch below).
+        if (nGpuLayers != 0 && wantCuda
+            && GpuForwardPass.PartialOffloadUnsupportedReason(model, hp) is { } partialGap)
+        {
+            AnsiConsole.MarkupLine($"[yellow]Note:[/] the CUDA backend has no path for {Markup.Escape(partialGap)}; running on CPU.");
+            nGpuLayers = 0;
+        }
+
+        if (nGpuLayers == 0)
+        {
+            // CPU only
+            if (gptOssFwd is not null)
+            {
+                forward = gptOssFwd.Forward;
+                prefill = tokens => gptOssFwd.Prefill(tokens);
+                resetCache = gptOssFwd.ResetCache;
+                AnsiConsole.MarkupLine("[dim]Backend: [blue]CPU[/] (gpt-oss)[/]");
+            }
+            else if (gpuFwd is IForwardPass archGpu)
+            {
+                // Architecture-specific full-offload Vulkan passes (gpt-oss, DeepSeek2 MLA).
+                forward = archGpu.Forward;
+                prefill = tokens => archGpu.Prefill(tokens);
+                resetCache = archGpu.ResetCache;
+                string kind = archGpu is GptOssGpuForwardPass ? "gpt-oss" : "DeepSeek2 MLA";
+                AnsiConsole.MarkupLine($"[dim]Backend: [green]GPU[/] ({((VulkanBackend)gpuBackend!).Name}, {kind}, all layers)[/]");
+            }
+            else if (hybridFwd is not null)
+            {
+                forward = hybridFwd.Forward;
+                prefill = tokens => hybridFwd.Prefill(tokens);
+                resetCache = hybridFwd.ResetCache;
+                string ffnKindCpu = hp.IsMoE ? "MoE" : "dense FFN";
+                AnsiConsole.MarkupLine($"[dim]Backend: [blue]CPU[/] (hybrid GDN + {ffnKindCpu})[/]");
+            }
+            else
+            {
+                if (settings.TurboQuant)
+                {
+                    fwd!.EnableTurboQuant(fp32WindowSize: 256, bits: 3, quantizer: tqQuantizer);
+                    AnsiConsole.MarkupLine(tqQuantizer == TqQuantizer.KVarN
+                        ? "[dim]TurboQuant: [green]enabled[/] (KVarN K4V2, window=256)[/]"
+                        : "[dim]TurboQuant: [green]enabled[/] (3-bit, window=256)[/]");
+                }
+                forward = fwd!.Forward;
+                prefill = tokens => fwd.Prefill(tokens);
+                resetCache = settings.TurboQuant ? fwd.TqCache!.Reset : fwd.Cache.Reset;
+                AnsiConsole.MarkupLine("[dim]Backend: [blue]CPU[/][/]");
+            }
+        }
+        else if (wantCuda)
+        {
+            var cuda = CudaBackend.Create();
+            gpuBackend = cuda;
+            try
+            {
+                // qwen35moe (hybrid GDN+MoE) takes a dedicated CUDA forward pass that
+                // routes the 30 recurrent blocks to CPU and the 10 attention layers +
+                // MoE FFN to GPU via the CudaExpertSlotManager SLRU. Layer placement is
+                // implicit (driven by hp.LayerTypes), so we skip TierPlanner here.
+                if (hp.IsHybridSsm)
+                {
+                    var hwProfile = HardwareProfile.Detect(cuda);
+                    AnsiConsole.MarkupLine($"[dim]Hardware: {hwProfile.Summary()}[/]");
+                    var placement = new LayerPlacement(
+                        GpuLayers: hp.NumLayers,
+                        CpuLayers: 0,
+                        GpuWeightBytes: 0,
+                        GpuKvBytes: 0,
+                        RecommendedCtxSize: ctxSize > 0 ? ctxSize : Math.Min(hp.ContextLength, 4096));
+                    var chgdn = new CudaHybridGdnForwardPass(model, cuda, hp, placement);
+                    gpuFwd = chgdn;
+                    if (chgdn.HasMtpHead) mtpFwd = chgdn;
+                    forward = chgdn.Forward;
+                    prefill = tokens => chgdn.Prefill(tokens);
+                    resetCache = chgdn.ResetCache;
+                    int gdnLayers = 0, attnLayers = 0;
+                    for (int i = 0; i < hp.NumLayers; i++)
+                        if (hp.LayerTypes![i] == LayerType.Attention) attnLayers++; else gdnLayers++;
+                    string ffnKind = hp.IsMoE
+                        ? (chgdn.IsMoeOnCpu ? "MoE on CPU" : "MoE on GPU")
+                        : "dense FFN on CPU";
+                    AnsiConsole.MarkupLine($"[dim]Backend: [green]CUDA hybrid GDN[/] ({cuda.Name}, {gdnLayers} GDN + {attnLayers} attn on GPU + {ffnKind})[/]");
+                }
+                else
+                {
+
+                // For -g -1 (auto), run TierPlanner against CUDA's VRAM and use the
+                // resulting layer split — same logic as the Vulkan branch. Without this,
+                // a model bigger than VRAM (e.g. Qwen3-Coder 30B-A3B in 12 GB) would
+                // attempt full-offload via CudaForwardPass and silently OOM.
+                int cudaGpuLayers;
+                bool moeAutoNeedsHybrid = false;
+                if (nGpuLayers == -1)
+                {
+                    var hwProfile = HardwareProfile.Detect(cuda);
+                    AnsiConsole.MarkupLine($"[dim]Hardware: {hwProfile.Summary()}[/]");
+                    var placement = TierPlanner.Plan(model, hp, hwProfile, settings.TurboQuant,
+                        requestedCtxSize: ctxSize, kvDtype: CudaForwardPass.ResolveConfiguredKvDType());
+                    cudaGpuLayers = placement.GpuLayers;
+
+                    // Gemma 4 KV-share constraint: the shared-KV source layers (E4B:
+                    // 22 and 23) must live on the same tier as the shared-KV tail
+                    // layers (24..41) because cross-tier KV reads are not wired.
+                    // TierPlanner doesn't model this and may return a value that
+                    // straddles the boundary (e.g. 30). Clamp UP to NumLayers when
+                    // possible — TierPlanner's per-layer KV budget ignores that
+                    // shared-KV-aliased layers don't grow their own cache, so it's
+                    // pessimistic by ~18 layers × full-ctx-KV; full offload almost
+                    // always fits when the auto value already exceeded the safe max.
+                    if (hp.KvSourceLayer is { } ksl)
+                    {
+                        int minSrc = int.MaxValue;
+                        for (int i = 0; i < hp.NumLayers; i++)
+                            if (ksl[i] >= 0 && ksl[i] < minSrc) minSrc = ksl[i];
+                        if (minSrc != int.MaxValue
+                            && cudaGpuLayers > minSrc
+                            && cudaGpuLayers < hp.NumLayers)
+                        {
+                            AnsiConsole.MarkupLine(
+                                $"[dim]TierPlanner returned -g {cudaGpuLayers}, which would " +
+                                $"cross the Gemma 4 KV-share boundary (sources <= {minSrc}); " +
+                                $"promoting to full offload (-g {hp.NumLayers}). " +
+                                $"Pass -g {minSrc} explicitly if VRAM is tight.[/]");
+                            cudaGpuLayers = hp.NumLayers;
+                        }
+                    }
+
+                    // Issue #215: a MoE model whose routed experts can't all stay resident must use the
+                    // hybrid path (which streams experts via SLRU or runs them on CPU), even though the
+                    // planner places the whole attention trunk on GPU (GpuLayers == NumLayers). Without
+                    // this, auto (-g -1) falls through to full-offload CudaForwardPass and thrashes/OOMs —
+                    // the very case TierPlanner was added to avoid.
+                    moeAutoNeedsHybrid = hp.IsMoE
+                        && cudaGpuLayers == hp.NumLayers
+                        && placement.MoeRoutedExpertBytes > placement.ExpertCacheBudgetBytes;
+                    if (moeAutoNeedsHybrid)
+                    {
+                        AnsiConsole.MarkupLine(
+                            $"[dim]MoE routed experts ({placement.MoeRoutedExpertBytes / (1024.0 * 1024):F0} MB) " +
+                            $"exceed the GPU expert-cache budget ({placement.ExpertCacheBudgetBytes / (1024.0 * 1024):F0} MB); " +
+                            $"using the hybrid path (CPU-MoE / SLRU streaming) instead of full offload.[/]");
+                    }
+                }
+                else
+                {
+                    cudaGpuLayers = nGpuLayers;
+                }
+
+                bool wantHybrid = (cudaGpuLayers > 0 && cudaGpuLayers < hp.NumLayers) || moeAutoNeedsHybrid;
+                if (wantHybrid && settings.TurboQuant && tqQuantizer == TqQuantizer.KVarN)
+                {
+                    // KVarN on GPU is the full-offload CudaForwardPass path only (issue
+                    // #180 Task 5a) — the hybrid pass has no KVarN ring/tile machinery.
+                    if (tqModeIsAuto)
+                    {
+                        // Auto-resolved KVarN, but TierPlanner picked a partial split.
+                        // The partial-offload path has no KVarN machinery, so the only
+                        // TQ codec available here is Lloyd-Max — which ships codebooks
+                        // for head dim 128/256 only. For any other (pow-2) head dim the
+                        // auto path reached here precisely because the Lloyd-Max 128/256
+                        // gate above was skipped under the KVarN assumption; downgrading
+                        // now would crash in the forward-pass constructor. Fail cleanly
+                        // instead, pointing at the CPU KVarN path that does support it.
+                        if (!TqSupport.IsLloydMaxHeadDim(hp.HeadDim))
+                        {
+                            AnsiConsole.ErrorLine(
+                                $"[red]Error:[/] --tq with head dim {hp.HeadDim} requires KVarN (Lloyd-Max has no " +
+                                $"codebook for this head dim), but KVarN needs full CUDA offload and only " +
+                                $"{cudaGpuLayers}/{hp.NumLayers} layers fit this GPU. Use [yellow]-g 0[/] for the CPU KVarN path.");
+                            { setup = null!; exitCode = ExitCodes.Failure; return false; }
+                        }
+                        // downgrade with the #432 quality warning instead of erroring.
+                        tqQuantizer = TqQuantizer.LloydMax;
+                        AnsiConsole.MarkupLine(
+                            $"[yellow]Warning:[/] --tq is falling back to the Lloyd-Max 3-bit quantizer (KVarN requires " +
+                            $"full CUDA offload; only {cudaGpuLayers}/{hp.NumLayers} layers fit this GPU). " +
+                            $"{Markup.Escape(TqSupport.QualityWarningReason)}; " +
+                            "use [yellow]-g 0[/] for CPU KVarN or pass [yellow]--tq-mode lloydmax[/] to silence this warning.");
+                    }
+                    else
+                    {
+                        AnsiConsole.ErrorLine(
+                            $"[red]Error:[/] --tq-mode kvarn requires full CUDA offload, but only " +
+                            $"{cudaGpuLayers}/{hp.NumLayers} layers fit this GPU. Use [yellow]-g 0[/] for the CPU path.");
+                        { setup = null!; exitCode = ExitCodes.Failure; return false; }
+                    }
+                }
+                if (wantHybrid)
+                {
+                    var hwProfile = HardwareProfile.Detect(cuda);
+                    // pinGpuLayers prices the expert-cache budget (read by the MoE CPU-vs-SLRU
+                    // auto-decision) for this exact split. cudaGpuLayers equals the auto value on
+                    // the -g -1 path, so pinning is a no-op there and only matters on explicit -g N
+                    // (#224). A `with { GpuLayers = }` override would leave the budget stale.
+                    var placement = TierPlanner.Plan(model, hp, hwProfile, settings.TurboQuant,
+                        requestedCtxSize: ctxSize, kvDtype: CudaForwardPass.ResolveConfiguredKvDType(),
+                        pinGpuLayers: cudaGpuLayers);
+
+                    var chfwd = new CudaHybridForwardPass(model, cuda, hp, placement, settings.TurboQuant);
+                    gpuFwd = chfwd;
+                    forward = chfwd.Forward;
+                    prefill = tokens => chfwd.Prefill(tokens);
+                    resetCache = chfwd.ResetCache;
+                    AnsiConsole.MarkupLine($"[dim]Backend: [green]CUDA hybrid[/] ({cuda.Name}, {placement.GpuLayers} GPU + {placement.CpuLayers} CPU layers)[/]");
+                }
+                else if (cudaGpuLayers == 0)
+                {
+                    // Model doesn't fit any GPU layer — fall back to CPU forward pass.
+                    // (Hybrid GDN models were rejected before reaching here.)
+                    cuda.Dispose();
+                    gpuBackend = null;
+                    if (settings.TurboQuant)
+                    {
+                        fwd!.EnableTurboQuant(fp32WindowSize: 256, bits: 3, quantizer: tqQuantizer);
+                        AnsiConsole.MarkupLine(tqQuantizer == TqQuantizer.KVarN
+                            ? "[dim]TurboQuant: [green]enabled[/] (KVarN K4V2, window=256)[/]"
+                            : "[dim]TurboQuant: [green]enabled[/] (3-bit, window=256)[/]");
+                    }
+                    forward = fwd!.Forward;
+                    prefill = tokens => fwd.Prefill(tokens);
+                    resetCache = settings.TurboQuant ? fwd.TqCache!.Reset : fwd.Cache.Reset;
+                    AnsiConsole.MarkupLine("[dim]Backend: [blue]CPU[/] (CUDA fallback: no GPU-capable layers)[/]");
+                }
+                else
+                {
+                    var cfwd = new CudaForwardPass(model, cuda, hp, ctxSize,
+                        enableTurboQuant: settings.TurboQuant, tqQuantizer: tqQuantizer);
+                    if (settings.TurboQuant)
+                        AnsiConsole.MarkupLine(tqQuantizer == TqQuantizer.KVarN
+                            ? $"[dim]TurboQuant: [green]enabled[/] (KVarN K4V2, window=256, context: {cfwd.MaxSeqLen})[/]"
+                            : $"[dim]TurboQuant: [green]enabled[/] (3-bit, context: {cfwd.MaxSeqLen})[/]");
+                    gpuFwd = cfwd;
+                    forward = cfwd.Forward;
+                    prefill = tokens => cfwd.Prefill(tokens);
+                    resetCache = cfwd.ResetCache;
+                    AnsiConsole.MarkupLine($"[dim]Backend: [green]CUDA[/] ({cuda.Name}, all {hp.NumLayers} layers)[/]");
+                }
+                } // end !IsHybridSsm
+            }
+            catch
+            {
+                gpuFwd?.Dispose();
+                gpuBackend?.Dispose();
+                gpuFwd = null;
+                gpuBackend = null;
+                throw;
+            }
+        }
+        else
+        {
+            var gpu = new VulkanBackend(gpuDeviceIndex);
+            gpuBackend = gpu;
+            try
+            {
+                gpu.PrintDeviceInfo();
+
+                var hwProfile = HardwareProfile.Detect(gpu);
+                AnsiConsole.MarkupLine($"[dim]Hardware: {hwProfile.Summary()}[/]");
+
+                // qwen35moe / qwen36 (hybrid GDN + attention) takes a dedicated Vulkan forward
+                // pass. Layer placement is implicit (driven by hp.LayerTypes — GDN + attn on GPU,
+                // FFN per-layer GPU/CPU), so TierPlanner is skipped, mirroring the CUDA branch above.
+                // (PR4 Round 1 — dense FFN; Round 2 — MoE FFN via CPU-MoE / GPU-SLRU.)
+                if (hp.IsHybridSsm)
+                {
+                    var placement = new LayerPlacement(
+                        GpuLayers: hp.NumLayers,
+                        CpuLayers: 0,
+                        GpuWeightBytes: 0,
+                        GpuKvBytes: 0,
+                        RecommendedCtxSize: ctxSize > 0 ? ctxSize : Math.Min(hp.ContextLength, 4096));
+                    var vhgdn = new VulkanHybridGdnForwardPass(model, gpu, hp, placement);
+                    gpuFwd = vhgdn;
+                    // #357 PR4: the Vulkan GDN hybrid now ships an MTP/NEXTN head (HasMtpHead +
+                    // SupportsBatchVerify), so admit it into the MtpDecoder path exactly like the
+                    // CUDA branch above. ResolveCliMtp gates the rest on --spec-type / greedy / no-think.
+                    if (vhgdn.HasMtpHead) mtpFwd = vhgdn;
+                    forward = vhgdn.Forward;
+                    prefill = tokens => vhgdn.Prefill(tokens);
+                    resetCache = vhgdn.ResetCache;
+                    int gdnLayers = 0, attnLayers = 0;
+                    for (int i = 0; i < hp.NumLayers; i++)
+                        if (hp.LayerTypes![i] == LayerType.Attention) attnLayers++; else gdnLayers++;
+                    string vkFfnKind = hp.IsMoE ? "MoE FFN (CPU/SLRU)" : "dense FFN GPU/CPU";
+                    AnsiConsole.MarkupLine($"[dim]Backend: [green]Vulkan hybrid GDN[/] ({gpu.Name}, {gdnLayers} GDN + {attnLayers} attn on GPU + {vkFfnKind})[/]");
+                    goto done;
+                }
+
+                // Auto-detect layer count when -g -1
+                if (nGpuLayers == -1)
+                {
+                    var placement = TierPlanner.Plan(model, hp, hwProfile, settings.TurboQuant, requestedCtxSize: ctxSize);
+                    nGpuLayers = placement.GpuLayers;
+                    if (nGpuLayers == 0)
+                    {
+                        // Hybrid GDN models were rejected before reaching this Vulkan branch.
+                        // KVarN cannot reach the Vulkan backend (explicit --tq-mode kvarn is
+                        // rejected up front, auto falls back to Lloyd-Max), so tqQuantizer is
+                        // always Lloyd-Max here.
+                        if (settings.TurboQuant)
+                        {
+                            fwd!.EnableTurboQuant(fp32WindowSize: 256, bits: 3, quantizer: tqQuantizer);
+                            AnsiConsole.MarkupLine("[dim]TurboQuant: [green]enabled[/] (3-bit, window=256)[/]");
+                        }
+
+                        forward = fwd!.Forward;
+                        prefill = tokens => fwd.Prefill(tokens);
+                        resetCache = settings.TurboQuant ? fwd.TqCache!.Reset : fwd.Cache.Reset;
+                        AnsiConsole.MarkupLine("[dim]Backend: [blue]CPU[/] (auto fallback: no GPU-capable layers for this model/path)[/]");
+                        goto done;
+                    }
+                }
+
+                if (nGpuLayers >= hp.NumLayers)
+                {
+                    // All layers on GPU. Pass the configured KV dtype (issues #311 / #325): fp32
+                    // default, bf16 = half-width KV, q8_0 = block-quantized (~quarter) KV. Reuses
+                    // the same --kv-type/STINGRAY_KV_DTYPE parser the CUDA path uses.
+                    var gfwd = new GpuForwardPass(model, gpu, hp, ctxSize,
+                        enableTurboQuant: settings.TurboQuant,
+                        kvDtype: CudaForwardPass.ResolveConfiguredKvDTypeOrNull());
+                    if (settings.TurboQuant)
+                        AnsiConsole.MarkupLine($"[dim]TurboQuant: [green]enabled[/] (3-bit, context: {gfwd.MaxSeqLen})[/]");
+                    gpuFwd = gfwd;
+                    forward = gfwd.Forward;
+                    prefill = tokens => gfwd.Prefill(tokens);
+                    resetCache = gfwd.ResetCache;
+                    AnsiConsole.MarkupLine($"[dim]Backend: [green]GPU[/] ({gpu.Name}, all {hp.NumLayers} layers)[/]");
+                }
+                else if (hp.LayerHeadDim is not null || GpuForwardPass.PartialOffloadUnsupportedReason(model, hp) is not null)
+                {
+                    // -g N for Gemma 4 and for architectures HybridForwardPass has no path for: GPU
+                    // layers [0, N) + CPU layers [N, L) (VulkanLayerSplitForwardPass). Gemma 4 caps N
+                    // so every shared-KV source layer stays on the CPU.
+                    int maxSplit = VulkanLayerSplitForwardPass.MaxGpuLayers(hp);
+                    int split = Math.Min(nGpuLayers, maxSplit);
+                    if (split < nGpuLayers)
+                        AnsiConsole.MarkupLine($"[yellow]Note:[/] this model splits at most {maxSplit} layers onto the GPU; using -g {split}.");
+                    var sfwd = new VulkanLayerSplitForwardPass(model, gpu, hp, split, ctxSize);
+                    gpuFwd = sfwd;
+                    forward = sfwd.Forward;
+                    prefill = tokens => sfwd.Prefill(tokens);
+                    resetCache = sfwd.ResetCache;
+                    AnsiConsole.MarkupLine($"[dim]Backend: [yellow]Split[/] ({gpu.Name}, {split} GPU + {hp.NumLayers - split} CPU layers)[/]");
+                }
+                else
+                {
+                    // Hybrid: N layers GPU, rest CPU. nGpuLayers is the auto value on -g -1 and the
+                    // explicit count otherwise; pinGpuLayers prices weights/KV/budget for it (#224).
+                    var placement = TierPlanner.Plan(model, hp, hwProfile, settings.TurboQuant,
+                        requestedCtxSize: ctxSize, pinGpuLayers: nGpuLayers);
+
+                    var hfwd = new HybridForwardPass(model, gpu, hp, placement, settings.TurboQuant);
+                    gpuFwd = hfwd;
+                    forward = hfwd.Forward;
+                    prefill = tokens => hfwd.Prefill(tokens);
+                    resetCache = hfwd.ResetCache;
+                    AnsiConsole.MarkupLine($"[dim]Backend: [yellow]Hybrid[/] ({gpu.Name}, {placement.GpuLayers} GPU + {placement.CpuLayers} CPU layers)[/]");
+                }
+            }
+            catch
+            {
+                gpuFwd?.Dispose();
+                gpuBackend?.Dispose();
+                gpuFwd = null;
+                gpuBackend = null;
+                throw;
+            }
+        }
+
+    done:
+        setup = new BackendSetup(forward, prefill, resetCache, gpuBackend, gpuFwd, mtpFwd, nGpuLayers, tqQuantizer);
+        exitCode = ExitCodes.Success;
+        return true;
+    }
+
     protected override int Execute(Settings settings, CancellationToken cancellation)
     {
         if (!TryPrepare(settings, out var prologue, out int prologueExit))
@@ -1716,419 +2164,19 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         // The MoE+hybrid path is now exercised by
         // OpenTail.Stingray.Tests.ForwardPass.VulkanShaderTests.HybridForwardPass_MoE_ProducesFiniteLogits.
 
-        // Resolve which GPU backend to use when -g is non-zero. CUDA is preferred only
-        // when the user explicitly opted in (--backend cuda) or auto-detection finds it
-        // and Vulkan is not the explicit choice. The CUDA forward pass currently covers
-        // dense (non-MoE) models with all layers on GPU; MoE and hybrid -g N stay on the
-        // Vulkan path.
-        bool wantCuda = false;
-        string backendStr = (settings.Backend ?? "auto").Trim().ToLowerInvariant();
-        if (nGpuLayers != 0)
-        {
-            switch (backendStr)
-            {
-                case "cuda":
-                    wantCuda = true;
-                    break;
-                case "vulkan":
-                    wantCuda = false;
-                    break;
-                case "auto":
-                case "":
-                    // Auto: pick CUDA when available. CudaForwardPass handles full-offload
-                    // (dense + MoE); CudaHybridForwardPass handles partial-offload (dense or
-                    // MoE; routed experts stream through the CudaExpertSlotManager SLRU).
-                    // TQ on CUDA requires head_dim ∈ {128, 256}; KVarN pow2 in [8, 256]
-                    // (already validated above, so kvarn implies CUDA-compatible here).
-                    bool tqHeadDimOk = tqQuantizer == TqQuantizer.KVarN
-                        || hp.HeadDim is 128 or 256;
-                    wantCuda = (!settings.TurboQuant || tqHeadDimOk)
-                        && CudaBackend.IsAvailable();
-                    break;
-                default:
-                    AnsiConsole.ErrorLine($"[red]Error:[/] Unknown --backend value '{settings.Backend}'. Expected one of: auto, vulkan, cuda.");
-                    return 1;
-            }
-            if (wantCuda && settings.TurboQuant && tqQuantizer == TqQuantizer.LloydMax
-                && hp.HeadDim is not 128 and not 256)
-            {
-                AnsiConsole.MarkupLine($"[yellow]Note:[/] --backend cuda TurboQuant requires head_dim ∈ {{128, 256}} (model head_dim={hp.HeadDim}); falling back to Vulkan.");
-                wantCuda = false;
-            }
-        }
-
-        // The CUDA passes lack features only the full Vulkan pass has (fused QKV, LayerNorm,
-        // parallel residual, non-gated FFN, ...). A Vulkan -g N split of such a model runs
-        // VulkanLayerSplitForwardPass instead of HybridForwardPass (see the Vulkan branch below).
-        if (nGpuLayers != 0 && wantCuda
-            && GpuForwardPass.PartialOffloadUnsupportedReason(model, hp) is { } partialGap)
-        {
-            AnsiConsole.MarkupLine($"[yellow]Note:[/] the CUDA backend has no path for {Markup.Escape(partialGap)}; running on CPU.");
-            nGpuLayers = 0;
-        }
-
-        if (nGpuLayers == 0)
-        {
-            // CPU only
-            if (gptOssFwd is not null)
-            {
-                forward = gptOssFwd.Forward;
-                prefill = tokens => gptOssFwd.Prefill(tokens);
-                resetCache = gptOssFwd.ResetCache;
-                AnsiConsole.MarkupLine("[dim]Backend: [blue]CPU[/] (gpt-oss)[/]");
-            }
-            else if (gpuFwd is IForwardPass archGpu)
-            {
-                // Architecture-specific full-offload Vulkan passes (gpt-oss, DeepSeek2 MLA).
-                forward = archGpu.Forward;
-                prefill = tokens => archGpu.Prefill(tokens);
-                resetCache = archGpu.ResetCache;
-                string kind = archGpu is GptOssGpuForwardPass ? "gpt-oss" : "DeepSeek2 MLA";
-                AnsiConsole.MarkupLine($"[dim]Backend: [green]GPU[/] ({((VulkanBackend)gpuBackend!).Name}, {kind}, all layers)[/]");
-            }
-            else if (hybridFwd is not null)
-            {
-                forward = hybridFwd.Forward;
-                prefill = tokens => hybridFwd.Prefill(tokens);
-                resetCache = hybridFwd.ResetCache;
-                string ffnKindCpu = hp.IsMoE ? "MoE" : "dense FFN";
-                AnsiConsole.MarkupLine($"[dim]Backend: [blue]CPU[/] (hybrid GDN + {ffnKindCpu})[/]");
-            }
-            else
-            {
-                if (settings.TurboQuant)
-                {
-                    fwd!.EnableTurboQuant(fp32WindowSize: 256, bits: 3, quantizer: tqQuantizer);
-                    AnsiConsole.MarkupLine(tqQuantizer == TqQuantizer.KVarN
-                        ? "[dim]TurboQuant: [green]enabled[/] (KVarN K4V2, window=256)[/]"
-                        : "[dim]TurboQuant: [green]enabled[/] (3-bit, window=256)[/]");
-                }
-                forward = fwd!.Forward;
-                prefill = tokens => fwd.Prefill(tokens);
-                resetCache = settings.TurboQuant ? fwd.TqCache!.Reset : fwd.Cache.Reset;
-                AnsiConsole.MarkupLine("[dim]Backend: [blue]CPU[/][/]");
-            }
-        }
-        else if (wantCuda)
-        {
-            var cuda = CudaBackend.Create();
-            gpuBackend = cuda;
-            try
-            {
-                // qwen35moe (hybrid GDN+MoE) takes a dedicated CUDA forward pass that
-                // routes the 30 recurrent blocks to CPU and the 10 attention layers +
-                // MoE FFN to GPU via the CudaExpertSlotManager SLRU. Layer placement is
-                // implicit (driven by hp.LayerTypes), so we skip TierPlanner here.
-                if (hp.IsHybridSsm)
-                {
-                    var hwProfile = HardwareProfile.Detect(cuda);
-                    AnsiConsole.MarkupLine($"[dim]Hardware: {hwProfile.Summary()}[/]");
-                    var placement = new LayerPlacement(
-                        GpuLayers: hp.NumLayers,
-                        CpuLayers: 0,
-                        GpuWeightBytes: 0,
-                        GpuKvBytes: 0,
-                        RecommendedCtxSize: ctxSize > 0 ? ctxSize : Math.Min(hp.ContextLength, 4096));
-                    var chgdn = new CudaHybridGdnForwardPass(model, cuda, hp, placement);
-                    gpuFwd = chgdn;
-                    if (chgdn.HasMtpHead) mtpFwd = chgdn;
-                    forward = chgdn.Forward;
-                    prefill = tokens => chgdn.Prefill(tokens);
-                    resetCache = chgdn.ResetCache;
-                    int gdnLayers = 0, attnLayers = 0;
-                    for (int i = 0; i < hp.NumLayers; i++)
-                        if (hp.LayerTypes![i] == LayerType.Attention) attnLayers++; else gdnLayers++;
-                    string ffnKind = hp.IsMoE
-                        ? (chgdn.IsMoeOnCpu ? "MoE on CPU" : "MoE on GPU")
-                        : "dense FFN on CPU";
-                    AnsiConsole.MarkupLine($"[dim]Backend: [green]CUDA hybrid GDN[/] ({cuda.Name}, {gdnLayers} GDN + {attnLayers} attn on GPU + {ffnKind})[/]");
-                }
-                else
-                {
-
-                // For -g -1 (auto), run TierPlanner against CUDA's VRAM and use the
-                // resulting layer split — same logic as the Vulkan branch. Without this,
-                // a model bigger than VRAM (e.g. Qwen3-Coder 30B-A3B in 12 GB) would
-                // attempt full-offload via CudaForwardPass and silently OOM.
-                int cudaGpuLayers;
-                bool moeAutoNeedsHybrid = false;
-                if (nGpuLayers == -1)
-                {
-                    var hwProfile = HardwareProfile.Detect(cuda);
-                    AnsiConsole.MarkupLine($"[dim]Hardware: {hwProfile.Summary()}[/]");
-                    var placement = TierPlanner.Plan(model, hp, hwProfile, settings.TurboQuant,
-                        requestedCtxSize: ctxSize, kvDtype: CudaForwardPass.ResolveConfiguredKvDType());
-                    cudaGpuLayers = placement.GpuLayers;
-
-                    // Gemma 4 KV-share constraint: the shared-KV source layers (E4B:
-                    // 22 and 23) must live on the same tier as the shared-KV tail
-                    // layers (24..41) because cross-tier KV reads are not wired.
-                    // TierPlanner doesn't model this and may return a value that
-                    // straddles the boundary (e.g. 30). Clamp UP to NumLayers when
-                    // possible — TierPlanner's per-layer KV budget ignores that
-                    // shared-KV-aliased layers don't grow their own cache, so it's
-                    // pessimistic by ~18 layers × full-ctx-KV; full offload almost
-                    // always fits when the auto value already exceeded the safe max.
-                    if (hp.KvSourceLayer is { } ksl)
-                    {
-                        int minSrc = int.MaxValue;
-                        for (int i = 0; i < hp.NumLayers; i++)
-                            if (ksl[i] >= 0 && ksl[i] < minSrc) minSrc = ksl[i];
-                        if (minSrc != int.MaxValue
-                            && cudaGpuLayers > minSrc
-                            && cudaGpuLayers < hp.NumLayers)
-                        {
-                            AnsiConsole.MarkupLine(
-                                $"[dim]TierPlanner returned -g {cudaGpuLayers}, which would " +
-                                $"cross the Gemma 4 KV-share boundary (sources <= {minSrc}); " +
-                                $"promoting to full offload (-g {hp.NumLayers}). " +
-                                $"Pass -g {minSrc} explicitly if VRAM is tight.[/]");
-                            cudaGpuLayers = hp.NumLayers;
-                        }
-                    }
-
-                    // Issue #215: a MoE model whose routed experts can't all stay resident must use the
-                    // hybrid path (which streams experts via SLRU or runs them on CPU), even though the
-                    // planner places the whole attention trunk on GPU (GpuLayers == NumLayers). Without
-                    // this, auto (-g -1) falls through to full-offload CudaForwardPass and thrashes/OOMs —
-                    // the very case TierPlanner was added to avoid.
-                    moeAutoNeedsHybrid = hp.IsMoE
-                        && cudaGpuLayers == hp.NumLayers
-                        && placement.MoeRoutedExpertBytes > placement.ExpertCacheBudgetBytes;
-                    if (moeAutoNeedsHybrid)
-                    {
-                        AnsiConsole.MarkupLine(
-                            $"[dim]MoE routed experts ({placement.MoeRoutedExpertBytes / (1024.0 * 1024):F0} MB) " +
-                            $"exceed the GPU expert-cache budget ({placement.ExpertCacheBudgetBytes / (1024.0 * 1024):F0} MB); " +
-                            $"using the hybrid path (CPU-MoE / SLRU streaming) instead of full offload.[/]");
-                    }
-                }
-                else
-                {
-                    cudaGpuLayers = nGpuLayers;
-                }
-
-                bool wantHybrid = (cudaGpuLayers > 0 && cudaGpuLayers < hp.NumLayers) || moeAutoNeedsHybrid;
-                if (wantHybrid && settings.TurboQuant && tqQuantizer == TqQuantizer.KVarN)
-                {
-                    // KVarN on GPU is the full-offload CudaForwardPass path only (issue
-                    // #180 Task 5a) — the hybrid pass has no KVarN ring/tile machinery.
-                    if (tqModeIsAuto)
-                    {
-                        // Auto-resolved KVarN, but TierPlanner picked a partial split.
-                        // The partial-offload path has no KVarN machinery, so the only
-                        // TQ codec available here is Lloyd-Max — which ships codebooks
-                        // for head dim 128/256 only. For any other (pow-2) head dim the
-                        // auto path reached here precisely because the Lloyd-Max 128/256
-                        // gate above was skipped under the KVarN assumption; downgrading
-                        // now would crash in the forward-pass constructor. Fail cleanly
-                        // instead, pointing at the CPU KVarN path that does support it.
-                        if (!TqSupport.IsLloydMaxHeadDim(hp.HeadDim))
-                        {
-                            AnsiConsole.ErrorLine(
-                                $"[red]Error:[/] --tq with head dim {hp.HeadDim} requires KVarN (Lloyd-Max has no " +
-                                $"codebook for this head dim), but KVarN needs full CUDA offload and only " +
-                                $"{cudaGpuLayers}/{hp.NumLayers} layers fit this GPU. Use [yellow]-g 0[/] for the CPU KVarN path.");
-                            return 1;
-                        }
-                        // downgrade with the #432 quality warning instead of erroring.
-                        tqQuantizer = TqQuantizer.LloydMax;
-                        AnsiConsole.MarkupLine(
-                            $"[yellow]Warning:[/] --tq is falling back to the Lloyd-Max 3-bit quantizer (KVarN requires " +
-                            $"full CUDA offload; only {cudaGpuLayers}/{hp.NumLayers} layers fit this GPU). " +
-                            $"{Markup.Escape(TqSupport.QualityWarningReason)}; " +
-                            "use [yellow]-g 0[/] for CPU KVarN or pass [yellow]--tq-mode lloydmax[/] to silence this warning.");
-                    }
-                    else
-                    {
-                        AnsiConsole.ErrorLine(
-                            $"[red]Error:[/] --tq-mode kvarn requires full CUDA offload, but only " +
-                            $"{cudaGpuLayers}/{hp.NumLayers} layers fit this GPU. Use [yellow]-g 0[/] for the CPU path.");
-                        return 1;
-                    }
-                }
-                if (wantHybrid)
-                {
-                    var hwProfile = HardwareProfile.Detect(cuda);
-                    // pinGpuLayers prices the expert-cache budget (read by the MoE CPU-vs-SLRU
-                    // auto-decision) for this exact split. cudaGpuLayers equals the auto value on
-                    // the -g -1 path, so pinning is a no-op there and only matters on explicit -g N
-                    // (#224). A `with { GpuLayers = }` override would leave the budget stale.
-                    var placement = TierPlanner.Plan(model, hp, hwProfile, settings.TurboQuant,
-                        requestedCtxSize: ctxSize, kvDtype: CudaForwardPass.ResolveConfiguredKvDType(),
-                        pinGpuLayers: cudaGpuLayers);
-
-                    var chfwd = new CudaHybridForwardPass(model, cuda, hp, placement, settings.TurboQuant);
-                    gpuFwd = chfwd;
-                    forward = chfwd.Forward;
-                    prefill = tokens => chfwd.Prefill(tokens);
-                    resetCache = chfwd.ResetCache;
-                    AnsiConsole.MarkupLine($"[dim]Backend: [green]CUDA hybrid[/] ({cuda.Name}, {placement.GpuLayers} GPU + {placement.CpuLayers} CPU layers)[/]");
-                }
-                else if (cudaGpuLayers == 0)
-                {
-                    // Model doesn't fit any GPU layer — fall back to CPU forward pass.
-                    // (Hybrid GDN models were rejected before reaching here.)
-                    cuda.Dispose();
-                    gpuBackend = null;
-                    if (settings.TurboQuant)
-                    {
-                        fwd!.EnableTurboQuant(fp32WindowSize: 256, bits: 3, quantizer: tqQuantizer);
-                        AnsiConsole.MarkupLine(tqQuantizer == TqQuantizer.KVarN
-                            ? "[dim]TurboQuant: [green]enabled[/] (KVarN K4V2, window=256)[/]"
-                            : "[dim]TurboQuant: [green]enabled[/] (3-bit, window=256)[/]");
-                    }
-                    forward = fwd!.Forward;
-                    prefill = tokens => fwd.Prefill(tokens);
-                    resetCache = settings.TurboQuant ? fwd.TqCache!.Reset : fwd.Cache.Reset;
-                    AnsiConsole.MarkupLine("[dim]Backend: [blue]CPU[/] (CUDA fallback: no GPU-capable layers)[/]");
-                }
-                else
-                {
-                    var cfwd = new CudaForwardPass(model, cuda, hp, ctxSize,
-                        enableTurboQuant: settings.TurboQuant, tqQuantizer: tqQuantizer);
-                    if (settings.TurboQuant)
-                        AnsiConsole.MarkupLine(tqQuantizer == TqQuantizer.KVarN
-                            ? $"[dim]TurboQuant: [green]enabled[/] (KVarN K4V2, window=256, context: {cfwd.MaxSeqLen})[/]"
-                            : $"[dim]TurboQuant: [green]enabled[/] (3-bit, context: {cfwd.MaxSeqLen})[/]");
-                    gpuFwd = cfwd;
-                    forward = cfwd.Forward;
-                    prefill = tokens => cfwd.Prefill(tokens);
-                    resetCache = cfwd.ResetCache;
-                    AnsiConsole.MarkupLine($"[dim]Backend: [green]CUDA[/] ({cuda.Name}, all {hp.NumLayers} layers)[/]");
-                }
-                } // end !IsHybridSsm
-            }
-            catch
-            {
-                gpuFwd?.Dispose();
-                gpuBackend?.Dispose();
-                gpuFwd = null;
-                gpuBackend = null;
-                throw;
-            }
-        }
-        else
-        {
-            var gpu = new VulkanBackend(gpuDeviceIndex);
-            gpuBackend = gpu;
-            try
-            {
-                gpu.PrintDeviceInfo();
-
-                var hwProfile = HardwareProfile.Detect(gpu);
-                AnsiConsole.MarkupLine($"[dim]Hardware: {hwProfile.Summary()}[/]");
-
-                // qwen35moe / qwen36 (hybrid GDN + attention) takes a dedicated Vulkan forward
-                // pass. Layer placement is implicit (driven by hp.LayerTypes — GDN + attn on GPU,
-                // FFN per-layer GPU/CPU), so TierPlanner is skipped, mirroring the CUDA branch above.
-                // (PR4 Round 1 — dense FFN; Round 2 — MoE FFN via CPU-MoE / GPU-SLRU.)
-                if (hp.IsHybridSsm)
-                {
-                    var placement = new LayerPlacement(
-                        GpuLayers: hp.NumLayers,
-                        CpuLayers: 0,
-                        GpuWeightBytes: 0,
-                        GpuKvBytes: 0,
-                        RecommendedCtxSize: ctxSize > 0 ? ctxSize : Math.Min(hp.ContextLength, 4096));
-                    var vhgdn = new VulkanHybridGdnForwardPass(model, gpu, hp, placement);
-                    gpuFwd = vhgdn;
-                    // #357 PR4: the Vulkan GDN hybrid now ships an MTP/NEXTN head (HasMtpHead +
-                    // SupportsBatchVerify), so admit it into the MtpDecoder path exactly like the
-                    // CUDA branch above. ResolveCliMtp gates the rest on --spec-type / greedy / no-think.
-                    if (vhgdn.HasMtpHead) mtpFwd = vhgdn;
-                    forward = vhgdn.Forward;
-                    prefill = tokens => vhgdn.Prefill(tokens);
-                    resetCache = vhgdn.ResetCache;
-                    int gdnLayers = 0, attnLayers = 0;
-                    for (int i = 0; i < hp.NumLayers; i++)
-                        if (hp.LayerTypes![i] == LayerType.Attention) attnLayers++; else gdnLayers++;
-                    string vkFfnKind = hp.IsMoE ? "MoE FFN (CPU/SLRU)" : "dense FFN GPU/CPU";
-                    AnsiConsole.MarkupLine($"[dim]Backend: [green]Vulkan hybrid GDN[/] ({gpu.Name}, {gdnLayers} GDN + {attnLayers} attn on GPU + {vkFfnKind})[/]");
-                    goto backendConfigured;
-                }
-
-                // Auto-detect layer count when -g -1
-                if (nGpuLayers == -1)
-                {
-                    var placement = TierPlanner.Plan(model, hp, hwProfile, settings.TurboQuant, requestedCtxSize: ctxSize);
-                    nGpuLayers = placement.GpuLayers;
-                    if (nGpuLayers == 0)
-                    {
-                        // Hybrid GDN models were rejected before reaching this Vulkan branch.
-                        // KVarN cannot reach the Vulkan backend (explicit --tq-mode kvarn is
-                        // rejected up front, auto falls back to Lloyd-Max), so tqQuantizer is
-                        // always Lloyd-Max here.
-                        if (settings.TurboQuant)
-                        {
-                            fwd!.EnableTurboQuant(fp32WindowSize: 256, bits: 3, quantizer: tqQuantizer);
-                            AnsiConsole.MarkupLine("[dim]TurboQuant: [green]enabled[/] (3-bit, window=256)[/]");
-                        }
-
-                        forward = fwd!.Forward;
-                        prefill = tokens => fwd.Prefill(tokens);
-                        resetCache = settings.TurboQuant ? fwd.TqCache!.Reset : fwd.Cache.Reset;
-                        AnsiConsole.MarkupLine("[dim]Backend: [blue]CPU[/] (auto fallback: no GPU-capable layers for this model/path)[/]");
-                        goto backendConfigured;
-                    }
-                }
-
-                if (nGpuLayers >= hp.NumLayers)
-                {
-                    // All layers on GPU. Pass the configured KV dtype (issues #311 / #325): fp32
-                    // default, bf16 = half-width KV, q8_0 = block-quantized (~quarter) KV. Reuses
-                    // the same --kv-type/STINGRAY_KV_DTYPE parser the CUDA path uses.
-                    var gfwd = new GpuForwardPass(model, gpu, hp, ctxSize,
-                        enableTurboQuant: settings.TurboQuant,
-                        kvDtype: CudaForwardPass.ResolveConfiguredKvDTypeOrNull());
-                    if (settings.TurboQuant)
-                        AnsiConsole.MarkupLine($"[dim]TurboQuant: [green]enabled[/] (3-bit, context: {gfwd.MaxSeqLen})[/]");
-                    gpuFwd = gfwd;
-                    forward = gfwd.Forward;
-                    prefill = tokens => gfwd.Prefill(tokens);
-                    resetCache = gfwd.ResetCache;
-                    AnsiConsole.MarkupLine($"[dim]Backend: [green]GPU[/] ({gpu.Name}, all {hp.NumLayers} layers)[/]");
-                }
-                else if (hp.LayerHeadDim is not null || GpuForwardPass.PartialOffloadUnsupportedReason(model, hp) is not null)
-                {
-                    // -g N for Gemma 4 and for architectures HybridForwardPass has no path for: GPU
-                    // layers [0, N) + CPU layers [N, L) (VulkanLayerSplitForwardPass). Gemma 4 caps N
-                    // so every shared-KV source layer stays on the CPU.
-                    int maxSplit = VulkanLayerSplitForwardPass.MaxGpuLayers(hp);
-                    int split = Math.Min(nGpuLayers, maxSplit);
-                    if (split < nGpuLayers)
-                        AnsiConsole.MarkupLine($"[yellow]Note:[/] this model splits at most {maxSplit} layers onto the GPU; using -g {split}.");
-                    var sfwd = new VulkanLayerSplitForwardPass(model, gpu, hp, split, ctxSize);
-                    gpuFwd = sfwd;
-                    forward = sfwd.Forward;
-                    prefill = tokens => sfwd.Prefill(tokens);
-                    resetCache = sfwd.ResetCache;
-                    AnsiConsole.MarkupLine($"[dim]Backend: [yellow]Split[/] ({gpu.Name}, {split} GPU + {hp.NumLayers - split} CPU layers)[/]");
-                }
-                else
-                {
-                    // Hybrid: N layers GPU, rest CPU. nGpuLayers is the auto value on -g -1 and the
-                    // explicit count otherwise; pinGpuLayers prices weights/KV/budget for it (#224).
-                    var placement = TierPlanner.Plan(model, hp, hwProfile, settings.TurboQuant,
-                        requestedCtxSize: ctxSize, pinGpuLayers: nGpuLayers);
-
-                    var hfwd = new HybridForwardPass(model, gpu, hp, placement, settings.TurboQuant);
-                    gpuFwd = hfwd;
-                    forward = hfwd.Forward;
-                    prefill = tokens => hfwd.Prefill(tokens);
-                    resetCache = hfwd.ResetCache;
-                    AnsiConsole.MarkupLine($"[dim]Backend: [yellow]Hybrid[/] ({gpu.Name}, {placement.GpuLayers} GPU + {placement.CpuLayers} CPU layers)[/]");
-                }
-            }
-            catch
-            {
-                gpuFwd?.Dispose();
-                gpuBackend?.Dispose();
-                gpuFwd = null;
-                gpuBackend = null;
-                throw;
-            }
-        }
+        // Backend selection and forward-pass construction (CPU / CUDA / Vulkan / hybrid): see TryConfigureBackend.
+        if (!TryConfigureBackend(settings,
+                new BackendInputs(model, hp, ctxSize, nGpuLayers, gpuDeviceIndex, fwd, hybridFwd, gptOssFwd, mtpFwd, gpuBackend, gpuFwd, tqModeIsAuto, tqQuantizer),
+                out var backend, out int backendExit))
+            return backendExit;
+        forward = backend.Forward;
+        prefill = backend.Prefill;
+        resetCache = backend.ResetCache;
+        gpuBackend = backend.GpuBackend;
+        gpuFwd = backend.GpuFwd;
+        mtpFwd = backend.MtpFwd;
+        nGpuLayers = backend.NGpuLayers;
+        tqQuantizer = backend.TqQuantizer;
 
     backendConfigured:
         int activeContextLength = (gpuFwd as IForwardPass)?.MaxSeqLen
