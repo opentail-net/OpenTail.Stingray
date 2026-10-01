@@ -10,25 +10,25 @@ State key: 🔴 open defect · 🟡 open investigation · 🔵 blocked on an ass
 | # | Area | State | Next action | Latest evidence |
 | --- | --- | --- | --- | --- |
 | 09 | GLM-4.5 Q5_K activations | 🟡 | 19b: broader Q5_K inventory with the gate on, plus a gate-on/off speed measurement (default stays off) | Paired NLL vs llama.cpp: PPL `[1024,+)` 8.7753 → 8.6200 (llama.cpp 8.6125) with `STINGRAY_Q5K_DECODE_Q8K=1`; neutral on SmolLM2 Q5_K_M. `docs/103` item 19 |
-| 10 | GLM-4.7-Flash (`deepseek2`) PPL | 🟡 | Test non-absorbed MLA and MoE routing numerics against llama.cpp (only if worth a router-level investigation) | Paired dNLL +0.0127 (2.2 SE), ~1.3% PPL; kernels, KV precision, Q8_K quantizer ruled out |
-| 13 | Granite 4.0-H small PPL | 🟡 | Same as 10 (shares the Q2_K-heavy MoE offset); Mamba-2 summation order | Paired dNLL +0.0171 (1.8 SE); batched == per-token with Q8 default-off |
 | 08 | Fish Speech S2 Pro oracle | 🔵 | Repair codec oracle (needs the original PyTorch checkpoint) and decide what the Q4 Fast-AR test should assert | Q8 Fast-AR cosine 0.997, Q4 0.44 with near-identical dequantized tensors: a test-contract question, not an engine defect |
 | 14 | Qwen-VL image input on CUDA / Vulkan hybrid | 🔵 | Needs a CUDA GPU (none on this machine) | CPU and full Vulkan done; CLI fails closed on unsupported backends |
 | 15 | LLaVA-NeXT AnyRes | 🔵 | Needs the real checkpoint and a reference | Plan written, correctly deferred |
 | 19 | RWKV6 CPU | ⚪ | Only against a concrete model target | `17-ggml-op-coverage-verification-plan.md` |
 | 20 | RWKV7 CPU | ⚪ | Same | same |
 | 21 | Generic `SOLVE_TRI` | ⚪ | Only when a concrete consumer exists | same |
-| 03 | Sweep memory report narratives | ℹ️ | None (informational) | PersonaPlex explanations in that report should not be trusted |
 | 12 | LFM2-MoE parity and admission | 🟢 | — | Flash-64 attention, not a bug; `lfm2moe` admitted 2026-10-01 |
 | 07 | FunASR Paraformer / Nano | 🟢 | — | Real Mandarin clip matches ONNX control; three stacked causes fixed 2026-10-01 |
 | 06 | Jais v1 | 🟢 | — | ALiBi + gated-FFN bias; PPL 36.94 vs llama.cpp 37.60 ± 5.74 |
 | 11 | LFM2 PPL "gap" | 🟢 | — | Labels were swapped; no gap |
+| 10 / 13 | GLM-4.7-Flash and Granite-H small PPL | 🟢 characterized | None; reopen only if the router-level investigation is wanted | Paired dNLL +0.0127 (2.2 SE) and +0.0171 (1.8 SE); small systematic offset on Q2_K-heavy MoE models, kernels/KV precision ruled out; not an engine defect |
+| 03 | Sweep memory report narratives | 🟢 | — | Informational; PersonaPlex explanations in that report should not be trusted |
 | 04 / 05 | Granite Vision EOS; Voxtral GGUF | 🟢 | — | Closed 2026-10-01 / 2026-09-30 |
 | 01 / 02 / 16 / 17 / 18 | Sweep rerun; prefill self-consistency; IQ formats; ggml op audit; speculative decoder | 🟢 | — | See each item below |
 
 **Cross-cutting finding (2026-10-01):** on Q2_K/Q3_K-heavy MoE models (GLM-4.5, GLM-4.7-Flash,
 Granite-H small) Stingray scores ~0.014 nats/token worse than llama.cpp (pooled +0.0144, SE 0.0045,
-3.2 SE; dense models sit at about −0.007). It is small and not yet explained: items 09, 10 and 13
+3.2 SE; dense models sit at about −0.007). It is small and not yet explained (items 10 and 13 are closed
+as characterized; item 09 stays open for its inventory and speed work): items 09, 10 and 13
 are three views of it.
 
 **Archive pointers:** [resolved entries](../done/bugstofix-resolved-2026-08.md) ·
@@ -64,7 +64,7 @@ are three views of it.
   - **Failure:** `dotnet test tests/OpenTail.Stingray.Tests.ForwardPass.exe -class OpenTail.Stingray.Tests.ForwardPass.PrefillDecodeSelfConsistencyTests` fails even run alone, single-process, with `STINGRAY_RUN_HEAVY_TESTS=1` — not a concurrency artifact from the mutex/sweep work done the same day.
   - **Context:** pins the invariant that whole-prompt `Prefill(t0..tN)` agrees with `Prefill(t0)` followed by `Forward(t1..tN)` token-by-token, on `SmolLM2-1.7B-Instruct-Q4_K_M.gguf`.
   - **Root cause:** the default dequant cache diverted prefill to F32 matmul whenever OpenBLAS was loaded, even with the Q8 gate disabled; decode continued through quantized MatVec. Disabling the numerically different cache route restored same-kernel parity. All three F32 cases (2, 8, and 33 tokens) pass with OpenBLAS loaded.
-- [ ] **03. `docs/sweep-tests-memory-report.md`'s per-test "why" narratives were mostly noise** (found 2026-09-28).
+- [x] **03. `docs/sweep-tests-memory-report.md`'s per-test "why" narratives were mostly noise — CLOSED 2026-10-01 (informational, no action)** (found 2026-09-28).
   - **What happened:** the memory sweep report attributed the top-10 memory ranking's 7 PersonaPlex entries to per-test specifics (Mimi codec held in both directions, KV-cache growth, frame count, voice-prompt extraction). The real, shared driver was `PersonaPlexLmTensorSource` eagerly dequantizing the whole 7B Q8_0 checkpoint to fp32 (~28 GB) on every test — fixed same day (zero-copy Q8_0 views, ~11.17 GiB, ~2.2x faster decode too; see `docs/done/audio-review-new-progress.md`'s PersonaPlex 7B entry, `PerformanceLeague.md`).
   - **Why it matters:** the report's rank-by-rank analysis is still useful for the non-PersonaPlex entries (`HunyuanVideoGpuParityTests`, `ZImageGpuRealScaleBisectTests`, `Sd3PerStepTrajectoryParityTests` — genuine double-load-pattern costs), but its 7 PersonaPlex explanations should not be trusted as the real cause without re-deriving them against the now-much-lower baseline.
   - **Next step:** none required — informational, so a future reader of that report doesn't take its PersonaPlex reasoning at face value.
@@ -112,7 +112,7 @@ are three views of it.
   - **Next step:** follow [`08-fish-speech-s2-pro-golden-reconciliation-plan.md`](08-fish-speech-s2-pro-golden-reconciliation-plan.md): classify current vs `7a68185`, regenerate the codec golden with the full post-module reference path, establish precision-appropriate Q8_0/Q4 Fast-AR tests, and inspect individual `d377049` changes only if a valid comparison demonstrates a regression.
   - **New evidence 2026-10-01 (Fast-AR):** the same golden input through `FishSpeechFastAr.Forward` gives cos **0.9971** vs the full-precision golden with `s2-pro-q8_0.gguf` (a real run: the Q8_0 file is in `models/_models/`) but **0.4406** with `s2-pro-q4_k_m.gguf`; Q4 vs Q8 outputs agree at only 0.506 (argmax 497 vs 324, golden 324), even though every compared Fast-AR tensor dequantizes to cos >= 0.9973 (Q4_K) / 0.9998 (Q6_K) against its Q8_0 twin. So the Q4_K_M checkpoint, not the Fast-AR math, is what diverges; the Q8_0 golden is the correctness gate and the Q4 golden is a quantization-sensitivity measurement (not a defect signal). The codec golden still needs the real 8-layer `post_module` transformer in its oracle, which needs the original PyTorch checkpoint (not on this machine).
   - **Status:** retain the conservative 🟡 rating until permanent, correctly scoped regression coverage is in place. The numeric golden failures are test/oracle issues to reconcile, not established evidence of a current end-to-end audio defect.
-- [ ] **10. GLM-4.7-Flash (`deepseek2`) perplexity 0.9-1.4% worse than llama.cpp; not at parity** (logged 2026-09-27; `docs/103-quickest-first-plan.md` item 3).
+- [x] **10. GLM-4.7-Flash (`deepseek2`) perplexity — CLOSED 2026-10-01 as characterized: paired +0.0127 nats (2.2 SE, ~1.3% PPL), a small systematic offset shared with other Q2_K-heavy MoE models, not an engine defect** (logged 2026-09-27; `docs/103-quickest-first-plan.md` item 3).
   - **Checkpoint:** `GLM-4.7-Flash-Q2_K.gguf` (10.6 GB).
   - **Result:** wikitext second-half PPL at -c 2048: ours 8.1757 batched prefill, 8.2100 sequential;
     `llama-perplexity --chunks 1` 8.0997.
@@ -163,7 +163,7 @@ are three views of it.
   - **Resolved 2026-10-01:** root cause was flash-64 attention (online softmax), not a batched-path bug: with `STINGRAY_PREFILL_ATTN_FLASH64=0` batched == per-token bit-for-bit. PPL [512,1024) 7.3425 (per-token) / 7.2882 (batched, flash) vs llama.cpp 7.9130 ± 1.09. Batched default restored (`STINGRAY_LFM2_MOE_BATCHED_PREFILL=0` opts out) and `lfm2moe` admitted; see the plan's Resolution section. (Superseded text follows.) Was open: reconcile PPL against llama.cpp using identical tokens/evaluation semantics, explain the experimental
     attention difference, and admit `lfm2moe` only after that reference check. See [12-LFM2-MoE batched/per-token
     parity plan](12-lfm2moe-batched-per-token-parity-plan.md).
-- [ ] **13. Granite 4.0-H small (MoE) PPL parity** (logged 2026-09-28, docs/103 item 13): `granite-4.0-h-small-Q2_K`,
+- [x] **13. Granite 4.0-H small (MoE) PPL parity — CLOSED 2026-10-01 as characterized: paired +0.0171 nats (1.8 SE), same small systematic offset as item 10, not an engine defect** (logged 2026-09-28, docs/103 item 13): `granite-4.0-h-small-Q2_K`,
   wikitext -c 2048 `[1024,+)` 26.4155 (old Q8 batched default) / 26.5483 (per token) vs
   `llama-perplexity --chunks 1` 26.1080; at -c 512 9.3505 vs 9.4103 (ours lower). The large error (157) was missing
   top-k renormalisation, fixed. Investigation found Q8 activation quantization in the batched MoE expert-down path caused
