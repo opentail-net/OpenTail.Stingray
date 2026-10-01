@@ -22,10 +22,9 @@ public sealed class ListMetadataCommand : Command<ListMetadataCommand.Settings>
             foreach (var candidate in new[] { "models/SmolLM2-1.7B-Instruct-Q4_K_M.gguf", "model.gguf" })
                 if (File.Exists(candidate)) { modelPath = candidate; break; }
         }
-        if (modelPath is null || !File.Exists(modelPath))
+        if (!ModelPathResolver.TryRequireModelFile(modelPath, out int modelFileExit))
         {
-            AnsiConsole.ErrorLine("[red]Error:[/] No model file found. Use [yellow]-m <path>[/]");
-            return 1;
+            return modelFileExit;
         }
 
         if (modelPath.EndsWith(".onnx", StringComparison.OrdinalIgnoreCase))

@@ -13,6 +13,8 @@ internal static class ExitCodes
     public const int Unsupported = 2;
     /// <summary>Missing or invalid command-line argument (BSD sysexits EX_USAGE).</summary>
     public const int Usage = 64;
+    /// <summary>A required input file does not exist (BSD sysexits EX_NOINPUT).</summary>
+    public const int NoInput = 66;
     /// <summary>128 + SIGINT, the conventional shell exit code for an interrupted process.</summary>
     public const int Interrupted = 130;
 }

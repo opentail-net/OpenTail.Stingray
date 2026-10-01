@@ -30,6 +30,29 @@ internal static class ModelPathResolver
     public static string Resolve(ModelSearch search) =>
         FindFirst(search.Candidates, search.DirMarker) ?? throw new ArgumentException(NotFoundMessage(search));
 
+    /// <summary>
+    /// Validates a command's <c>-m</c> argument. Returns true when the file exists; otherwise prints an actionable error to
+    /// stderr and sets <paramref name="exitCode"/> to the code to use: <see cref="ExitCodes.Usage"/> when no path was given, <see cref="ExitCodes.NoInput"/>
+    /// when the path does not exist (the two used to share one "No model file found" message).
+    /// </summary>
+    public static bool TryRequireModelFile([System.Diagnostics.CodeAnalysis.NotNullWhen(true)] string? path, out int exitCode)
+    {
+        if (string.IsNullOrEmpty(path))
+        {
+            AnsiConsole.ErrorLine("[red]Error:[/] No model file given. Use [yellow]-m <path>[/]");
+            exitCode = ExitCodes.Usage;
+            return false;
+        }
+        if (!File.Exists(path))
+        {
+            AnsiConsole.ErrorLine($"[red]Error:[/] Model file not found: {Markup.Escape(path)}");
+            exitCode = ExitCodes.NoInput;
+            return false;
+        }
+        exitCode = ExitCodes.Success;
+        return true;
+    }
+
     /// <summary>A path the user passed explicitly must exist; the message names the option and the path.</summary>
     public static string RequireExisting(string label, string given) =>
         File.Exists(given) ? given : throw new ArgumentException($"{label} model file not found: '{given}'.");

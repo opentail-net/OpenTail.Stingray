@@ -231,10 +231,9 @@ public sealed class PerplexityCommand : Command<PerplexityCommand.Settings>
         }
 
         var modelPath = settings.ModelPath;
-        if (modelPath is null || !File.Exists(modelPath))
+        if (!ModelPathResolver.TryRequireModelFile(modelPath, out int modelFileExit))
         {
-            AnsiConsole.ErrorLine("[red]Error:[/] No model file found. Use [yellow]-m <path>[/]");
-            return 1;
+            return modelFileExit;
         }
         if (settings.CtxSize < 2)
         {

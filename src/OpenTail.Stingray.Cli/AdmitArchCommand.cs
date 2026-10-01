@@ -46,10 +46,9 @@ public sealed class AdmitArchCommand : Command<AdmitArchCommand.Settings>
 
     protected override int Execute(Settings settings, CancellationToken cancellation)
     {
-        if (string.IsNullOrEmpty(settings.ModelPath) || !File.Exists(settings.ModelPath))
+        if (!ModelPathResolver.TryRequireModelFile(settings.ModelPath, out int modelFileExit))
         {
-            AnsiConsole.ErrorLine("[red]Error:[/] No model file found. Use [yellow]-m <path>[/]");
-            return 1;
+            return modelFileExit;
         }
 
         using var model = GgufModel.Open(settings.ModelPath);

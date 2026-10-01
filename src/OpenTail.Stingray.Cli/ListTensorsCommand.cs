@@ -33,10 +33,9 @@ public sealed class ListTensorsCommand : Command<ListTensorsCommand.Settings>
     protected override int Execute(Settings settings, CancellationToken cancellation)
     {
         var modelPath = settings.ModelPath;
-        if (modelPath is null || !File.Exists(modelPath))
+        if (!ModelPathResolver.TryRequireModelFile(modelPath, out int modelFileExit))
         {
-            AnsiConsole.ErrorLine("[red]Error:[/] No model file found. Use [yellow]-m <path>[/]");
-            return 1;
+            return modelFileExit;
         }
 
         if (modelPath.EndsWith(".onnx", StringComparison.OrdinalIgnoreCase))
