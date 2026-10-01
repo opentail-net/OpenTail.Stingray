@@ -534,6 +534,10 @@ public sealed partial class GgufTokenizer : ITokenizer
         // template only costs the caller that actually renders one — see docs/done/01-gguf-model-coverage-plan.md
         // §1d for the Granite investigation that found this, and the follow-up to fix the parser itself.
         string? chatTemplateSource = source.ChatTemplate is { Length: > 0 } tmplStr ? tmplStr : null;
+        // A few GGUFs store the NAME of one of llama.cpp's built-in templates instead of Jinja
+        // source; rendered as Jinja the name becomes the whole prompt.
+        if (chatTemplateSource is not null && s_namedChatTemplates.TryGetValue(chatTemplateSource, out var namedJinja))
+            chatTemplateSource = namedJinja;
         // Seed the BOS string so the template's `{{- bos_token -}}` (Gemma, Llama, …) renders it
         // instead of an empty string — otherwise the prompt ships with no BOS token, which Gemma is
         // sensitive to (the model degenerates). Only when the model actually prepends BOS
@@ -579,6 +583,23 @@ public sealed partial class GgufTokenizer : ITokenizer
 
         return tokenizer;
     }
+
+    /// <summary>
+    /// llama.cpp built-in template names (llama-chat.cpp LLM_CHAT_TEMPLATES) that real GGUFs carry
+    /// as their <c>tokenizer.chat_template</c>, mapped to Jinja that renders the same text.
+    /// <c>rwkv-world</c> (rwkv-6-world GGUFs): "System: …\n\n", "User: …\n\n", "Assistant: …\n\n",
+    /// contents trimmed, and "Assistant:" to open the reply (the model's EOT is "\n\n").
+    /// </summary>
+    private static readonly Dictionary<string, string> s_namedChatTemplates = new(StringComparer.Ordinal)
+    {
+        ["rwkv-world"] =
+            "{% for message in messages %}" +
+            "{% if message['role'] == 'system' %}{{ 'System: ' + (message['content'] | trim) + '\\n\\n' }}" +
+            "{% elif message['role'] == 'user' %}{{ 'User: ' + (message['content'] | trim) + '\\n\\n' }}" +
+            "{% elif message['role'] == 'assistant' %}{{ 'Assistant: ' + (message['content'] | trim) + '\\n\\n' }}" +
+            "{% endif %}{% endfor %}" +
+            "{% if add_generation_prompt %}{{ 'Assistant:' }}{% endif %}",
+    };
 
     private static Dictionary<string, int> BuildVocabLookup(string[] tokens)
     {

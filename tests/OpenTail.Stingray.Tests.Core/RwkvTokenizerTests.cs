@@ -53,6 +53,30 @@ public sealed class RwkvTokenizerTests
         Assert.Equal(text, tokenizer.Decode(expected));
     }
 
+    [Fact]
+    public void NamedRwkvWorldTemplate_RendersLikeLlamaCppBuiltin()
+    {
+        // rwkv-6-world GGUFs store tokenizer.chat_template = "rwkv-world", the NAME of a llama.cpp
+        // built-in. Expected strings are llama-server --no-jinja /apply-template output (2026-10-01).
+        var source = new TokenizerSource { Tokens = ["<s>", "a"], ChatTemplate = "rwkv-world" };
+        var template = GgufTokenizer.FromSource(source).ChatTemplate;
+        Assert.NotNull(template);
+        static Dictionary<string, object?> Msg(string role, string content) => new() { ["role"] = role, ["content"] = content };
+
+        Assert.Equal("User: Write a short story about a lighthouse keeper.\n\nAssistant:",
+            template.Render(new Dictionary<string, object?>
+            {
+                ["messages"] = new List<object?> { Msg("user", "  Write a short story about a lighthouse keeper.  ") },
+                ["add_generation_prompt"] = true,
+            }));
+        Assert.Equal("System: Be brief.\n\nUser: Hi\n\nAssistant: Hello.\n\nUser: Bye\n\nAssistant:",
+            template.Render(new Dictionary<string, object?>
+            {
+                ["messages"] = new List<object?> { Msg("system", "Be brief."), Msg("user", "Hi"), Msg("assistant", "Hello."), Msg("user", "Bye") },
+                ["add_generation_prompt"] = true,
+            }));
+    }
+
     private static string? FindModel()
     {
         var dir = Directory.GetCurrentDirectory();
