@@ -336,3 +336,7 @@ vs the ORIGINAL weights **cosine 0.9670, top-1 agrees, top-10 9/10** (pure Q4_K_
 math). End-to-end `stingray tts -e fish` on the mixed file generated 1.95 s of audio in 19.6 s (not listened to). Still unmeasured:
 slow-AR Q4_K_M sensitivity, and any listening comparison. The command has no unit test of its own; its built-in byte-for-byte verify
 is the check.
+
+**Listening check (2026-10-01):** the user listened to `docs/audio-samples/fishspeech_s2pro_q4km_fastar-wo-w3-q8_hello-world_2026-10-01.wav`
+(mixed file, "Hello world from Fish Speech.", 1.95 s) and judged it good. This confirms the mixed file produces sound speech end to end; it is
+not an A/B against Q4_K_M or Q8_0 (the `tts` CLI has no `--seed`, so sampling differs between runs and a fair comparison needs that flag first).
