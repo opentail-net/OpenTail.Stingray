@@ -399,15 +399,15 @@ public sealed class PerplexityCommand : Command<PerplexityCommand.Settings>
                 backendLabel = $"[green]Vulkan[/] ({vulkanBackend.Name}, all {hp.NumLayers} layers){kvTag}";
             }
         }
-        else if (Convert.ToString(model.Metadata["general.architecture"]) == "rwkv7")
+        else if (Convert.ToString(model.Metadata["general.architecture"]) is "rwkv6" or "rwkv7")
         {
             if (settings.Batched || settings.TurboQuant)
             {
-                AnsiConsole.ErrorLine("[red]Error:[/] rwkv7 perplexity supports neither --batched nor --tq.");
+                AnsiConsole.ErrorLine("[red]Error:[/] RWKV perplexity supports neither --batched nor --tq.");
                 return 1;
             }
-            fwd = new Rwkv7ForwardPass(model, Rwkv7Hyperparams.FromModel(model));
-            backendLabel = "[blue]CPU[/] (rwkv7)";
+            fwd = RwkvForwardPassBase.Create(model);
+            backendLabel = "[blue]CPU[/] (RWKV)";
         }
         else if (Convert.ToString(model.Metadata["general.architecture"]) == "gpt-oss")
         {

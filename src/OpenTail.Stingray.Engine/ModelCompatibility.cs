@@ -65,6 +65,13 @@ public static class ModelCompatibility
         // llama-perplexity -c 2048 --chunks 1 scores): Q8_0 6.9318 vs llama.cpp 6.9136, Q4_K_S
         // 7.2912 vs 7.3133 (both within 0.3%, inside llama's ±0.52/±0.56).
         "rwkv7",
+        // rwkv6 — admitted 2026-10-01. Runs on Rwkv6ForwardPass (CPU only, recurrent; shares
+        // RwkvForwardPassBase with rwkv7). Receipt: Rwkv6GreedyParityTests vs llama-server on
+        // rwkv-6-world-1.6b Q8_0, teacher-forced: 16/16 and 31/32 argmax, the miss a 0.007-nat tie in
+        // llama's own top-2; chosen-token |Δlogprob| mean 0.022/0.031. Wikitext-2 PPL, positions
+        // 1024+ of a 2048 window: Q8_0 8.9786 vs llama.cpp 8.9287 (±0.72), Q4_K_S 9.9818 vs 9.9510
+        // (±0.81). The QRWKV variant (no time_first, gated linear attention) is not handled.
+        "rwkv6",
         // gpt-oss — admitted 2026-09-26. Runs on its own GptOssForwardPass (CPU only; attention
         // sinks, 1:1 SWA/full alternation, biased MoE, OAI SwiGLU, YaRN factor 32 on both layer
         // kinds), routed by RunCommand/InferenceEngineLoader. Receipt vs llama-server (vendored

@@ -1805,7 +1805,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         ForwardPass? fwd = null;
         HybridGdnForwardPass? hybridFwd = null;
         // Architecture-specific CPU forward pass (gpt-oss: sinks, SWA, biased MoE, OAI SwiGLU, YaRN;
-        // rwkv7: recurrent, no KV cache) — the generic ForwardPass models none of these.
+        // rwkv6/rwkv7: recurrent, no KV cache) — the generic ForwardPass models none of these.
         IForwardPass? standaloneFwd = null;
         IForwardPass? mtpFwd = null;
         IDisposable? gpuBackend = null;
@@ -1998,17 +1998,17 @@ public sealed class RunCommand : Command<RunCommand.Settings>
             effNGpuLayers = 0;
         }
 
-        if (s_arch == "rwkv7")
+        if (RwkvForwardPassBase.IsRwkv(s_arch))
         {
             if (settings.TurboQuant || settings.DraftModelPath is not null || settings.DraftLookup)
             {
-                AnsiConsole.ErrorLine("[red]Error:[/] rwkv7 is recurrent (no KV cache) and supports neither TurboQuant nor speculative decoding.");
+                AnsiConsole.ErrorLine($"[red]Error:[/] {s_arch} is recurrent (no KV cache) and supports neither TurboQuant nor speculative decoding.");
                 return 1;
             }
             if (effNGpuLayers != 0)
-                AnsiConsole.MarkupLine("[yellow]Note:[/] rwkv7 has no GPU forward pass yet; running on CPU.");
+                AnsiConsole.MarkupLine($"[yellow]Note:[/] {s_arch} has no GPU forward pass yet; running on CPU.");
             effNGpuLayers = 0;
-            standaloneFwd = new Rwkv7ForwardPass(model, Rwkv7Hyperparams.FromModel(model));
+            standaloneFwd = RwkvForwardPassBase.Create(model);
         }
         else if (s_arch == "gpt-oss")
         {

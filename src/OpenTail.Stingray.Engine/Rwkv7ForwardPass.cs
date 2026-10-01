@@ -3,35 +3,15 @@ using OpenTail.Stingray.Cpu;
 
 namespace OpenTail.Stingray.Engine;
 
-/// <summary>Hyperparameters of an <c>rwkv7</c> GGUF (llama.cpp LLM_ARCH_RWKV7).</summary>
-public sealed record Rwkv7Hyperparams(int EmbedDim, int NumLayer, int HeadSize, int FfnDim, int VocabSize, float NormEps)
-{
-    public int NumHeads => EmbedDim / HeadSize;
-
-    public static Rwkv7Hyperparams FromModel(GgufModel model)
-    {
-        int Int(string key) => Convert.ToInt32(model.Metadata[key]);
-        int embed = Int("rwkv7.embedding_length");
-        int vocab = model.Metadata.TryGetValue("rwkv7.vocab_size", out var v)
-            ? Convert.ToInt32(v)
-            : ((object[])model.Metadata["tokenizer.ggml.tokens"]).Length;
-        float eps = model.Metadata.TryGetValue("rwkv7.attention.layer_norm_epsilon", out var e) ? Convert.ToSingle(e) : 1e-5f;
-        return new Rwkv7Hyperparams(embed, Int("rwkv7.block_count"), Int("rwkv7.wkv.head_size"),
-            Int("rwkv7.feed_forward_length"), vocab, eps);
-    }
-}
-
 /// <summary>
-/// CPU forward pass for RWKV-7 ("Goose", <c>general.architecture = rwkv7</c>): a recurrent model
-/// with no KV cache. Each layer is a time-mix block (token shift, low-rank decay/ICLR/value-residual/
-/// gate adapters, the WKV7 recurrence, per-head group norm) followed by a squared-ReLU channel-mix
-/// block, each with its own one-token shift state. Port of llama.cpp's <c>llm_build_rwkv7</c> and
-/// <c>llm_build_rwkv7_base</c> (src/models/rwkv7.cpp, rwkv7-base.cpp), evaluated one token at a time
-/// (llama.cpp batches a ubatch through the same recurrence; the math per token is identical).
+/// CPU forward pass for RWKV-7 ("Goose", <c>general.architecture = rwkv7</c>). Each layer is a
+/// time-mix block (token shift, a fused 6-way lerp, low-rank decay/ICLR/value-residual/gate
+/// adapters, the WKV7 recurrence, per-head group norm) followed by a squared-ReLU channel mix.
+/// Port of llama.cpp's <c>llm_build_rwkv7</c> / <c>llm_build_rwkv7_base</c>; the shared RWKV
+/// plumbing lives in <see cref="RwkvForwardPassBase"/>.
 /// </summary>
-public sealed unsafe class Rwkv7ForwardPass : IForwardPass
+public sealed unsafe class Rwkv7ForwardPass : RwkvForwardPassBase
 {
-    private const float GroupNormEps = 64e-5f;      // rwkv7-base.cpp: ggml_norm(ctx0, cur, 64e-5f)
     private const float DecayScale = -0.606531f;    // w = exp(-0.606531 * sigmoid(w)) = exp(-e^-0.5 * σ)
 
     private sealed class Layer
@@ -43,250 +23,161 @@ public sealed unsafe class Rwkv7ForwardPass : IForwardPass
         public required DeepSeek4TensorRef CmLerpK, CmKey, CmValue;
     }
 
-    private readonly Rwkv7Hyperparams _hp;
-    private readonly int _d, _heads, _headSize;
-    private readonly DeepSeek4TensorRef _tokEmbd, _tokNormW, _tokNormB, _outNormW, _outNormB, _output;
     private readonly Layer[] _layers;
+    private readonly int _maxLora;
 
-    // Recurrent state: per layer the previous token's attn_norm and ffn_norm (token shift) and the
-    // WKV7 matrix state.
-    private readonly float[][] _attShift, _ffnShift, _wkvState;
-    private int _length;
+    // Chunk scratch, [rows × width] row-major.
+    private float[] _xa = [], _sx = [], _mix = [], _r = [], _w = [], _k = [], _v = [], _a = [], _g = [];
+    private float[] _kk = [], _b = [], _vFirst = [], _y = [], _cur = [], _lora = [], _ffnK = [];
 
-    // Scratch.
-    private readonly float[] _x, _xa, _xn, _sx, _mix, _r, _w, _k, _v, _a, _g, _kk, _b, _vFirst, _y, _cur;
-    private readonly float[] _lora, _ffnK, _logits;
-
-    public Rwkv7ForwardPass(GgufModel model, Rwkv7Hyperparams hp)
+    public Rwkv7ForwardPass(GgufModel model) : base(model, "rwkv7")
     {
-        _hp = hp;
-        _d = hp.EmbedDim;
-        _headSize = hp.HeadSize;
-        _heads = hp.NumHeads;
-
-        DeepSeek4TensorRef Req(string name)
-        {
-            var info = model.FindTensor(name) ?? throw new InvalidOperationException($"Missing required rwkv7 tensor: {name}");
-            return new DeepSeek4TensorRef(name, info, model.GetTensorDataPtr(info));
-        }
-        DeepSeek4TensorRef? Opt(string name) =>
-            model.FindTensor(name) is { } info ? new DeepSeek4TensorRef(name, info, model.GetTensorDataPtr(info)) : null;
-
-        _tokEmbd = Req("token_embd.weight");
-        _tokNormW = Req("token_embd_norm.weight");
-        _tokNormB = Req("token_embd_norm.bias");
-        _outNormW = Req("output_norm.weight");
-        _outNormB = Req("output_norm.bias");
-        _output = Req("output.weight");
-
-        _layers = new Layer[hp.NumLayer];
-        for (int il = 0; il < hp.NumLayer; il++)
+        _layers = new Layer[NumLayer];
+        for (int il = 0; il < NumLayer; il++)
         {
             string p = $"blk.{il}.";
             _layers[il] = new Layer
             {
-                AttnNormW = Req(p + "attn_norm.weight"), AttnNormB = Req(p + "attn_norm.bias"),
-                FfnNormW = Req(p + "attn_norm_2.weight"), FfnNormB = Req(p + "attn_norm_2.bias"),
-                LerpFused = Req(p + "time_mix_lerp_fused.weight"),
-                W0 = Req(p + "time_mix_w0.weight"), W1 = Req(p + "time_mix_w1.weight"), W2 = Req(p + "time_mix_w2.weight"),
-                A0 = Req(p + "time_mix_a0.weight"), A1 = Req(p + "time_mix_a1.weight"), A2 = Req(p + "time_mix_a2.weight"),
-                V0 = Opt(p + "time_mix_v0.weight"), V1 = Opt(p + "time_mix_v1.weight"), V2 = Opt(p + "time_mix_v2.weight"),
-                G1 = Opt(p + "time_mix_g1.weight"), G2 = Opt(p + "time_mix_g2.weight"),
-                KK = Req(p + "time_mix_k_k.weight"), KA = Req(p + "time_mix_k_a.weight"), RK = Req(p + "time_mix_r_k.weight"),
-                LnW = Req(p + "time_mix_ln.weight"), LnB = Req(p + "time_mix_ln.bias"),
-                Receptance = Req(p + "time_mix_receptance.weight"), Key = Req(p + "time_mix_key.weight"),
-                Value = Req(p + "time_mix_value.weight"), Output = Req(p + "time_mix_output.weight"),
-                CmLerpK = Req(p + "channel_mix_lerp_k.weight"),
-                CmKey = Req(p + "channel_mix_key.weight"), CmValue = Req(p + "channel_mix_value.weight"),
+                AttnNormW = Req(model, p + "attn_norm.weight"), AttnNormB = Req(model, p + "attn_norm.bias"),
+                FfnNormW = Req(model, p + "attn_norm_2.weight"), FfnNormB = Req(model, p + "attn_norm_2.bias"),
+                LerpFused = Req(model, p + "time_mix_lerp_fused.weight"),
+                W0 = Req(model, p + "time_mix_w0.weight"), W1 = Req(model, p + "time_mix_w1.weight"), W2 = Req(model, p + "time_mix_w2.weight"),
+                A0 = Req(model, p + "time_mix_a0.weight"), A1 = Req(model, p + "time_mix_a1.weight"), A2 = Req(model, p + "time_mix_a2.weight"),
+                V0 = Opt(model, p + "time_mix_v0.weight"), V1 = Opt(model, p + "time_mix_v1.weight"), V2 = Opt(model, p + "time_mix_v2.weight"),
+                G1 = Opt(model, p + "time_mix_g1.weight"), G2 = Opt(model, p + "time_mix_g2.weight"),
+                KK = Req(model, p + "time_mix_k_k.weight"), KA = Req(model, p + "time_mix_k_a.weight"), RK = Req(model, p + "time_mix_r_k.weight"),
+                LnW = Req(model, p + "time_mix_ln.weight"), LnB = Req(model, p + "time_mix_ln.bias"),
+                Receptance = Req(model, p + "time_mix_receptance.weight"), Key = Req(model, p + "time_mix_key.weight"),
+                Value = Req(model, p + "time_mix_value.weight"), Output = Req(model, p + "time_mix_output.weight"),
+                CmLerpK = Req(model, p + "channel_mix_lerp_k.weight"),
+                CmKey = Req(model, p + "channel_mix_key.weight"), CmValue = Req(model, p + "channel_mix_value.weight"),
             };
         }
-
-        _attShift = new float[hp.NumLayer][];
-        _ffnShift = new float[hp.NumLayer][];
-        _wkvState = new float[hp.NumLayer][];
-        for (int il = 0; il < hp.NumLayer; il++)
-        {
-            _attShift[il] = new float[_d];
-            _ffnShift[il] = new float[_d];
-            _wkvState[il] = new float[_heads * _headSize * _headSize];
-        }
-
-        _x = new float[_d]; _xa = new float[_d]; _xn = new float[_d]; _sx = new float[_d];
-        _mix = new float[6 * _d];
-        _r = new float[_d]; _w = new float[_d]; _k = new float[_d]; _v = new float[_d]; _a = new float[_d];
-        _g = new float[_d]; _kk = new float[_d]; _b = new float[_d]; _vFirst = new float[_d];
-        _y = new float[_d]; _cur = new float[_d];
-        int maxLora = 0;
         foreach (var l in _layers)
             foreach (var t in new[] { l.W1, l.A1, l.V1, l.G1 })
-                if (t is { } tt) maxLora = Math.Max(maxLora, (int)tt.Info.Dimensions[1]);
-        _lora = new float[maxLora];
-        _ffnK = new float[hp.FfnDim];
-        _logits = new float[hp.VocabSize];
+                if (t is { } tt) _maxLora = Math.Max(_maxLora, (int)tt.Info.Dimensions[1]);
     }
 
-    public int VocabSize => _hp.VocabSize;
-    public int MaxSeqLen => int.MaxValue;
-
-    private static void MatVec(float* output, in DeepSeek4TensorRef w, float* input)
+    protected override void EnsureScratch(int n)
     {
-        int cols = (int)w.Info.Dimensions[0], rows = (int)w.Info.Dimensions[1];
-        SimdKernels.MatVec(output, w.DataPtr, input, rows, cols, w.DType);
+        int d = D;
+        _xa = new float[n * d]; _sx = new float[n * d]; _mix = new float[6 * n * d];
+        _r = new float[n * d]; _w = new float[n * d]; _k = new float[n * d]; _v = new float[n * d];
+        _a = new float[n * d]; _g = new float[n * d]; _kk = new float[n * d]; _b = new float[n * d];
+        _vFirst = new float[n * d]; _y = new float[n * d]; _cur = new float[n * d];
+        _lora = new float[n * _maxLora]; _ffnK = new float[n * FfnDim];
     }
 
-    private static float Sigmoid(float x) => 1f / (1f + MathF.Exp(-x));
-
-    public ReadOnlySpan<float> Forward(int token, int position)
+    protected override void RunLayer(int il, float* x, int n)
     {
-        if (position != _length)
-            throw new NotSupportedException($"Rwkv7ForwardPass is recurrent: expected position {_length}, got {position}.");
-
-        int d = _d;
-        fixed (float* x = _x, xa = _xa, xn = _xn, sx = _sx, mix = _mix, r = _r, w = _w, k = _k, v = _v, a = _a,
-               g = _g, kk = _kk, b = _b, vFirst = _vFirst, y = _y, cur = _cur, lora = _lora, ffnK = _ffnK, logits = _logits)
+        var L = _layers[il];
+        int d = D, hs = HeadSize;
+        fixed (float* xa = _xa, sx = _sx, mix = _mix, r = _r, w = _w, k = _k, v = _v, a = _a, g = _g,
+               kk = _kk, b = _b, vFirst = _vFirst, y = _y, cur = _cur, lora = _lora, ffnK = _ffnK,
+               attShift = AttShift[il], ffnShift = FfnShift[il], state = WkvState[il])
         {
-            int bytesPerRow = d / DTypeInfo.BlockSize(_tokEmbd.DType) * DTypeInfo.BytesPerBlock(_tokEmbd.DType);
-            SimdKernels.DequantRow(_tokEmbd.DataPtr + (long)token * bytesPerRow, x, d, _tokEmbd.DType);
-            SimdKernels.LayerNorm(x, x, (float*)_tokNormW.DataPtr, (float*)_tokNormB.DataPtr, d, _hp.NormEps);
+            // ── time mix ── six lerps (r, w, k, v, a, g); block m of `mix` holds n rows for lerp m.
+            LayerNormRows(xa, x, L.AttnNormW, L.AttnNormB, n);
+            float* lerp = (float*)L.LerpFused.DataPtr;              // [d, 6]
+            for (int m = 0; m < 6; m++)
+                TokenShiftLerp(mix + (long)m * n * d, xa, attShift, lerp + m * d, null, n);
+            SaveShift(xa, n, AttShift[il]);
+            float* xr = mix, xw = mix + n * d, xk = mix + 2 * n * d, xv = mix + 3 * n * d,
+                   xaa = mix + 4 * n * d, xg = mix + 5 * n * d;
 
-            for (int il = 0; il < _layers.Length; il++)
+            MatMul(r, L.Receptance, xr, n);
+
+            int nw = (int)L.W1.Info.Dimensions[1];
+            MatMul(lora, L.W1, xw, n);
+            for (int i = 0; i < n * nw; i++) lora[i] = MathF.Tanh(lora[i]);
+            MatMul(w, L.W2, lora, n);
+            float* w0 = (float*)L.W0.DataPtr;
+            for (int t = 0; t < n; t++)
+                for (int i = 0; i < d; i++) w[t * d + i] = MathF.Exp(DecayScale * Sigmoid(w[t * d + i] + w0[i]));
+
+            MatMul(k, L.Key, xk, n);
+            MatMul(v, L.Value, xv, n);
+            if (il == 0)
             {
-                var L = _layers[il];
-                fixed (float* attShift = _attShift[il], ffnShift = _ffnShift[il], state = _wkvState[il])
-                {
-                    // ── time mix ──
-                    SimdKernels.LayerNorm(xa, x, (float*)L.AttnNormW.DataPtr, (float*)L.AttnNormB.DataPtr, d, _hp.NormEps);
-                    for (int i = 0; i < d; i++) sx[i] = attShift[i] - xa[i];
-                    float* lerp = (float*)L.LerpFused.DataPtr;              // [d, 6]: r, w, k, v, a, g
-                    for (int m = 0; m < 6; m++)
-                        for (int i = 0; i < d; i++) mix[m * d + i] = sx[i] * lerp[m * d + i] + xa[i];
-                    float* xr = mix, xw = mix + d, xk = mix + 2 * d, xv = mix + 3 * d, xaa = mix + 4 * d, xg = mix + 5 * d;
-                    Buffer.MemoryCopy(xa, attShift, d * sizeof(float), d * sizeof(float));
-
-                    MatVec(r, L.Receptance, xr);
-
-                    MatVec(lora, L.W1, xw);
-                    int nw = (int)L.W1.Info.Dimensions[1];
-                    for (int i = 0; i < nw; i++) lora[i] = MathF.Tanh(lora[i]);
-                    MatVec(w, L.W2, lora);
-                    float* w0 = (float*)L.W0.DataPtr;
-                    for (int i = 0; i < d; i++) w[i] = MathF.Exp(DecayScale * Sigmoid(w[i] + w0[i]));
-
-                    MatVec(k, L.Key, xk);
-                    MatVec(v, L.Value, xv);
-                    if (il == 0)
-                    {
-                        Buffer.MemoryCopy(v, vFirst, d * sizeof(float), d * sizeof(float));
-                    }
-                    else
-                    {
-                        MatVec(lora, L.V1!.Value, xv);
-                        MatVec(cur, L.V2!.Value, lora);
-                        float* v0 = (float*)L.V0!.Value.DataPtr;
-                        for (int i = 0; i < d; i++) v[i] += (vFirst[i] - v[i]) * Sigmoid(cur[i] + v0[i]);
-                    }
-
-                    bool hasGate = L.G1 is not null && L.G2 is not null;
-                    if (hasGate)
-                    {
-                        MatVec(lora, L.G1!.Value, xg);
-                        int ng = (int)L.G1.Value.Info.Dimensions[1];
-                        for (int i = 0; i < ng; i++) lora[i] = Sigmoid(lora[i]);
-                        MatVec(g, L.G2!.Value, lora);
-                    }
-
-                    MatVec(lora, L.A1, xaa);
-                    MatVec(a, L.A2, lora);
-                    float* a0 = (float*)L.A0.DataPtr;
-                    for (int i = 0; i < d; i++) a[i] = Sigmoid(a[i] + a0[i]);
-
-                    // kk = l2_norm(k * k_k) per head (ggml_l2_norm eps 1e-12: x / max(‖x‖, eps)).
-                    float* kkW = (float*)L.KK.DataPtr, kaW = (float*)L.KA.DataPtr;
-                    for (int i = 0; i < d; i++) kk[i] = k[i] * kkW[i];
-                    for (int h = 0; h < _heads; h++)
-                    {
-                        float* kh = kk + h * _headSize;
-                        float ss = 0f;
-                        for (int j = 0; j < _headSize; j++) ss += kh[j] * kh[j];
-                        float scale = 1f / MathF.Max(MathF.Sqrt(ss), 1e-12f);
-                        for (int j = 0; j < _headSize; j++) kh[j] *= scale;
-                    }
-                    // k = k + (a*ka - ka), ka = k * k_a
+                Buffer.MemoryCopy(v, vFirst, (long)n * d * sizeof(float), (long)n * d * sizeof(float));
+            }
+            else
+            {
+                MatMul(lora, L.V1!.Value, xv, n);
+                MatMul(cur, L.V2!.Value, lora, n);
+                float* v0 = (float*)L.V0!.Value.DataPtr;
+                for (int t = 0; t < n; t++)
                     for (int i = 0; i < d; i++)
                     {
-                        float ka = k[i] * kaW[i];
-                        k[i] = k[i] + (a[i] * ka - ka);
+                        int o = t * d + i;
+                        v[o] += (vFirst[o] - v[o]) * Sigmoid(cur[o] + v0[i]);
                     }
-                    // WKV7 inputs: a' = -kk, b' = kk * a (reuse kk in place as a', b holds b').
-                    for (int i = 0; i < d; i++) { b[i] = kk[i] * a[i]; kk[i] = -kk[i]; }
-
-                    Wkv7Kernels.Step(state, r, w, k, v, kk, b, y, _heads, _headSize);
-
-                    // Group norm over heads, then ln weight/bias.
-                    float* lnW = (float*)L.LnW.DataPtr, lnB = (float*)L.LnB.DataPtr;
-                    for (int h = 0; h < _heads; h++)
-                    {
-                        int o = h * _headSize;
-                        SimdKernels.LayerNorm(y + o, y + o, lnW + o, lnB + o, _headSize, GroupNormEps);
-                    }
-                    // + v * Σ_head(k * r * r_k)
-                    float* rkW = (float*)L.RK.DataPtr;
-                    for (int h = 0; h < _heads; h++)
-                    {
-                        int o = h * _headSize;
-                        float rk = 0f;
-                        for (int j = 0; j < _headSize; j++) rk += k[o + j] * r[o + j] * rkW[o + j];
-                        for (int j = 0; j < _headSize; j++) y[o + j] += v[o + j] * rk;
-                    }
-                    if (hasGate)
-                        for (int i = 0; i < d; i++) y[i] *= g[i];
-                    MatVec(cur, L.Output, y);
-
-                    // ffn_inp = cur + x (x keeps the layer input; becomes ffn_inp)
-                    for (int i = 0; i < d; i++) x[i] += cur[i];
-
-                    // ── channel mix ──
-                    SimdKernels.LayerNorm(xn, x, (float*)L.FfnNormW.DataPtr, (float*)L.FfnNormB.DataPtr, d, _hp.NormEps);
-                    float* lerpK = (float*)L.CmLerpK.DataPtr;
-                    for (int i = 0; i < d; i++) sx[i] = (ffnShift[i] - xn[i]) * lerpK[i] + xn[i];
-                    Buffer.MemoryCopy(xn, ffnShift, d * sizeof(float), d * sizeof(float));
-                    MatVec(ffnK, L.CmKey, sx);
-                    for (int i = 0; i < _hp.FfnDim; i++) { float t = MathF.Max(ffnK[i], 0f); ffnK[i] = t * t; }
-                    MatVec(cur, L.CmValue, ffnK);
-                    for (int i = 0; i < d; i++) x[i] += cur[i];
-                }
             }
 
-            SimdKernels.LayerNorm(xn, x, (float*)_outNormW.DataPtr, (float*)_outNormB.DataPtr, d, _hp.NormEps);
-            MatVec(logits, _output, xn);
+            bool hasGate = L.G1 is not null && L.G2 is not null;
+            if (hasGate)
+            {
+                int ng = (int)L.G1!.Value.Info.Dimensions[1];
+                MatMul(lora, L.G1.Value, xg, n);
+                for (int i = 0; i < n * ng; i++) lora[i] = Sigmoid(lora[i]);
+                MatMul(g, L.G2!.Value, lora, n);
+            }
+
+            MatMul(lora, L.A1, xaa, n);
+            MatMul(a, L.A2, lora, n);
+            float* a0 = (float*)L.A0.DataPtr;
+            for (int t = 0; t < n; t++)
+                for (int i = 0; i < d; i++) a[t * d + i] = Sigmoid(a[t * d + i] + a0[i]);
+
+            float* kkW = (float*)L.KK.DataPtr, kaW = (float*)L.KA.DataPtr, rkW = (float*)L.RK.DataPtr;
+            for (int t = 0; t < n; t++)
+            {
+                float* kt = k + t * d, at = a + t * d, kkt = kk + t * d, bt = b + t * d;
+                // kk = l2_norm(k * k_k) per head (ggml_l2_norm eps 1e-12: x / max(‖x‖, eps)).
+                for (int i = 0; i < d; i++) kkt[i] = kt[i] * kkW[i];
+                for (int h = 0; h < Heads; h++)
+                {
+                    float* kh = kkt + h * hs;
+                    float ss = 0f;
+                    for (int j = 0; j < hs; j++) ss += kh[j] * kh[j];
+                    float scale = 1f / MathF.Max(MathF.Sqrt(ss), 1e-12f);
+                    for (int j = 0; j < hs; j++) kh[j] *= scale;
+                }
+                // k = k + (a*ka - ka), ka = k * k_a; WKV7 a' = -kk, b' = kk * a.
+                for (int i = 0; i < d; i++)
+                {
+                    float ka = kt[i] * kaW[i];
+                    kt[i] = kt[i] + (at[i] * ka - ka);
+                    bt[i] = kkt[i] * at[i];
+                    kkt[i] = -kkt[i];
+                }
+
+                float* yt = y + t * d, rt = r + t * d, vt = v + t * d;
+                WkvKernels.Wkv7Step(state, rt, w + t * d, kt, vt, kkt, bt, yt, Heads, hs);
+
+                // Group norm, then + v · Σ_head(k · r · r_k).
+                GroupNorm(yt, L.LnW, L.LnB);
+                for (int h = 0; h < Heads; h++)
+                {
+                    int o = h * hs;
+                    float rk = 0f;
+                    for (int j = 0; j < hs; j++) rk += kt[o + j] * rt[o + j] * rkW[o + j];
+                    for (int j = 0; j < hs; j++) yt[o + j] += vt[o + j] * rk;
+                }
+                if (hasGate)
+                    for (int i = 0; i < d; i++) yt[i] *= g[t * d + i];
+            }
+            MatMul(cur, L.Output, y, n);
+            for (int i = 0; i < n * d; i++) x[i] += cur[i];      // x is now ffn_inp
+
+            // ── channel mix ── (xa reused as ffn_norm)
+            LayerNormRows(xa, x, L.FfnNormW, L.FfnNormB, n);
+            TokenShiftLerp(sx, xa, ffnShift, (float*)L.CmLerpK.DataPtr, null, n);
+            SaveShift(xa, n, FfnShift[il]);
+            MatMul(ffnK, L.CmKey, sx, n);
+            for (int i = 0; i < n * FfnDim; i++) { float t = MathF.Max(ffnK[i], 0f); ffnK[i] = t * t; }
+            MatMul(cur, L.CmValue, ffnK, n);
+            for (int i = 0; i < n * d; i++) x[i] += cur[i];
         }
-
-        _length++;
-        return _logits;
     }
-
-    public ReadOnlySpan<float> Prefill(IReadOnlyList<int> tokens, int startPos = 0)
-    {
-        ReadOnlySpan<float> last = default;
-        for (int i = 0; i < tokens.Count; i++) last = Forward(tokens[i], startPos + i);
-        return last;
-    }
-
-    /// <summary>A recurrent state cannot be rewound: only a full reset or a no-op is possible.</summary>
-    public void TruncateTo(int length)
-    {
-        if (length == 0) { ResetCache(); return; }
-        if (length != _length)
-            throw new NotSupportedException($"Rwkv7ForwardPass is recurrent and cannot rewind from {_length} to {length}.");
-    }
-
-    public void ResetCache()
-    {
-        foreach (var s in _attShift) Array.Clear(s);
-        foreach (var s in _ffnShift) Array.Clear(s);
-        foreach (var s in _wkvState) Array.Clear(s);
-        _length = 0;
-    }
-
-    public void Dispose() { }
 }

@@ -1,22 +1,23 @@
 namespace OpenTail.Stingray.Cpu;
 
 /// <summary>
-/// RWKV-7 "WKV7" recurrence (GGML_OP_RWKV_WKV7), one token at a time. Port of ggml-cpu ops.cpp
-/// <c>ggml_compute_forward_rwkv_wkv7_f32</c>'s scalar route. Per head, with state <c>S</c> of
-/// shape [headSize (value index i)][headSize (key index j)]:
-/// <code>
-///   sa_i    = Σ_j a_j · S[i][j]
-///   S[i][j] = S[i][j] · w_j + v_i · k_j + sa_i · b_j
-///   y_i     = Σ_j S[i][j] · r_j
-/// </code>
-/// The update reads the PREVIOUS state for <c>sa_i</c> (computed before any write to row i), and
-/// row i only ever reads row i, so the in-place update is exact.
+/// The RWKV "WKV" recurrences, one token at a time, ported from ggml-cpu ops.cpp's scalar routes.
+/// State is heads × headSize × headSize per layer.
 /// </summary>
-public static unsafe class Wkv7Kernels
+public static unsafe class WkvKernels
 {
-    /// <param name="state">heads × headSize × headSize, updated in place.</param>
-    /// <param name="y">heads × headSize output.</param>
-    public static void Step(float* state, float* r, float* w, float* k, float* v, float* a, float* b,
+    /// <summary>
+    /// RWKV-7 (GGML_OP_RWKV_WKV7, <c>ggml_compute_forward_rwkv_wkv7_f32</c>). Per head, with state
+    /// <c>S</c> indexed [value i][key j]:
+    /// <code>
+    ///   sa_i    = Σ_j a_j · S[i][j]
+    ///   S[i][j] = S[i][j] · w_j + v_i · k_j + sa_i · b_j
+    ///   y_i     = Σ_j S[i][j] · r_j
+    /// </code>
+    /// <c>sa_i</c> reads row i before any write to it, and row i only reads row i, so the in-place
+    /// update is exact.
+    /// </summary>
+    public static void Wkv7Step(float* state, float* r, float* w, float* k, float* v, float* a, float* b,
         float* y, int heads, int headSize)
     {
         for (int h = 0; h < heads; h++)
@@ -38,6 +39,38 @@ public static unsafe class Wkv7Kernels
                     result += nv * rh[j];
                 }
                 y[off + i] = result;
+            }
+        }
+    }
+
+    /// <summary>
+    /// RWKV-6 (GGML_OP_RWKV_WKV6, <c>ggml_compute_forward_rwkv_wkv6_f32</c>). Per head, with state
+    /// <c>S</c> indexed [key i][value j] and the per-channel bonus <c>u</c> (time_first):
+    /// <code>
+    ///   y_j     = Σ_i r_i · (u_i · k_i · v_j + S[i][j])
+    ///   S[i][j] = S[i][j] · w_i + k_i · v_j
+    /// </code>
+    /// </summary>
+    public static void Wkv6Step(float* state, float* r, float* w, float* k, float* v, float* u,
+        float* y, int heads, int headSize)
+    {
+        for (int h = 0; h < heads; h++)
+        {
+            int off = h * headSize;
+            float* s = state + (long)h * headSize * headSize;
+            float* yh = y + off, vh = v + off;
+            new Span<float>(yh, headSize).Clear();
+            for (int i = 0; i < headSize; i++)
+            {
+                float* row = s + i * headSize;
+                float ki = k[off + i], ri = r[off + i], ui = u[off + i], wi = w[off + i];
+                for (int j = 0; j < headSize; j++)
+                {
+                    float kv = vh[j] * ki;
+                    float prev = row[j];
+                    yh[j] += (kv * ui + prev) * ri;
+                    row[j] = prev * wi + kv;
+                }
             }
         }
     }

@@ -577,6 +577,7 @@ public sealed class ModelCompatibilityTests
     [InlineData("phi3")]
     [InlineData("phimoe")]
     [InlineData("olmoe")]
+    [InlineData("rwkv6")]
     [InlineData("rwkv7")]
     [InlineData("olmo2")]
     [InlineData("falcon")]
@@ -601,7 +602,6 @@ public sealed class ModelCompatibilityTests
     [InlineData("falcon_mamba")]
     [InlineData("codestral_mamba")]
     [InlineData("rwkv")]
-    [InlineData("rwkv6")]
     [InlineData("deepseek4")]
     [InlineData("deepseek_v4")]
     [InlineData("dsv4")]
@@ -614,7 +614,7 @@ public sealed class ModelCompatibilityTests
     [InlineData("unknown")]
     [InlineData("Mamba")]
     [InlineData("MAMBA2")]
-    [InlineData("RWKV6")]
+    [InlineData("JAMBA")]
     public void TextGenerationProfiles_RejectArchitecturesWithoutAForwardPass(string architecture) =>
         Assert.False(ModelCompatibility.IsTextGenerationArchitectureSupported(architecture));
 
