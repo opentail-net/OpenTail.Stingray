@@ -7,6 +7,8 @@ first, then the engineering backlog, grouped by theme in priority order.
 
 | I want to… | Read |
 |---|---|
+| See everything I can do, in plain language | [WHAT-YOU-CAN-DO.md](WHAT-YOU-CAN-DO.md) |
+| Fix a problem (slow, out of memory, wrong output, will not load) | [TROUBLESHOOTING.md](TROUBLESHOOTING.md) |
 | Pick and download a model | [MODELS.md](MODELS.md) |
 | Know what works today, and how well it was checked | [STATUS.md](STATUS.md) |
 | Use the command line | [CLI README](../src/OpenTail.Stingray.Cli/README.md), [reference/cli-option-inventory.md](reference/cli-option-inventory.md) (every option) |
