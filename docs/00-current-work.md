@@ -31,11 +31,13 @@ updated with dated evidence in the same pass.
 
 ## 1. Correctness of what is already claimed
 
-1. **Vision features that exist only on the CPU `ForwardPass`.** 2D M-RoPE image positions
-   (PaddleOCR-VL, Qwen2.5-VL, …) and Granite 4.0 Vision deepstack are not applied by the CUDA and
-   Vulkan passes, nor by the server's image path (`InferenceEngine` handles Gemma-style placeholders
-   only). Today those models give correct answers from the CLI on CPU only. From #6 and #9 in
-   [done/102](done/102-status-open-items-plan.md).
+1. **Vision features that exist only on the CPU/Vulkan `ForwardPass`.** Qwen3-VL image input
+   (2D M-RoPE, deepstack) now runs on full Vulkan offload (2026-09-28, final-logit cosine ~0.9995 vs CPU,
+   `Qwen3VlVulkanMRopeParityTests`). Still open: CUDA full and hybrid offload and the Vulkan layer split
+   (unimplemented, CLI fails closed; CUDA cannot be verified here, bugstofix item 14 closed as not-a-bug);
+   Qwen2.5-VL / PaddleOCR-VL / Granite 4.0 Vision deepstack on GPU are unverified; the server's image path
+   (`InferenceEngine`, Gemma-style placeholders only). Plan:
+   [1-correctness/14](1-correctness/14-qwenvl-gpu-image-input-parity-plan.md).
 2. **Per-pipeline diffusion end-to-end smoke tests**: real weights, small resolution, a stored
    reference, and a loud failure when the checkpoint is missing. Item 4 of §4 in
    [done/2026-09-24-diffusion-perf-session-handoff.md](done/2026-09-24-diffusion-perf-session-handoff.md).
@@ -51,8 +53,10 @@ updated with dated evidence in the same pass.
     `LlavaVisionEncoder.cs` to match `llama.cpp`'s `clip_graph_llava::build` (patches at 0..575, CLS
     at 576, extracted at 1..576 dropping row 0). Pinned by `LlamaMtmdVisionParityTests.Llava15_Rainbow336_MatchesLlamaMtmdDebug`
     (sum -10587.12 vs -10596.39). End-to-end on `test-1.png` reads "The newspaper is the New York Times,
-    and the main headline reads \"Men Walk on Moon.\"" matching `llama-mtmd-cli`. (Note: `llava_uhd` /
-    anyres tiling remains unverified until a LLaVA-NeXT / 1.6 checkpoint is tested).
+    and the main headline reads \"Men Walk on Moon.\"" matching `llama-mtmd-cli`. (`llava_uhd` / anyres
+    tiling is **open**: checkpoint obtained 2026-10-01, interim result is 5 views agreeing with semantically
+    equal answers but exact parity not yet shown; bugstofix item 15,
+    [1-correctness/15](1-correctness/15-llava-next-anyres-parity-plan.md)).
 12. **CosyVoice 2 garbled endings — BLOCKED** on an independent reference: one recorded upstream
     `inference_zero_shot` run (input token ids, generated speech tokens, ideally per-step top-k),
     checked in as data. What is already ruled out: #10 in [done/102](done/102-status-open-items-plan.md).
@@ -61,7 +65,9 @@ updated with dated evidence in the same pass.
     independent reference. Needs one v1 reference run (ComfyUI or diffusers) recorded as data, or
     an upstream C++ port with v1 support. The row stays ⚪ with visual-only evidence. #13 in
     [done/102](done/102-status-open-items-plan.md) lists the local sd.cpp patch.
-14. **Small, known leftovers**: [1-correctness/bugstofix.md](1-correctness/bugstofix.md)
+14. **Dashboard of what is still open**: [1-correctness/bugstofix.md](1-correctness/bugstofix.md) is the
+    source of truth (open: 15, 19, 20, 21).
+15. **Small, known leftovers**: [1-correctness/bugstofix.md](1-correctness/bugstofix.md)
     (`SpeculativeDecoder` StepSampled/PLD latent defect, dtype/op drift notes); Apertus greedy
     re-check vs `llama-server --no-jinja`.
 
@@ -78,27 +84,32 @@ text model wants 4096), Llama 4 vision (93 GB), MobileNetV5 (no checkpoint decla
    - partial rewind of the recurrent state (`SupportsPartialRewind` is false, so the server's
      prefix cache is off for these models), and no zero KV rows for recurrent layers;
    - GPU paths;
-   - untested variants: MoE Nemotron-H, LFM2-MoE (MoE Granite-H was fixed 2026-09-28, see STATUS), LFM2-VL/Audio, and the
+   - untested variants: MoE Nemotron-H, LFM2-VL/Audio (MoE Granite-H was fixed 2026-09-28 and `lfm2moe` admitted 2026-10-01, see bugstofix 12/13), and the
      Nemotron-Nano-12B-v2-VL vision tower end to end; Falcon-H1 should come almost free.
-3. ~~**Qwen3-VL**~~: done 2026-09-27 on CPU (IMROPE, deepstack, `qwen3vl` admitted; see STATUS). GPU image input remains.
-4. **Gemma 4 E4B vision (`gemma4v`)**: encoder implemented, no STATUS row, never parity-checked.
-   The oracle now exists (`llama-mtmd-debug` stage fingerprints, as used for Kimi/Youtu).
-   [2-coverage/03-gemma4-e4b-vision-plan.md](2-coverage/03-gemma4-e4b-vision-plan.md).
-5. **ACE-Step 1.5 Turbo**: V1 works end to end; needs numeric parity and a STATUS row. The
-   `audio.cpp` head-to-head is blocked on the `acestep-5Hz-lm-1.7B` package.
-   [2-coverage/064-acestep-implementation-plan.md](2-coverage/064-acestep-implementation-plan.md).
+3. ~~**Qwen3-VL**~~: done 2026-09-27 on CPU (IMROPE, deepstack, `qwen3vl` admitted; see STATUS) and on full Vulkan offload 2026-09-28. CUDA image input remains (needs hardware).
+4. **Gemma 4 E4B vision (`gemma4v`)**: encoder and projector match `llama-mtmd-debug` (STATUS row,
+   2026-09-27). Open: an end-to-end image answer through the Gemma 4 text model has not been compared yet
+   (`docs/103` item 4). [done/03-gemma4-e4b-vision-plan.md](done/03-gemma4-e4b-vision-plan.md).
+5. **ACE-Step 1.5 Turbo**: compared against `audio.cpp` from identical noise 2026-09-28 (STATUS row;
+   8-step latent cosine 0.994, waveform 0.945 with a q8_0 DiT reference). Open: not wired into the CLI,
+   the planner LM (lyrics-to-codes) path is not ported, and the bf16 bundle ceiling check.
+   [done/064-acestep-implementation-plan.md](done/064-acestep-implementation-plan.md).
 6. **Qwen3.5 MoE / Gated DeltaNet**: GDN state-lifecycle conformance tests (incl. retained
-   sessions), then a benchmark. [2-coverage/02-qwen35moe-plan.md](2-coverage/02-qwen35moe-plan.md).
+   sessions), then a benchmark (2026-10-01: GDN kernels now checked against an independent double-precision
+   reference). [done/02-qwen35moe-plan.md](done/02-qwen35moe-plan.md).
 7. ~~**Parakeet TDT decode head**~~: done 2026-09-27 (`ParakeetTdtDecoder`, matches CrispASR on 4/4 LibriSpeech clips).
-8. **ONNX pipelines**: SenseVoice and ONNX Paraformer work but are not wired into `stingray stt`;
-    now that several ONNX pipelines exist, see whether a shared shape is worth extracting.
+8. **ONNX pipelines**: SenseVoice and ONNX Paraformer are wired into `stingray stt -m sensevoice|paraformer
+    --model-file` (2026-09-27, `docs/103` item 5). Open question only: with several ONNX pipelines now,
+    is a shared shape worth extracting?
 9. **Gemma 1 / Gemma 2**: no `ModelGraph` branch at all (no local checkpoint to verify with).
 10. **Newer LTX families** (LTX-2.3 / 2.5), a later campaign.
 11. **Missing GGML op kernels**: [2-coverage/050-ggml-op-coverage-gap-plan.md](2-coverage/050-ggml-op-coverage-gap-plan.md)
     (none blocks an admitted architecture today).
-12. **Lower priority, not planned**: AI21 Jamba, Kimi Linear, RWKV-7, Arcee AFM, ServiceNow
+12. **RWKV6 / RWKV7 CPU, generic `SOLVE_TRI`**: bugstofix items 19, 20, 21 (deferred, targets chosen:
+    rwkv6-world-1b6, rwkv7-goose-world3-1b5; plan [1-correctness/17](1-correctness/17-ggml-op-coverage-verification-plan.md)).
+13. **Lower priority, not planned**: AI21 Jamba, Kimi Linear, Arcee AFM, ServiceNow
     Apriel, Ant Ling (`bailingmoe2`), MiniMax-M2 (too large); DeepSeek-OCR v1 (no checkpoint).
-13. **Out of scope for this PC**: DeepSeek-V3.2 / V4, alpha code never run on real weights.
+14. **Out of scope for this PC**: DeepSeek-V3.2 / V4, alpha code never run on real weights.
     [2-coverage/058-deepseek-full-lineage-implementation-plan.md](2-coverage/058-deepseek-full-lineage-implementation-plan.md).
 
 ## 3. Product and runtime
@@ -114,7 +125,7 @@ text model wants 4096), Llama 4 vision (93 GB), MobileNetV5 (no checkpoint decla
 4. **Sessions**: `Fork()` skill/instruction propagation (design question, wait for a real caller),
    per-session LoRA in the batched engine, and forward-pass context isolation for forks
    (`IForwardPass.CreateContext` still returns `this`).
-   [051](3-product-and-runtime/051-hotsession-capability-wiring-plan.md),
+   [051](done/051-hotsession-capability-wiring-plan.md),
    [010](3-product-and-runtime/010-forward-pass-context-isolation-for-session-forking-plan.md).
 5. **Releases**: follow [3-product-and-runtime/nuget-release-checklist.md](3-product-and-runtime/nuget-release-checklist.md).
 6. **Parked** (useful as is, does not move the goal): DSpark speculative decoding, SafeTensors
@@ -127,14 +138,14 @@ numerical validation; no single-run result counts. An iGPU loss is not evidence 
 (CLAUDE.md rule 13). Do not reopen the closed Q4_K repacked-GEMM investigation. The cross-model
 sweep is [4-performance/perf-sweep-plan.md](4-performance/perf-sweep-plan.md).
 
-**CPU, LLM** ([4-performance/cpu/](4-performance/cpu))
+**CPU, LLM**
 1. SmolLM2 prefill at ~0.89x of llama.cpp: the Q4_K Path-2 GEMM is 65% of trunk time; then RoPE
    (scalar, ~3%) and attention (~6%). History: "SmolLM2 prefill" in
    [done/101](done/101-work-queue-after-coverage-plan.md).
 2. Qwen3.6-35B-A3B prefill at 0.63x of llama.cpp (Phase 8 of
    [done/2026-09-25-hf-top-downloads-coverage-plan.md](done/2026-09-25-hf-top-downloads-coverage-plan.md)).
 3. Image-token prefill in VLMs runs per token (~9 t/s here); a batched embedding prefill.
-4. The CPU kernel programme: [4-performance/cpu/05-cpu-architecture-kernel-opportunities.md](4-performance/cpu/05-cpu-architecture-kernel-opportunities.md).
+4. The CPU kernel programme: [done/05-cpu-architecture-kernel-opportunities.md](done/05-cpu-architecture-kernel-opportunities.md).
 
 **GPU, LLM** ([4-performance/gpu/](4-performance/gpu))
 5. Batched prefill for the Vulkan layer split (`VulkanLayerSplitForwardPass` prefills per token).
@@ -157,7 +168,7 @@ sweep is [4-performance/perf-sweep-plan.md](4-performance/perf-sweep-plan.md).
 
 **Audio** ([4-performance/audio/](4-performance/audio))
 13. MiniMax-Music3 vocoder decode 29-33 s vs the reference's 13.1 s
-    ([066](4-performance/audio/066-minimax-music3-future-plan.md)); flow-transformer GPU residency
+    ([066](done/066-minimax-music3-future-plan.md)); flow-transformer GPU residency
     ([079](4-performance/audio/079-minimax-music3-gpu-residency-plan.md)).
 14. MusicGen / AudioGen performance and DRY passes (CFG as a batch-2 GEMM, a T5 kernel shared with
     Parler) plus top-p sampling. "Known gaps" in [done/062](done/062-musicgen-implementation-plan.md).
