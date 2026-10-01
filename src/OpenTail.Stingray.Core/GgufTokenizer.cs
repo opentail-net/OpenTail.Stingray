@@ -42,6 +42,8 @@ public sealed partial class GgufTokenizer : ITokenizer
     // text into newline runs and non-newline runs before merging (merges never cross a newline),
     // and a newline run that is itself a vocab token is emitted whole.
     private bool _splitNewlineRuns;
+    // tokenizer.ggml.model = rwkv: byte-trie longest match; owns encode and token-to-bytes.
+    private RwkvTokenizer? _rwkv;
     private readonly bool _addSpacePrefix;
     // Real SentencePiece Unigram-LM (tokenizer.ggml.model=t5) -- a genuinely different
     // segmentation algorithm (Viterbi lattice over per-token scores), not merges-based at all.
@@ -396,8 +398,12 @@ public sealed partial class GgufTokenizer : ITokenizer
         // byte-BPE for (near-total fragmentation, same symptom class as the `xverse` SPM bug, but
         // this one really is a different algorithm entirely, not a missing-data edge case in an
         // algorithm this engine already implements).
-        bool isUnigramModel = source.ModelFamily == "t5";
-        UnigramTokenizer? unigram = isUnigramModel && source.Scores is not null
+        // RWKV "world" vocab: no merges and no scores, encoded by RwkvTokenizer below. Keeping it out
+        // of the BPE constructors leaves `inner` as a vocab-only BpeTokenizer that is never used to
+        // encode or decode (both are routed through _rwkv).
+        bool isRwkvModel = source.ModelFamily == "rwkv";
+        bool isUnigramModel = source.ModelFamily == "t5" || isRwkvModel;
+        UnigramTokenizer? unigram = isUnigramModel && !isRwkvModel && source.Scores is not null
             ? UnigramTokenizer.FromGgufVocab(source.Tokens, source.Scores, source.UnknownTokenId, source.TokenTypes, source.PrecompiledCharsmap)
             : null;
 
@@ -567,6 +573,7 @@ public sealed partial class GgufTokenizer : ITokenizer
             chatTemplateEos);
         tokenizer.PreTokenizerIsKnown = knownPre;
         tokenizer._splitNewlineRuns = source.ModelFamily == "gemma4";
+        if (isRwkvModel) tokenizer._rwkv = new RwkvTokenizer(source.Tokens, unknownTokenId);
         tokenizer._ignoreMerges = PreTokenizerPatterns.IgnoresMerges(source.TokenizerPre);
         tokenizer.DeclaredPreTokenizer = source.TokenizerPre;
 
@@ -690,6 +697,9 @@ public sealed partial class GgufTokenizer : ITokenizer
     private IReadOnlyList<int> EncodeTextSegment(string text)
     {
         if (text.Length == 0) return [];
+
+        if (_rwkv is not null)
+            return _rwkv.Encode(text);
 
         // Real Unigram-LM (Viterbi lattice, not merge-based) -- takes priority over every other
         // path; UnigramTokenizer.Encode does its own Metaspace ('▁') preprocessing internally, so
@@ -1121,6 +1131,13 @@ public sealed partial class GgufTokenizer : ITokenizer
             _specialTokensById.TryGetValue(list[0], out var specialStr))
             return specialStr;
 
+        if (_rwkv is not null)
+        {
+            var rwkvBytes = new List<byte>();
+            foreach (int t in tokens) rwkvBytes.AddRange(DecodeBytes(t));
+            return Encoding.UTF8.GetString(rwkvBytes.ToArray());
+        }
+
         var text = _inner.Decode(tokens) ?? string.Empty;
 
         if (_isSpmBpe || _unigram is not null)
@@ -1157,6 +1174,9 @@ public sealed partial class GgufTokenizer : ITokenizer
         // loses the exact bytes a single token contributes to the stream.
         if ((uint)token >= (uint)_idToToken.Length)
             return [];
+
+        if (_rwkv is not null)
+            return _rwkv.DecodeBytes(token);
 
         if (_isSpmBpe || _unigram is not null)
         {
