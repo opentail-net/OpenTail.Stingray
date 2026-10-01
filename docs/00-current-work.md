@@ -56,6 +56,7 @@ updated with dated evidence in the same pass.
     regression (diverges at generated token 9; bisect from 113734d2), #15 LLaVA-NeXT/OneVision residuals
     (pixel-level and per-view embedding parity unverified), #19/#20 RWKV6/RWKV7 (deferred, targets chosen).
     Also: Apertus greedy re-check vs `llama-server --no-jinja`.
+15. **Stable Audio 3 Small quality**: our local SA3 checkpoints are the `-base` (pre-trained) models, which sound    worse than the post-trained releases. Waiting on the user's listening verdict on the audio.cpp post-trained    clips (`docs/audio-samples/sa3_small_*_POSTTRAINED_*`); if better, add GGUF loading (or gated safetensors via    `HF_TOKEN`) and an opt-in `pingpong` sampler (8 steps, CFG 1.0). Detail: [done/104](done/104-handover-2026-09-28.md) §2.
 
 Not fixable on this machine (kept 🔴 in STATUS): MiMo-VL (upstream mmproj projects to 3584, the
 text model wants 4096), Llama 4 vision (93 GB), MobileNetV5 (no checkpoint declares the projector).
