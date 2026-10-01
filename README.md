@@ -185,14 +185,15 @@ really needs and its measured speed.
 The recipes above are the verified starting points. The engine covers much more, at varying
 levels of polish:
 
-- **Language models**: Llama, Qwen, Gemma, Mistral, Phi, DeepSeek, gpt-oss and many more GGUF
+- **Language models**: Llama, Qwen, Gemma, Mistral, Phi, DeepSeek, gpt-oss, GLM-4, Granite 4.0-H, Nemotron-H, LFM2 and many more GGUF
   architectures, on CPU, Vulkan or CUDA. Tool calling, JSON-schema constrained output, speculative
   decoding.
 - **Images in, text out**: Gemma, Qwen-VL, LLaVA, Pixtral, InternVL, OCR models such as dots.ocr.
 - **Speech**: text-to-speech engines including Kokoro, XTTS-v2 (voice cloning), Qwen3-TTS, Fish
   Speech and Chatterbox; speech recognition with Whisper, Parakeet and Qwen3-ASR.
-- **Image and video generation**: FLUX, Stable Diffusion 1.5 / XL / 3.5, Z-Image-Turbo, Wan,
+- **Image and video generation**: FLUX.1 / FLUX.2, Stable Diffusion 1.5 / XL / 3.5, Z-Image-Turbo, Qwen Image, Wan, LTX-Video,
   HunyuanVideo. These need several model files each; a guided setup is on the way.
+- **Music and sound**: Stable Audio 3, ACE-Step 1.5, MiniMax-Music3, MusicGen and AudioGen.
 
 What is verified, what is partial and what is experimental is tracked per model, with dated
 evidence, in **[docs/STATUS.md](docs/STATUS.md)**. Speed comparisons between the speech engines
@@ -205,7 +206,7 @@ with 64 GB of RAM, CPU only, on Windows 11. Rough guide:
 
 | You want to | Download | RAM | On that CPU |
 |---|---|---|---|
-| Chat with a small model | 0.5 GB | 2 GB | ~24 tokens/s |
+| Chat with a small model | 0.5 GB | 2 GB | ~60-70 tokens/s (Qwen2.5 0.5B) |
 | Chat with a 7–8B model | 4–5 GB | 8 GB | a few tokens/s; a GPU helps a lot |
 | Text to speech (Piper) | 63 MB | < 1 GB | faster than real time |
 | Speech to text (Whisper base) | 148 MB | < 1 GB | ~2x real time |
