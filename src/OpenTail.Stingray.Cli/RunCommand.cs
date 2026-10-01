@@ -728,6 +728,177 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         return true;
     }
 
+    /// <summary>
+    /// <c>run -m model.onnx</c>: a graph smoke test, not text generation. Loads the ONNX graph, feeds it the prompt's characters as
+    /// dummy token ids (plus zero embeddings, a mask and positions, and empty past-KV tensors where the graph asks for them),
+    /// runs it once and reports the output shapes. Self-contained: shares no state with the generation modes.
+    /// </summary>
+    private static int RunOnnxGraph(Settings settings, string modelPath)
+    {
+        using var onnxSession = OnnxModelSession.TryLoad(modelPath);
+        if (onnxSession == null)
+        {
+            AnsiConsole.ErrorLine("[red]Error:[/] Could not load ONNX model file. Ensure onnxruntime.dll is available.");
+            return 1;
+        }
+
+        AnsiConsole.MarkupLine($"[bold]{Markup.Escape(Path.GetFileName(modelPath))}[/] (ONNX Graph)");
+        AnsiConsole.MarkupLine($"  [cyan]Inputs ({onnxSession.InputNames.Count}):[/] {string.Join(", ", onnxSession.InputNames)}");
+        AnsiConsole.MarkupLine($"  [cyan]Outputs ({onnxSession.OutputNames.Count}):[/] {string.Join(", ", onnxSession.OutputNames)}");
+
+        string prompt = settings.Prompt ?? "Hello world";
+        AnsiConsole.MarkupLine($"\n[dim]Executing ONNX Graph with prompt:[/] {Markup.Escape(prompt)}");
+
+        long[] inputIds = prompt.Select(c => (long)c).ToArray();
+        long[] mask = new long[inputIds.Length];
+        Array.Fill(mask, 1L);
+        long[] posIds = Enumerable.Range(0, inputIds.Length).Select(i => (long)i).ToArray();
+
+        var inputList = new List<(string Name, Array Data, int[] Shape)>
+        {
+            ("input_ids", inputIds, [1, inputIds.Length]),
+            ("inputs_embeds", new float[inputIds.Length * 1024], [1, inputIds.Length, 1024]),
+            ("attention_mask", mask, [1, inputIds.Length]),
+            ("position_ids", posIds, [1, inputIds.Length])
+        };
+
+        foreach (var inName in onnxSession.InputNames)
+        {
+            if (inName.StartsWith("past_key_values"))
+            {
+                inputList.Add((inName, Array.Empty<float>(), [1, 16, 0, 64]));
+            }
+        }
+
+        var swOnnx = Stopwatch.StartNew();
+        var outputs = onnxSession.Run(inputList.ToArray());
+        swOnnx.Stop();
+
+        AnsiConsole.MarkupLine($"\n[green]ONNX Graph Executed in {swOnnx.ElapsedMilliseconds}ms[/]");
+        foreach (var kv in outputs)
+        {
+            AnsiConsole.MarkupLine($"  Output [bold]{kv.Key}[/]: {kv.Value.Length} elements");
+        }
+        return 0;
+    }
+
+    /// <summary>Everything the SafeTensors branch of <see cref="Execute"/> hands to the shared decode tail.</summary>
+    private sealed record PackageSession(ModelHyperparams Hp, GgufTokenizer Tokenizer, int CtxSize, CpuBackend CpuBackend,
+                                         ForwardPass Fwd, SafetensorsTensorSource TensorSource);
+
+    /// <summary>
+    /// <c>run -m &lt;SafeTensors package&gt;</c>: capability check, refusal of the GGUF-only features (GPU offload, TurboQuant,
+    /// speculation, DSpark, images), then opening the package and its tokenizer and building the CPU forward pass. Also sets
+    /// the architecture/template statics the decode loop reads. Extracted from <see cref="Execute"/>; false means a clean
+    /// failure with <paramref name="exitCode"/> already reported on stderr.
+    /// </summary>
+    private static bool TryLoadSafeTensorsPackage(Settings settings, string modelPath, ExecutionPlan? resolvedPlan, int effNGpuLayers,
+                                                  out PackageSession? session, out int exitCode)
+    {
+        ModelHyperparams hp;
+        GgufTokenizer tokenizer;
+        int ctxSize;
+        CpuBackend cpuBackend;
+        ForwardPass fwd;
+        SafetensorsTensorSource? stTensorSource = null;
+        // ── 1. Capability check — fail before allocating anything expensive.
+        var pkgReport = ModelPackageInspector.Inspect(modelPath);
+        if (!pkgReport.IsSupported)
+        {
+            AnsiConsole.ErrorLine("[red]Error:[/] SafeTensors package not supported:");
+            foreach (var r in pkgReport.Rejections)
+                AnsiConsole.ErrorLine($"  [red]·[/] {Markup.Escape(r.Detail)}");
+            AnsiConsole.ErrorLine("[dim]GGUF is the recommended deployment format for quantized models.[/]");
+            { session = null; exitCode = ExitCodes.Failure; return false; }
+        }
+
+        // ── 2. Refuse features that require GgufModel or GPU backends.
+        // Explicit errors — the user must know why, not receive a cryptic exception.
+        if (effNGpuLayers != 0)
+        {
+            AnsiConsole.ErrorLine("[red]Error:[/] GPU offload ([yellow]--ngl[/] / [yellow]-g[/]) is not yet supported for SafeTensors packages. " +
+                "Run on CPU (omit [yellow]-g[/] or pass [yellow]-g 0[/]), or convert to GGUF for GPU execution.");
+            { session = null; exitCode = ExitCodes.Failure; return false; }
+        }
+        if (settings.TurboQuant)
+        {
+            AnsiConsole.ErrorLine("[red]Error:[/] [yellow]--tq[/] (TurboQuant) is not supported for SafeTensors packages. " +
+                "Only GGUF models support KV-cache quantization via this flag.");
+            { session = null; exitCode = ExitCodes.Failure; return false; }
+        }
+        if (settings.DraftModelPath is not null || settings.DraftLookup)
+        {
+            AnsiConsole.ErrorLine("[red]Error:[/] Speculative decoding ([yellow]--draft-model[/] / [yellow]--draft-lookup[/]) " +
+                "is not supported for SafeTensors packages.");
+            { session = null; exitCode = ExitCodes.Failure; return false; }
+        }
+        if (settings.DSparkModelPath is not null)
+        {
+            AnsiConsole.ErrorLine("[red]Error:[/] DSpark ([yellow]--dspark-model[/]) is not supported for SafeTensors packages.");
+            { session = null; exitCode = ExitCodes.Failure; return false; }
+        }
+        if (settings.ImagePaths is { Length: > 0 })
+        {
+            AnsiConsole.ErrorLine("[red]Error:[/] [yellow]--image[/] (multimodal input) is not supported for SafeTensors packages.");
+            { session = null; exitCode = ExitCodes.Failure; return false; }
+        }
+
+        // ── 3. Open the package and tokenizer.
+        try
+        {
+            stTensorSource = SafetensorsTensorSource.Open(modelPath);
+        }
+        catch (Exception ex)
+        {
+            AnsiConsole.ErrorLine($"[red]Error:[/] Failed to open SafeTensors package: {Markup.Escape(ex.Message)}");
+            { session = null; exitCode = ExitCodes.Failure; return false; }
+        }
+
+        var tokResult = HuggingFaceTokenizerSource.Load(modelPath);
+        if (!tokResult.IsUsable || tokResult.Source is null)
+        {
+            stTensorSource.Dispose();
+            stTensorSource = null;
+            AnsiConsole.ErrorLine("[red]Error:[/] Failed to load tokenizer:");
+            foreach (var r in tokResult.Rejections)
+                AnsiConsole.ErrorLine($"  [red]·[/] {Markup.Escape(r.Detail)}");
+            { session = null; exitCode = ExitCodes.Failure; return false; }
+        }
+
+        // ── 4. Build engine objects.
+        hp = ModelHyperparams.FromGgufMetadata(stTensorSource.Metadata, stTensorSource);
+        tokenizer = GgufTokenizer.FromSource(tokResult.Source);
+        // Resolve the requested scratch/context ceiling BEFORE constructing the CPU pass.
+        // RunSinglePrompt rejects a prompt that would leave no decode slot, so this cannot
+        // turn an oversized prompt into an unsafe undersized-scratch prefill.
+        ctxSize = settings.CtxSize > 0 ? settings.CtxSize
+            : settings.Auto && resolvedPlan is not null ? resolvedPlan.ContextSize : 0;
+        cpuBackend = new CpuBackend();
+        fwd = new ForwardPass(stTensorSource, cpuBackend, hp, maxContextLength: ctxSize);
+
+        // Populate shared state the decode loop reads (mirrors the GGUF path below).
+        s_arch = stTensorSource.Metadata.TryGetValue("general.architecture", out var stArchVal)
+            ? (string)stArchVal : "llama";
+        s_jinja = tokenizer.ChatTemplate;
+        s_hasLlama3Headers = tokenizer.SpecialTokens.ContainsKey("<|start_header_id|>");
+        (s_thinkTokenId, s_endThinkTokenId) = tokenizer.ReasoningTokens;
+
+        if (settings.Thinking && settings.NoThinking)
+            AnsiConsole.MarkupLine("[yellow]Warning:[/] both --thinking and --no-thinking given; --no-thinking wins.");
+        s_noThinking = ResolveThinkingOff(s_arch, settings.Thinking, settings.NoThinking);
+
+        if (s_thinkTokenId > 0 && settings.Temperature == 0f && !s_noThinking)
+        {
+            AnsiConsole.MarkupLine("[yellow]Warning:[/] Greedy decoding (--temp 0) on a reasoning model often produces");
+            AnsiConsole.MarkupLine("infinite \"wait, but actually\" loops. Consider [yellow]--temp 0.6 --top-p 0.95 --top-k 20[/].");
+        }
+
+
+        session = new PackageSession(hp, tokenizer, ctxSize, cpuBackend, fwd, stTensorSource!);
+        exitCode = ExitCodes.Success;
+        return true;
+    }
+
     protected override int Execute(Settings settings, CancellationToken cancellation)
     {
         if (!TryPrepare(settings, out var prologue, out int prologueExit))
@@ -769,53 +940,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
 
         // ── ONNX model branch ────────────────────────────────────────────────
         if (modelPath.EndsWith(".onnx", StringComparison.OrdinalIgnoreCase))
-        {
-            using var onnxSession = OnnxModelSession.TryLoad(modelPath);
-            if (onnxSession == null)
-            {
-                AnsiConsole.ErrorLine("[red]Error:[/] Could not load ONNX model file. Ensure onnxruntime.dll is available.");
-                return 1;
-            }
-
-            AnsiConsole.MarkupLine($"[bold]{Markup.Escape(Path.GetFileName(modelPath))}[/] (ONNX Graph)");
-            AnsiConsole.MarkupLine($"  [cyan]Inputs ({onnxSession.InputNames.Count}):[/] {string.Join(", ", onnxSession.InputNames)}");
-            AnsiConsole.MarkupLine($"  [cyan]Outputs ({onnxSession.OutputNames.Count}):[/] {string.Join(", ", onnxSession.OutputNames)}");
-
-            string prompt = settings.Prompt ?? "Hello world";
-            AnsiConsole.MarkupLine($"\n[dim]Executing ONNX Graph with prompt:[/] {Markup.Escape(prompt)}");
-
-            long[] inputIds = prompt.Select(c => (long)c).ToArray();
-            long[] mask = new long[inputIds.Length];
-            Array.Fill(mask, 1L);
-            long[] posIds = Enumerable.Range(0, inputIds.Length).Select(i => (long)i).ToArray();
-
-            var inputList = new List<(string Name, Array Data, int[] Shape)>
-            {
-                ("input_ids", inputIds, [1, inputIds.Length]),
-                ("inputs_embeds", new float[inputIds.Length * 1024], [1, inputIds.Length, 1024]),
-                ("attention_mask", mask, [1, inputIds.Length]),
-                ("position_ids", posIds, [1, inputIds.Length])
-            };
-
-            foreach (var inName in onnxSession.InputNames)
-            {
-                if (inName.StartsWith("past_key_values"))
-                {
-                    inputList.Add((inName, Array.Empty<float>(), [1, 16, 0, 64]));
-                }
-            }
-
-            var swOnnx = Stopwatch.StartNew();
-            var outputs = onnxSession.Run(inputList.ToArray());
-            swOnnx.Stop();
-
-            AnsiConsole.MarkupLine($"\n[green]ONNX Graph Executed in {swOnnx.ElapsedMilliseconds}ms[/]");
-            foreach (var kv in outputs)
-            {
-                AnsiConsole.MarkupLine($"  Output [bold]{kv.Key}[/]: {kv.Value.Length} elements");
-            }
-            return 0;
-        }
+            return RunOnnxGraph(settings, modelPath);
 
         // ── SafeTensors package branch ────────────────────────────────────────
         // A directory path or bare .safetensors file routes here; GGUF falls
@@ -826,100 +951,17 @@ public sealed class RunCommand : Command<RunCommand.Settings>
 
         if (isPackage)
         {
-            // ── 1. Capability check — fail before allocating anything expensive.
-            var pkgReport = ModelPackageInspector.Inspect(modelPath);
-            if (!pkgReport.IsSupported)
-            {
-                AnsiConsole.ErrorLine("[red]Error:[/] SafeTensors package not supported:");
-                foreach (var r in pkgReport.Rejections)
-                    AnsiConsole.ErrorLine($"  [red]·[/] {Markup.Escape(r.Detail)}");
-                AnsiConsole.ErrorLine("[dim]GGUF is the recommended deployment format for quantized models.[/]");
-                return 1;
-            }
-
-            // ── 2. Refuse features that require GgufModel or GPU backends.
-            // Explicit errors — the user must know why, not receive a cryptic exception.
-            if (effNGpuLayers != 0)
-            {
-                AnsiConsole.ErrorLine("[red]Error:[/] GPU offload ([yellow]--ngl[/] / [yellow]-g[/]) is not yet supported for SafeTensors packages. " +
-                    "Run on CPU (omit [yellow]-g[/] or pass [yellow]-g 0[/]), or convert to GGUF for GPU execution.");
-                return 1;
-            }
-            if (settings.TurboQuant)
-            {
-                AnsiConsole.ErrorLine("[red]Error:[/] [yellow]--tq[/] (TurboQuant) is not supported for SafeTensors packages. " +
-                    "Only GGUF models support KV-cache quantization via this flag.");
-                return 1;
-            }
-            if (settings.DraftModelPath is not null || settings.DraftLookup)
-            {
-                AnsiConsole.ErrorLine("[red]Error:[/] Speculative decoding ([yellow]--draft-model[/] / [yellow]--draft-lookup[/]) " +
-                    "is not supported for SafeTensors packages.");
-                return 1;
-            }
-            if (settings.DSparkModelPath is not null)
-            {
-                AnsiConsole.ErrorLine("[red]Error:[/] DSpark ([yellow]--dspark-model[/]) is not supported for SafeTensors packages.");
-                return 1;
-            }
-            if (settings.ImagePaths is { Length: > 0 })
-            {
-                AnsiConsole.ErrorLine("[red]Error:[/] [yellow]--image[/] (multimodal input) is not supported for SafeTensors packages.");
-                return 1;
-            }
-
-            // ── 3. Open the package and tokenizer.
-            try
-            {
-                stTensorSource = SafetensorsTensorSource.Open(modelPath);
-            }
-            catch (Exception ex)
-            {
-                AnsiConsole.ErrorLine($"[red]Error:[/] Failed to open SafeTensors package: {Markup.Escape(ex.Message)}");
-                return 1;
-            }
-
-            var tokResult = HuggingFaceTokenizerSource.Load(modelPath);
-            if (!tokResult.IsUsable || tokResult.Source is null)
-            {
-                stTensorSource.Dispose();
-                stTensorSource = null;
-                AnsiConsole.ErrorLine("[red]Error:[/] Failed to load tokenizer:");
-                foreach (var r in tokResult.Rejections)
-                    AnsiConsole.ErrorLine($"  [red]·[/] {Markup.Escape(r.Detail)}");
-                return 1;
-            }
-
-            // ── 4. Build engine objects.
-            hp = ModelHyperparams.FromGgufMetadata(stTensorSource.Metadata, stTensorSource);
-            tokenizer = GgufTokenizer.FromSource(tokResult.Source);
-            // Resolve the requested scratch/context ceiling BEFORE constructing the CPU pass.
-            // RunSinglePrompt rejects a prompt that would leave no decode slot, so this cannot
-            // turn an oversized prompt into an unsafe undersized-scratch prefill.
-            ctxSize = settings.CtxSize > 0 ? settings.CtxSize
-                : settings.Auto && resolvedPlan is not null ? resolvedPlan.ContextSize : 0;
-            cpuBackend = new CpuBackend();
-            fwd = new ForwardPass(stTensorSource, cpuBackend, hp, maxContextLength: ctxSize);
-
-            // Populate shared state the decode loop reads (mirrors the GGUF path below).
-            s_arch = stTensorSource.Metadata.TryGetValue("general.architecture", out var stArchVal)
-                ? (string)stArchVal : "llama";
-            s_jinja = tokenizer.ChatTemplate;
-            s_hasLlama3Headers = tokenizer.SpecialTokens.ContainsKey("<|start_header_id|>");
-            (s_thinkTokenId, s_endThinkTokenId) = tokenizer.ReasoningTokens;
-
-            if (settings.Thinking && settings.NoThinking)
-                AnsiConsole.MarkupLine("[yellow]Warning:[/] both --thinking and --no-thinking given; --no-thinking wins.");
-            s_noThinking = ResolveThinkingOff(s_arch, settings.Thinking, settings.NoThinking);
-
-            if (s_thinkTokenId > 0 && settings.Temperature == 0f && !s_noThinking)
-            {
-                AnsiConsole.MarkupLine("[yellow]Warning:[/] Greedy decoding (--temp 0) on a reasoning model often produces");
-                AnsiConsole.MarkupLine("infinite \"wait, but actually\" loops. Consider [yellow]--temp 0.6 --top-p 0.95 --top-k 20[/].");
-            }
+            if (!TryLoadSafeTensorsPackage(settings, modelPath, resolvedPlan, effNGpuLayers, out var pkg, out int pkgExit))
+                return pkgExit;
+            hp = pkg!.Hp;
+            tokenizer = pkg.Tokenizer;
+            ctxSize = pkg.CtxSize;
+            cpuBackend = pkg.CpuBackend;
+            fwd = pkg.Fwd;
+            stTensorSource = pkg.TensorSource;
 
             // ── 5. Wire forward/prefill/resetCache — same shape as the GGUF CPU path.
-            // GPU offload is refused above, so the shared decode loop must see a CPU-only count.
+            // GPU offload is refused by the loader, so the shared decode loop must see a CPU-only count.
             nGpuLayers = 0;
             forward = fwd.Forward;
             prefill = tokens => fwd.Prefill(tokens);
