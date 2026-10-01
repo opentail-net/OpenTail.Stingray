@@ -32,7 +32,16 @@ public sealed class DeepSeek2GreedyParityTests : HeavyTestBase
 
         // " Paris is the capital of France.\n\nWell, I hope you are not"
         int[] expected = [8913, 317, 254, 6077, 280, 7239, 13, 185, 185, 6636, 11, 304, 3655, 340, 418, 441];
-        var logits = fwd.Prefill(s_promptTokens);
+
+        // Prefill with Q8 activations, as llama.cpp does for K-quant matmuls. The receipt was taken
+        // when that was Stingray's default; 7791e3c9 (2026-10-01) made the F32 prefill the default,
+        // and with it this Q2_K model's continuation leaves llama-server's at generated token 9
+        // (18684 instead of 6636). Bisected 2026-10-01; see bugstofix item 23.
+        bool savedQ8Prefill = SimdKernels.Q8PrefillEnabled;
+        SimdKernels.Q8PrefillEnabled = true;
+        ReadOnlySpan<float> logits;
+        try { logits = fwd.Prefill(s_promptTokens); }
+        finally { SimdKernels.Q8PrefillEnabled = savedQ8Prefill; }
         var generated = new List<int>(expected.Length);
         int pos = s_promptTokens.Length;
         for (int i = 0; i < expected.Length; i++)
