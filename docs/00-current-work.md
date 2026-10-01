@@ -39,13 +39,6 @@ updated with dated evidence in the same pass.
 2. **Per-pipeline diffusion end-to-end smoke tests**: real weights, small resolution, a stored
    reference, and a loud failure when the checkpoint is missing. Item 4 of §4 in
    [done/2026-09-24-diffusion-perf-session-handoff.md](done/2026-09-24-diffusion-perf-session-handoff.md).
-3. **Silent-no-op test sweep** (CLAUDE.md rule 12). Several real-weight tests search only
-   `models/`, not `models/_models/`, and "pass" in 0.1 s without loading anything (Parakeet,
-   Orpheus/SNAC and Z-Image were found by accident). Sweep every model-search helper against the
-   real `models/_models/` contents; better, make a missing checkpoint skip visibly.
-4. **`HybridGdnChunkedPrefill_MatchesSequentialPrefill` fails**, re-run with real weights on
-   2026-09-27 and still failing: logits diverge at vocab idx 142707 (sequential 0.4995 vs chunked
-   0.0924, tolerance 0.1025). See Phase 8 of [done/2026-09-25-hf-top-downloads-coverage-plan.md](done/2026-09-25-hf-top-downloads-coverage-plan.md).
 6. **CPU greedy-decode non-determinism**: two sightings under CPU contention, neither reproduced.
 8. **Stable Audio 3 APG padding masks**: **FIXED 2026-09-28**. Padded tokens masked from APG norm and dot product, orthogonal projection zeroed on padded tokens (`ApplyApg`), epsilon moved inside sqrt, and `ValidLatentTokens` / self-attention V-zeroing wired to `StableAudioMediumDiT`. Step 0 velocity cosine 0.999949; padded token final latent cosine 0.9999998 against `audiocpp_cli`. Attention masking over the padded tail remains a known gap. #11 in [done/102](done/102-status-open-items-plan.md).
 9. **Youtu-VL text**: one 1024-token wikitext window is +5% PPL vs llama.cpp (others −2.1% to
