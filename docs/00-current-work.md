@@ -40,19 +40,9 @@ updated with dated evidence in the same pass.
    reference, and a loud failure when the checkpoint is missing. Item 4 of §4 in
    [done/2026-09-24-diffusion-perf-session-handoff.md](done/2026-09-24-diffusion-perf-session-handoff.md).
 6. **CPU greedy-decode non-determinism**: two sightings under CPU contention, neither reproduced.
-8. **Stable Audio 3 APG padding masks**: **FIXED 2026-09-28**. Padded tokens masked from APG norm and dot product, orthogonal projection zeroed on padded tokens (`ApplyApg`), epsilon moved inside sqrt, and `ValidLatentTokens` / self-attention V-zeroing wired to `StableAudioMediumDiT`. Step 0 velocity cosine 0.999949; padded token final latent cosine 0.9999998 against `audiocpp_cli`. Attention masking over the padded tail remains a known gap. #11 in [done/102](done/102-status-open-items-plan.md).
 9. **Youtu-VL text**: one 1024-token wikitext window is +5% PPL vs llama.cpp (others −2.1% to
     +0.8%). Diff per-token log-probs over wiki.test.raw [1024,2048) against `llama-server`.
     #5 in [done/102](done/102-status-open-items-plan.md).
-11. **Classic LLaVA-1.5** (plain 32000-token vocab, no image token): **FIXED 2026-09-27**. The CLI
-    now has a direct-splice path when `PlaceholderMarker` is absent from special tokens, tokenizing
-    prompt text around the image marker and injecting soft tokens. Added Vicuna prompt formatting
-    for LLaMA-2 backbones (`USER: <image>{prompt}\nASSISTANT:`). Fixed ViT patch/CLS layout in
-    `LlavaVisionEncoder.cs` to match `llama.cpp`'s `clip_graph_llava::build` (patches at 0..575, CLS
-    at 576, extracted at 1..576 dropping row 0). Pinned by `LlamaMtmdVisionParityTests.Llava15_Rainbow336_MatchesLlamaMtmdDebug`
-    (sum -10587.12 vs -10596.39). End-to-end on `test-1.png` reads "The newspaper is the New York Times,
-    and the main headline reads \"Men Walk on Moon.\"" matching `llama-mtmd-cli`. (Note: `llava_uhd` /
-    anyres tiling remains unverified until a LLaVA-NeXT / 1.6 checkpoint is tested).
 12. **CosyVoice 2 garbled endings — BLOCKED** on an independent reference: one recorded upstream
     `inference_zero_shot` run (input token ids, generated speech tokens, ideally per-step top-k),
     checked in as data. What is already ruled out: #10 in [done/102](done/102-status-open-items-plan.md).
@@ -61,9 +51,11 @@ updated with dated evidence in the same pass.
     independent reference. Needs one v1 reference run (ComfyUI or diffusers) recorded as data, or
     an upstream C++ port with v1 support. The row stays ⚪ with visual-only evidence. #13 in
     [done/102](done/102-status-open-items-plan.md) lists the local sd.cpp patch.
-14. **Small, known leftovers**: [1-correctness/bugstofix.md](1-correctness/bugstofix.md)
-    (`SpeculativeDecoder` StepSampled/PLD latent defect, dtype/op drift notes); Apertus greedy
-    re-check vs `llama-server --no-jinja`.
+14. **Remaining open items in [1-correctness/bugstofix.md](1-correctness/bugstofix.md)**: #22 stale
+    numpy-golden vision parity tests (4 failing in the Vision run), #23 DeepSeek-V2-Lite greedy parity
+    regression (diverges at generated token 9; bisect from 113734d2), #15 LLaVA-NeXT/OneVision residuals
+    (pixel-level and per-view embedding parity unverified), #19/#20 RWKV6/RWKV7 (deferred, targets chosen).
+    Also: Apertus greedy re-check vs `llama-server --no-jinja`.
 
 Not fixable on this machine (kept 🔴 in STATUS): MiMo-VL (upstream mmproj projects to 3584, the
 text model wants 4096), Llama 4 vision (93 GB), MobileNetV5 (no checkpoint declares the projector).
@@ -78,24 +70,14 @@ text model wants 4096), Llama 4 vision (93 GB), MobileNetV5 (no checkpoint decla
    - partial rewind of the recurrent state (`SupportsPartialRewind` is false, so the server's
      prefix cache is off for these models), and no zero KV rows for recurrent layers;
    - GPU paths;
-   - untested variants: MoE Granite-H, MoE Nemotron-H, LFM2-MoE (`lfm2moe`), LFM2-VL/Audio, and the
-     Nemotron-Nano-12B-v2-VL vision tower end to end; Falcon-H1 should come almost free.
-3. ~~**Qwen3-VL**~~: done 2026-09-27 on CPU (IMROPE, deepstack, `qwen3vl` admitted; see STATUS). GPU image input remains.
-4. **Gemma 4 E4B vision (`gemma4v`)**: encoder implemented, no STATUS row, never parity-checked.
-   The oracle now exists (`llama-mtmd-debug` stage fingerprints, as used for Kimi/Youtu).
-   [2-coverage/03-gemma4-e4b-vision-plan.md](2-coverage/03-gemma4-e4b-vision-plan.md).
-5. **ACE-Step 1.5 Turbo**: V1 works end to end; needs numeric parity and a STATUS row. The
-   `audio.cpp` head-to-head is blocked on the `acestep-5Hz-lm-1.7B` package.
-   [2-coverage/064-acestep-implementation-plan.md](2-coverage/064-acestep-implementation-plan.md).
-6. **Qwen3.5 MoE / Gated DeltaNet**: GDN state-lifecycle conformance tests (incl. retained
-   sessions), then a benchmark. [2-coverage/02-qwen35moe-plan.md](2-coverage/02-qwen35moe-plan.md).
-7. ~~**Parakeet TDT decode head**~~: done 2026-09-27 (`ParakeetTdtDecoder`, matches CrispASR on 4/4 LibriSpeech clips).
+   - untested variants: MoE Nemotron-H, LFM2-VL/Audio, and the Nemotron-Nano-12B-v2-VL vision tower
+     end to end; Falcon-H1 should come almost free.
 8. **ONNX pipelines**: SenseVoice and ONNX Paraformer work but are not wired into `stingray stt`;
     now that several ONNX pipelines exist, see whether a shared shape is worth extracting.
 9. **Gemma 1 / Gemma 2**: no `ModelGraph` branch at all (no local checkpoint to verify with).
 10. **Newer LTX families** (LTX-2.3 / 2.5), a later campaign.
-11. **Missing GGML op kernels**: [2-coverage/050-ggml-op-coverage-gap-plan.md](2-coverage/050-ggml-op-coverage-gap-plan.md)
-    (none blocks an admitted architecture today).
+11. **Missing GGML op kernels**: RWKV6 / RWKV7 only, [1-correctness/bugstofix.md](1-correctness/bugstofix.md)
+    #19 / #20 (deferred; the rest of the old op gap is closed, see [done/17](done/17-ggml-op-coverage-verification-plan.md)).
 12. **Lower priority, not planned**: AI21 Jamba, Kimi Linear, RWKV-7, Arcee AFM, ServiceNow
     Apriel, Ant Ling (`bailingmoe2`), MiniMax-M2 (too large); DeepSeek-OCR v1 (no checkpoint).
 13. **Out of scope for this PC**: DeepSeek-V3.2 / V4, alpha code never run on real weights.
@@ -103,7 +85,7 @@ text model wants 4096), Llama 4 vision (93 GB), MobileNetV5 (no checkpoint decla
 
 ## 3. Product and runtime
 
-1. **Front door, steps 2-4**: `stingray setup`, a starter manifest, a model home, README recipes
+1. **Front door, steps 3-4** (steps 1-2 done: README, catalog, model home, `stingray setup`): starter manifest, README recipes
    around task commands. [3-product-and-runtime/103-front-door-design.md](3-product-and-runtime/103-front-door-design.md).
 2. **Configuration ownership**: source-tracked effective configuration beyond the static planning
    knobs, and an owner decision per obsolete-looking switch.

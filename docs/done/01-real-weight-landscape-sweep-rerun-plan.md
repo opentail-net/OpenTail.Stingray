@@ -1,6 +1,6 @@
 # Real-Weight Landscape Sweep Rerun and Failure Triage Plan
 
-**Tracker:** [`bugstofix.md`, item 01](bugstofix.md)  
+**Tracker:** [`bugstofix.md`, item 01](../1-correctness/bugstofix.md)  
 **Original sweep:** 2026-09-28, `scripts/sweep-tests.ps1`, default suites `Diffusion,Audio,Vision,ForwardPass` (649 classes resumed/run).  
 **Purpose:** establish a current, evidence-backed disposition for every historical failure attributed to item 01. This is a triage-and-closure plan, not a mandate to change every component that was red in the old sweep.
 

@@ -1,6 +1,6 @@
 # Plan: Q8_K activation quantization for the Q5_K decode matvec (GLM-4.5 PPL gap)
 
-**Implementation record:** [closed bugstofix scope 09](../done/09-glm45-q5k-activation-implementation.md).
+**Implementation record:** [closed bugstofix scope 09](09-glm45-q5k-activation-implementation.md).
 **Open real-weight follow-up:** [item 19 in `docs/103-quickest-first-plan.md`](../103-quickest-first-plan.md).
 Item 7 in that file is closed for implementation and synthetic validation. The archive and follow-up
 carry the diagnostic history and exact numbers this plan continues from. Do not re-run the earlier
@@ -152,7 +152,7 @@ Reuse the exact harness already built for this (don't rewrite it):
   before the dump (an env var read at the top of the test, matching the existing `ZZ_*` convention,
   is the simplest fit).
 - Compare the new `o_proj`/layer-0 output against the reference `node_26`/`ffn_inp-0` values already
-  captured in this investigation (see the [archived implementation record](../done/09-glm45-q5k-activation-implementation.md) for the exact reference numbers — no need
+  captured in this investigation (see the [archived implementation record](09-glm45-q5k-activation-implementation.md) for the exact reference numbers — no need
   to re-run `llama-eval-callback` unless you want a fresh capture; the reference values don't
   change). Compare raw values and report `max_abs`, `mean_abs`, RMS, relative L2, and cosine for F32
   and Q8_K against the reference, plus the change between activation modes. The ~1e-4 print-rounding
@@ -166,7 +166,7 @@ Reuse the exact harness already built for this (don't rewrite it):
   (`Get-CimInstance Win32_OperatingSystem | Select FreePhysicalMemory`) and run this alone — nothing
   else heavy in flight, per this project's standing rule on timing/memory under contention.
 - Command: whatever this project's existing PPL command is for this checkpoint at `-c 2048`,
-  second-half wikitext (see the [archived implementation record](../done/09-glm45-q5k-activation-implementation.md) for the exact prior
+  second-half wikitext (see the [archived implementation record](09-glm45-q5k-activation-implementation.md) for the exact prior
   invocation, or `src/OpenTail.Stingray.Cli`'s `perplexity` command's own `--help`).
 - Run both GLM activation modes under the same conditions and record each measured PPL, the
   reference PPL (8.6125), and the absolute/relative gap. Within ~0.3% of the reference is a target,
@@ -195,7 +195,7 @@ you flip the gate on by default**, every model using Q5_K needs to be re-verifie
 ### Step 8 — Close out
 
 - Update [docs/103-quickest-first-plan.md item 19](../103-quickest-first-plan.md) and the
-  [archived implementation record](../done/09-glm45-q5k-activation-implementation.md) with the real
+  [archived implementation record](09-glm45-q5k-activation-implementation.md) with the real
   outcome — whether the gap closed, by how much, and the measured PPL number, dated. If it didn't
   close the gap, that's still a real, useful result to record (rules out this specific hypothesis,
   narrows what's left).
