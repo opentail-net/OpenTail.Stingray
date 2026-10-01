@@ -304,7 +304,8 @@ public static unsafe class SimdKernels
     /// opt in with <c>STINGRAY_CPU_PREFILL_Q8=1</c> when the measured speed/quality tradeoff is
     /// acceptable for the workload. Quantizing activation rows lets each weight row be read once
     /// and dotted against 8 tokens per call (the <c>_8In</c>/<c>_4In</c> kernels) instead of once
-    /// per token — worth ~+47% end-to-end prefill throughput on the reference box, and the same
+    /// per token — measured 2026-10-01 at ~2.8x dense prefill throughput (SmolLM2-1.7B Q4_K_M,
+    /// 2,194 tokens: 81 t/s off vs 224 t/s on; docs/1-correctness/13-granite4-h-small-moe-ppl-parity-plan.md), and the same
     /// technique llama.cpp uses for its own prefill GEMM.</para>
     ///
     /// <para>The Q8 dots are NOT byte-exact with the F32 dots decode uses (docs/cpu-prefill-plan.md
