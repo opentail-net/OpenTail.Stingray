@@ -149,6 +149,9 @@ public sealed unsafe partial class ForwardPass
         if (_layerHeadDim is not null)
             throw new NotSupportedException(
                 "gemma4 per-layer head_dim not yet supported on PrefillWithCache.");
+        if (_perTokenTrunkOnly)
+            throw new NotSupportedException(
+                "PrefillWithCache does not support the attention output gate / embedding norm (muse-glimmer) yet.");
         int N = tokens.Count;
         if (N == 0) throw new ArgumentException("Token list is empty", nameof(tokens));
         // Keep the externally supplied-cache route coherent with PrefillDispatch. Continuous
@@ -220,6 +223,9 @@ public sealed unsafe partial class ForwardPass
         if (_layerHeadDim is not null)
             throw new NotSupportedException(
                 "gemma4 per-layer head_dim not yet supported on BatchForwardMulti.");
+        if (_perTokenTrunkOnly)
+            throw new NotSupportedException(
+                "BatchForwardMulti does not support the attention output gate / embedding norm (muse-glimmer) yet.");
         int N = tokens.Length;
         if (N == 0) return Array.Empty<float[]>();
         int qDim = _numHeads * _headDim;

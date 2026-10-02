@@ -379,6 +379,12 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
     // Gemma 4 per-layer norms + scale (null/empty on non-Gemma 4 models).
     private readonly TensorRef[]? _postAttnNorm;
     private readonly TensorRef[]? _postFfwNorm;
+    // Muse-Glimmer: per-layer attention output gate (ModelHyperparams.AttentionOutputGate) and its
+    // [numHeads*headDim] scratch. Gated / embedding-normed models run the per-token trunk only.
+    private readonly TensorRef[]? _attnGate;
+    private readonly float* _attnGateBuf;
+    private readonly float _postNormEps;
+    private readonly bool _perTokenTrunkOnly;
     private readonly float[]? _layerOutputScale;
 
     // Gemma 4 Per-Layer-Embedding (PLE) injection. Non-null only when
@@ -706,6 +712,15 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
         if (hp.HasPostAttnNorm) _postAttnNorm = new TensorRef[L];
         if (hp.HasPostFfwNorm) _postFfwNorm = new TensorRef[L];
         if (hp.HasLayerOutputScale) _layerOutputScale = new float[L];
+        _postNormEps = hp.PostNormEps > 0f ? hp.PostNormEps : hp.RmsNormEps;
+        _perTokenTrunkOnly = hp.AttentionOutputGate || hp.InputEmbeddingRmsNorm;
+        if (hp.AttentionOutputGate)
+        {
+            if (_layerHeadDim is not null || _isMla)
+                throw new NotSupportedException("Attention output gate is only wired for uniform-head-dim, non-MLA attention.");
+            _attnGate = new TensorRef[L];
+            _attnGateBuf = Alloc(_numHeads * _headDim);
+        }
 
         InitMamba2(L);
         InitShortConv(L);
@@ -733,6 +748,7 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
                 ? ResolveTensor($"blk.{i}.attn_norm.weight")
                 : default;
             if (!noAttnLayer) _wo[i] = ResolveTensor($"blk.{i}.attn_output.weight");
+            if (_attnGate is not null && !noAttnLayer) _attnGate[i] = ResolveTensor($"blk.{i}.attn_gate.weight");
             // Falcon-7B has no ffn_norm tensor at all — attention and FFN read the SAME
             // LayerNorm output (src/models/falcon.cpp: "use the attn norm, not the result").
             // Reusing _attnNorm[i]'s TensorRef recomputes an identical LayerNorm a second time
@@ -1216,7 +1232,7 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
 
         bool moeUnsupported = _hp.IsMoE && !MoeBatchedPrefillSupported;
         bool unweightedNormUnsupported = _usesUnweightedNorm;
-        if (N == 1 || moeUnsupported || unweightedNormUnsupported || _tqKvCache != null)
+        if (N == 1 || moeUnsupported || unweightedNormUnsupported || _perTokenTrunkOnly || _tqKvCache != null)
         {
             for (int i = 0; i < N; i++)
             {
@@ -1430,7 +1446,8 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
         // the sequential path reuses RunTrunk's fix instead of teaching PrefillCore a third norm
         // mode for a single architecture.
         bool unweightedNormUnsupported = _usesUnweightedNorm;
-        if (moeUnsupported || unweightedNormUnsupported)
+        // Muse-Glimmer (attention output gate, embedding norm): PrefillCore doesn't apply either yet.
+        if (moeUnsupported || unweightedNormUnsupported || _perTokenTrunkOnly)
         {
             ReadOnlySpan<float> logits = default;
             for (int i = 0; i < N; i++)

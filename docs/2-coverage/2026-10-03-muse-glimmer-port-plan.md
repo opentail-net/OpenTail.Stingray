@@ -43,20 +43,24 @@ Metadata: `muse-glimmer.attention.sliding_window_pattern` (scalar period),
 
 ## New work
 
-- [ ] `ModelGraph`: the `muse-glimmer`/`muse_glimmer` arch.
+**2026-10-03 checkpoint:** the four items below are wired (CPU). Release build is clean, and the
+existing ForwardPass.Fast (784 passed) and Core (679 passed) suites stay green. No Muse-specific
+test exists yet. **Next:** the level-2 synthetic specification test (Verification §1).
+
+- [x] `ModelGraph`: the `muse-glimmer`/`muse_glimmer` arch.
   - SWA period (default 4) and `RopeOnlySwaLayers`; optional `rope.freq_base_swa`.
   - Raw logit scale; softcap only when the key is present.
   - New fields `PostNormEps` (1e-8), `InputEmbeddingRmsNorm`, `AttentionOutputGate`.
-- [ ] `ForwardPass` decode:
+- [x] `ForwardPass` decode:
   - load `attn_gate` per layer;
   - gate projection from `_normBuf` next to Q/K/V, `attnOut *= sigmoid(g)` before `Wo`;
   - `PostNormEps` at both post-norm sites;
   - unweighted embedding RMSNorm in `Forward`.
-- [ ] Prefill: gated models take the per-token path in `PrefillDispatch`.
+- [x] Prefill: gated models take the per-token path in `PrefillDispatch`.
   - `PrefillWithCache` / `BatchForwardMulti` throw; `SupportsBatchVerify` is false.
   - CUDA/Vulkan/GPU passes refuse.
   - Batched prefill support is a follow-up once verified.
-- [ ] `ModelCompatibility`: a `// muse-glimmer — NOT admitted` block (not in the allowlist).
+- [x] `ModelCompatibility`: a `// muse-glimmer — NOT admitted` block (not in the allowlist).
   `STINGRAY_DIAGNOSTIC_ALLOW_UNSUPPORTED_ARCH=1` runs it for experiments.
 ## Deferred (not in the initial port)
 

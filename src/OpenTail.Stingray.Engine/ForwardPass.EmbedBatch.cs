@@ -9,6 +9,7 @@ public sealed unsafe partial class ForwardPass
     /// <inheritdoc />
     public bool SupportsBatchedHiddenStateExtraction =>
         !_usesUnweightedNorm &&
+        !_perTokenTrunkOnly &&
         _tqKvCache is null &&
         _layerKvSrc is null &&
         (!_hp.IsMoE || MoeBatchedPrefillSupported);

@@ -797,6 +797,13 @@ public static class ModelCompatibility
         "minicpm",
     };
     //
+    // muse-glimmer — NOT admitted (CLAUDE.md rule 14: ported, not verified). CPU ForwardPass wiring
+    // (2026-10-03) from llama.cpp src/models/muse-glimmer.cpp: SWA period / RoPE-only-on-SWA, attention
+    // output gate, 1e-8 post-norms, unweighted embedding RMSNorm, logit scale then optional softcap.
+    // Per-token trunk only; GPU passes refuse it. No real checkpoint run and no independent reference
+    // compared yet — see docs/2-coverage/2026-10-03-muse-glimmer-port-plan.md for the verification
+    // ladder. STINGRAY_DIAGNOSTIC_ALLOW_UNSUPPORTED_ARCH=1 runs it for experiments.
+    //
     // deepseek4 — NOT admitted. DeepSeek4ForwardPass (DeepSeek4ForwardPass.cs) is a structurally
     // complete ALPHA/UNTESTED IForwardPass covering all three of V4's attention variants (raw,
     // HCA, CSA), hyper-connections, MoE (incl. hash routing + sqrt-softplus gating), and tensor

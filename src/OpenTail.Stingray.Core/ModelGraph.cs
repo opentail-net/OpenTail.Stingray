@@ -453,6 +453,26 @@ public sealed record ModelHyperparams
     public bool RopeOnlySwaLayers { get; init; }
 
     /// <summary>
+    /// Epsilon for the post-attention / post-FFN sandwich norms when it differs from
+    /// <see cref="RmsNormEps"/>; 0 means "use RmsNormEps". Muse-Glimmer hardcodes 1e-8 in its
+    /// graph (llama.cpp <c>src/models/muse-glimmer.cpp</c>: <c>post_norm_eps = 1e-8f</c>).
+    /// </summary>
+    public float PostNormEps { get; init; }
+
+    /// <summary>
+    /// Unweighted RMSNorm (eps = <see cref="RmsNormEps"/>) on the input embedding before the
+    /// first layer — Muse-Glimmer (<c>build_norm(inpL, nullptr, nullptr, LLM_NORM_RMS, -1)</c>).
+    /// </summary>
+    public bool InputEmbeddingRmsNorm { get; init; }
+
+    /// <summary>
+    /// Per-layer attention output gate: <c>attn *= sigmoid(attn_gate · attn_norm_out)</c> before
+    /// the output projection (Muse-Glimmer, afmoe). Tensor <c>blk.N.attn_gate.weight</c>,
+    /// [embDim → numHeads·headDim]. The CPU <c>ForwardPass</c> supports it on its per-token path only.
+    /// </summary>
+    public bool AttentionOutputGate { get; init; }
+
+    /// <summary>
     /// Per-Layer-Embedding (PLE) projection width. Gemma 4 E4B = 256. 0 when the
     /// model has no PLE table.
     /// </summary>
@@ -819,6 +839,7 @@ public sealed record ModelHyperparams
         }
 
         bool isGemma4 = arch.Equals("gemma4", StringComparison.OrdinalIgnoreCase);
+        bool isMuseGlimmer = arch is "muse-glimmer" or "muse_glimmer";
 
         int slidingWindow = 0;
         int perLayerEmbedWidth = 0;
@@ -974,6 +995,32 @@ public sealed record ModelHyperparams
             for (int i = 0; i < numLayers; i++)
                 swa[i] = pattern is { Count: > 0 } ? pattern[i % pattern.Count] : i % 4 < 3;
             isSwaLayer = swa;
+        }
+        else if (isMuseGlimmer && numLayers > 0)
+        {
+            // Muse-Glimmer (llama.cpp src/models/muse-glimmer.cpp, NOT admitted): load_swa_pattern(ml, 4)
+            // takes a per-layer bool array when the key is one, else a scalar period (default 4) through
+            // set_swa_pattern(period, dense_first=false). RoPE only on SWA layers, as cohere2.
+            slidingWindow = GetInt(metadata, $"{arch}.attention.sliding_window");
+            var pattern = GetBoolArray(metadata, $"{arch}.attention.sliding_window_pattern");
+            int swaPeriod = pattern is { Count: > 0 } ? 0 : GetInt(metadata, $"{arch}.attention.sliding_window_pattern", 4);
+            var swa = new bool[numLayers];
+            for (int i = 0; i < numLayers; i++)
+                swa[i] = pattern is { Count: > 0 } ? pattern[i % pattern.Count]
+                    : swaPeriod == 0 || (i % swaPeriod < swaPeriod - 1);
+            isSwaLayer = swa;
+
+            // Optional rope.freq_base_swa (defaults to the main base). Only SWA layers rotate, so a
+            // separate SWA table at the same rope dim is exactly "use this base"; the uniform
+            // layerRopeDim is what makes ForwardPass build that table (see the gemma3 branch).
+            if (metadata.ContainsKey($"{arch}.rope.freq_base_swa"))
+            {
+                ropeThetaSwa = GetFloat(metadata, $"{arch}.rope.freq_base_swa");
+                layerRopeDim = Enumerable.Repeat(ropeDim, numLayers).ToArray();
+            }
+
+            // Softcap is optional with no default (get_key(..., false)): absent means none.
+            finalLogitSoftcap = GetFloat(metadata, $"{arch}.final_logit_softcapping");
         }
         else if (arch.Equals("gemma3", StringComparison.OrdinalIgnoreCase) && numLayers > 0)
         {
@@ -1212,7 +1259,7 @@ public sealed record ModelHyperparams
         // phimoe is the opposite case: it ships norm bias tensors but is RMSNorm + bias
         // (phi3.cpp's graph, shared by phimoe: build_norm(..., norm_b, LLM_NORM_RMS)).
         bool usesLayerNorm = (hasNormBias && arch != "phimoe") || arch == "cohere2";
-        bool ropeOnlySwaLayers = arch == "cohere2" || (arch == "exaone4" && isSwaLayer is not null);
+        bool ropeOnlySwaLayers = arch == "cohere2" || isMuseGlimmer || (arch == "exaone4" && isSwaLayer is not null);
 
         // OLMo v1 ships no attn_norm/ffn_norm/output_norm tensor at all (confirmed against
         // src/models/olmo.cpp: build_norm's weight AND bias arguments are both NULL) — the SAME
@@ -1227,7 +1274,8 @@ public sealed record ModelHyperparams
         // while granite.cpp does `ggml_scale(cur, 1.0f / f_logit_scale)`. LogitScale is documented
         // as already carrying whatever reciprocal is needed so every call site can just multiply,
         // so this reads the raw value straight through, not inverted.
-        if (arch == "cohere2")
+        // Muse-Glimmer uses the same direct multiply (ggml_scale(cur, f_logit_scale)), before the softcap.
+        if (arch == "cohere2" || isMuseGlimmer)
         {
             float rawLogitScaleC2 = GetFloat(metadata, $"{arch}.logit_scale");
             if (rawLogitScaleC2 != 0f) logitScale = rawLogitScaleC2;
@@ -1264,6 +1312,9 @@ public sealed record ModelHyperparams
             UsesLayerNorm = usesLayerNorm,
             UsesUnweightedNorm = usesUnweightedNorm,
             RopeOnlySwaLayers = ropeOnlySwaLayers,
+            PostNormEps = isMuseGlimmer ? 1e-8f : 0f,
+            InputEmbeddingRmsNorm = isMuseGlimmer,
+            AttentionOutputGate = isMuseGlimmer,
             HasFfnBias = hasFfnBias,
             UseParallelResidual = useParallelResidual,
             HasQkNorm = hasQkNorm,

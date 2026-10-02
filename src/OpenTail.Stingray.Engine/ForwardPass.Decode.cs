@@ -23,6 +23,10 @@ public sealed unsafe partial class ForwardPass
         if (_hp.HasPerLayerTokenEmbd)
             BuildPerLayerProjections(token);
 
+        // Muse-Glimmer: unweighted RMSNorm on the embedding before layer 0.
+        if (_hp.InputEmbeddingRmsNorm)
+            SimdKernels.PureRmsNorm(_hidden, _hidden, _embDim, _hp.RmsNormEps);
+
         return RunTrunk(position, token);
     }
 
@@ -66,6 +70,9 @@ public sealed unsafe partial class ForwardPass
         // PLE uses the padding token row.
         if (_hp.HasPerLayerTokenEmbd)
             BuildPerLayerProjections(0);
+        // muse-glimmer.cpp norms whatever build_inp_embd produced, raw embeddings included.
+        if (_hp.InputEmbeddingRmsNorm)
+            SimdKernels.PureRmsNorm(_hidden, _hidden, _embDim, _hp.RmsNormEps);
 
         try { return RunTrunk(position, traceToken: -1); }
         finally { _deepstackSlices = null; }
@@ -87,7 +94,7 @@ public sealed unsafe partial class ForwardPass
             throw new ArgumentException($"embedding width {width} != model embedding dim {_embDim}" +
                 (nDs > 0 ? $" (or {_embDim * (1 + nDs)} with {nDs} deepstack slices)." : "."));
 
-        bool batched = count > 1 && RecurrentBatchedPrefillApplies && _layerHeadDim is null && !_usesUnweightedNorm
+        bool batched = count > 1 && RecurrentBatchedPrefillApplies && _layerHeadDim is null && !_usesUnweightedNorm && !_perTokenTrunkOnly
             && _tqKvCache == null && !_hp.HasPerLayerTokenEmbd && (!_hp.IsMoE || MoeBatchedPrefillSupported);
         if (!batched)
         {
@@ -279,6 +286,9 @@ public sealed unsafe partial class ForwardPass
                         FusedMatVec(_v, _wv[layer], _normBuf, kvDimL, _embDim);
                     }
                 }
+                // Muse-Glimmer: gate = attn_gate · attn_norm_out, applied after attention (below).
+                if (_attnGate is not null)
+                    FusedMatVec(_attnGateBuf, _attnGate[layer], _normBuf, qDimL, _embDim);
             }
             if (profDecode)
             {
@@ -395,6 +405,13 @@ public sealed unsafe partial class ForwardPass
             StageCapture.Record("cpu", layer, StageCapture.Stages.AttnOut,
                 new ReadOnlySpan<float>(_attnOut, qDimL));
 
+            // Muse-Glimmer attention output gate: attn *= sigmoid(gate) before Wo (muse-glimmer.cpp).
+            if (_attnGate is not null)
+            {
+                SimdKernels.SigmoidInPlace(_attnGateBuf, qDimL);
+                for (int j = 0; j < qDimL; j++) _attnOut[j] *= _attnGateBuf[j];
+            }
+
             if (_isMla)
             {
                 // _attnOut is zero-padded to _maxHeadDim per head (see MlaComputeQkv); _wo's
@@ -425,7 +442,7 @@ public sealed unsafe partial class ForwardPass
             if (_postAttnNorm is not null)
             {
                 var paNormW = GetNormWeight(_postAttnNorm[layer]);
-                FastRmsNorm(_hidden, _hidden, paNormW, _embDim, _hp.RmsNormEps);
+                FastRmsNorm(_hidden, _hidden, paNormW, _embDim, _postNormEps);
             }
 
             // Granite/MiniCPM: scale the sublayer output before it joins the residual stream.
@@ -527,7 +544,7 @@ public sealed unsafe partial class ForwardPass
             if (_postFfwNorm is not null)
             {
                 var pfNormW = GetNormWeight(_postFfwNorm[layer]);
-                FastRmsNorm(_hidden, _hidden, pfNormW, _embDim, _hp.RmsNormEps);
+                FastRmsNorm(_hidden, _hidden, pfNormW, _embDim, _postNormEps);
             }
 
             // Granite/MiniCPM: scale the sublayer output before it joins the residual stream.

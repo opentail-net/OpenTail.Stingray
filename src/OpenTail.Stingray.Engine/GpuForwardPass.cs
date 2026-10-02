@@ -486,6 +486,8 @@ public sealed unsafe class GpuForwardPass : IForwardPass
     public static string? UnsupportedReason(GgufModel model, ModelHyperparams hp)
     {
         if (hp.KvLoraRank > 0) return "MLA attention (deepseek2)";
+        if (hp.AttentionOutputGate || hp.InputEmbeddingRmsNorm || hp.PostNormEps > 0f)
+            return "attention output gate / embedding norm (muse-glimmer, CPU only)";
         if (hp.UsesLayerNorm && hp.HasQkNorm) return "LayerNorm QK-norm";
         if (hp.RopeDim > 0 && hp.RopeDim < hp.HeadDim && !hp.IsNeoxRope) return "partial non-NEOX RoPE";
         bool gateless = model.FindTensor("blk.0.ffn_gate.weight") is null && model.FindTensor("blk.0.ffn_gate_exps.weight") is null
@@ -524,6 +526,8 @@ public sealed unsafe class GpuForwardPass : IForwardPass
         int maxContextLength = 0, bool enableTurboQuant = false, int tqFp32Window = 256, int tqBits = 3,
         DType? kvDtype = null, int layerLimit = int.MaxValue)
     {
+        if (hp.AttentionOutputGate || hp.InputEmbeddingRmsNorm || hp.PostNormEps > 0f)
+            throw new NotSupportedException("GpuForwardPass has no path for muse-glimmer's attention output gate / embedding norm; use the CPU pass (-g 0).");
         // Gemma 4 master switch: hp.LayerHeadDim is non-null only for gemma4-family models.
         // The full gemma4 trunk (per-layer head_dim, SWA, dual RoPE + rope_freqs, sandwich
         // norms, V-norm, attn_scale=1.0, final softcap, k_eq_v globals) is implemented in

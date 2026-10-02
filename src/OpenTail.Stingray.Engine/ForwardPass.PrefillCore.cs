@@ -1096,6 +1096,7 @@ public sealed unsafe partial class ForwardPass
     public bool SupportsBatchVerify =>
         _tqKvCache is null
         && _layerHeadDim is null
+        && !_perTokenTrunkOnly
         && _kvCache.Length == _kvCache.LogicalLength;
 
     /// <summary>
@@ -1112,6 +1113,9 @@ public sealed unsafe partial class ForwardPass
         if (_layerHeadDim is not null)
             throw new NotSupportedException(
                 "gemma4 per-layer head_dim not yet supported on the batched BatchVerify path.");
+        if (_perTokenTrunkOnly)
+            throw new NotSupportedException(
+                "BatchVerify does not support the attention output gate / embedding norm (muse-glimmer) yet.");
 
         int N = tokens.Length;
         if (N == 0) return Array.Empty<float[]>();
