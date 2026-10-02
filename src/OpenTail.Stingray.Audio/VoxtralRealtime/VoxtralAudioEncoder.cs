@@ -1,3 +1,4 @@
+using OpenTail.Stingray.Cpu;
 
 namespace OpenTail.Stingray.Audio.VoxtralRealtime;
 
@@ -63,16 +64,30 @@ public static class VoxtralAudioEncoder
             downsampled[t] = row;
         });
 
-        var output = new float[tokens][];
-        Parallel.For(0, tokens, t =>
+        var proj1 = new float[tokens * textHidden];
+        var proj2 = new float[tokens * textHidden];
+        unsafe
         {
-            var proj1 = new float[textHidden];
-            LinearNoBiasDirect(downsampled[t], w.Projector1Weight, proj1, hidden * factor, textHidden);
-            GeluErfInPlace(proj1);
-            var proj2 = new float[textHidden];
-            LinearNoBiasDirect(proj1, w.Projector2Weight, proj2, textHidden, textHidden);
-            output[t] = proj2;
-        });
+            byte[] dq = QuantizeRows(downsampled, hidden * factor);
+            fixed (byte* pD = dq, pP1 = w.Projector1Weight)
+            fixed (float* o1 = proj1)
+                Q8_0BatchedLinear.MatMul(pP1, textHidden, hidden * factor, pD, tokens, null, o1, textHidden);
+            Parallel.For(0, tokens, t =>
+            {
+                var row = proj1.AsSpan(t * textHidden, textHidden).ToArray();
+                GeluErfInPlace(row);
+                row.CopyTo(proj1, t * textHidden);
+            });
+            var pq = new byte[tokens * OpenTail.Stingray.Cpu.SimdKernels.Q8_0ScratchBytes(textHidden)];
+            fixed (float* p1 = proj1, o2 = proj2)
+            fixed (byte* pPq = pq, pP2 = w.Projector2Weight)
+            {
+                Q8_0BatchedLinear.QuantizeRows(p1, tokens, textHidden, pPq);
+                Q8_0BatchedLinear.MatMul(pP2, textHidden, textHidden, pPq, tokens, null, o2, textHidden);
+            }
+        }
+        var output = new float[tokens][];
+        for (int t = 0; t < tokens; t++) output[t] = proj2.AsSpan(t * textHidden, textHidden).ToArray();
         return output;
     }
 
@@ -89,17 +104,30 @@ public static class VoxtralAudioEncoder
         var k = new float[frames][];
         var v = new float[frames][];
 
+        // Weight-stationary over all frames (Q8_0BatchedLinear), bit-identical to per-frame matvecs.
+        var qFlat = new float[frames * qkvDim];
+        var kFlat = new float[frames * qkvDim];
+        var vFlat = new float[frames * qkvDim];
+        unsafe
+        {
+            byte[] xq = QuantizeRows(xRows, hidden);
+            fixed (byte* pX = xq, pQ = w.QWeight, pK = w.KWeight, pV = w.VWeight)
+            fixed (float* pQB = w.QBias, pVB = w.VBias, oq = qFlat, ok = kFlat, ov = vFlat)
+            {
+                Q8_0BatchedLinear.MatMul(pQ, qkvDim, hidden, pX, frames, pQB, oq, qkvDim);
+                Q8_0BatchedLinear.MatMul(pK, qkvDim, hidden, pX, frames, null, ok, qkvDim);
+                Q8_0BatchedLinear.MatMul(pV, qkvDim, hidden, pX, frames, pVB, ov, qkvDim);
+            }
+        }
         Parallel.For(0, frames, t =>
         {
-            var qt = new float[qkvDim];
-            var kt = new float[qkvDim];
-            var vt = new float[qkvDim];
-            LinearQKV(xRows[t], w.QWeight, w.QBias, w.KWeight, w.VWeight, w.VBias, qt, kt, vt, hidden, qkvDim);
+            var qt = qFlat.AsSpan(t * qkvDim, qkvDim).ToArray();
+            var kt = kFlat.AsSpan(t * qkvDim, qkvDim).ToArray();
             RopeNeoxInPlace(qt, heads, headDim, t);
             RopeNeoxInPlace(kt, heads, headDim, t);
             q[t] = qt;
             k[t] = kt;
-            v[t] = vt;
+            v[t] = vFlat.AsSpan(t * qkvDim, qkvDim).ToArray();
         });
 
         var contextFlat = new float[frames][];
@@ -134,63 +162,29 @@ public static class VoxtralAudioEncoder
         });
 
         var flatOut = new float[frames * hidden];
-        Parallel.For(0, frames, t =>
+        unsafe
         {
-            unsafe
-            {
-                fixed (float* pDst = &flatOut[t * hidden])
-                    LinearDirect(contextFlat[t], w.OWeight, w.OBias, pDst, heads * headDim, hidden);
-            }
-        });
+            byte[] cq = QuantizeRows(contextFlat, heads * headDim);
+            fixed (byte* pC = cq, pO = w.OWeight)
+            fixed (float* pOB = w.OBias, pDst = flatOut)
+                Q8_0BatchedLinear.MatMul(pO, hidden, heads * headDim, pC, frames, pOB, pDst, hidden);
+        }
         return flatOut;
     }
 
-    private static unsafe void LinearQKV(float[] input, byte[] wQ, float[] qBias, byte[] wK, byte[] wV, float[] vBias,
-        float[] outQ, float[] outK, float[] outV, int inDim, int outDim)
+    /// <summary>Q8_0 activation scratch for every row (row stride
+    /// <c>SimdKernels.Q8_0ScratchBytes(cols)</c>), as <see cref="Q8_0BatchedLinear.MatMul"/> expects.</summary>
+    private static unsafe byte[] QuantizeRows(float[][] rows, int cols)
     {
-        int bytesPerRow = (inDim / 32) * 34;
-        int scratchBytes = OpenTail.Stingray.Cpu.SimdKernels.Q8_0ScratchBytes(inDim);
-        byte* scratch = stackalloc byte[scratchBytes];
-        fixed (float* pIn = input)
-            OpenTail.Stingray.Cpu.SimdKernels.QuantizeRowToQ8_0(pIn, inDim, scratch);
-
-        fixed (byte* pQ = wQ, pK = wK, pV = wV)
-        fixed (float* pQB = qBias, pVB = vBias)
-        fixed (float* pq = outQ, pk = outK, pv = outV)
+        int stride = OpenTail.Stingray.Cpu.SimdKernels.Q8_0ScratchBytes(cols);
+        var xq = new byte[rows.Length * stride];
+        Parallel.For(0, rows.Length, t =>
         {
-            for (int i = 0; i < outDim; i++)
-            {
-                long offset = (long)i * bytesPerRow;
-                pq[i] = OpenTail.Stingray.Cpu.SimdKernels.DotQ8_0_Q8_0(pQ + offset, scratch, inDim) + (pQB != null ? pQB[i] : 0f);
-                pk[i] = OpenTail.Stingray.Cpu.SimdKernels.DotQ8_0_Q8_0(pK + offset, scratch, inDim);
-                pv[i] = OpenTail.Stingray.Cpu.SimdKernels.DotQ8_0_Q8_0(pV + offset, scratch, inDim) + (pVB != null ? pVB[i] : 0f);
-            }
-        }
-    }
-
-    private static unsafe void LinearNoBiasDirect(float[] input, byte[] weightQ8_0, float[] output, int inDim, int outDim)
-    {
-        fixed (float* pOut = output)
-            LinearDirect(input, weightQ8_0, null, pOut, inDim, outDim);
-    }
-
-    private static unsafe void LinearDirect(float[] input, byte[] weightQ8_0, float[]? bias, float* output, int inDim, int outDim)
-    {
-        int bytesPerRow = (inDim / 32) * 34;
-        int scratchBytes = OpenTail.Stingray.Cpu.SimdKernels.Q8_0ScratchBytes(inDim);
-        byte* scratch = stackalloc byte[scratchBytes];
-        fixed (float* pIn = input)
-            OpenTail.Stingray.Cpu.SimdKernels.QuantizeRowToQ8_0(pIn, inDim, scratch);
-
-        fixed (byte* pW = weightQ8_0)
-        fixed (float* pB = bias)
-        {
-            for (int i = 0; i < outDim; i++)
-            {
-                output[i] = OpenTail.Stingray.Cpu.SimdKernels.DotQ8_0_Q8_0(pW + (long)i * bytesPerRow, scratch, inDim) +
-                    (pB != null ? pB[i] : 0f);
-            }
-        }
+            fixed (float* pIn = rows[t])
+            fixed (byte* pDst = &xq[t * stride])
+                OpenTail.Stingray.Cpu.SimdKernels.QuantizeRowToQ8_0(pIn, cols, pDst);
+        });
+        return xq;
     }
 
     /// <summary>Real GGML `GGML_ROPE_TYPE_NEOX` convention: rotates pairs `(i, i+headDim/2)`
@@ -221,46 +215,31 @@ public static class VoxtralAudioEncoder
         int frames = xRows.Length;
         int inter = VoxtralAudioEncoderWeights.IntermediateSize;
         var flatOut = new float[frames * hidden];
-
-        Parallel.For(0, frames, t =>
+        var gate = new float[frames * inter];
+        var up = new float[frames * inter];
+        unsafe
         {
-            unsafe
+            byte[] xq = QuantizeRows(xRows, hidden);
+            fixed (byte* pX = xq, pGW = w.GateWeight, pUW = w.UpWeight)
+            fixed (float* pG = gate, pU = up)
             {
-                int inScratchBytes = OpenTail.Stingray.Cpu.SimdKernels.Q8_0ScratchBytes(hidden);
-                byte* inScratch = stackalloc byte[inScratchBytes];
-                fixed (float* pIn = xRows[t])
-                    OpenTail.Stingray.Cpu.SimdKernels.QuantizeRowToQ8_0(pIn, hidden, inScratch);
-
-                float* gate = stackalloc float[inter];
-                int inBytesPerRow = (hidden / 32) * 34;
-                fixed (byte* pGW = w.GateWeight, pUW = w.UpWeight)
-                {
-                    for (int i = 0; i < inter; i++)
-                    {
-                        long off = (long)i * inBytesPerRow;
-                        float g = OpenTail.Stingray.Cpu.SimdKernels.DotQ8_0_Q8_0(pGW + off, inScratch, hidden);
-                        float u = OpenTail.Stingray.Cpu.SimdKernels.DotQ8_0_Q8_0(pUW + off, inScratch, hidden);
-                        gate[i] = Silu(g) * u;
-                    }
-                }
-
-                int interScratchBytes = OpenTail.Stingray.Cpu.SimdKernels.Q8_0ScratchBytes(inter);
-                byte* interScratch = stackalloc byte[interScratchBytes];
-                OpenTail.Stingray.Cpu.SimdKernels.QuantizeRowToQ8_0(gate, inter, interScratch);
-
-                int downBytesPerRow = (inter / 32) * 34;
-                fixed (byte* pDW = w.DownWeight)
-                fixed (float* pDB = w.DownBias)
-                fixed (float* pOut = &flatOut[t * hidden])
-                {
-                    for (int i = 0; i < hidden; i++)
-                    {
-                        pOut[i] = OpenTail.Stingray.Cpu.SimdKernels.DotQ8_0_Q8_0(pDW + (long)i * downBytesPerRow, interScratch, inter) +
-                            (pDB != null ? pDB[i] : 0f);
-                    }
-                }
+                Q8_0BatchedLinear.MatMul(pGW, inter, hidden, pX, frames, null, pG, inter);
+                Q8_0BatchedLinear.MatMul(pUW, inter, hidden, pX, frames, null, pU, inter);
             }
-        });
+            Parallel.For(0, frames, t =>
+            {
+                for (int i = t * inter, e = i + inter; i < e; i++) gate[i] = Silu(gate[i]) * up[i];
+            });
+            int stride = OpenTail.Stingray.Cpu.SimdKernels.Q8_0ScratchBytes(inter);
+            var gq = new byte[frames * stride];
+            fixed (float* pG = gate)
+            fixed (byte* pGq = gq, pDW = w.DownWeight)
+            fixed (float* pDB = w.DownBias, pOut = flatOut)
+            {
+                Q8_0BatchedLinear.QuantizeRows(pG, frames, inter, pGq);
+                Q8_0BatchedLinear.MatMul(pDW, hidden, inter, pGq, frames, pDB, pOut, hidden);
+            }
+        }
         return flatOut;
     }
 
