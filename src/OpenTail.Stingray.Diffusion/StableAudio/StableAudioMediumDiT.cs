@@ -308,6 +308,28 @@ public sealed class StableAudioMediumDiT : IDisposable
             if (LocalEmbedConstant(layer) is { } c) ws.LocalAdd(layer, MemoryTokens, c);
     }
 
+    // Per conditioning embedding (cached by reference in ToCondEmbed, so constant across denoising
+    // steps) and per layer prefix: that layer's cross-attention to_kv projection. It depends only on
+    // the conditioning, so it is computed once per generation instead of once per step.
+    private readonly Dictionary<float[], Dictionary<string, float[]>> _crossKvCache = new(ReferenceEqualityComparer.Instance);
+
+    private float[] CrossKv(float[] condEmbed, int nCond, string p)
+    {
+        lock (_crossKvCache)
+        {
+            if (!_crossKvCache.TryGetValue(condEmbed, out var perLayer))
+            {
+                // One generation uses two embeddings (conditional + unconditional); a third means a
+                // new generation, so drop the old entries (~110 MB each) instead of growing forever.
+                if (_crossKvCache.Count >= 2) _crossKvCache.Clear();
+                _crossKvCache[condEmbed] = perLayer = new Dictionary<string, float[]>();
+            }
+            if (!perLayer.TryGetValue(p, out var kv))
+                perLayer[p] = kv = Linear($"{p}.cross_attn.to_kv.weight", null, condEmbed, nCond, Dim, 3 * Dim);
+            return kv;
+        }
+    }
+
     private float[] CrossAttention(float[] x, int seq, float[] condEmbed, int nCond, string p)
     {
         var qNormW = ReadWeight($"{p}.cross_attn.q_norm.gamma");
@@ -322,7 +344,7 @@ public sealed class StableAudioMediumDiT : IDisposable
             qBoth.AsSpan(t * 2 * Dim + Dim, Dim).CopyTo(qDiff.AsSpan(t * Dim, Dim));
         }
 
-        var kv = Linear($"{p}.cross_attn.to_kv.weight", null, condEmbed, nCond, Dim, 3 * Dim);
+        var kv = CrossKv(condEmbed, nCond, p);
         var k = new float[nCond * Dim];
         var kDiff = new float[nCond * Dim];
         var v = new float[nCond * Dim];
