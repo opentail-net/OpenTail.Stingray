@@ -1,0 +1,60 @@
+diff --git a/src/OpenTail.Stingray.Cpu/SimdKernels.cs b/src/OpenTail.Stingray.Cpu/SimdKernels.cs
+index 5a4fe57d..e147def3 100644
+--- a/src/OpenTail.Stingray.Cpu/SimdKernels.cs
++++ b/src/OpenTail.Stingray.Cpu/SimdKernels.cs
+@@ -4519,6 +4526,54 @@ public static unsafe class SimdKernels
+     public static float DotIq4Nl_Q8_0(byte* row, byte* scratch, int cols)
+     {
+         int numBlocks = cols / 32;
++        if (Avx2.IsSupported && Fma.IsSupported)
++            return DotIq4Nl_Q8_0_Avx2(row, scratch, numBlocks);
++        return DotIq4Nl_Q8_0_Scalar(row, scratch, numBlocks);
++    }
++
++    private static readonly Vector256<sbyte> s_iq4NlCodebook256 = Vector256.Create(
++        (sbyte)-127, -104, -83, -65, -49, -35, -22, -10, 1, 13, 25, 38, 53, 69, 89, 113,
++        -127, -104, -83, -65, -49, -35, -22, -10, 1, 13, 25, 38, 53, 69, 89, 113);
++
++    /// <summary>
++    /// AVX2 shape of ggml's <c>ggml_vec_dot_iq4_nl_q8_0</c>: pshufb maps the 32 nibbles through the
++    /// codebook to int8 weights (low nibbles = elements 0-15, high = 16-31), then the Q8_0-style
++    /// int8 dot and a per-lane FMA by <c>d4 * d8</c>. Same integer per block as the scalar loop;
++    /// the float accumulation is per lane (as ggml's) rather than one running scalar.
++    /// </summary>
++    internal static float DotIq4Nl_Q8_0_Avx2(byte* row, byte* scratch, int numBlocks)
++    {
++        // ggml's shape exactly: even/odd blocks in two accumulators, summed before the hsum, and
++        // a scalar tail for an odd block count.
++        var acc1 = Vector256<float>.Zero;
++        var acc2 = Vector256<float>.Zero;
++        int b = 0;
++        for (; b + 1 < numBlocks; b += 2)
++        {
++            acc1 = Iq4NlBlock(row + b * 18, scratch + b * 36, acc1);
++            acc2 = Iq4NlBlock(row + (b + 1) * 18, scratch + (b + 1) * 36, acc2);
++        }
++        float sum = HSum256(acc1 + acc2);
++        if (b < numBlocks) sum += DotIq4Nl_Q8_0_Scalar(row + b * 18, scratch + b * 36, 1);
++        return sum;
++    }
++
++    [MethodImpl(MethodImplOptions.AggressiveInlining)]
++    private static Vector256<float> Iq4NlBlock(byte* wb, byte* sb, Vector256<float> acc)
++    {
++        var m4 = Vector128.Create((byte)0x0F);
++        var q4 = Vector128.LoadUnsafe(ref *(wb + 2));
++        var idx = Vector256.Create(q4 & m4, Vector128.ShiftRightLogical(q4, 4) & m4);
++        var w = Avx2.Shuffle(s_iq4NlCodebook256.AsByte(), idx).AsSByte();
++        var q8 = Vector256.LoadUnsafe(ref *(sb + 4)).AsSByte();
++        var dot32 = Avx2.MultiplyAddAdjacent(Avx2.MultiplyAddAdjacent(Avx2.Abs(w), Avx2.Sign(q8, w)), Vector256.Create((short)1));
++        // ggml stores the Q8_0 activation scale as fp16; round ours the same way for this dot.
++        float d = (float)(Half)(*(float*)sb) * HalfToFloat(wb[0], wb[1]);
++        return Fma.MultiplyAdd(Vector256.Create(d), Avx.ConvertToVector256Single(dot32), acc);
++    }
++
++    internal static float DotIq4Nl_Q8_0_Scalar(byte* row, byte* scratch, int numBlocks)
++    {
+         float acc = 0f;
+         fixed (sbyte* cb = s_iq4NlCodebook)
+         {
+
