@@ -2186,7 +2186,7 @@ public sealed unsafe class HybridGdnForwardPass : IForwardPass
         var q = _q; var attnOut = _attnOut; var scores = _attnScores;
         var cache = _kvCache;
 
-        Parallel.For(0, _numHeads, h =>
+        SimdKernels.ParallelForUncapped(0, _numHeads, h =>
         {
             int kvHead = h / hpkg;
             float* qHead = q + h * hd;
@@ -2381,7 +2381,7 @@ public sealed unsafe class HybridGdnForwardPass : IForwardPass
         int ctxLen = _ctxLen; int hd = _headDim; int hpkg = _headsPerKvGroup;
         var q = _q; var attnOut = _attnOut; var scores = _attnScores;
 
-        Parallel.For(0, _numHeads, h =>
+        SimdKernels.ParallelForUncapped(0, _numHeads, h =>
         {
             int kvHead = h / hpkg;
             float* qHead = q + h * hd;
@@ -2744,7 +2744,7 @@ public sealed unsafe class HybridGdnForwardPass : IForwardPass
         // per-iter switch on enum across ~327 K dispatches per token.
         if (gateDt == DType.Q4_K && upDt == DType.Q4_K)
         {
-            Parallel.For(0, numActiveL * expertDimL, s_moeParallelOpts, idx =>
+            SimdKernels.ParallelForCapped(0, numActiveL * expertDimL, idx =>
             {
                 int k = idx / expertDimL;
                 int r = idx % expertDimL;
@@ -2762,7 +2762,7 @@ public sealed unsafe class HybridGdnForwardPass : IForwardPass
             // Q3_K-dense routed layers are the dominant hot case here; the
             // gateDt == upDt guard ensures we still pick the right kernel.
             DType dt = gateDt;
-            Parallel.For(0, numActiveL * expertDimL, s_moeParallelOpts, idx =>
+            SimdKernels.ParallelForCapped(0, numActiveL * expertDimL, idx =>
             {
                 int k = idx / expertDimL;
                 int r = idx % expertDimL;
@@ -2775,7 +2775,7 @@ public sealed unsafe class HybridGdnForwardPass : IForwardPass
         }
         else
         {
-            Parallel.For(0, numActiveL * expertDimL, s_moeParallelOpts, idx =>
+            SimdKernels.ParallelForCapped(0, numActiveL * expertDimL, idx =>
             {
                 int k = idx / expertDimL;
                 int r = idx % expertDimL;
@@ -2819,7 +2819,7 @@ public sealed unsafe class HybridGdnForwardPass : IForwardPass
         switch (downDt)
         {
             case DType.Q4_K:
-                Parallel.For(0, embDimL, s_moeParallelOpts, r =>
+                SimdKernels.ParallelForCapped(0, embDimL, r =>
                 {
                     float sum = 0f;
                     for (int k = 0; k < numActiveL; k++)
@@ -2835,7 +2835,7 @@ public sealed unsafe class HybridGdnForwardPass : IForwardPass
                 });
                 break;
             case DType.Q5_K:
-                Parallel.For(0, embDimL, s_moeParallelOpts, r =>
+                SimdKernels.ParallelForCapped(0, embDimL, r =>
                 {
                     float sum = 0f;
                     for (int k = 0; k < numActiveL; k++)
@@ -2851,7 +2851,7 @@ public sealed unsafe class HybridGdnForwardPass : IForwardPass
                 });
                 break;
             case DType.Q6_K:
-                Parallel.For(0, embDimL, s_moeParallelOpts, r =>
+                SimdKernels.ParallelForCapped(0, embDimL, r =>
                 {
                     float sum = 0f;
                     for (int k = 0; k < numActiveL; k++)
@@ -2870,7 +2870,7 @@ public sealed unsafe class HybridGdnForwardPass : IForwardPass
                 if (useQ8KDown)
                 {
                     DType downDtL = downDt;
-                    Parallel.For(0, embDimL, s_moeParallelOpts, r =>
+                    SimdKernels.ParallelForCapped(0, embDimL, r =>
                     {
                         float sum = 0f;
                         for (int k = 0; k < numActiveL; k++)
@@ -2888,7 +2888,7 @@ public sealed unsafe class HybridGdnForwardPass : IForwardPass
                 }
                 else
                 {
-                    Parallel.For(0, embDimL, s_moeParallelOpts, r =>
+                    SimdKernels.ParallelForCapped(0, embDimL, r =>
                     {
                         float sum = 0f;
                         for (int k = 0; k < numActiveL; k++)

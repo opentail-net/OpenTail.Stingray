@@ -18,7 +18,7 @@ public sealed unsafe partial class ForwardPass
         int kvDim = numKvHeads * headDim;
         int hpkg = numHeads / numKvHeads;
 
-        Parallel.For(0, numHeads, h =>
+        SimdKernels.ParallelForUncapped(0, numHeads, h =>
         {
             int kvHead = h / hpkg;
             int maxSeqLen = startPos + N;
@@ -198,7 +198,7 @@ public sealed unsafe partial class ForwardPass
         // FLASH_ATTN_EXT node with no inspectable intermediate).
         bool traceThisLayer = s_mlaTrace && _isMla;
 
-        Parallel.For(0, numHeads, h =>
+        SimdKernels.ParallelForUncapped(0, numHeads, h =>
         {
             int kvHead = h / hpkg;
             float alibiSlope = _hp.AlibiMaxBias > 0f ? ModelHyperparams.AlibiSlope(_hp.AlibiMaxBias, numHeads, h) : 0f;
@@ -395,7 +395,7 @@ public sealed unsafe partial class ForwardPass
         const int TokenTile = 64;
         int targetLayer = readLayer >= 0 ? readLayer : layer;
 
-        Parallel.For(0, numHeads, h =>
+        SimdKernels.ParallelForUncapped(0, numHeads, h =>
         {
             int kvHead = h / hpkg;
             float alibiSlope = _hp.AlibiMaxBias > 0f ? ModelHyperparams.AlibiSlope(_hp.AlibiMaxBias, numHeads, h) : 0f;
@@ -498,7 +498,7 @@ public sealed unsafe partial class ForwardPass
                 () => new PrefillFlash64KvOuterScratch(headDim, maxQueries), trackAllValues: true);
             try
             {
-                Parallel.For(0, numHeads, h =>
+                SimdKernels.ParallelForUncapped(0, numHeads, h =>
                     ComputePrefillFlashAttention64KvOuterHead(batchQ, cache, layer, tokenCount, startPos,
                         output, qDim, headDim, scale, h, h / headsPerKv, kvOuterScratch.Value!, groupTiles));
             }
@@ -514,7 +514,7 @@ public sealed unsafe partial class ForwardPass
             "STINGRAY_PREFILL_ATTN_FLASH64_TILE_JOBS") == "1";
         if (!useTileJobs)
         {
-            Parallel.For(0, numHeads, h =>
+            SimdKernels.ParallelForUncapped(0, numHeads, h =>
             {
                 using var scratch = new PrefillFlash64Scratch(headDim);
                 for (int nBase = 0; nBase < tokenCount; nBase += Tile)
@@ -531,7 +531,7 @@ public sealed unsafe partial class ForwardPass
 
         try
         {
-            Parallel.For(0, numHeads * queryTiles, job =>
+            SimdKernels.ParallelForUncapped(0, numHeads * queryTiles, job =>
             {
                 int h = job / queryTiles;
                 int nBase = (job - h * queryTiles) * Tile;
@@ -1112,7 +1112,7 @@ public sealed unsafe partial class ForwardPass
         bool bf16 = cache.IsBf16Store;
         if (posTiles > 1)
         {
-            Parallel.For(0, posTiles, ti =>
+            SimdKernels.ParallelForUncapped(0, posTiles, ti =>
             {
                 int i0 = ti * PosTile;
                 int i1 = Math.Min(i0 + PosTile, scoreLenAll);
@@ -1160,7 +1160,7 @@ public sealed unsafe partial class ForwardPass
         // Softmax and the weighted-V sum stay parallel over heads: the V accumulation is a
         // per-head reduction over ascending i, so splitting it by position would need per-thread
         // partials and would change the accumulation order (and the result).
-        Parallel.For(0, _numHeads, h =>
+        SimdKernels.ParallelForUncapped(0, _numHeads, h =>
         {
             int kvHead = h / hpkg;
             float* outHead = attnOut + h * hdLocal;
@@ -1450,7 +1450,7 @@ public sealed unsafe partial class ForwardPass
         var q = _q; var attnOut = _attnOut; var scores = _attnScores;
         var rotated = _rotatedQuery; var decomp = _decompBuf;
 
-        Parallel.For(0, _numHeads, h =>
+        SimdKernels.ParallelForUncapped(0, _numHeads, h =>
         {
             int kvHead = h / hpkg;
             float* qHead = q + h * hd;

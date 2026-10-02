@@ -545,6 +545,11 @@ ones.
         prefill 81/82 -> 86/84; Mistral-7B tie. Never slower; outputs unchanged (no arithmetic
         change). Remaining small-model gap (135M ~0.55x, 0.5B ~0.75x vs llama-bench) is per-call
         overhead on tiny matvecs, which per-kernel chunking did not fix (see above).
+      - **2026-10-02: spin-then-park worker pool, shipped opt-in (`STINGRAY_CPU_POOL=spin`)**,
+        ported from TensorSharp. Decode, interleaved, same session as llama-bench: SmolLM2-135M
+        0.52x -> 0.66x, 360M 0.68x -> 0.81x, Qwen2.5-0.5B 0.73x -> 0.87x; Mistral-7B tie. Not the
+        default because MoE prefill loses 18-19%. Full table and the variants that lost:
+        [2026-10-02-tensorsharp-takeaways-plan.md](../2-coverage/2026-10-02-tensorsharp-takeaways-plan.md) §1.
       - **Follow-up 9e911dba**: the routed-MoE decode and batched-MoE prefill sweeps had their own
         `ParallelOptions` pinned to `Environment.ProcessorCount`, bypassing the new default. Now
         `SimdKernels.CpuThreads`. Decode, interleaved x2: OLMoE-1B-7B 36.4 -> 37.1, LFM2-8B-A1B

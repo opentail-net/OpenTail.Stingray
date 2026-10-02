@@ -1,0 +1,153 @@
+# TensorSharp takeaways (2026-10-02)
+
+Source: `examples/TensorSharp/TensorSharp` (BSD 3-Clause; https://github.com/zhongkaifu/TensorSharp).
+Any ported code adds its file to the existing TensorSharp section of `THIRD_PARTY_NOTICES.md`.
+TensorSharp's published speed numbers come from its GGML (llama.cpp) native backend, so they say
+nothing about Stingray's pure-C# paths. Every item below is measured here before it is believed.
+
+**Order (user, 2026-10-02):** 1, 2, 3, then 4.
+
+## 1. Spin-then-park CPU worker pool (performance experiment)
+
+- **Reference:** `TensorSharp.Models/CpuWorkerPool.cs` (~300 lines), `CpuWorkers.cs`,
+  `CpuParallelBinding.cs`; its tests are `InferenceWeb.Tests/CpuWorkerPoolTests.cs`.
+- **Design:**
+  - Workers spin on a generation counter, so submitting a job is one interlocked write, and the
+    submitting thread works too.
+  - Blocks are claimed with an atomic counter.
+  - Each worker spins `TS_CPU_SPIN` = 4096 times, then parks on a monitor; the park happens under
+    the lock the submitter pulses, so a wakeup can't be missed.
+  - Pool width is half the logical CPUs above 8.
+  - Claimed: ~2.8x decode and ~15% prefill over `Parallel.For` per matmul, on a 122-core host.
+- **Why it isn't a re-test of something closed:**
+  - Stingray's `PersistentThreadPool` experiments (`docs/done/perf-loop-progress.md`, iteration 2,
+    `DecodeMatVecDispatchPerfTests`) measured an `AutoResetEvent` OS-wait pool (a kernel wakeup on
+    every call) and an unbounded pure-spin pool, on SmolLM2-1.7B shapes.
+  - Bounded spin-then-park on **tiny** models was never measured. That is where the remaining decode
+    gap is: SmolLM2-135M ~0.55x and Qwen2.5-0.5B ~0.75x of llama.cpp, attributed to per-call
+    overhead (`perf-sweep-plan.md`).
+- **Plan:**
+  1. Port behind a switch (e.g. `STINGRAY_CPU_POOL=spin`) and route `SimdKernels`'s matvec
+     `Parallel.For` sites through it.
+  2. Prove the dispatch happened (a call counter).
+  3. Run an interleaved A/B on 135M / 360M / Qwen2.5-0.5B decode and one 7B; outputs must be
+     bit-identical, since only scheduling changes.
+  4. Keep it only if it is measurably better; record the result either way.
+- **Expect less than claimed:** this machine has 8 cores, not 122.
+
+### Result, 2026-10-02: shipped **opt-in** (`STINGRAY_CPU_POOL=spin`)
+
+- **Code:**
+  - The pool is `src/OpenTail.Stingray.Cpu/SpinParkWorkerPool.cs`, with `TryFor`: a busy pool
+    (another thread's job in flight) makes the caller fall back to `Parallel.For` instead of
+    running serialized.
+  - Routing is `SimdKernels.KernelFor` / `ParallelForCapped` / `ParallelForUncapped`, used by
+    every `MatVec*` kernel, decode attention (`ForwardPass.Attention`, hybrid `Attention` /
+    `MtpAttnBlock`), `RowKernels`, the MoE decode sweeps (`ForwardPass.Moe`, hybrid `MoeFfnCore`)
+    and Mamba2 heads.
+  - Prefill/batched kernels (`MatMulBatchedF32`, `TryMatMulBatchedQ8`, `TryMatMulBatchedDualQ8`,
+    the GEMM classes, `MoeBatchedExperts`, chunked GDN/attention) stay on `Parallel.For`.
+  - Default (off) behaviour is unchanged: the same caps as before.
+- **Tests:** `SpinParkWorkerPoolTests` (blocks run exactly once at every width, nesting,
+  exceptions, concurrent submitters, park/wake, dispose, `TryFor` busy, empty ranges, bit identity
+  of `MatVec`/`MatVecDual` and concurrent `MatVec` vs `Parallel.For`). ForwardPass.Fast is 771/771
+  with the pool off **and** on, and running the suite with the pool on caught a real empty-range
+  divide-by-zero.
+- **Measurements** (interleaved off/on, Ryzen 5700G, 8 threads, generated text identical every pair):
+
+| Variant | Finding |
+|---|---|
+| v1: one pool block per row pair | decode **-25..35%** (an interlocked claim per row pair) |
+| v2: + attention/row kernels on the pool | still -15..30% |
+| v3: coarse blocks (`STINGRAY_CPU_POOL_BLOCKS`, ~4-8 per thread) | decode +14..23% on small models; Mistral-7B tie |
+| all CPU loops on the pool | decode +14..24% on every model incl. MoE, but prefill **-9..28%** (starves OpenBLAS threads, inlines nested loops) |
+| **shipped: decode loops only** | see the table below |
+
+| Model | Decode default -> spin | llama.cpp tg128 | Ratio | Prefill |
+|---|---|---|---|---|
+| SmolLM2-135M | 152 -> 193 t/s (+27%) | 293.8 | 0.52x -> 0.66x | neutral |
+| SmolLM2-360M | 86 -> 103 t/s (+21%) | 126.4 | 0.68x -> 0.81x | neutral |
+| Qwen2.5-0.5B | 69 -> 82 t/s (+19%) | 94.0 | 0.73x -> 0.87x | neutral (629-token prompt) |
+| SmolLM2-1.7B | +7..20% | | | mixed |
+| Mistral-7B | tie | | | tie |
+| OLMoE-1B-7B (MoE) | -5% | | | **-19%** |
+| LFM2-8B-A1B (MoE) | tie | | | **-18%** |
+| Ornith-9B (hybrid) | -4% | | | -2% |
+
+- **Why opt-in, not default:** a clear win for dense-model decode, but a loss for MoE prompt
+  processing. MoE prefill still issues decode-style matvecs (the per-token router) between its
+  batched expert loops, so the spinners compete with them. A concurrent multi-user server
+  workload has also not been measured.
+- **Next, if pursued:**
+  - a per-model or per-phase policy (pool for dense decode only);
+  - a concurrent-server throughput check before any default change;
+  - a many-core host, which is where TensorSharp measured its gains.
+- **Measurement caution recorded:** mid-session this machine's memory-bound throughput dropped
+  about 25% for reasons outside the code (a HEAD build showed the same drop). Only same-run
+  interleaved pairs count.
+
+## 2. Q8_K reference for the int8 alignment follow-up
+
+- **Context:** ADR-0003's known gap plus the 2026-10-02 row check. Our per-token int8 matvec has
+  1.2e-2 relative error per projection, and our int8 prefill is 0.69% further from llama.cpp PPL
+  than the per-token path on SmolLM2.
+- **Reference:** `TensorSharp.Models/ManagedQuantGemm*.cs` and `ManagedQuantizedOps.cs`, managed
+  AVX2/AVX-512 kernels on ggml's Q8_K layout (one scale per 256, per-16 bsums). Every SIMD variant
+  produces the same bits as the scalar loop.
+- **Also worth copying:** `TS_CPU_QGEMM_VERIFY`, which compares a finished GEMM against the
+  per-row path.
+- **Use:** a second, readable implementation next to the vendored ggml for the cross-check in
+  `perf-sweep-plan.md` 10.2 follow-ups (Q8_KS vs Q8_K, Q3_K batched vs decode format).
+
+## 3. `Q1_0` and the Bonsai2 quant types
+
+- **Types:** GGML type 41 `Q1_0` (one F16 scale plus 128 one-bit signs per block, 1.125
+  bits/weight), and the Bonsai2 publisher types `PQ2_0` (142) and `PTQ1_0` (143).
+- **TensorSharp's handling:** it transcodes the Bonsai2 types losslessly to GGML `Q2_0` at load
+  (`ModelBase.Bonsai.cs`, `docs/models/bonsai2.md`).
+- **Bonsai2 27B** is the `qwen35` architecture Stingray already runs, so this is coverage through
+  dequant/matvec kernels alone.
+- **Verify:** dequantize against gguf-py / llama.cpp (once it supports the type), then a real
+  Bonsai2 checkpoint if one fits on disk.
+
+## 4. Model families: port now, prove later ("ported, not verified")
+
+Working todo with per-family details and checklists: [ported-families-todo.md](ported-families-todo.md).
+
+The user's policy:
+- **Port** the families from their references now.
+- **Prove** them when there is capacity to check real checkpoints.
+- **Don't** "open the floodgates" or advertise them in the meantime.
+
+| Family | GGUF arch | Primary reference | Secondary (TensorSharp) | Notes |
+|---|---|---|---|---|
+| Qwen 3.8 Flash Next | `qwen4exp` | vendored llama.cpp, if present | `Models/Qwen4Exp` | Size not yet checked |
+| GLM-5.x | `glm-dsa`, `glm5next` | llama.cpp `src/models/glm-dsa.cpp` | `Models/GlmDsa` | TensorSharp: llama.cpp is not a valid reference for `glm5next` |
+| DeepSeek V4 / V4.1 Flash | `deepseek4`, `deepseek41` | llama.cpp `deepseek4.cpp` | `Models/DeepSeek4` (pure-C# `DeepSeek4CpuExecutor`) | Stingray already has alpha code (plan 058); use TensorSharp's to review it. Too large for this PC |
+| Muse-Glimmer | `muse-glimmer` | llama.cpp `src/models/muse-glimmer.cpp` | `Models/MuseGlimmer` | |
+| DiffusionGemma | - | HF reference | `Models/` (text diffusion) | No llama.cpp run of its output is recorded |
+| MiniMax-H3 (video + 32 kHz stereo audio) | - | upstream | `Models/MiniMaxH3` | Diffusion project |
+
+### Rules for a "ported, not verified" family
+
+1. **Not admitted:** it gets a `// <arch> — NOT admitted` comment block in
+   `src/OpenTail.Stingray.Engine/ModelCompatibility.cs` (precedent: `deepseek4`, `deepseek32`),
+   saying what was ported, from which reference, and what verification is missing. A user loading
+   one gets the normal unsupported-architecture refusal.
+2. **Not advertised:** it doesn't appear in `docs/STATUS.md`, the README, `docs/WHAT-YOU-CAN-DO.md`,
+   `docs/RUNNING.md`, the model catalog, or any supported-models list.
+3. **Internal record:** this file's table, one line per family (status `ported YYYY-MM-DD, not
+   verified`, code location, reference used and its commit or file), plus the family's own
+   detail doc if it needs one.
+4. **Tests:** structural and synthetic tests are fine, but they must not be named or described as
+   real-weight verification. `RealWeights` tests that no-op without a checkpoint must say so in
+   their name or skip message (CLAUDE.md rule 12).
+5. **Promotion to "supported"** follows the normal path: a real checkpoint, an independent
+   reference (llama.cpp / `admit-arch`), timed test runs, then the admission and the STATUS row in
+   the same pass.
+
+### Ported, not verified (fill in as ported)
+
+| Family | Ported | Code | Reference used | Missing for admission |
+|---|---|---|---|---|
+| (none yet) | | | | |

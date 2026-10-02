@@ -83,6 +83,13 @@ text model wants 4096), Llama 4 vision (93 GB), MobileNetV5 (no checkpoint decla
     Apriel, Ant Ling (`bailingmoe2`), MiniMax-M2 (too large); DeepSeek-OCR v1 (no checkpoint).
 13. **Out of scope for this PC**: DeepSeek-V3.2 / V4, alpha code never run on real weights.
     [2-coverage/058-deepseek-full-lineage-implementation-plan.md](2-coverage/058-deepseek-full-lineage-implementation-plan.md).
+14. **TensorSharp takeaways** (order: pool experiment, Q8_K reference, then this section's items):
+    `Q1_0` + Bonsai2 quant types (`PQ2_0`/`PTQ1_0`, coverage for Bonsai2 27B on `qwen35`), then
+    **port-now-prove-later** families (Qwen 3.8 Flash Next `qwen4exp`, GLM-5.x `glm-dsa`/`glm5next`,
+    Muse-Glimmer, DiffusionGemma, MiniMax-H3; DeepSeek V4 review). Ported families stay **not
+    admitted and not advertised** until checkpoint-verified.
+    [2-coverage/2026-10-02-tensorsharp-takeaways-plan.md](2-coverage/2026-10-02-tensorsharp-takeaways-plan.md);
+    per-family todo: [2-coverage/ported-families-todo.md](2-coverage/ported-families-todo.md).
 
 ## 3. Product and runtime
 
@@ -117,6 +124,13 @@ sweep is [4-performance/perf-sweep-plan.md](4-performance/perf-sweep-plan.md).
 2. Qwen3.6-35B-A3B prefill at 0.63x of llama.cpp (Phase 8 of
    [done/2026-09-25-hf-top-downloads-coverage-plan.md](done/2026-09-25-hf-top-downloads-coverage-plan.md)).
 3. Image-token prefill in VLMs runs per token (~9 t/s here); a batched embedding prefill.
+4a. Spin-then-park CPU worker pool (TensorSharp `CpuWorkerPool`) for the tiny-model decode gap
+   (SmolLM2-135M ~0.55x, Qwen2.5-0.5B ~0.75x): an experiment the earlier `PersistentThreadPool`
+   loss did not cover. §1 of
+   [2-coverage/2026-10-02-tensorsharp-takeaways-plan.md](2-coverage/2026-10-02-tensorsharp-takeaways-plan.md).
+4b. int8 alignment with ggml Q8_K (ADR-0003 known gap; per-token int8 matvec 1.2e-2 rel error per
+   projection), with TensorSharp's managed Q8_K kernels as a second reference. Follow-ups under 10.2
+   in [4-performance/perf-sweep-plan.md](4-performance/perf-sweep-plan.md).
 
 **GPU, LLM** ([4-performance/gpu/](4-performance/gpu))
 5. Batched prefill for the Vulkan layer split (`VulkanLayerSplitForwardPass` prefills per token).

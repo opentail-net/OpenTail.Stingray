@@ -17,6 +17,111 @@ public static unsafe class SimdKernels
     internal static ParallelOptions ParallelOpts => s_parallelOpts;
 
     /// <summary>
+    /// When true, the kernels' row-parallel loops (<see cref="KernelFor"/>) run on the persistent
+    /// spin-then-park <see cref="SpinParkWorkerPool"/> instead of <see cref="Parallel.For(int,int,ParallelOptions,Action{int})"/>.
+    /// <c>STINGRAY_CPU_POOL=spin</c> at process start; settable for tests and A/B runs. Only the
+    /// scheduling changes: every block computes exactly what it did, so outputs are bit-identical
+    /// either way. Experiment from docs/2-coverage/2026-10-02-tensorsharp-takeaways-plan.md §1.
+    /// </summary>
+    public static bool SpinPoolEnabled { get; set; } =
+        Environment.GetEnvironmentVariable("STINGRAY_CPU_POOL") == "spin";
+
+    private static SpinParkWorkerPool? s_spinPool;
+    private static readonly object s_spinPoolLock = new();
+
+    /// <summary>The spin pool, created on first use at the then-current <see cref="CpuThreads"/>
+    /// width (recreated if that width has changed since).</summary>
+    private static SpinParkWorkerPool SpinPool
+    {
+        get
+        {
+            var p = Volatile.Read(ref s_spinPool);
+            if (p != null && p.ThreadCount == s_parallelOpts.MaxDegreeOfParallelism) return p;
+            lock (s_spinPoolLock)
+            {
+                p = s_spinPool;
+                if (p == null || p.ThreadCount != s_parallelOpts.MaxDegreeOfParallelism)
+                {
+                    var old = p;
+                    p = new SpinParkWorkerPool(Math.Max(1, s_parallelOpts.MaxDegreeOfParallelism));
+                    Volatile.Write(ref s_spinPool, p);
+                    old?.Dispose();
+                }
+                return p;
+            }
+        }
+    }
+
+    /// <summary>Blocks per pool thread for <see cref="KernelFor"/> on the spin pool
+    /// (<c>STINGRAY_CPU_POOL_BLOCKS</c>, default 4; 0 = one block per index).</summary>
+    internal static int SpinPoolBlocksPerThread =
+        int.TryParse(Environment.GetEnvironmentVariable("STINGRAY_CPU_POOL_BLOCKS"), out int bpt) && bpt >= 0 ? bpt : 4;
+
+    /// <summary>Times <see cref="KernelFor"/> dispatched to the spin pool (dispatch proof for A/B runs).</summary>
+    public static long SpinPoolDispatches;
+
+    /// <summary>Times the spin pool was busy with another thread's job and <see cref="KernelFor"/> fell
+    /// back to <see cref="Parallel.For(int,int,ParallelOptions,Action{int})"/>.</summary>
+    public static long SpinPoolBusyFallbacks;
+
+    /// <summary>
+    /// Row-parallel loop over [<paramref name="fromInclusive"/>, <paramref name="toExclusive"/>) for the
+    /// kernels: <see cref="Parallel.For(int,int,ParallelOptions,Action{int})"/> capped at
+    /// <see cref="CpuThreads"/>, or the spin pool when <see cref="SpinPoolEnabled"/>.
+    /// </summary>
+    internal static void KernelFor(int fromInclusive, int toExclusive, Action<int> body)
+    {
+        if (SpinPoolEnabled)
+        {
+            int n = toExclusive - fromInclusive;
+            if (n <= 0) return; // Parallel.For treats an empty range as a no-op
+            Interlocked.Increment(ref SpinPoolDispatches);
+            var pool = SpinPool;
+            // Coarse blocks (~4 per thread), as TensorSharp's kernels hand its pool: one block per
+            // index costs an interlocked claim on a shared counter per row pair.
+            int blocks = SpinPoolBlocksPerThread == 0 ? n : Math.Min(n, Math.Max(1, pool.ThreadCount * SpinPoolBlocksPerThread));
+            int chunk = (n + blocks - 1) / blocks;
+            blocks = (n + chunk - 1) / chunk;
+            int from = fromInclusive;
+            // A second thread's matvec while the pool is busy (concurrent requests) takes the
+            // ThreadPool instead of running serialized on its own thread.
+            if (!pool.TryFor(blocks, b =>
+                {
+                    int start = from + b * chunk, end = Math.Min(toExclusive, start + chunk);
+                    for (int i = start; i < end; i++) body(i);
+                }))
+            {
+                Interlocked.Increment(ref SpinPoolBusyFallbacks);
+                Parallel.For(fromInclusive, toExclusive, s_parallelOpts, body);
+            }
+        }
+        else
+        {
+            Parallel.For(fromInclusive, toExclusive, s_parallelOpts, body);
+        }
+    }
+
+    /// <summary>
+    /// <see cref="KernelFor"/> for decode-path loops outside this class (MoE decode sweeps, hybrid
+    /// decode MoE) that use the <see cref="CpuThreads"/> cap: unchanged when the spin pool is off.
+    /// Prefill/batched loops deliberately stay on <see cref="Parallel.For(int,int,ParallelOptions,Action{int})"/>:
+    /// measured 2026-10-02, the pool loses there (it starves OpenBLAS's threads and runs nested loops inline).
+    /// </summary>
+    public static void ParallelForCapped(int fromInclusive, int toExclusive, Action<int> body) =>
+        KernelFor(fromInclusive, toExclusive, body);
+
+    /// <summary>
+    /// For decode-path loops that historically ran an UNcapped <see cref="Parallel.For(int,int,Action{int})"/>
+    /// (attention heads, row kernels): unchanged when the spin pool is off, on the pool when it is on
+    /// (a spinning pool next to ThreadPool work starves that work, so per-token loops share one scheduler).
+    /// </summary>
+    public static void ParallelForUncapped(int fromInclusive, int toExclusive, Action<int> body)
+    {
+        if (SpinPoolEnabled) KernelFor(fromInclusive, toExclusive, body);
+        else Parallel.For(fromInclusive, toExclusive, body);
+    }
+
+    /// <summary>
     /// Number of worker threads used by the CPU SIMD kernels. Defaults to the physical core
     /// count (<see cref="CpuTopology.PhysicalCores"/>; SMT siblings measured as no help, see there)
     /// and can be set at process start with <c>STINGRAY_CPU_THREADS</c>.
@@ -1031,7 +1136,7 @@ public static unsafe class SimdKernels
                         // (32 layers, real weights): 57.5-62.9 ms static vs 53.3-53.7 ms here.
                         var w1 = weights1; var w2 = weights2; var s = scratch;
                         var o1 = output1; var o2 = output2; int c = cols;
-                        Parallel.For(0, (rows + 1) / 2, s_parallelOpts, p =>
+                        KernelFor(0, (rows + 1) / 2, p =>
                         {
                             int end = Math.Min(rows, 2 * p + 2);
                             for (int r = 2 * p; r < end; r++)
@@ -1055,13 +1160,13 @@ public static unsafe class SimdKernels
                     var w1 = weights1; var w2 = weights2; var inp = input;
                     var o1 = output1; var o2 = output2; int c = cols;
                     if (UseWide8)
-                        Parallel.For(0, rows, s_parallelOpts, r =>
+                        KernelFor(0, rows, r =>
                         {
                             o1[r] = DotQ4K_Wide8(w1 + (long)r * bpr, inp, c);
                             o2[r] = DotQ4K_Wide8(w2 + (long)r * bpr, inp, c);
                         });
                     else
-                        Parallel.For(0, rows, s_parallelOpts, r =>
+                        KernelFor(0, rows, r =>
                         {
                             o1[r] = DotQ4K(w1 + (long)r * bpr, inp, c);
                             o2[r] = DotQ4K(w2 + (long)r * bpr, inp, c);
@@ -1088,7 +1193,7 @@ public static unsafe class SimdKernels
                 {
                     var w1 = weights1; var w2 = weights2; var s = scratch;
                     var o1 = output1; var o2 = output2; int c = cols;
-                    Parallel.For(0, rows, s_parallelOpts, r =>
+                    KernelFor(0, rows, r =>
                     {
                         o1[r] = DotQ6K_Q8K(w1 + (long)r * bpr, s, c);
                         o2[r] = DotQ6K_Q8K(w2 + (long)r * bpr, s, c);
@@ -1117,7 +1222,7 @@ public static unsafe class SimdKernels
                 {
                     var w1 = weights1; var w2 = weights2; var inp = input;
                     var o1 = output1; var o2 = output2; int c = cols;
-                    Parallel.For(0, rows, s_parallelOpts, r =>
+                    KernelFor(0, rows, r =>
                     {
                         o1[r] = DotQ5K(w1 + (long)r * bpr, inp, c);
                         o2[r] = DotQ5K(w2 + (long)r * bpr, inp, c);
@@ -1144,7 +1249,7 @@ public static unsafe class SimdKernels
                 {
                     var w1 = weights1; var w2 = weights2; var s = scratch;
                     var o1 = output1; var o2 = output2; int c = cols;
-                    Parallel.For(0, rows, s_parallelOpts, r =>
+                    KernelFor(0, rows, r =>
                     {
                         o1[r] = DotQ3K_Q8K(w1 + (long)r * bpr, s, c);
                         o2[r] = DotQ3K_Q8K(w2 + (long)r * bpr, s, c);
@@ -1171,7 +1276,7 @@ public static unsafe class SimdKernels
                 {
                     var w1 = weights1; var w2 = weights2; var s = scratch;
                     var o1 = output1; var o2 = output2; int c = cols;
-                    Parallel.For(0, rows, s_parallelOpts, r =>
+                    KernelFor(0, rows, r =>
                     {
                         o1[r] = DotQ2K_Q8K(w1 + (long)r * bpr, s, c);
                         o2[r] = DotQ2K_Q8K(w2 + (long)r * bpr, s, c);
@@ -1198,7 +1303,7 @@ public static unsafe class SimdKernels
                 {
                     var w1 = weights1; var w2 = weights2; var s = scratch;
                     var o1 = output1; var o2 = output2; int c = cols;
-                    Parallel.For(0, rows, s_parallelOpts, r =>
+                    KernelFor(0, rows, r =>
                     {
                         o1[r] = DotQ8_0_Q8_0(w1 + (long)r * bpr, s, c);
                         o2[r] = DotQ8_0_Q8_0(w2 + (long)r * bpr, s, c);
@@ -1228,7 +1333,7 @@ public static unsafe class SimdKernels
                 {
                     var m1 = (float*)weights1; var m2 = (float*)weights2; var inp = input;
                     var o1 = output1; var o2 = output2; int c = cols;
-                    Parallel.For(0, rows, s_parallelOpts, r =>
+                    KernelFor(0, rows, r =>
                     {
                         o1[r] = DotF32(m1 + (long)r * c, inp, c);
                         o2[r] = DotF32(m2 + (long)r * c, inp, c);
@@ -1293,7 +1398,7 @@ public static unsafe class SimdKernels
                 {
                     var w = weights; var s1 = sc1; var s2 = sc2;
                     var o1 = output1; var o2 = output2; int c = cols;
-                    Parallel.For(0, rows, s_parallelOpts, r =>
+                    KernelFor(0, rows, r =>
                     {
                         byte* row = w + (long)r * bpr;
                         DotQ4K_Q8KS_2In(row, s1, s2, c, out float v1, out float v2);
@@ -1324,7 +1429,7 @@ public static unsafe class SimdKernels
                 {
                     var w = weights; var i1 = input1; var i2 = input2;
                     var o1 = output1; var o2 = output2; int c = cols;
-                    Parallel.For(0, rows, s_parallelOpts, r =>
+                    KernelFor(0, rows, r =>
                     {
                         byte* row = w + (long)r * bpr;
                         DotQ5K_2In(row, i1, i2, c, out float s1, out float s2);
@@ -1357,7 +1462,7 @@ public static unsafe class SimdKernels
                 {
                     var w = weights; var s1 = sc1; var s2 = sc2;
                     var o1 = output1; var o2 = output2; int c = cols;
-                    Parallel.For(0, rows, s_parallelOpts, r =>
+                    KernelFor(0, rows, r =>
                     {
                         byte* row = w + (long)r * bpr;
                         DotQ6K_Q8K_2In(row, s1, s2, c, out float v1, out float v2);
@@ -1392,7 +1497,7 @@ public static unsafe class SimdKernels
                     var w = weights; var s1 = scratch1; var s2 = scratch2;
                     var o1 = output1; var o2 = output2; int nb = cols / 32;
                     if (rows >= MinRowsForParallel)
-                        Parallel.For(0, rows, s_parallelOpts, r =>
+                        KernelFor(0, rows, r =>
                             DotQ8_0_Q8_0_2In_Avx2(w + (long)r * bpr, s1, s2, nb, out o1[r], out o2[r]));
                     else
                         for (int r = 0; r < rows; r++)
@@ -1402,7 +1507,7 @@ public static unsafe class SimdKernels
                 {
                     var w = weights; var s1 = scratch1; var s2 = scratch2;
                     var o1 = output1; var o2 = output2; int c = cols;
-                    Parallel.For(0, rows, s_parallelOpts, r =>
+                    KernelFor(0, rows, r =>
                     {
                         byte* row = w + (long)r * bpr;
                         o1[r] = DotQ8_0_Q8_0(row, s1, c);
@@ -1427,7 +1532,7 @@ public static unsafe class SimdKernels
                 {
                     var i1 = input1; var i2 = input2;
                     var o1 = output1; var o2 = output2; int c = cols;
-                    Parallel.For(0, rows, s_parallelOpts, r =>
+                    KernelFor(0, rows, r =>
                     {
                         float* row = m + (long)r * c;
                         o1[r] = DotF32(row, i1, c);
@@ -1505,7 +1610,7 @@ public static unsafe class SimdKernels
                 {
                     var w = weights; var s0 = sc0; var s1 = sc1; var s2 = sc2; var s3 = sc3;
                     var o0 = output0; var o1 = output1; var o2 = output2; var o3 = output3; int c = cols;
-                    Parallel.For(0, rows, s_parallelOpts, r =>
+                    KernelFor(0, rows, r =>
                     {
                         byte* row = w + (long)r * bpr;
                         DotQ4K_Q8KS_4In(row, s0, s1, s2, s3, c, out float v0, out float v1, out float v2, out float v3);
@@ -1538,7 +1643,7 @@ public static unsafe class SimdKernels
                 {
                     var w = weights; var i0 = input0; var i1 = input1; var i2 = input2; var i3 = input3;
                     var o0 = output0; var o1 = output1; var o2 = output2; var o3 = output3; int c = cols;
-                    Parallel.For(0, rows, s_parallelOpts, r =>
+                    KernelFor(0, rows, r =>
                     {
                         byte* row = w + (long)r * bpr;
                         DotQ5K_4In(row, i0, i1, i2, i3, c, out float s0, out float s1, out float s2, out float s3);
@@ -1574,7 +1679,7 @@ public static unsafe class SimdKernels
                 {
                     var w = weights; var s0 = sc0; var s1 = sc1; var s2 = sc2; var s3 = sc3;
                     var o0 = output0; var o1 = output1; var o2 = output2; var o3 = output3; int c = cols;
-                    Parallel.For(0, rows, s_parallelOpts, r =>
+                    KernelFor(0, rows, r =>
                     {
                         byte* row = w + (long)r * bpr;
                         DotQ6K_Q8K_4In(row, s0, s1, s2, s3, c, out float v0, out float v1, out float v2, out float v3);
@@ -1616,7 +1721,7 @@ public static unsafe class SimdKernels
                     var w = weights; var s0 = sc0; var s1 = sc1; var s2 = sc2; var s3 = sc3;
                     var o0 = output0; var o1 = output1; var o2 = output2; var o3 = output3; int nb = cols / 32;
                     if (rows >= MinRowsForParallel)
-                        Parallel.For(0, rows, s_parallelOpts, r =>
+                        KernelFor(0, rows, r =>
                             DotQ8_0_Q8_0_4In_Avx2(w + (long)r * bpr, s0, s1, s2, s3, nb, out o0[r], out o1[r], out o2[r], out o3[r]));
                     else
                         for (int r = 0; r < rows; r++)
@@ -1626,7 +1731,7 @@ public static unsafe class SimdKernels
                 {
                     var w = weights; var s0 = sc0; var s1 = sc1; var s2 = sc2; var s3 = sc3;
                     var o0 = output0; var o1 = output1; var o2 = output2; var o3 = output3; int c = cols;
-                    Parallel.For(0, rows, s_parallelOpts, r =>
+                    KernelFor(0, rows, r =>
                     {
                         byte* row = w + (long)r * bpr;
                         o0[r] = DotQ8_0_Q8_0(row, s0, c);
@@ -1736,7 +1841,7 @@ public static unsafe class SimdKernels
         if (rows >= MinRowsForParallel)
         {
             var outp = output; var inp = rounded; var ww = weights; int c = cols;
-            Parallel.For(0, rows, s_parallelOpts, r =>
+            KernelFor(0, rows, r =>
             {
                 Half* rw = (Half*)(ww + (long)r * c * sizeof(ushort));
                 float sum = 0f;
@@ -1872,7 +1977,7 @@ public static unsafe class SimdKernels
             if (numThreads > 1)
             {
                 int chunkSize = (rows + numThreads - 1) / numThreads;
-                Parallel.For(0, numThreads, s_parallelOpts, t =>
+                KernelFor(0, numThreads, t =>
                 {
                     int start = t * chunkSize;
                     int end = Math.Min(rows, start + chunkSize);
@@ -1957,7 +2062,7 @@ public static unsafe class SimdKernels
         if (rows >= MinRowsForParallel)
         {
             var m = matrix; var inp = input; var outp = output; var b = bias;
-            Parallel.For(0, rows, s_parallelOpts, i =>
+            KernelFor(0, rows, i =>
             {
                 float dot = DotF32(m + (long)i * cols, inp, cols);
                 outp[i] = b != null ? dot + b[i] : dot;
@@ -1989,7 +2094,7 @@ public static unsafe class SimdKernels
         {
             var m = matrix; var i0 = input0; var i1 = input1;
             var o0 = output0; var o1 = output1; int c = cols;
-            Parallel.For(0, rows, s_parallelOpts, r =>
+            KernelFor(0, rows, r =>
             {
                 float* row = m + (long)r * c;
                 DotF32_2In(i0, i1, row, c, out o0[r], out o1[r]);
@@ -2048,7 +2153,7 @@ public static unsafe class SimdKernels
                 // ~6.8 -> ~7.6. 2-row chunks beat 4 (8.3) and 8 (8.0). Pairs start on even rows, so
                 // the 2Row/1Row split and therefore the results are unchanged.
                 var w = weights; var s = scratch; var outp = output; var b = bias; int c = cols;
-                Parallel.For(0, (rows + 1) / 2, s_parallelOpts, p =>
+                KernelFor(0, (rows + 1) / 2, p =>
                 {
                     int r = 2 * p;
                     if (r + 1 < rows)
@@ -2099,7 +2204,7 @@ public static unsafe class SimdKernels
             if (numThreads > 1)
             {
                 int chunkSize = (rows + numThreads - 1) / numThreads;
-                Parallel.For(0, numThreads, s_parallelOpts, t =>
+                KernelFor(0, numThreads, t =>
                 {
                     int start = t * chunkSize;
                     int end = Math.Min(rows, start + chunkSize);
@@ -2618,7 +2723,7 @@ public static unsafe class SimdKernels
         if (rows >= MinRowsForParallel)
         {
             var w = weights; var s = scratch; var outp = output; int c = cols;
-            Parallel.For(0, rows, s_parallelOpts, i =>
+            KernelFor(0, rows, i =>
             {
                 outp[i] = DotQ6K_Q8K(w + (long)i * bytesPerRow, s, c);
             });
@@ -3457,7 +3562,7 @@ public static unsafe class SimdKernels
         if (rows >= MinRowsForParallel)
         {
             var w = weights; var inp = input; var outp = output;
-            Parallel.For(0, rows, s_parallelOpts, i =>
+            KernelFor(0, rows, i =>
             {
                 outp[i] = DotQ5K(w + (long)i * bytesPerRow, inp, cols);
             });
@@ -3501,7 +3606,7 @@ public static unsafe class SimdKernels
         if (rows >= MinRowsForParallel)
         {
             var w = weights; var s = scratch; var outp = output; int c = cols;
-            Parallel.For(0, rows, s_parallelOpts, i =>
+            KernelFor(0, rows, i =>
             {
                 outp[i] = DotQ5K_Q8K(w + (long)i * bytesPerRow, s, c);
             });
@@ -3755,7 +3860,7 @@ public static unsafe class SimdKernels
         if (rows >= MinRowsForParallel)
         {
             var w = weights; var inp = input; var outp = output;
-            Parallel.For(0, rows, s_parallelOpts, i =>
+            KernelFor(0, rows, i =>
             {
                 outp[i] = DotQ4_0(w + (long)i * bytesPerRow, inp, cols);
             });
@@ -3777,7 +3882,7 @@ public static unsafe class SimdKernels
         if (rows >= MinRowsForParallel)
         {
             var w = weights; var s = scratch; var outp = output; int c = cols;
-            Parallel.For(0, rows, s_parallelOpts, i =>
+            KernelFor(0, rows, i =>
             {
                 outp[i] = DotIq4Nl_Q8_0(w + (long)i * bytesPerRow, s, c);
             });
@@ -3815,7 +3920,7 @@ public static unsafe class SimdKernels
         if (rows >= MinRowsForParallel)
         {
             var w = weights; var s = scratch; var outp = output; int c = cols;
-            Parallel.For(0, rows, s_parallelOpts, i =>
+            KernelFor(0, rows, i =>
             {
                 outp[i] = DotQ8_0_Q8_0(w + (long)i * bytesPerRow, s, c);
             });
@@ -3937,7 +4042,7 @@ public static unsafe class SimdKernels
         if (rows >= MinRowsForParallel)
         {
             var w = weights; var s = scratch; var outp = output; int c = cols;
-            Parallel.For(0, rows, s_parallelOpts, i =>
+            KernelFor(0, rows, i =>
             {
                 outp[i] = DotQ4_1_Q8_1(w + (long)i * bytesPerRow, s, c);
             });
@@ -4028,7 +4133,7 @@ public static unsafe class SimdKernels
         if (rows >= MinRowsForParallel)
         {
             var w = weights; var s = scratch; var outp = output; int c = cols;
-            Parallel.For(0, rows, s_parallelOpts, i =>
+            KernelFor(0, rows, i =>
             {
                 outp[i] = DotQ5_1_Q8_1(w + (long)i * bytesPerRow, s, c);
             });
@@ -4147,7 +4252,7 @@ public static unsafe class SimdKernels
         if (rows >= MinRowsForParallel)
         {
             var w = weights; var inp = input; var outp = output; int c = cols;
-            Parallel.For(0, rows, s_parallelOpts, i =>
+            KernelFor(0, rows, i =>
             {
                 outp[i] = DotBF16((ushort*)(w + (long)i * c * 2), inp, c);
             });
@@ -4627,7 +4732,7 @@ public static unsafe class SimdKernels
         byte* scratch = stackalloc byte[Q8KScratchBytes(cols)];
         QuantizeRowToQ8K(input, cols, scratch);
         var s = scratch; int c = cols;
-        Parallel.For(0, rows, s_parallelOpts, i =>
+        KernelFor(0, rows, i =>
         {
             out1[i] = dot1(w1 + (long)i * bpr1, s, c);
             out2[i] = dot2(w2 + (long)i * bpr2, s, c);
@@ -4646,7 +4751,7 @@ public static unsafe class SimdKernels
             // Measured 2026-09-25: 32-row chunks here were slower on Qwen3.8-27B decode (2.0 vs 2.1 t/s, 3 runs
             // each) than one work item per row, so the per-row loop stays.
             var w = weights; var s = scratch; var outp = output; int c = cols; var d = dot;
-            Parallel.For(0, rows, s_parallelOpts, i =>
+            KernelFor(0, rows, i =>
             {
                 outp[i] = d(w + (long)i * bytesPerRow, s, c);
             });
@@ -5781,7 +5886,7 @@ public static unsafe class SimdKernels
         if (rows >= MinRowsForParallel)
         {
             var w = weights; var s = scratch; var outp = output; int c = cols;
-            Parallel.For(0, rows, s_parallelOpts, i =>
+            KernelFor(0, rows, i =>
             {
                 outp[i] = DotQ5_0_Q8_0(w + (long)i * bytesPerRow, s, c);
             });
@@ -5943,7 +6048,7 @@ public static unsafe class SimdKernels
         if (rows >= MinRowsForParallel)
         {
             var w = weights; var s = scratch; var outp = output; int c = cols;
-            Parallel.For(0, rows, s_parallelOpts, i =>
+            KernelFor(0, rows, i =>
             {
                 outp[i] = DotQ1_0_Q8_0(w + (long)i * bytesPerRow, s, c);
             });
@@ -6044,7 +6149,7 @@ public static unsafe class SimdKernels
         if (rows >= MinRowsForParallel)
         {
             var w = weights; var s = scratch; var outp = output; int c = cols;
-            Parallel.For(0, rows, s_parallelOpts, i =>
+            KernelFor(0, rows, i =>
             {
                 outp[i] = DotQ2_0_Q8_0(w + (long)i * bytesPerRow, s, c);
             });
@@ -6144,7 +6249,7 @@ public static unsafe class SimdKernels
         if (rows >= MinRowsForParallel)
         {
             var w = weights; var s = scratch; var outp = output; int c = cols;
-            Parallel.For(0, rows, s_parallelOpts, i =>
+            KernelFor(0, rows, i =>
             {
                 outp[i] = DotMxfp4_Q8_0(w + (long)i * bytesPerRow, s, c);
             });
@@ -6162,7 +6267,7 @@ public static unsafe class SimdKernels
         if (rows >= MinRowsForParallel)
         {
             var w = weights; var s = scratch; var outp = output; int c = cols;
-            Parallel.For(0, rows, s_parallelOpts, i =>
+            KernelFor(0, rows, i =>
             {
                 outp[i] = DotMxfp4_Q8_0(w + (long)i * bytesPerRow, s, c);
             });
@@ -6184,7 +6289,7 @@ public static unsafe class SimdKernels
         {
             var w1 = weights1; var w2 = weights2; var s = scratch;
             var o1 = output1; var o2 = output2; int c = cols;
-            Parallel.For(0, rows, s_parallelOpts, i =>
+            KernelFor(0, rows, i =>
             {
                 o1[i] = DotMxfp4_Q8_0(w1 + (long)i * bytesPerRow, s, c);
                 o2[i] = DotMxfp4_Q8_0(w2 + (long)i * bytesPerRow, s, c);
@@ -6643,7 +6748,7 @@ public static unsafe class SimdKernels
         if (rows >= MinRowsForParallel)
         {
             var w = weights; var s = scratch; var outp = output; int c = cols;
-            Parallel.For(0, rows, s_parallelOpts, i =>
+            KernelFor(0, rows, i =>
             {
                 outp[i] = DotQ3K_Q8K(w + (long)i * bytesPerRow, s, c);
             });
@@ -6840,7 +6945,7 @@ public static unsafe class SimdKernels
         if (rows >= MinRowsForParallel)
         {
             var w = weights; var s = scratch; var outp = output; int c = cols;
-            Parallel.For(0, rows, s_parallelOpts, i =>
+            KernelFor(0, rows, i =>
             {
                 outp[i] = DotQ2K_Q8K(w + (long)i * bytesPerRow, s, c);
             });

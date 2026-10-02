@@ -13,7 +13,7 @@ public static class RowKernels
     /// <summary><c>y[r] = (x[r] - mean) / sqrt(var + eps) · w + b</c> for each of <paramref name="rows"/> rows of width <paramref name="d"/>.</summary>
     public static void LayerNormRows(float[] x, float[] y, int rows, int d, float[] w, float[] b, float eps)
     {
-        Parallel.For(0, rows, r =>
+        SimdKernels.ParallelForUncapped(0, rows, r =>
         {
             var xr = x.AsSpan(r * d, d);
             var yr = y.AsSpan(r * d, d);
@@ -29,7 +29,7 @@ public static class RowKernels
     /// <summary>T5-style RMSNorm (no mean, no bias): <c>y[r] = x[r] / sqrt(mean(x²) + eps) · w</c>.</summary>
     public static void RmsNormRows(float[] x, float[] y, int rows, int d, float[] w, float eps)
     {
-        Parallel.For(0, rows, r =>
+        SimdKernels.ParallelForUncapped(0, rows, r =>
         {
             var xr = x.AsSpan(r * d, d);
             var yr = y.AsSpan(r * d, d);

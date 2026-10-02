@@ -215,7 +215,7 @@ public sealed unsafe partial class ForwardPass
 
         // Phase A: gate + up rows for all (k, r) pairs in one parallel sweep.
         // Each worker computes row r of expert k's gate and up projection.
-        Parallel.For(0, numActiveL * expertDimL, s_moeParallelOpts, idx =>
+        SimdKernels.ParallelForCapped(0, numActiveL * expertDimL, idx =>
         {
             int k = idx / expertDimL;
             int r = idx % expertDimL;
@@ -252,7 +252,7 @@ public sealed unsafe partial class ForwardPass
         byte* downAct = stackalloc byte[Math.Max(1, downActBytes * numActiveL)];
         for (int k = 0; k < numActiveL; k++)
             QuantizeAct(downDt, gateAll + (long)k * expertDimL, expertDimL, downAct + (long)k * downActBytes);
-        Parallel.For(0, embDimL, s_moeParallelOpts, r =>
+        SimdKernels.ParallelForCapped(0, embDimL, r =>
         {
             float sum = 0f;
             for (int k = 0; k < numActiveL; k++)
@@ -494,7 +494,7 @@ public sealed unsafe partial class ForwardPass
         // Tokens in parallel: each writes only its own router row and sel/wts slice.
         float* routerRows = _moeBatchRouter, normRows = batchNorm, wtsAll = _moeBatchWts;
         int* selAll = _moeBatchSel;
-        Parallel.For(0, n, t =>
+        SimdKernels.ParallelForUncapped(0, n, t =>
         {
             float* logits = routerRows + (long)t * numExperts;
             FusedMatVec(logits, _wGateInp![layer], normRows + (long)t * _embDim, numExperts, _embDim);

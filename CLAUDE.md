@@ -49,6 +49,13 @@ OpenTail.Stingray is a high-performance LLM inference engine, image/video diffus
     * This dev machine has no discrete GPU — only a Ryzen 5700G's integrated AMD Radeon graphics, sharing system RAM with the CPU. A 2026-09-04 benchmark on MiniMax-Music3's Flow-matching DiT (`MiniMaxMusic3TransformerGpuParityTests`) measured CPU=298ms vs GPU=761ms for one 36-layer forward pass — GPU 2.5x *slower*, entirely plausible on this hardware given per-call `Upload`/`Sgemm`/`Synchronize` dispatch overhead dominating a workload this small, and an iGPU with no dedicated VRAM bandwidth advantage over the CPU it shares memory with.
     * **Do not conclude "the GPU code path doesn't help" or "GPU work here was wasted" from an iGPU-only timing result.** The actual, provable question is whether the SAME code is faster on a real discrete GPU (dedicated VRAM, real compute throughput) — which this machine cannot answer either way. Ways to actually get evidence, not a guess, when it matters: (a) run the same parity/benchmark test on a machine or cloud instance with a real discrete GPU and compare, (b) reason from the FLOP/bandwidth numbers directly (model size, matmul dimensions, per-call payload size) against that GPU's published compute/bandwidth specs rather than assuming, (c) if a batched/fused dispatch path is added (fewer, larger GPU calls instead of one round-trip per matmul) re-measure on whatever hardware is available, since dispatch-overhead-bound results on weak/integrated GPUs specifically do not generalize to dispatch-amortized workloads on strong ones. State which of these you actually did before drawing a conclusion — do not present an iGPU-only measurement as if it settled the question.
 
+14. **"Ported, not verified" families stay internal**:
+    * A family ported from its reference code before a real checkpoint could be checked (policy set 2026-10-02) is **not admitted** and **not advertised**:
+      * it gets a `// <arch> — NOT admitted` block in `ModelCompatibility.cs`, like `deepseek4`;
+      * it stays out of STATUS.md, the README, WHAT-YOU-CAN-DO, RUNNING and the catalogs.
+    * It is listed only in the "Ported, not verified" table of [docs/2-coverage/2026-10-02-tensorsharp-takeaways-plan.md](docs/2-coverage/2026-10-02-tensorsharp-takeaways-plan.md), with its date, the reference used and what is missing.
+    * Promotion follows the normal admission path: a real checkpoint, an independent reference, timed runs, then the STATUS row.
+
 ---
 
 ## Standard Build & Test Commands

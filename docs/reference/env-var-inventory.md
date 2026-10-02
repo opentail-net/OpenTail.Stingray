@@ -205,6 +205,8 @@ dynamically composed names.
 | Variable | Class | Notes |
 |---|---|---|
 | `STINGRAY_CPU_MOE` | expert | Mirrors `OpenTailStingrayServerOptions.CpuMoe`. |
+| `STINGRAY_CPU_POOL` | experimental | `spin` runs the CPU decode-path loops (matvecs, decode attention, row kernels, MoE decode sweeps) on a persistent spin-then-park worker pool (`SpinParkWorkerPool`, ported from TensorSharp) instead of `Parallel.For`. Opt-in; outputs are bit-identical. Measured 2026-10-02, interleaved: dense-model decode +19..27% (SmolLM2-135M 0.52x -> 0.66x, 360M 0.68x -> 0.81x, Qwen2.5-0.5B 0.73x -> 0.87x of llama.cpp); Mistral-7B tie. **Not for MoE**: OLMoE/LFM2 prefill -18..19%. Prefill/batched kernels always stay on `Parallel.For`. `docs/2-coverage/2026-10-02-tensorsharp-takeaways-plan.md` §1. |
+| `STINGRAY_CPU_POOL_BLOCKS` | experimental | With `STINGRAY_CPU_POOL=spin`: blocks handed to the pool per thread (default 4; 8 measured slightly better on small models, 2 worse; 0 = one block per index, which measured -25..35% decode). |
 | `STINGRAY_DSPARK_PLACE` | experimental | Mirrors `OpenTailStingrayServerOptions.DSparkPlace`; DSpark itself is parked (docs/00-current-work.md), not scheduled. |
 | `STINGRAY_EXPERT_STATS` | diagnostic | Mirrors `OpenTailStingrayServerOptions.ExpertStatsPath` (writes SLRU hit-rate stats to a file on exit — troubleshooting only). |
 | `STINGRAY_MOE_GPU_PREFILL` | experimental | Mirrors `OpenTailStingrayServerOptions.GpuMoePrefill`. |
@@ -248,6 +250,7 @@ dynamically composed names.
 
 | Variable | Class | Notes |
 |---|---|---|
+| `STINGRAY_CPU_SPIN` | experimental | With `STINGRAY_CPU_POOL=spin`: spin rounds (`Thread.SpinWait(64)` each) a pool worker makes between jobs before parking (default 4096, TensorSharp's measured value). |
 | `STINGRAY_CPU_THREADS` | expert | Mirrors `OpenTailStingrayServerOptions.CpuThreads`. Default since 2026-10-02: physical core count (`CpuTopology.PhysicalCores`), not logical processors; measured never slower and up to ~7% faster on an 8-core/16-thread CPU (fcfb5c57). |
 
 ## OpenTail.Stingray.Cuda

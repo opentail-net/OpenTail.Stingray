@@ -43,8 +43,12 @@ SOFTWARE.
 
 ## TensorSharp — BSD 3-Clause
 
-The MXFP4 decoding implementation in `src/OpenTail.Stingray.Cpu` is derived from
-TensorSharp's managed quantized operations:
+OpenTail.Stingray contains implementations, kernels, and algorithms derived from
+or inspired by TensorSharp, including:
+
+- MXFP4 decoding in `src/OpenTail.Stingray.Cpu/Dequantize.cs` (derived from TensorSharp's `ManagedQuantizedOps`)
+- Managed quantized GEMM operations, SIMD microkernels, and CPU threading routines in `src/OpenTail.Stingray.Cpu` and `src/OpenTail.Stingray.Engine`
+- The spin-then-park CPU worker pool in `src/OpenTail.Stingray.Cpu/SpinParkWorkerPool.cs` (ported from TensorSharp's `TensorSharp.Models/CpuWorkerPool.cs`)
 
 - Upstream: <https://github.com/zhongkaifu/TensorSharp>
 - Copyright (c) 2026, Zhongkai Fu

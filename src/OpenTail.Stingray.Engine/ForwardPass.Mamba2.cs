@@ -187,7 +187,7 @@ public sealed unsafe partial class ForwardPass
         bool ggmlOrder = Fma.IsSupported && Avx.IsSupported && Sse3.IsSupported && ds % 32 == 0;
         // Heads are independent: spread them over threads (each walks the tokens in order), and vectorise the
         // d_state loop (SIMD over n).
-        Parallel.For(0, nh, h =>
+        SimdKernels.ParallelForUncapped(0, nh, h =>
         {
             float ah = a[h], dh = d[h], dtbh = dtb[h];
             int g = h / headsPerGroup;
