@@ -1,0 +1,4 @@
+short1	64	chat	What is 17 times 23? Answer with just the number.
+short2	64	chat	Write a haiku about a lighthouse in winter.
+med_design	500	raw	@C:/Git-Public/OpenTail.Stingray/docs/reference/OpenTail.Stingray-Design.md
+long_plan	1200	raw	@C:/Git-Public/OpenTail.Stingray/docs/4-performance/perf-sweep-plan.md

@@ -208,9 +208,10 @@ doc as "worth another look" and not yet investigated.
         still F32 (`STINGRAY_MOE_PREFILL_Q8`). Record, evidence and rollback (`=0`):
         [ADR-0003](../reference/adr-0003-cpu-int8-prefill-default.md). Open follow-ups toward
         llama.cpp numerics and MoE int8, each to be verified before acting:
-        - [ ] Our int8 is not ggml's: SmolLM2 F32 is 0.03% from llama.cpp PPL, our int8 0.69%,
-              though ggml also quantizes activations. Compare our Q8_KS (8 scales/256) against
-              ggml's Q8_K (1 scale/256) per weight type; align where they differ.
+        - [x] Our int8 is not ggml's: SmolLM2 F32 is 0.03% from llama.cpp PPL, our int8 0.69%.
+              **Cross-checked 2026-10-02** (ADR-0003 "Known gap"): kernels exact on both sides;
+              decode Q8_KS about 2.5x more precise than ggml's Q8_K; batched Q4_K prefill uses
+              ggml's Q8_K. Not a defect. Open: a Q8_KS repacked GEMM, and the 0.69%'s actual source.
         - [ ] Q3_K batched prefill reportedly uses Q8_KS while decode uses Q8_K
               (`TryResolveQ8Dispatch`); unify on Q8_K to match decode and ggml.
         - [ ] MoE: quantize token activations once before expert dispatch (ggml `mul_mat_id`)

@@ -95,9 +95,25 @@ Why:
 
 Our int8 prefill is not numerically llama.cpp's. On SmolLM2 the F32 path matches llama.cpp PPL
 to 0.03%, while ours with int8 is 0.69% off, although llama.cpp also quantizes activations.
-Likely causes to check:
-- our Q8_KS layout (8 scales per 256) where ggml uses Q8_K (1 scale per 256);
-- the Q3_K batched path using Q8_KS while decode uses Q8_K.
+
+**Cross-checked 2026-10-02** against the vendored ggml (b10306): `ggml_get_type_traits_cpu`
+quantizer and `vec_dot` called directly, on identical rows of real SmolLM2-1.7B weights, against
+an FP64 dot of the dequantized weights. Harness: `docs/4-performance/patches/2026-10-02-prefill-numerics/harness/ggmlx`.
+- **Both engines' kernels are exact.** All of the error is activation quantization, which both
+  apply by design.
+- **ggml's Q8_K** (one scale per 256) has 2.1-3.5% activation error, and its Q4_K projections are
+  0.6-4.5% off.
+- **Our per-token decode Q8_KS** (one scale per 32) has 0.8-1.3% activation error, and its Q4_K
+  projections are 0.3-1.6% off: about 2.5x more precise than llama.cpp.
+- **Our Q6_K decode** is bit-identical to ggml's.
+- **Our batched Q4_K prefill** (the repacked Q4_Kx8 GEMM, `RepackedGemm*.cs`) quantizes activations
+  to ggml's own Q8_K, so it carries llama.cpp's activation-noise level. The per-token ("F32") path
+  is actually the more precise one.
+
+So the 0.69% isn't a precision defect in our int8 kernels, and its remaining source is still open.
+Follow-ups:
+- a Q8_KS variant of the repacked Q4_Kx8 GEMM (prefill more precise than llama.cpp at similar speed);
+- the Q3_K batched path's format (it reportedly uses Q8_KS where decode uses Q8_K).
 
 The follow-up list (quantize-once MoE dispatch, Q8_K alignment, then re-deciding
 `STINGRAY_MOE_PREFILL_Q8`) is tracked in `docs/4-performance/perf-sweep-plan.md`.

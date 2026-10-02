@@ -99,7 +99,26 @@ nothing about Stingray's pure-C# paths. Every item below is measured here before
 - **Use:** a second, readable implementation next to the vendored ggml for the cross-check in
   `perf-sweep-plan.md` 10.2 follow-ups (Q8_KS vs Q8_K, Q3_K batched vs decode format).
 
+### Result, 2026-10-02
+
+The cross-check used the vendored ggml directly rather than TensorSharp's port, because it is the
+primary reference. Findings are recorded in ADR-0003 "Known gap":
+- both engines' kernels are exact;
+- our decode Q8_KS is about 2.5x more precise than ggml's Q8_K on Q4_K;
+- Q6_K is bit-identical to ggml;
+- our batched Q4_K prefill uses ggml's Q8_K.
+
+TensorSharp's managed Q8_K kernels remain a readable reference if a Q8_KS variant of the repacked
+GEMM is built.
+
 ## 3. `Q1_0` and the Bonsai2 quant types
+
+**Result, 2026-10-02 (3a):** already supported since the initial release (`DType.Q1_0/Q2_0`,
+block tables, `Dequantize`, dedicated `MatVecQ1_0`/`MatVecQ2_0`). Now independently verified:
+dequantization is bit-identical to ggml's `to_float` on 786k random values (`harness/ggmlx`). No
+local `Q1_0` checkpoint exists, so no end-to-end or speed check. 3b (Bonsai2 PRISM) is still open;
+the checkpoint is downloaded (`models/_models/bonsai2/Ternary-Bonsai-2-27B-PTQ1_0.gguf`, SHA-256
+matches TensorSharp's card).
 
 - **Types:** GGML type 41 `Q1_0` (one F16 scale plus 128 one-bit signs per block, 1.125
   bits/weight), and the Bonsai2 publisher types `PQ2_0` (142) and `PTQ1_0` (143).

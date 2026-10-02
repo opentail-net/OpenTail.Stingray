@@ -1,0 +1,236 @@
+diff --git a/src/OpenTail.Stingray.Engine/HybridGdnForwardPass.cs b/src/OpenTail.Stingray.Engine/HybridGdnForwardPass.cs
+index 33772822..a213883c 100644
+--- a/src/OpenTail.Stingray.Engine/HybridGdnForwardPass.cs
++++ b/src/OpenTail.Stingray.Engine/HybridGdnForwardPass.cs
+@@ -289,6 +289,47 @@ public sealed unsafe class HybridGdnForwardPass : IForwardPass
+     public static bool GdnChunkedPrefillEnabled { get; set; } =
+         Environment.GetEnvironmentVariable("STINGRAY_GDN_CHUNKED_PREFILL") != "0";
+ 
++    // TEMP (attribution experiment, not for commit): per-optimisation switches for PrefillChunked.
++    public static bool XSeqRec, XSeqProj, XSeqFfn, XAllowMtp;
++    public static float[]? XAllLogits;   // when set (n*vocab), PrefillChunked fills logits for every position
++    public static bool XDblRec;          // GDN recurrence in double precision (state per layer in XDblState)
++    public static readonly Dictionary<int, double[]> XDblState = new();
++    public static List<(int Layer, double SeqRel, double ChkRel, double SeqMax, double ChkMax, double SeqStateRel, double ChkStateRel,
++        double ChkVsSeqRel, double ChkVsSeqStateRel, double SeqStateMax, double ChkStateMax)>? XRecProbe;
++    public static float[][]? XLayerHidden;   // [layer] <- copy of hid (n*e) at the end of each layer
++
++    /// <summary>TEMP: token-by-token double-precision GDN recurrence (GdnReferenceSweepTests.Reference), state in double.</summary>
++    private static void XDoubleRecurrence(int tokens, float* q, float* k, float* v, float* alpha, float* beta,
++        float* ssmA, float* dtBias, float* normW, float* zIn, double[] state, float* output, int hv, int d, double normEps)
++    {
++        double readoutScale = 1.0 / Math.Sqrt(d);
++        Parallel.For(0, hv, h =>
++        {
++            var p = new double[d]; var dvec = new double[d]; var o = new double[d];
++            int sOff = h * d * d;
++            for (int t = 0; t < tokens; t++)
++            {
++                double alphaX = alpha[t * hv + h] + (double)dtBias[h];
++                double dt = alphaX >= 20 ? alphaX : Math.Log(1 + Math.Exp(alphaX));
++                double decay = Math.Exp(dt * ssmA[h]);
++                double b = 1.0 / (1.0 + Math.Exp(-(double)beta[t * hv + h]));
++                long qkv = ((long)t * hv + h) * d;
++                for (int i = 0; i < d * d; i++) state[sOff + i] *= decay;
++                for (int j = 0; j < d; j++) { double s = 0; for (int i = 0; i < d; i++) s += state[sOff + i * d + j] * k[qkv + i]; p[j] = s; }
++                for (int j = 0; j < d; j++) dvec[j] = b * (v[qkv + j] - p[j]);
++                for (int i = 0; i < d; i++) for (int j = 0; j < d; j++) state[sOff + i * d + j] += k[qkv + i] * dvec[j];
++                for (int j = 0; j < d; j++) { double s = 0; for (int i = 0; i < d; i++) s += state[sOff + i * d + j] * q[qkv + i]; o[j] = s * readoutScale; }
++                double ss = 0; for (int j = 0; j < d; j++) ss += o[j] * o[j];
++                double inv = 1.0 / Math.Sqrt(ss / d + normEps);
++                for (int j = 0; j < d; j++)
++                {
++                    double z = zIn[qkv + j];
++                    output[qkv + j] = (float)(o[j] * inv * normW[j] * (z / (1.0 + Math.Exp(-z))));
++                }
++            }
++        });
++    }
++
+     // Q3_K_Q8K / Q8_0_Q8K kernel gates. Auto-on when the model has routed-expert
+     // weights in that dtype (APEX mixed-precision tier — e.g. Carnice).
+     // STINGRAY_Q3K_Q8K / STINGRAY_Q8_0_Q8K = "1" or "0" override. Mirrors the
+@@ -740,7 +781,7 @@ public sealed unsafe class HybridGdnForwardPass : IForwardPass
+         // not bit-exact, and on the Qwen3.6-MTP "thinking-or-not" knife-edge token that
+         // FP-reorder flips the generation trajectory off the per-token/llama.cpp
+         // reference (MtpDecoder_GreedyParity_LlamaCpp). MTP models keep the exact scan.
+-        if (GdnChunkedPrefillEnabled && tokens.Count > 1 && !_hasMtp
++        if (GdnChunkedPrefillEnabled && tokens.Count > 1 && (!_hasMtp || XAllowMtp)
+             && !_bypassGdn && !_bypassAttn && !_bypassMoe
+             && _kvCache.Length == startPos && _gdnStateCache.Length == startPos)
+         {
+@@ -842,7 +883,7 @@ public sealed unsafe class HybridGdnForwardPass : IForwardPass
+                     if (PrefillProfileTimers.Enabled)
+                         PrefillProfileTimers.Add(PrefillProfileTimers.Category.MoeFfn, Stopwatch.GetTimestamp() - tFfn);
+                 }
+-                else if (!_hp.IsMoE && n > 1)
++                else if (!_hp.IsMoE && n > 1 && !XSeqFfn)
+                 {
+                     DenseFfnChunked(layer, nrm, hid, n);
+                 }
+@@ -865,6 +906,8 @@ public sealed unsafe class HybridGdnForwardPass : IForwardPass
+                 // Post-FFN residual add (per token).
+                 for (int t = 0; t < n; t++)
+                     SimdKernels.AddInPlace(hid + (long)t * e, res + (long)t * e, e);
++                if (XLayerHidden is { } lh)
++                    new ReadOnlySpan<float>(hid, n * e).CopyTo(lh[layer] ??= new float[n * e]);
+             }
+ 
+             // Advance both caches by N (one bump per token, in order).
+@@ -889,6 +932,13 @@ public sealed unsafe class HybridGdnForwardPass : IForwardPass
+ 
+             // Final norm + lm_head for the LAST token (prefill returns its logits).
+             float* outNormW = GetNormWeight(_outputNorm);
++            if (XAllLogits is { } all)
++                fixed (float* allP = all)
++                    for (int t = 0; t < n; t++)
++                    {
++                        SimdKernels.RmsNorm(_hidden, hid + (long)t * e, outNormW, e, _hp.RmsNormEps);
++                        FusedMatVec(allP + (long)t * _hp.VocabSize, _outputWeight, _hidden, _hp.VocabSize, e);
++                    }
+             SimdKernels.RmsNorm(_hidden, hid + (long)(n - 1) * e, outNormW, e, _hp.RmsNormEps);
+             FusedMatVec(_logits, _outputWeight, _hidden, _hp.VocabSize, e);
+             return new ReadOnlySpan<float>(_logits, _hp.VocabSize);
+@@ -943,8 +993,8 @@ public sealed unsafe class HybridGdnForwardPass : IForwardPass
+         {
+         float* qkvIn = qkvAll + (long)hist * convCh;
+         new ReadOnlySpan<float>(convState, hist * convCh).CopyTo(new Span<float>(qkvAll, hist * convCh));
+-        BatchedProjection(qkvIn, _wQkv[layer], nrm, n, convCh, e);
+-        BatchedProjection(gZ, _wZGate[layer], nrm, n, valueDim, e);
++        ProjX(qkvIn, _wQkv[layer], nrm, n, convCh, e);
++        ProjX(gZ, _wZGate[layer], nrm, n, valueDim, e);
+ 
+         float* convW = _ssmConv1d[layer];
+         const int TokensPerJob = 8;
+@@ -985,6 +1035,63 @@ public sealed unsafe class HybridGdnForwardPass : IForwardPass
+ 
+         // One batched recurrence over all n tokens.
+         long tRec = PrefillProfileTimers.Enabled ? Stopwatch.GetTimestamp() : 0;
++        if (XDblRec && XRecProbe is { } probe)
++        {
++            // Local recurrence error on identical inputs: FP32 sequential and FP32 chunked vs the double recurrence.
++            if (!XDblState.TryGetValue(layer, out var ds0)) XDblState[layer] = ds0 = new double[hv * hd * hd];
++            int sl = scanStateLen, ol = n * valueDim;
++            var stSeq = new float[sl]; var stChk = new float[sl];
++            for (int i = 0; i < sl; i++) stSeq[i] = stChk[i] = (float)ds0[i];
++            var oSeq = new float[ol]; var oChk = new float[ol];
++            fixed (float* pSeq = stSeq, pOSeq = oSeq)
++                for (int t = 0; t < n; t++)
++                    GdnKernels.GdnRecurrenceDecode(
++                        new ReadOnlySpan<float>(gQ + (long)t * valueDim, valueDim), new ReadOnlySpan<float>(gK + (long)t * valueDim, valueDim),
++                        new ReadOnlySpan<float>(gV + (long)t * valueDim, valueDim), new ReadOnlySpan<float>(gA + (long)t * hv, hv),
++                        new ReadOnlySpan<float>(gB + (long)t * hv, hv), new ReadOnlySpan<float>(_ssmA[layer], hv),
++                        new ReadOnlySpan<float>(_ssmDtBias[layer], hv), new ReadOnlySpan<float>(_ssmNormW[layer], hd),
++                        new ReadOnlySpan<float>(gZ + (long)t * valueDim, valueDim), new Span<float>(pSeq, sl),
++                        new Span<float>(pOSeq + (long)t * valueDim, valueDim), hv, hd, normEps: 1e-6f);
++            GdnKernels.GdnRecurrenceChunkedPrefill(n,
++                new ReadOnlySpan<float>(gQ, ol), new ReadOnlySpan<float>(gK, ol), new ReadOnlySpan<float>(gV, ol),
++                new ReadOnlySpan<float>(gA, n * hv), new ReadOnlySpan<float>(gB, n * hv),
++                new ReadOnlySpan<float>(_ssmA[layer], hv), new ReadOnlySpan<float>(_ssmDtBias[layer], hv),
++                new ReadOnlySpan<float>(_ssmNormW[layer], hd), new ReadOnlySpan<float>(gZ, ol),
++                stChk, oChk, hv, hd, normEps: 1e-6f);
++            XDoubleRecurrence(n, gQ, gK, gV, gA, gB, _ssmA[layer], _ssmDtBias[layer], _ssmNormW[layer], gZ, ds0, gO, hv, hd, 1e-6);
++            for (int i = 0; i < ds0.Length; i++) scanState[i] = (float)ds0[i];
++            static (double Rel, double Max) Err(ReadOnlySpan<float> x, ReadOnlySpan<float> rf)
++            { double e2 = 0, r2 = 0, mx = 0; for (int i = 0; i < x.Length; i++) { double d = x[i] - rf[i]; e2 += d * d; r2 += (double)rf[i] * rf[i]; mx = Math.Max(mx, Math.Abs(d)); } return (Math.Sqrt(e2 / Math.Max(r2, 1e-300)), mx); }
++            var dsF = new float[sl]; for (int i = 0; i < sl; i++) dsF[i] = (float)ds0[i];
++            var eSeq = Err(oSeq, new ReadOnlySpan<float>(gO, ol)); var eChk = Err(oChk, new ReadOnlySpan<float>(gO, ol));
++            var sSeq = Err(stSeq, dsF); var sChk = Err(stChk, dsF);
++            var eCS = Err(oChk, oSeq); var sCS = Err(stChk, stSeq);
++            lock (probe) probe.Add((layer, eSeq.Rel, eChk.Rel, eSeq.Max, eChk.Max, sSeq.Rel, sChk.Rel, eCS.Rel, sCS.Rel, sSeq.Max, sChk.Max));
++        }
++        else if (XDblRec)
++        {
++            if (!XDblState.TryGetValue(layer, out var ds)) XDblState[layer] = ds = new double[hv * hd * hd];
++            XDoubleRecurrence(n, gQ, gK, gV, gA, gB, _ssmA[layer], _ssmDtBias[layer], _ssmNormW[layer], gZ, ds, gO, hv, hd, 1e-6);
++            for (int i = 0; i < ds.Length; i++) scanState[i] = (float)ds[i];
++        }
++        else if (XSeqRec)
++        {
++            for (int t = 0; t < n; t++)
++                GdnKernels.GdnRecurrenceDecode(
++                    new ReadOnlySpan<float>(gQ + (long)t * valueDim, valueDim),
++                    new ReadOnlySpan<float>(gK + (long)t * valueDim, valueDim),
++                    new ReadOnlySpan<float>(gV + (long)t * valueDim, valueDim),
++                    new ReadOnlySpan<float>(gA + (long)t * hv, hv),
++                    new ReadOnlySpan<float>(gB + (long)t * hv, hv),
++                    new ReadOnlySpan<float>(_ssmA[layer], hv),
++                    new ReadOnlySpan<float>(_ssmDtBias[layer], hv),
++                    new ReadOnlySpan<float>(_ssmNormW[layer], hd),
++                    new ReadOnlySpan<float>(gZ + (long)t * valueDim, valueDim),
++                    new Span<float>(scanState, scanStateLen),
++                    new Span<float>(gO + (long)t * valueDim, valueDim),
++                    hv, hd, normEps: 1e-6f);
++        }
++        else
+         GdnKernels.GdnRecurrenceChunkedPrefill(
+             n,
+             new ReadOnlySpan<float>(gQ, n * valueDim),
+@@ -1003,7 +1110,7 @@ public sealed unsafe class HybridGdnForwardPass : IForwardPass
+             PrefillProfileTimers.Add(PrefillProfileTimers.Category.GdnRecurrence, Stopwatch.GetTimestamp() - tRec);
+ 
+         // ssm-out projection → block output, batched.
+-        BatchedProjection(hid, _ssmOut[layer], gO, n, e, valueDim);
++        ProjX(hid, _ssmOut[layer], gO, n, e, valueDim);
+         }
+         finally
+         {
+@@ -2142,6 +2249,42 @@ public sealed unsafe class HybridGdnForwardPass : IForwardPass
+     /// <summary>output[n, rows] = input[n, cols] · Wᵀ for a chunked-prefill projection. Large batches of a block-quantized
+     /// weight take the packed GEMM (FP32 activations, weights dequantized per panel); smaller ones, or dtypes it can't
+     /// take, the int8 batched matmul.</summary>
++    public static int XCheckRow = -1;
++    public static List<(string Name, double GemmRel, double MatVecRel, double GemmMax, double MatVecMax)>? XRowCheck;
++
++    private static void ProjX(float* output, in TensorRef w, float* input, int n, int rows, int cols)
++    {
++        if (!XSeqProj)
++        {
++            BatchedProjection(output, w, input, n, rows, cols);
++            if (XRowCheck is { } rc && XCheckRow >= 0 && XCheckRow < n)
++            {
++                // Row r of the batched output vs a double-precision dot of the dequantized weights, and the
++                // per-token decode matvec (int8 activations) on the same row, against the same reference.
++                int r = XCheckRow;
++                long elems = (long)rows * cols;
++                var wf = new float[elems];
++                Dequantize.ToFloat32(new ReadOnlySpan<byte>(w.DataPtr, (int)DTypeInfo.ByteSize(elems, w.DType)), wf, w.DType, elems);
++                var mv = new float[rows];
++                fixed (float* mvp = mv) FusedMatVec(mvp, w, input + (long)r * cols, rows, cols);
++                double eg = 0, em = 0, rr = 0, mg = 0, mm = 0;
++                float* x = input + (long)r * cols;
++                for (int j = 0; j < rows; j++)
++                {
++                    double s = 0; long o = (long)j * cols;
++                    for (int k = 0; k < cols; k++) s += (double)x[k] * wf[o + k];
++                    double dg = output[(long)r * rows + j] - s, dm = mv[j] - s;
++                    eg += dg * dg; em += dm * dm; rr += s * s;
++                    mg = Math.Max(mg, Math.Abs(dg)); mm = Math.Max(mm, Math.Abs(dm));
++                }
++                rc.Add((w.Name, Math.Sqrt(eg / rr), Math.Sqrt(em / rr), mg, mm));
++            }
++            return;
++        }
++        for (int t = 0; t < n; t++)
++            FusedMatVec(output + (long)t * rows, w, input + (long)t * cols, rows, cols);
++    }
++
+     private static void BatchedProjection(float* output, in TensorRef w, float* input, int n, int rows, int cols)
+     {
+         if (n >= MinBatchForGemmQuant && PackedSgemmF32.CanGemmQuant(w.DType, cols))
+@@ -2163,11 +2306,11 @@ public sealed unsafe class HybridGdnForwardPass : IForwardPass
+             kAll = Alloc(n * kvDim);
+             vAll = Alloc(n * kvDim);
+             ao = Alloc(n * qDim);
+-            BatchedProjection(qg, _wQGate[layer], nrm, n, qDim * 2, e);
+-            BatchedProjection(kAll, _wK[layer], nrm, n, kvDim, e);
+-            BatchedProjection(vAll, _wV[layer], nrm, n, kvDim, e);
++            ProjX(qg, _wQGate[layer], nrm, n, qDim * 2, e);
++            ProjX(kAll, _wK[layer], nrm, n, kvDim, e);
++            ProjX(vAll, _wV[layer], nrm, n, kvDim, e);
+             AttnCoreChunked(layer, n, startPos, qg, kAll, vAll, ao);
+-            BatchedProjection(hid, _wO[layer], ao, n, e, qDim);
++            ProjX(hid, _wO[layer], ao, n, e, qDim);
+         }
+         finally
+         {

@@ -107,6 +107,7 @@ The solution (`OpenTail.Stingray.slnx`) is organized into four core layers:
 * **Model Command Examples & Archive**: [docs/reference/claude-reference-archive.md](docs/reference/claude-reference-archive.md)
 * **Active Engineering Backlog**: [docs/00-current-work.md](docs/00-current-work.md)
 * **Coverage tooling** (`pull`, `admit-arch`, `gen-vision-scaffold`): [docs/reference/061-coverage-tooling.md](docs/reference/061-coverage-tooling.md)
+* **Investigating a numerical discrepancy** (before keeping or adding any "slow but exact" path; "reproducible is not accurate"): [docs/reference/numerics-investigation-method.md](docs/reference/numerics-investigation-method.md)
 
 ---
 

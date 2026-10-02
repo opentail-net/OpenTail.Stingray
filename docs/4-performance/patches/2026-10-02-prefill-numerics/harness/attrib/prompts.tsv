@@ -1,0 +1,41 @@
+short	64	chat	The capital of France is
+short	64	chat	What is 17 times 23? Answer with just the number.
+short	64	chat	Write a haiku about a lighthouse in winter.
+short	64	chat	Explain in one sentence why the sky is blue.
+short	64	chat	Is 391 a prime number? Think it through.
+short	64	chat	Translate to German: The train leaves at seven in the morning.
+short	64	chat	Give me a JSON object with keys name and age for a fictional person.
+short	64	chat	def fib(n):\n    # complete this Python function
+short	64	chat	Hi!
+short	64	chat	Who wrote Pride and Prejudice?
+short	64	chat	Solve for x: 3x + 7 = 22.
+short	64	chat	List three uses of baking soda.
+short	64	chat	What day of the week was 1 January 2000?
+short	64	chat	Summarize the plot of Hamlet in two sentences.
+short	64	chat	If a train travels 120 km in 1.5 hours, what is its average speed?
+short	64	chat	Write a SQL query that counts rows per country in a table named users.
+short	64	chat	What is the derivative of x^3 * sin(x)?
+short	64	chat	Name a mammal that lays eggs.
+short	64	chat	Should I learn Rust or Go first? Be brief.
+short	64	chat	Convert 100 degrees Fahrenheit to Celsius.
+short	64	chat	What does the acronym GPU stand for?
+short	64	chat	A bat and a ball cost 1.10 in total. The bat costs 1.00 more than the ball. How much is the ball?
+short	64	chat	Write a regular expression that matches an email address.
+short	64	chat	How many r letters are in the word strawberry?
+short	64	chat	Tell me a fun fact about octopuses.
+short	64	chat	Rewrite this sentence formally: gonna be late, sorry.
+short	64	chat	What is the time complexity of binary search?
+short	64	chat	Pick a random number between 1 and 10 and explain your choice.
+short	64	chat	In C#, how do I reverse a string?
+short	64	chat	Why do cats purr?
+med	500	raw	@C:/Git-Public/OpenTail.Stingray/docs/reference/OpenTail.Stingray-Design.md
+med	500	raw	@C:/Git-Public/OpenTail.Stingray/src/OpenTail.Stingray.Cpu/GdnKernels.cs
+med	500	raw	@C:/Git-Public/OpenTail.Stingray/docs/STATUS.md
+med	500	raw	@C:/Git-Public/OpenTail.Stingray/README.md
+med	500	raw	@C:/Git-Public/OpenTail.Stingray/docs/1-correctness/bugstofix.md
+med	500	raw	@C:/Git-Public/OpenTail.Stingray/src/OpenTail.Stingray.Core/GgufTokenizer.cs
+med	500	raw	@C:/Git-Public/OpenTail.Stingray/docs/RUNNING.md
+med	500	raw	@C:/Git-Public/OpenTail.Stingray/src/OpenTail.Stingray.Engine/Sampler.cs
+long	1200	raw	@C:/Git-Public/OpenTail.Stingray/docs/4-performance/perf-sweep-plan.md
+long	1200	raw	@C:/Git-Public/OpenTail.Stingray/src/OpenTail.Stingray.Engine/HybridGdnForwardPass.cs
+long	1200	raw	@C:/Git-Public/OpenTail.Stingray/CLAUDE.md
