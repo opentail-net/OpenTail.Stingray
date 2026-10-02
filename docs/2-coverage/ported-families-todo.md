@@ -9,6 +9,21 @@ table.
 
 Order (user): after the worker-pool experiment, the Q8_K alignment, and `Q1_0` + Bonsai2.
 
+## Per-family plans (one each, 2026-10-03)
+
+| Family | Plan | Fits this PC? | Local independent reference | Effort |
+|---|---|---|---|---|
+| Muse-Glimmer (in progress) | [2026-10-03-muse-glimmer-port-plan.md](2026-10-03-muse-glimmer-port-plan.md) | yes (small quants) | none (TensorSharp only) | ~2-3 h text |
+| Qwen 3.8 Flash Next | [2026-10-03-qwen38-flash-next-port-plan.md](2026-10-03-qwen38-flash-next-port-plan.md) | yes (~15 GB quant) | none (TensorSharp only) | ~1-2 days |
+| GLM-5.x | [2026-10-03-glm5-port-plan.md](2026-10-03-glm5-port-plan.md) | no (320B-744B) | `glm-dsa`: llama.cpp source + vendored b10306 | ~2 days |
+| DiffusionGemma | [2026-10-03-diffusiongemma-port-plan.md](2026-10-03-diffusiongemma-port-plan.md) | yes (~13-17 GB) | none (TensorSharp only) | ~1 day |
+| MiniMax-H3 | [2026-10-03-minimax-h3-port-plan.md](2026-10-03-minimax-h3-port-plan.md) | yes (sequential loading) | TensorSharp pure-C# backend | ~3-5 days |
+| DeepSeek V4 / V4.1 (review) | [2026-10-03-deepseek-v4-review-plan.md](2026-10-03-deepseek-v4-review-plan.md) | no (~340 GB) | llama.cpp source + vendored b10306 | ~0.5-1.5 days |
+
+Each plan has the architecture spec as far as it is known, what Stingray reuses, phased work items,
+and a verification ladder: a synthetic-model check against an independent reference first, then a
+real checkpoint where it fits, then the normal admission path.
+
 ## Per-family checklist (every family)
 
 - [ ] Read the primary reference first (llama.cpp `src/models/<arch>.cpp` when it exists), then
