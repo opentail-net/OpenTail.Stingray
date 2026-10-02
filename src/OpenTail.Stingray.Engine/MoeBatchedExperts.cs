@@ -86,6 +86,6 @@ internal static unsafe class MoeBatchedExperts
             buf => NativeMemory.Free((void*)buf));
     }
 
-    // Pinned to ProcessorCount so back-to-back per-layer sweeps don't grow the thread pool.
-    private static readonly ParallelOptions s_opts = new() { MaxDegreeOfParallelism = Environment.ProcessorCount };
+    // Pinned to the kernels' thread cap (physical cores by default) so back-to-back per-layer sweeps don't grow the thread pool.
+    private static readonly ParallelOptions s_opts = new() { MaxDegreeOfParallelism = SimdKernels.CpuThreads };
 }

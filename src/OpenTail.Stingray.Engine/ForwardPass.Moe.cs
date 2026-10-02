@@ -270,12 +270,12 @@ public sealed unsafe partial class ForwardPass
         });
     }
 
-    // ParallelOptions for the routed-MoE sweeps. Pinning to ProcessorCount avoids
+    // ParallelOptions for the routed-MoE sweeps. Pinning to the kernels' thread cap avoids
     // the ThreadPool oversubscription that would otherwise add workers when these
     // short-but-heavy parallel loops fire back-to-back per layer.
     private static readonly ParallelOptions s_moeParallelOpts = new()
     {
-        MaxDegreeOfParallelism = Environment.ProcessorCount
+        MaxDegreeOfParallelism = SimdKernels.CpuThreads
     };
 
     private static bool IsFoldedDotDType(DType dtype) =>
