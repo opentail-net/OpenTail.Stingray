@@ -710,6 +710,8 @@ public sealed record ModelHyperparams
         // Read from metadata if available; fall back to computed value.
         int headDimFromMeta = GetInt(metadata, $"{arch}.attention.key_length_mla", 0) is > 0 and var kMla
             ? kMla : GetInt(metadata, $"{arch}.attention.key_length");
+        if (headDimFromMeta == 0 && arch is "rwkv6" or "rwkv7")
+            headDimFromMeta = GetInt(metadata, $"{arch}.wkv.head_size");
         int headDim = headDimFromMeta > 0 ? headDimFromMeta : (numHeads > 0 ? embDim / numHeads : embDim);
 
         // Partial RoPE: rope.dimension_count, when present and smaller than headDim,
