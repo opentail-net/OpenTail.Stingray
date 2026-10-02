@@ -1,6 +1,17 @@
 # PerformanceLeague sweep: closed phases
 
-> **ARCHIVED 2026-09-27.** Moved verbatim out of [../perf-sweep-plan.md](../4-performance/perf-sweep-plan.md).
+> **ARCHIVED 2026-10-02.** Moved verbatim out of [../perf-sweep-plan.md](../4-performance/perf-sweep-plan.md).
+> - **Phase 5** (sweep remainder): Whisper Tiny investigated (architecture/threading overhead, not loader);
+>   `PerformanceLeague.md` rows < 0.5x re-scanned: Qwen3-Embedding-0.6B Q8_0 prompt fixed with fused
+>   `DotQ8_0_Q8_0_4In_Avx2` (66daf1c2, 113-124 -> 158-184 t/s), small K-quant prefill gap identified
+>   (CPU int8 prefill policy decision).
+> - **Phase 16** (RWKV6/RWKV7 prefill): parallel heads with AVX2 head steps and TensorPrimitives
+>   (ad0c3851). RWKV7 prefill 56.6-57.1 -> 69.9-80.3 t/s, decode 18.7-19.2 -> 22.1-22.3 (0.95x); RWKV6
+>   prefill 63.6-64.5 -> 78.3-79.1, decode 19.4-19.8 -> 21.5-21.9 (0.94x). Residual gap is ~89% Q8_0 GEMM.
+> - **Horizontal Pass A** (naive scalar matvec): 15 files identified and converted to `DenseKernels.Linear`/
+>   `LinearNoBias`, 19/19 test classes passing. Real confirmed wins across PersonaPlex (8.1x), NemotronAsr
+>   (5.1x), FunASR-Nano (2.2x), VibeVoice-ASR (17.5%), XTTS (13.8%), VibeVoice-TTS (9.5%). A.5 manual
+>   reviews completed (neither is the Voxtral bug).
 > - **Phase 12** (FLUX.1 Vulkan speedup): answered. Per-stage profiling exists (2026-09-25 row in
 >   `PerformanceLeague.md`: CLIP 0.6s, T5 15.8s on CPU, DiT 23.5s per step, VAE 7.3s), the GPU gap was
 >   measured kernel by kernel against ggml's `test-backend-ops` (017765c), and FLUX.1 Vulkan went
@@ -340,4 +351,167 @@ previously-flagged loose end, not a fresh guess.
       hardware either way — a valid, complete closure per this sweep's own plateau discipline.
 
 ---
+
+<!-- Appended 2026-10-02: further fully-closed sections split verbatim from 4-performance/perf-sweep-plan.md: Phase 5, Phase 16, Horizontal Pass A. -->
+
+## Phase 5 — Sweep remainder
+
+- [x] 5.1 Whisper Tiny (0.46x ratio, worst of the mature Whisper sizes) investigated. Checked the
+      leading hypothesis first (this checkpoint is loaded via `LoadFromSafetensors` vs the other
+      sizes' GGUF path — maybe a slower code path): **ruled out** — `WhisperPipeline.Load`/
+      `LoadFromGguf`/`LoadFromSafetensors` all converge to the same `FromModel` factory, building
+      the identical `WhisperEncoder`/`WhisperDecoder` classes regardless of load format; there is
+      no separate compute path per loader. Most likely real explanation instead: Whisper Tiny
+      (39M params) is by far the smallest model in this family, and this doc already has a
+      confirmed, real pattern for exactly this — Phase 3's small-model-decode-weakness finding
+      (per-call/threading overhead proportionally larger at tiny hidden sizes). **Not re-attempting
+      a threading fix here** given Phase 3.2's own real, measured regression when a similar fix was
+      tried — that risk applies here too without new evidence. Real per-stage profiling (mirroring
+      Phase 3.1's `STINGRAY_PROFILE_DECODE=1` methodology) would be the correct next step if
+      revisited, not a blind retry of an already-reverted fix class.
+- [x] 5.2 (done 2026-10-01) Re-scanned `PerformanceLeague.md` for rows below 0.5x. Covered already: small-model
+      decode (Phase 3), hybrid GDN (2), Gemma prefill (6), RWKV prefill (16), DeepSeek2 prefill (8), Voxtral (1),
+      VLMs (10), Whisper Tiny (5.1). Bold sub-0.5 values on Whisper Base/Small, Parakeet and Qwen3-ASR are RTFs,
+      not ratios (Base/Small 0.83x, Parakeet 1.03-1.16x; Qwen3-ASR has no C++ reference). Two uncovered rows:
+      - **Qwen3-Embedding-0.6B Q8_0 prompt, 0.14-0.16x (2026-09-17)**: fixed. Cause: Q8_0 weights get no help from
+        the int8 prefill tier, and `MatVec4In` ran four separate serial-FMA dots per weight row. New fused
+        `DotQ8_0_Q8_0_4In_Avx2` (bit-identical per token, so on by default): Qwen3-0.6B Q8_0 prefill 113-124 ->
+        158-184 t/s, embedding 605 tokens 4.65-4.89 s -> 3.39-3.57 s (~0.50x of llama-bench `-embd 1` pp512 at 16
+        thr, 350 t/s), RWKV7 Q8_0 prefill 42-43 -> 60-61 t/s. 66daf1c2.
+      - **SmolLM2-1.7B prefill, 0.24-0.33x (2026-08/09)** and small K-quant prefill generally: the CPU int8 prefill
+        tier (`STINGRAY_CPU_PREFILL_Q8`) was turned OFF by default on 2026-10-01 (7791e3c9, exact-numerics policy).
+        Measured today on Qwen2.5-0.5B Q4_K_M (633 tok): 141-143 t/s off vs 260-308 t/s on, i.e. the default
+        halves K-quant prefill. Whether to restore it is a policy decision, not a perf bug; note it also brings
+        DeepSeek-V2-Lite back to token-exact llama.cpp parity (bugstofix #23). Remaining Q8_0 gap vs llama.cpp
+        (~0.4x on Qwen3-0.6B: 158-184 vs 443 t/s) is GEMM-kernel throughput (llama.cpp uses repacked tiles).
+
+---
+
+## Phase 16 — RWKV6/RWKV7 prefill — DONE 2026-10-02 (0.21x -> ~0.45x prefill, decode 0.94-0.95x; rest is Q8_0 GEMM)
+
+Added 2026-10-01 with the `rwkv6`/`rwkv7` admissions (code: `RwkvForwardPassBase`, `Rwkv6ForwardPass`,
+`Rwkv7ForwardPass`). Prefill already runs batched: one matmul per projection over chunks of up to 256
+tokens, with only the WKV recurrence stepping token by token. That took RWKV7 Q8_0 from 17.5-19.8 to
+38.7-39.7 t/s over 605 tokens (same-day A/B, idle machine), and the fused Q8_0 4-input dot (66daf1c2)
+to 60-61 t/s over 580 tokens. llama.cpp pp512 is 185 t/s (16 thr). Measured
+before profiling: the int8 prefill tier (`STINGRAY_CPU_PREFILL_Q8=1`) and BLAS on/off did not help
+(29-32 t/s, those two runs under background load, so only indicative).
+
+- [x] 16.1 (done 2026-10-02) 587-token RWKV7 prefill: matmuls 60%, the other 40% (4.0 s) a single-threaded scalar
+      per-token block, dominated by the WKV7 state update (~12M MACs/token). Original text: per-stage profile of a ~600-token prefill: batched matmuls vs the per-token WKV step, group
+      norm, lerps and LayerNorms (all scalar loops today). An env-gated stage timer is enough; the
+      2026-10-01 attempt was abandoned because another process was loading the CPU.
+- [x] 16.2 (done 2026-10-02, ad0c3851) Heads now run in parallel (each walks the chunk's tokens through its own
+      state slice) with AVX2 head steps, and the element-wise ops use TensorPrimitives: non-matmul time 4.0 -> 0.7 s.
+      CLI A/B: RWKV7 prefill 56.6-57.1 -> 69.9-80.3 t/s, decode 18.7-19.2 -> 22.1-22.3 (0.95x); RWKV6 prefill
+      63.6-64.5 -> 78.3-79.1, decode 19.4-19.8 -> 21.5-21.9 (0.94x). Parity unchanged or better. What is left
+      (~0.45x prefill) is ~89% Q8_0 GEMM, i.e. the same kernel-throughput gap as small Q8_0 transformers (5.2).
+      Original text: fix the biggest stage, re-verify `Rwkv6/Rwkv7GreedyParityTests` and `RwkvRecurrentStateTests`,
+      re-benchmark (3 alternated runs vs the current build), update the League rows.
+
+---
+
+## Horizontal Pass A — naive-scalar-matvec-never-wired-to-SIMD (the Voxtral bug, found in 15 more files)
+
+Voxtral's original bug (Phase 1.1) was a `for (int o = 0; o < outDim; o++) { for (int i = 0; i <
+inDim; i++) sum += ... }` scalar double-loop instead of the engine's own SIMD/parallel
+`SimdKernels.MatVecF32` — 5.6x win when fixed. Scanned the whole `src/` tree for the same literal
+pattern (`for (int o = 0; o < outDim; o++)`) and classified each of the 31 hits as
+already-SIMD/BCL-accelerated vs. truly naive. **15 files were genuinely the same bug**, spanning
+PersonaPlex (Mimi codec), OmniVoice (codec + semantic encoders), HiggsAudio (codec encoder),
+VibeVoice (connector), FunASR-Nano (adaptor + SANM block), NemotronAsr (RNNT decoder + conformer
+encoder + subsampling), RVC (synthesizer + rmvpe + hubert encoders), CosyVoice3 (flow encoder),
+QwenTTS (speaker encoder), and XTTS (ResNet encoder) — several of which directly back this doc's
+worst TTS/ASR rows (PersonaPlex ~262x RTF, HiggsAudio 13.64x, OmniVoice ~13.45x).
+
+- [x] A.1 Classified all 31 files hitting the `for (int o = 0; o < outDim; o++)` pattern:
+      14 already SIMD-backed (`SimdKernels`/`DenseKernels`/`TensorPrimitives.Dot`), 1 needs manual
+      review (`MossTtsGlobalTransformer.cs` — not yet checked), 15 confirmed genuinely naive,
+      1 (`MeloRelativeEncoder.cs`) uses a **transposed** weight layout (`weight[i*outDim+o]`, not
+      row-major `[outDim,inDim]`) — deferred separately, needs its own fix since it can't just
+      swap in `MatVecF32` as-is without a layout transpose (real correctness risk if rushed).
+- [x] A.2 Fixed all 15 confirmed files: replaced each naive private method's BODY with a one-line
+      delegation to `OpenTail.Stingray.Audio.Primitives.DenseKernels.Linear`/`LinearNoBias`
+      (already the documented shared SIMD/parallel helper for exactly this — its own doc comment
+      invites this reuse). Kept every method's original name/signature so NO call site needed
+      touching — zero risk of a missed call site across 15 files. `src/OpenTail.Stingray.Audio`
+      builds clean.
+- [x] A.3 Correctness verification: **19/19 test classes passed (0 failed), 1 skipped**
+      (`RvcSynthesizerRealReferenceMatchTests` — pre-existing missing reference-dump file on this
+      machine, unrelated to this change). `NemotronAsrEndToEndTests` produced a real, correct,
+      coherent transcript ("This little work was finished in the year eighteen oh three and
+      intended for immediate publication.") post-fix. `FunAsrNanoAdaptorGolden` logs an
+      already-documented pre-existing tolerance note (attention-masking gap, not caused by this
+      change) but still reports as passed. All 15 fixed pipelines confirmed correct.
+- [x] A.4a HiggsAudio re-benchmarked: **mean=36.333s, RTF=13.763x — matches its known 13.64x
+      baseline (no regression, no measurable change)**, i.e. HiggsAudio's own `Linear` call sites
+      weren't actually on this pipeline's hot path the same way, or its share of total time was
+      already small. Real, honest result — not every one of the 15 fixes moves its pipeline's
+      headline number equally.
+      - Combined run (PersonaPlex + OmniVoice + HiggsAudio together) took only 366.165s total —
+        far under PersonaPlex's OWN previous baseline of ~1049s ALONE — strongly suggesting a
+        large PersonaPlex win, but that's an inference from a combined number, not a real
+        measurement.
+      - [x] **PersonaPlex, real isolated result: 1099s → 135.140s total (same methodology, xunit
+        `Time:` for the isolated test class, includes model load) — an 8.1x speedup.** Output
+        correctness re-confirmed: decoded LM text ("Hey, let me know if you have any questions.")
+        exact match to the known-good transcript — same content, just fast. **This is the single
+        largest win of the entire sweep so far**, ahead of Voxtral's 11.05x on a much bigger
+        absolute baseline (~1049s of pure waste in a naive scalar loop inside a 25GB, 7B-class
+        codec encoder). Recorded in `PerformanceLeague.md`.
+      - [x] OmniVoice isolated timing: **39.014s total (incl. model load) vs baseline's 43.05s
+        (generation only, different methodology — not a clean apples-to-apples comparison, but
+        roughly flat either way, not a large win like PersonaPlex).** Plausible explanation: this
+        pipeline's dominant cost is likely the MaskGIT generator/acoustic decoder, which this
+        horizontal pass did NOT touch — only `OmniVoiceCodecEncoder`/`OmniVoiceSemanticEncoder`
+        were fixed, and those may be a small fraction of this specific pipeline's total time.
+        Real, honest result: this horizontal fix does not move every pipeline equally, and that's
+        expected — the fix targets a specific function, not "make X faster" generically.
+      - **A.4 REOPENED (2026-09-12, per user correction) — was prematurely marked closed after
+        only 3 of the ~16 fixed files' pipelines got a real before/after number. Now GENUINELY
+        CLOSED — every affected pipeline has a real recorded number.** Full scorecard:
+        - **PersonaPlex: 8.1x** (huge, dominant-cost hit — the largest win of Horizontal Pass A).
+        - **NemotronAsr: 5.1x** (38.05s → 7.44s) — the second-largest win, transcript re-verified
+          byte-identical. Bigger than initially expected for 3 conformer/subsampling/decoder files.
+        - **FunASR-Nano: ~2.2x** (26.24s → 11.953s), same known-degenerate synthetic-audio output
+          as the baseline (not a regression, a pre-existing, unrelated caveat).
+        - **VibeVoice-ASR: ~17.5%** (151.19s → 124.841s, mean of 3), transcript re-verified correct.
+        - **XTTS: ~13.8%** (10.16s → 8.758s, mean of 3) — confirmed the baseline genuinely
+          exercises the voice-cloning reference path (`XttsResNetEncoder` really runs both times).
+        - **VibeVoice-TTS: ~9.5%** (101.27s → 91.589s, single run both sides, same methodology).
+        - **HiggsAudio: flat** (13.763x vs 13.64x baseline — fix wasn't on the dominant path).
+        - **OmniVoice: flat** (39.0s vs 43.1s, different methodology, fix likely wasn't on the
+          dominant path either).
+        - **QwenTTS: inconclusive** (~9-12s vs 6.59s baseline) — genuine methodology mismatch (no
+          internal `Stopwatch` in the debug test, wall-clock includes process startup/model load
+          which the original number's methodology isn't documented precisely enough to match) —
+          recorded honestly as non-comparable rather than forced into a win/loss/flat bucket.
+        - **CosyVoice3's `FlowEncoder` fix (`SpkEmbedAffine`)**: NOT separately isolated — it's a
+          tiny 192→80 affine layer called once per generation (not per-frame), expected negligible
+          regardless, and isolating it from Pass C's already-measured caching fix in the same file
+          area would need an extra revert-and-remeasure cycle for a component this small. Reasoned
+          conclusion recorded, not measured separately — flagged honestly as such, not silently
+          assumed zero-impact.
+        - **RVC (3 files): new coverage** — no pre-existing baseline in `PerformanceLeague.md` at
+          all (this pipeline had never been benchmarked before), so recorded as a first-ever
+          timing (105.355s combined across 3 real tests) rather than a before/after comparison.
+        - **Net summary**: 6 real, confirmed wins (2 of them large — PersonaPlex 8.1x, NemotronAsr
+          5.1x), 2 flat/no-real-change, 1 genuinely non-comparable (methodology), 1 reasoned-not-
+          measured (negligible expected impact), 1 new-coverage-only. This is the honest,
+          complete picture across all affected pipelines — exactly the audit the user asked for
+          after A.4 was closed too early the first time.
+- [x] A.5 (done 2026-10-01: both reviewed, neither is the Voxtral bug, no change made) `MossTtsGlobalTransformer.cs`:
+      every linear already goes through `SimdKernels.MatVecF32` and LayerNorm through `SimdKernels.LayerNorm`;
+      leftover inefficiencies are not scalar matvecs (`LinearBatched` nests `Parallel.For` over tokens around an
+      already-parallel matvec instead of the batched F32 GEMM; the attention context is accumulated with a scalar
+      headDim loop), worth doing only if MOSS-TTS gets a League row. `MeloRelativeEncoder.LinearVec` is the
+      speaker-embedding projection, run once per encoder/flow layer per utterance (~50k MACs each), already
+      parallelized; a transposed-weight kernel would not move any measured number. Original item text:
+      manually review `MossTtsGlobalTransformer.cs` (flagged CHECK-MANUALLY, not
+      yet classified) and separately design a correct fix for `MeloRelativeEncoder.cs`'s
+      transposed-weight case (needs either a transposing `MatVecF32` variant or a one-time weight
+      transpose at load time — verify either approach against a real golden reference before
+      trusting it, this layout mismatch is exactly the kind of subtle thing that produces
+      confidently-wrong output if rushed).
+
 

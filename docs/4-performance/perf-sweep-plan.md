@@ -1,5 +1,7 @@
 # PerformanceLeague sweep — phased plan
 
+> **STATUS 2026-10-02.** Horizontal Pass A, Phase 5, and Phase 16 are also closed and moved verbatim to
+> [done/perf-sweep-plan-closed-phases.md](../done/perf-sweep-plan-closed-phases.md).
 > **STATUS 2026-10-01.** Horizontal Passes B and C and Phases 7 and 15 are also closed and moved to the same file. **STATUS 2026-09-27.** Phases 12 and 14 are closed and moved verbatim to
 > [done/perf-sweep-plan-closed-phases.md](../done/perf-sweep-plan-closed-phases.md). Also since the phases below were written: Phase 8's item 8.2 is
 > moot (`deepseek2` admitted 2026-09-26, no `--allow-unverified-arch` needed; its perf items are open);
@@ -32,18 +34,15 @@ Phase numbers are historical and are not renumbered, so the sections are no long
 Quick and well-understood work comes first; uncertain, architectural or hardware-dependent work comes
 last. Closed sections are one-line pointers into [done/perf-sweep-plan-closed-phases.md](../done/perf-sweep-plan-closed-phases.md).
 
-1. Phase 5: re-scan `PerformanceLeague.md` for uncovered rows (one pass, no code).
-2. Horizontal Pass A, item A.5: one manual file review plus one scoped fix.
-3. Phase 11: Citrinet-ASR, per-stage profile of a small, fast pipeline.
-4. Phase 16: RWKV6/RWKV7 prefill: done 2026-10-02 (~0.45x; the rest is the Q8_0 GEMM gap).
-5. Phase 10: VLM text decode, profile first (10.2), then the Vulkan regression (10.3).
-6. Phase 1: Voxtral Q8_0 weights (a known, large lever with a plateau declared).
-7. Phase 8: DeepSeek-V2-Lite prefill (0.49x), profile first.
-8. Phase 9: worst-RTF TTS/audio-generation pipelines (large, no numeric golden for some).
-9. Phase 3: small-model decode (a blanket threading fix already failed and was reverted; needs per-function work).
-10. Phase 2: Qwen3.6 hybrid-GDN decode (plateau declared; remaining angle is architectural).
-11. Phase 6: Gemma batched prefill (a multi-feature project).
-12. Phases 4 and 13: iGPU dispatch overhead (uncertain; the premise needs a discrete GPU to re-test).
+1. Phase 11: Citrinet-ASR, per-stage profile of a small, fast pipeline (~0.6x warm; pointwise attempt reverted).
+2. Phase 10: VLM text decode, profile first (10.2), then the Vulkan regression (10.3).
+3. Phase 1: Voxtral Q8_0 weights (a known, large lever with a plateau declared).
+4. Phase 8: DeepSeek-V2-Lite prefill (0.49x), profile first.
+5. Phase 9: worst-RTF TTS/audio-generation pipelines (large, no numeric golden for some).
+6. Phase 3: small-model decode (a blanket threading fix already failed and was reverted; needs per-function work).
+7. Phase 2: Qwen3.6 hybrid-GDN decode (plateau declared; remaining angle is architectural).
+8. Phase 6: Gemma batched prefill (a multi-feature project).
+9. Phases 4 and 13: iGPU dispatch overhead (uncertain; the premise needs a discrete GPU to re-test).
 
 ---
 
@@ -105,147 +104,11 @@ a re-attempt candidate without per-function analysis. #7 is a disambiguation tas
 
 ---
 
-## Horizontal Passes B and C — CLOSED; moved to [done/perf-sweep-plan-closed-phases.md](../done/perf-sweep-plan-closed-phases.md)
+## Horizontal Passes A, B and C — CLOSED; moved to [done/perf-sweep-plan-closed-phases.md](../done/perf-sweep-plan-closed-phases.md)
 
 ## Phase 15 — DSpark speculative decoding — CLOSED; moved to [done/perf-sweep-plan-closed-phases.md](../done/perf-sweep-plan-closed-phases.md)
 
----
-
-## Phase 5 — Sweep remainder
-
-- [x] 5.1 Whisper Tiny (0.46x ratio, worst of the mature Whisper sizes) investigated. Checked the
-      leading hypothesis first (this checkpoint is loaded via `LoadFromSafetensors` vs the other
-      sizes' GGUF path — maybe a slower code path): **ruled out** — `WhisperPipeline.Load`/
-      `LoadFromGguf`/`LoadFromSafetensors` all converge to the same `FromModel` factory, building
-      the identical `WhisperEncoder`/`WhisperDecoder` classes regardless of load format; there is
-      no separate compute path per loader. Most likely real explanation instead: Whisper Tiny
-      (39M params) is by far the smallest model in this family, and this doc already has a
-      confirmed, real pattern for exactly this — Phase 3's small-model-decode-weakness finding
-      (per-call/threading overhead proportionally larger at tiny hidden sizes). **Not re-attempting
-      a threading fix here** given Phase 3.2's own real, measured regression when a similar fix was
-      tried — that risk applies here too without new evidence. Real per-stage profiling (mirroring
-      Phase 3.1's `STINGRAY_PROFILE_DECODE=1` methodology) would be the correct next step if
-      revisited, not a blind retry of an already-reverted fix class.
-- [x] 5.2 (done 2026-10-01) Re-scanned `PerformanceLeague.md` for rows below 0.5x. Covered already: small-model
-      decode (Phase 3), hybrid GDN (2), Gemma prefill (6), RWKV prefill (16), DeepSeek2 prefill (8), Voxtral (1),
-      VLMs (10), Whisper Tiny (5.1). Bold sub-0.5 values on Whisper Base/Small, Parakeet and Qwen3-ASR are RTFs,
-      not ratios (Base/Small 0.83x, Parakeet 1.03-1.16x; Qwen3-ASR has no C++ reference). Two uncovered rows:
-      - **Qwen3-Embedding-0.6B Q8_0 prompt, 0.14-0.16x (2026-09-17)**: fixed. Cause: Q8_0 weights get no help from
-        the int8 prefill tier, and `MatVec4In` ran four separate serial-FMA dots per weight row. New fused
-        `DotQ8_0_Q8_0_4In_Avx2` (bit-identical per token, so on by default): Qwen3-0.6B Q8_0 prefill 113-124 ->
-        158-184 t/s, embedding 605 tokens 4.65-4.89 s -> 3.39-3.57 s (~0.50x of llama-bench `-embd 1` pp512 at 16
-        thr, 350 t/s), RWKV7 Q8_0 prefill 42-43 -> 60-61 t/s. 66daf1c2.
-      - **SmolLM2-1.7B prefill, 0.24-0.33x (2026-08/09)** and small K-quant prefill generally: the CPU int8 prefill
-        tier (`STINGRAY_CPU_PREFILL_Q8`) was turned OFF by default on 2026-10-01 (7791e3c9, exact-numerics policy).
-        Measured today on Qwen2.5-0.5B Q4_K_M (633 tok): 141-143 t/s off vs 260-308 t/s on, i.e. the default
-        halves K-quant prefill. Whether to restore it is a policy decision, not a perf bug; note it also brings
-        DeepSeek-V2-Lite back to token-exact llama.cpp parity (bugstofix #23). Remaining Q8_0 gap vs llama.cpp
-        (~0.4x on Qwen3-0.6B: 158-184 vs 443 t/s) is GEMM-kernel throughput (llama.cpp uses repacked tiles).
-
----
-
-## Horizontal Pass A — naive-scalar-matvec-never-wired-to-SIMD (the Voxtral bug, found in 15 more files)
-
-Voxtral's original bug (Phase 1.1) was a `for (int o = 0; o < outDim; o++) { for (int i = 0; i <
-inDim; i++) sum += ... }` scalar double-loop instead of the engine's own SIMD/parallel
-`SimdKernels.MatVecF32` — 5.6x win when fixed. Scanned the whole `src/` tree for the same literal
-pattern (`for (int o = 0; o < outDim; o++)`) and classified each of the 31 hits as
-already-SIMD/BCL-accelerated vs. truly naive. **15 files were genuinely the same bug**, spanning
-PersonaPlex (Mimi codec), OmniVoice (codec + semantic encoders), HiggsAudio (codec encoder),
-VibeVoice (connector), FunASR-Nano (adaptor + SANM block), NemotronAsr (RNNT decoder + conformer
-encoder + subsampling), RVC (synthesizer + rmvpe + hubert encoders), CosyVoice3 (flow encoder),
-QwenTTS (speaker encoder), and XTTS (ResNet encoder) — several of which directly back this doc's
-worst TTS/ASR rows (PersonaPlex ~262x RTF, HiggsAudio 13.64x, OmniVoice ~13.45x).
-
-- [x] A.1 Classified all 31 files hitting the `for (int o = 0; o < outDim; o++)` pattern:
-      14 already SIMD-backed (`SimdKernels`/`DenseKernels`/`TensorPrimitives.Dot`), 1 needs manual
-      review (`MossTtsGlobalTransformer.cs` — not yet checked), 15 confirmed genuinely naive,
-      1 (`MeloRelativeEncoder.cs`) uses a **transposed** weight layout (`weight[i*outDim+o]`, not
-      row-major `[outDim,inDim]`) — deferred separately, needs its own fix since it can't just
-      swap in `MatVecF32` as-is without a layout transpose (real correctness risk if rushed).
-- [x] A.2 Fixed all 15 confirmed files: replaced each naive private method's BODY with a one-line
-      delegation to `OpenTail.Stingray.Audio.Primitives.DenseKernels.Linear`/`LinearNoBias`
-      (already the documented shared SIMD/parallel helper for exactly this — its own doc comment
-      invites this reuse). Kept every method's original name/signature so NO call site needed
-      touching — zero risk of a missed call site across 15 files. `src/OpenTail.Stingray.Audio`
-      builds clean.
-- [x] A.3 Correctness verification: **19/19 test classes passed (0 failed), 1 skipped**
-      (`RvcSynthesizerRealReferenceMatchTests` — pre-existing missing reference-dump file on this
-      machine, unrelated to this change). `NemotronAsrEndToEndTests` produced a real, correct,
-      coherent transcript ("This little work was finished in the year eighteen oh three and
-      intended for immediate publication.") post-fix. `FunAsrNanoAdaptorGolden` logs an
-      already-documented pre-existing tolerance note (attention-masking gap, not caused by this
-      change) but still reports as passed. All 15 fixed pipelines confirmed correct.
-- [x] A.4a HiggsAudio re-benchmarked: **mean=36.333s, RTF=13.763x — matches its known 13.64x
-      baseline (no regression, no measurable change)**, i.e. HiggsAudio's own `Linear` call sites
-      weren't actually on this pipeline's hot path the same way, or its share of total time was
-      already small. Real, honest result — not every one of the 15 fixes moves its pipeline's
-      headline number equally.
-      - Combined run (PersonaPlex + OmniVoice + HiggsAudio together) took only 366.165s total —
-        far under PersonaPlex's OWN previous baseline of ~1049s ALONE — strongly suggesting a
-        large PersonaPlex win, but that's an inference from a combined number, not a real
-        measurement.
-      - [x] **PersonaPlex, real isolated result: 1099s → 135.140s total (same methodology, xunit
-        `Time:` for the isolated test class, includes model load) — an 8.1x speedup.** Output
-        correctness re-confirmed: decoded LM text ("Hey, let me know if you have any questions.")
-        exact match to the known-good transcript — same content, just fast. **This is the single
-        largest win of the entire sweep so far**, ahead of Voxtral's 11.05x on a much bigger
-        absolute baseline (~1049s of pure waste in a naive scalar loop inside a 25GB, 7B-class
-        codec encoder). Recorded in `PerformanceLeague.md`.
-      - [x] OmniVoice isolated timing: **39.014s total (incl. model load) vs baseline's 43.05s
-        (generation only, different methodology — not a clean apples-to-apples comparison, but
-        roughly flat either way, not a large win like PersonaPlex).** Plausible explanation: this
-        pipeline's dominant cost is likely the MaskGIT generator/acoustic decoder, which this
-        horizontal pass did NOT touch — only `OmniVoiceCodecEncoder`/`OmniVoiceSemanticEncoder`
-        were fixed, and those may be a small fraction of this specific pipeline's total time.
-        Real, honest result: this horizontal fix does not move every pipeline equally, and that's
-        expected — the fix targets a specific function, not "make X faster" generically.
-      - **A.4 REOPENED (2026-09-12, per user correction) — was prematurely marked closed after
-        only 3 of the ~16 fixed files' pipelines got a real before/after number. Now GENUINELY
-        CLOSED — every affected pipeline has a real recorded number.** Full scorecard:
-        - **PersonaPlex: 8.1x** (huge, dominant-cost hit — the largest win of Horizontal Pass A).
-        - **NemotronAsr: 5.1x** (38.05s → 7.44s) — the second-largest win, transcript re-verified
-          byte-identical. Bigger than initially expected for 3 conformer/subsampling/decoder files.
-        - **FunASR-Nano: ~2.2x** (26.24s → 11.953s), same known-degenerate synthetic-audio output
-          as the baseline (not a regression, a pre-existing, unrelated caveat).
-        - **VibeVoice-ASR: ~17.5%** (151.19s → 124.841s, mean of 3), transcript re-verified correct.
-        - **XTTS: ~13.8%** (10.16s → 8.758s, mean of 3) — confirmed the baseline genuinely
-          exercises the voice-cloning reference path (`XttsResNetEncoder` really runs both times).
-        - **VibeVoice-TTS: ~9.5%** (101.27s → 91.589s, single run both sides, same methodology).
-        - **HiggsAudio: flat** (13.763x vs 13.64x baseline — fix wasn't on the dominant path).
-        - **OmniVoice: flat** (39.0s vs 43.1s, different methodology, fix likely wasn't on the
-          dominant path either).
-        - **QwenTTS: inconclusive** (~9-12s vs 6.59s baseline) — genuine methodology mismatch (no
-          internal `Stopwatch` in the debug test, wall-clock includes process startup/model load
-          which the original number's methodology isn't documented precisely enough to match) —
-          recorded honestly as non-comparable rather than forced into a win/loss/flat bucket.
-        - **CosyVoice3's `FlowEncoder` fix (`SpkEmbedAffine`)**: NOT separately isolated — it's a
-          tiny 192→80 affine layer called once per generation (not per-frame), expected negligible
-          regardless, and isolating it from Pass C's already-measured caching fix in the same file
-          area would need an extra revert-and-remeasure cycle for a component this small. Reasoned
-          conclusion recorded, not measured separately — flagged honestly as such, not silently
-          assumed zero-impact.
-        - **RVC (3 files): new coverage** — no pre-existing baseline in `PerformanceLeague.md` at
-          all (this pipeline had never been benchmarked before), so recorded as a first-ever
-          timing (105.355s combined across 3 real tests) rather than a before/after comparison.
-        - **Net summary**: 6 real, confirmed wins (2 of them large — PersonaPlex 8.1x, NemotronAsr
-          5.1x), 2 flat/no-real-change, 1 genuinely non-comparable (methodology), 1 reasoned-not-
-          measured (negligible expected impact), 1 new-coverage-only. This is the honest,
-          complete picture across all affected pipelines — exactly the audit the user asked for
-          after A.4 was closed too early the first time.
-- [x] A.5 (done 2026-10-01: both reviewed, neither is the Voxtral bug, no change made) `MossTtsGlobalTransformer.cs`:
-      every linear already goes through `SimdKernels.MatVecF32` and LayerNorm through `SimdKernels.LayerNorm`;
-      leftover inefficiencies are not scalar matvecs (`LinearBatched` nests `Parallel.For` over tokens around an
-      already-parallel matvec instead of the batched F32 GEMM; the attention context is accumulated with a scalar
-      headDim loop), worth doing only if MOSS-TTS gets a League row. `MeloRelativeEncoder.LinearVec` is the
-      speaker-embedding projection, run once per encoder/flow layer per utterance (~50k MACs each), already
-      parallelized; a transposed-weight kernel would not move any measured number. Original item text:
-      manually review `MossTtsGlobalTransformer.cs` (flagged CHECK-MANUALLY, not
-      yet classified) and separately design a correct fix for `MeloRelativeEncoder.cs`'s
-      transposed-weight case (needs either a transposing `MatVecF32` variant or a one-time weight
-      transpose at load time — verify either approach against a real golden reference before
-      trusting it, this layout mismatch is exactly the kind of subtle thing that produces
-      confidently-wrong output if rushed).
+## Phase 5 — Sweep remainder — CLOSED 2026-10-01; moved to [done/perf-sweep-plan-closed-phases.md](../done/perf-sweep-plan-closed-phases.md)
 
 ---
 
@@ -283,27 +146,7 @@ a real, working ASR pipeline, worse than the Whisper Tiny row already queued in 
       (do not regress it) + re-benchmark (3+ runs, this pipeline is fast enough to afford more
       samples than the slow TTS/diffusion pipelines elsewhere in this doc) + record.
 
-## Phase 16 — RWKV6/RWKV7 prefill — DONE 2026-10-02 (0.21x -> ~0.45x prefill, decode 0.94-0.95x; rest is Q8_0 GEMM)
-
-Added 2026-10-01 with the `rwkv6`/`rwkv7` admissions (code: `RwkvForwardPassBase`, `Rwkv6ForwardPass`,
-`Rwkv7ForwardPass`). Prefill already runs batched: one matmul per projection over chunks of up to 256
-tokens, with only the WKV recurrence stepping token by token. That took RWKV7 Q8_0 from 17.5-19.8 to
-38.7-39.7 t/s over 605 tokens (same-day A/B, idle machine), and the fused Q8_0 4-input dot (66daf1c2)
-to 60-61 t/s over 580 tokens. llama.cpp pp512 is 185 t/s (16 thr). Measured
-before profiling: the int8 prefill tier (`STINGRAY_CPU_PREFILL_Q8=1`) and BLAS on/off did not help
-(29-32 t/s, those two runs under background load, so only indicative).
-
-- [x] 16.1 (done 2026-10-02) 587-token RWKV7 prefill: matmuls 60%, the other 40% (4.0 s) a single-threaded scalar
-      per-token block, dominated by the WKV7 state update (~12M MACs/token). Original text: per-stage profile of a ~600-token prefill: batched matmuls vs the per-token WKV step, group
-      norm, lerps and LayerNorms (all scalar loops today). An env-gated stage timer is enough; the
-      2026-10-01 attempt was abandoned because another process was loading the CPU.
-- [x] 16.2 (done 2026-10-02, ad0c3851) Heads now run in parallel (each walks the chunk's tokens through its own
-      state slice) with AVX2 head steps, and the element-wise ops use TensorPrimitives: non-matmul time 4.0 -> 0.7 s.
-      CLI A/B: RWKV7 prefill 56.6-57.1 -> 69.9-80.3 t/s, decode 18.7-19.2 -> 22.1-22.3 (0.95x); RWKV6 prefill
-      63.6-64.5 -> 78.3-79.1, decode 19.4-19.8 -> 21.5-21.9 (0.94x). Parity unchanged or better. What is left
-      (~0.45x prefill) is ~89% Q8_0 GEMM, i.e. the same kernel-throughput gap as small Q8_0 transformers (5.2).
-      Original text: fix the biggest stage, re-verify `Rwkv6/Rwkv7GreedyParityTests` and `RwkvRecurrentStateTests`,
-      re-benchmark (3 alternated runs vs the current build), update the League rows.
+## Phase 16 — RWKV6/RWKV7 prefill — CLOSED 2026-10-02 (0.21x -> ~0.45x prefill, decode 0.94-0.95x; rest is Q8_0 GEMM); moved to [done/perf-sweep-plan-closed-phases.md](../done/perf-sweep-plan-closed-phases.md)
 
 ## Phase 10 — Vision-Language Model decode weakness (~0.48x pattern, worst point 0.41x prefill)
 
@@ -321,9 +164,67 @@ doc as "worth another look" and not yet investigated.
       whether something in how these checkpoints are loaded/dispatched (e.g. a shared
       VLM-specific code path even in text-only mode) differs from a "pure" LLM of the same
       backbone size, rather than assuming it's per-backbone-architecture coincidence.
-- [ ] 10.2 Profile `Granite-Vision-3.2-2B Q3_K_S` decode (worst prefill ratio, 0.41x) with
-      `STINGRAY_PROFILE_DECODE=1` for a real trunk breakdown, same methodology as Phase 3.1/7.1.
-- [ ] 10.3 Separately investigate the Granite-Vision-3.2-2B Vulkan decode regression (4.1 vs
+      **2026-10-01/02 re-measure:** the shared ~0.48x was mostly the Q4_K decode scheduling issue
+      fixed in Phase 7; InternVL3-2B and Granite-4.0-3B-Vision now decode at ~0.75-0.79x.
+      Granite-Vision-3.2-2B stayed at ~0.47x because every projection is Q3_K (see 10.2).
+- [x] 10.2 `Granite-Vision-3.2-2B Q3_K_S`: **DONE 2026-10-02.** Q3_K matvec measured at only
+      7-21 GB/s on the real weights (scratch harness, all 40 layers' tensors per kind), against
+      30+ GB/s for Q4_K. Not scheduling (Q3_K already balances per row); it was the kernel:
+      `DotQ3K_Q8K_Avx2` unpacked scales scalar-wise into bounds-checked spans and picked its
+      shifts through `switch`es inside loops the JIT does not unroll. Rewritten in the shape of
+      ggml's `ggml_vec_dot_q3_K_q8_K` AVX2 path (SIMD scale unpack, pshufb scale broadcast, high
+      bit as `ql·q8 - 4·(1-h)·q8`, unrolled constant shifts).
+      - Matvec (tiered JIT off, 3 interleaved rounds): attn 6.6-7.1 -> 4.4-4.7 ms, ffn_up 22-27
+        -> 15 ms, ffn_down 24-26 -> 18 ms, gate+up dual 43-44 -> 29 ms. Caveat found later the
+        same day: tiering-off inflates every `HalfToFloat` call (see Phase 1), so these absolute
+        numbers are pessimistic; the end-to-end CLI A/B below ran with the normal JIT.
+      - CLI, interleaved old/new builds, 3 runs each, 620-token prompt: prefill 20.3 -> 42.2 t/s
+        (0.25x -> **0.51x** of llama-bench pp512 81.95), decode 16.9 -> 25.9 t/s (0.48x ->
+        **0.74x** of tg64 34.95; ~0.82x on a 26-token prompt). PerformanceLeague rows added.
+      - Numerics: not bit-identical to the old kernel. The block integer is the same but spread
+        over the i32 lanes as ggml spreads it, so the per-lane rounding changes. Against the
+        integer-exact scalar reference on 27,686 real rows: mean rel error 3.2e-7 (old 8.3e-7),
+        max 1.1e-4 (old 3.9e-4, both on near-zero rows). wiki.test.raw `[1024,+)` PPL moved
+        602.9 -> 544.4 vs llama-perplexity 617.1 ± 75.5: this checkpoint is ~PPL 600 as a text LM
+        in llama.cpp too, so float-level changes swing it; the kernel-level check is the evidence.
+        ForwardPass.Fast 749/749 pass.
+      - Remaining gap: decode ~0.74-0.82x, prefill 0.51x (Q3_K has an int8 batched path, off by
+        default with the rest of int8 prefill, a policy decision).
+      - **Evidence for the int8-prefill policy decision (user's call, default unchanged),
+        2026-10-02.** wiki.test.raw, `stingray perplexity --batched -g 0 -c 2048`, `[1024,+)`
+        bucket vs `llama-perplexity -c 2048 --chunks 1`; CLI prefill 2 runs each, ~600-token
+        prompt:
+
+        | Model | llama.cpp PPL | F32 prefill | int8 prefill | Prefill t/s F32 -> int8 |
+        |---|---|---|---|---|
+        | Qwen2.5-0.5B Q4_K_M | 12.0055 | 11.9702 | 11.9693 | 137 -> 309 (2.2x) |
+        | SmolLM2-1.7B Q4_K_M | 6.9414 | 6.9437 (+0.03%) | 6.9891 (+0.69%) | 77.5 -> 227 (2.9x) |
+        | Granite-Vision-3.2-2B Q3_K_S | 617 (degenerate LM) | 546.8 | 605.7 | 40.7 -> 43.8 |
+
+        Speed: 2.2-2.9x prefill on Q4_K. Quality: neutral on Qwen2.5-0.5B, 0.69% further from
+        llama.cpp on SmolLM2-1.7B (F32 matches llama.cpp to 0.03%). Q3_K gains nothing because
+        the `DotQ3K_Q8KS_*` kernels still had the pre-fix switch-in-loop shape (next item).
+      - **Done 2026-10-02 (0298f88e): the `DotQ3K_Q8KS_*` (1/2/4/8-input) int8-prefill kernels**
+        got the same treatment, kept bit-identical: SIMD scale unpack, running `qs >> 2` and a
+        doubling hmask bit in place of the switches, `Q3KAccumInput` unchanged. Real-weight
+        64-token batched matmul hash matches HEAD; ffn_up 433-490 -> 381-429 ms, ffn_down 439-459
+        -> 394-411 ms (~10%). The per-input, per-group lane-0 correction + cvt + FMA chain now
+        dominates; going further means changing that chain's lane layout (not bit-identical).
+      - **Tried and reverted 2026-10-02: row pairs for Q3_K.** (a) `DotQ3K_Q8K_2Row`, two rows
+        interleaved per block sharing the Q8_K loads, bit-identical to single dots: attn 4.7-5.7 ->
+        6.0-6.3 ms, ffn_down 19.3-20.3 -> 20.9-21.2 ms (slower). (b) Pair scheduling only (two
+        sequential single dots per `Parallel.For` iteration): attn 4.3-5.0 -> 5.1-5.4 ms, ffn_down
+        18.2-19.0 -> 19.6 ms (slower). Tiered JIT off, 3 interleaved rounds each. Unlike Q4_K, the
+        Q3_K dot is compute-bound (heavier unpack); two rows' worth of live vectors likely spills
+        the 16 YMM registers, and per-row dynamic balancing is already the right granularity.
+- [x] 10.3 **Resolved on re-measure 2026-10-02:** `-g 99 --backend vulkan`, 620-token prompt,
+      iGPU (Radeon 5700G): Granite-Vision-3.2-2B decode **12.1 t/s** (was 4.1), prefill 12.8 t/s;
+      Granite-4.0-3B-Vision on the same run 10.1 t/s decode, 42.9 prefill. The 3.2-specific
+      anomaly is gone (now in line with the 3B checkpoint); some change since 2026-09-11 fixed it,
+      not bisected. Vulkan still trails CPU here (12.1 vs 25.9 t/s), which on this iGPU-only
+      machine is not evidence about discrete GPUs (CLAUDE.md rule 13). Q3_K Vulkan prefill (12.8)
+      vs Q4_K (42.9) may deserve its own look on real GPU hardware. Original item:
+      Separately investigate the Granite-Vision-3.2-2B Vulkan decode regression (4.1 vs
       17.1 t/s CPU) — real, flagged, unexplained gap distinct from the usual "Vulkan trails CPU on
       prefill only" pattern seen everywhere else in this doc.
 - [ ] 10.4 Implement + verify (real image-understanding sanity check if touching anything
@@ -415,6 +316,29 @@ inference"), moving to Phase 2 now rather than continuing to grind marginal gain
             `ISpeechToTextPipeline` implementations (not just Voxtral) into a runnable command —
             worth a real look at `src/OpenTail.Stingray.Server*` before assuming one needs to be
             built from scratch, but out of scope for finishing 1.4's Voxtral-specific goal.
+- **2026-10-02 re-measure + three bit-identical wins** (stale header: the League already had
+  0.46x from 2026-09-17). Stage profile on a.wav (5.95s) showed the audio encoder at 53% of
+  inference: every encoder linear was one full Q8_0 matvec per frame (weights re-streamed per
+  frame). Fixed with `Q8_0BatchedLinear` (Cpu; weight-stationary, fused 4-input dot) for the
+  encoder (21a2afdb) and the text-decoder prefill incl. LM head (ece9cb49); encoder attention
+  vectorized in scalar order + RoPE table (34b304c4). Every step verified bit-identical (encoder
+  and prefill-logits hashes unchanged). a.wav: encoder 12.8 -> 5.4-5.9s, prefill 3.3 -> 1.1s,
+  inference 24.3 -> 14.7-15.3s. **14.07s `sample_16k.wav`, side by side with `audiocpp_cli
+  --threads 8` the same day: 30.1s vs 24.1-25.0s, ~0.81x** (identical transcripts). Remaining:
+  encoder 10.0-10.7s and 185 decode steps at ~100 ms each (18.3-18.9s). Peak RAM 13.6 GB vs
+  audio.cpp 9.7 GB: the GGUF path copies every Q8_0 weight out of the mmap (`GetRawBytes`) and
+  keeps an F32 embedding table plus a re-quantized copy.
+  - Stage comparison vs audio.cpp's own `--log` timings (same clip): encoder 6.07s vs ours
+    10.0-10.7s; prefill 0.83 vs 1.1s; 186 decode steps 17.95 vs 18.3-18.9s (decode at parity).
+    NativeAOT-published build: 29.9s, same as the JIT build (encoder 9.8s), same output hashes.
+  - Remaining encoder gap is GEMM throughput: `Q8_0BatchedLinear` measures 160-206 G MAC/s
+    (5120x1280 / 1280x5120 / 2048x1280 at 899 rows), so the 32 layers' linears alone are ~5.1s.
+    Tried and reverted: frames-outer / 32-row tiles (no gain, prefill slower). GC is not it (one
+    gen2, ~250 ms pause total). Next lever: a register-tiled Q8_0 GEMM micro-kernel.
+  - Benchmark trap found on the way: scratch harnesses run with `DOTNET_TieredCompilation=0`
+    make CoreLib's `(float)Half` cast (every quantized kernel's block-scale conversion) hit an
+    AVX/SSE transition penalty, ~62 ns per Q8_0 block vs 2.3 ns with tiering on. Production is
+    unaffected (`IlcInstructionSet=native` NativeAOT). Benchmark with the default JIT.
 - [ ] 1.5 Reduce per-call allocations in `LinearNoBias`/`RmsNormRow` (fresh `float[]` every call)
       by reusing preallocated scratch buffers, matching `HybridGdnForwardPass`'s pointer-scratch
       pattern. Only worth it once 1.2-1.4 land and allocation becomes the visible bottleneck.
@@ -526,6 +450,23 @@ ones.
       (Voxtral's approach) isn't available for this model class.
 - [ ] 9.3 Implement + verify + re-benchmark + record. If ACE-Step Turbo plateaus or has no quick
       win, move to Stable Audio 3 Medium (96.75x) as the next-worst using the same approach.
+      - **2026-10-02, Stable Audio 3 Medium.** Re-measured (4s, 12 steps, CFG 6, seed 1234; scratch
+        harness hashing the PCM): CPU 66.3s, Vulkan 48.7s (League had 263s / 60.65s from 09-17/18).
+        Stage timers: conditioning 1.6s, DiT steps 51.4s CPU / 33.0s Vulkan, **VAE decode 13.0-13.5s
+        on both backends** (it always runs on CPU). Inside the VAE (seq 1853): attention 7.9s, FF
+        3.8s, mapping conv 1.2s, norms 0.5s: everything but the GEMM linears was single-threaded.
+        Fixed in 94288c40 (parallel over rows/heads/positions, arithmetic unchanged): VAE 6.0s,
+        totals **CPU 59.0s (14.76x RTF), Vulkan 40.5s (10.12x)**, PCM hashes unchanged on both.
+        Next: the CPU DiT steps (51.4s, 24 passes); the VAE's remaining time is its F32 linears.
+      - **CPU DiT, same day:** per-block timers over the 24 passes: self-attention 14.4s,
+        **cross-attention 19.6s**, FF 14.5s (seq 173, nCond 257). Cross-attention recomputed each
+        layer's `to_kv` on the constant conditioning every pass; a834180d caches it per embedding
+        (bounded to the 2 per generation): interleaved A/B 59.2/59.3s -> 50.3/54.7s, PCM hash
+        unchanged. Then aa9419c5 vectorized the scalar P.V loop in
+        `StableAudioAttentionKernels.DotProductAttention` in scalar order: 56.8/49.7s -> 44.9/44.2s,
+        hash unchanged. **Stable Audio 3 Medium CPU today: 66.3s -> ~44.5s (11.1x RTF); Vulkan 48.7s
+        -> 40.5s.** What remains on both backends is F32 GEMM time in the DiT/VAE linears (a shared
+        GEMM-kernel project, not a Stable Audio item); moving on to the next phase.
 
 ## Phase 3 — Small-model decode weakness (SmolLM2/Qwen2.5, 0.125x-0.31x at 135M-500M)
 
@@ -573,6 +514,27 @@ ones.
         decode step may have caused pathological thread-pool interaction, not a simple overhead
         tradeoff. **This needs per-function understanding before any retry, not another blanket
         threshold change** — a real, scoped follow-up, not something to attempt again casually.
+      - **2026-10-02 re-measure** (128 decode tokens, single runs; llama-bench tg128 at 8 threads):
+        SmolLM2-135M 125 t/s at our default 16 threads / 149 at 8 / 161 at 4 / 72 at 1 vs llama
+        281 (0.45x default); SmolLM2-360M 95 / 97 / 81 / 30 vs 127 (0.75x); Qwen2.5-0.5B 75 / 76 /
+        66 / 22 vs 97 (0.77x). Single-threaded is now far slower everywhere (3.2's finding is
+        stale); **8 threads were never worse than 16** on these three. Decode profile, 135M:
+        QKV ~49 us and output projection ~49 us per layer for 576x576-class Q5_0 matrices (most
+        of this model is Q5_0, `ffn_down` Q6_K), i.e. per-call dispatch overhead.
+      - **Tried and reverted 2026-10-02**: `MatVecQ5_0` rows in dynamically balanced chunks of 8
+        (bit-identical). Interleaved x2: 135M mixed (145.7/127.7 -> 142.3/154.9), 360M worse
+        (94.1/88.5 -> 74.2/73.6), Qwen2.5-0.5B worse (75.9/74.9 -> 65.2/64.6).
+      - **Done 2026-10-02 (fcfb5c57): default kernel threads = physical cores** (new
+        `CpuTopology`; was `Environment.ProcessorCount`). Interleaved 16 vs 8 x2, ~600-token
+        prompt + 48 gen: SmolLM2-135M decode 151/145 -> 162/154; Qwen2.5-0.5B prefill 145/148 ->
+        154/158, decode 71/71 -> 73/74; Granite-Vision-3.2 prefill 42/42 -> 45/46; SmolLM2-1.7B
+        prefill 81/82 -> 86/84; Mistral-7B tie. Never slower; outputs unchanged (no arithmetic
+        change). Remaining small-model gap (135M ~0.55x, 0.5B ~0.75x vs llama-bench) is per-call
+        overhead on tiny matvecs, which per-kernel chunking did not fix (see above).
+      - **Follow-up 9e911dba**: the routed-MoE decode and batched-MoE prefill sweeps had their own
+        `ParallelOptions` pinned to `Environment.ProcessorCount`, bypassing the new default. Now
+        `SimdKernels.CpuThreads`. Decode, interleaved x2: OLMoE-1B-7B 36.4 -> 37.1, LFM2-8B-A1B
+        31.8 -> 33.5, Qwen3-Coder-30B-A3B 14.6 -> 15.2 t/s; prefill equal or better.
       - **Lesson for this sweep**: the direct `STINGRAY_CPU_THREADS=1` A/B (3.2's original
         measurement) is still a valid, true finding — thread-wake overhead really is a net loss at
         this specific tiny shape when EVERYTHING is single-threaded together. It does NOT license
@@ -607,10 +569,32 @@ ones.
       pass. **Phase 2 plateau declared 2026-09-12**: this is a real, already-well-optimized
       256-expert-top-8 MoE running one token at a time; no unexploited kernel-level gap found by
       inspection or profiling. Moving to the next-worst unswept row per the sweep's own rule.
+- **2026-10-02, 9B size point (Ornith-1.0-9B Q4_K_M) re-measured:** decode 6.8 vs llama-bench
+  7.24 t/s (**0.94x**, no longer a decode problem), prefill 11.2 vs 48.1 t/s (0.23x). Cause:
+  `PrefillChunked` batched the GDN/attention projections but ran the **dense FFN per token**.
+  a61f53ab batches it (`DenseFfnChunked` via `BatchedProjection`): prefill **33.0 t/s (0.69x)**,
+  greedy continuation identical, last-token logits vs per-token argmax-equal, cosine 0.999272
+  (pre-change chunked 0.999314; note the existing 0.9995 threshold in
+  `HybridGdnChunkedPrefill_MatchesSequentialPrefill` was set on Qwen3.6-35B, and the unchanged
+  chunked path already measures 0.999314 on Ornith). MoE hybrid models (35B-A3B) already had
+  `MoeFfnBatchedPrefill` and are unaffected. The dense 27B checkpoint on hand (Qwen3.8-27B
+  UD-Q3_K_XL) shows no change (2.1 t/s prefill before and after, identical text): its prefill
+  equals its decode rate because `Prefill` skips the chunked path for models with an MTP head
+  (`_hasMtp`; chunked GDN is not bit-exact and flipped the Qwen3.6-MTP llama.cpp parity
+  knife-edge). Enabling chunked prefill for MTP models is a numerics decision for the user, not
+  a perf item; it is the remaining 27B prefill lever (0.07x row).
 - [ ] 2.4 Repeat 2.1-2.3 for the 9B (Ornith-1.0-9B) and 27B (Qwen3.6-27B Q3_K_XL) size points if
       a 35B fix is found and generalizes; record each in `PerformanceLeague.md`.
 
 ## Phase 6 — Gemma family (0.12x-0.13x prefill, real "batched-prefill-missing" architectural gap)
+
+**2026-10-02: stale, effectively closed.** `ForwardPass.PrefillDispatch` has routed per-layer-
+head-dim models (Gemma 4) through the batched `PrefillCore` since 2026-09-16 (per-layer dims, KV
+heads, KV sharing, k_eq_v, V norm, sliding window). Re-measured vs llama-bench today: Gemma-4-12B
+prefill 0.39x / decode 0.84x, Gemma-4-E4B 0.33x / 0.85x, Gemma-3-4B 0.39x / 0.85x. The remaining
+prefill gap is the general F32-prefill default: with `STINGRAY_CPU_PREFILL_Q8=1` Gemma-3-4B is
+107.9 t/s (0.95x) and Gemma-4-12B 36.4 t/s (0.97x). That default is the user's decision (10.2's
+evidence table); no Gemma-specific work remains here.
 
 Flagship Google model family, real and severe: `PerformanceLeague.md`'s Gemma section notes
 `prefill:decode still ~1.0x` for these rows — i.e. prefill and decode take about the same t/s,
