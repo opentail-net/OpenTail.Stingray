@@ -7988,19 +7988,31 @@ public static unsafe class SimdKernels
         return acc;
     }
 
-    private static float DotQ3K_Q8KS_Avx2(byte* row, byte* scratch, int numBlocks)
+    /// <summary>The 16 6-bit Q3_K scales of block <paramref name="x"/> (ggml aux[] pattern), minus 32,
+    /// stored to <paramref name="scales"/>. Same values as the scalar unpack.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static void Q3KScalesMinus32(byte* x, sbyte* scales)
     {
         const uint kmask1 = 0x03030303;
         const uint kmask2 = 0x0f0f0f0f;
+        uint a0 = *(uint*)(x + 96), a1 = *(uint*)(x + 100), a2 = *(uint*)(x + 104);
+        (Vector128.Create(
+            (a0 & kmask2) | (((a2 >> 0) & kmask1) << 4),
+            (a1 & kmask2) | (((a2 >> 2) & kmask1) << 4),
+            ((a0 >> 4) & kmask2) | (((a2 >> 4) & kmask1) << 4),
+            ((a1 >> 4) & kmask2) | (((a2 >> 6) & kmask1) << 4)).AsSByte() - Vector128.Create((sbyte)32)).Store(scales);
+    }
+
+    private static float DotQ3K_Q8KS_Avx2(byte* row, byte* scratch, int numBlocks)
+    {
         float* dArr = (float*)scratch;
         sbyte* qsArr = (sbyte*)(scratch + numBlocks * 32);
         short* bsumsArr = (short*)(scratch + numBlocks * 32 + numBlocks * 256);
 
         var m3 = Vector256.Create((byte)0x03);
-        var m1 = Vector256.Create((byte)0x01);
         var acc = Vector256<float>.Zero;
-        Span<uint> aux = stackalloc uint[4];
-        Span<sbyte> scales = stackalloc sbyte[16];
+        sbyte* scales = stackalloc sbyte[16];
+        var four = Vector256.Create((byte)4);
 
         for (int b = 0; b < numBlocks; b++)
         {
@@ -8008,56 +8020,27 @@ public static unsafe class SimdKernels
             float dAll = HalfToFloat(x[108], x[109]);
             float* dSub = dArr + b * 8;
 
-            aux[0] = *(uint*)(x + 96);
-            aux[1] = *(uint*)(x + 100);
-            uint tmp = *(uint*)(x + 104);
-            aux[2] = ((aux[0] >> 4) & kmask2) | (((tmp >> 4) & kmask1) << 4);
-            aux[3] = ((aux[1] >> 4) & kmask2) | (((tmp >> 6) & kmask1) << 4);
-            aux[0] = (aux[0] & kmask2) | (((tmp >> 0) & kmask1) << 4);
-            aux[1] = (aux[1] & kmask2) | (((tmp >> 2) & kmask1) << 4);
-            for (int i = 0; i < 4; i++)
-            {
-                scales[i * 4 + 0] = (sbyte)((byte)(aux[i] >> 0) - 32);
-                scales[i * 4 + 1] = (sbyte)((byte)(aux[i] >> 8) - 32);
-                scales[i * 4 + 2] = (sbyte)((byte)(aux[i] >> 16) - 32);
-                scales[i * 4 + 3] = (sbyte)((byte)(aux[i] >> 24) - 32);
-            }
+            Q3KScalesMinus32(x, scales);
 
             short* bsums = bsumsArr + b * 16;
             var hm_v = Vector256.LoadUnsafe(ref *(x + 0));
+            var mbit = Vector256.Create((byte)1);
             sbyte* q8 = qsArr + b * 256;
             byte* qs = x + 32;
 
             for (int half = 0; half < 2; half++)
             {
-                var qs_v = Vector256.LoadUnsafe(ref *(qs + half * 32));
+                var qsCur = Vector256.LoadUnsafe(ref *(qs + half * 32));
 
                 for (int j = 0; j < 4; j++)
                 {
                     int sub = half * 4 + j;
 
-                    var qloShifted = j switch
-                    {
-                        0 => qs_v,
-                        1 => Avx2.ShiftRightLogical(qs_v.AsInt16(), 2).AsByte(),
-                        2 => Avx2.ShiftRightLogical(qs_v.AsInt16(), 4).AsByte(),
-                        _ => Avx2.ShiftRightLogical(qs_v.AsInt16(), 6).AsByte(),
-                    };
-                    var qlo = Avx2.And(qloShifted, m3);
-
-                    var hmShifted = (half, j) switch
-                    {
-                        (0, 0) => hm_v,
-                        (0, 1) => Avx2.ShiftRightLogical(hm_v.AsInt16(), 1).AsByte(),
-                        (0, 2) => Avx2.ShiftRightLogical(hm_v.AsInt16(), 2).AsByte(),
-                        (0, 3) => Avx2.ShiftRightLogical(hm_v.AsInt16(), 3).AsByte(),
-                        (1, 0) => Avx2.ShiftRightLogical(hm_v.AsInt16(), 4).AsByte(),
-                        (1, 1) => Avx2.ShiftRightLogical(hm_v.AsInt16(), 5).AsByte(),
-                        (1, 2) => Avx2.ShiftRightLogical(hm_v.AsInt16(), 6).AsByte(),
-                        _      => Avx2.ShiftRightLogical(hm_v.AsInt16(), 7).AsByte(),
-                    };
-                    var hbit = Avx2.ShiftLeftLogical(
-                        Avx2.And(hmShifted, m1).AsInt16(), 2).AsByte();
+                    // u3 = (qs >> 2j) & 3 | 4·hbit, from running state (no per-j switch on the shift).
+                    var qlo = Avx2.And(qsCur, m3);
+                    qsCur = Avx2.ShiftRightLogical(qsCur.AsInt16(), 2).AsByte();
+                    var hbit = Avx2.And(Avx2.CompareEqual(Avx2.And(hm_v, mbit), mbit), four);
+                    mbit = Avx2.Add(mbit, mbit);
                     var q3u = Avx2.Or(qlo, hbit);
 
                     var q8_v = Vector256.LoadUnsafe(ref *(q8 + half * 128 + j * 32)).AsSByte();
@@ -8111,8 +8094,6 @@ public static unsafe class SimdKernels
     private static void DotQ3K_Q8KS_2In_Avx2(byte* row, byte* scratch1, byte* scratch2,
                                              int numBlocks, out float sum1, out float sum2)
     {
-        const uint kmask1 = 0x03030303;
-        const uint kmask2 = 0x0f0f0f0f;
         float* dArr1 = (float*)scratch1;
         sbyte* qsArr1 = (sbyte*)(scratch1 + numBlocks * 32);
         short* bsumsArr1 = (short*)(scratch1 + numBlocks * 32 + numBlocks * 256);
@@ -8121,11 +8102,10 @@ public static unsafe class SimdKernels
         short* bsumsArr2 = (short*)(scratch2 + numBlocks * 32 + numBlocks * 256);
 
         var m3 = Vector256.Create((byte)0x03);
-        var m1 = Vector256.Create((byte)0x01);
         var acc1 = Vector256<float>.Zero;
         var acc2 = Vector256<float>.Zero;
-        Span<uint> aux = stackalloc uint[4];
-        Span<sbyte> scales = stackalloc sbyte[16];
+        sbyte* scales = stackalloc sbyte[16];
+        var four = Vector256.Create((byte)4);
 
         for (int b = 0; b < numBlocks; b++)
         {
@@ -8135,58 +8115,29 @@ public static unsafe class SimdKernels
             float* dSub2 = dArr2 + b * 8;
 
             // Scales decode (shared between both inputs).
-            aux[0] = *(uint*)(x + 96);
-            aux[1] = *(uint*)(x + 100);
-            uint tmp = *(uint*)(x + 104);
-            aux[2] = ((aux[0] >> 4) & kmask2) | (((tmp >> 4) & kmask1) << 4);
-            aux[3] = ((aux[1] >> 4) & kmask2) | (((tmp >> 6) & kmask1) << 4);
-            aux[0] = (aux[0] & kmask2) | (((tmp >> 0) & kmask1) << 4);
-            aux[1] = (aux[1] & kmask2) | (((tmp >> 2) & kmask1) << 4);
-            for (int i = 0; i < 4; i++)
-            {
-                scales[i * 4 + 0] = (sbyte)((byte)(aux[i] >> 0) - 32);
-                scales[i * 4 + 1] = (sbyte)((byte)(aux[i] >> 8) - 32);
-                scales[i * 4 + 2] = (sbyte)((byte)(aux[i] >> 16) - 32);
-                scales[i * 4 + 3] = (sbyte)((byte)(aux[i] >> 24) - 32);
-            }
+            Q3KScalesMinus32(x, scales);
 
             short* bsums1 = bsumsArr1 + b * 16;
             short* bsums2 = bsumsArr2 + b * 16;
             var hm_v = Vector256.LoadUnsafe(ref *(x + 0));
+            var mbit = Vector256.Create((byte)1);
             sbyte* q8a = qsArr1 + b * 256;
             sbyte* q8b = qsArr2 + b * 256;
             byte* qs = x + 32;
 
             for (int half = 0; half < 2; half++)
             {
-                var qs_v = Vector256.LoadUnsafe(ref *(qs + half * 32));
+                var qsCur = Vector256.LoadUnsafe(ref *(qs + half * 32));
 
                 for (int j = 0; j < 4; j++)
                 {
                     int sub = half * 4 + j;
 
-                    var qloShifted = j switch
-                    {
-                        0 => qs_v,
-                        1 => Avx2.ShiftRightLogical(qs_v.AsInt16(), 2).AsByte(),
-                        2 => Avx2.ShiftRightLogical(qs_v.AsInt16(), 4).AsByte(),
-                        _ => Avx2.ShiftRightLogical(qs_v.AsInt16(), 6).AsByte(),
-                    };
-                    var qlo = Avx2.And(qloShifted, m3);
-
-                    var hmShifted = (half, j) switch
-                    {
-                        (0, 0) => hm_v,
-                        (0, 1) => Avx2.ShiftRightLogical(hm_v.AsInt16(), 1).AsByte(),
-                        (0, 2) => Avx2.ShiftRightLogical(hm_v.AsInt16(), 2).AsByte(),
-                        (0, 3) => Avx2.ShiftRightLogical(hm_v.AsInt16(), 3).AsByte(),
-                        (1, 0) => Avx2.ShiftRightLogical(hm_v.AsInt16(), 4).AsByte(),
-                        (1, 1) => Avx2.ShiftRightLogical(hm_v.AsInt16(), 5).AsByte(),
-                        (1, 2) => Avx2.ShiftRightLogical(hm_v.AsInt16(), 6).AsByte(),
-                        _      => Avx2.ShiftRightLogical(hm_v.AsInt16(), 7).AsByte(),
-                    };
-                    var hbit = Avx2.ShiftLeftLogical(
-                        Avx2.And(hmShifted, m1).AsInt16(), 2).AsByte();
+                    // u3 = (qs >> 2j) & 3 | 4·hbit, from running state (no per-j switch on the shift).
+                    var qlo = Avx2.And(qsCur, m3);
+                    qsCur = Avx2.ShiftRightLogical(qsCur.AsInt16(), 2).AsByte();
+                    var hbit = Avx2.And(Avx2.CompareEqual(Avx2.And(hm_v, mbit), mbit), four);
+                    mbit = Avx2.Add(mbit, mbit);
                     var q3u = Avx2.Or(qlo, hbit);   // shared weight quants
 
                     int isc = half * 8 + 2 * j;
@@ -8257,8 +8208,6 @@ public static unsafe class SimdKernels
         byte* scratch0, byte* scratch1, byte* scratch2, byte* scratch3, int numBlocks,
         out float sum0, out float sum1, out float sum2, out float sum3)
     {
-        const uint kmask1 = 0x03030303;
-        const uint kmask2 = 0x0f0f0f0f;
         float* dArr0 = (float*)scratch0;
         sbyte* qsArr0 = (sbyte*)(scratch0 + numBlocks * 32);
         short* bsumsArr0 = (short*)(scratch0 + numBlocks * 32 + numBlocks * 256);
@@ -8273,13 +8222,12 @@ public static unsafe class SimdKernels
         short* bsumsArr3 = (short*)(scratch3 + numBlocks * 32 + numBlocks * 256);
 
         var m3 = Vector256.Create((byte)0x03);
-        var m1 = Vector256.Create((byte)0x01);
         var acc0 = Vector256<float>.Zero;
         var acc1 = Vector256<float>.Zero;
         var acc2 = Vector256<float>.Zero;
         var acc3 = Vector256<float>.Zero;
-        Span<uint> aux = stackalloc uint[4];
-        Span<sbyte> scales = stackalloc sbyte[16];
+        sbyte* scales = stackalloc sbyte[16];
+        var four = Vector256.Create((byte)4);
 
         for (int b = 0; b < numBlocks; b++)
         {
@@ -8291,26 +8239,14 @@ public static unsafe class SimdKernels
             float* dSub3 = dArr3 + b * 8;
 
             // Scales decode (shared between all four inputs).
-            aux[0] = *(uint*)(x + 96);
-            aux[1] = *(uint*)(x + 100);
-            uint tmp = *(uint*)(x + 104);
-            aux[2] = ((aux[0] >> 4) & kmask2) | (((tmp >> 4) & kmask1) << 4);
-            aux[3] = ((aux[1] >> 4) & kmask2) | (((tmp >> 6) & kmask1) << 4);
-            aux[0] = (aux[0] & kmask2) | (((tmp >> 0) & kmask1) << 4);
-            aux[1] = (aux[1] & kmask2) | (((tmp >> 2) & kmask1) << 4);
-            for (int i = 0; i < 4; i++)
-            {
-                scales[i * 4 + 0] = (sbyte)((byte)(aux[i] >> 0) - 32);
-                scales[i * 4 + 1] = (sbyte)((byte)(aux[i] >> 8) - 32);
-                scales[i * 4 + 2] = (sbyte)((byte)(aux[i] >> 16) - 32);
-                scales[i * 4 + 3] = (sbyte)((byte)(aux[i] >> 24) - 32);
-            }
+            Q3KScalesMinus32(x, scales);
 
             short* bsums0 = bsumsArr0 + b * 16;
             short* bsums1 = bsumsArr1 + b * 16;
             short* bsums2 = bsumsArr2 + b * 16;
             short* bsums3 = bsumsArr3 + b * 16;
             var hm_v = Vector256.LoadUnsafe(ref *(x + 0));
+            var mbit = Vector256.Create((byte)1);
             sbyte* q8_0 = qsArr0 + b * 256;
             sbyte* q8_1 = qsArr1 + b * 256;
             sbyte* q8_2 = qsArr2 + b * 256;
@@ -8319,34 +8255,17 @@ public static unsafe class SimdKernels
 
             for (int half = 0; half < 2; half++)
             {
-                var qs_v = Vector256.LoadUnsafe(ref *(qs + half * 32));
+                var qsCur = Vector256.LoadUnsafe(ref *(qs + half * 32));
 
                 for (int j = 0; j < 4; j++)
                 {
                     int sub = half * 4 + j;
 
-                    var qloShifted = j switch
-                    {
-                        0 => qs_v,
-                        1 => Avx2.ShiftRightLogical(qs_v.AsInt16(), 2).AsByte(),
-                        2 => Avx2.ShiftRightLogical(qs_v.AsInt16(), 4).AsByte(),
-                        _ => Avx2.ShiftRightLogical(qs_v.AsInt16(), 6).AsByte(),
-                    };
-                    var qlo = Avx2.And(qloShifted, m3);
-
-                    var hmShifted = (half, j) switch
-                    {
-                        (0, 0) => hm_v,
-                        (0, 1) => Avx2.ShiftRightLogical(hm_v.AsInt16(), 1).AsByte(),
-                        (0, 2) => Avx2.ShiftRightLogical(hm_v.AsInt16(), 2).AsByte(),
-                        (0, 3) => Avx2.ShiftRightLogical(hm_v.AsInt16(), 3).AsByte(),
-                        (1, 0) => Avx2.ShiftRightLogical(hm_v.AsInt16(), 4).AsByte(),
-                        (1, 1) => Avx2.ShiftRightLogical(hm_v.AsInt16(), 5).AsByte(),
-                        (1, 2) => Avx2.ShiftRightLogical(hm_v.AsInt16(), 6).AsByte(),
-                        _      => Avx2.ShiftRightLogical(hm_v.AsInt16(), 7).AsByte(),
-                    };
-                    var hbit = Avx2.ShiftLeftLogical(
-                        Avx2.And(hmShifted, m1).AsInt16(), 2).AsByte();
+                    // u3 = (qs >> 2j) & 3 | 4·hbit, from running state (no per-j switch on the shift).
+                    var qlo = Avx2.And(qsCur, m3);
+                    qsCur = Avx2.ShiftRightLogical(qsCur.AsInt16(), 2).AsByte();
+                    var hbit = Avx2.And(Avx2.CompareEqual(Avx2.And(hm_v, mbit), mbit), four);
+                    mbit = Avx2.Add(mbit, mbit);
                     var q3u = Avx2.Or(qlo, hbit);   // shared weight quants
 
                     int isc = half * 8 + 2 * j;
@@ -8460,8 +8379,6 @@ public static unsafe class SimdKernels
         out float sum0, out float sum1, out float sum2, out float sum3,
         out float sum4, out float sum5, out float sum6, out float sum7)
     {
-        const uint kmask1 = 0x03030303;
-        const uint kmask2 = 0x0f0f0f0f;
         float* dArr0 = (float*)scratch0; sbyte* qsArr0 = (sbyte*)(scratch0 + numBlocks * 32); short* bsumsArr0 = (short*)(scratch0 + numBlocks * 32 + numBlocks * 256);
         float* dArr1 = (float*)scratch1; sbyte* qsArr1 = (sbyte*)(scratch1 + numBlocks * 32); short* bsumsArr1 = (short*)(scratch1 + numBlocks * 32 + numBlocks * 256);
         float* dArr2 = (float*)scratch2; sbyte* qsArr2 = (sbyte*)(scratch2 + numBlocks * 32); short* bsumsArr2 = (short*)(scratch2 + numBlocks * 32 + numBlocks * 256);
@@ -8472,13 +8389,12 @@ public static unsafe class SimdKernels
         float* dArr7 = (float*)scratch7; sbyte* qsArr7 = (sbyte*)(scratch7 + numBlocks * 32); short* bsumsArr7 = (short*)(scratch7 + numBlocks * 32 + numBlocks * 256);
 
         var m3 = Vector256.Create((byte)0x03);
-        var m1 = Vector256.Create((byte)0x01);
         var acc0 = Vector256<float>.Zero; var acc1 = Vector256<float>.Zero;
         var acc2 = Vector256<float>.Zero; var acc3 = Vector256<float>.Zero;
         var acc4 = Vector256<float>.Zero; var acc5 = Vector256<float>.Zero;
         var acc6 = Vector256<float>.Zero; var acc7 = Vector256<float>.Zero;
-        Span<uint> aux = stackalloc uint[4];
-        Span<sbyte> scales = stackalloc sbyte[16];
+        sbyte* scales = stackalloc sbyte[16];
+        var four = Vector256.Create((byte)4);
 
         for (int b = 0; b < numBlocks; b++)
         {
@@ -8490,26 +8406,14 @@ public static unsafe class SimdKernels
             float* dSub6 = dArr6 + b * 8; float* dSub7 = dArr7 + b * 8;
 
             // Scales decode (shared between all eight inputs).
-            aux[0] = *(uint*)(x + 96);
-            aux[1] = *(uint*)(x + 100);
-            uint tmp = *(uint*)(x + 104);
-            aux[2] = ((aux[0] >> 4) & kmask2) | (((tmp >> 4) & kmask1) << 4);
-            aux[3] = ((aux[1] >> 4) & kmask2) | (((tmp >> 6) & kmask1) << 4);
-            aux[0] = (aux[0] & kmask2) | (((tmp >> 0) & kmask1) << 4);
-            aux[1] = (aux[1] & kmask2) | (((tmp >> 2) & kmask1) << 4);
-            for (int i = 0; i < 4; i++)
-            {
-                scales[i * 4 + 0] = (sbyte)((byte)(aux[i] >> 0) - 32);
-                scales[i * 4 + 1] = (sbyte)((byte)(aux[i] >> 8) - 32);
-                scales[i * 4 + 2] = (sbyte)((byte)(aux[i] >> 16) - 32);
-                scales[i * 4 + 3] = (sbyte)((byte)(aux[i] >> 24) - 32);
-            }
+            Q3KScalesMinus32(x, scales);
 
             short* bsums0 = bsumsArr0 + b * 16; short* bsums1 = bsumsArr1 + b * 16;
             short* bsums2 = bsumsArr2 + b * 16; short* bsums3 = bsumsArr3 + b * 16;
             short* bsums4 = bsumsArr4 + b * 16; short* bsums5 = bsumsArr5 + b * 16;
             short* bsums6 = bsumsArr6 + b * 16; short* bsums7 = bsumsArr7 + b * 16;
             var hm_v = Vector256.LoadUnsafe(ref *(x + 0));
+            var mbit = Vector256.Create((byte)1);
             sbyte* q8_0 = qsArr0 + b * 256; sbyte* q8_1 = qsArr1 + b * 256;
             sbyte* q8_2 = qsArr2 + b * 256; sbyte* q8_3 = qsArr3 + b * 256;
             sbyte* q8_4 = qsArr4 + b * 256; sbyte* q8_5 = qsArr5 + b * 256;
@@ -8518,34 +8422,17 @@ public static unsafe class SimdKernels
 
             for (int half = 0; half < 2; half++)
             {
-                var qs_v = Vector256.LoadUnsafe(ref *(qs + half * 32));
+                var qsCur = Vector256.LoadUnsafe(ref *(qs + half * 32));
 
                 for (int j = 0; j < 4; j++)
                 {
                     int sub = half * 4 + j;
 
-                    var qloShifted = j switch
-                    {
-                        0 => qs_v,
-                        1 => Avx2.ShiftRightLogical(qs_v.AsInt16(), 2).AsByte(),
-                        2 => Avx2.ShiftRightLogical(qs_v.AsInt16(), 4).AsByte(),
-                        _ => Avx2.ShiftRightLogical(qs_v.AsInt16(), 6).AsByte(),
-                    };
-                    var qlo = Avx2.And(qloShifted, m3);
-
-                    var hmShifted = (half, j) switch
-                    {
-                        (0, 0) => hm_v,
-                        (0, 1) => Avx2.ShiftRightLogical(hm_v.AsInt16(), 1).AsByte(),
-                        (0, 2) => Avx2.ShiftRightLogical(hm_v.AsInt16(), 2).AsByte(),
-                        (0, 3) => Avx2.ShiftRightLogical(hm_v.AsInt16(), 3).AsByte(),
-                        (1, 0) => Avx2.ShiftRightLogical(hm_v.AsInt16(), 4).AsByte(),
-                        (1, 1) => Avx2.ShiftRightLogical(hm_v.AsInt16(), 5).AsByte(),
-                        (1, 2) => Avx2.ShiftRightLogical(hm_v.AsInt16(), 6).AsByte(),
-                        _      => Avx2.ShiftRightLogical(hm_v.AsInt16(), 7).AsByte(),
-                    };
-                    var hbit = Avx2.ShiftLeftLogical(
-                        Avx2.And(hmShifted, m1).AsInt16(), 2).AsByte();
+                    // u3 = (qs >> 2j) & 3 | 4·hbit, from running state (no per-j switch on the shift).
+                    var qlo = Avx2.And(qsCur, m3);
+                    qsCur = Avx2.ShiftRightLogical(qsCur.AsInt16(), 2).AsByte();
+                    var hbit = Avx2.And(Avx2.CompareEqual(Avx2.And(hm_v, mbit), mbit), four);
+                    mbit = Avx2.Add(mbit, mbit);
                     var q3u = Avx2.Or(qlo, hbit);   // shared weight quants
 
                     int isc = half * 8 + 2 * j;
