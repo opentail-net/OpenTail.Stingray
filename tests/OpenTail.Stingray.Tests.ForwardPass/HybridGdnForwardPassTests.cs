@@ -142,6 +142,13 @@ public sealed class HybridGdnForwardPassTests : HeavyTestBase
     /// sequential scan, so the chunk algorithm is not the source; the kernel-level chunked vs
     /// sequential equivalence is pinned by GdnKernelsTests. The old bound (0.1 + 0.5 % per logit)
     /// assumed the recurrence reorder was the only difference and failed on this model.</para>
+    ///
+    /// <para>Caveat (2026-10-02): the 0.9995 cosine floor was calibrated on one model. On Ornith-9B
+    /// the unchanged chunked path measures 0.999314 (0.999272 after a61f53ab batched the dense FFN).
+    /// Single-cosine thresholds have no model-independent meaning. The principled per-position check
+    /// is the margin certificate (top1-top2 margin m > 2 * max|delta logit| means the argmax cannot
+    /// change). That is the method in docs/reference/numerics-investigation-method.md; zero certified
+    /// flips were seen across 8,197 positions in the 2026-10-02 investigation.</para>
     /// </summary>
     [Fact]
     public void HybridGdnChunkedPrefill_MatchesSequentialPrefill()
@@ -570,6 +577,17 @@ public sealed class HybridGdnForwardPassTests : HeavyTestBase
     ///
     /// Silently skips when either the 27B-MTP model or the reference fixture
     /// is unavailable.
+    ///
+    /// <para><b>Status 2026-10-02 (ADR-0002):</b> this receipt was the sole reason MTP models were
+    /// gated to the per-token prefill. That gate is gone: prompts now take the optimized chunked path.
+    /// The checkpoint (Qwen3.6-27B-MTP-Q4_K_M) is not on the reference machine, so this test has not
+    /// run since. It is not a clean oracle either: even on the per-token path it disagrees with
+    /// llama.cpp at the first generated token and realigns at <c>&lt;think&gt;</c>. When the checkpoint
+    /// is available, run it on the optimized path. If it flips at the <c>&lt;think&gt;</c> boundary,
+    /// record the logit margin there: the 2026-10-02 investigation found both FP32 paths flip
+    /// against an FP64 reference at that token. Then re-baseline the fixture as a documented
+    /// knife-edge rather than restoring the gate.
+    /// STINGRAY_GDN_CHUNKED_PREFILL=0 reproduces the old per-token behaviour for comparison.</para>
     /// </summary>
     [Fact]
     public async Task MtpDecoder_GreedyParity_LlamaCpp()

@@ -603,6 +603,10 @@ ones.
   (`_hasMtp`; chunked GDN is not bit-exact and flipped the Qwen3.6-MTP llama.cpp parity
   knife-edge). Enabling chunked prefill for MTP models is a numerics decision for the user, not
   a perf item; it is the remaining 27B prefill lever (0.07x row).
+  **Decided 2026-10-02 (user): optimized prefill for MTP models too**, after a 41-prompt
+  investigation found no systematic accuracy difference
+  ([ADR-0002](../reference/adr-0002-hybrid-gdn-mtp-chunked-prefill.md)); the gate is removed.
+  The 27B speed is recorded in ADR-0002 and the League.
 - [ ] 2.4 Repeat 2.1-2.3 for the 9B (Ornith-1.0-9B) and 27B (Qwen3.6-27B Q3_K_XL) size points if
       a 35B fix is found and generalizes; record each in `PerformanceLeague.md`.
 

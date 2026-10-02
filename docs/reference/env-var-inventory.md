@@ -306,7 +306,7 @@ dynamically composed names.
 | `STINGRAY_FLASH64_STRIDED_GEMM` | experimental | |
 | `STINGRAY_FORCE_CPU_EMBED` | experimental | |
 | `STINGRAY_FORCE_NO_BLAS` | experimental | |
-| `STINGRAY_GDN_CHUNKED_PREFILL` | experimental | |
+| `STINGRAY_GDN_CHUNKED_PREFILL` | expert | Hybrid-GDN optimized prefill (chunked recurrence + batched projections/FFN). Default **on** for every hybrid model, including MTP models since 2026-10-02 ([ADR-0002](adr-0002-hybrid-gdn-mtp-chunked-prefill.md)). `=0` forces the StrictSequential per-token path (bit-identical to decode, reproducible but not more accurate): the diagnostic control and the rollback switch. |
 | `STINGRAY_GDN_DECODE_FAST` | experimental | |
 | `STINGRAY_GDN_PREFILL_COMPUTE` | experimental | |
 | `STINGRAY_GDN_RAW_Q8_0` | experimental | |

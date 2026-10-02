@@ -275,17 +275,17 @@ public sealed unsafe class HybridGdnForwardPass : IForwardPass
     private static readonly bool _bypassMoe =
         Environment.GetEnvironmentVariable("STINGRAY_BYPASS_MOE") == "1";
 
-    // Chunk-parallel GDN prompt prefill (FlashQLA-style chunk_gated_delta_rule):
-    // Prefill resolves the GDN recurrence over the whole prompt via
-    // GdnKernels.GdnRecurrenceChunkedPrefill instead of the per-token scan, ~1.3×
-    // faster end-to-end on the CPU backend (measured: qwen35moe 8.3→11.0 t/s prefill).
-    // DEFAULT ON for CPU (STINGRAY_GDN_CHUNKED_PREFILL=0 to disable) — BUT the Prefill
-    // gate below additionally excludes models with a native MTP head: the chunked
-    // form is numerically equal to the scan only up to FP reduction order, and on the
-    // knife-edge "thinking-or-not" boundary token of the Qwen3.6-MTP models that ULP
-    // difference flips the trajectory off llama.cpp's (MtpDecoder_GreedyParity_LlamaCpp).
-    // MTP models therefore stay on the byte-exact per-token scan. Exposed as a settable
-    // property so a parity test can toggle it without env vars.
+    // Optimized prompt prefill (PrefillChunked): layer-major over the whole prompt, the GDN
+    // recurrence via GdnKernels.GdnRecurrenceChunkedPrefill (FlashQLA-style
+    // chunk_gated_delta_rule), and batched projections/FFN. DEFAULT ON for every hybrid-GDN
+    // model on CPU, including models with a native MTP head since 2026-10-02 (user decision,
+    // docs/reference/adr-0002-hybrid-gdn-mtp-chunked-prefill.md). Before that, MTP models were
+    // gated to the per-token path over one llama.cpp receipt flip. The investigation found the
+    // per-token path reproducible, not more accurate: both FP32 recurrences sit at FP32 epsilon
+    // against an FP64 one, and the batched GEMM is about 1e4 more precise per projection than the
+    // per-token int8 matvec (docs/1-correctness/2026-10-02-prefill-numerics-investigation.md).
+    // STINGRAY_GDN_CHUNKED_PREFILL=0 forces the StrictSequential per-token path for every model:
+    // the diagnostic control and the rollback switch. Settable so tests can toggle it.
     public static bool GdnChunkedPrefillEnabled { get; set; } =
         Environment.GetEnvironmentVariable("STINGRAY_GDN_CHUNKED_PREFILL") != "0";
 
@@ -733,14 +733,12 @@ public sealed unsafe class HybridGdnForwardPass : IForwardPass
         if (_hasMtp)
             EnsureMtpHiddenHistoryCap(startPos + tokens.Count);
 
-        // Chunk-parallel GDN prefill (default on; ~1.3× CPU prefill). Falls back to the
-        // per-token loop for single tokens (no chunking benefit), the bypass-debug flags,
-        // a cache not positioned at startPos (the chunked path assumes a clean append),
-        // or when the model has a native MTP head (_hasMtp): the chunked recurrence is
-        // not bit-exact, and on the Qwen3.6-MTP "thinking-or-not" knife-edge token that
-        // FP-reorder flips the generation trajectory off the per-token/llama.cpp
-        // reference (MtpDecoder_GreedyParity_LlamaCpp). MTP models keep the exact scan.
-        if (GdnChunkedPrefillEnabled && tokens.Count > 1 && !_hasMtp
+        // Optimized prefill (default on, MTP models included: ADR-0002). Falls back to the
+        // per-token loop for single tokens (no benefit), the bypass-debug flags, a cache not
+        // positioned at startPos (the chunked path assumes a clean append), or
+        // STINGRAY_GDN_CHUNKED_PREFILL=0 (StrictSequential control / rollback). PrefillChunked
+        // records the per-position hidden states the MTP head reads, as Forward does.
+        if (GdnChunkedPrefillEnabled && tokens.Count > 1
             && !_bypassGdn && !_bypassAttn && !_bypassMoe
             && _kvCache.Length == startPos && _gdnStateCache.Length == startPos)
         {
@@ -758,14 +756,22 @@ public sealed unsafe class HybridGdnForwardPass : IForwardPass
     /// through layer L before L+1 — provably equivalent to the token-major
     /// <see cref="Forward"/> loop because each token's per-layer work is independent
     /// given the prior layer's outputs and the KV/GDN caches are written in position
-    /// order). Attention and MoE/FFN run per-token via the exact same kernels and
-    /// order as <see cref="Forward"/> (byte-identical); only the GDN recurrence is
-    /// replaced by the batched <see cref="GdnKernels.GdnRecurrenceChunkedPrefill"/>
-    /// (FlashQLA-style chunk_gated_delta_rule), which differs from the per-token scan
-    /// only by floating-point reduction order.
+    /// order). It differs from the per-token path in three ways, none an algorithm change:
+    /// <list type="bullet">
+    /// <item>the GDN recurrence runs as <see cref="GdnKernels.GdnRecurrenceChunkedPrefill"/>
+    /// (FlashQLA-style chunk_gated_delta_rule), a different FP reduction order;</item>
+    /// <item>projections run through <see cref="BatchedProjection"/>, which for 64 or more tokens
+    /// is a packed FP32 GEMM over dequantized weights instead of the int8-activation matvec;</item>
+    /// <item>the dense FFN runs batched (<see cref="DenseFfnChunked"/>), and MoE runs through
+    /// <see cref="MoeFfnBatchedPrefill"/>.</item>
+    /// </list>
+    /// Attention itself still runs per (head, token) in position order. Measured
+    /// 2026-10-02 (Ornith-9B, 41 prompts): no systematic difference from the per-token path against
+    /// an FP64-recurrence reference, and no certified-margin flips
+    /// (docs/1-correctness/2026-10-02-prefill-numerics-investigation.md).
     ///
-    /// <para>Gated behind <see cref="GdnChunkedPrefillEnabled"/>; the per-token loop
-    /// remains the default. Requires the caches positioned at <paramref name="startPos"/>.</para>
+    /// <para>Gated behind <see cref="GdnChunkedPrefillEnabled"/> (default on). Requires the caches
+    /// positioned at <paramref name="startPos"/>.</para>
     /// </summary>
     private ReadOnlySpan<float> PrefillChunked(IReadOnlyList<int> tokens, int startPos)
     {
