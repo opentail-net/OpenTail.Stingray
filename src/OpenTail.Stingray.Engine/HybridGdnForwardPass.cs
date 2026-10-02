@@ -842,6 +842,10 @@ public sealed unsafe class HybridGdnForwardPass : IForwardPass
                     if (PrefillProfileTimers.Enabled)
                         PrefillProfileTimers.Add(PrefillProfileTimers.Category.MoeFfn, Stopwatch.GetTimestamp() - tFfn);
                 }
+                else if (!_hp.IsMoE && n > 1)
+                {
+                    DenseFfnChunked(layer, nrm, hid, n);
+                }
                 else
                 for (int t = 0; t < n; t++)
                 {
@@ -1004,6 +1008,31 @@ public sealed unsafe class HybridGdnForwardPass : IForwardPass
         finally
         {
             NativeMemory.Free(qkvAll);
+        }
+    }
+
+    /// <summary>Dense FFN for the chunked-prefill path, batched over the <paramref name="n"/> tokens:
+    /// gate/up/down through <see cref="BatchedProjection"/> (weights streamed once per chunk instead
+    /// of once per token), the same projection path the chunk's GDN and attention projections
+    /// already take. <paramref name="hid"/> is overwritten with the FFN output, as
+    /// <see cref="DenseFfnAt"/> overwrites its hiddenOut.</summary>
+    private void DenseFfnChunked(int layer, float* nrm, float* hid, int n)
+    {
+        int inter = _intermDim, e = _embDim;
+        float* gate = null, up = null;
+        try
+        {
+            gate = Alloc(n * inter);
+            up = Alloc(n * inter);
+            BatchedProjection(gate, _wFfnGate[layer], nrm, n, inter, e);
+            BatchedProjection(up, _wFfnUp[layer], nrm, n, inter, e);
+            SimdKernels.SiLuMul(gate, up, n * inter);
+            BatchedProjection(hid, _wFfnDown[layer], gate, n, e, inter);
+        }
+        finally
+        {
+            NativeMemory.Free(gate);
+            NativeMemory.Free(up);
         }
     }
 
