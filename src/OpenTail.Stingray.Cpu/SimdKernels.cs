@@ -7560,119 +7560,89 @@ public static unsafe class SimdKernels
         return acc;
     }
 
+    // Shape of ggml_vec_dot_q3_K_q8_K's AVX2 path: SIMD scale unpack, pshufb scale broadcast,
+    // high bit as `ql·q8 - 4·(1-h)·q8` (no bsums correction), fully unrolled constant shifts.
+    // The block's integer total equals the scalar reference's `qu·q8 - 4·Σscale·bsums`, but it is
+    // spread over the 8 i32 lanes as ggml spreads it (the old bsums form subtracted a differently
+    // laid-out correction vector), so the per-lane float conversion and FMA round like ggml's and
+    // can differ from the previous version in the last bit. See docs/4-performance/perf-sweep-plan.md 10.2.
     private static float DotQ3K_Q8K_Avx2(byte* row, byte* scratch, int numBlocks)
     {
         const uint kmask1 = 0x03030303;
         const uint kmask2 = 0x0f0f0f0f;
         float* dArr = (float*)scratch;
         sbyte* qsArr = (sbyte*)(scratch + numBlocks * 4);
-        short* bsumsArr = (short*)(scratch + numBlocks * 4 + numBlocks * 256);
 
-        var m3 = Vector256.Create((byte)0x03);
-        var m1 = Vector256.Create((byte)0x01);
+        var m32 = Vector128.Create((sbyte)32);
         var acc = Vector256<float>.Zero;
-        Span<uint> aux = stackalloc uint[4];
-        Span<sbyte> scales = stackalloc sbyte[16];
 
         for (int b = 0; b < numBlocks; b++)
         {
             byte* x = row + b * 110;
-            float dAll = HalfToFloat(x[108], x[109]);
-            float dSuper = dAll * dArr[b];
+            float dSuper = HalfToFloat(x[108], x[109]) * dArr[b];
 
-            // Unpack 16 6-bit scales via the ggml aux[] pattern.
-            aux[0] = *(uint*)(x + 96);
-            aux[1] = *(uint*)(x + 100);
-            uint tmp = *(uint*)(x + 104);
-            aux[2] = ((aux[0] >> 4) & kmask2) | (((tmp >> 4) & kmask1) << 4);
-            aux[3] = ((aux[1] >> 4) & kmask2) | (((tmp >> 6) & kmask1) << 4);
-            aux[0] = (aux[0] & kmask2) | (((tmp >> 0) & kmask1) << 4);
-            aux[1] = (aux[1] & kmask2) | (((tmp >> 2) & kmask1) << 4);
-            for (int i = 0; i < 4; i++)
-            {
-                scales[i * 4 + 0] = (sbyte)((byte)(aux[i] >> 0) - 32);
-                scales[i * 4 + 1] = (sbyte)((byte)(aux[i] >> 8) - 32);
-                scales[i * 4 + 2] = (sbyte)((byte)(aux[i] >> 16) - 32);
-                scales[i * 4 + 3] = (sbyte)((byte)(aux[i] >> 24) - 32);
-            }
+            // 16 6-bit scales (ggml aux[] pattern), minus 32, widened to i16: the low half's
+            // 8 scales broadcast to both lanes for half 0, the high half's for half 1.
+            uint a0 = *(uint*)(x + 96), a1 = *(uint*)(x + 100), a2 = *(uint*)(x + 104);
+            var sc8 = Vector128.Create(
+                (a0 & kmask2) | (((a2 >> 0) & kmask1) << 4),
+                (a1 & kmask2) | (((a2 >> 2) & kmask1) << 4),
+                ((a0 >> 4) & kmask2) | (((a2 >> 4) & kmask1) << 4),
+                ((a1 >> 4) & kmask2) | (((a2 >> 6) & kmask1) << 4)).AsSByte() - m32;
+            var sc16 = Avx2.ConvertToVector256Int16(sc8);
+            var scLo = Vector256.Create(sc16.GetLower(), sc16.GetLower()).AsByte();
+            var scHi = Vector256.Create(sc16.GetUpper(), sc16.GetUpper()).AsByte();
 
-            // q8sclsub = (bsums · scales_adj) << 2  →  8 int32
-            // scales_adj ∈ [-32, +31] fits in i8; bsums sub-group sums fit in i16.
-            var q8sums = Vector256.LoadUnsafe(ref *(bsumsArr + b * 16));
-            var scales128 = Vector128.LoadUnsafe(ref scales[0]);
-            var scales16 = Avx2.ConvertToVector256Int16(scales128);
-            var q8sclsub = Avx2.ShiftLeftLogical(
-                Avx2.MultiplyAddAdjacent(q8sums, scales16), 2);
-
-            // hmask is shared across both halves; bit-plane indexed by (half*4 + j).
-            var hm_v = Vector256.LoadUnsafe(ref *(x + 0));
-
-            var sumi = Vector256<int>.Zero;
+            var hbits = Vector256.LoadUnsafe(ref *x);
+            var mbit = Vector256.Create((byte)1);
             sbyte* q8 = qsArr + b * 256;
-            byte* qs = x + 32;
 
-            // Two halves × four j-iterations. The qs/hm shift amounts are
-            // selected via switch on j (and (half,j)) so each AVX2 shift sees
-            // a compile-time-constant immediate (CA1857). Each j contributes
-            // 32 unsigned 3-bit weights spanning two 16-element sub-groups.
-            for (int half = 0; half < 2; half++)
-            {
-                // 32 packed qs bytes for this half (4 weights per byte via shifts 0,2,4,6)
-                var qs_v = Vector256.LoadUnsafe(ref *(qs + half * 32));
+            var sumi = Q3KHalf(Vector256.LoadUnsafe(ref *(x + 32)), hbits, ref mbit, q8, scLo);
+            sumi = Avx2.Add(sumi, Q3KHalf(Vector256.LoadUnsafe(ref *(x + 64)), hbits, ref mbit, q8 + 128, scHi));
 
-                for (int j = 0; j < 4; j++)
-                {
-                    // qlo = (qs_v >> shift) & 0x03  (per-byte low-2-bits extraction)
-                    var qloShifted = j switch
-                    {
-                        0 => qs_v,
-                        1 => Avx2.ShiftRightLogical(qs_v.AsInt16(), 2).AsByte(),
-                        2 => Avx2.ShiftRightLogical(qs_v.AsInt16(), 4).AsByte(),
-                        _ => Avx2.ShiftRightLogical(qs_v.AsInt16(), 6).AsByte(),
-                    };
-                    var qlo = Avx2.And(qloShifted, m3);
-
-                    // hbit = ((hm_v >> hbitPos) & 1) << 2   → 0 or 4 per byte
-                    // hbitPos = half*4 + j  ∈ [0..7]
-                    var hmShifted = (half, j) switch
-                    {
-                        (0, 0) => hm_v,
-                        (0, 1) => Avx2.ShiftRightLogical(hm_v.AsInt16(), 1).AsByte(),
-                        (0, 2) => Avx2.ShiftRightLogical(hm_v.AsInt16(), 2).AsByte(),
-                        (0, 3) => Avx2.ShiftRightLogical(hm_v.AsInt16(), 3).AsByte(),
-                        (1, 0) => Avx2.ShiftRightLogical(hm_v.AsInt16(), 4).AsByte(),
-                        (1, 1) => Avx2.ShiftRightLogical(hm_v.AsInt16(), 5).AsByte(),
-                        (1, 2) => Avx2.ShiftRightLogical(hm_v.AsInt16(), 6).AsByte(),
-                        _      => Avx2.ShiftRightLogical(hm_v.AsInt16(), 7).AsByte(),
-                    };
-                    var hbit = Avx2.ShiftLeftLogical(
-                        Avx2.And(hmShifted, m1).AsInt16(), 2).AsByte();
-                    var q3u = Avx2.Or(qlo, hbit); // u3 in [0,7] per byte
-
-                    // q3u carries two 16-element sub-groups: lanes [0..15] and [16..31]
-                    var q8_v = Vector256.LoadUnsafe(ref *(q8 + half * 128 + j * 32)).AsSByte();
-
-                    // u3·i8 → i16 pairs (no saturation: |u3·i8| ≤ 7·127 = 889, pairs ≤ 1778)
-                    var p16 = Avx2.MultiplyAddAdjacent(q3u, q8_v);
-
-                    // Two scale lanes — one per 16-element sub-group within q3u
-                    int isc = half * 8 + 2 * j;
-                    var sc16 = Vector256.Create(
-                        Vector128.Create((short)scales[isc + 0]),
-                        Vector128.Create((short)scales[isc + 1]));
-
-                    var s = Avx2.MultiplyAddAdjacent(sc16, p16);
-                    sumi = Avx2.Add(sumi, s);
-                }
-            }
-
-            acc = Fma.MultiplyAdd(
-                Vector256.Create(dSuper),
-                Avx.ConvertToVector256Single(Avx2.Subtract(sumi, q8sclsub)),
-                acc);
+            acc = Fma.MultiplyAdd(Vector256.Create(dSuper), Avx.ConvertToVector256Single(sumi), acc);
         }
         return HSum256(acc);
     }
+
+    /// <summary>
+    /// One 128-element half of a Q3_K block against Q8_K: four 32-wide groups at qs shifts
+    /// 0/2/4/6 and hmask bits <paramref name="mbit"/>, ×2, ×4, ×8 (advanced in place for the next
+    /// half). Each group's lanes 0-15 / 16-31 take consecutive scales out of <paramref name="sc"/>
+    /// (8 i16 scales, both lanes).
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static Vector256<int> Q3KHalf(Vector256<byte> q3bits, Vector256<byte> hbits,
+        ref Vector256<byte> mbit, sbyte* q8, Vector256<byte> sc)
+    {
+        var m3 = Vector256.Create((byte)3);
+        var p0 = Q3KGroup(Avx2.And(q3bits, m3), hbits, ref mbit, q8);
+        var p1 = Q3KGroup(Avx2.And(Avx2.ShiftRightLogical(q3bits.AsInt16(), 2).AsByte(), m3), hbits, ref mbit, q8 + 32);
+        var p2 = Q3KGroup(Avx2.And(Avx2.ShiftRightLogical(q3bits.AsInt16(), 4).AsByte(), m3), hbits, ref mbit, q8 + 64);
+        var p3 = Q3KGroup(Avx2.And(Avx2.ShiftRightLogical(q3bits.AsInt16(), 6).AsByte(), m3), hbits, ref mbit, q8 + 96);
+        var s0 = Avx2.MultiplyAddAdjacent(Avx2.Shuffle(sc, Q3KScaleShuffle(0)).AsInt16(), p0);
+        var s1 = Avx2.MultiplyAddAdjacent(Avx2.Shuffle(sc, Q3KScaleShuffle(1)).AsInt16(), p1);
+        var s2 = Avx2.MultiplyAddAdjacent(Avx2.Shuffle(sc, Q3KScaleShuffle(2)).AsInt16(), p2);
+        var s3 = Avx2.MultiplyAddAdjacent(Avx2.Shuffle(sc, Q3KScaleShuffle(3)).AsInt16(), p3);
+        return Avx2.Add(Avx2.Add(s0, s1), Avx2.Add(s2, s3));
+    }
+
+    /// <summary>ql·q8 − 4·(1−h)·q8 as i16 pairs (no saturation: |pair| ≤ 2·4·127).</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static Vector256<short> Q3KGroup(Vector256<byte> ql, Vector256<byte> hbits,
+        ref Vector256<byte> mbit, sbyte* q8)
+    {
+        var qh = Avx2.And(Avx2.CompareEqual(Avx2.And(hbits, mbit), Vector256<byte>.Zero), Vector256.Create((byte)4));
+        mbit = Avx2.Add(mbit, mbit);
+        var y = Vector256.LoadUnsafe(ref *q8);
+        return Avx2.Subtract(Avx2.MultiplyAddAdjacent(ql, y), Avx2.MultiplyAddAdjacent(qh, y));
+    }
+
+    /// <summary>pshufb control picking i16 scale 2k into lanes 0-7 and 2k+1 into lanes 8-15.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static Vector256<byte> Q3KScaleShuffle(int k) => Vector256.Create(
+        Vector128.Create((ushort)((4 * k) | ((4 * k + 1) << 8))).AsByte(),
+        Vector128.Create((ushort)((4 * k + 2) | ((4 * k + 3) << 8))).AsByte());
 
     // ================================================================
     //  Q8_0 · Q8_K Dot Product  (one row, pre-quantized input)
