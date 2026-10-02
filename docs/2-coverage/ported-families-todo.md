@@ -11,18 +11,55 @@ Order (user): after the worker-pool experiment, the Q8_K alignment, and `Q1_0` +
 
 ## Per-family plans (one each, 2026-10-03)
 
-| Family | Plan | Fits this PC? | Local independent reference | Effort |
-|---|---|---|---|---|
-| Muse-Glimmer (in progress) | [2026-10-03-muse-glimmer-port-plan.md](2026-10-03-muse-glimmer-port-plan.md) | yes (small quants) | none (TensorSharp only) | ~2-3 h text |
-| Qwen 3.8 Flash Next | [2026-10-03-qwen38-flash-next-port-plan.md](2026-10-03-qwen38-flash-next-port-plan.md) | yes (~15 GB quant) | none (TensorSharp only) | ~1-2 days |
-| GLM-5.x | [2026-10-03-glm5-port-plan.md](2026-10-03-glm5-port-plan.md) | no (320B-744B) | `glm-dsa`: llama.cpp source + vendored b10306 | ~2 days |
-| DiffusionGemma | [2026-10-03-diffusiongemma-port-plan.md](2026-10-03-diffusiongemma-port-plan.md) | yes (~13-17 GB) | none (TensorSharp only) | ~1 day |
-| MiniMax-H3 | [2026-10-03-minimax-h3-port-plan.md](2026-10-03-minimax-h3-port-plan.md) | yes (sequential loading) | TensorSharp pure-C# backend | ~3-5 days |
-| DeepSeek V4 / V4.1 (review) | [2026-10-03-deepseek-v4-review-plan.md](2026-10-03-deepseek-v4-review-plan.md) | no (~340 GB) | llama.cpp source + vendored b10306 | ~0.5-1.5 days |
+References (updated 2026-10-03): the local llama.cpp source (`examples/llama.cpp/llama.cpp`,
+git-ignored) was pulled to upstream **`bed0a8566`** (2026-10-02). It now contains `qwen4exp.cpp`,
+`muse-glimmer.cpp` and `glm5-next.cpp` besides `glm-dsa.cpp` and `deepseek4.cpp`. The vendored
+**binaries** (`tools/llama.cpp`, b10306) are unchanged and know only `glm-dsa` and `deepseek4`.
+Every existing receipt and League ratio is pinned to b10306, so updating them is a separate,
+deliberate step (keep b10306 alongside, re-run key receipts on both, then switch).
 
-Each plan has the architecture spec as far as it is known, what Stingray reuses, phased work items,
-and a verification ladder: a synthetic-model check against an independent reference first, then a
-real checkpoint where it fits, then the normal admission path.
+| Family | Plan | Fits this PC? | Second implementation | Port + synthetic |
+|---|---|---|---|---|
+| Muse-Glimmer (in progress) | [plan](2026-10-03-muse-glimmer-port-plan.md) | yes (small quants) | llama.cpp `muse-glimmer.cpp` (source) + TensorSharp | ~2-3 h (text) |
+| Qwen 3.8 Flash Next | [plan](2026-10-03-qwen38-flash-next-port-plan.md) | yes (~15 GB quant) | llama.cpp `qwen4exp.cpp` (source) + TensorSharp | ~1-2 days |
+| GLM-5.x | [plan](2026-10-03-glm5-port-plan.md) | no (smallest GLM-5.3 quant ~236 GiB) | `glm-dsa`: llama.cpp source + b10306 binaries; `glm5next`: llama.cpp source for the trunk, **not NextN** | ~2 days |
+| DiffusionGemma | [plan](2026-10-03-diffusiongemma-port-plan.md) | yes (~13-17 GB) | HF reference + TensorSharp (no llama.cpp) | ~1 day |
+| MiniMax-H3 | [plan](2026-10-03-minimax-h3-port-plan.md) | yes (sequential loading, see plan) | upstream HF/PyTorch + TensorSharp | ~3-5 days |
+| DeepSeek V4 / V4.1 (review) | [plan](2026-10-03-deepseek-v4-review-plan.md) | no (~340 GB) | V4: llama.cpp source + b10306; V4.1: TensorSharp only | ~0.5-1.5 days |
+
+The estimates cover **port + synthetic verification only**. Real-checkpoint verification
+(hardware-dependent), the closeout performance + DRY pass (CLAUDE.md rule 7) and promotion are
+separate costs.
+
+## Status ladder (shared definition of done)
+
+`NOT STARTED -> PORTED -> SYNTHETIC VERIFIED -> REAL-WEIGHT VERIFIED -> ADMITTED`
+
+- **PORTED:** production code exists and loads the architecture (behind the not-admitted gate).
+- **SYNTHETIC VERIFIED:** structural and specification tests on tiny synthetic models pass. This is
+  not real-model evidence.
+- **REAL-WEIGHT VERIFIED:** a real checkpoint against an independent implementation, with timed runs.
+- **ADMITTED:** text LLMs go through `ModelCompatibility` + `admit-arch` + a STATUS row. **Media and
+  diffusion pipelines (DiffusionGemma, MiniMax-H3) are promoted through their own pipeline/CLI
+  registry**, not the LLM admission machinery.
+
+PORTED is not SUPPORTED, and SYNTHETIC VERIFIED is not REAL-WEIGHT VERIFIED.
+
+## Verification levels (say which one a check is)
+
+1. **Structural:** shapes, loading, invariants.
+2. **Specification:** a test-side reimplementation from the written spec. If the spec was written
+   by reading TensorSharp, this catches transcription errors only; it is **not** an independent
+   model reference.
+3. **Independent implementation:** a second codebase, e.g. llama.cpp source/binaries or HF/PyTorch,
+   run on the same synthetic or real inputs.
+4. **Real-weight parity:** tokens, logits or intermediates on the real checkpoint.
+5. **Admission:** level 4 + timed real-weight evidence + the registry/STATUS update.
+
+Never call a check "independent" when its reference derives from the same source as the port.
+
+**Scope:** this is the TensorSharp coverage wave (started 2026-10-02). Families beyond these six get
+a new plan when someone decides to take them on; the wave isn't meant to grow by itself.
 
 ## Per-family checklist (every family)
 
@@ -35,14 +72,11 @@ real checkpoint where it fits, then the normal admission path.
 - [ ] Row in the plan's "Ported, not verified" table (date, code location, reference).
 - [ ] Ported code from TensorSharp goes into the TensorSharp section of `THIRD_PARTY_NOTICES.md`.
 - [ ] Nothing in STATUS.md, README, WHAT-YOU-CAN-DO, RUNNING or the catalogs.
-- [ ] Later, for admission: a real checkpoint, an independent reference (`stingray admit-arch`
-      against llama.cpp where it supports the arch), timed real-weight runs, then the admission
-      and the STATUS row in the same pass.
-
-Local references: the llama.cpp source in `examples/llama.cpp/llama.cpp` (commit `3653e6d6d`,
-2026-08-07) has `glm-dsa.cpp` and `deepseek4.cpp` but **not** `glm5next`, `qwen4exp` or
-`muse-glimmer`. For those, TensorSharp is the only local reference, so a later independent
-reference has to come from a newer llama.cpp or the upstream HF code before admission.
+- [ ] Later, for promotion (see the status ladder): a real checkpoint, an independent implementation
+      (`stingray admit-arch` against llama.cpp for text LLMs; pipeline fixtures for media), timed
+      real-weight runs, then the admission/registry entry and the STATUS row in the same pass.
+- [ ] Each plan carries a **Deferred** list (vision, speculative heads, batched/GPU paths, ...) so the
+      initial port doesn't grow.
 
 ## Families
 

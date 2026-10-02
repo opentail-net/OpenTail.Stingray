@@ -83,11 +83,15 @@ text model wants 4096), Llama 4 vision (93 GB), MobileNetV5 (no checkpoint decla
     Apriel, Ant Ling (`bailingmoe2`), MiniMax-M2 (too large); DeepSeek-OCR v1 (no checkpoint).
 13. **Out of scope for this PC**: DeepSeek-V3.2 / V4, alpha code never run on real weights.
     [2-coverage/058-deepseek-full-lineage-implementation-plan.md](2-coverage/058-deepseek-full-lineage-implementation-plan.md).
-14. **TensorSharp takeaways** (order: pool experiment, Q8_K reference, then this section's items):
-    `Q1_0` + Bonsai2 quant types (`PQ2_0`/`PTQ1_0`, coverage for Bonsai2 27B on `qwen35`), then
-    **port-now-prove-later** families (Qwen 3.8 Flash Next `qwen4exp`, GLM-5.x `glm-dsa`/`glm5next`,
-    Muse-Glimmer, DiffusionGemma, MiniMax-H3; DeepSeek V4 review). Ported families stay **not
-    admitted and not advertised** until checkpoint-verified.
+14. **TensorSharp coverage wave** (from 2026-10-02; the user's current focus, ahead of the items
+    above while it runs).
+    - **Done:** spin worker pool (opt-in), ggml Q8 cross-check, `Q1_0`/`Q2_0` verified, Bonsai2
+      PRISM ported (gated).
+    - **Current, in order:** Muse-Glimmer (in progress), Qwen 3.8 Flash Next, GLM-5.x,
+      DiffusionGemma, MiniMax-H3, DeepSeek V4/V4.1 review. One plan each in `2-coverage/`.
+    - Ported families stay **not admitted and not advertised** until real-weight verified
+      (status ladder and verification levels in the families todo).
+    - New families beyond these get their own plan when someone takes them on.
     [2-coverage/2026-10-02-tensorsharp-takeaways-plan.md](2-coverage/2026-10-02-tensorsharp-takeaways-plan.md);
     per-family todo: [2-coverage/ported-families-todo.md](2-coverage/ported-families-todo.md).
 

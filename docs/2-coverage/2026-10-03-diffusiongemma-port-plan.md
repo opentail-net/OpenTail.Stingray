@@ -5,9 +5,11 @@
 
 ## Architecture
 
-Source: TensorSharp `docs/models/diffusiongemma.md`, `Models/DiffusionGemma/` (8 files, about 6k
-lines including CPU kernels and the sampler). Not in llama.cpp; TensorSharp checked a shard against a
-NumPy transcription of the HF reference, but no llama.cpp output is recorded.
+References: the **HF reference implementation** (`google/diffusiongemma-26B-A4B-it`) is the
+independent one. No llama.cpp port exists (upstream `bed0a8566` has no `diffusion-gemma.cpp`).
+Secondary: TensorSharp `docs/models/diffusiongemma.md`, `Models/DiffusionGemma/` (8 files, about
+6k lines including CPU kernels and the sampler; it checked a shard against a NumPy transcription of
+the HF reference).
 
 A **block text-diffusion** language model on a Gemma-4-style MoE backbone (26B-A4B). It isn't
 autoregressive: `Forward(token)` is invalid, and generation runs through a sampler.
@@ -42,15 +44,35 @@ Weights: `google/diffusiongemma-26B-A4B-it`, `unsloth/diffusiongemma-26B-A4B-it-
 - [ ] **3. Sampler:** `DiffusionGemmaSampler` (entropy-bounded acceptance, re-noising,
   temperature schedule, early stop, multi-block). Plus a CLI/engine entry, since it doesn't fit
   `InferenceEngine`'s token loop.
-- [ ] **4. Vision** (later).
-- [ ] **5. Gate:** a `// diffusion-gemma — NOT admitted` block; no server exposure until verified.
+- [ ] **4. Gate:** keep it out of the text-LLM path entirely. `ModelCompatibility` must refuse
+  `diffusion-gemma` for `InferenceEngine` (it can't decode token by token). The new sampler entry
+  point is behind an experimental flag; no server exposure until verified.
 
-## Verification
+**Promotion is pipeline-specific, not `ModelCompatibility` / `admit-arch`.** Those are built
+around autoregressive text generation, and DiffusionGemma isn't autoregressive (TensorSharp's
+`Forward()` throws; generation is the sampler over a canvas). Promotion means:
+- a real GGUF;
+- reference fixture checks (canvas forward intermediates, sampler decisions);
+- a deterministic end-to-end canvas test;
+- exposure through a CLI entry / diffusion-style registry;
+- a STATUS row.
 
-1. Synthetic tiny model: the canvas forward vs a spec-written reference (masks are the risk), and
-   the sampler on a fixed seed vs a reference implementation of its rules.
-2. Real checkpoint: coherence of generated text; token-level comparison with TensorSharp on the
-   same GGUF and seed (its pure-C# `cpu` backend runs here).
-3. Admission via the normal path.
+## Deferred (not in the initial port)
 
-**Effort:** about 1 day to ported + synthetic-verified; more for vision and server integration.
+Vision (Gemma 4 tower), the Jev `/v1/systemone` typed-decision endpoint, structured output,
+server integration, and GPU paths.
+
+## Verification (levels as in [ported-families-todo](ported-families-todo.md))
+
+1. **Specification tests (level 2):** a synthetic tiny model. The canvas forward against a
+   test-side reimplementation (the masks are the risk), and the sampler on a fixed seed against a
+   test-side implementation of its rules. Transcription checks, not independent.
+2. **Independent implementation (level 3):** the HF/PyTorch reference
+   (`google/diffusiongemma-26B-A4B-it`) is the independent implementation; no llama.cpp port
+   exists. A checked-in reference fixture (canvas logits for a fixed prompt, canvas and seed)
+   produced from it is the target.
+3. **Real weights (level 4):** coherence; canvas-logit comparison against that fixture; TensorSharp's
+   pure-C# `cpu` backend on the same GGUF and seed as a second reading.
+
+**Effort:** port + specification tests about 1 day. Real-weight verification, the closeout
+performance + DRY pass, vision and pipeline promotion are separate.

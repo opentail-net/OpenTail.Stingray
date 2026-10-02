@@ -30,8 +30,17 @@ Two denoiser checkpoints with different conditioning:
 | video VAE (fp16 safetensors) | 5.2 GB |
 | audio VAE (fp32) | 0.6 GB |
 
-Networks load and release in turn, so the peak is the largest network, not the sum. **This fits
-the machine** with sequential loading.
+**Memory:** this fits the 64 GB host **for sequential loading of weights.** Networks load and
+release in turn, so peak weight residency is about the largest single component (the ~17 GiB text
+encoder), not the ~35.5 GB sum. Generation tensors, latent buffers, decoded video frames and audio
+add RAM on top, so don't treat the summed checkpoint size, or the largest file alone, as the runtime
+peak. Measure it.
+
+**External-file dependencies (integration work, not detail):**
+- **The text-encoder GGUF carries no tokenizer.** The tokenizer is an external `vocab.json` +
+  `merges.txt` (TensorSharp documents this; a config cannot auto-fetch it).
+- The VAEs are safetensors, not GGUF.
+- The denoiser choice (`fl2va` vs `ref2va`) decides which conditioning modes work.
 
 ## Reuse in Stingray
 
@@ -53,12 +62,25 @@ the machine** with sequential loading.
   WAV.
 - [ ] **6. Gate:** an experimental flag; not listed in `stingray image` / video help until verified.
 
-## Verification
+**Promotion is pipeline-specific,** like the other diffusion pipelines: per-network fixture checks,
+an end-to-end deterministic clip, exposure in the CLI's video/diffusion registry, and a STATUS row.
+It doesn't go through `ModelCompatibility` / `admit-arch`.
 
-1. Per-network golden checks against TensorSharp's pure-C# backend: same GGUF, same seed, same
-   inputs, intermediate tensors (text embedding, one DiT step's velocity, VAE decode of a fixed
-   latent). Bounds as for the existing diffusion ports.
-2. End to end: a short t2v clip at small size, judged visually and by audio sanity. Only the
-   per-network checks count as verification.
+## Deferred (not in the initial port)
 
-**Effort:** multi-day (about 3-5). The largest item; a diffusion project.
+`ref2va` reference clips and soundtracks, i2v / fl2v until t2v is verified, GPU (Vulkan) paths,
+long clips past the FP16 attention ceiling, and the HTTP API.
+
+## Verification (levels as in [ported-families-todo](ported-families-todo.md))
+
+1. **Independent implementation (level 3):** fixtures from the upstream HF/PyTorch reference
+   (`MiniMaxAI/MiniMax-H3`): text embedding, one DiT step's velocity, VAE decode of a fixed latent,
+   on the same seed and inputs. TensorSharp's own verification uses upstream/PyTorch fixtures, not
+   self-comparison.
+2. **Second reading:** TensorSharp's pure-C# backend on the same files (useful for localising
+   differences; not independent of TensorSharp-derived code).
+3. **End to end:** a short t2v clip at small size, judged visually with an audio sanity check. Only
+   the per-network fixture checks count as verification.
+
+**Effort:** port + per-network checks multi-day (about 3-5). The largest item; a diffusion project.
+The closeout performance + DRY pass and promotion are separate.

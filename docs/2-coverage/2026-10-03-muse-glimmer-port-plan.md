@@ -5,9 +5,14 @@ advertised until checkpoint-verified (CLAUDE.md rule 14; [ported-families-todo](
 
 ## Architecture (text tower)
 
-Source: TensorSharp `docs/models/muse-glimmer.md` and `Models/MuseGlimmer/MuseGlimmerModel.cs`.
-TensorSharp cites llama.cpp's `src/models/muse-glimmer.cpp`, which is not in our local llama.cpp
-copy (2026-08-07) or in the vendored b10306 binaries.
+**Primary reference: llama.cpp `src/models/muse-glimmer.cpp`** (203 lines), in the local source
+checkout since the 2026-10-03 pull to `bed0a8566`. It isn't in the vendored b10306 binaries.
+Secondary: TensorSharp `docs/models/muse-glimmer.md`, `Models/MuseGlimmer/MuseGlimmerModel.cs`.
+The upstream source confirms the spec below, with three refinements:
+- `final_logit_softcapping` is **optional with no default**: absent means no softcap (TensorSharp
+  defaults to 20; follow llama.cpp).
+- `rope.freq_base_swa` is optional, defaulting to the main base.
+- Q/K/V come from `create_tensor_qkv`, so handle a fused `attn_qkv` as well as separate Q/K/V.
 
 The 30B model: 52 dense layers, `n_embd` 6656, `n_ff` 19968, 32 Q heads / 2 KV heads, head_dim 128,
 vocab 202048.
@@ -39,8 +44,8 @@ Metadata: `muse-glimmer.attention.sliding_window_pattern` (scalar period),
 ## New work
 
 - [ ] `ModelGraph`: the `muse-glimmer`/`muse_glimmer` arch.
-  - SWA period and `RopeOnlySwaLayers`.
-  - Raw logit scale, softcap with default 20.
+  - SWA period (default 4) and `RopeOnlySwaLayers`; optional `rope.freq_base_swa`.
+  - Raw logit scale; softcap only when the key is present.
   - New fields `PostNormEps` (1e-8), `InputEmbeddingRmsNorm`, `AttentionOutputGate`.
 - [ ] `ForwardPass` decode:
   - load `attn_gate` per layer;
@@ -53,18 +58,25 @@ Metadata: `muse-glimmer.attention.sliding_window_pattern` (scalar period),
   - Batched prefill support is a follow-up once verified.
 - [ ] `ModelCompatibility`: a `// muse-glimmer — NOT admitted` block (not in the allowlist).
   `STINGRAY_DIAGNOSTIC_ALLOW_UNSUPPORTED_ARCH=1` runs it for experiments.
-- [ ] The vision tower (50-layer ViT, erf-GELU, Lanczos-3 preprocessing) is a later phase.
+## Deferred (not in the initial port)
 
-## Verification
+The vision tower (50-layer ViT, erf-GELU, Lanczos-3 preprocessing), ATEM/tool-calling chat
+specifics, the DFlash speculative drafter, batched/paged prefill for gated models, and GPU paths.
 
-1. **Now (no checkpoint):** a synthetic tiny `muse-glimmer` GGUF (2-4 layers, P = 2, window 3, small
-   dims, random F32 weights). Compare the engine's logits over a 6-10-token prompt against an
-   **independent reference forward written in the test from the spec above**. It must cover SWA
-   masking past the window, NoPE on full layers, the gate, the 1e-8 post-norms, the embedding norm,
-   and scale-then-softcap. Bound: max |Δlogit| ≲ 1e-3 (F32).
-2. **With a checkpoint** (Muse-Glimmer-30B GGUF; card lists IQ2 to Q4 sizes, about 7-10 GB for small
-   quants): a coherence check, then a token-level comparison with a llama.cpp build that has
-   `muse-glimmer.cpp` (newer than b10306) via `stingray admit-arch`, or with TensorSharp.
-3. **Admission:** the normal path (independent reference, timed real-weight runs, STATUS row).
+## Verification (levels as in [ported-families-todo](ported-families-todo.md))
 
-**Effort:** about 2-3 hours to "ported + synthetic-verified"; vision about a day more.
+1. **Specification test (level 2), now:** a synthetic tiny `muse-glimmer` GGUF (2-4 layers, P = 2,
+   window 3, small dims, random F32 weights). Compare the engine's logits over a 6-10-token prompt
+   against a test-side reimplementation of the spec above. Cover SWA masking past the window, NoPE on
+   full layers, the gate, the 1e-8 post-norms, the embedding norm and scale-then-softcap; bound
+   max |Δlogit| ≲ 1e-3 (F32). The spec is cross-read against llama.cpp's source, but this test is
+   still not an independent implementation.
+2. **Independent implementation (level 3):** run the same synthetic GGUF through a llama.cpp build
+   from `bed0a8566` or later (has `muse-glimmer.cpp`) and compare logits. That needs building llama.cpp
+   or newer vendored binaries.
+3. **Real weights (level 4),** with a checkpoint (Muse-Glimmer-30B; small quants about 7-10 GB):
+   coherence, then `stingray admit-arch` against that newer `llama-server`.
+4. **Admission (level 5):** the normal text-LLM path.
+
+**Effort:** port + specification test about 2-3 hours. Real-weight verification, the closeout
+performance + DRY pass, and admission are separate.

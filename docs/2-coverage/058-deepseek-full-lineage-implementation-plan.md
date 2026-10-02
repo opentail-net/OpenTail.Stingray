@@ -1,3 +1,9 @@
+> **2026-10-03:** the V4 review and next-step work moved to
+> [2026-10-03-deepseek-v4-review-plan.md](2026-10-03-deepseek-v4-review-plan.md) (review against
+> llama.cpp `deepseek4.cpp` + TensorSharp, a synthetic llama.cpp b10306 check, then V4.1 as a
+> separate architecture). This document remains the historical implementation lineage and alpha
+> record. Don't use its old download questions or estimates as the current work queue.
+>
 > **STATUS 2026-09-27.** Unchanged since the entries below: DeepSeek-V3.2 and V4 are still
 > alpha code never run on real weights (STATUS rows 🔴 🔵), and
 > [102-status-open-items-plan.md](../done/102-status-open-items-plan.md) lists both as out of scope for this
@@ -680,11 +686,9 @@ mechanical, built from already-tested pieces. None of this can be numerically ve
 either a real DeepSeek-V4 GGUF or a synthetic ground-truth fixture — same caveat as every other
 piece of this Phase 0 alpha.
 
-## Open questions for the user before Phase 0 starts
+## Open questions (retired 2026-10-03)
 
-1. Which V4-Flash GGUF (source, quant level) to download — smallest is ~99 GB (Q2_K_S). Confirm
-   before the download starts, given shared CPU load with other running sessions.
-2. Confirm before Phase 1's real-weight verification: which V3.2 GGUF (quant level, source) to
-   download, given the ~149 GB minimum size.
-3. Should `--allow-unverified-arch` shipping (Phase 2 option (b)) be considered acceptable at all
-   if option (a) doesn't pan out, or is a hard "Paris" pass required for `deepseek2`?
+The pre-Phase-0 download and `--allow-unverified-arch` questions that stood here are retired. The
+download questions are moot on this 64 GB PC, and `deepseek2` has since been admitted and verified.
+Current next steps for V4/V4.1 live in
+[2026-10-03-deepseek-v4-review-plan.md](2026-10-03-deepseek-v4-review-plan.md).

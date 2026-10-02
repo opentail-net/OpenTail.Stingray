@@ -5,11 +5,16 @@
 
 ## Architecture
 
-Source: TensorSharp `docs/models/glm.md`, `Models/GlmDsa/` (20 files). **Primary reference for
-`glm-dsa`: llama.cpp `src/models/glm-dsa.cpp`**, present locally in
-`examples/llama.cpp/llama.cpp` and known to the vendored b10306. TensorSharp's note: reproducing
-llama.cpp's indexer top-k restored 6/6 token parity. For `glm5next`, TensorSharp is the only
-reference; it says llama.cpp is not a valid reference there.
+References:
+- **`glm-dsa`:** llama.cpp `src/models/glm-dsa.cpp` (local source; the vendored b10306 binaries
+  know it too). TensorSharp's note: reproducing llama.cpp's indexer top-k restored 6/6 token parity.
+- **`glm5next`:** llama.cpp `src/models/glm5-next.cpp` (1,013 lines, local source since the
+  2026-10-03 pull to `bed0a8566`; not in b10306) for the **trunk** (KDA, NoPE MLA, k-pool DSA, MoE,
+  HC). **It is not a complete reference:** it throws
+  `"GLM5-Next NextN graph not implemented yet"`, so TensorSharp (`GlmDsaModel.Glm5Next*.cs`) stays the
+  only implementation reference for NextN/MTP. TensorSharp's earlier "llama.cpp is not a valid
+  reference for glm5next" predates this upstream file.
+- Secondary for both: TensorSharp `docs/models/glm.md`, `Models/GlmDsa/` (20 files).
 
 **`glm-dsa`** (GLM-5.2: 744B MoE, 78 layers):
 
@@ -29,8 +34,10 @@ reference; it says llama.cpp is not a valid reference there.
 - **Sinkhorn hyper-connections** (×4, the DeepSeek-V4 mHC recipe);
 - a SwiGLU clamp at 10.
 
-**Checkpoints don't fit this machine** (GLM-5.3 GGUF about 765 GB; Flash 320B), so this is a
-port + synthetic verification only, until a large-RAM or cloud host is available.
+**Real checkpoints don't fit this PC** (64 GB RAM). The smallest published quant TensorSharp
+measured: **GLM-5.3 UD-Q2_K_XL ≈ 236.4 GiB in 7 shards**. GLM-5.3-Flash (320B) is likewise far
+beyond 64 GB at any usable quant. So this is port + synthetic verification only until a large-RAM
+or cloud host is available.
 
 ## Reuse in Stingray
 
@@ -45,16 +52,27 @@ port + synthetic verification only, until a large-RAM or cloud host is available
 - [ ] **0. Read** `glm-dsa.cpp` (primary) and TensorSharp's `GlmDsaModel*.cs`. Write the spec here.
 - [ ] **1. `glm-dsa`:** `ModelGraph` branch; forward pass extending the `deepseek2`/`deepseek32`
   paths (indexer layer schedule, selection reuse, Hadamard-before-F16 key cache, routed scale).
-- [ ] **2. `glm5next`:** KDA layers (short conv, l2 q/k, per-channel decay), pooled indexer, ×4 HC
-  streams, SwiGLU clamp. A separate class is likely.
+- [ ] **2a. `glm5next` trunk:** KDA layers (short conv, l2 q/k, per-channel decay), NoPE MLA +
+  pooled DSA indexer, ×4 HC streams, SwiGLU clamp, MoE. Reference: `glm5-next.cpp`. A separate class
+  is likely.
+- [ ] **2b. `glm5next` NextN/MTP:** TensorSharp is the primary implementation reference until an
+  independent implementation exists (upstream llama.cpp doesn't have one yet).
 - [ ] **3. Gate:** `// glm-dsa — NOT admitted` / `// glm5next — NOT admitted` blocks.
 
-## Verification
+## Deferred (not in the initial port)
 
-1. Synthetic tiny GGUFs vs spec-written reference forwards. For `glm-dsa`, the synthetic model can
-   also run through the **vendored llama.cpp b10306**, which knows `glm-dsa`: a real independent
-   check of the mechanics even without the real checkpoint.
-2. A real checkpoint needs a large host: then `stingray admit-arch` against `llama-server` for
-   `glm-dsa`, and TensorSharp for `glm5next`.
+Vision (GLM-OCR ViT mmproj), NextN/MTP speculative decoding (2b only after the trunk), tensor
+parallelism, and GPU paths.
 
-**Effort:** about 1 day (`glm-dsa`) + about 1 day (`glm5next`).
+## Verification (levels as in [ported-families-todo](ported-families-todo.md))
+
+1. **Specification tests (level 2):** synthetic tiny GGUFs against test-side reimplementations.
+2. **Independent implementation (level 3), available now for `glm-dsa`:** run the synthetic model
+   through the **vendored llama.cpp b10306**, which knows `glm-dsa`: a real independent mechanics
+   check without the real checkpoint. For the `glm5next` trunk, the same needs a llama.cpp build from
+   `bed0a8566` or later. For NextN, only TensorSharp is available, which is a second reading, not an
+   independent check.
+3. **Real weights (level 4):** needs a large host; then `stingray admit-arch` against `llama-server`.
+
+**Effort:** port + synthetic about 1 day (`glm-dsa`) + about 1 day (`glm5next` trunk); NextN extra.
+Real-weight verification (large host), the closeout performance + DRY pass, and admission are separate.
