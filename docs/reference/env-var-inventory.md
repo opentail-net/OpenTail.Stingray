@@ -248,7 +248,7 @@ dynamically composed names.
 
 | Variable | Class | Notes |
 |---|---|---|
-| `STINGRAY_CPU_THREADS` | expert | Mirrors `OpenTailStingrayServerOptions.CpuThreads`. |
+| `STINGRAY_CPU_THREADS` | expert | Mirrors `OpenTailStingrayServerOptions.CpuThreads`. Default since 2026-10-02: physical core count (`CpuTopology.PhysicalCores`), not logical processors; measured never slower and up to ~7% faster on an 8-core/16-thread CPU (fcfb5c57). |
 
 ## OpenTail.Stingray.Cuda
 
