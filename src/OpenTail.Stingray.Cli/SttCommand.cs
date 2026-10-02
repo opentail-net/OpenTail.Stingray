@@ -21,7 +21,7 @@ public sealed class SttCommand : Command<SttCommand.Settings>
         public string Task { get; init; } = "transcribe";
 
         [CommandOption("-m|--model <VARIANT>")]
-        [Description("Whisper model architecture preset: tiny (default), base, small, medium, large-v3, or turbo; or voxtral; or sensevoice / paraformer (ONNX, pass the .onnx with --model-file; its tokens file is found next to it); or parakeet (GGUF via --model-file: TDT or CTC, default parakeet-tdt-0.6b-v2-q4_k.gguf).")]
+        [Description("Whisper model architecture preset: tiny (default), base, small, medium, large-v3, or turbo; or voxtral; or sensevoice / paraformer (ONNX, pass the .onnx with --model-file; its tokens file is found next to it); or parakeet (GGUF via --model-file: TDT or CTC, default parakeet-tdt-0.6b-v2-q4_k.gguf); or citrinet (GGUF via --model-file: default citrinet-asr-q8_0.gguf).")]
         public string Model { get; init; } = "tiny";
 
         [CommandOption("--model-file <PATH>")]
@@ -111,6 +111,20 @@ public sealed class SttCommand : Command<SttCommand.Settings>
             }
             pipeline = OpenTail.Stingray.Audio.Parakeet.ParakeetPipeline.Load(gguf);
             modelTitle = $"NVIDIA Parakeet ({Path.GetFileNameWithoutExtension(gguf)}) Speech-to-Text";
+        }
+        else if (variant == "citrinet")
+        {
+            string? gguf = s.ModelFile
+                ?? FindModelsFile(Path.Combine("citrinet-asr", "Citrinet-ASR-GGUF", "citrinet-asr-q8_0.gguf"))
+                ?? FindModelsFile(Path.Combine("citrinet-asr", "citrinet-asr-q8_0.gguf"))
+                ?? FindModelsFile("citrinet-asr-q8_0.gguf");
+            if (gguf is null || !File.Exists(gguf))
+            {
+                Console.Error.WriteLine("Error: Citrinet GGUF not found. Pass --model-file <path-to-citrinet-*.gguf>.");
+                return 1;
+            }
+            pipeline = OpenTail.Stingray.Audio.Citrinet.CitrinetPipeline.Load(gguf);
+            modelTitle = $"NVIDIA Citrinet ({Path.GetFileNameWithoutExtension(gguf)}) Speech-to-Text";
         }
         else if (variant.Contains("voxtral"))
         {

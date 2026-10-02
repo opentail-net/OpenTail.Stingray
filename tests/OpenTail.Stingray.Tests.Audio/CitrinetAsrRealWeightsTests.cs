@@ -29,30 +29,6 @@ public sealed class CitrinetAsrRealWeightsTests
         return null;
     }
 
-    private static (byte[] ConfigJson, byte[] TokenizerModel) ExtractEmbeddedFiles(GgufModel model)
-    {
-        if (!model.Metadata.TryGetValue("audiocpp.embedded_files.names", out var namesObj) || namesObj is not object[] names)
-            throw new InvalidOperationException("no embedded_files metadata");
-        var offsets = (object[])model.Metadata["audiocpp.embedded_files.offsets"];
-        var data = (object[])model.Metadata["audiocpp.embedded_files.data"];
-        var bytes = data.Select(o => (byte)Convert.ToInt64(o)).ToArray();
-
-        byte[]? configJson = null, tokenizerModel = null;
-        for (int i = 0; i < names.Length; i++)
-        {
-            string name = (string)names[i];
-            if (name != "citrinet_256_config.json" && name != "citrinet_256_tokenizer.model") continue;
-            long start = Convert.ToInt64(offsets[i]);
-            long end = i + 1 < offsets.Length ? Convert.ToInt64(offsets[i + 1]) : bytes.Length;
-            var slice = bytes[(int)start..(int)end];
-            if (name == "citrinet_256_config.json") configJson = slice;
-            else tokenizerModel = slice;
-        }
-        if (configJson is null || tokenizerModel is null)
-            throw new InvalidOperationException("missing config or tokenizer embedded file");
-        return (configJson, tokenizerModel);
-    }
-
     [Fact]
     public void Transcribe_OnRealLibriSpeechClip_ProducesNonEmptyText()
     {
@@ -63,7 +39,7 @@ public sealed class CitrinetAsrRealWeightsTests
 
         var sw = System.Diagnostics.Stopwatch.StartNew();
         using var model = GgufModel.Open(checkpointPath!);
-        var (configJsonBytes, tokenizerModelBytes) = ExtractEmbeddedFiles(model);
+        var (configJsonBytes, tokenizerModelBytes) = CitrinetPipeline.ExtractEmbeddedFiles(model);
         string configJson = System.Text.Encoding.UTF8.GetString(configJsonBytes);
 
         var source = new RvcPackedTensorSource(model);
