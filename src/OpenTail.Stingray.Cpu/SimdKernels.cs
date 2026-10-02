@@ -17,8 +17,9 @@ public static unsafe class SimdKernels
     internal static ParallelOptions ParallelOpts => s_parallelOpts;
 
     /// <summary>
-    /// Number of worker threads used by the CPU SIMD kernels. Defaults to the logical
-    /// processor count and can be set at process start with <c>STINGRAY_CPU_THREADS</c>.
+    /// Number of worker threads used by the CPU SIMD kernels. Defaults to the physical core
+    /// count (<see cref="CpuTopology.PhysicalCores"/>; SMT siblings measured as no help, see there)
+    /// and can be set at process start with <c>STINGRAY_CPU_THREADS</c>.
     /// A server option can override it before a model is loaded. This is particularly useful
     /// when inference shares a machine with another CPU-heavy process: too many workers can
     /// reduce token throughput through scheduling and memory-bandwidth contention.
@@ -37,7 +38,7 @@ public static unsafe class SimdKernels
         int.TryParse(Environment.GetEnvironmentVariable("STINGRAY_CPU_THREADS"), out int threads)
             && threads > 0
             ? threads
-            : Environment.ProcessorCount;
+            : CpuTopology.PhysicalCores;
 
     // ================================================================
     //  Batched GEMM (for prefill)
