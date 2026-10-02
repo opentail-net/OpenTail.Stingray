@@ -91,6 +91,11 @@ public enum DType : uint
     NVFP4     = 40,
     Q1_0      = 41,
     Q2_0      = 42,
+    // Publisher (PrismML) ternary encodings used by Bonsai2 GGUFs, not upstream ggml types. Decoded
+    // and transcoded losslessly to Q2_0 at load (BonsaiQuant); they only appear together with
+    // prism.hadamard.* metadata. "Ported, not verified": see ModelCompatibility.
+    PQ2_0     = 142,
+    PTQ1_0    = 143,
 }
 
 /// <summary>
@@ -108,7 +113,7 @@ public static class DTypeInfo
         dtype = (DType)rawType;
         return rawType switch
         {
-            <= 3 or >= 6 and <= 30 or 34 or 35 or >= 39 and <= 42 => true,
+            <= 3 or >= 6 and <= 30 or 34 or 35 or >= 39 and <= 42 or 142 or 143 => true,
             _ => false,
         };
     }
@@ -156,6 +161,8 @@ public static class DTypeInfo
         DType.NVFP4     => 64,
         DType.Q1_0      => 128,
         DType.Q2_0      => 64,
+        DType.PQ2_0     => 128,
+        DType.PTQ1_0    => 128,
         _ => throw new ArgumentOutOfRangeException(nameof(dtype), dtype, "Unknown dtype")
     };
 
@@ -201,6 +208,8 @@ public static class DTypeInfo
         DType.NVFP4     => 36,
         DType.Q1_0      => 18,
         DType.Q2_0      => 18,
+        DType.PQ2_0     => 34,
+        DType.PTQ1_0    => 28,
         _ => throw new ArgumentOutOfRangeException(nameof(dtype), dtype, "Unknown dtype")
     };
 

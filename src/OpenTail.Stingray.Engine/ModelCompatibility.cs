@@ -876,8 +876,20 @@ public static class ModelCompatibility
                 $"{string.Join(", ", s_textGenerationArchitectures.Order())}.");
         }
 
+        // Bonsai2 PRISM (PQ2_0/PTQ1_0 + prism.hadamard.* transforms) — NOT admitted. Ported 2026-10-02
+        // (BonsaiQuant, PrismHadamard, PrismHadamardMetadata, HybridGdnForwardPass; spec from TensorSharp's
+        // BSD-3 port) but not verified against the publisher reference (PrismML-Eng/llama.cpp, branch prism):
+        // "ported, not verified" (CLAUDE.md rule 14; docs/2-coverage/2026-10-02-tensorsharp-takeaways-plan.md
+        // §3b). Loadable only with STINGRAY_EXPERIMENTAL_PRISM=1, on the CPU hybrid-GDN pass.
+        bool prismTensors = model.Tensors.Any(t => Cpu.BonsaiQuant.IsBonsaiType(t.DType));
+        if (prismTensors && Environment.GetEnvironmentVariable("STINGRAY_EXPERIMENTAL_PRISM") != "1")
+            throw new NotSupportedException(
+                "This GGUF uses Bonsai2 PRISM weights (PQ2_0/PTQ1_0 with Hadamard transforms). Support is ported " +
+                "but not yet verified against the publisher's reference; set STINGRAY_EXPERIMENTAL_PRISM=1 to try it " +
+                "(CPU only, outputs unverified).");
+
         var unsupported = model.Tensors
-            .Where(t => !IsSupportedWeightDType(t.DType))
+            .Where(t => !IsSupportedWeightDType(t.DType) && !(prismTensors && Cpu.BonsaiQuant.IsBonsaiType(t.DType)))
             .Select(t => $"{t.Name} ({t.DType})")
             .Take(4)
             .ToArray();

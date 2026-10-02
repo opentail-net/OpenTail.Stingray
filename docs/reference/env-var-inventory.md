@@ -29,7 +29,12 @@ names are treated as valid, `doctor` would not have flagged it either. The warni
 `STINGRAY_MAX_QUEUE` and the dead entry is out of the registry, so the mistake is now reported with
 a closest-match suggestion.
 
-**Reconciled again 2026-09-27 — `KnownEnvironmentVariables.All` now contains **251** names**
+**Reconciled again 2026-10-03 — `KnownEnvironmentVariables.All` now contains **255** names**
+(2026-10-02: `STINGRAY_CPU_POOL`, `STINGRAY_CPU_POOL_BLOCKS`, `STINGRAY_CPU_SPIN` for the opt-in spin worker
+pool, registered in 8f45d133 without a count update; and `STINGRAY_EXPERIMENTAL_PRISM`, the "ported, not
+verified" Bonsai2 PRISM gate.)
+
+**Reconciled 2026-09-27 — the registry then contained 251 names**
 (2026-09-28: `STINGRAY_MODEL_HOME`, the `stingray setup` model home, docs/103 item 16; plus three added earlier the same day without a count update: `STINGRAY_RECURRENT_BATCHED_PREFILL` (item 12 fallback switch) and the ACE-Step parity hooks `STINGRAY_ACESTEP_DUMP` / `STINGRAY_ACESTEP_NOISE` (item 14).)
 (2026-09-27: the reference-parity debug hooks from docs/102 #11/#13 — `STINGRAY_SD3_DUMP_LATENT_PATH`,
 `STINGRAY_FLUX2_INJECT_NOISE_PATH` / `_DUMP_LATENT_PATH` / `_DUMP_COND_PATH`,
@@ -208,6 +213,7 @@ dynamically composed names.
 | `STINGRAY_CPU_POOL` | experimental | `spin` runs the CPU decode-path loops (matvecs, decode attention, row kernels, MoE decode sweeps) on a persistent spin-then-park worker pool (`SpinParkWorkerPool`, ported from TensorSharp) instead of `Parallel.For`. Opt-in; outputs are bit-identical. Measured 2026-10-02, interleaved: dense-model decode +19..27% (SmolLM2-135M 0.52x -> 0.66x, 360M 0.68x -> 0.81x, Qwen2.5-0.5B 0.73x -> 0.87x of llama.cpp); Mistral-7B tie. **Not for MoE**: OLMoE/LFM2 prefill -18..19%. Prefill/batched kernels always stay on `Parallel.For`. `docs/2-coverage/2026-10-02-tensorsharp-takeaways-plan.md` §1. |
 | `STINGRAY_CPU_POOL_BLOCKS` | experimental | With `STINGRAY_CPU_POOL=spin`: blocks handed to the pool per thread (default 4; 8 measured slightly better on small models, 2 worse; 0 = one block per index, which measured -25..35% decode). |
 | `STINGRAY_DSPARK_PLACE` | experimental | Mirrors `OpenTailStingrayServerOptions.DSparkPlace`; DSpark itself is parked (docs/00-current-work.md), not scheduled. |
+| `STINGRAY_EXPERIMENTAL_PRISM` | experimental | `1` lets Bonsai2 PRISM GGUFs (PQ2_0/PTQ1_0 weights + `prism.hadamard.*` transforms) load on the CPU hybrid-GDN pass. **Ported, not verified** (CLAUDE.md rule 14): without it such files are refused. Not verified against the publisher reference (PrismML-Eng/llama.cpp). `docs/2-coverage/2026-10-02-tensorsharp-takeaways-plan.md` §3b. |
 | `STINGRAY_EXPERT_STATS` | diagnostic | Mirrors `OpenTailStingrayServerOptions.ExpertStatsPath` (writes SLRU hit-rate stats to a file on exit — troubleshooting only). |
 | `STINGRAY_MOE_GPU_PREFILL` | experimental | Mirrors `OpenTailStingrayServerOptions.GpuMoePrefill`. |
 | `STINGRAY_MOE_GPU_PREFILL_MIN_TOKENS` | experimental | |

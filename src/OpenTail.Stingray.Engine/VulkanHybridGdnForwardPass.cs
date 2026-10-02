@@ -359,6 +359,8 @@ public sealed unsafe class VulkanHybridGdnForwardPass : IForwardPass
         ArgumentNullException.ThrowIfNull(model);
         ArgumentNullException.ThrowIfNull(gpu);
         ArgumentNullException.ThrowIfNull(hp);
+        if (PrismHadamardMetadata.IsPresent(model))
+            throw new NotSupportedException("Bonsai2 PRISM weights (PQ2_0/PTQ1_0 + Hadamard transforms) are only implemented on the CPU hybrid-GDN pass, not Vulkan.");
         ArgumentNullException.ThrowIfNull(placement);
 
         // ── Validate (mirror CudaHybridGdnForwardPass.cs:727-740) ──────

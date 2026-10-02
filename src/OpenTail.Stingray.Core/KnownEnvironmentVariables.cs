@@ -64,6 +64,7 @@ public static class KnownEnvironmentVariables
         "STINGRAY_CPU_POOL_BLOCKS",
         "STINGRAY_CPU_PREFILL_Q8",
         "STINGRAY_CPU_SPIN",
+        "STINGRAY_EXPERIMENTAL_PRISM",
         "STINGRAY_Q5K_DECODE_Q8K",
         "STINGRAY_CPU_KPACK_SIMD",
         "STINGRAY_CPU_VNNI",

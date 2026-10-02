@@ -69,6 +69,14 @@ public static class Dequantize
             case DType.Q2_0:
                 DequantQ2_0(src, dst, elementCount);
                 break;
+            case DType.PQ2_0:
+            case DType.PTQ1_0:
+                unsafe
+                {
+                    fixed (byte* s = src) fixed (float* d = dst)
+                        BonsaiQuant.Dequantize(dtype, s, d, elementCount);
+                }
+                break;
             case DType.IQ4_NL:
                 DequantIq4Nl(src, dst, elementCount);
                 break;

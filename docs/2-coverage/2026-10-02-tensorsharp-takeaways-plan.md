@@ -116,9 +116,27 @@ GEMM is built.
 **Result, 2026-10-02 (3a):** already supported since the initial release (`DType.Q1_0/Q2_0`,
 block tables, `Dequantize`, dedicated `MatVecQ1_0`/`MatVecQ2_0`). Now independently verified:
 dequantization is bit-identical to ggml's `to_float` on 786k random values (`harness/ggmlx`). No
-local `Q1_0` checkpoint exists, so no end-to-end or speed check. 3b (Bonsai2 PRISM) is still open;
-the checkpoint is downloaded (`models/_models/bonsai2/Ternary-Bonsai-2-27B-PTQ1_0.gguf`, SHA-256
-matches TensorSharp's card).
+local `Q1_0` checkpoint exists, so no end-to-end or speed check.
+
+**Result, 2026-10-03 (3b): ported, not verified.** Bonsai2 PRISM runs on the CPU hybrid-GDN pass
+behind `STINGRAY_EXPERIMENTAL_PRISM=1`; without it such files are refused with a "ported but not
+verified" message. Design:
+- PQ2_0/PTQ1_0 are transcoded losslessly to ggml Q2_0 at load.
+- The forward transform (grouped-GDN head reorder first for `ssm_out`) is applied to a copy of each
+  listed projection's input; the inverse is applied on embedding rows.
+- MoE, MTP-head and tied-embedding PRISM checkpoints are refused (paths the transform doesn't
+  cover). CUDA and Vulkan refuse PRISM.
+
+Tests (`BonsaiPrismTests`, 13):
+- FWHT vs a dense Sylvester Hadamard matrix, both directions;
+- inverse∘forward = identity at width 5120 / block 1024;
+- grouped reorder vs an explicit index map;
+- PTQ1_0 decode of an independent test encoder;
+- transcode-to-Q2_0 bit-exact against the direct decode;
+- GGUF type IDs.
+
+Real checkpoint: coherent, correct greedy answers (see the "Ported, not verified" table).
+Remaining: the publisher-reference comparison and a fast ternary kernel (0.4 t/s now).
 
 - **Types:** GGML type 41 `Q1_0` (one F16 scale plus 128 one-bit signs per block, 1.125
   bits/weight), and the Bonsai2 publisher types `PQ2_0` (142) and `PTQ1_0` (143).
@@ -169,4 +187,4 @@ The user's policy:
 
 | Family | Ported | Code | Reference used | Missing for admission |
 |---|---|---|---|---|
-| (none yet) | | | | |
+| Bonsai2 PRISM (`qwen35` + PQ2_0/PTQ1_0 + `prism.hadamard.*`) | 2026-10-03 | `Cpu/BonsaiQuant.cs`, `Cpu/PrismHadamard.cs`, `Engine/PrismHadamardMetadata.cs`, `HybridGdnForwardPass` (ResolveTensor transcode, FusedMatVec / BatchedProjection / GateUpDual transforms, embedding inverse); gate `STINGRAY_EXPERIMENTAL_PRISM=1` in `ModelCompatibility`; CUDA/Vulkan refuse | TensorSharp `bonsai_quant.cpp`, `BonsaiHadamardMetadata.cs`, `ggml_ops_bonsai.cpp` (BSD-3) + its model card | Publisher-reference comparison (`PrismML-Eng/llama.cpp`, branch `prism`): exact token references, PPL. Sanity so far: `Ternary-Bonsai-2-27B-PTQ1_0` (SHA-256 matches) answers "The capital of France is **Paris**." and gives a correct two-sentence Rayleigh-scattering explanation, greedy. Speed 0.4 t/s (generic Q2_0 kernel), a ternary kernel is the lever |

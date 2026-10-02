@@ -49,6 +49,7 @@ or inspired by TensorSharp, including:
 - MXFP4 decoding in `src/OpenTail.Stingray.Cpu/Dequantize.cs` (derived from TensorSharp's `ManagedQuantizedOps`)
 - Managed quantized GEMM operations, SIMD microkernels, and CPU threading routines in `src/OpenTail.Stingray.Cpu` and `src/OpenTail.Stingray.Engine`
 - The spin-then-park CPU worker pool in `src/OpenTail.Stingray.Cpu/SpinParkWorkerPool.cs` (ported from TensorSharp's `TensorSharp.Models/CpuWorkerPool.cs`)
+- Bonsai2 PQ2_0/PTQ1_0 decoding and Q2_0 transcoding in `src/OpenTail.Stingray.Cpu/BonsaiQuant.cs` (ported from TensorSharp's `TensorSharp.GGML.Native/bonsai_quant.cpp`); the PRISM metadata validation in `src/OpenTail.Stingray.Engine/PrismHadamardMetadata.cs` and the transform in `src/OpenTail.Stingray.Cpu/PrismHadamard.cs` follow TensorSharp's `BonsaiHadamardMetadata.cs` / `ggml_ops_bonsai.cpp`
 
 - Upstream: <https://github.com/zhongkaifu/TensorSharp>
 - Copyright (c) 2026, Zhongkai Fu

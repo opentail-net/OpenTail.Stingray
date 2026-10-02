@@ -63,6 +63,8 @@ public sealed unsafe class HybridGdnForwardPass : IForwardPass
 
     private readonly GgufModel _model;
     private readonly ModelHyperparams _hp;
+    private readonly PrismHadamardMetadata? _prism;              // Bonsai2 PRISM transforms; null for ordinary GGUFs
+    private readonly List<nint> _ownedWeightBuffers = new();    // PQ2_0/PTQ1_0 transcoded to Q2_0 (freed in Dispose)
     private readonly GdnConfig _gdn;
     private readonly PagedKvCache _kvCache;
     private readonly GdnStateCache _gdnStateCache;
@@ -416,6 +418,15 @@ public sealed unsafe class HybridGdnForwardPass : IForwardPass
         _gdnConvChannels = _gdn.ConvChannels;
         _gdnConvKernel = _gdn.ConvKernel;
 
+        // Bonsai2 PRISM (ported, not verified; ModelCompatibility gates it behind
+        // STINGRAY_EXPERIMENTAL_PRISM=1). Must be read before any ResolveTensor call: resolving a
+        // PQ2_0/PTQ1_0 tensor transcodes it to Q2_0 and attaches its Hadamard transform.
+        _prism = PrismHadamardMetadata.Read(model);
+        if (_prism is not null && (hp.IsMoE || hp.NumMtpLayers > 0))
+            throw new NotSupportedException(
+                "PRISM (Bonsai2) Hadamard transforms are implemented for the dense qwen35 trunk only; " +
+                "MoE experts and the MTP head multiply through raw-pointer paths the transform does not cover.");
+
         _kvCache = new PagedKvCache(hp.NumLayers, hp.NumKvHeads, _headDim);
         _gdnStateCache = new GdnStateCache(hp.LayerTypes, _gdn);
 
@@ -577,6 +588,8 @@ public sealed unsafe class HybridGdnForwardPass : IForwardPass
         _outputWeight = model.FindTensor("output.weight") is not null
             ? ResolveTensor("output.weight")
             : _embTensor; // tied embeddings
+        if (_prism is not null && model.FindTensor("output.weight") is null)
+            throw new NotSupportedException("PRISM (Bonsai2) with tied embeddings: the output head would inherit token_embd's inverse transform.");
 
         // ── MTP / NEXTN head (issue #25) — block at index NumLayers ────────
         // Loaded only when the GGUF reports nextn_predict_layers > 0 AND all
@@ -1046,13 +1059,31 @@ public sealed unsafe class HybridGdnForwardPass : IForwardPass
     /// parameterised for the chunked-prefill per-token loop).</summary>
     private void DenseFfnAt(int layer, float* normIn, float* hiddenOut)
     {
-        SimdKernels.MatVecDual(
-            _ffnGate, _wFfnGate[layer].DataPtr,
-            _ffnUp, _wFfnUp[layer].DataPtr,
-            normIn, _intermDim, _embDim,
-            _wFfnGate[layer].DType, _wFfnUp[layer].DType);
+        GateUpDual(layer, normIn);
         SimdKernels.SiLuMul(_ffnGate, _ffnUp, _intermDim);
         FusedMatVec(hiddenOut, _wFfnDown[layer], _ffnGate, _embDim, _intermDim);
+    }
+
+    /// <summary>ffn_gate/ffn_up into _ffnGate/_ffnUp with one shared-input MatVecDual. With PRISM both
+    /// weights carry the same forward transform (same width), so the input is transformed once.</summary>
+    private void GateUpDual(int layer, float* normIn)
+    {
+        float* x = normIn;
+        if (_wFfnGate[layer].Prism is { Inverse: false } p)
+        {
+            if (_wFfnUp[layer].Prism is not { Inverse: false } pu || !ReferenceEquals(pu.Signs, p.Signs))
+                throw new InvalidDataException($"PRISM: blk.{layer} ffn_gate and ffn_up must share one input transform.");
+            x = PrismForwardCopy(p, normIn, _embDim, 1);
+        }
+        try
+        {
+            SimdKernels.MatVecDual(
+                _ffnGate, _wFfnGate[layer].DataPtr,
+                _ffnUp, _wFfnUp[layer].DataPtr,
+                x, _intermDim, _embDim,
+                _wFfnGate[layer].DType, _wFfnUp[layer].DType);
+        }
+        finally { if (x != normIn) NativeMemory.Free(x); }
     }
 
     private void EnsureMtpHiddenHistoryCap(int requiredTokens)
@@ -1847,6 +1878,7 @@ public sealed unsafe class HybridGdnForwardPass : IForwardPass
         {
             SimdKernels.DequantRow(rowPtr, dst, _embDim, _embTensor.DType);
         }
+        PrismEmbeddingInverse(dst);
     }
 
     // ============================================================
@@ -2149,6 +2181,18 @@ public sealed unsafe class HybridGdnForwardPass : IForwardPass
     /// weight take the packed GEMM (FP32 activations, weights dequantized per panel); smaller ones, or dtypes it can't
     /// take, the int8 batched matmul.</summary>
     private static void BatchedProjection(float* output, in TensorRef w, float* input, int n, int rows, int cols)
+    {
+        if (w.Prism is { Inverse: false } p)
+        {
+            float* x = PrismForwardCopy(p, input, cols, n);
+            try { BatchedProjectionCore(output, w, x, n, rows, cols); }
+            finally { NativeMemory.Free(x); }
+            return;
+        }
+        BatchedProjectionCore(output, w, input, n, rows, cols);
+    }
+
+    private static void BatchedProjectionCore(float* output, in TensorRef w, float* input, int n, int rows, int cols)
     {
         if (n >= MinBatchForGemmQuant && PackedSgemmF32.CanGemmQuant(w.DType, cols))
             PackedSgemmF32.GemmQuant(output, input, w.DataPtr, w.DType, n, rows, cols);
@@ -2620,11 +2664,7 @@ public sealed unsafe class HybridGdnForwardPass : IForwardPass
 
     private void DenseFfn(int layer)
     {
-        SimdKernels.MatVecDual(
-            _ffnGate, _wFfnGate[layer].DataPtr,
-            _ffnUp,   _wFfnUp[layer].DataPtr,
-            _normBuf, _intermDim, _embDim,
-            _wFfnGate[layer].DType, _wFfnUp[layer].DType);
+        GateUpDual(layer, _normBuf);
         SimdKernels.SiLuMul(_ffnGate, _ffnUp, _intermDim);
         FusedMatVec(_hidden, _wFfnDown[layer], _ffnGate, _embDim, _intermDim);
     }
@@ -3133,6 +3173,7 @@ public sealed unsafe class HybridGdnForwardPass : IForwardPass
         {
             SimdKernels.DequantRow(rowPtr, _hidden, _embDim, _embTensor.DType);
         }
+        PrismEmbeddingInverse(_hidden);
     }
 
     // ============================================================
@@ -3142,6 +3183,13 @@ public sealed unsafe class HybridGdnForwardPass : IForwardPass
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static void FusedMatVec(float* output, in TensorRef tensor, float* input, int rows, int cols)
     {
+        if (tensor.Prism is { Inverse: false } p)
+        {
+            float* x = PrismForwardCopy(p, input, cols, 1);
+            try { SimdKernels.MatVec(output, tensor.DataPtr, x, rows, cols, tensor.DType); }
+            finally { NativeMemory.Free(x); }
+            return;
+        }
         SimdKernels.MatVec(output, tensor.DataPtr, input, rows, cols, tensor.DType);
     }
 
@@ -3227,7 +3275,58 @@ public sealed unsafe class HybridGdnForwardPass : IForwardPass
     {
         var info = _model.FindTensor(name)
             ?? throw new InvalidOperationException($"Missing tensor: {name}");
-        return new TensorRef(name, info, info.DType, _model.GetTensorDataPtr(info));
+        byte* data = _model.GetTensorDataPtr(info);
+        DType dtype = info.DType;
+        if (BonsaiQuant.IsBonsaiType(dtype))
+        {
+            // Lossless transcode to ggml Q2_0 (owned buffer, freed in Dispose) so the existing Q2_0
+            // dequantizer and matvec run the weights.
+            long elems = info.ElementCount;
+            byte* q2 = (byte*)NativeMemory.Alloc((nuint)BonsaiQuant.Q2_0Bytes(elems));
+            BonsaiQuant.TranscodeToQ2_0(dtype, data, elems, q2);
+            _ownedWeightBuffers.Add((nint)q2);
+            data = q2;
+            dtype = DType.Q2_0;
+        }
+        return new TensorRef(name, info, dtype, data, PrismFor(name, info));
+    }
+
+    /// <summary>The PRISM transform declared for <paramref name="name"/>, or null.</summary>
+    private PrismTransform? PrismFor(string name, GgufTensorInfo info)
+    {
+        if (_prism is null) return null;
+        bool inverse = _prism.InverseNames.Contains(name);
+        if (!inverse && !_prism.ForwardNames.Contains(name)) return null;
+        int width = (int)info.Dimensions[0];
+        bool grouped = !inverse && _prism.GdnVGrouped && name.EndsWith(".ssm_out.weight", StringComparison.Ordinal);
+        if (grouped && width != _gdnHeadDim * _gdnNumVHeads)
+            throw new InvalidDataException($"PRISM grouped GDN width mismatch for '{name}'.");
+        return new PrismTransform(_prism.SignsByWidth[width], _prism.BlockSize, inverse,
+            grouped ? _gdnHeadDim : 0, grouped ? _gdnNumKHeads : 0, grouped ? _gdnKvRepeat : 1);
+    }
+
+    /// <summary>
+    /// A copy of <paramref name="n"/> input rows of width <paramref name="cols"/> with the weight's forward
+    /// PRISM transform applied (grouped-GDN head reorder first when declared). Caller frees it.
+    /// </summary>
+    private static float* PrismForwardCopy(PrismTransform p, float* input, int cols, int n)
+    {
+        float* x = (float*)NativeMemory.Alloc((nuint)((long)n * cols * sizeof(float)));
+        for (int t = 0; t < n; t++)
+        {
+            float* src = input + (long)t * cols, dst = x + (long)t * cols;
+            if (p.GroupRepeat > 1) PrismHadamard.GroupedHeadReorder(src, dst, p.GroupHeadDim, p.GroupKHeads, p.GroupRepeat);
+            else new ReadOnlySpan<float>(src, cols).CopyTo(new Span<float>(dst, cols));
+            PrismHadamard.Forward(dst, p.Signs, cols, p.BlockSize);
+        }
+        return x;
+    }
+
+    /// <summary>The inverse transform for an embedding row that has one (PRISM token_embd).</summary>
+    private void PrismEmbeddingInverse(float* row)
+    {
+        if (_embTensor.Prism is { Inverse: true } p)
+            PrismHadamard.Inverse(row, p.Signs, _embDim, p.BlockSize);
     }
 
     /// <summary>
@@ -3327,6 +3426,9 @@ public sealed unsafe class HybridGdnForwardPass : IForwardPass
     {
         if (_disposed) return;
         _disposed = true;
+
+        foreach (nint p in _ownedWeightBuffers) NativeMemory.Free((void*)p);
+        _ownedWeightBuffers.Clear();
 
         // Scratch buffers
         NativeMemory.Free(_hidden);
@@ -3451,10 +3553,16 @@ public sealed unsafe class HybridGdnForwardPass : IForwardPass
         public readonly GgufTensorInfo Info;
         public readonly DType DType;
         public readonly byte* DataPtr;
+        /// <summary>Bonsai2 PRISM Hadamard transform on this weight's input (forward) or on its
+        /// rows (inverse, token_embd); null for every ordinary GGUF.</summary>
+        public readonly PrismTransform? Prism;
 
-        public TensorRef(string name, GgufTensorInfo info, DType dtype, byte* dataPtr)
+        public TensorRef(string name, GgufTensorInfo info, DType dtype, byte* dataPtr, PrismTransform? prism = null)
         {
-            Name = name; Info = info; DType = dtype; DataPtr = dataPtr;
+            Name = name; Info = info; DType = dtype; DataPtr = dataPtr; Prism = prism;
         }
     }
+
+    private sealed record PrismTransform(float[] Signs, int BlockSize, bool Inverse,
+        int GroupHeadDim, int GroupKHeads, int GroupRepeat);
 }
