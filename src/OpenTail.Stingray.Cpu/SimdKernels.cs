@@ -298,30 +298,6 @@ public static unsafe class SimdKernels
     public static bool BlasAvailable => BlasInterop.IsAvailable;
 
     /// <summary>
-    /// Whether the int8 (Q8_K/Q8_KS) batched-prefill path in <see cref="MatMulBatched"/> is live.
-    ///
-    /// <para><b>Default off.</b> Q8 activation prefill is an approximation and may change model
-    /// logits or token NLLs versus the sequential F32 path. Exact numerical parity is the default;
-    /// opt in with <c>STINGRAY_CPU_PREFILL_Q8=1</c> when the measured speed/quality tradeoff is
-    /// acceptable for the workload. Quantizing activation rows lets each weight row be read once
-    /// and dotted against 8 tokens per call (the <c>_8In</c>/<c>_4In</c> kernels) instead of once
-    /// per token — measured 2026-10-01 at ~2.8x dense prefill throughput (SmolLM2-1.7B Q4_K_M,
-    /// 2,194 tokens: 81 t/s off vs 224 t/s on; docs/1-correctness/13-granite4-h-small-moe-ppl-parity-plan.md), and the same
-    /// technique llama.cpp uses for its own prefill GEMM.</para>
-    ///
-    /// <para>The Q8 dots are NOT byte-exact with the F32 dots decode uses (docs/cpu-prefill-plan.md
-    /// §10), so prefill's numerics differ slightly from decode's on a dense model. That gap was the
-    /// stated blocker on defaulting this on, and it has since been measured rather than assumed:
-    /// perplexity moved by −0.14% on a diverse 5-topic 2047-token corpus and −0.4% on the original
-    /// single-document corpus (both slightly *better* with the gate on, a direction not evidence
-    /// of higher accuracy), while Granite 4 H Small showed a larger per-token NLL difference. The
-    /// broad performance result is not sufficient to make approximation the default.</para>
-    ///
-    /// <para>All-control-token prompts are an explicit exception: <see cref="Engine.ForwardPass"/>
-    /// detects that structural GGUF input and uses its sequential F32 path even while this gate is
-    /// enabled. Mixed prompts (including normal BOS-plus-text input) remain eligible.</para>
-    /// </summary>
-    /// <summary>
     /// How many times the tiered fallback actually executed. Exists because a performance result
     /// — positive or negative — is only meaningful if the changed code ran. Without it "no effect"
     /// and "never invoked" are indistinguishable, and the second masquerading as the first is how
@@ -344,8 +320,34 @@ public static unsafe class SimdKernels
     public static bool BatchedMatVecTierEnabled { get; set; } =
         Environment.GetEnvironmentVariable("STINGRAY_BATCHED_MATVEC_TIER") != "0";
 
+    /// <summary>
+    /// Whether the int8 (Q8_K/Q8_KS) batched-prefill path in <see cref="MatMulBatched"/> is live.
+    ///
+    /// <para><b>Default on (user decision 2026-10-02, docs/reference/adr-0003-cpu-int8-prefill-default.md).</b>
+    /// Quantizing activation rows lets each weight row be read once and dotted against 8 tokens per
+    /// call (the <c>_8In</c>/<c>_4In</c> kernels) instead of once per token. It is the same technique
+    /// llama.cpp's CPU backend uses for its own prompt processing (src1 quantized to the weight's
+    /// <c>vec_dot_type</c>, Q8_K/Q8_0). Measured: SmolLM2-1.7B Q4_K_M 2,194 tokens 81 -> 224 t/s;
+    /// Gemma-3-4B 0.39x -> 0.95x and Gemma-4-12B 0.39x -> 0.97x of llama.cpp prefill (2026-10-02).
+    /// <c>STINGRAY_CPU_PREFILL_Q8=0</c> restores the per-token path (the rollback switch).</para>
+    ///
+    /// <para>The batched int8 dots are NOT byte-exact with the per-token decode kernels, so prefill
+    /// logits differ slightly from a token-by-token run. ("F32 prefill" was a misnomer: for K-quant
+    /// weights the per-token decode matvec also quantizes activations, to Q8_KS; the difference is
+    /// grouping and kernel, not int8 vs float.) Measured cost: SmolLM2-1.7B wikitext PPL 6.9437 -> 6.9891 (+0.69%),
+    /// Qwen2.5-0.5B 11.9702 -> 11.9693 (neutral); DeepSeek-V2-Lite matched llama-server greedily
+    /// with this on and departed at token 9 with it off (before e7b7aa8a, which flips that same
+    /// knife-edge token either way: docs/1-correctness/bugstofix.md item 24); Granite-4-H-Small PPL 26.42 (on) vs 26.55
+    /// (off) vs llama.cpp 26.11. Routed MoE experts are NOT covered by this gate: they also need
+    /// <c>STINGRAY_MOE_PREFILL_Q8=1</c> (default off; the 2026-10-01 Granite MoE per-token NLL
+    /// investigation, docs/done/13-granite4-h-small-moe-ppl-parity-plan.md).</para>
+    ///
+    /// <para>All-control-token prompts are an explicit exception: <see cref="Engine.ForwardPass"/>
+    /// detects that structural GGUF input and uses its sequential F32 path even while this gate is
+    /// enabled. Mixed prompts (including normal BOS-plus-text input) remain eligible.</para>
+    /// </summary>
     public static bool Q8PrefillEnabled { get; set; } =
-        Environment.GetEnvironmentVariable("STINGRAY_CPU_PREFILL_Q8") == "1";
+        Environment.GetEnvironmentVariable("STINGRAY_CPU_PREFILL_Q8") != "0";
 
     /// <summary>
     /// Use Q8_K activations (as ggml_vec_dot_q5_K_q8_K does) for every Q5_K matvec in the CPU decode path:

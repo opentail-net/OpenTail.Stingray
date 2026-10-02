@@ -204,6 +204,20 @@ doc as "worth another look" and not yet investigated.
         Speed: 2.2-2.9x prefill on Q4_K. Quality: neutral on Qwen2.5-0.5B, 0.69% further from
         llama.cpp on SmolLM2-1.7B (F32 matches llama.cpp to 0.03%). Q3_K gains nothing because
         the `DotQ3K_Q8KS_*` kernels still had the pre-fix switch-in-loop shape (next item).
+      - **Decided 2026-10-02 (user): int8 prefill default ON for dense models**, routed MoE experts
+        still F32 (`STINGRAY_MOE_PREFILL_Q8`). Record, evidence and rollback (`=0`):
+        [ADR-0003](../reference/adr-0003-cpu-int8-prefill-default.md). Open follow-ups toward
+        llama.cpp numerics and MoE int8, each to be verified before acting:
+        - [ ] Our int8 is not ggml's: SmolLM2 F32 is 0.03% from llama.cpp PPL, our int8 0.69%,
+              though ggml also quantizes activations. Compare our Q8_KS (8 scales/256) against
+              ggml's Q8_K (1 scale/256) per weight type; align where they differ.
+        - [ ] Q3_K batched prefill reportedly uses Q8_KS while decode uses Q8_K
+              (`TryResolveQ8Dispatch`); unify on Q8_K to match decode and ggml.
+        - [ ] MoE: quantize token activations once before expert dispatch (ggml `mul_mat_id`)
+              instead of per expert bucket; keep router and SiLU*up in F32.
+        - [ ] MoE: route small prompts (N <= 32) through the folded decode-style dispatch.
+        - [ ] Then re-run the Granite-4-H-Small PPL/NLL comparison and decide
+              `STINGRAY_MOE_PREFILL_Q8`.
       - **Done 2026-10-02 (0298f88e): the `DotQ3K_Q8KS_*` (1/2/4/8-input) int8-prefill kernels**
         got the same treatment, kept bit-identical: SIMD scale unpack, running `qs >> 2` and a
         doubling hmask bit in place of the switches, `Q3KAccumInput` unchanged. Real-weight
@@ -594,7 +608,9 @@ heads, KV sharing, k_eq_v, V norm, sliding window). Re-measured vs llama-bench t
 prefill 0.39x / decode 0.84x, Gemma-4-E4B 0.33x / 0.85x, Gemma-3-4B 0.39x / 0.85x. The remaining
 prefill gap is the general F32-prefill default: with `STINGRAY_CPU_PREFILL_Q8=1` Gemma-3-4B is
 107.9 t/s (0.95x) and Gemma-4-12B 36.4 t/s (0.97x). That default is the user's decision (10.2's
-evidence table); no Gemma-specific work remains here.
+evidence table); no Gemma-specific work remains here. **Decided 2026-10-02: int8 prefill is the
+default again** ([ADR-0003](../reference/adr-0003-cpu-int8-prefill-default.md)); uncontended
+re-measure of these rows pending.
 
 Flagship Google model family, real and severe: `PerformanceLeague.md`'s Gemma section notes
 `prefill:decode still ~1.0x` for these rows — i.e. prefill and decode take about the same t/s,
