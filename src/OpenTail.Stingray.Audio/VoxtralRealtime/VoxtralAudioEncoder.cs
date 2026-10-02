@@ -1,3 +1,4 @@
+using System.Runtime.Intrinsics;
 using OpenTail.Stingray.Cpu;
 
 namespace OpenTail.Stingray.Audio.VoxtralRealtime;
@@ -119,12 +120,13 @@ public static class VoxtralAudioEncoder
                 Q8_0BatchedLinear.MatMul(pV, qkvDim, hidden, pX, frames, pVB, ov, qkvDim);
             }
         }
+        var (ropeCos, ropeSin) = RopeTable(frames, headDim);
         Parallel.For(0, frames, t =>
         {
             var qt = qFlat.AsSpan(t * qkvDim, qkvDim).ToArray();
             var kt = kFlat.AsSpan(t * qkvDim, qkvDim).ToArray();
-            RopeNeoxInPlace(qt, heads, headDim, t);
-            RopeNeoxInPlace(kt, heads, headDim, t);
+            RopeNeoxInPlace(qt, heads, headDim, t, ropeCos, ropeSin);
+            RopeNeoxInPlace(kt, heads, headDim, t, ropeCos, ropeSin);
             q[t] = qt;
             k[t] = kt;
             v[t] = vFlat.AsSpan(t * qkvDim, qkvDim).ToArray();
@@ -133,30 +135,65 @@ public static class VoxtralAudioEncoder
         var contextFlat = new float[frames][];
         for (int t = 0; t < frames; t++) contextFlat[t] = new float[heads * headDim];
 
+        // Per head: K transposed to [d][frames] so one vector holds 8 keys, V contiguous [frames][d].
+        // Q·K puts 8 keys in the lanes and P·V puts 8 d's in the lanes, so every score and every
+        // output still sums over d (resp. j) in the scalar loop's order, without FMA contraction:
+        // bit-identical to the original triple loop.
         Parallel.For(0, heads, h =>
         {
             int chBase = h * headDim;
-            var scores = new float[frames];
-            for (int i = 0; i < frames; i++)
+            var kT = new float[headDim * frames];
+            var vH = new float[frames * headDim];
+            for (int j = 0; j < frames; j++)
             {
-                int begin = Math.Max(0, i - window + 1);
-                float maxScore = float.NegativeInfinity;
-                for (int j = begin; j <= i; j++)
-                {
-                    float dot = 0f;
-                    for (int d = 0; d < headDim; d++) dot += q[i][chBase + d] * k[j][chBase + d];
-                    dot *= invSqrtD;
-                    scores[j] = dot;
-                    if (dot > maxScore) maxScore = dot;
-                }
-                float sum = 0f;
-                for (int j = begin; j <= i; j++) { scores[j] = MathF.Exp(scores[j] - maxScore); sum += scores[j]; }
-                float invSum = 1f / sum;
+                float[] kj = k[j], vj = v[j];
                 for (int d = 0; d < headDim; d++)
                 {
-                    float acc = 0f;
-                    for (int j = begin; j <= i; j++) acc += scores[j] * invSum * v[j][chBase + d];
-                    contextFlat[i][chBase + d] = acc;
+                    kT[d * frames + j] = kj[chBase + d];
+                    vH[j * headDim + d] = vj[chBase + d];
+                }
+            }
+            var scores = new float[frames];
+            var acc = new float[headDim];
+            unsafe
+            {
+                fixed (float* pKT = kT, pV = vH, pS = scores, pAcc = acc)
+                {
+                    var scale = Vector256.Create(invSqrtD);
+                    for (int i = 0; i < frames; i++)
+                    {
+                        int begin = Math.Max(0, i - window + 1);
+                        float[] qi = q[i];
+                        int j = begin;
+                        for (; j + 8 <= i + 1; j += 8)
+                        {
+                            var dot = Vector256<float>.Zero;
+                            for (int d = 0; d < headDim; d++)
+                                dot += Vector256.Create(qi[chBase + d]) * Vector256.Load(pKT + d * frames + j);
+                            (dot * scale).Store(pS + j);
+                        }
+                        for (; j <= i; j++)
+                        {
+                            float dot = 0f;
+                            for (int d = 0; d < headDim; d++) dot += qi[chBase + d] * pKT[d * frames + j];
+                            pS[j] = dot * invSqrtD;
+                        }
+                        float maxScore = float.NegativeInfinity;
+                        for (j = begin; j <= i; j++) if (pS[j] > maxScore) maxScore = pS[j];
+                        float sum = 0f;
+                        for (j = begin; j <= i; j++) { pS[j] = MathF.Exp(pS[j] - maxScore); sum += pS[j]; }
+                        float invSum = 1f / sum;
+
+                        for (int d = 0; d < headDim; d += 8) Vector256<float>.Zero.Store(pAcc + d);
+                        for (j = begin; j <= i; j++)
+                        {
+                            var p = Vector256.Create(pS[j] * invSum);
+                            float* vj = pV + j * headDim;
+                            for (int d = 0; d < headDim; d += 8)
+                                (Vector256.Load(pAcc + d) + p * Vector256.Load(vj + d)).Store(pAcc + d);
+                        }
+                        acc.AsSpan().CopyTo(contextFlat[i].AsSpan(chBase, headDim));
+                    }
                 }
             }
         });
@@ -191,23 +228,46 @@ public static class VoxtralAudioEncoder
     /// within each head (half-split, NOT the interleaved GPT-J `(2i,2i+1)` pairing) -- applied
     /// across the full head_dim (no partial-rotation `n_dims` reduction here, unlike CosyVoice3's
     /// RoPE usage elsewhere in this codebase).</summary>
-    private static void RopeNeoxInPlace(float[] qkv, int heads, int headDim, int position)
+    private static void RopeNeoxInPlace(float[] qkv, int heads, int headDim, int position, float[] cosTable, float[] sinTable)
     {
         int half = headDim / 2;
+        int row = position * half;
         for (int h = 0; h < heads; h++)
         {
             int baseIdx = h * headDim;
             for (int i = 0; i < half; i++)
             {
-                float freq = MathF.Pow(VoxtralAudioEncoderWeights.RopeTheta, -2f * i / headDim);
-                float angle = position * freq;
-                float cos = MathF.Cos(angle), sin = MathF.Sin(angle);
+                float cos = cosTable[row + i], sin = sinTable[row + i];
                 float a = qkv[baseIdx + i];
                 float b = qkv[baseIdx + half + i];
                 qkv[baseIdx + i] = a * cos - b * sin;
                 qkv[baseIdx + half + i] = a * sin + b * cos;
             }
         }
+    }
+
+    /// <summary>cos/sin of <c>position * theta^(-2i/headDim)</c> for every position &lt;
+    /// <paramref name="frames"/> and pair i &lt; headDim/2, indexed <c>[position * headDim/2 + i]</c>:
+    /// the angles depend only on position, so one table serves every head, frame and layer (same
+    /// float expressions as computing them inline, so the same bits).</summary>
+    private static (float[] Cos, float[] Sin) RopeTable(int frames, int headDim)
+    {
+        int half = headDim / 2;
+        var freq = new float[half];
+        for (int i = 0; i < half; i++)
+            freq[i] = MathF.Pow(VoxtralAudioEncoderWeights.RopeTheta, -2f * i / headDim);
+        var cos = new float[frames * half];
+        var sin = new float[frames * half];
+        Parallel.For(0, frames, position =>
+        {
+            for (int i = 0; i < half; i++)
+            {
+                float angle = position * freq[i];
+                cos[position * half + i] = MathF.Cos(angle);
+                sin[position * half + i] = MathF.Sin(angle);
+            }
+        });
+        return (cos, sin);
     }
 
     private static float[] Mlp(float[][] xRows, int hidden, VoxtralAudioLayerWeights w)
