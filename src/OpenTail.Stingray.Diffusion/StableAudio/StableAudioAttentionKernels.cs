@@ -1,3 +1,4 @@
+using System.Runtime.Intrinsics;
 using System.Numerics.Tensors;
 
 namespace OpenTail.Stingray.Diffusion.StableAudio;
@@ -92,10 +93,11 @@ internal static class StableAudioAttentionKernels
                     if (w == 0f) continue;
                     int vOff = j * dim + h * HeadDim;
                     var vSpan = new ReadOnlySpan<float>(v, vOff, HeadDim);
-                    for (int d = 0; d < HeadDim; d++)
-                    {
-                        outSpan[d] += w * vSpan[d];
-                    }
+                    // 8 d's per vector, j still in order: each output element sees the same
+                    // multiply-then-add sequence as the scalar loop (no FMA), so bit-identical.
+                    var wv = Vector256.Create(w);
+                    for (int d = 0; d < HeadDim; d += 8)
+                        (Vector256.Create(outSpan.Slice(d, 8)) + wv * Vector256.Create(vSpan.Slice(d, 8))).CopyTo(outSpan.Slice(d, 8));
                 }
             }
         });
