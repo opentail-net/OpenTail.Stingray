@@ -1,3 +1,4 @@
+using OpenTail.Stingray.Cpu;
 
 namespace OpenTail.Stingray.Audio.VoxtralRealtime;
 
@@ -171,14 +172,30 @@ public static class VoxtralTextDecoder
     {
         int frames = xRows.Length;
         int inter = VoxtralTextDecoderWeights.IntermediateSize;
+        // Weight-stationary over all rows (Q8_0BatchedLinear): bit-identical to per-row MatVecQ8_0.
         var flatOut = new float[frames * hidden];
-        for (int t = 0; t < frames; t++)
+        var gate = new float[frames * inter];
+        var up = new float[frames * inter];
+        byte[] xq = Q8_0BatchedLinear.QuantizeRows(xRows, hidden);
+        unsafe
         {
-            var gate = LinearNoBias(xRows[t], l.GateWeight, hidden, inter);
-            var up = LinearNoBias(xRows[t], l.UpWeight, hidden, inter);
-            for (int i = 0; i < inter; i++) gate[i] = Silu(gate[i]) * up[i];
-            var down = LinearNoBias(gate, l.DownWeight, inter, hidden);
-            Array.Copy(down, 0, flatOut, t * hidden, hidden);
+            fixed (byte* pX = xq, pGW = l.GateWeight, pUW = l.UpWeight)
+            fixed (float* pG = gate, pU = up)
+            {
+                Q8_0BatchedLinear.MatMul(pGW, inter, hidden, pX, frames, null, pG, inter);
+                Q8_0BatchedLinear.MatMul(pUW, inter, hidden, pX, frames, null, pU, inter);
+            }
+            Parallel.For(0, frames, t =>
+            {
+                for (int i = t * inter, e = i + inter; i < e; i++) gate[i] = Silu(gate[i]) * up[i];
+            });
+            var gq = new byte[frames * OpenTail.Stingray.Cpu.SimdKernels.Q8_0ScratchBytes(inter)];
+            fixed (float* pG = gate, pOut = flatOut)
+            fixed (byte* pGq = gq, pDW = l.DownWeight)
+            {
+                Q8_0BatchedLinear.QuantizeRows(pG, frames, inter, pGq);
+                Q8_0BatchedLinear.MatMul(pDW, hidden, inter, pGq, frames, null, pOut, hidden);
+            }
         }
         return flatOut;
     }
@@ -356,9 +373,10 @@ public static class VoxtralTextDecoder
         }
 
         var normed = RmsNormRows(x, hidden, w.NormWeight);
+        int vocab = VoxtralTextDecoderWeights.VocabSize;
+        var logitsFlat = BatchedLinear(normed, w.EmbedTokensWeightQ8_0, hidden, vocab);
         var logits = new float[n][];
-        for (int t = 0; t < n; t++)
-            logits[t] = LinearNoBias(normed[t], w.EmbedTokensWeightQ8_0, hidden, VoxtralTextDecoderWeights.VocabSize);
+        for (int t = 0; t < n; t++) logits[t] = logitsFlat.AsSpan(t * vocab, vocab).ToArray();
         return (logits, cache);
     }
 
@@ -407,17 +425,29 @@ public static class VoxtralTextDecoder
         int kvDim = kvHeads * headDim;
 
         var q = new float[frames][];
+        var qFlat = new float[frames * qDim];
+        var kFlat = new float[frames * kvDim];
+        var vFlat = new float[frames * kvDim];
+        byte[] xq = Q8_0BatchedLinear.QuantizeRows(xRows, hidden);
+        unsafe
+        {
+            fixed (byte* pX = xq, pQ = l.QWeight, pK = l.KWeight, pV = l.VWeight)
+            fixed (float* oq = qFlat, ok = kFlat, ov = vFlat)
+            {
+                Q8_0BatchedLinear.MatMul(pQ, qDim, hidden, pX, frames, null, oq, qDim);
+                Q8_0BatchedLinear.MatMul(pK, kvDim, hidden, pX, frames, null, ok, kvDim);
+                Q8_0BatchedLinear.MatMul(pV, kvDim, hidden, pX, frames, null, ov, kvDim);
+            }
+        }
         for (int t = 0; t < frames; t++)
         {
-            var qt = new float[qDim];
-            var kt = new float[kvDim];
-            var vt = new float[kvDim];
-            LinearQKV_GQA(xRows[t], l.QWeight, l.KWeight, l.VWeight, qt, kt, vt, hidden, qDim, kvDim);
+            var qt = qFlat.AsSpan(t * qDim, qDim).ToArray();
+            var kt = kFlat.AsSpan(t * kvDim, kvDim).ToArray();
             RopeNeoxInPlace(qt, heads, headDim, t);
             RopeNeoxInPlace(kt, kvHeads, headDim, t);
             q[t] = qt;
             kCache.Add(kt);
-            vCache.Add(vt);
+            vCache.Add(vFlat.AsSpan(t * kvDim, kvDim).ToArray());
         }
 
         var contextFlat = new float[frames][];
@@ -451,10 +481,18 @@ public static class VoxtralTextDecoder
             }
         }
 
-        var output = new float[frames][];
-        for (int t = 0; t < frames; t++) output[t] = LinearNoBias(contextFlat[t], l.OWeight, heads * headDim, hidden);
-        var flatOut = new float[frames * hidden];
-        for (int t = 0; t < frames; t++) Array.Copy(output[t], 0, flatOut, t * hidden, hidden);
+        return BatchedLinear(contextFlat, l.OWeight, heads * headDim, hidden);
+    }
+
+    /// <summary>Flat <c>[rows.Length * outDim]</c> = every row through a Q8_0 linear, weight-stationary
+    /// (bit-identical to one <see cref="LinearNoBias"/> per row).</summary>
+    private static unsafe float[] BatchedLinear(float[][] rows, byte[] weightQ8_0, int inDim, int outDim)
+    {
+        var flatOut = new float[rows.Length * outDim];
+        byte[] xq = Q8_0BatchedLinear.QuantizeRows(rows, inDim);
+        fixed (byte* pX = xq, pW = weightQ8_0)
+        fixed (float* pOut = flatOut)
+            Q8_0BatchedLinear.MatMul(pW, outDim, inDim, pX, rows.Length, null, pOut, outDim);
         return flatOut;
     }
 

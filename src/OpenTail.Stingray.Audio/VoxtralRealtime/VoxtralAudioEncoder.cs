@@ -69,7 +69,7 @@ public static class VoxtralAudioEncoder
         var proj2 = new float[tokens * textHidden];
         unsafe
         {
-            byte[] dq = QuantizeRows(downsampled, hidden * factor);
+            byte[] dq = Q8_0BatchedLinear.QuantizeRows(downsampled, hidden * factor);
             fixed (byte* pD = dq, pP1 = w.Projector1Weight)
             fixed (float* o1 = proj1)
                 Q8_0BatchedLinear.MatMul(pP1, textHidden, hidden * factor, pD, tokens, null, o1, textHidden);
@@ -111,7 +111,7 @@ public static class VoxtralAudioEncoder
         var vFlat = new float[frames * qkvDim];
         unsafe
         {
-            byte[] xq = QuantizeRows(xRows, hidden);
+            byte[] xq = Q8_0BatchedLinear.QuantizeRows(xRows, hidden);
             fixed (byte* pX = xq, pQ = w.QWeight, pK = w.KWeight, pV = w.VWeight)
             fixed (float* pQB = w.QBias, pVB = w.VBias, oq = qFlat, ok = kFlat, ov = vFlat)
             {
@@ -201,27 +201,12 @@ public static class VoxtralAudioEncoder
         var flatOut = new float[frames * hidden];
         unsafe
         {
-            byte[] cq = QuantizeRows(contextFlat, heads * headDim);
+            byte[] cq = Q8_0BatchedLinear.QuantizeRows(contextFlat, heads * headDim);
             fixed (byte* pC = cq, pO = w.OWeight)
             fixed (float* pOB = w.OBias, pDst = flatOut)
                 Q8_0BatchedLinear.MatMul(pO, hidden, heads * headDim, pC, frames, pOB, pDst, hidden);
         }
         return flatOut;
-    }
-
-    /// <summary>Q8_0 activation scratch for every row (row stride
-    /// <c>SimdKernels.Q8_0ScratchBytes(cols)</c>), as <see cref="Q8_0BatchedLinear.MatMul"/> expects.</summary>
-    private static unsafe byte[] QuantizeRows(float[][] rows, int cols)
-    {
-        int stride = OpenTail.Stingray.Cpu.SimdKernels.Q8_0ScratchBytes(cols);
-        var xq = new byte[rows.Length * stride];
-        Parallel.For(0, rows.Length, t =>
-        {
-            fixed (float* pIn = rows[t])
-            fixed (byte* pDst = &xq[t * stride])
-                OpenTail.Stingray.Cpu.SimdKernels.QuantizeRowToQ8_0(pIn, cols, pDst);
-        });
-        return xq;
     }
 
     /// <summary>Real GGML `GGML_ROPE_TYPE_NEOX` convention: rotates pairs `(i, i+headDim/2)`
@@ -279,7 +264,7 @@ public static class VoxtralAudioEncoder
         var up = new float[frames * inter];
         unsafe
         {
-            byte[] xq = QuantizeRows(xRows, hidden);
+            byte[] xq = Q8_0BatchedLinear.QuantizeRows(xRows, hidden);
             fixed (byte* pX = xq, pGW = w.GateWeight, pUW = w.UpWeight)
             fixed (float* pG = gate, pU = up)
             {

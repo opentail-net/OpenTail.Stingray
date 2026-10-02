@@ -24,6 +24,21 @@ public static unsafe class Q8_0BatchedLinear
         Parallel.For(0, count, f => SimdKernels.QuantizeRowToQ8_0(x + (long)f * cols, cols, xq + (long)f * stride));
     }
 
+    /// <summary>Q8_0 activation scratch for every row of a jagged array (all rows
+    /// <paramref name="cols"/> long), laid out as <see cref="MatMul"/> expects.</summary>
+    public static byte[] QuantizeRows(float[][] rows, int cols)
+    {
+        int stride = SimdKernels.Q8_0ScratchBytes(cols);
+        var xq = new byte[rows.Length * stride];
+        Parallel.For(0, rows.Length, t =>
+        {
+            fixed (float* pIn = rows[t])
+            fixed (byte* pDst = &xq[t * stride])
+                SimdKernels.QuantizeRowToQ8_0(pIn, cols, pDst);
+        });
+        return xq;
+    }
+
     /// <summary>
     /// <c>output[f * outStride + r] = dot(weights row r, xq row f) + bias[r]</c> for every output
     /// row <c>r &lt; rows</c> and activation row <c>f &lt; count</c>. <paramref name="weights"/> is
