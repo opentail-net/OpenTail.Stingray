@@ -34,20 +34,11 @@ public sealed class PersonaPlexGenerateWavDebugTest : HeavyTestBase
 
     private static string ExtractVoicePrompt(GgufModel model)
     {
-        if (!model.Metadata.TryGetValue("audiocpp.embedded_files.names", out var namesObj) || namesObj is not object[] names)
-            throw new InvalidOperationException("PersonaPlex packed GGUF has no embedded_files metadata.");
-        var offsets = (object[])model.Metadata["audiocpp.embedded_files.offsets"];
-        var data = (object[])model.Metadata["audiocpp.embedded_files.data"];
-        var bytes = data.Select(o => (byte)Convert.ToInt64(o)).ToArray();
-
         const string wanted = "voices_safetensors/NATF0.safetensors";
-        for (int i = 0; i < names.Length; i++)
+        if (OpenTail.Stingray.Audio.AudioCppEmbeddedFiles.TryGet(model, wanted, out var bytes))
         {
-            if ((string)names[i] != wanted) continue;
-            long start = Convert.ToInt64(offsets[i]);
-            long end = i + 1 < offsets.Length ? Convert.ToInt64(offsets[i + 1]) : bytes.Length;
             string path = Path.Combine(Path.GetTempPath(), "stingray-personaplex-voice-natf0.safetensors");
-            File.WriteAllBytes(path, bytes[(int)start..(int)end]);
+            File.WriteAllBytes(path, bytes);
             return path;
         }
         throw new InvalidOperationException($"PersonaPlex packed GGUF is missing embedded file '{wanted}'.");
@@ -55,16 +46,9 @@ public sealed class PersonaPlexGenerateWavDebugTest : HeavyTestBase
 
     private static byte[] ExtractEmbeddedFile(GgufModel model, string fileName)
     {
-        var names = (object[])model.Metadata["audiocpp.embedded_files.names"];
-        var offsets = (object[])model.Metadata["audiocpp.embedded_files.offsets"];
-        var data = (object[])model.Metadata["audiocpp.embedded_files.data"];
-        var bytes = data.Select(o => (byte)Convert.ToInt64(o)).ToArray();
-        for (int i = 0; i < names.Length; i++)
+        if (OpenTail.Stingray.Audio.AudioCppEmbeddedFiles.TryGet(model, fileName, out var bytes))
         {
-            if ((string)names[i] != fileName) continue;
-            long start = Convert.ToInt64(offsets[i]);
-            long end = i + 1 < offsets.Length ? Convert.ToInt64(offsets[i + 1]) : bytes.Length;
-            return bytes[(int)start..(int)end];
+            return bytes;
         }
         throw new InvalidOperationException($"PersonaPlex packed GGUF is missing embedded file '{fileName}'.");
     }

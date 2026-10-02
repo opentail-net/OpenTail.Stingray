@@ -29,19 +29,13 @@ public sealed class VoxCpm2LlmDumpDebugTest : HeavyTestBase
         string? outDir = FindRepoFile("docs/00-current-work.md");
         string root = Path.GetDirectoryName(outDir!)!;
 
-        if (model.Metadata.TryGetValue("audiocpp.embedded_files.names", out var namesObj) && namesObj is object[] names)
+        Console.Error.WriteLine($"[VoxCpm2LlmDump] embedded files: {string.Join(" | ", OpenTail.Stingray.Audio.AudioCppEmbeddedFiles.Names(model))}");
+        var files = OpenTail.Stingray.Audio.AudioCppEmbeddedFiles.ReadAll(model);
+        foreach (string name in new[] { "config.json", "tokenizer.json", "tokenizer_config.json" })
         {
-            var offsets = (object[])model.Metadata["audiocpp.embedded_files.offsets"];
-            var data = (object[])model.Metadata["audiocpp.embedded_files.data"];
-            var bytes = data.Select(o => (byte)Convert.ToInt64(o)).ToArray();
-            Console.Error.WriteLine($"[VoxCpm2LlmDump] embedded files: {string.Join(" | ", names.Cast<string>())}");
-            for (int i = 0; i < names.Length; i++)
+            if (files.TryGetValue(name, out var bytes))
             {
-                string name = (string)names[i];
-                if (name != "config.json" && name != "tokenizer.json" && name != "tokenizer_config.json") continue;
-                long start = Convert.ToInt64(offsets[i]);
-                long end = i + 1 < offsets.Length ? Convert.ToInt64(offsets[i + 1]) : bytes.Length;
-                string content = System.Text.Encoding.UTF8.GetString(bytes, (int)start, (int)(end - start));
+                string content = System.Text.Encoding.UTF8.GetString(bytes);
                 File.WriteAllText(Path.Combine(root, "..", $"voxcpm2-{name}"), content);
             }
         }

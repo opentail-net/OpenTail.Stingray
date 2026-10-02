@@ -54,28 +54,26 @@ public sealed class HiggsTtsTextTokenizer
     }
 
     /// <summary>Extracts `tokenizer.json`/`tokenizer_config.json`/`special_tokens_map.json` from
-    /// a packed GGUF's `audiocpp.embedded_files.*` metadata into a scratch directory, then loads
+    /// a packed GGUF's embedded files metadata via AudioCppEmbeddedFiles into a scratch directory, then loads
     /// from there (same technique as `VoxCpm2TextTokenizer.LoadFromPackedGguf`).</summary>
     public static HiggsTtsTextTokenizer LoadFromPackedGguf(GgufModel model, int audioTokenId)
     {
-        if (!model.Metadata.TryGetValue("audiocpp.embedded_files.names", out var namesObj) || namesObj is not object[] names)
-            throw new InvalidOperationException("Higgs TTS packed GGUF has no embedded_files metadata.");
-        var offsets = (object[])model.Metadata["audiocpp.embedded_files.offsets"];
-        var data = (object[])model.Metadata["audiocpp.embedded_files.data"];
-        var bytes = data.Select(o => (byte)Convert.ToInt64(o)).ToArray();
-
         string dir = Path.Combine(Path.GetTempPath(), "stingray-higgs-tts-tokenizer");
         Directory.CreateDirectory(dir);
 
+        var files = AudioCppEmbeddedFiles.ReadAll(model);
         string[] wanted = ["tokenizer.json", "tokenizer_config.json", "special_tokens_map.json"];
-        for (int i = 0; i < names.Length; i++)
+        bool anyFound = false;
+        foreach (var name in wanted)
         {
-            string name = (string)names[i];
-            if (Array.IndexOf(wanted, name) < 0) continue;
-            long start = Convert.ToInt64(offsets[i]);
-            long end = i + 1 < offsets.Length ? Convert.ToInt64(offsets[i + 1]) : bytes.Length;
-            File.WriteAllBytes(Path.Combine(dir, name), bytes[(int)start..(int)end]);
+            if (files.TryGetValue(name, out var fileBytes))
+            {
+                File.WriteAllBytes(Path.Combine(dir, name), fileBytes);
+                anyFound = true;
+            }
         }
+        if (!anyFound)
+            throw new InvalidOperationException("Higgs TTS packed GGUF has no embedded_files metadata.");
 
         var result = HuggingFaceTokenizerSource.Load(dir);
         if (result.Source is null)

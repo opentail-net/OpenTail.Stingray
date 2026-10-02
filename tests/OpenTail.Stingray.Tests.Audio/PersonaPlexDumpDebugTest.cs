@@ -29,31 +29,17 @@ public sealed class PersonaPlexDumpDebugTest : HeavyTestBase
         string? outDir = FindRepoFile("docs/00-current-work.md");
         string root = Path.GetDirectoryName(outDir!)!;
 
-        if (model.Metadata.TryGetValue("audiocpp.embedded_files.names", out var namesObj) && namesObj is object[] names)
+        Console.Error.WriteLine($"[PersonaPlexDump] embedded files: {string.Join(" | ", OpenTail.Stingray.Audio.AudioCppEmbeddedFiles.Names(model))}");
+        if (OpenTail.Stingray.Audio.AudioCppEmbeddedFiles.TryGet(model, "config.json", out var configBytes))
         {
-            var offsets = (object[])model.Metadata["audiocpp.embedded_files.offsets"];
-            var data = (object[])model.Metadata["audiocpp.embedded_files.data"];
-            var bytes = data.Select(o => (byte)Convert.ToInt64(o)).ToArray();
-            Console.Error.WriteLine($"[PersonaPlexDump] embedded files: {string.Join(" | ", names.Cast<string>())}");
-            for (int i = 0; i < names.Length; i++)
-            {
-                string name = (string)names[i];
-                if (name != "config.json" && name != "voices_safetensors/NATF0.safetensors") continue;
-                long start = Convert.ToInt64(offsets[i]);
-                long end = i + 1 < offsets.Length ? Convert.ToInt64(offsets[i + 1]) : bytes.Length;
-                if (name == "config.json")
-                {
-                    string content = System.Text.Encoding.UTF8.GetString(bytes, (int)start, (int)(end - start));
-                    File.WriteAllText(Path.Combine(root, "..", "personaplex-config.json"), content);
-                }
-                else
-                {
-                    var voiceBytes = bytes[(int)start..(int)end];
-                    string voicePath = Path.Combine(root, "..", "personaplex-voice-natf0.safetensors");
-                    File.WriteAllBytes(voicePath, voiceBytes);
-                    Console.Error.WriteLine($"[PersonaPlexDump] wrote {voiceBytes.Length} bytes to {voicePath}");
-                }
-            }
+            string content = System.Text.Encoding.UTF8.GetString(configBytes);
+            File.WriteAllText(Path.Combine(root, "..", "personaplex-config.json"), content);
+        }
+        if (OpenTail.Stingray.Audio.AudioCppEmbeddedFiles.TryGet(model, "voices_safetensors/NATF0.safetensors", out var voiceBytes))
+        {
+            string voicePath = Path.Combine(root, "..", "personaplex-voice-natf0.safetensors");
+            File.WriteAllBytes(voicePath, voiceBytes);
+            Console.Error.WriteLine($"[PersonaPlexDump] wrote {voiceBytes.Length} bytes to {voicePath}");
         }
 
         if (model.Metadata.TryGetValue("audiocpp.tensor_names", out var tnObj) && tnObj is object[] tensorNames)

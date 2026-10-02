@@ -28,7 +28,7 @@ public sealed class VoxtralGgufInventoryTests
 
         foreach (var kvp in model.Metadata)
         {
-            if (kvp.Key.StartsWith("audiocpp.embedded_files.data")) continue;
+            if (kvp.Key.StartsWith("audiocpp.") && kvp.Key.EndsWith(".data")) continue;
             if (kvp.Value is object[] arr)
             {
                 Console.WriteLine($"[Metadata] {kvp.Key} (array of {arr.Length}): {string.Join(", ", arr.Take(5))}{(arr.Length > 5 ? "..." : "")}");
@@ -201,46 +201,16 @@ public sealed class VoxtralGgufInventoryTests
         Assert.NotNull(ggufPath);
 
         using var model = Core.GgufModel.Open(ggufPath!);
-        Assert.True(model.Metadata.TryGetValue("audiocpp.embedded_files.names", out var namesObj));
-        Assert.True(model.Metadata.TryGetValue("audiocpp.embedded_files.offsets", out var offsetsObj));
-        Assert.True(model.Metadata.TryGetValue("audiocpp.embedded_files.data", out var dataObj));
+        var names = AudioCppEmbeddedFiles.Names(model);
+        Assert.NotEmpty(names);
+        Assert.Contains("tekken.json", names, StringComparer.OrdinalIgnoreCase);
 
-        var names = Assert.IsType<object[]>(namesObj);
-        var offsets = Assert.IsType<object[]>(offsetsObj);
-        Assert.True(offsets.Length == names.Length || offsets.Length == names.Length + 1);
-        Assert.True(names.Length > 0);
-
-        byte[] data = dataObj switch
-        {
-            byte[] bArr => bArr,
-            object[] oArr => oArr.Select(o => (byte)Convert.ToInt64(o)).ToArray(),
-            _ => throw new Exception("Unexpected data format")
-        };
-
-        int tekkenIdx = -1;
-        for (int i = 0; i < names.Length; i++)
-        {
-            if (string.Equals((string)names[i], "tekken.json", StringComparison.OrdinalIgnoreCase))
-                tekkenIdx = i;
-        }
-
-        long prev = 0;
-        for (int i = 0; i < offsets.Length; i++)
-        {
-            long off = Convert.ToInt64(offsets[i]);
-            Assert.True(off >= 0 && off <= data.Length, $"Offset {off} out of bounds");
-            Assert.True(off >= prev, $"Offset {off} not monotonic (prev={prev})");
-            prev = off;
-        }
-
-        Assert.True(tekkenIdx >= 0, "tekken.json not found in embedded files");
-        long tStart = Convert.ToInt64(offsets[tekkenIdx]);
-        long tEnd = tekkenIdx + 1 < offsets.Length ? Convert.ToInt64(offsets[tekkenIdx + 1]) : data.Length;
-        Assert.True(tStart < tEnd);
-        Assert.True(tEnd <= data.Length);
+        Assert.True(AudioCppEmbeddedFiles.TryGet(model, "tekken.json", out var data));
+        Assert.NotNull(data);
+        Assert.NotEmpty(data);
 
         // Verify content begins with JSON '{'
-        Assert.Equal((byte)'{', data[tStart]);
+        Assert.Equal((byte)'{', data[0]);
     }
 
     [Fact]

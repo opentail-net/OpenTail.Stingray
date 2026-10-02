@@ -25,21 +25,8 @@ public sealed class MossTtsTextTokenizerRealWeightsTests : HeavyTestBase
         return null;
     }
 
-    private static byte[]? ExtractEmbeddedFile(GgufModel model, string fileName)
-    {
-        if (!model.Metadata.TryGetValue("audiocpp.embedded_files.names", out var namesObj) || namesObj is not object[] names) return null;
-        var offsets = (object[])model.Metadata["audiocpp.embedded_files.offsets"];
-        var data = (object[])model.Metadata["audiocpp.embedded_files.data"];
-        var bytes = data.Select(o => (byte)Convert.ToInt64(o)).ToArray();
-        for (int i = 0; i < names.Length; i++)
-        {
-            if ((string)names[i] != fileName) continue;
-            long start = Convert.ToInt64(offsets[i]);
-            long end = i + 1 < offsets.Length ? Convert.ToInt64(offsets[i + 1]) : bytes.Length;
-            return bytes[(int)start..(int)end];
-        }
-        return null;
-    }
+    private static byte[]? ExtractEmbeddedFile(GgufModel model, string fileName) =>
+        OpenTail.Stingray.Audio.AudioCppEmbeddedFiles.TryGet(model, fileName, out var bytes) ? bytes : null;
 
     [Fact]
     public void Encode_OnRealCheckpoint_RoundTripsAKnownVocabPieceAndByteFallsBackCleanly()

@@ -26,17 +26,9 @@ public sealed class PersonaPlexTokenizerModelTypeDebugTest : HeavyTestBase
 
     private static byte[] ExtractEmbeddedFile(GgufModel model, string fileName)
     {
-        var namesObj = model.Metadata["audiocpp.embedded_files.names"];
-        var names = (object[])namesObj;
-        var offsets = (object[])model.Metadata["audiocpp.embedded_files.offsets"];
-        var data = (object[])model.Metadata["audiocpp.embedded_files.data"];
-        var bytes = data.Select(o => (byte)Convert.ToInt64(o)).ToArray();
-        for (int i = 0; i < names.Length; i++)
+        if (OpenTail.Stingray.Audio.AudioCppEmbeddedFiles.TryGet(model, fileName, out var bytes))
         {
-            if ((string)names[i] != fileName) continue;
-            long start = Convert.ToInt64(offsets[i]);
-            long end = i + 1 < offsets.Length ? Convert.ToInt64(offsets[i + 1]) : bytes.Length;
-            return bytes[(int)start..(int)end];
+            return bytes;
         }
         throw new InvalidOperationException($"Embedded file '{fileName}' not found.");
     }

@@ -29,23 +29,21 @@ public sealed class VibeVoiceAsrRealSpeechRealWeightsTests : HeavyTestBase
 
     private static VibeVoiceAsrTextTokenizer LoadTokenizer(GgufModel model)
     {
-        if (!model.Metadata.TryGetValue("audiocpp.embedded_files.names", out var namesObj) || namesObj is not object[] names)
-            throw new InvalidOperationException("VibeVoice ASR packed GGUF has no embedded_files metadata.");
-        var offsets = (object[])model.Metadata["audiocpp.embedded_files.offsets"];
-        var data = (object[])model.Metadata["audiocpp.embedded_files.data"];
-        var bytes = data.Select(o => (byte)Convert.ToInt64(o)).ToArray();
-
+        var files = OpenTail.Stingray.Audio.AudioCppEmbeddedFiles.ReadAll(model);
         string dir = Path.Combine(Path.GetTempPath(), "stingray-vibevoice-asr-tokenizer");
         Directory.CreateDirectory(dir);
         string[] wanted = ["tokenizer.json", "tokenizer_config.json", "special_tokens_map.json", "vocab.json", "merges.txt"];
-        for (int i = 0; i < names.Length; i++)
+        bool anyFound = false;
+        foreach (string name in wanted)
         {
-            string name = (string)names[i];
-            if (Array.IndexOf(wanted, name) < 0) continue;
-            long start = Convert.ToInt64(offsets[i]);
-            long end = i + 1 < offsets.Length ? Convert.ToInt64(offsets[i + 1]) : bytes.Length;
-            File.WriteAllBytes(Path.Combine(dir, name), bytes[(int)start..(int)end]);
+            if (files.TryGetValue(name, out var slice))
+            {
+                File.WriteAllBytes(Path.Combine(dir, name), slice);
+                anyFound = true;
+            }
         }
+        if (!anyFound)
+            throw new InvalidOperationException("VibeVoice ASR packed GGUF has no embedded_files metadata.");
 
         var result = HuggingFaceTokenizerSource.Load(dir);
         if (result.Source is null)

@@ -46,19 +46,13 @@ public sealed class VibeVoiceTtsPerLayerBisectDebugTest : HeavyTestBase
         if (result.Source is null)
         {
             // Extract tokenizer files from the packed GGUF (same convention as other VibeVoice tests).
-            var namesObj = (object[])model.Metadata["audiocpp.embedded_files.names"];
-            var offsets = (object[])model.Metadata["audiocpp.embedded_files.offsets"];
-            var data = (object[])model.Metadata["audiocpp.embedded_files.data"];
-            var bytes = data.Select(o => (byte)Convert.ToInt64(o)).ToArray();
+            var files = OpenTail.Stingray.Audio.AudioCppEmbeddedFiles.ReadAll(model);
             Directory.CreateDirectory(dir);
             string[] wanted = ["tokenizer.json", "tokenizer_config.json", "special_tokens_map.json", "vocab.json", "merges.txt"];
-            for (int i = 0; i < namesObj.Length; i++)
+            foreach (string name in wanted)
             {
-                string name = (string)namesObj[i];
-                if (Array.IndexOf(wanted, name) < 0) continue;
-                long start = Convert.ToInt64(offsets[i]);
-                long end = i + 1 < offsets.Length ? Convert.ToInt64(offsets[i + 1]) : bytes.Length;
-                File.WriteAllBytes(Path.Combine(dir, name), bytes[(int)start..(int)end]);
+                if (files.TryGetValue(name, out var slice))
+                    File.WriteAllBytes(Path.Combine(dir, name), slice);
             }
             result = HuggingFaceTokenizerSource.Load(dir);
         }

@@ -27,26 +27,20 @@ public sealed class NeuTtsAudioDecoderRealWeightsTests : HeavyTestBase
 
     private static (TokenizerSource Source, byte[] TokenizerJsonBytes) LoadTokenizerSource(GgufModel model)
     {
-        if (!model.Metadata.TryGetValue("audiocpp.embedded_files.names", out var namesObj) || namesObj is not object[] names)
-            throw new InvalidOperationException("no embedded_files metadata");
-        var offsets = (object[])model.Metadata["audiocpp.embedded_files.offsets"];
-        var data = (object[])model.Metadata["audiocpp.embedded_files.data"];
-        var bytes = data.Select(o => (byte)Convert.ToInt64(o)).ToArray();
-
         string dir = Path.Combine(Path.GetTempPath(), "stingray-neutts-tokenizer");
         Directory.CreateDirectory(dir);
         string[] wanted = ["tokenizer.json", "tokenizer_config.json"];
         byte[]? tokenizerJsonBytes = null;
-        for (int i = 0; i < names.Length; i++)
+        foreach (string name in wanted)
         {
-            string name = (string)names[i];
-            if (Array.IndexOf(wanted, name) < 0) continue;
-            long start = Convert.ToInt64(offsets[i]);
-            long end = i + 1 < offsets.Length ? Convert.ToInt64(offsets[i + 1]) : bytes.Length;
-            var slice = bytes[(int)start..(int)end];
-            File.WriteAllBytes(Path.Combine(dir, name), slice);
-            if (name == "tokenizer.json") tokenizerJsonBytes = slice;
+            if (OpenTail.Stingray.Audio.AudioCppEmbeddedFiles.TryGet(model, name, out var slice))
+            {
+                File.WriteAllBytes(Path.Combine(dir, name), slice);
+                if (name == "tokenizer.json") tokenizerJsonBytes = slice;
+            }
         }
+        if (tokenizerJsonBytes is null)
+            throw new InvalidOperationException("no embedded_files metadata");
 
         var result = HuggingFaceTokenizerSource.Load(dir);
         if (result.Source is null)
@@ -78,19 +72,13 @@ public sealed class NeuTtsAudioDecoderRealWeightsTests : HeavyTestBase
         }
 
         string? emilyRefText = null;
-        if (model.Metadata.TryGetValue("audiocpp.embedded_files.names", out var nObj) && nObj is object[] fNames)
+        foreach (string fn in OpenTail.Stingray.Audio.AudioCppEmbeddedFiles.Names(model))
         {
-            var offsets = (object[])model.Metadata["audiocpp.embedded_files.offsets"];
-            var data = (object[])model.Metadata["audiocpp.embedded_files.data"];
-            var bytes = data.Select(o => (byte)Convert.ToInt64(o)).ToArray();
-            for (int i = 0; i < fNames.Length; i++)
+            if (fn.EndsWith("emily.txt", StringComparison.OrdinalIgnoreCase) || fn.EndsWith("emily", StringComparison.OrdinalIgnoreCase))
             {
-                string fn = (string)fNames[i];
-                if (fn.EndsWith("emily.txt", StringComparison.OrdinalIgnoreCase) || fn.EndsWith("emily", StringComparison.OrdinalIgnoreCase))
+                if (OpenTail.Stingray.Audio.AudioCppEmbeddedFiles.TryGet(model, fn, out var fnBytes))
                 {
-                    long start = Convert.ToInt64(offsets[i]);
-                    long end = i + 1 < offsets.Length ? Convert.ToInt64(offsets[i + 1]) : bytes.Length;
-                    emilyRefText = System.Text.Encoding.UTF8.GetString(bytes[(int)start..(int)end]).Trim();
+                    emilyRefText = System.Text.Encoding.UTF8.GetString(fnBytes).Trim();
                     break;
                 }
             }

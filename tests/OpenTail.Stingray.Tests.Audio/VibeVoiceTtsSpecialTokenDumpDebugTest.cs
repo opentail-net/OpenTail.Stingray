@@ -27,18 +27,10 @@ public sealed class VibeVoiceTtsSpecialTokenDumpDebugTest : HeavyTestBase
         Assert.SkipUnless(path != null, "vibevoice-1.5b-q8_0.gguf not found");
 
         using var model = OpenTail.Stingray.Core.GgufModel.Open(path!);
-        var namesObj = (object[])model.Metadata["audiocpp.embedded_files.names"];
-        var offsets = (object[])model.Metadata["audiocpp.embedded_files.offsets"];
-        var data = (object[])model.Metadata["audiocpp.embedded_files.data"];
-        var bytes = data.Select(o => (byte)Convert.ToInt64(o)).ToArray();
-
         string? tokenizerJson = null;
-        for (int i = 0; i < namesObj.Length; i++)
+        if (OpenTail.Stingray.Audio.AudioCppEmbeddedFiles.TryGet(model, "tokenizer.json", out var tokBytes))
         {
-            if ((string)namesObj[i] != "tokenizer.json") continue;
-            long start = Convert.ToInt64(offsets[i]);
-            long end = i + 1 < offsets.Length ? Convert.ToInt64(offsets[i + 1]) : bytes.Length;
-            tokenizerJson = System.Text.Encoding.UTF8.GetString(bytes, (int)start, (int)(end - start));
+            tokenizerJson = System.Text.Encoding.UTF8.GetString(tokBytes);
         }
         Assert.NotNull(tokenizerJson);
 

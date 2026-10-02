@@ -28,25 +28,22 @@ public sealed class VoxCpm2TokenizerConfigDumpDebugTest : HeavyTestBase
         Assert.SkipUnless(path != null, "voxcpm2-q8_0.gguf not found");
 
         using var model = GgufModel.Open(path!);
-        if (!model.Metadata.TryGetValue("audiocpp.embedded_files.names", out var namesObj) || namesObj is not object[] names)
+        var files = OpenTail.Stingray.Audio.AudioCppEmbeddedFiles.ReadAll(model);
+        if (files.Count == 0)
         {
             Console.WriteLine("No embedded_files metadata.");
             return;
         }
-        var offsets = (object[])model.Metadata["audiocpp.embedded_files.offsets"];
-        var data = (object[])model.Metadata["audiocpp.embedded_files.data"];
-        var bytes = data.Select(o => (byte)Convert.ToInt64(o)).ToArray();
 
-        for (int i = 0; i < names.Length; i++)
+        foreach (string name in new[] { "tokenizer.json", "tokenizer_config.json", "config.json" })
         {
-            string name = (string)names[i];
-            if (name != "tokenizer.json" && name != "tokenizer_config.json" && name != "config.json") continue;
-            long start = Convert.ToInt64(offsets[i]);
-            long end = i + 1 < offsets.Length ? Convert.ToInt64(offsets[i + 1]) : bytes.Length;
-            string content = System.Text.Encoding.UTF8.GetString(bytes, (int)start, (int)(end - start));
-            string outPath = Path.Combine(Path.GetTempPath(), $"voxcpm2-{name}");
-            File.WriteAllText(outPath, content);
-            Console.WriteLine($"Wrote {outPath} ({content.Length} chars)");
+            if (files.TryGetValue(name, out var bytes))
+            {
+                string content = System.Text.Encoding.UTF8.GetString(bytes);
+                string outPath = Path.Combine(Path.GetTempPath(), $"voxcpm2-{name}");
+                File.WriteAllText(outPath, content);
+                Console.WriteLine($"Wrote {outPath} ({content.Length} chars)");
+            }
         }
     }
 }

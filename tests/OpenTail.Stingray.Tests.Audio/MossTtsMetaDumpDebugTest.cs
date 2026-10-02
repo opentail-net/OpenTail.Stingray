@@ -39,28 +39,22 @@ public sealed class MossTtsMetaDumpDebugTest : HeavyTestBase
         }
         File.WriteAllText(outPath, sb.ToString());
 
-        var names = (object[])model.Metadata["audiocpp.embedded_files.names"];
-        var offsets = (object[])model.Metadata["audiocpp.embedded_files.offsets"];
-        var data = (object[])model.Metadata["audiocpp.embedded_files.data"];
-        var bytes = data.Select(o => (byte)(long)Convert.ChangeType(o, typeof(long))).ToArray();
         string[] wantText = ["config.json", "audio_tokenizer/config.json", "tokenization_moss_tts_nano.py", "tokenizer_config.json", "special_tokens_map.json"];
         string[] wantBinary = ["tokenizer.model"];
-        for (int i = 0; i < names.Length; i++)
+        foreach (string name in OpenTail.Stingray.Audio.AudioCppEmbeddedFiles.Names(model))
         {
-            string name = (string)names[i];
-            long start = Convert.ToInt64(offsets[i]);
-            long end = i + 1 < offsets.Length ? Convert.ToInt64(offsets[i + 1]) : bytes.Length;
+            if (!OpenTail.Stingray.Audio.AudioCppEmbeddedFiles.TryGet(model, name, out var fileBytes)) continue;
             string cfgOutPath = Path.GetFullPath(Path.Combine(Path.GetDirectoryName(outDir!)!, "..", name.Replace('/', '_').Insert(0, "moss-tts-")));
             if (Array.IndexOf(wantText, name) >= 0)
             {
-                string content = System.Text.Encoding.UTF8.GetString(bytes, (int)start, (int)(end - start));
+                string content = System.Text.Encoding.UTF8.GetString(fileBytes);
                 File.WriteAllText(cfgOutPath, content);
                 Console.Error.WriteLine($"[MossTtsMeta] wrote {cfgOutPath}");
             }
             else if (Array.IndexOf(wantBinary, name) >= 0)
             {
-                File.WriteAllBytes(cfgOutPath, bytes[(int)start..(int)end]);
-                Console.Error.WriteLine($"[MossTtsMeta] wrote {cfgOutPath} ({end - start} bytes)");
+                File.WriteAllBytes(cfgOutPath, fileBytes);
+                Console.Error.WriteLine($"[MossTtsMeta] wrote {cfgOutPath} ({fileBytes.Length} bytes)");
             }
         }
         Console.Error.WriteLine($"[MossTtsMeta] wrote {outPath}");
