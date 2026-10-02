@@ -216,7 +216,8 @@ private const int SinusoidalBlocks = 8; // decoder-only real `sinusoidal_blocks:
 
         var outp = new float[seqLen * outC];
         int pad = kernel / 2;
-        for (int t = 0; t < seqLen; t++)
+        // Output positions are independent: parallel over t, same per-element accumulation order.
+        Parallel.For(0, seqLen, t =>
         {
             for (int oc = 0; oc < outC; oc++)
             {
@@ -231,7 +232,7 @@ private const int SinusoidalBlocks = 8; // decoder-only real `sinusoidal_blocks:
                 }
                 outp[t * outC + oc] = acc;
             }
-        }
+        });
         return outp;
     }
 
@@ -290,7 +291,7 @@ private const int SinusoidalBlocks = 8; // decoder-only real `sinusoidal_blocks:
         var preBeta = ReadWeight($"{p}.pre_norm.beta");
 
         var normed = x.ToArray();
-        DynamicTanh(normed, preAlpha, preGamma, preBeta, EmbedDim);
+        DynamicTanhRows(normed, preAlpha, preGamma, preBeta, EmbedDim);
 
         var attn = SelfAttentionDifferentialWindowed(normed, seq, p, cos, sin);
         for (int i = 0; i < x.Length; i++) x[i] += attn[i];
@@ -300,11 +301,15 @@ private const int SinusoidalBlocks = 8; // decoder-only real `sinusoidal_blocks:
         var ffBeta = ReadWeight($"{p}.ff_norm.beta");
 
         var ffNormed = x.ToArray();
-        DynamicTanh(ffNormed, ffAlpha, ffGamma, ffBeta, EmbedDim);
+        DynamicTanhRows(ffNormed, ffAlpha, ffGamma, ffBeta, EmbedDim);
 
         var ff = FeedForward(ffNormed, seq, p, sinusoidal);
         for (int i = 0; i < x.Length; i++) x[i] += ff[i];
     }
+
+    /// <summary><see cref="DynamicTanh"/> over every <paramref name="dim"/>-wide row, rows in parallel.</summary>
+    private static void DynamicTanhRows(float[] x, float alpha, float[] gamma, float[] beta, int dim) =>
+        Parallel.For(0, x.Length / dim, t => DynamicTanh(x.AsSpan(t * dim, dim), alpha, gamma, beta, dim));
 
     private static void DynamicTanh(Span<float> x, float alpha, ReadOnlySpan<float> gamma, ReadOnlySpan<float> beta, int dim)
     {
@@ -366,9 +371,11 @@ private const int SinusoidalBlocks = 8; // decoder-only real `sinusoidal_blocks:
 
     private static void PerHeadDynamicTanh(float[] qk, int seq, float alpha, float[] gamma, float[] beta)
     {
-        for (int t = 0; t < seq; t++)
+        Parallel.For(0, seq, t =>
+        {
             for (int h = 0; h < NumHeads; h++)
                 DynamicTanh(qk.AsSpan(t * EmbedDim + h * HeadDim, HeadDim), alpha, gamma, beta, HeadDim);
+        });
     }
 
     /// <summary>Banded self-attention: query position `i` only attends to keys in
@@ -380,13 +387,16 @@ private const int SinusoidalBlocks = 8; // decoder-only real `sinusoidal_blocks:
         var outp = new float[seq * EmbedDim];
         int window = SlidingWindowEachSide;
 
-        for (int h = 0; h < NumHeads; h++)
+        // Heads are independent and write disjoint slices of outp: parallel over heads, same
+        // arithmetic per element (bit-identical to the sequential loop).
+        Parallel.For(0, NumHeads, h =>
         {
+            var scoreBuf = new float[2 * window + 1];
             for (int i = 0; i < seq; i++)
             {
                 int jStart = Math.Max(0, i - window);
                 int jEnd = Math.Min(seq, i + window + 1);
-                var scores = new float[jEnd - jStart];
+                var scores = scoreBuf.AsSpan(0, jEnd - jStart);
                 int qOff = i * EmbedDim + h * HeadDim;
                 for (int j = jStart; j < jEnd; j++)
                 {
@@ -406,7 +416,7 @@ private const int SinusoidalBlocks = 8; // decoder-only real `sinusoidal_blocks:
                     for (int d = 0; d < HeadDim; d++) outp[outOff + d] += w * v[vOff + d];
                 }
             }
-        }
+        });
         return outp;
     }
 
@@ -422,7 +432,7 @@ private const int SinusoidalBlocks = 8; // decoder-only real `sinusoidal_blocks:
 
         var proj = DiffusionOps.Linear(x, w0, b0, seq, EmbedDim, 2 * FfInner);
         var h = new float[seq * FfInner];
-        for (int t = 0; t < seq; t++)
+        Parallel.For(0, seq, t =>
         {
             var val = proj.AsSpan(t * 2 * FfInner, FfInner);
             var gate = proj.AsSpan(t * 2 * FfInner + FfInner, FfInner);
@@ -431,7 +441,7 @@ private const int SinusoidalBlocks = 8; // decoder-only real `sinusoidal_blocks:
                 for (int i = 0; i < FfInner; i++) dst[i] = val[i] * MathF.Sin(MathF.PI * gate[i]);
             else
                 for (int i = 0; i < FfInner; i++) dst[i] = val[i] * DiffusionOps.Silu(gate[i]);
-        }
+        });
 
         return DiffusionOps.Linear(h, w2, b2, seq, FfInner, EmbedDim);
     }
@@ -460,7 +470,7 @@ private const int SinusoidalBlocks = 8; // decoder-only real `sinusoidal_blocks:
     private static void ApplyPartialRope(float[] qk, int seq, float[] cos, float[] sin)
     {
         int half = RopeRotDim / 2;
-        for (int s = 0; s < seq; s++)
+        Parallel.For(0, seq, s =>
         {
             for (int h = 0; h < NumHeads; h++)
             {
@@ -475,7 +485,7 @@ private const int SinusoidalBlocks = 8; // decoder-only real `sinusoidal_blocks:
                     qk[headOff + half + i] = x1 * sn + x2 * c;
                 }
             }
-        }
+        });
     }
 
     private static int PadToMultiple(int value, int modulo) => ((value + modulo - 1) / modulo) * modulo;
