@@ -77,6 +77,40 @@ public sealed class RwkvTokenizerTests
             }));
     }
 
+    [Theory]
+    [InlineData("chatml", "<|im_start|>system\nBe brief.<|im_end|>\n<|im_start|>user\nHi<|im_end|>\n<|im_start|>assistant\nHello.<|im_end|>\n<|im_start|>user\nBye<|im_end|>\n<|im_start|>assistant\n")]
+    [InlineData("llama2", "[INST] Be brief.\nHi [/INST]Hello.</s>[INST] Bye [/INST]")]
+    [InlineData("llama2-sys", "[INST] <<SYS>>\nBe brief.\n<</SYS>>\n\nHi [/INST]Hello.</s>[INST] Bye [/INST]")]
+    [InlineData("mistral-v7", "[SYSTEM_PROMPT] Be brief.[/SYSTEM_PROMPT][INST] Hi[/INST] Hello.</s>[INST] Bye[/INST]")]
+    [InlineData("phi3", "<|system|>\nBe brief.<|end|>\n<|user|>\nHi<|end|>\n<|assistant|>\nHello.<|end|>\n<|user|>\nBye<|end|>\n<|assistant|>\n")]
+    [InlineData("zephyr", "<|system|>\nBe brief.<|endoftext|>\n<|user|>\nHi<|endoftext|>\n<|assistant|>\nHello.<|endoftext|>\n<|user|>\nBye<|endoftext|>\n<|assistant|>\n")]
+    [InlineData("gemma", "<start_of_turn>user\nBe brief.\n\nHi<end_of_turn>\n<start_of_turn>model\nHello.<end_of_turn>\n<start_of_turn>user\nBye<end_of_turn>\n<start_of_turn>model\n")]
+    [InlineData("falcon3", "<|system|>\nBe brief.\n<|user|>\nHi\n<|assistant|>\nHello.\n<|user|>\nBye\n<|assistant|>\n")]
+    [InlineData("openchat", "Be brief.<|end_of_turn|>GPT4 Correct User: Hi<|end_of_turn|>GPT4 Correct Assistant: Hello.<|end_of_turn|>GPT4 Correct User: Bye<|end_of_turn|>GPT4 Correct Assistant:")]
+    [InlineData("vicuna", "Be brief.\n\nUSER: Hi\nASSISTANT: Hello.</s>\nUSER: Bye\nASSISTANT:")]
+    [InlineData("vicuna-orca", "SYSTEM: Be brief.\nUSER: Hi\nASSISTANT: Hello.</s>\nUSER: Bye\nASSISTANT:")]
+    public void NamedTemplates_RenderLikeLlamaServerNoJinja(string templateName, string expected)
+    {
+        var source = new TokenizerSource { Tokens = ["<s>", "a"], ChatTemplate = templateName };
+        var template = GgufTokenizer.FromSource(source).ChatTemplate;
+        Assert.NotNull(template);
+        static Dictionary<string, object?> Msg(string role, string content) => new() { ["role"] = role, ["content"] = content };
+
+        string actual = template.Render(new Dictionary<string, object?>
+        {
+            ["messages"] = new List<object?>
+            {
+                Msg("system", "Be brief."),
+                Msg("user", "Hi"),
+                Msg("assistant", "Hello."),
+                Msg("user", "Bye")
+            },
+            ["add_generation_prompt"] = true,
+        });
+
+        Assert.Equal(expected, actual);
+    }
+
     private static string? FindModel()
     {
         var dir = Directory.GetCurrentDirectory();

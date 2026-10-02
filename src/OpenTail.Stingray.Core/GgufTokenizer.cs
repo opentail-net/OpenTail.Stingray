@@ -599,6 +599,91 @@ public sealed partial class GgufTokenizer : ITokenizer
             "{% elif message['role'] == 'assistant' %}{{ 'Assistant: ' + (message['content'] | trim) + '\\n\\n' }}" +
             "{% endif %}{% endfor %}" +
             "{% if add_generation_prompt %}{{ 'Assistant:' }}{% endif %}",
+
+        ["chatml"] =
+            "{% for message in messages %}" +
+            "{{ '<|im_start|>' + message['role'] + '\\n' + message['content'] + '<|im_end|>\\n' }}" +
+            "{% endfor %}" +
+            "{% if add_generation_prompt %}{{ '<|im_start|>assistant\\n' }}{% endif %}",
+
+        ["llama2"] =
+            "{% set ns = namespace(inside=false) %}" +
+            "{% for message in messages %}" +
+            "{% if not ns.inside %}{{ '[INST] ' }}{% set ns.inside = true %}{% endif %}" +
+            "{% if message['role'] == 'system' %}{{ message['content'] + '\\n' }}" +
+            "{% elif message['role'] == 'user' %}{{ message['content'] + ' [/INST]' }}" +
+            "{% elif message['role'] == 'assistant' %}{{ message['content'] + '</s>' }}{% set ns.inside = false %}" +
+            "{% endif %}{% endfor %}",
+
+        ["llama2-sys"] =
+            "{% set ns = namespace(inside=false) %}" +
+            "{% for message in messages %}" +
+            "{% if not ns.inside %}{{ '[INST] ' }}{% set ns.inside = true %}{% endif %}" +
+            "{% if message['role'] == 'system' %}{{ '<<SYS>>\\n' + message['content'] + '\\n<</SYS>>\\n\\n' }}" +
+            "{% elif message['role'] == 'user' %}{{ message['content'] + ' [/INST]' }}" +
+            "{% elif message['role'] == 'assistant' %}{{ message['content'] + '</s>' }}{% set ns.inside = false %}" +
+            "{% endif %}{% endfor %}",
+
+        ["mistral-v7"] =
+            "{% for message in messages %}" +
+            "{% if message['role'] == 'system' %}{{ '[SYSTEM_PROMPT] ' + message['content'] + '[/SYSTEM_PROMPT]' }}" +
+            "{% elif message['role'] == 'user' %}{{ '[INST] ' + message['content'] + '[/INST]' }}" +
+            "{% elif message['role'] == 'assistant' %}{{ ' ' + message['content'] + '</s>' }}" +
+            "{% endif %}{% endfor %}",
+
+        ["phi3"] =
+            "{% for message in messages %}" +
+            "{{ '<|' + message['role'] + '|>\\n' + message['content'] + '<|end|>\\n' }}" +
+            "{% endfor %}" +
+            "{% if add_generation_prompt %}{{ '<|assistant|>\\n' }}{% endif %}",
+
+        ["zephyr"] =
+            "{% for message in messages %}" +
+            "{{ '<|' + message['role'] + '|>\\n' + message['content'] + '<|endoftext|>\\n' }}" +
+            "{% endfor %}" +
+            "{% if add_generation_prompt %}{{ '<|assistant|>\\n' }}{% endif %}",
+
+        ["gemma"] =
+            "{% set ns = namespace(system='') %}" +
+            "{% for message in messages %}" +
+            "{% if message['role'] == 'system' %}{% set ns.system = ns.system + (message['content'] | trim) %}" +
+            "{% else %}" +
+            "{% if message['role'] == 'assistant' %}{% set role = 'model' %}{% else %}{% set role = message['role'] %}{% endif %}" +
+            "{{ '<start_of_turn>' + role + '\\n' }}" +
+            "{% if ns.system and role != 'model' %}{{ ns.system + '\\n\\n' }}{% set ns.system = '' %}{% endif %}" +
+            "{{ (message['content'] | trim) + '<end_of_turn>\\n' }}" +
+            "{% endif %}{% endfor %}" +
+            "{% if add_generation_prompt %}{{ '<start_of_turn>model\\n' }}{% endif %}",
+
+        ["falcon3"] =
+            "{% for message in messages %}" +
+            "{{ '<|' + message['role'] + '|>\\n' + message['content'] + '\\n' }}" +
+            "{% endfor %}" +
+            "{% if add_generation_prompt %}{{ '<|assistant|>\\n' }}{% endif %}",
+
+        ["openchat"] =
+            "{% for message in messages %}" +
+            "{% if message['role'] == 'system' %}{{ message['content'] + '<|end_of_turn|>' }}" +
+            "{% elif message['role'] == 'user' %}{{ 'GPT4 Correct User: ' + message['content'] + '<|end_of_turn|>' }}" +
+            "{% elif message['role'] == 'assistant' %}{{ 'GPT4 Correct Assistant: ' + message['content'] + '<|end_of_turn|>' }}" +
+            "{% endif %}{% endfor %}" +
+            "{% if add_generation_prompt %}{{ 'GPT4 Correct Assistant:' }}{% endif %}",
+
+        ["vicuna"] =
+            "{% for message in messages %}" +
+            "{% if message['role'] == 'system' %}{{ message['content'] + '\\n\\n' }}" +
+            "{% elif message['role'] == 'user' %}{{ 'USER: ' + message['content'] + '\\n' }}" +
+            "{% elif message['role'] == 'assistant' %}{{ 'ASSISTANT: ' + message['content'] + '</s>\\n' }}" +
+            "{% endif %}{% endfor %}" +
+            "{% if add_generation_prompt %}{{ 'ASSISTANT:' }}{% endif %}",
+
+        ["vicuna-orca"] =
+            "{% for message in messages %}" +
+            "{% if message['role'] == 'system' %}{{ 'SYSTEM: ' + message['content'] + '\\n' }}" +
+            "{% elif message['role'] == 'user' %}{{ 'USER: ' + message['content'] + '\\n' }}" +
+            "{% elif message['role'] == 'assistant' %}{{ 'ASSISTANT: ' + message['content'] + '</s>\\n' }}" +
+            "{% endif %}{% endfor %}" +
+            "{% if add_generation_prompt %}{{ 'ASSISTANT:' }}{% endif %}",
     };
 
     private static Dictionary<string, int> BuildVocabLookup(string[] tokens)
