@@ -1,3 +1,4 @@
+using System.Numerics.Tensors;
 using OpenTail.Stingray.Cpu;
 
 namespace OpenTail.Stingray.Diffusion.DiffusionGemma;
@@ -55,17 +56,13 @@ public static unsafe class DiffusionGemmaSelfConditioning
         for (int v = 0; v < vocabSize; v++)
         {
             float p = probs[v];
+            if (p == 0.0f) continue; // mathematically exact: 0 * row == 0
+
             float* row = embedWeights + (long)v * hiddenDim;
-            for (int d = 0; d < hiddenDim; d++)
-            {
-                softEmbedOut[d] += p * row[d];
-            }
+            TensorPrimitives.MultiplyAdd(new ReadOnlySpan<float>(row, hiddenDim), p, softEmbedOut, softEmbedOut);
         }
 
-        for (int d = 0; d < hiddenDim; d++)
-        {
-            softEmbedOut[d] *= embedScale;
-        }
+        TensorPrimitives.Multiply(softEmbedOut, embedScale, softEmbedOut);
     }
 
     /// <summary>

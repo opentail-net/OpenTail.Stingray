@@ -13,7 +13,7 @@ public static class Qwen4ExpMoeRouting
         float max = float.NegativeInfinity;
         for (int i = 0; i < n; i++) if (logits[i] > max) max = logits[i];
 
-        var probs = new float[n];
+        Span<float> probs = n <= 512 ? stackalloc float[n] : new float[n];
         float sum = 0f;
         for (int i = 0; i < n; i++)
         {
@@ -23,7 +23,8 @@ public static class Qwen4ExpMoeRouting
         for (int i = 0; i < n; i++) probs[i] /= sum;
 
         // top-k by descending probability; ties resolve to the lower expert index (stable)
-        var taken = new bool[n];
+        Span<bool> taken = n <= 512 ? stackalloc bool[n] : new bool[n];
+        taken.Clear();
         float selected = 0f;
         for (int k = 0; k < topK; k++)
         {

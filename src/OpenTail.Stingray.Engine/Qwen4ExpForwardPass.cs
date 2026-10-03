@@ -79,6 +79,21 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
     private readonly float[] _blockOut;
     private readonly float[] _logits;
     private readonly float[] _tokEmbdScratch;
+    private readonly float[] _pleEmbScratch;
+    private readonly float[] _qFullScratch;
+    private readonly float[] _qScratch;
+    private readonly float[] _qGateScratch;
+    private readonly float[] _kScratch;
+    private readonly float[] _vScratch;
+    private readonly float[] _attnOutScratch;
+    private readonly float[] _routerLogitsScratch;
+    private readonly int[] _moeTopIdxScratch;
+    private readonly float[] _moeTopWScratch;
+    private readonly float[] _moeGateScratch;
+    private readonly float[] _moeUpScratch;
+    private readonly float[] _moeDownScratch;
+    private readonly float[] _shGateUpScratch;
+    private readonly float[] _shOutScratch;
 
     public Qwen4ExpForwardPass(GgufModel model, Qwen4ExpHyperparams hp, Qwen4ExpTensorSet tensors)
     {
@@ -166,6 +181,30 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
         _blockOut = new float[_embedDim];
         _logits = new float[_vocabSize];
         _tokEmbdScratch = new float[_embedDim];
+        _pleEmbScratch = new float[_embedDim];
+
+        int totalQDim = _numHeads * _headDim * 2;
+        int totalKDim = _numHeadsKv * _headDim;
+        int totalVDim = _numHeadsKv * _headDim;
+        _qFullScratch = new float[totalQDim];
+        _qScratch = new float[_numHeads * _headDim];
+        _qGateScratch = new float[_numHeads * _headDim];
+        _kScratch = new float[totalKDim];
+        _vScratch = new float[totalVDim];
+        _attnOutScratch = new float[_numHeads * _headDim];
+
+        int numExperts = hp.ExpertCount > 0 ? hp.ExpertCount : 512;
+        int topK = Math.Min(hp.ExpertUsedCount > 0 ? hp.ExpertUsedCount : 10, numExperts);
+        _routerLogitsScratch = new float[numExperts];
+        _moeTopIdxScratch = new int[topK];
+        _moeTopWScratch = new float[topK];
+
+        int maxInterDim = Math.Max(2048, _embedDim * 2);
+        _moeGateScratch = new float[maxInterDim];
+        _moeUpScratch = new float[maxInterDim];
+        _moeDownScratch = new float[_embedDim];
+        _shGateUpScratch = new float[maxInterDim];
+        _shOutScratch = new float[_embedDim];
     }
 
     public ReadOnlySpan<float> Forward(int token, int position)
@@ -251,7 +290,7 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
         // If the PLE n-gram table (PerLayerTokEmbd) is present and hasher is initialized,
         // gather the embedding row for each head and concatenate them into pleEmb.
         // Otherwise fall back to tokEmb.
-        Span<float> pleEmb = stackalloc float[_embedDim];
+        Span<float> pleEmb = _pleEmbScratch;
         bool gatheredFromTable = false;
 
         if (_pleHasher != null && _tensors.PerLayerTokEmbd != null && _pleHeadRows != null)
@@ -434,15 +473,15 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
         int totalVDim = _numHeadsKv * _headDim;
 
         // Q (interleaved Q + gate), K, V
-        Span<float> qFull = stackalloc float[totalQDim];
+        Span<float> qFull = _qFullScratch.AsSpan(0, totalQDim);
         MatVec(layer.AttnQ.Value, input, qFull);
 
-        Span<float> q = stackalloc float[_numHeads * _headDim];
-        Span<float> gate = stackalloc float[_numHeads * _headDim];
+        Span<float> q = _qScratch;
+        Span<float> gate = _qGateScratch;
         var qNorm = AsFloatSpan(layer.AttnQNorm);
         Qwen4ExpQsa.SplitAndNormQGated(qFull, qNorm, q, gate, _numHeads, _headDim, _eps);
 
-        Span<float> k = stackalloc float[totalKDim];
+        Span<float> k = _kScratch.AsSpan(0, totalKDim);
         MatVec(layer.AttnK.Value, input, k);
         var kNorm = AsFloatSpan(layer.AttnKNorm);
         if (!kNorm.IsEmpty)
@@ -461,7 +500,7 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
         Qwen4ExpRope.ApplyImRope(q, position, _numHeads, _headDim, _hp.RopeDimensionSections, _ropeDim, _ropeTheta);
         Qwen4ExpRope.ApplyImRope(k, position, _numHeadsKv, _headDim, _hp.RopeDimensionSections, _ropeDim, _ropeTheta);
 
-        Span<float> v = stackalloc float[totalVDim];
+        Span<float> v = _vScratch.AsSpan(0, totalVDim);
         MatVec(layer.AttnV.Value, input, v);
 
         // Store K and V in cache
@@ -503,7 +542,7 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
         int numTokens = _qsaKeyCache[layerIdx].Count;
         float invSqrtD = 1.0f / MathF.Sqrt(_headDim);
 
-        Span<float> attnOut = stackalloc float[_numHeads * _headDim];
+        Span<float> attnOut = _attnOutScratch;
         attnOut.Clear();
 
         // Perform sparse block selection if indexer is active and topK is specified
@@ -626,8 +665,8 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
         if (layer.FfnGateShexp != null && layer.FfnUpShexp != null && layer.FfnDownShexp != null)
         {
             int shExpDim = (int)layer.FfnDownShexp.Value.Info.Dimensions[0];
-            Span<float> shGate = stackalloc float[shExpDim];
-            Span<float> shUp = stackalloc float[shExpDim];
+            Span<float> shGate = _moeGateScratch.AsSpan(0, shExpDim);
+            Span<float> shUp = _moeUpScratch.AsSpan(0, shExpDim);
 
             MatVec(layer.FfnGateShexp.Value, input, shGate);
             MatVec(layer.FfnUpShexp.Value, input, shUp);
@@ -640,7 +679,7 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
                 shGate[i] = (g * sig) * shUp[i];
             }
 
-            Span<float> shOut = stackalloc float[_embedDim];
+            Span<float> shOut = _shOutScratch;
             MatVec(layer.FfnDownShexp.Value, shGate, shOut);
 
             // Shared expert scale: sigmoid(ffn_gate_inp_shexp . input)
@@ -679,16 +718,16 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
             ? (int)layer.FfnGateExps!.Value.Info.Dimensions[1]
             : (int)layer.FfnGateUpExps!.Value.Info.Dimensions[1] / 2;
 
-        var logits = new float[numExperts];
+        Span<float> logits = _routerLogitsScratch.AsSpan(0, numExperts);
         MatVec(router, input, logits);
 
-        var topIdx = new int[topK];
-        var topW = new float[topK];
+        Span<int> topIdx = _moeTopIdxScratch.AsSpan(0, topK);
+        Span<float> topW = _moeTopWScratch.AsSpan(0, topK);
         Qwen4ExpMoeRouting.Route(logits, topK, _hp.ExpertWeightsScale, topIdx, topW);
 
-        var gate = new float[interDim];
-        var up = new float[interDim];
-        var down = new float[_embedDim];
+        Span<float> gate = _moeGateScratch.AsSpan(0, interDim);
+        Span<float> up = _moeUpScratch.AsSpan(0, interDim);
+        Span<float> down = _moeDownScratch;
         for (int k = 0; k < topK; k++)
         {
             int expert = topIdx[k];
