@@ -646,17 +646,26 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
 
     private void ExecuteRoutedExperts(Qwen4ExpLayerTensors layer, ReadOnlySpan<float> input, Span<float> output)
     {
-        if (layer.FfnGateInp is not { } router || layer.FfnGateExps is not { } gateExps
-            || layer.FfnUpExps is not { } upExps || layer.FfnDownExps is not { } downExps)
+        if (layer.FfnGateInp is not { } router || layer.FfnDownExps is not { } downExps)
         {
             throw new InvalidOperationException(
-                $"qwen4exp layer {layer.LayerIndex}: expert_count={_hp.ExpertCount} but the routed expert tensors " +
-                "(ffn_gate_inp / ffn_gate_exps / ffn_up_exps / ffn_down_exps) are missing; fused ffn_gate_up_exps is not supported yet.");
+                $"qwen4exp layer {layer.LayerIndex}: expert_count={_hp.ExpertCount} but routed expert tensors (ffn_gate_inp / ffn_down_exps) are missing.");
+        }
+
+        bool hasSeparate = layer.FfnGateExps is not null && layer.FfnUpExps is not null;
+        bool hasFused = layer.FfnGateUpExps is not null;
+
+        if (!hasSeparate && !hasFused)
+        {
+            throw new InvalidOperationException(
+                $"qwen4exp layer {layer.LayerIndex}: expert_count={_hp.ExpertCount} but neither separate (ffn_gate_exps, ffn_up_exps) nor fused (ffn_gate_up_exps) tensors were found.");
         }
 
         int numExperts = _hp.ExpertCount;
         int topK = Math.Min(_hp.ExpertUsedCount, numExperts);
-        int interDim = (int)gateExps.Info.Dimensions[1];
+        int interDim = hasSeparate
+            ? (int)layer.FfnGateExps!.Value.Info.Dimensions[1]
+            : (int)layer.FfnGateUpExps!.Value.Info.Dimensions[1] / 2;
 
         var logits = new float[numExperts];
         MatVec(router, input, logits);
@@ -670,25 +679,36 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
         var down = new float[_embedDim];
         for (int k = 0; k < topK; k++)
         {
-            ExpertMatVec(gateExps, topIdx[k], input, gate);
-            ExpertMatVec(upExps, topIdx[k], input, up);
+            int expert = topIdx[k];
+            if (hasSeparate)
+            {
+                ExpertMatVec(layer.FfnGateExps!.Value, expert, input, gate);
+                ExpertMatVec(layer.FfnUpExps!.Value, expert, input, up);
+            }
+            else
+            {
+                ExpertMatVec(layer.FfnGateUpExps!.Value, expert, input, gate, rowOffset: 0);
+                ExpertMatVec(layer.FfnGateUpExps!.Value, expert, input, up, rowOffset: interDim);
+            }
+
             for (int i = 0; i < interDim; i++)
             {
                 float g = gate[i];
                 gate[i] = (g / (1.0f + MathF.Exp(-g))) * up[i];
             }
-            ExpertMatVec(downExps, topIdx[k], gate, down);
+            ExpertMatVec(downExps, expert, gate, down);
             TensorPrimitives.MultiplyAdd(down, topW[k], output, output);
         }
     }
 
     /// <summary>Row-sliced matvec into expert <paramref name="expert"/> of a stacked [in, out, experts] tensor.</summary>
-    private static void ExpertMatVec(Qwen4ExpTensorRef tensor, int expert, ReadOnlySpan<float> inVec, Span<float> outVec)
+    private static void ExpertMatVec(Qwen4ExpTensorRef tensor, int expert, ReadOnlySpan<float> inVec, Span<float> outVec, int rowOffset = 0)
     {
         int inDim = (int)tensor.Info.Dimensions[0];
         int outDim = outVec.Length;
+        int totalRows = (int)tensor.Info.Dimensions[1];
         long bytesPerRow = (long)(inDim / DTypeInfo.BlockSize(tensor.DType)) * DTypeInfo.BytesPerBlock(tensor.DType);
-        byte* expertPtr = tensor.DataPtr + (long)expert * outDim * bytesPerRow;
+        byte* expertPtr = tensor.DataPtr + ((long)expert * totalRows + rowOffset) * bytesPerRow;
         fixed (float* outPtr = outVec, inPtr = inVec)
         {
             SimdKernels.MatVec(outPtr, expertPtr, inPtr, outDim, inDim, tensor.DType);

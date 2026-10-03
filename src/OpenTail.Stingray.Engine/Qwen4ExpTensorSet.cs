@@ -86,6 +86,7 @@ public sealed unsafe class Qwen4ExpLayerTensors
     public Qwen4ExpTensorRef? FfnDownExps;
     public Qwen4ExpTensorRef? FfnGateExps;
     public Qwen4ExpTensorRef? FfnUpExps;
+    public Qwen4ExpTensorRef? FfnGateUpExps;
     public Qwen4ExpTensorRef? FfnGateInpShexp;
     public Qwen4ExpTensorRef? FfnGateShexp;
     public Qwen4ExpTensorRef? FfnUpShexp;
@@ -162,6 +163,7 @@ public sealed unsafe class Qwen4ExpTensorSet
                 FfnDownExps = Find(model, $"blk.{il}.ffn_down_exps.weight"),
                 FfnGateExps = Find(model, $"blk.{il}.ffn_gate_exps.weight"),
                 FfnUpExps = Find(model, $"blk.{il}.ffn_up_exps.weight"),
+                FfnGateUpExps = Find(model, $"blk.{il}.ffn_gate_up_exps.weight"),
                 FfnGateInpShexp = Find(model, $"blk.{il}.ffn_gate_inp_shexp.weight"),
                 FfnGateShexp = Find(model, $"blk.{il}.ffn_gate_shexp.weight"),
                 FfnUpShexp = Find(model, $"blk.{il}.ffn_up_shexp.weight"),

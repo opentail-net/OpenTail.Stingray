@@ -768,6 +768,7 @@ public sealed class Qwen4ExpPleHasher
 
     /// <summary>
     /// Computes row indices in the PLE table for each head at the current token position.
+    /// Uses XOR accumulation across n-gram multiplier products per llama.cpp (qwen4exp.cpp) and TensorSharp.
     /// </summary>
     public void ComputeRowIndices(Span<long> outRowIndices)
     {
@@ -782,7 +783,8 @@ public sealed class Qwen4ExpPleHasher
                 int tIdx = histLen - 1 - k;
                 ulong tokenVal = tIdx >= 0 ? (ulong)_tokenHistory[tIdx] : 0UL;
                 ulong mult = k < _multipliers.Length ? _multipliers[k] : 1UL;
-                hash = unchecked(hash + tokenVal * mult);
+                ulong prod = unchecked(tokenVal * mult);
+                hash = k == 0 ? prod : (hash ^ prod);
             }
 
             uint vocabSize = h < _headVocabSizes.Length && _headVocabSizes[h] > 0 ? _headVocabSizes[h] : 65536U;

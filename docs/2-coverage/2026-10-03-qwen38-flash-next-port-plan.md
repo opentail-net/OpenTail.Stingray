@@ -29,8 +29,9 @@ A hybrid MoE consisting of 48 layers in a strict 3:1 pattern (`full_attention_in
 
 2. **PLE (Position-Less Embedding) n-gram table & conv block**:
    - Injected at layer 2 (`ple_layers = [2]`), which is a recurrent GDN layer.
-   - ~20M-entry / 51B-parameter n-gram embedding table mapped by 64-bit n-gram hashes.
+   - ~320M-row / ~51B-parameter n-gram embedding table (`per_layer_token_embd`) mapped by 64-bit n-gram hashes (row count $\neq$ parameter count $\neq$ file size).
    - Hash metadata arrays: `ple_layer_multipliers`, `ple_head_offsets`, `ple_head_vocab_sizes`.
+   - 64-bit n-gram hash calculation: XOR of multiplied terms across the n-gram window (`mixed = (tok_0 * mult_0) ^ (tok_1 * mult_1) ^ ...`).
    - Gated query/key projection with signed square root scaling:
      `s = sum(key * query) / sqrt(d); gate = sigmoid(sgn(s) * sqrt(|s|))`.
    - Broadcast value with grouped RMSNorm.
@@ -51,6 +52,7 @@ A hybrid MoE consisting of 48 layers in a strict 3:1 pattern (`full_attention_in
    - 1 shared expert per token.
    - Expert intermediate size $d_{ff} = 640$ (`n_ff_exp = 640`).
    - Softmax over router logits, top-k selection, renormalised weights.
+   - Fused `ffn_gate_up_exps` vs separate `ffn_gate_exps` / `ffn_up_exps` tensor layout compatibility must be confirmed against real checkpoints.
 
 5. **SSM Numerics**:
    - `mamba_ssm_dtype = float32`: GDN recurrent state and updates run strictly in FP32.
