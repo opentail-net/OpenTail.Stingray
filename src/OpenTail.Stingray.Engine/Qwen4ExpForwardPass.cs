@@ -451,7 +451,7 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
         }
     }
 
-    private void ExecuteMoe(Qwen4ExpLayerTensors layer, ReadOnlySpan<float> input, Span<float> output)
+    internal void ExecuteMoe(Qwen4ExpLayerTensors layer, ReadOnlySpan<float> input, Span<float> output)
     {
         output.Clear();
 

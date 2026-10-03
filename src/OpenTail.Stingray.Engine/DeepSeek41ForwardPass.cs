@@ -28,22 +28,9 @@ public sealed unsafe class DeepSeek41ForwardPass : IForwardPass
 
     public DeepSeek41ForwardPass(GgufModel model, DeepSeek41Hyperparams hp)
     {
-        _model = model;
-        _hp = hp;
-        _tensors = DeepSeek41TensorSet.Load(model, hp);
-        _engram = new DeepSeek41Engram(hp);
-
-        _hc = hp.HyperConnectionMultiplier;
-        _embedDim = hp.EmbedDim;
-        _numHeads = hp.NumHeads;
-        _headDim = hp.HeadDim;
-        _ropeDim = hp.RopeDim;
-        _nopeDim = hp.NopeDim;
-        _numLayer = hp.NumLayer;
-
         // Execution-path gaps (ported, not verified, not admitted): the loaded compressor / indexer tensors are
         // not consumed, and YaRN is not applied. Refuse real configurations rather than return wrong logits.
-        for (int i = 0; i < _numLayer && i < hp.CompressRatios.Count; i++)
+        for (int i = 0; i < hp.NumLayer && i < hp.CompressRatios.Count; i++)
         {
             if (hp.CompressRatios[i] > 0)
             {
@@ -57,6 +44,18 @@ public sealed unsafe class DeepSeek41ForwardPass : IForwardPass
             throw new NotSupportedException(
                 $"deepseek41: YaRN rope scaling (factor {hp.RopeScalingFactor}) is not implemented yet.");
         }
+        _model = model;
+        _hp = hp;
+        _tensors = DeepSeek41TensorSet.Load(model, hp);
+        _engram = new DeepSeek41Engram(hp);
+
+        _hc = hp.HyperConnectionMultiplier;
+        _embedDim = hp.EmbedDim;
+        _numHeads = hp.NumHeads;
+        _headDim = hp.HeadDim;
+        _ropeDim = hp.RopeDim;
+        _nopeDim = hp.NopeDim;
+        _numLayer = hp.NumLayer;
 
         VocabSize = _tensors.Output.HasValue && _tensors.Output.Value.Info.Dimensions.Length >= 2
             ? (int)_tensors.Output.Value.Info.Dimensions[1]

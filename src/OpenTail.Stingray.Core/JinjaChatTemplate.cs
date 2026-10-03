@@ -1225,7 +1225,9 @@ public sealed class JinjaChatTemplate
     {
         return op switch
         {
-            "+"  => (l is string || r is string) ? Stringify(l) + Stringify(r)
+            // list + list concatenates (Jinja/Python): Muse-Glimmer's template builds `rns.recipients + ['"user"']`.
+            "+"  => (l is List<object?> ll && r is List<object?> rl) ? new List<object?>(ll.Concat(rl))
+                    : (l is string || r is string) ? Stringify(l) + Stringify(r)
                     : (object)(ToLong(l) + ToLong(r)),
             "-"  => (object)(ToLong(l) - ToLong(r)),
             "*"  => (object)(ToLong(l) * ToLong(r)),

@@ -6,6 +6,20 @@ public sealed class JinjaChatTemplateTests
     private static string Render(string source, IReadOnlyDictionary<string, object?>? ctx = null) =>
         new JinjaChatTemplate(source).Render(ctx ?? new Dictionary<string, object?>());
 
+    // ── List concatenation ───────────────────────────────────────────────────
+    // Muse-Glimmer's chat template builds its recipient list with `rns.recipients + ['"user"']` and
+    // `nsns.seen + [tns]`. `+` only handled numbers and strings, so the real template threw
+    // InvalidCastException (List -> IConvertible) and the model could not be run through its own template.
+    [Fact]
+    public void Add_ConcatenatesLists_AndKeepsTheFilterBoundToItsOperand()
+    {
+        const string src =
+            "{%- set rns = namespace(r=['a']) -%}" +
+            "{%- set rns.r = rns.r + ['b', 'c'] -%}" +
+            "{{- '# Valid: ' + rns.r | join(', ') + '.' -}}";
+        Assert.Equal("# Valid: a, b, c.", Render(src));
+    }
+
     // ── List displays ────────────────────────────────────────────────────────
     // Gemma's chat template gates its system-message handling on
     // `messages[0]['role'] in ['system', 'developer']`. The parser had no '[' case in

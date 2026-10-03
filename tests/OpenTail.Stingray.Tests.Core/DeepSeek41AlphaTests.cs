@@ -35,7 +35,8 @@ public sealed unsafe class DeepSeek41AlphaTests
         Assert.Equal(4, hp.HyperConnectionMultiplier);
         Assert.Equal(20, hp.HyperConnectionSinkhornIterations);
 
-        Assert.Equal(64, hp.IndexerNumHeads);
+        Assert.Equal(32, hp.IndexerNumHeads);            // official config: index_n_heads
+        Assert.Equal(2304, hp.ExpertFeedForwardLength);  // official config: moe_intermediate_size
         Assert.Equal(128, hp.IndexerHeadSize);
         Assert.Equal(2048, hp.IndexerCandidateTopK);
         Assert.Equal(8, hp.IndexerBlockSize);
@@ -217,5 +218,27 @@ public sealed unsafe class DeepSeek41AlphaTests
         Assert.Equal(2, selected.Length);
         Assert.Equal(3, selected[0]); // 0.95
         Assert.Equal(1, selected[1]); // 0.8
+    }
+
+    [Fact]
+    public void ForwardPass_RefusesCompressedAttentionLayers_RatiosAboveZero()
+    {
+        // The real V4.1 schedule has ratio-2 and ratio-1 layers; their compressed attention and the V4.1 indexer are
+        // not implemented, so the forward pass must refuse before touching any weights (model is never read).
+        var hp = new DeepSeek41Hyperparams();
+        var ex = Assert.Throws<NotSupportedException>(() => new DeepSeek41ForwardPass(null!, hp));
+        Assert.Contains("compress ratio", ex.Message);
+    }
+
+    [Fact]
+    public void ForwardPass_RefusesYarnRopeScaling()
+    {
+        var hp = new DeepSeek41Hyperparams
+        {
+            CompressRatios = new int[40],  // all raw attention, so only the YaRN gate can fire
+            RopeScalingFactor = 16f,
+        };
+        var ex = Assert.Throws<NotSupportedException>(() => new DeepSeek41ForwardPass(null!, hp));
+        Assert.Contains("YaRN", ex.Message);
     }
 }

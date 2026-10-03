@@ -79,16 +79,16 @@ Additional architectural components:
   - [x] Unit test `Qwen4ExpGatedResidualTests`.
 - [x] **2. GDN + MoE Trunk (36 layers)**:
   - [x] Integrate the FP32 recurrence kernel via `GdnKernels.GdnRecurrenceDecode`.
-  - [x] Implement 512-expert MoE (top-10 + 1 shared expert, intermediate 640).
+  - [x] Implement 512-expert MoE (top-10 + 1 shared expert, intermediate 640). Routed experts were missing from the forward pass until 2026-10-03; now executed (softmax router, top-10, renormalised), covered by `Qwen4ExpMoeRoutingTests` (router maths only, no integrated expert-read test yet).
   - [x] Unit test `GdnRecurrenceDecode` integration and MoE structure.
-- [x] **3. PLE Subsystem**:
-  - [x] Implement multi-head hash mapping / gather over n-gram table.
+- [ ] **3. PLE Subsystem**: gate/conv parts done; n-gram table missing, see below.
+  - [ ] Implement multi-head hash mapping / gather over n-gram table. **NOT DONE** (reviewed 2026-10-03): no n-gram table is loaded; only `per_layer_token_embd` is used.
   - [x] Implement grouped RMSNorm + signed square root gating.
   - [x] Implement dilated depthwise causal 1D conv with state storage in recurrent cache.
   - [x] Unit test `Ple_ComputeGate_PositiveAndNegativeDotProducts` and `Ple_DilatedConv_AccessesExpectedTaps`.
-- [x] **4. QSA Subsystem (12 layers)**:
-  - [x] 4a: Implement indexer key pooling and top-k block selection (`Qsa_PoolIndexerKeys_AveragesAndNormalizes`, `Qsa_ComputeBlockScore_RectifiesAndScales`).
-  - [x] 4b: Implement interleaved Q+gate projection, sparse attention, and causal masking (`Qsa_SplitAndNormQGated_And_ApplyAttentionGate`).
+- [ ] **4. QSA Subsystem (12 layers)**: component helpers only (pooling, block score, gate). **Not wired** (reviewed 2026-10-03):
+  - [ ] 4a: indexer projections, K-pool block selection driving attention; the mixer attends over all cached K/V.
+  - [ ] 4b: RoPE (absent from the QSA mixer). The interleaved Q+gate split and attention gate are done (`Qsa_SplitAndNormQGated_And_ApplyAttentionGate`).
 - [x] **5. Forward Pass Composition (`Qwen4ExpForwardPass`)**:
   - [x] Assemble the full 48-layer stack: 36 GDN layers, 12 QSA layers, PLE at layer 2, HC wrapping all mixers and MoE blocks.
   - [x] Implement the final HC head mix (acting as RMS output norm).

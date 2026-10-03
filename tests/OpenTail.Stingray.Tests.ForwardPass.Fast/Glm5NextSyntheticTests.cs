@@ -90,8 +90,7 @@ public sealed class Glm5NextSyntheticTests : IDisposable
         Assert.True(hp.IsRecurrent(44));  // KDA
     }
 
-    [Fact]
-    public void Glm5Next_SyntheticForwardPass_ExecutesBothKdaAndMlaWithMhc()
+    private (GgufModel Model, Glm5NextHyperparams Hp) BuildSynthetic(Func<string, bool>? zeroFill)
     {
         const int embedDim = 32;
         const int numHeads = 2;
@@ -123,6 +122,7 @@ public sealed class Glm5NextSyntheticTests : IDisposable
             long total = 1;
             foreach (var s in shape) total *= s;
             var floats = new float[total];
+            if (zeroFill?.Invoke(name) == true) fill = 0f;
             for (int i = 0; i < total; i++) floats[i] = fill * MathF.Sin(i + 1);
             var bytes = new byte[total * 4];
             Buffer.BlockCopy(floats, 0, bytes, 0, bytes.Length);
@@ -229,30 +229,57 @@ public sealed class Glm5NextSyntheticTests : IDisposable
 
         WriteGgufFile(path, metadata, tensors);
 
-        using var model = GgufModel.Open(path);
+        var model = GgufModel.Open(path);
         var hp = Glm5NextHyperparams.FromGgufMetadata(
             model.Metadata, "glm5next", numLayerAll: numLayers, embedDim: embedDim, numHeads: numHeads,
             headDim: headDimKda, numExperts: numExperts, numExpertsUsed: numExpertsUsed);
 
+        return (model, hp);
+    }
+
+    [Fact]
+    public void Glm5Next_SyntheticForwardPass_ExecutesBothKdaAndMlaWithMhc()
+    {
+        var (model, hp) = BuildSynthetic(zeroFill: null);
+        using var _ = model;
         var forwardPass = new Glm5NextForwardPass(model, hp);
-        Assert.Equal(vocabSize, forwardPass.VocabSize);
 
-        // Step 0
-        var logits0 = forwardPass.Forward(token: 3, position: 0);
-        Assert.Equal(vocabSize, logits0.Length);
-        foreach (var l in logits0)
+        foreach (var (token, position) in new[] { (3, 0), (7, 1) })
         {
-            Assert.False(float.IsNaN(l));
-            Assert.False(float.IsInfinity(l));
+            var logits = forwardPass.Forward(token, position);
+            Assert.NotEmpty(logits.ToArray());
+            foreach (var l in logits)
+            {
+                Assert.False(float.IsNaN(l));
+                Assert.False(float.IsInfinity(l));
+            }
         }
+    }
 
-        // Step 1
-        var logits1 = forwardPass.Forward(token: 7, position: 1);
-        Assert.Equal(vocabSize, logits1.Length);
-        foreach (var l in logits1)
+    [Fact]
+    public void Glm5Next_HcStreams_AreRebuiltFromTheCurrentTokenOnly()
+    {
+        // Regression: the mHC streams used to accumulate (streams += embedding) for position > 0, contaminating a token
+        // with the previous token's residual. With every sublayer output weight zeroed, the streams only ever mix the
+        // current embedding, so token B's logits must be identical whether or not token A came first.
+        static bool IsSublayerOutput(string n) =>
+            n.EndsWith("attn_output.weight") || n.Contains("ffn_down");
+
+        var (modelA, hp) = BuildSynthetic(IsSublayerOutput);
+        using var _a = modelA;
+        var afterA = new Glm5NextForwardPass(modelA, hp);
+        afterA.Forward(token: 3, position: 0);
+        var bAfterA = afterA.Forward(token: 7, position: 1).ToArray();
+
+        var (modelB, hpB) = BuildSynthetic(IsSublayerOutput);
+        using var _b = modelB;
+        var fresh = new Glm5NextForwardPass(modelB, hpB);
+        var bFresh = fresh.Forward(token: 7, position: 0).ToArray();
+
+        Assert.Equal(bFresh.Length, bAfterA.Length);
+        for (int i = 0; i < bFresh.Length; i++)
         {
-            Assert.False(float.IsNaN(l));
-            Assert.False(float.IsInfinity(l));
+            Assert.Equal(bFresh[i], bAfterA[i], 1e-5f);
         }
     }
 
