@@ -810,6 +810,12 @@ public static class ModelCompatibility
     // Hugging Face GLM-5.3-Flash: 45 layers in strict 3:1 pattern (34 KDA + 11 MLA), 4-stream mHC
     // hyper-connections with Sinkhorn balancing, 4-token K-pool indexer, and 288-expert MoE.
     //
+    // diffusion-gemma — NOT admitted for autoregressive text generation (CLAUDE.md rule 14).
+    // DiffusionGemma is a block text-diffusion model based on Gemma-4 MoE (26B total, ~4B active)
+    // with 30 layers (5 full, 25 sliding 1024), 256-token canvas iterative denoising, self-conditioning,
+    // and entropy budget sampler (DiffusionGemmaPipeline). It is not autoregressive and must not be
+    // invoked via Forward(token).
+    //
     // qwen4exp — NOT admitted (CLAUDE.md rule 14: ported, not verified). Alpha forward pass
     // ported 2026-10-03 from llama.cpp src/models/qwen4exp.cpp (upstream bed0a8566) and TensorSharp
     // Models/Qwen4Exp/: 48 layers (36 GDN + 12 QSA), 4-stream GatedResidual hyper-connections
