@@ -2,6 +2,8 @@
 
 Written 2026-10-03. Companion to [2026-10-03-streamed-residency-plan.md](2026-10-03-streamed-residency-plan.md), which lists this as its largest remaining item. **Status: plan only, nothing implemented.**
 
+**Revision 2026-10-03 (after an external review; each point was checked against the code before adopting).** Corrected: the hybrid's CPU KV is `KvCache` (FP32, `[maxSeqLen, kvDim]` per layer), not the `PagedKvCache` that `ForwardPass` uses; the hybrid's GPU KV is FP32 (`gpu.Allocate` default dtype), the fp16 KV I cited belongs to `GpuForwardPass`, so Phase 1 has no precision conversion; Phase 1 is fresh sequences only (`startPos == 0`); `PagedKvCache` can narrow itself to BF16 (explicitly via `STINGRAY_KV_DTYPE` / `STINGRAY_KV_STORE`, or automatically at 1,024 tokens in `auto` mode), so the CPU prefill pass must be pinned to F32 KV or the handoff would silently put BF16-rounded K/V into the hybrid.
+
 ## Context
 
 `HybridForwardPass.Prefill` (`src/OpenTail.Stingray.Engine/HybridForwardPass.cs:691`) is a loop of single-token `Forward` calls, and `GpuForwardPass` excludes every MoE model from its batched trunk (`ComputeCanBatchedTrunk`, `GpuForwardPass.cs:1270`: "MoE (mid-trunk router submit)"). Measured on this machine, OLMoE-1B-7B Q4_K_M, 631-token prompt, Release build:
@@ -59,51 +61,80 @@ A single dispatcher chooses per chunk (Phase 5). Regime A is the only one I can 
 ### Phase 0: instrument and baseline (small, do first)
 - Add `STINGRAY_PREFILL_TIMING=1` to `HybridForwardPass` (and `GpuForwardPass`) printing, per prefill: time in GPU attention, router wait, CPU MoE, GPU MoE, CPU-layer attention, KV traffic. Same style as `STINGRAY_MOE_TIMING`.
 - Record the baseline matrix in the doc: OLMoE, Qwen3-Coder-30B; prompt lengths 20 / 128 / 631 / 2048; `-g 0`, `-g 8`, `-g -1`; 3 runs each. This fixes the crossover numbers the dispatcher needs (rule 7: measure, do not assume).
-- Read-only checks that decide Phase 1's shape (answer them in the doc): (a) is `HybridForwardPass._cpuKvCache` the same `CpuKvCache` type `ForwardPass` uses, and what is the GPU KV layout (Vulkan stores fp16; dtype/TurboQuant variants); (b) can a CPU `ForwardPass` be constructed over the same `GgufModel` for all layers without duplicating weights (they are memory-mapped; the CPU pass pre-faults them).
+- Baseline matrix, staged: OLMoE first (prompts 20 / 128 / 631 / 2048; `-g 0`, `-g 8`, `-g -1`; 3 runs each); Qwen3-Coder-30B only once Phase 1 mechanics work. Do not block Phase 1 on the full matrix.
+- Read-only checks (answers recorded in this doc before coding): (a) the layout and conversion boundary between `ForwardPass.Cache` (`PagedKvCache`: pages, F32 / BF16 store, auto-narrowing at 1,024 tokens, layer indexing, physical vs logical positions) and `HybridForwardPass._cpuKvCache` (`KvCache`: FP32, `[maxSeqLen, kvDim]` per CPU layer, CPU layer index = layer - nGpuLayers) and the hybrid GPU KV tensors (FP32, `[maxSeqLen * kvDim]` per GPU layer); (b) whether a CPU `ForwardPass` can be built over the same `GgufModel` without duplicating weights (they are memory-mapped; construction pre-faults them) and what its construction costs.
 
-### Phase 1: "prefill where it is fastest, hand off the KV" (recommended first implementation; no new kernels)
-Idea: for a prompt of N >= gate tokens (default 32, llama.cpp's number, tuned in Phase 0), run the whole prefill on the CPU with the existing batched path (`ForwardPass.Prefill`, which already includes `MoeFfnBatched`), then copy each layer's K/V rows [startPos, startPos+N) into the hybrid's caches: GPU layers' KV buffers (fp16 conversion), CPU layers' `_cpuKvCache`. Decode then continues on the hybrid unchanged.
-- Why first: it reuses the whole verified CPU path, so the result is the CPU prefill speed (141 tok/s on OLMoE here, 5.6x today) with logits identical to `-g 0`, and correctness reduces to "is the KV handoff exact", which is easy to test. It is also the right answer for regime A permanently.
-- New code: a `KvHandoff` helper (CPU KV -> GPU KV buffers via `VulkanBackend.Upload`/`UploadRaw`, per layer, one transfer per layer per prompt); hybrid `Prefill` dispatch (`n >= gate && cpuPrefillAvailable`); a lazily built CPU `ForwardPass` sharing the model (constructed only when a long prompt arrives; released or kept per memory budget).
-- Files: `HybridForwardPass.cs` (Prefill, KV accessors), new `HybridPrefillHandoff.cs` in `Engine`, `VulkanBackend` (KV upload helper if missing), reuse `ForwardPass.Prefill`.
-- Limits to handle explicitly: TurboQuant KV (skip handoff, fall back to per-token), SWA layers, `startPos > 0` (multi-turn: handoff appends), models whose hybrid path already refuses (Gemma 4 etc.), memory (CPU pass scratch for N tokens: chunk the prompt to bound it), thinking about snap-KV (skip).
-- Acceptance: OLMoE 631-token prefill >= 130 tok/s through `-g 8` (CPU-only is 141.6); logits after prefill within the existing hybrid parity contract vs the sequential hybrid path; 40 decode tokens after the handoff match the sequential-prefill run token-for-token (same device kernels for decode); Qwen3-Coder-30B same; multi-turn (second prompt with `startPos > 0`) matches.
+### Phase 1: CPU-prefill fast path with exact KV handoff (recommended first implementation; no new kernels)
+Name it for what it is: it does **not** make Vulkan MoE prefill batched; it makes a fresh prompt's prefill run on the already-proven CPU batched MoE path and hands the result to the hybrid. "Phase 1 done" must not be read as "Vulkan has batched MoE".
+
+**Scope and hard rules**
+- Fresh sequences only: `startPos == 0`. For `startPos > 0` (a later turn) fall back to the existing sequential hybrid prefill. A newly built CPU pass does not hold the hybrid's earlier K/V, so it cannot compute attention for new tokens correctly; supporting it needs a separate "Phase 1b" (import or shadow the prefix KV into the CPU cache), not done here.
+- **No semantic change**: no new KV precision, no new attention/RoPE/router/FFN arithmetic, no new GPU kernels. It is a scheduling and cache-transfer optimisation only.
+- The CPU prefill pass **must use F32 KV**. `PagedKvCache` can narrow itself to BF16 (`STINGRAY_KV_DTYPE=bf16`, `STINGRAY_KV_STORE=bf16`, or `auto` at 1,024 tokens). Construct the prefill pass with BF16 and auto-narrowing disabled, or refuse the fast path when those settings are on; otherwise long prompts would put BF16-rounded K/V into an F32 hybrid and change decode numerics versus the sequential path.
+- Disabled when: TurboQuant or SnapKV is active, the model/backend is already refused by the hybrid, the KV layout or per-layer head dimensions cannot be copied exactly, or any precision conversion would be needed.
+
+**Steps**
+1. Build one CPU `ForwardPass` over the same `GgufModel` on first use and keep it for the hybrid's lifetime (construction resolves and pre-faults weights and allocates cache and scratch; paying that per prompt would defeat the benchmark). Reset its cache between requests.
+2. For a fresh prompt with `N >= gate` (start at 32, tune from Phase 0): `ForwardPass.Prefill(tokens)`; chunk long prompts to bound activation scratch.
+3. Read the completed `ForwardPass.Cache` (`PagedKvCache`) and copy K/V rows `[0, N)`: CPU-resident layers into the hybrid `KvCache` (F32 rows), GPU-resident layers into the existing hybrid GPU K/V tensors (F32 slices via `VulkanBackend.Upload`/`UploadRaw`, one transfer per layer). Set the hybrid's position counters as the sequential path would.
+4. Return the CPU prefill logits as the prompt's final logits; keep the hybrid decode path unchanged.
+5. **Memory budget**: the CPU pass holds a full-model temporary KV cache that grows with the prompt. Report peak private memory, and fall back to the sequential path when the temporary cache would exceed the configured budget. Chunking bounds scratch, not this cache.
+
+**Files**: `HybridForwardPass.cs` (Prefill dispatch, KV accessors), new `HybridPrefillHandoff.cs` in `Engine`, a KV upload helper in `VulkanBackend` if missing, reuse `ForwardPass.Prefill`.
+
+**Tests (three separate properties, replacing "40 decode tokens match token-for-token")**
+- A. Handoff exactness: CPU `PagedKvCache` rows vs the hybrid's CPU-layer `KvCache` rows and a download of the GPU-layer tensors: byte-identical. This proves the transfer.
+- B. First-decode parity: decode after handoff vs decode after sequential hybrid prefill, under the existing cross-backend contract (cosine > 0.99, argmax flips only on a near-tie of the reference logits). The K/V values differ in low bits because CPU kernels produced them instead of GPU kernels, so bitwise equality is not the right bar.
+- C. Generation: same prompt, greedy, near-ties documented; plus the boundary prompt lengths below.
+- Short prompts (below the gate) must not regress; construction cost and warmed throughput are benchmarked separately (first-use latency, warmed prefill tok/s, end-to-end).
+
+**Acceptance**: fresh OLMoE 631-token prompt >= 130 tok/s warmed through `-g 8` (CPU-only is 141.6); tests A-C pass; peak memory recorded; `startPos > 0` demonstrably still on the old path.
 
 ### Phase 2: batched hybrid trunk with host MoE (Vulkan port of CUDA #410), for when the GPU attention trunk is worth keeping
 Idea: process the chunk layer by layer instead of token by token. GPU layers: batched attention trunk (`RmsNormBatched` -> `MatMulBatched` q/k/v -> `RoPEBatched` -> `KvAppendBatched` -> `AttentionBatched` -> o-proj -> residual) in chunks of at most 16 tokens (Path 1 limit); FFN for MoE layers via the CUDA #410 pattern: one D2H of the chunk's post-FFN-norm rows, host router (exact per-token F32 path), `MoeBatchedExperts.Run` over CSR buckets, reduce in top-k slot order, one H2D, batched add. CPU layers: batched CPU trunk (reuse the `ForwardPass.PrefillCore` layer logic over the hybrid's CPU weights/KV).
 - Value: keeps GPU attention and KV native (no handoff), lets GPU layers and CPU layers both batch, and is the structure Phases 3-4 plug into (swap the host MoE step for a GPU one).
 - Extend `ComputeCanBatchedTrunk` so MoE no longer disqualifies when the host-MoE stage is available; add the missing batched pieces only if absent (batched residual add, row-broadcast bias exists).
 - Cost: moderate; the per-layer D2H/H2D replaces per-token round trips, but the chunk cap of 16 tokens means ~40 round trips for 631 tokens per layer unless the cap is lifted (Phase 3 Path 2) or the host stages run on the whole prompt per layer (activations for N tokens are only N*embDim*4 bytes: 631*2048*4 = 5 MB, so the D2H/H2D can cover the whole prompt per layer with the attention trunk chunked internally; do that).
-- Acceptance: equal to Phase 1's logits on the same prompts; on this machine it should be at least as fast as Phase 1 only if GPU attention beats CPU attention, which dense measurements say it may not; keep it only if the Phase 0 numbers justify it (rule 7).
+- **Exit criterion (hard gate, not a note)**: proceed only if the Phase 0/1 measurements show GPU attention for the chunk beating CPU batched attention on the target hardware; on this machine the dense numbers suggest it will not, in which case Phase 2 is skipped here. Acceptance when run: equal to Phase 1's logits on the same prompts; on this machine it should be at least as fast as Phase 1 only if GPU attention beats CPU attention, which dense measurements say it may not; keep it only if the Phase 0 numbers justify it (rule 7).
 
-### Phase 3: GPU grouped-expert prefill on Vulkan (regime B; llama.cpp design)
-Kernels, in dependency order, each with a golden test against the CPU `MoeBatchedExperts` result:
-1. `MoeRouterTopK`: batched router GEMM + softmax (or sigmoid) + top-k + optional renormalisation, on the GPU, output `selected[N*k]`, `weights[N*k]`. Must tie-break exactly like `SelectTopK` (host) so selected experts are identical; test with adversarial near-ties.
-2. `MoeCountExperts` (llama.cpp `count_experts.comp`): per-expert counts, prefix offsets, packed row ids grouped by expert in a stable order. Counts up to 1024 experts. Output stays on the GPU.
-3. `MatMulBatchedExpert` (a grouped, id-driven variant of `MatMulBatched`): grid (rows tile, tokens-of-expert tile, expert); weight base offset = expert * rowsPerExpert * bytesPerRow (the missing "expert offset"); gather activations by row id, scatter results by row id. Q4_K and Q6_K first (the dtypes `MatMulBatched` already handles), then the rest. Initially on Path 1's register-accumulator design (16 tokens per tile) so no new GEMM is needed; real speed on large prompts needs the tiled Path 2 GEMM, which is its own project (shared-memory tiles, tile size chosen from tokens per expert as llama.cpp and vLLM do).
-4. `MoeReduceSlotOrder`: per token, sum the k unweighted down partials **in slot order** (parity), add shared-expert output.
-- Decision to record: dynamic row ids (llama.cpp, no padding) rather than vLLM-style padding; simpler to match our CSR semantics.
-- Validation here: correctness only (cosine vs CPU, argmax near-tie rule, as `VulkanHybridOlmoeParityTests`); speed cannot be judged on the iGPU. Needs a discrete GPU to decide the crossover; until then ship it off by default behind `STINGRAY_VULKAN_MOE_PREFILL=1`.
+### Phase 3: GPU grouped-expert prefill on Vulkan (regime B; informed by llama.cpp, not a port of it)
+Reduce how much new numerical machinery arrives at once. Split into 3a and 3b.
+
+**Invariants (name them in code and tests)**
+- *MoE reduction order is part of the numerical parity contract*: partials are reduced per token in top-k slot order, never expert order (it moved OLMoE logits by up to 0.20).
+- *Bucket correctness, not bucket order*: every (token, slot) pair appears exactly once in its selected expert's bucket and keeps its destination identity. Order within a bucket is not load-bearing (vLLM's own tests only check regions), so atomic-counter bucketing is acceptable; our CPU CSR happens to be stable but the GPU need not be.
+
+**Phase 3a (first GPU version)**
+1. GPU router GEMM over the chunk's normed rows; download only the router logits (`N * numExperts` floats, 160 KB for 631 tokens x 64 experts).
+2. **Exact selection stays on the host**, reusing `RouteExperts` (`ForwardPass.Moe.cs:643`): it already encodes softmax vs sigmoid, DeepSeek-style gating with the selection bias, selected-vs-weighted semantics, renormalisation and expert scaling, with deterministic tie-breaks. Upload `selected[N*k]` and `weights[N*k]` (tiny).
+3. `MoeCountExperts` on the GPU: per-expert counts, prefix offsets, grouped row ids (llama.cpp `count_experts.comp` is the reference). The hoisted path is limited by the packed row-id format `(i01 << 16) | i00`, which requires both indices <= 65,535 (llama.cpp checks `nei0 <= 0xffff && nei1 <= 0xffff`), and by a maximum expert count (1,024 today; treat it as the current limit, not a constant). Stingray must either use a wider row-id format or fall back to a non-hoisted path for longer sequences; test with synthetic indices past 65,535 even though the first real tests use 631 and 2,048 tokens.
+4. `MatMulBatchedExpert`: a **new grouped, indirect kernel variant**, not a small extension of `MatMulBatched`: grid (row tile, tokens-of-expert tile, expert); weight offset = expert * rowsPerExpert * bytesPerRow (the missing expert offset); gather activations by row id, scatter outputs by row id. Reuse Path 1's accumulator strategy where practical; Q4_K and Q6_K first. Real speed for large prompts needs the unimplemented Path 2 tiled GEMM (a separate project; tile size chosen from tokens per expert, as llama.cpp and vLLM do).
+5. `MoeReduceSlotOrder`: per token, sum the k unweighted down partials in slot order, add the shared expert.
+
+**Phase 3b (only if profiling shows the small router download and host selection matter)**: fully on-GPU router + top-k, matching `SelectTopK` tie-breaking exactly (adversarial near-tie tests). vLLM treats fused grouped top-k as a backend-specific optimisation, which supports deferring it.
+
+Validation here is correctness (cosine vs CPU, argmax near-tie rule, as `VulkanHybridOlmoeParityTests`). Local micro-performance evidence is still useful (dispatch count, bytes moved, grouping and routing overhead, kernel time) to reject a poor design before it reaches a discrete GPU, but it is not evidence about other hardware. Ship off by default behind `STINGRAY_VULKAN_MOE_PREFILL=1` until measured on a discrete GPU.
 
 ### Phase 4: oversized experts, stream per chunk (regime C)
 For layers whose experts are not resident: upload only the experts the chunk uses (count them from the CSR buckets; the CUDA op-offload uploads the whole layer, which wastes bandwidth when few experts are used, e.g. 128-256 expert models and short chunks), double-buffered against compute, after parallel prefault of those pages (TensorSharp, 16 threads). Reuse the lease/in-flight machinery from `ExpertSlotManager` (a staging slot is a transient lease). Gate by tokens (llama.cpp 32, our CUDA 64, TensorSharp 128; measure ours).
 - Depends on Phase 3 kernels (or the CPU path as the fallback below the gate).
 
-### Phase 5: dispatcher
-`PrefillMoeStrategy.Choose(n, device, expertResidency)` returning `CpuBatched` (Phase 1/2), `GpuResident` (Phase 3), `GpuStreamed` (Phase 4). Inputs: chunk tokens, integrated vs discrete GPU (Vulkan device type; llama.cpp tracks it too), expert residency, and a one-time calibration (time a small fixed MoE chunk on both devices at startup or cache per device in the model home) rather than hard-coded thresholds. Env override `STINGRAY_PREFILL_MOE=cpu|gpu|auto`. Defaults must never pick a path that Phase 0 showed to be slower on the detected hardware class.
+### Phase 5: dispatcher (a measured strategy table, not a device threshold)
+Choose among: CPU full prefill (Phase 1), host-routed hybrid (Phase 2), GPU-resident grouped MoE (Phase 3), GPU-streamed experts (Phase 4). The crossover depends on far more than the device: llama.cpp users report different `GGML_OP_OFFLOAD_MIN_BATCH` optima for Q4_K_M and Q8_0 on the same laptop (reported upstream; not verifiable from this checkout), and our own CUDA op-offload comments show a default of 64 against a measured benefit from about 120 tokens, TensorSharp uses 128, llama.cpp 32. So the calibration key is: model fingerprint, quantisation, backend/device, CPU ISA, layer placement, expert residency, KV configuration, and a prompt-length bucket. Store measured thresholds per key (model home), with conservative defaults when no entry exists, and an override `STINGRAY_PREFILL_MOE=cpu|gpu|auto`. Use a small in-process calibration of a fixed MoE chunk on both devices only to seed a missing entry.
 
 ## Tests and acceptance (all real-weight tests skip visibly without the checkpoint; check wall time per rule 12)
 - Parity: hybrid/GPU prefill logits vs the sequential path and vs `-g 0`, cosine > 0.99 and no argmax flip beyond the 2% near-tie rule, OLMoE (64 experts, top-8), Qwen3-Coder-30B (128 experts), plus a model with a shared expert and sigmoid gating where a checkpoint exists.
 - Chunk invariance: one prompt prefilled in one chunk vs several chunks gives the same logits; multi-turn (`startPos > 0`); prompts of 1, 2, 15, 16, 17, 32, 33, 631 tokens (the 16-token tile edge and the dispatcher gate edge).
+- Expert-occupancy adversarial tests with synthetic routing (not only real prompts): all tokens to one expert; uniform; one token per expert; all top-k slots distinct; some experts empty; one expert receiving almost everything; token indices past 65,535 for the packed row-id path.
 - Slot-order reduction test (the bug class that moved logits by 0.20): reduce in expert order must fail it.
-- KV handoff exactness (Phase 1): continue decoding 40 tokens after handoff and compare with the sequential prefill; fp16 round trip documented.
+- KV handoff (Phase 1): tests A-C above (byte-exact copy, tolerance-based first-decode parity, greedy generation with near-ties documented); the prefill pass asserted to use F32 KV when `STINGRAY_KV_STORE=auto` and the prompt exceeds 1,024 tokens.
 - Memory: scratch bounded for long prompts; `StreamedExpertMemoryBoundTests`-style leak check after repeated prefills; live GPU buffer count flat.
-- Performance gates recorded in the doc (3 runs each): OLMoE 631 tokens through `-g 8` >= 130 tok/s after Phase 1 (CPU-only 141.6); never below CPU-only on the same machine for prompts >= the gate.
+- Performance gates recorded in the doc (3 runs each): OLMoE 631 tokens through `-g 8` >= 130 tok/s after Phase 1 (CPU-only 141.6). For every tested hardware/model/prompt configuration, `auto` must select a strategy whose measured prefill throughput is no worse than the CPU-only baseline within an agreed tolerance; explicit `cpu`, `gpu` and `auto` modes stay available for diagnostics.
 - Regression: existing `VulkanHybridOlmoeParityTests`, `ExpertSlotManagerConcurrencyTests`, dense `VulkanArchLogitParityTests`, `ForwardPass.Fast`, `Server.Fast`.
 
 ## Risks
 - The iGPU may never beat the CPU for prefill; then Phases 2-4 only matter on other hardware. Mitigation: Phase 1 first, calibrate, ship Phase 3/4 off by default until measured on a discrete GPU (a decision for you: where can that be measured?).
-- KV handoff format mismatches (fp16, TurboQuant, SWA, per-layer head dims) or CPU-pass memory duplication: Phase 0 questions (a) and (b) are the gate; if they fail, Phase 2 becomes the first implementation.
+- KV handoff mismatches (BF16 narrowing in `PagedKvCache`, TurboQuant, SWA, per-layer head dims) or the temporary CPU KV cache and duplicated scratch exceeding the memory budget: Phase 0 questions (a) and (b) are the gate; if they fail, Phase 2 becomes the first implementation.
 - Parity: reduction order and top-k tie-breaking are exact-match requirements; both have named tests.
 - Path 1's 16-token limit makes Vulkan batched matmul amortise little for experts with many tokens; the real fix is the unimplemented Path 2 tiled GEMM (large, separate).
 - CUDA has the same structure and several of the same defects (see the residency plan); not changed or testable here.
