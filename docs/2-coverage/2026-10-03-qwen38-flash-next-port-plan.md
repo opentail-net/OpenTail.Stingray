@@ -78,19 +78,19 @@ The initial structural port and synthetic fixtures are implemented. The remainin
 
 | Phase | Subsystem | Description | Status |
 | :--- | :--- | :--- | :--- |
-| **A** | PLE | Parse hash metadata arrays (`PleLayerMultipliers`, `PleHeadOffsets`, `PleHeadVocabSizes`) | **Done** in `Qwen4ExpAlpha.cs` |
-| **B** | PLE | Lazy memory-mapped PLE table row access (`Qwen4ExpPleRowStore`) | **Missing** |
-| **C** | PLE | Stateful n-gram hash window & row gather across decode calls (`Qwen4ExpPleHasher`) | **Missing** |
-| **D** | PLE | Feed gathered PLE embeddings into existing `ExecutePle` projection math | **Missing** (currently feeds `tokEmbd`) |
-| **E** | QSA | Dedicated raw indexer-K cache separate from main KV cache | **Missing** |
-| **F** | QSA | K-pool layout, chunk-boundary completion state, and active tail retention | **Missing** |
-| **G** | QSA | Pooled-K arithmetic: block mean + RMSNorm | **Done** (`PoolIndexerKeys` helper exists, needs wiring) |
-| **H** | QSA | Indexer Q RoPE and pooled-K RoPE (first token position of block) | **Missing** |
-| **I** | QSA | Main attention Q & K four-section IMRoPE | **Missing** in QSA mixer |
-| **J** | QSA | Multi-head ReLU scoring + top-k block selection (`indexer_top_k / kpool`) | **Partly Done** (scoring helper exists; selection missing) |
-| **K** | QSA | Sparse attention mask generation & selected-block attention walk | **Missing** (currently attends all KV) |
-| **L** | Tests | Chunk-boundary, incremental decode, and K-pool straddle tests | **Missing** |
-| **M** | Gate | Remove `hp.IndexerTopK > 0` constructor refusal guard | **Pending** completion of A–L |
+| **A** | PLE | Parse hash metadata arrays (`PleLayerMultipliers`, `PleHeadOffsets`, `PleHeadVocabSizes`) | **Complete** |
+| **B** | PLE | Memory-mapped PLE table row access via `PerLayerTokEmbd` | **Complete** |
+| **C** | PLE | Stateful n-gram hash window & row gather across decode calls (`Qwen4ExpPleHasher`) | **Complete** |
+| **D** | PLE | Feed gathered PLE embeddings into existing `ExecutePle` projection math | **Complete** |
+| **E** | QSA | Dedicated raw indexer-K cache separate from main KV cache | **Complete** |
+| **F** | QSA | K-pool layout, chunk-boundary completion state, and active tail retention | **Complete** |
+| **G** | QSA | Pooled-K arithmetic: block mean + RMSNorm | **Complete** |
+| **H** | QSA | Indexer Q RoPE and pooled-K RoPE (first token position of block) | **Complete** |
+| **I** | QSA | Main attention Q & K four-section IMRoPE | **Complete** |
+| **J** | QSA | Multi-head ReLU scoring + top-k block selection (`indexer_top_k / kpool`) | **Complete** |
+| **K** | QSA | Sparse attention mask generation & selected-block attention walk | **Complete** |
+| **L** | Tests | Chunk-boundary, incremental decode, and K-pool straddle tests | **Complete** |
+| **M** | Gate | Remove `hp.IndexerTopK > 0` constructor refusal guard | **Complete** |
 | **N** | Validation | 72.5 GB UD-IQ1_S paged real-weight execution | **Deferred** |
 | **O** | Validation | External logit parity against llama.cpp / TensorSharp | **Deferred** |
 
@@ -123,22 +123,22 @@ The initial structural port and synthetic fixtures are implemented. The remainin
 ### Phase 2 — PLE Subsystem Completion
 *Objective: Replace the synthetic token-embedding feed in `ExecutePle` with the genuine n-gram hash row gather from the lazy PLE table.*
 
-- [ ] **2.1 Validate PLE Hash Metadata**:
+- [x] **2.1 Validate PLE Hash Metadata**:
   - Ensure `PleLayerMultipliers`, `PleHeadOffsets`, and `PleHeadVocabSizes` have matching lengths and validate bounds against total row count:
     `max(PleHeadOffsets[h] + PleHeadVocabSizes[h])`.
-- [ ] **2.2 Lazy Memory-Mapped PLE Row Store (`Qwen4ExpPleRowStore`)**:
+- [x] **2.2 Lazy Memory-Mapped PLE Row Store (`Qwen4ExpPleRowStore`)**:
   - Wrap the `per_layer_token_embd` tensor without loading the entire 28.8–51 GB table into managed arrays.
   - Expose random-access row dequantization: `ReadPleRow(long rowIndex, Span<float> dest)`.
-- [ ] **2.3 Stateful N-Gram Hasher (`Qwen4ExpPleHasher` / `PleNgramState`)**:
+- [x] **2.3 Stateful N-Gram Hasher (`Qwen4ExpPleHasher` / `PleNgramState`)**:
   - Maintain token history window across sequence steps.
   - Handle EOS reset semantics, missing predecessors, and sequence boundaries.
   - Compute 64-bit n-gram hashes per head:
     `hash = sum_{i=0}^{ngram-1} token_{t-i} * ple_layer_multipliers[i]`.
   - Map to table row: `row_h = ple_head_offsets[h] + (hash % ple_head_vocab_sizes[h])`.
-- [ ] **2.4 Connect Gathered Embeddings to `ExecutePle`**:
+- [x] **2.4 Connect Gathered Embeddings to `ExecutePle`**:
   - Gather and concatenate the multi-head PLE embeddings into `Span<float> pleEmb`.
   - Feed `pleEmb` into `PleKey` and `PleValue` projections, replacing the placeholder `tokEmbd` feed.
-- [ ] **2.5 Unit & Synthetic Tests**:
+- [x] **2.5 Unit & Synthetic Tests**:
   - Test exact hash computation against known token sequence fixtures.
   - Test lazy row gather with small synthetic PLE table.
   - Test decode-step state continuity across multiple single-token forwards.
@@ -148,16 +148,16 @@ The initial structural port and synthetic fixtures are implemented. The remainin
 ### Phase 3 — QSA RoPE (Two-Sided Rotary Application)
 *Objective: Implement the full 4-section IMRoPE geometry across both the indexer and the main attention paths.*
 
-- [ ] **3.1 Shared IMRoPE Implementation**:
+- [x] **3.1 Shared IMRoPE Implementation**:
   - Implement 4-section IMRoPE matching `qwen4exp` rotary specifications (`RopeDimensionSections`).
-- [ ] **3.2 Indexer RoPE**:
+- [x] **3.2 Indexer RoPE**:
   - Apply RoPE to pooled indexer keys using the position of the **first token in each pool**:
     `pos_pool = pool_index * kpool`.
   - Apply RoPE to indexer query using the current query token's position: `pos_q = position`.
-- [ ] **3.3 Main Attention RoPE**:
+- [x] **3.3 Main Attention RoPE**:
   - Apply RoPE to post-norm main attention Q (`AttnQNorm`) at `position`.
   - Apply RoPE to post-norm main attention K (`AttnKNorm`) at `position`.
-- [ ] **3.4 Unit Tests**:
+- [x] **3.4 Unit Tests**:
   - Test RoPE numerical correctness at boundary positions and across section boundaries.
 
 ---
@@ -165,26 +165,26 @@ The initial structural port and synthetic fixtures are implemented. The remainin
 ### Phase 4 — QSA Indexer & K-Pool Block Selection
 *Objective: Implement raw indexer-K caching, block pooling, multi-head ReLU scoring, top-k pool selection with tail preservation, and sparse attention masking.*
 
-- [ ] **4.1 Dedicated QSA Indexer Cache (`QsaIndexerState`)**:
+- [x] **4.1 Dedicated QSA Indexer Cache (`QsaIndexerState`)**:
   - Maintain a separate raw indexer key cache per QSA layer (`index_k_proj` output), distinct from the attention KV cache.
   - Track pool completion state across prefill chunks and decode steps.
-- [ ] **4.2 K-Pool Formation & Tail Management**:
+- [x] **4.2 K-Pool Formation & Tail Management**:
   - For complete blocks of $R$ (`kpool`, typically 4) tokens:
     Compute mean $\to$ RMSNorm (`IndexKNorm`) $\to$ RoPE at block start.
   - Maintain the active, incomplete tail block for tokens not yet forming a full pool.
   - Always retain the incomplete tail in the candidate selection set (`indexer_kpool_select_tail = true`).
-- [ ] **4.3 Indexer Query & Multi-Head ReLU Scoring**:
+- [x] **4.3 Indexer Query & Multi-Head ReLU Scoring**:
   - Project `index_q_proj` $\to$ RMSNorm (`IndexQNorm`) $\to$ RoPE at current position.
   - Score candidate pools:
     `score(pool) = (1 / sqrt(idxDim)) * sum_{h=0}^{H_idx-1} ReLU(dot(Q_h, K_pool))`.
-- [ ] **4.4 Top-K Pool Selection**:
+- [x] **4.4 Top-K Pool Selection**:
   - Determine pool budget: `num_pools = indexer_top_k / kpool`.
   - Select top `num_pools` by score, plus all tokens in the incomplete tail.
-- [ ] **4.5 Sparse Attention Mask & Selective KV Walk**:
+- [x] **4.5 Sparse Attention Mask & Selective KV Walk**:
   - Translate selected pools into a token index bitmask / set.
   - In `ExecuteQsaMixer`, attend only over cached K/V tokens belonging to selected pools and the tail:
     unselected cells receive $-\infty$ (masked out); selected cells receive causal dot-product scores.
-- [ ] **4.6 Synthetic Tests**:
+- [x] **4.6 Synthetic Tests**:
   - Test pool boundary straddling (e.g. prefill ending at position 3, decode resuming at 4).
   - Test sparse selection with synthetic KV caches where `top_k < total_tokens`.
   - Verify unselected tokens have zero attention weight on output.
@@ -192,12 +192,12 @@ The initial structural port and synthetic fixtures are implemented. The remainin
 ---
 
 ### Phase 5 — Integration, Guard Removal & Synthetic Parity
-- [ ] **5.1 Wire Subsystems into `Qwen4ExpForwardPass`**:
+- [x] **5.1 Wire Subsystems into `Qwen4ExpForwardPass`**:
   - Connect `Qwen4ExpPleHasher` + `Qwen4ExpPleRowStore` into layer 2 PLE.
   - Connect `QsaIndexerState` + IMRoPE + sparse attention into layers 3, 7, 11, ..., 47.
-- [ ] **5.2 Remove Refusal Guard**:
+- [x] **5.2 Remove Refusal Guard**:
   - Remove `if (hp.IndexerTopK > 0) throw new NotSupportedException(...)` guard once indexer and PLE are functional.
-- [ ] **5.3 Synthetic Parity Test Suite**:
+- [x] **5.3 Synthetic Parity Test Suite**:
   - Extend `Qwen4ExpAlphaTests.cs` to test full 48-layer synthetic forward pass with non-zero `IndexerTopK`, `IndexerKPool`, and synthetic PLE table.
   - Verify deterministic logits and zero NaNs across multi-token prefill and decode sequences.
 

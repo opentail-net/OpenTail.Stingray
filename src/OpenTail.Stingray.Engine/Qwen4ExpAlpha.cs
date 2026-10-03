@@ -619,4 +619,177 @@ public static class Qwen4ExpQsa
             attnOut[i] *= sig;
         }
     }
+
+    /// <summary>
+    /// Selects top-k pool blocks according to multi-head ReLU scores, always retaining the active incomplete tail.
+    /// Returns the total number of selected pool indices written to <paramref name="selectedPoolIndices"/>.
+    /// </summary>
+    public static int SelectTopKPools(
+        ReadOnlySpan<float> poolScores,
+        int topKPoolCount,
+        Span<int> selectedPoolIndices)
+    {
+        int totalPools = poolScores.Length;
+        if (totalPools == 0) return 0;
+        if (totalPools <= topKPoolCount)
+        {
+            for (int i = 0; i < totalPools; i++) selectedPoolIndices[i] = i;
+            return totalPools;
+        }
+
+        // Partial selection: pick topKPoolCount highest scores
+        Span<int> indices = stackalloc int[totalPools];
+        for (int i = 0; i < totalPools; i++) indices[i] = i;
+
+        // Simple selection sort for topK
+        for (int i = 0; i < topKPoolCount; i++)
+        {
+            int maxIdx = i;
+            float maxScore = poolScores[indices[i]];
+            for (int j = i + 1; j < totalPools; j++)
+            {
+                float s = poolScores[indices[j]];
+                if (s > maxScore)
+                {
+                    maxScore = s;
+                    maxIdx = j;
+                }
+            }
+            if (maxIdx != i)
+            {
+                (indices[i], indices[maxIdx]) = (indices[maxIdx], indices[i]);
+            }
+            selectedPoolIndices[i] = indices[i];
+        }
+
+        return topKPoolCount;
+    }
 }
+
+/// <summary>
+/// 4-section IMRoPE (Interleaved M-RoPE) rotary embeddings for Qwen4Exp QSA and indexer.
+/// </summary>
+public static class Qwen4ExpRope
+{
+    /// <summary>
+    /// Computes which M-RoPE section (0, 1, 2, or 3) corresponds to dimension pair <paramref name="pair"/>.
+    /// Section 3 is unrotated (position 0 / identity).
+    /// </summary>
+    public static int GetMropeComponent(int pair, IReadOnlyList<int>? sections)
+    {
+        if (sections == null || sections.Count == 0) return 0;
+        int s0 = sections[0];
+        int s1 = sections.Count > 1 ? sections[1] : 0;
+        int s2 = sections.Count > 2 ? sections[2] : 0;
+        int s3 = sections.Count > 3 ? sections[3] : 0;
+        int total = s0 + s1 + s2 + s3;
+        if (total <= 0) return 0;
+
+        int sector = pair % total;
+        if (sector % 3 == 1 && sector < 3 * s1) return 1;
+        if (sector % 3 == 2 && sector < 3 * s2) return 2;
+        if (sector % 3 == 0 && sector < 3 * s0) return 0;
+        return 3;
+    }
+
+    /// <summary>
+    /// Applies 4-section IMRoPE rotation to <paramref name="vec"/> in place.
+    /// </summary>
+    public static unsafe void ApplyImRope(
+        Span<float> vec,
+        int pos,
+        int numHeads,
+        int headDim,
+        IReadOnlyList<int>? sections,
+        float ropeTheta = 1000000.0f)
+    {
+        if (headDim <= 0 || (headDim & 1) != 0) return;
+        int halfDim = headDim / 2;
+
+        Span<float> cosTab = stackalloc float[halfDim];
+        Span<float> sinTab = stackalloc float[halfDim];
+
+        for (int i = 0; i < halfDim; i++)
+        {
+            int comp = GetMropeComponent(i, sections);
+            float p = comp switch
+            {
+                0 => pos,
+                1 => pos,
+                2 => pos,
+                _ => 0f // unrotated 4th component
+            };
+            float angle = p * MathF.Pow(ropeTheta, -2f * i / headDim);
+            cosTab[i] = MathF.Cos(angle);
+            sinTab[i] = MathF.Sin(angle);
+        }
+
+        fixed (float* pVec = vec, pCos = cosTab, pSin = sinTab)
+        {
+            SimdKernels.ApplyRoPECachedNeox(pVec, pCos, pSin, numHeads, headDim);
+        }
+    }
+}
+
+/// <summary>
+/// Maintains token sequence history and computes multi-head PLE n-gram table row indices.
+/// </summary>
+public sealed class Qwen4ExpPleHasher
+{
+    private readonly int _ngramSize;
+    private readonly int _eosTokenId;
+    private readonly ulong[] _multipliers;
+    private readonly uint[] _headOffsets;
+    private readonly uint[] _headVocabSizes;
+    private readonly List<int> _tokenHistory = new();
+
+    public Qwen4ExpPleHasher(Qwen4ExpHyperparams hp)
+    {
+        _ngramSize = hp.PleNgramSize > 0 ? hp.PleNgramSize : 2;
+        _eosTokenId = hp.PleEosTokenId;
+        _multipliers = hp.PleLayerMultipliers != null ? hp.PleLayerMultipliers.ToArray() : [1UL, 10007UL];
+        _headOffsets = hp.PleHeadOffsets != null ? hp.PleHeadOffsets.ToArray() : [0U];
+        _headVocabSizes = hp.PleHeadVocabSizes != null ? hp.PleHeadVocabSizes.ToArray() : [65536U];
+    }
+
+    public int NumHeads => _headOffsets.Length;
+
+    public void PushToken(int token)
+    {
+        if (token == _eosTokenId)
+        {
+            _tokenHistory.Clear();
+            return;
+        }
+        _tokenHistory.Add(token);
+    }
+
+    public void Reset() => _tokenHistory.Clear();
+
+    /// <summary>
+    /// Computes row indices in the PLE table for each head at the current token position.
+    /// </summary>
+    public void ComputeRowIndices(Span<long> outRowIndices)
+    {
+        int heads = _headOffsets.Length;
+        int histLen = _tokenHistory.Count;
+
+        for (int h = 0; h < heads; h++)
+        {
+            ulong hash = 0;
+            for (int k = 0; k < _ngramSize; k++)
+            {
+                int tIdx = histLen - 1 - k;
+                ulong tokenVal = tIdx >= 0 ? (ulong)_tokenHistory[tIdx] : 0UL;
+                ulong mult = k < _multipliers.Length ? _multipliers[k] : 1UL;
+                hash = unchecked(hash + tokenVal * mult);
+            }
+
+            uint vocabSize = h < _headVocabSizes.Length && _headVocabSizes[h] > 0 ? _headVocabSizes[h] : 65536U;
+            uint offset = h < _headOffsets.Length ? _headOffsets[h] : 0U;
+            long row = offset + (long)(hash % vocabSize);
+            outRowIndices[h] = row;
+        }
+    }
+}
+

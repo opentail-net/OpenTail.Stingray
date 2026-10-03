@@ -466,5 +466,180 @@ public class Qwen4ExpAlphaTests
             }
         }
     }
+
+    [Fact]
+    public unsafe void Qwen4Exp_SyntheticForwardPass_RunsWithQsaSparseSelection_AndPleTable()
+    {
+        const int embedDim = 32;
+        const int hc = 4;
+        const int hcDim = hc * embedDim;
+        const int hcLowRank = 8;
+        const int numHeads = 4;
+        const int numHeadsKv = 2;
+        const int headDim = 8;
+        const int vocabSize = 32;
+        const int shExpDim = 16;
+        const int ssmDState = 8;
+        const int ssmDtRank = 4;
+        const int ssmNGroup = 2;
+        const int ssmDConv = 2;
+        int keyDim = ssmDState * ssmNGroup;
+        int valDim = ssmDState * ssmDtRank;
+        int qkvDim = keyDim * 2 + valDim;
+        const int pleConvKernel = 2;
+        const int pleNgramSize = 2;
+        const int indexerTopK = 8;
+        const int indexerKPool = 4;
+        const int pleTableRows = 16;
+
+        var hp = new Qwen4ExpHyperparams
+        {
+            EmbedDim = embedDim,
+            HyperConnectionCount = hc,
+            HyperConnectionLowRank = hcLowRank,
+            NumHeads = numHeads,
+            NumHeadsKv = numHeadsKv,
+            HeadDim = headDim,
+            NumLayer = 2,
+            VocabSize = vocabSize,
+            ContextLength = 512,
+            SsmStateSize = ssmDState,
+            SsmInnerSize = embedDim,
+            SsmConvKernel = ssmDConv,
+            SsmDtRank = ssmDtRank,
+            SsmGroupCount = ssmNGroup,
+            PleConvKernel = pleConvKernel,
+            PleNgramSize = pleNgramSize,
+            PleLayers = [0],
+            PleLayerMultipliers = [1UL, 31UL],
+            PleHeadOffsets = [0U, 8U],
+            PleHeadVocabSizes = [8U, 8U],
+            IndexerHeadCount = 2,
+            IndexerKeyLength = headDim,
+            IndexerTopK = indexerTopK,
+            IndexerKPool = indexerKPool,
+            RopeDimensionSections = [4, 2, 2, 0],
+            RecurrentLayers = [true, false],
+            RmsNormEps = 1e-6f,
+        };
+
+        var allocatedPointers = new List<nint>();
+        Qwen4ExpTensorRef CreateRef(string name, long[] dims, float fillVal = 0.01f)
+        {
+            long count = 1;
+            foreach (var d in dims) count *= d;
+            nint mem = (nint)System.Runtime.InteropServices.NativeMemory.Alloc((nuint)count, sizeof(float));
+            allocatedPointers.Add(mem);
+            float* p = (float*)mem;
+            for (long i = 0; i < count; i++) p[i] = fillVal + (float)((i % 13) * 0.001);
+            var info = new OpenTail.Stingray.Core.GgufTensorInfo(name, dims.Length, dims, OpenTail.Stingray.Core.DType.Float32, 0);
+            return new Qwen4ExpTensorRef(name, info, (byte*)p);
+        }
+
+        try
+        {
+            var tokEmbd = CreateRef("token_embd.weight", [embedDim, vocabSize], 0.05f);
+            var output = CreateRef("output.weight", [embedDim, vocabSize], 0.05f);
+            var hcHeadNorm = CreateRef("hc_head_norm.weight", [embedDim, hc], 1.0f);
+            var hcHeadDown = CreateRef("hc_head_down.weight", [hcDim, hcLowRank], 0.02f);
+            var hcHeadUp = CreateRef("hc_head_up.weight", [hcLowRank, hcDim], 0.02f);
+            var perLayerTokEmbd = CreateRef("per_layer_token_embd.weight", [embedDim, pleTableRows], 0.03f);
+
+            var layer0 = new Qwen4ExpLayerTensors
+            {
+                LayerIndex = 0,
+                IsRecurrent = true,
+                IsPle = true,
+                HcAttnNorm = CreateRef("blk.0.hc_attn_norm.weight", [embedDim, hc], 1.0f),
+                HcAttnDown = CreateRef("blk.0.hc_attn_down.weight", [hcDim, hcLowRank], 0.02f),
+                HcAttnUp = CreateRef("blk.0.hc_attn_up.weight", [hcLowRank, hcDim], 0.02f),
+                HcAttnInject = CreateRef("blk.0.hc_attn_inject.weight", [hcDim, hc], 0.01f),
+                HcFfnNorm = CreateRef("blk.0.hc_ffn_norm.weight", [embedDim, hc], 1.0f),
+                HcFfnDown = CreateRef("blk.0.hc_ffn_down.weight", [hcDim, hcLowRank], 0.02f),
+                HcFfnUp = CreateRef("blk.0.hc_ffn_up.weight", [hcLowRank, hcDim], 0.02f),
+                HcFfnInject = CreateRef("blk.0.hc_ffn_inject.weight", [hcDim, hc], 0.01f),
+
+                AttnQkv = CreateRef("blk.0.attn_qkv.weight", [embedDim, qkvDim], 0.02f),
+                AttnGate = CreateRef("blk.0.attn_gate.weight", [embedDim, valDim], 0.02f),
+                SsmConv1d = CreateRef("blk.0.ssm_conv1d.weight", [ssmDConv, qkvDim], 0.1f),
+                SsmDt = CreateRef("blk.0.ssm_dt.bias", [ssmDtRank], 0.1f),
+                SsmA = CreateRef("blk.0.ssm_a", [ssmDtRank], -1.0f),
+                SsmBeta = CreateRef("blk.0.ssm_beta.weight", [embedDim, ssmDtRank], 0.05f),
+                SsmAlpha = CreateRef("blk.0.ssm_alpha.weight", [embedDim, ssmDtRank], 0.05f),
+                SsmNorm = CreateRef("blk.0.ssm_norm.weight", [ssmDState], 1.0f),
+                SsmOut = CreateRef("blk.0.ssm_out.weight", [valDim, embedDim], 0.05f),
+
+                PleKey = CreateRef("blk.0.ple_key.weight", [embedDim, hcDim], 0.02f),
+                PleValue = CreateRef("blk.0.ple_value.weight", [embedDim, embedDim], 0.02f),
+                PleNormKey = CreateRef("blk.0.ple_norm_key.weight", [embedDim, hc], 1.0f),
+                PleNormQuery = CreateRef("blk.0.ple_norm_query.weight", [embedDim, hc], 1.0f),
+                PleNormConv = CreateRef("blk.0.ple_norm_conv.weight", [embedDim, hc], 1.0f),
+                PleConv1d = CreateRef("blk.0.ple_conv1d.weight", [pleConvKernel, hcDim], 0.1f),
+
+                FfnGateShexp = CreateRef("blk.0.ffn_gate_shexp.weight", [embedDim, shExpDim], 0.02f),
+                FfnUpShexp = CreateRef("blk.0.ffn_up_shexp.weight", [embedDim, shExpDim], 0.02f),
+                FfnDownShexp = CreateRef("blk.0.ffn_down_shexp.weight", [shExpDim, embedDim], 0.02f),
+                FfnGateInpShexp = CreateRef("blk.0.ffn_gate_inp_shexp.weight", [embedDim], 0.05f),
+            };
+
+            var layer1 = new Qwen4ExpLayerTensors
+            {
+                LayerIndex = 1,
+                IsRecurrent = false,
+                IsPle = false,
+                HcAttnNorm = CreateRef("blk.1.hc_attn_norm.weight", [embedDim, hc], 1.0f),
+                HcAttnDown = CreateRef("blk.1.hc_attn_down.weight", [hcDim, hcLowRank], 0.02f),
+                HcAttnUp = CreateRef("blk.1.hc_attn_up.weight", [hcLowRank, hcDim], 0.02f),
+                HcAttnInject = CreateRef("blk.1.hc_attn_inject.weight", [hcDim, hc], 0.01f),
+                HcFfnNorm = CreateRef("blk.1.hc_ffn_norm.weight", [embedDim, hc], 1.0f),
+                HcFfnDown = CreateRef("blk.1.hc_ffn_down.weight", [hcDim, hcLowRank], 0.02f),
+                HcFfnUp = CreateRef("blk.1.hc_ffn_up.weight", [hcLowRank, hcDim], 0.02f),
+                HcFfnInject = CreateRef("blk.1.hc_ffn_inject.weight", [hcDim, hc], 0.01f),
+
+                AttnQ = CreateRef("blk.1.attn_q.weight", [embedDim, numHeads * headDim * 2], 0.02f),
+                AttnK = CreateRef("blk.1.attn_k.weight", [embedDim, numHeadsKv * headDim], 0.02f),
+                AttnV = CreateRef("blk.1.attn_v.weight", [embedDim, numHeadsKv * headDim], 0.02f),
+                AttnOut = CreateRef("blk.1.attn_output.weight", [numHeads * headDim, embedDim], 0.05f),
+                AttnQNorm = CreateRef("blk.1.attn_q_norm.weight", [headDim], 1.0f),
+                AttnKNorm = CreateRef("blk.1.attn_k_norm.weight", [headDim], 1.0f),
+
+                IndexQProj = CreateRef("blk.1.index_q_proj.weight", [embedDim, 2 * headDim], 0.02f),
+                IndexKProj = CreateRef("blk.1.index_k_proj.weight", [embedDim, headDim], 0.02f),
+                IndexQNorm = CreateRef("blk.1.index_q_norm.weight", [headDim], 1.0f),
+                IndexKNorm = CreateRef("blk.1.index_k_norm.weight", [headDim], 1.0f),
+
+                FfnGateShexp = CreateRef("blk.1.ffn_gate_shexp.weight", [embedDim, shExpDim], 0.02f),
+                FfnUpShexp = CreateRef("blk.1.ffn_up_shexp.weight", [embedDim, shExpDim], 0.02f),
+                FfnDownShexp = CreateRef("blk.1.ffn_down_shexp.weight", [shExpDim, embedDim], 0.02f),
+                FfnGateInpShexp = CreateRef("blk.1.ffn_gate_inp_shexp.weight", [embedDim], 0.05f),
+            };
+
+            var tensorSet = new Qwen4ExpTensorSet(
+                tokEmbd, output, hcHeadNorm, hcHeadDown, hcHeadUp, perLayerTokEmbd, [layer0, layer1]);
+
+            using var forwardPass = new Qwen4ExpForwardPass(null!, hp, tensorSet);
+
+            // Execute 6 sequential forward steps straddling K-pool boundary (kpool=4)
+            // Step 0..3: pool 0 accumulates; at step 3 (count=4), pool 0 completes and gets pooled/RoPE'd.
+            // Step 4..5: pool 1 begins as active tail.
+            for (int step = 0; step < 6; step++)
+            {
+                var logits = forwardPass.Forward(token: 3 + step, position: step).ToArray();
+                Assert.Equal(vocabSize, logits.Length);
+                for (int i = 0; i < vocabSize; i++)
+                {
+                    Assert.False(float.IsNaN(logits[i]), $"NaN at step {step} logit {i}");
+                    Assert.False(float.IsInfinity(logits[i]), $"Infinity at step {step} logit {i}");
+                }
+            }
+        }
+        finally
+        {
+            foreach (var p in allocatedPointers)
+            {
+                System.Runtime.InteropServices.NativeMemory.Free((void*)p);
+            }
+        }
+    }
 }
 

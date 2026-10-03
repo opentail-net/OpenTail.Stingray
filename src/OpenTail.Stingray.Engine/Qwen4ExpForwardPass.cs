@@ -37,6 +37,10 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
     private readonly int _numHeads;
     private readonly int _numHeadsKv;
     private readonly int _headDim;
+    private readonly int _indexerHeadCount;
+    private readonly int _indexerKeyLength;
+    private readonly int _indexerTopK;
+    private readonly int _indexerKPool;
 
     // SSM dims for GDN
     private readonly int _ssmDState;
@@ -46,10 +50,12 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
     private readonly int _ssmNGroup;
     private readonly int _convDim;
 
-    // PLE dims
+    // PLE dims & state
     private readonly int _pleConvKernel;
     private readonly int _pleNgramSize;
     private readonly int _pleHistSlots;
+    private readonly Qwen4ExpPleHasher? _pleHasher;
+    private readonly long[]? _pleHeadRows;
 
     // Recurrent & State buffers
     private readonly float[] _resHc;             // [hc * embedDim]
@@ -58,9 +64,10 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
     private readonly float[] _pleConvHistory;    // [histSlots * hcDim]
     private int _pleTokensSeen;
 
-    // QSA KV cache
+    // QSA KV cache and Indexer cache
     private readonly List<float[]>[] _qsaKeyCache;
     private readonly List<float[]>[] _qsaValCache;
+    private readonly List<float[]>[] _qsaRawIndexKCache;
     private readonly List<float[]>[] _qsaPooledKeys;
 
     // Scratch buffers
@@ -76,16 +83,6 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
         _hp = hp;
         _tensors = tensors;
 
-        // A real qwen4exp checkpoint always declares the QSA indexer (indexer_top_k is required by llama.cpp's loader).
-        // The QSA mixer here still lacks RoPE, the indexer projections / block selection, and the PLE n-gram table,
-        // so its output would be silently wrong at every length. Only synthetic fixtures (no indexer) may run.
-        if (hp.IndexerTopK > 0)
-        {
-            throw new NotSupportedException(
-                "qwen4exp: QSA block selection (indexer + K-pool), RoPE in the QSA mixer and the PLE n-gram table " +
-                "are not implemented yet; real checkpoints cannot be run (ported, not verified, not admitted).");
-        }
-
         _embedDim = hp.EmbedDim > 0 ? hp.EmbedDim : 2560;
         _hc = hp.HyperConnectionCount > 0 ? hp.HyperConnectionCount : 4;
         _hcDim = _hc * _embedDim;
@@ -97,6 +94,11 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
         _numHeads = hp.NumHeads > 0 ? hp.NumHeads : 32;
         _numHeadsKv = hp.NumHeadsKv > 0 ? hp.NumHeadsKv : 8;
         _headDim = hp.HeadDim > 0 ? hp.HeadDim : (_numHeads > 0 ? _embedDim / _numHeads : 128);
+
+        _indexerHeadCount = hp.IndexerHeadCount > 0 ? hp.IndexerHeadCount : 4;
+        _indexerKeyLength = hp.IndexerKeyLength > 0 ? hp.IndexerKeyLength : _headDim;
+        _indexerTopK = hp.IndexerTopK;
+        _indexerKPool = hp.IndexerKPool > 0 ? hp.IndexerKPool : 4;
 
         _ssmDState = hp.SsmStateSize > 0 ? hp.SsmStateSize : 128;
         _ssmDInner = hp.SsmInnerSize > 0 ? hp.SsmInnerSize : _embedDim;
@@ -110,6 +112,12 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
         _pleConvKernel = hp.PleConvKernel > 0 ? hp.PleConvKernel : 3;
         _pleNgramSize = hp.PleNgramSize > 0 ? hp.PleNgramSize : 2;
         _pleHistSlots = (_pleConvKernel - 1) * _pleNgramSize + 1;
+
+        if (hp.PleLayers != null && hp.PleLayers.Count > 0)
+        {
+            _pleHasher = new Qwen4ExpPleHasher(hp);
+            _pleHeadRows = new long[_pleHasher.NumHeads];
+        }
 
         _resHc = new float[_hcDim];
         _gdnConvState = new float[_numLayers][];
@@ -132,11 +140,13 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
 
         _qsaKeyCache = new List<float[]>[_numLayers];
         _qsaValCache = new List<float[]>[_numLayers];
+        _qsaRawIndexKCache = new List<float[]>[_numLayers];
         _qsaPooledKeys = new List<float[]>[_numLayers];
         for (int l = 0; l < _numLayers; l++)
         {
             _qsaKeyCache[l] = new List<float[]>();
             _qsaValCache[l] = new List<float[]>();
+            _qsaRawIndexKCache[l] = new List<float[]>();
             _qsaPooledKeys[l] = new List<float[]>();
         }
 
@@ -166,7 +176,7 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
             // 2a. PLE if present at this layer
             if (layer.IsPle && layer.PleKey != null && layer.PleValue != null)
             {
-                ExecutePle(layer, _tokEmbdScratch);
+                ExecutePle(layer, _tokEmbdScratch, token);
             }
 
             // 2b. HC Mix before Token Mixer
@@ -224,15 +234,57 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
         return _logits;
     }
 
-    private void ExecutePle(Qwen4ExpLayerTensors layer, ReadOnlySpan<float> emb)
+    private void ExecutePle(Qwen4ExpLayerTensors layer, ReadOnlySpan<float> tokEmb, int token)
     {
+        // 1. Determine PLE embedding input:
+        // If the PLE n-gram table (PerLayerTokEmbd) is present and hasher is initialized,
+        // gather the embedding row for each head and average/combine them into pleEmb.
+        // Otherwise fall back to tokEmb.
+        Span<float> pleEmb = stackalloc float[_embedDim];
+        bool gatheredFromTable = false;
+
+        if (_pleHasher != null && _tensors.PerLayerTokEmbd != null && _pleHeadRows != null)
+        {
+            _pleHasher.PushToken(token);
+            _pleHasher.ComputeRowIndices(_pleHeadRows);
+
+            var info = _tensors.PerLayerTokEmbd.Value.Info;
+            long totalRows = info.Dimensions.Length > 1 ? info.Dimensions[1] : 1;
+            int pleDim = _embedDim;
+            int bytesPerRow = (pleDim / DTypeInfo.BlockSize(info.DType)) * DTypeInfo.BytesPerBlock(info.DType);
+
+            pleEmb.Clear();
+            Span<float> headRowBuf = stackalloc float[pleDim];
+            float invHeads = 1.0f / _pleHeadRows.Length;
+
+            for (int h = 0; h < _pleHeadRows.Length; h++)
+            {
+                long row = _pleHeadRows[h] % totalRows;
+                byte* rowPtr = _tensors.PerLayerTokEmbd.Value.DataPtr + row * bytesPerRow;
+                fixed (float* pBuf = headRowBuf)
+                {
+                    SimdKernels.DequantRow(rowPtr, pBuf, pleDim, info.DType);
+                }
+                for (int d = 0; d < pleDim; d++)
+                {
+                    pleEmb[d] += headRowBuf[d] * invHeads;
+                }
+            }
+            gatheredFromTable = true;
+        }
+
+        if (!gatheredFromTable)
+        {
+            tokEmb.CopyTo(pleEmb);
+        }
+
         // key = ple_key * emb [hcDim]
         Span<float> key = stackalloc float[_hcDim];
-        MatVec(layer.PleKey!.Value, emb, key);
+        MatVec(layer.PleKey!.Value, pleEmb, key);
 
         // value = ple_value * emb [embedDim]
         Span<float> val = stackalloc float[_embedDim];
-        MatVec(layer.PleValue!.Value, emb, val);
+        MatVec(layer.PleValue!.Value, pleEmb, val);
 
         // Grouped RMSNorm on key and hidden (resHc)
         Span<float> normKey = stackalloc float[_hcDim];
@@ -395,6 +447,10 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
             }
         }
 
+        // Apply 4-section IMRoPE to Q and K at current token position
+        Qwen4ExpRope.ApplyImRope(q, position, _numHeads, _headDim, _hp.RopeDimensionSections);
+        Qwen4ExpRope.ApplyImRope(k, position, _numHeadsKv, _headDim, _hp.RopeDimensionSections);
+
         Span<float> v = stackalloc float[totalVDim];
         MatVec(layer.AttnV.Value, input, v);
 
@@ -404,16 +460,99 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
         _qsaKeyCache[layerIdx].Add(kCached);
         _qsaValCache[layerIdx].Add(vCached);
 
-        // Simple decode attention against cached K/V
+        // Maintain QSA raw indexer-K cache and form K-pools
+        if (layer.IndexKProj != null)
+        {
+            Span<float> rawIdxK = stackalloc float[_indexerKeyLength];
+            MatVec(layer.IndexKProj.Value, input, rawIdxK);
+            _qsaRawIndexKCache[layerIdx].Add(rawIdxK.ToArray());
+
+            // Check if a full pool of kpool tokens has just been completed
+            int rawCount = _qsaRawIndexKCache[layerIdx].Count;
+            if (rawCount % _indexerKPool == 0)
+            {
+                int poolIdx = (rawCount / _indexerKPool) - 1;
+                Span<float> blockKeys = stackalloc float[_indexerKPool * _indexerKeyLength];
+                for (int p = 0; p < _indexerKPool; p++)
+                {
+                    int t = poolIdx * _indexerKPool + p;
+                    _qsaRawIndexKCache[layerIdx][t].CopyTo(blockKeys.Slice(p * _indexerKeyLength, _indexerKeyLength));
+                }
+                Span<float> pooledKey = stackalloc float[_indexerKeyLength];
+                var indexKNorm = AsFloatSpan(layer.IndexKNorm);
+                Qwen4ExpQsa.PoolIndexerKeys(blockKeys, indexKNorm, pooledKey, _indexerKPool, _indexerKeyLength, _eps);
+
+                // Apply IMRoPE to pooled key at first token position of this block
+                int blockStartPos = poolIdx * _indexerKPool;
+                Qwen4ExpRope.ApplyImRope(pooledKey, blockStartPos, 1, _indexerKeyLength, _hp.RopeDimensionSections);
+                _qsaPooledKeys[layerIdx].Add(pooledKey.ToArray());
+            }
+        }
+
         int numTokens = _qsaKeyCache[layerIdx].Count;
         float invSqrtD = 1.0f / MathF.Sqrt(_headDim);
 
         Span<float> attnOut = stackalloc float[_numHeads * _headDim];
         attnOut.Clear();
 
-        Span<float> scores = stackalloc float[numTokens];
+        // Perform sparse block selection if indexer is active and topK is specified
+        HashSet<int>? selectedTokenIndices = null;
+        if (_indexerTopK > 0 && layer.IndexQProj != null && _qsaPooledKeys[layerIdx].Count > 0)
+        {
+            int totalPools = _qsaPooledKeys[layerIdx].Count;
+            int topKPoolCount = Math.Max(1, _indexerTopK / _indexerKPool);
 
+            // Project Indexer Q
+            Span<float> idxQFull = stackalloc float[_indexerHeadCount * _indexerKeyLength];
+            MatVec(layer.IndexQProj.Value, input, idxQFull);
+
+            // Norm and RoPE Indexer Q
+            var idxQNorm = AsFloatSpan(layer.IndexQNorm);
+            if (!idxQNorm.IsEmpty)
+            {
+                for (int h = 0; h < _indexerHeadCount; h++)
+                {
+                    var qh = idxQFull.Slice(h * _indexerKeyLength, _indexerKeyLength);
+                    float sumSq = TensorPrimitives.SumOfSquares(qh);
+                    float invRms = 1.0f / MathF.Sqrt(sumSq / _indexerKeyLength + _eps);
+                    TensorPrimitives.Multiply(qh, invRms, qh);
+                    TensorPrimitives.Multiply(qh, idxQNorm, qh);
+                }
+            }
+            Qwen4ExpRope.ApplyImRope(idxQFull, position, _indexerHeadCount, _indexerKeyLength, _hp.RopeDimensionSections);
+
+            // Score candidate pools
+            Span<float> poolScores = stackalloc float[totalPools];
+            for (int p = 0; p < totalPools; p++)
+            {
+                poolScores[p] = Qwen4ExpQsa.ComputeBlockScore(idxQFull, _qsaPooledKeys[layerIdx][p], _indexerHeadCount, _indexerKeyLength);
+            }
+
+            Span<int> selectedPools = stackalloc int[totalPools];
+            int nSelected = Qwen4ExpQsa.SelectTopKPools(poolScores, topKPoolCount, selectedPools);
+
+            selectedTokenIndices = new HashSet<int>();
+            for (int i = 0; i < nSelected; i++)
+            {
+                int p = selectedPools[i];
+                int startToken = p * _indexerKPool;
+                for (int t = 0; t < _indexerKPool; t++)
+                {
+                    selectedTokenIndices.Add(startToken + t);
+                }
+            }
+
+            // Incomplete tail tokens are always retained
+            int completedPoolTokens = totalPools * _indexerKPool;
+            for (int t = completedPoolTokens; t < numTokens; t++)
+            {
+                selectedTokenIndices.Add(t);
+            }
+        }
+
+        Span<float> scores = stackalloc float[numTokens];
         int headsPerKv = _numHeads / _numHeadsKv;
+
         for (int h = 0; h < _numHeads; h++)
         {
             int kvHead = h / headsPerKv;
@@ -421,8 +560,15 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
 
             for (int t = 0; t < numTokens; t++)
             {
-                var kt = _qsaKeyCache[layerIdx][t].AsSpan(kvHead * _headDim, _headDim);
-                scores[t] = TensorPrimitives.Dot(qh, kt) * invSqrtD;
+                if (selectedTokenIndices != null && !selectedTokenIndices.Contains(t))
+                {
+                    scores[t] = float.NegativeInfinity;
+                }
+                else
+                {
+                    var kt = _qsaKeyCache[layerIdx][t].AsSpan(kvHead * _headDim, _headDim);
+                    scores[t] = TensorPrimitives.Dot(qh, kt) * invSqrtD;
+                }
             }
 
             // Softmax
@@ -433,6 +579,8 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
             for (int t = 0; t < numTokens; t++)
             {
                 float weight = scores[t];
+                if (weight <= 0f || float.IsNaN(weight)) continue;
+
                 var vt = _qsaValCache[layerIdx][t].AsSpan(kvHead * _headDim, _headDim);
                 for (int d = 0; d < _headDim; d++)
                 {
@@ -601,6 +749,7 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
     public void ResetCache()
     {
         _pleTokensSeen = 0;
+        _pleHasher?.Reset();
         Array.Clear(_pleConvHistory);
         Array.Clear(_resHc);
         for (int l = 0; l < _numLayers; l++)
@@ -609,6 +758,7 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
             if (_gdnState[l].Length > 0) Array.Clear(_gdnState[l]);
             _qsaKeyCache[l].Clear();
             _qsaValCache[l].Clear();
+            _qsaRawIndexKCache[l].Clear();
             _qsaPooledKeys[l].Clear();
         }
     }
