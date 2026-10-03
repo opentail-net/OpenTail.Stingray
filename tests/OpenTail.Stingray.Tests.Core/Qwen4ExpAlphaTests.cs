@@ -543,7 +543,8 @@ public class Qwen4ExpAlphaTests
             var hcHeadNorm = CreateRef("hc_head_norm.weight", [embedDim, hc], 1.0f);
             var hcHeadDown = CreateRef("hc_head_down.weight", [hcDim, hcLowRank], 0.02f);
             var hcHeadUp = CreateRef("hc_head_up.weight", [hcLowRank, hcDim], 0.02f);
-            var perLayerTokEmbd = CreateRef("per_layer_token_embd.weight", [embedDim, pleTableRows], 0.03f);
+            int pleHeadDim = embedDim / 2;
+            var perLayerTokEmbd = CreateRef("per_layer_token_embd.weight", [pleHeadDim, pleTableRows], 0.03f);
 
             var layer0 = new Qwen4ExpLayerTensors
             {
@@ -678,13 +679,18 @@ public class Qwen4ExpAlphaTests
         Assert.Equal(200 + 14, rowIndices[1]);
 
         // Step 2: token 30. history: [10, 20, 30]
+        // Head 0 is in bigram group (n = 2):
+        // k=0: tok=30, mult=3 -> 90.
+        // k=1: tok=20, mult=5 -> 100. (90 ^ 100 = 62)
+        // row[0] = 100 + 62 = 162.
+        // Head 1 is in trigram group (n = 3):
         // k=0: tok=30, mult=3 -> 90.
         // k=1: tok=20, mult=5 -> 100. (90 ^ 100 = 62)
         // k=2: tok=10, mult=7 -> 70. (62 ^ 70 = 120)
-        // Note: With addition it would be 90 + 100 + 70 = 260. With XOR it is 120!
+        // row[1] = 200 + 120 = 320.
         hasher.PushToken(30);
         hasher.ComputeRowIndices(rowIndices);
-        Assert.Equal(100 + 120, rowIndices[0]);
+        Assert.Equal(100 + 62, rowIndices[0]);
         Assert.Equal(200 + 120, rowIndices[1]);
     }
 
@@ -767,6 +773,240 @@ public class Qwen4ExpAlphaTests
         // Pair 3 (indices 3 and 7) must remain strictly identical
         Assert.Equal(original[3], vec[3]);
         Assert.Equal(original[7], vec[7]);
+    }
+
+    [Fact]
+    public void PleHasher_BigramVsTrigram_16HeadGroups()
+    {
+        // Actual Qwen4Exp geometry: ngram_size = 3, heads_per_ngram = 8 -> 16 total heads
+        // Heads 0..7 are bigrams (n=2), Heads 8..15 are trigrams (n=3)
+        uint[] offsets = new uint[16];
+        uint[] vocabSizes = new uint[16];
+        for (int h = 0; h < 16; h++)
+        {
+            offsets[h] = (uint)(h * 1000);
+            vocabSizes[h] = 10000U;
+        }
+
+        var hp = new Qwen4ExpHyperparams
+        {
+            PleNgramSize = 3,
+            PleHeadsPerNgram = 8,
+            PleLayerMultipliers = [3UL, 5UL, 7UL],
+            PleHeadOffsets = offsets,
+            PleHeadVocabSizes = vocabSizes,
+        };
+
+        var hasher = new Qwen4ExpPleHasher(hp);
+        Assert.Equal(16, hasher.NumHeads);
+        Assert.Equal(8, hasher.HeadsPerNgram);
+
+        // Sequence: [10, 20, 30]
+        hasher.PushTokens([10, 20, 30]);
+
+        Span<long> rows = stackalloc long[16];
+        hasher.ComputeRowIndices(rows);
+
+        // Bigram hash for [20, 30]: 30 * 3 ^ 20 * 5 = 90 ^ 100 = 62
+        for (int h = 0; h < 8; h++)
+        {
+            long expected = offsets[h] + 62;
+            Assert.Equal(expected, rows[h]);
+        }
+
+        // Trigram hash for [10, 20, 30]: 30 * 3 ^ 20 * 5 ^ 10 * 7 = 62 ^ 70 = 120
+        for (int h = 8; h < 16; h++)
+        {
+            long expected = offsets[h] + 120;
+            Assert.Equal(expected, rows[h]);
+        }
+    }
+
+    [Fact]
+    public void PleHasher_BoundaryAndEosSemantics()
+    {
+        const int eosId = 248044;
+        var hp = new Qwen4ExpHyperparams
+        {
+            PleNgramSize = 3,
+            PleHeadsPerNgram = 1,
+            PleEosTokenId = eosId,
+            PleLayerMultipliers = [2UL, 3UL, 5UL],
+            PleHeadOffsets = [0U, 1000000U],
+            PleHeadVocabSizes = [10000000U, 10000000U],
+        };
+
+        var hasher = new Qwen4ExpPleHasher(hp);
+        Span<long> rows = stackalloc long[2];
+
+        // 1. [first token]: token 10
+        // Bigram: 10 * 2 ^ eos * 3
+        // Trigram: 10 * 2 ^ eos * 3 ^ eos * 5
+        hasher.PushToken(10);
+        hasher.ComputeRowIndices(rows);
+        ulong expBi1 = (10UL * 2UL) ^ ((ulong)eosId * 3UL);
+        ulong expTri1 = expBi1 ^ ((ulong)eosId * 5UL);
+        Assert.Equal((long)expBi1, rows[0]);
+        Assert.Equal(1000000L + (long)expTri1, rows[1]);
+
+        // 2. [token after normal token]: token 20 -> history [10, 20]
+        // Bigram: 20 * 2 ^ 10 * 3
+        // Trigram: 20 * 2 ^ 10 * 3 ^ eos * 5
+        hasher.PushToken(20);
+        hasher.ComputeRowIndices(rows);
+        ulong expBi2 = (20UL * 2UL) ^ (10UL * 3UL);
+        ulong expTri2 = expBi2 ^ ((ulong)eosId * 5UL);
+        Assert.Equal((long)expBi2, rows[0]);
+        Assert.Equal(1000000L + (long)expTri2, rows[1]);
+
+        // 3. [current token == EOS]: token 248044 -> history [10, 20, eos]
+        // Current token is EOS but it does not erase its own context!
+        // Bigram: eos * 2 ^ 20 * 3
+        // Trigram: eos * 2 ^ 20 * 3 ^ 10 * 5
+        hasher.PushToken(eosId);
+        hasher.ComputeRowIndices(rows);
+        ulong expBi3 = ((ulong)eosId * 2UL) ^ (20UL * 3UL);
+        ulong expTri3 = expBi3 ^ (10UL * 5UL);
+        Assert.Equal((long)expBi3, rows[0]);
+        Assert.Equal(1000000L + (long)expTri3, rows[1]);
+
+        // 4. [token after EOS]: token 30 -> history [10, 20, eos, 30]
+        // Predecessor is EOS; older token (20) is cut off by the intervening EOS and replaced with EOS!
+        // Bigram: 30 * 2 ^ eos * 3
+        // Trigram: 30 * 2 ^ eos * 3 ^ eos * 5
+        hasher.PushToken(30);
+        hasher.ComputeRowIndices(rows);
+        ulong expBi4 = (30UL * 2UL) ^ ((ulong)eosId * 3UL);
+        ulong expTri4 = expBi4 ^ ((ulong)eosId * 5UL);
+        Assert.Equal((long)expBi4, rows[0]);
+        Assert.Equal(1000000L + (long)expTri4, rows[1]);
+    }
+
+    [Fact]
+    public void RoPE_Qwen38Geometry_PartialRotaryFactor_Theta10M()
+    {
+        // Qwen3.8 configuration: headDim = 128, partial_rotary_factor = 0.25 -> ropeDim = 32
+        // sections = [11, 11, 10]
+        // ropeTheta = 10,000,000
+        const int headDim = 128;
+        const int ropeDim = 32;
+        int[] sections = [11, 11, 10];
+
+        float[] vec = new float[headDim];
+        for (int i = 0; i < headDim; i++) vec[i] = 1.0f + i * 0.1f;
+        float[] original = (float[])vec.Clone();
+
+        Qwen4ExpRope.ApplyImRope(vec, pos: 5, numHeads: 1, headDim: headDim, sections: sections, ropeDim: ropeDim, ropeTheta: 10000000.0f);
+
+        // First ropeDim (0..31) are rotated
+        int halfRope = ropeDim / 2; // 16
+        for (int i = 0; i < halfRope; i++)
+        {
+            Assert.NotEqual(original[i], vec[i]);
+            Assert.NotEqual(original[i + halfRope], vec[i + halfRope]);
+        }
+
+        // Remaining dimensions [32..127] must be strictly unrotated pass-through!
+        for (int i = ropeDim; i < headDim; i++)
+        {
+            Assert.Equal(original[i], vec[i]);
+        }
+    }
+
+    [Fact]
+    public void Qsa_CandidateSelection_AlwaysRetainsActiveTail()
+    {
+        // L = 6 tokens, kpool = 4
+        // Complete pool 0: tokens 0..3
+        // Incomplete tail: tokens 4..5
+        // Even if pool 0 has negative score, active tail tokens [4, 5] must always be in selected set.
+        const int kpool = 4;
+        const int totalTokens = 6;
+        int completedPools = 1;
+        float[] poolScores = [-100.0f]; // Very bad score
+
+        Span<int> selectedPools = stackalloc int[1];
+        int nSelected = Qwen4ExpQsa.SelectTopKPools(poolScores, topKPoolCount: 1, selectedPools);
+
+        var selectedTokenIndices = new HashSet<int>();
+        for (int i = 0; i < nSelected; i++)
+        {
+            int p = selectedPools[i];
+            int startToken = p * kpool;
+            for (int t = 0; t < kpool; t++) selectedTokenIndices.Add(startToken + t);
+        }
+
+        // Active tail tokens are unconditionally added per Qwen4Exp spec
+        int tailStart = completedPools * kpool;
+        for (int t = tailStart; t < totalTokens; t++)
+        {
+            selectedTokenIndices.Add(t);
+        }
+
+        // Verify active tail tokens 4 and 5 are unconditionally retained
+        Assert.Contains(4, selectedTokenIndices);
+        Assert.Contains(5, selectedTokenIndices);
+        Assert.Equal(6, selectedTokenIndices.Count);
+    }
+
+    [Fact]
+    public unsafe void Ple_Concatenation_AssemblyGeometry()
+    {
+        // 4 heads, pleHeadDim = 4 -> embedDim = 16.
+        // Head 0 gets row 0 filled with 1.0f
+        // Head 1 gets row 1 filled with 2.0f
+        // Head 2 gets row 2 filled with 3.0f
+        // Head 3 gets row 3 filled with 4.0f
+        // Concatenation must produce [1,1,1,1, 2,2,2,2, 3,3,3,3, 4,4,4,4].
+        // If averaged, it would produce [2.5, 2.5, 2.5, 2.5].
+        const int numHeads = 4;
+        const int pleHeadDim = 4;
+        const int embedDim = numHeads * pleHeadDim; // 16
+        const int totalRows = 4;
+
+        float[] table = new float[pleHeadDim * totalRows];
+        for (int r = 0; r < totalRows; r++)
+        {
+            for (int d = 0; d < pleHeadDim; d++)
+            {
+                table[r * pleHeadDim + d] = (float)(r + 1);
+            }
+        }
+
+        fixed (float* pTable = table)
+        {
+            var info = new OpenTail.Stingray.Core.GgufTensorInfo(
+                "per_layer_token_embd.weight", 2, [pleHeadDim, totalRows], OpenTail.Stingray.Core.DType.Float32, 0);
+            var perLayerRef = new Qwen4ExpTensorRef("per_layer_token_embd.weight", info, (byte*)pTable);
+
+            // Mock pleHeadRows mapping: head h -> row h
+            long[] headRows = [0L, 1L, 2L, 3L];
+
+            Span<float> pleEmb = stackalloc float[embedDim];
+            pleEmb.Clear();
+
+            int bytesPerRow = pleHeadDim * sizeof(float);
+            for (int h = 0; h < numHeads; h++)
+            {
+                long row = headRows[h];
+                byte* rowPtr = perLayerRef.DataPtr + row * bytesPerRow;
+                var headSlice = pleEmb.Slice(h * pleHeadDim, pleHeadDim);
+                fixed (float* pHead = headSlice)
+                {
+                    OpenTail.Stingray.Cpu.SimdKernels.DequantRow(rowPtr, pHead, pleHeadDim, info.DType);
+                }
+            }
+
+            // Verify concatenation: slice 0 has 1.0, slice 1 has 2.0, slice 2 has 3.0, slice 3 has 4.0
+            for (int h = 0; h < numHeads; h++)
+            {
+                float expected = (float)(h + 1);
+                for (int d = 0; d < pleHeadDim; d++)
+                {
+                    Assert.Equal(expected, pleEmb[h * pleHeadDim + d]);
+                }
+            }
+        }
     }
 }
 

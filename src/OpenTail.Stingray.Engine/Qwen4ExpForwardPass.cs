@@ -50,7 +50,10 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
     private readonly int _ssmNGroup;
     private readonly int _convDim;
 
-    // PLE dims & state
+    // RoPE and PLE dims & state
+    private readonly int _ropeDim;
+    private readonly float _ropeTheta;
+    private readonly int _pleHeadDim;
     private readonly int _pleConvKernel;
     private readonly int _pleNgramSize;
     private readonly int _pleHistSlots;
@@ -113,11 +116,19 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
         _pleNgramSize = hp.PleNgramSize > 0 ? hp.PleNgramSize : 2;
         _pleHistSlots = (_pleConvKernel - 1) * _pleNgramSize + 1;
 
+        _ropeTheta = hp.RopeTheta > 0 ? hp.RopeTheta : 10000000.0f;
+        _ropeDim = hp.RopeDim > 0 ? hp.RopeDim : _headDim;
+
         if (hp.PleLayers != null && hp.PleLayers.Count > 0)
         {
             _pleHasher = new Qwen4ExpPleHasher(hp);
             _pleHeadRows = new long[_pleHasher.NumHeads];
         }
+
+        int numPleHeads = _pleHasher != null ? _pleHasher.NumHeads : 16;
+        _pleHeadDim = hp.PleEmbeddingLengthPerLayer > 0
+            ? hp.PleEmbeddingLengthPerLayer
+            : (numPleHeads > 0 ? _embedDim / numPleHeads : 160);
 
         _resHc = new float[_hcDim];
         _gdnConvState = new float[_numLayers][];
@@ -238,7 +249,7 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
     {
         // 1. Determine PLE embedding input:
         // If the PLE n-gram table (PerLayerTokEmbd) is present and hasher is initialized,
-        // gather the embedding row for each head and average/combine them into pleEmb.
+        // gather the embedding row for each head and concatenate them into pleEmb.
         // Otherwise fall back to tokEmb.
         Span<float> pleEmb = stackalloc float[_embedDim];
         bool gatheredFromTable = false;
@@ -250,24 +261,23 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
 
             var info = _tensors.PerLayerTokEmbd.Value.Info;
             long totalRows = info.Dimensions.Length > 1 ? info.Dimensions[1] : 1;
-            int pleDim = _embedDim;
-            int bytesPerRow = (pleDim / DTypeInfo.BlockSize(info.DType)) * DTypeInfo.BytesPerBlock(info.DType);
-
-            pleEmb.Clear();
-            Span<float> headRowBuf = stackalloc float[pleDim];
-            float invHeads = 1.0f / _pleHeadRows.Length;
+            int pleHeadDim = _pleHeadDim;
+            int bytesPerRow = (pleHeadDim / DTypeInfo.BlockSize(info.DType)) * DTypeInfo.BytesPerBlock(info.DType);
 
             for (int h = 0; h < _pleHeadRows.Length; h++)
             {
-                long row = _pleHeadRows[h] % totalRows;
-                byte* rowPtr = _tensors.PerLayerTokEmbd.Value.DataPtr + row * bytesPerRow;
-                fixed (float* pBuf = headRowBuf)
+                long row = _pleHeadRows[h];
+                if (row < 0 || row >= totalRows)
                 {
-                    SimdKernels.DequantRow(rowPtr, pBuf, pleDim, info.DType);
+                    throw new InvalidOperationException(
+                        $"PLE head {h} computed row index {row} out of bounds [0, {totalRows}) in PerLayerTokEmbd.");
                 }
-                for (int d = 0; d < pleDim; d++)
+
+                byte* rowPtr = _tensors.PerLayerTokEmbd.Value.DataPtr + row * bytesPerRow;
+                var headSlice = pleEmb.Slice(h * pleHeadDim, pleHeadDim);
+                fixed (float* pHead = headSlice)
                 {
-                    pleEmb[d] += headRowBuf[d] * invHeads;
+                    SimdKernels.DequantRow(rowPtr, pHead, pleHeadDim, info.DType);
                 }
             }
             gatheredFromTable = true;
@@ -448,8 +458,8 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
         }
 
         // Apply 4-section IMRoPE to Q and K at current token position
-        Qwen4ExpRope.ApplyImRope(q, position, _numHeads, _headDim, _hp.RopeDimensionSections);
-        Qwen4ExpRope.ApplyImRope(k, position, _numHeadsKv, _headDim, _hp.RopeDimensionSections);
+        Qwen4ExpRope.ApplyImRope(q, position, _numHeads, _headDim, _hp.RopeDimensionSections, _ropeDim, _ropeTheta);
+        Qwen4ExpRope.ApplyImRope(k, position, _numHeadsKv, _headDim, _hp.RopeDimensionSections, _ropeDim, _ropeTheta);
 
         Span<float> v = stackalloc float[totalVDim];
         MatVec(layer.AttnV.Value, input, v);
@@ -484,7 +494,8 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
 
                 // Apply IMRoPE to pooled key at first token position of this block
                 int blockStartPos = poolIdx * _indexerKPool;
-                Qwen4ExpRope.ApplyImRope(pooledKey, blockStartPos, 1, _indexerKeyLength, _hp.RopeDimensionSections);
+                int indexerRopeDim = Math.Min(_ropeDim, _indexerKeyLength);
+                Qwen4ExpRope.ApplyImRope(pooledKey, blockStartPos, 1, _indexerKeyLength, _hp.RopeDimensionSections, indexerRopeDim, _ropeTheta);
                 _qsaPooledKeys[layerIdx].Add(pooledKey.ToArray());
             }
         }
@@ -519,7 +530,8 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
                     TensorPrimitives.Multiply(qh, idxQNorm, qh);
                 }
             }
-            Qwen4ExpRope.ApplyImRope(idxQFull, position, _indexerHeadCount, _indexerKeyLength, _hp.RopeDimensionSections);
+            int indexerRopeDim = Math.Min(_ropeDim, _indexerKeyLength);
+            Qwen4ExpRope.ApplyImRope(idxQFull, position, _indexerHeadCount, _indexerKeyLength, _hp.RopeDimensionSections, indexerRopeDim, _ropeTheta);
 
             // Score candidate pools
             Span<float> poolScores = stackalloc float[totalPools];

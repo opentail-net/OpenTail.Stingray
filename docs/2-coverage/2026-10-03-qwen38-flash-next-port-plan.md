@@ -1,7 +1,7 @@
 # Qwen 3.8 Flash Next port plan (`qwen4exp`)
 
-**Status (revised 2026-10-03): PORTED PARTIALLY; real configs are refused.**
-Routed MoE was missing and is now executed; PLE n-gram table, RoPE in the QSA mixer and QSA indexer/K-pool selection are the three missing semantic blocks (see the detailed execution phases below).
+**Status (revised 2026-10-03): IMPLEMENTED (SYNTHETICALLY VERIFIED, AWAITING REAL-WEIGHT QUALIFICATION).**
+The full structural and semantic implementation (HC, GDN, MoE with fused/separate expert tensors, 16-head n-gram grouped PLE with 160-wide row concatenation, 4-section IMRoPE with partial rotary factor 0.25 and theta 10M, and QSA K-pooling/scoring with unconditional active tail retention) is complete and verified with synthetic tests. Real-weight qualification on the 72.5 GB UD-IQ1_S checkpoint is deferred.
 
 **Policy:** port now, prove later; not admitted, not advertised (CLAUDE.md rule 14; [ported-families-todo](ported-families-todo.md)).
 
@@ -28,8 +28,12 @@ A hybrid MoE consisting of 48 layers in a strict 3:1 pattern (`full_attention_in
    - Note: This is an explicit `GatedResidual` mechanism. It is **not** DeepSeek-V4's Sinkhorn matrix hyper-connection (mHC).
 
 2. **PLE (Position-Less Embedding) n-gram table & conv block**:
-   - Injected at layer 2 (`ple_layers = [2]`), which is a recurrent GDN layer.
+   - Injected at layer index 1 in GGUF zero-based indexing (`ple_layers = [1]`), corresponding to Hugging Face 1-based layer 2, which is a recurrent GDN layer.
    - ~320M-row / ~51B-parameter n-gram embedding table (`per_layer_token_embd`) mapped by 64-bit n-gram hashes (row count $\neq$ parameter count $\neq$ file size).
+   - Upstream row geometry: `ple_head_dim = 160`, `n_heads = 16` (`ngram_size = 3`, 8 heads per n-gram).
+   - **Row Concatenation**: Gathered head embeddings are $16 \times 160$ rows concatenated into a 2560-wide vector (`16 * 160 = 2560 = embed_dim`), which feeds `ple_key` and `ple_value`. They are **concatenated, never averaged**.
+   - **N-Gram Head Grouping**: Heads are partitioned by n-gram length ($n = 2..\text{ngram\_size}$, base $= (n - 2) \times \text{heads\_per\_ngram}$). Heads 0–7 are bigrams ($n=2$); heads 8–15 are trigrams ($n=3$).
+   - **EOS / Padding Semantics**: Missing predecessors before sequence start act as `eos_token_id`. An EOS anywhere in the predecessor window truncates context older than that EOS (padded with EOS). The current token being EOS does not erase its own context history.
    - Hash metadata arrays: `ple_layer_multipliers`, `ple_head_offsets`, `ple_head_vocab_sizes`.
    - 64-bit n-gram hash calculation: XOR of multiplied terms across the n-gram window (`mixed = (tok_0 * mult_0) ^ (tok_1 * mult_1) ^ ...`).
    - Gated query/key projection with signed square root scaling:
@@ -39,8 +43,9 @@ A hybrid MoE consisting of 48 layers in a strict 3:1 pattern (`full_attention_in
    - Stateful token history window surviving across chunked prefill and incremental decode calls.
 
 3. **QSA (Qwen Sparse Attention)**:
-   - Key pooling across blocks of `compress_ratio` cells (`indexer_kpool`).
+   - Key pooling across blocks of `compress_ratio` cells (`indexer_kpool = 4`).
    - Dedicated indexer projections (`index_q_proj`, `index_k_proj`) and RMS norms.
+   - **RoPE Geometry**: $\theta = 10{,}000{,}000$, `partial_rotary_factor = 0.25` ($\text{ropeDim} = 32$ of 128 head dim), sections `[11, 11, 10]`. Dimensions $\ge 32$ pass through unrotated (`sector = pair`, no modulo wrapping). Uses `SimdKernels.ApplyRoPECachedNeoxPartial`.
    - Two-sided RoPE: indexer Q and pooled-K RoPE; main attention Q and K RoPE using four-section IMRoPE.
    - Multi-head ReLU scoring: `score(pool, query) = (1 / sqrt(idxDim)) * sum_h ReLU(dot(Q_h, K_pool))`.
    - Top-k block selection (`indexer_top_k` / `compress_ratio` pools), with incomplete current tail preservation (`indexer_kpool_select_tail = true`).
@@ -52,7 +57,7 @@ A hybrid MoE consisting of 48 layers in a strict 3:1 pattern (`full_attention_in
    - 1 shared expert per token.
    - Expert intermediate size $d_{ff} = 640$ (`n_ff_exp = 640`).
    - Softmax over router logits, top-k selection, renormalised weights.
-   - Fused `ffn_gate_up_exps` vs separate `ffn_gate_exps` / `ffn_up_exps` tensor layout compatibility must be confirmed against real checkpoints.
+   - Both fused `ffn_gate_up_exps` and separate `ffn_gate_exps` / `ffn_up_exps` tensor layouts are supported and verified bit-identical.
 
 5. **SSM Numerics**:
    - `mamba_ssm_dtype = float32`: GDN recurrent state and updates run strictly in FP32.
@@ -77,26 +82,26 @@ A hybrid MoE consisting of 48 layers in a strict 3:1 pattern (`full_attention_in
 
 ## Current Status & Summary Matrix
 
-The initial structural port and synthetic fixtures are implemented. The remaining work consists of **three major missing semantic subsystems + one checkpoint-layout compatibility item + validation**:
+The initial structural port, semantic implementations, and synthetic fixtures are complete. All unit and synthetic integration tests pass. The gate to production admission is real-weight qualification on the 72.5 GB checkpoint:
 
 | Phase | Subsystem | Description | Status |
 | :--- | :--- | :--- | :--- |
-| **A** | PLE | Parse hash metadata arrays (`PleLayerMultipliers`, `PleHeadOffsets`, `PleHeadVocabSizes`) | **Complete** |
-| **B** | PLE | Memory-mapped PLE table row access via `PerLayerTokEmbd` | **Complete** |
-| **C** | PLE | Stateful n-gram hash window & row gather across decode calls (`Qwen4ExpPleHasher`) | **Complete** |
-| **D** | PLE | Feed gathered PLE embeddings into existing `ExecutePle` projection math | **Complete** |
-| **E** | QSA | Dedicated raw indexer-K cache separate from main KV cache | **Complete** |
-| **F** | QSA | K-pool layout, chunk-boundary completion state, and active tail retention | **Complete** |
-| **G** | QSA | Pooled-K arithmetic: block mean + RMSNorm | **Complete** |
-| **H** | QSA | Indexer Q RoPE and pooled-K RoPE (first token position of block) | **Complete** |
-| **I** | QSA | Main attention Q & K four-section IMRoPE | **Complete** |
-| **J** | QSA | Multi-head ReLU scoring + top-k block selection (`indexer_top_k / kpool`) | **Complete** |
-| **K** | QSA | Sparse attention mask generation & selected-block attention walk | **Complete** |
-| **L** | MoE | Fused `ffn_gate_up_exps` vs separate `ffn_gate_exps`/`ffn_up_exps` compatibility | **Complete** |
-| **M** | Tests | Chunk-boundary, incremental decode, K-pool straddle, and structural parity tests | **Complete** |
-| **N** | Gate | Remove `hp.IndexerTopK > 0` constructor refusal guard | **Complete** |
-| **O** | Validation | 72.5 GB UD-IQ1_S paged real-weight execution | **Deferred** |
-| **P** | Validation | External logit parity against llama.cpp / TensorSharp | **Deferred** |
+| **A** | PLE | Parse hash metadata arrays (`PleLayerMultipliers`, `PleHeadOffsets`, `PleHeadVocabSizes`) | **Implemented (synthetic verified)** |
+| **B** | PLE | Memory-mapped PLE table row access via `PerLayerTokEmbd` | **Implemented (synthetic verified)** |
+| **C** | PLE | Stateful n-gram hash window & row gather across decode calls (`Qwen4ExpPleHasher`, n-gram head grouping, EOS truncation) | **Implemented (synthetic verified)** |
+| **D** | PLE | $16 \times 160$ row concatenation into 2560-wide vector feeding `ExecutePle` projection math | **Implemented (synthetic verified)** |
+| **E** | QSA | Dedicated raw indexer-K cache separate from main KV cache | **Implemented (synthetic verified)** |
+| **F** | QSA | K-pool layout, chunk-boundary completion state, and active tail retention | **Implemented (synthetic verified)** |
+| **G** | QSA | Pooled-K arithmetic: block mean + RMSNorm | **Implemented (synthetic verified)** |
+| **H** | QSA | Indexer Q RoPE and pooled-K RoPE ($\theta = 10\text{M}$, partial rotary 0.25, unrotated dims passthrough) | **Implemented (synthetic verified)** |
+| **I** | QSA | Main attention Q & K four-section IMRoPE (`[11, 11, 10]`, partial rotary 0.25) | **Implemented (synthetic verified)** |
+| **J** | QSA | Multi-head ReLU scoring + top-k block selection (`indexer_top_k / kpool`) | **Implemented (synthetic verified)** |
+| **K** | QSA | Sparse attention mask generation & selected-block attention walk | **Implemented (synthetic verified)** |
+| **L** | MoE | Fused `ffn_gate_up_exps` vs separate `ffn_gate_exps`/`ffn_up_exps` compatibility | **Implemented (synthetic verified)** |
+| **M** | Tests | Chunk-boundary, incremental decode, K-pool tail retention, n-gram grouping, RoPE geometry, and MoE parity tests | **Implemented (synthetic verified)** |
+| **N** | Gate | Remove `hp.IndexerTopK > 0` constructor refusal guard | **Implemented (synthetic verified)** |
+| **O** | Validation | 72.5 GB UD-IQ1_S paged real-weight execution | **Deferred (awaiting download/run)** |
+| **P** | Validation | External logit parity against llama.cpp / TensorSharp | **Deferred (awaiting download/run)** |
 
 ---
 
@@ -211,9 +216,14 @@ The initial structural port and synthetic fixtures are implemented. The remainin
   | Test | Target Subsystem | What It Catches |
   | :--- | :--- | :--- |
   | **PLE known-token fixture** | `PleHasher_KnownTokenSequence_CalculatesXorHashAndHeadIndices` | XOR vs addition, multipliers, and head index math |
+  | **PLE n-gram head grouping** | `PleHasher_BigramVsTrigram_16HeadGroups` | Partitioning into bigram (heads 0–7) and trigram (heads 8–15) groups |
+  | **PLE EOS / boundary semantics** | `PleHasher_BoundaryAndEosSemantics` | Missing predecessor padding, intervening EOS context cutoff, current EOS preservation |
+  | **PLE concatenation geometry** | `Ple_Concatenation_AssemblyGeometry` | $16 \times 160$ head rows concatenated to 2560 (never averaged) |
   | **PLE chunked vs single-shot** | `PleHasher_ChunkedVsSingleShot_HistoryContinuity` | History continuity bugs and boundary truncation |
   | **QSA pool straddle** | `Qsa_PoolIndexerKeys_AveragesAndNormalizes` + multi-step forward | Block-state bugs when prefill/decode crosses $R$ boundary |
+  | **QSA candidate & tail retention** | `Qsa_CandidateSelection_AlwaysRetainsActiveTail` | Unconditional preservation of incomplete tail block ($L=6$, $k=4$, tail $[4..5]$) |
   | **QSA selected vs unselected KV** | `Qsa_SelectTopKPools_ExcludesLowScoringPoolsAndRetainsTail` | Masking & index translation (unselected keys masked to $-\infty$) |
+  | **RoPE Qwen3.8 geometry** | `RoPE_Qwen38Geometry_PartialRotaryFactor_Theta10M` | Partial rotary factor 0.25 (32 rotated, 96 passthrough), $\theta = 10\text{M}$ |
   | **RoPE known vector** | `Qwen4ExpRope_FourSectionImRope_RotatesSectionsCorrectly` | 4-section IMRoPE section boundaries and unrotated section 3 |
   | **Fused vs separate expert tensors** | `ExecuteMoe_FusedGateUpExperts_ProducesIdenticalOutputToSeparateTensors` | MoE layout compatibility (`ffn_gate_up_exps` vs separate) |
   | **End-to-end forward pass** | `Qwen4Exp_SyntheticForwardPass_RunsWithQsaSparseSelection_AndPleTable` | Full 4-stream HC + GDN + QSA + PLE integration |

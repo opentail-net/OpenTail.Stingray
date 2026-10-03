@@ -51,6 +51,8 @@ public sealed record Qwen4ExpHyperparams
     /// <summary>Routed-weight scale (<c>expert_weights_scale</c>); 0 = unscaled, as in llama.cpp's build_moe_ffn.</summary>
     public float ExpertWeightsScale { get; init; }
     public float RmsNormEps { get; init; } = 1e-6f;
+    public int RopeDim { get; init; }
+    public float RopeTheta { get; init; } = 10000000.0f;
     public IReadOnlyList<int>? RopeDimensionSections { get; init; }
     public int SsmConvKernel { get; init; }
     public int SsmInnerSize { get; init; }
@@ -155,6 +157,9 @@ public sealed record Qwen4ExpHyperparams
             ExpertUsedCount = GetInt(metadata, $"{arch}.expert_used_count", 10),
             ExpertWeightsScale = GetFloat(metadata, $"{arch}.expert_weights_scale"),
             RmsNormEps = GetFloat(metadata, $"{arch}.attention.layer_norm_rms_epsilon", 1e-6f),
+            RopeDim = GetInt(metadata, $"{arch}.rope.dimension_count",
+                Math.Max(1, (int)(GetInt(metadata, $"{arch}.attention.key_length", 128) * GetFloat(metadata, $"{arch}.rope.partial_rotary_factor", 0.25f)))),
+            RopeTheta = GetFloat(metadata, $"{arch}.rope.freq_base", 10000000.0f),
             RopeDimensionSections = GetIntArray(metadata, $"{arch}.rope.dimension_sections"),
             SsmConvKernel = GetInt(metadata, $"{arch}.ssm.conv_kernel", 4),
             SsmInnerSize = GetInt(metadata, $"{arch}.ssm.inner_size"),
@@ -668,12 +673,13 @@ public static class Qwen4ExpQsa
 
 /// <summary>
 /// 4-section IMRoPE (Interleaved M-RoPE) rotary embeddings for Qwen4Exp QSA and indexer.
+/// Integrates with Stingray's partial NEOX RoPE kernels and avoids cyclic section wrapping.
 /// </summary>
 public static class Qwen4ExpRope
 {
     /// <summary>
     /// Computes which M-RoPE section (0, 1, 2, or 3) corresponds to dimension pair <paramref name="pair"/>.
-    /// Section 3 is unrotated (position 0 / identity).
+    /// Section 3 or any pair beyond the section sum is unrotated (position 0 / identity).
     /// </summary>
     public static int GetMropeComponent(int pair, IReadOnlyList<int>? sections)
     {
@@ -684,8 +690,9 @@ public static class Qwen4ExpRope
         int s3 = sections.Count > 3 ? sections[3] : 0;
         int total = s0 + s1 + s2 + s3;
         if (total <= 0) return 0;
+        if (pair >= total) return 3; // Beyond section boundary: strictly unrotated!
 
-        int sector = pair % total;
+        int sector = pair;
         if (sector % 3 == 1 && sector < 3 * s1) return 1;
         if (sector % 3 == 2 && sector < 3 * s2) return 2;
         if (sector % 3 == 0 && sector < 3 * s0) return 0;
@@ -694,6 +701,7 @@ public static class Qwen4ExpRope
 
     /// <summary>
     /// Applies 4-section IMRoPE rotation to <paramref name="vec"/> in place.
+    /// Rotates only the first <paramref name="ropeDim"/> dimensions using SimdKernels.ApplyRoPECachedNeoxPartial.
     /// </summary>
     public static unsafe void ApplyImRope(
         Span<float> vec,
@@ -701,15 +709,17 @@ public static class Qwen4ExpRope
         int numHeads,
         int headDim,
         IReadOnlyList<int>? sections,
-        float ropeTheta = 1000000.0f)
+        int ropeDim = 0,
+        float ropeTheta = 10000000.0f)
     {
         if (headDim <= 0 || (headDim & 1) != 0) return;
-        int halfDim = headDim / 2;
+        if (ropeDim <= 0 || ropeDim > headDim) ropeDim = headDim;
+        int halfRope = ropeDim / 2;
 
-        Span<float> cosTab = stackalloc float[halfDim];
-        Span<float> sinTab = stackalloc float[halfDim];
+        Span<float> cosTab = stackalloc float[halfRope];
+        Span<float> sinTab = stackalloc float[halfRope];
 
-        for (int i = 0; i < halfDim; i++)
+        for (int i = 0; i < halfRope; i++)
         {
             int comp = GetMropeComponent(i, sections);
             float p = comp switch
@@ -717,26 +727,36 @@ public static class Qwen4ExpRope
                 0 => pos,
                 1 => pos,
                 2 => pos,
-                _ => 0f // unrotated 4th component
+                _ => 0f // component 3 / unrotated
             };
-            float angle = p * MathF.Pow(ropeTheta, -2f * i / headDim);
+            float angle = p * MathF.Pow(ropeTheta, -2f * i / ropeDim);
             cosTab[i] = MathF.Cos(angle);
             sinTab[i] = MathF.Sin(angle);
         }
 
         fixed (float* pVec = vec, pCos = cosTab, pSin = sinTab)
         {
-            SimdKernels.ApplyRoPECachedNeox(pVec, pCos, pSin, numHeads, headDim);
+            if (ropeDim < headDim)
+            {
+                SimdKernels.ApplyRoPECachedNeoxPartial(pVec, pCos, pSin, numHeads, headDim, ropeDim);
+            }
+            else
+            {
+                SimdKernels.ApplyRoPECachedNeox(pVec, pCos, pSin, numHeads, headDim);
+            }
         }
     }
 }
 
 /// <summary>
 /// Maintains token sequence history and computes multi-head PLE n-gram table row indices.
+/// Heads are partitioned by n-gram length (n = 2 .. ngramSize).
+/// Missing predecessors before sequence start or cut off by intervening EOS tokens pad to eosTokenId.
 /// </summary>
 public sealed class Qwen4ExpPleHasher
 {
     private readonly int _ngramSize;
+    private readonly int _headsPerNgram;
     private readonly int _eosTokenId;
     private readonly ulong[] _multipliers;
     private readonly uint[] _headOffsets;
@@ -745,22 +765,25 @@ public sealed class Qwen4ExpPleHasher
 
     public Qwen4ExpPleHasher(Qwen4ExpHyperparams hp)
     {
-        _ngramSize = hp.PleNgramSize > 0 ? hp.PleNgramSize : 2;
+        _ngramSize = hp.PleNgramSize > 0 ? hp.PleNgramSize : 3;
         _eosTokenId = hp.PleEosTokenId;
-        _multipliers = hp.PleLayerMultipliers != null ? hp.PleLayerMultipliers.ToArray() : [1UL, 10007UL];
+        _multipliers = hp.PleLayerMultipliers != null ? hp.PleLayerMultipliers.ToArray() : [1UL, 10007UL, 1000003UL];
         _headOffsets = hp.PleHeadOffsets != null ? hp.PleHeadOffsets.ToArray() : [0U];
         _headVocabSizes = hp.PleHeadVocabSizes != null ? hp.PleHeadVocabSizes.ToArray() : [65536U];
+
+        int totalHeads = _headOffsets.Length;
+        int numNgramGroups = Math.Max(1, _ngramSize - 1);
+        _headsPerNgram = hp.PleHeadsPerNgram > 0 ? hp.PleHeadsPerNgram : totalHeads / numNgramGroups;
+        if (_headsPerNgram <= 0) _headsPerNgram = totalHeads;
     }
 
     public int NumHeads => _headOffsets.Length;
+    public int NgramSize => _ngramSize;
+    public int HeadsPerNgram => _headsPerNgram;
+    public int EosTokenId => _eosTokenId;
 
     public void PushToken(int token)
     {
-        if (token == _eosTokenId)
-        {
-            _tokenHistory.Clear();
-            return;
-        }
         _tokenHistory.Add(token);
     }
 
@@ -768,7 +791,7 @@ public sealed class Qwen4ExpPleHasher
     {
         for (int i = 0; i < tokens.Length; i++)
         {
-            PushToken(tokens[i]);
+            _tokenHistory.Add(tokens[i]);
         }
     }
 
@@ -776,29 +799,63 @@ public sealed class Qwen4ExpPleHasher
 
     /// <summary>
     /// Computes row indices in the PLE table for each head at the current token position.
-    /// Uses XOR accumulation across n-gram multiplier products per llama.cpp (qwen4exp.cpp) and TensorSharp.
+    /// Heads are partitioned by n-gram length (n = 2 .. ngramSize).
     /// </summary>
     public void ComputeRowIndices(Span<long> outRowIndices)
     {
-        int heads = _headOffsets.Length;
+        int totalHeads = _headOffsets.Length;
         int histLen = _tokenHistory.Count;
+        int t = histLen - 1;
 
-        for (int h = 0; h < heads; h++)
+        int currentTok = t >= 0 ? _tokenHistory[t] : _eosTokenId;
+
+        for (int n = 2; n <= _ngramSize; n++)
         {
+            int baseHead = (n - 2) * _headsPerNgram;
+            if (baseHead >= totalHeads) break;
+            int countInGroup = Math.Min(_headsPerNgram, totalHeads - baseHead);
+
             ulong hash = 0;
-            for (int k = 0; k < _ngramSize; k++)
+            bool truncatedByEos = false;
+
+            for (int k = 0; k < n; k++)
             {
-                int tIdx = histLen - 1 - k;
-                ulong tokenVal = tIdx >= 0 ? (ulong)_tokenHistory[tIdx] : 0UL;
+                ulong tokVal;
+                if (k == 0)
+                {
+                    tokVal = (ulong)currentTok;
+                }
+                else
+                {
+                    int predIdx = t - k;
+                    if (predIdx < 0 || truncatedByEos)
+                    {
+                        tokVal = (ulong)_eosTokenId;
+                    }
+                    else
+                    {
+                        int predTok = _tokenHistory[predIdx];
+                        if (predTok == _eosTokenId)
+                        {
+                            truncatedByEos = true;
+                        }
+                        tokVal = (ulong)predTok;
+                    }
+                }
+
                 ulong mult = k < _multipliers.Length ? _multipliers[k] : 1UL;
-                ulong prod = unchecked(tokenVal * mult);
+                ulong prod = unchecked(tokVal * mult);
                 hash = k == 0 ? prod : (hash ^ prod);
             }
 
-            uint vocabSize = h < _headVocabSizes.Length && _headVocabSizes[h] > 0 ? _headVocabSizes[h] : 65536U;
-            uint offset = h < _headOffsets.Length ? _headOffsets[h] : 0U;
-            long row = offset + (long)(hash % vocabSize);
-            outRowIndices[h] = row;
+            for (int i = 0; i < countInGroup; i++)
+            {
+                int h = baseHead + i;
+                uint vocabSize = h < _headVocabSizes.Length && _headVocabSizes[h] > 0 ? _headVocabSizes[h] : 65536U;
+                uint offset = h < _headOffsets.Length ? _headOffsets[h] : 0U;
+                long row = offset + (long)(hash % vocabSize);
+                outRowIndices[h] = row;
+            }
         }
     }
 }
