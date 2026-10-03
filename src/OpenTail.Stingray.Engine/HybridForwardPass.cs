@@ -99,6 +99,13 @@ public sealed unsafe class HybridForwardPass : IForwardPass
     // ── Expert slot cache (for MoE GPU layers with lazy/evictable expert loading) ──
     private ExpertSlotManager? _expertSlotManager;
     private MoEPrefetcher? _prefetcher;
+
+    // STINGRAY_MOE_TIMING=1: where a token's GPU-layer MoE time goes (printed when the pass is disposed).
+    private static readonly bool s_moeTiming = Environment.GetEnvironmentVariable("STINGRAY_MOE_TIMING") == "1";
+    private long _tmSyncTicks, _tmLookupTicks, _tmFallbackTicks, _tmTailTicks;
+    private long _tmLayers, _tmExperts, _tmMisses;
+    private float[]? _cpuFallbackNorm;
+    private long _tmFbGate, _tmFbUpAct, _tmFbDown, _tmFbExperts;
     // Next-layer predictive prefetch: records each layer's expert selection and prefetches
     // the next GPU MoE layer's likely experts a layer ahead. ON by default (it only makes
     // the already-on background prefetch smarter, and is a no-op when experts aren't being
@@ -1495,8 +1502,13 @@ public sealed unsafe class HybridForwardPass : IForwardPass
         // _gpuPinnedNorm reads on RTX 4070 Ti, manifesting as garbled MoE output past
         // ~10 GPU layers — issue #2). Explicit HOST_READ barrier flushes the writes.
         _gpu.RecordComputeToHostBarrier();
+        long tm0 = s_moeTiming ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
         _gpu.EndRecordAndSubmit();
         _gpu.Download(_gpuRouterLogits!, _gpuRouterBuf!);
+        // The submit above carried the previous MoE layer's expert matmuls and Download waited for the fence, so the
+        // GPU no longer reads those slots: their leases can go (this layer takes its own below).
+        _expertSlotManager!.ReleaseLeases();
+        long tm1 = s_moeTiming ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
 
         Span<int> selectedExperts = stackalloc int[numActive];
         Span<float> expertWeights = stackalloc float[numActive];
@@ -1518,9 +1530,10 @@ public sealed unsafe class HybridForwardPass : IForwardPass
 
         for (int i = 0; i < numActive; i++)
         {
-            isGpu[i] = _expertSlotManager!.TryGetCached(layer, selectedExperts[i], out cachedSlots[i]);
+            isGpu[i] = _expertSlotManager!.TryGetCachedLeased(layer, selectedExperts[i], out cachedSlots[i]);
             if (!isGpu[i]) hasCpuFallback = true;
         }
+        long tm2 = s_moeTiming ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
 
         // Now enqueue prefetches. Order matters: the worker thread may race ahead
         // and evict probationary slots — by promoting current-layer slots first
@@ -1551,6 +1564,7 @@ public sealed unsafe class HybridForwardPass : IForwardPass
                 _gpu.UnmapPinned(_gpuPinnedNorm!);
             }
         }
+        long tm3 = s_moeTiming ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
 
         _gpu.BeginRecord();
 
@@ -1617,6 +1631,14 @@ public sealed unsafe class HybridForwardPass : IForwardPass
 
         if (_hasSharedExpert)
             _gpu.AddInPlace(_gpuHidden, _gpuMoeSharedOut!);
+
+        if (s_moeTiming)
+        {
+            long tm4 = System.Diagnostics.Stopwatch.GetTimestamp();
+            _tmSyncTicks += tm1 - tm0; _tmLookupTicks += tm2 - tm1; _tmFallbackTicks += tm3 - tm2; _tmTailTicks += tm4 - tm3;
+            _tmLayers++; _tmExperts += numActive;
+            for (int i = 0; i < numActive; i++) if (!isGpu[i]) _tmMisses++;
+        }
     }
 
     private unsafe void GpuMoeFfnCpuFallback(int layer, ReadOnlySpan<int> selectedExperts,
@@ -1629,6 +1651,12 @@ public sealed unsafe class HybridForwardPass : IForwardPass
 
         Array.Clear(_cpuFallbackBuf);
 
+        // normPtr is mapped Vulkan host-visible memory, whose reads are uncached: the quantised matvec reads its
+        // input scalar by scalar, which cost ~2.6 ms per gate/up matvec against ~0.05 ms for the down matvec
+        // (whose input is an ordinary array). One wide copy per layer, then every expert reads normal memory.
+        _cpuFallbackNorm ??= new float[_embDim];
+        new ReadOnlySpan<float>(normPtr, _embDim).CopyTo(_cpuFallbackNorm);
+
         // Resolve mmap weight refs for this layer's expert tensors.
         var wGateExps = ResolveCpuWeight($"blk.{layer}.ffn_gate_exps.weight");
         var wUpExps   = ResolveCpuWeight($"blk.{layer}.ffn_up_exps.weight");
@@ -1637,6 +1665,7 @@ public sealed unsafe class HybridForwardPass : IForwardPass
         fixed (float* fallbackPtr = _cpuFallbackBuf)
         fixed (float* gatePtr = _cpuFallbackGate)
         fixed (float* upPtr = _cpuFallbackUp)
+        fixed (float* inputPtr = _cpuFallbackNorm)
         {
             for (int i = 0; i < numActive; i++)
             {
@@ -1644,8 +1673,10 @@ public sealed unsafe class HybridForwardPass : IForwardPass
                 int expertIdx = selectedExperts[i];
                 float weight = expertWeights[i];
 
-                ExpertMatVec(gatePtr, wGateExps, expertIdx, _expertDim, _embDim, normPtr);
-                ExpertMatVec(upPtr,   wUpExps,   expertIdx, _expertDim, _embDim, normPtr);
+                long fa = s_moeTiming ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
+                ExpertMatVec(gatePtr, wGateExps, expertIdx, _expertDim, _embDim, inputPtr);
+                long fb = s_moeTiming ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
+                ExpertMatVec(upPtr,   wUpExps,   expertIdx, _expertDim, _embDim, inputPtr);
 
                 if (_hp.UseSigmoidGating)
                 {
@@ -1655,7 +1686,13 @@ public sealed unsafe class HybridForwardPass : IForwardPass
                 }
 
                 SimdKernels.SiLuMul(gatePtr, upPtr, _expertDim);
+                long fc = s_moeTiming ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
                 ExpertMatVecDown(fallbackPtr, wDownExps, expertIdx, _embDim, _expertDim, gatePtr, weight);
+                if (s_moeTiming)
+                {
+                    long fd = System.Diagnostics.Stopwatch.GetTimestamp();
+                    _tmFbGate += fb - fa; _tmFbUpAct += fc - fb; _tmFbDown += fd - fc; _tmFbExperts++;
+                }
             }
         }
     }
@@ -1893,6 +1930,18 @@ public sealed unsafe class HybridForwardPass : IForwardPass
         _cpuKvCache.Dispose();
         _cpuTqKvCache?.Dispose();
         _prefetcher?.Dispose();
+        if (s_moeTiming && _tmLayers > 0)
+        {
+            double ms(long t) => t * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
+            Console.Error.WriteLine(
+                $"[moe-timing] {_tmLayers} GPU MoE layer-steps, {_tmMisses}/{_tmExperts} expert lookups missed ({100.0 * _tmMisses / Math.Max(1, _tmExperts):F1}%). "
+                + $"Per layer-step: GPU wait+router {ms(_tmSyncTicks) / _tmLayers:F3} ms, cache lookup {ms(_tmLookupTicks) / _tmLayers:F3} ms, "
+                + $"CPU fallback {ms(_tmFallbackTicks) / _tmLayers:F3} ms, record tail {ms(_tmTailTicks) / _tmLayers:F3} ms.");
+            if (_tmFbExperts > 0)
+                Console.Error.WriteLine(
+                    $"[moe-timing] CPU fallback per expert: gate {ms(_tmFbGate) / _tmFbExperts:F3} ms, up+act {ms(_tmFbUpAct) / _tmFbExperts:F3} ms, down {ms(_tmFbDown) / _tmFbExperts:F3} ms"
+                    + ".");
+        }
         if (_expertSlotManager is not null)
         {
             // STINGRAY_EXPERT_STATS=<path>: parity with the CUDA hybrid forward passes

@@ -1013,6 +1013,12 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
     // ================================================================
 
     private readonly ConcurrentDictionary<nint, GpuBuffer> _buffers = new();
+
+    /// <summary>
+    /// Number of GPU buffers currently allocated through this backend. A diagnostic for leak checks: a streamed-expert
+    /// run that uploads and evicts for thousands of tokens must keep this bounded.
+    /// </summary>
+    public int LiveBufferCount => _buffers.Count;
     private long _nextHandle = 1;
 
     public GpuBuffer GetBuffer(Tensor tensor) =>

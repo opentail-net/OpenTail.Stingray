@@ -17,6 +17,9 @@ public sealed class ExpertSlotManager : IDisposable, IExpertPrefetchTarget
     private readonly ExpertAccessProfiler _profiler;
     private readonly Dictionary<nint, DType> _dtypes;
     private readonly object _lock = new();
+    private readonly HashSet<long> _inFlight = []; // (layer, expert) keys being uploaded outside the lock
+    private readonly List<(int Layer, int Expert)> _leases = []; // slots handed out by TryGetCachedLeased, pinned until ReleaseLeases
+    private readonly HashSet<long> _warmPinned = []; // keys pinned by MaybeWarmPin (a lease release must not unpin these)
     private bool _disposed;
 
     // Opt-in warm-pinning of hot experts (STINGRAY_MOE_WARMPIN=N). Disabled by default.
@@ -74,6 +77,48 @@ public sealed class ExpertSlotManager : IDisposable, IExpertPrefetchTarget
     }
 
     /// <summary>
+    /// <see cref="TryGetCached"/> that also <b>leases</b> the slot: it is pinned, so neither a background
+    /// <see cref="Preload"/> nor any other insert can evict and free its GPU tensors, until
+    /// <see cref="ReleaseLeases"/>. A caller records GPU commands that read the slot only after this returns and the GPU
+    /// finishes them only at its next fence-wait, so without a lease a small cache loses the slot in between (a prefetch
+    /// evicts a hit that was just demoted from the protected segment; seen as "Tensor handle N not found" with 8 slots and
+    /// 8 active experts). Release once the GPU work that used the slots has completed.
+    /// </summary>
+    public bool TryGetCachedLeased(int layer, int expertId, out ExpertGpuSlot slot)
+    {
+        lock (_lock)
+        {
+            bool hit = _cache.TryGet(layer, expertId, out slot);
+            if (hit)
+            {
+                _profiler.RecordHit(layer, expertId);
+                if (!_cache.IsPinned(layer, expertId))
+                {
+                    _cache.Pin(layer, expertId);
+                    _leases.Add((layer, expertId));
+                }
+            }
+            else
+            {
+                _profiler.RecordMiss(layer, expertId);
+            }
+            return hit;
+        }
+    }
+
+    /// <summary>Unpins every slot leased since the last call (warm-pinned slots stay pinned).</summary>
+    public void ReleaseLeases()
+    {
+        lock (_lock)
+        {
+            foreach (var (layer, expert) in _leases)
+                if (!_warmPinned.Contains(((long)layer << 32) | (uint)expert))
+                    _cache.Unpin(layer, expert);
+            _leases.Clear();
+        }
+    }
+
+    /// <summary>
     /// Return the GPU tensors for the given expert, loading from the GGUF mmap if not cached.
     /// Thread-safe: concurrent calls are serialized by an internal lock.
     /// </summary>
@@ -127,7 +172,7 @@ public sealed class ExpertSlotManager : IDisposable, IExpertPrefetchTarget
             foreach (int e in _profiler.GetTopExperts(layer, _warmPinPerLayer))
             {
                 if (pinnedList.Count >= _pinBudget) break;
-                if (_cache.Contains(layer, e)) { _cache.Pin(layer, e); pinnedList.Add((layer, e)); }
+                if (_cache.Contains(layer, e)) { _cache.Pin(layer, e); _warmPinned.Add(((long)layer << 32) | (uint)e); pinnedList.Add((layer, e)); }
             }
         }
         _profiler.RecordWarmPin(System.Runtime.InteropServices.CollectionsMarshal.AsSpan(pinnedList));
@@ -142,13 +187,41 @@ public sealed class ExpertSlotManager : IDisposable, IExpertPrefetchTarget
     /// </summary>
     public void Preload(int layer, int expertId)
     {
+        // The upload (allocate + copy ~10 MB per expert) must not hold the lock: TryGetCached on the forward
+        // pass takes it for every routed expert, and waiting behind an upload cost 14-43 ms per MoE layer
+        // (STINGRAY_MOE_TIMING, OLMoE on a small cache). So: claim the key under the lock, upload outside it,
+        // publish the finished slot under the lock. A lookup never sees a half-uploaded slot (it is not in the
+        // cache until complete) and never waits for one: it counts as a miss and the caller computes on the CPU.
+        long key = ((long)layer << 32) | (uint)expertId;
         lock (_lock)
         {
-            if (!_cache.Contains(layer, expertId))
+            if (_cache.Contains(layer, expertId) || !_inFlight.Add(key))
             {
-                var slot = UploadExpert(layer, expertId, background: true);
-                _cache.Put(layer, expertId, slot);
+                MaybeWarmPin();
+                return;
             }
+        }
+
+        ExpertGpuSlot slot;
+        try
+        {
+            slot = UploadExpert(layer, expertId, background: true);
+        }
+        catch
+        {
+            lock (_lock) _inFlight.Remove(key);
+            throw;
+        }
+
+        lock (_lock)
+        {
+            _inFlight.Remove(key);
+            if (_disposed)
+            {
+                EvictSlot(slot); // the manager was disposed while this upload was running: free it, do not cache it
+                return;
+            }
+            _cache.Put(layer, expertId, slot);
             MaybeWarmPin();
         }
     }
@@ -220,10 +293,14 @@ public sealed class ExpertSlotManager : IDisposable, IExpertPrefetchTarget
 
     public void Dispose()
     {
-        if (_disposed) return;
-        _disposed = true;
-        // Drain cache, invoking EvictSlot for every resident entry to free GPU tensors.
-        _cache.Drain(EvictSlot);
+        lock (_lock)
+        {
+            if (_disposed) return;
+            _disposed = true;
+            // Drain cache, invoking EvictSlot for every resident entry to free GPU tensors. An upload still running
+            // outside the lock frees its own slot when it finishes and finds _disposed set (see Preload).
+            _cache.Drain(EvictSlot);
+        }
     }
 }
 

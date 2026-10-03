@@ -174,6 +174,7 @@ public static class KnownEnvironmentVariables
         "STINGRAY_MOE_PREFILL_Q8",
         "STINGRAY_MOE_SLOTS",
         "STINGRAY_MOE_THREADS",
+        "STINGRAY_MOE_TIMING",
         "STINGRAY_MOE_WARMPIN",
         "STINGRAY_MOE_WARMPIN_AFTER",
         "STINGRAY_MTP_BATCHED_MOE_VERIFY",

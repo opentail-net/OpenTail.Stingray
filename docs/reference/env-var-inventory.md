@@ -29,8 +29,8 @@ names are treated as valid, `doctor` would not have flagged it either. The warni
 `STINGRAY_MAX_QUEUE` and the dead entry is out of the registry, so the mistake is now reported with
 a closest-match suggestion.
 
-**Reconciled again 2026-10-03 — `KnownEnvironmentVariables.All` now contains **258** names**
-(2026-10-03, later: `STINGRAY_MOE_SLOTS` and `STINGRAY_OFFLINE`, added by the TensorSharp selective-port work.)
+**Reconciled again 2026-10-03 — `KnownEnvironmentVariables.All` now contains **259** names**
+(2026-10-03, later: `STINGRAY_MOE_SLOTS`, `STINGRAY_MOE_TIMING` and `STINGRAY_OFFLINE`, added by the TensorSharp selective-port work.)
 (2026-10-02: `STINGRAY_CPU_POOL`, `STINGRAY_CPU_POOL_BLOCKS`, `STINGRAY_CPU_SPIN` for the opt-in spin worker
 pool, registered in 8f45d133 without a count update; and `STINGRAY_EXPERIMENTAL_PRISM`, the "ported, not
 verified" Bonsai2 PRISM gate.)
@@ -221,6 +221,7 @@ dynamically composed names.
 | `STINGRAY_MOE_PIN_MODE` | experimental | |
 | `STINGRAY_MOE_PREDICT_PREFETCH` | expert | Mirrors `OpenTailStingrayServerOptions.MoePredictPrefetch`. |
 | `STINGRAY_MOE_WARMPIN` | expert | Mirrors `OpenTailStingrayServerOptions.MoeWarmPin`. |
+| `STINGRAY_MOE_TIMING` | experimental | `1`: Vulkan hybrid (`-g N`) MoE only. On exit prints, per GPU MoE layer-step, where the time went: GPU wait + router, cache lookup, CPU fallback for missed experts, record tail; and per-expert gate/up/down fallback time. |
 | `STINGRAY_MOE_SLOTS` | experimental | Vulkan hybrid (`-g N`) only: caps the GPU expert cache at this many (layer, expert) slots instead of sizing it to hold every expert. Misses are computed on the CPU. For testing eviction on models that would otherwise fit; `VulkanHybridOlmoeParityTests` uses the constructor argument for the same thing. |
 | `STINGRAY_OFFLINE` | stable | `1`/`true`: catalog installs never touch the network (files already present are still hash-checked; a missing one fails with a clear message). `HF_HUB_OFFLINE` is honoured the same way. |
 | `STINGRAY_MOE_WARMPIN_AFTER` | expert | Mirrors `OpenTailStingrayServerOptions.MoeWarmPinAfter`. |

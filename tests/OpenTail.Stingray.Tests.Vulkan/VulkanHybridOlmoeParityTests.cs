@@ -23,6 +23,8 @@ public sealed class VulkanHybridOlmoeParityTests : HeavyTestBase
     [InlineData(Olmoe, 8, 16)]
     [InlineData(Olmoe, 16, -1)] // every layer through the hybrid pass: isolates its GPU half
     [InlineData(Olmoe, 1, -1)]  // one GPU layer: isolates its CPU half
+    // A 128-expert, 48-layer MoE (qwen3moe, 18 GB): 4 GPU layers x 128 experts through 16 slots.
+    [InlineData("Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf", 4, 16)]
     // Weighted per-head QK-norm on the CPU layers: the same ordering fix (norm before RoPE) applies to Qwen3.
     [InlineData("Qwen3-0.6B-Q8_0.gguf", 8, -1)]
     public void PrefillAndDecodeLogits_AgreeWithCpu(string file, int gpuLayers, int expertSlots)

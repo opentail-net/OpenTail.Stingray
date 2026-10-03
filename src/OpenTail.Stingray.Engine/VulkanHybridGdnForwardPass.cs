@@ -274,6 +274,7 @@ public sealed unsafe class VulkanHybridGdnForwardPass : IForwardPass
     private readonly float[]? _gpuRouterBuf;    // [numExperts] router readback
     private float[]? _cpuFallbackBuf;           // [embDim] CPU-fallback expert accumulator
     private float[]? _cpuFallbackGate;          // [expertDim]
+    private float[]? _cpuFallbackNorm;          // [embDim] ordinary-memory copy of the mapped norm (uncached-read workaround)
     private float[]? _cpuFallbackUp;            // [expertDim]
 
     private readonly float[] _logitsBuf;
@@ -2460,6 +2461,11 @@ public sealed unsafe class VulkanHybridGdnForwardPass : IForwardPass
         _cpuFallbackUp   ??= new float[_expertDim];
         Array.Clear(_cpuFallbackBuf);
 
+        // normPtr is mapped Vulkan host-visible memory with uncached reads; the row dots below read the whole input
+        // once per row. Copy it once into ordinary memory (measured on HybridForwardPass: 2.6 ms -> 0.08 ms per matvec).
+        _cpuFallbackNorm ??= new float[_embDim];
+        new ReadOnlySpan<float>(normPtr, _embDim).CopyTo(_cpuFallbackNorm);
+
         var wGateExps = ResolveCpuWeight($"blk.{layer}.ffn_gate_exps.weight");
         var wUpExps   = ResolveCpuWeight($"blk.{layer}.ffn_up_exps.weight");
         var wDownExps = ResolveCpuWeight($"blk.{layer}.ffn_down_exps.weight");
@@ -2471,6 +2477,7 @@ public sealed unsafe class VulkanHybridGdnForwardPass : IForwardPass
         fixed (float* fallbackPtr = _cpuFallbackBuf)
         fixed (float* gatePtr = _cpuFallbackGate)
         fixed (float* upPtr = _cpuFallbackUp)
+        fixed (float* inputPtr = _cpuFallbackNorm)
         {
             for (int i = 0; i < numActive; i++)
             {
@@ -2482,9 +2489,9 @@ public sealed unsafe class VulkanHybridGdnForwardPass : IForwardPass
                 for (int r = 0; r < _expertDim; r++)
                 {
                     gatePtr[r] = DispatchDot(wGateExps.DataPtr + (long)e * _expertDim * bprG + (long)r * bprG,
-                        normPtr, _embDim, wGateExps.DType);
+                        inputPtr, _embDim, wGateExps.DType);
                     upPtr[r] = DispatchDot(wUpExps.DataPtr + (long)e * _expertDim * bprU + (long)r * bprU,
-                        normPtr, _embDim, wUpExps.DType);
+                        inputPtr, _embDim, wUpExps.DType);
                 }
                 SimdKernels.SiLuMul(gatePtr, upPtr, _expertDim);
                 for (int r = 0; r < _embDim; r++)
