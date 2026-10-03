@@ -49,7 +49,8 @@ public sealed unsafe class DiffusionGemmaForwardPass
     private readonly IReadOnlyList<DiffusionGemmaLayerTensors> _layers;
 
     // Persistent prompt KV cache: [layer][pos][kvDim]
-    private readonly List<float[]>[] _promptKvCache;
+    private readonly List<float[]>[] _promptKCache;
+    private readonly List<float[]>[] _promptVCache;
 
     public DiffusionGemmaForwardPass(GgufModel model, DiffusionGemmaConfig config)
     {
@@ -104,13 +105,18 @@ public sealed unsafe class DiffusionGemmaForwardPass
         }
         _layers = layers;
 
-        _promptKvCache = new List<float[]>[config.NumLayers];
-        for (int i = 0; i < config.NumLayers; i++) _promptKvCache[i] = [];
+        _promptKCache = new List<float[]>[config.NumLayers];
+        _promptVCache = new List<float[]>[config.NumLayers];
+        for (int i = 0; i < config.NumLayers; i++)
+        {
+            _promptKCache[i] = [];
+            _promptVCache[i] = [];
+        }
     }
 
     public int VocabSize => (int)_tokEmbd.Info.Dimensions[1];
     public int HiddenDim => _config.HiddenDim;
-    public int PromptLength => _promptKvCache[0].Count;
+    public int PromptLength => _promptKCache[0].Count;
 
     /// <summary>
     /// Prefills prompt tokens causally into persistent prompt KV cache.
@@ -138,13 +144,28 @@ public sealed unsafe class DiffusionGemmaForwardPass
                     SimdKernels.RmsNorm(outPtr, inPtr, weightPtr, HiddenDim, _config.RmsNormEps);
                 }
 
-                // Compute K and store in prompt KV cache
+                // Compute K and V and store in prompt KV cache
                 var k = new float[kvDim];
-                fixed (float* inPtr = normed, outPtr = k)
+                var v = new float[kvDim];
+                fixed (float* inPtr = normed, kPtr = k, vPtr = v)
                 {
-                    SimdKernels.MatVec(outPtr, layer.Wk!.Value.DataPtr, inPtr, kvDim, HiddenDim, layer.Wk.Value.DType);
+                    SimdKernels.MatVec(kPtr, layer.Wk!.Value.DataPtr, inPtr, kvDim, HiddenDim, layer.Wk.Value.DType);
+                    SimdKernels.MatVec(vPtr, layer.Wv!.Value.DataPtr, inPtr, kvDim, HiddenDim, layer.Wv.Value.DType);
                 }
-                _promptKvCache[il].Add(k);
+
+                if (layer.KNorm is { } kn)
+                {
+                    for (int h = 0; h < kvHeads; h++)
+                    {
+                        fixed (float* kHeadPtr = &k[h * headDim])
+                        {
+                            SimdKernels.RmsNorm(kHeadPtr, kHeadPtr, (float*)kn.DataPtr, headDim, _config.RmsNormEps);
+                        }
+                    }
+                }
+
+                _promptKCache[il].Add(k);
+                _promptVCache[il].Add(v);
 
                 // Residual forward step
                 var ffnNormed = new float[HiddenDim];
@@ -223,6 +244,27 @@ public sealed unsafe class DiffusionGemmaForwardPass
                         SimdKernels.MatVec(vPtr, layer.Wv!.Value.DataPtr, inPtr, kvDim, HiddenDim, layer.Wv.Value.DType);
                     }
                 }
+
+                if (layer.QNorm is { } qn)
+                {
+                    for (int h = 0; h < qHeads; h++)
+                    {
+                        fixed (float* qHeadPtr = &canvasQ[pos, h * headDim])
+                        {
+                            SimdKernels.RmsNorm(qHeadPtr, qHeadPtr, (float*)qn.DataPtr, headDim, _config.RmsNormEps);
+                        }
+                    }
+                }
+                if (layer.KNorm is { } kn)
+                {
+                    for (int h = 0; h < kvHeads; h++)
+                    {
+                        fixed (float* kHeadPtr = &canvasK[pos, h * headDim])
+                        {
+                            SimdKernels.RmsNorm(kHeadPtr, kHeadPtr, (float*)kn.DataPtr, headDim, _config.RmsNormEps);
+                        }
+                    }
+                }
             }
 
             // Bidirectional canvas attention + prefix prompt attention
@@ -248,7 +290,7 @@ public sealed unsafe class DiffusionGemmaForwardPass
                     int promptStart = promptLen - prefixAttendable;
                     for (int k = 0; k < prefixAttendable; k++)
                     {
-                        var promptK = _promptKvCache[il][promptStart + k];
+                        var promptK = _promptKCache[il][promptStart + k];
                         float dot = 0f;
                         for (int d = 0; d < headDim; d++)
                         {
@@ -277,6 +319,13 @@ public sealed unsafe class DiffusionGemmaForwardPass
                     for (int d = 0; d < headDim; d++)
                     {
                         float acc = 0f;
+                        // Prompt V
+                        for (int k = 0; k < prefixAttendable; k++)
+                        {
+                            var promptV = _promptVCache[il][promptStart + k];
+                            acc += scores[k] * promptV[kvH * headDim + d];
+                        }
+
                         // Canvas V
                         for (int k = 0; k < canvasLen; k++)
                         {
@@ -481,6 +530,10 @@ public sealed unsafe class DiffusionGemmaForwardPass
 
     public void Reset()
     {
-        for (int i = 0; i < _config.NumLayers; i++) _promptKvCache[i].Clear();
+        for (int i = 0; i < _config.NumLayers; i++)
+        {
+            _promptKCache[i].Clear();
+            _promptVCache[i].Clear();
+        }
     }
 }

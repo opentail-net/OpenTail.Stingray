@@ -1,4 +1,7 @@
 using System;
+using System.Collections.Generic;
+using System.IO;
+using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Diffusion.DiffusionGemma;
 using Xunit;
 
@@ -185,5 +188,203 @@ public sealed unsafe class DiffusionGemmaTests
         Assert.True(result.Accepted[0]);
         Assert.Equal(2, result.Tokens[0]);
         Assert.True(result.MeanEntropy > 0f);
+    }
+
+    [Fact]
+    public void Pipeline_SyntheticForwardPass_RunsPromptAndDenoisingLoop()
+    {
+        const int hiddenDim = 16;
+        const int numLayers = 2;
+        const int numHeads = 2;
+        const int headDim = 8;
+        const int vocabSize = 16;
+        const int canvasLen = 4;
+        const int interDim = 16;
+
+        var config = new DiffusionGemmaConfig
+        {
+            HiddenDim = hiddenDim,
+            NumLayers = numLayers,
+            SlidingNumQHeads = numHeads,
+            SlidingNumKvHeads = numHeads,
+            SlidingHeadDim = headDim,
+            FullNumQHeads = numHeads,
+            FullNumKvHeads = numHeads,
+            FullHeadDim = headDim,
+            DenseIntermediateDim = interDim,
+            CanvasLength = canvasLen,
+            MaxDenoisingSteps = 2,
+            VocabSize = vocabSize,
+            TemperatureMax = 0.8f,
+            TemperatureMin = 0.4f,
+        };
+
+        string path = Path.Combine(Path.GetTempPath(), $"diffgemma_synthetic_{Guid.NewGuid():N}.gguf");
+        try
+        {
+            var tensors = new Dictionary<string, (long[] shape, DType dtype, byte[] data)>();
+
+            void AddTensor(string name, long[] shape, float fill = 0.05f)
+            {
+                long total = 1;
+                foreach (var s in shape) total *= s;
+                var floats = new float[total];
+                for (int i = 0; i < total; i++) floats[i] = fill * MathF.Sin(i + 1);
+                var bytes = new byte[total * 4];
+                Buffer.BlockCopy(floats, 0, bytes, 0, bytes.Length);
+                tensors[name] = (shape, DType.Float32, bytes);
+            }
+
+            AddTensor("token_embd.weight", [hiddenDim, vocabSize]);
+            AddTensor("output_norm.weight", [hiddenDim]);
+            AddTensor("output.weight", [hiddenDim, vocabSize]);
+
+            for (int i = 0; i < numLayers; i++)
+            {
+                AddTensor($"blk.{i}.attn_norm.weight", [hiddenDim]);
+                AddTensor($"blk.{i}.attn_q.weight", [hiddenDim, numHeads * headDim]);
+                AddTensor($"blk.{i}.attn_k.weight", [hiddenDim, numHeads * headDim]);
+                AddTensor($"blk.{i}.attn_v.weight", [hiddenDim, numHeads * headDim]);
+                AddTensor($"blk.{i}.attn_output.weight", [numHeads * headDim, hiddenDim]);
+                AddTensor($"blk.{i}.ffn_norm.weight", [hiddenDim]);
+                AddTensor($"blk.{i}.ffn_gate.weight", [hiddenDim, interDim]);
+                AddTensor($"blk.{i}.ffn_up.weight", [hiddenDim, interDim]);
+                AddTensor($"blk.{i}.ffn_down.weight", [interDim, hiddenDim]);
+            }
+
+            var metadata = new Dictionary<string, object>
+            {
+                ["general.architecture"] = "diffusiongemma"
+            };
+
+            WriteGgufFile(path, metadata, tensors);
+
+            using var model = GgufModel.Open(path);
+            var forwardPass = new DiffusionGemmaForwardPass(model, config);
+            Assert.Equal(vocabSize, forwardPass.VocabSize);
+            Assert.Equal(hiddenDim, forwardPass.HiddenDim);
+
+            var pipeline = new DiffusionGemmaPipeline(forwardPass, config, seed: 1234);
+
+            int[] prompt = [2, 5];
+            var generatedTokens = pipeline.Generate(prompt, maxBlocks: 2);
+
+            Assert.Equal(canvasLen * 2, generatedTokens.Count);
+            foreach (var tok in generatedTokens)
+            {
+                Assert.InRange(tok, 0, vocabSize - 1);
+            }
+        }
+        finally
+        {
+            try { if (File.Exists(path)) File.Delete(path); } catch { }
+        }
+    }
+
+    private static void WriteGgufFile(
+        string path,
+        Dictionary<string, object> metadata,
+        Dictionary<string, (long[] shape, DType dtype, byte[] data)> tensors)
+    {
+        using var stream = File.Create(path);
+        using var writer = new BinaryWriter(stream);
+
+        // Header: Magic "GGUF" (0x46554747)
+        writer.Write((byte)'G');
+        writer.Write((byte)'G');
+        writer.Write((byte)'U');
+        writer.Write((byte)'F');
+        writer.Write((uint)3); // Version 3
+        writer.Write((ulong)tensors.Count);
+        writer.Write((ulong)metadata.Count);
+
+        // Write metadata
+        foreach (var (key, value) in metadata)
+        {
+            WriteGgufString(writer, key);
+            WriteGgufValue(writer, value);
+        }
+
+        long runningOffset = 0;
+        var tensorOffsets = new Dictionary<string, ulong>();
+        foreach (var (name, (shape, dtype, data)) in tensors)
+        {
+            if (runningOffset % 32 != 0) runningOffset += (32 - (runningOffset % 32));
+            tensorOffsets[name] = (ulong)runningOffset;
+            runningOffset += data.Length;
+        }
+
+        foreach (var (name, (shape, dtype, data)) in tensors)
+        {
+            WriteGgufString(writer, name);
+            writer.Write((uint)shape.Length);
+            for (int d = 0; d < shape.Length; d++)
+            {
+                writer.Write((ulong)shape[d]);
+            }
+            writer.Write((uint)dtype);
+            writer.Write(tensorOffsets[name]);
+        }
+
+        long currentPos = stream.Position;
+        int pad = (int)((32 - (currentPos % 32)) % 32);
+        for (int i = 0; i < pad; i++) writer.Write((byte)0);
+
+        long dataBase = stream.Position;
+        foreach (var (name, (shape, dtype, data)) in tensors)
+        {
+            long targetPos = dataBase + (long)tensorOffsets[name];
+            while (stream.Position < targetPos) writer.Write((byte)0);
+            writer.Write(data);
+        }
+    }
+
+    private static void WriteGgufString(BinaryWriter writer, string s)
+    {
+        byte[] utf8 = System.Text.Encoding.UTF8.GetBytes(s);
+        writer.Write((ulong)utf8.Length);
+        writer.Write(utf8);
+    }
+
+    private static void WriteGgufValue(BinaryWriter writer, object value)
+    {
+        switch (value)
+        {
+            case uint u32:
+                writer.Write((uint)4);
+                writer.Write(u32);
+                break;
+            case int i32:
+                writer.Write((uint)5);
+                writer.Write(i32);
+                break;
+            case float f32:
+                writer.Write((uint)6);
+                writer.Write(f32);
+                break;
+            case bool b:
+                writer.Write((uint)7);
+                writer.Write((byte)(b ? 1 : 0));
+                break;
+            case string s:
+                writer.Write((uint)8);
+                WriteGgufString(writer, s);
+                break;
+            case ulong u64:
+                writer.Write((uint)10);
+                writer.Write(u64);
+                break;
+            case object[] arr:
+                writer.Write((uint)9);
+                writer.Write((uint)5);
+                writer.Write((ulong)arr.Length);
+                foreach (var item in arr)
+                {
+                    writer.Write(Convert.ToInt32(item));
+                }
+                break;
+            default:
+                throw new NotSupportedException($"Unsupported metadata type: {value.GetType()}");
+        }
     }
 }
