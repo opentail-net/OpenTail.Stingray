@@ -43,6 +43,8 @@ app.Configure(config =>
         .WithDescription("Build a mixed-precision GGUF by copying a base checkpoint and taking selected tensors (regex) from a donor checkpoint; verifies the result byte-for-byte");
     config.AddCommand<StaticPlanCommand>("plan")
         .WithDescription("Read-only GGUF compatibility, hardware availability, and placement plan report");
+    config.AddCommand<CalibrateCommand>("calibrate")
+        .WithDescription("Time the expert kernels (CPU, copy, GPU) on this machine and print where expert work should run");
     config.AddCommand<InspectCommand>("inspect")
         .WithDescription("Read-only GGUF identity, compatibility, and capability report without placement planning");
     config.AddCommand<CapabilitiesCommand>("capabilities")

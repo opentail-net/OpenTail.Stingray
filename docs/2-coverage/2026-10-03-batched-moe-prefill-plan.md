@@ -196,6 +196,24 @@ For layers whose experts are not resident: upload only the experts the chunk use
 ### Phase 5: dispatcher (a measured strategy table, not a device threshold)
 Choose among: CPU full prefill (Phase 1), host-routed hybrid (Phase 2), GPU-resident grouped MoE (Phase 3), GPU-streamed experts (Phase 4). The crossover depends on far more than the device: llama.cpp users report different `GGML_OP_OFFLOAD_MIN_BATCH` optima for Q4_K_M and Q8_0 on the same laptop (reported upstream; not verifiable from this checkout), and our own CUDA op-offload comments show a default of 64 against a measured benefit from about 120 tokens, TensorSharp uses 128, llama.cpp 32. So the calibration key is: model fingerprint, quantisation, backend/device, CPU ISA, layer placement, expert residency, KV configuration, and a prompt-length bucket. Store measured thresholds per key (model home), with conservative defaults when no entry exists, and an override `STINGRAY_PREFILL_MOE=cpu|gpu|auto`. Use a small in-process calibration of a fixed MoE chunk on both devices only to seed a missing entry.
 
+### Phase 5 status: measured chooser built (2026-10-04)
+
+`stingray calibrate` (`Engine/Calibration/ExpertCalibration.cs`, `Cli/CalibrateCommand.cs`) times the real kernels on this machine for Q4_K and Q6_K expert matrices (1024x2048): CPU matmul at 1 row (decode) and 93 rows (OLMoE's average per expert), host-to-device copy, GPU batched matmul on resident weights, and the CPU matmul and copy **at the same time**. It writes JSON to `<model home>/calibration/<gpu>_<threads>t.json` (a profile from another schema version is ignored) and applies explicit rules: cold experts at decode go to the CPU when its weight consumption exceeds 2x the overlapped copy rate (FreeToken's rule); resident-weight prefill goes to the GPU only at 1.25x the CPU's rate; streamed prefill compares copy + GPU time with CPU time. Rules are unit-tested with synthetic numbers (`ExpertCalibrationTests`).
+
+Result on this machine (Ryzen 5700G + integrated Radeon, 8 workers; iGPU numbers only, rule 13):
+
+| | Q4_K | Q6_K |
+|---|---:|---:|
+| CPU decode, weights consumed | 31-32 GB/s | 37-40 GB/s |
+| CPU prefill (93 rows) | 324-338 GFLOP/s | 503-508 GFLOP/s |
+| Host-to-device copy, alone / with CPU running | 4.7 / 2.0-2.2 GB/s | 4.3 / 2.1-2.2 GB/s |
+| GPU matmul, resident weights (16 rows per dispatch) | 308-315 GFLOP/s | 221-224 GFLOP/s |
+| CPU rate kept while copying | 91-92% | 92-93% |
+
+Verdict: CPU for cold decode experts (about 15-19x the copy rate), CPU for resident prefill (GPU 0.97x / 0.44x of the CPU), CPU for streamed prefill. This matches the end-to-end matrix above (CPU-only is the fastest configuration here) from a 20-second probe instead of a full model run. The copy path is slow in absolute terms (4.7 GB/s alone, halved when the CPU runs), so copying experts is a poor trade on shared-memory hardware.
+
+Not done: no engine code reads the profile yet, because the engine has no batched GPU MoE prefill (Phase 3) or streamed prefill (Phase 4) to choose; the decode-side consumer is Phase 6. The calibration is infrastructure for those. A discrete GPU is expected to flip the decode and streamed-prefill verdicts; that is unmeasured here.
+
 ### Phase 6 (new, discrete-GPU only): decode miss split and device-side cache decisions
 From FreeToken: split a decode step's expert misses between PCIe fetch and CPU compute by the overlapped bandwidth ratio, and move the slot-cache lookup and copy planning onto the device so decode needs no per-layer host round trip (and can be captured in a graph). Not measurable on the integrated GPU (fetching and CPU compute share the same DRAM); needs a discrete GPU, and CUDA code is deferred like the rest of the CUDA work.
 
