@@ -6,6 +6,7 @@ namespace OpenTail.Stingray.Tests.Server.Fast;
 /// coverage elsewhere; these tests protect the cross-protocol wire contracts that must remain
 /// true while server configuration and planning work evolves.
 /// </summary>
+[Collection("EncoderEnv")] // shares STINGRAY_EMBEDDING_MODEL with EmbeddingEndpointTests
 public sealed class CompatibilityContractTests : IDisposable
 {
     private readonly List<WebApplicationFactory<Program>> _factories = new();
@@ -60,10 +61,18 @@ public sealed class CompatibilityContractTests : IDisposable
         Assert.True(api.GetProperty("anthropic_messages").GetBoolean());
         Assert.True(api.GetProperty("open_ai_models").GetBoolean());
         Assert.False(api.GetProperty("session_lifecycle").GetBoolean());
+        Assert.True(api.GetProperty("open_ai_embeddings").GetBoolean());
+        Assert.True(api.GetProperty("ollama_embed").GetBoolean());
+        Assert.True(api.GetProperty("open_ai_rerank").GetBoolean());
 
         var runtime = root.GetProperty("runtime");
         Assert.True(runtime.GetProperty("tool_grammar").GetProperty("available").GetBoolean());
         Assert.False(runtime.GetProperty("image_input").GetBoolean());
+        // The routes are mapped, but with no default checkpoint configured they cannot answer; say why.
+        var embeddings = runtime.GetProperty("embeddings");
+        Assert.False(embeddings.GetProperty("available").GetBoolean());
+        Assert.Contains("STINGRAY_EMBEDDING_MODEL", embeddings.GetProperty("detail").GetString(), StringComparison.Ordinal);
+        Assert.Contains("STINGRAY_RERANK_MODEL", runtime.GetProperty("rerank").GetProperty("detail").GetString(), StringComparison.Ordinal);
         var restart = runtime.GetProperty("session_restart_continuation");
         Assert.False(restart.GetProperty("available").GetBoolean());
         // Pin the DISTINCTION, not the prose: the flag reports restart continuation, which is

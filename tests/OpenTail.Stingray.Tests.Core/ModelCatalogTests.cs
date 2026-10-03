@@ -35,6 +35,8 @@ public sealed class ModelCatalogTests
             foreach (var f in e.Files)
             {
                 Assert.Matches("^[0-9a-f]{64}$", f.Sha256);
+                Assert.Matches("^[0-9a-f]{40}$", f.Revision); // Pinned to a commit, never "main".
+                Assert.Contains("/resolve/" + f.Revision + "/", f.Url, StringComparison.Ordinal);
                 Assert.True(f.Size > 0);
                 Assert.DoesNotContain("..", f.RepoPath, StringComparison.Ordinal);
             }
@@ -54,7 +56,7 @@ public sealed class ModelCatalogTests
     {
         byte[] a = Encoding.UTF8.GetBytes(string.Concat(Enumerable.Repeat("model weights ", 5000)));
         byte[] b = Encoding.UTF8.GetBytes("{\"config\":true}");
-        using var server = new StubServer(new() { ["/o/r/resolve/main/dir/a.bin"] = a, ["/o/r/resolve/main/b.json"] = b });
+        using var server = new StubServer(new() { ["/o/r/resolve/" + Rev + "/dir/a.bin"] = a, ["/o/r/resolve/" + Rev + "/b.json"] = b });
         var entry = MakeEntry(server, a, b);
 
         string root = Path.Combine(Path.GetTempPath(), "stingray-catalog-test-" + Guid.NewGuid().ToString("N"));
@@ -91,7 +93,7 @@ public sealed class ModelCatalogTests
     {
         byte[] a = Encoding.UTF8.GetBytes("the real file");
         byte[] served = Encoding.UTF8.GetBytes("a tampered one");
-        using var server = new StubServer(new() { ["/o/r/resolve/main/dir/a.bin"] = served });
+        using var server = new StubServer(new() { ["/o/r/resolve/" + Rev + "/dir/a.bin"] = served });
         // The catalog expects a's hash; the server hands out something else of the listed size.
         var entry = MakeEntry(server, a, [1]) with { Files = [StubFile(server, "dir/a.bin", a) with { Size = served.Length }] };
 
@@ -105,6 +107,64 @@ public sealed class ModelCatalogTests
             Assert.False(File.Exists(Path.Combine(root, "a.bin")));
             Assert.False(File.Exists(Path.Combine(root, "a.bin" + ModelHome.PartialSuffix)));
             Assert.Equal(InstallState.Missing, home.StateOf(entry));
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task StaleRevisionFailsAndInstallsNothing()
+    {
+        byte[] a = Encoding.UTF8.GetBytes("pinned content");
+        // The server only has the file at a different commit; the entry pins another one.
+        using var server = new StubServer(new() { ["/o/r/resolve/ffffffffffffffffffffffffffffffffffffffff/dir/a.bin"] = a });
+        var entry = MakeEntry(server, a, [1]) with { Files = [StubFile(server, "dir/a.bin", a)] };
+
+        string root = Path.Combine(Path.GetTempPath(), "stingray-catalog-test-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var home = new ModelHome(root);
+            using var http = new HttpClient();
+            await Assert.ThrowsAsync<HttpRequestException>(() =>
+                ModelInstaller.EnsureAsync(entry, home, http, null, null, TestContext.Current.CancellationToken, offline: false));
+            Assert.False(File.Exists(Path.Combine(root, "a.bin")));
+            Assert.Equal(InstallState.Missing, home.StateOf(entry));
+            Assert.Contains("/resolve/" + Rev + "/", server.RangesSeen.Single().Path, StringComparison.Ordinal);
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task OfflineModeNeverTouchesTheNetworkButStillVerifiesLocalFiles()
+    {
+        byte[] a = Encoding.UTF8.GetBytes("local model bytes");
+        using var server = new StubServer(new() { ["/o/r/resolve/" + Rev + "/dir/a.bin"] = a });
+        var entry = MakeEntry(server, a, [1]) with { Files = [StubFile(server, "dir/a.bin", a)] };
+
+        string root = Path.Combine(Path.GetTempPath(), "stingray-catalog-test-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var home = new ModelHome(root);
+            using var http = new HttpClient();
+            await Assert.ThrowsAsync<ModelOfflineException>(() =>
+                ModelInstaller.EnsureAsync(entry, home, http, null, null, TestContext.Current.CancellationToken, offline: true));
+            Assert.Empty(server.RangesSeen);
+
+            // A hand-placed correct file (the "explicit local model" case) is accepted offline.
+            File.WriteAllBytes(Path.Combine(root, "a.bin"), a);
+            string main = await ModelInstaller.EnsureAsync(entry, home, http, null, null, TestContext.Current.CancellationToken, offline: true);
+            Assert.Equal(Path.Combine(root, "a.bin"), main);
+            Assert.Empty(server.RangesSeen);
+
+            // A same-size but different file is rejected, offline or not.
+            File.WriteAllBytes(Path.Combine(root, "a.bin"), Encoding.UTF8.GetBytes("LOCAL MODEL BYTES"));
+            await Assert.ThrowsAsync<ModelHashMismatchException>(() =>
+                ModelInstaller.EnsureAsync(entry, home, http, null, null, TestContext.Current.CancellationToken, offline: true));
         }
         finally
         {
@@ -129,6 +189,8 @@ public sealed class ModelCatalogTests
         }
     }
 
+    private const string Rev = "0123456789abcdef0123456789abcdef01234567";
+
     private static CatalogEntry MakeEntry(StubServer server, byte[] a, byte[] b) => new(
         Id: "test", Task: "chat", Why: "test",
         Files:
@@ -140,7 +202,7 @@ public sealed class ModelCatalogTests
 
     /// <summary>A catalog file whose URL points at the local stub server.</summary>
     private static CatalogFile StubFile(StubServer server, string path, byte[] content) =>
-        new CatalogFile("o/r", path, Convert.ToHexStringLower(SHA256.HashData(content)), content.Length) { BaseUrl = server.BaseUrl };
+        new CatalogFile("o/r", Rev, path, Convert.ToHexStringLower(SHA256.HashData(content)), content.Length) { BaseUrl = server.BaseUrl };
 
     /// <summary>Minimal HTTP/1.1 file server with Range support, on a loopback port.</summary>
     private sealed class StubServer : IDisposable

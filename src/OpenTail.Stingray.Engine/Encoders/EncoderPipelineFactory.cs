@@ -22,7 +22,7 @@ public static class EncoderPipelineFactory
         "bert", "electra", "roberta", "xlm-roberta", "camembert", "mpnet", "nomic_bert",
     };
 
-    private static readonly ConcurrentDictionary<string, Lazy<IEmbeddingPipeline>> s_embedding = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly ConcurrentDictionary<string, Lazy<ResidentEmbedder>> s_embedding = new(StringComparer.OrdinalIgnoreCase);
     private static readonly ConcurrentDictionary<string, Lazy<IRerankerPipeline>> s_rerank = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>True when <paramref name="path"/> is a directory holding an HF encoder checkpoint.</summary>
@@ -70,9 +70,23 @@ public static class EncoderPipelineFactory
             "(*ForSequenceClassification) or a GGUF embedding model (bi-encoder cosine).", model);
     }
 
-    /// <summary>Process-lifetime shared embedding pipeline per model path (for the server).</summary>
-    public static IEmbeddingPipeline GetSharedEmbedding(string model) =>
-        s_embedding.GetOrAdd(Path.GetFullPath(model), p => new Lazy<IEmbeddingPipeline>(() => CreateEmbedding(p))).Value;
+    /// <summary>Resident embedder per model path (for the server): loaded on first use, kept until unloaded.</summary>
+    public static ResidentEmbedder GetResidentEmbedding(string model) =>
+        s_embedding.GetOrAdd(Path.GetFullPath(model), p => new Lazy<ResidentEmbedder>(() => new ResidentEmbedder(CreateEmbedding(p)))).Value;
+
+    /// <summary>Shared embedding pipeline per model path. Prefer <see cref="GetResidentEmbedding"/>, which serialises callers.</summary>
+    public static IEmbeddingPipeline GetSharedEmbedding(string model) => GetResidentEmbedding(model).Pipeline;
+
+    /// <summary>
+    /// Unloads the resident embedder for <paramref name="model"/>, waiting for a call in progress. A later request
+    /// loads it again. Returns false when it was not loaded.
+    /// </summary>
+    public static bool UnloadEmbedding(string model)
+    {
+        if (!s_embedding.TryRemove(Path.GetFullPath(model), out var lazy)) return false;
+        if (lazy.IsValueCreated) lazy.Value.Dispose();
+        return true;
+    }
 
     /// <summary>Process-lifetime shared reranker per model path (for the server).</summary>
     public static IRerankerPipeline GetSharedReranker(string model) =>

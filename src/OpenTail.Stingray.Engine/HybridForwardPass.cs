@@ -395,6 +395,11 @@ public sealed unsafe class HybridForwardPass : IForwardPass
         if (_isMoE && _nGpuLayers > 0)
         {
             int totalExperts = hp.NumExperts * _nGpuLayers;
+            // STINGRAY_MOE_SLOTS forces a small cache so eviction/CPU-fallback paths run on models that would
+            // otherwise fit (used by the oversized-MoE parity check); an explicit constructor argument wins.
+            if (expertSlotCapacity <= 0
+                && int.TryParse(Environment.GetEnvironmentVariable("STINGRAY_MOE_SLOTS"), out int envSlots) && envSlots > 0)
+                expertSlotCapacity = envSlots;
             int capacity = expertSlotCapacity > 0
                 ? Math.Min(expertSlotCapacity, totalExperts)
                 : totalExperts;
@@ -727,8 +732,18 @@ public sealed unsafe class HybridForwardPass : IForwardPass
             //   • L2 QK-norm (Llama-4):        norm AFTER  RoPE (RoPE layers only)
             if (_hasQkNorm && !_hp.UseL2QkNorm)
             {
-                _gpu.HeadNorm(_gpuQ, _gpuQNorm![i], (uint)_numHeads, (uint)_headDim, _hp.RmsNormEps, _hp.IsPerChannelQkNorm);
-                _gpu.HeadNorm(_gpuK, _gpuKNorm![i], (uint)_numKvHeads, (uint)_headDim, _hp.RmsNormEps, _hp.IsPerChannelQkNorm);
+                // Per-channel weight (OLMoE): the RMS spans ALL heads (one row of numHeads*headDim), not each head
+                // separately; same as GpuForwardPass.QkNorm and the CPU ForwardPass (OlmoeGreedyParityTests).
+                if (_hp.IsPerChannelQkNorm)
+                {
+                    _gpu.HeadNorm(_gpuQ, _gpuQNorm![i], 1u, (uint)(_numHeads * _headDim), _hp.RmsNormEps, perChannelWeight: true);
+                    _gpu.HeadNorm(_gpuK, _gpuKNorm![i], 1u, (uint)(_numKvHeads * _headDim), _hp.RmsNormEps, perChannelWeight: true);
+                }
+                else
+                {
+                    _gpu.HeadNorm(_gpuQ, _gpuQNorm![i], (uint)_numHeads, (uint)_headDim, _hp.RmsNormEps, perChannelWeight: false);
+                    _gpu.HeadNorm(_gpuK, _gpuKNorm![i], (uint)_numKvHeads, (uint)_headDim, _hp.RmsNormEps, perChannelWeight: false);
+                }
                 _gpu.RecordBarrier();
             }
 
@@ -874,6 +889,23 @@ public sealed unsafe class HybridForwardPass : IForwardPass
             || (actualLayer + 1) % _hp.NoRopeLayerStep != 0;
         if (_hp.RopeOnlySwaLayers) useRoPE = useRoPE && isSwa;
 
+        // QK-norm ordering (issue #157; same as ForwardPass and this class's GPU layers): weighted QK-norm
+        // (Qwen3, OLMoE, ...) goes BEFORE RoPE because RoPE does not commute with the per-channel weight;
+        // L2 QK-norm (Llama-4) goes AFTER RoPE, on RoPE layers only.
+        if (_hasQkNorm && !_hp.UseL2QkNorm)
+        {
+            if (_hp.IsPerChannelQkNorm)
+            {
+                PerChannelRmsNorm(_cpuQ, _cpuQNorm[ci], _numHeads,   _headDim, _hp.RmsNormEps);
+                PerChannelRmsNorm(_cpuK, _cpuKNorm[ci], _numKvHeads, _headDim, _hp.RmsNormEps);
+            }
+            else
+            {
+                PerHeadRmsNorm(_cpuQ, _cpuQNorm[ci], _numHeads,   _headDim, _hp.RmsNormEps);
+                PerHeadRmsNorm(_cpuK, _cpuKNorm[ci], _numKvHeads, _headDim, _hp.RmsNormEps);
+            }
+        }
+
         if (useRoPE)
         {
             var cos = _ropeCosTable + (long)position * _ropeHalfDim;
@@ -890,27 +922,10 @@ public sealed unsafe class HybridForwardPass : IForwardPass
             }
         }
 
-        // QK-norm: for L2 (Llama-4), only on RoPE layers per llama.cpp
-        if (_hasQkNorm && (_hp.UseL2QkNorm ? useRoPE : true))
+        if (_hasQkNorm && _hp.UseL2QkNorm && useRoPE)
         {
-            if (_hp.UseL2QkNorm)
-            {
-                PerHeadPureRmsNorm(_cpuQ, _numHeads, _headDim, _hp.RmsNormEps);
-                PerHeadPureRmsNorm(_cpuK, _numKvHeads, _headDim, _hp.RmsNormEps);
-            }
-            else
-            {
-                if (_hp.IsPerChannelQkNorm)
-                {
-                    PerChannelRmsNorm(_cpuQ, _cpuQNorm[ci], _numHeads,   _headDim, _hp.RmsNormEps);
-                    PerChannelRmsNorm(_cpuK, _cpuKNorm[ci], _numKvHeads, _headDim, _hp.RmsNormEps);
-                }
-                else
-                {
-                    PerHeadRmsNorm(_cpuQ, _cpuQNorm[ci], _numHeads,   _headDim, _hp.RmsNormEps);
-                    PerHeadRmsNorm(_cpuK, _cpuKNorm[ci], _numKvHeads, _headDim, _hp.RmsNormEps);
-                }
-            }
+            PerHeadPureRmsNorm(_cpuQ, _numHeads, _headDim, _hp.RmsNormEps);
+            PerHeadPureRmsNorm(_cpuK, _numKvHeads, _headDim, _hp.RmsNormEps);
         }
 
         // KV cache append (ci = CPU layer index)
@@ -1770,11 +1785,9 @@ public sealed unsafe class HybridForwardPass : IForwardPass
             SimdKernels.RmsNorm(data + h * headDim, data + h * headDim, weight, headDim, eps);
     }
 
-    private static void PerChannelRmsNorm(float* data, float* weight, int numHeads, int headDim, float eps)
-    {
-        for (int h = 0; h < numHeads; h++)
-            SimdKernels.RmsNorm(data + h * headDim, data + h * headDim, weight + h * headDim, headDim, eps);
-    }
+    /// <summary>Whole-vector RMS over all heads with a per-channel weight (OLMoE); see ForwardPass.PerChannelRmsNorm.</summary>
+    private static void PerChannelRmsNorm(float* data, float* weight, int numHeads, int headDim, float eps) =>
+        SimdKernels.RmsNorm(data, data, weight, numHeads * headDim, eps);
 
     private static void PerHeadPureRmsNorm(float* data, int numHeads, int headDim, float eps)
     {

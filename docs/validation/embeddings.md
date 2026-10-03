@@ -47,12 +47,32 @@ vocab turned most words into `[UNK]`. `BertWordPieceTokenizer.FromGgufVocab` inv
 - OpenAI error shape `{"error":{"message","type":"invalid_request_error"}}` on `/v1/embeddings`; Ollama's `{"error":"..."}`
   on `/api/embed`; 404 when no encoder is configured (never synthetic vectors).
 
+## HTTP against a real encoder (2026-10-03)
+
+`EmbeddingEndpointTests.RealEncoder_FloatBase64AndBatchAgree_OverHttp` (Server.Fast) runs a real MiniLM Q8_0 GGUF through the
+host: a two-text batch gives 384-d unit-norm vectors with correct indices and `usage`; the single call with
+`encoding_format=base64` decodes to the same floats (5 decimal places); `/api/embed` with `dimensions=64` returns a
+re-normalised 64-d prefix. It is skipped, visibly, when no checkpoint is found. It ran on
+`F:\_models\all-MiniLM-L6-v2-Q8_0.gguf`, SHA-256 `263215c3cadd6e16740741a7624ab4cbb6c8e777688bd5331ecfbf5681c2f8ed`:
+the `second-state/All-MiniLM-L6-v2-Embedding-GGUF` file TensorSharp pins, a different conversion from the `leliuga` file
+above, so the same encoder code now has two independent MiniLM conversions behind it (cosine against llama.cpp was
+measured on the leliuga file only). Also new: `encoding_format` other than `float`/`base64` and `dimensions <= 0` are 400s.
+
+## Runtime (2026-10-03)
+
+`ResidentEmbedder` (Engine) serialises callers on one loaded encoder in arrival order, without holding a thread while
+waiting; the server calls it instead of locking. `ResidentEmbedderTests` (5): never two calls inside the encoder, each
+caller gets its own result, a queued caller cancels at once while the running call finishes and the survivor completes
+(the cancelled request never reaches the encoder), unload waits for the running call then frees the model and later
+calls are rejected, and on real MiniLM Q8_0 24 interleaved concurrent requests are bit-identical to single calls,
+a batch agrees with the single calls (dot product within 1e-4), and unload then reload gives the same vector.
+
 ## Not validated
 
 - Batch-versus-single and repeated-input determinism: tested only for MiniLM Q8_0 (`MiniLmQ8Gguf_BatchEqualsSingle_...`).
-- `/v1/embeddings` and `/api/embed` against a real encoder over HTTP (only validation and 404 paths are covered).
-- `encoding_format=base64`, `dimensions` (Matryoshka truncation) over HTTP; Ollama `truncate`, `options`, `keep_alive`.
-- Concurrency, bounded batch size, cancellation, model unload (the server serialises calls with a lock).
+- Arctic Embed over HTTP (only MiniLM was run through the endpoints).
+- Ollama `truncate`, `options`, `keep_alive`; integer token-array `input` (TensorSharp accepts it; we reject it).
+- Coalescing of waiting requests into one encoder call, and cancelling a call that is already inside the encoder.
 - GGUF `nomic-bert` and other non-`bert` encoder architectures; long inputs near the 8192-token limit.
 - Speed: the encoder dequantises weights to F32 at load (a Q8_0 model uses about 4x its file size in RAM).
 - GPU backends.

@@ -91,9 +91,22 @@ public sealed class ModelHashMismatchException(string path, string expected, str
     public string FilePath { get; } = path;
 }
 
+/// <summary>Thrown when a catalog file has to be downloaded but offline mode is on.</summary>
+public sealed class ModelOfflineException(string fileName)
+    : IOException($"{fileName} is not in the model home and offline mode is on (STINGRAY_OFFLINE / HF_HUB_OFFLINE). Run setup without it, or put the file there yourself.")
+{
+}
+
 /// <summary>Installs catalog entries into a <see cref="ModelHome"/>.</summary>
 public static class ModelInstaller
 {
+    /// <summary>True when <c>STINGRAY_OFFLINE</c> or <c>HF_HUB_OFFLINE</c> is set to 1/true: never touch the network.</summary>
+    public static bool OfflineFromEnvironment() =>
+        IsOn("STINGRAY_OFFLINE") || IsOn("HF_HUB_OFFLINE");
+
+    private static bool IsOn(string name) =>
+        Environment.GetEnvironmentVariable(name) is { } v && (v == "1" || v.Equals("true", StringComparison.OrdinalIgnoreCase));
+
     /// <summary>Progress of one file: which file, bytes on disk, total size.</summary>
     public delegate void FileProgress(CatalogFile file, long bytes, long total);
 
@@ -105,10 +118,13 @@ public static class ModelInstaller
     /// once here (cheap next to a download) in case the home points at a hand-filled folder.
     /// </summary>
     /// <param name="onFileStart">Called before each file with whether it is already present.</param>
+    /// <param name="offline">Null reads <see cref="OfflineFromEnvironment"/>. When on, files already present are still verified, and a missing one throws <see cref="ModelOfflineException"/> instead of downloading.</param>
     public static async Task<string> EnsureAsync(
         CatalogEntry entry, ModelHome home, HttpClient http,
-        Action<CatalogFile, bool>? onFileStart, FileProgress? progress, CancellationToken ct)
+        Action<CatalogFile, bool>? onFileStart, FileProgress? progress, CancellationToken ct,
+        bool? offline = null)
     {
+        bool isOffline = offline ?? OfflineFromEnvironment();
         Directory.CreateDirectory(home.Root);
         foreach (var file in entry.Files)
         {
@@ -120,6 +136,7 @@ public static class ModelInstaller
                 continue;
             }
 
+            if (isOffline) throw new ModelOfflineException(file.FileName);
             onFileStart?.Invoke(file, false);
             string part = dest + ModelHome.PartialSuffix;
             await ModelDownloader.DownloadAsync(http, file.Url, part, file.Size,

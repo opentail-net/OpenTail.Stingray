@@ -16,26 +16,38 @@ public static class OpenAiEmbeddingEndpoints
             var result = await RunAsync(ctx, req, texts);
             if (result is null) return;
 
-            var responseObj = new EmbeddingApiResponse
+            var usage = new EmbeddingUsageResponse
             {
-                Object = "list",
-                Model = result.Model,
-                Data = result.Data.Select(d => new EmbeddingItemResponse
-                {
-                    Object = "embedding",
-                    Index = d.Index,
-                    Embedding = d.Vector
-                }).ToList(),
-                Usage = new EmbeddingUsageResponse
-                {
-                    PromptTokens = result.PromptTokens,
-                    TotalTokens = result.TotalTokens
-                }
+                PromptTokens = result.PromptTokens,
+                TotalTokens = result.TotalTokens
             };
+            object responseObj = req.EncodingFormat == "base64"
+                ? new EmbeddingApiBase64Response
+                {
+                    Model = result.Model,
+                    Data = result.Data.Select(d => new EmbeddingItemBase64Response
+                    {
+                        Index = d.Index,
+                        Embedding = ToBase64(d.Vector)
+                    }).ToList(),
+                    Usage = usage
+                }
+                : new EmbeddingApiResponse
+                {
+                    Object = "list",
+                    Model = result.Model,
+                    Data = result.Data.Select(d => new EmbeddingItemResponse
+                    {
+                        Object = "embedding",
+                        Index = d.Index,
+                        Embedding = d.Vector
+                    }).ToList(),
+                    Usage = usage
+                };
 
             ctx.Response.StatusCode = 200;
             ctx.Response.ContentType = "application/json";
-            await JsonSerializer.SerializeAsync(ctx.Response.Body, responseObj, cancellationToken: ctx.RequestAborted);
+            await JsonSerializer.SerializeAsync(ctx.Response.Body, responseObj, responseObj.GetType(), cancellationToken: ctx.RequestAborted);
         });
 
         // Ollama: POST /api/embed {"model","input": string | string[]} -> {"model","embeddings":[[...]],...}
@@ -100,6 +112,15 @@ public static class OpenAiEmbeddingEndpoints
         return true;
     }
 
+    /// <summary>Little-endian float32 bytes, base64: OpenAI's <c>encoding_format=base64</c>.</summary>
+    public static string ToBase64(float[] vector)
+    {
+        byte[] bytes = new byte[vector.Length * sizeof(float)];
+        for (int i = 0; i < vector.Length; i++)
+            System.Buffers.Binary.BinaryPrimitives.WriteSingleLittleEndian(bytes.AsSpan(i * sizeof(float)), vector[i]);
+        return Convert.ToBase64String(bytes);
+    }
+
     private static async Task<(EmbeddingApiRequest Req, List<string> Texts)?> ReadRequestAsync(HttpContext ctx, bool openAiShape)
     {
         EmbeddingApiRequest? req;
@@ -126,6 +147,16 @@ public static class OpenAiEmbeddingEndpoints
             await WriteErrorAsync(ctx, 400, error, openAiShape);
             return null;
         }
+        if (req.EncodingFormat is not (null or "float" or "base64"))
+        {
+            await WriteErrorAsync(ctx, 400, "'encoding_format' must be 'float' or 'base64'.", openAiShape);
+            return null;
+        }
+        if (req.Dimensions is <= 0)
+        {
+            await WriteErrorAsync(ctx, 400, "'dimensions' must be a positive integer.", openAiShape);
+            return null;
+        }
         return (req, texts);
     }
 
@@ -140,7 +171,7 @@ public static class OpenAiEmbeddingEndpoints
             return null;
         }
 
-        var engine = Engine.Encoders.EncoderPipelineFactory.GetSharedEmbedding(modelPath);
+        var embedder = Engine.Encoders.EncoderPipelineFactory.GetResidentEmbedding(modelPath);
 
         var embedReq = new EmbeddingRequest
         {
@@ -151,7 +182,15 @@ public static class OpenAiEmbeddingEndpoints
             EncodingFormat = req.EncodingFormat ?? "float"
         };
 
-        lock (engine) return engine.Embed(embedReq); // the GGUF forward pass is not re-entrant
+        try
+        {
+            // Calls queue in arrival order (the forward pass is not re-entrant); a client that disconnects while queued leaves it.
+            return await embedder.EmbedAsync(embedReq, ctx.RequestAborted);
+        }
+        catch (OperationCanceledException) when (ctx.RequestAborted.IsCancellationRequested)
+        {
+            return null; // nobody is listening
+        }
     }
 
     private static async Task WriteErrorAsync(HttpContext ctx, int status, string message, bool openAiShape)
@@ -212,6 +251,33 @@ public sealed record EmbeddingItemResponse
 
     [JsonPropertyName("embedding")]
     public float[] Embedding { get; init; } = [];
+}
+
+public sealed record EmbeddingApiBase64Response
+{
+    [JsonPropertyName("object")]
+    public string Object { get; init; } = "list";
+
+    [JsonPropertyName("model")]
+    public string Model { get; init; } = "";
+
+    [JsonPropertyName("data")]
+    public List<EmbeddingItemBase64Response> Data { get; init; } = [];
+
+    [JsonPropertyName("usage")]
+    public EmbeddingUsageResponse Usage { get; init; } = new();
+}
+
+public sealed record EmbeddingItemBase64Response
+{
+    [JsonPropertyName("object")]
+    public string Object { get; init; } = "embedding";
+
+    [JsonPropertyName("index")]
+    public int Index { get; init; }
+
+    [JsonPropertyName("embedding")]
+    public string Embedding { get; init; } = "";
 }
 
 public sealed record EmbeddingUsageResponse

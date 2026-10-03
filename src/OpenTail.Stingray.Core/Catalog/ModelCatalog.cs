@@ -2,10 +2,11 @@ namespace OpenTail.Stingray.Core.Catalog;
 
 /// <summary>One file of a catalog entry: where it lives on Hugging Face and what it must hash to.</summary>
 /// <param name="Repo">Hugging Face repo id, e.g. <c>Qwen/Qwen2.5-0.5B-Instruct-GGUF</c>.</param>
+/// <param name="Revision">Full 40-character commit the file is pinned to, never a branch name: a floating <c>main</c> can change under a pinned SHA-256.</param>
 /// <param name="RepoPath">Path of the file inside the repo (may contain folders).</param>
 /// <param name="Sha256">Lower-case hex SHA-256 of the file, as the HF tree API reports it for LFS files.</param>
 /// <param name="Size">Exact size in bytes.</param>
-public sealed record CatalogFile(string Repo, string RepoPath, string Sha256, long Size)
+public sealed record CatalogFile(string Repo, string Revision, string RepoPath, string Sha256, long Size)
 {
     /// <summary>File name the file is stored under in the model home (the last path segment).</summary>
     public string FileName => RepoPath[(RepoPath.LastIndexOf('/') + 1)..];
@@ -13,8 +14,8 @@ public sealed record CatalogFile(string Repo, string RepoPath, string Sha256, lo
     /// <summary>Server root; only tests point it elsewhere.</summary>
     internal string BaseUrl { get; init; } = "https://huggingface.co";
 
-    /// <summary>Direct download URL (main branch).</summary>
-    public string Url => $"{BaseUrl}/{Repo}/resolve/main/{RepoPath}?download=true";
+    /// <summary>Direct download URL, at the pinned <see cref="Revision"/>.</summary>
+    public string Url => $"{BaseUrl}/{Repo}/resolve/{Revision}/{RepoPath}?download=true";
 }
 
 /// <summary>
@@ -75,14 +76,15 @@ public static class ModelCatalog
     public static readonly IReadOnlyList<CatalogEntry> Entries =
     [
         // sha256 values: HF tree API lfs.oid (2026-09-28), matching the files the README quick start and
-        // samples/QuickStart ran on.
+        // samples/QuickStart ran on. Revisions: the repo head on 2026-10-03; for each file the X-Linked-ETag (LFS
+        // sha256) and Content-Length served at that commit were re-checked against the values here.
         new(
             Id: "qwen2.5-0.5b",
             Task: "chat",
             Why: "Small and quick; a first chat model that runs on any CPU.",
             Files:
             [
-                new("Qwen/Qwen2.5-0.5B-Instruct-GGUF", "qwen2.5-0.5b-instruct-q4_k_m.gguf",
+                new("Qwen/Qwen2.5-0.5B-Instruct-GGUF", "9217f5db79a29953eb74d5343926648285ec7e67", "qwen2.5-0.5b-instruct-q4_k_m.gguf",
                     "74a4da8c9fdbcd15bd1f6d01d621410d31c6fc00986f5eb687824e7b93d7a9db", 491_400_032),
             ],
             Licence: "Apache-2.0",
@@ -98,10 +100,10 @@ public static class ModelCatalog
             Why: "Fast, clear US English voice.",
             Files:
             [
-                new("rhasspy/piper-voices", "en/en_US/lessac/medium/en_US-lessac-medium.onnx",
+                new("rhasspy/piper-voices", "c10ece1aade47bb51c153c893d14e5bf8e5b7117", "en/en_US/lessac/medium/en_US-lessac-medium.onnx",
                     "5efe09e69902187827af646e1a6e9d269dee769f9877d17b16b1b46eeaaf019f", 63_201_294),
                 // Not an LFS file; hashed from the downloaded file (2026-09-28).
-                new("rhasspy/piper-voices", "en/en_US/lessac/medium/en_US-lessac-medium.onnx.json",
+                new("rhasspy/piper-voices", "c10ece1aade47bb51c153c893d14e5bf8e5b7117", "en/en_US/lessac/medium/en_US-lessac-medium.onnx.json",
                     "efe19c417bed055f2d69908248c6ba650fa135bc868b0e6abb3da181dab690a0", 4_885),
             ],
             Licence: "MIT (code); the voice was trained on the Lessac Blizzard 2013 data, whose own licence applies: "
@@ -118,7 +120,7 @@ public static class ModelCatalog
             Why: "Accurate multilingual transcription at a small size.",
             Files:
             [
-                new("ggerganov/whisper.cpp", "ggml-base.bin",
+                new("ggerganov/whisper.cpp", "5359861c739e955e79d9a303bcbc70fb988958b1", "ggml-base.bin",
                     "60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe", 147_951_465),
             ],
             Licence: "MIT",

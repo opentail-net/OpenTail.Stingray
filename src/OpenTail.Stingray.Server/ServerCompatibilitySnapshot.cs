@@ -62,11 +62,16 @@ public sealed record ServerCompatibilitySnapshot(
                 OpenAiModels: true,
                 Health: true,
                 Metrics: true,
-                SessionLifecycle: sessions?.Runtime is not null),
+                SessionLifecycle: sessions?.Runtime is not null,
+                OpenAiEmbeddings: true,
+                OllamaEmbed: true,
+                OpenAiRerank: true),
             Runtime: new ServerRuntimeCapabilities(
                 ContinuousBatching: continuousBatching,
                 ImageInput: engine.SupportsImageInput,
                 ToolGrammar: toolGrammar,
+                Embeddings: EncoderAvailability(Endpoints.EncoderModelResolver.EmbeddingEnv, "embedding"),
+                Rerank: EncoderAvailability(Endpoints.EncoderModelResolver.RerankEnv, "rerank"),
                 OutputConstraintConfigured: options.OutputConstraintFactory is not null,
                 SessionRestartContinuation: sessionRestart,
                 SessionOperationResultPersistence: sessions?.ColdRuntime is not null
@@ -86,6 +91,17 @@ public sealed record ServerCompatibilitySnapshot(
                 ToolGrammarRequested: options.ToolGrammar,
                 SpecType: options.SpecType.ToString().ToLowerInvariant()));
     }
+
+    /// <summary>
+    /// Whether <c>/v1/embeddings</c> / <c>/v1/rerank</c> can answer: the routes are always mapped, but they only
+    /// work when the environment names a real checkpoint (a request can also name one by path, which this
+    /// diagnostics view cannot know). Reports presence only; it does not load the model.
+    /// </summary>
+    private static ServerFeatureAvailability EncoderAvailability(string envVar, string kind) =>
+        Endpoints.EncoderModelResolver.Resolve(null, envVar) is { } path
+            ? new ServerFeatureAvailability(true, $"Default {kind} model: {Path.GetFileName(path.TrimEnd('/', '\\'))}.")
+            : new ServerFeatureAvailability(false,
+                $"No default {kind} model: set {envVar} to a checkpoint directory or GGUF file, or name one in the request.");
 }
 
 /// <summary>HTTP APIs supplied by <see cref="EndpointRouteBuilderExtensions.MapOpenTailStingray"/>.</summary>
@@ -96,13 +112,18 @@ public sealed record ServerApiSurface(
     bool OpenAiModels,
     bool Health,
     bool Metrics,
-    bool SessionLifecycle);
+    bool SessionLifecycle,
+    bool OpenAiEmbeddings,
+    bool OllamaEmbed,
+    bool OpenAiRerank);
 
 /// <summary>Runtime capabilities relevant to client compatibility and request eligibility.</summary>
 public sealed record ServerRuntimeCapabilities(
     bool ContinuousBatching,
     bool ImageInput,
     ServerFeatureAvailability ToolGrammar,
+    ServerFeatureAvailability Embeddings,
+    ServerFeatureAvailability Rerank,
     bool OutputConstraintConfigured,
     ServerFeatureAvailability SessionRestartContinuation,
     ServerFeatureAvailability SessionOperationResultPersistence);
