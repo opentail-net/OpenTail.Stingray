@@ -154,12 +154,17 @@ a new plan when someone decides to take them on; the wave isn't meant to grow by
 - [x] Add table row
 - [x] 13 unit / pipeline tests passing (`MiniMaxH3Tests.cs`)
 
-### 6. DeepSeek V4 / V4.1 Flash (review, not a new port)
-- Stingray already has alpha code (`DeepSeek4*.cs`, plan
-  [058](058-deepseek-full-lineage-implementation-plan.md)), never run.
-- **Task:** review it against TensorSharp's pure-C# `DeepSeek4CpuExecutor` and llama.cpp
-  `deepseek4.cpp` (local). Add `deepseek41` deltas if TensorSharp shows them. Checkpoints
-  (about 340 GB) don't fit this PC.
-- [ ] Review the existing V4 alpha
-- [ ] Record V4.1 deltas
-- [ ] Update plan 058
+### 6. DeepSeek V4 / V4.1 Flash (V4 review + V4.1 distinct architecture)
+- Stingray has V4 alpha code (`DeepSeek4*.cs`, plan [058](058-deepseek-full-lineage-implementation-plan.md)), never run.
+- **Design:**
+  - V4 Flash (`deepseek4`): 43 layers, hidden 4096, 64 heads, head dim 512, compression ratios 0/4/128, 256+1 MoE (top-6, sqrtsoftplus), x4 mHC, 64x128 indexer top-512, 1 NextN.
+  - V4.1 Flash (`deepseek41`): distinct architecture with 40 layers, hidden 5120, compression ratios 0/1/2, 384+1 MoE (scale 1.5), dual ~196B Engram tables (layers 1 & 14, 4-gram, 99k compressed vocab), 8 index-source layers, candidate top-2048 x block 8, 3 NextN layers, DSpark (layers 37-39).
+- **Weights:** V4 Flash Q2_K ~98.6 GB / 117 GB; V4.1 Flash Q2_K+Q5 ~335.4 GB (due to Engram). Neither fits 64 GB RAM.
+- **Reuse:** Stingray's existing `DeepSeek4ForwardPass`, `DeepSeek4CompressedState`, `DeepSeek4Alpha`.
+- **References:**
+  - V4: llama.cpp `src/models/deepseek4.cpp` (local source + vendored b10306 as local oracle).
+  - V4.1: TensorSharp `Models/DeepSeek4/` (`DeepSeek41Model.cs`, `DeepSeek4CpuExecutor.V41.cs`, `Dsv41EngramData.cs`) validated under 103-case PyTorch oracle (100/103 passed).
+- [ ] Review and fix existing V4 alpha (CSA ratio 4, output LoRA, rope_ext_back)
+- [ ] Prove V4 mechanics synthetically against vendored llama.cpp b10306
+- [ ] Implement V4.1 distinct architecture (`deepseek41`): ratios 0/1/2, 384+1 MoE, Engram subsystem
+- [ ] Add not-admitted blocks and update table rows
