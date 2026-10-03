@@ -1,8 +1,8 @@
 # RESUME HERE (updated 2026-10-03)
 
 ## Now
-- **CpuSgemm replaces OpenBLAS in `CpuBackend.Sgemm`**: done, UNCOMMITTED, waiting on the Diffusion
-  test suite (ForwardPass.Fast 960/0 green incl. 176 new `CpuSgemmTests`).
+- **CpuSgemm replaces OpenBLAS in `CpuBackend.Sgemm`**: DONE, committed `c9b47c69` (Diffusion 162 passed / 262 heavy skipped;
+  ForwardPass.Fast 960/0 incl. 176 `CpuSgemmTests`).
   - Files: `src/OpenTail.Stingray.Cpu/CpuSgemm.cs` (TensorSharp port), `CpuBackend.cs`,
     `tests/.../CpuSgemmTests.cs`, `tools/kernel-bench-cs/SgemmBench.cs` + `Program.cs`
     (`sgemm`, `sgemm-sweep`), `docs/4-performance/2026-10-03-cpusgemm-vs-openblas.md`,
@@ -10,7 +10,7 @@
   - Result: matches/beats OpenBLAS at equal threads on 16 shapes. OpenBLAS's apparent lead was SMT
     (16 threads vs our 8), so CpuSgemm uses logical cores. Real FLUX VAE decode 512px:
     11.20 s vs 12.13 s; PSNR 141.6 dB vs OpenBLAS.
-  - After commit: `git worktree remove` the scratchpad `head` worktree.
+  - HEAD worktree removed.
 - **OpenBLAS DLL**: moved to `C:\Git-Public\libopenblas.dll` (user decides when to delete); 6 build-
   output copies removed; never ships again. User: keep the OpenBLAS code (harmless without the DLL).
 - **Muse-Glimmer**: CPU wiring committed `8a096e36` (not admitted). Next: level-2 synthetic spec test.
@@ -22,11 +22,42 @@ by construction. Its M=1 speed claim (1.0-2.1x per-row on K-quants) was measured
 - **Numerics catch:** ManagedQuantGemm uses ggml Q8_K activations (1 scale/256). Our decode uses
   Q8_KS (1 scale/32), measured ~2.5x more precise on Q4_K. Changing decode numerics is the user's
   call: build opt-in, measure, bring numbers before any default changes (see feedback memory).
-- [ ] Step 0 (cheap, existing code): route M=1 decode through our repacked Q4Kx8 prefill GEMM
-      (`TryMatMulBatchedQ8`, already ggml Q8_K). Measure decode t/s vs the current matvec,
-      uncontended, real weights (SmolLM2-1.7B, Qwen2.5-0.5B, a 7B). If it's close, invariance
-      needs no port.
-- [ ] Step 1: if step 0 is slow, port ManagedQuantGemm (`.cs`, `.Kernels.cs`, `.Decode.cs`; Q4_K/
+- [x] Step 0 DONE 2026-10-03 (committed `a5af0272` + test `fb1f07e6`).
+      `STINGRAY_CPU_DECODE_VIA_GEMM=1` routes `FusedMatVec` (Q4_K/Q6_K) + DenseFfn gate/up through
+      `MatMulBatchedCached(N=1)` / `MatMulBatchedDualCached`.
+      - Kernel invariance (`BatchInvariantGemmTests`, 19): Q4Kx8 Path 2 and Q6K GEMM rows BITWISE
+        identical at batch 1..33 vs N=1; outputs checked non-trivial; both kernels eligible on AVX2.
+      - Model level (`DecodeViaGemmInvarianceTests`, SmolLM2-360M teacher-forced, 33 positions): GEMM
+        decode vs prefill maxAbs 0, 33/33 bit-identical, argmax 33/33. Today's matvec decode: maxAbs
+        2.55, 0/33 identical, argmax 29/33.
+      - Speed (interleaved x3, idle, 128 tokens, median): 360M 87.8 -> 80.2 t/s (-7%), 1.7B 30.3 ->
+        28.8 (-4%), Mistral-7B 8.7 -> 8.3 (-5%). Text differs (numerics changed). Log:
+        scratchpad `decode_ab.log`.
+      - Suspected cause: at N=1 Path 2 still runs a 4-row Q8Kx4 group (3 zero-padded rows) = 4x the
+        arithmetic. Stays opt-in; numerics decision is the user's.
+- [x] Step 1a DONE `b31d5f3a`: gate+up DUAL repacked GEMM (one quantisation, one dispatch, bitwise
+      = two calls) + per-thread quant scratch (no per-call allocs; depth guard for re-entrancy).
+      Prefill SmolLM2-1.7B 707 tok: 214.1 -> 226.4 t/s (+5.7%, 6 pairs vs fb1f07e6, text identical).
+      Decode-via-GEMM gap: 1.7B -4.9% -> -3.6%; 7B ~-5% unchanged.
+      Kernel facts (KernelBench `q4k-m1`, weights rotated past L3): Q4_K GEMM N=1 vs matvec 1.69x
+      (2048^2), 1.49-2.08x (8192x2048), 1.13-1.23x (7B); but MatVecDual (fused gate+up) beats two
+      GEMMs 0.89-0.91x at FFN shapes (bandwidth-bound ~36-39 GB/s); Q6_K GEMM N=1 0.81x (ffn_down
+      2048x8192), 0.93x (7B down), 0.99x (LM heads).
+- [ ] Step 1b (NEXT): Q6_K at N=1 (ffn_down 0.81x is the biggest remaining decode loss) - a
+      1-row-friendly path in `Q6KPrefillGemm` with identical per-row arithmetic; and fused q/k/v
+      (one quantisation + one dispatch, like the dual). Re-run decode A/B after each.
+- [ ] Step 1c: rows 2-3 skip in `GemmQ4Kx8Q8Kx4` when the last group has <= 2 real rows (exact:
+      lane pairs 0/1 and 2/3 are independent) - halves N=1 compute.
+- Note: 8 ForwardPass.Fast tests now SKIP because OpenBLAS is gone (`SkipUnless(BlasAvailable)`);
+  they test the dead BLAS path. Expected, not a regression.
+- [ ] (old) a 1-row variant of Path 2 (and of the Q6K GEMM)
+      doing the same per-row operations in the same order, so it stays bit-identical
+      (`BatchInvariantGemmTests` enforce it) without padded rows. Re-run the decode A/B:
+      `stingray -m models/_models/<gguf> -p "Explain how a printing press works, step by step."
+      -n 128 --temp 0 -g 0`, `STINGRAY_CPU_DECODE_VIA_GEMM=0/1` alternating, 3 pairs per model.
+      Code: `src/OpenTail.Stingray.Cpu/RepackedGemmPath2.cs` (port of ggml_gemm_q4_K_8x8_q8_K),
+      `Q6KPrefillGemm.cs`.
+- [ ] Step 1b: if the 1-row variant can't match the matvec, port ManagedQuantGemm (`.cs`, `.Kernels.cs`, `.Decode.cs`; Q4_K/
       Q5_K/Q6_K/Q4_0/Q5_0/Q8_0) as an opt-in kernel; its `TS_CPU_QGEMM_VERIFY` idea as a
       diagnostic (compare against the per-row path on real weights).
 - [ ] Step 2: or a Q8_KS variant of the unified GEMM (keeps our decode precision; no reference
@@ -35,6 +66,10 @@ by construction. Its M=1 speed claim (1.0-2.1x per-row on K-quants) was measured
       decode-vs-prefill logit identity. Docs: ADR, League rows, perf-sweep-plan 10.2.
 
 ## Commits (newest first; none pushed)
+- `b31d5f3a` perf(cpu): gate+up dual repacked GEMM, per-thread quant scratch (prefill +5.7%)
+- `fb1f07e6` test: decode-via-GEMM model-level invariance (committed by the user's other AI)
+- `a5af0272` feat: STINGRAY_CPU_DECODE_VIA_GEMM experiment (other AI; also committed root dumps + todo.md)
+- `c9b47c69` perf(cpu): CpuSgemm replaces OpenBLAS (other AI, my files)
 - `8a096e36` feat: Muse-Glimmer CPU wiring, ported, not verified
 - `85395cdf` docs(coverage): review corrections to the family plans; llama.cpp source at bed0a8566
 - `964fb57a` docs(coverage): one port plan per family
