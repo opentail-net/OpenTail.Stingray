@@ -1,77 +1,152 @@
 # DiffusionGemma port plan (`diffusion-gemma` / `diffusion_gemma`)
 
-**Status:** not started. **Policy:** port now, prove later; not admitted, not advertised
+**Status:** not started (2026-10-03). **Policy:** port now, prove later; not admitted, not advertised
 (CLAUDE.md rule 14; [ported-families-todo](ported-families-todo.md)).
 
-## Architecture
+## Architecture & Upstream References
 
-References: the **HF reference implementation** (`google/diffusiongemma-26B-A4B-it`) is the
-independent one. No llama.cpp port exists (upstream `bed0a8566` has no `diffusion-gemma.cpp`).
-Secondary: TensorSharp `docs/models/diffusiongemma.md`, `Models/DiffusionGemma/` (8 files, about
-6k lines including CPU kernels and the sampler; it checked a shard against a NumPy transcription of
-the HF reference).
+**Primary & secondary references:**
+- **Hugging Face Reference:** `google/diffusiongemma-26B-A4B-it` (official configuration and PyTorch model).
+- **llama.cpp / Unsloth:** `unsloth/diffusiongemma-26B-A4B-it-GGUF` and upstream DiffusionGemma runner.
+- **TensorSharp:** `docs/models/diffusiongemma.md`, `Models/DiffusionGemma/` (8 files, CPU kernels, self-conditioning, sampler).
 
-A **block text-diffusion** language model on a Gemma-4-style MoE backbone (26B-A4B). It isn't
-autoregressive: `Forward(token)` is invalid, and generation runs through a sampler.
-- Each denoising step runs over `[prompt | canvas]`. The prompt side is causal and never attends to
-  the canvas; the canvas is bidirectional over prompt + canvas.
-- Per step: region-aware embedding scale, then prompt/canvas masks, then N Gemma layers.
-  - Each layer: local/global QK-norm attention, a dense gated-GELU MLP **and** top-k MoE experts,
-    and a prompt-encoder / canvas-decoder scale.
-  - Then the output norm, the tied LM head and the final logit softcap.
-- Optimized: prefill the prompt K/V once, then repeat canvas decodes reusing it.
-- Sampler (`DiffusionEbParams`): 48 max steps, temperature schedule 0.4-0.8, entropy bound 0.1,
-  stability/confidence early stop, a seed, block-autoregressive canvases.
-- Image input through Gemma 4's vision tower.
+**DiffusionGemma** is a **block text-diffusion** model based on a Gemma-4 MoE backbone (26B total, ~4B active).
+It is **not autoregressive**: `Forward(token)` is invalid; generation executes iterative denoising over a 256-token canvas.
 
-Weights: `google/diffusiongemma-26B-A4B-it`, `unsloth/diffusiongemma-26B-A4B-it-GGUF` (about
-13-17 GB). **This fits the machine.**
+---
 
-## Reuse in Stingray
+### 1. Model Geometry & Layer Schedule (30 Layers)
 
-- The Gemma 4 forward pieces (per-layer head dims, SWA/global, QK-norm, sandwich norms, softcap),
-  the MoE router and experts, and the Gemma 4 vision tower (`UnifiedVisionPipeline`).
-- `PagedKvCache` for prompt K/V.
+| Parameter | Value |
+|---|---|
+| Hidden Dimension | $D = 2816$ |
+| Layers | 30 total: **5 Full Attention** (layers 5, 11, 17, 23, 29) + **25 Sliding Attention** (all others) |
+| Sliding Attention Layers | $Q = 16$ heads, $KV = 8$ heads, $\text{head\_dim} = 256$. Window size $W = 1024$. |
+| Full Attention Layers | $Q = 16$ heads, $KV = 2$ heads, $\text{head\_dim} = 512$. Global attention. |
+| Embedding Scaling | $\sqrt{D} = \sqrt{2816} \approx 53.0659966$, applied to token embeddings and soft self-conditioning embeddings. |
+| Per-Layer MLP + MoE | Both dense MLP **and** MoE experts present in every layer: |
+| Dense FFN | Intermediate dimension $= 2112$, gated GeLU activation. |
+| MoE Experts | 128 routed experts, $\text{top\_k} = 8$, expert intermediate dimension $= 704$. Router evaluated in FP32. |
+| Embeddings | Tied input/output embeddings (`output.weight` aliases `token_embd.weight`). Final logit softcapping. |
 
-## New work (phases)
+---
 
-- [ ] **0. Read** `DiffusionGemmaModel.cs`, `.Cpu.cs`, `DiffusionGemmaSampler.cs`,
-  `DiffusionComputeTurns.cs`. Write the exact mask rules, region scales and sampler algorithm here.
-- [ ] **1. Hyperparams + tensors** (`ModelGraph` branch; the dense MLP + MoE per layer).
-- [ ] **2. Canvas forward:** a new `DiffusionGemmaForwardPass` with `ForwardCanvas(tokens,
-  promptLen)` (unified path) using the prompt-causal / canvas-bidirectional mask. Then
-  `PrefillPrompt` + `DecodeCanvas` with prompt-KV reuse.
-- [ ] **3. Sampler:** `DiffusionGemmaSampler` (entropy-bounded acceptance, re-noising,
-  temperature schedule, early stop, multi-block). Plus a CLI/engine entry, since it doesn't fit
-  `InferenceEngine`'s token loop.
-- [ ] **4. Gate:** keep it out of the text-LLM path entirely. `ModelCompatibility` must refuse
-  `diffusion-gemma` for `InferenceEngine` (it can't decode token by token). The new sampler entry
-  point is behind an experimental flag; no server exposure until verified.
+### 2. Self-Conditioning (Core Forward Contract)
 
-**Promotion is pipeline-specific, not `ModelCompatibility` / `admit-arch`.** Those are built
-around autoregressive text generation, and DiffusionGemma isn't autoregressive (TensorSharp's
-`Forward()` throws; generation is the sampler over a canvas). Promotion means:
-- [ ] Obtain a real GGUF.
-- [ ] Check reference fixtures for canvas-forward intermediates and sampler decisions.
-- [ ] Add a deterministic end-to-end canvas test.
-- [ ] Expose through a CLI entry / diffusion-style registry.
-- [ ] Add a STATUS row.
+DiffusionGemma conditions each denoising step on the model's own previous prediction via learned soft embeddings:
+1. **Step 1 (Seed):** Initial canvas embeddings generated directly from input/noise tokens scaled by $\sqrt{2816}$.
+2. **Subsequent Steps ($t > 1$):**
+   - Soft probabilities: $P = \text{softmax}(\text{logits}_{t-1} / T)$.
+   - Soft embedding: $E_{\text{soft}} = P \cdot W_{\text{embed}} \times \sqrt{2816}$.
+   - Self-conditioning transformation: $E_{\text{sc}} = \text{MLP}_{\text{sc}}(E_{\text{soft}})$ (learned gating/FFN projection).
+   - Injected into canvas: $X_{\text{canvas}} = X_{\text{canvas\_base}} + E_{\text{sc}}$.
 
-## Deferred (not in the initial port)
+---
 
-Vision (Gemma 4 tower), the Jev `/v1/systemone` typed-decision endpoint, structured output,
-server integration, and GPU paths.
+### 3. Attention Mask Contract & Prefix KV Reuse
 
-## Verification (levels as in [ported-families-todo](ported-families-todo.md))
+Generation is factored into a persistent prompt prefix and an iterative canvas:
+- **Prompt Prefill (Persistent):**
+  - Prompt tokens attend strictly causally ($j \le i$) and never see the canvas.
+  - Builds persistent prefix KV cache once.
+- **Canvas Denoising ($256$ tokens):**
+  - **Bidirectional Canvas:** Every canvas token attends to all $256$ canvas tokens ($i_{\text{canvas}}, j_{\text{canvas}} \in [0, 255]$).
+  - **Prefix Attention:** Canvas tokens attend to prompt KV:
+    - *Full Layers (5, 11, 17, 23, 29):* Canvas attends to **all** prompt KV positions.
+    - *Sliding Layers (all others):* Canvas attends to the **last $\min(\text{prompt\_len}, W - 1)$** prompt positions (sliding window applies to prefix).
 
-- [ ] **Specification tests (level 2):** build a synthetic tiny model and compare the canvas forward against a
-   test-side reimplementation (the masks are the risk), and the sampler on a fixed seed against a
-   test-side implementation of its rules. Transcription checks, not independent.
-- [ ] **Independent implementation (level 3):** use the HF/PyTorch reference
-   (`google/diffusiongemma-26B-A4B-it`); no llama.cpp port exists. Produce a checked-in reference
-   fixture (canvas logits for a fixed prompt, canvas and seed) as the target.
-- [ ] **Real weights (level 4):** check coherence and canvas-logit parity against that fixture; run TensorSharp's
-   pure-C# `cpu` backend on the same GGUF and seed as a second reading.
+---
 
-**Effort:** port + specification tests about 1 day. Real-weight verification, the closeout
-performance + DRY pass, vision and pipeline promotion are separate.
+### 4. Sampler Algorithm (`DiffusionGemmaSampler`)
+
+| Parameter | Value |
+|---|---|
+| Canvas Length | 256 tokens |
+| Max Denoising Steps | 48 steps |
+| Temperature Schedule | Decays from $T_{\max} = 0.8 \to T_{\min} \approx 0.408$ across 48 steps |
+| Entropy Acceptance Budget | $H_{\text{bound}} = 0.1$ nats |
+| Stopping Thresholds | Mean entropy $< 0.005$ nats AND prediction stability $= 1$ |
+
+**Step Execution:**
+1. Compute Shannon entropy in nats for all 256 canvas positions: $H_i = -\sum p_{i,v} \ln p_{i,v}$.
+2. Rank positions by ascending entropy (lowest entropy = highest model confidence).
+3. Greedily accept positions until cumulative accepted entropy reaches $H_{\text{bound}} = 0.1$ nats.
+4. Non-accepted positions are **fully re-noised** with categorical noise.
+5. Check early exit criteria (mean entropy $< 0.005$ & stable predictions).
+
+---
+
+### 5. Block-Autoregressive Canvas Lifecycle
+
+DiffusionGemma generates arbitrary length text through a sequence of 256-token canvas blocks:
+```
+Prompt -> Prefill Causal KV Cache
+             │
+             ▼
+   [256-token Canvas Denoise Loop] <─── Self-Conditioning Loop (up to 48 steps)
+             │
+             ▼
+   Commit Final Canvas Block
+             │
+             ▼
+   Causal Pre-fill Committed Block into Persistent KV Cache
+             │
+             ▼
+   Initialize Next 256-token Canvas (repeat until target length or EOS)
+```
+
+---
+
+### 6. Component Architecture & Responsibility Separation
+
+To maintain clean architecture, responsibilities are split across dedicated types:
+- **`DiffusionGemmaForwardPass`**: Model weights, prompt prefill, canvas forward pass (bidirectional canvas + prefix KV attention, sliding/full masks), logits.
+- **`DiffusionGemmaState`**: Canvas token IDs, self-conditioning vectors, committed tokens count, step index, convergence status.
+- **`DiffusionGemmaSampler`**: Temperature schedule, entropy calculation, greedy acceptance budget, categorical re-noising, early exit evaluation.
+- **`DiffusionGemmaPipeline`**: Block commit lifecycle, causal re-prefill orchestration, multi-block generation loop.
+
+---
+
+## Hardware Constraint & Fitting
+
+- Unsloth GGUF quant sizes:
+  - **Q4_K_M**: ~16.8 GB (**fits comfortably in 64 GB RAM**)
+  - **Q5_K_M**: ~19.1 GB
+  - **Q8_0**: ~26.9 GB
+- **Policy**: Port now, prove on real weights locally (hardware capable).
+
+---
+
+## Decomposed Implementation Phases
+
+- [ ] **Phase 0: Contract Freeze**
+  - Freeze exact layer parameters, self-conditioning FFN tensor names, and sampler equations.
+- [ ] **Phase 1: Model Graph & Tensor Loader (`DiffusionGemmaConfig.cs`, `DiffusionGemmaTensorSet.cs`)**
+  - 30-layer Gemma-4 MoE backbone (16 heads, 8/2 KV heads, 256/512 head dim), tied embeddings, dense FFN (2112) + MoE (128 experts, top-8, 704 dim).
+- [ ] **Phase 2: Persistent Prompt Prefill**
+  - Causal prefill creating persistent prompt prefix KV cache.
+- [ ] **Phase 3: Canvas Forward Pass (`DiffusionGemmaForwardPass.cs`)**
+  - Bidirectional canvas attention, prefix KV cross-attention with sliding (1024) / full layer masks, $\sqrt{2816}$ scaling, logits output.
+- [ ] **Phase 4: Self-Conditioning (`DiffusionGemmaSelfConditioning.cs`)**
+  - Step 1 seed vs $t > 1$ soft probability weighted embeddings, self-conditioning MLP projection, canvas injection.
+- [ ] **Phase 5: Sampler (`DiffusionGemmaSampler.cs`)**
+  - Temperature decay ($0.8 \to 0.408$), nats entropy budget ($0.1$), greedy acceptance, categorical re-noising, confidence/stability stop.
+- [ ] **Phase 6: Block Lifecycle (`DiffusionGemmaPipeline.cs`)**
+  - Commit 256-token block, causal re-prefill into persistent KV cache, multi-block loop.
+- [ ] **Phase 7: Synthetic End-to-End Tests (`DiffusionGemmaSyntheticTests.cs`)**
+  - Tiny synthetic model (e.g. 4 layers: 3 sliding, 1 full; small canvas 16; MoE 8 experts), testing step trace parity, self-conditioning, and sampler convergence.
+- [ ] **Phase 8: Gate & CLI Registry**
+  - `ModelCompatibility` refusal for autoregressive `InferenceEngine`. Add pipeline CLI entry point.
+- [ ] **Phase 9: Real Q4 Checkpoint Verification**
+  - Step trace parity against TensorSharp and llama.cpp DiffusionGemma on pinned prompt and initial canvas IDs.
+
+---
+
+## Deferred (Explicitly Out of Scope)
+
+- **Vision Tower**: Gemma-4 27-layer vision tower (1152 dim, 16 heads, 280 image tokens) is deferred; initial port is strictly text-only.
+- **Server API Endpoints**: Jev `/v1/systemone` typed endpoints, structured output constraints, and GPU execution paths are follow-ups.
+
+---
+
+**Effort:** ~1-2 days for core model, self-conditioning, sampler, block lifecycle, and synthetic specification tests. Real Q4 checkpoint verification follows directly on local 64 GB machine.

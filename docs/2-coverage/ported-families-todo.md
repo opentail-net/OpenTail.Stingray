@@ -125,14 +125,15 @@ a new plan when someone decides to take them on; the wave isn't meant to grow by
 
 ### 4. DiffusionGemma (`diffusion-gemma`, alias `diffusion_gemma`)
 - **Design:**
-  - block **text diffusion**, not autoregressive decode;
-  - Gemma 4 trunk; image input through Gemma 4's vision tower.
-- **Weights:** `google/diffusiongemma-26B-A4B-it` (HF), `unsloth/diffusiongemma-26B-A4B-it-GGUF`;
-  about 13-17 GB.
-- **Reuse:** Stingray's Gemma 4 path and vision tower; needs a new generation loop (a sampler over
-  a canvas, not the token-by-token `InferenceEngine`).
-- **References:** TensorSharp `Models/DiffusionGemma` (shard checked against a NumPy
-  transcription of the HF reference); no llama.cpp output is recorded.
+  - block **text diffusion** on Gemma-4 MoE backbone (26B total, ~4B active: hidden 2816, dense FFN 2112 + 128 experts top-8);
+  - 30 layers: 5 Full attention (Q=16, KV=2, dim=512) + 25 Sliding attention (Q=16, KV=8, dim=256, window=1024);
+  - **Self-conditioning**: step 1 seed, $t > 1$ soft probability weighted embeddings through learned SC MLP injected into canvas;
+  - Canvas denoising (256 tokens) with bidirectional canvas attention + persistent causal prefix KV cross-attention;
+  - Sampler: temperature decay ($0.8 \to 0.408$ over 48 steps), nats entropy budget (0.1), greedy acceptance, categorical re-noising;
+  - Block-autoregressive lifecycle: commit 256 tokens, causal re-prefill, next canvas.
+- **Weights:** `google/diffusiongemma-26B-A4B-it` (HF), `unsloth/diffusiongemma-26B-A4B-it-GGUF` (Q4_K_M ~16.8 GB; fits 64 GB machine).
+- **Reuse:** Stingray's Gemma 4 primitives, MoE routing, and PagedKvCache.
+- **References:** HF reference implementation, TensorSharp `Models/DiffusionGemma`, Unsloth / llama.cpp DiffusionGemma runner.
 - [ ] Port
 - [ ] Add not-admitted block
 - [ ] Add table row
