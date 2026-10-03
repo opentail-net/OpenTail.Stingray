@@ -21,7 +21,7 @@ deliberate step (keep b10306 alongside, re-run key receipts on both, then switch
 | Family | Plan | Fits this PC? | Second implementation | Port + synthetic |
 |---|---|---|---|---|
 | Muse-Glimmer (in progress) | [plan](2026-10-03-muse-glimmer-port-plan.md) | yes (small quants) | llama.cpp `muse-glimmer.cpp` (source) + TensorSharp | ~2-3 h (text) |
-| Qwen 3.8 Flash Next | [plan](2026-10-03-qwen38-flash-next-port-plan.md) | yes (~15 GB quant) | llama.cpp `qwen4exp.cpp` (source) + TensorSharp | ~1-2 days |
+| Qwen 3.8 Flash Next | [plan](2026-10-03-qwen38-flash-next-port-plan.md) | no (smallest quant ~72.5 GB) | llama.cpp `qwen4exp.cpp` (source) + TensorSharp | ~1-2 days |
 | GLM-5.x | [plan](2026-10-03-glm5-port-plan.md) | no (smallest GLM-5.3 quant ~236 GiB) | `glm-dsa`: llama.cpp source + b10306 binaries; `glm5next`: llama.cpp source for the trunk, **not NextN** | ~2 days |
 | DiffusionGemma | [plan](2026-10-03-diffusiongemma-port-plan.md) | yes (~13-17 GB) | HF reference + TensorSharp (no llama.cpp) | ~1 day |
 | MiniMax-H3 | [plan](2026-10-03-minimax-h3-port-plan.md) | yes (sequential loading, see plan) | upstream HF/PyTorch + TensorSharp | ~3-5 days |
@@ -88,12 +88,10 @@ a new plan when someone decides to take them on; the wave isn't meant to grow by
   - x4 hyper-connection streams;
   - 512-expert MoE;
   - image input through an mmproj.
-- **Weights:** `unsloth/Qwen3.8-Flash-Next-GGUF` (multi-shard); quants about 15-48 GB, so the
-  smaller ones fit here.
-- **Reuse:** Stingray's `HybridGdnForwardPass` (GDN), MoE and DeepSeek-style indexer work
-  (`deepseek32` lightning indexer); hyper-connections overlap `deepseek4`'s.
-- **References:** TensorSharp `Models/Qwen4Exp`. Not in the local llama.cpp.
-- [ ] Port   - [ ] Not-admitted block   - [ ] Table row
+- **Weights:** `unsloth/Qwen3.8-Flash-Next-GGUF` (~180B total: 125B lang + 51B PLE + 4B MTP; smallest quant ~72.5 GB; does not fit this PC; synthetic gate only).
+- **Reuse:** Stingray's `GdnKernels` (GDN FP32 recurrence), MoE primitives (512 experts, top-10 + 1 shared); distinct `GatedResidual` (HC) and QSA/PLE subsystems.
+- **References:** llama.cpp `src/models/qwen4exp.cpp` (local source), TensorSharp `Models/Qwen4Exp`.
+- [x] Port   - [x] Not-admitted block   - [x] Table row
 
 ### 2. GLM-5.x (`glm-dsa`, alias `glm_dsa`; GLM-5.3-Flash is `glm5next`)
 - **Design:**

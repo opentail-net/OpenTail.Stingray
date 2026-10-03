@@ -797,6 +797,14 @@ public static class ModelCompatibility
         "minicpm",
     };
     //
+    // qwen4exp — NOT admitted (CLAUDE.md rule 14: ported, not verified). Alpha forward pass
+    // ported 2026-10-03 from llama.cpp src/models/qwen4exp.cpp (upstream bed0a8566) and TensorSharp
+    // Models/Qwen4Exp/: 48 layers (36 GDN + 12 QSA), 4-stream GatedResidual hyper-connections
+    // (low-rank bottleneck 320, 2*sigmoid injection), PLE n-gram embedding table with dilated 1D conv,
+    // and 512-expert MoE (top-10 + 1 shared expert). Real checkpoints (~72.5 GB minimum for UD-IQ1_S)
+    // do not fit in this machine's 64 GB RAM; verification is gated on synthetic component and
+    // full-stack parity tests. Do not admit until real-checkpoint parity on capable hardware is achieved.
+    //
     // muse-glimmer — NOT admitted (CLAUDE.md rule 14: ported, not verified). CPU ForwardPass wiring
     // (2026-10-03) from llama.cpp src/models/muse-glimmer.cpp: SWA period / RoPE-only-on-SWA, attention
     // output gate, 1e-8 post-norms, unweighted embedding RMSNorm, logit scale then optional softcap.
