@@ -1666,10 +1666,15 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
         // is all that is needed. Both weights must be repackable or we fall through: taking the
         // repacked path for one and dual-Q8 for the other would mix quantisation schemes within a
         // single FFN.
+        byte* packed1, packed2;
         if (!useCache1 && !useCache2 && SimdKernels.Q8PrefillEnabled
-            && GetRepackedQ4Kx8(in w1, rows, cols) != null
-            && GetRepackedQ4Kx8(in w2, rows, cols) != null)
+            && (packed1 = GetRepackedQ4Kx8(in w1, rows, cols)) != null
+            && (packed2 = GetRepackedQ4Kx8(in w2, rows, cols)) != null)
         {
+            // One activation quantisation and one dispatch for both (bitwise identical to the two
+            // calls below; 2026-10-03, see RepackedGemmPath2.TryMatMulBatchedDual).
+            if (SimdKernels.TryMatMulBatchedQ4Kx8Dual(output1, packed1, output2, packed2, input, N, rows, cols))
+                return;
             MatMulBatchedCached(output1, in w1, input, N, rows, cols, allowBlas);
             MatMulBatchedCached(output2, in w2, input, N, rows, cols, allowBlas);
             return;

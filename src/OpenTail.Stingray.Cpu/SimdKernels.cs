@@ -11769,6 +11769,19 @@ public static unsafe class SimdKernels
     ///
     /// <para>Output layout matches <see cref="MatMulBatched"/>: <c>output[token * rows + row]</c>.</para>
     /// </summary>
+    /// <summary>
+    /// Gate + up over two repacked Q4_K matrices with one shared activation quantisation and one
+    /// dispatch (Path 2 only). Bitwise identical to two <see cref="TryMatMulBatchedQ4Kx8"/> calls on
+    /// Path 2. Returns false when Path 2 is off or declines; the caller then makes the two calls.
+    /// </summary>
+    public static bool TryMatMulBatchedQ4Kx8Dual(float* output1, byte* packed1, float* output2, byte* packed2,
+        float* input, int batchSize, int rows, int cols)
+    {
+        if (!CanRepackQ4Kx8(rows, cols) || batchSize < 1 || batchSize > 512) return false;
+        return GemmPathConfig.UsePath2 &&
+            RepackedGemmPath2.TryMatMulBatchedDual(output1, packed1, output2, packed2, input, batchSize, rows, cols);
+    }
+
     public static bool TryMatMulBatchedQ4Kx8(float* output, byte* packed, float* input,
         int batchSize, int rows, int cols)
     {

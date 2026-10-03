@@ -74,6 +74,110 @@ internal static unsafe class SgemmBench
         return 0;
     }
 
+    /// <summary><c>q4k-m1 [reps=200]</c>: decode-shape Q4_K, the Q8_KS matvec (today's decode) vs the
+    /// repacked Path 2 GEMM at N = 1 (STINGRAY_CPU_DECODE_VIA_GEMM). Interleaved, median.</summary>
+    public static int Q4KM1(string[] args)
+    {
+        int reps = args.Length > 0 && int.TryParse(args[0], out int r) && r > 0 ? r : 200;
+        (string Name, int Rows, int Cols)[] shapes =
+        [
+            ("360M q/o 960x960", 960, 960), ("360M ffn-up 2560x960", 2560, 960),
+            ("1.7B q 2048x2048", 2048, 2048), ("1.7B ffn-up 8192x2048", 8192, 2048),
+            ("7B ffn-up 14336x4096", 14336, 4096),
+        ];
+        Console.WriteLine($"{"shape",-24} | {"matvec us",10} | {"gemm N=1 us",11} | ratio");
+        foreach (var (name, rows, cols) in shapes)
+        {
+            if (cols % 256 != 0) { Console.WriteLine($"{name,-24} | skipped (cols % 256)"); continue; }
+            long rowBytes = (long)cols / 256 * 144;
+            byte* w = (byte*)NativeMemory.AlignedAlloc((nuint)(rowBytes * rows), 64);
+            byte* packed = (byte*)NativeMemory.AlignedAlloc((nuint)SimdKernels.Q4Kx8PackedBytes(rows, cols), 64);
+            float* x = Alloc(cols); float* o1 = Alloc(rows); float* o2 = Alloc(rows);
+            var rng = new Random(5);
+            for (long i = 0; i < rowBytes * rows; i++) w[i] = (byte)rng.Next(256);
+            for (int i = 0; i < rows; i++)
+                for (int b = 0; b < cols / 256; b++)
+                {
+                    byte* blk = w + i * rowBytes + b * 144;
+                    short d = BitConverter.HalfToInt16Bits((Half)0.01f);
+                    blk[0] = (byte)d; blk[1] = (byte)(d >> 8); blk[2] = (byte)d; blk[3] = (byte)(d >> 8);
+                }
+            Fill(x, cols, 6);
+            SimdKernels.RepackQ4KMatrix(w, packed, rows, cols);
+            // Decode streams every matrix from DRAM: rotate through copies totalling > 96 MB per arm so
+            // no call finds its weights in the 16 MB L3 (TensorSharp's "weights rotated past the L3").
+            long matBytes = rowBytes * rows;
+            int copies = (int)Math.Max(1, (96L << 20) / matBytes + 1);
+            var ws = new nint[copies]; var ps = new nint[copies];
+            for (int c = 0; c < copies; c++)
+            {
+                ws[c] = (nint)NativeMemory.AlignedAlloc((nuint)matBytes, 64);
+                Buffer.MemoryCopy(w, (void*)ws[c], matBytes, matBytes);
+                long pb = SimdKernels.Q4Kx8PackedBytes(rows, cols);
+                ps[c] = (nint)NativeMemory.AlignedAlloc((nuint)pb, 64);
+                Buffer.MemoryCopy(packed, (void*)ps[c], pb, pb);
+            }
+            int ci = 0, cj = 0;
+            void Mv() { SimdKernels.MatVec(o1, (byte*)ws[ci], x, rows, cols, OpenTail.Stingray.Core.DType.Q4_K); ci = (ci + 1) % copies; }
+            void Gm() { SimdKernels.TryMatMulBatchedQ4Kx8(o2, (byte*)ps[cj], x, 1, rows, cols); cj = (cj + 1) % copies; }
+            for (int i = 0; i < 2 * copies; i++) { Mv(); Gm(); }
+            var t1 = new List<double>(); var t2 = new List<double>();
+            for (int i = 0; i < reps; i++) { t1.Add(Time(Mv) * 1000); t2.Add(Time(Gm) * 1000); }
+            double a = Median(t1), b2 = Median(t2);
+            Console.WriteLine($"{name,-24} | {a,10:F1} | {b2,11:F1} | {a / b2:F2}   ({copies} copies, {matBytes * copies >> 20} MB/arm)");
+            // Decode's gate+up: one fused MatVecDual over two matrices vs two GEMM calls.
+            if (copies >= 2)
+            {
+                float* o3 = Alloc(rows);
+                int di = 0, dj = 0;
+                void Dual() { SimdKernels.MatVecDual(o1, (byte*)ws[di], o3, (byte*)ws[(di + 1) % copies], x, rows, cols, OpenTail.Stingray.Core.DType.Q4_K, OpenTail.Stingray.Core.DType.Q4_K); di = (di + 2) % copies; }
+                void Gm2() { SimdKernels.TryMatMulBatchedQ4Kx8(o2, (byte*)ps[dj], x, 1, rows, cols); SimdKernels.TryMatMulBatchedQ4Kx8(o3, (byte*)ps[(dj + 1) % copies], x, 1, rows, cols); dj = (dj + 2) % copies; }
+                for (int i = 0; i < copies; i++) { Dual(); Gm2(); }
+                var t3 = new List<double>(); var t4 = new List<double>();
+                for (int i = 0; i < reps; i++) { t3.Add(Time(Dual) * 1000); t4.Add(Time(Gm2) * 1000); }
+                Console.WriteLine($"{"  x2 (MatVecDual vs 2 GEMM)",-24} | {Median(t3),10:F1} | {Median(t4),11:F1} | {Median(t3) / Median(t4):F2}");
+                NativeMemory.AlignedFree(o3);
+            }
+            for (int c = 0; c < copies; c++) { NativeMemory.AlignedFree((void*)ws[c]); NativeMemory.AlignedFree((void*)ps[c]); }
+            NativeMemory.AlignedFree(w); NativeMemory.AlignedFree(packed);
+            NativeMemory.AlignedFree(x); NativeMemory.AlignedFree(o1); NativeMemory.AlignedFree(o2);
+        }
+        Console.WriteLine("ratio = matvec / gemm (>1: the GEMM at N=1 is faster). Weights L3/DRAM-resident as in decode for the larger shapes.");
+
+        // Q6_K (ffn_down / attn_v on half the layers of Q4_K_M, and usually the LM head).
+        (string Name, int Rows, int Cols)[] q6 =
+        [
+            ("1.7B ffn-down 2048x8192", 2048, 8192), ("1.7B lm-head 49152x2048", 49152, 2048),
+            ("7B ffn-down 4096x14336", 4096, 14336), ("7B lm-head 32768x4096", 32768, 4096),
+        ];
+        Console.WriteLine($"{"Q6_K shape",-24} | {"matvec us",10} | {"gemm N=1 us",11} | ratio");
+        foreach (var (name, rows, cols) in q6)
+        {
+            long rowBytes = (long)cols / 256 * 210;
+            byte* w = (byte*)NativeMemory.AlignedAlloc((nuint)(rowBytes * rows), 64);
+            float* x = Alloc(cols); float* o1 = Alloc(rows); float* o2 = Alloc(rows);
+            var rng = new Random(7);
+            for (long i = 0; i < rowBytes * rows; i++) w[i] = (byte)rng.Next(256);
+            for (int i = 0; i < rows; i++)
+                for (int b = 0; b < cols / 256; b++)
+                {
+                    byte* blk = w + i * rowBytes + b * 210;
+                    short d = BitConverter.HalfToInt16Bits((Half)0.005f);
+                    blk[208] = (byte)d; blk[209] = (byte)(d >> 8);
+                }
+            Fill(x, cols, 8);
+            void Mv() => SimdKernels.MatVec(o1, w, x, rows, cols, OpenTail.Stingray.Core.DType.Q6_K);
+            void Gm() => Q6KPrefillGemm.TryMatMulBatched(o2, w, x, 1, rows, cols);
+            for (int i = 0; i < 10; i++) { Mv(); Gm(); }
+            var t1 = new List<double>(); var t2 = new List<double>();
+            for (int i = 0; i < reps / 4; i++) { t1.Add(Time(Mv) * 1000); t2.Add(Time(Gm) * 1000); }
+            double a = Median(t1), b2 = Median(t2);
+            Console.WriteLine($"{name,-24} | {a,10:F1} | {b2,11:F1} | {a / b2:F2}");
+            NativeMemory.AlignedFree(w); NativeMemory.AlignedFree(x); NativeMemory.AlignedFree(o1); NativeMemory.AlignedFree(o2);
+        }
+        return 0;
+    }
+
     public static int Run(string[] args)
     {
         int reps = args.Length > 0 && int.TryParse(args[0], out int r) && r > 0 ? r : 7;

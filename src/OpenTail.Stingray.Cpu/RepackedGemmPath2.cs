@@ -279,44 +279,130 @@ public static unsafe class RepackedGemmPath2
 
         Interlocked.Increment(ref _engagedCalls);
 
-        int nb = cols / QK_K;
-        long q8Stride = Q8Kx4Bytes(cols);                 // bytes per block_q8_Kx4 row-group
-        long bytesPerGroup = (long)nb * SimdKernels.Q4Kx8BlockBytes;
-
-        int fullGroups = batchSize / Q8Kx4Rows;
-        int rem = batchSize % Q8Kx4Rows;
-        int rowGroups = fullGroups + (rem > 0 ? 1 : 0);
-
-        byte* aBase = (byte*)NativeMemory.Alloc((nuint)(q8Stride * rowGroups));
+        long q8Stride = Q8Kx4Bytes(cols);
+        long bytesPerGroup = (long)(cols / QK_K) * SimdKernels.Q4Kx8BlockBytes;
+        byte* aBase = AcquireQuantized(input, batchSize, cols, out int rowGroups, out bool owned);
         try
         {
-            Parallel.For(0, fullGroups, rg =>
-                QuantizeMatQ8Kx4Avx2(input + (long)rg * Q8Kx4Rows * cols, aBase + (long)rg * q8Stride, cols));
-
-            if (rem > 0)
-            {
-                // Zero-pad the final partial group. Zero rows quantise to d=0 (amax==0), so they
-                // contribute exactly 0 and cannot perturb the real rows.
-                long padBytes = (long)sizeof(float) * Q8Kx4Rows * cols;
-                float* pad = (float*)NativeMemory.AllocZeroed((nuint)padBytes);
-                try
-                {
-                    Buffer.MemoryCopy(input + (long)fullGroups * Q8Kx4Rows * cols, pad,
-                                      padBytes, (long)sizeof(float) * rem * cols);
-                    QuantizeMatQ8Kx4Avx2(pad, aBase + (long)fullGroups * q8Stride, cols);
-                }
-                finally { NativeMemory.Free(pad); }
-            }
-
             Parallel.For(0, rows / NbCols, x =>
                 GemmQ4Kx8Q8Kx4(cols, output, rows, packed + (long)x * bytesPerGroup,
                                aBase, q8Stride, rowGroups * Q8Kx4Rows, batchSize, x));
         }
-        finally
-        {
-            NativeMemory.Free(aBase);
-        }
+        finally { Release(aBase, owned); }
         return true;
+    }
+
+    /// <summary>
+    /// Two repacked Q4_K matrices sharing one input (FFN gate + up): the activations are quantised
+    /// once and one parallel loop covers both matrices' 8-column groups. Each group runs the same
+    /// <see cref="GemmQ4Kx8Q8Kx4"/> on the same quantised activations as two
+    /// <see cref="TryMatMulBatched"/> calls would, so the outputs are bitwise identical to theirs;
+    /// only the dispatch is shared. Measured motivation (2026-10-03, decode N = 1, weights streamed
+    /// from DRAM): two separate calls lost to the fused <c>MatVecDual</c> at FFN shapes (0.89-0.91x).
+    /// </summary>
+    public static bool TryMatMulBatchedDual(float* output1, byte* packed1, float* output2, byte* packed2,
+        float* input, int batchSize, int rows, int cols)
+    {
+        if (!Avx2.IsSupported || !Fma.IsSupported) return false;
+        if (rows % NbCols != 0 || cols % 256 != 0 || batchSize < 1) return false;
+
+        Interlocked.Increment(ref _engagedCalls);
+
+        long q8Stride = Q8Kx4Bytes(cols);
+        long bytesPerGroup = (long)(cols / QK_K) * SimdKernels.Q4Kx8BlockBytes;
+        byte* aBase = AcquireQuantized(input, batchSize, cols, out int rowGroups, out bool owned);
+        try
+        {
+            int groups = rows / NbCols;
+            Parallel.For(0, 2 * groups, g =>
+            {
+                bool second = g >= groups;
+                int x = second ? g - groups : g;
+                GemmQ4Kx8Q8Kx4(cols, second ? output2 : output1, rows,
+                               (second ? packed2 : packed1) + (long)x * bytesPerGroup,
+                               aBase, q8Stride, rowGroups * Q8Kx4Rows, batchSize, x);
+            });
+        }
+        finally { Release(aBase, owned); }
+        return true;
+    }
+
+    // Per-thread quantised-activation scratch, grown on demand and kept: decode calls this a few
+    // hundred times per token, and a native alloc + zeroed pad buffer per call was pure overhead.
+    // Only the calling thread writes it; the GEMM workers read it before the call returns.
+    // t_depth guards re-entrancy: if this thread is already inside a call (it was reused to run
+    // another iteration while waiting on its own Parallel.For), the nested call gets a private
+    // allocation so it cannot overwrite activations the outer call's workers are still reading.
+    [ThreadStatic] private static nint t_aBuf;
+    [ThreadStatic] private static long t_aCap;
+    [ThreadStatic] private static nint t_padBuf;
+    [ThreadStatic] private static long t_padCap;
+    [ThreadStatic] private static int t_depth;
+
+    private static byte* AcquireQuantized(float* input, int batchSize, int cols, out int rowGroups, out bool owned)
+    {
+        owned = t_depth > 0;
+        t_depth++;
+        try { return QuantizeInput(input, batchSize, cols, out rowGroups, owned); }
+        catch { t_depth--; throw; }
+    }
+
+    private static void Release(byte* aBase, bool owned)
+    {
+        t_depth--;
+        if (owned) NativeMemory.Free(aBase);
+    }
+
+    /// <summary>
+    /// Quantises <paramref name="batchSize"/> rows into <c>block_q8_Kx4</c> groups (the last one
+    /// zero-padded), into this thread's scratch or, when <paramref name="privateBuffer"/>, a fresh
+    /// allocation the caller frees. Zero rows quantise to d = 0 (amax == 0), so they contribute
+    /// exactly 0 and cannot perturb the real rows.
+    /// </summary>
+    private static byte* QuantizeInput(float* input, int batchSize, int cols, out int rowGroups, bool privateBuffer)
+    {
+        long q8Stride = Q8Kx4Bytes(cols);
+        int fullGroups = batchSize / Q8Kx4Rows;
+        int rem = batchSize % Q8Kx4Rows;
+        rowGroups = fullGroups + (rem > 0 ? 1 : 0);
+
+        long need = q8Stride * rowGroups;
+        byte* aBase;
+        if (privateBuffer)
+            aBase = (byte*)NativeMemory.Alloc((nuint)need);
+        else
+        {
+            if (t_aCap < need)
+            {
+                if (t_aBuf != 0) NativeMemory.Free((void*)t_aBuf);
+                t_aBuf = (nint)NativeMemory.Alloc((nuint)need);
+                t_aCap = need;
+            }
+            aBase = (byte*)t_aBuf;
+        }
+
+        if (fullGroups > 1)
+            Parallel.For(0, fullGroups, rg =>
+                QuantizeMatQ8Kx4Avx2(input + (long)rg * Q8Kx4Rows * cols, aBase + (long)rg * q8Stride, cols));
+        else if (fullGroups == 1)
+            QuantizeMatQ8Kx4Avx2(input, aBase, cols);
+
+        if (rem > 0)
+        {
+            long padBytes = (long)sizeof(float) * Q8Kx4Rows * cols;
+            if (t_padCap < padBytes)
+            {
+                if (t_padBuf != 0) NativeMemory.Free((void*)t_padBuf);
+                t_padBuf = (nint)NativeMemory.Alloc((nuint)padBytes);
+                t_padCap = padBytes;
+            }
+            float* pad = (float*)t_padBuf;
+            long realBytes = (long)sizeof(float) * rem * cols;
+            Buffer.MemoryCopy(input + (long)fullGroups * Q8Kx4Rows * cols, pad, padBytes, realBytes);
+            new Span<byte>((byte*)pad + realBytes, (int)(padBytes - realBytes)).Clear();
+            QuantizeMatQ8Kx4Avx2(pad, aBase + (long)fullGroups * q8Stride, cols);
+        }
+        return aBase;
     }
 
     /// <summary>
