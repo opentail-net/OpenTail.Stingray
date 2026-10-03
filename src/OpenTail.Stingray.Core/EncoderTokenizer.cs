@@ -110,6 +110,32 @@ public sealed class EncoderTokenizer
         }
     }
 
+    /// <summary>
+    /// WordPiece tokenizer with the standard BERT post-processing: <c>[CLS] A [SEP]</c> and <c>[CLS] A [SEP] B [SEP]</c>
+    /// (type ids 0/1). Used for GGUF <c>bert</c> models, which carry the vocab but no post-processor.
+    /// </summary>
+    public static EncoderTokenizer FromWordPiece(BertWordPieceTokenizer w)
+    {
+        int[] cls = [w.ClsTokenId];
+        int[] sep = [w.SepTokenId];
+        TemplatePiece[] single = [new(cls, false, 0), new(null, false, 0), new(sep, false, 0)];
+        TemplatePiece[] pair = [new(cls, false, 0), new(null, false, 0), new(sep, false, 0), new(null, true, 1), new(sep, false, 1)];
+        return new EncoderTokenizer(w.EncodeIds, single, pair, w.PadTokenId);
+    }
+
+    /// <summary>
+    /// Unigram (SentencePiece) tokenizer with the RoBERTa/XLM-R post-processing: <c>&lt;s&gt; A &lt;/s&gt;</c> and
+    /// <c>&lt;s&gt; A &lt;/s&gt;&lt;/s&gt; B &lt;/s&gt;</c>, all type ids 0. Used for GGUF XLM-R-family encoders.
+    /// </summary>
+    public static EncoderTokenizer FromUnigram(UnigramTokenizer u, int bosId, int eosId, int padId)
+    {
+        int[] bos = [bosId];
+        int[] eos = [eosId];
+        TemplatePiece[] single = [new(bos, false, 0), new(null, false, 0), new(eos, false, 0)];
+        TemplatePiece[] pair = [new(bos, false, 0), new(null, false, 0), new(eos, false, 0), new(eos, false, 0), new(null, true, 0), new(eos, false, 0)];
+        return new EncoderTokenizer(u.Encode, single, pair, padId);
+    }
+
     /// <summary>Single sequence with its special tokens, truncated to <paramref name="maxLength"/> ids.</summary>
     public EncodedInput Encode(string text, int maxLength = int.MaxValue)
     {

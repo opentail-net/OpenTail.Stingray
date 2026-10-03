@@ -1,6 +1,6 @@
 # MiniMax-H3 port plan (video + native 32 kHz stereo audio)
 
-**Status:** not started. **Policy:** port now, prove later; kept off the CLI's model list and the
+**Status (revised 2026-10-03): FOUNDATION ONLY.** Layout, dual schedulers, AdaLN, MM-RoPE, both VAE decoders, output export and a synthetic pipeline exist with synthetic tests. It is **not a complete port**: no real text-encoder conditioning, no real DiT weight loader, no VAE encode, no conditioning modes, no parity with upstream. **Policy:** port now, prove later; kept off the CLI model list and the
 diffusion docs until verified (CLAUDE.md rule 14; [ported-families-todo](ported-families-todo.md)).
 
 ## Licensing & Distribution Note
@@ -91,28 +91,36 @@ The central engineering abstraction is `MiniMaxH3Layout`:
 
 ## Implementation Phases
 
-- [x] **0. Mathematical Primitives & Dual Schedulers:**
-  - [x] `MiniMaxH3Scheduler`: dual flow shifts (video=12, audio=3), independent sigma generation, Euler solver step.
-  - [x] `MiniMaxH3AdaLN`: `adaln_t_table = [8, 1025]` interpolation and 8 -> 96768 block modulation vector extraction.
-  - [x] `MiniMaxH3Layout`: token layout, coordinate packing, RoPE coordinate generation, post-denoise slice extraction.
-- [x] **1. Text Encoder Integration:**
-  - [x] External `vocab.json` + `merges.txt` tokenizer loader (`QwenTokenizer.FromVocabAndMerges`).
+Legend: [x] done and checked, [~] implemented and covered by synthetic tests only (shapes and plumbing; **no comparison
+with the upstream implementation**), [ ] not done. Everything marked [~] below was written from the plan and the model
+description; none of it has run against real weights or upstream outputs.
+
+Missing for a real run: Qwen3-VL-32B layer-50 hidden-state extraction (the pipeline takes already-prepared context tokens
+and starts from synthetic Gaussian latents), the 50-block DiT tensor inventory and loader (the DiT is built from in-memory
+float arrays), VAE encode, and the I2V/FL2V/Ref2VA conditioning modes.
+
+- [~] **0. Mathematical Primitives & Dual Schedulers:**
+  - [~] `MiniMaxH3Scheduler`: dual flow shifts (video=12, audio=3), independent sigma generation, Euler solver step.
+  - [~] `MiniMaxH3AdaLN`: `adaln_t_table = [8, 1025]` interpolation and 8 -> 96768 block modulation vector extraction.
+  - [~] `MiniMaxH3Layout`: token layout, coordinate packing, RoPE coordinate generation, post-denoise slice extraction.
+- [~] **1. Text Encoder Integration:**
+  - [~] External `vocab.json` + `merges.txt` tokenizer loader (`QwenTokenizer.FromVocabAndMerges`).
   - [ ] Hidden-state extraction from Qwen3-VL-32B GGUF.
 - [ ] **2. DiT Denoiser:**
-  - [x] 2a. Tiny DiT with video only.
-  - [x] 2b. Tiny DiT with audio only.
-  - [x] 2c. Packed video+audio sequence (`MiniMaxH3Layout` + `MiniMaxH3DiTBlock`).
-  - [x] 2d. Multimodal RoPE / positional layout (`MiniMaxH3RoPE`).
-  - [x] 2e. AdaLN modulation ($8 \to 96768$).
+  - [~] 2a. Tiny DiT with video only.
+  - [~] 2b. Tiny DiT with audio only.
+  - [~] 2c. Packed video+audio sequence (`MiniMaxH3Layout` + `MiniMaxH3DiTBlock`).
+  - [~] 2d. Multimodal RoPE / positional layout (`MiniMaxH3RoPE`).
+  - [~] 2e. AdaLN modulation ($8 \to 96768$).
   - [ ] 2f. Full 50-block DiT graph with real weight loader.
-- [x] **3. VAEs:**
-  - [x] Audio VAE decode to 32 kHz stereo PCM (`MiniMaxH3AudioVaeDecoder`).
-  - [x] Video VAE 3D decode with spatial tiling and 5-latent-frame temporal chunking (`MiniMaxH3VideoVaeDecoder`).
-- [x] **4. Pipeline & Denoising Loop:**
-  - [x] Dual-schedule Euler denoising orchestration (`MiniMaxH3Pipeline`).
-- [x] **5. Host Output:**
-  - [x] WAV export for 32 kHz stereo audio latent decode (`MiniMaxH3OutputExporter.ExportAudioWav`).
-  - [x] Frame export / video container writer for decoded video frames (`MiniMaxH3OutputExporter.ExportVideo`).
+- [~] **3. VAEs:**
+  - [~] Audio VAE decode to 32 kHz stereo PCM (`MiniMaxH3AudioVaeDecoder`).
+  - [~] Video VAE 3D decode with spatial tiling and 5-latent-frame temporal chunking (`MiniMaxH3VideoVaeDecoder`).
+- [~] **4. Pipeline & Denoising Loop:**
+  - [~] Dual-schedule Euler denoising orchestration (`MiniMaxH3Pipeline`).
+- [~] **5. Host Output:**
+  - [~] WAV export for 32 kHz stereo audio latent decode (`MiniMaxH3OutputExporter.ExportAudioWav`).
+  - [~] Frame export / video container writer for decoded video frames (`MiniMaxH3OutputExporter.ExportVideo`).
 - [x] **6. Experimental Gate:**
   - [x] Unadvertised in CLI/STATUS until real checkpoint verified (CLAUDE.md Rule 14).
 
@@ -135,4 +143,4 @@ The central engineering abstraction is `MiniMaxH3Layout`:
 - [ ] **Long-clip VAE verification on real video:** Seam blending verification on >22 frame real latent sequence.
 - [ ] **Conditioning Extensions:** I2V, FL2V, Ref2VA.
 
-**Target:** 3–5 days for a structurally complete CPU T2V implementation, assuming existing VAE/DiT primitives map cleanly. I2V/FL2V/Ref2VA and Vulkan are subsequent work.
+**Target (revised 2026-10-03):** the foundation exists. A real CPU T2V run still needs the text-encoder path, the DiT loader and a real-checkpoint parity ladder (level 3 above), none started. No time estimate: the text encoder is a 32B model, so the plan needs sequential loading. I2V/FL2V/Ref2VA and Vulkan follow.

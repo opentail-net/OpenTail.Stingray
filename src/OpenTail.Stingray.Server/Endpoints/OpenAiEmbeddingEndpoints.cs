@@ -6,67 +6,15 @@ public static class OpenAiEmbeddingEndpoints
 {
     public static IEndpointRouteBuilder MapOpenAiEmbeddingEndpoints(this IEndpointRouteBuilder app)
     {
+        // OpenAI: POST /v1/embeddings {"model","input": string | string[]}
         app.MapPost("/v1/embeddings", async (HttpContext ctx) =>
         {
-            EmbeddingApiRequest? req;
-            try
-            {
-                req = await JsonSerializer.DeserializeAsync<EmbeddingApiRequest>(ctx.Request.Body, cancellationToken: ctx.RequestAborted);
-            }
-            catch (JsonException)
-            {
-                ctx.Response.StatusCode = 400;
-                ctx.Response.ContentType = "application/json";
-                await ctx.Response.WriteAsync("{\"error\":{\"message\":\"Invalid JSON request body\",\"type\":\"invalid_request_error\"}}");
-                return;
-            }
+            var parsed = await ReadRequestAsync(ctx, openAiShape: true);
+            if (parsed is null) return;
+            var (req, texts) = parsed.Value;
 
-            if (req is null || (req.Input is null && (req.Inputs is null || req.Inputs.Count == 0)))
-            {
-                ctx.Response.StatusCode = 400;
-                ctx.Response.ContentType = "application/json";
-                await ctx.Response.WriteAsync("{\"error\":{\"message\":\"'input' field is required.\",\"type\":\"invalid_request_error\"}}");
-                return;
-            }
-
-            // Normalize input to list of strings
-            List<string> inputTexts = [];
-            if (!string.IsNullOrEmpty(req.Input))
-            {
-                inputTexts.Add(req.Input);
-            }
-            else if (req.Inputs != null)
-            {
-                inputTexts.AddRange(req.Inputs.Where(s => !string.IsNullOrEmpty(s)));
-            }
-
-            if (inputTexts.Count == 0)
-            {
-                inputTexts.Add(string.Empty);
-            }
-
-            string? modelPath = EncoderModelResolver.Resolve(req.Model, EncoderModelResolver.EmbeddingEnv);
-            if (modelPath is null)
-            {
-                ctx.Response.StatusCode = 404;
-                ctx.Response.ContentType = "application/json";
-                await ctx.Response.WriteAsync(EncoderModelResolver.NotFoundJson(req.Model, EncoderModelResolver.EmbeddingEnv));
-                return;
-            }
-
-            var engine = Engine.Encoders.EncoderPipelineFactory.GetSharedEmbedding(modelPath);
-
-            var embedReq = new EmbeddingRequest
-            {
-                Inputs = inputTexts,
-                Model = modelPath,
-                Dimensions = req.Dimensions,
-                Normalize = true,
-                EncodingFormat = req.EncodingFormat ?? "float"
-            };
-
-            EmbeddingResult result;
-            lock (engine) result = engine.Embed(embedReq); // the GGUF forward pass is not re-entrant
+            var result = await RunAsync(ctx, req, texts);
+            if (result is null) return;
 
             var responseObj = new EmbeddingApiResponse
             {
@@ -90,7 +38,130 @@ public static class OpenAiEmbeddingEndpoints
             await JsonSerializer.SerializeAsync(ctx.Response.Body, responseObj, cancellationToken: ctx.RequestAborted);
         });
 
+        // Ollama: POST /api/embed {"model","input": string | string[]} -> {"model","embeddings":[[...]],...}
+        app.MapPost("/api/embed", async (HttpContext ctx) =>
+        {
+            var parsed = await ReadRequestAsync(ctx, openAiShape: false);
+            if (parsed is null) return;
+            var (req, texts) = parsed.Value;
+
+            long started = System.Diagnostics.Stopwatch.GetTimestamp();
+            var result = await RunAsync(ctx, req, texts);
+            if (result is null) return;
+
+            var responseObj = new OllamaEmbedResponse
+            {
+                Model = result.Model,
+                Embeddings = result.Data.OrderBy(d => d.Index).Select(d => d.Vector).ToList(),
+                TotalDuration = (long)(System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalMilliseconds * 1_000_000d),
+                PromptEvalCount = result.PromptTokens
+            };
+
+            ctx.Response.StatusCode = 200;
+            ctx.Response.ContentType = "application/json";
+            await JsonSerializer.SerializeAsync(ctx.Response.Body, responseObj, cancellationToken: ctx.RequestAborted);
+        });
+
         return app;
+    }
+
+    /// <summary>
+    /// Parses the <c>input</c> field: a string or an array of strings (OpenAI and Ollama both allow either).
+    /// Empty strings, empty arrays and non-string array items (token-id arrays are not supported) are rejected,
+    /// never silently dropped.
+    /// </summary>
+    public static bool TryParseInput(JsonElement input, out List<string> texts, out string error)
+    {
+        texts = [];
+        error = "";
+        switch (input.ValueKind)
+        {
+            case JsonValueKind.String:
+                texts.Add(input.GetString() ?? "");
+                break;
+            case JsonValueKind.Array:
+                foreach (var item in input.EnumerateArray())
+                {
+                    if (item.ValueKind != JsonValueKind.String)
+                    {
+                        error = "'input' array items must be strings (token-id arrays are not supported).";
+                        return false;
+                    }
+                    texts.Add(item.GetString() ?? "");
+                }
+                break;
+            default:
+                error = "'input' field is required and must be a string or an array of strings.";
+                return false;
+        }
+
+        if (texts.Count == 0) { error = "'input' must contain at least one string."; return false; }
+        if (texts.Any(string.IsNullOrEmpty)) { error = "'input' must not contain empty strings."; return false; }
+        return true;
+    }
+
+    private static async Task<(EmbeddingApiRequest Req, List<string> Texts)?> ReadRequestAsync(HttpContext ctx, bool openAiShape)
+    {
+        EmbeddingApiRequest? req;
+        try
+        {
+            req = await JsonSerializer.DeserializeAsync<EmbeddingApiRequest>(ctx.Request.Body, cancellationToken: ctx.RequestAborted);
+        }
+        catch (JsonException)
+        {
+            await WriteErrorAsync(ctx, 400, "Invalid JSON request body", openAiShape);
+            return null;
+        }
+
+        if (req is null)
+        {
+            await WriteErrorAsync(ctx, 400, "Request body is required.", openAiShape);
+            return null;
+        }
+
+        // `inputs` is a non-standard alias kept for existing callers.
+        JsonElement input = req.Input.ValueKind != JsonValueKind.Undefined ? req.Input : req.Inputs;
+        if (!TryParseInput(input, out var texts, out var error))
+        {
+            await WriteErrorAsync(ctx, 400, error, openAiShape);
+            return null;
+        }
+        return (req, texts);
+    }
+
+    private static async Task<EmbeddingResult?> RunAsync(HttpContext ctx, EmbeddingApiRequest req, List<string> texts)
+    {
+        string? modelPath = EncoderModelResolver.Resolve(req.Model, EncoderModelResolver.EmbeddingEnv);
+        if (modelPath is null)
+        {
+            ctx.Response.StatusCode = 404;
+            ctx.Response.ContentType = "application/json";
+            await ctx.Response.WriteAsync(EncoderModelResolver.NotFoundJson(req.Model, EncoderModelResolver.EmbeddingEnv));
+            return null;
+        }
+
+        var engine = Engine.Encoders.EncoderPipelineFactory.GetSharedEmbedding(modelPath);
+
+        var embedReq = new EmbeddingRequest
+        {
+            Inputs = texts,
+            Model = modelPath,
+            Dimensions = req.Dimensions,
+            Normalize = true,
+            EncodingFormat = req.EncodingFormat ?? "float"
+        };
+
+        lock (engine) return engine.Embed(embedReq); // the GGUF forward pass is not re-entrant
+    }
+
+    private static async Task WriteErrorAsync(HttpContext ctx, int status, string message, bool openAiShape)
+    {
+        ctx.Response.StatusCode = status;
+        ctx.Response.ContentType = "application/json";
+        string escaped = JsonSerializer.Serialize(message);
+        await ctx.Response.WriteAsync(openAiShape
+            ? $"{{\"error\":{{\"message\":{escaped},\"type\":\"invalid_request_error\"}}}}"
+            : $"{{\"error\":{escaped}}}");
     }
 }
 
@@ -99,11 +170,12 @@ public sealed record EmbeddingApiRequest
     [JsonPropertyName("model")]
     public string? Model { get; init; }
 
+    /// <summary>A string or an array of strings; parsed by <see cref="OpenAiEmbeddingEndpoints.TryParseInput"/>.</summary>
     [JsonPropertyName("input")]
-    public string? Input { get; init; }
+    public JsonElement Input { get; init; }
 
     [JsonPropertyName("inputs")]
-    public List<string>? Inputs { get; init; }
+    public JsonElement Inputs { get; init; }
 
     [JsonPropertyName("dimensions")]
     public int? Dimensions { get; init; }
@@ -149,4 +221,19 @@ public sealed record EmbeddingUsageResponse
 
     [JsonPropertyName("total_tokens")]
     public int TotalTokens { get; init; }
+}
+
+public sealed record OllamaEmbedResponse
+{
+    [JsonPropertyName("model")]
+    public string Model { get; init; } = "";
+
+    [JsonPropertyName("embeddings")]
+    public List<float[]> Embeddings { get; init; } = [];
+
+    [JsonPropertyName("total_duration")]
+    public long TotalDuration { get; init; }
+
+    [JsonPropertyName("prompt_eval_count")]
+    public int PromptEvalCount { get; init; }
 }

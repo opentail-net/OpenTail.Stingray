@@ -1,6 +1,6 @@
 # DeepSeek V4 / V4.1 review plan (`deepseek4`, `deepseek41`)
 
-**Status:** Stingray has V4 **alpha code, never run** ([058](058-deepseek-full-lineage-implementation-plan.md)).
+**Status (revised 2026-10-03):** V4 has reviewed alpha code (never compared with llama.cpp; its only test does not exercise CSA). V4.1 is **partial**: raw-attention trunk only, and it refuses real configs. Neither is verified. ([058](058-deepseek-full-lineage-implementation-plan.md))
 This plan governs the review of existing V4 alpha code and the architectural definition of V4.1.
 **Policy:** Both architectures remain **not admitted and not advertised** (CLAUDE.md rule 14).
 
@@ -68,32 +68,39 @@ Per plan [058](058-deepseek-full-lineage-implementation-plan.md), Stingray's exi
 
 ---
 
-## Decomposed Review & Implementation Phases
+## Decomposed Review & Implementation Phases (honest state, 2026-10-03)
+
+Legend: [x] done and checked, [~] code exists but is smoke-tested only or has known gaps, [ ] not done.
+Tests: `DeepSeek4AlphaTests` / `DeepSeek41AlphaTests` (component and metadata checks) and `DeepSeek4SyntheticTests` /
+`DeepSeek41SyntheticTests` (one finite-logit smoke test each). **No numeric oracle has run for either architecture.**
 
 ### Part 1: DeepSeek-V4 Review & Synthetic Verification
-- [ ] **Phase 0: V4 Reference Reconciliation**
-  - Line-by-line audit of `DeepSeek4Alpha.cs`, `DeepSeek4ForwardPass.cs`, `DeepSeek4CompressedState.cs` against `deepseek4.cpp` (`bed0a8566`) and TensorSharp `DeepSeek4CpuExecutor.cs`.
-- [ ] **Phase 1: Resolve V4 Alpha Uncertainties**
-  - Wire CSA (ratio 4), verify 8-group output LoRA, align `rope_ext_back` and mHC equations.
-- [ ] **Phase 2: V4 Synthetic Specification Test**
-  - Construct tiny synthetic `deepseek4` GGUF.
-  - Run level-3 independent verification against vendored `llama.cpp` b10306.
-- [ ] **Phase 3: V4 Gate & Audit Record**
-  - Retain `// deepseek4 — NOT admitted` block; update audit notes in plan 058.
+- [~] **Phase 0: V4 reference reconciliation.** A review pass changed the alpha code (CSA ratio 4, 8-group output LoRA,
+  Hadamard on the indexer, per the commit and the hub). Not independently re-audited line by line; the code itself still calls
+  its CSA overlap construction a "working hypothesis".
+- [~] **Phase 1: Resolve V4 alpha uncertainties.** CSA ratio 4 and the 8-group output LoRA are in the code. Unverified:
+  CSA overlap boundaries, indexer top-k selection, `rope_ext_back`, mHC equations, and the grouped-LoRA pointer arithmetic on
+  quantised dtypes (offsets assume a dense stride).
+- [ ] **Phase 2: V4 synthetic specification test.** The one synthetic test uses `compress_ratios = [0, 0]` and 2 output
+  groups: **CSA is not exercised at all**. The planned tiny `deepseek4` GGUF against vendored llama.cpp b10306 was never run.
+- [~] **Phase 3: V4 gate & audit record.** Gate [x] (`// deepseek4 - NOT admitted`). Plan 058's audit notes not updated.
 
 ### Part 2: DeepSeek-V4.1 Architecture Definition & Core Port
-- [ ] **Phase 10: V4.1 Reference & GGUF Schema Lock**
-  - Establish `deepseek41` GGUF architecture loader, metadata parser, and tensor set (`DeepSeek41Alpha.cs`, `DeepSeek41TensorSet.cs`).
-- [ ] **Phase 11: V4.1 Core Forward Pass**
-  - Implement 40-layer trunk, compression ratios **0 / 1 / 2**, 384+1 MoE (top-6, scale 1.5, sqrtsoftplus), and mHC.
-- [ ] **Phase 12: V4.1 Indexer Subsystem**
-  - 8 index-source layers, candidate pool 2048 $\times$ block 8, top-512 final selection.
-- [ ] **Phase 13: V4.1 Engram Subsystem**
-  - Layer 1 and layer 14 N-gram memory lookup, compressed-vocab hashing (99,092), memory-mapped tensor access strategy.
-- [ ] **Phase 14: V4.1 Synthetic Specification Test**
-  - Tiny synthetic `deepseek41` model; verify step trace parity against TensorSharp reference executor.
-- [ ] **Phase 15: V4.1 Gate & Documentation**
-  - Add `// deepseek41 — NOT admitted` block in `ModelCompatibility.cs`.
+- [~] **Phase 10: V4.1 schema.** Loader, parser and tensor set exist. Corrected 2026-10-03 against the official
+  `config.json`: `moe_intermediate_size` 2304 (was 2048) and `index_n_heads` 32 (was 64), now parsed from metadata.
+  Official `compress_ratios` (0,0, then 2 x18, 1 x20, 0,0,0), `index_source_layer_ids` [2,8,14,20,24,28,32,36] and
+  `engram_layer_ids` [1,14] agree with the code's defaults.
+- [~] **Phase 11: V4.1 core forward pass.** Raw attention + mHC + MoE + grouped output only. **Compressed attention for
+  ratios 1 and 2 is not implemented** (the ratio array was parsed and never used), and YaRN (factor 16, beta 32/1, original
+  65536) is not applied. The forward pass now **refuses** configs with ratios > 0 or `rope.scaling.factor` > 1 before loading
+  weights (`DeepSeek41AlphaTests` refusal tests). `output_hc_*` tensors are loaded but not consumed.
+- [ ] **Phase 12: V4.1 indexer subsystem.** Tensors are loaded; the indexer (candidate 2048 x block 8, final top-512, 8
+  index-source layers) is **not implemented**.
+- [~] **Phase 13: V4.1 Engram.** Hashing, lookup and projection exist with unit tests, but the lookup reads raw **F32** (a
+  non-F32 table now throws), and the hash function (multiplier 1000003, mod 99,092) is unverified against any reference.
+- [ ] **Phase 14: V4.1 synthetic specification test.** One 2-layer smoke test; the 40-layer schedule, layers 1 and 14 Engram,
+  ratio-1/2 layers, the index-source schedule and the TensorSharp 103-case oracle comparison are all untested.
+- [~] **Phase 15: V4.1 gate.** `// deepseek41 - NOT admitted` block [x]; refusal gates [x].
 
 ### Deferred (Explicitly Out of Scope)
 - **V4.1 DSpark**: Layers 37–39 speculative drafting is deferred.
@@ -107,9 +114,9 @@ Per plan [058](058-deepseek-full-lineage-implementation-plan.md), Stingray's exi
 
 | Model | Level 2 (Specification) | Level 3 (Independent Implementation) | Level 4 (Real Weights) | Admission (Level 5) |
 |---|---|---|---|---|
-| **V4** | Synthetic tiny GGUF | Vendored `llama.cpp` b10306 | Deferred (>100 GB) | Needs large-RAM host + `admit-arch` |
-| **V4.1** | Synthetic tiny GGUF | TensorSharp 103-case oracle | Deferred (>335 GB) | Needs custom deepseek41 runtime host |
+| **V4** | Smoke test only (ratio 0, 2 groups); tiny-GGUF comparison not run | Vendored `llama.cpp` b10306 knows `deepseek4` | **Feasible**: Q2_K ~98.6 GB, paged from `E:_models`, hours-long correctness-only run (decision 2026-10-03: slowness is acceptable); do after GLM-5.3 | `admit-arch` + timed runs |
+| **V4.1** | Smoke test only | TensorSharp 103-case oracle (needs a PyTorch/TensorSharp run) | **Not attempted: ~335 GB does not fit the 279 GB scratch disk.** Stays written, tested synthetically, not exposed | Not admissible on this host |
 
 ---
 
-**Effort:** ~1 day for V4 alpha reconciliation + b10306 synthetic verification; ~2 days for V4.1 core, ratios 0/1/2, and Engram architecture port. DSpark, vision, and real weights are separate.
+**Effort:** the original estimates covered port + smoke tests. Remaining for V4: a CSA-exercising synthetic test, the b10306 comparison, then the paged real-weight run. Remaining for V4.1: ratios 1/2 attention, the indexer, YaRN, dtype-aware Engram, an oracle comparison.

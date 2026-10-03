@@ -1,6 +1,6 @@
 # Muse-Glimmer port plan (`muse-glimmer`)
 
-**Status:** in progress (2026-10-03). **Policy:** port now, prove later. Not admitted, not
+**Status (revised 2026-10-03): text tower REAL-WEIGHT VERIFIED on CPU (level 4), not admitted.** Vision tower, DFlash and batched prefill for gated models are not done. **Policy:** port now, prove later. Not admitted, not
 advertised until checkpoint-verified (CLAUDE.md rule 14; [ported-families-todo](ported-families-todo.md)).
 
 ## Architecture (text tower)
@@ -98,12 +98,22 @@ The vision tower (50-layer ViT, 1536 hidden width, merge size 2, erf-GELU, Lancz
    `attn_q_norm.weight = 3.87f`, `attn_k_norm.weight = 1.0f`, converted per-layer norm weights, unshifted
    final output norm, SWA masking past the window, NoPE on full layers, attention output gate, 1e-8 post-norms,
    embedding norm and output multiplier scale-then-softcap; verified max |Δlogit| < 1e-3 (F32). Passed 2026-10-03.
-- [ ] **Independent implementation (level 3):** run the same synthetic GGUF through a llama.cpp build
-   from `bed0a8566` or later (has `muse-glimmer.cpp`) and compare logits. That needs building llama.cpp
-   or newer vendored binaries.
-- [ ] **Real weights (level 4):** with a checkpoint (Muse-Glimmer-30B; small quants about 7-10 GB, fits
-   this machine), coherence, then `stingray admit-arch` against that newer `llama-server`.
+- [ ] **Independent implementation, synthetic (level 3):** the synthetic-GGUF comparison against llama.cpp was never run
+   as such; a CPU llama.cpp build at `bed0a8566` now exists (`examples/llama.cpp/llama.cpp/build-ref`), so it is cheap to do. The
+   level-4 result below makes it lower priority.
+- [x] **Real weights, text, CPU (level 4), 2026-10-03:** `unsloth/Muse-Glimmer-30B-GGUF` `UD-Q4_K_XL` (14.8 GB), greedy,
+   `--temp 0 --repeat-penalty 1.0`, raw prompt via a pass-through `--chat-template`, against llama.cpp `bed0a8566`
+   (`llama-completion -no-cnv`, CPU):
+   - "The capital of France is": identical for 20 tokens, then a **0.006-nat near-tie** (" in" NLL 0.7108 vs " proper"
+     0.7169 in our engine), i.e. quantised-accumulation noise;
+   - "Q: What is 17 times 23? Think step by step. A:": identical through "340+51=391. So";
+   - "def fibonacci(n):": identical through `else:`.
+   Decode about 1.1 t/s on this CPU. **Not covered:** prompts were under 40 tokens, so the sliding-window mask on real weights
+   is not exercised; no `admit-arch` verdict; no timed runs; vision and DFlash untouched. Harness notes: the CLI's default
+   `--repeat-penalty 1.1` breaks greedy parity (always pass 1.0); the model's real chat template crashed our Jinja evaluator
+   (list `+` list), fixed 2026-10-03 with a regression test but not compared against a reference rendering. The checkpoint was
+   deleted afterwards.
 - [ ] **Admission (level 5):** admit through the normal text-LLM path.
 
-**Effort:** port + specification test ~2-4 hours. Real-weight verification (fits 64 GB RAM at 7-10 GB),
+**Effort:** port + specification test ~2-4 hours; level-4 text check done 2026-10-03. Remaining:
 closeout performance + DRY pass, batched prefill, and admission are separate.

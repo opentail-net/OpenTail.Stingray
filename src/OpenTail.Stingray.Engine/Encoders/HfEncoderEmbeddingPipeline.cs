@@ -54,6 +54,54 @@ public sealed class HfEncoderEmbeddingPipeline : IEmbeddingPipeline
         return new HfEncoderEmbeddingPipeline(name, tokenizer, encoder, pooling, normalize, maxLen);
     }
 
+    /// <summary>
+    /// Loads a GGUF <c>bert</c>-architecture embedding model (e.g. all-MiniLM-L6-v2 Q8_0). Pooling comes from
+    /// <c>bert.pooling_type</c> (llama.cpp numbering, which <see cref="PoolingType"/> shares); output is L2-normalised
+    /// by default like llama.cpp's <c>llama-embedding</c>. The WordPiece vocab is read from the GGUF, with BERT-uncased
+    /// normalisation assumed (GGUF stores no normalizer flags).
+    /// </summary>
+    public static HfEncoderEmbeddingPipeline LoadGguf(string ggufPath)
+    {
+        using var model = OpenTail.Stingray.Core.GgufModel.Open(ggufPath);
+        var md = model.Metadata;
+
+        string tokModel = md.TryGetValue("tokenizer.ggml.model", out var tm) ? tm as string ?? "" : "";
+        var tokens = ((object[])md["tokenizer.ggml.tokens"]).Select(o => (string)o).ToList();
+        int MdInt(string key, int fallback) => md.TryGetValue(key, out var v) ? Convert.ToInt32(v, System.Globalization.CultureInfo.InvariantCulture) : fallback;
+        EncoderTokenizer tokenizer;
+        switch (tokModel)
+        {
+            case "bert": // WordPiece (MiniLM, BGE, ...)
+                tokenizer = EncoderTokenizer.FromWordPiece(OpenTail.Stingray.Core.BertWordPieceTokenizer.FromGgufVocab(tokens));
+                break;
+            case "t5": // SentencePiece Unigram (XLM-R family, e.g. Arctic Embed L v2)
+            {
+                var scores = ((object[])md["tokenizer.ggml.scores"]).Select(o => Convert.ToSingle(o, System.Globalization.CultureInfo.InvariantCulture)).ToArray();
+                int[]? types = md.TryGetValue("tokenizer.ggml.token_type", out var tt2)
+                    ? ((object[])tt2).Select(o => Convert.ToInt32(o, System.Globalization.CultureInfo.InvariantCulture)).ToArray() : null;
+                byte[]? charsmap = md.TryGetValue("tokenizer.ggml.precompiled_charsmap", out var cm) && cm is object[] raw
+                    ? raw.Select(o => unchecked((byte)Convert.ToInt32(o, System.Globalization.CultureInfo.InvariantCulture))).ToArray() : null;
+                var uni = OpenTail.Stingray.Core.UnigramTokenizer.FromGgufVocab(tokens.ToArray(), scores, MdInt("tokenizer.ggml.unknown_token_id", 3), types, charsmap);
+                tokenizer = EncoderTokenizer.FromUnigram(uni, MdInt("tokenizer.ggml.bos_token_id", 0), MdInt("tokenizer.ggml.eos_token_id", 2), MdInt("tokenizer.ggml.padding_token_id", 1));
+                break;
+            }
+            default:
+                throw new NotSupportedException($"GGUF encoder tokenizer '{tokModel}' is not supported (only 'bert' WordPiece and 't5' Unigram).");
+        }
+
+        // A single-row type table (XLM-R) is stored 1-D, so there is no second dimension to read.
+        int typeVocab = model.FindTensor("token_types.weight") is { } tt ? (tt.Dimensions.Length > 1 ? (int)tt.Dimensions[1] : 1) : 0;
+        var config = EncoderConfig.FromGguf(md, typeVocab);
+        var encoder = TransformerEncoder.LoadGguf(config, model);
+
+        var pooling = md.TryGetValue("bert.pooling_type", out var pt)
+            ? (PoolingType)Convert.ToInt32(pt, System.Globalization.CultureInfo.InvariantCulture)
+            : PoolingType.Mean;
+        if (pooling == PoolingType.None) pooling = PoolingType.Mean;
+        string name = md.TryGetValue("general.name", out var gn) && gn is string s && s.Length > 0 ? s : Path.GetFileNameWithoutExtension(ggufPath);
+        return new HfEncoderEmbeddingPipeline(name, tokenizer, encoder, pooling, normalize: true, config.MaxSequenceLength);
+    }
+
     private static (PoolingType Pooling, bool Normalize) ReadSentenceTransformersModules(string modelDir)
     {
         string modules = Path.Combine(modelDir, "modules.json");

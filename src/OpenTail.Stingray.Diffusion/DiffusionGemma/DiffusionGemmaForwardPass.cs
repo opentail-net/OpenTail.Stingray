@@ -57,6 +57,22 @@ public sealed unsafe class DiffusionGemmaForwardPass
         _model = model;
         _config = config;
 
+        // The real unsloth GGUF (inspected 2026-10-03) uses the Gemma-4 MoE layer layout, which this port does not
+        // implement: fused ffn_gate_up_exps, per-expert scales, ffn_gate_inp.scale router scaling, parallel dense +
+        // expert FFN with pre_ffw_norm_2 / post_ffw_norm_1 / post_ffw_norm_2, layer_output_scale, and self_cond_{pre_norm,
+        // gate,up,down}. The port also lacks RoPE and V-norm and its prefill never applies attention. All of those tensors
+        // were `Optional` under guessed names, so a real file would silently run a degraded model: refuse it instead.
+        if (model.FindTensor("blk.0.post_ffw_norm_1.weight") is not null
+            || model.FindTensor("blk.0.ffn_gate_up_exps.weight") is not null
+            || model.FindTensor("self_cond_gate.weight") is not null)
+        {
+            throw new NotSupportedException(
+                "diffusion-gemma: this checkpoint uses the Gemma-4 MoE layer layout (fused gate/up experts, router scale, " +
+                "parallel dense+expert FFN norms, layer output scales, self_cond_* MLP), which the port does not implement; " +
+                "it also lacks RoPE and attention in prefill. Ported, not verified, not admitted. " +
+                "See docs/1-correctness/2026-10-03-unverified-port-claims.md.");
+        }
+
         DeepSeek4TensorRef Required(string name)
         {
             var info = model.FindTensor(name)

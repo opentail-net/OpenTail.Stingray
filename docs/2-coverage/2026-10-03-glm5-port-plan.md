@@ -1,6 +1,6 @@
 # GLM-5.x port plan (`glm-dsa`: GLM-5.2 / 5.3; `glm5next`: GLM-5.3-Flash)
 
-**Status:** not started (2026-10-03). **Policy:** port now, prove later; not admitted, not advertised
+**Status (revised 2026-10-03): PORTED, SMOKE-TESTED ONLY.** Both variants have code and a finite-logit smoke test; `glm5next` lacks K-pool sparse selection; no numeric oracle has run. **Policy:** port now, prove later; not admitted, not advertised
 (CLAUDE.md rule 14; [ported-families-todo](ported-families-todo.md)).
 
 ## Architecture & Upstream References
@@ -61,44 +61,42 @@
 
 ---
 
-## New Work & Decomposed Phases
+## New Work & Decomposed Phases (honest state, 2026-10-03)
+
+Legend: [x] done and checked, [~] code exists but only smoke-tested (finite logits) or has a known gap, [ ] not done.
+The only tests are `GlmDsaSyntheticTests` and `Glm5NextSyntheticTests`: metadata parsing, the layer pattern, and a tiny forward
+pass that checks the logits are finite. **No numeric oracle has been run for either variant** (not llama.cpp b10306, not
+`bed0a8566`, not an independent reimplementation).
 
 ### Phase 0: Freeze References
-- [ ] Freeze exact shapes, tensor naming, and metadata keys against `glm-dsa.cpp` and `glm5-next.cpp`.
+- [~] Shapes, tensor names and metadata keys were taken from `glm-dsa.cpp` / `glm5-next.cpp` while porting; no recorded
+  reconciliation against a real GGUF inventory (the GLM-5.3 Q2_K_XL download to `E:\_models\glm-5.3` is in progress, so this
+  can now be done).
 
-### Phase 1: `glm-dsa` Trunk
-- [ ] **1a. Metadata & Tensor Set (`GlmDsaAlpha.cs`)**:
-  Parse `glm-dsa` / `glm_dsa` hyperparameters, load MLA tensors (`wq_a`, `wq_b`, `wkv_a_mqa`, `wk_b`, `wv_b`, `wo`), indexer tensors (`indexer_k_norm`, `indexer_k_norm_b`, `indexer_proj`, `indexer_attn_k`, `indexer_attn_q_b`), dense FFN and MoE tensors.
-- [ ] **1b. MLA & Attention**:
-  Compressed KV caching ($512 + 64$ per token), absorbed Q calculation, NORM RoPE on positional slice.
-- [ ] **1c. DSA Indexer & Refresh Schedule**:
-  Full indexer on schedule (layers 0, 1, 2, then every 4th); reuse `top_k` across shared indexer layers.
-- [ ] **1d. Hadamard Indexer Rotation**:
-  In-place orthonormal FWHT (`PrismHadamard`) on `indexer_q` and `indexer_k` scaled by $1/\sqrt{128}$.
-- [ ] **1e. MoE & Leading Dense Blocks**:
-  First 3 layers dense; subsequent layers MoE with sigmoid routing, bias, top-8, renormalization, scale 2.5, and shared expert.
-- [ ] **1f. Full Forward Pass (`GlmDsaForwardPass.cs`)**:
-  Assemble decode pass.
-- [ ] **1g. Not-Admitted Gate & Synthetic Test**:
-  Add `// glm-dsa — NOT admitted` block in `ModelCompatibility.cs`. Build synthetic specification test (`GlmDsaSyntheticTests.cs`) and verify against vendored llama.cpp b10306.
+### Phase 1: `glm-dsa` Trunk (`GlmDsaAlpha.cs`, `GlmDsaForwardPass.cs`)
+- [~] **1a. Metadata & tensor set.** Present.
+- [~] **1b. MLA & attention.** Present (absorbed Q, compressed KV, RoPE on the positional slice); unverified.
+- [~] **1c. DSA indexer & refresh schedule.** Present, with top-k reuse on shared layers; the schedule is untested against
+  the reference.
+- [~] **1d. Hadamard indexer rotation.** Present (`PrismHadamard`); unverified.
+- [~] **1e. MoE & leading dense blocks.** Present (sigmoid routing, shared expert, scale); unverified.
+- [~] **1f. Full forward pass.** Present.
+- [~] **1g. Not-admitted gate & synthetic test.** Gate [x]. Synthetic test is a smoke test; the planned **comparison against
+  vendored llama.cpp b10306 on a synthetic GGUF was never run** [ ].
 
-### Phase 2: `glm5next` Trunk (GLM-5.3-Flash)
-- [ ] **2a. Metadata & Tensor Set (`Glm5NextAlpha.cs`)**:
-  Hyperparameters (`head_count_kv`, `index_kpool`, `hc_mult`, etc.) and tensor loader.
-- [ ] **2b. KDA Recurrence**:
-  Independent KDA linear attention recurrence (kernel 4, gate clamp -5, channel decay).
-- [ ] **2c. Sinkhorn mHC (`Glm5NextMhcTests`)**:
-  4-stream hyper-connections, 20 Sinkhorn iterations, FP32 arithmetic, isolated unit tests.
-- [ ] **2d. K-Pool Indexer Subsystem**:
-  4-token pool construction, tail selection, pooled K layout, sequence-local state.
-- [ ] **2e. NoPE MLA / DSA**:
-  Main attention with `qk_rope_head_dim = 0`, `q_lora_rank = 1536`.
-- [ ] **2f. MoE & SwiGLU Clamp**:
-  288+1 MoE, FP32 router, top-8, scale 2.5, clamp 10.
-- [ ] **2g. Full 45-Layer Trunk Forward Pass (`Glm5NextForwardPass.cs`)**:
-  Assemble the 34 KDA + 11 MLA layers.
-- [ ] **2h. Not-Admitted Gate & Synthetic Test**:
-  Add `// glm5next — NOT admitted` block and specification tests.
+### Phase 2: `glm5next` Trunk (GLM-5.3-Flash) (`Glm5NextAlpha.cs`, `Glm5NextForwardPass.cs`)
+- [~] **2a. Metadata & tensor set.** Present.
+- [~] **2b. KDA recurrence.** Present; no independent numeric check.
+- [~] **2c. Sinkhorn mHC.** Present. The planned isolated `Glm5NextMhcTests` **do not exist**. A bug was found and fixed
+  2026-10-03: the four streams accumulated across tokens instead of being rebuilt from each token's embedding; now pinned by
+  `Glm5Next_HcStreams_AreRebuiltFromTheCurrentTokenOnly` (mutation-checked).
+- [ ] **2d. K-pool indexer subsystem.** The pooled keys are built and stored, but **selection does not drive attention**:
+  MLA attends over all cached KV, and the forward pass throws once the context exceeds `indexer.top_k` keys (full attention
+  is exact only up to that length). Tail selection and pooled-K layout are unverified.
+- [~] **2e. NoPE MLA / DSA.** Dense attention only (see 2d).
+- [~] **2f. MoE & SwiGLU clamp.** Present; unverified.
+- [~] **2g. Full 45-layer trunk forward pass.** Present, with the 2d limit.
+- [~] **2h. Not-admitted gate & synthetic test.** Gate [x]; smoke test only.
 
 ### Deferred (Explicitly Out of Scope)
 - **MTP / NextN Speculative Drafter**: Text trunk first; NextN extra block is a follow-up.
@@ -116,10 +114,10 @@
   - `glm-dsa`: verified against vendored **`llama.cpp` b10306** binaries using synthetic GGUFs.
   - `glm5next`: verified against upstream `bed0a8566` source / TensorSharp / HF references.
 - **Real Weights (Level 4)**:
-  - Deferred until access to large-memory (>256 GB RAM) host.
+  - GLM-5.3 Q2_K_XL (236 GiB) fits the 279 GB scratch disk; a paged, hours-long, correctness-only run on this 64 GB host is acceptable (decision 2026-10-03). Download to `E:_modelsglm-5.3` in progress. Larger quants are out of reach.
 - **Admission (Level 5)**:
   - Standard admission gate once level 4 evidence is captured.
 
 ---
 
-**Effort:** ~1-2 days for `glm-dsa` port + synthetic oracle tests; ~2 days for `glm5next` trunk + mHC/K-pool/KDA tests. MTP, vision, and real-weight verification are separate.
+**Effort:** the original estimate covered port + smoke tests only. Remaining: K-pool selection, the numeric oracles above, and a paged real-weight run (hours of wall-clock, dominated by disk paging).

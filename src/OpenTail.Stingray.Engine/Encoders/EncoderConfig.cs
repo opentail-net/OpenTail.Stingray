@@ -48,6 +48,35 @@ public sealed record EncoderConfig
     /// <summary>Longest input the position scheme takes.</summary>
     public int MaxSequenceLength => MaxPositions - PositionOffset;
 
+    /// <summary>
+    /// Config from a GGUF <c>bert</c>-architecture header (llama.cpp layout). GGUF stores positions already offset
+    /// (the converter drops the first <c>pad+1</c> RoBERTa/XLM-R rows), so positions start at 0.
+    /// </summary>
+    public static EncoderConfig FromGguf(IReadOnlyDictionary<string, object> md, int typeVocabSize)
+    {
+        string arch = md.TryGetValue("general.architecture", out var a) ? a as string ?? "" : "";
+        if (arch != "bert")
+            throw new NotSupportedException($"GGUF encoder architecture '{arch}' is not supported (only 'bert').");
+        int Int(string key) => md.TryGetValue(key, out var v) ? Convert.ToInt32(v, System.Globalization.CultureInfo.InvariantCulture)
+            : throw new InvalidDataException($"GGUF is missing '{key}'.");
+        float eps = md.TryGetValue("bert.attention.layer_norm_epsilon", out var e) ? Convert.ToSingle(e, System.Globalization.CultureInfo.InvariantCulture) : 1e-12f;
+        return new EncoderConfig
+        {
+            ModelType = "bert",
+            Family = EncoderFamily.Bert,
+            HiddenSize = Int("bert.embedding_length"),
+            NumLayers = Int("bert.block_count"),
+            NumHeads = Int("bert.attention.head_count"),
+            IntermediateSize = Int("bert.feed_forward_length"),
+            VocabSize = md.TryGetValue("bert.vocab_size", out var vs) ? Convert.ToInt32(vs, System.Globalization.CultureInfo.InvariantCulture) : 0,
+            MaxPositions = Int("bert.context_length"),
+            TypeVocabSize = typeVocabSize,
+            LayerNormEps = eps,
+            HiddenAct = "gelu",
+            PositionOffset = 0,
+        };
+    }
+
     public static EncoderConfig FromFile(string configJsonPath)
     {
         using var doc = JsonDocument.Parse(File.ReadAllBytes(configJsonPath));

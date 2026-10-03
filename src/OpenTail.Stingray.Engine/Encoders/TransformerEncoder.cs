@@ -116,6 +116,70 @@ public sealed class TransformerEncoder : IDisposable
         return new TransformerEncoder(c, p, word, pos, type, lnW, lnB, relBias, layers);
     }
 
+    /// <summary>
+    /// Loads a GGUF <c>bert</c>-architecture encoder (llama.cpp tensor names), dequantising every tensor to F32 so the
+    /// same <see cref="PackedLinearF32"/> kernels serve safetensors and GGUF (a Q8_0 encoder expands about 4x in RAM).
+    /// </summary>
+    public static unsafe TransformerEncoder LoadGguf(EncoderConfig c, OpenTail.Stingray.Core.GgufModel m)
+    {
+        float[] R(string name) => ReadGgufF32(m, name);
+        bool Has(string name) => m.FindTensor(name) is not null;
+        int h = c.HiddenSize;
+
+        var word = R("token_embd.weight");
+        var pos = R("position_embd.weight");
+        float[]? type = c.TypeVocabSize > 0 && Has("token_types.weight") ? R("token_types.weight") : null;
+        var lnW = R("token_embd_norm.weight");
+        var lnB = R("token_embd_norm.bias");
+
+        var layers = new Layer[c.NumLayers];
+        for (int i = 0; i < c.NumLayers; i++)
+        {
+            string l = $"blk.{i}.";
+            var qkvW = new float[3 * h * h];
+            var qkvB = new float[3 * h];
+            if (Has(l + "attn_qkv.weight"))
+            {
+                R(l + "attn_qkv.weight").CopyTo(qkvW, 0);
+                R(l + "attn_qkv.bias").CopyTo(qkvB, 0);
+            }
+            else
+            {
+                string[] names = ["attn_q", "attn_k", "attn_v"];
+                for (int j = 0; j < 3; j++)
+                {
+                    R($"{l}{names[j]}.weight").CopyTo(qkvW, j * h * h);
+                    R($"{l}{names[j]}.bias").CopyTo(qkvB, j * h);
+                }
+            }
+            layers[i] = new Layer
+            {
+                Qkv = new PackedLinearF32(qkvW, qkvB, 3 * h, h),
+                AttnOut = new PackedLinearF32(R(l + "attn_output.weight"), R(l + "attn_output.bias"), h, h),
+                Ffn1 = new PackedLinearF32(R(l + "ffn_up.weight"), R(l + "ffn_up.bias"), c.IntermediateSize, h),
+                Ffn2 = new PackedLinearF32(R(l + "ffn_down.weight"), R(l + "ffn_down.bias"), h, c.IntermediateSize),
+                AttnLnW = R(l + "attn_output_norm.weight"), AttnLnB = R(l + "attn_output_norm.bias"),
+                OutLnW = R(l + "layer_output_norm.weight"), OutLnB = R(l + "layer_output_norm.bias"),
+            };
+        }
+        return new TransformerEncoder(c, "", word, pos, type, lnW, lnB, null, layers);
+    }
+
+    private static unsafe float[] ReadGgufF32(OpenTail.Stingray.Core.GgufModel m, string name)
+    {
+        var t = m.FindTensor(name) ?? throw new InvalidDataException($"GGUF is missing tensor '{name}'.");
+        long n = t.ElementCount;
+        int cols = (int)t.Dimensions[0];
+        long rows = n / cols;
+        long bytesPerRow = (long)(cols / OpenTail.Stingray.Core.DTypeInfo.BlockSize(t.DType)) * OpenTail.Stingray.Core.DTypeInfo.BytesPerBlock(t.DType);
+        var dst = new float[n];
+        byte* src = m.GetTensorDataPtr(t);
+        fixed (float* d = dst)
+            for (long r = 0; r < rows; r++)
+                OpenTail.Stingray.Cpu.SimdKernels.DequantRow(src + r * bytesPerRow, d + r * cols, cols, t.DType);
+        return dst;
+    }
+
     private static Layer LoadBertLayer(EncoderConfig c, SafetensorsLoader st, string l, string qkvPrefix, string[] qkvNames, string attnOut, string attnLn)
     {
         int h = c.HiddenSize;

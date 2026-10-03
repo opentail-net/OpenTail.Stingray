@@ -112,3 +112,22 @@ Two harness findings from this run (neither is a model bug):
 - The CLI's default `--repeat-penalty 1.1` changes greedy output versus llama.cpp's default; always pass `1.0` for parity.
 - Muse-Glimmer's real chat template failed in our Jinja evaluator (list `+` list unsupported). Fixed with a regression
   test; the real template renders now, but it has not been compared against a reference rendering.
+
+## Update 2026-10-03 (later still): DiffusionGemma checked against the real checkpoint's tensor inventory
+
+`unsloth/diffusiongemma-26B-A4B-it-GGUF` Q4_K_M (692 tensors) was inventoried and compared with the port and with
+llama.cpp's `gemma4.cpp` (same backbone). The port does **not** match the real architecture, and the mismatch was silent:
+- **Tensor names:** the port looks for `self_cond.gate/up/down.weight`, `attn_post_norm`, `ffn_post_norm`, `ffn_gate_exps`,
+  `ffn_up_exps` (all `Optional`). The file has `self_cond_pre_norm/gate/up/down`, `post_attention_norm`, `post_ffw_norm`,
+  `post_ffw_norm_1`, `post_ffw_norm_2`, `pre_ffw_norm_2`, fused `ffn_gate_up_exps`, `ffn_down_exps.scale`,
+  `ffn_gate_inp.scale`, `layer_output_scale`, `enc_layer_output_scale`, `rope_freqs`. None would load.
+- **Architecture:** no RoPE and no V-norm anywhere; `PrefillPrompt` computes K/V and an FFN per token but never applies
+  attention (prompt tokens do not attend to each other); the FFN is not the Gemma-4 layer (dense MLP and expert FFN in
+  parallel, each with its own norm, router logits from `rms_norm(attn_out)/sqrt(n_embd) * ffn_gate_inp.scale`, top-8 softmax
+  with renormalisation, per-expert down scale, summed, `post_ffw_norm`, residual, `layer_output_scale`).
+- **Containment (done):** the forward pass now refuses a checkpoint carrying those markers
+  (`DiffusionGemmaRealCheckpointGuardTests`).
+- **Unknown, needs the HF/vLLM source:** what `enc_layer_output_scale` vs `layer_output_scale` mean (prefill vs canvas pass?),
+  the self-conditioning pre-norm placement, and Gumbel-max sampling. llama.cpp has no diffusion-gemma model file.
+- **Likely route to a real check:** rewrite the backbone against `gemma4.cpp`, then verify its causal-prefill path by
+  re-labelling a copy of the GGUF as `gemma4` for llama.cpp; the canvas/self-conditioning path still needs the HF reference.

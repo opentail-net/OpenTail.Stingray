@@ -419,3 +419,21 @@ public sealed unsafe class DiffusionGemmaTests
         }
     }
 }
+
+public sealed class DiffusionGemmaRealCheckpointGuardTests
+{
+    [Fact]
+    public void RealGemma4MoeLayout_IsRefusedInsteadOfRunningDegraded()
+    {
+        const string path = @"F:\_models\diffusiongemma\diffusiongemma-26B-A4B-it-Q4_K_M.gguf";
+        string? env = Environment.GetEnvironmentVariable("STINGRAY_TEST_DIFFUSIONGEMMA_GGUF");
+        string? gguf = env is { Length: > 0 } && File.Exists(env) ? env : File.Exists(path) ? path : null;
+        Assert.SkipUnless(gguf != null, "DiffusionGemma GGUF not found (set STINGRAY_TEST_DIFFUSIONGEMMA_GGUF)");
+
+        using var model = OpenTail.Stingray.Core.GgufModel.Open(gguf!);
+        var ex = Assert.Throws<NotSupportedException>(() =>
+            new OpenTail.Stingray.Diffusion.DiffusionGemma.DiffusionGemmaForwardPass(
+                model, new OpenTail.Stingray.Diffusion.DiffusionGemma.DiffusionGemmaConfig()));
+        Assert.Contains("Gemma-4 MoE layer layout", ex.Message);
+    }
+}

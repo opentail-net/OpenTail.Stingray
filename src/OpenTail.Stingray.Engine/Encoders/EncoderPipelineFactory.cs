@@ -41,10 +41,19 @@ public static class EncoderPipelineFactory
         }
     }
 
+    /// <summary>True when <paramref name="path"/> is a GGUF whose architecture is the <c>bert</c> encoder (not a decoder embedder).</summary>
+    public static bool IsGgufBertEncoder(string path)
+    {
+        if (!path.EndsWith(".gguf", StringComparison.OrdinalIgnoreCase) || !File.Exists(path)) return false;
+        using var m = OpenTail.Stingray.Core.GgufModel.Open(path);
+        return m.Metadata.TryGetValue("general.architecture", out var a) && a as string == "bert";
+    }
+
     /// <summary>New embedding pipeline for <paramref name="model"/> (caller disposes).</summary>
     public static IEmbeddingPipeline CreateEmbedding(string model)
     {
         if (IsHfEncoderDirectory(model)) return HfEncoderEmbeddingPipeline.Load(model);
+        if (IsGgufBertEncoder(model)) return HfEncoderEmbeddingPipeline.LoadGguf(model);
         if (model.EndsWith(".gguf", StringComparison.OrdinalIgnoreCase) && File.Exists(model)) return new EmbeddingEngine(model);
         throw new FileNotFoundException(
             $"Embedding model '{model}' not found. Pass an HF encoder checkpoint directory (config.json, model.safetensors, " +

@@ -1,6 +1,6 @@
 # Qwen 3.8 Flash Next port plan (`qwen4exp`)
 
-**Status:** in progress (Phase 0/1). **Policy:** port now, prove later; not admitted, not advertised
+**Status (revised 2026-10-03): PORTED PARTIALLY; real configs are refused.** Routed MoE was missing and is now executed; PLE n-gram table, RoPE in the QSA mixer and QSA indexer/K-pool selection are not implemented (see the phase list). **Policy:** port now, prove later; not admitted, not advertised
 (CLAUDE.md rule 14; [ported-families-todo](ported-families-todo.md)).
 
 ## Architecture
@@ -54,7 +54,7 @@ Additional architectural components:
 
 - **Total Parameter Count**: ~180B total (125B language + 51B PLE n-gram table + 4B MTP).
 - **Weights**: Smallest published GGUF (`UD-IQ1_S`) is **72.5 GB**. Standard quants range from 79 to 192 GB (BF16 is 354 GB).
-- **Hardware Constraint**: This dev machine has 64 GB RAM and an integrated GPU. Real-checkpoint verification **does not fit in RAM**.
+- **Hardware Constraint**: This dev machine has 64 GB RAM and an integrated GPU. The 72.5 GB checkpoint does not fit in RAM but **does fit the 279 GB scratch disk**, so a paged, slow, correctness-only run is possible (decision 2026-10-03). It is blocked on the missing pieces above, not on hardware.
 - **Strategy**: Per CLAUDE.md rule 14, **synthetic verification is our primary gate**. Real-weight verification is deferred until hardware capacity permits. The architecture will be ported and verified synthetically, but kept unadmitted.
 
 ## Architectural Design: Composition over Inheritance

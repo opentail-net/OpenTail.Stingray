@@ -109,6 +109,36 @@ public sealed class BertWordPieceTokenizer
         return new BertWordPieceTokenizer(vocab, lower, chinese, strip, clean, unk, prefix, maxChars);
     }
 
+    /// <summary>
+    /// Builds the tokenizer from an in-memory vocab list (id = index), e.g. a GGUF <c>tokenizer.ggml.tokens</c> array.
+    /// GGUF carries no normalizer flags; BERT-uncased conventions (lowercase, strip accents, Chinese-char spacing)
+    /// are assumed, as llama.cpp's <c>bert</c> tokenizer does.
+    /// </summary>
+    public static BertWordPieceTokenizer FromVocabTokens(IReadOnlyList<string> tokens, bool doLowerCase = true, bool tokenizeChineseChars = true)
+    {
+        var vocab = new Dictionary<string, int>(tokens.Count, StringComparer.Ordinal);
+        for (int i = 0; i < tokens.Count; i++) vocab[tokens[i]] = i;
+        return new BertWordPieceTokenizer(vocab, doLowerCase, tokenizeChineseChars);
+    }
+
+    /// <summary>
+    /// Builds the tokenizer from a GGUF <c>bert</c> vocab. llama.cpp's converter rewrites WordPiece into a "phantom space"
+    /// form: a word-start token <c>w</c> is stored as <c>▁w</c>, a continuation <c>##x</c> as plain <c>x</c>, and
+    /// <c>[SPECIAL]</c> tokens verbatim. This undoes that so the usual WordPiece matcher (<c>##</c> continuations) applies.
+    /// </summary>
+    public static BertWordPieceTokenizer FromGgufVocab(IReadOnlyList<string> tokens, bool doLowerCase = true, bool tokenizeChineseChars = true)
+    {
+        var restored = new string[tokens.Count];
+        for (int i = 0; i < tokens.Count; i++)
+        {
+            string t = tokens[i];
+            restored[i] = t.Length > 0 && t[0] == '▁' ? t[1..]
+                : t.Length >= 2 && t[0] == '[' && t[^1] == ']' ? t
+                : "##" + t;
+        }
+        return FromVocabTokens(restored, doLowerCase, tokenizeChineseChars);
+    }
+
     /// <summary>Vocab id of <paramref name="token"/>, or null when it is not in the vocab.</summary>
     public int? TokenToId(string token) => _vocab.TryGetValue(token, out var id) ? id : null;
 
