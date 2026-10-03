@@ -133,6 +133,7 @@ public sealed unsafe class DeepSeek4ForwardPass : IForwardPass
         }
 
         _compressedState = new DeepSeek4CompressedState(_numLayer, _headDim, hp.IndexerHeadSize, hp.CompressRatios);
+        VocabSize = (int)_tensors.Output.Info.Dimensions[1];
     }
 
     public int VocabSize { get; private set; }

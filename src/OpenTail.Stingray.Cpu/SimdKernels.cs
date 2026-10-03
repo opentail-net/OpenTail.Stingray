@@ -10055,43 +10055,78 @@ public static unsafe class SimdKernels
             float scale = (float)(1.0 / Math.Sqrt(ss / size + eps));
             var scaleV = Vector256.Create(scale);
 
-            // Pass 2: scale and weight
+            // Pass 2: scale and weight (supports unweighted RMSNorm when weight == null)
             i = 0;
-            for (; i + 32 <= size; i += 32)
+            if (weight != null)
             {
-                var v0 = Avx.LoadVector256(input + i);
-                var v1 = Avx.LoadVector256(input + i + 8);
-                var v2 = Avx.LoadVector256(input + i + 16);
-                var v3 = Avx.LoadVector256(input + i + 24);
+                for (; i + 32 <= size; i += 32)
+                {
+                    var v0 = Avx.LoadVector256(input + i);
+                    var v1 = Avx.LoadVector256(input + i + 8);
+                    var v2 = Avx.LoadVector256(input + i + 16);
+                    var v3 = Avx.LoadVector256(input + i + 24);
 
-                var w0 = Avx.LoadVector256(weight + i);
-                var w1 = Avx.LoadVector256(weight + i + 8);
-                var w2 = Avx.LoadVector256(weight + i + 16);
-                var w3 = Avx.LoadVector256(weight + i + 24);
+                    var w0 = Avx.LoadVector256(weight + i);
+                    var w1 = Avx.LoadVector256(weight + i + 8);
+                    var w2 = Avx.LoadVector256(weight + i + 16);
+                    var w3 = Avx.LoadVector256(weight + i + 24);
 
-                Avx.Store(output + i,      Avx.Multiply(Avx.Multiply(v0, scaleV), w0));
-                Avx.Store(output + i + 8,  Avx.Multiply(Avx.Multiply(v1, scaleV), w1));
-                Avx.Store(output + i + 16, Avx.Multiply(Avx.Multiply(v2, scaleV), w2));
-                Avx.Store(output + i + 24, Avx.Multiply(Avx.Multiply(v3, scaleV), w3));
+                    Avx.Store(output + i,      Avx.Multiply(Avx.Multiply(v0, scaleV), w0));
+                    Avx.Store(output + i + 8,  Avx.Multiply(Avx.Multiply(v1, scaleV), w1));
+                    Avx.Store(output + i + 16, Avx.Multiply(Avx.Multiply(v2, scaleV), w2));
+                    Avx.Store(output + i + 24, Avx.Multiply(Avx.Multiply(v3, scaleV), w3));
+                }
+
+                for (; i + 8 <= size; i += 8)
+                {
+                    var v = Avx.LoadVector256(input + i);
+                    var w = Avx.LoadVector256(weight + i);
+                    Avx.Store(output + i, Avx.Multiply(Avx.Multiply(v, scaleV), w));
+                }
+
+                for (; i < size; i++)
+                    output[i] = input[i] * scale * weight[i];
             }
-
-            for (; i + 8 <= size; i += 8)
+            else
             {
-                var v = Avx.LoadVector256(input + i);
-                var w = Avx.LoadVector256(weight + i);
-                Avx.Store(output + i, Avx.Multiply(Avx.Multiply(v, scaleV), w));
-            }
+                for (; i + 32 <= size; i += 32)
+                {
+                    var v0 = Avx.LoadVector256(input + i);
+                    var v1 = Avx.LoadVector256(input + i + 8);
+                    var v2 = Avx.LoadVector256(input + i + 16);
+                    var v3 = Avx.LoadVector256(input + i + 24);
 
-            for (; i < size; i++)
-                output[i] = input[i] * scale * weight[i];
+                    Avx.Store(output + i,      Avx.Multiply(v0, scaleV));
+                    Avx.Store(output + i + 8,  Avx.Multiply(v1, scaleV));
+                    Avx.Store(output + i + 16, Avx.Multiply(v2, scaleV));
+                    Avx.Store(output + i + 24, Avx.Multiply(v3, scaleV));
+                }
+
+                for (; i + 8 <= size; i += 8)
+                {
+                    var v = Avx.LoadVector256(input + i);
+                    Avx.Store(output + i, Avx.Multiply(v, scaleV));
+                }
+
+                for (; i < size; i++)
+                    output[i] = input[i] * scale;
+            }
         }
         else
         {
             double ss = 0;
             for (int i = 0; i < size; i++) ss += (double)input[i] * input[i];
             float scale = (float)(1.0 / Math.Sqrt(ss / size + eps));
-            for (int i = 0; i < size; i++)
-                output[i] = input[i] * scale * weight[i];
+            if (weight != null)
+            {
+                for (int i = 0; i < size; i++)
+                    output[i] = input[i] * scale * weight[i];
+            }
+            else
+            {
+                for (int i = 0; i < size; i++)
+                    output[i] = input[i] * scale;
+            }
         }
     }
 

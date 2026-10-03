@@ -127,6 +127,11 @@ public sealed record DeepSeek41Hyperparams
             compressRatios = BuildDefaultCompressRatios();
         }
 
+        int engramMaxNgram = GetInt($"{arch}.engram.max_ngram", 4);
+        int engramHeads = GetInt($"{arch}.engram.head_count", 8);
+        int engramHeadDim = GetInt($"{arch}.engram.head_dim", 256);
+        int engramCompressedVocab = GetInt($"{arch}.engram.compressed_vocab_size", 99092);
+
         return new DeepSeek41Hyperparams
         {
             NumLayerAll = numLayerAll,
@@ -143,6 +148,10 @@ public sealed record DeepSeek41Hyperparams
             ExpertWeightsScale = expertScale,
             ExpertWeightsNorm = expertNorm,
             CompressRatios = compressRatios,
+            EngramMaxNgram = engramMaxNgram,
+            EngramHeads = engramHeads,
+            EngramHeadDim = engramHeadDim,
+            EngramCompressedVocab = engramCompressedVocab,
         };
     }
 }
