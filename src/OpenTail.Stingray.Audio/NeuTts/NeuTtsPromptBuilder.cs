@@ -60,10 +60,10 @@ public static class NeuTtsPromptBuilder
         return result;
     }
 
-    private static int RequireTokenId(IReadOnlyDictionary<string, int> addedTokens, TokenizerSource source, string token)
+    private static int RequireTokenId(IReadOnlyDictionary<string, int> addedTokens, TokenizerSource? source, string token)
     {
-        if (addedTokens.TryGetValue(token, out int id)) return id;
-        if (source.AdditionalSpecialTokens.TryGetValue(token, out id)) return id;
+        if (addedTokens != null && addedTokens.TryGetValue(token, out int id)) return id;
+        if (source?.AdditionalSpecialTokens != null && source.AdditionalSpecialTokens.TryGetValue(token, out id)) return id;
         throw new InvalidDataException($"NeuTTS tokenizer missing token: {token}");
     }
 
