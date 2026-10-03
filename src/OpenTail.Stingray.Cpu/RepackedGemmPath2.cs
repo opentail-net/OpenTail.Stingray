@@ -553,6 +553,17 @@ public static unsafe class RepackedGemmPath2
 
                     for (int rp = 0; rp < nrp; rp++)
                     {
+                        // Rows 2-3 of a group live in their own lane pair (l*_23, iacc_mat_1*), so
+                        // when they are only zero padding (decode N = 1 or 2, a ragged tail of
+                        // 1-2 rows) skipping them leaves rows 0-1 bitwise unchanged.
+                        bool half = validRows - (y + rp) * 4 <= 2;
+                        if (half)
+                        {
+                            AccumulateRows01(aqsBase: a_ptrs[rp] + (long)b * Q8Kx4BlockBytes, sb, rhs,
+                                scale_0145_0, scale_2367_0, scale_0145_1, scale_2367_1, mins_01,
+                                col_scale_f32, col_dmin_f32, acc_rows + rp * 4, acc_min_rows + rp * 4);
+                            continue;
+                        }
                         byte* ablk = a_ptrs[rp] + (long)b * Q8Kx4BlockBytes;
                         float* ad = (float*)ablk;
                         sbyte* aqs = (sbyte*)(ablk + 16);
@@ -654,6 +665,75 @@ public static unsafe class RepackedGemmPath2
 
             y += nrp;
         }
+    }
+
+    /// <summary>
+    /// The row 0-1 half of <see cref="GemmQ4Kx8Q8Kx4"/>'s per-group body, for groups whose rows 2-3
+    /// are zero padding. Every operation on rows 0-1 is the full body's, in the same order (the
+    /// row 2-3 lane pair is simply not computed), so results are bitwise identical; pinned by
+    /// BatchInvariantGemmTests at N = 1, 2, 5, 13, 17, 33.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static void AccumulateRows01(byte* aqsBase, int sb, Vector256<byte>* rhs,
+        Vector256<short> scale_0145_0, Vector256<short> scale_2367_0,
+        Vector256<short> scale_0145_1, Vector256<short> scale_2367_1, Vector256<short> mins_01,
+        Vector256<float> col_scale_f32, Vector256<float> col_dmin_f32,
+        Vector256<float>* acc_rows, Vector256<float>* acc_min_rows)
+    {
+        byte* ablk = aqsBase;
+        float* ad = (float*)ablk;
+        sbyte* aqs = (sbyte*)(ablk + 16);
+        short* absums = (short*)(ablk + 16 + QK_K * 4);
+        sbyte* aq = aqs + 256 * sb;
+
+        var iacc_mat_00_0 = Vector256<short>.Zero; var iacc_mat_01_0 = Vector256<short>.Zero;
+        var iacc_mat_00_1 = Vector256<short>.Zero; var iacc_mat_01_1 = Vector256<short>.Zero;
+        for (int j = 0; j < 4; j++)
+        {
+            var l0 = Vector256.LoadUnsafe(ref *(aq + 32 * j)).AsByte();
+            var l0_01 = Perm0(l0);
+            var l0_01a = Sh160(l0_01);
+            var l0_01b = Sh245(l0_01);
+            iacc_mat_00_0 = Add16(iacc_mat_00_0, Add16(Mul(rhs[0 + j], l0_01a), Mul(rhs[4 + j], l0_01b)));
+            iacc_mat_01_0 = Add16(iacc_mat_01_0, Add16(Mul(rhs[16 + j], l0_01a), Mul(rhs[20 + j], l0_01b)));
+
+            var l1 = Vector256.LoadUnsafe(ref *(aq + 128 + 32 * j)).AsByte();
+            var l1_01 = Perm0(l1);
+            var l1_01a = Sh160(l1_01);
+            var l1_01b = Sh245(l1_01);
+            iacc_mat_00_1 = Add16(iacc_mat_00_1, Add16(Mul(rhs[8 + j], l1_01a), Mul(rhs[12 + j], l1_01b)));
+            iacc_mat_01_1 = Add16(iacc_mat_01_1, Add16(Mul(rhs[24 + j], l1_01a), Mul(rhs[28 + j], l1_01b)));
+        }
+
+        var lhs_bsums_0123_01 = Vector256.LoadUnsafe(ref *(absums + 16 * sb));
+        var lhs_bsums_hsum_0123_01 =
+            Ssse3.HorizontalAdd(lhs_bsums_0123_01.GetLower(), lhs_bsums_0123_01.GetUpper()).ToVector256Unsafe();
+        lhs_bsums_hsum_0123_01 = Perm0s(lhs_bsums_hsum_0123_01);
+
+        var i00_0 = Avx2.MultiplyAddAdjacent(iacc_mat_00_0, scale_0145_0);
+        var i01_0 = Avx2.MultiplyAddAdjacent(iacc_mat_01_0, scale_2367_0);
+        var i00_1 = Avx2.MultiplyAddAdjacent(iacc_mat_00_1, scale_0145_1);
+        var i01_1 = Avx2.MultiplyAddAdjacent(iacc_mat_01_1, scale_2367_1);
+
+        var iacc_row_0_0 = Avx2.Blend(i00_0, Avx2.Shuffle(i01_0, 78), 204);
+        var iacc_row_1_0 = Avx2.Blend(Avx2.Shuffle(i00_0, 78), i01_0, 204);
+        var iacc_row_0_1 = Avx2.Blend(i00_1, Avx2.Shuffle(i01_1, 78), 204);
+        var iacc_row_1_1 = Avx2.Blend(Avx2.Shuffle(i00_1, 78), i01_1, 204);
+
+        var iacc_row_0 = Avx2.Add(iacc_row_0_0, iacc_row_0_1);
+        var iacc_row_1 = Avx2.Add(iacc_row_1_0, iacc_row_1_1);
+
+        var row_scale_f32_sse = Vector128.LoadUnsafe(ref *ad);
+        var row_scale_f32 = Vector256.Create(row_scale_f32_sse, row_scale_f32_sse);
+
+        acc_rows[0] = Fma.MultiplyAdd(Avx.ConvertToVector256Single(iacc_row_0), Avx.Multiply(col_scale_f32, Avx.Shuffle(row_scale_f32, row_scale_f32, 0)), acc_rows[0]);
+        acc_rows[1] = Fma.MultiplyAdd(Avx.ConvertToVector256Single(iacc_row_1), Avx.Multiply(col_scale_f32, Avx.Shuffle(row_scale_f32, row_scale_f32, 85)), acc_rows[1]);
+
+        var iacc_row_min_0 = Avx2.MultiplyAddAdjacent(Sh0s(lhs_bsums_hsum_0123_01), mins_01);
+        var iacc_row_min_1 = Avx2.MultiplyAddAdjacent(Sh85s(lhs_bsums_hsum_0123_01), mins_01);
+
+        acc_min_rows[0] = Fma.MultiplyAdd(Avx.ConvertToVector256Single(iacc_row_min_0), Avx.Multiply(col_dmin_f32, Avx.Shuffle(row_scale_f32, row_scale_f32, 0)), acc_min_rows[0]);
+        acc_min_rows[1] = Fma.MultiplyAdd(Avx.ConvertToVector256Single(iacc_row_min_1), Avx.Multiply(col_dmin_f32, Avx.Shuffle(row_scale_f32, row_scale_f32, 85)), acc_min_rows[1]);
     }
 
     // ---- 1:1 wrappers ----

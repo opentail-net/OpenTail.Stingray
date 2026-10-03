@@ -7,6 +7,11 @@ namespace OpenTail.Stingray.Tests.ForwardPass.Fast;
 /// (prefill, chunked prefill, speculative verify). That property is the whole point of routing decode
 /// through the GEMM, so it is asserted exactly, not to a tolerance.
 ///
+/// <para>The Q4_K tests call <see cref="RepackedGemmPath2"/> directly, not the
+/// <c>SimdKernels.TryMatMulBatchedQ4Kx8</c> dispatcher: <c>RepackedGemmPath2Tests</c> flips the
+/// process-global <c>GemmPathConfig.Current</c> to Path 1 while it runs in parallel, which made a
+/// dispatcher-based comparison here flaky (seen 2026-10-03; Path 1 quantises activations differently).</para>
+///
 /// <para>Why it should hold: activations are quantized per row (Q8_K), ragged groups are padded with
 /// zero rows that quantize to d = 0, and each output row accumulates independently of its neighbours.
 /// These tests are what prove it instead of that reasoning.</para>
@@ -89,7 +94,7 @@ public sealed unsafe class BatchInvariantGemmTests
         {
             FillQ4K(w, rows, cols, rng);
             SimdKernels.RepackQ4KMatrix(w, packed, rows, cols);
-            AssertRowInvariant((o, x, n) => SimdKernels.TryMatMulBatchedQ4Kx8(o, packed, x, n, rows, cols),
+            AssertRowInvariant((o, x, n) => RepackedGemmPath2.TryMatMulBatched(o, packed, x, n, rows, cols),
                 batch, rows, cols, rng, "Q4Kx8");
         }
         finally { NativeMemory.AlignedFree(w); NativeMemory.AlignedFree(packed); }
@@ -135,9 +140,9 @@ public sealed unsafe class BatchInvariantGemmTests
             SimdKernels.RepackQ4KMatrix(w1, p1, rows, cols); SimdKernels.RepackQ4KMatrix(w2, p2, rows, cols);
             for (int i = 0; i < cols * batch; i++) x[i] = (float)(rng.NextDouble() * 2 - 1);
 
-            Assert.True(SimdKernels.TryMatMulBatchedQ4Kx8Dual(outs[0], p1, outs[1], p2, x, batch, rows, cols), "dual declined");
-            Assert.True(SimdKernels.TryMatMulBatchedQ4Kx8(outs[2], p1, x, batch, rows, cols));
-            Assert.True(SimdKernels.TryMatMulBatchedQ4Kx8(outs[3], p2, x, batch, rows, cols));
+            Assert.True(RepackedGemmPath2.TryMatMulBatchedDual(outs[0], p1, outs[1], p2, x, batch, rows, cols), "dual declined");
+            Assert.True(RepackedGemmPath2.TryMatMulBatched(outs[2], p1, x, batch, rows, cols));
+            Assert.True(RepackedGemmPath2.TryMatMulBatched(outs[3], p2, x, batch, rows, cols));
             for (long i = 0; i < (long)rows * batch; i++)
             {
                 Assert.Equal(BitConverter.SingleToInt32Bits(outs[2][i]), BitConverter.SingleToInt32Bits(outs[0][i]));
@@ -175,10 +180,10 @@ public sealed unsafe class BatchInvariantGemmTests
             nint pp = (nint)p, px = (nint)x, ps = (nint)serial, ppar = (nint)par;
             // Job j: a batch of (j % 3) + 1 rows at its own offset.
             for (int j = 0; j < jobs; j++)
-                SimdKernels.TryMatMulBatchedQ4Kx8((float*)ps + (long)j * 3 * rows, (byte*)pp, (float*)px + (long)j * 3 * cols, j % 3 + 1, rows, cols);
+                RepackedGemmPath2.TryMatMulBatched((float*)ps + (long)j * 3 * rows, (byte*)pp, (float*)px + (long)j * 3 * cols, j % 3 + 1, rows, cols);
             for (int round = 0; round < 5; round++)
                 Parallel.For(0, jobs, j =>
-                    SimdKernels.TryMatMulBatchedQ4Kx8((float*)ppar + (long)j * 3 * rows, (byte*)pp, (float*)px + (long)j * 3 * cols, j % 3 + 1, rows, cols));
+                    RepackedGemmPath2.TryMatMulBatched((float*)ppar + (long)j * 3 * rows, (byte*)pp, (float*)px + (long)j * 3 * cols, j % 3 + 1, rows, cols));
             for (int j = 0; j < jobs; j++)
                 for (long i = 0; i < (long)(j % 3 + 1) * rows; i++)
                     Assert.Equal(BitConverter.SingleToInt32Bits(serial[(long)j * 3 * rows + i]),
@@ -203,7 +208,7 @@ public sealed unsafe class BatchInvariantGemmTests
         {
             FillQ4K(w, rows, cols, rng);
             SimdKernels.RepackQ4KMatrix(w, packed, rows, cols);
-            AssertRowInvariant((o, x, n) => SimdKernels.TryMatMulBatchedQ4Kx8(o, packed, x, n, rows, cols),
+            AssertRowInvariant((o, x, n) => RepackedGemmPath2.TryMatMulBatched(o, packed, x, n, rows, cols),
                 batch, rows, cols, rng, "Q4Kx8 trunk");
         }
         finally { NativeMemory.AlignedFree(w); NativeMemory.AlignedFree(packed); }
