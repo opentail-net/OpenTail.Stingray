@@ -29,6 +29,8 @@ public sealed unsafe class DiffusionGemmaTests
         Assert.Equal(128, config.NumExperts);
         Assert.Equal(8, config.NumExpertsUsed);
         Assert.Equal(704, config.ExpertIntermediateDim);
+        Assert.Equal(2112, config.SelfCondIntermediateDim);
+        Assert.Equal(262144, config.VocabSize);
 
         Assert.Equal(48, config.MaxDenoisingSteps);
         Assert.Equal(256, config.CanvasLength);
@@ -155,6 +157,39 @@ public sealed unsafe class DiffusionGemmaTests
             Assert.NotEqual(originalCanvas[i], canvas[i]);
             Assert.True(float.IsFinite(canvas[i]));
         }
+    }
+
+    [Fact]
+    public void SelfConditioning_UsesPreNormAndWeightlessPostNorm()
+    {
+        int hiddenDim = 4;
+        int interDim = 8;
+        float[] softEmbed = [2.0f, -1.0f, 0.5f, 1.5f];
+        float[] preNormW = [1.0f, 1.0f, 1.0f, 1.0f];
+        float[] wGate = new float[interDim * hiddenDim];
+        float[] wUp = new float[interDim * hiddenDim];
+        float[] wDown = new float[hiddenDim * interDim];
+        Array.Fill(wGate, 0.1f);
+        Array.Fill(wUp, 0.1f);
+        Array.Fill(wDown, 0.05f);
+
+        float[] canvas = [1.0f, 2.0f, 3.0f, 4.0f];
+
+        fixed (float* pNorm = preNormW, g = wGate, u = wUp, d = wDown)
+        {
+            DiffusionGemmaSelfConditioning.ApplySelfConditioningWithNorms(
+                softEmbed, pNorm, g, u, d, hiddenDim, interDim, canvas);
+        }
+
+        // Verify output is post-normalized (RMS norm should be ~1.0)
+        float sumSq = 0f;
+        for (int i = 0; i < hiddenDim; i++)
+        {
+            sumSq += canvas[i] * canvas[i];
+            Assert.True(float.IsFinite(canvas[i]));
+        }
+        float rms = MathF.Sqrt(sumSq / hiddenDim);
+        Assert.Equal(1.0f, rms, 1e-4f);
     }
 
     [Fact]
@@ -305,6 +340,11 @@ public sealed unsafe class DiffusionGemmaTests
             {
                 Assert.InRange(tok, 0, vocabSize - 1);
             }
+
+            // Test reproducibility with same seed
+            var pipeline2 = new DiffusionGemmaPipeline(forwardPass, config, seed: 1234);
+            var generatedTokens2 = pipeline2.Generate(prompt, maxBlocks: 2);
+            Assert.Equal(generatedTokens, generatedTokens2);
         }
         finally
         {

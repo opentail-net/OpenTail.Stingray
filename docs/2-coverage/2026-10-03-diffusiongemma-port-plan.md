@@ -255,10 +255,12 @@ output = (attn_res + combined_ffn) * scale
 *Objective: Connect the exact soft-embedding projection to the learned `self_cond` MLP.*
 
 - [ ] **4.1 Soft Probability & Embedding Extraction**:
-  - Existing `ComputeSoftEmbeddings` calculates $P = \text{softmax}(\text{logits} / T)$ and $E = P \cdot W_{embed} \cdot \sqrt{D}$.
-- [ ] **4.2 Learned Self-Conditioning MLP**:
-  - Implement $E_{sc} = \text{down}(\text{act}(\text{gate}(\text{rms}(E))) \cdot \text{up}(\text{rms}(E)))$.
-  - Add $E_{sc}$ directly to canvas embeddings before layer 0.
+  - Existing `ComputeSoftEmbeddings` calculates $P = \text{softmax}(\text{logits} / T)$ and $E = P \cdot W_{embed} \cdot \sqrt{D}$ across the full vocabulary without tail pruning.
+- [ ] **4.2 Learned Self-Conditioning MLP & Dual Norms**:
+  - Implement full reference structure matching vLLM:
+    `soft_emb -> pre_norm(weighted) -> gate/up (2112) -> GELU(gate) * up -> down -> canvas_embedding + sc_signal -> post_norm(weightless)`.
+  - Derive intermediate dimension (2112) from checkpoint tensor shapes rather than hardcoding.
+  - The weightless post-norm around `canvas_embedding + sc_signal` (`SimdKernels.PureRmsNorm`) is mandatory and must not be omitted.
 - [ ] **4.3 Lifecycle State Management**:
   - Step 0: Zero or identity seed.
   - Step $t > 0$: Derived from step $t-1$ predicted logits.
@@ -371,3 +373,236 @@ PRODUCTION ADMISSION (Phase 8)
 
 **Key Takeaway:**
 By structuring the work as a **Gemma-4 MoE backbone implementation first**, we decouple the foundational transformer mechanics (which can be independently verified against llama.cpp) from the diffusion canvas loop. This minimizes risk, provides direct reuse for regular Gemma-4 models, and ensures the implementation rests on a solid, verified foundation.
+
+---
+
+## DiffusionGemma — Coder AI Implementation Brief (Strict Rules)
+
+The goal is **not** to make the existing simplified implementation "work well enough". Replace the guessed/simplified implementation with a faithful C#/.NET 10 implementation of the real `google/diffusiongemma-26B-A4B-it` architecture.
+
+### 0. Source Priority — Do Not Invent Missing Semantics
+Use the sources in this strict order:
+1. **Real Checkpoint / Plan**: `docs/2-coverage/2026-10-03-diffusiongemma-port-plan.md`. The verified 692-tensor Q4_K_M GGUF layout in this document is ground truth for tensor names, shapes, and layer differences.
+2. **Gemma-4 Backbone Oracle**: llama.cpp `src/models/gemma4.cpp` (reference commit `bed0a8566`). Primary reference for transformer block arithmetic and operation ordering.
+3. **Diffusion Model Behaviour**: current vLLM:
+   - `vllm/model_executor/models/diffusion_gemma.py`
+   - `vllm/model_executor/models/diffusion_gemma_sampler.py`
+   - `vllm/transformers_utils/configs/diffusion_gemma.py`
+4. **Official Diffusion API / Scheduler**: Hugging Face Diffusers `DiffusionGemmaPipeline` and `EntropyBoundScheduler`.
+5. **C# Secondary Reference**: TensorSharp (`docs/models/diffusiongemma.md`, `Models/DiffusionGemma/`). Use for C# idiom/structure only; never let it override llama.cpp / HF / vLLM semantics.
+6. **Existing OpenTail Implementation to Reuse**:
+   - `src/OpenTail.Stingray.Engine/ForwardPass.cs`
+   - `src/OpenTail.Stingray.Engine/ForwardPass.Moe.cs`
+   - `src/OpenTail.Stingray.Engine/ForwardPass.Decode.cs`
+   - `src/OpenTail.Stingray.Engine/ForwardPass.PrefillCore.cs`
+   - `src/OpenTail.Stingray.Engine/CudaForwardPass.cs`
+   - `src/OpenTail.Stingray.Engine/GpuForwardPass.cs`
+
+Do not invent behaviour where references disagree. Stop and make ambiguity explicit in code/comments/tests rather than picking a plausible guess.
+
+### 1. Model Configuration Invariants
+Do not retain stale defaults that disagree with the real GGUF:
+- `hidden_dim = 2816`
+- `vocab_size = 262144`
+- `dense_intermediate = 2112`
+- `experts = 128`, `experts_used = 8`, `expert_intermediate = 704`
+- `canvas_length = 256`, `max_denoising_steps = 48`, `final_logit_softcap = 30.0f`
+- `self_cond_intermediate = 2112`
+- Layer geometry:
+  - **SWA**: `q_heads = 16`, `kv_heads = 8`, `head_dim = 256`, `window = 1024`, `rope_theta = 1e4`, `rope_dim = 256`, has $W_v$ = **YES**.
+  - **FULL**: `q_heads = 16`, `kv_heads = 2`, `head_dim = 512`, global context, `rope_theta = 1e6`, `rope_dim = 512`, `rope_freqs` = present, has $W_v$ = **NO** ($V$ derived from raw $K$ projection before $K$ RoPE).
+
+Derive these from tensor/config metadata rather than hardcoding. Never leave 256,000 vocab or 2816 self-cond intermediate in the real model path.
+
+### 2. Strict Tensor Set (`DiffusionGemmaTensorSet`)
+Replace `DiffusionGemmaLayerTensors` with:
+- `DiffusionGemmaTensorSet`
+- `DiffusionGemmaSlidingLayerTensors`
+- `DiffusionGemmaFullLayerTensors`
+
+Every required real tensor must be resolved with `Required(GgufModel model, string name)` (throwing on missing). Never treat required weights as `Optional`.
+Enforce layer contracts:
+- Sliding layer: `Debug.Assert(layer.AttnV != null && layer.QHeadDim == 256 && layer.KvHeads == 8);`
+- Full layer: `Debug.Assert(layer.AttnV == null && layer.QHeadDim == 512 && layer.KvHeads == 2 && layer.RopeFreqs != null);`
+
+### 3. Core Gemma-4 Layer Arithmetic & Mode
+Write one shared layer routine with an explicit mode:
+```csharp
+public enum DiffusionGemmaPassMode { EncoderPrefill, DecoderCanvas }
+```
+Mathematical sequence:
+1. `hAttn = RmsNorm(x, t.AttnNorm)`
+2. `q = PerHeadRmsNorm(hAttn @ W_q, t.AttnQNorm)`
+3. `k = PerHeadRmsNorm(hAttn @ W_k, t.AttnKNorm)`
+4. Branch on layer type:
+   - Full layer: `v = RmsNormNoWeight(k.CopyFromRawK()); ApplyGlobalRoPE(q, pos, t.RopeFreqs); ApplyGlobalRoPE(k, pos, t.RopeFreqs);`
+   - SWA layer: `v = RmsNormNoWeight(hAttn @ W_v); ApplySwaRoPE(q, pos); ApplySwaRoPE(k, pos);`
+5. `attnOut = Attention(q, k, v, mask)`
+6. `attnRes = x + RmsNorm(attnOut @ W_o, t.PostAttentionNorm)`
+
+**Critical Invariant**: On full layers, $V$ comes from raw $K$ projection (post-norm) **before** RoPE. Never RoPE $K$ and then copy to $V$.
+
+### 4. Dense FFN and MoE Must Be Parallel
+After computing `attnRes`:
+1. **Dense FFN Branch**:
+   - `denseNorm = RmsNorm(attnRes, t.FfnNorm)`
+   - `denseAct = GeluTanh(denseNorm @ W_gate) * (denseNorm @ W_up)`
+   - `denseOut = RmsNorm(denseAct @ W_down, t.PostFfwNorm1)`
+2. **MoE Router Branch (Independent)**:
+   - Router input is **not** `moeInput`! It is:
+     `routerNorm = RmsNorm(attnRes, routerNorm); routerNorm *= (1.0f / sqrt(D)) * routerScale; routerLogits = routerNorm @ W_gate_inp;`
+   - Softmax over 128 experts $\to$ top-8 selection $\to$ renormalize selected weights.
+3. **MoE Expert Execution**:
+   - `moeInput = RmsNorm(attnRes, t.PreFfwNorm2)`
+   - For each selected expert $e$:
+     - Fused gate+up: gate = `[0..703]`, up = `[704..1407]`
+     - `act = GeluTanh(gate) * up`
+     - `expertOut = (act @ W_down_exps[e]) * t.FfnDownExpsScale[e]`
+     - `moeAccum += weight[e] * expertOut`
+   - `moeOut = RmsNorm(moeAccum, t.PostFfwNorm2)`
+4. **Combine & Scale**:
+   - `combinedFfn = RmsNorm(denseOut + moeOut, t.PostFfwNorm)`
+   - `output = (attnRes + combinedFfn) * (mode == EncoderPrefill ? t.EncLayerOutputScale : t.LayerOutputScale)`
+
+### 5. Causal Prompt Prefill Backbone
+Prompt prefill is a true transformer pass, not an offline K/V computation:
+- For each prompt token $p$:
+  - `x = tokenEmbedding(prompt[p]) * sqrt(D)`
+  - For each layer $l$:
+    - `h = Gemma4Layer(x, mode: EncoderPrefill, mask: Causal, prefixKv: currentLayerPrefixCache)`
+    - Append layer $K, V$ to prefix cache.
+    - `x = h` (hidden state feeds next layer).
+
+### 6. Strict Separation of Encoder KV and Canvas State
+One Gemma-4 backbone, two operating modes:
+- **Encoder Mode (`EncoderPrefill`)**: Causal attention, writes persistent prefix KV, no canvas tokens.
+- **Decoder Mode (`DecoderCanvas`)**: Bidirectional canvas attention, reads prefix KV and canvas KV, **never writes persistent prefix KV**.
+
+### 7. Explicit Canvas Attention Mask
+- Canvas $\to$ Canvas: Fully bidirectional (every canvas token attends to every canvas token).
+- Canvas $\to$ Prompt: Canvas tokens attend to prompt KV according to layer rules (Full: all prompt positions; SWA: local sliding window).
+- Never make canvas attention causal.
+
+### 8. Full-Layer $V$ Semantics Test
+Must have a dedicated test asserting:
+- $V == \text{RMSNormNoWeight}(\text{raw } K \text{ projection before RoPE})$
+- $K_{\text{after\_rope}} \neq \text{raw } K$
+
+### 9. Self-Conditioning Reference Structure
+From vLLM `DiffusionGemmaSelfConditioning`:
+```csharp
+// 1. Soft embeddings from previous step
+softEmb = probs @ embeddingWeights;
+softEmb *= MathF.Sqrt(hiddenDim);
+
+// 2. Learned pre-normalization
+RmsNorm(softEmb, scPreNorm, scInput);
+
+// 3. Gated MLP (intermediate = 2112)
+gate = scInput @ scGate;
+up   = scInput @ scUp;
+act  = GeluTanh(gate) * up;
+scSignal = act @ scDown;
+
+// 4. Add to current canvas embedding, then apply WEIGHTLESS RMSNorm!
+combined = canvasEmbedding + scSignal;
+PureRmsNorm(combined, combined, hiddenDim, eps);
+```
+Do not omit the weightless post-norm.
+
+### 10. Exact Soft Embedding Path
+Do not prune probabilities with `if (p < 1e-6f) continue;`. Compute the exact sum across all 262,144 vocabulary entries.
+
+### 11. Single `ProcessLogits` Definition
+Use one centralized function for FP32 softcapping and temperature scaling:
+```csharp
+static void ProcessLogits(ReadOnlySpan<float> rawLogits, Span<float> processed, float softcap, float temperature)
+{
+    for (int i = 0; i < rawLogits.Length; i++)
+    {
+        float x = rawLogits[i];
+        x = MathF.Tanh(x / softcap) * softcap;
+        processed[i] = x / temperature;
+    }
+}
+```
+Use this output consistently for softmax, entropy, argmax, Gumbel-max sampling, and self-conditioning.
+
+### 12. Sampler Contract
+- Candidate tokens: $\text{argmax}(\text{processed\_logit} + \text{Gumbel noise})$.
+- Acceptance: Sort positions by entropy $H(p)$, accept lowest-entropy positions subject to cumulative mutual information bound $\le 0.1$ nats.
+- Non-accepted positions: Re-noised for next step.
+- Argmax history: Track predicted **argmax** canvas, NOT the re-noised working canvas.
+- Final block commit: The predicted argmax canvas.
+
+### 13. Temperature Contract
+Use `temperature = scheduler.GetTemperature(step)` adhering to the official schedule (annealing from $T_{\max} = 0.8$ down to $T_{\min}$).
+
+### 14. Pipeline Lifecycle & Seed Reproducibility
+- Inject and retain `_rng = new Random(seed);`. Never construct `new Random(42)` inside `Generate()` ignoring the caller's seed.
+- Committed argmax canvas is causally prefilled into the persistent KV cache before the next 256-token canvas begins.
+
+### 15. Required Tests Before Real-Weight Execution
+- **Tensor Layout**:
+  - `RealCheckpoint_Layer5_IsFullAttentionAndHasNoV`
+  - `RealCheckpoint_Layer4_IsSwaAndHasV`
+  - `RealCheckpoint_AllRequiredTensorsPresent`
+  - `RealCheckpoint_FusedExpertShapeMatches128x1408`
+- **Gemma Block**:
+  - `Gemma4_FullLayer_DerivesVFromRawKBeforeRoPE`
+  - `Gemma4_SwaLayer_UsesDedicatedVProjection`
+  - `Gemma4_RouterUsesAttnResidualNotFfnNorm`
+  - `Gemma4_RouterScaleIsAppliedElementwiseBeforeRouterProjection`
+  - `Gemma4_FusedGateUpSplits704And704`
+  - `Gemma4_ExpertDownScaleIsAppliedPerExpert`
+  - `Gemma4_PostNormAndLayerScaleOrderMatchesReference`
+- **Attention**:
+  - `CanvasAttention_IsBidirectional`
+  - `PromptPrefill_IsCausal`
+  - `Canvas_DoesNotWritePersistentPrefixKv`
+  - `FullLayer_UsesGlobalAttention`
+  - `SwaLayer_UsesWindow`
+- **Self-Conditioning**:
+  - `SelfConditioning_UsesPreNorm`
+  - `SelfConditioning_UsesWeightlessPostNorm`
+  - `SelfConditioning_Uses2112Intermediate`
+  - `SelfConditioning_Step0HasNoPreviousPrediction`
+  - `SelfConditioning_UsesExactFullVocabularySoftEmbedding`
+- **Sampler**:
+  - `Sampler_TemperatureContract`
+  - `Sampler_GumbelMax`
+  - `Sampler_EntropyBoundSelection`
+  - `Sampler_ArgmaxHistoryIgnoresRenoisedCanvas`
+  - `Sampler_FinalCommitUsesArgmaxCanvas`
+- **Lifecycle**:
+  - `Pipeline_PromptKvPersistsAcrossBlocks`
+  - `Pipeline_CommittedBlockIsPrefilledCausally`
+  - `Pipeline_NextCanvasSeesCommittedPrefix`
+  - `Pipeline_SeedIsReproducible`
+
+### 16. Verification Ladder
+1. Tensor inventory verification on real Q4_K_M GGUF.
+2. Single-layer synthetic numerical oracle.
+3. Full 30-layer synthetic backbone.
+4. Real-weight Gemma-style causal path.
+5. Compare causal logits against llama.cpp `gemma4`.
+6. Real canvas forward pass.
+7. Compare canvas step traces against HF/vLLM.
+8. Self-conditioning trace comparison.
+9. Sampler trace comparison.
+10. Single 256-token block generation.
+11. Multi-block generation.
+12. Remove NOT-admitted guard.
+
+### 17. Reuse Established OpenTail Kernels
+Leverage existing optimized primitives in `SimdKernels`, `VisionOps`, and `ForwardPass`:
+- `SimdKernels.RmsNorm` (weighted) and `SimdKernels.PureRmsNorm` (weightless).
+- `SimdKernels.MatVecF32`.
+- `SimdKernels.ApplyRoPECachedNeoxPartial` and global rotary tables.
+- Top-k MoE router selection and fused expert dispatch.
+
+### 18. Definition of Done
+The port is DONE only when:
+`REAL Q4_K_M CHECKPOINT LOADS + CAUSAL BACKBONE MATCHES REFERENCE + CANVAS FORWARD MATCHES REFERENCE + SELF-CONDITIONING MATCHES REFERENCE + SAMPLER CONTRACT MATCHES REFERENCE + MULTI-BLOCK CACHE LIFECYCLE WORKS + REAL GENERATION IS NON-DEGRADED`.
+Keep `ModelCompatibility.cs` unadmitted until all Phase 9 verification criteria are met.
+
