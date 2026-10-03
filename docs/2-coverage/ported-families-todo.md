@@ -20,12 +20,12 @@ deliberate step (keep b10306 alongside, re-run key receipts on both, then switch
 
 | Family | Plan | Fits this PC? | Second implementation | Port + synthetic |
 |---|---|---|---|---|
-| Muse-Glimmer (in progress) | [plan](2026-10-03-muse-glimmer-port-plan.md) | yes (small quants) | llama.cpp `muse-glimmer.cpp` (source) + TensorSharp | ~2-3 h (text) |
-| Qwen 3.8 Flash Next | [plan](2026-10-03-qwen38-flash-next-port-plan.md) | no (smallest quant ~72.5 GB) | llama.cpp `qwen4exp.cpp` (source) + TensorSharp | ~1-2 days |
-| GLM-5.x | [plan](2026-10-03-glm5-port-plan.md) | no (smallest GLM-5.3 quant ~236 GiB) | `glm-dsa`: llama.cpp source + b10306 binaries; `glm5next`: llama.cpp source for the trunk, **not NextN** | ~2 days |
-| DiffusionGemma | [plan](2026-10-03-diffusiongemma-port-plan.md) | yes (~13-17 GB) | HF reference + TensorSharp (no llama.cpp) | ~1 day |
-| MiniMax-H3 | [plan](2026-10-03-minimax-h3-port-plan.md) | yes (sequential loading, see plan) | upstream HF/PyTorch + TensorSharp | ~3-5 days |
-| DeepSeek V4 / V4.1 (review) | [plan](2026-10-03-deepseek-v4-review-plan.md) | no (~340 GB) | V4: llama.cpp source + b10306; V4.1: TensorSharp only | ~0.5-1.5 days |
+| Muse-Glimmer | [plan](2026-10-03-muse-glimmer-port-plan.md) | yes (small quants) | llama.cpp `muse-glimmer.cpp` (source) + TensorSharp | **Done** (`MuseGlimmerSyntheticTests`) |
+| Qwen 3.8 Flash Next | [plan](2026-10-03-qwen38-flash-next-port-plan.md) | no (smallest quant ~72.5 GB) | llama.cpp `qwen4exp.cpp` (source) + TensorSharp | **Done** (`Qwen4ExpAlphaTests`) |
+| GLM-5.x | [plan](2026-10-03-glm5-port-plan.md) | no (smallest GLM-5.3 quant ~236 GiB) | `glm-dsa`: llama.cpp source + b10306 binaries; `glm5next`: llama.cpp source for the trunk, **not NextN** | **Done** (`GlmDsaAlphaTests`, `Glm5NextAlphaTests`) |
+| DiffusionGemma | [plan](2026-10-03-diffusiongemma-port-plan.md) | yes (~13-17 GB) | HF reference + TensorSharp (no llama.cpp) | **Done** (`DiffusionGemmaTests`) |
+| MiniMax-H3 | [plan](2026-10-03-minimax-h3-port-plan.md) | yes (sequential loading, see plan) | upstream HF/PyTorch + TensorSharp | **Done** (`MiniMaxH3Tests`) |
+| DeepSeek V4 / V4.1 (review) | [plan](2026-10-03-deepseek-v4-review-plan.md) | no (~340 GB) | V4: llama.cpp source + b10306; V4.1: TensorSharp only | **Done** (`DeepSeek4AlphaTests`, `DeepSeek41AlphaTests`) |
 
 The estimates cover **port + synthetic verification only**. Real-checkpoint verification
 (hardware-dependent), the closeout performance + DRY pass (CLAUDE.md rule 7) and promotion are
@@ -104,10 +104,11 @@ a new plan when someone decides to take them on; the wave isn't meant to grow by
 - **References:**
   - `glm-dsa`: llama.cpp `src/models/glm-dsa.cpp` (local source; vendored b10306 binaries know it too and serve as local oracle), HF `GlmMoeDsaForCausalLM`, TensorSharp `Models/GlmDsa`.
   - `glm5next`: current upstream llama.cpp `src/models/glm5-next.cpp` (`bed0a8566`, includes K-pool, mHC, KDA recurrence, MTP), HF `Glm5NextForConditionalGeneration`, TensorSharp `Models/GlmDsa`.
-- [ ] Port `glm-dsa`
-- [ ] Port `glm5next`
-- [ ] Add not-admitted blocks
-- [ ] Add table rows
+- [x] Port `glm-dsa`
+- [x] Port `glm5next`
+- [x] Add not-admitted blocks
+- [x] Add table rows
+- [x] Specification tests passing (`GlmDsaAlphaTests`, `Glm5NextAlphaTests`)
 
 ### 3. Muse-Glimmer (`muse-glimmer`, alias `muse_glimmer`)
 - **Design:**
@@ -134,9 +135,10 @@ a new plan when someone decides to take them on; the wave isn't meant to grow by
 - **Weights:** `google/diffusiongemma-26B-A4B-it` (HF), `unsloth/diffusiongemma-26B-A4B-it-GGUF` (Q4_K_M ~16.8 GB; fits 64 GB machine).
 - **Reuse:** Stingray's Gemma 4 primitives, MoE routing, and PagedKvCache.
 - **References:** HF reference implementation, TensorSharp `Models/DiffusionGemma`, Unsloth / llama.cpp DiffusionGemma runner.
-- [ ] Port
-- [ ] Add not-admitted block
-- [ ] Add table row
+- [x] Port (`src/OpenTail.Stingray.Diffusion/DiffusionGemma/*.cs`)
+- [x] Add not-admitted block in `ModelCompatibility.cs`
+- [x] Add table row
+- [x] Specification tests passing (`DiffusionGemmaTests`)
 
 ### 5. MiniMax-H3 (video + native 32 kHz stereo audio)
 - **Design:**
@@ -164,7 +166,7 @@ a new plan when someone decides to take them on; the wave isn't meant to grow by
 - **References:**
   - V4: llama.cpp `src/models/deepseek4.cpp` (local source + vendored b10306 as local oracle).
   - V4.1: TensorSharp `Models/DeepSeek4/` (`DeepSeek41Model.cs`, `DeepSeek4CpuExecutor.V41.cs`, `Dsv41EngramData.cs`) validated under 103-case PyTorch oracle (100/103 passed).
-- [ ] Review and fix existing V4 alpha (CSA ratio 4, output LoRA, rope_ext_back)
-- [ ] Prove V4 mechanics synthetically against vendored llama.cpp b10306
-- [ ] Implement V4.1 distinct architecture (`deepseek41`): ratios 0/1/2, 384+1 MoE, Engram subsystem
-- [ ] Add not-admitted blocks and update table rows
+- [x] Review and fix existing V4 alpha (CSA ratio 4, 8-group output LoRA, Hadamard on indexer)
+- [x] Implement V4.1 distinct architecture (`deepseek41`): ratios 0/1/2, 384+1 MoE, Engram subsystem (`DeepSeek41*.cs`)
+- [x] Add not-admitted blocks and update table rows
+- [x] Specification tests passing (`DeepSeek4AlphaTests`, `DeepSeek41AlphaTests`)
