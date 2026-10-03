@@ -1,7 +1,7 @@
 # Muse-Glimmer port plan (`muse-glimmer`)
 
-**Status (revised 2026-10-03): text tower REAL-WEIGHT VERIFIED on CPU (level 4), not admitted.** Vision tower, DFlash and batched prefill for gated models are not done. **Policy:** port now, prove later. Not admitted, not
-advertised until checkpoint-verified (CLAUDE.md rule 14; [ported-families-todo](ported-families-todo.md)).
+**Status (revised 2026-10-03): ADMITTED, text only, CPU only.** Real-weight verified against llama.cpp (`admit-arch` 8/8, a 3,748-token prompt past the real window, patched-window runs); prefill is about 10x slower than llama.cpp. Vision tower, DFlash and batched prefill for gated models are not done. **Policy was:** port now, prove later. Not admitted, not
+advertised until checkpoint-verified (CLAUDE.md rule 14; [ported-families-todo](ported-families-todo.md)); the checkpoint check has now been done.
 
 ## Architecture (text tower)
 
@@ -113,7 +113,22 @@ The vision tower (50-layer ViT, 1536 hidden width, merge size 2, erf-GELU, Lancz
    `--repeat-penalty 1.1` breaks greedy parity (always pass 1.0); the model's real chat template crashed our Jinja evaluator
    (list `+` list), fixed 2026-10-03 with a regression test but not compared against a reference rendering. The checkpoint was
    deleted afterwards.
-- [ ] **Admission (level 5):** admit through the normal text-LLM path.
+- [x] **`admit-arch` verdict, 2026-10-03:** reference ids from `llama-server /completion` (`return_tokens`), prompt "The capital of
+   France is": **ADMIT, 8-of-8 exact**; our prompt tokenisation is identical to llama.cpp's (6 tokens, BOS 200000).
+- [x] **Sliding-window mask on real weights, 2026-10-03.** The model's window is 2048 (`muse-glimmer.attention.sliding_window`).
+   - A 3,748-token prompt (past the real window), 24-token greedy continuation: **identical** (llama.cpp `-c 4096`).
+   - Window **patched to 64** in the GGUF header (value restored to 2048 afterwards) with three ~300-token prompts, so most
+     layers' attention is truncated: identical for 6 / ~20 / ~16 tokens, then a divergence on each. The first was measured: our
+     engine scores `..` at NLL 1.5085 and `+` at 1.5602 (a 0.05-nat near-tie); the other two margins were not measured.
+- [x] **Speed, same machine, CPU (Ryzen 5700G, default threads):** llama.cpp prefill **15.2 t/s** (3,746 tokens, batched) and decode
+   **2.42-2.48 t/s**; ours prefill **1.4-1.7 t/s** (per-token path for gated models) and decode **1.1-1.7 t/s**. Prefill is about
+   10x slower, decode about 0.6x. Single runs, no thread tuning on either side.
+- [x] **Admission (level 5), 2026-10-03: text only, CPU only.** `muse-glimmer` / `muse_glimmer` are in the `ModelCompatibility`
+   allowlist with the evidence and limits; STATUS row added. The CPU server path now keeps gated models off the continuous batcher
+   (`PrefillWithCache` and `BatchForwardMulti` throw for them). Caveats: the checkpoint's license bucket was not reviewed, so no
+   real-weight parity test is committed; no vision, no DFlash, no GPU.
+- [ ] **Follow-up (rule 7 performance pass):** wire `attn_gate` and the embedding norm into the batched `PrefillCore` GEMM path;
+   the gate is a plain GEMM, so this should close most of the 10x prefill gap. Not started.
 
 **Effort:** port + specification test ~2-4 hours; level-4 text check done 2026-10-03. Remaining:
 closeout performance + DRY pass, batched prefill, and admission are separate.

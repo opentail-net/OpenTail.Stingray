@@ -86,9 +86,10 @@ text model wants 4096), Llama 4 vision (93 GB), MobileNetV5 (no checkpoint decla
 14. **TensorSharp coverage wave** (from 2026-10-02; the user's current focus, ahead of the items
     above while it runs).
     - **Done:** spin worker pool (opt-in), ggml Q8 cross-check, `Q1_0`/`Q2_0` verified, Bonsai2
-      PRISM ported (gated).
-    - **Current, in order:** Muse-Glimmer (in progress), Qwen 3.8 Flash Next, GLM-5.x,
-      DiffusionGemma, MiniMax-H3, DeepSeek V4/V4.1 review. One plan each in `2-coverage/`.
+      PRISM ported (gated). Muse-Glimmer **admitted 2026-10-03** (text, CPU only).
+    - **Current, in order:** GLM-5.x (paged real-weight run, K-pool selection), DeepSeek V4 (paged run vs b10306),
+      Qwen 3.8 Flash Next, DiffusionGemma (needs a Gemma-4 MoE backbone rewrite), MiniMax-H3, V4.1 (not attemptable
+      here). One plan each in `2-coverage/`; the plans carry the honest state.
     - Ported families stay **not admitted and not advertised** until real-weight verified
       (status ladder and verification levels in the families todo).
     - New families beyond these get their own plan when someone takes them on.

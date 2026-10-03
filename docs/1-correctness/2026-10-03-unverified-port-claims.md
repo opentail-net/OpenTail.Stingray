@@ -131,3 +131,12 @@ llama.cpp's `gemma4.cpp` (same backbone). The port does **not** match the real a
   the self-conditioning pre-norm placement, and Gumbel-max sampling. llama.cpp has no diffusion-gemma model file.
 - **Likely route to a real check:** rewrite the backbone against `gemma4.cpp`, then verify its causal-prefill path by
   re-labelling a copy of the GGUF as `gemma4` for llama.cpp; the canvas/self-conditioning path still needs the HF reference.
+
+## Update 2026-10-03 (evening): Muse-Glimmer admitted (text, CPU only)
+
+The open items listed above for Muse-Glimmer are now closed except those that were never in scope: `admit-arch` returned ADMIT (8/8
+exact); a 3,748-token prompt (past the real 2048 sliding window) was identical over 24 generated tokens; and with the window patched
+to 64 in the GGUF header (restored afterwards) three ~300-token prompts agreed for 6-20 tokens before near-ties (one measured at
+0.05 nat). Speed against llama.cpp on the same CPU: prefill 1.4-1.7 vs 15.2 t/s, decode 1.1-1.7 vs 2.4-2.5 t/s. Still unchecked:
+the near-tie margins of the other two patched-window prompts, the vision tower, DFlash, any GPU path, and the checkpoint's license
+bucket (so no real-weight parity test is committed).

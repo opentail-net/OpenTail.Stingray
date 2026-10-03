@@ -795,6 +795,21 @@ public static class ModelCompatibility
         // DO NOT MODIFY THIS ARCHITECTURE'S CODE PATH WITHOUT GOOD REASON — there is no regression
         // test to catch a mistake.
         "minicpm",
+
+        // muse-glimmer (alias muse_glimmer) — ADMITTED 2026-10-03, TEXT ONLY, CPU ONLY. Ported from llama.cpp
+        // src/models/muse-glimmer.cpp (SWA period 4 with RoPE only on SWA layers, attention output gate, 1e-8
+        // post-norms, unweighted embedding RMSNorm, logit scale then optional softcap). Evidence, against llama.cpp
+        // bed0a8566 on unsloth Muse-Glimmer-30B UD-Q4_K_XL (greedy, repeat penalty 1.0):
+        //   - `stingray admit-arch`: 8-of-8-token exact greedy match, prompt tokenisation identical;
+        //   - three further prompts token-identical until near-ties (0.006 and 0.05 nats, measured);
+        //   - a 3,748-token prompt (past the real 2048 sliding window) identical over a 24-token continuation;
+        //   - sliding window patched to 64 on three ~300-token prompts: identical for 6-20 tokens, then near-ties.
+        // Limits: per-token prefill only (about 1.5 t/s prefill and decode on a Ryzen 5700G), so the batched prefill,
+        // PrefillWithCache and BatchForwardMulti paths refuse it and the server does not batch it; GPU passes refuse it;
+        // the vision tower and the DFlash drafter are not ported. License bucket of the checkpoint not reviewed:
+        // no real-weight parity test is committed. Details: docs/2-coverage/2026-10-03-muse-glimmer-port-plan.md.
+        "muse-glimmer",
+        "muse_glimmer",
     };
     //
     // glm-dsa — NOT admitted (CLAUDE.md rule 14: ported, not verified). Alpha forward pass
@@ -824,12 +839,7 @@ public static class ModelCompatibility
     // do not fit in this machine's 64 GB RAM; verification is gated on synthetic component and
     // full-stack parity tests. Do not admit until real-checkpoint parity on capable hardware is achieved.
     //
-    // muse-glimmer — NOT admitted (CLAUDE.md rule 14: ported, not verified). CPU ForwardPass wiring
-    // (2026-10-03) from llama.cpp src/models/muse-glimmer.cpp: SWA period / RoPE-only-on-SWA, attention
-    // output gate, 1e-8 post-norms, unweighted embedding RMSNorm, logit scale then optional softcap.
-    // Per-token trunk only; GPU passes refuse it. No real checkpoint run and no independent reference
-    // compared yet — see docs/2-coverage/2026-10-03-muse-glimmer-port-plan.md for the verification
-    // ladder. STINGRAY_DIAGNOSTIC_ALLOW_UNSUPPORTED_ARCH=1 runs it for experiments.
+    // muse-glimmer — ADMITTED 2026-10-03 (text, CPU only); see the allowlist entry above.
     //
     // deepseek41 — NOT admitted (CLAUDE.md rule 14: ported, not verified). Distinct architecture
     // from V4: 40 layers, hidden dimension 5120, 64 heads (KV=1), head dim 512, q_lora_rank 1280,

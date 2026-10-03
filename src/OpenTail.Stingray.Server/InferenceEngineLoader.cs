@@ -656,7 +656,10 @@ public static class InferenceEngineLoader
             // gemma4 per-layer head_dim (PrefillWithCache / BatchForwardMulti /
             // PrefillPackedMulti all throw NotSupportedException) — those fall back to
             // the single-user InferenceEngine instead of failing every request.
-            bool batchOk = !hp.IsMoE && !turboQuant && hp.LayerHeadDim is null;
+            // Muse-Glimmer's attention output gate / embedding norm exist only on the per-token trunk, so its
+            // PrefillWithCache / BatchForwardMulti throw as well: single-user engine, never the batcher.
+            bool batchOk = !hp.IsMoE && !turboQuant && hp.LayerHeadDim is null
+                && !hp.AttentionOutputGate && !hp.InputEmbeddingRmsNorm;
             return (dense, batchOk, GpuWeightBytesExact: null);
         }
 
