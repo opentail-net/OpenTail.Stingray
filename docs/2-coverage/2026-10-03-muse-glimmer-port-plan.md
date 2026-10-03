@@ -69,12 +69,11 @@ specifics, the DFlash speculative drafter, batched/paged prefill for gated model
 
 ## Verification (levels as in [ported-families-todo](ported-families-todo.md))
 
-- [ ] **Specification test (level 2), next:** create a synthetic tiny `muse-glimmer` GGUF (2-4 layers, P = 2,
-   window 3, small dims, random F32 weights). Compare the engine's logits over a 6-10-token prompt
-   against a test-side reimplementation of the spec above. Cover SWA masking past the window, NoPE on
-   full layers, the gate, the 1e-8 post-norms, the embedding norm and scale-then-softcap; bound
-   max |Δlogit| ≲ 1e-3 (F32). The spec is cross-read against llama.cpp's source, but this test is
-   still not an independent implementation.
+- [x] **Specification test (level 2):** created a synthetic tiny `muse-glimmer` GGUF (4 layers, P = 2,
+   window 3, small dims, random F32 weights; `MuseGlimmerSyntheticTests`). Compares the engine's logits over
+   a 6-token prompt against a test-side reimplementation of the spec. Covers SWA masking past the window,
+   NoPE on full layers, attention output gate, 1e-8 post-norms, embedding norm and scale-then-softcap;
+   verified max |Δlogit| < 1e-3 (F32). Passed 2026-10-03.
 - [ ] **Independent implementation (level 3):** run the same synthetic GGUF through a llama.cpp build
    from `bed0a8566` or later (has `muse-glimmer.cpp`) and compare logits. That needs building llama.cpp
    or newer vendored binaries.

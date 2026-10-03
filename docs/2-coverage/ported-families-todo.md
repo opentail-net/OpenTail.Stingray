@@ -119,11 +119,12 @@ a new plan when someone decides to take them on; the wave isn't meant to grow by
   - DFlash speculative drafter (optional).
 - **Weights:** Muse-Glimmer-30B; GGUF sizes on the card are about 3-10 GB for the parts listed.
 - **References:** TensorSharp `Models/MuseGlimmer` (cites `llama.cpp/src/models/muse-glimmer.cpp`,
-  which is not in the local copy).
-- [ ] Port text tower
-- [ ] Port vision tower
-- [ ] Add not-admitted block
-- [ ] Add table row
+  which is present in the local copy at `bed0a8566`).
+- [x] Port text tower
+- [ ] Port vision tower (deferred)
+- [x] Add not-admitted block
+- [x] Add table row
+- [x] Specification test (level 2) passing (`MuseGlimmerSyntheticTests`)
 
 ### 4. DiffusionGemma (`diffusion-gemma`, alias `diffusion_gemma`)
 - **Design:**
@@ -149,10 +150,11 @@ a new plan when someone decides to take them on; the wave isn't meant to grow by
 - **Reuse:** Stingray's diffusion pipeline (Wan, HunyuanVideo, LTX) and audio VAE code. A
   diffusion project, not an LLM arch.
 - **References:** TensorSharp `Models/MiniMaxH3`, upstream HF code.
-- [ ] Port
-- [ ] Add a not-advertised entry; diffusion has no `ModelCompatibility` allowlist, so keep it off
+- [x] Port (`src/OpenTail.Stingray.Diffusion/MiniMaxH3/*.cs`)
+- [x] Add a not-advertised entry; diffusion has no `ModelCompatibility` allowlist, so keep it off
       the CLI's model list until verified
-- [ ] Add table row
+- [x] Add table row
+- [x] 13 unit / pipeline tests passing (`MiniMaxH3Tests.cs`)
 
 ### 6. DeepSeek V4 / V4.1 Flash (review, not a new port)
 - Stingray already has alpha code (`DeepSeek4*.cs`, plan
