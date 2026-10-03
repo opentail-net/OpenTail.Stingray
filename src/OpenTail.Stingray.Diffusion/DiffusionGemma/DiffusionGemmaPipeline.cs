@@ -10,12 +10,14 @@ public sealed class DiffusionGemmaPipeline
     private readonly DiffusionGemmaForwardPass _forwardPass;
     private readonly DiffusionGemmaConfig _config;
     private readonly DiffusionGemmaSampler _sampler;
+    private readonly Random _rng;
 
     public DiffusionGemmaPipeline(DiffusionGemmaForwardPass forwardPass, DiffusionGemmaConfig config, int seed = 42)
     {
         _forwardPass = forwardPass;
         _config = config;
         _sampler = new DiffusionGemmaSampler(config, seed);
+        _rng = new Random(seed);
     }
 
     /// <summary>
@@ -34,13 +36,12 @@ public sealed class DiffusionGemmaPipeline
         var outputTokens = new List<int>();
         int canvasLen = _config.CanvasLength;
         int vocabSize = _forwardPass.VocabSize;
-        var rng = new Random(42);
 
         for (int block = 0; block < maxBlocks; block++)
         {
             // Initial categorical noise on canvas
             var canvasTokens = new int[canvasLen];
-            for (int i = 0; i < canvasLen; i++) canvasTokens[i] = rng.Next(vocabSize);
+            for (int i = 0; i < canvasLen; i++) canvasTokens[i] = _rng.Next(vocabSize);
 
             var previouslyAccepted = new bool[canvasLen];
             var prevArgmax = new int[canvasLen];

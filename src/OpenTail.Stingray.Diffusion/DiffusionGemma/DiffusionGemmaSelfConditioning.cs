@@ -51,12 +51,10 @@ public static unsafe class DiffusionGemmaSelfConditioning
     {
         softEmbedOut.Clear();
 
-        // embedWeights is [vocabSize, hiddenDim] row-major
+        // embedWeights is [vocabSize, hiddenDim] row-major (exact full-vocabulary sum without pruning)
         for (int v = 0; v < vocabSize; v++)
         {
             float p = probs[v];
-            if (p < 1e-6f) continue; // skip insignificant tail mass for CPU efficiency
-
             float* row = embedWeights + (long)v * hiddenDim;
             for (int d = 0; d < hiddenDim; d++)
             {
@@ -101,6 +99,42 @@ public static unsafe class DiffusionGemmaSelfConditioning
         fixed (float* inPtr = gate, outPtr = scOut)
         {
             SimdKernels.MatVecF32(outPtr, wDown, null, inPtr, hiddenDim, intermediateDim);
+        }
+    }
+
+    /// <summary>
+    /// Applies the complete self-conditioning transformation with pre-norm and weightless post-norm:
+    /// x = pre_norm(soft_embeds)
+    /// sc_signal = down(GELU(gate(x)) * up(x))
+    /// canvas_embeds = post_norm(canvas_embeds + sc_signal)
+    /// </summary>
+    public static void ApplySelfConditioningWithNorms(
+        ReadOnlySpan<float> softEmbed,
+        float* scPreNorm,
+        float* wGate, float* wUp, float* wDown,
+        int hiddenDim, int intermediateDim,
+        Span<float> canvasPos,
+        float eps = 1e-6f)
+    {
+        Span<float> preNormed = hiddenDim <= 4096 ? stackalloc float[hiddenDim] : new float[hiddenDim];
+        Span<float> scSignal = hiddenDim <= 4096 ? stackalloc float[hiddenDim] : new float[hiddenDim];
+
+        fixed (float* inPtr = softEmbed, normPtr = preNormed, scPtr = scSignal, cPtr = canvasPos)
+        {
+            // 1. Learned pre-normalization
+            SimdKernels.RmsNorm(normPtr, inPtr, scPreNorm, hiddenDim, eps);
+
+            // 2. Gated MLP
+            ApplySelfCondMlp(preNormed, wGate, wUp, wDown, hiddenDim, intermediateDim, scSignal);
+
+            // 3. Add to current canvas embedding
+            for (int d = 0; d < hiddenDim; d++)
+            {
+                cPtr[d] += scPtr[d];
+            }
+
+            // 4. Weightless post-normalization (vLLM: RMSNorm(hidden, has_weight=False))
+            SimdKernels.PureRmsNorm(cPtr, cPtr, hiddenDim, eps);
         }
     }
 

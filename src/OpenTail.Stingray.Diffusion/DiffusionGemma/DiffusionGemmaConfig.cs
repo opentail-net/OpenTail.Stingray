@@ -32,7 +32,7 @@ public sealed record DiffusionGemmaConfig
     public int ExpertIntermediateDim { get; init; } = 704;
 
     // Self-Conditioning MLP
-    public int SelfCondIntermediateDim { get; init; } = 2816;
+    public int SelfCondIntermediateDim { get; init; } = 2112;
 
     // Canvas & Sampler
     public int CanvasLength { get; init; } = 256;
@@ -42,7 +42,7 @@ public sealed record DiffusionGemmaConfig
     public float EntropyBudgetNats { get; init; } = 0.1f;
     public float ConvergenceEntropyThreshold { get; init; } = 0.005f;
 
-    public int VocabSize { get; init; } = 256000;
+    public int VocabSize { get; init; } = 262144;
     public float RmsNormEps { get; init; } = 1e-6f;
     public float FinalLogitSoftcap { get; init; } = 30.0f;
 
