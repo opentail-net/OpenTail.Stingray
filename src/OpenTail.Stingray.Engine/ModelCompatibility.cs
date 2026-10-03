@@ -831,6 +831,14 @@ public static class ModelCompatibility
     // compared yet — see docs/2-coverage/2026-10-03-muse-glimmer-port-plan.md for the verification
     // ladder. STINGRAY_DIAGNOSTIC_ALLOW_UNSUPPORTED_ARCH=1 runs it for experiments.
     //
+    // deepseek41 — NOT admitted (CLAUDE.md rule 14: ported, not verified). Distinct architecture
+    // from V4: 40 layers, hidden dimension 5120, 64 heads (KV=1), head dim 512, q_lora_rank 1280,
+    // 8-group output LoRA (rank 1024), compression ratios 0 / 1 / 2 ([0, 0, 18 of 2, 20 of 1]),
+    // 384 routed experts + 1 shared expert (sqrtsoftplus routing with scale 1.5), dual Engram tables
+    // on layers 1 and 14 (max 4-gram, 99,092 compressed vocab, 8 heads x 256 dim), 8 index-source
+    // layers (block size 8, candidate top-k 2048 to top-512), 3 NextN draft-head layers, and 4-stream mHC.
+    // Checkpoints exceed 335 GB (due to dual ~196B Engram tables); gated until reference execution receipt.
+    //
     // deepseek4 — NOT admitted. DeepSeek4ForwardPass (DeepSeek4ForwardPass.cs) is a structurally
     // complete ALPHA/UNTESTED IForwardPass covering all three of V4's attention variants (raw,
     // HCA, CSA), hyper-connections, MoE (incl. hash routing + sqrt-softplus gating), and tensor

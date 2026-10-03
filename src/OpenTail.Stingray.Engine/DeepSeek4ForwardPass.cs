@@ -389,16 +389,35 @@ public sealed unsafe class DeepSeek4ForwardPass : IForwardPass
             ApplyRopeInterleaved(outHead.Slice(_nopeDim, _ropeDim), -position, _hp.RopeFreqBase);
         }
 
-        // wo_a/wo_b grouped output LoRA (deepseek4.cpp:1247-1263-ish region; grouping is NOT
-        // implemented here -- this treats wo_a/wo_b as a single ungrouped down-projection, which
-        // is wrong whenever OutputGroupCount > 1. Flagged as a known gap, not silently assumed
-        // correct: re-derive the per-group reshape (wo_a's {n_head*headDim/groups, loraRank,
-        // groups} shape, deepseek4.cpp:119) before trusting this for a checkpoint with groups>1.
+        // wo_a/wo_b grouped output LoRA (deepseek4.cpp:1247-1263).
         int outLoraRank = _hp.OutputLoraRank;
         var oa = new float[outLoraRank];
-        fixed (float* inPtr = attnOut, outPtr = oa)
+        int groups = Math.Max(1, _hp.OutputGroupCount);
+        if (groups > 1 && (_numHeads * _headDim) % groups == 0 && outLoraRank % groups == 0)
         {
-            SimdKernels.MatVec(outPtr, layer.WoA!.Value.DataPtr, inPtr, outLoraRank, _numHeads * _headDim, layer.WoA.Value.DType);
+            int groupInDim = (_numHeads * _headDim) / groups;
+            int groupOutDim = outLoraRank / groups;
+            fixed (float* inPtr = attnOut, outPtr = oa)
+            {
+                byte* wBase = layer.WoA!.Value.DataPtr;
+                var dtype = layer.WoA.Value.DType;
+                for (int g = 0; g < groups; g++)
+                {
+                    float* gIn = inPtr + g * groupInDim;
+                    float* gOut = outPtr + g * groupOutDim;
+                    byte* gWeight = dtype == DType.Float32
+                        ? (byte*)((float*)wBase + (long)g * groupOutDim * groupInDim)
+                        : wBase + (long)g * groupOutDim * groupInDim;
+                    SimdKernels.MatVec(gOut, gWeight, gIn, groupOutDim, groupInDim, dtype);
+                }
+            }
+        }
+        else
+        {
+            fixed (float* inPtr = attnOut, outPtr = oa)
+            {
+                SimdKernels.MatVec(outPtr, layer.WoA!.Value.DataPtr, inPtr, outLoraRank, _numHeads * _headDim, layer.WoA.Value.DType);
+            }
         }
         var result = new float[_embedDim];
         fixed (float* inPtr = oa, outPtr = result)
@@ -638,7 +657,15 @@ public sealed unsafe class DeepSeek4ForwardPass : IForwardPass
             var (blockKv, _) = lidState.GetBlock(t);
             for (int h = 0; h < numIndexerHeads; h++)
             {
-                blockKv.Span.CopyTo(k.AsSpan((t * numIndexerHeads + h) * _indexerHeadDim, _indexerHeadDim));
+                int kOffset = (t * numIndexerHeads + h) * _indexerHeadDim;
+                blockKv.Span.CopyTo(k.AsSpan(kOffset, _indexerHeadDim));
+                if ((_indexerHeadDim & (_indexerHeadDim - 1)) == 0 && _indexerHeadDim >= 2)
+                {
+                    fixed (float* kPtr = k)
+                    {
+                        PrismHadamard.ApplySylvesterHadamard(kPtr + kOffset, _indexerHeadDim, _indexerHeadDim);
+                    }
+                }
                 weights[t * numIndexerHeads + h] = indexerWeightsPerHead[h];
             }
         }
