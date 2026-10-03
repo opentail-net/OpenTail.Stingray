@@ -86,4 +86,98 @@ public sealed unsafe class Qwen4ExpRoutedMoeTests
             foreach (var p in allocations) System.Runtime.InteropServices.NativeMemory.Free((void*)p);
         }
     }
+
+    [Fact]
+    public void ExecuteMoe_FusedGateUpExperts_ProducesIdenticalOutputToSeparateTensors()
+    {
+        var allocations = new List<nint>();
+        Qwen4ExpTensorRef Ref(string name, long[] dims, float[] data)
+        {
+            nint mem = (nint)System.Runtime.InteropServices.NativeMemory.Alloc((nuint)data.Length, sizeof(float));
+            allocations.Add(mem);
+            for (int i = 0; i < data.Length; i++) ((float*)mem)[i] = data[i];
+            var info = new GgufTensorInfo(name, dims.Length, dims, DType.Float32, 0);
+            return new Qwen4ExpTensorRef(name, info, (byte*)mem);
+        }
+
+        try
+        {
+            var router = new float[E * Dim];
+            float[] logits = [0f, 5f, -2f, 4f];
+            for (int e = 0; e < E; e++) router[e * Dim] = logits[e];
+
+            var gate = new float[E * Inter * Dim];
+            var up = new float[E * Inter * Dim];
+            var down = new float[E * Dim * Inter];
+
+            gate[(1 * Inter + 0) * Dim] = 1f; up[(1 * Inter + 0) * Dim] = 1f;
+            gate[(3 * Inter + 0) * Dim] = 2f; up[(3 * Inter + 0) * Dim] = 1f;
+            gate[(0 * Inter + 0) * Dim] = 9f; up[(0 * Inter + 0) * Dim] = 9f;
+            gate[(2 * Inter + 0) * Dim] = 9f; up[(2 * Inter + 0) * Dim] = 9f;
+
+            down[(1 * Dim + 0) * Inter + 0] = 1f;
+            down[(3 * Dim + 2) * Inter + 0] = 1f;
+            down[(0 * Dim + 1) * Inter + 0] = 1f;
+            down[(2 * Dim + 3) * Inter + 0] = 1f;
+
+            // Form fused tensor [Dim, 2 * Inter, E]
+            var fusedGateUp = new float[E * (2 * Inter) * Dim];
+            for (int e = 0; e < E; e++)
+            {
+                for (int j = 0; j < Inter; j++)
+                {
+                    for (int d = 0; d < Dim; d++)
+                    {
+                        fusedGateUp[(e * (2 * Inter) + j) * Dim + d] = gate[(e * Inter + j) * Dim + d];
+                        fusedGateUp[(e * (2 * Inter) + Inter + j) * Dim + d] = up[(e * Inter + j) * Dim + d];
+                    }
+                }
+            }
+
+            var separateLayer = new Qwen4ExpLayerTensors
+            {
+                LayerIndex = 0,
+                FfnGateInp = Ref("blk.0.ffn_gate_inp.weight", [Dim, E], router),
+                FfnGateExps = Ref("blk.0.ffn_gate_exps.weight", [Dim, Inter, E], gate),
+                FfnUpExps = Ref("blk.0.ffn_up_exps.weight", [Dim, Inter, E], up),
+                FfnDownExps = Ref("blk.0.ffn_down_exps.weight", [Inter, Dim, E], down),
+            };
+
+            var fusedLayer = new Qwen4ExpLayerTensors
+            {
+                LayerIndex = 0,
+                FfnGateInp = Ref("blk.0.ffn_gate_inp.weight", [Dim, E], router),
+                FfnGateUpExps = Ref("blk.0.ffn_gate_up_exps.weight", [Dim, 2 * Inter, E], fusedGateUp),
+                FfnDownExps = Ref("blk.0.ffn_down_exps.weight", [Inter, Dim, E], down),
+            };
+
+            var hp = new Qwen4ExpHyperparams
+            {
+                EmbedDim = Dim, HyperConnectionCount = 1, NumLayer = 1, ExpertCount = E, ExpertUsedCount = TopK,
+                RecurrentLayers = [true],
+            };
+            var tokEmbd = Ref("token_embd.weight", [Dim, 2], new float[Dim * 2]);
+            var separateTensors = new Qwen4ExpTensorSet(tokEmbd, tokEmbd, tokEmbd, tokEmbd, tokEmbd, null, [separateLayer]);
+            var fusedTensors = new Qwen4ExpTensorSet(tokEmbd, tokEmbd, tokEmbd, tokEmbd, tokEmbd, null, [fusedLayer]);
+
+            using var separateFwd = new Qwen4ExpForwardPass(null!, hp, separateTensors);
+            using var fusedFwd = new Qwen4ExpForwardPass(null!, hp, fusedTensors);
+
+            var sepOut = new float[Dim];
+            var fusedOut = new float[Dim];
+            float[] input = [1f, 0f, 0f, 0f];
+
+            separateFwd.ExecuteMoe(separateLayer, input, sepOut);
+            fusedFwd.ExecuteMoe(fusedLayer, input, fusedOut);
+
+            for (int d = 0; d < Dim; d++)
+            {
+                Assert.Equal(sepOut[d], fusedOut[d], 1e-6f);
+            }
+        }
+        finally
+        {
+            foreach (var p in allocations) System.Runtime.InteropServices.NativeMemory.Free((void*)p);
+        }
+    }
 }
