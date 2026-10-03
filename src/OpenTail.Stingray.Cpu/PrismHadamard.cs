@@ -15,7 +15,7 @@ namespace OpenTail.Stingray.Cpu;
 public static unsafe class PrismHadamard
 {
     /// <summary>In-place unnormalized fast Walsh-Hadamard transform of each block, then scale.</summary>
-    private static void FwhtBlocks(float* x, int width, int blockSize, float scale)
+    internal static void FwhtBlocks(float* x, int width, int blockSize, float scale)
     {
         for (int start = 0; start < width; start += blockSize)
         {
@@ -30,6 +30,17 @@ public static unsafe class PrismHadamard
                     }
             for (int i = 0; i < blockSize; i++) b[i] *= scale;
         }
+    }
+
+    /// <summary>
+    /// In-place orthonormal Sylvester-Walsh-Hadamard transform on blocks of size <paramref name="blockSize"/>
+    /// scaled by 1/sqrt(blockSize). Used by DSA / lightning-indexer (GLM-DSA, DeepSeek-V3.2, etc.).
+    /// </summary>
+    public static void ApplySylvesterHadamard(float* x, int count, int blockSize)
+    {
+        if (blockSize < 2 || (blockSize & (blockSize - 1)) != 0 || count % blockSize != 0)
+            throw new ArgumentException($"Invalid Hadamard transform: count {count}, block {blockSize}.");
+        FwhtBlocks(x, count, blockSize, 1f / MathF.Sqrt(blockSize));
     }
 
     private static void Validate(int width, int signsLength, int blockSize)

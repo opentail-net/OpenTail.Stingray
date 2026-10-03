@@ -797,6 +797,19 @@ public static class ModelCompatibility
         "minicpm",
     };
     //
+    // glm-dsa — NOT admitted (CLAUDE.md rule 14: ported, not verified). Alpha forward pass
+    // ported 2026-10-03 from llama.cpp src/models/glm-dsa.cpp (upstream b10306) and official GLM-5.2
+    // config: 78 layers (3 leading dense + 75 MoE with 256 routed + 1 shared expert, top-8 routed,
+    // sigmoid gating, scale 2.5), MLA attention with weight absorption (64 heads, 576-dim compressed
+    // KV cache), and DSA lightning indexer (32 heads x 128 head dim, top-k 2048, Sylvester-Walsh-Hadamard
+    // rotation via PrismHadamard.ApplySylvesterHadamard, full/shared layer refresh schedule).
+    // No real checkpoint run yet; gated until greedy parity receipt is established.
+    //
+    // glm5next — NOT admitted (CLAUDE.md rule 14: ported, not verified). Hybrid KDA (linear) +
+    // MLA trunk ported 2026-10-03 from llama.cpp src/models/glm5-next.cpp (upstream b10306) and
+    // Hugging Face GLM-5.3-Flash: 45 layers in strict 3:1 pattern (34 KDA + 11 MLA), 4-stream mHC
+    // hyper-connections with Sinkhorn balancing, 4-token K-pool indexer, and 288-expert MoE.
+    //
     // qwen4exp — NOT admitted (CLAUDE.md rule 14: ported, not verified). Alpha forward pass
     // ported 2026-10-03 from llama.cpp src/models/qwen4exp.cpp (upstream bed0a8566) and TensorSharp
     // Models/Qwen4Exp/: 48 layers (36 GDN + 12 QSA), 4-stream GatedResidual hyper-connections
