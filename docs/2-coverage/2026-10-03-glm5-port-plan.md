@@ -1,78 +1,125 @@
 # GLM-5.x port plan (`glm-dsa`: GLM-5.2 / 5.3; `glm5next`: GLM-5.3-Flash)
 
-**Status:** not started. **Policy:** port now, prove later; not admitted, not advertised
+**Status:** not started (2026-10-03). **Policy:** port now, prove later; not admitted, not advertised
 (CLAUDE.md rule 14; [ported-families-todo](ported-families-todo.md)).
 
-## Architecture
+## Architecture & Upstream References
 
-References:
-- **`glm-dsa`:** llama.cpp `src/models/glm-dsa.cpp` (local source; the vendored b10306 binaries
-  know it too). TensorSharp's note: reproducing llama.cpp's indexer top-k restored 6/6 token parity.
-- **`glm5next`:** llama.cpp `src/models/glm5-next.cpp` (1,013 lines, local source since the
-  2026-10-03 pull to `bed0a8566`; not in b10306) for the **trunk** (KDA, NoPE MLA, k-pool DSA, MoE,
-  HC). **It is not a complete reference:** it throws
-  `"GLM5-Next NextN graph not implemented yet"`, so TensorSharp (`GlmDsaModel.Glm5Next*.cs`) stays the
-  only implementation reference for NextN/MTP. TensorSharp's earlier "llama.cpp is not a valid
-  reference for glm5next" predates this upstream file.
-- Secondary for both: TensorSharp `docs/models/glm.md`, `Models/GlmDsa/` (20 files).
+**Primary & secondary references:**
+- **`glm-dsa`** (GLM-5.2 / 5.3):
+  - Primary: local llama.cpp `src/models/glm-dsa.cpp` (770 lines; vendored b10306 binaries know it too, serving as local oracle).
+  - Secondary: TensorSharp `Models/GlmDsa/` (reproducing llama.cpp indexer top-k restored 6/6 token parity).
+  - Hugging Face: `GlmMoeDsaForCausalLM`.
+- **`glm5next`** (GLM-5.3-Flash):
+  - Primary: current upstream llama.cpp `src/models/glm5-next.cpp` (1,013 lines in local source checkout `bed0a8566`, covering KDA, NoPE MLA, K-pool DSA, MoE, mHC).
+  - Secondary: Hugging Face `Glm5NextForConditionalGeneration`.
+  - Secondary: TensorSharp `Models/GlmDsa/` (`Glm5Next*.cs`).
+  - Local oracle: vendored b10306 does not yet carry `glm5next`; an updated llama.cpp build is required for level-3 parity.
 
-**`glm-dsa`** (GLM-5.2: 744B MoE, 78 layers):
+---
 
-| Piece | Shape / rule |
+### 1. `glm-dsa` (GLM-5.2: 744B MoE, 78 layers)
+
+| Piece | Exact specification |
 |---|---|
-| Attention | MLA with weight absorption: 64 Q heads, 1 key head, q_lora 2048, kv_lora 512, head k/v 256, n_rot 64; KV cache one 576-wide row per token per layer |
-| DSA indexer | 32 heads x 128, top-k 2048, on 21 of 78 layers (0, 1, 2, then every 4th from 6); in-between layers reuse the last selection; Walsh-Hadamard rotation before the F16 key cache (needed for parity) |
-| MoE | 256 experts, top-8, sigmoid gating, selection-only routing bias, renormalisation, x2.5 routed scale; first 3 layers dense SwiGLU (n_ff 12288) |
-| NextN/MTP | 1 trailing block |
-| RoPE | NORM, base 8e6, on the 64-wide rope slice; softmax scale 1/sqrt(256) |
+| **MLA Attention** | 64 attention heads / 64 KV heads (decompressed). `q_lora_rank = 2048`, `kv_lora_rank = 512`. `qk_head_dim = 256` (`qk_nope_head_dim = 192`, `qk_rope_head_dim = 64`), `v_head_dim = 256`. Cached latent: $512 \text{ (KV)} + 64 \text{ (positional RoPE)} = 576$ values/token/layer. $W_{kv\_a}$ produces the 576-wide compressed row. |
+| **DSA Indexer** | 32 heads $\times$ 128 key length, `top_k = 2048`. Present on 21 of 78 layers: default schedule is layers 0, 1, 2, then every 4th layer from 6 (or overridden by `attention.indexer_types`). In-between layers reuse the `top_k` selection from the preceding full layer. |
+| **Hadamard Rotation** | In-place orthonormal Sylvester Walsh-Hadamard transform (`1/sqrt(128)`) applied to `indexer_q` and `indexer_k` before KV caching (matching `PrismHadamard` FWHT). |
+| **MoE & FFN** | First 3 layers are dense SwiGLU (`n_ff = 12288`). Layers 3..77: 256 routed experts + 1 shared expert (`expert_shared_count = 1`), `top_k = 8`. Sigmoid scoring (`expert_gating_func = 2`), biased selection by `exp_probs_b`, unbiased probabilities, probability renormalization (`expert_weights_norm = true`), $\times 2.5$ routed scaling (`expert_weights_scale = 2.5`). |
+| **RoPE & Scaling** | NORM RoPE (interleaved) on 64-wide slice, base 8e6. Softmax scale $\text{kq\_scale} = \text{mscale}^2 / \sqrt{256}$. YaRN scaling parameters pre-divided by 0.1 at load time. |
 
-**`glm5next`** (GLM-5.3-Flash, 320B):
-- 45 trunk layers + 1 NextN; 288 experts, top-8, 1 shared;
-- **KDA linear attention** on 34 layers, with a per-layer `head_count_kv` array (0 = KDA, 1 = MLA);
-- MLA + DSA on 11 layers, NoPE;
-- a pooled indexer;
-- **Sinkhorn hyper-connections** (×4, the DeepSeek-V4 mHC recipe);
-- a SwiGLU clamp at 10.
+---
 
-**Real checkpoints don't fit this PC** (64 GB RAM). The smallest published quant TensorSharp
-measured: **GLM-5.3 UD-Q2_K_XL ≈ 236.4 GiB in 7 shards**. GLM-5.3-Flash (320B) is likewise far
-beyond 64 GB at any usable quant. So this is port + synthetic verification only until a large-RAM
-or cloud host is available.
+### 2. `glm5next` (GLM-5.3-Flash, 320B)
+
+| Piece | Exact specification |
+|---|---|
+| **Layer Schedule** | 45 trunk layers with a strict 3:1 repeating structure (34 KDA + 11 DSA/MLA layers):<br>• `i % 4 != 3` $\to$ **KDA** (layers 0, 1, 2, 4, 5, 6, ..., 42, 44)<br>• `i % 4 == 3` $\to$ **DSA/MLA** (layers 3, 7, 11, 15, 19, 23, 27, 31, 35, 39, 43)<br>Overrideable via GGUF `attention.head_count_kv` array (0 = KDA, 1 = MLA). |
+| **KDA Recurrence** | Distinct linear attention recurrence (not a generic GDN clone): 64 heads, 128 head dimension, short conv kernel 4, gate lower bound -5. Channel-wise decay, state equations, gating, decay normalization, and dedicated state layout. |
+| **NoPE MLA / Attention** | `q_lora_rank = 1536`, `qk_nope_head_dim = 256`, `qk_rope_head_dim = 0` (**NO Q/K RoPE** on main attention), `mla_use_nope = true`, `v_head_dim = 256`. Main attention carries zero rotary embedding; positional information is handled by the indexer. |
+| **K-Pool Indexer** | Dedicated stateful subsystem: `index_kpool = 4` (4-token pool construction), `index_kpool_compress = true`, `index_kpool_always_select_tail = true`, `index_topk = 2048`. Pooled K layout, token $\to$ pool coordinate mapping, sequence-local pool state, and incremental updates across decode. |
+| **Sinkhorn mHC** | $\times 4$ hyper-connection streams (`hc_mult = 4`), Sinkhorn iteration count `hc_sinkhorn_iters = 20`, `hc_eps = 1e-6`. Row/column normalization, pre/post residual mixing in FP32 arithmetic. |
+| **MoE & Router** | First 3 layers dense SwiGLU; remaining 42 layers MoE (`mlp_layer_types`: dense $\times 3$, sparse $\times 42$). 288 routed experts + 1 shared expert, top-8 routed, sigmoid scoring, **router in FP32** (`moe_router_dtype = float32`), probability renormalization, $\times 2.5$ routed scaling. SwiGLU clamp at 10. |
+
+---
+
+## Hardware Constraint & Policy
+
+**Real checkpoints do not fit this machine** (64 GB RAM):
+- Smallest published quant for GLM-5.3: **UD-Q2_K_XL ≈ 236.4 GiB in 7 shards** (Q4 is ~432 GB).
+- GLM-5.3-Flash (320B) is similarly far beyond 64 GB RAM.
+- **Policy**: Port now, prove later. Implementation is verified via isolated synthetic specification tests and independent execution against vendored `llama.cpp` b10306 (`glm-dsa`). Code remains unadmitted and unadvertised.
+
+---
 
 ## Reuse in Stingray
 
 - `deepseek2` MLA with absorption (admitted, verified): attention core and KV layout.
-- The `deepseek32` lightning-indexer alpha: DSA scoring + top-k mask.
-- The MoE router with sigmoid gating, routing bias and renormalisation (DeepSeek-V3 family code).
-- For `glm5next`: the DeepSeek-V4 alpha's Sinkhorn mHC; GDN/KDA-like recurrence pieces in
-  `GdnKernels` (KDA differs: per-channel decay; read first).
+- `DeepSeek32ForwardPass`: DSA indexer scoring and top-k selection.
+- `PrismHadamard`: fast Sylvester Walsh-Hadamard transform (`FwhtBlocks`) for indexer rotation.
+- `DeepSeek4Alpha`: Sinkhorn mHC primitives.
 
-## New work (phases)
+---
 
-- [ ] **0. Read** `glm-dsa.cpp` (primary) and TensorSharp's `GlmDsaModel*.cs`. Write the spec here.
-- [ ] **1. `glm-dsa`:** `ModelGraph` branch; forward pass extending the `deepseek2`/`deepseek32`
-  paths (indexer layer schedule, selection reuse, Hadamard-before-F16 key cache, routed scale).
-- [ ] **2a. `glm5next` trunk:** KDA layers (short conv, l2 q/k, per-channel decay), NoPE MLA +
-  pooled DSA indexer, ×4 HC streams, SwiGLU clamp, MoE. Reference: `glm5-next.cpp`. A separate class
-  is likely.
-- [ ] **2b. `glm5next` NextN/MTP:** TensorSharp is the primary implementation reference until an
-  independent implementation exists (upstream llama.cpp doesn't have one yet).
-- [ ] **3. Gate:** `// glm-dsa — NOT admitted` / `// glm5next — NOT admitted` blocks.
+## New Work & Decomposed Phases
 
-## Deferred (not in the initial port)
+### Phase 0: Freeze References
+- [ ] Freeze exact shapes, tensor naming, and metadata keys against `glm-dsa.cpp` and `glm5-next.cpp`.
 
-Vision (GLM-OCR ViT mmproj), NextN/MTP speculative decoding (2b only after the trunk), tensor
-parallelism, and GPU paths.
+### Phase 1: `glm-dsa` Trunk
+- [ ] **1a. Metadata & Tensor Set (`GlmDsaAlpha.cs`)**:
+  Parse `glm-dsa` / `glm_dsa` hyperparameters, load MLA tensors (`wq_a`, `wq_b`, `wkv_a_mqa`, `wk_b`, `wv_b`, `wo`), indexer tensors (`indexer_k_norm`, `indexer_k_norm_b`, `indexer_proj`, `indexer_attn_k`, `indexer_attn_q_b`), dense FFN and MoE tensors.
+- [ ] **1b. MLA & Attention**:
+  Compressed KV caching ($512 + 64$ per token), absorbed Q calculation, NORM RoPE on positional slice.
+- [ ] **1c. DSA Indexer & Refresh Schedule**:
+  Full indexer on schedule (layers 0, 1, 2, then every 4th); reuse `top_k` across shared indexer layers.
+- [ ] **1d. Hadamard Indexer Rotation**:
+  In-place orthonormal FWHT (`PrismHadamard`) on `indexer_q` and `indexer_k` scaled by $1/\sqrt{128}$.
+- [ ] **1e. MoE & Leading Dense Blocks**:
+  First 3 layers dense; subsequent layers MoE with sigmoid routing, bias, top-8, renormalization, scale 2.5, and shared expert.
+- [ ] **1f. Full Forward Pass (`GlmDsaForwardPass.cs`)**:
+  Assemble decode pass.
+- [ ] **1g. Not-Admitted Gate & Synthetic Test**:
+  Add `// glm-dsa — NOT admitted` block in `ModelCompatibility.cs`. Build synthetic specification test (`GlmDsaSyntheticTests.cs`) and verify against vendored llama.cpp b10306.
 
-## Verification (levels as in [ported-families-todo](ported-families-todo.md))
+### Phase 2: `glm5next` Trunk (GLM-5.3-Flash)
+- [ ] **2a. Metadata & Tensor Set (`Glm5NextAlpha.cs`)**:
+  Hyperparameters (`head_count_kv`, `index_kpool`, `hc_mult`, etc.) and tensor loader.
+- [ ] **2b. KDA Recurrence**:
+  Independent KDA linear attention recurrence (kernel 4, gate clamp -5, channel decay).
+- [ ] **2c. Sinkhorn mHC (`Glm5NextMhcTests`)**:
+  4-stream hyper-connections, 20 Sinkhorn iterations, FP32 arithmetic, isolated unit tests.
+- [ ] **2d. K-Pool Indexer Subsystem**:
+  4-token pool construction, tail selection, pooled K layout, sequence-local state.
+- [ ] **2e. NoPE MLA / DSA**:
+  Main attention with `qk_rope_head_dim = 0`, `q_lora_rank = 1536`.
+- [ ] **2f. MoE & SwiGLU Clamp**:
+  288+1 MoE, FP32 router, top-8, scale 2.5, clamp 10.
+- [ ] **2g. Full 45-Layer Trunk Forward Pass (`Glm5NextForwardPass.cs`)**:
+  Assemble the 34 KDA + 11 MLA layers.
+- [ ] **2h. Not-Admitted Gate & Synthetic Test**:
+  Add `// glm5next — NOT admitted` block and specification tests.
 
-- [ ] **Specification tests (level 2):** check synthetic tiny GGUFs against test-side reimplementations.
-- [ ] **Independent implementation (level 3), available now for `glm-dsa`:** run the synthetic model
-   through the **vendored llama.cpp b10306**, which knows `glm-dsa`: a real independent mechanics
-   check without the real checkpoint. For the `glm5next` trunk, the same needs a llama.cpp build from
-   `bed0a8566` or later. For NextN, only TensorSharp is available, which is a second reading, not an
-   independent check.
-- [ ] **Real weights (level 4):** on a large host, verify against real weights and run `stingray admit-arch` against `llama-server`.
+### Deferred (Explicitly Out of Scope)
+- **MTP / NextN Speculative Drafter**: Text trunk first; NextN extra block is a follow-up.
+- **Vision Tower**: GLM-5.3-Flash multimodal 24-block ViT (448 input, temporal patching) is deferred; initial port milestone is text-only.
+- **GPU Paths & Batched Prefill**: CPU decode and synthetic verification first.
 
-**Effort:** port + synthetic about 1 day (`glm-dsa`) + about 1 day (`glm5next` trunk); NextN extra.
-Real-weight verification (large host), the closeout performance + DRY pass, and admission are separate.
+---
+
+## Verification Plan
+
+- **Specification Tests (Level 2)**:
+  - Tiny synthetic GGUFs for `glm-dsa` and `glm5next`.
+  - Check intermediate states: Hadamard rotation, KDA recurrence, mHC Sinkhorn convergence, K-pool coordinate mapping, MoE routing.
+- **Independent Implementation (Level 3)**:
+  - `glm-dsa`: verified against vendored **`llama.cpp` b10306** binaries using synthetic GGUFs.
+  - `glm5next`: verified against upstream `bed0a8566` source / TensorSharp / HF references.
+- **Real Weights (Level 4)**:
+  - Deferred until access to large-memory (>256 GB RAM) host.
+- **Admission (Level 5)**:
+  - Standard admission gate once level 4 evidence is captured.
+
+---
+
+**Effort:** ~1-2 days for `glm-dsa` port + synthetic oracle tests; ~2 days for `glm5next` trunk + mHC/K-pool/KDA tests. MTP, vision, and real-weight verification are separate.

@@ -97,16 +97,13 @@ a new plan when someone decides to take them on; the wave isn't meant to grow by
 
 ### 2. GLM-5.x (`glm-dsa`, alias `glm_dsa`; GLM-5.3-Flash is `glm5next`)
 - **Design:**
-  - GLM-5.2/5.3 is a 744B MoE (256 routed + 1 shared, top-8) on DeepSeek Sparse Attention: MLA
-    with weight absorption plus a lightning indexer;
-  - GLM-5.3-Flash (`glm5next`) runs through the same executor in TensorSharp.
-- **Weights:** `unsloth/GLM-5.3-GGUF` (about 765 GB; won't fit). GLM-5.3-Flash size not yet
-  checked.
-- **Reuse:** Stingray's `deepseek2` MLA and `deepseek32` indexer alpha code.
+  - `glm-dsa` (GLM-5.2/5.3): 744B MoE (256 routed + 1 shared, top-8, sigmoid, scale 2.5; 3 leading dense) on MLA (64 heads, 512+64 latent row) + 32-head DSA indexer with orthonormal Sylvester Hadamard rotation (`PrismHadamard` FWHT); shared indexer layers reuse top-k.
+  - `glm5next` (GLM-5.3-Flash): 320B hybrid trunk with 45 layers (34 KDA linear attention + 11 NoPE MLA/DSA in strict 3:1 schedule: `i % 4 != 3` -> KDA, `i % 4 == 3` -> MLA), 4-token K-pool indexer, x4 Sinkhorn mHC, 288+1 MoE with FP32 router, SwiGLU clamp at 10.
+- **Weights:** `unsloth/GLM-5.3-GGUF` (UD-Q2_K_XL ~236.4 GiB, Q4 ~432 GB; does not fit 64 GB RAM; synthetic gate only).
+- **Reuse:** Stingray's `deepseek2` MLA, `deepseek32` indexer, `PrismHadamard` FWHT, and `deepseek4` mHC.
 - **References:**
-  - `glm-dsa`: llama.cpp `src/models/glm-dsa.cpp` (local), plus TensorSharp `Models/GlmDsa`. Its
-    note: reproducing llama.cpp's indexer top-k restored 6/6 token parity.
-  - `glm5next`: TensorSharp only. Its note: llama.cpp is not a valid reference for it.
+  - `glm-dsa`: llama.cpp `src/models/glm-dsa.cpp` (local source; vendored b10306 binaries know it too and serve as local oracle), HF `GlmMoeDsaForCausalLM`, TensorSharp `Models/GlmDsa`.
+  - `glm5next`: current upstream llama.cpp `src/models/glm5-next.cpp` (`bed0a8566`, includes K-pool, mHC, KDA recurrence, MTP), HF `Glm5NextForConditionalGeneration`, TensorSharp `Models/GlmDsa`.
 - [ ] Port `glm-dsa`
 - [ ] Port `glm5next`
 - [ ] Add not-admitted blocks
