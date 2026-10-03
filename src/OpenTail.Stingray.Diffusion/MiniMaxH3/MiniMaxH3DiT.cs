@@ -89,7 +89,10 @@ public sealed class MiniMaxH3DiT
             MatVec(AudioInProj, aud, h, HiddenDim, MiniMaxH3Config.AudioPatchDim);
         }
 
-        // 4. Pass through all DiT blocks
+        // 4. Precompute Multimodal RoPE tables once for this packed sequence layout
+        var (ropeCos, ropeSin) = MiniMaxH3RoPE.ComputeMultimodalRoPE(layout, headDim);
+
+        // 5. Pass through all DiT blocks
         var hiddenSpan = hiddenStates.AsSpan();
         for (int b = 0; b < NumLayers; b++)
         {
@@ -100,7 +103,9 @@ public sealed class MiniMaxH3DiT
                 curveVec8,
                 Blocks[b],
                 numHeads,
-                headDim);
+                headDim,
+                ropeCos,
+                ropeSin);
         }
 
         // 5. Output projection for Video Target tokens -> [NumVideoTokens, 96]

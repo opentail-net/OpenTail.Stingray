@@ -72,31 +72,31 @@ Additional architectural components:
 ## New Work (Phases)
 
 - [x] **0. Specification & Hyperparameters Lock**:
-  - Map exact GGUF metadata keys and tensor names matching `qwen4exp.cpp`.
-  - Add `qwen4exp` architecture constants and parameter bindings to `Qwen4ExpHyperparams`.
+  - [x] Map exact GGUF metadata keys and tensor names matching `qwen4exp.cpp`.
+  - [x] Add `qwen4exp` architecture constants and parameter bindings to `Qwen4ExpHyperparams`.
 - [x] **1. GatedResidual (Hyper-Connections)**:
-  - Implement 4-stream grouped RMSNorm, low-rank bottleneck (320), SiLU, stream-average collapse, and $2\sigma$ injection combine.
-  - Unit test `Qwen4ExpGatedResidualTests`.
+  - [x] Implement 4-stream grouped RMSNorm, low-rank bottleneck (320), SiLU, stream-average collapse, and $2\sigma$ injection combine.
+  - [x] Unit test `Qwen4ExpGatedResidualTests`.
 - [x] **2. GDN + MoE Trunk (36 layers)**:
-  - FP32 recurrence kernel integration via `GdnKernels.GdnRecurrenceDecode`.
-  - 512-expert MoE (top-10 + 1 shared expert, intermediate 640).
-  - Unit test `GdnRecurrenceDecode` integration and MoE structure.
+  - [x] Integrate the FP32 recurrence kernel via `GdnKernels.GdnRecurrenceDecode`.
+  - [x] Implement 512-expert MoE (top-10 + 1 shared expert, intermediate 640).
+  - [x] Unit test `GdnRecurrenceDecode` integration and MoE structure.
 - [x] **3. PLE Subsystem**:
-  - Multi-head hash mapping / gather over n-gram table.
-  - Grouped RMSNorm + signed square root gating.
-  - Dilated depthwise causal 1D conv with state storage in recurrent cache.
-  - Unit test `Ple_ComputeGate_PositiveAndNegativeDotProducts` and `Ple_DilatedConv_AccessesExpectedTaps`.
+  - [x] Implement multi-head hash mapping / gather over n-gram table.
+  - [x] Implement grouped RMSNorm + signed square root gating.
+  - [x] Implement dilated depthwise causal 1D conv with state storage in recurrent cache.
+  - [x] Unit test `Ple_ComputeGate_PositiveAndNegativeDotProducts` and `Ple_DilatedConv_AccessesExpectedTaps`.
 - [x] **4. QSA Subsystem (12 layers)**:
-  - 4a: Indexer key pooling and top-k block selection (`Qsa_PoolIndexerKeys_AveragesAndNormalizes`, `Qsa_ComputeBlockScore_RectifiesAndScales`).
-  - 4b: Interleaved Q+gate projection, sparse attention, and causal masking (`Qsa_SplitAndNormQGated_And_ApplyAttentionGate`).
+  - [x] 4a: Implement indexer key pooling and top-k block selection (`Qsa_PoolIndexerKeys_AveragesAndNormalizes`, `Qsa_ComputeBlockScore_RectifiesAndScales`).
+  - [x] 4b: Implement interleaved Q+gate projection, sparse attention, and causal masking (`Qsa_SplitAndNormQGated_And_ApplyAttentionGate`).
 - [x] **5. Forward Pass Composition (`Qwen4ExpForwardPass`)**:
-  - Assemble full 48-layer stack: 36 GDN layers, 12 QSA layers, PLE at layer 2, HC wrapping all mixers and MoE blocks.
-  - Final HC head mix (acting as RMS output norm).
+  - [x] Assemble the full 48-layer stack: 36 GDN layers, 12 QSA layers, PLE at layer 2, HC wrapping all mixers and MoE blocks.
+  - [x] Implement the final HC head mix (acting as RMS output norm).
 - [x] **6. Synthetic Full-Stack Parity**:
-  - End-to-end tiny synthetic test (`Qwen4Exp_SyntheticForwardPass_RunsEndToEnd_ProducesFiniteLogits`).
+  - [x] Add the end-to-end tiny synthetic test (`Qwen4Exp_SyntheticForwardPass_RunsEndToEnd_ProducesFiniteLogits`).
 - [x] **7. Not-Admitted Gate**:
-  - Add `// qwen4exp — NOT admitted` block in `ModelCompatibility.cs` (CLAUDE.md rule 14).
-  - Update `ported-families-todo.md`.
+  - [x] Add `// qwen4exp — NOT admitted` block in `ModelCompatibility.cs` (CLAUDE.md rule 14).
+  - [x] Update `ported-families-todo.md`.
 
 ## Deferred (Out of Scope for Initial Port)
 

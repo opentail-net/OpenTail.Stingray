@@ -91,7 +91,9 @@ a new plan when someone decides to take them on; the wave isn't meant to grow by
 - **Weights:** `unsloth/Qwen3.8-Flash-Next-GGUF` (~180B total: 125B lang + 51B PLE + 4B MTP; smallest quant ~72.5 GB; does not fit this PC; synthetic gate only).
 - **Reuse:** Stingray's `GdnKernels` (GDN FP32 recurrence), MoE primitives (512 experts, top-10 + 1 shared); distinct `GatedResidual` (HC) and QSA/PLE subsystems.
 - **References:** llama.cpp `src/models/qwen4exp.cpp` (local source), TensorSharp `Models/Qwen4Exp`.
-- [x] Port   - [x] Not-admitted block   - [x] Table row
+- [x] Port
+- [x] Not-admitted block
+- [x] Table row
 
 ### 2. GLM-5.x (`glm-dsa`, alias `glm_dsa`; GLM-5.3-Flash is `glm5next`)
 - **Design:**
@@ -105,7 +107,10 @@ a new plan when someone decides to take them on; the wave isn't meant to grow by
   - `glm-dsa`: llama.cpp `src/models/glm-dsa.cpp` (local), plus TensorSharp `Models/GlmDsa`. Its
     note: reproducing llama.cpp's indexer top-k restored 6/6 token parity.
   - `glm5next`: TensorSharp only. Its note: llama.cpp is not a valid reference for it.
-- [ ] Port `glm-dsa`   - [ ] Port `glm5next`   - [ ] Not-admitted blocks   - [ ] Table rows
+- [ ] Port `glm-dsa`
+- [ ] Port `glm5next`
+- [ ] Add not-admitted blocks
+- [ ] Add table rows
 
 ### 3. Muse-Glimmer (`muse-glimmer`, alias `muse_glimmer`)
 - **Design:**
@@ -115,7 +120,10 @@ a new plan when someone decides to take them on; the wave isn't meant to grow by
 - **Weights:** Muse-Glimmer-30B; GGUF sizes on the card are about 3-10 GB for the parts listed.
 - **References:** TensorSharp `Models/MuseGlimmer` (cites `llama.cpp/src/models/muse-glimmer.cpp`,
   which is not in the local copy).
-- [ ] Port (text first, vision second)   - [ ] Not-admitted block   - [ ] Table row
+- [ ] Port text tower
+- [ ] Port vision tower
+- [ ] Add not-admitted block
+- [ ] Add table row
 
 ### 4. DiffusionGemma (`diffusion-gemma`, alias `diffusion_gemma`)
 - **Design:**
@@ -127,7 +135,9 @@ a new plan when someone decides to take them on; the wave isn't meant to grow by
   a canvas, not the token-by-token `InferenceEngine`).
 - **References:** TensorSharp `Models/DiffusionGemma` (shard checked against a NumPy
   transcription of the HF reference); no llama.cpp output is recorded.
-- [ ] Port   - [ ] Not-admitted block   - [ ] Table row
+- [ ] Port
+- [ ] Add not-admitted block
+- [ ] Add table row
 
 ### 5. MiniMax-H3 (video + native 32 kHz stereo audio)
 - **Design:**
@@ -139,8 +149,10 @@ a new plan when someone decides to take them on; the wave isn't meant to grow by
 - **Reuse:** Stingray's diffusion pipeline (Wan, HunyuanVideo, LTX) and audio VAE code. A
   diffusion project, not an LLM arch.
 - **References:** TensorSharp `Models/MiniMaxH3`, upstream HF code.
-- [ ] Port   - [ ] Not-advertised entry (diffusion has no `ModelCompatibility` allowlist; keep it off
-      the CLI's model list until verified)   - [ ] Table row
+- [ ] Port
+- [ ] Add a not-advertised entry; diffusion has no `ModelCompatibility` allowlist, so keep it off
+      the CLI's model list until verified
+- [ ] Add table row
 
 ### 6. DeepSeek V4 / V4.1 Flash (review, not a new port)
 - Stingray already has alpha code (`DeepSeek4*.cs`, plan
@@ -148,4 +160,6 @@ a new plan when someone decides to take them on; the wave isn't meant to grow by
 - **Task:** review it against TensorSharp's pure-C# `DeepSeek4CpuExecutor` and llama.cpp
   `deepseek4.cpp` (local). Add `deepseek41` deltas if TensorSharp shows them. Checkpoints
   (about 340 GB) don't fit this PC.
-- [ ] Review   - [ ] V4.1 deltas   - [ ] Update plan 058
+- [ ] Review the existing V4 alpha
+- [ ] Record V4.1 deltas
+- [ ] Update plan 058

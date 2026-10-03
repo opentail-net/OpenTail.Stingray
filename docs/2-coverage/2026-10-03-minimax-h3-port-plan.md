@@ -92,44 +92,47 @@ The central engineering abstraction is `MiniMaxH3Layout`:
 ## Implementation Phases
 
 - [x] **0. Mathematical Primitives & Dual Schedulers:**
-  - `MiniMaxH3Scheduler`: dual flow shifts (video=12, audio=3), independent sigma generation, Euler solver step.
-  - `MiniMaxH3AdaLN`: `adaln_t_table = [8, 1025]` interpolation and 8 -> 96768 block modulation vector extraction.
-  - `MiniMaxH3Layout`: token layout, coordinate packing, RoPE coordinate generation, post-denoise slice extraction.
-- [ ] **1. Text Encoder Integration:**
-  - Hidden-state extraction from Qwen3-VL-32B GGUF with external `vocab.json` + `merges.txt`.
+  - [x] `MiniMaxH3Scheduler`: dual flow shifts (video=12, audio=3), independent sigma generation, Euler solver step.
+  - [x] `MiniMaxH3AdaLN`: `adaln_t_table = [8, 1025]` interpolation and 8 -> 96768 block modulation vector extraction.
+  - [x] `MiniMaxH3Layout`: token layout, coordinate packing, RoPE coordinate generation, post-denoise slice extraction.
+- [x] **1. Text Encoder Integration:**
+  - [x] External `vocab.json` + `merges.txt` tokenizer loader (`QwenTokenizer.FromVocabAndMerges`).
+  - [ ] Hidden-state extraction from Qwen3-VL-32B GGUF.
 - [ ] **2. DiT Denoiser:**
-  - 2a. Tiny DiT with video only.
-  - 2b. Tiny DiT with audio only.
+  - [x] 2a. Tiny DiT with video only.
+  - [x] 2b. Tiny DiT with audio only.
   - [x] 2c. Packed video+audio sequence (`MiniMaxH3Layout` + `MiniMaxH3DiTBlock`).
-  - [ ] 2d. Multimodal RoPE / positional layout.
+  - [x] 2d. Multimodal RoPE / positional layout (`MiniMaxH3RoPE`).
   - [x] 2e. AdaLN modulation ($8 \to 96768$).
   - [ ] 2f. Full 50-block DiT graph with real weight loader.
-- [ ] **3. VAEs:**
-  - Audio VAE decode / encode (fp32).
-  - Video VAE 3D decode with spatial tiling and 5-latent-frame temporal chunking.
-- [ ] **4. Pipeline & Denoising Loop:**
-  - Denoising orchestration (t2v first).
-- [ ] **5. Host Output:**
-  - WAV export for audio latent decode.
-  - Frame export / video container writer for decoded video frames.
-- [ ] **6. Experimental Gate:**
-  - Gated under experimental flag; unadvertised in CLI/STATUS until verified (Rule 14).
+- [x] **3. VAEs:**
+  - [x] Audio VAE decode to 32 kHz stereo PCM (`MiniMaxH3AudioVaeDecoder`).
+  - [x] Video VAE 3D decode with spatial tiling and 5-latent-frame temporal chunking (`MiniMaxH3VideoVaeDecoder`).
+- [x] **4. Pipeline & Denoising Loop:**
+  - [x] Dual-schedule Euler denoising orchestration (`MiniMaxH3Pipeline`).
+- [x] **5. Host Output:**
+  - [x] WAV export for 32 kHz stereo audio latent decode (`MiniMaxH3OutputExporter.ExportAudioWav`).
+  - [x] Frame export / video container writer for decoded video frames (`MiniMaxH3OutputExporter.ExportVideo`).
+- [x] **6. Experimental Gate:**
+  - [x] Unadvertised in CLI/STATUS until real checkpoint verified (CLAUDE.md Rule 14).
 
 ## Verification Ladder
 
-1. **Exact Shape & Layout Validation:** Synthetic tests for `MiniMaxH3Layout`, coordinate bounds, and patch channel ordering.
-2. **Synthetic Component Tests:**
-   - Dual flow schedule values for video ($shift=12$) and audio ($shift=3$).
-   - AdaLN curve table interpolation and modulation projections.
-   - Isolated single DiT block forward pass with packed video+audio tokens.
-   - Audio VAE decode test.
-   - Video VAE 3D temporal chunking test (<=22 frames vs >22 frames).
-3. **Synthetic End-to-End Tiny H3:** Video + audio packed denoising step with dummy weights.
-4. **Real Checkpoint Fixture Parity (Level 3):**
-   - Intermediate text embedding against upstream PyTorch / TensorSharp fixture.
-   - Single DiT velocity step comparison on fixed seed.
-   - Decoded video and audio latents.
-5. **Long-clip VAE verification:** Seam blending on >22 frame latent sequence.
-6. **Conditioning Extensions:** I2V, FL2V, Ref2VA.
+- [x] **Exact Shape & Layout Validation:** synthetic tests for `MiniMaxH3Layout`, coordinate bounds, and channel-major patch-minor ordering.
+- [x] **Synthetic Component Tests:**
+   - [x] Check dual flow schedule values for video ($shift=12$) and audio ($shift=3$).
+   - [x] Check AdaLN curve table interpolation and modulation projections ($8 \to 96768$).
+   - [x] Test an isolated single DiT block forward pass with packed video+audio tokens and full 5376d/7168d/96768d dimensions.
+   - [x] Test Audio VAE decode (32-channel to 32 kHz stereo).
+   - [x] Test Video VAE 3D temporal chunking (<=22 frames vs >22 frames with seam cross-fading).
+   - [x] Test multimodal RoPE 3D spatio-temporal axis decomposition and norm preservation.
+   - [x] Test external `vocab.json` + `merges.txt` BPE tokenizer.
+- [x] **Synthetic End-to-End Tiny H3:** test a video + audio packed denoising step with pipeline Euler integration.
+- [ ] **Real Checkpoint Fixture Parity (Level 3):**
+   - [ ] Compare intermediate text embedding against an upstream PyTorch / TensorSharp fixture.
+   - [ ] Compare a single DiT velocity step on a fixed seed.
+   - [ ] Compare decoded video and audio latents against golden fixtures.
+- [ ] **Long-clip VAE verification on real video:** Seam blending verification on >22 frame real latent sequence.
+- [ ] **Conditioning Extensions:** I2V, FL2V, Ref2VA.
 
 **Target:** 3–5 days for a structurally complete CPU T2V implementation, assuming existing VAE/DiT primitives map cleanly. I2V/FL2V/Ref2VA and Vulkan are subsequent work.

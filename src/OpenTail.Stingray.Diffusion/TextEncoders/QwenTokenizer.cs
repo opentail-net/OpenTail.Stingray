@@ -106,6 +106,37 @@ public sealed class QwenTokenizer
     }
 
     /// <summary>
+    /// Loads a Qwen BPE tokenizer from standalone external vocab.json and merges.txt files
+    /// (used by models like MiniMax-H3 where the GGUF has no embedded tokenizer).
+    /// </summary>
+    public static QwenTokenizer FromVocabAndMerges(string vocabJsonPath, string mergesTxtPath)
+    {
+        var vocab = new Dictionary<string, int>(160_000, StringComparer.Ordinal);
+        using (var stream = File.OpenRead(vocabJsonPath))
+        using (var doc = JsonDocument.Parse(stream))
+        {
+            foreach (var prop in doc.RootElement.EnumerateObject())
+            {
+                vocab[prop.Name] = prop.Value.GetInt32();
+            }
+        }
+
+        var mergeRanks = new Dictionary<(string, string), int>(64_000);
+        int rank = 0;
+        foreach (var line in File.ReadLines(mergesTxtPath))
+        {
+            if (string.IsNullOrWhiteSpace(line) || line.StartsWith("#")) continue;
+            int sp = line.IndexOf(' ');
+            if (sp < 0) continue;
+            string a = line[..sp];
+            string b = line[(sp + 1)..];
+            mergeRanks.TryAdd((a, b), rank++);
+        }
+
+        return new QwenTokenizer(vocab, mergeRanks, chatTemplate: null);
+    }
+
+    /// <summary>
     /// Encode a text prompt using the model's chat template with thinking mode enabled.
     /// If a Jinja2 template is available (from tokenizer_config.json), it is used.
     /// Otherwise falls back to the hardcoded Qwen3 ChatML + &lt;think&gt; format.

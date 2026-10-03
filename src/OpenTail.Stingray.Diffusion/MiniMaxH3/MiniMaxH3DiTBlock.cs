@@ -67,7 +67,9 @@ public static class MiniMaxH3DiTBlock
         ReadOnlySpan<float> curveVec8,
         MiniMaxH3DiTBlockWeights weights,
         int numHeads = MiniMaxH3Config.NumHeads,
-        int headDim = MiniMaxH3Config.HeadDim)
+        int headDim = MiniMaxH3Config.HeadDim,
+        ReadOnlySpan<float> ropeCos = default,
+        ReadOnlySpan<float> ropeSin = default)
     {
         int hiddenDim = weights.HiddenDim;
         int attnDim = weights.AttentionDim;
@@ -121,6 +123,13 @@ public static class MiniMaxH3DiTBlock
                     MatVec(weights.Wq, normSpan, q.Slice(i * attnDim, attnDim), attnDim, hiddenDim);
                     MatVec(weights.Wk, normSpan, k.Slice(i * attnDim, attnDim), attnDim, hiddenDim);
                     MatVec(weights.Wv, normSpan, v.Slice(i * attnDim, attnDim), attnDim, hiddenDim);
+                }
+
+                // 2b. Apply Multimodal RoPE to Q and K if provided
+                if (!ropeCos.IsEmpty && !ropeSin.IsEmpty)
+                {
+                    MiniMaxH3RoPE.ApplyRoPE(q, ropeCos, ropeSin, numTokens, numHeads, headDim);
+                    MiniMaxH3RoPE.ApplyRoPE(k, ropeCos, ropeSin, numTokens, numHeads, headDim);
                 }
 
                 // 3. Full Bidirectional Multi-Head Self-Attention

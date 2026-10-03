@@ -51,11 +51,11 @@ Weights: `google/diffusiongemma-26B-A4B-it`, `unsloth/diffusiongemma-26B-A4B-it-
 **Promotion is pipeline-specific, not `ModelCompatibility` / `admit-arch`.** Those are built
 around autoregressive text generation, and DiffusionGemma isn't autoregressive (TensorSharp's
 `Forward()` throws; generation is the sampler over a canvas). Promotion means:
-- a real GGUF;
-- reference fixture checks (canvas forward intermediates, sampler decisions);
-- a deterministic end-to-end canvas test;
-- exposure through a CLI entry / diffusion-style registry;
-- a STATUS row.
+- [ ] Obtain a real GGUF.
+- [ ] Check reference fixtures for canvas-forward intermediates and sampler decisions.
+- [ ] Add a deterministic end-to-end canvas test.
+- [ ] Expose through a CLI entry / diffusion-style registry.
+- [ ] Add a STATUS row.
 
 ## Deferred (not in the initial port)
 
@@ -64,14 +64,13 @@ server integration, and GPU paths.
 
 ## Verification (levels as in [ported-families-todo](ported-families-todo.md))
 
-1. **Specification tests (level 2):** a synthetic tiny model. The canvas forward against a
+- [ ] **Specification tests (level 2):** build a synthetic tiny model and compare the canvas forward against a
    test-side reimplementation (the masks are the risk), and the sampler on a fixed seed against a
    test-side implementation of its rules. Transcription checks, not independent.
-2. **Independent implementation (level 3):** the HF/PyTorch reference
-   (`google/diffusiongemma-26B-A4B-it`) is the independent implementation; no llama.cpp port
-   exists. A checked-in reference fixture (canvas logits for a fixed prompt, canvas and seed)
-   produced from it is the target.
-3. **Real weights (level 4):** coherence; canvas-logit comparison against that fixture; TensorSharp's
+- [ ] **Independent implementation (level 3):** use the HF/PyTorch reference
+   (`google/diffusiongemma-26B-A4B-it`); no llama.cpp port exists. Produce a checked-in reference
+   fixture (canvas logits for a fixed prompt, canvas and seed) as the target.
+- [ ] **Real weights (level 4):** check coherence and canvas-logit parity against that fixture; run TensorSharp's
    pure-C# `cpu` backend on the same GGUF and seed as a second reading.
 
 **Effort:** port + specification tests about 1 day. Real-weight verification, the closeout

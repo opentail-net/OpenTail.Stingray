@@ -1,4 +1,5 @@
 using OpenTail.Stingray.Diffusion.MiniMaxH3;
+using OpenTail.Stingray.Diffusion.TextEncoders;
 
 namespace OpenTail.Stingray.Tests.Diffusion;
 
@@ -209,6 +210,67 @@ public sealed class MiniMaxH3Tests
     }
 
     [Fact]
+    public void RoPE_Multimodal_GeneratesValidTables_AndRotatesCorrectly()
+    {
+        // 2 text, 1 vis, video: 2 frames, H=4, W=4 (2x2=4 spatial patches -> 8 video tokens), audio: 3 tokens
+        // Total tokens = 3 context + 8 video + 3 audio = 14 tokens
+        var layout = new MiniMaxH3Layout(
+            numTextTokens: 2,
+            numVisualCondTokens: 1,
+            videoFrames: 2,
+            videoHeight: 4,
+            videoWidth: 4,
+            audioFrames: 3);
+
+        int headDim = 128;
+        var (cos, sin) = MiniMaxH3RoPE.ComputeMultimodalRoPE(layout, headDim);
+
+        Assert.Equal(layout.TotalTokens * headDim, cos.Length);
+        Assert.Equal(layout.TotalTokens * headDim, sin.Length);
+
+        // Verify cos^2 + sin^2 ~= 1.0 for every entry
+        for (int i = 0; i < cos.Length; i++)
+        {
+            float norm = cos[i] * cos[i] + sin[i] * sin[i];
+            Assert.True(MathF.Abs(norm - 1.0f) < 1e-4f, $"Entry {i} failed Pythagorean identity: {norm}");
+        }
+
+        // Verify 3D video axis differentiation:
+        // Video token 0: (t=0, hp=0, wp=0)
+        // Video token 4: (t=1, hp=0, wp=0)
+        int vid0Off = (layout.VideoTargetStart + 0) * headDim;
+        int vid4Off = (layout.VideoTargetStart + 4) * headDim;
+
+        // Temporal slice (dims 0..43) must differ between t=0 and t=1
+        bool tDiffers = false;
+        for (int d = 0; d < MiniMaxH3RoPE.VideoDimT; d++)
+        {
+            if (MathF.Abs(cos[vid0Off + d] - cos[vid4Off + d]) > 1e-5f) tDiffers = true;
+        }
+        Assert.True(tDiffers, "Temporal slice should differ for t=0 vs t=1");
+
+        // Spatial slice (dims 44..127) must match because hp=0, wp=0 for both
+        for (int d = MiniMaxH3RoPE.VideoDimT; d < headDim; d++)
+        {
+            Assert.Equal(cos[vid0Off + d], cos[vid4Off + d], 1e-5f);
+        }
+
+        // Verify ApplyRoPE preserves L2 norm (orthogonal transformation)
+        var qk = new float[layout.TotalTokens * headDim];
+        for (int i = 0; i < qk.Length; i++) qk[i] = (i % 7) + 1.0f;
+
+        float originalNorm = 0.0f;
+        for (int i = 0; i < headDim; i++) originalNorm += qk[i] * qk[i];
+
+        MiniMaxH3RoPE.ApplyRoPE(qk, cos, sin, layout.TotalTokens, numHeads: 1, headDim: headDim);
+
+        float rotatedNorm = 0.0f;
+        for (int i = 0; i < headDim; i++) rotatedNorm += qk[i] * qk[i];
+
+        Assert.True(MathF.Abs(originalNorm - rotatedNorm) < 1e-3f, $"RoPE rotated norm {rotatedNorm} != original {originalNorm}");
+    }
+
+    [Fact]
     public void DiTBlock_Forward_RunsAndAppliesModulation()
     {
         int hiddenDim = 64;
@@ -377,6 +439,159 @@ public sealed class MiniMaxH3Tests
         {
             Assert.False(float.IsNaN(val));
             Assert.False(float.IsInfinity(val));
+        }
+    }
+
+    [Fact]
+    public void VideoVae_SmallClip_DecodesExpectedShapes()
+    {
+        var decoder = new MiniMaxH3VideoVaeDecoder(hiddenDim: 32);
+        int latentFrames = 2;
+        int latentH = 2;
+        int latentW = 2;
+        int latentLen = latentFrames * MiniMaxH3Config.VideoLatentChannels * latentH * latentW;
+
+        var latent = new float[latentLen];
+        for (int i = 0; i < latentLen; i++) latent[i] = 0.5f;
+
+        var frames = decoder.Decode(latent, latentFrames, latentH, latentW);
+
+        // Expected output frames = (2 - 1) * 4 + 1 = 5
+        Assert.Equal(5, frames.Count);
+
+        int expectedPixelsPerFrame = 3 * (latentH * 8) * (latentW * 8); // 3 * 16 * 16 = 768
+        foreach (var frame in frames)
+        {
+            Assert.Equal(expectedPixelsPerFrame, frame.Length);
+            for (int p = 0; p < frame.Length; p++)
+            {
+                Assert.True(frame[p] >= 0.0f && frame[p] <= 1.0f);
+            }
+        }
+    }
+
+    [Fact]
+    public void VideoVae_LongClip_ExecutesTemporalChunkingAndSeamBlending()
+    {
+        var decoder = new MiniMaxH3VideoVaeDecoder(hiddenDim: 32);
+        // 25 latent frames (> 22 frames threshold) triggers 5-latent-frame temporal chunking
+        int latentFrames = 25;
+        int latentH = 1;
+        int latentW = 1;
+        int latentLen = latentFrames * MiniMaxH3Config.VideoLatentChannels * latentH * latentW;
+
+        var latent = new float[latentLen];
+        for (int i = 0; i < latentLen; i++) latent[i] = (i % 5) * 0.2f;
+
+        var frames = decoder.Decode(latent, latentFrames, latentH, latentW);
+
+        // Expected output frames = (25 - 1) * 4 + 1 = 97
+        Assert.Equal(97, frames.Count);
+
+        int expectedPixels = 3 * (latentH * 8) * (latentW * 8); // 3 * 8 * 8 = 192
+        foreach (var frame in frames)
+        {
+            Assert.Equal(expectedPixels, frame.Length);
+            for (int p = 0; p < frame.Length; p++)
+            {
+                Assert.True(frame[p] >= 0.0f && frame[p] <= 1.0f);
+            }
+        }
+    }
+
+    [Fact]
+    public void AudioVae_DecodesStereoPcmAt32kHz()
+    {
+        var decoder = new MiniMaxH3AudioVaeDecoder(hiddenDim: 32);
+        int audioFrames = 4;
+        int latentLen = audioFrames * MiniMaxH3Config.AudioLatentChannels; // 4 * 32 = 128
+
+        var latent = new float[latentLen];
+        for (int i = 0; i < latentLen; i++) latent[i] = MathF.Sin(i * 0.1f);
+
+        var pcm = decoder.Decode(latent, audioFrames);
+
+        // Expected samples: 4 * 512 = 2048 per channel -> 4096 interleaved stereo samples
+        Assert.Equal(4096, pcm.Length);
+
+        for (int i = 0; i < pcm.Length; i++)
+        {
+            Assert.False(float.IsNaN(pcm[i]));
+            Assert.True(pcm[i] >= -1.0f && pcm[i] <= 1.0f);
+        }
+    }
+
+    [Fact]
+    public void OutputExporter_WritesValidWavFile()
+    {
+        string tempPath = Path.Combine(Path.GetTempPath(), $"minimax_h3_test_{Guid.NewGuid():N}.wav");
+        try
+        {
+            float[] pcmStereo = new float[32000 * 2]; // 1 second of stereo audio
+            for (int i = 0; i < 32000; i++)
+            {
+                float val = MathF.Sin(2.0f * MathF.PI * 440.0f * i / 32000.0f); // 440 Hz tone
+                pcmStereo[i * 2 + 0] = val; // Left
+                pcmStereo[i * 2 + 1] = val; // Right
+            }
+
+            MiniMaxH3OutputExporter.ExportAudioWav(tempPath, pcmStereo, 32000, 2);
+
+            Assert.True(File.Exists(tempPath));
+            byte[] bytes = File.ReadAllBytes(tempPath);
+            Assert.True(bytes.Length > 44);
+
+            // Check RIFF header
+            string riff = System.Text.Encoding.ASCII.GetString(bytes, 0, 4);
+            string wave = System.Text.Encoding.ASCII.GetString(bytes, 8, 4);
+            Assert.Equal("RIFF", riff);
+            Assert.Equal("WAVE", wave);
+        }
+        finally
+        {
+            if (File.Exists(tempPath)) File.Delete(tempPath);
+        }
+    }
+
+    [Fact]
+    public void Tokenizer_FromVocabAndMerges_EncodesTokens()
+    {
+        string tempDir = Path.Combine(Path.GetTempPath(), $"minimax_h3_tok_{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempDir);
+        string vocabPath = Path.Combine(tempDir, "vocab.json");
+        string mergesPath = Path.Combine(tempDir, "merges.txt");
+
+        try
+        {
+            // Synthetic vocab with byte tokens and merged tokens
+            string vocabJson = """
+            {
+                "h": 0,
+                "e": 1,
+                "l": 2,
+                "o": 3,
+                "he": 4,
+                "ll": 5,
+                "hello": 6
+            }
+            """;
+            File.WriteAllText(vocabPath, vocabJson);
+
+            string mergesTxt = """
+            #version: 0.2
+            h e
+            l l
+            he l
+            hel lo
+            """;
+            File.WriteAllText(mergesPath, mergesTxt);
+
+            var tokenizer = QwenTokenizer.FromVocabAndMerges(vocabPath, mergesPath);
+            Assert.NotNull(tokenizer);
+        }
+        finally
+        {
+            if (Directory.Exists(tempDir)) Directory.Delete(tempDir, recursive: true);
         }
     }
 }

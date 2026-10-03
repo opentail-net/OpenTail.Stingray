@@ -27,12 +27,12 @@ nothing about Stingray's pure-C# paths. Every item below is measured here before
     gap is: SmolLM2-135M ~0.55x and Qwen2.5-0.5B ~0.75x of llama.cpp, attributed to per-call
     overhead (`perf-sweep-plan.md`).
 - **Plan:**
-  1. Port behind a switch (e.g. `STINGRAY_CPU_POOL=spin`) and route `SimdKernels`'s matvec
+  - [x] Port behind a switch (e.g. `STINGRAY_CPU_POOL=spin`) and route `SimdKernels`'s matvec
      `Parallel.For` sites through it.
-  2. Prove the dispatch happened (a call counter).
-  3. Run an interleaved A/B on 135M / 360M / Qwen2.5-0.5B decode and one 7B; outputs must be
+  - [x] Prove the dispatch happened (a call counter).
+  - [x] Run an interleaved A/B on 135M / 360M / Qwen2.5-0.5B decode and one 7B; outputs must be
      bit-identical, since only scheduling changes.
-  4. Keep it only if it is measurably better; record the result either way.
+  - [x] Keep it only if it is measurably better; record the result either way.
 - **Expect less than claimed:** this machine has 8 cores, not 122.
 
 ### Result, 2026-10-02: shipped **opt-in** (`STINGRAY_CPU_POOL=spin`)
@@ -79,9 +79,9 @@ nothing about Stingray's pure-C# paths. Every item below is measured here before
   batched expert loops, so the spinners compete with them. A concurrent multi-user server
   workload has also not been measured.
 - **Next, if pursued:**
-  - a per-model or per-phase policy (pool for dense decode only);
-  - a concurrent-server throughput check before any default change;
-  - a many-core host, which is where TensorSharp measured its gains.
+  - [ ] Evaluate a per-model or per-phase policy (pool for dense decode only).
+  - [ ] Check concurrent-server throughput before any default change.
+  - [ ] Measure on a many-core host, where TensorSharp measured its gains.
 - **Measurement caution recorded:** mid-session this machine's memory-bound throughput dropped
   about 25% for reasons outside the code (a HEAD build showed the same drop). Only same-run
   interleaved pairs count.

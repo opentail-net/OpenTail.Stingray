@@ -69,18 +69,18 @@ specifics, the DFlash speculative drafter, batched/paged prefill for gated model
 
 ## Verification (levels as in [ported-families-todo](ported-families-todo.md))
 
-1. **Specification test (level 2), now:** a synthetic tiny `muse-glimmer` GGUF (2-4 layers, P = 2,
+- [ ] **Specification test (level 2), next:** create a synthetic tiny `muse-glimmer` GGUF (2-4 layers, P = 2,
    window 3, small dims, random F32 weights). Compare the engine's logits over a 6-10-token prompt
    against a test-side reimplementation of the spec above. Cover SWA masking past the window, NoPE on
    full layers, the gate, the 1e-8 post-norms, the embedding norm and scale-then-softcap; bound
    max |Δlogit| ≲ 1e-3 (F32). The spec is cross-read against llama.cpp's source, but this test is
    still not an independent implementation.
-2. **Independent implementation (level 3):** run the same synthetic GGUF through a llama.cpp build
+- [ ] **Independent implementation (level 3):** run the same synthetic GGUF through a llama.cpp build
    from `bed0a8566` or later (has `muse-glimmer.cpp`) and compare logits. That needs building llama.cpp
    or newer vendored binaries.
-3. **Real weights (level 4),** with a checkpoint (Muse-Glimmer-30B; small quants about 7-10 GB):
+- [ ] **Real weights (level 4):** with a checkpoint (Muse-Glimmer-30B; small quants about 7-10 GB),
    coherence, then `stingray admit-arch` against that newer `llama-server`.
-4. **Admission (level 5):** the normal text-LLM path.
+- [ ] **Admission (level 5):** admit through the normal text-LLM path.
 
 **Effort:** port + specification test about 2-3 hours. Real-weight verification, the closeout
 performance + DRY pass, and admission are separate.

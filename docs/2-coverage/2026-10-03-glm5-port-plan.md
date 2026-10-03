@@ -66,13 +66,13 @@ parallelism, and GPU paths.
 
 ## Verification (levels as in [ported-families-todo](ported-families-todo.md))
 
-1. **Specification tests (level 2):** synthetic tiny GGUFs against test-side reimplementations.
-2. **Independent implementation (level 3), available now for `glm-dsa`:** run the synthetic model
+- [ ] **Specification tests (level 2):** check synthetic tiny GGUFs against test-side reimplementations.
+- [ ] **Independent implementation (level 3), available now for `glm-dsa`:** run the synthetic model
    through the **vendored llama.cpp b10306**, which knows `glm-dsa`: a real independent mechanics
    check without the real checkpoint. For the `glm5next` trunk, the same needs a llama.cpp build from
    `bed0a8566` or later. For NextN, only TensorSharp is available, which is a second reading, not an
    independent check.
-3. **Real weights (level 4):** needs a large host; then `stingray admit-arch` against `llama-server`.
+- [ ] **Real weights (level 4):** on a large host, verify against real weights and run `stingray admit-arch` against `llama-server`.
 
 **Effort:** port + synthetic about 1 day (`glm-dsa`) + about 1 day (`glm5next` trunk); NextN extra.
 Real-weight verification (large host), the closeout performance + DRY pass, and admission are separate.
