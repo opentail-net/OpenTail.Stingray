@@ -670,16 +670,17 @@ public class Qwen4ExpAlphaTests
         // Step 1: token 20. history: [10, 20]
         // k=0: tok=20, mult=3 -> 60.
         // k=1: tok=10, mult=5 -> 50.
-        // hash = 60 ^ 50 = 110.
+        // 60 = 0b00111100, 50 = 0b00110010 -> 60 ^ 50 = 0b00001110 = 14.
+        // Note: With addition it would be 60 + 50 = 110!
         hasher.PushToken(20);
         hasher.ComputeRowIndices(rowIndices);
-        Assert.Equal(100 + 110, rowIndices[0]);
-        Assert.Equal(200 + 110, rowIndices[1]);
+        Assert.Equal(100 + 14, rowIndices[0]);
+        Assert.Equal(200 + 14, rowIndices[1]);
 
         // Step 2: token 30. history: [10, 20, 30]
         // k=0: tok=30, mult=3 -> 90.
-        // k=1: tok=20, mult=5 -> 100. (90 ^ 100 = 58)
-        // k=2: tok=10, mult=7 -> 70. (58 ^ 70 = 120)
+        // k=1: tok=20, mult=5 -> 100. (90 ^ 100 = 62)
+        // k=2: tok=10, mult=7 -> 70. (62 ^ 70 = 120)
         // Note: With addition it would be 90 + 100 + 70 = 260. With XOR it is 120!
         hasher.PushToken(30);
         hasher.ComputeRowIndices(rowIndices);
@@ -733,7 +734,7 @@ public class Qwen4ExpAlphaTests
         float[] poolScores = [0.1f, 5.0f, 0.2f, 8.0f, 0.3f];
         Span<int> selected = stackalloc int[poolScores.Length];
 
-        int count = Qwen4ExpQsa.SelectTopKPools(poolScores, topKPools: 2, selected);
+        int count = Qwen4ExpQsa.SelectTopKPools(poolScores, topKPoolCount: 2, selected);
 
         Assert.Equal(2, count);
         Assert.True(selected[0] == 3 || selected[1] == 3);
@@ -746,24 +747,25 @@ public class Qwen4ExpAlphaTests
     [Fact]
     public void Qwen4ExpRope_FourSectionImRope_RotatesSectionsCorrectly()
     {
-        // 4 sections: s0=2, s1=2, s2=2, s3=2. Total headDim = 8.
-        // Section 3 (indices 6..7) is strictly unrotated per IMRoPE spec.
-        int[] sections = [2, 2, 2, 2];
-        float[] vec = [1f, 1f, 2f, 2f, 3f, 3f, 99f, 100f];
+        // 4 sections: s0=1, s1=1, s2=1, s3=1. Total pairs = 4 -> headDim = 8, halfDim = 4.
+        // In NeoX-style RoPE, pair i consists of elements (i, i + halfDim).
+        // Pairs 0, 1, 2 correspond to sections 0, 1, 2 (rotated).
+        // Pair 3 (elements 3 and 7) corresponds to section 3 (strictly unrotated per IMRoPE spec).
+        int[] sections = [1, 1, 1, 1];
+        float[] vec = [1f, 2f, 3f, 99f, 5f, 6f, 7f, 100f];
         float[] original = (float[])vec.Clone();
 
-        Qwen4ExpRope.ApplyImRope(vec, position: 10, numHeads: 1, headDim: 8, sections);
+        Qwen4ExpRope.ApplyImRope(vec, pos: 10, numHeads: 1, headDim: 8, sections);
 
-        // Sections 0, 1, 2 must have rotated (values changed)
-        bool sections012Changed = false;
-        for (int i = 0; i < 6; i++)
+        // Pairs 0, 1, 2 (indices 0, 1, 2 and 4, 5, 6) must have rotated
+        for (int i = 0; i < 3; i++)
         {
-            if (Math.Abs(vec[i] - original[i]) > 1e-4f) sections012Changed = true;
+            Assert.NotEqual(original[i], vec[i]);
+            Assert.NotEqual(original[i + 4], vec[i + 4]);
         }
-        Assert.True(sections012Changed, "First 3 sections must be rotated by RoPE");
 
-        // Section 3 must remain strictly identical
-        Assert.Equal(original[6], vec[6]);
+        // Pair 3 (indices 3 and 7) must remain strictly identical
+        Assert.Equal(original[3], vec[3]);
         Assert.Equal(original[7], vec[7]);
     }
 }

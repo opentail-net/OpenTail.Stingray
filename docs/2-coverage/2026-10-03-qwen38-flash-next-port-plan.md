@@ -68,15 +68,16 @@ A hybrid MoE consisting of 48 layers in a strict 3:1 pattern (`full_attention_in
 - **Weights**: Smallest published GGUF (`UD-IQ1_S`) is **72.5 GB**. Standard quants range from 79 to 192 GB (BF16 is 354 GB).
 - **Physical Host Context**: 64 GB host RAM + 279 GB scratch disk.
 - **Lazy PLE Row Access**:
-  - The PLE table (`per_layer_token_embd`) is ~28.8 GB to 51 GB. It **must not** be loaded into managed RAM via `new byte[]`.
-  - Normal weight access is sequential-ish where OS mmap paging works naturally. PLE access is sparse/random row access over 20M entries.
+  - The PLE table (`per_layer_token_embd`) is ~320M rows / ~51B scalar parameters, and tens of GB on disk depending on representation (e.g. 28.8 GB on Q2_K_XL to 51 GB on 8-bit). Note: **row count $\neq$ parameter count $\neq$ file size**.
+  - It **must not** be loaded into managed RAM via `new byte[]`.
+  - Normal weight access is sequential-ish where OS mmap paging works naturally. PLE access is sparse/random row access across ~320M rows.
   - Follow TensorSharp and llama.cpp: keep the table memory-mapped on disk and read/dequantize only the specific gathered head rows required for each token.
 
 ---
 
 ## Current Status & Summary Matrix
 
-The initial structural port and synthetic fixtures are implemented. The remaining work consists of **three semantic blocks** plus the real-weight qualification gate:
+The initial structural port and synthetic fixtures are implemented. The remaining work consists of **three major missing semantic subsystems + one checkpoint-layout compatibility item + validation**:
 
 | Phase | Subsystem | Description | Status |
 | :--- | :--- | :--- | :--- |
@@ -91,10 +92,11 @@ The initial structural port and synthetic fixtures are implemented. The remainin
 | **I** | QSA | Main attention Q & K four-section IMRoPE | **Complete** |
 | **J** | QSA | Multi-head ReLU scoring + top-k block selection (`indexer_top_k / kpool`) | **Complete** |
 | **K** | QSA | Sparse attention mask generation & selected-block attention walk | **Complete** |
-| **L** | Tests | Chunk-boundary, incremental decode, and K-pool straddle tests | **Complete** |
-| **M** | Gate | Remove `hp.IndexerTopK > 0` constructor refusal guard | **Complete** |
-| **N** | Validation | 72.5 GB UD-IQ1_S paged real-weight execution | **Deferred** |
-| **O** | Validation | External logit parity against llama.cpp / TensorSharp | **Deferred** |
+| **L** | MoE | Fused `ffn_gate_up_exps` vs separate `ffn_gate_exps`/`ffn_up_exps` compatibility | **Complete** |
+| **M** | Tests | Chunk-boundary, incremental decode, K-pool straddle, and structural parity tests | **Complete** |
+| **N** | Gate | Remove `hp.IndexerTopK > 0` constructor refusal guard | **Complete** |
+| **O** | Validation | 72.5 GB UD-IQ1_S paged real-weight execution | **Deferred** |
+| **P** | Validation | External logit parity against llama.cpp / TensorSharp | **Deferred** |
 
 ---
 
@@ -134,9 +136,13 @@ The initial structural port and synthetic fixtures are implemented. The remainin
 - [x] **2.3 Stateful N-Gram Hasher (`Qwen4ExpPleHasher` / `PleNgramState`)**:
   - Maintain token history window across sequence steps.
   - Handle EOS reset semantics, missing predecessors, and sequence boundaries.
-  - Compute 64-bit n-gram hashes per head:
-    `hash = sum_{i=0}^{ngram-1} token_{t-i} * ple_layer_multipliers[i]`.
-  - Map to table row: `row_h = ple_head_offsets[h] + (hash % ple_head_vocab_sizes[h])`.
+  - Compute the 64-bit n-gram hash per head via XOR of multiplied terms across the n-gram window:
+    ```text
+    mixed = token[t] * multiplier[0]
+    mixed ^= token[t-1] * multiplier[1]
+    ...
+    row_h = offset[h] + (mixed % vocab_size[h])
+    ```
 - [x] **2.4 Connect Gathered Embeddings to `ExecutePle`**:
   - Gather and concatenate the multi-head PLE embeddings into `Span<float> pleEmb`.
   - Feed `pleEmb` into `PleKey` and `PleValue` projections, replacing the placeholder `tokEmbd` feed.
@@ -200,8 +206,18 @@ The initial structural port and synthetic fixtures are implemented. The remainin
 - [x] **5.2 Remove Refusal Guard**:
   - Remove `if (hp.IndexerTopK > 0) throw new NotSupportedException(...)` guard once indexer and PLE are functional.
 - [x] **5.3 Synthetic Parity Test Suite**:
-  - Extend `Qwen4ExpAlphaTests.cs` to test full 48-layer synthetic forward pass with non-zero `IndexerTopK`, `IndexerKPool`, and synthetic PLE table.
-  - Verify deterministic logits and zero NaNs across multi-token prefill and decode sequences.
+  - Extend `Qwen4ExpAlphaTests.cs` and `Qwen4ExpRoutedMoeTests.cs` with targeted structural parity tests:
+
+  | Test | Target Subsystem | What It Catches |
+  | :--- | :--- | :--- |
+  | **PLE known-token fixture** | `PleHasher_KnownTokenSequence_CalculatesXorHashAndHeadIndices` | XOR vs addition, multipliers, and head index math |
+  | **PLE chunked vs single-shot** | `PleHasher_ChunkedVsSingleShot_HistoryContinuity` | History continuity bugs and boundary truncation |
+  | **QSA pool straddle** | `Qsa_PoolIndexerKeys_AveragesAndNormalizes` + multi-step forward | Block-state bugs when prefill/decode crosses $R$ boundary |
+  | **QSA selected vs unselected KV** | `Qsa_SelectTopKPools_ExcludesLowScoringPoolsAndRetainsTail` | Masking & index translation (unselected keys masked to $-\infty$) |
+  | **RoPE known vector** | `Qwen4ExpRope_FourSectionImRope_RotatesSectionsCorrectly` | 4-section IMRoPE section boundaries and unrotated section 3 |
+  | **Fused vs separate expert tensors** | `ExecuteMoe_FusedGateUpExperts_ProducesIdenticalOutputToSeparateTensors` | MoE layout compatibility (`ffn_gate_up_exps` vs separate) |
+  | **End-to-end forward pass** | `Qwen4Exp_SyntheticForwardPass_RunsWithQsaSparseSelection_AndPleTable` | Full 4-stream HC + GDN + QSA + PLE integration |
+  | **Reset / replay** | `ResetCache` test in `Qwen4ExpAlphaTests` | State leakage across consecutive forward passes |
 
 ---
 

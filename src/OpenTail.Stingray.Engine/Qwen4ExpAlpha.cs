@@ -764,6 +764,14 @@ public sealed class Qwen4ExpPleHasher
         _tokenHistory.Add(token);
     }
 
+    public void PushTokens(ReadOnlySpan<int> tokens)
+    {
+        for (int i = 0; i < tokens.Length; i++)
+        {
+            PushToken(tokens[i]);
+        }
+    }
+
     public void Reset() => _tokenHistory.Clear();
 
     /// <summary>
