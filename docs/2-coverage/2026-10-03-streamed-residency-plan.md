@@ -94,7 +94,7 @@ From **SharpMind** (`TransformerWeightsStreaming`, `StreamingLayerLoadRaceTests`
 
 1. **Batched MoE prefill on the hybrid/GPU paths.** `HybridForwardPass.Prefill` is a loop of single-token `Forward`
    calls, and `GpuForwardPass` has no batched trunk for MoE. Measured on OLMoE, 631-token prompt: CPU 141.6 tok/s, hybrid
-   25.1, full-GPU 26.6. This is the larger remaining cost and the place TensorSharp gets its 4.5-10x prefill advantage
+   25.1, full-GPU 26.6. This is the larger remaining cost (plan: [batched MoE prefill](2026-10-03-batched-moe-prefill-plan.md)) and the place TensorSharp gets its 4.5-10x prefill advantage
    (stream the used experts of a chunk once, run batched). On this integrated GPU the CPU path may stay faster; the design
    should pick per chunk size. Needs its own plan and numbers.
 2. **Longer leak check** (1,000+ tokens) and a CUDA equivalent; the 440-token Vulkan check is done.

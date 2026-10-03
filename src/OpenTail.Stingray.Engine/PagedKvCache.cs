@@ -107,6 +107,12 @@ public sealed unsafe class PagedKvCache : IRewindableSequenceKvCache, IPersistab
         int.TryParse(Environment.GetEnvironmentVariable("STINGRAY_KV_BF16_MIN_TOKENS"), out int v) && v > 0
             ? v : 1024;
 
+    /// <summary>
+    /// True when <c>STINGRAY_KV_DTYPE=bf16</c>: every write is rounded to BF16 precision, process-wide, whatever the
+    /// instance's store mode. A caller that needs exact F32 K/V (the hybrid CPU-prefill handoff) must refuse when this is on.
+    /// </summary>
+    public static bool Bf16RoundingRequested => s_kvBf16;
+
     private bool _bf16Store;
     private readonly bool _autoBf16;
     private static long s_bf16Conversions;

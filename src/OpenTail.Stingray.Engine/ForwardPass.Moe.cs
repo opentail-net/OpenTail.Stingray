@@ -383,6 +383,12 @@ public sealed unsafe partial class ForwardPass
     private static readonly bool s_flash64StridedGemm =
         Environment.GetEnvironmentVariable("STINGRAY_FLASH64_STRIDED_GEMM") != "0";
 
+    /// <summary>
+    /// Called by the batched MoE prefill once per MoE layer with the number of (token, slot) pairs routed to each expert.
+    /// Null (the default) costs nothing. Not called on the sequential paths.
+    /// </summary>
+    internal Action<int, int[]>? MoeRoutingObserver { get; set; }
+
     public static bool MoeBatchedPrefillEnabled { get; set; } =
         Environment.GetEnvironmentVariable("STINGRAY_MOE_BATCHED_PREFILL") != "0";
 
@@ -527,6 +533,15 @@ public sealed unsafe partial class ForwardPass
                 _moeExpTokI[p] = t;
                 _moeExpTokK[p] = k;
             }
+
+        // Optional routing statistics for callers that want to know which experts a prefill used (the hybrid's
+        // post-handoff expert-cache warm-up); one small array per layer, and only when an observer is set.
+        if (MoeRoutingObserver is { } routingObserver)
+        {
+            var counts = new int[numExperts];
+            for (int e = 0; e < numExperts; e++) counts[e] = expStart[e + 1] - expStart[e];
+            routingObserver(layer, counts);
+        }
 
         // ── 3. One batch of GEMMs per used expert ──────────────────────────────────────────
         ref readonly TensorRef gateExps = ref _wGateExps![layer];

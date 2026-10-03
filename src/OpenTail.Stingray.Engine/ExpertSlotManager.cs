@@ -30,6 +30,9 @@ public sealed class ExpertSlotManager : IDisposable, IExpertPrefetchTarget
 
     public ExpertAccessProfiler Profiler => _profiler;
 
+    /// <summary>Slots the cache may hold (leased slots can briefly exceed it).</summary>
+    public int Capacity => _cache.Capacity;
+
     /// <param name="gpu">Vulkan backend to allocate/free GPU tensors on.</param>
     /// <param name="model">GGUF model for mmap weight access.</param>
     /// <param name="hp">Model hyperparameters.</param>

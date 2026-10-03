@@ -6,7 +6,7 @@ namespace OpenTail.Stingray.Engine;
 /// First N layers run on GPU (CUDA / cuBLAS + NVRTC kernels), remaining layers on CPU (AVX2 SIMD).
 /// Hidden state transfers via pinned host memory at GPU↔CPU boundaries.
 /// </summary>
-public sealed unsafe class CudaHybridForwardPass : IForwardPass
+public sealed unsafe partial class CudaHybridForwardPass : IForwardPass
 {
     private readonly GgufModel _model;
     private readonly CudaBackend _gpu;
@@ -1205,6 +1205,11 @@ public sealed unsafe class CudaHybridForwardPass : IForwardPass
         ThrowIfFaulted();
         int n = tokens.Count;
         LastPrefillUsedBatchedCpuMoe = false;   // set by the #410 FFN stage when it runs
+        // Opt-in (STINGRAY_CUDA_HYBRID_CPU_PREFILL=1), untested on CUDA hardware: see CudaHybridPrefillHandoff.cs.
+        LastPrefillUsedCpuHandoff = false;
+        LastCpuPrefillRefusal = CpuPrefillRefusal(n, startPos);
+        if (LastCpuPrefillRefusal is null && TryPrefillViaCpuHandoff(tokens))
+            return _logitsBuf;
         // Issue #123: batched-trunk prefill for the supported pure-attention configs
         // (non-Gemma4, non-TurboQuant, NEOX RoPE, learned/no QK-norm — never L2). The
         // batched trunk collapses the per-position attention launches whose cost grows
@@ -3942,6 +3947,7 @@ public sealed unsafe class CudaHybridForwardPass : IForwardPass
         if (_disposed) return;
         _disposed = true;
 
+        DisposeCpuPrefill();
         _gpu.Free(_gpuHidden); _gpu.Free(_gpuResidual); _gpu.Free(_gpuNormBuf);
         _gpu.Free(_gpuQ); _gpu.Free(_gpuK); _gpu.Free(_gpuV); _gpu.Free(_gpuAttnOut);
         _gpu.Free(_gpuFfnGate); _gpu.Free(_gpuFfnUp); _gpu.Free(_gpuLogits);

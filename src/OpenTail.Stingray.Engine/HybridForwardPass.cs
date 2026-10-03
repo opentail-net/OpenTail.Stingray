@@ -6,7 +6,7 @@ namespace OpenTail.Stingray.Engine;
 /// First N layers run on GPU (Vulkan compute shaders), remaining layers on CPU (AVX2 SIMD).
 /// Hidden state transfers via pinned host memory at GPU↔CPU boundaries.
 /// </summary>
-public sealed unsafe class HybridForwardPass : IForwardPass
+public sealed unsafe partial class HybridForwardPass : IForwardPass
 {
     private readonly GgufModel _model;
     private readonly VulkanBackend _gpu;
@@ -690,9 +690,22 @@ public sealed unsafe class HybridForwardPass : IForwardPass
     /// <inheritdoc/>
     public ReadOnlySpan<float> Prefill(IReadOnlyList<int> tokens, int startPos = 0)
     {
+        // Fresh long prompts take the CPU batched prefill + KV handoff (HybridPrefillHandoff.cs); everything else, and
+        // every case the handoff refuses, runs the sequential per-token loop below.
+        LastPrefillUsedCpuHandoff = false;
+        LastCpuPrefillRefusal = CpuPrefillRefusal(tokens.Count, startPos);
+        if (LastCpuPrefillRefusal is null && TryPrefillViaCpuHandoff(tokens))
+            return _logitsBuf;
+
+        long t0 = s_prefillTiming ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
         ReadOnlySpan<float> logits = default;
         for (int i = 0; i < tokens.Count; i++)
             logits = Forward(tokens[i], startPos + i);
+        if (s_prefillTiming)
+        {
+            double ms = System.Diagnostics.Stopwatch.GetElapsedTime(t0).TotalMilliseconds;
+            Console.Error.WriteLine($"[hybrid-prefill] sequential: {tokens.Count} tokens in {ms:F0} ms ({tokens.Count * 1000.0 / Math.Max(ms, 1e-3):F1} tok/s); cpu handoff not used: {LastCpuPrefillRefusal ?? "handoff failed"}");
+        }
         return logits;
     }
 
@@ -1851,6 +1864,7 @@ public sealed unsafe class HybridForwardPass : IForwardPass
         if (_disposed) return;
         _disposed = true;
 
+        DisposeCpuPrefill();
         _gpu.Free(_gpuHidden); _gpu.Free(_gpuResidual); _gpu.Free(_gpuNormBuf);
         _gpu.Free(_gpuQ); _gpu.Free(_gpuK); _gpu.Free(_gpuV); _gpu.Free(_gpuAttnOut);
         _gpu.Free(_gpuFfnGate); _gpu.Free(_gpuFfnUp); _gpu.Free(_gpuLogits);

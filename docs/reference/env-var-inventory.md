@@ -29,8 +29,8 @@ names are treated as valid, `doctor` would not have flagged it either. The warni
 `STINGRAY_MAX_QUEUE` and the dead entry is out of the registry, so the mistake is now reported with
 a closest-match suggestion.
 
-**Reconciled again 2026-10-03 — `KnownEnvironmentVariables.All` now contains **259** names**
-(2026-10-03, later: `STINGRAY_MOE_SLOTS`, `STINGRAY_MOE_TIMING` and `STINGRAY_OFFLINE`, added by the TensorSharp selective-port work.)
+**Reconciled again 2026-10-03 — `KnownEnvironmentVariables.All` now contains **266** names**
+(2026-10-03, later: `STINGRAY_MOE_SLOTS`, `STINGRAY_MOE_TIMING`, `STINGRAY_OFFLINE`, `STINGRAY_HYBRID_CPU_PREFILL`, `STINGRAY_HYBRID_CPU_PREFILL_MIN_TOKENS`, `STINGRAY_HYBRID_CPU_PREFILL_KV_BUDGET_MB` and `STINGRAY_PREFILL_TIMING`, `STINGRAY_GPU_CPU_PREFILL` and `STINGRAY_CUDA_HYBRID_CPU_PREFILL` and `STINGRAY_HYBRID_CPU_PREFILL_WARM`, added by the TensorSharp selective-port work.)
 (2026-10-02: `STINGRAY_CPU_POOL`, `STINGRAY_CPU_POOL_BLOCKS`, `STINGRAY_CPU_SPIN` for the opt-in spin worker
 pool, registered in 8f45d133 without a count update; and `STINGRAY_EXPERIMENTAL_PRISM`, the "ported, not
 verified" Bonsai2 PRISM gate.)
@@ -221,6 +221,13 @@ dynamically composed names.
 | `STINGRAY_MOE_PIN_MODE` | experimental | |
 | `STINGRAY_MOE_PREDICT_PREFETCH` | expert | Mirrors `OpenTailStingrayServerOptions.MoePredictPrefetch`. |
 | `STINGRAY_MOE_WARMPIN` | expert | Mirrors `OpenTailStingrayServerOptions.MoeWarmPin`. |
+| `STINGRAY_GPU_CPU_PREFILL` | experimental | Full-offload Vulkan pass (`-g -1`), MoE models only: a fresh prompt of at least `STINGRAY_HYBRID_CPU_PREFILL_MIN_TOKENS` tokens is prefilled by the CPU batched pass and its K/V (F32, or packed fp16 when the GPU KV is narrowed) handed to the GPU caches. On by default for MoE; `0` turns it off, `all` admits families without a parity test. |
+| `STINGRAY_CUDA_HYBRID_CPU_PREFILL` | experimental | CUDA hybrid: the same handoff, **opt-in and untested on CUDA hardware** (written 2026-10-03 without an NVIDIA GPU). `1` enables it for admitted families, `all` for any; only for F32 GPU KV. |
+| `STINGRAY_HYBRID_CPU_PREFILL` | experimental | Vulkan hybrid (`-g N`): a fresh prompt of at least `..._MIN_TOKENS` tokens is prefilled by the CPU batched pass and its K/V handed to the hybrid. `0` turns it off, `all` admits model families without a parity test. Fresh sequences only; refused for TurboQuant, `STINGRAY_KV_DTYPE=bf16`, per-layer head dims. |
+| `STINGRAY_HYBRID_CPU_PREFILL_WARM` | experimental | `0` turns off the post-handoff expert-cache warm-up: after a CPU prefill the hybrid preloads the experts the prompt used most into the GPU slot cache (up to its capacity) so decode does not start cold. |
+| `STINGRAY_HYBRID_CPU_PREFILL_MIN_TOKENS` | experimental | Shortest prompt that takes the CPU-prefill handoff (default 32). |
+| `STINGRAY_HYBRID_CPU_PREFILL_KV_BUDGET_MB` | experimental | Largest temporary CPU KV cache the handoff may allocate (default 4096 MiB); above it the sequential prefill runs. |
+| `STINGRAY_PREFILL_TIMING` | experimental | `1`: Vulkan hybrid prints, per prefill, which path ran and the CPU-prefill / KV-handoff / end-to-end times. |
 | `STINGRAY_MOE_TIMING` | experimental | `1`: Vulkan hybrid (`-g N`) MoE only. On exit prints, per GPU MoE layer-step, where the time went: GPU wait + router, cache lookup, CPU fallback for missed experts, record tail; and per-expert gate/up/down fallback time. |
 | `STINGRAY_MOE_SLOTS` | experimental | Vulkan hybrid (`-g N`) only: caps the GPU expert cache at this many (layer, expert) slots instead of sizing it to hold every expert. Misses are computed on the CPU. For testing eviction on models that would otherwise fit; `VulkanHybridOlmoeParityTests` uses the constructor argument for the same thing. |
 | `STINGRAY_OFFLINE` | stable | `1`/`true`: catalog installs never touch the network (files already present are still hash-checked; a missing one fails with a clear message). `HF_HUB_OFFLINE` is honoured the same way. |

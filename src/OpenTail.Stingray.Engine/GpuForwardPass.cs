@@ -11,7 +11,7 @@ namespace OpenTail.Stingray.Engine;
 /// For operations not yet GPU-accelerated (attention scoring/aggregation),
 /// falls back to CPU with download/upload round-trips.
 /// </summary>
-public sealed unsafe class GpuForwardPass : IForwardPass
+public sealed unsafe partial class GpuForwardPass : IForwardPass
 {
     private readonly VulkanBackend _gpu;
     private readonly GgufModel _model;
@@ -1305,6 +1305,13 @@ public sealed unsafe class GpuForwardPass : IForwardPass
             throw new ArgumentException("Token list is empty", nameof(tokens));
 
         int N = tokens.Count;
+
+        // MoE models: a fresh long prompt is prefilled by the CPU batched pass and its K/V handed to the GPU caches
+        // (GpuPrefillHandoff.cs); this pass has no batched MoE trunk, only the per-token loop below.
+        LastPrefillUsedCpuHandoff = false;
+        LastCpuPrefillRefusal = CpuPrefillRefusal(N, startPos);
+        if (LastCpuPrefillRefusal is null && TryPrefillViaCpuHandoff(tokens))
+            return _logitsBuf;
 
         // SnapKV (issue #59) gating: only run eviction when this is a fresh
         // prefill (startPos==0), the effective budget is positive, the prompt
@@ -3951,6 +3958,7 @@ public sealed unsafe class GpuForwardPass : IForwardPass
         // that corrupts the native/VRAM heap).
         if (_disposed) return;
         _disposed = true;
+        DisposeCpuPrefill();
 
         _taps?.Dispose();
         _gpu.Free(_hidden); _gpu.Free(_residual); _gpu.Free(_normBuf);
