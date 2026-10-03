@@ -17,8 +17,9 @@ public sealed class MuseGlimmerSyntheticTests : IDisposable
     private const int Context = 64;
     private const int SwaWindow = 3;
     private const int SwaPeriod = 2; // P=2: layers 0, 2 are SWA; layers 1, 3 are full attention
-    private const float LogitScale = 1.25f;
-    private const float Softcap = 15.0f;
+    private const float LogitScale = 0.19611613513818404f;
+    private const float Softcap = 20.0f;
+    private const float QkScaleFactor = 3.87f;
     private const float NormEps = 1e-6f;
     private const float PostNormEps = 1e-8f;
 
@@ -93,6 +94,29 @@ public sealed class MuseGlimmerSyntheticTests : IDisposable
         }
     }
 
+    [Fact]
+    public void MuseGlimmer_SlidingWindowBoundary_ExactlyWindowKeysVisible()
+    {
+        // Query at position p in an SWA layer with window W sees exactly min(p + 1, W) keys:
+        // positions [max(0, p - W + 1), p]. Keys older than p - W + 1 must be masked out.
+        const int window = 2048;
+        int pos = 3000;
+        int visibleCount = 0;
+        int oldestVisible = -1;
+        for (int j = 0; j <= pos; j++)
+        {
+            bool isMasked = (pos - j) >= window;
+            if (!isMasked)
+            {
+                visibleCount++;
+                if (oldestVisible == -1) oldestVisible = j;
+            }
+        }
+
+        Assert.Equal(window, visibleCount);
+        Assert.Equal(pos - window + 1, oldestVisible); // exactly p - 2047: 2048 keys visible including self
+    }
+
     private (string Path, Dictionary<string, float[]> Tensors) WriteSyntheticMuseGlimmerGguf(int seed)
     {
         var tensorDict = new Dictionary<string, float[]>(StringComparer.Ordinal);
@@ -111,21 +135,23 @@ public sealed class MuseGlimmerSyntheticTests : IDisposable
         for (int l = 0; l < NumLayers; l++)
         {
             int b = seed + 100 * (l + 1);
-            AddTensor($"blk.{l}.attn_norm.weight", [EmbDim], OnesF32(EmbDim));
+            // Four per-layer norms carry the (1 + learned_weight) conversion shift
+            AddTensor($"blk.{l}.attn_norm.weight", [EmbDim], ShiftedNormF32(EmbDim, b + 11));
             AddTensor($"blk.{l}.attn_q.weight", [EmbDim, QDim], RandF32(QDim * EmbDim, b + 1));
             AddTensor($"blk.{l}.attn_k.weight", [EmbDim, KvDim], RandF32(KvDim * EmbDim, b + 2));
             AddTensor($"blk.{l}.attn_v.weight", [EmbDim, KvDim], RandF32(KvDim * EmbDim, b + 3));
             AddTensor($"blk.{l}.attn_gate.weight", [EmbDim, QDim], RandF32(QDim * EmbDim, b + 4));
-            AddTensor($"blk.{l}.attn_q_norm.weight", [HeadDim], OnesF32(HeadDim));
+            // Synthesized QK-norm in GGUF: attn_q_norm absorbs qk_scale_factor (3.87), attn_k_norm is 1.0
+            AddTensor($"blk.{l}.attn_q_norm.weight", [HeadDim], ConstF32(HeadDim, QkScaleFactor));
             AddTensor($"blk.{l}.attn_k_norm.weight", [HeadDim], OnesF32(HeadDim));
             AddTensor($"blk.{l}.attn_output.weight", [QDim, EmbDim], RandF32(EmbDim * QDim, b + 5));
-            AddTensor($"blk.{l}.post_attention_norm.weight", [EmbDim], OnesF32(EmbDim));
+            AddTensor($"blk.{l}.post_attention_norm.weight", [EmbDim], ShiftedNormF32(EmbDim, b + 12));
 
-            AddTensor($"blk.{l}.ffn_norm.weight", [EmbDim], OnesF32(EmbDim));
+            AddTensor($"blk.{l}.ffn_norm.weight", [EmbDim], ShiftedNormF32(EmbDim, b + 13));
             AddTensor($"blk.{l}.ffn_gate.weight", [EmbDim, FfnDim], RandF32(FfnDim * EmbDim, b + 6));
             AddTensor($"blk.{l}.ffn_up.weight", [EmbDim, FfnDim], RandF32(FfnDim * EmbDim, b + 7));
             AddTensor($"blk.{l}.ffn_down.weight", [FfnDim, EmbDim], RandF32(EmbDim * FfnDim, b + 8));
-            AddTensor($"blk.{l}.post_ffw_norm.weight", [EmbDim], OnesF32(EmbDim));
+            AddTensor($"blk.{l}.post_ffw_norm.weight", [EmbDim], ShiftedNormF32(EmbDim, b + 14));
         }
 
         var metadata = new (string key, GgufValueType type, object value)[]
@@ -196,6 +222,21 @@ public sealed class MuseGlimmerSyntheticTests : IDisposable
             s ^= s << 13; s ^= s >> 17; s ^= s << 5;
             a[i] = ((s & 0xFFFF) / 65535f - 0.5f) * 0.05f;
         }
+        return a;
+    }
+
+    private static float[] ConstF32(int n, float val)
+    {
+        var a = new float[n];
+        Array.Fill(a, val);
+        return a;
+    }
+
+    private static float[] ShiftedNormF32(int n, int seed)
+    {
+        // Models per-layer norm weights converted to GGUF format: data_torch = data_torch + 1
+        var a = RandF32(n, seed);
+        for (int i = 0; i < n; i++) a[i] += 1.0f;
         return a;
     }
 
