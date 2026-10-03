@@ -455,6 +455,17 @@ public static unsafe class SimdKernels
         Environment.GetEnvironmentVariable("STINGRAY_CPU_PREFILL_Q8") != "0";
 
     /// <summary>
+    /// Experiment (2026-10-03, TensorSharp ManagedQuantGemm idea): run the dense CPU decode's
+    /// projections through the SAME batched GEMM that prefill uses (<c>ForwardPass.MatMulBatchedCached</c>
+    /// at N = 1), so a token's result is independent of whether it was decoded, prefilled, chunked or
+    /// verified in a batch. Changes decode numerics (ggml Q8_K activations instead of Q8_KS), so it is
+    /// opt-in (<c>STINGRAY_CPU_DECODE_VIA_GEMM=1</c>) until measured and decided. Needs
+    /// <see cref="Q8PrefillEnabled"/>. Settable for tests and A/B runs.
+    /// </summary>
+    public static bool DecodeViaGemm { get; set; } =
+        Environment.GetEnvironmentVariable("STINGRAY_CPU_DECODE_VIA_GEMM") == "1";
+
+    /// <summary>
     /// Use Q8_K activations (as ggml_vec_dot_q5_K_q8_K does) for every Q5_K matvec in the CPU decode path:
     /// single, dual, 2-input and 4-input dispatch plus the decode attention-output call site, and for Q5_1 matvecs
     /// (Q8_1 activations, <c>ggml_vec_dot_q5_1_q8_1</c>) and the folded MoE expert dot.

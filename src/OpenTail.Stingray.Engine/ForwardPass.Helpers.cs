@@ -114,8 +114,14 @@ public sealed unsafe partial class ForwardPass
     // ================================================================
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static void FusedMatVec(float* output, in TensorRef tensor, float* input, int rows, int cols)
+    private void FusedMatVec(float* output, in TensorRef tensor, float* input, int rows, int cols)
     {
+        // STINGRAY_CPU_DECODE_VIA_GEMM=1: the prefill GEMM at N = 1 (batch-invariant decode experiment).
+        if (SimdKernels.DecodeViaGemm && SimdKernels.Q8PrefillEnabled && tensor.DType is DType.Q4_K or DType.Q6_K)
+        {
+            MatMulBatchedCached(output, in tensor, input, 1, rows, cols, allowBlas: false);
+            return;
+        }
         SimdKernels.MatVec(output, tensor.DataPtr, input, rows, cols, tensor.DType);
     }
 
