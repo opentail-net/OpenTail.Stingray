@@ -108,7 +108,7 @@ a new plan when someone decides to take them on; the wave isn't meant to grow by
 - [x] Port `glm5next`
 - [x] Add not-admitted blocks
 - [x] Add table rows
-- [x] Specification tests passing (`GlmDsaAlphaTests`, `Glm5NextAlphaTests`)
+- [x] Specification tests passing (`GlmDsaSyntheticTests`, `Glm5NextSyntheticTests`)
 
 ### 3. Muse-Glimmer (`muse-glimmer`, alias `muse_glimmer`)
 - **Design:**
