@@ -51,6 +51,8 @@ or inspired by TensorSharp, including:
 - The spin-then-park CPU worker pool in `src/OpenTail.Stingray.Cpu/SpinParkWorkerPool.cs` (ported from TensorSharp's `TensorSharp.Models/CpuWorkerPool.cs`)
 - The packed F32 GEMM in `src/OpenTail.Stingray.Cpu/CpuSgemm.cs` (ported from TensorSharp's `TensorSharp.Core/Cpu/CpuSgemm.cs`)
 - Bonsai2 PQ2_0/PTQ1_0 decoding and Q2_0 transcoding in `src/OpenTail.Stingray.Cpu/BonsaiQuant.cs` (ported from TensorSharp's `TensorSharp.GGML.Native/bonsai_quant.cpp`); the PRISM metadata validation in `src/OpenTail.Stingray.Engine/PrismHadamardMetadata.cs` and the transform in `src/OpenTail.Stingray.Cpu/PrismHadamard.cs` follow TensorSharp's `BonsaiHadamardMetadata.cs` / `ggml_ops_bonsai.cpp`
+- Qwen 3.8 Flash Next (`qwen4exp`) architecture structures, GatedResidual hyper-connections, PLE dilated conv, and QSA indexing in `src/OpenTail.Stingray.Engine/Qwen4Exp*.cs` (referencing TensorSharp `Models/Qwen4Exp/` and llama.cpp `src/models/qwen4exp.cpp`)
+- MiniMax-H3 architecture structures, dual flow schedulers, AdaLN timestep curve modulation, and packed sequence layout in `src/OpenTail.Stingray.Diffusion/MiniMaxH3/` (referencing TensorSharp `Models/MiniMaxH3/` and upstream MiniMax-H3)
 
 - Upstream: <https://github.com/zhongkaifu/TensorSharp>
 - Copyright (c) 2026, Zhongkai Fu

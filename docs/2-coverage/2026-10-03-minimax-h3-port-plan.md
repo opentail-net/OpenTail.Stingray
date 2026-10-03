@@ -3,23 +3,69 @@
 **Status:** not started. **Policy:** port now, prove later; kept off the CLI's model list and the
 diffusion docs until verified (CLAUDE.md rule 14; [ported-families-todo](ported-families-todo.md)).
 
+## Licensing & Distribution Note
+
+The MiniMax H3 Community License applies downstream conditions and territorial restrictions to the
+reproduction and distribution of H3 model weights / works. OpenTail does **not** distribute model
+weights or checkpoints; OpenTail only provides inference and execution runtime capabilities.
+In accordance with CLAUDE.md Rule 14, all code remains unadvertised and internal until verified,
+and no proprietary weights are bundled or distributed.
+
 ## Architecture
 
 Source: TensorSharp `docs/models/minimax-h3.md`, `Models/MiniMaxH3/` (20 files, including a 100%
 pure-C# backend), upstream HF code (`MiniMaxAI/MiniMax-H3`).
 
 One diffusion transformer denoises a **packed video+audio latent** in a single token sequence:
-up to 15 s at 24 fps, plus a 32 kHz stereo soundtrack written as a sidecar `.wav`. Seven whole
-networks:
-- a text encoder (a Qwen3-VL-32B derivative, its own GGUF, no tokenizer embedded);
-- a vision encoder (for image / reference conditioning);
-- the DiT;
-- encode + decode for the video VAE (3D, tiled; 5 latent frames at a time past 22 frames);
-- encode + decode for the audio VAE.
+up to 15 s at 24 fps, plus a 32 kHz stereo soundtrack written as a sidecar `.wav`.
 
-Two denoiser checkpoints with different conditioning:
-- `fl2va` (text + first/last keyframes; also t2v and i2v);
-- `ref2va` (text + reference images, clips and soundtracks).
+### Graphs vs Weight Sets
+Seven execution graphs / passes over four principal weight sets:
+1. **H3-Encoder (text & visual semantic encode):** Qwen3-VL-32B derivative (its own GGUF, no tokenizer embedded; `vocab.json` + `merges.txt` loaded externally).
+2. **DiT Denoiser:** single omni-modal DiT operating over packed video + audio sequence.
+3. **Video VAE (3D causal):** encode + decode (5.2 GB fp16 safetensors).
+4. **Audio VAE:** encode + decode (0.6 GB fp32 safetensors).
+
+### DiT Architecture Contract
+- **Depth:** 50 transformer blocks.
+- **Hidden dimension:** 5,376.
+- **Attention:** 56 heads × 128 head dim = 7,168 attention dim. Full bidirectional attention, no cross-attention.
+- **FFN:** SwiGLU.
+- **Patch size:** `(1, 2, 2)` (1 temporal, 2 height, 2 width).
+- **Patch ordering:** Video patch values are **channel-major, patch-minor**. (Critical: getting this wrong silently scrambles every token).
+- **Latent channels:** Video = 24 latent channels; Audio = 32 latent channels.
+- **Single packed sequence:** `[text tokens | conditioning visual tokens | target video tokens | target audio tokens]`.
+
+### Dual Flow Schedules
+Unlike single-modality diffusion models, H3 uses independent flow shift parameters and dual sigma schedules:
+- **Video flow shift:** 12.
+- **Audio flow shift:** 3.
+- Two independent sigma trajectories driving the unified denoiser step.
+
+### Guidance & CFG
+- Distilled model: standard inference uses `cfg_scale = 1.0`.
+- No unconditional branch / negative-prompt pass in the base path.
+
+### DiT Conditioning (AdaLN Table)
+- Not a standard scalar timestep MLP: uses a learned timestep curve table `adaln_t_table = [8, 1025]`.
+- Continuous interpolation at timestep $t$.
+- Per-block projection from 8 -> 96,768 (yielding 6 modulation vectors × 3 modalities: $6 \times 5376 = 32256$ per modality, $32256 \times 3 = 96768$).
+
+### Video VAE Temporal Chunking
+- 3D causal VAE encoder/decoder with spatial tiling.
+- **Temporal chunking is correctness-sensitive:** clips past 22 frames are decoded in chunks of 5 latent frames with overlap/look-ahead and seam cross-fading.
+
+### Conditioning Modes (Staged)
+Two denoiser checkpoints support different conditioning:
+- `fl2va`: text + first/last keyframes; also t2v and i2v.
+- `ref2va`: text + multimodal references (up to 9 images, 3 video clips, 3 audio clips).
+
+**Sequencing:**
+- M1: T2V (Text to Video + Audio)
+- M2: I2V (Image to Video + Audio)
+- M3: FL2V (First & Last Frame to Video + Audio)
+- M4: Ref2VA images
+- M5: Ref2VA video/audio references
 
 **Files** (about 35.5 GB per set):
 
@@ -30,57 +76,60 @@ Two denoiser checkpoints with different conditioning:
 | video VAE (fp16 safetensors) | 5.2 GB |
 | audio VAE (fp32) | 0.6 GB |
 
-**Memory:** this fits the 64 GB host **for sequential loading of weights.** Networks load and
-release in turn, so peak weight residency is about the largest single component (the ~17 GiB text
-encoder), not the ~35.5 GB sum. Generation tensors, latent buffers, decoded video frames and audio
-add RAM on top, so don't treat the summed checkpoint size, or the largest file alone, as the runtime
-peak. Measure it.
+**Memory:** Peak working-set target is approximately the largest active network plus its conditioning/output buffers (~17 GiB); sequential loading allows fitting comfortably within a 64 GB host without keeping all networks resident simultaneously.
 
-**External-file dependencies (integration work, not detail):**
-- **The text-encoder GGUF carries no tokenizer.** The tokenizer is an external `vocab.json` +
-  `merges.txt` (TensorSharp documents this; a config cannot auto-fetch it).
-- The VAEs are safetensors, not GGUF.
-- The denoiser choice (`fl2va` vs `ref2va`) decides which conditioning modes work.
+**Out of Scope for Initial Port:**
+- Initial scope excludes MiniMax's proprietary hosted `H3-Context-IR` orchestration system. Local port accepts already-authored prompts and references directly.
 
-## Reuse in Stingray
+## Packed Sequence Layout (`MiniMaxH3Layout`)
 
-- The diffusion stack: Wan / HunyuanVideo / LTX DiT blocks, 3D VAE decoders (`HunyuanVaeDecoder3D`),
-  flow-matching schedulers, tiled VAE decode, CPU and Vulkan paths.
-- Audio: VAE / vocoder pieces from the audio engines; WAV writing.
-- The text encoder: Qwen3-VL text tower (`UnifiedVisionPipeline` / LLM forward for hidden states).
+The central engineering abstraction is `MiniMaxH3Layout`:
+- Modality token partition and range indexing: `[text | visual_cond | video_target | audio_target]`.
+- Modality-specific spatial, temporal, and frequency RoPE coordinate indexing.
+- Mask generation: conditioning masks vs target/noise masks.
+- Extraction of predicted velocity outputs split into video latent and audio latent slices.
 
-## New work (phases)
+## Implementation Phases
 
-- [ ] **0. Read** `MiniMaxH3Pipeline.cs`, `MiniMaxH3DiT.cs` / `DirectDiT.cs`, `MiniMaxH3Layout.cs`
-  (latent packing), `MiniMaxH3Scheduler.cs`, both VAEs, and the encoders. Write the spec here:
-  token layout, conditioning injection per mode, scheduler, guidance.
-- [ ] **1. Text encoder:** hidden-state extraction from the Qwen3-VL-32B GGUF (external tokenizer).
-- [ ] **2. DiT** over the packed video+audio latent (CPU first; Vulkan later).
-- [ ] **3. VAEs:** video (3D, tiled) and audio decode first, then encode for i2v / fl2v / ref.
-- [ ] **4. Pipeline + scheduler:** t2v first, then i2v, fl2v, ref.
-- [ ] **5. Output:** an MP4 (existing H.264 writer, if the diffusion stack has one) plus a sidecar
-  WAV.
-- [ ] **6. Gate:** an experimental flag; not listed in `stingray image` / video help until verified.
+- [x] **0. Mathematical Primitives & Dual Schedulers:**
+  - `MiniMaxH3Scheduler`: dual flow shifts (video=12, audio=3), independent sigma generation, Euler solver step.
+  - `MiniMaxH3AdaLN`: `adaln_t_table = [8, 1025]` interpolation and 8 -> 96768 block modulation vector extraction.
+  - `MiniMaxH3Layout`: token layout, coordinate packing, RoPE coordinate generation, post-denoise slice extraction.
+- [ ] **1. Text Encoder Integration:**
+  - Hidden-state extraction from Qwen3-VL-32B GGUF with external `vocab.json` + `merges.txt`.
+- [ ] **2. DiT Denoiser:**
+  - 2a. Tiny DiT with video only.
+  - 2b. Tiny DiT with audio only.
+  - [x] 2c. Packed video+audio sequence (`MiniMaxH3Layout` + `MiniMaxH3DiTBlock`).
+  - [ ] 2d. Multimodal RoPE / positional layout.
+  - [x] 2e. AdaLN modulation ($8 \to 96768$).
+  - [ ] 2f. Full 50-block DiT graph with real weight loader.
+- [ ] **3. VAEs:**
+  - Audio VAE decode / encode (fp32).
+  - Video VAE 3D decode with spatial tiling and 5-latent-frame temporal chunking.
+- [ ] **4. Pipeline & Denoising Loop:**
+  - Denoising orchestration (t2v first).
+- [ ] **5. Host Output:**
+  - WAV export for audio latent decode.
+  - Frame export / video container writer for decoded video frames.
+- [ ] **6. Experimental Gate:**
+  - Gated under experimental flag; unadvertised in CLI/STATUS until verified (Rule 14).
 
-**Promotion is pipeline-specific,** like the other diffusion pipelines: per-network fixture checks,
-an end-to-end deterministic clip, exposure in the CLI's video/diffusion registry, and a STATUS row.
-It doesn't go through `ModelCompatibility` / `admit-arch`.
+## Verification Ladder
 
-## Deferred (not in the initial port)
+1. **Exact Shape & Layout Validation:** Synthetic tests for `MiniMaxH3Layout`, coordinate bounds, and patch channel ordering.
+2. **Synthetic Component Tests:**
+   - Dual flow schedule values for video ($shift=12$) and audio ($shift=3$).
+   - AdaLN curve table interpolation and modulation projections.
+   - Isolated single DiT block forward pass with packed video+audio tokens.
+   - Audio VAE decode test.
+   - Video VAE 3D temporal chunking test (<=22 frames vs >22 frames).
+3. **Synthetic End-to-End Tiny H3:** Video + audio packed denoising step with dummy weights.
+4. **Real Checkpoint Fixture Parity (Level 3):**
+   - Intermediate text embedding against upstream PyTorch / TensorSharp fixture.
+   - Single DiT velocity step comparison on fixed seed.
+   - Decoded video and audio latents.
+5. **Long-clip VAE verification:** Seam blending on >22 frame latent sequence.
+6. **Conditioning Extensions:** I2V, FL2V, Ref2VA.
 
-`ref2va` reference clips and soundtracks, i2v / fl2v until t2v is verified, GPU (Vulkan) paths,
-long clips past the FP16 attention ceiling, and the HTTP API.
-
-## Verification (levels as in [ported-families-todo](ported-families-todo.md))
-
-1. **Independent implementation (level 3):** fixtures from the upstream HF/PyTorch reference
-   (`MiniMaxAI/MiniMax-H3`): text embedding, one DiT step's velocity, VAE decode of a fixed latent,
-   on the same seed and inputs. TensorSharp's own verification uses upstream/PyTorch fixtures, not
-   self-comparison.
-2. **Second reading:** TensorSharp's pure-C# backend on the same files (useful for localising
-   differences; not independent of TensorSharp-derived code).
-3. **End to end:** a short t2v clip at small size, judged visually with an audio sanity check. Only
-   the per-network fixture checks count as verification.
-
-**Effort:** port + per-network checks multi-day (about 3-5). The largest item; a diffusion project.
-The closeout performance + DRY pass and promotion are separate.
+**Target:** 3–5 days for a structurally complete CPU T2V implementation, assuming existing VAE/DiT primitives map cleanly. I2V/FL2V/Ref2VA and Vulkan are subsequent work.
