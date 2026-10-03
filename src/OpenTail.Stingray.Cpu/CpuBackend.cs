@@ -244,8 +244,7 @@ public sealed unsafe class CpuBackend : IComputeBackend
     public void Synchronize() { /* CPU operations are synchronous */ }
 
     /// <summary>
-    /// General matrix multiply: C[M,N] = A[M,K] × B[N,K]^T using CBLAS SGEMM.
-    /// Falls back to a scalar loop if OpenBLAS is not available.
+    /// General matrix multiply: C[M,N] = A[M,K] × B[N,K]^T on <see cref="CpuSgemm"/> (pure C#).
     /// </summary>
     public unsafe void Sgemm(Tensor C, Tensor A, Tensor B, int M, int K, int N)
         => Sgemm(C, A, B, M, K, N, 0);
@@ -259,36 +258,12 @@ public sealed unsafe class CpuBackend : IComputeBackend
         if (MicroGemmConfig.IsEnabled && MicroGemmKernel.TryMatMulF32(a, b, c, M, K, N))
             return;
 
-        // NOT the same "BLAS is last resort, effectively dead" situation as
-        // SimdKernels.MatMulBatched/MatMulBatchedF32 (see
-        // docs/done/openblas-elimination-findings-2026-08-20.md) -- deliberately left BLAS-then-
-        // scalar here, not reordered. This path is plain F32-in/F32-out GEMM for image/diffusion
-        // ops, with no quantized weight to dequantize (no bandwidth handicap for BLAS to lose to)
-        // and no specialized SIMD dot kernel as the alternative -- only a naive O(M*K*N) triple
-        // scalar loop below, which is far worse than BLAS, not better. If this path is ever
-        // measured to have the same problem (e.g. a genuinely faster SIMD F32 GEMM shows up),
-        // re-evaluate independently; don't assume the text-inference finding transfers here.
-        if (BlasInterop.IsAvailable)
-        {
-            BlasInterop.Sgemm(
-                BlasInterop.RowMajor, BlasInterop.NoTrans, BlasInterop.Trans,
-                M, N, K,
-                1.0f, a, K,
-                b, K,
-                0.0f, c, N);
-        }
-        else
-        {
-            // Scalar fallback: C[i,j] = sum_k A[i,k] * B[j,k]
-            for (int i = 0; i < M; i++)
-            for (int j = 0; j < N; j++)
-            {
-                float acc = 0f;
-                for (int k = 0; k < K; k++)
-                    acc += a[i * K + k] * b[j * K + k];
-                c[i * N + j] = acc;
-            }
-        }
+        // Was OpenBLAS cblas_sgemm with a naive scalar triple loop as fallback. CpuSgemm (BLIS-style
+        // packed GEMM ported from TensorSharp) replaced it 2026-10-03: on the diffusion/TTS call shapes
+        // it matched or beat OpenBLAS at equal thread counts (KernelBench sgemm, 16 shapes; Ryzen 7
+        // 5700G) and needs no native library. Record: docs/4-performance/2026-10-03-cpusgemm-vs-openblas.md.
+        // A is [M,K] row-major; B is [N,K] row-major, i.e. B(p,j) = b[j*K + p].
+        CpuSgemm.Gemm(M, N, K, 1f, a, K, 1, b, 1, K, 0f, c, N);
     }
 
     /// <summary>
