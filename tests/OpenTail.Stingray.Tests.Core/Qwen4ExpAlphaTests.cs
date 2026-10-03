@@ -641,5 +641,130 @@ public class Qwen4ExpAlphaTests
             }
         }
     }
+
+    [Fact]
+    public void PleHasher_KnownTokenSequence_CalculatesXorHashAndHeadIndices()
+    {
+        // 3 tokens, ngram=3, multipliers=[3, 5, 7]
+        // heads=2, offsets=[100, 200], vocabSizes=[1000, 2000]
+        var hp = new Qwen4ExpHyperparams
+        {
+            PleNgramSize = 3,
+            PleLayerMultipliers = [3UL, 5UL, 7UL],
+            PleHeadOffsets = [100U, 200U],
+            PleHeadVocabSizes = [1000U, 2000U],
+        };
+
+        var hasher = new Qwen4ExpPleHasher(hp);
+        Span<long> rowIndices = stackalloc long[2];
+
+        // Step 0: token 10
+        // k=0: tok=10, mult=3 -> 30. hash=30.
+        // head 0: 100 + (30 % 1000) = 130.
+        // head 1: 200 + (30 % 2000) = 230.
+        hasher.PushToken(10);
+        hasher.ComputeRowIndices(rowIndices);
+        Assert.Equal(130, rowIndices[0]);
+        Assert.Equal(230, rowIndices[1]);
+
+        // Step 1: token 20. history: [10, 20]
+        // k=0: tok=20, mult=3 -> 60.
+        // k=1: tok=10, mult=5 -> 50.
+        // hash = 60 ^ 50 = 110.
+        hasher.PushToken(20);
+        hasher.ComputeRowIndices(rowIndices);
+        Assert.Equal(100 + 110, rowIndices[0]);
+        Assert.Equal(200 + 110, rowIndices[1]);
+
+        // Step 2: token 30. history: [10, 20, 30]
+        // k=0: tok=30, mult=3 -> 90.
+        // k=1: tok=20, mult=5 -> 100. (90 ^ 100 = 58)
+        // k=2: tok=10, mult=7 -> 70. (58 ^ 70 = 120)
+        // Note: With addition it would be 90 + 100 + 70 = 260. With XOR it is 120!
+        hasher.PushToken(30);
+        hasher.ComputeRowIndices(rowIndices);
+        Assert.Equal(100 + 120, rowIndices[0]);
+        Assert.Equal(200 + 120, rowIndices[1]);
+    }
+
+    [Fact]
+    public void PleHasher_ChunkedVsSingleShot_HistoryContinuity()
+    {
+        var hp = new Qwen4ExpHyperparams
+        {
+            PleNgramSize = 4,
+            PleLayerMultipliers = [17UL, 31UL, 53UL, 97UL],
+            PleHeadOffsets = [0U, 1024U, 2048U, 4096U],
+            PleHeadVocabSizes = [1024U, 1024U, 2048U, 4096U],
+        };
+
+        var singleShot = new Qwen4ExpPleHasher(hp);
+        var chunked = new Qwen4ExpPleHasher(hp);
+
+        int[] tokens = [42, 101, 7, 888, 1234, 55];
+
+        // Single shot
+        for (int i = 0; i < tokens.Length; i++)
+        {
+            singleShot.PushToken(tokens[i]);
+        }
+
+        // Chunked: push 2 tokens, then 4 tokens
+        chunked.PushTokens(tokens.AsSpan(0, 2));
+        chunked.PushTokens(tokens.AsSpan(2, 4));
+
+        Span<long> singleIndices = stackalloc long[4];
+        Span<long> chunkedIndices = stackalloc long[4];
+
+        singleShot.ComputeRowIndices(singleIndices);
+        chunked.ComputeRowIndices(chunkedIndices);
+
+        for (int h = 0; h < 4; h++)
+        {
+            Assert.Equal(singleIndices[h], chunkedIndices[h]);
+        }
+    }
+
+    [Fact]
+    public void Qsa_SelectTopKPools_ExcludesLowScoringPoolsAndRetainsTail()
+    {
+        // 5 pools total: scores [0.1, 5.0, 0.2, 8.0, 0.3]
+        // topK=2 pools -> pool 3 (score 8.0) and pool 1 (score 5.0) should be selected.
+        float[] poolScores = [0.1f, 5.0f, 0.2f, 8.0f, 0.3f];
+        Span<int> selected = stackalloc int[poolScores.Length];
+
+        int count = Qwen4ExpQsa.SelectTopKPools(poolScores, topKPools: 2, selected);
+
+        Assert.Equal(2, count);
+        Assert.True(selected[0] == 3 || selected[1] == 3);
+        Assert.True(selected[0] == 1 || selected[1] == 1);
+        Assert.DoesNotContain(0, selected.Slice(0, count).ToArray());
+        Assert.DoesNotContain(2, selected.Slice(0, count).ToArray());
+        Assert.DoesNotContain(4, selected.Slice(0, count).ToArray());
+    }
+
+    [Fact]
+    public void Qwen4ExpRope_FourSectionImRope_RotatesSectionsCorrectly()
+    {
+        // 4 sections: s0=2, s1=2, s2=2, s3=2. Total headDim = 8.
+        // Section 3 (indices 6..7) is strictly unrotated per IMRoPE spec.
+        int[] sections = [2, 2, 2, 2];
+        float[] vec = [1f, 1f, 2f, 2f, 3f, 3f, 99f, 100f];
+        float[] original = (float[])vec.Clone();
+
+        Qwen4ExpRope.ApplyImRope(vec, position: 10, numHeads: 1, headDim: 8, sections);
+
+        // Sections 0, 1, 2 must have rotated (values changed)
+        bool sections012Changed = false;
+        for (int i = 0; i < 6; i++)
+        {
+            if (Math.Abs(vec[i] - original[i]) > 1e-4f) sections012Changed = true;
+        }
+        Assert.True(sections012Changed, "First 3 sections must be rotated by RoPE");
+
+        // Section 3 must remain strictly identical
+        Assert.Equal(original[6], vec[6]);
+        Assert.Equal(original[7], vec[7]);
+    }
 }
 
