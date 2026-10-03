@@ -41,6 +41,23 @@ public sealed unsafe class DeepSeek41ForwardPass : IForwardPass
         _nopeDim = hp.NopeDim;
         _numLayer = hp.NumLayer;
 
+        // Execution-path gaps (ported, not verified, not admitted): the loaded compressor / indexer tensors are
+        // not consumed, and YaRN is not applied. Refuse real configurations rather than return wrong logits.
+        for (int i = 0; i < _numLayer && i < hp.CompressRatios.Count; i++)
+        {
+            if (hp.CompressRatios[i] > 0)
+            {
+                throw new NotSupportedException(
+                    $"deepseek41: layer {i} has compress ratio {hp.CompressRatios[i]}; compressed attention (ratios 1/2) " +
+                    "and the V4.1 DSA indexer are not implemented yet.");
+            }
+        }
+        if (hp.RopeScalingFactor > 1f)
+        {
+            throw new NotSupportedException(
+                $"deepseek41: YaRN rope scaling (factor {hp.RopeScalingFactor}) is not implemented yet.");
+        }
+
         VocabSize = _tensors.Output.HasValue && _tensors.Output.Value.Info.Dimensions.Length >= 2
             ? (int)_tensors.Output.Value.Info.Dimensions[1]
             : (int)_tensors.TokenEmbd!.Value.Info.Dimensions[1];
@@ -82,6 +99,13 @@ public sealed unsafe class DeepSeek41ForwardPass : IForwardPass
             // Engram injection on layers 1 and 14
             if ((il == 1 || il == 14) && layer.EngramTable.HasValue && layer.EngramProj.HasValue)
             {
+                if (layer.EngramTable.Value.DType != DType.Float32 || layer.EngramProj.Value.DType != DType.Float32)
+                {
+                    throw new NotSupportedException(
+                        $"deepseek41: Engram tensors are {layer.EngramTable.Value.DType}/{layer.EngramProj.Value.DType}; " +
+                        "the lookup reads raw F32, and quantised Engram tables are not supported yet.");
+                }
+
                 var engramContrib = new float[_embedDim];
                 _engram.LookupAndProject(
                     (float*)layer.EngramTable.Value.DataPtr,

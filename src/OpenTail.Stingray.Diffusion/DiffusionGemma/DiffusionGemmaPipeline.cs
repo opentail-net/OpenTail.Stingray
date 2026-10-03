@@ -43,36 +43,18 @@ public sealed class DiffusionGemmaPipeline
             for (int i = 0; i < canvasLen; i++) canvasTokens[i] = rng.Next(vocabSize);
 
             var previouslyAccepted = new bool[canvasLen];
+            var prevArgmax = new int[canvasLen];
+            Array.Fill(prevArgmax, -1);   // no previous prediction at step 0, so step 0 can never count as stable
+            var argmaxCanvas = new int[canvasLen];
             float[]? prevLogits = null;
-            var selfCondEmbeddings = new float[canvasLen * _config.HiddenDim];
+            float[] selfCondEmbeddings = [];
 
             for (int step = 0; step < _config.MaxDenoisingSteps; step++)
             {
-                // Self-conditioning for step > 0
+                // Self-conditioning from the previous step's temperature-shaped distribution (exact sum).
                 if (step > 0 && prevLogits is not null)
                 {
-                    // Compute soft probabilities
-                    var probs = new float[vocabSize];
-                    for (int pos = 0; pos < canvasLen; pos++)
-                    {
-                        var posLogits = prevLogits.AsSpan(pos * vocabSize, vocabSize);
-                        float temp = _sampler.GetTemperature(step);
-                        DiffusionGemmaSelfConditioning.ComputeSoftProbabilities(posLogits, temp, probs);
-
-                        // Soft embedding
-                        var softEmb = selfCondEmbeddings.AsSpan(pos * _config.HiddenDim, _config.HiddenDim);
-                        for (int d = 0; d < _config.HiddenDim; d++) softEmb[d] = 0f;
-                        // Use mean soft probability embedding as CPU baseline
-                        for (int v = 0; v < Math.Min(vocabSize, 128); v++)
-                        {
-                            float p = probs[v];
-                            if (p < 1e-4f) continue;
-                            for (int d = 0; d < _config.HiddenDim; d++)
-                            {
-                                softEmb[d] += p * MathF.Sin(v * 0.1f + d);
-                            }
-                        }
-                    }
+                    selfCondEmbeddings = _forwardPass.ComputeSoftEmbeddings(prevLogits, _sampler.GetTemperature(step), canvasLen);
                 }
 
                 // Canvas denoising step
@@ -80,14 +62,18 @@ public sealed class DiffusionGemmaPipeline
                 prevLogits = logits;
 
                 // Sampler evaluation
-                var (accepted, nextTokens, meanEntropy, shouldStop) = _sampler.Step(step, logits, canvasTokens, previouslyAccepted);
+                var (accepted, nextTokens, meanEntropy, shouldStop, argmax) = _sampler.Step(step, logits, prevArgmax, previouslyAccepted);
                 previouslyAccepted = accepted;
                 canvasTokens = nextTokens;
+                prevArgmax = argmax;
+                argmaxCanvas = argmax;
 
                 if (shouldStop) break;
             }
 
-            // Commit final block
+            // Commit the highest-probability prediction for every position (the re-noised canvas still holds
+            // random tokens at non-accepted positions and must never be committed).
+            canvasTokens = argmaxCanvas;
             outputTokens.AddRange(canvasTokens);
 
             // Causal re-prefill of committed block into persistent KV cache

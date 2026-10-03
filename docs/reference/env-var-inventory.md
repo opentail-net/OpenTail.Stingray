@@ -29,7 +29,7 @@ names are treated as valid, `doctor` would not have flagged it either. The warni
 `STINGRAY_MAX_QUEUE` and the dead entry is out of the registry, so the mistake is now reported with
 a closest-match suggestion.
 
-**Reconciled again 2026-10-03 — `KnownEnvironmentVariables.All` now contains **255** names**
+**Reconciled again 2026-10-03 — `KnownEnvironmentVariables.All` now contains **256** names**
 (2026-10-02: `STINGRAY_CPU_POOL`, `STINGRAY_CPU_POOL_BLOCKS`, `STINGRAY_CPU_SPIN` for the opt-in spin worker
 pool, registered in 8f45d133 without a count update; and `STINGRAY_EXPERIMENTAL_PRISM`, the "ported, not
 verified" Bonsai2 PRISM gate.)

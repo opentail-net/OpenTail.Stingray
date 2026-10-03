@@ -86,19 +86,11 @@ public sealed unsafe class Glm5NextForwardPass : IForwardPass
         var embedded = new float[_embedDim];
         EmbedTokenInto(token, embedded);
 
-        if (position == 0)
+        // The mHC streams are the current token's residual state, not sequence history (that lives in
+        // the KDA / MLA / K-pool caches): every token starts from its own embedding replicated x hc.
+        for (int s = 0; s < _hp.HcMult; s++)
         {
-            for (int s = 0; s < _hp.HcMult; s++)
-            {
-                embedded.CopyTo(_streams[s], 0);
-            }
-        }
-        else
-        {
-            for (int s = 0; s < _hp.HcMult; s++)
-            {
-                for (int i = 0; i < _embedDim; i++) _streams[s][i] += embedded[i];
-            }
+            embedded.CopyTo(_streams[s], 0);
         }
 
         for (int il = 0; il < _numLayer; il++)
@@ -572,8 +564,16 @@ public sealed unsafe class Glm5NextForwardPass : IForwardPass
             absorbed.CopyTo(qEff.AsSpan(h * kvLoraRank, kvLoraRank));
         }
 
-        // Full or sparse attention over cached KV tokens
+        // Full attention over the cached KV tokens. The K-pool DSA indexer selects at most IndexerTopK keys, so for
+        // numKeys <= IndexerTopK selection keeps every key and full attention is exact. Beyond that the pooled-key
+        // top-k selection (kpool blocks + tail) is not implemented: fail loudly rather than attend to everything.
         int numKeys = _mlaKvCache[il].Count;
+        if (_hp.IndexerTopK > 0 && numKeys > _hp.IndexerTopK)
+        {
+            throw new NotSupportedException(
+                $"glm5next: context of {numKeys} keys exceeds indexer.top_k={_hp.IndexerTopK}; K-pool sparse key " +
+                "selection is not implemented, so results past this length would be wrong.");
+        }
         float kqScale = 1.0f / MathF.Sqrt(headDimK);
         var attnOut = new float[numHeads * headDimV];
         var scores = new float[numKeys];

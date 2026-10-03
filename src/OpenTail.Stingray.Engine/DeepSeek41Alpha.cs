@@ -46,17 +46,20 @@ public sealed record DeepSeek41Hyperparams
     public int ExpertSharedCount { get; init; } = 1;
     public float ExpertWeightsScale { get; init; } = 1.5f;
     public bool ExpertWeightsNorm { get; init; } = true;
-    public int ExpertFeedForwardLength { get; init; } = 2048;
+    public int ExpertFeedForwardLength { get; init; } = 2304;   // official moe_intermediate_size
 
     public int HyperConnectionMultiplier { get; init; } = 4;
     public int HyperConnectionSinkhornIterations { get; init; } = 20;
     public float HyperConnectionEpsilon { get; init; } = 1e-6f;
 
-    public int IndexerNumHeads { get; init; } = 64;
+    public int IndexerNumHeads { get; init; } = 32;        // official index_n_heads
     public int IndexerHeadSize { get; init; } = 128;
     public int IndexerCandidateTopK { get; init; } = 2048;
     public int IndexerBlockSize { get; init; } = 8;
     public int IndexerFinalTopK { get; init; } = 512;
+
+    /// <summary>YaRN rope scaling factor (official config: 16). Not applied by the forward pass yet.</summary>
+    public float RopeScalingFactor { get; init; } = 1f;
     public int SlidingWindow { get; init; } = 128;
 
     // Engram parameters (layers 1 and 14)
@@ -144,6 +147,11 @@ public sealed record DeepSeek41Hyperparams
             OutputLoraRank = outLoraRank,
             OutputGroupCount = outGroupCount,
             NumExperts = numExperts,
+            ExpertFeedForwardLength = GetInt($"{arch}.expert_feed_forward_length", 2304),
+            IndexerNumHeads = GetInt($"{arch}.attention.indexer.head_count", 32),
+            IndexerHeadSize = GetInt($"{arch}.attention.indexer.key_length", 128),
+            IndexerFinalTopK = GetInt($"{arch}.attention.indexer.top_k", 512),
+            RopeScalingFactor = GetFloat($"{arch}.rope.scaling.factor", 1f),
             NumExpertsUsed = numExpertsUsed,
             ExpertWeightsScale = expertScale,
             ExpertWeightsNorm = expertNorm,

@@ -20,12 +20,12 @@ deliberate step (keep b10306 alongside, re-run key receipts on both, then switch
 
 | Family | Plan | Fits this PC? | Second implementation | Port + synthetic |
 |---|---|---|---|---|
-| Muse-Glimmer | [plan](2026-10-03-muse-glimmer-port-plan.md) | yes (small quants) | llama.cpp `muse-glimmer.cpp` (source) + TensorSharp | **Done** (`MuseGlimmerSyntheticTests`) |
-| Qwen 3.8 Flash Next | [plan](2026-10-03-qwen38-flash-next-port-plan.md) | no (smallest quant ~72.5 GB) | llama.cpp `qwen4exp.cpp` (source) + TensorSharp | **Done** (`Qwen4ExpAlphaTests`) |
-| GLM-5.x | [plan](2026-10-03-glm5-port-plan.md) | no (smallest GLM-5.3 quant ~236 GiB) | `glm-dsa`: llama.cpp source + b10306 binaries; `glm5next`: llama.cpp source for the trunk, **not NextN** | **Done** (`GlmDsaAlphaTests`, `Glm5NextAlphaTests`) |
-| DiffusionGemma | [plan](2026-10-03-diffusiongemma-port-plan.md) | yes (~13-17 GB) | HF reference + TensorSharp (no llama.cpp) | **Done** (`DiffusionGemmaTests`) |
-| MiniMax-H3 | [plan](2026-10-03-minimax-h3-port-plan.md) | yes (sequential loading, see plan) | upstream HF/PyTorch + TensorSharp | **Done** (`MiniMaxH3Tests`) |
-| DeepSeek V4 / V4.1 (review) | [plan](2026-10-03-deepseek-v4-review-plan.md) | no (~340 GB) | V4: llama.cpp source + b10306; V4.1: TensorSharp only | **Done** (`DeepSeek4AlphaTests`, `DeepSeek41AlphaTests`) |
+| Muse-Glimmer | [plan](2026-10-03-muse-glimmer-port-plan.md) | yes (small quants) | llama.cpp `muse-glimmer.cpp` (source) + TensorSharp | **Synthetic parity** (level 2, test-side reference; `MuseGlimmerSyntheticTests`) |
+| Qwen 3.8 Flash Next | [plan](2026-10-03-qwen38-flash-next-port-plan.md) | no (smallest quant ~72.5 GB) | llama.cpp `qwen4exp.cpp` (source) + TensorSharp | **Partial**: component tests + synthetic execution. Routed MoE added 2026-10-03 (`Qwen4ExpMoeRoutingTests`). **Missing:** RoPE in the QSA mixer, QSA indexer + K-pool block selection, PLE n-gram table. Forward pass refuses real configs (`indexer_top_k > 0`) until then |
+| GLM-5.x | [plan](2026-10-03-glm5-port-plan.md) | no (smallest GLM-5.3 quant ~236 GiB) | `glm-dsa`: llama.cpp source + b10306 binaries; `glm5next`: llama.cpp source for the trunk, **not NextN** | **Done** (`GlmDsaSyntheticTests`, `Glm5NextSyntheticTests`) |
+| DiffusionGemma | [plan](2026-10-03-diffusiongemma-port-plan.md) | yes (~13-17 GB) | HF reference + TensorSharp (no llama.cpp) | **Component-tested** (`DiffusionGemmaTests`). Fixed 2026-10-03: stability on argmax history, commit argmax not the re-noised canvas, exact soft-embedding sum. **Missing:** learned self-conditioning MLP (tensors not loaded), Gumbel-max candidate sampling unverified against the HF/vLLM source |
+| MiniMax-H3 | [plan](2026-10-03-minimax-h3-port-plan.md) | yes (sequential loading, see plan) | upstream HF/PyTorch + TensorSharp | **Foundation only** (`MiniMaxH3Tests`): layout, schedulers, AdaLN, MM-RoPE, VAE decoders, synthetic pipeline. **Missing:** Qwen3-VL hidden-state extraction, 50-block real loader, VAE encode, conditioning modes |
+| DeepSeek V4 / V4.1 (review) | [plan](2026-10-03-deepseek-v4-review-plan.md) | no (~340 GB) | V4: llama.cpp source + b10306; V4.1: TensorSharp only | **V4: synthetic execution** (the forward test uses ratio 0 only, so CSA is unexercised). **V4.1: partial**, parsed + loaded but compressed attention (ratios 1/2), V4.1 indexer, YaRN and quantised Engram are not on the execution path; the forward pass now refuses such configs. Fixed 2026-10-03: `moe_intermediate_size` 2304, indexer defaults |
 
 The estimates cover **port + synthetic verification only**. Real-checkpoint verification
 (hardware-dependent), the closeout performance + DRY pass (CLAUDE.md rule 7) and promotion are
@@ -58,8 +58,28 @@ PORTED is not SUPPORTED, and SYNTHETIC VERIFIED is not REAL-WEIGHT VERIFIED.
 
 Never call a check "independent" when its reference derives from the same source as the port.
 
+Label what a test suite actually proves; "Done" is not a label:
+**structural** (metadata, shapes, construction) < **synthetic execution** (tiny model runs, finite
+output) < **synthetic parity** (agrees with an independently written reference) < **reference
+parity** (agrees with another implementation). A test that recomputes the expected value with the
+same logic as the code under test proves nothing and should not exist.
+
 **Scope:** this is the TensorSharp coverage wave (started 2026-10-02). Families beyond these six get
 a new plan when someone decides to take them on; the wave isn't meant to grow by itself.
+
+## Models that cannot be admitted on this host (2026-10-03)
+
+Policy: a family whose checkpoint cannot be run here stays **written, tested synthetically, and not
+exposed** (no admission, no catalog/CLI/STATUS entry). That is the correct end state, not a gap.
+
+- **DeepSeek-V4.1 (`deepseek41`, ~335 GB):** does not fit even on the 279 GB scratch disk; not
+  attempted. Stays PORTED + SYNTHETIC only.
+- **Qwen 3.8 Flash Next, DeepSeek-V4 (~72-98 GB):** only if a later decision says to; low priority.
+- **GLM-5.3 (~236 GiB):** fits `E:\_models`; correctness-only runs (hours, paged from disk) are
+  acceptable. Slowness is not a failure; a token/logit mismatch is.
+
+Real-checkpoint order when taken on: Muse-Glimmer, DiffusionGemma, then GLM-5.3. Download into
+`E:\_models\`, verify against the independent implementation, then delete the checkpoint.
 
 ## Per-family checklist (every family)
 

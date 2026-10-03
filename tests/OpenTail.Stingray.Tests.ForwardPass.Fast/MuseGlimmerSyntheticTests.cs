@@ -94,29 +94,6 @@ public sealed class MuseGlimmerSyntheticTests : IDisposable
         }
     }
 
-    [Fact]
-    public void MuseGlimmer_SlidingWindowBoundary_ExactlyWindowKeysVisible()
-    {
-        // Query at position p in an SWA layer with window W sees exactly min(p + 1, W) keys:
-        // positions [max(0, p - W + 1), p]. Keys older than p - W + 1 must be masked out.
-        const int window = 2048;
-        int pos = 3000;
-        int visibleCount = 0;
-        int oldestVisible = -1;
-        for (int j = 0; j <= pos; j++)
-        {
-            bool isMasked = (pos - j) >= window;
-            if (!isMasked)
-            {
-                visibleCount++;
-                if (oldestVisible == -1) oldestVisible = j;
-            }
-        }
-
-        Assert.Equal(window, visibleCount);
-        Assert.Equal(pos - window + 1, oldestVisible); // exactly p - 2047: 2048 keys visible including self
-    }
-
     private (string Path, Dictionary<string, float[]> Tensors) WriteSyntheticMuseGlimmerGguf(int seed)
     {
         var tensorDict = new Dictionary<string, float[]>(StringComparer.Ordinal);

@@ -419,6 +419,39 @@ public sealed unsafe class DiffusionGemmaForwardPass
         return logits;
     }
 
+    /// <summary>
+    /// Exact soft-embedding sum E[pos] = EmbedScale * sum_v softmax(logits[pos] / temperature)[v] * Embed[v], over
+    /// the whole vocabulary (no tail pruning, so step traces stay comparable with a reference). Vocabulary-major
+    /// so each (possibly quantised) embedding row is dequantised once per step, not once per canvas position.
+    /// The learned self-conditioning MLP that follows in the reference is NOT applied here (see the plan's open items).
+    /// </summary>
+    public float[] ComputeSoftEmbeddings(ReadOnlySpan<float> canvasLogits, float temperature, int canvasLen)
+    {
+        int vocabSize = VocabSize;
+        var probs = new float[(long)canvasLen * vocabSize];
+        for (int pos = 0; pos < canvasLen; pos++)
+        {
+            DiffusionGemmaSelfConditioning.ComputeSoftProbabilities(
+                canvasLogits.Slice(pos * vocabSize, vocabSize), temperature, probs.AsSpan(pos * vocabSize, vocabSize));
+        }
+
+        var soft = new float[canvasLen * HiddenDim];
+        var row = new float[HiddenDim];
+        for (int v = 0; v < vocabSize; v++)
+        {
+            EmbedToken(v, row);
+            for (int pos = 0; pos < canvasLen; pos++)
+            {
+                float p = probs[(long)pos * vocabSize + v];
+                var dst = soft.AsSpan(pos * HiddenDim, HiddenDim);
+                System.Numerics.Tensors.TensorPrimitives.MultiplyAdd(row, p, dst, dst);
+            }
+        }
+
+        for (int i = 0; i < soft.Length; i++) soft[i] *= _config.EmbedScale;
+        return soft;
+    }
+
     private void EmbedToken(int token, float[] destination)
     {
         var tensor = _tokEmbd;

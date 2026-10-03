@@ -191,6 +191,37 @@ public sealed unsafe class DiffusionGemmaTests
     }
 
     [Fact]
+    public void Sampler_Stability_UsesArgmaxHistory_NotTheRenoisedCanvas()
+    {
+        // Positions 0,1 are sharp (accepted); positions 2,3 are flat so they stay un-accepted and get
+        // re-noised with random tokens. Argmax predictions are identical across the two steps, so the
+        // sampler must report stability and stop (mean entropy forced under the threshold).
+        var config = new DiffusionGemmaConfig
+        {
+            CanvasLength = 4,
+            VocabSize = 8,
+            MaxDenoisingSteps = 10,
+            EntropyBudgetNats = 1.0f,
+            ConvergenceEntropyThreshold = 10.0f,
+        };
+        var sampler = new DiffusionGemmaSampler(config, seed: 7);
+
+        float[] logits = new float[4 * 8];
+        logits[0 * 8 + 2] = 20f;
+        logits[1 * 8 + 5] = 20f;
+        logits[2 * 8 + 1] = 0.5f;  // flat-ish but a definite argmax
+        logits[3 * 8 + 6] = 0.5f;
+
+        var first = sampler.Step(0, logits, [-1, -1, -1, -1], new bool[4]);
+        Assert.False(first.ShouldStop);                        // no previous argmax => not stable
+        Assert.Equal([2, 5, 1, 6], first.ArgmaxTokens);
+
+        var second = sampler.Step(1, logits, first.ArgmaxTokens, first.Accepted);
+        Assert.Equal([2, 5, 1, 6], second.ArgmaxTokens);
+        Assert.True(second.ShouldStop);                        // stable on argmax even though the canvas was re-noised
+    }
+
+    [Fact]
     public void Pipeline_SyntheticForwardPass_RunsPromptAndDenoisingLoop()
     {
         const int hiddenDim = 16;

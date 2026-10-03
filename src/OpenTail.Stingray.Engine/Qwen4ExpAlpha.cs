@@ -43,6 +43,13 @@ public sealed record Qwen4ExpHyperparams
     public int NumLayerNextn { get; init; }
     public int ExpertFeedForwardLength { get; init; }
     public int ExpertSharedFeedForwardLength { get; init; }
+
+    /// <summary>Routed expert count (<c>expert_count</c>); 0 means "no routed experts" (synthetic fixtures only).</summary>
+    public int ExpertCount { get; init; }
+    public int ExpertUsedCount { get; init; } = 10;
+
+    /// <summary>Routed-weight scale (<c>expert_weights_scale</c>); 0 = unscaled, as in llama.cpp's build_moe_ffn.</summary>
+    public float ExpertWeightsScale { get; init; }
     public float RmsNormEps { get; init; } = 1e-6f;
     public IReadOnlyList<int>? RopeDimensionSections { get; init; }
     public int SsmConvKernel { get; init; }
@@ -144,6 +151,9 @@ public sealed record Qwen4ExpHyperparams
             NumLayerNextn = GetInt(metadata, $"{arch}.nextn.layer_count"),
             ExpertFeedForwardLength = GetInt(metadata, $"{arch}.expert_feed_forward_length", 640),
             ExpertSharedFeedForwardLength = GetInt(metadata, $"{arch}.expert_shared_feed_forward_length"),
+            ExpertCount = GetInt(metadata, $"{arch}.expert_count"),
+            ExpertUsedCount = GetInt(metadata, $"{arch}.expert_used_count", 10),
+            ExpertWeightsScale = GetFloat(metadata, $"{arch}.expert_weights_scale"),
             RmsNormEps = GetFloat(metadata, $"{arch}.attention.layer_norm_rms_epsilon", 1e-6f),
             RopeDimensionSections = GetIntArray(metadata, $"{arch}.rope.dimension_sections"),
             SsmConvKernel = GetInt(metadata, $"{arch}.ssm.conv_kernel", 4),

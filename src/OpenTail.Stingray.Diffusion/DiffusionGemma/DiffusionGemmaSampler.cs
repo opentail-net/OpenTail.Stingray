@@ -51,10 +51,10 @@ public sealed class DiffusionGemmaSampler
     ///  - meanEntropy: average entropy in nats across canvas
     ///  - shouldStop: true if convergence threshold is met
     /// </summary>
-    public (bool[] Accepted, int[] Tokens, float MeanEntropy, bool ShouldStop) Step(
+    public (bool[] Accepted, int[] Tokens, float MeanEntropy, bool ShouldStop, int[] ArgmaxTokens) Step(
         int step,
         ReadOnlySpan<float> canvasLogits, // [canvasLength, vocabSize]
-        int[] prevTokens,
+        int[] prevArgmaxTokens,           // previous step's highest-probability tokens (NOT the re-noised canvas)
         bool[] previouslyAccepted)
     {
         int canvasLen = _config.CanvasLength;
@@ -62,6 +62,7 @@ public sealed class DiffusionGemmaSampler
         float temp = GetTemperature(step);
 
         var currentTokens = new int[canvasLen];
+        var argmaxTokens = new int[canvasLen];
         var entropies = new float[canvasLen];
         var probs = new float[vocabSize];
 
@@ -87,6 +88,7 @@ public sealed class DiffusionGemmaSampler
                 }
             }
             currentTokens[pos] = bestToken;
+            argmaxTokens[pos] = bestToken;
         }
 
         float meanEntropy = totalEntropy / canvasLen;
@@ -125,17 +127,19 @@ public sealed class DiffusionGemmaSampler
             }
         }
 
-        // Stability check: ratio of identical tokens between steps
+        // Stability (model card, "Adaptive Stopping"): the highest-probability token predictions stay identical
+        // across two consecutive steps. Compared on the argmax canvas, never on the re-noised canvas, whose
+        // random tokens would make stability unreachable.
         int stableCount = 0;
         for (int pos = 0; pos < canvasLen; pos++)
         {
-            if (currentTokens[pos] == prevTokens[pos]) stableCount++;
+            if (argmaxTokens[pos] == prevArgmaxTokens[pos]) stableCount++;
         }
         float stability = (float)stableCount / canvasLen;
 
         bool shouldStop = (meanEntropy < _config.ConvergenceEntropyThreshold && stability >= 0.999f)
             || step >= _config.MaxDenoisingSteps - 1;
 
-        return (accepted, currentTokens, meanEntropy, shouldStop);
+        return (accepted, currentTokens, meanEntropy, shouldStop, argmaxTokens);
     }
 }

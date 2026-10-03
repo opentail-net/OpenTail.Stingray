@@ -76,6 +76,16 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
         _hp = hp;
         _tensors = tensors;
 
+        // A real qwen4exp checkpoint always declares the QSA indexer (indexer_top_k is required by llama.cpp's loader).
+        // The QSA mixer here still lacks RoPE, the indexer projections / block selection, and the PLE n-gram table,
+        // so its output would be silently wrong at every length. Only synthetic fixtures (no indexer) may run.
+        if (hp.IndexerTopK > 0)
+        {
+            throw new NotSupportedException(
+                "qwen4exp: QSA block selection (indexer + K-pool), RoPE in the QSA mixer and the PLE n-gram table " +
+                "are not implemented yet; real checkpoints cannot be run (ported, not verified, not admitted).");
+        }
+
         _embedDim = hp.EmbedDim > 0 ? hp.EmbedDim : 2560;
         _hc = hp.HyperConnectionCount > 0 ? hp.HyperConnectionCount : 4;
         _hcDim = _hc * _embedDim;
@@ -445,6 +455,13 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
     {
         output.Clear();
 
+        // 0. Routed experts: softmax router, top-k, renormalised (+ optional scale), SiLU(gate)*up -> down
+        //    (llama.cpp qwen4exp.cpp build_moe_ffn call).
+        if (_hp.ExpertCount > 0)
+        {
+            ExecuteRoutedExperts(layer, input, output);
+        }
+
         // 1. Shared expert
         if (layer.FfnGateShexp != null && layer.FfnUpShexp != null && layer.FfnDownShexp != null)
         {
@@ -475,7 +492,58 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
                 TensorPrimitives.Multiply(shOut, scale, shOut);
             }
 
-            shOut.CopyTo(output);
+            TensorPrimitives.Add(output, shOut, output);
+        }
+    }
+
+    private void ExecuteRoutedExperts(Qwen4ExpLayerTensors layer, ReadOnlySpan<float> input, Span<float> output)
+    {
+        if (layer.FfnGateInp is not { } router || layer.FfnGateExps is not { } gateExps
+            || layer.FfnUpExps is not { } upExps || layer.FfnDownExps is not { } downExps)
+        {
+            throw new InvalidOperationException(
+                $"qwen4exp layer {layer.LayerIndex}: expert_count={_hp.ExpertCount} but the routed expert tensors " +
+                "(ffn_gate_inp / ffn_gate_exps / ffn_up_exps / ffn_down_exps) are missing; fused ffn_gate_up_exps is not supported yet.");
+        }
+
+        int numExperts = _hp.ExpertCount;
+        int topK = Math.Min(_hp.ExpertUsedCount, numExperts);
+        int interDim = (int)gateExps.Info.Dimensions[1];
+
+        var logits = new float[numExperts];
+        MatVec(router, input, logits);
+
+        var topIdx = new int[topK];
+        var topW = new float[topK];
+        Qwen4ExpMoeRouting.Route(logits, topK, _hp.ExpertWeightsScale, topIdx, topW);
+
+        var gate = new float[interDim];
+        var up = new float[interDim];
+        var down = new float[_embedDim];
+        for (int k = 0; k < topK; k++)
+        {
+            ExpertMatVec(gateExps, topIdx[k], input, gate);
+            ExpertMatVec(upExps, topIdx[k], input, up);
+            for (int i = 0; i < interDim; i++)
+            {
+                float g = gate[i];
+                gate[i] = (g / (1.0f + MathF.Exp(-g))) * up[i];
+            }
+            ExpertMatVec(downExps, topIdx[k], gate, down);
+            TensorPrimitives.MultiplyAdd(down, topW[k], output, output);
+        }
+    }
+
+    /// <summary>Row-sliced matvec into expert <paramref name="expert"/> of a stacked [in, out, experts] tensor.</summary>
+    private static void ExpertMatVec(Qwen4ExpTensorRef tensor, int expert, ReadOnlySpan<float> inVec, Span<float> outVec)
+    {
+        int inDim = (int)tensor.Info.Dimensions[0];
+        int outDim = outVec.Length;
+        long bytesPerRow = (long)(inDim / DTypeInfo.BlockSize(tensor.DType)) * DTypeInfo.BytesPerBlock(tensor.DType);
+        byte* expertPtr = tensor.DataPtr + (long)expert * outDim * bytesPerRow;
+        fixed (float* outPtr = outVec, inPtr = inVec)
+        {
+            SimdKernels.MatVec(outPtr, expertPtr, inPtr, outDim, inDim, tensor.DType);
         }
     }
 
