@@ -89,27 +89,23 @@ public sealed unsafe partial class HybridForwardPass
                 int n = tokens.Count;
                 using var cache = new PagedKvCache(_hp.NumLayers, _numKvHeads, _headDim,
                     bf16Store: false, autoBf16: false, layerHeadDim: null);
-                // Which GPU-layer experts did this prompt use? The sequential prefill would have loaded them into the GPU expert
-                // cache as a side effect; the CPU pass does not touch it, so decode would start cold (measured: first 16 tokens
-                // at about 13-15 tok/s against 18-20 after a sequential prefill). Count them while the CPU pass routes.
-                int[][]? hot = _expertSlotManager is not null && CpuPrefillWarmExperts ? new int[_nGpuLayers][] : null;
-                if (hot is not null)
-                    _cpuPrefillPass!.MoeRoutingObserver = (layer, counts) =>
-                    {
-                        if (layer >= _nGpuLayers) return;
-                        var acc = hot[layer] ??= new int[counts.Length];
-                        for (int e = 0; e < counts.Length; e++) acc[e] += counts[e];
-                    };
+                // Which GPU-layer experts does this prompt use? The sequential prefill loaded them into the GPU expert cache as a
+                // side effect; the CPU pass does not touch it, so decode would start cold (measured: 62-70% of lookups missing in
+                // the first 16 tokens, decode 14 tok/s against 19). Each layer's routing is known the moment that layer's batched
+                // MoE finishes, so its hot experts are queued for upload then, while the CPU is still busy with later layers and
+                // the GPU is idle: by the time the prefill returns, the cache is warm and no upload competes with decode.
+                var warm = _expertSlotManager is not null && CpuPrefillWarmExperts ? StartExpertWarmup() : null;
+                if (warm is not null)
+                    _cpuPrefillPass!.MoeRoutingObserver = (layer, counts) => { if (layer < _nGpuLayers) warm.Add(layer, counts); };
                 ReadOnlySpan<float> logits;
                 try { logits = _cpuPrefillPass!.PrefillWithCache(tokens, cache, 0); }
-                finally { _cpuPrefillPass!.MoeRoutingObserver = null; }
+                finally { _cpuPrefillPass!.MoeRoutingObserver = null; warm?.Complete(); }
                 logits[.._logitsBuf.Length].CopyTo(_logitsBuf);
                 long t2 = Stopwatch.GetTimestamp();
 
                 HandoffKv(cache, n);
                 _kvLength = n;
                 long t3 = Stopwatch.GetTimestamp();
-                int warmed = hot is null ? 0 : WarmExpertCache(hot);
                 long t4 = Stopwatch.GetTimestamp();
 
                 LastPrefillUsedCpuHandoff = true;
@@ -118,12 +114,11 @@ public sealed unsafe partial class HybridForwardPass
                     double construct = Stopwatch.GetElapsedTime(t0, t1).TotalMilliseconds;
                     double cpu = Stopwatch.GetElapsedTime(t1, t2).TotalMilliseconds;
                     double hand = Stopwatch.GetElapsedTime(t2, t3).TotalMilliseconds;
-                    double warm = Stopwatch.GetElapsedTime(t3, t4).TotalMilliseconds;
                     double total = Stopwatch.GetElapsedTime(t0, t4).TotalMilliseconds;
                     Console.Error.WriteLine(
                         $"[hybrid-prefill] cpu handoff: {n} tokens; construct {construct:F0} ms (0 once warm); " +
                         $"cpu prefill {cpu:F0} ms ({n * 1000.0 / Math.Max(cpu, 1e-3):F1} tok/s); kv handoff {hand:F0} ms; " +
-                        $"expert warm-up {warmed} experts {warm:F0} ms; " +
+                        (warm is null ? "" : "expert warm-up overlapped with the prefill; ") +
                         $"end-to-end {total:F0} ms ({n * 1000.0 / Math.Max(total, 1e-3):F1} tok/s)");
                 }
                 return true;
@@ -139,32 +134,88 @@ public sealed unsafe partial class HybridForwardPass
         }
     }
 
-    /// <summary>
-    /// Loads the most-used (layer, expert) pairs of the prompt into the slot cache, hottest first, up to its capacity.
-    /// Returns how many were loaded. Failures are not fatal: a missing warm-up only means decode warms the cache itself.
-    /// </summary>
-    private int WarmExpertCache(int[][] hot)
-    {
-        var slots = _expertSlotManager!;
-        var ranked = new List<(int Layer, int Expert, int Count)>();
-        for (int layer = 0; layer < hot.Length; layer++)
-            if (hot[layer] is { } counts)
-                for (int e = 0; e < counts.Length; e++)
-                    if (counts[e] > 0) ranked.Add((layer, e, counts[e]));
-        ranked.Sort((a, b) => b.Count.CompareTo(a.Count));
+    private ExpertWarmup? _warmup;
 
-        int loaded = 0;
-        foreach (var (layer, expert, _) in ranked)
+    private ExpertWarmup StartExpertWarmup()
+    {
+        StopExpertWarmup();
+        return _warmup = new ExpertWarmup(_expertSlotManager!, Math.Max(1, _expertSlotManager!.Capacity / Math.Max(1, _nGpuLayers)));
+    }
+
+    /// <summary>The GPU expert cache the hybrid owns, null for dense models (tests read its profiler).</summary>
+    internal ExpertSlotManager? ExpertSlots => _expertSlotManager;
+
+    /// <summary>Waits for the post-handoff expert warm-up to finish (tests only).</summary>
+    internal void WaitForExpertWarmup() => _warmup?.Wait();
+
+    private void StopExpertWarmup()
+    {
+        _warmup?.Stop();
+        _warmup = null;
+    }
+
+    /// <summary>
+    /// Uploads, on one background thread, the hottest experts of each GPU layer as the CPU prefill reports them: per layer the
+    /// top <c>perLayer</c> by token count, coldest first so the hottest are the most recently used, each promoted to the
+    /// protected segment as it lands (<see cref="ExpertSlotManager.PromoteOnPreload"/>; new entries otherwise land in a small
+    /// probationary segment and a bulk preload evicts its own earlier entries). A prompt processed in several chunks reports a
+    /// layer several times; experts already resident are skipped by <c>Preload</c>. Failures are not fatal: without a warm-up
+    /// decode just warms the cache itself.
+    /// </summary>
+    private sealed class ExpertWarmup
+    {
+        private readonly ExpertSlotManager _slots;
+        private readonly int _perLayer;
+        private readonly System.Collections.Concurrent.BlockingCollection<(int Layer, int Expert)> _queue = new();
+        private readonly CancellationTokenSource _cts = new();
+        private readonly Task _worker;
+
+        public ExpertWarmup(ExpertSlotManager slots, int perLayer)
         {
-            if (loaded >= slots.Capacity) break;
-            try { slots.Preload(layer, expert); loaded++; }
+            _slots = slots;
+            _perLayer = perLayer;
+            _slots.PromoteOnPreload = true;
+            _worker = Task.Run(Run);
+        }
+
+        /// <summary>Queues the hottest experts of one layer (called on the CPU prefill's thread, once per layer per chunk).</summary>
+        public void Add(int layer, int[] counts)
+        {
+            var chosen = Enumerable.Range(0, counts.Length).Where(e => counts[e] > 0)
+                .OrderByDescending(e => counts[e]).Take(_perLayer).Reverse();
+            foreach (int e in chosen) _queue.Add((layer, e));
+        }
+
+        /// <summary>Blocks until every queued upload is done (tests; production decode never waits).</summary>
+        public void Wait() { try { _worker.Wait(); } catch { /* reported by the worker */ } }
+
+        /// <summary>No more layers will be reported; the worker drains what is queued and finishes.</summary>
+        public void Complete() => _queue.CompleteAdding();
+
+        public void Stop()
+        {
+            _cts.Cancel();
+            _queue.CompleteAdding();
+            try { _worker.Wait(TimeSpan.FromSeconds(10)); } catch { /* a faulted warm-up was already reported */ }
+        }
+
+        private void Run()
+        {
+            try
+            {
+                foreach (var (layer, expert) in _queue.GetConsumingEnumerable(_cts.Token))
+                    _slots.Preload(layer, expert);
+            }
+            catch (OperationCanceledException) { }
             catch (Exception ex) when (ex is not OutOfMemoryException)
             {
-                Console.Error.WriteLine($"[hybrid-prefill] expert warm-up stopped at {loaded}: {ex.Message}");
-                break;
+                Console.Error.WriteLine($"[hybrid-prefill] expert warm-up stopped: {ex.Message}");
+            }
+            finally
+            {
+                _slots.PromoteOnPreload = false;
             }
         }
-        return loaded;
     }
 
     private bool BuildCpuPrefillPass()
@@ -244,6 +295,7 @@ public sealed unsafe partial class HybridForwardPass
 
     private void DisposeCpuPrefill()
     {
+        StopExpertWarmup();
         lock (_cpuPrefillGate)
         {
             _cpuPrefillPass?.Dispose();

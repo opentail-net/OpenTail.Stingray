@@ -220,6 +220,40 @@ public sealed unsafe class HybridCpuPrefillHandoffTests : HeavyTestBase
     }
 
     [Fact]
+    public void ExpertWarmup_RemovesTheColdStartOfDecodeAfterTheHandoff()
+    {
+        using var s = Open("OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf")!;
+        int n = s.Prompt.Length;
+
+        // Miss rate over the first 8 decode steps, with and without the warm-up. Without it the GPU expert cache is empty after a
+        // CPU prefill (the sequential prefill would have filled it as a side effect) and most lookups miss; with it the experts the
+        // prompt used were uploaded while the CPU was still working, so they hit.
+        double MissRate(bool warm)
+        {
+            using var h = NewHybrid(s, 4, -1);
+            h.CpuPrefillWarmExperts = warm;
+            var logits = h.Prefill(s.Prompt, 0).ToArray();
+            Assert.True(h.LastPrefillUsedCpuHandoff, h.LastCpuPrefillRefusal);
+            h.WaitForExpertWarmup();
+            var profiler = h.ExpertSlots!.Profiler;
+            long hits0 = profiler.TotalHits, misses0 = profiler.TotalMisses;
+            for (int i = 0; i < 8; i++)
+            {
+                int next = Argmax(logits);
+                logits = h.Forward(next, n + i).ToArray();
+            }
+            long hits = profiler.TotalHits - hits0, misses = profiler.TotalMisses - misses0;
+            return (double)misses / Math.Max(1, hits + misses);
+        }
+
+        double cold = MissRate(warm: false);
+        double warmed = MissRate(warm: true);
+        Console.WriteLine($"[handoff] decode miss rate over 8 steps: without warm-up {cold:P1}, with warm-up {warmed:P1}");
+        Assert.True(cold > 0.3, $"without the warm-up the cache should start cold (miss rate {cold:P1}); the premise of the warm-up is gone");
+        Assert.True(warmed < 0.1, $"with the warm-up the first decode steps should mostly hit (miss rate {warmed:P1})");
+    }
+
+    [Fact]
     public void UnadmittedFamily_AndOversizedKvBudget_AreRefusedWithAReason()
     {
         using var s = Open("OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf")!;

@@ -46,5 +46,6 @@ public static class PrefillProfileTimers
             double pct = total > 0 ? 100.0 * s_ticks[i] / total : 0;
             w.WriteLine($"  {s_names[i],-38} {ms,10:F2}ms  {pct,6:F2}%");
         }
+        MoeBatchedExperts.ReportProfile(w);
     }
 }

@@ -4,6 +4,61 @@ Written 2026-10-03. Companion to [2026-10-03-streamed-residency-plan.md](2026-10
 
 **Revision 2026-10-03 (after an external review; each point was checked against the code before adopting).** Corrected: the hybrid's CPU KV is `KvCache` (FP32, `[maxSeqLen, kvDim]` per layer), not the `PagedKvCache` that `ForwardPass` uses; the hybrid's GPU KV is FP32 (`gpu.Allocate` default dtype), the fp16 KV I cited belongs to `GpuForwardPass`, so Phase 1 has no precision conversion; Phase 1 is fresh sequences only (`startPos == 0`); `PagedKvCache` can narrow itself to BF16 (explicitly via `STINGRAY_KV_DTYPE` / `STINGRAY_KV_STORE`, or automatically at 1,024 tokens in `auto` mode), so the CPU prefill pass must be pinned to F32 KV or the handoff would silently put BF16-rounded K/V into the hybrid.
 
+## Implementation status (2026-10-04)
+
+Phase 0 and Phase 1 are implemented for the Vulkan hybrid; Phase 1b (full-offload `GpuForwardPass`) is implemented; the CUDA variant is written, compiles, and has **never run** (no NVIDIA GPU here; opt-in, default off). Phases 2-5 are not started. What exists:
+
+- `HybridPrefillHandoff.cs` (Vulkan hybrid), `GpuPrefillHandoff.cs` (full-offload Vulkan, MoE only, F32 or packed-fp16 KV), `CudaHybridPrefillHandoff.cs` (opt-in, F32 KV only), shared `KvHandoff.cs`; `PagedKvCache.Bf16RoundingRequested`, `ForwardPass.MoeRoutingObserver`, `ExpertSlotManager.PromoteOnPreload/Capacity`.
+- Tests: `HybridCpuPrefillHandoffTests` (byte-exact K/V and logits, decode parity, boundary lengths, `startPos > 0`, budget refusal, expert warm-up), `GpuCpuPrefillHandoffTests` (same for full GPU, both KV dtypes, fp16 packing), `CudaHybridCpuPrefillHandoffTests` (not run).
+- Environment variables: `STINGRAY_HYBRID_CPU_PREFILL` (`0` off, `all` lifts the family list), `..._MIN_TOKENS`, `..._KV_BUDGET_MB`, `..._WARM`, `STINGRAY_GPU_CPU_PREFILL`, `STINGRAY_CUDA_HYBRID_CPU_PREFILL`, `STINGRAY_PREFILL_TIMING`.
+
+**Phase 0 baseline** (OLMoE-1B-7B Q4_K_M, Ryzen 5700G + integrated Radeon, Release, 16 generated tokens, 3 runs each; prompts are varied prose from the docs, so token counts are whatever they tokenised to):
+
+| Prompt (tokens) | Configuration | Prefill tok/s (mean of 3) | Decode tok/s (mean of 3) |
+|---|---|---:|---:|
+| 41 | CPU only (`-g 0`) | 73.3 | 21.5 |
+| 41 | hybrid `-g 8`, sequential prefill | 17.2 | 23.1 |
+| 41 | hybrid `-g 8`, CPU prefill + handoff | 45.0 | 15.8 (cold cache) |
+| 41 | full GPU `-g -1` | 31.0 | 28.5 |
+| 168 | CPU only | 99.2 | 35.9 |
+| 168 | hybrid sequential | 21.5 | 22.5 |
+| 168 | hybrid handoff | 87.8 | 18.6 (cold cache) |
+| 168 | full GPU | 29.5 | 26.6 |
+| 740 | CPU only | 141.7 | 31.9 |
+| 740 | hybrid sequential | 21.5 | 17.0 |
+| 740 | hybrid handoff | 133.3 | 14.0 (cold cache) |
+| 740 | full GPU | 26.0 | 22.5 |
+| 2,597 | CPU only | 140.9 | 21.1 |
+| 2,597 | hybrid sequential | 15.7 | 10.6 |
+| 2,597 | hybrid handoff | 142.1 | 9.2 (cold cache) |
+| 2,597 | full GPU | 19.6 | 14.3 |
+
+Reading it (integrated GPU, rule 13: nothing here says anything about a discrete GPU):
+- Pure CPU is the best configuration on this machine for MoE at every prompt length: it prefills at 99-142 tok/s and decodes at 21-36.
+- The hybrid's sequential prefill is 17-22 tok/s; the CPU-prefill handoff lifts it to 88-142 (5-9x), reaching the CPU-only prefill speed at 2,597 tokens.
+- Full-GPU decode is the fastest GPU decode (28.5 at short prompts) and its MoE prefill the slowest (20-31); Phase 1b hands the two together.
+- Decode after a handoff was 3-5 tok/s slower than after a sequential prefill until the expert warm-up below.
+
+**Phase 1 results**: byte-identical K/V rows (GPU tensors and CPU cache, every layer) and logits identical to the CPU pass; decode after the handoff has cosine 0.996-0.9999 against sequential hybrid prefill on OLMoE, Qwen3-0.6B and Qwen3-Coder-30B; the handoff itself costs about 70-80 ms for 740 tokens, first-use construction of the retained CPU pass about 200 ms.
+
+**Expert warm-up (found by measurement, 2026-10-04).** After a CPU prefill the GPU expert cache is empty (the sequential prefill filled it as a side effect), so the first decode steps missed 62-74% of lookups (decode 14-15 tok/s against 18-20). Three attempts:
+1. Preload the hottest experts after the handoff, synchronously: 510 experts took about 2 s (end-to-end prefill 133 -> 98 tok/s) and did not help, because new entries land in the small probationary segment and a bulk preload evicts its own earlier entries (miss rate stayed 31% at 48 tokens).
+2. The same in the background with promotion: misses halved but decode speed did not improve (the uploads compete with decode).
+3. **Queue each GPU layer's hot experts the moment the CPU prefill reports that layer's routing (`MoeRoutingObserver`), upload them on a background thread while the CPU is still busy with later layers, promote each to the protected segment.** Misses during decode: 0.0% (128 tokens: 1 of 8,192); decode 19.2-20.4 tok/s, equal to the sequential baseline (18.4-20.3); cost: about 8% of CPU prefill throughput (uploads share DRAM bandwidth with the CPU), no added latency after the prefill.
+
+**Phase 1b results (full-offload `GpuForwardPass`, `-g -1`, OLMoE, 3 runs each, 64 decoded tokens):** 740-token prompt: prefill 126-130 tok/s with the handoff against 17-27 sequential, decode 22.0-22.3 against 23.0 (no cold-cache effect: every expert is already resident); 2,597 tokens: 131-140 against 19.8-20.1, decode 14.2-14.7 against 14.6-14.7. The KV handoff costs about 255 ms at 740 tokens and 690-766 ms at 2,597 (packing fp16 on the CPU). Tests: F32 copy byte-exact, packed fp16 equal to an independent `Half` conversion, decode cosine 0.9993-0.9999 against sequential GPU prefill.
+
+**CPU path profile and experiments (2026-10-04; OLMoE, 740 tokens, CPU only, `STINGRAY_PROFILE_PREFILL=1`; new `[MoeExperts]` breakdown in `MoeBatchedExperts`):**
+- The FFN is 79% of the prefill trunk (QKV 10%, attention 5%, output projection 3%). Inside the routed-expert stage: 93 rows per expert run on average; worker time is gate matmul 37%, up 35%, down 27%, everything else under 1%; Q4_K matmuls account for 24.6 s of summed worker time and Q6_K for 3.4 s; workers are 6.8 of 8 busy on average.
+- Per worker the Q4_K path runs at about 40 GFLOP/s and the Q6_K path at about 59, against a Zen 3 fp32 peak of about 130 per core. The kernel comments describe the exact path (int8-activation dots, four tokens per weight read) as dot-compute bound; micro-GEMM is off by default and limited to 16 rows, so it never applies at about 93 rows.
+- **`STINGRAY_MOE_PREFILL_Q8=1`: +11% (153 to 171 tok/s), identical text. Not adopted**: exactness is the policy for MoE prefill (Granite NLL), and 11% does not justify revisiting it.
+- **Longest-expert-first scheduling of the expert loop: 10% slower (122-137 against 148-154 tok/s), reverted.** The expert workers also run kernels that parallelise internally, so the idle time is not a simple tail problem.
+- Conclusion: no cheap exact win exists in the CPU expert stage. Real headroom needs a new Q4_K GEMM that reuses each dequantised weight tile across the roughly 90 rows of an expert (ExLlamaV3's "reconstruct hot experts, dense GEMM" idea); that is a kernel project of its own, to be started from a micro-benchmark, not from this plan.
+
+**Parallel prefault already exists** (`MmapPrefault`, issue #221: OS read-ahead hint plus a parallel stride read, gated on RAM fit). TensorSharp's gain came from faulting only the experts a layer uses, which only matters when the model does not fit in RAM; the experts already fault from many threads inside the expert loop. Deferred until GLM-5.3 is verified and a larger-than-RAM run is possible.
+
+**Measured chooser (Phase 5), design only:** on first use time the real kernels (CPU expert matmul at decode and at prefill row counts, host-to-device copy, GPU batched matmul, and the CPU/copy pair overlapped), store a JSON profile in the model home keyed by device and expert dtype (model detail optional, mismatched profiles ignored as FreeToken does), and have the dispatcher and `stingray plan` read it. On this machine it would pick the CPU. Not built yet.
+
 ## Context
 
 `HybridForwardPass.Prefill` (`src/OpenTail.Stingray.Engine/HybridForwardPass.cs:691`) is a loop of single-token `Forward` calls, and `GpuForwardPass` excludes every MoE model from its batched trunk (`ComputeCanBatchedTrunk`, `GpuForwardPass.cs:1270`: "MoE (mid-trunk router submit)"). Measured on this machine, OLMoE-1B-7B Q4_K_M, 631-token prompt, Release build:
@@ -39,6 +94,22 @@ Goal: hybrid and full-GPU prefill on MoE models is never slower than the CPU-onl
 
 ### TensorSharp (`examples/TensorSharp/TensorSharp`, docs only; source not read)
 - Decode runs each host layer's routed experts on the CPU from the memory map (thread team woken once per layer). **Prefill of 128+ tokens (`TS_HOST_MOE_DEVICE_MIN_BATCH`) streams each host layer's used experts to the GPU per chunk**, after faulting their pages in on 16 threads first (their 1,818-token prefill 37.2-38 s -> 15.7-16.6 s). The engine plans the split from the accelerator working set and the RAM left as page cache; wiring more layers than fit makes both decode and prefill worse. Published: 4.5-10.9x prefill over llama.cpp's offloaded configurations (on a 2-GPU server, not comparable to this machine).
+
+### FreeToken (`examples/FreeToken`, examined 2026-10-04: python source and docs)
+A Python/Triton/CUDA MoE engine for consumer GPUs. The parts that bear on this plan:
+- **Prefill streams whole layers, double-buffered** (`layers/moe.py` `_prefill_routed`, `moe/offload_cache.py` `prefill_overlap`): while layer L's grouped GEMMs run, layer L+1's full expert bank is copied host-to-device into the other buffer; inside a prefill buffer position equals expert id, so routing ids need no remapping. Optional `prefill_hit_d2d`: experts already resident in the slot cache are copied device-to-device into the buffer and only the misses cross PCIe, as one batched asynchronous copy of coalesced runs. The double buffer is carved from the same unified cache, so it needs `cache_size >= 2 * num_experts`. A recorded pitfall: `cudaMemcpyBatchAsync` silently degrades to a synchronous copy when a batch mixes large entries with entries under about 256 KB on registered host memory, so small banks ship as one whole-layer entry.
+- **Backend choice by measured bandwidth** (`moe/benchbw.py`, `ft bench bw`): STREAM-style host read bandwidth, pinned H2D/D2H copy bandwidth, and the *real* CPU MoE GEMV and PCIe gather kernels, each alone and **overlapped** (running concurrently, contending for DRAM). Rule: hybrid when the CPU MoE bandwidth exceeds 2x the PCIe gather bandwidth, else offload. Profiles are JSON per GPU (uuid), keyed by expert format (dtype), with optional per-model detail; mismatched profiles are ignored rather than trusted.
+- **Decode miss split ("q*")** (`moe/bench_profile.py`, `moe/offload_kernels.py`): of a decode step's expert misses, fetch a fraction over PCIe and compute the rest on the CPU so both finish together; fetched : cpu-computed = pcie_ov : cpu_ov from the overlapped measurement. This generalises our CPU fallback (today 100% of misses on the CPU, with prefetch for later tokens) and is the next decode-side idea once a discrete GPU is available.
+- **Cache bookkeeping on the device**: the LRU (`ensure_experts` / `lru_stats`) and the copy plan run in GPU kernels, so a decode step needs no host round trip for cache decisions and is CUDA-graph compatible. Ours does a router download and host lookup per layer per token (2-3 ms of GPU wait per MoE layer-step on OLMoE); that sync is the structural limit of the current design.
+- `decode computes experts on the CPU; the slot cache only backs the prefill double buffer` is one of its modes, i.e. the same split TensorSharp uses and Phase 1 relies on.
+
+### ExLlamaV3 (`examples/ExLlamaV3`, examined 2026-10-04: `modules/block_sparse_mlp.py`, `moe_batch_recon.py`)
+- **Size classes by rows**: separate paths for 1 row, decode (up to 32 rows) and prefill (llama.cpp likewise has a vec-id kernel and a mm-id kernel).
+- **Two tiers at prefill**: experts with up to 128-256 assigned rows run a fused quantised kernel (row-tile instances of 16 / 32 / 64 chosen by row count); hotter experts take a **reconstruct tier**: dequantise the expert to fp16 once and run a dense GEMM, batched over up to 16 experts per launch (strided-batched, groups sorted by row count so padding stays within 1.1x, used while a single expert's GEMM cannot fill the GPU: below about SM-count tiles). Scratch for the dequantised weights is budgeted (`EXL3_MOE_RECON_MB`).
+- Tokens are sorted by expert (`token_sorted`, `weight_sorted`, `expert_count_list`); **accumulation is deterministic by default (slot + gather)** and atomics are opt-in. That is the same contract as our slot-order reduction, reached independently.
+- A prefill chunk's assignments are split between GPU-resident experts and CPU-streamed experts and both parts are bounded and run (`prefill_worst_case_parts` returns GPU and CPU parts).
+
+What this changes in the plan: Phase 4 is validated and gains a concrete shape (double-buffered whole-layer stream, position == expert id, optional hit copy, batched asynchronous copies without tiny entries); Phase 3 gains a reconstruct tier for hot experts and rows-based kernel selection; Phase 5's calibration should be keyed first by device and expert format (FreeToken's key) with the model as secondary detail, and measure the *overlapped* CPU/transfer pair, not each alone; a new Phase 6 (decode miss split, device-side cache bookkeeping) is added.
 
 ### SharpMind
 Training-oriented; its `MoEFfnLayer` was not found to contain a batched-prefill design. Nothing to take for this plan beyond the testing lessons already used in the residency plan.
@@ -124,6 +195,9 @@ For layers whose experts are not resident: upload only the experts the chunk use
 
 ### Phase 5: dispatcher (a measured strategy table, not a device threshold)
 Choose among: CPU full prefill (Phase 1), host-routed hybrid (Phase 2), GPU-resident grouped MoE (Phase 3), GPU-streamed experts (Phase 4). The crossover depends on far more than the device: llama.cpp users report different `GGML_OP_OFFLOAD_MIN_BATCH` optima for Q4_K_M and Q8_0 on the same laptop (reported upstream; not verifiable from this checkout), and our own CUDA op-offload comments show a default of 64 against a measured benefit from about 120 tokens, TensorSharp uses 128, llama.cpp 32. So the calibration key is: model fingerprint, quantisation, backend/device, CPU ISA, layer placement, expert residency, KV configuration, and a prompt-length bucket. Store measured thresholds per key (model home), with conservative defaults when no entry exists, and an override `STINGRAY_PREFILL_MOE=cpu|gpu|auto`. Use a small in-process calibration of a fixed MoE chunk on both devices only to seed a missing entry.
+
+### Phase 6 (new, discrete-GPU only): decode miss split and device-side cache decisions
+From FreeToken: split a decode step's expert misses between PCIe fetch and CPU compute by the overlapped bandwidth ratio, and move the slot-cache lookup and copy planning onto the device so decode needs no per-layer host round trip (and can be captured in a graph). Not measurable on the integrated GPU (fetching and CPU compute share the same DRAM); needs a discrete GPU, and CUDA code is deferred like the rest of the CUDA work.
 
 ## Tests and acceptance (all real-weight tests skip visibly without the checkpoint; check wall time per rule 12)
 - Parity: hybrid/GPU prefill logits vs the sequential path and vs `-g 0`, cosine > 0.99 and no argmax flip beyond the 2% near-tie rule, OLMoE (64 experts, top-8), Qwen3-Coder-30B (128 experts), plus a model with a shared expert and sigmoid gating where a checkpoint exists.

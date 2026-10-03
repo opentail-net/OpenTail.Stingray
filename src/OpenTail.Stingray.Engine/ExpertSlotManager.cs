@@ -225,9 +225,16 @@ public sealed class ExpertSlotManager : IDisposable, IExpertPrefetchTarget
                 return;
             }
             _cache.Put(layer, expertId, slot);
+            // New entries land in the small probationary segment (a quarter of the capacity) and a bulk preload would evict its
+            // own earlier entries before anything promotes them. A warm-up (HybridPrefillHandoff) sets this so each preloaded
+            // expert is promoted to the protected segment at once, without touching the access profiler.
+            if (PromoteOnPreload) _cache.TryGet(layer, expertId, out _);
             MaybeWarmPin();
         }
     }
+
+    /// <summary>When set, <see cref="Preload"/> promotes what it inserts to the protected segment. Off by default.</summary>
+    internal volatile bool PromoteOnPreload;
 
     private void EvictSlot(ExpertGpuSlot slot)
     {
