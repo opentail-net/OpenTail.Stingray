@@ -9,19 +9,13 @@ namespace OpenTail.Stingray.Engine;
 internal static unsafe class KvHandoff
 {
     /// <summary>
-    /// Families admitted by default: those with a hybrid-versus-CPU logit parity test (Vulkan:
-    /// <c>VulkanHybridOlmoeParityTests</c> for OLMoE, Qwen3-Coder-30B and Qwen3-0.6B). A setting of <c>all</c> lifts the
-    /// restriction for experiments; the default has to stay evidence-based.
+    /// Null when the model may use the handoff, otherwise the refusal reason. The decision is
+    /// <see cref="PrefillHandoffFamilies"/>: a structural check, then a parity receipt; a setting of <c>all</c> lifts only the
+    /// missing-receipt refusal, never a structural one.
     /// </summary>
-    private static readonly HashSet<string> s_families = new(StringComparer.Ordinal) { "olmoe", "qwen3moe", "qwen3" };
-
-    /// <summary>Null when the model's family is admitted, otherwise the refusal reason.</summary>
-    internal static string? FamilyRefusal(GgufModel model, string? setting)
-    {
-        if (setting == "all") return null;
-        string arch = model.Metadata.TryGetValue("general.architecture", out var a) ? Convert.ToString(a) ?? "" : "";
-        return s_families.Contains(arch) ? null : $"architecture '{arch}' has no hybrid-versus-CPU parity test";
-    }
+    internal static string? FamilyRefusal(GgufModel model, string? setting) =>
+        PrefillHandoffFamilies.Refusal(
+            PrefillHandoffFamilies.Classify(model.Metadata, model.FindTensor("rope_factors_short.weight") is not null), setting);
 
     /// <summary>Bytes of the temporary F32 K+V cache the CPU pass allocates for an <paramref name="n"/>-token prompt.</summary>
     internal static long TemporaryKvBytes(int n, int numKvHeads, int headDim, int numLayers) =>
