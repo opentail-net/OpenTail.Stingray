@@ -95,6 +95,7 @@ public sealed class PullCommand : Command<PullCommand.Settings>
                 AnsiConsole.ErrorLine($"[red]Skipping {Markup.Escape(name)}:[/] it would be written outside {Markup.Escape(outRoot)}.");
                 continue;
             }
+            Directory.CreateDirectory(Path.GetDirectoryName(destPath)!);   // sharded repos keep shards in a quant subfolder
             string url = $"https://huggingface.co/{repo}/resolve/main/{Uri.EscapeDataString(name).Replace("%2F", "/")}?download=true";
             AnsiConsole.MarkupLine($"[bold]Downloading[/] {Markup.Escape(name)} {(size is { } s ? $"({ConsoleDownloadProgress.FormatBytes(s)})" : "")}");
             try
