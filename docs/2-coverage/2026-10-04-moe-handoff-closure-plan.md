@@ -1,6 +1,6 @@
 # Plan: close the CPU-prefill handoff, one model family at a time (2026-10-04)
 
-Status: **plan only, nothing downloaded or implemented.** Context: [coverage matrix](2026-10-04-moe-handoff-coverage.md), [batched MoE prefill plan](2026-10-03-batched-moe-prefill-plan.md).
+Status: **steps 1-3 done (qwen2moe, Mixtral, phimoe; see the checklist), step 4 (GLM-4.5-Air) in progress.** Context: [coverage matrix](2026-10-04-moe-handoff-coverage.md), [batched MoE prefill plan](2026-10-03-batched-moe-prefill-plan.md).
 
 ## What "closed" means
 
@@ -8,6 +8,12 @@ A family is closed when `PrefillHandoffFamilies.Receipts` has a line for it, bac
 
 - **Stage A, the CPU path is admitted.** The CPU forward pass produces the right tokens on a real checkpoint against an independent reference (`llama-server` from `tools/llama.cpp`), per `docs/reference/numerics-investigation-method.md` and the pattern of `PhiMoeGreedyParityTests`. The handoff copies K/V computed by that path, so a wrong CPU path would be handed over faithfully. Today **no real-weight CPU parity test exists in `tests/` for `qwen2moe`, `glm4moe`, `llama4` text, or Mixtral-style `llama` + experts** (grep, 2026-10-04); only `phimoe` has one.
 - **Stage B, the handoff is exact for it.** Add the checkpoint as an `InlineData` row to `HybridCpuPrefillHandoffTests` (already a Theory over model files): K/V byte-identical to the CPU pass, logits equal, 40 decode tokens after the handoff within the near-tie rule, boundary lengths, `startPos > 0`. Then the receipt line, naming that test and the checkpoint.
+
+**Decode length:** the permanent closure tests teacher-force **40** decode steps (raised from 6 on 2026-10-04 review feedback: six catch gross corruption, forty also catch a small CPU-KV vs GPU-KV difference accumulating into a later router/attention divergence). Receipts earned before that used 6 steps and are being re-run at 40.
+
+**Fingerprint:** a mismatch is diagnostic, not an admission gate. A checkpoint whose header differs from the proven one is still admitted and the difference is reported, so variants do not need their own entry.
+
+**Stage A2 (router-level check):** parked for the three finished families (PPL stands in); mandatory for any new family with novel routing semantics.
 
 Stop rule per family: if a stage fails and the cause is not understood within one working session, record the finding in the coverage doc, leave the family `Unverified`, and move to the next. No receipt without a passing run; no downloads in bulk.
 
@@ -70,7 +76,7 @@ Stop rule per family: if a stage fails and the cause is not understood within on
 
 Update the coverage table in [2026-10-04-moe-handoff-coverage.md](2026-10-04-moe-handoff-coverage.md) after each family, and keep this checklist:
 
-- [ ] Step 0 shared test plumbing
+- [x] Step 0 shared test plumbing (receipts keyed by (family, path); fingerprints; Theory over model files)
 - [x] 1. `qwen2moe` (2026-10-04): Stage A (found and fixed 3 bugs, below), Stage B on the Vulkan hybrid at 1 and 4 GPU layers, receipt `(qwen2moe, VulkanHybrid)`. Vulkan full-GPU (2026-10-04, later): `GpuForwardPass` now applies the shared-expert sigmoid gate and uses own shared-expert scratch; `GpuCpuPrefillHandoffTests` on Qwen1.5-MoE passes (prefill cosine 0.9995, decode 0.998-1.0), receipt `(qwen2moe, VulkanFullGpu)`. Not done for this family: CUDA, router-level check (Stage A2; PPL 4.7838 against 4.8144 ± 0.78 stands in for it). Weights kept at `H:\_models` (F: is full; `models/_models` points at F:) until Mixtral needs the room.
 - [x] 2. `llama+experts` (Mixtral, 2026-10-04): Stage A, Stage B on the Vulkan hybrid at 1 and 4 GPU layers, receipt `(llama+experts, VulkanHybrid)`. Not done: Vulkan full-GPU, CUDA, Stage A2 routing check (PPL stands in), the 2- and 4-slot `STINGRAY_MOE_SLOTS` boundary and warm-up cost question (only 16 and 4 slots were run). Weights kept in `H:\_models`.
 - [x] 3. `phimoe` (2026-10-04): LongRoPE, norm biases and LM-head bias in the Vulkan hybrid, Stage B at both RoPE regimes, receipt `(phimoe, VulkanHybrid)`. Vulkan full-GPU (2026-10-04, later): `GpuForwardPass` now adds the RMSNorm biases and `output.bias`; `GpuCpuPrefillHandoffTests` on Phi-3.5-MoE (ctx 1024, short factors only) passes (prefill cosine 0.99995, decode >= 0.9987), receipt `(phimoe, VulkanFullGpu)`. Not done: full-GPU at the long-factor regime (ctx > 4096), CUDA hybrid (no LongRoPE), Stage A2.

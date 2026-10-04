@@ -73,10 +73,10 @@ public static class PrefillHandoffFamilies
                 "GpuCpuPrefillHandoffTests (OLMoE-1B-7B Q4_K_M, F32 and packed-fp16 KV): byte-exact K/V, logits equal the CPU pass",
                 "olmoe|attention.head_count_kv=16|expert_count=64|expert_used_count=8"),
             [("qwen2moe", HandoffPath.VulkanFullGpu)] = new(
-                "GpuCpuPrefillHandoffTests (Qwen1.5-MoE-A2.7B-Chat Q4_K_M, -g -1, shared expert 5632 wide with sigmoid gate): handoff logits equal the CPU pass, decode cosine vs sequential GPU prefill 0.998-1.0000",
+                "GpuCpuPrefillHandoffTests (Qwen1.5-MoE-A2.7B-Chat Q4_K_M, -g -1, shared expert 5632 wide with sigmoid gate): handoff logits equal the CPU pass, 40 decode steps vs sequential GPU prefill: cosine 0.998-1.0000 except one isolated 0.9888 dip at step 34 (near-tie router, neighbours 0.998)",
                 "qwen2moe|attention.head_count_kv=16|expert_count=60|expert_used_count=4"),
             [("phimoe", HandoffPath.VulkanFullGpu)] = new(
-                "GpuCpuPrefillHandoffTests (Phi-3.5-MoE-instruct Q3_K_M, -g -1, ctx 1024 = short LongRoPE factors; RMSNorm + bias, LM-head bias): handoff logits equal the CPU pass, decode cosine vs sequential GPU prefill 0.9987-0.9998",
+                "GpuCpuPrefillHandoffTests (Phi-3.5-MoE-instruct Q3_K_M, -g -1, ctx 1024 = short LongRoPE factors; RMSNorm + bias, LM-head bias): handoff logits equal the CPU pass, 40 decode steps vs sequential GPU prefill: cosine >= 0.988 (one dip, rest >= 0.997)",
                 "phimoe|attention.head_count_kv=8|expert_count=16|expert_used_count=2"),
             // CudaHybrid: no receipts. The path compiles and has never run (no NVIDIA GPU on the development machine).
         };
@@ -88,6 +88,8 @@ public static class PrefillHandoffFamilies
         "expert_shared_count", "expert_shared_feed_forward_length", "leading_dense_block_count", "expert_gating_func", "expert_weights_norm",
     };
 
+    // The fingerprint is diagnostic, not an admission gate: a header that differs from the proven checkpoint is still admitted and the
+    // difference is reported in the evidence text, so checkpoint variants do not each need an allowlist entry.
     /// <summary>Deterministic structural summary of a header, in the form stored in <see cref="HandoffReceipt.Fingerprint"/>.</summary>
     public static string Fingerprint(IReadOnlyDictionary<string, object> metadata)
     {

@@ -122,7 +122,7 @@ public sealed unsafe class HybridCpuPrefillHandoffTests : HeavyTestBase
         // ── A. Handoff exactness ──
         float[] fastLogits;
         var decodeFast = new List<float[]>();
-        var forced = new int[6];
+        var forced = new int[40];   // closure requirement: 40 teacher-forced decode steps
         using (var fast = NewHybrid(s, gpuLayers, slots, ctx))
         {
             var l0 = fast.Prefill(s.Prompt, 0).ToArray();

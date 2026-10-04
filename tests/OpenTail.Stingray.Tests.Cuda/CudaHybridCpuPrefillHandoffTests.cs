@@ -96,7 +96,7 @@ public sealed unsafe class CudaHybridCpuPrefillHandoffTests
             }
         }
 
-        var forced = new int[6];
+        var forced = new int[40];   // closure requirement: 40 teacher-forced decode steps
         var decodeFast = new List<float[]>();
         float[] fastLogits;
         using (var fast = new CudaHybridForwardPass(model, gpu!, hp, placement))
