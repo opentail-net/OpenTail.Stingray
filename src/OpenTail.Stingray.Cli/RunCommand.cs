@@ -1715,6 +1715,18 @@ public sealed class RunCommand : Command<RunCommand.Settings>
                         AnsiConsole.MarkupLine("[dim]Backend: [blue]CPU[/] (auto fallback: no GPU-capable layers for this model/path)[/]");
                         goto done;
                     }
+
+                    // A layer-split-only MoE (glm4moe: leading dense layers, selection-bias routing) has no slot-cached hybrid, and the
+                    // full Vulkan pass uploads every expert of every layer as its own device buffer: GLM-4.5-Air Q2_K dies with
+                    // ErrorOutOfHostMemory at 34 layers (measured 2026-10-04; -g 4 is the largest split that has run). Auto therefore
+                    // takes the proven small split instead of crashing (the planner proposes 34 of 47 layers there); an explicit -g N is
+                    // left to the user.
+                    const int safeSplitGpuLayers = 4;
+                    if (nGpuLayers > safeSplitGpuLayers && hp.IsMoE && GpuForwardPass.PartialOffloadUnsupportedReason(model, hp) is { } splitOnly)
+                    {
+                        nGpuLayers = Math.Min(safeSplitGpuLayers, VulkanLayerSplitForwardPass.MaxGpuLayers(hp));
+                        AnsiConsole.MarkupLine($"[yellow]Note:[/] {Markup.Escape(splitOnly)}: auto offload uses the layer split with {nGpuLayers} GPU layers (all-expert upload does not fit device memory).");
+                    }
                 }
 
                 if (nGpuLayers >= hp.NumLayers)

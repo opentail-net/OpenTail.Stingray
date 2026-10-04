@@ -1184,6 +1184,37 @@ hand and untested.
 
 ---
 
+## MoE lot, CPU and Vulkan iGPU (2026-10-04, Step 6 of the MoE handoff closure plan)
+
+Method: `docs/reference/benchmark-prompt.txt` (468-587 tokens depending on the tokenizer), 24 generated tokens, `--temp 0 --single-turn --no-display-prompt -t 6`, three runs per cell, median. llama.cpp: `tools/llama.cpp/llama-bench.exe -p 512 -n 128 -t 6 -ngl 0 -r 1`, three invocations, median (prefill = pp512, decode = tg128 at depth 0). One process at a time on an idle machine. Caveats: ours measures decode at about 500 tokens of context while `tg128` runs from an empty cache, and this document already shows our decode eroding with context, so the decode ratios here are somewhat pessimistic; the size of that effect was not separated for these models. Raw runs: scratchpad `league.txt` / `league2.txt` (not committed).
+
+**llama.cpp has only the CPU and RPC backends vendored, so its mixed (`-ngl N`) and GPU-only (`-ngl 99`) modes are not available here** and no llama.cpp GPU rows exist. The GPU columns below are ours alone, on an integrated GPU that shares system RAM with the CPU (CLAUDE.md rule 13): they say nothing about discrete GPUs.
+
+| Model | Scenario | Backend / path | C# (OT, t/s) | C++ (llama.cpp, t/s) | Ratio | Performance Check | Source |
+|---|---|---|---|---|---|---|---|
+| Qwen1.5-MoE-A2.7B Q4_K_M | prefill | CPU (`-g 0`) | 81.9 | 97.0 | **0.84x** | 2026-10-04 | median of 3 |
+| Qwen1.5-MoE-A2.7B Q4_K_M | decode | CPU (`-g 0`) | 12.0 | 24.2 | **0.50x** | 2026-10-04 | median of 3 |
+| Qwen1.5-MoE-A2.7B Q4_K_M | prefill / decode | Vulkan hybrid (`-g 4`, CPU prefill handoff) | 63.8 / 8.4 | not available here | — | 2026-10-04 | |
+| Qwen1.5-MoE-A2.7B Q4_K_M | prefill / decode | Vulkan full GPU (`-g -1`, ctx auto) | 71.9 / 10.8 | not available here | — | 2026-10-04 | |
+| Mixtral-8x7B (Nous-Hermes-2-DPO i1-Q4_K_S) | prefill | CPU | 8.8 | 11.0 | **0.80x** | 2026-10-04 | |
+| Mixtral-8x7B (Nous-Hermes-2-DPO i1-Q4_K_S) | decode | CPU | 2.4 | 5.7 | **0.42x** | 2026-10-04 | |
+| Mixtral-8x7B (Nous-Hermes-2-DPO i1-Q4_K_S) | prefill / decode | Vulkan hybrid (`-g 4`) | 8.6 / 2.2 | not available here | — | 2026-10-04 | |
+| Mixtral-8x7B (Nous-Hermes-2-DPO i1-Q4_K_S) | prefill / decode | Vulkan full GPU (`-g -1 -c 1024`) | 3.9 / 3.8 | not available here | — | 2026-10-04 | first attempt failed: the auto-picked context (512) is shorter than the 582-token prompt, the CLI refuses it; rerun with `-c 1024`. Full-GPU prefill is the per-token path here (no CPU handoff on the full-GPU pass for this family) |
+| Phi-3.5-MoE-instruct Q3_K_M | prefill | CPU | 16.8 | 31.8 | **0.53x** | 2026-10-04 | |
+| Phi-3.5-MoE-instruct Q3_K_M | decode | CPU | 6.2 | 12.5 | **0.50x** | 2026-10-04 | |
+| Phi-3.5-MoE-instruct Q3_K_M | prefill / decode | Vulkan hybrid (`-g 4`) | 13.8 / 3.8 | not available here | — | 2026-10-04 | |
+| Phi-3.5-MoE-instruct Q3_K_M | prefill / decode | Vulkan full GPU (`-g -1 -c 1024`) | 16.8 / 5.3 | not available here | — | 2026-10-04 | first attempt failed for the same context reason as Mixtral |
+| GLM-4.5-Air Q2_K | prefill | CPU | 2.9 | 10.9 | **0.27x** | 2026-10-04 | |
+| GLM-4.5-Air Q2_K | decode | CPU | 1.3 | 6.1 | **0.21x** | 2026-10-04 | |
+| GLM-4.5-Air Q2_K | prefill / decode | Vulkan layer split (`-g 4`, CPU prefill handoff) | 2.5 / 0.5 | not available here | — | 2026-10-04 | |
+| GLM-4.5-Air Q2_K | prefill / decode | `-g -1` | 2.6 / 0.5 (one run) | not available here | — | 2026-10-04 | **failure row:** before the fix, three runs died with `VkException ErrorOutOfHostMemory` (the planner proposed a 34-layer split and the full Vulkan pass uploads every expert of every layer as its own buffer). Fixed the same day: auto offload now takes the 4-layer split with a note; the figure is the first run after the fix |
+| Llama-4-Scout-17B-16E Q3_K_M | prefill | CPU | 6.6 | 11.4 | **0.58x** | 2026-10-04 | |
+| Llama-4-Scout-17B-16E Q3_K_M | decode | CPU | 2.7 | 4.6 | **0.59x** | 2026-10-04 | |
+| Llama-4-Scout-17B-16E Q3_K_M | prefill / decode | Vulkan hybrid (`-g 4`) | 3.3 / 0.5 | not available here | — | 2026-10-04 | |
+| Llama-4-Scout-17B-16E Q3_K_M | prefill / decode | `-g -1` (auto: hybrid, 30 GPU + 18 CPU layers) | 2.8 / 0.3 | not available here | — | 2026-10-04 | the path that ran is the hybrid, not a full-GPU pass |
+
+Reading: on CPU we are **below llama.cpp on every MoE model here, not at par**: prefill 0.27-0.84x, decode 0.21-0.59x, with the worst gap on GLM-4.5-Air (a 128-expert, 47-layer MoE at Q2_K) and a decode gap of about 2x on the others. The iGPU paths are slower than our own CPU path on the big models (hybrid and split decode 0.3-0.5 t/s against 1.3-2.7 on CPU); by rule 13 that is a statement about this machine's shared-memory iGPU and the per-token expert upload traffic, not evidence about the GPU code on discrete hardware, which was not measured. Not attempted: depth-matched decode (`llama-bench -d`), a different thread count, `-ngl` on a GPU build of llama.cpp.
+
 ## CUDA Inference — No Numbers Yet
 
 > **No CUDA GPU on dev machine.** No measured numbers exist for CUDA on this box.
