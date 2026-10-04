@@ -1,18 +1,27 @@
+using System.Numerics.Tensors;
+
 namespace OpenTail.Stingray.Diffusion.DiffusionGemma;
 
 /// <summary>
 /// Sampler state and decision logic for DiffusionGemma.
-/// Implements temperature decay, entropy budget acceptance, categorical re-noising, and early stopping.
+/// Implements temperature decay, EntropyBound acceptance via multinomial inverse CDF,
+/// categorical re-noising, and argmax-stability adaptive stopping.
 /// </summary>
 public sealed class DiffusionGemmaSampler
 {
     private readonly DiffusionGemmaConfig _config;
-    private readonly Random _rng;
+    private readonly DeterministicRng _rng;
+    private int _held;
 
     public DiffusionGemmaSampler(DiffusionGemmaConfig config, int seed = 42)
     {
         _config = config;
-        _rng = new Random(seed);
+        _rng = new DeterministicRng((ulong)seed);
+    }
+
+    public void Reset()
+    {
+        _held = 0;
     }
 
     /// <summary>
@@ -44,12 +53,7 @@ public sealed class DiffusionGemmaSampler
     }
 
     /// <summary>
-    /// Evaluates one denoising step across all canvas positions.
-    /// Returns:
-    ///  - accepted: boolean mask indicating which positions were accepted into this step
-    ///  - acceptedTokens: token IDs for each canvas position
-    ///  - meanEntropy: average entropy in nats across canvas
-    ///  - shouldStop: true if convergence threshold is met
+    /// Evaluates one denoising step across all canvas positions using EntropyBound acceptance.
     /// </summary>
     public (bool[] Accepted, int[] Tokens, float MeanEntropy, bool ShouldStop, int[] ArgmaxTokens) Step(
         int step,
@@ -60,86 +64,133 @@ public sealed class DiffusionGemmaSampler
         int canvasLen = _config.CanvasLength;
         int vocabSize = _config.VocabSize;
         float temp = GetTemperature(step);
+        float tempInv = 1.0f / MathF.Max(1e-4f, temp);
 
         var currentTokens = new int[canvasLen];
         var argmaxTokens = new int[canvasLen];
+        var denoiserTokens = new int[canvasLen];
         var entropies = new float[canvasLen];
-        var probs = new float[vocabSize];
+        var u = new float[canvasLen];
+        var renoise = new int[canvasLen];
+
+        // Draw deterministic step randomness
+        for (int pos = 0; pos < canvasLen; pos++)
+        {
+            u[pos] = _rng.NextFloat();
+            renoise[pos] = _rng.NextInt(vocabSize);
+        }
 
         float totalEntropy = 0f;
+        var s = new float[vocabSize];
+        var e = new float[vocabSize];
 
         for (int pos = 0; pos < canvasLen; pos++)
         {
-            var posLogits = canvasLogits.Slice(pos * vocabSize, vocabSize);
-            DiffusionGemmaSelfConditioning.ComputeSoftProbabilities(posLogits, temp, probs);
+            var row = canvasLogits.Slice(pos * vocabSize, vocabSize);
+            TensorPrimitives.Multiply(row, tempInv, s);
+            int amax = TensorPrimitives.IndexOfMax<float>(s);
+            float m = s[amax];
 
-            entropies[pos] = ComputeEntropyNats(probs);
+            TensorPrimitives.Subtract(s, m, e);
+            TensorPrimitives.Exp(e, e);
+            float z = TensorPrimitives.Sum<float>(e);
+            float sz = TensorPrimitives.Dot<float>(e, s);
+
+            // Shannon entropy: H = ln(Z) + m - (sum(e * s)) / Z
+            float h = MathF.Log(MathF.Max(1e-12f, z)) + m - (sz / MathF.Max(1e-12f, z));
+            entropies[pos] = MathF.Max(0f, h);
             totalEntropy += entropies[pos];
 
-            // Greedy argmax token prediction
-            int bestToken = 0;
-            float bestProb = probs[0];
-            for (int v = 1; v < vocabSize; v++)
+            // Multinomial inverse CDF sample
+            float target = u[pos] * z;
+            float cum = 0f;
+            int sampled = vocabSize - 1;
+            for (int v = 0; v < vocabSize; v++)
             {
-                if (probs[v] > bestProb)
+                cum += e[v];
+                if (cum >= target)
                 {
-                    bestProb = probs[v];
-                    bestToken = v;
+                    sampled = v;
+                    break;
                 }
             }
-            currentTokens[pos] = bestToken;
-            argmaxTokens[pos] = bestToken;
+
+            argmaxTokens[pos] = amax;
+            denoiserTokens[pos] = sampled;
         }
 
         float meanEntropy = totalEntropy / canvasLen;
 
         // Rank positions by ascending entropy (lowest entropy = highest confidence)
-        var rankedPositions = new int[canvasLen];
-        for (int i = 0; i < canvasLen; i++) rankedPositions[i] = i;
-        Array.Sort(rankedPositions, (a, b) => entropies[a].CompareTo(entropies[b]));
+        var order = new int[canvasLen];
+        for (int i = 0; i < canvasLen; i++) order[i] = i;
+        Array.Sort(order, (a, b) => entropies[a].CompareTo(entropies[b]));
 
-        // Greedy acceptance up to cumulative entropy budget (0.1 nats)
+        // EntropyBound acceptance: sum of strictly earlier accepted entropies <= EntropyBudget
         var accepted = new bool[canvasLen];
-        float cumEntropy = 0f;
+        double cumE = 0.0;
         for (int i = 0; i < canvasLen; i++)
         {
-            int pos = rankedPositions[i];
-            if (previouslyAccepted[pos])
+            int pos = order[i];
+            cumE += entropies[pos];
+            if (cumE - entropies[pos] <= _config.EntropyBudgetNats)
             {
                 accepted[pos] = true;
-                continue;
-            }
-
-            if (cumEntropy + entropies[pos] <= _config.EntropyBudgetNats)
-            {
-                accepted[pos] = true;
-                cumEntropy += entropies[pos];
             }
         }
 
-        // Categorical re-noising for non-accepted positions
+        // Re-noise rejected positions with fresh random tokens
         for (int pos = 0; pos < canvasLen; pos++)
         {
-            if (!accepted[pos])
+            currentTokens[pos] = accepted[pos] ? denoiserTokens[pos] : renoise[pos];
+        }
+
+        // Adaptive stopping: argmax canvas stable for at least 1 step AND mean entropy below threshold
+        bool same = true;
+        for (int pos = 0; pos < canvasLen; pos++)
+        {
+            if (prevArgmaxTokens == null || argmaxTokens[pos] != prevArgmaxTokens[pos])
             {
-                // Re-sample token from uniform categorical noise
-                currentTokens[pos] = _rng.Next(vocabSize);
+                same = false;
+                break;
             }
         }
 
-        // Stability (model card, "Adaptive Stopping"): the highest-probability token predictions stay identical
-        // across two consecutive steps. Compared on the argmax canvas, never on the re-noised canvas, whose
-        // random tokens would make stability unreachable.
-        int stableCount = 0;
-        for (int pos = 0; pos < canvasLen; pos++)
-        {
-            if (argmaxTokens[pos] == prevArgmaxTokens[pos]) stableCount++;
-        }
-        float stability = (float)stableCount / canvasLen;
-
-        bool shouldStop = (meanEntropy < _config.ConvergenceEntropyThreshold && stability >= 0.999f)
-            || step >= _config.MaxDenoisingSteps - 1;
+        _held = same ? _held + 1 : 0;
+        bool confident = meanEntropy < _config.ConvergenceEntropyThreshold;
+        bool shouldStop = (_held >= 1 && confident) || step >= _config.MaxDenoisingSteps - 1;
 
         return (accepted, currentTokens, meanEntropy, shouldStop, argmaxTokens);
+    }
+
+    /// <summary>
+    /// Deterministic PRNG (SplitMix64) ensuring exact seed reproducibility.
+    /// </summary>
+    public sealed class DeterministicRng
+    {
+        private ulong _state;
+
+        public DeterministicRng(ulong seed)
+        {
+            _state = seed == 0 ? 0x9E3779B97F4A7C15UL : seed;
+        }
+
+        public ulong NextU64()
+        {
+            ulong z = (_state += 0x9E3779B97F4A7C15UL);
+            z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9UL;
+            z = (z ^ (z >> 27)) * 0x94D049BB133111EBUL;
+            return z ^ (z >> 31);
+        }
+
+        public float NextFloat()
+        {
+            return (NextU64() >> 40) * (1.0f / 16777216.0f);
+        }
+
+        public int NextInt(int bound)
+        {
+            return (int)(NextU64() % (ulong)bound);
+        }
     }
 }

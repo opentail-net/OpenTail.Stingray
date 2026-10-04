@@ -71,11 +71,14 @@ public sealed unsafe partial class ForwardPass
         int expertDim = _hp.ExpertIntermediateDim;
 
         // Step 1: Router — compute expert logits and select top-k
+        long pt0 = MoePhaseTiming.Now();
         FusedMatVec(_routerLogits, _wGateInp![layer], _normBuf, numExperts, _embDim);
 
         Span<int> selectedExperts = stackalloc int[numActive];
         Span<float> expertWeights = stackalloc float[numActive];
         RouteExperts(layer, _routerLogits, numExperts, selectedExperts, expertWeights);
+        long pt1 = MoePhaseTiming.Now();
+        MoePhaseTiming.Add(MoePhaseTiming.Router, pt1 - pt0);
 
         if (_traceRouters && (_traceRouterPos < 0 || _traceRouterPos == _currentPos))
         {
@@ -126,6 +129,8 @@ public sealed unsafe partial class ForwardPass
                 ScaleBySharedGate(_sharedOut, _normBuf, _wGateInpShexp[layer]);
         }
 
+        long pt2 = MoePhaseTiming.Now();
+        MoePhaseTiming.Add(MoePhaseTiming.SharedExpert, pt2 - pt1);
         // Step 3: Selected expert(s) — 2-sweep folded execution when every expert dtype has a
         // float-input row dot (DispatchDot); otherwise the per-expert sequential loop, whose
         // SimdKernels.MatVec covers every dtype (Q2_K, MXFP4, IQ*, ... — the folded path threw
@@ -159,9 +164,17 @@ public sealed unsafe partial class ForwardPass
             }
         }
 
+        long pt3 = MoePhaseTiming.Now();
         // Step 4: Add shared expert output
         if (_hp.HasSharedExpert)
             SimdKernels.AddInPlace(_hidden, _sharedOut, _embDim);
+        if (MoePhaseTiming.Enabled)
+        {
+            long pt4 = MoePhaseTiming.Now();
+            if (!(IsFoldedDotDType(_wGateExps![layer].DType) && IsFoldedDotDType(_wUpExps![layer].DType) && IsFoldedDotDType(_wDownExps![layer].DType)))
+                MoePhaseTiming.Add(MoePhaseTiming.SequentialExperts, pt3 - pt2);
+            MoePhaseTiming.Add(MoePhaseTiming.Total, pt4 - pt0);
+        }
     }
 
     /// <summary>
@@ -215,8 +228,11 @@ public sealed unsafe partial class ForwardPass
         byte* gateAct = stackalloc byte[Math.Max(1, ActScratchBytes(gateDt, embDimL))];
         byte* upActOwn = stackalloc byte[upDt == gateDt ? 1 : Math.Max(1, ActScratchBytes(upDt, embDimL))];
         byte* upAct = upDt == gateDt ? gateAct : upActOwn;
+        long ft0 = MoePhaseTiming.Now();
         QuantizeAct(gateDt, normBuf, embDimL, gateAct);
         if (upDt != gateDt) QuantizeAct(upDt, normBuf, embDimL, upAct);
+        long ft1 = MoePhaseTiming.Now();
+        MoePhaseTiming.Add(MoePhaseTiming.ActQuantA, ft1 - ft0);
 
         // Phase A: gate + up rows for all (k, r) pairs in one parallel sweep.
         // Each worker computes row r of expert k's gate and up projection.
@@ -230,6 +246,16 @@ public sealed unsafe partial class ForwardPass
             gateAll[idx] = DispatchDot(gateP + offG, normBuf, gateAct, embDimL, gateDt);
             upAll[idx]   = DispatchDot(upP   + offU, normBuf, upAct, embDimL, upDt);
         });
+
+        long ft2 = MoePhaseTiming.Now();
+        MoePhaseTiming.Add(MoePhaseTiming.SweepA, ft2 - ft1);
+        if (MoePhaseTiming.Enabled)
+        {
+            long e0 = MoePhaseTiming.Now();
+            SimdKernels.ParallelForCapped(0, numActiveL * expertDimL, idx => { });
+            MoePhaseTiming.Add(MoePhaseTiming.EmptyA, MoePhaseTiming.Now() - e0);
+        }
+        long ft3 = MoePhaseTiming.Now();
 
         // Llama-4 sigmoid weighting scales gate/up BEFORE SiLuMul (scales input),
         // weight baked in; the down phase then uses weight = 1.
@@ -245,6 +271,8 @@ public sealed unsafe partial class ForwardPass
 
         // Fused SiLuMul over all (numActive × expertDim) floats in one pass.
         SimdKernels.SiLuMul(gateAll, upAll, numActiveL * expertDimL);
+        long ft4 = MoePhaseTiming.Now();
+        MoePhaseTiming.Add(MoePhaseTiming.SiLuMul, ft4 - ft3);
 
         // Phase B: down × weight, accumulated across all k experts into hiddenOut.
         // Reduction is in TOP-K SLOT ORDER (k=0, 1, …) matching MoeFfn's sequential
@@ -257,6 +285,8 @@ public sealed unsafe partial class ForwardPass
         byte* downAct = stackalloc byte[Math.Max(1, downActBytes * numActiveL)];
         for (int k = 0; k < numActiveL; k++)
             QuantizeAct(downDt, gateAll + (long)k * expertDimL, expertDimL, downAct + (long)k * downActBytes);
+        long ft5 = MoePhaseTiming.Now();
+        MoePhaseTiming.Add(MoePhaseTiming.ActQuantB, ft5 - ft4);
         SimdKernels.ParallelForCapped(0, embDimL, r =>
         {
             float sum = 0f;
@@ -273,6 +303,14 @@ public sealed unsafe partial class ForwardPass
             }
             hiddenOut[r] = sum;
         });
+        long ft6 = MoePhaseTiming.Now();
+        MoePhaseTiming.Add(MoePhaseTiming.SweepB, ft6 - ft5);
+        if (MoePhaseTiming.Enabled)
+        {
+            long e1 = MoePhaseTiming.Now();
+            SimdKernels.ParallelForCapped(0, embDimL, r => { });
+            MoePhaseTiming.Add(MoePhaseTiming.EmptyB, MoePhaseTiming.Now() - e1);
+        }
     }
 
     // ParallelOptions for the routed-MoE sweeps. Pinning to the kernels' thread cap avoids

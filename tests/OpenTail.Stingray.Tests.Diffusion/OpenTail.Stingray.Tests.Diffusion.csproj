@@ -24,6 +24,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\OpenTail.Stingray.Diffusion\OpenTail.Stingray.Diffusion.csproj" />
+    <ProjectReference Include="..\..\src\OpenTail.Stingray.Cpu\OpenTail.Stingray.Cpu.csproj" />
     <ProjectReference Include="..\..\src\OpenTail.Stingray.Vulkan\OpenTail.Stingray.Vulkan.csproj" />
   </ItemGroup>
 

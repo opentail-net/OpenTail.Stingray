@@ -5,66 +5,81 @@ using OpenTail.Stingray.Engine;
 namespace OpenTail.Stingray.Diffusion.DiffusionGemma;
 
 /// <summary>
-/// Resolved layer tensors for DiffusionGemma.
+/// Pass execution mode for the shared Gemma-4 backbone in DiffusionGemma.
 /// </summary>
-public sealed unsafe class DiffusionGemmaLayerTensors
+public enum DiffusionGemmaPassMode
 {
-    public DeepSeek4TensorRef? AttnNorm;
-    public DeepSeek4TensorRef? AttnPostNorm;
-    public DeepSeek4TensorRef? Wq;
-    public DeepSeek4TensorRef? Wk;
-    public DeepSeek4TensorRef? Wv;
-    public DeepSeek4TensorRef? Wo;
-    public DeepSeek4TensorRef? QNorm;
-    public DeepSeek4TensorRef? KNorm;
-
-    public DeepSeek4TensorRef? FfnNorm;
-    public DeepSeek4TensorRef? FfnPostNorm;
-
-    // Dense FFN
-    public DeepSeek4TensorRef? FfnGate;
-    public DeepSeek4TensorRef? FfnUp;
-    public DeepSeek4TensorRef? FfnDown;
-
-    // MoE
-    public DeepSeek4TensorRef? FfnGateInp;
-    public DeepSeek4TensorRef? FfnGateExps;
-    public DeepSeek4TensorRef? FfnUpExps;
-    public DeepSeek4TensorRef? FfnDownExps;
+    EncoderPrefill,
+    DecoderCanvas
 }
 
 /// <summary>
-/// Forward pass and prompt prefill executor for DiffusionGemma.
+/// Forward pass, causal prompt prefill, and bidirectional canvas decode executor
+/// for DiffusionGemma (google/diffusiongemma-26B-A4B-it).
 /// </summary>
 public sealed unsafe class DiffusionGemmaForwardPass
 {
-    private readonly GgufModel _model;
     private readonly DiffusionGemmaConfig _config;
+    private readonly DiffusionGemmaTensorSet? _tensorSet;
+
+    // Direct tensor references
     private readonly DeepSeek4TensorRef _tokEmbd;
     private readonly DeepSeek4TensorRef _outputNorm;
     private readonly DeepSeek4TensorRef _output;
+    private readonly DeepSeek4TensorRef? _ropeFreqs;
+    private readonly DeepSeek4TensorRef? _scPreNorm;
     private readonly DeepSeek4TensorRef? _scGate;
     private readonly DeepSeek4TensorRef? _scUp;
     private readonly DeepSeek4TensorRef? _scDown;
-    private readonly IReadOnlyList<DiffusionGemmaLayerTensors> _layers;
+    private readonly IReadOnlyList<DiffusionGemmaLayerTensorsBase> _layers;
 
-    // Persistent prompt KV cache: [layer][pos][kvDim]
+    // Persistent prompt KV cache: [layer][pos] -> float[kvDim]
     private readonly List<float[]>[] _promptKCache;
     private readonly List<float[]>[] _promptVCache;
 
-    public DiffusionGemmaForwardPass(GgufModel model, DiffusionGemmaConfig config)
+    // Precomputed RoPE frequency tables
+    private readonly float[] _ropeFreqsLocal;   // localHalf = 128
+    private readonly float[] _ropeFreqsGlobal;  // globalHalf = 256
+
+    public DiffusionGemmaForwardPass(DiffusionGemmaTensorSet tensorSet, DiffusionGemmaConfig config)
     {
-        _model = model;
+        _tensorSet = tensorSet;
         _config = config;
 
-        // The real unsloth GGUF (inspected 2026-10-03) uses the Gemma-4 MoE layer layout, which this port does not
-        // implement: fused ffn_gate_up_exps, per-expert scales, ffn_gate_inp.scale router scaling, parallel dense +
-        // expert FFN with pre_ffw_norm_2 / post_ffw_norm_1 / post_ffw_norm_2, layer_output_scale, and self_cond_{pre_norm,
-        // gate,up,down}. The port also lacks RoPE and V-norm and its prefill never applies attention. All of those tensors
-        // were `Optional` under guessed names, so a real file would silently run a degraded model: refuse it instead.
-        if (model.FindTensor("blk.0.post_ffw_norm_1.weight") is not null
-            || model.FindTensor("blk.0.ffn_gate_up_exps.weight") is not null
-            || model.FindTensor("self_cond_gate.weight") is not null)
+        _tokEmbd = tensorSet.TokEmbd;
+        _outputNorm = tensorSet.OutputNorm;
+        _output = tensorSet.Output;
+        _ropeFreqs = tensorSet.RopeFreqs;
+
+        _scPreNorm = tensorSet.SelfCondPreNorm;
+        _scGate = tensorSet.SelfCondGate;
+        _scUp = tensorSet.SelfCondUp;
+        _scDown = tensorSet.SelfCondDown;
+
+        _layers = tensorSet.Layers;
+
+        // Initialize persistent prompt KV cache
+        _promptKCache = new List<float[]>[_layers.Count];
+        _promptVCache = new List<float[]>[_layers.Count];
+        for (int i = 0; i < _layers.Count; i++)
+        {
+            _promptKCache[i] = [];
+            _promptVCache[i] = [];
+        }
+
+        (_ropeFreqsLocal, _ropeFreqsGlobal) = PrecomputeRopeFrequencies(_ropeFreqs);
+    }
+
+    public DiffusionGemmaForwardPass(GgufModel model, DiffusionGemmaConfig config, bool allowRealCheckpoint = false)
+    {
+        _config = config;
+
+        bool isRealCheckpoint = model.FindTensor("blk.0.ffn_gate_up_exps.weight") is not null
+            || model.FindTensor("blk.0.post_ffw_norm_1.weight") is not null;
+
+        // Real checkpoints remain guarded until full verification ladder passes unless explicitly allowed
+        if (isRealCheckpoint && !allowRealCheckpoint
+            && Environment.GetEnvironmentVariable("STINGRAY_DIFFUSIONGEMMA_ENABLE_REAL") != "1")
         {
             throw new NotSupportedException(
                 "diffusion-gemma: this checkpoint uses the Gemma-4 MoE layer layout (fused gate/up experts, router scale, " +
@@ -73,136 +88,351 @@ public sealed unsafe class DiffusionGemmaForwardPass
                 "See docs/1-correctness/2026-10-03-unverified-port-claims.md.");
         }
 
-        DeepSeek4TensorRef Required(string name)
+        if (isRealCheckpoint)
         {
-            var info = model.FindTensor(name)
-                ?? throw new InvalidOperationException($"Missing required DiffusionGemma tensor: {name}");
-            return new DeepSeek4TensorRef(name, info, model.GetTensorDataPtr(info));
+            _tensorSet = DiffusionGemmaTensorSet.Load(model, config);
+            _tokEmbd = _tensorSet.TokEmbd;
+            _outputNorm = _tensorSet.OutputNorm;
+            _output = _tensorSet.Output;
+            _ropeFreqs = _tensorSet.RopeFreqs;
+            _scPreNorm = _tensorSet.SelfCondPreNorm;
+            _scGate = _tensorSet.SelfCondGate;
+            _scUp = _tensorSet.SelfCondUp;
+            _scDown = _tensorSet.SelfCondDown;
+            _layers = _tensorSet.Layers;
         }
-
-        DeepSeek4TensorRef? Optional(string name)
+        else
         {
-            var info = model.FindTensor(name);
-            return info is null ? null : new DeepSeek4TensorRef(name, info.Value, model.GetTensorDataPtr(info.Value));
-        }
+            // Synthetic / fallback test model support
+            _tokEmbd = DiffusionGemmaTensorSet.Required(model, "token_embd.weight");
+            _outputNorm = DiffusionGemmaTensorSet.Required(model, "output_norm.weight");
+            _output = DiffusionGemmaTensorSet.Optional(model, "output.weight") ?? _tokEmbd;
+            _ropeFreqs = DiffusionGemmaTensorSet.Optional(model, "rope_freqs.weight");
 
-        _tokEmbd = Required("token_embd.weight");
-        _outputNorm = Required("output_norm.weight");
-        _output = Optional("output.weight") ?? _tokEmbd;
+            _scPreNorm = DiffusionGemmaTensorSet.Optional(model, "self_cond_pre_norm.weight");
+            _scGate = DiffusionGemmaTensorSet.Optional(model, "self_cond_gate.weight");
+            _scUp = DiffusionGemmaTensorSet.Optional(model, "self_cond_up.weight");
+            _scDown = DiffusionGemmaTensorSet.Optional(model, "self_cond_down.weight");
 
-        _scGate = Optional("self_cond.gate.weight");
-        _scUp = Optional("self_cond.up.weight");
-        _scDown = Optional("self_cond.down.weight");
-
-        var layers = new List<DiffusionGemmaLayerTensors>(config.NumLayers);
-        for (int i = 0; i < config.NumLayers; i++)
-        {
-            var lt = new DiffusionGemmaLayerTensors
+            var layers = new List<DiffusionGemmaLayerTensorsBase>(config.NumLayers);
+            for (int i = 0; i < config.NumLayers; i++)
             {
-                AttnNorm = Required($"blk.{i}.attn_norm.weight"),
-                AttnPostNorm = Optional($"blk.{i}.attn_post_norm.weight"),
-                Wq = Required($"blk.{i}.attn_q.weight"),
-                Wk = Required($"blk.{i}.attn_k.weight"),
-                Wv = Required($"blk.{i}.attn_v.weight"),
-                Wo = Optional($"blk.{i}.attn_output.weight") ?? Required($"blk.{i}.attn_out.weight"),
-                QNorm = Optional($"blk.{i}.attn_q_norm.weight"),
-                KNorm = Optional($"blk.{i}.attn_k_norm.weight"),
-                FfnNorm = Required($"blk.{i}.ffn_norm.weight"),
-                FfnPostNorm = Optional($"blk.{i}.ffn_post_norm.weight"),
-                FfnGate = Required($"blk.{i}.ffn_gate.weight"),
-                FfnUp = Required($"blk.{i}.ffn_up.weight"),
-                FfnDown = Required($"blk.{i}.ffn_down.weight"),
-                FfnGateInp = Optional($"blk.{i}.ffn_gate_inp.weight"),
-                FfnGateExps = Optional($"blk.{i}.ffn_gate_exps.weight"),
-                FfnUpExps = Optional($"blk.{i}.ffn_up_exps.weight"),
-                FfnDownExps = Optional($"blk.{i}.ffn_down_exps.weight"),
-            };
-            layers.Add(lt);
-        }
-        _layers = layers;
+                bool isFull = config.IsFullAttention(i);
+                var attnNorm = DiffusionGemmaTensorSet.Required(model, $"blk.{i}.attn_norm.weight");
+                var attnQ = DiffusionGemmaTensorSet.Required(model, $"blk.{i}.attn_q.weight");
+                var attnK = DiffusionGemmaTensorSet.Required(model, $"blk.{i}.attn_k.weight");
+                var attnQNorm = DiffusionGemmaTensorSet.Optional(model, $"blk.{i}.attn_q_norm.weight") ?? attnNorm;
+                var attnKNorm = DiffusionGemmaTensorSet.Optional(model, $"blk.{i}.attn_k_norm.weight") ?? attnNorm;
+                var attnOutput = DiffusionGemmaTensorSet.Optional(model, $"blk.{i}.attn_output.weight")
+                    ?? DiffusionGemmaTensorSet.Required(model, $"blk.{i}.attn_out.weight");
+                var postAttnNorm = DiffusionGemmaTensorSet.Optional(model, $"blk.{i}.post_attention_norm.weight") ?? attnNorm;
 
-        _promptKCache = new List<float[]>[config.NumLayers];
-        _promptVCache = new List<float[]>[config.NumLayers];
-        for (int i = 0; i < config.NumLayers; i++)
+                var ffnNorm = DiffusionGemmaTensorSet.Required(model, $"blk.{i}.ffn_norm.weight");
+                var ffnGate = DiffusionGemmaTensorSet.Required(model, $"blk.{i}.ffn_gate.weight");
+                var ffnUp = DiffusionGemmaTensorSet.Required(model, $"blk.{i}.ffn_up.weight");
+                var ffnDown = DiffusionGemmaTensorSet.Required(model, $"blk.{i}.ffn_down.weight");
+                var postFfwNorm1 = DiffusionGemmaTensorSet.Optional(model, $"blk.{i}.post_ffw_norm_1.weight");
+                var preFfwNorm2 = DiffusionGemmaTensorSet.Optional(model, $"blk.{i}.pre_ffw_norm_2.weight");
+                var ffnGateInp = DiffusionGemmaTensorSet.Optional(model, $"blk.{i}.ffn_gate_inp.weight");
+                var ffnGateInpScale = DiffusionGemmaTensorSet.Optional(model, $"blk.{i}.ffn_gate_inp.scale");
+                var ffnGateUpExps = DiffusionGemmaTensorSet.Optional(model, $"blk.{i}.ffn_gate_up_exps.weight");
+                var ffnDownExps = DiffusionGemmaTensorSet.Optional(model, $"blk.{i}.ffn_down_exps.weight");
+                var ffnDownExpsScale = DiffusionGemmaTensorSet.Optional(model, $"blk.{i}.ffn_down_exps.scale");
+                var postFfwNorm2 = DiffusionGemmaTensorSet.Optional(model, $"blk.{i}.post_ffw_norm_2.weight");
+
+                var postFfwNorm = DiffusionGemmaTensorSet.Optional(model, $"blk.{i}.post_ffw_norm.weight");
+                var layerOutputScale = DiffusionGemmaTensorSet.Optional(model, $"blk.{i}.layer_output_scale");
+                var encLayerOutputScale = DiffusionGemmaTensorSet.Optional(model, $"blk.{i}.enc_layer_output_scale");
+
+                DiffusionGemmaLayerTensorsBase layer;
+                if (isFull)
+                {
+                    layer = new DiffusionGemmaFullLayerTensors
+                    {
+                        LayerIndex = i,
+                        AttnNorm = attnNorm,
+                        Wq = attnQ,
+                        Wk = attnK,
+                        AttnQNorm = attnQNorm,
+                        AttnKNorm = attnKNorm,
+                        Wo = attnOutput,
+                        PostAttnNorm = postAttnNorm,
+                        FfnNorm = ffnNorm,
+                        FfnGate = ffnGate,
+                        FfnUp = ffnUp,
+                        FfnDown = ffnDown,
+                        PostFfwNorm1 = postFfwNorm1,
+                        PreFfwNorm2 = preFfwNorm2,
+                        FfnGateInp = ffnGateInp,
+                        FfnGateInpScale = ffnGateInpScale,
+                        FfnGateUpExps = ffnGateUpExps,
+                        FfnDownExps = ffnDownExps,
+                        FfnDownExpsScale = ffnDownExpsScale,
+                        PostFfwNorm2 = postFfwNorm2,
+                        PostFfwNorm = postFfwNorm,
+                        LayerOutputScale = layerOutputScale,
+                        EncLayerOutputScale = encLayerOutputScale,
+                    };
+                }
+                else
+                {
+                    var attnV = DiffusionGemmaTensorSet.Required(model, $"blk.{i}.attn_v.weight");
+                    layer = new DiffusionGemmaSlidingLayerTensors(attnV)
+                    {
+                        LayerIndex = i,
+                        AttnNorm = attnNorm,
+                        Wq = attnQ,
+                        Wk = attnK,
+                        AttnQNorm = attnQNorm,
+                        AttnKNorm = attnKNorm,
+                        Wo = attnOutput,
+                        PostAttnNorm = postAttnNorm,
+                        FfnNorm = ffnNorm,
+                        FfnGate = ffnGate,
+                        FfnUp = ffnUp,
+                        FfnDown = ffnDown,
+                        PostFfwNorm1 = postFfwNorm1,
+                        PreFfwNorm2 = preFfwNorm2,
+                        FfnGateInp = ffnGateInp,
+                        FfnGateInpScale = ffnGateInpScale,
+                        FfnGateUpExps = ffnGateUpExps,
+                        FfnDownExps = ffnDownExps,
+                        FfnDownExpsScale = ffnDownExpsScale,
+                        PostFfwNorm2 = postFfwNorm2,
+                        PostFfwNorm = postFfwNorm,
+                        LayerOutputScale = layerOutputScale,
+                        EncLayerOutputScale = encLayerOutputScale,
+                    };
+                }
+                layers.Add(layer);
+            }
+            _layers = layers;
+        }
+
+        _promptKCache = new List<float[]>[_layers.Count];
+        _promptVCache = new List<float[]>[_layers.Count];
+        for (int i = 0; i < _layers.Count; i++)
         {
             _promptKCache[i] = [];
             _promptVCache[i] = [];
         }
+
+        (_ropeFreqsLocal, _ropeFreqsGlobal) = PrecomputeRopeFrequencies(_ropeFreqs);
     }
 
     public int VocabSize => (int)_tokEmbd.Info.Dimensions[1];
     public int HiddenDim => _config.HiddenDim;
     public int PromptLength => _promptKCache[0].Count;
 
+    private static (float[] local, float[] global) PrecomputeRopeFrequencies(DeepSeek4TensorRef? ropeFreqs)
+    {
+        const int localHalf = 128;
+        const int globalHalf = 256;
+
+        var local = new float[localHalf];
+        for (int i = 0; i < localHalf; i++)
+        {
+            local[i] = (float)(1.0 / Math.Pow(10000.0, 2.0 * i / 256.0));
+        }
+
+        var global = new float[globalHalf];
+        float[]? freqFactors = null;
+        if (ropeFreqs is { } rf)
+        {
+            freqFactors = new float[globalHalf];
+            fixed (float* dst = freqFactors)
+            {
+                if (rf.DType == DType.Float32)
+                {
+                    Buffer.MemoryCopy(rf.DataPtr, dst, globalHalf * 4, Math.Min((long)globalHalf * 4, (long)rf.Info.Dimensions[0] * 4));
+                }
+                else
+                {
+                    Dequantize.ToFloat32(new ReadOnlySpan<byte>(rf.DataPtr, (int)rf.Info.ByteSize),
+                        new Span<float>(dst, globalHalf), rf.DType, globalHalf);
+                }
+            }
+        }
+
+        for (int i = 0; i < globalHalf; i++)
+        {
+            double freq = 1.0 / Math.Pow(1000000.0, 2.0 * i / 512.0);
+            if (freqFactors != null && i < freqFactors.Length && freqFactors[i] != 0f)
+            {
+                freq /= freqFactors[i];
+            }
+            global[i] = (float)freq;
+        }
+
+        return (local, global);
+    }
+
     /// <summary>
-    /// Prefills prompt tokens causally into persistent prompt KV cache.
+    /// Prefills prompt tokens causally into persistent prompt KV cache across all layers.
     /// </summary>
     public void PrefillPrompt(ReadOnlySpan<int> promptTokens)
     {
-        for (int p = 0; p < promptTokens.Length; p++)
+        int pLen = promptTokens.Length;
+        if (pLen == 0) return;
+
+        // Embedding: Embed(token) * sqrt(hidden_dim)
+        var promptH = new float[pLen, HiddenDim];
+        for (int p = 0; p < pLen; p++)
         {
-            int token = promptTokens[p];
-            var cur = new float[HiddenDim];
-            EmbedToken(token, cur);
-
-            for (int il = 0; il < _config.NumLayers; il++)
+            var emb = new float[HiddenDim];
+            EmbedToken(promptTokens[p], emb);
+            for (int d = 0; d < HiddenDim; d++)
             {
-                var layer = _layers[il];
-                bool isFull = _config.IsFullAttention(il);
-                int kvHeads = isFull ? _config.FullNumKvHeads : _config.SlidingNumKvHeads;
-                int headDim = isFull ? _config.FullHeadDim : _config.SlidingHeadDim;
-                int kvDim = kvHeads * headDim;
+                promptH[p, d] = emb[d] * _config.EmbedScale;
+            }
+        }
 
-                var normed = new float[HiddenDim];
-                fixed (float* inPtr = cur, outPtr = normed)
+        for (int il = 0; il < _layers.Count; il++)
+        {
+            var layer = _layers[il];
+            bool isFull = layer.IsFullAttention;
+            int qHeads = isFull ? _config.FullNumQHeads : _config.SlidingNumQHeads;
+            int kvHeads = isFull ? _config.FullNumKvHeads : _config.SlidingNumKvHeads;
+            int headDim = isFull ? _config.FullHeadDim : _config.SlidingHeadDim;
+            int qDim = qHeads * headDim;
+            int kvDim = kvHeads * headDim;
+            int swa = _config.SlidingWindowSize;
+
+            var qAll = new float[pLen, qDim];
+            var kAll = new float[pLen, kvDim];
+            var vAll = new float[pLen, kvDim];
+            var curRow = new float[HiddenDim];
+            var normed = new float[HiddenDim];
+
+            for (int p = 0; p < pLen; p++)
+            {
+                for (int d = 0; d < HiddenDim; d++) curRow[d] = promptH[p, d];
+                fixed (float* inPtr = curRow, outPtr = normed)
                 {
-                    float* weightPtr = (float*)layer.AttnNorm!.Value.DataPtr;
-                    SimdKernels.RmsNorm(outPtr, inPtr, weightPtr, HiddenDim, _config.RmsNormEps);
+                    SimdKernels.RmsNorm(outPtr, inPtr, (float*)layer.AttnNorm.DataPtr, HiddenDim, _config.RmsNormEps);
                 }
 
-                // Compute K and V and store in prompt KV cache
-                var k = new float[kvDim];
-                var v = new float[kvDim];
-                fixed (float* inPtr = normed, kPtr = k, vPtr = v)
+                fixed (float* inPtr = normed)
+                fixed (float* qPtr = &qAll[p, 0], kPtr = &kAll[p, 0], vPtr = &vAll[p, 0])
                 {
-                    SimdKernels.MatVec(kPtr, layer.Wk!.Value.DataPtr, inPtr, kvDim, HiddenDim, layer.Wk.Value.DType);
-                    SimdKernels.MatVec(vPtr, layer.Wv!.Value.DataPtr, inPtr, kvDim, HiddenDim, layer.Wv.Value.DType);
-                }
+                    SimdKernels.MatVec(qPtr, layer.Wq.DataPtr, inPtr, qDim, HiddenDim, layer.Wq.DType);
+                    SimdKernels.MatVec(kPtr, layer.Wk.DataPtr, inPtr, kvDim, HiddenDim, layer.Wk.DType);
 
-                if (layer.KNorm is { } kn)
-                {
+                    if (!isFull && layer.Wv is { } wv)
+                    {
+                        SimdKernels.MatVec(vPtr, wv.DataPtr, inPtr, kvDim, HiddenDim, wv.DType);
+                        // SWA V: weightless RMSNorm per head
+                        for (int h = 0; h < kvHeads; h++)
+                        {
+                            SimdKernels.PureRmsNorm(vPtr + h * headDim, vPtr + h * headDim, headDim, _config.RmsNormEps);
+                        }
+                    }
+                    else
+                    {
+                        // Full attention layer: V is derived from RAW K before RoPE via weightless RMSNorm!
+                        for (int h = 0; h < kvHeads; h++)
+                        {
+                            SimdKernels.PureRmsNorm(vPtr + h * headDim, kPtr + h * headDim, headDim, _config.RmsNormEps);
+                        }
+                    }
+
+                    // Learned per-head Q and K RMSNorm
+                    for (int h = 0; h < qHeads; h++)
+                    {
+                        SimdKernels.RmsNorm(qPtr + h * headDim, qPtr + h * headDim, (float*)layer.AttnQNorm.DataPtr, headDim, _config.RmsNormEps);
+                    }
                     for (int h = 0; h < kvHeads; h++)
                     {
-                        fixed (float* kHeadPtr = &k[h * headDim])
+                        SimdKernels.RmsNorm(kPtr + h * headDim, kPtr + h * headDim, (float*)layer.AttnKNorm.DataPtr, headDim, _config.RmsNormEps);
+                    }
+
+                    // Apply NeoX RoPE at position p
+                    ApplyNeoXRope(qPtr, qHeads, headDim, p, isFull);
+                    ApplyNeoXRope(kPtr, kvHeads, headDim, p, isFull);
+                }
+
+                // Append persistent prompt K and V
+                var kStored = new float[kvDim];
+                var vStored = new float[kvDim];
+                for (int d = 0; d < kvDim; d++)
+                {
+                    kStored[d] = kAll[p, d];
+                    vStored[d] = vAll[p, d];
+                }
+                _promptKCache[il].Add(kStored);
+                _promptVCache[il].Add(vStored);
+            }
+
+            // Causal prompt attention
+            int gqaRatio = qHeads / kvHeads;
+            var attnOut = new float[pLen, qDim];
+            float[] scores = new float[pLen];
+
+            for (int p = 0; p < pLen; p++)
+            {
+                int kStart = isFull ? 0 : Math.Max(0, p - swa + 1);
+                int kCount = p - kStart + 1;
+
+                for (int h = 0; h < qHeads; h++)
+                {
+                    int kvH = h / gqaRatio;
+
+                    // Attention scale is 1.0 (absorbed into Q/K norms)
+                    for (int ki = 0; ki < kCount; ki++)
+                    {
+                        int kPos = kStart + ki;
+                        float dot = 0f;
+                        for (int d = 0; d < headDim; d++)
                         {
-                            SimdKernels.RmsNorm(kHeadPtr, kHeadPtr, (float*)kn.DataPtr, headDim, _config.RmsNormEps);
+                            dot += qAll[p, h * headDim + d] * kAll[kPos, kvH * headDim + d];
                         }
+                        scores[ki] = dot;
+                    }
+
+                    fixed (float* sPtr = scores)
+                    {
+                        SimdKernels.SoftmaxInPlace(sPtr, kCount);
+                    }
+
+                    for (int d = 0; d < headDim; d++)
+                    {
+                        float acc = 0f;
+                        for (int ki = 0; ki < kCount; ki++)
+                        {
+                            int kPos = kStart + ki;
+                            acc += scores[ki] * vAll[kPos, kvH * headDim + d];
+                        }
+                        attnOut[p, h * headDim + d] = acc;
                     }
                 }
 
-                _promptKCache[il].Add(k);
-                _promptVCache[il].Add(v);
-
-                // Residual forward step
-                var ffnNormed = new float[HiddenDim];
-                fixed (float* inPtr = cur, outPtr = ffnNormed)
+                // Project attention output, post-norm, residual
+                var headOut = new float[qDim];
+                for (int d = 0; d < qDim; d++) headOut[d] = attnOut[p, d];
+                var proj = new float[HiddenDim];
+                fixed (float* inPtr = headOut, outPtr = proj)
                 {
-                    float* weightPtr = (float*)layer.FfnNorm!.Value.DataPtr;
-                    SimdKernels.RmsNorm(outPtr, inPtr, weightPtr, HiddenDim, _config.RmsNormEps);
+                    SimdKernels.MatVec(outPtr, layer.Wo.DataPtr, inPtr, HiddenDim, qDim, layer.Wo.DType);
+                    SimdKernels.RmsNorm(outPtr, outPtr, (float*)layer.PostAttnNorm.DataPtr, HiddenDim, _config.RmsNormEps);
                 }
-                var ffnOut = DenseFfn(layer, ffnNormed);
-                for (int d = 0; d < HiddenDim; d++) cur[d] += ffnOut[d];
+                for (int d = 0; d < HiddenDim; d++) curRow[d] = promptH[p, d] + proj[d];
+
+                // FFN: Dense + MoE
+                ExecuteFfnAndScaling(layer, curRow, DiffusionGemmaPassMode.EncoderPrefill);
+                for (int d = 0; d < HiddenDim; d++) promptH[p, d] = curRow[d];
             }
         }
     }
 
     /// <summary>
-    /// Executes a denoising step over the 256-token canvas with self-conditioning.
+    /// Executes a denoising step over the 256-token canvas with self-conditioning,
+    /// cross-attending to cached prompt KV and bidirectional self-attending across canvas.
     /// </summary>
-    public float[] ForwardCanvas(ReadOnlySpan<int> canvasTokens, ReadOnlySpan<float> selfCondEmbeddings)
+    public float[] ForwardCanvas(ReadOnlySpan<int> canvasTokens, ReadOnlySpan<float> selfCondEmbeddings = default)
     {
         int canvasLen = canvasTokens.Length;
         int vocabSize = VocabSize;
+        int promptLen = PromptLength;
 
         // 1. Initial canvas representations: Embed(token) * sqrt(2816) + self_cond
         var canvas = new float[canvasLen, HiddenDim];
@@ -219,78 +449,88 @@ public sealed unsafe class DiffusionGemmaForwardPass
                 }
                 canvas[pos, d] = val;
             }
+
+            // Weightless RMSNorm on combined canvas embedding
+            fixed (float* cPtr = &canvas[pos, 0])
+            {
+                SimdKernels.PureRmsNorm(cPtr, cPtr, HiddenDim, _config.RmsNormEps);
+            }
         }
 
-        // 2. Transformer layers
         var curRow = new float[HiddenDim];
-        var nextCanvas = new float[canvasLen, HiddenDim];
+        var normed = new float[HiddenDim];
 
-        for (int il = 0; il < _config.NumLayers; il++)
+        for (int il = 0; il < _layers.Count; il++)
         {
             var layer = _layers[il];
-            bool isFull = _config.IsFullAttention(il);
+            bool isFull = layer.IsFullAttention;
             int qHeads = isFull ? _config.FullNumQHeads : _config.SlidingNumQHeads;
             int kvHeads = isFull ? _config.FullNumKvHeads : _config.SlidingNumKvHeads;
             int headDim = isFull ? _config.FullHeadDim : _config.SlidingHeadDim;
             int qDim = qHeads * headDim;
             int kvDim = kvHeads * headDim;
+            int swa = _config.SlidingWindowSize;
 
-            // Compute Q, K, V for all canvas tokens
             var canvasQ = new float[canvasLen, qDim];
             var canvasK = new float[canvasLen, kvDim];
             var canvasV = new float[canvasLen, kvDim];
 
             for (int pos = 0; pos < canvasLen; pos++)
             {
+                int absPos = promptLen + pos;
                 for (int d = 0; d < HiddenDim; d++) curRow[d] = canvas[pos, d];
 
-                var normed = new float[HiddenDim];
                 fixed (float* inPtr = curRow, outPtr = normed)
                 {
-                    float* weightPtr = (float*)layer.AttnNorm!.Value.DataPtr;
-                    SimdKernels.RmsNorm(outPtr, inPtr, weightPtr, HiddenDim, _config.RmsNormEps);
+                    SimdKernels.RmsNorm(outPtr, inPtr, (float*)layer.AttnNorm.DataPtr, HiddenDim, _config.RmsNormEps);
                 }
 
                 fixed (float* inPtr = normed)
+                fixed (float* qPtr = &canvasQ[pos, 0], kPtr = &canvasK[pos, 0], vPtr = &canvasV[pos, 0])
                 {
-                    fixed (float* qPtr = &canvasQ[pos, 0], kPtr = &canvasK[pos, 0], vPtr = &canvasV[pos, 0])
-                    {
-                        SimdKernels.MatVec(qPtr, layer.Wq!.Value.DataPtr, inPtr, qDim, HiddenDim, layer.Wq.Value.DType);
-                        SimdKernels.MatVec(kPtr, layer.Wk!.Value.DataPtr, inPtr, kvDim, HiddenDim, layer.Wk.Value.DType);
-                        SimdKernels.MatVec(vPtr, layer.Wv!.Value.DataPtr, inPtr, kvDim, HiddenDim, layer.Wv.Value.DType);
-                    }
-                }
+                    SimdKernels.MatVec(qPtr, layer.Wq.DataPtr, inPtr, qDim, HiddenDim, layer.Wq.DType);
+                    SimdKernels.MatVec(kPtr, layer.Wk.DataPtr, inPtr, kvDim, HiddenDim, layer.Wk.DType);
 
-                if (layer.QNorm is { } qn)
-                {
+                    if (!isFull && layer.Wv is { } wv)
+                    {
+                        SimdKernels.MatVec(vPtr, wv.DataPtr, inPtr, kvDim, HiddenDim, wv.DType);
+                        for (int h = 0; h < kvHeads; h++)
+                        {
+                            SimdKernels.PureRmsNorm(vPtr + h * headDim, vPtr + h * headDim, headDim, _config.RmsNormEps);
+                        }
+                    }
+                    else
+                    {
+                        // Full attention layer: V is derived from RAW K before RoPE via weightless RMSNorm!
+                        for (int h = 0; h < kvHeads; h++)
+                        {
+                            SimdKernels.PureRmsNorm(vPtr + h * headDim, kPtr + h * headDim, headDim, _config.RmsNormEps);
+                        }
+                    }
+
+                    // Learned per-head Q and K RMSNorm
                     for (int h = 0; h < qHeads; h++)
                     {
-                        fixed (float* qHeadPtr = &canvasQ[pos, h * headDim])
-                        {
-                            SimdKernels.RmsNorm(qHeadPtr, qHeadPtr, (float*)qn.DataPtr, headDim, _config.RmsNormEps);
-                        }
+                        SimdKernels.RmsNorm(qPtr + h * headDim, qPtr + h * headDim, (float*)layer.AttnQNorm.DataPtr, headDim, _config.RmsNormEps);
                     }
-                }
-                if (layer.KNorm is { } kn)
-                {
                     for (int h = 0; h < kvHeads; h++)
                     {
-                        fixed (float* kHeadPtr = &canvasK[pos, h * headDim])
-                        {
-                            SimdKernels.RmsNorm(kHeadPtr, kHeadPtr, (float*)kn.DataPtr, headDim, _config.RmsNormEps);
-                        }
+                        SimdKernels.RmsNorm(kPtr + h * headDim, kPtr + h * headDim, (float*)layer.AttnKNorm.DataPtr, headDim, _config.RmsNormEps);
                     }
+
+                    // Apply NeoX RoPE at absolute position (promptLen + pos)
+                    ApplyNeoXRope(qPtr, qHeads, headDim, absPos, isFull);
+                    ApplyNeoXRope(kPtr, kvHeads, headDim, absPos, isFull);
                 }
             }
 
-            // Bidirectional canvas attention + prefix prompt attention
-            int promptLen = PromptLength;
+            // Allowed prompt keys for canvas queries
             int prefixAttendable = isFull
                 ? promptLen
-                : Math.Min(promptLen, Math.Max(0, _config.SlidingWindowSize - 1));
+                : Math.Min(promptLen, Math.Max(0, swa - 1));
+            int promptStart = promptLen - prefixAttendable;
 
             int totalKeys = prefixAttendable + canvasLen;
-            float scale = 1.0f / MathF.Sqrt(headDim);
             int gqaRatio = qHeads / kvHeads;
 
             var attnOut = new float[canvasLen, qDim];
@@ -302,8 +542,7 @@ public sealed unsafe class DiffusionGemmaForwardPass
                 {
                     int kvH = h / gqaRatio;
 
-                    // 1. Cross-attend to prefix prompt KV
-                    int promptStart = promptLen - prefixAttendable;
+                    // 1. Cross-attend to prefix prompt KV (scale = 1.0)
                     for (int k = 0; k < prefixAttendable; k++)
                     {
                         var promptK = _promptKCache[il][promptStart + k];
@@ -312,10 +551,10 @@ public sealed unsafe class DiffusionGemmaForwardPass
                         {
                             dot += canvasQ[pos, h * headDim + d] * promptK[kvH * headDim + d];
                         }
-                        scores[k] = dot * scale;
+                        scores[k] = dot;
                     }
 
-                    // 2. Bidirectional attention across canvas
+                    // 2. Bidirectional attention across canvas (scale = 1.0)
                     for (int k = 0; k < canvasLen; k++)
                     {
                         float dot = 0f;
@@ -323,7 +562,7 @@ public sealed unsafe class DiffusionGemmaForwardPass
                         {
                             dot += canvasQ[pos, h * headDim + d] * canvasK[k, kvH * headDim + d];
                         }
-                        scores[prefixAttendable + k] = dot * scale;
+                        scores[prefixAttendable + k] = dot;
                     }
 
                     fixed (float* sPtr = scores)
@@ -331,18 +570,14 @@ public sealed unsafe class DiffusionGemmaForwardPass
                         SimdKernels.SoftmaxInPlace(sPtr, totalKeys);
                     }
 
-                    // Weighted sum
                     for (int d = 0; d < headDim; d++)
                     {
                         float acc = 0f;
-                        // Prompt V
                         for (int k = 0; k < prefixAttendable; k++)
                         {
                             var promptV = _promptVCache[il][promptStart + k];
                             acc += scores[k] * promptV[kvH * headDim + d];
                         }
-
-                        // Canvas V
                         for (int k = 0; k < canvasLen; k++)
                         {
                             acc += scores[prefixAttendable + k] * canvasV[k, kvH * headDim + d];
@@ -350,59 +585,26 @@ public sealed unsafe class DiffusionGemmaForwardPass
                         attnOut[pos, h * headDim + d] = acc;
                     }
                 }
-            }
 
-            // Project out and residual add
-            for (int pos = 0; pos < canvasLen; pos++)
-            {
+                // Project out and residual add
                 var headOut = new float[qDim];
                 for (int d = 0; d < qDim; d++) headOut[d] = attnOut[pos, d];
 
                 var proj = new float[HiddenDim];
                 fixed (float* inPtr = headOut, outPtr = proj)
                 {
-                    SimdKernels.MatVec(outPtr, layer.Wo!.Value.DataPtr, inPtr, HiddenDim, qDim, layer.Wo.Value.DType);
+                    SimdKernels.MatVec(outPtr, layer.Wo.DataPtr, inPtr, HiddenDim, qDim, layer.Wo.DType);
+                    SimdKernels.RmsNorm(outPtr, outPtr, (float*)layer.PostAttnNorm.DataPtr, HiddenDim, _config.RmsNormEps);
                 }
+                for (int d = 0; d < HiddenDim; d++) curRow[d] = canvas[pos, d] + proj[d];
 
-                // Attn post-norm + residual
-                if (layer.AttnPostNorm is { } apn)
-                {
-                    fixed (float* ptr = proj)
-                    {
-                        SimdKernels.RmsNorm(ptr, ptr, (float*)apn.DataPtr, HiddenDim, _config.RmsNormEps);
-                    }
-                }
-                for (int d = 0; d < HiddenDim; d++) canvas[pos, d] += proj[d];
-
-                // FFN
-                for (int d = 0; d < HiddenDim; d++) curRow[d] = canvas[pos, d];
-                var ffnNormed = new float[HiddenDim];
-                fixed (float* inPtr = curRow, outPtr = ffnNormed)
-                {
-                    float* weightPtr = (float*)layer.FfnNorm!.Value.DataPtr;
-                    SimdKernels.RmsNorm(outPtr, inPtr, weightPtr, HiddenDim, _config.RmsNormEps);
-                }
-
-                var ffnOut = DenseFfn(layer, ffnNormed);
-                if (layer.FfnGateExps is not null)
-                {
-                    var moeOut = MoeFfn(layer, ffnNormed);
-                    for (int d = 0; d < HiddenDim; d++) ffnOut[d] += moeOut[d];
-                }
-
-                if (layer.FfnPostNorm is { } fpn)
-                {
-                    fixed (float* ptr = ffnOut)
-                    {
-                        SimdKernels.RmsNorm(ptr, ptr, (float*)fpn.DataPtr, HiddenDim, _config.RmsNormEps);
-                    }
-                }
-
-                for (int d = 0; d < HiddenDim; d++) canvas[pos, d] += ffnOut[d];
+                // FFN: Dense + MoE
+                ExecuteFfnAndScaling(layer, curRow, DiffusionGemmaPassMode.DecoderCanvas);
+                for (int d = 0; d < HiddenDim; d++) canvas[pos, d] = curRow[d];
             }
         }
 
-        // 3. Final norm, tied embedding projection, and softcapping
+        // 3. Final norm, tied embedding projection, and final logit softcapping (30.0)
         var logits = new float[canvasLen * vocabSize];
         var finalRow = new float[HiddenDim];
         var normedRow = new float[HiddenDim];
@@ -414,8 +616,7 @@ public sealed unsafe class DiffusionGemmaForwardPass
             for (int d = 0; d < HiddenDim; d++) finalRow[d] = canvas[pos, d];
             fixed (float* inPtr = finalRow, outPtr = normedRow)
             {
-                float* weightPtr = (float*)_outputNorm.DataPtr;
-                SimdKernels.RmsNorm(outPtr, inPtr, weightPtr, HiddenDim, _config.RmsNormEps);
+                SimdKernels.RmsNorm(outPtr, inPtr, (float*)_outputNorm.DataPtr, HiddenDim, _config.RmsNormEps);
             }
 
             fixed (float* inPtr = normedRow, outPtr = posLogits)
@@ -423,7 +624,7 @@ public sealed unsafe class DiffusionGemmaForwardPass
                 SimdKernels.MatVec(outPtr, _output.DataPtr, inPtr, vocabSize, HiddenDim, _output.DType);
             }
 
-            // Softcap: tanh(l / softcap) * softcap
+            // Softcap: MathF.Tanh(l / softcap) * softcap
             for (int v = 0; v < vocabSize; v++)
             {
                 float l = posLogits[v];
@@ -435,60 +636,63 @@ public sealed unsafe class DiffusionGemmaForwardPass
         return logits;
     }
 
-    /// <summary>
-    /// Exact soft-embedding sum E[pos] = EmbedScale * sum_v softmax(logits[pos] / temperature)[v] * Embed[v], over
-    /// the whole vocabulary (no tail pruning, so step traces stay comparable with a reference). Vocabulary-major
-    /// so each (possibly quantised) embedding row is dequantised once per step, not once per canvas position.
-    /// The learned self-conditioning MLP that follows in the reference is NOT applied here (see the plan's open items).
-    /// </summary>
-    public float[] ComputeSoftEmbeddings(ReadOnlySpan<float> canvasLogits, float temperature, int canvasLen)
+    private void ExecuteFfnAndScaling(DiffusionGemmaLayerTensorsBase layer, float[] curRow, DiffusionGemmaPassMode mode)
     {
-        int vocabSize = VocabSize;
-        var probs = new float[(long)canvasLen * vocabSize];
-        for (int pos = 0; pos < canvasLen; pos++)
+        // 1. Dense FFN: RMSNorm -> gate/up (dim 2112) -> GELU(gate)*up -> down -> PostFfwNorm1
+        var ffnNormed = new float[HiddenDim];
+        fixed (float* inPtr = curRow, outPtr = ffnNormed)
         {
-            DiffusionGemmaSelfConditioning.ComputeSoftProbabilities(
-                canvasLogits.Slice(pos * vocabSize, vocabSize), temperature, probs.AsSpan(pos * vocabSize, vocabSize));
+            SimdKernels.RmsNorm(outPtr, inPtr, (float*)layer.FfnNorm.DataPtr, HiddenDim, _config.RmsNormEps);
         }
+        var denseOut = DenseFfn(layer, ffnNormed);
 
-        var soft = new float[canvasLen * HiddenDim];
-        var row = new float[HiddenDim];
-        for (int v = 0; v < vocabSize; v++)
+        // 2. MoE Expert branch:
+        float[] combinedFfn;
+        if (layer.FfnGateUpExps is { DataPtr: not null } && layer.FfnGateInp is { DataPtr: not null } && layer.FfnDownExps is { DataPtr: not null })
         {
-            EmbedToken(v, row);
-            for (int pos = 0; pos < canvasLen; pos++)
+            var moeOut = MoeFfn(layer, curRow);
+            // Combine: PostFfwNorm(denseOut + moeOut)
+            var sumFfn = new float[HiddenDim];
+            for (int d = 0; d < HiddenDim; d++) sumFfn[d] = denseOut[d] + moeOut[d];
+
+            if (layer.PostFfwNorm is { DataPtr: not null } pfn)
             {
-                float p = probs[(long)pos * vocabSize + v];
-                var dst = soft.AsSpan(pos * HiddenDim, HiddenDim);
-                System.Numerics.Tensors.TensorPrimitives.MultiplyAdd(row, p, dst, dst);
+                combinedFfn = new float[HiddenDim];
+                fixed (float* inPtr = sumFfn, outPtr = combinedFfn)
+                {
+                    SimdKernels.RmsNorm(outPtr, inPtr, (float*)pfn.DataPtr, HiddenDim, _config.RmsNormEps);
+                }
+            }
+            else
+            {
+                combinedFfn = sumFfn;
             }
         }
-
-        for (int i = 0; i < soft.Length; i++) soft[i] *= _config.EmbedScale;
-        return soft;
-    }
-
-    private void EmbedToken(int token, float[] destination)
-    {
-        var tensor = _tokEmbd;
-        int cols = HiddenDim;
-        long bytesPerRow = ((long)cols / DTypeInfo.BlockSize(tensor.DType)) * DTypeInfo.BytesPerBlock(tensor.DType);
-        byte* src = tensor.DataPtr + (long)token * bytesPerRow;
-        fixed (float* dst = destination)
+        else
         {
-            SimdKernels.DequantRow(src, dst, cols, tensor.DType);
+            combinedFfn = denseOut;
+        }
+
+        // Add residual + apply layer output scale
+        float scale = mode == DiffusionGemmaPassMode.EncoderPrefill
+            ? layer.EncLayerOutputScaleValue
+            : layer.LayerOutputScaleValue;
+
+        for (int d = 0; d < HiddenDim; d++)
+        {
+            curRow[d] = (curRow[d] + combinedFfn[d]) * scale;
         }
     }
 
-    private float[] DenseFfn(DiffusionGemmaLayerTensors layer, float[] normedInput)
+    private float[] DenseFfn(DiffusionGemmaLayerTensorsBase layer, float[] normedInput)
     {
-        int interDim = (int)layer.FfnGate!.Value.Info.Dimensions[1];
+        int interDim = (int)layer.FfnGate.Info.Dimensions[1];
         var gate = new float[interDim];
         var up = new float[interDim];
         fixed (float* inPtr = normedInput, gPtr = gate, uPtr = up)
         {
-            SimdKernels.MatVec(gPtr, layer.FfnGate.Value.DataPtr, inPtr, interDim, HiddenDim, layer.FfnGate.Value.DType);
-            SimdKernels.MatVec(uPtr, layer.FfnUp!.Value.DataPtr, inPtr, interDim, HiddenDim, layer.FfnUp.Value.DType);
+            SimdKernels.MatVec(gPtr, layer.FfnGate.DataPtr, inPtr, interDim, HiddenDim, layer.FfnGate.DType);
+            SimdKernels.MatVec(uPtr, layer.FfnUp.DataPtr, inPtr, interDim, HiddenDim, layer.FfnUp.DType);
         }
         for (int i = 0; i < interDim; i++)
         {
@@ -499,60 +703,167 @@ public sealed unsafe class DiffusionGemmaForwardPass
         var down = new float[HiddenDim];
         fixed (float* inPtr = gate, outPtr = down)
         {
-            SimdKernels.MatVec(outPtr, layer.FfnDown!.Value.DataPtr, inPtr, HiddenDim, interDim, layer.FfnDown.Value.DType);
+            SimdKernels.MatVec(outPtr, layer.FfnDown.DataPtr, inPtr, HiddenDim, interDim, layer.FfnDown.DType);
+        }
+        if (layer.PostFfwNorm1 is { DataPtr: not null } pfn1)
+        {
+            var postNorm = new float[HiddenDim];
+            fixed (float* inPtr = down, postPtr = postNorm)
+            {
+                SimdKernels.RmsNorm(postPtr, inPtr, (float*)pfn1.DataPtr, HiddenDim, _config.RmsNormEps);
+            }
+            return postNorm;
         }
         return down;
     }
 
-    private float[] MoeFfn(DiffusionGemmaLayerTensors layer, float[] normedInput)
+    private float[] MoeFfn(DiffusionGemmaLayerTensorsBase layer, float[] attnRes)
     {
         int numExperts = _config.NumExperts;
         int topK = _config.NumExpertsUsed;
-        int interDim = (int)layer.FfnGateExps!.Value.Info.Dimensions[1];
+        int expertFfnDim = _config.ExpertIntermediateDim; // 704
 
-        var logits = new float[numExperts];
-        fixed (float* inPtr = normedInput, outPtr = logits)
+        // 1. Router: pure RMSNorm(attnRes) * (1 / sqrt(D)) * routerScale
+        var routerNormed = new float[HiddenDim];
+        float invSqrtD = 1.0f / MathF.Sqrt(HiddenDim);
+        fixed (float* inPtr = attnRes, outPtr = routerNormed)
         {
-            SimdKernels.MatVec(outPtr, layer.FfnGateInp!.Value.DataPtr, inPtr, numExperts, HiddenDim, layer.FfnGateInp.Value.DType);
+            SimdKernels.PureRmsNorm(outPtr, inPtr, HiddenDim, _config.RmsNormEps);
         }
 
-        int[] topIndices = DeepSeek4Graph.SelectTopKIndices(logits, topK);
-        var weights = new float[topK];
-        float sumWeight = 0f;
+        // Apply router scale if available
+        if (layer.FfnGateInpScale is { } gateScale && gateScale.DataPtr != null)
+        {
+            var scalePtr = (float*)gateScale.DataPtr;
+            for (int d = 0; d < HiddenDim; d++)
+            {
+                routerNormed[d] = routerNormed[d] * invSqrtD * scalePtr[d];
+            }
+        }
+        else
+        {
+            for (int d = 0; d < HiddenDim; d++)
+            {
+                routerNormed[d] *= invSqrtD;
+            }
+        }
+
+        // Router logits
+        var routerLogits = new float[numExperts];
+        var gateInp = layer.FfnGateInp!.Value;
+        fixed (float* inPtr = routerNormed, outPtr = routerLogits)
+        {
+            SimdKernels.MatVec(outPtr, gateInp.DataPtr, inPtr, numExperts, HiddenDim, gateInp.DType);
+        }
+
+        // Softmax over 128 experts + top-K selection
+        float maxVal = float.NegativeInfinity;
+        for (int e = 0; e < numExperts; e++)
+        {
+            if (routerLogits[e] > maxVal) maxVal = routerLogits[e];
+        }
+        float sumExp = 0f;
+        var expLogits = new float[numExperts];
+        for (int e = 0; e < numExperts; e++)
+        {
+            float ex = MathF.Exp(routerLogits[e] - maxVal);
+            expLogits[e] = ex;
+            sumExp += ex;
+        }
+        float invSum = sumExp > 0f ? 1.0f / sumExp : 0f;
+        for (int e = 0; e < numExperts; e++) expLogits[e] *= invSum;
+
+        // Select top-K
+        var topIndices = new int[topK];
+        var topWeights = new float[topK];
+        float selSum = 0f;
         for (int k = 0; k < topK; k++)
         {
-            float e = MathF.Exp(logits[topIndices[k]]);
-            weights[k] = e;
-            sumWeight += e;
+            int bestIdx = -1;
+            float bestVal = float.NegativeInfinity;
+            for (int e = 0; e < numExperts; e++)
+            {
+                if (expLogits[e] > bestVal)
+                {
+                    bestVal = expLogits[e];
+                    bestIdx = e;
+                }
+            }
+            topIndices[k] = bestIdx;
+            topWeights[k] = bestVal;
+            selSum += bestVal;
+            expLogits[bestIdx] = float.NegativeInfinity;
         }
-        float invSum = 1.0f / MathF.Max(1e-6f, sumWeight);
-        for (int k = 0; k < topK; k++) weights[k] *= invSum;
 
-        var accumulated = new float[HiddenDim];
-        var expertGate = new float[interDim];
-        var expertUp = new float[interDim];
+        // Renormalize top-K
+        if (selSum > 0f)
+        {
+            float invSel = 1.0f / selSum;
+            for (int k = 0; k < topK; k++) topWeights[k] *= invSel;
+        }
+
+        // 2. Expert execution: moeInput = RMSNorm(attnRes, pre_ffw_norm_2)
+        var moeInput = new float[HiddenDim];
+        if (layer.PreFfwNorm2 is { DataPtr: not null } pfn2)
+        {
+            fixed (float* inPtr = attnRes, outPtr = moeInput)
+            {
+                SimdKernels.RmsNorm(outPtr, inPtr, (float*)pfn2.DataPtr, HiddenDim, _config.RmsNormEps);
+            }
+        }
+        else
+        {
+            Array.Copy(attnRes, moeInput, HiddenDim);
+        }
+
+        int fusedCols = expertFfnDim * 2; // 1408
+        var gateUp = new float[fusedCols];
+        var act = new float[expertFfnDim];
         var expertDown = new float[HiddenDim];
+        var moeAccum = new float[HiddenDim];
 
         for (int k = 0; k < topK; k++)
         {
             int expert = topIndices[k];
-            float w = weights[k];
+            float w = topWeights[k];
 
-            PerExpertMatVec(layer.FfnGateExps!.Value, expert, normedInput, expertGate, interDim);
-            PerExpertMatVec(layer.FfnUpExps!.Value, expert, normedInput, expertUp, interDim);
+            // Fused gate/up: [2816, 1408]
+            PerExpertMatVec(layer.FfnGateUpExps!.Value, expert, moeInput, gateUp, fusedCols);
 
-            for (int i = 0; i < interDim; i++)
+            // GEGLU: first 704 values are gate, second 704 are up
+            for (int i = 0; i < expertFfnDim; i++)
             {
-                float x = expertGate[i];
+                float x = gateUp[i];
+                float up = gateUp[expertFfnDim + i];
                 float gelu = 0.5f * x * (1.0f + MathF.Tanh(0.7978845608f * (x + 0.044715f * x * x * x)));
-                expertGate[i] = gelu * expertUp[i];
+                act[i] = gelu * up;
             }
 
-            PerExpertMatVecDown(layer.FfnDownExps!.Value, expert, expertGate, expertDown, interDim);
-            for (int i = 0; i < HiddenDim; i++) accumulated[i] += expertDown[i] * w;
+            // Down projection: [704, 2816]
+            PerExpertMatVecDown(layer.FfnDownExps!.Value, expert, act, expertDown, expertFfnDim);
+
+            // Per-expert down scale
+            float expScale = layer.GetExpertDownScale(expert);
+            for (int d = 0; d < HiddenDim; d++)
+            {
+                moeAccum[d] += w * expertDown[d] * expScale;
+            }
         }
 
-        return accumulated;
+        // Post-FFW norm 2 on MoE output
+        var moeOut = new float[HiddenDim];
+        if (layer.PostFfwNorm2 is { DataPtr: not null } pfn2Out)
+        {
+            fixed (float* inPtr = moeAccum, outPtr = moeOut)
+            {
+                SimdKernels.RmsNorm(outPtr, inPtr, (float*)pfn2Out.DataPtr, HiddenDim, _config.RmsNormEps);
+            }
+        }
+        else
+        {
+            Array.Copy(moeAccum, moeOut, HiddenDim);
+        }
+        return moeOut;
     }
 
     private void PerExpertMatVec(DeepSeek4TensorRef tensor, int expert, float[] input, float[] output, int outDim)
@@ -577,9 +888,117 @@ public sealed unsafe class DiffusionGemmaForwardPass
         }
     }
 
+    private void ApplyNeoXRope(float* data, int numHeads, int headDim, int pos, bool isFull)
+    {
+        int half = headDim / 2;
+        float[] freqs = isFull ? _ropeFreqsGlobal : _ropeFreqsLocal;
+
+        for (int h = 0; h < numHeads; h++)
+        {
+            float* head = data + (long)h * headDim;
+            for (int j = 0; j < half; j++)
+            {
+                float angle = pos * freqs[j];
+                float c = MathF.Cos(angle);
+                float s = MathF.Sin(angle);
+
+                float x0 = head[j];
+                float x1 = head[j + half];
+
+                head[j] = x0 * c - x1 * s;
+                head[j + half] = x0 * s + x1 * c;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Exact full-vocabulary soft-embedding sum E[pos] = EmbedScale * sum_v softmax(logits[pos] / temperature)[v] * Embed[v].
+    /// </summary>
+    public float[] ComputeSoftEmbeddings(ReadOnlySpan<float> canvasLogits, float temperature, int canvasLen)
+    {
+        int vocabSize = VocabSize;
+        var probs = new float[(long)canvasLen * vocabSize];
+        for (int pos = 0; pos < canvasLen; pos++)
+        {
+            DiffusionGemmaSelfConditioning.ComputeSoftProbabilities(
+                canvasLogits.Slice(pos * vocabSize, vocabSize), temperature, probs.AsSpan(pos * vocabSize, vocabSize));
+        }
+
+        var soft = new float[canvasLen * HiddenDim];
+        var row = new float[HiddenDim];
+        for (int v = 0; v < vocabSize; v++)
+        {
+            EmbedToken(v, row);
+            for (int pos = 0; pos < canvasLen; pos++)
+            {
+                float p = probs[(long)pos * vocabSize + v];
+                if (p == 0f) continue;
+                var dst = soft.AsSpan(pos * HiddenDim, HiddenDim);
+                System.Numerics.Tensors.TensorPrimitives.MultiplyAdd(row, p, dst, dst);
+            }
+        }
+
+        for (int i = 0; i < soft.Length; i++) soft[i] *= _config.EmbedScale;
+        return soft;
+    }
+
+    /// <summary>
+    /// Applies the learned self-conditioning MLP to soft embeddings:
+    /// signal = down(GELU(gate(pre_norm(soft))) * up(pre_norm(soft))).
+    /// </summary>
+    public void ApplySelfCondMlp(ReadOnlySpan<float> softEmbed, Span<float> scOut, int canvasLen)
+    {
+        if (_scGate is null || _scUp is null || _scDown is null || _scPreNorm is null)
+        {
+            softEmbed.Slice(0, canvasLen * HiddenDim).CopyTo(scOut);
+            return;
+        }
+
+        int interDim = _config.SelfCondIntermediateDim;
+        var normed = new float[HiddenDim];
+        var gate = new float[interDim];
+        var up = new float[interDim];
+
+        for (int pos = 0; pos < canvasLen; pos++)
+        {
+            fixed (float* inPtr = softEmbed.Slice(pos * HiddenDim, HiddenDim), nPtr = normed, gPtr = gate, uPtr = up, outPtr = scOut.Slice(pos * HiddenDim, HiddenDim))
+            {
+                // Pre-norm
+                SimdKernels.RmsNorm(nPtr, inPtr, (float*)_scPreNorm.Value.DataPtr, HiddenDim, _config.RmsNormEps);
+
+                // Gate & Up
+                SimdKernels.MatVec(gPtr, _scGate.Value.DataPtr, nPtr, interDim, HiddenDim, _scGate.Value.DType);
+                SimdKernels.MatVec(uPtr, _scUp.Value.DataPtr, nPtr, interDim, HiddenDim, _scUp.Value.DType);
+
+                // GELU(gate) * up
+                for (int i = 0; i < interDim; i++)
+                {
+                    float x = gate[i];
+                    float gelu = 0.5f * x * (1.0f + MathF.Tanh(0.7978845608f * (x + 0.044715f * x * x * x)));
+                    gate[i] = gelu * up[i];
+                }
+
+                // Down
+                SimdKernels.MatVec(outPtr, _scDown.Value.DataPtr, gPtr, HiddenDim, interDim, _scDown.Value.DType);
+            }
+        }
+    }
+
+    private void EmbedToken(int token, float[] destination)
+    {
+        var tensor = _tokEmbd;
+        int cols = HiddenDim;
+        long bytesPerRow = ((long)cols / DTypeInfo.BlockSize(tensor.DType)) * DTypeInfo.BytesPerBlock(tensor.DType);
+        byte* src = tensor.DataPtr + (long)token * bytesPerRow;
+        fixed (float* dst = destination)
+        {
+            SimdKernels.DequantRow(src, dst, cols, tensor.DType);
+        }
+    }
+
     public void Reset()
     {
-        for (int i = 0; i < _config.NumLayers; i++)
+        for (int i = 0; i < _layers.Count; i++)
         {
             _promptKCache[i].Clear();
             _promptVCache[i].Clear();

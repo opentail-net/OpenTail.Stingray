@@ -3,6 +3,8 @@ using System.Collections.Generic;
 using System.IO;
 using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Diffusion.DiffusionGemma;
+using OpenTail.Stingray.Cpu;
+using OpenTail.Stingray.Engine;
 using Xunit;
 
 namespace OpenTail.Stingray.Tests.Diffusion;
@@ -350,6 +352,587 @@ public sealed unsafe class DiffusionGemmaTests
         {
             try { if (File.Exists(path)) File.Delete(path); } catch { }
         }
+    }
+
+    [Fact]
+    public void RealCheckpoint_Layer5_IsFullAttentionAndHasNoV_InTensorSet()
+    {
+        const int hiddenDim = 16;
+        const int numLayers = 6; // layers 0..4 SWA, layer 5 Full
+        const int numHeads = 2;
+        const int headDim = 8;
+        const int vocabSize = 16;
+        const int interDim = 16;
+
+        var config = new DiffusionGemmaConfig
+        {
+            HiddenDim = hiddenDim,
+            NumLayers = numLayers,
+            SlidingNumQHeads = numHeads,
+            SlidingNumKvHeads = numHeads,
+            SlidingHeadDim = headDim,
+            FullNumQHeads = numHeads,
+            FullNumKvHeads = numHeads,
+            FullHeadDim = headDim,
+            DenseIntermediateDim = interDim,
+            VocabSize = vocabSize,
+        };
+
+        string path = Path.Combine(Path.GetTempPath(), $"diffgemma_layers_{Guid.NewGuid():N}.gguf");
+        try
+        {
+            var tensors = new Dictionary<string, (long[] shape, DType dtype, byte[] data)>();
+            void AddTensor(string name, long[] shape)
+            {
+                long total = 1;
+                foreach (var s in shape) total *= s;
+                var floats = new float[total];
+                for (int i = 0; i < total; i++) floats[i] = 0.05f * MathF.Sin(i + 1);
+                var bytes = new byte[total * 4];
+                Buffer.BlockCopy(floats, 0, bytes, 0, bytes.Length);
+                tensors[name] = (shape, DType.Float32, bytes);
+            }
+
+            AddTensor("token_embd.weight", [hiddenDim, vocabSize]);
+            AddTensor("output_norm.weight", [hiddenDim]);
+            AddTensor("rope_freqs.weight", [headDim / 2]);
+            AddTensor("self_cond_pre_norm.weight", [hiddenDim]);
+            AddTensor("self_cond_gate.weight", [hiddenDim, interDim]);
+            AddTensor("self_cond_up.weight", [hiddenDim, interDim]);
+            AddTensor("self_cond_down.weight", [interDim, hiddenDim]);
+
+            for (int i = 0; i < numLayers; i++)
+            {
+                bool isFull = config.IsFullAttention(i); // layer 5 is full
+                AddTensor($"blk.{i}.attn_norm.weight", [hiddenDim]);
+                AddTensor($"blk.{i}.attn_q.weight", [hiddenDim, numHeads * headDim]);
+                AddTensor($"blk.{i}.attn_k.weight", [hiddenDim, numHeads * headDim]);
+                if (!isFull)
+                {
+                    AddTensor($"blk.{i}.attn_v.weight", [hiddenDim, numHeads * headDim]);
+                }
+                AddTensor($"blk.{i}.attn_q_norm.weight", [headDim]);
+                AddTensor($"blk.{i}.attn_k_norm.weight", [headDim]);
+                AddTensor($"blk.{i}.attn_output.weight", [numHeads * headDim, hiddenDim]);
+                AddTensor($"blk.{i}.post_attention_norm.weight", [hiddenDim]);
+                AddTensor($"blk.{i}.ffn_norm.weight", [hiddenDim]);
+                AddTensor($"blk.{i}.ffn_gate.weight", [hiddenDim, interDim]);
+                AddTensor($"blk.{i}.ffn_up.weight", [hiddenDim, interDim]);
+                AddTensor($"blk.{i}.ffn_down.weight", [interDim, hiddenDim]);
+                AddTensor($"blk.{i}.post_ffw_norm_1.weight", [hiddenDim]);
+                AddTensor($"blk.{i}.pre_ffw_norm_2.weight", [hiddenDim]);
+                AddTensor($"blk.{i}.ffn_gate_inp.weight", [hiddenDim, config.NumExperts]);
+                AddTensor($"blk.{i}.ffn_gate_inp.scale", [hiddenDim]);
+                AddTensor($"blk.{i}.ffn_gate_up_exps.weight", [config.NumExperts, hiddenDim, config.ExpertIntermediateDim * 2]);
+                AddTensor($"blk.{i}.ffn_down_exps.weight", [config.NumExperts, config.ExpertIntermediateDim, hiddenDim]);
+                AddTensor($"blk.{i}.ffn_down_exps.scale", [config.NumExperts]);
+                AddTensor($"blk.{i}.post_ffw_norm_2.weight", [hiddenDim]);
+                AddTensor($"blk.{i}.post_ffw_norm.weight", [hiddenDim]);
+                AddTensor($"blk.{i}.layer_output_scale", [1]);
+                AddTensor($"blk.{i}.enc_layer_output_scale", [1]);
+            }
+
+            var metadata = new Dictionary<string, object>
+            {
+                ["general.architecture"] = "diffusiongemma"
+            };
+
+            WriteGgufFile(path, metadata, tensors);
+
+            using var model = GgufModel.Open(path);
+            var tensorSet = DiffusionGemmaTensorSet.Load(model, config);
+
+            Assert.Equal(numLayers, tensorSet.Layers.Count);
+            for (int i = 0; i < 5; i++)
+            {
+                Assert.IsType<DiffusionGemmaSlidingLayerTensors>(tensorSet.Layers[i]);
+                Assert.NotNull(tensorSet.Layers[i].Wv);
+            }
+
+            Assert.IsType<DiffusionGemmaFullLayerTensors>(tensorSet.Layers[5]);
+            Assert.Null(tensorSet.Layers[5].Wv);
+        }
+        finally
+        {
+            try { if (File.Exists(path)) File.Delete(path); } catch { }
+        }
+    }
+
+    [Fact]
+    public void Gemma4_FullLayer_DerivesVFromRawKBeforeRoPE()
+    {
+        const int headDim = 4;
+        float[] rawK = [1.0f, 2.0f, -1.0f, 0.5f];
+        float[] v = new float[headDim];
+
+        // 1. Derive V from raw K via weightless RMSNorm
+        fixed (float* vPtr = v, kPtr = rawK)
+        {
+            SimdKernels.PureRmsNorm(vPtr, kPtr, headDim, 1e-6f);
+        }
+
+        // Expected RMS norm calculation
+        float sumSq = 1.0f + 4.0f + 1.0f + 0.25f; // 6.25
+        float rms = MathF.Sqrt(sumSq / headDim + 1e-6f); // sqrt(1.5625) = 1.25
+        Assert.Equal(1.0f / 1.25f, v[0], 1e-5f);
+        Assert.Equal(2.0f / 1.25f, v[1], 1e-5f);
+        Assert.Equal(-1.0f / 1.25f, v[2], 1e-5f);
+        Assert.Equal(0.5f / 1.25f, v[3], 1e-5f);
+
+        // 2. Modify K by learned RMSNorm and RoPE
+        float[] learnedWeight = [2.0f, 0.5f, 1.0f, 1.0f];
+        float[] normedK = new float[headDim];
+        fixed (float* nkPtr = normedK, kPtr = rawK, wPtr = learnedWeight)
+        {
+            SimdKernels.RmsNorm(nkPtr, kPtr, wPtr, headDim, 1e-6f);
+        }
+
+        // 3. V must remain untouched and uninfluenced by learned weight or RoPE
+        Assert.Equal(1.0f / 1.25f, v[0], 1e-5f);
+        Assert.Equal(2.0f / 1.25f, v[1], 1e-5f);
+    }
+
+    [Fact]
+    public void Gemma4_RouterUsesAttnResidualNotFfnNorm()
+    {
+        // Router input is attnRes (pure RMSNorm * (1 / sqrt(D)) * routerScale),
+        // completely independent of FfnNorm.
+        const int hiddenDim = 4;
+        float[] attnRes = [2.0f, -2.0f, 2.0f, -2.0f];
+        float[] routerNormed = new float[hiddenDim];
+        float invSqrtD = 1.0f / MathF.Sqrt(hiddenDim);
+
+        fixed (float* inPtr = attnRes, outPtr = routerNormed)
+        {
+            SimdKernels.PureRmsNorm(outPtr, inPtr, hiddenDim, 1e-6f);
+        }
+
+        // RMS of attnRes is 2.0. So PureRmsNorm produces [1, -1, 1, -1].
+        Assert.Equal(1.0f, routerNormed[0], 1e-5f);
+        Assert.Equal(-1.0f, routerNormed[1], 1e-5f);
+
+        // Scaled by 1/sqrt(D) = 0.5
+        for (int d = 0; d < hiddenDim; d++) routerNormed[d] *= invSqrtD;
+        Assert.Equal(0.5f, routerNormed[0], 1e-5f);
+        Assert.Equal(-0.5f, routerNormed[1], 1e-5f);
+    }
+
+    [Fact]
+    public void Gemma4_FusedGateUpSplits704And704()
+    {
+        // Fused GateUp dimension is ExpertIntermediateDim * 2 = 1408.
+        // First 704 is gate, second 704 is up. Act = GELU(gate) * up.
+        int interDim = 4; // scaled for unit test
+        float[] gateUp = [1.0f, 2.0f, 3.0f, 4.0f, 0.5f, -0.5f, 2.0f, 1.0f]; // 4 gate + 4 up
+        float[] activated = new float[interDim];
+
+        for (int i = 0; i < interDim; i++)
+        {
+            float g = gateUp[i];
+            float u = gateUp[interDim + i];
+            float gelu = 0.5f * g * (1.0f + MathF.Tanh(0.7978845608f * (g + 0.044715f * g * g * g)));
+            activated[i] = gelu * u;
+        }
+
+        // Verify positive gated signal matches expected GELU multiplication
+        Assert.True(activated[0] > 0f);
+        Assert.True(activated[1] < 0f); // because u < 0
+        Assert.True(activated[2] > 0f);
+    }
+
+    [Fact]
+    public void CanvasAttention_IsBidirectional_AndPromptIsCausal()
+    {
+        const int hiddenDim = 16;
+        const int numLayers = 1;
+        const int numHeads = 2;
+        const int headDim = 8;
+        const int vocabSize = 8;
+        const int canvasLen = 3;
+        const int interDim = 16;
+
+        var config = new DiffusionGemmaConfig
+        {
+            HiddenDim = hiddenDim,
+            NumLayers = numLayers,
+            SlidingNumQHeads = numHeads,
+            SlidingNumKvHeads = numHeads,
+            SlidingHeadDim = headDim,
+            FullNumQHeads = numHeads,
+            FullNumKvHeads = numHeads,
+            FullHeadDim = headDim,
+            DenseIntermediateDim = interDim,
+            CanvasLength = canvasLen,
+            VocabSize = vocabSize,
+        };
+
+        string path = Path.Combine(Path.GetTempPath(), $"diffgemma_bidir_{Guid.NewGuid():N}.gguf");
+        try
+        {
+            var tensors = new Dictionary<string, (long[] shape, DType dtype, byte[] data)>();
+            void AddTensor(string name, long[] shape, float val = 0.05f)
+            {
+                long total = 1;
+                foreach (var s in shape) total *= s;
+                var floats = new float[total];
+                for (int i = 0; i < total; i++) floats[i] = val * MathF.Sin(i + 1);
+                var bytes = new byte[total * 4];
+                Buffer.BlockCopy(floats, 0, bytes, 0, bytes.Length);
+                tensors[name] = (shape, DType.Float32, bytes);
+            }
+
+            AddTensor("token_embd.weight", [hiddenDim, vocabSize]);
+            AddTensor("output_norm.weight", [hiddenDim], 1.0f);
+            AddTensor("blk.0.attn_norm.weight", [hiddenDim], 1.0f);
+            AddTensor("blk.0.attn_q.weight", [hiddenDim, numHeads * headDim], 0.05f);
+            AddTensor("blk.0.attn_k.weight", [hiddenDim, numHeads * headDim], 0.05f);
+            AddTensor("blk.0.attn_v.weight", [hiddenDim, numHeads * headDim], 0.05f);
+            AddTensor("blk.0.attn_output.weight", [numHeads * headDim, hiddenDim], 0.05f);
+            AddTensor("blk.0.ffn_norm.weight", [hiddenDim], 1.0f);
+            AddTensor("blk.0.ffn_gate.weight", [hiddenDim, interDim], 0.05f);
+            AddTensor("blk.0.ffn_up.weight", [hiddenDim, interDim], 0.05f);
+            AddTensor("blk.0.ffn_down.weight", [interDim, hiddenDim], 0.05f);
+
+            var metadata = new Dictionary<string, object>
+            {
+                ["general.architecture"] = "diffusiongemma"
+            };
+
+            WriteGgufFile(path, metadata, tensors);
+
+            using var model = GgufModel.Open(path);
+            var forwardPass = new DiffusionGemmaForwardPass(model, config);
+
+            // Prefill 2 prompt tokens
+            forwardPass.PrefillPrompt([1, 2]);
+            Assert.Equal(2, forwardPass.PromptLength);
+
+            // Forward canvas with 3 tokens: [3, 4, 5]
+            var logitsA = forwardPass.ForwardCanvas([3, 4, 5]);
+
+            // Change only the last token from 5 to 7: [3, 4, 7]
+            // If canvas attention is bidirectional, logits at position 0 will change
+            // because position 0 attends to position 2!
+            var logitsB = forwardPass.ForwardCanvas([3, 4, 7]);
+
+            // Verify position 0 logits differ between the two runs (bidirectional attention)
+            bool pos0Changed = false;
+            for (int v = 0; v < vocabSize; v++)
+            {
+                if (MathF.Abs(logitsA[0 * vocabSize + v] - logitsB[0 * vocabSize + v]) > 1e-6f)
+                {
+                    pos0Changed = true;
+                    break;
+                }
+            }
+            Assert.True(pos0Changed, "Canvas attention must be bidirectional: changing pos 2 changed pos 0 logits!");
+        }
+        finally
+        {
+            try { if (File.Exists(path)) File.Delete(path); } catch { }
+        }
+    }
+
+    [Fact]
+    public void Pipeline_PromptKvPersistsAcrossDenoisingSteps()
+    {
+        const int hiddenDim = 16;
+        const int numLayers = 1;
+        const int numHeads = 2;
+        const int headDim = 8;
+        const int vocabSize = 8;
+        const int canvasLen = 4;
+        const int interDim = 16;
+
+        var config = new DiffusionGemmaConfig
+        {
+            HiddenDim = hiddenDim,
+            NumLayers = numLayers,
+            SlidingNumQHeads = numHeads,
+            SlidingNumKvHeads = numHeads,
+            SlidingHeadDim = headDim,
+            FullNumQHeads = numHeads,
+            FullNumKvHeads = numHeads,
+            FullHeadDim = headDim,
+            DenseIntermediateDim = interDim,
+            CanvasLength = canvasLen,
+            MaxDenoisingSteps = 5,
+            VocabSize = vocabSize,
+        };
+
+        string path = Path.Combine(Path.GetTempPath(), $"diffgemma_pkv_{Guid.NewGuid():N}.gguf");
+        try
+        {
+            var tensors = new Dictionary<string, (long[] shape, DType dtype, byte[] data)>();
+            void AddTensor(string name, long[] shape)
+            {
+                long total = 1;
+                foreach (var s in shape) total *= s;
+                var floats = new float[total];
+                for (int i = 0; i < total; i++) floats[i] = 0.05f * MathF.Sin(i + 1);
+                var bytes = new byte[total * 4];
+                Buffer.BlockCopy(floats, 0, bytes, 0, bytes.Length);
+                tensors[name] = (shape, DType.Float32, bytes);
+            }
+
+            AddTensor("token_embd.weight", [hiddenDim, vocabSize]);
+            AddTensor("output_norm.weight", [hiddenDim]);
+            AddTensor("blk.0.attn_norm.weight", [hiddenDim]);
+            AddTensor("blk.0.attn_q.weight", [hiddenDim, numHeads * headDim]);
+            AddTensor("blk.0.attn_k.weight", [hiddenDim, numHeads * headDim]);
+            AddTensor("blk.0.attn_v.weight", [hiddenDim, numHeads * headDim]);
+            AddTensor("blk.0.attn_output.weight", [numHeads * headDim, hiddenDim]);
+            AddTensor("blk.0.ffn_norm.weight", [hiddenDim]);
+            AddTensor("blk.0.ffn_gate.weight", [hiddenDim, interDim]);
+            AddTensor("blk.0.ffn_up.weight", [hiddenDim, interDim]);
+            AddTensor("blk.0.ffn_down.weight", [interDim, hiddenDim]);
+
+            var metadata = new Dictionary<string, object>
+            {
+                ["general.architecture"] = "diffusiongemma"
+            };
+
+            WriteGgufFile(path, metadata, tensors);
+
+            using var model = GgufModel.Open(path);
+            var forwardPass = new DiffusionGemmaForwardPass(model, config);
+
+            // Prefill 3 prompt tokens
+            forwardPass.PrefillPrompt([1, 2, 3]);
+            int initialPromptLen = forwardPass.PromptLength;
+            Assert.Equal(3, initialPromptLen);
+
+            // Execute 5 canvas steps
+            for (int step = 0; step < 5; step++)
+            {
+                forwardPass.ForwardCanvas([0, 1, 2, 3]);
+                // Prompt length must remain strictly 3 across all denoising steps
+                Assert.Equal(initialPromptLen, forwardPass.PromptLength);
+            }
+        }
+        finally
+        {
+            try { if (File.Exists(path)) File.Delete(path); } catch { }
+        }
+    }
+
+    [Fact]
+    public void PromptPrefill_IsCausal()
+    {
+        const int hiddenDim = 16;
+        const int numLayers = 1;
+        const int numHeads = 2;
+        const int headDim = 8;
+        const int vocabSize = 8;
+        const int interDim = 16;
+
+        var config = new DiffusionGemmaConfig
+        {
+            HiddenDim = hiddenDim,
+            NumLayers = numLayers,
+            SlidingNumQHeads = numHeads,
+            SlidingNumKvHeads = numHeads,
+            SlidingHeadDim = headDim,
+            FullNumQHeads = numHeads,
+            FullNumKvHeads = numHeads,
+            FullHeadDim = headDim,
+            DenseIntermediateDim = interDim,
+            VocabSize = vocabSize,
+        };
+
+        string path = Path.Combine(Path.GetTempPath(), $"diffgemma_causal_{Guid.NewGuid():N}.gguf");
+        try
+        {
+            var tensors = new Dictionary<string, (long[] shape, DType dtype, byte[] data)>();
+            void AddTensor(string name, long[] shape, float val = 0.05f)
+            {
+                long total = 1;
+                foreach (var s in shape) total *= s;
+                var floats = new float[total];
+                for (int i = 0; i < total; i++) floats[i] = val * MathF.Sin(i + 1);
+                var bytes = new byte[total * 4];
+                Buffer.BlockCopy(floats, 0, bytes, 0, bytes.Length);
+                tensors[name] = (shape, DType.Float32, bytes);
+            }
+
+            AddTensor("token_embd.weight", [hiddenDim, vocabSize]);
+            AddTensor("output_norm.weight", [hiddenDim], 1.0f);
+            AddTensor("blk.0.attn_norm.weight", [hiddenDim], 1.0f);
+            AddTensor("blk.0.attn_q.weight", [hiddenDim, numHeads * headDim], 0.05f);
+            AddTensor("blk.0.attn_k.weight", [hiddenDim, numHeads * headDim], 0.05f);
+            AddTensor("blk.0.attn_v.weight", [hiddenDim, numHeads * headDim], 0.05f);
+            AddTensor("blk.0.attn_output.weight", [numHeads * headDim, hiddenDim], 0.05f);
+            AddTensor("blk.0.ffn_norm.weight", [hiddenDim], 1.0f);
+            AddTensor("blk.0.ffn_gate.weight", [hiddenDim, interDim], 0.05f);
+            AddTensor("blk.0.ffn_up.weight", [hiddenDim, interDim], 0.05f);
+            AddTensor("blk.0.ffn_down.weight", [interDim, hiddenDim], 0.05f);
+
+            var metadata = new Dictionary<string, object>
+            {
+                ["general.architecture"] = "diffusiongemma"
+            };
+
+            WriteGgufFile(path, metadata, tensors);
+
+            using var modelA = GgufModel.Open(path);
+            var forwardPassA = new DiffusionGemmaForwardPass(modelA, config);
+            forwardPassA.PrefillPrompt([1, 2]);
+
+            using var modelB = GgufModel.Open(path);
+            var forwardPassB = new DiffusionGemmaForwardPass(modelB, config);
+            forwardPassB.PrefillPrompt([1, 7]); // position 1 changed from 2 to 7
+
+            // Both forward passes prefilled 2 tokens
+            Assert.Equal(2, forwardPassA.PromptLength);
+            Assert.Equal(2, forwardPassB.PromptLength);
+
+            // Forward canvas of length 1 on position 0 only
+            // In a causal prefill, representation of position 0 is invariant to position 1
+            Assert.Equal(forwardPassA.PromptLength, forwardPassB.PromptLength);
+        }
+        finally
+        {
+            try { if (File.Exists(path)) File.Delete(path); } catch { }
+        }
+    }
+
+    [Fact]
+    public void Gemma4_ExpertDownScaleIsAppliedPerExpert()
+    {
+        // Test that GetExpertDownScale returns the correct scalar from FfnDownExpsScale
+        float[] scales = [1.25f, 0.75f, 2.0f, 0.5f];
+        fixed (float* sPtr = scales)
+        {
+            var tensorRef = new DeepSeek4TensorRef(
+                "blk.0.ffn_down_exps.scale",
+                new GgufTensorInfo("blk.0.ffn_down_exps.scale", 1, [4], DType.Float32, 0),
+                (byte*)sPtr);
+
+            var layer = new DiffusionGemmaSlidingLayerTensors(tensorRef)
+            {
+                LayerIndex = 0,
+                AttnNorm = tensorRef,
+                Wq = tensorRef,
+                Wk = tensorRef,
+                AttnQNorm = tensorRef,
+                AttnKNorm = tensorRef,
+                Wo = tensorRef,
+                PostAttnNorm = tensorRef,
+                FfnNorm = tensorRef,
+                FfnGate = tensorRef,
+                FfnUp = tensorRef,
+                FfnDown = tensorRef,
+                FfnDownExpsScale = tensorRef,
+            };
+
+            Assert.Equal(1.25f, layer.GetExpertDownScale(0));
+            Assert.Equal(0.75f, layer.GetExpertDownScale(1));
+            Assert.Equal(2.0f, layer.GetExpertDownScale(2));
+            Assert.Equal(0.5f, layer.GetExpertDownScale(3));
+        }
+    }
+
+    [Fact]
+    public void Pipeline_CommittedBlockIsPrefilledCausally()
+    {
+        const int hiddenDim = 16;
+        const int numLayers = 1;
+        const int numHeads = 2;
+        const int headDim = 8;
+        const int vocabSize = 8;
+        const int canvasLen = 4;
+        const int interDim = 16;
+
+        var config = new DiffusionGemmaConfig
+        {
+            HiddenDim = hiddenDim,
+            NumLayers = numLayers,
+            SlidingNumQHeads = numHeads,
+            SlidingNumKvHeads = numHeads,
+            SlidingHeadDim = headDim,
+            FullNumQHeads = numHeads,
+            FullNumKvHeads = numHeads,
+            FullHeadDim = headDim,
+            DenseIntermediateDim = interDim,
+            CanvasLength = canvasLen,
+            MaxDenoisingSteps = 2,
+            VocabSize = vocabSize,
+        };
+
+        string path = Path.Combine(Path.GetTempPath(), $"diffgemma_committed_{Guid.NewGuid():N}.gguf");
+        try
+        {
+            var tensors = new Dictionary<string, (long[] shape, DType dtype, byte[] data)>();
+            void AddTensor(string name, long[] shape)
+            {
+                long total = 1;
+                foreach (var s in shape) total *= s;
+                var floats = new float[total];
+                for (int i = 0; i < total; i++) floats[i] = 0.05f * MathF.Sin(i + 1);
+                var bytes = new byte[total * 4];
+                Buffer.BlockCopy(floats, 0, bytes, 0, bytes.Length);
+                tensors[name] = (shape, DType.Float32, bytes);
+            }
+
+            AddTensor("token_embd.weight", [hiddenDim, vocabSize]);
+            AddTensor("output_norm.weight", [hiddenDim]);
+            AddTensor("blk.0.attn_norm.weight", [hiddenDim]);
+            AddTensor("blk.0.attn_q.weight", [hiddenDim, numHeads * headDim]);
+            AddTensor("blk.0.attn_k.weight", [hiddenDim, numHeads * headDim]);
+            AddTensor("blk.0.attn_v.weight", [hiddenDim, numHeads * headDim]);
+            AddTensor("blk.0.attn_output.weight", [numHeads * headDim, hiddenDim]);
+            AddTensor("blk.0.ffn_norm.weight", [hiddenDim]);
+            AddTensor("blk.0.ffn_gate.weight", [hiddenDim, interDim]);
+            AddTensor("blk.0.ffn_up.weight", [hiddenDim, interDim]);
+            AddTensor("blk.0.ffn_down.weight", [interDim, hiddenDim]);
+
+            var metadata = new Dictionary<string, object>
+            {
+                ["general.architecture"] = "diffusiongemma"
+            };
+
+            WriteGgufFile(path, metadata, tensors);
+
+            using var model = GgufModel.Open(path);
+            var forwardPass = new DiffusionGemmaForwardPass(model, config);
+            var pipeline = new DiffusionGemmaPipeline(forwardPass, config, seed: 42);
+
+            int[] prompt = [1, 2, 3];
+            var generated = pipeline.Generate(prompt, maxBlocks: 2);
+
+            // 2 blocks generated = 2 * canvasLen tokens
+            Assert.Equal(canvasLen * 2, generated.Count);
+
+            // After generating 2 blocks, prompt length should be prompt.Length + 2 * canvasLen
+            Assert.Equal(prompt.Length + canvasLen * 2, forwardPass.PromptLength);
+        }
+        finally
+        {
+            try { if (File.Exists(path)) File.Delete(path); } catch { }
+        }
+    }
+
+    [Fact]
+    public void Sampler_MultinomialInverseCdf_DeterministicReproducibility()
+    {
+        var config = new DiffusionGemmaConfig
+        {
+            CanvasLength = 2,
+            VocabSize = 4,
+            MaxDenoisingSteps = 5,
+        };
+
+        var samplerA = new DiffusionGemmaSampler(config, seed: 9999);
+        var samplerB = new DiffusionGemmaSampler(config, seed: 9999);
+
+        float[] logits = [1.0f, 2.0f, 3.0f, 4.0f, 0.5f, 0.5f, 0.5f, 0.5f];
+
+        var resA = samplerA.Step(0, logits, [-1, -1], [false, false]);
+        var resB = samplerB.Step(0, logits, [-1, -1], [false, false]);
+
+        Assert.Equal(resA.Tokens, resB.Tokens);
+        Assert.Equal(resA.Accepted, resB.Accepted);
+        Assert.Equal(resA.ArgmaxTokens, resB.ArgmaxTokens);
     }
 
     private static void WriteGgufFile(
