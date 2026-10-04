@@ -44,6 +44,8 @@ Refusals now say which of the two applies. Tests: `PrefillHandoffFamiliesTests` 
 
 Count that matters: **3 admitted families (two MoE) of 13 rows**; 5 more are structurally eligible and waiting for a receipt; 5 are a different class entirely, so the handoff should never claim them.
 
+Per-family closure plan, in order: [2026-10-04-moe-handoff-closure-plan.md](2026-10-04-moe-handoff-closure-plan.md).
+
 ## What it takes to admit one more family
 
 1. Obtain one checkpoint (disk budget: one at a time; for `qwen2moe`, the smallest published checkpoint is the sensible first proof).
