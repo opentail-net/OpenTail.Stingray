@@ -12,6 +12,7 @@ public sealed class LayerSplitCpuPrefillHandoffTests : HeavyTestBase
 {
     [Theory]
     [InlineData("GLM-4.5-Air-Q2_K.gguf", 4)]   // glm4moe: leading dense layer, selection-bias sigmoid routing, partial RoPE, shared expert
+    [InlineData("tencent.Hunyuan-A13B-Instruct.Q3_K_S.gguf", 4)]   // hunyuan-moe: shared expert, QK-norm after RoPE
     public void Handoff_GpuKvEqualsCpuAndDecodeAgrees(string file, int split)
     {
         string? path = FindModelPath(file);
