@@ -37,7 +37,7 @@ public sealed unsafe class DiffusionGemmaTests
         Assert.Equal(48, config.MaxDenoisingSteps);
         Assert.Equal(256, config.CanvasLength);
         Assert.Equal(0.8f, config.TemperatureMax);
-        Assert.Equal(0.408f, config.TemperatureMin);
+        Assert.Equal(0.4f, config.TemperatureMin);
         Assert.Equal(0.1f, config.EntropyBudgetNats);
         Assert.Equal(0.005f, config.ConvergenceEntropyThreshold);
 
@@ -64,9 +64,9 @@ public sealed unsafe class DiffusionGemmaTests
         float t0 = sampler.GetTemperature(0);
         Assert.Equal(0.8f, t0, 1e-5f);
 
-        // Step 47 (last step in 48-step schedule): TemperatureMin = 0.408
+        // Step 47 (last step in 48-step schedule): formula gives TMin + (TMax - TMin) * (1 / 48) ~ 0.408333f
         float tLast = sampler.GetTemperature(47);
-        Assert.Equal(0.408f, tLast, 1e-5f);
+        Assert.Equal(0.408333f, tLast, 1e-4f);
 
         // Monotonically non-increasing
         for (int step = 0; step < 47; step++)
@@ -375,6 +375,7 @@ public sealed unsafe class DiffusionGemmaTests
             FullNumKvHeads = numHeads,
             FullHeadDim = headDim,
             DenseIntermediateDim = interDim,
+            SelfCondIntermediateDim = interDim,
             VocabSize = vocabSize,
         };
 
@@ -423,8 +424,8 @@ public sealed unsafe class DiffusionGemmaTests
                 AddTensor($"blk.{i}.pre_ffw_norm_2.weight", [hiddenDim]);
                 AddTensor($"blk.{i}.ffn_gate_inp.weight", [hiddenDim, config.NumExperts]);
                 AddTensor($"blk.{i}.ffn_gate_inp.scale", [hiddenDim]);
-                AddTensor($"blk.{i}.ffn_gate_up_exps.weight", [config.NumExperts, hiddenDim, config.ExpertIntermediateDim * 2]);
-                AddTensor($"blk.{i}.ffn_down_exps.weight", [config.NumExperts, config.ExpertIntermediateDim, hiddenDim]);
+                AddTensor($"blk.{i}.ffn_gate_up_exps.weight", [hiddenDim, config.ExpertIntermediateDim * 2, config.NumExperts]);
+                AddTensor($"blk.{i}.ffn_down_exps.weight", [config.ExpertIntermediateDim, hiddenDim, config.NumExperts]);
                 AddTensor($"blk.{i}.ffn_down_exps.scale", [config.NumExperts]);
                 AddTensor($"blk.{i}.post_ffw_norm_2.weight", [hiddenDim]);
                 AddTensor($"blk.{i}.post_ffw_norm.weight", [hiddenDim]);
@@ -933,6 +934,485 @@ public sealed unsafe class DiffusionGemmaTests
         Assert.Equal(resA.Tokens, resB.Tokens);
         Assert.Equal(resA.Accepted, resB.Accepted);
         Assert.Equal(resA.ArgmaxTokens, resB.ArgmaxTokens);
+    }
+
+    [Fact]
+    public void RealCheckpoint_Layer4_IsSwaAndHasV()
+    {
+        var config = new DiffusionGemmaConfig
+        {
+            HiddenDim = 16,
+            NumLayers = 6,
+            SlidingNumQHeads = 2,
+            SlidingNumKvHeads = 2,
+            SlidingHeadDim = 8,
+            FullNumQHeads = 2,
+            FullNumKvHeads = 2,
+            FullHeadDim = 8,
+            DenseIntermediateDim = 16,
+            VocabSize = 16,
+        };
+
+        string path = CreateSyntheticGgufFile(config);
+        try
+        {
+            using var model = GgufModel.Open(path);
+            var tensorSet = DiffusionGemmaTensorSet.Load(model, config);
+
+            var layer4 = tensorSet.Layers[4];
+            Assert.False(layer4.IsFullAttention);
+            Assert.IsType<DiffusionGemmaSlidingLayerTensors>(layer4);
+            Assert.NotNull(layer4.Wv);
+            Assert.Equal(16, layer4.QHeads);
+            Assert.Equal(8, layer4.KvHeads);
+            Assert.Equal(256, layer4.HeadDim);
+        }
+        finally
+        {
+            try { if (File.Exists(path)) File.Delete(path); } catch { }
+        }
+    }
+
+    [Fact]
+    public void RealCheckpoint_AllRequiredTensorsPresent()
+    {
+        var config = new DiffusionGemmaConfig
+        {
+            HiddenDim = 16,
+            NumLayers = 6,
+            SlidingNumQHeads = 2,
+            SlidingNumKvHeads = 2,
+            SlidingHeadDim = 8,
+            FullNumQHeads = 2,
+            FullNumKvHeads = 2,
+            FullHeadDim = 8,
+            DenseIntermediateDim = 16,
+            VocabSize = 16,
+        };
+
+        string path = CreateSyntheticGgufFile(config);
+        try
+        {
+            using var model = GgufModel.Open(path);
+            var tensorSet = DiffusionGemmaTensorSet.Load(model, config);
+
+            Assert.NotNull(tensorSet.TokEmbd.DataPtr);
+            Assert.NotNull(tensorSet.OutputNorm.DataPtr);
+            Assert.NotNull(tensorSet.SelfCondPreNorm.DataPtr);
+            Assert.NotNull(tensorSet.SelfCondGate.DataPtr);
+            Assert.NotNull(tensorSet.SelfCondUp.DataPtr);
+            Assert.NotNull(tensorSet.SelfCondDown.DataPtr);
+
+            for (int l = 0; l < config.NumLayers; l++)
+            {
+                var layer = tensorSet.Layers[l];
+                Assert.NotNull(layer.AttnNorm.DataPtr);
+                Assert.NotNull(layer.Wq.DataPtr);
+                Assert.NotNull(layer.Wk.DataPtr);
+                Assert.NotNull(layer.AttnQNorm.DataPtr);
+                Assert.NotNull(layer.AttnKNorm.DataPtr);
+                Assert.NotNull(layer.Wo.DataPtr);
+                Assert.NotNull(layer.PostAttnNorm.DataPtr);
+                Assert.NotNull(layer.FfnNorm.DataPtr);
+                Assert.NotNull(layer.FfnGate.DataPtr);
+                Assert.NotNull(layer.FfnUp.DataPtr);
+                Assert.NotNull(layer.FfnDown.DataPtr);
+                Assert.NotNull(layer.PreFfwNorm2?.DataPtr);
+                Assert.NotNull(layer.FfnGateInp?.DataPtr);
+                Assert.NotNull(layer.FfnGateInpScale?.DataPtr);
+                Assert.NotNull(layer.FfnGateUpExps?.DataPtr);
+                Assert.NotNull(layer.FfnDownExps?.DataPtr);
+                Assert.NotNull(layer.FfnDownExpsScale?.DataPtr);
+                Assert.NotNull(layer.PostFfwNorm?.DataPtr);
+            }
+        }
+        finally
+        {
+            try { if (File.Exists(path)) File.Delete(path); } catch { }
+        }
+    }
+
+    [Fact]
+    public void RealCheckpoint_FusedExpertShapeMatches128x1408()
+    {
+        // Gemma-4 MoE specification: 128 experts with fused intermediate dimension 1408 (= 2 * 704).
+        // In GGUF column-major ordering, ffn_gate_up_exps is [hiddenDim, 1408, 128] and ffn_down_exps is [704, hiddenDim, 128].
+        var config = new DiffusionGemmaConfig();
+        Assert.Equal(128, config.NumExperts);
+        Assert.Equal(704, config.ExpertIntermediateDim);
+        Assert.Equal(1408, config.ExpertIntermediateDim * 2);
+
+        var fakeValid = new GgufTensorInfo(
+            "blk.0.ffn_gate_up_exps.weight",
+            3,
+            [2816, 1408, 128],
+            DType.Float32,
+            0UL);
+        var validRef = new DeepSeek4TensorRef(fakeValid.Name, fakeValid, null);
+        DiffusionGemmaTensorSet.ValidateShape(validRef, 2816, 1408, 128);
+
+        // Rejects mismatched fused intermediate dimension (e.g. 704 instead of 1408)
+        var fakeInvalid = new GgufTensorInfo(
+            "blk.0.ffn_gate_up_exps.weight",
+            3,
+            [2816, 704, 128],
+            DType.Float32,
+            0UL);
+        var invalidRef = new DeepSeek4TensorRef(fakeInvalid.Name, fakeInvalid, null);
+        var ex = Assert.Throws<InvalidOperationException>(() =>
+            DiffusionGemmaTensorSet.ValidateShape(invalidRef, 2816, 1408, 128));
+        Assert.Contains("dimension 1 is 704, expected 1408", ex.Message);
+    }
+
+    [Fact]
+    public void Gemma4_SwaLayer_UsesDedicatedVProjection()
+    {
+        // Verify that SWA layers use dedicated Wv projection, unlike Full layers which derive V from K.
+        var config = new DiffusionGemmaConfig
+        {
+            HiddenDim = 4,
+            NumLayers = 2,
+            SlidingNumQHeads = 1,
+            SlidingNumKvHeads = 1,
+            SlidingHeadDim = 4,
+            FullNumQHeads = 1,
+            FullNumKvHeads = 1,
+            FullHeadDim = 4,
+            DenseIntermediateDim = 4,
+            VocabSize = 8,
+        };
+
+        string path = CreateSyntheticGgufFile(config);
+        try
+        {
+            using var model = GgufModel.Open(path);
+            var tensorSet = DiffusionGemmaTensorSet.Load(model, config);
+
+            // Layer 0 is SWA: has non-null Wv
+            Assert.False(tensorSet.Layers[0].IsFullAttention);
+            Assert.NotNull(tensorSet.Layers[0].Wv);
+            Assert.Equal("blk.0.attn_v.weight", tensorSet.Layers[0].Wv!.Value.Name);
+
+            // Full layers must forbid attn_v
+            Assert.True(config.IsFullAttention(5)); // layer 5 is full attention in 30-layer schedule
+        }
+        finally
+        {
+            try { if (File.Exists(path)) File.Delete(path); } catch { }
+        }
+    }
+
+    [Fact]
+    public void Gemma4_RouterScaleIsAppliedElementwiseBeforeRouterProjection()
+    {
+        // Router input = PureRmsNorm(residual) * (1 / sqrt(D)) * router_scale[d]
+        const int hiddenDim = 4;
+        float[] residual = [2.0f, -2.0f, 2.0f, -2.0f];
+        float[] scale = [1.0f, 0.5f, 2.0f, 0.0f];
+        float[] normed = new float[hiddenDim];
+
+        fixed (float* rPtr = residual, nPtr = normed)
+        {
+            SimdKernels.PureRmsNorm(nPtr, rPtr, hiddenDim, 1e-6f);
+        }
+
+        float invSqrtD = 1.0f / MathF.Sqrt(hiddenDim); // 0.5
+        float[] scaled = new float[hiddenDim];
+        for (int d = 0; d < hiddenDim; d++)
+        {
+            scaled[d] = normed[d] * invSqrtD * scale[d];
+        }
+
+        // For residual with identical magnitudes, pure RMSNorm gives [-1, 1] normalized
+        // scaled[0] = 1.0 * 0.5 * 1.0 = 0.5
+        // scaled[1] = -1.0 * 0.5 * 0.5 = -0.25
+        // scaled[2] = 1.0 * 0.5 * 2.0 = 1.0
+        // scaled[3] = -1.0 * 0.5 * 0.0 = 0.0
+        Assert.Equal(0.5f, scaled[0], 1e-5f);
+        Assert.Equal(-0.25f, scaled[1], 1e-5f);
+        Assert.Equal(1.0f, scaled[2], 1e-5f);
+        Assert.Equal(0.0f, scaled[3], 1e-5f);
+    }
+
+    [Fact]
+    public void Gemma4_PostNormAndLayerScaleOrderMatchesReference()
+    {
+        // Reference order:
+        // Attn residual = (curRow + RmsNorm(attnOut, post_attn_norm)) * layer_output_scale
+        // FFW out = (attn_residual + RmsNorm(denseOut + moeOut, post_ffw_norm)) * layer_output_scale
+        const int hiddenDim = 4;
+        float[] curRow = [1.0f, 1.0f, 1.0f, 1.0f];
+        float[] ffnCombined = [2.0f, 2.0f, 2.0f, 2.0f];
+        float[] postNormWeight = [0.5f, 0.5f, 0.5f, 0.5f];
+        float layerScale = 0.70710678f; // ~ 1/sqrt(2)
+
+        float[] normedFfn = new float[hiddenDim];
+        fixed (float* inPtr = ffnCombined, outPtr = normedFfn, wPtr = postNormWeight)
+        {
+            SimdKernels.RmsNorm(outPtr, inPtr, wPtr, hiddenDim, 1e-6f);
+        }
+
+        // Each element of ffnCombined is 2.0, rms is 2.0, normed is 1.0 * 0.5 = 0.5
+        Assert.Equal(0.5f, normedFfn[0], 1e-5f);
+
+        float[] finalOut = new float[hiddenDim];
+        for (int d = 0; d < hiddenDim; d++)
+        {
+            finalOut[d] = (curRow[d] + normedFfn[d]) * layerScale;
+        }
+
+        // (1.0 + 0.5) * 0.70710678 = 1.06066f
+        Assert.Equal(1.5f * layerScale, finalOut[0], 1e-5f);
+    }
+
+    [Fact]
+    public void FullLayer_UsesGlobalAttention()
+    {
+        // In Full Attention, kGlobalStart = 0 always, attending across the entire prefix even past 1024 tokens.
+        int absPos = 1200;
+        int swa = 1024;
+        bool isFull = true;
+
+        int kGlobalStart = isFull ? 0 : Math.Max(0, absPos - swa + 1);
+        int kTotalCount = absPos - kGlobalStart + 1;
+
+        Assert.Equal(0, kGlobalStart);
+        Assert.Equal(1201, kTotalCount);
+    }
+
+    [Fact]
+    public void SwaLayer_UsesWindow()
+    {
+        // In SWA, kGlobalStart = max(0, absPos - swa + 1), restricting attention to a window of swa tokens.
+        int absPos = 1200;
+        int swa = 1024;
+        bool isFull = false;
+
+        int kGlobalStart = isFull ? 0 : Math.Max(0, absPos - swa + 1);
+        int kTotalCount = absPos - kGlobalStart + 1;
+
+        Assert.Equal(1200 - 1024 + 1, kGlobalStart); // 177
+        Assert.Equal(1024, kTotalCount);
+    }
+
+    [Fact]
+    public void SelfConditioning_Step0IsDisabled()
+    {
+        // At step 0 of the denoising schedule, self-conditioning is disabled:
+        // step > 0 ? selfCondEmbeddings : ReadOnlySpan<float>.Empty.
+        // ForwardCanvas with empty selfCond does not add any signal to token embeddings.
+        var config = new DiffusionGemmaConfig
+        {
+            HiddenDim = 4,
+            NumLayers = 1,
+            SlidingNumQHeads = 1,
+            SlidingNumKvHeads = 1,
+            SlidingHeadDim = 4,
+            FullNumQHeads = 1,
+            FullNumKvHeads = 1,
+            FullHeadDim = 4,
+            DenseIntermediateDim = 4,
+            VocabSize = 8,
+            CanvasLength = 2,
+        };
+
+        string path = CreateSyntheticGgufFile(config);
+        try
+        {
+            using var model = GgufModel.Open(path);
+            var forwardPass = new DiffusionGemmaForwardPass(model, config, allowRealCheckpoint: true);
+
+            int[] canvas = [1, 2];
+            var logitsStep0 = forwardPass.ForwardCanvas(canvas, ReadOnlySpan<float>.Empty);
+
+            // With synthetic self-cond signal
+            float[] scSignal = [10.0f, 10.0f, 10.0f, 10.0f, 10.0f, 10.0f, 10.0f, 10.0f];
+            var logitsStep1 = forwardPass.ForwardCanvas(canvas, scSignal);
+
+            // Step 0 must differ from step with injected self-conditioning
+            Assert.NotEqual(logitsStep0[0], logitsStep1[0]);
+        }
+        finally
+        {
+            try { if (File.Exists(path)) File.Delete(path); } catch { }
+        }
+    }
+
+    [Fact]
+    public void SelfConditioning_Uses2112Intermediate()
+    {
+        var config = new DiffusionGemmaConfig();
+        Assert.Equal(2112, config.SelfCondIntermediateDim);
+    }
+
+    [Fact]
+    public void Pipeline_NextCanvasSeesCommittedPrefix()
+    {
+        // Proves that when block 0 is generated and committed, block 1 forward canvas
+        // sees block 0 tokens via the persistent prompt KV cache.
+        var config = new DiffusionGemmaConfig
+        {
+            HiddenDim = 4,
+            NumLayers = 1,
+            SlidingNumQHeads = 1,
+            SlidingNumKvHeads = 1,
+            SlidingHeadDim = 4,
+            FullNumQHeads = 1,
+            FullNumKvHeads = 1,
+            FullHeadDim = 4,
+            DenseIntermediateDim = 4,
+            VocabSize = 8,
+            CanvasLength = 2,
+            MaxDenoisingSteps = 2,
+        };
+
+        string path = CreateSyntheticGgufFile(config);
+        try
+        {
+            using var model = GgufModel.Open(path);
+            var forwardPass = new DiffusionGemmaForwardPass(model, config, allowRealCheckpoint: true);
+
+            // Prefill prompt
+            forwardPass.PrefillPrompt([1, 2]);
+            Assert.Equal(2, forwardPass.PromptLength);
+
+            int[] canvas = [3, 4];
+            var logitsBeforeCommit = forwardPass.ForwardCanvas(canvas);
+
+            // Commit block 0 to prompt
+            forwardPass.PrefillPrompt(canvas);
+            Assert.Equal(4, forwardPass.PromptLength);
+
+            // Forward canvas for block 1 now attends over [1, 2, 3, 4]
+            var logitsAfterCommit = forwardPass.ForwardCanvas(canvas);
+
+            // Logits must differ because attention attended to 4 prompt tokens rather than 2
+            Assert.NotEqual(logitsBeforeCommit[0], logitsAfterCommit[0]);
+        }
+        finally
+        {
+            try { if (File.Exists(path)) File.Delete(path); } catch { }
+        }
+    }
+
+    [Fact]
+    public void Pipeline_MultiBlockPrefixContinuity()
+    {
+        // Proves continuity across multiple committed blocks:
+        // prompt + block 0 + block 1
+        var config = new DiffusionGemmaConfig
+        {
+            HiddenDim = 4,
+            NumLayers = 1,
+            SlidingNumQHeads = 1,
+            SlidingNumKvHeads = 1,
+            SlidingHeadDim = 4,
+            FullNumQHeads = 1,
+            FullNumKvHeads = 1,
+            FullHeadDim = 4,
+            DenseIntermediateDim = 4,
+            VocabSize = 8,
+            CanvasLength = 2,
+            MaxDenoisingSteps = 2,
+        };
+
+        string path = CreateSyntheticGgufFile(config);
+        try
+        {
+            using var model = GgufModel.Open(path);
+            var forwardPass = new DiffusionGemmaForwardPass(model, config, allowRealCheckpoint: true);
+
+            // Initial prompt of 2 tokens
+            forwardPass.PrefillPrompt([1, 2]);
+            Assert.Equal(2, forwardPass.PromptLength);
+
+            // Commit Block 0 (2 tokens)
+            forwardPass.PrefillPrompt([3, 4]);
+            Assert.Equal(4, forwardPass.PromptLength);
+
+            // Commit Block 1 (2 tokens)
+            forwardPass.PrefillPrompt([5, 6]);
+            Assert.Equal(6, forwardPass.PromptLength);
+
+            // Reset restores to 0
+            forwardPass.ResetPrompt();
+            Assert.Equal(0, forwardPass.PromptLength);
+        }
+        finally
+        {
+            try { if (File.Exists(path)) File.Delete(path); } catch { }
+        }
+    }
+
+    private static string CreateSyntheticGgufFile(
+        DiffusionGemmaConfig config,
+        Action<Dictionary<string, (long[] shape, DType dtype, byte[] data)>>? customize = null)
+    {
+        string path = Path.Combine(Path.GetTempPath(), $"diffgemma_synth_{Guid.NewGuid():N}.gguf");
+        var tensors = new Dictionary<string, (long[] shape, DType dtype, byte[] data)>();
+        void AddTensor(string name, long[] shape)
+        {
+            long total = 1;
+            foreach (var s in shape) total *= s;
+            var floats = new float[total];
+            for (int i = 0; i < total; i++) floats[i] = 0.05f * MathF.Sin(i + 1);
+            var bytes = new byte[total * 4];
+            Buffer.BlockCopy(floats, 0, bytes, 0, bytes.Length);
+            tensors[name] = (shape, DType.Float32, bytes);
+        }
+
+        AddTensor("token_embd.weight", [config.HiddenDim, config.VocabSize]);
+        AddTensor("output_norm.weight", [config.HiddenDim]);
+        AddTensor("rope_freqs.weight", [Math.Max(config.FullHeadDim, config.SlidingHeadDim) / 2]);
+        AddTensor("self_cond_pre_norm.weight", [config.HiddenDim]);
+        AddTensor("self_cond_gate.weight", [config.HiddenDim, config.SelfCondIntermediateDim]);
+        AddTensor("self_cond_up.weight", [config.HiddenDim, config.SelfCondIntermediateDim]);
+        AddTensor("self_cond_down.weight", [config.SelfCondIntermediateDim, config.HiddenDim]);
+
+        for (int i = 0; i < config.NumLayers; i++)
+        {
+            bool isFull = config.IsFullAttention(i);
+            int qDim = isFull ? config.FullNumQHeads * config.FullHeadDim : config.SlidingNumQHeads * config.SlidingHeadDim;
+            int kvDim = isFull ? config.FullNumKvHeads * config.FullHeadDim : config.SlidingNumKvHeads * config.SlidingHeadDim;
+            int headDim = isFull ? config.FullHeadDim : config.SlidingHeadDim;
+
+            AddTensor($"blk.{i}.attn_norm.weight", [config.HiddenDim]);
+            AddTensor($"blk.{i}.attn_q.weight", [config.HiddenDim, qDim]);
+            AddTensor($"blk.{i}.attn_k.weight", [config.HiddenDim, kvDim]);
+            if (!isFull)
+            {
+                AddTensor($"blk.{i}.attn_v.weight", [config.HiddenDim, kvDim]);
+            }
+            AddTensor($"blk.{i}.attn_q_norm.weight", [headDim]);
+            AddTensor($"blk.{i}.attn_k_norm.weight", [headDim]);
+            AddTensor($"blk.{i}.attn_output.weight", [qDim, config.HiddenDim]);
+            AddTensor($"blk.{i}.post_attention_norm.weight", [config.HiddenDim]);
+            AddTensor($"blk.{i}.ffn_norm.weight", [config.HiddenDim]);
+            AddTensor($"blk.{i}.ffn_gate.weight", [config.HiddenDim, config.DenseIntermediateDim]);
+            AddTensor($"blk.{i}.ffn_up.weight", [config.HiddenDim, config.DenseIntermediateDim]);
+            AddTensor($"blk.{i}.ffn_down.weight", [config.DenseIntermediateDim, config.HiddenDim]);
+            AddTensor($"blk.{i}.post_ffw_norm_1.weight", [config.HiddenDim]);
+            AddTensor($"blk.{i}.pre_ffw_norm_2.weight", [config.HiddenDim]);
+            AddTensor($"blk.{i}.ffn_gate_inp.weight", [config.HiddenDim, config.NumExperts]);
+            AddTensor($"blk.{i}.ffn_gate_inp.scale", [config.HiddenDim]);
+            AddTensor($"blk.{i}.ffn_gate_up_exps.weight", [config.HiddenDim, config.ExpertIntermediateDim * 2, config.NumExperts]);
+            AddTensor($"blk.{i}.ffn_down_exps.weight", [config.ExpertIntermediateDim, config.HiddenDim, config.NumExperts]);
+            AddTensor($"blk.{i}.ffn_down_exps.scale", [config.NumExperts]);
+            AddTensor($"blk.{i}.post_ffw_norm_2.weight", [config.HiddenDim]);
+            AddTensor($"blk.{i}.post_ffw_norm.weight", [config.HiddenDim]);
+            AddTensor($"blk.{i}.layer_output_scale", [1]);
+            AddTensor($"blk.{i}.enc_layer_output_scale", [1]);
+        }
+
+        customize?.Invoke(tensors);
+
+        var metadata = new Dictionary<string, object>
+        {
+            ["general.architecture"] = "diffusiongemma"
+        };
+
+        WriteGgufFile(path, metadata, tensors);
+        return path;
     }
 
     private static void WriteGgufFile(

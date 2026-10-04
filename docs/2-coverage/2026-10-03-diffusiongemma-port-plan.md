@@ -52,24 +52,24 @@ Do not copy TensorSharp's architecture wholesale. Port the **semantics and prove
 # High-Level Status & Roadmap Matrix
 
 ### Status Legend
-- 🟢 **Complete** — fully implemented and verified against synthetic tests/specification
-- 🔵 **Infrastructure Available** — generic infrastructure exists and is battle-tested in other recently-admitted MoE families; requires Gemma-4 specific integration
-- 🟡 **In Progress / Guarded** — partially implemented or guarded
+- 🟢 **Verified Complete** — implementation complete and verified against real weights with independent parity established
+- 🟡 **Impl-Complete / Synthetic-Covered** — implementation complete and covered by synthetic test suite; real-checkpoint parity pending
+- 🔵 **Infrastructure Available** — generic infrastructure exists and is battle-tested in other recently-admitted MoE families; Gemma-4 specific delta implemented
 - 🔴 **Pending** — awaiting real weights or verification ladder
 
 | Phase                    | Subsystem                            | Current State | Infrastructure Available in Stingray | Gemma-4 Specific Delta Status |
 | :----------------------- | :----------------------------------- | :-----------: | :----------------------------------- | :---------------------------- |
-| **0. Contract**          | GGUF + Gemma-4 + Diffusion semantics |  🟢 Complete  | GGUF v3 parsing, tensor descriptors  | Locked to real 692-tensor GGUF contract |
-| **1. Tensor Loader**     | `DiffusionGemmaTensorSet`            |  🟢 Complete  | ModelBase, GgufModel, DType decoders | Strict typed loader with SWA/Full separation |
-| **2. Gemma-4 Backbone**  | Shared transformer block             |  🟢 Complete  | 🔵 Top-k routing, expert dispatch, SIMD | Full/SWA RoPE, V-from-K, fused MoE, scales |
-| **3. Prompt Prefill**    | Causal encoder path                  |  🟢 Complete  | 🔵 Causal prefill, KV caches         | 30-layer causal prefill to persistent KV |
-| **4. Canvas Forward**    | Bidirectional decoder path           |  🟢 Complete  | 🔵 Multi-head attention, SimdKernels | Bidirectional canvas cross-attending prompt KV |
-| **5. Self-Conditioning** | Soft embeddings + MLP                |  🟢 Complete  | 🔵 Embedding table lookup, MatVec    | Pre-norm + GEGLU MLP + weightless post-norm |
-| **6. Sampler**           | EntropyBound                         |  🟢 Complete  | 🔵 Softmax, categorical sampling     | Deterministic inverse CDF, Shannon entropy, argmax |
-| **7. Block Lifecycle**   | Multi-block generation               |  🟢 Complete  | 🔵 Generation loop, token management | Multi-block, causal committed block prefill |
-| **8. Tests**             | Synthetic + reference parity         |  🟢 Complete  | 🔵 xUnit v3 test framework           | 20 tests verifying invariants & end-to-end |
+| **0. Contract**          | GGUF + Gemma-4 + Diffusion semantics |  🟢 Verified  | GGUF v3 parsing, tensor descriptors  | Locked to real 692-tensor GGUF contract |
+| **1. Tensor Loader**     | `DiffusionGemmaTensorSet`            |  🟡 Impl-Covered | ModelBase, GgufModel, DType decoders | Strict typed loader with shape validation & SWA/Full separation |
+| **2. Gemma-4 Backbone**  | Shared transformer block             |  🟡 Impl-Covered | 🔵 Top-k routing, expert dispatch, SIMD | Full/SWA RoPE, V-from-K, fused MoE, scales (synthetic covered) |
+| **3. Prompt Prefill**    | Causal encoder path                  |  🟡 Impl-Covered | 🔵 Causal prefill, KV caches         | Multi-block causal prefill attending persistent prefix |
+| **4. Canvas Forward**    | Bidirectional decoder path           |  🟡 Impl-Covered | 🔵 Multi-head attention, SimdKernels | Bidirectional canvas cross-attending prompt KV |
+| **5. Self-Conditioning** | Soft embeddings + MLP                |  🟡 Impl-Covered | 🔵 Embedding table lookup, MatVec    | Pre-norm + GEGLU MLP + weightless post-norm (disabled step 0) |
+| **6. Sampler**           | EntropyBound                         |  🟡 Impl-Covered | 🔵 Softmax, categorical sampling     | Deterministic inverse CDF, Shannon entropy, cumAccepted budget |
+| **7. Block Lifecycle**   | Multi-block generation               |  🟡 Impl-Covered | 🔵 Generation loop, token management | Multi-block autoregressive, causal committed block prefill |
+| **8. Tests**             | Synthetic unit suite (32 tests)      |  🟡 Impl-Covered | 🔵 xUnit v3 test framework           | 32 synthetic tests passing; real-weight parity pending |
 | **9. Real Verification** | Q4_K_M (16.8 GB)                     |  🔴 Pending   | 🔵 Large model mmap, quantized ops   | Awaiting checkpoint download to F:\_models |
-| **10. Admission**        | Registry + CLI                       |  🟡 Guarded   | 🔵 ModelCompatibility registration   | Guarded by RealCheckpointGuardTests per Rule 14 |
+| **10. Admission**        | Registry + CLI                       |  🔴 Guarded   | 🔵 ModelCompatibility registration   | Guarded by RealCheckpointGuardTests per Rule 14 |
 
 ---
 

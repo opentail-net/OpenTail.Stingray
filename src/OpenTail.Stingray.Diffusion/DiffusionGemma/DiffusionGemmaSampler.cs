@@ -26,13 +26,13 @@ public sealed class DiffusionGemmaSampler
 
     /// <summary>
     /// Computes temperature for denoising step <paramref name="step"/> in [0, maxSteps - 1].
-    /// Linearly decays from TemperatureMax (0.8) to TemperatureMin (0.408).
+    /// Follows reference schedule: T = TMin + (TMax - TMin) * (curStep / MaxSteps),
+    /// annealing from 0.8 at step 0 down to ~0.4083 at step 47 (when MaxSteps=48, TMin=0.4, TMax=0.8).
     /// </summary>
     public float GetTemperature(int step)
     {
-        int maxSteps = Math.Max(1, _config.MaxDenoisingSteps - 1);
-        float progress = Math.Clamp((float)step / maxSteps, 0f, 1f);
-        return _config.TemperatureMax - (_config.TemperatureMax - _config.TemperatureMin) * progress;
+        int curStep = Math.Clamp(_config.MaxDenoisingSteps - step, 1, _config.MaxDenoisingSteps);
+        return _config.TemperatureMin + (_config.TemperatureMax - _config.TemperatureMin) * ((float)curStep / _config.MaxDenoisingSteps);
     }
 
     /// <summary>
@@ -126,16 +126,16 @@ public sealed class DiffusionGemmaSampler
         for (int i = 0; i < canvasLen; i++) order[i] = i;
         Array.Sort(order, (a, b) => entropies[a].CompareTo(entropies[b]));
 
-        // EntropyBound acceptance: sum of strictly earlier accepted entropies <= EntropyBudget
+        // EntropyBound acceptance: sum of accepted entropies <= EntropyBudget
         var accepted = new bool[canvasLen];
-        double cumE = 0.0;
+        double cumAcceptedEntropy = 0.0;
         for (int i = 0; i < canvasLen; i++)
         {
             int pos = order[i];
-            cumE += entropies[pos];
-            if (cumE - entropies[pos] <= _config.EntropyBudgetNats)
+            if (cumAcceptedEntropy + entropies[pos] <= _config.EntropyBudgetNats)
             {
                 accepted[pos] = true;
+                cumAcceptedEntropy += entropies[pos];
             }
         }
 

@@ -38,7 +38,7 @@ public sealed record DiffusionGemmaConfig
     public int CanvasLength { get; init; } = 256;
     public int MaxDenoisingSteps { get; init; } = 48;
     public float TemperatureMax { get; init; } = 0.8f;
-    public float TemperatureMin { get; init; } = 0.408f;
+    public float TemperatureMin { get; init; } = 0.4f;
     public float EntropyBudgetNats { get; init; } = 0.1f;
     public float ConvergenceEntropyThreshold { get; init; } = 0.005f;
 

@@ -1072,3 +1072,15 @@
 [Whisper-Tiny] audio=14.07s text="Some call me nature. Others call me mother nature. I've been here for over 4.5 billion years. 22,500 times longer than you."
 [Whisper-Tiny] runs(s)=[0.841, 0.703, 0.665] mean=0.737s RTF=0.052 (lower=faster; 1.0=realtime)
 
+[StableAudio3-SmallSfx] prompt="a glass bottle shattering on a hard floor" steps=8 audio=6.00s samples=264600
+[StableAudio3-SmallSfx] runs(s)=[30.993, 32.349, 32.693] mean=32.011s RTF=5.335 (lower=faster; 1.0=realtime; 8-step CFG, not the full recommended step count)
+
+[StableAudio3-SmallMusic] prompt="upbeat acoustic guitar melody" steps=8 audio=6.00s samples=264600
+[StableAudio3-SmallMusic] runs(s)=[27.607, 27.640, 28.398] mean=27.882s RTF=4.647 (lower=faster; 1.0=realtime; 8-step CFG, not the full recommended step count)
+
+[StableAudio3-SmallSfx] prompt="a glass bottle shattering on a hard floor" steps=8 audio=6.00s samples=264600
+[StableAudio3-SmallSfx] runs(s)=[27.702, 27.814, 27.504] mean=27.673s RTF=4.612 (lower=faster; 1.0=realtime; 8-step CFG, not the full recommended step count)
+
+[StableAudio3-SmallMusic] prompt="upbeat acoustic guitar melody" steps=8 audio=6.00s samples=264600
+[StableAudio3-SmallMusic] runs(s)=[27.638, 27.525, 27.942] mean=27.702s RTF=4.617 (lower=faster; 1.0=realtime; 8-step CFG, not the full recommended step count)
+

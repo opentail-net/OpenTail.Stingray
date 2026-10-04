@@ -83,9 +83,9 @@ public sealed unsafe class DiffusionGemmaForwardPass
         {
             throw new NotSupportedException(
                 "diffusion-gemma: this checkpoint uses the Gemma-4 MoE layer layout (fused gate/up experts, router scale, " +
-                "parallel dense+expert FFN norms, layer output scales, self_cond_* MLP), which the port does not implement; " +
-                "it also lacks RoPE and attention in prefill. Ported, not verified, not admitted. " +
-                "See docs/1-correctness/2026-10-03-unverified-port-claims.md.");
+                "parallel dense+expert FFN norms, layer output scales, self_cond_* MLP). Architecture implementation is in-place, " +
+                "but real-weight execution remains guarded until independent real-weight verification passes per CLAUDE.md Rule 14. " +
+                "Set STINGRAY_DIFFUSIONGEMMA_ENABLE_REAL=1 to override.");
         }
 
         if (isRealCheckpoint)
@@ -224,6 +224,15 @@ public sealed unsafe class DiffusionGemmaForwardPass
     public int HiddenDim => _config.HiddenDim;
     public int PromptLength => _promptKCache[0].Count;
 
+    public void ResetPrompt()
+    {
+        for (int i = 0; i < _layers.Count; i++)
+        {
+            _promptKCache[i].Clear();
+            _promptVCache[i].Clear();
+        }
+    }
+
     private static (float[] local, float[] global) PrecomputeRopeFrequencies(DeepSeek4TensorRef? ropeFreqs)
     {
         const int localHalf = 128;
@@ -269,6 +278,9 @@ public sealed unsafe class DiffusionGemmaForwardPass
 
     /// <summary>
     /// Prefills prompt tokens causally into persistent prompt KV cache across all layers.
+    /// Supports multi-block appends: newly prefilled tokens causally attend to all previously
+    /// cached prefix KV tokens (subject to layer-specific SWA / Full geometry) and to earlier
+    /// tokens in the current append.
     /// </summary>
     public void PrefillPrompt(ReadOnlySpan<int> promptTokens)
     {
@@ -298,6 +310,8 @@ public sealed unsafe class DiffusionGemmaForwardPass
             int kvDim = kvHeads * headDim;
             int swa = _config.SlidingWindowSize;
 
+            int startPos = _promptKCache[il].Count;
+
             var qAll = new float[pLen, qDim];
             var kAll = new float[pLen, kvDim];
             var vAll = new float[pLen, kvDim];
@@ -306,6 +320,7 @@ public sealed unsafe class DiffusionGemmaForwardPass
 
             for (int p = 0; p < pLen; p++)
             {
+                int absPos = startPos + p;
                 for (int d = 0; d < HiddenDim; d++) curRow[d] = promptH[p, d];
                 fixed (float* inPtr = curRow, outPtr = normed)
                 {
@@ -346,61 +361,72 @@ public sealed unsafe class DiffusionGemmaForwardPass
                         SimdKernels.RmsNorm(kPtr + h * headDim, kPtr + h * headDim, (float*)layer.AttnKNorm.DataPtr, headDim, _config.RmsNormEps);
                     }
 
-                    // Apply NeoX RoPE at position p
-                    ApplyNeoXRope(qPtr, qHeads, headDim, p, isFull);
-                    ApplyNeoXRope(kPtr, kvHeads, headDim, p, isFull);
+                    // Apply NeoX RoPE at absolute position (startPos + p)
+                    ApplyNeoXRope(qPtr, qHeads, headDim, absPos, isFull);
+                    ApplyNeoXRope(kPtr, kvHeads, headDim, absPos, isFull);
                 }
-
-                // Append persistent prompt K and V
-                var kStored = new float[kvDim];
-                var vStored = new float[kvDim];
-                for (int d = 0; d < kvDim; d++)
-                {
-                    kStored[d] = kAll[p, d];
-                    vStored[d] = vAll[p, d];
-                }
-                _promptKCache[il].Add(kStored);
-                _promptVCache[il].Add(vStored);
             }
 
-            // Causal prompt attention
+            // Causal prompt attention across [cached KV + new tokens]
             int gqaRatio = qHeads / kvHeads;
             var attnOut = new float[pLen, qDim];
-            float[] scores = new float[pLen];
 
             for (int p = 0; p < pLen; p++)
             {
-                int kStart = isFull ? 0 : Math.Max(0, p - swa + 1);
-                int kCount = p - kStart + 1;
+                int absPos = startPos + p;
+                int kGlobalStart = isFull ? 0 : Math.Max(0, absPos - swa + 1);
+                int kTotalCount = absPos - kGlobalStart + 1;
+                var scores = new float[kTotalCount];
 
                 for (int h = 0; h < qHeads; h++)
                 {
                     int kvH = h / gqaRatio;
 
                     // Attention scale is 1.0 (absorbed into Q/K norms)
-                    for (int ki = 0; ki < kCount; ki++)
+                    for (int ki = 0; ki < kTotalCount; ki++)
                     {
-                        int kPos = kStart + ki;
+                        int kGlobal = kGlobalStart + ki;
                         float dot = 0f;
-                        for (int d = 0; d < headDim; d++)
+                        if (kGlobal < startPos)
                         {
-                            dot += qAll[p, h * headDim + d] * kAll[kPos, kvH * headDim + d];
+                            var cachedK = _promptKCache[il][kGlobal];
+                            for (int d = 0; d < headDim; d++)
+                            {
+                                dot += qAll[p, h * headDim + d] * cachedK[kvH * headDim + d];
+                            }
+                        }
+                        else
+                        {
+                            int newIdx = kGlobal - startPos;
+                            for (int d = 0; d < headDim; d++)
+                            {
+                                dot += qAll[p, h * headDim + d] * kAll[newIdx, kvH * headDim + d];
+                            }
                         }
                         scores[ki] = dot;
                     }
 
                     fixed (float* sPtr = scores)
                     {
-                        SimdKernels.SoftmaxInPlace(sPtr, kCount);
+                        SimdKernels.SoftmaxInPlace(sPtr, kTotalCount);
                     }
 
                     for (int d = 0; d < headDim; d++)
                     {
                         float acc = 0f;
-                        for (int ki = 0; ki < kCount; ki++)
+                        for (int ki = 0; ki < kTotalCount; ki++)
                         {
-                            int kPos = kStart + ki;
-                            acc += scores[ki] * vAll[kPos, kvH * headDim + d];
+                            int kGlobal = kGlobalStart + ki;
+                            if (kGlobal < startPos)
+                            {
+                                var cachedV = _promptVCache[il][kGlobal];
+                                acc += scores[ki] * cachedV[kvH * headDim + d];
+                            }
+                            else
+                            {
+                                int newIdx = kGlobal - startPos;
+                                acc += scores[ki] * vAll[newIdx, kvH * headDim + d];
+                            }
                         }
                         attnOut[p, h * headDim + d] = acc;
                     }
@@ -420,6 +446,20 @@ public sealed unsafe class DiffusionGemmaForwardPass
                 // FFN: Dense + MoE
                 ExecuteFfnAndScaling(layer, curRow, DiffusionGemmaPassMode.EncoderPrefill);
                 for (int d = 0; d < HiddenDim; d++) promptH[p, d] = curRow[d];
+            }
+
+            // Append persistent prompt K and V for the newly prefilled tokens
+            for (int p = 0; p < pLen; p++)
+            {
+                var kStored = new float[kvDim];
+                var vStored = new float[kvDim];
+                for (int d = 0; d < kvDim; d++)
+                {
+                    kStored[d] = kAll[p, d];
+                    vStored[d] = vAll[p, d];
+                }
+                _promptKCache[il].Add(kStored);
+                _promptVCache[il].Add(vStored);
             }
         }
     }
