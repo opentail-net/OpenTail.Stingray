@@ -50,6 +50,13 @@ public sealed unsafe partial class GpuForwardPass : IForwardPass
     // LayerNorm models (NormRows): norm biases when the GGUF has them, else one shared zero bias.
     private readonly Tensor[]? _bAttnNorm, _bFfnNorm;
     private readonly Tensor? _bOutputNorm, _zeroEmbBias;
+    private readonly bool _rmsNormBias;   // RMSNorm followed by an additive bias (phimoe attn/ffn/output norms)
+    private Tensor? _bOutput;             // LM-head bias [vocab] (phimoe output.bias)
+    private Tensor? _shexpGateLogit;      // [1] scalar: ffn_gate_inp_shexp . norm (qwen2moe shared-expert sigmoid gate)
+    private float[]? _shexpGateBuf;
+    private Tensor[]? _wGateInpShexp;
+    private Tensor _shGate = default!, _shUp = default!;   // shared-expert scratch (aliases _ffnGate/_ffnUp when widths match)
+    private bool _shScratchOwned;
     // Non-gated FFN (GPT-2 / StarCoder2 / GPT-NeoX): _wGate[i] is null and the FFN is
     // down(gelu(up·x + b_up)) + b_down. The biases are null for models without them.
     private readonly bool _gatelessFfn;
@@ -740,6 +747,15 @@ public sealed unsafe partial class GpuForwardPass : IForwardPass
         ValidateFfnScratchDim(_isMoE, ffnScratchDim, _intermDim, _expertDim);
         _ffnGate = gpu.Allocate(TensorShape.D1(ffnScratchDim));
         _ffnUp = gpu.Allocate(TensorShape.D1(ffnScratchDim));
+        // The shared expert can be wider than the routed experts (qwen2moe: 5632 vs 1408). MatMul derives its
+        // row count from the output size, so it needs its own scratch rather than the expert-width one.
+        if (_isMoE && _hasSharedExpert && hp.SharedExpertIntermediateDim != ffnScratchDim)
+        {
+            _shGate = gpu.Allocate(TensorShape.D1(hp.SharedExpertIntermediateDim));
+            _shUp = gpu.Allocate(TensorShape.D1(hp.SharedExpertIntermediateDim));
+            _shScratchOwned = true;
+        }
+        else { _shGate = _ffnGate; _shUp = _ffnUp; }
         _logits = gpu.Allocate(TensorShape.D1(hp.VocabSize));
         _routerLogits = _isMoE ? gpu.Allocate(TensorShape.D1(hp.NumExperts)) : null;
         _moeSharedOut = _isMoE && _hasSharedExpert ? gpu.Allocate(TensorShape.D1(_embDim)) : null;
@@ -1043,6 +1059,13 @@ public sealed unsafe partial class GpuForwardPass : IForwardPass
                     _wGateShexp![i] = UploadWeight($"blk.{i}.ffn_gate_shexp.weight");
                     _wUpShexp![i] = UploadWeight($"blk.{i}.ffn_up_shexp.weight");
                     _wDownShexp![i] = UploadWeight($"blk.{i}.ffn_down_shexp.weight");
+                    if (model.FindTensor($"blk.{i}.ffn_gate_inp_shexp.weight") is not null)
+                    {
+                        _wGateInpShexp ??= new Tensor[L];
+                        _wGateInpShexp[i] = UploadWeight($"blk.{i}.ffn_gate_inp_shexp.weight");
+                        _shexpGateLogit ??= gpu.Allocate(TensorShape.D1(1));
+                        _shexpGateBuf ??= new float[1];
+                    }
                 }
             }
             else
@@ -1141,9 +1164,10 @@ public sealed unsafe partial class GpuForwardPass : IForwardPass
         }
 
         _wOutputNorm = UploadWeight("output_norm.weight");
-        if (hp.UsesLayerNorm)
+        _rmsNormBias = hp.HasNormBias && !hp.UsesLayerNorm;   // phimoe: RMSNorm, then + bias
+        if (hp.UsesLayerNorm || _rmsNormBias)
         {
-            _zeroEmbBias = _gpu.Upload(new float[_embDim], TensorShape.D1(_embDim));
+            if (hp.UsesLayerNorm) _zeroEmbBias = _gpu.Upload(new float[_embDim], TensorShape.D1(_embDim));
             if (model.FindTensor("output_norm.bias") is not null) _bOutputNorm = UploadWeight("output_norm.bias");
             if (model.FindTensor("blk.0.attn_norm.bias") is not null)
             {
@@ -1193,6 +1217,8 @@ public sealed unsafe partial class GpuForwardPass : IForwardPass
         _wOutput = model.FindTensor("output.weight") is not null
             ? UploadWeight("output.weight")
             : _gpuEmbedding;
+        if (model.FindTensor("output.bias") is GgufTensorInfo ob && ob.DType == DType.Float32 && ob.ElementCount == hp.VocabSize)
+            _bOutput = UploadWeight("output.bias");
 
         // Gemma 4: optional `rope_freqs.weight` (size = maxHeadDim/2) masks the global-layer RoPE
         // high-frequency tail (~identity for long context). CPU bakes this into its precomputed
@@ -1593,6 +1619,7 @@ public sealed unsafe partial class GpuForwardPass : IForwardPass
         OutputNormInPlace(_hidden, 1);
         _gpu.RecordBarrier();
         GpuMatMul(_logits, _wOutput, _hidden);
+        AddLogitBias(_logits, 1);
 
         // Granite/MiniCPM final-logit scale (already carries llama.cpp's 1/f_logit_scale
         // reciprocal — see ModelHyperparams.LogitScale). Mirrors CPU ForwardPass.Decode.cs.
@@ -2097,6 +2124,7 @@ public sealed unsafe partial class GpuForwardPass : IForwardPass
         OutputNormInPlace(_hidden, 1);
         _gpu.RecordBarrier();
         GpuMatMul(_logits, _wOutput, _hidden);
+        AddLogitBias(_logits, 1);
         if (_hp.LogitScale != 1f)
         {
             _gpu.RecordBarrier();
@@ -2190,6 +2218,7 @@ public sealed unsafe partial class GpuForwardPass : IForwardPass
             OutputNormInPlace(_hidden, 1);
             _gpu.RecordBarrier();
             GpuMatMul(_logits, _wOutput, _hidden);
+        AddLogitBias(_logits, 1);
             if (_hp.LogitScale != 1f)
             {
                 _gpu.RecordBarrier();
@@ -2221,6 +2250,7 @@ public sealed unsafe partial class GpuForwardPass : IForwardPass
             OutputNormInPlace(_hidden, 1);
             _gpu.RecordBarrier();
             GpuMatMul(_logits, _wOutput, _hidden);
+        AddLogitBias(_logits, 1);
             if (_hp.LogitScale != 1f)
             {
                 _gpu.RecordBarrier();
@@ -2743,6 +2773,7 @@ public sealed unsafe partial class GpuForwardPass : IForwardPass
         OutputNormInPlace(_hiddenK, k);
         _gpu.RecordBarrier();
         _gpu.MatMulBatched(_logitsK, _wOutput, _hiddenK, k, WeightDType(_wOutput));
+        AddLogitBias(_logitsK, k);
         if (_hp.LogitScale != 1f)
         {
             _gpu.RecordBarrier();
@@ -3187,6 +3218,7 @@ public sealed unsafe partial class GpuForwardPass : IForwardPass
         OutputNormInPlace(_hidden, 1);
         _gpu.RecordBarrier();
         GpuMatMul(_logits, _wOutput, _hidden);
+        AddLogitBias(_logits, 1);
         if (_hp.LogitScale != 1f)
         {
             _gpu.RecordBarrier();
@@ -3433,11 +3465,20 @@ public sealed unsafe partial class GpuForwardPass : IForwardPass
         GpuMatMul(_hidden, _wDown[layer], _ffnGate);
     }
 
+    private void AddLogitBias(Tensor logits, int rows)
+    {
+        if (_bOutput is null) return;
+        _gpu.RecordBarrier();
+        _gpu.AddRowBroadcastInPlace(logits, _bOutput, rows, _hp.VocabSize);
+    }
+
     private void GpuMoeFfn(int layer)
     {
         int numActive = _hp.NumActiveExperts;
 
         GpuMatMul(_routerLogits!, _wGateInp![layer], _normBuf);
+        bool shexpGated = _hasSharedExpert && _wGateInpShexp is not null;
+        if (shexpGated) GpuMatMul(_shexpGateLogit!, _wGateInpShexp![layer], _normBuf);
         _gpu.RecordBarrier();
         if (_hp.UseSigmoidGating)
             _gpu.Sigmoid(_routerLogits!);
@@ -3445,6 +3486,13 @@ public sealed unsafe partial class GpuForwardPass : IForwardPass
             _gpu.Softmax(_routerLogits!);
         _gpu.EndRecordAndSubmit();
         _gpu.Download(_routerLogits!, _routerBuf!);
+        float shexpScale = 1f;
+        if (shexpGated)
+        {
+            // qwen2moe: out *= sigmoid(ffn_gate_inp_shexp . x), same as ForwardPass.ScaleBySharedGate.
+            _gpu.Download(_shexpGateLogit!, _shexpGateBuf!);
+            shexpScale = 1f / (1f + MathF.Exp(-_shexpGateBuf![0]));
+        }
 
         Span<int> selectedExperts = stackalloc int[numActive];
         Span<float> expertWeights = stackalloc float[numActive];
@@ -3454,13 +3502,18 @@ public sealed unsafe partial class GpuForwardPass : IForwardPass
 
         if (_hasSharedExpert)
         {
-            GpuMatMul(_ffnGate, _wGateShexp![layer], _normBuf);
-            GpuMatMul(_ffnUp, _wUpShexp![layer], _normBuf);
+            GpuMatMul(_shGate, _wGateShexp![layer], _normBuf);
+            GpuMatMul(_shUp, _wUpShexp![layer], _normBuf);
             _gpu.RecordBarrier();
-            _gpu.SiLuMul(_ffnGate, _ffnUp);
+            _gpu.SiLuMul(_shGate, _shUp);
             _gpu.RecordBarrier();
-            GpuMatMul(_moeSharedOut!, _wDownShexp![layer], _ffnGate);
+            GpuMatMul(_moeSharedOut!, _wDownShexp![layer], _shGate);
             _gpu.RecordBarrier();
+            if (shexpScale != 1f)
+            {
+                _gpu.ScaleInPlace(_moeSharedOut!, shexpScale);
+                _gpu.RecordBarrier();
+            }
         }
 
         _gpu.Clear(_hidden);
@@ -3571,10 +3624,16 @@ public sealed unsafe partial class GpuForwardPass : IForwardPass
     {
         if (_hp.UsesLayerNorm)
             _gpu.LayerNormGpu(output, x, weight, bias ?? _zeroEmbBias!, rows, _embDim, _hp.RmsNormEps);
-        else if (rows == 1)
-            _gpu.RmsNorm(output, x, weight, _hp.RmsNormEps);
         else
-            _gpu.RmsNormBatched(output, x, weight, _embDim, rows, _hp.RmsNormEps);
+        {
+            if (rows == 1) _gpu.RmsNorm(output, x, weight, _hp.RmsNormEps);
+            else _gpu.RmsNormBatched(output, x, weight, _embDim, rows, _hp.RmsNormEps);
+            if (bias is not null && _rmsNormBias)
+            {
+                _gpu.RecordBarrier();
+                _gpu.AddRowBroadcastInPlace(output, bias, rows, _embDim);
+            }
+        }
     }
 
     /// <summary>Final norm in place. LayerNorm goes through the norm scratch and back, since its
@@ -3585,6 +3644,11 @@ public sealed unsafe partial class GpuForwardPass : IForwardPass
         {
             if (rows == 1) _gpu.RmsNorm(hidden, hidden, _wOutputNorm, _hp.RmsNormEps);
             else _gpu.RmsNormBatched(hidden, hidden, _wOutputNorm, _embDim, rows, _hp.RmsNormEps);
+            if (_bOutputNorm is not null && _rmsNormBias)
+            {
+                _gpu.RecordBarrier();
+                _gpu.AddRowBroadcastInPlace(hidden, _bOutputNorm, rows, _embDim);
+            }
             return;
         }
         Tensor scratch = rows == 1 ? _normBuf : _normK;
@@ -3965,6 +4029,9 @@ public sealed unsafe partial class GpuForwardPass : IForwardPass
         if (_parAttnOut is not null) _gpu.Free(_parAttnOut);
         _gpu.Free(_q); _gpu.Free(_k); _gpu.Free(_v); _gpu.Free(_attnOut);
         _gpu.Free(_ffnGate); _gpu.Free(_ffnUp); _gpu.Free(_logits);
+        if (_shScratchOwned) { _gpu.Free(_shGate); _gpu.Free(_shUp); }
+        if (_shexpGateLogit is not null) _gpu.Free(_shexpGateLogit);
+        if (_bOutput is not null) _gpu.Free(_bOutput);
         if (_routerLogits is not null) _gpu.Free(_routerLogits);
         if (_moeSharedOut is not null) _gpu.Free(_moeSharedOut);
         if (_moeExpertOut is not null) _gpu.Free(_moeExpertOut);
@@ -3993,6 +4060,7 @@ public sealed unsafe partial class GpuForwardPass : IForwardPass
                 if (_hasSharedExpert)
                 {
                     _gpu.Free(_wGateShexp![i]);
+                    if (_wGateInpShexp?[i] is { } gis) _gpu.Free(gis);
                     _gpu.Free(_wUpShexp![i]);
                     _gpu.Free(_wDownShexp![i]);
                 }

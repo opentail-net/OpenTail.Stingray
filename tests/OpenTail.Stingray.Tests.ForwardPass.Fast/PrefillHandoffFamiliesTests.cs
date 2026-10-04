@@ -69,7 +69,7 @@ public sealed class PrefillHandoffFamiliesTests
     {
         Assert.Equal(HandoffStatus.Incompatible, PrefillHandoffFamilies.Classify(Md("phimoe"), HandoffPath.CudaHybrid, hasLongRopeTensors: true).Status);
         Assert.Equal(HandoffStatus.Admitted, PrefillHandoffFamilies.Classify(Md("phimoe"), HandoffPath.VulkanHybrid, hasLongRopeTensors: true).Status);   // the Vulkan hybrid implements LongRoPE
-        Assert.Equal(HandoffStatus.Unverified, PrefillHandoffFamilies.Classify(Md("phimoe"), HandoffPath.VulkanFullGpu, hasLongRopeTensors: true).Status);
+        Assert.Equal(HandoffStatus.Admitted, PrefillHandoffFamilies.Classify(Md("phimoe"), HandoffPath.VulkanFullGpu, hasLongRopeTensors: true).Status);
         Assert.Equal(HandoffStatus.Incompatible, PrefillHandoffFamilies.Classify(Md("gpt-oss"), HandoffPath.VulkanHybrid).Status);
         Assert.Equal(HandoffStatus.Incompatible, PrefillHandoffFamilies.Classify(new Dictionary<string, object>(), HandoffPath.VulkanHybrid).Status);
     }
@@ -100,7 +100,7 @@ public sealed class PrefillHandoffFamiliesTests
         Assert.Equal(HandoffStatus.Admitted, PrefillHandoffFamilies.Classify(Md("qwen3moe"), HandoffPath.VulkanHybrid).Status);
         Assert.Equal(HandoffStatus.Unverified, PrefillHandoffFamilies.Classify(Md("qwen3moe"), HandoffPath.VulkanFullGpu).Status);
         Assert.Equal(HandoffStatus.Admitted, PrefillHandoffFamilies.Classify(Md("qwen2moe", ("qwen2moe.attention.head_count_kv", 16u), ("qwen2moe.expert_count", 60u), ("qwen2moe.expert_used_count", 4u)), HandoffPath.VulkanHybrid).Status);
-        Assert.Equal(HandoffStatus.Unverified, PrefillHandoffFamilies.Classify(Md("qwen2moe"), HandoffPath.VulkanFullGpu).Status);
+        Assert.Equal(HandoffStatus.Admitted, PrefillHandoffFamilies.Classify(Md("qwen2moe", ("qwen2moe.attention.head_count_kv", 16u), ("qwen2moe.expert_count", 60u), ("qwen2moe.expert_used_count", 4u)), HandoffPath.VulkanFullGpu).Status);
         foreach (var arch in new[] { "olmoe", "qwen3moe", "qwen3" })
             Assert.Equal(HandoffStatus.Unverified, PrefillHandoffFamilies.Classify(Md(arch), HandoffPath.CudaHybrid).Status);
     }

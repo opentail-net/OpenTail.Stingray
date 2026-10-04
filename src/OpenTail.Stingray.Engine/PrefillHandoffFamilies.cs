@@ -72,6 +72,12 @@ public static class PrefillHandoffFamilies
             [("olmoe", HandoffPath.VulkanFullGpu)] = new(
                 "GpuCpuPrefillHandoffTests (OLMoE-1B-7B Q4_K_M, F32 and packed-fp16 KV): byte-exact K/V, logits equal the CPU pass",
                 "olmoe|attention.head_count_kv=16|expert_count=64|expert_used_count=8"),
+            [("qwen2moe", HandoffPath.VulkanFullGpu)] = new(
+                "GpuCpuPrefillHandoffTests (Qwen1.5-MoE-A2.7B-Chat Q4_K_M, -g -1, shared expert 5632 wide with sigmoid gate): handoff logits equal the CPU pass, decode cosine vs sequential GPU prefill 0.998-1.0000",
+                "qwen2moe|attention.head_count_kv=16|expert_count=60|expert_used_count=4"),
+            [("phimoe", HandoffPath.VulkanFullGpu)] = new(
+                "GpuCpuPrefillHandoffTests (Phi-3.5-MoE-instruct Q3_K_M, -g -1, ctx 1024 = short LongRoPE factors; RMSNorm + bias, LM-head bias): handoff logits equal the CPU pass, decode cosine vs sequential GPU prefill 0.9987-0.9998",
+                "phimoe|attention.head_count_kv=8|expert_count=16|expert_used_count=2"),
             // CudaHybrid: no receipts. The path compiles and has never run (no NVIDIA GPU on the development machine).
         };
 

@@ -31,7 +31,7 @@ public sealed unsafe class GpuCpuPrefillHandoffTests : HeavyTestBase
 
     private static string? Find(string file)
     {
-        foreach (var p in new[] { Path.Combine(@"F:\_models", file), Path.Combine(@"E:\_models", file) })
+        foreach (var p in new[] { Path.Combine(@"F:\_models", file), Path.Combine(@"E:\_models", file), Path.Combine(@"H:\_models", file) })
             if (File.Exists(p)) return p;
         var dir = new DirectoryInfo(AppContext.BaseDirectory);
         while (dir is not null)
@@ -62,10 +62,10 @@ public sealed unsafe class GpuCpuPrefillHandoffTests : HeavyTestBase
         public void Dispose() { Model.Dispose(); Gpu.Dispose(); }
     }
 
-    private static Setup Open()
+    private static Setup Open(string file = Olmoe)
     {
-        string? path = Find(Olmoe);
-        Assert.SkipWhen(path is null, $"{Olmoe} not present");
+        string? path = Find(file);
+        Assert.SkipWhen(path is null, $"{file} not present");
         VulkanBackend? gpu;
         try { gpu = new VulkanBackend(); } catch { gpu = null; }
         Assert.SkipWhen(gpu is null, "no Vulkan device available on this host");
@@ -75,11 +75,13 @@ public sealed unsafe class GpuCpuPrefillHandoffTests : HeavyTestBase
     }
 
     [Theory]
-    [InlineData(null)]                 // the default KV dtype (packed fp16 when the model can narrow)
-    [InlineData(DType.Float32)]        // exact F32 copy
-    public void Handoff_IsExact_AndDecodeAgreesWithSequentialPrefill(DType? kv)
+    [InlineData(Olmoe, null)]                 // the default KV dtype (packed fp16 when the model can narrow)
+    [InlineData(Olmoe, DType.Float32)]        // exact F32 copy
+    [InlineData("Qwen1.5-MoE-A2.7B-Chat.Q4_K_M.gguf", null)]   // qwen2moe: shared expert (5632 wide) with sigmoid gate
+    [InlineData("Phi-3.5-MoE-instruct-Q3_K_M.gguf", null)]     // phimoe: RMSNorm + bias, LM-head bias
+    public void Handoff_IsExact_AndDecodeAgreesWithSequentialPrefill(string file, DType? kv)
     {
-        using var s = Open();
+        using var s = Open(file);
         int n = s.Prompt.Length;
         Assert.True(n >= 100, $"prompt too short: {n}");
         int kvDim = s.Hp.NumKvHeads * s.Hp.HeadDim;
