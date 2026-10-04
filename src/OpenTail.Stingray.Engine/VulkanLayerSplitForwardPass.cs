@@ -97,11 +97,19 @@ public sealed class VulkanLayerSplitForwardPass : IForwardPass
     private bool TryPrefillViaCpuHandoff(IReadOnlyList<int> tokens, out ReadOnlySpan<float> logits)
     {
         logits = default;
-        if (!_cpuPart.GetBatchedPrefillCapability().Available) { _cpuPrefillBroken = true; return false; }
+        // Models with the attention output gate (afmoe) have no batched CPU trunk: their CPU Prefill is the per-token trunk, which is exactly the
+        // path whose K/V the parity test checks, so it is still a valid (if not faster) source of rows. Everything else needs the batched trunk.
+        var capability = _cpuPart.GetBatchedPrefillCapability();
+        if (!capability.Available && !_hp.AttentionOutputGate)
+        {
+            _cpuPrefillBroken = true;
+            LastCpuPrefillRefusal = "CPU batched prefill unavailable: " + capability.Detail;
+            return false;
+        }
         _cpuPart.TruncateTo(0);
         ReadOnlySpan<float> cpuLogits;
         try { cpuLogits = _cpuPart.Prefill(tokens, 0); }
-        catch (NotSupportedException) { _cpuPrefillBroken = true; return false; }
+        catch (NotSupportedException ex) { _cpuPrefillBroken = true; LastCpuPrefillRefusal = "CPU pass refused: " + ex.Message; return false; }
         if (_gpuPart.ImportSplitKv(_cpuPart.KvCacheForHandoff, tokens.Count) is { } why)
         {
             LastCpuPrefillRefusal = "GPU side: " + why;

@@ -10,10 +10,12 @@ namespace OpenTail.Stingray.Tests.Vulkan;
 /// </summary>
 public sealed class LayerSplitCpuPrefillHandoffTests : HeavyTestBase
 {
-    [Theory]
-    [InlineData("GLM-4.5-Air-Q2_K.gguf", 4)]   // glm4moe: leading dense layer, selection-bias sigmoid routing, partial RoPE, shared expert
-    [InlineData("tencent.Hunyuan-A13B-Instruct.Q3_K_S.gguf", 4)]   // hunyuan-moe: shared expert, QK-norm after RoPE
-    public void Handoff_GpuKvEqualsCpuAndDecodeAgrees(string file, int split)
+    // One Fact per checkpoint (not a Theory) so a single heavy model can be run alone with -method; each loads a 16-45 GB file.
+    [Fact] public void GlmAir_Handoff_GpuKvEqualsCpuAndDecodeAgrees() => Handoff("GLM-4.5-Air-Q2_K.gguf", 4);                   // glm4moe: leading dense layer, selection-bias sigmoid routing, partial RoPE, shared expert
+    [Fact] public void HunyuanA13B_Handoff_GpuKvEqualsCpuAndDecodeAgrees() => Handoff("tencent.Hunyuan-A13B-Instruct.Q3_K_S.gguf", 4);   // hunyuan-moe: shared expert, QK-norm after RoPE
+    [Fact] public void TrinityMini_Handoff_GpuKvEqualsCpuAndDecodeAgrees() => Handoff("Trinity-Mini-Q4_K_M.gguf", 4);                  // afmoe: attention output gate, sliding/global layers, shared expert, leading dense layers
+
+    private static void Handoff(string file, int split)
     {
         string? path = FindModelPath(file);
         Assert.SkipWhen(path is null, $"{file} not present");

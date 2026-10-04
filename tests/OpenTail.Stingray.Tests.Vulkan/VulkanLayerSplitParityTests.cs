@@ -24,6 +24,7 @@ public sealed class VulkanLayerSplitParityTests : HeavyTestBase
     [InlineData("tencent_Hunyuan-0.5B-Instruct-Q8_0.gguf", 0)]
     [InlineData("orpheus-3b-0.1-ft.Q4_K_M.gguf", 0)]         // rope_freqs through the split
     [InlineData("GLM-4.5-Air-Q2_K.gguf", 4)]                  // glm4moe: leading dense layer 0, selection-bias sigmoid routing, partial NEOX RoPE, shared expert
+    [InlineData("Trinity-Mini-Q4_K_M.gguf", 4)]               // afmoe: attention output gate (full Vulkan pass), sliding/global layers
     public void PrefillAndDecodeLogits_AgreeWithCpu(string file, int split)
     {
         string? path = FindModelPath(file);

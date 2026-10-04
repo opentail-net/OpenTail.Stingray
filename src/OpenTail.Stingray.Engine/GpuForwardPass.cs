@@ -412,6 +412,9 @@ public sealed unsafe partial class GpuForwardPass : IForwardPass
     private readonly float _ropeThetaSwa;
     // Per-layer post-norms (sandwich norm), per-head Q/K norm, per-layer output scale.
     private readonly Tensor[]? _wPostAttnNorm;
+    // afmoe (and Muse-Glimmer on the CPU): per-layer attention output gate, attn *= sigmoid(attn_gate . attn_norm_out) before the output projection.
+    private readonly Tensor[]? _wAttnGate;
+    private readonly Tensor? _attnGateBuf;
     private readonly Tensor[]? _wPostFfwNorm;
     private readonly Tensor[]? _wQNormG4;   // per-layer attn_q_norm (gemma4; [layerHd])
     private readonly Tensor[]? _wKNormG4;   // per-layer attn_k_norm (gemma4; [layerHd])
@@ -499,7 +502,7 @@ public sealed unsafe partial class GpuForwardPass : IForwardPass
     public static string? UnsupportedReason(GgufModel model, ModelHyperparams hp)
     {
         if (hp.KvLoraRank > 0) return "MLA attention (deepseek2)";
-        if (hp.AttentionOutputGate || hp.InputEmbeddingRmsNorm || hp.PostNormEps > 0f)
+        if (hp.InputEmbeddingRmsNorm || hp.PostNormEps > 0f)
             return "attention output gate / embedding norm (muse-glimmer, CPU only)";
         if (hp.UsesLayerNorm && hp.HasQkNorm) return "LayerNorm QK-norm";
         if (hp.RopeDim > 0 && hp.RopeDim < hp.HeadDim && !hp.IsNeoxRope) return "partial non-NEOX RoPE";
@@ -523,6 +526,8 @@ public sealed unsafe partial class GpuForwardPass : IForwardPass
     public static string? PartialOffloadUnsupportedReason(GgufModel model, ModelHyperparams hp)
     {
         if (UnsupportedReason(model, hp) is { } reason) return reason;
+        // The attention output gate (afmoe) is implemented in the full Vulkan pass only; the hybrid and CUDA loops have no gate.
+        if (hp.AttentionOutputGate) return "attention output gate (full Vulkan offload only)";
         // glm4moe: only the full Vulkan pass (and so the Vulkan layer split) has the dense-then-MoE layer mix and selection-bias routing.
         if (hp.IsMoE && hp.LeadingDenseBlockCount > 0) return "MoE with leading dense layers (full Vulkan offload only)";
         if (hp.IsMoE && hp.ExpertGatingFunc == 2 && !hp.UseSigmoidGating) return "selection-bias expert routing (full Vulkan offload only)";
@@ -542,7 +547,7 @@ public sealed unsafe partial class GpuForwardPass : IForwardPass
         int maxContextLength = 0, bool enableTurboQuant = false, int tqFp32Window = 256, int tqBits = 3,
         DType? kvDtype = null, int layerLimit = int.MaxValue)
     {
-        if (hp.AttentionOutputGate || hp.InputEmbeddingRmsNorm || hp.PostNormEps > 0f)
+        if (hp.InputEmbeddingRmsNorm || hp.PostNormEps > 0f)
             throw new NotSupportedException("GpuForwardPass has no path for muse-glimmer's attention output gate / embedding norm; use the CPU pass (-g 0).");
         // Gemma 4 master switch: hp.LayerHeadDim is non-null only for gemma4-family models.
         // The full gemma4 trunk (per-layer head_dim, SWA, dual RoPE + rope_freqs, sandwich
@@ -981,6 +986,11 @@ public sealed unsafe partial class GpuForwardPass : IForwardPass
         // RunStandardLayers then silently skipped both norms entirely, which is why Gemma 3's
         // GPU/Vulkan output was still gibberish after fixing the embedding-scale/SWA gaps.
         if (hp.HasPostAttnNorm) _wPostAttnNorm = new Tensor[L];
+        if (hp.AttentionOutputGate)
+        {
+            _wAttnGate = new Tensor[L];
+            _attnGateBuf = gpu.Allocate(TensorShape.D1((long)_numHeads * _maxHeadDim));
+        }
         if (hp.HasPostFfwNorm) _wPostFfwNorm = new Tensor[L];
         // Gemma 4 only: per-layer scalar output gain and gemma4's own per-head Q/K norm arrays
         // (kept separate from the generic _wqNorm/_wkNorm above so the per-layer-head_dim
@@ -1061,6 +1071,8 @@ public sealed unsafe partial class GpuForwardPass : IForwardPass
                 _wPostAttnNorm[i] = UploadWeight($"blk.{i}.post_attention_norm.weight");
             if (_wPostFfwNorm is not null)
                 _wPostFfwNorm[i] = UploadWeight($"blk.{i}.post_ffw_norm.weight");
+            if (_wAttnGate is not null)
+                _wAttnGate[i] = UploadWeight($"blk.{i}.attn_gate.weight");
 
             if (_isGemma4)
             {
@@ -1323,7 +1335,7 @@ public sealed unsafe partial class GpuForwardPass : IForwardPass
         // L2 QK-norm (HeadNormPure post-RoPE, Llama-4) is excluded EXPLICITLY: the batched trunk
         // has no L2 path (it would silently skip the norm), and the Debug.Assert that guards it is
         // stripped in Release — so don't rely on the L2⟹Llama4⟹MoE coupling, exclude it directly.
-        if (_isMoE || _isGemma4 || _hp.UseL2QkNorm || _embOnCpu) return false;
+        if (_isMoE || _isGemma4 || _hp.UseL2QkNorm || _hp.AttentionOutputGate || _embOnCpu) return false;
         // M-RoPE: positions are per pair and shift after images; only the per-token trunk applies them.
         if (_mropePairPos is not null) return false;
         if (_residentLayers < _hp.NumLayers) return false;   // layer split: per-token trunk only
@@ -1708,6 +1720,7 @@ public sealed unsafe partial class GpuForwardPass : IForwardPass
             GpuMatMul(_q, _wq[layer], _normBuf);
             GpuMatMul(_k, _wk[layer], _normBuf);
             GpuMatMul(_v, _wv[layer], _normBuf);
+            if (_wAttnGate is not null) GpuMatMul(_attnGateBuf!, _wAttnGate[layer], _normBuf);
             _gpu.RecordBarrier(); // Q/K/V done → bias + RoPE
 
             if (_hasAttnBias)
@@ -1937,6 +1950,11 @@ public sealed unsafe partial class GpuForwardPass : IForwardPass
             }
             _gpu.RecordBarrier(); // attnOut done → output projection
 
+            if (_wAttnGate is not null)
+            {
+                _gpu.SigmoidMulInPlace(_attnOut, _attnGateBuf!);
+                _gpu.RecordBarrier();
+            }
             GpuMatMul(_hidden, _wo[layer], _attnOut);
             if (_hasAttnOutputBias)
             {

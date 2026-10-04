@@ -86,6 +86,9 @@ public static class PrefillHandoffFamilies
             [("glm4moe", HandoffPath.VulkanLayerSplit)] = new(
                 "GlmMoeGreedyParityTests (CPU vs llama-server, 54/54 teacher-forced positions, PPL 3.37 vs 3.43) + LayerSplitCpuPrefillHandoffTests (GLM-4.5-Air Q2_K, -g 4, 205-token prompt; leading dense layer, selection-bias sigmoid routing, partial RoPE, shared expert): GPU K/V rows equal the CPU pass, prefill logits equal, 40 decode steps vs all-CPU cosine >= 0.9946, 0 argmax flips",
                 "glm4moe|attention.head_count_kv=8|attention.key_length=128|expert_count=128|expert_used_count=8|expert_feed_forward_length=1408|expert_shared_count=1|leading_dense_block_count=1|expert_gating_func=2|expert_weights_norm=True"),
+            [("afmoe", HandoffPath.VulkanLayerSplit)] = new(
+                "AfmoeGreedyParityTests (CPU vs llama-server, 31 confident positions, PPL 6.84 vs 7.11) + LayerSplitCpuPrefillHandoffTests (Arcee Trinity Mini Q4_K_M, -g 4, 198-token prompt; attention output gate in the Vulkan pass, sliding/global layers, leading dense layers, shared expert; the CPU source is the per-token trunk because gated models have no batched CPU prefill): GPU K/V rows equal the CPU pass, prefill logits equal, 40 decode steps vs all-CPU cosine >= 0.9956, 1 near-tie argmax flip of 41. Prompts under the 2048-token sliding window only",
+                "afmoe|attention.head_count_kv=4|attention.key_length=128|expert_count=128|expert_used_count=8|expert_feed_forward_length=1024|expert_shared_count=1|leading_dense_block_count=2|expert_gating_func=2|expert_weights_norm=True"),
             // CudaHybrid: no receipts. The path compiles and has never run (no NVIDIA GPU on the development machine).
         };
 
