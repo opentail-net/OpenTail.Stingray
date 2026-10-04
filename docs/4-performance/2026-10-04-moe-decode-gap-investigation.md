@@ -85,3 +85,24 @@ Reading `DotQ4K_Q8KS_Avx2` against what ggml's `vec_dot_q4_K_q8_K` does, the str
 
 ## 7. Step 1 done: Q5_0 and Q2_K in the folded MoE decode path (2026-10-04, later)
 `IsFoldedDotDType`, `ActScratchBytes`, `QuantizeAct` and `DispatchDot` now cover Q5_0 (Q8_0 activations, `DotQ5_0_Q8_0`) and Q2_K (Q8_K activations, `DotQ2K_Q8K`), exactly what the sequential path's `SimdKernels.MatVec` uses for those dtypes, so the two paths stay bit-identical per row. Checks: `Qwen2MoeGreedyParityTests` (Qwen1.5-MoE: Q5_0 down experts in 12 layers) and `GlmMoeGreedyParityTests` (Q2_K) pass with the same confident-position counts as before (17 and 5; 14 and 16), real runs of 29 s and 213 s; Fast suite 1030 passed. Phase timing on Qwen1.5-MoE at 6 threads: the "sequential per-expert loop" phase (24.6% of the MoE layer before) is gone and the layer total fell from 2224 to 1838 us, measured while the machine was in a SLOWER state than the earlier run (llama.cpp read 18.8 t/s instead of 25 in the same window), so the gain is understated; end-to-end ratios from this session are too noisy to quote.
+
+## 8. Steps 2 and 3 (2026-10-04, evening)
+
+### Step 2: a ggml-style Q4_K kernel prototype, in the bench tool only (`tools/kernel-bench-cs/Q4KProto.cs`, mode `q4k-dot`)
+Same structure as `ggml_vec_dot_q4_K_q8_K`: activations in Q8_K (one float scale per 256, per-16 sums), 6-bit scales unpacked once per super-block and broadcast as 16-bit lanes by byte shuffle, `maddubs` + `madd` against the scales accumulating in integer across the super-block, mins folded in through the activation's per-16 sums, one float conversion + FMA per super-block. It is fed ggml's own Q8_K buffer.
+
+| ns/row, one thread, same window | ours 1-row (Q8_KS) | ours 2-row | prototype | ggml |
+|---|---|---|---|---|
+| L1 (18 KB) | 200 | 181 | 88-100 | 56 |
+| L2 (295 KB) | 196 | 182 | 87 | 89 |
+| DRAM (75 MB) | 199-207 | 250-280 | 98-107 | 65-79 |
+| shared-expert shape | 199 | 255 | 101 | 65 |
+| Qwen3-Coder expert shape | 216 | 240 | 96 | 77 |
+
+The prototype is about 2x faster than our current kernel and within 1.25-1.7x of ggml. On the cells where all kernels see the same rows its output equals ggml's to three decimals (checksums -832.681, -3598.620, -3684.363). Accuracy against an exact double-precision dot of the dequantised weights and the original float activation (K = 2048, 8 x 4096 random rows, activations uniform [-1,1] with occasional x8 outliers): **ours Q8_KS 0.66% relative RMS error, ggml Q8_K and the prototype 1.38%**. So the speed-up costs about 2x the activation-quantisation error, which is exactly llama.cpp's behaviour; it is a policy decision, not applied to the engine. Integration would also have to deal with the bit-identity contract between the single-row Q8_KS kernel and the batched `_4In`/`_8In` kernels (`MatMulBatchedQ8EquivalenceTests`) and with an own Q8_K quantiser in ggml's 292-byte layout. A middle option not prototyped: keep Q8_KS but replace the scalar scale unpacking and per-sub-block broadcasts with the shuffle/madd structure (expected gain smaller; it cannot accumulate across sub-blocks in integer because the activation scales differ per 32).
+
+### Step 3: NativeAOT build vs the JIT build
+`dotnet publish src/OpenTail.Stingray.Cli -c Release -r win-x64` works once `vswhere.exe` (Visual Studio Installer directory) is on PATH; without it the ILCompiler step fails with "vswhere.exe is not recognized". The AOT `stingray.exe` (22.6 MB) decodes Qwen1.5-MoE at 6.8 / 15.6 / 15.3 t/s against the JIT build's 7.7 / 9.3 / 13.4 in interleaved pairs, with llama.cpp at 13.6 in the same window. So the AOT build is **not** in the slow `TieredCompilation=0` regime (4x slower); it is in the same range as the tiered JIT. The window was too noisy for a finer comparison.
+
+### Measurement contamination (probable, not proven)
+At 21:3x a process named `OpenTail.Stingray.Tests.Diffusion` (not started by this work; 21,100 CPU-seconds, 17.7 GB working set) was running on the same machine. The MoE benchmarks in this note therefore ran next to other heavy work at least part of the time. That plausibly explains the session-to-session drift (llama.cpp read 25, then 18.8, then 13.6 t/s on the same model), the unreproduced 12 t/s result this morning, and the low-memory kill of the Hunyuan run. Before quoting any ratio from these notes, re-measure on a machine with nothing else running.

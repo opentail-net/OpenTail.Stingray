@@ -63,6 +63,30 @@ internal static unsafe class Q4KDotBench
             ("real: Qwen3-Coder expert gate/up 768 x 2048", 768, true),
         ];
 
+        // Accuracy against an exact double dot (4096 random rows, K = 2048): activations uniform [-1,1] with a few outliers, as in real hidden states.
+        {
+            var rng2 = new Random(99);
+            float* xa = (float*)NativeMemory.AlignedAlloc((nuint)(K * sizeof(float)), 64);
+            byte* a8 = (byte*)NativeMemory.AlignedAlloc((nuint)SimdKernels.Q8KSScratchBytes(K), 64);
+            byte* aK = (byte*)NativeMemory.AlignedAlloc((nuint)(K / 256 * 292), 64);
+            int rowsA = 4096; byte* wa = (byte*)NativeMemory.AlignedAlloc((nuint)((long)rowsA * RowBytes), 64);
+            FillQ4K(wa, rowsA, new Random(5));
+            double eOurs = 0, eGgml = 0, eProto = 0, norm = 0;
+            for (int trial = 0; trial < 8; trial++)
+            {
+                for (int i = 0; i < K; i++) xa[i] = (float)(rng2.NextDouble() * 2 - 1) * (rng2.Next(64) == 0 ? 8f : 1f);
+                SimdKernels.QuantizeRowToQ8KS(xa, K, a8); fromFloatQ8K(xa, aK, K);
+                for (int r = 0; r < rowsA; r++)
+                {
+                    double exact = Q4KAccuracy.ExactDot(wa + (long)r * RowBytes, xa, K / 256);
+                    float o = SimdKernels.DotQ4K_Q8KS(wa + (long)r * RowBytes, a8, K);
+                    float g; vecDot(K, &g, 0, wa + (long)r * RowBytes, 0, aK, 0, 1);
+                    float p = Q4KProto.Dot(wa + (long)r * RowBytes, aK, K / 256);
+                    eOurs += (o - exact) * (o - exact); eGgml += (g - exact) * (g - exact); eProto += (p - exact) * (p - exact); norm += exact * exact;
+                }
+            }
+            Console.WriteLine($"accuracy vs exact double dot (relative RMS error over {8 * rowsA} dots): ours Q8_KS {Math.Sqrt(eOurs / norm):E2}   ggml Q8_K {Math.Sqrt(eGgml / norm):E2}   prototype {Math.Sqrt(eProto / norm):E2}");
+        }
         Console.WriteLine($"{"working set",-46} {"kernel",-14} {"ns/row",8} {"ns/superblk",12} {"GB/s",7}   checksum");
         foreach (var (label, rows, rotate) in shapes)
         {
@@ -94,9 +118,10 @@ internal static unsafe class Q4KDotBench
             int cur = 0;
             void PassOurs1() { byte* m = mats[cur]; cur = (cur + 1) % copies; for (int r = 0; r < rows; r++) outBuf[r] = SimdKernels.DotQ4K_Q8KS(m + (long)r * RowBytes, actOurs, K); }
             void PassOurs2() { byte* m = mats[cur]; cur = (cur + 1) % copies; for (int r = 0; r + 1 < rows; r += 2) { SimdKernels.DotQ4K_Q8KS_2Row(m + (long)r * RowBytes, m + (long)(r + 1) * RowBytes, actOurs, K, out float a, out float b); outBuf[r] = a; outBuf[r + 1] = b; } }
+            void PassProto() { byte* m = mats[cur]; cur = (cur + 1) % copies; int nb = K / 256; for (int r = 0; r < rows; r++) outBuf[r] = Q4KProto.Dot(m + (long)r * RowBytes, actGgml, nb); }
             void PassGgml() { byte* m = mats[cur]; cur = (cur + 1) % copies; for (int r = 0; r < rows; r++) vecDot(K, outBuf + r, 0, m + (long)r * RowBytes, 0, actGgml, 0, 1); }
 
-            foreach (var (name, pass) in new (string, Action)[] { ("ours 1-row", PassOurs1), ("ours 2-row", PassOurs2), ("ggml vec_dot", PassGgml) })
+            foreach (var (name, pass) in new (string, Action)[] { ("ours 1-row", PassOurs1), ("ours 2-row", PassOurs2), ("proto (ggml-style)", PassProto), ("ggml vec_dot", PassGgml) })
             {
                 cur = 0;
                 double nsRow = Run1(pass, rows);
