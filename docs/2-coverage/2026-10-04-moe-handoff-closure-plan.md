@@ -72,7 +72,7 @@ Update the coverage table in [2026-10-04-moe-handoff-coverage.md](2026-10-04-moe
 
 - [ ] Step 0 shared test plumbing
 - [x] 1. `qwen2moe` (2026-10-04): Stage A (found and fixed 3 bugs, below), Stage B on the Vulkan hybrid at 1 and 4 GPU layers, receipt `(qwen2moe, VulkanHybrid)`. Not done for this family: Vulkan full-GPU path (shared-expert gate and scratch width are not implemented in `GpuForwardPass`, so it stays unverified), CUDA, router-level check (Stage A2; PPL 4.7838 against 4.8144 ± 0.78 stands in for it). Weights kept at `H:\_models` (F: is full; `models/_models` points at F:) until Mixtral needs the room.
-- [ ] 2. `llama+experts` (Mixtral): Stage A, Stage B, receipt, weights removed
+- [x] 2. `llama+experts` (Mixtral, 2026-10-04): Stage A, Stage B on the Vulkan hybrid at 1 and 4 GPU layers, receipt `(llama+experts, VulkanHybrid)`. Not done: Vulkan full-GPU, CUDA, Stage A2 routing check (PPL stands in), the 2- and 4-slot `STINGRAY_MOE_SLOTS` boundary and warm-up cost question (only 16 and 4 slots were run). Weights kept in `H:\_models`.
 - [ ] 3. `phimoe`: Vulkan LongRoPE, Stage B, receipt
 - [ ] 4. `glm4moe`: disk decision, Stage A, Stage B, receipt
 - [ ] 5. `llama4`: forward-path reading, then decide
@@ -91,11 +91,12 @@ Evidence: `Qwen2MoeGreedyParityTests` (teacher-forced against `llama-server`, 1.
 
 Also found while checking Mixtral (not fixed, belongs to step 2): `NormalizeMoeTopKWeights` defaults to false for any architecture without an `expert_weights_norm` key, which includes `llama`; Mixtral needs renormalised top-2 weights (llama.cpp `build_moe_ffn` with `norm_w = true`).
 
-### 2. Mixtral-style (`llama` + experts), in progress (2026-10-04)
+### 2. Mixtral-style (`llama` + experts) (2026-10-04)
 - **Checkpoint search:** the common Mixtral GGUFs (TheBloke, MaziyarPanahi, 2023) use the legacy per-expert tensor layout (`blk.N.ffn_gate.E.weight`, 995 tensors) that this engine does not load; stacked-layout (`ffn_gate_exps`) ones exist from newer converts. Header-sniffed with HTTP range requests before downloading. Legacy-layout support would be a separate loader task.
 - **Bug fixed:** `NormalizeMoeTopKWeights` defaulted to false for `llama` (no `expert_weights_norm` key), but llama.cpp's `llama` builder passes `norm_w = true` for experts. Fixed in `ModelGraph`.
 - **Stage A on TinyLlama-4x1.1B-MoE Q4_K_M** (4 experts top-2, 1.9 GB): `MixtralStyleGreedyParityTests` teacher-forced against `llama-server` (BOS added), 7 of 22 and 11 of 32 confident positions all match; second-half PPL (-c 512) 10.5418 vs `llama-perplexity` 10.1558 ± 1.71.
-- **Stage B on the tiny model: not receipted.** The handoff is byte-exact (K/V and prefill logits identical to the CPU pass, 1 and 4 GPU layers), but decode after the handoff differs from decode after the sequential hybrid prefill at one step in both splits (cosine 0.973 and 0.975; at 4 GPU layers an argmax flip with a 4.7% gap). The suspected cause is a near-tied router in this mergekit-made model (a hybrid-GPU versus CPU K/V difference of a few ulps flips the chosen expert), not the handoff; not proven. The two test rows were removed again; a real Mixtral-8x7B (stacked layout, 26.7 GB, Nous-Hermes-2-Mixtral-8x7B-DPO i1-Q4_K_S) is being downloaded to settle it.
+- **Stage B on the tiny model: not receipted.** The handoff is byte-exact (K/V and prefill logits identical to the CPU pass, 1 and 4 GPU layers), but decode after the handoff differs from decode after the sequential hybrid prefill at one step in both splits (cosine 0.973 and 0.975; at 4 GPU layers an argmax flip with a 4.7% gap). The suspected cause is a near-tied router in this mergekit-made model (a hybrid-GPU versus CPU K/V difference of a few ulps flips the chosen expert), not the handoff; not proven. The two test rows were removed again.
+- **Real Mixtral-8x7B** (Nous-Hermes-2-Mixtral-8x7B-DPO i1-Q4_K_S, stacked layout, 26.7 GB, 8 experts top-2, 32 layers; downloaded from mradermacher after sniffing headers): `MixtralGreedyParityTests` teacher-forced against `llama-server`, all 24 confident positions match (18 of 32 and 6 of 22); second-half PPL (-c 512) 3.2040 vs `llama-perplexity` 3.1935 ± 0.41. Handoff on the Vulkan hybrid at 4 and 1 GPU layers: byte-exact K/V, prefill cosine 0.9998, decode cosines 0.99982-1.00000 (no near-tie argmax flips). That settles the tiny model: the decode dip there was the merge's router, not the handoff. Receipt added; `STINGRAY_HYBRID_CPU_PREFILL=all` was needed to run the rows before it existed.
 
 ## Review feedback, parked for later consideration (2026-10-04)
 

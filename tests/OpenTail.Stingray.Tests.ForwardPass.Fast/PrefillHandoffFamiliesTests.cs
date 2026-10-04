@@ -41,7 +41,9 @@ public sealed class PrefillHandoffFamiliesTests
         var moe = PrefillHandoffFamilies.Classify(Md("llama", ("llama.expert_count", 8u)), HandoffPath.VulkanHybrid);
         Assert.Equal("llama", dense.Family);
         Assert.Equal("llama+experts", moe.Family);
-        Assert.Equal(HandoffStatus.Unverified, moe.Status);
+        Assert.Equal(HandoffStatus.Admitted, moe.Status);   // Mixtral-8x7B receipt on the Vulkan hybrid
+        Assert.Equal(HandoffStatus.Unverified, PrefillHandoffFamilies.Classify(Md("llama", ("llama.expert_count", 8u)), HandoffPath.VulkanFullGpu).Status);
+        Assert.Equal(HandoffStatus.Unverified, dense.Status);    // dense llama has no receipt of its own
     }
 
     [Theory]
@@ -121,6 +123,7 @@ public sealed class PrefillHandoffFamiliesTests
     [InlineData("OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf", HandoffStatus.Admitted)]
     [InlineData("Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf", HandoffStatus.Admitted)]
     [InlineData("Qwen1.5-MoE-A2.7B-Chat.Q4_K_M.gguf", HandoffStatus.Admitted)]
+    [InlineData("Nous-Hermes-2-Mixtral-8x7B-DPO.i1-Q4_K_S.gguf", HandoffStatus.Admitted)]
     [InlineData("DeepSeek-V2-Lite-Chat.Q2_K.gguf", HandoffStatus.Incompatible)]      // MLA
     [InlineData("LFM2-8B-A1B-Q4_K_M.gguf", HandoffStatus.Incompatible)]               // short-conv state
     [InlineData("granite-4.0-h-small-Q2_K.gguf", HandoffStatus.Incompatible)]         // Mamba-2 state
