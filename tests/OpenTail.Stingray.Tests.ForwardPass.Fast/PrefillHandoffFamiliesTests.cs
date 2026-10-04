@@ -16,7 +16,7 @@ public sealed class PrefillHandoffFamiliesTests
     [InlineData("qwen3")]
     public void ReceiptedFamilies_AreAdmitted(string arch)
     {
-        var c = PrefillHandoffFamilies.Classify(Md(arch));
+        var c = PrefillHandoffFamilies.Classify(Md(arch), HandoffPath.VulkanHybrid);
         Assert.Equal(HandoffStatus.Admitted, c.Status);
         Assert.Null(PrefillHandoffFamilies.Refusal(c, null));
     }
@@ -28,18 +28,18 @@ public sealed class PrefillHandoffFamiliesTests
     [InlineData("phimoe")]
     public void ConventionalFamiliesWithoutReceipt_AreUnverified_AndOnlyAllLiftsIt(string arch)
     {
-        var c = PrefillHandoffFamilies.Classify(Md(arch));
+        var c = PrefillHandoffFamilies.Classify(Md(arch), HandoffPath.VulkanHybrid);
         Assert.Equal(HandoffStatus.Unverified, c.Status);
-        Assert.Contains("no hybrid-versus-CPU parity receipt", PrefillHandoffFamilies.Refusal(c, null));
-        Assert.Contains("no hybrid-versus-CPU parity receipt", PrefillHandoffFamilies.Refusal(c, "1"));
+        Assert.Contains("no parity receipt for this path", PrefillHandoffFamilies.Refusal(c, null));
+        Assert.Contains("no parity receipt for this path", PrefillHandoffFamilies.Refusal(c, "1"));
         Assert.Null(PrefillHandoffFamilies.Refusal(c, "all"));
     }
 
     [Fact]
     public void MixtralStyleLlama_IsItsOwnFamily_NotDenseLlama()
     {
-        var dense = PrefillHandoffFamilies.Classify(Md("llama"));
-        var moe = PrefillHandoffFamilies.Classify(Md("llama", ("llama.expert_count", 8u)));
+        var dense = PrefillHandoffFamilies.Classify(Md("llama"), HandoffPath.VulkanHybrid);
+        var moe = PrefillHandoffFamilies.Classify(Md("llama", ("llama.expert_count", 8u)), HandoffPath.VulkanHybrid);
         Assert.Equal("llama", dense.Family);
         Assert.Equal("llama+experts", moe.Family);
         Assert.Equal(HandoffStatus.Unverified, moe.Status);
@@ -52,7 +52,7 @@ public sealed class PrefillHandoffFamiliesTests
     [InlineData("qwen35moe", "qwen35moe.full_attention_interval", 4u, "recurrent")]
     public void StateThatIsNotKvRows_IsIncompatible_AndNothingLiftsIt(string arch, string key, object value, string reasonPart)
     {
-        var c = PrefillHandoffFamilies.Classify(Md(arch, (key, value)));
+        var c = PrefillHandoffFamilies.Classify(Md(arch, (key, value)), HandoffPath.VulkanHybrid);
         Assert.Equal(HandoffStatus.Incompatible, c.Status);
         Assert.Contains(reasonPart, c.Reason);
         Assert.NotNull(PrefillHandoffFamilies.Refusal(c, "all"));
@@ -61,30 +61,58 @@ public sealed class PrefillHandoffFamiliesTests
     [Fact]
     public void KvLoraRankZero_IsNotMla()
     {
-        Assert.Equal(HandoffStatus.Unverified, PrefillHandoffFamilies.Classify(Md("glm4moe", ("glm4moe.attention.kv_lora_rank", 0u))).Status);
+        Assert.Equal(HandoffStatus.Unverified, PrefillHandoffFamilies.Classify(Md("glm4moe", ("glm4moe.attention.kv_lora_rank", 0u)), HandoffPath.VulkanHybrid).Status);
     }
 
     [Fact]
     public void LongRope_AndOwnForwardPass_AndMissingArchitecture_AreIncompatible()
     {
-        Assert.Equal(HandoffStatus.Incompatible, PrefillHandoffFamilies.Classify(Md("phimoe"), hasLongRopeTensors: true).Status);
-        Assert.Equal(HandoffStatus.Incompatible, PrefillHandoffFamilies.Classify(Md("gpt-oss")).Status);
-        Assert.Equal(HandoffStatus.Incompatible, PrefillHandoffFamilies.Classify(new Dictionary<string, object>()).Status);
+        Assert.Equal(HandoffStatus.Incompatible, PrefillHandoffFamilies.Classify(Md("phimoe"), HandoffPath.VulkanHybrid, hasLongRopeTensors: true).Status);
+        Assert.Equal(HandoffStatus.Incompatible, PrefillHandoffFamilies.Classify(Md("gpt-oss"), HandoffPath.VulkanHybrid).Status);
+        Assert.Equal(HandoffStatus.Incompatible, PrefillHandoffFamilies.Classify(new Dictionary<string, object>(), HandoffPath.VulkanHybrid).Status);
     }
 
     [Fact]
     public void StructuralRefusalOutranksAReceipt()
     {
         // A receipted name on a header that carries recurrent state must still be refused.
-        var c = PrefillHandoffFamilies.Classify(Md("qwen3moe", ("qwen3moe.ssm.conv_kernel", 4u)));
+        var c = PrefillHandoffFamilies.Classify(Md("qwen3moe", ("qwen3moe.ssm.conv_kernel", 4u)), HandoffPath.VulkanHybrid);
         Assert.Equal(HandoffStatus.Incompatible, c.Status);
     }
 
     [Fact]
-    public void EveryReceipt_NamesItsEvidence()
+    public void EveryReceipt_NamesItsEvidenceAndFingerprint()
     {
-        foreach (var (family, evidence) in PrefillHandoffFamilies.Receipts)
-            Assert.True(evidence.Length > 20, $"receipt for '{family}' must cite a test");
+        foreach (var ((family, path), receipt) in PrefillHandoffFamilies.Receipts)
+        {
+            Assert.True(receipt.Evidence.Length > 20, $"receipt for '{family}' on {path} must cite a test");
+            Assert.StartsWith(family.Split('+')[0], receipt.Fingerprint);
+        }
+    }
+
+    [Fact]
+    public void Receipts_AreForOnePath_AndDoNotAuthorizeAnother()
+    {
+        // OLMoE has Vulkan hybrid and Vulkan full-GPU receipts; Qwen3-MoE only hybrid; nothing for CUDA (never run).
+        Assert.Equal(HandoffStatus.Admitted, PrefillHandoffFamilies.Classify(Md("olmoe"), HandoffPath.VulkanFullGpu).Status);
+        Assert.Equal(HandoffStatus.Admitted, PrefillHandoffFamilies.Classify(Md("qwen3moe"), HandoffPath.VulkanHybrid).Status);
+        Assert.Equal(HandoffStatus.Unverified, PrefillHandoffFamilies.Classify(Md("qwen3moe"), HandoffPath.VulkanFullGpu).Status);
+        foreach (var arch in new[] { "olmoe", "qwen3moe", "qwen3" })
+            Assert.Equal(HandoffStatus.Unverified, PrefillHandoffFamilies.Classify(Md(arch), HandoffPath.CudaHybrid).Status);
+    }
+
+    [Fact]
+    public void Fingerprint_ListsWhatTheCheckpointExercises_AndDifferingVariantsAreReported()
+    {
+        var md = Md("qwen2moe", ("qwen2moe.expert_count", 60u), ("qwen2moe.expert_used_count", 4u), ("qwen2moe.expert_shared_feed_forward_length", 5632u),
+            ("qwen2moe.rope.freq_base", 1e6f));
+        Assert.Equal("qwen2moe|expert_count=60|expert_used_count=4|expert_shared_feed_forward_length=5632", PrefillHandoffFamilies.Fingerprint(md));
+
+        // a header of a receipted family whose structure differs from the proven checkpoint is still admitted, but says so
+        var other = Md("olmoe", ("olmoe.expert_count", 32u));
+        var c = PrefillHandoffFamilies.Classify(other, HandoffPath.VulkanHybrid);
+        Assert.Equal(HandoffStatus.Admitted, c.Status);
+        Assert.Contains("differs from the proven one", c.Reason);
     }
 
     // Real headers (index only, no weights): one checkpoint for each class the gate has to tell apart. Skips visibly when absent.
@@ -106,7 +134,9 @@ public sealed class PrefillHandoffFamiliesTests
             }
         Assert.SkipUnless(path is not null, $"{file} is not in models/ or models/_models/");
         using var model = GgufModel.Open(path!);
-        var c = PrefillHandoffFamilies.Classify(model.Metadata, model.FindTensor("rope_factors_short.weight") is not null);
+        var c = PrefillHandoffFamilies.Classify(model.Metadata, HandoffPath.VulkanHybrid, model.FindTensor("rope_factors_short.weight") is not null);
         Assert.True(expected == c.Status, $"{file}: {c.Family} classified {c.Status} ({c.Reason}), expected {expected}");
+        if (expected == HandoffStatus.Admitted)
+            Assert.DoesNotContain("differs from the proven one", c.Reason); // the receipt was written from this very header
     }
 }

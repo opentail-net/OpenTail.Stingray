@@ -58,7 +58,7 @@ public sealed unsafe partial class CudaHybridForwardPass
         if (_kvDType != DType.Float32) return $"GPU KV dtype {_kvDType}: the handoff would need a conversion that must match the CUDA append kernels exactly";
         if (PagedKvCache.Bf16RoundingRequested) return "STINGRAY_KV_DTYPE=bf16 rounds every KV write; exact F32 K/V cannot be guaranteed";
         if (_nGpuLayers + _nCpuLayers != _hp.NumLayers) return "layer placement does not cover the model";
-        if (KvHandoff.FamilyRefusal(_model, s_cpuPrefillSetting) is { } familyRefusal) return familyRefusal;
+        if (KvHandoff.FamilyRefusal(_model, s_cpuPrefillSetting, HandoffPath.CudaHybrid) is { } familyRefusal) return familyRefusal;
         long kvBytes = KvHandoff.TemporaryKvBytes(n, _numKvHeads, _headDim, _hp.NumLayers);
         if (kvBytes > CpuPrefillKvBudgetBytes)
             return $"temporary CPU KV cache ({kvBytes >> 20} MiB) exceeds the {CpuPrefillKvBudgetBytes >> 20} MiB budget";

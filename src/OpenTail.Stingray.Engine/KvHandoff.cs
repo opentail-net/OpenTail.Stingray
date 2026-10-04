@@ -13,9 +13,9 @@ internal static unsafe class KvHandoff
     /// <see cref="PrefillHandoffFamilies"/>: a structural check, then a parity receipt; a setting of <c>all</c> lifts only the
     /// missing-receipt refusal, never a structural one.
     /// </summary>
-    internal static string? FamilyRefusal(GgufModel model, string? setting) =>
+    internal static string? FamilyRefusal(GgufModel model, string? setting, HandoffPath path) =>
         PrefillHandoffFamilies.Refusal(
-            PrefillHandoffFamilies.Classify(model.Metadata, model.FindTensor("rope_factors_short.weight") is not null), setting);
+            PrefillHandoffFamilies.Classify(model.Metadata, path, model.FindTensor("rope_factors_short.weight") is not null), setting);
 
     /// <summary>Bytes of the temporary F32 K+V cache the CPU pass allocates for an <paramref name="n"/>-token prompt.</summary>
     internal static long TemporaryKvBytes(int n, int numKvHeads, int headDim, int numLayers) =>

@@ -73,7 +73,7 @@ public sealed unsafe partial class GpuForwardPass
         if (_mropePairPos is not null) return "M-RoPE positions";
         if (_kvDType is not (DType.Float32 or DType.BFloat16)) return $"GPU KV dtype {_kvDType} has no handoff conversion";
         if (PagedKvCache.Bf16RoundingRequested) return "STINGRAY_KV_DTYPE=bf16 rounds every KV write; exact F32 K/V cannot be guaranteed";
-        if (KvHandoff.FamilyRefusal(_model, s_cpuPrefillSetting) is { } familyRefusal) return familyRefusal;
+        if (KvHandoff.FamilyRefusal(_model, s_cpuPrefillSetting, HandoffPath.VulkanFullGpu) is { } familyRefusal) return familyRefusal;
         long kvBytes = KvHandoff.TemporaryKvBytes(n, _numKvHeads, _headDim, _hp.NumLayers);
         if (kvBytes > CpuPrefillKvBudgetBytes)
             return $"temporary CPU KV cache ({kvBytes >> 20} MiB) exceeds the {CpuPrefillKvBudgetBytes >> 20} MiB budget";

@@ -11,6 +11,20 @@ public enum HandoffStatus
     Incompatible,
 }
 
+/// <summary>The code paths that run the handoff; each has its own KV layout and upload code, so each needs its own receipt.</summary>
+public enum HandoffPath
+{
+    /// <summary><c>HybridForwardPass</c>: Vulkan, some layers on the GPU and the rest on the CPU (<c>-g N</c>).</summary>
+    VulkanHybrid,
+    /// <summary><c>GpuForwardPass</c>: Vulkan, every layer on the GPU (<c>-g -1</c>).</summary>
+    VulkanFullGpu,
+    /// <summary><c>CudaHybridForwardPass</c>.</summary>
+    CudaHybrid,
+}
+
+/// <summary>What one receipt proves: the test that proved it and the structural fingerprint of the checkpoint it ran on.</summary>
+public sealed record HandoffReceipt(string Evidence, string Fingerprint);
+
 /// <summary>Result of <see cref="PrefillHandoffFamilies.Classify"/>: the family key, its status and the sentence behind it.</summary>
 public sealed record HandoffClassification(string Family, HandoffStatus Status, string Reason);
 
@@ -28,13 +42,47 @@ public sealed record HandoffClassification(string Family, HandoffStatus Status, 
 /// </summary>
 public static class PrefillHandoffFamilies
 {
-    /// <summary>Family key to the evidence that admits it. Add a line only together with a passing parity test.</summary>
-    public static readonly IReadOnlyDictionary<string, string> Receipts = new Dictionary<string, string>(StringComparer.Ordinal)
+    /// <summary>
+    /// (family, path) to the receipt that admits it. A receipt for one path says nothing about another: the CPU-layer cache and the
+    /// GPU upload are different code. Add a line only together with a passing real-weight run on that path, including a mixed
+    /// CPU/GPU layer split where the path has one. The fingerprint records what the checkpoint exercised (experts, top-k,
+    /// shared-expert width, KV heads), so a later reader can tell what "admitted" covers.
+    /// </summary>
+    public static readonly IReadOnlyDictionary<(string Family, HandoffPath Path), HandoffReceipt> Receipts =
+        new Dictionary<(string, HandoffPath), HandoffReceipt>
+        {
+            [("olmoe", HandoffPath.VulkanHybrid)] = new(
+                "HybridCpuPrefillHandoffTests (OLMoE-1B-7B Q4_K_M, 4 and 8 GPU layers): byte-exact K/V, logits cosine 0.996-0.9999 after handoff",
+                "olmoe|attention.head_count_kv=16|expert_count=64|expert_used_count=8"),
+            [("qwen3moe", HandoffPath.VulkanHybrid)] = new(
+                "HybridCpuPrefillHandoffTests (Qwen3-Coder-30B-A3B Q4_K_M, 4 GPU layers, 16 slots): same contract",
+                "qwen3moe|attention.head_count_kv=4|attention.key_length=128|expert_count=128|expert_used_count=8|expert_feed_forward_length=768|expert_shared_feed_forward_length=0"),
+            [("qwen3", HandoffPath.VulkanHybrid)] = new(
+                "HybridCpuPrefillHandoffTests (Qwen3-0.6B Q8_0 dense, 8 GPU layers)",
+                "qwen3|attention.head_count_kv=8|attention.key_length=128"),
+            [("olmoe", HandoffPath.VulkanFullGpu)] = new(
+                "GpuCpuPrefillHandoffTests (OLMoE-1B-7B Q4_K_M, F32 and packed-fp16 KV): byte-exact K/V, logits equal the CPU pass",
+                "olmoe|attention.head_count_kv=16|expert_count=64|expert_used_count=8"),
+            // CudaHybrid: no receipts. The path compiles and has never run (no NVIDIA GPU on the development machine).
+        };
+
+    // Header keys (without the architecture prefix) that describe what a checkpoint exercises; recorded in receipts.
+    private static readonly string[] s_fingerprintKeys =
     {
-        ["olmoe"] = "VulkanHybridOlmoeParityTests (OLMoE-1B-7B Q4_K_M): byte-exact K/V, logits cosine 0.996-0.9999 after handoff",
-        ["qwen3moe"] = "VulkanHybridOlmoeParityTests (Qwen3-Coder-30B-A3B Q4_K_M, 128 experts): same contract",
-        ["qwen3"] = "HybridCpuPrefillHandoffTests / GpuCpuPrefillHandoffTests (Qwen3-0.6B, dense)",
+        "attention.head_count_kv", "attention.key_length", "expert_count", "expert_used_count", "expert_feed_forward_length",
+        "expert_shared_count", "expert_shared_feed_forward_length", "leading_dense_block_count", "expert_gating_func", "expert_weights_norm",
     };
+
+    /// <summary>Deterministic structural summary of a header, in the form stored in <see cref="HandoffReceipt.Fingerprint"/>.</summary>
+    public static string Fingerprint(IReadOnlyDictionary<string, object> metadata)
+    {
+        string arch = Str(metadata, "general.architecture");
+        var sb = new System.Text.StringBuilder(arch);
+        foreach (var key in s_fingerprintKeys)
+            if (metadata.TryGetValue($"{arch}.{key}", out var v))
+                sb.Append('|').Append(key).Append('=').Append(Convert.ToString(v, System.Globalization.CultureInfo.InvariantCulture));
+        return sb.ToString();
+    }
 
     // Architectures that run a forward pass of their own, which has no hybrid K/V layout to hand rows to.
     private static readonly HashSet<string> s_ownForwardPass = new(StringComparer.Ordinal) { "gpt-oss" };
@@ -50,8 +98,9 @@ public static class PrefillHandoffFamilies
     }
 
     /// <param name="metadata">GGUF key/values.</param>
+    /// <param name="path">Which handoff path is asking; receipts are per path.</param>
     /// <param name="hasLongRopeTensors">The model carries <c>rope_factors_short.weight</c> (Phi-3 / Phi-3.5 LongRoPE).</param>
-    public static HandoffClassification Classify(IReadOnlyDictionary<string, object> metadata, bool hasLongRopeTensors = false)
+    public static HandoffClassification Classify(IReadOnlyDictionary<string, object> metadata, HandoffPath path, bool hasLongRopeTensors = false)
     {
         string arch = Str(metadata, "general.architecture");
         string family = FamilyKey(metadata);
@@ -68,9 +117,13 @@ public static class PrefillHandoffFamilies
         if (hasLongRopeTensors)
             return new(family, HandoffStatus.Incompatible, "LongRoPE: the Vulkan/CUDA hybrid cannot decode it, so there is nothing to hand the KV to");
 
-        return Receipts.TryGetValue(family, out var evidence)
-            ? new(family, HandoffStatus.Admitted, evidence)
-            : new(family, HandoffStatus.Unverified, "conventional K/V layout, but no hybrid-versus-CPU parity receipt");
+        if (Receipts.TryGetValue((family, path), out var receipt))
+        {
+            string fp = Fingerprint(metadata);
+            string variant = fp == receipt.Fingerprint ? "" : $" (this checkpoint differs from the proven one: {fp} vs {receipt.Fingerprint})";
+            return new(family, HandoffStatus.Admitted, receipt.Evidence + variant);
+        }
+        return new(family, HandoffStatus.Unverified, $"conventional K/V layout, but no parity receipt for this path ({path})");
     }
 
     /// <summary>Null when the handoff may run; otherwise why not. <paramref name="setting"/> <c>all</c> lifts only <see cref="HandoffStatus.Unverified"/>.</summary>
@@ -78,7 +131,7 @@ public static class PrefillHandoffFamilies
     {
         HandoffStatus.Admitted => null,
         HandoffStatus.Unverified when setting == "all" => null,
-        HandoffStatus.Unverified => $"family '{c.Family}' has no hybrid-versus-CPU parity receipt (STINGRAY_HYBRID_CPU_PREFILL=all runs it unverified)",
+        HandoffStatus.Unverified => $"family '{c.Family}' has no parity receipt for this path (the CPU-prefill setting all runs it unverified)",
         _ => $"family '{c.Family}' cannot use the handoff: {c.Reason}",
     };
 
