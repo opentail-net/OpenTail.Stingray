@@ -73,9 +73,9 @@ public sealed unsafe class HybridCpuPrefillHandoffTests : HeavyTestBase
         return new Setup(model, hp, prompt, gpu!);
     }
 
-    private static HybridForwardPass NewHybrid(Setup s, int gpuLayers, int slots) =>
+    private static HybridForwardPass NewHybrid(Setup s, int gpuLayers, int slots, int ctx = 1024) =>
         new(s.Model, s.Gpu, s.Hp,
-            new LayerPlacement(gpuLayers, s.Hp.NumLayers - gpuLayers, 0, 0, 1024), expertSlotCapacity: slots);
+            new LayerPlacement(gpuLayers, s.Hp.NumLayers - gpuLayers, 0, 0, ctx), expertSlotCapacity: slots);
 
     [Theory]
     [InlineData("OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf", 4, -1)]
@@ -86,7 +86,11 @@ public sealed unsafe class HybridCpuPrefillHandoffTests : HeavyTestBase
     [InlineData("Qwen1.5-MoE-A2.7B-Chat.Q4_K_M.gguf", 1, 8)]
     [InlineData("Nous-Hermes-2-Mixtral-8x7B-DPO.i1-Q4_K_S.gguf", 4, 16)]   // llama + experts (Mixtral-8x7B): 8 experts top-2, renormalised
     [InlineData("Nous-Hermes-2-Mixtral-8x7B-DPO.i1-Q4_K_S.gguf", 1, 4)]
-    public void Handoff_IsByteExact_AndDecodeAgreesWithSequentialPrefill(string file, int gpuLayers, int slots)
+    // phimoe (LongRoPE, RMSNorm + bias, LM-head bias): ctx 1024 uses the short factors, ctx 8192 (> original_context_length 4096) the long ones.
+    [InlineData("Phi-3.5-MoE-instruct-Q3_K_M.gguf", 4, 16, 1024)]
+    [InlineData("Phi-3.5-MoE-instruct-Q3_K_M.gguf", 1, 8, 1024)]
+    [InlineData("Phi-3.5-MoE-instruct-Q3_K_M.gguf", 4, 16, 8192)]
+    public void Handoff_IsByteExact_AndDecodeAgreesWithSequentialPrefill(string file, int gpuLayers, int slots, int ctx = 1024)
     {
         using var s = Open(file)!;
         Assert.True(s.Prompt.Length >= 100, $"prompt too short for a meaningful test: {s.Prompt.Length}");
@@ -98,7 +102,7 @@ public sealed unsafe class HybridCpuPrefillHandoffTests : HeavyTestBase
         var refV = new float[s.Hp.NumLayers][];
         float[] refLogits;
         using (var backend = new CpuBackend())
-        using (var cpu = new Engine.ForwardPass(s.Model, backend, s.Hp, maxContextLength: 1024))
+        using (var cpu = new Engine.ForwardPass(s.Model, backend, s.Hp, maxContextLength: ctx))
         using (var cache = new PagedKvCache(s.Hp.NumLayers, s.Hp.NumKvHeads, s.Hp.HeadDim, bf16Store: false, autoBf16: false, layerHeadDim: null))
         {
             refLogits = cpu.PrefillWithCache(s.Prompt, cache, 0).ToArray();
@@ -119,7 +123,7 @@ public sealed unsafe class HybridCpuPrefillHandoffTests : HeavyTestBase
         float[] fastLogits;
         var decodeFast = new List<float[]>();
         var forced = new int[6];
-        using (var fast = NewHybrid(s, gpuLayers, slots))
+        using (var fast = NewHybrid(s, gpuLayers, slots, ctx))
         {
             var l0 = fast.Prefill(s.Prompt, 0).ToArray();
             Assert.True(fast.LastPrefillUsedCpuHandoff, "the handoff was not taken: " + fast.LastCpuPrefillRefusal);
@@ -148,7 +152,7 @@ public sealed unsafe class HybridCpuPrefillHandoffTests : HeavyTestBase
         // ── B. Decode after handoff vs decode after the sequential hybrid prefill ──
         var decodeSeq = new List<float[]>();
         float[] seqLogits;
-        using (var seq = NewHybrid(s, gpuLayers, slots))
+        using (var seq = NewHybrid(s, gpuLayers, slots, ctx))
         {
             seq.CpuPrefillEnabled = false;
             seqLogits = seq.Prefill(s.Prompt, 0).ToArray();

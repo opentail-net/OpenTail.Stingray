@@ -38,6 +38,15 @@ public sealed unsafe partial class HybridForwardPass : IForwardPass
     private readonly Tensor[]? _gpuPostAttnNorm, _gpuPostFfwNorm;
     // rope_freqs.weight (Llama-3.x-style scaling, NORM or NEOX), applied with the global RoPE theta.
     private readonly Tensor? _gpuRopeFreqs;
+    // phimoe: RMSNorm with a bias added after it (attn_norm.bias, ffn_norm.bias, output_norm.bias) and an LM-head bias (output.bias).
+    // GPU layers keep the biases as tensors, CPU layers as host vectors; the output bias is applied to the downloaded logits.
+    private readonly bool _hasNormBias;
+    private Tensor[]? _gpuBAttnNorm, _gpuBFfnNorm;
+    private Tensor? _gpuBOutputNorm;
+    private float*[]? _cpuBAttnNorm, _cpuBFfnNorm;
+    private float* _cpuBOutputNorm;
+    private float[]? _outputBias;
+    private readonly float _ropeMscale = 1f; // rope.scaling.attn_factor: scales cos/sin (LongRoPE); 1 when absent
     private readonly Tensor[] _gpuKCache, _gpuVCache;
     private readonly Tensor[]? _gpuTqKCache, _gpuTqVCache, _gpuSignPatterns;
     private readonly Tensor? _gpuCodebook, _gpuBoundaries, _gpuRotatedQ, _gpuEvictK, _gpuEvictV;
@@ -189,11 +198,14 @@ public sealed unsafe partial class HybridForwardPass : IForwardPass
             throw new NotSupportedException(
                 "Gemma 4 models are not supported on the Vulkan backend. " +
                 "Use the CUDA backend (-g) or CPU (NGpuLayers=0).");
-        // LongRoPE (Phi-3.5 / Phi-3 128k: rope_factors_* tensors, rope.scaling.attn_factor) is
-        // only implemented on the CPU ForwardPass; refuse rather than rotate with the wrong angles.
-        if (model.FindTensor("rope_factors_short.weight") is not null || hp.RopeAttnFactor != 1f)
+        // LongRoPE (Phi-3.5 / Phi-3 128k: rope_factors_short/long, rope.scaling.attn_factor) is applied on both sides: GPU layers
+        // through RoPEFactorsBatched with the factors and mscale, CPU layers through the cos/sin table. As in ForwardPass and
+        // GpuForwardPass the factor set is chosen once by the context size (long when it exceeds the original context length).
+        // A cos/sin attention factor without factor tensors means YaRN-style scaling, which only the CPU ForwardPass implements: refuse
+        // rather than rotate with the wrong angles.
+        if (hp.RopeAttnFactor != 1f && model.FindTensor("rope_factors_short.weight") is null)
             throw new NotSupportedException(
-                "LongRoPE models (rope_factors_short/long, rope.scaling.attn_factor) are not supported " +
+                "RoPE scaling with rope.scaling.attn_factor but no rope_factors tensors (YaRN) is not supported " +
                 "on the Vulkan hybrid backend yet. Use CPU (-g 0).");
 
         _model = model;
@@ -218,6 +230,7 @@ public sealed unsafe partial class HybridForwardPass : IForwardPass
         _hasQkNorm = hp.HasQkNorm;
         _isMoE = hp.IsMoE;
         _hasSharedExpert = hp.HasSharedExpert;
+        _hasNormBias = hp.HasNormBias && !hp.UsesLayerNorm;
         if (hp.HasSharedExpert && model.FindTensor("blk.0.ffn_gate_inp_shexp.weight") is not null)
         {
             _shexpGate = new CpuWeightRef[hp.NumLayers];
@@ -284,6 +297,7 @@ public sealed unsafe partial class HybridForwardPass : IForwardPass
         if (!cpuEmbeddingOutputOnly)
         {
             _gpuOutputNorm = UploadWeight("output_norm.weight");
+            if (_hasNormBias) _gpuBOutputNorm = UploadWeight("output_norm.bias");
             _gpuOutputWeight = model.FindTensor("output.weight") is not null
                 ? UploadWeight("output.weight")
                 : _gpuEmbedding;
@@ -341,12 +355,23 @@ public sealed unsafe partial class HybridForwardPass : IForwardPass
         if (model.FindTensor("rope_freqs.weight") is GgufTensorInfo rfInfo
             && rfInfo.DType == DType.Float32 && rfInfo.ElementCount == _headDim / 2)
             _gpuRopeFreqs = UploadWeight("rope_freqs.weight");
+        else if (LongRopeFactorsName(model, hp, _maxSeqLen, _headDim / 2) is { } longRopeName)
+            _gpuRopeFreqs = UploadWeight(longRopeName);
+        _ropeMscale = hp.RopeAttnFactor;
+        if (model.FindTensor("output.bias") is GgufTensorInfo ob && ob.DType == DType.Float32 && ob.ElementCount == hp.VocabSize)
+            _outputBias = MemoryMarshal.Cast<byte, float>(model.GetTensorData(ob)).Slice(0, hp.VocabSize).ToArray();
 
+        if (_hasNormBias) { _gpuBAttnNorm = new Tensor[_nGpuLayers]; _gpuBFfnNorm = new Tensor[_nGpuLayers]; }
         Console.Error.Write($"[HybridForwardPass] Uploading {_nGpuLayers} GPU layers...");
         for (int i = 0; i < _nGpuLayers; i++)
         {
             if (_hasAttnPreNorm)
                 _gpuAttnNorm[i] = UploadWeight($"blk.{i}.attn_norm.weight");
+            if (_hasNormBias)
+            {
+                _gpuBAttnNorm![i] = UploadWeight($"blk.{i}.attn_norm.bias");
+                _gpuBFfnNorm![i] = UploadWeight($"blk.{i}.ffn_norm.bias");
+            }
             if (_gpuPostAttnNorm is not null)
                 _gpuPostAttnNorm[i] = UploadWeight($"blk.{i}.post_attention_norm.weight");
             if (_gpuPostFfwNorm is not null)
@@ -460,8 +485,17 @@ public sealed unsafe partial class HybridForwardPass : IForwardPass
         if (model.FindTensor("rope_freqs.weight") is GgufTensorInfo cpuRf
             && cpuRf.DType == DType.Float32 && cpuRf.ElementCount == _ropeHalfDim)
             ropeFreqs = MemoryMarshal.Cast<byte, float>(model.GetTensorData(cpuRf)).Slice(0, _ropeHalfDim).ToArray();
+        else if (LongRopeFactorsName(model, hp, _maxSeqLen, _ropeHalfDim) is { } cpuLongRopeName
+                 && model.FindTensor(cpuLongRopeName) is GgufTensorInfo cpuLr)
+            ropeFreqs = MemoryMarshal.Cast<byte, float>(model.GetTensorData(cpuLr)).Slice(0, _ropeHalfDim).ToArray();
         fixed (float* rf = ropeFreqs)
             SimdKernels.BuildRopeTable(_ropeCosTable, _ropeSinTable, _maxSeqLen, _headDim, hp.RopeTheta, rf);
+        if (hp.RopeAttnFactor != 1f)
+        {
+            int tableElems = _maxSeqLen * _ropeHalfDim;
+            SimdKernels.ScaleInPlace(_ropeCosTable, hp.RopeAttnFactor, tableElems);
+            SimdKernels.ScaleInPlace(_ropeSinTable, hp.RopeAttnFactor, tableElems);
+        }
 
         _cpuAttnNorm = new CpuWeightRef[_nCpuLayers];
         _cpuWq = new CpuWeightRef[_nCpuLayers]; _cpuWk = new CpuWeightRef[_nCpuLayers];
@@ -488,11 +522,22 @@ public sealed unsafe partial class HybridForwardPass : IForwardPass
         if (hp.HasPostAttnNorm) _cpuPostAttnNorm = new CpuWeightRef[_nCpuLayers];
         if (hp.HasPostFfwNorm) _cpuPostFfwNorm = new CpuWeightRef[_nCpuLayers];
 
+        if (_hasNormBias)
+        {
+            _cpuBAttnNorm = new float*[_nCpuLayers];
+            _cpuBFfnNorm = new float*[_nCpuLayers];
+            _cpuBOutputNorm = LoadCpuBias("output_norm.bias", _embDim);
+        }
         for (int ci = 0; ci < _nCpuLayers; ci++)
         {
             int li = ci + _nGpuLayers; // actual layer index
             if (_hasAttnPreNorm)
                 _cpuAttnNorm[ci] = ResolveCpuWeight($"blk.{li}.attn_norm.weight");
+            if (_hasNormBias)
+            {
+                _cpuBAttnNorm![ci] = LoadCpuBias($"blk.{li}.attn_norm.bias", _embDim);
+                _cpuBFfnNorm![ci] = LoadCpuBias($"blk.{li}.ffn_norm.bias", _embDim);
+            }
             if (_cpuPostAttnNorm is not null)
                 _cpuPostAttnNorm[ci] = ResolveCpuWeight($"blk.{li}.post_attention_norm.weight");
             if (_cpuPostFfwNorm is not null)
@@ -675,6 +720,7 @@ public sealed unsafe partial class HybridForwardPass : IForwardPass
         // ── Phase 5: Final norm + output projection on GPU ──
         _gpu.RecordBarrier();
         _gpu.RmsNorm(_gpuHidden, _gpuHidden, _gpuOutputNorm!, _hp.RmsNormEps);
+        if (_hasNormBias) { _gpu.RecordBarrier(); _gpu.AddInPlace(_gpuHidden, _gpuBOutputNorm!); }
         _gpu.RecordBarrier();
         GpuMatMul(_gpuLogits, _gpuOutputWeight!, _gpuHidden);
 
@@ -682,6 +728,7 @@ public sealed unsafe partial class HybridForwardPass : IForwardPass
         _gpu.RecordDownloadToStaging(_gpuLogits, _logitsBuf.Length);
         _gpu.EndRecordAndSubmit();
         _gpu.ReadFromStaging(_logitsBuf);
+        AddOutputBias();
 
         _kvLength = position + 1;
         return _logitsBuf;
@@ -734,7 +781,10 @@ public sealed unsafe partial class HybridForwardPass : IForwardPass
         _gpu.RecordBarrier();
 
         if (_hasAttnPreNorm)
+        {
             _gpu.RmsNorm(_gpuNormBuf, _gpuHidden, _gpuAttnNorm[i], _hp.RmsNormEps);
+            if (_hasNormBias) { _gpu.RecordBarrier(); _gpu.AddInPlace(_gpuNormBuf, _gpuBAttnNorm![i]); }
+        }
         else
             CopyGpuBuffer(_gpuNormBuf, _gpuHidden);
         _gpu.RecordBarrier();
@@ -784,8 +834,8 @@ public sealed unsafe partial class HybridForwardPass : IForwardPass
             {
                 if (_gpuRopeFreqs is not null)
                 {
-                    _gpu.RoPEFactorsBatched(_gpuQ, position, _headDim, _numHeads, 1, _hp.RopeTheta, _hp.IsNeoxRope, _gpuRopeFreqs);
-                    _gpu.RoPEFactorsBatched(_gpuK, position, _headDim, _numKvHeads, 1, _hp.RopeTheta, _hp.IsNeoxRope, _gpuRopeFreqs);
+                    _gpu.RoPEFactorsBatched(_gpuQ, position, _headDim, _numHeads, 1, _hp.RopeTheta, _hp.IsNeoxRope, _gpuRopeFreqs, _ropeMscale);
+                    _gpu.RoPEFactorsBatched(_gpuK, position, _headDim, _numKvHeads, 1, _hp.RopeTheta, _hp.IsNeoxRope, _gpuRopeFreqs, _ropeMscale);
                 }
                 else
                 {
@@ -868,7 +918,10 @@ public sealed unsafe partial class HybridForwardPass : IForwardPass
         _gpu.RecordBarrier();
 
         if (_hasFfnPreNorm)
+        {
             _gpu.RmsNorm(_gpuNormBuf, _gpuHidden, _gpuFfnNorm[i], _hp.RmsNormEps);
+            if (_hasNormBias) { _gpu.RecordBarrier(); _gpu.AddInPlace(_gpuNormBuf, _gpuBFfnNorm![i]); }
+        }
         else
             CopyGpuBuffer(_gpuNormBuf, _gpuHidden);
         _gpu.RecordBarrier();
@@ -899,7 +952,10 @@ public sealed unsafe partial class HybridForwardPass : IForwardPass
 
         // Pre-attention RMS norm (absent on post-norm-only models: read the raw residual)
         if (_hasAttnPreNorm)
+        {
             SimdKernels.RmsNorm(_cpuNormBuf, _cpuHidden, GetCpuNormWeight(_cpuAttnNorm[ci]), _embDim, _hp.RmsNormEps);
+            if (_hasNormBias) SimdKernels.AddInPlace(_cpuNormBuf, _cpuBAttnNorm![ci], _embDim);
+        }
         else
             new Span<float>(_cpuHidden, _embDim).CopyTo(new Span<float>(_cpuNormBuf, _embDim));
 
@@ -996,7 +1052,10 @@ public sealed unsafe partial class HybridForwardPass : IForwardPass
 
         // Pre-FFN RMS norm
         if (_hasFfnPreNorm)
+        {
             SimdKernels.RmsNorm(_cpuNormBuf, _cpuHidden, GetCpuNormWeight(_cpuFfnNorm[ci]), _embDim, _hp.RmsNormEps);
+            if (_hasNormBias) SimdKernels.AddInPlace(_cpuNormBuf, _cpuBFfnNorm![ci], _embDim);
+        }
         else
             new Span<float>(_cpuHidden, _embDim).CopyTo(new Span<float>(_cpuNormBuf, _embDim));
 
@@ -1281,6 +1340,17 @@ public sealed unsafe partial class HybridForwardPass : IForwardPass
         { Name = name; Info = info; DType = dtype; DataPtr = dataPtr; }
     }
 
+    /// <summary>
+    /// LongRoPE: the per-pair factor tensor to use, chosen once by the context size (long when it exceeds the original context length,
+    /// as llama_model::get_rope_factors and ForwardPass do), or null when the model has none.
+    /// </summary>
+    private static string? LongRopeFactorsName(GgufModel model, ModelHyperparams hp, int ctxLen, int halfDim)
+    {
+        bool useLong = hp.RopeYarnOrigCtxLen > 0 && ctxLen > hp.RopeYarnOrigCtxLen;
+        string name = useLong ? "rope_factors_long.weight" : "rope_factors_short.weight";
+        return model.FindTensor(name) is GgufTensorInfo t && t.DType == DType.Float32 && t.ElementCount == halfDim ? name : null;
+    }
+
     private static CpuWeightRef ResolveCpuWeightFor(GgufModel model, string name)
     {
         var info = model.FindTensor(name) ?? throw new InvalidOperationException($"Missing tensor: {name}");
@@ -1415,8 +1485,16 @@ public sealed unsafe partial class HybridForwardPass : IForwardPass
     {
         var outputNorm = GetCpuNormWeight(_cpuOutputNorm);
         SimdKernels.RmsNorm(_cpuNormBuf, _cpuHidden, outputNorm, _embDim, _hp.RmsNormEps);
+        if (_hasNormBias) SimdKernels.AddInPlace(_cpuNormBuf, _cpuBOutputNorm, _embDim);
         fixed (float* logits = _logitsBuf)
             SimdKernels.MatVec(logits, _cpuOutputWeight.DataPtr, _cpuNormBuf, _hp.VocabSize, _embDim, _cpuOutputWeight.DType);
+        AddOutputBias();
+    }
+
+    private void AddOutputBias()
+    {
+        if (_outputBias is null) return;
+        for (int i = 0; i < _logitsBuf.Length; i++) _logitsBuf[i] += _outputBias[i];
     }
 
     private static bool ShouldKeepFixedWeightsOnCpu(GgufTensorInfo embedding, GgufTensorInfo? output)
@@ -1924,6 +2002,7 @@ public sealed unsafe partial class HybridForwardPass : IForwardPass
         for (int i = 0; i < _nGpuLayers; i++)
         {
             if (_hasAttnPreNorm) _gpu.Free(_gpuAttnNorm[i]);
+            if (_gpuBAttnNorm is not null) { _gpu.Free(_gpuBAttnNorm[i]); _gpu.Free(_gpuBFfnNorm![i]); }
             // Falcon/gpt-oss fallback (see UploadWeight above) can alias _gpuFfnNorm[i] to the
             // same handle as _gpuAttnNorm[i] — only free it once.
             if (_hasFfnPreNorm && (!_hasAttnPreNorm || _gpuFfnNorm[i].Handle != _gpuAttnNorm[i].Handle))
@@ -1973,6 +2052,7 @@ public sealed unsafe partial class HybridForwardPass : IForwardPass
         _gpu.Free(_gpuAttnScoresScratch);
         if (_gpuOutputNorm is not null)
             _gpu.Free(_gpuOutputNorm);
+            if (_gpuBOutputNorm is not null) _gpu.Free(_gpuBOutputNorm);
         if (_gpuOutputWeight is not null && _gpuOutputWeight.Handle != _gpuEmbedding?.Handle)
             _gpu.Free(_gpuOutputWeight);
         if (_gpuEmbedding is not null)

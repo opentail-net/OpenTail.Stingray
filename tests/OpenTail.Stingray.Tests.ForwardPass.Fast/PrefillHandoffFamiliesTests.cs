@@ -24,7 +24,6 @@ public sealed class PrefillHandoffFamiliesTests
     [Theory]
     [InlineData("llama4")]
     [InlineData("glm4moe")]
-    [InlineData("phimoe")]
     public void ConventionalFamiliesWithoutReceipt_AreUnverified_AndOnlyAllLiftsIt(string arch)
     {
         var c = PrefillHandoffFamilies.Classify(Md(arch), HandoffPath.VulkanHybrid);
@@ -68,7 +67,9 @@ public sealed class PrefillHandoffFamiliesTests
     [Fact]
     public void LongRope_AndOwnForwardPass_AndMissingArchitecture_AreIncompatible()
     {
-        Assert.Equal(HandoffStatus.Incompatible, PrefillHandoffFamilies.Classify(Md("phimoe"), HandoffPath.VulkanHybrid, hasLongRopeTensors: true).Status);
+        Assert.Equal(HandoffStatus.Incompatible, PrefillHandoffFamilies.Classify(Md("phimoe"), HandoffPath.CudaHybrid, hasLongRopeTensors: true).Status);
+        Assert.Equal(HandoffStatus.Admitted, PrefillHandoffFamilies.Classify(Md("phimoe"), HandoffPath.VulkanHybrid, hasLongRopeTensors: true).Status);   // the Vulkan hybrid implements LongRoPE
+        Assert.Equal(HandoffStatus.Unverified, PrefillHandoffFamilies.Classify(Md("phimoe"), HandoffPath.VulkanFullGpu, hasLongRopeTensors: true).Status);
         Assert.Equal(HandoffStatus.Incompatible, PrefillHandoffFamilies.Classify(Md("gpt-oss"), HandoffPath.VulkanHybrid).Status);
         Assert.Equal(HandoffStatus.Incompatible, PrefillHandoffFamilies.Classify(new Dictionary<string, object>(), HandoffPath.VulkanHybrid).Status);
     }
@@ -124,6 +125,7 @@ public sealed class PrefillHandoffFamiliesTests
     [InlineData("Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf", HandoffStatus.Admitted)]
     [InlineData("Qwen1.5-MoE-A2.7B-Chat.Q4_K_M.gguf", HandoffStatus.Admitted)]
     [InlineData("Nous-Hermes-2-Mixtral-8x7B-DPO.i1-Q4_K_S.gguf", HandoffStatus.Admitted)]
+    [InlineData("Phi-3.5-MoE-instruct-Q3_K_M.gguf", HandoffStatus.Admitted)]
     [InlineData("DeepSeek-V2-Lite-Chat.Q2_K.gguf", HandoffStatus.Incompatible)]      // MLA
     [InlineData("LFM2-8B-A1B-Q4_K_M.gguf", HandoffStatus.Incompatible)]               // short-conv state
     [InlineData("granite-4.0-h-small-Q2_K.gguf", HandoffStatus.Incompatible)]         // Mamba-2 state

@@ -33,7 +33,7 @@ public sealed record HandoffClassification(string Family, HandoffStatus Status, 
 /// <list type="number">
 /// <item>a <b>structural</b> check from the GGUF header: the handoff copies per-head K and V rows, so models whose state is
 /// something else (MLA latent cache, recurrent / convolution state, a forward pass of their own, LongRoPE the hybrid cannot decode)
-/// are <see cref="HandoffStatus.Incompatible"/> and nothing lifts that;</item>
+/// are <see cref="HandoffStatus.Incompatible"/> and nothing lifts that (LongRoPE only on the CUDA hybrid, the Vulkan paths implement it);</item>
 /// <item>an <b>evidence</b> check: a family is <see cref="HandoffStatus.Admitted"/> only with a receipt in
 /// <see cref="Receipts"/> (a named hybrid-versus-CPU parity test on a real checkpoint). Structurally fine families without one are
 /// <see cref="HandoffStatus.Unverified"/>, and <c>STINGRAY_HYBRID_CPU_PREFILL=all</c> may run them for experiments.</item>
@@ -66,6 +66,9 @@ public static class PrefillHandoffFamilies
             [("llama+experts", HandoffPath.VulkanHybrid)] = new(
                 "MixtralGreedyParityTests (CPU vs llama-server, PPL 3.2040 vs 3.1935) + HybridCpuPrefillHandoffTests (Nous-Hermes-2-Mixtral-8x7B-DPO i1-Q4_K_S, 1 and 4 GPU layers): byte-exact K/V, logits cosine 0.9998-1.0000",
                 "llama|attention.head_count_kv=8|expert_count=8|expert_used_count=2"),
+            [("phimoe", HandoffPath.VulkanHybrid)] = new(
+                "PhiMoeGreedyParityTests (CPU vs llama-server, short and long LongRoPE factors) + HybridCpuPrefillHandoffTests (Phi-3.5-MoE-instruct Q3_K_M, 4 and 1 GPU layers at ctx 1024 = short factors and 4 GPU layers at ctx 8192 = long factors; RMSNorm + bias, LM-head bias): byte-exact K/V, logits cosine 0.9995-1.0000",
+                "phimoe|attention.head_count_kv=8|expert_count=16|expert_used_count=2"),
             [("olmoe", HandoffPath.VulkanFullGpu)] = new(
                 "GpuCpuPrefillHandoffTests (OLMoE-1B-7B Q4_K_M, F32 and packed-fp16 KV): byte-exact K/V, logits equal the CPU pass",
                 "olmoe|attention.head_count_kv=16|expert_count=64|expert_used_count=8"),
@@ -120,8 +123,8 @@ public static class PrefillHandoffFamilies
         if (metadata.Keys.Any(k => k.StartsWith($"{arch}.ssm.", StringComparison.Ordinal) || k.StartsWith($"{arch}.shortconv.", StringComparison.Ordinal))
             || metadata.ContainsKey($"{arch}.full_attention_interval"))
             return new(family, HandoffStatus.Incompatible, "recurrent or convolution layers keep state that is not in the KV cache");
-        if (hasLongRopeTensors)
-            return new(family, HandoffStatus.Incompatible, "LongRoPE: the Vulkan/CUDA hybrid cannot decode it, so there is nothing to hand the KV to");
+        if (hasLongRopeTensors && path == HandoffPath.CudaHybrid)
+            return new(family, HandoffStatus.Incompatible, "LongRoPE: the CUDA hybrid cannot decode it (the Vulkan paths can), so there is nothing to hand the KV to");
 
         if (Receipts.TryGetValue((family, path), out var receipt))
         {
