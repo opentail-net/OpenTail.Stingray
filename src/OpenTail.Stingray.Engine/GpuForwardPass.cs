@@ -37,6 +37,7 @@ public sealed unsafe partial class GpuForwardPass : IForwardPass
     // Embedding table in VRAM (kept raw-quantized for Q4_K/Q6_K large vocabs, F32 for small/other).
     // _embDType records which path was taken so the lookup dispatches the matching shader.
     private readonly Tensor _gpuEmbedding;
+    private readonly bool _embOnCpu;   // large non-Q4_K/Q6_K table (its F32 dequant would exceed 1 GiB): rows are dequantised on the CPU per token instead
     private readonly DType _embDType;
 
     // GPU weight tensors (Q4_K/Q6_K bytes uploaded to VRAM)
@@ -55,6 +56,11 @@ public sealed unsafe partial class GpuForwardPass : IForwardPass
     private Tensor? _shexpGateLogit;      // [1] scalar: ffn_gate_inp_shexp . norm (qwen2moe shared-expert sigmoid gate)
     private float[]? _shexpGateBuf;
     private Tensor[]? _wGateInpShexp;
+    private float[]?[]? _expProbsB;   // [L] per-layer selection bias (glm4moe exp_probs_b), null entries for layers without one
+    private Tensor _dnGate = default!, _dnUp = default!;   // dense-FFN scratch (aliases _ffnGate/_ffnUp unless leading dense layers need a wider one)
+    private bool _dnScratchOwned;
+    /// <summary>MoE layers: every layer of a MoE model except the leading dense ones (glm4moe has one, DeepSeek-style).</summary>
+    private bool IsMoeLayer(int layer) => _isMoE && layer >= _hp.LeadingDenseBlockCount;
     private Tensor _shGate = default!, _shUp = default!;   // shared-expert scratch (aliases _ffnGate/_ffnUp when widths match)
     private bool _shScratchOwned;
     // Non-gated FFN (GPT-2 / StarCoder2 / GPT-NeoX): _wGate[i] is null and the FFN is
@@ -493,10 +499,6 @@ public sealed unsafe partial class GpuForwardPass : IForwardPass
     public static string? UnsupportedReason(GgufModel model, ModelHyperparams hp)
     {
         if (hp.KvLoraRank > 0) return "MLA attention (deepseek2)";
-        // glm4moe: the GPU layer loops have no dense-FFN-then-MoE layer mix (blk.0 has no router) and no selection-bias routing
-        // (probabilities selected with exp_probs_b, weighted by the unbiased ones); both exist on the CPU pass only.
-        if (hp.IsMoE && hp.LeadingDenseBlockCount > 0) return "MoE with leading dense layers (CPU only)";
-        if (hp.IsMoE && hp.ExpertGatingFunc == 2 && !hp.UseSigmoidGating) return "selection-bias expert routing (CPU only)";
         if (hp.AttentionOutputGate || hp.InputEmbeddingRmsNorm || hp.PostNormEps > 0f)
             return "attention output gate / embedding norm (muse-glimmer, CPU only)";
         if (hp.UsesLayerNorm && hp.HasQkNorm) return "LayerNorm QK-norm";
@@ -521,6 +523,9 @@ public sealed unsafe partial class GpuForwardPass : IForwardPass
     public static string? PartialOffloadUnsupportedReason(GgufModel model, ModelHyperparams hp)
     {
         if (UnsupportedReason(model, hp) is { } reason) return reason;
+        // glm4moe: only the full Vulkan pass (and so the Vulkan layer split) has the dense-then-MoE layer mix and selection-bias routing.
+        if (hp.IsMoE && hp.LeadingDenseBlockCount > 0) return "MoE with leading dense layers (full Vulkan offload only)";
+        if (hp.IsMoE && hp.ExpertGatingFunc == 2 && !hp.UseSigmoidGating) return "selection-bias expert routing (full Vulkan offload only)";
         if (model.FindTensor("blk.0.attn_qkv.weight") is not null) return "fused attn_qkv (full Vulkan offload only)";
         if (hp.UsesLayerNorm) return "LayerNorm (full Vulkan offload only)";
         if (hp.UseParallelResidual) return "parallel residual (full Vulkan offload only)";
@@ -667,6 +672,7 @@ public sealed unsafe partial class GpuForwardPass : IForwardPass
         if (_tqEnabled && _headDim is not 128 and not 256)
             throw new NotSupportedException($"TurboQuant currently supports head dimensions 128 and 256; model head dim is {_headDim}.");
         _routerBuf = _isMoE ? new float[hp.NumExperts] : null;
+        if (_isMoE && hp.ExpertGatingFunc == 2 && !hp.UseSigmoidGating) _expProbsB = new float[]?[hp.NumLayers];
 
         // SnapKV (issue #59) — gated by STINGRAY_SNAPKV_BUDGET. Buffers are lazily
         // allocated on the first active prefill in Prefill(). Composition with
@@ -760,6 +766,13 @@ public sealed unsafe partial class GpuForwardPass : IForwardPass
             _shScratchOwned = true;
         }
         else { _shGate = _ffnGate; _shUp = _ffnUp; }
+        if (_isMoE && hp.LeadingDenseBlockCount > 0 && _intermDim != ffnScratchDim)
+        {
+            _dnGate = gpu.Allocate(TensorShape.D1(_intermDim));
+            _dnUp = gpu.Allocate(TensorShape.D1(_intermDim));
+            _dnScratchOwned = true;
+        }
+        else { _dnGate = _ffnGate; _dnUp = _ffnUp; }
         _logits = gpu.Allocate(TensorShape.D1(hp.VocabSize));
         _routerLogits = _isMoE ? gpu.Allocate(TensorShape.D1(hp.NumExperts)) : null;
         _moeSharedOut = _isMoE && _hasSharedExpert ? gpu.Allocate(TensorShape.D1(_embDim)) : null;
@@ -1033,7 +1046,9 @@ public sealed unsafe partial class GpuForwardPass : IForwardPass
             // (ForwardPass.cs:652) rather than hard-crashing on a genuinely absent tensor.
             _wFfnNorm[i] = model.FindTensor($"blk.{i}.ffn_norm.weight") is not null
                 ? UploadWeight($"blk.{i}.ffn_norm.weight")
-                : _wAttnNorm[i];
+                : hp.PostAttnNormIsFfnNorm && model.FindTensor($"blk.{i}.post_attention_norm.weight") is not null
+                    ? UploadWeight($"blk.{i}.post_attention_norm.weight")   // glm4moe names its pre-FFN norm this way
+                    : _wAttnNorm[i];
 
             if (_hasPle)
             {
@@ -1052,9 +1067,11 @@ public sealed unsafe partial class GpuForwardPass : IForwardPass
                 if (_layerOutputScale is not null)
                     _layerOutputScale[i] = LoadScalarF32($"blk.{i}.layer_output_scale.weight");
             }
-            if (_isMoE)
+            if (IsMoeLayer(i))
             {
                 _wGateInp![i] = UploadWeight($"blk.{i}.ffn_gate_inp.weight");
+                if (_expProbsB is not null && model.FindTensor($"blk.{i}.exp_probs_b.bias") is { } epb && epb.DType == DType.Float32)
+                    _expProbsB[i] = MemoryMarshal.Cast<byte, float>(model.GetTensorData(epb)).Slice(0, hp.NumExperts).ToArray();
                 _wGateExps![i] = UploadExpertWeights($"blk.{i}.ffn_gate_exps.weight", _expertDim, _embDim, hp.NumExperts);
                 _wUpExps![i] = UploadExpertWeights($"blk.{i}.ffn_up_exps.weight", _expertDim, _embDim, hp.NumExperts);
                 _wDownExps![i] = UploadExpertWeights($"blk.{i}.ffn_down_exps.weight", _embDim, _expertDim, hp.NumExperts);
@@ -1155,6 +1172,15 @@ public sealed unsafe partial class GpuForwardPass : IForwardPass
             _gpuEmbedding = gpu.Upload(raw, TensorShape.D1(floatCount));
             _embDType = embInfo.DType;
             _weightDTypes[_gpuEmbedding.Handle] = embInfo.DType;
+        }
+        else if (embInfo.DType is not DType.Float32 && embInfo.ElementCount * sizeof(float) > (1L << 30)
+                 && !_isGemma4 && model.FindTensor("output.weight") is not null)
+        {
+            // e.g. a 151552 x 4096 Q2_K table is 2.5 GB as F32: too big for one device buffer here. The output projection is a separate
+            // tensor, so nothing else reads this table on the GPU; look rows up on the CPU (EmbedToken) like the hybrid does.
+            _embOnCpu = true;
+            _gpuEmbedding = gpu.Allocate(TensorShape.D1(1));   // placeholder so the shared Free / handle comparisons stay valid
+            _embDType = embInfo.DType;
         }
         else
         {
@@ -1297,7 +1323,7 @@ public sealed unsafe partial class GpuForwardPass : IForwardPass
         // L2 QK-norm (HeadNormPure post-RoPE, Llama-4) is excluded EXPLICITLY: the batched trunk
         // has no L2 path (it would silently skip the norm), and the Debug.Assert that guards it is
         // stripped in Release — so don't rely on the L2⟹Llama4⟹MoE coupling, exclude it directly.
-        if (_isMoE || _isGemma4 || _hp.UseL2QkNorm) return false;
+        if (_isMoE || _isGemma4 || _hp.UseL2QkNorm || _embOnCpu) return false;
         // M-RoPE: positions are per pair and shift after images; only the per-token trunk applies them.
         if (_mropePairPos is not null) return false;
         if (_residentLayers < _hp.NumLayers) return false;   // layer split: per-token trunk only
@@ -1587,6 +1613,7 @@ public sealed unsafe partial class GpuForwardPass : IForwardPass
 
         _deepstackActive = false;
         UploadMRopePairPositions(position);
+        if (_embOnCpu) EmbedToken(token);   // before BeginRecord: UploadToExisting owns the transfer command buffer
 
         // Record ALL dispatches into ONE command buffer
         _gpu.BeginRecord();
@@ -1950,7 +1977,7 @@ public sealed unsafe partial class GpuForwardPass : IForwardPass
                 _gpu.RecordBarrier();
             }
 
-            if (_isMoE)
+            if (IsMoeLayer(layer))
                 GpuMoeFfn(layer);
             else
                 GpuDenseFfn(layer);
@@ -2032,6 +2059,7 @@ public sealed unsafe partial class GpuForwardPass : IForwardPass
         if (_isGemma4) { ForwardGemma4Hidden(token, position, hiddenOut); return; }
         _deepstackActive = false;
         UploadMRopePairPositions(position);
+        if (_embOnCpu) EmbedToken(token);
         _gpu.BeginRecord();
         DispatchEmbedLookup(token);
         _gpu.RecordBarrier();
@@ -2285,6 +2313,7 @@ public sealed unsafe partial class GpuForwardPass : IForwardPass
     /// </summary>
     private void DispatchEmbedLookup(int token)
     {
+        if (_embOnCpu) return;   // _hidden was filled by EmbedToken before recording began
         switch (_embDType)
         {
             case DType.Q4_K:
@@ -3433,20 +3462,20 @@ public sealed unsafe partial class GpuForwardPass : IForwardPass
         if (_gatelessFfn)
         {
             // ForwardPass.DenseFfn's non-gated branch: the up bias goes INSIDE the GELU.
-            GpuMatMul(_ffnUp, _wUp[layer], _normBuf);
+            GpuMatMul(_dnUp, _wUp[layer], _normBuf);
             _gpu.RecordBarrier();
             if (_bFfnUp is not null)
             {
-                _gpu.AddRowBroadcastInPlace(_ffnUp, _bFfnUp[layer], 1, _intermDim);
+                _gpu.AddRowBroadcastInPlace(_dnUp, _bFfnUp[layer], 1, _intermDim);
                 _gpu.RecordBarrier();
             }
             if (_xielu)
-                _gpu.XieluInPlace(_ffnUp, _intermDim, _hp.XieluAlphaN![layer], _hp.XieluAlphaP![layer],
+                _gpu.XieluInPlace(_dnUp, _intermDim, _hp.XieluAlphaN![layer], _hp.XieluAlphaP![layer],
                     _hp.XieluBeta![layer], _hp.XieluEps![layer]);
             else
-                _gpu.VisionGeluInPlace(_ffnUp);   // tanh GELU, as SimdKernels.GeluInPlace
+                _gpu.VisionGeluInPlace(_dnUp);   // tanh GELU, as SimdKernels.GeluInPlace
             _gpu.RecordBarrier();
-            GpuMatMul(_hidden, _wDown[layer], _ffnUp);
+            GpuMatMul(_hidden, _wDown[layer], _dnUp);
             if (_bFfnDown is not null)
             {
                 _gpu.RecordBarrier();
@@ -3455,18 +3484,46 @@ public sealed unsafe partial class GpuForwardPass : IForwardPass
             return;
         }
 
-        GpuMatMul(_ffnGate, _wGate[layer], _normBuf);
-        GpuMatMul(_ffnUp, _wUp[layer], _normBuf);
+        GpuMatMul(_dnGate, _wGate[layer], _normBuf);
+        GpuMatMul(_dnUp, _wUp[layer], _normBuf);
         _gpu.RecordBarrier();
 
         // SwiGLU, or GEGLU (tanh GELU) for the Gemma family — ForwardPass.DenseFfn's choice.
         if (_hp.FfnActivation == FfnActivation.GeluApprox)
-            _gpu.GeluTanhMul(_ffnGate, _ffnUp);
+            _gpu.GeluTanhMul(_dnGate, _dnUp);
         else
-            _gpu.SiLuMul(_ffnGate, _ffnUp);
+            _gpu.SiLuMul(_dnGate, _dnUp);
         _gpu.RecordBarrier();
 
-        GpuMatMul(_hidden, _wDown[layer], _ffnGate);
+        GpuMatMul(_hidden, _wDown[layer], _dnGate);
+    }
+
+    /// <summary>
+    /// glm4moe / DeepSeek-V3 routing (ForwardPass.RouteExperts): <paramref name="probs"/> are sigmoid probabilities; experts are SELECTED by
+    /// probs + bias but WEIGHTED by the unbiased probs, optionally renormalised over the chosen k.
+    /// </summary>
+    private void SelectTopKWithBias(float[] probs, float[]? bias, int k, Span<int> selected, Span<float> weights)
+    {
+        int n = probs.Length;
+        for (int ki = 0; ki < k; ki++)
+        {
+            int best = 0; float bestVal = float.NegativeInfinity;
+            for (int i = 0; i < n; i++)
+            {
+                bool taken = false;
+                for (int j = 0; j < ki; j++) if (selected[j] == i) { taken = true; break; }
+                float score = probs[i] + (bias is not null ? bias[i] : 0f);
+                if (!taken && score > bestVal) { bestVal = score; best = i; }
+            }
+            selected[ki] = best;
+            weights[ki] = probs[best];
+        }
+        if (_hp.NormalizeMoeTopKWeights && k > 1)
+        {
+            float sum = 0;
+            for (int i = 0; i < k; i++) sum += weights[i];
+            if (sum > 0) for (int i = 0; i < k; i++) weights[i] /= sum;
+        }
     }
 
     private void AddLogitBias(Tensor logits, int rows)
@@ -3484,7 +3541,8 @@ public sealed unsafe partial class GpuForwardPass : IForwardPass
         bool shexpGated = _hasSharedExpert && _wGateInpShexp is not null;
         if (shexpGated) GpuMatMul(_shexpGateLogit!, _wGateInpShexp![layer], _normBuf);
         _gpu.RecordBarrier();
-        if (_hp.UseSigmoidGating)
+        bool selectionBias = _hp.ExpertGatingFunc == 2 && !_hp.UseSigmoidGating;
+        if (_hp.UseSigmoidGating || selectionBias)
             _gpu.Sigmoid(_routerLogits!);
         else
             _gpu.Softmax(_routerLogits!);
@@ -3500,7 +3558,12 @@ public sealed unsafe partial class GpuForwardPass : IForwardPass
 
         Span<int> selectedExperts = stackalloc int[numActive];
         Span<float> expertWeights = stackalloc float[numActive];
-        SelectTopK(_routerBuf!, numActive, selectedExperts, expertWeights, _hp.NormalizeMoeTopKWeights);
+        if (selectionBias)
+            SelectTopKWithBias(_routerBuf!, _expProbsB![layer], numActive, selectedExperts, expertWeights);
+        else
+            SelectTopK(_routerBuf!, numActive, selectedExperts, expertWeights, _hp.NormalizeMoeTopKWeights);
+        if (_hp.ExpertWeightsScale != 1f)
+            for (int i = 0; i < numActive; i++) expertWeights[i] *= _hp.ExpertWeightsScale;
 
         _gpu.BeginRecord();
 
@@ -4034,6 +4097,7 @@ public sealed unsafe partial class GpuForwardPass : IForwardPass
         _gpu.Free(_q); _gpu.Free(_k); _gpu.Free(_v); _gpu.Free(_attnOut);
         _gpu.Free(_ffnGate); _gpu.Free(_ffnUp); _gpu.Free(_logits);
         if (_shScratchOwned) { _gpu.Free(_shGate); _gpu.Free(_shUp); }
+        if (_dnScratchOwned) { _gpu.Free(_dnGate); _gpu.Free(_dnUp); }
         if (_shexpGateLogit is not null) _gpu.Free(_shexpGateLogit);
         if (_bOutput is not null) _gpu.Free(_bOutput);
         if (_routerLogits is not null) _gpu.Free(_routerLogits);
@@ -4055,7 +4119,7 @@ public sealed unsafe partial class GpuForwardPass : IForwardPass
             // Gemma 4 k_eq_v global layers have no attn_v (V reuses raw K) — _wv[i] is null.
             if (_wv[i] is not null) _gpu.Free(_wv[i]);
             _gpu.Free(_wo[i]);
-            if (_isMoE)
+            if (IsMoeLayer(i))
             {
                 _gpu.Free(_wGateInp![i]);
                 foreach (var t in _wGateExps![i]) _gpu.Free(t);
