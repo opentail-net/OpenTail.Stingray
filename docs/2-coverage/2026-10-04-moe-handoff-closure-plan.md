@@ -1,6 +1,6 @@
 # Plan: close the CPU-prefill handoff, one model family at a time (2026-10-04)
 
-Status: **steps 1-3 done (qwen2moe, Mixtral, phimoe; see the checklist), step 4 (GLM-4.5-Air) in progress.** Context: [coverage matrix](2026-10-04-moe-handoff-coverage.md), [batched MoE prefill plan](2026-10-03-batched-moe-prefill-plan.md).
+Status (2026-10-04, later): **steps 1-3 closed; step 4 (GLM-4.5-Air) partly closed: CPU path admitted and Vulkan layer split working (-g 4), but no CPU-prefill handoff receipt (expert residency: all 128 experts per resident layer are uploaded, so more GPU layers need the expert slot cache); step 5 (Llama 4) Vulkan-hybrid handoff receipt for contexts up to 8192, chunked attention and NoPE temperature tuning implemented (d8ca10da) with the 9430-token llama-server comparison still being verified; step 6 (speed league) pending.** 7 families now have path-specific receipts (6 MoE on the Vulkan hybrid). Context: [coverage matrix](2026-10-04-moe-handoff-coverage.md), [batched MoE prefill plan](2026-10-03-batched-moe-prefill-plan.md).
 
 ## What "closed" means
 
@@ -26,7 +26,7 @@ Stop rule per family: if a stage fails and the cause is not understood within on
 
 ## Step 0, shared work (about half a day, no download)
 
-1. **Model-path override for the handoff tests:** let `STINGRAY_HANDOFF_TEST_MODEL=<file>` add one more row to `HybridCpuPrefillHandoffTests` and `GpuCpuPrefillHandoffTests`, so a new checkpoint is tested without editing code; the permanent InlineData row is added only with the receipt. (A new env var needs registering in `KnownEnvironmentVariables` and the inventory.)
+1. **Model-path override for the handoff tests** (implemented 2026-10-04 for `HybridCpuPrefillHandoffTests` as `Handoff_EnvironmentChosenModel`, with optional `STINGRAY_HANDOFF_TEST_GPU_LAYERS` and `STINGRAY_HANDOFF_TEST_CTX`; not yet for `GpuCpuPrefillHandoffTests`): let `STINGRAY_HANDOFF_TEST_MODEL=<file>` add one more row, so a new checkpoint is tested without editing code; the permanent InlineData row is added only with the receipt. (A new env var needs registering in `KnownEnvironmentVariables` and the inventory.)
 2. **A Stage A test template:** a `MoeGreedyParity` helper shaped like `PhiMoeGreedyParityTests` (teacher-forced against `llama-server`, near-tie rule) taking the file name and prompts; one small test class per family reuses it.
 3. A fixed three-prompt set (short, about 170 tokens, about 700 tokens) so results are comparable across families.
 
@@ -144,3 +144,26 @@ The review's verdict was that the plan is sound and its order (Qwen2-MoE, Mixtra
 
 - **GLM-4.5-Air on Vulkan (2026-10-04, later)**: closed the gap I had wrongly left as "CPU only". `GpuForwardPass` (and so the Vulkan layer split behind `-g N`) now has: leading dense layers (own wider dense scratch), selection-bias routing (select on sigmoid + `exp_probs_b`, weight by the unbiased probabilities, renormalise, scale), GLM's `post_attention_norm`-as-pre-FFN-norm naming, and a CPU-side embedding row lookup for tables whose F32 dequant exceeds 1 GiB (GLM's 2.5 GB table crashed the upload with `ErrorOutOfHostMemory`). `VulkanLayerSplitParityTests` row `GLM-4.5-Air-Q2_K.gguf -g 4`: worst cosine 0.9983, 0 argmax flips in 9 steps. CLI `-g 4` answers coherently. **Limit found:** `-g 6` and `-g 8` fail with `ErrorOutOfHostMemory` in a fresh process, because the layer split uploads all 128 experts of every resident layer as separate device buffers; an expert-slot-cached hybrid for GLM is the way to fit more layers. The layer split has no CPU-prefill handoff, so there is no handoff receipt for GLM. `PartialOffloadUnsupportedReason` (hybrid and CUDA) now names leading dense layers and selection-bias routing as full-Vulkan-only.
 - **Llama 4 on Vulkan (2026-10-04, later)**: I had not run it. The Vulkan hybrid runs it (`-g 4` answers "Paris"), and `HybridCpuPrefillHandoffTests.Handoff_LargeFamilies` passes at 4 and 1 GPU layers (prefill cosine 0.9999, decode cosines >= 0.998 over 40 steps), receipt `(llama4, VulkanHybrid)`. `-g -1` on Scout selects the hybrid automatically (30 GPU + 18 CPU layers); there is no pure full-GPU pass at 52 GB on this machine.
+
+## Extension wave: further conventional-KV MoE families (added 2026-10-04, after review)
+
+The first wave (steps 1-5) proved the mechanism across materially different routing designs. Later families are **extensions of this plan, not new handoff projects**, unless inspection shows a different state or cache representation. Do this only after the open items above settle (Llama 4 long-context result, GLM expert-slot-cached hybrid for its handoff, step 6 speed league, CUDA evidence).
+
+Rule: *recognised in `ModelGraph`* is not *CPU path works* is not *handoff works*. Admission needs a real-weight receipt for `(family, path)`; no family-wide "MoE is safe" switch.
+
+**Workflow per candidate**
+- **A. Structural classification** (no weights): ordinary per-head K/V? recurrent or conv state? MLA or another compressed cache? expert count, top-k, shared experts, routing semantics, special attention/RoPE/norm/residual features. Outcome: *conventional KV, extension candidate* / *conventional KV, needs a feature port first* / *different state, separate handoff class* / *not worth it on this hardware*.
+- **B. CPU admission (Stage A):** real checkpoint, independent `llama-server` reference, teacher-forced greedy with the confident-margin rule, perplexity cross-check; record every architecture-specific fix. No GPU receipt before this is clean.
+- **C. Is hybrid support already compositional?** Read `GpuForwardPass.PartialOffloadUnsupportedReason` / `UnsupportedReason` as the to-do list; prefer generalising an existing implementation (leading dense layers, selection-bias routing, partial RoPE, shared expert scratch, chunked attention are already in `GpuForwardPass`) over a family-specific branch.
+- **D. Real-weight handoff (Stage B):** K/V byte identity, logits, 40 teacher-forced decode steps, mixed split, boundary contexts, `startPos > 0`.
+- **E. Admit:** `(family, HandoffPath.VulkanHybrid)` only after D passes.
+
+**Backlog (priority order)**
+1. `hunyuan-moe`: likely conventional KV; today only recognised in `ModelGraph`. Needs Stage A first (Hunyuan-specific attention/RoPE/QK-norm behaviour against the real reference). Check disk before choosing a quant.
+2. `afmoe` (Arcee Trinity Mini): attention output gate (`blk.N.attn_gate.weight`) is rejected by `GpuForwardPass.UnsupportedReason` today; port the gate into the Vulkan paths with identical semantics, then Stage A/B.
+3. `cohere2moe`: compound extension; LayerNorm, parallel residual and sliding-window/NoPE mixing are refused for partial offload today.
+4. `step35`, 5. `exaone-moe`: checkpoints too large for this machine; classify only.
+- *inspect first:* `grovemoe` (expert layout may not fit the generic slot-cache model).
+
+**Stay outside this class** (keep the structural refusals): `deepseek2` (MLA, needs a latent-cache handoff), recurrent/conv-state families (`lfm2moe`, `qwen35moe`, `qwen3next`, `granitehybrid`, Nemotron-H), `gpt-oss` (own forward pass).
+

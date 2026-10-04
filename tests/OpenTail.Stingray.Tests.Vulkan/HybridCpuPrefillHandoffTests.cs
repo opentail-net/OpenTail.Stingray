@@ -60,7 +60,7 @@ public sealed unsafe class HybridCpuPrefillHandoffTests : HeavyTestBase
         public void Dispose() { Model.Dispose(); Gpu.Dispose(); }
     }
 
-    private static Setup? Open(string file)
+    private static Setup? Open(string file, string? text = null)
     {
         string? path = Find(file);
         Assert.SkipWhen(path is null, $"{file} not present");
@@ -69,7 +69,7 @@ public sealed unsafe class HybridCpuPrefillHandoffTests : HeavyTestBase
         Assert.SkipWhen(gpu is null, "no Vulkan device available on this host");
         var model = GgufModel.Open(path!);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
-        int[] prompt = GgufTokenizer.FromGgufModel(model).Encode(Text).ToArray();
+        int[] prompt = GgufTokenizer.FromGgufModel(model).Encode(text ?? Text).ToArray();
         return new Setup(model, hp, prompt, gpu!);
     }
 
@@ -92,6 +92,84 @@ public sealed unsafe class HybridCpuPrefillHandoffTests : HeavyTestBase
     [InlineData("Phi-3.5-MoE-instruct-Q3_K_M.gguf", 4, 16, 8192)]
     public void Handoff_IsByteExact_AndDecodeAgreesWithSequentialPrefill(string file, int gpuLayers, int slots, int ctx = 1024)
         => RunHandoff(file, gpuLayers, slots, ctx);
+
+    /// <summary>
+    /// One extra checkpoint chosen at run time: <c>STINGRAY_HANDOFF_TEST_MODEL=&lt;file name&gt;</c> (looked up like the InlineData rows), optionally
+    /// <c>STINGRAY_HANDOFF_TEST_GPU_LAYERS</c> (default 4) and <c>STINGRAY_HANDOFF_TEST_CTX</c> (default 1024). Skips without the variable.
+    /// A new family is tried here first; its permanent InlineData row is added only together with its receipt.
+    /// </summary>
+    [Fact]
+    public void Handoff_EnvironmentChosenModel()
+    {
+        string? file = Environment.GetEnvironmentVariable("STINGRAY_HANDOFF_TEST_MODEL");
+        Assert.SkipWhen(string.IsNullOrWhiteSpace(file), "STINGRAY_HANDOFF_TEST_MODEL is not set");
+        int layers = int.TryParse(Environment.GetEnvironmentVariable("STINGRAY_HANDOFF_TEST_GPU_LAYERS"), out int l) ? l : 4;
+        int ctx = int.TryParse(Environment.GetEnvironmentVariable("STINGRAY_HANDOFF_TEST_CTX"), out int c) ? c : 1024;
+        RunHandoff(file!, layers, 16, ctx);
+    }
+
+    /// <summary>
+    /// Llama 4 past its 8192-token attention chunk: a 9430-token prompt (first 42000 characters of scripts/kvarn-gate/wiki.test.raw, as in
+    /// LlamaFourLongContextParityTests) goes through the CPU-prefill handoff into 4 GPU layers + 44 CPU layers, then 6 teacher-forced decode steps
+    /// are compared with the all-CPU pass continuing from the same prompt. The sequential GPU prefill is not run (about 1 token/s on this
+    /// machine, hours at this length); the short-prompt rows cover that comparison. Exercises chunked attention and NoPE temperature tuning on
+    /// both the GPU layers (window = position % 8192 + 1) and the CPU layers.
+    /// </summary>
+    [Fact]
+    public void Handoff_Llama4_PastTheChunkBoundary_DecodeAgreesWithCpu()
+    {
+        const string file = @"Q3_K_M\Llama-4-Scout-17B-16E-Instruct-Q3_K_M-00001-of-00002.gguf";
+        const int ctx = 9728, steps = 6;
+        string? wiki = null;
+        for (var d = new DirectoryInfo(AppContext.BaseDirectory); d is not null && wiki is null; d = d.Parent)
+            if (File.Exists(Path.Combine(d.FullName, "scripts", "kvarn-gate", "wiki.test.raw"))) wiki = Path.Combine(d.FullName, "scripts", "kvarn-gate", "wiki.test.raw");
+        Assert.SkipWhen(wiki is null, "scripts/kvarn-gate/wiki.test.raw not found");
+        string text = File.ReadAllText(wiki!);
+        text = text[..Math.Min(42000, text.Length)];
+        text = text[..text.LastIndexOf('\n')];
+
+        using var s = Open(file, text)!;
+        Assert.True(s.Prompt.Length > 8192 + 64, $"prompt must cross the 8192 boundary: {s.Prompt.Length}");
+
+        var cpuLogits = new List<float[]>();
+        var forced = new int[steps];
+        using (var backend = new CpuBackend())
+        using (var cpu = new Engine.ForwardPass(s.Model, backend, s.Hp, maxContextLength: ctx))
+        {
+            var l = cpu.Prefill(s.Prompt).ToArray();
+            cpuLogits.Add(l);
+            for (int i = 0; i < steps; i++)
+            {
+                forced[i] = Argmax(l);
+                l = cpu.Forward(forced[i], s.Prompt.Length + i).ToArray();
+                cpuLogits.Add(l);
+            }
+        }
+
+        var hybridLogits = new List<float[]>();
+        using (var fast = NewHybrid(s, 4, 16, ctx))
+        {
+            hybridLogits.Add(fast.Prefill(s.Prompt, 0).ToArray());
+            Assert.True(fast.LastPrefillUsedCpuHandoff, "the handoff was not taken: " + fast.LastCpuPrefillRefusal);
+            for (int i = 0; i < steps; i++) hybridLogits.Add(fast.Forward(forced[i], s.Prompt.Length + i).ToArray());
+        }
+
+        Assert.Equal(cpuLogits[0], hybridLogits[0]);   // the handoff returns the CPU pass's own logits
+        var failures = new List<string>();
+        for (int i = 1; i <= steps; i++)
+        {
+            double cos = Cosine(cpuLogits[i], hybridLogits[i]);
+            int ca = Argmax(cpuLogits[i]), ha = Argmax(hybridLogits[i]);
+            if (ca != ha)
+            {
+                float range = cpuLogits[i].Max() - cpuLogits[i].Min(), gap = cpuLogits[i][ca] - cpuLogits[i][ha];
+                if (gap / range >= 0.02) failures.Add($"decode {i}: argmax {ca} vs {ha}, gap {gap:F3} of range {range:F3}");
+            }
+            if (cos <= 0.99) failures.Add($"decode {i}: cosine {cos:F6}");
+        }
+        Console.WriteLine($"[handoff] llama4 past 8192: n={s.Prompt.Length}; decode cosines {string.Join(",", Enumerable.Range(1, steps).Select(i => Cosine(cpuLogits[i], hybridLogits[i]).ToString("F5")))}");
+        Assert.True(failures.Count == 0, string.Join("; ", failures));
+    }
 
     // Large checkpoints, kept in their own method so they can be run (and re-run) without the 14 smaller rows.
     [Theory]

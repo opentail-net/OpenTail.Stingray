@@ -69,6 +69,7 @@ public static class KnownEnvironmentVariables
         "STINGRAY_EXPERIMENTAL_PRISM",
         "STINGRAY_GPU_CPU_PREFILL",
         "STINGRAY_HYBRID_CPU_PREFILL",
+        "STINGRAY_HANDOFF_TEST_MODEL",   // test-only: file name of one extra checkpoint for the handoff tests (see the closure plan, step 0)
         "STINGRAY_HYBRID_CPU_PREFILL_KV_BUDGET_MB",
         "STINGRAY_HYBRID_CPU_PREFILL_MIN_TOKENS",
         "STINGRAY_HYBRID_CPU_PREFILL_WARM",
