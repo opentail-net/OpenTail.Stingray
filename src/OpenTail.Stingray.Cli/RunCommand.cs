@@ -1722,7 +1722,10 @@ public sealed class RunCommand : Command<RunCommand.Settings>
                     // takes the proven small split instead of crashing (the planner proposes 34 of 47 layers there); an explicit -g N is
                     // left to the user.
                     const int safeSplitGpuLayers = 4;
-                    if (nGpuLayers > safeSplitGpuLayers && hp.IsMoE && GpuForwardPass.PartialOffloadUnsupportedReason(model, hp) is { } splitOnly)
+                    // Measured: the 45 GB GLM-4.5-Air dies, the 16 GB afmoe (same split-only classification) runs all 32 layers on the GPU. Cap only the large ones.
+                    long modelBytes = model.Tensors.Sum(t => t.ByteSize);
+                    const long splitCapMinBytes = 30L << 30;
+                    if (nGpuLayers > safeSplitGpuLayers && modelBytes >= splitCapMinBytes && hp.IsMoE && GpuForwardPass.PartialOffloadUnsupportedReason(model, hp) is { } splitOnly)
                     {
                         nGpuLayers = Math.Min(safeSplitGpuLayers, VulkanLayerSplitForwardPass.MaxGpuLayers(hp));
                         AnsiConsole.MarkupLine($"[yellow]Note:[/] {Markup.Escape(splitOnly)}: auto offload uses the layer split with {nGpuLayers} GPU layers (all-expert upload does not fit device memory).");
