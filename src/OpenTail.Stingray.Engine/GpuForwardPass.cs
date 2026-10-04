@@ -493,6 +493,10 @@ public sealed unsafe partial class GpuForwardPass : IForwardPass
     public static string? UnsupportedReason(GgufModel model, ModelHyperparams hp)
     {
         if (hp.KvLoraRank > 0) return "MLA attention (deepseek2)";
+        // glm4moe: the GPU layer loops have no dense-FFN-then-MoE layer mix (blk.0 has no router) and no selection-bias routing
+        // (probabilities selected with exp_probs_b, weighted by the unbiased ones); both exist on the CPU pass only.
+        if (hp.IsMoE && hp.LeadingDenseBlockCount > 0) return "MoE with leading dense layers (CPU only)";
+        if (hp.IsMoE && hp.ExpertGatingFunc == 2 && !hp.UseSigmoidGating) return "selection-bias expert routing (CPU only)";
         if (hp.AttentionOutputGate || hp.InputEmbeddingRmsNorm || hp.PostNormEps > 0f)
             return "attention output gate / embedding norm (muse-glimmer, CPU only)";
         if (hp.UsesLayerNorm && hp.HasQkNorm) return "LayerNorm QK-norm";

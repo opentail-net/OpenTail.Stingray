@@ -454,6 +454,11 @@ public static class ModelCompatibility
         // implementation for the "normal"/interleaved (non-NEOX) rotation convention
         // (SimdKernels.ApplyRoPECachedPartial, new).
         "glm4",
+        // glm4moe (GLM-4.5-Air) — admitted 2026-10-04: GlmMoeGreedyParityTests teacher-forced against llama-server on GLM-4.5-Air-Q2_K,
+        // all 54 positions of a short and a 190-token prompt match (30 confident, 0 near-tie differences); second-half wikitext PPL
+        // (-c 512) 3.3709 vs llama-perplexity 3.4260 +/- 0.41. 128 experts top-8, sigmoid gating with selection bias, one shared expert,
+        // one leading dense layer. Only the Q2_K quantisation has been run.
+        "glm4moe",
         // stablelm — admitted 2026-08-09. Smallest code change of any new-kernel architecture this
         // session: LayerNorm-with-bias, non-gated-FFN plumbing, and NEOX partial rope were all
         // already generic (built for gptneox/falcon/glm4), so nothing new was needed for any of
