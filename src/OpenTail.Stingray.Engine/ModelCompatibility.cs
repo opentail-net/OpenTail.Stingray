@@ -534,6 +534,11 @@ public static class ModelCompatibility
         // no regression test to catch a mistake, and this receipt is currently the only thing in
         // the codebase exercising that combination.
         "hunyuan-dense",
+        // hunyuan-moe (Hunyuan-A13B-Instruct) — admitted 2026-10-04 on a real checkpoint (DevQuasar Q3_K_S only), CPU:
+        // HunyuanMoeGreedyParityTests teacher-forced against llama-server (same GGUF): all 39 confident positions match
+        // (27 of 32 on a 196-token prompt, 12 of 22 on a 5-token one), 0 near-tie differences. Needed in ModelGraph: QK-norm
+        // after RoPE (as hunyuan-dense) and renormalised top-k expert weights. Not on any GPU path yet.
+        "hunyuan-moe",
         // gpt2 — admitted 2026-08-09, FULL 22-of-22-token exact greedy match, bucket-1 (genuinely
         // MIT). The first architecture this session without RoPE at all: GPT-2 encodes position
         // via a learned absolute position-embedding table (`position_embd.weight`) added to the

@@ -704,7 +704,8 @@ public sealed record ModelHyperparams
         // UseL2QkNorm (also after-RoPE, but unweighted). Maincoder (src/models/maincoder.cpp) does
         // the same; it ran with the before-RoPE order until 2026-09-26 (wikitext second-half PPL
         // 12.61 vs llama.cpp 12.01; 11.90 after).
-        bool qkNormAfterRope = arch is "hunyuan-dense" or "maincoder";
+        // Hunyuan-MoE (A13B): HF HunYuanAttention applies query_layernorm/key_layernorm after apply_rotary_pos_emb, the same order.
+        bool qkNormAfterRope = arch is "hunyuan-dense" or "hunyuan-moe" or "maincoder";
 
         // RoPE convention: NEOX (pairs offset by headDim/2) vs NORM/interleaved (consecutive pairs).
         // Mirrors llama.cpp's llama_model_rope_type() in src/llama-model.cpp (NEOX block).
@@ -1394,7 +1395,8 @@ public sealed record ModelHyperparams
             // phimoe: phi3.cpp's build_moe_ffn passes norm_w = true unconditionally; so do granite.cpp
             // (granitemoe) and granite-hybrid.cpp (Granite 4.0-H tiny/small MoE; without it the small
             // model's wikitext PPL was 157 vs llama.cpp 9.41, 2026-09-28).
-            NormalizeMoeTopKWeights = arch is "qwen3moe" or "phimoe" or "granitemoe" or "granitehybrid" or "lfm2moe" or "llama" ? true
+            // hunyuan-moe: from memory of src/models/hunyuan-moe.cpp (norm_w = true, softmax gating); Stage A against llama-server confirms or refutes it.
+            NormalizeMoeTopKWeights = arch is "qwen3moe" or "phimoe" or "granitemoe" or "granitehybrid" or "lfm2moe" or "llama" or "hunyuan-moe" ? true
                 : arch.Equals("olmoe", StringComparison.OrdinalIgnoreCase) ? false
                 : GetBool(metadata, $"{arch}.expert_weights_norm", false),
             // llama.cpp's LLM_KV_EXPERT_WEIGHTS_SCALE ("routed_scaling_factor" in DeepSeek-V2/V3's

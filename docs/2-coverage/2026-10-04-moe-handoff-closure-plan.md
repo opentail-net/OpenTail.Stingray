@@ -69,7 +69,7 @@ Stop rule per family: if a stage fails and the cause is not understood within on
 - **Effort:** 4-6 days. **Risk:** high. Treat as optional.
 
 ### Not on this list, on purpose
-- `hunyuan-moe`: not admitted on CPU at all; admission comes first (a separate item).
+- `hunyuan-moe`: now admitted on CPU (2026-10-04, see the extension-wave results entry); GPU paths pending.
 - MLA (`deepseek2`), recurrent (`lfm2moe`, `granitehybrid`, `qwen35*`) and `gpt-oss`: a different class, each needing its own handoff mechanism (latent cache, state snapshot). None is a gate fix. Worth a separate plan only if a user need appears.
 
 ## Tracking
@@ -163,7 +163,7 @@ Rule: *recognised in `ModelGraph`* is not *CPU path works* is not *handoff works
 - **E. Admit:** `(family, HandoffPath.VulkanHybrid)` only after D passes.
 
 **Backlog (priority order)**
-1. `hunyuan-moe`: likely conventional KV; today only recognised in `ModelGraph`. Needs Stage A first (Hunyuan-specific attention/RoPE/QK-norm behaviour against the real reference). Check disk before choosing a quant.
+1. `hunyuan-moe` (Stage A done 2026-10-04, CPU admitted; GPU handoff pending): conventional KV. Needs Stage A first (Hunyuan-specific attention/RoPE/QK-norm behaviour against the real reference). Check disk before choosing a quant.
 2. `afmoe` (Arcee Trinity Mini): attention output gate (`blk.N.attn_gate.weight`) is rejected by `GpuForwardPass.UnsupportedReason` today; port the gate into the Vulkan paths with identical semantics, then Stage A/B.
 3. `cohere2moe`: compound extension; LayerNorm, parallel residual and sliding-window/NoPE mixing are refused for partial offload today.
 4. `step35`, 5. `exaone-moe`: checkpoints too large for this machine; classify only.
@@ -171,3 +171,7 @@ Rule: *recognised in `ModelGraph`* is not *CPU path works* is not *handoff works
 
 **Stay outside this class** (keep the structural refusals): `deepseek2` (MLA, needs a latent-cache handoff), recurrent/conv-state families (`lfm2moe`, `qwen35moe`, `qwen3next`, `granitehybrid`, Nemotron-H), `gpt-oss` (own forward pass).
 
+
+### Extension wave results
+
+- **`hunyuan-moe` Stage A (Hunyuan-A13B-Instruct Q3_K_S, DevQuasar, 34.8 GB on `H:\_models`, 2026-10-04)**: two `ModelGraph` changes from memory of the HF/llama.cpp references, both confirmed by the real run: QK-norm after RoPE (as `hunyuan-dense`) and renormalised top-k expert weights (no `expert_weights_norm` key). `HunyuanMoeGreedyParityTests` teacher-forced against `llama-server` (same GGUF, CPU, no prefix token): all 39 confident positions matched (27 of 32 on a 196-token prompt whose continuation is repetitive, 12 of 22 on "The capital of France is"), 0 near-tie differences, 37 s real run. Second-half wikitext PPL at -c 512: ours 219.8 (bucket [256,1024)), `llama-perplexity` 201.57 +/- 53.71. I did not run the code without the two changes, so which of them was individually required is not shown. `hunyuan-moe` is in the `ModelCompatibility` allowlist (CPU only, Q3_K_S only). Not done: any GPU path, a handoff receipt (QK-norm after RoPE is refused on the partial-offload paths, so the layer split is the candidate), Stage A2.
