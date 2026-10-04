@@ -140,7 +140,7 @@ public sealed unsafe partial class ForwardPass
                 int qDim = _numHeads * layerHd;
                 int kvDim = layerKv * layerHd;
                 bool isSwa = _isSwaLayer is not null && _isSwaLayer[layer];
-                int windowSize = isSwa ? _hp.SlidingWindowSize : -1;
+                int windowSize = isSwa ? _hp.SlidingWindowSize : _hp.ChunkWindowCode(layer);
                 bool kEqV = _hp.AttentionKEqV && !isSwa && _wv[layer].DataPtr is null;
 
                 var normW = GetNormWeight(_attnNorm[layer]);

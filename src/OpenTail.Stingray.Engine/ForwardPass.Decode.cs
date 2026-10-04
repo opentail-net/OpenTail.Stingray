@@ -169,7 +169,7 @@ public sealed unsafe partial class ForwardPass
             bool kvShared = kvSrc >= 0;
             int effLayer = kvShared ? kvSrc : layer;
             bool isSwa = _isSwaLayer is not null && _isSwaLayer[layer];
-            int windowSize = isSwa ? _hp.SlidingWindowSize : -1;
+            int windowSize = isSwa ? _hp.SlidingWindowSize : _hp.ChunkWindowCode(layer);
             // Gemma 4 12B global layers carry no attn_v (attention_k_eq_v): V reuses the
             // raw K projection (pre QK-norm, pre-RoPE). These layers always own their KV.
             bool kEqV = _hp.AttentionKEqV && !isSwa && _wv[layer].DataPtr is null;
@@ -342,6 +342,11 @@ public sealed unsafe partial class ForwardPass
                 ApplyRopeLayer(_q, position, _numHeads, layer, layerHd);
                 if (!kvShared)
                     ApplyRopeLayer(_k, position, layerKv, layer, layerHd);
+            }
+            else if (_hp.AttnTempScale != 0f)
+            {
+                // Llama 4 attention temperature tuning on the NoPE layers (llama.cpp llm_graph_input_attn_temp).
+                SimdKernels.ScaleInPlace(_q, _hp.AttnTempFactor(position), _numHeads * layerHd);
             }
 
             // Hunyuan-Dense (weighted QK-norm): apply norm AFTER RoPE, on the already-rotated Q/K

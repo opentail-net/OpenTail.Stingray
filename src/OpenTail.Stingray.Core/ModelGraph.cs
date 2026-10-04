@@ -440,6 +440,28 @@ public sealed record ModelHyperparams
     public int SlidingWindowSize { get; init; }
 
     /// <summary>
+    /// Llama 4 chunked attention (llama.cpp LLAMA_SWA_TYPE_CHUNKED, n_swa 8192): on the RoPE layers a query attends only to the keys of its own
+    /// 8192-token chunk. 0 = none. The NoPE layers (every 4th) stay fully causal and instead scale Q by <see cref="AttnTempFactor"/>.
+    /// </summary>
+    public int AttentionChunkSize { get; init; }
+    /// <summary>Llama 4 attention temperature tuning on NoPE layers: scale = log(floor((pos + offset) / floor) + 1) * AttnTempScale + 1. 0 = off.</summary>
+    public float AttnTempScale { get; init; }
+    public int AttnTempFloor { get; init; }
+    public float AttnTempOffset { get; init; }
+
+    /// <summary>
+    /// The attention-window argument for <paramref name="layer"/> when it is chunked: <c>-AttentionChunkSize</c> (an encoding read by the attention
+    /// kernels: values below -1 mean "keys from the start of the query's chunk"), or -1 for full causal attention.
+    /// </summary>
+    public int ChunkWindowCode(int layer) =>
+        AttentionChunkSize > 0 && (NoRopeLayerStep == 0 || (layer + 1) % NoRopeLayerStep != 0) ? -AttentionChunkSize : -1;
+
+    /// <summary>Q scale for a NoPE layer at <paramref name="position"/> (1 when temperature tuning is off).</summary>
+    public float AttnTempFactor(int position) =>
+        AttnTempScale == 0f || AttnTempFloor <= 0 ? 1f
+            : MathF.Log(MathF.Floor((position + AttnTempOffset) / AttnTempFloor) + 1f) * AttnTempScale + 1f;
+
+    /// <summary>
     /// Whether RoPE is applied ONLY on SWA (local) layers, with global layers getting NO
     /// rotary embedding at all — Command-R's (cohere2) convention, confirmed against
     /// <c>src/models/cohere2.cpp</c>: its attention block calls <c>ggml_rope_ext</c> only inside
@@ -1412,6 +1434,10 @@ public sealed record ModelHyperparams
             FinalLogitSoftcap = finalLogitSoftcap,
             RopeThetaSwa = ropeThetaSwa,
             SlidingWindowSize = slidingWindow,
+            AttentionChunkSize = isLlama4 && !(metadata.ContainsKey($"{arch}.attention.sliding_window") && GetInt(metadata, $"{arch}.attention.sliding_window") == 0) ? 8192 : 0,
+            AttnTempScale = isLlama4 && !(metadata.ContainsKey($"{arch}.attention.sliding_window") && GetInt(metadata, $"{arch}.attention.sliding_window") == 0) ? 0.1f : 0f,
+            AttnTempFloor = 8192,
+            AttnTempOffset = 1f,
             PerLayerEmbeddingWidth = perLayerEmbedWidth,
             HasPostAttnNorm = hasPostAttnNorm,
             HasPostFfwNorm = hasPostFfwNorm,

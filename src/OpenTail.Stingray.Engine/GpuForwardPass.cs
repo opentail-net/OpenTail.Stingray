@@ -1688,7 +1688,7 @@ public sealed unsafe partial class GpuForwardPass : IForwardPass
             // path also depends on but wasn't consuming.
             bool isSwa = _hp.IsSwaLayer is { } swaArr && swaArr[layer];
             float layerRopeTheta = isSwa && _ropeThetaSwa > 0f ? _ropeThetaSwa : _hp.RopeTheta;
-            uint window = isSwa ? (uint)_hp.SlidingWindowSize : 0u;
+            uint window = isSwa ? (uint)_hp.SlidingWindowSize : ChunkWindow(layer, position);
 
             // Deepstack: add this layer's slice of the current multimodal token (ForwardPass.Decode RunTrunk).
             if (_deepstackActive && layer > 0 && _hp.DeepstackMapping![layer] is int dsIdx && dsIdx >= 1)
@@ -1765,6 +1765,12 @@ public sealed unsafe partial class GpuForwardPass : IForwardPass
                         _gpu.RoPE(_q, position, _headDim, layerRopeTheta, _hp.IsNeoxRope);
                         _gpu.RoPE(_k, position, _headDim, layerRopeTheta, _hp.IsNeoxRope);
                     }
+                    _gpu.RecordBarrier();
+                }
+                else if (_hp.AttnTempScale != 0f)
+                {
+                    // Llama 4 attention temperature tuning on the NoPE layers.
+                    _gpu.ScaleInPlace(_q, _hp.AttnTempFactor(position));
                     _gpu.RecordBarrier();
                 }
 
@@ -3525,6 +3531,13 @@ public sealed unsafe partial class GpuForwardPass : IForwardPass
             if (sum > 0) for (int i = 0; i < k; i++) weights[i] /= sum;
         }
     }
+
+    /// <summary>
+    /// Attention-kernel window for a Llama 4 chunked layer: the kernels read the last <c>window</c> keys, and a query at <paramref name="position"/>
+    /// may read from the start of its chunk, which is <c>position % chunk + 1</c> keys. 0 (full causal) for every other layer.
+    /// </summary>
+    private uint ChunkWindow(int layer, int position) =>
+        _hp.ChunkWindowCode(layer) is < -1 and int code ? (uint)(position % -code + 1) : 0u;
 
     private void AddLogitBias(Tensor logits, int rows)
     {

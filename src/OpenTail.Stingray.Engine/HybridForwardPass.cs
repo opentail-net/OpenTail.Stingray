@@ -844,6 +844,11 @@ public sealed unsafe partial class HybridForwardPass : IForwardPass
                 }
                 _gpu.RecordBarrier();
             }
+            else if (_hp.AttnTempScale != 0f)
+            {
+                _gpu.ScaleInPlace(_gpuQ, _hp.AttnTempFactor(position));   // Llama 4 temperature tuning (NoPE layers)
+                _gpu.RecordBarrier();
+            }
 
             if (_hasQkNorm && _hp.UseL2QkNorm && useRoPE)
             {
@@ -895,7 +900,7 @@ public sealed unsafe partial class HybridForwardPass : IForwardPass
             _gpu.Attention(_gpuQ, _gpuKCache[i], _gpuVCache[i], _gpuAttnOut,
                 _gpuAttnScoresScratch,
                 (uint)_numHeads, (uint)_numKvHeads, (uint)_headDim,
-                (uint)(position + 1), (uint)_maxSeqLen, window: isSwa ? (uint)_hp.SlidingWindowSize : 0u);
+                (uint)(position + 1), (uint)_maxSeqLen, window: isSwa ? (uint)_hp.SlidingWindowSize : (_hp.ChunkWindowCode(i) is < -1 and int chunkCode ? (uint)(position % -chunkCode + 1) : 0u));
         }
         _gpu.RecordBarrier();
 
@@ -1010,6 +1015,10 @@ public sealed unsafe partial class HybridForwardPass : IForwardPass
                 SimdKernels.ApplyRoPECached(_cpuK, cos, sin, _numKvHeads, _headDim);
             }
         }
+        else if (_hp.AttnTempScale != 0f)
+        {
+            SimdKernels.ScaleInPlace(_cpuQ, _hp.AttnTempFactor(position), _numHeads * _headDim);   // Llama 4 temperature tuning (NoPE layers)
+        }
 
         if (_hasQkNorm && _hp.UseL2QkNorm && useRoPE)
         {
@@ -1035,7 +1044,7 @@ public sealed unsafe partial class HybridForwardPass : IForwardPass
         if (_cpuTqKvCache != null)
             CpuTqAttention(ci, position);
         else
-            CpuAttention(ci, position, isSwa ? _hp.SlidingWindowSize : 0);
+            CpuAttention(ci, position, isSwa ? _hp.SlidingWindowSize : _hp.ChunkWindowCode(actualLayer));
 
         // Output projection
         SimdKernels.MatVec(_cpuHidden, _cpuWo[ci].DataPtr, _cpuAttnOut, _embDim, _numHeads * _headDim, _cpuWo[ci].DType);
@@ -1140,7 +1149,7 @@ public sealed unsafe partial class HybridForwardPass : IForwardPass
     /// at positions &gt; position - window, llama.cpp's LLAMA_SWA_TYPE_STANDARD mask.</param>
     private void CpuAttention(int ci, int position, int window)
     {
-        int start = window > 0 ? Math.Max(0, position + 1 - window) : 0;
+        int start = ForwardPass.AttnStart(position + 1, window);   // window: > 0 sliding, < -1 Llama 4 chunk (see AttnStart)
         int seqLen = position + 1 - start;
         float scale = 1.0f / MathF.Sqrt(_headDim);
         int maxSeqLen = _maxSeqLen; int hd = _headDim; int hpkg = _headsPerKvGroup;

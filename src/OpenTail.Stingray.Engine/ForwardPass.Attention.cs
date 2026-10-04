@@ -91,6 +91,18 @@ public sealed unsafe partial class ForwardPass
     /// dot in the same order, softmax runs over the same row, and each output still accumulates
     /// over i ascending. Only the loop nesting changes, not the arithmetic order.</para>
     /// </summary>
+    /// <summary>
+    /// First key position a query whose causal end is <paramref name="endSeq"/> (= position + 1) may read. <paramref name="windowSize"/>:
+    /// &gt; 0 sliding window of that many keys; 0 or -1 full causal; &lt; -1 Llama 4 chunked attention with chunk size -windowSize
+    /// (keys from the start of the query's own chunk).
+    /// </summary>
+    internal static int AttnStart(int endSeq, int windowSize)
+    {
+        if (windowSize > 0) return Math.Max(0, endSeq - windowSize);
+        if (windowSize < -1) { int chunk = -windowSize; return (endSeq - 1) / chunk * chunk; }
+        return 0;
+    }
+
     private void PrefillCoreAttention(float* batchQ, PagedKvCache cache, int layer, int N, int startPos, float* batchAttnOut, int windowSize = -1)
     {
         int numHeads = _numHeads;
@@ -157,7 +169,7 @@ public sealed unsafe partial class ForwardPass
         // Full investigation (ruled-out hypotheses, the parity and perplexity measurements, the
         // superseded reasoning that preceded them): docs/reference/forwardpass-investigation-log.md
         // #flash-128256-wide-attention-heads--perplexity-investigation
-        if (enableFlash64 && startPos + N >= 256 && _layerHeadDim is null && windowSize <= 0 && _hp.AlibiMaxBias <= 0f
+        if (enableFlash64 && startPos + N >= 256 && _layerHeadDim is null && windowSize is 0 or -1 && _hp.AlibiMaxBias <= 0f
             && (headDim == 64 || (Flash64WideHeadDimsEnabled && headDim is 128 or 256)) &&
             Avx2.IsSupported && Fma.IsSupported)
         {
@@ -214,7 +226,7 @@ public sealed unsafe partial class ForwardPass
             // a speed change.
             int stride = maxSeqLen;
             float* scores = (float*)NativeMemory.AllocZeroed((nuint)((long)TokenTile * stride * sizeof(float)));
-            bool registerValues = enableRegisterValues && Fma.IsSupported && headDim >= 8 && headDim % 8 == 0 && windowSize <= 0;
+            bool registerValues = enableRegisterValues && Fma.IsSupported && headDim >= 8 && headDim % 8 == 0 && windowSize is 0 or -1;
             float** valueRows = registerValues
                 ? (float**)NativeMemory.Alloc((nuint)(Math.Min(maxSeqLen, cache.Length) * sizeof(nint)))
                 : null;
@@ -266,7 +278,7 @@ public sealed unsafe partial class ForwardPass
                         for (int t = 0; t < tn; t++)
                         {
                             int endSeq = Math.Min(startPos + nBase + t + 1, cache.Length);
-                            int startSeq = windowSize > 0 ? Math.Max(0, endSeq - windowSize) : 0;
+                            int startSeq = AttnStart(endSeq, windowSize);
                             if (i >= startSeq && i < endSeq)
                             {
                                 float sc = SimdKernels.DotF32(
@@ -289,7 +301,7 @@ public sealed unsafe partial class ForwardPass
                     for (int t = 0; t < tn; t++)
                     {
                         int endSeq = Math.Min(startPos + nBase + t + 1, cache.Length);
-                        int startSeq = windowSize > 0 ? Math.Max(0, endSeq - windowSize) : 0;
+                        int startSeq = AttnStart(endSeq, windowSize);
                         if (startSeq > 0)
                             new Span<float>(scores + (long)t * stride, startSeq).Clear();
                         SimdKernels.SoftmaxInPlace(scores + (long)t * stride + startSeq, endSeq - startSeq);
@@ -329,7 +341,7 @@ public sealed unsafe partial class ForwardPass
                             for (int t = 0; t < tn; t++)
                             {
                                 int endSeq = Math.Min(startPos + nBase + t + 1, cache.Length);
-                                int startSeq = windowSize > 0 ? Math.Max(0, endSeq - windowSize) : 0;
+                                int startSeq = AttnStart(endSeq, windowSize);
                                 if (i < startSeq || i >= endSeq) continue;
                                 float* outHead = batchAttnOut + (long)(nBase + t) * qDim + h * headDim;
                                 float w = scores[(long)t * stride + i];
@@ -417,7 +429,7 @@ public sealed unsafe partial class ForwardPass
                         for (int t = 0; t < tn; t++)
                         {
                             int endSeq = Math.Min(startPos + nBase + t + 1, cache.Length);
-                            int startSeq = windowSize > 0 ? Math.Max(0, endSeq - windowSize) : 0;
+                            int startSeq = AttnStart(endSeq, windowSize);
                             if (i >= startSeq && i < endSeq)
                             {
                                 float sc = SimdKernels.DotF32Bf16(
@@ -432,7 +444,7 @@ public sealed unsafe partial class ForwardPass
                     for (int t = 0; t < tn; t++)
                     {
                         int endSeq = Math.Min(startPos + nBase + t + 1, cache.Length);
-                        int startSeq = windowSize > 0 ? Math.Max(0, endSeq - windowSize) : 0;
+                        int startSeq = AttnStart(endSeq, windowSize);
                         if (startSeq > 0)
                             new Span<float>(scores + (long)t * stride, startSeq).Clear();
                         SimdKernels.SoftmaxInPlace(scores + (long)t * stride + startSeq, endSeq - startSeq);
@@ -451,7 +463,7 @@ public sealed unsafe partial class ForwardPass
                         for (int t = 0; t < tn; t++)
                         {
                             int endSeq = Math.Min(startPos + nBase + t + 1, cache.Length);
-                            int startSeq = windowSize > 0 ? Math.Max(0, endSeq - windowSize) : 0;
+                            int startSeq = AttnStart(endSeq, windowSize);
                             if (i < startSeq || i >= endSeq) continue;
                             SimdKernels.AccumulateScaledBf16(
                                 batchAttnOut + (long)(nBase + t) * qDim + h * headDim,
@@ -1072,7 +1084,7 @@ public sealed unsafe partial class ForwardPass
         // stored slots once eviction has shrunk the cache.
         _ = ownLayer;
         int endSeq = Math.Min(position + 1, cache.Length + 1);
-        int startSeq = windowSize > 0 ? Math.Max(0, endSeq - windowSize) : 0;
+        int startSeq = AttnStart(endSeq, windowSize);
         // Gemma 4 uses self.scaling = 1.0 (no pre-attention scaling); other archs
         // use 1/sqrt(head_dim). See llama.cpp src/models/gemma4.cpp:11
         //   hparams.f_attention_scale = 1.0f
