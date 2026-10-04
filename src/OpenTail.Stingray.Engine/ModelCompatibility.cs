@@ -539,6 +539,12 @@ public static class ModelCompatibility
         // (27 of 32 on a 196-token prompt, 12 of 22 on a 5-token one), 0 near-tie differences. Needed in ModelGraph: QK-norm
         // after RoPE (as hunyuan-dense) and renormalised top-k expert weights. Not on any GPU path yet.
         "hunyuan-moe",
+        // afmoe (Arcee Trinity Mini) — admitted 2026-10-04 on a real checkpoint (arcee-ai Q4_K_M only), CPU, contexts below the 2048-token
+        // sliding window only (window masking beyond it is not verified): AfmoeGreedyParityTests teacher-forced against llama-server, all 31
+        // confident positions match (13 of 32 on a 183-token prompt, 18 of 22 on a 5-token one), 3 near-tie differences. Needed: the per-layer
+        // attention output gate and 3:1 sliding/global pattern with RoPE only on sliding layers (shared with Muse-Glimmer), muP embedding scale
+        // sqrt(n_embd), and the afmoe pre-tokenizer (right-aligned digit groups). Not on any GPU path yet.
+        "afmoe",
         // gpt2 — admitted 2026-08-09, FULL 22-of-22-token exact greedy match, bucket-1 (genuinely
         // MIT). The first architecture this session without RoPE at all: GPT-2 encodes position
         // via a learned absolute position-embedding table (`position_embd.weight`) added to the

@@ -875,6 +875,9 @@ public sealed record ModelHyperparams
 
         bool isGemma4 = arch.Equals("gemma4", StringComparison.OrdinalIgnoreCase);
         bool isMuseGlimmer = arch is "muse-glimmer" or "muse_glimmer";
+        // afmoe (Arcee Trinity): same attention shape as Muse-Glimmer (per-layer sigmoid output gate; 3 sliding-window : 1 global layers, RoPE only on the sliding ones)
+        // plus muP embedding scaling; routing, dense lead and shared expert come from the generic keys. Ported from memory of llama.cpp afmoe.cpp.
+        bool isAfmoe = arch == "afmoe";
 
         int slidingWindow = 0;
         int perLayerEmbedWidth = 0;
@@ -1031,7 +1034,7 @@ public sealed record ModelHyperparams
                 swa[i] = pattern is { Count: > 0 } ? pattern[i % pattern.Count] : i % 4 < 3;
             isSwaLayer = swa;
         }
-        else if (isMuseGlimmer && numLayers > 0)
+        else if ((isMuseGlimmer || isAfmoe) && numLayers > 0)
         {
             // Muse-Glimmer (llama.cpp src/models/muse-glimmer.cpp, NOT admitted): load_swa_pattern(ml, 4)
             // takes a per-layer bool array when the key is one, else a scalar period (default 4) through
@@ -1294,7 +1297,7 @@ public sealed record ModelHyperparams
         // phimoe is the opposite case: it ships norm bias tensors but is RMSNorm + bias
         // (phi3.cpp's graph, shared by phimoe: build_norm(..., norm_b, LLM_NORM_RMS)).
         bool usesLayerNorm = (hasNormBias && arch != "phimoe") || arch == "cohere2";
-        bool ropeOnlySwaLayers = arch == "cohere2" || isMuseGlimmer || (arch == "exaone4" && isSwaLayer is not null);
+        bool ropeOnlySwaLayers = arch == "cohere2" || isMuseGlimmer || isAfmoe || (arch == "exaone4" && isSwaLayer is not null);
 
         // OLMo v1 ships no attn_norm/ffn_norm/output_norm tensor at all (confirmed against
         // src/models/olmo.cpp: build_norm's weight AND bias arguments are both NULL) — the SAME
@@ -1349,7 +1352,7 @@ public sealed record ModelHyperparams
             RopeOnlySwaLayers = ropeOnlySwaLayers,
             PostNormEps = isMuseGlimmer ? 1e-8f : 0f,
             InputEmbeddingRmsNorm = isMuseGlimmer,
-            AttentionOutputGate = isMuseGlimmer,
+            AttentionOutputGate = isMuseGlimmer || isAfmoe,
             HasFfnBias = hasFfnBias,
             UseParallelResidual = useParallelResidual,
             HasQkNorm = hasQkNorm,
@@ -1414,7 +1417,7 @@ public sealed record ModelHyperparams
             RopeSectionsInterleaved = arch is "qwen3vl" or "qwen3vlmoe",
             LayerTypes = layerTypes,
             Gdn = gdn,
-            EmbeddingScale = embeddingScale,
+            EmbeddingScale = isAfmoe && embeddingScale == 1f ? MathF.Sqrt(embDim) : embeddingScale,   // afmoe: muP, x * sqrt(n_embd)
             // llama-graph.cpp build_inp_embd: raw embeddings are scaled unless the model has deepstack layers
             // (Granite 4.0 Vision's granite.deepstack_mapping), whose multimodal inputs arrive unscaled.
             ScaleRawEmbeddings = isGraniteFamily && !metadata.ContainsKey($"{arch}.deepstack_mapping"),

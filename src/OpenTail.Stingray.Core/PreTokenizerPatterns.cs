@@ -104,6 +104,18 @@ public static partial class PreTokenizerPatterns
     private static partial Regex HunyuanDenseTail();
 
     /// <summary>
+    /// AFMoE digits (llama.cpp's custom <c>\p{AFMoE_digits}</c>, written from memory): a digit run is split right-aligned into
+    /// groups of three, with a 1-2 digit lead group when the length is not a multiple of 3. The lookahead keeps exactly a multiple
+    /// of three digits after each group, which backtracks the greedy {1,3} to the right lead length.
+    /// </summary>
+    [GeneratedRegex("""\p{N}{1,3}(?=(?:\p{N}{3})*(?!\p{N}))""")]
+    private static partial Regex AfmoeDigits();
+
+    /// <summary>AFMoE's CJK class (Han, extension A, Hiragana, Katakana, Hangul syllables, fullwidth forms), written from memory.</summary>
+    [GeneratedRegex("""[一-鿿㐀-䶿぀-ゟ゠-ヿ가-힯＀-￯]+""")]
+    private static partial Regex AfmoeCjk();
+
+    /// <summary>
     /// GPT-4o family (also used by Llama 4, Kanana-2, and Talkie — llama.cpp folds all four onto
     /// the same LLAMA_VOCAB_PRE_TYPE_GPT4O case). Ported from the ORIGINAL tokenizer.json regex
     /// (llama-vocab.cpp's own comment marks it "original regex from tokenizer.json"), not
@@ -266,6 +278,12 @@ public static partial class PreTokenizerPatterns
                 patterns = [DigitRun3(), Cjk(), HunyuanDenseTail()];
                 return true;
 
+            // llama.cpp: LLAMA_VOCAB_PRE_TYPE_AFMOE (Arcee Trinity): custom right-aligned digit groups, a wider CJK class, then the
+            // same punctuation/letter/whitespace tail as the Hunyuan-Dense cascade.
+            case "afmoe":
+                patterns = [AfmoeDigits(), AfmoeCjk(), HunyuanDenseTail()];
+                return true;
+
             case "deepseek-llm":
                 patterns = [SingleNewline(), DeepSeekLlmLetters(), DeepSeekLlmPunct(), TrailingSpace(), DeepSeekLlmCjk(), NumberRun()];
                 return true;
@@ -353,7 +371,7 @@ public static partial class PreTokenizerPatterns
         "llama3", "llama-v3", "llama-bpe", "falcon3", "falcon-h1", "pixtral", "midm-2.0", "lfm2", "jina-v5-nano",
         "dbrx", "smaug-bpe", "glm4", "chatglm-bpe",
         "jais-2",
-        "qwen2", "stablelm2", "hunyuan", "solar-open",
+        "qwen2", "stablelm2", "hunyuan", "solar-open", "afmoe",
         "qwen35",
         "tekken",
         "hunyuan-dense", "deepseek3-llm", "joyai-llm",
