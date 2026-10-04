@@ -52,6 +52,24 @@ public static class IqCodebooks
     ];
 
     /// <summary>
+    /// ggml's <c>keven_signs_q2xs</c>: for each 7-bit sign index, 8 bytes of +1 / -1 (0x01 / 0xFF), byte j = -1 when bit j of <see cref="KSignsIq2Xs"/>[index] is set,
+    /// so one 64-bit load plus <c>sign_epi8</c> applies the signs of 8 elements (the IQ2_XXS / IQ2_XS / IQ3_XXS AVX2 kernels).
+    /// </summary>
+    public static readonly ulong[] KevenSigns64 = BuildKevenSigns64();
+
+    private static ulong[] BuildKevenSigns64()
+    {
+        var t = new ulong[128];
+        for (var i = 0; i < 128; i++)
+        {
+            ulong v = 0;
+            for (var j = 0; j < 8; j++) v |= (ulong)(((KSignsIq2Xs[i] >> j) & 1) != 0 ? 0xFF : 0x01) << (8 * j);
+            t[i] = v;
+        }
+        return t;
+    }
+
+    /// <summary>
     /// 256 grid vectors of 8 signed-magnitude bytes for IQ2_XXS (ggml's iq2xxs_grid). Byte j of
     /// entry i is <c>(byte)(Iq2XxsGrid[i] &gt;&gt; (8*j))</c>, matching ggml's
     /// <c>(const uint8_t*)(iq2xxs_grid + idx)</c> little-endian pointer cast.

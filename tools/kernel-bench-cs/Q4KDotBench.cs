@@ -119,9 +119,16 @@ internal static unsafe class Q4KDotBench
             void PassOurs1() { byte* m = mats[cur]; cur = (cur + 1) % copies; for (int r = 0; r < rows; r++) outBuf[r] = SimdKernels.DotQ4K_Q8KS(m + (long)r * RowBytes, actOurs, K); }
             void PassOurs2() { byte* m = mats[cur]; cur = (cur + 1) % copies; for (int r = 0; r + 1 < rows; r += 2) { SimdKernels.DotQ4K_Q8KS_2Row(m + (long)r * RowBytes, m + (long)(r + 1) * RowBytes, actOurs, K, out float a, out float b); outBuf[r] = a; outBuf[r + 1] = b; } }
             void PassProto() { byte* m = mats[cur]; cur = (cur + 1) % copies; int nb = K / 256; for (int r = 0; r < rows; r++) outBuf[r] = Q4KProto.Dot(m + (long)r * RowBytes, actGgml, nb); }
+            void PassProto2() { byte* m = mats[cur]; cur = (cur + 1) % copies; int nb = K / 256; for (int r = 0; r + 1 < rows; r += 2) { Q4KProto2.Dot2(m + (long)r * RowBytes, m + (long)(r + 1) * RowBytes, actGgml, nb, out float a, out float b); outBuf[r] = a; outBuf[r + 1] = b; } }
+            void PassA() { byte* m = mats[cur]; cur = (cur + 1) % copies; int nb = K / 256; for (int r = 0; r < rows; r++) outBuf[r] = Q4KProto3.DotA(m + (long)r * RowBytes, actGgml, nb); }
+            void PassB() { byte* m = mats[cur]; cur = (cur + 1) % copies; int nb = K / 256; for (int r = 0; r < rows; r++) outBuf[r] = Q4KProto3.DotB(m + (long)r * RowBytes, actGgml, nb); }
+            void PassAB() { byte* m = mats[cur]; cur = (cur + 1) % copies; int nb = K / 256; for (int r = 0; r < rows; r++) outBuf[r] = Q4KProto3.DotAB(m + (long)r * RowBytes, actGgml, nb); }
+            void PassR() { byte* m = mats[cur]; cur = (cur + 1) % copies; Q4KProto3.Rows(m, rows, RowBytes, actGgml, K / 256, outBuf); }
+            void PassRA() { byte* m = mats[cur]; cur = (cur + 1) % copies; Q4KProto3.RowsA(m, rows, RowBytes, actGgml, K / 256, outBuf); }
+            void PassRAB() { byte* m = mats[cur]; cur = (cur + 1) % copies; Q4KProto3.RowsAB(m, rows, RowBytes, actGgml, K / 256, outBuf); }
             void PassGgml() { byte* m = mats[cur]; cur = (cur + 1) % copies; for (int r = 0; r < rows; r++) vecDot(K, outBuf + r, 0, m + (long)r * RowBytes, 0, actGgml, 0, 1); }
 
-            foreach (var (name, pass) in new (string, Action)[] { ("ours 1-row", PassOurs1), ("ours 2-row", PassOurs2), ("proto (ggml-style)", PassProto), ("ggml vec_dot", PassGgml) })
+            foreach (var (name, pass) in new (string, Action)[] { ("ours 1-row", PassOurs1), ("ours 2-row", PassOurs2), ("proto (ggml-style)", PassProto), ("proto 2-row", PassProto2), ("A 2acc", PassA),("B batchHalf", PassB), ("AB", PassAB), ("R rows-in", PassR), ("RA", PassRA), ("RAB", PassRAB),("ggml vec_dot", PassGgml) })
             {
                 cur = 0;
                 double nsRow = Run1(pass, rows);

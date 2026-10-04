@@ -172,7 +172,7 @@ internal static class RepackedGemm
     }
 
     private static float HalfToFloat(byte lo, byte hi) =>
-        (float)BitConverter.UInt16BitsToHalf((ushort)(lo | (hi << 8)));
+        HalfConv.ToFloat((ushort)(lo | (hi << 8)));
 
     // Forward packing copies row `row`'s 8-byte span [group8*8, group8*8+8) as a unit (i = group8*8 + row),
     // so a given source byte index within the row lands at the same within-group offset in the destination.

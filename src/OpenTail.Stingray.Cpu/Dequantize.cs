@@ -1268,6 +1268,6 @@ public static class Dequantize
     private static float HalfToFloat(byte lo, byte hi)
     {
         ushort bits = (ushort)(lo | (hi << 8));
-        return (float)BitConverter.UInt16BitsToHalf(bits);
+        return HalfConv.ToFloat(bits);
     }
 }

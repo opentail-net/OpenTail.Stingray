@@ -370,8 +370,8 @@ internal static class RealAvx2Gemm
 
             for (int col = 0; col < 8; col++)
             {
-                colScaleArr[col] = (float)BitConverter.UInt16BitsToHalf((ushort)(d16[col * 2] | (d16[col * 2 + 1] << 8)));
-                colDminArr[col] = (float)BitConverter.UInt16BitsToHalf((ushort)(dmin16[col * 2] | (dmin16[col * 2 + 1] << 8)));
+                colScaleArr[col] = HalfConv.ToFloat((ushort)(d16[col * 2] | (d16[col * 2 + 1] << 8)));
+                colDminArr[col] = HalfConv.ToFloat((ushort)(dmin16[col * 2] | (dmin16[col * 2 + 1] << 8)));
             }
             var colScale = Vector256.Create(colScaleArr[0], colScaleArr[1], colScaleArr[2], colScaleArr[3], colScaleArr[4], colScaleArr[5], colScaleArr[6], colScaleArr[7]);
             var colDmin = Vector256.Create(colDminArr[0], colDminArr[1], colDminArr[2], colDminArr[3], colDminArr[4], colDminArr[5], colDminArr[6], colDminArr[7]);

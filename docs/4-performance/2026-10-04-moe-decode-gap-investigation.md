@@ -106,3 +106,95 @@ The prototype is about 2x faster than our current kernel and within 1.25-1.7x of
 
 ### Measurement contamination (probable, not proven)
 At 21:3x a process named `OpenTail.Stingray.Tests.Diffusion` (not started by this work; 21,100 CPU-seconds, 17.7 GB working set) was running on the same machine. The MoE benchmarks in this note therefore ran next to other heavy work at least part of the time. That plausibly explains the session-to-session drift (llama.cpp read 25, then 18.8, then 13.6 t/s on the same model), the unreproduced 12 t/s result this morning, and the low-memory kill of the Hunyuan run. Before quoting any ratio from these notes, re-measure on a machine with nothing else running.
+
+## 9. Parity research on the Q4_K prototype: the gap was an un-inlined `Half` call (2026-10-04, night)
+Method: `DOTNET_JitDisasm` (with `TieredCompilation=0`, `TieredPGO=0`, `ReadyToRun=0`) on `Q4KProto.Dot`, compared against ggml's `ggml_vec_dot_q4_K_q8_K` AVX2 source (`examples/audio.cpp/external/ggml/src/ggml-cpu/arch/x86/quants.c`). Findings from the listing:
+- The `j < 4` loop was already fully unrolled, no spills in the loop, shuffle masks already memory operands. The structural suspects (unroll, masks, register pressure) were not the problem.
+- **Both `(float)BitConverter.UInt16BitsToHalf(..)` conversions compiled to real `call System.Half:op_Explicit(System.Half):float` inside the per-block loop**, not inlined. On Windows x64 only the low 128 bits of xmm6-15 survive a call, so the JIT also split and re-inserted the upper halves of the live ymm accumulators (`vextractf128`/`vinsertf128`) around each call, and the method grew a 7-register xmm save/restore frame.
+- Fix in the prototype: convert d and dmin together with integer ops (`pmovzxwd`, mask/shift sign and magnitude into float position, multiply by 2^112; exact for zeros, subnormals and normals, not for inf/NaN, which are not valid scales). Plus pointer increments instead of `imul` indexing and an explicit ggml-order horizontal sum.
+
+| ns/row, one thread, same window | before | after | ggml vec_dot |
+|---|---|---|---|
+| L1 (18 KB) | 81 | 56 | 50 |
+| L2 (295 KB) | 81 | 54 | 50 |
+| L3 (4.7 MB) | 82 | 54 | 50-51 |
+| DRAM (75 MB) | 91 | 65 | 61-62 |
+| shared-expert shape | 91 | 65 | 61 |
+
+Prototype is now **1.05-1.10x of ggml** (it was 1.6x; our production Q8_KS kernel is 2.6-3.6x). Checksums equal ggml's on every cell where the rows are the same. ggml's number includes an unmanaged function-pointer call per row.
+
+**The same defect is in the production kernels.** `SimdKernels.HalfToFloat` is `(float)BitConverter.UInt16BitsToHalf(bits)`, and the JIT listing of `DotQ4K_Q8KS_Avx2` shows two `Half.op_Explicit` calls per block, `DotQ4K_Q8KS_2Row_Avx2` four. Experiment (reverted, not applied): replacing the body of `HalfToFloat` with the bit-trick above took `ours 1-row` from 181 to 144 ns/row with bit-identical checksums, and the 2-row from 175 to 144 (L1). So about 20% of our per-row time is this call, and it presumably affects every kernel that routes scales through `HalfToFloat` (and the 8 other `UInt16BitsToHalf` sites in Cpu/). It is not the whole gap: the Q8_KS kernel structure (per-32 float scales, scalar scale unpack) is still ~2.7x slower than the prototype after the fix.
+
+Two-row prototype (`Q4KProto2.cs`, shared activation work, bit-identical to the 1-row prototype): **slower per row** (69 vs 56 ns at L1, 110 vs 65 at DRAM), one stack spill in the loop, not spill-bound by the listing. Our existing 2-row kernel also degrades at DRAM (228 vs 191), so both 2-row shapes lose where the weights stream. Not explained; do not build on 2-row.
+
+Remaining gap to ggml, about 4 ns/row (~2 cycles per super-block): the half conversion is still ~10 vector/scalar instructions against ggml's single `vcvtph2ps` (.NET exposes no F16C class), plus the per-row call prologue. Untried: converting d/dmin for all 8 blocks in one pass, a rows-inside-the-kernel API to amortise the prologue, two integer accumulators.
+
+### 9b. Variations on the remaining ~4 ns/row (2026-10-05): none helps, the ceiling is reached
+`Q4KProto3.cs` (flags specialised per call site, per-row results bit-identical to the baseline prototype; checksums equal on every cell). ns/row, one thread, median of two full runs:
+
+| Variant | L1 | L2 | DRAM | shared-expert shape |
+|---|---|---|---|---|
+| baseline prototype | 56 | 54 | 65 | 64 |
+| A: two integer accumulators | 56 | 54 | 65 | 65 |
+| R: row loop inside the kernel (one prologue per matrix) | 56 | 54 | 65 | 65 |
+| R+A | 56 | 55 | 66 | 66 |
+| B: d/dmin of 8 blocks converted in one vector pass | 62 | 62 | 78 | 78 |
+| AB / RAB | 62 | 61 | 76-77 | 76-78 |
+| 2-row, shared activation work | 56 | 57 | **114** | **114** |
+| ggml `vec_dot` | 50 | 50 | 61-63 | 61-63 |
+
+- A and R are exactly neutral: the out-of-order core already overlaps the integer chains, and a ~20-instruction prologue per 8-block row is noise. B is worse (+6 to +12 ns): staging 8 words through the stack and re-loading costs more than the ~10 scalar/vector instructions per block it saves.
+- The 2-row kernel ties in cache but is ~75% slower when the weights stream from DRAM (same signature as our production 2-row kernel). Not explained; do not build on it.
+- A trap worth recording: an earlier version of these variants ran 12-30 ns SLOWER only because a `for (j < 4)` loop with a computed `Vector256.Create(mask)` is not unrolled by RyuJIT, so the masks are rebuilt every iteration. The four chunks must be written out through an `AggressiveInlining` helper taking constant masks (`Q4KProto3.Chunk`); that is what the 2-row figures above use. The first 2-row numbers in section 9 (69/110) had this flaw.
+- Remaining gap: 4-6 ns/row in cache (~1.1x), 3-4 ns at DRAM (~1.05x), where multi-thread decode actually lives. Candidate causes that .NET cannot remove: no `vcvtph2ps` (F16C is not exposed), and the JIT's choice of instruction order versus clang's.
+
+## 10. The `Half` call fix applied engine-wide, and what is left per dtype (2026-10-05)
+**Change (applied, uncommitted):** new `src/OpenTail.Stingray.Cpu/HalfConv.cs` (`HalfConv.ToFloat`, integer re-bias by 2^112, bit-identical to the `Half` cast for all 65536 bit patterns, NaNs quieted as `vcvtph2ps` does). Routed through it: `SimdKernels.HalfToFloat` (about 100 call sites: Q4_0/Q8_0/IQ4_NL, Q2_K-Q6_K, every IQ type), `Dequantize.HalfToFloat`, `RepackedGemm.HalfToFloat`, and the direct casts in `RealAvx2Gemm`, `Q6KPrefillGemm`, `BonsaiQuant`. `MicroGemmQ4K` already had its own branchy converter and was left alone. `HalfConvTests` checks every pattern against the cast (the first version of the helper failed it on signalling NaNs). Fast suite: 1032 total, 0 failed, 10 skipped.
+
+**Measured per dtype** with the new `dtype-matvec` mode (`DtypeBench.cs`: `SimdKernels.MatVec`, 63 rows/call so no scheduler, cols 8192, ~48 MB pool rotated past the L3, one thread, median). Checksums are bit-identical before and after for all 14 dtypes.
+
+| dtype | before ns/row | after | change | ggml ns/row | ours / ggml |
+|---|---|---|---|---|---|
+| Q8_0 | 1162 | 664-701 | -40% | 394 | 1.7x |
+| Q4_0 | 1215 | 903 | -26% | 360 | 2.5x |
+| Q2_K | 605 | 475-484 | -21% | 278 | 1.7x |
+| Q3_K | 625 | 551-559 | -11% | 356 | 1.5x |
+| Q4_K | 1015 | 896-907 | -11% | 325 | 2.8x |
+| Q5_K | 1177 | 1065-1074 | -9% | 387 | 2.7x |
+| IQ4_XS | 710 | 641-643 | -10% | 398 | 1.6x |
+| IQ3_S | 1399 | 1270-1277 | -9% | 908 | 1.4x |
+| IQ2_XXS | 1548 | 1436-1440 | -7% | 615 | 2.3x |
+| IQ2_XS | 1032 | 969-978 | -6% | 626 | 1.5x |
+| IQ2_S | 1194 | 1121-1130 | -6% | 520 | 2.2x |
+| IQ3_XXS | 1508 | 1464-1468 | -3% | 722 | 2.0x |
+| Q6_K | 642 | 578-678 | noise | 408 | 1.4x |
+| IQ4_NL | 6147 | ~7000 | noise (scalar loop) | 355 | **19.7x** |
+
+The gain is bigger the cheaper the per-block arithmetic is (Q8_0, Q4_0): the call is a fixed cost per 32-element block. ggml column: its own activation quantiser per call plus its own `vec_dot` per row on the same weight bytes, from the vendored `ggml-cpu-haswell.dll`.
+
+**What is left, by kind**
+- *Numerically free* (our and ggml's checksums agree to 3 decimals, same activation format, so any speed-up is pure engineering): Q2_K 1.7x, Q3_K 1.5x, Q6_K 1.4x, IQ4_XS 1.6x, IQ2_XS 1.5x, IQ2_S 2.2x, IQ2_XXS 2.3x, IQ3_XXS 2.0x, IQ3_S 1.4x, Q8_0 1.7x. The JIT listings of the Q8_0/Q2_K/Q3_K/Q6_K dots no longer contain any `Half` call.
+- *Outlier*: `DotIq4Nl_Q8_0` is a scalar C# loop (27 ns/block against ~3 for Q4_0). An AVX2 version with a pshufb codebook lookup and maddubs is integer arithmetic and would be bit-exact.
+- *Policy*: Q4_K/Q5_K (Q8_KS activation, see section 8) and Q4_0 (`DotQ4_0` dots against the raw F32 activation, which is more accurate than ggml's Q8_0 activation and 2.5x slower; the Q8_0 and IQ4_NL paths already use a Q8_0 activation).
+
+## 11. IQ4_NL vectorised, IQ-family kernels brought to ggml's structure (2026-10-05)
+Same bench as section 10 (`dtype-matvec`), one thread, `TieredCompilation=0` for the before/after columns (production tiered mode measured 5-10% faster again on every row, ratios unchanged). Checksums are identical to 3 decimals before/after for all 14 dtypes; the Fast suite passes (1036 total, 0 failed, 10 skipped), including `SimdKernelsIqQ8KTests` (AVX2 vs scalar per IQ kernel) and the new `Iq4NlDotAvx2Tests`, `HalfConvTests`.
+
+| dtype | start of session (ns/row) | now | ggml | ours / ggml now | what changed |
+|---|---|---|---|---|---|
+| IQ4_NL | 6147 | 683 | 356 | 1.9x | scalar loop replaced by AVX2 (pshufb codebook lookup, `abs`/`sign` + maddubs, two accumulators); integer part exact, float order now ggml's |
+| IQ2_XXS | 1548 | 725 | 622 | 1.17x | ggml's `keven_signs_q2xs` table (one 64-bit load + `sign_epi8` per 8 elements instead of 4 scalar lookups + shuffle/cmpeq/xor/sub), pinned grid, 2 groups/step, 2 accumulators |
+| IQ3_XXS | 1508 | 919 | 725 | 1.27x | same |
+| IQ2_XS | 1032 | 772 | 624 | 1.24x | same, plus ggml's per-block `scales16` vector with a shuffle-mask increment instead of per-group scalar broadcasts |
+| IQ2_S | 1194 | 763 | 521 | 1.47x | pinned grid, 2 groups/step, 2 accumulators, `scales16`, sign masks hoisted out of the loop |
+| IQ3_S | 1399 | 1283 | 907 | 1.41x | sign masks hoisted, 2 groups/step, 2 accumulators |
+| Q2_K | 605 | 483 | 279 | 1.73x | `Q2KHalf` helper: the 2-iteration loop was not unrolled and reloaded its 4 static shuffle masks (behind a class-init check) every pass |
+| Q8_0 / Q3_K / Q6_K / IQ4_XS | 1162 / 625 / 642 / 710 | 674 / 587 / 605 / 653 | 393 / 355 / 407 / 397 | 1.7 / 1.65 / 1.5 / 1.65x | only the `HalfConv` fix (section 10) |
+| Q4_0 / Q4_K / Q5_K | 1215 / 1015 / 1177 | 910 / 840 / 1062 | 362 / 326 / 388 | 2.5 / 2.6 / 2.7x | only the `HalfConv` fix; the rest is the activation-format policy (section 10) |
+
+**Things that were tried and rejected**
+- A branch-free arithmetic patch for half inf/NaN in `HalfConv`: slower than the predictable test + out-of-line call it replaced (Q8_0 746 vs 664 ns/row). Dropping the special case entirely would gain only 5-10% more.
+- A 65536-entry float table for the conversion (ggml's own fallback): Q8_0 -13%, IQ4_NL -15%, 0-5% elsewhere, but it adds a 256 KB table, a static the JIT cannot fold under `TieredCompilation=0` (Q6_K got 35% slower in that mode) and would need class-init checks under NativeAOT. Not adopted; revisit only if the cheap 32-element formats matter more than robustness.
+- Per-kernel micro-tuning past this point (IQ4_XS, Q3_K, Q6_K, Q8_0) is a few percent each: the listings show instruction count (scalar half conversion ~13 instructions against ggml's one `vcvtph2ps`, address arithmetic) rather than structure.
+
+**Method note (reusable):** read the JIT listing of the hot kernel before changing anything and look for (1) `call`s inside the loop, (2) static-field loads behind `test byte ptr [reloc], 1` class-init checks inside the loop, (3) loops RyuJIT does not unroll whose bodies need constant masks, (4) managed-array lookups with bounds checks (use `fixed`), and (5) scalar-to-vector scale broadcasts that ggml does once per block as a vector.

@@ -148,7 +148,7 @@ public static unsafe class Q6KPrefillGemm
                 {
                     byte* x = row + b * BlockBytes;
                     var scales128 = Vector128.LoadUnsafe(ref *(x + 192)).AsSByte();
-                    float dw = (float)BitConverter.UInt16BitsToHalf((ushort)(x[208] | (x[209] << 8)));
+                    float dw = HalfConv.ToFloat((ushort)(x[208] | (x[209] << 8)));
                     long qb = qsOff + (long)b * 256;
 
                     // ---- half 0: groups 0-7 (scales 0-7) ----

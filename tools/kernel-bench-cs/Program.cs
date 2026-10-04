@@ -6,6 +6,7 @@ return args.Length > 0 && args[0] == "sgemm" ? SgemmBench.Run(args[1..])
     : args.Length > 0 && args[0] == "sgemm-sweep" ? SgemmBench.Sweep(args[1..])
     : args.Length > 0 && args[0] == "q4k-m1" ? SgemmBench.Q4KM1(args[1..])
     : args.Length > 0 && args[0] == "q4k-dot" ? Q4KDotBench.Run(args[1..])
+    : args.Length > 0 && args[0] == "dtype-matvec" ? DtypeBench.Run(args[1..])
     : KernelBench.Run(args);
 
 internal static unsafe class KernelBench

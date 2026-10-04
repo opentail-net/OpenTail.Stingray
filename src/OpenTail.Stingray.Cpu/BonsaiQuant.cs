@@ -63,7 +63,7 @@ public static unsafe class BonsaiQuant
         for (long b = 0; b < elementCount / BlockElements; b++)
         {
             UnpackBlock(dtype, src + b * stride, codes, out ushort sb);
-            float d = (float)BitConverter.UInt16BitsToHalf(sb);
+            float d = HalfConv.ToFloat(sb);
             float* y = dst + b * BlockElements;
             for (int j = 0; j < BlockElements; j++) y[j] = (codes[j] - 1) * d;
         }

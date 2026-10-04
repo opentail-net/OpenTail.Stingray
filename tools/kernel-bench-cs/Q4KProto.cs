@@ -10,21 +10,27 @@ using System.Runtime.Intrinsics.X86;
 /// </summary>
 internal static unsafe class Q4KProto
 {
+    private const float HalfRescale = 5.192296858534828e33f;   // 2^112
+
     [MethodImpl(MethodImplOptions.AggressiveOptimization)]
     public static float Dot(byte* row, byte* y, int numBlocks)
     {
         var m4 = Vector256.Create((byte)0x0F);
         Vector256<float> acc = Vector256<float>.Zero;
         Vector128<float> accM = Vector128<float>.Zero;
-        for (int i = 0; i < numBlocks; i++)
+        for (int i = 0; i < numBlocks; i++, row += 144, y += 292)
         {
-            byte* x = row + i * 144;
-            byte* yb = y + i * 292;
+            byte* x = row;
+            byte* yb = y;
             float yd = *(float*)yb;
             sbyte* q8 = (sbyte*)(yb + 4);
             short* bsums = (short*)(yb + 260);
-            float d = yd * (float)BitConverter.UInt16BitsToHalf(*(ushort*)x);
-            float dmin = -yd * (float)BitConverter.UInt16BitsToHalf(*(ushort*)(x + 2));
+            // d, dmin as halves -> floats, both lanes at once, without Half.op_Explicit (which the JIT left as an un-inlined call here). Widen, move sign/exponent/mantissa
+            // into float position, and rescale by 2^112 so zeros and subnormals come out exact (inf/NaN halves are not valid scales and are not handled).
+            var hh = Sse41.ConvertToVector128Int32(Vector128.CreateScalarUnsafe(*(uint*)x).AsUInt16());
+            var dd = Sse.Multiply(Sse2.Or(Sse2.ShiftLeftLogical(Sse2.And(hh, Vector128.Create(0x8000)), 16), Sse2.ShiftLeftLogical(Sse2.And(hh, Vector128.Create(0x7fff)), 13)).AsSingle(), Vector128.Create(HalfRescale));
+            float d = yd * dd.ToScalar();
+            float dmin = -yd * dd.GetElement(1);
 
             uint u0 = *(uint*)(x + 4), u1 = *(uint*)(x + 8), u2 = *(uint*)(x + 12);
             uint t3 = ((u2 >> 4) & 0x0f0f0f0fu) | (((u1 >> 6) & 0x03030303u) << 4);
@@ -71,8 +77,13 @@ internal static unsafe class Q4KProto
             acc = Fma.MultiplyAdd(Vector256.Create(d), Avx.ConvertToVector256Single(sumi), acc);
         }
         // horizontal sums: mins term (4 lanes) + main accumulator (8 lanes)
-        float m = Vector128.Sum(accM);
-        return Vector256.Sum(acc) + m;
+        // same reduction order as ggml: hsum_float_8(acc) + (accM lanes 0+2, then +1+3)
+        var h = Sse.Add(acc.GetLower(), acc.GetUpper());
+        h = Sse.Add(h, Sse.MoveHighToLow(h, h));
+        h = Sse.AddScalar(h, Sse3.MoveHighAndDuplicate(h));
+        accM = Sse.Add(accM, Sse.MoveHighToLow(accM, accM));
+        accM = Sse.AddScalar(accM, Sse3.MoveHighAndDuplicate(accM));
+        return Sse.AddScalar(h, accM).ToScalar();
     }
 }
 

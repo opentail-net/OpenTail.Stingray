@@ -2354,8 +2354,8 @@ public static unsafe class SimdKernels
         for (int b = 0; b < numBlocks; b++)
         {
             byte* x = row + b * 176;
-            float d = HalfToFloat(x[0], x[1]);
-            float dmin = HalfToFloat(x[2], x[3]);
+            float d = HalfConv.ToFloat(x);
+            float dmin = HalfConv.ToFloat(x + 2);
             byte* sc = x + 4;
             byte* qh = x + 16;
             byte* ql = x + 48;
@@ -2460,8 +2460,8 @@ public static unsafe class SimdKernels
         for (int b = 0; b < numBlocks; b++)
         {
             byte* x = row + b * 144;
-            float d = HalfToFloat(x[0], x[1]);
-            float dmin = HalfToFloat(x[2], x[3]);
+            float d = HalfConv.ToFloat(x);
+            float dmin = HalfConv.ToFloat(x + 2);
             byte* sc = x + 4;
             byte* qs = x + 16;
 
@@ -2556,8 +2556,8 @@ public static unsafe class SimdKernels
         for (int b = 0; b < numBlocks; b++)
         {
             byte* x = row + b * 144;
-            float d = HalfToFloat(x[0], x[1]);
-            float dmin = HalfToFloat(x[2], x[3]);
+            float d = HalfConv.ToFloat(x);
+            float dmin = HalfConv.ToFloat(x + 2);
             byte* sc = x + 4;
             byte* qs = x + 16;
 
@@ -2651,8 +2651,8 @@ public static unsafe class SimdKernels
         for (int b = 0; b < numBlocks; b++)
         {
             byte* x = row + b * 176;
-            float d = HalfToFloat(x[0], x[1]);
-            float dmin = HalfToFloat(x[2], x[3]);
+            float d = HalfConv.ToFloat(x);
+            float dmin = HalfConv.ToFloat(x + 2);
             byte* sc = x + 4;
             byte* qh = x + 16;
             byte* ql = x + 48;
@@ -3023,8 +3023,8 @@ public static unsafe class SimdKernels
         for (int b = 0; b < numBlocks; b++)
         {
             byte* x = row + b * 144;
-            float d = HalfToFloat(x[0], x[1]);
-            float dmin = HalfToFloat(x[2], x[3]);
+            float d = HalfConv.ToFloat(x);
+            float dmin = HalfConv.ToFloat(x + 2);
             byte* sc = x + 4;
             byte* qs = x + 16;
 
@@ -3100,10 +3100,10 @@ public static unsafe class SimdKernels
         {
             byte* x0 = row0 + b * 144;
             byte* x1 = row1 + b * 144;
-            float d0 = HalfToFloat(x0[0], x0[1]);
-            float dmin0 = HalfToFloat(x0[2], x0[3]);
-            float d1v = HalfToFloat(x1[0], x1[1]);
-            float dmin1 = HalfToFloat(x1[2], x1[3]);
+            float d0 = HalfConv.ToFloat(x0);
+            float dmin0 = HalfConv.ToFloat(x0 + 2);
+            float d1v = HalfConv.ToFloat(x1);
+            float dmin1 = HalfConv.ToFloat(x1 + 2);
             byte* sc0 = x0 + 4; byte* qs0 = x0 + 16;
             byte* sc1 = x1 + 4; byte* qs1 = x1 + 16;
 
@@ -3198,8 +3198,8 @@ public static unsafe class SimdKernels
         for (int b = 0; b < numBlocks; b++)
         {
             byte* x = row + b * 144;
-            float d = HalfToFloat(x[0], x[1]);
-            float dmin = HalfToFloat(x[2], x[3]);
+            float d = HalfConv.ToFloat(x);
+            float dmin = HalfConv.ToFloat(x + 2);
             byte* sc = x + 4;
             byte* qs = x + 16;
 
@@ -3284,8 +3284,8 @@ public static unsafe class SimdKernels
         for (int b = 0; b < numBlocks; b++)
         {
             byte* x = row + b * 144;
-            float d = HalfToFloat(x[0], x[1]);
-            float dmin = HalfToFloat(x[2], x[3]);
+            float d = HalfConv.ToFloat(x);
+            float dmin = HalfConv.ToFloat(x + 2);
             byte* sc = x + 4;
             byte* qs = x + 16;
 
@@ -3348,8 +3348,8 @@ public static unsafe class SimdKernels
         for (int b = 0; b < numBlocks; b++)
         {
             byte* x = row + b * 144;
-            float d = HalfToFloat(x[0], x[1]);
-            float dmin = HalfToFloat(x[2], x[3]);
+            float d = HalfConv.ToFloat(x);
+            float dmin = HalfConv.ToFloat(x + 2);
             byte* sc = x + 4;
             byte* qs = x + 16;
             int qIdx = 0, scIdx = 0;
@@ -3428,8 +3428,8 @@ public static unsafe class SimdKernels
         for (int b = 0; b < numBlocks; b++)
         {
             byte* x = row + b * 176;
-            float d = HalfToFloat(x[0], x[1]) * dArr[b];
-            float dmin = HalfToFloat(x[2], x[3]) * dArr[b];
+            float d = HalfConv.ToFloat(x) * dArr[b];
+            float dmin = HalfConv.ToFloat(x + 2) * dArr[b];
             byte* scalesMins = x + 4;
             byte* qh = x + 16;
             byte* ql = x + 48;
@@ -3493,8 +3493,8 @@ public static unsafe class SimdKernels
         for (int b = 0; b < numBlocks; b++)
         {
             byte* x = row + b * 176;
-            float d = HalfToFloat(x[0], x[1]) * dArr[b];
-            float dmin = HalfToFloat(x[2], x[3]) * dArr[b];
+            float d = HalfConv.ToFloat(x) * dArr[b];
+            float dmin = HalfConv.ToFloat(x + 2) * dArr[b];
             byte* scalesMins = x + 4;
             byte* qh = x + 16;
             byte* ql = x + 48;
@@ -3658,8 +3658,8 @@ public static unsafe class SimdKernels
         for (int b = 0; b < numBlocks; b++)
         {
             byte* x = row + b * 176;
-            float d = HalfToFloat(x[0], x[1]);
-            float dmin = HalfToFloat(x[2], x[3]);
+            float d = HalfConv.ToFloat(x);
+            float dmin = HalfConv.ToFloat(x + 2);
             byte* sc = x + 4;
             byte* qh = x + 16;
             byte* ql = x + 48;
@@ -3737,8 +3737,8 @@ public static unsafe class SimdKernels
         for (int b = 0; b < numBlocks; b++)
         {
             byte* x = row + b * 176;
-            float d = HalfToFloat(x[0], x[1]);
-            float dmin = HalfToFloat(x[2], x[3]);
+            float d = HalfConv.ToFloat(x);
+            float dmin = HalfConv.ToFloat(x + 2);
             byte* sc = x + 4;
             byte* qh = x + 16;
             byte* ql = x + 48;
@@ -3807,8 +3807,8 @@ public static unsafe class SimdKernels
         for (int b = 0; b < numBlocks; b++)
         {
             byte* x = row + b * 176;
-            float d = HalfToFloat(x[0], x[1]);
-            float dmin = HalfToFloat(x[2], x[3]);
+            float d = HalfConv.ToFloat(x);
+            float dmin = HalfConv.ToFloat(x + 2);
             byte* sc = x + 4;
             byte* qh = x + 16;
             byte* ql = x + 48;
@@ -4081,8 +4081,8 @@ public static unsafe class SimdKernels
         for (int b = 0; b < numBlocks; b++)
         {
             byte* blk = row + b * 20;
-            float dW = HalfToFloat(blk[0], blk[1]);
-            float mW = HalfToFloat(blk[2], blk[3]);
+            float dW = HalfConv.ToFloat(blk);
+            float mW = HalfConv.ToFloat(blk + 2);
             byte* qsPacked = blk + 4;
 
             byte* q8Chunk = scratch + b * 40;
@@ -4114,8 +4114,8 @@ public static unsafe class SimdKernels
         for (int b = 0; b < numBlocks; b++)
         {
             byte* blk = row + b * 20;
-            float dW = HalfToFloat(blk[0], blk[1]);
-            float mW = HalfToFloat(blk[2], blk[3]);
+            float dW = HalfConv.ToFloat(blk);
+            float mW = HalfConv.ToFloat(blk + 2);
             byte* qs = blk + 4;
 
             byte* q8Chunk = scratch + b * 40;
@@ -4181,8 +4181,8 @@ public static unsafe class SimdKernels
         for (int b = 0; b < numBlocks; b++)
         {
             byte* blk = row + b * 24;
-            float dW = HalfToFloat(blk[0], blk[1]);
-            float mW = HalfToFloat(blk[2], blk[3]);
+            float dW = HalfConv.ToFloat(blk);
+            float mW = HalfConv.ToFloat(blk + 2);
             uint qh = (uint)(blk[4] | (blk[5] << 8) | (blk[6] << 16) | (blk[7] << 24));
             byte* qs = blk + 8;
 
@@ -4221,8 +4221,8 @@ public static unsafe class SimdKernels
         for (int b = 0; b < numBlocks; b++)
         {
             byte* blk = row + b * 24;
-            float dW = HalfToFloat(blk[0], blk[1]);
-            float mW = HalfToFloat(blk[2], blk[3]);
+            float dW = HalfConv.ToFloat(blk);
+            float mW = HalfConv.ToFloat(blk + 2);
             uint qh = (uint)(blk[4] | (blk[5] << 8) | (blk[6] << 16) | (blk[7] << 24));
             byte* qs = blk + 8;
 
@@ -4567,7 +4567,7 @@ public static unsafe class SimdKernels
             byte* wb = row + b * 18;
             byte* sb = scratch + b * 36;
 
-            float d4 = HalfToFloat(wb[0], wb[1]);
+            float d4 = HalfConv.ToFloat(wb);
             float d8 = *(float*)sb;
 
             var packed = Sse2.LoadVector128(wb + 2);
@@ -4613,7 +4613,7 @@ public static unsafe class SimdKernels
         {
             byte* wb = row + b * 18;
             byte* sb = scratch + b * 36;
-            float d4 = HalfToFloat(wb[0], wb[1]);
+            float d4 = HalfConv.ToFloat(wb);
             float d8 = *(float*)sb;
             byte* qs = wb + 2;
             sbyte* q8 = (sbyte*)(sb + 4);
@@ -4644,6 +4644,50 @@ public static unsafe class SimdKernels
 
     public static float DotIq4Nl_Q8_0(byte* row, byte* scratch, int cols)
     {
+        if (Avx2.IsSupported && Fma.IsSupported && cols >= 64) return DotIq4Nl_Q8_0_Avx2(row, scratch, cols / 32);
+        return DotIq4Nl_Q8_0_Scalar(row, scratch, cols);
+    }
+
+    private static readonly Vector128<sbyte> s_iq4NlValues = Vector128.Create(
+        (sbyte)-127, -104, -83, -65, -49, -35, -22, -10, 1, 13, 25, 38, 53, 69, 89, 113);
+
+    /// <summary>
+    /// AVX2 IQ4_NL · Q8_0 row dot, ggml's <c>ggml_vec_dot_iq4_nl_q8_0</c> structure: the 16 packed nibble bytes of a block are split into low/high halves, each
+    /// looked up in the 16-entry codebook with one pshufb, then |w| x sign(a, w) through maddubs + madd(1), one FMA per block, two accumulators over alternating
+    /// blocks. The integer part is exact (a pair sum is at most 2 x 127 x 127 = 32258, so maddubs cannot saturate); only the float accumulation order differs from
+    /// the scalar kernel, and it now equals ggml's.
+    /// </summary>
+    internal static float DotIq4Nl_Q8_0_Avx2(byte* row, byte* scratch, int numBlocks)
+    {
+        var values = s_iq4NlValues;
+        var m4 = Vector128.Create((byte)0x0F);
+        var ones16 = Vector256.Create((short)1);
+        var acc0 = Vector256<float>.Zero;
+        var acc1 = Vector256<float>.Zero;
+        int b = 0;
+        for (; b + 1 < numBlocks; b += 2)
+        {
+            byte* wb0 = row + b * 18, wb1 = wb0 + 18;
+            byte* sb0 = scratch + b * 36, sb1 = sb0 + 36;
+            var qb0 = Sse2.LoadVector128(wb0 + 2);
+            var qb1 = Sse2.LoadVector128(wb1 + 2);
+            var w0 = Vector256.Create(Ssse3.Shuffle(values, Sse2.And(qb0, m4).AsSByte()), Ssse3.Shuffle(values, Sse2.And(Sse2.ShiftRightLogical(qb0.AsUInt16(), 4).AsByte(), m4).AsSByte()));
+            var w1 = Vector256.Create(Ssse3.Shuffle(values, Sse2.And(qb1, m4).AsSByte()), Ssse3.Shuffle(values, Sse2.And(Sse2.ShiftRightLogical(qb1.AsUInt16(), 4).AsByte(), m4).AsSByte()));
+            var a0 = Avx.LoadVector256((sbyte*)(sb0 + 4));
+            var a1 = Avx.LoadVector256((sbyte*)(sb1 + 4));
+            var p0 = Avx2.MultiplyAddAdjacent(Avx2.MultiplyAddAdjacent(Avx2.Abs(w0), Avx2.Sign(a0, w0)), ones16);
+            var p1 = Avx2.MultiplyAddAdjacent(Avx2.MultiplyAddAdjacent(Avx2.Abs(w1), Avx2.Sign(a1, w1)), ones16);
+            acc0 = Fma.MultiplyAdd(Vector256.Create(HalfConv.ToFloat(wb0) * *(float*)sb0), Avx.ConvertToVector256Single(p0), acc0);
+            acc1 = Fma.MultiplyAdd(Vector256.Create(HalfConv.ToFloat(wb1) * *(float*)sb1), Avx.ConvertToVector256Single(p1), acc1);
+        }
+        float sum = HSum256(Avx.Add(acc0, acc1));
+        if (b < numBlocks) sum += DotIq4Nl_Q8_0_Scalar(row + b * 18, scratch + b * 36, 32);
+        return sum;
+    }
+
+    /// <summary>Scalar reference (and non-AVX2 fallback) for <see cref="DotIq4Nl_Q8_0"/>.</summary>
+    internal static float DotIq4Nl_Q8_0_Scalar(byte* row, byte* scratch, int cols)
+    {
         int numBlocks = cols / 32;
         float acc = 0f;
         fixed (sbyte* cb = s_iq4NlCodebook)
@@ -4652,7 +4696,7 @@ public static unsafe class SimdKernels
             {
                 byte* wb = row + b * 18;
                 byte* sb = scratch + b * 36;
-                float d4 = HalfToFloat(wb[0], wb[1]);
+                float d4 = HalfConv.ToFloat(wb);
                 float d8 = *(float*)sb;
                 byte* qs = wb + 2;
                 sbyte* q8 = (sbyte*)(sb + 4);
@@ -4707,6 +4751,31 @@ public static unsafe class SimdKernels
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static Vector256<short> IqSignedMaddubs(ulong g0, ulong g1, ulong g2, ulong g3, uint signs4, sbyte* q8) =>
         IqSignedMaddubs(Vector256.Create(g0, g1, g2, g3).AsByte(), signs4, q8);
+    /// <summary>
+    /// The 8 packed scale bytes of an IQ2_XS / IQ2_S block as 16 int16 lanes of <c>2 * nibble + 1</c> (lanes 0-7: low nibbles of bytes 0-7, lanes 8-15: high nibbles),
+    /// ggml's <c>scales16</c>. A per-group <c>Shuffle</c> with <see cref="IqScaleLaneStep"/> steps then broadcasts lane k of each 128-bit half.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static Vector256<short> IqScales16(byte* s)
+    {
+        ulong aux = *(ulong*)s;
+        var v = Sse2.And(Vector128.Create(aux, aux >> 4).AsByte(), Vector128.Create((byte)0x0F));
+        v = Sse2.Add(Sse2.ShiftLeftLogical(v.AsUInt16(), 1).AsByte(), Vector128.Create((byte)1));
+        return Avx2.ConvertToVector256Int16(v.AsSByte());
+    }
+
+    /// <summary>Shuffle-mask increment that moves the broadcast lane of <see cref="IqScales16"/> by one.</summary>
+    private const ushort IqScaleLaneStep = 0x0202;
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static Vector256<short> IqSignedMaddubs(Vector256<byte> grid, uint signs4, sbyte* q8, Vector256<byte> signShuffle, Vector256<byte> signBits)
+    {
+        var bits = Avx2.And(Avx2.Shuffle(Vector256.Create(signs4).AsByte(), signShuffle), signBits);
+        var neg = Avx2.CompareEqual(bits, signBits);
+        var q8s = Avx2.Subtract(Avx2.Xor(Avx.LoadVector256((byte*)q8), neg), neg).AsSByte();
+        return Avx2.MultiplyAddAdjacent(grid, q8s);
+    }
+
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static Vector256<short> IqSignedMaddubs(Vector256<byte> grid, uint signs4, sbyte* q8)
@@ -4800,7 +4869,7 @@ public static unsafe class SimdKernels
             for (int ibl = 0; ibl < nb; ibl++)
             {
                 byte* blk = row + ibl * 136;
-                float d4d8 = HalfToFloat(blk[0], blk[1]) * dArr[ibl];
+                float d4d8 = HalfConv.ToFloat(blk) * dArr[ibl];
                 int h = blk[2] | (blk[3] << 8);
                 byte* scalesL = blk + 4;
                 byte* qs = blk + 8;
@@ -4862,7 +4931,7 @@ public static unsafe class SimdKernels
         for (int ibl = 0; ibl < nb; ibl++)
         {
             byte* blk = row + ibl * 136;
-            float dSuper = HalfToFloat(blk[0], blk[1]) * dArr[ibl];
+            float dSuper = HalfConv.ToFloat(blk) * dArr[ibl];
             int h = blk[2] | (blk[3] << 8);
             byte* scalesL = blk + 4;
             byte* qs = blk + 8;
@@ -4938,52 +5007,54 @@ public static unsafe class SimdKernels
     }
 
     /// <summary>
-    /// AVX2 path for IQ2_XS. ggml's own AVX2 kernel uses a memory-aliasing "store the grid
-    /// index vector, reload as scalar uint16s" gather trick that is not a safe pattern to port
-    /// 1:1 into managed code, and IQ2_XS's 512-entry grid is too large for a single
-    /// <c>Ssse3.Shuffle</c> table lookup the way IQ4_XS's 16-entry codebook worked. Instead:
-    /// the unavoidable per-index grid+sign lookups stay scalar (gathered into a 32-byte signed
-    /// buffer, matching Q8_K's per-superblock element order exactly), then the sign/multiply/
-    /// reduce arithmetic is vectorized with the same abs/sign maddubs trick as
-    /// <see cref="DotIq4Xs_Q8K_Avx2"/> and <see cref="DotQ8_0_Q8_0_Avx2"/>. AVX2's maddubs/madd
-    /// operate independently per 128-bit lane, which conveniently matches this format's
-    /// 16+16-element ls1/ls2 split with no extra shuffling needed.
+    /// IQ2_XS · Q8_K with the table-based sign application of <see cref="DotIq2Xxs_Q8K_Avx2"/> (the 7-bit sign index is the top of each 16-bit quant) and two
+    /// integer accumulators. Bit-identical to the previous shuffle/cmpeq version.
     /// </summary>
     private static float DotIq2Xs_Q8K_Avx2(byte* row, byte* scratch, int cols)
     {
         int nb = cols / 256;
         float* dArr = (float*)scratch;
         sbyte* qsArr = (sbyte*)(scratch + nb * 4);
-        var grid = IqCodebooks.Iq2XsGrid;
-        var ksigns = IqCodebooks.KSignsIq2Xs;
-        var kmask = IqCodebooks.KMaskIq2Xs;
         var accum = Vector256<float>.Zero;
-        sbyte* gbuf = stackalloc sbyte[32];
+        var laneStep = Vector256.Create(IqScaleLaneStep).AsUInt16();
 
-        for (int i = 0; i < nb; i++)
+        fixed (ulong* grid = IqCodebooks.Iq2XsGrid)
+        fixed (ulong* signs64 = IqCodebooks.KevenSigns64)
         {
-            byte* blk = row + i * 74;
-            float d = HalfToFloat(blk[0], blk[1]) * dArr[i];
-            byte* qsBytes = blk + 2;
-            byte* scales = blk + 66;
-            sbyte* q8 = qsArr + i * 256;
-            var sumi = Vector256<int>.Zero;
-
-            for (int ib32 = 0; ib32 < 8; ib32++)
+            for (int i = 0; i < nb; i++)
             {
-                int ls1 = 2 * (scales[ib32] & 0xF) + 1;
-                int ls2 = 2 * (scales[ib32] >> 4) + 1;
+                byte* blk = row + i * 74;
+                float d = HalfConv.ToFloat(blk) * dArr[i];
+                ushort* qv = (ushort*)(blk + 2);
+                byte* scales = blk + 66;
+                sbyte* q8 = qsArr + i * 256;
+                var sumi1 = Vector256<int>.Zero;
+                var sumi2 = Vector256<int>.Zero;
+                var sc16 = IqScales16(scales).AsByte();
+                var shuf = Vector256.Create((ushort)0x0100).AsByte();
 
-                ushort* qv = (ushort*)(qsBytes + ib32 * 8);
-                uint signs4 = ksigns[qv[0] >> 9] | (uint)ksigns[qv[1] >> 9] << 8 | (uint)ksigns[qv[2] >> 9] << 16 | (uint)ksigns[qv[3] >> 9] << 24;
-                var p16 = IqSignedMaddubs(grid[qv[0] & 511], grid[qv[1] & 511], grid[qv[2] & 511], grid[qv[3] & 511],
-                    signs4, q8 + ib32 * 32);
-                var scalesVec = Vector256.Create(Vector128.Create((short)ls1), Vector128.Create((short)ls2));
-                sumi = Avx2.Add(sumi, Avx2.MultiplyAddAdjacent(p16, scalesVec));
+                for (int ib32 = 0; ib32 < 8; ib32 += 2)
+                {
+                    var q8a = Avx.LoadVector256(q8);
+                    var q8b = Avx.LoadVector256(q8 + 32);
+                    q8 += 64;
+                    var g1 = Vector256.Create(grid[qv[0] & 511], grid[qv[1] & 511], grid[qv[2] & 511], grid[qv[3] & 511]).AsByte();
+                    var g2 = Vector256.Create(grid[qv[4] & 511], grid[qv[5] & 511], grid[qv[6] & 511], grid[qv[7] & 511]).AsByte();
+                    var s1 = Vector256.Create(signs64[qv[0] >> 9], signs64[qv[1] >> 9], signs64[qv[2] >> 9], signs64[qv[3] >> 9]).AsSByte();
+                    var s2 = Vector256.Create(signs64[qv[4] >> 9], signs64[qv[5] >> 9], signs64[qv[6] >> 9], signs64[qv[7] >> 9]).AsSByte();
+                    qv += 8;
+                    var dot1 = Avx2.MultiplyAddAdjacent(g1, Avx2.Sign(q8a, s1));
+                    var dot2 = Avx2.MultiplyAddAdjacent(g2, Avx2.Sign(q8b, s2));
+                    var sv1 = Avx2.Shuffle(sc16, shuf).AsInt16();
+                    shuf = Avx2.Add(shuf.AsUInt16(), laneStep).AsByte();
+                    var sv2 = Avx2.Shuffle(sc16, shuf).AsInt16();
+                    shuf = Avx2.Add(shuf.AsUInt16(), laneStep).AsByte();
+                    sumi1 = Avx2.Add(sumi1, Avx2.MultiplyAddAdjacent(dot1, sv1));
+                    sumi2 = Avx2.Add(sumi2, Avx2.MultiplyAddAdjacent(dot2, sv2));
+                }
+
+                accum = Fma.MultiplyAdd(Vector256.Create(d), Avx.ConvertToVector256Single(Avx2.Add(sumi1, sumi2)), accum);
             }
-
-            var total = Avx.ConvertToVector256Single(sumi);
-            accum = Fma.MultiplyAdd(Vector256.Create(d), total, accum);
         }
         return 0.125f * HSum256(accum);
     }
@@ -5002,7 +5073,7 @@ public static unsafe class SimdKernels
         for (int i = 0; i < nb; i++)
         {
             byte* blk = row + i * 74;
-            float d = HalfToFloat(blk[0], blk[1]) * dArr[i];
+            float d = HalfConv.ToFloat(blk) * dArr[i];
             byte* qsBytes = blk + 2;
             byte* scales = blk + 66;
             sbyte* q8 = qsArr + i * 256;
@@ -5058,44 +5129,54 @@ public static unsafe class SimdKernels
     /// <summary>AVX2 path for IQ2_S — same design as <see cref="DotIq2Xs_Q8K_Avx2"/> (scalar
     /// gather into a signed 32-byte buffer, then vectorized abs/sign maddubs+madd), adapted for
     /// this format's qh-bit grid indexing and raw (non-ksigns-indexed) sign bytes.</summary>
+    /// <summary>
+    /// IQ2_S · Q8_K in ggml's structure: pinned grid (no bounds checks), two 32-element groups per step, two integer accumulators (exact, so order is free).
+    /// Signs keep the shuffle/and/cmpeq scheme ggml itself uses for this format. Bit-identical to the previous one-group version.
+    /// </summary>
     private static float DotIq2S_Q8K_Avx2(byte* row, byte* scratch, int cols)
     {
         int nb = cols / 256;
         float* dArr = (float*)scratch;
         sbyte* qsArr = (sbyte*)(scratch + nb * 4);
-        var grid = IqCodebooks.Iq2SGrid;
-        var kmask = IqCodebooks.KMaskIq2Xs;
         var accum = Vector256<float>.Zero;
-        sbyte* gbuf = stackalloc sbyte[32];
+        var laneStep = Vector256.Create(IqScaleLaneStep).AsUInt16();
+        var signShuf = s_iqSignShuffle;
+        var signBits = s_iqSignBits;
 
-        for (int i = 0; i < nb; i++)
+        fixed (ulong* grid = IqCodebooks.Iq2SGrid)
         {
-            byte* blk = row + i * 82;
-            float d = HalfToFloat(blk[0], blk[1]) * dArr[i];
-            byte* qsLow = blk + 2;
-            byte* signs = blk + 34;
-            byte* qh = blk + 66;
-            byte* scales = blk + 74;
-            sbyte* q8 = qsArr + i * 256;
-            var sumi = Vector256<int>.Zero;
-
-            for (int ib32 = 0; ib32 < 8; ib32++)
+            for (int i = 0; i < nb; i++)
             {
-                int ls1 = 1 + 2 * (scales[ib32] & 0xF);
-                int ls2 = 1 + 2 * (scales[ib32] >> 4);
-                int baseOff = ib32 * 4;
+                byte* blk = row + i * 82;
+                float d = HalfConv.ToFloat(blk) * dArr[i];
+                byte* ql = blk + 2;
+                byte* signs = blk + 34;
+                byte* qh = blk + 66;
+                byte* scales = blk + 74;
+                sbyte* q8 = qsArr + i * 256;
+                var sumi1 = Vector256<int>.Zero;
+                var sumi2 = Vector256<int>.Zero;
+                var sc16 = IqScales16(scales).AsByte();
+                var shuf = Vector256.Create((ushort)0x0100).AsByte();
 
-                byte* ql = qsLow + baseOff;
-                int h = qh[ib32];
-                var p16 = IqSignedMaddubs(grid[ql[0] | ((h << 8) & 0x300)], grid[ql[1] | ((h << 6) & 0x300)],
-                    grid[ql[2] | ((h << 4) & 0x300)], grid[ql[3] | ((h << 2) & 0x300)],
-                    *(uint*)(signs + baseOff), q8 + ib32 * 32);
-                var scalesVec = Vector256.Create(Vector128.Create((short)ls1), Vector128.Create((short)ls2));
-                sumi = Avx2.Add(sumi, Avx2.MultiplyAddAdjacent(p16, scalesVec));
+                for (int ib32 = 0; ib32 < 8; ib32 += 2)
+                {
+                    int h0 = qh[ib32], h1 = qh[ib32 + 1];
+                    var g1 = Vector256.Create(grid[ql[0] | ((h0 << 8) & 0x300)], grid[ql[1] | ((h0 << 6) & 0x300)], grid[ql[2] | ((h0 << 4) & 0x300)], grid[ql[3] | ((h0 << 2) & 0x300)]).AsByte();
+                    var g2 = Vector256.Create(grid[ql[4] | ((h1 << 8) & 0x300)], grid[ql[5] | ((h1 << 6) & 0x300)], grid[ql[6] | ((h1 << 4) & 0x300)], grid[ql[7] | ((h1 << 2) & 0x300)]).AsByte();
+                    var p1 = IqSignedMaddubs(g1, *(uint*)signs, q8, signShuf, signBits);
+                    var p2 = IqSignedMaddubs(g2, *(uint*)(signs + 4), q8 + 32, signShuf, signBits);
+                    ql += 8; signs += 8; q8 += 64;
+                    var sv1 = Avx2.Shuffle(sc16, shuf).AsInt16();
+                    shuf = Avx2.Add(shuf.AsUInt16(), laneStep).AsByte();
+                    var sv2 = Avx2.Shuffle(sc16, shuf).AsInt16();
+                    shuf = Avx2.Add(shuf.AsUInt16(), laneStep).AsByte();
+                    sumi1 = Avx2.Add(sumi1, Avx2.MultiplyAddAdjacent(p1, sv1));
+                    sumi2 = Avx2.Add(sumi2, Avx2.MultiplyAddAdjacent(p2, sv2));
+                }
+
+                accum = Fma.MultiplyAdd(Vector256.Create(d), Avx.ConvertToVector256Single(Avx2.Add(sumi1, sumi2)), accum);
             }
-
-            var total = Avx.ConvertToVector256Single(sumi);
-            accum = Fma.MultiplyAdd(Vector256.Create(d), total, accum);
         }
         return 0.125f * HSum256(accum);
     }
@@ -5113,7 +5194,7 @@ public static unsafe class SimdKernels
         for (int i = 0; i < nb; i++)
         {
             byte* blk = row + i * 82;
-            float d = HalfToFloat(blk[0], blk[1]) * dArr[i];
+            float d = HalfConv.ToFloat(blk) * dArr[i];
             byte* qsLow = blk + 2;
             byte* signs = blk + 34;
             byte* qh = blk + 66;
@@ -5167,45 +5248,50 @@ public static unsafe class SimdKernels
 
     /// <summary>AVX2 path for IQ3_XXS — same design as <see cref="DotIq2Xs_Q8K_Avx2"/>, but this
     /// format has only one scale per 32-element group (like IQ4_XS) instead of a 16+16 split.</summary>
+    /// <summary>
+    /// ggml's <c>ggml_vec_dot_iq3_xxs_q8_K</c> structure (see <see cref="DotIq2Xxs_Q8K_Avx2"/>): 8 uint32 grid lookups per 32 elements, signs by one 64-bit
+    /// <c>keven_signs_q2xs</c> load per 8 elements and <c>sign_epi8</c>, two integer accumulators. Bit-identical to the previous shuffle/cmpeq version.
+    /// </summary>
     private static float DotIq3Xxs_Q8K_Avx2(byte* row, byte* scratch, int cols)
     {
         int nb = cols / 256;
         float* dArr = (float*)scratch;
         sbyte* qsArr = (sbyte*)(scratch + nb * 4);
-        var grid = IqCodebooks.Iq3XxsGrid;
-        var ksigns = IqCodebooks.KSignsIq2Xs;
-        var kmask = IqCodebooks.KMaskIq2Xs;
         var accum = Vector256<float>.Zero;
-        sbyte* gbuf = stackalloc sbyte[32];
 
-        for (int i = 0; i < nb; i++)
+        fixed (uint* grid = IqCodebooks.Iq3XxsGrid)
+        fixed (ulong* signs64 = IqCodebooks.KevenSigns64)
         {
-            byte* blk = row + i * 98;
-            float d = HalfToFloat(blk[0], blk[1]) * dArr[i];
-            byte* q3 = blk + 2;
-            byte* gas = blk + 2 + 64;
-            sbyte* q8 = qsArr + i * 256;
-            var sumi = Vector256<int>.Zero;
-
-            for (int ib32 = 0; ib32 < 8; ib32++)
+            for (int i = 0; i < nb; i++)
             {
-                int gOff = ib32 * 4;
-                uint aux32 = (uint)(gas[gOff] | (gas[gOff + 1] << 8) | (gas[gOff + 2] << 16) | (gas[gOff + 3] << 24));
-                int ls = (int)(2 * (aux32 >> 28) + 1);
-                int qOff = ib32 * 8;
+                byte* blk = row + i * 98;
+                float d = HalfConv.ToFloat(blk) * dArr[i];
+                byte* q3 = blk + 2;
+                uint* gas = (uint*)(blk + 66);
+                sbyte* q8 = qsArr + i * 256;
+                var sumi1 = Vector256<int>.Zero;
+                var sumi2 = Vector256<int>.Zero;
 
-                byte* qq = q3 + qOff;
-                uint signs4 = ksigns[(int)(aux32 & 127)] | (uint)ksigns[(int)((aux32 >> 7) & 127)] << 8
-                    | (uint)ksigns[(int)((aux32 >> 14) & 127)] << 16 | (uint)ksigns[(int)((aux32 >> 21) & 127)] << 24;
-                var p16 = IqSignedMaddubs(
-                    grid[qq[0]] | (ulong)grid[qq[1]] << 32, grid[qq[2]] | (ulong)grid[qq[3]] << 32,
-                    grid[qq[4]] | (ulong)grid[qq[5]] << 32, grid[qq[6]] | (ulong)grid[qq[7]] << 32,
-                    signs4, q8 + ib32 * 32);
-                sumi = Avx2.Add(sumi, Avx2.MultiplyAddAdjacent(p16, Vector256.Create((short)ls)));
+                for (int ib32 = 0; ib32 < 8; ib32 += 2)
+                {
+                    var q8a = Avx.LoadVector256(q8);
+                    var q8b = Avx.LoadVector256(q8 + 32);
+                    q8 += 64;
+                    var g1 = Vector256.Create(grid[q3[0]], grid[q3[1]], grid[q3[2]], grid[q3[3]], grid[q3[4]], grid[q3[5]], grid[q3[6]], grid[q3[7]]).AsByte();
+                    var g2 = Vector256.Create(grid[q3[8]], grid[q3[9]], grid[q3[10]], grid[q3[11]], grid[q3[12]], grid[q3[13]], grid[q3[14]], grid[q3[15]]).AsByte();
+                    q3 += 16;
+                    uint a0 = gas[0], a1 = gas[1];
+                    gas += 2;
+                    var s1 = Vector256.Create(signs64[a0 & 127], signs64[(a0 >> 7) & 127], signs64[(a0 >> 14) & 127], signs64[(a0 >> 21) & 127]).AsSByte();
+                    var s2 = Vector256.Create(signs64[a1 & 127], signs64[(a1 >> 7) & 127], signs64[(a1 >> 14) & 127], signs64[(a1 >> 21) & 127]).AsSByte();
+                    var dot1 = Avx2.MultiplyAddAdjacent(g1, Avx2.Sign(q8a, s1));
+                    var dot2 = Avx2.MultiplyAddAdjacent(g2, Avx2.Sign(q8b, s2));
+                    sumi1 = Avx2.Add(sumi1, Avx2.MultiplyAddAdjacent(dot1, Vector256.Create((short)(2 * (a0 >> 28) + 1))));
+                    sumi2 = Avx2.Add(sumi2, Avx2.MultiplyAddAdjacent(dot2, Vector256.Create((short)(2 * (a1 >> 28) + 1))));
+                }
+
+                accum = Fma.MultiplyAdd(Vector256.Create(d), Avx.ConvertToVector256Single(Avx2.Add(sumi1, sumi2)), accum);
             }
-
-            var total = Avx.ConvertToVector256Single(sumi);
-            accum = Fma.MultiplyAdd(Vector256.Create(d), total, accum);
         }
         return 0.25f * HSum256(accum);
     }
@@ -5224,7 +5310,7 @@ public static unsafe class SimdKernels
         for (int i = 0; i < nb; i++)
         {
             byte* blk = row + i * 98;
-            float d = HalfToFloat(blk[0], blk[1]) * dArr[i];
+            float d = HalfConv.ToFloat(blk) * dArr[i];
             byte* q3 = blk + 2;
             byte* gas = blk + 2 + 64;
             sbyte* q8 = qsArr + i * 256;
@@ -5281,41 +5367,48 @@ public static unsafe class SimdKernels
         return DotIq2Xxs_Q8K_Scalar(row, scratch, cols);
     }
 
+    /// <summary>
+    /// ggml's <c>ggml_vec_dot_iq2_xxs_q8_K</c> structure: two 32-element groups per step, signs applied by one 64-bit <c>keven_signs_q2xs</c> load per 8 elements and
+    /// <c>sign_epi8</c> on the activations, two integer accumulators (integer sums are exact, so order is free). Bit-identical to the previous shuffle/cmpeq version.
+    /// </summary>
     private static float DotIq2Xxs_Q8K_Avx2(byte* row, byte* scratch, int cols)
     {
         int nb = cols / 256;
         float* dArr = (float*)scratch;
         sbyte* qsArr = (sbyte*)(scratch + nb * 4);
-        var grid = IqCodebooks.Iq2XxsGrid;
-        var ksigns = IqCodebooks.KSignsIq2Xs;
-        var kmask = IqCodebooks.KMaskIq2Xs;
         var accum = Vector256<float>.Zero;
-        sbyte* gbuf = stackalloc sbyte[32];
 
-        for (int i = 0; i < nb; i++)
+        fixed (ulong* grid = IqCodebooks.Iq2XxsGrid)
+        fixed (ulong* signs64 = IqCodebooks.KevenSigns64)
         {
-            byte* blk = row + i * 66;
-            float d = HalfToFloat(blk[0], blk[1]) * dArr[i];
-            byte* qs = blk + 2;
-            sbyte* q8 = qsArr + i * 256;
-            var sumi = Vector256<int>.Zero;
-
-            for (int ib32 = 0; ib32 < 8; ib32++)
+            for (int i = 0; i < nb; i++)
             {
-                int off = ib32 * 8;
-                uint aux0 = (uint)(qs[off] | (qs[off + 1] << 8) | (qs[off + 2] << 16) | (qs[off + 3] << 24));
-                uint aux1 = (uint)(qs[off + 4] | (qs[off + 5] << 8) | (qs[off + 6] << 16) | (qs[off + 7] << 24));
-                int ls = (int)(2 * (aux1 >> 28) + 1);
+                byte* blk = row + i * 66;
+                float d = HalfConv.ToFloat(blk) * dArr[i];
+                uint* q2 = (uint*)(blk + 2);
+                sbyte* q8 = qsArr + i * 256;
+                var sumi1 = Vector256<int>.Zero;
+                var sumi2 = Vector256<int>.Zero;
 
-                uint signs4 = ksigns[(int)(aux1 & 127)] | (uint)ksigns[(int)((aux1 >> 7) & 127)] << 8
-                    | (uint)ksigns[(int)((aux1 >> 14) & 127)] << 16 | (uint)ksigns[(int)((aux1 >> 21) & 127)] << 24;
-                var p16 = IqSignedMaddubs(grid[(byte)aux0], grid[(byte)(aux0 >> 8)], grid[(byte)(aux0 >> 16)], grid[(byte)(aux0 >> 24)],
-                    signs4, q8 + ib32 * 32);
-                sumi = Avx2.Add(sumi, Avx2.MultiplyAddAdjacent(p16, Vector256.Create((short)ls)));
+                for (int ib32 = 0; ib32 < 8; ib32 += 2)
+                {
+                    var q8a = Avx.LoadVector256(q8);
+                    var q8b = Avx.LoadVector256(q8 + 32);
+                    q8 += 64;
+                    uint a0 = q2[0], a1 = q2[1], a2 = q2[2], a3 = q2[3];
+                    q2 += 4;
+                    var g1 = Vector256.Create(grid[(byte)a0], grid[(byte)(a0 >> 8)], grid[(byte)(a0 >> 16)], grid[a0 >> 24]).AsByte();
+                    var g2 = Vector256.Create(grid[(byte)a2], grid[(byte)(a2 >> 8)], grid[(byte)(a2 >> 16)], grid[a2 >> 24]).AsByte();
+                    var s1 = Vector256.Create(signs64[a1 & 127], signs64[(a1 >> 7) & 127], signs64[(a1 >> 14) & 127], signs64[(a1 >> 21) & 127]).AsSByte();
+                    var s2 = Vector256.Create(signs64[a3 & 127], signs64[(a3 >> 7) & 127], signs64[(a3 >> 14) & 127], signs64[(a3 >> 21) & 127]).AsSByte();
+                    var dot1 = Avx2.MultiplyAddAdjacent(g1, Avx2.Sign(q8a, s1));
+                    var dot2 = Avx2.MultiplyAddAdjacent(g2, Avx2.Sign(q8b, s2));
+                    sumi1 = Avx2.Add(sumi1, Avx2.MultiplyAddAdjacent(dot1, Vector256.Create((short)(2 * (a1 >> 28) + 1))));
+                    sumi2 = Avx2.Add(sumi2, Avx2.MultiplyAddAdjacent(dot2, Vector256.Create((short)(2 * (a3 >> 28) + 1))));
+                }
+
+                accum = Fma.MultiplyAdd(Vector256.Create(d), Avx.ConvertToVector256Single(Avx2.Add(sumi1, sumi2)), accum);
             }
-
-            var total = Avx.ConvertToVector256Single(sumi);
-            accum = Fma.MultiplyAdd(Vector256.Create(d), total, accum);
         }
         return 0.125f * HSum256(accum);
     }
@@ -5334,7 +5427,7 @@ public static unsafe class SimdKernels
         for (int i = 0; i < nb; i++)
         {
             byte* blk = row + i * 66;
-            float d = HalfToFloat(blk[0], blk[1]) * dArr[i];
+            float d = HalfConv.ToFloat(blk) * dArr[i];
             byte* qs = blk + 2;
             sbyte* q8 = qsArr + i * 256;
             int bsum = 0;
@@ -5383,35 +5476,46 @@ public static unsafe class SimdKernels
         sbyte* qsArr = (sbyte*)(scratch + nb * 4);
         var idxShift = Vector256.Create(8u, 7u, 6u, 5u, 4u, 3u, 2u, 1u);
         var idxMask = Vector256.Create(256u);
-        uint* idx = stackalloc uint[8];
+        uint* idx = stackalloc uint[16];
         var accum = Vector256<float>.Zero;
+        var signShuf = s_iqSignShuffle;
+        var signBits = s_iqSignBits;
 
         fixed (uint* grid = IqCodebooks.Iq3SGrid)
         {
             for (int i = 0; i < nb; i++)
             {
                 byte* blk = row + i * 110;
-                float d = HalfToFloat(blk[0], blk[1]) * dArr[i];
+                float d = HalfConv.ToFloat(blk) * dArr[i];
                 byte* qs = blk + 2;
                 byte* qh = blk + 2 + 64;
                 byte* signs = blk + 2 + 64 + 8;
                 byte* scales = blk + 2 + 64 + 8 + 32;
                 sbyte* q8 = qsArr + i * 256;
-                var sumiAcc = Vector256<int>.Zero;
+                var sumi1 = Vector256<int>.Zero;
+                var sumi2 = Vector256<int>.Zero;
 
-                for (int ib32 = 0; ib32 < 8; ib32++)
+                for (int ib32 = 0; ib32 < 8; ib32 += 2)
                 {
-                    int ls = 2 * ((scales[ib32 >> 1] >> (4 * (ib32 & 1))) & 0xF) + 1;
-                    var lo = Avx2.ConvertToVector256Int32(qs + ib32 * 8).AsUInt32();
-                    var hi = Avx2.And(Avx2.ShiftLeftLogicalVariable(Vector256.Create((uint)qh[ib32]), idxShift), idxMask);
-                    Avx.Store(idx, Avx2.Or(lo, hi));
-                    var g = Vector256.Create(grid[idx[0]], grid[idx[1]], grid[idx[2]], grid[idx[3]],
+                    int sc = scales[ib32 >> 1];
+                    int ls1 = 2 * (sc & 0xF) + 1, ls2 = 2 * (sc >> 4) + 1;
+                    var lo1 = Avx2.ConvertToVector256Int32(qs + ib32 * 8).AsUInt32();
+                    var lo2 = Avx2.ConvertToVector256Int32(qs + ib32 * 8 + 8).AsUInt32();
+                    var hi1 = Avx2.And(Avx2.ShiftLeftLogicalVariable(Vector256.Create((uint)qh[ib32]), idxShift), idxMask);
+                    var hi2 = Avx2.And(Avx2.ShiftLeftLogicalVariable(Vector256.Create((uint)qh[ib32 + 1]), idxShift), idxMask);
+                    Avx.Store(idx, Avx2.Or(lo1, hi1));
+                    var g1 = Vector256.Create(grid[idx[0]], grid[idx[1]], grid[idx[2]], grid[idx[3]],
                         grid[idx[4]], grid[idx[5]], grid[idx[6]], grid[idx[7]]).AsByte();
-                    var p16 = IqSignedMaddubs(g, *(uint*)(signs + ib32 * 4), q8 + ib32 * 32);
-                    sumiAcc = Avx2.Add(sumiAcc, Avx2.MultiplyAddAdjacent(p16, Vector256.Create((short)ls)));
+                    Avx.Store(idx + 8, Avx2.Or(lo2, hi2));
+                    var g2 = Vector256.Create(grid[idx[8]], grid[idx[9]], grid[idx[10]], grid[idx[11]],
+                        grid[idx[12]], grid[idx[13]], grid[idx[14]], grid[idx[15]]).AsByte();
+                    var p1 = IqSignedMaddubs(g1, *(uint*)(signs + ib32 * 4), q8 + ib32 * 32, signShuf, signBits);
+                    var p2 = IqSignedMaddubs(g2, *(uint*)(signs + ib32 * 4 + 4), q8 + ib32 * 32 + 32, signShuf, signBits);
+                    sumi1 = Avx2.Add(sumi1, Avx2.MultiplyAddAdjacent(p1, Vector256.Create((short)ls1)));
+                    sumi2 = Avx2.Add(sumi2, Avx2.MultiplyAddAdjacent(p2, Vector256.Create((short)ls2)));
                 }
 
-                accum = Fma.MultiplyAdd(Vector256.Create(d), Avx.ConvertToVector256Single(sumiAcc), accum);
+                accum = Fma.MultiplyAdd(Vector256.Create(d), Avx.ConvertToVector256Single(Avx2.Add(sumi1, sumi2)), accum);
             }
         }
         return HSum256(accum); // ggml_vec_dot_iq3_s_q8_K: *s = sumf (no 0.25, unlike IQ3_XXS)
@@ -5430,7 +5534,7 @@ public static unsafe class SimdKernels
         for (int i = 0; i < nb; i++)
         {
             byte* blk = row + i * 110;
-            float d = HalfToFloat(blk[0], blk[1]) * dArr[i];
+            float d = HalfConv.ToFloat(blk) * dArr[i];
             byte* qs = blk + 2;
             byte* qh = blk + 2 + 64;
             byte* signs = blk + 2 + 64 + 8;
@@ -5510,7 +5614,7 @@ public static unsafe class SimdKernels
         for (int i = 0; i < nb; i++)
         {
             byte* blk = row + i * 50;
-            float dW = HalfToFloat(blk[0], blk[1]);
+            float dW = HalfConv.ToFloat(blk);
             byte* qs = blk + 2;
             byte* qh = blk + 34;
             sbyte* q8 = qsArr + i * 256;
@@ -5565,7 +5669,7 @@ public static unsafe class SimdKernels
         for (int i = 0; i < nb; i++)
         {
             byte* blk = row + i * 50;
-            float dW = HalfToFloat(blk[0], blk[1]);
+            float dW = HalfConv.ToFloat(blk);
             byte* qs = blk + 2;
             byte* qh = blk + 34;
             sbyte* q8 = qsArr + i * 256;
@@ -5730,7 +5834,7 @@ public static unsafe class SimdKernels
         {
             byte* blk = row + i * 66;
             byte* qs = blk;
-            float dW = HalfToFloat(blk[64], blk[65]) * dArr[i];
+            float dW = HalfConv.ToFloat(blk + 64) * dArr[i];
             sbyte* q8 = qsArr + i * 256;
 
             var sumiVec = Vector256<int>.Zero;
@@ -5770,7 +5874,7 @@ public static unsafe class SimdKernels
         {
             byte* blk = row + i * 66;
             byte* qs = blk;
-            float dW = HalfToFloat(blk[64], blk[65]);
+            float dW = HalfConv.ToFloat(blk + 64);
             sbyte* q8 = qsArr + i * 256;
             float dA = dArr[i];
 
@@ -5815,7 +5919,7 @@ public static unsafe class SimdKernels
             byte* blk = row + i * 54;
             byte* qs = blk;
             byte* qh = blk + 48;
-            float dW = HalfToFloat(blk[52], blk[53]);
+            float dW = HalfConv.ToFloat(blk + 52);
             sbyte* q8 = qsArr + i * 256;
             float dA = dArr[i];
 
@@ -5934,7 +6038,7 @@ public static unsafe class SimdKernels
         {
             byte* blk = row + b * 22;
             byte* q8Chunk = scratch + b * 36;
-            float dW = HalfToFloat(blk[0], blk[1]);
+            float dW = HalfConv.ToFloat(blk);
             float d = dW * *(float*)q8Chunk;
 
             // Low 16 bytes: low nibbles (weights 0..15); high 16 bytes: high nibbles (16..31).
@@ -5979,7 +6083,7 @@ public static unsafe class SimdKernels
         for (int b = 0; b < numBlocks; b++)
         {
             byte* blk = row + b * 22;
-            float dW = HalfToFloat(blk[0], blk[1]);
+            float dW = HalfConv.ToFloat(blk);
             var q128 = Sse2.LoadVector128(blk + 6);
             var qx = Vector256.Create(q128, Sse2.ShiftRightLogical(q128.AsUInt16(), 4).AsByte()) & lowMask;
             qx |= Avx2.AndNot(BytesFromBits32(Unsafe.ReadUnaligned<uint>(blk + 2)), hiFill);
@@ -6028,7 +6132,7 @@ public static unsafe class SimdKernels
         for (int b = 0; b < numBlocks; b++)
         {
             byte* blk = row + b * 22;
-            float dW = HalfToFloat(blk[0], blk[1]);
+            float dW = HalfConv.ToFloat(blk);
             uint qh = (uint)(blk[2] | (blk[3] << 8) | (blk[4] << 16) | (blk[5] << 24));
             byte* qs = blk + 6;
             byte* q8Chunk = scratch + b * 36;
@@ -6092,7 +6196,7 @@ public static unsafe class SimdKernels
         for (int b = 0; b < numBlocks; b++)
         {
             byte* blk = row + b * 18;
-            float dW = HalfToFloat(blk[0], blk[1]);
+            float dW = HalfConv.ToFloat(blk);
             byte* mask = blk + 2;
 
             for (int c = 0; c < 4; c++)
@@ -6129,7 +6233,7 @@ public static unsafe class SimdKernels
         for (int b = 0; b < numBlocks; b++)
         {
             byte* blk = row + b * 18;
-            float dW = HalfToFloat(blk[0], blk[1]);
+            float dW = HalfConv.ToFloat(blk);
             byte* mask = blk + 2;
 
             for (int c = 0; c < 4; c++)
@@ -6190,7 +6294,7 @@ public static unsafe class SimdKernels
         for (int b = 0; b < numBlocks; b++)
         {
             byte* blk = row + b * 18;
-            float dW = HalfToFloat(blk[0], blk[1]);
+            float dW = HalfConv.ToFloat(blk);
             byte* qs = blk + 2;
 
             for (int c = 0; c < 2; c++)
@@ -6228,7 +6332,7 @@ public static unsafe class SimdKernels
         for (int b = 0; b < numBlocks; b++)
         {
             byte* blk = row + b * 18;
-            float dW = HalfToFloat(blk[0], blk[1]);
+            float dW = HalfConv.ToFloat(blk);
             byte* qs = blk + 2;
 
             for (int c = 0; c < 2; c++)
@@ -6425,7 +6529,7 @@ public static unsafe class SimdKernels
         for (int b = 0; b < numBlocks; b++)
         {
             byte* wb = row + b * 18;
-            float d4 = HalfToFloat(wb[0], wb[1]);
+            float d4 = HalfConv.ToFloat(wb);
 
             var packed = Sse2.LoadVector128(wb + 2);
             var lowNib = Sse2.And(packed, nibbleMask);
@@ -6483,7 +6587,7 @@ public static unsafe class SimdKernels
         for (int b = 0; b < numBlocks; b++)
         {
             byte* block = row + b * bytesPerBlock;
-            float d = HalfToFloat(block[0], block[1]);
+            float d = HalfConv.ToFloat(block);
             var dvec = Vector256.Create(d);
             float* inp = input + b * QK;
 
@@ -6531,7 +6635,7 @@ public static unsafe class SimdKernels
         for (int b = 0; b < numBlocks; b++)
         {
             byte* block = row + b * bytesPerBlock;
-            float d = HalfToFloat(block[0], block[1]);
+            float d = HalfConv.ToFloat(block);
             byte* qs = block + 2;
             float* inp = input + b * QK;
             for (int j = 0; j < QK / 2; j++)
@@ -6557,7 +6661,7 @@ public static unsafe class SimdKernels
         for (int b = 0; b < numBlocks; b++)
         {
             byte* block = row + b * bytesPerBlock;
-            float d = HalfToFloat(block[0], block[1]);
+            float d = HalfConv.ToFloat(block);
             var dvec = Vector256.Create(d);
             sbyte* qs = (sbyte*)(block + 2);
             float* inp = input + b * QK;
@@ -6588,7 +6692,7 @@ public static unsafe class SimdKernels
         for (int b = 0; b < numBlocks; b++)
         {
             byte* block = row + b * bytesPerBlock;
-            float d = HalfToFloat(block[0], block[1]);
+            float d = HalfConv.ToFloat(block);
             sbyte* qs = (sbyte*)(block + 2);
             float* inp = input + b * QK;
             float blockSum = 0;
@@ -6629,7 +6733,7 @@ public static unsafe class SimdKernels
         {
             byte* wb = row + b * bytesPerBlock;
             byte* sb = scratch + b * 36; // scratch activation block: fp32 d[4] + qs[32]
-            float d = HalfToFloat(wb[0], wb[1]) * *(float*)sb;
+            float d = HalfConv.ToFloat(wb) * *(float*)sb;
             sbyte* qw = (sbyte*)(wb + 2);
             sbyte* qa = (sbyte*)(sb + 4);
             int isum = 0;
@@ -6655,7 +6759,7 @@ public static unsafe class SimdKernels
         {
             byte* wb = row + b * bytesPerBlock;
             byte* sb = scratch + b * 36;
-            float d = HalfToFloat(wb[0], wb[1]) * *(float*)sb;
+            float d = HalfConv.ToFloat(wb) * *(float*)sb;
 
             var qw = Vector256.LoadUnsafe(ref *(wb + 2)).AsSByte();
             var qa = Vector256.LoadUnsafe(ref *(sb + 4)).AsSByte();
@@ -6690,7 +6794,7 @@ public static unsafe class SimdKernels
         {
             byte* wb = row + b * bytesPerBlock;
             int so = b * 36;
-            float dw = HalfToFloat(wb[0], wb[1]);
+            float dw = HalfConv.ToFloat(wb);
             var qw = Vector256.LoadUnsafe(ref *(wb + 2)).AsSByte();
             var ax = Avx2.Abs(qw);
 
@@ -6724,7 +6828,7 @@ public static unsafe class SimdKernels
         {
             byte* wb = row + b * bytesPerBlock;
             int so = b * 36;
-            float dw = HalfToFloat(wb[0], wb[1]);
+            float dw = HalfConv.ToFloat(wb);
             var qw = Vector256.LoadUnsafe(ref *(wb + 2)).AsSByte();
             var ax = Avx2.Abs(qw);
 
@@ -6797,7 +6901,7 @@ public static unsafe class SimdKernels
         for (int b = 0; b < numBlocks; b++)
         {
             byte* x = row + b * 110;
-            float dAll = HalfToFloat(x[108], x[109]);
+            float dAll = HalfConv.ToFloat(x + 108);
 
             // Unpack scales using aux[] manipulation (matching ggml)
             aux[0] = *(uint*)(x + 96);
@@ -6903,7 +7007,7 @@ public static unsafe class SimdKernels
         for (int b = 0; b < numBlocks; b++)
         {
             byte* x = row + b * 110;
-            float dAll = HalfToFloat(x[108], x[109]);
+            float dAll = HalfConv.ToFloat(x + 108);
 
             aux[0] = *(uint*)(x + 96); aux[1] = *(uint*)(x + 100);
             uint tmp = *(uint*)(x + 104);
@@ -6991,8 +7095,8 @@ public static unsafe class SimdKernels
         for (int b = 0; b < numBlocks; b++)
         {
             byte* x = row + b * 84;
-            float d = HalfToFloat(x[80], x[81]);
-            float min = HalfToFloat(x[82], x[83]);
+            float d = HalfConv.ToFloat(x + 80);
+            float min = HalfConv.ToFloat(x + 82);
             byte* sc = x;       // scales at byte 0
             byte* qs = x + 16;  // qs at byte 16
 
@@ -7058,8 +7162,8 @@ public static unsafe class SimdKernels
         for (int b = 0; b < numBlocks; b++)
         {
             byte* x = row + b * 84;
-            float d = HalfToFloat(x[80], x[81]);
-            float min = HalfToFloat(x[82], x[83]);
+            float d = HalfConv.ToFloat(x + 80);
+            float min = HalfConv.ToFloat(x + 82);
             byte* sc = x;
             byte* qs = x + 16;
 
@@ -7139,8 +7243,8 @@ public static unsafe class SimdKernels
             byte* x = row + b * 84;
             byte* sc = x;       // scales[16]
             byte* q2 = x + 16;  // qs[64]
-            float dw = HalfToFloat(x[80], x[81]);
-            float dminW = HalfToFloat(x[82], x[83]);
+            float dw = HalfConv.ToFloat(x + 80);
+            float dminW = HalfConv.ToFloat(x + 82);
             float dy = dArr[b];
 
             sbyte* q8 = qsArr + b * 256;
@@ -7205,6 +7309,25 @@ public static unsafe class SimdKernels
     /// operation order and lane-parallel accumulation, not just the same formula. See the doc
     /// comment on <see cref="DotQ2K_Q8K_Scalar"/> for why order (not just correctness) matters here.
     /// </summary>
+    /// <summary>One 128-weight half of a Q2_K super-block (ggml's inner <c>j</c> iteration): 4 x 32 two-bit weights against 4 x 32 activations, each product pair scaled by
+    /// its shuffled scale lane. Written out per half, with the shuffle masks as arguments, because RyuJIT does not unroll the 2-iteration loop and then reloads the
+    /// static masks (behind a class-init check) on every pass.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static Vector256<int> Q2KHalf(byte* q2p, sbyte* q8p, Vector256<byte> scaleV, Vector256<byte> m3,
+        Vector256<byte> sh0, Vector256<byte> sh1, Vector256<byte> sh2, Vector256<byte> sh3)
+    {
+        var q2bits = Avx.LoadVector256(q2p);
+        var pw0 = Avx2.MultiplyAddAdjacent(Avx2.And(q2bits, m3), Avx.LoadVector256(q8p));
+        var pw1 = Avx2.MultiplyAddAdjacent(Avx2.And(Avx2.ShiftRightLogical(q2bits.AsUInt16(), 2).AsByte(), m3), Avx.LoadVector256(q8p + 32));
+        var pw2 = Avx2.MultiplyAddAdjacent(Avx2.And(Avx2.ShiftRightLogical(q2bits.AsUInt16(), 4).AsByte(), m3), Avx.LoadVector256(q8p + 64));
+        var pw3 = Avx2.MultiplyAddAdjacent(Avx2.And(Avx2.ShiftRightLogical(q2bits.AsUInt16(), 6).AsByte(), m3), Avx.LoadVector256(q8p + 96));
+        var p0 = Avx2.MultiplyAddAdjacent(Avx2.Shuffle(scaleV, sh0).AsInt16(), pw0);
+        var p1 = Avx2.MultiplyAddAdjacent(Avx2.Shuffle(scaleV, sh1).AsInt16(), pw1);
+        var p2 = Avx2.MultiplyAddAdjacent(Avx2.Shuffle(scaleV, sh2).AsInt16(), pw2);
+        var p3 = Avx2.MultiplyAddAdjacent(Avx2.Shuffle(scaleV, sh3).AsInt16(), pw3);
+        return Avx2.Add(Avx2.Add(p0, p1), Avx2.Add(p2, p3));
+    }
+
     internal static float DotQ2K_Q8K_Avx2(byte* row, byte* scratch, int numBlocks)
     {
         float* dArr = (float*)scratch;
@@ -7214,14 +7337,15 @@ public static unsafe class SimdKernels
         var m3 = Vector256.Create((byte)3);
         var m4 = Vector128.Create((byte)0xF);
         var acc = Vector256<float>.Zero;
+        var sh0 = s_q2kScaleShuffle0; var sh1 = s_q2kScaleShuffle1; var sh2 = s_q2kScaleShuffle2; var sh3 = s_q2kScaleShuffle3;
 
         for (int i = 0; i < numBlocks; i++)
         {
             byte* x = row + i * 84;
             byte* sc = x;       // scales[16]: low nibble = scale, high nibble = min
             byte* q2 = x + 16;  // qs[64]
-            float d = dArr[i] * HalfToFloat(x[80], x[81]);
-            float dmin = -dArr[i] * HalfToFloat(x[82], x[83]);
+            float d = dArr[i] * HalfConv.ToFloat(x + 80);
+            float dmin = -dArr[i] * HalfConv.ToFloat(x + 82);
 
             sbyte* q8 = qsArr + i * 256;
             short* bsums = bsumsArr + i * 16;
@@ -7239,43 +7363,8 @@ public static unsafe class SimdKernels
             var scales0 = Vector256.Create(lScales, lScales).AsByte();
             var scales1 = Vector256.Create(hScales, hScales).AsByte();
 
-            var sumi = Vector256<int>.Zero;
-            byte* q2p = q2;
-            sbyte* q8p = q8;
-
-            for (int j = 0; j < 2; j++)
-            {
-                var q2bits = Vector256.LoadUnsafe(ref *q2p); q2p += 32;
-
-                var q8_0 = Vector256.LoadUnsafe(ref *(byte*)q8p).AsSByte(); q8p += 32;
-                var q8_1 = Vector256.LoadUnsafe(ref *(byte*)q8p).AsSByte(); q8p += 32;
-                var q8_2 = Vector256.LoadUnsafe(ref *(byte*)q8p).AsSByte(); q8p += 32;
-                var q8_3 = Vector256.LoadUnsafe(ref *(byte*)q8p).AsSByte(); q8p += 32;
-
-                var q2_0 = Avx2.And(q2bits, m3);
-                var q2_1 = Avx2.And(Avx2.ShiftRightLogical(q2bits.AsUInt16(), 2).AsByte(), m3);
-                var q2_2 = Avx2.And(Avx2.ShiftRightLogical(q2bits.AsUInt16(), 4).AsByte(), m3);
-                var q2_3 = Avx2.And(Avx2.ShiftRightLogical(q2bits.AsUInt16(), 6).AsByte(), m3);
-
-                var pw0 = Avx2.MultiplyAddAdjacent(q2_0, q8_0);
-                var pw1 = Avx2.MultiplyAddAdjacent(q2_1, q8_1);
-                var pw2 = Avx2.MultiplyAddAdjacent(q2_2, q8_2);
-                var pw3 = Avx2.MultiplyAddAdjacent(q2_3, q8_3);
-
-                // scales[j] (j = this loop's outer index, 0 or 1) supplies all 8 real scale values
-                // for this half of the super-block; shuffle indices 0..3 pick which pair of those 8
-                // goes with p0/p1/p2/p3 respectively -- independent of j, matching
-                // ggml_vec_dot_q2_K_q8_K's `_mm256_shuffle_epi8(scales[j], get_scale_shuffle_q3k(0..3))`.
-                var scaleV = j == 0 ? scales0 : scales1;
-                var p0 = Avx2.MultiplyAddAdjacent(Avx2.Shuffle(scaleV, s_q2kScaleShuffle0).AsInt16(), pw0);
-                var p1 = Avx2.MultiplyAddAdjacent(Avx2.Shuffle(scaleV, s_q2kScaleShuffle1).AsInt16(), pw1);
-                var p2 = Avx2.MultiplyAddAdjacent(Avx2.Shuffle(scaleV, s_q2kScaleShuffle2).AsInt16(), pw2);
-                var p3 = Avx2.MultiplyAddAdjacent(Avx2.Shuffle(scaleV, s_q2kScaleShuffle3).AsInt16(), pw3);
-
-                p0 = Avx2.Add(p0, p1);
-                p2 = Avx2.Add(p2, p3);
-                sumi = Avx2.Add(sumi, Avx2.Add(p0, p2));
-            }
+            // scales[j] supplies the 8 scale values of half j; shuffle masks 0..3 pick the pair for each of its four 32-weight groups (ggml: get_scale_shuffle_q3k(0..3)).
+            var sumi = Avx2.Add(Q2KHalf(q2, q8, scales0, m3, sh0, sh1, sh2, sh3), Q2KHalf(q2 + 32, q8 + 128, scales1, m3, sh0, sh1, sh2, sh3));
 
             acc = Fma.MultiplyAdd(Vector256.Create(d), Avx.ConvertToVector256Single(sumi), acc);
         }
@@ -7404,7 +7493,7 @@ public static unsafe class SimdKernels
             byte* ql = x;
             byte* qh = x + 128;
             sbyte* sc = (sbyte*)(x + 192);
-            float dw = HalfToFloat(x[208], x[209]);
+            float dw = HalfConv.ToFloat(x + 208);
             float dy = dArr[b];
             float dSuper = dw * dy;
 
@@ -7518,7 +7607,7 @@ public static unsafe class SimdKernels
             byte* ql = x;
             byte* qh = x + 128;
             sbyte* sc = (sbyte*)(x + 192);
-            float dw = HalfToFloat(x[208], x[209]);
+            float dw = HalfConv.ToFloat(x + 208);
             float dSuper = dw * dArr[i];
 
             // q8sclsub = (bsums · scales_int16) << 5  →  8 int32
@@ -7654,7 +7743,7 @@ public static unsafe class SimdKernels
         for (int b = 0; b < numBlocks; b++)
         {
             byte* x = row + b * 110;
-            float dAll = HalfToFloat(x[108], x[109]);
+            float dAll = HalfConv.ToFloat(x + 108);
             float dy = dArr[b];
             float dSuper = dAll * dy;
 
@@ -7738,7 +7827,7 @@ public static unsafe class SimdKernels
         for (int b = 0; b < numBlocks; b++)
         {
             byte* x = row + b * 110;
-            float dSuper = HalfToFloat(x[108], x[109]) * dArr[b];
+            float dSuper = HalfConv.ToFloat(x + 108) * dArr[b];
 
             // 16 6-bit scales (ggml aux[] pattern), minus 32, widened to i16: the low half's
             // 8 scales broadcast to both lanes for half 0, the high half's for half 1.
@@ -7870,7 +7959,7 @@ public static unsafe class SimdKernels
             for (int sub = 0; sub < 8; sub++)
             {
                 byte* block = superBase + sub * bytesPerBlock;
-                float dw = HalfToFloat(block[0], block[1]);
+                float dw = HalfConv.ToFloat(block);
                 sbyte* qw = (sbyte*)(block + 2);
                 sbyte* qy = q8 + sub * 32;
 
@@ -7906,7 +7995,7 @@ public static unsafe class SimdKernels
             for (int sub = 0; sub < 8; sub++)
             {
                 byte* block = superBase + sub * bytesPerBlock;
-                float dw = HalfToFloat(block[0], block[1]);
+                float dw = HalfConv.ToFloat(block);
                 sbyte* qw = (sbyte*)(block + 2);
                 sbyte* qy = q8 + sub * 32;
 
@@ -8085,7 +8174,7 @@ public static unsafe class SimdKernels
         for (int b = 0; b < numBlocks; b++)
         {
             byte* x = row + b * 110;
-            float dAll = HalfToFloat(x[108], x[109]);
+            float dAll = HalfConv.ToFloat(x + 108);
             float* dSub = dArr + b * 8;
 
             aux[0] = *(uint*)(x + 96);
@@ -8176,7 +8265,7 @@ public static unsafe class SimdKernels
         for (int b = 0; b < numBlocks; b++)
         {
             byte* x = row + b * 110;
-            float dAll = HalfToFloat(x[108], x[109]);
+            float dAll = HalfConv.ToFloat(x + 108);
             float* dSub = dArr + b * 8;
 
             Q3KScalesMinus32(x, scales);
@@ -8269,7 +8358,7 @@ public static unsafe class SimdKernels
         for (int b = 0; b < numBlocks; b++)
         {
             byte* x = row + b * 110;
-            float dAll = HalfToFloat(x[108], x[109]);
+            float dAll = HalfConv.ToFloat(x + 108);
             float* dSub1 = dArr1 + b * 8;
             float* dSub2 = dArr2 + b * 8;
 
@@ -8391,7 +8480,7 @@ public static unsafe class SimdKernels
         for (int b = 0; b < numBlocks; b++)
         {
             byte* x = row + b * 110;
-            float dAll = HalfToFloat(x[108], x[109]);
+            float dAll = HalfConv.ToFloat(x + 108);
             float* dSub0 = dArr0 + b * 8;
             float* dSub1 = dArr1 + b * 8;
             float* dSub2 = dArr2 + b * 8;
@@ -8558,7 +8647,7 @@ public static unsafe class SimdKernels
         for (int b = 0; b < numBlocks; b++)
         {
             byte* x = row + b * 110;
-            float dAll = HalfToFloat(x[108], x[109]);
+            float dAll = HalfConv.ToFloat(x + 108);
             float* dSub0 = dArr0 + b * 8; float* dSub1 = dArr1 + b * 8;
             float* dSub2 = dArr2 + b * 8; float* dSub3 = dArr3 + b * 8;
             float* dSub4 = dArr4 + b * 8; float* dSub5 = dArr5 + b * 8;
@@ -8660,7 +8749,7 @@ public static unsafe class SimdKernels
             for (int sub = 0; sub < 8; sub++)
             {
                 byte* block = superBase + sub * bytesPerBlock;
-                float dw = HalfToFloat(block[0], block[1]);
+                float dw = HalfConv.ToFloat(block);
                 sbyte* qw = (sbyte*)(block + 2);
                 sbyte* qy = q8 + sub * 32;
 
@@ -8691,7 +8780,7 @@ public static unsafe class SimdKernels
             for (int sub = 0; sub < 8; sub++)
             {
                 byte* block = superBase + sub * bytesPerBlock;
-                float dw = HalfToFloat(block[0], block[1]);
+                float dw = HalfConv.ToFloat(block);
                 sbyte* qw = (sbyte*)(block + 2);
                 sbyte* qy = q8 + sub * 32;
 
@@ -8761,8 +8850,8 @@ public static unsafe class SimdKernels
         for (int b = 0; b < numBlocks; b++)
         {
             byte* x = row + b * 144;
-            float d = HalfToFloat(x[0], x[1]);
-            float dmin = HalfToFloat(x[2], x[3]);
+            float d = HalfConv.ToFloat(x);
+            float dmin = HalfConv.ToFloat(x + 2);
             byte* sc = x + 4;
             byte* qs = x + 16;
 
@@ -8816,8 +8905,8 @@ public static unsafe class SimdKernels
         for (int b = 0; b < numBlocks; b++)
         {
             byte* x = row + b * 144;
-            float d = HalfToFloat(x[0], x[1]);
-            float dmin = HalfToFloat(x[2], x[3]);
+            float d = HalfConv.ToFloat(x);
+            float dmin = HalfConv.ToFloat(x + 2);
             byte* sc = x + 4;
             byte* qs = x + 16;
 
@@ -8905,15 +8994,15 @@ public static unsafe class SimdKernels
         {
             // ---- row 0 weight metadata ----
             byte* x0  = row0 + b * 144;
-            float d0  = HalfToFloat(x0[0], x0[1]);
-            float dm0 = HalfToFloat(x0[2], x0[3]);
+            float d0  = HalfConv.ToFloat(x0);
+            float dm0 = HalfConv.ToFloat(x0 + 2);
             byte* sc0 = x0 + 4;
             byte* qs0 = x0 + 16;
 
             // ---- row 1 weight metadata ----
             byte* x1  = row1 + b * 144;
-            float d1  = HalfToFloat(x1[0], x1[1]);
-            float dm1 = HalfToFloat(x1[2], x1[3]);
+            float d1  = HalfConv.ToFloat(x1);
+            float dm1 = HalfConv.ToFloat(x1 + 2);
             byte* sc1 = x1 + 4;
             byte* qs1 = x1 + 16;
 
@@ -9007,8 +9096,8 @@ public static unsafe class SimdKernels
         for (int b = 0; b < numBlocks; b++)
         {
             byte* x = row + b * 144;
-            float d = HalfToFloat(x[0], x[1]);
-            float dmin = HalfToFloat(x[2], x[3]);
+            float d = HalfConv.ToFloat(x);
+            float dmin = HalfConv.ToFloat(x + 2);
             byte* sc = x + 4;
             byte* qs = x + 16;
 
@@ -9107,8 +9196,8 @@ public static unsafe class SimdKernels
         for (int b = 0; b < numBlocks; b++)
         {
             byte* x = row + b * 144;
-            float d = HalfToFloat(x[0], x[1]);
-            float dmin = HalfToFloat(x[2], x[3]);
+            float d = HalfConv.ToFloat(x);
+            float dmin = HalfConv.ToFloat(x + 2);
             byte* sc = x + 4;
             byte* qs = x + 16;
 
@@ -9210,8 +9299,8 @@ public static unsafe class SimdKernels
         for (int b = 0; b < numBlocks; b++)
         {
             byte* x = row + b * 144;
-            float d = HalfToFloat(x[0], x[1]);
-            float dmin = HalfToFloat(x[2], x[3]);
+            float d = HalfConv.ToFloat(x);
+            float dmin = HalfConv.ToFloat(x + 2);
             byte* sc = x + 4;
             byte* qs = x + 16;
 
@@ -9524,7 +9613,7 @@ public static unsafe class SimdKernels
             byte* ql = x;
             byte* qh = x + 128;
             sbyte* sc = (sbyte*)(x + 192);
-            float dw = HalfToFloat(x[208], x[209]);
+            float dw = HalfConv.ToFloat(x + 208);
             float dSuper1 = dw * dArr1[i];
             float dSuper2 = dw * dArr2[i];
 
@@ -9691,7 +9780,7 @@ public static unsafe class SimdKernels
             byte* ql = x;
             byte* qh = x + 128;
             sbyte* sc = (sbyte*)(x + 192);
-            float dw = HalfToFloat(x[208], x[209]);
+            float dw = HalfConv.ToFloat(x + 208);
             float dSuper0 = dw * dArr0[i];
             float dSuper1 = dw * dArr1[i];
             float dSuper2 = dw * dArr2[i];
@@ -9831,7 +9920,7 @@ public static unsafe class SimdKernels
             byte* ql = x;
             byte* qh = x + 128;
             sbyte* sc = (sbyte*)(x + 192);
-            float dw = HalfToFloat(x[208], x[209]);
+            float dw = HalfConv.ToFloat(x + 208);
             float dSuper0 = dw * dArr0[i]; float dSuper1 = dw * dArr1[i];
             float dSuper2 = dw * dArr2[i]; float dSuper3 = dw * dArr3[i];
             float dSuper4 = dw * dArr4[i]; float dSuper5 = dw * dArr5[i];
@@ -11388,7 +11477,7 @@ public static unsafe class SimdKernels
     private static float HalfToFloat(byte lo, byte hi)
     {
         ushort bits = (ushort)(lo | (hi << 8));
-        return (float)BitConverter.UInt16BitsToHalf(bits);
+        return HalfConv.ToFloat(bits);
     }
 
     // ================================================================
@@ -11441,8 +11530,8 @@ public static unsafe class SimdKernels
             for (int r = 0; r < 8; r++)
             {
                 byte* x = src + r * srcRowStrideBytes + (long)b * 144;
-                dOut[r] = HalfToFloat(x[0], x[1]);
-                dminOut[r] = HalfToFloat(x[2], x[3]);
+                dOut[r] = HalfConv.ToFloat(x);
+                dminOut[r] = HalfConv.ToFloat(x + 2);
 
                 byte* sc = x + 4;
                 for (int j = 0; j < 8; j++)
