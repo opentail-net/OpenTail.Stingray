@@ -136,7 +136,7 @@ half a day if it does not.
   AVX-512 or Apple silicon.
 - **Load imbalance is not the issue.** Longest-expert-first scheduling was tried and made prefill 10% slower (the kernels
   parallelise internally); do not retry it as part of this work.
-- **Not in scope:** decode (a different shape, memory-bound, already at its streaming limit), GPU kernels (see the MoE plan's
+- **Not in scope:** decode (a different shape; the earlier claim that it is "memory-bound, already at its streaming limit" is UNSUBSTANTIATED as of 2026-10-04: no decode measurement supports it, and the 2026-10-04 MoE speed league has our decode at 0.21-0.59x of llama.cpp, see PerformanceLeague.md "MoE lot" and the decode investigation below), GPU kernels (see the MoE plan's
   Phase 3), other quantisation formats (Q5_K, IQ*), changing the routing or reduction order (slot-order reduction is a parity
   contract and stays).
 
