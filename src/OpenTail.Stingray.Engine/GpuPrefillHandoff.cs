@@ -160,7 +160,8 @@ public sealed unsafe partial class GpuForwardPass
         uint[]? kPacked = _kvDType == DType.BFloat16 ? new uint[(long)n * kvDim / 2] : null;
         uint[]? vPacked = _kvDType == DType.BFloat16 ? new uint[(long)n * kvDim / 2] : null;
 
-        for (int layer = 0; layer < _hp.NumLayers; layer++)
+        // Only the resident layers have GPU caches: all of them for a full offload, [0, LayerLimit) for the Vulkan layer split.
+        for (int layer = 0; layer < _residentLayers; layer++)
         {
             KvHandoff.ExtractRows(source, layer, n, _numKvHeads, _headDim, kHost, vHost);
             if (kPacked is null)
@@ -177,6 +178,24 @@ public sealed unsafe partial class GpuForwardPass
                 _gpu.UploadInto(_gpuVCache[layer], MemoryMarshal.Cast<uint, float>(vPacked!));
             }
         }
+    }
+
+    /// <summary>
+    /// Layer-split handoff (<see cref="VulkanLayerSplitForwardPass"/>): the CPU pass prefilled the whole model into
+    /// <paramref name="source"/>; this uploads rows [0, n) of the resident layers [0, LayerLimit) and sets the GPU KV length to
+    /// <paramref name="n"/>. Returns null on success, otherwise why the GPU side cannot take the rows (nothing was written).
+    /// </summary>
+    internal string? ImportSplitKv(PagedKvCache source, int n)
+    {
+        if (_tqEnabled) return "TurboQuant KV is active";
+        if (_isGemma4 || _hp.LayerHeadDim is not null) return "per-layer head dimensions";
+        if (_kvEvicted) return "KV positions were evicted (SnapKV)";
+        if (_mropePairPos is not null) return "M-RoPE positions";
+        if (n > _maxSeqLen) return "prompt longer than the context";
+        if (_kvDType is not (DType.Float32 or DType.BFloat16)) return $"GPU KV dtype {_kvDType} has no handoff conversion";
+        HandoffKv(source, n);
+        TruncateTo(n);
+        return null;
     }
 
     /// <summary>Two IEEE fp16 per word, element 2w in the low half: the layout <c>KvAppendBf16</c> writes and attention reads.</summary>

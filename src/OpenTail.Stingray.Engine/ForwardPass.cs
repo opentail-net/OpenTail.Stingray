@@ -1252,6 +1252,9 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
         ResetKvCache();
     }
 
+    /// <summary>This pass's own KV cache, which a whole-model <see cref="Prefill"/> fills for every layer (layer-split CPU-prefill handoff reads the GPU layers' rows from it).</summary>
+    internal PagedKvCache KvCacheForHandoff => _kvCache;
+
     /// <summary>
     /// Truncate the KV cache to the given length, discarding positions >= length.
     /// Used by speculative decoding to rewind rejected draft tokens.

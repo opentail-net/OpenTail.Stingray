@@ -19,6 +19,7 @@ public sealed class VulkanLayerSplitForwardPass : IForwardPass
     private readonly ForwardPass _cpuPart;
     private readonly CpuBackend _cpuBackend;
     private readonly int _split;
+    private readonly ModelHyperparams _hp;
     private readonly float[] _hidden;
 
     public VulkanLayerSplitForwardPass(GgufModel model, VulkanBackend gpu, ModelHyperparams hp, int gpuLayers,
@@ -29,6 +30,8 @@ public sealed class VulkanLayerSplitForwardPass : IForwardPass
             throw new NotSupportedException(
                 $"-g {gpuLayers}: a layer split needs 1..{maxSplit} GPU layers (Gemma 4 keeps every shared-KV source layer on the CPU); use -g -1 for all layers.");
         _split = gpuLayers;
+        _model = model;
+        _hp = hp;
         _gpuPart = new GpuForwardPass(model, gpu, hp, maxContextLength, layerLimit: gpuLayers);
         _cpuBackend = new CpuBackend();
         _cpuPart = new ForwardPass(model, _cpuBackend, hp, maxContextLength: _gpuPart.MaxSeqLen);
@@ -56,8 +59,74 @@ public sealed class VulkanLayerSplitForwardPass : IForwardPass
         return _cpuPart.ForwardFromHidden(_hidden, token, position, _split);
     }
 
+    private static readonly string? s_cpuPrefillSetting = Environment.GetEnvironmentVariable("STINGRAY_HYBRID_CPU_PREFILL");
+    private readonly GgufModel _model;
+    private bool _cpuPrefillBroken;
+
+    /// <summary>Master switch (<c>STINGRAY_HYBRID_CPU_PREFILL=0</c> turns it off); settable so tests can compare both paths.</summary>
+    internal bool CpuPrefillEnabled { get; set; } = s_cpuPrefillSetting != "0";
+
+    internal int CpuPrefillMinTokens { get; set; } =
+        int.TryParse(Environment.GetEnvironmentVariable("STINGRAY_HYBRID_CPU_PREFILL_MIN_TOKENS"), out int m) && m > 0 ? m : 32;
+
+    /// <summary>True when the last <see cref="Prefill"/> ran on the CPU and handed its KV to the GPU layers.</summary>
+    internal bool LastPrefillUsedCpuHandoff { get; private set; }
+
+    /// <summary>Why the last <see cref="Prefill"/> did not use the handoff, or null when it did.</summary>
+    internal string? LastCpuPrefillRefusal { get; private set; }
+
+    private string? CpuPrefillRefusal(int n, int startPos)
+    {
+        if (!CpuPrefillEnabled) return "disabled (STINGRAY_HYBRID_CPU_PREFILL=0)";
+        if (_cpuPrefillBroken) return "the CPU pass refused batched prefill";
+        if (startPos != 0) return "startPos != 0 (the CPU pass would not hold the earlier turns' K/V on the GPU layers)";
+        if (n < CpuPrefillMinTokens) return $"prompt shorter than {CpuPrefillMinTokens} tokens";
+        if (n > MaxSeqLen) return "prompt longer than the context";
+        if (_hp.LayerHeadDim is not null) return "per-layer head dimensions";
+        if (PagedKvCache.Bf16RoundingRequested || PagedKvCache.Bf16StoreRequested || PagedKvCache.Bf16AutoRequested)
+            return "bf16 KV store requested: exact F32 K/V cannot be guaranteed";
+        return KvHandoff.FamilyRefusal(_model, s_cpuPrefillSetting, HandoffPath.VulkanLayerSplit);
+    }
+
+    /// <summary>
+    /// CPU-prefill handoff for the layer split: the CPU pass prefills every layer into its own F32 KV cache (the CPU layers'
+    /// cache already, and the source for the GPU layers), then the GPU layers' rows are uploaded. Decode continues split.
+    /// Compared with the per-token split prefill (one GPU round trip per token plus the MoE router per layer) this is a batched
+    /// CPU prefill; the contract is tested on a real checkpoint before a family is admitted (receipts, per path).
+    /// </summary>
+    private bool TryPrefillViaCpuHandoff(IReadOnlyList<int> tokens, out ReadOnlySpan<float> logits)
+    {
+        logits = default;
+        if (!_cpuPart.GetBatchedPrefillCapability().Available) { _cpuPrefillBroken = true; return false; }
+        _cpuPart.TruncateTo(0);
+        ReadOnlySpan<float> cpuLogits;
+        try { cpuLogits = _cpuPart.Prefill(tokens, 0); }
+        catch (NotSupportedException) { _cpuPrefillBroken = true; return false; }
+        if (_gpuPart.ImportSplitKv(_cpuPart.KvCacheForHandoff, tokens.Count) is { } why)
+        {
+            LastCpuPrefillRefusal = "GPU side: " + why;
+            _cpuPart.TruncateTo(0);
+            return false;
+        }
+        logits = cpuLogits;
+        return true;
+    }
+
+    /// <summary>The dtype the GPU layers store KV in (tests pick the comparison from it).</summary>
+    internal DType GpuKvDType => _gpuPart.KvDTypeForTest;
+
+    /// <summary>Diagnostic: K/V rows [0, count) of one GPU-resident layer (tests compare them with the CPU pass).</summary>
+    internal void ReadGpuKvRows(int layer, int count, float[] k, float[] v) => _gpuPart.ReadKvRows(layer, count, k, v);
+
     public ReadOnlySpan<float> Prefill(IReadOnlyList<int> tokens, int startPos = 0)
     {
+        LastPrefillUsedCpuHandoff = false;
+        LastCpuPrefillRefusal = CpuPrefillRefusal(tokens.Count, startPos);
+        if (LastCpuPrefillRefusal is null && TryPrefillViaCpuHandoff(tokens, out var handed))
+        {
+            LastPrefillUsedCpuHandoff = true;
+            return handed;
+        }
         ReadOnlySpan<float> last = default;
         for (int i = 0; i < tokens.Count; i++) last = Forward(tokens[i], startPos + i);
         return last;

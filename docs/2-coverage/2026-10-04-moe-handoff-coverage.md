@@ -34,7 +34,7 @@ Refusals now say which of the two applies. Tests: `PrefillHandoffFamiliesTests` 
 | Mixtral (`llama` + experts) | ordinary KV | **Admitted on Vulkan hybrid** (2026-10-04); full-GPU and CUDA unverified | receipt on the Vulkan hybrid (Nous-Hermes-2-Mixtral); top-k renormalisation fixed | full-GPU, CUDA |
 | Phi-3.5-MoE (`phimoe`) | ordinary KV + LongRoPE | **Admitted on Vulkan hybrid and full-GPU (short factors tested)** (2026-10-04); CUDA hybrid Incompatible (no LongRoPE) | Vulkan hybrid at both RoPE regimes; full-GPU only at the short-factor regime (ctx 1024) | full-GPU long factors (ctx > 4096), CUDA LongRoPE |
 | Llama 4 (`llama4`) | ordinary KV, MoE top-1 + shared expert, NoPE every 4th layer, L2 QK-norm, chunked attention | **Admitted on Vulkan hybrid**, including past the 8192 chunk boundary (2026-10-04); CUDA unverified | Scout Q3_K_M: CPU parity vs llama-server, hybrid handoff at 4 and 1 GPU layers (40 steps); chunked attention + temperature tuning implemented; CPU 9430-token run matches llama-server (24 positions, 16 confident, 0 near-tie differences); hybrid handoff at 9429 tokens into 4 GPU layers, 6 decode steps cosine 0.9994-0.99996 vs all-CPU (`Handoff_Llama4_PastTheChunkBoundary_DecodeAgreesWithCpu`, 3130 s) | CUDA; sequential-GPU-prefill comparison at this length (hours) not run |
-| GLM-4.5 / Air (`glm4moe`) | ordinary KV, sigmoid gating + selection bias, leading dense layers | CPU path admitted, Vulkan layer split works (-g 4); **no handoff receipt** | gating handled in `ModelGraph`; real-weight admission still open | after the small families |
+| GLM-4.5 / Air (`glm4moe`) | ordinary KV, sigmoid gating + selection bias, leading dense layers | CPU path admitted, Vulkan layer split works (-g 4); **admitted on `VulkanLayerSplit`** (2026-10-04) | `LayerSplitCpuPrefillHandoffTests`: GLM-4.5-Air Q2_K, -g 4, 205 tokens, GPU K/V equal to the CPU pass, prefill logits equal, 40 decode steps cosine >= 0.9946, 0 flips | -g above 4 (needs the expert slot cache), CUDA |
 | Hunyuan-MoE | ordinary KV | not admitted at all | recognised in `ModelGraph` only | out of scope until admitted |
 | DeepSeek-V2/V3/R1 (`deepseek2`) | MLA | **Incompatible** | header-checked on DeepSeek-V2-Lite | separate latent-cache handoff, not this one |
 | LFM2-MoE (`lfm2moe`) | short-conv state | **Incompatible** | header-checked | separate class |
@@ -42,7 +42,7 @@ Refusals now say which of the two applies. Tests: `PrefillHandoffFamiliesTests` 
 | Qwen3.5/3.6 (`qwen35*`) | gated delta-net hybrid | **Incompatible** | header-checked on Qwen3.6-27B | separate class |
 | gpt-oss | own forward pass | **Incompatible** | by rule | separate class |
 
-Count that matters: **7 admitted families (6 MoE: OLMoE, Qwen3-MoE, Qwen2-MoE, Mixtral, Phi-MoE, Llama 4; plus dense Qwen3) of 13 rows, all on Vulkan only (10 path-specific receipts)**; GLM-4.5 runs on the CPU and the Vulkan layer split but has no handoff receipt; 5 are a different class entirely, so the handoff should never claim them.
+Count that matters: **7 admitted families (6 MoE: OLMoE, Qwen3-MoE, Qwen2-MoE, Mixtral, Phi-MoE, Llama 4; plus dense Qwen3) of 13 rows, all on Vulkan only (10 path-specific receipts)**; GLM-4.5 has a receipt on the Vulkan layer split path only (`-g 4`); 5 are a different class entirely, so the handoff should never claim them.
 
 Per-family closure plan, in order: [2026-10-04-moe-handoff-closure-plan.md](2026-10-04-moe-handoff-closure-plan.md).
 
