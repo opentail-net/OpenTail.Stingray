@@ -91,6 +91,16 @@ public sealed unsafe class HybridCpuPrefillHandoffTests : HeavyTestBase
     [InlineData("Phi-3.5-MoE-instruct-Q3_K_M.gguf", 1, 8, 1024)]
     [InlineData("Phi-3.5-MoE-instruct-Q3_K_M.gguf", 4, 16, 8192)]
     public void Handoff_IsByteExact_AndDecodeAgreesWithSequentialPrefill(string file, int gpuLayers, int slots, int ctx = 1024)
+        => RunHandoff(file, gpuLayers, slots, ctx);
+
+    // Large checkpoints, kept in their own method so they can be run (and re-run) without the 14 smaller rows.
+    [Theory]
+    [InlineData(@"Q3_K_M\Llama-4-Scout-17B-16E-Instruct-Q3_K_M-00001-of-00002.gguf", 4, 16)]   // llama4: NoPE every 4th layer, L2 QK-norm, top-1 + shared expert
+    [InlineData(@"Q3_K_M\Llama-4-Scout-17B-16E-Instruct-Q3_K_M-00001-of-00002.gguf", 1, 16)]
+    public void Handoff_LargeFamilies(string file, int gpuLayers, int slots, int ctx = 1024)
+        => RunHandoff(file, gpuLayers, slots, ctx);
+
+    private void RunHandoff(string file, int gpuLayers, int slots, int ctx)
     {
         using var s = Open(file)!;
         Assert.True(s.Prompt.Length >= 100, $"prompt too short for a meaningful test: {s.Prompt.Length}");

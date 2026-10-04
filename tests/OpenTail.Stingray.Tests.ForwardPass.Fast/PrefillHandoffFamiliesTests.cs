@@ -14,6 +14,7 @@ public sealed class PrefillHandoffFamiliesTests
     [InlineData("olmoe")]
     [InlineData("qwen3moe")]
     [InlineData("qwen3")]
+    [InlineData("llama4")]
     public void ReceiptedFamilies_AreAdmitted(string arch)
     {
         var c = PrefillHandoffFamilies.Classify(Md(arch), HandoffPath.VulkanHybrid);
@@ -22,7 +23,6 @@ public sealed class PrefillHandoffFamiliesTests
     }
 
     [Theory]
-    [InlineData("llama4")]
     [InlineData("glm4moe")]
     public void ConventionalFamiliesWithoutReceipt_AreUnverified_AndOnlyAllLiftsIt(string arch)
     {

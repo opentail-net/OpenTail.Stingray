@@ -69,6 +69,9 @@ public static class PrefillHandoffFamilies
             [("phimoe", HandoffPath.VulkanHybrid)] = new(
                 "PhiMoeGreedyParityTests (CPU vs llama-server, short and long LongRoPE factors) + HybridCpuPrefillHandoffTests (Phi-3.5-MoE-instruct Q3_K_M, 4 and 1 GPU layers at ctx 1024 = short factors and 4 GPU layers at ctx 8192 = long factors; RMSNorm + bias, LM-head bias): byte-exact K/V, logits cosine 0.9995-1.0000",
                 "phimoe|attention.head_count_kv=8|expert_count=16|expert_used_count=2"),
+            [("llama4", HandoffPath.VulkanHybrid)] = new(
+                "LlamaFourGreedyParityTests (CPU vs llama-server, PPL 6.86 vs 6.81) + HybridCpuPrefillHandoffTests (Llama-4-Scout-17B-16E Q3_K_M, 4 and 1 GPU layers, ctx 1024, 40 decode steps; NoPE every 4th layer, L2 QK-norm, top-1 + shared expert): prefill cosine 0.9999, decode cosines >= 0.998. Contexts above 8192 are NOT covered (chunked attention and temperature tuning are not implemented)",
+                "llama4|attention.head_count_kv=8|attention.key_length=128|expert_count=16|expert_used_count=1|expert_feed_forward_length=8192"),
             [("olmoe", HandoffPath.VulkanFullGpu)] = new(
                 "GpuCpuPrefillHandoffTests (OLMoE-1B-7B Q4_K_M, F32 and packed-fp16 KV): byte-exact K/V, logits equal the CPU pass",
                 "olmoe|attention.head_count_kv=16|expert_count=64|expert_used_count=8"),
