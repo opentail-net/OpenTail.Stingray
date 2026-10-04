@@ -122,6 +122,8 @@ public sealed unsafe partial class ForwardPass
                 _normBuf, _sharedExpertDim, _embDim, _wGateShexp[layer].DType, _wUpShexp[layer].DType);
             SimdKernels.SiLuMul(_expertGate, _expertUp, _sharedExpertDim);
             FusedMatVec(_sharedOut, _wDownShexp![layer], _expertGate, _embDim, _sharedExpertDim);
+            if (_wGateInpShexp is not null)
+                ScaleBySharedGate(_sharedOut, _normBuf, _wGateInpShexp[layer]);
         }
 
         // Step 3: Selected expert(s) — 2-sweep folded execution when every expert dtype has a
@@ -587,9 +589,26 @@ public sealed unsafe partial class ForwardPass
             SimdKernels.SiLuMul(_moeBatchGate, _moeBatchUp, n * sd);
             MatMulBatchedCached(_moeBatchDown, in _wDownShexp![layer], _moeBatchGate, n, _embDim, sd);
             for (int t = 0; t < n; t++)
+            {
+                if (_wGateInpShexp is not null)
+                    ScaleBySharedGate(_moeBatchDown + (long)t * _embDim, batchNorm + (long)t * _embDim, _wGateInpShexp[layer]);
                 SimdKernels.AddInPlace(batchOut + (long)t * _embDim,
                     _moeBatchDown + (long)t * _embDim, _embDim);
+            }
         }
+    }
+
+    /// <summary>
+    /// Qwen2-MoE shared-expert gate: <c>out *= sigmoid(dot(x, w))</c> with <c>w</c> the F32 <c>ffn_gate_inp_shexp</c> vector
+    /// (llama.cpp <c>build_moe_ffn</c> caller, qwen2moe.cpp: <c>ffn_shexp_gate = sigmoid(mul_mat(ffn_gate_inp_shexp, cur))</c>).
+    /// </summary>
+    private void ScaleBySharedGate(float* sharedOut, float* x, in TensorRef gateInp)
+    {
+        float* w = (float*)gateInp.DataPtr;
+        float dot = 0f;
+        for (int i = 0; i < _embDim; i++) dot += w[i] * x[i];
+        float g = 1f / (1f + MathF.Exp(-dot));
+        for (int i = 0; i < _embDim; i++) sharedOut[i] *= g;
     }
 
     /// <summary>Bytes one weight row of <paramref name="cols"/> elements occupies in this dtype.</summary>

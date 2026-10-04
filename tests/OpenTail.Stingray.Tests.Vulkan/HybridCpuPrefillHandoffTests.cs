@@ -29,7 +29,7 @@ public sealed unsafe class HybridCpuPrefillHandoffTests : HeavyTestBase
 
     private static string? Find(string file)
     {
-        foreach (var p in new[] { Path.Combine(@"F:\_models", file), Path.Combine(@"E:\_models", file) })
+        foreach (var p in new[] { Path.Combine(@"F:\_models", file), Path.Combine(@"E:\_models", file), Path.Combine(@"H:\_models", file) })
             if (File.Exists(p)) return p;
         var dir = new DirectoryInfo(AppContext.BaseDirectory);
         while (dir is not null)
@@ -82,6 +82,8 @@ public sealed unsafe class HybridCpuPrefillHandoffTests : HeavyTestBase
     [InlineData("OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf", 8, 16)]
     [InlineData("Qwen3-0.6B-Q8_0.gguf", 8, -1)]
     [InlineData("Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf", 4, 16)]
+    [InlineData("Qwen1.5-MoE-A2.7B-Chat.Q4_K_M.gguf", 4, 16)]   // qwen2moe: shared expert with sigmoid gate, 60 experts top-4
+    [InlineData("Qwen1.5-MoE-A2.7B-Chat.Q4_K_M.gguf", 1, 8)]
     public void Handoff_IsByteExact_AndDecodeAgreesWithSequentialPrefill(string file, int gpuLayers, int slots)
     {
         using var s = Open(file)!;

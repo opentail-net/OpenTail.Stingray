@@ -71,10 +71,40 @@ Stop rule per family: if a stage fails and the cause is not understood within on
 Update the coverage table in [2026-10-04-moe-handoff-coverage.md](2026-10-04-moe-handoff-coverage.md) after each family, and keep this checklist:
 
 - [ ] Step 0 shared test plumbing
-- [ ] 1. `qwen2moe`: Stage A, Stage B, receipt, weights removed
+- [x] 1. `qwen2moe` (2026-10-04): Stage A (found and fixed 3 bugs, below), Stage B on the Vulkan hybrid at 1 and 4 GPU layers, receipt `(qwen2moe, VulkanHybrid)`. Not done for this family: Vulkan full-GPU path (shared-expert gate and scratch width are not implemented in `GpuForwardPass`, so it stays unverified), CUDA, router-level check (Stage A2; PPL 4.7838 against 4.8144 ± 0.78 stands in for it). Weights kept at `H:\_models` (F: is full; `models/_models` points at F:) until Mixtral needs the room.
 - [ ] 2. `llama+experts` (Mixtral): Stage A, Stage B, receipt, weights removed
 - [ ] 3. `phimoe`: Vulkan LongRoPE, Stage B, receipt
 - [ ] 4. `glm4moe`: disk decision, Stage A, Stage B, receipt
 - [ ] 5. `llama4`: forward-path reading, then decide
 
 Realistic total for 1-3: about a week. 4 and 5 depend on disk and on whether they are wanted.
+
+## Results log
+
+### 1. `qwen2moe` (Qwen1.5-MoE-A2.7B-Chat Q4_K_M, 2026-10-04)
+Three real bugs, none visible without a real checkpoint (before any fix the CPU path emitted `!!!!`, i.e. all-zero logits):
+1. **Routed-expert width fell back to the dense width.** This older GGUF has no `expert_feed_forward_length`; `feed_forward_length` (5632) is the dense width, the experts are 1408. `ModelGraph` now reads the width from the stacked `ffn_gate_exps` tensor when the key is missing (as llama.cpp does).
+2. **The shared expert's sigmoid gate was never applied** (`ffn_gate_inp_shexp`, an F32 `[embDim]` vector): `out = sigmoid(w . x) * shared_ffn(x)`. Added to the CPU pass (per-token and batched) and to the Vulkan hybrid's CPU and GPU layers. Any other family with that tensor (qwen35moe uses the same gate) now gets it too; not verified there, no checkpoint on disk.
+3. **Hybrid GPU scratch too narrow for the shared expert.** The hybrid's GPU FFN scratch is sized to the routed-expert width, and a matmul takes its row count from its output buffer, so a 5632-wide shared expert computed 1408 rows. Dedicated shared-expert scratch added when the widths differ.
+
+Evidence: `Qwen2MoeGreedyParityTests` (teacher-forced against `llama-server`, 1.5-nat confident margins: 17 of 22 and 5 of 32 positions confident, all matched; free-running greedy diverged at a 0.05-nat near-tie, which is why the contract is teacher-forced). Second-half wikitext PPL at -c 512: ours 4.7838, `llama-perplexity` 4.8144 ± 0.78. Handoff: `HybridCpuPrefillHandoffTests` rows at 4 and 1 GPU layers, byte-exact K/V, prefill cosine 0.9995, decode cosines 0.998-0.9998 (the baseline is the sequential hybrid, which needed fixes 2 and 3 to be right). Regression: ForwardPass.Fast 1029 passed / 0 failed, `VulkanHybridOlmoeParityTests` 7/7.
+
+Also found while checking Mixtral (not fixed, belongs to step 2): `NormalizeMoeTopKWeights` defaults to false for any architecture without an `expert_weights_norm` key, which includes `llama`; Mixtral needs renormalised top-2 weights (llama.cpp `build_moe_ffn` with `norm_w = true`).
+
+## Review feedback, parked for later consideration (2026-10-04)
+
+An outside review of this plan, recorded here and **not yet acted on**. I checked point 1 against the code: it is correct as stated, and it also means the CUDA hybrid path (never run) is currently admitted for the same three families as the Vulkan hybrid.
+
+| Priority | Change | Notes from checking the repo |
+|---|---|---|
+| Must | **Receipts per family and path** (`VulkanHybrid`, `VulkanFullGpu`, `CudaHybrid`), so a Vulkan `-g N` receipt cannot authorize another path. | `PrefillHandoffFamilies.Receipts` is family-only and all three `*PrefillHandoff.cs` call it. Real evidence today: Vulkan hybrid has OLMoE, Qwen3-Coder and Qwen3-0.6B; Vulkan full-GPU has OLMoE only (`GpuCpuPrefillHandoffTests`); CUDA hybrid has none. Smallest change: key receipts by `(family, path)`, pass the path from each caller, and the CUDA path becomes unverified until it runs. |
+| Must | **Stage B must include a mixed CPU/GPU layer split** (for example `-g 4`), plus `-g -1` for the full-GPU path, optionally `-g 1`. | The existing hybrid theory already uses 4 and 8 GPU layers; make it a stated requirement of every receipt. |
+| Strong | **Fingerprint the proven checkpoint in each receipt**: architecture, expert count, top-k, expert FFN width, shared-expert count and width, leading dense layers, gating function, top-k renormalisation, KV heads, head dimension, RoPE mode. | Records what "admitted" actually covered. Informational: a checkpoint whose fingerprint differs would be reported, not refused. Qwen1.5-MoE's own values (60 experts, top-4, 5632-wide shared expert against 1408 routed) are the kind of fact to freeze. |
+| Strong | **Stage A2, routing check**: compare selected expert ids, routing weights, top-k count, renormalisation and shared-expert contribution against the reference for the first 8 layers and 32 prompt tokens. | A wrong router can still give the right argmax; token parity alone is weaker evidence for a discrete mechanism. Diagnostic run, no permanent dump. |
+| Strong | **Phi-3.5-MoE: make LongRoPE threshold crossing an explicit gate.** | The CPU pass and the GPU must pick the same short/long factor regime on both sides of `original_context_length`; use a prompt that crosses it. |
+| Minor | **License checkbox in the checklist.** | Qwen1.5-MoE-A2.7B is under the Tongyi Qianwen license, not Apache or MIT; check the project's checkpoint-license policy before a checkpoint becomes a permanent test fixture. |
+| Order | **GLM-4.5-Air a little higher.** | The review reports 106B total / 12B active and an MIT license (not checked by me; confirm before relying on it). Still after Qwen2-MoE, Mixtral and Phi-MoE. |
+
+Proposed redefinition of "closed" if adopted: a family/path is closed when that path has a real-weight receipt that shows (1) CPU correctness against an independent reference, (2) exact K/V transfer from that CPU path, (3) stable decode after the handoff, (4) at least one mixed CPU/GPU split, (5) the model's distinctive MoE features, and (6) the relevant context and RoPE boundaries. No family-level admission authorizes an untested path.
+
+The review's verdict was that the plan is sound and its order (Qwen2-MoE, Mixtral, Phi-MoE) is a good first three; the changes above strengthen the evidence standard rather than redesign it.

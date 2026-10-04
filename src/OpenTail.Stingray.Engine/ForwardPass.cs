@@ -227,6 +227,8 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
     // MoE (Mixture of Experts) — Phase 5
     private readonly TensorRef[]? _wGateInp;      // router weights [numExperts, embDim] per layer
     private readonly TensorRef[]? _wGateShexp, _wUpShexp, _wDownShexp; // shared expert per layer
+    // Qwen2-MoE: sigmoid gate on the shared expert, a [embDim] F32 vector per layer (ffn_gate_inp_shexp); null when the model has none.
+    private readonly TensorRef[]? _wGateInpShexp;
     private readonly TensorRef[]? _wGateExps, _wUpExps, _wDownExps;   // packed expert weights per layer
     private readonly float* _routerLogits;  // [numExperts] scratch
     private readonly float* _sharedOut;     // [embDim] shared expert output
@@ -697,6 +699,7 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
             if (hp.HasSharedExpert)
             {
                 _wGateShexp = new TensorRef[L]; _wUpShexp = new TensorRef[L]; _wDownShexp = new TensorRef[L];
+                if (model.FindTensor("blk.0.ffn_gate_inp_shexp.weight") is not null) _wGateInpShexp = new TensorRef[L];
             }
             _routerLogits = Alloc(hp.NumExperts);
             _sharedOut = Alloc(_embDim);
@@ -854,6 +857,7 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
                     _wGateShexp![i] = ResolveTensor($"blk.{i}.ffn_gate_shexp.weight");
                     _wUpShexp![i] = ResolveTensor($"blk.{i}.ffn_up_shexp.weight");
                     _wDownShexp![i] = ResolveTensor($"blk.{i}.ffn_down_shexp.weight");
+                    if (_wGateInpShexp is not null) _wGateInpShexp[i] = ResolveTensor($"blk.{i}.ffn_gate_inp_shexp.weight");
                 }
             }
             else if (noFfnLayer)
@@ -1137,6 +1141,7 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
                 if (_hp.HasSharedExpert)
                 {
                     Add(_wGateShexp![i]); Add(_wUpShexp![i]); Add(_wDownShexp![i]);
+                    if (_wGateInpShexp is not null) Add(_wGateInpShexp[i]);
                 }
             }
             else

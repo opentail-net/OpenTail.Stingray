@@ -22,6 +22,9 @@ public sealed unsafe partial class HybridForwardPass : IForwardPass
     private readonly Tensor _gpuHidden, _gpuResidual, _gpuNormBuf;
     private readonly Tensor _gpuQ, _gpuK, _gpuV, _gpuAttnOut;
     private readonly Tensor _gpuFfnGate, _gpuFfnUp;
+    // Shared-expert scratch: a MatMul takes its row count from the output buffer, so a shared expert wider than the routed experts
+    // (Qwen2-MoE: 5632 against 1408) needs buffers of its own width; the routed-expert ones are reused when the widths match.
+    private readonly Tensor _gpuShGate, _gpuShUp;
     private readonly Tensor _gpuLogits;
     private readonly Tensor? _gpuRouterLogits, _gpuMoeSharedOut, _gpuMoeExpertOut;
     private readonly Tensor? _gpuEmbedding, _gpuOutputWeight, _gpuOutputNorm;
@@ -55,6 +58,8 @@ public sealed unsafe partial class HybridForwardPass : IForwardPass
     private readonly float*[] _cpuQNorm, _cpuKNorm;
     private readonly CpuWeightRef[]? _cpuPostAttnNorm, _cpuPostFfwNorm;
     private readonly CpuWeightRef[]? _cpuWGateInp, _cpuWGateShexp, _cpuWUpShexp, _cpuWDownShexp;
+    // Qwen2-MoE: sigmoid gate on the shared expert (ffn_gate_inp_shexp, an F32 [embDim] vector), by absolute layer; null when absent.
+    private readonly CpuWeightRef[]? _shexpGate;
     private readonly CpuWeightRef[]? _cpuWGateExps, _cpuWUpExps, _cpuWDownExps;
     private readonly CpuWeightRef _cpuEmbedding, _cpuOutputWeight, _cpuOutputNorm;
     private readonly float* _cpuRouterLogits;
@@ -213,6 +218,11 @@ public sealed unsafe partial class HybridForwardPass : IForwardPass
         _hasQkNorm = hp.HasQkNorm;
         _isMoE = hp.IsMoE;
         _hasSharedExpert = hp.HasSharedExpert;
+        if (hp.HasSharedExpert && model.FindTensor("blk.0.ffn_gate_inp_shexp.weight") is not null)
+        {
+            _shexpGate = new CpuWeightRef[hp.NumLayers];
+            for (int li = 0; li < hp.NumLayers; li++) _shexpGate[li] = ResolveCpuWeightFor(model, $"blk.{li}.ffn_gate_inp_shexp.weight");
+        }
         bool cpuEmbeddingOutputOnly = ShouldKeepFixedWeightsOnCpu(
             model.FindTensor("token_embd.weight")!.Value,
             model.FindTensor("output.weight"));
@@ -242,6 +252,9 @@ public sealed unsafe partial class HybridForwardPass : IForwardPass
         int gpuFfnScratch = _isMoE ? _expertDim : _intermDim;
         _gpuFfnGate = gpu.Allocate(TensorShape.D1(gpuFfnScratch));
         _gpuFfnUp = gpu.Allocate(TensorShape.D1(gpuFfnScratch));
+        bool sharedNeedsOwnScratch = _isMoE && hp.HasSharedExpert && hp.SharedExpertIntermediateDim != gpuFfnScratch;
+        _gpuShGate = sharedNeedsOwnScratch ? gpu.Allocate(TensorShape.D1(hp.SharedExpertIntermediateDim)) : _gpuFfnGate;
+        _gpuShUp = sharedNeedsOwnScratch ? gpu.Allocate(TensorShape.D1(hp.SharedExpertIntermediateDim)) : _gpuFfnUp;
         _gpuLogits = gpu.Allocate(TensorShape.D1(hp.VocabSize));
         _gpuRouterLogits = _isMoE && _nGpuLayers > 0 ? gpu.Allocate(TensorShape.D1(hp.NumExperts)) : null;
         _gpuMoeSharedOut = _isMoE && _hasSharedExpert && _nGpuLayers > 0 ? gpu.Allocate(TensorShape.D1(_embDim)) : null;
@@ -1032,6 +1045,11 @@ public sealed unsafe partial class HybridForwardPass : IForwardPass
             SimdKernels.MatVec(_cpuExpertUp, _cpuWUpShexp![ci].DataPtr, _cpuNormBuf, _hp.SharedExpertIntermediateDim, _embDim, _cpuWUpShexp[ci].DType);
             SimdKernels.SiLuMul(_cpuExpertGate, _cpuExpertUp, _hp.SharedExpertIntermediateDim);
             SimdKernels.MatVec(_cpuSharedOut, _cpuWDownShexp![ci].DataPtr, _cpuExpertGate, _embDim, _hp.SharedExpertIntermediateDim, _cpuWDownShexp[ci].DType);
+            if (_shexpGate is not null)
+            {
+                float g = SharedExpertGate(ci + _nGpuLayers, _cpuNormBuf);
+                for (int i = 0; i < _embDim; i++) _cpuSharedOut![i] *= g;
+            }
         }
 
         new Span<float>(_cpuHidden, _embDim).Clear();
@@ -1261,6 +1279,21 @@ public sealed unsafe partial class HybridForwardPass : IForwardPass
 
         public CpuWeightRef(string name, GgufTensorInfo info, DType dtype, byte* dataPtr)
         { Name = name; Info = info; DType = dtype; DataPtr = dataPtr; }
+    }
+
+    private static CpuWeightRef ResolveCpuWeightFor(GgufModel model, string name)
+    {
+        var info = model.FindTensor(name) ?? throw new InvalidOperationException($"Missing tensor: {name}");
+        return new CpuWeightRef(name, info, info.DType, model.GetTensorDataPtr(info));
+    }
+
+    /// <summary>Qwen2-MoE shared-expert gate: <c>sigmoid(dot(x, ffn_gate_inp_shexp))</c> for layer <paramref name="layer"/>.</summary>
+    private unsafe float SharedExpertGate(int layer, float* x)
+    {
+        float* w = (float*)_shexpGate![layer].DataPtr;
+        float dot = 0f;
+        for (int i = 0; i < _embDim; i++) dot += w[i] * x[i];
+        return 1f / (1f + MathF.Exp(-dot));
     }
 
     private CpuWeightRef ResolveCpuWeight(string name)
@@ -1583,13 +1616,26 @@ public sealed unsafe partial class HybridForwardPass : IForwardPass
 
         if (_hasSharedExpert)
         {
-            GpuMatMul(_gpuFfnGate, _gpuWGateShexp![layer], _gpuNormBuf);
-            GpuMatMul(_gpuFfnUp, _gpuWUpShexp![layer], _gpuNormBuf);
+            GpuMatMul(_gpuShGate, _gpuWGateShexp![layer], _gpuNormBuf);
+            GpuMatMul(_gpuShUp, _gpuWUpShexp![layer], _gpuNormBuf);
             _gpu.RecordBarrier();
-            _gpu.SiLuMul(_gpuFfnGate, _gpuFfnUp);
+            _gpu.SiLuMul(_gpuShGate, _gpuShUp);
             _gpu.RecordBarrier();
-            GpuMatMul(_gpuMoeSharedOut!, _gpuWDownShexp![layer], _gpuFfnGate);
+            GpuMatMul(_gpuMoeSharedOut!, _gpuWDownShexp![layer], _gpuShGate);
             _gpu.RecordBarrier();
+            if (_shexpGate is not null)
+            {
+                // the pinned norm row was filled by the session above; the gate is one dot product, so it is computed on the host
+                float g;
+                unsafe
+                {
+                    float* normPtr = _gpu.MapPinned(_gpuPinnedNorm!);
+                    g = SharedExpertGate(layer, normPtr);
+                    _gpu.UnmapPinned(_gpuPinnedNorm!);
+                }
+                _gpu.ScaleInPlace(_gpuMoeSharedOut!, g);
+                _gpu.RecordBarrier();
+            }
         }
 
         _gpu.Clear(_gpuHidden);
@@ -1868,6 +1914,8 @@ public sealed unsafe partial class HybridForwardPass : IForwardPass
         _gpu.Free(_gpuHidden); _gpu.Free(_gpuResidual); _gpu.Free(_gpuNormBuf);
         _gpu.Free(_gpuQ); _gpu.Free(_gpuK); _gpu.Free(_gpuV); _gpu.Free(_gpuAttnOut);
         _gpu.Free(_gpuFfnGate); _gpu.Free(_gpuFfnUp); _gpu.Free(_gpuLogits);
+        if (!ReferenceEquals(_gpuShGate, _gpuFfnGate)) _gpu.Free(_gpuShGate);
+        if (!ReferenceEquals(_gpuShUp, _gpuFfnUp)) _gpu.Free(_gpuShUp);
         if (_gpuRouterLogits is not null) _gpu.Free(_gpuRouterLogits);
         if (_gpuMoeSharedOut is not null) _gpu.Free(_gpuMoeSharedOut);
         if (_gpuMoeExpertOut is not null) _gpu.Free(_gpuMoeExpertOut);

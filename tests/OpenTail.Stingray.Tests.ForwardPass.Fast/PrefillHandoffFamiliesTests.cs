@@ -22,7 +22,6 @@ public sealed class PrefillHandoffFamiliesTests
     }
 
     [Theory]
-    [InlineData("qwen2moe")]
     [InlineData("llama4")]
     [InlineData("glm4moe")]
     [InlineData("phimoe")]
@@ -97,6 +96,8 @@ public sealed class PrefillHandoffFamiliesTests
         Assert.Equal(HandoffStatus.Admitted, PrefillHandoffFamilies.Classify(Md("olmoe"), HandoffPath.VulkanFullGpu).Status);
         Assert.Equal(HandoffStatus.Admitted, PrefillHandoffFamilies.Classify(Md("qwen3moe"), HandoffPath.VulkanHybrid).Status);
         Assert.Equal(HandoffStatus.Unverified, PrefillHandoffFamilies.Classify(Md("qwen3moe"), HandoffPath.VulkanFullGpu).Status);
+        Assert.Equal(HandoffStatus.Admitted, PrefillHandoffFamilies.Classify(Md("qwen2moe", ("qwen2moe.attention.head_count_kv", 16u), ("qwen2moe.expert_count", 60u), ("qwen2moe.expert_used_count", 4u)), HandoffPath.VulkanHybrid).Status);
+        Assert.Equal(HandoffStatus.Unverified, PrefillHandoffFamilies.Classify(Md("qwen2moe"), HandoffPath.VulkanFullGpu).Status);
         foreach (var arch in new[] { "olmoe", "qwen3moe", "qwen3" })
             Assert.Equal(HandoffStatus.Unverified, PrefillHandoffFamilies.Classify(Md(arch), HandoffPath.CudaHybrid).Status);
     }
@@ -119,6 +120,7 @@ public sealed class PrefillHandoffFamiliesTests
     [Theory]
     [InlineData("OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf", HandoffStatus.Admitted)]
     [InlineData("Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf", HandoffStatus.Admitted)]
+    [InlineData("Qwen1.5-MoE-A2.7B-Chat.Q4_K_M.gguf", HandoffStatus.Admitted)]
     [InlineData("DeepSeek-V2-Lite-Chat.Q2_K.gguf", HandoffStatus.Incompatible)]      // MLA
     [InlineData("LFM2-8B-A1B-Q4_K_M.gguf", HandoffStatus.Incompatible)]               // short-conv state
     [InlineData("granite-4.0-h-small-Q2_K.gguf", HandoffStatus.Incompatible)]         // Mamba-2 state
@@ -126,6 +128,8 @@ public sealed class PrefillHandoffFamiliesTests
     public void RealHeaders_ClassifyAsExpected(string file, HandoffStatus expected)
     {
         string? path = null;
+        var external = Path.Combine(@"H:\_models", file);
+        if (File.Exists(external)) path = external;
         for (var dir = new DirectoryInfo(Directory.GetCurrentDirectory()); dir is not null && path is null; dir = dir.Parent)
             foreach (var sub in new[] { "models", Path.Combine("models", "_models") })
             {

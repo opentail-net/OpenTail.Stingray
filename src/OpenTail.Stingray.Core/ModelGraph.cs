@@ -630,6 +630,18 @@ public sealed record ModelHyperparams
                     break;
                 }
 
+        // Routed-expert width. Newer GGUFs carry expert_feed_forward_length; older converts (Qwen1.5-MoE-A2.7B, qwen2moe) do not,
+        // and feed_forward_length is then the DENSE width (5632 there), not the experts' (1408). The stacked expert tensor
+        // [embDim, expertFfn, nExperts] has the real width, so read it from there, as llama.cpp does for the missing key.
+        int expertFfnFromTensor = 0;
+        if (isMoE && GetInt(metadata, $"{arch}.expert_feed_forward_length") <= 0)
+            foreach (var l in new[] { 0, 1, GetInt(metadata, $"{arch}.leading_dense_block_count", 0) })
+                if (tensorSource?.FindTensor($"blk.{l}.ffn_gate_exps.weight") is { Dimensions.Length: 3 } gx)
+                {
+                    expertFfnFromTensor = (int)gx.Dimensions[1];
+                    break;
+                }
+
         // NoPE: every Nth layer skips RoPE entirely. Hardcoded in llama.cpp rather than stored in
         // GGUF metadata, for both architectures that use it — Llama-4 (`llama.cpp` sets
         // n_no_rope_layer_step = 4) and SmolLM3 (`models/smollm3.cpp` does the same). The gate
@@ -1323,7 +1335,7 @@ public sealed record ModelHyperparams
             NumExperts = numExperts,
             NumActiveExperts = numActiveExperts,
             ExpertIntermediateDim = GetInt(metadata, $"{arch}.expert_feed_forward_length",
-                                       GetInt(metadata, $"{arch}.feed_forward_length")),
+                                       expertFfnFromTensor > 0 ? expertFfnFromTensor : GetInt(metadata, $"{arch}.feed_forward_length")),
             HasSharedExpert = hasSharedExpert,
             SharedExpertIntermediateDim = sharedExpertDim,
             NumSharedExperts = GetInt(metadata, $"{arch}.expert_shared_count", hasSharedExpert ? 1 : 0),
