@@ -91,6 +91,12 @@ Evidence: `Qwen2MoeGreedyParityTests` (teacher-forced against `llama-server`, 1.
 
 Also found while checking Mixtral (not fixed, belongs to step 2): `NormalizeMoeTopKWeights` defaults to false for any architecture without an `expert_weights_norm` key, which includes `llama`; Mixtral needs renormalised top-2 weights (llama.cpp `build_moe_ffn` with `norm_w = true`).
 
+### 2. Mixtral-style (`llama` + experts), in progress (2026-10-04)
+- **Checkpoint search:** the common Mixtral GGUFs (TheBloke, MaziyarPanahi, 2023) use the legacy per-expert tensor layout (`blk.N.ffn_gate.E.weight`, 995 tensors) that this engine does not load; stacked-layout (`ffn_gate_exps`) ones exist from newer converts. Header-sniffed with HTTP range requests before downloading. Legacy-layout support would be a separate loader task.
+- **Bug fixed:** `NormalizeMoeTopKWeights` defaulted to false for `llama` (no `expert_weights_norm` key), but llama.cpp's `llama` builder passes `norm_w = true` for experts. Fixed in `ModelGraph`.
+- **Stage A on TinyLlama-4x1.1B-MoE Q4_K_M** (4 experts top-2, 1.9 GB): `MixtralStyleGreedyParityTests` teacher-forced against `llama-server` (BOS added), 7 of 22 and 11 of 32 confident positions all match; second-half PPL (-c 512) 10.5418 vs `llama-perplexity` 10.1558 ± 1.71.
+- **Stage B on the tiny model: not receipted.** The handoff is byte-exact (K/V and prefill logits identical to the CPU pass, 1 and 4 GPU layers), but decode after the handoff differs from decode after the sequential hybrid prefill at one step in both splits (cosine 0.973 and 0.975; at 4 GPU layers an argmax flip with a 4.7% gap). The suspected cause is a near-tied router in this mergekit-made model (a hybrid-GPU versus CPU K/V difference of a few ulps flips the chosen expert), not the handoff; not proven. The two test rows were removed again; a real Mixtral-8x7B (stacked layout, 26.7 GB, Nous-Hermes-2-Mixtral-8x7B-DPO i1-Q4_K_S) is being downloaded to settle it.
+
 ## Review feedback, parked for later consideration (2026-10-04)
 
 An outside review of this plan, recorded here and **not yet acted on**. I checked point 1 against the code: it is correct as stated, and it also means the CUDA hybrid path (never run) is currently admitted for the same three families as the Vulkan hybrid.
