@@ -12,7 +12,7 @@ public static class ModelCompatibility
     private static readonly HashSet<string> s_textGenerationArchitectures = new(StringComparer.OrdinalIgnoreCase)
     {
         // Decoder-only transformer profiles exercised by OpenTail's forward passes.
-        "llama", "llama4",
+        // llama, llama4 -> Architectures/LlamaArchitecture.cs, Llama4Architecture.cs (descriptors win over this list).
         "qwen", "qwen2", "qwen2moe", "qwen3", "qwen3moe",
         // qwen2vl -- admitted 2026-08-18 (docs/089) SCOPED TO TEXT-ONLY use (no image/video
         // tokens ever fed through this engine): confirmed against the real vendored
@@ -37,7 +37,7 @@ public static class ModelCompatibility
         // next-token-prediction head (correctly ignored by both engines in non-speculative mode).
         "qwen35", "qwen35moe",
         "mimo", "mimo2",
-        "gemma", "gemma2", "gemma3", "gemma3n", "gemma4",
+        "gemma", "gemma2", "gemma3", "gemma3n",
         // phimoe — was allowlisted without a receipt and produced word salad. Fixed 2026-09-26
         // (RMSNorm + bias instead of LayerNorm, output.bias, top-k weight renormalization,
         // LongRoPE short/long factors chosen by context size + rope.scaling.attn_factor).
@@ -94,16 +94,6 @@ public static class ModelCompatibility
         // (DeepSeek2GreedyParityTests); Q8_0 on a 195-token prompt: first-token top-5 in the same
         // order with gaps within 0.17 logits, 14/24 exact then a flip at a 0.15-logit near-tie.
         "deepseek2",
-        // granite — admitted 2026-08-08 on FULL 24-token exact greedy match against llama.cpp
-        // (stronger than the olmoe receipt above, which only reaches a 2-token prefix). Needs a
-        // "scale trio" + attention-scale override beyond the plain llama trunk, read from GGUF
-        // metadata (ModelHyperparams.ResidualScale/AttentionScaleOverride/LogitScale, generalized
-        // EmbeddingScale) — see GraniteGreedyParityTests and docs/done/01-gguf-model-coverage-plan.md
-        // §1d for the receipt and for what is NOT yet wired (TurboQuant prefill, continuous-batching
-        // admission, CUDA/Vulkan). MiniCPM (not MiniCPM3 — that's MLA, a different architecture)
-        // shares this exact graph in llama.cpp and reuses the same implementation, unvalidated here
-        // pending a permissively-licensed checkpoint on a llama.cpp build that can serve as an oracle.
-        "granite",
         // smollm3 — one twist over the plain llama trunk: NoPE every 4th layer, gated the same way
         // as llama4's noRopeStep. See SmolLm3GreedyParityTests for the full 24-token greedy receipt.
         "smollm3",

@@ -28,7 +28,7 @@ not part of this work.
 
 - [x] 1. Registry + `gemma4`, `granite`, `llama`, `llama4`; CLI and server read thinking default and fallback chat format from it.
 - [x] 2. The seven "NOT admitted" blocks (`glm-dsa`, `glm5next`, `diffusion-gemma`, `qwen4exp`, `deepseek41`, `deepseek4`, `deepseek32`) become `NotAdmitted` descriptors; `muse-glimmer` (+ `muse_glimmer` alias) becomes `Admitted`. The refusal message now quotes the descriptor's reason and record.
-- [ ] 3. Remove the now-duplicate legacy entries for `gemma4`, `granite`, `llama`, `llama4` (their evidence comments move into descriptor files).
+- [x] 3. Remove the now-duplicate legacy entries for `gemma4`, `granite`, `llama`, `llama4` (their evidence comments move into descriptor files).
 - [ ] 4. Move the remaining admitted allowlist entries into descriptors, grouped by trunk family (llama-like, qwen, gemma, phi, rwkv, deepseek2, ...), carrying each evidence comment into the file. Mechanical; no behaviour change. Reconcile the stale `minicpm` "NOT admitted" note that was removed in step 2: the allowlist entry says admitted 2026-09-01.
 - [ ] 5. `Experimental` for gated families (PRISM is a quant-type gate in `ValidateForTextGeneration`, not an architecture, so it stays there unless it gets its own flag).
 - [ ] 6. Forward-pass factory field + `SupportedBackends`, replacing the hand-written selection in `InferenceEngineLoader` / `RunCommand` (`gpt-oss`, `rwkv*`, hybrid GDN, ...).

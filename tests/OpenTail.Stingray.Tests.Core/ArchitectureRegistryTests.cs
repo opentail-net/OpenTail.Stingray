@@ -104,4 +104,22 @@ public sealed class ArchitectureRegistryTests
         foreach (var d in ArchitectureRegistry.All.Where(d => d.Status == AdmissionStatus.NotAdmitted))
             Assert.False(ModelCompatibility.IsTextGenerationArchitectureSupported(d.Id));
     }
+
+    [Fact]
+    public void MigratedDescriptorIds_AreNotAlsoInTheLegacyAllowlist()
+    {
+        // Single source of truth: once a family has a descriptor its allowlist entry must go, or the
+        // two could silently disagree. Detected via reflection-free source scan of the allowlist.
+        string? root = AppContext.BaseDirectory;
+        while (root is not null && !File.Exists(Path.Combine(root, "CLAUDE.md")))
+            root = Path.GetDirectoryName(root);
+        string src = File.ReadAllText(Path.Combine(root!, "src/OpenTail.Stingray.Engine/ModelCompatibility.cs"));
+        int start = src.IndexOf("s_textGenerationArchitectures = new", StringComparison.Ordinal);
+        int end = src.IndexOf("};", start, StringComparison.Ordinal);
+        string list = string.Join(Environment.NewLine, src[start..end]
+            .Split('\n').Where(l => !l.TrimStart().StartsWith("//")));
+        foreach (var d in ArchitectureRegistry.All)
+            foreach (var name in d.Aliases.Prepend(d.Id))
+                Assert.DoesNotContain($"\"{name}\"", list);
+    }
 }
