@@ -153,14 +153,70 @@ The CPU and Vulkan runs are **not token-identical** (first difference at generat
 
 ### Optional architecture models
 
-A local `models/_models/gpt-oss-20b-MXFP4.gguf` is present (12,109,566,624 bytes), so it was run on CPU, greedy, `-n 24`; it completed successfully, using the architecture-specific `gpt-oss` CPU pass. Exact command:
+A local `models/_models/gpt-oss-20b-MXFP4.gguf` is present (12,109,566,624 bytes). A local `models/_models/DeepSeek-V2-Lite-Chat.Q2_K.gguf` is also present (6,430,464,768 bytes). Both were run before the CLI migration, greedy, `-n 16`, with the architecture-specific CPU pass and full Vulkan path respectively. Both Vulkan runs used `Vulkan GPU (AMD Radeon(TM) Graphics)` and all layers on GPU. There is no local RWKV GGUF.
+
+#### gpt-oss-20b MXFP4 — CPU
 
 `src/OpenTail.Stingray.Cli/bin/Release/net10.0/stingray.exe -m models/_models/gpt-oss-20b-MXFP4.gguf -p "The capital of France is" -n 24 --temp 0 -g 0 --seed 1 --verbose-prompt --no-display-prompt`
+
+Re-run for the step-6 CLI migration at `-n 16`:
+
+`src/OpenTail.Stingray.Cli/bin/Release/net10.0/stingray.exe -m models/_models/gpt-oss-20b-MXFP4.gguf -p "The capital of France is" -n 16 --temp 0 -g 0 --seed 1 --verbose-prompt --no-display-prompt`
 
 Rendered prompt IDs (65): `200006, 17360, 200008, 3575, 553, 17554, 162016, 11, 261, 4410, 6439, 2359, 22203, 656, 7788, 17527, 558, 87447, 100594, 25, 220, 1323, 19, 12, 3218, 198, 6576, 3521, 25, 1202, 30377, 289, 25, 14093, 279, 2, 13888, 18403, 25, 8450, 11, 49159, 11, 1721, 13, 21030, 2804, 413, 7360, 395, 1753, 3176, 13, 200007, 200006, 1428, 200008, 976, 9029, 328, 10128, 382, 200007, 200006, 173781`.
 
 Generated text (24 tokens; text inside quotes is rendered as `"The capital of France is"`): `<|channel|>analysis<|message|>The user says: "The capital of France is". They likely want the answer. The correct answer:`
 
 Generated token IDs: `200005, 35644, 200008, 976, 1825, 5003, 25, 392, 976, 9029, 328, 10128, 382, 4050, 3164, 6960, 1682, 290, 6052, 13, 623, 6145, 6052, 25`.
+
+Additional `-n 16` run used for the Section 5 CPU/Vulkan comparison, with the same CPU command except `-n 16`: prompt IDs matched the 65 IDs above. Generated text: `<|channel|>analysis<|message|>The user says: "The capital of France is". They likely`; token IDs: `200005, 35644, 200008, 976, 1825, 5003, 25, 392, 976, 9029, 328, 10128, 382, 4050, 3164, 6960`.
+
+#### gpt-oss-20b MXFP4 — full Vulkan
+
+Exact command (same prompt and generation settings as CPU, using `-g -1 --backend vulkan`):
+
+`src/OpenTail.Stingray.Cli/bin/Release/net10.0/stingray.exe -m models/_models/gpt-oss-20b-MXFP4.gguf -p "The capital of France is" -n 16 --temp 0 -g -1 --backend vulkan --seed 1 --verbose-prompt --no-display-prompt`
+
+Prompt IDs (65) are identical to the gpt-oss CPU baseline above. Generated text and IDs matched the CPU baseline exactly: `<|channel|>analysis<|message|>The user says: "The capital of France is". They likely`; `200005, 35644, 200008, 976, 1825, 5003, 25, 392, 976, 9029, 328, 10128, 382, 4050, 3164, 6960`.
+
+#### DeepSeek-V2-Lite-Chat Q2_K — CPU
+
+Exact command:
+
+`src/OpenTail.Stingray.Cli/bin/Release/net10.0/stingray.exe -m models/_models/DeepSeek-V2-Lite-Chat.Q2_K.gguf -p "The capital of France is" -n 16 --temp 0 -g 0 --seed 1 --verbose-prompt --no-display-prompt`
+
+Prompt tokens (12): `100000, 5726, 25, 429, 6077, 280, 7239, 317, 185, 185, 77398, 25`.
+
+Generated text (16 tokens): ` Paris is the capital of France.\n\n*** Please note that this answer was`.
+
+Generated token IDs: `8913, 317, 254, 6077, 280, 7239, 13, 185, 185, 16656, 6456, 4347, 344, 437, 3510, 438`.
+
+#### DeepSeek-V2-Lite-Chat Q2_K — full Vulkan / DeepSeek2 MLA
+
+Exact command:
+
+`src/OpenTail.Stingray.Cli/bin/Release/net10.0/stingray.exe -m models/_models/DeepSeek-V2-Lite-Chat.Q2_K.gguf -p "The capital of France is" -n 16 --temp 0 -g -1 --backend vulkan --seed 1 --verbose-prompt --no-display-prompt`
+
+Prompt IDs (12) are identical to the DeepSeek2 CPU baseline above. Generated text (16 tokens): ` Paris is the capital of France.\n\nWould you like to know more about`.
+
+Generated token IDs: `8913, 317, 254, 6077, 280, 7239, 13, 185, 185, 18684, 340, 837, 276, 1006, 691, 786`.
+
+The DeepSeek2 CPU and full-Vulkan generated vectors differ beginning at generated token index 9 (`***` CPU vs `Would` Vulkan); each is a frozen execution-path baseline, not a parity claim. gpt-oss CPU and Vulkan vectors match for these 16 tokens.
+
+### CLI refusal baselines (pre-migration)
+
+All commands below used the unchanged CLI built in Release. Exact stderr lines:
+
+| Model / options | Exit | Error line |
+|---|---:|---|
+| SmolLM2-135M `--tq-mode bogus` | 1 | `Error: Unknown --tq-mode value 'bogus'. Expected one of: auto, lloydmax, kvarn.` |
+| SmolLM2-135M `--tq-mode kvarn` without `--tq` | 1 | `Error: --tq-mode kvarn requires --tq.` |
+| gpt-oss-20b `--tq --draft-lookup` | 1 | `Error: gpt-oss runs on its own CPU forward pass, which supports neither TurboQuant nor speculative decoding.` |
+
+No hybrid-GDN GGUF or RWKV GGUF was found locally; the hybrid-GDN `--tq` refusal is therefore not captured against a real model, and RWKV remains selector-test-only.
+
+### Server CPU baseline for Section 4
+
+Started the Release server host on `http://127.0.0.1:5261` with `STINGRAY_MODEL=models/_models/SmolLM2-135M-Instruct-Q4_K_M.gguf`, `STINGRAY_N_GPU_LAYERS=0`, configuration `OpenTail:Stingray:Sampling:RepetitionPenalty=1.1`, and `MaxNewTokens=24`. Sent a `/v1/chat/completions` request with user content `Write a short story: Once upon a time`, `temperature=0`, `max_tokens=24`. Response: 39 prompt tokens, 24 completion tokens, exact text `Once upon a time, there lived a young girl named Lily. She was always curious and loved to explore her surroundings.` This matches the frozen S1 CLI CPU text exactly.
 
 No local RWKV GGUF was found under `models/_models`. Timing is excluded; runs were not repeated for statistical performance measurement.
