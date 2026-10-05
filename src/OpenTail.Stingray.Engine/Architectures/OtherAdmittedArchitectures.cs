@@ -31,7 +31,7 @@ internal static class OtherAdmittedArchitectures
         Id = "olmoe",
         Status = AdmissionStatus.Admitted,
         StatusExemption = "Covered by the generic 'LLM inference (GGUF)' row; the MoE partial-offload row is a backend capability, not a family verification row.",
-        EvidenceDoc = "docs/STATUS.md",
+        EvidenceDoc = "docs/done/01-gguf-model-coverage-plan.md",
     };
 
     // gpt-oss — admitted 2026-09-26. Runs on its own GptOssForwardPass (CPU only; attention
@@ -318,7 +318,7 @@ internal static class OtherAdmittedArchitectures
         Id = "lfm2moe",
         Status = AdmissionStatus.Admitted,
         StatusAnchor = "Liquid LFM2-MoE (`lfm2moe`)",
-        EvidenceDoc = "docs/STATUS.md",
+        EvidenceDoc = "docs/done/12-lfm2moe-batched-per-token-parity-plan.md",
     };
 
     // internlm2 -- ADMITTED 2026-09-01. Was blocked purely on the tokenizer axis (same as
