@@ -522,6 +522,38 @@ public static class InferenceEngineLoader
         List<IDisposable> owned, long prefillDequantCacheBytes,
         bool preferBatchingOverAutoSnapKv = false)
     {
+        ForwardPassDecision SelectPass(ServerBackend requestedBackend, int requestedGpuLayers,
+            bool unsupportedPartialVulkanPath = false)
+        {
+            var request = new ForwardPassRequest
+            {
+                Frontend = ForwardPassFrontend.Server,
+                Architecture = arch,
+                IsHybridSsm = hp.IsHybridSsm,
+                HasHybridGdnLayers = hp.IsHybridSsm,
+                IsMoE = hp.IsMoE,
+                KvLoraRank = hp.KvLoraRank,
+                HasMlaTensors = model.FindTensor("blk.0.attn_kv_b.weight") is not null
+                    && model.FindTensor("blk.0.attn_q_a.weight") is null,
+                NumLayers = hp.NumLayers,
+                GpuLayers = requestedGpuLayers,
+                Backend = requestedBackend switch
+                {
+                    ServerBackend.Cpu => ForwardPassBackend.Cpu,
+                    ServerBackend.Cuda => ForwardPassBackend.Cuda,
+                    ServerBackend.Vulkan => ForwardPassBackend.Vulkan,
+                    _ => ForwardPassBackend.Auto,
+                },
+                CudaAvailable = requestedBackend == ServerBackend.Cuda,
+                TurboQuant = turboQuant,
+                HeadDim = hp.HeadDim,
+                LayerHeadDim = hp.LayerHeadDim is not null,
+                HasLayerHeadDim = hp.LayerHeadDim is not null,
+                UnsupportedPartialVulkanPath = unsupportedPartialVulkanPath,
+            };
+            return ForwardPassSelection.Select(request);
+        }
+
         // TurboQuant quantizer resolution (issue #432): TqMode "auto" prefers KVarN
         // wherever the resolved path supports it and falls back to Lloyd-Max 3-bit —
         // which severely degrades quality on QK-norm models such as Qwen3 — with a
@@ -556,10 +588,8 @@ public static class InferenceEngineLoader
         // Features the GPU layer loops don't implement (MLA, LayerNorm, parallel residual, learned
         // positions, non-gated FFN): run on CPU rather than compute silently wrong logits.
         // DeepSeek2 (MLA): its own full-offload Vulkan pass (no CUDA / -g N / TurboQuant path).
-        if (hp.KvLoraRank > 0 && nGpuLayers != 0 && !turboQuant
-            && model.FindTensor("blk.0.attn_kv_b.weight") is not null && model.FindTensor("blk.0.attn_q_a.weight") is null
-            && backend is ServerBackend.Auto or ServerBackend.Vulkan
-            && (nGpuLayers < 0 || nGpuLayers >= hp.NumLayers))
+        var initialSelection = SelectPass(backend, nGpuLayers);
+        if (initialSelection.Kind == ForwardPassKind.DeepSeek2Vulkan)
         {
             var vk = new VulkanBackend();
             owned.Add(vk);
@@ -601,10 +631,12 @@ public static class InferenceEngineLoader
         }
 
         // RWKV (rwkv6, rwkv7) is recurrent (no KV cache) and runs only on its own CPU forward pass.
-        if (RwkvForwardPassBase.IsRwkv(arch))
+        var architectureSelection = SelectPass(backend, nGpuLayers);
+        var architectureFamily = ArchitectureRegistry.Find(arch)?.ForwardPassFamily ?? ForwardPassFamily.Dense;
+        if (architectureFamily == ForwardPassFamily.Rwkv)
         {
-            if (turboQuant)
-                throw new InvalidOperationException("TurboQuant is not supported for RWKV (no KV cache).");
+            if (architectureSelection.Refusal is { } refusal)
+                throw new InvalidOperationException(refusal);
             if (backend != ServerBackend.Cpu)
                 Console.Error.WriteLine("[InferenceEngineLoader] RWKV has no GPU forward pass yet; running on CPU.");
             var rwkv = RwkvForwardPassBase.Create(model);
@@ -613,13 +645,13 @@ public static class InferenceEngineLoader
         }
 
         // gpt-oss runs only on its own CPU forward pass (sinks, SWA, biased MoE, OAI SwiGLU, YaRN).
-        if (arch == "gpt-oss")
+        if (architectureFamily == ForwardPassFamily.GptOss)
         {
-            if (turboQuant)
-                throw new InvalidOperationException("TurboQuant is not supported for gpt-oss.");
+            if (architectureSelection.Refusal is { } refusal)
+                throw new InvalidOperationException(refusal);
             var gptOssHp = GptOssHyperparams.FromModel(model);
             // Full Vulkan offload only (GptOssGpuForwardPass); CUDA and a -g N split run on CPU.
-            if (backend == ServerBackend.Vulkan && (nGpuLayers < 0 || nGpuLayers >= gptOssHp.NumLayer))
+            if (architectureSelection.Kind == ForwardPassKind.GptOssVulkan)
             {
                 var vk = new VulkanBackend();
                 owned.Add(vk);
@@ -640,7 +672,8 @@ public static class InferenceEngineLoader
         // CPU path: covers hybrid GDN (HybridGdnForwardPass) and dense (ForwardPass).
         if (backend == ServerBackend.Cpu)
         {
-            if (hp.IsHybridSsm)
+            var cpuSelection = SelectPass(ServerBackend.Cpu, 0);
+            if (cpuSelection.Kind == ForwardPassKind.CpuHybridGdn)
             {
                 var hybrid = new HybridGdnForwardPass(model, cpuBackend, hp);
                 owned.Add(hybrid);
@@ -676,7 +709,8 @@ public static class InferenceEngineLoader
             var cuda = CudaBackend.Create();
             owned.Add(cuda);
 
-            if (hp.IsHybridSsm)
+            var cudaSelection = SelectPass(ServerBackend.Cuda, nGpuLayers);
+            if (cudaSelection.Kind == ForwardPassKind.CudaHybridGdn)
             {
                 // Layer placement for hybrid GDN is driven by hp.LayerTypes, not VRAM
                 // budget — so TierPlanner is skipped and we always claim "all layers
@@ -702,14 +736,15 @@ public static class InferenceEngineLoader
             if (nGpuLayers == -1)
                 gpuLayers = ClampGemma4KvShareBoundary(hp, gpuLayers);
 
-            if (gpuLayers <= 0)
+            var denseSelection = SelectPass(ServerBackend.Cuda, gpuLayers);
+            if (denseSelection.Kind == ForwardPassKind.CpuDense)
             {
                 // GPU planner says nothing fits — fall back to CPU dense.
                 if (turboQuant) cpuDense!.EnableTurboQuant(fp32WindowSize: 256, bits: 3, quantizer: ResolveTq(null));
                 return (cpuDense!, BatchingSupported: !hp.IsMoE && !turboQuant, GpuWeightBytesExact: null);
             }
 
-            if (gpuLayers >= hp.NumLayers)
+            if (denseSelection.Kind == ForwardPassKind.CudaDense)
             {
                 // #196 Option 2: when batching is requested, suppress the VRAM-scaled SnapKV
                 // auto-enable (prefer pure batching over routing every sequence through the slower
@@ -741,6 +776,9 @@ public static class InferenceEngineLoader
                 return (cfwd, batches, GpuWeightBytesExact: null); // full offload — EstimatedModelBytes is already exact
             }
 
+            if (denseSelection.Kind != ForwardPassKind.CudaHybrid)
+                throw new InvalidOperationException($"Unexpected CUDA forward-pass selection: {denseSelection.Kind}.");
+
             // pinGpuLayers (not a `with { GpuLayers = }` override) so the expert-cache budget the
             // MoE CPU-vs-SLRU auto-decision reads is priced for THIS split, not the auto one (#224).
             // The hybrid pass has no KVarN machinery — resolve for the throw/warn side effect
@@ -762,7 +800,8 @@ public static class InferenceEngineLoader
             var vulkan = new VulkanBackend();
             owned.Add(vulkan);
 
-            if (hp.IsHybridSsm)
+            var vulkanSelection = SelectPass(ServerBackend.Vulkan, nGpuLayers);
+            if (vulkanSelection.Kind == ForwardPassKind.VulkanHybridGdn)
             {
                 // Layer placement for hybrid GDN is driven by hp.LayerTypes, not VRAM budget —
                 // so TierPlanner is skipped and we claim "all layers on GPU" (GDN/attn routing
@@ -784,13 +823,14 @@ public static class InferenceEngineLoader
                 ? TierPlanner.Plan(model, hp, hwProfile, turboQuant, requestedCtxSize: ctxSize).GpuLayers
                 : nGpuLayers;
 
-            if (gpuLayers <= 0)
+            var denseSelection = SelectPass(ServerBackend.Vulkan, gpuLayers);
+            if (denseSelection.Kind == ForwardPassKind.CpuDense)
             {
                 if (turboQuant) cpuDense!.EnableTurboQuant(fp32WindowSize: 256, bits: 3, quantizer: ResolveTq(null));
                 return (cpuDense!, BatchingSupported: !hp.IsMoE && !turboQuant, GpuWeightBytesExact: null);
             }
 
-            if (gpuLayers >= hp.NumLayers)
+            if (denseSelection.Kind == ForwardPassKind.VulkanDense)
             {
                 // Vulkan TQ is Lloyd-Max only — resolve for the throw/warn side effect.
                 _ = ResolveTq(TqSupport.VulkanReason);
@@ -800,8 +840,9 @@ public static class InferenceEngineLoader
                 return (gfwd, BatchingSupported: false, GpuWeightBytesExact: null); // full offload — EstimatedModelBytes is already exact
             }
 
-            if ((hp.LayerHeadDim is not null || GpuForwardPass.PartialOffloadUnsupportedReason(model, hp) is not null)
-                && !turboQuant)
+            var partialSelection = SelectPass(ServerBackend.Vulkan, gpuLayers,
+                GpuForwardPass.PartialOffloadUnsupportedReason(model, hp) is not null);
+            if (partialSelection.Kind == ForwardPassKind.VulkanLayerSplit)
             {
                 // -g N for Gemma 4 and for architectures HybridForwardPass has no path for: GPU
                 // layers [0, N) + CPU layers [N, L) (VulkanLayerSplitForwardPass).
@@ -810,6 +851,9 @@ public static class InferenceEngineLoader
                 owned.Add(sfwd);
                 return (sfwd, BatchingSupported: false, GpuWeightBytesExact: null);
             }
+
+            if (partialSelection.Kind != ForwardPassKind.VulkanHybrid)
+                throw new InvalidOperationException($"Unexpected Vulkan forward-pass selection: {partialSelection.Kind}.");
 
             _ = ResolveTq(TqSupport.VulkanReason);
             var planForHybrid = TierPlanner.Plan(model, hp, hwProfile, turboQuant, requestedCtxSize: ctxSize,
