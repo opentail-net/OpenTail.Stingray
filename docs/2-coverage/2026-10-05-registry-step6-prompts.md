@@ -97,8 +97,9 @@ Tasks:
    a `BackendLimitation` string (required when not all backends are supported, like TensorSharp's `MultiGpuLimitation`).
    Extend `Validate()` accordingly.
 2. Populate them **only from constraints the code already enforces** (cite the file:line in a comment on each descriptor
-   you change): rwkv6/rwkv7 (CPU only), gpt-oss (CPU, Vulkan full-offload only), deepseek2 and deepseek2-ocr (MLA: Vulkan
-   full offload, no CUDA), muse-glimmer (CPU only; unsupported GPU requests fall back to CPU, as the existing loader does). Leave every other descriptor at defaults. If a
+   you change): rwkv6/rwkv7 (CPU only), gpt-oss (CPU, Vulkan full-offload only), deepseek2 only (MLA: Vulkan
+   full offload, no CUDA; `deepseek2-ocr` stays `Dense` / `SupportedBackends.All`, asserted in `ArchitectureRegistryTests`,
+   and the MLA pass is chosen by shape, i.e. `KvLoraRank` + tensor presence, not by architecture name), muse-glimmer (CPU only; unsupported GPU requests fall back to CPU, as the existing loader does). Leave every other descriptor at defaults. If a
    constraint is unclear, leave the default and list it in your report; never guess.
 3. Make `ForwardPassSelection.Select` consult the descriptor (via `ArchitectureRegistry.Find`) for the arch-driven rows
    instead of string comparisons, keeping every S2 test green with unchanged expectations.
