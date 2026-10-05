@@ -2,7 +2,7 @@
 
 **Generated:** by `scripts/gen-cli-option-inventory.ps1`, which scans `[CommandOption]` /
 `[Description]` pairs under `src/OpenTail.Stingray.Cli`. Last regenerated **2026-09-28**, recording
-**221 option declarations** across 22 command files — the same count the
+**225 option declarations** across 23 command files — the same count the
 `StaticPlanConfigurationTests` guard enforces against source. (Reconciled 12 rows of drift, caught
 by CI failing `CliOptionInventory_DeclaredCountMatchesSource` on `main`: three new commands —
 `AdmitArchCommand`, `GenVisionScaffoldCommand` and `PullCommand`, see `docs/reference/061-coverage-tooling.md` —
@@ -11,7 +11,7 @@ rows are unclassified**, as are 8 `ImageCommand` rows (`--control-image`, `--con
 `--control-strength`, `--init-image`, `--mask-image`, `--sampler`, `--strength`, `--video-frames`)
 that were already blank; they need the classification pass described below. 2026-09-28: `ModelsCommand` and
 `SetupCommand` added, docs/103 item 16; 2026-10-01: `GgufTransplantCommand` (6 rows, classified `expert`; docs/1-correctness/08); the script's attribute regex now also matches named arguments such as
-`Positional = true`.)
+`Positional = true`. 2026-10-05, reconciled by hand because the generator needs PowerShell: `CalibrateCommand` added (4 rows, unclassified: `--no-gpu`, `--no-save`, `--seconds`, `--tokens`), and the `SttCommand --model` description refreshed to include `citrinet`.)
 
 The tables below are no longer hand-maintained. Regenerate with the script rather than editing rows
 by hand; `-Check` exits non-zero when they are stale.
@@ -80,6 +80,15 @@ hoc at each read site rather than in one place.
 | `--prompt <TEXT>` |  | Raw prompt to tokenize and greedy-decode (no chat template applied) |
 | `--reference-tokens <IDS>` |  | Comma-separated reference token ids (from llama.cpp or another oracle) to compare against, e.g. from `llama-server .../completion` with return_tokens:true |
 | `--tokens <N>` |  | Number of greedy tokens to generate |
+
+## CalibrateCommand
+
+| Option | Class | Description |
+|---|---|---|
+| `--no-gpu` |  | Skip the GPU measurements |
+| `--no-save` |  | Print only; do not write the profile |
+| `--seconds <N>` |  | Window per measurement in seconds (default 2) |
+| `--tokens <N>` |  | Rows per expert for the prefill measurement (default 93, the OLMoE average) |
 
 ## DoctorCommand
 
@@ -376,7 +385,7 @@ hoc at each read site rather than in one place.
 |---|---|---|
 | `--input <PATH>` | stable | Input 16kHz WAV audio file path for Speech-to-Text transcription or translation. |
 | `--language <LANG>` | stable | Spoken language code (e.g. en, es, fr, de, zh, ja). Default: auto/en. |
-| `--model <VARIANT>` | stable | Whisper model architecture preset: tiny (default), base, small, medium, large-v3, or turbo; or voxtral; or sensevoice / paraformer (ONNX, pass the .onnx with --model-file; its tokens file is found next to it); or parakeet (GGUF via --model-file: TDT or CTC, default parakeet-tdt-0.6b-v2-q4_k.gguf). |
+| `--model <VARIANT>` | stable | Whisper model architecture preset: tiny (default), base, small, medium, large-v3, or turbo; or voxtral; or sensevoice / paraformer (ONNX, pass the .onnx with --model-file; its tokens file is found next to it); or parakeet (GGUF via --model-file: TDT or CTC, default parakeet-tdt-0.6b-v2-q4_k.gguf); or citrinet (GGUF via --model-file: default citrinet-asr-q8_0.gguf). |
 | `--model-file <PATH>` | stable | Path to a whisper.cpp GGML .bin checkpoint with real weights, a voxtral model directory, or a SenseVoice / Paraformer .onnx file. If omitted, searched for under ./models. |
 | `--no-timestamps` | stable | Disable timestamp-aligned subtitle segment generation. |
 | `--output <PATH>` | stable | Optional output file path to write the transcribed text or subtitle segments. |
