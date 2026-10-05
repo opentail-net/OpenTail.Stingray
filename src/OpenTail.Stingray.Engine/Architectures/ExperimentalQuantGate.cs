@@ -8,10 +8,13 @@ public sealed class ExperimentalQuantGate
     public required string Reason { get; init; }
     public required string EvidenceDoc { get; init; }
 
+    /// <summary>Caveat appended to the refusal, e.g. which backends can run it.</summary>
+    public required string Limitations { get; init; }
+
     public bool IsEnabled() => Environment.GetEnvironmentVariable(EnvironmentVariable) == "1";
 
     public string RefusalMessage =>
-        $"{Reason}; set {EnvironmentVariable}=1 to try it (CPU only, outputs unverified).";
+        $"{Reason}; set {EnvironmentVariable}=1 to try it ({Limitations}).";
 }
 
 public static class ExperimentalQuantGateRegistry
@@ -26,6 +29,7 @@ public static class ExperimentalQuantGateRegistry
             Reason = "This GGUF uses Bonsai2 PRISM weights (PQ2_0/PTQ1_0 with Hadamard transforms). " +
                 "Support is ported but not yet verified against the publisher's reference",
             EvidenceDoc = "docs/2-coverage/2026-10-02-tensorsharp-takeaways-plan.md",
+            Limitations = "CPU only, outputs unverified",
         },
     ];
 }
