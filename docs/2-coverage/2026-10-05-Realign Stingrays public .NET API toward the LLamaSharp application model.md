@@ -36,19 +36,19 @@ LLamaSharp reference repository:
 
 Study the current `master` branch and particularly:
 
-- [ ] `LLama/Abstractions/ILLamaExecutor.cs`
-- [ ] `LLama/Abstractions/IContextParams.cs`
-- [ ] `LLama/Abstractions/IModelParams.cs`
-- [ ] `LLama/Common/ModelParams.cs`
-- [ ] `LLama/Common/InferenceParams.cs`
-- [ ] `LLama/ChatSession.cs`
-- [ ] `LLama/InteractiveExecutor.cs`
-- [ ] `LLama/StatelessExecutor.cs`
-- [ ] `LLama/Batched/BatchedExecutor.cs`
-- [ ] `LLama/ChatHistory.cs`
-- [ ] `docs/Architecture.md`
-- [ ] `docs/Tutorials/Executors.md`
-- [ ] `docs/Tutorials/ChatSession.md`
+- [x] `LLama/Abstractions/ILLamaExecutor.cs`
+- [x] `LLama/Abstractions/IContextParams.cs`
+- [x] `LLama/Abstractions/IModelParams.cs`
+- [x] `LLama/Common/ModelParams.cs`
+- [x] `LLama/Common/InferenceParams.cs`
+- [x] `LLama/ChatSession.cs`
+- [x] `LLama/InteractiveExecutor.cs`
+- [x] `LLama/StatelessExecutor.cs`
+- [x] `LLama/Batched/BatchedExecutor.cs`
+- [x] `LLama/ChatHistory.cs`
+- [x] `docs/Architecture.md`
+- [x] `docs/Tutorials/Executors.md`
+- [x] `docs/Tutorials/ChatSession.md`
 
 Do not assume the LLamaSharp API from memory. Re-read the current source.
 
@@ -60,10 +60,10 @@ Do **not** mechanically rename Stingray classes to LLamaSharp names.
 
 In particular:
 
-- [ ] Do not introduce `LLamaWeights` merely because LLamaSharp has it;
-- [ ] Do not introduce LLaMA-specific naming into a runtime that supports Qwen, Gemma, RWKV, gpt-oss, DeepSeek, vision, diffusion, speech, etc.;
-- [ ] Do not make the Stingray core depend on LLamaSharp simply to obtain API compatibility;
-- [ ] Do not duplicate Stingray's engine underneath a second parallel API indefinitely.
+- [x] Do not introduce `LLamaWeights` merely because LLamaSharp has it;
+- [x] Do not introduce LLaMA-specific naming into a runtime that supports Qwen, Gemma, RWKV, gpt-oss, DeepSeek, vision, diffusion, speech, etc.;
+- [x] Do not make the Stingray core depend on LLamaSharp simply to obtain API compatibility;
+- [x] Do not duplicate Stingray's engine underneath a second parallel API indefinitely.
 
 Instead:
 
@@ -79,17 +79,17 @@ Inspect the current source before making changes.
 
 Important current concepts include:
 
-- [ ] `IInferenceEngine`
-- [ ] `InferenceEngine`
-- [ ] `ContinuousBatchingEngine`
-- [ ] `SamplingParams`
-- [ ] `GenerateChunk`
-- [ ] `GenerateChunkKind`
-- [ ] `ITokenizer`
-- [ ] Existing session/runtime classes
-- [ ] Current model loading/runtime ownership
-- [ ] Current server/CLI APIs
-- [ ] Architecture registry and forward-pass selection
+- [x] `IInferenceEngine`
+- [x] `InferenceEngine`
+- [x] `ContinuousBatchingEngine`
+- [x] `SamplingParams`
+- [x] `GenerateChunk`
+- [x] `GenerateChunkKind`
+- [x] `ITokenizer`
+- [x] Existing session/runtime classes
+- [x] Current model loading/runtime ownership
+- [x] Current server/CLI APIs
+- [x] Architecture registry and forward-pass selection
 
 The current engine already has useful semantics that should **not** be discarded merely to resemble LLamaSharp.
 
@@ -109,7 +109,7 @@ Usage
 Stop
 ```
 
-- [ ] Preserve this richer native capability.
+- [x] Preserve this richer native capability.
 
 The LLamaSharp-shaped API should be a natural public layer over this, not a replacement for useful typed Stingray functionality.
 
@@ -192,14 +192,14 @@ ChatHistory
 ChatSession
 ```
 
-- [ ] Prefer a neutral `Model` / `Context` concept rather than LLaMA-specific names.
-- [ ] Do not blindly use these exact names if they create ambiguity with existing .NET APIs; make the final choice deliberately and document it.
+- [x] Prefer a neutral `Model` / `Context` concept rather than LLaMA-specific names.
+- [x] Do not blindly use these exact names if they create ambiguity with existing .NET APIs; make the final choice deliberately and document it.
 
 ---
 
 ## API requirements
 
-- [ ] **1. Model lifecycle**
+- [x] **1. Model lifecycle**
   - The public API should permit:
     ```csharp
     var parameters = new ModelParams(modelPath)
@@ -224,19 +224,19 @@ ChatSession
   - The model/weights object must be reusable for multiple contexts where Stingray's implementation permits it.
   - Do not duplicate large model state unnecessarily.
 
-- [ ] **2. Context parameters**
+- [x] **2. Context parameters**
   - Create a coherent context-configuration abstraction inspired by LLamaSharp's `IContextParams`.
   - Only expose settings that Stingray actually supports or can sensibly represent.
   - Do not create fake properties purely for API similarity.
   - Where Stingray has concepts that LLamaSharp doesn't expose, keep them Stingray-specific (e.g. context length, batch/physical batch size, sequence count, embedding mode, thread controls, K/V cache types, RoPE/YaRN overrides, backend/device configuration).
   - Use evidence from the current Stingray implementation.
 
-- [ ] **3. Model parameters**
+- [x] **3. Model parameters**
   - Create a coherent model-load configuration type inspired by LLamaSharp `ModelParams`.
   - It should express things such as: model path, backend, GPU/device preferences, GPU layer count, context settings, relevant loading options.
   - Do not put generation/sampling options into model parameters.
 
-- [ ] **4. Inference parameters**
+- [x] **4. Inference parameters**
   - Realign `SamplingParams` toward an LLamaSharp-like `InferenceParams` concept if the archaeology shows that this improves the public API.
   - Do not merely rename the existing record; separate concerns where useful.
   - The preferred conceptual split is:
@@ -252,7 +252,7 @@ ChatSession
   - Preserve existing Stingray features such as: temperature, top-k, top-p, seed, max-new-token budget, stop tokens/sequences, logit bias, thinking controls, allowed choices / constraints, and other currently supported controls.
   - Do not remove capabilities just because LLamaSharp does not expose them under the same name.
 
-- [ ] **5. Executor model**
+- [x] **5. Executor model**
   - Provide the LLamaSharp-style conceptual executor separation:
     ```text
     InteractiveExecutor
@@ -274,7 +274,7 @@ ChatSession
     ```
   - Document exactly what each executor owns and what it does not.
 
-- [ ] **6. Common executor interface**
+- [x] **6. Common executor interface**
   - Create a small executor abstraction with the same broad usage pattern as LLamaSharp:
     ```csharp
     IAsyncEnumerable<string> InferAsync(
@@ -286,7 +286,7 @@ ChatSession
   - The interface should be intentionally small.
   - Do not put model registry, backend diagnostics, batching metrics, placement policy, or server-specific concepts into the basic executor interface (those belong elsewhere).
 
-- [ ] **7. Preserve Stingray typed generation**
+- [x] **7. Preserve Stingray typed generation**
   - The public API must continue to provide a richer typed stream in addition to the simple text stream:
     ```csharp
     IAsyncEnumerable<GenerateChunk> InferChunksAsync(...)
@@ -319,7 +319,7 @@ ChatSession
   - Where appropriate, preserve Stingray's existing session/KV-cache mechanisms rather than inventing an independent state system.
   - Do not copy LLamaSharp's transform architecture unless Stingray actually needs it.
 
-- [ ] **9. Batching**
+- [x] **9. Batching**
   - `BatchedExecutor` should map cleanly to Stingray's existing continuous batching implementation.
   - Do not promise batching merely because the type exists. Capability must reflect actual runtime:
     ```text
@@ -339,10 +339,10 @@ Treat the current Stingray public API as existing API.
 
 Before removing or renaming public types:
 
-- [ ] 1. Identify every production/test/sample use;
-- [ ] 2. Determine whether the old API is already published/advertised;
-- [ ] 3. Decide whether compatibility shims are appropriate;
-- [ ] 4. Avoid keeping two complete APIs forever.
+- [x] 1. Identify every production/test/sample use;
+- [x] 2. Determine whether the old API is already published/advertised;
+- [x] 3. Decide whether compatibility shims are appropriate;
+- [x] 4. Avoid keeping two complete APIs forever.
 
 If compatibility aliases are required, they must be extremely thin and documented as migration helpers.
 
@@ -374,13 +374,13 @@ engine
 
 Everything must continue to work with Stingray's existing constraints:
 
-- [ ] .NET 10
-- [ ] NativeAOT
-- [ ] `TreatWarningsAsErrors`
-- [ ] No reflection-based discovery
-- [ ] No dynamic code generation
-- [ ] No Python dependency
-- [ ] No llama.cpp/ggml runtime dependency
+- [x] .NET 10
+- [x] NativeAOT
+- [x] `TreatWarningsAsErrors`
+- [x] No reflection-based discovery
+- [x] No dynamic code generation
+- [x] No Python dependency
+- [x] No llama.cpp/ggml runtime dependency
 
 Do not introduce an abstraction that requires runtime reflection or dynamic proxy generation.
 
@@ -392,17 +392,17 @@ The public API must remain compatible with Stingray's current NativeAOT design.
 
 The following should remain engine concerns:
 
-- [ ] Architecture registry
-- [ ] Forward-pass selection
-- [ ] CPU/Vulkan/CUDA implementations
-- [ ] TierPlanner
-- [ ] MoE routing
-- [ ] KV/cache implementation
-- [ ] Tensor loading
-- [ ] Backend creation
-- [ ] Kernel selection
-- [ ] Placement
-- [ ] Quantisation implementation
+- [x] Architecture registry
+- [x] Forward-pass selection
+- [x] CPU/Vulkan/CUDA implementations
+- [x] TierPlanner
+- [x] MoE routing
+- [x] KV/cache implementation
+- [x] Tensor loading
+- [x] Backend creation
+- [x] Kernel selection
+- [x] Placement
+- [x] Quantisation implementation
 
 Executors should **coordinate** these components, not absorb their implementation.
 
@@ -455,11 +455,11 @@ Work in small commits.
     using the existing engine implementations.
   - Avoid duplicating inference algorithms.
 
-- [ ] **Commit 5 — ChatSession / ChatHistory**
+- [x] **Commit 5 — ChatSession / ChatHistory**
   - Build the high-level conversational API.
   - Reuse existing session/runtime functionality.
 
-- [ ] **Commit 6 — compatibility cleanup**
+- [x] **Commit 6 — compatibility cleanup**
   - Update samples/tests/documentation to use the new public API.
   - Only retain old API aliases where there is a concrete reason.
   - Delete duplicate public paths once all consumers migrate.
@@ -472,9 +472,9 @@ Add tests for the public API at the level a higher-level application would use i
 
 At minimum:
 
-- [ ] **API shape tests**: Verify the expected public types and core methods exist.
+- [x] **API shape tests**: Verify the expected public types and core methods exist.
 
-- [ ] **Lifecycle tests**:
+- [x] **Lifecycle tests**:
   ```text
   Model
   → Context
@@ -484,7 +484,7 @@ At minimum:
   ```
   Verify disposal order and failure behaviour.
 
-- [ ] **Text generation**:
+- [x] **Text generation**:
   - Use at least one existing small real GGUF.
   - Verify:
     - deterministic greedy generation
@@ -492,7 +492,7 @@ At minimum:
     - expected text
     - streaming completion
 
-- [ ] **Stateful session**:
+- [x] **Stateful session**:
   - Verify:
     ```text
     session turn 1
@@ -500,34 +500,34 @@ At minimum:
     ```
     retains conversation state correctly.
 
-- [ ] **Stateless executor**: Verify independent calls do not accidentally inherit previous state.
+- [x] **Stateless executor**: Verify independent calls do not accidentally inherit previous state.
 
-- [ ] **Batched executor**: Where a currently supported model/path exists, verify multiple requests generate independently and correctly.
+- [x] **Batched executor**: Where a currently supported model/path exists, verify multiple requests generate independently and correctly.
 
-- [ ] **Typed stream**:
+- [x] **Typed stream**:
   - Verify the simple text API and typed chunk API agree on user-facing text.
   - Verify thinking/usage/stop metadata remains available through the richer API.
 
-- [ ] **Tokenizer**: Expose tokenizer functionality only where the design calls for it, and test encode/decode behaviour against the existing `ITokenizer`.
+- [x] **Tokenizer**: Expose tokenizer functionality only where the design calls for it, and test encode/decode behaviour against the existing `ITokenizer`.
 
 ---
 
 ## LLamaSharp comparison tests
 
-- [ ] Create a small documentation/sample project or test fixture demonstrating the same conceptual task implemented twice:
+- [x] Create a small documentation/sample project or test fixture demonstrating the same conceptual task implemented twice:
   ```text
   LLamaSharp version
   Stingray version
   ```
-- [ ] Measure application-level similarity.
-- [ ] Do NOT require binary compatibility with LLamaSharp assemblies.
-- [ ] A wrapper should be able to abstract over the two implementations without having to understand Stingray internals.
+- [x] Measure application-level similarity.
+- [x] Do NOT require binary compatibility with LLamaSharp assemblies.
+- [x] A wrapper should be able to abstract over the two implementations without having to understand Stingray internals.
 
 ---
 
 ## Documentation
 
-- [ ] Update the README and relevant reference documentation so a new .NET developer can understand:
+- [x] Update the README and relevant reference documentation so a new .NET developer can understand:
   ```text
   Model
   Context
@@ -537,7 +537,7 @@ At minimum:
   ```
   within one page.
 
-- [ ] Include a "Coming from LLamaSharp" document:
+- [x] Include a "Coming from LLamaSharp" document:
   ```text
   LLamaSharp concept
   → Stingray concept
@@ -545,7 +545,7 @@ At minimum:
   ```
   Be explicit about deliberate differences.
 
-- [ ] Do not claim "LLamaSharp compatible" unless the implementation actually supports the claimed level of compatibility. Use more precise language such as:
+- [x] Do not claim "LLamaSharp compatible" unless the implementation actually supports the claimed level of compatibility. Use more precise language such as:
   > "LLamaSharp-shaped application API"
   or
   > "designed to make higher-level executor wrappers portable between LLamaSharp and Stingray"
@@ -557,16 +557,16 @@ At minimum:
 
 Before declaring completion, answer these questions in the final report:
 
-- [ ] 1. What parts of LLamaSharp were intentionally mirrored?
-- [ ] 2. What parts were intentionally NOT mirrored?
-- [ ] 3. Which current Stingray types were renamed?
-- [ ] 4. Which current Stingray types were split?
-- [ ] 5. Which current Stingray types were retained?
-- [ ] 6. Did any engine functionality get lost? The answer should be **no**.
-- [ ] 7. Can one higher-level wrapper target both implementations with only a thin backend-specific adapter?
-- [ ] 8. Is the public API still clearly a general AI runtime rather than a LLaMA wrapper?
-- [ ] 9. Is NativeAOT still clean?
-- [ ] 10. What migration burden remains for existing Stingray callers?
+- [x] 1. What parts of LLamaSharp were intentionally mirrored?
+- [x] 2. What parts were intentionally NOT mirrored?
+- [x] 3. Which current Stingray types were renamed?
+- [x] 4. Which current Stingray types were split?
+- [x] 5. Which current Stingray types were retained?
+- [x] 6. Did any engine functionality get lost? The answer should be **no**.
+- [x] 7. Can one higher-level wrapper target both implementations with only a thin backend-specific adapter?
+- [x] 8. Is the public API still clearly a general AI runtime rather than a LLaMA wrapper?
+- [x] 9. Is NativeAOT still clean?
+- [x] 10. What migration burden remains for existing Stingray callers?
 
 ### Important
 

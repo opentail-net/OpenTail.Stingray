@@ -390,6 +390,69 @@ public class PublicApiContractsTests
         Assert.Equal("User:Question", formatted);
     }
 
+    [Fact]
+    public async Task LlamaSharpPatternParity_EndToEndApplicationFlow()
+    {
+        // Demonstrates that a developer coming from LLamaSharp writes code with identical structure:
+        // 1. ModelParams & Model.Load
+        // 2. ContextParams & model.CreateContext
+        // 3. InteractiveExecutor
+        // 4. ChatSession
+        // 5. Dual-stream chat: string streaming and typed chunk streaming
+
+        var modelPath = Path.Combine("models", "_models", "all-MiniLM-L6-v2-Q8_0.gguf");
+        if (!File.Exists(modelPath)) return;
+
+        var modelParams = new ModelParams(modelPath)
+        {
+            GpuLayerCount = 0
+        };
+
+        using var model = Model.Load(modelParams);
+        var contextParams = new ContextParams
+        {
+            ContextSize = 2048,
+            BatchSize = 512
+        };
+
+        using var context = (ModelContext)model.CreateContext(contextParams);
+        var fakeEngine = new FakeInferenceEngine();
+        context.SetEngine(fakeEngine);
+
+        var executor = new InteractiveExecutor(context);
+        var session = new ChatSession(executor);
+        session.AddSystemMessage("You are an expert assistant.");
+
+        // First turn: simple text streaming
+        var responseTokens = new List<string>();
+        await foreach (var piece in session.ChatAsync("What is prefix caching?"))
+        {
+            responseTokens.Add(piece);
+        }
+
+        Assert.Equal("Hello world!", string.Concat(responseTokens));
+        Assert.Equal(3, session.History.Count);
+
+        // Second turn: rich chunk streaming preserving thinking and usage
+        var chunks = new List<GenerateChunk>();
+        var inferenceParams = new InferenceParams
+        {
+            MaxTokens = 100,
+            Temperature = 0.7f,
+            TopP = 0.9f
+        };
+
+        await foreach (var chunk in session.ChatChunksAsync("Can you elaborate?", inferenceParams))
+        {
+            chunks.Add(chunk);
+        }
+
+        Assert.Equal(5, session.History.Count);
+        Assert.Contains(chunks, c => c.Kind == GenerateChunkKind.Thinking);
+        Assert.Contains(chunks, c => c.Kind == GenerateChunkKind.Text);
+        Assert.Contains(chunks, c => c.Kind == GenerateChunkKind.Usage);
+    }
+
     private sealed class FakeInferenceEngine : IInferenceEngine
     {
         public string ModelId => "fake-model";

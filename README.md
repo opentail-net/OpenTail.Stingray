@@ -61,37 +61,28 @@ This saves `models/qwen2.5-0.5b-instruct-q4_k_m.gguf`. You can also download it 
 **3. Replace `Program.cs`**
 
 ```csharp
-using OpenTail.Stingray.Core;
-using OpenTail.Stingray.Cpu;
-using OpenTail.Stingray.Engine;
+using OpenTail.Stingray;
+using OpenTail.Stingray.Executors;
 
-// Load the model and its tokenizer, and run it on the CPU.
-using var model = GgufModel.Open("models/qwen2.5-0.5b-instruct-q4_k_m.gguf");
-var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
-var tokenizer = GgufTokenizer.FromGgufModel(model);
-using var cpu = new CpuBackend();
-var forward = new ForwardPass(model, cpu, hp, maxContextLength: 4096);
-await using var engine = new InferenceEngine(forward, tokenizer, "qwen", forward);
+// Load the model, allocate execution context, and drive interactive chat:
+using var model = Model.Load("models/qwen2.5-0.5b-instruct-q4_k_m.gguf");
+using var context = model.CreateContext(new ContextParams { ContextSize = 4096 });
+var executor = new InteractiveExecutor(context);
+var session = new ChatSession(executor);
 
-// Format the question with the model's own chat template, then stream the answer.
-string prompt = tokenizer.ChatTemplate!.Render(new Dictionary<string, object?>
-{
-    ["messages"] = JinjaChatTemplate.BuildMessages("In one sentence, why do developers write unit tests?"),
-    ["add_generation_prompt"] = true,
-});
-await foreach (string piece in engine.GenerateAsync(prompt, new SamplingParams { Temperature = 0.7f, MaxNewTokens = 200 }))
+await foreach (string piece in session.ChatAsync("In one sentence, why do developers write unit tests?"))
     Console.Write(piece);
 ```
+
+For advanced applications requiring internal thinking tokens or detailed usage metrics, use `session.ChatChunksAsync(...)` which yields typed `GenerateChunk` streams.
+
+*(Alternatively, low-level engine pipelines can directly wire `GgufModel`, `CpuBackend`, `ForwardPass`, and `InferenceEngine` as demonstrated in [samples/QuickStart](samples/QuickStart/Program.cs).)*
 
 **4. Run it**
 
 ```bash
 dotnet run
 ```
-
-Yes, that is more wiring than it should be. A one-line `Open("model")` API is being designed
-([docs/103](docs/3-product-and-runtime/103-front-door-design.md)). The code above is what works today, and it is
-compiled and run as [samples/QuickStart](samples/QuickStart/Program.cs).
 
 ## Speak and listen
 
