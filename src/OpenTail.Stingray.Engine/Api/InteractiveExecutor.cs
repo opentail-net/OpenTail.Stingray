@@ -75,7 +75,7 @@ public sealed class InteractiveExecutor : IExecutor
 
         await foreach (var chunk in _context.Engine.GenerateChunksAsync(prompt, sp, cancellationToken, canonicalHistoryPrefix: prefixToUse).WithCancellation(cancellationToken).ConfigureAwait(false))
         {
-            if (chunk.Kind is GenerateChunkKind.Text or GenerateChunkKind.Thinking)
+            if (chunk.Kind == GenerateChunkKind.Text)
             {
                 outputBuilder.Append(chunk.Text);
             }
@@ -86,7 +86,7 @@ public sealed class InteractiveExecutor : IExecutor
         {
             _history.Append(prompt);
             _history.Append(outputBuilder.ToString());
-            _lastPrefix = prompt;
+            _lastPrefix = prompt + outputBuilder.ToString();
         }
     }
 }

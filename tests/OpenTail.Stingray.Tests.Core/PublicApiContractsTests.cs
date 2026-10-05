@@ -199,7 +199,7 @@ public class PublicApiContractsTests
         }
         Assert.Equal(2, fakeEngine.RecordedCalls.Count);
         Assert.Equal("Turn 2 prompt", fakeEngine.RecordedCalls[1].Prompt);
-        Assert.Equal("Turn 1 prompt", fakeEngine.RecordedCalls[1].Prefix);
+        Assert.Equal("Turn 1 promptHello world!", fakeEngine.RecordedCalls[1].Prefix);
 
         // Rich typed stream includes thinking and usage
         Assert.Contains(chunks, c => c.Kind == GenerateChunkKind.Thinking && c.Text.Contains("Thinking"));
@@ -249,6 +249,145 @@ public class PublicApiContractsTests
         Assert.Equal(["Hello", " world!"], strings);
         Assert.Single(fakeEngine.RecordedCalls);
         Assert.Equal("Batched request", fakeEngine.RecordedCalls[0].Prompt);
+    }
+
+    [Fact]
+    public void ChatHistory_CollectionOperations_WorkCorrectly()
+    {
+        var history = new ChatHistory();
+        Assert.Empty(history);
+
+        history.AddSystemMessage("You are a helpful assistant.");
+        history.AddUserMessage("Hello!");
+        history.AddAssistantMessage("Hi there!");
+        history.AddToolMessage("Tool result");
+
+        Assert.Equal(4, history.Count);
+        Assert.Equal(AuthorRole.System, history[0].Role);
+        Assert.Equal("You are a helpful assistant.", history[0].Content);
+        Assert.Equal(AuthorRole.User, history[1].Role);
+        Assert.Equal("Hello!", history[1].Content);
+        Assert.Equal(AuthorRole.Assistant, history[2].Role);
+        Assert.Equal("Hi there!", history[2].Content);
+        Assert.Equal(AuthorRole.Tool, history[3].Role);
+        Assert.Equal("Tool result", history[3].Content);
+
+        // Verification of IEnumerable enumeration
+        var roles = history.Select(m => m.Role).ToList();
+        Assert.Equal([AuthorRole.System, AuthorRole.User, AuthorRole.Assistant, AuthorRole.Tool], roles);
+
+        // Verification of Clear
+        history.Clear();
+        Assert.Empty(history);
+    }
+
+    [Fact]
+    public void ChatMessage_StaticFactories_WorkCorrectly()
+    {
+        var sys = ChatMessage.System("sys");
+        var usr = ChatMessage.User("usr");
+        var ast = ChatMessage.Assistant("ast");
+        var tool = ChatMessage.Tool("tool");
+
+        Assert.Equal(AuthorRole.System, sys.Role);
+        Assert.Equal("sys", sys.Content);
+        Assert.Equal(AuthorRole.User, usr.Role);
+        Assert.Equal("usr", usr.Content);
+        Assert.Equal(AuthorRole.Assistant, ast.Role);
+        Assert.Equal("ast", ast.Content);
+        Assert.Equal(AuthorRole.Tool, tool.Role);
+        Assert.Equal("tool", tool.Content);
+    }
+
+    [Fact]
+    public async Task ChatSession_DualStreaming_And_MultiTurnHistoryTracking()
+    {
+        var modelPath = Path.Combine("models", "_models", "all-MiniLM-L6-v2-Q8_0.gguf");
+        if (!File.Exists(modelPath)) return;
+
+        using var model = Model.Load(modelPath);
+        using var ctx = (ModelContext)model.CreateContext();
+        var fakeEngine = new FakeInferenceEngine();
+        ctx.SetEngine(fakeEngine);
+
+        var executor = new InteractiveExecutor(ctx);
+        var session = new ChatSession(executor);
+        session.AddSystemMessage("You are a test assistant.");
+
+        // Turn 1: Simple string streaming via ChatAsync
+        var turn1Tokens = new List<string>();
+        await foreach (var token in session.ChatAsync("What is 2+2?"))
+        {
+            turn1Tokens.Add(token);
+        }
+
+        // Filters thinking tokens, returns only user-facing text
+        Assert.Equal(["Hello", " world!"], turn1Tokens);
+        Assert.Equal(3, session.History.Count);
+        Assert.Equal(AuthorRole.System, session.History[0].Role);
+        Assert.Equal(AuthorRole.User, session.History[1].Role);
+        Assert.Equal("What is 2+2?", session.History[1].Content);
+        Assert.Equal(AuthorRole.Assistant, session.History[2].Role);
+        Assert.Equal("Hello world!", session.History[2].Content);
+
+        // Turn 2: Rich typed chunk streaming via ChatChunksAsync
+        var turn2Chunks = new List<GenerateChunk>();
+        await foreach (var chunk in session.ChatChunksAsync("And what is 3+3?"))
+        {
+            turn2Chunks.Add(chunk);
+        }
+
+        // Rich stream preserves thinking, usage, and stop chunks
+        Assert.Contains(turn2Chunks, c => c.Kind == GenerateChunkKind.Thinking);
+        Assert.Contains(turn2Chunks, c => c.Kind == GenerateChunkKind.Usage);
+        Assert.Contains(turn2Chunks, c => c.Kind == GenerateChunkKind.Stop);
+
+        // History now has 5 messages: System, User1, Assistant1, User2, Assistant2
+        Assert.Equal(5, session.History.Count);
+        Assert.Equal(AuthorRole.User, session.History[3].Role);
+        Assert.Equal("And what is 3+3?", session.History[3].Content);
+        Assert.Equal(AuthorRole.Assistant, session.History[4].Role);
+        Assert.Equal("Hello world!", session.History[4].Content);
+    }
+
+    [Fact]
+    public void ChatSession_DefaultChatMLFormat_FormatsCorrectly()
+    {
+        var modelPath = Path.Combine("models", "_models", "all-MiniLM-L6-v2-Q8_0.gguf");
+        if (!File.Exists(modelPath)) return;
+
+        using var model = Model.Load(modelPath);
+        using var ctx = (ModelContext)model.CreateContext();
+        var executor = new StatelessExecutor(ctx);
+
+        var session = new ChatSession(executor);
+        session.AddSystemMessage("Be concise.");
+        session.AddUserMessage("Hello");
+
+        string formatted = session.FormatPrompt(session.History);
+        Assert.Contains("<|im_start|>system\nBe concise.<|im_end|>", formatted);
+        Assert.Contains("<|im_start|>user\nHello<|im_end|>", formatted);
+        Assert.EndsWith("<|im_start|>assistant\n", formatted);
+    }
+
+    [Fact]
+    public void ChatSession_CustomPromptFormatter_OverridesDefault()
+    {
+        var modelPath = Path.Combine("models", "_models", "all-MiniLM-L6-v2-Q8_0.gguf");
+        if (!File.Exists(modelPath)) return;
+
+        using var model = Model.Load(modelPath);
+        using var ctx = (ModelContext)model.CreateContext();
+        var executor = new StatelessExecutor(ctx);
+
+        var session = new ChatSession(executor)
+        {
+            PromptFormatter = history => string.Join(" --- ", history.Select(m => $"{m.Role}:{m.Content}"))
+        };
+        session.AddUserMessage("Question");
+
+        string formatted = session.FormatPrompt(session.History);
+        Assert.Equal("User:Question", formatted);
     }
 
     private sealed class FakeInferenceEngine : IInferenceEngine

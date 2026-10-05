@@ -302,7 +302,7 @@ ChatSession
     ```
   - Do not make higher-level applications lose access to thinking/usage/stop metadata.
 
-- [ ] **8. ChatSession / ChatHistory**
+- [x] **8. ChatSession / ChatHistory**
   - Design a Stingray equivalent of LLamaSharp's `ChatSession` and `ChatHistory`.
   - The public API should support the normal flow:
     ```csharp

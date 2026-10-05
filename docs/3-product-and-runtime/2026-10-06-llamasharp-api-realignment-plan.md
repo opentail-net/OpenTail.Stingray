@@ -234,7 +234,7 @@ await foreach (var chunk in session.ChatChunksAsync("Explain prefix caching in S
 - [x] **Milestone 4 — Executors (Interactive, Stateless, Batched)**
   - Implement `InteractiveExecutor`, `StatelessExecutor`, and `BatchedExecutor`.
   - Wire dual streaming: `InferAsync` and `InferChunksAsync`.
-- [ ] **Milestone 5 — ChatSession & ChatHistory**
+- [x] **Milestone 5 — ChatSession & ChatHistory**
   - Implement `ChatSession` and `ChatHistory` with Jinja chat template formatting and multi-turn state retention.
 - [ ] **Milestone 6 — Verification, Samples & Documentation**
   - Comparison sample demonstrating identical app pattern between LLamaSharp and Stingray.
