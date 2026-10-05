@@ -231,7 +231,7 @@ await foreach (var chunk in session.ChatChunksAsync("Explain prefix caching in S
   - Implement `ModelParams`, `ContextParams`, `InferenceParams`, `IExecutor`, `GenerateChunk` exposure in core/engine.
 - [x] **Milestone 3 — Model & ModelContext Lifecycle**
   - Implement `Model.Load(...)` and `model.CreateContext(...)` wrapping Stingray's native forward-pass loaders.
-- [ ] **Milestone 4 — Executors (Interactive, Stateless, Batched)**
+- [x] **Milestone 4 — Executors (Interactive, Stateless, Batched)**
   - Implement `InteractiveExecutor`, `StatelessExecutor`, and `BatchedExecutor`.
   - Wire dual streaming: `InferAsync` and `InferChunksAsync`.
 - [ ] **Milestone 5 — ChatSession & ChatHistory**

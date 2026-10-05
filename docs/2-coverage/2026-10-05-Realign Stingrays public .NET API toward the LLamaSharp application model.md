@@ -447,7 +447,7 @@ Work in small commits.
   - Ensure ownership/disposal is correct (a model must not be disposed before dependent contexts/executors).
   - Test multiple contexts where supported.
 
-- [ ] **Commit 4 — executor migration**
+- [x] **Commit 4 — executor migration**
   - Implement:
     - interactive executor
     - stateless executor

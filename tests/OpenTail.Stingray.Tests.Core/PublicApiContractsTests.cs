@@ -166,4 +166,113 @@ public class PublicApiContractsTests
         Assert.Throws<ObjectDisposedException>(() => ctx.Reset());
         Assert.Throws<ObjectDisposedException>(() => model.CreateContext());
     }
+
+    [Fact]
+    public async Task InteractiveExecutor_DualStreaming_And_PrefixHistory()
+    {
+        var modelPath = Path.Combine("models", "_models", "all-MiniLM-L6-v2-Q8_0.gguf");
+        if (!File.Exists(modelPath)) return;
+
+        using var model = Model.Load(modelPath);
+        using var ctx = (ModelContext)model.CreateContext();
+        var fakeEngine = new FakeInferenceEngine();
+        ctx.SetEngine(fakeEngine);
+
+        var executor = new InteractiveExecutor(ctx);
+
+        // Turn 1: simple string stream filters out thinking and metadata
+        var strings = new List<string>();
+        await foreach (var piece in executor.InferAsync("Turn 1 prompt"))
+        {
+            strings.Add(piece);
+        }
+        Assert.Equal(["Hello", " world!"], strings);
+        Assert.Single(fakeEngine.RecordedCalls);
+        Assert.Equal("Turn 1 prompt", fakeEngine.RecordedCalls[0].Prompt);
+        Assert.Null(fakeEngine.RecordedCalls[0].Prefix);
+
+        // Turn 2: should carry Turn 1 prompt as canonicalHistoryPrefix
+        var chunks = new List<GenerateChunk>();
+        await foreach (var chunk in executor.InferChunksAsync("Turn 2 prompt"))
+        {
+            chunks.Add(chunk);
+        }
+        Assert.Equal(2, fakeEngine.RecordedCalls.Count);
+        Assert.Equal("Turn 2 prompt", fakeEngine.RecordedCalls[1].Prompt);
+        Assert.Equal("Turn 1 prompt", fakeEngine.RecordedCalls[1].Prefix);
+
+        // Rich typed stream includes thinking and usage
+        Assert.Contains(chunks, c => c.Kind == GenerateChunkKind.Thinking && c.Text.Contains("Thinking"));
+        Assert.Contains(chunks, c => c.Kind == GenerateChunkKind.Usage);
+        Assert.Contains(chunks, c => c.Kind == GenerateChunkKind.Stop);
+    }
+
+    [Fact]
+    public async Task StatelessExecutor_ResetsContext_And_DoesNotPassPrefix()
+    {
+        var modelPath = Path.Combine("models", "_models", "all-MiniLM-L6-v2-Q8_0.gguf");
+        if (!File.Exists(modelPath)) return;
+
+        using var model = Model.Load(modelPath);
+        using var ctx = (ModelContext)model.CreateContext();
+        var fakeEngine = new FakeInferenceEngine();
+        ctx.SetEngine(fakeEngine);
+
+        var executor = new StatelessExecutor(ctx);
+
+        await foreach (var _ in executor.InferAsync("Stateless 1")) { }
+        await foreach (var _ in executor.InferAsync("Stateless 2")) { }
+
+        Assert.Equal(2, fakeEngine.RecordedCalls.Count);
+        Assert.Null(fakeEngine.RecordedCalls[0].Prefix);
+        Assert.Null(fakeEngine.RecordedCalls[1].Prefix);
+    }
+
+    [Fact]
+    public async Task BatchedExecutor_DelegatesToEngine()
+    {
+        var modelPath = Path.Combine("models", "_models", "all-MiniLM-L6-v2-Q8_0.gguf");
+        if (!File.Exists(modelPath)) return;
+
+        using var model = Model.Load(modelPath);
+        using var ctx = (ModelContext)model.CreateContext();
+        var fakeEngine = new FakeInferenceEngine();
+        ctx.SetEngine(fakeEngine);
+
+        var executor = new BatchedExecutor(ctx);
+        var strings = new List<string>();
+        await foreach (var s in executor.InferAsync("Batched request"))
+        {
+            strings.Add(s);
+        }
+
+        Assert.Equal(["Hello", " world!"], strings);
+        Assert.Single(fakeEngine.RecordedCalls);
+        Assert.Equal("Batched request", fakeEngine.RecordedCalls[0].Prompt);
+    }
+
+    private sealed class FakeInferenceEngine : IInferenceEngine
+    {
+        public string ModelId => "fake-model";
+        public int QueueDepth => 0;
+        public int ActiveRequests => 0;
+        public bool PrefixCacheEnabled => true;
+        public long PrefillTokensReused => 0;
+
+        public List<(string Prompt, string? Prefix)> RecordedCalls { get; } = [];
+
+        public async IAsyncEnumerable<GenerateChunk> GenerateChunksAsync(
+            string prompt,
+            SamplingParams sp,
+            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct = default,
+            string? canonicalHistoryPrefix = null)
+        {
+            RecordedCalls.Add((prompt, canonicalHistoryPrefix));
+            yield return new GenerateChunk(GenerateChunkKind.Usage, "", 5);
+            yield return new GenerateChunk(GenerateChunkKind.Thinking, "Thinking about answer...");
+            yield return new GenerateChunk(GenerateChunkKind.Text, "Hello");
+            yield return new GenerateChunk(GenerateChunkKind.Text, " world!");
+            yield return new GenerateChunk(GenerateChunkKind.Stop, "");
+        }
+    }
 }
