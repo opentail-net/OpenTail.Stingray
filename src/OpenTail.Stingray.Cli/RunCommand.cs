@@ -812,31 +812,31 @@ public sealed class RunCommand : Command<RunCommand.Settings>
             { session = null; exitCode = ExitCodes.Failure; return false; }
         }
 
-        // ── 2. Refuse features that require GgufModel or GPU backends.
-        // Explicit errors — the user must know why, not receive a cryptic exception.
-        if (effNGpuLayers != 0)
+        var packageSelection = ForwardPassSelection.Select(new ForwardPassRequest
         {
-            AnsiConsole.ErrorLine("[red]Error:[/] GPU offload ([yellow]--ngl[/] / [yellow]-g[/]) is not yet supported for SafeTensors packages. " +
-                "Run on CPU (omit [yellow]-g[/] or pass [yellow]-g 0[/]), or convert to GGUF for GPU execution.");
+            Frontend = ForwardPassFrontend.Cli,
+            IsSafeTensors = true,
+            IsSafeTensorsGpuRequested = effNGpuLayers != 0,
+            TurboQuant = settings.TurboQuant,
+            IsSafeTensorsDraftRequested = settings.DraftModelPath is not null || settings.DraftLookup,
+            IsSafeTensorsDSparkRequested = settings.DSparkModelPath is not null,
+        });
+        if (packageSelection.Refusal is not null && pkgReport.IsSupported)
+        {
+            if (effNGpuLayers != 0)
+                AnsiConsole.ErrorLine("[red]Error:[/] GPU offload ([yellow]--ngl[/] / [yellow]-g[/]) is not yet supported for SafeTensors packages. " +
+                    "Run on CPU (omit [yellow]-g[/] or pass [yellow]-g 0[/]), or convert to GGUF for GPU execution.");
+            else if (settings.TurboQuant)
+                AnsiConsole.ErrorLine("[red]Error:[/] [yellow]--tq[/] (TurboQuant) is not supported for SafeTensors packages. " +
+                    "Only GGUF models support KV-cache quantization via this flag.");
+            else if (settings.DraftModelPath is not null || settings.DraftLookup)
+                AnsiConsole.ErrorLine("[red]Error:[/] Speculative decoding ([yellow]--draft-model[/] / [yellow]--draft-lookup[/]) " +
+                    "is not supported for SafeTensors packages.");
+            else
+                AnsiConsole.ErrorLine("[red]Error:[/] DSpark ([yellow]--dspark-model[/]) is not supported for SafeTensors packages.");
             { session = null; exitCode = ExitCodes.Failure; return false; }
         }
-        if (settings.TurboQuant)
-        {
-            AnsiConsole.ErrorLine("[red]Error:[/] [yellow]--tq[/] (TurboQuant) is not supported for SafeTensors packages. " +
-                "Only GGUF models support KV-cache quantization via this flag.");
-            { session = null; exitCode = ExitCodes.Failure; return false; }
-        }
-        if (settings.DraftModelPath is not null || settings.DraftLookup)
-        {
-            AnsiConsole.ErrorLine("[red]Error:[/] Speculative decoding ([yellow]--draft-model[/] / [yellow]--draft-lookup[/]) " +
-                "is not supported for SafeTensors packages.");
-            { session = null; exitCode = ExitCodes.Failure; return false; }
-        }
-        if (settings.DSparkModelPath is not null)
-        {
-            AnsiConsole.ErrorLine("[red]Error:[/] DSpark ([yellow]--dspark-model[/]) is not supported for SafeTensors packages.");
-            { session = null; exitCode = ExitCodes.Failure; return false; }
-        }
+
         if (settings.ImagePaths is { Length: > 0 })
         {
             AnsiConsole.ErrorLine("[red]Error:[/] [yellow]--image[/] (multimodal input) is not supported for SafeTensors packages.");
@@ -1343,6 +1343,87 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         Func<int, int, ReadOnlySpan<float>> Forward, Func<IReadOnlyList<int>, ReadOnlySpan<float>> Prefill, Action ResetCache,
         IDisposable? GpuBackend, IDisposable? GpuFwd, IForwardPass? MtpFwd, int NGpuLayers, TqQuantizer TqQuantizer);
 
+    private static ForwardPassDecision SelectForwardPass(GgufModel model, ModelHyperparams hp, Settings settings,
+        string architecture, int gpuLayers, int plannedGpuLayers = -1, bool unsupportedGpuPath = false,
+        bool unsupportedPartialCudaPath = false, bool unsupportedPartialVulkanPath = false,
+        string? turboQuantMode = null, bool? cudaAvailable = null, ForwardPassBackend? backendOverride = null,
+        bool isSafeTensors = false, bool packageSupported = true, bool safeTensorsGpuRequested = false,
+        bool safeTensorsDraftRequested = false, bool safeTensorsDsparkRequested = false,
+        bool unsupportedHybridGdnTq = false, bool moeAutoCacheOverflow = false,
+        bool? turboQuantOverride = null, bool validateTurboQuantModeOnly = false,
+        bool validateKVarNOnly = false, bool validateTurboQuantHeadDimOnly = false,
+        bool ignoreDraftFeatures = false, bool layerSplitOnlyLargeMoe = false,
+        bool autoPlan = false, bool skipFamilyRefusals = false,
+        string? unsupportedBackendName = null, bool skipTurboQuantShapeValidation = false)
+    {
+        var backend = backendOverride ?? ((settings.Backend ?? "auto").Trim().ToLowerInvariant() switch
+        {
+            "cpu" => ForwardPassBackend.Cpu,
+            "cuda" => ForwardPassBackend.Cuda,
+            "vulkan" => ForwardPassBackend.Vulkan,
+            _ => ForwardPassBackend.Auto,
+        });
+        return ForwardPassSelection.Select(new ForwardPassRequest
+        {
+            Frontend = ForwardPassFrontend.Cli,
+            Architecture = architecture,
+            UnsupportedBackendName = unsupportedBackendName,
+            IsSafeTensors = isSafeTensors,
+            PackageSupported = packageSupported,
+            IsSafeTensorsGpuRequested = safeTensorsGpuRequested,
+            IsSafeTensorsDraftRequested = safeTensorsDraftRequested,
+            IsSafeTensorsDSparkRequested = safeTensorsDsparkRequested,
+            IsHybridSsm = hp.IsHybridSsm,
+            HasHybridGdnLayers = hp.IsHybridSsm,
+            HasCpuHybridGdnPass = hp.IsHybridSsm,
+            IsMoE = hp.IsMoE,
+            KvLoraRank = hp.KvLoraRank,
+            HasMlaTensors = model.FindTensor("blk.0.attn_kv_b.weight") is not null
+                && model.FindTensor("blk.0.attn_q_a.weight") is null,
+            NumLayers = hp.NumLayers,
+            GpuLayers = gpuLayers,
+            PlannedGpuLayers = plannedGpuLayers,
+            Backend = backend,
+            CudaAvailable = cudaAvailable ?? CudaBackend.IsAvailable(),
+            UnsupportedGpuPath = unsupportedGpuPath,
+            UnsupportedPartialCudaPath = unsupportedPartialCudaPath,
+            UnsupportedPartialVulkanPath = unsupportedPartialVulkanPath,
+            LayerHeadDim = hp.LayerHeadDim is not null,
+            HasLayerHeadDim = hp.LayerHeadDim is not null,
+            TurboQuant = turboQuantOverride ?? (settings.TurboQuant || unsupportedHybridGdnTq),
+            ValidateTurboQuantModeOnly = validateTurboQuantModeOnly,
+            ValidateKVarNOnly = validateKVarNOnly,
+            ValidateTurboQuantHeadDimOnly = validateTurboQuantHeadDimOnly,
+            SkipFamilyRefusals = skipFamilyRefusals,
+            SkipTurboQuantShapeValidation = skipTurboQuantShapeValidation,
+            HasDraftModel = !ignoreDraftFeatures && settings.DraftModelPath is not null,
+            DraftLookup = !ignoreDraftFeatures && settings.DraftLookup,
+            TurboQuantMode = turboQuantMode ?? settings.TqModeStr,
+            HeadDim = hp.HeadDim,
+            KVarNSnapKvBlocked = SnapKvConfig.FromEnvironment().Enabled,
+            KVarNCudaMoeBlocked = hp.IsMoE,
+            KVarNPartialCudaBlocked = gpuLayers > 0 && gpuLayers < hp.NumLayers,
+            PlannedGpuLayersForKVarN = plannedGpuLayers,
+            LayerSplitOnly = unsupportedPartialVulkanPath || hp.LayerHeadDim is not null,
+            LayerSplitOnlyLargeMoe = layerSplitOnlyLargeMoe,
+            AutoPlan = autoPlan,
+            IsGemma4 = hp.LayerHeadDim is not null,
+            MoEAutoCacheOverflow = moeAutoCacheOverflow,
+        });
+    }
+
+    private static bool RefuseSelection(ForwardPassDecision decision, out int exitCode)
+    {
+        if (decision.Refusal is not { } refusal)
+        {
+            exitCode = ExitCodes.Success;
+            return false;
+        }
+        AnsiConsole.ErrorLine($"[red]Error:[/] {Markup.Escape(refusal)}");
+        exitCode = ExitCodes.Failure;
+        return true;
+    }
+
     /// <summary>
     /// Backend selection and forward-pass construction for a GGUF model: CPU (generic, hybrid-SSM, gpt-oss), full CUDA offload,
     /// full Vulkan offload, and the CPU+GPU hybrids, including TurboQuant cache wiring and the multi-token-prediction head.
@@ -1367,7 +1448,17 @@ public sealed class RunCommand : Command<RunCommand.Settings>
 
         bool wantCuda = false;
         string backendStr = (settings.Backend ?? "auto").Trim().ToLowerInvariant();
-        if (nGpuLayers != 0)
+        var backendDecision = SelectForwardPass(model, hp, settings, s_arch, nGpuLayers,
+            turboQuantOverride: false, turboQuantMode: "auto",
+            unsupportedBackendName: settings.Backend is not null
+                && backendStr is not ("auto" or "" or "vulkan" or "cuda") ? settings.Backend : null);
+        if (backendDecision.Refusal is { } backendRefusal && settings.Backend is not null
+            && backendStr is not ("auto" or "" or "vulkan" or "cuda"))
+        {
+            AnsiConsole.ErrorLine($"[red]Error:[/] {backendRefusal}");
+            { setup = null!; exitCode = ExitCodes.Failure; return false; }
+        }
+        if (nGpuLayers != 0 && backendDecision.Refusal is null)
         {
             switch (backendStr)
             {
@@ -1389,9 +1480,6 @@ public sealed class RunCommand : Command<RunCommand.Settings>
                     wantCuda = (!settings.TurboQuant || tqHeadDimOk)
                         && CudaBackend.IsAvailable();
                     break;
-                default:
-                    AnsiConsole.ErrorLine($"[red]Error:[/] Unknown --backend value '{settings.Backend}'. Expected one of: auto, vulkan, cuda.");
-                    { setup = null!; exitCode = ExitCodes.Failure; return false; }
             }
             if (wantCuda && settings.TurboQuant && tqQuantizer == TqQuantizer.LloydMax
                 && hp.HeadDim is not 128 and not 256)
@@ -1404,12 +1492,22 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         // The CUDA passes lack features only the full Vulkan pass has (fused QKV, LayerNorm,
         // parallel residual, non-gated FFN, ...). A Vulkan -g N split of such a model runs
         // VulkanLayerSplitForwardPass instead of HybridForwardPass (see the Vulkan branch below).
-        if (nGpuLayers != 0 && wantCuda
-            && GpuForwardPass.PartialOffloadUnsupportedReason(model, hp) is { } partialGap)
+        var hybridGpuSelection = SelectForwardPass(model, hp, settings, s_arch, nGpuLayers,
+            backendOverride: wantCuda ? ForwardPassBackend.Cuda : ForwardPassBackend.Vulkan,
+            turboQuantOverride: false,
+            unsupportedPartialVulkanPath: !wantCuda
+                && GpuForwardPass.PartialOffloadUnsupportedReason(model, hp) is not null);
+        var partialCudaSelection = SelectForwardPass(model, hp, settings, s_arch, nGpuLayers,
+            backendOverride: ForwardPassBackend.Cuda, turboQuantOverride: false,
+            unsupportedPartialCudaPath: GpuForwardPass.PartialOffloadUnsupportedReason(model, hp) is not null);
+        if (partialCudaSelection.Kind == ForwardPassKind.CpuDense && nGpuLayers != 0 && wantCuda)
         {
+            string partialGap = GpuForwardPass.PartialOffloadUnsupportedReason(model, hp)!;
             AnsiConsole.MarkupLine($"[yellow]Note:[/] the CUDA backend has no path for {Markup.Escape(partialGap)}; running on CPU.");
             nGpuLayers = 0;
         }
+        if (hybridGpuSelection.Kind == ForwardPassKind.VulkanLayerSplit && !wantCuda)
+            nGpuLayers = Math.Min(nGpuLayers, VulkanLayerSplitForwardPass.MaxGpuLayers(hp));
 
         if (nGpuLayers == 0)
         {
@@ -1463,7 +1561,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
                 // routes the 30 recurrent blocks to CPU and the 10 attention layers +
                 // MoE FFN to GPU via the CudaExpertSlotManager SLRU. Layer placement is
                 // implicit (driven by hp.LayerTypes), so we skip TierPlanner here.
-                if (hp.IsHybridSsm)
+                if (hybridGpuSelection.Kind == ForwardPassKind.CudaHybridGdn)
                 {
                     var hwProfile = HardwareProfile.Detect(cuda);
                     AnsiConsole.MarkupLine($"[dim]Hardware: {hwProfile.Summary()}[/]");
@@ -1552,7 +1650,12 @@ public sealed class RunCommand : Command<RunCommand.Settings>
                     cudaGpuLayers = nGpuLayers;
                 }
 
-                bool wantHybrid = (cudaGpuLayers > 0 && cudaGpuLayers < hp.NumLayers) || moeAutoNeedsHybrid;
+                var cudaSelection = SelectForwardPass(model, hp, settings, s_arch, cudaGpuLayers,
+                    plannedGpuLayers: cudaGpuLayers, backendOverride: ForwardPassBackend.Cuda,
+                    turboQuantOverride: false, moeAutoCacheOverflow: moeAutoNeedsHybrid);
+                // Rely on the selector's resolved Kind to choose the hybrid vs dense branch.
+                // Do not infer hybridity from placement arithmetic here; the selector is authoritative.
+                bool wantHybrid = cudaSelection.Kind == ForwardPassKind.CudaHybrid;
                 if (wantHybrid && settings.TurboQuant && tqQuantizer == TqQuantizer.KVarN)
                 {
                     // KVarN on GPU is the full-offload CudaForwardPass path only (issue
@@ -1609,7 +1712,8 @@ public sealed class RunCommand : Command<RunCommand.Settings>
                     resetCache = chfwd.ResetCache;
                     AnsiConsole.MarkupLine($"[dim]Backend: [green]CUDA hybrid[/] ({cuda.Name}, {placement.GpuLayers} GPU + {placement.CpuLayers} CPU layers)[/]");
                 }
-                else if (cudaGpuLayers == 0)
+                else if (cudaSelection.Kind == ForwardPassKind.CpuDense
+                    || cudaSelection.Kind == ForwardPassKind.CpuHybridGdn)
                 {
                     // Model doesn't fit any GPU layer — fall back to CPU forward pass.
                     // (Hybrid GDN models were rejected before reaching here.)
@@ -1667,7 +1771,9 @@ public sealed class RunCommand : Command<RunCommand.Settings>
                 // pass. Layer placement is implicit (driven by hp.LayerTypes — GDN + attn on GPU,
                 // FFN per-layer GPU/CPU), so TierPlanner is skipped, mirroring the CUDA branch above.
                 // (PR4 Round 1 — dense FFN; Round 2 — MoE FFN via CPU-MoE / GPU-SLRU.)
-                if (hp.IsHybridSsm)
+                var hybridGdnSelection = SelectForwardPass(model, hp, settings, s_arch, nGpuLayers,
+                    backendOverride: ForwardPassBackend.Vulkan, turboQuantOverride: false);
+                if (hybridGdnSelection.Kind == ForwardPassKind.VulkanHybridGdn)
                 {
                     var placement = new LayerPlacement(
                         GpuLayers: hp.NumLayers,
@@ -1732,7 +1838,35 @@ public sealed class RunCommand : Command<RunCommand.Settings>
                     }
                 }
 
-                if (nGpuLayers >= hp.NumLayers)
+                var vulkanSelection = SelectForwardPass(model, hp, settings, s_arch, nGpuLayers,
+                    plannedGpuLayers: nGpuLayers, backendOverride: ForwardPassBackend.Vulkan,
+                    turboQuantOverride: false, unsupportedPartialVulkanPath:
+                        GpuForwardPass.PartialOffloadUnsupportedReason(model, hp) is not null
+                            || hp.LayerHeadDim is not null,
+                    layerSplitOnlyLargeMoe: hp.IsMoE && model.Tensors.Sum(t => t.ByteSize) >= (30L << 30),
+                    autoPlan: nGpuLayers == -1);
+                if (nGpuLayers == 0)
+                {
+                    var cpuSelection = SelectForwardPass(model, hp, settings, s_arch, 0,
+                        backendOverride: ForwardPassBackend.Cpu, turboQuantOverride: false);
+                    if (cpuSelection.Refusal is { } cpuRefusal)
+                        throw new InvalidOperationException(cpuRefusal);
+                }
+                if (vulkanSelection.Kind == ForwardPassKind.CpuDense)
+                {
+                    // TierPlanner resolved no layers for Vulkan, so keep the dense CPU fallback.
+                    if (settings.TurboQuant)
+                    {
+                        fwd!.EnableTurboQuant(fp32WindowSize: 256, bits: 3, quantizer: tqQuantizer);
+                        AnsiConsole.MarkupLine("[dim]TurboQuant: [green]enabled[/] (3-bit, window=256)[/]");
+                    }
+                    forward = fwd!.Forward;
+                    prefill = tokens => fwd.Prefill(tokens);
+                    resetCache = settings.TurboQuant ? fwd.TqCache!.Reset : fwd.Cache.Reset;
+                    AnsiConsole.MarkupLine("[dim]Backend: [blue]CPU[/] (auto fallback: no GPU-capable layers for this model/path)[/]");
+                    goto done;
+                }
+                else if (vulkanSelection.Kind == ForwardPassKind.VulkanDense)
                 {
                     // All layers on GPU. Pass the configured KV dtype (issues #311 / #325): fp32
                     // default, bf16 = half-width KV, q8_0 = block-quantized (~quarter) KV. Reuses
@@ -1748,7 +1882,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
                     resetCache = gfwd.ResetCache;
                     AnsiConsole.MarkupLine($"[dim]Backend: [green]GPU[/] ({gpu.Name}, all {hp.NumLayers} layers)[/]");
                 }
-                else if (hp.LayerHeadDim is not null || GpuForwardPass.PartialOffloadUnsupportedReason(model, hp) is not null)
+                else if (vulkanSelection.Kind == ForwardPassKind.VulkanLayerSplit)
                 {
                     // -g N for Gemma 4 and for architectures HybridForwardPass has no path for: GPU
                     // layers [0, N) + CPU layers [N, L) (VulkanLayerSplitForwardPass). Gemma 4 caps N
@@ -1968,18 +2102,17 @@ public sealed class RunCommand : Command<RunCommand.Settings>
 
         cpuBackend = new CpuBackend();
 
-        // Hybrid GDN models (qwen35moe) run via the dedicated HybridGdnForwardPass
-        // (CPU) or CudaHybridGdnForwardPass (GPU). Features that touch the per-token
-        // GDN state are not supported because the rank-1 recurrence is destructive.
-        if (hp.IsHybridSsm && settings.TurboQuant)
-        {
-            AnsiConsole.ErrorLine("[red]Error:[/] TurboQuant is not supported for hybrid GDN models (no KV cache on GDN layers).");
-            return 1;
-        }
-        if (hp.IsHybridSsm && (settings.DraftModelPath is not null || settings.DraftLookup))
-        {
-            AnsiConsole.ErrorLine("[red]Error:[/] Speculative decoding is not supported for hybrid GDN models (GDN state is destructively updated and cannot be rewound).");
-            return 1;
+        // Hybrid GDN refusals precede pass construction and TurboQuant-mode parsing, as before.
+        if (hp.IsHybridSsm && (settings.TurboQuant || settings.DraftModelPath is not null || settings.DraftLookup))
+{
+            var hybridSelection = SelectForwardPass(model, hp, settings, s_arch, effNGpuLayers,
+                turboQuantMode: "auto", ignoreDraftFeatures: settings.TurboQuant,
+                turboQuantOverride: settings.TurboQuant ? null : false);
+            if (hybridSelection.Refusal is { } hybridRefusal)
+            {
+                AnsiConsole.ErrorLine($"[red]Error:[/] {Markup.Escape(hybridRefusal)}");
+                return 1;
+            }
         }
 
         // Build the appropriate CPU forward pass. The GPU branches below construct
@@ -1991,55 +2124,63 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         // RunSinglePrompt / RunInteractive based on sp.SpecType.
         // DeepSeek2 (MLA): its own full-offload Vulkan pass. Held in gpuFwd/gpuBackend (disposed
         // pass-first); effNGpuLayers = 0 then routes past the generic GPU branches.
-        if (hp.KvLoraRank > 0 && effNGpuLayers != 0
-            && model.FindTensor("blk.0.attn_kv_b.weight") is not null && model.FindTensor("blk.0.attn_q_a.weight") is null)
+        var architectureBackend = (settings.Backend ?? "auto").Trim().ToLowerInvariant() switch
         {
-            bool cudaOnly = (settings.Backend ?? "auto").Trim().ToLowerInvariant() == "cuda";
-            bool partial = effNGpuLayers > 0 && effNGpuLayers < hp.NumLayers;
-            if (!cudaOnly && !partial && !settings.TurboQuant && settings.DraftModelPath is null && !settings.DraftLookup)
+            "cuda" => ForwardPassBackend.Cuda,
+            "vulkan" => ForwardPassBackend.Vulkan,
+            _ => ForwardPassBackend.Auto,
+        };
+        var architectureSelection = SelectForwardPass(model, hp, settings, s_arch, effNGpuLayers,
+            backendOverride: architectureBackend, turboQuantMode: "auto",
+            skipTurboQuantShapeValidation: true);
+        if (architectureSelection.Kind == ForwardPassKind.DeepSeek2Vulkan)
+        {
+            var vk = new VulkanBackend(gpuDeviceIndex);
+            gpuBackend = vk;
+            gpuFwd = new DeepSeek2GpuForwardPass(model, vk, hp, maxContextLength: ctxSize);
+            effNGpuLayers = 0;
+        }
+
+        // Features the GPU layer loops don't implement (MLA, LayerNorm, parallel residual, learned
+        // positions, non-gated FFN): ask the selector to choose the legacy CPU fallback.
+        string? gpuGap = effNGpuLayers != 0 ? GpuForwardPass.UnsupportedReason(model, hp) : null;
+        if (gpuGap is not null)
+        {
+            var unsupportedGpuSelection = SelectForwardPass(model, hp, settings, s_arch, effNGpuLayers,
+                unsupportedGpuPath: true, backendOverride: architectureBackend, turboQuantOverride: false);
+            if (unsupportedGpuSelection.Kind is ForwardPassKind.CpuDense or ForwardPassKind.CpuHybridGdn)
             {
-                var vk = new VulkanBackend(gpuDeviceIndex);
-                gpuBackend = vk;
-                gpuFwd = new DeepSeek2GpuForwardPass(model, vk, hp, maxContextLength: ctxSize);
+                AnsiConsole.MarkupLine($"[yellow]Note:[/] no GPU forward pass for {Markup.Escape(gpuGap)} yet; running on CPU.");
                 effNGpuLayers = 0;
             }
         }
 
-        // Features the GPU layer loops don't implement (MLA, LayerNorm, parallel residual, learned
-        // positions, non-gated FFN): run on CPU rather than compute silently wrong logits.
-        if (effNGpuLayers != 0 && GpuForwardPass.UnsupportedReason(model, hp) is { } gpuGap)
+        architectureSelection = SelectForwardPass(model, hp, settings, s_arch, effNGpuLayers,
+            backendOverride: architectureBackend, turboQuantMode: "auto",
+            skipTurboQuantShapeValidation: true);
+        if (architectureSelection.Refusal is { } architectureRefusal
+            && (ArchitectureRegistry.Find(s_arch)?.ForwardPassFamily is ForwardPassFamily.Rwkv or ForwardPassFamily.GptOss))
         {
-            AnsiConsole.MarkupLine($"[yellow]Note:[/] no GPU forward pass for {Markup.Escape(gpuGap)} yet; running on CPU.");
-            effNGpuLayers = 0;
+            AnsiConsole.ErrorLine($"[red]Error:[/] {Markup.Escape(architectureRefusal)}");
+            return 1;
         }
 
-        if (RwkvForwardPassBase.IsRwkv(s_arch))
+        if (ArchitectureRegistry.Find(s_arch)?.ForwardPassFamily == ForwardPassFamily.Rwkv)
         {
-            if (settings.TurboQuant || settings.DraftModelPath is not null || settings.DraftLookup)
-            {
-                AnsiConsole.ErrorLine($"[red]Error:[/] {s_arch} is recurrent (no KV cache) and supports neither TurboQuant nor speculative decoding.");
-                return 1;
-            }
             if (effNGpuLayers != 0)
                 AnsiConsole.MarkupLine($"[yellow]Note:[/] {s_arch} has no GPU forward pass yet; running on CPU.");
             effNGpuLayers = 0;
             standaloneFwd = RwkvForwardPassBase.Create(model);
         }
-        else if (s_arch == "gpt-oss")
+        else if (ArchitectureRegistry.Find(s_arch)?.ForwardPassFamily == ForwardPassFamily.GptOss)
         {
-            if (settings.TurboQuant || settings.DraftModelPath is not null || settings.DraftLookup)
-            {
-                AnsiConsole.ErrorLine("[red]Error:[/] gpt-oss runs on its own CPU forward pass, which supports neither TurboQuant nor speculative decoding.");
-                return 1;
-            }
             var gptOssHp = GptOssHyperparams.FromModel(model);
-            bool wantsCudaOnly = (settings.Backend ?? "auto").Trim().ToLowerInvariant() == "cuda";
-            if (effNGpuLayers != 0 && (wantsCudaOnly || (effNGpuLayers > 0 && effNGpuLayers < gptOssHp.NumLayer)))
+            if (effNGpuLayers != 0 && architectureSelection.Kind == ForwardPassKind.GptOssCpu)
             {
                 AnsiConsole.MarkupLine("[yellow]Note:[/] gpt-oss runs on GPU only as a full Vulkan offload (-g -1); running on CPU.");
                 effNGpuLayers = 0;
             }
-            if (effNGpuLayers != 0)
+            if (effNGpuLayers != 0 && architectureSelection.Kind == ForwardPassKind.GptOssVulkan)
             {
                 // Full Vulkan offload: GptOssGpuForwardPass. It lives in gpuFwd/gpuBackend so the
                 // finally block disposes the pass before its backend; effNGpuLayers = 0 then routes
@@ -2054,12 +2195,12 @@ public sealed class RunCommand : Command<RunCommand.Settings>
                 standaloneFwd = new GptOssForwardPass(model, gptOssHp);
             }
         }
-        else if (hp.IsHybridSsm && effNGpuLayers == 0)
+        else if (architectureSelection.Kind == ForwardPassKind.CpuHybridGdn && effNGpuLayers == 0)
         {
             hybridFwd = new HybridGdnForwardPass(model, cpuBackend, hp);
             if (hybridFwd.HasMtpHead) mtpFwd = hybridFwd;
         }
-        else if (!hp.IsHybridSsm && gpuFwd is null)
+        else if (architectureSelection.Kind != ForwardPassKind.DeepSeek2Vulkan && gpuFwd is null)
         {
             // #189 dequant cache: only the pure-CPU path (no GPU offload) runs the batched
             // CPU prefill that consults it; under -g it would be a wasted F32 model copy.
@@ -2084,7 +2225,15 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         // 15.67 KVarN / 945.6 Lloyd-Max 3-bit).
         TqQuantizer tqQuantizer;
         bool tqModeIsAuto = false;
-        switch (settings.TqModeStr.Trim().ToLowerInvariant())
+        var tqModeSelection = SelectForwardPass(model, hp, settings, s_arch, effNGpuLayers,
+            validateTurboQuantModeOnly: true);
+        if (tqModeSelection.Refusal is { } tqModeRefusal)
+        {
+            AnsiConsole.ErrorLine($"[red]Error:[/] {Markup.Escape(tqModeRefusal)}");
+            return 1;
+        }
+        string parsedTqMode = settings.TqModeStr.Trim().ToLowerInvariant();
+        switch (parsedTqMode)
         {
             case "" or "auto":
                 tqModeIsAuto = true;
@@ -2096,9 +2245,9 @@ public sealed class RunCommand : Command<RunCommand.Settings>
             case "kvarn":
                 tqQuantizer = TqQuantizer.KVarN;
                 break;
-            default:
-                AnsiConsole.ErrorLine($"[red]Error:[/] Unknown --tq-mode value '{Markup.Escape(settings.TqModeStr)}'. Expected one of: auto, lloydmax, kvarn.");
-                return 1;
+            default: // unreachable: the selector refused unknown modes above
+                tqQuantizer = TqQuantizer.LloydMax;
+                break;
         }
         if (tqModeIsAuto && settings.TurboQuant)
         {
@@ -2125,35 +2274,12 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         }
         if (tqQuantizer == TqQuantizer.KVarN)
         {
-            if (!settings.TurboQuant)
+            var kvarnSelection = SelectForwardPass(model, hp, settings, s_arch, effNGpuLayers,
+                turboQuantMode: "kvarn", validateKVarNOnly: true, skipFamilyRefusals: true);
+            if (kvarnSelection.Refusal is { } kvarnRefusal)
             {
-                AnsiConsole.ErrorLine("[red]Error:[/] --tq-mode kvarn requires [yellow]--tq[/].");
+                AnsiConsole.ErrorLine($"[red]Error:[/] {Markup.Escape(kvarnRefusal)}");
                 return 1;
-            }
-            if (SnapKvConfig.FromEnvironment().Enabled)
-            {
-                AnsiConsole.ErrorLine("[red]Error:[/] --tq-mode kvarn does not compose with SnapKV eviction yet (issue #180 follow-up); unset [yellow]STINGRAY_SNAPKV_BUDGET[/].");
-                return 1;
-            }
-            if (effNGpuLayers != 0)
-            {
-                // GPU KVarN is the CUDA full-offload dense path only (issue #180 Task 5a).
-                string kvarnBackend = (settings.Backend ?? "auto").Trim().ToLowerInvariant();
-                if (kvarnBackend == "vulkan")
-                {
-                    AnsiConsole.ErrorLine("[red]Error:[/] --tq-mode kvarn is not supported on the Vulkan backend; use [yellow]--backend cuda -g -1[/] (full offload) or [yellow]-g 0[/] (CPU).");
-                    return 1;
-                }
-                if (!CudaBackend.IsAvailable())
-                {
-                    AnsiConsole.ErrorLine("[red]Error:[/] --tq-mode kvarn with GPU offload requires a CUDA device (issue #180 Task 5a); use [yellow]-g 0[/] for the CPU path.");
-                    return 1;
-                }
-                if (hp.IsMoE)
-                {
-                    AnsiConsole.ErrorLine("[red]Error:[/] --tq-mode kvarn on CUDA supports dense models only (issue #180 Task 5a); use [yellow]-g 0[/] for MoE.");
-                    return 1;
-                }
             }
         }
 
@@ -2163,23 +2289,13 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         // on CUDA (the shared-memory WHT cap — 512/1024 stay CPU-only for now).
         if (settings.TurboQuant)
         {
-            int headDim = hp.HeadDim;
-            if (tqQuantizer == TqQuantizer.KVarN)
+            var tqShapeSelection = SelectForwardPass(model, hp, settings, s_arch, effNGpuLayers,
+                turboQuantMode: tqQuantizer == TqQuantizer.KVarN ? "kvarn" : "lloydmax",
+                validateTurboQuantHeadDimOnly: true, skipFamilyRefusals: true,
+                turboQuantOverride: true);
+            if (tqShapeSelection.Refusal is { } tqShapeRefusal)
             {
-                if (!TqSupport.IsKVarNHeadDim(headDim))
-                {
-                    AnsiConsole.ErrorLine($"[red]Error:[/] --tq-mode kvarn requires a power-of-2 head dimension in [[8, 1024]]; this model has head dim {headDim}.");
-                    return 1;
-                }
-                if (effNGpuLayers != 0 && headDim > TqSupport.KVarNCudaMaxHeadDim)
-                {
-                    AnsiConsole.ErrorLine($"[red]Error:[/] --tq-mode kvarn on CUDA requires head dim ≤ 256 (shared-memory WHT cap); this model has head dim {headDim}. Use [yellow]-g 0[/] for the CPU path.");
-                    return 1;
-                }
-            }
-            else if (!TqSupport.IsLloydMaxHeadDim(headDim))
-            {
-                AnsiConsole.ErrorLine($"[red]Error:[/] TurboQuant requires head dimension 128 or 256; this model has head dim {headDim}. Remove [yellow]--tq[/] to run without KV compression.");
+                AnsiConsole.ErrorLine($"[red]Error:[/] {Markup.Escape(tqShapeRefusal)}");
                 return 1;
             }
         }

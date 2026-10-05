@@ -36,6 +36,7 @@ public sealed record ForwardPassRequest
 {
     public ForwardPassFrontend Frontend { get; init; } = ForwardPassFrontend.Cli;
     public string Architecture { get; init; } = "llama";
+    public string? UnsupportedBackendName { get; init; }
     public bool IsSafeTensors { get; init; }
     public bool PackageSupported { get; init; } = true;
     public bool IsHybridSsm { get; init; }
@@ -57,6 +58,11 @@ public sealed record ForwardPassRequest
     public bool UnsupportedPartialVulkanPath { get; init; }
     public bool LayerHeadDim { get; init; }
     public bool TurboQuant { get; init; }
+    public bool ValidateTurboQuantModeOnly { get; init; }
+    public bool ValidateKVarNOnly { get; init; }
+    public bool ValidateTurboQuantHeadDimOnly { get; init; }
+    public bool SkipFamilyRefusals { get; init; }
+    public bool SkipTurboQuantShapeValidation { get; init; }
     public bool HasDraftModel { get; init; }
     public bool DraftLookup { get; init; }
     public bool DraftModelExists { get; init; } = true;
@@ -150,9 +156,21 @@ public static class ForwardPassSelection
             return ForwardPassDecision.Select(ForwardPassKind.SafeTensorsCpu);
         }
 
+        if (request.ValidateTurboQuantModeOnly)
+        {
+            string mode = request.TurboQuantMode.Trim().ToLowerInvariant();
+            return mode is "" or "auto" or "lloydmax" or "lloyd-max" or "kvarn"
+                ? ForwardPassDecision.Select(ForwardPassKind.CpuDense)
+                : ForwardPassDecision.Refuse(request.Frontend == ForwardPassFrontend.Cli
+                    ? $"Unknown --tq-mode value '{request.TurboQuantMode}'. Expected one of: auto, lloydmax, kvarn."
+                    : $"Unknown TqMode '{request.TurboQuantMode}'. Expected one of: auto, lloydmax, kvarn.");
+        }
+
         if (!request.ArchitectureSupported && !request.AllowUnverifiedArchitecture)
             return ForwardPassDecision.Refuse(request.ArchitectureRefusal ??
                 $"GGUF architecture '{request.Architecture}' is not admitted by OpenTail.Stingray.");
+        if (request.UnsupportedBackendName is { } unsupportedBackend)
+            return ForwardPassDecision.Refuse($"Unknown --backend value '{unsupportedBackend}'. Expected one of: auto, vulkan, cuda.");
 
         ArchitectureDescriptor? descriptor = ArchitectureRegistry.Find(request.Architecture);
         ForwardPassFamily family = descriptor?.ForwardPassFamily ?? ForwardPassFamily.Dense;
@@ -162,7 +180,8 @@ public static class ForwardPassSelection
         bool explicitKvarn = tqMode == "kvarn";
         bool explicitLloydMax = tqMode is "lloydmax" or "lloyd-max";
         bool tqModeIsAuto = tqMode is "auto" or "";
-        if (!tqModeIsAuto && !explicitKvarn && !explicitLloydMax)
+        if (!request.ValidateKVarNOnly && !request.ValidateTurboQuantHeadDimOnly
+            && !tqModeIsAuto && !explicitKvarn && !explicitLloydMax)
             return ForwardPassDecision.Refuse(request.Frontend == ForwardPassFrontend.Cli
                 ? $"Unknown --tq-mode value '{request.TurboQuantMode}'. Expected one of: auto, lloydmax, kvarn."
                 : $"Unknown TqMode '{request.TurboQuantMode}'. Expected one of: auto, lloydmax, kvarn.");
@@ -171,13 +190,21 @@ public static class ForwardPassSelection
                 ? "--tq-mode kvarn requires --tq."
                 : "TqMode=kvarn requires TurboQuant=true.");
 
-        if (request.IsHybridSsm && request.TurboQuant)
+        if (request.IsHybridSsm && request.TurboQuant
+            && !request.ValidateKVarNOnly && !request.ValidateTurboQuantHeadDimOnly)
             return ForwardPassDecision.Refuse("TurboQuant is not supported for hybrid GDN models (no KV cache on GDN layers).");
-        if ((request.IsHybridSsm || request.HasHybridGdnLayers) && draftRequested && request.Frontend == ForwardPassFrontend.Cli)
+        if (!request.ValidateTurboQuantModeOnly && !request.ValidateKVarNOnly
+            && !request.ValidateTurboQuantHeadDimOnly
+            && (request.IsHybridSsm || request.HasHybridGdnLayers)
+            && draftRequested && request.Frontend == ForwardPassFrontend.Cli)
             return ForwardPassDecision.Refuse("Speculative decoding is not supported for hybrid GDN models (GDN state is destructively updated and cannot be rewound).");
+        if (request.ValidateTurboQuantModeOnly)
+            return ForwardPassDecision.Select(ForwardPassKind.CpuDense);
 
         if (family == ForwardPassFamily.Rwkv)
         {
+            if (request.SkipFamilyRefusals)
+                return ForwardPassDecision.Select(ForwardPassKind.RwkvCpu);
             if (request.TurboQuant || (draftRequested && request.Frontend == ForwardPassFrontend.Cli))
             {
                 string message = request.Frontend == ForwardPassFrontend.Cli
@@ -189,6 +216,8 @@ public static class ForwardPassSelection
         }
 
         bool isGptOss = family == ForwardPassFamily.GptOss;
+        if (isGptOss && request.SkipFamilyRefusals)
+            return ForwardPassDecision.Select(ForwardPassKind.GptOssCpu);
         if (isGptOss && (request.TurboQuant || (draftRequested && request.Frontend == ForwardPassFrontend.Cli)))
         {
             string message = request.Frontend == ForwardPassFrontend.Cli
@@ -197,7 +226,40 @@ public static class ForwardPassSelection
             return ForwardPassDecision.Refuse(message);
         }
 
-        if (request.TurboQuant || explicitKvarn || explicitLloydMax)
+        if (request.ValidateKVarNOnly || request.ValidateTurboQuantHeadDimOnly)
+        {
+            if (request.ValidateKVarNOnly && explicitKvarn && !request.TurboQuant)
+                return ForwardPassDecision.Refuse("--tq-mode kvarn requires --tq.");
+            if (request.ValidateKVarNOnly)
+            {
+                if (explicitKvarn && request.KVarNSnapKvBlocked)
+                    return ForwardPassDecision.Refuse("--tq-mode kvarn does not compose with SnapKV eviction yet (issue #180 follow-up); unset STINGRAY_SNAPKV_BUDGET.");
+                if (explicitKvarn && request.GpuLayers != 0)
+                {
+                    if (request.Backend == ForwardPassBackend.Vulkan)
+                        return ForwardPassDecision.Refuse("--tq-mode kvarn is not supported on the Vulkan backend; use --backend cuda -g -1 (full offload) or -g 0 (CPU).");
+                    if (!request.CudaAvailable)
+                        return ForwardPassDecision.Refuse("--tq-mode kvarn with GPU offload requires a CUDA device (issue #180 Task 5a); use -g 0 for the CPU path.");
+                    if (request.IsMoE)
+                        return ForwardPassDecision.Refuse("--tq-mode kvarn on CUDA supports dense models only (issue #180 Task 5a); use -g 0 for MoE.");
+                }
+            }
+            if (request.ValidateTurboQuantHeadDimOnly)
+            {
+                if (request.TurboQuant && explicitKvarn && !TqSupport.IsKVarNHeadDim(request.HeadDim))
+                    return ForwardPassDecision.Refuse($"--tq-mode kvarn requires a power-of-2 head dimension in [8, 1024]; this model has head dim {request.HeadDim}.");
+                if (request.TurboQuant && explicitKvarn && request.GpuLayers != 0 && request.HeadDim > TqSupport.KVarNCudaMaxHeadDim)
+                    return ForwardPassDecision.Refuse($"--tq-mode kvarn on CUDA requires head dim ≤ 256 (shared-memory WHT cap); this model has head dim {request.HeadDim}. Use -g 0 for the CPU path.");
+                if (request.TurboQuant && !explicitKvarn && !TqSupport.IsLloydMaxHeadDim(request.HeadDim))
+                    return ForwardPassDecision.Refuse($"TurboQuant requires head dimension 128 or 256; this model has head dim {request.HeadDim}. Remove --tq to run without KV compression.");
+            }
+            return ForwardPassDecision.Select(family == ForwardPassFamily.GptOss
+                ? ForwardPassKind.GptOssCpu
+                : ForwardPassKind.CpuDense);
+        }
+
+        if (!request.SkipTurboQuantShapeValidation
+            && (request.TurboQuant || explicitKvarn || explicitLloydMax))
         {
             if (explicitLloydMax && request.HeadDim is not (128 or 256))
             {
@@ -381,6 +443,9 @@ public static class ForwardPassSelection
             gpuRequested = false;
         }
 
+        if (backend == ForwardPassBackend.Cuda && request.UnsupportedPartialCudaPath)
+            return ForwardPassDecision.Select(ForwardPassKind.CpuDense);
+
         if (gpuRequested && hasDeepSeek2Mla && request.Frontend == ForwardPassFrontend.Server
             || descriptor is not null && gpuRequested
                 && family is not (ForwardPassFamily.Rwkv or ForwardPassFamily.GptOss)
@@ -413,6 +478,9 @@ public static class ForwardPassSelection
                 : ForwardPassKind.VulkanHybridGdn);
         }
 
+        if (backend == ForwardPassBackend.Cuda && request.UnsupportedPartialCudaPath)
+            return ForwardPassDecision.Select(ForwardPassKind.CpuDense);
+
         if (!gpuRequested || backend == ForwardPassBackend.Cpu)
             return ForwardPassDecision.Select(request.HasCpuHybridGdnPass
                 ? ForwardPassKind.CpuHybridGdn
@@ -423,6 +491,9 @@ public static class ForwardPassSelection
             return ForwardPassDecision.Select(ForwardPassKind.CpuDense);
         if (request.LayerSplitOnly && request.Frontend == ForwardPassFrontend.Server)
             return ForwardPassDecision.Select(ForwardPassKind.VulkanLayerSplit);
+        if (request.LayerSplitOnlyLargeMoe && request.AutoPlan && request.IsMoE && gpuLayers > 4)
+            return ForwardPassDecision.Select(ForwardPassKind.VulkanLayerSplit,
+                "Automatic split limited to four GPU layers for large split-only MoE.");
         if (backend == ForwardPassBackend.Cuda)
         {
             if (request.TurboQuant && explicitKvarn && request.KVarNPartialCudaBlocked)
@@ -440,8 +511,6 @@ public static class ForwardPassSelection
         if ((request.HasLayerHeadDim || request.UnsupportedPartialVulkanPath || request.LayerSplitOnly)
             && (request.Frontend == ForwardPassFrontend.Cli || !request.TurboQuant))
         {
-            if (request.LayerSplitOnlyLargeMoe && request.AutoPlan && request.IsMoE && request.PlannedGpuLayers > 4)
-                return ForwardPassDecision.Select(ForwardPassKind.VulkanLayerSplit, "Automatic split limited to four GPU layers for large split-only MoE.");
             return ForwardPassDecision.Select(ForwardPassKind.VulkanLayerSplit);
         }
         return ForwardPassDecision.Select(ForwardPassKind.VulkanHybrid);
