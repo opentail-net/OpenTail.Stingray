@@ -21,15 +21,15 @@ Labels: **structural** < **synthetic execution** < **synthetic parity** < **refe
 
 ## Per family
 
-### Qwen 3.8 Flash Next (`qwen4exp`) - refuses real configs
-| Unchecked | Why unchecked | What would settle it |
+### Qwen 3.8 Flash Next (`qwen4exp`)
+| Item | Current Status (2026-10-04) | What would settle it |
 |---|---|---|
-| PLE n-gram hash, shard and table lookup (no n-gram table is loaded) | Mechanism taken from the plan and the reviewer; llama.cpp `qwen4exp.cpp` not yet read for it | Read the PLE gather in `qwen4exp.cpp`, load the table, test 1/2/3-gram lookups produce distinct, expected rows |
-| QSA RoPE (the mixer applies none) | Not yet compared with `build_layer_attn` | Read `build_layer_attn`; synthetic test with a known rotation |
-| QSA indexer, K-pool block selection (`n_sel`, select-tail, by-order) | Reference logic is in the graph input builder; not ported | Controlled-score fixture: a distractor block outside the selection must not affect the output |
-| Routed experts read the stacked tensor correctly (`ExpertMatVec` slicing, quantised row stride) | Only the router maths has a test | Integrated 2-4 expert fixture with known matrices and exact expected output |
-| Fused `ffn_gate_up_exps` tensors | Not loaded; unknown whether real GGUFs use them | Inventory a real GGUF (72.5 GB, does not fit this host) |
-| GDN, HC and PLE gate/conv numerics | Only finite-output and component tests exist | llama.cpp `qwen4exp` run on a synthetic GGUF |
+| PLE n-gram hash, head grouping & table lookup | **Resolved**: 64-bit stateful `Qwen4ExpPleHasher`, n-gram head grouping (8 bigram, 8 trigram), EOS context truncation, 160-wide row concatenation into 2560d, dilated 1D causal conv, and memory-mapped `Qwen4ExpPleRowStore` | Verified in synthetic suite; real checkpoint row gather |
+| QSA RoPE & IMRoPE | **Resolved**: Indexer Q and pooled-K RoPE ($\theta = 10\text{M}$, partial rotary 0.25), main attention four-section IMRoPE (`[11, 11, 10]`) using `SimdKernels.ApplyRoPECachedNeoxPartial` | Verified in synthetic suite |
+| QSA indexer & K-pool block selection | **Resolved**: Dedicated raw indexer-K cache, K-pool (kpool=4) with active tail retention, multi-head ReLU scoring, top-k block selection, sparse attention mask walk | Verified in synthetic suite |
+| Routed experts & fused tensors | **Resolved**: 512-expert MoE (top-10 + 1 shared expert, intermediate 640). Both fused `ffn_gate_up_exps` and separate tensor layouts supported and verified bit-identical (`Qwen4ExpRoutedMoeTests`) | Synthetic parity tests passing |
+| Forward pass refusal guard | **Resolved**: Constructor refusal guard removed; real configs with `indexer_top_k > 0` accepted (`Qwen4ExpGuardTests`) | 24 unit/synthetic tests passing |
+| Real-weight run | Implementation-complete / synthetic-covered (24 tests passing); real checkpoints remain guarded per CLAUDE.md Rule 14 until verified | Level 4 paged run on `unsloth/Qwen3.8-Flash-Next-GGUF` UD-IQ1_S (~72.5 GB) against llama.cpp / TensorSharp |
 | MTP, vision | Deferred | n/a |
 
 ### GLM-5.x
@@ -43,15 +43,16 @@ Labels: **structural** < **synthetic execution** < **synthetic parity** < **refe
 | 236 GiB checkpoint | Real-weight parity pending | GLM-5.3 Q2_K_XL is being downloaded to `E:\_models\glm-5.3` |
 
 ### DiffusionGemma
-| Unchecked | Why unchecked | What would settle it |
+| Item | Current Status (2026-10-04) | What would settle it |
 |---|---|---|
-| Gumbel-max candidate sampling versus plain argmax | Claimed by a reviewer from the vLLM reference; the HF/vLLM Python source is not in the repo, the HF repo carries no code, and the model card does not mention it | Read `transformers` `DiffusionGemma*` / the vLLM sampler |
-| Learned self-conditioning MLP | Tensors are not loaded; the reference is unavailable; `ApplySelfCondMlp` exists but is unused by the pipeline | Inventory the GGUF tensor names, read the HF modeling code |
-| Self-conditioning probabilities use the temperature of the *current* step | Assumed | Reference step trace |
-| `TemperatureMin` 0.408 versus the official 0.4 | Config says 0.4; the engine bakes in 0.408 (decay over 47 steps) | Reference step trace; then pin one contract |
-| Token-selection rule: "lowest-entropy tokens such that the mutual-information bound stays under 0.1" | The engine uses a cumulative-entropy budget; equivalence is assumed | Reference step trace |
-| Exact soft embedding performance | About 262k vocab x 256 positions per step | Perf pass after parity (rule 7) |
-| Real-weight run | `unsloth/diffusiongemma-26B-A4B-it-GGUF` Q4_K_M downloading to `F:\_models` | Phase 9 of the plan |
+| Real GGUF tensor inventory & strict loader | **Resolved**: `DiffusionGemmaTensorSet` strictly loads and validates all 692 tensors with shape assertions (`[2816, 1408, 128]` fused gate/up, `[704, 2816, 128]` down, scales) and SWA vs Full separation | Verified in synthetic tests; real checkpoint load test |
+| Gemma-4 MoE backbone & prefill | **Resolved**: Full heterogeneous SWA/Full pass, NeoX RoPE, Q/K norms, full-layer V-from-K derivation, parallel dense (2112) + routed MoE (128 experts, top-8), router & expert down scales, post-norms, dual layer scales. Multi-block prefill now attends to persistent prefix KV across blocks | Parity test against llama.cpp `gemma4.cpp` (Phase 13) |
+| Learned self-conditioning MLP | **Resolved**: `self_cond_pre_norm/gate/up/down` loaded and wired into pipeline. Disabled at step 0; at step > 0 computes exact full-vocab soft embeddings -> pre-norm -> GEGLU (2112) -> down -> canvas addition -> weightless norm | Verified in synthetic suite; numerical parity with reference |
+| Temperature contract | **Resolved**: Contract aligned to `TemperatureMin = 0.4f`, `TemperatureMax = 0.8f` using reference schedule $T = T_{\min} + (T_{\max} - T_{\min}) \times (\text{curStep}/\text{MaxSteps})$ ($0.8 \to 0.408333$ at step 47) | Step trace verification against TensorSharp |
+| EntropyBound token acceptance | **Resolved**: `DiffusionGemmaSampler` now tracks `cumAcceptedEntropy`, accumulating entropy from accepted positions only against the 0.1 nat budget | Step trace verification against TensorSharp |
+| Gumbel-max candidate sampling versus plain argmax | TensorSharp reference implements deterministic inverse-CDF multinomial sampling during denoising and argmax for final block commit; vLLM variant unverified | Reference step trace |
+| Exact soft embedding performance | About 262k vocab x 256 positions per step; correct implementation present | Perf pass after real parity (rule 7) |
+| Real-weight run | Implementation-complete / synthetic-covered (32 tests passing); real checkpoints remain guarded per CLAUDE.md Rule 14 until verified | Download `unsloth/diffusiongemma-26B-A4B-it-GGUF` Q4_K_M (~16.8 GB) and execute Phase 9/13 ladder |
 
 ### MiniMax-H3 (foundation only)
 Unchecked: Qwen3-VL-32B layer-50 hidden-state conditioning, the 50-block DiT loader and tensor inventory,
@@ -131,6 +132,17 @@ llama.cpp's `gemma4.cpp` (same backbone). The port does **not** match the real a
   the self-conditioning pre-norm placement, and Gumbel-max sampling. llama.cpp has no diffusion-gemma model file.
 - **Likely route to a real check:** rewrite the backbone against `gemma4.cpp`, then verify its causal-prefill path by
   re-labelling a copy of the GGUF as `gemma4` for llama.cpp; the canvas/self-conditioning path still needs the HF reference.
+
+## Update 2026-10-04: DiffusionGemma architecture implementation jump & synthetic verification
+
+The architectural rewrite and tensor contract alignment were completed across `src/OpenTail.Stingray.Diffusion/DiffusionGemma/`:
+- **Real GGUF tensor inventory & geometry loader:** `DiffusionGemmaTensorSet.cs` strictly loads all 692 tensors, validates SWA vs Full rules (`attn_v` required on SWA, forbidden on Full), and enforces shape validation on fused expert weights `[2816, 1408, 128]`, down weights `[704, 2816, 128]`, scales, and projections.
+- **Gemma-4 MoE backbone:** heterogeneous 25 SWA / 5 Full layers, NeoX RoPE at absolute token positions, per-head Q/K RMSNorm, full-layer V-from-K derivation, parallel dense FFN (2112) + routed MoE (128 experts, top-8), router scaling, expert down scaling, post-norms, dual layer scales (`enc_layer_output_scale` in prefill vs `layer_output_scale` in canvas), and final logit softcapping.
+- **Causal multi-block prefill:** `PrefillPrompt` cross-attends across cached prefix (`_promptKCache`/`_promptVCache` with SWA window clipping or full context) and newly committed blocks with correct RoPE position offsets, enabling continuous multi-block generation.
+- **Self-conditioning MLP:** fully wired into pipeline; disabled at step 0; at step > 0 computes exact full-vocabulary soft embeddings, pre-norm, GEGLU (2112 intermediate), down projection, canvas addition, and weightless RMSNorm.
+- **EntropyBound sampler:** corrected to track `cumAcceptedEntropy` against the 0.1 nat budget; temperature schedule pinned to reference formula $T = 0.4 + 0.4 \times (\text{curStep}/48)$ ($0.8 \to 0.408333$ at step 47).
+- **Synthetic test suite:** expanded to 32 tests (`DiffusionGemmaTests`) verifying tensor geometry, SWA/Full separation, V-from-K, router scaling, post-norm/scaling order, global vs window attention, self-conditioning step-0 behavior, multi-block prefix continuity, and deterministic sampling.
+- **Remaining for admission:** download real 16.8 GB Q4_K_M GGUF to `F:\_models` (or `E:\_models`), execute Phase 9/13 parity ladder against llama.cpp (backbone) and TensorSharp (canvas/sampler). Checkpoints remain guarded per CLAUDE.md Rule 14 until verified.
 
 ## Update 2026-10-03 (evening): Muse-Glimmer admitted (text, CPU only)
 

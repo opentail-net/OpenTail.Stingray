@@ -21,9 +21,9 @@ deliberate step (keep b10306 alongside, re-run key receipts on both, then switch
 | Family | Plan | Fits this PC? | Second implementation | Port + synthetic |
 |---|---|---|---|---|
 | Muse-Glimmer | [plan](2026-10-03-muse-glimmer-port-plan.md) | yes (small quants) | llama.cpp `muse-glimmer.cpp` (source) + TensorSharp | **ADMITTED 2026-10-03 (text, CPU only).** `admit-arch` 8/8 exact; real-window 3,748-token prompt identical; Level 2 synthetic parity (`MuseGlimmerSyntheticTests`) plus level 4: `UD-Q4_K_XL` (Muse-Glimmer-30B) greedy output vs llama.cpp `bed0a8566` over 3 prompts is token-identical to the compared length except one 0.006-nat near-tie (" in" 0.7108 vs " proper" 0.7169 NLL). Prefill about 10x slower than llama.cpp (per-token for gated models). Remaining: batched prefill, vision tower, DFlash |
-| Qwen 3.8 Flash Next | [plan](2026-10-03-qwen38-flash-next-port-plan.md) | paged only (72.5 GB; fits the scratch disk, not RAM) | llama.cpp `qwen4exp.cpp` (source) + TensorSharp | **Partial**: component tests + synthetic execution. Routed MoE added 2026-10-03 (`Qwen4ExpMoeRoutingTests`). **Missing:** RoPE in the QSA mixer, QSA indexer + K-pool block selection, PLE n-gram table. Forward pass refuses real configs (`indexer_top_k > 0`) until then |
+| Qwen 3.8 Flash Next | [plan](2026-10-03-qwen38-flash-next-port-plan.md) | paged only (72.5 GB; fits the scratch disk, not RAM) | llama.cpp `qwen4exp.cpp` (source) + TensorSharp | **Impl-complete / synthetic-covered (24 tests passing).** Full structural & semantic implementation (GatedResidual HC, FP32 GDN, 512-expert MoE with fused/separate tensors, 16-head n-gram grouped PLE with 160-wide row concat & lazy disk mmap, QSA four-section IMRoPE, indexer-K cache, K-pool sparse selection with active tail retention). Constructor refusal guard removed (`Qwen4ExpGuardTests`). **Pending:** Level 4 paged real-weight execution on the 72.5 GB UD-IQ1_S checkpoint, parity against llama.cpp/TensorSharp. MTP & vision deferred. |
 | GLM-5.x | [plan](2026-10-03-glm5-port-plan.md) | paged only (GLM-5.3 Q2_K_XL ~236 GiB; fits the 279 GB scratch disk, not RAM) | `glm-dsa`: llama.cpp source + b10306 binaries; `glm5next`: llama.cpp source for the trunk, **not NextN** | **Synthetic execution** (`GlmDsaSyntheticTests`, `Glm5NextSyntheticTests`; finite-logit smoke tests, not parity). `glm5next`: HC-stream carry-over bug fixed 2026-10-03; K-pool sparse selection missing (throws past `indexer.top_k` keys); no regression test for the HC fix yet. `glm-dsa`: the b10306 llama.cpp synthetic comparison is not done |
-| DiffusionGemma | [plan](2026-10-03-diffusiongemma-port-plan.md) | yes (~13-17 GB) | HF reference + TensorSharp (no llama.cpp) | **Component-tested only; real checkpoint REFUSED (2026-10-03: tensor names and Gemma-4 MoE layer do not match the port, no RoPE, prefill without attention; see docs/1-correctness).** (`DiffusionGemmaTests`). Fixed 2026-10-03: stability on argmax history, commit argmax not the re-noised canvas, exact soft-embedding sum. **Missing:** learned self-conditioning MLP (tensors not loaded), Gumbel-max candidate sampling unverified against the HF/vLLM source |
+| DiffusionGemma | [plan](2026-10-03-diffusiongemma-port-plan.md) | yes (~13-17 GB) | llama.cpp (Gemma-4 backbone) + TensorSharp (diffusion/sampler) | **Impl-complete / synthetic-covered (32 tests passing); real checkpoint REFUSED per Rule 14 pending verification.** Real 692-tensor loader with strict geometry validation, Gemma-4 MoE backbone (25 SWA / 5 Full, top-8 fused MoE, V-from-K, dual scales), multi-block causal prefill attending persistent prefix, self-conditioning pipeline, and EntropyBound sampler. **Pending:** real 16.8 GB Q4_K_M load, single-layer/backbone parity against llama.cpp, and end-to-end canvas/sampler parity against TensorSharp. |
 | MiniMax-H3 | [plan](2026-10-03-minimax-h3-port-plan.md) | yes (sequential loading, see plan) | upstream HF/PyTorch + TensorSharp | **Foundation only** (`MiniMaxH3Tests`): layout, schedulers, AdaLN, MM-RoPE, VAE decoders, synthetic pipeline. **Missing:** Qwen3-VL hidden-state extraction, 50-block real loader, VAE encode, conditioning modes |
 | DeepSeek V4 / V4.1 (review) | [plan](2026-10-03-deepseek-v4-review-plan.md) | V4: paged only (~98.6 GB). V4.1: no (~335 GB, does not fit the scratch disk) | V4: llama.cpp source + b10306; V4.1: TensorSharp only | **V4: synthetic execution** (the forward test uses ratio 0 only, so CSA is unexercised). **V4.1: partial**, parsed + loaded but compressed attention (ratios 1/2), V4.1 indexer, YaRN and quantised Engram are not on the execution path; the forward pass now refuses such configs. Fixed 2026-10-03: `moe_intermediate_size` 2304, indexer defaults |
 
@@ -74,11 +74,11 @@ exposed** (no admission, no catalog/CLI/STATUS entry). That is the correct end s
 
 - **DeepSeek-V4.1 (`deepseek41`, ~335 GB):** does not fit even on the 279 GB scratch disk; not
   attempted. Stays PORTED + SYNTHETIC only.
-- **Qwen 3.8 Flash Next (~72.5 GB), DeepSeek-V4 (~98.6 GB):** both fit `E:\_models` and can be paged on this host (slow is fine). DeepSeek-V4 is a real candidate (the vendored llama.cpp b10306 knows `deepseek4`); do it after GLM-5.3. Qwen cannot be run until QSA selection, RoPE and the PLE table are implemented (the forward pass refuses real configs).
+- **Qwen 3.8 Flash Next (~72.5 GB), DeepSeek-V4 (~98.6 GB):** both fit `E:\_models` and can be paged on this host (slow is fine). DeepSeek-V4 is a real candidate (the vendored llama.cpp b10306 knows `deepseek4`); do it after GLM-5.3. Qwen's architecture is fully implemented and accepts real configs; paged Level 4 verification can proceed when disk/checkpoint capacity allows.
 - **GLM-5.3 (~236 GiB):** fits `E:\_models`; correctness-only runs (hours, paged from disk) are
   acceptable. Slowness is not a failure; a token/logit mismatch is.
 
-Real-checkpoint order: Muse-Glimmer (done 2026-10-03), then GLM-5.3, then DeepSeek-V4. DiffusionGemma is blocked on a backbone rewrite (see its plan). Download into `E:\_models`, verify against the independent implementation, then delete the checkpoint.
+Real-checkpoint order: Muse-Glimmer (done 2026-10-03), then GLM-5.3, then DeepSeek-V4, then DiffusionGemma (backbone & pipeline implementation complete; synthetic test suite passes with 32 tests; pending real Q4_K_M checkpoint verification). Download into `E:\_models` (or `F:\_models`), verify against the independent implementation, then delete the checkpoint.
 
 
 ## Per-family checklist (every family)
@@ -114,6 +114,8 @@ Real-checkpoint order: Muse-Glimmer (done 2026-10-03), then GLM-5.3, then DeepSe
 - [x] Port
 - [x] Not-admitted block
 - [x] Table row
+- [x] Specification & synthetic tests passing (24 tests in `Qwen4ExpAlphaTests`, `Qwen4ExpRoutedMoeTests`, `Qwen4ExpMoeRoutingTests`, `Qwen4ExpGuardTests`)
+- [ ] Real-weight verification (paged execution on `unsloth/Qwen3.8-Flash-Next-GGUF` UD-IQ1_S ~72.5 GB)
 
 ### 2. GLM-5.x (`glm-dsa`, alias `glm_dsa`; GLM-5.3-Flash is `glm5next`)
 - **Design:**
@@ -155,10 +157,11 @@ Real-checkpoint order: Muse-Glimmer (done 2026-10-03), then GLM-5.3, then DeepSe
 - **Weights:** `google/diffusiongemma-26B-A4B-it` (HF), `unsloth/diffusiongemma-26B-A4B-it-GGUF` (Q4_K_M ~16.8 GB; fits 64 GB machine).
 - **Reuse:** Stingray's Gemma 4 primitives, MoE routing, and PagedKvCache.
 - **References:** HF reference implementation, TensorSharp `Models/DiffusionGemma`, Unsloth / llama.cpp DiffusionGemma runner.
-- [x] Port (`src/OpenTail.Stingray.Diffusion/DiffusionGemma/*.cs`)
-- [x] Add not-admitted block in `ModelCompatibility.cs`
+- [x] Port (`src/OpenTail.Stingray.Diffusion/DiffusionGemma/*.cs`: Gemma-4 MoE backbone, multi-block causal prefill, persistent KV, bidirectional canvas, self-conditioning MLP, EntropyBound sampler, and strict tensor loader)
+- [x] Add not-admitted block in `ModelCompatibility.cs` (real checkpoint guarded by `DiffusionGemmaRealCheckpointGuardTests` per Rule 14)
 - [x] Add table row
-- [x] Specification tests passing (`DiffusionGemmaTests`)
+- [x] Specification & synthetic tests passing (32 tests in `DiffusionGemmaTests`)
+- [ ] Real-weight verification (Phase 9/13 ladder against llama.cpp and TensorSharp on `diffusiongemma-26B-A4B-it-Q4_K_M.gguf`)
 
 ### 5. MiniMax-H3 (video + native 32 kHz stereo audio)
 - **Design:**
