@@ -3798,7 +3798,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
     {
         if (noThinking) return true;   // explicit off wins over a conflicting --thinking
         if (thinking)   return false;  // explicit on
-        return arch == "gemma4";       // default: off only for Gemma 4
+        return ArchitectureRegistry.ThinkingDefaultOff(arch); // per-family default (Gemma 4)
     }
 
     // Accept llama.cpp's "draft-mtp" alongside the shorter "mtp" so existing command
@@ -3850,7 +3850,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         // none was requested, and indents user content by 8 spaces in render_content(x), causing
         // the vision decoder to predict <|end_of_text|> at token 0 (empty decode / early EOS).
         // Match llama.cpp's canonical LLM_CHAT_TEMPLATE_GRANITE_4_0 instead of the defective metadata Jinja.
-        if (s_arch is "granite")
+        if (ArchitectureRegistry.FallbackChat(s_arch) == FallbackChatFormat.Granite)
         {
             var sbGranite = new System.Text.StringBuilder();
             if (!string.IsNullOrEmpty(systemPrompt))
@@ -3883,7 +3883,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         // Fallback: hardcoded templates for known architectures.
         var sb = new System.Text.StringBuilder();
 
-        if (s_arch is "llama4")
+        if (ArchitectureRegistry.FallbackChat(s_arch) == FallbackChatFormat.Llama4)
         {
             // Llama 4: <|begin_of_text|><|header_start|>role<|header_end|>\n\nmessage<|eot|>
             sb.Append("<|begin_of_text|>");
@@ -3892,7 +3892,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
             sb.Append($"<|header_start|>user<|header_end|>\n\n{userMessage}<|eot|>");
             sb.Append("<|header_start|>assistant<|header_end|>\n\n");
         }
-        else if (s_arch is "llama")
+        else if (ArchitectureRegistry.FallbackChat(s_arch) == FallbackChatFormat.Llama3)
         {
             if (!s_hasLlama3Headers)
             {
@@ -3911,7 +3911,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
                 sb.Append("<|start_header_id|>assistant<|end_header_id|>\n\n");
             }
         }
-        else if (s_arch is "granite")
+        else if (ArchitectureRegistry.FallbackChat(s_arch) == FallbackChatFormat.Granite)
         {
             // Granite: <|start_of_role|>role<|end_of_role|>message<|end_of_text|>\n
             if (systemPrompt is not null)

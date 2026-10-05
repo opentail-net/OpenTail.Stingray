@@ -86,7 +86,7 @@ public sealed class ChatTemplateRenderer
     /// (and go badly out-of-distribution on multimodal input, producing garbage). Mirrors the
     /// CLI's <c>modelDefaultsThinkingOff = s_arch == "gemma4"</c> gate so the server and CLI agree.
     /// </summary>
-    public bool ModelDefaultsThinkingOff => _architecture == "gemma4";
+    public bool ModelDefaultsThinkingOff => ArchitectureRegistry.ThinkingDefaultOff(_architecture);
 
     /// <summary>Compiled Jinja template, if the loaded model shipped one.</summary>
     public JinjaChatTemplate? JinjaTemplate => _template;
@@ -197,7 +197,7 @@ public sealed class ChatTemplateRenderer
         // system prompt even when none was requested, and indents user content by 8 spaces in
         // render_content(x), causing vision decoders to predict <|end_of_text|> at token 0.
         // Match llama.cpp's canonical LLM_CHAT_TEMPLATE_GRANITE_4_0.
-        if (_architecture is "granite")
+        if (ArchitectureRegistry.FallbackChat(_architecture) == FallbackChatFormat.Granite)
             return RenderGranite(messages, addGenerationPrompt);
 
         if (_template != null)
@@ -241,7 +241,7 @@ public sealed class ChatTemplateRenderer
         bool plainChat = tools is null
             && !messages.Any(m => m.ContainsKey("tool_calls")
                 || (m.TryGetValue("role", out var rl) && rl as string is "tool"));
-        if (_architecture is "granite" && (plainChat || _template is null))
+        if (ArchitectureRegistry.FallbackChat(_architecture) == FallbackChatFormat.Granite && (plainChat || _template is null))
         {
             var simpleGranite = messages
                 .Select(m => (
@@ -292,7 +292,8 @@ public sealed class ChatTemplateRenderer
     {
         var sb = new StringBuilder();
 
-        if (arch is "llama4")
+        var chatFormat = ArchitectureRegistry.FallbackChat(arch);
+        if (chatFormat == FallbackChatFormat.Llama4)
         {
             sb.Append("<|begin_of_text|>");
             foreach (var (role, content) in messages)
@@ -300,7 +301,7 @@ public sealed class ChatTemplateRenderer
             if (addGenerationPrompt)
                 sb.Append("<|header_start|>assistant<|header_end|>\n\n");
         }
-        else if (arch is "llama")
+        else if (chatFormat == FallbackChatFormat.Llama3)
         {
             sb.Append("<|begin_of_text|>");
             foreach (var (role, content) in messages)
@@ -308,7 +309,7 @@ public sealed class ChatTemplateRenderer
             if (addGenerationPrompt)
                 sb.Append("<|start_header_id|>assistant<|end_header_id|>\n\n");
         }
-        else if (arch is "granite")
+        else if (chatFormat == FallbackChatFormat.Granite)
         {
             return RenderGranite(messages, addGenerationPrompt);
         }

@@ -906,7 +906,9 @@ public static class ModelCompatibility
 
     /// <summary>Whether the architecture has an implemented text-generation forward profile.</summary>
     public static bool IsTextGenerationArchitectureSupported(string architecture) =>
-        s_textGenerationArchitectures.Contains(architecture);
+        ArchitectureRegistry.Find(architecture) is { } descriptor
+            ? descriptor.IsUsable()
+            : s_textGenerationArchitectures.Contains(architecture);
 
     /// <summary>
     /// Matrix weight formats implemented by the portable CPU path. CUDA/Vulkan routes share
