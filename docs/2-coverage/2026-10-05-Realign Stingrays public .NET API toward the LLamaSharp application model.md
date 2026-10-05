@@ -427,7 +427,7 @@ Work in small commits.
   - Add the API archaeology/design document only (`docs/3-product-and-runtime/<date>-llamasharp-api-realignment-plan.md`).
   - No runtime changes.
 
-- [ ] **Commit 2 — foundational API types**
+- [x] **Commit 2 — foundational API types**
   - Introduce the new public concepts:
     - model parameters
     - context parameters
