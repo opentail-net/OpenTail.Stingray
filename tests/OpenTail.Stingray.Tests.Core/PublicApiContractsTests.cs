@@ -111,4 +111,59 @@ public class PublicApiContractsTests
         Assert.Equal(SpecType.Mtp, sp.SpecType);
         Assert.Equal(2, sp.SpecDraftNMax);
     }
+
+    [Fact]
+    public void Model_Load_Throws_WhenFileNotFound()
+    {
+        Assert.Throws<FileNotFoundException>(() => Model.Load("non_existent_model_file.gguf"));
+    }
+
+    [Fact]
+    public void Model_Load_Throws_WhenParametersNull()
+    {
+        Assert.Throws<ArgumentNullException>(() => Model.Load((ModelParams)null!));
+    }
+
+    [Fact]
+    public void Model_Load_And_MultipleContexts_Lifecycle()
+    {
+        var modelPath = Path.Combine("models", "_models", "all-MiniLM-L6-v2-Q8_0.gguf");
+        if (!File.Exists(modelPath)) return;
+
+        using var model = Model.Load(modelPath);
+        Assert.False(string.IsNullOrEmpty(model.Architecture));
+        Assert.True(model.ContextLength > 0);
+        Assert.True(model.EmbeddingLength > 0);
+        Assert.Equal(0, model.ActiveContextCount);
+
+        var ctx1 = model.CreateContext(new ContextParams { ContextSize = 128 });
+        Assert.Equal(1, model.ActiveContextCount);
+        Assert.Equal(128, ctx1.ContextSize);
+        Assert.NotNull(ctx1.Tokenizer);
+
+        var ctx2 = model.CreateContext(new ContextParams { ContextSize = 256 });
+        Assert.Equal(2, model.ActiveContextCount);
+        Assert.Equal(256, ctx2.ContextSize);
+
+        ctx1.Dispose();
+        Assert.Equal(1, model.ActiveContextCount);
+
+        ctx2.Dispose();
+        Assert.Equal(0, model.ActiveContextCount);
+    }
+
+    [Fact]
+    public void Model_Dispose_DisposesActiveChildContexts()
+    {
+        var modelPath = Path.Combine("models", "_models", "all-MiniLM-L6-v2-Q8_0.gguf");
+        if (!File.Exists(modelPath)) return;
+
+        var model = Model.Load(modelPath);
+        var ctx = model.CreateContext();
+        Assert.Equal(1, model.ActiveContextCount);
+
+        model.Dispose();
+        Assert.Throws<ObjectDisposedException>(() => ctx.Reset());
+        Assert.Throws<ObjectDisposedException>(() => model.CreateContext());
+    }
 }

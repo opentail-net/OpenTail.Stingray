@@ -437,7 +437,7 @@ Work in small commits.
   - Do not migrate the whole engine yet.
   - Build and test.
 
-- [ ] **Commit 3 — model/context lifecycle**
+- [x] **Commit 3 — model/context lifecycle**
   - Implement:
     ```text
     Model

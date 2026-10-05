@@ -229,7 +229,7 @@ await foreach (var chunk in session.ChatChunksAsync("Explain prefix caching in S
   - Document LLamaSharp mapping, upstream llama.cpp divergences, explicit naming decisions, and target shape.
 - [x] **Milestone 2 — Foundational Public API Types**
   - Implement `ModelParams`, `ContextParams`, `InferenceParams`, `IExecutor`, `GenerateChunk` exposure in core/engine.
-- [ ] **Milestone 3 — Model & ModelContext Lifecycle**
+- [x] **Milestone 3 — Model & ModelContext Lifecycle**
   - Implement `Model.Load(...)` and `model.CreateContext(...)` wrapping Stingray's native forward-pass loaders.
 - [ ] **Milestone 4 — Executors (Interactive, Stateless, Batched)**
   - Implement `InteractiveExecutor`, `StatelessExecutor`, and `BatchedExecutor`.
