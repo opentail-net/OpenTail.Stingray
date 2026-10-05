@@ -96,36 +96,48 @@ Characterization of the current CLI and server loader selection paths. This docu
 
 ## CLI vs. server divergences
 
-These are observable selection/refusal differences for equivalent model/request conditions, not proposed corrections.
+These are observable selection/refusal differences for equivalent model/request conditions, not proposed corrections. Following the Step 6 S5 migration (commit `88bbc653`), forward-pass selection and compatibility refusals are unified through `ForwardPassSelection.Select`. Note that **rwkv** and **hybrid-GDN** have no local GGUF models available and are covered only by selector tests (`ForwardPassSelectionTests`).
 
-| Point | CLI | Server | Classification / consequence |
+| Point | CLI | Server | Status after Step 6 migration |
 |---|---|---|---|
-| DeepSeek2 MLA with speculative decoding requested | At 1994–2005, draft-model or lookup prevents the special Vulkan pass; generic path then processes it. | At 559–569, there is no draft flag and MLA branch can select Vulkan pass. | hardware/flag-driven: known asymmetry from the step-6 prompt; no server equivalent of CLI draft flags. |
-| DeepSeek2 MLA with explicit CUDA backend | At 1997–2005, explicit CUDA-only blocks Vulkan MLA selection; the generic unsupported-feature logic can fall back to CPU. | At 559–563 backend Auto/Vulkan is required, so CUDA bypasses MLA; generic unsupported-feature logic can fall back to CPU. | No material disagreement in selected pass for same explicit backend; conditions are structurally similar. |
-| DeepSeek2 MLA with partial layer count | CLI `partial` blocks special MLA and falls through generic GPU checks. | Full layer count required, so MLA special case is skipped. | No material disagreement for equivalent positive partial request. |
-| RWKV with draft-model or prompt lookup | 2016–2022 hard-refuses TurboQuant and either draft mode. | 603–613 only rejects TurboQuant; loader has no standard draft-decoding option and returns RWKV CPU pass. | hardware/flag-driven: CLI rejects a combination the server API cannot request. |
-| Hybrid GDN with standard draft options | 1979–1983 hard-refuses. | `BuildForwardPass` has no standard draft option; it may load hybrid GDN. | hardware/flag-driven: CLI-only standard speculation gate. |
-| gpt-oss with standard speculative options | 2030–2034 hard-refuses drafts. | 615–635 has no draft gate and can load CPU or Vulkan gpt-oss. | hardware/flag-driven: CLI-only standard speculation gate. |
-| gpt-oss CUDA-only/full-layer request | 2037–2040 treats CUDA-only (`wantsCudaOnly`) as unsupported for gpt-oss and forces CPU, including an explicit CUDA full-layer request. | 622 requires Vulkan for GPU; CUDA returns CPU. | Same selected pass, though CLI logs fallback note where server uses loader diagnostic. |
-| gpt-oss Auto GPU, all layers | CLI auto backend can choose CUDA when available; then `wantsCudaOnly` is false and nonzero full offload reaches `GptOssGpuForwardPass` on Vulkan construction path (see 2036–2050); server Auto resolves to CUDA when available, and CUDA is not eligible in gpt-oss branch, so returns CPU. | Auto resolution at 577–587 selects CUDA when available; gpt-oss full-GPU gate at 622 requires Vulkan, hence CPU. | hardware-driven likely divergence: the CLI's gpt-oss branch creates Vulkan regardless of resolved `wantCuda`; confirm with current runtime behavior when CUDA hardware is present. |
-| Hybrid GDN with TurboQuant | CLI refuses before backend selection at 1974–1978. | Server refuses before `BuildForwardPass` at 192–194. | Same refusal text and outcome. |
-| SafeTensors backend features | CLI explicitly refuses GPU, TurboQuant, standard drafts, DSpark, and images at 815–844; then CPU `ForwardPass`. | Server accepts packages into CPU `ForwardPass` at 111–135 but does not expose the same per-feature CLI flags here; session mode is explicitly refused at 77–80. | Interface capability difference: not equivalent request surface; do not interpret missing server flags as permission to execute them. |
-| Package inference details | CLI accepts package features only after explicit capability gates, then uses CPU `ForwardPass` at 795–878. | Server additionally rejects SafeTensors sessions at 77–80 and starts `ContinuousBatchingEngine` for supported packages at 111–135. | Interface difference: package/session use is not the same request surface; server adds a package session refusal and batching wrapper. |
-| Image input | CLI validates mmproj and prompt before the forward path at 1931–1967, then image execution uses active pass at 2232–2239. | Server image path at 272–305 restricts text architecture to Gemma4 and requires embedding-input support; refuses images with batching. | architecture/shape/flag-driven: server has stricter Gemma4-only image guard in this loader; CLI delegates projector dispatch to `UnifiedVisionPipeline`. |
-| DSpark Off or unsupported configuration | CLI warns and continues ordinary generation for Off/unsupported target or interactive use at 1142–1189. | Server throws for unsupported hidden taps or placement Off at 422–426, 456–461. | hardware/flag-driven: explicit server configuration is treated as a deployment contract; CLI treats DSpark as optional and falls back. |
-| DSpark context-window overflow | CLI checks prompt + block fit at 2547–2555 and returns error code 1 for that run. | Server attachment validates head/target/tap support and placement at 415–461; no corresponding prompt exists at startup because the request prompt is not yet known. | Request-time vs startup API boundary; no equivalent server refusal point at model load. |
-| Auto CUDA layer planning / Gemma4 boundary / expert cache | CLI has explicit Gemma4 KV-source boundary clamp and special MoE expert-cache auto-hybrid path (1493–1548). | CUDA loader uses TierPlanner and Gemma4 clamp (702–704), but no equivalent `MoeRoutedExpertBytes > ExpertCacheBudgetBytes` full-offload-to-hybrid override in this selection block (712–757). | shape/hardware-driven: auto MoE placement may select different CUDA pass for matching resource conditions. |
-| Auto Vulkan large split-only MoE safeguard | CLI caps certain >=30 GiB models to 4 layers under auto placement (1719–1732). | Server selects split pass based on shape and requested planner count only (803–812); no model-size auto cap here. | shape/hardware-driven: same very large split-only MoE may use a much larger layer split on server. |
-| Vulkan partial split with TurboQuant | CLI split decision at 1751–1760 has no `!TurboQuant` guard; a selected split can reach a constructor incompatible with requested TurboQuant. | Server split branch explicitly requires `!turboQuant` at 803–805; otherwise continues to generic hybrid path/codec resolution. | shape/flag-driven divergence: CLI/server route this combination differently; recorded, not fixed. |
-| TurboQuant explicit/auto validation | CLI checks many KVarN gates after model/GPU setup at 2087–2185, including SnapKV, CUDA availability, MoE, and GPU head dim. | Server validates mode/head dim before pass construction at 189–235 and resolves per path in 525–553; explicit KVarN blocked-path throws at 538–539. | hardware/flag-driven: validation order, messages, and some path gates differ; invalid combinations can fail at different stages. |
-| Generic unsupported GPU feature | CLI at 2008–2014 and CUDA partial gate at 1404–1412 force CPU; Vulkan can use layer split for `PartialOffloadUnsupportedReason` at 1751–1765. | Server at 571–575 uses `UnsupportedReason`; CUDA partial gate forces CPU at 594–601, while Vulkan split is selected at 803–812. | Same general policy, but CLI has an earlier frontend GPU/CUDA resolution and server resolves backend inside loader; detailed routing is not identical. |
-| Vulkan speculative decoding diagnostics | CLI at 939–946 and 1043–1054 actually accepts model-draft verification on a supported full-offload `GpuForwardPass`; warning/comment at 943–944 and warning at 962 describe Vulkan as prompt-lookup-only. | No standard server draft decoder option in `BuildForwardPass`. | CLI documentation/diagnostic text is narrower than its implemented model-draft branch. This is an intra-CLI discrepancy, not a CLI/server pass-selection difference. |
+| DeepSeek2 MLA with speculative decoding requested | At 1994–2005, draft-model or lookup prevents the special Vulkan pass; generic path then processes it. | At 559–569, there is no draft flag and MLA branch can select Vulkan pass. | **Preserved asymmetry**: CLI-only draft flags (`HasDraftModel`, `DraftLookup`) prevent MLA Vulkan pass in the selector when `Frontend == Cli`; server has no standard draft options. |
+| DeepSeek2 MLA with explicit CUDA backend | At 1997–2005, explicit CUDA-only blocks Vulkan MLA selection; the generic unsupported-feature logic can fall back to CPU. | At 559–563 backend Auto/Vulkan is required, so CUDA bypasses MLA; generic unsupported-feature logic can fall back to CPU. | **Unified**: Selector requires `mlaRequestedBackend` (`Backend != Cuda` on CLI, `Auto` or `Vulkan` on server), falling back to generic CPU/GPU path. |
+| DeepSeek2 MLA with partial layer count | CLI `partial` blocks special MLA and falls through generic GPU checks. | Full layer count required, so MLA special case is skipped. | **Unified**: Selector requires full offload (`!partialRequest`), falling back to generic path. |
+| RWKV with draft-model or prompt lookup | 2016–2022 hard-refuses TurboQuant and either draft mode. | 603–613 only rejects TurboQuant; loader has no standard draft-decoding option and returns RWKV CPU pass. | **Unified**: Selector handles `ForwardPassFamily.Rwkv`, refusing TurboQuant for both frontends and speculative options when `Frontend == Cli`. Covered only by selector tests (no local GGUF). |
+| Hybrid GDN with standard draft options | 1979–1983 hard-refuses. | `BuildForwardPass` has no standard draft option; it may load hybrid GDN. | **Unified**: Selector refuses speculative decoding for hybrid GDN when `Frontend == Cli`. Covered only by selector tests (no local GGUF). |
+| gpt-oss with standard speculative options | 2030–2034 hard-refuses drafts. | 615–635 has no draft gate and can load CPU or Vulkan gpt-oss. | **Unified**: Selector refuses drafts on gpt-oss when `Frontend == Cli`. |
+| gpt-oss CUDA-only/full-layer request | 2037–2040 treats CUDA-only (`wantsCudaOnly`) as unsupported for gpt-oss and forces CPU, including an explicit CUDA full-layer request. | 622 requires Vulkan for GPU; CUDA returns CPU. | **Unified**: Selector returns `GptOssCpu` for CUDA or partial offload. |
+| gpt-oss Auto GPU, all layers | CLI auto backend can choose CUDA when available; then `wantsCudaOnly` is false and nonzero full offload reaches `GptOssGpuForwardPass` on Vulkan construction path; server Auto resolves to CUDA when available, and CUDA is not eligible in gpt-oss branch, so returns CPU. | Auto resolution selects CUDA when available; gpt-oss full-GPU gate requires Vulkan, hence CPU. | **Unified**: Selector returns `GptOssVulkan` for full GPU offload on Vulkan/Auto (with CLI branch explicitly preserving Vulkan selection). |
+| Hybrid GDN with TurboQuant | CLI refuses before backend selection at 1974–1978. | Server refuses before `BuildForwardPass` at 192–194. | **Unified**: Selector returns identical refusal `"TurboQuant is not supported for hybrid GDN models (no KV cache on GDN layers)."`. Covered only by selector tests (no local GGUF). |
+| SafeTensors backend features | CLI explicitly refuses GPU, TurboQuant, standard drafts, DSpark, and images at 815–844; then CPU `ForwardPass`. | Server accepts packages into CPU `ForwardPass` at 111–135 but does not expose the same per-feature CLI flags here; session mode is explicitly refused at 77–80. | **Unified**: SafeTensors capability and feature gates are verified via `ForwardPassSelection.Select(IsSafeTensors: true)`. |
+| Package inference details | CLI accepts package features only after explicit capability gates, then uses CPU `ForwardPass` at 795–878. | Server additionally rejects SafeTensors sessions at 77–80 and starts `ContinuousBatchingEngine` for supported packages at 111–135. | **Preserved frontend distinction**: Server wraps packages in `ContinuousBatchingEngine`; CLI uses single-session execution. |
+| Image input | CLI validates mmproj and prompt before the forward path at 1931–1967, then image execution uses active pass at 2232–2239. | Server image path at 272–305 restricts text architecture to Gemma4 and requires embedding-input support; refuses images with batching. | **Preserved frontend distinction**: Server enforces Gemma4 embedding guard in loader; CLI routes through `UnifiedVisionPipeline`. |
+| DSpark Off or unsupported configuration | CLI warns and continues ordinary generation for Off/unsupported target or interactive use at 1142–1189. | Server throws for unsupported hidden taps or placement Off at 422–426, 456–461. | **Preserved frontend distinction**: Server treats missing/Off DSpark as deployment error; CLI treats DSpark as optional feature and falls back. |
+| DSpark context-window overflow | CLI checks prompt + block fit at 2547–2555 and returns error code 1 for that run. | Server attachment validates head/target/tap support and placement at 415–461; no corresponding prompt exists at startup because the request prompt is not yet known. | **Preserved frontend distinction**: Request-time prompt size check vs startup model-load check. |
+| Auto CUDA layer planning / Gemma4 boundary / expert cache | CLI has explicit Gemma4 KV-source boundary clamp and special MoE expert-cache auto-hybrid path (1493–1548). | CUDA loader uses TierPlanner and Gemma4 clamp (702–704), but no equivalent `MoeRoutedExpertBytes > ExpertCacheBudgetBytes` full-offload-to-hybrid override in this selection block (712–757). | **Preserved frontend distinction**: Hardware placement calculation (`TierPlanner`, layer counts) remains in the frontend. |
+| Auto Vulkan large split-only MoE safeguard | CLI caps certain >=30 GiB models to 4 layers under auto placement (1719–1732). | Server selects split pass based on shape and requested planner count only (803–812); no model-size auto cap here. | **Unified in selector / Preserved frontend placement**: Selector models `LayerSplitOnlyLargeMoe`; hardware layer clamping remains frontend placement. |
+| Vulkan partial split with TurboQuant | CLI split decision at 1751–1760 has no `!TurboQuant` guard; a selected split can reach a constructor incompatible with requested TurboQuant. | Server split branch explicitly requires `!turboQuant` at 803–805; otherwise continues to generic hybrid path/codec resolution. | **Preserved divergence**: Selector checks `Frontend == Cli || !TurboQuant` for layer split. |
+| TurboQuant explicit/auto validation | CLI checks many KVarN gates after model/GPU setup at 2087–2185, including SnapKV, CUDA availability, MoE, and GPU head dim. | Server validates mode/head dim before pass construction at 189–235 and resolves per path in 525–553; explicit KVarN blocked-path throws at 538–539. | **Unified**: Selector provides sliced validation via request flags (`ValidateTurboQuantModeOnly`, `ValidateTurboQuantHeadDimOnly`, `ValidateKVarNOnly`), keeping exact CLI order and server semantics. |
+| Generic unsupported GPU feature | CLI at 2008–2014 and CUDA partial gate at 1404–1412 force CPU; Vulkan can use layer split for `PartialOffloadUnsupportedReason` at 1751–1765. | Server at 571–575 uses `UnsupportedReason`; CUDA partial gate forces CPU at 594–601, while Vulkan split is selected at 803–812. | **Unified**: Handled by selector via `UnsupportedGpuPath`, `UnsupportedPartialCudaPath`, `UnsupportedPartialVulkanPath`. |
+| Vulkan speculative decoding diagnostics | CLI at 939–946 and 1043–1054 actually accepts model-draft verification on a supported full-offload `GpuForwardPass`; warning/comment at 943–944 and warning at 962 describe Vulkan as prompt-lookup-only. | No standard server draft decoder option in `BuildForwardPass`. | **Preserved CLI diagnostic nuance**: Speculative decoder setup remains in CLI frontend. |
+
+### Selector Request Flags
+
+The selector (`ForwardPassSelection.Select`) exposes specific request flags that allow frontends (notably the CLI) to evaluate slices of rules at precise points in execution. This design preserves the exact ordering of checks and error messages without duplicating validation logic:
+
+- `ValidateTurboQuantModeOnly`: Asks the selector to validate solely the syntax and string name of `--tq-mode` (accepting `auto`, `lloydmax`/`lloyd-max`, `kvarn`, or empty), returning `CpuDense` on success or refusing with an unknown mode error (`Unknown --tq-mode value '...'`), without performing model-shape, architecture, or hardware checks.
+- `ValidateTurboQuantHeadDimOnly`: Isolates head dimension validation for TurboQuant (requiring LloydMax head dimensions in {128, 256}, or KVarN power of 2 in [8, 1024] / CUDA cap ≤ 256). Used by the CLI after quantizer resolution.
+- `SkipFamilyRefusals`: Bypasses recurrent/family refusals (e.g. RWKV or gpt-oss rejecting TurboQuant or speculative decoding) when the CLI evaluates a targeted slice of rules (such as validating TurboQuant head dimensions or KVarN preconditions) without failing prematurely on the family type.
+- `SkipTurboQuantShapeValidation`: Skips general TurboQuant shape and device validation during the earlier architecture selection phase (e.g. when checking DeepSeek2, RWKV, or gpt-oss compatibility), allowing the CLI to defer TurboQuant shape errors until its dedicated TurboQuant validation stage.
+- `UnsupportedBackendName`: Allows the CLI to pass an invalid `--backend` string to the selector so the selector produces the canonical error message (`Unknown --backend value '...'. Expected one of: auto, vulkan, cuda.`) at backend validation time.
 
 ## Baselines
 
 Recorded after `dotnet build src/OpenTail.Stingray.Cli -c Release` succeeded on the working tree (0 warnings; build completed in 35.2 s). Baselines are greedy and output identity only; generation stops at EOS if reached before `-n`. `--verbose-prompt` prints the rendered prompt token IDs and each selected token ID as `[DBG] tok=… next=…`. The fixed user prompt is `Write a short story: Once upon a time`; the GGUF chat template adds its stock system/user/assistant wrapper. The input file is `models/_models/SmolLM2-135M-Instruct-Q4_K_M.gguf` (105,454,432 bytes).
 
 ### SmolLM2-135M-Instruct Q4_K_M — CPU
+
+Verification: identical to pre-CLI migration, re-run 2026-10-05 (commit 88bbc653).
 
 Exact command:
 
@@ -138,6 +150,8 @@ Generated text (24 tokens): `Once upon a time, there lived a young girl named Li
 Generated token IDs: `6403, 1980, 253, 655, 28, 665, 4161, 253, 1805, 8180, 3365, 14176, 30, 2306, 436, 1811, 7436, 284, 5732, 288, 2217, 874, 10882, 30`.
 
 ### SmolLM2-135M-Instruct Q4_K_M — full Vulkan
+
+Verification: identical to pre-CLI migration, re-run 2026-10-05 (commit 88bbc653).
 
 Exact command:
 
@@ -157,6 +171,8 @@ A local `models/_models/gpt-oss-20b-MXFP4.gguf` is present (12,109,566,624 bytes
 
 #### gpt-oss-20b MXFP4 — CPU
 
+Verification: identical to pre-CLI migration, re-run 2026-10-05 (commit 88bbc653).
+
 `src/OpenTail.Stingray.Cli/bin/Release/net10.0/stingray.exe -m models/_models/gpt-oss-20b-MXFP4.gguf -p "The capital of France is" -n 24 --temp 0 -g 0 --seed 1 --verbose-prompt --no-display-prompt`
 
 Re-run for the step-6 CLI migration at `-n 16`:
@@ -173,6 +189,8 @@ Additional `-n 16` run used for the Section 5 CPU/Vulkan comparison, with the sa
 
 #### gpt-oss-20b MXFP4 — full Vulkan
 
+Verification: identical to pre-CLI migration, re-run 2026-10-05 (commit 88bbc653).
+
 Exact command (same prompt and generation settings as CPU, using `-g -1 --backend vulkan`):
 
 `src/OpenTail.Stingray.Cli/bin/Release/net10.0/stingray.exe -m models/_models/gpt-oss-20b-MXFP4.gguf -p "The capital of France is" -n 16 --temp 0 -g -1 --backend vulkan --seed 1 --verbose-prompt --no-display-prompt`
@@ -180,6 +198,8 @@ Exact command (same prompt and generation settings as CPU, using `-g -1 --backen
 Prompt IDs (65) are identical to the gpt-oss CPU baseline above. Generated text and IDs matched the CPU baseline exactly: `<|channel|>analysis<|message|>The user says: "The capital of France is". They likely`; `200005, 35644, 200008, 976, 1825, 5003, 25, 392, 976, 9029, 328, 10128, 382, 4050, 3164, 6960`.
 
 #### DeepSeek-V2-Lite-Chat Q2_K — CPU
+
+Verification: identical to pre-CLI migration, re-run 2026-10-05 (commit 88bbc653).
 
 Exact command:
 
@@ -192,6 +212,8 @@ Generated text (16 tokens): ` Paris is the capital of France.\n\n*** Please note
 Generated token IDs: `8913, 317, 254, 6077, 280, 7239, 13, 185, 185, 16656, 6456, 4347, 344, 437, 3510, 438`.
 
 #### DeepSeek-V2-Lite-Chat Q2_K — full Vulkan / DeepSeek2 MLA
+
+Verification: identical to pre-CLI migration, re-run 2026-10-05 (commit 88bbc653).
 
 Exact command:
 
@@ -207,11 +229,11 @@ The DeepSeek2 CPU and full-Vulkan generated vectors differ beginning at generate
 
 All commands below used the unchanged CLI built in Release. Exact stderr lines:
 
-| Model / options | Exit | Error line |
-|---|---:|---|
-| SmolLM2-135M `--tq-mode bogus` | 1 | `Error: Unknown --tq-mode value 'bogus'. Expected one of: auto, lloydmax, kvarn.` |
-| SmolLM2-135M `--tq-mode kvarn` without `--tq` | 1 | `Error: --tq-mode kvarn requires --tq.` |
-| gpt-oss-20b `--tq --draft-lookup` | 1 | `Error: gpt-oss runs on its own CPU forward pass, which supports neither TurboQuant nor speculative decoding.` |
+| Model / options | Exit | Error line | Status |
+|---|---:|---|---|
+| SmolLM2-135M `--tq-mode bogus` | 1 | `Error: Unknown --tq-mode value 'bogus'. Expected one of: auto, lloydmax, kvarn.` | identical to pre-CLI migration, re-run 2026-10-05 (commit 88bbc653) |
+| SmolLM2-135M `--tq-mode kvarn` without `--tq` | 1 | `Error: --tq-mode kvarn requires --tq.` | identical to pre-CLI migration, re-run 2026-10-05 (commit 88bbc653) |
+| gpt-oss-20b `--tq --draft-lookup` | 1 | `Error: gpt-oss runs on its own CPU forward pass, which supports neither TurboQuant nor speculative decoding.` | identical to pre-CLI migration, re-run 2026-10-05 (commit 88bbc653) |
 
 No hybrid-GDN GGUF or RWKV GGUF was found locally; the hybrid-GDN `--tq` refusal is therefore not captured against a real model, and RWKV remains selector-test-only.
 

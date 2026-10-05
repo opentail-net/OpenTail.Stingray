@@ -31,7 +31,28 @@ not part of this work.
 - [x] 3. Remove the now-duplicate legacy entries for `gemma4`, `granite`, `llama`, `llama4` (their evidence comments move into descriptor files).
 - [x] 4. Move the remaining admitted allowlist entries into descriptors, grouped by trunk family (llama-like, qwen, gemma, phi, rwkv, deepseek2, ...), carrying each evidence comment into the file. Mechanical; no behaviour change. Reconcile the stale `minicpm` "NOT admitted" note that was removed in step 2: the allowlist entry says admitted 2026-09-01.
 - [x] 5. Add the `Experimental` refusal path and quant-gate registry. PRISM remains a quant-type gate, not an architecture, declared through `ExperimentalQuantGate`; no family was promoted to `Experimental`.
-- [ ] 6. Forward-pass factory field + `SupportedBackends`, replacing the hand-written selection in `InferenceEngineLoader` / `RunCommand` (`gpt-oss`, `rwkv*`, hybrid GDN, ...).
+- [x] 6. Forward-pass factory field + `SupportedBackends`, replacing the hand-written selection in `InferenceEngineLoader` / `RunCommand` (`gpt-oss`, `rwkv*`, hybrid GDN, ...).
+  - **What stays in the frontends**:
+    - Hardware placement: layer counts, `TierPlanner.Plan` (pricing VRAM and layer splits), CUDA/Vulkan backend resolution, device selection.
+    - Object construction: instantiating the chosen forward-pass classes (`ForwardPass`, `CudaForwardPass`, `CudaHybridForwardPass`, `GpuForwardPass`, `DeepSeek2GpuForwardPass`, `GptOssForwardPass`, `GptOssGpuForwardPass`, `VulkanHybridGdnForwardPass`, `RwkvForwardPassBase`), wiring delegates (`Forward`, `Prefill`, `ResetCache`), and handling backend/pass disposal.
+    - AnsiConsole output: terminal markup, progress displays, warnings (e.g. greedy reasoning warnings, fallback notes).
+  - **Audited CLI checks and status**:
+    - SafeTensors package gates (`--ngl`, `--tq`, `--draft-model`, `--draft-lookup`, `--dspark-model`): Delegated to `ForwardPassSelection.Select(IsSafeTensors: true)`, with CLI formatting the returned refusal into rich terminal markup.
+    - SafeTensors image input refusal: Left in CLI frontend because SafeTensors packages do not integrate multimodal vision projector dispatch.
+    - Mutual exclusivity of `--draft-model` and `--draft-lookup`: Left in CLI frontend speculative decoder argument parsing before model loading (also mirrored in selector).
+    - Missing draft model file path: Left in CLI frontend filesystem validation prior to tensor loading.
+    - DSpark CLI options validation (`--spec-type dspark`, `--dspark-model`, `--spec-type mtp`, confidence range): Left in CLI frontend option parsing as early CLI failure points.
+    - GGUF architecture admission check (`ModelCompatibility.ValidateForTextGeneration`): Uses registry descriptors with `--allow-unverified-arch` override handled in frontend.
+    - Hybrid GDN + TurboQuant / Speculative decoding: Delegated to `ForwardPassSelection.Select` (returns canonical refusal string).
+    - DeepSeek2 MLA Vulkan selection: Delegated to `ForwardPassSelection.Select` (returns `DeepSeek2Vulkan`); object instantiation and backend setup stay in frontend.
+    - Generic unsupported GPU feature fallback: Delegated to `ForwardPassSelection.Select` (`UnsupportedGpuPath`, `UnsupportedPartialCudaPath`); note and layer clamp stay in frontend.
+    - RWKV recurrent refusal (TQ / drafts): Delegated to `ForwardPassSelection.Select`; CPU pass creation and GPU notice stay in frontend.
+    - gpt-oss refusals and Vulkan/CPU selection: Delegated to `ForwardPassSelection.Select` (`GptOssVulkan` / `GptOssCpu`); object instantiation and GPU notice stay in frontend.
+    - TurboQuant mode string parsing: Delegated to `ForwardPassSelection.Select(ValidateTurboQuantModeOnly: true)`.
+    - TurboQuant KVarN preconditions (SnapKV, CUDA, MoE, partial offload): Delegated to `ForwardPassSelection.Select(ValidateKVarNOnly: true)`.
+    - TurboQuant head dimension validation: Delegated to `ForwardPassSelection.Select(ValidateTurboQuantHeadDimOnly: true)`.
+    - CUDA hybrid post-TierPlanner KVarN check: Left in CLI frontend because `cudaGpuLayers` is calculated dynamically by `TierPlanner` during backend configuration.
+    - Dead checks: None (all dead string checks were removed during S5 migration).
 - [x] 7. Contract test enforces explicit STATUS anchors or exemptions for every `Admitted` descriptor, every `NotAdmitted` descriptor's internal-table entry and public-doc exclusion, and evidence-doc existence. Removed two stale public DeepSeek alpha rows; no architecture status changed.
 - [ ] 8. Optional `DetectFromTensors` for GGUFs with missing or relabelled architecture metadata; `admit-arch` emits a descriptor stub.
 

@@ -80,6 +80,11 @@ public sealed class ForwardPassSelectionTests
         { "server-image-non-gemma", new() { Frontend = ForwardPassFrontend.Server, Architecture = "qwen3", HasImageInput = true, IsGemma4 = false }, null, "Image input (MmprojPath / STINGRAY_MMPROJ) is only supported for Gemma 4 (gemma4uv) text models; this model's architecture is 'qwen3'." },
         { "server-image-no-embedding", new() { Frontend = ForwardPassFrontend.Server, Architecture = "gemma4", IsGemma4 = true, HasImageInput = true, SupportsEmbeddingInput = false }, null, "MmprojPath / STINGRAY_MMPROJ is set but image input requires a forward pass that accepts precomputed-embedding input: CPU (NGpuLayers=0) or full CUDA offload (NGpuLayers=-1) of a Gemma 4 model that fits VRAM." },
         { "server-image-batching", new() { Frontend = ForwardPassFrontend.Server, Architecture = "gemma4", IsGemma4 = true, HasImageInput = true, HasImageBatching = true }, null, "Image input is not supported with continuous batching (MaxBatchSize > 1). Set MaxBatchSize=1." },
+        { "flag-validate-tq-mode-only-refusal", new() { ValidateTurboQuantModeOnly = true, TurboQuantMode = "invalid" }, null, "Unknown --tq-mode value 'invalid'. Expected one of: auto, lloydmax, kvarn." },
+        { "flag-validate-tq-head-dim-only-refusal", new() { ValidateTurboQuantHeadDimOnly = true, TurboQuant = true, TurboQuantMode = "lloydmax", HeadDim = 64 }, null, "TurboQuant requires head dimension 128 or 256; this model has head dim 64. Remove --tq to run without KV compression." },
+        { "flag-skip-family-refusals-bypass", new() { Architecture = "gpt-oss", TurboQuant = true, SkipFamilyRefusals = true }, ForwardPassKind.GptOssCpu, null },
+        { "flag-skip-turbo-quant-shape-validation-refusal", new() { Architecture = "gpt-oss", TurboQuant = true, HeadDim = 64, SkipTurboQuantShapeValidation = true }, null, "gpt-oss runs on its own CPU forward pass, which supports neither TurboQuant nor speculative decoding." },
+        { "flag-unsupported-backend-refusal", new() { UnsupportedBackendName = "bogus" }, null, "Unknown --backend value 'bogus'. Expected one of: auto, vulkan, cuda." },
     };
 
     [Theory]
