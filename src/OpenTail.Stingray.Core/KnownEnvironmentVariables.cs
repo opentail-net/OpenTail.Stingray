@@ -69,7 +69,6 @@ public static class KnownEnvironmentVariables
         "STINGRAY_EXPERIMENTAL_PRISM",
         "STINGRAY_GPU_CPU_PREFILL",
         "STINGRAY_HYBRID_CPU_PREFILL",
-        "STINGRAY_HANDOFF_TEST_MODEL",   // test-only: file name of one extra checkpoint for the handoff tests (see the closure plan, step 0)
         "STINGRAY_HYBRID_CPU_PREFILL_KV_BUDGET_MB",
         "STINGRAY_HYBRID_CPU_PREFILL_MIN_TOKENS",
         "STINGRAY_HYBRID_CPU_PREFILL_WARM",
@@ -95,6 +94,7 @@ public static class KnownEnvironmentVariables
         // architecture (e.g. deepseek2 -- see docs/1-correctness/bugstofix.md), without actually admitting it.
         // Never set this in a served/production context.
         "STINGRAY_DIAGNOSTIC_ALLOW_UNSUPPORTED_ARCH",
+        "STINGRAY_DIFFUSIONGEMMA_ENABLE_REAL",
         "STINGRAY_DISABLE_BATCH_VERIFY",
         "STINGRAY_DISABLE_DUAL_Q8",
         "STINGRAY_DISABLE_MTP",
@@ -177,6 +177,7 @@ public static class KnownEnvironmentVariables
         "STINGRAY_MOE_GPU_PREFILL",
         "STINGRAY_MOE_GPU_PREFILL_MIN_TOKENS",
         "STINGRAY_MOE_GPU_ROUTER",
+        "STINGRAY_MOE_PHASE_TIMING",
         "STINGRAY_MOE_PIN_MODE",
         "STINGRAY_MOE_PREDICT_PREFETCH",
         "STINGRAY_MOE_PREFILL_Q8",
