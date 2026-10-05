@@ -113,7 +113,7 @@ public sealed class ArchitectureRegistryTests
     }
 
     [Fact]
-    public void BackendLimitedDescriptors_HaveLimitation_AndSelectorRefusesUnsupportedBackend()
+    public void BackendLimitedDescriptors_HaveLimitation_AndSelectorFallsBackForUnsupportedBackend()
     {
         var descriptors = new[]
         {
@@ -142,6 +142,7 @@ public sealed class ArchitectureRegistryTests
             var descriptor = ArchitectureRegistry.Find(architecture)!;
             var decision = ForwardPassSelection.Select(new ForwardPassRequest
             {
+                Frontend = ForwardPassFrontend.Server,
                 Architecture = architecture,
                 Backend = backend,
                 GpuLayers = -1,
@@ -150,7 +151,8 @@ public sealed class ArchitectureRegistryTests
                 HasMlaTensors = architecture == "deepseek2",
             });
 
-            Assert.Equal(descriptor.BackendLimitation, decision.Refusal);
+            Assert.Equal(ForwardPassKind.CpuDense, decision.Kind);
+            Assert.Null(decision.Refusal);
         }
 
         Assert.Equal(ForwardPassKind.RwkvCpu, ForwardPassSelection.Select(new ForwardPassRequest

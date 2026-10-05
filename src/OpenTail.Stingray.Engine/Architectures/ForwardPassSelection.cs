@@ -361,9 +361,6 @@ public static class ForwardPassSelection
         bool mlaRequestedBackend = request.Frontend == ForwardPassFrontend.Cli
             ? request.Backend != ForwardPassBackend.Cuda
             : request.Backend is ForwardPassBackend.Auto or ForwardPassBackend.Vulkan;
-        if (hasDeepSeek2Mla && request.GpuLayers != 0 && request.Backend == ForwardPassBackend.Cuda
-            && descriptor is not null)
-            return ForwardPassDecision.Refuse(descriptor.BackendLimitation!);
         if (hasDeepSeek2Mla && request.GpuLayers != 0 && !request.TurboQuant
             && mlaRequestedBackend && !partialRequest && !cliDraftBlocksMla)
             return ForwardPassDecision.Select(ForwardPassKind.DeepSeek2Vulkan);
@@ -384,10 +381,14 @@ public static class ForwardPassSelection
             gpuRequested = false;
         }
 
-        if (descriptor is not null && gpuRequested
-            && family is not (ForwardPassFamily.Rwkv or ForwardPassFamily.GptOss)
-            && !SupportsBackend(descriptor.SupportedBackends, backend))
-            return ForwardPassDecision.Refuse(descriptor.BackendLimitation!);
+        if (gpuRequested && hasDeepSeek2Mla && request.Frontend == ForwardPassFrontend.Server
+            || descriptor is not null && gpuRequested
+                && family is not (ForwardPassFamily.Rwkv or ForwardPassFamily.GptOss)
+                && !SupportsBackend(descriptor.SupportedBackends, backend))
+        {
+            backend = ForwardPassBackend.Cpu;
+            gpuRequested = false;
+        }
 
         if (isGptOss)
         {
