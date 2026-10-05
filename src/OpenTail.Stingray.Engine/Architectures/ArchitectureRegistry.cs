@@ -1,9 +1,8 @@
 namespace OpenTail.Stingray.Engine;
 
 /// <summary>
-/// Lookup over <see cref="BuiltInArchitectures"/>. Architectures not yet migrated to a descriptor
-/// are still governed by <see cref="ModelCompatibility"/>'s legacy allowlist; a descriptor, when
-/// present, wins.
+/// Lookup over <see cref="BuiltInArchitectures"/>. Admission and per-family behavior are defined
+/// by descriptors in the explicit built-in manifest.
 /// </summary>
 public static class ArchitectureRegistry
 {
@@ -22,7 +21,7 @@ public static class ArchitectureRegistry
         return false;
     }
 
-    /// <summary>Descriptor for the architecture, or null when it is still on the legacy path.</summary>
+    /// <summary>Descriptor for the architecture, or null when it is not registered.</summary>
     public static ArchitectureDescriptor? Find(string? architecture) =>
         architecture is not null && s_byId.TryGetValue(architecture, out var d) ? d : null;
 

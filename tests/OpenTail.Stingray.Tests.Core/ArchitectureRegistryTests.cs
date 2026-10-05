@@ -43,7 +43,7 @@ public sealed class ArchitectureRegistryTests
     [InlineData("granite")]
     [InlineData("llama")]
     [InlineData("llama4")]
-    [InlineData("qwen3")] // not migrated: still on the legacy allowlist
+    [InlineData("qwen3")]
     public void AdmittedArchitectures_StayAdmitted(string arch) =>
         Assert.True(ModelCompatibility.IsTextGenerationArchitectureSupported(arch));
 
@@ -97,29 +97,33 @@ public sealed class ArchitectureRegistryTests
     }
 
     [Fact]
-    public void NoArchitectureIsBothMigratedAndLegacy_ExceptDocumentedOverlap()
+    public void NotAdmittedDescriptors_AreNeverSupported()
     {
-        // Migrated descriptors win over the legacy allowlist, so a NotAdmitted descriptor must never be
-        // shadowed by a stale allowlist entry.
         foreach (var d in ArchitectureRegistry.All.Where(d => d.Status == AdmissionStatus.NotAdmitted))
             Assert.False(ModelCompatibility.IsTextGenerationArchitectureSupported(d.Id));
     }
 
     [Fact]
-    public void MigratedDescriptorIds_AreNotAlsoInTheLegacyAllowlist()
+    public void AdmittedSet_IsExactlyTheSnapshot()
     {
-        // Single source of truth: once a family has a descriptor its allowlist entry must go, or the
-        // two could silently disagree. Detected via reflection-free source scan of the allowlist.
-        string? root = AppContext.BaseDirectory;
-        while (root is not null && !File.Exists(Path.Combine(root, "CLAUDE.md")))
-            root = Path.GetDirectoryName(root);
-        string src = File.ReadAllText(Path.Combine(root!, "src/OpenTail.Stingray.Engine/ModelCompatibility.cs"));
-        int start = src.IndexOf("s_textGenerationArchitectures = new", StringComparison.Ordinal);
-        int end = src.IndexOf("};", start, StringComparison.Ordinal);
-        string list = string.Join(Environment.NewLine, src[start..end]
-            .Split('\n').Where(l => !l.TrimStart().StartsWith("//")));
-        foreach (var d in ArchitectureRegistry.All)
-            foreach (var name in d.Aliases.Prepend(d.Id))
-                Assert.DoesNotContain($"\"{name}\"", list);
+        var expected = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "qwen", "qwen2", "qwen2moe", "qwen3", "qwen3moe", "qwen2vl", "qwen35", "qwen35moe",
+            "mimo", "mimo2", "gemma", "gemma2", "gemma3", "gemma3n", "phi2", "phi3", "phimoe",
+            "olmoe", "rwkv7", "rwkv6", "gpt-oss", "deepseek2", "smollm3", "apertus", "gptneox",
+            "falcon", "olmo2", "exaone", "orion", "ernie4_5", "paddleocr", "qwen3vl", "deepseek2-ocr",
+            "granitehybrid", "nemotron_h", "lfm2", "lfm2moe", "internlm2", "starcoder2", "cohere2", "glm4",
+            "glm4moe", "stablelm", "hunyuan-dense", "hunyuan-moe", "afmoe", "gpt2", "granitemoe", "olmo",
+            "starcoder", "codeshell", "jais2", "jais", "maincoder", "exaone4", "mistral3", "ministral",
+            "xverse", "minicpm", "gemma4", "granite", "llama", "llama4", "muse-glimmer", "muse_glimmer",
+        };
+        var actual = ArchitectureRegistry.All
+            .Where(d => d.Status == AdmissionStatus.Admitted)
+            .SelectMany(d => d.Aliases.Prepend(d.Id))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        Assert.True(expected.SetEquals(actual),
+            $"Missing: {string.Join(", ", expected.Except(actual, StringComparer.OrdinalIgnoreCase))}; " +
+            $"unexpected: {string.Join(", ", actual.Except(expected, StringComparer.OrdinalIgnoreCase))}");
     }
 }
