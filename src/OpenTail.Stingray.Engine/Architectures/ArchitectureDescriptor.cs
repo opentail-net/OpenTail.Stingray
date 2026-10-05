@@ -56,6 +56,17 @@ public sealed class ArchitectureDescriptor
         _ => false,
     };
 
+    public string GetRefusalMessage(string architecture) => Status switch
+    {
+        AdmissionStatus.NotAdmitted =>
+            $"GGUF architecture '{architecture}' is not admitted by OpenTail.Stingray: {RefusalReason} " +
+            $"(status {Status}; record: {EvidenceDoc}).",
+        AdmissionStatus.Experimental =>
+            $"GGUF architecture '{architecture}' is ported but not verified: {RefusalReason} " +
+            $"Set {ExperimentalEnvVar}=1 to try it; outputs are unverified (record: {EvidenceDoc}).",
+        _ => throw new InvalidOperationException($"Architecture '{Id}' is not refused."),
+    };
+
     internal void Validate()
     {
         if (string.IsNullOrWhiteSpace(Id))

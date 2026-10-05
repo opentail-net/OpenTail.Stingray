@@ -1,4 +1,5 @@
 using OpenTail.Stingray.Engine;
+using OpenTail.Stingray.Core;
 
 namespace OpenTail.Stingray.Tests.Core;
 
@@ -48,22 +49,37 @@ public sealed class ArchitectureRegistryTests
         Assert.True(ModelCompatibility.IsTextGenerationArchitectureSupported(arch));
 
     [Fact]
-    public void NotAdmittedDescriptor_OverridesLegacyAllowlist_AndExperimentalNeedsEnvVar()
+    public void NotAdmittedDescriptor_IsRefused_AndExperimentalNeedsEnvVar()
     {
         var notAdmitted = new ArchitectureDescriptor
         {
             Id = "x", Status = AdmissionStatus.NotAdmitted, EvidenceDoc = "d", RefusalReason = "r",
         };
         Assert.False(notAdmitted.IsUsable());
+        Assert.Equal(
+            "GGUF architecture 'x' is not admitted by OpenTail.Stingray: r (status NotAdmitted; record: d).",
+            notAdmitted.GetRefusalMessage("x"));
         var experimental = new ArchitectureDescriptor
         {
-            Id = "x", Status = AdmissionStatus.Experimental, EvidenceDoc = "d", RefusalReason = "r",
+            Id = "x", Status = AdmissionStatus.Experimental, EvidenceDoc = "docs/test.md", RefusalReason = "reason.",
             ExperimentalEnvVar = "REGISTRY_TEST_EXPERIMENTAL_FLAG",
         };
-        Assert.False(experimental.IsUsable());
-        Environment.SetEnvironmentVariable("REGISTRY_TEST_EXPERIMENTAL_FLAG", "1");
-        try { Assert.True(experimental.IsUsable()); }
-        finally { Environment.SetEnvironmentVariable("REGISTRY_TEST_EXPERIMENTAL_FLAG", null); }
+        string? previous = Environment.GetEnvironmentVariable("REGISTRY_TEST_EXPERIMENTAL_FLAG");
+        try
+        {
+            Environment.SetEnvironmentVariable("REGISTRY_TEST_EXPERIMENTAL_FLAG", null);
+            Assert.False(experimental.IsUsable());
+            Assert.Equal(
+                "GGUF architecture 'x' is ported but not verified: reason. " +
+                "Set REGISTRY_TEST_EXPERIMENTAL_FLAG=1 to try it; outputs are unverified (record: docs/test.md).",
+                experimental.GetRefusalMessage("x"));
+            Environment.SetEnvironmentVariable("REGISTRY_TEST_EXPERIMENTAL_FLAG", "1");
+            Assert.True(experimental.IsUsable());
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("REGISTRY_TEST_EXPERIMENTAL_FLAG", previous);
+        }
     }
 
     [Fact]
@@ -125,5 +141,18 @@ public sealed class ArchitectureRegistryTests
         Assert.True(expected.SetEquals(actual),
             $"Missing: {string.Join(", ", expected.Except(actual, StringComparer.OrdinalIgnoreCase))}; " +
             $"unexpected: {string.Join(", ", actual.Except(expected, StringComparer.OrdinalIgnoreCase))}");
+    }
+
+    [Fact]
+    public void ExperimentalEnvironmentVariables_AreInKnownInventory()
+    {
+        var environmentVariables = ArchitectureRegistry.All
+            .Where(d => d.Status == AdmissionStatus.Experimental)
+            .Select(d => d.ExperimentalEnvVar!)
+            .Concat(ExperimentalQuantGateRegistry.All.Select(g => g.EnvironmentVariable));
+
+        foreach (string environmentVariable in environmentVariables)
+            Assert.True(KnownEnvironmentVariables.All.Contains(environmentVariable),
+                $"{environmentVariable} is missing from KnownEnvironmentVariables.All.");
     }
 }

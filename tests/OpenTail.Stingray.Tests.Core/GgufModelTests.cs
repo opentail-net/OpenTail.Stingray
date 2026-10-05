@@ -1,3 +1,4 @@
+using OpenTail.Stingray.Engine;
 
 namespace OpenTail.Stingray.Tests.Core;
 
@@ -273,12 +274,89 @@ public sealed class GgufModelTests : IDisposable
         Assert.Equal(24L, info.ElementCount);
     }
 
+    [Theory]
+    [InlineData(DType.PQ2_0, 34)]
+    [InlineData(DType.PTQ1_0, 28)]
+    public void ValidateForTextGeneration_PrismRefusalMessage_IsStable(DType dtype, int byteCount)
+    {
+        string path = CreatePrismGguf(dtype, byteCount);
+        using var model = GgufModel.Open(path);
+        string? previous = Environment.GetEnvironmentVariable("STINGRAY_EXPERIMENTAL_PRISM");
+        try
+        {
+            Environment.SetEnvironmentVariable("STINGRAY_EXPERIMENTAL_PRISM", null);
+            var error = Assert.Throws<NotSupportedException>(() => ModelCompatibility.ValidateForTextGeneration(model));
+            Assert.Equal(
+                "This GGUF uses Bonsai2 PRISM weights (PQ2_0/PTQ1_0 with Hadamard transforms). " +
+                "Support is ported but not yet verified against the publisher's reference; " +
+                "set STINGRAY_EXPERIMENTAL_PRISM=1 to try it (CPU only, outputs unverified).",
+                error.Message);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("STINGRAY_EXPERIMENTAL_PRISM", previous);
+        }
+    }
+
+    [Theory]
+    [InlineData(DType.PQ2_0, 34)]
+    [InlineData(DType.PTQ1_0, 28)]
+    public void ValidateForTextGeneration_EnabledPrismGate_ExemptsQuantType(DType dtype, int byteCount)
+    {
+        string path = CreatePrismGguf(dtype, byteCount);
+        using var model = GgufModel.Open(path);
+        string? previous = Environment.GetEnvironmentVariable("STINGRAY_EXPERIMENTAL_PRISM");
+        try
+        {
+            Environment.SetEnvironmentVariable("STINGRAY_EXPERIMENTAL_PRISM", "1");
+            ModelCompatibility.ValidateForTextGeneration(model);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("STINGRAY_EXPERIMENTAL_PRISM", previous);
+        }
+    }
+
+    private string CreatePrismGguf(DType dtype, int byteCount = 34) =>
+        CreateGgufWithMetadataAndTensors(
+            new Dictionary<string, (GgufValueType, object)>
+            {
+                ["general.architecture"] = (GgufValueType.String, "qwen35"),
+            },
+            [("prism.weight", [128], dtype, new byte[byteCount])]);
+
     #region Helper methods
 
     private string CreateTempFile()
     {
         var path = Path.GetTempFileName();
         _tempFiles.Add(path);
+        return path;
+    }
+
+    private string CreateGgufWithMetadataAndTensors(
+        Dictionary<string, (GgufValueType type, object value)> metadata,
+        (string name, long[] dims, DType dtype, byte[] data)[] tensors)
+    {
+        var path = CreateTempFile();
+        using var fs = File.Create(path);
+        using var writer = new GgufWriter(fs);
+
+        writer.WriteHeader(3, (ulong)tensors.Length, (ulong)metadata.Count);
+        foreach (var (key, (type, value)) in metadata)
+            writer.WriteMetadataKv(key, type, value);
+
+        ulong offset = 0;
+        foreach (var (name, dims, dtype, data) in tensors)
+        {
+            writer.WriteTensorInfo(name, dims, dtype, offset);
+            offset += (ulong)data.Length;
+        }
+
+        writer.PadToAlignment(32);
+        foreach (var (_, _, _, data) in tensors)
+            fs.Write(data);
+
         return path;
     }
 
