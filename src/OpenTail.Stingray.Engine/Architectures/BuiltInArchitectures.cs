@@ -12,5 +12,15 @@ internal static class BuiltInArchitectures
         yield return GraniteArchitecture.Descriptor;
         yield return LlamaArchitecture.Descriptor;
         yield return Llama4Architecture.Descriptor;
+        yield return MuseGlimmerArchitecture.Descriptor;
+
+        // Ported, not verified (CLAUDE.md rule 14): refused until a real checkpoint is verified.
+        yield return GlmDsaArchitecture.Descriptor;
+        yield return Glm5NextArchitecture.Descriptor;
+        yield return DiffusionGemmaArchitecture.Descriptor;
+        yield return Qwen4ExpArchitecture.Descriptor;
+        yield return DeepSeek41Architecture.Descriptor;
+        yield return DeepSeek4Architecture.Descriptor;
+        yield return DeepSeek32Architecture.Descriptor;
     }
 }

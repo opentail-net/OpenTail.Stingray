@@ -30,6 +30,9 @@ public sealed class ArchitectureDescriptor
     /// <summary>The GGUF <c>general.architecture</c> value.</summary>
     public required string Id { get; init; }
 
+    /// <summary>Other GGUF architecture strings that map to this family (e.g. muse_glimmer).</summary>
+    public IReadOnlyList<string> Aliases { get; init; } = [];
+
     public required AdmissionStatus Status { get; init; }
 
     /// <summary>Repo-relative doc holding the receipt (Admitted) or the missing work (NotAdmitted).</summary>

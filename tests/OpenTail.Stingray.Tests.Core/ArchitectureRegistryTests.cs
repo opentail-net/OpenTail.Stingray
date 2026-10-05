@@ -58,12 +58,12 @@ public sealed class ArchitectureRegistryTests
         var experimental = new ArchitectureDescriptor
         {
             Id = "x", Status = AdmissionStatus.Experimental, EvidenceDoc = "d", RefusalReason = "r",
-            ExperimentalEnvVar = "STINGRAY_TEST_REGISTRY_EXPERIMENTAL",
+            ExperimentalEnvVar = "REGISTRY_TEST_EXPERIMENTAL_FLAG",
         };
         Assert.False(experimental.IsUsable());
-        Environment.SetEnvironmentVariable("STINGRAY_TEST_REGISTRY_EXPERIMENTAL", "1");
+        Environment.SetEnvironmentVariable("REGISTRY_TEST_EXPERIMENTAL_FLAG", "1");
         try { Assert.True(experimental.IsUsable()); }
-        finally { Environment.SetEnvironmentVariable("STINGRAY_TEST_REGISTRY_EXPERIMENTAL", null); }
+        finally { Environment.SetEnvironmentVariable("REGISTRY_TEST_EXPERIMENTAL_FLAG", null); }
     }
 
     [Fact]
@@ -72,4 +72,36 @@ public sealed class ArchitectureRegistryTests
         {
             Id = "x", Status = AdmissionStatus.NotAdmitted, EvidenceDoc = "d",
         }.Validate());
+
+    [Theory]
+    [InlineData("glm-dsa")]
+    [InlineData("glm5next")]
+    [InlineData("diffusion-gemma")]
+    [InlineData("qwen4exp")]
+    [InlineData("deepseek41")]
+    [InlineData("deepseek4")]
+    [InlineData("deepseek32")]
+    public void PortedNotVerifiedFamilies_AreRefused_WithTheirOwnReason(string arch)
+    {
+        Assert.False(ModelCompatibility.IsTextGenerationArchitectureSupported(arch));
+        var d = ArchitectureRegistry.Find(arch);
+        Assert.NotNull(d);
+        Assert.Equal(AdmissionStatus.NotAdmitted, d!.Status);
+    }
+
+    [Fact]
+    public void MuseGlimmer_AdmittedUnderBothSpellings()
+    {
+        Assert.True(ModelCompatibility.IsTextGenerationArchitectureSupported("muse-glimmer"));
+        Assert.True(ModelCompatibility.IsTextGenerationArchitectureSupported("muse_glimmer"));
+    }
+
+    [Fact]
+    public void NoArchitectureIsBothMigratedAndLegacy_ExceptDocumentedOverlap()
+    {
+        // Migrated descriptors win over the legacy allowlist, so a NotAdmitted descriptor must never be
+        // shadowed by a stale allowlist entry.
+        foreach (var d in ArchitectureRegistry.All.Where(d => d.Status == AdmissionStatus.NotAdmitted))
+            Assert.False(ModelCompatibility.IsTextGenerationArchitectureSupported(d.Id));
+    }
 }

@@ -9,7 +9,7 @@ public static class ArchitectureRegistry
 {
     private static readonly Dictionary<string, ArchitectureDescriptor> s_byId = Build();
 
-    public static IReadOnlyCollection<ArchitectureDescriptor> All => s_byId.Values;
+    public static IReadOnlyCollection<ArchitectureDescriptor> All => s_byId.Values.Distinct().ToArray();
 
     public static bool TryGet(string architecture, out ArchitectureDescriptor descriptor)
     {
@@ -37,8 +37,9 @@ public static class ArchitectureRegistry
         foreach (var d in BuiltInArchitectures.Create())
         {
             d.Validate();
-            if (!map.TryAdd(d.Id, d))
-                throw new InvalidOperationException($"Architecture '{d.Id}' is registered twice.");
+            foreach (var name in d.Aliases.Prepend(d.Id))
+                if (!map.TryAdd(name, d))
+                    throw new InvalidOperationException($"Architecture '{name}' is registered twice.");
         }
         return map;
     }

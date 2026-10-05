@@ -811,99 +811,7 @@ public static class ModelCompatibility
         // DO NOT MODIFY THIS ARCHITECTURE'S CODE PATH WITHOUT GOOD REASON — there is no regression
         // test to catch a mistake.
         "minicpm",
-
-        // muse-glimmer (alias muse_glimmer) — ADMITTED 2026-10-03, TEXT ONLY, CPU ONLY. Ported from llama.cpp
-        // src/models/muse-glimmer.cpp (SWA period 4 with RoPE only on SWA layers, attention output gate, 1e-8
-        // post-norms, unweighted embedding RMSNorm, logit scale then optional softcap). Evidence, against llama.cpp
-        // bed0a8566 on unsloth Muse-Glimmer-30B UD-Q4_K_XL (greedy, repeat penalty 1.0):
-        //   - `stingray admit-arch`: 8-of-8-token exact greedy match, prompt tokenisation identical;
-        //   - three further prompts token-identical until near-ties (0.006 and 0.05 nats, measured);
-        //   - a 3,748-token prompt (past the real 2048 sliding window) identical over a 24-token continuation;
-        //   - sliding window patched to 64 on three ~300-token prompts: identical for 6-20 tokens, then near-ties.
-        // Limits: per-token prefill only (about 1.5 t/s prefill and decode on a Ryzen 5700G), so the batched prefill,
-        // PrefillWithCache and BatchForwardMulti paths refuse it and the server does not batch it; GPU passes refuse it;
-        // the vision tower and the DFlash drafter are not ported. License bucket of the checkpoint not reviewed:
-        // no real-weight parity test is committed. Details: docs/2-coverage/2026-10-03-muse-glimmer-port-plan.md.
-        "muse-glimmer",
-        "muse_glimmer",
     };
-    //
-    // glm-dsa — NOT admitted (CLAUDE.md rule 14: ported, not verified). Alpha forward pass
-    // ported 2026-10-03 from llama.cpp src/models/glm-dsa.cpp (upstream b10306) and official GLM-5.2
-    // config: 78 layers (3 leading dense + 75 MoE with 256 routed + 1 shared expert, top-8 routed,
-    // sigmoid gating, scale 2.5), MLA attention with weight absorption (64 heads, 576-dim compressed
-    // KV cache), and DSA lightning indexer (32 heads x 128 head dim, top-k 2048, Sylvester-Walsh-Hadamard
-    // rotation via PrismHadamard.ApplySylvesterHadamard, full/shared layer refresh schedule).
-    // No real checkpoint run yet; gated until greedy parity receipt is established.
-    //
-    // glm5next — NOT admitted (CLAUDE.md rule 14: ported, not verified). Hybrid KDA (linear) +
-    // MLA trunk ported 2026-10-03 from llama.cpp src/models/glm5-next.cpp (upstream b10306) and
-    // Hugging Face GLM-5.3-Flash: 45 layers in strict 3:1 pattern (34 KDA + 11 MLA), 4-stream mHC
-    // hyper-connections with Sinkhorn balancing, 4-token K-pool indexer, and 288-expert MoE.
-    //
-    // diffusion-gemma — NOT admitted for autoregressive text generation (CLAUDE.md rule 14).
-    // DiffusionGemma is a block text-diffusion model based on Gemma-4 MoE (26B total, ~4B active)
-    // with 30 layers (5 full, 25 sliding 1024), 256-token canvas iterative denoising, self-conditioning,
-    // and entropy budget sampler (DiffusionGemmaPipeline). It is not autoregressive and must not be
-    // invoked via Forward(token).
-    //
-    // qwen4exp — NOT admitted (CLAUDE.md rule 14: ported, not verified). Alpha forward pass
-    // ported 2026-10-03 from llama.cpp src/models/qwen4exp.cpp (upstream bed0a8566) and TensorSharp
-    // Models/Qwen4Exp/: 48 layers (36 GDN + 12 QSA), 4-stream GatedResidual hyper-connections
-    // (low-rank bottleneck 320, 2*sigmoid injection), PLE n-gram embedding table with dilated 1D conv,
-    // and 512-expert MoE (top-10 + 1 shared expert). Real checkpoints (~72.5 GB minimum for UD-IQ1_S)
-    // do not fit in this machine's 64 GB RAM; verification is gated on synthetic component and
-    // full-stack parity tests. Do not admit until real-checkpoint parity on capable hardware is achieved.
-    //
-    // muse-glimmer — ADMITTED 2026-10-03 (text, CPU only); see the allowlist entry above.
-    //
-    // deepseek41 — NOT admitted (CLAUDE.md rule 14: ported, not verified). Distinct architecture
-    // from V4: 40 layers, hidden dimension 5120, 64 heads (KV=1), head dim 512, q_lora_rank 1280,
-    // 8-group output LoRA (rank 1024), compression ratios 0 / 1 / 2 ([0, 0, 18 of 2, 20 of 1]),
-    // 384 routed experts + 1 shared expert (sqrtsoftplus routing with scale 1.5), dual Engram tables
-    // on layers 1 and 14 (max 4-gram, 99,092 compressed vocab, 8 heads x 256 dim), 8 index-source
-    // layers (block size 8, candidate top-k 2048 to top-512), 3 NextN draft-head layers, and 4-stream mHC.
-    // Checkpoints exceed 335 GB (due to dual ~196B Engram tables); gated until reference execution receipt.
-    //
-    // deepseek4 — NOT admitted. DeepSeek4ForwardPass (DeepSeek4ForwardPass.cs) is a structurally
-    // complete ALPHA/UNTESTED IForwardPass covering all three of V4's attention variants (raw,
-    // HCA, CSA), hyper-connections, MoE (incl. hash routing + sqrt-softplus gating), and tensor
-    // loading (DeepSeek4TensorSet.cs) — but it has NEVER been run: no DeepSeek-V4 GGUF has been
-    // loaded, no output compared against any reference. Multiple specific pieces are known-
-    // unverified or known-wrong (MQA K==V, output-side rope_ext_back, CSA's overlap-gather
-    // hypothesis, Hadamard rotation entirely unimplemented) — see this file's own header and
-    // docs/2-coverage/058-deepseek-full-lineage-implementation-plan.md Phase 0 for the full, current list.
-    // Only synthetic shape/invariant/boundary unit tests exist (DeepSeek4AlphaTests.cs) — zero
-    // real-weight verification. Do not admit under any circumstance until a real checkpoint
-    // produces a passing greedy-parity or perplexity receipt.
-    //
-    // deepseek32 — NOT admitted. DeepSeek32ForwardPass (DeepSeek32ForwardPass.cs) is a
-    // structurally complete ALPHA/UNTESTED IForwardPass: classic MLA attention with absorption,
-    // DSA/lightning-indexer sparse masking over a real raw indexer K cache, dense/MoE FFN
-    // dispatch. NEVER RUN — no DeepSeek-V3.2 GGUF available. Four specific, deliberate
-    // simplifications documented in the file's header: (1) YaRN RoPE scaling IS implemented
-    // (ported from the deepseek2 investigation's already-verified formula chain,
-    // docs/done/032-...md), but not independently re-verified in this new context, and the
-    // "YaRN active" detection is a RopeYarnFactor>1 proxy rather than reading
-    // rope.scaling.type directly; (2) Hadamard rotation on the indexer's Q/K not implemented
-    // (same gap/reason as deepseek4); (3) MTP not implemented; (4) the MLA absorption math was
-    // re-derived from reading deepseek32.cpp, not reused from this codebase's dead
-    // Engine.MlaAttention/DeepSeekMoeGraph classes, and is unverified. Phase
-    // 1 of docs/058-...md. IMPORTANT: deepseek32 is NOT a subset of deepseek4 despite the version
-    // ordering — classic MLA is a different attention design from V4's CSA/HCA compressed-state
-    // mechanism; none of deepseek4's CSA/HCA/hyper-connection code is reusable here. Shares the
-    // lightning-indexer/DSA concept with deepseek4, but deepseek32's indexer is simpler (a real
-    // raw indexer_attn_k tensor, no compression needed).
-    //
-    // minicpm — NOT admitted. The forward-pass scale trio (reusing Granite's graph, see
-    // GraniteGreedyParityTests) is implemented and presumed correct, but MiniCPM4-0.5B — the only
-    // Apache-2.0 checkpoint tried (2026-08-08) — declares tokenizer.ggml.model=llama with a
-    // `scores` array and NO `merges` array: Unigram-LM SentencePiece (Viterbi segmentation), not
-    // the BPE-order SPM (explicit merges list) that Llama/Gemma use and this engine implements.
-    // Measured: our tokenizer produces unrelated single-token-per-fragment ids for a 5-token
-    // reference prompt. A different, unimplemented tokenization algorithm, not a scale-trio bug —
-    // see docs/done/01-gguf-model-coverage-plan.md §1d.
-
     /// <summary>Whether the architecture has an implemented text-generation forward profile.</summary>
     public static bool IsTextGenerationArchitectureSupported(string architecture) =>
         ArchitectureRegistry.Find(architecture) is { } descriptor
@@ -939,11 +847,16 @@ public static class ModelCompatibility
         if (!IsTextGenerationArchitectureSupported(architecture)
             && Environment.GetEnvironmentVariable("STINGRAY_DIAGNOSTIC_ALLOW_UNSUPPORTED_ARCH") != "1")
         {
+            var known = ArchitectureRegistry.Find(architecture);
+            if (known is not null)
+                throw new NotSupportedException(
+                    $"GGUF architecture '{architecture}' is not admitted by OpenTail.Stingray: {known.RefusalReason} " +
+                    $"(status {known.Status}; record: {known.EvidenceDoc}).");
             throw new NotSupportedException(
                 $"GGUF architecture '{architecture}' is not supported for text generation by OpenTail.Stingray. " +
                 "The model was rejected before inference because GGUF tensor naming alone does not establish " +
                 "compatible attention, RoPE, normalization, and FFN semantics. Supported profiles: " +
-                $"{string.Join(", ", s_textGenerationArchitectures.Order())}.");
+                $"{string.Join(", ", s_textGenerationArchitectures.Concat(ArchitectureRegistry.All.Where(d => d.Status == AdmissionStatus.Admitted).SelectMany(d => d.Aliases.Prepend(d.Id))).Distinct().Order())}.");
         }
 
         // Bonsai2 PRISM (PQ2_0/PTQ1_0 + prism.hadamard.* transforms) — NOT admitted. Ported 2026-10-02
