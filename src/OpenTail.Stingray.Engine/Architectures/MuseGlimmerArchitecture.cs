@@ -14,6 +14,7 @@ internal static class MuseGlimmerArchitecture
         Id = "muse-glimmer",
         Aliases = ["muse_glimmer"],
         Status = AdmissionStatus.Admitted,
+        StatusAnchor = "Muse-Glimmer 30B (`muse-glimmer`)",
         EvidenceDoc = "docs/2-coverage/2026-10-03-muse-glimmer-port-plan.md",
     };
 }

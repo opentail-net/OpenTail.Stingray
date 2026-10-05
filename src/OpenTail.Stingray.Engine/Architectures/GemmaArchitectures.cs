@@ -6,6 +6,7 @@ internal static class GemmaArchitectures
     {
         Id = "gemma",
         Status = AdmissionStatus.Admitted,
+        StatusExemption = "Covered by the generic 'LLM inference (GGUF)' row; STATUS.md is a capability matrix, not an architecture catalog.",
         EvidenceDoc = "docs/STATUS.md",
     };
 
@@ -14,6 +15,7 @@ internal static class GemmaArchitectures
     {
         Id = "gemma2",
         Status = AdmissionStatus.Admitted,
+        StatusExemption = "Covered by the generic 'LLM inference (GGUF)' row; STATUS.md is a capability matrix, not an architecture catalog.",
         EvidenceDoc = "docs/STATUS.md",
     };
 
@@ -22,6 +24,7 @@ internal static class GemmaArchitectures
     {
         Id = "gemma3",
         Status = AdmissionStatus.Admitted,
+        StatusAnchor = "Gemma 3 text (`gemma3`)",
         EvidenceDoc = "docs/STATUS.md",
     };
 
@@ -30,6 +33,7 @@ internal static class GemmaArchitectures
     {
         Id = "gemma3n",
         Status = AdmissionStatus.Admitted,
+        StatusExemption = "Covered by the generic 'LLM inference (GGUF)' row; STATUS.md is a capability matrix, not an architecture catalog.",
         EvidenceDoc = "docs/STATUS.md",
     };
 }

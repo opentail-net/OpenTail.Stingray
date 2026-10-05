@@ -17,6 +17,7 @@ internal static class RwkvArchitectures
     {
         Id = "rwkv7",
         Status = AdmissionStatus.Admitted,
+        StatusAnchor = "RWKV-7 Goose (`rwkv7`)",
         EvidenceDoc = "docs/STATUS.md",
     };
 
@@ -30,6 +31,7 @@ internal static class RwkvArchitectures
     {
         Id = "rwkv6",
         Status = AdmissionStatus.Admitted,
+        StatusAnchor = "RWKV-6 Finch (`rwkv6`)",
         EvidenceDoc = "docs/STATUS.md",
     };
 }

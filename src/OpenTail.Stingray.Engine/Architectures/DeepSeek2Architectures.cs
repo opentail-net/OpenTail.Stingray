@@ -15,6 +15,7 @@ internal static class DeepSeek2Architectures
     {
         Id = "deepseek2",
         Status = AdmissionStatus.Admitted,
+        StatusAnchor = "DeepSeek-V2/V3/R1 (`deepseek2`)",
         EvidenceDoc = "docs/STATUS.md",
     };
 
@@ -27,6 +28,7 @@ internal static class DeepSeek2Architectures
     {
         Id = "deepseek2-ocr",
         Status = AdmissionStatus.Admitted,
+        StatusAnchor = "text arch `deepseek2-ocr` is admitted",
         EvidenceDoc = "docs/STATUS.md",
     };
 }

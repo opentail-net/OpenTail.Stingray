@@ -13,6 +13,7 @@ internal static class GraniteArchitectures
     {
         Id = "granitehybrid",
         Status = AdmissionStatus.Admitted,
+        StatusAnchor = "IBM Granite 4.0-H (`granitehybrid`)",
         EvidenceDoc = "docs/STATUS.md",
     };
 
@@ -32,6 +33,7 @@ internal static class GraniteArchitectures
     {
         Id = "granitemoe",
         Status = AdmissionStatus.Admitted,
+        StatusExemption = "Covered by the generic 'LLM inference (GGUF)' row; STATUS.md is a capability matrix, not an architecture catalog.",
         EvidenceDoc = "docs/done/01-gguf-model-coverage-plan.md",
     };
 }

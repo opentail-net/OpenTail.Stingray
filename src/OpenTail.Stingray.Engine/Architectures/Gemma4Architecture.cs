@@ -6,6 +6,7 @@ internal static class Gemma4Architecture
     {
         Id = "gemma4",
         Status = AdmissionStatus.Admitted,
+        StatusAnchor = "Gemma 4 E4B text (`gemma4`)",
         EvidenceDoc = "docs/STATUS.md",
         // Not trained for the engine's <|channel> thought split: enabling it makes the model ramble
         // and go out-of-distribution on multimodal input.

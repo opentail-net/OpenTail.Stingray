@@ -6,7 +6,8 @@ internal static class OtherAdmittedArchitectures
     {
         Id = "mimo",
         Status = AdmissionStatus.Admitted,
-        EvidenceDoc = "docs/STATUS.md",
+        StatusExemption = "Covered by the generic 'LLM inference (GGUF)' row; STATUS.md is a capability matrix, not an architecture catalog.",
+        EvidenceDoc = "docs/done/01-gguf-model-coverage-plan.md",
     };
 
     // Shares the evidence comment and receipt for 'mimo'.
@@ -14,6 +15,7 @@ internal static class OtherAdmittedArchitectures
     {
         Id = "mimo2",
         Status = AdmissionStatus.Admitted,
+        StatusExemption = "Covered by the generic 'LLM inference (GGUF)' row; STATUS.md is a capability matrix, not an architecture catalog.",
         EvidenceDoc = "docs/STATUS.md",
     };
 
@@ -28,7 +30,8 @@ internal static class OtherAdmittedArchitectures
     {
         Id = "olmoe",
         Status = AdmissionStatus.Admitted,
-        EvidenceDoc = "docs/done/01-gguf-model-coverage-plan.md",
+        StatusExemption = "Covered by the generic 'LLM inference (GGUF)' row; the MoE partial-offload row is a backend capability, not a family verification row.",
+        EvidenceDoc = "docs/STATUS.md",
     };
 
     // gpt-oss — admitted 2026-09-26. Runs on its own GptOssForwardPass (CPU only; attention
@@ -46,6 +49,7 @@ internal static class OtherAdmittedArchitectures
     {
         Id = "gpt-oss",
         Status = AdmissionStatus.Admitted,
+        StatusAnchor = "gpt-oss (`gpt-oss`)",
         EvidenceDoc = "docs/done/101-work-queue-after-coverage-plan.md",
     };
 
@@ -55,6 +59,7 @@ internal static class OtherAdmittedArchitectures
     {
         Id = "smollm3",
         Status = AdmissionStatus.Admitted,
+        StatusExemption = "Covered by the generic 'LLM inference (GGUF)' row; STATUS.md is a capability matrix, not an architecture catalog.",
         EvidenceDoc = "docs/STATUS.md",
     };
 
@@ -71,6 +76,7 @@ internal static class OtherAdmittedArchitectures
     {
         Id = "apertus",
         Status = AdmissionStatus.Admitted,
+        StatusExemption = "Covered by the generic 'LLM inference (GGUF)' row; STATUS.md is a capability matrix, not an architecture catalog.",
         EvidenceDoc = "docs/done/01-gguf-model-coverage-plan.md",
     };
 
@@ -88,6 +94,7 @@ internal static class OtherAdmittedArchitectures
     {
         Id = "gptneox",
         Status = AdmissionStatus.Admitted,
+        StatusExemption = "Covered by the generic 'LLM inference (GGUF)' row; STATUS.md is a capability matrix, not an architecture catalog.",
         EvidenceDoc = "docs/done/01-gguf-model-coverage-plan.md",
     };
 
@@ -109,6 +116,7 @@ internal static class OtherAdmittedArchitectures
     {
         Id = "falcon",
         Status = AdmissionStatus.Admitted,
+        StatusExemption = "Covered by the generic 'LLM inference (GGUF)' row; STATUS.md is a capability matrix, not an architecture catalog.",
         EvidenceDoc = "docs/done/01-gguf-model-coverage-plan.md",
     };
 
@@ -135,6 +143,7 @@ internal static class OtherAdmittedArchitectures
     {
         Id = "olmo2",
         Status = AdmissionStatus.Admitted,
+        StatusExemption = "Covered by the generic 'LLM inference (GGUF)' row; STATUS.md is a capability matrix, not an architecture catalog.",
         EvidenceDoc = "docs/done/01-gguf-model-coverage-plan.md",
     };
 
@@ -171,6 +180,7 @@ internal static class OtherAdmittedArchitectures
     {
         Id = "exaone",
         Status = AdmissionStatus.Admitted,
+        StatusExemption = "Covered by the generic 'LLM inference (GGUF)' row; STATUS.md is a capability matrix, not an architecture catalog.",
         EvidenceDoc = "docs/done/01-gguf-model-coverage-plan.md",
     };
 
@@ -206,6 +216,7 @@ internal static class OtherAdmittedArchitectures
     {
         Id = "orion",
         Status = AdmissionStatus.Admitted,
+        StatusExemption = "Covered by the generic 'LLM inference (GGUF)' row; STATUS.md is a capability matrix, not an architecture catalog.",
         EvidenceDoc = "docs/STATUS.md",
     };
 
@@ -245,6 +256,7 @@ internal static class OtherAdmittedArchitectures
     {
         Id = "ernie4_5",
         Status = AdmissionStatus.Admitted,
+        StatusExemption = "Covered by the generic 'LLM inference (GGUF)' row; STATUS.md is a capability matrix, not an architecture catalog.",
         EvidenceDoc = "docs/STATUS.md",
     };
 
@@ -260,6 +272,7 @@ internal static class OtherAdmittedArchitectures
     {
         Id = "paddleocr",
         Status = AdmissionStatus.Admitted,
+        StatusAnchor = "Vision: PaddleOCR-VL",
         EvidenceDoc = "docs/STATUS.md",
     };
 
@@ -274,6 +287,7 @@ internal static class OtherAdmittedArchitectures
     {
         Id = "nemotron_h",
         Status = AdmissionStatus.Admitted,
+        StatusAnchor = "NVIDIA Nemotron-H / Nemotron Nano v2 (`nemotron_h`)",
         EvidenceDoc = "docs/STATUS.md",
     };
 
@@ -289,6 +303,7 @@ internal static class OtherAdmittedArchitectures
     {
         Id = "lfm2",
         Status = AdmissionStatus.Admitted,
+        StatusAnchor = "Liquid LFM2 (`lfm2`)",
         EvidenceDoc = "docs/STATUS.md",
     };
 
@@ -302,6 +317,7 @@ internal static class OtherAdmittedArchitectures
     {
         Id = "lfm2moe",
         Status = AdmissionStatus.Admitted,
+        StatusAnchor = "Liquid LFM2-MoE (`lfm2moe`)",
         EvidenceDoc = "docs/STATUS.md",
     };
 
@@ -332,6 +348,7 @@ internal static class OtherAdmittedArchitectures
     {
         Id = "internlm2",
         Status = AdmissionStatus.Admitted,
+        StatusExemption = "Covered by the generic 'LLM inference (GGUF)' row; STATUS.md is a capability matrix, not an architecture catalog.",
         EvidenceDoc = "docs/STATUS.md",
     };
 
@@ -378,6 +395,7 @@ internal static class OtherAdmittedArchitectures
     {
         Id = "starcoder2",
         Status = AdmissionStatus.Admitted,
+        StatusExemption = "Covered by the generic 'LLM inference (GGUF)' row; STATUS.md is a capability matrix, not an architecture catalog.",
         EvidenceDoc = "docs/done/01-gguf-model-coverage-plan.md",
     };
 
@@ -434,6 +452,7 @@ internal static class OtherAdmittedArchitectures
     {
         Id = "cohere2",
         Status = AdmissionStatus.Admitted,
+        StatusExemption = "Covered by the generic 'LLM inference (GGUF)' row; STATUS.md is a capability matrix, not an architecture catalog.",
         EvidenceDoc = "docs/STATUS.md",
     };
 
@@ -460,6 +479,7 @@ internal static class OtherAdmittedArchitectures
     {
         Id = "glm4",
         Status = AdmissionStatus.Admitted,
+        StatusExemption = "Covered by the generic 'LLM inference (GGUF)' row; STATUS.md is a capability matrix, not an architecture catalog.",
         EvidenceDoc = "docs/done/01-gguf-model-coverage-plan.md",
     };
 
@@ -471,6 +491,7 @@ internal static class OtherAdmittedArchitectures
     {
         Id = "glm4moe",
         Status = AdmissionStatus.Admitted,
+        StatusAnchor = "GLM-4.5-Air (`glm4moe`)",
         EvidenceDoc = "docs/STATUS.md",
     };
 
@@ -511,6 +532,7 @@ internal static class OtherAdmittedArchitectures
     {
         Id = "stablelm",
         Status = AdmissionStatus.Admitted,
+        StatusExemption = "Covered by the generic 'LLM inference (GGUF)' row; STATUS.md is a capability matrix, not an architecture catalog.",
         EvidenceDoc = "docs/STATUS.md",
     };
 
@@ -558,6 +580,7 @@ internal static class OtherAdmittedArchitectures
     {
         Id = "hunyuan-dense",
         Status = AdmissionStatus.Admitted,
+        StatusExemption = "Covered by the generic 'LLM inference (GGUF)' row; STATUS.md is a capability matrix, not an architecture catalog.",
         EvidenceDoc = "docs/STATUS.md",
     };
 
@@ -569,6 +592,7 @@ internal static class OtherAdmittedArchitectures
     {
         Id = "hunyuan-moe",
         Status = AdmissionStatus.Admitted,
+        StatusAnchor = "Hunyuan-A13B-Instruct (`hunyuan-moe`)",
         EvidenceDoc = "docs/STATUS.md",
     };
 
@@ -581,6 +605,7 @@ internal static class OtherAdmittedArchitectures
     {
         Id = "afmoe",
         Status = AdmissionStatus.Admitted,
+        StatusAnchor = "Arcee Trinity Mini (`afmoe`)",
         EvidenceDoc = "docs/STATUS.md",
     };
 
@@ -604,6 +629,7 @@ internal static class OtherAdmittedArchitectures
     {
         Id = "gpt2",
         Status = AdmissionStatus.Admitted,
+        StatusExemption = "Covered by the generic 'LLM inference (GGUF)' row; the GPT-2 SafeTensors row describes a separate loader path.",
         EvidenceDoc = "docs/done/01-gguf-model-coverage-plan.md",
     };
 
@@ -629,6 +655,7 @@ internal static class OtherAdmittedArchitectures
     {
         Id = "olmo",
         Status = AdmissionStatus.Admitted,
+        StatusExemption = "Covered by the generic 'LLM inference (GGUF)' row; the MoE partial-offload row is a backend capability, not a family verification row.",
         EvidenceDoc = "docs/done/01-gguf-model-coverage-plan.md",
     };
 
@@ -658,6 +685,7 @@ internal static class OtherAdmittedArchitectures
     {
         Id = "starcoder",
         Status = AdmissionStatus.Admitted,
+        StatusExemption = "Covered by the generic 'LLM inference (GGUF)' row; STATUS.md is a capability matrix, not an architecture catalog.",
         EvidenceDoc = "docs/STATUS.md",
     };
 
@@ -688,6 +716,7 @@ internal static class OtherAdmittedArchitectures
     {
         Id = "codeshell",
         Status = AdmissionStatus.Admitted,
+        StatusExemption = "Covered by the generic 'LLM inference (GGUF)' row; STATUS.md is a capability matrix, not an architecture catalog.",
         EvidenceDoc = "docs/STATUS.md",
     };
 
@@ -730,6 +759,7 @@ internal static class OtherAdmittedArchitectures
     {
         Id = "jais2",
         Status = AdmissionStatus.Admitted,
+        StatusExemption = "Covered by the generic 'LLM inference (GGUF)' row; STATUS.md is a capability matrix, not an architecture catalog.",
         EvidenceDoc = "docs/STATUS.md",
     };
 
@@ -785,6 +815,7 @@ internal static class OtherAdmittedArchitectures
     {
         Id = "jais",
         Status = AdmissionStatus.Admitted,
+        StatusAnchor = "Jais v1 (`jais`)",
         EvidenceDoc = "docs/STATUS.md",
     };
 
@@ -800,6 +831,7 @@ internal static class OtherAdmittedArchitectures
     {
         Id = "maincoder",
         Status = AdmissionStatus.Admitted,
+        StatusExemption = "Covered by the generic 'LLM inference (GGUF)' row; STATUS.md is a capability matrix, not an architecture catalog.",
         EvidenceDoc = "docs/done/01-gguf-model-coverage-plan.md",
     };
 
@@ -807,6 +839,7 @@ internal static class OtherAdmittedArchitectures
     {
         Id = "exaone4",
         Status = AdmissionStatus.Admitted,
+        StatusAnchor = "EXAONE 4.5 33B (`exaone4`)",
         EvidenceDoc = "docs/STATUS.md",
     };
 
@@ -814,6 +847,7 @@ internal static class OtherAdmittedArchitectures
     {
         Id = "mistral3",
         Status = AdmissionStatus.Admitted,
+        StatusExemption = "Covered by the generic 'LLM inference (GGUF)' row; STATUS.md is a capability matrix, not an architecture catalog.",
         EvidenceDoc = "docs/STATUS.md",
     };
 
@@ -821,6 +855,7 @@ internal static class OtherAdmittedArchitectures
     {
         Id = "ministral",
         Status = AdmissionStatus.Admitted,
+        StatusExemption = "Covered by the generic 'LLM inference (GGUF)' row; STATUS.md is a capability matrix, not an architecture catalog.",
         EvidenceDoc = "docs/STATUS.md",
     };
 
@@ -863,6 +898,7 @@ internal static class OtherAdmittedArchitectures
     {
         Id = "xverse",
         Status = AdmissionStatus.Admitted,
+        StatusExemption = "Covered by the generic 'LLM inference (GGUF)' row; STATUS.md is a capability matrix, not an architecture catalog.",
         EvidenceDoc = "docs/STATUS.md",
     };
 
@@ -905,6 +941,7 @@ internal static class OtherAdmittedArchitectures
     {
         Id = "minicpm",
         Status = AdmissionStatus.Admitted,
+        StatusExemption = "Covered by the generic 'LLM inference (GGUF)' row; STATUS.md is a capability matrix, not an architecture catalog.",
         EvidenceDoc = "docs/STATUS.md",
     };
 }

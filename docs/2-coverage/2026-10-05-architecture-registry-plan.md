@@ -32,7 +32,7 @@ not part of this work.
 - [x] 4. Move the remaining admitted allowlist entries into descriptors, grouped by trunk family (llama-like, qwen, gemma, phi, rwkv, deepseek2, ...), carrying each evidence comment into the file. Mechanical; no behaviour change. Reconcile the stale `minicpm` "NOT admitted" note that was removed in step 2: the allowlist entry says admitted 2026-09-01.
 - [x] 5. Add the `Experimental` refusal path and quant-gate registry. PRISM remains a quant-type gate, not an architecture, declared through `ExperimentalQuantGate`; no family was promoted to `Experimental`.
 - [ ] 6. Forward-pass factory field + `SupportedBackends`, replacing the hand-written selection in `InferenceEngineLoader` / `RunCommand` (`gpt-oss`, `rwkv*`, hybrid GDN, ...).
-- [ ] 7. Contract test: every `Admitted` descriptor has a `docs/STATUS.md` row; every `NotAdmitted` one appears in the "Ported, not verified" table.
+- [x] 7. Contract test enforces explicit STATUS anchors or exemptions for every `Admitted` descriptor, every `NotAdmitted` descriptor's internal-table entry and public-doc exclusion, and evidence-doc existence. Removed two stale public DeepSeek alpha rows; no architecture status changed.
 - [ ] 8. Optional `DetectFromTensors` for GGUFs with missing or relabelled architecture metadata; `admit-arch` emits a descriptor stub.
 
 ## Out of scope

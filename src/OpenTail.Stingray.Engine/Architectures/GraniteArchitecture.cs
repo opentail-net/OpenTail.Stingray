@@ -13,6 +13,7 @@ internal static class GraniteArchitecture
     {
         Id = "granite",
         Status = AdmissionStatus.Admitted,
+        StatusExemption = "Covered by the generic 'LLM inference (GGUF)' row; STATUS.md is a capability matrix, not an architecture catalog.",
         EvidenceDoc = "docs/done/01-gguf-model-coverage-plan.md",
         // IBM's embedded Jinja injects a default system prompt and indents user content, which makes
         // vision decoders emit <|end_of_text|> at token 0; use llama.cpp's canonical GRANITE_4_0 layout.

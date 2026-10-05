@@ -38,6 +38,12 @@ public sealed class ArchitectureDescriptor
     /// <summary>Repo-relative doc holding the receipt (Admitted) or the missing work (NotAdmitted).</summary>
     public required string EvidenceDoc { get; init; }
 
+    /// <summary>Substring identifying this family's row in the public status matrix.</summary>
+    public string? StatusAnchor { get; init; }
+
+    /// <summary>Why this admitted family has no dedicated row in the public status matrix.</summary>
+    public string? StatusExemption { get; init; }
+
     /// <summary>Shown to the user when the status is not <see cref="AdmissionStatus.Admitted"/>.</summary>
     public string? RefusalReason { get; init; }
 
@@ -77,5 +83,18 @@ public sealed class ArchitectureDescriptor
             throw new InvalidOperationException($"Architecture '{Id}' is {Status} but gives no RefusalReason.");
         if (Status == AdmissionStatus.Experimental && string.IsNullOrWhiteSpace(ExperimentalEnvVar))
             throw new InvalidOperationException($"Architecture '{Id}' is Experimental but names no ExperimentalEnvVar.");
+        if (Status == AdmissionStatus.Admitted)
+        {
+            bool hasAnchor = !string.IsNullOrWhiteSpace(StatusAnchor);
+            bool hasExemption = !string.IsNullOrWhiteSpace(StatusExemption);
+            if (hasAnchor == hasExemption)
+                throw new InvalidOperationException(
+                    $"Admitted architecture '{Id}' must have exactly one of StatusAnchor or StatusExemption.");
+        }
+        else if (StatusAnchor is not null || StatusExemption is not null)
+        {
+            throw new InvalidOperationException(
+                $"Architecture '{Id}' is {Status} and must not have StatusAnchor or StatusExemption.");
+        }
     }
 }

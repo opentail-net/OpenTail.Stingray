@@ -8,6 +8,7 @@ internal static class QwenArchitectures
     {
         Id = "qwen",
         Status = AdmissionStatus.Admitted,
+        StatusExemption = "Covered by the generic 'LLM inference (GGUF)' row; the SafeTensors row is a separate loader path.",
         EvidenceDoc = "docs/STATUS.md",
     };
 
@@ -16,6 +17,7 @@ internal static class QwenArchitectures
     {
         Id = "qwen2",
         Status = AdmissionStatus.Admitted,
+        StatusExemption = "Covered by the generic 'LLM inference (GGUF)' row; the SafeTensors row is a separate loader path.",
         EvidenceDoc = "docs/STATUS.md",
     };
 
@@ -24,6 +26,7 @@ internal static class QwenArchitectures
     {
         Id = "qwen2moe",
         Status = AdmissionStatus.Admitted,
+        StatusAnchor = "Qwen2-MoE (`qwen2moe`",
         EvidenceDoc = "docs/STATUS.md",
     };
 
@@ -32,6 +35,7 @@ internal static class QwenArchitectures
     {
         Id = "qwen3",
         Status = AdmissionStatus.Admitted,
+        StatusExemption = "Covered by the generic 'LLM inference (GGUF)' row; the SafeTensors row is a separate loader path.",
         EvidenceDoc = "docs/STATUS.md",
     };
 
@@ -40,6 +44,7 @@ internal static class QwenArchitectures
     {
         Id = "qwen3moe",
         Status = AdmissionStatus.Admitted,
+        StatusExemption = "Covered by the generic 'LLM inference (GGUF)' row; STATUS.md does not have a separate Qwen3-MoE row.",
         EvidenceDoc = "docs/STATUS.md",
     };
 
@@ -54,6 +59,7 @@ internal static class QwenArchitectures
     {
         Id = "qwen2vl",
         Status = AdmissionStatus.Admitted,
+        StatusExemption = "Admitted only for text-only decoding; the Qwen Image row concerns a separate diffusion text-conditioning path.",
         EvidenceDoc = "docs/STATUS.md",
     };
 
@@ -74,6 +80,7 @@ internal static class QwenArchitectures
     {
         Id = "qwen35",
         Status = AdmissionStatus.Admitted,
+        StatusAnchor = "Qwen3.5 / 3.6 / 3.8 hybrid Gated DeltaNet + MoE",
         EvidenceDoc = "docs/done/01-gguf-model-coverage-plan.md",
     };
 
@@ -82,6 +89,7 @@ internal static class QwenArchitectures
     {
         Id = "qwen35moe",
         Status = AdmissionStatus.Admitted,
+        StatusAnchor = "Qwen3.5 / 3.6 / 3.8 hybrid Gated DeltaNet + MoE",
         EvidenceDoc = "docs/done/01-gguf-model-coverage-plan.md",
     };
 
@@ -96,6 +104,7 @@ internal static class QwenArchitectures
     {
         Id = "qwen3vl",
         Status = AdmissionStatus.Admitted,
+        StatusAnchor = "Vision: Qwen3-VL",
         EvidenceDoc = "docs/STATUS.md",
     };
 }
