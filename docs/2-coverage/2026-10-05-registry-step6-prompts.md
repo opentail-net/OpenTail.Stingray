@@ -132,18 +132,68 @@ Verify: build `Server` and `Tests.Server.Fast`; run `OpenTail.Stingray.Tests.Ser
 
 ## Section 5 of 5: Switch the CLI over, then clean up
 
-Goal: `RunCommand.cs` uses the same selector; the duplicate name checks are gone; docs and plan are updated.
+Goal: `RunCommand.cs` uses the same selector as the server, with the selector's rules no longer duplicated in the CLI;
+docs and plan are updated. This is the riskiest section: behaviour must not change, and "identical output" is only
+proven where a real baseline exists, so build the baselines first.
 
-Tasks:
-1. In `src/OpenTail.Stingray.Cli/RunCommand.cs`, replace the rwkv / gpt-oss / DeepSeek2-MLA and hybrid-vs-dense kind
-   decisions with `ForwardPassSelection.Select` (`Frontend = Cli`), keeping the CLI-only draft-model/`--draft-lookup` guard
-   expressed as a request flag so it behaves exactly as today. Construction, placement and messages stay put.
-2. Remove any now-unused arch-name checks left in either frontend, and delete nothing else.
-3. Re-run the **S1 baselines** with the CLI (CPU, and Vulkan if recorded); texts and token ids must be identical.
-   Record "identical, run on <date>" in the matrix doc's Baselines section.
-4. Update `docs/2-coverage/2026-10-05-architecture-registry-plan.md`: tick step 6 and note what stayed in the frontends
-   (hardware placement). Update the matrix doc's divergence list with anything now unified.
+Note on size: `ForwardPassSelection.Select` is ~470 lines and already covers more than rwkv / gpt-oss / DeepSeek2 / hybrid:
+SafeTensors refusals, `--tq-mode` parsing, TurboQuant head-dim and KVarN rules, and the hybrid-GDN guards, all with a
+`ForwardPassFrontend.Cli` branch. The CLI still has its own copies of these (e.g. TQ mode parsing ~2087-2101, head-dim
+checks ~2160-2185, SafeTensors gates ~815-840, hybrid guards ~1974-1983, rwkv/gpt-oss ~2016-2055). Use line numbers from
+the S1 matrix doc, but re-check them: they drift.
 
-Verify: build the CLI with 0 warnings; run `OpenTail.Stingray.Tests.Cli` (all classes), `ForwardPassSelectionTests`,
-`ArchitectureRegistryTests`, `Tests.Server.Fast`; plus `Tests.ForwardPass.Fast` if it completes in a few minutes (report its
-duration; `STINGRAY_RUN_HEAVY_TESTS` stays unset). Commit.
+### Part A: baselines for the paths the S1 baselines did not cover (before touching production code)
+
+1. In `models/_models/` there are `gpt-oss-20b-MXFP4.gguf` and `DeepSeek-V2-Lite-Chat.Q2_K.gguf` (confirm with `ls`; check
+   RAM first and run **one heavy job at a time**: do not run these in parallel with a build or test run). If an RWKV
+   GGUF is present use it too; if not, say so, and do **not** download one in this section (the selector tests are the only
+   cover for rwkv; record that explicitly).
+2. For each available model, capture a CPU baseline with the **unchanged** CLI: greedy, fixed prompt, small `-n` (e.g. 16),
+   `--seed 1 --verbose-prompt --no-display-prompt`, `-g 0`. Where the iGPU can run it, also capture a full-Vulkan baseline
+   (`-g -1 --backend vulkan`). Record exact commands, prompt ids, generated text and token ids in the matrix doc's Baselines
+   section, in the same format as the existing SmolLM2 entries. Note which selection path each one exercises (gpt-oss CPU /
+   gpt-oss Vulkan, DeepSeek2 MLA Vulkan vs generic).
+3. Also capture the **refusal texts** of the CLI today for: `--tq` on a hybrid-GDN model if one is in `models/` (else skip),
+   `--tq-mode bogus`, `--tq-mode kvarn` without `--tq`, `--tq` with `--draft-lookup` on gpt-oss. These are exit-code-1
+   runs and cheap. Record the exact stderr line for each.
+4. Server baseline for S4 (it was never recorded): start the server host on SmolLM2-135M, send one chat completion at
+   temperature 0 with the same prompt, record the text and compare with the CLI baseline. If the server cannot be run here,
+   say so.
+Commit the doc changes (docs only) before Part B.
+
+### Part B: switch the CLI over
+
+5. In `RunCommand.cs`, build a `ForwardPassRequest` (`Frontend = Cli`) and call `ForwardPassSelection.Select` for the
+   decisions the selector already owns. Express the CLI-only draft-model/`--draft-lookup` guard as request flags
+   (`HasDraftModel`, `DraftLookup`) so it behaves exactly as today. Construction, hardware placement (layer counts,
+   TierPlanner, CUDA/Vulkan resolution) and `AnsiConsole` output stay in the CLI.
+6. **Move, don't duplicate:** for every rule the selector now owns (SafeTensors gates, TQ mode parsing, TQ head-dim /
+   KVarN rules, hybrid-GDN guards, rwkv / gpt-oss refusals), the CLI must consume the selector's result and delete its own
+   copy. The selector's refusal text must be byte-identical to what the CLI printed (use the strings recorded in step 3;
+   the CLI wraps them in `[red]Error:[/]` and `Markup.Escape`, so check markup characters such as `[[8, 1024]]`).
+7. For any CLI check that the selector does **not** cover and that you therefore leave in place, list it in your report
+   with a one-line reason. Do not silently keep both versions of a rule, and do not add rules to the selector that the CLI
+   did not have.
+8. If a selector rule disagrees with what the CLI did (different order of refusals, different text, different condition),
+   **stop and fix the selector test + selector to match the CLI's current behaviour** (the baseline is today's CLI),
+   never the other way round. Add a selector test row for each such case. Also note the CLI-vs-selector ordering: the CLI
+   validates some things (TQ mode) after model load; do not change which message wins when two conditions hold.
+9. Remove arch-name checks left in either frontend that are now dead, and delete nothing else.
+
+### Part C: verify and document
+
+10. Rebuild the CLI; re-run **every** baseline from S1 and Part A (CPU and Vulkan) and the refusal-text runs. Token ids,
+    texts and stderr lines must be identical. Record "identical, run on <date>" next to each in the matrix doc. Any
+    difference: stop, do not "explain it away", report it.
+11. Update `docs/2-coverage/2026-10-05-architecture-registry-plan.md`: tick step 6, and note what stayed in the frontends
+    (hardware placement, plus any item from step 7). Update the matrix doc's divergence list with anything now unified, and
+    say which paths are covered only by selector tests (e.g. rwkv if no checkpoint).
+
+Verify: CLI build with 0 warnings; run `OpenTail.Stingray.Tests.Cli` (all classes), `ForwardPassSelectionTests`,
+`ArchitectureRegistryTests`, `ArchitectureDocsContractTests`, `Tests.Server.Fast`, using fully namespace-qualified class
+names and checking `Total` is not 0; plus `Tests.ForwardPass.Fast` if it completes in a few minutes (report its duration;
+`STINGRAY_RUN_HEAVY_TESTS` stays unset). Timings from this iGPU-only machine are not evidence about GPU speed (rule 13);
+only output identity is being checked. Commit Part B and C separately from Part A.
+
+Report must include: the baselines table (before/after identical yes/no), the list of CLI checks deliberately left in place,
+the refusal strings compared, and which families have no real-weight baseline.
