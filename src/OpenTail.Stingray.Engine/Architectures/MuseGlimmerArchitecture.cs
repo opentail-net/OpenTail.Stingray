@@ -14,6 +14,10 @@ internal static class MuseGlimmerArchitecture
         Id = "muse-glimmer",
         Aliases = ["muse_glimmer"],
         Status = AdmissionStatus.Admitted,
+        // GPU passes reject the embedding norm / attention output gate: GpuForwardPass.cs:546-551.
+        ForwardPassFamily = ForwardPassFamily.Dense,
+        SupportedBackends = SupportedBackends.Cpu,
+        BackendLimitation = "Muse-Glimmer's attention output gate and embedding norm are supported by the CPU pass only.",
         StatusAnchor = "Muse-Glimmer 30B (`muse-glimmer`)",
         EvidenceDoc = "docs/2-coverage/2026-10-03-muse-glimmer-port-plan.md",
     };

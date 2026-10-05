@@ -113,6 +113,59 @@ public sealed class ArchitectureRegistryTests
     }
 
     [Fact]
+    public void BackendLimitedDescriptors_HaveLimitation_AndSelectorRefusesUnsupportedBackend()
+    {
+        var descriptors = new[]
+        {
+            (Architecture: "rwkv6", Family: ForwardPassFamily.Rwkv, Backends: SupportedBackends.Cpu),
+            (Architecture: "rwkv7", Family: ForwardPassFamily.Rwkv, Backends: SupportedBackends.Cpu),
+            (Architecture: "gpt-oss", Family: ForwardPassFamily.GptOss, Backends: SupportedBackends.Cpu | SupportedBackends.Vulkan),
+            (Architecture: "deepseek2", Family: ForwardPassFamily.DeepSeek2Mla, Backends: SupportedBackends.Cpu | SupportedBackends.Vulkan),
+            (Architecture: "muse-glimmer", Family: ForwardPassFamily.Dense, Backends: SupportedBackends.Cpu),
+        };
+
+        foreach (var (architecture, family, backends) in descriptors)
+        {
+            var descriptor = ArchitectureRegistry.Find(architecture);
+            Assert.NotNull(descriptor);
+            Assert.False(string.IsNullOrWhiteSpace(descriptor!.BackendLimitation), architecture);
+            Assert.Equal(family, descriptor.ForwardPassFamily);
+            Assert.Equal(backends, descriptor.SupportedBackends);
+        }
+
+        foreach (var (architecture, backend) in new[]
+        {
+            ("deepseek2", ForwardPassBackend.Cuda),
+            ("muse-glimmer", ForwardPassBackend.Vulkan),
+        })
+        {
+            var descriptor = ArchitectureRegistry.Find(architecture)!;
+            var decision = ForwardPassSelection.Select(new ForwardPassRequest
+            {
+                Architecture = architecture,
+                Backend = backend,
+                GpuLayers = -1,
+                PlannedGpuLayers = 1,
+                KvLoraRank = architecture == "deepseek2" ? 1 : 0,
+                HasMlaTensors = architecture == "deepseek2",
+            });
+
+            Assert.Equal(descriptor.BackendLimitation, decision.Refusal);
+        }
+
+        Assert.Equal(ForwardPassKind.RwkvCpu, ForwardPassSelection.Select(new ForwardPassRequest
+        {
+            Architecture = "rwkv7", Backend = ForwardPassBackend.Cuda, GpuLayers = -1,
+        }).Kind);
+        Assert.Equal(ForwardPassKind.GptOssCpu, ForwardPassSelection.Select(new ForwardPassRequest
+        {
+            Architecture = "gpt-oss", Backend = ForwardPassBackend.Cuda, GpuLayers = -1,
+        }).Kind);
+        Assert.Equal(ForwardPassFamily.Dense, ArchitectureRegistry.Find("deepseek2-ocr")!.ForwardPassFamily);
+        Assert.Equal(SupportedBackends.All, ArchitectureRegistry.Find("deepseek2-ocr")!.SupportedBackends);
+    }
+
+    [Fact]
     public void NotAdmittedDescriptors_AreNeverSupported()
     {
         foreach (var d in ArchitectureRegistry.All.Where(d => d.Status == AdmissionStatus.NotAdmitted))

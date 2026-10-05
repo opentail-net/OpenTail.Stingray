@@ -154,6 +154,9 @@ public static class ForwardPassSelection
             return ForwardPassDecision.Refuse(request.ArchitectureRefusal ??
                 $"GGUF architecture '{request.Architecture}' is not admitted by OpenTail.Stingray.");
 
+        ArchitectureDescriptor? descriptor = ArchitectureRegistry.Find(request.Architecture);
+        ForwardPassFamily family = descriptor?.ForwardPassFamily ?? ForwardPassFamily.Dense;
+
         bool draftRequested = request.HasDraftModel || request.DraftLookup;
         string tqMode = request.TurboQuantMode.Trim().ToLowerInvariant();
         bool explicitKvarn = tqMode == "kvarn";
@@ -173,8 +176,7 @@ public static class ForwardPassSelection
         if ((request.IsHybridSsm || request.HasHybridGdnLayers) && draftRequested && request.Frontend == ForwardPassFrontend.Cli)
             return ForwardPassDecision.Refuse("Speculative decoding is not supported for hybrid GDN models (GDN state is destructively updated and cannot be rewound).");
 
-        bool isRwkv = request.Architecture is "rwkv6" or "rwkv7";
-        if (isRwkv)
+        if (family == ForwardPassFamily.Rwkv)
         {
             if (request.TurboQuant || (draftRequested && request.Frontend == ForwardPassFrontend.Cli))
             {
@@ -186,7 +188,7 @@ public static class ForwardPassSelection
             return ForwardPassDecision.Select(ForwardPassKind.RwkvCpu);
         }
 
-        bool isGptOss = request.Architecture == "gpt-oss";
+        bool isGptOss = family == ForwardPassFamily.GptOss;
         if (isGptOss && (request.TurboQuant || (draftRequested && request.Frontend == ForwardPassFrontend.Cli)))
         {
             string message = request.Frontend == ForwardPassFrontend.Cli
@@ -352,12 +354,16 @@ public static class ForwardPassSelection
                 return ForwardPassDecision.Refuse("DSpark was configured but placement resolved to Off.");
         }
 
-        bool hasDeepSeek2Mla = request.KvLoraRank > 0 && request.HasMlaTensors;
+        bool hasDeepSeek2Mla = family == ForwardPassFamily.DeepSeek2Mla
+            && request.KvLoraRank > 0 && request.HasMlaTensors;
         bool partialRequest = request.GpuLayers > 0 && request.GpuLayers < request.NumLayers;
         bool cliDraftBlocksMla = request.Frontend == ForwardPassFrontend.Cli && draftRequested;
         bool mlaRequestedBackend = request.Frontend == ForwardPassFrontend.Cli
             ? request.Backend != ForwardPassBackend.Cuda
             : request.Backend is ForwardPassBackend.Auto or ForwardPassBackend.Vulkan;
+        if (hasDeepSeek2Mla && request.GpuLayers != 0 && request.Backend == ForwardPassBackend.Cuda
+            && descriptor is not null)
+            return ForwardPassDecision.Refuse(descriptor.BackendLimitation!);
         if (hasDeepSeek2Mla && request.GpuLayers != 0 && !request.TurboQuant
             && mlaRequestedBackend && !partialRequest && !cliDraftBlocksMla)
             return ForwardPassDecision.Select(ForwardPassKind.DeepSeek2Vulkan);
@@ -377,6 +383,11 @@ public static class ForwardPassSelection
             backend = ForwardPassBackend.Cpu;
             gpuRequested = false;
         }
+
+        if (descriptor is not null && gpuRequested
+            && family is not (ForwardPassFamily.Rwkv or ForwardPassFamily.GptOss)
+            && !SupportsBackend(descriptor.SupportedBackends, backend))
+            return ForwardPassDecision.Refuse(descriptor.BackendLimitation!);
 
         if (isGptOss)
         {
@@ -451,4 +462,12 @@ public static class ForwardPassSelection
     }
 
     private static bool TqLloydMaxHeadDim(int headDim) => headDim is 128 or 256;
+
+    private static bool SupportsBackend(SupportedBackends supportedBackends, ForwardPassBackend backend) => backend switch
+    {
+        ForwardPassBackend.Cpu => (supportedBackends & SupportedBackends.Cpu) != 0,
+        ForwardPassBackend.Cuda => (supportedBackends & SupportedBackends.Cuda) != 0,
+        ForwardPassBackend.Vulkan => (supportedBackends & SupportedBackends.Vulkan) != 0,
+        _ => false,
+    };
 }

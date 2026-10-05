@@ -17,6 +17,10 @@ internal static class RwkvArchitectures
     {
         Id = "rwkv7",
         Status = AdmissionStatus.Admitted,
+        // CPU-only routing is enforced by RunCommand.cs:2016-2026 and InferenceEngineLoader.cs:603-612.
+        ForwardPassFamily = ForwardPassFamily.Rwkv,
+        SupportedBackends = SupportedBackends.Cpu,
+        BackendLimitation = "RWKV has a CPU forward pass only; GPU requests fall back to CPU.",
         StatusAnchor = "RWKV-7 Goose (`rwkv7`)",
         EvidenceDoc = "docs/STATUS.md",
     };
@@ -31,6 +35,10 @@ internal static class RwkvArchitectures
     {
         Id = "rwkv6",
         Status = AdmissionStatus.Admitted,
+        // CPU-only routing is enforced by RunCommand.cs:2016-2026 and InferenceEngineLoader.cs:603-612.
+        ForwardPassFamily = ForwardPassFamily.Rwkv,
+        SupportedBackends = SupportedBackends.Cpu,
+        BackendLimitation = "RWKV has a CPU forward pass only; GPU requests fall back to CPU.",
         StatusAnchor = "RWKV-6 Finch (`rwkv6`)",
         EvidenceDoc = "docs/STATUS.md",
     };

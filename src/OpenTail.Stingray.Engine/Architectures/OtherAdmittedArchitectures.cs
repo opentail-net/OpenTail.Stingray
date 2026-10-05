@@ -49,6 +49,11 @@ internal static class OtherAdmittedArchitectures
     {
         Id = "gpt-oss",
         Status = AdmissionStatus.Admitted,
+        // CPU or full Vulkan only; CUDA and partial GPU requests fall back to CPU.
+        // Enforced by RunCommand.cs:2035-2054 and InferenceEngineLoader.cs:620-634.
+        ForwardPassFamily = ForwardPassFamily.GptOss,
+        SupportedBackends = SupportedBackends.Cpu | SupportedBackends.Vulkan,
+        BackendLimitation = "gpt-oss supports CPU or full Vulkan offload only; CUDA and partial offload use CPU.",
         StatusAnchor = "gpt-oss (`gpt-oss`)",
         EvidenceDoc = "docs/done/101-work-queue-after-coverage-plan.md",
     };

@@ -11,6 +11,24 @@ public enum AdmissionStatus
     Experimental,
 }
 
+[Flags]
+public enum SupportedBackends
+{
+    Cpu = 1,
+    Vulkan = 2,
+    Cuda = 4,
+    All = Cpu | Vulkan | Cuda,
+}
+
+public enum ForwardPassFamily
+{
+    Dense,
+    HybridGdn,
+    Rwkv,
+    GptOss,
+    DeepSeek2Mla,
+}
+
 /// <summary>Prompt layout used when the GGUF ships no usable Jinja chat template.</summary>
 public enum FallbackChatFormat
 {
@@ -54,6 +72,12 @@ public sealed class ArchitectureDescriptor
 
     public FallbackChatFormat FallbackChat { get; init; } = FallbackChatFormat.ChatMl;
 
+    public ForwardPassFamily ForwardPassFamily { get; init; } = ForwardPassFamily.Dense;
+
+    public SupportedBackends SupportedBackends { get; init; } = SupportedBackends.All;
+
+    public string? BackendLimitation { get; init; }
+
     /// <summary>Whether the engine may run this architecture right now.</summary>
     public bool IsUsable() => Status switch
     {
@@ -79,6 +103,12 @@ public sealed class ArchitectureDescriptor
             throw new InvalidOperationException("Architecture descriptor has no Id.");
         if (string.IsNullOrWhiteSpace(EvidenceDoc))
             throw new InvalidOperationException($"Architecture '{Id}' has no EvidenceDoc.");
+        if ((SupportedBackends & ~SupportedBackends.All) != 0 || SupportedBackends == 0)
+            throw new InvalidOperationException($"Architecture '{Id}' has invalid SupportedBackends.");
+        if (SupportedBackends != SupportedBackends.All && string.IsNullOrWhiteSpace(BackendLimitation))
+            throw new InvalidOperationException($"Architecture '{Id}' restricts backends but gives no BackendLimitation.");
+        if (SupportedBackends == SupportedBackends.All && BackendLimitation is not null)
+            throw new InvalidOperationException($"Architecture '{Id}' gives BackendLimitation but supports every backend.");
         if (Status != AdmissionStatus.Admitted && string.IsNullOrWhiteSpace(RefusalReason))
             throw new InvalidOperationException($"Architecture '{Id}' is {Status} but gives no RefusalReason.");
         if (Status == AdmissionStatus.Experimental && string.IsNullOrWhiteSpace(ExperimentalEnvVar))
