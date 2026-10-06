@@ -1,0 +1,327 @@
+#nullable enable
+
+using System.Collections.Immutable;
+using OpenTail.Stingray.Core;
+
+namespace OpenTail.Stingray.Engine.Planning;
+
+/// <summary>
+/// Authoritative planner orchestrating candidate evaluation, hardware budgeting,
+/// and pass selection into an immutable, inspectable <see cref="ExecutionPlan"/>.
+/// Guarantees that runtime execution never encounters ambiguous or rediscovering policies.
+/// </summary>
+public static class ExecutionPlanner
+{
+    public static ExecutionPlan Plan(
+        ModelDescription model,
+        ExecutionRequest request,
+        BackendCapabilities capabilities)
+    {
+        ArgumentNullException.ThrowIfNull(model);
+        ArgumentNullException.ThrowIfNull(request);
+        ArgumentNullException.ThrowIfNull(capabilities);
+
+        var decisions = ImmutableArray.CreateBuilder<ExecutionPlanDecisionDetail>();
+        var warnings = ImmutableArray.CreateBuilder<string>();
+
+        string resolvedGoal = NormalizeGoal(request.Goal);
+
+        // 1. Candidate Evaluation & Backend Selection
+        var (selectedBackend, backendDeviceName) = SelectBackend(
+            model, request, capabilities, decisions, warnings);
+
+        // 2. Context Size Selection
+        int ctxSize = ResolveContextSize(
+            model.PlanningFacts, resolvedGoal, request.PinnedContextSize, decisions, warnings);
+
+        // 3. KV DType Selection
+        DType kvDtype = ResolveKvDtype(
+            resolvedGoal, request.PinnedKvDtype, decisions, warnings);
+
+        // 4. Placement & Layer Offload via TierPlanner
+        int? requestedGpuLayers = request.PinnedGpuLayers;
+        if (requestedGpuLayers == -1)
+        {
+            requestedGpuLayers = model.PlanningFacts.NumLayers;
+        }
+
+        if (!requestedGpuLayers.HasValue && selectedBackend == ForwardPassBackend.Cpu)
+        {
+            requestedGpuLayers = 0;
+        }
+
+        var hardwareProfile = capabilities.HardwareProfile;
+        if (selectedBackend == ForwardPassBackend.Cpu)
+        {
+            hardwareProfile = hardwareProfile with { VramBytes = 0 };
+        }
+
+        var placementResult = TierPlanner.Plan(
+            model.PlanningFacts,
+            hardwareProfile,
+            turboQuant: request.TurboQuant,
+            tqBits: request.TurboQuantBits,
+            requestedCtxSize: ctxSize,
+            tqFp32Window: request.TurboQuantFp32Window,
+            kvDtype: kvDtype,
+            pinGpuLayers: requestedGpuLayers);
+
+        int resolvedGpuLayers = placementResult.GpuLayers;
+        if (request.PinnedGpuLayers.HasValue)
+        {
+            decisions.Add(new("GPU_LAYERS", resolvedGpuLayers.ToString(),
+                "User explicitly pinned GPU layer count.", "request_pin"));
+        }
+        else
+        {
+            decisions.Add(new("GPU_LAYERS", resolvedGpuLayers.ToString(),
+                resolvedGpuLayers >= model.PlanningFacts.NumLayers
+                    ? "Full GPU weight offload selected."
+                    : $"Offloaded {resolvedGpuLayers}/{model.PlanningFacts.NumLayers} layers based on VRAM budget.",
+                "auto_planner"));
+        }
+
+        // 5. Select ForwardPassKind via ForwardPassSelection
+        var passReq = model.CreateForwardPassRequest(
+            frontend: ForwardPassFrontend.Cli,
+            backend: selectedBackend,
+            gpuLayers: resolvedGpuLayers,
+            plannedGpuLayers: resolvedGpuLayers,
+            cudaAvailable: capabilities.CudaAvailable,
+            turboQuant: request.TurboQuant,
+            turboQuantMode: request.TurboQuantMode,
+            hasDraftModel: !string.IsNullOrEmpty(request.DraftModelPath),
+            isContinuousBatching: request.BatchingMode == BatchingMode.Continuous,
+            targetContextLength: ctxSize,
+            allowUnverifiedArchitecture: request.AllowUnverifiedArchitecture);
+
+        var passDecision = ForwardPassSelection.Select(passReq);
+        ForwardPassKind forwardPassKind;
+        if (passDecision.Kind.HasValue)
+        {
+            forwardPassKind = passDecision.Kind.Value;
+            decisions.Add(new("FORWARD_PASS", forwardPassKind.ToString(),
+                passDecision.Notice ?? "Selected optimal forward pass.", "forward_pass_selection"));
+        }
+        else
+        {
+            // Fallback to CPU dense when unselected, logging warning
+            warnings.Add(passDecision.Refusal ?? "Preferred forward pass was refused.");
+            forwardPassKind = model.Semantics.Format == ModelFormat.SafeTensors
+                ? ForwardPassKind.SafeTensorsCpu
+                : (model.PlanningFacts.IsHybridSsm ? ForwardPassKind.CpuHybridGdn : ForwardPassKind.CpuDense);
+        }
+
+        // 6. Build Sub-Plans
+        int threadCount = request.ThreadCount > 0 ? request.ThreadCount : capabilities.RecommendedThreadCount;
+        var backendPlan = new BackendPlan(
+            Backend: selectedBackend,
+            DeviceName: backendDeviceName,
+            DeviceIndex: 0,
+            CudaAvailable: capabilities.CudaAvailable,
+            VulkanAvailable: capabilities.VulkanAvailable,
+            ThreadCount: threadCount);
+
+        var placementPlan = new PlacementPlan(
+            GpuLayers: placementResult.GpuLayers,
+            CpuLayers: placementResult.CpuLayers,
+            TotalLayers: placementResult.GpuLayers + placementResult.CpuLayers,
+            GpuWeightBytes: placementResult.GpuWeightBytes,
+            CpuWeightBytes: placementResult.CpuWeightBytes,
+            ExpertCacheBudgetBytes: placementResult.ExpertCacheBudgetBytes,
+            MoeRoutedExpertBytes: placementResult.MoeRoutedExpertBytes,
+            FixedWeightsOnCpu: model.PlanningFacts.ShouldKeepFixedWeightsOnCpu);
+
+        var statePlan = new StatePlan(
+            StateModel: model.Capabilities.StateModel,
+            ContextLength: ctxSize,
+            KvDType: kvDtype,
+            TurboQuant: request.TurboQuant,
+            TurboQuantMode: request.TurboQuantMode,
+            TurboQuantBits: request.TurboQuantBits,
+            TurboQuantFp32Window: request.TurboQuantFp32Window,
+            SnapKvEnabled: request.SnapKvEnabled,
+            SnapKvBudget: request.SnapKvBudget);
+
+        var batchingPlan = new BatchingPlan(
+            Mode: request.BatchingMode,
+            MaxBatchSize: request.MaxBatchSize,
+            MaxConcurrentSessions: request.MaxBatchSize);
+
+        var speculationPlan = new SpeculationPlan(
+            Mode: request.SpeculationMode,
+            DraftModelPath: request.DraftModelPath,
+            DSparkModelPath: request.DSparkModelPath);
+
+        var modalityPlan = new ModalityPlan(
+            SupportsVision: model.Capabilities.SupportsVision,
+            SupportsEmbeddingInput: model.Capabilities.SupportsEmbeddingInput);
+
+        double estVramMb = (placementResult.GpuWeightBytes + placementResult.GpuKvBytes) / (1024.0 * 1024.0);
+        double estRamMb = placementResult.CpuWeightBytes / (1024.0 * 1024.0);
+
+        var memoryPlan = new MemoryPlan(
+            EstimatedVramMb: estVramMb,
+            EstimatedRamMb: estRamMb,
+            ScratchBytes: model.PlanningFacts.ScratchBytes);
+
+        var provenance = new PlanProvenance(
+            CreatedAtUtc: DateTime.UtcNow.ToString("o"),
+            PlannerVersion: "2.0.0",
+            PrimaryModelPath: model.Identity.Components.FirstOrDefault()?.RelativeName ?? "model",
+            TargetArchitecture: model.Semantics.Architecture,
+            Goal: resolvedGoal);
+
+        // 7. Construct ExecutionPlan v2
+        var plan = ExecutionPlan.CreateV2(
+            packageIdentity: model.Identity,
+            forwardPassKind: forwardPassKind,
+            backendPlan: backendPlan,
+            placement: placementPlan,
+            state: statePlan,
+            batching: batchingPlan,
+            speculation: speculationPlan,
+            modality: modalityPlan,
+            memory: memoryPlan,
+            provenance: provenance,
+            decisions: decisions.ToImmutable(),
+            warnings: warnings.ToImmutable(),
+            modelFormat: model.Semantics.Format,
+            isExecutable: passDecision.Kind.HasValue);
+
+        // 8. Validate Plan Invariants
+        ExecutionPlanValidator.Validate(plan);
+
+        return plan;
+    }
+
+    private static (ForwardPassBackend Backend, string DeviceName) SelectBackend(
+        ModelDescription model,
+        ExecutionRequest request,
+        BackendCapabilities capabilities,
+        ImmutableArray<ExecutionPlanDecisionDetail>.Builder decisions,
+        ImmutableArray<string>.Builder warnings)
+    {
+        if (!string.IsNullOrEmpty(request.PinnedBackend) &&
+            !string.Equals(request.PinnedBackend, "auto", StringComparison.OrdinalIgnoreCase))
+        {
+            string pinned = request.PinnedBackend.Trim().ToLowerInvariant();
+            decisions.Add(new("BACKEND", pinned, "User explicitly pinned backend.", "request_pin"));
+
+            return pinned switch
+            {
+                "cuda" => (ForwardPassBackend.Cuda, capabilities.CudaDeviceName ?? "CUDA Device 0"),
+                "vulkan" => (ForwardPassBackend.Vulkan, capabilities.VulkanDeviceName ?? "Vulkan Device 0"),
+                _ => (ForwardPassBackend.Cpu, "CPU Host")
+            };
+        }
+
+        // Candidate Evaluation
+        if (model.Semantics.Format == ModelFormat.SafeTensors)
+        {
+            decisions.Add(new("BACKEND", "cpu", "SafeTensors packages currently execute on CPU.", "auto_planner"));
+            return (ForwardPassBackend.Cpu, "CPU Host");
+        }
+
+        if (capabilities.CudaAvailable && CanUseCuda(model))
+        {
+            decisions.Add(new("BACKEND", "cuda", "CUDA compute device detected and supported by architecture.", "auto_planner"));
+            return (ForwardPassBackend.Cuda, capabilities.CudaDeviceName ?? "CUDA Device 0");
+        }
+
+        if (capabilities.VulkanAvailable && CanUseVulkan(model))
+        {
+            decisions.Add(new("BACKEND", "vulkan", "Vulkan compute device detected and supported by architecture.", "auto_planner"));
+            return (ForwardPassBackend.Vulkan, capabilities.VulkanDeviceName ?? "Vulkan Device 0");
+        }
+
+        decisions.Add(new("BACKEND", "cpu", "No accelerator available or architecture requires CPU execution.", "auto_planner"));
+        return (ForwardPassBackend.Cpu, "CPU Host");
+    }
+
+    private static bool CanUseCuda(ModelDescription model)
+    {
+        // RWKV, SafeTensors, and GPT-OSS currently lack CUDA kernels
+        if (model.Semantics.Family is ForwardPassFamily.Rwkv or ForwardPassFamily.GptOss)
+            return false;
+        return true;
+    }
+
+    private static bool CanUseVulkan(ModelDescription model)
+    {
+        return true;
+    }
+
+    private static string NormalizeGoal(string goal)
+    {
+        return goal.ToLowerInvariant() switch
+        {
+            "quality" => "quality",
+            "throughput" => "throughput",
+            "long-context" => "long-context",
+            "low-memory" => "low-memory",
+            _ => "balanced"
+        };
+    }
+
+    private static int ResolveContextSize(
+        ModelPlanningFacts hp,
+        string goal,
+        int? pinContextSize,
+        ImmutableArray<ExecutionPlanDecisionDetail>.Builder decisions,
+        ImmutableArray<string>.Builder warnings)
+    {
+        if (pinContextSize.HasValue)
+        {
+            int pinned = pinContextSize.Value;
+            if (pinned > hp.ContextLength)
+            {
+                warnings.Add($"Requested context size ({pinned}) exceeds model training context length ({hp.ContextLength}).");
+            }
+            decisions.Add(new("CONTEXT_SIZE", pinned.ToString(), "User explicitly pinned context size.", "request_pin"));
+            return pinned;
+        }
+
+        int ctx = goal switch
+        {
+            "long-context" => hp.ContextLength,
+            "low-memory" => Math.Min(2048, hp.ContextLength),
+            "throughput" => Math.Min(4096, hp.ContextLength),
+            "quality" => Math.Min(8192, hp.ContextLength),
+            _ => Math.Min(8192, hp.ContextLength)
+        };
+
+        decisions.Add(new("CONTEXT_SIZE", ctx.ToString(), $"Context size selected based on '{goal}' goal.", "auto_planner"));
+        return ctx;
+    }
+
+    private static DType ResolveKvDtype(
+        string goal,
+        string? pinKvDtype,
+        ImmutableArray<ExecutionPlanDecisionDetail>.Builder decisions,
+        ImmutableArray<string>.Builder warnings)
+    {
+        if (!string.IsNullOrEmpty(pinKvDtype))
+        {
+            string pinned = pinKvDtype.Trim().ToLowerInvariant();
+            decisions.Add(new("KV_DTYPE", pinned, "User explicitly pinned KV cache datatype.", "request_pin"));
+            return pinned switch
+            {
+                "q8_0" or "q8" => DType.Q8_0,
+                "bfloat16" or "bf16" => DType.BFloat16,
+                _ => DType.Float32
+            };
+        }
+
+        DType selected = goal switch
+        {
+            "low-memory" => DType.Q8_0,
+            "quality" => DType.Float32,
+            _ => DType.Float32
+        };
+
+        decisions.Add(new("KV_DTYPE", selected.ToString().ToLowerInvariant(),
+            $"KV cache datatype selected based on '{goal}' goal.", "auto_planner"));
+        return selected;
+    }
+}

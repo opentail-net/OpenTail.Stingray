@@ -1,4 +1,6 @@
 
+using OpenTail.Stingray.Engine.Planning;
+
 namespace OpenTail.Stingray.Engine;
 
 /// <summary>
@@ -7,6 +9,134 @@ namespace OpenTail.Stingray.Engine;
 /// </summary>
 public static class TierPlanner
 {
+    /// <summary>
+    /// Compute optimal layer placement from precomputed immutable planning facts and hardware profile,
+    /// avoiding disk and model inspection during planning.
+    /// </summary>
+    public static LayerPlacement Plan(ModelPlanningFacts facts,
+        HardwareProfile hardware, bool turboQuant = false, int tqBits = 3,
+        int requestedCtxSize = 0, int tqFp32Window = 256, DType kvDtype = DType.Float32,
+        int? pinGpuLayers = null)
+    {
+        if (hardware.VramBytes <= 0)
+        {
+            long allCpuBytes = 0;
+            for (int i = 0; i < facts.NumLayers; i++)
+                allCpuBytes += facts.PerLayerCpuWeightBytes.Length > i ? facts.PerLayerCpuWeightBytes[i] : 0;
+            return new LayerPlacement(0, facts.NumLayers, 0, 0,
+                requestedCtxSize > 0 ? requestedCtxSize : facts.ContextLength,
+                CpuWeightBytes: allCpuBytes);
+        }
+
+        long vramTotal = hardware.VramBytes;
+        int headDim = facts.HeadDim;
+
+        long scratchBytes = facts.ScratchBytes;
+        long reserved = ReservedVramBytes(vramTotal);
+        long vramBudget = vramTotal - scratchBytes - reserved;
+
+        bool cpuFixedWeights = facts.ShouldKeepFixedWeightsOnCpu;
+        long embBytes = cpuFixedWeights ? 0 : facts.EmbeddingGpuBytes;
+        long outputBytes = cpuFixedWeights ? 0 : facts.OutputGpuBytes;
+        long fixedGpuBytes = embBytes + outputBytes;
+        vramBudget -= fixedGpuBytes;
+        if (vramBudget < 0) vramBudget = 0;
+
+        int gpuLayers = 0;
+        long gpuWeightBytes = fixedGpuBytes;
+        if (pinGpuLayers is int pin)
+        {
+            gpuLayers = Math.Clamp(pin, 0, facts.NumLayers);
+            for (int i = 0; i < gpuLayers; i++)
+                gpuWeightBytes += facts.PerLayerGpuWeightBytes.Length > i ? facts.PerLayerGpuWeightBytes[i] : 0;
+            vramBudget = Math.Max(0, vramBudget - (gpuWeightBytes - fixedGpuBytes));
+        }
+        else
+        {
+            for (int i = 0; i < facts.NumLayers; i++)
+            {
+                long layerBytes = facts.PerLayerGpuWeightBytes.Length > i ? facts.PerLayerGpuWeightBytes[i] : 0;
+                if (vramBudget >= layerBytes)
+                {
+                    vramBudget -= layerBytes;
+                    gpuWeightBytes += layerBytes;
+                    gpuLayers++;
+                }
+                else
+                {
+                    break;
+                }
+            }
+        }
+
+        int gpuCtxSize;
+        int autoCtxCap = Math.Min(facts.ContextLength, 32768);
+        if (requestedCtxSize > 0)
+        {
+            gpuCtxSize = requestedCtxSize;
+        }
+        else if (gpuLayers > 0 && turboQuant)
+        {
+            int fp32Window = Math.Min(tqFp32Window, autoCtxCap);
+            int tqBlockSize = TurboQuantOps.BlockSize(tqBits, headDim);
+            long fp32WindowBytes = 2L * gpuLayers * facts.NumKvHeads * headDim * sizeof(float) * fp32Window;
+            long tqBytesPerToken = 2L * gpuLayers * facts.NumKvHeads * tqBlockSize;
+
+            long availableForTq = vramBudget - fp32WindowBytes;
+            if (availableForTq <= 0) availableForTq = 64L * 1024 * 1024;
+
+            int maxTqPositions = tqBytesPerToken > 0 ? (int)(availableForTq / tqBytesPerToken) : 0;
+            gpuCtxSize = Math.Clamp(maxTqPositions + fp32Window, 512, autoCtxCap);
+        }
+        else if (gpuLayers > 0 && vramBudget > 0)
+        {
+            long kvBytesPerToken = 2L * gpuLayers * DTypeInfo.ByteSize((long)facts.NumKvHeads * headDim, kvDtype);
+            gpuCtxSize = (int)(vramBudget / kvBytesPerToken);
+            gpuCtxSize = Math.Clamp(gpuCtxSize, 512, autoCtxCap);
+        }
+        else
+        {
+            gpuCtxSize = Math.Min(2048, autoCtxCap);
+        }
+
+        long gpuKvBytes;
+        if (gpuLayers == 0)
+        {
+            gpuKvBytes = 0;
+        }
+        else if (turboQuant)
+        {
+            int fp32Window = Math.Min(tqFp32Window, gpuCtxSize);
+            int tqBlockSize = TurboQuantOps.BlockSize(tqBits, headDim);
+            long fp32WindowBytes = 2L * gpuLayers * facts.NumKvHeads * headDim * sizeof(float) * fp32Window;
+            long tqBytesPerToken = 2L * gpuLayers * facts.NumKvHeads * tqBlockSize;
+            long tqPositions = Math.Max(0, gpuCtxSize - fp32Window);
+            gpuKvBytes = fp32WindowBytes + tqBytesPerToken * tqPositions;
+        }
+        else
+        {
+            long kvBytesPerToken = 2L * gpuLayers * DTypeInfo.ByteSize((long)facts.NumKvHeads * headDim, kvDtype);
+            gpuKvBytes = kvBytesPerToken * gpuCtxSize;
+        }
+
+        long expertCacheBudget = facts.IsMoE ? Math.Max(0, vramBudget - gpuKvBytes) : 0;
+        long moeRoutedExpertBytes = facts.MoeRoutedExpertGpuBytes;
+
+        long cpuWeightBytes = 0;
+        for (int i = gpuLayers; i < facts.NumLayers; i++)
+            cpuWeightBytes += facts.PerLayerCpuWeightBytes.Length > i ? facts.PerLayerCpuWeightBytes[i] : 0;
+
+        return new LayerPlacement(
+            gpuLayers,
+            facts.NumLayers - gpuLayers,
+            gpuWeightBytes,
+            gpuKvBytes,
+            gpuCtxSize,
+            expertCacheBudget,
+            moeRoutedExpertBytes,
+            cpuWeightBytes);
+    }
+
     /// <summary>
     /// Compute optimal layer placement for a given model and hardware profile.
     /// </summary>
