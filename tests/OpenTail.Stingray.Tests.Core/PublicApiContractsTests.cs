@@ -22,9 +22,6 @@ public class PublicApiContractsTests
         Assert.True(p.UseMemoryMap);
         Assert.False(p.UseMemoryLock);
         Assert.False(p.AllowUnverifiedArch);
-        Assert.Null(p.DraftModelPath);
-        Assert.False(p.DraftLookup);
-        Assert.Null(p.DSparkModelPath);
     }
 
     [Fact]
@@ -40,7 +37,6 @@ public class PublicApiContractsTests
         Assert.Null(p.TurboQuantHeadDim);
         Assert.Null(p.RopeFrequencyBase);
         Assert.Null(p.RopeFrequencyScale);
-        Assert.False(p.Embeddings);
     }
 
     [Fact]
@@ -636,7 +632,7 @@ public class PublicApiContractsTests
         var task1 = Task.Run(async () =>
         {
             var sb = new System.Text.StringBuilder();
-            await foreach (var piece in executor.InferAsync("The capital of France is", new InferenceParams { MaxTokens = 4, Temperature = 0.0f }))
+            await foreach (var piece in executor.InferAsync("The capital of France is", new InferenceParams { MaxTokens = 8, Temperature = 0.0f }))
             {
                 sb.Append(piece);
             }
@@ -646,7 +642,7 @@ public class PublicApiContractsTests
         var task2 = Task.Run(async () =>
         {
             var sb = new System.Text.StringBuilder();
-            await foreach (var piece in executor.InferAsync("The capital of Germany is", new InferenceParams { MaxTokens = 4, Temperature = 0.0f }))
+            await foreach (var piece in executor.InferAsync("The capital of Germany is", new InferenceParams { MaxTokens = 8, Temperature = 0.0f }))
             {
                 sb.Append(piece);
             }
@@ -658,6 +654,14 @@ public class PublicApiContractsTests
         Assert.False(string.IsNullOrWhiteSpace(results[1]));
         Assert.Contains("Paris", results[0]);
         Assert.Contains("Berlin", results[1]);
+
+        var obs = Assert.IsAssignableFrom<IContinuousBatchingObservability>(ctx.Engine);
+        long totalSteps = obs.BatchedArgmaxSteps + obs.BatchedFullLogitsSteps;
+        long totalSeqs = obs.BatchedArgmaxSequences + obs.BatchedFullLogitsSequences;
+        Assert.True(totalSteps > 0, $"Expected batched decode steps > 0, got {totalSteps}");
+        Assert.True(totalSeqs >= 2, $"Expected batched sequence steps >= 2, got {totalSeqs}");
+        Assert.True(totalSeqs > totalSteps,
+            $"Expected at least one multi-sequence combined batch step (totalSeqs {totalSeqs} > totalSteps {totalSteps})");
     }
 
     [Fact]

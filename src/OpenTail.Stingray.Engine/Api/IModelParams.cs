@@ -34,15 +34,6 @@ public interface IModelParams
 
     /// <summary>Whether to allow loading architectures marked as experimental or unverified.</summary>
     bool AllowUnverifiedArch { get; }
-
-    /// <summary>Optional secondary draft model path for speculative decoding.</summary>
-    string? DraftModelPath { get; }
-
-    /// <summary>Whether to enable prompt lookup self-speculative decoding.</summary>
-    bool DraftLookup { get; }
-
-    /// <summary>Optional secondary DSpark draft model path.</summary>
-    string? DSparkModelPath { get; }
 }
 
 /// <summary>
@@ -73,13 +64,4 @@ public record ModelParams(string ModelPath) : IModelParams
 
     /// <summary>Whether to allow loading architectures marked as experimental or unverified.</summary>
     public bool AllowUnverifiedArch { get; init; } = false;
-
-    /// <summary>Optional secondary draft model path for speculative decoding.</summary>
-    public string? DraftModelPath { get; init; }
-
-    /// <summary>Whether to enable prompt lookup self-speculative decoding.</summary>
-    public bool DraftLookup { get; init; } = false;
-
-    /// <summary>Optional secondary DSpark draft model path.</summary>
-    public string? DSparkModelPath { get; init; }
 }

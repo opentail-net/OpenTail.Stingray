@@ -130,8 +130,7 @@ public sealed class Model : IModel
             TurboQuantMode = contextParams.TurboQuantMode,
             TurboQuantHeadDim = contextParams.TurboQuantHeadDim,
             RopeFrequencyBase = contextParams.RopeFrequencyBase,
-            RopeFrequencyScale = contextParams.RopeFrequencyScale,
-            Embeddings = contextParams.Embeddings
+            RopeFrequencyScale = contextParams.RopeFrequencyScale
         } : new ContextParams());
 
         var context = new ModelContext(this, concreteParams);

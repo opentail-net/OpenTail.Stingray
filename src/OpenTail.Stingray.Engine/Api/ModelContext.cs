@@ -94,6 +94,13 @@ public sealed class ModelContext : IModelContext
 
     private IInferenceEngine CreateDefaultEngine()
     {
+        var (fwd, _, owned) = BuildForwardPass(isContinuousBatching: false);
+        var (thinkTokenId, endThinkTokenId) = _tokenizer.ReasoningTokens;
+        return new InferenceEngine(fwd, _tokenizer, _model.Architecture, thinkTokenId, endThinkTokenId, owned: [.. owned]);
+    }
+
+    private (IForwardPass Fwd, ForwardPassKind Kind, List<IDisposable> Owned) BuildForwardPass(bool isContinuousBatching)
+    {
         var owned = new List<IDisposable>();
         var hp = _model.Hyperparams;
         if (_params.RopeFrequencyBase is { } rfb and > 0)
@@ -147,8 +154,6 @@ public sealed class ModelContext : IModelContext
             && _model.Gguf.FindTensor("blk.0.attn_q_a.weight") is null;
 
         bool isSafeTensorsGpu = !isGguf && (nGpuLayers != 0 && backendStr != "cpu");
-        bool isSafeTensorsDraft = !isGguf && (_model.Parameters.DraftModelPath is not null || _model.Parameters.DraftLookup);
-        bool isSafeTensorsDSpark = !isGguf && _model.Parameters.DSparkModelPath is not null;
 
         int plannedGpuLayers = hp.NumLayers;
         if (nGpuLayers != 0 && backend != ForwardPassBackend.Cpu && isGguf)
@@ -174,6 +179,8 @@ public sealed class ModelContext : IModelContext
             }
         }
 
+        int headDim = _params.TurboQuantHeadDim is { } tqHd and > 0 ? tqHd : hp.HeadDim;
+
         var request = new ForwardPassRequest
         {
             Frontend = ForwardPassFrontend.Cli,
@@ -182,8 +189,6 @@ public sealed class ModelContext : IModelContext
             IsSafeTensors = !isGguf,
             PackageSupported = true,
             IsSafeTensorsGpuRequested = isSafeTensorsGpu,
-            IsSafeTensorsDraftRequested = isSafeTensorsDraft,
-            IsSafeTensorsDSparkRequested = isSafeTensorsDSpark,
             IsHybridSsm = hp.IsHybridSsm,
             HasHybridGdnLayers = hp.IsHybridSsm,
             HasCpuHybridGdnPass = hp.IsHybridSsm,
@@ -205,12 +210,8 @@ public sealed class ModelContext : IModelContext
             HasLayerHeadDim = hp.LayerHeadDim is not null,
             TurboQuant = turboQuant,
             TurboQuantMode = tqMode,
-            HeadDim = hp.HeadDim,
-            HasDraftModel = _model.Parameters.DraftModelPath is not null,
-            DraftLookup = _model.Parameters.DraftLookup,
-            DraftModelPath = _model.Parameters.DraftModelPath,
-            HasDSparkModel = _model.Parameters.DSparkModelPath is not null,
-            DsParkRequested = _model.Parameters.DSparkModelPath is not null,
+            HeadDim = headDim,
+            IsContinuousBatching = isContinuousBatching,
             KVarNSnapKvBlocked = snapKvEnabled,
             KVarNCudaMoeBlocked = hp.IsMoE,
             KVarNPartialCudaBlocked = nGpuLayers > 0 && nGpuLayers < hp.NumLayers,
@@ -237,9 +238,9 @@ public sealed class ModelContext : IModelContext
                 return tqModeIsAuto ? TqQuantizer.KVarN : (tqMode.Equals("kvarn", StringComparison.OrdinalIgnoreCase) ? TqQuantizer.KVarN : TqQuantizer.LloydMax);
             if (!tqModeIsAuto && tqMode.Equals("kvarn", StringComparison.OrdinalIgnoreCase))
                 throw new InvalidOperationException($"TqMode=kvarn is not supported on this path: {kvarnBlocked}.");
-            if (!TqSupport.IsLloydMaxHeadDim(hp.HeadDim))
+            if (!TqSupport.IsLloydMaxHeadDim(headDim))
                 throw new InvalidOperationException(
-                    $"TurboQuant with head dim {hp.HeadDim} requires KVarN ({kvarnBlocked}), but Lloyd-Max — the " +
+                    $"TurboQuant with head dim {headDim} requires KVarN ({kvarnBlocked}), but Lloyd-Max — the " +
                     "only codec available on this path — ships codebooks for head dim 128/256 only. " +
                     "Use nGpuLayers=0 for the CPU KVarN path.");
             return TqQuantizer.LloydMax;
@@ -304,7 +305,7 @@ public sealed class ModelContext : IModelContext
                 var cfwd = new CudaForwardPass(_model.Gguf, cuda, hp, ContextSize,
                     enableTurboQuant: turboQuant,
                     tqQuantizer: ResolveTq(hp.IsMoE ? TqSupport.CudaMoeReason
-                        : !TqSupport.IsKVarNCudaHeadDim(hp.HeadDim) ? TqSupport.CudaHeadDimReason(hp.HeadDim)
+                        : !TqSupport.IsKVarNCudaHeadDim(headDim) ? TqSupport.CudaHeadDimReason(headDim)
                         : null));
                 owned.Add(cfwd);
                 fwd = cfwd;
@@ -342,6 +343,10 @@ public sealed class ModelContext : IModelContext
                 _ = ResolveTq(TqSupport.VulkanReason);
                 var gfwd = new GpuForwardPass(_model.Gguf, vk, hp, ContextSize, enableTurboQuant: turboQuant,
                     kvDtype: CudaForwardPass.ResolveConfiguredKvDType());
+                if (!_params.FlashAttention)
+                {
+                    gfwd.DisableFlashAttention = true;
+                }
                 owned.Add(gfwd);
                 fwd = gfwd;
                 break;
@@ -387,8 +392,7 @@ public sealed class ModelContext : IModelContext
                 throw new InvalidOperationException($"Unhandled forward pass kind: {decision.Kind}");
         }
 
-        var (thinkTokenId, endThinkTokenId) = _tokenizer.ReasoningTokens;
-        return new InferenceEngine(fwd, _tokenizer, _model.Architecture, thinkTokenId, endThinkTokenId, owned: [.. owned]);
+        return (fwd, decision.Kind!.Value, owned);
     }
 
     /// <summary>
@@ -399,37 +403,31 @@ public sealed class ModelContext : IModelContext
         ThrowIfDisposed();
         int batchSize = maxBatchSize ?? (_params.BatchSize > 0 ? (int)_params.BatchSize : 8);
         var hp = _model.Hyperparams;
-        if (_params.RopeFrequencyBase is { } rfb and > 0)
-        {
-            hp = hp with { RopeTheta = rfb };
-        }
-        if (_params.RopeFrequencyScale is { } rfs and > 0)
-        {
-            hp = hp with { RopeTheta = hp.RopeTheta / rfs };
-        }
+        var (fwd, kind, owned) = BuildForwardPass(isContinuousBatching: true);
 
-        if (_params.ThreadCount > 0)
+        bool batchOk = false;
+        if (fwd is IBatchedForwardPass)
         {
-            SimdKernels.CpuThreads = (int)_params.ThreadCount;
-        }
-
-        bool turboQuant = !string.IsNullOrWhiteSpace(_params.TurboQuantMode);
-        bool batchOk = !hp.IsMoE && !turboQuant && hp.LayerHeadDim is null
-            && !hp.AttentionOutputGate && !hp.InputEmbeddingRmsNorm;
-
-        if (!batchOk)
-        {
-            throw new NotSupportedException($"The architecture '{_model.Architecture}' or configuration does not support continuous batching.");
+            if (kind is ForwardPassKind.CpuDense or ForwardPassKind.SafeTensorsCpu)
+            {
+                bool turboQuant = !string.IsNullOrWhiteSpace(_params.TurboQuantMode);
+                batchOk = !hp.IsMoE && !turboQuant && hp.LayerHeadDim is null
+                    && !hp.AttentionOutputGate && !hp.InputEmbeddingRmsNorm;
+            }
+            else if (kind == ForwardPassKind.CudaDense && fwd is CudaForwardPass cfwd)
+            {
+                batchOk = cfwd.SupportsContinuousBatching;
+            }
         }
 
-        var owned = new List<IDisposable>();
-        var cpuBackend = new CpuBackend();
-        owned.Add(cpuBackend);
+        if (!batchOk || fwd is not IBatchedForwardPass batchPass)
+        {
+            foreach (var d in owned) d.Dispose();
+            throw new NotSupportedException($"The architecture '{_model.Architecture}' with forward pass '{kind}' does not support continuous batching.");
+        }
 
-        var fwd = new ForwardPass(_model.TensorSource, cpuBackend, hp, maxContextLength: ContextSize);
-        owned.Add(fwd);
         var (thinkTokenId, endThinkTokenId) = _tokenizer.ReasoningTokens;
-        return new ContinuousBatchingEngine(fwd, _tokenizer, _model.Architecture, batchSize, thinkTokenId, endThinkTokenId);
+        return new ContinuousBatchingEngine(batchPass, _tokenizer, _model.Architecture, batchSize, thinkTokenId, endThinkTokenId);
     }
 
     /// <summary>

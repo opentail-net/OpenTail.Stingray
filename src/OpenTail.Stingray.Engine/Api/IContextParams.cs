@@ -31,9 +31,6 @@ public interface IContextParams
 
     /// <summary>Optional RoPE frequency scale override.</summary>
     float? RopeFrequencyScale { get; }
-
-    /// <summary>Whether the context is created in embedding extraction mode rather than text generation.</summary>
-    bool Embeddings { get; }
 }
 
 /// <summary>
@@ -64,7 +61,4 @@ public record ContextParams : IContextParams
 
     /// <summary>Optional RoPE frequency scale override.</summary>
     public float? RopeFrequencyScale { get; init; }
-
-    /// <summary>Whether the context is created in embedding extraction mode rather than text generation.</summary>
-    public bool Embeddings { get; init; } = false;
 }
