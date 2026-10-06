@@ -127,7 +127,7 @@ public class PublicApiContractsTests
     [Fact]
     public void Model_Load_And_MultipleContexts_Lifecycle()
     {
-        var modelPath = Path.Combine("models", "_models", "all-MiniLM-L6-v2-Q8_0.gguf");
+        var modelPath = Path.Combine(RepoRoot, "models", "_models", "all-MiniLM-L6-v2-Q8_0.gguf");
         if (!File.Exists(modelPath)) return;
 
         using var model = Model.Load(modelPath);
@@ -155,7 +155,7 @@ public class PublicApiContractsTests
     [Fact]
     public void Model_Dispose_DisposesActiveChildContexts()
     {
-        var modelPath = Path.Combine("models", "_models", "all-MiniLM-L6-v2-Q8_0.gguf");
+        var modelPath = Path.Combine(RepoRoot, "models", "_models", "all-MiniLM-L6-v2-Q8_0.gguf");
         if (!File.Exists(modelPath)) return;
 
         var model = Model.Load(modelPath);
@@ -170,7 +170,7 @@ public class PublicApiContractsTests
     [Fact]
     public async Task InteractiveExecutor_DualStreaming_And_PrefixHistory()
     {
-        var modelPath = Path.Combine("models", "_models", "all-MiniLM-L6-v2-Q8_0.gguf");
+        var modelPath = Path.Combine(RepoRoot, "models", "_models", "all-MiniLM-L6-v2-Q8_0.gguf");
         if (!File.Exists(modelPath)) return;
 
         using var model = Model.Load(modelPath);
@@ -210,7 +210,7 @@ public class PublicApiContractsTests
     [Fact]
     public async Task StatelessExecutor_ResetsContext_And_DoesNotPassPrefix()
     {
-        var modelPath = Path.Combine("models", "_models", "all-MiniLM-L6-v2-Q8_0.gguf");
+        var modelPath = Path.Combine(RepoRoot, "models", "_models", "all-MiniLM-L6-v2-Q8_0.gguf");
         if (!File.Exists(modelPath)) return;
 
         using var model = Model.Load(modelPath);
@@ -231,7 +231,7 @@ public class PublicApiContractsTests
     [Fact]
     public async Task BatchedExecutor_DelegatesToEngine()
     {
-        var modelPath = Path.Combine("models", "_models", "all-MiniLM-L6-v2-Q8_0.gguf");
+        var modelPath = Path.Combine(RepoRoot, "models", "_models", "all-MiniLM-L6-v2-Q8_0.gguf");
         if (!File.Exists(modelPath)) return;
 
         using var model = Model.Load(modelPath);
@@ -302,7 +302,7 @@ public class PublicApiContractsTests
     [Fact]
     public async Task ChatSession_DualStreaming_And_MultiTurnHistoryTracking()
     {
-        var modelPath = Path.Combine("models", "_models", "all-MiniLM-L6-v2-Q8_0.gguf");
+        var modelPath = Path.Combine(RepoRoot, "models", "_models", "all-MiniLM-L6-v2-Q8_0.gguf");
         if (!File.Exists(modelPath)) return;
 
         using var model = Model.Load(modelPath);
@@ -353,7 +353,7 @@ public class PublicApiContractsTests
     [Fact]
     public void ChatSession_DefaultChatMLFormat_FormatsCorrectly()
     {
-        var modelPath = Path.Combine("models", "_models", "all-MiniLM-L6-v2-Q8_0.gguf");
+        var modelPath = Path.Combine(RepoRoot, "models", "_models", "all-MiniLM-L6-v2-Q8_0.gguf");
         if (!File.Exists(modelPath)) return;
 
         using var model = Model.Load(modelPath);
@@ -373,7 +373,7 @@ public class PublicApiContractsTests
     [Fact]
     public void ChatSession_CustomPromptFormatter_OverridesDefault()
     {
-        var modelPath = Path.Combine("models", "_models", "all-MiniLM-L6-v2-Q8_0.gguf");
+        var modelPath = Path.Combine(RepoRoot, "models", "_models", "all-MiniLM-L6-v2-Q8_0.gguf");
         if (!File.Exists(modelPath)) return;
 
         using var model = Model.Load(modelPath);
@@ -400,7 +400,7 @@ public class PublicApiContractsTests
         // 4. ChatSession
         // 5. Dual-stream chat: string streaming and typed chunk streaming
 
-        var modelPath = Path.Combine("models", "_models", "all-MiniLM-L6-v2-Q8_0.gguf");
+        var modelPath = Path.Combine(RepoRoot, "models", "_models", "all-MiniLM-L6-v2-Q8_0.gguf");
         if (!File.Exists(modelPath)) return;
 
         var modelParams = new ModelParams(modelPath)
@@ -451,6 +451,48 @@ public class PublicApiContractsTests
         Assert.Contains(chunks, c => c.Kind == GenerateChunkKind.Thinking);
         Assert.Contains(chunks, c => c.Kind == GenerateChunkKind.Text);
         Assert.Contains(chunks, c => c.Kind == GenerateChunkKind.Usage);
+    }
+
+    private static readonly string RepoRoot = FindRepoRoot();
+
+    private static string FindRepoRoot()
+    {
+        string? root = AppContext.BaseDirectory;
+        while (root is not null && !File.Exists(Path.Combine(root, "CLAUDE.md")))
+            root = Path.GetDirectoryName(root);
+        return root ?? Directory.GetCurrentDirectory();
+    }
+
+    // Real-weights check (silently no-ops without the checkpoint; a genuine run takes seconds).
+    // Expected text is the CPU greedy baseline in docs/2-coverage/2026-10-05-forward-pass-selection-matrix.md.
+    [Fact]
+    public async Task ChatSession_RealSmolLM2_GreedyMatchesCliBaseline_AndStatefulTurns()
+    {
+        var modelPath = Path.Combine(RepoRoot, "models", "_models", "SmolLM2-135M-Instruct-Q4_K_M.gguf");
+        if (!File.Exists(modelPath)) return;
+
+        using var model = Model.Load(modelPath);
+        using var ctx = (ModelContext)model.CreateContext(new ContextParams { ContextSize = 512 });
+        var session = new ChatSession(new InteractiveExecutor(ctx));
+        var inf = new InferenceParams { MaxTokens = 24, Temperature = 0f };
+
+        var sb = new System.Text.StringBuilder();
+        await foreach (var piece in session.ChatAsync("Write a short story: Once upon a time", inf))
+        {
+            sb.Append(piece);
+        }
+
+        Assert.StartsWith("Once upon a time, there lived a young girl named Lily.", sb.ToString());
+        Assert.Equal(2, session.History.Count);
+        Assert.Equal(sb.ToString(), session.History[1].Content);
+
+        var turn2 = new System.Text.StringBuilder();
+        await foreach (var piece in session.ChatAsync("Continue.", new InferenceParams { MaxTokens = 8, Temperature = 0f }))
+        {
+            turn2.Append(piece);
+        }
+        Assert.False(string.IsNullOrWhiteSpace(turn2.ToString()));
+        Assert.Equal(4, session.History.Count);
     }
 
     private sealed class FakeInferenceEngine : IInferenceEngine

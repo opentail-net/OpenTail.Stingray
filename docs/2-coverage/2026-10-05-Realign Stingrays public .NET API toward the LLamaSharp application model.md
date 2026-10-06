@@ -537,7 +537,7 @@ At minimum:
   ```
   within one page.
 
-- [x] Include a "Coming from LLamaSharp" document:
+- [x] Include a "Coming from LLamaSharp" document ([docs/3-product-and-runtime/coming-from-llamasharp.md](../3-product-and-runtime/coming-from-llamasharp.md)):
   ```text
   LLamaSharp concept
   → Stingray concept
@@ -581,3 +581,11 @@ Do not stop after renaming classes.
 Do not create a facade and declare success.
 
 The desired result is for the **actual Stingray public API** to have a coherent model/context/executor/session design that a .NET developer familiar with LLamaSharp immediately understands, while still making sense for non-LLaMA model families and Stingray's broader AI scope.
+
+---
+
+## Closure notes (2026-10-06)
+
+- Real-weights verification: the earlier `PublicApiContractsTests` resolved `models/...` relative to the working directory and silently no-opped (0.14 s for 17 tests; a deliberately wrong assertion still passed). Paths now anchor on the repo root. Re-run: 18 tests, 2.5 s, weights loaded; new `ChatSession_RealSmolLM2_GreedyMatchesCliBaseline_AndStatefulTurns` matches the CPU greedy baseline in `2026-10-05-forward-pass-selection-matrix.md` and checks a second stateful turn.
+- Still fake-engine only: executor/session behaviour tests (typed chunks, stateless, batched) use `FakeInferenceEngine` over a real MiniLM `Model`; real-engine coverage is the single SmolLM2 test above.
+- Old engine types (`InferenceEngine`, `ContinuousBatchingEngine`, `SamplingParams`) are intentionally retained as the layer under the new API; see `coming-from-llamasharp.md`.
