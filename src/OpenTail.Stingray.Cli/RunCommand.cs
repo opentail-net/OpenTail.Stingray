@@ -873,15 +873,25 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         // turn an oversized prompt into an unsafe undersized-scratch prefill.
         ctxSize = settings.CtxSize > 0 ? settings.CtxSize
             : settings.Auto && resolvedPlan is not null ? resolvedPlan.ContextSize : 0;
-        cpuBackend = new CpuBackend();
-        fwd = new ForwardPass(stTensorSource, cpuBackend, hp, maxContextLength: ctxSize);
-
         // Populate shared state the decode loop reads (mirrors the GGUF path below).
         s_arch = stTensorSource.Metadata.TryGetValue("general.architecture", out var stArchVal)
             ? (string)stArchVal : "llama";
         s_jinja = tokenizer.ChatTemplate;
         s_hasLlama3Headers = tokenizer.SpecialTokens.ContainsKey("<|start_header_id|>");
         (s_thinkTokenId, s_endThinkTokenId) = tokenizer.ReasoningTokens;
+
+        cpuBackend = new CpuBackend();
+        var stLoadCtx = new ArchitectureLoadContext
+        {
+            Probe = new ArchitectureProbe { Architecture = s_arch, TensorSource = stTensorSource, Hyperparams = hp, IsGguf = false },
+            Decision = packageSelection,
+            Backend = ForwardPassBackend.Cpu,
+            ContextSize = ctxSize,
+            GpuLayers = 0,
+            CpuBackend = cpuBackend,
+        };
+        var stDesc = ArchitectureRegistry.Find(s_arch);
+        fwd = (ForwardPass)(stDesc != null ? stDesc.ConstructForwardPass(stLoadCtx) : CommonForwardPassFactory.CreateDense(stLoadCtx));
 
         if (settings.Thinking && settings.NoThinking)
             AnsiConsole.MarkupLine("[yellow]Warning:[/] both --thinking and --no-thinking given; --no-thinking wins.");
@@ -1573,8 +1583,8 @@ public sealed class RunCommand : Command<RunCommand.Settings>
                         RecommendedCtxSize: ctxSize > 0 ? ctxSize : Math.Min(hp.ContextLength, 4096));
                     var loadCtx = CreateLoadContext(model, hp, s_arch, hybridGpuSelection,
                         ForwardPassBackend.Cuda, ctxSize, hp.NumLayers, placement, cudaBackend: cuda);
-                    var desc = ArchitectureRegistry.Find(s_arch)!;
-                    var chgdn = (CudaHybridGdnForwardPass)desc.CreateForwardPass!(loadCtx);
+                    var desc = ArchitectureRegistry.Find(s_arch);
+                    var chgdn = (CudaHybridGdnForwardPass)(desc != null ? desc.ConstructForwardPass(loadCtx) : CommonForwardPassFactory.CreateHybridGdn(loadCtx));
                     gpuFwd = chgdn;
                     if (chgdn.HasMtpHead) mtpFwd = chgdn;
                     forward = chgdn.Forward;
@@ -1708,7 +1718,10 @@ public sealed class RunCommand : Command<RunCommand.Settings>
                         requestedCtxSize: ctxSize, kvDtype: CudaForwardPass.ResolveConfiguredKvDType(),
                         pinGpuLayers: cudaGpuLayers);
 
-                    var chfwd = new CudaHybridForwardPass(model, cuda, hp, placement, settings.TurboQuant);
+                    var desc = ArchitectureRegistry.Find(s_arch);
+                    var loadCtx = CreateLoadContext(model, hp, s_arch, cudaSelection, ForwardPassBackend.Cuda,
+                        ctxSize, cudaGpuLayers, placement, turboQuant: settings.TurboQuant, tqQuantizer: tqQuantizer, cudaBackend: cuda);
+                    var chfwd = (CudaHybridForwardPass)(desc != null ? desc.ConstructForwardPass(loadCtx) : CommonForwardPassFactory.CreateDense(loadCtx));
                     gpuFwd = chfwd;
                     forward = chfwd.Forward;
                     prefill = tokens => chfwd.Prefill(tokens);
@@ -1736,8 +1749,10 @@ public sealed class RunCommand : Command<RunCommand.Settings>
                 }
                 else
                 {
-                    var cfwd = new CudaForwardPass(model, cuda, hp, ctxSize,
-                        enableTurboQuant: settings.TurboQuant, tqQuantizer: tqQuantizer);
+                    var desc = ArchitectureRegistry.Find(s_arch);
+                    var loadCtx = CreateLoadContext(model, hp, s_arch, cudaSelection, ForwardPassBackend.Cuda,
+                        ctxSize, cudaGpuLayers, null, turboQuant: settings.TurboQuant, tqQuantizer: tqQuantizer, cudaBackend: cuda);
+                    var cfwd = (CudaForwardPass)(desc != null ? desc.ConstructForwardPass(loadCtx) : CommonForwardPassFactory.CreateDense(loadCtx));
                     if (settings.TurboQuant)
                         AnsiConsole.MarkupLine(tqQuantizer == TqQuantizer.KVarN
                             ? $"[dim]TurboQuant: [green]enabled[/] (KVarN K4V2, window=256, context: {cfwd.MaxSeqLen})[/]"
@@ -1786,8 +1801,8 @@ public sealed class RunCommand : Command<RunCommand.Settings>
                         RecommendedCtxSize: ctxSize > 0 ? ctxSize : Math.Min(hp.ContextLength, 4096));
                     var loadCtx = CreateLoadContext(model, hp, s_arch, hybridGdnSelection,
                         ForwardPassBackend.Vulkan, ctxSize, hp.NumLayers, placement, vulkanBackend: gpu);
-                    var desc = ArchitectureRegistry.Find(s_arch)!;
-                    var vhgdn = (VulkanHybridGdnForwardPass)desc.CreateForwardPass!(loadCtx);
+                    var desc = ArchitectureRegistry.Find(s_arch);
+                    var vhgdn = (VulkanHybridGdnForwardPass)(desc != null ? desc.ConstructForwardPass(loadCtx) : CommonForwardPassFactory.CreateHybridGdn(loadCtx));
                     gpuFwd = vhgdn;
                     // #357 PR4: the Vulkan GDN hybrid now ships an MTP/NEXTN head (HasMtpHead +
                     // SupportsBatchVerify), so admit it into the MtpDecoder path exactly like the
@@ -1877,9 +1892,10 @@ public sealed class RunCommand : Command<RunCommand.Settings>
                     // All layers on GPU. Pass the configured KV dtype (issues #311 / #325): fp32
                     // default, bf16 = half-width KV, q8_0 = block-quantized (~quarter) KV. Reuses
                     // the same --kv-type/STINGRAY_KV_DTYPE parser the CUDA path uses.
-                    var gfwd = new GpuForwardPass(model, gpu, hp, ctxSize,
-                        enableTurboQuant: settings.TurboQuant,
-                        kvDtype: CudaForwardPass.ResolveConfiguredKvDTypeOrNull());
+                    var desc = ArchitectureRegistry.Find(s_arch);
+                    var loadCtx = CreateLoadContext(model, hp, s_arch, vulkanSelection, ForwardPassBackend.Vulkan,
+                        ctxSize, nGpuLayers, null, turboQuant: settings.TurboQuant, tqQuantizer: tqQuantizer, vulkanBackend: gpu);
+                    var gfwd = (GpuForwardPass)(desc != null ? desc.ConstructForwardPass(loadCtx) : CommonForwardPassFactory.CreateDense(loadCtx));
                     if (settings.TurboQuant)
                         AnsiConsole.MarkupLine($"[dim]TurboQuant: [green]enabled[/] (3-bit, context: {gfwd.MaxSeqLen})[/]");
                     gpuFwd = gfwd;
@@ -1897,7 +1913,10 @@ public sealed class RunCommand : Command<RunCommand.Settings>
                     int split = Math.Min(nGpuLayers, maxSplit);
                     if (split < nGpuLayers)
                         AnsiConsole.MarkupLine($"[yellow]Note:[/] this model splits at most {maxSplit} layers onto the GPU; using -g {split}.");
-                    var sfwd = new VulkanLayerSplitForwardPass(model, gpu, hp, split, ctxSize);
+                    var desc = ArchitectureRegistry.Find(s_arch);
+                    var loadCtx = CreateLoadContext(model, hp, s_arch, vulkanSelection, ForwardPassBackend.Vulkan,
+                        ctxSize, split, null, turboQuant: settings.TurboQuant, tqQuantizer: tqQuantizer, vulkanBackend: gpu);
+                    var sfwd = (VulkanLayerSplitForwardPass)(desc != null ? desc.ConstructForwardPass(loadCtx) : CommonForwardPassFactory.CreateDense(loadCtx));
                     gpuFwd = sfwd;
                     forward = sfwd.Forward;
                     prefill = tokens => sfwd.Prefill(tokens);
@@ -1911,7 +1930,10 @@ public sealed class RunCommand : Command<RunCommand.Settings>
                     var placement = TierPlanner.Plan(model, hp, hwProfile, settings.TurboQuant,
                         requestedCtxSize: ctxSize, pinGpuLayers: nGpuLayers);
 
-                    var hfwd = new HybridForwardPass(model, gpu, hp, placement, settings.TurboQuant);
+                    var desc = ArchitectureRegistry.Find(s_arch);
+                    var loadCtx = CreateLoadContext(model, hp, s_arch, vulkanSelection, ForwardPassBackend.Vulkan,
+                        ctxSize, nGpuLayers, placement, turboQuant: settings.TurboQuant, tqQuantizer: tqQuantizer, vulkanBackend: gpu);
+                    var hfwd = (HybridForwardPass)(desc != null ? desc.ConstructForwardPass(loadCtx) : CommonForwardPassFactory.CreateDense(loadCtx));
                     gpuFwd = hfwd;
                     forward = hfwd.Forward;
                     prefill = tokens => hfwd.Prefill(tokens);
@@ -2173,8 +2195,8 @@ public sealed class RunCommand : Command<RunCommand.Settings>
             gpuBackend = vk;
             var loadCtx = CreateLoadContext(model, hp, s_arch, architectureSelection,
                 ForwardPassBackend.Vulkan, ctxSize, effNGpuLayers, vulkanBackend: vk);
-            var desc = ArchitectureRegistry.Find(s_arch)!;
-            gpuFwd = (IDisposable)desc.CreateForwardPass!(loadCtx);
+            var desc = ArchitectureRegistry.Find(s_arch);
+            gpuFwd = (IDisposable)(desc != null ? desc.ConstructForwardPass(loadCtx) : CommonForwardPassFactory.CreateDense(loadCtx));
             effNGpuLayers = 0;
         }
 
@@ -2209,8 +2231,8 @@ public sealed class RunCommand : Command<RunCommand.Settings>
             effNGpuLayers = 0;
             var loadCtx = CreateLoadContext(model, hp, s_arch, architectureSelection,
                 ForwardPassBackend.Cpu, ctxSize, 0);
-            var desc = ArchitectureRegistry.Find(s_arch)!;
-            standaloneFwd = desc.CreateForwardPass!(loadCtx);
+            var desc = ArchitectureRegistry.Find(s_arch);
+            standaloneFwd = desc != null ? desc.ConstructForwardPass(loadCtx) : CommonForwardPassFactory.CreateDense(loadCtx);
         }
         else if (ArchitectureRegistry.Find(s_arch)?.ForwardPassFamily == ForwardPassFamily.GptOss)
         {
@@ -2228,24 +2250,24 @@ public sealed class RunCommand : Command<RunCommand.Settings>
                 gpuBackend = vk;
                 var loadCtx = CreateLoadContext(model, hp, s_arch, architectureSelection,
                     ForwardPassBackend.Vulkan, ctxSize, effNGpuLayers, vulkanBackend: vk);
-                var desc = ArchitectureRegistry.Find(s_arch)!;
-                gpuFwd = (IDisposable)desc.CreateForwardPass!(loadCtx);
+                var desc = ArchitectureRegistry.Find(s_arch);
+                gpuFwd = (IDisposable)(desc != null ? desc.ConstructForwardPass(loadCtx) : CommonForwardPassFactory.CreateDense(loadCtx));
                 effNGpuLayers = 0;
             }
             else
             {
                 var loadCtx = CreateLoadContext(model, hp, s_arch, architectureSelection,
                     ForwardPassBackend.Cpu, ctxSize, 0);
-                var desc = ArchitectureRegistry.Find(s_arch)!;
-                standaloneFwd = desc.CreateForwardPass!(loadCtx);
+                var desc = ArchitectureRegistry.Find(s_arch);
+                standaloneFwd = desc != null ? desc.ConstructForwardPass(loadCtx) : CommonForwardPassFactory.CreateDense(loadCtx);
             }
         }
         else if (architectureSelection.Kind == ForwardPassKind.CpuHybridGdn && effNGpuLayers == 0)
         {
             var loadCtx = CreateLoadContext(model, hp, s_arch, architectureSelection,
                 ForwardPassBackend.Cpu, ctxSize, 0, cpuBackend: cpuBackend);
-            var desc = ArchitectureRegistry.Find(s_arch)!;
-            hybridFwd = (HybridGdnForwardPass)desc.CreateForwardPass!(loadCtx);
+            var desc = ArchitectureRegistry.Find(s_arch);
+            hybridFwd = (HybridGdnForwardPass)(desc != null ? desc.ConstructForwardPass(loadCtx) : CommonForwardPassFactory.CreateHybridGdn(loadCtx));
             if (hybridFwd.HasMtpHead) mtpFwd = hybridFwd;
         }
         else if (architectureSelection.Kind != ForwardPassKind.DeepSeek2Vulkan && gpuFwd is null)
@@ -2257,8 +2279,11 @@ public sealed class RunCommand : Command<RunCommand.Settings>
                 : settings.PrefillDequantCacheMb == long.MinValue
                     ? long.MinValue // auto / STINGRAY_PREFILL_DEQUANT_MB
                     : ForwardPass.MbToBudgetBytes(settings.PrefillDequantCacheMb);
-            fwd = new ForwardPass(model, cpuBackend, hp, maxContextLength: ctxSize,
+            var loadCtx = CreateLoadContext(model, hp, s_arch, architectureSelection,
+                ForwardPassBackend.Cpu, ctxSize, 0, cpuBackend: cpuBackend,
                 prefillDequantCacheBytes: dequantBytes);
+            var desc = ArchitectureRegistry.Find(s_arch);
+            fwd = (ForwardPass)(desc != null ? desc.ConstructForwardPass(loadCtx) : CommonForwardPassFactory.CreateDense(loadCtx));
         }
 
 
@@ -2428,7 +2453,9 @@ public sealed class RunCommand : Command<RunCommand.Settings>
     private static ArchitectureLoadContext CreateLoadContext(
         GgufModel model, ModelHyperparams hp, string arch, ForwardPassDecision decision,
         ForwardPassBackend backend, int ctxSize, int gpuLayers = 0, LayerPlacement? placement = null,
-        CpuBackend? cpuBackend = null, CudaBackend? cudaBackend = null, VulkanBackend? vulkanBackend = null)
+        bool turboQuant = false, TqQuantizer tqQuantizer = TqQuantizer.LloydMax,
+        CpuBackend? cpuBackend = null, CudaBackend? cudaBackend = null, VulkanBackend? vulkanBackend = null,
+        long prefillDequantCacheBytes = 0)
     {
         return new ArchitectureLoadContext
         {
@@ -2445,9 +2472,15 @@ public sealed class RunCommand : Command<RunCommand.Settings>
             ContextSize = ctxSize,
             GpuLayers = gpuLayers,
             Placement = placement,
+            TurboQuant = turboQuant,
+            TqQuantizer = tqQuantizer,
+            HeadDim = hp.HeadDim,
+            FlashAttention = true,
+            KvDType = CudaForwardPass.ResolveConfiguredKvDType(),
             CpuBackend = cpuBackend,
             CudaBackend = cudaBackend,
             VulkanBackend = vulkanBackend,
+            PrefillDequantCacheBytes = prefillDequantCacheBytes,
         };
     }
 

@@ -10,6 +10,7 @@ internal static class QwenArchitectures
         Status = AdmissionStatus.Admitted,
         StatusExemption = "Covered by the generic 'LLM inference (GGUF)' row; the SafeTensors row is a separate loader path.",
         EvidenceDoc = "docs/STATUS.md",
+        CreateForwardPass = CommonForwardPassFactory.CreateDense,
     };
 
     // Shares the evidence comment and receipt for 'qwen'.
@@ -19,6 +20,7 @@ internal static class QwenArchitectures
         Status = AdmissionStatus.Admitted,
         StatusExemption = "Covered by the generic 'LLM inference (GGUF)' row; the SafeTensors row is a separate loader path.",
         EvidenceDoc = "docs/STATUS.md",
+        CreateForwardPass = CommonForwardPassFactory.CreateDense,
     };
 
     // Shares the evidence comment and receipt for 'qwen'.
@@ -28,6 +30,7 @@ internal static class QwenArchitectures
         Status = AdmissionStatus.Admitted,
         StatusAnchor = "Qwen2-MoE (`qwen2moe`",
         EvidenceDoc = "docs/STATUS.md",
+        CreateForwardPass = CommonForwardPassFactory.CreateDense,
     };
 
     // Shares the evidence comment and receipt for 'qwen'.
@@ -37,6 +40,7 @@ internal static class QwenArchitectures
         Status = AdmissionStatus.Admitted,
         StatusExemption = "Covered by the generic 'LLM inference (GGUF)' row; the SafeTensors row is a separate loader path.",
         EvidenceDoc = "docs/STATUS.md",
+        CreateForwardPass = CommonForwardPassFactory.CreateDense,
     };
 
     // Shares the evidence comment and receipt for 'qwen'.
@@ -46,6 +50,7 @@ internal static class QwenArchitectures
         Status = AdmissionStatus.Admitted,
         StatusExemption = "Covered by the generic 'LLM inference (GGUF)' row; STATUS.md does not have a separate Qwen3-MoE row.",
         EvidenceDoc = "docs/STATUS.md",
+        CreateForwardPass = CommonForwardPassFactory.CreateDense,
     };
 
     // qwen2vl -- admitted 2026-08-18 (docs/089) SCOPED TO TEXT-ONLY use (no image/video
@@ -61,6 +66,7 @@ internal static class QwenArchitectures
         Status = AdmissionStatus.Admitted,
         StatusExemption = "Admitted only for text-only decoding; the Qwen Image row concerns a separate diffusion text-conditioning path.",
         EvidenceDoc = "docs/STATUS.md",
+        CreateForwardPass = CommonForwardPassFactory.CreateDense,
     };
 
     // qwen35 — hybrid Gated-DeltaNet MoE + MTP path (docs/2-coverage/02-qwen35moe-plan.md). Ornith-1.0
@@ -82,6 +88,7 @@ internal static class QwenArchitectures
         Status = AdmissionStatus.Admitted,
         StatusAnchor = "Qwen3.5 / 3.6 / 3.8 hybrid Gated DeltaNet + MoE",
         EvidenceDoc = "docs/done/01-gguf-model-coverage-plan.md",
+        CreateForwardPass = CommonForwardPassFactory.CreateDense,
     };
 
     // Shares the evidence comment and receipt for 'qwen35'.
@@ -91,6 +98,7 @@ internal static class QwenArchitectures
         Status = AdmissionStatus.Admitted,
         StatusAnchor = "Qwen3.5 / 3.6 / 3.8 hybrid Gated DeltaNet + MoE",
         EvidenceDoc = "docs/done/01-gguf-model-coverage-plan.md",
+        CreateForwardPass = CommonForwardPassFactory.CreateDense,
     };
 
     // qwen3vl -- Qwen3-VL text decoder (llama.cpp src/models/qwen3vl.cpp): the qwen3 block with IMROPE (interleaved
@@ -106,5 +114,6 @@ internal static class QwenArchitectures
         Status = AdmissionStatus.Admitted,
         StatusAnchor = "Vision: Qwen3-VL",
         EvidenceDoc = "docs/STATUS.md",
+        CreateForwardPass = CommonForwardPassFactory.CreateDense,
     };
 }

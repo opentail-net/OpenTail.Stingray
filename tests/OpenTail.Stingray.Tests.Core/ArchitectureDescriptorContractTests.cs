@@ -24,6 +24,10 @@ public sealed class ArchitectureDescriptorContractTests
         foreach (var d in admitted)
         {
             Assert.NotNull(d.CreateForwardPass);
+            if (d.ForwardPassFamily != ForwardPassFamily.Dense)
+            {
+                Assert.NotEqual(CommonForwardPassFactory.CreateDense, d.CreateForwardPass);
+            }
         }
     }
 
@@ -133,11 +137,21 @@ public sealed class ArchitectureDescriptorContractTests
         var resolvedMistral = ArchitectureRegistry.Resolve(mistralProbe);
         Assert.Equal("mistral3", resolvedMistral.Id);
 
-        // 3. Metadata-free detection (no general.architecture, but token_embd and blk.0.attn_q tensors present)
+        // 3. Metadata-free detection (conservative: full Llama structural signature present)
         var metadataFreeSource = new TestProbeTensorSource(
             new Dictionary<string, object>(),
             new GgufTensorInfo("token_embd.weight", 2, [64, 128], DType.Float32, 0),
-            new GgufTensorInfo("blk.0.attn_q.weight", 2, [64, 64], DType.Float32, 0));
+            new GgufTensorInfo("output.weight", 2, [64, 128], DType.Float32, 0),
+            new GgufTensorInfo("output_norm.weight", 1, [128], DType.Float32, 0),
+            new GgufTensorInfo("blk.0.attn_q.weight", 2, [64, 64], DType.Float32, 0),
+            new GgufTensorInfo("blk.0.attn_k.weight", 2, [64, 64], DType.Float32, 0),
+            new GgufTensorInfo("blk.0.attn_v.weight", 2, [64, 64], DType.Float32, 0),
+            new GgufTensorInfo("blk.0.attn_output.weight", 2, [64, 64], DType.Float32, 0),
+            new GgufTensorInfo("blk.0.attn_norm.weight", 1, [64], DType.Float32, 0),
+            new GgufTensorInfo("blk.0.ffn_gate.weight", 2, [64, 128], DType.Float32, 0),
+            new GgufTensorInfo("blk.0.ffn_up.weight", 2, [64, 128], DType.Float32, 0),
+            new GgufTensorInfo("blk.0.ffn_down.weight", 2, [128, 64], DType.Float32, 0),
+            new GgufTensorInfo("blk.0.ffn_norm.weight", 1, [64], DType.Float32, 0));
         var metadataFreeProbe = new ArchitectureProbe
         {
             Path = "model.gguf",
@@ -147,6 +161,20 @@ public sealed class ArchitectureDescriptorContractTests
         };
         var resolvedMetadataFree = ArchitectureRegistry.Resolve(metadataFreeProbe);
         Assert.Equal("llama", resolvedMetadataFree.Id);
+
+        // 3b. Broad/generic transformer without full structural signature is NOT claimed as Llama
+        var genericTransformerSource = new TestProbeTensorSource(
+            new Dictionary<string, object>(),
+            new GgufTensorInfo("token_embd.weight", 2, [64, 128], DType.Float32, 0),
+            new GgufTensorInfo("blk.0.attn_q.weight", 2, [64, 64], DType.Float32, 0));
+        var genericTransformerProbe = new ArchitectureProbe
+        {
+            Path = "model.gguf",
+            Architecture = null,
+            TensorSource = genericTransformerSource,
+            Hyperparams = ModelHyperparams.FromGgufMetadata(genericTransformerSource.Metadata, genericTransformerSource),
+        };
+        Assert.Throws<NotSupportedException>(() => ArchitectureRegistry.Resolve(genericTransformerProbe));
 
         // 4. Metadata-free with unknown tensors throws
         var unknownFreeSource = new TestProbeTensorSource(
@@ -195,8 +223,76 @@ public sealed class ArchitectureDescriptorContractTests
             Status = AdmissionStatus.Admitted,
             EvidenceDoc = "docs/STATUS.md",
             StatusExemption = "exempt",
+            CreateForwardPass = CommonForwardPassFactory.CreateDense,
             RecognizeRelabelledFile = (_, _) => true,
         }.Validate());
+
+        // Admitted descriptor missing CreateForwardPass
+        Assert.Throws<InvalidOperationException>(() => new ArchitectureDescriptor
+        {
+            Id = "test_no_factory",
+            Status = AdmissionStatus.Admitted,
+            EvidenceDoc = "docs/STATUS.md",
+            StatusExemption = "exempt",
+            CreateForwardPass = null,
+        }.Validate());
+
+        // Non-dense architecture mistakenly using CommonForwardPassFactory.CreateDense
+        Assert.Throws<InvalidOperationException>(() => new ArchitectureDescriptor
+        {
+            Id = "test_wrong_factory",
+            Status = AdmissionStatus.Admitted,
+            EvidenceDoc = "docs/STATUS.md",
+            StatusExemption = "exempt",
+            ForwardPassFamily = ForwardPassFamily.GptOss,
+            CreateForwardPass = CommonForwardPassFactory.CreateDense,
+        }.Validate());
+    }
+
+    [Fact]
+    public void ConstructForwardPass_InvokesApplyLoadSetup()
+    {
+        bool setupInvoked = false;
+        var desc = new ArchitectureDescriptor
+        {
+            Id = "test_setup",
+            Status = AdmissionStatus.Admitted,
+            EvidenceDoc = "docs/STATUS.md",
+            StatusExemption = "exempt",
+            ApplyLoadSetup = ctx => { setupInvoked = true; },
+            CreateForwardPass = ctx => new TestForwardPass(),
+        };
+        desc.Validate();
+
+        var dummySource = new TestProbeTensorSource(new Dictionary<string, object>());
+        var loadCtx = new ArchitectureLoadContext
+        {
+            Probe = new ArchitectureProbe
+            {
+                Architecture = "test_setup",
+                TensorSource = dummySource,
+                Hyperparams = ModelHyperparams.FromGgufMetadata(dummySource.Metadata, dummySource),
+            },
+            Decision = new ForwardPassDecision(ForwardPassKind.CpuDense, null),
+            Backend = ForwardPassBackend.Cpu,
+            ContextSize = 128,
+            GpuLayers = 0,
+        };
+
+        var pass = desc.ConstructForwardPass(loadCtx);
+        Assert.True(setupInvoked);
+        Assert.NotNull(pass);
+    }
+
+    private sealed class TestForwardPass : IForwardPass
+    {
+        public int VocabSize => 32000;
+        public int MaxSeqLen => 2048;
+        public ReadOnlySpan<float> Forward(int token, int position) => ReadOnlySpan<float>.Empty;
+        public ReadOnlySpan<float> Prefill(IReadOnlyList<int> tokens, int startPos = 0) => ReadOnlySpan<float>.Empty;
+        public void TruncateTo(int length) { }
+        public void ResetCache() { }
+        public void Dispose() { }
     }
 
     private sealed unsafe class TestProbeTensorSource : IModelTensorSource

@@ -8,6 +8,7 @@ internal static class OtherAdmittedArchitectures
         Status = AdmissionStatus.Admitted,
         StatusExemption = "Covered by the generic 'LLM inference (GGUF)' row; STATUS.md is a capability matrix, not an architecture catalog.",
         EvidenceDoc = "docs/done/01-gguf-model-coverage-plan.md",
+        CreateForwardPass = CommonForwardPassFactory.CreateDense,
     };
 
     // Shares the evidence comment and receipt for 'mimo'.
@@ -17,6 +18,7 @@ internal static class OtherAdmittedArchitectures
         Status = AdmissionStatus.Admitted,
         StatusExemption = "Covered by the generic 'LLM inference (GGUF)' row; STATUS.md is a capability matrix, not an architecture catalog.",
         EvidenceDoc = "docs/STATUS.md",
+        CreateForwardPass = CommonForwardPassFactory.CreateDense,
     };
 
     // olmoe — admitted 2026-08-08 on perplexity parity, NOT on token-for-token greedy parity,
@@ -32,6 +34,7 @@ internal static class OtherAdmittedArchitectures
         Status = AdmissionStatus.Admitted,
         StatusExemption = "Covered by the generic 'LLM inference (GGUF)' row; the MoE partial-offload row is a backend capability, not a family verification row.",
         EvidenceDoc = "docs/done/01-gguf-model-coverage-plan.md",
+        CreateForwardPass = CommonForwardPassFactory.CreateDense,
     };
 
     // gpt-oss — admitted 2026-09-26. Runs on its own GptOssForwardPass (CPU only; attention
@@ -82,6 +85,7 @@ internal static class OtherAdmittedArchitectures
         Status = AdmissionStatus.Admitted,
         StatusExemption = "Covered by the generic 'LLM inference (GGUF)' row; STATUS.md is a capability matrix, not an architecture catalog.",
         EvidenceDoc = "docs/STATUS.md",
+        CreateForwardPass = CommonForwardPassFactory.CreateDense,
     };
 
     // apertus — admitted 2026-08-08 on an 11-token EXACT prefix match (one full sentence)
@@ -99,6 +103,7 @@ internal static class OtherAdmittedArchitectures
         Status = AdmissionStatus.Admitted,
         StatusExemption = "Covered by the generic 'LLM inference (GGUF)' row; STATUS.md is a capability matrix, not an architecture catalog.",
         EvidenceDoc = "docs/done/01-gguf-model-coverage-plan.md",
+        CreateForwardPass = CommonForwardPassFactory.CreateDense,
     };
 
     // gptneox (Pythia) — LayerNorm (mean/variance + learned bias, not RMSNorm), a biased
@@ -117,6 +122,7 @@ internal static class OtherAdmittedArchitectures
         Status = AdmissionStatus.Admitted,
         StatusExemption = "Covered by the generic 'LLM inference (GGUF)' row; STATUS.md is a capability matrix, not an architecture catalog.",
         EvidenceDoc = "docs/done/01-gguf-model-coverage-plan.md",
+        CreateForwardPass = CommonForwardPassFactory.CreateDense,
     };
 
     // falcon (7B only — 40B's second attn_norm_2 tensor is NOT implemented, no small 40B
@@ -139,6 +145,7 @@ internal static class OtherAdmittedArchitectures
         Status = AdmissionStatus.Admitted,
         StatusExemption = "Covered by the generic 'LLM inference (GGUF)' row; STATUS.md is a capability matrix, not an architecture catalog.",
         EvidenceDoc = "docs/done/01-gguf-model-coverage-plan.md",
+        CreateForwardPass = CommonForwardPassFactory.CreateDense,
     };
 
     // olmo2 — a THIRD residual pattern, distinct from both the ordinary pre-norm trunk and
@@ -166,6 +173,7 @@ internal static class OtherAdmittedArchitectures
         Status = AdmissionStatus.Admitted,
         StatusExemption = "Covered by the generic 'LLM inference (GGUF)' row; STATUS.md is a capability matrix, not an architecture catalog.",
         EvidenceDoc = "docs/done/01-gguf-model-coverage-plan.md",
+        CreateForwardPass = CommonForwardPassFactory.CreateDense,
     };
 
     // exaone — ADMITTED 2026-08-09, full 24-of-24-token exact match. Genuinely gate-only: an
@@ -203,6 +211,7 @@ internal static class OtherAdmittedArchitectures
         Status = AdmissionStatus.Admitted,
         StatusExemption = "Covered by the generic 'LLM inference (GGUF)' row; STATUS.md is a capability matrix, not an architecture catalog.",
         EvidenceDoc = "docs/done/01-gguf-model-coverage-plan.md",
+        CreateForwardPass = CommonForwardPassFactory.CreateDense,
     };
 
     // orion -- ADMITTED 2026-09-01, full 4-of-4-token exact greedy match, zero new code.
@@ -239,6 +248,7 @@ internal static class OtherAdmittedArchitectures
         Status = AdmissionStatus.Admitted,
         StatusExemption = "Covered by the generic 'LLM inference (GGUF)' row; STATUS.md is a capability matrix, not an architecture catalog.",
         EvidenceDoc = "docs/STATUS.md",
+        CreateForwardPass = CommonForwardPassFactory.CreateDense,
     };
 
     // ernie4_5 (dense path) -- ADMITTED 2026-09-01. Was diagnosed as blocked purely on the
@@ -279,6 +289,7 @@ internal static class OtherAdmittedArchitectures
         Status = AdmissionStatus.Admitted,
         StatusExemption = "Covered by the generic 'LLM inference (GGUF)' row; STATUS.md is a capability matrix, not an architecture catalog.",
         EvidenceDoc = "docs/STATUS.md",
+        CreateForwardPass = CommonForwardPassFactory.CreateDense,
     };
 
     // paddleocr — PaddleOCR-VL 1.6 text decoder (ERNIE-4.5-0.3B-shaped, llama.cpp src/models/paddleocr.cpp:
@@ -295,6 +306,7 @@ internal static class OtherAdmittedArchitectures
         Status = AdmissionStatus.Admitted,
         StatusAnchor = "Vision: PaddleOCR-VL",
         EvidenceDoc = "docs/STATUS.md",
+        CreateForwardPass = CommonForwardPassFactory.CreateDense,
     };
 
     // nemotron_h — NVIDIA Nemotron-H / Nemotron Nano v2 (llama.cpp nemotron-h.cpp): every layer is exactly one of
@@ -310,6 +322,7 @@ internal static class OtherAdmittedArchitectures
         Status = AdmissionStatus.Admitted,
         StatusAnchor = "NVIDIA Nemotron-H / Nemotron Nano v2 (`nemotron_h`)",
         EvidenceDoc = "docs/STATUS.md",
+        CreateForwardPass = CommonForwardPassFactory.CreateDense,
     };
 
     // lfm2 — Liquid LFM2 (llama.cpp lfm2.cpp): gated short-conv layers (in_proj -> b|c|x, causal depthwise conv of
@@ -326,6 +339,7 @@ internal static class OtherAdmittedArchitectures
         Status = AdmissionStatus.Admitted,
         StatusAnchor = "Liquid LFM2 (`lfm2`)",
         EvidenceDoc = "docs/STATUS.md",
+        CreateForwardPass = CommonForwardPassFactory.CreateDense,
     };
 
     // lfm2moe -- Liquid LFM2-MoE (llama.cpp lfm2.cpp, MoE FFN: sigmoid gating + exp_probs_b selection bias, top-k
@@ -340,6 +354,7 @@ internal static class OtherAdmittedArchitectures
         Status = AdmissionStatus.Admitted,
         StatusAnchor = "Liquid LFM2-MoE (`lfm2moe`)",
         EvidenceDoc = "docs/done/12-lfm2moe-batched-per-token-parity-plan.md",
+        CreateForwardPass = CommonForwardPassFactory.CreateDense,
     };
 
     // internlm2 -- ADMITTED 2026-09-01. Was blocked purely on the tokenizer axis (same as
@@ -371,6 +386,7 @@ internal static class OtherAdmittedArchitectures
         Status = AdmissionStatus.Admitted,
         StatusExemption = "Covered by the generic 'LLM inference (GGUF)' row; STATUS.md is a capability matrix, not an architecture catalog.",
         EvidenceDoc = "docs/STATUS.md",
+        CreateForwardPass = CommonForwardPassFactory.CreateDense,
     };
 
     // starcoder2 — ADMITTED 2026-08-09, full 24-of-24-token exact match. Reuses gptneox/
@@ -418,6 +434,7 @@ internal static class OtherAdmittedArchitectures
         Status = AdmissionStatus.Admitted,
         StatusExemption = "Covered by the generic 'LLM inference (GGUF)' row; STATUS.md is a capability matrix, not an architecture catalog.",
         EvidenceDoc = "docs/done/01-gguf-model-coverage-plan.md",
+        CreateForwardPass = CommonForwardPassFactory.CreateDense,
     };
 
     // cohere2 (Command-R7B) — ADMITTED 2026-08-09, 1-token exact match plus a documented
@@ -475,6 +492,7 @@ internal static class OtherAdmittedArchitectures
         Status = AdmissionStatus.Admitted,
         StatusExemption = "Covered by the generic 'LLM inference (GGUF)' row; STATUS.md is a capability matrix, not an architecture catalog.",
         EvidenceDoc = "docs/STATUS.md",
+        CreateForwardPass = CommonForwardPassFactory.CreateDense,
     };
 
     // glm4 (non-multimodal/text-only) — admitted 2026-08-09 on a 14-of-24-token exact prefix
@@ -502,6 +520,7 @@ internal static class OtherAdmittedArchitectures
         Status = AdmissionStatus.Admitted,
         StatusExemption = "Covered by the generic 'LLM inference (GGUF)' row; STATUS.md is a capability matrix, not an architecture catalog.",
         EvidenceDoc = "docs/done/01-gguf-model-coverage-plan.md",
+        CreateForwardPass = CommonForwardPassFactory.CreateDense,
     };
 
     // glm4moe (GLM-4.5-Air) — admitted 2026-10-04: GlmMoeGreedyParityTests teacher-forced against llama-server on GLM-4.5-Air-Q2_K,
@@ -514,6 +533,7 @@ internal static class OtherAdmittedArchitectures
         Status = AdmissionStatus.Admitted,
         StatusAnchor = "GLM-4.5-Air (`glm4moe`)",
         EvidenceDoc = "docs/STATUS.md",
+        CreateForwardPass = CommonForwardPassFactory.CreateDense,
     };
 
     // stablelm — admitted 2026-08-09. Smallest code change of any new-kernel architecture this
@@ -555,6 +575,7 @@ internal static class OtherAdmittedArchitectures
         Status = AdmissionStatus.Admitted,
         StatusExemption = "Covered by the generic 'LLM inference (GGUF)' row; STATUS.md is a capability matrix, not an architecture catalog.",
         EvidenceDoc = "docs/STATUS.md",
+        CreateForwardPass = CommonForwardPassFactory.CreateDense,
     };
 
     // hunyuan-dense — admitted 2026-08-09 on a FULL 24-of-24-token exact greedy match
@@ -603,6 +624,7 @@ internal static class OtherAdmittedArchitectures
         Status = AdmissionStatus.Admitted,
         StatusExemption = "Covered by the generic 'LLM inference (GGUF)' row; STATUS.md is a capability matrix, not an architecture catalog.",
         EvidenceDoc = "docs/STATUS.md",
+        CreateForwardPass = CommonForwardPassFactory.CreateDense,
     };
 
     // hunyuan-moe (Hunyuan-A13B-Instruct) — admitted 2026-10-04 on a real checkpoint (DevQuasar Q3_K_S only), CPU:
@@ -615,6 +637,7 @@ internal static class OtherAdmittedArchitectures
         Status = AdmissionStatus.Admitted,
         StatusAnchor = "Hunyuan-A13B-Instruct (`hunyuan-moe`)",
         EvidenceDoc = "docs/STATUS.md",
+        CreateForwardPass = CommonForwardPassFactory.CreateDense,
     };
 
     // afmoe (Arcee Trinity Mini) — admitted 2026-10-04 on a real checkpoint (arcee-ai Q4_K_M only), CPU, contexts below the 2048-token
@@ -628,6 +651,7 @@ internal static class OtherAdmittedArchitectures
         Status = AdmissionStatus.Admitted,
         StatusAnchor = "Arcee Trinity Mini (`afmoe`)",
         EvidenceDoc = "docs/STATUS.md",
+        CreateForwardPass = CommonForwardPassFactory.CreateDense,
     };
 
     // gpt2 — admitted 2026-08-09, FULL 22-of-22-token exact greedy match, bucket-1 (genuinely
@@ -652,6 +676,7 @@ internal static class OtherAdmittedArchitectures
         Status = AdmissionStatus.Admitted,
         StatusExemption = "Covered by the generic 'LLM inference (GGUF)' row; the GPT-2 SafeTensors row describes a separate loader path.",
         EvidenceDoc = "docs/done/01-gguf-model-coverage-plan.md",
+        CreateForwardPass = CommonForwardPassFactory.CreateDense,
     };
 
     // olmo (v1) — admitted 2026-08-09, FULL 24-of-24-token exact greedy match, bucket-1
@@ -678,6 +703,7 @@ internal static class OtherAdmittedArchitectures
         Status = AdmissionStatus.Admitted,
         StatusExemption = "Covered by the generic 'LLM inference (GGUF)' row; the MoE partial-offload row is a backend capability, not a family verification row.",
         EvidenceDoc = "docs/done/01-gguf-model-coverage-plan.md",
+        CreateForwardPass = CommonForwardPassFactory.CreateDense,
     };
 
     // starcoder (v1) — admitted 2026-08-09, FULL 23-of-23-token exact greedy match, bucket-2,
@@ -708,6 +734,7 @@ internal static class OtherAdmittedArchitectures
         Status = AdmissionStatus.Admitted,
         StatusExemption = "Covered by the generic 'LLM inference (GGUF)' row; STATUS.md is a capability matrix, not an architecture catalog.",
         EvidenceDoc = "docs/STATUS.md",
+        CreateForwardPass = CommonForwardPassFactory.CreateDense,
     };
 
     // codeshell — admitted 2026-08-09, FULL 24-of-24-token exact greedy match, bucket-2,
@@ -739,6 +766,7 @@ internal static class OtherAdmittedArchitectures
         Status = AdmissionStatus.Admitted,
         StatusExemption = "Covered by the generic 'LLM inference (GGUF)' row; STATUS.md is a capability matrix, not an architecture catalog.",
         EvidenceDoc = "docs/STATUS.md",
+        CreateForwardPass = CommonForwardPassFactory.CreateDense,
     };
 
     // jais2 — admitted 2026-08-09, FULL 3-of-3-token exact greedy match (including a natural
@@ -782,6 +810,7 @@ internal static class OtherAdmittedArchitectures
         Status = AdmissionStatus.Admitted,
         StatusExemption = "Covered by the generic 'LLM inference (GGUF)' row; STATUS.md is a capability matrix, not an architecture catalog.",
         EvidenceDoc = "docs/STATUS.md",
+        CreateForwardPass = CommonForwardPassFactory.CreateDense,
     };
 
     // jais (v1) — admitted 2026-09-28. Confirmed against jais.cpp before writing any code.
@@ -838,6 +867,7 @@ internal static class OtherAdmittedArchitectures
         Status = AdmissionStatus.Admitted,
         StatusAnchor = "Jais v1 (`jais`)",
         EvidenceDoc = "docs/STATUS.md",
+        CreateForwardPass = CommonForwardPassFactory.CreateDense,
     };
 
     // maincoder — admitted 2026-08-09, FULL 24-of-24-token exact greedy match, bucket-1
@@ -854,6 +884,7 @@ internal static class OtherAdmittedArchitectures
         Status = AdmissionStatus.Admitted,
         StatusExemption = "Covered by the generic 'LLM inference (GGUF)' row; STATUS.md is a capability matrix, not an architecture catalog.",
         EvidenceDoc = "docs/done/01-gguf-model-coverage-plan.md",
+        CreateForwardPass = CommonForwardPassFactory.CreateDense,
     };
 
     public static readonly ArchitectureDescriptor Exaone4 = new()
@@ -862,6 +893,7 @@ internal static class OtherAdmittedArchitectures
         Status = AdmissionStatus.Admitted,
         StatusAnchor = "EXAONE 4.5 33B (`exaone4`)",
         EvidenceDoc = "docs/STATUS.md",
+        CreateForwardPass = CommonForwardPassFactory.CreateDense,
     };
 
     public static readonly ArchitectureDescriptor Mistral3 = new()
@@ -875,6 +907,7 @@ internal static class OtherAdmittedArchitectures
             (probe.GetMetadataString("general.name")?.Contains("mistral-3", StringComparison.OrdinalIgnoreCase) == true ||
              probe.GetMetadataString("general.name")?.Contains("mistral3", StringComparison.OrdinalIgnoreCase) == true),
         RelabelledFileDescription = "Mistral 3 models labeled with general.architecture 'llama'",
+        CreateForwardPass = CommonForwardPassFactory.CreateDense,
     };
 
     public static readonly ArchitectureDescriptor Ministral = new()
@@ -883,6 +916,7 @@ internal static class OtherAdmittedArchitectures
         Status = AdmissionStatus.Admitted,
         StatusExemption = "Covered by the generic 'LLM inference (GGUF)' row; STATUS.md is a capability matrix, not an architecture catalog.",
         EvidenceDoc = "docs/STATUS.md",
+        CreateForwardPass = CommonForwardPassFactory.CreateDense,
     };
 
     // xverse — re-investigated and admitted 2026-09-02, FULL 24-of-24-token exact greedy
@@ -926,6 +960,7 @@ internal static class OtherAdmittedArchitectures
         Status = AdmissionStatus.Admitted,
         StatusExemption = "Covered by the generic 'LLM inference (GGUF)' row; STATUS.md is a capability matrix, not an architecture catalog.",
         EvidenceDoc = "docs/STATUS.md",
+        CreateForwardPass = CommonForwardPassFactory.CreateDense,
     };
 
     // minicpm — ADMITTED 2026-09-01. Was blocked purely on the tokenizer axis (§01 coverage
@@ -969,5 +1004,6 @@ internal static class OtherAdmittedArchitectures
         Status = AdmissionStatus.Admitted,
         StatusExemption = "Covered by the generic 'LLM inference (GGUF)' row; STATUS.md is a capability matrix, not an architecture catalog.",
         EvidenceDoc = "docs/STATUS.md",
+        CreateForwardPass = CommonForwardPassFactory.CreateDense,
     };
 }

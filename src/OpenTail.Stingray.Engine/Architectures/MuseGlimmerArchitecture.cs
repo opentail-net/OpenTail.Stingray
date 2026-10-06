@@ -21,5 +21,6 @@ internal static class MuseGlimmerArchitecture
         StatusAnchor = "Muse-Glimmer 30B (`muse-glimmer`)",
         EvidenceDoc = "docs/2-coverage/2026-10-03-muse-glimmer-port-plan.md",
         SupportsContinuousBatching = false,
+        CreateForwardPass = CommonForwardPassFactory.CreateDense,
     };
 }

@@ -26,7 +26,8 @@ public static class CommonForwardPassFactory
                 var cpuBackend = ctx.CpuBackend ?? new CpuBackend();
                 if (ctx.CpuBackend is null) ctx.TrackDisposable(cpuBackend);
 
-                var dense = new ForwardPass(ctx.Probe.TensorSource, cpuBackend, hp, maxContextLength: ctx.ContextSize);
+                var dense = new ForwardPass(ctx.Probe.TensorSource, cpuBackend, hp, maxContextLength: ctx.ContextSize,
+                    prefillDequantCacheBytes: ctx.PrefillDequantCacheBytes);
                 ctx.TrackDisposable(dense);
 
                 if (ctx.TurboQuant)
@@ -43,7 +44,8 @@ public static class CommonForwardPassFactory
 
                 var cfwd = new CudaForwardPass(ctx.Probe.Gguf!, cuda, hp, ctx.ContextSize,
                     enableTurboQuant: ctx.TurboQuant,
-                    tqQuantizer: ctx.TqQuantizer);
+                    tqQuantizer: ctx.TqQuantizer,
+                    preferBatchingOverAutoSnapKv: ctx.PreferBatchingOverAutoSnapKv);
                 ctx.TrackDisposable(cfwd);
                 return cfwd;
             }

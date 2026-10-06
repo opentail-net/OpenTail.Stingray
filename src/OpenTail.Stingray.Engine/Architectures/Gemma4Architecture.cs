@@ -12,5 +12,6 @@ internal static class Gemma4Architecture
         SupportsImageInput = true,
         ProjectorFileHints = ["*mmproj*.gguf", "*vision*.gguf"],
         CanBatchPredicate = (hp, tq) => !hp.IsMoE && !tq && hp.LayerHeadDim is null,
+        CreateForwardPass = CommonForwardPassFactory.CreateDense,
     };
 }

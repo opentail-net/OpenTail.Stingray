@@ -18,5 +18,6 @@ internal static class GraniteArchitecture
         // IBM's embedded Jinja injects a default system prompt and indents user content, which makes
         // vision decoders emit <|end_of_text|> at token 0; use llama.cpp's canonical GRANITE_4_0 layout.
         FallbackChat = FallbackChatFormat.Granite,
+        CreateForwardPass = CommonForwardPassFactory.CreateDense,
     };
 }

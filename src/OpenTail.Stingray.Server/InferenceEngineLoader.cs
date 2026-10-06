@@ -521,7 +521,7 @@ public static class InferenceEngineLoader
         ForwardPassBackend backend, int ctxSize, int gpuLayers, LayerPlacement? placement,
         bool turboQuant, bool tqModeIsAuto, TqQuantizer tqQuantizer,
         CpuBackend? cpuBackend = null, CudaBackend? cudaBackend = null, VulkanBackend? vulkanBackend = null,
-        ForwardPass? cpuDensePass = null)
+        ForwardPass? cpuDensePass = null, long prefillDequantCacheBytes = 0, bool preferBatchingOverAutoSnapKv = false)
     {
         return new ArchitectureLoadContext
         {
@@ -548,6 +548,8 @@ public static class InferenceEngineLoader
             CudaBackend = cudaBackend,
             VulkanBackend = vulkanBackend,
             CpuDensePass = cpuDensePass,
+            PrefillDequantCacheBytes = prefillDequantCacheBytes,
+            PreferBatchingOverAutoSnapKv = preferBatchingOverAutoSnapKv,
         };
     }
 
@@ -620,6 +622,9 @@ public static class InferenceEngineLoader
             return TqQuantizer.LloydMax;
         }
 
+        var desc = ArchitectureRegistry.Find(arch);
+        ArchitectureLoadContext loadCtx;
+
         // Features the GPU layer loops don't implement (MLA, LayerNorm, parallel residual, learned
         // positions, non-gated FFN): run on CPU rather than compute silently wrong logits.
         // DeepSeek2 (MLA): its own full-offload Vulkan pass (no CUDA / -g N / TurboQuant path).
@@ -628,10 +633,9 @@ public static class InferenceEngineLoader
         {
             var vk = new VulkanBackend();
             owned.Add(vk);
-            var loadCtx = CreateLoadContext(model, hp, arch, initialSelection, ForwardPassBackend.Vulkan,
+            loadCtx = CreateLoadContext(model, hp, arch, initialSelection, ForwardPassBackend.Vulkan,
                 ctxSize, nGpuLayers, null, turboQuant, tqModeIsAuto, tqQuantizer, vulkanBackend: vk);
-            var desc = ArchitectureRegistry.Find(arch)!;
-            var mla = desc.CreateForwardPass!(loadCtx);
+            var mla = desc != null ? desc.ConstructForwardPass(loadCtx) : CommonForwardPassFactory.CreateDense(loadCtx);
             owned.AddRange(loadCtx.OwnedDisposables);
             return (mla, BatchingSupported: false, GpuWeightBytesExact: null);
         }
@@ -670,17 +674,16 @@ public static class InferenceEngineLoader
 
         // RWKV (rwkv6, rwkv7) is recurrent (no KV cache) and runs only on its own CPU forward pass.
         var architectureSelection = SelectPass(backend, nGpuLayers);
-        var architectureFamily = ArchitectureRegistry.Find(arch)?.ForwardPassFamily ?? ForwardPassFamily.Dense;
+        var architectureFamily = desc?.ForwardPassFamily ?? ForwardPassFamily.Dense;
         if (architectureFamily == ForwardPassFamily.Rwkv)
         {
             if (architectureSelection.Refusal is { } refusal)
                 throw new InvalidOperationException(refusal);
             if (backend != ServerBackend.Cpu)
                 Console.Error.WriteLine("[InferenceEngineLoader] RWKV has no GPU forward pass yet; running on CPU.");
-            var loadCtx = CreateLoadContext(model, hp, arch, architectureSelection, ForwardPassBackend.Cpu,
+            loadCtx = CreateLoadContext(model, hp, arch, architectureSelection, ForwardPassBackend.Cpu,
                 ctxSize, 0, null, turboQuant, tqModeIsAuto, tqQuantizer);
-            var desc = ArchitectureRegistry.Find(arch)!;
-            var rwkv = desc.CreateForwardPass!(loadCtx);
+            var rwkv = desc != null ? desc.ConstructForwardPass(loadCtx) : CommonForwardPassFactory.CreateDense(loadCtx);
             owned.AddRange(loadCtx.OwnedDisposables);
             return (rwkv, BatchingSupported: false, GpuWeightBytesExact: null);
         }
@@ -700,11 +703,10 @@ public static class InferenceEngineLoader
             {
                 Console.Error.WriteLine("[InferenceEngineLoader] gpt-oss runs on GPU only as a full Vulkan offload; running on CPU.");
             }
-            var loadCtx = CreateLoadContext(model, hp, arch, architectureSelection,
+            loadCtx = CreateLoadContext(model, hp, arch, architectureSelection,
                 architectureSelection.Kind == ForwardPassKind.GptOssVulkan ? ForwardPassBackend.Vulkan : ForwardPassBackend.Cpu,
                 ctxSize, nGpuLayers, null, turboQuant, tqModeIsAuto, tqQuantizer, vulkanBackend: vk);
-            var desc = ArchitectureRegistry.Find(arch)!;
-            var gptOssPass = desc.CreateForwardPass!(loadCtx);
+            var gptOssPass = desc != null ? desc.ConstructForwardPass(loadCtx) : CommonForwardPassFactory.CreateDense(loadCtx);
             owned.AddRange(loadCtx.OwnedDisposables);
             return (gptOssPass, BatchingSupported: false, GpuWeightBytesExact: null);
         }
@@ -718,20 +720,18 @@ public static class InferenceEngineLoader
             var cpuSelection = SelectPass(ServerBackend.Cpu, 0);
             if (cpuSelection.Kind == ForwardPassKind.CpuHybridGdn)
             {
-                var loadCtx = CreateLoadContext(model, hp, arch, cpuSelection, ForwardPassBackend.Cpu,
+                loadCtx = CreateLoadContext(model, hp, arch, cpuSelection, ForwardPassBackend.Cpu,
                     ctxSize, 0, null, turboQuant, tqModeIsAuto, tqQuantizer, cpuBackend: cpuBackend);
-                var archDesc = ArchitectureRegistry.Find(arch)!;
-                var hybrid = archDesc.CreateForwardPass!(loadCtx);
+                var hybrid = desc != null ? desc.ConstructForwardPass(loadCtx) : CommonForwardPassFactory.CreateHybridGdn(loadCtx);
                 owned.AddRange(loadCtx.OwnedDisposables);
                 return (hybrid, BatchingSupported: false, GpuWeightBytesExact: null);
             }
 
-            var dense = new ForwardPass(model, cpuBackend, hp,
+            loadCtx = CreateLoadContext(model, hp, arch, cpuSelection, ForwardPassBackend.Cpu,
+                ctxSize, 0, null, turboQuant, tqModeIsAuto, ResolveTq(null), cpuBackend: cpuBackend,
                 prefillDequantCacheBytes: prefillDequantCacheBytes);
-            owned.Add(dense);
-            if (turboQuant)
-                dense.EnableTurboQuant(fp32WindowSize: 256, bits: 3, quantizer: ResolveTq(null));
-            var desc = ArchitectureRegistry.Find(arch);
+            var dense = (ForwardPass)(desc != null ? desc.ConstructForwardPass(loadCtx) : CommonForwardPassFactory.CreateDense(loadCtx));
+            owned.AddRange(loadCtx.OwnedDisposables);
             bool batchOk = desc?.CanBatch(hp, turboQuant) ?? (!hp.IsMoE && !turboQuant && hp.LayerHeadDim is null
                 && !hp.AttentionOutputGate && !hp.InputEmbeddingRmsNorm);
             return (dense, batchOk, GpuWeightBytesExact: null);
@@ -742,7 +742,16 @@ public static class InferenceEngineLoader
         // The #189 dequant cache is off here: GPU/hybrid never drive the batched CPU prefill
         // that consults it, so a full F32 model copy would be pure wasted RAM.
         ForwardPass? cpuDense = hp.IsHybridSsm ? null
-            : new ForwardPass(model, cpuBackend, hp, prefillDequantCacheBytes: 0);
+            : (ForwardPass)CommonForwardPassFactory.CreateDense(new ArchitectureLoadContext
+            {
+                Probe = new ArchitectureProbe { Architecture = arch, TensorSource = model, Hyperparams = hp, IsGguf = true, Gguf = model },
+                Decision = new ForwardPassDecision(ForwardPassKind.CpuDense, null),
+                Backend = ForwardPassBackend.Cpu,
+                ContextSize = ctxSize,
+                GpuLayers = 0,
+                CpuBackend = cpuBackend,
+                PrefillDequantCacheBytes = 0,
+            });
         if (cpuDense is not null) owned.Add(cpuDense);
 
         if (backend == ServerBackend.Cuda)
@@ -762,10 +771,9 @@ public static class InferenceEngineLoader
                     GpuWeightBytes: 0,
                     GpuKvBytes: 0,
                     RecommendedCtxSize: ctxSize > 0 ? ctxSize : Math.Min(hp.ContextLength, 4096));
-                var loadCtx = CreateLoadContext(model, hp, arch, cudaSelection, ForwardPassBackend.Cuda,
+                loadCtx = CreateLoadContext(model, hp, arch, cudaSelection, ForwardPassBackend.Cuda,
                     ctxSize, hp.NumLayers, placement, turboQuant, tqModeIsAuto, tqQuantizer, cudaBackend: cuda);
-                var desc = ArchitectureRegistry.Find(arch)!;
-                var chgdn = desc.CreateForwardPass!(loadCtx);
+                var chgdn = desc != null ? desc.ConstructForwardPass(loadCtx) : CommonForwardPassFactory.CreateHybridGdn(loadCtx);
                 owned.AddRange(loadCtx.OwnedDisposables);
                 return (chgdn, BatchingSupported: false, GpuWeightBytesExact: null);
             }
@@ -794,12 +802,14 @@ public static class InferenceEngineLoader
                 // auto-enable (prefer pure batching over routing every sequence through the slower
                 // per-sequence-eviction decode). An explicit STINGRAY_SNAPKV_BUDGET>0 still wins and
                 // composes with batching via #196 Option 1.
-                var cfwd = new CudaForwardPass(model, cuda, hp, ctxSize, enableTurboQuant: turboQuant,
-                    tqQuantizer: ResolveTq(hp.IsMoE ? TqSupport.CudaMoeReason
+                loadCtx = CreateLoadContext(model, hp, arch, denseSelection, ForwardPassBackend.Cuda,
+                    ctxSize, gpuLayers, null, turboQuant, tqModeIsAuto,
+                    ResolveTq(hp.IsMoE ? TqSupport.CudaMoeReason
                         : !TqSupport.IsKVarNCudaHeadDim(hp.HeadDim) ? TqSupport.CudaHeadDimReason(hp.HeadDim)
                         : null),
-                    preferBatchingOverAutoSnapKv: preferBatchingOverAutoSnapKv);
-                owned.Add(cfwd);
+                    cudaBackend: cuda, preferBatchingOverAutoSnapKv: preferBatchingOverAutoSnapKv);
+                var cfwd = (CudaForwardPass)(desc != null ? desc.ConstructForwardPass(loadCtx) : CommonForwardPassFactory.CreateDense(loadCtx));
+                owned.AddRange(loadCtx.OwnedDisposables);
                 // Issue #190 (dense) / #195 (Gemma 4): CUDA full-offload supports continuous
                 // batching (per-sequence GPU KV caches + true batched decode). SupportsContinuous-
                 // Batching is the single source of truth shared with CudaForwardPass's runtime
@@ -830,8 +840,10 @@ public static class InferenceEngineLoader
             _ = ResolveTq($"KVarN requires full CUDA offload; TierPlanner fit {gpuLayers}/{hp.NumLayers} layers");
             var planForHybrid = TierPlanner.Plan(model, hp, hwProfile, turboQuant, requestedCtxSize: ctxSize,
                 kvDtype: CudaForwardPass.ResolveConfiguredKvDType(), pinGpuLayers: gpuLayers);
-            var chfwd = new CudaHybridForwardPass(model, cuda, hp, planForHybrid, turboQuant);
-            owned.Add(chfwd);
+            loadCtx = CreateLoadContext(model, hp, arch, denseSelection, ForwardPassBackend.Cuda,
+                ctxSize, gpuLayers, planForHybrid, turboQuant, tqModeIsAuto, tqQuantizer, cudaBackend: cuda, cpuDensePass: cpuDense);
+            var chfwd = (CudaHybridForwardPass)(desc != null ? desc.ConstructForwardPass(loadCtx) : CommonForwardPassFactory.CreateDense(loadCtx));
+            owned.AddRange(loadCtx.OwnedDisposables);
             // The real fix (docs/032 Phase 3 Slice 8 follow-up): TierPlanner already computed a
             // precise per-layer GPU weight-byte figure for this exact partial-offload split —
             // previously thrown away, forcing ModelRuntime to fall back to the whole-file
@@ -857,10 +869,9 @@ public static class InferenceEngineLoader
                     GpuWeightBytes: 0,
                     GpuKvBytes: 0,
                     RecommendedCtxSize: ctxSize > 0 ? ctxSize : Math.Min(hp.ContextLength, 4096));
-                var loadCtx = CreateLoadContext(model, hp, arch, vulkanSelection, ForwardPassBackend.Vulkan,
+                loadCtx = CreateLoadContext(model, hp, arch, vulkanSelection, ForwardPassBackend.Vulkan,
                     ctxSize, hp.NumLayers, placement, turboQuant, tqModeIsAuto, tqQuantizer, vulkanBackend: vulkan);
-                var desc = ArchitectureRegistry.Find(arch)!;
-                var vhgdn = desc.CreateForwardPass!(loadCtx);
+                var vhgdn = desc != null ? desc.ConstructForwardPass(loadCtx) : CommonForwardPassFactory.CreateHybridGdn(loadCtx);
                 owned.AddRange(loadCtx.OwnedDisposables);
                 return (vhgdn, BatchingSupported: false, GpuWeightBytesExact: null);
             }
@@ -881,9 +892,10 @@ public static class InferenceEngineLoader
             {
                 // Vulkan TQ is Lloyd-Max only — resolve for the throw/warn side effect.
                 _ = ResolveTq(TqSupport.VulkanReason);
-                var gfwd = new GpuForwardPass(model, vulkan, hp, ctxSize, enableTurboQuant: turboQuant,
-                    kvDtype: CudaForwardPass.ResolveConfiguredKvDType());
-                owned.Add(gfwd);
+                loadCtx = CreateLoadContext(model, hp, arch, denseSelection, ForwardPassBackend.Vulkan,
+                    ctxSize, gpuLayers, null, turboQuant, tqModeIsAuto, tqQuantizer, vulkanBackend: vulkan);
+                var gfwd = (GpuForwardPass)(desc != null ? desc.ConstructForwardPass(loadCtx) : CommonForwardPassFactory.CreateDense(loadCtx));
+                owned.AddRange(loadCtx.OwnedDisposables);
                 return (gfwd, BatchingSupported: false, GpuWeightBytesExact: null); // full offload — EstimatedModelBytes is already exact
             }
 
@@ -894,8 +906,10 @@ public static class InferenceEngineLoader
                 // -g N for Gemma 4 and for architectures HybridForwardPass has no path for: GPU
                 // layers [0, N) + CPU layers [N, L) (VulkanLayerSplitForwardPass).
                 int split = Math.Min(gpuLayers, VulkanLayerSplitForwardPass.MaxGpuLayers(hp));
-                var sfwd = new VulkanLayerSplitForwardPass(model, vulkan, hp, split, ctxSize);
-                owned.Add(sfwd);
+                loadCtx = CreateLoadContext(model, hp, arch, partialSelection, ForwardPassBackend.Vulkan,
+                    ctxSize, split, null, turboQuant, tqModeIsAuto, tqQuantizer, vulkanBackend: vulkan);
+                var sfwd = (VulkanLayerSplitForwardPass)(desc != null ? desc.ConstructForwardPass(loadCtx) : CommonForwardPassFactory.CreateDense(loadCtx));
+                owned.AddRange(loadCtx.OwnedDisposables);
                 return (sfwd, BatchingSupported: false, GpuWeightBytesExact: null);
             }
 
@@ -905,8 +919,10 @@ public static class InferenceEngineLoader
             _ = ResolveTq(TqSupport.VulkanReason);
             var planForHybrid = TierPlanner.Plan(model, hp, hwProfile, turboQuant, requestedCtxSize: ctxSize,
                 pinGpuLayers: gpuLayers);
-            var hfwd = new HybridForwardPass(model, vulkan, hp, planForHybrid, turboQuant);
-            owned.Add(hfwd);
+            loadCtx = CreateLoadContext(model, hp, arch, partialSelection, ForwardPassBackend.Vulkan,
+                ctxSize, gpuLayers, planForHybrid, turboQuant, tqModeIsAuto, tqQuantizer, vulkanBackend: vulkan, cpuDensePass: cpuDense);
+            var hfwd = (HybridForwardPass)(desc != null ? desc.ConstructForwardPass(loadCtx) : CommonForwardPassFactory.CreateDense(loadCtx));
+            owned.AddRange(loadCtx.OwnedDisposables);
             // The real fix — see the identical CUDA branch's comment above.
             return (hfwd, BatchingSupported: false, GpuWeightBytesExact: planForHybrid.GpuWeightBytes);
         }

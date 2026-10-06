@@ -14,6 +14,7 @@ internal static class PhiArchitectures
         Status = AdmissionStatus.Admitted,
         StatusExemption = "Covered by the generic 'LLM inference (GGUF)' row; STATUS.md is a capability matrix, not an architecture catalog.",
         EvidenceDoc = "docs/STATUS.md",
+        CreateForwardPass = CommonForwardPassFactory.CreateDense,
     };
 
     // Shares the evidence comment and receipt for 'phi2'.
@@ -23,6 +24,7 @@ internal static class PhiArchitectures
         Status = AdmissionStatus.Admitted,
         StatusAnchor = "Phi-3 (`phi3`) on Vulkan",
         EvidenceDoc = "docs/STATUS.md",
+        CreateForwardPass = CommonForwardPassFactory.CreateDense,
     };
 
     // Shares the evidence comment and receipt for 'phi2'.
@@ -32,5 +34,6 @@ internal static class PhiArchitectures
         Status = AdmissionStatus.Admitted,
         StatusAnchor = "Phi-3.5-MoE (`phimoe`)",
         EvidenceDoc = "docs/STATUS.md",
+        CreateForwardPass = CommonForwardPassFactory.CreateDense,
     };
 }

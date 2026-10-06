@@ -305,10 +305,7 @@ public sealed class ModelContext : IModelContext
             CpuBackend = cpuBackend,
         };
 
-        if (descriptor.CreateForwardPass is null)
-            throw new InvalidOperationException($"Architecture '{descriptor.Id}' has no forward-pass factory.");
-
-        var fwd = descriptor.CreateForwardPass(loadContext);
+        var fwd = descriptor.ConstructForwardPass(loadContext);
         owned.AddRange(loadContext.OwnedDisposables);
 
         return (fwd, decision.Kind!.Value, owned);

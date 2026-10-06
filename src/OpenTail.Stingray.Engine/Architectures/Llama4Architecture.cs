@@ -9,5 +9,6 @@ internal static class Llama4Architecture
         StatusAnchor = "Llama 4 Scout (`llama4`)",
         EvidenceDoc = "docs/STATUS.md",
         FallbackChat = FallbackChatFormat.Llama4,
+        CreateForwardPass = CommonForwardPassFactory.CreateDense,
     };
 }

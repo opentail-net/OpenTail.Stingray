@@ -119,11 +119,22 @@ public sealed class ArchitectureDescriptor
     /// <summary>
     /// Constructs the forward pass for this architecture according to the load context.
     /// </summary>
-    public Func<ArchitectureLoadContext, OpenTail.Stingray.Core.IForwardPass>? CreateForwardPass { get; init; } =
-        CommonForwardPassFactory.CreateDense;
+    public Func<ArchitectureLoadContext, OpenTail.Stingray.Core.IForwardPass>? CreateForwardPass { get; init; }
 
     /// <summary>Optional process-wide native tunables or pre-load hooks.</summary>
     public Action<ArchitectureLoadContext>? ApplyLoadSetup { get; init; }
+
+    /// <summary>
+    /// Universal construction pipeline: executes any pre-load setup hooks and invokes the factory.
+    /// </summary>
+    public OpenTail.Stingray.Core.IForwardPass ConstructForwardPass(ArchitectureLoadContext context)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        if (CreateForwardPass is null)
+            throw new InvalidOperationException($"Architecture '{Id}' has no CreateForwardPass factory.");
+        ApplyLoadSetup?.Invoke(context);
+        return CreateForwardPass(context);
+    }
 
     /// <summary>Whether the engine may run this architecture right now.</summary>
     public bool IsUsable() => Status switch
@@ -169,6 +180,9 @@ public sealed class ArchitectureDescriptor
                     $"Admitted architecture '{Id}' must have exactly one of StatusAnchor or StatusExemption.");
             if (CreateForwardPass == null)
                 throw new InvalidOperationException($"Admitted architecture '{Id}' has no CreateForwardPass factory.");
+            if (ForwardPassFamily != ForwardPassFamily.Dense && CreateForwardPass == CommonForwardPassFactory.CreateDense)
+                throw new InvalidOperationException(
+                    $"Admitted architecture '{Id}' has non-dense ForwardPassFamily '{ForwardPassFamily}' but uses CommonForwardPassFactory.CreateDense.");
         }
         else if (StatusAnchor is not null || StatusExemption is not null)
         {

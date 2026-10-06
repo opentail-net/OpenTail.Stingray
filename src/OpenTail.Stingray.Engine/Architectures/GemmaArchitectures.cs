@@ -8,6 +8,7 @@ internal static class GemmaArchitectures
         Status = AdmissionStatus.Admitted,
         StatusExemption = "Covered by the generic 'LLM inference (GGUF)' row; STATUS.md is a capability matrix, not an architecture catalog.",
         EvidenceDoc = "docs/STATUS.md",
+        CreateForwardPass = CommonForwardPassFactory.CreateDense,
     };
 
     // Shares the evidence comment and receipt for 'gemma'.
@@ -17,6 +18,7 @@ internal static class GemmaArchitectures
         Status = AdmissionStatus.Admitted,
         StatusExemption = "Covered by the generic 'LLM inference (GGUF)' row; STATUS.md is a capability matrix, not an architecture catalog.",
         EvidenceDoc = "docs/STATUS.md",
+        CreateForwardPass = CommonForwardPassFactory.CreateDense,
     };
 
     // Shares the evidence comment and receipt for 'gemma'.
@@ -26,6 +28,7 @@ internal static class GemmaArchitectures
         Status = AdmissionStatus.Admitted,
         StatusAnchor = "Gemma 3 text (`gemma3`)",
         EvidenceDoc = "docs/STATUS.md",
+        CreateForwardPass = CommonForwardPassFactory.CreateDense,
     };
 
     // Shares the evidence comment and receipt for 'gemma'.
@@ -35,5 +38,6 @@ internal static class GemmaArchitectures
         Status = AdmissionStatus.Admitted,
         StatusExemption = "Covered by the generic 'LLM inference (GGUF)' row; STATUS.md is a capability matrix, not an architecture catalog.",
         EvidenceDoc = "docs/STATUS.md",
+        CreateForwardPass = CommonForwardPassFactory.CreateDense,
     };
 }

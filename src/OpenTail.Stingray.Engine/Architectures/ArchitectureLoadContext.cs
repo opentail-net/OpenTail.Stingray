@@ -26,6 +26,8 @@ public sealed class ArchitectureLoadContext
     public TqQuantizer TqQuantizer { get; init; } = TqQuantizer.LloydMax;
     public bool FlashAttention { get; init; } = true;
     public DType KvDType { get; init; } = DType.Float16;
+    public long PrefillDequantCacheBytes { get; init; }
+    public bool PreferBatchingOverAutoSnapKv { get; init; }
 
     // Backend resources (orchestrator manages initialization and lifetime)
     public CpuBackend? CpuBackend { get; init; }
