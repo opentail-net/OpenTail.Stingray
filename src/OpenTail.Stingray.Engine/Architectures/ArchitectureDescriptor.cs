@@ -99,6 +99,17 @@ public sealed class ArchitectureDescriptor
     /// <summary>Optional fine-grained predicate checking (hyperparams, turboQuant) -> canBatch.</summary>
     public Func<ModelHyperparams, bool, bool>? CanBatchPredicate { get; init; }
 
+    /// <summary>
+    /// Checks whether continuous batching is supported for this model under the given hyperparams and quantization.
+    /// </summary>
+    public bool CanBatch(ModelHyperparams hp, bool turboQuant)
+    {
+        if (!SupportsContinuousBatching) return false;
+        if (CanBatchPredicate is not null) return CanBatchPredicate(hp, turboQuant);
+        return !hp.IsMoE && !turboQuant && hp.LayerHeadDim is null
+            && !hp.AttentionOutputGate && !hp.InputEmbeddingRmsNorm;
+    }
+
     public bool SupportsImageInput { get; init; }
     public bool SupportsAudioInput { get; init; }
 
