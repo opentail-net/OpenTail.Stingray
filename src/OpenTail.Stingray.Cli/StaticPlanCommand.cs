@@ -458,7 +458,9 @@ public sealed record StaticPlanReport(
             arch, model.Tensors.Count, model.Metadata.Count, hp.NumLayers, hp.ContextLength, hp.HeadDim,
             hp.NumKvHeads, hp.IsMoE, hp.NumMtpLayers, Metadata("general.name"), Metadata("general.file_type"),
             Metadata("general.quantization_version"), !string.IsNullOrWhiteSpace(Metadata("tokenizer.chat_template")),
-            HasToken("<think>") && HasToken("</think>"), arch == "gemma4", parameterElements,
+            HasToken("<think>") && HasToken("</think>"),
+            ArchitectureRegistry.Find(arch)?.SupportsImageInput ?? (arch == "gemma4"),
+            parameterElements,
             vocabularySize, tensorDtypes);
         var executionPlan = BuildExecutionPlan(config, compatibility,
             config.Get<string>("backend").ToLowerInvariant(), selected, selectedAvailable, placement, decisions, effectiveConfiguration);
