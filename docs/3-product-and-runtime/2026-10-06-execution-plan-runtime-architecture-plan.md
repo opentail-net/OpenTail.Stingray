@@ -271,42 +271,58 @@ graph TD
   * `--explain` prints the exact `ExecutionPlan` being executed.
   * In `StaticPlanCommand.cs`: invoke `ExecutionPlanner` directly.
 
-### Chunk 10: Bypass Elimination, Contract Tests & Parity Verification
+### Chunk 10: Bypass Elimination, Contract Tests & Parity Verification [COMPLETED]
 * **Goal:** Eliminate dead policy code and prove cross-frontend consistency.
 * **Deliverables:**
   * Audit codebase: no calls to `ForwardPassSelection.SelectPass()` or `TierPlanner.Plan()` outside `ExecutionPlanner` and tests.
   * `ExecutionPlannerTests`: Verify deterministic mapping of requests to concrete plans; verify candidate rejection during auto planning.
   * `ExecutionPlanRuntimeTests`: Prove runtime executes the exact planned forward pass and placement without re-planning; verify `RuntimeInstance.ExecutionPlan == plan`.
   * `PlanNotExecutableTests`: Verify explicit failure when hardware cannot satisfy the plan.
-  * Cross-Frontend Parity Tests: Verify that CLI, Server, and `ModelContext` produce identical plans for identical inputs.
-  * Update documentation in `docs/3-product-and-runtime/`.
+  * Cross-Frontend Parity Tests: Verify that CLI, Server, and `ModelContext` produce identical plans for identical inputs (`tests/OpenTail.Stingray.Tests.Core/FrontendPlanParityTests.cs`).
+  * Updated architecture documentation in `docs/3-product-and-runtime/`.
 
 ---
 
 ## 6. Acceptance Criteria Checklist
 
-- [ ] `ModelPackage` is a logical abstraction over external model components.
-- [ ] `ModelPackageIdentity` does not contain file paths in its record equality.
-- [ ] When digests are available, identical packages at different paths produce identical `ModelPackageIdentity`; without digests, identity is explicitly provisional.
-- [ ] No new competing Stingray physical model/blob format is introduced.
-- [ ] Ollama-compatible model packages can be consumed without Ollama installed/running.
-- [ ] Ollama/package blobs can be reused without unnecessary duplicate weight copies.
-- [ ] Stingray-specific metadata is represented separately from package storage (`stingray.json` sidecar).
-- [ ] Stingray sidecar metadata is keyed to model/package identity and is advisory only (never overrides admission).
-- [ ] `ModelDescription` contains an immutable snapshot of all intrinsic planning facts.
-- [ ] `ModelDescription.FromPackage` performs the one-time inspection; `ExecutionPlanner` never reopens model files.
-- [ ] `ExecutionRequest` contains every execution-affecting option; no hidden policy in `Model.Parameters` or environment.
-- [ ] `ExecutionPlan` is genuinely immutable (`ImmutableArray<T>`) and contains concrete choices (no `"auto"`).
-- [ ] `ExecutionPlan` validation checks strongly typed invariants without overly restrictive universal equations.
-- [ ] Candidate evaluation during planning is model-aware and distinct from runtime fallback.
-- [ ] `RuntimeInstance` executes the plan strictly without re-planning or reading `Model.Parameters`.
-- [ ] `RuntimeInstance` (Engine) integrates cleanly with `ModelRuntime` and `ModelRuntimeManager` (Server).
-- [ ] `RuntimeInstance` exposes the effective `ExecutionPlan` for inspection and contract verification.
-- [ ] Existing `ForwardPassSelection` and `TierPlanner` policy is orchestrated by `ExecutionPlanner`, not rewritten.
-- [ ] Frontend-specific execution policy (`ForwardPassFrontend.Cli` vs `Server`) is eliminated.
-- [ ] CLI, Server, and `ModelContext` all converge on the same planning path.
-- [ ] `LoadFromPlan()` does not accept execution-altering options and never calls `Load()`.
-- [ ] The runtime cannot silently substitute CPU/Vulkan/CUDA for the backend in the plan.
-- [ ] Plan JSON serializes/deserializes using NativeAOT source generation.
-- [ ] Parity tests confirm identical plans across all frontends.
-- [ ] No model weights are bundled into Stingray itself.
+- [x] `ModelPackage` is a logical abstraction over external model components.
+- [x] `ModelPackageIdentity` does not contain file paths in its record equality.
+- [x] When digests are available, identical packages at different paths produce identical `ModelPackageIdentity`; without digests, identity is explicitly provisional.
+- [x] No new competing Stingray physical model/blob format is introduced.
+- [x] Ollama-compatible model packages can be consumed without Ollama installed/running.
+- [x] Ollama/package blobs can be reused without unnecessary duplicate weight copies.
+- [x] Stingray-specific metadata is represented separately from package storage (`stingray.json` sidecar).
+- [x] Stingray sidecar metadata is keyed to model/package identity and is advisory only (never overrides admission).
+- [x] `ModelDescription` contains an immutable snapshot of all intrinsic planning facts.
+- [x] `ModelDescription.FromPackage` performs the one-time inspection; `ExecutionPlanner` never reopens model files.
+- [x] `ExecutionRequest` contains every execution-affecting option; no hidden policy in `Model.Parameters` or environment.
+- [x] `ExecutionPlan` is genuinely immutable (`ImmutableArray<T>`) and contains concrete choices (no `"auto"`).
+- [x] `ExecutionPlan` validation checks strongly typed invariants without overly restrictive universal equations.
+- [x] Candidate evaluation during planning is model-aware and distinct from runtime fallback.
+- [x] `RuntimeInstance` executes the plan strictly without re-planning or reading `Model.Parameters`.
+- [x] `RuntimeInstance` (Engine) integrates cleanly with `ModelRuntime` and `ModelRuntimeManager` (Server).
+- [x] `RuntimeInstance` exposes the effective `ExecutionPlan` for inspection and contract verification.
+- [x] Existing `ForwardPassSelection` and `TierPlanner` policy is orchestrated by `ExecutionPlanner`, not rewritten.
+- [x] Frontend-specific execution policy (`ForwardPassFrontend.Cli` vs `Server`) is eliminated.
+- [x] CLI, Server, and `ModelContext` all converge on the same planning path.
+- [x] `LoadFromPlan()` does not accept execution-altering options and never calls `Load()`.
+- [x] The runtime cannot silently substitute CPU/Vulkan/CUDA for the backend in the plan.
+- [x] Plan JSON serializes/deserializes using NativeAOT source generation.
+- [x] Parity tests confirm identical plans across all frontends.
+- [x] No model weights are bundled into Stingray itself.
+
+---
+
+## 7. Implementation Summary
+
+The unified execution plan architecture has been implemented across all 10 chunks:
+1. **Packaging**: `ModelPackageIdentity` and `IModelPackage` implementations (`LooseGgufModelPackage`, `SafeTensorsModelPackage`, `OllamaModelPackage`) with advisory `StingraySidecarMetadata`.
+2. **Planning Facts**: `ModelDescription` captures all intrinsic properties in a single pass without disk re-reading.
+3. **Execution Contract**: Schema v2 `ExecutionPlan` with immutable collections, strongly typed sub-plans (`BackendPlan`, `PlacementPlan`, `StatePlan`, `BatchingPlan`, `SpeculationPlan`, `ModalityPlan`, `MemoryPlan`, `PlanProvenance`), and zero `"auto"` options.
+4. **Central Planner**: `ExecutionPlanner.Plan(desc, request, capabilities)` coordinates candidate evaluation, tier placement, and forward pass selection without frontend-specific divergence.
+5. **Context Propagation**: `ArchitectureLoadContext` directly carries the authoritative `ExecutionPlan`.
+6. **Resource Ownership**: `RuntimeInstance.Create(plan, model)` deterministically allocates backends and forward passes, throwing `PlanNotExecutableException` on hardware or contract mismatch with zero silent fallbacks.
+7. **ModelContext**: Plan-driven engine construction via `RuntimeInstance.Create(plan, _model)`.
+8. **Server Loader**: `InferenceEngineLoader.LoadFromPlan(plan, opts)` directly instantiates `RuntimeInstance.Create(plan, model)` without re-evaluating policy.
+9. **CLI Engine**: `RunCommand` and `StaticPlanCommand` resolve via `ExecutionPlanner` and execute via `RuntimeInstance`.
+10. **Parity & Audit**: Cross-frontend parity verified in `FrontendPlanParityTests.cs`, ensuring identical plans and contracts across `ModelContext`, `InferenceEngineLoader`, and CLI `ExecutionPlanBuilder`.

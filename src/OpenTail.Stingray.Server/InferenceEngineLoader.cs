@@ -171,8 +171,9 @@ public static class InferenceEngineLoader
             ThreadCount = opts.CpuThreads,
             BatchingMode = (opts.MaxBatchSize > 1 || opts.EnableSessions) ? BatchingMode.Continuous : BatchingMode.Sequential,
             MaxBatchSize = opts.MaxBatchSize > 0 ? opts.MaxBatchSize : 1,
-            DraftModelPath = null,
-            DSparkModelPath = opts.DSparkModelPath,
+            DSparkModelPath = !string.IsNullOrWhiteSpace(opts.DSparkModelPath)
+                ? opts.DSparkModelPath
+                : Environment.GetEnvironmentVariable("STINGRAY_DSPARK_MODEL"),
             SnapKvEnabled = SnapKvConfig.FromEnvironment().Enabled,
             SnapKvBudget = SnapKvConfig.FromEnvironment().Budget,
         };

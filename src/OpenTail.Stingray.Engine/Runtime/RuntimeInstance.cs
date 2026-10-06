@@ -92,6 +92,13 @@ public sealed class RuntimeInstance : IDisposable
             throw new PlanNotExecutableException(descriptor.GetRefusalMessage(model.Architecture), plan);
         }
 
+        if (!string.IsNullOrEmpty(plan.Provenance?.TargetArchitecture)
+            && !string.Equals(plan.Provenance.TargetArchitecture, model.Architecture, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new PlanNotExecutableException(
+                $"Plan target architecture '{plan.Provenance.TargetArchitecture}' does not match model architecture '{model.Architecture}'.", plan);
+        }
+
         // 4. Validate backend operational availability (Zero silent fallbacks!)
         var backend = plan.BackendPlan?.Backend
             ?? (Enum.TryParse<ForwardPassBackend>(plan.Backend, true, out var b) ? b : ForwardPassBackend.Cpu);
