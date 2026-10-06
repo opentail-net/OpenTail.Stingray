@@ -82,6 +82,17 @@ public static class ExecutionPlanner
         }
 
         // 5. Select ForwardPassKind via ForwardPassSelection
+        string? unsupportedBackend = null;
+        if (!string.IsNullOrEmpty(request.PinnedBackend) &&
+            !string.Equals(request.PinnedBackend, "auto", StringComparison.OrdinalIgnoreCase))
+        {
+            string b = request.PinnedBackend.Trim().ToLowerInvariant();
+            if (b is not ("cpu" or "cuda" or "vulkan"))
+            {
+                unsupportedBackend = request.PinnedBackend;
+            }
+        }
+
         var passReq = model.CreateForwardPassRequest(
             frontend: ForwardPassFrontend.Cli,
             backend: selectedBackend,
@@ -93,24 +104,18 @@ public static class ExecutionPlanner
             hasDraftModel: !string.IsNullOrEmpty(request.DraftModelPath),
             isContinuousBatching: request.BatchingMode == BatchingMode.Continuous,
             targetContextLength: ctxSize,
-            allowUnverifiedArchitecture: request.AllowUnverifiedArchitecture);
+            allowUnverifiedArchitecture: request.AllowUnverifiedArchitecture,
+            unsupportedBackendName: unsupportedBackend);
 
         var passDecision = ForwardPassSelection.Select(passReq);
-        ForwardPassKind forwardPassKind;
-        if (passDecision.Kind.HasValue)
+        if (passDecision.IsRefused)
         {
-            forwardPassKind = passDecision.Kind.Value;
-            decisions.Add(new("FORWARD_PASS", forwardPassKind.ToString(),
-                passDecision.Notice ?? "Selected optimal forward pass.", "forward_pass_selection"));
+            throw new NotSupportedException(passDecision.Refusal);
         }
-        else
-        {
-            // Fallback to CPU dense when unselected, logging warning
-            warnings.Add(passDecision.Refusal ?? "Preferred forward pass was refused.");
-            forwardPassKind = model.Semantics.Format == ModelFormat.SafeTensors
-                ? ForwardPassKind.SafeTensorsCpu
-                : (model.PlanningFacts.IsHybridSsm ? ForwardPassKind.CpuHybridGdn : ForwardPassKind.CpuDense);
-        }
+
+        ForwardPassKind forwardPassKind = passDecision.Kind!.Value;
+        decisions.Add(new("FORWARD_PASS", forwardPassKind.ToString(),
+            passDecision.Notice ?? "Selected optimal forward pass.", "forward_pass_selection"));
 
         // 6. Build Sub-Plans
         int threadCount = request.ThreadCount > 0 ? request.ThreadCount : capabilities.RecommendedThreadCount;

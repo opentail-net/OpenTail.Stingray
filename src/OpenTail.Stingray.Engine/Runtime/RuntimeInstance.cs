@@ -55,10 +55,17 @@ public sealed class RuntimeInstance : IDisposable
     /// Strictly validates plan invariants, backend operational status, and architecture admission.
     /// Never reads execution policy from <see cref="Model.Parameters"/>.
     /// </summary>
-    public static RuntimeInstance Create(ExecutionPlan plan, Model model)
+    public static RuntimeInstance Create(ExecutionPlan plan, Model model, ModelHyperparams? hyperparamsOverride = null)
     {
         ArgumentNullException.ThrowIfNull(plan);
         ArgumentNullException.ThrowIfNull(model);
+
+        if (plan.BackendPlan?.ThreadCount > 0)
+        {
+            SimdKernels.CpuThreads = plan.BackendPlan.ThreadCount;
+        }
+
+        var effectiveHp = hyperparamsOverride ?? model.Hyperparams;
 
         // 1. Validate plan executability
         if (!plan.IsExecutable)
@@ -145,12 +152,12 @@ public sealed class RuntimeInstance : IDisposable
             // 6. Allocate baseline CPU dense pass for hybrid configurations if needed
             if (plan.ForwardPassKind is ForwardPassKind.CudaHybrid or ForwardPassKind.VulkanHybrid)
             {
-                if (!model.Hyperparams.IsHybridSsm && model.IsGguf)
+                if (!effectiveHp.IsHybridSsm && model.IsGguf)
                 {
                     cpuDensePass = new ForwardPass(
                         model.Gguf,
                         cpuBackend ?? new CpuBackend(),
-                        model.Hyperparams,
+                        effectiveHp,
                         maxContextLength: plan.ContextSize,
                         prefillDequantCacheBytes: 0);
                     ownedDisposables.Add(cpuDensePass);
@@ -163,7 +170,7 @@ public sealed class RuntimeInstance : IDisposable
                 Path = model.ModelPath,
                 Architecture = model.Architecture,
                 TensorSource = model.TensorSource,
-                Hyperparams = model.Hyperparams,
+                Hyperparams = effectiveHp,
                 IsGguf = model.IsGguf,
                 Gguf = model.IsGguf ? model.Gguf : null,
             };

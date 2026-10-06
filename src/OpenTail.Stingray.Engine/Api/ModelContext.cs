@@ -1,11 +1,10 @@
 #nullable enable
 
 using OpenTail.Stingray.Core;
-using OpenTail.Stingray.Cpu;
 using OpenTail.Stingray.Cuda;
 using OpenTail.Stingray.Engine;
-using OpenTail.Stingray.TurboQuant;
-using OpenTail.Stingray.Vulkan;
+using OpenTail.Stingray.Engine.Planning;
+using OpenTail.Stingray.Engine.Runtime;
 
 namespace OpenTail.Stingray;
 
@@ -19,7 +18,9 @@ public sealed class ModelContext : IModelContext
     private readonly ContextParams _params;
     private readonly ITokenizer _tokenizer;
     private readonly object _lock = new();
+    private RuntimeInstance? _runtimeInstance;
     private IInferenceEngine? _engine;
+    private ExecutionPlan? _plan;
     private bool _hasExplicitEngine;
     private bool _disposed;
 
@@ -40,6 +41,27 @@ public sealed class ModelContext : IModelContext
 
     /// <summary>Whether an explicit engine was configured via <see cref="SetEngine"/>.</summary>
     public bool HasExplicitEngine => _hasExplicitEngine;
+
+    /// <summary>
+    /// Gets the authoritative execution plan governing this context's runtime.
+    /// If an engine has already been instantiated, returns the active plan.
+    /// Otherwise, lazily plans the default execution configuration.
+    /// </summary>
+    public ExecutionPlan ExecutionPlan
+    {
+        get
+        {
+            ThrowIfDisposed();
+            lock (_lock)
+            {
+                if (_runtimeInstance is not null)
+                {
+                    return _runtimeInstance.Plan;
+                }
+                return _plan ??= Plan(isContinuousBatching: false);
+            }
+        }
+    }
 
     /// <summary>
     /// Gets the underlying <see cref="IInferenceEngine"/> powering this context.
@@ -83,7 +105,12 @@ public sealed class ModelContext : IModelContext
         ThrowIfDisposed();
         lock (_lock)
         {
-            if (_engine is IDisposable oldDisposable && !ReferenceEquals(_engine, engine))
+            if (_runtimeInstance is not null && !ReferenceEquals(_runtimeInstance.Engine, engine))
+            {
+                _runtimeInstance.Dispose();
+                _runtimeInstance = null;
+            }
+            else if (_engine is IDisposable oldDisposable && !ReferenceEquals(_engine, engine))
             {
                 oldDisposable.Dispose();
             }
@@ -94,229 +121,11 @@ public sealed class ModelContext : IModelContext
 
     private IInferenceEngine CreateDefaultEngine()
     {
-        var (fwd, _, owned) = BuildForwardPass(isContinuousBatching: false);
-        var (thinkTokenId, endThinkTokenId) = _tokenizer.ReasoningTokens;
-        return new InferenceEngine(fwd, _tokenizer, _model.Architecture, thinkTokenId, endThinkTokenId, owned: [.. owned]);
-    }
-
-    private (IForwardPass Fwd, ForwardPassKind Kind, List<IDisposable> Owned) BuildForwardPass(bool isContinuousBatching)
-    {
-        var owned = new List<IDisposable>();
-        var hp = _model.Hyperparams;
-        if (_params.RopeFrequencyBase is { } rfb and > 0)
-        {
-            hp = hp with { RopeTheta = rfb };
-        }
-        if (_params.RopeFrequencyScale is { } rfs and > 0)
-        {
-            hp = hp with { RopeTheta = hp.RopeTheta / rfs };
-        }
-
-        if (_params.ThreadCount > 0)
-        {
-            SimdKernels.CpuThreads = (int)_params.ThreadCount;
-        }
-
-        string backendStr = (_model.Parameters.Backend ?? "auto").Trim().ToLowerInvariant();
-        int nGpuLayers = _model.Parameters.GpuLayerCount;
-        bool isGguf = _model.IsGguf;
-        string arch = _model.Architecture;
-
-        ForwardPassBackend backend = backendStr switch
-        {
-            "cpu" => ForwardPassBackend.Cpu,
-            "cuda" => ForwardPassBackend.Cuda,
-            "vulkan" => ForwardPassBackend.Vulkan,
-            "auto" or "" => ForwardPassBackend.Auto,
-            _ => ForwardPassBackend.Auto,
-        };
-
-        string? unsupportedBackend = backendStr is not ("auto" or "" or "cpu" or "cuda" or "vulkan")
-            ? _model.Parameters.Backend
-            : null;
-
-        var desc = ArchitectureRegistry.Find(arch);
-        bool archSupported = desc?.IsUsable() ?? false;
-        string? archRefusal = desc is not null && !desc.IsUsable()
-            ? desc.GetRefusalMessage(arch)
-            : (desc is null ? $"GGUF architecture '{arch}' is not admitted by OpenTail.Stingray." : null);
-
-        bool turboQuant = !string.IsNullOrWhiteSpace(_params.TurboQuantMode);
-        string tqMode = turboQuant ? _params.TurboQuantMode! : "auto";
-        bool snapKvEnabled = SnapKvConfig.FromEnvironment().Enabled;
-
-        bool unsupportedGpuPath = isGguf && nGpuLayers != 0 && GpuForwardPass.UnsupportedReason(_model.Gguf, hp) is not null;
-        bool unsupportedPartialCudaPath = isGguf && GpuForwardPass.PartialOffloadUnsupportedReason(_model.Gguf, hp) is not null;
-        bool unsupportedPartialVulkanPath = isGguf && GpuForwardPass.PartialOffloadUnsupportedReason(_model.Gguf, hp) is not null;
-
-        bool hasMlaTensors = isGguf
-            && _model.Gguf.FindTensor("blk.0.attn_kv_b.weight") is not null
-            && _model.Gguf.FindTensor("blk.0.attn_q_a.weight") is null;
-
-        bool isSafeTensorsGpu = !isGguf && (nGpuLayers != 0 && backendStr != "cpu");
-
-        int plannedGpuLayers = hp.NumLayers;
-        if (nGpuLayers != 0 && backend != ForwardPassBackend.Cpu && isGguf)
-        {
-            try
-            {
-                bool wantCuda = backend == ForwardPassBackend.Cuda || (backend == ForwardPassBackend.Auto && CudaBackend.IsAvailable());
-                if (wantCuda && CudaBackend.IsAvailable())
-                {
-                    var hw = HardwareProfile.Detect();
-                    plannedGpuLayers = TierPlanner.Plan(_model.Gguf, hp, hw, turboQuant, requestedCtxSize: ContextSize,
-                        kvDtype: CudaForwardPass.ResolveConfiguredKvDType()).GpuLayers;
-                }
-                else
-                {
-                    var hw = HardwareProfile.Detect();
-                    plannedGpuLayers = TierPlanner.Plan(_model.Gguf, hp, hw, turboQuant, requestedCtxSize: ContextSize).GpuLayers;
-                }
-            }
-            catch
-            {
-                plannedGpuLayers = hp.NumLayers;
-            }
-        }
-
-        int headDim = _params.TurboQuantHeadDim is { } tqHd and > 0 ? tqHd : hp.HeadDim;
-
-        var request = new ForwardPassRequest
-        {
-            Frontend = ForwardPassFrontend.Cli,
-            Architecture = arch,
-            UnsupportedBackendName = unsupportedBackend,
-            IsSafeTensors = !isGguf,
-            PackageSupported = true,
-            IsSafeTensorsGpuRequested = isSafeTensorsGpu,
-            IsHybridSsm = hp.IsHybridSsm,
-            HasHybridGdnLayers = hp.IsHybridSsm,
-            HasCpuHybridGdnPass = hp.IsHybridSsm,
-            IsMoE = hp.IsMoE,
-            KvLoraRank = hp.KvLoraRank,
-            HasMlaTensors = hasMlaTensors,
-            ArchitectureSupported = archSupported,
-            AllowUnverifiedArchitecture = _model.Parameters.AllowUnverifiedArch,
-            ArchitectureRefusal = archRefusal,
-            NumLayers = hp.NumLayers,
-            GpuLayers = nGpuLayers,
-            PlannedGpuLayers = plannedGpuLayers,
-            Backend = backend,
-            CudaAvailable = CudaBackend.IsAvailable(),
-            UnsupportedGpuPath = unsupportedGpuPath,
-            UnsupportedPartialCudaPath = unsupportedPartialCudaPath,
-            UnsupportedPartialVulkanPath = unsupportedPartialVulkanPath,
-            LayerHeadDim = hp.LayerHeadDim is not null,
-            HasLayerHeadDim = hp.LayerHeadDim is not null,
-            TurboQuant = turboQuant,
-            TurboQuantMode = tqMode,
-            HeadDim = headDim,
-            IsContinuousBatching = isContinuousBatching,
-            KVarNSnapKvBlocked = snapKvEnabled,
-            KVarNCudaMoeBlocked = hp.IsMoE,
-            KVarNPartialCudaBlocked = nGpuLayers > 0 && nGpuLayers < hp.NumLayers,
-            PlannedGpuLayersForKVarN = plannedGpuLayers,
-            LayerSplitOnly = unsupportedPartialVulkanPath || hp.LayerHeadDim is not null,
-            IsGemma4 = hp.LayerHeadDim is not null,
-        };
-
-        var decision = ForwardPassSelection.Select(request);
-        if (decision.IsRefused)
-        {
-            throw new NotSupportedException(decision.Refusal);
-        }
-
-        var cpuBackend = new CpuBackend();
-        owned.Add(cpuBackend);
-
-        TqQuantizer ResolveTq(string? kvarnBlocked)
-        {
-            if (!turboQuant) return TqQuantizer.LloydMax;
-            kvarnBlocked ??= snapKvEnabled ? TqSupport.SnapKvReason : null;
-            bool tqModeIsAuto = string.IsNullOrEmpty(tqMode) || tqMode.Equals("auto", StringComparison.OrdinalIgnoreCase);
-            if (kvarnBlocked is null)
-                return tqModeIsAuto ? TqQuantizer.KVarN : (tqMode.Equals("kvarn", StringComparison.OrdinalIgnoreCase) ? TqQuantizer.KVarN : TqQuantizer.LloydMax);
-            if (!tqModeIsAuto && tqMode.Equals("kvarn", StringComparison.OrdinalIgnoreCase))
-                throw new InvalidOperationException($"TqMode=kvarn is not supported on this path: {kvarnBlocked}.");
-            if (!TqSupport.IsLloydMaxHeadDim(headDim))
-                throw new InvalidOperationException(
-                    $"TurboQuant with head dim {headDim} requires KVarN ({kvarnBlocked}), but Lloyd-Max — the " +
-                    "only codec available on this path — ships codebooks for head dim 128/256 only. " +
-                    "Use nGpuLayers=0 for the CPU KVarN path.");
-            return TqQuantizer.LloydMax;
-        }
-
-        var probe = new ArchitectureProbe
-        {
-            Path = _model.ModelPath,
-            Architecture = _model.Architecture,
-            TensorSource = _model.TensorSource,
-            Hyperparams = hp,
-            IsGguf = _model.IsGguf,
-            Gguf = _model.IsGguf ? _model.Gguf : null,
-        };
-
-        var descriptor = ArchitectureRegistry.Find(_model.Architecture)
-            ?? throw new NotSupportedException($"Unsupported architecture '{_model.Architecture}'.");
-
-        LayerPlacement? placement = null;
-        if (decision.Kind is ForwardPassKind.CudaHybrid)
-        {
-            var cudaHyb = CudaBackend.Create();
-            owned.Add(cudaHyb);
-            int effCudaLayers = nGpuLayers > 0 ? nGpuLayers : plannedGpuLayers;
-            var hwProfileCuda = HardwareProfile.Detect(cudaHyb);
-            placement = TierPlanner.Plan(_model.Gguf, hp, hwProfileCuda, turboQuant, requestedCtxSize: ContextSize,
-                kvDtype: CudaForwardPass.ResolveConfiguredKvDType(), pinGpuLayers: effCudaLayers);
-        }
-        else if (decision.Kind is ForwardPassKind.VulkanHybrid)
-        {
-            var vkHyb = new VulkanBackend();
-            owned.Add(vkHyb);
-            _ = ResolveTq(TqSupport.VulkanReason);
-            int effVkLayers = nGpuLayers > 0 ? nGpuLayers : plannedGpuLayers;
-            var hwProfileVk = HardwareProfile.Detect(vkHyb);
-            placement = TierPlanner.Plan(_model.Gguf, hp, hwProfileVk, turboQuant, requestedCtxSize: ContextSize,
-                pinGpuLayers: effVkLayers);
-        }
-        else if (decision.Kind is ForwardPassKind.VulkanDense)
-        {
-            _ = ResolveTq(TqSupport.VulkanReason);
-        }
-
-        var tqQuantizer = ResolveTq(hp.IsMoE ? TqSupport.CudaMoeReason
-            : !TqSupport.IsKVarNCudaHeadDim(headDim) ? TqSupport.CudaHeadDimReason(headDim)
-            : null);
-
-        var plan = ExecutionPlan.CreateSynthesized(
-            architecture: probe.Architecture ?? "unknown",
-            decision: decision,
-            backend: backend,
-            contextSize: ContextSize,
-            gpuLayers: nGpuLayers > 0 ? nGpuLayers : plannedGpuLayers,
-            placement: placement,
-            turboQuant: turboQuant,
-            turboQuantMode: tqMode,
-            headDim: headDim,
-            tqQuantizer: tqQuantizer,
-            flashAttention: _params.FlashAttention,
-            kvDtype: CudaForwardPass.ResolveConfiguredKvDType(),
-            prefillDequantCacheBytes: 0,
-            preferBatchingOverAutoSnapKv: false,
-            modelPath: _model.ModelPath,
-            totalLayers: hp.NumLayers);
-
-        var loadContext = new ArchitectureLoadContext
-        {
-            Probe = probe,
-            Plan = plan,
-            CpuBackend = cpuBackend,
-        };
-
-        var fwd = descriptor.ConstructForwardPass(loadContext);
-        owned.AddRange(loadContext.OwnedDisposables);
-
-        return (fwd, decision.Kind!.Value, owned);
+        var plan = _plan ?? Plan(isContinuousBatching: false);
+        var hpOverride = ResolveRopeOverride();
+        _runtimeInstance = RuntimeInstance.Create(plan, _model, hpOverride);
+        _plan = _runtimeInstance.Plan;
+        return _runtimeInstance.Engine;
     }
 
     /// <summary>
@@ -326,38 +135,33 @@ public sealed class ModelContext : IModelContext
     {
         ThrowIfDisposed();
         int batchSize = maxBatchSize ?? (_params.BatchSize > 0 ? (int)_params.BatchSize : 8);
-        var hp = _model.Hyperparams;
-        var (fwd, kind, owned) = BuildForwardPass(isContinuousBatching: true);
+        var plan = Plan(isContinuousBatching: true, maxBatchSize: batchSize);
+        var hpOverride = ResolveRopeOverride();
+        var instance = RuntimeInstance.Create(plan, _model, hpOverride);
 
-        var descriptor = ArchitectureRegistry.Find(_model.Architecture);
-        bool batchOk = false;
-        bool turboQuant = !string.IsNullOrWhiteSpace(_params.TurboQuantMode);
-
-        if (fwd is IBatchedForwardPass && (descriptor?.SupportsContinuousBatching ?? true))
+        if (instance.Engine is not ContinuousBatchingEngine batchEngine)
         {
-            if (descriptor?.CanBatchPredicate is { } predicate)
-            {
-                batchOk = predicate(hp, turboQuant);
-            }
-            else if (kind is ForwardPassKind.CpuDense or ForwardPassKind.SafeTensorsCpu)
-            {
-                batchOk = !hp.IsMoE && !turboQuant && hp.LayerHeadDim is null
-                    && !hp.AttentionOutputGate && !hp.InputEmbeddingRmsNorm;
-            }
-            else if (kind == ForwardPassKind.CudaDense && fwd is CudaForwardPass cfwd)
-            {
-                batchOk = cfwd.SupportsContinuousBatching;
-            }
+            instance.Dispose();
+            throw new NotSupportedException($"The architecture '{_model.Architecture}' with forward pass '{plan.ForwardPassKind}' does not support continuous batching.");
         }
 
-        if (!batchOk || fwd is not IBatchedForwardPass batchPass)
+        lock (_lock)
         {
-            foreach (var d in owned) d.Dispose();
-            throw new NotSupportedException($"The architecture '{_model.Architecture}' with forward pass '{kind}' does not support continuous batching.");
+            if (_runtimeInstance is not null && !ReferenceEquals(_runtimeInstance, instance))
+            {
+                _runtimeInstance.Dispose();
+            }
+            else if (_engine is IDisposable oldDisposable && !ReferenceEquals(_engine, batchEngine))
+            {
+                oldDisposable.Dispose();
+            }
+
+            _runtimeInstance = instance;
+            _engine = batchEngine;
+            _plan = plan;
         }
 
-        var (thinkTokenId, endThinkTokenId) = _tokenizer.ReasoningTokens;
-        return new ContinuousBatchingEngine(batchPass, _tokenizer, _model.Architecture, batchSize, thinkTokenId, endThinkTokenId);
+        return batchEngine;
     }
 
     /// <summary>
@@ -373,6 +177,57 @@ public sealed class ModelContext : IModelContext
             var batchEngine = CreateContinuousBatchingEngine(maxBatchSize);
             SetEngine(batchEngine);
         }
+    }
+
+    private ExecutionPlan Plan(bool isContinuousBatching, int? maxBatchSize = null)
+    {
+        int batchSize = maxBatchSize ?? (_params.BatchSize > 0 ? (int)_params.BatchSize : (isContinuousBatching ? 8 : 1));
+        bool turboQuant = !string.IsNullOrWhiteSpace(_params.TurboQuantMode);
+        string tqMode = turboQuant ? _params.TurboQuantMode! : "auto";
+        var snapKv = SnapKvConfig.FromEnvironment();
+
+        var request = new ExecutionRequest
+        {
+            Goal = "balanced",
+            PinnedBackend = _model.Parameters.Backend,
+            PinnedGpuLayers = _model.Parameters.GpuLayerCount,
+            PinnedContextSize = ContextSize,
+            PinnedKvDtype = CudaForwardPass.ResolveConfiguredKvDType().ToString().ToLowerInvariant(),
+            TurboQuant = turboQuant,
+            TurboQuantMode = tqMode,
+            FlashAttention = _params.FlashAttention,
+            RopeFrequencyBase = _params.RopeFrequencyBase,
+            RopeFrequencyScale = _params.RopeFrequencyScale,
+            ThreadCount = (int)_params.ThreadCount,
+            BatchingMode = isContinuousBatching ? BatchingMode.Continuous : BatchingMode.Sequential,
+            MaxBatchSize = batchSize,
+            SnapKvEnabled = snapKv.Enabled,
+            SnapKvBudget = snapKv.Budget,
+            AllowUnverifiedArchitecture = _model.Parameters.AllowUnverifiedArch,
+        };
+
+        var modelDesc = ModelDescription.FromModel(_model);
+        var capabilities = BackendCapabilities.Detect();
+        return ExecutionPlanner.Plan(modelDesc, request, capabilities);
+    }
+
+    private ModelHyperparams? ResolveRopeOverride()
+    {
+        if (_params.RopeFrequencyBase is null && _params.RopeFrequencyScale is null)
+        {
+            return null;
+        }
+
+        var hp = _model.Hyperparams;
+        if (_params.RopeFrequencyBase is { } rfb and > 0)
+        {
+            hp = hp with { RopeTheta = rfb };
+        }
+        if (_params.RopeFrequencyScale is { } rfs and > 0)
+        {
+            hp = hp with { RopeTheta = hp.RopeTheta / rfs };
+        }
+        return hp;
     }
 
     /// <inheritdoc/>
@@ -397,7 +252,12 @@ public sealed class ModelContext : IModelContext
         {
             if (_disposed) return;
             _disposed = true;
-            if (_engine is IDisposable disposableEngine)
+            if (_runtimeInstance is not null)
+            {
+                _runtimeInstance.Dispose();
+                _runtimeInstance = null;
+            }
+            else if (_engine is IDisposable disposableEngine)
             {
                 disposableEngine.Dispose();
             }
