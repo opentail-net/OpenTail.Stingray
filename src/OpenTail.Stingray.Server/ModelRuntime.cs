@@ -205,11 +205,20 @@ public sealed class ModelRuntime : IDisposable
     /// handles, and not already mid-transition.</summary>
     internal bool IsEvictable => !IsPinned && HandleCount == 0 && State == ModelRuntimeState.Ready;
 
-    internal ModelRuntime(ModelId id, LoadedEngine loaded, long estimatedModelBytes)
+    /// <summary>
+    /// The underlying engine runtime instance owning execution resources (backends, forward pass, engine).
+    /// </summary>
+    public OpenTail.Stingray.Engine.Runtime.RuntimeInstance? Instance { get; }
+
+    /// <summary>The execution plan driving this runtime, if plan-managed.</summary>
+    public OpenTail.Stingray.Engine.ExecutionPlan? Plan => Instance?.Plan;
+
+    internal ModelRuntime(ModelId id, LoadedEngine loaded, long estimatedModelBytes, OpenTail.Stingray.Engine.Runtime.RuntimeInstance? instance = null)
     {
         Id = id;
         Loaded = loaded;
         EstimatedModelBytes = estimatedModelBytes;
+        Instance = instance;
         State = ModelRuntimeState.Ready;
         Touch();
     }
@@ -237,6 +246,7 @@ public sealed class ModelRuntime : IDisposable
     {
         if (State == ModelRuntimeState.Disposed) return;
         State = ModelRuntimeState.Disposed;
+        Instance?.Dispose();
         (Loaded.Engine as IDisposable)?.Dispose();
     }
 }

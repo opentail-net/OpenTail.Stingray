@@ -58,4 +58,9 @@
     <ProjectReference Include="..\OpenTail.Stingray\OpenTail.Stingray.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="OpenTail.Stingray.Tests.Server" />
+    <InternalsVisibleTo Include="OpenTail.Stingray.Tests.Server.Fast" />
+  </ItemGroup>
+
 </Project>
