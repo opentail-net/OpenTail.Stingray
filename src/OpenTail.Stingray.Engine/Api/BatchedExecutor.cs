@@ -27,9 +27,9 @@ public sealed class BatchedExecutor : IExecutor
     {
         ArgumentNullException.ThrowIfNull(context);
         _context = context;
-        if (!_context.HasExplicitEngine && _context.Engine is not ContinuousBatchingEngine)
+        if (!_context.HasExplicitEngine)
         {
-            _context.SetEngine(_context.CreateContinuousBatchingEngine());
+            _context.EnsureContinuousBatchingEngine();
         }
     }
 

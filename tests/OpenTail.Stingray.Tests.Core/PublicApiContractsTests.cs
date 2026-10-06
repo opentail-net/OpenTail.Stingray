@@ -581,6 +581,86 @@ public class PublicApiContractsTests
     }
 
     [Fact]
+    public void ModelParams_UnsupportedBackend_RefusesCleanly()
+    {
+        var modelPath = Path.Combine(RepoRoot, "models", "_models", "SmolLM2-135M-Instruct-Q4_K_M.gguf");
+        if (!File.Exists(modelPath)) return;
+
+        var modelParams = new ModelParams(modelPath) { Backend = "nonexistent_backend" };
+        using var model = Model.Load(modelParams);
+        using var ctx = (ModelContext)model.CreateContext(new ContextParams { ContextSize = 256 });
+
+        var ex = Assert.Throws<NotSupportedException>(() => _ = ctx.Engine);
+        Assert.Contains("Unknown --backend value 'nonexistent_backend'", ex.Message);
+    }
+
+    [Fact]
+    public void ModelParams_UnsupportedOptions_ThrowsNotSupportedException()
+    {
+        var modelPath = Path.Combine(RepoRoot, "models", "_models", "SmolLM2-135M-Instruct-Q4_K_M.gguf");
+        if (!File.Exists(modelPath)) return;
+
+        Assert.Throws<NotSupportedException>(() => Model.Load(new ModelParams(modelPath) { UseMemoryLock = true }));
+        Assert.Throws<NotSupportedException>(() => Model.Load(new ModelParams(modelPath) { UseMemoryMap = false }));
+        Assert.Throws<NotSupportedException>(() => Model.Load(new ModelParams(modelPath) { MainGpu = 1 }));
+        Assert.Throws<NotSupportedException>(() => Model.Load(new ModelParams(modelPath) { TensorSplit = [0.5f, 0.5f] }));
+    }
+
+    [Fact]
+    public void ModelContext_UnknownTurboQuantMode_RefusesCleanly()
+    {
+        var modelPath = Path.Combine(RepoRoot, "models", "_models", "SmolLM2-135M-Instruct-Q4_K_M.gguf");
+        if (!File.Exists(modelPath)) return;
+
+        var modelParams = new ModelParams(modelPath) { Backend = "cpu", GpuLayerCount = 0 };
+        using var model = Model.Load(modelParams);
+        using var ctx = (ModelContext)model.CreateContext(new ContextParams { ContextSize = 256, TurboQuantMode = "invalid_mode" });
+
+        var ex = Assert.Throws<NotSupportedException>(() => _ = ctx.Engine);
+        Assert.Contains("Unknown --tq-mode value 'invalid_mode'", ex.Message);
+    }
+
+    [Fact]
+    public async Task BatchedExecutor_ConcurrentDualInference_ExecutesConcurrentlyOnContinuousBatchingEngine()
+    {
+        var modelPath = Path.Combine(RepoRoot, "models", "_models", "SmolLM2-135M-Instruct-Q4_K_M.gguf");
+        if (!File.Exists(modelPath)) return;
+
+        var modelParams = new ModelParams(modelPath) { Backend = "cpu", GpuLayerCount = 0 };
+        using var model = Model.Load(modelParams);
+        using var ctx = (ModelContext)model.CreateContext(new ContextParams { ContextSize = 512, BatchSize = 4 });
+
+        var executor = new BatchedExecutor(ctx);
+        Assert.IsType<ContinuousBatchingEngine>(ctx.Engine);
+
+        var task1 = Task.Run(async () =>
+        {
+            var sb = new System.Text.StringBuilder();
+            await foreach (var piece in executor.InferAsync("The capital of France is", new InferenceParams { MaxTokens = 4, Temperature = 0.0f }))
+            {
+                sb.Append(piece);
+            }
+            return sb.ToString();
+        });
+
+        var task2 = Task.Run(async () =>
+        {
+            var sb = new System.Text.StringBuilder();
+            await foreach (var piece in executor.InferAsync("The capital of Germany is", new InferenceParams { MaxTokens = 4, Temperature = 0.0f }))
+            {
+                sb.Append(piece);
+            }
+            return sb.ToString();
+        });
+
+        var results = await Task.WhenAll(task1, task2);
+        Assert.False(string.IsNullOrWhiteSpace(results[0]));
+        Assert.False(string.IsNullOrWhiteSpace(results[1]));
+        Assert.Contains("Paris", results[0]);
+        Assert.Contains("Berlin", results[1]);
+    }
+
+    [Fact]
     public void ChatSession_JinjaRaiseException_ThrowsChatTemplateException_DoesNotFallbackToChatML()
     {
         var tokSource = new TokenizerSource

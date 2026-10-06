@@ -112,115 +112,283 @@ public sealed class ModelContext : IModelContext
 
         string backendStr = (_model.Parameters.Backend ?? "auto").Trim().ToLowerInvariant();
         int nGpuLayers = _model.Parameters.GpuLayerCount;
-        bool useGpu = nGpuLayers != 0 && backendStr != "cpu";
+        bool isGguf = _model.IsGguf;
+        string arch = _model.Architecture;
+
+        ForwardPassBackend backend = backendStr switch
+        {
+            "cpu" => ForwardPassBackend.Cpu,
+            "cuda" => ForwardPassBackend.Cuda,
+            "vulkan" => ForwardPassBackend.Vulkan,
+            "auto" or "" => ForwardPassBackend.Auto,
+            _ => ForwardPassBackend.Auto,
+        };
+
+        string? unsupportedBackend = backendStr is not ("auto" or "" or "cpu" or "cuda" or "vulkan")
+            ? _model.Parameters.Backend
+            : null;
+
+        var desc = ArchitectureRegistry.Find(arch);
+        bool archSupported = desc?.IsUsable() ?? false;
+        string? archRefusal = desc is not null && !desc.IsUsable()
+            ? desc.GetRefusalMessage(arch)
+            : (desc is null ? $"GGUF architecture '{arch}' is not admitted by OpenTail.Stingray." : null);
+
+        bool turboQuant = !string.IsNullOrWhiteSpace(_params.TurboQuantMode);
+        string tqMode = turboQuant ? _params.TurboQuantMode! : "auto";
+        bool snapKvEnabled = SnapKvConfig.FromEnvironment().Enabled;
+
+        bool unsupportedGpuPath = isGguf && nGpuLayers != 0 && GpuForwardPass.UnsupportedReason(_model.Gguf, hp) is not null;
+        bool unsupportedPartialCudaPath = isGguf && GpuForwardPass.PartialOffloadUnsupportedReason(_model.Gguf, hp) is not null;
+        bool unsupportedPartialVulkanPath = isGguf && GpuForwardPass.PartialOffloadUnsupportedReason(_model.Gguf, hp) is not null;
+
+        bool hasMlaTensors = isGguf
+            && _model.Gguf.FindTensor("blk.0.attn_kv_b.weight") is not null
+            && _model.Gguf.FindTensor("blk.0.attn_q_a.weight") is null;
+
+        bool isSafeTensorsGpu = !isGguf && (nGpuLayers != 0 && backendStr != "cpu");
+        bool isSafeTensorsDraft = !isGguf && (_model.Parameters.DraftModelPath is not null || _model.Parameters.DraftLookup);
+        bool isSafeTensorsDSpark = !isGguf && _model.Parameters.DSparkModelPath is not null;
+
+        int plannedGpuLayers = hp.NumLayers;
+        if (nGpuLayers != 0 && backend != ForwardPassBackend.Cpu && isGguf)
+        {
+            try
+            {
+                bool wantCuda = backend == ForwardPassBackend.Cuda || (backend == ForwardPassBackend.Auto && CudaBackend.IsAvailable());
+                if (wantCuda && CudaBackend.IsAvailable())
+                {
+                    var hw = HardwareProfile.Detect();
+                    plannedGpuLayers = TierPlanner.Plan(_model.Gguf, hp, hw, turboQuant, requestedCtxSize: ContextSize,
+                        kvDtype: CudaForwardPass.ResolveConfiguredKvDType()).GpuLayers;
+                }
+                else
+                {
+                    var hw = HardwareProfile.Detect();
+                    plannedGpuLayers = TierPlanner.Plan(_model.Gguf, hp, hw, turboQuant, requestedCtxSize: ContextSize).GpuLayers;
+                }
+            }
+            catch
+            {
+                plannedGpuLayers = hp.NumLayers;
+            }
+        }
+
+        var request = new ForwardPassRequest
+        {
+            Frontend = ForwardPassFrontend.Cli,
+            Architecture = arch,
+            UnsupportedBackendName = unsupportedBackend,
+            IsSafeTensors = !isGguf,
+            PackageSupported = true,
+            IsSafeTensorsGpuRequested = isSafeTensorsGpu,
+            IsSafeTensorsDraftRequested = isSafeTensorsDraft,
+            IsSafeTensorsDSparkRequested = isSafeTensorsDSpark,
+            IsHybridSsm = hp.IsHybridSsm,
+            HasHybridGdnLayers = hp.IsHybridSsm,
+            HasCpuHybridGdnPass = hp.IsHybridSsm,
+            IsMoE = hp.IsMoE,
+            KvLoraRank = hp.KvLoraRank,
+            HasMlaTensors = hasMlaTensors,
+            ArchitectureSupported = archSupported,
+            AllowUnverifiedArchitecture = _model.Parameters.AllowUnverifiedArch,
+            ArchitectureRefusal = archRefusal,
+            NumLayers = hp.NumLayers,
+            GpuLayers = nGpuLayers,
+            PlannedGpuLayers = plannedGpuLayers,
+            Backend = backend,
+            CudaAvailable = CudaBackend.IsAvailable(),
+            UnsupportedGpuPath = unsupportedGpuPath,
+            UnsupportedPartialCudaPath = unsupportedPartialCudaPath,
+            UnsupportedPartialVulkanPath = unsupportedPartialVulkanPath,
+            LayerHeadDim = hp.LayerHeadDim is not null,
+            HasLayerHeadDim = hp.LayerHeadDim is not null,
+            TurboQuant = turboQuant,
+            TurboQuantMode = tqMode,
+            HeadDim = hp.HeadDim,
+            HasDraftModel = _model.Parameters.DraftModelPath is not null,
+            DraftLookup = _model.Parameters.DraftLookup,
+            DraftModelPath = _model.Parameters.DraftModelPath,
+            HasDSparkModel = _model.Parameters.DSparkModelPath is not null,
+            DsParkRequested = _model.Parameters.DSparkModelPath is not null,
+            KVarNSnapKvBlocked = snapKvEnabled,
+            KVarNCudaMoeBlocked = hp.IsMoE,
+            KVarNPartialCudaBlocked = nGpuLayers > 0 && nGpuLayers < hp.NumLayers,
+            PlannedGpuLayersForKVarN = plannedGpuLayers,
+            LayerSplitOnly = unsupportedPartialVulkanPath || hp.LayerHeadDim is not null,
+            IsGemma4 = hp.LayerHeadDim is not null,
+        };
+
+        var decision = ForwardPassSelection.Select(request);
+        if (decision.IsRefused)
+        {
+            throw new NotSupportedException(decision.Refusal);
+        }
 
         var cpuBackend = new CpuBackend();
         owned.Add(cpuBackend);
 
-        IForwardPass fwd;
-        if (useGpu && _model.IsGguf)
+        TqQuantizer ResolveTq(string? kvarnBlocked)
         {
-            bool isCuda = backendStr == "cuda" || (backendStr == "auto" && CudaBackend.IsAvailable());
-            bool isVulkan = backendStr == "vulkan" || (backendStr == "auto" && !isCuda);
+            if (!turboQuant) return TqQuantizer.LloydMax;
+            kvarnBlocked ??= snapKvEnabled ? TqSupport.SnapKvReason : null;
+            bool tqModeIsAuto = string.IsNullOrEmpty(tqMode) || tqMode.Equals("auto", StringComparison.OrdinalIgnoreCase);
+            if (kvarnBlocked is null)
+                return tqModeIsAuto ? TqQuantizer.KVarN : (tqMode.Equals("kvarn", StringComparison.OrdinalIgnoreCase) ? TqQuantizer.KVarN : TqQuantizer.LloydMax);
+            if (!tqModeIsAuto && tqMode.Equals("kvarn", StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException($"TqMode=kvarn is not supported on this path: {kvarnBlocked}.");
+            if (!TqSupport.IsLloydMaxHeadDim(hp.HeadDim))
+                throw new InvalidOperationException(
+                    $"TurboQuant with head dim {hp.HeadDim} requires KVarN ({kvarnBlocked}), but Lloyd-Max — the " +
+                    "only codec available on this path — ships codebooks for head dim 128/256 only. " +
+                    "Use nGpuLayers=0 for the CPU KVarN path.");
+            return TqQuantizer.LloydMax;
+        }
 
-            if (isCuda)
-            {
-                if (!CudaBackend.IsAvailable() && backendStr == "cuda")
-                {
-                    throw new PlatformNotSupportedException("CUDA backend was requested but CUDA is not available on this system.");
-                }
+        IForwardPass fwd;
+        switch (decision.Kind!.Value)
+        {
+            case ForwardPassKind.SafeTensorsCpu:
+                var sfwd = new ForwardPass(_model.TensorSource, cpuBackend, hp, maxContextLength: ContextSize);
+                owned.Add(sfwd);
+                fwd = sfwd;
+                break;
+
+            case ForwardPassKind.CpuDense:
+                var dfwd = new ForwardPass(_model.TensorSource, cpuBackend, hp, maxContextLength: ContextSize);
+                if (turboQuant)
+                    dfwd.EnableTurboQuant(fp32WindowSize: 256, bits: 3, quantizer: ResolveTq(null));
+                owned.Add(dfwd);
+                fwd = dfwd;
+                break;
+
+            case ForwardPassKind.CpuHybridGdn:
+                var gdnFwd = new HybridGdnForwardPass(_model.Gguf, cpuBackend, hp, maxContextLength: ContextSize);
+                owned.Add(gdnFwd);
+                fwd = gdnFwd;
+                break;
+
+            case ForwardPassKind.RwkvCpu:
+                var rwkvFwd = RwkvForwardPassBase.Create(_model.Gguf);
+                owned.Add(rwkvFwd);
+                fwd = rwkvFwd;
+                break;
+
+            case ForwardPassKind.GptOssCpu:
+                var gptOssHp = GptOssHyperparams.FromModel(_model.Gguf);
+                var gptOssFwd = new GptOssForwardPass(_model.Gguf, gptOssHp);
+                owned.Add(gptOssFwd);
+                fwd = gptOssFwd;
+                break;
+
+            case ForwardPassKind.GptOssVulkan:
+                var vkGpt = new VulkanBackend();
+                owned.Add(vkGpt);
+                var gptOssHpVk = GptOssHyperparams.FromModel(_model.Gguf);
+                var gptOssGpu = new GptOssGpuForwardPass(_model.Gguf, vkGpt, gptOssHpVk, maxContextLength: ContextSize);
+                owned.Add(gptOssGpu);
+                fwd = gptOssGpu;
+                break;
+
+            case ForwardPassKind.DeepSeek2Vulkan:
+                var vkDs = new VulkanBackend();
+                owned.Add(vkDs);
+                var dsFwd = new DeepSeek2GpuForwardPass(_model.Gguf, vkDs, hp, maxContextLength: ContextSize);
+                owned.Add(dsFwd);
+                fwd = dsFwd;
+                break;
+
+            case ForwardPassKind.CudaDense:
                 var cuda = CudaBackend.Create();
                 owned.Add(cuda);
-                bool enableTq = !string.IsNullOrEmpty(_params.TurboQuantMode);
-                var tqQuantizer = _params.TurboQuantMode?.ToLowerInvariant() == "lloydmax"
-                    ? TqQuantizer.LloydMax
-                    : TqQuantizer.KVarN;
+                var cfwd = new CudaForwardPass(_model.Gguf, cuda, hp, ContextSize,
+                    enableTurboQuant: turboQuant,
+                    tqQuantizer: ResolveTq(hp.IsMoE ? TqSupport.CudaMoeReason
+                        : !TqSupport.IsKVarNCudaHeadDim(hp.HeadDim) ? TqSupport.CudaHeadDimReason(hp.HeadDim)
+                        : null));
+                owned.Add(cfwd);
+                fwd = cfwd;
+                break;
 
-                if (nGpuLayers < 0 || nGpuLayers >= hp.NumLayers)
-                {
-                    var cudaFwd = new CudaForwardPass(_model.Gguf, cuda, hp,
-                        maxContextLength: ContextSize,
-                        enableTurboQuant: enableTq,
-                        tqQuantizer: tqQuantizer);
-                    owned.Add(cudaFwd);
-                    fwd = cudaFwd;
-                }
-                else
-                {
-                    var placement = new LayerPlacement(
-                        GpuLayers: nGpuLayers,
-                        CpuLayers: hp.NumLayers - nGpuLayers,
-                        GpuWeightBytes: 0,
-                        GpuKvBytes: 0,
-                        RecommendedCtxSize: ContextSize);
-                    var hybridCuda = new CudaHybridForwardPass(_model.Gguf, cuda, hp,
-                        placement,
-                        enableTq: enableTq);
-                    owned.Add(hybridCuda);
-                    fwd = hybridCuda;
-                }
-            }
-            else if (isVulkan)
-            {
+            case ForwardPassKind.CudaHybridGdn:
+                var cudaGdn = CudaBackend.Create();
+                owned.Add(cudaGdn);
+                var placementGdn = new LayerPlacement(
+                    GpuLayers: hp.NumLayers,
+                    CpuLayers: 0,
+                    GpuWeightBytes: 0,
+                    GpuKvBytes: 0,
+                    RecommendedCtxSize: ContextSize);
+                var chgdn = new CudaHybridGdnForwardPass(_model.Gguf, cudaGdn, hp, placementGdn);
+                owned.Add(chgdn);
+                fwd = chgdn;
+                break;
+
+            case ForwardPassKind.CudaHybrid:
+                var cudaHyb = CudaBackend.Create();
+                owned.Add(cudaHyb);
+                int effCudaLayers = nGpuLayers > 0 ? nGpuLayers : plannedGpuLayers;
+                var hwProfileCuda = HardwareProfile.Detect(cudaHyb);
+                var planCuda = TierPlanner.Plan(_model.Gguf, hp, hwProfileCuda, turboQuant, requestedCtxSize: ContextSize,
+                    kvDtype: CudaForwardPass.ResolveConfiguredKvDType(), pinGpuLayers: effCudaLayers);
+                var chfwd = new CudaHybridForwardPass(_model.Gguf, cudaHyb, hp, planCuda, turboQuant);
+                owned.Add(chfwd);
+                fwd = chfwd;
+                break;
+
+            case ForwardPassKind.VulkanDense:
                 var vk = new VulkanBackend();
                 owned.Add(vk);
-                bool enableTq = !string.IsNullOrEmpty(_params.TurboQuantMode);
-                if (nGpuLayers < 0 || nGpuLayers >= hp.NumLayers)
-                {
-                    var vkFwd = new GpuForwardPass(_model.Gguf, vk, hp,
-                        maxContextLength: ContextSize,
-                        enableTurboQuant: enableTq);
-                    owned.Add(vkFwd);
-                    fwd = vkFwd;
-                }
-                else
-                {
-                    var placement = new LayerPlacement(
-                        GpuLayers: nGpuLayers,
-                        CpuLayers: hp.NumLayers - nGpuLayers,
-                        GpuWeightBytes: 0,
-                        GpuKvBytes: 0,
-                        RecommendedCtxSize: ContextSize);
-                    var hybridVk = new HybridForwardPass(_model.Gguf, vk, hp,
-                        placement,
-                        enableTq: enableTq);
-                    owned.Add(hybridVk);
-                    fwd = hybridVk;
-                }
-            }
-            else
-            {
-                fwd = CreateCpuForwardPass(cpuBackend, hp, owned);
-            }
-        }
-        else
-        {
-            fwd = CreateCpuForwardPass(cpuBackend, hp, owned);
+                _ = ResolveTq(TqSupport.VulkanReason);
+                var gfwd = new GpuForwardPass(_model.Gguf, vk, hp, ContextSize, enableTurboQuant: turboQuant,
+                    kvDtype: CudaForwardPass.ResolveConfiguredKvDType());
+                owned.Add(gfwd);
+                fwd = gfwd;
+                break;
+
+            case ForwardPassKind.VulkanHybridGdn:
+                var vkGdn = new VulkanBackend();
+                owned.Add(vkGdn);
+                var placementVkGdn = new LayerPlacement(
+                    GpuLayers: hp.NumLayers,
+                    CpuLayers: 0,
+                    GpuWeightBytes: 0,
+                    GpuKvBytes: 0,
+                    RecommendedCtxSize: ContextSize);
+                var vhgdn = new VulkanHybridGdnForwardPass(_model.Gguf, vkGdn, hp, placementVkGdn);
+                owned.Add(vhgdn);
+                fwd = vhgdn;
+                break;
+
+            case ForwardPassKind.VulkanHybrid:
+                var vkHyb = new VulkanBackend();
+                owned.Add(vkHyb);
+                _ = ResolveTq(TqSupport.VulkanReason);
+                int effVkLayers = nGpuLayers > 0 ? nGpuLayers : plannedGpuLayers;
+                var hwProfileVk = HardwareProfile.Detect(vkHyb);
+                var planVk = TierPlanner.Plan(_model.Gguf, hp, hwProfileVk, turboQuant, requestedCtxSize: ContextSize,
+                    pinGpuLayers: effVkLayers);
+                var hfwd = new HybridForwardPass(_model.Gguf, vkHyb, hp, planVk, enableTq: turboQuant);
+                owned.Add(hfwd);
+                fwd = hfwd;
+                break;
+
+            case ForwardPassKind.VulkanLayerSplit:
+                var vkSplit = new VulkanBackend();
+                owned.Add(vkSplit);
+                int effSplitLayers = nGpuLayers > 0 ? nGpuLayers : plannedGpuLayers;
+                int split = Math.Min(effSplitLayers, VulkanLayerSplitForwardPass.MaxGpuLayers(hp));
+                var sfwdSplit = new VulkanLayerSplitForwardPass(_model.Gguf, vkSplit, hp, split, ContextSize);
+                owned.Add(sfwdSplit);
+                fwd = sfwdSplit;
+                break;
+
+            default:
+                throw new InvalidOperationException($"Unhandled forward pass kind: {decision.Kind}");
         }
 
         var (thinkTokenId, endThinkTokenId) = _tokenizer.ReasoningTokens;
         return new InferenceEngine(fwd, _tokenizer, _model.Architecture, thinkTokenId, endThinkTokenId, owned: [.. owned]);
-    }
-
-    private IForwardPass CreateCpuForwardPass(CpuBackend cpuBackend, ModelHyperparams hp, List<IDisposable> owned)
-    {
-        if (hp.IsHybridSsm && _model.IsGguf)
-        {
-            var gdn = new HybridGdnForwardPass(_model.Gguf, cpuBackend, hp, maxContextLength: ContextSize);
-            owned.Add(gdn);
-            return gdn;
-        }
-
-        var cpuFwd = new ForwardPass(_model.TensorSource, cpuBackend, hp, maxContextLength: ContextSize);
-        if (!string.IsNullOrEmpty(_params.TurboQuantMode))
-        {
-            var quantizer = _params.TurboQuantMode.ToLowerInvariant() == "lloydmax"
-                ? TqQuantizer.LloydMax
-                : TqQuantizer.KVarN;
-            cpuFwd.EnableTurboQuant(fp32WindowSize: 256, bits: 3, quantizer: quantizer);
-        }
-        owned.Add(cpuFwd);
-        return cpuFwd;
     }
 
     /// <summary>
@@ -230,20 +398,53 @@ public sealed class ModelContext : IModelContext
     {
         ThrowIfDisposed();
         int batchSize = maxBatchSize ?? (_params.BatchSize > 0 ? (int)_params.BatchSize : 8);
-        var owned = new List<IDisposable>();
-        var cpuBackend = new CpuBackend();
-        owned.Add(cpuBackend);
         var hp = _model.Hyperparams;
+        if (_params.RopeFrequencyBase is { } rfb and > 0)
+        {
+            hp = hp with { RopeTheta = rfb };
+        }
+        if (_params.RopeFrequencyScale is { } rfs and > 0)
+        {
+            hp = hp with { RopeTheta = hp.RopeTheta / rfs };
+        }
 
-        if (hp.IsMoE || !string.IsNullOrEmpty(_params.TurboQuantMode) || hp.LayerHeadDim is not null)
+        if (_params.ThreadCount > 0)
+        {
+            SimdKernels.CpuThreads = (int)_params.ThreadCount;
+        }
+
+        bool turboQuant = !string.IsNullOrWhiteSpace(_params.TurboQuantMode);
+        bool batchOk = !hp.IsMoE && !turboQuant && hp.LayerHeadDim is null
+            && !hp.AttentionOutputGate && !hp.InputEmbeddingRmsNorm;
+
+        if (!batchOk)
         {
             throw new NotSupportedException($"The architecture '{_model.Architecture}' or configuration does not support continuous batching.");
         }
+
+        var owned = new List<IDisposable>();
+        var cpuBackend = new CpuBackend();
+        owned.Add(cpuBackend);
 
         var fwd = new ForwardPass(_model.TensorSource, cpuBackend, hp, maxContextLength: ContextSize);
         owned.Add(fwd);
         var (thinkTokenId, endThinkTokenId) = _tokenizer.ReasoningTokens;
         return new ContinuousBatchingEngine(fwd, _tokenizer, _model.Architecture, batchSize, thinkTokenId, endThinkTokenId);
+    }
+
+    /// <summary>
+    /// Ensures that this context has an active <see cref="ContinuousBatchingEngine"/> instance.
+    /// If no explicit engine is configured, creates one via <see cref="CreateContinuousBatchingEngine"/>.
+    /// </summary>
+    public void EnsureContinuousBatchingEngine(int? maxBatchSize = null)
+    {
+        ThrowIfDisposed();
+        lock (_lock)
+        {
+            if (_engine is ContinuousBatchingEngine) return;
+            var batchEngine = CreateContinuousBatchingEngine(maxBatchSize);
+            SetEngine(batchEngine);
+        }
     }
 
     /// <inheritdoc/>

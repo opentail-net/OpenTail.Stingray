@@ -80,6 +80,16 @@ public sealed class Model : IModel
     public static Model Load(ModelParams parameters)
     {
         ArgumentNullException.ThrowIfNull(parameters);
+
+        if (parameters.UseMemoryLock)
+            throw new NotSupportedException("Memory locking (mlock) is not supported in OpenTail.Stingray.");
+        if (!parameters.UseMemoryMap)
+            throw new NotSupportedException("Disabling memory mapping (no-mmap) is not supported in OpenTail.Stingray.");
+        if (parameters.MainGpu != 0)
+            throw new NotSupportedException("Multi-GPU device index selection is not supported in OpenTail.Stingray (expected MainGpu = 0).");
+        if (parameters.TensorSplit is { Count: > 1 })
+            throw new NotSupportedException("Multi-GPU tensor split is not supported in OpenTail.Stingray.");
+
         bool isDirectory = Directory.Exists(parameters.ModelPath);
         bool isSafeTensors = parameters.ModelPath.EndsWith(".safetensors", StringComparison.OrdinalIgnoreCase) || isDirectory;
 
