@@ -881,13 +881,20 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         (s_thinkTokenId, s_endThinkTokenId) = tokenizer.ReasoningTokens;
 
         cpuBackend = new CpuBackend();
+        var stPlan = ExecutionPlan.CreateSynthesized(
+            architecture: s_arch,
+            decision: packageSelection,
+            backend: ForwardPassBackend.Cpu,
+            contextSize: ctxSize,
+            gpuLayers: 0,
+            headDim: hp.HeadDim,
+            modelPath: settings.ModelPath ?? "safetensors",
+            totalLayers: hp.NumLayers);
+
         var stLoadCtx = new ArchitectureLoadContext
         {
             Probe = new ArchitectureProbe { Architecture = s_arch, TensorSource = stTensorSource, Hyperparams = hp, IsGguf = false },
-            Decision = packageSelection,
-            Backend = ForwardPassBackend.Cpu,
-            ContextSize = ctxSize,
-            GpuLayers = 0,
+            Plan = stPlan,
             CpuBackend = cpuBackend,
         };
         var stDesc = ArchitectureRegistry.Find(s_arch);
@@ -2457,6 +2464,23 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         CpuBackend? cpuBackend = null, CudaBackend? cudaBackend = null, VulkanBackend? vulkanBackend = null,
         long prefillDequantCacheBytes = 0)
     {
+        var plan = ExecutionPlan.CreateSynthesized(
+            architecture: arch,
+            decision: decision,
+            backend: backend,
+            contextSize: ctxSize,
+            gpuLayers: gpuLayers,
+            placement: placement,
+            turboQuant: turboQuant,
+            turboQuantMode: "auto",
+            headDim: hp.HeadDim,
+            tqQuantizer: tqQuantizer,
+            flashAttention: true,
+            kvDtype: CudaForwardPass.ResolveConfiguredKvDType(),
+            prefillDequantCacheBytes: prefillDequantCacheBytes,
+            preferBatchingOverAutoSnapKv: false,
+            totalLayers: hp.NumLayers);
+
         return new ArchitectureLoadContext
         {
             Probe = new ArchitectureProbe
@@ -2467,20 +2491,10 @@ public sealed class RunCommand : Command<RunCommand.Settings>
                 IsGguf = true,
                 Gguf = model,
             },
-            Decision = decision,
-            Backend = backend,
-            ContextSize = ctxSize,
-            GpuLayers = gpuLayers,
-            Placement = placement,
-            TurboQuant = turboQuant,
-            TqQuantizer = tqQuantizer,
-            HeadDim = hp.HeadDim,
-            FlashAttention = true,
-            KvDType = CudaForwardPass.ResolveConfiguredKvDType(),
+            Plan = plan,
             CpuBackend = cpuBackend,
             CudaBackend = cudaBackend,
             VulkanBackend = vulkanBackend,
-            PrefillDequantCacheBytes = prefillDequantCacheBytes,
         };
     }
 

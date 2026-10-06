@@ -265,6 +265,14 @@ public sealed class ArchitectureDescriptorContractTests
         desc.Validate();
 
         var dummySource = new TestProbeTensorSource(new Dictionary<string, object>());
+        var plan = ExecutionPlan.CreateSynthesized(
+            architecture: "test_setup",
+            decision: new ForwardPassDecision(ForwardPassKind.CpuDense, null),
+            backend: ForwardPassBackend.Cpu,
+            contextSize: 128,
+            gpuLayers: 0,
+            headDim: 128);
+
         var loadCtx = new ArchitectureLoadContext
         {
             Probe = new ArchitectureProbe
@@ -273,10 +281,7 @@ public sealed class ArchitectureDescriptorContractTests
                 TensorSource = dummySource,
                 Hyperparams = ModelHyperparams.FromGgufMetadata(dummySource.Metadata, dummySource),
             },
-            Decision = new ForwardPassDecision(ForwardPassKind.CpuDense, null),
-            Backend = ForwardPassBackend.Cpu,
-            ContextSize = 128,
-            GpuLayers = 0,
+            Plan = plan,
         };
 
         var pass = desc.ConstructForwardPass(loadCtx);

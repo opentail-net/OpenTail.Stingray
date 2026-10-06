@@ -80,12 +80,16 @@ public sealed record StatePlan(
     int TurboQuantBits = 3,
     int TurboQuantFp32Window = 256,
     bool SnapKvEnabled = false,
-    int SnapKvBudget = 0);
+    int SnapKvBudget = 0,
+    TqQuantizer TqQuantizer = TqQuantizer.LloydMax,
+    bool FlashAttention = true,
+    int HeadDim = 0);
 
 public sealed record BatchingPlan(
     BatchingMode Mode,
     int MaxBatchSize,
-    int MaxConcurrentSessions);
+    int MaxConcurrentSessions,
+    bool PreferBatchingOverAutoSnapKv = false);
 
 public sealed record SpeculationPlan(
     SpeculationMode Mode,
@@ -102,7 +106,8 @@ public sealed record MemoryPlan(
     double EstimatedVramMb,
     double EstimatedRamMb,
     long ScratchBytes = 0,
-    long PeakAllocationBytes = 0);
+    long PeakAllocationBytes = 0,
+    long PrefillDequantCacheBytes = 0);
 
 public sealed record PlanProvenance(
     string CreatedAtUtc,
@@ -301,6 +306,115 @@ public sealed record ExecutionPlan(
             Memory: memory,
             Provenance: provenance
         );
+    }
+
+    /// <summary>Convenience accessor for head dimension stored in StatePlan.</summary>
+    public int HeadDim => State?.HeadDim ?? 0;
+
+    /// <summary>
+    /// Creates a schema v2 execution plan synthesized from load context parameters.
+    /// Used for transitioning legacy call sites and tests to plan-driven execution.
+    /// </summary>
+    public static ExecutionPlan CreateSynthesized(
+        string architecture,
+        ForwardPassDecision decision,
+        ForwardPassBackend backend,
+        int contextSize,
+        int gpuLayers,
+        LayerPlacement? placement = null,
+        bool turboQuant = false,
+        string turboQuantMode = "manual",
+        int headDim = 0,
+        TqQuantizer tqQuantizer = TqQuantizer.LloydMax,
+        bool flashAttention = true,
+        DType kvDtype = DType.Float16,
+        long prefillDequantCacheBytes = 0,
+        bool preferBatchingOverAutoSnapKv = false,
+        string modelPath = "synthesized",
+        int totalLayers = 0)
+    {
+        var packageId = new ModelPackageIdentity(
+            ContentDigest: null,
+            Format: ModelFormat.Gguf,
+            Components: ImmutableArray<ModelPackageComponentIdentity>.Empty,
+            IsProvisional: true);
+
+        var backendPlan = new BackendPlan(
+            Backend: backend,
+            DeviceName: backend.ToString(),
+            DeviceIndex: 0,
+            CudaAvailable: backend == ForwardPassBackend.Cuda,
+            VulkanAvailable: backend == ForwardPassBackend.Vulkan,
+            ThreadCount: Environment.ProcessorCount);
+
+        var placementPlan = new PlacementPlan(
+            GpuLayers: gpuLayers,
+            CpuLayers: placement != null ? placement.CpuLayers : Math.Max(0, totalLayers - gpuLayers),
+            TotalLayers: totalLayers > 0 ? totalLayers : (placement != null ? placement.GpuLayers + placement.CpuLayers : gpuLayers),
+            GpuWeightBytes: placement?.GpuWeightBytes ?? 0,
+            CpuWeightBytes: placement?.CpuWeightBytes ?? 0,
+            ExpertCacheBudgetBytes: placement?.ExpertCacheBudgetBytes ?? 0,
+            MoeRoutedExpertBytes: placement?.MoeRoutedExpertBytes ?? 0,
+            FixedWeightsOnCpu: false);
+
+        var statePlan = new StatePlan(
+            StateModel: "standard",
+            ContextLength: contextSize,
+            KvDType: kvDtype,
+            TurboQuant: turboQuant,
+            TurboQuantMode: turboQuantMode,
+            TurboQuantBits: 3,
+            TurboQuantFp32Window: 256,
+            SnapKvEnabled: false,
+            SnapKvBudget: 0,
+            TqQuantizer: tqQuantizer,
+            FlashAttention: flashAttention,
+            HeadDim: headDim);
+
+        var batchingPlan = new BatchingPlan(
+            Mode: BatchingMode.Continuous,
+            MaxBatchSize: 8,
+            MaxConcurrentSessions: 8,
+            PreferBatchingOverAutoSnapKv: preferBatchingOverAutoSnapKv);
+
+        var speculationPlan = new SpeculationPlan(
+            Mode: SpeculationMode.None,
+            DraftModelPath: null,
+            DSparkModelPath: null,
+            SpeculativeTokens: 0);
+
+        var modalityPlan = new ModalityPlan(
+            SupportsVision: false,
+            SupportsEmbeddingInput: false,
+            MmprojPath: null);
+
+        var memoryPlan = new MemoryPlan(
+            EstimatedVramMb: (placement?.GpuWeightBytes ?? 0) / (1024.0 * 1024.0),
+            EstimatedRamMb: (placement?.CpuWeightBytes ?? 0) / (1024.0 * 1024.0),
+            ScratchBytes: 0,
+            PeakAllocationBytes: 0,
+            PrefillDequantCacheBytes: prefillDequantCacheBytes);
+
+        var provenance = new PlanProvenance(
+            CreatedAtUtc: DateTime.UtcNow.ToString("o"),
+            PlannerVersion: "2.0.0",
+            PrimaryModelPath: modelPath,
+            TargetArchitecture: architecture,
+            Goal: "synthesized");
+
+        return CreateV2(
+            packageIdentity: packageId,
+            forwardPassKind: decision.Kind ?? ForwardPassKind.CpuDense,
+            backendPlan: backendPlan,
+            placement: placementPlan,
+            state: statePlan,
+            batching: batchingPlan,
+            speculation: speculationPlan,
+            modality: modalityPlan,
+            memory: memoryPlan,
+            provenance: provenance,
+            decisions: ImmutableArray<ExecutionPlanDecisionDetail>.Empty,
+            warnings: ImmutableArray<string>.Empty);
     }
 
     /// <summary>

@@ -288,20 +288,28 @@ public sealed class ModelContext : IModelContext
             : !TqSupport.IsKVarNCudaHeadDim(headDim) ? TqSupport.CudaHeadDimReason(headDim)
             : null);
 
+        var plan = ExecutionPlan.CreateSynthesized(
+            architecture: probe.Architecture ?? "unknown",
+            decision: decision,
+            backend: backend,
+            contextSize: ContextSize,
+            gpuLayers: nGpuLayers > 0 ? nGpuLayers : plannedGpuLayers,
+            placement: placement,
+            turboQuant: turboQuant,
+            turboQuantMode: tqMode,
+            headDim: headDim,
+            tqQuantizer: tqQuantizer,
+            flashAttention: _params.FlashAttention,
+            kvDtype: CudaForwardPass.ResolveConfiguredKvDType(),
+            prefillDequantCacheBytes: 0,
+            preferBatchingOverAutoSnapKv: false,
+            modelPath: _model.ModelPath,
+            totalLayers: hp.NumLayers);
+
         var loadContext = new ArchitectureLoadContext
         {
             Probe = probe,
-            Decision = decision,
-            Backend = backend,
-            ContextSize = ContextSize,
-            GpuLayers = nGpuLayers > 0 ? nGpuLayers : plannedGpuLayers,
-            Placement = placement,
-            TurboQuant = turboQuant,
-            TurboQuantMode = tqMode,
-            HeadDim = headDim,
-            TqQuantizer = tqQuantizer,
-            FlashAttention = _params.FlashAttention,
-            KvDType = CudaForwardPass.ResolveConfiguredKvDType(),
+            Plan = plan,
             CpuBackend = cpuBackend,
         };
 

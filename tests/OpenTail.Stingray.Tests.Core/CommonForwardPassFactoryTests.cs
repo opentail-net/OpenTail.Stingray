@@ -23,6 +23,14 @@ public sealed class CommonForwardPassFactoryTests
     {
         var source = new FakeModelTensorSource();
         var hp = new ModelHyperparams { EmbeddingDim = 128, NumLayers = 2, VocabSize = 100, HeadDim = 64 };
+        var plan = ExecutionPlan.CreateSynthesized(
+            architecture: "custom",
+            decision: new ForwardPassDecision(ForwardPassKind.RwkvCpu, null),
+            backend: ForwardPassBackend.Cpu,
+            contextSize: 512,
+            gpuLayers: 0,
+            headDim: 64);
+
         var loadCtx = new ArchitectureLoadContext
         {
             Probe = new ArchitectureProbe
@@ -31,10 +39,7 @@ public sealed class CommonForwardPassFactoryTests
                 TensorSource = source,
                 Hyperparams = hp,
             },
-            Decision = new ForwardPassDecision(ForwardPassKind.RwkvCpu, null),
-            Backend = ForwardPassBackend.Cpu,
-            ContextSize = 512,
-            GpuLayers = 0,
+            Plan = plan,
         };
 
         var ex = Assert.Throws<InvalidOperationException>(() => CommonForwardPassFactory.CreateDense(loadCtx));
@@ -46,6 +51,14 @@ public sealed class CommonForwardPassFactoryTests
     {
         var source = new FakeModelTensorSource();
         var hp = new ModelHyperparams { EmbeddingDim = 128, NumLayers = 2, VocabSize = 100, HeadDim = 64 };
+        var plan = ExecutionPlan.CreateSynthesized(
+            architecture: "custom",
+            decision: new ForwardPassDecision(ForwardPassKind.CpuDense, null),
+            backend: ForwardPassBackend.Cpu,
+            contextSize: 512,
+            gpuLayers: 0,
+            headDim: 64);
+
         var loadCtx = new ArchitectureLoadContext
         {
             Probe = new ArchitectureProbe
@@ -54,10 +67,7 @@ public sealed class CommonForwardPassFactoryTests
                 TensorSource = source,
                 Hyperparams = hp,
             },
-            Decision = new ForwardPassDecision(ForwardPassKind.CpuDense, null),
-            Backend = ForwardPassBackend.Cpu,
-            ContextSize = 512,
-            GpuLayers = 0,
+            Plan = plan,
         };
 
         var ex = Assert.Throws<InvalidOperationException>(() => CommonForwardPassFactory.CreateHybridGdn(loadCtx));

@@ -18,7 +18,7 @@ public static class CommonForwardPassFactory
         ArgumentNullException.ThrowIfNull(ctx);
         var hp = ctx.Probe.Hyperparams;
 
-        switch (ctx.Decision.Kind)
+        switch (ctx.Plan.ForwardPassKind)
         {
             case ForwardPassKind.SafeTensorsCpu:
             case ForwardPassKind.CpuDense:
@@ -99,7 +99,7 @@ public static class CommonForwardPassFactory
             }
 
             default:
-                throw new InvalidOperationException($"Unsupported forward pass kind '{ctx.Decision.Kind}' for dense architecture.");
+                throw new InvalidOperationException($"Unsupported forward pass kind '{ctx.Plan.ForwardPassKind}' for dense architecture.");
         }
     }
 
@@ -111,7 +111,7 @@ public static class CommonForwardPassFactory
         ArgumentNullException.ThrowIfNull(ctx);
         var hp = ctx.Probe.Hyperparams;
 
-        switch (ctx.Decision.Kind)
+        switch (ctx.Plan.ForwardPassKind)
         {
             case ForwardPassKind.CpuHybridGdn:
             {
@@ -158,7 +158,7 @@ public static class CommonForwardPassFactory
             }
 
             default:
-                throw new InvalidOperationException($"Unsupported forward pass kind '{ctx.Decision.Kind}' for hybrid GDN architecture.");
+                throw new InvalidOperationException($"Unsupported forward pass kind '{ctx.Plan.ForwardPassKind}' for hybrid GDN architecture.");
         }
     }
 }

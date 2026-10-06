@@ -523,6 +523,23 @@ public static class InferenceEngineLoader
         CpuBackend? cpuBackend = null, CudaBackend? cudaBackend = null, VulkanBackend? vulkanBackend = null,
         ForwardPass? cpuDensePass = null, long prefillDequantCacheBytes = 0, bool preferBatchingOverAutoSnapKv = false)
     {
+        var plan = ExecutionPlan.CreateSynthesized(
+            architecture: arch,
+            decision: decision,
+            backend: backend,
+            contextSize: ctxSize,
+            gpuLayers: gpuLayers,
+            placement: placement,
+            turboQuant: turboQuant,
+            turboQuantMode: tqModeIsAuto ? "auto" : "manual",
+            headDim: hp.HeadDim,
+            tqQuantizer: tqQuantizer,
+            flashAttention: true,
+            kvDtype: CudaForwardPass.ResolveConfiguredKvDType(),
+            prefillDequantCacheBytes: prefillDequantCacheBytes,
+            preferBatchingOverAutoSnapKv: preferBatchingOverAutoSnapKv,
+            totalLayers: hp.NumLayers);
+
         return new ArchitectureLoadContext
         {
             Probe = new ArchitectureProbe
@@ -533,23 +550,11 @@ public static class InferenceEngineLoader
                 IsGguf = true,
                 Gguf = model,
             },
-            Decision = decision,
-            Backend = backend,
-            ContextSize = ctxSize,
-            GpuLayers = gpuLayers,
-            Placement = placement,
-            TurboQuant = turboQuant,
-            TurboQuantMode = tqModeIsAuto ? "auto" : "manual",
-            HeadDim = hp.HeadDim,
-            TqQuantizer = tqQuantizer,
-            FlashAttention = true,
-            KvDType = CudaForwardPass.ResolveConfiguredKvDType(),
+            Plan = plan,
             CpuBackend = cpuBackend,
             CudaBackend = cudaBackend,
             VulkanBackend = vulkanBackend,
             CpuDensePass = cpuDensePass,
-            PrefillDequantCacheBytes = prefillDequantCacheBytes,
-            PreferBatchingOverAutoSnapKv = preferBatchingOverAutoSnapKv,
         };
     }
 
@@ -745,12 +750,15 @@ public static class InferenceEngineLoader
             : (ForwardPass)CommonForwardPassFactory.CreateDense(new ArchitectureLoadContext
             {
                 Probe = new ArchitectureProbe { Architecture = arch, TensorSource = model, Hyperparams = hp, IsGguf = true, Gguf = model },
-                Decision = new ForwardPassDecision(ForwardPassKind.CpuDense, null),
-                Backend = ForwardPassBackend.Cpu,
-                ContextSize = ctxSize,
-                GpuLayers = 0,
+                Plan = ExecutionPlan.CreateSynthesized(
+                    architecture: arch,
+                    decision: new ForwardPassDecision(ForwardPassKind.CpuDense, null),
+                    backend: ForwardPassBackend.Cpu,
+                    contextSize: ctxSize,
+                    gpuLayers: 0,
+                    headDim: hp.HeadDim,
+                    totalLayers: hp.NumLayers),
                 CpuBackend = cpuBackend,
-                PrefillDequantCacheBytes = 0,
             });
         if (cpuDense is not null) owned.Add(cpuDense);
 

@@ -11,23 +11,37 @@ using OpenTail.Stingray.Vulkan;
 public sealed class ArchitectureLoadContext
 {
     public required ArchitectureProbe Probe { get; init; }
-    public required ForwardPassDecision Decision { get; init; }
-    public required ForwardPassBackend Backend { get; init; }
-    public required int ContextSize { get; init; }
-    public required int GpuLayers { get; init; }
+    public required ExecutionPlan Plan { get; init; }
+
+    // Convenience forwarders reading from Plan
+    public ForwardPassKind ForwardPassKind => Plan.ForwardPassKind;
+    public ForwardPassDecision Decision => new(Plan.ForwardPassKind, Plan.BackendPlan?.Backend.ToString());
+    public ForwardPassBackend Backend => Plan.BackendPlan?.Backend ?? ForwardPassBackend.Cpu;
+    public int ContextSize => Plan.ContextSize;
+    public int GpuLayers => Plan.GpuLayers;
 
     // Hardware layer placement computed by TierPlanner (for partial offloads: CudaHybrid, VulkanHybrid, VulkanLayerSplit)
-    public LayerPlacement? Placement { get; init; }
+    public LayerPlacement? Placement => Plan.Placement != null
+        ? new LayerPlacement(
+            Plan.Placement.GpuLayers,
+            Plan.Placement.CpuLayers,
+            Plan.Placement.GpuWeightBytes,
+            0,
+            Plan.ContextSize,
+            Plan.Placement.ExpertCacheBudgetBytes,
+            Plan.Placement.MoeRoutedExpertBytes,
+            Plan.Placement.CpuWeightBytes)
+        : null;
 
-    // Configured runtime options
-    public bool TurboQuant { get; init; }
-    public string TurboQuantMode { get; init; } = "auto";
-    public int HeadDim { get; init; }
-    public TqQuantizer TqQuantizer { get; init; } = TqQuantizer.LloydMax;
-    public bool FlashAttention { get; init; } = true;
-    public DType KvDType { get; init; } = DType.Float16;
-    public long PrefillDequantCacheBytes { get; init; }
-    public bool PreferBatchingOverAutoSnapKv { get; init; }
+    // Configured runtime options forwarded from Plan
+    public bool TurboQuant => Plan.State?.TurboQuant ?? false;
+    public string TurboQuantMode => Plan.State?.TurboQuantMode ?? "manual";
+    public int HeadDim => Plan.HeadDim;
+    public TqQuantizer TqQuantizer => Plan.State?.TqQuantizer ?? TqQuantizer.LloydMax;
+    public bool FlashAttention => Plan.State?.FlashAttention ?? true;
+    public DType KvDType => Plan.State?.KvDType ?? DType.Float16;
+    public long PrefillDequantCacheBytes => Plan.Memory?.PrefillDequantCacheBytes ?? 0;
+    public bool PreferBatchingOverAutoSnapKv => Plan.Batching?.PreferBatchingOverAutoSnapKv ?? false;
 
     // Backend resources (orchestrator manages initialization and lifetime)
     public CpuBackend? CpuBackend { get; init; }
