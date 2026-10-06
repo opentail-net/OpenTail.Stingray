@@ -122,8 +122,7 @@ public sealed class ModelContext : IModelContext
     private IInferenceEngine CreateDefaultEngine()
     {
         var plan = _plan ?? Plan(isContinuousBatching: false);
-        var hpOverride = ResolveRopeOverride();
-        _runtimeInstance = RuntimeInstance.Create(plan, _model, hpOverride);
+        _runtimeInstance = RuntimeInstance.Create(plan, _model);
         _plan = _runtimeInstance.Plan;
         return _runtimeInstance.Engine;
     }
@@ -136,8 +135,7 @@ public sealed class ModelContext : IModelContext
         ThrowIfDisposed();
         int batchSize = maxBatchSize ?? (_params.BatchSize > 0 ? (int)_params.BatchSize : 8);
         var plan = Plan(isContinuousBatching: true, maxBatchSize: batchSize);
-        var hpOverride = ResolveRopeOverride();
-        var instance = RuntimeInstance.Create(plan, _model, hpOverride);
+        var instance = RuntimeInstance.Create(plan, _model);
 
         if (instance.Engine is not ContinuousBatchingEngine batchEngine)
         {
@@ -209,25 +207,6 @@ public sealed class ModelContext : IModelContext
         var modelDesc = ModelDescription.FromModel(_model);
         var capabilities = BackendCapabilities.Detect();
         return ExecutionPlanner.Plan(modelDesc, request, capabilities);
-    }
-
-    private ModelHyperparams? ResolveRopeOverride()
-    {
-        if (_params.RopeFrequencyBase is null && _params.RopeFrequencyScale is null)
-        {
-            return null;
-        }
-
-        var hp = _model.Hyperparams;
-        if (_params.RopeFrequencyBase is { } rfb and > 0)
-        {
-            hp = hp with { RopeTheta = rfb };
-        }
-        if (_params.RopeFrequencyScale is { } rfs and > 0)
-        {
-            hp = hp with { RopeTheta = hp.RopeTheta / rfs };
-        }
-        return hp;
     }
 
     /// <inheritdoc/>

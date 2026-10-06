@@ -83,13 +83,17 @@ public sealed record StatePlan(
     int SnapKvBudget = 0,
     TqQuantizer TqQuantizer = TqQuantizer.LloydMax,
     bool FlashAttention = true,
-    int HeadDim = 0);
+    int HeadDim = 0,
+    float? RopeFrequencyBase = null,
+    float? RopeFrequencyScale = null,
+    float? EffectiveRopeTheta = null);
 
 public sealed record BatchingPlan(
     BatchingMode Mode,
     int MaxBatchSize,
     int MaxConcurrentSessions,
-    bool PreferBatchingOverAutoSnapKv = false);
+    bool PreferBatchingOverAutoSnapKv = false,
+    bool EnableSessions = false);
 
 public sealed record SpeculationPlan(
     SpeculationMode Mode,

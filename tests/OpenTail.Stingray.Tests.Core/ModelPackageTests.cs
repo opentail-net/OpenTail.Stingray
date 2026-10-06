@@ -3,6 +3,7 @@ using System.IO;
 using System.Text.Json;
 using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Engine.Packaging;
+using OpenTail.Stingray.Engine.Planning;
 using Xunit;
 
 namespace OpenTail.Stingray.Tests.Core;
@@ -147,9 +148,9 @@ public sealed class ModelPackageTests
             string modelDigest = "sha256:aaaa1111222233334444555566667777888899990000aaaabbbbccccddddeeee";
             string templateDigest = "sha256:bbbb1111222233334444555566667777888899990000aaaabbbbccccddddeeee";
 
-            // Create blob files using Ollama naming convention: sha256-<hex>
+            // Create real GGUF blob file using Ollama naming convention: sha256-<hex>
             string modelBlobFile = Path.Combine(blobsDir, modelDigest.Replace(':', '-'));
-            File.WriteAllBytes(modelBlobFile, new byte[256]);
+            CreateTestGgufBlob(modelBlobFile);
 
             string templateBlobFile = Path.Combine(blobsDir, templateDigest.Replace(':', '-'));
             File.WriteAllBytes(templateBlobFile, new byte[64]);
@@ -174,15 +175,111 @@ public sealed class ModelPackageTests
             Assert.Equal("sha256:configdigest", pkg.Identity.ContentDigest);
             Assert.False(pkg.Identity.IsProvisional);
             Assert.Equal(Path.GetFullPath(modelBlobFile), pkg.ModelBlobPath);
+            Assert.Equal(Path.GetFullPath(modelBlobFile), pkg.PrimaryPath);
+            Assert.Equal(Path.GetFullPath(manifestPath), pkg.ManifestPath);
 
             Assert.Equal(2, pkg.Components.Length);
             Assert.Contains(pkg.Components, c => c.Role == ModelPackageRoles.PrimaryWeights && c.Digest == modelDigest);
             Assert.Contains(pkg.Components, c => c.Role == ModelPackageRoles.ChatTemplate && c.Digest == templateDigest);
+
+            // Verify Ollama package is directly consumable by ModelDescription and ExecutionPlanner
+            var desc = ModelDescription.FromPackage(pkg);
+            Assert.Equal("llama", desc.Semantics.Architecture);
+            Assert.Equal(1, desc.PlanningFacts.NumLayers);
+
+            var req = new ExecutionRequest
+            {
+                PinnedBackend = "cpu",
+                PinnedGpuLayers = 0,
+                PinnedContextSize = 512,
+                NoGpuProbe = true
+            };
+            var plan = ExecutionPlanner.Plan(desc, req, BackendCapabilities.Detect(noGpuProbe: true));
+            Assert.NotNull(plan);
+            Assert.Equal(2, plan.SchemaVersion);
+            Assert.Equal("cpu", plan.Backend);
+            Assert.Equal(512, plan.ContextSize);
         }
         finally
         {
             if (Directory.Exists(tempDir))
                 Directory.Delete(tempDir, true);
+        }
+    }
+
+    private static void CreateTestGgufBlob(string path)
+    {
+        var metadata = new Dictionary<string, (GgufValueType, object)>
+        {
+            ["general.architecture"] = (GgufValueType.String, "llama"),
+            ["llama.block_count"] = (GgufValueType.UInt32, 1u),
+            ["llama.context_length"] = (GgufValueType.UInt32, 1024u),
+            ["llama.embedding_length"] = (GgufValueType.UInt32, 64u),
+            ["llama.feed_forward_length"] = (GgufValueType.UInt32, 128u),
+            ["llama.attention.head_count"] = (GgufValueType.UInt32, 2u),
+            ["llama.attention.head_count_kv"] = (GgufValueType.UInt32, 2u),
+            ["llama.vocab_size"] = (GgufValueType.UInt32, 100u)
+        };
+
+        var tensors = new (string name, long[] dims, DType dtype, byte[] data)[]
+        {
+            ("token_embd.weight", [64, 100], DType.Float32, new byte[64 * 100 * 4]),
+            ("output.weight", [64, 100], DType.Float32, new byte[64 * 100 * 4]),
+            ("blk.0.attn_q.weight", [64, 64], DType.Float32, new byte[64 * 64 * 4])
+        };
+
+        using var fs = File.Create(path);
+        using var writer = new System.IO.BinaryWriter(fs);
+
+        // Header
+        writer.Write(0x46554747u); // 'GGUF'
+        writer.Write(3u); // Version
+        writer.Write((ulong)tensors.Length);
+        writer.Write((ulong)metadata.Count);
+
+        // Metadata
+        foreach (var (k, (type, val)) in metadata)
+        {
+            var keyBytes = System.Text.Encoding.UTF8.GetBytes(k);
+            writer.Write((ulong)keyBytes.Length);
+            writer.Write(keyBytes);
+            writer.Write((uint)type);
+            if (type == GgufValueType.UInt32)
+                writer.Write((uint)val);
+            else if (type == GgufValueType.String)
+            {
+                var sBytes = System.Text.Encoding.UTF8.GetBytes((string)val);
+                writer.Write((ulong)sBytes.Length);
+                writer.Write(sBytes);
+            }
+        }
+
+        // Tensor infos
+        ulong offset = 0;
+        foreach (var (name, dims, dtype, data) in tensors)
+        {
+            var nBytes = System.Text.Encoding.UTF8.GetBytes(name);
+            writer.Write((ulong)nBytes.Length);
+            writer.Write(nBytes);
+            writer.Write((uint)dims.Length);
+            foreach (var d in dims) writer.Write((ulong)d);
+            writer.Write((uint)dtype);
+            writer.Write(offset);
+            offset += (ulong)data.Length;
+        }
+
+        // Alignment padding (32)
+        long current = fs.Position;
+        long rem = current % 32;
+        if (rem != 0)
+        {
+            fs.Write(new byte[32 - rem]);
+        }
+
+        // Tensor data
+        foreach (var (_, _, _, data) in tensors)
+        {
+            fs.Write(data);
         }
     }
 }

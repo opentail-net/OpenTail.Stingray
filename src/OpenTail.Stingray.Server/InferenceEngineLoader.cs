@@ -20,7 +20,7 @@ public static class InferenceEngineLoader
     /// Constructs an inference engine directly from an immutable <see cref="ExecutionPlan"/> (§5.3 of plan).
     /// Guarantees that runtime execution consumes the plan rather than rediscovering execution policy.
     /// </summary>
-    public static LoadedEngine LoadFromPlan(ExecutionPlan plan, OpenTailStingrayServerOptions? baseOptions = null)
+    public static LoadedEngine LoadFromPlan(ExecutionPlan plan, string? sessionStorageDirectory = null)
     {
         ArgumentNullException.ThrowIfNull(plan);
         var detectedFormat = DetectModelFormat(plan.ModelPath);
@@ -38,19 +38,19 @@ public static class InferenceEngineLoader
 
         HotSessionRuntime? sessionRuntime = null;
         ColdSessionRuntime? coldSessionRuntime = null;
-        if (baseOptions?.EnableSessions == true && instance.Engine is ContinuousBatchingEngine batchingEngine)
+        if (plan.Batching?.EnableSessions == true && instance.Engine is ContinuousBatchingEngine batchingEngine)
         {
             sessionRuntime = new HotSessionRuntime(batchingEngine, instance.Tokenizer);
-            if (!string.IsNullOrWhiteSpace(baseOptions.SessionStorageDirectory))
+            if (!string.IsNullOrWhiteSpace(sessionStorageDirectory))
             {
                 coldSessionRuntime = new ColdSessionRuntime(sessionRuntime, batchingEngine,
-                    baseOptions.SessionStorageDirectory, plan.ModelFormat);
+                    sessionStorageDirectory, plan.ModelFormat);
             }
         }
 
         string targetArch = plan.Provenance?.TargetArchitecture ?? model.Architecture;
 
-        if (!string.IsNullOrWhiteSpace(baseOptions?.MmprojPath) && instance.Engine is InferenceEngine ieVision)
+        if (!string.IsNullOrWhiteSpace(plan.Modality?.MmprojPath) && instance.Engine is InferenceEngine ieVision)
         {
             if (!string.Equals(targetArch, "gemma4", StringComparison.Ordinal))
                 throw new InvalidOperationException(
@@ -61,11 +61,11 @@ public static class InferenceEngineLoader
                     "MmprojPath / STINGRAY_MMPROJ is set but image input requires a forward pass that accepts " +
                     "precomputed-embedding input: CPU (NGpuLayers=0) or full CUDA offload (NGpuLayers=-1) of a " +
                     $"Gemma 4 model that fits VRAM. The configured pass ({instance.ForwardPass.GetType().Name}) does not support it.");
-            if (baseOptions.MaxBatchSize > 1 && instance.Engine is ContinuousBatchingEngine)
+            if (plan.Batching?.MaxBatchSize > 1 && instance.Engine is ContinuousBatchingEngine)
                 throw new InvalidOperationException(
                     "Image input is not supported with continuous batching (MaxBatchSize > 1). Set MaxBatchSize=1.");
 
-            var mmprojPath = ResolvePath(baseOptions.MmprojPath, "mmproj projector", "STINGRAY_MMPROJ", "MmprojPath");
+            var mmprojPath = ResolvePath(plan.Modality.MmprojPath, "mmproj projector", "STINGRAY_MMPROJ", "MmprojPath");
             var visionModel = VisionModel.Open(mmprojPath);
             var visionEmbedder = new GemmaUvVisionEmbedder(visionModel);
             int imgOpen = instance.Tokenizer.SpecialTokens.TryGetValue("<|image>", out var o) ? o : 255999;
@@ -74,9 +74,9 @@ public static class InferenceEngineLoader
             ieVision.EnableImageInput(visionEmbedder, visionModel, imgOpen, imgClose, imgPlaceholder);
         }
 
-        if (!string.IsNullOrWhiteSpace(baseOptions?.DSparkModelPath) && instance.Engine is InferenceEngine ieDspark && model.IsGguf)
+        if (!string.IsNullOrWhiteSpace(plan.Speculation?.DSparkModelPath) && instance.Engine is InferenceEngine ieDspark && model.IsGguf)
         {
-            AttachDSpark(ieDspark, instance.ForwardPass, model.Gguf, model.Hyperparams, instance.OwnedDisposables.ToList(), baseOptions, baseOptions.DSparkModelPath, plan.ContextSize);
+            AttachDSpark(ieDspark, instance.ForwardPass, model.Gguf, model.Hyperparams, instance.OwnedDisposables.ToList(), null, plan.Speculation.DSparkModelPath, plan.ContextSize);
         }
 
         var chatTemplate = (instance.Tokenizer as GgufTokenizer)?.ChatTemplate;
@@ -171,21 +171,23 @@ public static class InferenceEngineLoader
             ThreadCount = opts.CpuThreads,
             BatchingMode = (opts.MaxBatchSize > 1 || opts.EnableSessions) ? BatchingMode.Continuous : BatchingMode.Sequential,
             MaxBatchSize = opts.MaxBatchSize > 0 ? opts.MaxBatchSize : 1,
+            EnableSessions = opts.EnableSessions,
             DSparkModelPath = !string.IsNullOrWhiteSpace(opts.DSparkModelPath)
                 ? opts.DSparkModelPath
                 : Environment.GetEnvironmentVariable("STINGRAY_DSPARK_MODEL"),
+            MmprojPath = opts.MmprojPath,
             SnapKvEnabled = SnapKvConfig.FromEnvironment().Enabled,
             SnapKvBudget = SnapKvConfig.FromEnvironment().Budget,
         };
 
         var plan = ExecutionPlanner.Plan(modelDesc, request, capabilities);
-        return LoadFromPlan(plan, opts);
+        return LoadFromPlan(plan, opts.SessionStorageDirectory);
     }
 
     // ── DSpark draft head (docs/dspark-plan.md Phase 6, PR #413) ─────────────
 
     private static void AttachDSpark(InferenceEngine ie, IForwardPass fwd, GgufModel model,
-        ModelHyperparams hp, List<IDisposable> owned, OpenTailStingrayServerOptions opts,
+        ModelHyperparams hp, List<IDisposable> owned, OpenTailStingrayServerOptions? opts,
         string configuredPath, int ctxSize)
     {
         string stPath = configuredPath;
@@ -214,7 +216,7 @@ public static class InferenceEngineLoader
             foreach (var d in owned)
                 if (d is CudaBackend cb) { cuda = cb; break; }
 
-        var userPlace = !string.IsNullOrWhiteSpace(opts.DSparkPlace)
+        var userPlace = !string.IsNullOrWhiteSpace(opts?.DSparkPlace)
             ? DSparkPlacementPlanner.ParsePlacement(opts.DSparkPlace)
             : DSparkPlacementPlanner.ResolvePlacement(null);
         var hwProfile = cuda is not null ? HardwareProfile.Detect(cuda) : HardwareProfile.Detect();

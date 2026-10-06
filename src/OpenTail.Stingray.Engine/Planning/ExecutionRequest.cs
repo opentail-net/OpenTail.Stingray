@@ -27,6 +27,8 @@ public sealed record ExecutionRequest
     public SpeculationMode SpeculationMode { get; init; } = SpeculationMode.None;
     public string? DraftModelPath { get; init; }
     public string? DSparkModelPath { get; init; }
+    public string? MmprojPath { get; init; }
+    public bool EnableSessions { get; init; }
     public bool SnapKvEnabled { get; init; }
     public int SnapKvBudget { get; init; }
     public bool AllowUnverifiedArchitecture { get; init; }

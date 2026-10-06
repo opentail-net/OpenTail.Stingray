@@ -137,30 +137,85 @@ public static class ExecutionPlanner
             MoeRoutedExpertBytes: placementResult.MoeRoutedExpertBytes,
             FixedWeightsOnCpu: model.PlanningFacts.ShouldKeepFixedWeightsOnCpu);
 
+        int headDim = model.PlanningFacts.HeadDim > 0
+            ? model.PlanningFacts.HeadDim
+            : (model.PlanningFacts.EmbeddingDim > 0 && model.PlanningFacts.NumHeads > 0
+                ? model.PlanningFacts.EmbeddingDim / model.PlanningFacts.NumHeads
+                : 0);
+
+        TqQuantizer resolvedTqQuantizer = TqQuantizer.LloydMax;
+        if (request.TurboQuant)
+        {
+            string tqMode = (request.TurboQuantMode ?? "auto").Trim().ToLowerInvariant();
+            string? blockedReason = TqSupport.KVarNBlockedReason(
+                headDim,
+                request.SnapKvEnabled,
+                onGpu: placementResult.GpuLayers > 0,
+                isVulkan: selectedBackend == ForwardPassBackend.Vulkan,
+                cudaAvailable: capabilities.CudaAvailable,
+                isMoE: model.PlanningFacts.IsMoE,
+                window: request.TurboQuantFp32Window);
+
+            if (tqMode == "kvarn")
+            {
+                if (blockedReason != null)
+                {
+                    throw new NotSupportedException($"TurboQuant KVarN is not supported: {blockedReason}");
+                }
+                resolvedTqQuantizer = TqQuantizer.KVarN;
+            }
+            else if (tqMode == "lloydmax")
+            {
+                resolvedTqQuantizer = TqQuantizer.LloydMax;
+            }
+            else // auto
+            {
+                resolvedTqQuantizer = blockedReason == null ? TqQuantizer.KVarN : TqQuantizer.LloydMax;
+            }
+        }
+
+        float effectiveRopeTheta = model.PlanningFacts.RopeTheta;
+        if (request.RopeFrequencyBase is { } rfb and > 0)
+        {
+            effectiveRopeTheta = rfb;
+        }
+        if (request.RopeFrequencyScale is { } rfs and > 0)
+        {
+            effectiveRopeTheta /= rfs;
+        }
+
         var statePlan = new StatePlan(
             StateModel: model.Capabilities.StateModel,
             ContextLength: ctxSize,
             KvDType: kvDtype,
             TurboQuant: request.TurboQuant,
-            TurboQuantMode: request.TurboQuantMode,
+            TurboQuantMode: request.TurboQuantMode ?? "none",
             TurboQuantBits: request.TurboQuantBits,
             TurboQuantFp32Window: request.TurboQuantFp32Window,
             SnapKvEnabled: request.SnapKvEnabled,
-            SnapKvBudget: request.SnapKvBudget);
+            SnapKvBudget: request.SnapKvBudget,
+            TqQuantizer: resolvedTqQuantizer,
+            FlashAttention: request.FlashAttention,
+            HeadDim: headDim,
+            RopeFrequencyBase: request.RopeFrequencyBase,
+            RopeFrequencyScale: request.RopeFrequencyScale,
+            EffectiveRopeTheta: effectiveRopeTheta);
 
         var batchingPlan = new BatchingPlan(
             Mode: request.BatchingMode,
             MaxBatchSize: request.MaxBatchSize,
-            MaxConcurrentSessions: request.MaxBatchSize);
+            MaxConcurrentSessions: request.MaxBatchSize,
+            EnableSessions: request.EnableSessions);
 
         var speculationPlan = new SpeculationPlan(
-            Mode: request.SpeculationMode,
+            Mode: request.DSparkModelPath != null ? SpeculationMode.DSpark : request.SpeculationMode,
             DraftModelPath: request.DraftModelPath,
             DSparkModelPath: request.DSparkModelPath);
 
         var modalityPlan = new ModalityPlan(
             SupportsVision: model.Capabilities.SupportsVision,
-            SupportsEmbeddingInput: model.Capabilities.SupportsEmbeddingInput);
+            SupportsEmbeddingInput: model.Capabilities.SupportsEmbeddingInput,
+            MmprojPath: request.MmprojPath);
 
         double estVramMb = (placementResult.GpuWeightBytes + placementResult.GpuKvBytes) / (1024.0 * 1024.0);
         double estRamMb = placementResult.CpuWeightBytes / (1024.0 * 1024.0);
@@ -212,10 +267,23 @@ public static class ExecutionPlanner
         ImmutableArray<ExecutionPlanDecisionDetail>.Builder decisions,
         ImmutableArray<string>.Builder warnings)
     {
+        var descriptor = ArchitectureRegistry.Find(model.Semantics.Architecture);
+        bool archSupportsCuda = descriptor is null || (descriptor.SupportedBackends & SupportedBackends.Cuda) != 0;
+        bool archSupportsVulkan = descriptor is null || (descriptor.SupportedBackends & SupportedBackends.Vulkan) != 0;
+
         if (!string.IsNullOrEmpty(request.PinnedBackend) &&
             !string.Equals(request.PinnedBackend, "auto", StringComparison.OrdinalIgnoreCase))
         {
             string pinned = request.PinnedBackend.Trim().ToLowerInvariant();
+            if (pinned == "cuda" && !archSupportsCuda)
+            {
+                throw new NotSupportedException($"Architecture '{model.Semantics.Architecture}' does not support CUDA backend: {descriptor?.BackendLimitation ?? "CUDA unsupported."}");
+            }
+            if (pinned == "vulkan" && !archSupportsVulkan)
+            {
+                throw new NotSupportedException($"Architecture '{model.Semantics.Architecture}' does not support Vulkan backend: {descriptor?.BackendLimitation ?? "Vulkan unsupported."}");
+            }
+
             decisions.Add(new("BACKEND", pinned, "User explicitly pinned backend.", "request_pin"));
 
             return pinned switch
@@ -233,13 +301,13 @@ public static class ExecutionPlanner
             return (ForwardPassBackend.Cpu, "CPU Host");
         }
 
-        if (capabilities.CudaAvailable && CanUseCuda(model))
+        if (capabilities.CudaAvailable && CanUseCuda(model, descriptor))
         {
             decisions.Add(new("BACKEND", "cuda", "CUDA compute device detected and supported by architecture.", "auto_planner"));
             return (ForwardPassBackend.Cuda, capabilities.CudaDeviceName ?? "CUDA Device 0");
         }
 
-        if (capabilities.VulkanAvailable && CanUseVulkan(model))
+        if (capabilities.VulkanAvailable && CanUseVulkan(model, descriptor))
         {
             decisions.Add(new("BACKEND", "vulkan", "Vulkan compute device detected and supported by architecture.", "auto_planner"));
             return (ForwardPassBackend.Vulkan, capabilities.VulkanDeviceName ?? "Vulkan Device 0");
@@ -249,16 +317,20 @@ public static class ExecutionPlanner
         return (ForwardPassBackend.Cpu, "CPU Host");
     }
 
-    private static bool CanUseCuda(ModelDescription model)
+    private static bool CanUseCuda(ModelDescription model, ArchitectureDescriptor? descriptor)
     {
+        if (descriptor is not null && (descriptor.SupportedBackends & SupportedBackends.Cuda) == 0)
+            return false;
         // RWKV, SafeTensors, and GPT-OSS currently lack CUDA kernels
         if (model.Semantics.Family is ForwardPassFamily.Rwkv or ForwardPassFamily.GptOss)
             return false;
         return true;
     }
 
-    private static bool CanUseVulkan(ModelDescription model)
+    private static bool CanUseVulkan(ModelDescription model, ArchitectureDescriptor? descriptor)
     {
+        if (descriptor is not null && (descriptor.SupportedBackends & SupportedBackends.Vulkan) == 0)
+            return false;
         return true;
     }
 

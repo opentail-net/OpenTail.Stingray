@@ -55,7 +55,7 @@ public sealed class RuntimeInstance : IDisposable
     /// Strictly validates plan invariants, backend operational status, and architecture admission.
     /// Never reads execution policy from <see cref="Model.Parameters"/>.
     /// </summary>
-    public static RuntimeInstance Create(ExecutionPlan plan, Model model, ModelHyperparams? hyperparamsOverride = null)
+    public static RuntimeInstance Create(ExecutionPlan plan, Model model)
     {
         ArgumentNullException.ThrowIfNull(plan);
         ArgumentNullException.ThrowIfNull(model);
@@ -65,7 +65,11 @@ public sealed class RuntimeInstance : IDisposable
             SimdKernels.CpuThreads = plan.BackendPlan.ThreadCount;
         }
 
-        var effectiveHp = hyperparamsOverride ?? model.Hyperparams;
+        var effectiveHp = model.Hyperparams;
+        if (plan.State?.EffectiveRopeTheta is { } ropeTheta and > 0)
+        {
+            effectiveHp = effectiveHp with { RopeTheta = ropeTheta };
+        }
 
         // 1. Validate plan executability
         if (!plan.IsExecutable)

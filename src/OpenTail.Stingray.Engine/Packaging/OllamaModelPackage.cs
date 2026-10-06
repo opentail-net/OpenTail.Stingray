@@ -13,7 +13,8 @@ namespace OpenTail.Stingray.Engine.Packaging;
 public sealed class OllamaModelPackage : IModelPackage
 {
     public ModelPackageIdentity Identity { get; }
-    public string PrimaryPath { get; }
+    public string PrimaryPath => ModelBlobPath;
+    public string ManifestPath { get; }
     public ImmutableArray<ModelPackageComponent> Components { get; }
     public ModelFormat Format => ModelFormat.Gguf; // Ollama model blobs are GGUF
     public StingraySidecarMetadata? SidecarMetadata { get; }
@@ -25,13 +26,13 @@ public sealed class OllamaModelPackage : IModelPackage
 
     private OllamaModelPackage(
         ModelPackageIdentity identity,
-        string primaryPath,
+        string manifestPath,
         string modelBlobPath,
         ImmutableArray<ModelPackageComponent> components,
         StingraySidecarMetadata? sidecarMetadata)
     {
         Identity = identity;
-        PrimaryPath = primaryPath;
+        ManifestPath = manifestPath;
         ModelBlobPath = modelBlobPath;
         Components = components;
         SidecarMetadata = sidecarMetadata;
