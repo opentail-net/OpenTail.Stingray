@@ -117,6 +117,11 @@ public interface IInferenceEngine
                 yield return c.Text;
         }
     }
+
+    /// <summary>
+    /// Clears active KV cache tokens and resets sequence state.
+    /// </summary>
+    void Reset() { }
 }
 
 /// <summary>

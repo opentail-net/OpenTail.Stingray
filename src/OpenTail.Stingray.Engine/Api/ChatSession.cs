@@ -62,7 +62,12 @@ public class ChatSession
     /// <summary>
     /// Formats the conversation history into a prompt string for generation.
     /// </summary>
-    public virtual string FormatPrompt(ChatHistory history)
+    public virtual string FormatPrompt(ChatHistory history) => FormatPrompt(history, addGenerationPrompt: true);
+
+    /// <summary>
+    /// Formats the conversation history into a prompt string for generation, optionally specifying whether to add generation prompt.
+    /// </summary>
+    public virtual string FormatPrompt(ChatHistory history, bool addGenerationPrompt)
     {
         ArgumentNullException.ThrowIfNull(history);
         if (history.Count == 0) return string.Empty;
@@ -74,35 +79,39 @@ public class ChatSession
 
         if (_executor.Context.Tokenizer is GgufTokenizer ggufTokenizer && ggufTokenizer.ChatTemplate is { } jinja)
         {
+            var messages = new List<object?>(history.Count);
+            foreach (var msg in history)
+            {
+                string role = msg.Role switch
+                {
+                    AuthorRole.System => "system",
+                    AuthorRole.User => "user",
+                    AuthorRole.Assistant => "assistant",
+                    AuthorRole.Tool => "tool",
+                    _ => "user"
+                };
+                messages.Add(new Dictionary<string, object?>
+                {
+                    ["role"] = role,
+                    ["content"] = msg.Content
+                });
+            }
+
             try
             {
-                var messages = new List<object?>(history.Count);
-                foreach (var msg in history)
-                {
-                    string role = msg.Role switch
-                    {
-                        AuthorRole.System => "system",
-                        AuthorRole.User => "user",
-                        AuthorRole.Assistant => "assistant",
-                        AuthorRole.Tool => "tool",
-                        _ => "user"
-                    };
-                    messages.Add(new Dictionary<string, object?>
-                    {
-                        ["role"] = role,
-                        ["content"] = msg.Content
-                    });
-                }
-
                 return jinja.Render(new Dictionary<string, object?>
                 {
                     ["messages"] = messages,
-                    ["add_generation_prompt"] = true
+                    ["add_generation_prompt"] = addGenerationPrompt
                 });
             }
-            catch
+            catch (ChatTemplateException)
             {
-                // Fall back to ChatML on template rendering error
+                throw;
+            }
+            catch (Exception ex)
+            {
+                throw new ChatTemplateException($"Jinja chat template rendering failed: {ex.Message}");
             }
         }
 
@@ -119,7 +128,10 @@ public class ChatSession
             };
             sb.Append($"<|im_start|>{role}\n{msg.Content}<|im_end|>\n");
         }
-        sb.Append("<|im_start|>assistant\n");
+        if (addGenerationPrompt)
+        {
+            sb.Append("<|im_start|>assistant\n");
+        }
         return sb.ToString();
     }
 
@@ -153,10 +165,19 @@ public class ChatSession
         ArgumentNullException.ThrowIfNull(userMessage);
         _history.AddUserMessage(userMessage);
 
-        string prompt = FormatPrompt(_history);
+        string prompt = FormatPrompt(_history, addGenerationPrompt: true);
+        string canonicalPrefix = FormatPrompt(_history, addGenerationPrompt: false);
+
+        IInferenceParams? effectiveParams = parameters switch
+        {
+            InferenceParams ip => ip with { CanonicalHistoryPrefix = canonicalPrefix },
+            null => new InferenceParams { CanonicalHistoryPrefix = canonicalPrefix },
+            _ => parameters
+        };
+
         var replyBuilder = new StringBuilder();
 
-        await foreach (var chunk in _executor.InferChunksAsync(prompt, parameters, cancellationToken).WithCancellation(cancellationToken).ConfigureAwait(false))
+        await foreach (var chunk in _executor.InferChunksAsync(prompt, effectiveParams, cancellationToken).WithCancellation(cancellationToken).ConfigureAwait(false))
         {
             if (chunk.Kind == GenerateChunkKind.Text)
             {
@@ -200,10 +221,19 @@ public class ChatSession
         ArgumentNullException.ThrowIfNull(message);
         _history.Add(message);
 
-        string prompt = FormatPrompt(_history);
+        string prompt = FormatPrompt(_history, addGenerationPrompt: true);
+        string canonicalPrefix = FormatPrompt(_history, addGenerationPrompt: false);
+
+        IInferenceParams? effectiveParams = parameters switch
+        {
+            InferenceParams ip => ip with { CanonicalHistoryPrefix = canonicalPrefix },
+            null => new InferenceParams { CanonicalHistoryPrefix = canonicalPrefix },
+            _ => parameters
+        };
+
         var replyBuilder = new StringBuilder();
 
-        await foreach (var chunk in _executor.InferChunksAsync(prompt, parameters, cancellationToken).WithCancellation(cancellationToken).ConfigureAwait(false))
+        await foreach (var chunk in _executor.InferChunksAsync(prompt, effectiveParams, cancellationToken).WithCancellation(cancellationToken).ConfigureAwait(false))
         {
             if (chunk.Kind == GenerateChunkKind.Text)
             {

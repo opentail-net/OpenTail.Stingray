@@ -15,6 +15,15 @@ public interface IInferenceParams
     /// <summary>Maximum number of new tokens to generate.</summary>
     int MaxTokens { get; }
 
+    /// <summary>Optional RNG seed for deterministic sampling across generations.</summary>
+    int? Seed { get; }
+
+    /// <summary>
+    /// Optional chat-template render of the message history with add_generation_prompt=false.
+    /// Used for canonical-history prefix caching across multi-turn conversations.
+    /// </summary>
+    string? CanonicalHistoryPrefix { get; }
+
     /// <summary>Sampling temperature. 0.0 specifies deterministic greedy decoding.</summary>
     float Temperature { get; }
 
@@ -80,6 +89,15 @@ public record InferenceParams : IInferenceParams
     /// <summary>Maximum number of new tokens to generate. Default is 512.</summary>
     public int MaxTokens { get; init; } = 512;
 
+    /// <summary>Optional RNG seed for deterministic sampling across generations.</summary>
+    public int? Seed { get; init; }
+
+    /// <summary>
+    /// Optional chat-template render of the message history with add_generation_prompt=false.
+    /// Used for canonical-history prefix caching across multi-turn conversations.
+    /// </summary>
+    public string? CanonicalHistoryPrefix { get; init; }
+
     /// <summary>Sampling temperature. 0.0 specifies deterministic greedy decoding. Default is 0.7.</summary>
     public float Temperature { get; init; } = 0.7f;
 
@@ -144,6 +162,7 @@ public record InferenceParams : IInferenceParams
         return new SamplingParams
         {
             MaxNewTokens = MaxTokens,
+            Seed = Seed,
             Temperature = Temperature,
             TopK = TopK,
             TopP = TopP,

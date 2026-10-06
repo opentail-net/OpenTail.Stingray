@@ -11,7 +11,8 @@ namespace OpenTail.Stingray;
 /// </summary>
 public sealed class Model : IModel
 {
-    private readonly GgufModel _ggufModel;
+    private readonly IModelTensorSource _tensorSource;
+    private readonly GgufModel? _ggufModel;
     private readonly ModelHyperparams _hp;
     private readonly string _arch;
     private readonly HashSet<ModelContext> _activeContexts = [];
@@ -36,8 +37,14 @@ public sealed class Model : IModel
     /// <summary>Model load configuration parameters.</summary>
     public ModelParams Parameters { get; }
 
-    /// <summary>Underlying memory-mapped GGUF model handle.</summary>
-    public GgufModel Gguf => _ggufModel;
+    /// <summary>Underlying model tensor source (GGUF or SafeTensors).</summary>
+    public IModelTensorSource TensorSource => _tensorSource;
+
+    /// <summary>Underlying memory-mapped GGUF model handle, or throws if loaded from non-GGUF format.</summary>
+    public GgufModel Gguf => _ggufModel ?? throw new InvalidOperationException("Model was not loaded from a GGUF file.");
+
+    /// <summary>Whether this model was loaded from a GGUF file.</summary>
+    public bool IsGguf => _ggufModel is not null;
 
     /// <summary>Number of currently active child contexts created from this model.</summary>
     public int ActiveContextCount
@@ -51,9 +58,10 @@ public sealed class Model : IModel
         }
     }
 
-    private Model(string modelPath, GgufModel ggufModel, ModelHyperparams hp, string arch, ModelParams parameters)
+    private Model(string modelPath, IModelTensorSource tensorSource, GgufModel? ggufModel, ModelHyperparams hp, string arch, ModelParams parameters)
     {
         ModelPath = modelPath;
+        _tensorSource = tensorSource;
         _ggufModel = ggufModel;
         _hp = hp;
         _arch = arch;
@@ -67,19 +75,36 @@ public sealed class Model : IModel
 
     /// <summary>
     /// Loads model weights according to the specified model parameters.
+    /// Supports GGUF files and SafeTensors packages.
     /// </summary>
     public static Model Load(ModelParams parameters)
     {
         ArgumentNullException.ThrowIfNull(parameters);
-        if (!File.Exists(parameters.ModelPath))
+        bool isDirectory = Directory.Exists(parameters.ModelPath);
+        bool isSafeTensors = parameters.ModelPath.EndsWith(".safetensors", StringComparison.OrdinalIgnoreCase) || isDirectory;
+
+        if (!File.Exists(parameters.ModelPath) && !isDirectory)
         {
             throw new FileNotFoundException($"Model file not found: {parameters.ModelPath}", parameters.ModelPath);
         }
 
-        var gguf = GgufModel.Open(parameters.ModelPath);
-        var hp = ModelHyperparams.FromGgufMetadata(gguf.Metadata, gguf);
-        var arch = gguf.Metadata.TryGetValue("general.architecture", out var a) ? (string)a : "unknown";
-        return new Model(parameters.ModelPath, gguf, hp, arch, parameters);
+        IModelTensorSource tensorSource;
+        GgufModel? gguf = null;
+
+        if (isSafeTensors)
+        {
+            var st = SafetensorsTensorSource.Open(parameters.ModelPath);
+            tensorSource = st;
+        }
+        else
+        {
+            gguf = GgufModel.Open(parameters.ModelPath);
+            tensorSource = gguf;
+        }
+
+        var hp = ModelHyperparams.FromGgufMetadata(tensorSource.Metadata, tensorSource);
+        var arch = tensorSource.Metadata.TryGetValue("general.architecture", out var a) ? (string)a : "unknown";
+        return new Model(parameters.ModelPath, tensorSource, gguf, hp, arch, parameters);
     }
 
     /// <inheritdoc/>
@@ -132,7 +157,10 @@ public sealed class Model : IModel
                 ctx.Dispose();
             }
             _activeContexts.Clear();
-            _ggufModel.Dispose();
+            if (_tensorSource is IDisposable disposableSource)
+            {
+                disposableSource.Dispose();
+            }
             _disposed = true;
         }
     }

@@ -1242,7 +1242,7 @@ public sealed class ContinuousBatchingEngine : IInferenceEngine, IContinuousBatc
         // StopTokenIds replaces this set; AdditionalStopTokenIds is unioned on top (issue #304).
         System.Collections.Immutable.ImmutableArray<int> stopIds =
             req.Sp.ResolveStopSet(_tokenizer.EogTokenIds);
-        var rng = new Random();
+        var rng = req.Sp.Seed.HasValue ? new Random(req.Sp.Seed.Value) : new Random();
 
         // Per-request grammar constraint (issue #374/#377). Reset to its watching state so a reused
         // instance can't carry state across requests, then mask the first sampled token if it is

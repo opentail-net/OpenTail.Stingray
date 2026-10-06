@@ -548,6 +548,20 @@ public sealed class InferenceEngine : IInferenceEngine, IDisposable, IAsyncDispo
     private const int OwnedSlotIdx = 0;
     private const int ScratchSlotIdx = 1;
 
+    /// <inheritdoc/>
+    public void Reset()
+    {
+        _fwd.ResetCache();
+        _prevTokens = null;
+        if (_slotTokens is not null)
+        {
+            for (int i = 0; i < _slotTokens.Length; i++)
+            {
+                _slotTokens[i] = null;
+            }
+        }
+    }
+
     /// <summary>
     /// Back-compat string-stream view of <see cref="GenerateChunksAsync"/>: yields only
     /// user-facing answer text, suppressing reasoning chunks. Equivalent to the default
@@ -685,7 +699,7 @@ public sealed class InferenceEngine : IInferenceEngine, IDisposable, IAsyncDispo
                     // Emitted before any text/thinking chunk; consumers that only read text
                     // ignore the Usage kind.
                     channel.Writer.TryWrite(new GenerateChunk(GenerateChunkKind.Usage, "", promptTokenCount));
-                    var rng = new Random();
+                    var rng = sp.Seed.HasValue ? new Random(sp.Seed.Value) : new Random();
                     // Explicit StopTokenIds REPLACE the EOG set; AdditionalStopTokenIds are unioned
                     // on top so a caller can add a stop (e.g. a tool-boundary token) without dropping
                     // EOG — issue #304.

@@ -65,10 +65,13 @@ public sealed class InteractiveExecutor : IExecutor
         ArgumentNullException.ThrowIfNull(prompt);
 
         var sp = (inferenceParams as InferenceParams)?.ToSamplingParams() ?? new SamplingParams();
-        string? prefixToUse;
-        lock (_lock)
+        string? prefixToUse = inferenceParams?.CanonicalHistoryPrefix;
+        if (string.IsNullOrEmpty(prefixToUse))
         {
-            prefixToUse = _lastPrefix;
+            lock (_lock)
+            {
+                prefixToUse = _lastPrefix;
+            }
         }
 
         var outputBuilder = new StringBuilder();

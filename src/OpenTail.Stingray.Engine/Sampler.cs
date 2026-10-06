@@ -654,6 +654,11 @@ public sealed record SamplingParams
     public float RepetitionPenalty { get; init; } = 1.0f;
 
     /// <summary>
+    /// Optional RNG seed for deterministic sampling across generations. Null for non-deterministic.
+    /// </summary>
+    public int? Seed { get; init; }
+
+    /// <summary>
     /// Optional list of exact text choices to constrain generation (e.g. ["APPROVED", "REJECTED", "NEEDS_REVISION"]).
     /// When non-null and non-empty, generation is restricted to one of the specified choices.
     /// </summary>

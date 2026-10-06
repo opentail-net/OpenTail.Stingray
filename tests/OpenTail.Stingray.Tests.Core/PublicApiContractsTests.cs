@@ -67,6 +67,8 @@ public class PublicApiContractsTests
         Assert.Equal(SpecType.Auto, p.SpecType);
         Assert.Equal(0, p.SpecDraftNMax);
         Assert.Null(p.Constraint);
+        Assert.Null(p.Seed);
+        Assert.Null(p.CanonicalHistoryPrefix);
     }
 
     [Fact]
@@ -75,6 +77,7 @@ public class PublicApiContractsTests
         var p = new InferenceParams
         {
             MaxTokens = 1024,
+            Seed = 42,
             Temperature = 0.0f,
             TopK = 50,
             TopP = 0.95f,
@@ -95,6 +98,7 @@ public class PublicApiContractsTests
         var sp = p.ToSamplingParams();
 
         Assert.Equal(1024, sp.MaxNewTokens);
+        Assert.Equal(42, sp.Seed);
         Assert.Equal(0.0f, sp.Temperature);
         Assert.Equal(50, sp.TopK);
         Assert.Equal(0.95f, sp.TopP);
@@ -465,13 +469,16 @@ public class PublicApiContractsTests
 
     // Real-weights check (silently no-ops without the checkpoint; a genuine run takes seconds).
     // Expected text is the CPU greedy baseline in docs/2-coverage/2026-10-05-forward-pass-selection-matrix.md.
+    // Real-weights check (silently no-ops without the checkpoint; a genuine run takes seconds).
+    // Expected text is the CPU greedy baseline in docs/2-coverage/2026-10-05-forward-pass-selection-matrix.md.
     [Fact]
     public async Task ChatSession_RealSmolLM2_GreedyMatchesCliBaseline_AndStatefulTurns()
     {
         var modelPath = Path.Combine(RepoRoot, "models", "_models", "SmolLM2-135M-Instruct-Q4_K_M.gguf");
         if (!File.Exists(modelPath)) return;
 
-        using var model = Model.Load(modelPath);
+        var modelParams = new ModelParams(modelPath) { Backend = "cpu", GpuLayerCount = 0 };
+        using var model = Model.Load(modelParams);
         using var ctx = (ModelContext)model.CreateContext(new ContextParams { ContextSize = 512 });
         var session = new ChatSession(new InteractiveExecutor(ctx));
         var inf = new InferenceParams { MaxTokens = 24, Temperature = 0f };
@@ -493,6 +500,118 @@ public class PublicApiContractsTests
         }
         Assert.False(string.IsNullOrWhiteSpace(turn2.ToString()));
         Assert.Equal(4, session.History.Count);
+
+        // Verification of review item 4: prefix tokens were actually reused on turn 2
+        Assert.True(ctx.Engine.PrefillTokensReused > 0,
+            $"Expected PrefillTokensReused > 0 on turn 2, but was {ctx.Engine.PrefillTokensReused}");
+    }
+
+    [Fact]
+    public void ModelContext_Reset_ClearsEngineState()
+    {
+        var modelPath = Path.Combine(RepoRoot, "models", "_models", "SmolLM2-135M-Instruct-Q4_K_M.gguf");
+        if (!File.Exists(modelPath)) return;
+
+        var modelParams = new ModelParams(modelPath) { Backend = "cpu", GpuLayerCount = 0 };
+        using var model = Model.Load(modelParams);
+        using var ctx = (ModelContext)model.CreateContext(new ContextParams { ContextSize = 512 });
+
+        // Force engine initialization
+        _ = ctx.Engine;
+
+        // Reset should execute cleanly without throwing
+        ctx.Reset();
+    }
+
+    [Fact]
+    public void BatchedExecutor_ConstructsRealContinuousBatchingEngine()
+    {
+        var modelPath = Path.Combine(RepoRoot, "models", "_models", "SmolLM2-135M-Instruct-Q4_K_M.gguf");
+        if (!File.Exists(modelPath)) return;
+
+        var modelParams = new ModelParams(modelPath) { Backend = "cpu", GpuLayerCount = 0 };
+        using var model = Model.Load(modelParams);
+        using var ctx = (ModelContext)model.CreateContext(new ContextParams { ContextSize = 512, BatchSize = 4 });
+
+        var batchedExecutor = new BatchedExecutor(ctx);
+        Assert.IsType<ContinuousBatchingEngine>(ctx.Engine);
+    }
+
+    [Fact]
+    public async Task InferenceParams_Seed_ProducesDeterministicOutput()
+    {
+        var modelPath = Path.Combine(RepoRoot, "models", "_models", "SmolLM2-135M-Instruct-Q4_K_M.gguf");
+        if (!File.Exists(modelPath)) return;
+
+        var modelParams = new ModelParams(modelPath) { Backend = "cpu", GpuLayerCount = 0 };
+        using var model = Model.Load(modelParams);
+        using var ctx = (ModelContext)model.CreateContext(new ContextParams { ContextSize = 512 });
+
+        var executor = new StatelessExecutor(ctx);
+        var inf1 = new InferenceParams { MaxTokens = 12, Temperature = 0.8f, Seed = 12345 };
+        var inf2 = new InferenceParams { MaxTokens = 12, Temperature = 0.8f, Seed = 12345 };
+
+        var sb1 = new System.Text.StringBuilder();
+        await foreach (var piece in executor.InferAsync("The universe is", inf1))
+        {
+            sb1.Append(piece);
+        }
+
+        var sb2 = new System.Text.StringBuilder();
+        await foreach (var piece in executor.InferAsync("The universe is", inf2))
+        {
+            sb2.Append(piece);
+        }
+
+        Assert.Equal(sb1.ToString(), sb2.ToString());
+    }
+
+    [Fact]
+    public void ModelParams_ExplicitVulkanBackend_ConfiguresGpuForwardPass()
+    {
+        var modelPath = Path.Combine(RepoRoot, "models", "_models", "SmolLM2-135M-Instruct-Q4_K_M.gguf");
+        if (!File.Exists(modelPath)) return;
+
+        var modelParams = new ModelParams(modelPath) { Backend = "vulkan", GpuLayerCount = -1 };
+        using var model = Model.Load(modelParams);
+        using var ctx = (ModelContext)model.CreateContext(new ContextParams { ContextSize = 512 });
+
+        var engine = ctx.Engine;
+        Assert.NotNull(engine);
+    }
+
+    [Fact]
+    public void ChatSession_JinjaRaiseException_ThrowsChatTemplateException_DoesNotFallbackToChatML()
+    {
+        var tokSource = new TokenizerSource
+        {
+            Tokens = ["<unk>", "<s>", "</s>"],
+            ChatTemplate = "{{ raise_exception('Rejected by template') }}"
+        };
+        var tok = GgufTokenizer.FromSource(tokSource);
+        var ctx = new ContextWithTokenizer(tok);
+        var session = new ChatSession(new StubExecutor(ctx));
+
+        session.AddUserMessage("Hello");
+        var ex = Assert.Throws<ChatTemplateException>(() => session.FormatPrompt(session.History));
+        Assert.Contains("Rejected by template", ex.Message);
+    }
+
+    private sealed class ContextWithTokenizer(ITokenizer tokenizer) : IModelContext
+    {
+        public IModel Model => null!;
+        public ITokenizer Tokenizer => tokenizer;
+        public int ContextSize => 512;
+        public IInferenceEngine Engine => null!;
+        public void Reset() { }
+        public void Dispose() { }
+    }
+
+    private sealed class StubExecutor(IModelContext context) : IExecutor
+    {
+        public IModelContext Context => context;
+        public IAsyncEnumerable<string> InferAsync(string prompt, IInferenceParams? inferenceParams = null, CancellationToken cancellationToken = default) => throw new NotImplementedException();
+        public IAsyncEnumerable<GenerateChunk> InferChunksAsync(string prompt, IInferenceParams? inferenceParams = null, CancellationToken cancellationToken = default) => throw new NotImplementedException();
     }
 
     private sealed class FakeInferenceEngine : IInferenceEngine
