@@ -115,6 +115,12 @@ public class ChatSession
             }
         }
 
+        var protocol = ChatProtocolRegistry.For(_executor.Context.Model.Architecture);
+        if (protocol.Render != null)
+        {
+            return protocol.Render(new ChatRenderRequest(history, addGenerationPrompt));
+        }
+
         var sb = new StringBuilder();
         foreach (var msg in history)
         {

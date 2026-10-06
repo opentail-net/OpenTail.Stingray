@@ -8,8 +8,9 @@ internal static class Gemma4Architecture
         Status = AdmissionStatus.Admitted,
         StatusAnchor = "Gemma 4 E4B text (`gemma4`)",
         EvidenceDoc = "docs/STATUS.md",
-        // Not trained for the engine's <|channel> thought split: enabling it makes the model ramble
-        // and go out-of-distribution on multimodal input.
         ThinkingDefaultOff = true,
+        SupportsImageInput = true,
+        ProjectorFileHints = ["*mmproj*.gguf", "*vision*.gguf"],
+        CanBatchPredicate = (hp, tq) => !hp.IsMoE && !tq && hp.LayerHeadDim is null,
     };
 }

@@ -23,6 +23,13 @@ internal static class RwkvArchitectures
         BackendLimitation = "RWKV has a CPU forward pass only; GPU requests fall back to CPU.",
         StatusAnchor = "RWKV-7 Goose (`rwkv7`)",
         EvidenceDoc = "docs/STATUS.md",
+        SupportsContinuousBatching = false,
+        CreateForwardPass = ctx =>
+        {
+            var rwkv = RwkvForwardPassBase.Create(ctx.Probe.Gguf!);
+            ctx.TrackDisposable(rwkv);
+            return rwkv;
+        },
     };
 
     // rwkv6 — admitted 2026-10-01. Runs on Rwkv6ForwardPass (CPU only, recurrent; shares
@@ -41,5 +48,12 @@ internal static class RwkvArchitectures
         BackendLimitation = "RWKV has a CPU forward pass only; GPU requests fall back to CPU.",
         StatusAnchor = "RWKV-6 Finch (`rwkv6`)",
         EvidenceDoc = "docs/STATUS.md",
+        SupportsContinuousBatching = false,
+        CreateForwardPass = ctx =>
+        {
+            var rwkv = RwkvForwardPassBase.Create(ctx.Probe.Gguf!);
+            ctx.TrackDisposable(rwkv);
+            return rwkv;
+        },
     };
 }

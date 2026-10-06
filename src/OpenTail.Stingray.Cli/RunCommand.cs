@@ -31,7 +31,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
 
         [CommandOption("--mmproj")]
         [Description("Path to the multimodal projector GGUF (mmproj-*.gguf). Required with --image. Mirrors llama.cpp's --mmproj.")]
-        public string? MmprojPath { get; init; }
+        public string? MmprojPath { get; set; }
 
         [CommandOption("-n|--n-predict|-npredict")]
         [Description("Number of tokens to predict (default: 512)")]
@@ -2049,8 +2049,8 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         // Gemma 4's stock instruct models (E4B-it, 12B-it) bracket a <|channel>thought block in
         // their chat template but are NOT trained to reason, so Gemma 4 defaults thinking off.
         // Surface that default (and how to override it) only when we actually defaulted off.
-        if (s_arch == "gemma4" && !settings.Thinking && !settings.NoThinking)
-            AnsiConsole.MarkupLine("[dim]Gemma 4 defaults to --no-thinking (stock instruct models aren't " +
+        if (ArchitectureRegistry.ThinkingDefaultOff(s_arch) && !settings.Thinking && !settings.NoThinking)
+            AnsiConsole.MarkupLine($"[dim]{ArchitectureRegistry.Find(s_arch)?.DisplayName ?? s_arch} defaults to --no-thinking (stock instruct models aren't " +
                 "reasoning-trained). For a reasoning finetune pass --thinking " +
                 "(recommended: --temp 1.0 --top-k 64 --top-p 0.95).[/]");
 
@@ -2075,6 +2075,34 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         // isn't removing validation, just the redundant and wrong one.
         if (settings.ImagePaths is { Length: > 0 } imagePaths)
         {
+            if (string.IsNullOrWhiteSpace(settings.MmprojPath) || Directory.Exists(settings.MmprojPath))
+            {
+                // Auto-discover companion projector beside model file or in specified directory
+                string searchDir = Directory.Exists(settings.MmprojPath)
+                    ? settings.MmprojPath
+                    : (Path.GetDirectoryName(settings.ModelPath) ?? ".");
+
+                var desc = ArchitectureRegistry.Find(s_arch);
+                var hints = desc?.ProjectorFileHints is { Count: > 0 } h
+                    ? h
+                    : (IReadOnlyList<string>)["*mmproj*.gguf", "*vision*.gguf"];
+
+                foreach (var hint in hints)
+                {
+                    try
+                    {
+                        var matches = Directory.GetFiles(searchDir, hint);
+                        if (matches.Length > 0)
+                        {
+                            settings.MmprojPath = matches[0];
+                            AnsiConsole.MarkupLine($"[dim]Auto-discovered multimodal projector: {Markup.Escape(settings.MmprojPath)}[/]");
+                            break;
+                        }
+                    }
+                    catch { }
+                }
+            }
+
             if (settings.MmprojPath is not { Length: > 0 })
             {
                 AnsiConsole.ErrorLine("[red]Error:[/] --image requires --mmproj <mmproj.gguf> (the multimodal projector).");

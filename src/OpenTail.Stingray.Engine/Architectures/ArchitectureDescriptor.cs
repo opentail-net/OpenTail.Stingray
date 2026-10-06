@@ -78,6 +78,42 @@ public sealed class ArchitectureDescriptor
 
     public string? BackendLimitation { get; init; }
 
+    public string? DisplayName { get; init; }
+
+    /// <summary>
+    /// Recognizes a GGUF that declares NO architecture metadata (e.g. MiniMax-H3).
+    /// </summary>
+    public Func<ArchitectureProbe, bool>? DetectFromProbe { get; init; }
+
+    /// <summary>
+    /// Recognizes a model file labeled with a generic architecture (e.g. older Mistral models labeled as 'llama',
+    /// or 'llama' with 'llama.expert_count' > 0). Receives declared architecture and probe.
+    /// </summary>
+    public Func<string, ArchitectureProbe, bool>? RecognizeRelabelledFile { get; init; }
+
+    /// <summary>What <see cref="RecognizeRelabelledFile"/> accepts, for refusal/diagnostic messages.</summary>
+    public string? RelabelledFileDescription { get; init; }
+
+    public bool SupportsContinuousBatching { get; init; } = true;
+
+    /// <summary>Optional fine-grained predicate checking (hyperparams, turboQuant) -> canBatch.</summary>
+    public Func<ModelHyperparams, bool, bool>? CanBatchPredicate { get; init; }
+
+    public bool SupportsImageInput { get; init; }
+    public bool SupportsAudioInput { get; init; }
+
+    /// <summary>File-name patterns, tried in order, for finding this family's mmproj companion beside the model GGUF.</summary>
+    public IReadOnlyList<string> ProjectorFileHints { get; init; } = [];
+
+    /// <summary>
+    /// Constructs the forward pass for this architecture according to the load context.
+    /// </summary>
+    public Func<ArchitectureLoadContext, OpenTail.Stingray.Core.IForwardPass>? CreateForwardPass { get; init; } =
+        CommonForwardPassFactory.CreateDense;
+
+    /// <summary>Optional process-wide native tunables or pre-load hooks.</summary>
+    public Action<ArchitectureLoadContext>? ApplyLoadSetup { get; init; }
+
     /// <summary>Whether the engine may run this architecture right now.</summary>
     public bool IsUsable() => Status switch
     {
@@ -120,11 +156,19 @@ public sealed class ArchitectureDescriptor
             if (hasAnchor == hasExemption)
                 throw new InvalidOperationException(
                     $"Admitted architecture '{Id}' must have exactly one of StatusAnchor or StatusExemption.");
+            if (CreateForwardPass == null)
+                throw new InvalidOperationException($"Admitted architecture '{Id}' has no CreateForwardPass factory.");
         }
         else if (StatusAnchor is not null || StatusExemption is not null)
         {
             throw new InvalidOperationException(
                 $"Architecture '{Id}' is {Status} and must not have StatusAnchor or StatusExemption.");
+        }
+
+        if (RecognizeRelabelledFile != null && string.IsNullOrWhiteSpace(RelabelledFileDescription))
+        {
+            throw new InvalidOperationException(
+                $"Architecture '{Id}' recognises relabelled files but does not say which (RelabelledFileDescription is required).");
         }
     }
 }

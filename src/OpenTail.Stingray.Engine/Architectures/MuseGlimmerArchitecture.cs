@@ -20,5 +20,6 @@ internal static class MuseGlimmerArchitecture
         BackendLimitation = "Muse-Glimmer's attention output gate and embedding norm are supported by the CPU pass only.",
         StatusAnchor = "Muse-Glimmer 30B (`muse-glimmer`)",
         EvidenceDoc = "docs/2-coverage/2026-10-03-muse-glimmer-port-plan.md",
+        SupportsContinuousBatching = false,
     };
 }

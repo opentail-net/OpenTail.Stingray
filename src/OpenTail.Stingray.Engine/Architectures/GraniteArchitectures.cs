@@ -15,6 +15,8 @@ internal static class GraniteArchitectures
         Status = AdmissionStatus.Admitted,
         StatusAnchor = "IBM Granite 4.0-H (`granitehybrid`)",
         EvidenceDoc = "docs/STATUS.md",
+        SupportsContinuousBatching = false,
+        CreateForwardPass = CommonForwardPassFactory.CreateHybridGdn,
     };
 
     // granitemoe — admitted 2026-08-09, FULL 24-of-24-token exact greedy match, bucket-1
@@ -35,5 +37,6 @@ internal static class GraniteArchitectures
         Status = AdmissionStatus.Admitted,
         StatusExemption = "Covered by the generic 'LLM inference (GGUF)' row; STATUS.md is a capability matrix, not an architecture catalog.",
         EvidenceDoc = "docs/done/01-gguf-model-coverage-plan.md",
+        CreateForwardPass = CommonForwardPassFactory.CreateDense,
     };
 }

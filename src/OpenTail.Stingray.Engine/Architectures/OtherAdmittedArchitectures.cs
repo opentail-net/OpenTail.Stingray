@@ -56,6 +56,22 @@ internal static class OtherAdmittedArchitectures
         BackendLimitation = "gpt-oss supports CPU or full Vulkan offload only; CUDA and partial offload use CPU.",
         StatusAnchor = "gpt-oss (`gpt-oss`)",
         EvidenceDoc = "docs/done/101-work-queue-after-coverage-plan.md",
+        SupportsContinuousBatching = false,
+        CreateForwardPass = ctx =>
+        {
+            var gptOssHp = GptOssHyperparams.FromModel(ctx.Probe.Gguf!);
+            if (ctx.Decision.Kind == ForwardPassKind.GptOssVulkan)
+            {
+                var vk = ctx.VulkanBackend ?? new OpenTail.Stingray.Vulkan.VulkanBackend();
+                if (ctx.VulkanBackend is null) ctx.TrackDisposable(vk);
+                var gptGpu = new GptOssGpuForwardPass(ctx.Probe.Gguf!, vk, gptOssHp, maxContextLength: ctx.ContextSize);
+                ctx.TrackDisposable(gptGpu);
+                return gptGpu;
+            }
+            var gptPass = new GptOssForwardPass(ctx.Probe.Gguf!, gptOssHp);
+            ctx.TrackDisposable(gptPass);
+            return gptPass;
+        },
     };
 
     // smollm3 — one twist over the plain llama trunk: NoPE every 4th layer, gated the same way
@@ -854,6 +870,11 @@ internal static class OtherAdmittedArchitectures
         Status = AdmissionStatus.Admitted,
         StatusExemption = "Covered by the generic 'LLM inference (GGUF)' row; STATUS.md is a capability matrix, not an architecture catalog.",
         EvidenceDoc = "docs/STATUS.md",
+        RecognizeRelabelledFile = (arch, probe) =>
+            arch.Equals("llama", StringComparison.OrdinalIgnoreCase) &&
+            (probe.GetMetadataString("general.name")?.Contains("mistral-3", StringComparison.OrdinalIgnoreCase) == true ||
+             probe.GetMetadataString("general.name")?.Contains("mistral3", StringComparison.OrdinalIgnoreCase) == true),
+        RelabelledFileDescription = "Mistral 3 models labeled with general.architecture 'llama'",
     };
 
     public static readonly ArchitectureDescriptor Ministral = new()

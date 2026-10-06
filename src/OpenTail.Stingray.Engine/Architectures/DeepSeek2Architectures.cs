@@ -22,6 +22,19 @@ internal static class DeepSeek2Architectures
         BackendLimitation = "DeepSeek2 MLA supports CPU or full Vulkan offload; CUDA and partial GPU offload use CPU.",
         StatusAnchor = "DeepSeek-V2/V3/R1 (`deepseek2`)",
         EvidenceDoc = "docs/STATUS.md",
+        SupportsContinuousBatching = false,
+        CreateForwardPass = ctx =>
+        {
+            if (ctx.Decision.Kind == ForwardPassKind.DeepSeek2Vulkan)
+            {
+                var vk = ctx.VulkanBackend ?? new OpenTail.Stingray.Vulkan.VulkanBackend();
+                if (ctx.VulkanBackend is null) ctx.TrackDisposable(vk);
+                var mla = new DeepSeek2GpuForwardPass(ctx.Probe.Gguf!, vk, ctx.Probe.Hyperparams, maxContextLength: ctx.ContextSize);
+                ctx.TrackDisposable(mla);
+                return mla;
+            }
+            return CommonForwardPassFactory.CreateDense(ctx);
+        },
     };
 
     // deepseek2-ocr — DeepSeek-OCR2 text decoder (llama.cpp src/models/deepseek2.cpp is_ocr branch: plain MHA
@@ -35,5 +48,6 @@ internal static class DeepSeek2Architectures
         Status = AdmissionStatus.Admitted,
         StatusAnchor = "text arch `deepseek2-ocr` is admitted",
         EvidenceDoc = "docs/STATUS.md",
+        CreateForwardPass = CommonForwardPassFactory.CreateDense,
     };
 }

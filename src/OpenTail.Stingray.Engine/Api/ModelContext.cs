@@ -246,151 +246,70 @@ public sealed class ModelContext : IModelContext
             return TqQuantizer.LloydMax;
         }
 
-        IForwardPass fwd;
-        switch (decision.Kind!.Value)
+        var probe = new ArchitectureProbe
         {
-            case ForwardPassKind.SafeTensorsCpu:
-                var sfwd = new ForwardPass(_model.TensorSource, cpuBackend, hp, maxContextLength: ContextSize);
-                owned.Add(sfwd);
-                fwd = sfwd;
-                break;
+            Path = _model.ModelPath,
+            Architecture = _model.Architecture,
+            TensorSource = _model.TensorSource,
+            Hyperparams = hp,
+            IsGguf = _model.IsGguf,
+            Gguf = _model.IsGguf ? _model.Gguf : null,
+        };
 
-            case ForwardPassKind.CpuDense:
-                var dfwd = new ForwardPass(_model.TensorSource, cpuBackend, hp, maxContextLength: ContextSize);
-                if (turboQuant)
-                    dfwd.EnableTurboQuant(fp32WindowSize: 256, bits: 3, quantizer: ResolveTq(null));
-                owned.Add(dfwd);
-                fwd = dfwd;
-                break;
+        var descriptor = ArchitectureRegistry.Find(_model.Architecture)
+            ?? throw new NotSupportedException($"Unsupported architecture '{_model.Architecture}'.");
 
-            case ForwardPassKind.CpuHybridGdn:
-                var gdnFwd = new HybridGdnForwardPass(_model.Gguf, cpuBackend, hp, maxContextLength: ContextSize);
-                owned.Add(gdnFwd);
-                fwd = gdnFwd;
-                break;
-
-            case ForwardPassKind.RwkvCpu:
-                var rwkvFwd = RwkvForwardPassBase.Create(_model.Gguf);
-                owned.Add(rwkvFwd);
-                fwd = rwkvFwd;
-                break;
-
-            case ForwardPassKind.GptOssCpu:
-                var gptOssHp = GptOssHyperparams.FromModel(_model.Gguf);
-                var gptOssFwd = new GptOssForwardPass(_model.Gguf, gptOssHp);
-                owned.Add(gptOssFwd);
-                fwd = gptOssFwd;
-                break;
-
-            case ForwardPassKind.GptOssVulkan:
-                var vkGpt = new VulkanBackend();
-                owned.Add(vkGpt);
-                var gptOssHpVk = GptOssHyperparams.FromModel(_model.Gguf);
-                var gptOssGpu = new GptOssGpuForwardPass(_model.Gguf, vkGpt, gptOssHpVk, maxContextLength: ContextSize);
-                owned.Add(gptOssGpu);
-                fwd = gptOssGpu;
-                break;
-
-            case ForwardPassKind.DeepSeek2Vulkan:
-                var vkDs = new VulkanBackend();
-                owned.Add(vkDs);
-                var dsFwd = new DeepSeek2GpuForwardPass(_model.Gguf, vkDs, hp, maxContextLength: ContextSize);
-                owned.Add(dsFwd);
-                fwd = dsFwd;
-                break;
-
-            case ForwardPassKind.CudaDense:
-                var cuda = CudaBackend.Create();
-                owned.Add(cuda);
-                var cfwd = new CudaForwardPass(_model.Gguf, cuda, hp, ContextSize,
-                    enableTurboQuant: turboQuant,
-                    tqQuantizer: ResolveTq(hp.IsMoE ? TqSupport.CudaMoeReason
-                        : !TqSupport.IsKVarNCudaHeadDim(headDim) ? TqSupport.CudaHeadDimReason(headDim)
-                        : null));
-                owned.Add(cfwd);
-                fwd = cfwd;
-                break;
-
-            case ForwardPassKind.CudaHybridGdn:
-                var cudaGdn = CudaBackend.Create();
-                owned.Add(cudaGdn);
-                var placementGdn = new LayerPlacement(
-                    GpuLayers: hp.NumLayers,
-                    CpuLayers: 0,
-                    GpuWeightBytes: 0,
-                    GpuKvBytes: 0,
-                    RecommendedCtxSize: ContextSize);
-                var chgdn = new CudaHybridGdnForwardPass(_model.Gguf, cudaGdn, hp, placementGdn);
-                owned.Add(chgdn);
-                fwd = chgdn;
-                break;
-
-            case ForwardPassKind.CudaHybrid:
-                var cudaHyb = CudaBackend.Create();
-                owned.Add(cudaHyb);
-                int effCudaLayers = nGpuLayers > 0 ? nGpuLayers : plannedGpuLayers;
-                var hwProfileCuda = HardwareProfile.Detect(cudaHyb);
-                var planCuda = TierPlanner.Plan(_model.Gguf, hp, hwProfileCuda, turboQuant, requestedCtxSize: ContextSize,
-                    kvDtype: CudaForwardPass.ResolveConfiguredKvDType(), pinGpuLayers: effCudaLayers);
-                var chfwd = new CudaHybridForwardPass(_model.Gguf, cudaHyb, hp, planCuda, turboQuant);
-                owned.Add(chfwd);
-                fwd = chfwd;
-                break;
-
-            case ForwardPassKind.VulkanDense:
-                var vk = new VulkanBackend();
-                owned.Add(vk);
-                _ = ResolveTq(TqSupport.VulkanReason);
-                var gfwd = new GpuForwardPass(_model.Gguf, vk, hp, ContextSize, enableTurboQuant: turboQuant,
-                    kvDtype: CudaForwardPass.ResolveConfiguredKvDType());
-                if (!_params.FlashAttention)
-                {
-                    gfwd.DisableFlashAttention = true;
-                }
-                owned.Add(gfwd);
-                fwd = gfwd;
-                break;
-
-            case ForwardPassKind.VulkanHybridGdn:
-                var vkGdn = new VulkanBackend();
-                owned.Add(vkGdn);
-                var placementVkGdn = new LayerPlacement(
-                    GpuLayers: hp.NumLayers,
-                    CpuLayers: 0,
-                    GpuWeightBytes: 0,
-                    GpuKvBytes: 0,
-                    RecommendedCtxSize: ContextSize);
-                var vhgdn = new VulkanHybridGdnForwardPass(_model.Gguf, vkGdn, hp, placementVkGdn);
-                owned.Add(vhgdn);
-                fwd = vhgdn;
-                break;
-
-            case ForwardPassKind.VulkanHybrid:
-                var vkHyb = new VulkanBackend();
-                owned.Add(vkHyb);
-                _ = ResolveTq(TqSupport.VulkanReason);
-                int effVkLayers = nGpuLayers > 0 ? nGpuLayers : plannedGpuLayers;
-                var hwProfileVk = HardwareProfile.Detect(vkHyb);
-                var planVk = TierPlanner.Plan(_model.Gguf, hp, hwProfileVk, turboQuant, requestedCtxSize: ContextSize,
-                    pinGpuLayers: effVkLayers);
-                var hfwd = new HybridForwardPass(_model.Gguf, vkHyb, hp, planVk, enableTq: turboQuant);
-                owned.Add(hfwd);
-                fwd = hfwd;
-                break;
-
-            case ForwardPassKind.VulkanLayerSplit:
-                var vkSplit = new VulkanBackend();
-                owned.Add(vkSplit);
-                int effSplitLayers = nGpuLayers > 0 ? nGpuLayers : plannedGpuLayers;
-                int split = Math.Min(effSplitLayers, VulkanLayerSplitForwardPass.MaxGpuLayers(hp));
-                var sfwdSplit = new VulkanLayerSplitForwardPass(_model.Gguf, vkSplit, hp, split, ContextSize);
-                owned.Add(sfwdSplit);
-                fwd = sfwdSplit;
-                break;
-
-            default:
-                throw new InvalidOperationException($"Unhandled forward pass kind: {decision.Kind}");
+        LayerPlacement? placement = null;
+        if (decision.Kind is ForwardPassKind.CudaHybrid)
+        {
+            var cudaHyb = CudaBackend.Create();
+            owned.Add(cudaHyb);
+            int effCudaLayers = nGpuLayers > 0 ? nGpuLayers : plannedGpuLayers;
+            var hwProfileCuda = HardwareProfile.Detect(cudaHyb);
+            placement = TierPlanner.Plan(_model.Gguf, hp, hwProfileCuda, turboQuant, requestedCtxSize: ContextSize,
+                kvDtype: CudaForwardPass.ResolveConfiguredKvDType(), pinGpuLayers: effCudaLayers);
         }
+        else if (decision.Kind is ForwardPassKind.VulkanHybrid)
+        {
+            var vkHyb = new VulkanBackend();
+            owned.Add(vkHyb);
+            _ = ResolveTq(TqSupport.VulkanReason);
+            int effVkLayers = nGpuLayers > 0 ? nGpuLayers : plannedGpuLayers;
+            var hwProfileVk = HardwareProfile.Detect(vkHyb);
+            placement = TierPlanner.Plan(_model.Gguf, hp, hwProfileVk, turboQuant, requestedCtxSize: ContextSize,
+                pinGpuLayers: effVkLayers);
+        }
+        else if (decision.Kind is ForwardPassKind.VulkanDense)
+        {
+            _ = ResolveTq(TqSupport.VulkanReason);
+        }
+
+        var tqQuantizer = ResolveTq(hp.IsMoE ? TqSupport.CudaMoeReason
+            : !TqSupport.IsKVarNCudaHeadDim(headDim) ? TqSupport.CudaHeadDimReason(headDim)
+            : null);
+
+        var loadContext = new ArchitectureLoadContext
+        {
+            Probe = probe,
+            Decision = decision,
+            Backend = backend,
+            ContextSize = ContextSize,
+            GpuLayers = nGpuLayers > 0 ? nGpuLayers : plannedGpuLayers,
+            Placement = placement,
+            TurboQuant = turboQuant,
+            TurboQuantMode = tqMode,
+            HeadDim = headDim,
+            TqQuantizer = tqQuantizer,
+            FlashAttention = _params.FlashAttention,
+            KvDType = CudaForwardPass.ResolveConfiguredKvDType(),
+            CpuBackend = cpuBackend,
+        };
+
+        if (descriptor.CreateForwardPass is null)
+            throw new InvalidOperationException($"Architecture '{descriptor.Id}' has no forward-pass factory.");
+
+        var fwd = descriptor.CreateForwardPass(loadContext);
+        owned.AddRange(loadContext.OwnedDisposables);
 
         return (fwd, decision.Kind!.Value, owned);
     }
@@ -405,12 +324,18 @@ public sealed class ModelContext : IModelContext
         var hp = _model.Hyperparams;
         var (fwd, kind, owned) = BuildForwardPass(isContinuousBatching: true);
 
+        var descriptor = ArchitectureRegistry.Find(_model.Architecture);
         bool batchOk = false;
-        if (fwd is IBatchedForwardPass)
+        bool turboQuant = !string.IsNullOrWhiteSpace(_params.TurboQuantMode);
+
+        if (fwd is IBatchedForwardPass && (descriptor?.SupportsContinuousBatching ?? true))
         {
-            if (kind is ForwardPassKind.CpuDense or ForwardPassKind.SafeTensorsCpu)
+            if (descriptor?.CanBatchPredicate is { } predicate)
             {
-                bool turboQuant = !string.IsNullOrWhiteSpace(_params.TurboQuantMode);
+                batchOk = predicate(hp, turboQuant);
+            }
+            else if (kind is ForwardPassKind.CpuDense or ForwardPassKind.SafeTensorsCpu)
+            {
                 batchOk = !hp.IsMoE && !turboQuant && hp.LayerHeadDim is null
                     && !hp.AttentionOutputGate && !hp.InputEmbeddingRmsNorm;
             }

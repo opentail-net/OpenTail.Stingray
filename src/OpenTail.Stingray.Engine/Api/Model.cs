@@ -1,6 +1,7 @@
 #nullable enable
 
 using OpenTail.Stingray.Core;
+using OpenTail.Stingray.Engine;
 
 namespace OpenTail.Stingray;
 
@@ -113,7 +114,21 @@ public sealed class Model : IModel
         }
 
         var hp = ModelHyperparams.FromGgufMetadata(tensorSource.Metadata, tensorSource);
-        var arch = tensorSource.Metadata.TryGetValue("general.architecture", out var a) ? (string)a : "unknown";
+        string? rawArch = tensorSource.Metadata.TryGetValue("general.architecture", out var a) ? Convert.ToString(a) : null;
+        var probe = new ArchitectureProbe
+        {
+            Path = parameters.ModelPath,
+            Architecture = rawArch,
+            TensorSource = tensorSource,
+            Hyperparams = hp,
+            IsGguf = gguf is not null,
+            Gguf = gguf,
+        };
+
+        string arch = ArchitectureRegistry.TryResolve(probe, out var descriptor)
+            ? descriptor.Id
+            : (rawArch ?? "unknown");
+
         return new Model(parameters.ModelPath, tensorSource, gguf, hp, arch, parameters);
     }
 
