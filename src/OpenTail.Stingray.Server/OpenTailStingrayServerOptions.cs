@@ -588,4 +588,5 @@ public sealed record LoadedEngine(
     OpenTail.Stingray.Sessions.ColdSessionRuntime? ColdSessionRuntime = null,
     OpenTail.Stingray.Engine.CpuBatchedPrefillCapability? CpuBatchedPrefill = null,
     ServerRuntimeResolution? RuntimeResolution = null,
-    long? GpuWeightBytesExact = null);
+    long? GpuWeightBytesExact = null,
+    OpenTail.Stingray.Engine.Runtime.RuntimeInstance? Instance = null);

@@ -1,5 +1,14 @@
+#nullable enable
+
+using OpenTail.Stingray.Core;
+using OpenTail.Stingray.Core.Grammar;
 using OpenTail.Stingray.Cpu;
 using OpenTail.Stingray.Cuda;
+using OpenTail.Stingray.Engine;
+using OpenTail.Stingray.Engine.Packaging;
+using OpenTail.Stingray.Engine.Planning;
+using OpenTail.Stingray.Engine.Runtime;
+using OpenTail.Stingray.Sessions;
 using OpenTail.Stingray.Vision;
 using OpenTail.Stingray.Vulkan;
 
@@ -8,7 +17,8 @@ namespace OpenTail.Stingray.Server;
 public static class InferenceEngineLoader
 {
     /// <summary>
-    /// Constructs an inference engine directly from an immutable <see cref="ExecutionPlan"/> (§5.3 of QoL plan).
+    /// Constructs an inference engine directly from an immutable <see cref="ExecutionPlan"/> (§5.3 of plan).
+    /// Guarantees that runtime execution consumes the plan rather than rediscovering execution policy.
     /// </summary>
     public static LoadedEngine LoadFromPlan(ExecutionPlan plan, OpenTailStingrayServerOptions? baseOptions = null)
     {
@@ -18,18 +28,85 @@ public static class InferenceEngineLoader
             throw new InvalidOperationException(
                 $"Execution plan declares model format '{plan.ModelFormat}', but '{plan.ModelPath}' resolves as '{detectedFormat}'.");
 
-        var opts = baseOptions ?? new OpenTailStingrayServerOptions();
-        opts.ModelPath = plan.ModelPath;
-        opts.NGpuLayers = plan.GpuLayers;
-        opts.ContextSize = plan.ContextSize;
-        opts.KvType = ExecutionPlan.KvDtypeToEnvValue(plan.KvDtype);
-        opts.Backend = plan.Backend.ToLowerInvariant() switch
+        var model = Model.Load(new ModelParams(plan.ModelPath)
         {
-            "vulkan" => ServerBackend.Vulkan,
-            "cuda" => ServerBackend.Cuda,
-            _ => ServerBackend.Cpu
-        };
-        return Load(opts);
+            Backend = plan.Backend,
+            GpuLayerCount = plan.GpuLayers
+        });
+
+        var instance = RuntimeInstance.Create(plan, model);
+
+        HotSessionRuntime? sessionRuntime = null;
+        ColdSessionRuntime? coldSessionRuntime = null;
+        if (baseOptions?.EnableSessions == true && instance.Engine is ContinuousBatchingEngine batchingEngine)
+        {
+            sessionRuntime = new HotSessionRuntime(batchingEngine, instance.Tokenizer);
+            if (!string.IsNullOrWhiteSpace(baseOptions.SessionStorageDirectory))
+            {
+                coldSessionRuntime = new ColdSessionRuntime(sessionRuntime, batchingEngine,
+                    baseOptions.SessionStorageDirectory, plan.ModelFormat);
+            }
+        }
+
+        string targetArch = plan.Provenance?.TargetArchitecture ?? model.Architecture;
+
+        if (!string.IsNullOrWhiteSpace(baseOptions?.MmprojPath) && instance.Engine is InferenceEngine ieVision)
+        {
+            if (!string.Equals(targetArch, "gemma4", StringComparison.Ordinal))
+                throw new InvalidOperationException(
+                    "Image input (MmprojPath / STINGRAY_MMPROJ) is only supported for Gemma 4 (gemma4uv) " +
+                    $"text models; this model's architecture is '{targetArch}'.");
+            if (!instance.ForwardPass.SupportsEmbeddingInput)
+                throw new InvalidOperationException(
+                    "MmprojPath / STINGRAY_MMPROJ is set but image input requires a forward pass that accepts " +
+                    "precomputed-embedding input: CPU (NGpuLayers=0) or full CUDA offload (NGpuLayers=-1) of a " +
+                    $"Gemma 4 model that fits VRAM. The configured pass ({instance.ForwardPass.GetType().Name}) does not support it.");
+            if (baseOptions.MaxBatchSize > 1 && instance.Engine is ContinuousBatchingEngine)
+                throw new InvalidOperationException(
+                    "Image input is not supported with continuous batching (MaxBatchSize > 1). Set MaxBatchSize=1.");
+
+            var mmprojPath = ResolvePath(baseOptions.MmprojPath, "mmproj projector", "STINGRAY_MMPROJ", "MmprojPath");
+            var visionModel = VisionModel.Open(mmprojPath);
+            var visionEmbedder = new GemmaUvVisionEmbedder(visionModel);
+            int imgOpen = instance.Tokenizer.SpecialTokens.TryGetValue("<|image>", out var o) ? o : 255999;
+            int imgClose = instance.Tokenizer.SpecialTokens.TryGetValue("<image|>", out var c) ? c : 258882;
+            int imgPlaceholder = instance.Tokenizer.SpecialTokens.TryGetValue("<|image|>", out var p) ? p : 258880;
+            ieVision.EnableImageInput(visionEmbedder, visionModel, imgOpen, imgClose, imgPlaceholder);
+        }
+
+        if (!string.IsNullOrWhiteSpace(baseOptions?.DSparkModelPath) && instance.Engine is InferenceEngine ieDspark && model.IsGguf)
+        {
+            AttachDSpark(ieDspark, instance.ForwardPass, model.Gguf, model.Hyperparams, instance.OwnedDisposables.ToList(), baseOptions, baseOptions.DSparkModelPath, plan.ContextSize);
+        }
+
+        var chatTemplate = (instance.Tokenizer as GgufTokenizer)?.ChatTemplate;
+        var grammarVocab = new GrammarVocabulary(instance.Tokenizer);
+        var toolBoundaryMarkers = ToolCallAdapterRegistry.Get(targetArch).ToolBoundaryStopMarkers;
+        var toolBoundaryStopTokenIds = toolBoundaryMarkers
+            .Select(m => instance.Tokenizer.SpecialTokens.TryGetValue(m, out int id) ? id : -1)
+            .Where(id => id > 0)
+            .Distinct()
+            .ToArray();
+
+        var runtimeRes = DescribeRuntime(instance.ForwardPass, plan.ModelFormat);
+        long? gpuWeightBytes = plan.Placement?.GpuWeightBytes;
+        var engine = instance.Engine is ContinuousBatchingEngine cbe
+            ? new OwnedDisposableEngine(cbe, instance.OwnedDisposables.ToList())
+            : instance.Engine;
+
+        return new LoadedEngine(
+            engine,
+            targetArch,
+            chatTemplate,
+            toolBoundaryStopTokenIds,
+            grammarVocab,
+            instance.Tokenizer,
+            sessionRuntime,
+            coldSessionRuntime,
+            instance.ForwardPass is ForwardPass cpuFwd ? cpuFwd.GetBatchedPrefillCapability() : null,
+            runtimeRes,
+            gpuWeightBytes,
+            instance);
     }
 
     private static ModelFormat DetectModelFormat(string modelPath) =>
@@ -40,34 +117,22 @@ public static class InferenceEngineLoader
             : ModelFormat.Gguf;
 
     /// <summary>
-    /// Opens the GGUF file referenced by <paramref name="opts"/> and constructs the
-    /// inference engine. Throws <see cref="InvalidOperationException"/> when the model
-    /// file cannot be located or the requested configuration is unsupported.
+    /// Opens the model referenced by <paramref name="opts"/>, resolves execution policy via
+    /// <see cref="ExecutionPlanner"/> into an immutable <see cref="ExecutionPlan"/>, and constructs
+    /// the runtime via <see cref="LoadFromPlan(ExecutionPlan, OpenTailStingrayServerOptions)"/>.
     /// </summary>
     public static LoadedEngine Load(OpenTailStingrayServerOptions opts)
     {
-        // ── 0. Translate the MoE env-var-backed knobs BEFORE building the forward pass.
-        // WarmPinConfig / HybridForwardPass / slot-manager constructors read these once at
-        // load time, so they have to be in the environment by the time GgufModel.Open
-        // chains into ForwardPass construction below.
         ApplyMoeEnvironment(opts);
 
-        // ── 1. Apply the SIMD/BLAS crossover threshold (overrides STINGRAY_MIN_BATCH_BLAS).
         if (opts.MinBatchBlas > 0)
             SimdKernels.MinBatchForBlas = opts.MinBatchBlas;
         if (opts.CpuThreads > 0)
             SimdKernels.CpuThreads = opts.CpuThreads;
 
-        // KV-cache dtype (#179): the CUDA dense forward pass reads STINGRAY_KV_DTYPE in its
-
-        // KV-cache dtype (#179): the CUDA dense forward pass reads STINGRAY_KV_DTYPE in its
-        // constructor, so translate the option into the environment before BuildForwardPass.
-        // Only set when explicitly configured — leave an externally-set env var alone so
-        // STINGRAY_KV_DTYPE-only operation keeps working. CudaForwardPass validates the value.
         if (!string.IsNullOrWhiteSpace(opts.KvType))
             Environment.SetEnvironmentVariable("STINGRAY_KV_DTYPE", opts.KvType);
 
-        // ── 2. Resolve & open the model.
         var modelPath = ResolvePath(opts.ModelPath, "model", "STINGRAY_MODEL", "ModelPath");
 
         bool isPackage = Directory.Exists(modelPath)
@@ -79,327 +144,45 @@ public static class InferenceEngineLoader
                 "EnableSessions currently supports only the proven CPU-dense GGUF lane; " +
                 "SafeTensors session/cache conformance is not available yet.");
 
-        if (isPackage)
+        IModelPackage package = isPackage
+            ? SafeTensorsModelPackage.Open(modelPath)
+            : LooseGgufModelPackage.Open(modelPath);
+
+        var modelDesc = ModelDescription.FromPackage(package);
+        var capabilities = BackendCapabilities.Detect();
+
+        var request = new ExecutionRequest
         {
-            var report = ModelPackageInspector.Inspect(modelPath);
-            if (!report.IsSupported)
+            ModelPath = modelPath,
+            Goal = "balanced",
+            PinnedBackend = opts.Backend switch
             {
-                throw new InvalidOperationException(
-                    $"Model package '{modelPath}' is not supported by profile '{report.ProfileId}': " +
-                    string.Join("; ", report.Rejections.Select(r => r.Detail)));
-            }
+                ServerBackend.Cuda => "cuda",
+                ServerBackend.Vulkan => "vulkan",
+                ServerBackend.Cpu => "cpu",
+                _ => "auto"
+            },
+            PinnedGpuLayers = opts.NGpuLayers != -1 ? opts.NGpuLayers : (int?)null,
+            PinnedContextSize = opts.ContextSize > 0 ? opts.ContextSize : null,
+            PinnedKvDtype = opts.KvType,
+            TurboQuant = opts.TurboQuant,
+            TurboQuantMode = opts.TqMode ?? "auto",
+            FlashAttention = true,
+            ThreadCount = opts.CpuThreads,
+            BatchingMode = (opts.MaxBatchSize > 1 || opts.EnableSessions) ? BatchingMode.Continuous : BatchingMode.Sequential,
+            MaxBatchSize = opts.MaxBatchSize > 0 ? opts.MaxBatchSize : 1,
+            DraftModelPath = null,
+            DSparkModelPath = opts.DSparkModelPath,
+            SnapKvEnabled = SnapKvConfig.FromEnvironment().Enabled,
+            SnapKvBudget = SnapKvConfig.FromEnvironment().Budget,
+        };
 
-            // Everything built here is disposable and multi-gigabyte. Each is registered the moment
-            // it exists so ANY later failure releases it in reverse order. Previously only the
-            // tokenizer check cleaned up, so a throw out of the hyperparameters, the backend, the
-            // forward pass or the batching engine leaked the SafeTensors mapping plus whatever had
-            // been built after it. Ownership transfers to the engine at the end and the list is
-            // cleared, so this catch can never double-dispose what the engine now owns.
-            var stOwned = new List<IDisposable>();
-            try
-            {
-                var stSource = SafetensorsTensorSource.Open(modelPath);
-                stOwned.Add(stSource);
-
-                var tokResult = HuggingFaceTokenizerSource.Load(modelPath);
-                if (!tokResult.IsUsable || tokResult.Source is null)
-                    throw new InvalidOperationException($"Failed to load tokenizer from '{modelPath}'.");
-
-                var stTokenizer = GgufTokenizer.FromSource(tokResult.Source);
-                var stHp = ModelHyperparams.FromGgufMetadata(stSource.Metadata, stSource);
-
-                var cpuBackend = new CpuBackend();
-                stOwned.Add(cpuBackend);
-
-                int stCtxSize = opts.ContextSize > 0 ? opts.ContextSize : stHp.ContextLength;
-                var forwardPass = new ForwardPass(stSource, cpuBackend, stHp, maxContextLength: stCtxSize);
-                stOwned.Add(forwardPass);
-
-                string packageModelId = Path.GetFileNameWithoutExtension(modelPath.TrimEnd('/', '\\'));
-                var (stThinkId, stEndThinkId) = stTokenizer.ReasoningTokens;
-
-                var rawEngine = new ContinuousBatchingEngine(forwardPass, stTokenizer, packageModelId, opts.MaxBatchSize,
-                    stThinkId, stEndThinkId,
-                    prefillChunkTokens: opts.PrefillChunkTokens,
-                    kvBudgetBytes: opts.KvBudgetMb > 0 ? opts.KvBudgetMb * 1024 * 1024 : opts.KvBudgetMb,
-                    prefixCacheBytes: opts.PrefixCacheMb > 0 ? opts.PrefixCacheMb * 1024 * 1024 : opts.PrefixCacheMb);
-
-                // Ownership transfer: from here the engine is responsible for these.
-                var ownedEngine = new OwnedDisposableEngine(rawEngine, [stSource, cpuBackend, forwardPass]);
-                stOwned.Clear();
-
-                var stGrammarVocab = new OpenTail.Stingray.Core.Grammar.GrammarVocabulary(stTokenizer);
-                return new LoadedEngine(ownedEngine, report.ArchitectureId ?? "llama", stTokenizer.ChatTemplate, [], stGrammarVocab,
-                    stTokenizer, CpuBatchedPrefill: forwardPass.GetBatchedPrefillCapability(),
-                    RuntimeResolution: DescribeRuntime(forwardPass, ModelFormat.SafeTensors));
-            }
-            catch
-            {
-                for (int i = stOwned.Count - 1; i >= 0; i--)
-                    try { stOwned[i].Dispose(); } catch { /* fall through to rethrow */ }
-                throw;
-            }
-        }
-
-        var model = GgufModel.Open(modelPath);
-
-        // Everything from here to the ownership transfer runs with the model mapped. Compatibility
-        // validation, hyperparameter derivation, tokenizer construction and the TurboQuant argument
-        // checks all throw on bad input, and until this guard existed every one of those paths
-        // leaked the mapping and its file handles — the owned[] cleanup scope did not begin until
-        // after BuildForwardPass, well past all of them.
-        //
-        // The body is deliberately NOT re-indented (same convention as ContinuousBatchingEngine's
-        // BatcherLoop) so this reads as a guard rather than a restructuring. The inner catches
-        // below also dispose the model; that is safe because GgufModel.Dispose is idempotent.
-        try
-        {
-        // GGUF is only a container: validate the architecture profile and every tensor's
-        // executable storage format before selecting a backend. This prevents a generic
-        // model from getting as far as its first request before failing (or, worse, running
-        // with incompatible transformer assumptions).
-        ModelCompatibility.ValidateForTextGeneration(model);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
-        var tokenizer = GgufTokenizer.FromGgufModel(model);
-        var arch = model.Metadata.TryGetValue("general.architecture", out var a)
-            ? (string)a
-            : opts.Architecture;
-        var modelId = Path.GetFileNameWithoutExtension(modelPath);
-        var (thinkTokenId, endThinkTokenId) = tokenizer.ReasoningTokens;
-
-        // Tool-boundary stop tokens for agentic loops (issue #304): resolve the architecture's
-        // adapter markers (Gemma 4: <|tool_response>) against the vocab. The chat endpoints add
-        // these to the stop set on tool-active requests so the model halts the instant it finishes
-        // its tool calls instead of opening a hallucinated trailing turn.
-        var toolBoundaryMarkers = ToolCallAdapterRegistry.Get(arch).ToolBoundaryStopMarkers;
-        var toolBoundaryStopTokenIds = toolBoundaryMarkers
-            .Select(m => tokenizer.SpecialTokens.TryGetValue(m, out int id) ? id : -1)
-            .Where(id => id > 0)
-            .Distinct()
-            .ToArray();
-        // The adapter declared it needs a tool-boundary stop but none resolved to a vocab id —
-        // agentic generation will run past the tool calls (the #304 symptom) with no other clue.
-        // Warn rather than fail silently (mirrors the image-input diagnostic below).
-        if (toolBoundaryMarkers.Count > 0 && toolBoundaryStopTokenIds.Length == 0)
-            Console.Error.WriteLine(
-                $"[OpenTail.Stingray] {arch} declares tool-boundary stop markers [{string.Join(", ", toolBoundaryMarkers)}] " +
-                "that were not found in this model's vocab; agentic tool-call generation may run past " +
-                "the tool calls (issue #304).");
-
-        // ── 3. Validate TurboQuant up-front so a mis-shaped request fails fast (and not
-        // after the model has already been mmap'd into VRAM).
-        bool turboQuant = opts.TurboQuant;
-        if (turboQuant && hp.IsHybridSsm)
-            throw new InvalidOperationException(
-                "TurboQuant is not supported for hybrid GDN models (no KV cache on GDN layers).");
-        bool tqModeIsAuto = false;
-        TqQuantizer tqQuantizer;
-        switch ((opts.TqMode ?? "auto").Trim().ToLowerInvariant())
-        {
-            case "" or "auto":
-                tqModeIsAuto = true;
-                tqQuantizer = TqQuantizer.LloydMax; // resolved per-path in BuildForwardPass
-                break;
-            case "lloydmax" or "lloyd-max":
-                tqQuantizer = TqQuantizer.LloydMax;
-                break;
-            case "kvarn":
-                tqQuantizer = TqQuantizer.KVarN;
-                break;
-            default:
-                throw new InvalidOperationException(
-                    $"Unknown TqMode '{opts.TqMode}'. Expected one of: auto, lloydmax, kvarn.");
-        }
-
-        // An explicit TqMode=kvarn is meaningless without TurboQuant — reject it up front
-        // like the CLI does (issue #437) rather than silently ignoring it.
-        if (!turboQuant && !tqModeIsAuto && tqQuantizer == TqQuantizer.KVarN)
-            throw new InvalidOperationException("TqMode=kvarn requires TurboQuant=true.");
-
-        // Head-dim gate, codec-aware (issue #437): KVarN accepts any power-of-2 head dim in
-        // [8, 1024] (CPU) / [8, 256] (CUDA) — the resolved path is validated in ResolveTq
-        // below; Lloyd-Max ships codebooks for 128/256 only. An explicit lloydmax therefore
-        // needs 128/256 up front; auto / explicit kvarn need only a valid KVarN head dim
-        // here (a path that can't run KVarN falls back or errors in ResolveTq). This relaxes
-        // the old hard {128,256} reject so KVarN's broader head dims (32/64/512/1024) are
-        // reachable on the server's CPU path, as they already are on the CLI.
-        if (turboQuant)
-        {
-            bool explicitLloydMax = !tqModeIsAuto && tqQuantizer == TqQuantizer.LloydMax;
-            if (explicitLloydMax && !TqSupport.IsLloydMaxHeadDim(hp.HeadDim))
-                throw new InvalidOperationException(
-                    $"TurboQuant Lloyd-Max requires head dimension 128 or 256; this model has head dim {hp.HeadDim}.");
-            if (!explicitLloydMax && !TqSupport.IsKVarNHeadDim(hp.HeadDim))
-                throw new InvalidOperationException(
-                    $"TurboQuant requires a power-of-2 head dimension in [8, 1024]; this model has head dim {hp.HeadDim}.");
-        }
-
-        int ctxSize = opts.ContextSize;
-        int nGpuLayers = opts.NGpuLayers;
-
-        // ── 4. Build the forward pass. The owned[] list collects everything the engine
-        // must dispose on shutdown (backends, the forward pass itself, the GGUF handle).
-        var owned = new List<IDisposable>();
-        IForwardPass fwd;
-        bool batchingSupported;
-        long? gpuWeightBytesExact;
-
-        try
-        {
-            (fwd, batchingSupported, gpuWeightBytesExact) = BuildForwardPass(model, hp, arch, ctxSize, nGpuLayers, opts.Backend, turboQuant,
-                tqQuantizer, tqModeIsAuto, owned,
-                DequantCacheBytes(opts.PrefillDequantCacheMb), preferBatchingOverAutoSnapKv: opts.MaxBatchSize > 1);
-            owned.Add(model);
-        }
-        catch
-        {
-            foreach (var d in owned) try { d.Dispose(); } catch { /* fall through to rethrow */ }
-            model.Dispose();
-            throw;
-        }
-
-        // ── 5. Wrap in the right engine. ContinuousBatchingEngine takes the concrete
-        // ForwardPass — it isn't built for the GPU / hybrid paths — so we honour
-        // MaxBatchSize > 1 only when batching is structurally possible. Mirror the
-        // BuildForwardPass guard above: if an engine constructor throws, dispose everything
-        // in owned[] (the backend, the multi-GB forward pass, the GGUF handle) rather than
-        // leaking it — ownership only transfers once construction succeeds.
-        IInferenceEngine engine;
-        HotSessionRuntime? sessionRuntime = null;
-        ColdSessionRuntime? coldSessionRuntime = null;
-        try
-        {
-            // ── Image input (issue #253): open the mmproj vision projector when configured.
-            // Requires an embedding-capable forward pass (CPU / full-CUDA Gemma 4) and the
-            // single-user InferenceEngine path; reject other configs with a clear error.
-            GemmaUvVisionEmbedder? visionEmbedder = null;
-            VisionModel? visionModel = null;
-            (int Open, int Close, int Placeholder) imgIds = default;
-            if (!string.IsNullOrWhiteSpace(opts.MmprojPath))
-            {
-                // The gemma4uv splice path is specific to Gemma 4 text models. The CPU forward
-                // pass reports SupportsEmbeddingInput=true for every architecture, so without this
-                // arch check a non-Gemma CPU model + a valid gemma4uv mmproj would load and either
-                // splice foreign soft tokens into the wrong trunk (garbage) or throw an opaque
-                // dimension error mid-request. Fail fast at load instead.
-                if (!string.Equals(arch, "gemma4", StringComparison.Ordinal))
-                    throw new InvalidOperationException(
-                        "Image input (MmprojPath / STINGRAY_MMPROJ) is only supported for Gemma 4 (gemma4uv) " +
-                        $"text models; this model's architecture is '{arch}'.");
-                if (!fwd.SupportsEmbeddingInput)
-                    throw new InvalidOperationException(
-                        "MmprojPath / STINGRAY_MMPROJ is set but image input requires a forward pass that accepts " +
-                        "precomputed-embedding input: CPU (NGpuLayers=0) or full CUDA offload (NGpuLayers=-1) of a " +
-                        $"Gemma 4 model that fits VRAM. The configured pass ({fwd.GetType().Name}) does not support it.");
-                if (opts.MaxBatchSize > 1 && batchingSupported && fwd is IBatchedForwardPass)
-                    throw new InvalidOperationException(
-                        "Image input is not supported with continuous batching (MaxBatchSize > 1). Set MaxBatchSize=1.");
-
-                var mmprojPath = ResolvePath(opts.MmprojPath, "mmproj projector", "STINGRAY_MMPROJ", "MmprojPath");
-                visionModel = VisionModel.Open(mmprojPath); // validates clip / gemma4uv projector, else throws
-                owned.Add(visionModel);
-                visionEmbedder = new GemmaUvVisionEmbedder(visionModel);
-                imgIds = (
-                    tokenizer.SpecialTokens.TryGetValue("<|image>", out var o) ? o : 255999,
-                    tokenizer.SpecialTokens.TryGetValue("<image|>", out var c) ? c : 258882,
-                    tokenizer.SpecialTokens.TryGetValue("<|image|>", out var p) ? p : 258880);
-            }
-
-            string? dsparkPath = !string.IsNullOrWhiteSpace(opts.DSparkModelPath)
-                ? opts.DSparkModelPath
-                : Environment.GetEnvironmentVariable("STINGRAY_DSPARK_MODEL");
-
-            bool continuousBatchingRequested = opts.MaxBatchSize > 1 || opts.EnableSessions;
-            if (opts.EnableSessions && (!batchingSupported || fwd is not ForwardPass))
-                throw new InvalidOperationException(
-                    "EnableSessions currently supports only the proven CPU-dense GGUF lane " +
-                    "without MoE or TurboQuant. Disable EnableSessions or select CPU dense GGUF.");
-
-            if (continuousBatchingRequested && batchingSupported && fwd is IBatchedForwardPass batchFwd)
-            {
-                if (!string.IsNullOrWhiteSpace(dsparkPath))
-                    throw new InvalidOperationException(
-                        "DSpark (DSparkModelPath / STINGRAY_DSPARK_MODEL) is not supported with " +
-                        "continuous batching (MaxBatchSize > 1) — the tap buffer is " +
-                        "single-sequence (docs/dspark-plan.md Phase 6). Set MaxBatchSize=1.");
-                var batchingEngine = new ContinuousBatchingEngine(batchFwd, tokenizer, modelId,
-                    opts.EnableSessions ? Math.Max(2, opts.MaxBatchSize) : opts.MaxBatchSize,
-                    thinkTokenId, endThinkTokenId,
-                    prefillChunkTokens: opts.PrefillChunkTokens,
-                    kvBudgetBytes: opts.KvBudgetMb > 0 ? opts.KvBudgetMb * 1024 * 1024 : opts.KvBudgetMb,
-                    prefixCacheBytes: opts.PrefixCacheMb > 0 ? opts.PrefixCacheMb * 1024 * 1024 : opts.PrefixCacheMb);
-                if (opts.EnableSessions)
-                {
-                    sessionRuntime = new HotSessionRuntime(batchingEngine, tokenizer);
-                    if (!string.IsNullOrWhiteSpace(opts.SessionStorageDirectory))
-                        coldSessionRuntime = new ColdSessionRuntime(sessionRuntime, batchingEngine,
-                            opts.SessionStorageDirectory, ModelFormat.Gguf);
-                }
-                // ContinuousBatchingEngine doesn't accept owned[] disposables; transfer
-                // disposal responsibility by wrapping it in a composite disposable.
-                engine = new OwnedDisposableEngine(batchingEngine, owned);
-            }
-            else
-            {
-                var ie = new InferenceEngine(fwd, tokenizer, modelId, thinkTokenId, endThinkTokenId,
-                    owned.ToArray());
-                if (visionEmbedder is not null)
-                    ie.EnableImageInput(visionEmbedder, visionModel!, imgIds.Open, imgIds.Close, imgIds.Placeholder);
-                if (!string.IsNullOrWhiteSpace(dsparkPath))
-                {
-                    try
-                    {
-                        AttachDSpark(ie, fwd, model, hp, owned, opts, dsparkPath, ctxSize);
-                    }
-                    catch
-                    {
-                        // The engine already owns fwd + owned[] and runs a background
-                        // worker thread; dispose IT (which tears all of that down) and
-                        // clear the list so the outer catch can't double-dispose.
-                        ie.Dispose();
-                        owned.Clear();
-                        throw;
-                    }
-                }
-                engine = ie;
-            }
-        }
-        catch
-        {
-            foreach (var d in owned) try { d.Dispose(); } catch { /* fall through to rethrow */ }
-            throw;
-        }
-
-        // Grammar-constrained tool-call decoding (issue #374): expose a vocabulary view built from
-        // the model's tokenizer. The full-vocab byte table inside it is materialised lazily on first
-        // constrained request, so this costs nothing unless tool-grammar is actually used.
-        var grammarVocab = new OpenTail.Stingray.Core.Grammar.GrammarVocabulary(tokenizer);
-
-        return new LoadedEngine(engine, arch, tokenizer.ChatTemplate, toolBoundaryStopTokenIds, grammarVocab, tokenizer,
-            sessionRuntime, coldSessionRuntime,
-            fwd is ForwardPass cpuForwardPass ? cpuForwardPass.GetBatchedPrefillCapability() : null,
-            DescribeRuntime(fwd, ModelFormat.Gguf), gpuWeightBytesExact);
-        }
-        catch
-        {
-            // Reached only on failure: success returns from inside the try, by which point the
-            // engine owns the mapping.
-            model.Dispose();
-            throw;
-        }
+        var plan = ExecutionPlanner.Plan(modelDesc, request, capabilities);
+        return LoadFromPlan(plan, opts);
     }
 
     // ── DSpark draft head (docs/dspark-plan.md Phase 6, PR #413) ─────────────
 
-    /// <summary>
-    /// Load the configured DSpark draft head and attach it to the single-user engine:
-    /// resolve the safetensors + sibling config.json, validate head↔target compatibility
-    /// and tap support, run the placement planner (GPU draft on the target's CudaBackend,
-    /// CPU draft otherwise), enable hidden taps BEFORE any request runs, and hand
-    /// ownership of the draft to the engine. Unlike the CLI (which falls back to normal
-    /// generation), an explicitly configured server head that can't be honored throws —
-    /// silent degradation at startup would misreport the deployment's capabilities.
-    /// </summary>
     private static void AttachDSpark(InferenceEngine ie, IForwardPass fwd, GgufModel model,
         ModelHyperparams hp, List<IDisposable> owned, OpenTailStingrayServerOptions opts,
         string configuredPath, int ctxSize)
@@ -425,8 +208,6 @@ public static class InferenceEngineLoader
                 "CUDA offload, NGpuLayers=-1; no MoE / Gemma-4 / TurboQuant / SnapKV). " +
                 $"The configured pass ({fwd.GetType().Name}) can't capture hidden taps.");
 
-        // The GPU draft shares the TARGET's CudaBackend (one stream orders the tap
-        // producer and draft consumer); only meaningful for the dense CUDA pass.
         CudaBackend? cuda = null;
         if (fwd is CudaForwardPass)
             foreach (var d in owned)
@@ -479,15 +260,6 @@ public static class InferenceEngineLoader
             $"({decision.Placement}) from {stPath}");
     }
 
-    // ── Backend dispatch ─────────────────────────────────────────────────────
-
-    /// <summary>
-    /// Translate the legacy <see cref="OpenTailStingrayServerOptions.PrefillDequantCacheMb"/>
-    /// setting for compatibility. The ForwardPass currently keeps this cache dormant.
-    /// </summary>
-    private static long DequantCacheBytes(long? mb) =>
-        mb is null ? long.MinValue : ForwardPass.MbToBudgetBytes(mb.Value);
-
     private static ServerRuntimeResolution DescribeRuntime(IForwardPass forwardPass, ModelFormat format)
     {
         (string backend, string route) = forwardPass switch
@@ -505,447 +277,6 @@ public static class InferenceEngineLoader
         return new ServerRuntimeResolution(backend, route, format.ToString().ToLowerInvariant(), forwardPass.MaxSeqLen);
     }
 
-    /// <summary>
-    /// <paramref name="model"/>'s forward pass, plus <c>GpuWeightBytesExact</c> — a precise
-    /// accelerator-resident weight-byte figure when one is genuinely available (currently only
-    /// the CUDA/Vulkan <em>partial</em>-offload hybrid branches, which already ask
-    /// <see cref="TierPlanner"/> for a real per-layer placement and previously discarded it —
-    /// docs/032 Phase 3 Slice 8's "not yet done" byte-exact hybrid/partial-offload tracking).
-    /// <c>null</c> everywhere else (CPU-only; full dense GPU offload, where the existing
-    /// file-size estimate is already exact; hybrid-GDN, whose placement is driven by
-    /// <c>hp.LayerTypes</c> rather than <see cref="TierPlanner"/> and isn't attempted here) —
-    /// callers fall back to the existing <c>ModelRuntime.EstimatedModelBytes</c> heuristic.
-    /// </summary>
-    private static ArchitectureLoadContext CreateLoadContext(
-        GgufModel model, ModelHyperparams hp, string arch, ForwardPassDecision decision,
-        ForwardPassBackend backend, int ctxSize, int gpuLayers, LayerPlacement? placement,
-        bool turboQuant, bool tqModeIsAuto, TqQuantizer tqQuantizer,
-        CpuBackend? cpuBackend = null, CudaBackend? cudaBackend = null, VulkanBackend? vulkanBackend = null,
-        ForwardPass? cpuDensePass = null, long prefillDequantCacheBytes = 0, bool preferBatchingOverAutoSnapKv = false)
-    {
-        var plan = ExecutionPlan.CreateSynthesized(
-            architecture: arch,
-            decision: decision,
-            backend: backend,
-            contextSize: ctxSize,
-            gpuLayers: gpuLayers,
-            placement: placement,
-            turboQuant: turboQuant,
-            turboQuantMode: tqModeIsAuto ? "auto" : "manual",
-            headDim: hp.HeadDim,
-            tqQuantizer: tqQuantizer,
-            flashAttention: true,
-            kvDtype: CudaForwardPass.ResolveConfiguredKvDType(),
-            prefillDequantCacheBytes: prefillDequantCacheBytes,
-            preferBatchingOverAutoSnapKv: preferBatchingOverAutoSnapKv,
-            totalLayers: hp.NumLayers);
-
-        return new ArchitectureLoadContext
-        {
-            Probe = new ArchitectureProbe
-            {
-                Architecture = arch,
-                TensorSource = model,
-                Hyperparams = hp,
-                IsGguf = true,
-                Gguf = model,
-            },
-            Plan = plan,
-            CpuBackend = cpuBackend,
-            CudaBackend = cudaBackend,
-            VulkanBackend = vulkanBackend,
-            CpuDensePass = cpuDensePass,
-        };
-    }
-
-    private static (IForwardPass Fwd, bool BatchingSupported, long? GpuWeightBytesExact) BuildForwardPass(
-        GgufModel model, ModelHyperparams hp, string arch, int ctxSize, int nGpuLayers,
-        ServerBackend backend, bool turboQuant, TqQuantizer tqQuantizer, bool tqModeIsAuto,
-        List<IDisposable> owned, long prefillDequantCacheBytes,
-        bool preferBatchingOverAutoSnapKv = false)
-    {
-        ForwardPassDecision SelectPass(ServerBackend requestedBackend, int requestedGpuLayers,
-            bool unsupportedPartialVulkanPath = false)
-        {
-            var request = new ForwardPassRequest
-            {
-                Frontend = ForwardPassFrontend.Server,
-                Architecture = arch,
-                IsHybridSsm = hp.IsHybridSsm,
-                HasHybridGdnLayers = hp.IsHybridSsm,
-                IsMoE = hp.IsMoE,
-                KvLoraRank = hp.KvLoraRank,
-                HasMlaTensors = model.FindTensor("blk.0.attn_kv_b.weight") is not null
-                    && model.FindTensor("blk.0.attn_q_a.weight") is null,
-                NumLayers = hp.NumLayers,
-                GpuLayers = requestedGpuLayers,
-                Backend = requestedBackend switch
-                {
-                    ServerBackend.Cpu => ForwardPassBackend.Cpu,
-                    ServerBackend.Cuda => ForwardPassBackend.Cuda,
-                    ServerBackend.Vulkan => ForwardPassBackend.Vulkan,
-                    _ => ForwardPassBackend.Auto,
-                },
-                CudaAvailable = requestedBackend == ServerBackend.Cuda,
-                TurboQuant = turboQuant,
-                HeadDim = hp.HeadDim,
-                LayerHeadDim = hp.LayerHeadDim is not null,
-                HasLayerHeadDim = hp.LayerHeadDim is not null,
-                UnsupportedPartialVulkanPath = unsupportedPartialVulkanPath,
-            };
-            return ForwardPassSelection.Select(request);
-        }
-
-        // TurboQuant quantizer resolution (issue #432): TqMode "auto" prefers KVarN
-        // wherever the resolved path supports it and falls back to Lloyd-Max 3-bit —
-        // which severely degrades quality on QK-norm models such as Qwen3 — with a
-        // stderr warning. An explicit TqMode forces the codec; forcing kvarn on an
-        // unsupported path fails model load with the reason.
-        bool snapKvEnabled = SnapKvConfig.FromEnvironment().Enabled;
-        TqQuantizer ResolveTq(string? kvarnBlocked)
-        {
-            if (!turboQuant) return TqQuantizer.LloydMax; // unused — TQ is off
-            kvarnBlocked ??= snapKvEnabled ? TqSupport.SnapKvReason : null;
-            if (kvarnBlocked is null)
-                return tqModeIsAuto ? TqQuantizer.KVarN : tqQuantizer;
-            // KVarN is unavailable on this resolved path. An explicit kvarn → hard error.
-            if (!tqModeIsAuto && tqQuantizer == TqQuantizer.KVarN)
-                throw new InvalidOperationException($"TqMode=kvarn is not supported on this path: {kvarnBlocked}.");
-            // Auto (and explicit lloydmax) fall back to Lloyd-Max — but it ships codebooks
-            // for 128/256 only. A non-{128,256} head dim reached here under the relaxed KVarN
-            // envelope, so the downgrade would crash in the forward-pass ctor; fail cleanly
-            // and point at the CPU KVarN path instead (issue #437, mirrors the CLI).
-            if (!TqSupport.IsLloydMaxHeadDim(hp.HeadDim))
-                throw new InvalidOperationException(
-                    $"TurboQuant with head dim {hp.HeadDim} requires KVarN ({kvarnBlocked}), but Lloyd-Max — the " +
-                    "only codec available on this path — ships codebooks for head dim 128/256 only. " +
-                    "Use nGpuLayers=0 for the CPU KVarN path.");
-            if (tqModeIsAuto)
-                Console.Error.WriteLine(
-                    $"[InferenceEngineLoader] TurboQuant is falling back to the Lloyd-Max 3-bit quantizer ({kvarnBlocked}). " +
-                    $"{TqSupport.QualityWarningReason}; set TqMode=\"lloydmax\" to silence this warning.");
-            return TqQuantizer.LloydMax;
-        }
-
-        var desc = ArchitectureRegistry.Find(arch);
-        ArchitectureLoadContext loadCtx;
-
-        // Features the GPU layer loops don't implement (MLA, LayerNorm, parallel residual, learned
-        // positions, non-gated FFN): run on CPU rather than compute silently wrong logits.
-        // DeepSeek2 (MLA): its own full-offload Vulkan pass (no CUDA / -g N / TurboQuant path).
-        var initialSelection = SelectPass(backend, nGpuLayers);
-        if (initialSelection.Kind == ForwardPassKind.DeepSeek2Vulkan)
-        {
-            var vk = new VulkanBackend();
-            owned.Add(vk);
-            loadCtx = CreateLoadContext(model, hp, arch, initialSelection, ForwardPassBackend.Vulkan,
-                ctxSize, nGpuLayers, null, turboQuant, tqModeIsAuto, tqQuantizer, vulkanBackend: vk);
-            var mla = desc != null ? desc.ConstructForwardPass(loadCtx) : CommonForwardPassFactory.CreateDense(loadCtx);
-            owned.AddRange(loadCtx.OwnedDisposables);
-            return (mla, BatchingSupported: false, GpuWeightBytesExact: null);
-        }
-
-        if (nGpuLayers != 0 && GpuForwardPass.UnsupportedReason(model, hp) is { } gpuGap)
-        {
-            Console.Error.WriteLine($"[InferenceEngineLoader] no GPU forward pass for {gpuGap} yet; running on CPU.");
-            nGpuLayers = 0;
-        }
-
-        // Resolve "auto" first so the rest of the method can treat backend as concrete.
-        if (nGpuLayers != 0 && backend == ServerBackend.Auto)
-        {
-            // CUDA can run TQ for any KVarN CUDA head dim (pow-2 [8,256]; 128/256 also cover
-            // Lloyd-Max) — issue #437 relaxed this from the old hard {128,256}. Larger/other
-            // head dims fall through to Vulkan (Lloyd-Max) or the CPU KVarN path.
-            bool tqOk = !turboQuant || TqSupport.IsKVarNCudaHeadDim(hp.HeadDim);
-            if (tqOk && CudaBackend.IsAvailable())
-                backend = ServerBackend.Cuda;
-            else
-                backend = ServerBackend.Vulkan;
-        }
-        else if (nGpuLayers == 0 || backend == ServerBackend.Cpu)
-        {
-            backend = ServerBackend.Cpu;
-        }
-
-        // CUDA and the Vulkan -g N split lack features only the full Vulkan pass has.
-        if (backend == ServerBackend.Cuda
-            && GpuForwardPass.PartialOffloadUnsupportedReason(model, hp) is { } partialGap)
-        {
-            Console.Error.WriteLine($"[InferenceEngineLoader] {backend} (this offload) has no path for {partialGap}; running on CPU.");
-            backend = ServerBackend.Cpu;
-            nGpuLayers = 0;
-        }
-
-        // RWKV (rwkv6, rwkv7) is recurrent (no KV cache) and runs only on its own CPU forward pass.
-        var architectureSelection = SelectPass(backend, nGpuLayers);
-        var architectureFamily = desc?.ForwardPassFamily ?? ForwardPassFamily.Dense;
-        if (architectureFamily == ForwardPassFamily.Rwkv)
-        {
-            if (architectureSelection.Refusal is { } refusal)
-                throw new InvalidOperationException(refusal);
-            if (backend != ServerBackend.Cpu)
-                Console.Error.WriteLine("[InferenceEngineLoader] RWKV has no GPU forward pass yet; running on CPU.");
-            loadCtx = CreateLoadContext(model, hp, arch, architectureSelection, ForwardPassBackend.Cpu,
-                ctxSize, 0, null, turboQuant, tqModeIsAuto, tqQuantizer);
-            var rwkv = desc != null ? desc.ConstructForwardPass(loadCtx) : CommonForwardPassFactory.CreateDense(loadCtx);
-            owned.AddRange(loadCtx.OwnedDisposables);
-            return (rwkv, BatchingSupported: false, GpuWeightBytesExact: null);
-        }
-
-        // gpt-oss runs only on its own CPU forward pass (sinks, SWA, biased MoE, OAI SwiGLU, YaRN).
-        if (architectureFamily == ForwardPassFamily.GptOss)
-        {
-            if (architectureSelection.Refusal is { } refusal)
-                throw new InvalidOperationException(refusal);
-            VulkanBackend? vk = null;
-            if (architectureSelection.Kind == ForwardPassKind.GptOssVulkan)
-            {
-                vk = new VulkanBackend();
-                owned.Add(vk);
-            }
-            else if (backend != ServerBackend.Cpu)
-            {
-                Console.Error.WriteLine("[InferenceEngineLoader] gpt-oss runs on GPU only as a full Vulkan offload; running on CPU.");
-            }
-            loadCtx = CreateLoadContext(model, hp, arch, architectureSelection,
-                architectureSelection.Kind == ForwardPassKind.GptOssVulkan ? ForwardPassBackend.Vulkan : ForwardPassBackend.Cpu,
-                ctxSize, nGpuLayers, null, turboQuant, tqModeIsAuto, tqQuantizer, vulkanBackend: vk);
-            var gptOssPass = desc != null ? desc.ConstructForwardPass(loadCtx) : CommonForwardPassFactory.CreateDense(loadCtx);
-            owned.AddRange(loadCtx.OwnedDisposables);
-            return (gptOssPass, BatchingSupported: false, GpuWeightBytesExact: null);
-        }
-
-        var cpuBackend = new CpuBackend();
-        owned.Add(cpuBackend);
-
-        // CPU path: covers hybrid GDN (HybridGdnForwardPass) and dense (ForwardPass).
-        if (backend == ServerBackend.Cpu)
-        {
-            var cpuSelection = SelectPass(ServerBackend.Cpu, 0);
-            if (cpuSelection.Kind == ForwardPassKind.CpuHybridGdn)
-            {
-                loadCtx = CreateLoadContext(model, hp, arch, cpuSelection, ForwardPassBackend.Cpu,
-                    ctxSize, 0, null, turboQuant, tqModeIsAuto, tqQuantizer, cpuBackend: cpuBackend);
-                var hybrid = desc != null ? desc.ConstructForwardPass(loadCtx) : CommonForwardPassFactory.CreateHybridGdn(loadCtx);
-                owned.AddRange(loadCtx.OwnedDisposables);
-                return (hybrid, BatchingSupported: false, GpuWeightBytesExact: null);
-            }
-
-            loadCtx = CreateLoadContext(model, hp, arch, cpuSelection, ForwardPassBackend.Cpu,
-                ctxSize, 0, null, turboQuant, tqModeIsAuto, ResolveTq(null), cpuBackend: cpuBackend,
-                prefillDequantCacheBytes: prefillDequantCacheBytes);
-            var dense = (ForwardPass)(desc != null ? desc.ConstructForwardPass(loadCtx) : CommonForwardPassFactory.CreateDense(loadCtx));
-            owned.AddRange(loadCtx.OwnedDisposables);
-            bool batchOk = desc?.CanBatch(hp, turboQuant) ?? (!hp.IsMoE && !turboQuant && hp.LayerHeadDim is null
-                && !hp.AttentionOutputGate && !hp.InputEmbeddingRmsNorm);
-            return (dense, batchOk, GpuWeightBytesExact: null);
-        }
-
-        // GPU paths share a CPU baseline (for the hybrid-CPU half of partial offload).
-        // For full GPU paths the dense CPU fwd is unused but still cheap to construct.
-        // The #189 dequant cache is off here: GPU/hybrid never drive the batched CPU prefill
-        // that consults it, so a full F32 model copy would be pure wasted RAM.
-        ForwardPass? cpuDense = hp.IsHybridSsm ? null
-            : (ForwardPass)CommonForwardPassFactory.CreateDense(new ArchitectureLoadContext
-            {
-                Probe = new ArchitectureProbe { Architecture = arch, TensorSource = model, Hyperparams = hp, IsGguf = true, Gguf = model },
-                Plan = ExecutionPlan.CreateSynthesized(
-                    architecture: arch,
-                    decision: new ForwardPassDecision(ForwardPassKind.CpuDense, null),
-                    backend: ForwardPassBackend.Cpu,
-                    contextSize: ctxSize,
-                    gpuLayers: 0,
-                    headDim: hp.HeadDim,
-                    totalLayers: hp.NumLayers),
-                CpuBackend = cpuBackend,
-            });
-        if (cpuDense is not null) owned.Add(cpuDense);
-
-        if (backend == ServerBackend.Cuda)
-        {
-            var cuda = CudaBackend.Create();
-            owned.Add(cuda);
-
-            var cudaSelection = SelectPass(ServerBackend.Cuda, nGpuLayers);
-            if (cudaSelection.Kind == ForwardPassKind.CudaHybridGdn)
-            {
-                // Layer placement for hybrid GDN is driven by hp.LayerTypes, not VRAM
-                // budget — so TierPlanner is skipped and we always claim "all layers
-                // on GPU" (the GDN/MoE routing is implicit per-layer).
-                var placement = new LayerPlacement(
-                    GpuLayers: hp.NumLayers,
-                    CpuLayers: 0,
-                    GpuWeightBytes: 0,
-                    GpuKvBytes: 0,
-                    RecommendedCtxSize: ctxSize > 0 ? ctxSize : Math.Min(hp.ContextLength, 4096));
-                loadCtx = CreateLoadContext(model, hp, arch, cudaSelection, ForwardPassBackend.Cuda,
-                    ctxSize, hp.NumLayers, placement, turboQuant, tqModeIsAuto, tqQuantizer, cudaBackend: cuda);
-                var chgdn = desc != null ? desc.ConstructForwardPass(loadCtx) : CommonForwardPassFactory.CreateHybridGdn(loadCtx);
-                owned.AddRange(loadCtx.OwnedDisposables);
-                return (chgdn, BatchingSupported: false, GpuWeightBytesExact: null);
-            }
-
-            // Dense + CUDA: ask TierPlanner for a layer count when -1, then route to
-            // full-offload / hybrid / CPU based on what we got back.
-            var hwProfile = HardwareProfile.Detect(cuda);
-            int gpuLayers = nGpuLayers == -1
-                ? TierPlanner.Plan(model, hp, hwProfile, turboQuant, requestedCtxSize: ctxSize,
-                    kvDtype: CudaForwardPass.ResolveConfiguredKvDType()).GpuLayers
-                : nGpuLayers;
-            if (nGpuLayers == -1)
-                gpuLayers = ClampGemma4KvShareBoundary(hp, gpuLayers);
-
-            var denseSelection = SelectPass(ServerBackend.Cuda, gpuLayers);
-            if (denseSelection.Kind == ForwardPassKind.CpuDense)
-            {
-                // GPU planner says nothing fits — fall back to CPU dense.
-                if (turboQuant) cpuDense!.EnableTurboQuant(fp32WindowSize: 256, bits: 3, quantizer: ResolveTq(null));
-                return (cpuDense!, BatchingSupported: !hp.IsMoE && !turboQuant, GpuWeightBytesExact: null);
-            }
-
-            if (denseSelection.Kind == ForwardPassKind.CudaDense)
-            {
-                // #196 Option 2: when batching is requested, suppress the VRAM-scaled SnapKV
-                // auto-enable (prefer pure batching over routing every sequence through the slower
-                // per-sequence-eviction decode). An explicit STINGRAY_SNAPKV_BUDGET>0 still wins and
-                // composes with batching via #196 Option 1.
-                loadCtx = CreateLoadContext(model, hp, arch, denseSelection, ForwardPassBackend.Cuda,
-                    ctxSize, gpuLayers, null, turboQuant, tqModeIsAuto,
-                    ResolveTq(hp.IsMoE ? TqSupport.CudaMoeReason
-                        : !TqSupport.IsKVarNCudaHeadDim(hp.HeadDim) ? TqSupport.CudaHeadDimReason(hp.HeadDim)
-                        : null),
-                    cudaBackend: cuda, preferBatchingOverAutoSnapKv: preferBatchingOverAutoSnapKv);
-                var cfwd = (CudaForwardPass)(desc != null ? desc.ConstructForwardPass(loadCtx) : CommonForwardPassFactory.CreateDense(loadCtx));
-                owned.AddRange(loadCtx.OwnedDisposables);
-                // Issue #190 (dense) / #195 (Gemma 4): CUDA full-offload supports continuous
-                // batching (per-sequence GPU KV caches + true batched decode). SupportsContinuous-
-                // Batching is the single source of truth shared with CudaForwardPass's runtime
-                // guard, so the loader gate can't diverge from what the batched methods accept — it
-                // admits dense AND Gemma-4 models and folds OUT MoE, TurboQuant, a dense final-logit
-                // softcap, and any non-GEMM-N-batchable trunk/output weight dtype (Q4_0). A SnapKV
-                // budget no longer disqualifies batching (#196 — it composes via per-sequence eviction).
-                bool batches = cfwd.SupportsContinuousBatching;
-                // #196 footgun guard: we suppressed the SnapKV auto-enable because batching was
-                // requested, but this model can't actually batch (e.g. dense softcap / Q4_0) — so it
-                // would fall back to single-user with NO auto-SnapKV either. Warn so the operator can
-                // restore the memory savings with an explicit budget or a narrowed --kv-type.
-                if (preferBatchingOverAutoSnapKv && !batches && !cfwd.SnapKvEnabled)
-                    Console.Error.WriteLine(
-                        "[InferenceEngineLoader] MaxBatchSize>1 suppressed SnapKV auto-enable, but this " +
-                        "model does not support continuous batching (it will run single-user). Set an " +
-                        "explicit STINGRAY_SNAPKV_BUDGET>0 or a narrowed --kv-type to keep KV memory bounded.");
-                return (cfwd, batches, GpuWeightBytesExact: null); // full offload — EstimatedModelBytes is already exact
-            }
-
-            if (denseSelection.Kind != ForwardPassKind.CudaHybrid)
-                throw new InvalidOperationException($"Unexpected CUDA forward-pass selection: {denseSelection.Kind}.");
-
-            // pinGpuLayers (not a `with { GpuLayers = }` override) so the expert-cache budget the
-            // MoE CPU-vs-SLRU auto-decision reads is priced for THIS split, not the auto one (#224).
-            // The hybrid pass has no KVarN machinery — resolve for the throw/warn side effect
-            // (the constructor itself only takes the Lloyd-Max bool).
-            _ = ResolveTq($"KVarN requires full CUDA offload; TierPlanner fit {gpuLayers}/{hp.NumLayers} layers");
-            var planForHybrid = TierPlanner.Plan(model, hp, hwProfile, turboQuant, requestedCtxSize: ctxSize,
-                kvDtype: CudaForwardPass.ResolveConfiguredKvDType(), pinGpuLayers: gpuLayers);
-            loadCtx = CreateLoadContext(model, hp, arch, denseSelection, ForwardPassBackend.Cuda,
-                ctxSize, gpuLayers, planForHybrid, turboQuant, tqModeIsAuto, tqQuantizer, cudaBackend: cuda, cpuDensePass: cpuDense);
-            var chfwd = (CudaHybridForwardPass)(desc != null ? desc.ConstructForwardPass(loadCtx) : CommonForwardPassFactory.CreateDense(loadCtx));
-            owned.AddRange(loadCtx.OwnedDisposables);
-            // The real fix (docs/032 Phase 3 Slice 8 follow-up): TierPlanner already computed a
-            // precise per-layer GPU weight-byte figure for this exact partial-offload split —
-            // previously thrown away, forcing ModelRuntime to fall back to the whole-file
-            // overestimate for every hybrid/partial-offload model.
-            return (chfwd, BatchingSupported: false, GpuWeightBytesExact: planForHybrid.GpuWeightBytes);
-        }
-
-        if (backend == ServerBackend.Vulkan)
-        {
-            var vulkan = new VulkanBackend();
-            owned.Add(vulkan);
-
-            var vulkanSelection = SelectPass(ServerBackend.Vulkan, nGpuLayers);
-            if (vulkanSelection.Kind == ForwardPassKind.VulkanHybridGdn)
-            {
-                // Layer placement for hybrid GDN is driven by hp.LayerTypes, not VRAM budget —
-                // so TierPlanner is skipped and we claim "all layers on GPU" (GDN/attn routing
-                // is implicit; FFN is per-layer GPU/CPU). Mirrors the CUDA loader branch.
-                // (PR4 Round 1 — dense FFN; Round 2 — MoE FFN via CPU-MoE / GPU-SLRU.)
-                var placement = new LayerPlacement(
-                    GpuLayers: hp.NumLayers,
-                    CpuLayers: 0,
-                    GpuWeightBytes: 0,
-                    GpuKvBytes: 0,
-                    RecommendedCtxSize: ctxSize > 0 ? ctxSize : Math.Min(hp.ContextLength, 4096));
-                loadCtx = CreateLoadContext(model, hp, arch, vulkanSelection, ForwardPassBackend.Vulkan,
-                    ctxSize, hp.NumLayers, placement, turboQuant, tqModeIsAuto, tqQuantizer, vulkanBackend: vulkan);
-                var vhgdn = desc != null ? desc.ConstructForwardPass(loadCtx) : CommonForwardPassFactory.CreateHybridGdn(loadCtx);
-                owned.AddRange(loadCtx.OwnedDisposables);
-                return (vhgdn, BatchingSupported: false, GpuWeightBytesExact: null);
-            }
-
-            var hwProfile = HardwareProfile.Detect(vulkan);
-            int gpuLayers = nGpuLayers == -1
-                ? TierPlanner.Plan(model, hp, hwProfile, turboQuant, requestedCtxSize: ctxSize).GpuLayers
-                : nGpuLayers;
-
-            var denseSelection = SelectPass(ServerBackend.Vulkan, gpuLayers);
-            if (denseSelection.Kind == ForwardPassKind.CpuDense)
-            {
-                if (turboQuant) cpuDense!.EnableTurboQuant(fp32WindowSize: 256, bits: 3, quantizer: ResolveTq(null));
-                return (cpuDense!, BatchingSupported: !hp.IsMoE && !turboQuant, GpuWeightBytesExact: null);
-            }
-
-            if (denseSelection.Kind == ForwardPassKind.VulkanDense)
-            {
-                // Vulkan TQ is Lloyd-Max only — resolve for the throw/warn side effect.
-                _ = ResolveTq(TqSupport.VulkanReason);
-                loadCtx = CreateLoadContext(model, hp, arch, denseSelection, ForwardPassBackend.Vulkan,
-                    ctxSize, gpuLayers, null, turboQuant, tqModeIsAuto, tqQuantizer, vulkanBackend: vulkan);
-                var gfwd = (GpuForwardPass)(desc != null ? desc.ConstructForwardPass(loadCtx) : CommonForwardPassFactory.CreateDense(loadCtx));
-                owned.AddRange(loadCtx.OwnedDisposables);
-                return (gfwd, BatchingSupported: false, GpuWeightBytesExact: null); // full offload — EstimatedModelBytes is already exact
-            }
-
-            var partialSelection = SelectPass(ServerBackend.Vulkan, gpuLayers,
-                GpuForwardPass.PartialOffloadUnsupportedReason(model, hp) is not null);
-            if (partialSelection.Kind == ForwardPassKind.VulkanLayerSplit)
-            {
-                // -g N for Gemma 4 and for architectures HybridForwardPass has no path for: GPU
-                // layers [0, N) + CPU layers [N, L) (VulkanLayerSplitForwardPass).
-                int split = Math.Min(gpuLayers, VulkanLayerSplitForwardPass.MaxGpuLayers(hp));
-                loadCtx = CreateLoadContext(model, hp, arch, partialSelection, ForwardPassBackend.Vulkan,
-                    ctxSize, split, null, turboQuant, tqModeIsAuto, tqQuantizer, vulkanBackend: vulkan);
-                var sfwd = (VulkanLayerSplitForwardPass)(desc != null ? desc.ConstructForwardPass(loadCtx) : CommonForwardPassFactory.CreateDense(loadCtx));
-                owned.AddRange(loadCtx.OwnedDisposables);
-                return (sfwd, BatchingSupported: false, GpuWeightBytesExact: null);
-            }
-
-            if (partialSelection.Kind != ForwardPassKind.VulkanHybrid)
-                throw new InvalidOperationException($"Unexpected Vulkan forward-pass selection: {partialSelection.Kind}.");
-
-            _ = ResolveTq(TqSupport.VulkanReason);
-            var planForHybrid = TierPlanner.Plan(model, hp, hwProfile, turboQuant, requestedCtxSize: ctxSize,
-                pinGpuLayers: gpuLayers);
-            loadCtx = CreateLoadContext(model, hp, arch, partialSelection, ForwardPassBackend.Vulkan,
-                ctxSize, gpuLayers, planForHybrid, turboQuant, tqModeIsAuto, tqQuantizer, vulkanBackend: vulkan, cpuDensePass: cpuDense);
-            var hfwd = (HybridForwardPass)(desc != null ? desc.ConstructForwardPass(loadCtx) : CommonForwardPassFactory.CreateDense(loadCtx));
-            owned.AddRange(loadCtx.OwnedDisposables);
-            // The real fix — see the identical CUDA branch's comment above.
-            return (hfwd, BatchingSupported: false, GpuWeightBytesExact: planForHybrid.GpuWeightBytes);
-        }
-
-        throw new InvalidOperationException($"Unknown backend selection: {backend}");
-    }
-
-    // ── Helpers ──────────────────────────────────────────────────────────────
-
-    /// <summary>
-    /// Sets the MoE-related environment variables (STINGRAY_MOE_* cache knobs plus the
-    /// STINGRAY_CPU_MOE placement override, issue #93) from the options object so the engine's
-    /// MoE code picks them up at construction time. The engine reads these once per backend
-    /// instance, so we have to do this BEFORE the backend is built.
-    /// </summary>
     private static void ApplyMoeEnvironment(OpenTailStingrayServerOptions opts)
     {
         if (opts.MoeWarmPin is int wp)
@@ -957,36 +288,11 @@ public static class InferenceEngineLoader
         if (!string.IsNullOrEmpty(opts.ExpertStatsPath))
             Environment.SetEnvironmentVariable("STINGRAY_EXPERT_STATS", opts.ExpertStatsPath);
 
-        // CPU-MoE placement (issue #93, mirrors the CLI's --cpu-moe issue #80). The hybrid
-        // forward passes read STINGRAY_CPU_MOE once at construction, so write it before load.
-        // Nullable: only an explicit option writes — null leaves any externally-set value (and
-        // the engine's VRAM-fit auto-select) untouched.
         if (opts.CpuMoe is bool cpuMoe)
             Environment.SetEnvironmentVariable("STINGRAY_CPU_MOE", cpuMoe ? "1" : "0");
 
-        // GPU op-offload of the CPU-MoE routed prefill (mirrors the CLI's --gpu-moe-prefill).
-        // Opt-in, default OFF in the engine; nullable here so only an explicit option overrides.
         if (opts.GpuMoePrefill is bool gpuMoePrefill)
             Environment.SetEnvironmentVariable("STINGRAY_MOE_GPU_PREFILL", gpuMoePrefill ? "1" : "0");
-    }
-
-    private static int ClampGemma4KvShareBoundary(ModelHyperparams hp, int gpuLayers)
-    {
-        if (hp.KvSourceLayer is not { } ksl) return gpuLayers;
-
-        int minSrc = int.MaxValue;
-        for (int i = 0; i < hp.NumLayers; i++)
-            if (ksl[i] >= 0 && ksl[i] < minSrc) minSrc = ksl[i];
-
-        if (minSrc != int.MaxValue && gpuLayers > minSrc && gpuLayers < hp.NumLayers)
-        {
-            Console.Error.WriteLine(
-                $"[OpenTail.Stingray] TierPlanner returned -g {gpuLayers}, which would cross the " +
-                $"Gemma 4 KV-share boundary (sources <= {minSrc}); promoting to full offload " +
-                $"(-g {hp.NumLayers}). Set NGpuLayers={minSrc} explicitly if VRAM is tight.");
-            return hp.NumLayers;
-        }
-        return gpuLayers;
     }
 
     private static bool PathExists(string p) => File.Exists(p) || Directory.Exists(p);
@@ -1022,6 +328,7 @@ public static class InferenceEngineLoader
             $"or the OpenTail.Stingray:{configKey} configuration key.");
     }
 }
+
 internal sealed class OwnedDisposableEngine(IInferenceEngine inner, IList<IDisposable> owned)
     : IInferenceEngine, IContinuousBatchingObservability, IDisposable
 {
@@ -1054,11 +361,6 @@ internal sealed class OwnedDisposableEngine(IInferenceEngine inner, IList<IDispo
     {
         (inner as IDisposable)?.Dispose();
 
-        // owned[] is the forward pass, the compute backend and the mapped model — native, GPU and
-        // mmap'd memory that the batcher loop dereferences directly. If that loop has not exited,
-        // releasing them is not a teardown ordering nit but a use-after-free the moment it takes its
-        // next step. Leak instead: process exit reclaims everything, and a leak at shutdown is
-        // strictly preferable to an access violation. This mirrors the single-user engine's policy.
         if (inner is ContinuousBatchingEngine { DrainedOnDispose: false })
             return;
 

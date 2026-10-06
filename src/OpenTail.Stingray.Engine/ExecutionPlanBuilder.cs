@@ -33,6 +33,7 @@ public static class ExecutionPlanBuilder
         var capabilities = BackendCapabilities.Detect(noGpuProbe);
         var request = new ExecutionRequest
         {
+            ModelPath = modelPath,
             Goal = goal,
             PinnedBackend = pinBackend,
             PinnedGpuLayers = pinGpuLayers,

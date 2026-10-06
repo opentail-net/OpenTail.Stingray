@@ -170,10 +170,15 @@ public static class ExecutionPlanner
             EstimatedRamMb: estRamMb,
             ScratchBytes: model.PlanningFacts.ScratchBytes);
 
+        string primaryModelPath = request.ModelPath
+            ?? model.PrimaryPath
+            ?? model.Identity.Components.FirstOrDefault()?.RelativeName
+            ?? "model";
+
         var provenance = new PlanProvenance(
             CreatedAtUtc: DateTime.UtcNow.ToString("o"),
             PlannerVersion: "2.0.0",
-            PrimaryModelPath: model.Identity.Components.FirstOrDefault()?.RelativeName ?? "model",
+            PrimaryModelPath: primaryModelPath,
             TargetArchitecture: model.Semantics.Architecture,
             Goal: resolvedGoal);
 

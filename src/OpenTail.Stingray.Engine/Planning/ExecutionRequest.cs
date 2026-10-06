@@ -8,6 +8,7 @@ namespace OpenTail.Stingray.Engine.Planning;
 /// </summary>
 public sealed record ExecutionRequest
 {
+    public string? ModelPath { get; init; }
     public string Goal { get; init; } = "balanced";
     public string? PinnedBackend { get; init; }
     public int? PinnedGpuLayers { get; init; }

@@ -579,7 +579,7 @@ public sealed class ModelRuntimeManager : IModelRuntimeManager, IDisposable
         try
         {
             var loaded = _loader(model);
-            var runtime = new ModelRuntime(model, loaded, _estimateBytes(model));
+            var runtime = new ModelRuntime(model, loaded, _estimateBytes(model), loaded.Instance);
             lock (_lock)
             {
                 _resident[model] = runtime;

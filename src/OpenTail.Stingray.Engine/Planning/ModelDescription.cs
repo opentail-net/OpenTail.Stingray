@@ -16,7 +16,8 @@ public sealed record ModelDescription(
     ModelSemanticDescription Semantics,
     ModelCapabilitySummary Capabilities,
     ModelResourceSummary Resources,
-    ModelPlanningFacts PlanningFacts)
+    ModelPlanningFacts PlanningFacts,
+    string? PrimaryPath = null)
 {
     /// <summary>
     /// Performs a one-time package inspection to construct an immutable <see cref="ModelDescription"/>.
@@ -85,7 +86,7 @@ public sealed record ModelDescription(
         var resources = BuildResourceSummary(gguf, hp, facts);
         var semantics = BuildSemanticDescription(identity, primaryPath, arch, family, format, probe, descriptor, package, facts);
 
-        return new ModelDescription(identity, semantics, capabilities, resources, facts);
+        return new ModelDescription(identity, semantics, capabilities, resources, facts, primaryPath);
     }
 
     private static ModelDescription FromTensorSource(
@@ -117,7 +118,7 @@ public sealed record ModelDescription(
         var resources = BuildResourceSummaryFromSource(tensorSource, hp, facts);
         var semantics = BuildSemanticDescription(identity, primaryPath, arch, family, format, probe, descriptor, package, facts);
 
-        return new ModelDescription(identity, semantics, capabilities, resources, facts);
+        return new ModelDescription(identity, semantics, capabilities, resources, facts, primaryPath);
     }
 
     private static ModelPlanningFacts BuildPlanningFacts(GgufModel gguf, ModelHyperparams hp, string? rawArch)

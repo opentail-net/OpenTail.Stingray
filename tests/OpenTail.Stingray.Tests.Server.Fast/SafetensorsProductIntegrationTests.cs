@@ -1,5 +1,8 @@
 using System.Text;
 using System.Reflection;
+using OpenTail.Stingray.Engine;
+using OpenTail.Stingray.Engine.Packaging;
+using OpenTail.Stingray.Engine.Planning;
 using Xunit;
 
 namespace OpenTail.Stingray.Tests.Server.Fast;
@@ -42,6 +45,36 @@ public sealed class SafetensorsProductIntegrationTests : IDisposable
         Assert.NotNull(loadedEngine.Engine);
         Assert.Equal("llama", loadedEngine.Architecture);
         Assert.Equal(128, GetForwardPassScratchContextLength(loadedEngine));
+    }
+
+    [Fact]
+    public void InferenceEngineLoader_LoadFromPlan_ConstructsDirectly()
+    {
+        string packageDir = Path.Combine(_tempDir, "llama_package_plan");
+        Directory.CreateDirectory(packageDir);
+
+        BuildTestPackage(packageDir);
+
+        var package = SafeTensorsModelPackage.Open(packageDir);
+        var modelDesc = ModelDescription.FromPackage(package);
+        var req = new ExecutionRequest
+        {
+            ModelPath = packageDir,
+            Goal = "balanced",
+            PinnedBackend = "cpu",
+            PinnedGpuLayers = 0,
+            PinnedContextSize = 128
+        };
+        var plan = ExecutionPlanner.Plan(modelDesc, req, BackendCapabilities.Detect(noGpuProbe: true));
+
+        var loadedEngine = InferenceEngineLoader.LoadFromPlan(plan);
+        using var disposableEngine = loadedEngine.Engine as IDisposable;
+
+        Assert.NotNull(loadedEngine.Engine);
+        Assert.NotNull(loadedEngine.Instance);
+        Assert.Same(plan, loadedEngine.Instance.Plan);
+        Assert.Equal("llama", loadedEngine.Architecture);
+        Assert.Equal(128, loadedEngine.Instance.Plan.ContextSize);
     }
 
     [Fact]
