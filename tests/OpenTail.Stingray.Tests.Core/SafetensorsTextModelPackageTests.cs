@@ -115,7 +115,7 @@ public sealed class SafetensorsTextModelPackageTests
         Assert.Equal(["F16"], model.WeightDtypes);
     }
 
-    private sealed class TestPackage : IDisposable
+    internal sealed class TestPackage : IDisposable
     {
         public string Directory { get; }
 
