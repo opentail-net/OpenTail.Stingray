@@ -29,7 +29,7 @@ Refactor Stingray so that execution policy is resolved once into an immutable, i
                                       │
                                       ▼
                                RuntimeInstance
-                       (managed by ModelRuntime in 032)
+                 (Engine resource owner; wrapped in Server by ModelRuntime)
                                       │
                          ┌────────────┼────────────┐
                          ▼            ▼            ▼
@@ -56,7 +56,7 @@ Stingray strictly distinguishes four separate questions:
 | **`ModelPackage`** | *What files/components belong together?* | Compositional identity (weights, tokenizer, chat template, vision projector, draft model, configuration, licenses); digest-aware identity. | Machine-specific execution choices; model architecture parsing; hardware policy. Location paths are external to identity. |
 | **`ModelDescription`** | *What is this model?* | Semantic identity (architecture ID, semantic family, state model, MoE, multimodal capabilities, verified backends, admission status) **plus** intrinsic planning facts (layer counts, head dims, Rope params, quantization info, GDN/MLA flags). | Machine-specific execution choices (no backend, GPU layers, context size, KV dtype). |
 | **`ExecutionPlan`** | *How will this model run on this machine for this request?* | Concrete resolved runtime policy (backend, device, placement, GPU/CPU layer split, context size, KV dtype, batching mode, speculation mode, memory budget). Genuinely immutable collections (`ImmutableArray`). | Unresolved `"auto"` options; delegate instances; native handles; model weight copying; mutable collections. |
-| **`RuntimeInstance`** | *What actual resources have been allocated to execute that plan?* | Concrete allocated resources (backend instances, forward pass, KV state memory, buffers, inference engine). Managed within `ModelRuntime`. | Secondary policy selection; fallback logic; re-planning; reading policy from `Model.Parameters`. |
+| **`RuntimeInstance`** | *What actual resources have been allocated to execute that plan?* | Concrete allocated resources (backend instances, forward pass, KV state memory, buffers, inference engine). Wrapped by `ModelRuntime` in the server layer. | Secondary policy selection; fallback logic; re-planning; reading policy from `Model.Parameters`. |
 
 ---
 
@@ -78,7 +78,9 @@ Stingray strictly distinguishes four separate questions:
        ...
    }
    ```
-   `PrimaryPath` is diagnostic location metadata, not part of identity equality. Two identical models at different paths produce the same `ModelPackageIdentity`. For Ollama packages, the manifest digest is primary.
+   `PrimaryPath` is diagnostic location metadata, not part of identity equality.
+   * **Digest Contract:** When content/component digests are available, identical package content at different paths produces the same `ModelPackageIdentity`. When no digest is available, identity is explicitly provisional; path remains location metadata and is never silently promoted to semantic identity.
+   * For Ollama packages, the manifest digest is primary.
 3. **Do NOT Invent a New Physical Stingray Package Format:**
    Stingray will not create a new `stingray-manifest` or blob layout. Where practical, Stingray understands and consumes the Ollama package representation (`manifest`, `blobs/sha256-...`) essentially as-is.
 4. **No Internal Dependency on Ollama:**
@@ -117,13 +119,22 @@ Stingray strictly distinguishes four separate questions:
    Backend selection does not merely check "is GPU available". It cross-references model requirements, `ArchitectureDescriptor` restrictions, backend capabilities, and established policy.
 7. **`ModelContext` Owns the Plan for Its Runtime:**
    `ModelContext` owns the `ExecutionPlan` for the runtime it represents. Any change to execution-affecting configuration (such as `maxBatchSize` for continuous batching) requires a new plan and runtime, and never mutates or reconfigures an existing plan.
-8. **No Second Ownership/Residency Manager:**
-   `RuntimeInstance` integrates directly into the existing `ModelRuntime` from 032:
+8. **Clean Integration with Server-Side `ModelRuntime`:**
+   `RuntimeInstance` integrates with the existing multi-model runtime architecture without duplicating responsibilities:
    ```
-   ModelRuntimeManager (owns residency, acquisition, lifetime, eviction)
-       └── ModelRuntime (owns model package, plan, runtime instance)
-               └── RuntimeInstance (owns backend context, forward pass, engine)
+   ModelRuntimeManager (Server: residency, acquisition, lifetime, eviction)
+       └── ModelRuntime (Server: residency/lifecycle wrapper)
+               ├── Model / ModelPackage
+               ├── ExecutionPlan
+               └── RuntimeInstance (Engine: concrete execution resource owner)
+                      ├── backend context
+                      ├── forward pass
+                      └── inference engine
    ```
+   * `RuntimeInstance` lives in the Engine/runtime layer and owns the concrete resources required by one `ExecutionPlan`.
+   * `ModelRuntime` remains in `OpenTail.Stingray.Server` and owns residency/lifetime around that runtime.
+   * `ModelRuntimeManager` continues to own acquisition, eviction, resource admission, and disposal.
+   * Do not move `ModelRuntime`/`ModelRuntimeManager` into Engine.
 9. **Eliminate Frontend-Specific Execution Policy:**
    Eliminate `ForwardPassFrontend.Cli` vs `ForwardPassFrontend.Server` divergence. All frontends map to `ExecutionRequest` $\rightarrow$ `ExecutionPlanner` $\rightarrow$ identical execution policy.
 10. **Genuine Collection Immutability:**
@@ -139,7 +150,7 @@ graph TD
     C2 --> C3[Chunk 3: Immutable ExecutionPlan v2 & Validator]
     C3 --> C4[Chunk 4: Authoritative ExecutionPlanner]
     C4 --> C5[Chunk 5: Plan-Driven ArchitectureLoadContext]
-    C5 --> C6[Chunk 6: RuntimeInstance in ModelRuntime]
+    C5 --> C6[Chunk 6: RuntimeInstance & ModelRuntime Integration]
     C6 --> C7[Chunk 7: ModelContext Migration]
     C6 --> C8[Chunk 8: Server InferenceEngineLoader Unification]
     C6 --> C9[Chunk 9: CLI RunCommand & StaticPlan Unification]
@@ -166,6 +177,7 @@ graph TD
   * `ModelDescription(ModelPackageIdentity Identity, ModelSemanticDescription Semantics, ModelCapabilitySummary Capabilities, ModelResourceSummary Resources, ModelPlanningFacts PlanningFacts)`.
   * `ModelPlanningFacts`: Immutable snapshot containing all facts needed by `TierPlanner` and `ForwardPassSelection` without reopening disk files (layer count, context limit, head dimensions, KV head count, Rope theta/scale, GDN/SSM flags, MLA tensor flags, MoE routing properties, primary weight quantization type).
   * Factory method: `ModelDescription.FromPackage(IModelPackage package)`.
+    * *Inspection Boundary Rule:* `FromPackage` may perform the one-time package/model inspection required to construct `ModelDescription`, including reading metadata and tensor descriptors. However, `ExecutionPlanner` must consume the resulting snapshot and **must not reopen the package/model files**.
   * Unit tests validating that `ModelDescription` completely satisfies `ForwardPassRequest` requirements without disk re-reading.
 
 ### Chunk 3: `ExecutionPlan` Schema v2 & Structural Validation
@@ -198,10 +210,10 @@ graph TD
   * In `CommonForwardPassFactory`, branch directly on `ctx.Plan.ForwardPassKind`.
   * Preserve `ArchitectureDescriptor.ConstructForwardPass(context)` as the single factory seam (`ApplyLoadSetup` $\rightarrow$ `CreateForwardPass`).
 
-### Chunk 6: `RuntimeInstance` Resource Boundary (Integrated in `ModelRuntime`)
-* **Goal:** Implement the deterministic runtime resource allocator and engine construction boundary within `ModelRuntime`.
+### Chunk 6: `RuntimeInstance` Resource Boundary (Integrated with Server `ModelRuntime`)
+* **Goal:** Implement the deterministic runtime resource allocator and engine construction boundary in `Engine` and integrate with `ModelRuntime` in `Server`.
 * **Deliverables:**
-  * `RuntimeInstance.Create(ExecutionPlan plan, Model model)`:
+  * `RuntimeInstance.Create(ExecutionPlan plan, Model model)` in `src/OpenTail.Stingray.Engine/Runtime/`:
     * Validates model architecture, format, and package digest against `plan.PackageIdentity`.
     * Verifies that the planned backend is operational; throws `PlanNotExecutableException` on mismatch or unavailability (zero silent fallbacks).
     * Never reads execution policy from `Model.Parameters`.
@@ -209,7 +221,11 @@ graph TD
     * Builds `ArchitectureLoadContext` and calls `descriptor.ConstructForwardPass(loadCtx)`.
     * Instantiates `ContinuousBatchingEngine` if `plan.Batching.Mode == BatchingMode.Continuous`, else `InferenceEngine`.
     * Exposes effective `ExecutionPlan` for test and telemetry inspection.
-  * Integrate with `ModelRuntime` in `src/OpenTail.Stingray.Engine/`: `ModelRuntime` holds the `ExecutionPlan` and `RuntimeInstance`, while `ModelRuntimeManager` continues to own residency and lifetime.
+  * Integrate with `ModelRuntime` in `src/OpenTail.Stingray.Server/`:
+    * `RuntimeInstance` lives in the Engine/runtime layer and owns the concrete execution resources.
+    * `ModelRuntime` remains in `OpenTail.Stingray.Server` and wraps residency/lifetime around that runtime.
+    * `ModelRuntimeManager` continues to own acquisition, eviction, resource admission, and disposal.
+    * Do not move `ModelRuntime`/`ModelRuntimeManager` into Engine.
 
 ### Chunk 7: Migrate `ModelContext`
 * **Goal:** Replace `BuildForwardPass(...)` policy rediscovery in `ModelContext`.
@@ -254,19 +270,20 @@ graph TD
 
 - [ ] `ModelPackage` is a logical abstraction over external model components.
 - [ ] `ModelPackageIdentity` does not contain file paths in its record equality.
+- [ ] When digests are available, identical packages at different paths produce identical `ModelPackageIdentity`; without digests, identity is explicitly provisional.
 - [ ] No new competing Stingray physical model/blob format is introduced.
 - [ ] Ollama-compatible model packages can be consumed without Ollama installed/running.
 - [ ] Ollama/package blobs can be reused without unnecessary duplicate weight copies.
 - [ ] Stingray-specific metadata is represented separately from package storage (`stingray.json` sidecar).
 - [ ] Stingray sidecar metadata is keyed to model/package identity and is advisory only (never overrides admission).
 - [ ] `ModelDescription` contains an immutable snapshot of all intrinsic planning facts.
-- [ ] `ExecutionPlanner` does not reopen or reread model files from disk.
+- [ ] `ModelDescription.FromPackage` performs the one-time inspection; `ExecutionPlanner` never reopens model files.
 - [ ] `ExecutionRequest` contains every execution-affecting option; no hidden policy in `Model.Parameters` or environment.
 - [ ] `ExecutionPlan` is genuinely immutable (`ImmutableArray<T>`) and contains concrete choices (no `"auto"`).
 - [ ] `ExecutionPlan` validation checks strongly typed invariants without overly restrictive universal equations.
 - [ ] Candidate evaluation during planning is model-aware and distinct from runtime fallback.
 - [ ] `RuntimeInstance` executes the plan strictly without re-planning or reading `Model.Parameters`.
-- [ ] `RuntimeInstance` integrates with `ModelRuntime`; `ModelRuntimeManager` retains residency/lifetime ownership.
+- [ ] `RuntimeInstance` (Engine) integrates cleanly with `ModelRuntime` and `ModelRuntimeManager` (Server).
 - [ ] `RuntimeInstance` exposes the effective `ExecutionPlan` for inspection and contract verification.
 - [ ] Existing `ForwardPassSelection` and `TierPlanner` policy is orchestrated by `ExecutionPlanner`, not rewritten.
 - [ ] Frontend-specific execution policy (`ForwardPassFrontend.Cli` vs `Server`) is eliminated.
