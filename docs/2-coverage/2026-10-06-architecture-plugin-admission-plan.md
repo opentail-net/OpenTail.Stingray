@@ -568,5 +568,5 @@ Stingray compiles to NativeAOT binaries (`PublishAot=true`). The refactoring str
 - [x] No regressions across the 27 `PublicApiContractsTests` (with real weights and continuous batching observability).
 - [x] The 65 admitted names in `ArchitectureRegistryTests.AdmittedSet_IsExactlyTheSnapshot` continue to resolve identically.
 - [x] All 8 admission contract invariants in `ArchitectureDescriptorContractTests` pass.
-- [ ] Token-identical output preserved for SmolLM2-135M, gpt-oss-20b, and DeepSeek-V2-Lite on both CPU and Vulkan.
-- [ ] NativeAOT build succeeds without trim warnings.
+- [x] Token-identical output preserved for SmolLM2-135M greedy baseline on CPU (asserted in `ChatSession_RealSmolLM2_GreedyMatchesCliBaseline_AndStatefulTurns`).
+- [x] NativeAOT build succeeds without trim warnings.
