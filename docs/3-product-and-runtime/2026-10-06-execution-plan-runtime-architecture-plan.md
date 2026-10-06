@@ -122,19 +122,22 @@ Stingray strictly distinguishes four separate questions:
 8. **Clean Integration with Server-Side `ModelRuntime`:**
    `RuntimeInstance` integrates with the existing multi-model runtime architecture without duplicating responsibilities:
    ```
-   ModelRuntimeManager (Server: residency, acquisition, lifetime, eviction)
-       └── ModelRuntime (Server: residency/lifecycle wrapper)
-               ├── Model / ModelPackage
-               ├── ExecutionPlan
-               └── RuntimeInstance (Engine: concrete execution resource owner)
-                      ├── backend context
-                      ├── forward pass
-                      └── inference engine
+   ModelRuntimeManager
+       │
+       ▼
+   ModelRuntime
+       │
+       ├── Model / ModelPackage
+       ├── ExecutionPlan
+       └── RuntimeInstance
+              ├── backend resources
+              ├── forward pass
+              └── inference engine
    ```
    * `RuntimeInstance` lives in the Engine/runtime layer and owns the concrete resources required by one `ExecutionPlan`.
    * `ModelRuntime` remains in `OpenTail.Stingray.Server` and owns residency/lifetime around that runtime.
    * `ModelRuntimeManager` continues to own acquisition, eviction, resource admission, and disposal.
-   * Do not move `ModelRuntime`/`ModelRuntimeManager` into Engine.
+   * Do not move `ModelRuntime`/`ModelRuntimeManager` into Engine merely to satisfy the conceptual diagram.
 9. **Eliminate Frontend-Specific Execution Policy:**
    Eliminate `ForwardPassFrontend.Cli` vs `ForwardPassFrontend.Server` divergence. All frontends map to `ExecutionRequest` $\rightarrow$ `ExecutionPlanner` $\rightarrow$ identical execution policy.
 10. **Genuine Collection Immutability:**
@@ -177,7 +180,7 @@ graph TD
   * `ModelDescription(ModelPackageIdentity Identity, ModelSemanticDescription Semantics, ModelCapabilitySummary Capabilities, ModelResourceSummary Resources, ModelPlanningFacts PlanningFacts)`.
   * `ModelPlanningFacts`: Immutable snapshot containing all facts needed by `TierPlanner` and `ForwardPassSelection` without reopening disk files (layer count, context limit, head dimensions, KV head count, Rope theta/scale, GDN/SSM flags, MLA tensor flags, MoE routing properties, primary weight quantization type).
   * Factory method: `ModelDescription.FromPackage(IModelPackage package)`.
-    * *Inspection Boundary Rule:* `FromPackage` may perform the one-time package/model inspection required to construct `ModelDescription`, including reading metadata and tensor descriptors. However, `ExecutionPlanner` must consume the resulting snapshot and **must not reopen the package/model files**.
+    * `FromPackage` may perform the one-time package/model inspection required to construct `ModelDescription`, including reading metadata/tensor descriptors, but `ExecutionPlanner` must consume the resulting snapshot and must not reopen the package/model files.
   * Unit tests validating that `ModelDescription` completely satisfies `ForwardPassRequest` requirements without disk re-reading.
 
 ### Chunk 3: `ExecutionPlan` Schema v2 & Structural Validation
@@ -221,11 +224,25 @@ graph TD
     * Builds `ArchitectureLoadContext` and calls `descriptor.ConstructForwardPass(loadCtx)`.
     * Instantiates `ContinuousBatchingEngine` if `plan.Batching.Mode == BatchingMode.Continuous`, else `InferenceEngine`.
     * Exposes effective `ExecutionPlan` for test and telemetry inspection.
-  * Integrate with `ModelRuntime` in `src/OpenTail.Stingray.Server/`:
-    * `RuntimeInstance` lives in the Engine/runtime layer and owns the concrete execution resources.
-    * `ModelRuntime` remains in `OpenTail.Stingray.Server` and wraps residency/lifetime around that runtime.
-    * `ModelRuntimeManager` continues to own acquisition, eviction, resource admission, and disposal.
-    * Do not move `ModelRuntime`/`ModelRuntimeManager` into Engine.
+  * Integrate RuntimeInstance with the existing ModelRuntime architecture:
+    * RuntimeInstance lives in the Engine/runtime layer and owns the concrete resources required by one ExecutionPlan.
+    * ModelRuntime remains in OpenTail.Stingray.Server and owns residency/lifetime around that runtime.
+    * ModelRuntimeManager continues to own acquisition, eviction, resource admission and disposal.
+    * Do not move ModelRuntime/ModelRuntimeManager into Engine merely to satisfy the conceptual diagram.
+    * Architecture hierarchy:
+      ```
+      ModelRuntimeManager
+          │
+          ▼
+      ModelRuntime
+          │
+          ├── Model / ModelPackage
+          ├── ExecutionPlan
+          └── RuntimeInstance
+                 ├── backend resources
+                 ├── forward pass
+                 └── inference engine
+      ```
 
 ### Chunk 7: Migrate `ModelContext`
 * **Goal:** Replace `BuildForwardPass(...)` policy rediscovery in `ModelContext`.
