@@ -65,4 +65,60 @@ public sealed class ExecutionPlanTests
         Assert.Contains("KV: fp16", summary);
         Assert.Contains("est. VRAM: 1124.5 MiB", summary);
     }
+
+    [Fact]
+    public void StaticPlanCommand_ProducesSchemaV2Plan()
+    {
+        string path = Path.Combine(Path.GetTempPath(), $"opentail-schema2-plan-{Guid.NewGuid():N}.gguf");
+        try
+        {
+            using (var stream = File.Create(path))
+            using (var writer = new BinaryWriter(stream, System.Text.Encoding.UTF8, leaveOpen: false))
+            {
+                writer.Write(0x46554747u);
+                writer.Write(3u);
+                writer.Write(0UL);
+                writer.Write(6UL);
+
+                WriteKv(writer, "general.architecture", GgufValueType.String, "llama");
+                WriteKv(writer, "llama.block_count", GgufValueType.UInt32, 16u);
+                WriteKv(writer, "llama.context_length", GgufValueType.UInt32, 2048u);
+                WriteKv(writer, "llama.embedding_length", GgufValueType.UInt32, 128u);
+                WriteKv(writer, "llama.attention.head_count", GgufValueType.UInt32, 4u);
+                WriteKv(writer, "llama.feed_forward_length", GgufValueType.UInt32, 256u);
+            }
+
+            var settings = new StaticPlanCommand.Settings { ModelPath = path };
+            var profile = new StaticPlanProfile();
+            var config = StaticPlanConfiguration.Resolve(settings, profile, _ => null);
+            using var model = GgufModel.Open(path);
+            var report = StaticPlanReport.Create(path, model, config, StaticPlanRuntimeFacts.Detect(noGpuProbe: true), includePlacement: false);
+
+            Assert.NotNull(report.ExecutionPlan);
+            Assert.Equal(2, report.ExecutionPlan.SchemaVersion);
+            Assert.Equal("llama", report.ExecutionPlan.Provenance?.TargetArchitecture);
+        }
+        finally
+        {
+            if (File.Exists(path)) File.Delete(path);
+        }
+    }
+
+    private static void WriteKv(BinaryWriter writer, string key, GgufValueType type, object value)
+    {
+        byte[] keyBytes = System.Text.Encoding.UTF8.GetBytes(key);
+        writer.Write((ulong)keyBytes.Length);
+        writer.Write(keyBytes);
+        writer.Write((uint)type);
+        if (type == GgufValueType.String)
+        {
+            byte[] strBytes = System.Text.Encoding.UTF8.GetBytes((string)value);
+            writer.Write((ulong)strBytes.Length);
+            writer.Write(strBytes);
+        }
+        else if (type == GgufValueType.UInt32)
+        {
+            writer.Write((uint)value);
+        }
+    }
 }

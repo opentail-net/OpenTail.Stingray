@@ -1,3 +1,7 @@
+using System.Collections.Immutable;
+using OpenTail.Stingray.Engine;
+using OpenTail.Stingray.Engine.Packaging;
+using OpenTail.Stingray.Engine.Planning;
 
 namespace OpenTail.Stingray.Cli;
 
@@ -462,12 +466,14 @@ public sealed record StaticPlanReport(
             ArchitectureRegistry.Find(arch)?.SupportsImageInput ?? (arch == "gemma4"),
             parameterElements,
             vocabularySize, tensorDtypes);
-        var executionPlan = BuildExecutionPlan(config, compatibility,
-            config.Get<string>("backend").ToLowerInvariant(), selected, selectedAvailable, placement, decisions, effectiveConfiguration);
+        var executionPlan = BuildExecutionPlan(path, model, config, compatibility,
+            config.Get<string>("backend").ToLowerInvariant(), selected, selectedAvailable, placement, decisions, effectiveConfiguration, runtimeFacts);
         return new(1, modelInfo, compatibility, backends, runtimeFacts.Hardware, effectiveConfiguration, placement, decisions, executionPlan);
     }
 
     private static ExecutionPlan BuildExecutionPlan(
+        string path,
+        GgufModel model,
         EffectiveConfigurationSnapshot configuration,
         StaticPlanDecision compatibility,
         string requestedBackend,
@@ -475,7 +481,8 @@ public sealed record StaticPlanReport(
         bool backendAvailable,
         StaticPlanPlacement? placement,
         IReadOnlyList<StaticPlanDecision> decisions,
-        EffectiveConfigurationSnapshot effectiveConfiguration)
+        EffectiveConfigurationSnapshot effectiveConfiguration,
+        StaticPlanRuntimeFacts runtimeFacts)
     {
         var request = new PlanRequest(
             configuration.Get<string>("target"), requestedBackend,
@@ -493,9 +500,81 @@ public sealed record StaticPlanReport(
         planDecisions.AddRange(decisions.Select(decision => new ExecutionPlanDecision(
             DecisionCode(decision.Area), DecisionDisposition(decision), DecisionSeverity(decision), decision.Why)));
         bool invalidConfiguration = effectiveConfiguration.Diagnostics.Any(x => x.Kind == "invalid");
-        return new(1, request, placement?.SelectedBackend ?? selectedBackend,
-            placement?.GpuLayers ?? 0, placement?.CpuLayers ?? 0, placement?.RecommendedCtxSize ?? request.ContextSize,
-            compatibility.Selected && backendAvailable && !invalidConfiguration, planDecisions, effectiveConfiguration);
+        bool isExecutable = compatibility.Selected && backendAvailable && !invalidConfiguration;
+
+        try
+        {
+            var package = LooseGgufModelPackage.Open(path);
+            var modelDesc = ModelDescription.FromPackage(package);
+            var execReq = new ExecutionRequest
+            {
+                ModelPath = path,
+                Goal = "balanced",
+                PinnedBackend = requestedBackend != "auto" ? requestedBackend : null,
+                PinnedGpuLayers = configuration.Get<int>("gpu_layers") != -1 ? configuration.Get<int>("gpu_layers") : null,
+                PinnedContextSize = configuration.Get<int>("context_size") > 0 ? configuration.Get<int>("context_size") : null,
+                PinnedKvDtype = configuration.Get<string>("kv_type"),
+                TurboQuant = configuration.Get<bool>("turbo_quant"),
+                TurboQuantMode = configuration.Get<string>("tq_mode"),
+                BatchingMode = configuration.Get<string>("target") == "server" && configuration.Get<int>("max_batch") > 1
+                    ? BatchingMode.Continuous : BatchingMode.Sequential,
+                MaxBatchSize = configuration.Get<int>("max_batch") > 0 ? configuration.Get<int>("max_batch") : 1,
+                SpeculationMode = configuration.Get<string>("spec_type").ToLowerInvariant() switch
+                {
+                    "mtp" => SpeculationMode.DraftModel,
+                    _ => SpeculationMode.None
+                },
+                SnapKvEnabled = configuration.Get<int>("snapkv_budget") > 0,
+                SnapKvBudget = configuration.Get<int>("snapkv_budget"),
+            };
+
+            bool cuda = runtimeFacts.Backends.Any(x => x.Name == "cuda" && x.Status == "available");
+            bool vulkan = runtimeFacts.Backends.Any(x => x.Name == "vulkan" && x.Status == "available");
+            var capabilities = new BackendCapabilities(
+                CudaAvailable: cuda,
+                VulkanAvailable: vulkan,
+                HardwareProfile: runtimeFacts.HardwareProfile);
+
+            var plan = ExecutionPlanner.Plan(modelDesc, execReq, capabilities);
+            return plan with
+            {
+                Request = request,
+                SelectedBackend = placement?.SelectedBackend ?? selectedBackend,
+                IsExecutable = isExecutable,
+                PlanDecisions = planDecisions.ToImmutableArray(),
+                EffectiveConfiguration = effectiveConfiguration
+            };
+        }
+        catch
+        {
+            string targetArch = model.Metadata.TryGetValue("general.architecture", out var ga) ? Convert.ToString(ga) ?? "unknown" : "unknown";
+            return new(
+                SchemaVersion: 2,
+                ModelPath: path,
+                Goal: "balanced",
+                Backend: placement?.SelectedBackend ?? selectedBackend,
+                GpuLayers: placement?.GpuLayers ?? 0,
+                TotalLayers: model.Metadata.TryGetValue("llama.block_count", out var bc) ? Convert.ToInt32(bc) : 0,
+                ContextSize: placement?.RecommendedCtxSize ?? (request.ContextSize > 0 ? request.ContextSize : 512),
+                KvDtype: configuration.Get<string>("kv_type") ?? "fp32",
+                EstimatedVramMb: 0,
+                EstimatedRamMb: 0,
+                Decisions: ImmutableArray<ExecutionPlanDecisionDetail>.Empty,
+                Warnings: ImmutableArray<string>.Empty,
+                Request: request,
+                SelectedBackend: placement?.SelectedBackend ?? selectedBackend,
+                CpuLayers: placement?.CpuLayers ?? 0,
+                IsExecutable: isExecutable,
+                PlanDecisions: planDecisions.ToImmutableArray(),
+                EffectiveConfiguration: effectiveConfiguration,
+                ModelFormat: ModelFormat.Gguf,
+                Provenance: new PlanProvenance(
+                    CreatedAtUtc: DateTime.UtcNow.ToString("o"),
+                    PlannerVersion: "2.0.0",
+                    PrimaryModelPath: path,
+                    TargetArchitecture: targetArch,
+                    Goal: "balanced"));
+        }
     }
 
     private static string DecisionCode(string area) => area switch

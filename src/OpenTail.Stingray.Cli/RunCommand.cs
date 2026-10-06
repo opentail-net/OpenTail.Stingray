@@ -1,6 +1,8 @@
 using System.Text;
 using OpenTail.Stingray.Core.Grammar;
 using OpenTail.Stingray.Cpu;
+using OpenTail.Stingray.Engine;
+using OpenTail.Stingray.Engine.Runtime;
 using OpenTail.Stingray.Vision;
 
 namespace OpenTail.Stingray.Cli;
@@ -1999,6 +2001,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         SafetensorsTensorSource? stTensorSource = null;
         // Shared by both paths, and not a `using var` for the same CS8648 reason as `model`.
         CpuBackend? cpuBackend = null;
+        RuntimeInstance? runtimeInstance = null;
         Func<int, int, ReadOnlySpan<float>> forward;
         Func<IReadOnlyList<int>, ReadOnlySpan<float>> prefill;
         Action resetCache;
@@ -2031,6 +2034,44 @@ public sealed class RunCommand : Command<RunCommand.Settings>
             forward = fwd.Forward;
             prefill = tokens => fwd.Prefill(tokens);
             resetCache = fwd.ResetCache;
+
+            goto backendConfigured;
+        }
+
+        // ── Plan-driven runtime execution (§5 of plan) ───────────────────────
+        if (resolvedPlan is not null && !isPackage)
+        {
+            var modelParams = new ModelParams(modelPath)
+            {
+                Backend = resolvedPlan.Backend,
+                GpuLayerCount = resolvedPlan.GpuLayers
+            };
+            var modelObj = Model.Load(modelParams);
+            runtimeInstance = RuntimeInstance.Create(resolvedPlan, modelObj);
+
+            hp = modelObj.Hyperparams;
+            s_arch = resolvedPlan.Provenance?.TargetArchitecture ?? modelObj.Architecture;
+            ctxSize = resolvedPlan.ContextSize;
+            tokenizer = (runtimeInstance.Tokenizer as GgufTokenizer)
+                ?? (modelObj.Gguf is not null ? GgufTokenizer.FromGgufModel(modelObj.Gguf) : null!);
+            s_jinja = tokenizer.ChatTemplate;
+            s_hasLlama3Headers = tokenizer.SpecialTokens.ContainsKey("<|start_header_id|>");
+            (s_thinkTokenId, s_endThinkTokenId) = tokenizer.ReasoningTokens;
+            s_noThinking = ResolveThinkingOff(s_arch, settings.Thinking, settings.NoThinking);
+
+            nGpuLayers = resolvedPlan.GpuLayers;
+            gpuDeviceIndex = prologue.GpuDeviceIndex;
+            model = modelObj.Gguf;
+            fwd = runtimeInstance.ForwardPass as ForwardPass;
+            hybridFwd = runtimeInstance.ForwardPass as HybridGdnForwardPass;
+            standaloneFwd = runtimeInstance.ForwardPass;
+            gpuBackend = (IDisposable?)runtimeInstance.VulkanBackend ?? runtimeInstance.CudaBackend;
+            gpuFwd = runtimeInstance.ForwardPass as IDisposable;
+            cpuBackend = runtimeInstance.CpuBackend;
+
+            forward = runtimeInstance.ForwardPass.Forward;
+            prefill = tokens => runtimeInstance.ForwardPass.Prefill(tokens);
+            resetCache = runtimeInstance.ForwardPass.ResetCache;
 
             goto backendConfigured;
         }
@@ -2443,17 +2484,21 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         }
         finally
         {
-            gpuFwd?.Dispose();
-            gpuBackend?.Dispose();
-            fwd?.Dispose();
-            hybridFwd?.Dispose();
-            standaloneFwd?.Dispose();
-            // Package-path resources: null in the GGUF path. Disposed after fwd so that
-            // ForwardPass finishes reading tensor data before the memory maps are closed.
-            cpuBackend?.Dispose();
-            stTensorSource?.Dispose();
-            // Was a `using var` before the package branch needed to jump past it.
-            model?.Dispose();
+            if (runtimeInstance is not null)
+            {
+                runtimeInstance.Dispose();
+            }
+            else
+            {
+                gpuFwd?.Dispose();
+                gpuBackend?.Dispose();
+                fwd?.Dispose();
+                hybridFwd?.Dispose();
+                standaloneFwd?.Dispose();
+                cpuBackend?.Dispose();
+                stTensorSource?.Dispose();
+                model?.Dispose();
+            }
         }
     }
 
