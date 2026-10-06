@@ -555,7 +555,7 @@ Stingray compiles to NativeAOT binaries (`PublishAot=true`). The refactoring str
 | **Phase 1** | Factory Seam & Abstractions | `ArchitectureProbe.cs`, `ArchitectureLoadContext.cs`, `ArchitectureDescriptor.cs`, `DefaultForwardPassFactories.cs` |
 | **Phase 2** | Pilot Migration (`GptOss`, `RWKV`) | `OtherAdmittedArchitectures.cs`, `RwkvArchitectures.cs`, `ModelContext.cs` |
 | **Phase 3** | Specialist Migration (`DeepSeek2`, `GDN`, `Gemma4`) | `DeepSeek2Architectures.cs`, `GraniteArchitectures.cs`, `Gemma4Architecture.cs` |
-| **Phase 4** | Shared Dense Factory & Switch Removal | `CommonForwardPassFactory.cs`, `BuiltInArchitectures.cs`, `ModelContext.cs`, `InferenceEngineLoader.cs` |
+| **Phase 4** | Shared Dense Factory & Switch Removal | `CommonForwardPassFactory.cs`, `BuiltInArchitectures.cs`, `ModelContext.cs`, `InferenceEngineLoader.cs`, `RunCommand.cs` |
 | **Phase 5** | Probe Detectors & Relabelled Support | `ArchitectureRegistry.cs`, `ArchitectureProbe.cs`, `PrefillHandoffFamilies.cs` |
 | **Phase 6** | Admission Contract Test Suite | `ArchitectureDescriptorContractTests.cs` |
 | **Phase 7** | Chat Protocol & Multimodal Registry | `ChatProtocol.cs`, `ChatProtocolRegistry.cs`, `RunCommand.cs` |

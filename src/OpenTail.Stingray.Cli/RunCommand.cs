@@ -1571,7 +1571,10 @@ public sealed class RunCommand : Command<RunCommand.Settings>
                         GpuWeightBytes: 0,
                         GpuKvBytes: 0,
                         RecommendedCtxSize: ctxSize > 0 ? ctxSize : Math.Min(hp.ContextLength, 4096));
-                    var chgdn = new CudaHybridGdnForwardPass(model, cuda, hp, placement);
+                    var loadCtx = CreateLoadContext(model, hp, s_arch, hybridGpuSelection,
+                        ForwardPassBackend.Cuda, ctxSize, hp.NumLayers, placement, cudaBackend: cuda);
+                    var desc = ArchitectureRegistry.Find(s_arch)!;
+                    var chgdn = (CudaHybridGdnForwardPass)desc.CreateForwardPass!(loadCtx);
                     gpuFwd = chgdn;
                     if (chgdn.HasMtpHead) mtpFwd = chgdn;
                     forward = chgdn.Forward;
@@ -1781,7 +1784,10 @@ public sealed class RunCommand : Command<RunCommand.Settings>
                         GpuWeightBytes: 0,
                         GpuKvBytes: 0,
                         RecommendedCtxSize: ctxSize > 0 ? ctxSize : Math.Min(hp.ContextLength, 4096));
-                    var vhgdn = new VulkanHybridGdnForwardPass(model, gpu, hp, placement);
+                    var loadCtx = CreateLoadContext(model, hp, s_arch, hybridGdnSelection,
+                        ForwardPassBackend.Vulkan, ctxSize, hp.NumLayers, placement, vulkanBackend: gpu);
+                    var desc = ArchitectureRegistry.Find(s_arch)!;
+                    var vhgdn = (VulkanHybridGdnForwardPass)desc.CreateForwardPass!(loadCtx);
                     gpuFwd = vhgdn;
                     // #357 PR4: the Vulkan GDN hybrid now ships an MTP/NEXTN head (HasMtpHead +
                     // SupportsBatchVerify), so admit it into the MtpDecoder path exactly like the
@@ -2165,7 +2171,10 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         {
             var vk = new VulkanBackend(gpuDeviceIndex);
             gpuBackend = vk;
-            gpuFwd = new DeepSeek2GpuForwardPass(model, vk, hp, maxContextLength: ctxSize);
+            var loadCtx = CreateLoadContext(model, hp, s_arch, architectureSelection,
+                ForwardPassBackend.Vulkan, ctxSize, effNGpuLayers, vulkanBackend: vk);
+            var desc = ArchitectureRegistry.Find(s_arch)!;
+            gpuFwd = (IDisposable)desc.CreateForwardPass!(loadCtx);
             effNGpuLayers = 0;
         }
 
@@ -2198,11 +2207,13 @@ public sealed class RunCommand : Command<RunCommand.Settings>
             if (effNGpuLayers != 0)
                 AnsiConsole.MarkupLine($"[yellow]Note:[/] {s_arch} has no GPU forward pass yet; running on CPU.");
             effNGpuLayers = 0;
-            standaloneFwd = RwkvForwardPassBase.Create(model);
+            var loadCtx = CreateLoadContext(model, hp, s_arch, architectureSelection,
+                ForwardPassBackend.Cpu, ctxSize, 0);
+            var desc = ArchitectureRegistry.Find(s_arch)!;
+            standaloneFwd = desc.CreateForwardPass!(loadCtx);
         }
         else if (ArchitectureRegistry.Find(s_arch)?.ForwardPassFamily == ForwardPassFamily.GptOss)
         {
-            var gptOssHp = GptOssHyperparams.FromModel(model);
             if (effNGpuLayers != 0 && architectureSelection.Kind == ForwardPassKind.GptOssCpu)
             {
                 AnsiConsole.MarkupLine("[yellow]Note:[/] gpt-oss runs on GPU only as a full Vulkan offload (-g -1); running on CPU.");
@@ -2215,17 +2226,26 @@ public sealed class RunCommand : Command<RunCommand.Settings>
                 // past the generic GPU branches to the gpt-oss wiring below.
                 var vk = new VulkanBackend(gpuDeviceIndex);
                 gpuBackend = vk;
-                gpuFwd = new GptOssGpuForwardPass(model, vk, gptOssHp, maxContextLength: ctxSize);
+                var loadCtx = CreateLoadContext(model, hp, s_arch, architectureSelection,
+                    ForwardPassBackend.Vulkan, ctxSize, effNGpuLayers, vulkanBackend: vk);
+                var desc = ArchitectureRegistry.Find(s_arch)!;
+                gpuFwd = (IDisposable)desc.CreateForwardPass!(loadCtx);
                 effNGpuLayers = 0;
             }
             else
             {
-                standaloneFwd = new GptOssForwardPass(model, gptOssHp);
+                var loadCtx = CreateLoadContext(model, hp, s_arch, architectureSelection,
+                    ForwardPassBackend.Cpu, ctxSize, 0);
+                var desc = ArchitectureRegistry.Find(s_arch)!;
+                standaloneFwd = desc.CreateForwardPass!(loadCtx);
             }
         }
         else if (architectureSelection.Kind == ForwardPassKind.CpuHybridGdn && effNGpuLayers == 0)
         {
-            hybridFwd = new HybridGdnForwardPass(model, cpuBackend, hp);
+            var loadCtx = CreateLoadContext(model, hp, s_arch, architectureSelection,
+                ForwardPassBackend.Cpu, ctxSize, 0, cpuBackend: cpuBackend);
+            var desc = ArchitectureRegistry.Find(s_arch)!;
+            hybridFwd = (HybridGdnForwardPass)desc.CreateForwardPass!(loadCtx);
             if (hybridFwd.HasMtpHead) mtpFwd = hybridFwd;
         }
         else if (architectureSelection.Kind != ForwardPassKind.DeepSeek2Vulkan && gpuFwd is null)
@@ -2403,6 +2423,32 @@ public sealed class RunCommand : Command<RunCommand.Settings>
             // Was a `using var` before the package branch needed to jump past it.
             model?.Dispose();
         }
+    }
+
+    private static ArchitectureLoadContext CreateLoadContext(
+        GgufModel model, ModelHyperparams hp, string arch, ForwardPassDecision decision,
+        ForwardPassBackend backend, int ctxSize, int gpuLayers = 0, LayerPlacement? placement = null,
+        CpuBackend? cpuBackend = null, CudaBackend? cudaBackend = null, VulkanBackend? vulkanBackend = null)
+    {
+        return new ArchitectureLoadContext
+        {
+            Probe = new ArchitectureProbe
+            {
+                Architecture = arch,
+                TensorSource = model,
+                Hyperparams = hp,
+                IsGguf = true,
+                Gguf = model,
+            },
+            Decision = decision,
+            Backend = backend,
+            ContextSize = ctxSize,
+            GpuLayers = gpuLayers,
+            Placement = placement,
+            CpuBackend = cpuBackend,
+            CudaBackend = cudaBackend,
+            VulkanBackend = vulkanBackend,
+        };
     }
 
     /// <summary>

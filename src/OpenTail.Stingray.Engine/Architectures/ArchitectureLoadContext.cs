@@ -20,11 +20,11 @@ public sealed class ArchitectureLoadContext
     public LayerPlacement? Placement { get; init; }
 
     // Configured runtime options
-    public required bool TurboQuant { get; init; }
-    public required string TurboQuantMode { get; init; }
-    public required int HeadDim { get; init; }
-    public required TqQuantizer TqQuantizer { get; init; }
-    public required bool FlashAttention { get; init; }
+    public bool TurboQuant { get; init; }
+    public string TurboQuantMode { get; init; } = "auto";
+    public int HeadDim { get; init; }
+    public TqQuantizer TqQuantizer { get; init; } = TqQuantizer.LloydMax;
+    public bool FlashAttention { get; init; } = true;
     public DType KvDType { get; init; } = DType.Float16;
 
     // Backend resources (orchestrator manages initialization and lifetime)

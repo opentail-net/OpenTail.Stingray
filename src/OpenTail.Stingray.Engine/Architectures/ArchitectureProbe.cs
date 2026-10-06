@@ -8,7 +8,7 @@ using OpenTail.Stingray.Core;
 /// </summary>
 public sealed class ArchitectureProbe
 {
-    public required string Path { get; init; }
+    public string? Path { get; init; }
     public required string? Architecture { get; init; }
     public required IModelTensorSource TensorSource { get; init; }
     public required ModelHyperparams Hyperparams { get; init; }
