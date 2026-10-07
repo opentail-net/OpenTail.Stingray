@@ -94,7 +94,6 @@ public static class ExecutionPlanner
         }
 
         var passReq = model.CreateForwardPassRequest(
-            frontend: ForwardPassFrontend.Cli,
             backend: selectedBackend,
             gpuLayers: resolvedGpuLayers,
             plannedGpuLayers: resolvedGpuLayers,
@@ -123,7 +122,7 @@ public static class ExecutionPlanner
         var backendPlan = new BackendPlan(
             Backend: selectedBackend,
             DeviceName: backendDeviceName,
-            DeviceIndex: 0,
+            DeviceIndex: selectedBackend == ForwardPassBackend.Cpu ? 0 : request.DeviceIndex,
             CudaAvailable: capabilities.CudaAvailable,
             VulkanAvailable: capabilities.VulkanAvailable,
             ThreadCount: threadCount);
@@ -208,10 +207,19 @@ public static class ExecutionPlanner
             MaxConcurrentSessions: request.MaxBatchSize,
             EnableSessions: request.EnableSessions);
 
-        var speculationPlan = new SpeculationPlan(
-            Mode: request.DSparkModelPath != null ? SpeculationMode.DSpark : request.SpeculationMode,
-            DraftModelPath: request.DraftModelPath,
-            DSparkModelPath: request.DSparkModelPath);
+        var speculationPlan = ResolveSpeculation(
+            model, request, placementResult, hardwareProfile, forwardPassKind, decisions, warnings);
+
+        var moePlan = new MoePlan(
+            IsMoE: model.PlanningFacts.IsMoE,
+            NumExperts: model.PlanningFacts.NumExperts,
+            NumActiveExperts: model.PlanningFacts.NumActiveExperts,
+            CpuMoe: request.CpuMoe,
+            GpuMoePrefill: request.GpuMoePrefill,
+            WarmPin: request.MoeWarmPin,
+            WarmPinAfter: request.MoeWarmPinAfter,
+            PredictPrefetch: request.MoePredictPrefetch,
+            ExpertStatsPath: request.ExpertStatsPath);
 
         var modalityPlan = new ModalityPlan(
             SupportsVision: model.Capabilities.SupportsVision,
@@ -253,12 +261,91 @@ public static class ExecutionPlanner
             decisions: decisions.ToImmutable(),
             warnings: warnings.ToImmutable(),
             modelFormat: model.Semantics.Format,
-            isExecutable: passDecision.Kind.HasValue);
+            isExecutable: passDecision.Kind.HasValue,
+            moe: moePlan);
 
         // 8. Validate Plan Invariants
         ExecutionPlanValidator.Validate(plan);
 
         return plan;
+    }
+
+    /// <summary>
+    /// Resolves speculation, including the DSpark draft-head placement (GPU/CPU/off). This is the ONLY place
+    /// DSpark placement is decided; <c>AttachDSpark</c>/the CLI runner just obey the recorded decision.
+    /// </summary>
+    private static SpeculationPlan ResolveSpeculation(
+        ModelDescription model,
+        ExecutionRequest request,
+        LayerPlacement targetPlacement,
+        HardwareProfile hardware,
+        ForwardPassKind passKind,
+        ImmutableArray<ExecutionPlanDecisionDetail>.Builder decisions,
+        ImmutableArray<string>.Builder warnings)
+    {
+        if (string.IsNullOrWhiteSpace(request.DSparkModelPath))
+        {
+            return new SpeculationPlan(request.SpeculationMode, request.DraftModelPath, null);
+        }
+
+        if (model.Semantics.Format != ModelFormat.Gguf)
+            throw new NotSupportedException("DSpark is not supported for SafeTensors packages.");
+
+        string stPath = request.DSparkModelPath;
+        if (Directory.Exists(stPath)) stPath = Path.Combine(stPath, "model.safetensors");
+        if (!File.Exists(stPath))
+            throw new FileNotFoundException($"DSpark model not found: {stPath}");
+        string cfgPath = Path.Combine(Path.GetDirectoryName(Path.GetFullPath(stPath))!, "config.json");
+        if (!File.Exists(cfgPath))
+            throw new FileNotFoundException($"DSpark config.json not found next to the safetensors: {cfgPath}");
+
+        var cfg = DSparkConfig.FromJsonFile(cfgPath);
+        var facts = model.PlanningFacts;
+        if (cfg.VocabSize != facts.VocabSize || cfg.NumTargetLayers != facts.NumLayers
+            || cfg.HiddenSize != facts.EmbeddingDim)
+            throw new InvalidOperationException(
+                $"DSpark head/target mismatch — head expects vocab {cfg.VocabSize}, " +
+                $"{cfg.NumTargetLayers} target layers, hidden {cfg.HiddenSize}; target has " +
+                $"vocab {facts.VocabSize}, {facts.NumLayers} layers, hidden {facts.EmbeddingDim}.");
+
+        DSparkPlacement userPlace;
+        try
+        {
+            userPlace = DSparkPlacementPlanner.ResolvePlacement(request.DSparkPlace);
+        }
+        catch (ArgumentException ex)
+        {
+            throw new NotSupportedException(ex.Message, ex);
+        }
+
+        long headGpu = CudaDSparkDraftModel.EstimateGpuResidentBytes(cfg);
+        long headCpu = DSparkDraftModel.EstimateResidentBytes(cfg);
+        long tapBytes = (long)targetPlacement.RecommendedCtxSize * cfg.TapDim * sizeof(float);
+        var decision = DSparkPlacementPlanner.Plan(hardware, targetPlacement, headGpu, headCpu, userPlace, tapBytes);
+
+        // A GPU draft needs the target's CudaBackend (shared stream orders tap producer and draft consumer).
+        // Gpu -> Cpu -> Off: re-plan in Auto over a GPU-less profile so the RAM budget is actually checked.
+        if (decision.Placement == DSparkPlacement.Gpu && passKind != ForwardPassKind.CudaDense)
+        {
+            decision = DSparkPlacementPlanner.Plan(
+                hardware with { VramBytes = 0 }, targetPlacement, headGpu, headCpu, DSparkPlacement.Auto, tapBytes);
+            warnings.Add("A GPU DSpark draft requires a full-CUDA target; re-planned for CPU — " + decision.Reason);
+        }
+
+        decisions.Add(new("DSPARK_PLACEMENT", decision.Placement.ToString(), decision.Reason,
+            userPlace == DSparkPlacement.Auto ? "auto_planner" : "request_pin"));
+
+        bool enabled = decision.Placement != DSparkPlacement.Off;
+        return new SpeculationPlan(
+            Mode: enabled ? SpeculationMode.DSpark : request.SpeculationMode,
+            DraftModelPath: request.DraftModelPath,
+            DSparkModelPath: request.DSparkModelPath,
+            DSparkEnabled: enabled,
+            DSparkPlacement: decision.Placement,
+            DSparkPlacementReason: decision.Reason,
+            DSparkHeadBytesGpu: headGpu,
+            DSparkHeadBytesCpu: headCpu,
+            DSparkTapBytes: tapBytes);
     }
 
     private static (ForwardPassBackend Backend, string DeviceName) SelectBackend(

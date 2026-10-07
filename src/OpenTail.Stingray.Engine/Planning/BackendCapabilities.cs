@@ -19,7 +19,7 @@ public sealed record BackendCapabilities(
     /// <summary>
     /// Probes the local system for available accelerator backends and memory capacity.
     /// </summary>
-    public static BackendCapabilities Detect(bool noGpuProbe = false)
+    public static BackendCapabilities Detect(bool noGpuProbe = false, int deviceIndex = -1)
     {
         if (noGpuProbe)
         {
@@ -30,6 +30,8 @@ public sealed record BackendCapabilities(
                 RecommendedThreadCount: Environment.ProcessorCount);
         }
 
+        // CUDA_VISIBLE_DEVICES is read at first CUDA init, so pin before the availability probe below.
+        OpenTail.Stingray.Engine.Runtime.GpuDeviceSelection.PinCudaDevice(deviceIndex);
         bool cudaAvailable = false;
         string? cudaName = null;
         try
@@ -44,7 +46,7 @@ public sealed record BackendCapabilities(
         VulkanBackend? vk = null;
         try
         {
-            vk = TryCreateVulkan();
+            vk = TryCreateVulkan(deviceIndex < 0 ? 0 : deviceIndex);
             if (vk != null)
             {
                 vulkanAvailable = true;
@@ -63,9 +65,9 @@ public sealed record BackendCapabilities(
             RecommendedThreadCount: Environment.ProcessorCount);
     }
 
-    private static VulkanBackend? TryCreateVulkan()
+    private static VulkanBackend? TryCreateVulkan(int deviceIndex)
     {
-        try { return new VulkanBackend(deviceIndex: 0); }
+        try { return new VulkanBackend(deviceIndex); }
         catch { return null; }
     }
 }

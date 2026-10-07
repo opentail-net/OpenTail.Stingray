@@ -514,7 +514,6 @@ public sealed record ModelDescription(
     /// and user execution options without reopening disk files.
     /// </summary>
     public ForwardPassRequest CreateForwardPassRequest(
-        ForwardPassFrontend frontend = ForwardPassFrontend.Cli,
         ForwardPassBackend backend = ForwardPassBackend.Auto,
         int gpuLayers = 0,
         int plannedGpuLayers = -1,
@@ -535,7 +534,6 @@ public sealed record ModelDescription(
     {
         return new ForwardPassRequest
         {
-            Frontend = frontend,
             Architecture = Semantics.Architecture,
             UnsupportedBackendName = unsupportedBackendName,
             IsSafeTensors = Semantics.Format == ModelFormat.SafeTensors,

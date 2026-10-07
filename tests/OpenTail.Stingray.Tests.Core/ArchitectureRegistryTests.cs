@@ -142,7 +142,7 @@ public sealed class ArchitectureRegistryTests
             var descriptor = ArchitectureRegistry.Find(architecture)!;
             var decision = ForwardPassSelection.Select(new ForwardPassRequest
             {
-                Frontend = ForwardPassFrontend.Server,
+                
                 Architecture = architecture,
                 Backend = backend,
                 GpuLayers = -1,

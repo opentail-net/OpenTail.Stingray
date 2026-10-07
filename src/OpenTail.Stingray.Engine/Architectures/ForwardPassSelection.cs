@@ -1,11 +1,5 @@
 namespace OpenTail.Stingray.Engine;
 
-public enum ForwardPassFrontend
-{
-    Cli,
-    Server,
-}
-
 public enum ForwardPassBackend
 {
     Auto,
@@ -34,7 +28,6 @@ public enum ForwardPassKind
 
 public sealed record ForwardPassRequest
 {
-    public ForwardPassFrontend Frontend { get; init; } = ForwardPassFrontend.Cli;
     public string Architecture { get; init; } = "llama";
     public string? UnsupportedBackendName { get; init; }
     public bool IsSafeTensors { get; init; }
@@ -142,8 +135,6 @@ public static class ForwardPassSelection
         {
             if (!request.PackageSupported)
                 return ForwardPassDecision.Refuse("Model package is not supported by its SafeTensors profile.");
-            if (request.Frontend == ForwardPassFrontend.Cli)
-            {
                 if (request.IsSafeTensorsGpuRequested)
                     return ForwardPassDecision.Refuse("GPU offload is not yet supported for SafeTensors packages.");
                 if (request.TurboQuant)
@@ -152,7 +143,6 @@ public static class ForwardPassSelection
                     return ForwardPassDecision.Refuse("Speculative decoding is not supported for SafeTensors packages.");
                 if (request.IsSafeTensorsDSparkRequested)
                     return ForwardPassDecision.Refuse("DSpark is not supported for SafeTensors packages.");
-            }
             return ForwardPassDecision.Select(ForwardPassKind.SafeTensorsCpu);
         }
 
@@ -161,9 +151,7 @@ public static class ForwardPassSelection
             string mode = request.TurboQuantMode.Trim().ToLowerInvariant();
             return mode is "" or "auto" or "lloydmax" or "lloyd-max" or "kvarn"
                 ? ForwardPassDecision.Select(ForwardPassKind.CpuDense)
-                : ForwardPassDecision.Refuse(request.Frontend == ForwardPassFrontend.Cli
-                    ? $"Unknown --tq-mode value '{request.TurboQuantMode}'. Expected one of: auto, lloydmax, kvarn."
-                    : $"Unknown TqMode '{request.TurboQuantMode}'. Expected one of: auto, lloydmax, kvarn.");
+                : ForwardPassDecision.Refuse($"Unknown --tq-mode value '{request.TurboQuantMode}'. Expected one of: auto, lloydmax, kvarn.");
         }
 
         if (!request.ArchitectureSupported && !request.AllowUnverifiedArchitecture)
@@ -182,13 +170,9 @@ public static class ForwardPassSelection
         bool tqModeIsAuto = tqMode is "auto" or "";
         if (!request.ValidateKVarNOnly && !request.ValidateTurboQuantHeadDimOnly
             && !tqModeIsAuto && !explicitKvarn && !explicitLloydMax)
-            return ForwardPassDecision.Refuse(request.Frontend == ForwardPassFrontend.Cli
-                ? $"Unknown --tq-mode value '{request.TurboQuantMode}'. Expected one of: auto, lloydmax, kvarn."
-                : $"Unknown TqMode '{request.TurboQuantMode}'. Expected one of: auto, lloydmax, kvarn.");
+            return ForwardPassDecision.Refuse($"Unknown --tq-mode value '{request.TurboQuantMode}'. Expected one of: auto, lloydmax, kvarn.");
         if (explicitKvarn && !request.TurboQuant)
-            return ForwardPassDecision.Refuse(request.Frontend == ForwardPassFrontend.Cli
-                ? "--tq-mode kvarn requires --tq."
-                : "TqMode=kvarn requires TurboQuant=true.");
+            return ForwardPassDecision.Refuse("--tq-mode kvarn requires --tq.");
 
         if (request.IsHybridSsm && request.TurboQuant
             && !request.ValidateKVarNOnly && !request.ValidateTurboQuantHeadDimOnly)
@@ -196,7 +180,7 @@ public static class ForwardPassSelection
         if (!request.ValidateTurboQuantModeOnly && !request.ValidateKVarNOnly
             && !request.ValidateTurboQuantHeadDimOnly
             && (request.IsHybridSsm || request.HasHybridGdnLayers)
-            && draftRequested && request.Frontend == ForwardPassFrontend.Cli)
+            && draftRequested)
             return ForwardPassDecision.Refuse("Speculative decoding is not supported for hybrid GDN models (GDN state is destructively updated and cannot be rewound).");
         if (request.ValidateTurboQuantModeOnly)
             return ForwardPassDecision.Select(ForwardPassKind.CpuDense);
@@ -205,11 +189,9 @@ public static class ForwardPassSelection
         {
             if (request.SkipFamilyRefusals)
                 return ForwardPassDecision.Select(ForwardPassKind.RwkvCpu);
-            if (request.TurboQuant || (draftRequested && request.Frontend == ForwardPassFrontend.Cli))
+            if (request.TurboQuant || (draftRequested))
             {
-                string message = request.Frontend == ForwardPassFrontend.Cli
-                    ? $"{request.Architecture} is recurrent (no KV cache) and supports neither TurboQuant nor speculative decoding."
-                    : "TurboQuant is not supported for RWKV (no KV cache).";
+                string message = $"{request.Architecture} is recurrent (no KV cache) and supports neither TurboQuant nor speculative decoding.";
                 return ForwardPassDecision.Refuse(message);
             }
             return ForwardPassDecision.Select(ForwardPassKind.RwkvCpu);
@@ -218,11 +200,9 @@ public static class ForwardPassSelection
         bool isGptOss = family == ForwardPassFamily.GptOss;
         if (isGptOss && request.SkipFamilyRefusals)
             return ForwardPassDecision.Select(ForwardPassKind.GptOssCpu);
-        if (isGptOss && (request.TurboQuant || (draftRequested && request.Frontend == ForwardPassFrontend.Cli)))
+        if (isGptOss && (request.TurboQuant || (draftRequested)))
         {
-            string message = request.Frontend == ForwardPassFrontend.Cli
-                ? "gpt-oss runs on its own CPU forward pass, which supports neither TurboQuant nor speculative decoding."
-                : "TurboQuant is not supported for gpt-oss.";
+            string message = "gpt-oss runs on its own CPU forward pass, which supports neither TurboQuant nor speculative decoding.";
             return ForwardPassDecision.Refuse(message);
         }
 
@@ -264,16 +244,12 @@ public static class ForwardPassSelection
             if (explicitLloydMax && request.HeadDim is not (128 or 256))
             {
                 if (request.TurboQuant)
-                    return ForwardPassDecision.Refuse(request.Frontend == ForwardPassFrontend.Cli
-                        ? $"TurboQuant requires head dimension 128 or 256; this model has head dim {request.HeadDim}. Remove --tq to run without KV compression."
-                        : $"TurboQuant Lloyd-Max requires head dimension 128 or 256; this model has head dim {request.HeadDim}.");
+                    return ForwardPassDecision.Refuse($"TurboQuant requires head dimension 128 or 256; this model has head dim {request.HeadDim}. Remove --tq to run without KV compression.");
             }
             if (!explicitLloydMax && (request.HeadDim < 8 || request.HeadDim > 1024 || (request.HeadDim & (request.HeadDim - 1)) != 0))
             {
                 if (request.TurboQuant)
-                    return ForwardPassDecision.Refuse(request.Frontend == ForwardPassFrontend.Cli
-                        ? $"--tq-mode kvarn requires a power-of-2 head dimension in [8, 1024]; this model has head dim {request.HeadDim}."
-                        : $"TurboQuant requires a power-of-2 head dimension in [8, 1024]; this model has head dim {request.HeadDim}.");
+                    return ForwardPassDecision.Refuse($"--tq-mode kvarn requires a power-of-2 head dimension in [8, 1024]; this model has head dim {request.HeadDim}.");
             }
             if (explicitKvarn || tqModeIsAuto && request.TurboQuant)
             {
@@ -289,8 +265,6 @@ public static class ForwardPassSelection
                     kvarnBlockedReason = "partial CUDA offload";
                 if (explicitKvarn && kvarnBlockedReason is not null)
                 {
-                    if (request.Frontend == ForwardPassFrontend.Cli)
-                    {
                         string message = request.KVarNSnapKvBlocked
                             ? "--tq-mode kvarn does not compose with SnapKV eviction yet (issue #180 follow-up); unset STINGRAY_SNAPKV_BUDGET."
                             : request.Backend == ForwardPassBackend.Vulkan
@@ -303,94 +277,78 @@ public static class ForwardPassSelection
                                             ? $"--tq-mode kvarn requires full CUDA offload, but only {request.PlannedGpuLayersForKVarN}/{request.NumLayers} layers fit this GPU. Use -g 0 for the CPU path."
                                             : "--tq-mode kvarn requires full CUDA offload or the CPU path.";
                         return ForwardPassDecision.Refuse(message);
-                    }
-                    return ForwardPassDecision.Refuse($"TqMode=kvarn is not supported on this path: {kvarnBlockedReason}.");
                 }
-                if (tqModeIsAuto && kvarnBlockedReason is not null && request.Frontend == ForwardPassFrontend.Cli)
+                if (tqModeIsAuto && kvarnBlockedReason is not null)
                 {
                     if (request.HeadDim is not (128 or 256))
                         return ForwardPassDecision.Refuse($"TurboQuant requires head dimension 128 or 256; this model has head dim {request.HeadDim}. Remove --tq to run without KV compression.");
                 }
-                if (tqModeIsAuto && kvarnBlockedReason is not null && request.Frontend == ForwardPassFrontend.Server
-                    && !TqLloydMaxHeadDim(request.HeadDim))
-                    return ForwardPassDecision.Refuse(
-                        $"TurboQuant with head dim {request.HeadDim} requires KVarN ({kvarnBlockedReason}), but Lloyd-Max — the only codec available on this path — ships codebooks for head dim 128/256 only. Use nGpuLayers=0 for the CPU KVarN path.");
             }
-            if (request.Frontend == ForwardPassFrontend.Cli && explicitKvarn && request.GpuLayers != 0
+            if (explicitKvarn && request.GpuLayers != 0
                 && request.GpuLayers > 0 && request.GpuLayers < request.NumLayers)
                 return ForwardPassDecision.Refuse($"--tq-mode kvarn requires full CUDA offload, but only {request.PlannedGpuLayersForKVarN}/{request.NumLayers} layers fit this GPU. Use -g 0 for the CPU path.");
-            if (request.Frontend == ForwardPassFrontend.Cli && explicitKvarn && request.GpuLayers != 0
+            if (explicitKvarn && request.GpuLayers != 0
                 && request.Backend != ForwardPassBackend.Vulkan && request.HeadDim > 256)
                 return ForwardPassDecision.Refuse($"--tq-mode kvarn on CUDA requires head dim ≤ 256 (shared-memory WHT cap); this model has head dim {request.HeadDim}. Use -g 0 for the CPU path.");
-            if (request.Frontend == ForwardPassFrontend.Cli && explicitKvarn && request.Backend == ForwardPassBackend.Vulkan
+            if (explicitKvarn && request.Backend == ForwardPassBackend.Vulkan
                 && request.GpuLayers != 0)
                 return ForwardPassDecision.Refuse("--tq-mode kvarn is not supported on the Vulkan backend; use --backend cuda -g -1 (full offload) or -g 0 (CPU).");
         }
 
         if (request.HasImageInput)
         {
-            if (request.Frontend == ForwardPassFrontend.Server && !request.IsGemma4)
-                return ForwardPassDecision.Refuse($"Image input (MmprojPath / STINGRAY_MMPROJ) is only supported for Gemma 4 (gemma4uv) text models; this model's architecture is '{request.Architecture}'.");
             if (!request.SupportsEmbeddingInput)
-                return ForwardPassDecision.Refuse(request.Frontend == ForwardPassFrontend.Server
-                    ? "MmprojPath / STINGRAY_MMPROJ is set but image input requires a forward pass that accepts precomputed-embedding input: CPU (NGpuLayers=0) or full CUDA offload (NGpuLayers=-1) of a Gemma 4 model that fits VRAM."
-                    : "Image input requires a forward pass that accepts precomputed-embedding input.");
-            if (request.HasImageBatching || request.Frontend == ForwardPassFrontend.Server
-                && request.MaxBatchSizeGreaterThanOne && request.BatchingSupported)
+                return ForwardPassDecision.Refuse("Image input requires a forward pass that accepts precomputed-embedding input.");
+            if (request.HasImageBatching || request.MaxBatchSizeGreaterThanOne && request.BatchingSupported)
                 return ForwardPassDecision.Refuse("Image input is not supported with continuous batching (MaxBatchSize > 1). Set MaxBatchSize=1.");
         }
 
-        if (request.Frontend == ForwardPassFrontend.Server && request.SessionsRequested
+        if (request.SessionsRequested
             && (request.IsSafeTensors || !request.SessionsPathSupported || !request.BatchingSupported || !request.IsConcreteCpuDensePass))
             return ForwardPassDecision.Refuse(request.IsSafeTensors
                 ? "EnableSessions currently supports only the proven CPU-dense GGUF lane; SafeTensors session/cache conformance is not available yet."
                 : "EnableSessions currently supports only the proven CPU-dense GGUF lane without MoE or TurboQuant. Disable EnableSessions or select CPU dense GGUF.");
 
-        if (request.IsContinuousBatching && request.SupportsContinuousBatching
-            && request.Frontend == ForwardPassFrontend.Server && request.DsParkRequested)
+        if (request.IsContinuousBatching && request.SupportsContinuousBatching && request.DsParkRequested)
             return ForwardPassDecision.Refuse("DSpark (DSparkModelPath / STINGRAY_DSPARK_MODEL) is not supported with continuous batching (MaxBatchSize > 1) — the tap buffer is single-sequence. Set MaxBatchSize=1.");
 
-        if (request.DsParkRequested && request.Frontend == ForwardPassFrontend.Cli)
+        if (request.DsParkRequested)
         {
             if (!request.HasDSparkModel)
                 return ForwardPassDecision.Refuse("--spec-type dspark requires --dspark-model <path-to-model.safetensors>.");
             if (!request.DSparkModelPathExists)
                 return ForwardPassDecision.Refuse("DSpark model not found: configured DSpark path.");
-            if (request.Frontend == ForwardPassFrontend.Cli && !request.HasDSparkConfig)
+            if (!request.HasDSparkConfig)
                 return ForwardPassDecision.Refuse("DSpark config.json not found next to the safetensors.");
             if (!request.DSparkConfigExists)
                 return ForwardPassDecision.Refuse("DSpark config.json not found next to the safetensors.");
             if (!request.DSparkHeadMatchesTarget)
                 return ForwardPassDecision.Refuse(
                     $"DSpark head/target mismatch — head expects vocab {request.DSparkVocabSize}, {request.DSparkTargetLayers} target layers, hidden {request.DSparkHiddenSize}; target has vocab {request.ModelVocabSize}, {request.ModelLayers} layers, hidden {request.ModelHiddenSize}. The head must be trained for this target model.");
-            if (request.Frontend == ForwardPassFrontend.Cli && (request.HasDraftModel || request.DraftLookup))
+            if ((request.HasDraftModel || request.DraftLookup))
                 return ForwardPassDecision.Refuse("--dspark-model and --draft-model/--draft-lookup are mutually exclusive.");
-            if (request.Frontend == ForwardPassFrontend.Cli && request.HasMtpSpecType)
+            if (request.HasMtpSpecType)
                 return ForwardPassDecision.Refuse("--spec-type mtp conflicts with --dspark-model; pick one.");
-            if (request.Frontend == ForwardPassFrontend.Cli && request.DSparkMinConfidence > 1f)
+            if (request.DSparkMinConfidence > 1f)
                 return ForwardPassDecision.Refuse("--dspark-min-confidence must be in [0, 1].");
-            if (request.Frontend == ForwardPassFrontend.Cli && (!request.DSparkTargetSupported || !request.SupportsHiddenTaps
+            if ((!request.DSparkTargetSupported || !request.SupportsHiddenTaps
                 || request.HasTokenConstraint || request.HasTools || request.IsSampled))
                 return SelectOrdinary(request, "DSpark disabled; falling back to normal generation.");
-            if (request.Frontend == ForwardPassFrontend.Server && (!request.DSparkTargetSupported || !request.SupportsHiddenTaps))
-                return ForwardPassDecision.Refuse("DSpark requires a tap-capable dense forward pass (CPU, NGpuLayers=0, or full CUDA offload, NGpuLayers=-1; no MoE / Gemma-4 / TurboQuant / SnapKV).");
             if (request.DSparkPlacementOff)
-                return request.Frontend == ForwardPassFrontend.Cli
-                    ? SelectOrdinary(request, "DSpark placement is off; falling back to normal generation.")
-                    : ForwardPassDecision.Refuse("DSpark was configured but placement resolved to Off.");
+                return SelectOrdinary(request, "DSpark placement is off; falling back to normal generation.");
             int window = request.DSparkContextLength > 0
                 ? Math.Min(request.TargetContextLength, request.DSparkContextLength)
                 : request.TargetContextLength;
             if (window > 0 && request.PromptTokenCount + request.DSparkBlockSize + 1 >= window)
                 return ForwardPassDecision.Refuse(
                     $"prompt ({request.PromptTokenCount} tokens) + DSpark block ({request.DSparkBlockSize}) does not fit the context window ({window} tokens).");
-            if (request.Frontend == ForwardPassFrontend.Cli && !request.HasSinglePrompt)
+            if (!request.HasSinglePrompt)
                 return SelectOrdinary(request, "DSpark is wired for single-prompt runs only; interactive mode falls back to normal generation.");
         }
 
         if (draftRequested && request.HasDraftModel && request.DraftLookup)
             return ForwardPassDecision.Refuse("--draft-model and --draft-lookup are mutually exclusive.");
-        if (request.Frontend == ForwardPassFrontend.Cli && request.HasDraftModel && !request.DraftModelExists)
+        if (request.HasDraftModel && !request.DraftModelExists)
             return ForwardPassDecision.Refuse($"Draft model not found: {request.DraftModelPath ?? "<path>"}.");
         if (draftRequested && request.HasTokenConstraint)
             return ForwardPassDecision.Select(SelectOrdinary(request).Kind!.Value, "Speculation disabled because a token constraint is active.");
@@ -399,30 +357,11 @@ public static class ForwardPassSelection
         if (draftRequested && request.IsSampled && (request.SampledSpecDisabled || request.HasSamplingPenaltyOrBias))
             return ForwardPassDecision.Select(SelectOrdinary(request).Kind!.Value, "Sampled speculative decoding is disabled or incompatible with penalties/logit bias.");
 
-        if (request.Frontend == ForwardPassFrontend.Server && request.DsParkRequested)
-        {
-            if (!request.HasDSparkModel)
-                return ForwardPassDecision.Refuse("DSpark model path is not configured.");
-            if (!request.DSparkModelPathExists)
-                return ForwardPassDecision.Refuse("DSpark model not found: configured DSpark path.");
-            if (!request.DSparkConfigExists)
-                return ForwardPassDecision.Refuse("DSpark config.json not found next to the safetensors.");
-            if (!request.DSparkHeadMatchesTarget)
-                return ForwardPassDecision.Refuse(
-                    $"DSpark head/target mismatch — head expects vocab {request.DSparkVocabSize}, {request.DSparkTargetLayers} target layers, hidden {request.DSparkHiddenSize}; target has vocab {request.ModelVocabSize}, {request.ModelLayers} layers, hidden {request.ModelHiddenSize}.");
-            if (!request.SupportsHiddenTaps || !request.DSparkTargetSupported)
-                return ForwardPassDecision.Refuse("DSpark requires a tap-capable dense forward pass (CPU, NGpuLayers=0, or full CUDA offload, NGpuLayers=-1; no MoE / Gemma-4 / TurboQuant / SnapKV).");
-            if (request.DSparkPlacementOff)
-                return ForwardPassDecision.Refuse("DSpark was configured but placement resolved to Off.");
-        }
-
         bool hasDeepSeek2Mla = family == ForwardPassFamily.DeepSeek2Mla
             && request.KvLoraRank > 0 && request.HasMlaTensors;
         bool partialRequest = request.GpuLayers > 0 && request.GpuLayers < request.NumLayers;
-        bool cliDraftBlocksMla = request.Frontend == ForwardPassFrontend.Cli && draftRequested;
-        bool mlaRequestedBackend = request.Frontend == ForwardPassFrontend.Cli
-            ? request.Backend != ForwardPassBackend.Cuda
-            : request.Backend is ForwardPassBackend.Auto or ForwardPassBackend.Vulkan;
+        bool cliDraftBlocksMla = draftRequested;
+        bool mlaRequestedBackend = request.Backend != ForwardPassBackend.Cuda;
         if (hasDeepSeek2Mla && request.GpuLayers != 0 && !request.TurboQuant
             && mlaRequestedBackend && !partialRequest && !cliDraftBlocksMla)
             return ForwardPassDecision.Select(ForwardPassKind.DeepSeek2Vulkan);
@@ -446,8 +385,7 @@ public static class ForwardPassSelection
         if (backend == ForwardPassBackend.Cuda && request.UnsupportedPartialCudaPath)
             return ForwardPassDecision.Select(ForwardPassKind.CpuDense);
 
-        if (gpuRequested && hasDeepSeek2Mla && request.Frontend == ForwardPassFrontend.Server
-            || descriptor is not null && gpuRequested
+        if (descriptor is not null && gpuRequested
                 && family is not (ForwardPassFamily.Rwkv or ForwardPassFamily.GptOss)
                 && !SupportsBackend(descriptor.SupportedBackends, backend))
         {
@@ -459,9 +397,9 @@ public static class ForwardPassSelection
         {
             bool cudaOnly = request.Backend == ForwardPassBackend.Cuda;
             bool partial = request.GpuLayers > 0 && request.GpuLayers < request.NumLayers;
-            if (request.Frontend == ForwardPassFrontend.Cli && gpuRequested && (cudaOnly || partial))
+            if (gpuRequested && (cudaOnly || partial))
                 return ForwardPassDecision.Select(ForwardPassKind.GptOssCpu);
-            if (request.Frontend == ForwardPassFrontend.Cli && request.Backend == ForwardPassBackend.Auto
+            if (request.Backend == ForwardPassBackend.Auto
                 && gpuRequested && !partial)
                 return ForwardPassDecision.Select(ForwardPassKind.GptOssVulkan);
             if (backend == ForwardPassBackend.Vulkan && gpuRequested && !partial)
@@ -489,8 +427,6 @@ public static class ForwardPassSelection
         int gpuLayers = request.GpuLayers == -1 ? request.PlannedGpuLayers : request.GpuLayers;
         if (gpuLayers <= 0)
             return ForwardPassDecision.Select(ForwardPassKind.CpuDense);
-        if (request.LayerSplitOnly && request.Frontend == ForwardPassFrontend.Server)
-            return ForwardPassDecision.Select(ForwardPassKind.VulkanLayerSplit);
         if (request.LayerSplitOnlyLargeMoe && request.AutoPlan && request.IsMoE && gpuLayers > 4)
             return ForwardPassDecision.Select(ForwardPassKind.VulkanLayerSplit,
                 "Automatic split limited to four GPU layers for large split-only MoE.");
@@ -508,8 +444,7 @@ public static class ForwardPassSelection
         }
         if (gpuLayers >= request.NumLayers)
             return ForwardPassDecision.Select(ForwardPassKind.VulkanDense);
-        if ((request.HasLayerHeadDim || request.UnsupportedPartialVulkanPath || request.LayerSplitOnly)
-            && (request.Frontend == ForwardPassFrontend.Cli || !request.TurboQuant))
+        if (request.HasLayerHeadDim || request.UnsupportedPartialVulkanPath || request.LayerSplitOnly)
         {
             return ForwardPassDecision.Select(ForwardPassKind.VulkanLayerSplit);
         }
@@ -530,8 +465,6 @@ public static class ForwardPassSelection
         var selected = Select(copy);
         return selected with { Notice = notice ?? selected.Notice };
     }
-
-    private static bool TqLloydMaxHeadDim(int headDim) => headDim is 128 or 256;
 
     private static bool SupportsBackend(SupportedBackends supportedBackends, ForwardPassBackend backend) => backend switch
     {

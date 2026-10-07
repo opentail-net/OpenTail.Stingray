@@ -295,15 +295,16 @@ graph TD
 - [x] Stingray sidecar metadata is keyed to model/package identity and is advisory only (never overrides admission).
 - [x] `ModelDescription` contains an immutable snapshot of all intrinsic planning facts.
 - [x] `ModelDescription.FromPackage` performs the one-time inspection; `ExecutionPlanner` never reopens model files.
-- [x] `ExecutionRequest` contains every execution-affecting option; no hidden policy in `Model.Parameters` or environment.
+- [~] `ExecutionRequest` carries the execution-affecting options that change topology (backend, device, layers, context, KV dtype, TurboQuant, batching, DSpark path + placement pin, MoE expert execution). Remaining `STINGRAY_*` variables are developer kernel/tuning/diagnostic switches read inside kernels and are **not** captured (see "Environment boundary" below). `STINGRAY_SNAPKV_BUDGET` is read into the request but the engine also re-reads it.
+
 - [x] `ExecutionPlan` is genuinely immutable (`ImmutableArray<T>`) and contains concrete choices (no `"auto"`).
 - [x] `ExecutionPlan` validation checks strongly typed invariants without overly restrictive universal equations.
 - [x] Candidate evaluation during planning is model-aware and distinct from runtime fallback.
-- [x] `RuntimeInstance` executes the plan strictly without re-planning or reading `Model.Parameters`.
+- [x] `RuntimeInstance` executes the plan strictly without re-planning or reading `Model.Parameters`. Contract-tested: `RuntimeLayer_DoesNotMakePolicyDecisions` forbids `TierPlanner.Plan`, `DSparkPlacementPlanner.Plan` and `ForwardPassSelection.Select` in `RuntimeInstance.cs` and `InferenceEngineLoader.cs`.
 - [x] `RuntimeInstance` (Engine) integrates cleanly with `ModelRuntime` and `ModelRuntimeManager` (Server).
 - [x] `RuntimeInstance` exposes the effective `ExecutionPlan` for inspection and contract verification.
 - [x] Existing `ForwardPassSelection` and `TierPlanner` policy is orchestrated by `ExecutionPlanner`, not rewritten.
-- [x] Frontend-specific execution policy (`ForwardPassFrontend.Cli` vs `Server`) is eliminated.
+- [x] Frontend-specific execution policy is eliminated: `ForwardPassFrontend` no longer exists. The Cli branches (the policy the planner already ran for every frontend) became the single policy; Server-only branches were deleted. Refusal wording is now the CLI wording for all frontends. Server-only capability checks that are not policy (Gemma-4-only image input, DSpark tap support) stay as execution validation in `LoadFromPlan`.
 - [x] CLI, Server, and `ModelContext` all converge on the same planning path.
 - [x] `LoadFromPlan()` does not accept execution-altering options and never calls `Load()`.
 - [x] The runtime cannot silently substitute CPU/Vulkan/CUDA for the backend in the plan.
@@ -326,3 +327,31 @@ The unified execution plan architecture has been implemented across all 10 chunk
 8. **Server Loader**: `InferenceEngineLoader.LoadFromPlan(plan, opts)` directly instantiates `RuntimeInstance.Create(plan, model)` without re-evaluating policy.
 9. **CLI Engine**: `RunCommand` and `StaticPlanCommand` resolve via `ExecutionPlanner` and execute via `RuntimeInstance`.
 10. **Parity & Audit**: Cross-frontend parity verified in `FrontendPlanParityTests.cs`, ensuring identical plans and contracts across `ModelContext`, `InferenceEngineLoader`, and CLI `ExecutionPlanBuilder`.
+
+---
+
+## Audit 2026-10-07 — what the repository actually enforces
+
+Written against the working tree after the finishing pass; supersedes the optimistic checklist above where they differ.
+
+**Landed in this pass**
+
+* **Dead CLI policy removed.** `TryPrepare` always produces a plan for non-ONNX models, so `RunCommand` had two architectures: the plan-driven path and ~800 unreachable lines (`TryConfigureBackend`, `SelectForwardPass`, `CreateLoadContext`, `TryLoadSafeTensorsPackage`, the SafeTensors/GGUF branches of `Execute`). All deleted; `Execute` throws if no plan exists. ONNX (`RunOnnxGraph`) remains an intentionally separate mode.
+* **No frontend discriminator.** See checklist line above; `Request_HasNoFrontendDiscriminator` and 12 deleted Server-only matrix cases (they asserted behaviour the planner never ran).
+* **DSpark placement is planned.** `ExecutionPlanner.ResolveSpeculation` runs `DSparkPlacementPlanner` once (including the GPU→CPU re-plan when the target is not full-CUDA) and records `SpeculationPlan.DSparkPlacement/Reason/HeadBytes*`. `AttachDSpark` (server) and `TryRunDSparkSinglePrompt` (CLI) only obey the recorded placement. Off is handled per frontend as before (the CLI notes it and falls back to normal generation; the server throws, explicit failure), but both read the same recorded decision.
+* **Device index travels in the plan.** `ExecutionRequest.DeviceIndex` → `BackendPlan.DeviceIndex` → `RuntimeInstance` (`new VulkanBackend(index)`). CUDA is pinned through `CUDA_VISIBLE_DEVICES`, which the driver reads at first init, so the pin (`GpuDeviceSelection.PinCudaDevice`) also runs inside `BackendCapabilities.Detect(deviceIndex:)` before the availability probe, and again in `RuntimeInstance.Create` (a no-op if the caller already constrained the visible set).
+* **MoE / KV environment is applied from the plan.** `MoePlan` (nullable = unspecified) is recorded by the planner; `RuntimeInstance.ApplyPlanEnvironment` is now the only writer of `STINGRAY_CPU_MOE`, `_MOE_GPU_PREFILL`, `_MOE_WARMPIN(_AFTER)`, `_MOE_PREDICT_PREFETCH`, `_EXPERT_STATS` and `STINGRAY_KV_DTYPE` (only fp32/bf16/q8_0). `InferenceEngineLoader.ApplyMoeEnvironment` and the CLI `Environment.SetEnvironmentVariable` calls are gone. `--cpu-moe` is no longer special-cased; `TryValidateCpuMoeFlags` only rejects `--n-cpu-moe`.
+* **Ownership.** `InferenceEngine` frees its forward pass and `owned` list; `RuntimeInstance.Dispose` previously freed them again. It now returns after the engine for `InferenceEngine`, and for batching engines (which own nothing) frees the pass and each backend exactly once, honouring `DrainedOnDispose`. The server’s `OwnedDisposableEngine` delegates to the instance.
+
+**Environment boundary (item 5)**
+
+Captured in the plan: variables above plus `STINGRAY_CPU_THREADS` (`ThreadCount`) and `STINGRAY_DSPARK_MODEL` (request input). Deliberately **not** captured — they select between mathematically-equivalent kernels or only emit diagnostics: `STINGRAY_TRACE_*`, `_PROFILE_*`, `_PROBE_*`, `Q4K/Q6K/Q80 SOA/DP4A/MMQ`, `_PREFILL_*` tile/flash tuning, `_VULKAN_*` tuning, `_CUDA_GRAPH`, `_BATCHED_PREFILL`, `_SPLIT_DECODE*`. Closer to policy and still **un-captured**: `STINGRAY_DISABLE_MTP`, `_DISABLE_BATCH_VERIFY`, `_SPEC_BATCH_VERIFY`, `_HYBRID_CPU_PREFILL*`, `_PREFIX_SLOTS`, `_PREFILL_CHUNK`, `_KV_STORE`, `_SNAPKV_BUDGET`. These are developer overrides today, but they can change what executes.
+
+**Outstanding**
+
+* The plan is transported to engine constructors through process-global environment variables (set once in `RuntimeInstance.Create`). That is process-wide mutable state, so two instances with different MoE/KV plans in one process are not isolated. The structural fix is to pass `MoePlan`/KV dtype through `ArchitectureLoadContext`.
+* The un-captured policy-adjacent variables listed above.
+* `StaticPlanCommand` still calls `TierPlanner.Plan` itself for its report (reporting only, not execution); `ExecutionPlanBuilder` does not yet forward `DeviceIndex`/MoE/DSpark-place.
+* CLI and server still react differently to a DSpark placement of Off (CLI falls back, server throws). The decision is shared; the reaction is not yet expressed in the plan.
+* The DSpark head/config validation is duplicated in `TryRunDSparkSinglePrompt` (needs `cfg` to build the draft) and the planner.
+* Not run in this pass: `STINGRAY_RUN_HEAVY_TESTS=1` suites, real-weights CLI/server runs, any CUDA/second-device run (none available on this machine).

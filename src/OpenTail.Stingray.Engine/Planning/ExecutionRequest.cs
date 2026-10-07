@@ -33,4 +33,18 @@ public sealed record ExecutionRequest
     public int SnapKvBudget { get; init; }
     public bool AllowUnverifiedArchitecture { get; init; }
     public bool NoGpuProbe { get; init; }
+
+    /// <summary>Concrete GPU device index to use (CUDA and Vulkan); -1 = driver default selection.</summary>
+    public int DeviceIndex { get; init; } = -1;
+
+    /// <summary>User pin for the DSpark draft head location: null/"auto", "gpu", "cpu" or "off".</summary>
+    public string? DSparkPlace { get; init; }
+
+    // MoE / expert execution (null = unspecified; engine default or inherited environment applies).
+    public bool? CpuMoe { get; init; }
+    public bool? GpuMoePrefill { get; init; }
+    public int? MoeWarmPin { get; init; }
+    public int? MoeWarmPinAfter { get; init; }
+    public bool? MoePredictPrefetch { get; init; }
+    public string? ExpertStatsPath { get; init; }
 }

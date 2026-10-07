@@ -65,6 +65,12 @@ public sealed class RuntimeInstance : IDisposable
             SimdKernels.CpuThreads = plan.BackendPlan.ThreadCount;
         }
 
+        // The plan is the single source of execution policy. Engine components read some of it from
+        // STINGRAY_* variables at construction, so materialise the planned values here, once, before any
+        // backend or forward pass exists. Null plan values leave the inherited environment (engine default) alone.
+        GpuDeviceSelection.PinCudaDevice(plan.BackendPlan?.DeviceIndex ?? -1);
+        ApplyPlanEnvironment(plan);
+
         var effectiveHp = model.Hyperparams;
         if (plan.State?.EffectiveRopeTheta is { } ropeTheta and > 0)
         {
@@ -151,7 +157,7 @@ public sealed class RuntimeInstance : IDisposable
             {
                 try
                 {
-                    vulkanBackend = new VulkanBackend();
+                    vulkanBackend = new VulkanBackend(plan.BackendPlan?.DeviceIndex ?? -1);
                     ownedDisposables.Add(vulkanBackend);
                 }
                 catch (Exception ex)
@@ -231,6 +237,7 @@ public sealed class RuntimeInstance : IDisposable
             }
             else
             {
+                // InferenceEngine owns (and frees) the forward pass and every backend in this list; Dispose below must not repeat it.
                 engine = new InferenceEngine(forwardPass, tokenizer, model.Architecture, thinkTokenId, endThinkTokenId, owned: [.. ownedDisposables]);
             }
 
@@ -255,6 +262,27 @@ public sealed class RuntimeInstance : IDisposable
         }
     }
 
+    private static void ApplyPlanEnvironment(ExecutionPlan plan)
+    {
+        static void Set(string name, string? value)
+        {
+            if (value is not null) Environment.SetEnvironmentVariable(name, value);
+        }
+        static string Flag(bool v) => v ? "1" : "0";
+
+        // Only dtypes the CUDA passes accept are transported; anything else is not a value the engine can honour.
+        string kv = ExecutionPlan.KvDtypeToEnvValue(plan.KvDtype);
+        if (kv is "fp32" or "bf16" or "q8_0") Set("STINGRAY_KV_DTYPE", kv);
+
+        if (plan.Moe is not { } moe) return;
+        if (moe.CpuMoe is bool cpuMoe) Set("STINGRAY_CPU_MOE", Flag(cpuMoe));
+        if (moe.GpuMoePrefill is bool gpuPrefill) Set("STINGRAY_MOE_GPU_PREFILL", Flag(gpuPrefill));
+        if (moe.WarmPin is int wp) Set("STINGRAY_MOE_WARMPIN", wp.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        if (moe.WarmPinAfter is int wpa and > 0) Set("STINGRAY_MOE_WARMPIN_AFTER", wpa.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        if (moe.PredictPrefetch is bool pp) Set("STINGRAY_MOE_PREDICT_PREFETCH", Flag(pp));
+        if (!string.IsNullOrEmpty(moe.ExpertStatsPath)) Set("STINGRAY_EXPERT_STATS", moe.ExpertStatsPath);
+    }
+
     /// <summary>
     /// Loads the model from <see cref="ExecutionPlan.ModelPath"/> and creates a RuntimeInstance.
     /// </summary>
@@ -271,11 +299,27 @@ public sealed class RuntimeInstance : IDisposable
         _disposed = true;
 
         (Engine as IDisposable)?.Dispose();
-        ForwardPass.Dispose();
 
-        foreach (var d in _ownedDisposables)
+        // A batching engine that could not drain its worker must not have its pass/backends freed underneath it.
+        if (Engine is ContinuousBatchingEngine { DrainedOnDispose: false })
+            return;
+
+        // InferenceEngine owns and has already freed the forward pass and every backend; releasing them again
+        // would rely on accidental idempotence.
+        if (Engine is InferenceEngine)
+            return;
+
+        // Batching engines own nothing: free the pass and each backend exactly once, backends last.
+        var released = new HashSet<IDisposable>(ReferenceEqualityComparer.Instance as IEqualityComparer<IDisposable>);
+        if (released.Add(ForwardPass))
         {
-            try { d.Dispose(); } catch { }
+            try { ForwardPass.Dispose(); } catch { }
+        }
+
+        for (int i = _ownedDisposables.Count - 1; i >= 0; i--)
+        {
+            if (!released.Add(_ownedDisposables[i])) continue;
+            try { _ownedDisposables[i].Dispose(); } catch { }
         }
     }
 }

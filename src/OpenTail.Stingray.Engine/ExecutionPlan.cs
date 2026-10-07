@@ -95,15 +95,20 @@ public sealed record BatchingPlan(
     bool PreferBatchingOverAutoSnapKv = false,
     bool EnableSessions = false);
 
+/// <summary>
+/// Expert-execution choices that change which compute path MoE models take. Null = "not specified":
+/// the engine default (or an inherited STINGRAY_* environment value) applies. The runtime applies
+/// non-null values; frontends no longer set these environment variables themselves.
+/// </summary>
 public sealed record MoePlan(
     bool IsMoE,
     int NumExperts = 0,
     int NumActiveExperts = 0,
-    bool CpuMoe = false,
-    bool GpuMoePrefill = true,
+    bool? CpuMoe = null,
+    bool? GpuMoePrefill = null,
     int? WarmPin = null,
     int? WarmPinAfter = null,
-    bool PredictPrefetch = true,
+    bool? PredictPrefetch = null,
     string? ExpertStatsPath = null);
 
 public sealed record SpeculationPlan(
@@ -172,7 +177,8 @@ public sealed record ExecutionPlan(
     [property: JsonPropertyName("speculation_plan")] SpeculationPlan? Speculation = null,
     [property: JsonPropertyName("modality_plan")] ModalityPlan? Modality = null,
     [property: JsonPropertyName("memory_plan")] MemoryPlan? Memory = null,
-    [property: JsonPropertyName("provenance")] PlanProvenance? Provenance = null
+    [property: JsonPropertyName("provenance")] PlanProvenance? Provenance = null,
+    [property: JsonPropertyName("moe_plan")] MoePlan? Moe = null
 )
 {
     public ExecutionPlan(
@@ -204,7 +210,8 @@ public sealed record ExecutionPlan(
         SpeculationPlan? Speculation = null,
         ModalityPlan? Modality = null,
         MemoryPlan? Memory = null,
-        PlanProvenance? Provenance = null)
+        PlanProvenance? Provenance = null,
+        MoePlan? Moe = null)
         : this(
             SchemaVersion,
             ModelPath,
@@ -234,7 +241,8 @@ public sealed record ExecutionPlan(
             Speculation,
             Modality,
             Memory,
-            Provenance)
+            Provenance,
+            Moe)
     {
     }
 
@@ -292,7 +300,8 @@ public sealed record ExecutionPlan(
         ImmutableArray<ExecutionPlanDecision>? planDecisions = null,
         EffectiveConfigurationSnapshot? effectiveConfiguration = null,
         ModelFormat modelFormat = ModelFormat.Gguf,
-        bool isExecutable = true)
+        bool isExecutable = true,
+        MoePlan? moe = null)
     {
         string backendStr = backendPlan.Backend.ToString().ToLowerInvariant();
 
@@ -325,7 +334,8 @@ public sealed record ExecutionPlan(
             Speculation: speculation,
             Modality: modality,
             Memory: memory,
-            Provenance: provenance
+            Provenance: provenance,
+            Moe: moe
         );
     }
 
@@ -496,6 +506,7 @@ public sealed record PlanRequest(
 [JsonSerializable(typeof(StatePlan))]
 [JsonSerializable(typeof(BatchingPlan))]
 [JsonSerializable(typeof(SpeculationPlan))]
+[JsonSerializable(typeof(MoePlan))]
 [JsonSerializable(typeof(ModalityPlan))]
 [JsonSerializable(typeof(MemoryPlan))]
 [JsonSerializable(typeof(PlanProvenance))]

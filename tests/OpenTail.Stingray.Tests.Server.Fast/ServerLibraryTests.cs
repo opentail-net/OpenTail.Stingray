@@ -673,8 +673,8 @@ public sealed class ModelCompatibilityTests
 /// Issue #93: the server <see cref="OpenTailStingrayServerOptions.CpuMoe"/> option must reach the
 /// engine as the <c>STINGRAY_CPU_MOE</c> override <em>before</em> the forward pass is built (the
 /// hybrid passes read it once at construction). We drive the real translation path:
-/// <see cref="InferenceEngineLoader.Load"/> runs <c>ApplyMoeEnvironment</c> first, then throws on
-/// the absent model — so the env var the engine would read is observable afterwards. The var is
+/// <see cref="InferenceEngineLoader.Load"/> throws on the absent model before any plan exists, so
+/// it must not have touched the environment (the plan-driven RuntimeInstance owns that). The var is
 /// saved/restored, all cases live in one class so they never race each other, and no other
 /// Tests.Server collection touches it (engines under test come from a FakeEngine factory, which
 /// bypasses the loader entirely). Mirrors the existing MoE-knob coverage.
@@ -693,13 +693,15 @@ public sealed class CpuMoeEnvironmentTests : IDisposable
         new() { ModelPath = null, CpuMoe = cpuMoe };
 
     [Theory]
-    [InlineData(true, "1")]
-    [InlineData(false, "0")]
-    public void CpuMoe_Set_WritesEnvAheadOfLoad(bool cpuMoe, string expected)
+    [InlineData(true)]
+    [InlineData(false)]
+    public void CpuMoe_Set_IsNotWrittenByTheLoader(bool cpuMoe)
     {
+        // The loader maps the option into the ExecutionRequest/ExecutionPlan; RuntimeInstance (not the
+        // frontend) materialises STINGRAY_CPU_MOE once the plan is concrete.
         Environment.SetEnvironmentVariable(Var, null);
         Assert.Throws<InvalidOperationException>(() => InferenceEngineLoader.Load(OptsNoModel(cpuMoe)));
-        Assert.Equal(expected, Environment.GetEnvironmentVariable(Var));
+        Assert.Null(Environment.GetEnvironmentVariable(Var));
     }
 
     [Fact]

@@ -76,7 +76,7 @@ public static class InferenceEngineLoader
 
         if (!string.IsNullOrWhiteSpace(plan.Speculation?.DSparkModelPath) && instance.Engine is InferenceEngine ieDspark && model.IsGguf)
         {
-            AttachDSpark(ieDspark, instance.ForwardPass, model.Gguf, model.Hyperparams, instance.OwnedDisposables.ToList(), null, plan.Speculation.DSparkModelPath, plan.ContextSize);
+            AttachDSpark(ieDspark, instance.ForwardPass, plan.Speculation, instance.OwnedDisposables.ToList());
         }
 
         var chatTemplate = (instance.Tokenizer as GgufTokenizer)?.ChatTemplate;
@@ -91,7 +91,7 @@ public static class InferenceEngineLoader
         var runtimeRes = DescribeRuntime(instance.ForwardPass, plan.ModelFormat);
         long? gpuWeightBytes = plan.Placement?.GpuWeightBytes;
         var engine = instance.Engine is ContinuousBatchingEngine cbe
-            ? new OwnedDisposableEngine(cbe, instance.OwnedDisposables.ToList())
+            ? new OwnedDisposableEngine(cbe, instance)
             : instance.Engine;
 
         return new LoadedEngine(
@@ -119,19 +119,14 @@ public static class InferenceEngineLoader
     /// <summary>
     /// Opens the model referenced by <paramref name="opts"/>, resolves execution policy via
     /// <see cref="ExecutionPlanner"/> into an immutable <see cref="ExecutionPlan"/>, and constructs
-    /// the runtime via <see cref="LoadFromPlan(ExecutionPlan, OpenTailStingrayServerOptions)"/>.
+    /// the runtime via <see cref="LoadFromPlan(ExecutionPlan, string)"/>.
     /// </summary>
     public static LoadedEngine Load(OpenTailStingrayServerOptions opts)
     {
-        ApplyMoeEnvironment(opts);
-
         if (opts.MinBatchBlas > 0)
             SimdKernels.MinBatchForBlas = opts.MinBatchBlas;
         if (opts.CpuThreads > 0)
             SimdKernels.CpuThreads = opts.CpuThreads;
-
-        if (!string.IsNullOrWhiteSpace(opts.KvType))
-            Environment.SetEnvironmentVariable("STINGRAY_KV_DTYPE", opts.KvType);
 
         var modelPath = ResolvePath(opts.ModelPath, "model", "STINGRAY_MODEL", "ModelPath");
 
@@ -178,6 +173,13 @@ public static class InferenceEngineLoader
             MmprojPath = opts.MmprojPath,
             SnapKvEnabled = SnapKvConfig.FromEnvironment().Enabled,
             SnapKvBudget = SnapKvConfig.FromEnvironment().Budget,
+            DSparkPlace = opts.DSparkPlace,
+            CpuMoe = opts.CpuMoe,
+            GpuMoePrefill = opts.GpuMoePrefill,
+            MoeWarmPin = opts.MoeWarmPin,
+            MoeWarmPinAfter = opts.MoeWarmPinAfter > 0 ? (int)opts.MoeWarmPinAfter : null,
+            MoePredictPrefetch = opts.MoePredictPrefetch ? null : false,
+            ExpertStatsPath = string.IsNullOrEmpty(opts.ExpertStatsPath) ? null : opts.ExpertStatsPath,
         };
 
         var plan = ExecutionPlanner.Plan(modelDesc, request, capabilities);
@@ -185,68 +187,43 @@ public static class InferenceEngineLoader
     }
 
     // ── DSpark draft head (docs/dspark-plan.md Phase 6, PR #413) ─────────────
-
-    private static void AttachDSpark(InferenceEngine ie, IForwardPass fwd, GgufModel model,
-        ModelHyperparams hp, List<IDisposable> owned, OpenTailStingrayServerOptions? opts,
-        string configuredPath, int ctxSize)
+    /// <summary>
+    /// Execution-only: loads the draft head and attaches it exactly as the plan recorded. Placement (GPU/CPU/off)
+    /// was decided by <see cref="ExecutionPlanner"/>; nothing here consults TierPlanner or DSparkPlacementPlanner,
+    /// and a plan that cannot be honoured fails loudly instead of being re-planned.
+    /// </summary>
+    private static void AttachDSpark(InferenceEngine ie, IForwardPass fwd, SpeculationPlan spec, List<IDisposable> owned)
     {
-        string stPath = configuredPath;
-        if (Directory.Exists(stPath)) stPath = Path.Combine(stPath, "model.safetensors");
-        if (!File.Exists(stPath))
-            throw new FileNotFoundException($"DSpark model not found: {stPath}");
-        string cfgPath = Path.Combine(Path.GetDirectoryName(Path.GetFullPath(stPath))!, "config.json");
-        if (!File.Exists(cfgPath))
-            throw new FileNotFoundException($"DSpark config.json not found next to the safetensors: {cfgPath}");
-
-        var cfg = DSparkConfig.FromJsonFile(cfgPath);
-        if (cfg.VocabSize != hp.VocabSize || cfg.NumTargetLayers != hp.NumLayers
-            || cfg.HiddenSize != hp.EmbeddingDim)
+        if (!spec.DSparkEnabled || spec.DSparkPlacement == DSparkPlacement.Off)
             throw new InvalidOperationException(
-                $"DSpark head/target mismatch — head expects vocab {cfg.VocabSize}, " +
-                $"{cfg.NumTargetLayers} target layers, hidden {cfg.HiddenSize}; target has " +
-                $"vocab {hp.VocabSize}, {hp.NumLayers} layers, hidden {hp.EmbeddingDim}.");
+                "DSpark was configured (STINGRAY_DSPARK_MODEL / DSparkModelPath) but placement " +
+                $"resolved to Off — {spec.DSparkPlacementReason}. Free resources, pass DSparkPlace=cpu/gpu " +
+                "explicitly, or unset the head.");
         if (!fwd.SupportsHiddenTaps)
             throw new InvalidOperationException(
                 "DSpark requires a tap-capable dense forward pass (CPU, NGpuLayers=0, or full " +
                 "CUDA offload, NGpuLayers=-1; no MoE / Gemma-4 / TurboQuant / SnapKV). " +
                 $"The configured pass ({fwd.GetType().Name}) can't capture hidden taps.");
 
+        string stPath = spec.DSparkModelPath!;
+        if (Directory.Exists(stPath)) stPath = Path.Combine(stPath, "model.safetensors");
+        string cfgPath = Path.Combine(Path.GetDirectoryName(Path.GetFullPath(stPath))!, "config.json");
+        var cfg = DSparkConfig.FromJsonFile(cfgPath);
+
         CudaBackend? cuda = null;
-        if (fwd is CudaForwardPass)
+        if (spec.DSparkPlacement == DSparkPlacement.Gpu)
+        {
             foreach (var d in owned)
                 if (d is CudaBackend cb) { cuda = cb; break; }
-
-        var userPlace = !string.IsNullOrWhiteSpace(opts?.DSparkPlace)
-            ? DSparkPlacementPlanner.ParsePlacement(opts.DSparkPlace)
-            : DSparkPlacementPlanner.ResolvePlacement(null);
-        var hwProfile = cuda is not null ? HardwareProfile.Detect(cuda) : HardwareProfile.Detect();
-        var targetPlacement = TierPlanner.Plan(model, hp, hwProfile, requestedCtxSize: ctxSize);
-        long headBytesGpu = CudaDSparkDraftModel.EstimateGpuResidentBytes(cfg);
-        long headBytesCpu = DSparkDraftModel.EstimateResidentBytes(cfg);
-        long tapBytes = (long)targetPlacement.RecommendedCtxSize * cfg.TapDim * sizeof(float);
-        var decision = DSparkPlacementPlanner.Plan(
-            hwProfile, targetPlacement, headBytesGpu, headBytesCpu, userPlace,
-            hostTapBytes: tapBytes);
-
-        if (decision.Placement == DSparkPlacement.Gpu && cuda is null)
-        {
-            // Gpu → Cpu → Off graceful fallback: re-plan in Auto over a GPU-less
-            // profile so the RAM budget is actually checked.
-            decision = DSparkPlacementPlanner.Plan(
-                hwProfile with { VramBytes = 0 }, targetPlacement,
-                headBytesGpu, headBytesCpu, DSparkPlacement.Auto,
-                hostTapBytes: tapBytes);
+            if (fwd is not CudaForwardPass || cuda is null)
+                throw new InvalidOperationException(
+                    "The plan places the DSpark draft on GPU but the runtime has no full-CUDA target backend.");
         }
-        Console.Error.WriteLine($"[InferenceEngine] DSpark placement: {decision.Placement} — {decision.Reason}");
-        if (decision.Placement == DSparkPlacement.Off)
-            throw new InvalidOperationException(
-                $"DSpark was configured (STINGRAY_DSPARK_MODEL / DSparkModelPath) but placement " +
-                $"resolved to Off — {decision.Reason}. Free resources, pass DSparkPlace=cpu/gpu " +
-                "explicitly, or unset the head.");
 
+        Console.Error.WriteLine($"[InferenceEngine] DSpark placement: {spec.DSparkPlacement} — {spec.DSparkPlacementReason}");
         fwd.EnableHiddenTaps(cfg.TargetLayerIds);
         using var st = SafetensorsLoader.Open(stPath);
-        IDSparkDraft draft = decision.Placement == DSparkPlacement.Gpu
+        IDSparkDraft draft = spec.DSparkPlacement == DSparkPlacement.Gpu
             ? new CudaDSparkDraftModel(cfg, st, cuda!, fwd.MaxSeqLen)
             : new DSparkDraftModel(cfg, st, fwd.MaxSeqLen);
         try
@@ -260,7 +237,7 @@ public static class InferenceEngineLoader
         }
         Console.Error.WriteLine(
             $"[InferenceEngine] DSpark draft attached: {cfg.NumLayers}L block-{cfg.BlockSize} " +
-            $"({decision.Placement}) from {stPath}");
+            $"({spec.DSparkPlacement}) from {stPath}");
     }
 
     private static ServerRuntimeResolution DescribeRuntime(IForwardPass forwardPass, ModelFormat format)
@@ -278,24 +255,6 @@ public static class InferenceEngineLoader
             _ => ("unknown", forwardPass.GetType().Name),
         };
         return new ServerRuntimeResolution(backend, route, format.ToString().ToLowerInvariant(), forwardPass.MaxSeqLen);
-    }
-
-    private static void ApplyMoeEnvironment(OpenTailStingrayServerOptions opts)
-    {
-        if (opts.MoeWarmPin is int wp)
-            Environment.SetEnvironmentVariable("STINGRAY_MOE_WARMPIN", wp.ToString(System.Globalization.CultureInfo.InvariantCulture));
-        if (opts.MoeWarmPinAfter > 0)
-            Environment.SetEnvironmentVariable("STINGRAY_MOE_WARMPIN_AFTER", opts.MoeWarmPinAfter.ToString(System.Globalization.CultureInfo.InvariantCulture));
-        if (!opts.MoePredictPrefetch)
-            Environment.SetEnvironmentVariable("STINGRAY_MOE_PREDICT_PREFETCH", "0");
-        if (!string.IsNullOrEmpty(opts.ExpertStatsPath))
-            Environment.SetEnvironmentVariable("STINGRAY_EXPERT_STATS", opts.ExpertStatsPath);
-
-        if (opts.CpuMoe is bool cpuMoe)
-            Environment.SetEnvironmentVariable("STINGRAY_CPU_MOE", cpuMoe ? "1" : "0");
-
-        if (opts.GpuMoePrefill is bool gpuMoePrefill)
-            Environment.SetEnvironmentVariable("STINGRAY_MOE_GPU_PREFILL", gpuMoePrefill ? "1" : "0");
     }
 
     private static bool PathExists(string p) => File.Exists(p) || Directory.Exists(p);
@@ -332,7 +291,7 @@ public static class InferenceEngineLoader
     }
 }
 
-internal sealed class OwnedDisposableEngine(IInferenceEngine inner, IList<IDisposable> owned)
+internal sealed class OwnedDisposableEngine(IInferenceEngine inner, RuntimeInstance owner)
     : IInferenceEngine, IContinuousBatchingObservability, IDisposable
 {
     private IContinuousBatchingObservability? Batching => inner as IContinuousBatchingObservability;
@@ -360,16 +319,6 @@ internal sealed class OwnedDisposableEngine(IInferenceEngine inner, IList<IDispo
         string prompt, SamplingParams sp, CancellationToken ct = default, string? canonicalHistoryPrefix = null)
         => inner.GenerateChunksAsync(prompt, sp, ct, canonicalHistoryPrefix);
 
-    public void Dispose()
-    {
-        (inner as IDisposable)?.Dispose();
-
-        if (inner is ContinuousBatchingEngine { DrainedOnDispose: false })
-            return;
-
-        for (int i = owned.Count - 1; i >= 0; i--)
-        {
-            try { owned[i].Dispose(); } catch { /* best-effort teardown */ }
-        }
-    }
+    // RuntimeInstance is the single owner: it disposes the engine, applies the drain guard, then frees backends once.
+    public void Dispose() => owner.Dispose();
 }

@@ -204,7 +204,7 @@ public sealed class ModelDescriptionTests : IDisposable
 
         // 1. Evaluate CPU request
         var cpuReq = desc.CreateForwardPassRequest(
-            frontend: ForwardPassFrontend.Cli,
+            
             backend: ForwardPassBackend.Cpu,
             gpuLayers: 0);
 
@@ -214,7 +214,7 @@ public sealed class ModelDescriptionTests : IDisposable
 
         // 2. Evaluate Full CUDA Offload
         var cudaReq = desc.CreateForwardPassRequest(
-            frontend: ForwardPassFrontend.Cli,
+            
             backend: ForwardPassBackend.Cuda,
             gpuLayers: -1,
             plannedGpuLayers: 4,
@@ -226,7 +226,7 @@ public sealed class ModelDescriptionTests : IDisposable
 
         // 3. Evaluate Partial Vulkan Offload
         var vulkanHybridReq = desc.CreateForwardPassRequest(
-            frontend: ForwardPassFrontend.Cli,
+            
             backend: ForwardPassBackend.Vulkan,
             gpuLayers: 2,
             plannedGpuLayers: 2);
@@ -248,7 +248,7 @@ public sealed class ModelDescriptionTests : IDisposable
         Assert.False(desc.Capabilities.SupportsContinuousBatching);
         Assert.False(desc.Capabilities.SupportsSpeculation);
 
-        var req = desc.CreateForwardPassRequest(frontend: ForwardPassFrontend.Cli);
+        var req = desc.CreateForwardPassRequest();
         var decision = ForwardPassSelection.Select(req);
         Assert.Null(decision.Refusal);
         Assert.Equal(ForwardPassKind.SafeTensorsCpu, decision.Kind);
@@ -309,7 +309,7 @@ public sealed class ModelDescriptionTests : IDisposable
         var desc = new ModelDescription(identity, semantics, capabilities, resources, facts);
 
         var req = desc.CreateForwardPassRequest(
-            frontend: ForwardPassFrontend.Cli,
+            
             backend: ForwardPassBackend.Vulkan,
             gpuLayers: -1);
 

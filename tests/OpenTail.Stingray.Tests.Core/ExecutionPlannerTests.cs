@@ -171,6 +171,110 @@ public sealed class ExecutionPlannerTests : IDisposable
         Assert.Equal(ForwardPassKind.CpuDense, plan.ForwardPassKind);
     }
 
+    private ExecutionPlan PlanTinyModel(ExecutionRequest request, bool vulkan = true)
+    {
+        var metadata = new Dictionary<string, (GgufValueType, object)>
+        {
+            ["general.architecture"] = (GgufValueType.String, "llama"),
+            ["llama.block_count"] = (GgufValueType.UInt32, 2u),
+            ["llama.context_length"] = (GgufValueType.UInt32, 2048u),
+            ["llama.embedding_length"] = (GgufValueType.UInt32, 64u),
+            ["llama.feed_forward_length"] = (GgufValueType.UInt32, 128u),
+            ["llama.attention.head_count"] = (GgufValueType.UInt32, 2u),
+            ["llama.attention.head_count_kv"] = (GgufValueType.UInt32, 2u),
+            ["llama.vocab_size"] = (GgufValueType.UInt32, 100u)
+        };
+        var tensors = new (string name, long[] dims, DType dtype, byte[] data)[]
+        {
+            ("token_embd.weight", [64, 100], DType.Float32, new byte[64 * 100 * 4]),
+            ("output.weight", [64, 100], DType.Float32, new byte[64 * 100 * 4]),
+            ("blk.0.attn_q.weight", [64, 64], DType.Float32, new byte[64 * 64 * 4]),
+            ("blk.1.attn_q.weight", [64, 64], DType.Float32, new byte[64 * 64 * 4]),
+        };
+        var desc = ModelDescription.FromPackage(LooseGgufModelPackage.Open(CreateGguf(metadata, tensors)));
+        var caps = new BackendCapabilities(
+            CudaAvailable: false,
+            VulkanAvailable: vulkan,
+            HardwareProfile: new HardwareProfile(8L << 30, 32L << 30, 8, 16.0, false),
+            VulkanDeviceName: vulkan ? "Simulated Vulkan GPU" : null,
+            RecommendedThreadCount: 8);
+        return ExecutionPlanner.Plan(desc, request, caps);
+    }
+
+    [Fact]
+    public void Plan_CarriesRequestedDeviceIndex_ForGpuBackend()
+    {
+        var plan = PlanTinyModel(new ExecutionRequest { PinnedContextSize = 512, DeviceIndex = 2 });
+
+        Assert.Equal("vulkan", plan.Backend);
+        Assert.Equal(2, plan.BackendPlan!.DeviceIndex);
+    }
+
+    [Fact]
+    public void Plan_DeviceIndexIsZero_ForCpuBackend()
+    {
+        var plan = PlanTinyModel(new ExecutionRequest { PinnedBackend = "cpu", PinnedGpuLayers = 0, PinnedContextSize = 512, DeviceIndex = 2 });
+
+        Assert.Equal("cpu", plan.Backend);
+        Assert.Equal(0, plan.BackendPlan!.DeviceIndex);
+    }
+
+    [Fact]
+    public void Plan_RecordsMoeExecutionChoices_AndSurvivesAotJsonRoundTrip()
+    {
+        var plan = PlanTinyModel(new ExecutionRequest
+        {
+            PinnedContextSize = 512,
+            CpuMoe = true,
+            GpuMoePrefill = false,
+            MoeWarmPin = 4,
+            MoeWarmPinAfter = 16,
+            MoePredictPrefetch = false,
+            ExpertStatsPath = "stats.json",
+        });
+
+        Assert.NotNull(plan.Moe);
+        Assert.Equal(true, plan.Moe!.CpuMoe);
+        Assert.Equal(false, plan.Moe.GpuMoePrefill);
+        Assert.Equal(4, plan.Moe.WarmPin);
+        Assert.Equal(16, plan.Moe.WarmPinAfter);
+        Assert.Equal(false, plan.Moe.PredictPrefetch);
+        Assert.Equal("stats.json", plan.Moe.ExpertStatsPath);
+
+        string json = System.Text.Json.JsonSerializer.Serialize(plan, ExecutionPlanJsonContext.Default.ExecutionPlan);
+        var back = System.Text.Json.JsonSerializer.Deserialize(json, ExecutionPlanJsonContext.Default.ExecutionPlan)!;
+        Assert.Equal(plan.Moe, back.Moe);
+        Assert.Equal(plan.BackendPlan!.DeviceIndex, back.BackendPlan!.DeviceIndex);
+    }
+
+    [Fact]
+    public void Plan_UnspecifiedMoeChoices_StayNull()
+    {
+        var plan = PlanTinyModel(new ExecutionRequest { PinnedContextSize = 512 });
+
+        Assert.Null(plan.Moe!.CpuMoe);
+        Assert.Null(plan.Moe.GpuMoePrefill);
+        Assert.Null(plan.Moe.PredictPrefetch);
+    }
+
+    [Theory]
+    [InlineData("src/OpenTail.Stingray.Engine/Runtime/RuntimeInstance.cs")]
+    [InlineData("src/OpenTail.Stingray.Server/InferenceEngineLoader.cs")]
+    public void RuntimeLayer_DoesNotMakePolicyDecisions(string relativePath)
+    {
+        // THE PLANNER DECIDES, THE PLAN RECORDS, THE RUNTIME OBEYS: once an ExecutionPlan exists, neither the
+        // runtime nor the server loader may call the placement/selection policy again.
+        string? dir = AppContext.BaseDirectory;
+        while (dir is not null && !File.Exists(Path.Combine(dir, "OpenTail.Stingray.slnx")))
+            dir = Path.GetDirectoryName(dir);
+        Assert.NotNull(dir);
+
+        string text = File.ReadAllText(Path.Combine(dir!, relativePath));
+        Assert.DoesNotContain("TierPlanner.Plan(", text);
+        Assert.DoesNotContain("DSparkPlacementPlanner.Plan(", text);
+        Assert.DoesNotContain("ForwardPassSelection.Select", text);
+    }
+
     private string CreateGguf(
         Dictionary<string, (GgufValueType type, object value)> metadata,
         (string name, long[] dims, DType dtype, byte[] data)[] tensors)

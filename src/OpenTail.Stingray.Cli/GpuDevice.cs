@@ -59,8 +59,7 @@ internal static class GpuDevice
         // Pin CUDA to this physical device process-wide. Harmless on the Vulkan path (Vulkan
         // enumerates all devices regardless and uses the returned index). Don't override an
         // explicit CUDA_VISIBLE_DEVICES the user already set in the environment.
-        if (Environment.GetEnvironmentVariable("CUDA_VISIBLE_DEVICES") is null)
-            Environment.SetEnvironmentVariable("CUDA_VISIBLE_DEVICES", index.ToString());
+        OpenTail.Stingray.Engine.Runtime.GpuDeviceSelection.PinCudaDevice(index);
 
         return index;
     }
