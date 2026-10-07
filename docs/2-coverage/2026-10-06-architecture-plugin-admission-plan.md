@@ -1,5 +1,7 @@
 # Architecture Plugin & Admission Refactor: Implementation Plan (2026-10-06)
 
+> **SUPERSEDED 2026-10-08** by `2026-10-08-architecture-semantics-admission-plan.md`. The descriptor/registry/factory work described here has landed; kept for history.
+
 **Reference & Origin:** Adapted from TensorSharp's descriptor-driven model admission architecture (`TensorSharp.Models.Architecture.ModelArchitectureDescriptor` + `ModelArchitectureRegistry`, BSD-3; located at `examples/TensorSharp/TensorSharp/`) for OpenTail.Stingray.
 
 ---
