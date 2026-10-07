@@ -95,11 +95,28 @@ public sealed record BatchingPlan(
     bool PreferBatchingOverAutoSnapKv = false,
     bool EnableSessions = false);
 
+public sealed record MoePlan(
+    bool IsMoE,
+    int NumExperts = 0,
+    int NumActiveExperts = 0,
+    bool CpuMoe = false,
+    bool GpuMoePrefill = true,
+    int? WarmPin = null,
+    int? WarmPinAfter = null,
+    bool PredictPrefetch = true,
+    string? ExpertStatsPath = null);
+
 public sealed record SpeculationPlan(
     SpeculationMode Mode,
     string? DraftModelPath = null,
     string? DSparkModelPath = null,
-    int SpeculativeTokens = 0);
+    int SpeculativeTokens = 0,
+    bool DSparkEnabled = false,
+    DSparkPlacement DSparkPlacement = DSparkPlacement.Off,
+    string? DSparkPlacementReason = null,
+    long DSparkHeadBytesGpu = 0,
+    long DSparkHeadBytesCpu = 0,
+    long DSparkTapBytes = 0);
 
 public sealed record ModalityPlan(
     bool SupportsVision,
