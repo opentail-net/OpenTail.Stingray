@@ -26,7 +26,6 @@ namespace OpenTail.Stingray.Engine;
 /// </summary>
 public sealed unsafe partial class HybridForwardPass
 {
-    private static readonly string? s_cpuPrefillSetting = Environment.GetEnvironmentVariable("STINGRAY_HYBRID_CPU_PREFILL");
     private static readonly bool s_prefillTiming = Environment.GetEnvironmentVariable("STINGRAY_PREFILL_TIMING") == "1";
 
     private ForwardPass? _cpuPrefillPass;
@@ -36,21 +35,28 @@ public sealed unsafe partial class HybridForwardPass
     private string _cpuPrefillBrokenReason = "";
 
     /// <summary>Master switch; <c>STINGRAY_HYBRID_CPU_PREFILL=0</c> turns it off. Settable so tests can compare both paths.</summary>
-    internal bool CpuPrefillEnabled { get; set; } = s_cpuPrefillSetting != "0";
+    internal bool CpuPrefillEnabled { get; set; }
 
     /// <summary>Shortest prompt that takes the handoff (llama.cpp's op-offload gate is 32 too). <c>STINGRAY_HYBRID_CPU_PREFILL_MIN_TOKENS</c>.</summary>
-    internal int CpuPrefillMinTokens { get; set; } =
-        int.TryParse(Environment.GetEnvironmentVariable("STINGRAY_HYBRID_CPU_PREFILL_MIN_TOKENS"), out int m) && m > 0 ? m : 32;
+    internal int CpuPrefillMinTokens { get; set; }
 
     /// <summary>Largest temporary CPU KV cache the fast path may allocate. <c>STINGRAY_HYBRID_CPU_PREFILL_KV_BUDGET_MB</c>, default 4 GiB.</summary>
-    internal long CpuPrefillKvBudgetBytes { get; set; } =
-        (int.TryParse(Environment.GetEnvironmentVariable("STINGRAY_HYBRID_CPU_PREFILL_KV_BUDGET_MB"), out int mb) && mb > 0 ? mb : 4096) * 1024L * 1024L;
+    internal long CpuPrefillKvBudgetBytes { get; set; }
 
     /// <summary>
     /// Preload the experts the CPU prefill used most into the GPU expert cache after a handoff (default on; MoE models with a
     /// slot cache only). <c>STINGRAY_HYBRID_CPU_PREFILL_WARM=0</c> turns it off.
     /// </summary>
-    internal bool CpuPrefillWarmExperts { get; set; } = Environment.GetEnvironmentVariable("STINGRAY_HYBRID_CPU_PREFILL_WARM") != "0";
+    internal bool CpuPrefillWarmExperts { get; set; }
+
+    private void InitCpuPrefillHandoff()
+    {
+        var p = _settings.Prefill;
+        CpuPrefillEnabled = p.HybridCpuPrefill != "0";
+        CpuPrefillMinTokens = p.HybridCpuPrefillMinTokens;
+        CpuPrefillKvBudgetBytes = p.HybridCpuPrefillKvBudgetMb * 1024L * 1024L;
+        CpuPrefillWarmExperts = p.HybridCpuPrefillWarmExperts;
+    }
 
     /// <summary>True when the last <see cref="Prefill"/> ran on the CPU and handed its KV over.</summary>
     internal bool LastPrefillUsedCpuHandoff { get; private set; }
@@ -67,9 +73,9 @@ public sealed unsafe partial class HybridForwardPass
         if (n > _maxSeqLen) return "prompt longer than the hybrid context";
         if (_tqEnabled) return "TurboQuant KV is active";
         if (_hp.LayerHeadDim is not null) return "per-layer head dimensions";
-        if (PagedKvCache.Bf16RoundingRequested) return "STINGRAY_KV_DTYPE=bf16 rounds every KV write; exact F32 K/V cannot be guaranteed";
+        if (_settings.Kv.RoundBf16) return "STINGRAY_KV_DTYPE=bf16 rounds every KV write; exact F32 K/V cannot be guaranteed";
         if (_nGpuLayers + _nCpuLayers != _hp.NumLayers) return "layer placement does not cover the model";
-        if (KvHandoff.FamilyRefusal(_model, s_cpuPrefillSetting, HandoffPath.VulkanHybrid) is { } familyRefusal) return familyRefusal;
+        if (KvHandoff.FamilyRefusal(_model, _settings.Prefill.HybridCpuPrefill, HandoffPath.VulkanHybrid) is { } familyRefusal) return familyRefusal;
         long kvBytes = KvHandoff.TemporaryKvBytes(n, _numKvHeads, _headDim, _hp.NumLayers);
         if (kvBytes > CpuPrefillKvBudgetBytes)
             return $"temporary CPU KV cache ({kvBytes >> 20} MiB) exceeds the {CpuPrefillKvBudgetBytes >> 20} MiB budget";
@@ -224,7 +230,7 @@ public sealed unsafe partial class HybridForwardPass
         ForwardPass? pass = null;
         try
         {
-            pass = new ForwardPass(_model, backend, _hp, maxContextLength: _maxSeqLen);
+            pass = new ForwardPass(_model, backend, _hp, maxContextLength: _maxSeqLen, settings: _settings);
             var capability = pass.GetBatchedPrefillCapability();
             if (!capability.Available)
             {

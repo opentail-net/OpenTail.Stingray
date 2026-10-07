@@ -51,6 +51,10 @@ public sealed class ArchitectureLoadContext
     // Baseline CPU dense pass (used by partial GPU passes: CudaHybridForwardPass / VulkanHybridForwardPass)
     public ForwardPass? CpuDensePass { get; init; }
 
+    /// <summary>Instance-local execution settings resolved from <see cref="Plan"/>; pass to every pass constructor.</summary>
+    public EngineSettings Settings => _settings ??= EngineSettings.FromPlan(Plan);
+    private EngineSettings? _settings;
+
     // Track disposable resources created during forward pass setup
     public List<IDisposable> OwnedDisposables { get; } = [];
 

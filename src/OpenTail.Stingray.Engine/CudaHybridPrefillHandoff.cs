@@ -22,7 +22,6 @@ namespace OpenTail.Stingray.Engine;
 /// </summary>
 public sealed unsafe partial class CudaHybridForwardPass
 {
-    private static readonly string? s_cpuPrefillSetting = Environment.GetEnvironmentVariable("STINGRAY_CUDA_HYBRID_CPU_PREFILL");
     private static readonly bool s_prefillTiming = Environment.GetEnvironmentVariable("STINGRAY_PREFILL_TIMING") == "1";
 
     private ForwardPass? _cpuPrefillPass;
@@ -32,13 +31,19 @@ public sealed unsafe partial class CudaHybridForwardPass
     private string _cpuPrefillBrokenReason = "";
 
     /// <summary>Off by default; <c>STINGRAY_CUDA_HYBRID_CPU_PREFILL=1</c> (or <c>all</c>) turns it on. Settable for tests.</summary>
-    internal bool CpuPrefillEnabled { get; set; } = s_cpuPrefillSetting is "1" or "all";
+    internal bool CpuPrefillEnabled { get; set; }
 
-    internal int CpuPrefillMinTokens { get; set; } =
-        int.TryParse(Environment.GetEnvironmentVariable("STINGRAY_HYBRID_CPU_PREFILL_MIN_TOKENS"), out int m) && m > 0 ? m : 32;
+    internal int CpuPrefillMinTokens { get; set; }
 
-    internal long CpuPrefillKvBudgetBytes { get; set; } =
-        (int.TryParse(Environment.GetEnvironmentVariable("STINGRAY_HYBRID_CPU_PREFILL_KV_BUDGET_MB"), out int mb) && mb > 0 ? mb : 4096) * 1024L * 1024L;
+    internal long CpuPrefillKvBudgetBytes { get; set; }
+
+    private void InitCpuPrefillHandoff()
+    {
+        var p = _settings.Prefill;
+        CpuPrefillEnabled = p.CudaHybridCpuPrefill is "1" or "all";
+        CpuPrefillMinTokens = p.HybridCpuPrefillMinTokens;
+        CpuPrefillKvBudgetBytes = p.HybridCpuPrefillKvBudgetMb * 1024L * 1024L;
+    }
 
     /// <summary>True when the last <see cref="Prefill"/> ran on the CPU and handed its KV over.</summary>
     internal bool LastPrefillUsedCpuHandoff { get; private set; }
@@ -56,9 +61,9 @@ public sealed unsafe partial class CudaHybridForwardPass
         if (_tqEnabled) return "TurboQuant KV is active";
         if (_isGemma4Like || _hp.LayerHeadDim is not null || _hp.LayerKvHeads is not null) return "per-layer head dimensions or KV head counts";
         if (_kvDType != DType.Float32) return $"GPU KV dtype {_kvDType}: the handoff would need a conversion that must match the CUDA append kernels exactly";
-        if (PagedKvCache.Bf16RoundingRequested) return "STINGRAY_KV_DTYPE=bf16 rounds every KV write; exact F32 K/V cannot be guaranteed";
+        if (_settings.Kv.RoundBf16) return "STINGRAY_KV_DTYPE=bf16 rounds every KV write; exact F32 K/V cannot be guaranteed";
         if (_nGpuLayers + _nCpuLayers != _hp.NumLayers) return "layer placement does not cover the model";
-        if (KvHandoff.FamilyRefusal(_model, s_cpuPrefillSetting, HandoffPath.CudaHybrid) is { } familyRefusal) return familyRefusal;
+        if (KvHandoff.FamilyRefusal(_model, _settings.Prefill.CudaHybridCpuPrefill, HandoffPath.CudaHybrid) is { } familyRefusal) return familyRefusal;
         long kvBytes = KvHandoff.TemporaryKvBytes(n, _numKvHeads, _headDim, _hp.NumLayers);
         if (kvBytes > CpuPrefillKvBudgetBytes)
             return $"temporary CPU KV cache ({kvBytes >> 20} MiB) exceeds the {CpuPrefillKvBudgetBytes >> 20} MiB budget";
@@ -119,7 +124,7 @@ public sealed unsafe partial class CudaHybridForwardPass
         ForwardPass? pass = null;
         try
         {
-            pass = new ForwardPass(_model, backend, _hp, maxContextLength: _maxSeqLen);
+            pass = new ForwardPass(_model, backend, _hp, maxContextLength: _maxSeqLen, settings: _settings);
             var capability = pass.GetBatchedPrefillCapability();
             if (!capability.Available)
             {

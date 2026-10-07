@@ -129,16 +129,6 @@ public static class DSparkPlacementPlanner
         };
     }
 
-    /// <summary>
-    /// Resolve the placement with the standard precedence: explicit flag &gt;
-    /// STINGRAY_DSPARK_PLACE env var &gt; Auto.
-    /// </summary>
-    public static DSparkPlacement ResolvePlacement(string? flagValue)
-    {
-        if (!string.IsNullOrWhiteSpace(flagValue)) return ParsePlacement(flagValue);
-        return ParsePlacement(Environment.GetEnvironmentVariable("STINGRAY_DSPARK_PLACE"));
-    }
-
     private static long VramHeadroom(HardwareProfile hardware, LayerPlacement target)
     {
         if (hardware.VramBytes <= 0) return 0;

@@ -75,7 +75,7 @@ public sealed class MtpDecoder
     // across a plain-decode gap, and content type is stable within a response). Greedy MTP is
     // byte-identical to plain greedy, so the switch never changes output. STINGRAY_MTP_MIN_ACCEPT=0
     // disables adaptivity (always MTP); STINGRAY_MTP_PROBE_STEPS tunes the probe length.
-    private static readonly float _mtpMinAccept = ResolveMtpMinAccept();
+    private readonly float _mtpMinAccept;
     private static readonly int _mtpProbeSteps =
         int.TryParse(Environment.GetEnvironmentVariable("STINGRAY_MTP_PROBE_STEPS"), out var ps) && ps >= 1 ? ps : 8;
     private bool _specCommitted;   // probe finished, decision made for the rest of this Decode call
@@ -98,8 +98,13 @@ public sealed class MtpDecoder
     /// <summary>Cumulative ms in snapshot rollback + saved-state sync.</summary>
     public double CommitMs { get; private set; }
 
-    public MtpDecoder(IForwardPass fwd)
+    private readonly bool _batchVerifyAllowed;
+
+    public MtpDecoder(IForwardPass fwd, SpeculationSettings? spec = null)
     {
+        spec ??= EngineEnvironment.ReadTuning().Speculation;
+        _batchVerifyAllowed = spec.BatchVerify;
+        _mtpMinAccept = spec.MtpMinAccept;
         ArgumentNullException.ThrowIfNull(fwd);
         if (!fwd.HasMtpHead)
             throw new ArgumentException(
@@ -175,24 +180,10 @@ public sealed class MtpDecoder
     /// clamped per step against <see cref="IForwardPass.MaxBatchVerifyTokens"/>.
     /// Shared by <see cref="InferenceEngine"/> and the CLI so both resolve identically.
     /// </summary>
-    public static int ResolveDraftN(int specDraftNMax)
+    public static int ResolveDraftN(int specDraftNMax, SpeculationSettings spec)
     {
         if (specDraftNMax >= 1) return specDraftNMax;
-        var s = Environment.GetEnvironmentVariable("STINGRAY_MTP_DRAFT_N");
-        if (s is not null && int.TryParse(s, out var v) && v >= 1) return v;
-        return 3;
-    }
-
-    /// <summary>Break-even draft acceptance below which MTP self-spec is slower than plain
-    /// per-token decode (the k-token verify re-runs the trunk + CPU-MoE). Default 0.55 (the
-    /// measured Carnice crossover); STINGRAY_MTP_MIN_ACCEPT overrides, 0 disables adaptivity.</summary>
-    private static float ResolveMtpMinAccept()
-    {
-        var s = Environment.GetEnvironmentVariable("STINGRAY_MTP_MIN_ACCEPT");
-        if (s is not null && float.TryParse(s, System.Globalization.NumberStyles.Float,
-                System.Globalization.CultureInfo.InvariantCulture, out var v) && v >= 0f && v <= 1f)
-            return v;
-        return 0.55f;
+        return spec.MtpDraftN >= 1 ? spec.MtpDraftN : 3;
     }
 
     /// <summary>
@@ -227,7 +218,7 @@ public sealed class MtpDecoder
         // step (#130: it flips false when the KV cache is SnapKV-compacted) and
         // hands off to the sequential loop if it ever turns off mid-decode.
         bool batched = _fwd.SupportsBatchVerify
-            && Environment.GetEnvironmentVariable("STINGRAY_DISABLE_BATCH_VERIFY") != "1";
+            && _batchVerifyAllowed;
         if (Environment.GetEnvironmentVariable("STINGRAY_TRACE_MTP") == "1")
             Console.Error.WriteLine(
                 $"[mtp] batched-verify {(batched ? $"ON (draftN={draftN}, maxBatch={_fwd.MaxBatchVerifyTokens})" : "OFF (cache compacted / unsupported config / disabled)")}");

@@ -107,13 +107,11 @@ public sealed class SafetensorsProductIntegrationTests : IDisposable
         // LoadedEngine deliberately exposes only the serving interface. This integration test
         // verifies loader-to-forward-pass wiring without widening the production API for a
         // test-only diagnostic.
-        var owned = loaded.Engine.GetType()
-            .GetFields(BindingFlags.Instance | BindingFlags.NonPublic)
-            .Select(field => field.GetValue(loaded.Engine))
-            .OfType<IList<IDisposable>>()
-            .SingleOrDefault()
-            ?? throw new InvalidOperationException("Owned server engine lifetime list is unavailable.");
-        var forwardPass = owned.OfType<ForwardPass>().Single();
+        // InferenceEngine owns the pass it drives in its `_fwd` field (it is deliberately not duplicated in the owned list).
+        var forwardPass = loaded.Engine.GetType()
+            .GetField("_fwd", BindingFlags.Instance | BindingFlags.NonPublic)?
+            .GetValue(loaded.Engine) as ForwardPass
+            ?? throw new InvalidOperationException("Engine forward pass is unavailable.");
         var contextField = typeof(ForwardPass).GetField("_ctxLen", BindingFlags.Instance | BindingFlags.NonPublic)
             ?? throw new InvalidOperationException("ForwardPass scratch-context field is unavailable.");
         return (int)(contextField.GetValue(forwardPass)

@@ -35,6 +35,7 @@ namespace OpenTail.Stingray.Engine;
 /// </summary>
 public sealed unsafe class CudaForwardPass : IForwardPass, IBatchedForwardPass, IMultiSlotKvCache
 {
+    private readonly EngineSettings _settings;
     private readonly CudaBackend _gpu;
     private readonly GgufModel _model;
     private readonly ModelHyperparams _hp;
@@ -352,7 +353,10 @@ public sealed unsafe class CudaForwardPass : IForwardPass, IBatchedForwardPass, 
     /// as the constructor) so a typo can't silently mis-budget.
     /// </summary>
     public static DType ResolveConfiguredKvDType() =>
-        ParseKvDType(Environment.GetEnvironmentVariable("STINGRAY_KV_DTYPE"));
+        ParseKvDType(EngineEnvironment.Raw("STINGRAY_KV_DTYPE"));
+
+    /// <summary>The KV dtype the plan/settings request (fp32 default); instance-local counterpart of <see cref="ResolveConfiguredKvDType()"/>.</summary>
+    public static DType ResolveConfiguredKvDType(EngineSettings settings) => ParseKvDType(settings.Kv.Dtype);
 
     /// <summary>
     /// Like <see cref="ResolveConfiguredKvDType"/>, but returns <c>null</c> when
@@ -367,7 +371,7 @@ public sealed unsafe class CudaForwardPass : IForwardPass, IBatchedForwardPass, 
     /// </summary>
     public static DType? ResolveConfiguredKvDTypeOrNull()
     {
-        string? env = Environment.GetEnvironmentVariable("STINGRAY_KV_DTYPE");
+        string? env = EngineEnvironment.Raw("STINGRAY_KV_DTYPE");
         return string.IsNullOrWhiteSpace(env) ? null : ParseKvDType(env);
     }
 
@@ -707,8 +711,10 @@ public sealed unsafe class CudaForwardPass : IForwardPass, IBatchedForwardPass, 
         int maxContextLength = 0,
         bool enableTurboQuant = false, int tqFp32Window = 256, int tqBits = 3,
         bool? mmqSoa = null, bool preferBatchingOverAutoSnapKv = false,
-        TqQuantizer tqQuantizer = TqQuantizer.LloydMax)
+        TqQuantizer tqQuantizer = TqQuantizer.LloydMax,
+        EngineSettings? settings = null)
     {
+        _settings = settings ?? EngineSettings.FromEnvironment();
         if (GpuForwardPass.PartialOffloadUnsupportedReason(model, hp) is { } gpuGap)
             throw new NotSupportedException($"CudaForwardPass has no path for {gpuGap}; use the CPU pass (-g 0).");
         _model = model;
@@ -828,7 +834,7 @@ public sealed unsafe class CudaForwardPass : IForwardPass, IBatchedForwardPass, 
             // window, and the fp32 default still yields the fp32-fit context (the auto-narrow
             // below never fires for an fp32-sized auto-context, since fp32 fits there by
             // construction).
-            _maxSeqLen = EstimateMaxContext(model, gpu, hp, ResolveConfiguredKvDType());
+            _maxSeqLen = EstimateMaxContext(model, gpu, hp, ResolveConfiguredKvDType(_settings));
         // Invariant (#228): the resolved context never exceeds the model's own maximum, whether
         // it came from an explicit -c or a VRAM-fit estimator. Each branch above already clamps
         // to hp.ContextLength; this is the single chokepoint that guarantees it so no future
@@ -882,10 +888,10 @@ public sealed unsafe class CudaForwardPass : IForwardPass, IBatchedForwardPass, 
         // ring) nor SnapKV physical compaction (no narrowed compact kernel wired on this
         // path yet), so both are rejected up front and auto-SnapKV is disabled under a
         // narrowed dtype below.
-        string? kvDTypeEnv = Environment.GetEnvironmentVariable("STINGRAY_KV_DTYPE");
+        string? kvDTypeEnv = _settings.Kv.Dtype;
         bool kvDTypeExplicit = !string.IsNullOrWhiteSpace(kvDTypeEnv);
         _kvDType = ParseKvDType(kvDTypeEnv);
-        _snapKvCfg = SnapKvConfig.FromEnvironment();
+        _snapKvCfg = _settings.SnapKv;
 
         // Auto-narrow the KV dtype (issue #185 item 1). When the resolved context's fp32
         // KV cache won't fit the VRAM budget, the construction-time per-layer K/V Allocate
@@ -981,7 +987,7 @@ public sealed unsafe class CudaForwardPass : IForwardPass, IBatchedForwardPass, 
             // isn't wired here yet (#179). Don't auto-enable eviction on top.
             _snapKvEffectiveBudget = 0;
         }
-        else if (MultiSlotPrefixRequested())
+        else if (_settings.Prefill.PrefixSlots == 2)
         {
             // Issue #212: the operator opted into the multi-slot prefix cache
             // (STINGRAY_PREFIX_SLOTS=2), which keeps a long prefix resident for cross-request
@@ -4586,17 +4592,6 @@ public sealed unsafe class CudaForwardPass : IForwardPass, IBatchedForwardPass, 
 
     /// <inheritdoc/>
     public bool SupportsMultiSlotPrefix => _snapKvEffectiveBudget == 0 && DenseBatchedDecodeSupported();
-
-    /// <summary>
-    /// Issue #212: whether the operator requested the multi-slot prefix cache via
-    /// <c>STINGRAY_PREFIX_SLOTS=2</c>. Read in the constructor so the SnapKV auto-enable can defer
-    /// to it (the two are mutually exclusive — SnapKV compaction destroys the positional cache
-    /// invariant prefix reuse relies on). Mirrors the engine's own parse of the same var.
-    /// </summary>
-    private static bool MultiSlotPrefixRequested() =>
-        int.TryParse(Environment.GetEnvironmentVariable("STINGRAY_PREFIX_SLOTS"),
-            System.Globalization.NumberStyles.Integer,
-            System.Globalization.CultureInfo.InvariantCulture, out int s) && s == 2;
 
     /// <inheritdoc/>
     public ISequenceKvCache OwnedSlot

@@ -18,7 +18,26 @@ public static class ExecutionPlanBuilder
         int? pinContextSize = null,
         string? pinKvDtype = null,
         bool noGpuProbe = false)
+        => Build(new ExecutionRequest
+        {
+            ModelPath = modelPath,
+            Goal = goal,
+            PinnedBackend = pinBackend,
+            PinnedGpuLayers = pinGpuLayers,
+            PinnedContextSize = pinContextSize,
+            PinnedKvDtype = pinKvDtype,
+            NoGpuProbe = noGpuProbe
+        });
+
+    /// <summary>
+    /// Plans an arbitrary <see cref="ExecutionRequest"/> (every execution-affecting input the planner knows). Like the CLI,
+    /// server and ModelContext it bridges inherited <c>STINGRAY_*</c> variables into the request first, so equivalent
+    /// requests yield equivalent plans from every frontend.
+    /// </summary>
+    public static ExecutionPlan Build(ExecutionRequest request)
     {
+        string modelPath = request.ModelPath ?? throw new ArgumentException("ExecutionRequest.ModelPath is required.", nameof(request));
+        bool noGpuProbe = request.NoGpuProbe;
         IModelPackage package;
         if (Directory.Exists(modelPath) || modelPath.EndsWith(".safetensors", StringComparison.OrdinalIgnoreCase))
         {
@@ -30,18 +49,7 @@ public static class ExecutionPlanBuilder
         }
 
         var modelDesc = ModelDescription.FromPackage(package);
-        var capabilities = BackendCapabilities.Detect(noGpuProbe);
-        var request = new ExecutionRequest
-        {
-            ModelPath = modelPath,
-            Goal = goal,
-            PinnedBackend = pinBackend,
-            PinnedGpuLayers = pinGpuLayers,
-            PinnedContextSize = pinContextSize,
-            PinnedKvDtype = pinKvDtype,
-            NoGpuProbe = noGpuProbe
-        };
-
-        return ExecutionPlanner.Plan(modelDesc, request, capabilities);
+        var capabilities = BackendCapabilities.Detect(noGpuProbe, request.DeviceIndex);
+        return ExecutionPlanner.Plan(modelDesc, ExecutionRequestEnvironment.ApplyTo(request), capabilities);
     }
 }

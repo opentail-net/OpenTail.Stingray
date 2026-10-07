@@ -193,9 +193,6 @@ public sealed class CudaHybridGdnBatchedPrefillTests : IDisposable
         var path = FindCarnicePath();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
-        var prevCpuMoe = Environment.GetEnvironmentVariable("STINGRAY_CPU_MOE");
-        Environment.SetEnvironmentVariable("STINGRAY_CPU_MOE", "1");
-        bool prevBatchedMoeVerify = CudaHybridGdnForwardPass.BatchedMoeVerifyEnabled;
         try
         {
             using var model = GgufModel.Open(path);
@@ -218,8 +215,11 @@ public sealed class CudaHybridGdnBatchedPrefillTests : IDisposable
             // Run an identical prefill + k-token verify batch under each toggle.
             float[][] RunVerify(bool batchedMoeVerify)
             {
-                CudaHybridGdnForwardPass.BatchedMoeVerifyEnabled = batchedMoeVerify;
-                using var fwd = new CudaHybridGdnForwardPass(model, gpu, hp, placement);
+                // Instance-local settings (no process-wide switch): CPU-MoE on, batched MoE verify toggled per pass.
+                var settings = new EngineSettings(
+                    EngineTuning.Default with { Speculation = EngineTuning.Default.Speculation with { MtpBatchedMoeVerify = batchedMoeVerify } },
+                    new MoePlan(true, CpuMoe: true));
+                using var fwd = new CudaHybridGdnForwardPass(model, gpu, hp, placement, settings: settings);
                 if (!fwd.SupportsBatchVerify) return Array.Empty<float[]>();
                 var pf = fwd.Prefill(prompt).ToArray();
                 int k = Math.Min(4, fwd.MaxBatchVerifyTokens);
@@ -260,8 +260,6 @@ public sealed class CudaHybridGdnBatchedPrefillTests : IDisposable
         }
         finally
         {
-            CudaHybridGdnForwardPass.BatchedMoeVerifyEnabled = prevBatchedMoeVerify;
-            Environment.SetEnvironmentVariable("STINGRAY_CPU_MOE", prevCpuMoe);
         }
     }
 

@@ -15,6 +15,7 @@ namespace OpenTail.Stingray.Engine;
 /// </summary>
 public sealed class VulkanLayerSplitForwardPass : IForwardPass
 {
+    private readonly EngineSettings _settings;
     private readonly GpuForwardPass _gpuPart;
     private readonly ForwardPass _cpuPart;
     private readonly CpuBackend _cpuBackend;
@@ -23,8 +24,11 @@ public sealed class VulkanLayerSplitForwardPass : IForwardPass
     private readonly float[] _hidden;
 
     public VulkanLayerSplitForwardPass(GgufModel model, VulkanBackend gpu, ModelHyperparams hp, int gpuLayers,
-        int maxContextLength = 0)
+        int maxContextLength = 0,
+        EngineSettings? settings = null)
     {
+        _settings = settings ?? EngineSettings.FromEnvironment();
+        InitCpuPrefillHandoff();
         int maxSplit = MaxGpuLayers(hp);
         if (gpuLayers <= 0 || gpuLayers > maxSplit)
             throw new NotSupportedException(
@@ -32,9 +36,9 @@ public sealed class VulkanLayerSplitForwardPass : IForwardPass
         _split = gpuLayers;
         _model = model;
         _hp = hp;
-        _gpuPart = new GpuForwardPass(model, gpu, hp, maxContextLength, layerLimit: gpuLayers);
+        _gpuPart = new GpuForwardPass(model, gpu, hp, maxContextLength, layerLimit: gpuLayers, settings: _settings);
         _cpuBackend = new CpuBackend();
-        _cpuPart = new ForwardPass(model, _cpuBackend, hp, maxContextLength: _gpuPart.MaxSeqLen);
+        _cpuPart = new ForwardPass(model, _cpuBackend, hp, maxContextLength: _gpuPart.MaxSeqLen, settings: _settings);
         _hidden = new float[hp.EmbeddingDim];
     }
 
@@ -59,15 +63,20 @@ public sealed class VulkanLayerSplitForwardPass : IForwardPass
         return _cpuPart.ForwardFromHidden(_hidden, token, position, _split);
     }
 
-    private static readonly string? s_cpuPrefillSetting = Environment.GetEnvironmentVariable("STINGRAY_HYBRID_CPU_PREFILL");
     private readonly GgufModel _model;
     private bool _cpuPrefillBroken;
 
     /// <summary>Master switch (<c>STINGRAY_HYBRID_CPU_PREFILL=0</c> turns it off); settable so tests can compare both paths.</summary>
-    internal bool CpuPrefillEnabled { get; set; } = s_cpuPrefillSetting != "0";
+    internal bool CpuPrefillEnabled { get; set; }
 
-    internal int CpuPrefillMinTokens { get; set; } =
-        int.TryParse(Environment.GetEnvironmentVariable("STINGRAY_HYBRID_CPU_PREFILL_MIN_TOKENS"), out int m) && m > 0 ? m : 32;
+    internal int CpuPrefillMinTokens { get; set; }
+
+    private void InitCpuPrefillHandoff()
+    {
+        var p = _settings.Prefill;
+        CpuPrefillEnabled = p.HybridCpuPrefill != "0";
+        CpuPrefillMinTokens = p.HybridCpuPrefillMinTokens;
+    }
 
     /// <summary>True when the last <see cref="Prefill"/> ran on the CPU and handed its KV to the GPU layers.</summary>
     internal bool LastPrefillUsedCpuHandoff { get; private set; }
@@ -83,9 +92,9 @@ public sealed class VulkanLayerSplitForwardPass : IForwardPass
         if (n < CpuPrefillMinTokens) return $"prompt shorter than {CpuPrefillMinTokens} tokens";
         if (n > MaxSeqLen) return "prompt longer than the context";
         if (_hp.LayerHeadDim is not null) return "per-layer head dimensions";
-        if (PagedKvCache.Bf16RoundingRequested || PagedKvCache.Bf16StoreRequested || PagedKvCache.Bf16AutoRequested)
+        if (_settings.Kv.RoundBf16 || _settings.Kv.Store != KvStoreMode.Fp32)
             return "bf16 KV store requested: exact F32 K/V cannot be guaranteed";
-        return KvHandoff.FamilyRefusal(_model, s_cpuPrefillSetting, HandoffPath.VulkanLayerSplit);
+        return KvHandoff.FamilyRefusal(_model, _settings.Prefill.HybridCpuPrefill, HandoffPath.VulkanLayerSplit);
     }
 
     /// <summary>

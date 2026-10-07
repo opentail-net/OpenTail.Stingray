@@ -36,7 +36,9 @@ public sealed class SpeculativeDecoder
     private readonly IForwardPass _target;
     private readonly IForwardPass? _draft;          // model-draft mode
     private readonly PromptLookupDraft? _lookup;    // prompt-lookup mode (issue #207)
-    private readonly bool _batchVerify;
+    // Batched verification is the default; the frontend/plan can turn it off per decoder instance.
+    private bool _batchVerify;
+    public bool BatchVerify { get => _batchVerify; init => _batchVerify = value; }
     private int _lookahead;
 
     // Sampled-accept mode (issue #178). _sampling is non-null only for temp > 0 + a draft
@@ -105,7 +107,7 @@ public sealed class SpeculativeDecoder
                 nameof(target));
         _target = target;
         _lookup = lookup;
-        _batchVerify = Environment.GetEnvironmentVariable("STINGRAY_SPEC_BATCH_VERIFY") != "0";
+        _batchVerify = true;
         _lookahead = Math.Max(1, lookahead);
         _savedTargetLogits = new float[target.VocabSize];
     }
@@ -161,7 +163,7 @@ public sealed class SpeculativeDecoder
         // construction (same pattern as the forward passes' decode toggles); the
         // capability itself is re-checked per step — it can flip after construction
         // (e.g. ForwardPass.EnableTurboQuant).
-        _batchVerify = Environment.GetEnvironmentVariable("STINGRAY_SPEC_BATCH_VERIFY") != "0";
+        _batchVerify = true;
         _lookahead = Math.Max(1, lookahead);
         _savedTargetLogits = new float[target.VocabSize];
     }

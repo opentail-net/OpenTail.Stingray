@@ -8,6 +8,7 @@ namespace OpenTail.Stingray.Engine;
 /// </summary>
 public sealed unsafe partial class HybridForwardPass : IForwardPass
 {
+    private readonly EngineSettings _settings;
     private readonly GgufModel _model;
     private readonly VulkanBackend _gpu;
     private readonly ModelHyperparams _hp;
@@ -125,25 +126,7 @@ public sealed unsafe partial class HybridForwardPass : IForwardPass
     // the already-on background prefetch smarter, and is a no-op when experts aren't being
     // evicted); disable with STINGRAY_MOE_PREDICT_PREFETCH=0 (or --no-moe-predict-prefetch).
     private readonly ExpertRoutePredictor? _routePredictor;
-    private readonly bool _predictPrefetch = ParsePredictPrefetchFlag();
-
-    private static bool ParsePredictPrefetchFlag()
-    {
-        var s = Environment.GetEnvironmentVariable("STINGRAY_MOE_PREDICT_PREFETCH");
-        if (string.IsNullOrEmpty(s)) return true; // default on
-        switch (s.Trim().ToLowerInvariant())
-        {
-            case "0": case "false": case "off": case "no": case "disabled":
-                return false;
-            case "1": case "true": case "on": case "yes": case "enabled":
-                return true;
-            default:
-                Console.Error.WriteLine(
-                    $"[HybridForwardPass] STINGRAY_MOE_PREDICT_PREFETCH='{s}' not recognized; defaulting to ON. " +
-                    "Accepted: 1/0, true/false, on/off, yes/no (case-insensitive).");
-                return true;
-        }
-    }
+    private readonly bool _predictPrefetch;
     // Pinned host-visible GPU tensor for uploading CPU fallback contributions to GPU hidden state.
     private Tensor? _gpuFallbackContrib;
     // Pinned host-visible GPU tensor for reading the norm buffer on CPU without a separate Download.
@@ -187,8 +170,12 @@ public sealed unsafe partial class HybridForwardPass : IForwardPass
 
     public HybridForwardPass(GgufModel model, VulkanBackend gpu, ModelHyperparams hp,
         LayerPlacement placement, bool enableTq = false, int tqFp32Window = 256, int tqBits = 3,
-        int expertSlotCapacity = -1)
+        int expertSlotCapacity = -1,
+        EngineSettings? settings = null)
     {
+        _settings = settings ?? EngineSettings.FromEnvironment();
+        InitCpuPrefillHandoff();
+        _predictPrefetch = _settings.Moe.PredictPrefetch ?? true;
         if (GpuForwardPass.PartialOffloadUnsupportedReason(model, hp) is { } gpuGap)
             throw new NotSupportedException($"HybridForwardPass has no path for {gpuGap}; use the CPU pass (-g 0).");
         // Gemma 4 has no Vulkan implementation (no SWA / PLE / per-layer head_dim / softcap);
@@ -448,7 +435,7 @@ public sealed unsafe partial class HybridForwardPass : IForwardPass
             int capacity = expertSlotCapacity > 0
                 ? Math.Min(expertSlotCapacity, totalExperts)
                 : totalExperts;
-            _expertSlotManager = new ExpertSlotManager(gpu, model, hp, capacity, _gpuWeightDTypes);
+            _expertSlotManager = new ExpertSlotManager(gpu, model, hp, capacity, _gpuWeightDTypes, _settings.Moe);
             _prefetcher = new MoEPrefetcher(_expertSlotManager);
             if (_predictPrefetch)
                 _routePredictor = new ExpertRoutePredictor(_nGpuLayers, hp.NumActiveExperts);
@@ -2098,7 +2085,7 @@ public sealed unsafe partial class HybridForwardPass : IForwardPass
             // STINGRAY_EXPERT_STATS=<path>: parity with the CUDA hybrid forward passes
             // (CudaHybridForwardPass/CudaHybridGdnForwardPass) so the CLI flag works
             // on every MoE backend, not just CUDA.
-            var statsPath = Environment.GetEnvironmentVariable("STINGRAY_EXPERT_STATS");
+            var statsPath = _settings.Moe.ExpertStatsPath;
             if (!string.IsNullOrEmpty(statsPath))
             {
                 try

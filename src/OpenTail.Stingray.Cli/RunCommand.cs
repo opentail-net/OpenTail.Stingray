@@ -722,6 +722,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
                     ExpertStatsPath = string.IsNullOrEmpty(settings.ExpertStatsPath) ? null : settings.ExpertStatsPath,
                 };
 
+                request = ExecutionRequestEnvironment.ApplyTo(request);
                 resolvedPlan = ExecutionPlanner.Plan(modelDesc, request, capabilities);
 
                 if (settings.Auto)
@@ -1303,6 +1304,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
 
             hp = modelObj.Hyperparams;
             s_arch = resolvedPlan.Provenance?.TargetArchitecture ?? modelObj.Architecture;
+            s_speculation = resolvedPlan.Tuning?.Speculation ?? new SpeculationSettings();
             ctxSize = resolvedPlan.ContextSize;
             tokenizer = (runtimeInstance.Tokenizer as GgufTokenizer)
                 ?? (modelObj.IsGguf ? GgufTokenizer.FromGgufModel(modelObj.Gguf) : null)
@@ -1440,13 +1442,13 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         {
             // temp>0 → sampled (distribution-preserving) accept; temp 0 → greedy (byte-stable).
             spec = sp.Temperature > 0f
-                ? new SpeculativeDecoder(target, draft, sp, rng, s.SpecLookahead)
-                : new SpeculativeDecoder(target, draft, s.SpecLookahead);
+                ? new SpeculativeDecoder(target, draft, sp, rng, s.SpecLookahead) { BatchVerify = s_speculation.SpecBatchVerify }
+                : new SpeculativeDecoder(target, draft, s.SpecLookahead) { BatchVerify = s_speculation.SpecBatchVerify };
             spec.Initialize(tokens.Count, targetLogits, draftLogits);
         }
         else
         {
-            spec = new SpeculativeDecoder(target, new PromptLookupDraft(), s.SpecLookahead);
+            spec = new SpeculativeDecoder(target, new PromptLookupDraft(), s.SpecLookahead) { BatchVerify = s_speculation.SpecBatchVerify };
             spec.Initialize(tokens, targetLogits);
         }
 
@@ -1490,9 +1492,9 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         AnsiConsole.MarkupLine("[green]Interactive chat (speculative decoding).[/] Type a message, or [yellow]/exit[/] to quit.\n");
         var spec = draft is not null
             ? (sp.Temperature > 0f
-                ? new SpeculativeDecoder(target, draft, sp, rng, s.SpecLookahead)
-                : new SpeculativeDecoder(target, draft, s.SpecLookahead))
-            : new SpeculativeDecoder(target, new PromptLookupDraft(), s.SpecLookahead);
+                ? new SpeculativeDecoder(target, draft, sp, rng, s.SpecLookahead) { BatchVerify = s_speculation.SpecBatchVerify }
+                : new SpeculativeDecoder(target, draft, s.SpecLookahead) { BatchVerify = s_speculation.SpecBatchVerify })
+            : new SpeculativeDecoder(target, new PromptLookupDraft(), s.SpecLookahead) { BatchVerify = s_speculation.SpecBatchVerify };
 
         while (true)
         {
@@ -1645,8 +1647,8 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         if (maxNew < sp.MaxNewTokens)
             AnsiConsole.MarkupLine($"[yellow]Note:[/] generation capped at {maxNew} tokens by the context window.");
 
-        float minConfidence = DSparkDecoder.ResolveMinConfidence(s.DSparkMinConfidence);
-        int verifyLenCap = DSparkDecoder.ResolveVerifyLen(s.DSparkVerifyLen);
+        float minConfidence = DSparkDecoder.ResolveMinConfidence(s.DSparkMinConfidence, s_speculation);
+        int verifyLenCap = DSparkDecoder.ResolveVerifyLen(s.DSparkVerifyLen, s_speculation);
 
         sw.Restart();
         int generated = 0;
@@ -2205,7 +2207,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
     private static bool ResolveCliMtp(IForwardPass? mtpFwd, SamplingParams sp, bool noThinking, out string? rejectReason)
     {
         rejectReason = null;
-        bool envDisabled = Environment.GetEnvironmentVariable("STINGRAY_DISABLE_MTP") == "1";
+        bool envDisabled = !s_speculation.MtpEnabled;
         bool eligible = mtpFwd is not null
                         && mtpFwd.HasMtpHead
                         && sp.Temperature <= 0f
@@ -2280,7 +2282,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         IForwardPass mtpFwd, IReadOnlyList<int> promptTokens, ReadOnlySpan<float> initialLogits,
         GgufTokenizer tok, SamplingParams sp, bool hideThinking, bool verbosePromptLogging = false)
     {
-        var mtpDec = new MtpDecoder(mtpFwd);
+        var mtpDec = new MtpDecoder(mtpFwd, s_speculation);
         mtpDec.Initialize(promptTokens.Count, initialLogits);
         // Populate the MTP KV cache for the full prompt. Cost: ~1.6%/token; only paid
         // on the MTP-enabled run.
@@ -2300,7 +2302,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
                 Console.Error.WriteLine($"[DBG] tok={totalDecoded} next={next}('{tok.Decode([next])}')");
             totalDecoded++;
             if (EmitToken(next, tok, streamDec, ref inThinking, hideThinking)) generated++;
-        }, pMin: sp.SpecDraftPMin, draftN: MtpDecoder.ResolveDraftN(sp.SpecDraftNMax),
+        }, pMin: sp.SpecDraftPMin, draftN: MtpDecoder.ResolveDraftN(sp.SpecDraftNMax, s_speculation),
            ct: CancellationToken.None);
 
         if (Environment.GetEnvironmentVariable("STINGRAY_TRACE_MTP") == "1" && mtpDec.TotalDraftsEmitted > 0)
@@ -2650,6 +2652,8 @@ public sealed class RunCommand : Command<RunCommand.Settings>
     }
 
     internal static string s_arch = "qwen2"; // set during model load
+    // Speculation switches from the resolved ExecutionPlan (CLI hosts exactly one runtime per process).
+    private static SpeculationSettings s_speculation = new();
     internal static bool s_hasLlama3Headers;
     // Effective "thinking off" state: --no-thinking OR a model whose recommended config
     // disables reasoning (Gemma 4 E4B-it is not a reasoning model). Set during model load.

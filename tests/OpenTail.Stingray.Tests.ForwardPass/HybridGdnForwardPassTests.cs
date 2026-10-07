@@ -503,48 +503,34 @@ public sealed class HybridGdnForwardPassTests : HeavyTestBase
         Assert.True(hp.NumMtpLayers > 0);
 
         var tokenizer = GgufTokenizer.FromGgufModel(model);
-        using var backend = new CpuBackend();
-        using var fwd = new HybridGdnForwardPass(model, backend, hp);
-        Assert.True(fwd.HasMtpHead);
-
-        // thinkTokenId=-1 disables the engine's reasoning-stream split so MTP
-        // isn't gated off on this model (which has <think>/</think> tokens).
-        using var engine = new InferenceEngine(
-            fwd, tokenizer, "qwen35-27b-mtp",
-            thinkTokenId: -1, endThinkTokenId: -1);
-
         var sp = new SamplingParams { Temperature = 0f, MaxNewTokens = 12 };
         const string prompt = "The capital of France is";
 
-        // Force sequential MTP for this test (see XML doc above). Both runs see
-        // the same env var; STINGRAY_DISABLE_MTP wins inside the run-2 try block.
-        Environment.SetEnvironmentVariable("STINGRAY_DISABLE_BATCH_VERIFY", "1");
-        try
+        // Instance-local switches (no process environment): sequential MTP (batch verify off) vs the MTP-disabled
+        // baseline, each on its own pass+engine built from its own EngineSettings.
+        async Task<string> Run(bool mtpEnabled)
         {
-            // ── Run 1: sequential MTP (STINGRAY_DISABLE_MTP not set) ───────
-            var withMtp = new StringBuilder();
+            var tuning = EngineTuning.Default with
+            {
+                Speculation = EngineTuning.Default.Speculation with { MtpEnabled = mtpEnabled, BatchVerify = false },
+            };
+            var settings = new EngineSettings(tuning, null);
+            using var backend = new CpuBackend();
+            using var fwd = new HybridGdnForwardPass(model, backend, hp, settings: settings);
+            Assert.True(fwd.HasMtpHead);
+
+            // thinkTokenId=-1 disables the engine reasoning-stream split so MTP is not gated off on this model.
+            using var engine = new InferenceEngine(
+                fwd, tokenizer, "qwen35-27b-mtp", thinkTokenId: -1, endThinkTokenId: -1, settings);
+            var sb = new StringBuilder();
             await foreach (var s in engine.GenerateAsync(prompt, sp))
-                withMtp.Append(s);
-
-            // ── Run 2: baseline (MTP disabled via env var) ──────────────
-            Environment.SetEnvironmentVariable("STINGRAY_DISABLE_MTP", "1");
-            try
-            {
-                var withoutMtp = new StringBuilder();
-                await foreach (var s in engine.GenerateAsync(prompt, sp))
-                    withoutMtp.Append(s);
-
-                Assert.Equal(withoutMtp.ToString(), withMtp.ToString());
-            }
-            finally
-            {
-                Environment.SetEnvironmentVariable("STINGRAY_DISABLE_MTP", null);
-            }
+                sb.Append(s);
+            return sb.ToString();
         }
-        finally
-        {
-            Environment.SetEnvironmentVariable("STINGRAY_DISABLE_BATCH_VERIFY", null);
-        }
+
+        string withMtp = await Run(mtpEnabled: true);
+        string withoutMtp = await Run(mtpEnabled: false);
+        Assert.Equal(withoutMtp, withMtp);
     }
 
     /// <summary>

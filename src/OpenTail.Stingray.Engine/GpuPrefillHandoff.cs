@@ -29,7 +29,6 @@ namespace OpenTail.Stingray.Engine;
 /// </summary>
 public sealed unsafe partial class GpuForwardPass
 {
-    private static readonly string? s_cpuPrefillSetting = Environment.GetEnvironmentVariable("STINGRAY_GPU_CPU_PREFILL");
     private static readonly bool s_prefillTiming = Environment.GetEnvironmentVariable("STINGRAY_PREFILL_TIMING") == "1";
 
     private ForwardPass? _cpuPrefillPass;
@@ -39,13 +38,19 @@ public sealed unsafe partial class GpuForwardPass
     private string _cpuPrefillBrokenReason = "";
 
     /// <summary>On by default for MoE; <c>STINGRAY_GPU_CPU_PREFILL=0</c> turns it off (<c>all</c> also lifts the family list).</summary>
-    internal bool CpuPrefillEnabled { get; set; } = s_cpuPrefillSetting != "0";
+    internal bool CpuPrefillEnabled { get; set; }
 
-    internal int CpuPrefillMinTokens { get; set; } =
-        int.TryParse(Environment.GetEnvironmentVariable("STINGRAY_HYBRID_CPU_PREFILL_MIN_TOKENS"), out int m) && m > 0 ? m : 32;
+    internal int CpuPrefillMinTokens { get; set; }
 
-    internal long CpuPrefillKvBudgetBytes { get; set; } =
-        (int.TryParse(Environment.GetEnvironmentVariable("STINGRAY_HYBRID_CPU_PREFILL_KV_BUDGET_MB"), out int mb) && mb > 0 ? mb : 4096) * 1024L * 1024L;
+    internal long CpuPrefillKvBudgetBytes { get; set; }
+
+    private void InitCpuPrefillHandoff()
+    {
+        var p = _settings.Prefill;
+        CpuPrefillEnabled = p.GpuCpuPrefill != "0";
+        CpuPrefillMinTokens = p.HybridCpuPrefillMinTokens;
+        CpuPrefillKvBudgetBytes = p.HybridCpuPrefillKvBudgetMb * 1024L * 1024L;
+    }
 
     /// <summary>The dtype this pass stores KV in (F32 or packed fp16 as "BFloat16"); tests need it to pick the right comparison.</summary>
     internal DType KvDTypeForTest => _kvDType;
@@ -72,8 +77,8 @@ public sealed unsafe partial class GpuForwardPass
         if (_snapKvEffectiveBudget > 0 && n > _snapKvEffectiveBudget) return "SnapKV would evict after this prefill";
         if (_mropePairPos is not null) return "M-RoPE positions";
         if (_kvDType is not (DType.Float32 or DType.BFloat16)) return $"GPU KV dtype {_kvDType} has no handoff conversion";
-        if (PagedKvCache.Bf16RoundingRequested) return "STINGRAY_KV_DTYPE=bf16 rounds every KV write; exact F32 K/V cannot be guaranteed";
-        if (KvHandoff.FamilyRefusal(_model, s_cpuPrefillSetting, HandoffPath.VulkanFullGpu) is { } familyRefusal) return familyRefusal;
+        if (_settings.Kv.RoundBf16) return "STINGRAY_KV_DTYPE=bf16 rounds every KV write; exact F32 K/V cannot be guaranteed";
+        if (KvHandoff.FamilyRefusal(_model, _settings.Prefill.GpuCpuPrefill, HandoffPath.VulkanFullGpu) is { } familyRefusal) return familyRefusal;
         long kvBytes = KvHandoff.TemporaryKvBytes(n, _numKvHeads, _headDim, _hp.NumLayers);
         if (kvBytes > CpuPrefillKvBudgetBytes)
             return $"temporary CPU KV cache ({kvBytes >> 20} MiB) exceeds the {CpuPrefillKvBudgetBytes >> 20} MiB budget";
@@ -130,7 +135,7 @@ public sealed unsafe partial class GpuForwardPass
         ForwardPass? pass = null;
         try
         {
-            pass = new ForwardPass(_model, backend, _hp, maxContextLength: _maxSeqLen);
+            pass = new ForwardPass(_model, backend, _hp, maxContextLength: _maxSeqLen, settings: _settings);
             var capability = pass.GetBatchedPrefillCapability();
             if (!capability.Available)
             {

@@ -178,22 +178,19 @@ public sealed class DSparkPlacementPlannerTests
     }
 
     [Fact]
-    public void ResolvePlacement_FlagBeatsEnv_EnvUsedWhenFlagAbsent()
+    public void ParsePlacement_NullOrWhitespace_IsAuto_AndNeverReadsTheEnvironment()
     {
         const string envName = "STINGRAY_DSPARK_PLACE";
         string? original = Environment.GetEnvironmentVariable(envName);
         try
         {
             Environment.SetEnvironmentVariable(envName, "cpu");
-            // Explicit flag wins over the env var.
-            Assert.Equal(DSparkPlacement.Gpu, DSparkPlacementPlanner.ResolvePlacement("gpu"));
-            // Null / whitespace flag falls through to the env var.
-            Assert.Equal(DSparkPlacement.Cpu, DSparkPlacementPlanner.ResolvePlacement(null));
-            Assert.Equal(DSparkPlacement.Cpu, DSparkPlacementPlanner.ResolvePlacement("   "));
-
-            // Neither flag nor env → Auto.
-            Environment.SetEnvironmentVariable(envName, null);
-            Assert.Equal(DSparkPlacement.Auto, DSparkPlacementPlanner.ResolvePlacement(null));
+            Assert.Equal(DSparkPlacement.Gpu, DSparkPlacementPlanner.ParsePlacement("gpu"));
+            Assert.Equal(DSparkPlacement.Auto, DSparkPlacementPlanner.ParsePlacement(null));    // planner is env-free
+            Assert.Equal(DSparkPlacement.Auto, DSparkPlacementPlanner.ParsePlacement("   "));
+            // The inherited variable reaches the plan only through the frontend request bridge.
+            Assert.Equal("cpu", OpenTail.Stingray.Engine.Planning.ExecutionRequestEnvironment.ApplyTo(new OpenTail.Stingray.Engine.Planning.ExecutionRequest()).DSparkPlace);
+            Assert.Equal("gpu", OpenTail.Stingray.Engine.Planning.ExecutionRequestEnvironment.ApplyTo(new OpenTail.Stingray.Engine.Planning.ExecutionRequest { DSparkPlace = "gpu" }).DSparkPlace);
         }
         finally
         {

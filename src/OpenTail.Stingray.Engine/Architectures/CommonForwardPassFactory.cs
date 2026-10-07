@@ -27,7 +27,8 @@ public static class CommonForwardPassFactory
                 if (ctx.CpuBackend is null) ctx.TrackDisposable(cpuBackend);
 
                 var dense = new ForwardPass(ctx.Probe.TensorSource, cpuBackend, hp, maxContextLength: ctx.ContextSize,
-                    prefillDequantCacheBytes: ctx.PrefillDequantCacheBytes);
+                    prefillDequantCacheBytes: ctx.PrefillDequantCacheBytes,
+                    settings: ctx.Settings);
                 ctx.TrackDisposable(dense);
 
                 if (ctx.TurboQuant)
@@ -45,7 +46,8 @@ public static class CommonForwardPassFactory
                 var cfwd = new CudaForwardPass(ctx.Probe.Gguf!, cuda, hp, ctx.ContextSize,
                     enableTurboQuant: ctx.TurboQuant,
                     tqQuantizer: ctx.TqQuantizer,
-                    preferBatchingOverAutoSnapKv: ctx.PreferBatchingOverAutoSnapKv);
+                    preferBatchingOverAutoSnapKv: ctx.PreferBatchingOverAutoSnapKv,
+                    settings: ctx.Settings);
                 ctx.TrackDisposable(cfwd);
                 return cfwd;
             }
@@ -56,7 +58,7 @@ public static class CommonForwardPassFactory
                 if (ctx.CudaBackend is null) ctx.TrackDisposable(cuda);
 
                 var placement = ctx.Placement ?? throw new InvalidOperationException("LayerPlacement required for CudaHybrid.");
-                var chybrid = new CudaHybridForwardPass(ctx.Probe.Gguf!, cuda, hp, placement, enableTq: ctx.TurboQuant);
+                var chybrid = new CudaHybridForwardPass(ctx.Probe.Gguf!, cuda, hp, placement, enableTq: ctx.TurboQuant, settings: ctx.Settings);
                 ctx.TrackDisposable(chybrid);
                 return chybrid;
             }
@@ -68,7 +70,8 @@ public static class CommonForwardPassFactory
 
                 var gfwd = new GpuForwardPass(ctx.Probe.Gguf!, vk, hp, ctx.ContextSize,
                     enableTurboQuant: ctx.TurboQuant,
-                    kvDtype: ctx.KvDType);
+                    kvDtype: ctx.KvDType,
+                    settings: ctx.Settings);
                 if (!ctx.FlashAttention)
                 {
                     gfwd.DisableFlashAttention = true;
@@ -83,7 +86,7 @@ public static class CommonForwardPassFactory
                 if (ctx.VulkanBackend is null) ctx.TrackDisposable(vk);
 
                 var placement = ctx.Placement ?? throw new InvalidOperationException("LayerPlacement required for VulkanHybrid.");
-                var vhybrid = new HybridForwardPass(ctx.Probe.Gguf!, vk, hp, placement, enableTq: ctx.TurboQuant);
+                var vhybrid = new HybridForwardPass(ctx.Probe.Gguf!, vk, hp, placement, enableTq: ctx.TurboQuant, settings: ctx.Settings);
                 ctx.TrackDisposable(vhybrid);
                 return vhybrid;
             }
@@ -93,7 +96,7 @@ public static class CommonForwardPassFactory
                 var vk = ctx.VulkanBackend ?? new VulkanBackend();
                 if (ctx.VulkanBackend is null) ctx.TrackDisposable(vk);
 
-                var vsplit = new VulkanLayerSplitForwardPass(ctx.Probe.Gguf!, vk, hp, ctx.ContextSize, ctx.GpuLayers);
+                var vsplit = new VulkanLayerSplitForwardPass(ctx.Probe.Gguf!, vk, hp, ctx.ContextSize, ctx.GpuLayers, settings: ctx.Settings);
                 ctx.TrackDisposable(vsplit);
                 return vsplit;
             }
@@ -118,7 +121,7 @@ public static class CommonForwardPassFactory
                 var cpu = ctx.CpuBackend ?? new CpuBackend();
                 if (ctx.CpuBackend is null) ctx.TrackDisposable(cpu);
 
-                var cpuHybrid = new HybridGdnForwardPass(ctx.Probe.Gguf!, cpu, hp);
+                var cpuHybrid = new HybridGdnForwardPass(ctx.Probe.Gguf!, cpu, hp, settings: ctx.Settings);
                 ctx.TrackDisposable(cpuHybrid);
                 return cpuHybrid;
             }
@@ -135,7 +138,7 @@ public static class CommonForwardPassFactory
                     GpuKvBytes: 0,
                     RecommendedCtxSize: ctx.ContextSize > 0 ? ctx.ContextSize : Math.Min(hp.ContextLength, 4096));
 
-                var chgdn = new CudaHybridGdnForwardPass(ctx.Probe.Gguf!, cuda, hp, placement);
+                var chgdn = new CudaHybridGdnForwardPass(ctx.Probe.Gguf!, cuda, hp, placement, settings: ctx.Settings);
                 ctx.TrackDisposable(chgdn);
                 return chgdn;
             }
@@ -152,7 +155,7 @@ public static class CommonForwardPassFactory
                     GpuKvBytes: 0,
                     RecommendedCtxSize: ctx.ContextSize > 0 ? ctx.ContextSize : Math.Min(hp.ContextLength, 4096));
 
-                var vhgdn = new VulkanHybridGdnForwardPass(ctx.Probe.Gguf!, vk, hp, placement);
+                var vhgdn = new VulkanHybridGdnForwardPass(ctx.Probe.Gguf!, vk, hp, placement, settings: ctx.Settings);
                 ctx.TrackDisposable(vhgdn);
                 return vhgdn;
             }

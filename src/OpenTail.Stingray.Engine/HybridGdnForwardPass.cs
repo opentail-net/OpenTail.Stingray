@@ -36,6 +36,7 @@ namespace OpenTail.Stingray.Engine;
 /// </remarks>
 public sealed unsafe class HybridGdnForwardPass : IForwardPass
 {
+    private readonly EngineSettings _settings;
     // TEMPORARY diagnostic instrumentation (2026-08-28) for the qwen35 hybrid-GDN CPU perf
     // investigation (docs/4-performance/cpu/05-cpu-architecture-kernel-opportunities.md) — NOT wired into
     // DecodeProfileTimers because that timer's Category enum is ForwardPass-specific (QKV/Attn/
@@ -177,7 +178,7 @@ public sealed unsafe class HybridGdnForwardPass : IForwardPass
     // snapshot ring grows lazily to k-1 slots. Instance-resolved at construction so
     // tests can override per instance; the knob semantics live in one place
     // (GdnStateCache.ResolveMtpBatchMax) shared with the CUDA pass.
-    private readonly int _mtpBatchMax = GdnStateCache.ResolveMtpBatchMax();
+    private readonly int _mtpBatchMax;
 
     // ── Dimensions (cached) ────────────────────────────────────────────
     private readonly int _embDim;
@@ -361,8 +362,11 @@ public sealed unsafe class HybridGdnForwardPass : IForwardPass
     private int _mtpHiddenHistoryLength;              // slots [0.._mtpHiddenHistoryLength) populated
 
     public HybridGdnForwardPass(GgufModel model, IComputeBackend backend, ModelHyperparams hp,
-        int maxContextLength = 0)
+        int maxContextLength = 0,
+        EngineSettings? settings = null)
     {
+        _settings = settings ?? EngineSettings.FromEnvironment();
+        _mtpBatchMax = _settings.Speculation.MtpBatchMax;
         ArgumentNullException.ThrowIfNull(model);
         ArgumentNullException.ThrowIfNull(backend);
         ArgumentNullException.ThrowIfNull(hp);
@@ -1365,7 +1369,7 @@ public sealed unsafe class HybridGdnForwardPass : IForwardPass
     public bool SupportsBatchVerify =>
         _hasMtp
         && !KvCacheCompacted
-        && Environment.GetEnvironmentVariable("STINGRAY_DISABLE_BATCH_VERIFY") != "1";
+        && _settings.Speculation.BatchVerify;
 
     /// <summary>
     /// Run two adjacent tokens (t1 at <paramref name="startPos"/>, t2 at

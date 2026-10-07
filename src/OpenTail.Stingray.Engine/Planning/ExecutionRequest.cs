@@ -40,6 +40,13 @@ public sealed record ExecutionRequest
     /// <summary>User pin for the DSpark draft head location: null/"auto", "gpu", "cpu" or "off".</summary>
     public string? DSparkPlace { get; init; }
 
+    /// <summary>
+    /// True when a configured DSpark head is mandatory: a placement of Off is then a planning failure. False (default)
+    /// means optional: Off records a warning and the plan falls back to normal generation. Same request, same plan,
+    /// whichever frontend asked.
+    /// </summary>
+    public bool DSparkRequired { get; init; }
+
     // MoE / expert execution (null = unspecified; engine default or inherited environment applies).
     public bool? CpuMoe { get; init; }
     public bool? GpuMoePrefill { get; init; }
@@ -47,4 +54,29 @@ public sealed record ExecutionRequest
     public int? MoeWarmPinAfter { get; init; }
     public bool? MoePredictPrefetch { get; init; }
     public string? ExpertStatsPath { get; init; }
+
+    // KV store layout, speculation, prefill and SnapKV (null = unspecified: the planner records the engine default).
+    public string? KvStore { get; init; }
+    public int? KvBf16MinTokens { get; init; }
+    public bool? MtpEnabled { get; init; }
+    public bool? BatchVerify { get; init; }
+    public bool? SpecBatchVerify { get; init; }
+    public int? MtpDraftN { get; init; }
+    public float? MtpMinAccept { get; init; }
+    public int? MtpBatchMax { get; init; }
+    public bool? MtpBatchedMoeVerify { get; init; }
+    public int? DSparkVerifyLen { get; init; }
+    public float? DSparkMinConfidence { get; init; }
+    public int? PrefillChunkTokens { get; init; }
+    public int? PrefixSlots { get; init; }
+    public int? PrefixScratchTokens { get; init; }
+    public string? HybridCpuPrefill { get; init; }
+    public string? CudaHybridCpuPrefill { get; init; }
+    public string? GpuCpuPrefill { get; init; }
+    public int? HybridCpuPrefillMinTokens { get; init; }
+    public int? HybridCpuPrefillKvBudgetMb { get; init; }
+    public bool? HybridCpuPrefillWarmExperts { get; init; }
+    public int? SnapKvWindow { get; init; }
+    public int? SnapKvRecency { get; init; }
+    public bool SnapKvBudgetExplicit { get; init; }
 }

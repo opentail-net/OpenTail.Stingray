@@ -52,6 +52,7 @@ namespace OpenTail.Stingray.Engine;
 /// </summary>
 public sealed unsafe class VulkanHybridGdnForwardPass : IForwardPass
 {
+    private readonly EngineSettings _settings;
     private readonly GgufModel _model;
     private readonly VulkanBackend _gpu;
     private readonly ModelHyperparams _hp;
@@ -161,7 +162,7 @@ public sealed unsafe class VulkanHybridGdnForwardPass : IForwardPass
     private Tensor? _gpuGdnRingScan;     // [slots × numGdn × scanFloatsPerLayer]
     private Tensor? _gpuGdnRingConv;     // [slots × numGdn × convFloatsPerLayer]
     private int _gdnRingSlots;           // captured slots; MaxBatchVerifyTokens = slots + 1
-    private readonly int _mtpBatchMax = GdnStateCache.ResolveMtpBatchMax();
+    private readonly int _mtpBatchMax;
     // GGUF declares a NEXTN/MTP head → reserve the verify ring. The head WEIGHTS + HasMtpHead +
     // SupportsBatchVerify are wired in #357 PR3; PR2 only builds the verify+rollback mechanism.
     private bool _hasMtp;
@@ -355,8 +356,11 @@ public sealed unsafe class VulkanHybridGdnForwardPass : IForwardPass
     }
 
     public VulkanHybridGdnForwardPass(GgufModel model, VulkanBackend gpu, ModelHyperparams hp,
-        LayerPlacement placement, int maxContextLength = 0)
+        LayerPlacement placement, int maxContextLength = 0,
+        EngineSettings? settings = null)
     {
+        _settings = settings ?? EngineSettings.FromEnvironment();
+        _mtpBatchMax = _settings.Speculation.MtpBatchMax;
         ArgumentNullException.ThrowIfNull(model);
         ArgumentNullException.ThrowIfNull(gpu);
         ArgumentNullException.ThrowIfNull(hp);
@@ -478,7 +482,7 @@ public sealed unsafe class VulkanHybridGdnForwardPass : IForwardPass
         // STINGRAY_CPU_MOE: "1" force CPU, "0" force GPU-SLRU, unset → auto.
         if (hp.IsMoE)
         {
-            string? cpuMoeOverride = Environment.GetEnvironmentVariable("STINGRAY_CPU_MOE");
+            string? cpuMoeOverride = _settings.Moe.CpuMoe is bool cpuMoeSetting ? (cpuMoeSetting ? "1" : "0") : null;
             if (cpuMoeOverride == "1") _cpuMoe = true;
             else if (cpuMoeOverride == "0") _cpuMoe = false;
             else
@@ -687,7 +691,7 @@ public sealed unsafe class VulkanHybridGdnForwardPass : IForwardPass
         _hasMtp = hp.NumMtpLayers > 0
                   && model.FindTensor($"blk.{hp.NumLayers}.nextn.eh_proj.weight") is not null;
         if (_hasMtp && _gdnStateCache.NumGdnLayers > 0
-            && Environment.GetEnvironmentVariable("STINGRAY_DISABLE_MTP") != "1")
+            && _settings.Speculation.MtpEnabled)
         {
             int numGdn = _gdnStateCache.NumGdnLayers;
             int scanF = _gdnStateCache.ScanStateFloatsPerLayer;
@@ -744,7 +748,7 @@ public sealed unsafe class VulkanHybridGdnForwardPass : IForwardPass
             capacity = Math.Min(capacity, totalExperts);
             Console.Error.WriteLine(
                 $"[VulkanHybridGdnForwardPass] SLRU expert cache: {capacity} slots / {totalExperts} total experts (per-expert ≈ {perExpertBytes / 1024} KiB, remaining VRAM ≈ {remaining / (1024 * 1024)} MiB).");
-            _expertSlotManager = new ExpertSlotManager(gpu, model, hp, capacity, _gpuWeightDTypes);
+            _expertSlotManager = new ExpertSlotManager(gpu, model, hp, capacity, _gpuWeightDTypes, _settings.Moe);
             _prefetcher = new MoEPrefetcher(_expertSlotManager);
         }
         // CPU-MoE: no SLRU manager; routed experts read from mmap per token.
@@ -793,7 +797,7 @@ public sealed unsafe class VulkanHybridGdnForwardPass : IForwardPass
     public bool SupportsBatchVerify => _hasMtp
         && (!_hp.IsMoE || _cpuMoe)
         && _gdnRingSlots >= 1
-        && Environment.GetEnvironmentVariable("STINGRAY_DISABLE_BATCH_VERIFY") != "1";
+        && _settings.Speculation.BatchVerify;
 
     /// <summary>Ceiling for a single <see cref="BatchVerify"/> batch = ring slots + 1
     /// (the slots reserved at construction, STINGRAY_MTP_BATCH_MAX). 1 when no ring.</summary>

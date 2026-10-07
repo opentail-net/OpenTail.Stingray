@@ -121,7 +121,8 @@ public sealed record SpeculationPlan(
     string? DSparkPlacementReason = null,
     long DSparkHeadBytesGpu = 0,
     long DSparkHeadBytesCpu = 0,
-    long DSparkTapBytes = 0);
+    long DSparkTapBytes = 0,
+    bool DSparkRequired = false);
 
 public sealed record ModalityPlan(
     bool SupportsVision,
@@ -178,7 +179,8 @@ public sealed record ExecutionPlan(
     [property: JsonPropertyName("modality_plan")] ModalityPlan? Modality = null,
     [property: JsonPropertyName("memory_plan")] MemoryPlan? Memory = null,
     [property: JsonPropertyName("provenance")] PlanProvenance? Provenance = null,
-    [property: JsonPropertyName("moe_plan")] MoePlan? Moe = null
+    [property: JsonPropertyName("moe_plan")] MoePlan? Moe = null,
+    [property: JsonPropertyName("engine_tuning")] EngineTuning? Tuning = null
 )
 {
     public ExecutionPlan(
@@ -211,7 +213,8 @@ public sealed record ExecutionPlan(
         ModalityPlan? Modality = null,
         MemoryPlan? Memory = null,
         PlanProvenance? Provenance = null,
-        MoePlan? Moe = null)
+        MoePlan? Moe = null,
+        EngineTuning? Tuning = null)
         : this(
             SchemaVersion,
             ModelPath,
@@ -242,7 +245,8 @@ public sealed record ExecutionPlan(
             Modality,
             Memory,
             Provenance,
-            Moe)
+            Moe,
+            Tuning)
     {
     }
 
@@ -301,7 +305,8 @@ public sealed record ExecutionPlan(
         EffectiveConfigurationSnapshot? effectiveConfiguration = null,
         ModelFormat modelFormat = ModelFormat.Gguf,
         bool isExecutable = true,
-        MoePlan? moe = null)
+        MoePlan? moe = null,
+        EngineTuning? tuning = null)
     {
         string backendStr = backendPlan.Backend.ToString().ToLowerInvariant();
 
@@ -335,7 +340,8 @@ public sealed record ExecutionPlan(
             Modality: modality,
             Memory: memory,
             Provenance: provenance,
-            Moe: moe
+            Moe: moe,
+            Tuning: tuning
         );
     }
 
@@ -507,6 +513,7 @@ public sealed record PlanRequest(
 [JsonSerializable(typeof(BatchingPlan))]
 [JsonSerializable(typeof(SpeculationPlan))]
 [JsonSerializable(typeof(MoePlan))]
+[JsonSerializable(typeof(EngineTuning))]
 [JsonSerializable(typeof(ModalityPlan))]
 [JsonSerializable(typeof(MemoryPlan))]
 [JsonSerializable(typeof(PlanProvenance))]

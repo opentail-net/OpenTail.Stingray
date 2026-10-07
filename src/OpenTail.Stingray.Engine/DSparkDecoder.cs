@@ -75,12 +75,10 @@ public sealed class DSparkDecoder
     /// Resolve the per-step verify-length cap: explicit flag (&gt;= 1) &gt;
     /// STINGRAY_DSPARK_VERIFY_LEN &gt; 0 (uncapped — confidence trim decides).
     /// </summary>
-    public static int ResolveVerifyLen(int flagValue)
+    public static int ResolveVerifyLen(int flagValue, SpeculationSettings spec)
     {
         if (flagValue >= 1) return flagValue;
-        var s = Environment.GetEnvironmentVariable("STINGRAY_DSPARK_VERIFY_LEN");
-        if (s is not null && int.TryParse(s, out var v) && v >= 1) return v;
-        return 0;
+        return spec.DSparkVerifyLen >= 1 ? spec.DSparkVerifyLen : 0;
     }
 
     /// <summary>
@@ -88,16 +86,10 @@ public sealed class DSparkDecoder
     /// STINGRAY_DSPARK_MIN_CONFIDENCE &gt; 0 (disabled — verify the whole block).
     /// Pass a negative flag value for "unset".
     /// </summary>
-    public static float ResolveMinConfidence(float flagValue)
+    public static float ResolveMinConfidence(float flagValue, SpeculationSettings spec)
     {
         if (flagValue >= 0f) return flagValue;
-        var s = Environment.GetEnvironmentVariable("STINGRAY_DSPARK_MIN_CONFIDENCE");
-        if (s is not null && float.TryParse(s,
-                System.Globalization.NumberStyles.Float,
-                System.Globalization.CultureInfo.InvariantCulture, out var v)
-            && v >= 0f && v <= 1f)
-            return v;
-        return 0f;
+        return spec.DSparkMinConfidence;
     }
 
     /// <summary>

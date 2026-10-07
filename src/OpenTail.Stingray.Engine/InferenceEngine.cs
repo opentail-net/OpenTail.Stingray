@@ -137,7 +137,25 @@ public sealed class InferenceEngine : IInferenceEngine, IDisposable, IAsyncDispo
         int thinkTokenId,
         int endThinkTokenId,
         params IDisposable[] owned)
+        : this(fwd, tokenizer, modelId, thinkTokenId, endThinkTokenId, EngineSettings.FromEnvironment(), owned)
     {
+    }
+
+    /// <summary>
+    /// Plan-driven constructor: prefix-slot, prefill-chunk and speculation switches come from <paramref name="settings"/>
+    /// (this instance only), never from the process environment.
+    /// </summary>
+    public InferenceEngine(
+        IForwardPass fwd,
+        ITokenizer tokenizer,
+        string modelId,
+        int thinkTokenId,
+        int endThinkTokenId,
+        EngineSettings settings,
+        params IDisposable[] owned)
+    {
+        _settings = settings ?? throw new ArgumentNullException(nameof(settings));
+        _prefillChunkSize = settings.Prefill.ChunkTokens > 0 ? settings.Prefill.ChunkTokens : 512;
         _fwd = fwd;
         _tokenizer = tokenizer;
         ModelId = modelId;
@@ -171,18 +189,9 @@ public sealed class InferenceEngine : IInferenceEngine, IDisposable, IAsyncDispo
         // rewindable path only. A bounded scratch slot (STINGRAY_PREFIX_SCRATCH_TOKENS, default
         // 4096) holds short interleaved requests so they don't evict slot 0's long prefix.
         // Default (env unset / != 2) leaves _multiSlot null → exact single-slot behavior.
-        _scratchCap = 4096;
-        if (int.TryParse(
-                Environment.GetEnvironmentVariable("STINGRAY_PREFIX_SCRATCH_TOKENS"),
-                System.Globalization.NumberStyles.Integer,
-                System.Globalization.CultureInfo.InvariantCulture, out int sc) && sc > 0)
-            _scratchCap = sc;
+        _scratchCap = settings.Prefill.PrefixScratchTokens > 0 ? settings.Prefill.PrefixScratchTokens : 4096;
 
-        if (int.TryParse(
-                Environment.GetEnvironmentVariable("STINGRAY_PREFIX_SLOTS"),
-                System.Globalization.NumberStyles.Integer,
-                System.Globalization.CultureInfo.InvariantCulture, out int slots)
-            && slots == 2
+        if (settings.Prefill.PrefixSlots == 2
             && fwd.SupportsPartialRewind
             && fwd is IMultiSlotKvCache ms && ms.SupportsMultiSlotPrefix)
         {
@@ -435,24 +444,22 @@ public sealed class InferenceEngine : IInferenceEngine, IDisposable, IAsyncDispo
     /// prefill throughput benchmarking).
     /// </para>
     /// </summary>
-    private static readonly int PrefillChunkSize =
-        int.TryParse(Environment.GetEnvironmentVariable("STINGRAY_PREFILL_CHUNK"), out int c) && c > 0
-            ? c
-            : 512;
+    private readonly int _prefillChunkSize;
+    private readonly EngineSettings _settings;
 
     /// <summary>
     /// Prefill the absolute token range <c>[from, to)</c> (where <c>tokens[i]</c> sits at cache
-    /// position <c>i</c>) in <see cref="PrefillChunkSize"/>-token chunks, checking
+    /// position <c>i</c>) in <see cref="_prefillChunkSize"/>-token chunks, checking
     /// <paramref name="ct"/> before each chunk so a client disconnect aborts prefill promptly.
     /// Returns the logits for the last processed token (the only ones a caller consumes).
     /// </summary>
     private ReadOnlySpan<float> PrefillChunked(int[] tokens, int from, int to, CancellationToken ct)
     {
         ReadOnlySpan<float> logits = default;
-        for (int pos = from; pos < to; pos += PrefillChunkSize)
+        for (int pos = from; pos < to; pos += _prefillChunkSize)
         {
             ct.ThrowIfCancellationRequested();
-            int len = Math.Min(PrefillChunkSize, to - pos);
+            int len = Math.Min(_prefillChunkSize, to - pos);
             logits = _fwd.Prefill(new ArraySegment<int>(tokens, pos, len), pos);
         }
         return logits;
@@ -465,10 +472,10 @@ public sealed class InferenceEngine : IInferenceEngine, IDisposable, IAsyncDispo
     /// </summary>
     private void PrefillMtpChunked(int[] tokens, int from, int to, CancellationToken ct)
     {
-        for (int pos = from; pos < to; pos += PrefillChunkSize)
+        for (int pos = from; pos < to; pos += _prefillChunkSize)
         {
             ct.ThrowIfCancellationRequested();
-            int len = Math.Min(PrefillChunkSize, to - pos);
+            int len = Math.Min(_prefillChunkSize, to - pos);
             _fwd.PrefillMtp(new ArraySegment<int>(tokens, pos, len), pos);
         }
     }
@@ -760,7 +767,7 @@ public sealed class InferenceEngine : IInferenceEngine, IDisposable, IAsyncDispo
                     //
                     // STINGRAY_DISABLE_MTP=1 is a back-compat off-switch that wins over Auto
                     // and Mtp (so existing benchmarking scripts that set it keep working).
-                    bool mtpEnvDisabled = Environment.GetEnvironmentVariable("STINGRAY_DISABLE_MTP") == "1";
+                    bool mtpEnvDisabled = !_settings.Speculation.MtpEnabled;
                     bool useMtp;
                     bool useDSpark = false;
                     switch (sp.SpecType)
@@ -835,7 +842,7 @@ public sealed class InferenceEngine : IInferenceEngine, IDisposable, IAsyncDispo
                     // STINGRAY_MTP_DRAFT_N → built-in default; MtpDecoder clamps per
                     // step against the pass's snapshot-ring capacity
                     // (MaxBatchVerifyTokens), so over-asking degrades gracefully.
-                    int mtpDraftN = MtpDecoder.ResolveDraftN(sp.SpecDraftNMax);
+                    int mtpDraftN = MtpDecoder.ResolveDraftN(sp.SpecDraftNMax, _settings.Speculation);
 
                     // Prefix cache decision: two branches.
                     //   (a) Rewindable attention pass — existing FindCacheablePrefix path,
@@ -1071,8 +1078,8 @@ public sealed class InferenceEngine : IInferenceEngine, IDisposable, IAsyncDispo
                                 channel.Writer.TryWrite(
                                     new GenerateChunk(GenerateChunkKind.Text, chunk));
                         },
-                            minConfidence: DSparkDecoder.ResolveMinConfidence(-1f),
-                            verifyLenCap: DSparkDecoder.ResolveVerifyLen(0),
+                            minConfidence: DSparkDecoder.ResolveMinConfidence(-1f, _settings.Speculation),
+                            verifyLenCap: DSparkDecoder.ResolveVerifyLen(0, _settings.Speculation),
                             ct: ct);
 
                         var textFlushDs = textDecDs.Flush();
@@ -1122,7 +1129,7 @@ public sealed class InferenceEngine : IInferenceEngine, IDisposable, IAsyncDispo
                         // PrefillMtp's MtpForward calls overwrite the shared _logits
                         // scratch buffer (issue #33). PrefillMtp does not touch
                         // _lastHidden, so the captured hidden remains h_{N-1}.
-                        var mtpDec = new MtpDecoder(_fwd);
+                        var mtpDec = new MtpDecoder(_fwd, _settings.Speculation);
                         mtpDec.Initialize(tokens.Length, logits);
 
                         // Issue #33: populate the MTP KV cache for the prompt so the

@@ -50,18 +50,16 @@ public sealed unsafe class PagedKvCache : IRewindableSequenceKvCache, IPersistab
     /// traffic dominates the widen ops (<c>vpmovzxwd</c> + <c>vpslld</c>). The per-8-float uop
     /// count in the old note is accurate; the conclusion drawn from it was not.</para>
     ///
-    /// <para>See <see cref="Bf16StoreRequested"/> for the real 2-byte store. Memory saving is
+    /// <para>See the <c>Kv.Store</c> setting for the real 2-byte store. Memory saving is
     /// unchanged: 3.0 GiB -> 1.5 GiB at 8192 context for this model.</para>
     /// </remarks>
-    private static readonly bool s_kvBf16 = string.Equals(
-        Environment.GetEnvironmentVariable("STINGRAY_KV_DTYPE"), "bf16", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// The real 2-byte KV store: <c>STINGRAY_KV_STORE=bf16</c>. Pages hold BF16, so the cache
     /// costs half the bytes AND moves half the bytes; readers widen on load.
     /// </summary>
     /// <remarks>
-    /// <para>Distinct from <see cref="s_kvBf16"/>, which rounds to BF16 precision while still
+    /// <para>Distinct from the BF16 rounding gate, which rounds to BF16 precision while still
     /// storing F32 — that flag is a quality scaffold and buys zero bytes. This one changes the
     /// layout. Both can be on; the rounding is then redundant but harmless.</para>
     ///
@@ -84,8 +82,6 @@ public sealed unsafe class PagedKvCache : IRewindableSequenceKvCache, IPersistab
     /// get BF16 pages and then throw on their first <see cref="KeyAt"/>. An env var must not be able
     /// to break a model family that has no BF16 reader — opting in is the caller's decision.</para>
     /// </remarks>
-    public static bool Bf16StoreRequested { get; } = string.Equals(
-        Environment.GetEnvironmentVariable("STINGRAY_KV_STORE"), "bf16", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// <c>STINGRAY_KV_STORE=auto</c>: start F32 and narrow the cache to BF16 once the sequence is
@@ -99,22 +95,18 @@ public sealed unsafe class PagedKvCache : IRewindableSequenceKvCache, IPersistab
     /// the only signal available is the CONFIGURED context (<c>-c</c>) — which defaults to the model
     /// maximum and says nothing about how much of it a request will use.
     /// </remarks>
-    public static bool Bf16AutoRequested { get; } = string.Equals(
-        Environment.GetEnvironmentVariable("STINGRAY_KV_STORE"), "auto", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>Sequence length at which auto mode narrows. Default 1024 — the measured crossover.</summary>
-    public static int Bf16AutoMinTokens { get; } =
-        int.TryParse(Environment.GetEnvironmentVariable("STINGRAY_KV_BF16_MIN_TOKENS"), out int v) && v > 0
-            ? v : 1024;
 
     /// <summary>
     /// True when <c>STINGRAY_KV_DTYPE=bf16</c>: every write is rounded to BF16 precision, process-wide, whatever the
     /// instance's store mode. A caller that needs exact F32 K/V (the hybrid CPU-prefill handoff) must refuse when this is on.
     /// </summary>
-    public static bool Bf16RoundingRequested => s_kvBf16;
 
     private bool _bf16Store;
     private readonly bool _autoBf16;
+    private readonly bool _roundBf16;
+    private readonly int _autoMinTokens;
     private static long s_bf16Conversions;
 
     /// <summary>Number of caches that have narrowed to BF16 in auto mode. Lets a null A/B result be
@@ -245,18 +237,21 @@ public sealed unsafe class PagedKvCache : IRewindableSequenceKvCache, IPersistab
 
     /// <param name="bf16Store">Store K/V as BF16 rather than F32 — half the bytes, half the DRAM
     /// traffic. Only pass true from a forward pass that has BF16 readers (today: the dense CPU
-    /// <c>ForwardPass</c>); every other reader's accessors throw. See <see cref="Bf16StoreRequested"/>.</param>
+    /// <c>ForwardPass</c>); every other reader's accessors throw. See the <c>Kv.Store</c> setting.</param>
     /// <param name="autoBf16">Start F32 and narrow to BF16 once <see cref="Length"/> reaches
-    /// <see cref="Bf16AutoMinTokens"/>. Same reader requirements as <paramref name="bf16Store"/>.</param>
+    /// the auto-narrowing threshold. Same reader requirements as <paramref name="bf16Store"/>.</param>
     /// <param name="layerHeadDim">Per-layer head_dim, for models that vary it by layer (Gemma 4:
     /// 256 on SWA layers, 512 on global ones). <paramref name="headDim"/> then sizes the pages at
     /// the MAXIMUM, while each layer reads and writes its V head planes at its OWN stride. Pages
     /// are pooled per layer, so no two layers ever share one and a per-layer stride is safe.
     /// Null (the default) means every layer uses <paramref name="headDim"/>.</param>
     public PagedKvCache(int numLayers, int numKvHeads, int headDim, int maxBlocks = 8192,
-                        bool bf16Store = false, bool autoBf16 = false, int[]? layerHeadDim = null)
+                        bool bf16Store = false, bool autoBf16 = false, int[]? layerHeadDim = null,
+                        bool roundBf16 = false, int autoMinTokens = 1024)
     {
         _autoBf16 = autoBf16 && !bf16Store;
+        _roundBf16 = roundBf16;
+        _autoMinTokens = autoMinTokens > 0 ? autoMinTokens : 1024;
         _numLayers = numLayers;
         _layerHeadDim = layerHeadDim;
         _kvDim = numKvHeads * headDim;
@@ -402,7 +397,7 @@ public sealed unsafe class PagedKvCache : IRewindableSequenceKvCache, IPersistab
         // The fork must match this cache's element width: it shares pages by reference and
         // copy-on-writes them with a raw byte copy sized by _pageBytes.
         var fork = new PagedKvCache(_numLayers, _numKvHeads, _headDim, _maxBlocks, _bf16Store,
-            layerHeadDim: _layerHeadDim)
+            layerHeadDim: _layerHeadDim, roundBf16: _roundBf16, autoMinTokens: _autoMinTokens)
         {
             _sharedPrefixBlocks = prefixLength / PageSize,
             _length = prefixLength,
@@ -558,7 +553,7 @@ public sealed unsafe class PagedKvCache : IRewindableSequenceKvCache, IPersistab
     /// <summary>Advances the logical length. Call once per token after all layers are appended.</summary>
     public void IncrementPosition()
     {
-        if (_autoBf16 && !_bf16Store && _length + 1 >= Bf16AutoMinTokens)
+        if (_autoBf16 && !_bf16Store && _length + 1 >= _autoMinTokens)
             ConvertPagesToBf16();
 
         _length++;
@@ -625,7 +620,7 @@ public sealed unsafe class PagedKvCache : IRewindableSequenceKvCache, IPersistab
 
     /// <summary>Scatters a contiguous kvDim-wide value row into the transposed V region of a page.</summary>
     /// <summary>
-    /// Single write point for a token's K and V, so the BF16 precision gate (<see cref="s_kvBf16"/>)
+    /// Single write point for a token's K and V, so the BF16 precision gate (the BF16 rounding gate)
     /// applies identically to <see cref="Append"/> and <see cref="AppendAt"/>. Having two copies of
     /// this would be a numerics boundary between the ordinary and the speculative/batched-verify
     /// paths — the defect class this codebase keeps re-learning.
@@ -640,7 +635,7 @@ public sealed unsafe class PagedKvCache : IRewindableSequenceKvCache, IPersistab
         }
 
         float* keyDst = page + (long)offset * _kvDim;
-        if (!s_kvBf16)
+        if (!_roundBf16)
         {
             key[.._kvDim].CopyTo(new Span<float>(keyDst, _kvDim));
             ScatterValue(layer, page, offset, value);

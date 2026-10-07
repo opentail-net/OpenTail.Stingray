@@ -7,6 +7,7 @@ namespace OpenTail.Stingray.Engine;
 /// </summary>
 public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPass, IPrefixCacheableBatchedForwardPass
 {
+    private readonly EngineSettings _settings;
     // Widened from GgufModel to the tensor-source seam: ForwardPass uses only FindTensor,
     // GetTensorData and GetTensorDataPtr, so a non-GGUF source can feed this unmodified loop.
     private readonly IModelTensorSource _model;
@@ -405,8 +406,10 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
     private readonly float* _pleY;            // [embDim] inner scratch
 
     public ForwardPass(IModelTensorSource model, IComputeBackend backend, ModelHyperparams hp,
-        int maxContextLength = 0, long prefillDequantCacheBytes = long.MinValue)
+        int maxContextLength = 0, long prefillDequantCacheBytes = long.MinValue,
+        EngineSettings? settings = null)
     {
+        _settings = settings ?? EngineSettings.FromEnvironment();
         _model = model;
         _hp = hp;
         if (model.Metadata.TryGetValue("tokenizer.ggml.token_type", out object? tokenTypesObj)
@@ -424,7 +427,7 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
             ? Math.Min(maxContextLength, hp.ContextLength)
             : Math.Min(hp.ContextLength, 32768);
         _ctxLen = ctxLen;
-        _snapKvCfg = SnapKvConfig.FromEnvironment();
+        _snapKvCfg = _settings.SnapKv;
 
         _embDim = hp.EmbeddingDim;
         _headDim = hp.HeadDim;
@@ -491,8 +494,9 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
         // max stride while the K path read at the per-layer one, so every KV head above the first
         // landed in unwritten memory (Gemma 4 layer 0: q heads 4-7 read zeros).
         _kvCache = new PagedKvCache(hp.NumLayers, hp.NumKvHeads, _maxHeadDim,
-            bf16Store: PagedKvCache.Bf16StoreRequested,
-            autoBf16: PagedKvCache.Bf16AutoRequested,
+            bf16Store: _settings.Kv.Store == KvStoreMode.Bf16,
+            autoBf16: _settings.Kv.Store == KvStoreMode.Auto,
+            roundBf16: _settings.Kv.RoundBf16, autoMinTokens: _settings.Kv.Bf16AutoMinTokens,
             layerHeadDim: _layerHeadDim);
 
         // Allocate scratch

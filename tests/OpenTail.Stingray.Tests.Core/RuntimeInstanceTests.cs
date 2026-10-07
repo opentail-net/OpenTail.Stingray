@@ -64,4 +64,23 @@ public sealed class RuntimeInstanceTests
         Assert.Contains("CUDA backend", ex.Message);
         Assert.Same(plan, ex.Plan);
     }
+
+    [Fact]
+    public void CudaPin_SecondDifferentDevice_IsRefused_NotSilentlyIgnored()
+    {
+        string? saved = Environment.GetEnvironmentVariable("CUDA_VISIBLE_DEVICES");
+        try
+        {
+            Environment.SetEnvironmentVariable("CUDA_VISIBLE_DEVICES", null);
+            GpuDeviceSelection.PinCudaDevice(0);
+            GpuDeviceSelection.PinCudaDevice(0);                                  // same device is fine (idempotent)
+            Assert.Equal(0, GpuDeviceSelection.PinnedCudaDevice);
+            Assert.Throws<InvalidOperationException>(() => GpuDeviceSelection.PinCudaDevice(1));
+            GpuDeviceSelection.PinCudaDevice(-1);                                 // unspecified is a no-op
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("CUDA_VISIBLE_DEVICES", saved);
+        }
+    }
 }

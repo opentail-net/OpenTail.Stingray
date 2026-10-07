@@ -295,7 +295,7 @@ graph TD
 - [x] Stingray sidecar metadata is keyed to model/package identity and is advisory only (never overrides admission).
 - [x] `ModelDescription` contains an immutable snapshot of all intrinsic planning facts.
 - [x] `ModelDescription.FromPackage` performs the one-time inspection; `ExecutionPlanner` never reopens model files.
-- [~] `ExecutionRequest` carries the execution-affecting options that change topology (backend, device, layers, context, KV dtype, TurboQuant, batching, DSpark path + placement pin, MoE expert execution). Remaining `STINGRAY_*` variables are developer kernel/tuning/diagnostic switches read inside kernels and are **not** captured (see "Environment boundary" below). `STINGRAY_SNAPKV_BUDGET` is read into the request but the engine also re-reads it.
+- [x] `ExecutionRequest` carries every execution-affecting option (backend, device, layers, context, KV dtype/store, TurboQuant, batching/sessions, speculation switches, DSpark path/placement/required, MoE expert execution, prefill/prefix/hybrid-handoff, SnapKV). Inherited `STINGRAY_*` variables enter ONLY through `ExecutionRequestEnvironment.ApplyTo` at the frontend. `NoGpuProbe` is a capability-probe input consumed by frontends, not planner policy.
 
 - [x] `ExecutionPlan` is genuinely immutable (`ImmutableArray<T>`) and contains concrete choices (no `"auto"`).
 - [x] `ExecutionPlan` validation checks strongly typed invariants without overly restrictive universal equations.
@@ -328,30 +328,44 @@ The unified execution plan architecture has been implemented across all 10 chunk
 9. **CLI Engine**: `RunCommand` and `StaticPlanCommand` resolve via `ExecutionPlanner` and execute via `RuntimeInstance`.
 10. **Parity & Audit**: Cross-frontend parity verified in `FrontendPlanParityTests.cs`, ensuring identical plans and contracts across `ModelContext`, `InferenceEngineLoader`, and CLI `ExecutionPlanBuilder`.
 
+
 ---
 
-## Audit 2026-10-07 — what the repository actually enforces
+## Closure pass 2026-10-07 — what the repository actually enforces
 
-Written against the working tree after the finishing pass; supersedes the optimistic checklist above where they differ.
+**Principle now true in code:** policy = `ExecutionPlan`; resources = `RuntimeInstance`. Every plan-derived execution setting reaches a runtime object as an *instance-local constructor argument*; nothing is written to the process environment to reach it.
 
-**Landed in this pass**
+### Instance-local settings seam
 
-* **Dead CLI policy removed.** `TryPrepare` always produces a plan for non-ONNX models, so `RunCommand` had two architectures: the plan-driven path and ~800 unreachable lines (`TryConfigureBackend`, `SelectForwardPass`, `CreateLoadContext`, `TryLoadSafeTensorsPackage`, the SafeTensors/GGUF branches of `Execute`). All deleted; `Execute` throws if no plan exists. ONNX (`RunOnnxGraph`) remains an intentionally separate mode.
-* **No frontend discriminator.** See checklist line above; `Request_HasNoFrontendDiscriminator` and 12 deleted Server-only matrix cases (they asserted behaviour the planner never ran).
-* **DSpark placement is planned.** `ExecutionPlanner.ResolveSpeculation` runs `DSparkPlacementPlanner` once (including the GPU→CPU re-plan when the target is not full-CUDA) and records `SpeculationPlan.DSparkPlacement/Reason/HeadBytes*`. `AttachDSpark` (server) and `TryRunDSparkSinglePrompt` (CLI) only obey the recorded placement. Off is handled per frontend as before (the CLI notes it and falls back to normal generation; the server throws, explicit failure), but both read the same recorded decision.
-* **Device index travels in the plan.** `ExecutionRequest.DeviceIndex` → `BackendPlan.DeviceIndex` → `RuntimeInstance` (`new VulkanBackend(index)`). CUDA is pinned through `CUDA_VISIBLE_DEVICES`, which the driver reads at first init, so the pin (`GpuDeviceSelection.PinCudaDevice`) also runs inside `BackendCapabilities.Detect(deviceIndex:)` before the availability probe, and again in `RuntimeInstance.Create` (a no-op if the caller already constrained the visible set).
-* **MoE / KV environment is applied from the plan.** `MoePlan` (nullable = unspecified) is recorded by the planner; `RuntimeInstance.ApplyPlanEnvironment` is now the only writer of `STINGRAY_CPU_MOE`, `_MOE_GPU_PREFILL`, `_MOE_WARMPIN(_AFTER)`, `_MOE_PREDICT_PREFETCH`, `_EXPERT_STATS` and `STINGRAY_KV_DTYPE` (only fp32/bf16/q8_0). `InferenceEngineLoader.ApplyMoeEnvironment` and the CLI `Environment.SetEnvironmentVariable` calls are gone. `--cpu-moe` is no longer special-cased; `TryValidateCpuMoeFlags` only rejects `--n-cpu-moe`.
-* **Ownership.** `InferenceEngine` frees its forward pass and `owned` list; `RuntimeInstance.Dispose` previously freed them again. It now returns after the engine for `InferenceEngine`, and for batching engines (which own nothing) frees the pass and each backend exactly once, honouring `DrainedOnDispose`. The server’s `OwnedDisposableEngine` delegates to the instance.
+```
+ExecutionRequest ──ExecutionPlanner──▶ ExecutionPlan { Moe, Tuning{Kv,Speculation,Prefill,SnapKv}, Speculation(DSpark), BackendPlan.DeviceIndex … }
+        ▲                                         │
+ExecutionRequestEnvironment.ApplyTo               ▼
+(frontends only; env → request)         RuntimeInstance ─▶ EngineSettings ─▶ ArchitectureLoadContext.Settings
+                                                                    └─▶ every ForwardPass / InferenceEngine / MtpDecoder / ExpertSlotManager / PagedKvCache constructor
+```
 
-**Environment boundary (item 5)**
+* `EngineSettings` (immutable, one per runtime instance) = `EngineTuning` (KV store/dtype/auto-narrow threshold, speculation switches, prefill/prefix/handoff, SnapKV) + `MoePlan`.
+* `PagedKvCache` no longer has static env-backed members; BF16 rounding, store mode and auto-narrow threshold are constructor arguments (the failure documented in its remarks — a global default reaching a pass with no BF16 reader — can no longer happen).
+* `WarmPinConfig` is pure functions of an instance’s `MoePlan`; `ExpertSlotManager`/`CudaExpertSlotManager` take it. The static `MtpDecoder._mtpMinAccept`, `CudaHybridGdnForwardPass.BatchedMoeVerifyEnabled`, handoff `static readonly` settings and the `ResolveDraftN/VerifyLen/MinConfidence/MtpBatchMax` env fallbacks are instance/plan values.
+* Code that constructs a pass directly (tests, benchmarks, embedding) gets `EngineSettings.FromEnvironment()`: today’s inherited values, snapshotted once at construction. The plan-driven path never uses it.
+* `RuntimeInstance.Create` no longer calls `Environment.SetEnvironmentVariable` for anything except the CUDA device pin below.
 
-Captured in the plan: variables above plus `STINGRAY_CPU_THREADS` (`ThreadCount`) and `STINGRAY_DSPARK_MODEL` (request input). Deliberately **not** captured — they select between mathematically-equivalent kernels or only emit diagnostics: `STINGRAY_TRACE_*`, `_PROFILE_*`, `_PROBE_*`, `Q4K/Q6K/Q80 SOA/DP4A/MMQ`, `_PREFILL_*` tile/flash tuning, `_VULKAN_*` tuning, `_CUDA_GRAPH`, `_BATCHED_PREFILL`, `_SPLIT_DECODE*`. Closer to policy and still **un-captured**: `STINGRAY_DISABLE_MTP`, `_DISABLE_BATCH_VERIFY`, `_SPEC_BATCH_VERIFY`, `_HYBRID_CPU_PREFILL*`, `_PREFIX_SLOTS`, `_PREFILL_CHUNK`, `_KV_STORE`, `_SNAPKV_BUDGET`. These are developer overrides today, but they can change what executes.
+### DSpark
+Placement is decided once in `ExecutionPlanner.ResolveSpeculation` (including the Gpu→Cpu re-plan). The planner no longer reads `STINGRAY_DSPARK_PLACE` (the request bridge supplies it). `ExecutionRequest.DSparkRequired` makes “Off” deterministic and frontend-independent: required ⇒ planning throws `NotSupportedException`; optional ⇒ the plan records `DSparkEnabled=false` plus a warning and execution continues normally. The server sets `Required=true`; the CLI default is optional. `AttachDSpark` / the CLI runner only obey the plan.
 
-**Outstanding**
+### Device selection
+`ExecutionRequest.DeviceIndex` → `BackendPlan.DeviceIndex` → `new VulkanBackend(index)` (Vulkan runtimes are fully isolated). **CUDA limitation (not a fake guarantee):** the device is pinned through `CUDA_VISIBLE_DEVICES`, read once at driver init. The pin runs before the capability probe and again in `RuntimeInstance`; a process that already pinned device *N* refuses a plan for device *M* with `PlanNotExecutableException` instead of silently using *N*. One process ⇒ one CUDA device. If the operator sets `CUDA_VISIBLE_DEVICES` themselves, indices are relative to that set and are not rewritten. Not exercised on real hardware (no CUDA / second GPU here).
 
-* The plan is transported to engine constructors through process-global environment variables (set once in `RuntimeInstance.Create`). That is process-wide mutable state, so two instances with different MoE/KV plans in one process are not isolated. The structural fix is to pass `MoePlan`/KV dtype through `ArchitectureLoadContext`.
-* The un-captured policy-adjacent variables listed above.
-* `StaticPlanCommand` still calls `TierPlanner.Plan` itself for its report (reporting only, not execution); `ExecutionPlanBuilder` does not yet forward `DeviceIndex`/MoE/DSpark-place.
-* CLI and server still react differently to a DSpark placement of Off (CLI falls back, server throws). The decision is shared; the reaction is not yet expressed in the plan.
-* The DSpark head/config validation is duplicated in `TryRunDSparkSinglePrompt` (needs `cfg` to build the draft) and the planner.
-* Not run in this pass: `STINGRAY_RUN_HEAVY_TESTS=1` suites, real-weights CLI/server runs, any CUDA/second-device run (none available on this machine).
+### Ownership (single owner, explicit)
+`InferenceEngine` frees its forward pass and then its `owned` list (newest first, each once, never the pass itself — it was previously in both). For batching engines `RuntimeInstance.Dispose` frees the pass and then each backend once (honouring `DrainedOnDispose`); the server’s `OwnedDisposableEngine` delegates to the instance. The DSpark draft is owned by `InferenceEngine`. The Gemma-4 vision projector/embedder handed to `EnableImageInput` keeps its pre-existing lifetime (not changed here).
+
+### Remaining process-global state (honest list)
+* **`SimdKernels.CpuThreads` / `MinBatchForBlas`:** `RuntimeInstance` writes `SimdKernels.CpuThreads` from `BackendPlan.ThreadCount` and the CLI/server write `MinBatchForBlas`. The CPU kernel pool is process-wide by design, so two instances with different thread counts share the last-written value. This changes parallelism, not selected math, but it **is** cross-instance state.
+* **CUDA device** (above).
+* **Developer kernel/diagnostic gates** still read from the environment inside the engine (same math, different kernel/path, or tracing): `STINGRAY_TRACE_*`, `_PROFILE_*`, `_PROBE_*`, `_Q4K_/_Q6K_/_Q80_ SOA/DP4A/MMQ`, `_PREFILL_FLASH*/_PREFILL_GEMM/_PREFILL_MMQ/_PREFILL_ATTN_*`, `_VULKAN_*`, `_CUDA_GRAPH`, `_DECODE_*`, `_BATCHED_*`/`_MOE_BATCHED_PREFILL`, `_MOE_GPU_ROUTER`, `_MOE_GPU_PREFILL_MIN_TOKENS`, `_MOE_PIN_MODE`, `_MOE_THREADS`, `_MOE_SLOTS` (test override), `_PREFILL_DEQUANT_MB`, `_CPU_POOL*`, `_CPU_SPIN`, `_PREFAULT`, `CUDA_MODULE_LOADING`. Not captured in the plan; they are process-level developer overrides. A test that flips one of these mid-process affects every instance.
+* Static *counters* (`PagedKvCache.Bf16Conversions`, rounded-append counters) are diagnostics.
+* `StaticPlanCommand` still calls `TierPlanner` for its read-only report (not execution).
+
+### Enforcement
+`RuntimeCode_DoesNotReadOrWritePolicyEnvironment` scans `src/OpenTail.Stingray.Engine` for every plan-carried variable (outside `EngineEnvironment`, `SnapKvConfig.FromEnvironment`, `GpuDeviceSelection`) and fails on any hit; `RuntimeLayer_DoesNotMakePolicyDecisions` forbids the policy planners in `RuntimeInstance`/`InferenceEngineLoader`. Isolation tests (`InstanceLocalSettingsTests`, `WarmPinConfigTests`) build two differently-configured instances in one process and assert neither affects the other. A full two-model, real-weight isolation run was **not** performed (no loadable synthetic fixture; real weights absent).

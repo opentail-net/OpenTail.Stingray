@@ -334,37 +334,19 @@ public sealed class DSparkDecoderTests
     [Fact]
     public void ResolveVerifyLen_Precedence()
     {
-        var prev = Environment.GetEnvironmentVariable("STINGRAY_DSPARK_VERIFY_LEN");
-        try
-        {
-            Environment.SetEnvironmentVariable("STINGRAY_DSPARK_VERIFY_LEN", "5");
-            Assert.Equal(3, DSparkDecoder.ResolveVerifyLen(3));   // flag wins
-            Assert.Equal(5, DSparkDecoder.ResolveVerifyLen(0));   // env fallback
-            Environment.SetEnvironmentVariable("STINGRAY_DSPARK_VERIFY_LEN", null);
-            Assert.Equal(0, DSparkDecoder.ResolveVerifyLen(0));   // default: uncapped
-        }
-        finally
-        {
-            Environment.SetEnvironmentVariable("STINGRAY_DSPARK_VERIFY_LEN", prev);
-        }
+        var spec = new SpeculationSettings(DSparkVerifyLen: 5);
+        Assert.Equal(3, DSparkDecoder.ResolveVerifyLen(3, spec));                       // flag wins
+        Assert.Equal(5, DSparkDecoder.ResolveVerifyLen(0, spec));                       // plan value
+        Assert.Equal(0, DSparkDecoder.ResolveVerifyLen(0, new SpeculationSettings()));  // default: uncapped
     }
 
     [Fact]
     public void ResolveMinConfidence_Precedence()
     {
-        var prev = Environment.GetEnvironmentVariable("STINGRAY_DSPARK_MIN_CONFIDENCE");
-        try
-        {
-            Environment.SetEnvironmentVariable("STINGRAY_DSPARK_MIN_CONFIDENCE", "0.25");
-            Assert.Equal(0.5f, DSparkDecoder.ResolveMinConfidence(0.5f));  // flag wins
-            Assert.Equal(0f, DSparkDecoder.ResolveMinConfidence(0f));      // explicit 0 wins too
-            Assert.Equal(0.25f, DSparkDecoder.ResolveMinConfidence(-1f));  // env fallback
-            Environment.SetEnvironmentVariable("STINGRAY_DSPARK_MIN_CONFIDENCE", null);
-            Assert.Equal(0f, DSparkDecoder.ResolveMinConfidence(-1f));     // default
-        }
-        finally
-        {
-            Environment.SetEnvironmentVariable("STINGRAY_DSPARK_MIN_CONFIDENCE", prev);
-        }
+        var spec = new SpeculationSettings(DSparkMinConfidence: 0.25f);
+        Assert.Equal(0.5f, DSparkDecoder.ResolveMinConfidence(0.5f, spec));                // flag wins
+        Assert.Equal(0f, DSparkDecoder.ResolveMinConfidence(0f, spec));                    // explicit 0 wins too
+        Assert.Equal(0.25f, DSparkDecoder.ResolveMinConfidence(-1f, spec));                // plan value
+        Assert.Equal(0f, DSparkDecoder.ResolveMinConfidence(-1f, new SpeculationSettings())); // default
     }
 }

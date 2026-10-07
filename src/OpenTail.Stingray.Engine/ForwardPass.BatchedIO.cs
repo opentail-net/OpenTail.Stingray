@@ -17,8 +17,9 @@ public sealed unsafe partial class ForwardPass
     /// </summary>
     public PagedKvCache CreateCache() =>
         new PagedKvCache(_hp.NumLayers, _hp.NumKvHeads, _maxHeadDim,
-            bf16Store: PagedKvCache.Bf16StoreRequested,
-            autoBf16: PagedKvCache.Bf16AutoRequested,
+            bf16Store: _settings.Kv.Store == KvStoreMode.Bf16,
+            autoBf16: _settings.Kv.Store == KvStoreMode.Auto,
+            roundBf16: _settings.Kv.RoundBf16, autoMinTokens: _settings.Kv.Bf16AutoMinTokens,
             layerHeadDim: _layerHeadDim);
 
     // ── IBatchedForwardPass (issue #190) ────────────────────────────────────────

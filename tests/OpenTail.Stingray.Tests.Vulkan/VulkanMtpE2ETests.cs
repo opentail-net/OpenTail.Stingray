@@ -106,7 +106,7 @@ public sealed class VulkanMtpE2ETests : HeavyTestBase
             var dec = new MtpDecoder(fwd);
             dec.Initialize(prompt.Length, logits);
             fwd.PrefillMtp(prompt);
-            dec.Decode(N, stops, mtp.Add, pMin: 1f, draftN: MtpDecoder.ResolveDraftN(0));
+            dec.Decode(N, stops, mtp.Add, pMin: 1f, draftN: MtpDecoder.ResolveDraftN(0, new SpeculationSettings()));
             acceptance = dec.AcceptanceRate;
             emitted = dec.TotalDraftsEmitted;
             accepted = dec.TotalDraftsAccepted;

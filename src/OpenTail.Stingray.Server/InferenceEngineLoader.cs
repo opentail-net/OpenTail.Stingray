@@ -74,7 +74,7 @@ public static class InferenceEngineLoader
             ieVision.EnableImageInput(visionEmbedder, visionModel, imgOpen, imgClose, imgPlaceholder);
         }
 
-        if (!string.IsNullOrWhiteSpace(plan.Speculation?.DSparkModelPath) && instance.Engine is InferenceEngine ieDspark && model.IsGguf)
+        if (plan.Speculation is { DSparkEnabled: true } && !string.IsNullOrWhiteSpace(plan.Speculation.DSparkModelPath) && instance.Engine is InferenceEngine ieDspark && model.IsGguf)
         {
             AttachDSpark(ieDspark, instance.ForwardPass, plan.Speculation, instance.OwnedDisposables.ToList());
         }
@@ -171,9 +171,8 @@ public static class InferenceEngineLoader
                 ? opts.DSparkModelPath
                 : Environment.GetEnvironmentVariable("STINGRAY_DSPARK_MODEL"),
             MmprojPath = opts.MmprojPath,
-            SnapKvEnabled = SnapKvConfig.FromEnvironment().Enabled,
-            SnapKvBudget = SnapKvConfig.FromEnvironment().Budget,
             DSparkPlace = opts.DSparkPlace,
+            DSparkRequired = true,   // the server never silently drops a configured head
             CpuMoe = opts.CpuMoe,
             GpuMoePrefill = opts.GpuMoePrefill,
             MoeWarmPin = opts.MoeWarmPin,
@@ -182,7 +181,7 @@ public static class InferenceEngineLoader
             ExpertStatsPath = string.IsNullOrEmpty(opts.ExpertStatsPath) ? null : opts.ExpertStatsPath,
         };
 
-        var plan = ExecutionPlanner.Plan(modelDesc, request, capabilities);
+        var plan = ExecutionPlanner.Plan(modelDesc, ExecutionRequestEnvironment.ApplyTo(request), capabilities);
         return LoadFromPlan(plan, opts.SessionStorageDirectory);
     }
 

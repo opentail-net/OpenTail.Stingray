@@ -275,6 +275,253 @@ public sealed class ExecutionPlannerTests : IDisposable
         Assert.DoesNotContain("ForwardPassSelection.Select", text);
     }
 
+    [Fact]
+    public void Plan_ResolvesEngineTuningFromRequest_AndSurvivesJsonRoundTrip()
+    {
+        var plan = PlanTinyModel(new ExecutionRequest
+        {
+            PinnedContextSize = 512,
+            PinnedKvDtype = "bf16",
+            KvStore = "Auto",
+            KvBf16MinTokens = 300,
+            MtpEnabled = false,
+            BatchVerify = false,
+            SpecBatchVerify = false,
+            PrefillChunkTokens = 128,
+            PrefixSlots = 2,
+            PrefixScratchTokens = 1024,
+            HybridCpuPrefill = "0",
+            HybridCpuPrefillMinTokens = 48,
+            HybridCpuPrefillKvBudgetMb = 256,
+            HybridCpuPrefillWarmExperts = false,
+            SnapKvEnabled = true,
+            SnapKvBudget = 2048,
+            SnapKvWindow = 16,
+            SnapKvRecency = 32,
+            SnapKvBudgetExplicit = true,
+        });
+
+        var t = plan.Tuning!;
+        Assert.Equal("bf16", t.Kv.Dtype);
+        Assert.Equal(KvStoreMode.Auto, t.Kv.Store);
+        Assert.Equal(300, t.Kv.Bf16AutoMinTokens);
+        Assert.False(t.Speculation.MtpEnabled);
+        Assert.False(t.Speculation.BatchVerify);
+        Assert.False(t.Speculation.SpecBatchVerify);
+        Assert.Equal(128, t.Prefill.ChunkTokens);
+        Assert.Equal(2, t.Prefill.PrefixSlots);
+        Assert.Equal(1024, t.Prefill.PrefixScratchTokens);
+        Assert.Equal("0", t.Prefill.HybridCpuPrefill);
+        Assert.Equal(48, t.Prefill.HybridCpuPrefillMinTokens);
+        Assert.Equal(256, t.Prefill.HybridCpuPrefillKvBudgetMb);
+        Assert.False(t.Prefill.HybridCpuPrefillWarmExperts);
+        Assert.Equal(new SnapKvConfig(2048, 16, 32, true), t.SnapKv);
+
+        string json = System.Text.Json.JsonSerializer.Serialize(plan, ExecutionPlanJsonContext.Default.ExecutionPlan);
+        var back = System.Text.Json.JsonSerializer.Deserialize(json, ExecutionPlanJsonContext.Default.ExecutionPlan)!;
+        Assert.Equal(plan.Tuning, back.Tuning);
+        Assert.Equal(t, EngineSettings.FromPlan(back).Tuning);
+    }
+
+    [Fact]
+    public void Plan_UnspecifiedTuning_RecordsEngineDefaults_NotEnvironment()
+    {
+        string?[] saved = [Environment.GetEnvironmentVariable("STINGRAY_KV_STORE"), Environment.GetEnvironmentVariable("STINGRAY_DISABLE_MTP")];
+        try
+        {
+            Environment.SetEnvironmentVariable("STINGRAY_KV_STORE", "bf16");
+            Environment.SetEnvironmentVariable("STINGRAY_DISABLE_MTP", "1");
+
+            // The planner never reads the environment: only the frontend bridge does.
+            var plan = PlanTinyModel(new ExecutionRequest { PinnedContextSize = 512 });
+            Assert.Equal(KvStoreMode.Fp32, plan.Tuning!.Kv.Store);
+            Assert.True(plan.Tuning.Speculation.MtpEnabled);
+            Assert.Null(plan.Tuning.Kv.Dtype);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("STINGRAY_KV_STORE", saved[0]);
+            Environment.SetEnvironmentVariable("STINGRAY_DISABLE_MTP", saved[1]);
+        }
+    }
+
+    [Fact]
+    public void RequestEnvironmentBridge_FillsOnlyUnspecifiedFields()
+    {
+        string?[] saved = [Environment.GetEnvironmentVariable("STINGRAY_KV_STORE"), Environment.GetEnvironmentVariable("STINGRAY_DISABLE_MTP"),
+            Environment.GetEnvironmentVariable("STINGRAY_CPU_MOE")];
+        try
+        {
+            Environment.SetEnvironmentVariable("STINGRAY_KV_STORE", "bf16");
+            Environment.SetEnvironmentVariable("STINGRAY_DISABLE_MTP", "1");
+            Environment.SetEnvironmentVariable("STINGRAY_CPU_MOE", "1");
+
+            var filled = ExecutionRequestEnvironment.ApplyTo(new ExecutionRequest { PinnedContextSize = 512 });
+            Assert.Equal("Bf16", filled.KvStore);
+            Assert.Equal(false, filled.MtpEnabled);
+            Assert.Equal(true, filled.CpuMoe);
+
+            var explicitReq = ExecutionRequestEnvironment.ApplyTo(
+                new ExecutionRequest { KvStore = "Fp32", MtpEnabled = true, CpuMoe = false });
+            Assert.Equal("Fp32", explicitReq.KvStore);
+            Assert.Equal(true, explicitReq.MtpEnabled);
+            Assert.Equal(false, explicitReq.CpuMoe);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("STINGRAY_KV_STORE", saved[0]);
+            Environment.SetEnvironmentVariable("STINGRAY_DISABLE_MTP", saved[1]);
+            Environment.SetEnvironmentVariable("STINGRAY_CPU_MOE", saved[2]);
+        }
+    }
+
+    [Fact]
+    public void ExecutionPlanBuilder_FullRequest_EqualsPlannerPlan()
+    {
+        var metadata = new Dictionary<string, (GgufValueType, object)>
+        {
+            ["general.architecture"] = (GgufValueType.String, "llama"),
+            ["llama.block_count"] = (GgufValueType.UInt32, 2u),
+            ["llama.context_length"] = (GgufValueType.UInt32, 2048u),
+            ["llama.embedding_length"] = (GgufValueType.UInt32, 64u),
+            ["llama.feed_forward_length"] = (GgufValueType.UInt32, 128u),
+            ["llama.attention.head_count"] = (GgufValueType.UInt32, 2u),
+            ["llama.attention.head_count_kv"] = (GgufValueType.UInt32, 2u),
+            ["llama.vocab_size"] = (GgufValueType.UInt32, 100u)
+        };
+        var tensors = new (string name, long[] dims, DType dtype, byte[] data)[]
+        {
+            ("token_embd.weight", [64, 100], DType.Float32, new byte[64 * 100 * 4]),
+            ("output.weight", [64, 100], DType.Float32, new byte[64 * 100 * 4]),
+            ("blk.0.attn_q.weight", [64, 64], DType.Float32, new byte[64 * 64 * 4]),
+            ("blk.1.attn_q.weight", [64, 64], DType.Float32, new byte[64 * 64 * 4]),
+        };
+        string path = CreateGguf(metadata, tensors);
+        var request = new ExecutionRequest
+        {
+            ModelPath = path,
+            PinnedContextSize = 512,
+            NoGpuProbe = true,
+            DeviceIndex = 3,
+            CpuMoe = true,
+            MoeWarmPin = 4,
+            KvStore = "Bf16",
+            MtpEnabled = false,
+            PrefixSlots = 2,
+            DSparkPlace = "cpu",
+        };
+
+        var viaBuilder = ExecutionPlanBuilder.Build(request);
+
+        var desc = ModelDescription.FromPackage(LooseGgufModelPackage.Open(path));
+        var caps = new BackendCapabilities(false, false, HardwareProfile.Detect(null as OpenTail.Stingray.Vulkan.VulkanBackend),
+            RecommendedThreadCount: Environment.ProcessorCount);
+        var direct = ExecutionPlanner.Plan(desc, ExecutionRequestEnvironment.ApplyTo(request), caps);
+
+        Assert.Equal(direct.Backend, viaBuilder.Backend);
+        Assert.Equal(direct.ContextSize, viaBuilder.ContextSize);
+        Assert.Equal(direct.GpuLayers, viaBuilder.GpuLayers);
+        Assert.Equal(direct.Moe, viaBuilder.Moe);
+        Assert.Equal(direct.Tuning, viaBuilder.Tuning);
+        Assert.Equal(direct.BackendPlan!.DeviceIndex, viaBuilder.BackendPlan!.DeviceIndex);
+        Assert.Equal(KvStoreMode.Bf16, viaBuilder.Tuning!.Kv.Store);
+        Assert.Equal(4, viaBuilder.Moe!.WarmPin);
+    }
+
+    // Execution-affecting settings the runtime must receive through EngineSettings, never from the process environment.
+    private static readonly string[] PolicyEnvVars =
+    [
+        "STINGRAY_KV_DTYPE", "STINGRAY_KV_STORE", "STINGRAY_KV_BF16_MIN_TOKENS",
+        "STINGRAY_CPU_MOE", "STINGRAY_MOE_GPU_PREFILL", "STINGRAY_MOE_WARMPIN", "STINGRAY_MOE_WARMPIN_AFTER",
+        "STINGRAY_MOE_PREDICT_PREFETCH", "STINGRAY_EXPERT_STATS",
+        "STINGRAY_DISABLE_MTP", "STINGRAY_DISABLE_BATCH_VERIFY", "STINGRAY_SPEC_BATCH_VERIFY",
+        "STINGRAY_PREFIX_SLOTS", "STINGRAY_PREFIX_SCRATCH_TOKENS", "STINGRAY_PREFILL_CHUNK",
+        "STINGRAY_HYBRID_CPU_PREFILL", "STINGRAY_CUDA_HYBRID_CPU_PREFILL", "STINGRAY_GPU_CPU_PREFILL",
+        "STINGRAY_HYBRID_CPU_PREFILL_MIN_TOKENS", "STINGRAY_HYBRID_CPU_PREFILL_KV_BUDGET_MB", "STINGRAY_HYBRID_CPU_PREFILL_WARM",
+        "STINGRAY_SNAPKV_BUDGET", "STINGRAY_SNAPKV_WINDOW", "STINGRAY_SNAPKV_RECENCY",
+    ];
+
+    [Fact]
+    public void RuntimeCode_DoesNotReadOrWritePolicyEnvironment()
+    {
+        string? dir = AppContext.BaseDirectory;
+        while (dir is not null && !File.Exists(Path.Combine(dir, "OpenTail.Stingray.slnx")))
+            dir = Path.GetDirectoryName(dir);
+        Assert.NotNull(dir);
+
+        // The only sanctioned readers: the request bridge (EngineEnvironment), SnapKvConfig.FromEnvironment (invoked only
+        // by that bridge / EngineSettings.FromEnvironment), and the CUDA pin (GpuDeviceSelection, a process-level constraint).
+        string[] allowed = ["EngineEnvironment.cs", "SnapKvSelector.cs", "GpuDeviceSelection.cs"];
+        var offenders = new List<string>();
+        foreach (string file in Directory.EnumerateFiles(Path.Combine(dir!, "src", "OpenTail.Stingray.Engine"), "*.cs", SearchOption.AllDirectories))
+        {
+            if (allowed.Contains(Path.GetFileName(file))) continue;
+            string text = File.ReadAllText(file);
+            foreach (string name in PolicyEnvVars)
+                if (text.Contains($"GetEnvironmentVariable(\"{name}\")") || text.Contains($"SetEnvironmentVariable(\"{name}\""))
+                    offenders.Add($"{Path.GetFileName(file)}: {name}");
+        }
+        Assert.True(offenders.Count == 0, "Policy environment variables read/written outside the request bridge:\n" + string.Join("\n", offenders));
+
+        string runtime = File.ReadAllText(Path.Combine(dir!, "src", "OpenTail.Stingray.Engine", "Runtime", "RuntimeInstance.cs"));
+        Assert.DoesNotContain("SetEnvironmentVariable", runtime);
+    }
+
+    private string CreateDSparkHead()
+    {
+        string dir = Path.Combine(Path.GetTempPath(), $"stingray_dspark_{Guid.NewGuid():N}");
+        Directory.CreateDirectory(dir);
+        _tempDirs.Add(dir);
+        // Matches the tiny llama fixture: vocab 100, 2 target layers, hidden 64.
+        File.WriteAllText(Path.Combine(dir, "config.json"), """
+            {"hidden_size":64,"head_dim":32,"num_attention_heads":2,"num_key_value_heads":2,"intermediate_size":128,
+             "num_hidden_layers":1,"block_size":4,"mask_token_id":1,"target_layer_ids":[1],"num_target_layers":2,
+             "markov_rank":0,"vocab_size":100,"rms_norm_eps":1e-6,"rope_theta":10000.0,"max_position_embeddings":512}
+            """);
+        File.WriteAllBytes(Path.Combine(dir, "model.safetensors"), []);
+        return dir;
+    }
+
+    [Fact]
+    public void Plan_DSparkPlacementOff_Optional_FallsBackWithWarning()
+    {
+        var plan = PlanTinyModel(new ExecutionRequest
+        {
+            PinnedContextSize = 512, DSparkModelPath = CreateDSparkHead(), DSparkPlace = "off", DSparkRequired = false,
+        }, vulkan: false);
+
+        Assert.False(plan.Speculation!.DSparkEnabled);
+        Assert.Equal(DSparkPlacement.Off, plan.Speculation.DSparkPlacement);
+        Assert.NotEqual(SpeculationMode.DSpark, plan.Speculation.Mode);
+        Assert.False(plan.Speculation.DSparkRequired);
+        Assert.Contains(plan.Warnings, w => w.Contains("normal generation"));
+    }
+
+    [Fact]
+    public void Plan_DSparkPlacementOff_Required_FailsAtPlanTime_NotAtRuntime()
+    {
+        var ex = Assert.Throws<NotSupportedException>(() => PlanTinyModel(new ExecutionRequest
+        {
+            PinnedContextSize = 512, DSparkModelPath = CreateDSparkHead(), DSparkPlace = "off", DSparkRequired = true,
+        }, vulkan: false));
+        Assert.Contains("placement resolved to Off", ex.Message);
+    }
+
+    [Fact]
+    public void Plan_DSparkPinnedToCpu_RecordsThePlacementOnce()
+    {
+        var plan = PlanTinyModel(new ExecutionRequest
+        {
+            PinnedContextSize = 512, DSparkModelPath = CreateDSparkHead(), DSparkPlace = "cpu", DSparkRequired = true,
+        }, vulkan: false);
+
+        Assert.True(plan.Speculation!.DSparkEnabled);
+        Assert.Equal(DSparkPlacement.Cpu, plan.Speculation.DSparkPlacement);
+        Assert.Equal(SpeculationMode.DSpark, plan.Speculation.Mode);
+        Assert.True(plan.Speculation.DSparkRequired);
+        Assert.Contains(plan.Decisions, d => d.Code == "DSPARK_PLACEMENT");
+    }
+
     private string CreateGguf(
         Dictionary<string, (GgufValueType type, object value)> metadata,
         (string name, long[] dims, DType dtype, byte[] data)[] tensors)

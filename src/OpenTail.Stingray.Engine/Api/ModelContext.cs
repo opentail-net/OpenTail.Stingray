@@ -182,15 +182,12 @@ public sealed class ModelContext : IModelContext
         int batchSize = maxBatchSize ?? (_params.BatchSize > 0 ? (int)_params.BatchSize : (isContinuousBatching ? 8 : 1));
         bool turboQuant = !string.IsNullOrWhiteSpace(_params.TurboQuantMode);
         string tqMode = turboQuant ? _params.TurboQuantMode! : "auto";
-        var snapKv = SnapKvConfig.FromEnvironment();
-
         var request = new ExecutionRequest
         {
             Goal = "balanced",
             PinnedBackend = _model.Parameters.Backend,
             PinnedGpuLayers = _model.Parameters.GpuLayerCount,
             PinnedContextSize = ContextSize,
-            PinnedKvDtype = CudaForwardPass.ResolveConfiguredKvDType().ToString().ToLowerInvariant(),
             TurboQuant = turboQuant,
             TurboQuantMode = tqMode,
             FlashAttention = _params.FlashAttention,
@@ -199,14 +196,12 @@ public sealed class ModelContext : IModelContext
             ThreadCount = (int)_params.ThreadCount,
             BatchingMode = isContinuousBatching ? BatchingMode.Continuous : BatchingMode.Sequential,
             MaxBatchSize = batchSize,
-            SnapKvEnabled = snapKv.Enabled,
-            SnapKvBudget = snapKv.Budget,
             AllowUnverifiedArchitecture = _model.Parameters.AllowUnverifiedArch,
         };
 
         var modelDesc = ModelDescription.FromModel(_model);
         var capabilities = BackendCapabilities.Detect();
-        return ExecutionPlanner.Plan(modelDesc, request, capabilities);
+        return ExecutionPlanner.Plan(modelDesc, ExecutionRequestEnvironment.ApplyTo(request), capabilities);
     }
 
     /// <inheritdoc/>

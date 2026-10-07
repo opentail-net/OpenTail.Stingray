@@ -221,6 +221,8 @@ public static class ExecutionPlanner
             PredictPrefetch: request.MoePredictPrefetch,
             ExpertStatsPath: request.ExpertStatsPath);
 
+        var tuning = ResolveTuning(request);
+
         var modalityPlan = new ModalityPlan(
             SupportsVision: model.Capabilities.SupportsVision,
             SupportsEmbeddingInput: model.Capabilities.SupportsEmbeddingInput,
@@ -262,7 +264,8 @@ public static class ExecutionPlanner
             warnings: warnings.ToImmutable(),
             modelFormat: model.Semantics.Format,
             isExecutable: passDecision.Kind.HasValue,
-            moe: moePlan);
+            moe: moePlan,
+            tuning: tuning);
 
         // 8. Validate Plan Invariants
         ExecutionPlanValidator.Validate(plan);
@@ -311,7 +314,7 @@ public static class ExecutionPlanner
         DSparkPlacement userPlace;
         try
         {
-            userPlace = DSparkPlacementPlanner.ResolvePlacement(request.DSparkPlace);
+            userPlace = DSparkPlacementPlanner.ParsePlacement(request.DSparkPlace);
         }
         catch (ArgumentException ex)
         {
@@ -336,6 +339,13 @@ public static class ExecutionPlanner
             userPlace == DSparkPlacement.Auto ? "auto_planner" : "request_pin"));
 
         bool enabled = decision.Placement != DSparkPlacement.Off;
+        if (!enabled)
+        {
+            string why = "DSpark was configured but placement resolved to Off — " + decision.Reason;
+            if (request.DSparkRequired)
+                throw new NotSupportedException(why + ". Free resources, pin DSparkPlace=cpu/gpu explicitly, or unset the head.");
+            warnings.Add(why + "; continuing with normal generation.");
+        }
         return new SpeculationPlan(
             Mode: enabled ? SpeculationMode.DSpark : request.SpeculationMode,
             DraftModelPath: request.DraftModelPath,
@@ -345,8 +355,51 @@ public static class ExecutionPlanner
             DSparkPlacementReason: decision.Reason,
             DSparkHeadBytesGpu: headGpu,
             DSparkHeadBytesCpu: headCpu,
-            DSparkTapBytes: tapBytes);
+            DSparkTapBytes: tapBytes,
+            DSparkRequired: request.DSparkRequired);
     }
+
+    /// <summary>
+    /// Resolves KV store, speculation, prefill and SnapKV settings into concrete values (unspecified request fields take the
+    /// engine default). Parses nothing from the environment: frontends bridge env into the request first.
+    /// </summary>
+    private static EngineTuning ResolveTuning(ExecutionRequest request)
+    {
+        KvStoreMode store = request.KvStore?.Trim().ToLowerInvariant() switch
+        {
+            "bf16" => KvStoreMode.Bf16,
+            "auto" => KvStoreMode.Auto,
+            _ => KvStoreMode.Fp32,
+        };
+        string? kvDtype = string.IsNullOrWhiteSpace(request.PinnedKvDtype) ? null : KvDtypeEnvName(request.PinnedKvDtype);
+        var kv = new KvSettings(kvDtype, store, request.KvBf16MinTokens is > 0 ? request.KvBf16MinTokens.Value : 1024);
+        var spec = new SpeculationSettings(
+            request.MtpEnabled ?? true, request.BatchVerify ?? true, request.SpecBatchVerify ?? true,
+            request.MtpDraftN is > 0 ? request.MtpDraftN.Value : 0,
+            request.MtpMinAccept is >= 0f and <= 1f ? request.MtpMinAccept.Value : 0.55f,
+            request.MtpBatchMax is { } mbm ? Math.Clamp(mbm, 2, 8) : 4,
+            request.MtpBatchedMoeVerify ?? true,
+            request.DSparkVerifyLen is > 0 ? request.DSparkVerifyLen.Value : 0,
+            request.DSparkMinConfidence is >= 0f and <= 1f ? request.DSparkMinConfidence.Value : 0f);
+        var prefill = new PrefillSettings(
+            request.PrefillChunkTokens ?? 0,
+            request.PrefixSlots ?? 0,
+            request.PrefixScratchTokens ?? 0,
+            request.HybridCpuPrefill,
+            request.CudaHybridCpuPrefill,
+            request.GpuCpuPrefill,
+            request.HybridCpuPrefillMinTokens is > 0 ? request.HybridCpuPrefillMinTokens.Value : 32,
+            request.HybridCpuPrefillKvBudgetMb is > 0 ? request.HybridCpuPrefillKvBudgetMb.Value : 4096,
+            request.HybridCpuPrefillWarmExperts ?? true);
+        var snap = new SnapKvConfig(
+            Math.Max(0, request.SnapKvEnabled || request.SnapKvBudget > 0 ? request.SnapKvBudget : 0),
+            Math.Max(1, request.SnapKvWindow ?? SnapKvSelector.DefaultWindow),
+            Math.Max(0, request.SnapKvRecency ?? SnapKvSelector.DefaultRecency),
+            request.SnapKvBudgetExplicit);
+        return new EngineTuning(kv, spec, prefill, snap);
+    }
+
+    private static string KvDtypeEnvName(string pinned) => ExecutionPlan.KvDtypeToEnvValue(pinned);
 
     private static (ForwardPassBackend Backend, string DeviceName) SelectBackend(
         ModelDescription model,

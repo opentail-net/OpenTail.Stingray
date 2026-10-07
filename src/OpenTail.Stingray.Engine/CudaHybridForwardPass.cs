@@ -8,6 +8,7 @@ namespace OpenTail.Stingray.Engine;
 /// </summary>
 public sealed unsafe partial class CudaHybridForwardPass : IForwardPass
 {
+    private readonly EngineSettings _settings;
     private readonly GgufModel _model;
     private readonly CudaBackend _gpu;
     private readonly ModelHyperparams _hp;
@@ -346,8 +347,11 @@ public sealed unsafe partial class CudaHybridForwardPass : IForwardPass
 
     public CudaHybridForwardPass(GgufModel model, CudaBackend gpu, ModelHyperparams hp,
         LayerPlacement placement, bool enableTq = false, int tqFp32Window = 256, int tqBits = 3,
-        int expertSlotCapacity = -1)
+        int expertSlotCapacity = -1,
+        EngineSettings? settings = null)
     {
+        _settings = settings ?? EngineSettings.FromEnvironment();
+        InitCpuPrefillHandoff();
         if (GpuForwardPass.PartialOffloadUnsupportedReason(model, hp) is { } gpuGap)
             throw new NotSupportedException($"CudaHybridForwardPass has no path for {gpuGap}; use the CPU pass (-g 0).");
         _model = model;
@@ -405,7 +409,7 @@ public sealed unsafe partial class CudaHybridForwardPass : IForwardPass
         // and a larger expert-cache budget while the runtime allocated the full fp32 cache. Narrowing
         // applies to the GPU-trunk KV only; CPU layers keep their fp32 store. Reuses the dense path's
         // narrowed append/attention kernels (#179) via the *Kv dispatch helpers below.
-        DType requestedKv = CudaForwardPass.ResolveConfiguredKvDType();
+        DType requestedKv = CudaForwardPass.ResolveConfiguredKvDType(_settings);
         if (_tqEnabled && requestedKv != DType.Float32)
             throw new NotSupportedException(
                 $"STINGRAY_KV_DTYPE={requestedKv} + TurboQuant is not supported (TQ owns the KV quantization). " +
@@ -430,7 +434,7 @@ public sealed unsafe partial class CudaHybridForwardPass : IForwardPass
         // fewer than ~half of all GPU-trunk experts can be cached on the GPU.
         if (_isMoE)
         {
-            string? cpuMoeOverride = Environment.GetEnvironmentVariable("STINGRAY_CPU_MOE");
+            string? cpuMoeOverride = _settings.Moe.CpuMoe is bool cpuMoeSetting ? (cpuMoeSetting ? "1" : "0") : null;
             if (cpuMoeOverride == "1")
             {
                 _cpuMoe = true;
@@ -772,7 +776,7 @@ public sealed unsafe partial class CudaHybridForwardPass : IForwardPass
                         $"expert hit rate may suffer. Fewer GPU layers (-g) or more VRAM would help.");
                     break;
             }
-            _expertSlotManager = new CudaExpertSlotManager(gpu, model, hp, plan.Slots, _gpuWeightDTypes);
+            _expertSlotManager = new CudaExpertSlotManager(gpu, model, hp, plan.Slots, _gpuWeightDTypes, _settings.Moe);
         }
 
         // CPU-MoE: resolve the GPU-trunk layers' routed-expert weights as CPU mmap views.
@@ -4062,7 +4066,7 @@ public sealed unsafe partial class CudaHybridForwardPass : IForwardPass
         {
             // STINGRAY_EXPERT_STATS=<path>: dump SLRU hit rate + top experts per layer
             // (parity with CudaHybridGdnForwardPass).
-            var statsPath = Environment.GetEnvironmentVariable("STINGRAY_EXPERT_STATS");
+            var statsPath = _settings.Moe.ExpertStatsPath;
             if (!string.IsNullOrEmpty(statsPath))
             {
                 // Diagnostic-only: a write failure must never skip the slot manager's

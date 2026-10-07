@@ -53,6 +53,7 @@ namespace OpenTail.Stingray.Engine;
 /// </summary>
 public sealed unsafe class CudaHybridGdnForwardPass : IForwardPass
 {
+    private readonly EngineSettings _settings;
     private readonly GgufModel _model;
     private readonly CudaBackend _gpu;
     private readonly ModelHyperparams _hp;
@@ -464,7 +465,7 @@ public sealed unsafe class CudaHybridGdnForwardPass : IForwardPass
     // the dominant mmap weight read four ways. Instance-resolved at construction so
     // tests can override per instance; the knob semantics live in one place
     // (GdnStateCache.ResolveMtpBatchMax) shared with the CPU pass.
-    private readonly int _mtpBatchMax = GdnStateCache.ResolveMtpBatchMax();
+    private readonly int _mtpBatchMax;
     // Token-2 host FFN scratch (intermediate gate/up post-MatVec2In, pre-SiLuMul).
     private readonly float* _cpuFfnGateBuf2;
     private readonly float* _cpuFfnUpBuf2;
@@ -631,8 +632,7 @@ public sealed unsafe class CudaHybridGdnForwardPass : IForwardPass
     // and (routed+shared)+resid combine mirror the per-token operand order exactly.
     // STINGRAY_MTP_BATCHED_MOE_VERIFY=0 reverts to the per-token loop for parity
     // bisection. Settable (not readonly) so the A/B parity test can toggle it.
-    internal static bool BatchedMoeVerifyEnabled =
-        Environment.GetEnvironmentVariable("STINGRAY_MTP_BATCHED_MOE_VERIFY") != "0";
+    internal bool BatchedMoeVerifyEnabled { get; set; }
     private int _bCap;                 // token capacity the batched scratch is sized for (grow-only)
     private Tensor? _gpuStreamAll;     // [N × embDim] inter-layer residual stream for all tokens
     private float* _bResidAll;         // [bCap × embDim] pinned — per-token MoE residual (postBlock hidden)
@@ -756,7 +756,7 @@ public sealed unsafe class CudaHybridGdnForwardPass : IForwardPass
     //   from ~120 tokens up). STINGRAY_MOE_GPU_PREFILL=0 restores the pure CPU MoE prefill. ***
     // Falls back to the CPU path (the field is cleared) if the scratch can't be allocated —
     // see the ctor. Not readonly: the ctor clears it on a setup failure.
-    private bool _gpuMoePrefill = ResolveGate("STINGRAY_MOE_GPU_PREFILL", true);
+    private bool _gpuMoePrefill;
     // #388: run the CPU-MoE prefill router matvec on the GPU (batched GEMM over the on-GPU
     // post-attn norm) instead of the per-token CPU matvec (~16% of CPU-MoE prefill). RAW logits
     // download; softmax + top-k stay on the host. Argmax-stable vs the CPU matvec (same FP class
@@ -963,8 +963,13 @@ public sealed unsafe class CudaHybridGdnForwardPass : IForwardPass
     public PagedKvCache Cache => _kvCache;
 
     public CudaHybridGdnForwardPass(GgufModel model, CudaBackend gpu, ModelHyperparams hp,
-        LayerPlacement placement, int maxContextLength = 0)
+        LayerPlacement placement, int maxContextLength = 0,
+        EngineSettings? settings = null)
     {
+        _settings = settings ?? EngineSettings.FromEnvironment();
+        _mtpBatchMax = _settings.Speculation.MtpBatchMax;
+        BatchedMoeVerifyEnabled = _settings.Speculation.MtpBatchedMoeVerify;
+        _gpuMoePrefill = _settings.Moe.GpuMoePrefill ?? true;
         ArgumentNullException.ThrowIfNull(model);
         ArgumentNullException.ThrowIfNull(gpu);
         ArgumentNullException.ThrowIfNull(hp);
@@ -1024,11 +1029,11 @@ public sealed unsafe class CudaHybridGdnForwardPass : IForwardPass
         _layerGraphCaptured = _decodeCudaGraph ? new bool[L] : null;
 
         // STINGRAY_KV_DTYPE: fp32 | bf16 (default bf16). Issue #27.
-        _kvDType = ParseKvDType(Environment.GetEnvironmentVariable("STINGRAY_KV_DTYPE"));
+        _kvDType = ParseKvDType(_settings.Kv.Dtype);
 
         // SnapKV (issue #58) — gated by STINGRAY_SNAPKV_BUDGET. Buffers are
         // lazily allocated on the first active prefill in Prefill().
-        _snapKvCfg = SnapKvConfig.FromEnvironment();
+        _snapKvCfg = _settings.SnapKv;
         _attnLayerIndexOf = new int[L];
         int numAttn = 0;
         for (int i = 0; i < L; i++)
@@ -1210,7 +1215,7 @@ public sealed unsafe class CudaHybridGdnForwardPass : IForwardPass
         //  CPU MoE 11.8 t/s on Qwen3.6-35B-A3B on a 4070 Ti.)
         if (hp.IsMoE)
         {
-            string? cpuMoeOverride = Environment.GetEnvironmentVariable("STINGRAY_CPU_MOE");
+            string? cpuMoeOverride = _settings.Moe.CpuMoe is bool cpuMoeSetting ? (cpuMoeSetting ? "1" : "0") : null;
             if (cpuMoeOverride == "1")
             {
                 _cpuMoe = true;
@@ -1504,7 +1509,7 @@ public sealed unsafe class CudaHybridGdnForwardPass : IForwardPass
         _hasMtp = hp.NumMtpLayers > 0
                   && model.FindTensor($"blk.{hp.NumLayers}.nextn.eh_proj.weight") is not null;
         if (_hasMtp && !_cpuGdn && _gdnStateCache.NumGdnLayers > 0
-            && Environment.GetEnvironmentVariable("STINGRAY_DISABLE_MTP") != "1")
+            && _settings.Speculation.MtpEnabled)
         {
             int numGdn = _gdnStateCache.NumGdnLayers;
             int scanF = _gdnStateCache.ScanStateFloatsPerLayer;
@@ -1573,7 +1578,7 @@ public sealed unsafe class CudaHybridGdnForwardPass : IForwardPass
             int totalExperts = L * _numExperts;
             capacity = Math.Min(capacity, totalExperts);
             Console.Error.WriteLine($"[CudaHybridGdnForwardPass] SLRU expert cache: {capacity} slots / {totalExperts} total experts (per-expert ≈ {perExpertBytes / 1024} KiB, remaining VRAM ≈ {remaining / (1024 * 1024)} MiB).");
-            _expertSlotManager = new CudaExpertSlotManager(gpu, model, hp, capacity, _gpuWeightDTypes);
+            _expertSlotManager = new CudaExpertSlotManager(gpu, model, hp, capacity, _gpuWeightDTypes, _settings.Moe);
         }
 
         // ── MTP / NEXTN head on GPU (issue #29; mirror of HybridGdnForwardPass) ──
@@ -1762,8 +1767,7 @@ public sealed unsafe class CudaHybridGdnForwardPass : IForwardPass
         // pin is built at load.
         if (_gpuMoePrefill)
         {
-            int warmChunk = int.TryParse(Environment.GetEnvironmentVariable("STINGRAY_PREFILL_CHUNK"),
-                out int pc) && pc > 0 ? pc : 512;
+            int warmChunk = _settings.Prefill.ChunkTokens > 0 ? _settings.Prefill.ChunkTokens : 512;
             // Safety fallback (op-offload is opt-in but can still hit allocation limits): if the
             // scratch can't be allocated (low host RAM for the ~14 GB pinned buffer, or tight
             // VRAM for the GPU gather/scatter/layer buffers), disable op-offload and run the CPU
@@ -4854,7 +4858,7 @@ public sealed unsafe class CudaHybridGdnForwardPass : IForwardPass
         && (!_hp.IsMoE || _cpuMoe)
         && (_cpuGdn || _gdnRingSlots >= 1)
         && !KvCacheCompacted
-        && Environment.GetEnvironmentVariable("STINGRAY_DISABLE_BATCH_VERIFY") != "1";
+        && _settings.Speculation.BatchVerify;
 
     /// <inheritdoc/>
     // #219: the verify lm_head logits are produced on-device anyway, so the greedy verify can
@@ -7777,7 +7781,7 @@ public sealed unsafe class CudaHybridGdnForwardPass : IForwardPass
             // top-3 experts per layer to the given file. Used to investigate whether
             // the expert access pattern is highly skewed (caching strategies matter)
             // or uniformly random (only more VRAM helps).
-            var statsPath = Environment.GetEnvironmentVariable("STINGRAY_EXPERT_STATS");
+            var statsPath = _settings.Moe.ExpertStatsPath;
             if (!string.IsNullOrEmpty(statsPath))
             {
                 using var w = new StreamWriter(statsPath);

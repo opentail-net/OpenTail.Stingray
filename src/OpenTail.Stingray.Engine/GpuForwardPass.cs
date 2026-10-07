@@ -13,6 +13,7 @@ namespace OpenTail.Stingray.Engine;
 /// </summary>
 public sealed unsafe partial class GpuForwardPass : IForwardPass
 {
+    private readonly EngineSettings _settings;
     private readonly VulkanBackend _gpu;
     private readonly GgufModel _model;
     private readonly ModelHyperparams _hp;
@@ -545,8 +546,11 @@ public sealed unsafe partial class GpuForwardPass : IForwardPass
 
     public GpuForwardPass(GgufModel model, VulkanBackend gpu, ModelHyperparams hp,
         int maxContextLength = 0, bool enableTurboQuant = false, int tqFp32Window = 256, int tqBits = 3,
-        DType? kvDtype = null, int layerLimit = int.MaxValue)
+        DType? kvDtype = null, int layerLimit = int.MaxValue,
+        EngineSettings? settings = null)
     {
+        _settings = settings ?? EngineSettings.FromEnvironment();
+        InitCpuPrefillHandoff();
         if (hp.InputEmbeddingRmsNorm || hp.PostNormEps > 0f)
             throw new NotSupportedException("GpuForwardPass has no path for muse-glimmer's attention output gate / embedding norm; use the CPU pass (-g 0).");
         // Gemma 4 master switch: hp.LayerHeadDim is non-null only for gemma4-family models.
@@ -575,7 +579,7 @@ public sealed unsafe partial class GpuForwardPass : IForwardPass
         // explicitly requested before it can pick. FromEnvironment is a pure env parse; _snapKvCfg
         // is assigned from it again below where the rest of the SnapKV wiring happens.
         bool kvExplicit = kvDtype.HasValue;
-        _kvDType = kvDtype ?? ChooseDefaultKvDType(hp, enableTurboQuant, SnapKvConfig.FromEnvironment());
+        _kvDType = kvDtype ?? ChooseDefaultKvDType(hp, enableTurboQuant, _settings.SnapKv);
 
         // Per-layer-max head_dim (gemma4: 256 SWA / 512 global). Mirrors CudaForwardPass.
         _maxHeadDim = hp.HeadDim;
@@ -591,7 +595,7 @@ public sealed unsafe partial class GpuForwardPass : IForwardPass
         // that the caller never asked for downgrades to fp32 instead of throwing. An explicit
         // request still takes the strict path below and fails loudly.
         if (!kvExplicit && _kvDType != DType.Float32 &&
-            !CanNarrowKv(_kvDType, hp, _tqEnabled, SnapKvConfig.FromEnvironment()))
+            !CanNarrowKv(_kvDType, hp, _tqEnabled, _settings.SnapKv))
             _kvDType = DType.Float32;
 
         // Issues #311 / #325: the Vulkan KV cache supports fp32, a half-width (bf16) store, and a
@@ -684,7 +688,7 @@ public sealed unsafe partial class GpuForwardPass : IForwardPass
         // TurboQuant requires per-block ring bookkeeping that doesn't yet exist
         // (issue #60); explicit opt-in + TQ is rejected up front, and the auto
         // path stays disabled when TQ is on. Mirrors CudaForwardPass.
-        _snapKvCfg = SnapKvConfig.FromEnvironment();
+        _snapKvCfg = _settings.SnapKv;
         if (_tqEnabled && _snapKvCfg.IsBudgetExplicit && _snapKvCfg.Budget > 0)
             throw new NotSupportedException(
                 "SnapKV + TurboQuant composition is not yet implemented (issue #60). " +

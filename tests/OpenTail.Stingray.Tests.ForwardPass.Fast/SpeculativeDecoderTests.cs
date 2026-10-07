@@ -88,20 +88,10 @@ public sealed class SpeculativeDecoderTests
     [Fact]
     public void Decode_KillSwitch_FallsBackToSequentialForward()
     {
-        var prev = Environment.GetEnvironmentVariable("STINGRAY_SPEC_BATCH_VERIFY");
-        Environment.SetEnvironmentVariable("STINGRAY_SPEC_BATCH_VERIFY", "0");
-        SpeculativeDecoder spec;
         var target = new ChainForwardPass(vocab: 16, supportsBatchVerify: true);
         var draft = new ChainForwardPass(vocab: 16, supportsBatchVerify: false);
-        try
-        {
-            // The kill-switch is read once at construction.
-            spec = new SpeculativeDecoder(target, draft, lookahead: 3);
-        }
-        finally
-        {
-            Environment.SetEnvironmentVariable("STINGRAY_SPEC_BATCH_VERIFY", prev);
-        }
+        // The kill-switch is plan/instance state now (SpeculationSettings.SpecBatchVerify), not process environment.
+        var spec = new SpeculativeDecoder(target, draft, lookahead: 3) { BatchVerify = false };
 
         spec.Initialize(prefillLength: 1, ChainForwardPass.Logits(16, next: 2), ChainForwardPass.Logits(16, next: 2));
         var emitted = new List<int>();

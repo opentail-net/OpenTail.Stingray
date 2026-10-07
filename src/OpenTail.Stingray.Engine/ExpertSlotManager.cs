@@ -44,7 +44,7 @@ public sealed class ExpertSlotManager : IDisposable, IExpertPrefetchTarget
     /// Shared DType map used by <c>GpuMatMul</c> to select the right shader.
     /// </param>
     public ExpertSlotManager(VulkanBackend gpu, GgufModel model, ModelHyperparams hp,
-        int slotCapacity, Dictionary<nint, DType> dtypes)
+        int slotCapacity, Dictionary<nint, DType> dtypes, MoePlan? moe = null)
     {
         _gpu = gpu;
         _model = model;
@@ -55,8 +55,8 @@ public sealed class ExpertSlotManager : IDisposable, IExpertPrefetchTarget
         // probationary expert is a better victim than the strict LRU tail.
         _cache = new ExpertCache<ExpertGpuSlot>(slotCapacity, EvictSlot,
             frequencyOf: _profiler.GetAccessCount);
-        _warmPinPerLayer = WarmPinConfig.ResolvePerLayer(hp.NumLayers, hp.NumExperts, hp.NumActiveExperts, slotCapacity);
-        _warmPinAfter = WarmPinConfig.AfterAccesses;
+        _warmPinPerLayer = WarmPinConfig.ResolvePerLayer(moe, hp.NumLayers, hp.NumExperts, hp.NumActiveExperts, slotCapacity);
+        _warmPinAfter = WarmPinConfig.ResolveAfterAccesses(moe);
         _pinBudget = Math.Max(1, slotCapacity / 2); // never pin more than half the cache
     }
 
