@@ -105,7 +105,8 @@ public static class ExecutionPlanner
             isContinuousBatching: request.BatchingMode == BatchingMode.Continuous,
             targetContextLength: ctxSize,
             allowUnverifiedArchitecture: request.AllowUnverifiedArchitecture,
-            unsupportedBackendName: unsupportedBackend);
+            unsupportedBackendName: unsupportedBackend,
+            hasDSparkModel: !string.IsNullOrEmpty(request.DSparkModelPath));
 
         var passDecision = ForwardPassSelection.Select(passReq);
         if (passDecision.IsRefused)

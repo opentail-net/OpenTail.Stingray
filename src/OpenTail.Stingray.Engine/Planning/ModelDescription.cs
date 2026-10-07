@@ -530,7 +530,8 @@ public sealed record ModelDescription(
         bool unsupportedGpuPath = false,
         bool unsupportedPartialCudaPath = false,
         bool unsupportedPartialVulkanPath = false,
-        string? unsupportedBackendName = null)
+        string? unsupportedBackendName = null,
+        bool hasDSparkModel = false)
     {
         return new ForwardPassRequest
         {
@@ -538,6 +539,9 @@ public sealed record ModelDescription(
             Architecture = Semantics.Architecture,
             UnsupportedBackendName = unsupportedBackendName,
             IsSafeTensors = Semantics.Format == ModelFormat.SafeTensors,
+            IsSafeTensorsGpuRequested = Semantics.Format == ModelFormat.SafeTensors && (gpuLayers != 0 || backend is ForwardPassBackend.Cuda or ForwardPassBackend.Vulkan),
+            IsSafeTensorsDraftRequested = Semantics.Format == ModelFormat.SafeTensors && (hasDraftModel || draftLookup),
+            IsSafeTensorsDSparkRequested = Semantics.Format == ModelFormat.SafeTensors && hasDSparkModel,
             PackageSupported = true,
             IsHybridSsm = PlanningFacts.IsHybridSsm,
             HasHybridGdnLayers = PlanningFacts.HasHybridGdnLayers,

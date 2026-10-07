@@ -2,6 +2,8 @@ using System.Text;
 using OpenTail.Stingray.Core.Grammar;
 using OpenTail.Stingray.Cpu;
 using OpenTail.Stingray.Engine;
+using OpenTail.Stingray.Engine.Packaging;
+using OpenTail.Stingray.Engine.Planning;
 using OpenTail.Stingray.Engine.Runtime;
 using OpenTail.Stingray.Vision;
 
@@ -570,37 +572,6 @@ public sealed class RunCommand : Command<RunCommand.Settings>
             { prologue = null!; exitCode = ExitCodes.Failure; return false; }
         }
 
-        if (settings.Auto && !string.IsNullOrEmpty(settings.ModelPath) && File.Exists(settings.ModelPath))
-        {
-            try
-            {
-                AutoPlanInputs planInputs = ResolveAutoPlanInputs(settings);
-                resolvedPlan = ExecutionPlanBuilder.Build(
-                    settings.ModelPath,
-                    settings.Goal,
-                    planInputs.Backend,
-                    planInputs.GpuLayers,
-                    planInputs.ContextSize,
-                    settings.KvType);
-
-                Console.WriteLine(resolvedPlan.CompactSummary());
-
-                if (settings.Explain)
-                {
-                    Console.WriteLine("\n[ExecutionPlan Decision Trace]");
-                    foreach (var d in resolvedPlan.Decisions)
-                    {
-                        Console.WriteLine($"  - [{d.Code}] {d.SelectedValue} ({d.Reason} - {d.Source})");
-                    }
-                    Console.WriteLine();
-                }
-            }
-            catch
-            {
-                // Soft fallback if plan building fails before loading
-            }
-        }
-
         // --file/-f (llama.cpp): load the prompt from a file. Overrides -p; lets prompts exceed
         // the shell command-line length limit. Read as-is (no trailing-newline stripping).
         if (settings.PromptFile is { Length: > 0 } promptFile)
@@ -723,6 +694,94 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         {
             AnsiConsole.ErrorLine("[red]Error:[/] No model file or package directory found. Use [yellow]-m <path>[/]");
             { prologue = null!; exitCode = ExitCodes.Failure; return false; }
+        }
+
+        bool isPackage = Directory.Exists(modelPath)
+            || modelPath.EndsWith(".safetensors", StringComparison.OrdinalIgnoreCase)
+            || modelPath.EndsWith(".safetensors.index.json", StringComparison.OrdinalIgnoreCase);
+
+        if (isPackage)
+        {
+            var pkgReport = ModelPackageInspector.Inspect(modelPath);
+            if (!pkgReport.IsSupported)
+            {
+                AnsiConsole.ErrorLine("[red]Error:[/] SafeTensors package not supported:");
+                foreach (var r in pkgReport.Rejections)
+                    AnsiConsole.ErrorLine($"  [red]·[/] {Markup.Escape(r.Detail)}");
+                AnsiConsole.ErrorLine("[dim]GGUF is the recommended deployment format for quantized models.[/]");
+                { prologue = null!; exitCode = ExitCodes.Failure; return false; }
+            }
+        }
+
+        if (!modelPath.EndsWith(".onnx", StringComparison.OrdinalIgnoreCase))
+        {
+            try
+            {
+                int? pinGpuLayers = deviceNone ? 0 : (settings.NGpuLayers ?? (settings.Auto ? null : 0));
+                string? pinBackend = deviceNone ? "cpu" : settings.Backend;
+                int? pinCtxSize = settings.CtxSize > 0 ? settings.CtxSize : null;
+
+                IModelPackage package = isPackage
+                    ? SafeTensorsModelPackage.Open(modelPath)
+                    : (modelPath.EndsWith(".json", StringComparison.OrdinalIgnoreCase)
+                        ? OllamaModelPackage.Open(modelPath)
+                        : LooseGgufModelPackage.Open(modelPath));
+
+                var modelDesc = ModelDescription.FromPackage(package);
+                var capabilities = BackendCapabilities.Detect(noGpuProbe: false);
+                var request = new ExecutionRequest
+                {
+                    ModelPath = modelPath,
+                    Goal = settings.Goal ?? "balanced",
+                    PinnedBackend = pinBackend,
+                    PinnedGpuLayers = pinGpuLayers,
+                    PinnedContextSize = pinCtxSize,
+                    PinnedKvDtype = settings.KvType,
+                    TurboQuant = settings.TurboQuant,
+                    TurboQuantMode = settings.TqModeStr ?? "auto",
+                    DraftModelPath = settings.DraftModelPath,
+                    DSparkModelPath = settings.DSparkModelPath,
+                    MmprojPath = settings.MmprojPath,
+                    ThreadCount = settings.Threads,
+                    AllowUnverifiedArchitecture = settings.AllowUnverifiedArch,
+                };
+
+                resolvedPlan = ExecutionPlanner.Plan(modelDesc, request, capabilities);
+
+                if (settings.Auto)
+                {
+                    Console.WriteLine(resolvedPlan.CompactSummary());
+
+                    if (settings.Explain)
+                    {
+                        Console.WriteLine("\n[ExecutionPlan Decision Trace]");
+                        foreach (var d in resolvedPlan.Decisions)
+                        {
+                            Console.WriteLine($"  - [{d.Code}] {d.SelectedValue} ({d.Reason} - {d.Source})");
+                        }
+                        Console.WriteLine();
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                if (ex is NotSupportedException or PlanNotExecutableException)
+                {
+                    AnsiConsole.ErrorLine($"[red]Error:[/] {Markup.Escape(ex.Message)}");
+                    { prologue = null!; exitCode = ExitCodes.Failure; return false; }
+                }
+                throw;
+            }
+        }
+
+        effNGpuLayers = resolvedPlan?.GpuLayers ?? effNGpuLayers;
+        if (resolvedPlan != null && string.IsNullOrEmpty(settings.KvType))
+        {
+            string? planKvType = ExecutionPlan.KvDtypeToEnvValue(resolvedPlan.KvDtype);
+            if (!string.IsNullOrEmpty(planKvType))
+            {
+                Environment.SetEnvironmentVariable("STINGRAY_KV_DTYPE", planKvType);
+            }
         }
 
         prologue = new RunPrologue(resolvedPlan, gpuDeviceIndex, deviceNone, effNGpuLayers, modelPath);
@@ -2010,6 +2069,46 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         if (modelPath.EndsWith(".onnx", StringComparison.OrdinalIgnoreCase))
             return RunOnnxGraph(settings, modelPath);
 
+        // ── Plan-driven runtime execution (§5 of plan) ───────────────────────
+        if (resolvedPlan is not null)
+        {
+            var modelParams = new ModelParams(modelPath)
+            {
+                Backend = resolvedPlan.Backend,
+                GpuLayerCount = resolvedPlan.GpuLayers
+            };
+            var modelObj = Model.Load(modelParams);
+            runtimeInstance = RuntimeInstance.Create(resolvedPlan, modelObj);
+
+            hp = modelObj.Hyperparams;
+            s_arch = resolvedPlan.Provenance?.TargetArchitecture ?? modelObj.Architecture;
+            ctxSize = resolvedPlan.ContextSize;
+            tokenizer = (runtimeInstance.Tokenizer as GgufTokenizer)
+                ?? (modelObj.IsGguf ? GgufTokenizer.FromGgufModel(modelObj.Gguf) : null)
+                ?? throw new InvalidOperationException($"Model '{modelPath}' does not have a valid tokenizer.");
+            s_jinja = tokenizer.ChatTemplate;
+            s_hasLlama3Headers = tokenizer.SpecialTokens.ContainsKey("<|start_header_id|>");
+            (s_thinkTokenId, s_endThinkTokenId) = tokenizer.ReasoningTokens;
+            s_noThinking = ResolveThinkingOff(s_arch, settings.Thinking, settings.NoThinking);
+
+            nGpuLayers = resolvedPlan.GpuLayers;
+            gpuDeviceIndex = prologue.GpuDeviceIndex;
+            model = modelObj.IsGguf ? modelObj.Gguf : null;
+            stTensorSource = !modelObj.IsGguf ? modelObj.TensorSource as SafetensorsTensorSource : null;
+            fwd = runtimeInstance.ForwardPass as ForwardPass;
+            hybridFwd = runtimeInstance.ForwardPass as HybridGdnForwardPass;
+            standaloneFwd = runtimeInstance.ForwardPass;
+            gpuBackend = (IDisposable?)runtimeInstance.VulkanBackend ?? runtimeInstance.CudaBackend;
+            gpuFwd = runtimeInstance.ForwardPass as IDisposable;
+            cpuBackend = runtimeInstance.CpuBackend;
+
+            forward = runtimeInstance.ForwardPass.Forward;
+            prefill = tokens => runtimeInstance.ForwardPass.Prefill(tokens);
+            resetCache = runtimeInstance.ForwardPass.ResetCache;
+
+            goto backendConfigured;
+        }
+
         // ── SafeTensors package branch ────────────────────────────────────────
         // A directory path or bare .safetensors file routes here; GGUF falls
         // through to the GgufModel.Open path below, unchanged.
@@ -2034,44 +2133,6 @@ public sealed class RunCommand : Command<RunCommand.Settings>
             forward = fwd.Forward;
             prefill = tokens => fwd.Prefill(tokens);
             resetCache = fwd.ResetCache;
-
-            goto backendConfigured;
-        }
-
-        // ── Plan-driven runtime execution (§5 of plan) ───────────────────────
-        if (resolvedPlan is not null && !isPackage)
-        {
-            var modelParams = new ModelParams(modelPath)
-            {
-                Backend = resolvedPlan.Backend,
-                GpuLayerCount = resolvedPlan.GpuLayers
-            };
-            var modelObj = Model.Load(modelParams);
-            runtimeInstance = RuntimeInstance.Create(resolvedPlan, modelObj);
-
-            hp = modelObj.Hyperparams;
-            s_arch = resolvedPlan.Provenance?.TargetArchitecture ?? modelObj.Architecture;
-            ctxSize = resolvedPlan.ContextSize;
-            tokenizer = (runtimeInstance.Tokenizer as GgufTokenizer)
-                ?? (modelObj.Gguf is not null ? GgufTokenizer.FromGgufModel(modelObj.Gguf) : null!);
-            s_jinja = tokenizer.ChatTemplate;
-            s_hasLlama3Headers = tokenizer.SpecialTokens.ContainsKey("<|start_header_id|>");
-            (s_thinkTokenId, s_endThinkTokenId) = tokenizer.ReasoningTokens;
-            s_noThinking = ResolveThinkingOff(s_arch, settings.Thinking, settings.NoThinking);
-
-            nGpuLayers = resolvedPlan.GpuLayers;
-            gpuDeviceIndex = prologue.GpuDeviceIndex;
-            model = modelObj.Gguf;
-            fwd = runtimeInstance.ForwardPass as ForwardPass;
-            hybridFwd = runtimeInstance.ForwardPass as HybridGdnForwardPass;
-            standaloneFwd = runtimeInstance.ForwardPass;
-            gpuBackend = (IDisposable?)runtimeInstance.VulkanBackend ?? runtimeInstance.CudaBackend;
-            gpuFwd = runtimeInstance.ForwardPass as IDisposable;
-            cpuBackend = runtimeInstance.CpuBackend;
-
-            forward = runtimeInstance.ForwardPass.Forward;
-            prefill = tokens => runtimeInstance.ForwardPass.Prefill(tokens);
-            resetCache = runtimeInstance.ForwardPass.ResetCache;
 
             goto backendConfigured;
         }
@@ -2486,6 +2547,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         {
             if (runtimeInstance is not null)
             {
+                runtimeInstance.Model?.Dispose();
                 runtimeInstance.Dispose();
             }
             else
