@@ -167,7 +167,9 @@ public sealed class CaptureGoldenCommand : Command<CaptureGoldenCommand.Settings
             if (!s.NoHash)
             {
                 AnsiConsole.MarkupLine($"Hashing {size / 1048576.0:F0} MiB (SHA-256)...");
-                sha = GoldenCaptureParsing.Sha256Hex(modelPath);
+                var fp = ModelFingerprinter.Compute(modelPath);
+                sha = fp.Sha256;
+                if (fp.FromCache) AnsiConsole.MarkupLine("  [dim](from the sidecar cache; size and modification time unchanged)[/]");
                 AnsiConsole.MarkupLine($"  sha256 {sha}");
             }
             else AnsiConsole.MarkupLine("[yellow]--no-hash:[/] the golden will not pin the checkpoint.");

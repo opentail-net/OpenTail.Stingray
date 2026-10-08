@@ -48,8 +48,11 @@ public sealed class GoldenParityTests : HeavyTestBase
         using var source = new GoldenForwardPassSource(modelHandle.Model, maxContextLength: 2048);
         using var scope = new GoldenEngineSettingsScope(golden.EngineSettings);
 
+        var pin = ModelFingerprinter.CheckPin(golden, path!);
         var result = GoldenParityRunner.Run(golden, source.Create);
-        Assert.True(result.Passed, result.Format());
+        string pinLine = pin.Describe(golden.Model.FileName);
+        Assert.True(result.Passed, (pin.Status == PinStatus.Mismatch ? pinLine + Environment.NewLine : "") + result.Format());
+        Console.WriteLine(pinLine);
         Console.WriteLine(result.Format());   // visible with -verbose: near-ties are reported even when they pass
     }
 

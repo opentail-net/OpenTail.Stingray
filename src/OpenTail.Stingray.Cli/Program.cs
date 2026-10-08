@@ -94,6 +94,8 @@ app.Configure(config =>
         .WithDescription("Show which tasks have a model installed, and the command that fixes each gap");
     config.AddCommand<PullCommand>("pull")
         .WithDescription("Download a GGUF model from Hugging Face by repo id, e.g. `stingray pull -r bartowski/Qwen2.5-7B-Instruct-GGUF`");
+    config.AddCommand<HashCommand>("hash")
+        .WithDescription("Print a model file's SHA-256 and size (cached beside the file); the identity a golden reference pins.");
     config.AddCommand<CaptureGoldenCommand>("capture-golden")
         .WithDescription("Capture a golden reference from the vendored llama.cpp: oracle-tokenized prompt ids, greedy continuation from llama-server, model SHA-256; writes a small JSON with no machine paths. Check it later with admit-arch --golden.");
     config.AddCommand<AdmitArchCommand>("admit-arch")

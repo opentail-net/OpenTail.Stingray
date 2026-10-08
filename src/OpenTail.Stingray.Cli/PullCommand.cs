@@ -1,3 +1,4 @@
+using OpenTail.Stingray.Engine.Verification;
 using System.Net.Http;
 using OpenTail.Stingray.Core.Catalog;
 
@@ -48,10 +49,11 @@ public sealed class PullCommand : Command<PullCommand.Settings>
         using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(10) };
         http.DefaultRequestHeaders.UserAgent.ParseAdd("OpenTail.Stingray/pull");
 
+        var publishedSha256 = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         List<(string Name, long? Size)> files;
         try
         {
-            files = ListGgufFiles(http, repo, cancellation);
+            files = ListGgufFiles(http, repo, cancellation, publishedSha256);
         }
         catch (Exception ex) when (ex is HttpRequestException or JsonException or TaskCanceledException)
         {
@@ -109,6 +111,19 @@ public sealed class PullCommand : Command<PullCommand.Settings>
                 return 1;
             }
             AnsiConsole.MarkupLine($"[green]Saved[/] {Markup.Escape(Path.GetFullPath(destPath))}");
+            if (publishedSha256.TryGetValue(name, out string? expectedSha))
+            {
+                AnsiConsole.MarkupLine("Verifying SHA-256...");
+                var fp = ModelFingerprinter.Compute(destPath);
+                if (!string.Equals(fp.Sha256, expectedSha, StringComparison.OrdinalIgnoreCase))
+                {
+                    AnsiConsole.ErrorLine($"[red]SHA-256 MISMATCH[/] for {Markup.Escape(name)}: Hugging Face publishes {expectedSha}, the file on disk is {fp.Sha256}. " +
+                        "The download is corrupt or incomplete; delete it and rerun `pull`.");
+                    return 1;
+                }
+                AnsiConsole.MarkupLine($"[green]SHA-256 verified[/] ({fp.Sha256[..12]}...)");
+            }
+            else AnsiConsole.MarkupLine("[dim]No SHA-256 published for this file; not verified.[/]");
         }
 
         if (selected.Count == 1)
@@ -135,9 +150,10 @@ public sealed class PullCommand : Command<PullCommand.Settings>
         return input;
     }
 
-    private static List<(string Name, long? Size)> ListGgufFiles(HttpClient http, string repo, CancellationToken ct)
+    private static List<(string Name, long? Size)> ListGgufFiles(HttpClient http, string repo, CancellationToken ct, Dictionary<string, string>? sha256ByName = null)
     {
-        string apiUrl = $"https://huggingface.co/api/models/{repo}";
+        // ?blobs=true makes the API return each file's size and (for LFS files) its SHA-256; the default response carries neither.
+        string apiUrl = $"https://huggingface.co/api/models/{repo}?blobs=true";
         using var request = new HttpRequestMessage(HttpMethod.Get, apiUrl);
         string? token = Environment.GetEnvironmentVariable("HF_TOKEN");
         if (!string.IsNullOrEmpty(token))
@@ -147,20 +163,27 @@ public sealed class PullCommand : Command<PullCommand.Settings>
         response.EnsureSuccessStatusCode();
         using var stream = response.Content.ReadAsStream(ct);
         using var doc = JsonDocument.Parse(stream);
+        return ParseGgufListing(doc.RootElement, sha256ByName);
+    }
 
+    /// <summary>Reads the .gguf files (and, when published, their LFS SHA-256) from a Hugging Face model API response.</summary>
+    internal static List<(string Name, long? Size)> ParseGgufListing(JsonElement root, Dictionary<string, string>? sha256ByName = null)
+    {
         var result = new List<(string, long?)>();
-        if (!doc.RootElement.TryGetProperty("siblings", out var siblings)) return result;
+        if (!root.TryGetProperty("siblings", out var siblings)) return result;
         foreach (var sib in siblings.EnumerateArray())
         {
             if (!sib.TryGetProperty("rfilename", out var nameEl)) continue;
             string? name = nameEl.GetString();
             if (name is null || !name.EndsWith(".gguf", StringComparison.OrdinalIgnoreCase)) continue;
-            // The default (non-"expand") HF models API response omits "size" on siblings; a
-            // per-file HEAD request on download resolves the real size regardless, so this is a
-            // best-effort hint only.
+            // Without ?blobs=true the API omits "size" on siblings; a per-file HEAD request on download resolves the real size regardless,
+            // so this is a best-effort hint only.
             long? size = sib.TryGetProperty("size", out var sizeEl) && sizeEl.TryGetInt64(out long sz) ? sz
                 : sib.TryGetProperty("lfs", out var lfsEl) && lfsEl.TryGetProperty("size", out var lfsSizeEl) && lfsSizeEl.TryGetInt64(out long lfsSz) ? lfsSz
                 : null;
+            if (sha256ByName is not null && sib.TryGetProperty("lfs", out var lfs) && lfs.TryGetProperty("sha256", out var shaEl)
+                && shaEl.GetString() is { Length: 64 } sha)
+                sha256ByName[name] = sha.ToLowerInvariant();
             result.Add((name, size));
         }
         return result;

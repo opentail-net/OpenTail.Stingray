@@ -2,7 +2,7 @@
 
 **Generated:** by `scripts/gen-cli-option-inventory.ps1`, which scans `[CommandOption]` /
 `[Description]` pairs under `src/OpenTail.Stingray.Cli`. Last regenerated **2026-09-28**, recording
-**241 option declarations** across 24 command files — the same count the
+**242 option declarations** across 25 command files — the same count the
 `StaticPlanConfigurationTests` guard enforces against source. (Reconciled 12 rows of drift, caught
 by CI failing `CliOptionInventory_DeclaredCountMatchesSource` on `main`: three new commands —
 `AdmitArchCommand`, `GenVisionScaffoldCommand` and `PullCommand`, see `docs/reference/061-coverage-tooling.md` —
@@ -150,6 +150,12 @@ hoc at each read site rather than in one place.
 | `--force` | expert | Overwrite the output if it exists |
 | `--out` | expert | Output GGUF path (must not be the base or donor; must not exist unless --force) |
 | `--tensors` | expert | Regex matched against base tensor names; matching tensors are taken from the donor |
+
+## HashCommand
+
+| Option | Class | Description |
+|---|---|---|
+| `--model <PATH>` |  | Model file to fingerprint |
 
 ## ImageCommand
 

@@ -233,6 +233,10 @@ public sealed class AdmitArchCommand : Command<AdmitArchCommand.Settings>
         if (!string.Equals(fileName, golden.Model.FileName, StringComparison.OrdinalIgnoreCase))
             AnsiConsole.MarkupLine($"[yellow]Note:[/] this file is named '{Markup.Escape(fileName)}', the golden was recorded on '{Markup.Escape(golden.Model.FileName)}'. " +
                 "A golden is evidence for the file it was recorded on; a different conversion can legitimately differ.");
+        AnsiConsole.MarkupLine("[dim]Checking the file against the golden's SHA-256 (cached beside the model after the first time)...[/]");
+        var pin = ModelFingerprinter.CheckPin(golden, settings.ModelPath);
+        string pinColor = pin.Status switch { PinStatus.Verified => "green", PinStatus.Mismatch => "yellow", _ => "dim" };
+        AnsiConsole.MarkupLine($"[{pinColor}]{Markup.Escape(pin.Describe(fileName))}[/]");
 
         using var source = new GoldenForwardPassSource(model, Math.Max(settings.CtxSize, 1024));
         using var scope = new GoldenEngineSettingsScope(golden.EngineSettings);
