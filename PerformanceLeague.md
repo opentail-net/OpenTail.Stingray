@@ -1301,6 +1301,16 @@ Short-context decode re-check (24-token-class prompt, 128 generated, 3 runs; lla
 
 "Odd" rows are not failures: they are base/code models fed a raw prompt, or models that emit control tokens first. They were not compared with a reference, so they stay unverified for output correctness.
 
+## GC / managed-allocation cost during decode (2026-10-08): measured, small, not worth an arena
+
+Question: would a zero-allocation tensor arena (pooled native scratch) speed decode up? Measured with the new `STINGRAY_GC_STATS=1` (collections, bytes allocated and total GC pause at process exit), differencing a short and a long run of the same model so model load and tokenizer setup cancel:
+
+| Workload (CPU, greedy) | Extra tokens | Extra managed allocation | Extra GC pause | Decode time | **GC share of decode** |
+|---|---:|---:|---:|---:|---:|
+| SmolLM2-135M Q4_K_M (169 t/s, the case where per-token overhead matters most) | 280 | 270 MiB (~1 MiB/token) | 15 ms | 1.65 s | **0.9%** |
+| Qwen3.8-27B UD-Q3_K_XL, MTP depth 1 | 80 | 213 MiB (~2.7 MiB/token) | 111 ms | ~31 s | **0.4%** |
+
+Why so small: the forward passes already keep their scratch in pre-allocated `NativeMemory` (dozens of `NativeMemory.Alloc*` sites across `ForwardPass.*` and `HybridGdnForwardPass`), which is the arena pattern. What still reaches the managed heap per token is the logits copy for the sampler and, in the MTP verify, a vocab-sized `ToArray()` per verified token (~1 MiB each); those cost under 1% even on the fastest model. Decode is memory-bandwidth-bound (plain Qwen3.8 decode runs at ~79% of the DRAM ceiling), so shaving ~1% of GC time cannot move it. If anyone wants the last fraction of a percent, the targeted fix is to reuse those two logits buffers, not a framework.
 ## CUDA Inference — No Numbers Yet
 
 > **No CUDA GPU on dev machine.** No measured numbers exist for CUDA on this box.
