@@ -81,6 +81,13 @@ updated with dated evidence in the same pass.
     Q4_K/Q5_K-quantised hybrid-GDN checkpoints (existing 2In/4In kernels already amortise their FFN) and on hardware with more
     ALU headroom per byte (VNNI/AVX-512, GPU). Plain decode is at ~79% of the DRAM ceiling (12.2 GiB / ~36.8 GB/s ~ 3 t/s),
     so `--spec-type none` (~2.4 t/s) is the right setting for this checkpoint here.
+    **Reference ground truth (llama.cpp b8585 CPU, `-t 8`, same file, `llama-bench -p 1,2,4,8`, 2026-10-08):** a batch of
+    1/2/4/8 tokens runs at 2.43/3.44/4.05/4.27 t/s, i.e. costs 1.0/1.4/2.4/4.5 plain steps (0.41/0.58/0.99/1.87 s). So the
+    reference is ALU-bound on this IQ quant too (throughput saturates at ~4.3 t/s), and its batch is ~1.6x cheaper than ours
+    (k=2: 0.58 vs 0.92 s; k=4: 0.99 vs 1.6-1.7 s). Even matching llama.cpp exactly would give ~2.6 t/s at k=2/67% accept (+8%)
+    and ~2.2 t/s at k=4/50% (break-even). Nothing in `examples/` is liftable for this: ggml's IQ dot kernels are single-input
+    (`ggml_vec_dot_iq3_s_q8_K` asserts `nrc == 1`; batching is just one dot per (row, column) pair) and TensorSharp's batched
+    Qwen3.5 decode goes through the native ggml graph, across sequences, not speculative verify.
     Notes: acceptance depends on draft depth (batched draftN=1: 67%, draftN=3: 50%, legacy sequential N=2: 75%), so the
     "batched accepts less" worry is mostly depth; the greedy text differing from plain decode at token ~20 is consistent with
     the FP32-ordering drift accepted in ADR-0002 but is not proven. Re-measure with 3+ runs after any change.
