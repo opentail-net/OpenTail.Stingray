@@ -86,9 +86,9 @@ Refuses clearly if `tools/llama.cpp` binaries are absent; `--server` overrides t
   - [x] 1.2 Replace the 25 `FindModel()` copies in `Tests.ForwardPass` (mechanical; the shape is identical). Net effect: about 35 hard-coded drive literals leave the repo.
   - [x] 1.3 Measure (results below): re-run the heavy classes one process at a time and count classes that moved from **skipped to running** (today ~10 skip). Record the list in the progress doc; any newly running class that fails is a real finding, not a regression of this change.
   - [ ] 1.b (optional) Point `Tests.Cuda` / other `FindModelPath` copies at the same locator.
-- [ ] **2. Golden model and runner (no model needed to test it)**
-  - [ ] 2.1 `GoldenFile`, `GoldenJsonContext`, load/save; round-trip and schema-version tests; **the no-machine-paths guard test over `Goldens/`**.
-  - [ ] 2.2 `GoldenParityRunner` with a scripted stub `IForwardPass`: tests for `Exact`, `NearTie` (our top-2 equals the reference, margin under tolerance), `Diverged`, teacher-forced mode, first-divergence index, and the stepwise-vs-prefill check detecting an injected inconsistency.
+- [x] **2. Golden model and runner (no model needed to test it)** (done 2026-10-09)
+  - [x] 2.1 `GoldenFile`, `GoldenJsonContext`, load/save; round-trip and schema-version tests; **the no-machine-paths guard test over `Goldens/`**.
+  - [x] 2.2 `GoldenParityRunner` with a scripted stub `IForwardPass`: tests for `Exact`, `NearTie` (our top-2 equals the reference, margin under tolerance), `Diverged`, teacher-forced mode, first-divergence index, and the stepwise-vs-prefill check detecting an injected inconsistency.
 - [ ] **3. Consumers and validation of the harness itself**
   - [ ] 3.1 `GoldenParityTests` (heavy Theory) with the loud skip.
   - [ ] 3.2 `admit-arch --golden`.

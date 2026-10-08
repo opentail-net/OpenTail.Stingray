@@ -1,0 +1,175 @@
+using System.Text;
+using OpenTail.Stingray.Core;
+
+namespace OpenTail.Stingray.Engine.Verification;
+
+/// <summary>How a case compares with its reference.</summary>
+public enum CaseVerdict
+{
+    /// <summary>Every compared token matches.</summary>
+    Exact,
+    /// <summary>Tokens differ, but only where our logits had the reference token within the tolerance of our own top choice (a genuine near-tie, as FP32 reordering produces).</summary>
+    NearTie,
+    /// <summary>At least one mismatch where our top choice beat the reference token by more than the tolerance.</summary>
+    Diverged,
+}
+
+public sealed record ParityOptions
+{
+    /// <summary>Logit gap (our top-1 minus the reference token's logit) at or below which a mismatch counts as a near-tie.</summary>
+    public double NearTieTolerance { get; init; } = 0.02;
+    /// <summary>Bound for the stepwise-vs-prefill self-check, following the existing receipts' precedent for the int8 prefill approximation.</summary>
+    public float StepwiseMaxAbsDiff { get; init; } = 5.0f;
+}
+
+/// <param name="Index">Position in the continuation.</param>
+/// <param name="Expected">Reference token.</param>
+/// <param name="Actual">Our top choice.</param>
+/// <param name="Gap">Our logit for <paramref name="Actual"/> minus our logit for <paramref name="Expected"/>; 0 means an exact tie.</param>
+public sealed record PositionMismatch(int Index, int Expected, int Actual, double Gap, bool NearTie);
+
+public sealed record GoldenCaseResult(
+    string Name, string Mode, CaseVerdict Verdict, int Compared, int Matched, IReadOnlyList<PositionMismatch> Mismatches, IReadOnlyList<int> Generated)
+{
+    public PositionMismatch? FirstMismatch => Mismatches.Count > 0 ? Mismatches[0] : null;
+}
+
+public sealed record StepwiseCheckResult(bool ArgmaxAgrees, float MaxAbsDiff, int StepwiseArgmax, int PrefillArgmax, bool WithinBound);
+
+public sealed record GoldenRunResult(
+    string Architecture, IReadOnlyList<GoldenCaseResult> Cases, StepwiseCheckResult? Stepwise)
+{
+    /// <summary>The worst case verdict, or <see cref="CaseVerdict.Exact"/> when there are none.</summary>
+    public CaseVerdict Verdict => Cases.Count == 0 ? CaseVerdict.Exact : Cases.Max(c => c.Verdict);
+
+    /// <summary>True when no case diverged and the self-consistency check (if run) passed.</summary>
+    public bool Passed => Verdict != CaseVerdict.Diverged && (Stepwise is null || (Stepwise.ArgmaxAgrees && Stepwise.WithinBound));
+
+    public string Format()
+    {
+        var sb = new StringBuilder();
+        sb.Append(Architecture).Append(": ").Append(Passed ? "PASS" : "FAIL").Append(" (").Append(Verdict).AppendLine(")");
+        foreach (var c in Cases)
+        {
+            sb.Append("  case '").Append(c.Name).Append("' [").Append(c.Mode).Append("]: ").Append(c.Verdict)
+              .Append(", ").Append(c.Matched).Append('/').Append(c.Compared).Append(" matched");
+            foreach (var m in c.Mismatches.Take(5))
+                sb.Append("; @").Append(m.Index).Append(" expected ").Append(m.Expected).Append(" got ").Append(m.Actual)
+                  .Append(" gap ").Append(m.Gap.ToString("0.####", System.Globalization.CultureInfo.InvariantCulture))
+                  .Append(m.NearTie ? " (near-tie)" : " (DIVERGED)");
+            sb.AppendLine();
+        }
+        if (Stepwise is not null)
+            sb.Append("  stepwise-vs-prefill: argmax ").Append(Stepwise.ArgmaxAgrees ? "agrees" : $"DISAGREES ({Stepwise.StepwiseArgmax} vs {Stepwise.PrefillArgmax})")
+              .Append(", max |diff| ").Append(Stepwise.MaxAbsDiff.ToString("0.####", System.Globalization.CultureInfo.InvariantCulture))
+              .AppendLine(Stepwise.WithinBound ? "" : " (OVER BOUND)");
+        return sb.ToString();
+    }
+}
+
+/// <summary>
+/// Runs a <see cref="GoldenFile"/> against a forward pass and reports structured results; it never asserts, so the same logic serves the
+/// heavy tests, <c>admit-arch --golden</c> and tooling. The forward pass is supplied as a factory because each check needs fresh state.
+/// </summary>
+public static class GoldenParityRunner
+{
+    public static GoldenRunResult Run(GoldenFile golden, Func<IForwardPass> create, ParityOptions? options = null)
+    {
+        ArgumentNullException.ThrowIfNull(golden);
+        ArgumentNullException.ThrowIfNull(create);
+        options ??= new ParityOptions();
+
+        var cases = new List<GoldenCaseResult>();
+        foreach (var c in golden.Cases)
+        {
+            using var fwd = create();
+            cases.Add(RunCase(c, fwd, options));
+        }
+
+        StepwiseCheckResult? stepwise = null;
+        var basis = golden.Cases.FirstOrDefault(c => c.PromptTokens.Length > 0 && c.Tokens.Length >= 2);
+        if (basis is not null)
+            stepwise = CheckStepwiseVsPrefill(create, basis.PromptTokens, basis.Tokens[0], basis.Tokens[1], options);
+
+        return new GoldenRunResult(golden.Architecture, cases, stepwise);
+    }
+
+    public static GoldenCaseResult RunCase(GoldenCase c, IForwardPass fwd, ParityOptions options)
+    {
+        if (c.PromptTokens.Length == 0) throw new InvalidDataException($"Golden case '{c.Name}' has no prompt tokens.");
+        bool teacher = string.Equals(c.Mode, "teacherForced", StringComparison.OrdinalIgnoreCase);
+        int n = c.Tokens.Length;
+        var mismatches = new List<PositionMismatch>();
+        var generated = new List<int>(n);
+
+        var logits = fwd.Prefill(c.PromptTokens);
+        int pos = c.PromptTokens.Length;
+        int matched = 0;
+        int compared = 0;
+        for (int i = 0; i < n; i++)
+        {
+            int vocab = Math.Min(logits.Length, fwd.VocabSize);
+            int top = ArgMax(logits, vocab);
+            generated.Add(top);
+            compared++;
+            if (top == c.Tokens[i])
+            {
+                matched++;
+            }
+            else
+            {
+                double gap = c.Tokens[i] >= 0 && c.Tokens[i] < vocab ? logits[top] - logits[c.Tokens[i]] : double.PositiveInfinity;
+                mismatches.Add(new PositionMismatch(i, c.Tokens[i], top, gap, gap <= options.NearTieTolerance));
+                // Free-running generation: after the first mismatch the two sequences are no longer comparable.
+                if (!teacher) break;
+            }
+            if (i + 1 < n)
+            {
+                // Teacher forcing feeds the reference token; free mode feeds our own (identical while they agree).
+                logits = fwd.Forward(teacher ? c.Tokens[i] : top, pos++);
+            }
+        }
+
+        var verdict = mismatches.Count == 0 ? CaseVerdict.Exact
+            : mismatches.All(m => m.NearTie) ? CaseVerdict.NearTie
+            : CaseVerdict.Diverged;
+        return new GoldenCaseResult(c.Name, teacher ? "teacherForced" : "free", verdict, compared, matched, mismatches, generated);
+    }
+
+    /// <summary>
+    /// Model-independent consistency: the last-position logits from a step-by-step decode must agree with a single-pass prefill of the same
+    /// tokens (same argmax, and a bounded absolute difference). Mirrors the check each parity class used to carry.
+    /// </summary>
+    public static StepwiseCheckResult CheckStepwiseVsPrefill(Func<IForwardPass> create, int[] prompt, int next1, int next2, ParityOptions options)
+    {
+        int[] full = [.. prompt, next1, next2];
+        float[] stepwise;
+        using (var fwd = create())
+        {
+            fwd.Prefill(prompt);
+            fwd.Forward(next1, prompt.Length);
+            var last = fwd.Forward(next2, prompt.Length + 1);
+            stepwise = last[..Math.Min(last.Length, fwd.VocabSize)].ToArray();
+        }
+        float[] single;
+        using (var fwd = create())
+        {
+            var last = fwd.Prefill(full);
+            single = last[..Math.Min(last.Length, fwd.VocabSize)].ToArray();
+        }
+
+        int a = ArgMax(stepwise, stepwise.Length), b = ArgMax(single, single.Length);
+        float maxDiff = 0;
+        for (int i = 0; i < Math.Min(stepwise.Length, single.Length); i++)
+            maxDiff = Math.Max(maxDiff, Math.Abs(stepwise[i] - single[i]));
+        return new StepwiseCheckResult(a == b, maxDiff, a, b, maxDiff < options.StepwiseMaxAbsDiff);
+    }
+
+    private static int ArgMax(ReadOnlySpan<float> logits, int count)
+    {
+        int best = 0;
+        for (int i = 1; i < count; i++)
+            if (logits[i] > logits[best]) best = i;
+        return best;
+    }
+}
