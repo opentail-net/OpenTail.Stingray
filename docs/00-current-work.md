@@ -98,6 +98,9 @@ text model wants 4096), Llama 4 vision (93 GB), MobileNetV5 (no checkpoint decla
 
 ## 3. Product and runtime
 
+- **Architecture semantics in the descriptor** (adding a model = one component, no central edits): plan and live checklist in
+  [2-coverage/2026-10-08-architecture-semantics-admission-plan.md](2-coverage/2026-10-08-architecture-semantics-admission-plan.md).
+
 1. **Front door, steps 3-4** (steps 1-2 done: README, catalog, model home, `stingray setup`): starter manifest, README recipes
    around task commands. [3-product-and-runtime/103-front-door-design.md](3-product-and-runtime/103-front-door-design.md).
 2. **Configuration ownership**: source-tracked effective configuration beyond the static planning

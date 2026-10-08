@@ -1,5 +1,7 @@
 # Forward-pass selection and refusal matrix
 
+> **Historical snapshot (pre-`5c591e6`).** Selection is now plan-driven (`ExecutionPlanner` -> `ExecutionPlan` -> `ArchitectureDescriptor.ConstructForwardPass`). Current plan: [2026-10-08-architecture-semantics-admission-plan.md](2026-10-08-architecture-semantics-admission-plan.md).
+
 Characterization of the current CLI and server loader selection paths. This document records existing behavior; it does not propose or make runtime changes. Line numbers are source lines re-read on 2026-10-05 and should be refreshed after source edits.
 
 **Classification:** **architecture-driven** means architecture ID/family decides; **shape-driven** means hyperparameters or tensor presence decides; **hardware/flag-driven** means requested backend, layer count, device availability, planner result, TurboQuant, or draft options decide. Many rows combine categories; each lists all relevant categories. The matrix covers model forward-pass class selection and explicit compatibility refusals/fallbacks, including speculative decoders that select a target pass. It omits unrelated validation (prompt, tokenizer, model path, image/mmproj) except package capability gates that directly refuse forward-pass modes.

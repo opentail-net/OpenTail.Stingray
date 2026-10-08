@@ -1,5 +1,7 @@
 # Architecture descriptor registry: plan and migration (2026-10-05)
 
+> **Historical.** The descriptor/registry/factory migration here is complete. Open follow-up work (model semantics owned by the descriptor): [2026-10-08-architecture-semantics-admission-plan.md](2026-10-08-architecture-semantics-admission-plan.md).
+
 Source of the idea: TensorSharp's `Architecture/ModelArchitectureDescriptor.cs` + `BuiltInArchitectures.cs`
 (BSD-3; see THIRD_PARTY_NOTICES.md). Code: `src/OpenTail.Stingray.Engine/Architectures/`.
 
