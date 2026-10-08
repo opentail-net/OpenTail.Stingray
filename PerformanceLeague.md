@@ -1243,6 +1243,59 @@ Short-context decode re-check (24-token-class prompt, 128 generated, 3 runs; lla
 
 **Regressions found by this sweep: one confirmed — Phi-3-mini prefill (-12% vs 2026-09-13, now 0.52x of llama.cpp; cause not bisected. **CLOSED 2026-10-08, won't investigate:** Phi-3 has tiny monthly download numbers, so a 12% prefill drop on it is not worth engineering time; accepted as a known, documented exception (user decision). Reopen only if Phi-3 usage grows or the same drop shows up on a more widely used model).** Mistral-7B / Qwen3-8B decode are 4% below their 2026-10-01 rows, inside the 3-run spread, so flagged "watch", not regression. Everything else matched or beat its previous row. Other note: the dirty working tree includes the architecture-semantics migration, so this is the first sweep with it applied. Decode/prefill for models with a ratio < 1.0 prefill (Qwen3-0.6B 0.79x, LFM2-1.2B 0.78x) was already below parity before and is unchanged within noise.
 
+## Load-and-generate smoke sweep of the other available checkpoints, CPU (2026-10-08, F:\_models, H:\_models, K:\_other_models, models\_models)
+
+**What this is:** does each text GGUF load and produce sane output? One run each, `stingray -g 0 -p "The capital of France is" -n 16 --temp 0 --allow-unverified-arch`, raw (no chat template), machine idle. **Speeds are single-run and decode-only is meaningful; the 5-token prefill is startup-dominated, so no prefill figure is quoted. No llama.cpp reference was run, so there are no ratios.** Not a substitute for the best-of-3 table above.
+
+**Result: 46 models tried: 41 loaded and generated, 4 crashed at load (now fixed), 1 timed out.**
+
+**Crashed (found by this sweep, fixed the same day):** deepreinforce Ornith-1.0-9B, Qwen3.6-27B, Qwen3.8-27B, Qwen3.6-35B-A3B. All threw `Unsupported forward pass kind 'CpuHybridGdn' for dense architecture` because the `qwen35`/`qwen35moe` descriptors used `CreateDense` instead of `CreateHybridGdn`. Fixed in `QwenArchitectures.cs`, guarded by `ArchitectureRegistryTests.GatedDeltaNetFamilies_UseTheHybridGdnFactory`. Re-run after the fix (CPU, 16 tokens): Ornith-9B decode **6.6 t/s**, Qwen3.8-27B **2.4 t/s**, Qwen3.6-35B-A3B **3.1 t/s**; all coherent. (Qwen3.6-27B shares the descriptor and loader path; not re-run separately.) **This was a regression from the plan-driven migration, invisible to the Fast suites because no Fast test loads a Gated-DeltaNet checkpoint.**
+
+**Timed out:** cerebras GLM-4.5-Air-REAP-82B-A12B Q2_K (33 GB) hit the 420 s cap with no output; inconclusive (large model, cold mmap), not a verified failure.
+
+| Model | Decode t/s (single run) | Output |
+|---|---:|---|
+| gpt2 Q8_0 | 145.6 | odd (`<|imp...`), special-token text; base model, unverified |
+| pythia-160m Q8_0 | 143.6 | gibberish-style (160M base model); runs |
+| granite-4.0-h-350m Q8_0 | 52.2 | correct (Paris) |
+| ERNIE-4.5-0.3B Q8_0 | 57.0 | correct |
+| jais-590m-chat Q4_K_M | 13.8 | correct |
+| qwen2.5-0.5b / coder-0.5b Q4_K_M | 48.5 / 48.7 | correct |
+| Hunyuan-0.5B Q8_0 | 53.4 | thinking-style, coherent |
+| Maincoder-1B Q4_K_M | 10.7 | correct |
+| qwen2.5-1.5b / coder-1.5b Q4_K_M | 27.4 / 26.3 | correct |
+| SmolLM2-1.7B Q5_K_M | 20.5 | correct |
+| granite-4.0-h-1b Q8_0 | 19.2 | correct |
+| stablelm-zephyr-3b Q4_K_M | 19.0 | coherent |
+| starcoder2-3b Q4_K_M | 17.5 | odd (`<`), code model on a prose prompt; unverified |
+| TinyLlama-4x1.1B-MoE Q4_K_M | 28.7 | correct |
+| qwen2.5-3b / coder-3b Q4_K_M | 15.9 / 15.7 | correct |
+| phi-2 Q4_K_M | 12.7 | correct |
+| gemma-3-4b-it Q4_K_M | 13.6 | coherent but not an answer (raw prompt, instruct model) |
+| OLMoE-1B-7B Q4_K_M | 38.4 | correct |
+| xverse-7b-chat Q4_K_M | 8.7 | odd (`<`); unverified |
+| Ministral-8B Q4_K_M | 7.9 | correct |
+| gemma-4-E4B-it Q4_K_M | 11.2 | correct |
+| gemma-4-12b-it Q4_K_M | 5.2 | correct |
+| LFM2-8B-A1B Q4_K_M | 29.3 | correct |
+| c4ai-command-r7b Q4_K_M | 7.2 | correct |
+| Apertus-8B Q4_K_M | 6.4 | correct |
+| DeepSeek-V2-Lite Q2_K | 25.9 | coherent (still diverges from llama-server at token 9, bugstofix #24) |
+| DeepSeek-V2-Lite Q8_0 | 12.5 | coherent |
+| Qwen1.5-MoE-A2.7B Q4_K_M | 13.6 | correct |
+| GLM-4.7-Flash Q2_K | 13.0 | coherent (thinking); 173 s wall incl. load |
+| gpt-oss-20b MXFP4 | 6.5 | odd (`<`): harmony channel tokens, raw prompt; unverified |
+| Mistral-Small-3.2-24B Q4_K_S | 2.8 | correct; 248 s wall incl. load |
+| Trinity-Mini Q4_K_M | 15.8 | coherent |
+| Qwen3-Coder-30B-A3B Q4_K_M | 12.0 | correct |
+| Phi-3.5-MoE Q3_K_M | 11.1 | correct |
+| EXAONE-4.5-33B Q4_K_M | 2.0 | coherent; 259 s wall incl. load |
+| Nous-Hermes-2-Mixtral-8x7B Q4_K_S | 4.9 | correct |
+| Hunyuan-A13B Q3_K_S | 5.7 | coherent |
+| GLM-4.5-Air Q2_K (42 GB) | 0.7 | coherent (thinking); memory-bound, slow |
+
+"Odd" rows are not failures: they are base/code models fed a raw prompt, or models that emit control tokens first. They were not compared with a reference, so they stay unverified for output correctness.
+
 ## CUDA Inference — No Numbers Yet
 
 > **No CUDA GPU on dev machine.** No measured numbers exist for CUDA on this box.
