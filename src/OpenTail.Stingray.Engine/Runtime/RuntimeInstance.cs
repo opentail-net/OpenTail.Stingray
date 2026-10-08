@@ -58,6 +58,7 @@ public sealed class RuntimeInstance : IDisposable
     public static RuntimeInstance Create(ExecutionPlan plan, Model model)
     {
         ArgumentNullException.ThrowIfNull(plan);
+        long createStart = System.Diagnostics.Stopwatch.GetTimestamp();
         ArgumentNullException.ThrowIfNull(model);
 
         if (plan.BackendPlan?.ThreadCount > 0)
@@ -248,7 +249,7 @@ public sealed class RuntimeInstance : IDisposable
                 engine = new InferenceEngine(forwardPass, tokenizer, model.Architecture, thinkTokenId, endThinkTokenId, settings, owned: [.. engineOwned]);
             }
 
-            return new RuntimeInstance(
+            var created = new RuntimeInstance(
                 plan,
                 model,
                 engine,
@@ -258,6 +259,9 @@ public sealed class RuntimeInstance : IDisposable
                 cudaBackend,
                 vulkanBackend,
                 ownedDisposables);
+            if (EngineEvents.Enabled)
+                EngineEvents.Emit(new(EngineEventKind.ModelLoaded, model.Architecture, Ms: System.Diagnostics.Stopwatch.GetElapsedTime(createStart).TotalMilliseconds, Detail: $"forwardPass={plan.ForwardPassKind}"));
+            return created;
         }
         catch
         {

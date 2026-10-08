@@ -191,6 +191,7 @@ public static class KnownEnvironmentVariables
         "STINGRAY_MTP_DRAFT_N",
         "STINGRAY_MTP_MIN_ACCEPT",
         "STINGRAY_GC_STATS",
+        "STINGRAY_EVENTS",
         "STINGRAY_MTP_PROBE_STEPS",
         "STINGRAY_NO_THINKING",
         "STINGRAY_N_GPU_LAYERS",

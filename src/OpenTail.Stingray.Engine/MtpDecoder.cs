@@ -485,6 +485,9 @@ public sealed class MtpDecoder
                 }
             }
 
+            if (EngineEvents.Enabled)
+                EngineEvents.Emit(new(EngineEventKind.MtpStep, A: P, B: kEff - 1, C: a));
+
             if (trace)
                 Console.Error.WriteLine(
                     $"[mtp-batch] P={P} k={kEff} t1={t1} " +

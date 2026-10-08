@@ -1480,6 +1480,8 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         var decodeMs = sw.Elapsed.TotalMilliseconds;
 
         Console.WriteLine();
+        EngineEvents.Emit(new(EngineEventKind.PrefillCompleted, A: tokens.Count, Ms: prefillMs));
+        EngineEvents.Emit(new(EngineEventKind.DecodeCompleted, A: totalDecoded, B: generated, Ms: decodeMs));
         AnsiConsole.MarkupLine($"\n[dim]Prefill: {tokens.Count} tokens, {tokens.Count / (prefillMs / 1000):F1} t/s | " +
             $"Decode: {totalDecoded} tokens, {totalDecoded / (decodeMs / 1000):F1} t/s" +
             (totalDecoded > generated ? $" ({generated} visible, {totalDecoded - generated} thinking)" : "") +
@@ -1670,6 +1672,8 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         var decodeMs = sw.Elapsed.TotalMilliseconds;
 
         Console.WriteLine();
+        EngineEvents.Emit(new(EngineEventKind.PrefillCompleted, A: tokens.Count, Ms: prefillMs));
+        EngineEvents.Emit(new(EngineEventKind.DecodeCompleted, A: totalDecoded, B: generated, Ms: decodeMs));
         AnsiConsole.MarkupLine($"\n[dim]Prefill: {tokens.Count} tokens, {tokens.Count / (prefillMs / 1000):F1} t/s | " +
             $"Decode: {totalDecoded} tokens, {totalDecoded / (decodeMs / 1000):F1} t/s" +
             (totalDecoded > generated ? $" ({generated} visible, {totalDecoded - generated} thinking)" : "") +
@@ -1788,6 +1792,8 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         var decodeMs = sw.Elapsed.TotalMilliseconds;
 
         Console.WriteLine();
+        EngineEvents.Emit(new(EngineEventKind.PrefillCompleted, A: tokens.Count, Ms: prefillMs));
+        EngineEvents.Emit(new(EngineEventKind.DecodeCompleted, A: totalDecoded, B: generated, Ms: decodeMs));
         AnsiConsole.MarkupLine($"\n[dim]Prefill: {tokens.Count} tokens, {tokens.Count / (prefillMs / 1000):F1} t/s | " +
             $"Decode: {totalDecoded} tokens, {totalDecoded / (decodeMs / 1000):F1} t/s" +
             (totalDecoded > generated ? $" ({generated} visible, {totalDecoded - generated} thinking)" : "") +

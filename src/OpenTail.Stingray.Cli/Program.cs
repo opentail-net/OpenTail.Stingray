@@ -7,14 +7,26 @@ using OpenTail.Stingray.Cli;
 Console.OutputEncoding = Encoding.UTF8;
 Console.InputEncoding = Encoding.UTF8;
 
-// STINGRAY_GC_STATS=1: print garbage-collector activity at process exit (collections per generation, bytes allocated, total pause).
-// Whole process incl. model load, so it is an upper bound for what GC can cost a decode loop.
-if (Environment.GetEnvironmentVariable("STINGRAY_GC_STATS") == "1")
-    AppDomain.CurrentDomain.ProcessExit += (_, _) => Console.Error.WriteLine(
-        $"[gc] gen0={GC.CollectionCount(0)} gen1={GC.CollectionCount(1)} gen2={GC.CollectionCount(2)} " +
-        $"allocated={GC.GetTotalAllocatedBytes() / 1048576.0:F1} MiB pause={GC.GetTotalPauseDuration().TotalMilliseconds:F0} ms " +
-        $"managedHeap={GC.GetGCMemoryInfo().HeapSizeBytes / 1048576.0:F0} MiB gcCommitted={GC.GetGCMemoryInfo().TotalCommittedBytes / 1048576.0:F0} MiB " +
-        $"peakWorkingSet={System.Diagnostics.Process.GetCurrentProcess().PeakWorkingSet64 / 1048576.0:F0} MiB");
+// STINGRAY_EVENTS=1: stream engine telemetry (EngineEvents) to stderr as one JSON object per line.
+// STINGRAY_GC_STATS=1: print garbage-collector activity at process exit (collections per generation, bytes allocated, total pause,
+// heap sizes, peak working set). Whole process incl. model load, so it is an upper bound for what GC can cost a decode loop.
+bool eventsToStderr = Environment.GetEnvironmentVariable("STINGRAY_EVENTS") == "1";
+bool gcStats = Environment.GetEnvironmentVariable("STINGRAY_GC_STATS") == "1";
+if (eventsToStderr) OpenTail.Stingray.Core.EngineEvents.Subscribe(new StderrJsonEventSink());
+if (eventsToStderr || gcStats)
+    AppDomain.CurrentDomain.ProcessExit += (_, _) =>
+    {
+        var mem = GC.GetGCMemoryInfo();
+        string sizes = $"allocated={GC.GetTotalAllocatedBytes() / 1048576.0:F1} MiB managedHeap={mem.HeapSizeBytes / 1048576.0:F0} MiB " +
+                       $"gcCommitted={mem.TotalCommittedBytes / 1048576.0:F0} MiB " +
+                       $"peakWorkingSet={System.Diagnostics.Process.GetCurrentProcess().PeakWorkingSet64 / 1048576.0:F0} MiB";
+        double pauseMs = GC.GetTotalPauseDuration().TotalMilliseconds;
+        OpenTail.Stingray.Core.EngineEvents.Emit(new(OpenTail.Stingray.Core.EngineEventKind.GcStats,
+            A: GC.CollectionCount(0), B: GC.CollectionCount(1), C: GC.CollectionCount(2), Ms: pauseMs, Detail: sizes));
+        if (gcStats)
+            Console.Error.WriteLine($"[gc] gen0={GC.CollectionCount(0)} gen1={GC.CollectionCount(1)} gen2={GC.CollectionCount(2)} " +
+                                    $"{sizes} pause={pauseMs:F0} ms");
+    };
 
 // Warn about STINGRAY_* variables the engine never reads. They are consumed ad hoc at ~141
 // call sites, so a misspelling is indistinguishable from "unset" â the run silently ignores the
