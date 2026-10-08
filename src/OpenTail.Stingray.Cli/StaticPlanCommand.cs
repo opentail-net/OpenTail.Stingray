@@ -463,7 +463,7 @@ public sealed record StaticPlanReport(
             hp.NumKvHeads, hp.IsMoE, hp.NumMtpLayers, Metadata("general.name"), Metadata("general.file_type"),
             Metadata("general.quantization_version"), !string.IsNullOrWhiteSpace(Metadata("tokenizer.chat_template")),
             HasToken("<think>") && HasToken("</think>"),
-            ArchitectureRegistry.Find(arch)?.SupportsImageInput ?? (arch == "gemma4"),
+            ArchitectureRegistry.Find(arch)?.SupportsImageInput ?? false,
             parameterElements,
             vocabularySize, tensorDtypes);
         var executionPlan = BuildExecutionPlan(path, model, config, compatibility,

@@ -12,6 +12,7 @@ internal static class GraniteArchitectures
     public static readonly ArchitectureDescriptor Granitehybrid = new()
     {
         Id = "granitehybrid",
+        ForwardPassFamily = ForwardPassFamily.HybridGdn, // the hybrid-recurrent factory; it delegates Mamba-2 layouts to the dense passes
         ApplyModelSemantics = ctx => FamilyModelSemantics.Granite(ctx, miniCpm: false, hybrid: true) with { NormalizeMoeTopKWeights = true },
         Status = AdmissionStatus.Admitted,
         StatusAnchor = "IBM Granite 4.0-H (`granitehybrid`)",

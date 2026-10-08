@@ -409,8 +409,8 @@ public static class ExecutionPlanner
         ImmutableArray<string>.Builder warnings)
     {
         var descriptor = ArchitectureRegistry.Find(model.Semantics.Architecture);
-        bool archSupportsCuda = descriptor is null || (descriptor.SupportedBackends & SupportedBackends.Cuda) != 0;
-        bool archSupportsVulkan = descriptor is null || (descriptor.SupportedBackends & SupportedBackends.Vulkan) != 0;
+        bool archSupportsCuda = descriptor is null || (descriptor.Capabilities.Backends & SupportedBackends.Cuda) != 0;
+        bool archSupportsVulkan = descriptor is null || (descriptor.Capabilities.Backends & SupportedBackends.Vulkan) != 0;
 
         if (!string.IsNullOrEmpty(request.PinnedBackend) &&
             !string.Equals(request.PinnedBackend, "auto", StringComparison.OrdinalIgnoreCase))
@@ -460,7 +460,7 @@ public static class ExecutionPlanner
 
     private static bool CanUseCuda(ModelDescription model, ArchitectureDescriptor? descriptor)
     {
-        if (descriptor is not null && (descriptor.SupportedBackends & SupportedBackends.Cuda) == 0)
+        if (descriptor is not null && (descriptor.Capabilities.Backends & SupportedBackends.Cuda) == 0)
             return false;
         // RWKV, SafeTensors, and GPT-OSS currently lack CUDA kernels
         if (model.Semantics.Family is ForwardPassFamily.Rwkv or ForwardPassFamily.GptOss)
@@ -470,7 +470,7 @@ public static class ExecutionPlanner
 
     private static bool CanUseVulkan(ModelDescription model, ArchitectureDescriptor? descriptor)
     {
-        if (descriptor is not null && (descriptor.SupportedBackends & SupportedBackends.Vulkan) == 0)
+        if (descriptor is not null && (descriptor.Capabilities.Backends & SupportedBackends.Vulkan) == 0)
             return false;
         return true;
     }

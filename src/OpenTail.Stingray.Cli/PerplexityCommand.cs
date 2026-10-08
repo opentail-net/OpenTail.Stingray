@@ -399,7 +399,7 @@ public sealed class PerplexityCommand : Command<PerplexityCommand.Settings>
                 backendLabel = $"[green]Vulkan[/] ({vulkanBackend.Name}, all {hp.NumLayers} layers){kvTag}";
             }
         }
-        else if (Convert.ToString(model.Metadata["general.architecture"]) is "rwkv6" or "rwkv7")
+        else if (ArchitectureRegistry.Find(Convert.ToString(model.Metadata["general.architecture"]))?.ForwardPassFamily == ForwardPassFamily.Rwkv)
         {
             if (settings.Batched || settings.TurboQuant)
             {
@@ -409,7 +409,7 @@ public sealed class PerplexityCommand : Command<PerplexityCommand.Settings>
             fwd = RwkvForwardPassBase.Create(model);
             backendLabel = "[blue]CPU[/] (RWKV)";
         }
-        else if (Convert.ToString(model.Metadata["general.architecture"]) == "gpt-oss")
+        else if (ArchitectureRegistry.Find(Convert.ToString(model.Metadata["general.architecture"]))?.ForwardPassFamily == ForwardPassFamily.GptOss)
         {
             // gpt-oss runs only on its own CPU pass (sinks, SWA, biased MoE, OAI SwiGLU, YaRN, MXFP4),
             // as RunCommand and the server route it. The generic ForwardPass scored ~994k on

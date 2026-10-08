@@ -92,6 +92,7 @@ internal static class QwenArchitectures
     public static readonly ArchitectureDescriptor Qwen35 = new()
     {
         Id = "qwen35",
+        ForwardPassFamily = ForwardPassFamily.HybridGdn,
         UsesNeoxRope = true,
         Status = AdmissionStatus.Admitted,
         StatusAnchor = "Qwen3.5 / 3.6 / 3.8 hybrid Gated DeltaNet + MoE",
@@ -103,6 +104,7 @@ internal static class QwenArchitectures
     public static readonly ArchitectureDescriptor Qwen35moe = new()
     {
         Id = "qwen35moe",
+        ForwardPassFamily = ForwardPassFamily.HybridGdn,
         UsesNeoxRope = true,
         Status = AdmissionStatus.Admitted,
         StatusAnchor = "Qwen3.5 / 3.6 / 3.8 hybrid Gated DeltaNet + MoE",

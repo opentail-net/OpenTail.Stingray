@@ -25,7 +25,7 @@ gpt-oss|Admitted|GptOss|Cpu, Vulkan|batch=False|canBatchPredicate=False|img=Fals
 gpt2|Admitted|Dense|All|batch=True|canBatchPredicate=False|img=False|aud=False|neox=False|thinkOff=False|fallbackChat=ChatMl|chatProtocol=chatml|toolAdapter=default|semantics=True|aliases=
 gptneox|Admitted|Dense|All|batch=True|canBatchPredicate=False|img=False|aud=False|neox=True|thinkOff=False|fallbackChat=ChatMl|chatProtocol=chatml|toolAdapter=default|semantics=False|aliases=
 granite|Admitted|Dense|All|batch=True|canBatchPredicate=False|img=False|aud=False|neox=False|thinkOff=False|fallbackChat=Granite|chatProtocol=granite|toolAdapter=default|semantics=True|aliases=
-granitehybrid|Admitted|Dense|All|batch=False|canBatchPredicate=False|img=False|aud=False|neox=False|thinkOff=False|fallbackChat=ChatMl|chatProtocol=granite|toolAdapter=default|semantics=True|aliases=
+granitehybrid|Admitted|HybridGdn|All|batch=False|canBatchPredicate=False|img=False|aud=False|neox=False|thinkOff=False|fallbackChat=ChatMl|chatProtocol=granite|toolAdapter=default|semantics=True|aliases=
 granitemoe|Admitted|Dense|All|batch=True|canBatchPredicate=False|img=False|aud=False|neox=False|thinkOff=False|fallbackChat=ChatMl|chatProtocol=granite|toolAdapter=default|semantics=True|aliases=
 hunyuan-dense|Admitted|Dense|All|batch=True|canBatchPredicate=False|img=False|aud=False|neox=True|thinkOff=False|fallbackChat=ChatMl|chatProtocol=chatml|toolAdapter=default|semantics=True|aliases=
 hunyuan-moe|Admitted|Dense|All|batch=True|canBatchPredicate=False|img=False|aud=False|neox=True|thinkOff=False|fallbackChat=ChatMl|chatProtocol=chatml|toolAdapter=default|semantics=True|aliases=
@@ -57,8 +57,8 @@ qwen2|Admitted|Dense|All|batch=True|canBatchPredicate=False|img=False|aud=False|
 qwen2moe|Admitted|Dense|All|batch=True|canBatchPredicate=False|img=False|aud=False|neox=True|thinkOff=False|fallbackChat=ChatMl|chatProtocol=chatml|toolAdapter=default|semantics=False|aliases=
 qwen2vl|Admitted|Dense|All|batch=True|canBatchPredicate=False|img=False|aud=False|neox=True|thinkOff=False|fallbackChat=ChatMl|chatProtocol=chatml|toolAdapter=default|semantics=False|aliases=
 qwen3|Admitted|Dense|All|batch=True|canBatchPredicate=False|img=False|aud=False|neox=True|thinkOff=False|fallbackChat=ChatMl|chatProtocol=chatml|toolAdapter=qwen3|semantics=False|aliases=
-qwen35|Admitted|Dense|All|batch=True|canBatchPredicate=False|img=False|aud=False|neox=True|thinkOff=False|fallbackChat=ChatMl|chatProtocol=chatml|toolAdapter=qwen35|semantics=False|aliases=
-qwen35moe|Admitted|Dense|All|batch=True|canBatchPredicate=False|img=False|aud=False|neox=True|thinkOff=False|fallbackChat=ChatMl|chatProtocol=chatml|toolAdapter=qwen35moe|semantics=False|aliases=
+qwen35|Admitted|HybridGdn|All|batch=True|canBatchPredicate=False|img=False|aud=False|neox=True|thinkOff=False|fallbackChat=ChatMl|chatProtocol=chatml|toolAdapter=qwen35|semantics=False|aliases=
+qwen35moe|Admitted|HybridGdn|All|batch=True|canBatchPredicate=False|img=False|aud=False|neox=True|thinkOff=False|fallbackChat=ChatMl|chatProtocol=chatml|toolAdapter=qwen35moe|semantics=False|aliases=
 qwen3moe|Admitted|Dense|All|batch=True|canBatchPredicate=False|img=False|aud=False|neox=True|thinkOff=False|fallbackChat=ChatMl|chatProtocol=chatml|toolAdapter=qwen3moe|semantics=True|aliases=
 qwen3vl|Admitted|Dense|All|batch=True|canBatchPredicate=False|img=False|aud=False|neox=True|thinkOff=False|fallbackChat=ChatMl|chatProtocol=chatml|toolAdapter=default|semantics=True|aliases=
 qwen4exp|NotAdmitted|Dense|All|batch=True|canBatchPredicate=False|img=False|aud=False|neox=False|thinkOff=False|fallbackChat=ChatMl|chatProtocol=chatml|toolAdapter=default|semantics=False|aliases=

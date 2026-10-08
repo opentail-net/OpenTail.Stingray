@@ -43,6 +43,15 @@ public enum FallbackChatFormat
 /// spread over CLI/server <c>arch == "..."</c> checks. Add a family by adding one
 /// <c>*Architecture.cs</c> beside this file and one line in <see cref="BuiltInArchitectures"/>.
 /// </summary>
+/// <summary>The planner-facing capability view of an <see cref="ArchitectureDescriptor"/> (see <see cref="ArchitectureDescriptor.Capabilities"/>).</summary>
+public sealed record ArchitectureCapabilities(
+    SupportedBackends Backends,
+    bool ContinuousBatching,
+    bool HasBatchPredicate,
+    bool ImageInput,
+    bool AudioInput,
+    ForwardPassFamily Family);
+
 public sealed class ArchitectureDescriptor
 {
     /// <summary>The GGUF <c>general.architecture</c> value.</summary>
@@ -125,6 +134,15 @@ public sealed class ArchitectureDescriptor
     public bool SupportsImageInput { get; init; }
     public bool SupportsAudioInput { get; init; }
 
+    /// <summary>
+    /// What this model CAN do, as one small read-only value. The planner reads this and nothing else from the descriptor:
+    /// a descriptor says what the model supports ("can run on CUDA", "can batch", "takes image input"), never what to do on a
+    /// given machine ("use CUDA"), which stays the planner's decision. A projection over the flat init fields so the 70-odd
+    /// descriptors keep their declarative syntax (docs/2-coverage/2026-10-08-architecture-capabilities-plan.md, Phase 1).
+    /// </summary>
+    public ArchitectureCapabilities Capabilities => new(
+        SupportedBackends, SupportsContinuousBatching, CanBatchPredicate is not null, SupportsImageInput, SupportsAudioInput, ForwardPassFamily);
+
     /// <summary>File-name patterns, tried in order, for finding this family's mmproj companion beside the model GGUF.</summary>
     public IReadOnlyList<string> ProjectorFileHints { get; init; } = [];
 
@@ -195,6 +213,11 @@ public sealed class ArchitectureDescriptor
             if (ForwardPassFamily != ForwardPassFamily.Dense && CreateForwardPass == CommonForwardPassFactory.CreateDense)
                 throw new InvalidOperationException(
                     $"Admitted architecture '{Id}' has non-dense ForwardPassFamily '{ForwardPassFamily}' but uses CommonForwardPassFactory.CreateDense.");
+            // The reverse direction (found 2026-10-08): qwen35/qwen35moe declared no family (so Dense) while using the dense factory
+            // for a Gated-DeltaNet model, and nothing noticed. A hybrid factory now requires the hybrid family.
+            if (CreateForwardPass == CommonForwardPassFactory.CreateHybridGdn && ForwardPassFamily != ForwardPassFamily.HybridGdn)
+                throw new InvalidOperationException(
+                    $"Admitted architecture '{Id}' uses CommonForwardPassFactory.CreateHybridGdn but declares ForwardPassFamily '{ForwardPassFamily}'; declare ForwardPassFamily.HybridGdn.");
         }
         else if (StatusAnchor is not null || StatusExemption is not null)
         {

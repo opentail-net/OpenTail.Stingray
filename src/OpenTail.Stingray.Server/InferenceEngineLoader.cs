@@ -52,9 +52,9 @@ public static class InferenceEngineLoader
 
         if (!string.IsNullOrWhiteSpace(plan.Modality?.MmprojPath) && instance.Engine is InferenceEngine ieVision)
         {
-            if (!string.Equals(targetArch, "gemma4", StringComparison.Ordinal))
+            if (ArchitectureRegistry.Find(targetArch)?.SupportsImageInput != true)
                 throw new InvalidOperationException(
-                    "Image input (MmprojPath / STINGRAY_MMPROJ) is only supported for Gemma 4 (gemma4uv) " +
+                    "Image input (MmprojPath / STINGRAY_MMPROJ) is only supported for architectures that declare image input (currently Gemma 4, gemma4uv) " +
                     $"text models; this model's architecture is '{targetArch}'.");
             if (!instance.ForwardPass.SupportsEmbeddingInput)
                 throw new InvalidOperationException(

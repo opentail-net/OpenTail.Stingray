@@ -161,7 +161,7 @@ public static class ForwardPassSelection
             return ForwardPassDecision.Refuse($"Unknown --backend value '{unsupportedBackend}'. Expected one of: auto, vulkan, cuda.");
 
         ArchitectureDescriptor? descriptor = ArchitectureRegistry.Find(request.Architecture);
-        ForwardPassFamily family = descriptor?.ForwardPassFamily ?? ForwardPassFamily.Dense;
+        ForwardPassFamily family = descriptor?.Capabilities.Family ?? ForwardPassFamily.Dense;
 
         bool draftRequested = request.HasDraftModel || request.DraftLookup;
         string tqMode = request.TurboQuantMode.Trim().ToLowerInvariant();
@@ -387,7 +387,7 @@ public static class ForwardPassSelection
 
         if (descriptor is not null && gpuRequested
                 && family is not (ForwardPassFamily.Rwkv or ForwardPassFamily.GptOss)
-                && !SupportsBackend(descriptor.SupportedBackends, backend))
+                && !SupportsBackend(descriptor.Capabilities.Backends, backend))
         {
             backend = ForwardPassBackend.Cpu;
             gpuRequested = false;

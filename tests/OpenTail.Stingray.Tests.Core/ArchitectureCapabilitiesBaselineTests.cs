@@ -124,4 +124,29 @@ public sealed class ArchitectureCapabilitiesBaselineTests
         Assert.True(shrank.Count == 0,
             "Literals were removed (good). Lower the baseline so it cannot creep back: STINGRAY_UPDATE_BASELINE=1.\n  " + string.Join("\n  ", shrank));
     }
+
+    /// <summary>
+    /// The model-vs-machine boundary (capabilities plan): the planner and the forward-pass selection decide what to run from a
+    /// descriptor's <c>Capabilities</c> only. Descriptive reads (<c>Id</c>, <c>BackendLimitation</c>, used in explanations) are allowed.
+    /// A new read of any other descriptor member from these files fails here; add it to <c>ArchitectureCapabilities</c> instead.
+    /// </summary>
+    [Fact]
+    public void PlannerAndSelection_ReadOnlyCapabilities_FromTheDescriptor()
+    {
+        string engine = Path.Combine(Root(), "src", "OpenTail.Stingray.Engine");
+        var files = Directory.EnumerateFiles(Path.Combine(engine, "Planning"), "*.cs")
+            .Append(Path.Combine(engine, "Architectures", "ForwardPassSelection.cs"));
+        var allowed = new HashSet<string>(StringComparer.Ordinal) { "Capabilities", "Id", "BackendLimitation" };
+        var rx = new System.Text.RegularExpressions.Regex(@"\bdescriptor\??\.(\w+)");
+        var bad = new List<string>();
+        foreach (var file in files)
+            foreach (var (line, i) in File.ReadLines(file).Select((l, i) => (l, i + 1)))
+            {
+                if (line.TrimStart().StartsWith("//", StringComparison.Ordinal)) continue;
+                foreach (System.Text.RegularExpressions.Match m in rx.Matches(line))
+                    if (!allowed.Contains(m.Groups[1].Value))
+                        bad.Add($"{Path.GetFileName(file)}:{i}: descriptor.{m.Groups[1].Value}");
+            }
+        Assert.True(bad.Count == 0, "Planner/selection read a descriptor member other than Capabilities:\n  " + string.Join("\n  ", bad));
+    }
 }

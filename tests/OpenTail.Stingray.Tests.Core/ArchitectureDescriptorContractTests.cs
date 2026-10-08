@@ -251,6 +251,16 @@ public sealed class ArchitectureDescriptorContractTests
             RecognizeRelabelledFile = (_, _) => true,
         }.Validate());
 
+        // Hybrid factory with the default (Dense) family: the qwen35 mistake of 2026-10-08, in the other direction.
+        Assert.Throws<InvalidOperationException>(() => new ArchitectureDescriptor
+        {
+            Id = "test",
+            Status = AdmissionStatus.Admitted,
+            EvidenceDoc = "docs/STATUS.md",
+            StatusExemption = "exempt",
+            CreateForwardPass = CommonForwardPassFactory.CreateHybridGdn,
+        }.Validate());
+
         // Admitted descriptor missing CreateForwardPass
         Assert.Throws<InvalidOperationException>(() => new ArchitectureDescriptor
         {

@@ -1,8 +1,7 @@
 src/OpenTail.Stingray.Cli/AdmitArchCommand.cs|2
 src/OpenTail.Stingray.Cli/ImageCommand.cs|1
-src/OpenTail.Stingray.Cli/PerplexityCommand.cs|3
 src/OpenTail.Stingray.Cli/RunCommand.cs|4
-src/OpenTail.Stingray.Cli/StaticPlanCommand.cs|2
+src/OpenTail.Stingray.Cli/StaticPlanCommand.cs|1
 src/OpenTail.Stingray.Cli/TtsEngines.cs|1
 src/OpenTail.Stingray.Core/GgufModel.cs|2
 src/OpenTail.Stingray.Core/GgufTokenizer.cs|15
@@ -19,7 +18,6 @@ src/OpenTail.Stingray.Engine/Chat/ChatProtocolRegistry.cs|22
 src/OpenTail.Stingray.Engine/DeepSeek41Alpha.cs|1
 src/OpenTail.Stingray.Engine/GptOssAlpha.cs|1
 src/OpenTail.Stingray.Engine/ModelCompatibility.cs|1
-src/OpenTail.Stingray.Engine/Planning/ModelDescription.cs|2
 src/OpenTail.Stingray.Engine/PrefillHandoffFamilies.cs|13
 src/OpenTail.Stingray.Engine/Qwen4ExpAlpha.cs|1
 src/OpenTail.Stingray.Engine/Rwkv6ForwardPass.cs|1
@@ -27,7 +25,6 @@ src/OpenTail.Stingray.Engine/Rwkv7ForwardPass.cs|1
 src/OpenTail.Stingray.Engine/RwkvForwardPassBase.cs|4
 src/OpenTail.Stingray.Server/ChatTemplate.cs|1
 src/OpenTail.Stingray.Server/Endpoints/LlamaCompatEndpoints.cs|9
-src/OpenTail.Stingray.Server/InferenceEngineLoader.cs|1
 src/OpenTail.Stingray.Server/OpenTailStingrayServerOptions.cs|1
 src/OpenTail.Stingray.Vision/Exaone4VisionModel.cs|1
 src/OpenTail.Stingray.Vision/Gemma3VisionModel.cs|1

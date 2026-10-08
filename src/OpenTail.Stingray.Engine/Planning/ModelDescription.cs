@@ -70,7 +70,7 @@ public sealed record ModelDescription(
         var probe = resolvedArch.Probe;
         var descriptor = resolvedArch.Descriptor;
         string arch = resolvedArch.CanonicalArchitecture;
-        ForwardPassFamily family = descriptor?.ForwardPassFamily ?? (hp.IsHybridSsm ? ForwardPassFamily.HybridGdn : ForwardPassFamily.Dense);
+        ForwardPassFamily family = descriptor?.Capabilities.Family ?? (hp.IsHybridSsm ? ForwardPassFamily.HybridGdn : ForwardPassFamily.Dense);
 
         var facts = BuildPlanningFacts(gguf, hp, rawArch);
         var capabilities = BuildCapabilitySummary(family, hp, package, gguf);
@@ -93,7 +93,7 @@ public sealed record ModelDescription(
         var probe = resolvedArch.Probe;
         var descriptor = resolvedArch.Descriptor;
         string arch = resolvedArch.CanonicalArchitecture;
-        ForwardPassFamily family = descriptor?.ForwardPassFamily ?? ForwardPassFamily.Dense;
+        ForwardPassFamily family = descriptor?.Capabilities.Family ?? ForwardPassFamily.Dense;
 
         var facts = BuildPlanningFactsFromSource(tensorSource, hp, rawArch);
         var capabilities = BuildCapabilitySummary(family, hp, package, null);
@@ -167,7 +167,7 @@ public sealed record ModelDescription(
             IsHybridSsm = hp.IsHybridSsm,
             HasHybridGdnLayers = hp.IsHybridSsm,
             HasCpuHybridGdnPass = hp.IsHybridSsm,
-            IsGemma4 = hp.LayerHeadDim is not null || string.Equals(rawArch, "gemma4", StringComparison.OrdinalIgnoreCase),
+            IsGemma4 = hp.LayerHeadDim is not null,
             HasLayerHeadDim = hp.LayerHeadDim is not null,
             HasAttnBias = hp.HasAttnBias,
             HasQkNorm = hp.HasQkNorm,
@@ -238,7 +238,7 @@ public sealed record ModelDescription(
             IsHybridSsm = hp.IsHybridSsm,
             HasHybridGdnLayers = hp.IsHybridSsm,
             HasCpuHybridGdnPass = hp.IsHybridSsm,
-            IsGemma4 = hp.LayerHeadDim is not null || string.Equals(rawArch, "gemma4", StringComparison.OrdinalIgnoreCase),
+            IsGemma4 = hp.LayerHeadDim is not null,
             HasLayerHeadDim = hp.LayerHeadDim is not null,
             HasAttnBias = hp.HasAttnBias,
             HasQkNorm = hp.HasQkNorm,

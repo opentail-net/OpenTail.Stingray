@@ -1,6 +1,6 @@
 # Architecture descriptors as statically registered model plugins: finish the job (plan)
 
-**Date:** 2026-10-08. **Status:** proposed, not started. **Follows:** [2026-10-08-architecture-semantics-admission-plan.md](2026-10-08-architecture-semantics-admission-plan.md) (all phases 1-8 done).
+**Date:** 2026-10-08. **Status:** Phases 0 and 1 done 2026-10-08; 2-5 open. **Follows:** [2026-10-08-architecture-semantics-admission-plan.md](2026-10-08-architecture-semantics-admission-plan.md) (all phases 1-8 done).
 **Origin:** an outside design suggestion (ChatGPT): make each architecture a self-contained "model plugin" that owns what is true of the model, while the planner owns what is true of the machine and the request. This plan checks that suggestion against the code at commit `6a768250` and scopes what is actually worth doing.
 
 ## Verdict
@@ -58,18 +58,18 @@ Rule that keeps the boundary honest: **a descriptor says what the model can do; 
 
 Each phase ends green: `dotnet build` 0 warnings (warnings are errors), the `.Fast` suites pass, and the phase-specific check below. One commit per phase.
 
-- [ ] **0. Baseline and guard (do first; makes the rest safe)**
+- [x] **0. Baseline and guard (do first; makes the rest safe)** (0.3 deferred)
   - [x] 0.1 (done 2026-10-08: `ArchitectureFacts_MatchBaseline`, 71 architectures, `Baselines/ArchitectureFacts.txt`) Snapshot test: for every registered architecture, serialize today's `ModelDescription` facts, chat-protocol selection, tool-call adapter id, llama-compat name, `SupportedBackends` and batching capability into a checked-in baseline (`tests/.../ArchitectureFactsBaseline.json`). Phases 1-3 must leave it unchanged except where a phase says otherwise.
   - [x] 0.2 (done 2026-10-08: `ArchitectureLiterals_OutsideTheArchitectureFolder_OnlyShrink`, a ratchet over 37 files, `Baselines/ArchitectureLiterals.txt`; may only shrink) **Architecture-literal guard test:** scan `src/**/*.cs` for any registered architecture id used as a string literal outside `Engine/Architectures/`, with an explicit allowlist initialised from the inventory above. It fails on any *new* literal and shrinks as phases land. This is what stops regression.
   - [ ] 0.3 (deferred: low value, table is private) Test that every key in `PrefillHandoffFamilies` names a registered architecture.
   - [x] 0.4 (the 2026-10-08 smoke sweep in PerformanceLeague.md is the pre-change reference; re-run it at the end of Phase 3 and 5) Re-run the smoke matrix (`scripts` copy of the 2026-10-08 smoke run, 8-10 representative models incl. Qwen3.8 with MTP) and save outputs as the pre-change reference. Greedy text must match after every phase.
   - **Exit:** baseline + guard committed, passing on the unchanged tree.
 
-- [ ] **1. Capabilities record; remove the capability special cases (inventory #2, 6, 7, 8)**
-  - [ ] 1.1 Introduce `ArchitectureCapabilities` (move `SupportedBackends`, `SupportsContinuousBatching`, `CanBatchPredicate`, `SupportsImageInput`, `SupportsAudioInput` into it; add `IsGemma4`-style needs as named capabilities, not "is gemma4").
-  - [ ] 1.2 Rewrite `ModelDescription.IsGemma4`, `InferenceEngineLoader`, `PerplexityCommand`, `StaticPlanCommand` to read capabilities / `CreateForwardPass`.
-  - [ ] 1.3 Declare `ForwardPassFamily.HybridGdn` on `qwen35`, `qwen35moe`, `granitehybrid`; add the reverse validation in `ArchitectureDescriptor` (each factory requires its family and vice versa). Check first what `ForwardPassSelection` does with the family so this does not change plan selection (baseline test 0.1 covers it).
-  - [ ] 1.4 Keep the old property names as forwarding properties for one phase to keep the diff reviewable; remove them at the end of the phase.
+- [x] **1. Capabilities record; remove the capability special cases (inventory #2, 6, 7, 8)**
+  - [x] 1.1 (done 2026-10-08; `ArchitectureDescriptor.Capabilities` + `ArchitectureCapabilities` record; `ExecutionPlanner`, `ModelDescription` and `ForwardPassSelection` now read only it; decision: provide it as a read-only projection `descriptor.Capabilities` over the existing flat init fields instead of moving 71 descriptors' syntax; same planner-facing narrowing, far less churn) Introduce `ArchitectureCapabilities` (move `SupportedBackends`, `SupportsContinuousBatching`, `CanBatchPredicate`, `SupportsImageInput`, `SupportsAudioInput` into it; add `IsGemma4`-style needs as named capabilities, not "is gemma4").
+  - [x] 1.2 (done 2026-10-08, 7 literals removed: ModelDescription IsGemma4 now structural only; server image-input check reads `SupportsImageInput`; Perplexity reads `ForwardPassFamily`; static-plan fallback dropped. Behavior identical: only gemma4 declares image input) Rewrite `ModelDescription.IsGemma4`, `InferenceEngineLoader`, `PerplexityCommand`, `StaticPlanCommand` to read capabilities / `CreateForwardPass`.
+  - [x] 1.3 (done 2026-10-08; plan JSON for 5 hybrid/dense models identical before and after except timestamps; facts baseline changed in exactly the 3 family lines; reverse validation + test added) Declare `ForwardPassFamily.HybridGdn` on `qwen35`, `qwen35moe`, `granitehybrid`; add the reverse validation in `ArchitectureDescriptor` (each factory requires its family and vice versa). Check first what `ForwardPassSelection` does with the family so this does not change plan selection (baseline test 0.1 covers it).
+  - [x] 1.4 (not needed: the flat init fields stay, so there is nothing to forward or remove)
   - **Exit:** baseline unchanged; guard allowlist loses entries 2, 6, 7, 8; planner still touches only `Capabilities.SupportedBackends` (assert in 0.2's test that `Planning/` reads no other descriptor member).
 
 - [ ] **2. Integrations record; fold the chat and tool-call duplication (inventory #3, 4, 5)**
