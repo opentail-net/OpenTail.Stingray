@@ -59,10 +59,10 @@ Rule that keeps the boundary honest: **a descriptor says what the model can do; 
 Each phase ends green: `dotnet build` 0 warnings (warnings are errors), the `.Fast` suites pass, and the phase-specific check below. One commit per phase.
 
 - [ ] **0. Baseline and guard (do first; makes the rest safe)**
-  - [ ] 0.1 Snapshot test: for every registered architecture, serialize today's `ModelDescription` facts, chat-protocol selection, tool-call adapter id, llama-compat name, `SupportedBackends` and batching capability into a checked-in baseline (`tests/.../ArchitectureFactsBaseline.json`). Phases 1-3 must leave it unchanged except where a phase says otherwise.
-  - [ ] 0.2 **Architecture-literal guard test:** scan `src/**/*.cs` for any registered architecture id used as a string literal outside `Engine/Architectures/`, with an explicit allowlist initialised from the inventory above. It fails on any *new* literal and shrinks as phases land. This is what stops regression.
-  - [ ] 0.3 Test that every key in `PrefillHandoffFamilies` names a registered architecture.
-  - [ ] 0.4 Re-run the smoke matrix (`scripts` copy of the 2026-10-08 smoke run, 8-10 representative models incl. Qwen3.8 with MTP) and save outputs as the pre-change reference. Greedy text must match after every phase.
+  - [x] 0.1 (done 2026-10-08: `ArchitectureFacts_MatchBaseline`, 71 architectures, `Baselines/ArchitectureFacts.txt`) Snapshot test: for every registered architecture, serialize today's `ModelDescription` facts, chat-protocol selection, tool-call adapter id, llama-compat name, `SupportedBackends` and batching capability into a checked-in baseline (`tests/.../ArchitectureFactsBaseline.json`). Phases 1-3 must leave it unchanged except where a phase says otherwise.
+  - [x] 0.2 (done 2026-10-08: `ArchitectureLiterals_OutsideTheArchitectureFolder_OnlyShrink`, a ratchet over 37 files, `Baselines/ArchitectureLiterals.txt`; may only shrink) **Architecture-literal guard test:** scan `src/**/*.cs` for any registered architecture id used as a string literal outside `Engine/Architectures/`, with an explicit allowlist initialised from the inventory above. It fails on any *new* literal and shrinks as phases land. This is what stops regression.
+  - [ ] 0.3 (deferred: low value, table is private) Test that every key in `PrefillHandoffFamilies` names a registered architecture.
+  - [x] 0.4 (the 2026-10-08 smoke sweep in PerformanceLeague.md is the pre-change reference; re-run it at the end of Phase 3 and 5) Re-run the smoke matrix (`scripts` copy of the 2026-10-08 smoke run, 8-10 representative models incl. Qwen3.8 with MTP) and save outputs as the pre-change reference. Greedy text must match after every phase.
   - **Exit:** baseline + guard committed, passing on the unchanged tree.
 
 - [ ] **1. Capabilities record; remove the capability special cases (inventory #2, 6, 7, 8)**
