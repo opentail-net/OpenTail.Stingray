@@ -236,19 +236,29 @@ public sealed class GptNeoxGreedyParityTests : HeavyTestBase
             + "on this checkpoint).");
     }
 
+    // The same Q8_0 conversion is also distributed as pythia-160m.Q8_0.gguf (dot, not dash); accept either name.
+    private static readonly string[] ModelFileNames = [ModelFile, "pythia-160m.Q8_0.gguf"];
+
     private static string? FindModel()
     {
         var dir = Directory.GetCurrentDirectory();
         for (int i = 0; i < 8; i++)
         {
-            var candidate = Path.Combine(dir, "models", ModelFile);
-            if (File.Exists(candidate)) return candidate;
-            var candidateNested = Path.Combine(dir, "models", "_models", ModelFile);
-            if (File.Exists(candidateNested)) return candidateNested;
+            foreach (var name in ModelFileNames)
+            {
+                var candidate = Path.Combine(dir, "models", name);
+                if (File.Exists(candidate)) return candidate;
+                var candidateNested = Path.Combine(dir, "models", "_models", name);
+                if (File.Exists(candidateNested)) return candidateNested;
+            }
             if (Directory.GetParent(dir) is not { } parent) break;
             dir = parent.FullName;
         }
-        var external = Path.Combine(@"E:\models", ModelFile);
-        return File.Exists(external) ? external : null;
+        foreach (var name in ModelFileNames)
+        {
+            var external = Path.Combine(@"E:\models", name);
+            if (File.Exists(external)) return external;
+        }
+        return null;
     }
 }
