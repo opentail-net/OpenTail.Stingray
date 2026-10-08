@@ -12,6 +12,7 @@ internal static class MuseGlimmerArchitecture
     public static readonly ArchitectureDescriptor Descriptor = new()
     {
         Id = "muse-glimmer",
+        ApplyModelSemantics = ctx => FamilyModelSemantics.GatedSwa(ctx, muse: true),
         Aliases = ["muse_glimmer"],
         Status = AdmissionStatus.Admitted,
         // GPU passes reject the embedding norm / attention output gate: GpuForwardPass.cs:546-551.

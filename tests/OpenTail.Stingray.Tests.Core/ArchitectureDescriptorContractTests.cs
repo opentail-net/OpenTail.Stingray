@@ -16,6 +16,36 @@ public sealed class ArchitectureDescriptorContractTests
     }
 
     [Fact]
+    public void SemanticsHook_IsOptional_AndEverySuppliedHookRunsOnSyntheticMetadata()
+    {
+        var all = ArchitectureRegistry.All.ToList();
+        Assert.Contains(all, d => d.ApplyModelSemantics is null);   // ordinary models need no hook
+        var withHook = all.Where(d => d.ApplyModelSemantics is not null).ToList();
+        Assert.NotEmpty(withHook);
+        foreach (var d in withHook)
+        {
+            var md = new Dictionary<string, object>
+            {
+                ["general.architecture"] = d.Id,
+                [$"{d.Id}.block_count"] = 4u,
+                [$"{d.Id}.embedding_length"] = 64u,
+                [$"{d.Id}.attention.head_count"] = 4u,
+            };
+            var r = OpenTail.Stingray.Engine.ArchitectureModelResolver.Resolve(new OpenTail.Stingray.Engine.MetadataOnlyTensorSource(md), null);
+            Assert.NotNull(r.Hyperparams);
+            // identity must resolve before semantics; the hook only ever sees its own descriptor's canonical id
+            Assert.Equal(d.Id, r.CanonicalArchitecture);
+        }
+    }
+
+    [Fact]
+    public void DescriptorIdsAndAliases_AreUniquelyRegistered()
+    {
+        var names = ArchitectureRegistry.All.SelectMany(d => d.Aliases.Prepend(d.Id)).ToList();
+        Assert.Equal(names.Count, names.Distinct(StringComparer.OrdinalIgnoreCase).Count());
+    }
+
+    [Fact]
     public void EveryAdmittedDescriptor_HasValidCreateForwardPass()
     {
         var admitted = ArchitectureRegistry.All.Where(d => d.Status == AdmissionStatus.Admitted);
@@ -116,7 +146,6 @@ public sealed class ArchitectureDescriptorContractTests
             Path = "model.gguf",
             Architecture = "llama",
             TensorSource = llamaSource,
-            Hyperparams = ModelHyperparams.FromGgufMetadata(llamaSource.Metadata, llamaSource),
         };
         var resolvedLlama = ArchitectureRegistry.Resolve(llamaProbe);
         Assert.Equal("llama", resolvedLlama.Id);
@@ -132,7 +161,6 @@ public sealed class ArchitectureDescriptorContractTests
             Path = "model.gguf",
             Architecture = "llama",
             TensorSource = mistralSource,
-            Hyperparams = ModelHyperparams.FromGgufMetadata(mistralSource.Metadata, mistralSource),
         };
         var resolvedMistral = ArchitectureRegistry.Resolve(mistralProbe);
         Assert.Equal("mistral3", resolvedMistral.Id);
@@ -157,7 +185,6 @@ public sealed class ArchitectureDescriptorContractTests
             Path = "model.gguf",
             Architecture = null,
             TensorSource = metadataFreeSource,
-            Hyperparams = ModelHyperparams.FromGgufMetadata(metadataFreeSource.Metadata, metadataFreeSource),
         };
         var resolvedMetadataFree = ArchitectureRegistry.Resolve(metadataFreeProbe);
         Assert.Equal("llama", resolvedMetadataFree.Id);
@@ -172,7 +199,6 @@ public sealed class ArchitectureDescriptorContractTests
             Path = "model.gguf",
             Architecture = null,
             TensorSource = genericTransformerSource,
-            Hyperparams = ModelHyperparams.FromGgufMetadata(genericTransformerSource.Metadata, genericTransformerSource),
         };
         Assert.Throws<NotSupportedException>(() => ArchitectureRegistry.Resolve(genericTransformerProbe));
 
@@ -185,7 +211,6 @@ public sealed class ArchitectureDescriptorContractTests
             Path = "model.gguf",
             Architecture = null,
             TensorSource = unknownFreeSource,
-            Hyperparams = ModelHyperparams.FromGgufMetadata(unknownFreeSource.Metadata, unknownFreeSource),
         };
         Assert.Throws<NotSupportedException>(() => ArchitectureRegistry.Resolve(unknownFreeProbe));
 
@@ -199,7 +224,6 @@ public sealed class ArchitectureDescriptorContractTests
             Path = "model.gguf",
             Architecture = "completely_unknown_family",
             TensorSource = unknownArchSource,
-            Hyperparams = ModelHyperparams.FromGgufMetadata(unknownArchSource.Metadata, unknownArchSource),
         };
         Assert.Throws<NotSupportedException>(() => ArchitectureRegistry.Resolve(unknownArchProbe));
     }
@@ -279,8 +303,8 @@ public sealed class ArchitectureDescriptorContractTests
             {
                 Architecture = "test_setup",
                 TensorSource = dummySource,
-                Hyperparams = ModelHyperparams.FromGgufMetadata(dummySource.Metadata, dummySource),
             },
+            Hyperparams = ArchitectureModelResolver.ResolveHyperparams(dummySource),
             Plan = plan,
         };
 

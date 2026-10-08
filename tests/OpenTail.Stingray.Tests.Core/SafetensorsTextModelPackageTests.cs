@@ -30,7 +30,7 @@ public sealed class SafetensorsTextModelPackageTests
         using var package = TestPackage.Create();
 
         var model = SafetensorsTextModelPackage.Open(package.Directory);
-        var hp = ModelHyperparams.FromGgufMetadata(model.ToOpenTailMetadata());
+        var hp = OpenTail.Stingray.Engine.ArchitectureModelResolver.ResolveHyperparams(model.ToOpenTailMetadata());
 
         Assert.Equal(8, hp.EmbeddingDim);
         Assert.Equal(1, hp.NumLayers);

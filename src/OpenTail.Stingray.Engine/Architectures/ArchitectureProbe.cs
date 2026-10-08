@@ -11,7 +11,6 @@ public sealed class ArchitectureProbe
     public string? Path { get; init; }
     public required string? Architecture { get; init; }
     public required IModelTensorSource TensorSource { get; init; }
-    public required ModelHyperparams Hyperparams { get; init; }
     public bool IsGguf { get; init; }
     public GgufModel? Gguf { get; init; }
 

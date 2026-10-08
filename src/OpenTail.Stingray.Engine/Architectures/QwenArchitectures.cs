@@ -7,6 +7,7 @@ internal static class QwenArchitectures
     public static readonly ArchitectureDescriptor Qwen = new()
     {
         Id = "qwen",
+        UsesNeoxRope = true,
         Status = AdmissionStatus.Admitted,
         StatusExemption = "Covered by the generic 'LLM inference (GGUF)' row; the SafeTensors row is a separate loader path.",
         EvidenceDoc = "docs/STATUS.md",
@@ -17,6 +18,7 @@ internal static class QwenArchitectures
     public static readonly ArchitectureDescriptor Qwen2 = new()
     {
         Id = "qwen2",
+        UsesNeoxRope = true,
         Status = AdmissionStatus.Admitted,
         StatusExemption = "Covered by the generic 'LLM inference (GGUF)' row; the SafeTensors row is a separate loader path.",
         EvidenceDoc = "docs/STATUS.md",
@@ -27,6 +29,7 @@ internal static class QwenArchitectures
     public static readonly ArchitectureDescriptor Qwen2moe = new()
     {
         Id = "qwen2moe",
+        UsesNeoxRope = true,
         Status = AdmissionStatus.Admitted,
         StatusAnchor = "Qwen2-MoE (`qwen2moe`",
         EvidenceDoc = "docs/STATUS.md",
@@ -37,6 +40,7 @@ internal static class QwenArchitectures
     public static readonly ArchitectureDescriptor Qwen3 = new()
     {
         Id = "qwen3",
+        UsesNeoxRope = true,
         Status = AdmissionStatus.Admitted,
         StatusExemption = "Covered by the generic 'LLM inference (GGUF)' row; the SafeTensors row is a separate loader path.",
         EvidenceDoc = "docs/STATUS.md",
@@ -47,6 +51,8 @@ internal static class QwenArchitectures
     public static readonly ArchitectureDescriptor Qwen3moe = new()
     {
         Id = "qwen3moe",
+        UsesNeoxRope = true,
+        ApplyModelSemantics = ctx => ctx.Baseline with { NormalizeMoeTopKWeights = true },
         Status = AdmissionStatus.Admitted,
         StatusExemption = "Covered by the generic 'LLM inference (GGUF)' row; STATUS.md does not have a separate Qwen3-MoE row.",
         EvidenceDoc = "docs/STATUS.md",
@@ -63,6 +69,7 @@ internal static class QwenArchitectures
     public static readonly ArchitectureDescriptor Qwen2vl = new()
     {
         Id = "qwen2vl",
+        UsesNeoxRope = true,
         Status = AdmissionStatus.Admitted,
         StatusExemption = "Admitted only for text-only decoding; the Qwen Image row concerns a separate diffusion text-conditioning path.",
         EvidenceDoc = "docs/STATUS.md",
@@ -85,6 +92,7 @@ internal static class QwenArchitectures
     public static readonly ArchitectureDescriptor Qwen35 = new()
     {
         Id = "qwen35",
+        UsesNeoxRope = true,
         Status = AdmissionStatus.Admitted,
         StatusAnchor = "Qwen3.5 / 3.6 / 3.8 hybrid Gated DeltaNet + MoE",
         EvidenceDoc = "docs/done/01-gguf-model-coverage-plan.md",
@@ -95,6 +103,7 @@ internal static class QwenArchitectures
     public static readonly ArchitectureDescriptor Qwen35moe = new()
     {
         Id = "qwen35moe",
+        UsesNeoxRope = true,
         Status = AdmissionStatus.Admitted,
         StatusAnchor = "Qwen3.5 / 3.6 / 3.8 hybrid Gated DeltaNet + MoE",
         EvidenceDoc = "docs/done/01-gguf-model-coverage-plan.md",
@@ -111,6 +120,8 @@ internal static class QwenArchitectures
     public static readonly ArchitectureDescriptor Qwen3vl = new()
     {
         Id = "qwen3vl",
+        UsesNeoxRope = true,
+        ApplyModelSemantics = ctx => ctx.Baseline with { RopeSectionsInterleaved = true },
         Status = AdmissionStatus.Admitted,
         StatusAnchor = "Vision: Qwen3-VL",
         EvidenceDoc = "docs/STATUS.md",

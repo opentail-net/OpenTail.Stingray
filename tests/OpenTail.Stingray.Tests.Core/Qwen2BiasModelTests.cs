@@ -1,3 +1,5 @@
+using OpenTail.Stingray.Engine;
+
 
 namespace OpenTail.Stingray.Tests.Core;
 
@@ -40,7 +42,7 @@ public sealed class Qwen2BiasModelTests
             ["_opentailllm.has_attn_bias"]                   = true,
         };
 
-        var hp = ModelHyperparams.FromGgufMetadata(md);
+        var hp = OpenTail.Stingray.Engine.ArchitectureModelResolver.ResolveHyperparams(md);
 
         Assert.True(hp.HasAttnBias, "Qwen2 carries Q/K/V projection bias");
         Assert.False(hp.HasAttnOutputBias, "Qwen2 has no output-projection bias");
@@ -85,7 +87,7 @@ public sealed class Qwen2BiasModelTests
         Assert.Null(model.FindTensor("blk.0.attn_output.bias")); // Qwen2 has no o_proj bias
         Assert.Null(model.FindTensor("blk.0.attn_q_norm.weight"));
 
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
 
         Assert.True(hp.HasAttnBias);
         Assert.False(hp.HasAttnOutputBias);

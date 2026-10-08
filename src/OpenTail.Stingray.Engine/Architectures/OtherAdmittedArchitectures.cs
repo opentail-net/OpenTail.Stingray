@@ -15,6 +15,7 @@ internal static class OtherAdmittedArchitectures
     public static readonly ArchitectureDescriptor Mimo2 = new()
     {
         Id = "mimo2",
+        UsesNeoxRope = true,
         Status = AdmissionStatus.Admitted,
         StatusExemption = "Covered by the generic 'LLM inference (GGUF)' row; STATUS.md is a capability matrix, not an architecture catalog.",
         EvidenceDoc = "docs/STATUS.md",
@@ -31,6 +32,8 @@ internal static class OtherAdmittedArchitectures
     public static readonly ArchitectureDescriptor Olmoe = new()
     {
         Id = "olmoe",
+        UsesNeoxRope = true,
+        ApplyModelSemantics = ctx => ctx.Baseline with { NormalizeMoeTopKWeights = false },
         Status = AdmissionStatus.Admitted,
         StatusExemption = "Covered by the generic 'LLM inference (GGUF)' row; the MoE partial-offload row is a backend capability, not a family verification row.",
         EvidenceDoc = "docs/done/01-gguf-model-coverage-plan.md",
@@ -51,6 +54,7 @@ internal static class OtherAdmittedArchitectures
     public static readonly ArchitectureDescriptor GptOss = new()
     {
         Id = "gpt-oss",
+        UsesNeoxRope = true,
         Status = AdmissionStatus.Admitted,
         // CPU or full Vulkan only; CUDA and partial GPU requests fall back to CPU.
         // Enforced by RunCommand.cs:2035-2054 and InferenceEngineLoader.cs:620-634.
@@ -86,6 +90,7 @@ internal static class OtherAdmittedArchitectures
         StatusExemption = "Covered by the generic 'LLM inference (GGUF)' row; STATUS.md is a capability matrix, not an architecture catalog.",
         EvidenceDoc = "docs/STATUS.md",
         CreateForwardPass = CommonForwardPassFactory.CreateDense,
+        ApplyModelSemantics = ctx => ctx.Baseline with { NoRopeLayerStep = 4 },
     };
 
     // apertus — admitted 2026-08-08 on an 11-token EXACT prefix match (one full sentence)
@@ -100,6 +105,7 @@ internal static class OtherAdmittedArchitectures
     public static readonly ArchitectureDescriptor Apertus = new()
     {
         Id = "apertus",
+        UsesNeoxRope = true,
         Status = AdmissionStatus.Admitted,
         StatusExemption = "Covered by the generic 'LLM inference (GGUF)' row; STATUS.md is a capability matrix, not an architecture catalog.",
         EvidenceDoc = "docs/done/01-gguf-model-coverage-plan.md",
@@ -119,6 +125,7 @@ internal static class OtherAdmittedArchitectures
     public static readonly ArchitectureDescriptor GptNeoX = new()
     {
         Id = "gptneox",
+        UsesNeoxRope = true,
         Status = AdmissionStatus.Admitted,
         StatusExemption = "Covered by the generic 'LLM inference (GGUF)' row; STATUS.md is a capability matrix, not an architecture catalog.",
         EvidenceDoc = "docs/done/01-gguf-model-coverage-plan.md",
@@ -142,6 +149,8 @@ internal static class OtherAdmittedArchitectures
     public static readonly ArchitectureDescriptor Falcon = new()
     {
         Id = "falcon",
+        UsesNeoxRope = true,
+        ApplyModelSemantics = ctx => ctx.Baseline with { UseParallelResidual = true },
         Status = AdmissionStatus.Admitted,
         StatusExemption = "Covered by the generic 'LLM inference (GGUF)' row; STATUS.md is a capability matrix, not an architecture catalog.",
         EvidenceDoc = "docs/done/01-gguf-model-coverage-plan.md",
@@ -170,6 +179,7 @@ internal static class OtherAdmittedArchitectures
     public static readonly ArchitectureDescriptor Olmo2 = new()
     {
         Id = "olmo2",
+        UsesNeoxRope = true,
         Status = AdmissionStatus.Admitted,
         StatusExemption = "Covered by the generic 'LLM inference (GGUF)' row; STATUS.md is a capability matrix, not an architecture catalog.",
         EvidenceDoc = "docs/done/01-gguf-model-coverage-plan.md",
@@ -208,6 +218,7 @@ internal static class OtherAdmittedArchitectures
     public static readonly ArchitectureDescriptor Exaone = new()
     {
         Id = "exaone",
+        UsesNeoxRope = true,
         Status = AdmissionStatus.Admitted,
         StatusExemption = "Covered by the generic 'LLM inference (GGUF)' row; STATUS.md is a capability matrix, not an architecture catalog.",
         EvidenceDoc = "docs/done/01-gguf-model-coverage-plan.md",
@@ -245,6 +256,7 @@ internal static class OtherAdmittedArchitectures
     public static readonly ArchitectureDescriptor Orion = new()
     {
         Id = "orion",
+        UsesNeoxRope = true,
         Status = AdmissionStatus.Admitted,
         StatusExemption = "Covered by the generic 'LLM inference (GGUF)' row; STATUS.md is a capability matrix, not an architecture catalog.",
         EvidenceDoc = "docs/STATUS.md",
@@ -303,6 +315,7 @@ internal static class OtherAdmittedArchitectures
     public static readonly ArchitectureDescriptor Paddleocr = new()
     {
         Id = "paddleocr",
+        UsesNeoxRope = true,
         Status = AdmissionStatus.Admitted,
         StatusAnchor = "Vision: PaddleOCR-VL",
         EvidenceDoc = "docs/STATUS.md",
@@ -319,6 +332,8 @@ internal static class OtherAdmittedArchitectures
     public static readonly ArchitectureDescriptor Nemotronh = new()
     {
         Id = "nemotron_h",
+        // nemotron-h.cpp: non-gated ReLU^2 FFN (LLM_FFN_RELU_SQR); attention never applies RoPE.
+        ApplyModelSemantics = ctx => ctx.Baseline with { UsesReluSquared = true, NoRopeLayerStep = 1 },
         Status = AdmissionStatus.Admitted,
         StatusAnchor = "NVIDIA Nemotron-H / Nemotron Nano v2 (`nemotron_h`)",
         EvidenceDoc = "docs/STATUS.md",
@@ -336,6 +351,7 @@ internal static class OtherAdmittedArchitectures
     public static readonly ArchitectureDescriptor Lfm2 = new()
     {
         Id = "lfm2",
+        UsesNeoxRope = true,
         Status = AdmissionStatus.Admitted,
         StatusAnchor = "Liquid LFM2 (`lfm2`)",
         EvidenceDoc = "docs/STATUS.md",
@@ -351,6 +367,8 @@ internal static class OtherAdmittedArchitectures
     public static readonly ArchitectureDescriptor Lfm2moe = new()
     {
         Id = "lfm2moe",
+        UsesNeoxRope = true,
+        ApplyModelSemantics = ctx => ctx.Baseline with { NormalizeMoeTopKWeights = true },
         Status = AdmissionStatus.Admitted,
         StatusAnchor = "Liquid LFM2-MoE (`lfm2moe`)",
         EvidenceDoc = "docs/done/12-lfm2moe-batched-per-token-parity-plan.md",
@@ -431,6 +449,7 @@ internal static class OtherAdmittedArchitectures
     public static readonly ArchitectureDescriptor Starcoder2 = new()
     {
         Id = "starcoder2",
+        UsesNeoxRope = true,
         Status = AdmissionStatus.Admitted,
         StatusExemption = "Covered by the generic 'LLM inference (GGUF)' row; STATUS.md is a capability matrix, not an architecture catalog.",
         EvidenceDoc = "docs/done/01-gguf-model-coverage-plan.md",
@@ -493,7 +512,38 @@ internal static class OtherAdmittedArchitectures
         StatusExemption = "Covered by the generic 'LLM inference (GGUF)' row; STATUS.md is a capability matrix, not an architecture catalog.",
         EvidenceDoc = "docs/STATUS.md",
         CreateForwardPass = CommonForwardPassFactory.CreateDense,
+        ApplyModelSemantics = Cohere2Semantics,
     };
+
+    /// <summary>
+    /// Command-R: sliding-window attention alternates every swaPeriod layers with the LAST layer of each block global
+    /// (llama.cpp set_swa_pattern(period), dense_first=false); RoPE only on SWA layers; true (bias-less) LayerNorm;
+    /// parallel residual; logit_scale applied as a direct multiply (cohere2.cpp), unlike Granite's reciprocal.
+    /// </summary>
+    private static ModelHyperparams Cohere2Semantics(ModelArchitectureSemanticsContext ctx)
+    {
+        var hp = ctx.Baseline;
+        int numLayers = hp.NumLayers;
+        IReadOnlyList<bool>? isSwa = null;
+        if (numLayers > 0)
+        {
+            int swaPeriod = ctx.Int("attention.sliding_window_pattern", 4);
+            var swa = new bool[numLayers];
+            for (int i = 0; i < numLayers; i++)
+                swa[i] = swaPeriod == 0 || (i % swaPeriod < swaPeriod - 1);
+            isSwa = swa;
+        }
+        float rawLogitScale = ctx.Float("logit_scale");
+        return hp with
+        {
+            SlidingWindowSize = numLayers > 0 ? ctx.Int("attention.sliding_window") : hp.SlidingWindowSize,
+            IsSwaLayer = isSwa ?? hp.IsSwaLayer,
+            UseParallelResidual = true,
+            UsesLayerNorm = true,
+            RopeOnlySwaLayers = true,
+            LogitScale = rawLogitScale != 0f ? rawLogitScale : hp.LogitScale,
+        };
+    }
 
     // glm4 (non-multimodal/text-only) — admitted 2026-08-09 on a 14-of-24-token exact prefix
     // (then a documented 0.0214-logit near-tie, the deepest-position/tightest-margin near-tie
@@ -530,6 +580,9 @@ internal static class OtherAdmittedArchitectures
     public static readonly ArchitectureDescriptor Glm4moe = new()
     {
         Id = "glm4moe",
+        UsesNeoxRope = true,
+        // glm4-moe.cpp names the pre-FFN norm post_attention_norm: it is the FFN norm here, not a Gemma/OLMo2-style post-attention-output norm.
+        ApplyModelSemantics = ctx => ctx.Baseline with { PostAttnNormIsFfnNorm = true, HasPostAttnNorm = false },
         Status = AdmissionStatus.Admitted,
         StatusAnchor = "GLM-4.5-Air (`glm4moe`)",
         EvidenceDoc = "docs/STATUS.md",
@@ -572,6 +625,10 @@ internal static class OtherAdmittedArchitectures
     public static readonly ArchitectureDescriptor Stablelm = new()
     {
         Id = "stablelm",
+        UsesNeoxRope = true,
+        // stablelm.cpp ignores the use_parallel_residual key and branches on whether the per-layer ffn_norm TENSOR exists
+        // (2-1.6B ships the key true yet has ffn_norm; only the 12B variant, without it, is truly parallel).
+        ApplyModelSemantics = ctx => ctx.Baseline with { UseParallelResidual = ctx.TensorSource.FindTensor("blk.0.ffn_norm.weight") is null },
         Status = AdmissionStatus.Admitted,
         StatusExemption = "Covered by the generic 'LLM inference (GGUF)' row; STATUS.md is a capability matrix, not an architecture catalog.",
         EvidenceDoc = "docs/STATUS.md",
@@ -621,6 +678,9 @@ internal static class OtherAdmittedArchitectures
     public static readonly ArchitectureDescriptor Hunyuandense = new()
     {
         Id = "hunyuan-dense",
+        UsesNeoxRope = true,
+        // Weighted QK-norm applied AFTER RoPE (hunyuan-vl.cpp), unlike every other weighted-QK-norm family.
+        ApplyModelSemantics = ctx => ctx.Baseline with { QkNormAfterRope = true },
         Status = AdmissionStatus.Admitted,
         StatusExemption = "Covered by the generic 'LLM inference (GGUF)' row; STATUS.md is a capability matrix, not an architecture catalog.",
         EvidenceDoc = "docs/STATUS.md",
@@ -634,6 +694,9 @@ internal static class OtherAdmittedArchitectures
     public static readonly ArchitectureDescriptor Hunyuanmoe = new()
     {
         Id = "hunyuan-moe",
+        UsesNeoxRope = true,
+        // QK-norm after RoPE (HF HunYuanAttention); norm_w = true, softmax gating.
+        ApplyModelSemantics = ctx => ctx.Baseline with { QkNormAfterRope = true, NormalizeMoeTopKWeights = true },
         Status = AdmissionStatus.Admitted,
         StatusAnchor = "Hunyuan-A13B-Instruct (`hunyuan-moe`)",
         EvidenceDoc = "docs/STATUS.md",
@@ -648,6 +711,8 @@ internal static class OtherAdmittedArchitectures
     public static readonly ArchitectureDescriptor Afmoe = new()
     {
         Id = "afmoe",
+        UsesNeoxRope = true,
+        ApplyModelSemantics = ctx => FamilyModelSemantics.GatedSwa(ctx, muse: false),
         Status = AdmissionStatus.Admitted,
         StatusAnchor = "Arcee Trinity Mini (`afmoe`)",
         EvidenceDoc = "docs/STATUS.md",
@@ -673,6 +738,8 @@ internal static class OtherAdmittedArchitectures
     public static readonly ArchitectureDescriptor Gpt2 = new()
     {
         Id = "gpt2",
+        // Learned absolute position table, no RoPE anywhere: step 1 makes (layer+1)%step != 0 false for every layer.
+        ApplyModelSemantics = ctx => ctx.Baseline with { NoRopeLayerStep = 1 },
         Status = AdmissionStatus.Admitted,
         StatusExemption = "Covered by the generic 'LLM inference (GGUF)' row; the GPT-2 SafeTensors row describes a separate loader path.",
         EvidenceDoc = "docs/done/01-gguf-model-coverage-plan.md",
@@ -700,6 +767,8 @@ internal static class OtherAdmittedArchitectures
     public static readonly ArchitectureDescriptor Olmo = new()
     {
         Id = "olmo",
+        // olmo.cpp: build_norm with NULL weight AND bias -> normalise anyway, with no parameters (OLMo2 instead skips pre-norm).
+        ApplyModelSemantics = ctx => ctx.Baseline with { UsesUnweightedNorm = true },
         Status = AdmissionStatus.Admitted,
         StatusExemption = "Covered by the generic 'LLM inference (GGUF)' row; the MoE partial-offload row is a backend capability, not a family verification row.",
         EvidenceDoc = "docs/done/01-gguf-model-coverage-plan.md",
@@ -731,6 +800,8 @@ internal static class OtherAdmittedArchitectures
     public static readonly ArchitectureDescriptor Starcoder = new()
     {
         Id = "starcoder",
+        // Same absolute-position-embedding shape as GPT-2 (starcoder.cpp has no RoPE call).
+        ApplyModelSemantics = ctx => ctx.Baseline with { NoRopeLayerStep = 1 },
         Status = AdmissionStatus.Admitted,
         StatusExemption = "Covered by the generic 'LLM inference (GGUF)' row; STATUS.md is a capability matrix, not an architecture catalog.",
         EvidenceDoc = "docs/STATUS.md",
@@ -763,6 +834,7 @@ internal static class OtherAdmittedArchitectures
     public static readonly ArchitectureDescriptor Codeshell = new()
     {
         Id = "codeshell",
+        UsesNeoxRope = true,
         Status = AdmissionStatus.Admitted,
         StatusExemption = "Covered by the generic 'LLM inference (GGUF)' row; STATUS.md is a capability matrix, not an architecture catalog.",
         EvidenceDoc = "docs/STATUS.md",
@@ -807,6 +879,8 @@ internal static class OtherAdmittedArchitectures
     public static readonly ArchitectureDescriptor Jais2 = new()
     {
         Id = "jais2",
+        UsesNeoxRope = true,
+        ApplyModelSemantics = ctx => ctx.Baseline with { UsesReluSquared = true },
         Status = AdmissionStatus.Admitted,
         StatusExemption = "Covered by the generic 'LLM inference (GGUF)' row; STATUS.md is a capability matrix, not an architecture catalog.",
         EvidenceDoc = "docs/STATUS.md",
@@ -864,6 +938,12 @@ internal static class OtherAdmittedArchitectures
     public static readonly ArchitectureDescriptor Jais = new()
     {
         Id = "jais",
+        // ALiBi position encoding, no RoPE (jais.cpp); kq_scale = 1/n_embd_head (not 1/sqrt).
+        ApplyModelSemantics = ctx => ctx.Baseline with
+        {
+            NoRopeLayerStep = 1,
+            AttentionScaleOverride = ctx.Baseline.HeadDim > 0 ? 1f / ctx.Baseline.HeadDim : ctx.Baseline.AttentionScaleOverride,
+        },
         Status = AdmissionStatus.Admitted,
         StatusAnchor = "Jais v1 (`jais`)",
         EvidenceDoc = "docs/STATUS.md",
@@ -881,6 +961,8 @@ internal static class OtherAdmittedArchitectures
     public static readonly ArchitectureDescriptor Maincoder = new()
     {
         Id = "maincoder",
+        // src/models/maincoder.cpp applies the weighted QK-norm after RoPE (PPL 12.61 -> 11.90 vs llama.cpp 12.01).
+        ApplyModelSemantics = ctx => ctx.Baseline with { QkNormAfterRope = true },
         Status = AdmissionStatus.Admitted,
         StatusExemption = "Covered by the generic 'LLM inference (GGUF)' row; STATUS.md is a capability matrix, not an architecture catalog.",
         EvidenceDoc = "docs/done/01-gguf-model-coverage-plan.md",
@@ -890,6 +972,8 @@ internal static class OtherAdmittedArchitectures
     public static readonly ArchitectureDescriptor Exaone4 = new()
     {
         Id = "exaone4",
+        UsesNeoxRope = true,
+        ApplyModelSemantics = FamilyModelSemantics.Exaone4,
         Status = AdmissionStatus.Admitted,
         StatusAnchor = "EXAONE 4.5 33B (`exaone4`)",
         EvidenceDoc = "docs/STATUS.md",
@@ -1001,6 +1085,8 @@ internal static class OtherAdmittedArchitectures
     public static readonly ArchitectureDescriptor Minicpm = new()
     {
         Id = "minicpm",
+        UsesNeoxRope = true,
+        ApplyModelSemantics = ctx => FamilyModelSemantics.Granite(ctx, miniCpm: true),
         Status = AdmissionStatus.Admitted,
         StatusExemption = "Covered by the generic 'LLM inference (GGUF)' row; STATUS.md is a capability matrix, not an architecture catalog.",
         EvidenceDoc = "docs/STATUS.md",

@@ -37,8 +37,8 @@ public sealed class CommonForwardPassFactoryTests
             {
                 Architecture = "custom",
                 TensorSource = source,
-                Hyperparams = hp,
             },
+            Hyperparams = hp,
             Plan = plan,
         };
 
@@ -65,8 +65,8 @@ public sealed class CommonForwardPassFactoryTests
             {
                 Architecture = "custom",
                 TensorSource = source,
-                Hyperparams = hp,
             },
+            Hyperparams = hp,
             Plan = plan,
         };
 

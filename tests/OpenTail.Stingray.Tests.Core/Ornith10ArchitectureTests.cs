@@ -35,7 +35,7 @@ public sealed class Ornith10ArchitectureTests
             ["qwen35moe.ssm.time_step_rank"]                = 32,
         };
 
-        var hp = ModelHyperparams.FromGgufMetadata(md);
+        var hp = OpenTail.Stingray.Engine.ArchitectureModelResolver.ResolveHyperparams(md);
 
         // Ornith-35B must take the existing hybrid GDN + MoE path — no new arch handling.
         Assert.True(hp.IsHybridSsm);
@@ -68,7 +68,7 @@ public sealed class Ornith10ArchitectureTests
             ["qwen35.attention.layer_norm_rms_epsilon"] = 1e-6f,
         };
 
-        var hp = ModelHyperparams.FromGgufMetadata(md);
+        var hp = OpenTail.Stingray.Engine.ArchitectureModelResolver.ResolveHyperparams(md);
 
         Assert.True(hp.IsNeoxRope);     // qwen35 is in the NEOX rope set
         Assert.False(hp.IsMoE);
@@ -106,7 +106,7 @@ public sealed class Ornith10ArchitectureTests
             ["qwen35.ssm.time_step_rank"]              = 32,
         };
 
-        var hp = ModelHyperparams.FromGgufMetadata(md);
+        var hp = OpenTail.Stingray.Engine.ArchitectureModelResolver.ResolveHyperparams(md);
 
         Assert.True(hp.IsHybridSsm);
         Assert.NotNull(hp.LayerTypes);

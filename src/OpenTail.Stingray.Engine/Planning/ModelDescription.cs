@@ -64,21 +64,12 @@ public sealed record ModelDescription(
         ModelFormat format,
         IModelPackage? package)
     {
-        var hp = ModelHyperparams.FromGgufMetadata(gguf.Metadata, gguf);
-        string? rawArch = gguf.Metadata.TryGetValue("general.architecture", out var a) ? Convert.ToString(a) : null;
-
-        var probe = new ArchitectureProbe
-        {
-            Path = primaryPath,
-            Architecture = rawArch,
-            TensorSource = gguf,
-            Hyperparams = hp,
-            IsGguf = true,
-            Gguf = gguf,
-        };
-
-        bool resolved = ArchitectureRegistry.TryResolve(probe, out var descriptor);
-        string arch = resolved ? descriptor.Id : (rawArch ?? "unknown");
+        var resolvedArch = ArchitectureModelResolver.Resolve(gguf, primaryPath, gguf);
+        var hp = resolvedArch.Hyperparams;
+        string? rawArch = resolvedArch.DeclaredArchitecture;
+        var probe = resolvedArch.Probe;
+        var descriptor = resolvedArch.Descriptor;
+        string arch = resolvedArch.CanonicalArchitecture;
         ForwardPassFamily family = descriptor?.ForwardPassFamily ?? (hp.IsHybridSsm ? ForwardPassFamily.HybridGdn : ForwardPassFamily.Dense);
 
         var facts = BuildPlanningFacts(gguf, hp, rawArch);
@@ -96,21 +87,12 @@ public sealed record ModelDescription(
         ModelFormat format,
         IModelPackage? package)
     {
-        var hp = ModelHyperparams.FromGgufMetadata(tensorSource.Metadata, tensorSource);
-        string? rawArch = tensorSource.Metadata.TryGetValue("general.architecture", out var a) ? Convert.ToString(a) : null;
-
-        var probe = new ArchitectureProbe
-        {
-            Path = primaryPath,
-            Architecture = rawArch,
-            TensorSource = tensorSource,
-            Hyperparams = hp,
-            IsGguf = false,
-            Gguf = null,
-        };
-
-        bool resolved = ArchitectureRegistry.TryResolve(probe, out var descriptor);
-        string arch = resolved ? descriptor.Id : (rawArch ?? "unknown");
+        var resolvedArch = ArchitectureModelResolver.Resolve(tensorSource, primaryPath);
+        var hp = resolvedArch.Hyperparams;
+        string? rawArch = resolvedArch.DeclaredArchitecture;
+        var probe = resolvedArch.Probe;
+        var descriptor = resolvedArch.Descriptor;
+        string arch = resolvedArch.CanonicalArchitecture;
         ForwardPassFamily family = descriptor?.ForwardPassFamily ?? ForwardPassFamily.Dense;
 
         var facts = BuildPlanningFactsFromSource(tensorSource, hp, rawArch);

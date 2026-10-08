@@ -592,16 +592,18 @@ public sealed record ModelHyperparams
     /// Extract hyperparameters from GGUF metadata using the model's architecture prefix.
     /// Supports llama-family models (llama, mistral, qwen, smollm, etc.) and MoE variants.
     /// </summary>
-    public static ModelHyperparams FromGgufMetadata(IReadOnlyDictionary<string, object> metadata)
-        => FromGgufMetadata(metadata, null);
-
-    public static ModelHyperparams FromGgufMetadata(IModelTensorSource tensorSource)
-        => FromGgufMetadata(tensorSource.Metadata, tensorSource);
-
-    public static ModelHyperparams FromGgufMetadata(IReadOnlyDictionary<string, object> metadata,
-        IModelTensorSource? tensorSource)
+    /// <summary>
+    /// Stage A of model-hyperparameter extraction: structural facts read from metadata and the tensor inventory.
+    /// <paramref name="metadataArchitecture"/> is the key namespace to read (<c>{ns}.block_count</c>, ...); null means
+    /// the file's own <c>general.architecture</c> (default <c>llama</c>). Architecture-specific interpretation is being
+    /// moved out of here into <see cref="ModelArchitectureSemanticsContext"/> hooks owned by each architecture
+    /// descriptor (docs/2-coverage/2026-10-08-architecture-semantics-admission-plan.md); rules not yet moved remain below.
+    /// </summary>
+    public static ModelHyperparams CreateBaseline(IReadOnlyDictionary<string, object> metadata,
+        IModelTensorSource? tensorSource, string? metadataArchitecture)
     {
-        var arch = metadata.TryGetValue("general.architecture", out var a) ? (string)a : "llama";
+        var arch = metadataArchitecture
+            ?? (metadata.TryGetValue("general.architecture", out var a) ? (string)a : "llama");
 
         int numExperts = GetInt(metadata, $"{arch}.expert_count");
         int numActiveExperts = GetInt(metadata, $"{arch}.expert_used_count");
@@ -666,47 +668,11 @@ public sealed record ModelHyperparams
 
         // NoPE: every Nth layer skips RoPE entirely. Hardcoded in llama.cpp rather than stored in
         // GGUF metadata, for both architectures that use it — Llama-4 (`llama.cpp` sets
-        // n_no_rope_layer_step = 4) and SmolLM3 (`models/smollm3.cpp` does the same). The gate
+        // n_no_rope_layer_step = 4); SmolLM3 (`models/smollm3.cpp` does the same) now lives in its descriptor's ApplyModelSemantics. The gate
         // below, `(layer + 1) % step != 0`, is the same expression llama.cpp applies.
-        bool isLlama4 = arch.Equals("llama4", StringComparison.OrdinalIgnoreCase);
-        bool isSmolLm3 = arch.Equals("smollm3", StringComparison.OrdinalIgnoreCase);
-        bool usesReluSquared = arch == "jais2" || arch == "nemotron_h"; // nemotron-h.cpp LLM_FFN_RELU_SQR, non-gated
-        // GPT-2 has no RoPE at all — position is encoded once via a learned absolute
-        // position-embedding table (ModelHyperparams consumers detect this from
-        // `position_embd.weight`'s tensor presence directly, not a hyperparam flag) added to the
-        // token embedding before the trunk starts. Step=1 makes `(layer+1) % step != 0` false for
-        // every layer, so useRoPE computes to false unconditionally via the SAME formula
-        // Llama-4/SmolLM3 already use for their periodic skip — no new dispatch code needed.
-        // StarCoder (v1) shares GPT-2's exact absolute-position-embedding shape (confirmed against
-        // src/models/starcoder.cpp: same ggml_get_rows(pos_embd, inp_pos) pattern, no RoPE call
-        // anywhere in the graph).
-        bool isGpt2Family = arch is "gpt2" or "starcoder";
-        int noRopeStep = isLlama4 || isSmolLm3 ? 4 : isGpt2Family ? 1 : 0;
+        int noRopeStep = 0;
         // Granite hybrids use rope.scaling.finetuned as a RoPE on/off switch, default on (llama.cpp
         // granite-hybrid.cpp load_arch_hparams). Granite 4.0-H ships false: NoPE on every attention layer.
-        if (arch == "granitehybrid" && !GetBool(metadata, $"{arch}.rope.scaling.finetuned", true)) noRopeStep = 1;
-        // Nemotron-H attention never applies RoPE (nemotron-h.cpp build_attention_layer).
-        if (arch == "nemotron_h") noRopeStep = 1;
-        // jais (v1) uses ALiBi position encoding, not RoPE — jais.cpp never calls inp_pos/ggml_rope_ext;
-        // positional bias is added to each attention head's scores as a head-specific slope multiplied by
-        // relative distance (ModelHyperparams.AlibiMaxBias, applied in ForwardPass.Attention*).
-        if (arch == "jais") noRopeStep = 1;
-        // Llama-4 uses sigmoid gating with weight-before-FFN per Meta's reference impl.
-        bool useSigmoidGating = isLlama4;
-        // Llama-4 uses Llama4TextL2Norm for QK-norm: pure RMS norm without learned weights.
-        // No attn_q_norm.weight tensor exists, so force hasQkNorm for Llama-4.
-        bool useL2QkNorm = isLlama4;
-        if (isLlama4) hasQkNorm = true;
-
-        // Hunyuan-Dense's graph (src/models/hunyuan-vl.cpp, shared by the dense variant) applies
-        // its WEIGHTED attn_q_norm/attn_k_norm AFTER ggml_rope_ext, not before like every other
-        // weighted-QK-norm architecture this engine has (Qwen3, OLMoE). Distinct from Llama-4's
-        // UseL2QkNorm (also after-RoPE, but unweighted). Maincoder (src/models/maincoder.cpp) does
-        // the same; it ran with the before-RoPE order until 2026-09-26 (wikitext second-half PPL
-        // 12.61 vs llama.cpp 12.01; 11.90 after).
-        // Hunyuan-MoE (A13B): HF HunYuanAttention applies query_layernorm/key_layernorm after apply_rotary_pos_emb, the same order.
-        bool qkNormAfterRope = arch is "hunyuan-dense" or "hunyuan-moe" or "maincoder";
-
         // RoPE convention: NEOX (pairs offset by headDim/2) vs NORM/interleaved (consecutive pairs).
         // Mirrors llama.cpp's llama_model_rope_type() in src/llama-model.cpp (NEOX block).
         // Architectures NOT listed here default to NORM (LLaMA-style interleaved).
@@ -723,25 +689,12 @@ public sealed record ModelHyperparams
         // matters when real image/video tokens are interleaved with text, which this engine's
         // text-conditioning-extraction use case (docs/089, Qwen Image's Mistral-equivalent path)
         // never does.
+        // NEOX (rotate-half) vs NORM (interleaved) RoPE pairing, mirroring llama.cpp llama_model_rope_type().
+        // Registered architectures declare this on their ArchitectureDescriptor (UsesNeoxRope); this table only covers
+        // GGUF architectures that have no descriptor (BERT-family embedding models, Dream, ...).
         bool isNeoxRope = arch switch
         {
-            "falcon" or "falcon-h1" or "grok" or "dbrx" or
-            "bert" or "jina-bert-v3" or "modern-bert" or "nomic-bert" or "nomic-bert-moe" or "eurobert" or
-            "stablelm" or "bitnet" or
-            "qwen" or "qwen2" or "qwen2vl" or "qwen3vl" or "qwen3vlmoe" or "paddleocr" or "deepseek2-ocr" or "glm4moe" or "lfm2" or "lfm2moe" or "dream" or "qwen2moe" or "qwen3" or "qwen3moe" or "qwen3-tts" or
-            "llada-moe" or "rnd1" or
-            "olmo2" or "olmoe" or
-            "phi2" or "phi3" or "phimoe" or
-            "plamo" or "plamo2" or
-            "gemma" or "gemma2" or "gemma3" or "gemma3n" or "gemma4" or "gemma-embedding" or
-            "starcoder2" or "openelm" or "gptneox" or "codeshell" or "orion" or
-            "nemotron" or "exaone" or "exaone4" or "exaone-moe" or
-            "minicpm" or "minicpm3" or "bailingmoe2" or "dots1" or
-            "hunyuan-moe" or "hunyuan-dense" or
-            "jais2" or "gpt-oss" or
-            "lfm2" or "lfm2moe" or "smallthinker" or "seed_oss" or "grovemoe" or
-            "apertus" or "minimax-m2" or "cogvlm" or "pangu-embedded" or "afmoe" or
-            "qwen3next" or "qwen35moe" or "qwen35" or "mimo2" or "step35" => true,
+            "falcon-h1" or "grok" or "dbrx" or "bert" or "jina-bert-v3" or "modern-bert" or "nomic-bert" or "nomic-bert-moe" or "eurobert" or "bitnet" or "qwen3vlmoe" or "dream" or "qwen3-tts" or "llada-moe" or "rnd1" or "plamo" or "plamo2" or "gemma-embedding" or "openelm" or "nemotron" or "exaone-moe" or "minicpm3" or "bailingmoe2" or "dots1" or "smallthinker" or "seed_oss" or "grovemoe" or "minimax-m2" or "cogvlm" or "pangu-embedded" or "qwen3next" or "step35" => true,
             _ => false,
         };
         // Real, per-checkpoint override: some checkpoints declaring a standard architecture
@@ -873,11 +826,6 @@ public sealed record ModelHyperparams
                 FullAttentionInterval: fullAttnInterval);
         }
 
-        bool isGemma4 = arch.Equals("gemma4", StringComparison.OrdinalIgnoreCase);
-        bool isMuseGlimmer = arch is "muse-glimmer" or "muse_glimmer";
-        // afmoe (Arcee Trinity): same attention shape as Muse-Glimmer (per-layer sigmoid output gate; 3 sliding-window : 1 global layers, RoPE only on the sliding ones)
-        // plus muP embedding scaling; routing, dense lead and shared expert come from the generic keys. Ported from memory of llama.cpp afmoe.cpp.
-        bool isAfmoe = arch == "afmoe";
 
         int slidingWindow = 0;
         int perLayerEmbedWidth = 0;
@@ -907,288 +855,10 @@ public sealed record ModelHyperparams
         // blk.%d.post_ffw_norm for both architectures) — see src/models/olmo2.cpp vs gemma4.cpp.
         // GLM-4.5 (glm4moe) names its pre-FFN norm post_attention_norm (llama.cpp glm4-moe.cpp: norm(ffn_inp) then
         // the FFN), so there it is the FFN norm, NOT a Gemma/OLMo2-style norm on the attention output.
-        bool postAttnNormIsFfnNorm = arch == "glm4moe";
-        bool hasPostAttnNorm = !postAttnNormIsFfnNorm && (metadata.ContainsKey("_opentailllm.has_post_attn_norm")
+        bool hasPostAttnNorm = (metadata.ContainsKey("_opentailllm.has_post_attn_norm")
             || (tensorSource?.FindTensor("blk.0.post_attention_norm.weight") is not null));
         bool hasPostFfwNorm = metadata.ContainsKey("_opentailllm.has_post_ffw_norm")
             || (tensorSource?.FindTensor("blk.0.post_ffw_norm.weight") is not null);
-
-        if (isGemma4)
-        {
-            slidingWindow         = GetInt(metadata, $"{arch}.attention.sliding_window");
-            perLayerEmbedWidth    = GetInt(metadata, $"{arch}.embedding_length_per_layer_input");
-            finalLogitSoftcap     = GetFloat(metadata, $"{arch}.final_logit_softcapping");
-            ropeThetaSwa          = GetFloat(metadata, $"{arch}.rope.freq_base_swa", 10_000f);
-            int sharedKvLayers    = GetInt(metadata, $"{arch}.attention.shared_kv_layers");
-            int keyLengthSwa      = GetInt(metadata, $"{arch}.attention.key_length_swa", headDim);
-            int ropeDimSwa        = GetInt(metadata, $"{arch}.rope.dimension_count_swa", keyLengthSwa);
-
-            embeddingScale = MathF.Sqrt(embDim);
-            ffnActivation  = FfnActivation.GeluApprox;
-
-            hasPerLayerTokenEmbd = metadata.ContainsKey("_opentailllm.has_ple")
-                || (tensorSource?.FindTensor("per_layer_token_embd.weight") is not null);
-            hasLayerOutputScale  = metadata.ContainsKey("_opentailllm.has_layer_output_scale")
-                || (tensorSource?.FindTensor("blk.0.layer_output_scale.weight") is not null);
-
-            // Gemma 4 12B (dense) global layers omit attn_v and reuse K as V
-            // (attention_k_eq_v=true in the HF config; not a GGUF metadata key, so it
-            // is detected from the tensor inventory via a GgufModel.Open probe).
-            attentionKEqV = metadata.ContainsKey("_opentailllm.attention_k_eq_v");
-
-            if (numLayers > 0)
-            {
-                var pattern = GetBoolArray(metadata, $"{arch}.attention.sliding_window_pattern");
-                var swa = new bool[numLayers];
-                if (pattern is not null && pattern.Count > 0)
-                {
-                    for (int i = 0; i < numLayers; i++)
-                        swa[i] = pattern[i % pattern.Count];
-                }
-                isSwaLayer = swa;
-
-                var hdArr = new int[numLayers];
-                var rdArr = new int[numLayers];
-                for (int i = 0; i < numLayers; i++)
-                {
-                    bool sw = swa[i];
-                    hdArr[i] = sw ? keyLengthSwa : headDim;
-                    rdArr[i] = sw ? ropeDimSwa : ropeDim;
-                }
-                layerHeadDim = hdArr;
-                layerRopeDim = rdArr;
-
-                // Per-layer KV head count (Gemma 4 12B: 8 on SWA, 1 on global).
-                // Stored as a per-layer array in the GGUF; build the full vector so
-                // forward passes can size each layer's KV independently. Falls back
-                // to the scalar head_count_kv (broadcast) when stored as a scalar.
-                var kvArr = GetIntArray(metadata, $"{arch}.attention.head_count_kv");
-                if (kvArr is not null && kvArr.Count > 0)
-                {
-                    var lkv = new int[numLayers];
-                    for (int i = 0; i < numLayers; i++)
-                    {
-                        // Guard a corrupt/0 KV head count → it would divide-by-zero in the
-                        // attention group-size calc (_numHeads / kvHeads) downstream.
-                        int val = kvArr[i % kvArr.Count];
-                        lkv[i] = val > 0 ? val : 1;
-                    }
-                    layerKvHeads = lkv;
-                }
-
-                if (sharedKvLayers > 0)
-                {
-                    int firstSharedLayer = numLayers - sharedKvLayers;
-                    var src = new int[numLayers];
-                    for (int i = 0; i < numLayers; i++)
-                    {
-                        if (i < firstSharedLayer)
-                        {
-                            src[i] = -1;
-                        }
-                        else
-                        {
-                            int found = -1;
-                            for (int j = firstSharedLayer - 1; j >= 0; j--)
-                            {
-                                if (swa[j] == swa[i]) { found = j; break; }
-                            }
-                            src[i] = found;
-                        }
-                    }
-                    kvSourceLayer = src;
-                }
-            }
-        }
-        else if (arch == "cohere2" && numLayers > 0)
-        {
-            // Command-R: sliding-window attention alternates every swaPeriod layers, the LAST
-            // layer of each block being global — llama.cpp's set_swa_pattern(period) with its
-            // default dense_first=false: is_swa[il] = period==0 || (il % period < period-1).
-            // Confirmed against llama-hparams.cpp directly rather than assumed. The period is a
-            // plain scalar in GGUF metadata (cohere2.cpp: ml.get_key_or_arr(..., swa_period=4,
-            // false) — 4 even when the key is absent), NOT a literal per-layer bool array the
-            // way Gemma 4's own sliding_window_pattern key is, so this does not reuse Gemma 4's
-            // GetBoolArray-based cycling above.
-            slidingWindow = GetInt(metadata, $"{arch}.attention.sliding_window");
-            int swaPeriod = GetInt(metadata, $"{arch}.attention.sliding_window_pattern", 4);
-            var swa = new bool[numLayers];
-            for (int i = 0; i < numLayers; i++)
-                swa[i] = swaPeriod == 0 || (i % swaPeriod < swaPeriod - 1);
-            isSwaLayer = swa;
-            // No separate SWA rope table is needed: cohere2 doesn't use a different frequency
-            // for SWA vs global layers, it skips RoPE on global layers ENTIRELY (see
-            // ModelHyperparams.RopeOnlySwaLayers) — ropeThetaSwa stays 0f (unset), so the
-            // SWA-rope-table construction path (gated on RopeThetaSwa > 0f) never fires.
-        }
-        else if (arch == "exaone4" && numLayers == 64)
-        {
-            // EXAONE 4 32B / 4.5 33B (exaone4.cpp load_arch_hparams: only n_layer == 64 gets SWA,
-            // the 1.2B stays full attention): 4096-token window, period 4 (3 SWA : 1 global), and
-            // RoPE ONLY on SWA layers (graph: use_rope = is_swa(il)) — same shape as cohere2.
-            // The 4.5 GGUF stores the pattern as a per-layer bool array; honour it when present.
-            slidingWindow = GetInt(metadata, $"{arch}.attention.sliding_window", 4096);
-            var pattern = GetBoolArray(metadata, $"{arch}.attention.sliding_window_pattern");
-            var swa = new bool[numLayers];
-            for (int i = 0; i < numLayers; i++)
-                swa[i] = pattern is { Count: > 0 } ? pattern[i % pattern.Count] : i % 4 < 3;
-            isSwaLayer = swa;
-        }
-        else if ((isMuseGlimmer || isAfmoe) && numLayers > 0)
-        {
-            // Muse-Glimmer (llama.cpp src/models/muse-glimmer.cpp, NOT admitted): load_swa_pattern(ml, 4)
-            // takes a per-layer bool array when the key is one, else a scalar period (default 4) through
-            // set_swa_pattern(period, dense_first=false). RoPE only on SWA layers, as cohere2.
-            slidingWindow = GetInt(metadata, $"{arch}.attention.sliding_window");
-            var pattern = GetBoolArray(metadata, $"{arch}.attention.sliding_window_pattern");
-            int swaPeriod = pattern is { Count: > 0 } ? 0 : GetInt(metadata, $"{arch}.attention.sliding_window_pattern", 4);
-            var swa = new bool[numLayers];
-            for (int i = 0; i < numLayers; i++)
-                swa[i] = pattern is { Count: > 0 } ? pattern[i % pattern.Count]
-                    : swaPeriod == 0 || (i % swaPeriod < swaPeriod - 1);
-            isSwaLayer = swa;
-
-            // Optional rope.freq_base_swa (defaults to the main base). Only SWA layers rotate, so a
-            // separate SWA table at the same rope dim is exactly "use this base"; the uniform
-            // layerRopeDim is what makes ForwardPass build that table (see the gemma3 branch).
-            if (metadata.ContainsKey($"{arch}.rope.freq_base_swa"))
-            {
-                ropeThetaSwa = GetFloat(metadata, $"{arch}.rope.freq_base_swa");
-                layerRopeDim = Enumerable.Repeat(ropeDim, numLayers).ToArray();
-            }
-
-            // Softcap is optional with no default (get_key(..., false)): absent means none.
-            finalLogitSoftcap = GetFloat(metadata, $"{arch}.final_logit_softcapping");
-        }
-        else if (arch.Equals("gemma3", StringComparison.OrdinalIgnoreCase) && numLayers > 0)
-        {
-            // Real gemma3.cpp (load_arch_hparams + graph<iswa>::graph), confirmed against source
-            // directly rather than assumed — this whole architecture was previously falling
-            // through with NONE of its real setup applied (the isGemma4 gate above excludes the
-            // literal string "gemma3", and this file had no separate gemma3 branch at all),
-            // silently running Gemma 3 as if it were a plain dense transformer with no embedding
-            // scale, no sliding-window attention, and no SWA-specific RoPE base. Root-caused as
-            // the primary cause of Gemma 3 producing incoherent/degenerate text on both backends
-            // (2026-09-02 finding, see docs/00-current-work.md).
-            //
-            // 1. Embedding scale: real gemma3.cpp does
-            //    `inpL = ggml_scale(ctx0, inpL, ubatch.token ? sqrtf(n_embd) : 1.0f)` right after
-            //    the embedding lookup, for every Gemma generation (1/2/3/4) — missing this alone
-            //    would leave the token-identity signal in the residual stream permanently
-            //    under-scaled by ~sqrt(n_embd) (e.g. ~50x for a 2560-wide model) relative to every
-            //    later attention/FFN contribution, since a pre-norm architecture's residual path
-            //    carries the raw (unscaled) embedding forward untouched.
-            embeddingScale = MathF.Sqrt(embDim);
-
-            // 1b. FFN activation: gemma3.cpp builds the FFN with LLM_FFN_GELU (tanh-approximate
-            //     GELU gate), like every Gemma generation — this branch used to leave the SiLU
-            //     default, so Gemma 3 ran SwiGLU on BOTH backends (they agreed with each other, so
-            //     no CPU/GPU parity check could see it). Found 2026-09-26.
-            ffnActivation = FfnActivation.GeluApprox;
-
-            // 2. Sliding-window attention: real gemma3.cpp reads a plain scalar window size
-            //    (LLM_KV_ATTENTION_SLIDING_WINDOW) and a period (LLM_KV_ATTENTION_SLIDING_WINDOW_
-            //    PATTERN, real default 6 when absent — NOT Gemma 4's literal per-layer bool-array
-            //    convention), then calls hparams.set_swa_pattern(swa_period) with the library
-            //    default dense_first=false: is_swa[il] = period==0 || (il % period < period-1).
-            //    That is the EXACT same formula already implemented for cohere2 just above, reused
-            //    here with gemma3's own real default period of 6 (vs cohere2's 4).
-            slidingWindow = GetInt(metadata, $"{arch}.attention.sliding_window");
-            if (slidingWindow > 0)
-            {
-                int swaPeriod = GetInt(metadata, $"{arch}.attention.sliding_window_pattern", 6);
-                var swa = new bool[numLayers];
-                for (int i = 0; i < numLayers; i++)
-                    swa[i] = swaPeriod == 0 || (i % swaPeriod < swaPeriod - 1);
-                isSwaLayer = swa;
-
-                // Real: `ml.get_key(LLM_KV_ROPE_FREQ_BASE_SWA, ..., false)` — optional, only
-                // applied when the key is present. Gemma 3's real default local-layer rope base
-                // (rope_local_base_freq in the HF config) is 10000, distinct from the global
-                // rope_theta (typically 1_000_000) already read into RopeTheta above.
-                ropeThetaSwa = GetFloat(metadata, $"{arch}.rope.freq_base_swa", 10_000f);
-
-                // ForwardPass only builds the separate SWA RoPE table when _layerRopeDim is
-                // non-null (its gemma-4 origin: SWA layers there use a genuinely smaller rope
-                // dim). Gemma 3's SWA layers use the SAME rope dim as global layers — only the
-                // theta differs — so a uniform array (every entry = ropeDim) satisfies that gate
-                // correctly without changing per-layer head/rope sizing.
-                layerRopeDim = Enumerable.Repeat(ropeDim, numLayers).ToArray();
-            }
-
-            // 3. Final logit softcapping: real gemma3.cpp still reads this key (default 0.0f) even
-            //    though newer Gemma-3 checkpoints normally omit it (softcapping was replaced by
-            //    QK-norm) — reading it generically here is harmless (0 = a no-op multiplier
-            //    downstream) and correct for any checkpoint that DOES set it.
-            finalLogitSoftcap = GetFloat(metadata, $"{arch}.final_logit_softcapping");
-        }
-
-        // Granite (dense/MoE/hybrid) and MiniCPM share ONE graph builder in llama.cpp
-        // (models.h: "using graph = llama_model_granite::graph") — MiniCPM is Granite's
-        // scale trio with different constants, not a different structure. All four keys
-        // are read generically per-arch rather than globally: llama.cpp itself only calls
-        // ml.get_key for these on this specific family (grok and command-r read
-        // logit_scale independently, with a DIFFERENT sign convention — see
-        // ModelHyperparams.LogitScale — and are not wired here).
-        //
-        // Deliberately EXCLUDES "minicpm3": despite the name it is a different
-        // architecture, not a MiniCPM variant — models/minicpm3.cpp declares
-        // ATTENTION_Q_LORA_RANK / ATTENTION_KV_LORA_RANK and builds Multi-head Latent
-        // Attention, the same mechanism as deepseek2, not Granite's dense/GQA attention.
-        // Routing it through this branch would silently misapply the scale trio to an
-        // architecture that needs MLA kernels first — new-kernel work, not this.
-        //
-        // GGUF's convention is "0 / absent = off"; ModelHyperparams' fields are
-        // multiplicative identities ("1 = off"), so an absent or exactly-zero key must
-        // fall through to 1, not 0 — multiplying embeddings or a residual by a literal 0
-        // would zero the trunk instead of leaving it alone.
-        bool isMiniCpm = arch.Equals("minicpm", StringComparison.OrdinalIgnoreCase);
-        bool isGraniteFamily = arch.Equals("granite", StringComparison.OrdinalIgnoreCase)
-            || arch.Equals("granitemoe", StringComparison.OrdinalIgnoreCase)
-            || arch.Equals("granitehybrid", StringComparison.OrdinalIgnoreCase)
-            || arch.Equals("granitehybrid", StringComparison.OrdinalIgnoreCase)
-            || isMiniCpm;
-        if (isGraniteFamily)
-        {
-            // MiniCPM ships older GGUFs that omit these keys entirely and rely on
-            // llama.cpp hardcoding formula-based defaults (models/minicpm.cpp) BEFORE
-            // checking for an explicit override — unlike Granite, which has no
-            // architecture-level default and simply leaves scaling off when absent.
-            // Applying these unconditionally for non-MiniCPM archs would be wrong (they
-            // have no such fallback), so they are gated on isMiniCpm specifically.
-            if (isMiniCpm)
-            {
-                embeddingScale = 12.0f;
-                residualScale = numLayers > 0 ? 1.4f / MathF.Sqrt(numLayers) : 1f;
-                logitScale = embDim > 0 ? 256.0f / embDim : 1f;
-            }
-
-            float rawEmbeddingScale = GetFloat(metadata, $"{arch}.embedding_scale");
-            if (rawEmbeddingScale != 0f) embeddingScale = rawEmbeddingScale;
-
-            float rawResidualScale = GetFloat(metadata, $"{arch}.residual_scale");
-            if (rawResidualScale != 0f) residualScale = rawResidualScale;
-
-            // MiniCPM's load_arch_hparams never calls ml.get_key for attention.scale at
-            // all (only Granite does) — so even if a MiniCPM GGUF happened to carry that
-            // key, llama.cpp would ignore it. Mirror that exactly rather than reading it
-            // generically for the whole family.
-            if (!isMiniCpm)
-            {
-                // kq_scale override: 0 sentinel means "no override — caller falls back to
-                // 1/sqrt(HeadDim)". Granite 3.3 2B declares 0.015625 (1/64), NOT
-                // 1/sqrt(64) (0.125) — a real per-architecture override, not a rounding
-                // of the usual formula.
-                attentionScaleOverride = GetFloat(metadata, $"{arch}.attention.scale");
-            }
-
-            // llama.cpp's granite.cpp DIVIDES by the raw metadata value
-            // (ggml_scale(cur, 1.0f / f_logit_scale)); LogitScale is documented as
-            // already carrying that reciprocal, so bake the division in here rather
-            // than at every call site.
-            float rawLogitScale = GetFloat(metadata, $"{arch}.logit_scale");
-            if (rawLogitScale != 0f) logitScale = 1f / rawLogitScale;
-        }
 
         // DeepSeek2 (MLA) YaRN attention-score correction (src/models/deepseek2.cpp): YaRN's
         // own magnitude scaling (baked into the RoPE cos/sin table itself, see the YaRN table
@@ -1224,7 +894,6 @@ public sealed record ModelHyperparams
             attentionScaleOverride = mscale * mscale / MathF.Sqrt(headDim);
         }
         // jais.cpp: kq_scale = 1/n_embd_head (not 1/sqrt).
-        if (arch == "jais" && headDim > 0) attentionScaleOverride = 1f / headDim;
 
         // xIELU non-gated FFN (Apertus): detected from tensor inventory (no ffn_gate weight),
         // same style as HasAttnBias/HasQkNorm — not gated on architecture string, since the
@@ -1285,9 +954,7 @@ public sealed record ModelHyperparams
         // in metadata while every layer still carries a real `ffn_norm` weight+bias, so trusting
         // the metadata key here would wrongly take the parallel path; only the 12B variant (no
         // `ffn_norm` tensor) is genuinely parallel-residual.
-        bool stablelmHasFfnNorm = tensorSource?.FindTensor("blk.0.ffn_norm.weight") is not null;
-        bool useParallelResidual = arch is "falcon" or "cohere2"
-            || (arch == "stablelm" ? !stablelmHasFfnNorm : GetBool(metadata, $"{arch}.use_parallel_residual"));
+        bool useParallelResidual = GetBool(metadata, $"{arch}.use_parallel_residual");
 
         // Command-R (cohere2) uses true LayerNorm (build_norm's LLM_NORM, not LLM_NORM_RMS) but
         // ships no bias tensor at all — hasNormBias (tensor-presence) stays false, so this needs
@@ -1296,28 +963,13 @@ public sealed record ModelHyperparams
         // "bias-less LayerNorm with a weight tensor", since both look identical on disk.
         // phimoe is the opposite case: it ships norm bias tensors but is RMSNorm + bias
         // (phi3.cpp's graph, shared by phimoe: build_norm(..., norm_b, LLM_NORM_RMS)).
-        bool usesLayerNorm = (hasNormBias && arch != "phimoe") || arch == "cohere2";
-        bool ropeOnlySwaLayers = arch == "cohere2" || isMuseGlimmer || isAfmoe || (arch == "exaone4" && isSwaLayer is not null);
+        bool usesLayerNorm = hasNormBias;
 
         // OLMo v1 ships no attn_norm/ffn_norm/output_norm tensor at all (confirmed against
         // src/models/olmo.cpp: build_norm's weight AND bias arguments are both NULL) — the SAME
         // tensor-absence signal OLMo2 uses for "no pre-norm, sandwich-normed instead", so this
         // needs its own arch-string check to mean "normalize anyway, just with no parameters" as
         // opposed to OLMo2's "skip normalizing here entirely".
-        bool usesUnweightedNorm = arch == "olmo";
-
-        // Command-R (cohere2) reads logit_scale independently of the Granite-family block above
-        // (isGraniteFamily deliberately doesn't cover it) and applies it with the OPPOSITE
-        // convention: cohere2.cpp does `ggml_scale(cur, f_logit_scale)` — a direct multiply —
-        // while granite.cpp does `ggml_scale(cur, 1.0f / f_logit_scale)`. LogitScale is documented
-        // as already carrying whatever reciprocal is needed so every call site can just multiply,
-        // so this reads the raw value straight through, not inverted.
-        // Muse-Glimmer uses the same direct multiply (ggml_scale(cur, f_logit_scale)), before the softcap.
-        if (arch == "cohere2" || isMuseGlimmer)
-        {
-            float rawLogitScaleC2 = GetFloat(metadata, $"{arch}.logit_scale");
-            if (rawLogitScaleC2 != 0f) logitScale = rawLogitScaleC2;
-        }
 
         return new ModelHyperparams
         {
@@ -1348,11 +1000,6 @@ public sealed record ModelHyperparams
             HasAttnOutputBias = hasAttnOutputBias,
             HasNormBias = hasNormBias,
             UsesLayerNorm = usesLayerNorm,
-            UsesUnweightedNorm = usesUnweightedNorm,
-            RopeOnlySwaLayers = ropeOnlySwaLayers,
-            PostNormEps = isMuseGlimmer ? 1e-8f : 0f,
-            InputEmbeddingRmsNorm = isMuseGlimmer,
-            AttentionOutputGate = isMuseGlimmer || isAfmoe,
             HasFfnBias = hasFfnBias,
             UseParallelResidual = useParallelResidual,
             HasQkNorm = hasQkNorm,
@@ -1370,7 +1017,6 @@ public sealed record ModelHyperparams
             QLoraRank = GetInt(metadata, $"{arch}.attention.q_lora_rank", 0),
             // glm4moe defaults to sigmoid + selection bias when the key is absent (llama.cpp glm4-moe.cpp).
             ExpertGatingFunc = GetInt(metadata, $"{arch}.expert_gating_func", arch == "glm4moe" ? 2 : 0),
-            PostAttnNormIsFfnNorm = postAttnNormIsFfnNorm,
             // Absorbed-MLA GGUFs (split attn_k_b / attn_v_b) store the latent sizes in
             // key_length / value_length (576 / 512) and the per-head sizes in *_mla (192 / 128).
             MlaVHeadDim = GetInt(metadata, $"{arch}.attention.value_length_mla", 0) is > 0 and var vMla
@@ -1399,28 +1045,23 @@ public sealed record ModelHyperparams
             // (granitemoe) and granite-hybrid.cpp (Granite 4.0-H tiny/small MoE; without it the small
             // model's wikitext PPL was 157 vs llama.cpp 9.41, 2026-09-28).
             // hunyuan-moe: from memory of src/models/hunyuan-moe.cpp (norm_w = true, softmax gating); Stage A against llama-server confirms or refutes it.
-            NormalizeMoeTopKWeights = arch is "qwen3moe" or "phimoe" or "granitemoe" or "granitehybrid" or "lfm2moe" or "llama" or "hunyuan-moe" ? true
-                : arch.Equals("olmoe", StringComparison.OrdinalIgnoreCase) ? false
+            NormalizeMoeTopKWeights = arch is "llama" ? true
                 : GetBool(metadata, $"{arch}.expert_weights_norm", false),
             // llama.cpp's LLM_KV_EXPERT_WEIGHTS_SCALE ("routed_scaling_factor" in DeepSeek-V2/V3's
             // HF config) -- multiplies every routed expert's weight after top-k selection/
             // renormalization. 1 (no-op) when the GGUF doesn't declare it.
             ExpertWeightsScale = GetFloat(metadata, $"{arch}.expert_weights_scale", 1f),
             NoRopeLayerStep = noRopeStep,
-            UseSigmoidGating = useSigmoidGating,
-            UseL2QkNorm = useL2QkNorm,
-            QkNormAfterRope = qkNormAfterRope,
             IsNeoxRope = isNeoxRope,
             RopeDim = ropeDim,
             IsHybridSsm = isHybridSsm,
             RopeSections = arch is "qwen2vl" or "paddleocr" or "qwen3vl" or "qwen3vlmoe" ? GetIntArray(metadata, $"{arch}.rope.dimension_sections") : null,
-            RopeSectionsInterleaved = arch is "qwen3vl" or "qwen3vlmoe",
+            RopeSectionsInterleaved = arch is "qwen3vlmoe", // qwen3vl: descriptor hook; qwen3vlmoe has no descriptor yet
             LayerTypes = layerTypes,
             Gdn = gdn,
-            EmbeddingScale = isAfmoe && embeddingScale == 1f ? MathF.Sqrt(embDim) : embeddingScale,   // afmoe: muP, x * sqrt(n_embd)
+            EmbeddingScale = embeddingScale,
             // llama-graph.cpp build_inp_embd: raw embeddings are scaled unless the model has deepstack layers
             // (Granite 4.0 Vision's granite.deepstack_mapping), whose multimodal inputs arrive unscaled.
-            ScaleRawEmbeddings = isGraniteFamily && !metadata.ContainsKey($"{arch}.deepstack_mapping"),
             // Qwen3-VL (qwen3vl.cpp) adds slice il+1 after layer il for il < n_deepstack_layers, which is the same as
             // adding slice k before layer k: the Granite mapping shape with mapping[k] = k for k in [1, n].
             DeepstackMapping = GetIntArray(metadata, $"{arch}.deepstack_mapping")
@@ -1435,13 +1076,10 @@ public sealed record ModelHyperparams
             XieluAlphaP = xieluAlphaP,
             XieluBeta = xieluBeta,
             XieluEps = xieluEps,
-            UsesReluSquared = usesReluSquared,
             FinalLogitSoftcap = finalLogitSoftcap,
             RopeThetaSwa = ropeThetaSwa,
             SlidingWindowSize = slidingWindow,
-            AttentionChunkSize = isLlama4 && !(metadata.ContainsKey($"{arch}.attention.sliding_window") && GetInt(metadata, $"{arch}.attention.sliding_window") == 0) ? 8192 : 0,
-            AttnTempScale = isLlama4 && !(metadata.ContainsKey($"{arch}.attention.sliding_window") && GetInt(metadata, $"{arch}.attention.sliding_window") == 0) ? 0.1f : 0f,
-            AttnTempFloor = 8192,
+                        AttnTempFloor = 8192,
             AttnTempOffset = 1f,
             PerLayerEmbeddingWidth = perLayerEmbedWidth,
             HasPostAttnNorm = hasPostAttnNorm,
@@ -1464,7 +1102,7 @@ public sealed record ModelHyperparams
         };
     }
 
-    private static int GetInt(IReadOnlyDictionary<string, object> m, string key, int fallback = 0)
+    internal static int GetInt(IReadOnlyDictionary<string, object> m, string key, int fallback = 0)
     {
         if (!m.TryGetValue(key, out var v)) return fallback;
         // Some keys are stored per-layer as an array (e.g. Gemma 4 12B's
@@ -1476,10 +1114,10 @@ public sealed record ModelHyperparams
         return Convert.ToInt32(v);
     }
 
-    private static float GetFloat(IReadOnlyDictionary<string, object> m, string key, float fallback = 0f) =>
+    internal static float GetFloat(IReadOnlyDictionary<string, object> m, string key, float fallback = 0f) =>
         m.TryGetValue(key, out var v) ? Convert.ToSingle(v) : fallback;
 
-    private static bool GetBool(IReadOnlyDictionary<string, object> m, string key, bool fallback = false) =>
+    internal static bool GetBool(IReadOnlyDictionary<string, object> m, string key, bool fallback = false) =>
         m.TryGetValue(key, out var v) ? Convert.ToBoolean(v) : fallback;
 
     /// <summary>
@@ -1487,7 +1125,7 @@ public sealed record ModelHyperparams
     /// <c>attention.head_count_kv</c>). Returns <c>null</c> when the key is absent
     /// or stored as a scalar (the caller then falls back to the scalar field).
     /// </summary>
-    private static IReadOnlyList<int>? GetIntArray(IReadOnlyDictionary<string, object> m, string key)
+    internal static IReadOnlyList<int>? GetIntArray(IReadOnlyDictionary<string, object> m, string key)
     {
         if (!m.TryGetValue(key, out var v)) return null;
         switch (v)
@@ -1504,7 +1142,7 @@ public sealed record ModelHyperparams
         }
     }
 
-    private static IReadOnlyList<bool>? GetBoolArray(IReadOnlyDictionary<string, object> m, string key)
+    internal static IReadOnlyList<bool>? GetBoolArray(IReadOnlyDictionary<string, object> m, string key)
     {
         if (!m.TryGetValue(key, out var v)) return null;
         switch (v)
@@ -1525,7 +1163,7 @@ public sealed record ModelHyperparams
     /// <summary>Per-layer float array (e.g. Apertus's <c>xielu.alpha_n</c>). Same shape as
     /// <see cref="GetIntArray"/>; also accepts a scalar (broadcast to every layer), since
     /// <c>get_key_or_arr</c> on the llama.cpp side accepts either.</summary>
-    private static IReadOnlyList<float>? GetFloatArray(IReadOnlyDictionary<string, object> m, string key, int numLayers)
+    internal static IReadOnlyList<float>? GetFloatArray(IReadOnlyDictionary<string, object> m, string key, int numLayers)
     {
         if (!m.TryGetValue(key, out var v)) return null;
         switch (v)

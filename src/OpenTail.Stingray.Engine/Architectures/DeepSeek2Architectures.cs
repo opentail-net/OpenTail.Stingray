@@ -29,7 +29,7 @@ internal static class DeepSeek2Architectures
             {
                 var vk = ctx.VulkanBackend ?? new OpenTail.Stingray.Vulkan.VulkanBackend();
                 if (ctx.VulkanBackend is null) ctx.TrackDisposable(vk);
-                var mla = new DeepSeek2GpuForwardPass(ctx.Probe.Gguf!, vk, ctx.Probe.Hyperparams, maxContextLength: ctx.ContextSize);
+                var mla = new DeepSeek2GpuForwardPass(ctx.Probe.Gguf!, vk, ctx.Hyperparams, maxContextLength: ctx.ContextSize);
                 ctx.TrackDisposable(mla);
                 return mla;
             }
@@ -45,6 +45,7 @@ internal static class DeepSeek2Architectures
     public static readonly ArchitectureDescriptor DeepSeek2Ocr = new()
     {
         Id = "deepseek2-ocr",
+        UsesNeoxRope = true,
         Status = AdmissionStatus.Admitted,
         StatusAnchor = "text arch `deepseek2-ocr` is admitted",
         EvidenceDoc = "docs/STATUS.md",

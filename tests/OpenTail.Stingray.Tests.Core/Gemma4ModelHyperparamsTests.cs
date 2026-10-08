@@ -1,3 +1,5 @@
+using OpenTail.Stingray.Engine;
+
 namespace OpenTail.Stingray.Tests.Core;
 
 public sealed class Gemma4ModelHyperparamsTests
@@ -44,7 +46,7 @@ public sealed class Gemma4ModelHyperparamsTests
     public void Gemma4_PopulatesAllFields()
     {
         var md = BuildE4BMetadata();
-        var hp = ModelHyperparams.FromGgufMetadata(md);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(md);
 
         Assert.Equal(42, hp.NumLayers);
         Assert.Equal(2560, hp.EmbeddingDim);
@@ -165,7 +167,7 @@ public sealed class Gemma4ModelHyperparamsTests
     public void Gemma4_12B_Dense_PopulatesAllFields()
     {
         var md = Build12BDenseMetadata();
-        var hp = ModelHyperparams.FromGgufMetadata(md);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(md);
 
         Assert.Equal(48, hp.NumLayers);
         Assert.Equal(3840, hp.EmbeddingDim);
@@ -237,7 +239,7 @@ public sealed class Gemma4ModelHyperparamsTests
         md["gemma4.nextn_predict_layers"] = 2;
         md["gemma4.block_count"] = 44;
 
-        var hp = ModelHyperparams.FromGgufMetadata(md);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(md);
 
         Assert.Equal(42, hp.NumLayers);
         Assert.Equal(2, hp.NumMtpLayers);
@@ -259,7 +261,7 @@ public sealed class Gemma4ModelHyperparamsTests
             ["llama.attention.layer_norm_rms_epsilon"]     = 1e-5f,
         };
 
-        var hp = ModelHyperparams.FromGgufMetadata(md);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(md);
 
         Assert.Equal(1f, hp.EmbeddingScale);
         Assert.Equal(0f, hp.FinalLogitSoftcap);

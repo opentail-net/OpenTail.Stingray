@@ -11,6 +11,7 @@ internal static class PhiArchitectures
     public static readonly ArchitectureDescriptor Phi2 = new()
     {
         Id = "phi2",
+        UsesNeoxRope = true,
         Status = AdmissionStatus.Admitted,
         StatusExemption = "Covered by the generic 'LLM inference (GGUF)' row; STATUS.md is a capability matrix, not an architecture catalog.",
         EvidenceDoc = "docs/STATUS.md",
@@ -21,6 +22,7 @@ internal static class PhiArchitectures
     public static readonly ArchitectureDescriptor Phi3 = new()
     {
         Id = "phi3",
+        UsesNeoxRope = true,
         Status = AdmissionStatus.Admitted,
         StatusAnchor = "Phi-3 (`phi3`) on Vulkan",
         EvidenceDoc = "docs/STATUS.md",
@@ -31,6 +33,9 @@ internal static class PhiArchitectures
     public static readonly ArchitectureDescriptor Phimoe = new()
     {
         Id = "phimoe",
+        UsesNeoxRope = true,
+        // phi3.cpp (shared by phimoe): RMSNorm + bias, so norm-bias tensors must NOT select LayerNorm; build_moe_ffn norm_w = true.
+        ApplyModelSemantics = ctx => ctx.Baseline with { UsesLayerNorm = false, NormalizeMoeTopKWeights = true },
         Status = AdmissionStatus.Admitted,
         StatusAnchor = "Phi-3.5-MoE (`phimoe`)",
         EvidenceDoc = "docs/STATUS.md",

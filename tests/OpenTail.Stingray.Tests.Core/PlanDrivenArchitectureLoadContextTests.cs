@@ -55,12 +55,12 @@ public sealed class PlanDrivenArchitectureLoadContextTests
         {
             Architecture = "llama",
             TensorSource = tensorSource,
-            Hyperparams = new ModelHyperparams { EmbeddingDim = 4096, NumLayers = 32, HeadDim = 128, VocabSize = 32000 },
         };
 
         var loadCtx = new ArchitectureLoadContext
         {
             Probe = probe,
+            Hyperparams = new ModelHyperparams { EmbeddingDim = 4096, NumLayers = 32, HeadDim = 128, VocabSize = 32000 },
             Plan = plan,
         };
 
@@ -105,12 +105,12 @@ public sealed class PlanDrivenArchitectureLoadContextTests
         {
             Architecture = "llama",
             TensorSource = tensorSource,
-            Hyperparams = new ModelHyperparams { EmbeddingDim = 128, NumLayers = 2, HeadDim = 64, VocabSize = 256, NumHeads = 2, NumKvHeads = 2 },
         };
 
         var loadCtx = new ArchitectureLoadContext
         {
             Probe = probe,
+            Hyperparams = new ModelHyperparams { EmbeddingDim = 128, NumLayers = 2, HeadDim = 64, VocabSize = 256, NumHeads = 2, NumKvHeads = 2 },
             Plan = plan,
         };
 
@@ -149,12 +149,12 @@ public sealed class PlanDrivenArchitectureLoadContextTests
         {
             Architecture = "plan_test_arch",
             TensorSource = tensorSource,
-            Hyperparams = new ModelHyperparams { EmbeddingDim = 128, NumLayers = 2, HeadDim = 64, VocabSize = 256, NumHeads = 2, NumKvHeads = 2 },
         };
 
         var loadCtx = new ArchitectureLoadContext
         {
             Probe = probe,
+            Hyperparams = new ModelHyperparams { EmbeddingDim = 128, NumLayers = 2, HeadDim = 64, VocabSize = 256, NumHeads = 2, NumKvHeads = 2 },
             Plan = plan,
         };
 

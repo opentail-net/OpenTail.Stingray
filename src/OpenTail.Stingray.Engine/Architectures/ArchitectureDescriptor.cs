@@ -94,6 +94,18 @@ public sealed class ArchitectureDescriptor
     /// <summary>What <see cref="RecognizeRelabelledFile"/> accepts, for refusal/diagnostic messages.</summary>
     public string? RelabelledFileDescription { get; init; }
 
+    /// <summary>
+    /// RoPE pairing: true = NEOX (rotate-half), false = NORM (interleaved), mirroring llama.cpp llama_model_rope_type().
+    /// A per-checkpoint <c>{arch}.rope.is_neox</c> metadata key still overrides.
+    /// </summary>
+    public bool UsesNeoxRope { get; init; }
+
+    /// <summary>
+    /// Optional load-time hook: generic baseline hyperparameters in, architecture-correct hyperparameters out.
+    /// Pure and deterministic; must not touch execution plans or backends. Null means the baseline is already correct.
+    /// </summary>
+    public Func<OpenTail.Stingray.Core.ModelArchitectureSemanticsContext, ModelHyperparams>? ApplyModelSemantics { get; init; }
+
     public bool SupportsContinuousBatching { get; init; } = true;
 
     /// <summary>Optional fine-grained predicate checking (hyperparams, turboQuant) -> canBatch.</summary>

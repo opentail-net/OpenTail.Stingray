@@ -16,7 +16,7 @@ public static class CommonForwardPassFactory
     public static IForwardPass CreateDense(ArchitectureLoadContext ctx)
     {
         ArgumentNullException.ThrowIfNull(ctx);
-        var hp = ctx.Probe.Hyperparams;
+        var hp = ctx.Hyperparams;
 
         switch (ctx.Plan.ForwardPassKind)
         {
@@ -112,7 +112,14 @@ public static class CommonForwardPassFactory
     public static IForwardPass CreateHybridGdn(ArchitectureLoadContext ctx)
     {
         ArgumentNullException.ThrowIfNull(ctx);
-        var hp = ctx.Probe.Hyperparams;
+        var hp = ctx.Hyperparams;
+
+        // Mamba-2 (Granite-H, Nemotron-H) and short-conv (LFM2) hybrids are not Gated-DeltaNet: the planner routes them to
+        // the dense passes, which carry their recurrent layers internally (hp.IsMamba2Layer / hp.IsShortConvLayer).
+        // Found 2026-10-08: since the plan-driven migration (5c591e6a) granitehybrid crashed here with "Unsupported forward pass kind 'CpuDense'".
+        if ((hp.IsMamba2Layer is not null || hp.IsShortConvLayer is not null) && ctx.Plan.ForwardPassKind is not
+            (ForwardPassKind.CpuHybridGdn or ForwardPassKind.CudaHybridGdn or ForwardPassKind.VulkanHybridGdn))
+            return CreateDense(ctx);
 
         switch (ctx.Plan.ForwardPassKind)
         {

@@ -1,3 +1,5 @@
+using OpenTail.Stingray.Engine;
+
 namespace OpenTail.Stingray.Tests.Core;
 
 public sealed class ModelHyperparamsTests
@@ -21,7 +23,7 @@ public sealed class ModelHyperparamsTests
             },
             new GgufTensorInfo("blk.0.attn_q.bias", 1, [64], DType.Float32, 0));
 
-        var hp = ModelHyperparams.FromGgufMetadata(source.Metadata, source);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(source);
 
         Assert.True(hp.HasAttnBias);
         Assert.False(hp.HasAttnOutputBias);
@@ -56,7 +58,7 @@ public sealed class ModelHyperparamsTests
             ["qwen35moe.ssm.time_step_rank"]                    = 32,
         };
 
-        var hp = ModelHyperparams.FromGgufMetadata(md);
+        var hp = OpenTail.Stingray.Engine.ArchitectureModelResolver.ResolveHyperparams(md);
 
         Assert.True(hp.IsHybridSsm);
         Assert.True(hp.IsMoE);
@@ -115,7 +117,7 @@ public sealed class ModelHyperparamsTests
             ["qwen3.attention.layer_norm_rms_epsilon"]     = 1e-5f,
         };
 
-        var hp = ModelHyperparams.FromGgufMetadata(md);
+        var hp = OpenTail.Stingray.Engine.ArchitectureModelResolver.ResolveHyperparams(md);
 
         Assert.False(hp.IsHybridSsm);
         Assert.Null(hp.LayerTypes);

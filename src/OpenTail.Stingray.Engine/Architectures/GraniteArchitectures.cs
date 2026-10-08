@@ -12,6 +12,7 @@ internal static class GraniteArchitectures
     public static readonly ArchitectureDescriptor Granitehybrid = new()
     {
         Id = "granitehybrid",
+        ApplyModelSemantics = ctx => FamilyModelSemantics.Granite(ctx, miniCpm: false, hybrid: true) with { NormalizeMoeTopKWeights = true },
         Status = AdmissionStatus.Admitted,
         StatusAnchor = "IBM Granite 4.0-H (`granitehybrid`)",
         EvidenceDoc = "docs/STATUS.md",
@@ -34,6 +35,7 @@ internal static class GraniteArchitectures
     public static readonly ArchitectureDescriptor Granitemoe = new()
     {
         Id = "granitemoe",
+        ApplyModelSemantics = ctx => FamilyModelSemantics.Granite(ctx, miniCpm: false) with { NormalizeMoeTopKWeights = true },
         Status = AdmissionStatus.Admitted,
         StatusExemption = "Covered by the generic 'LLM inference (GGUF)' row; STATUS.md is a capability matrix, not an architecture catalog.",
         EvidenceDoc = "docs/done/01-gguf-model-coverage-plan.md",

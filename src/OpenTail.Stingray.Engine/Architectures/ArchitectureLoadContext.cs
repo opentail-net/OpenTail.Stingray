@@ -11,6 +11,9 @@ using OpenTail.Stingray.Vulkan;
 public sealed class ArchitectureLoadContext
 {
     public required ArchitectureProbe Probe { get; init; }
+
+    /// <summary>Final, architecture-correct hyperparameters (after descriptor semantics). Factories read this, never the raw probe.</summary>
+    public required ModelHyperparams Hyperparams { get; init; }
     public required ExecutionPlan Plan { get; init; }
 
     // Convenience forwarders reading from Plan

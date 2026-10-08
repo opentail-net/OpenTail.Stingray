@@ -24,7 +24,7 @@ public unsafe class DeepSeek2Tests
             ["deepseek2.vocab_size"] = (ulong)102400,
         };
 
-        var hparams = ModelHyperparams.FromGgufMetadata(metadata);
+        var hparams = OpenTail.Stingray.Engine.ArchitectureModelResolver.ResolveHyperparams(metadata);
 
         Assert.Equal(27, hparams.NumLayers);
         Assert.Equal(2048, hparams.EmbeddingDim);

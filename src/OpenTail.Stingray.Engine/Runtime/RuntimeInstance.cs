@@ -189,7 +189,6 @@ public sealed class RuntimeInstance : IDisposable
                 Path = model.ModelPath,
                 Architecture = model.Architecture,
                 TensorSource = model.TensorSource,
-                Hyperparams = effectiveHp,
                 IsGguf = model.IsGguf,
                 Gguf = model.IsGguf ? model.Gguf : null,
             };
@@ -197,6 +196,7 @@ public sealed class RuntimeInstance : IDisposable
             var loadContext = new ArchitectureLoadContext
             {
                 Probe = probe,
+                Hyperparams = effectiveHp,
                 Plan = plan,
                 CpuBackend = cpuBackend,
                 CudaBackend = cudaBackend,

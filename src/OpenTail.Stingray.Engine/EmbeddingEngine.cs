@@ -54,7 +54,7 @@ public sealed class EmbeddingEngine : IEmbeddingPipeline, IRerankerPipeline
                 var model = GgufModel.Open(modelName);
                 _ownedDisposables.Add(model);
 
-                var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+                var hp = ArchitectureModelResolver.ResolveHyperparams(model);
                 _tokenizer = GgufTokenizer.FromGgufModel(model);
 
                 if (model.Metadata.TryGetValue("tokenizer.ggml.add_eos_token", out var addEosObj))

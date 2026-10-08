@@ -113,23 +113,9 @@ public sealed class Model : IModel
             tensorSource = gguf;
         }
 
-        var hp = ModelHyperparams.FromGgufMetadata(tensorSource.Metadata, tensorSource);
-        string? rawArch = tensorSource.Metadata.TryGetValue("general.architecture", out var a) ? Convert.ToString(a) : null;
-        var probe = new ArchitectureProbe
-        {
-            Path = parameters.ModelPath,
-            Architecture = rawArch,
-            TensorSource = tensorSource,
-            Hyperparams = hp,
-            IsGguf = gguf is not null,
-            Gguf = gguf,
-        };
+        var resolved = ArchitectureModelResolver.Resolve(tensorSource, parameters.ModelPath, gguf);
 
-        string arch = ArchitectureRegistry.TryResolve(probe, out var descriptor)
-            ? descriptor.Id
-            : (rawArch ?? "unknown");
-
-        return new Model(parameters.ModelPath, tensorSource, gguf, hp, arch, parameters);
+        return new Model(parameters.ModelPath, tensorSource, gguf, resolved.Hyperparams, resolved.CanonicalArchitecture, parameters);
     }
 
     /// <inheritdoc/>
