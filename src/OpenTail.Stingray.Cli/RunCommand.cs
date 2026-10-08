@@ -1321,6 +1321,9 @@ public sealed class RunCommand : Command<RunCommand.Settings>
             fwd = runtimeInstance.ForwardPass as ForwardPass;
             hybridFwd = runtimeInstance.ForwardPass as HybridGdnForwardPass;
             standaloneFwd = runtimeInstance.ForwardPass;
+            // Found 2026-10-08: the plan-driven migration (dd198b80) dropped the old per-backend "if (HasMtpHead) mtpFwd = ..." assignments,
+            // so --spec-type mtp was always rejected. Any pass that reports an MTP head (CPU, CUDA or Vulkan hybrid GDN) drives MTP.
+            if (runtimeInstance.ForwardPass is { HasMtpHead: true } mtpCapable) mtpFwd = mtpCapable;
             gpuBackend = (IDisposable?)runtimeInstance.VulkanBackend ?? runtimeInstance.CudaBackend;
             gpuFwd = runtimeInstance.ForwardPass as IDisposable;
             cpuBackend = runtimeInstance.CpuBackend;
