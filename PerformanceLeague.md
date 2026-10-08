@@ -1311,6 +1311,8 @@ Question: would a zero-allocation tensor arena (pooled native scratch) speed dec
 | Qwen3.8-27B UD-Q3_K_XL, MTP depth 1 | 80 | 213 MiB (~2.7 MiB/token) | 111 ms | ~31 s | **0.4%** |
 
 Why so small: the forward passes already keep their scratch in pre-allocated `NativeMemory` (dozens of `NativeMemory.Alloc*` sites across `ForwardPass.*` and `HybridGdnForwardPass`), which is the arena pattern. What still reaches the managed heap per token is the logits copy for the sampler and, in the MTP verify, a vocab-sized `ToArray()` per verified token (~1 MiB each); those cost under 1% even on the fastest model. Decode is memory-bandwidth-bound (plain Qwen3.8 decode runs at ~79% of the DRAM ceiling), so shaving ~1% of GC time cannot move it. If anyone wants the last fraction of a percent, the targeted fix is to reuse those two logits buffers, not a framework.
+
+Memory footprint (same run, `STINGRAY_GC_STATS=1` also prints managed heap, GC-committed bytes and peak working set): GC-committed memory is **2% of peak** on Qwen3.8-27B (294 of 13,503 MiB; file 12,538 MiB), 4% on SmolLM2-1.7B (90 of 2,027 MiB; file 1,007 MiB) and 28% on SmolLM2-135M (95 of 345 MiB; file 101 MiB, so under 100 MiB in absolute terms). An allocator arena therefore cannot save more than about 300 MiB on the largest model. Non-weight, non-GC native memory is ~150 / ~930 / ~670 MiB for the three (the 1.7B figure is probably KV cache; not broken down). A real saving would need scratch buffers with disjoint lifetimes to share blocks, which is a liveness-analysis design, not an allocator, and has not been measured.
 ## CUDA Inference — No Numbers Yet
 
 > **No CUDA GPU on dev machine.** No measured numbers exist for CUDA on this box.

@@ -12,7 +12,9 @@ Console.InputEncoding = Encoding.UTF8;
 if (Environment.GetEnvironmentVariable("STINGRAY_GC_STATS") == "1")
     AppDomain.CurrentDomain.ProcessExit += (_, _) => Console.Error.WriteLine(
         $"[gc] gen0={GC.CollectionCount(0)} gen1={GC.CollectionCount(1)} gen2={GC.CollectionCount(2)} " +
-        $"allocated={GC.GetTotalAllocatedBytes() / 1048576.0:F1} MiB pause={GC.GetTotalPauseDuration().TotalMilliseconds:F0} ms");
+        $"allocated={GC.GetTotalAllocatedBytes() / 1048576.0:F1} MiB pause={GC.GetTotalPauseDuration().TotalMilliseconds:F0} ms " +
+        $"managedHeap={GC.GetGCMemoryInfo().HeapSizeBytes / 1048576.0:F0} MiB gcCommitted={GC.GetGCMemoryInfo().TotalCommittedBytes / 1048576.0:F0} MiB " +
+        $"peakWorkingSet={System.Diagnostics.Process.GetCurrentProcess().PeakWorkingSet64 / 1048576.0:F0} MiB");
 
 // Warn about STINGRAY_* variables the engine never reads. They are consumed ad hoc at ~141
 // call sites, so a misspelling is indistinguishable from "unset" â the run silently ignores the
