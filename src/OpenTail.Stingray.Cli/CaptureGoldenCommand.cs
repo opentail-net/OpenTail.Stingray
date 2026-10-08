@@ -73,6 +73,14 @@ public sealed class CaptureGoldenCommand : Command<CaptureGoldenCommand.Settings
         [Description("How long to wait for llama-server to load the model")]
         public int ServerTimeoutSeconds { get; init; } = 900;
 
+        [CommandOption("--expect <LIST>")]
+        [Description("Hyperparameter guards to pin in the golden, e.g. ropeDim=16,numExperts=8,hasFfnBias=true (ModelHyperparams property=value, comma separated)")]
+        public string? Expect { get; init; }
+
+        [CommandOption("--min-confident <N>")]
+        [Description("Require at least N matches at positions where the reference itself was confident (evidence requirement for teacher-forced cases)")]
+        public int MinConfident { get; init; }
+
         [CommandOption("--no-hash")]
         [Description("Skip the SHA-256 of the model (the golden then cannot pin the file; slow for large checkpoints)")]
         public bool NoHash { get; init; }
@@ -252,6 +260,9 @@ public sealed class CaptureGoldenCommand : Command<CaptureGoldenCommand.Settings
 
             // 6. Assemble and write. Machine-specific text is refused by GoldenFile.Save.
             string outPath = s.Out ?? $"{arch}.golden.json";
+            Dictionary<string, string>? expectations = s.Expect is { Length: > 0 }
+                ? s.Expect.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Select(p => p.Split('=', 2)).ToDictionary(p => p[0], p => p.Length > 1 ? p[1] : "true", StringComparer.OrdinalIgnoreCase)
+                : null;
             var newCase = new GoldenCase
             {
                 Name = s.CaseName,
@@ -261,6 +272,7 @@ public sealed class CaptureGoldenCommand : Command<CaptureGoldenCommand.Settings
                 NPredict = s.Tokens,
                 Tokens = completion.Tokens,
                 Margins = completion.Margins,
+                MinConfident = s.MinConfident,
                 Text = completion.Content,
                 Mode = teacher ? "teacherForced" : "free",
             };
@@ -271,7 +283,7 @@ public sealed class CaptureGoldenCommand : Command<CaptureGoldenCommand.Settings
                 if (!string.Equals(existing.Model.FileName, fileName, StringComparison.OrdinalIgnoreCase)
                     || (existing.Model.Sha256 is not null && sha is not null && existing.Model.Sha256 != sha))
                 { AnsiConsole.ErrorLine($"[red]Error:[/] '{Markup.Escape(outPath)}' is a golden for a different model file; refusing to mix them. Pick another --out."); return 1; }
-                golden = existing with { Cases = [.. existing.Cases.Where(c => c.Name != s.CaseName), newCase] };
+                golden = existing with { Cases = [.. existing.Cases.Where(c => c.Name != s.CaseName), newCase], ExpectedHyperparameters = expectations ?? existing.ExpectedHyperparameters, Notes = s.Notes ?? existing.Notes };
             }
             else
             {
@@ -289,6 +301,7 @@ public sealed class CaptureGoldenCommand : Command<CaptureGoldenCommand.Settings
                         CapturedUtc = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ"),
                     },
                     Cases = [newCase],
+                    ExpectedHyperparameters = expectations,
                 };
             }
             golden.Save(outPath);

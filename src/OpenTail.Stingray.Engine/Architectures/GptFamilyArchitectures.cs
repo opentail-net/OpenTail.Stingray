@@ -51,7 +51,7 @@ internal static partial class OtherAdmittedArchitectures
     // src/models/gptneox.cpp, NOT the interleaved per-head layout an earlier draft
     // assumed), and the metadata-driven parallel-residual graph (x + attn(ln1(x)) +
     // ffn(ln2(x)), both norms reading the SAME incoming residual — ModelHyperparams.
-    // HasNormBias/HasFfnBias/UseParallelResidual). See GptNeoxGreedyParityTests and
+    // HasNormBias/HasFfnBias/UseParallelResidual). See tests/OpenTail.Stingray.Tests.ForwardPass/Goldens/gptneox.golden.json and
     // docs/done/01-gguf-model-coverage-plan.md for the receipt. TurboQuant prefill, continuous-
     // batching admission, and CUDA/Vulkan are not wired to this profile.
     public static readonly ArchitectureDescriptor GptNeoX = new()

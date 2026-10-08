@@ -240,6 +240,8 @@ public sealed class AdmitArchCommand : Command<AdmitArchCommand.Settings>
 
         using var source = new GoldenForwardPassSource(model, Math.Max(settings.CtxSize, 1024));
         using var scope = new GoldenEngineSettingsScope(golden.EngineSettings);
+        var hpExpect = HyperparameterExpectations.Check(ArchitectureModelResolver.ResolveHyperparams(model), golden.ExpectedHyperparameters);
+        foreach (var f in hpExpect) AnsiConsole.MarkupLine($"[red]Hyperparameter guard failed:[/] {Markup.Escape(f)}");
         var result = GoldenParityRunner.Run(golden, source.Create, new ParityOptions { RequireStepwiseArgmaxAgreement = false });
 
         AnsiConsole.WriteLine();
@@ -263,7 +265,7 @@ public sealed class AdmitArchCommand : Command<AdmitArchCommand.Settings>
             Console.WriteLine($"// {arch} — verified {DateTime.UtcNow:yyyy-MM-dd} against golden {Path.GetFileName(settings.Golden!)}: " +
                 $"{golden.Reference.Engine} {golden.Reference.Build}, sha256 {golden.Model.Sha256 ?? "(not recorded)"}, {result.Verdict}.");
         }
-        return result.Passed ? 0 : 1;
+        return result.Passed && hpExpect.Count == 0 ? 0 : 1;
     }
 
     private static int Argmax(ReadOnlySpan<float> logits)

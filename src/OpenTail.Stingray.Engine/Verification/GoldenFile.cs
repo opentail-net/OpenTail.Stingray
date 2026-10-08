@@ -20,6 +20,11 @@ public sealed record GoldenFile
     public IReadOnlyList<GoldenCase> Cases { get; init; } = [];
     /// <summary>Named overrides for the rare model whose receipt needs a non-default engine setting.</summary>
     public GoldenEngineSettings? EngineSettings { get; init; }
+    /// <summary>
+    /// Hyperparameter guards the old parity classes asserted by hand (e.g. <c>ropeDim</c> = 16, <c>numExperts</c> = 8, <c>hasFfnBias</c> = true): ModelHyperparams property name
+    /// (case-insensitive) to the expected invariant string (<c>null</c> for null). They pin what an architecture's descriptor must resolve for this very file.
+    /// </summary>
+    public Dictionary<string, string>? ExpectedHyperparameters { get; init; }
 
     public const int CurrentSchema = 1;
 
@@ -117,6 +122,8 @@ public sealed record GoldenCase
     /// undecided, so a mismatch there is a near-tie, not evidence against us. Null for receipts migrated without it.
     /// </summary>
     public double[]? Margins { get; init; }
+    /// <summary>Evidence requirement: at least this many positions must match where the reference itself was confident (margin at or above the confident threshold). 0 = none.</summary>
+    public int MinConfident { get; init; }
 }
 
 public sealed record GoldenEngineSettings

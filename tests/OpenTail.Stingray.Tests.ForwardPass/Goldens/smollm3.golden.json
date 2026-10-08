@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "architecture": "smollm3",
-  "notes": "Cross-check of the legacy SmolLm3GreedyParityTests receipt (greedy, 24 tokens).",
+  "notes": "Migrated from SmolLm3GreedyParityTests (the independent capture reproduced the legacy continuation text exactly). Original provenance: Greedy token parity against llama.cpp for SmolLM3 \u2014 the receipt that admits smollm3 to \u0027s architecture allowlist. What SmolLM3 needs beyond the plain llama trunk. Exactly one twist: NoPE layers, where every 4th layer skips RoPE entirely (\u0060models/smollm3.cpp\u0060 hardcodes \u0060n_no_rope_layer_step = 4\u0060, gated on \u0060(il \u002B 1) % step != 0\u0060 \u2014 the identical expression this engine already used for Llama-4, so \u0060ModelGraph.cs\u0060 just added \u0060isSmolLm3\u0060 alongside \u0060isLlama4\u0060 in the existing \u0060noRopeStep\u0060 computation). RMSNorm, gated SwiGLU FFN, standard GQA attention, no scale trio, no QK-norm \u2014 otherwise identical to the Llama family this engine already runs. Tokenizer pre-type \u0060smaug-bpe\u0060 was already covered by the ported cascade table (\u00A73 of the coverage plan), so this exercises only the architecture axis. Why a test and not a CLI comparison. Same reasoning as the OLMoE/Granite receipts: the CLI renders the chat template (and SmolLM3 additionally injects a reasoning-mode wrapper via its template) rather than prefilling a raw completion. Driving directly with the reference token ids is the only apples-to-apples form. Reference. \u0060tools/llama.cpp\u0060 build \u0060b8585-cad2d3884\u0060, model \u0060SmolLM3-3B-Q4_K_M.gguf\u0060 (ggml-org, from \u0060HuggingFaceTB/SmolLM3-3B\u0060, Apache-2.0): llama-tokenize -m \u003Cmodel\u003E -p \u0022The capital of France is\u0022 --ids --no-bos -\u003E [791, 6864, 315, 9822, 374] llama-completion -m \u003Cmodel\u003E -p \u0022The capital of France is\u0022 -n 24 --temp 0 --top-k 1 --seed 0 \\ -no-cnv --override-kv tokenizer.ggml.add_bos_token=bool:false -\u003E \u0022The capital of France is Paris. The Eiffel Tower is a famous landmark in Paris. The Eiffel Tower was built for the\u0022 \u0060llama-completion\u0060, not \u0060llama-cli\u0060: this build\u0027s \u0060llama-cli -no-cnv\u0060 silently falls back to interactive conversation mode instead of raising \u2014 see the coverage plan\u0027s \u0022operational gotcha\u0022 note. Raw completion mode also sidesteps SmolLM3\u0027s chat-template reasoning wrapper (\u0060[Start thinking]\u0060) entirely, which only applies through the template, not raw continuation. ",
   "model": {
     "fileName": "SmolLM3-Q4_K_M.gguf",
     "sizeBytes": 1915305312,
@@ -86,7 +86,8 @@
         2.6951,
         4.6211,
         1.079
-      ]
+      ],
+      "minConfident": 0
     }
   ]
 }

@@ -45,6 +45,11 @@ public sealed class GoldenParityTests : HeavyTestBase
             + (golden.Model.Source is { } src ? $" Obtain it from {src} (e.g. `stingray pull -r {src}`)." : ""));
 
         using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path!);
+        // Guards the old parity classes asserted by hand: the architecture string, and any hyperparameters the golden pins for this file.
+        string arch = Convert.ToString(modelHandle.Model.Metadata["general.architecture"]) ?? "";
+        Assert.Equal(golden.Architecture, arch, ignoreCase: true);
+        var guardFailures = HyperparameterExpectations.Check(ArchitectureModelResolver.ResolveHyperparams(modelHandle.Model), golden.ExpectedHyperparameters);
+        Assert.True(guardFailures.Count == 0, "hyperparameter guards failed: " + string.Join("; ", guardFailures));
         using var source = new GoldenForwardPassSource(modelHandle.Model, maxContextLength: 2048);
         using var scope = new GoldenEngineSettingsScope(golden.EngineSettings);
 

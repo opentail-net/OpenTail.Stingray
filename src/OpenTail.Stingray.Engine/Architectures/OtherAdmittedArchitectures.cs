@@ -4,7 +4,7 @@ namespace OpenTail.Stingray.Engine;
 internal static partial class OtherAdmittedArchitectures
 {
     // smollm3 — one twist over the plain llama trunk: NoPE every 4th layer, gated the same way
-    // as llama4's noRopeStep. See SmolLm3GreedyParityTests for the full 24-token greedy receipt.
+    // as llama4's noRopeStep. See tests/OpenTail.Stingray.Tests.ForwardPass/Goldens/smollm3.golden.json for the full 24-token greedy receipt.
     public static readonly ArchitectureDescriptor Smollm3 = new()
     {
         Id = "smollm3",

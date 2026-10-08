@@ -40,10 +40,14 @@ public sealed record ParityOptions
 /// <param name="ReferenceMargin">The reference engine's own top-1 minus top-2 margin at this position (nats), when the golden recorded it.</param>
 public sealed record PositionMismatch(int Index, int Expected, int Actual, double Gap, bool NearTie, double? ReferenceMargin = null);
 
+/// <param name="ConfidentMatched">Positions that matched where the reference itself was confident (margin at or above the confident threshold).</param>
 public sealed record GoldenCaseResult(
-    string Name, string Mode, CaseVerdict Verdict, int Compared, int Matched, IReadOnlyList<PositionMismatch> Mismatches, IReadOnlyList<int> Generated)
+    string Name, string Mode, CaseVerdict Verdict, int Compared, int Matched, IReadOnlyList<PositionMismatch> Mismatches, IReadOnlyList<int> Generated,
+    int ConfidentMatched = 0, int MinConfident = 0)
 {
     public PositionMismatch? FirstMismatch => Mismatches.Count > 0 ? Mismatches[0] : null;
+    /// <summary>False when the case asked for a minimum number of confident matches and fewer were seen (too little evidence).</summary>
+    public bool EvidenceOk => ConfidentMatched >= MinConfident;
 }
 
 /// <param name="ArgmaxGap">The single-pass logit gap between the two argmax tokens (0 when they agree); a flip is always within 2 x MaxAbsDiff.</param>
@@ -59,7 +63,7 @@ public sealed record GoldenRunResult(
     public CaseVerdict Verdict => Cases.Count == 0 ? CaseVerdict.Exact : Cases.Max(c => c.Verdict);
 
     /// <summary>True when no case diverged and the self-consistency check (if run) passed.</summary>
-    public bool Passed => Verdict != CaseVerdict.Diverged && (Stepwise is null || Stepwise.Passed);
+    public bool Passed => Verdict != CaseVerdict.Diverged && Cases.All(c => c.EvidenceOk) && (Stepwise is null || Stepwise.Passed);
 
     public string Format()
     {
@@ -68,7 +72,8 @@ public sealed record GoldenRunResult(
         foreach (var c in Cases)
         {
             sb.Append("  case '").Append(c.Name).Append("' [").Append(c.Mode).Append("]: ").Append(c.Verdict)
-              .Append(", ").Append(c.Matched).Append('/').Append(c.Compared).Append(" matched");
+              .Append(", ").Append(c.Matched).Append('/').Append(c.Compared).Append(" matched")
+              .Append(c.MinConfident > 0 ? $", {c.ConfidentMatched} confident (need {c.MinConfident}){(c.EvidenceOk ? "" : " INSUFFICIENT EVIDENCE")}" : "");
             foreach (var m in c.Mismatches.Take(5))
                 sb.Append("; @").Append(m.Index).Append(" expected ").Append(m.Expected).Append(" got ").Append(m.Actual)
                   .Append(" gap ").Append(m.Gap.ToString("0.####", System.Globalization.CultureInfo.InvariantCulture))
@@ -127,6 +132,7 @@ public static class GoldenParityRunner
         int pos = c.PromptTokens.Length;
         int matched = 0;
         int compared = 0;
+        int confidentMatched = 0;
         for (int i = 0; i < n; i++)
         {
             int vocab = Math.Min(logits.Length, fwd.VocabSize);
@@ -136,6 +142,7 @@ public static class GoldenParityRunner
             if (top == c.Tokens[i])
             {
                 matched++;
+                if (c.Margins is { } cm && i < cm.Length && cm[i] >= options.ConfidentMargin) confidentMatched++;
             }
             else
             {
@@ -156,7 +163,7 @@ public static class GoldenParityRunner
         var verdict = mismatches.Count == 0 ? CaseVerdict.Exact
             : mismatches.All(m => m.NearTie) ? CaseVerdict.NearTie
             : CaseVerdict.Diverged;
-        return new GoldenCaseResult(c.Name, teacher ? "teacherForced" : "free", verdict, compared, matched, mismatches, generated);
+        return new GoldenCaseResult(c.Name, teacher ? "teacherForced" : "free", verdict, compared, matched, mismatches, generated, confidentMatched, c.MinConfident);
     }
 
     /// <summary>
