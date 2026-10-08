@@ -2254,6 +2254,8 @@ public sealed class RunCommand : Command<RunCommand.Settings>
                 if (mtpFwd is null || !mtpFwd.HasMtpHead) { rejectReason = "--spec-type mtp requires a model with an MTP head (nextn tensors)."; return false; }
                 if (sp.Temperature > 0f) { rejectReason = "--spec-type mtp requires greedy sampling (--temp 0)."; return false; }
                 if (!noThinking) { rejectReason = "--spec-type mtp requires --no-thinking (chat template must render with enable_thinking=false)."; return false; }
+                if (sp.HasHistoryPenalty)
+                    AnsiConsole.MarkupLine("[yellow]Note:[/] --spec-type mtp decodes by pure argmax and ignores the repetition/presence penalties; pass --repeat-penalty 1.0 to make plain decoding match it exactly.");
                 WarnIfDraftNClamped(sp.SpecDraftNMax, maxDraftN);
                 return true;
             default: // Auto
