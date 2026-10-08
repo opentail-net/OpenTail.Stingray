@@ -12,6 +12,7 @@ internal static class GraniteArchitectures
     public static readonly ArchitectureDescriptor Granitehybrid = new()
     {
         Id = "granitehybrid",
+        ChatProtocolId = "granite",
         ForwardPassFamily = ForwardPassFamily.HybridGdn, // the hybrid-recurrent factory; it delegates Mamba-2 layouts to the dense passes
         ApplyModelSemantics = ctx => FamilyModelSemantics.Granite(ctx, miniCpm: false, hybrid: true) with { NormalizeMoeTopKWeights = true },
         Status = AdmissionStatus.Admitted,
@@ -36,6 +37,7 @@ internal static class GraniteArchitectures
     public static readonly ArchitectureDescriptor Granitemoe = new()
     {
         Id = "granitemoe",
+        ChatProtocolId = "granite",
         ApplyModelSemantics = ctx => FamilyModelSemantics.Granite(ctx, miniCpm: false) with { NormalizeMoeTopKWeights = true },
         Status = AdmissionStatus.Admitted,
         StatusExemption = "Covered by the generic 'LLM inference (GGUF)' row; STATUS.md is a capability matrix, not an architecture catalog.",

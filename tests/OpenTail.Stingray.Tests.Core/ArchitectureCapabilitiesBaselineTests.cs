@@ -149,4 +149,18 @@ public sealed class ArchitectureCapabilitiesBaselineTests
             }
         Assert.True(bad.Count == 0, "Planner/selection read a descriptor member other than Capabilities:\n  " + string.Join("\n  ", bad));
     }
+
+    // Phase 2: the chat protocol now comes from the descriptor. Pin the lookup edge cases the old per-protocol arch lists had.
+    [Theory]
+    [InlineData("gemma4", "gemma")]
+    [InlineData("GEMMA3", "gemma")]            // case-insensitive, as before
+    [InlineData("llama", "llama3")]
+    [InlineData("llama4", "llama4")]
+    [InlineData("granitehybrid", "granite")]
+    [InlineData("qwen35", "chatml")]
+    [InlineData("gemma3n", "chatml")]          // never listed under the gemma protocol
+    [InlineData("not-a-registered-architecture", "chatml")]
+    [InlineData(null, "chatml")]
+    public void ChatProtocol_ResolvesThroughTheDescriptor(string? architecture, string expectedProtocol) =>
+        Assert.Equal(expectedProtocol, ChatProtocolRegistry.For(architecture).Id);
 }

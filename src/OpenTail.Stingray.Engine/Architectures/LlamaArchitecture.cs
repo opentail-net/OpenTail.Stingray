@@ -5,6 +5,7 @@ internal static class LlamaArchitecture
     public static readonly ArchitectureDescriptor Descriptor = new()
     {
         Id = "llama",
+        ChatProtocolId = "llama3",
         Status = AdmissionStatus.Admitted,
         StatusExemption = "Covered by the generic 'LLM inference (GGUF)' row; STATUS.md is a capability matrix, not an architecture catalog.",
         EvidenceDoc = "docs/STATUS.md",

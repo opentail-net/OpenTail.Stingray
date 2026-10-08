@@ -5,6 +5,7 @@ internal static class GemmaArchitectures
     public static readonly ArchitectureDescriptor Gemma = new()
     {
         Id = "gemma",
+        ChatProtocolId = "gemma",
         UsesNeoxRope = true,
         Status = AdmissionStatus.Admitted,
         StatusExemption = "Covered by the generic 'LLM inference (GGUF)' row; STATUS.md is a capability matrix, not an architecture catalog.",
@@ -16,6 +17,7 @@ internal static class GemmaArchitectures
     public static readonly ArchitectureDescriptor Gemma2 = new()
     {
         Id = "gemma2",
+        ChatProtocolId = "gemma",
         UsesNeoxRope = true,
         Status = AdmissionStatus.Admitted,
         StatusExemption = "Covered by the generic 'LLM inference (GGUF)' row; STATUS.md is a capability matrix, not an architecture catalog.",
@@ -27,6 +29,7 @@ internal static class GemmaArchitectures
     public static readonly ArchitectureDescriptor Gemma3 = new()
     {
         Id = "gemma3",
+        ChatProtocolId = "gemma",
         UsesNeoxRope = true,
         ApplyModelSemantics = FamilyModelSemantics.Gemma3,
         Status = AdmissionStatus.Admitted,

@@ -81,6 +81,14 @@ public sealed class ArchitectureDescriptor
 
     public FallbackChatFormat FallbackChat { get; init; } = FallbackChatFormat.ChatMl;
 
+    /// <summary>
+    /// Id of the <see cref="ChatProtocol"/> the engine API uses for this architecture (rendering, media placeholders, thinking
+    /// markers, output parsing): <c>llama3</c>, <c>llama4</c>, <c>granite</c> or <c>gemma</c>. Null means the default
+    /// <c>chatml</c> protocol. Distinct from <see cref="FallbackChat"/>, which only picks the prompt layout the CLI/server fall back
+    /// to when a GGUF ships no usable Jinja template; the two differ today for the Gemma family and granitehybrid/granitemoe.
+    /// </summary>
+    public string? ChatProtocolId { get; init; }
+
     public ForwardPassFamily ForwardPassFamily { get; init; } = ForwardPassFamily.Dense;
 
     public SupportedBackends SupportedBackends { get; init; } = SupportedBackends.All;

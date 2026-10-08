@@ -91,13 +91,9 @@ public static class LlamaCompatEndpoints
 
         // Derive a human-readable template name from the architecture. llama-server's /props
         // returns the full Jinja source; we return the name (or "custom" for an unknown arch).
-        string tmplName = chatTemplate.Architecture switch
-        {
-            "llama"  => "llama3",
-            "llama4" => "llama4",
-            "gemma"  or "gemma2" or "gemma4" => "gemma",
-            _        => "chatml",   // qwen2, smollm, default
-        };
+        // The template name is the engine's chat protocol id for the architecture (chatml, llama3, llama4, granite, gemma): one source of
+        // truth with the descriptor. (Before 2026-10-08 this was its own arch switch, which reported gemma3 as chatml.)
+        string tmplName = ChatProtocolRegistry.For(chatTemplate.Architecture).Id;
         if (chatTemplate.JinjaTemplate is not null && tmplName == "chatml"
                 && chatTemplate.Architecture is not ("qwen2" or "qwen3"))
             tmplName = "custom";

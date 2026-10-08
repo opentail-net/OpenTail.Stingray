@@ -10,7 +10,7 @@ namespace OpenTail.Stingray.Engine;
 /// </summary>
 public static class ChatProtocolRegistry
 {
-    private static readonly Dictionary<string, ChatProtocol> s_byArch = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly Dictionary<string, ChatProtocol> s_byId = new(StringComparer.Ordinal);
     private static readonly ChatProtocol s_chatMl;
 
     static ChatProtocolRegistry()
@@ -18,7 +18,6 @@ public static class ChatProtocolRegistry
         s_chatMl = new ChatProtocol
         {
             Id = "chatml",
-            Architectures = ["qwen", "qwen2", "qwen2moe", "qwen3", "qwen3moe", "qwen35", "qwen35moe", "deepseek2", "gpt-oss", "smollm3"],
             Render = req =>
             {
                 var sb = new StringBuilder();
@@ -47,7 +46,6 @@ public static class ChatProtocolRegistry
         var llama3 = new ChatProtocol
         {
             Id = "llama3",
-            Architectures = ["llama", "llama3", "llama31", "llama32", "llama33"],
             Render = req =>
             {
                 var sb = new StringBuilder();
@@ -75,7 +73,6 @@ public static class ChatProtocolRegistry
         var llama4 = new ChatProtocol
         {
             Id = "llama4",
-            Architectures = ["llama4"],
             Render = req =>
             {
                 var sb = new StringBuilder();
@@ -103,7 +100,6 @@ public static class ChatProtocolRegistry
         var granite = new ChatProtocol
         {
             Id = "granite",
-            Architectures = ["granite", "granitehybrid", "granitemoe"],
             Render = req =>
             {
                 var sb = new StringBuilder();
@@ -130,7 +126,6 @@ public static class ChatProtocolRegistry
         var gemma = new ChatProtocol
         {
             Id = "gemma",
-            Architectures = ["gemma", "gemma2", "gemma3", "gemma4"],
             Render = req =>
             {
                 var sb = new StringBuilder();
@@ -162,21 +157,19 @@ public static class ChatProtocolRegistry
         Register(gemma);
     }
 
-    private static void Register(ChatProtocol protocol)
-    {
-        foreach (var arch in protocol.Architectures)
-        {
-            s_byArch[arch] = protocol;
-        }
-    }
+    private static void Register(ChatProtocol protocol) => s_byId[protocol.Id] = protocol;
+
+    // Llama model-family names callers have passed as an "architecture" (the GGUF architecture is just "llama"). They are not
+    // registered descriptors, so they must not become admitted architectures; they only select the llama3 chat protocol.
+    private static readonly HashSet<string> s_llama3FamilyNames = new(StringComparer.OrdinalIgnoreCase) { "llama3", "llama31", "llama32", "llama33" };
 
     /// <summary>
     /// Returns the matched chat protocol for an architecture, or the default ChatML protocol.
     /// </summary>
     public static ChatProtocol For(string? architecture)
     {
-        if (architecture is not null && s_byArch.TryGetValue(architecture, out var protocol))
-            return protocol;
-        return s_chatMl;
+        string? id = ArchitectureRegistry.Find(architecture)?.ChatProtocolId
+                     ?? (architecture is not null && s_llama3FamilyNames.Contains(architecture) ? "llama3" : null);
+        return id is not null && s_byId.TryGetValue(id, out var protocol) ? protocol : s_chatMl;
     }
 }

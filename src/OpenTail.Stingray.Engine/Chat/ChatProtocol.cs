@@ -25,7 +25,6 @@ public interface IOutputParser
 public sealed class ChatProtocol
 {
     public required string Id { get; init; }
-    public required IReadOnlyList<string> Architectures { get; init; }
     public Func<ChatRenderRequest, string>? Render { get; init; }
     public Action<ChatMessage, StringBuilder>? AppendMediaPlaceholders { get; init; }
     public string? ThinkingGrammarActivationTrigger { get; init; } = "</think>";

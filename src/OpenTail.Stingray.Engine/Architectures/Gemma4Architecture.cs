@@ -5,6 +5,7 @@ internal static class Gemma4Architecture
     public static readonly ArchitectureDescriptor Descriptor = new()
     {
         Id = "gemma4",
+        ChatProtocolId = "gemma",
         UsesNeoxRope = true,
         Status = AdmissionStatus.Admitted,
         StatusAnchor = "Gemma 4 E4B text (`gemma4`)",

@@ -12,6 +12,7 @@ internal static class GraniteArchitecture
     public static readonly ArchitectureDescriptor Descriptor = new()
     {
         Id = "granite",
+        ChatProtocolId = "granite",
         ApplyModelSemantics = ctx => FamilyModelSemantics.Granite(ctx, miniCpm: false),
         Status = AdmissionStatus.Admitted,
         StatusExemption = "Covered by the generic 'LLM inference (GGUF)' row; STATUS.md is a capability matrix, not an architecture catalog.",

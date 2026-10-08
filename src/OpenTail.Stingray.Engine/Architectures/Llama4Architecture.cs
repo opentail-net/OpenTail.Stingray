@@ -5,6 +5,7 @@ internal static class Llama4Architecture
     public static readonly ArchitectureDescriptor Descriptor = new()
     {
         Id = "llama4",
+        ChatProtocolId = "llama4",
         // Meta reference: sigmoid gating weight-before-FFN; Llama4TextL2Norm QK-norm (unweighted, no attn_q_norm tensor);
         // NoPE every 4th layer (llama.cpp n_no_rope_layer_step = 4); chunked attention unless sliding_window is explicitly 0.
         ApplyModelSemantics = ctx =>

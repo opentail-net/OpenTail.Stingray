@@ -14,7 +14,7 @@ src/OpenTail.Stingray.Core/SafetensorsConfigReader.cs|5
 src/OpenTail.Stingray.Core/SafetensorsTensorSource.cs|1
 src/OpenTail.Stingray.Core/SafetensorsTextModelPackage.cs|13
 src/OpenTail.Stingray.Core/ToolCallAdapter.cs|17
-src/OpenTail.Stingray.Engine/Chat/ChatProtocolRegistry.cs|22
+src/OpenTail.Stingray.Engine/Chat/ChatProtocolRegistry.cs|3
 src/OpenTail.Stingray.Engine/DeepSeek41Alpha.cs|1
 src/OpenTail.Stingray.Engine/GptOssAlpha.cs|1
 src/OpenTail.Stingray.Engine/ModelCompatibility.cs|1
@@ -24,7 +24,7 @@ src/OpenTail.Stingray.Engine/Rwkv6ForwardPass.cs|1
 src/OpenTail.Stingray.Engine/Rwkv7ForwardPass.cs|1
 src/OpenTail.Stingray.Engine/RwkvForwardPassBase.cs|4
 src/OpenTail.Stingray.Server/ChatTemplate.cs|1
-src/OpenTail.Stingray.Server/Endpoints/LlamaCompatEndpoints.cs|9
+src/OpenTail.Stingray.Server/Endpoints/LlamaCompatEndpoints.cs|2
 src/OpenTail.Stingray.Server/OpenTailStingrayServerOptions.cs|1
 src/OpenTail.Stingray.Vision/Exaone4VisionModel.cs|1
 src/OpenTail.Stingray.Vision/Gemma3VisionModel.cs|1
