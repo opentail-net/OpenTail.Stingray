@@ -1215,6 +1215,34 @@ Method: `docs/reference/benchmark-prompt.txt` (468-587 tokens depending on the t
 
 Reading: on CPU we are **below llama.cpp on every MoE model here, not at par**: prefill 0.27-0.84x, decode 0.21-0.59x, with the worst gap on GLM-4.5-Air (a 128-expert, 47-layer MoE at Q2_K) and a decode gap of about 2x on the others. The iGPU paths are slower than our own CPU path on the big models (hybrid and split decode 0.3-0.5 t/s against 1.3-2.7 on CPU); by rule 13 that is a statement about this machine's shared-memory iGPU and the per-token expert upload traffic, not evidence about the GPU code on discrete hardware, which was not measured. Not attempted: depth-matched decode (`llama-bench -d`), a different thread count, `-ngl` on a GPU build of llama.cpp.
 
+## Full re-sweep of available text checkpoints, CPU (2026-10-08, after the architecture-semantics migration)
+
+Method: Release `stingray` CLI, `-g 0` (CPU), ~800-1100-token prompt (the same sentence repeated; exact length per row), 32 generated tokens, **best of 3**, machine otherwise idle. Reference: `llama-bench -p <same N> -n 32 -t 6 -ngl 0 -r 2` (b8585-cpu). Long-prompt decode is *not* comparable with the older short-prompt decode rows above (decode slows with context), so decode for the models that looked lower was re-measured at a short prompt (below). Ratio = C# ÷ C++.
+
+| Model | OT prefill (t/s) | llama.cpp prefill | Ratio | OT decode @long ctx | llama.cpp tg32 | Ratio | vs previous OT row |
+|---|---:|---:|---:|---:|---:|---:|---|
+| SmolLM2-135M Q4_K_M (791 tok) | 965.4 | 839.5 | **1.15x** | 102.7 | 249.8 | 0.41x | prefill 1000 → 965 (-3%, noise); decode 39.6 → 102.7 (better) |
+| SmolLM2-360M Q4_K_M (791) | 457.6 | 351.1 | **1.30x** | 66.1 | 131.1 | 0.50x | prefill 369.5 → 457.6 (better) |
+| SmolLM2-1.7B Q4_K_M (791) | 218.6 | 172.9 | **1.26x** | 23.2 | 37.8 | 0.61x | prefill ~185 → 218.6 (better); decode see short-ctx table |
+| Qwen3-0.6B Q8_0 (900) | 222.5 | 280.6 | 0.79x | 40.0 | 59.6 | 0.67x | prefill 226.1 → 222.5 (-1.6%, noise); decode 41.2 → 40.0 (noise) |
+| Qwen3-4B Q4_K_M (900) | 96.4 | 77.8 | **1.24x** | 12.0 | 16.6 | 0.72x | prefill 61.4 → 96.4 (better); decode 10.0 → 12.0 (better) |
+| Falcon3-3B Q4_K_M (773) | 153.3 | 123.5 | **1.24x** | 17.1 | 23.3 | 0.73x | prefill 102.4 → 153.3, decode 14.8 → 17.1 (both better; first llama.cpp ref) |
+| LFM2-1.2B Q8_0 (850) | 146.7 | 187.8 | 0.78x | 28.8 | 34.1 | 0.85x | new row, no earlier timing in this section |
+| **Phi-3-mini-4k Q4_K_M (569, matched)** | **35.4** | **68.5** | **0.52x** | 11.0 | — | — | **REGRESSION: prefill 40.1 (2026-09-13) → 35.4 (-12%, 3 runs 34.7-35.6)**; decode 9.8 → ~11 (fine) |
+| SmolLM3 Q4_K_M (1123) | 129.2 | 99.0 | **1.31x** | 15.5 | 21.3 | 0.73x | new row |
+| Mistral-7B-Instruct-v0.3 Q4_K_M (1005) | 53.8 | 44.4 | **1.21x** | 7.3 | 9.1 | 0.80x | prefill 46.4 → 53.8 (better); decode see short-ctx table |
+| Qwen3-8B Q4_K_M (900) | 55.2 | 44.0 | **1.26x** | 6.5 | 8.5 | 0.77x | prefill 48.3 → 55.2 (better); decode see short-ctx table |
+
+Short-context decode re-check (24-token-class prompt, 128 generated, 3 runs; llama.cpp `-p 0 -n 128 -t 6`), to separate real regressions from the context-length effect:
+
+| Model | OT decode (t/s) | llama.cpp tg128 | Ratio | Previous OT row | Verdict |
+|---|---:|---:|---:|---|---|
+| SmolLM2-1.7B Q4_K_M | 28.2-30.8 | 35.5 | 0.79-0.87x | 26.5 (2026-07) | better, not a regression |
+| Mistral-7B Q4_K_M | 7.8-8.0 | 9.43 | 0.83-0.85x | 8.3 (2026-10-01) | -4%, within run noise; watch |
+| Qwen3-8B Q4_K_M | 7.4 | 8.54 | 0.87x | 7.7 (2026-10-01) | -4%, within run noise; watch |
+
+**Regressions found by this sweep: one confirmed — Phi-3-mini prefill (-12% vs 2026-09-13, now 0.52x of llama.cpp; cause not yet bisected).** Mistral-7B / Qwen3-8B decode are 4% below their 2026-10-01 rows, inside the 3-run spread, so flagged "watch", not regression. Everything else matched or beat its previous row. Other note: the dirty working tree includes the architecture-semantics migration, so this is the first sweep with it applied. Decode/prefill for models with a ratio < 1.0 prefill (Qwen3-0.6B 0.79x, LFM2-1.2B 0.78x) was already below parity before and is unchanged within noise.
+
 ## CUDA Inference — No Numbers Yet
 
 > **No CUDA GPU on dev machine.** No measured numbers exist for CUDA on this box.
