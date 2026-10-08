@@ -26,7 +26,7 @@ public static class Program
 
         Console.WriteLine($"[INFO] Using model file: {modelPath}");
         using var model = GgufModel.Open(modelPath);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
+        var hp = OpenTail.Stingray.Engine.ArchitectureModelResolver.ResolveHyperparams(model.Metadata);
         var tokenizer = GgufTokenizer.FromGgufModel(model);
 
         using var backend = new CpuBackend();

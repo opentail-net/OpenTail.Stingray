@@ -78,7 +78,7 @@ public sealed class OrpheusPipeline : ITextToSpeechPipeline
     public OrpheusPipeline(string talkerGgufPath, string snacGgufPath, int ctxSize = 2048, bool allowGpu = true)
     {
         _model = GgufModel.Open(talkerGgufPath);
-        var hp = ModelHyperparams.FromGgufMetadata(_model.Metadata, _model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(_model);
 
         IForwardPass? fwd = null;
         IDisposable? backend = null;

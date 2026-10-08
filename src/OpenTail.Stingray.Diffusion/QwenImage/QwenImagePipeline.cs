@@ -94,7 +94,7 @@ public sealed class QwenImagePipeline : IDiffusionPipeline
         var vae = new Wan.WanVaeDecoder3D(vaeLoader, backend);
 
         var textEncoderModel = GgufModel.Open(textEncoderPath);
-        var hp = ModelHyperparams.FromGgufMetadata(textEncoderModel.Metadata, textEncoderModel);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(textEncoderModel);
         var tokenizer = GgufTokenizer.FromGgufModel(textEncoderModel);
         var textEncoderBackend = new Cpu.CpuBackend();
         var textEncoderForward = new Engine.ForwardPass(textEncoderModel, textEncoderBackend, hp);

@@ -65,7 +65,7 @@ public static class CosyVoice3Llm
         var textTokens = tokenizer.Encode(text);
         promptSpeechTokens ??= [];
 
-        var hp = ModelHyperparams.FromGgufMetadata(source.Metadata, source);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(source);
         using var backend = new CpuBackend();
         using var fwd = new ForwardPass(source, backend, hp);
 
@@ -142,7 +142,7 @@ public static class CosyVoice3Llm
         var textTokens = tokenizer.Encode(text);
         promptSpeechTokens ??= [];
 
-        var hp = ModelHyperparams.FromGgufMetadata(source.Metadata, source);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(source);
         using var backend = new CpuBackend();
         using var fwd = new ForwardPass(source, backend, hp);
 

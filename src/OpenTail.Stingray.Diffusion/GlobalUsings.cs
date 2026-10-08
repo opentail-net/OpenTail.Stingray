@@ -13,3 +13,4 @@ global using OpenTail.Stingray.Diffusion.TextEncoders;
 global using OpenTail.Stingray.Diffusion.Primitives;
 global using System.Text;
 global using System.Text.Json;
+global using OpenTail.Stingray.Engine;

@@ -53,7 +53,7 @@ public sealed class AceStepQwen3TextEncoder : IDisposable
     {
         _model = GgufModel.Open(ggufPath);
         _tokenizer = GgufTokenizer.FromGgufModel(_model);
-        _hp = ModelHyperparams.FromGgufMetadata(_model.Metadata, _model);
+        _hp = ArchitectureModelResolver.ResolveHyperparams(_model);
         _backend = new CpuBackend();
 
         var normInfo = _model.FindTensor("output_norm.weight")

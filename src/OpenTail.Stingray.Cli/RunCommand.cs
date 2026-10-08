@@ -926,7 +926,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
                 {
                     AnsiConsole.MarkupLine($"[dim]Loading draft model:[/] {settings.DraftModelPath}");
                     using var draftModel = GgufModel.Open(settings.DraftModelPath);
-                    var draftHp = ModelHyperparams.FromGgufMetadata(draftModel.Metadata, draftModel);
+                    var draftHp = ArchitectureModelResolver.ResolveHyperparams(draftModel);
                     if (cudaSpecTarget)
                     {
                         var target = (CudaForwardPass)gpuFwd!;

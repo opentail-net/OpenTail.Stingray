@@ -243,7 +243,7 @@ public sealed class PerplexityCommand : Command<PerplexityCommand.Settings>
 
         AnsiConsole.MarkupLine($"[dim]Loading model:[/] {Markup.Escape(modelPath)}");
         using var model = GgufModel.Open(modelPath);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         var tokenizer = GgufTokenizer.FromGgufModel(model);
 
         // Auto --tq-mode (issue #432): prefer KVarN, fall back to Lloyd-Max with a

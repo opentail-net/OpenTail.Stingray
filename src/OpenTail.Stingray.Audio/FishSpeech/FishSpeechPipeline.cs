@@ -58,7 +58,7 @@ public sealed class FishSpeechPipeline : IDisposable
     {
         _model = GgufModel.Open(ggufPath);
         _tensorSource = new FishSpeechTensorSource(_model, numLayers);
-        var hp = ModelHyperparams.FromGgufMetadata(_tensorSource.Metadata, _tensorSource);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(_tensorSource);
         _backend = new CpuBackend();
         _fwd = new ForwardPass(_tensorSource, _backend, hp, maxContextLength: ctxSize);
         _fwd.EnableHiddenTaps([numLayers - 1]); // last layer's output = the trunk's post-trunk pre-final-norm hidden

@@ -106,7 +106,7 @@ public sealed class HunyuanVideoPipeline : IDiffusionPipeline
         var vae = new HunyuanVaeDecoder3D(vaeLoader);
 
         var textEncoderModel = GgufModel.Open(textEncoderPath);
-        var hp = ModelHyperparams.FromGgufMetadata(textEncoderModel.Metadata, textEncoderModel);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(textEncoderModel);
         var tokenizer = GgufTokenizer.FromGgufModel(textEncoderModel);
         var textEncoderBackend = new Cpu.CpuBackend();
         var textEncoderForward = new Engine.ForwardPass(textEncoderModel, textEncoderBackend, hp);

@@ -70,7 +70,7 @@ public static class Program
         try
         {
             using var model = GgufModel.Open(modelPath);
-            var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
+            var hp = OpenTail.Stingray.Engine.ArchitectureModelResolver.ResolveHyperparams(model.Metadata);
             using var backend = new CpuBackend();
             using var fwd = new ForwardPass(model, backend, hp);
             var tokenizer = GgufTokenizer.FromGgufModel(model);

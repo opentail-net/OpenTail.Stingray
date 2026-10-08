@@ -52,7 +52,7 @@ Console.CancelKeyPress += (_, e) =>
 // down to release the mmap'd GGUF, the backend, and all native scratch.
 Console.Error.Write($"loading {modelPath} ... ");
 var model = GgufModel.Open(modelPath);
-var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+var hp = ArchitectureModelResolver.ResolveHyperparams(model);
 var tokenizer = GgufTokenizer.FromGgufModel(model);
 var backend = new CpuBackend();
 var forward = new ForwardPass(model, backend, hp);

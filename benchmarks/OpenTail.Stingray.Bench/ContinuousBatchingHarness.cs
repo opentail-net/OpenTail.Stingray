@@ -47,7 +47,7 @@ public static class ContinuousBatchingHarness
 
         Console.WriteLine($"[cb] model: {path}");
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
+        var hp = OpenTail.Stingray.Engine.ArchitectureModelResolver.ResolveHyperparams(model.Metadata);
         var tokenizer = GgufTokenizer.FromGgufModel(model);
         using var backend = new CpuBackend();
         using var fwd = new ForwardPass(model, backend, hp);

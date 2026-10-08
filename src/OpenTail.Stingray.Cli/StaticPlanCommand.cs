@@ -320,7 +320,7 @@ public sealed record StaticPlanReport(
         StaticPlanRuntimeFacts runtimeFacts, bool includePlacement)
     {
         string arch = model.Metadata.TryGetValue("general.architecture", out var a) ? Convert.ToString(a) ?? "unknown" : "llama";
-        ModelHyperparams hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        ModelHyperparams hp = ArchitectureModelResolver.ResolveHyperparams(model);
         StaticPlanDecision compatibility;
         try { ModelCompatibility.ValidateForTextGeneration(model); compatibility = new("gguf_compatibility", true, "Architecture and tensor storage types are supported."); }
         catch (NotSupportedException ex) { compatibility = new("gguf_compatibility", false, ex.Message); }

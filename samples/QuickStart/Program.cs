@@ -22,7 +22,7 @@ switch (args.ElementAtOrDefault(0))
     {
         // Load a GGUF model and its tokenizer, and run it on the CPU.
         using var model = GgufModel.Open(args[1]);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         var tokenizer = GgufTokenizer.FromGgufModel(model);
         using var cpu = new CpuBackend();
         var forward = new ForwardPass(model, cpu, hp, maxContextLength: 4096);

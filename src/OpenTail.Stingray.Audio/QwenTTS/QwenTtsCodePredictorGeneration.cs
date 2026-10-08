@@ -77,7 +77,7 @@ public static class QwenTtsCodePredictorGeneration
         {
             _weights = weights;
             _source = new QwenTtsCodePredictorTensorSource(rawModel, numLayers);
-            var hp = ModelHyperparams.FromGgufMetadata(_source.Metadata, _source);
+            var hp = ArchitectureModelResolver.ResolveHyperparams(_source);
             _backend = new CpuBackend();
             _fwd = new ForwardPass(_source, _backend, hp);
 

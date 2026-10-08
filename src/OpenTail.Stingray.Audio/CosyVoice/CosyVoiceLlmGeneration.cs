@@ -64,7 +64,7 @@ public static class CosyVoiceLlmGeneration
 
         promptSpeechTokens ??= [];
 
-        var hp = ModelHyperparams.FromGgufMetadata(source.Metadata, source);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(source);
         using var backend = new Cpu.CpuBackend();
         using var fwd = new ForwardPass(source, backend, hp);
 
@@ -114,7 +114,7 @@ public static class CosyVoiceLlmGeneration
         prefillIds.AddRange(tokenizer.Encode(text));
         prefillIds.Add(source.SosTaskTokenIdBase + 1);
 
-        var hp = ModelHyperparams.FromGgufMetadata(source.Metadata, source);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(source);
         using var backend = new Cpu.CpuBackend();
         using var fwd = new ForwardPass(source, backend, hp);
         var logits = ApplyBias(fwd.Prefill(prefillIds).ToArray(), source.LlmDecoderBias);

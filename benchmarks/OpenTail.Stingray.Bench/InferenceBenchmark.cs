@@ -24,7 +24,7 @@ public class SmolLM2CpuBenchmarks
             ?? throw new FileNotFoundException("SmolLM2-1.7B-Instruct-Q4_K_M.gguf not found");
 
         _model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(_model.Metadata);
+        var hp = OpenTail.Stingray.Engine.ArchitectureModelResolver.ResolveHyperparams(_model.Metadata);
         _backend = new CpuBackend();
         _fwd = new ForwardPass(_model, _backend, hp);
         _promptTokens = GgufTokenizer.FromGgufModel(_model).Encode(
@@ -106,7 +106,7 @@ public class SmolLM2GpuDecodeBenchmark
             ?? throw new FileNotFoundException("SmolLM2-1.7B-Instruct-Q4_K_M.gguf not found");
 
         _model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(_model.Metadata);
+        var hp = OpenTail.Stingray.Engine.ArchitectureModelResolver.ResolveHyperparams(_model.Metadata);
         _gpu = new Vulkan.VulkanBackend();
         _gpuFwd = new GpuForwardPass(_model, _gpu, hp);
         _promptTokens = GgufTokenizer.FromGgufModel(_model).Encode(
@@ -170,7 +170,7 @@ public class Qwen3CpuBenchmarks
             ?? throw new FileNotFoundException("Qwen3-8B-Q4_K_M.gguf not found");
 
         _model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(_model.Metadata);
+        var hp = OpenTail.Stingray.Engine.ArchitectureModelResolver.ResolveHyperparams(_model.Metadata);
         _backend = new CpuBackend();
         _fwd = new ForwardPass(_model, _backend, hp);
         _promptTokens = GgufTokenizer.FromGgufModel(_model).Encode(
@@ -242,7 +242,7 @@ public class Qwen3GpuDecodeBenchmark
             ?? throw new FileNotFoundException("Qwen3-8B-Q4_K_M.gguf not found");
 
         _model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(_model.Metadata);
+        var hp = OpenTail.Stingray.Engine.ArchitectureModelResolver.ResolveHyperparams(_model.Metadata);
         _gpu = new Vulkan.VulkanBackend();
         _gpuFwd = new GpuForwardPass(_model, _gpu, hp);
         _promptTokens = GgufTokenizer.FromGgufModel(_model).Encode(
@@ -307,7 +307,7 @@ public class Qwen3TqCpuBenchmark
             ?? throw new FileNotFoundException("Qwen3-8B-Q4_K_M.gguf not found");
 
         _model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(_model.Metadata);
+        var hp = OpenTail.Stingray.Engine.ArchitectureModelResolver.ResolveHyperparams(_model.Metadata);
         _backend = new CpuBackend();
         _fwd = new ForwardPass(_model, _backend, hp);
         _fwdTq = new ForwardPass(_model, _backend, hp);
@@ -399,7 +399,7 @@ public class Qwen3TqGpuBenchmark
             ?? throw new FileNotFoundException("Qwen3-8B-Q4_K_M.gguf not found");
 
         _model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(_model.Metadata);
+        var hp = OpenTail.Stingray.Engine.ArchitectureModelResolver.ResolveHyperparams(_model.Metadata);
         _gpu = new Vulkan.VulkanBackend();
         _gpuFwd = new GpuForwardPass(_model, _gpu, hp);
 
@@ -467,7 +467,7 @@ public class Qwen3TqGpuDecodeBenchmark
             ?? throw new FileNotFoundException("Qwen3-8B-Q4_K_M.gguf not found");
 
         _model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(_model.Metadata);
+        var hp = OpenTail.Stingray.Engine.ArchitectureModelResolver.ResolveHyperparams(_model.Metadata);
         _gpu = new Vulkan.VulkanBackend();
         _gpuFwdTq = new GpuForwardPass(_model, _gpu, hp, enableTurboQuant: true);
 
@@ -663,7 +663,7 @@ public class Llama70bCpuBenchmark
             ?? throw new FileNotFoundException("Meta-Llama-3.1-70B-Instruct-Q4_K_M.gguf not found");
 
         _model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(_model.Metadata, _model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(_model);
         _backend = new CpuBackend();
         _fwd = new ForwardPass(_model, _backend, hp);
         _promptTokens = GgufTokenizer.FromGgufModel(_model).Encode(
@@ -723,7 +723,7 @@ public class Llama70bHybridBenchmark
             ?? throw new FileNotFoundException("Meta-Llama-3.1-70B-Instruct-Q4_K_M.gguf not found");
 
         _model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(_model.Metadata, _model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(_model);
         _gpu = new Vulkan.VulkanBackend();
 
         var hwProfile = HardwareProfile.Detect(_gpu);
@@ -789,7 +789,7 @@ public class Llama4ScoutCpuBenchmark
             ?? throw new FileNotFoundException($"{BenchmarkHelper.Llama4ScoutModelFile} not found");
 
         _model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(_model.Metadata, _model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(_model);
         _backend = new CpuBackend();
         _fwd = new ForwardPass(_model, _backend, hp, maxContextLength: BenchmarkHelper.ScoutBenchmarkContext);
         _promptTokens = GgufTokenizer.FromGgufModel(_model).Encode(BenchmarkHelper.LlamaChatPrompt);
@@ -846,7 +846,7 @@ public class Llama4ScoutCpuTqBenchmark
             ?? throw new FileNotFoundException($"{BenchmarkHelper.Llama4ScoutModelFile} not found");
 
         _model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(_model.Metadata, _model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(_model);
         _backend = new CpuBackend();
         _fwd = new ForwardPass(_model, _backend, hp, maxContextLength: BenchmarkHelper.ScoutBenchmarkContext);
         _fwd.EnableTurboQuant(fp32WindowSize: 256, bits: 3);
@@ -906,7 +906,7 @@ public class Llama4ScoutHybridBenchmark
             ?? throw new FileNotFoundException($"{BenchmarkHelper.Llama4ScoutModelFile} not found");
 
         _model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(_model.Metadata, _model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(_model);
         _gpu = new Vulkan.VulkanBackend();
 
         var hwProfile = HardwareProfile.Detect(_gpu);
@@ -998,7 +998,7 @@ public class Llama4ScoutHybridTqBenchmark
             ?? throw new FileNotFoundException($"{BenchmarkHelper.Llama4ScoutModelFile} not found");
 
         _model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(_model.Metadata, _model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(_model);
         _gpu = new Vulkan.VulkanBackend();
 
         var hwProfile = HardwareProfile.Detect(_gpu);
@@ -1103,7 +1103,7 @@ public unsafe class Llama4ScoutMoeMicroBenchmarks
             ?? throw new FileNotFoundException($"{BenchmarkHelper.Llama4ScoutModelFile} not found");
 
         _model = GgufModel.Open(path);
-        _hp = ModelHyperparams.FromGgufMetadata(_model.Metadata, _model);
+        _hp = ArchitectureModelResolver.ResolveHyperparams(_model);
         if (!_hp.IsMoE)
             throw new InvalidOperationException("Llama 4 Scout microbenchmarks require an MoE model.");
 
@@ -1337,11 +1337,11 @@ public class SpeculativeDecodingBenchmark
         _backend = new CpuBackend();
 
         _targetModel = GgufModel.Open(targetPath);
-        var targetHp = ModelHyperparams.FromGgufMetadata(_targetModel.Metadata);
+        var targetHp = OpenTail.Stingray.Engine.ArchitectureModelResolver.ResolveHyperparams(_targetModel.Metadata);
         _target = new ForwardPass(_targetModel, _backend, targetHp);
 
         _draftModel = GgufModel.Open(draftPath);
-        var draftHp = ModelHyperparams.FromGgufMetadata(_draftModel.Metadata);
+        var draftHp = OpenTail.Stingray.Engine.ArchitectureModelResolver.ResolveHyperparams(_draftModel.Metadata);
         _draft = new ForwardPass(_draftModel, _backend, draftHp);
 
         _promptTokens = GgufTokenizer.FromGgufModel(_targetModel).Encode(
@@ -1573,7 +1573,7 @@ public class Gemma4E4BCpuBenchmarks
             ?? throw new FileNotFoundException($"{ModelFile} not found (drop it in models/ or E:\\models\\).");
 
         _model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(_model.Metadata, _model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(_model);
         _backend = new CpuBackend();
         _fwd = new ForwardPass(_model, _backend, hp);
         // Gemma 4's GGUF carries a BOS token; mirror llama.cpp `--no-conversation`
@@ -1646,7 +1646,7 @@ public class Gemma4E4BCudaDecodeBenchmark
             ?? throw new FileNotFoundException($"{ModelFile} not found (drop it in models/ or E:\\models\\).");
 
         _model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(_model.Metadata, _model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(_model);
         _gpu = Cuda.CudaBackend.Create();
         // 512-token context keeps the full 42-layer Gemma 4 E4B Q8 model in VRAM
         // on a 12 GB card without spilling to CudaHybridForwardPass.

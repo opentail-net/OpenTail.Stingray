@@ -34,7 +34,7 @@ public static class QwenTtsTalkerGeneration
         using var source = new QwenTtsTalkerTensorSource(rawModel, numLayers);
         source.SetPromptEmbedding(promptEmbed, tRows);
 
-        var hp = ModelHyperparams.FromGgufMetadata(source.Metadata, source);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(source);
         using var backend = new CpuBackend();
         using var fwd = new ForwardPass(source, backend, hp);
 

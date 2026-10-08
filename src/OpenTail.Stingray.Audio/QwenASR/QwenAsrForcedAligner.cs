@@ -121,7 +121,7 @@ public sealed unsafe class QwenAsrForcedAligner : IDisposable
             numLayers: weights.LlmLayers, hiddenDim: weights.LlmDim, numHeads: weights.LlmHeads,
             numKvHeads: weights.LlmKvHeads, headDim: weights.LlmHeadDim, ffDim: weights.LlmFfDim,
             vocabSize: 5000, ropeTheta: weights.LlmRopeTheta, rmsNormEps: weights.LlmRmsNormEps);
-        var hp = ModelHyperparams.FromGgufMetadata(source.Metadata, source);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(source);
         var backend = new CpuBackend();
         var fwd = new ForwardPass(source, backend, hp);
 
@@ -251,7 +251,7 @@ public sealed unsafe class QwenAsrForcedAligner : IDisposable
         }
 
         sw.Restart();
-        var hp = ModelHyperparams.FromGgufMetadata(source.Metadata, source);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(source);
         using var fallbackBackend = _forwardPass == null ? new CpuBackend() : null;
         using var fallbackFwd = _forwardPass == null ? new ForwardPass(source, fallbackBackend!, hp) : null;
         var fwd = _forwardPass ?? fallbackFwd!;

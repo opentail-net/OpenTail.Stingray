@@ -113,7 +113,7 @@ public sealed class Flux2Pipeline : IDisposable
         var transformer = new Flux2DiT(ditWeights, p);
 
         var mistralModel = GgufModel.Open(mistralPath);
-        var hp = ModelHyperparams.FromGgufMetadata(mistralModel.Metadata, mistralModel);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(mistralModel);
         var tokenizer = GgufTokenizer.FromGgufModel(mistralModel);
         IDisposable? mistralBackend = null;
         IForwardPass mistralForward;
@@ -219,7 +219,7 @@ public sealed class Flux2Pipeline : IDisposable
         {
             using (var mistralModel = GgufModel.Open(_mistralPath))
             {
-                var hp = ModelHyperparams.FromGgufMetadata(mistralModel.Metadata, mistralModel);
+                var hp = ArchitectureModelResolver.ResolveHyperparams(mistralModel);
                 // Only hidden_states up to the last tap (layer 29 of Mistral-Small's 40) are used, so
                 // truncate the trunk: layers 30-39 are never loaded or run.
                 hp = hp with { NumLayers = Math.Min(hp.NumLayers, Flux2TextConditioning.TapLayers.Max() + 1) };

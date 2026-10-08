@@ -81,7 +81,7 @@ Console.CancelKeyPress += (_, e) =>
 
 Console.Error.Write($"loading {modelPath} ... ");
 var model     = GgufModel.Open(modelPath);
-var hp        = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+var hp        = ArchitectureModelResolver.ResolveHyperparams(model);
 var tokenizer = GgufTokenizer.FromGgufModel(model);
 Console.Error.WriteLine($"{hp.NumLayers}L · {hp.EmbeddingDim}d · vocab {hp.VocabSize}" +
                         (hp.IsMoE ? $" · MoE {hp.NumExperts}x{hp.ExpertIntermediateDim}d" : ""));

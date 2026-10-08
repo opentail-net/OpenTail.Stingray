@@ -103,7 +103,7 @@ public sealed class AdmitArchCommand : Command<AdmitArchCommand.Settings>
         IReadOnlyList<int> promptTokens;
         try
         {
-            var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+            var hp = ArchitectureModelResolver.ResolveHyperparams(model);
             var tokenizer = GgufTokenizer.FromGgufModel(model);
             // Match llama-server's raw completion (the reference this is compared against): BOS first when the model's
             // metadata asks for it. Without it, BOS-dependent models (LFM2) degenerate and every verdict is wrong.

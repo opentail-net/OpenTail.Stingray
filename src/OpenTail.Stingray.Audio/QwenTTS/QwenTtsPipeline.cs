@@ -99,7 +99,7 @@ public sealed class QwenTtsPipeline : ITextToSpeechPipeline
         Array.Copy(promptEmbed, prefillRows, prefillRows.Length);
         talkerSource.SetPromptEmbedding(prefillRows, tRows - 1);
 
-        var hp = ModelHyperparams.FromGgufMetadata(talkerSource.Metadata, talkerSource);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(talkerSource);
         using var backend = new CpuBackend();
         using var fwd = new ForwardPass(talkerSource, backend, hp);
 
@@ -244,7 +244,7 @@ public sealed class QwenTtsPipeline : ITextToSpeechPipeline
         Array.Copy(promptEmbed, prefillRows, prefillRows.Length);
         talkerSource.SetPromptEmbedding(prefillRows, tRows - 1);
 
-        var hp = ModelHyperparams.FromGgufMetadata(talkerSource.Metadata, talkerSource);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(talkerSource);
         using var backend = new CpuBackend();
         using var fwd = new ForwardPass(talkerSource, backend, hp);
 

@@ -38,7 +38,7 @@ public class PrefillWarmupBenchmark
             ?? throw new FileNotFoundException("SmolLM2-1.7B-Instruct-Q4_K_M.gguf not found");
 
         _model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(_model.Metadata);
+        var hp = OpenTail.Stingray.Engine.ArchitectureModelResolver.ResolveHyperparams(_model.Metadata);
         _backend = new CpuBackend();
         _fwd = new ForwardPass(_model, _backend, hp);
 
