@@ -104,6 +104,7 @@ The solution (`OpenTail.Stingray.slnx`) is organized into four core layers:
 ## Documentation References
 
 * **Subsystem Architecture & Layouts**: [docs/reference/OpenTail.Stingray-Design.md](docs/reference/OpenTail.Stingray-Design.md)
+* **Adding a model family (architecture descriptors vs the planner)**: [docs/reference/adding-an-architecture.md](docs/reference/adding-an-architecture.md)
 * **Model Command Examples & Archive**: [docs/reference/claude-reference-archive.md](docs/reference/claude-reference-archive.md)
 * **Active Engineering Backlog**: [docs/00-current-work.md](docs/00-current-work.md)
 * **Coverage tooling** (`pull`, `admit-arch`, `gen-vision-scaffold`): [docs/reference/061-coverage-tooling.md](docs/reference/061-coverage-tooling.md)

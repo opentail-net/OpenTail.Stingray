@@ -165,12 +165,15 @@ public sealed class ArchitectureCapabilitiesBaselineTests
         Assert.Equal(expectedProtocol, ChatProtocolRegistry.For(architecture).Id);
 
     // Phase 3: descriptors own their structural traits; the by-name table in Core serves direct callers of the baseline parser and
-    // qwen3vlmoe (no descriptor). Until that shim is gone the two must agree for every registered architecture.
+    // qwen3vlmoe (no descriptor). For every architecture the table knows, the descriptor must agree. A NEW architecture is not in the
+    // table and must not have to be: declaring Traits on its descriptor is enough (found by the Phase 5 exercise, which this test
+    // originally broke by demanding a Core edit).
     [Fact]
     public void DescriptorTraits_MatchTheByNameTable()
     {
         var bad = ArchitectureRegistry.All
-            .Where(d => (d.Traits ?? ModelArchitectureTraits.None) != ModelArchitectureTraits.Legacy(d.Id))
+            .Where(d => ModelArchitectureTraits.Legacy(d.Id) != ModelArchitectureTraits.None
+                        && (d.Traits ?? ModelArchitectureTraits.None) != ModelArchitectureTraits.Legacy(d.Id))
             .Select(d => d.Id).ToList();
         Assert.True(bad.Count == 0, "Descriptor Traits differ from ModelArchitectureTraits.Legacy for: " + string.Join(", ", bad));
     }

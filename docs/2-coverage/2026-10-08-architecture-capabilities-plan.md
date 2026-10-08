@@ -1,6 +1,6 @@
 # Architecture descriptors as statically registered model plugins: finish the job (plan)
 
-**Date:** 2026-10-08. **Status:** Phases 0-4 done 2026-10-08; 5 open. **Follows:** [2026-10-08-architecture-semantics-admission-plan.md](2026-10-08-architecture-semantics-admission-plan.md) (all phases 1-8 done).
+**Date:** 2026-10-08. **Status:** All phases (0-5) done 2026-10-08. **Follows:** [2026-10-08-architecture-semantics-admission-plan.md](2026-10-08-architecture-semantics-admission-plan.md) (all phases 1-8 done).
 **Origin:** an outside design suggestion (ChatGPT): make each architecture a self-contained "model plugin" that owns what is true of the model, while the planner owns what is true of the machine and the request. This plan checks that suggestion against the code at commit `6a768250` and scopes what is actually worth doing.
 
 ## Verdict
@@ -90,10 +90,10 @@ Each phase ends green: `dotnet build` 0 warnings (warnings are errors), the `.Fa
   - [x] 4.2 (decided NOT to move: its helpers are shared by several families (Granite by three descriptors, GatedSwa by two files, Gemma3, Exaone4), so there is no single "next to" location; left as the shared-helpers file) Move `FamilyModelSemantics.cs` content next to the architectures that use it.
   - **Exit:** no behavior change; diff is moves only (verify with `git diff --stat -M`).
 
-- [ ] **5. Prove it and document it**
-  - [ ] 5.1 **New-architecture exercise:** add a hypothetical dense architecture and a hypothetical hybrid in a test project; assert each needs edits in **one** file only and the guard test stays green.
-  - [ ] 5.2 NativeAOT publish (`dotnet publish src/OpenTail.Stingray.Cli -c Release -r win-x64`) builds and runs a smoke model; confirms no reflection crept in.
-  - [ ] 5.3 Update `docs/reference/OpenTail.Stingray-Design.md` (descriptor = model plugin; planner = machine/request policy) and the "add a new architecture" recipe.
+- [x] **5. Prove it and document it**
+  - [x] 5.1 (done 2026-10-08, performed on the working tree and reverted; results below) **New-architecture exercise:** add a hypothetical dense architecture and a hypothetical hybrid in a test project; assert each needs edits in **one** file only and the guard test stays green.
+  - [x] 5.2 (done 2026-10-08: publish succeeded once `vswhere` was on PATH, 22.8 MB `stingray.exe`, no IL warnings in the output; it loaded and generated on SmolLM2-135M, granite-4.0-h-350m and LFM2-8B-A1B, with text identical to the JIT run on the two hybrids) NativeAOT publish (`dotnet publish src/OpenTail.Stingray.Cli -c Release -r win-x64`) builds and runs a smoke model; confirms no reflection crept in.
+  - [x] 5.3 (done: `docs/reference/adding-an-architecture.md`, linked from CLAUDE.md) Update `docs/reference/OpenTail.Stingray-Design.md` (descriptor = model plugin; planner = machine/request policy) and the "add a new architecture" recipe.
   - **Exit:** smoke matrix from 0.4 reproduces identically; AOT binary works.
 
 ## Out of scope
@@ -136,3 +136,11 @@ P0 small. P1 small-medium. P2 medium (prompt-rendering care). P3 medium (layerin
 - Tests: ArchitectureCapabilitiesBaselineTests 14, ArchitectureModelResolverTests 18, RealHeaderSemanticsTests 7 (real headers), descriptor/registry contract tests pass; ForwardPass.Fast 1056, Server.Fast 456, Sessions.Fast 129 pass.
 - **Net literal count in Core is only -2 (ModelGraph 15 -> 1, plus 12 in the shim table)**. The gain is structural: on the Engine path a new hybrid or multi-axis-rope architecture declares `Traits` in its own descriptor and needs no Core edit. The shim table is the remaining debt.
 - Behavior note: a relabelled file (declared name differs from the resolved descriptor) now uses the resolved descriptor's traits; before it used the declared name's. No real file on disk exercises the difference.
+
+## Phase 5 exercise results (2026-10-08)
+Added two hypothetical families to the working tree, ran the guards, then reverted (nothing committed):
+- `exercise-dense` (plain descriptor with `CreateDense`) and `exercise-hybrid` (`ForwardPassFamily.HybridGdn`, `Traits = Mamba2`, an `ApplyModelSemantics` tweak, `CreateHybridGdn`).
+- **Code edits: one new file with the two descriptors plus one `yield return` per family in `BuiltInArchitectures.cs`.** Both resolved correctly through `ArchitectureModelResolver` with **no Core or planner edit**: the hybrid got its Mamba-2 layer pattern from `Traits` (`IsMamba2Layer` populated), its tweak from the semantics hook (`NoRopeLayerStep = 4`), and `Capabilities.Family = HybridGdn`; the dense one resolved with the default chat protocol.
+- **Gates that fired, as designed:** the facts baseline (regenerate: one command), and the admitted-set snapshot, which exists in **two** tests (`ArchitectureDescriptorContractTests` and `ArchitectureRegistryTests`, a duplication worth removing). Not fired: the literal ratchet, the planner-boundary test, descriptor validation, forward-pass selection tests.
+- **One real defect found in my own Phase 3 work and fixed:** `DescriptorTraits_MatchTheByNameTable` demanded that every descriptor with `Traits` also appear in Core's by-name table, so a new hybrid *did* force a Core edit. The test now only constrains architectures the table already knows. Without this exercise that trap would have shipped.
+- Not measured: the verification cost (checkpoint, independent reference, STATUS row), which is unchanged by this work and dominated historically (see the 2026-10-08 discussion of pre-October admissions).
