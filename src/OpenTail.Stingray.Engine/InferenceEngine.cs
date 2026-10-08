@@ -842,7 +842,7 @@ public sealed class InferenceEngine : IInferenceEngine, IDisposable, IAsyncDispo
                     // STINGRAY_MTP_DRAFT_N → built-in default; MtpDecoder clamps per
                     // step against the pass's snapshot-ring capacity
                     // (MaxBatchVerifyTokens), so over-asking degrades gracefully.
-                    int mtpDraftN = MtpDecoder.ResolveDraftN(sp.SpecDraftNMax, _settings.Speculation);
+                    int mtpDraftN = MtpDecoder.ResolveDraftN(sp.SpecDraftNMax, _settings.Speculation, _fwd);
 
                     // Prefix cache decision: two branches.
                     //   (a) Rewindable attention pass — existing FindCacheablePrefix path,

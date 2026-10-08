@@ -2305,7 +2305,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
                 Console.Error.WriteLine($"[DBG] tok={totalDecoded} next={next}('{tok.Decode([next])}')");
             totalDecoded++;
             if (EmitToken(next, tok, streamDec, ref inThinking, hideThinking)) generated++;
-        }, pMin: sp.SpecDraftPMin, draftN: MtpDecoder.ResolveDraftN(sp.SpecDraftNMax, s_speculation),
+        }, pMin: sp.SpecDraftPMin, draftN: MtpDecoder.ResolveDraftN(sp.SpecDraftNMax, s_speculation, mtpFwd),
            ct: CancellationToken.None);
 
         if (Environment.GetEnvironmentVariable("STINGRAY_TRACE_MTP") == "1" && mtpDec.TotalDraftsEmitted > 0)

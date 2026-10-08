@@ -16,6 +16,8 @@ public sealed unsafe class IqSharedDecodeMultiInputTests
     [Theory]
     [InlineData(DType.IQ3_S, 110)]
     [InlineData(DType.IQ4_XS, 136)]
+    [InlineData(DType.IQ3_XXS, 98)]
+    [InlineData(DType.IQ2_S, 82)]
     public void MatVec2In_And_MatVec4In_EqualIndependentMatVecs_Bitwise(DType dtype, int bytesPerBlock)
     {
         Assert.True(SimdKernels.HasSharedDecodeMultiInput(dtype, Cols));
@@ -57,7 +59,43 @@ public sealed unsafe class IqSharedDecodeMultiInputTests
     [Theory]
     [InlineData(DType.Q4_K)]
     [InlineData(DType.Q8_0)]
-    [InlineData(DType.IQ3_XXS)]
+    [InlineData(DType.IQ2_XS)]
     public void NonSharedDtypes_ReportNoSharedDecodeKernel(DType dtype) =>
         Assert.False(SimdKernels.HasSharedDecodeMultiInput(dtype, Cols));
+
+    // Routing safety for the batched verify: a group with at most two real tokens may use the 2-input kernel instead of a
+    // padded 4-input one only if a token's result does not depend on the width. Pinned per dtype so a future kernel change
+    // that breaks the property fails here, not as a silent greedy flip.
+    [Theory]
+    [InlineData(DType.Q4_K, 144)]
+    [InlineData(DType.Q5_K, 176)]
+    [InlineData(DType.Q6_K, 210)]
+    [InlineData(DType.IQ3_S, 110)]
+    [InlineData(DType.IQ4_XS, 136)]
+    public void TwoInput_Equals_FirstTwoLanesOfFourInput_Bitwise(DType dtype, int bytesPerBlock)
+    {
+        int nb = Cols / 256;
+        var rng = new Random(77);
+        byte* w = (byte*)NativeMemory.AlignedAlloc((nuint)(Rows * nb * bytesPerBlock), 64);
+        float* x = (float*)NativeMemory.AlignedAlloc((nuint)(4 * Cols * sizeof(float)), 64);
+        float* a = (float*)NativeMemory.AlignedAlloc((nuint)(4 * Rows * sizeof(float)), 64);
+        float* b = (float*)NativeMemory.AlignedAlloc((nuint)(2 * Rows * sizeof(float)), 64);
+        try
+        {
+            for (int i = 0; i < Rows * nb * bytesPerBlock; i++) w[i] = (byte)rng.Next(256);
+            for (int r = 0; r < Rows; r++)
+                for (int blk = 0; blk < nb; blk++)
+                    *(ushort*)(w + (r * nb + blk) * bytesPerBlock) = BitConverter.HalfToUInt16Bits((Half)(0.25f + (float)rng.NextDouble()));
+            for (int i = 0; i < 4 * Cols; i++) x[i] = (float)(rng.NextDouble() * 2 - 1);
+            SimdKernels.MatVec4In(a, a + Rows, a + 2 * Rows, a + 3 * Rows, w, x, x + Cols, x + 2 * Cols, x + 3 * Cols, Rows, Cols, dtype);
+            SimdKernels.MatVec2In(b, b + Rows, w, x, x + Cols, Rows, Cols, dtype);
+            for (int i = 0; i < 2 * Rows; i++)
+                Assert.True(BitConverter.SingleToInt32Bits(a[i]) == BitConverter.SingleToInt32Bits(b[i]),
+                    $"{dtype}: 2-input differs from 4-input lane at {i}: {b[i]} vs {a[i]}");
+        }
+        finally
+        {
+            NativeMemory.AlignedFree(w); NativeMemory.AlignedFree(x); NativeMemory.AlignedFree(a); NativeMemory.AlignedFree(b);
+        }
+    }
 }

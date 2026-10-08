@@ -187,6 +187,16 @@ public sealed class MtpDecoder
     }
 
     /// <summary>
+    /// As <see cref="ResolveDraftN(int, SpeculationSettings)"/>, but the CPU hybrid-GDN pass defaults to a single draft (a 2-token verify).
+    /// Measured 2026-10-08 on Qwen3.8-27B UD-Q3_K_XL (IQ-quantised, Ryzen 5700G, forced MTP, 96 tokens): depth 1 = 2.7 t/s
+    /// (76% accepted), depth 2 = 2.4, depth 3 = 2.2 (41% accepted, which the adaptive probe then abandons), plain = 2.4. A CPU
+    /// verify step still costs ~1.5x a plain step per extra token, so deeper chains lose more to rejection than they gain.
+    /// Explicit <c>--spec-draft-n-max</c> / <c>STINGRAY_MTP_DRAFT_N</c> still win.
+    /// </summary>
+    public static int ResolveDraftN(int specDraftNMax, SpeculationSettings spec, IForwardPass? fwd) =>
+        specDraftNMax < 1 && spec.MtpDraftN < 1 && fwd is HybridGdnForwardPass ? 1 : ResolveDraftN(specDraftNMax, spec);
+
+    /// <summary>
     /// Decode up to <paramref name="maxTokens"/> tokens. Calls <paramref name="emitToken"/>
     /// for every accepted or correction token. Stops when a token in
     /// <paramref name="stopTokenIds"/> is generated (and does NOT emit the stop token).

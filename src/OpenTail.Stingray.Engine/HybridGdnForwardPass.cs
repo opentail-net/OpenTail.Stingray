@@ -1706,7 +1706,7 @@ public sealed unsafe class HybridGdnForwardPass : IForwardPass
                     MtpBatchTail.Group4(i, k, out int j0, out int j1, out int j2, out int j3, out int nReal);
                     // <=2 real tokens and IQ FFN weights: the 2-input kernel computes only the real lanes (a quad would pad two
                     // duplicate lanes). IQ results do not depend on the multi-input width, so per-token bits are unchanged.
-                    if (nReal <= 2 && FfnIsIq(layer))
+                    if (nReal <= 2 && FfnWidthIndependent(layer))
                     {
                         DenseFfn2(layer, _bvNormAll + (long)j0 * embDim, _bvNormAll + (long)j1 * embDim,
                             _bvHiddenAll + (long)j0 * embDim,
@@ -1763,6 +1763,14 @@ public sealed unsafe class HybridGdnForwardPass : IForwardPass
         for (int i = 0; i < k; i += 4)
         {
             MtpBatchTail.Group4(i, k, out int j0, out int j1, out int j2, out int j3, out int nReal);
+            if (nReal == 2 && SimdKernels.IsWidthIndependentMultiInput(_outputWeight.DType, embDim))
+            {
+                // Two real tokens: the 2-input kernel computes only those lanes (a padded quad would do four dots per row).
+                SimdKernels.MatVec2In(_logits, _logits2, _outputWeight.DataPtr,
+                    _bvHiddenAll + (long)j0 * embDim, _bvHiddenAll + (long)j1 * embDim,
+                    _hp.VocabSize, embDim, _outputWeight.DType);
+            }
+            else
             SimdKernels.MatVec4In(_logits, _logits2, _logits3, _logits4, _outputWeight.DataPtr,
                 _bvHiddenAll + (long)j0 * embDim, _bvHiddenAll + (long)j1 * embDim,
                 _bvHiddenAll + (long)j2 * embDim, _bvHiddenAll + (long)j3 * embDim,
@@ -1819,10 +1827,10 @@ public sealed unsafe class HybridGdnForwardPass : IForwardPass
 
     /// <summary>True when this layer's dense FFN gate/up/down weights all use an IQ format (see
     /// <see cref="SimdKernels.HasIqMultiInputKernel"/>), so the 2-input FFN is the cheapest verify path for up to two tokens.</summary>
-    private bool FfnIsIq(int layer) =>
-        SimdKernels.HasIqMultiInputKernel(_wFfnGate[layer].DType, _embDim)
-        && SimdKernels.HasIqMultiInputKernel(_wFfnUp[layer].DType, _embDim)
-        && SimdKernels.HasIqMultiInputKernel(_wFfnDown[layer].DType, _intermDim);
+    private bool FfnWidthIndependent(int layer) =>
+        SimdKernels.IsWidthIndependentMultiInput(_wFfnGate[layer].DType, _embDim)
+        && SimdKernels.IsWidthIndependentMultiInput(_wFfnUp[layer].DType, _embDim)
+        && SimdKernels.IsWidthIndependentMultiInput(_wFfnDown[layer].DType, _intermDim);
 
     /// <summary>
     /// Batched gate × up → down dense FFN for two tokens sharing the same weight
@@ -2703,7 +2711,8 @@ public sealed unsafe class HybridGdnForwardPass : IForwardPass
     /// </summary>
     private void MatVecBatch(float* outAll, in TensorRef tensor, float* inAll, int k, int rows, int cols)
     {
-        bool iq = SimdKernels.HasIqMultiInputKernel(tensor.DType, cols);
+        bool iq = SimdKernels.HasIqMultiInputKernel(tensor.DType, cols);            // single-input path also bit-identical
+        bool narrow = SimdKernels.IsWidthIndependentMultiInput(tensor.DType, cols); // 2-input path bit-identical to a 4-input lane
         byte* w = tensor.DataPtr;
         var dt = tensor.DType;
         for (int i = 0; i < k; i += 4)
@@ -2713,7 +2722,7 @@ public sealed unsafe class HybridGdnForwardPass : IForwardPass
             {
                 SimdKernels.MatVec(outAll + (long)j0 * rows, w, inAll + (long)j0 * cols, rows, cols, dt);
             }
-            else if (iq && nReal == 2)
+            else if (narrow && nReal == 2)
             {
                 SimdKernels.MatVec2In(outAll + (long)j0 * rows, outAll + (long)j1 * rows, w,
                     inAll + (long)j0 * cols, inAll + (long)j1 * cols, rows, cols, dt);
