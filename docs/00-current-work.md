@@ -66,12 +66,23 @@ updated with dated evidence in the same pass.
     the chat template. Evidence: PerformanceLeague.md, "Load-and-generate smoke sweep".
 
 17. **Qwen3.8-27B (priority checkpoint): make MTP self-speculation a win on CPU.** 2026-10-08: MTP was silently
-    unreachable from the CLI after the plan-driven refactor (fixed, `RunCommand.cs`). Now engaged, accept 50%, but
-    decode is 1.9 t/s vs 2.4 plain, and greedy text diverges from plain decode at token ~20. Plain decode is at the
-    DRAM ceiling (~3 t/s), so speculation is the only big lever. To do: (a) find why the 2-token verify costs >2x a
-    single step on `HybridGdnForwardPass` (weight reads not amortised across the batch? GDN state snapshot/rollback?),
-    (b) check whether the divergence is batched-vs-single numerics or a verify/rollback bug, (c) re-measure at
-    longer generation and with `--spec-draft-n` variations, 3+ runs each.
+    unreachable from the CLI after the plan-driven refactor (fixed, `RunCommand.cs`). Now engaged, but **slower than
+    plain decode (1.8-2.0 vs 2.3-2.4 t/s, 3 interleaved runs)**, and greedy text diverges from plain decode at token ~20.
+    **Diagnosis (measured, `STINGRAY_TRACE_MTP=1`):** one verify step costs ~0.26 s fixed + **~0.33 s per extra token**
+    (k=2: 0.92 s, k=4: 1.59 s; a plain step is 0.42 s), i.e. each extra verified token costs ~80% of a plain step, so the
+    batched verify amortises almost nothing and no acceptance rate can win. Causes found in code:
+    (a) `BatchVerify`/`BatchForward2` batch only the dense FFN and lm_head; the GDN/attention blocks (`GdnBlockAt`/`AttnBlockAt`)
+    run once per token, re-reading their projection weights k times; (b) this checkpoint's FFN is IQ3_S/IQ4_XS/IQ3_XXS/IQ2_S,
+    and `MatVec2In`/`MatVec4In` have no IQ cases (fall back to 2-4 full `MatVec` calls: no weight-read sharing), and the IQ
+    dots are ALU-heavy, so even a shared read is compute-bound unless the grid dequant is shared across the k inputs.
+    **Tried and reverted (no measurable gain: 1.9 -> 1.8-2.0 t/s):** a one-sweep 2-input and 4-input IQ path in `MatVec2In`/
+    `MatVec4In` (per-row `dot(row, q8scratch)` for each input) plus routing <=2-token groups to `DenseFfn2`. Real fix needs
+    both (1) batched GDN/attention projections over the k tokens (only the recurrence stays sequential) and (2) IQ
+    multi-input kernels that decode the grid once and maddubs it against k Q8_K vectors. Large task; acceptance is 50%
+    (draftN=3) to 67-75% (draftN=1 / sequential), so the ceiling if verify were ideal is roughly 1.5-1.8x.
+    Also open: batched verify accepts less than sequential (50% vs 75%) and the text diverges, so the batched path is
+    numerically different from single-token decode (not yet diagnosed). Re-measure with 3+ runs after any change.
+
 
 Not fixable on this machine (kept 🔴 in STATUS): MiMo-VL (upstream mmproj projects to 3584, the
 text model wants 4096), Llama 4 vision (93 GB), MobileNetV5 (no checkpoint declares the projector).
