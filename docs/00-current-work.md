@@ -65,23 +65,26 @@ updated with dated evidence in the same pass.
     each against `llama-server` with the same prompt and tokenizer, compare tokens, and for gpt-oss use
     the chat template. Evidence: PerformanceLeague.md, "Load-and-generate smoke sweep".
 
-17. **Qwen3.8-27B (priority checkpoint): make MTP self-speculation a win on CPU.** 2026-10-08: MTP was silently
-    unreachable from the CLI after the plan-driven refactor (fixed, `RunCommand.cs`). Now engaged, but **slower than
-    plain decode (1.8-2.0 vs 2.3-2.4 t/s, 3 interleaved runs)**, and greedy text diverges from plain decode at token ~20.
-    **Diagnosis (measured, `STINGRAY_TRACE_MTP=1`):** one verify step costs ~0.26 s fixed + **~0.33 s per extra token**
-    (k=2: 0.92 s, k=4: 1.59 s; a plain step is 0.42 s), i.e. each extra verified token costs ~80% of a plain step, so the
-    batched verify amortises almost nothing and no acceptance rate can win. Causes found in code:
-    (a) `BatchVerify`/`BatchForward2` batch only the dense FFN and lm_head; the GDN/attention blocks (`GdnBlockAt`/`AttnBlockAt`)
-    run once per token, re-reading their projection weights k times; (b) this checkpoint's FFN is IQ3_S/IQ4_XS/IQ3_XXS/IQ2_S,
-    and `MatVec2In`/`MatVec4In` have no IQ cases (fall back to 2-4 full `MatVec` calls: no weight-read sharing), and the IQ
-    dots are ALU-heavy, so even a shared read is compute-bound unless the grid dequant is shared across the k inputs.
-    **Tried and reverted (no measurable gain: 1.9 -> 1.8-2.0 t/s):** a one-sweep 2-input and 4-input IQ path in `MatVec2In`/
-    `MatVec4In` (per-row `dot(row, q8scratch)` for each input) plus routing <=2-token groups to `DenseFfn2`. Real fix needs
-    both (1) batched GDN/attention projections over the k tokens (only the recurrence stays sequential) and (2) IQ
-    multi-input kernels that decode the grid once and maddubs it against k Q8_K vectors. Large task; acceptance is 50%
-    (draftN=3) to 67-75% (draftN=1 / sequential), so the ceiling if verify were ideal is roughly 1.5-1.8x.
-    Also open: batched verify accepts less than sequential (50% vs 75%) and the text diverges, so the batched path is
-    numerically different from single-token decode (not yet diagnosed). Re-measure with 3+ runs after any change.
+17. **Qwen3.8-27B (priority checkpoint): MTP self-speculation does not pay on this CPU/quant; ceiling is ~+12%.**
+    2026-10-08: MTP was silently unreachable from the CLI after the plan-driven refactor (fixed, `RunCommand.cs`). Now
+    engaged, but **slower than plain decode (1.8-2.0 vs 2.3-2.4 t/s, 3 interleaved runs)**.
+    **Measured breakdown of one k=4 verify (~1.73 s; a plain step is 0.42 s):** GDN/attention ~0.55 s (32%), FFN ~1.02 s
+    (59%), lm_head+rest ~0.13 s (8%). That is exactly 4x the plain-step components: nothing amortises. Cost model: a verify is
+    ~0.26 s fixed + ~0.33 s per extra token (k=2: 0.92 s, k=4: 1.59 s).
+    **Why:** (a) `BatchVerify`/`BatchForward2` batch only the dense FFN and lm_head; `GdnBlockAt`/`AttnBlockAt` run per token
+    and re-read their projection weights; (b) the FFN is IQ3_S/IQ4_XS/IQ3_XXS/IQ2_S, `MatVec2In`/`MatVec4In` have no IQ cases,
+    and **a one-sweep multi-input IQ path that reads each weight once gave no gain (1.9 -> 1.8-2.0 t/s, reverted)**, so the IQ
+    FFN is ALU-bound (grid index build + 16 scalar grid loads per 64 weights are repeated per input), not bandwidth-bound.
+    **Realistic ceiling even with everything done** (batched GDN/attn projections, IQ kernels sharing the grid decode across
+    inputs, FFN ALU roughly halved at k=4): k=4 verify ~1.0 s + 0.16 s draft -> ~2.2 t/s at 50% acceptance (= plain); k=2 at
+    67% acceptance ~2.7 t/s (**~+12%**). Large kernel project for ~+12% on this machine; not started. It would pay more on
+    Q4_K/Q5_K-quantised hybrid-GDN checkpoints (existing 2In/4In kernels already amortise their FFN) and on hardware with more
+    ALU headroom per byte (VNNI/AVX-512, GPU). Plain decode is at ~79% of the DRAM ceiling (12.2 GiB / ~36.8 GB/s ~ 3 t/s),
+    so `--spec-type none` (~2.4 t/s) is the right setting for this checkpoint here.
+    Notes: acceptance depends on draft depth (batched draftN=1: 67%, draftN=3: 50%, legacy sequential N=2: 75%), so the
+    "batched accepts less" worry is mostly depth; the greedy text differing from plain decode at token ~20 is consistent with
+    the FP32-ordering drift accepted in ADR-0002 but is not proven. Re-measure with 3+ runs after any change.
+
 
 
 Not fixable on this machine (kept 🔴 in STATUS): MiMo-VL (upstream mmproj projects to 3584, the
