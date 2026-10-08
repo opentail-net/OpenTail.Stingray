@@ -210,4 +210,16 @@ public sealed class ArchitectureRegistryTests
             Assert.True(KnownEnvironmentVariables.All.Contains(environmentVariable),
                 $"{environmentVariable} is missing from KnownEnvironmentVariables.All.");
     }
+
+    // Found 2026-10-08: qwen35/qwen35moe (Qwen3.5/3.6/3.8, Ornith) pointed at CreateDense, so the plan-selected
+    // CpuHybridGdn pass threw "Unsupported forward pass kind" at load for every Gated-DeltaNet checkpoint.
+    [Theory]
+    [InlineData("qwen35")]
+    [InlineData("qwen35moe")]
+    public void GatedDeltaNetFamilies_UseTheHybridGdnFactory(string arch)
+    {
+        var d = ArchitectureRegistry.Find(arch);
+        Assert.NotNull(d);
+        Assert.Equal((Func<ArchitectureLoadContext, IForwardPass>)CommonForwardPassFactory.CreateHybridGdn, d!.CreateForwardPass);
+    }
 }

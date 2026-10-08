@@ -96,7 +96,7 @@ internal static class QwenArchitectures
         Status = AdmissionStatus.Admitted,
         StatusAnchor = "Qwen3.5 / 3.6 / 3.8 hybrid Gated DeltaNet + MoE",
         EvidenceDoc = "docs/done/01-gguf-model-coverage-plan.md",
-        CreateForwardPass = CommonForwardPassFactory.CreateDense,
+        CreateForwardPass = CommonForwardPassFactory.CreateHybridGdn,
     };
 
     // Shares the evidence comment and receipt for 'qwen35'.
@@ -107,7 +107,7 @@ internal static class QwenArchitectures
         Status = AdmissionStatus.Admitted,
         StatusAnchor = "Qwen3.5 / 3.6 / 3.8 hybrid Gated DeltaNet + MoE",
         EvidenceDoc = "docs/done/01-gguf-model-coverage-plan.md",
-        CreateForwardPass = CommonForwardPassFactory.CreateDense,
+        CreateForwardPass = CommonForwardPassFactory.CreateHybridGdn,
     };
 
     // qwen3vl -- Qwen3-VL text decoder (llama.cpp src/models/qwen3vl.cpp): the qwen3 block with IMROPE (interleaved
