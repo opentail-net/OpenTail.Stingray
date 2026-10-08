@@ -63,7 +63,7 @@ public static class PrefillHandoffFamilies
                 "HybridCpuPrefillHandoffTests (Qwen3-0.6B Q8_0 dense, 8 GPU layers)",
                 "qwen3|attention.head_count_kv=8|attention.key_length=128"),
             [("qwen2moe", HandoffPath.VulkanHybrid)] = new(
-                "Qwen2MoeGreedyParityTests (CPU vs llama-server, PPL 4.78 vs 4.81) + HybridCpuPrefillHandoffTests (Qwen1.5-MoE-A2.7B-Chat Q4_K_M, 1 and 4 GPU layers, shared expert with sigmoid gate): byte-exact K/V, logits cosine 0.998-0.9998",
+                "Goldens/qwen2moe.golden.json (CPU vs llama-server, PPL 4.78 vs 4.81) + HybridCpuPrefillHandoffTests (Qwen1.5-MoE-A2.7B-Chat Q4_K_M, 1 and 4 GPU layers, shared expert with sigmoid gate): byte-exact K/V, logits cosine 0.998-0.9998",
                 "qwen2moe|attention.head_count_kv=16|expert_count=60|expert_used_count=4"),
             [("llama+experts", HandoffPath.VulkanHybrid)] = new(
                 "MixtralGreedyParityTests (CPU vs llama-server, PPL 3.2040 vs 3.1935) + HybridCpuPrefillHandoffTests (Nous-Hermes-2-Mixtral-8x7B-DPO i1-Q4_K_S, 1 and 4 GPU layers): byte-exact K/V, logits cosine 0.9998-1.0000",
