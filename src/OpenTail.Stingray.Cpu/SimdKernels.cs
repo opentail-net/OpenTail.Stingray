@@ -1561,6 +1561,40 @@ public static unsafe class SimdKernels
                 }
                 break;
             }
+            case DType.IQ4_XS when cols % 256 == 0 && rows >= MinRowsForParallel:
+            {
+                // Shared-decode: each IQ4_XS weight group is reconstructed once and applied to both activations.
+                int scratchBytes = Q8KScratchBytes(cols);
+                byte* sc1 = stackalloc byte[scratchBytes];
+                byte* sc2 = stackalloc byte[scratchBytes];
+                QuantizeRowToQ8K(input1, cols, sc1);
+                QuantizeRowToQ8K(input2, cols, sc2);
+                var w = weights; var s1 = sc1; var s2 = sc2;
+                var o1 = output1; var o2 = output2; int c = cols; int bpr = (cols / 256) * 136;
+                KernelFor(0, rows, r =>
+                {
+                    DotIq4Xs_Q8K_2In(w + (long)r * bpr, s1, s2, c, out float v1, out float v2);
+                    o1[r] = v1; o2[r] = v2;
+                });
+                break;
+            }
+            case DType.IQ3_S when cols % 256 == 0 && rows >= MinRowsForParallel:
+            {
+                // Shared-decode: each IQ3_S weight group is reconstructed once and applied to both activations.
+                int scratchBytes = Q8KScratchBytes(cols);
+                byte* sc1 = stackalloc byte[scratchBytes];
+                byte* sc2 = stackalloc byte[scratchBytes];
+                QuantizeRowToQ8K(input1, cols, sc1);
+                QuantizeRowToQ8K(input2, cols, sc2);
+                var w = weights; var s1 = sc1; var s2 = sc2;
+                var o1 = output1; var o2 = output2; int c = cols; int bpr = (cols / 256) * 110;
+                KernelFor(0, rows, r =>
+                {
+                    DotIq3S_Q8K_2In(w + (long)r * bpr, s1, s2, c, out float v1, out float v2);
+                    o1[r] = v1; o2[r] = v2;
+                });
+                break;
+            }
             default:
                 // Fallback: two sequential MatVec calls. Loses the weight-bandwidth
                 // benefit but stays correct for dtypes we haven't specialised yet.
@@ -1771,6 +1805,50 @@ public static unsafe class SimdKernels
                 MatVecF32(output1, m, input1, rows, cols);
                 MatVecF32(output2, m, input2, rows, cols);
                 MatVecF32(output3, m, input3, rows, cols);
+                break;
+            }
+            case DType.IQ4_XS when cols % 256 == 0 && rows >= MinRowsForParallel:
+            {
+                // Shared-decode: each IQ4_XS weight group is reconstructed once and applied to all four activations.
+                int scratchBytes = Q8KScratchBytes(cols);
+                byte* sc0 = stackalloc byte[scratchBytes];
+                byte* sc1 = stackalloc byte[scratchBytes];
+                byte* sc2 = stackalloc byte[scratchBytes];
+                byte* sc3 = stackalloc byte[scratchBytes];
+                QuantizeRowToQ8K(input0, cols, sc0);
+                QuantizeRowToQ8K(input1, cols, sc1);
+                QuantizeRowToQ8K(input2, cols, sc2);
+                QuantizeRowToQ8K(input3, cols, sc3);
+                var w = weights; var q0 = sc0; var q1 = sc1; var q2 = sc2; var q3 = sc3;
+                var o0 = output0; var o1 = output1; var o2 = output2; var o3 = output3;
+                int c = cols; int bpr = (cols / 256) * 136;
+                KernelFor(0, rows, r =>
+                {
+                    DotIq4Xs_Q8K_4In(w + (long)r * bpr, q0, q1, q2, q3, c, out float v0, out float v1, out float v2, out float v3);
+                    o0[r] = v0; o1[r] = v1; o2[r] = v2; o3[r] = v3;
+                });
+                break;
+            }
+            case DType.IQ3_S when cols % 256 == 0 && rows >= MinRowsForParallel:
+            {
+                // Shared-decode: each IQ3_S weight group is reconstructed once and applied to all four activations.
+                int scratchBytes = Q8KScratchBytes(cols);
+                byte* sc0 = stackalloc byte[scratchBytes];
+                byte* sc1 = stackalloc byte[scratchBytes];
+                byte* sc2 = stackalloc byte[scratchBytes];
+                byte* sc3 = stackalloc byte[scratchBytes];
+                QuantizeRowToQ8K(input0, cols, sc0);
+                QuantizeRowToQ8K(input1, cols, sc1);
+                QuantizeRowToQ8K(input2, cols, sc2);
+                QuantizeRowToQ8K(input3, cols, sc3);
+                var w = weights; var q0 = sc0; var q1 = sc1; var q2 = sc2; var q3 = sc3;
+                var o0 = output0; var o1 = output1; var o2 = output2; var o3 = output3;
+                int c = cols; int bpr = (cols / 256) * 110;
+                KernelFor(0, rows, r =>
+                {
+                    DotIq3S_Q8K_4In(w + (long)r * bpr, q0, q1, q2, q3, c, out float v0, out float v1, out float v2, out float v3);
+                    o0[r] = v0; o1[r] = v1; o2[r] = v2; o3[r] = v3;
+                });
                 break;
             }
             default:
@@ -4804,6 +4882,10 @@ public static unsafe class SimdKernels
         return bpb != 0 && cols % 256 == 0;
     }
 
+    /// <summary>True for the IQ formats whose MatVec/MatVec2In/MatVec4In paths all use the same per-row Q8_K dot, so a token's
+    /// result does not depend on which multi-input width computed it (callers may regroup tokens freely).</summary>
+    public static bool HasIqMultiInputKernel(DType dtype, int cols) => TryIqQ8KKernel(dtype, cols, out _, out _);
+
     /// <summary>Two same-shape IQ matvecs over one input (FFN gate + up): the input is quantized to Q8_K once and both
     /// rows are dotted in one parallel sweep. Per-row arithmetic is that of <see cref="MatVecQ8KDispatch"/>.</summary>
     private static void MatVecDualQ8K(float* out1, byte* w1, int bpr1, delegate*<byte*, byte*, int, float> dot1,
@@ -4976,6 +5058,108 @@ public static unsafe class SimdKernels
             accum = Fma.MultiplyAdd(Vector256.Create(dSuper), total, accum);
         }
         return HSum256(accum);
+    }
+
+    // ── IQ4_XS shared-decode multi-input dots (MTP batched verify) ───────────────────────────────────────────────
+    // Nibble unpack + table lookup + abs(w) are built once per 32-weight group; sign(q8, w) and the multiply-adds are per input.
+    // Same per-row integer arithmetic as DotIq4Xs_Q8K_Avx2, so results equal N separate single-input dots.
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static void Iq4XsGroup(byte* qs, Vector128<byte> values128, Vector128<byte> m4b,
+        out Vector256<sbyte> w, out Vector256<byte> absW)
+    {
+        var q4bits = Sse2.LoadVector128(qs);
+        var lo = Ssse3.Shuffle(values128, Sse2.And(q4bits, m4b));
+        var hi = Ssse3.Shuffle(values128, Sse2.And(Sse2.ShiftRightLogical(q4bits.AsUInt16(), 4).AsByte(), m4b));
+        w = Vector256.Create(lo, hi).AsSByte();
+        absW = Avx2.Abs(w);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static Vector256<short> Iq4XsMadd(Vector256<byte> absW, Vector256<sbyte> w, sbyte* q8)
+    {
+        var y = Vector256.LoadUnsafe(ref *q8).AsSByte();
+        return Avx2.MultiplyAddAdjacent(absW, Avx2.Sign(y, w));
+    }
+
+    /// <summary>One IQ4_XS row against two Q8_K activations; nibble lookup and abs(w) are done once per group.</summary>
+    internal static void DotIq4Xs_Q8K_2In(byte* row, byte* s0, byte* s1, int cols, out float r0, out float r1)
+    {
+        int nb = cols / 256;
+        float* d0 = (float*)s0; float* d1 = (float*)s1;
+        sbyte* qa0 = (sbyte*)(s0 + nb * 4); sbyte* qa1 = (sbyte*)(s1 + nb * 4);
+        var values128 = Vector128.Create(
+            (sbyte)-127, -104, -83, -65, -49, -35, -22, -10, 1, 13, 25, 38, 53, 69, 89, 113).AsByte();
+        var m4b = Vector128.Create((byte)0x0F);
+        var acc0 = Vector256<float>.Zero; var acc1 = Vector256<float>.Zero;
+        for (int ibl = 0; ibl < nb; ibl++)
+        {
+            byte* blk = row + ibl * 136;
+            float dh = HalfConv.ToFloat(blk);
+            int h = blk[2] | (blk[3] << 8);
+            byte* scalesL = blk + 4;
+            byte* qs = blk + 8;
+            sbyte* q0 = qa0 + ibl * 256; sbyte* q1 = qa1 + ibl * 256;
+            var a0 = Vector256<int>.Zero; var a1 = Vector256<int>.Zero;
+            for (int ib = 0; ib < 8; ib += 2)
+            {
+                Iq4XsGroup(qs + ib * 16, values128, m4b, out var w1, out var ax1);
+                Iq4XsGroup(qs + ib * 16 + 16, values128, m4b, out var w2, out var ax2);
+                var ls1 = Vector256.Create((short)(((scalesL[ib / 2] & 0xF) | ((h << 4) & 0x30)) - 32));
+                var ls2 = Vector256.Create((short)(((scalesL[ib / 2] >> 4) | ((h << 2) & 0x30)) - 32));
+                h >>= 4;
+                int o1 = ib * 32, o2 = o1 + 32;
+                a0 = Avx2.Add(a0, Avx2.Add(Avx2.MultiplyAddAdjacent(Iq4XsMadd(ax1, w1, q0 + o1), ls1), Avx2.MultiplyAddAdjacent(Iq4XsMadd(ax2, w2, q0 + o2), ls2)));
+                a1 = Avx2.Add(a1, Avx2.Add(Avx2.MultiplyAddAdjacent(Iq4XsMadd(ax1, w1, q1 + o1), ls1), Avx2.MultiplyAddAdjacent(Iq4XsMadd(ax2, w2, q1 + o2), ls2)));
+            }
+            acc0 = Fma.MultiplyAdd(Vector256.Create(dh * d0[ibl]), Avx.ConvertToVector256Single(a0), acc0);
+            acc1 = Fma.MultiplyAdd(Vector256.Create(dh * d1[ibl]), Avx.ConvertToVector256Single(a1), acc1);
+        }
+        r0 = HSum256(acc0); r1 = HSum256(acc1);
+    }
+
+    /// <summary>One IQ4_XS row against four Q8_K activations; nibble lookup and abs(w) are done once per group.</summary>
+    internal static void DotIq4Xs_Q8K_4In(byte* row, byte* s0, byte* s1, byte* s2, byte* s3, int cols,
+        out float r0, out float r1, out float r2, out float r3)
+    {
+        int nb = cols / 256;
+        float* d0 = (float*)s0; float* d1 = (float*)s1; float* d2 = (float*)s2; float* d3 = (float*)s3;
+        sbyte* qa0 = (sbyte*)(s0 + nb * 4); sbyte* qa1 = (sbyte*)(s1 + nb * 4);
+        sbyte* qa2 = (sbyte*)(s2 + nb * 4); sbyte* qa3 = (sbyte*)(s3 + nb * 4);
+        var values128 = Vector128.Create(
+            (sbyte)-127, -104, -83, -65, -49, -35, -22, -10, 1, 13, 25, 38, 53, 69, 89, 113).AsByte();
+        var m4b = Vector128.Create((byte)0x0F);
+        var acc0 = Vector256<float>.Zero; var acc1 = Vector256<float>.Zero;
+        var acc2 = Vector256<float>.Zero; var acc3 = Vector256<float>.Zero;
+        for (int ibl = 0; ibl < nb; ibl++)
+        {
+            byte* blk = row + ibl * 136;
+            float dh = HalfConv.ToFloat(blk);
+            int h = blk[2] | (blk[3] << 8);
+            byte* scalesL = blk + 4;
+            byte* qs = blk + 8;
+            sbyte* q0 = qa0 + ibl * 256; sbyte* q1 = qa1 + ibl * 256; sbyte* q2 = qa2 + ibl * 256; sbyte* q3 = qa3 + ibl * 256;
+            var a0 = Vector256<int>.Zero; var a1 = Vector256<int>.Zero;
+            var a2 = Vector256<int>.Zero; var a3 = Vector256<int>.Zero;
+            for (int ib = 0; ib < 8; ib += 2)
+            {
+                Iq4XsGroup(qs + ib * 16, values128, m4b, out var w1, out var ax1);
+                Iq4XsGroup(qs + ib * 16 + 16, values128, m4b, out var w2, out var ax2);
+                var ls1 = Vector256.Create((short)(((scalesL[ib / 2] & 0xF) | ((h << 4) & 0x30)) - 32));
+                var ls2 = Vector256.Create((short)(((scalesL[ib / 2] >> 4) | ((h << 2) & 0x30)) - 32));
+                h >>= 4;
+                int o1 = ib * 32, o2 = o1 + 32;
+                a0 = Avx2.Add(a0, Avx2.Add(Avx2.MultiplyAddAdjacent(Iq4XsMadd(ax1, w1, q0 + o1), ls1), Avx2.MultiplyAddAdjacent(Iq4XsMadd(ax2, w2, q0 + o2), ls2)));
+                a1 = Avx2.Add(a1, Avx2.Add(Avx2.MultiplyAddAdjacent(Iq4XsMadd(ax1, w1, q1 + o1), ls1), Avx2.MultiplyAddAdjacent(Iq4XsMadd(ax2, w2, q1 + o2), ls2)));
+                a2 = Avx2.Add(a2, Avx2.Add(Avx2.MultiplyAddAdjacent(Iq4XsMadd(ax1, w1, q2 + o1), ls1), Avx2.MultiplyAddAdjacent(Iq4XsMadd(ax2, w2, q2 + o2), ls2)));
+                a3 = Avx2.Add(a3, Avx2.Add(Avx2.MultiplyAddAdjacent(Iq4XsMadd(ax1, w1, q3 + o1), ls1), Avx2.MultiplyAddAdjacent(Iq4XsMadd(ax2, w2, q3 + o2), ls2)));
+            }
+            acc0 = Fma.MultiplyAdd(Vector256.Create(dh * d0[ibl]), Avx.ConvertToVector256Single(a0), acc0);
+            acc1 = Fma.MultiplyAdd(Vector256.Create(dh * d1[ibl]), Avx.ConvertToVector256Single(a1), acc1);
+            acc2 = Fma.MultiplyAdd(Vector256.Create(dh * d2[ibl]), Avx.ConvertToVector256Single(a2), acc2);
+            acc3 = Fma.MultiplyAdd(Vector256.Create(dh * d3[ibl]), Avx.ConvertToVector256Single(a3), acc3);
+        }
+        r0 = HSum256(acc0); r1 = HSum256(acc1); r2 = HSum256(acc2); r3 = HSum256(acc3);
     }
 
     // ================================================================
@@ -5458,6 +5642,132 @@ public static unsafe class SimdKernels
 
     public static void MatVecIq3S(float* output, byte* weights, float* input, int rows, int cols) =>
         MatVecQ8KDispatch(output, weights, input, rows, cols, (cols / 256) * 110, &DotIq3S_Q8K);
+
+    // ── IQ3_S shared-decode multi-input dots (MTP batched verify) ────────────────────────────────────────────────
+    // Microbench 2026-10-08 (tools/kernel-bench-cs, iq3s-multi, one thread; hot and streaming timings identical => compute-bound):
+    // reconstructing an IQ3_S weight group (9-bit index build, 16 scalar grid loads, vector assembly, sign-mask expansion) is
+    // ~570 of the ~680 ns a row costs; each extra activation only adds ~110 ns. These kernels build the group once and apply
+    // it to 2 or 4 Q8_K activations. Per-row integer arithmetic is that of DotIq3S_Q8K_Avx2, so results are bit-identical to
+    // N separate single-input dots (verified: 0 relative error). Measured vs N separate dots: N=2 1.85x, N=4 2.70x.
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static Vector256<byte> Iq3SNegMask(uint signs4)
+    {
+        var bits = Avx2.And(Avx2.Shuffle(Vector256.Create(signs4).AsByte(), s_iqSignShuffle), s_iqSignBits);
+        return Avx2.CompareEqual(bits, s_iqSignBits);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static Vector256<short> Iq3SMaddubs(Vector256<byte> grid, Vector256<byte> neg, sbyte* q8)
+    {
+        var q8s = Avx2.Subtract(Avx2.Xor(Avx.LoadVector256((byte*)q8), neg), neg).AsSByte();
+        return Avx2.MultiplyAddAdjacent(grid, q8s);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static void Iq3SGroupPair(byte* qs, byte qh0, byte qh1, int ib32, uint* grid, uint* idx,
+        Vector256<uint> idxShift, Vector256<uint> idxMask, out Vector256<byte> g1, out Vector256<byte> g2)
+    {
+        var lo1 = Avx2.ConvertToVector256Int32(qs + ib32 * 8).AsUInt32();
+        var lo2 = Avx2.ConvertToVector256Int32(qs + ib32 * 8 + 8).AsUInt32();
+        var hi1 = Avx2.And(Avx2.ShiftLeftLogicalVariable(Vector256.Create((uint)qh0), idxShift), idxMask);
+        var hi2 = Avx2.And(Avx2.ShiftLeftLogicalVariable(Vector256.Create((uint)qh1), idxShift), idxMask);
+        Avx.Store(idx, Avx2.Or(lo1, hi1));
+        g1 = Vector256.Create(grid[idx[0]], grid[idx[1]], grid[idx[2]], grid[idx[3]],
+            grid[idx[4]], grid[idx[5]], grid[idx[6]], grid[idx[7]]).AsByte();
+        Avx.Store(idx + 8, Avx2.Or(lo2, hi2));
+        g2 = Vector256.Create(grid[idx[8]], grid[idx[9]], grid[idx[10]], grid[idx[11]],
+            grid[idx[12]], grid[idx[13]], grid[idx[14]], grid[idx[15]]).AsByte();
+    }
+
+    /// <summary>One IQ3_S row against two Q8_K activations; the weight group is reconstructed once.</summary>
+    internal static void DotIq3S_Q8K_2In(byte* row, byte* s0, byte* s1, int cols, out float r0, out float r1)
+    {
+        int nb = cols / 256;
+        float* d0 = (float*)s0; float* d1 = (float*)s1;
+        sbyte* qa0 = (sbyte*)(s0 + nb * 4); sbyte* qa1 = (sbyte*)(s1 + nb * 4);
+        var idxShift = Vector256.Create(8u, 7u, 6u, 5u, 4u, 3u, 2u, 1u);
+        var idxMask = Vector256.Create(256u);
+        uint* idx = stackalloc uint[16];
+        var acc0 = Vector256<float>.Zero; var acc1 = Vector256<float>.Zero;
+        fixed (uint* grid = IqCodebooks.Iq3SGrid)
+        {
+            for (int i = 0; i < nb; i++)
+            {
+                byte* blk = row + i * 110;
+                float dh = HalfConv.ToFloat(blk);
+                byte* qs = blk + 2, qh = blk + 66, signs = blk + 74, scales = blk + 106;
+                sbyte* q0 = qa0 + i * 256; sbyte* q1 = qa1 + i * 256;
+                var sum0 = Vector256<int>.Zero; var sum1 = Vector256<int>.Zero;
+                for (int ib32 = 0; ib32 < 8; ib32 += 2)
+                {
+                    int sc = scales[ib32 >> 1];
+                    var ls1 = Vector256.Create((short)(2 * (sc & 0xF) + 1));
+                    var ls2 = Vector256.Create((short)(2 * (sc >> 4) + 1));
+                    Iq3SGroupPair(qs, qh[ib32], qh[ib32 + 1], ib32, grid, idx, idxShift, idxMask, out var g1, out var g2);
+                    var n1 = Iq3SNegMask(*(uint*)(signs + ib32 * 4));
+                    var n2 = Iq3SNegMask(*(uint*)(signs + ib32 * 4 + 4));
+                    int o1 = ib32 * 32, o2 = o1 + 32;
+                    sum0 = Avx2.Add(sum0, Avx2.Add(Avx2.MultiplyAddAdjacent(Iq3SMaddubs(g1, n1, q0 + o1), ls1), Avx2.MultiplyAddAdjacent(Iq3SMaddubs(g2, n2, q0 + o2), ls2)));
+                    sum1 = Avx2.Add(sum1, Avx2.Add(Avx2.MultiplyAddAdjacent(Iq3SMaddubs(g1, n1, q1 + o1), ls1), Avx2.MultiplyAddAdjacent(Iq3SMaddubs(g2, n2, q1 + o2), ls2)));
+                }
+                acc0 = Fma.MultiplyAdd(Vector256.Create(dh * d0[i]), Avx.ConvertToVector256Single(sum0), acc0);
+                acc1 = Fma.MultiplyAdd(Vector256.Create(dh * d1[i]), Avx.ConvertToVector256Single(sum1), acc1);
+            }
+        }
+        r0 = HSum256(acc0); r1 = HSum256(acc1);
+    }
+
+    /// <summary>One IQ3_S row against four Q8_K activations; the weight group is reconstructed once.</summary>
+    internal static void DotIq3S_Q8K_4In(byte* row, byte* s0, byte* s1, byte* s2, byte* s3, int cols,
+        out float r0, out float r1, out float r2, out float r3)
+    {
+        int nb = cols / 256;
+        float* d0 = (float*)s0; float* d1 = (float*)s1; float* d2 = (float*)s2; float* d3 = (float*)s3;
+        sbyte* qa0 = (sbyte*)(s0 + nb * 4); sbyte* qa1 = (sbyte*)(s1 + nb * 4);
+        sbyte* qa2 = (sbyte*)(s2 + nb * 4); sbyte* qa3 = (sbyte*)(s3 + nb * 4);
+        var idxShift = Vector256.Create(8u, 7u, 6u, 5u, 4u, 3u, 2u, 1u);
+        var idxMask = Vector256.Create(256u);
+        uint* idx = stackalloc uint[16];
+        var acc0 = Vector256<float>.Zero; var acc1 = Vector256<float>.Zero;
+        var acc2 = Vector256<float>.Zero; var acc3 = Vector256<float>.Zero;
+        fixed (uint* grid = IqCodebooks.Iq3SGrid)
+        {
+            for (int i = 0; i < nb; i++)
+            {
+                byte* blk = row + i * 110;
+                float dh = HalfConv.ToFloat(blk);
+                byte* qs = blk + 2, qh = blk + 66, signs = blk + 74, scales = blk + 106;
+                sbyte* q0 = qa0 + i * 256; sbyte* q1 = qa1 + i * 256; sbyte* q2 = qa2 + i * 256; sbyte* q3 = qa3 + i * 256;
+                var sum0 = Vector256<int>.Zero; var sum1 = Vector256<int>.Zero;
+                var sum2 = Vector256<int>.Zero; var sum3 = Vector256<int>.Zero;
+                for (int ib32 = 0; ib32 < 8; ib32 += 2)
+                {
+                    int sc = scales[ib32 >> 1];
+                    var ls1 = Vector256.Create((short)(2 * (sc & 0xF) + 1));
+                    var ls2 = Vector256.Create((short)(2 * (sc >> 4) + 1));
+                    Iq3SGroupPair(qs, qh[ib32], qh[ib32 + 1], ib32, grid, idx, idxShift, idxMask, out var g1, out var g2);
+                    var n1 = Iq3SNegMask(*(uint*)(signs + ib32 * 4));
+                    var n2 = Iq3SNegMask(*(uint*)(signs + ib32 * 4 + 4));
+                    int o1 = ib32 * 32, o2 = o1 + 32;
+                    sum0 = Avx2.Add(sum0, Avx2.Add(Avx2.MultiplyAddAdjacent(Iq3SMaddubs(g1, n1, q0 + o1), ls1), Avx2.MultiplyAddAdjacent(Iq3SMaddubs(g2, n2, q0 + o2), ls2)));
+                    sum1 = Avx2.Add(sum1, Avx2.Add(Avx2.MultiplyAddAdjacent(Iq3SMaddubs(g1, n1, q1 + o1), ls1), Avx2.MultiplyAddAdjacent(Iq3SMaddubs(g2, n2, q1 + o2), ls2)));
+                    sum2 = Avx2.Add(sum2, Avx2.Add(Avx2.MultiplyAddAdjacent(Iq3SMaddubs(g1, n1, q2 + o1), ls1), Avx2.MultiplyAddAdjacent(Iq3SMaddubs(g2, n2, q2 + o2), ls2)));
+                    sum3 = Avx2.Add(sum3, Avx2.Add(Avx2.MultiplyAddAdjacent(Iq3SMaddubs(g1, n1, q3 + o1), ls1), Avx2.MultiplyAddAdjacent(Iq3SMaddubs(g2, n2, q3 + o2), ls2)));
+                }
+                acc0 = Fma.MultiplyAdd(Vector256.Create(dh * d0[i]), Avx.ConvertToVector256Single(sum0), acc0);
+                acc1 = Fma.MultiplyAdd(Vector256.Create(dh * d1[i]), Avx.ConvertToVector256Single(sum1), acc1);
+                acc2 = Fma.MultiplyAdd(Vector256.Create(dh * d2[i]), Avx.ConvertToVector256Single(sum2), acc2);
+                acc3 = Fma.MultiplyAdd(Vector256.Create(dh * d3[i]), Avx.ConvertToVector256Single(sum3), acc3);
+            }
+        }
+        r0 = HSum256(acc0); r1 = HSum256(acc1); r2 = HSum256(acc2); r3 = HSum256(acc3);
+    }
+
+    /// <summary>True when <paramref name="dtype"/> has a shared-decode multi-input kernel (MatVec2In/MatVec4In amortise the
+    /// weight reconstruction, not just the weight read) and the shape fits it. Per-row arithmetic equals the single-input dot's.</summary>
+    public static bool HasSharedDecodeMultiInput(DType dtype, int cols) =>
+        (dtype == DType.IQ3_S || dtype == DType.IQ4_XS) && cols % 256 == 0 && Avx2.IsSupported && Fma.IsSupported;
 
     public static float DotIq3S_Q8K(byte* row, byte* scratch, int cols)
     {

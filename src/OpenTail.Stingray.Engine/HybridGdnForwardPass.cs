@@ -1710,6 +1710,15 @@ public sealed unsafe class HybridGdnForwardPass : IForwardPass
                 for (int i = 0; i < k; i += 4)
                 {
                     MtpBatchTail.Group4(i, k, out int j0, out int j1, out int j2, out int j3, out int nReal);
+                    // <=2 real tokens and IQ FFN weights: the 2-input kernel computes only the real lanes (a quad would pad two
+                    // duplicate lanes). IQ results do not depend on the multi-input width, so per-token bits are unchanged.
+                    if (nReal <= 2 && FfnIsIq(layer))
+                    {
+                        DenseFfn2(layer, _bvNormAll + (long)j0 * embDim, _bvNormAll + (long)j1 * embDim,
+                            _bvHiddenAll + (long)j0 * embDim,
+                            nReal > 1 ? _bvHiddenAll + (long)j1 * embDim : _hidden2);
+                        continue;
+                    }
                     DenseFfn4(layer,
                         _bvNormAll + (long)j0 * embDim, _bvNormAll + (long)j1 * embDim,
                         _bvNormAll + (long)j2 * embDim, _bvNormAll + (long)j3 * embDim,
@@ -1805,6 +1814,13 @@ public sealed unsafe class HybridGdnForwardPass : IForwardPass
         _batchSnapshotCap = slotBytes * slots;
         _batchSnapshotSlots = slots;
     }
+
+    /// <summary>True when this layer's dense FFN gate/up/down weights all use an IQ format (see
+    /// <see cref="SimdKernels.HasIqMultiInputKernel"/>), so the 2-input FFN is the cheapest verify path for up to two tokens.</summary>
+    private bool FfnIsIq(int layer) =>
+        SimdKernels.HasIqMultiInputKernel(_wFfnGate[layer].DType, _embDim)
+        && SimdKernels.HasIqMultiInputKernel(_wFfnUp[layer].DType, _embDim)
+        && SimdKernels.HasIqMultiInputKernel(_wFfnDown[layer].DType, _intermDim);
 
     /// <summary>
     /// Batched gate × up → down dense FFN for two tokens sharing the same weight

@@ -2,7 +2,9 @@ using System.Diagnostics;
 using System.Runtime.InteropServices;
 using OpenTail.Stingray.Cpu;
 
-return args.Length > 0 && args[0] == "sgemm" ? SgemmBench.Run(args[1..])
+return args.Length > 0 && args[0] == "iq4xs-multi" ? Iq4XsMultiBench.Run(args[1..])
+    : args.Length > 0 && args[0] == "iq3s-multi" ? Iq3SMultiBench.Run(args[1..])
+    : args.Length > 0 && args[0] == "sgemm" ? SgemmBench.Run(args[1..])
     : args.Length > 0 && args[0] == "sgemm-sweep" ? SgemmBench.Sweep(args[1..])
     : args.Length > 0 && args[0] == "q4k-m1" ? SgemmBench.Q4KM1(args[1..])
     : args.Length > 0 && args[0] == "q4k-dot" ? Q4KDotBench.Run(args[1..])
