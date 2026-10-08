@@ -65,32 +65,29 @@ updated with dated evidence in the same pass.
     each against `llama-server` with the same prompt and tokenizer, compare tokens, and for gpt-oss use
     the chat template. Evidence: PerformanceLeague.md, "Load-and-generate smoke sweep".
 
-17. **Qwen3.8-27B (priority checkpoint): MTP self-speculation does not pay on this CPU/quant; ceiling is ~+12%.**
-    2026-10-08: MTP was silently unreachable from the CLI after the plan-driven refactor (fixed, `RunCommand.cs`). Now
-    engaged, but **slower than plain decode (1.8-2.0 vs 2.3-2.4 t/s, 3 interleaved runs)**.
-    **Measured breakdown of one k=4 verify (~1.73 s; a plain step is 0.42 s):** GDN/attention ~0.55 s (32%), FFN ~1.02 s
-    (59%), lm_head+rest ~0.13 s (8%). That is exactly 4x the plain-step components: nothing amortises. Cost model: a verify is
-    ~0.26 s fixed + ~0.33 s per extra token (k=2: 0.92 s, k=4: 1.59 s).
-    **Why:** (a) `BatchVerify`/`BatchForward2` batch only the dense FFN and lm_head; `GdnBlockAt`/`AttnBlockAt` run per token
-    and re-read their projection weights; (b) the FFN is IQ3_S/IQ4_XS/IQ3_XXS/IQ2_S, `MatVec2In`/`MatVec4In` have no IQ cases,
-    and **a one-sweep multi-input IQ path that reads each weight once gave no gain (1.9 -> 1.8-2.0 t/s, reverted)**, so the IQ
-    FFN is ALU-bound (grid index build + 16 scalar grid loads per 64 weights are repeated per input), not bandwidth-bound.
-    **Realistic ceiling even with everything done** (batched GDN/attn projections, IQ kernels sharing the grid decode across
-    inputs, FFN ALU roughly halved at k=4): k=4 verify ~1.0 s + 0.16 s draft -> ~2.2 t/s at 50% acceptance (= plain); k=2 at
-    67% acceptance ~2.7 t/s (**~+12%**). Large kernel project for ~+12% on this machine; not started. It would pay more on
-    Q4_K/Q5_K-quantised hybrid-GDN checkpoints (existing 2In/4In kernels already amortise their FFN) and on hardware with more
-    ALU headroom per byte (VNNI/AVX-512, GPU). Plain decode is at ~79% of the DRAM ceiling (12.2 GiB / ~36.8 GB/s ~ 3 t/s),
-    so `--spec-type none` (~2.4 t/s) is the right setting for this checkpoint here.
-    **Reference ground truth (llama.cpp b8585 CPU, `-t 8`, same file, `llama-bench -p 1,2,4,8`, 2026-10-08):** a batch of
-    1/2/4/8 tokens runs at 2.43/3.44/4.05/4.27 t/s, i.e. costs 1.0/1.4/2.4/4.5 plain steps (0.41/0.58/0.99/1.87 s). So the
-    reference is ALU-bound on this IQ quant too (throughput saturates at ~4.3 t/s), and its batch is ~1.6x cheaper than ours
-    (k=2: 0.58 vs 0.92 s; k=4: 0.99 vs 1.6-1.7 s). Even matching llama.cpp exactly would give ~2.6 t/s at k=2/67% accept (+8%)
-    and ~2.2 t/s at k=4/50% (break-even). Nothing in `examples/` is liftable for this: ggml's IQ dot kernels are single-input
-    (`ggml_vec_dot_iq3_s_q8_K` asserts `nrc == 1`; batching is just one dot per (row, column) pair) and TensorSharp's batched
-    Qwen3.5 decode goes through the native ggml graph, across sequences, not speculative verify.
-    Notes: acceptance depends on draft depth (batched draftN=1: 67%, draftN=3: 50%, legacy sequential N=2: 75%), so the
-    "batched accepts less" worry is mostly depth; the greedy text differing from plain decode at token ~20 is consistent with
-    the FP32-ordering drift accepted in ADR-0002 but is not proven. Re-measure with 3+ runs after any change.
+17. **Qwen3.8-27B (priority checkpoint): MTP self-speculation now wins on CPU: +12% (2.7 vs 2.4 t/s) at draft depth 1.**
+    Use `--spec-type mtp --no-thinking --temp 0` (auto mode does not engage it: it also requires no history penalty).
+    2026-10-08 history: MTP was silently unreachable from the CLI after the plan-driven refactor (fixed, `RunCommand.cs`);
+    once reachable it was *slower* than plain (1.8-2.0 t/s). Measured cause: a verify step cost ~0.26 s + ~0.33 s per extra token
+    (k=2 0.92 s, k=4 1.6-1.7 s; plain step 0.42 s) because nothing amortised. Reference ground truth (llama.cpp `-t 8`,
+    same file, batch 1/2/4/8 = 2.43/3.44/4.05/4.27 t/s) showed the IQ quant is compute-bound there too, and a microbench
+    (`tools/kernel-bench-cs iq3s-multi`, one thread, hot == streaming) showed ~570 of the 680 ns an IQ3_S row costs is weight
+    *reconstruction*, repeated per activation. Fixes, each measured and committed:
+    (1) shared-decode multi-input kernels (weight group reconstructed once, applied to 2 or 4 activations), bit-identical to
+    N single dots: IQ3_S 1.85x/2.70x (N=2/4), IQ4_XS 1.66x/2.37x, plus IQ3_XXS and IQ2_S; verify (64 tok) 12.7 s -> 9.2 s;
+    (2) batched GDN projections (`GdnBlockBatch`: qkv/z/ssm_out once for all k tokens, conv + recurrence stay sequential), 9.2 -> 7.4 s;
+    (3) IQ3_XXS/IQ2_S kernels 7.4 -> 6.5 s; (4) groups with <=2 real tokens use the 2-input kernels (FFN, batched projections and
+    lm_head; pinned bit-identical to the 4-input lanes for Q4_K/Q5_K/Q6_K/IQ formats), k=2 verify 0.92 s -> ~0.58 s (derived from the 2.7 t/s result: cycle 0.65 s minus 0.07 s draft);
+    (5) CPU hybrid-GDN default draft depth 1 (`MtpDecoder.ResolveDraftN`).
+    **Result (forced MTP, 96 tokens, repeated runs):** depth 1 **2.7 t/s** (76% accepted), depth 2 2.4, depth 3 2.2 (41% accepted;
+    the adaptive probe, threshold 55%, then abandons it), plain 2.4. Generated text identical across kernel changes.
+    **Remaining headroom:** a k=2 verify is still ~1.4x a plain step (floor ~1.0x = one DRAM pass of 12.2 GiB, ~0.33 s). Left on the
+    table: attention layers still run per token (~0.05 s at k=2), lm_head Q5_K 2-input kernel is float (not Q8_K) arithmetic, and
+    IQ2_XS/Q3_K/IQ2_XXS FFN tensors (~5% of FFN) have no shared-decode kernel. Evidence for depth 1 is this one checkpoint; other
+    CPU hybrid-GDN MTP models are unmeasured. The CLI help still says "defaults to 1 / batch max 2", which was stale before this
+    (the pre-migration default was 3 / 4). Plain decode is at ~79% of the DRAM ceiling (~3 t/s), so +12% is most of what is available.
+    Reference: llama.cpp k=2 batch costs 1.4 plain steps; ours is now in the same range.
+
 
 
 
