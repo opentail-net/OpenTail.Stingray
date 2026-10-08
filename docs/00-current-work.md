@@ -83,7 +83,7 @@ updated with dated evidence in the same pass.
     the adaptive probe, threshold 55%, then abandons it), plain 2.4. Generated text identical across kernel changes.
     **Remaining headroom:** a k=2 verify is still ~1.4x a plain step (floor ~1.0x = one DRAM pass of 12.2 GiB, ~0.33 s). Left on the
     table: attention layers still run per token (~0.05 s at k=2), lm_head Q5_K 2-input kernel is float (not Q8_K) arithmetic, and
-    IQ2_XS/Q3_K/IQ2_XXS FFN tensors (~5% of FFN) have no shared-decode kernel. Evidence for depth 1 is this one checkpoint; other
+    IQ2_XS/Q3_K/IQ2_XXS FFN tensors (~5% of FFN) have no shared-decode kernel. **Counter-example measured the same day: Qwen3.6-27B UD-Q3_K_XL is SLOWER with MTP (2.0-2.1 vs 2.6 t/s plain, all depths), see PerformanceLeague; cause not diagnosed (quant-mix coverage of the shared-decode kernels is the first suspect).** Evidence for depth 1 is Qwen3.8 only; other
     CPU hybrid-GDN MTP models are unmeasured. The CLI help still says "defaults to 1 / batch max 2", which was stale before this
     (the pre-migration default was 3 / 4). Plain decode is at ~79% of the DRAM ceiling (~3 t/s), so +12% is most of what is available.
     Reference: llama.cpp k=2 batch costs 1.4 plain steps; ours is now in the same range.
