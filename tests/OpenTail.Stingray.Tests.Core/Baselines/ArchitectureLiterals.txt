@@ -6,7 +6,8 @@ src/OpenTail.Stingray.Cli/TtsEngines.cs|1
 src/OpenTail.Stingray.Core/GgufModel.cs|2
 src/OpenTail.Stingray.Core/GgufTokenizer.cs|15
 src/OpenTail.Stingray.Core/HuggingFaceTokenizerSource.cs|1
-src/OpenTail.Stingray.Core/ModelGraph.cs|15
+src/OpenTail.Stingray.Core/ModelArchitectureTraits.cs|12
+src/OpenTail.Stingray.Core/ModelGraph.cs|1
 src/OpenTail.Stingray.Core/ModelPackageCapability.cs|4
 src/OpenTail.Stingray.Core/ModelPackageInspector.cs|2
 src/OpenTail.Stingray.Core/PreTokenizerPatterns.cs|26

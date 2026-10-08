@@ -69,6 +69,7 @@ internal static class QwenArchitectures
     public static readonly ArchitectureDescriptor Qwen2vl = new()
     {
         Id = "qwen2vl",
+        Traits = new() { ReadsRopeDimensionSections = true },
         UsesNeoxRope = true,
         Status = AdmissionStatus.Admitted,
         StatusExemption = "Admitted only for text-only decoding; the Qwen Image row concerns a separate diffusion text-conditioning path.",
@@ -104,6 +105,7 @@ internal static class QwenArchitectures
     public static readonly ArchitectureDescriptor Qwen35moe = new()
     {
         Id = "qwen35moe",
+        Traits = new() { Hybrid = OpenTail.Stingray.Core.HybridKind.GatedDeltaNet },
         ForwardPassFamily = ForwardPassFamily.HybridGdn,
         UsesNeoxRope = true,
         Status = AdmissionStatus.Admitted,
@@ -122,6 +124,7 @@ internal static class QwenArchitectures
     public static readonly ArchitectureDescriptor Qwen3vl = new()
     {
         Id = "qwen3vl",
+        Traits = new() { ReadsRopeDimensionSections = true, DeepstackFromLayerCount = true },
         UsesNeoxRope = true,
         ApplyModelSemantics = ctx => ctx.Baseline with { RopeSectionsInterleaved = true },
         Status = AdmissionStatus.Admitted,

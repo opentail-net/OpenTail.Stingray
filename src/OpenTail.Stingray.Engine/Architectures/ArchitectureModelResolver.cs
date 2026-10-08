@@ -50,7 +50,9 @@ public static class ArchitectureModelResolver
         // Same namespace the file's own keys use (declared, default "llama"): relabelled files keep their declared prefix.
         string metadataArch = declared ?? "llama";
 
-        var baseline = ModelHyperparams.CreateBaseline(tensorSource.Metadata, tensorSource, metadataArch);
+        // A resolved descriptor owns its structural traits; an unregistered architecture (e.g. qwen3vlmoe) falls back to the by-name table.
+        var baseline = ModelHyperparams.CreateBaseline(tensorSource.Metadata, tensorSource, metadataArch,
+            traits: descriptor is null ? null : descriptor.Traits ?? OpenTail.Stingray.Core.ModelArchitectureTraits.None);
         if (descriptor is { UsesNeoxRope: true }
             && !(tensorSource.Metadata.TryGetValue($"{metadataArch}.rope.is_neox", out var neoxOverride) && neoxOverride is bool))
             baseline = baseline with { IsNeoxRope = true };

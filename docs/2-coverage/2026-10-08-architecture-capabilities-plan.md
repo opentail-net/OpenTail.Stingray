@@ -1,6 +1,6 @@
 # Architecture descriptors as statically registered model plugins: finish the job (plan)
 
-**Date:** 2026-10-08. **Status:** Phases 0 and 1 done 2026-10-08; 2-5 open. **Follows:** [2026-10-08-architecture-semantics-admission-plan.md](2026-10-08-architecture-semantics-admission-plan.md) (all phases 1-8 done).
+**Date:** 2026-10-08. **Status:** Phases 0-3 done 2026-10-08; 4-5 open. **Follows:** [2026-10-08-architecture-semantics-admission-plan.md](2026-10-08-architecture-semantics-admission-plan.md) (all phases 1-8 done).
 **Origin:** an outside design suggestion (ChatGPT): make each architecture a self-contained "model plugin" that owns what is true of the model, while the planner owns what is true of the machine and the request. This plan checks that suggestion against the code at commit `6a768250` and scopes what is actually worth doing.
 
 ## Verdict
@@ -79,10 +79,10 @@ Each phase ends green: `dotnet build` 0 warnings (warnings are errors), the `.Fa
   - **Exit:** baseline unchanged (including rendered chat prompt per architecture for a fixed message set, which is added to the baseline in 0.1 for this phase); allowlist loses 3, 4, 5.
   - **Risk:** prompt rendering is user-visible. The per-architecture rendered-prompt snapshot is the safeguard; do not merge without it.
 
-- [ ] **3. Structural traits; shrink Core's parser (inventory #1)**
+- [x] **3. Structural traits; shrink Core's parser (inventory #1)** (done 2026-10-08)
   - [ ] 3.1 Decide D1 (below).
-  - [ ] 3.2 Add `ArchitectureTraits` (hybrid kind, single-sublayer, head-dim source) and pass them to Core through `ModelArchitectureSemanticsContext`, replacing the `arch is "granitehybrid" or ...` tests in `ModelGraph.cs`.
-  - [ ] 3.3 The legacy parser stays as the shim for the non-LLM callers (earlier plan Appendix A) until they are moved; mark each remaining literal with the caller that still needs it.
+  - [x] 3.2 (`Core/ModelArchitectureTraits.cs`: Hybrid kind, single-sublayer, wkv head size, default gating func, default top-k normalize, multi-axis rope keys, deepstack; `ArchitectureDescriptor.Traits` declared on 12 descriptors; `CreateBaseline(..., traits)`; ModelGraph.cs went from 15 architecture-name literals to 1, the NeoX list for architectures without descriptors) Add `ArchitectureTraits` (hybrid kind, single-sublayer, head-dim source) and pass them to Core through `ModelArchitectureSemanticsContext`, replacing the `arch is "granitehybrid" or ...` tests in `ModelGraph.cs`.
+  - [x] 3.3 (the by-name table `ModelArchitectureTraits.Legacy` is the shim: 12 literals in one place, pinned to the descriptors by `DescriptorTraits_MatchTheByNameTable`; delete it when the direct `CreateBaseline`/`FromGgufMetadata` callers are gone; `qwen3vlmoe` has no descriptor and lives only there) The legacy parser stays as the shim for the non-LLM callers (earlier plan Appendix A) until they are moved; mark each remaining literal with the caller that still needs it.
   - **Exit:** `ModelHyperparams` equality test across all admitted architectures (the old-vs-new equality harness from the semantics plan) still passes; real-weight spot checks on Granite-H, NemotronH, LFM2 and Qwen3.8 (these are the hybrids that exercise the moved rules); static-plan output diff clean.
 
 - [ ] **4. Layout (mechanical, last)**
@@ -128,3 +128,11 @@ P0 small. P1 small-medium. P2 medium (prompt-rendering care). P3 medium (layerin
 - **`FallbackChat` and `ChatProtocolId` answer different questions and disagree for six architectures.** `FallbackChat` picks the prompt layout the CLI (`RunCommand`) and server (`ChatTemplate`) fall back to when a GGUF has no usable Jinja template; the chat protocol drives the engine API (`ChatSession`: rendering, media placeholders, thinking markers, output parser). For gemma, gemma2, gemma3, gemma4 and granitehybrid/granitemoe the fallback says ChatML while the protocol says gemma/granite. Merging them would change no-template behavior for those families, so they stay separate and **D3 is answered "keep, document"** unless you decide those families' no-template fallback should follow the protocol (then it is a one-line change per descriptor plus a behavior note).
 - Four llama family names (`llama3`, `llama31`, `llama32`, `llama33`) that callers pass as an "architecture" keep selecting the llama3 protocol through a small table inside `ChatProtocolRegistry`; they are not descriptors and must not become admitted architectures.
 - Literals removed from the ratchet: `ChatProtocolRegistry.cs` 22 -> 3, `LlamaCompatEndpoints.cs` 9 -> 2.
+
+## Phase 3 evidence (2026-10-08)
+- **Resolved hyperparameters are identical before and after for every real header on disk**: `HyperparamsSnapshotDump` over `models\_models`, `F:\_models`, `K:\_other_models` and `H:\_models` (about 175 distinct models, 13,588 property lines for the largest folder) differs in zero lines. The files cover glm4moe, granitehybrid, lfm2, lfm2moe, nemotron_h, paddleocr, qwen2vl, qwen35, qwen35moe, qwen3vl and llama. RWKV and qwen3vlmoe have no real checkpoint here; synthetic resolver tests cover them.
+- Static plan JSON for five models (Qwen3.8, Qwen3.6, Granite-H, LFM2, Gemma4): 0 differing lines apart from the timestamp.
+- Real-weight generation (`The capital of France is`, 16 tokens): granite-4.0-h-1b, granite-4.0-h-350m and LFM2-8B-A1B produce text identical to the 2026-10-08 sweep.
+- Tests: ArchitectureCapabilitiesBaselineTests 14, ArchitectureModelResolverTests 18, RealHeaderSemanticsTests 7 (real headers), descriptor/registry contract tests pass; ForwardPass.Fast 1056, Server.Fast 456, Sessions.Fast 129 pass.
+- **Net literal count in Core is only -2 (ModelGraph 15 -> 1, plus 12 in the shim table)**. The gain is structural: on the Engine path a new hybrid or multi-axis-rope architecture declares `Traits` in its own descriptor and needs no Core edit. The shim table is the remaining debt.
+- Behavior note: a relabelled file (declared name differs from the resolved descriptor) now uses the resolved descriptor's traits; before it used the declared name's. No real file on disk exercises the difference.

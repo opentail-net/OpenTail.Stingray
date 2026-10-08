@@ -315,6 +315,7 @@ internal static class OtherAdmittedArchitectures
     public static readonly ArchitectureDescriptor Paddleocr = new()
     {
         Id = "paddleocr",
+        Traits = new() { ReadsRopeDimensionSections = true },
         UsesNeoxRope = true,
         Status = AdmissionStatus.Admitted,
         StatusAnchor = "Vision: PaddleOCR-VL",
@@ -332,6 +333,7 @@ internal static class OtherAdmittedArchitectures
     public static readonly ArchitectureDescriptor Nemotronh = new()
     {
         Id = "nemotron_h",
+        Traits = new() { Hybrid = OpenTail.Stingray.Core.HybridKind.Mamba2, SingleSublayerBlocks = true },
         // nemotron-h.cpp: non-gated ReLU^2 FFN (LLM_FFN_RELU_SQR); attention never applies RoPE.
         ApplyModelSemantics = ctx => ctx.Baseline with { UsesReluSquared = true, NoRopeLayerStep = 1 },
         Status = AdmissionStatus.Admitted,
@@ -351,6 +353,7 @@ internal static class OtherAdmittedArchitectures
     public static readonly ArchitectureDescriptor Lfm2 = new()
     {
         Id = "lfm2",
+        Traits = new() { Hybrid = OpenTail.Stingray.Core.HybridKind.ShortConv },
         UsesNeoxRope = true,
         Status = AdmissionStatus.Admitted,
         StatusAnchor = "Liquid LFM2 (`lfm2`)",
@@ -367,6 +370,7 @@ internal static class OtherAdmittedArchitectures
     public static readonly ArchitectureDescriptor Lfm2moe = new()
     {
         Id = "lfm2moe",
+        Traits = new() { Hybrid = OpenTail.Stingray.Core.HybridKind.ShortConv },
         UsesNeoxRope = true,
         ApplyModelSemantics = ctx => ctx.Baseline with { NormalizeMoeTopKWeights = true },
         Status = AdmissionStatus.Admitted,
@@ -580,6 +584,7 @@ internal static class OtherAdmittedArchitectures
     public static readonly ArchitectureDescriptor Glm4moe = new()
     {
         Id = "glm4moe",
+        Traits = new() { DefaultExpertGatingFunc = 2 },
         UsesNeoxRope = true,
         // glm4-moe.cpp names the pre-FFN norm post_attention_norm: it is the FFN norm here, not a Gemma/OLMo2-style post-attention-output norm.
         ApplyModelSemantics = ctx => ctx.Baseline with { PostAttnNormIsFfnNorm = true, HasPostAttnNorm = false },

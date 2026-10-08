@@ -12,6 +12,7 @@ internal static class GraniteArchitectures
     public static readonly ArchitectureDescriptor Granitehybrid = new()
     {
         Id = "granitehybrid",
+        Traits = new() { Hybrid = OpenTail.Stingray.Core.HybridKind.Mamba2 },
         ChatProtocolId = "granite",
         ForwardPassFamily = ForwardPassFamily.HybridGdn, // the hybrid-recurrent factory; it delegates Mamba-2 layouts to the dense passes
         ApplyModelSemantics = ctx => FamilyModelSemantics.Granite(ctx, miniCpm: false, hybrid: true) with { NormalizeMoeTopKWeights = true },

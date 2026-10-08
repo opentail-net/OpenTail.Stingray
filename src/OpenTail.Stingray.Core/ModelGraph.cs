@@ -600,10 +600,12 @@ public sealed record ModelHyperparams
     /// descriptor (docs/2-coverage/2026-10-08-architecture-semantics-admission-plan.md); rules not yet moved remain below.
     /// </summary>
     public static ModelHyperparams CreateBaseline(IReadOnlyDictionary<string, object> metadata,
-        IModelTensorSource? tensorSource, string? metadataArchitecture)
+        IModelTensorSource? tensorSource, string? metadataArchitecture, ModelArchitectureTraits? traits = null)
     {
         var arch = metadataArchitecture
             ?? (metadata.TryGetValue("general.architecture", out var a) ? (string)a : "llama");
+        // Structural facts come from the resolved descriptor on the normal load path; the by-name table serves direct callers.
+        traits ??= ModelArchitectureTraits.Legacy(arch);
 
         int numExperts = GetInt(metadata, $"{arch}.expert_count");
         int numActiveExperts = GetInt(metadata, $"{arch}.expert_used_count");
@@ -718,7 +720,7 @@ public sealed record ModelHyperparams
         // Read from metadata if available; fall back to computed value.
         int headDimFromMeta = GetInt(metadata, $"{arch}.attention.key_length_mla", 0) is > 0 and var kMla
             ? kMla : GetInt(metadata, $"{arch}.attention.key_length");
-        if (headDimFromMeta == 0 && arch is "rwkv6" or "rwkv7")
+        if (headDimFromMeta == 0 && traits.HeadDimFromWkvHeadSize)
             headDimFromMeta = GetInt(metadata, $"{arch}.wkv.head_size");
         int headDim = headDimFromMeta > 0 ? headDimFromMeta : (numHeads > 0 ? embDim / numHeads : embDim);
 
@@ -732,13 +734,13 @@ public sealed record ModelHyperparams
         // the synthetic-metadata probe in GgufModel.Open injects _opentailllm.is_hybrid_ssm
         // when GDN tensors are observed.
         bool isHybridSsm = metadata.ContainsKey("_opentailllm.is_hybrid_ssm")
-                        || arch == "qwen35moe";
+                        || traits.Hybrid == HybridKind.GatedDeltaNet;
         // Mamba-2 hybrids also carry ssm.* tensors (so the probe above fires) but are a different recurrence:
         // selective scan, not delta rule. A layer is recurrent iff its head_count_kv entry is 0 (llama.cpp
         // granite-hybrid.cpp / nemotron-h.cpp is_recr_impl).
-        bool isMamba2Hybrid = arch is "granitehybrid" or "nemotron_h";
+        bool isMamba2Hybrid = traits.Hybrid == HybridKind.Mamba2;
         // Liquid LFM2: gated short-conv layers (head_count_kv 0) + attention layers (llama.cpp lfm2.cpp).
-        bool isShortConvHybrid = arch is "lfm2" or "lfm2moe";
+        bool isShortConvHybrid = traits.Hybrid == HybridKind.ShortConv;
         if (isMamba2Hybrid || isShortConvHybrid) isHybridSsm = false;
 
         // {arch}.block_count is the total block count in the file, which on MTP-enabled
@@ -777,7 +779,7 @@ public sealed record ModelHyperparams
             // Nemotron-H layers carry exactly ONE sublayer each (llama.cpp nemotron-h.cpp): Mamba-2 (kv 0, ff 0),
             // attention (kv > 0, ff 0) or MLP only (kv 0, ff > 0), each with its own attn_norm and residual.
             // Granite-H layers are Mamba-2 or attention, always followed by the FFN.
-            bool singleSublayer = arch == "nemotron_h";
+            bool singleSublayer = traits.SingleSublayerBlocks;
             var recurrent = new bool[numLayers];
             var ffnOnly = new bool[numLayers];
             var noFfn = new bool[numLayers];
@@ -1016,7 +1018,7 @@ public sealed record ModelHyperparams
             KvLoraRank = GetInt(metadata, $"{arch}.attention.kv_lora_rank", 0),
             QLoraRank = GetInt(metadata, $"{arch}.attention.q_lora_rank", 0),
             // glm4moe defaults to sigmoid + selection bias when the key is absent (llama.cpp glm4-moe.cpp).
-            ExpertGatingFunc = GetInt(metadata, $"{arch}.expert_gating_func", arch == "glm4moe" ? 2 : 0),
+            ExpertGatingFunc = GetInt(metadata, $"{arch}.expert_gating_func", traits.DefaultExpertGatingFunc),
             // Absorbed-MLA GGUFs (split attn_k_b / attn_v_b) store the latent sizes in
             // key_length / value_length (576 / 512) and the per-head sizes in *_mla (192 / 128).
             MlaVHeadDim = GetInt(metadata, $"{arch}.attention.value_length_mla", 0) is > 0 and var vMla
@@ -1045,7 +1047,7 @@ public sealed record ModelHyperparams
             // (granitemoe) and granite-hybrid.cpp (Granite 4.0-H tiny/small MoE; without it the small
             // model's wikitext PPL was 157 vs llama.cpp 9.41, 2026-09-28).
             // hunyuan-moe: from memory of src/models/hunyuan-moe.cpp (norm_w = true, softmax gating); Stage A against llama-server confirms or refutes it.
-            NormalizeMoeTopKWeights = arch is "llama" ? true
+            NormalizeMoeTopKWeights = traits.NormalizeMoeTopKWeightsByDefault ? true
                 : GetBool(metadata, $"{arch}.expert_weights_norm", false),
             // llama.cpp's LLM_KV_EXPERT_WEIGHTS_SCALE ("routed_scaling_factor" in DeepSeek-V2/V3's
             // HF config) -- multiplies every routed expert's weight after top-k selection/
@@ -1055,8 +1057,8 @@ public sealed record ModelHyperparams
             IsNeoxRope = isNeoxRope,
             RopeDim = ropeDim,
             IsHybridSsm = isHybridSsm,
-            RopeSections = arch is "qwen2vl" or "paddleocr" or "qwen3vl" or "qwen3vlmoe" ? GetIntArray(metadata, $"{arch}.rope.dimension_sections") : null,
-            RopeSectionsInterleaved = arch is "qwen3vlmoe", // qwen3vl: descriptor hook; qwen3vlmoe has no descriptor yet
+            RopeSections = traits.ReadsRopeDimensionSections ? GetIntArray(metadata, $"{arch}.rope.dimension_sections") : null,
+            RopeSectionsInterleaved = traits.RopeSectionsInterleaved, // qwen3vl: descriptor hook (semantics); qwen3vlmoe has no descriptor yet
             LayerTypes = layerTypes,
             Gdn = gdn,
             EmbeddingScale = embeddingScale,
@@ -1065,7 +1067,7 @@ public sealed record ModelHyperparams
             // Qwen3-VL (qwen3vl.cpp) adds slice il+1 after layer il for il < n_deepstack_layers, which is the same as
             // adding slice k before layer k: the Granite mapping shape with mapping[k] = k for k in [1, n].
             DeepstackMapping = GetIntArray(metadata, $"{arch}.deepstack_mapping")
-                ?? (arch is "qwen3vl" or "qwen3vlmoe" && GetInt(metadata, $"{arch}.n_deepstack_layers") is int nDs && nDs > 0
+                ?? (traits.DeepstackFromLayerCount && GetInt(metadata, $"{arch}.n_deepstack_layers") is int nDs && nDs > 0
                     ? Enumerable.Range(0, numLayers).Select(l => l >= 1 && l <= nDs ? l : -1).ToArray()
                     : null),
             ResidualScale = residualScale,

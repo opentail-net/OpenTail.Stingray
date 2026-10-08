@@ -89,6 +89,13 @@ public sealed class ArchitectureDescriptor
     /// </summary>
     public string? ChatProtocolId { get; init; }
 
+    /// <summary>
+    /// Structural facts the generic baseline parser needs while reading this architecture's file (hybrid layout, head-size source,
+    /// multi-axis rope keys, ...). Null means none. Declared here so a new architecture needs no edit in Core; pinned to
+    /// <see cref="OpenTail.Stingray.Core.ModelArchitectureTraits.Legacy"/> by a test while the by-name shim still exists.
+    /// </summary>
+    public OpenTail.Stingray.Core.ModelArchitectureTraits? Traits { get; init; }
+
     public ForwardPassFamily ForwardPassFamily { get; init; } = ForwardPassFamily.Dense;
 
     public SupportedBackends SupportedBackends { get; init; } = SupportedBackends.All;

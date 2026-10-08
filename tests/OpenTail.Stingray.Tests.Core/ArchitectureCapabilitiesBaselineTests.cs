@@ -163,4 +163,38 @@ public sealed class ArchitectureCapabilitiesBaselineTests
     [InlineData(null, "chatml")]
     public void ChatProtocol_ResolvesThroughTheDescriptor(string? architecture, string expectedProtocol) =>
         Assert.Equal(expectedProtocol, ChatProtocolRegistry.For(architecture).Id);
+
+    // Phase 3: descriptors own their structural traits; the by-name table in Core serves direct callers of the baseline parser and
+    // qwen3vlmoe (no descriptor). Until that shim is gone the two must agree for every registered architecture.
+    [Fact]
+    public void DescriptorTraits_MatchTheByNameTable()
+    {
+        var bad = ArchitectureRegistry.All
+            .Where(d => (d.Traits ?? ModelArchitectureTraits.None) != ModelArchitectureTraits.Legacy(d.Id))
+            .Select(d => d.Id).ToList();
+        Assert.True(bad.Count == 0, "Descriptor Traits differ from ModelArchitectureTraits.Legacy for: " + string.Join(", ", bad));
+    }
+
+    [Fact]
+    public void Traits_DriveTheBaselineParser_NotTheArchitectureName()
+    {
+        // A file whose metadata namespace is an unknown name but whose descriptor says Mamba-2: the traits decide the layout.
+        var meta = new Dictionary<string, object>
+        {
+            ["general.architecture"] = "granitehybrid",
+            ["granitehybrid.block_count"] = 4u,
+            ["granitehybrid.embedding_length"] = 64u,
+            ["granitehybrid.attention.head_count"] = 4u,
+            ["granitehybrid.attention.head_count_kv"] = new uint[] { 0, 2, 0, 2 },
+            ["granitehybrid.feed_forward_length"] = 128u,
+            ["granitehybrid.context_length"] = 256u,
+        };
+        var viaDescriptor = ArchitectureModelResolver.ResolveHyperparams(meta);
+        Assert.NotNull(viaDescriptor.IsMamba2Layer);
+        Assert.Contains(viaDescriptor.IsMamba2Layer!, b => b);
+
+        // The same keys under a name nobody registered get no hybrid treatment (no traits, no Legacy entry).
+        var renamed = meta.ToDictionary(kv => kv.Key.Replace("granitehybrid", "zz-unknown"), kv => kv.Key == "general.architecture" ? (object)"zz-unknown" : kv.Value);
+        Assert.Null(ArchitectureModelResolver.ResolveHyperparams(renamed).IsMamba2Layer);
+    }
 }

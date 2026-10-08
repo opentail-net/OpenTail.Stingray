@@ -16,6 +16,7 @@ internal static class RwkvArchitectures
     public static readonly ArchitectureDescriptor Rwkv7 = new()
     {
         Id = "rwkv7",
+        Traits = new() { HeadDimFromWkvHeadSize = true },
         Status = AdmissionStatus.Admitted,
         // CPU-only routing is enforced by RunCommand.cs:2016-2026 and InferenceEngineLoader.cs:603-612.
         ForwardPassFamily = ForwardPassFamily.Rwkv,
@@ -41,6 +42,7 @@ internal static class RwkvArchitectures
     public static readonly ArchitectureDescriptor Rwkv6 = new()
     {
         Id = "rwkv6",
+        Traits = new() { HeadDimFromWkvHeadSize = true },
         Status = AdmissionStatus.Admitted,
         // CPU-only routing is enforced by RunCommand.cs:2016-2026 and InferenceEngineLoader.cs:603-612.
         ForwardPassFamily = ForwardPassFamily.Rwkv,
