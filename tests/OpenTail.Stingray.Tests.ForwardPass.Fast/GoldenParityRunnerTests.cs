@@ -86,15 +86,41 @@ public sealed class GoldenParityRunnerTests
             if (h[^1] == 5) l[20] = 10f - 0.01f;
             return l;
         }
-        var r = GoldenParityRunner.Run(Golden("free", [5, 20, 7]), () => new ScriptedPass(Script));
+        var r = GoldenParityRunner.Run(Golden("free", [5, 20, 21]), () => new ScriptedPass(Script));
         var c = r.Cases[0];
         Assert.Equal(CaseVerdict.NearTie, c.Verdict);
         Assert.True(r.Passed);                         // a near-tie is not a failure
         Assert.True(c.FirstMismatch!.NearTie);
         Assert.Equal(0.01, c.FirstMismatch.Gap, 4);
         // The same file with a stricter tolerance is a divergence.
-        var strict = GoldenParityRunner.Run(Golden("free", [5, 20, 7]), () => new ScriptedPass(Script), new ParityOptions { NearTieTolerance = 0.001 });
+        var strict = GoldenParityRunner.Run(Golden("free", [5, 20, 21]), () => new ScriptedPass(Script), new ParityOptions { NearTieTolerance = 0.001 });
         Assert.Equal(CaseVerdict.Diverged, strict.Cases[0].Verdict);
+    }
+
+    [Fact]
+    public void FreeMode_AfterANearTie_ContinuesTeacherForced_SoALaterRealDivergenceIsStillCaught()
+    {
+        float[] Script(IReadOnlyList<int> h)
+        {
+            var l = Counting(h);
+            if (h[^1] == 5) l[20] = 10f - 0.01f;          // near-tie at index 1
+            return l;
+        }
+        // Index 1 is a near-tie (20). After feeding the reference's 20 we predict 21, which matches index 2; index 3 (99) is a confident mismatch.
+        var r = GoldenParityRunner.Run(Golden("free", [5, 20, 21, 99]), () => new ScriptedPass(Script));
+        var c = r.Cases[0];
+        Assert.Equal(4, c.Compared);                       // did not stop at the near-tie
+        Assert.Equal(2, c.Mismatches.Count);
+        Assert.True(c.Mismatches[0].NearTie);
+        Assert.False(c.Mismatches[1].NearTie);
+        Assert.Equal(3, c.Mismatches[1].Index);
+        Assert.Equal(CaseVerdict.Diverged, c.Verdict);
+
+        // The same near-tie followed by a tail that matches is still just a near-tie, with every position compared.
+        var ok = GoldenParityRunner.Run(Golden("free", [5, 20, 21, 22]), () => new ScriptedPass(Script));
+        Assert.Equal(CaseVerdict.NearTie, ok.Cases[0].Verdict);
+        Assert.Equal(4, ok.Cases[0].Compared);
+        Assert.Equal(3, ok.Cases[0].Matched);
     }
 
     [Fact]

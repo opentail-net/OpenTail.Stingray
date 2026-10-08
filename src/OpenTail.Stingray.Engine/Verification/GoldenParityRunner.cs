@@ -115,6 +115,10 @@ public static class GoldenParityRunner
     {
         if (c.PromptTokens.Length == 0) throw new InvalidDataException($"Golden case '{c.Name}' has no prompt tokens.");
         bool teacher = string.Equals(c.Mode, "teacherForced", StringComparison.OrdinalIgnoreCase);
+        // A free-running case that hits a *near-tie* switches to teacher forcing for the rest of the continuation: our own token and the
+        // reference's differ there, so the two sequences stop being comparable, but feeding the reference token lets every later position still be
+        // checked. (A confident mismatch still ends the comparison: the sequences have genuinely diverged.)
+        bool forceReference = teacher;
         int n = c.Tokens.Length;
         var mismatches = new List<PositionMismatch>();
         var generated = new List<int>(n);
@@ -139,14 +143,14 @@ public static class GoldenParityRunner
                 double? refMargin = c.Margins is { } ms && i < ms.Length ? ms[i] : null;
                 bool nearTie = gap <= options.NearTieTolerance || (refMargin is { } rm && rm < options.ConfidentMargin);
                 mismatches.Add(new PositionMismatch(i, c.Tokens[i], top, gap, nearTie, refMargin));
-                // Free-running generation: after the first mismatch the two sequences are no longer comparable.
-                if (!teacher) break;
+                if (!forceReference)
+                {
+                    if (!nearTie) break;          // confident mismatch in free mode: genuinely diverged, nothing further is comparable
+                    forceReference = true;        // near-tie: carry on, teacher-forced
+                }
             }
             if (i + 1 < n)
-            {
-                // Teacher forcing feeds the reference token; free mode feeds our own (identical while they agree).
-                logits = fwd.Forward(teacher ? c.Tokens[i] : top, pos++);
-            }
+                logits = fwd.Forward(forceReference ? c.Tokens[i] : top, pos++);
         }
 
         var verdict = mismatches.Count == 0 ? CaseVerdict.Exact

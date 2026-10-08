@@ -93,10 +93,10 @@ Refuses clearly if `tools/llama.cpp` binaries are absent; `--server` overrides t
   - [x] 3.1 `GoldenParityTests` (heavy Theory) with the loud skip.
   - [x] 3.2 `admit-arch --golden`.
   - [ ] 3.3 **Validate before trusting:** (a) convert 6 existing receipts of different kinds (SmolLM3, Olmo2, Gpt2, GptNeoX, Qwen2Moe, Mixtral teacher-forced) into goldens by hand-copying their arrays; the harness must reproduce each legacy class's verdict; (b) negative tests: change one token (must report `Diverged`), swap to our top-2 at a small margin (must report `NearTie`); (c) confirm known real cases: DeepSeek2 reports its token-9 divergence (bugstofix #24), and the four classes that print a near-tie report (Afmoe, GlmMoe, HunyuanMoe, LlamaFour) get the same counts from the shared runner.
-- [ ] **4. `capture-golden`**
+- [x] **4. `capture-golden`** (done 2026-10-09)
   - [x] 4.1 Implementation per Design D (process management, free-port selection, kill-tree, timeouts).
   - [x] 4.2 (done 2026-10-09, see results) **Validate the capture itself:** (a) capture twice on SmolLM2-135M, tokens must be byte-identical (determinism at `-t 4`; if not, record and document the thread-count sensitivity); (b) capture for a model that has a pasted legacy array (SmolLM3 or Olmo2) and compare token for token with the legacy array; (c) capture with `--prompt-ids` and with `--prompt` and check `llama-tokenize` ids equal the ids our own tokenizer produces for the same text (feeds the tokenizer-oracle fact).
-  - [ ] 4.3 Failure paths tested: server fails to start, port busy, tool missing, Ctrl-C leaves no orphan `llama-server`.
+  - [x] 4.3 (done 2026-10-09: missing server tool, a server that exits immediately, and a 5 s load timeout on the 12 GB model each exit 1, write no file and leave no orphan llama-server; a busy port is an unreproducible race and Ctrl-C is not automatable here, so both are untested) Failure paths tested: server fails to start, port busy, tool missing, Ctrl-C leaves no orphan `llama-server`.
 - [ ] **5. Hash-pinned receipts**
   - [ ] 5.1 `lfs.oid` capture and post-download verification in `pull` (+ `stingray hash`).
   - [ ] 5.2 `ModelFingerprint` with the sidecar cache; harness `UnpinnedFile` behaviour.
