@@ -69,7 +69,7 @@ public sealed class Gemma4CudaForwardPassTests
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
 
         // Defensive: the test only makes sense against a real gemma4 GGUF.
         Assert.NotNull(hp.LayerHeadDim);
@@ -142,7 +142,7 @@ public sealed class Gemma4CudaForwardPassTests
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         Assert.NotNull(hp.LayerHeadDim);
 
         int bosId = ReadIntMetadata(model, "tokenizer.ggml.bos_token_id", fallback: 2);
@@ -196,7 +196,7 @@ public sealed class Gemma4CudaForwardPassTests
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         Assert.NotNull(hp.LayerHeadDim);
 
         int bosId = ReadIntMetadata(model, "tokenizer.ggml.bos_token_id", fallback: 2);
@@ -279,7 +279,7 @@ public sealed class Gemma4CudaForwardPassTests
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         Assert.NotNull(hp.LayerHeadDim);
 
         int bosId = ReadIntMetadata(model, "tokenizer.ggml.bos_token_id", fallback: 2);
@@ -344,7 +344,7 @@ public sealed class Gemma4CudaForwardPassTests
         try
         {
             using var model = GgufModel.Open(path);
-            var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+            var hp = ArchitectureModelResolver.ResolveHyperparams(model);
             Assert.NotNull(hp.LayerHeadDim); // confirms this is the Gemma-4-like path
 
             // Build an over-budget prompt (N > budget AND N > SnapKV window) from valid
@@ -384,7 +384,7 @@ public sealed class Gemma4CudaForwardPassTests
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         Assert.NotNull(hp.LayerHeadDim);
 
         // Precondition: a KV-share layer whose attn_k_norm is genuinely absent (the case that

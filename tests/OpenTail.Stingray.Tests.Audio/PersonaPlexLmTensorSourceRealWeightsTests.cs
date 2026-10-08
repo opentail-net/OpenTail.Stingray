@@ -101,7 +101,7 @@ public sealed class PersonaPlexLmTensorSourceRealWeightsTests : HeavyTestBase
         var source = new RvcPackedTensorSource(model);
         using var llm = new PersonaPlexLmTensorSource(source, NumLayers, HiddenDim, NumHeads, HeadDim, FfDim, TextVocabSize, LmCodebooks, AudioCodebookSize, RopeTheta, RmsNormEps);
 
-        var hp = ModelHyperparams.FromGgufMetadata(llm.Metadata);
+        var hp = OpenTail.Stingray.Engine.ArchitectureModelResolver.ResolveHyperparams(llm.Metadata);
         using var backend = new CpuBackend();
         using var fwd = new ForwardPass(llm, backend, hp);
 

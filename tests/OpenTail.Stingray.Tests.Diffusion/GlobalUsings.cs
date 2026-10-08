@@ -9,3 +9,4 @@ global using OpenTail.Stingray.Diffusion;
 global using OpenTail.Stingray.Core;
 global using OpenTail.Stingray.Diffusion.StableDiffusion;
 global using OpenTail.Stingray.Diffusion.Wan;
+global using OpenTail.Stingray.Engine;

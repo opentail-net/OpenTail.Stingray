@@ -251,7 +251,7 @@ public sealed class CudaAsyncUploadTests
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         if (!hp.IsMoE) return;
 
         // Two slot managers, same expert: one loaded sync via GetOrLoad, the

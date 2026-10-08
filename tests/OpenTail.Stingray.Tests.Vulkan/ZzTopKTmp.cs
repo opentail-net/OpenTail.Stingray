@@ -9,7 +9,7 @@ public sealed class ZzTopKTmp
         int[] prompt = Environment.GetEnvironmentVariable("ZZ_PROMPT")!.Split(',').Select(int.Parse).ToArray();
         int[] forced = Environment.GetEnvironmentVariable("ZZ_FORCED")!.Split(',').Select(int.Parse).ToArray();
         using var model = GgufModel.Open($@"C:/Git-Public/OpenTail.Stingray/models/_models/{m}.gguf");
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         using var backend = new CpuBackend();
         using var vk = Environment.GetEnvironmentVariable("ZZ_GPU") == "1" ? new VulkanBackend() : null;
         int split = int.Parse(Environment.GetEnvironmentVariable("ZZ_SPLIT") ?? "0");

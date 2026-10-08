@@ -97,7 +97,7 @@ public sealed class CosyVoiceBenchmarkTests : HeavyTestBase
         if (path is null) Assert.Skip("path not found (checkpoint or fixture missing).");
 
         using var source = OpenLlm(path);
-        var hp = ModelHyperparams.FromGgufMetadata(source.Metadata);
+        var hp = OpenTail.Stingray.Engine.ArchitectureModelResolver.ResolveHyperparams(source.Metadata);
         using var backend = new CpuBackend();
         using var fwd = new ForwardPass(source, backend, hp);
 

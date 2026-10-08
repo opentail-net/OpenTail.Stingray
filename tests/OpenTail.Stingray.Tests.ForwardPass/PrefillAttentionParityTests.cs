@@ -84,7 +84,7 @@ public sealed class PrefillAttentionParityTests : HeavyTestBase
 
         using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
         var model = modelHandle.Model;
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
+        var hp = OpenTail.Stingray.Engine.ArchitectureModelResolver.ResolveHyperparams(model.Metadata);
         using var backend = new CpuBackend();
 
         int[] tokens = MakeTokens(600);
@@ -118,7 +118,7 @@ public sealed class PrefillAttentionParityTests : HeavyTestBase
 
         using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
         var model = modelHandle.Model;
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
+        var hp = OpenTail.Stingray.Engine.ArchitectureModelResolver.ResolveHyperparams(model.Metadata);
         using var backend = new CpuBackend();
 
         int[] tokens = MakeTokens(600);
@@ -148,7 +148,7 @@ public sealed class PrefillAttentionParityTests : HeavyTestBase
 
         using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
         var model = modelHandle.Model;
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
+        var hp = OpenTail.Stingray.Engine.ArchitectureModelResolver.ResolveHyperparams(model.Metadata);
         using var backend = new CpuBackend();
 
         int[] tokens = MakeTokens(200);

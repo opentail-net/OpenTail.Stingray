@@ -10,7 +10,7 @@ public sealed class AfmoeAblationScratchTests : HeavyTestBase
         Assert.SkipWhen(path is null, "model missing");
         using var handle = SharedModelCacheFixture.Instance.Acquire(path!);
         var model = handle.Model;
-        var hp0 = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp0 = ArchitectureModelResolver.ResolveHyperparams(model);
         var tok = GgufTokenizer.FromGgufModel(model);
         var ids = tok.Encode("The capital of France is").ToList();
         Console.WriteLine($"[abl] prompt ids: {string.Join(",", ids)} embScale={hp0.EmbeddingScale} gate={hp0.AttentionOutputGate} layers={hp0.NumLayers}");

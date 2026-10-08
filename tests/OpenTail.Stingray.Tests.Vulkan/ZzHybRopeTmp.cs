@@ -9,7 +9,7 @@ public sealed class ZzHybRopeTmp
         string m = Environment.GetEnvironmentVariable("ZZ_MODEL")!;
         int gpuLayers = int.Parse(Environment.GetEnvironmentVariable("ZZ_GL") ?? "14");
         using var model = GgufModel.Open($@"C:/Git-Public/OpenTail.Stingray/models/_models/{m}.gguf");
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         int[] ids = GgufTokenizer.FromGgufModel(model).Encode(File.ReadAllText(Path.Combine(sp, "wiki20k.txt"))).Take(1501).ToArray();
         using var cpuB = new CpuBackend();
         using var cpu = new Engine.ForwardPass(model, cpuB, hp, maxContextLength: 2048);

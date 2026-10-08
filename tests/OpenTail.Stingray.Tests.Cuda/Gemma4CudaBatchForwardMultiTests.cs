@@ -116,7 +116,7 @@ public sealed class Gemma4CudaBatchForwardMultiTests
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         Assert.NotNull(hp.LayerHeadDim);          // per-layer head_dim
         Assert.True(hp.HasPerLayerTokenEmbd);     // PLE
         Assert.NotNull(hp.KvSourceLayer);         // shared-KV tail
@@ -143,7 +143,7 @@ public sealed class Gemma4CudaBatchForwardMultiTests
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         using var fwd = NewFwd(model, gpu, hp);
 
         int[] prompt = { 2, 651, 6037, 576, 6081, 603, 1234, 4567, 8901, 222 };
@@ -176,7 +176,7 @@ public sealed class Gemma4CudaBatchForwardMultiTests
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         using var fwd = NewFwd(model, gpu, hp);
 
         int[] promptA = { 2, 651, 6037, 576, 6081, 603, 1234 };
@@ -225,7 +225,7 @@ public sealed class Gemma4CudaBatchForwardMultiTests
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         using var fwd = NewFwd(model, gpu, hp);
 
         int[] promptA = { 2, 651, 6037, 576, 6081, 603, 1234 };

@@ -28,7 +28,7 @@ public sealed class Gemma4PrefillConsistencyTests : HeavyTestBase
         Assert.SkipUnless(path is not null, $"{ModelFile} not present");
 
         using var model = GgufModel.Open(path!);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         Assert.NotNull(hp.LayerHeadDim);
         Assert.NotNull(hp.KvSourceLayer);
 

@@ -68,7 +68,7 @@ public sealed unsafe class HybridCpuPrefillHandoffTests : HeavyTestBase
         try { gpu = new VulkanBackend(); } catch { gpu = null; }
         Assert.SkipWhen(gpu is null, "no Vulkan device available on this host");
         var model = GgufModel.Open(path!);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         int[] prompt = GgufTokenizer.FromGgufModel(model).Encode(text ?? Text).ToArray();
         return new Setup(model, hp, prompt, gpu!);
     }

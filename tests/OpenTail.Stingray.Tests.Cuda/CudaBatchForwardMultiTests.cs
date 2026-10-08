@@ -106,7 +106,7 @@ public sealed class CudaBatchForwardMultiTests
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         // Precondition: dense, non-Gemma, non-MoE — the supported batching path.
         Assert.Null(hp.LayerHeadDim);
         Assert.False(hp.IsMoE);
@@ -166,7 +166,7 @@ public sealed class CudaBatchForwardMultiTests
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
 
         var prevMmq = Environment.GetEnvironmentVariable("STINGRAY_BATCH_DECODE_MMQ");
         Environment.SetEnvironmentVariable("STINGRAY_BATCH_DECODE_MMQ", "1");
@@ -231,7 +231,7 @@ public sealed class CudaBatchForwardMultiTests
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
 
         var prevMmq = Environment.GetEnvironmentVariable("STINGRAY_BATCH_DECODE_MMQ");
         Environment.SetEnvironmentVariable("STINGRAY_BATCH_DECODE_MMQ", "1");
@@ -324,7 +324,7 @@ public sealed class CudaBatchForwardMultiTests
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         using var fwd = NewFwd(model, gpu, hp);
 
         const int N = 6;
@@ -378,7 +378,7 @@ public sealed class CudaBatchForwardMultiTests
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         Assert.Null(hp.LayerHeadDim);
 
         using var fwd = NewFwd(model, gpu, hp);
@@ -435,7 +435,7 @@ public sealed class CudaBatchForwardMultiTests
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         Assert.Null(hp.LayerHeadDim);
 
         using var fwd = NewFwd(model, gpu, hp);
@@ -472,7 +472,7 @@ public sealed class CudaBatchForwardMultiTests
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         Assert.Null(hp.LayerHeadDim);
 
         int[] prompt = { 9707, 11, 1879, 0, 358, 1079, 264, 4108, 1614, 13, 220, 17, 18, 19 };
@@ -515,7 +515,7 @@ public sealed class CudaBatchForwardMultiTests
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         Assert.Null(hp.LayerHeadDim);
         using var fwd = NewFwd(model, gpu, hp);
 
@@ -567,7 +567,7 @@ public sealed class CudaBatchForwardMultiTests
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         Assert.Null(hp.LayerHeadDim);
         using var fwd = NewFwd(model, gpu, hp);
 
@@ -640,7 +640,7 @@ public sealed class CudaBatchForwardMultiTests
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         Assert.Null(hp.LayerHeadDim);
         using var fwd = NewFwd(model, gpu, hp);
 
@@ -681,7 +681,7 @@ public sealed class CudaBatchForwardMultiTests
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         using var fwd = NewFwd(model, gpu, hp);
 
         Assert.Empty(fwd.BatchForwardMulti([], [], []));

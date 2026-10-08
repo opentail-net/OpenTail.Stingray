@@ -47,7 +47,7 @@ public sealed class StreamedExpertMemoryBoundTests : HeavyTestBase
         using var _gpu = gpu;
 
         using var model = GgufModel.Open(path!);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         int[] prompt = GgufTokenizer.FromGgufModel(model).Encode("The history of computing began with").ToArray();
         var placement = new LayerPlacement(
             GpuLayers: 4, CpuLayers: hp.NumLayers - 4, GpuWeightBytes: 0, GpuKvBytes: 0, RecommendedCtxSize: 512);

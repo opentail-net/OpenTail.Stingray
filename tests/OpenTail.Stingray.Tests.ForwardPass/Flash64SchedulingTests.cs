@@ -15,7 +15,7 @@ public sealed class Flash64SchedulingTests : HeavyTestBase
 
         using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
         var model = modelHandle.Model;
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
+        var hp = OpenTail.Stingray.Engine.ArchitectureModelResolver.ResolveHyperparams(model.Metadata);
         using var backend = new CpuBackend();
         int[] tokens = BuildTokens(320); // Above Flash64's 256-token activation threshold.
 
@@ -47,7 +47,7 @@ public sealed class Flash64SchedulingTests : HeavyTestBase
 
         using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
         var model = modelHandle.Model;
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
+        var hp = OpenTail.Stingray.Engine.ArchitectureModelResolver.ResolveHyperparams(model.Metadata);
         using var backend = new CpuBackend();
         int[] tokens = BuildTokens(512);
 
@@ -99,7 +99,7 @@ public sealed class Flash64SchedulingTests : HeavyTestBase
 
         using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
         var model = modelHandle.Model;
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
+        var hp = OpenTail.Stingray.Engine.ArchitectureModelResolver.ResolveHyperparams(model.Metadata);
         Assert.Equal(128, hp.HeadDim);
         using var backend = new CpuBackend();
         int[] tokens = BuildTokens(256);

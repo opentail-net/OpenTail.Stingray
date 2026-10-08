@@ -62,7 +62,7 @@ public sealed class Gemma4VisionVulkanE2ETests : HeavyTestBase
         Assert.SkipUnless(textPath is not null && mmprojPath is not null, "textPath, mmprojPath not found");     // model-gated
 
         using var model = GgufModel.Open(textPath);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         Assert.NotNull(hp.LayerHeadDim);                        // real gemma4 GGUF
         var tok = GgufTokenizer.FromGgufModel(model);
         Assert.NotNull(tok.ChatTemplate);                       // need the template to suppress thinking

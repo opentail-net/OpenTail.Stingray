@@ -76,7 +76,7 @@ public sealed class Gemma4CudaHybridForwardPassTests
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         Assert.NotNull(hp.LayerHeadDim);
         Assert.True(hp.HasPerLayerTokenEmbd);
 
@@ -144,7 +144,7 @@ public sealed class Gemma4CudaHybridForwardPassTests
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         Assert.NotNull(hp.LayerHeadDim);
 
         int bosId = ReadIntMetadata(model, "tokenizer.ggml.bos_token_id", fallback: 2);
@@ -202,7 +202,7 @@ public sealed class Gemma4CudaHybridForwardPassTests
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         Assert.NotNull(hp.LayerHeadDim);
 
         int bosId = ReadIntMetadata(model, "tokenizer.ggml.bos_token_id", fallback: 2);
@@ -265,7 +265,7 @@ public sealed class Gemma4CudaHybridForwardPassTests
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
 
         // -g 30 places own-KV source layers 22, 23 on the GPU but their shared-KV
         // dependents (layers 24..29 on GPU, 30..41 on CPU) live across the tier

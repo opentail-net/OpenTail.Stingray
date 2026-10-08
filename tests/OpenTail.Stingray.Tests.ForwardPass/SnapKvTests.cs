@@ -77,7 +77,7 @@ public sealed class SnapKvTests : HeavyTestBase
         {
             using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
             var model = modelHandle.Model;
-            var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
+            var hp = OpenTail.Stingray.Engine.ArchitectureModelResolver.ResolveHyperparams(model.Metadata);
             using var backend = new CpuBackend();
             using var fwd = new Engine.ForwardPass(model, backend, hp);
 
@@ -145,7 +145,7 @@ public sealed class SnapKvTests : HeavyTestBase
         {
             using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
             var model = modelHandle.Model;
-            var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
+            var hp = OpenTail.Stingray.Engine.ArchitectureModelResolver.ResolveHyperparams(model.Metadata);
             using var backend = new CpuBackend();
             using var fwd = new Engine.ForwardPass(model, backend, hp);
             var tokenizer = GgufTokenizer.FromGgufModel(model);
@@ -176,7 +176,7 @@ public sealed class SnapKvTests : HeavyTestBase
         {
             using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
             var model = modelHandle.Model;
-            var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
+            var hp = OpenTail.Stingray.Engine.ArchitectureModelResolver.ResolveHyperparams(model.Metadata);
             using var backend = new CpuBackend();
             using var fwd = new Engine.ForwardPass(model, backend, hp);
             var tokenizer = GgufTokenizer.FromGgufModel(model);

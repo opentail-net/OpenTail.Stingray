@@ -85,7 +85,7 @@ public sealed class VibeVoiceTtsDumpDebugTest : HeavyTestBase
         const int NumLayers = 28, NumHeads = 12, NumKvHeads = 2, HeadDim = 128, FfDim = 8960, VocabSize = 151936;
         const float RopeTheta = 1_000_000f, RmsNormEps = 1e-6f;
         using var llm = new VibeVoiceLlmTensorSource(source, NumLayers, hiddenDim, NumHeads, NumKvHeads, HeadDim, FfDim, VocabSize, RopeTheta, RmsNormEps);
-        var hp = ModelHyperparams.FromGgufMetadata(llm.Metadata);
+        var hp = OpenTail.Stingray.Engine.ArchitectureModelResolver.ResolveHyperparams(llm.Metadata);
         Assert.True(hp.HasAttnBias, "VibeVoice Qwen2 backbone must have attention bias enabled.");
 
         using var backend = new CpuBackend();

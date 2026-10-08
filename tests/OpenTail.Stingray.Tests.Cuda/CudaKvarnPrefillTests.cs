@@ -322,7 +322,7 @@ public sealed unsafe class CudaKvarnPrefillTests(ITestOutputHelper output)
 
         using var gpu = TryCreate() ?? throw new InvalidOperationException("checked above");
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
 
         int single;
         var tilesK1 = new byte[hp.NumLayers][];
@@ -374,7 +374,7 @@ public sealed unsafe class CudaKvarnPrefillTests(ITestOutputHelper output)
     {
         using var gpu = TryCreate() ?? throw new InvalidOperationException("CUDA availability checked by caller");
         using var model = GgufModel.Open(modelPath);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         using var fwd = new CudaForwardPass(model, gpu, hp, maxContextLength: 768,
             enableTurboQuant: true, tqFp32Window: 256, tqQuantizer: TqQuantizer.KVarN);
         fwd.KvarnBatchedPrefillEnabled = chunked;
@@ -483,7 +483,7 @@ public sealed unsafe class CudaKvarnPrefillTests(ITestOutputHelper output)
     private static int[] MakeTokens(string modelPath, int count)
     {
         using var model = GgufModel.Open(modelPath);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         var rng = new Random(6161);
         var tokens = new int[count];
         for (int i = 0; i < count; i++)
@@ -494,7 +494,7 @@ public sealed unsafe class CudaKvarnPrefillTests(ITestOutputHelper output)
     private static int GetHeadDim(string modelPath)
     {
         using var model = GgufModel.Open(modelPath);
-        return ModelHyperparams.FromGgufMetadata(model.Metadata, model).HeadDim;
+        return ArchitectureModelResolver.ResolveHyperparams(model).HeadDim;
     }
 
     private static int ArgMax(ReadOnlySpan<float> logits)

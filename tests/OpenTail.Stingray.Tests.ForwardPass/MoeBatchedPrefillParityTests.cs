@@ -95,7 +95,7 @@ public sealed class MoeBatchedPrefillParityTests : HeavyTestBase
         {
             using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
             var model = modelHandle.Model;
-            var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
+            var hp = OpenTail.Stingray.Engine.ArchitectureModelResolver.ResolveHyperparams(model.Metadata);
             Assert.True(hp.IsMoE, "expected an MoE model — the batched path under test is MoE-only");
             using var backend = new CpuBackend();
 
@@ -136,7 +136,7 @@ public sealed class MoeBatchedPrefillParityTests : HeavyTestBase
 
         using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
         var model = modelHandle.Model;
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
+        var hp = OpenTail.Stingray.Engine.ArchitectureModelResolver.ResolveHyperparams(model.Metadata);
         if (!hp.IsMoE) return;
         using var backend = new CpuBackend();
 
@@ -174,7 +174,7 @@ public sealed class MoeBatchedPrefillParityTests : HeavyTestBase
 
         using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
         var model = modelHandle.Model;
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
+        var hp = OpenTail.Stingray.Engine.ArchitectureModelResolver.ResolveHyperparams(model.Metadata);
         if (!hp.IsMoE) return;
         using var backend = new CpuBackend();
 

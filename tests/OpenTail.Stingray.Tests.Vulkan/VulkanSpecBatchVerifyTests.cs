@@ -116,7 +116,7 @@ public sealed class VulkanSpecBatchVerifyTests : HeavyTestBase
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         Assert.Null(hp.LayerHeadDim); // dense, not Gemma-4
         Assert.False(hp.IsMoE);
 
@@ -139,7 +139,7 @@ public sealed class VulkanSpecBatchVerifyTests : HeavyTestBase
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         Assert.Null(hp.LayerHeadDim);
         Assert.False(hp.IsMoE);
 
@@ -209,7 +209,7 @@ public sealed class VulkanSpecBatchVerifyTests : HeavyTestBase
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         Assert.Null(hp.LayerHeadDim);
         Assert.False(hp.IsMoE);
 
@@ -291,7 +291,7 @@ public sealed class VulkanSpecBatchVerifyTests : HeavyTestBase
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
 
         using var fwd = NewFwd(model, gpu, hp, ctx: 64);
         Assert.True(fwd.CanBatchedTrunk, "needs the batched trunk to exercise the scratch-sizing path.");
@@ -351,7 +351,7 @@ public sealed class VulkanSpecBatchVerifyTests : HeavyTestBase
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
 
         using var fwd = NewFwd(model, gpu, hp, ctx: 64);
         Assert.True(fwd.SupportsBatchVerify);
@@ -421,7 +421,7 @@ public sealed class VulkanSpecBatchVerifyTests : HeavyTestBase
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
 
         int prefillLen = int.TryParse(Environment.GetEnvironmentVariable("STINGRAY_SPEC_BENCH_PREFILL"), out var pl) ? pl : 512;
         int k = int.TryParse(Environment.GetEnvironmentVariable("STINGRAY_SPEC_BENCH_K"), out var kk) ? kk : 4;

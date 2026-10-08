@@ -24,7 +24,7 @@ public sealed class ZzHiggsProfTmp
         using var model = GgufModel.Open(@"C:\Git-Public\OpenTail.Stingray\models\_models\higgs_audio_tts\Higgs-Audio-v3-TTS-4B-GGUF\higgs-audio-v3-tts-4b-q8_0.gguf");
         var source = new RvcPackedTensorSource(model);
         using var llm = new HiggsLlmTensorSource(source, NumLayers, HiddenDim, NumHeads, NumKvHeads, HeadDim, FfDim, VocabSize, RopeTheta, RmsNormEps, NumCodebooks, AudioVocabSize);
-        var hp = ModelHyperparams.FromGgufMetadata(llm.Metadata);
+        var hp = OpenTail.Stingray.Engine.ArchitectureModelResolver.ResolveHyperparams(llm.Metadata);
         using var backend = new OpenTail.Stingray.Cpu.CpuBackend();
         using var fwd = new ForwardPass(llm, backend, hp);
         var tokenizer = HiggsTtsTextTokenizer.LoadFromPackedGguf(model, audioTokenId: -100);

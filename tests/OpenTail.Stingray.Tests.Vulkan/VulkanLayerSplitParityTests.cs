@@ -35,7 +35,7 @@ public sealed class VulkanLayerSplitParityTests : HeavyTestBase
         using var _gpu = gpu;
 
         using var model = GgufModel.Open(path!);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         int n = split > 0 ? split : split < 0 ? VulkanLayerSplitForwardPass.MaxGpuLayers(hp) : hp.NumLayers / 2;
         int[] prompt = GgufTokenizer.FromGgufModel(model)
             .Encode("The scheduler assigns runnable threads to cores, balancing throughput against latency.").ToArray();

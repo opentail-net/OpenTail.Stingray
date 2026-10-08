@@ -9,7 +9,7 @@ public sealed class ZzNemotronTopKTmp
         if (Environment.GetEnvironmentVariable("ZZ_NH") != "1") return;
         string path = Environment.GetEnvironmentVariable("ZZ_MODEL") ?? @"C:\Git-Public\OpenTail.Stingray\models\_models\nemotron-nano-12b-v2-vl-Q2_K.gguf";
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         var tok = GgufTokenizer.FromGgufModel(model);
         var ids = Environment.GetEnvironmentVariable("ZZ_IDS") is { Length: > 0 } raw
             ? raw.Split(',').Select(int.Parse).ToList()

@@ -364,7 +364,7 @@ public sealed class PipelineStepTests : HeavyTestBase
 
         using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
         var model = modelHandle.Model;
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
 
         Assert.True(hp.HasQkNorm, "Llama-4 must have QK-norm enabled (L2 pure RMS norm)");
         Assert.True(hp.UseL2QkNorm, "Llama-4 must use L2 (pure) QK-norm, not weighted");
@@ -378,7 +378,7 @@ public sealed class PipelineStepTests : HeavyTestBase
 
         using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
         var model = modelHandle.Model;
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
 
         Assert.Equal(4, hp.NoRopeLayerStep);
         // Layers 3,7,11,15,... skip RoPE (NoPE layers)
@@ -394,7 +394,7 @@ public sealed class PipelineStepTests : HeavyTestBase
 
         using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
         var model = modelHandle.Model;
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
 
         Assert.True(hp.UseSigmoidGating, "Llama-4 must use sigmoid gating for MoE router");
         Assert.True(hp.IsMoE, "Llama-4 must be identified as MoE");
@@ -410,7 +410,7 @@ public sealed class PipelineStepTests : HeavyTestBase
 
         using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
         var model = modelHandle.Model;
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
 
         Assert.Equal(5120, hp.EmbeddingDim);
         Assert.Equal(48, hp.NumLayers);
@@ -436,7 +436,7 @@ public sealed class PipelineStepTests : HeavyTestBase
 
         using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
         var model = modelHandle.Model;
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         using var backend = new CpuBackend();
         using var fwd = new Engine.ForwardPass(model, backend, hp, maxContextLength: 512);
 
@@ -485,7 +485,7 @@ public sealed class PipelineStepTests : HeavyTestBase
 
         using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
         var model = modelHandle.Model;
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         using var backend = new CpuBackend();
         using var fwd = new Engine.ForwardPass(model, backend, hp, maxContextLength: 512);
 
@@ -523,7 +523,7 @@ public sealed class PipelineStepTests : HeavyTestBase
 
         using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
         var model = modelHandle.Model;
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model) with { UseSigmoidGating = false };
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model) with { UseSigmoidGating = false };
         Assert.False(hp.UseSigmoidGating);
         Assert.True(hp.HasQkNorm, "QK-norm must be enabled for Llama-4");
         using var backend = new CpuBackend();
@@ -549,7 +549,7 @@ public sealed class PipelineStepTests : HeavyTestBase
 
         using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
         var model = modelHandle.Model;
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         Assert.True(hp.UseSigmoidGating);
         Assert.True(hp.HasQkNorm, "QK-norm must be enabled for Llama-4");
         using var backend = new CpuBackend();
@@ -577,7 +577,7 @@ public sealed class PipelineStepTests : HeavyTestBase
 
         using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
         var model = modelHandle.Model;
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         using var backend = new CpuBackend();
         using var fwd = new Engine.ForwardPass(model, backend, hp, maxContextLength: 512);
 
@@ -621,7 +621,7 @@ public sealed class PipelineStepTests : HeavyTestBase
 
         using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
         var model = modelHandle.Model;
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model) with { UseSigmoidGating = false };
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model) with { UseSigmoidGating = false };
         using var backend = new CpuBackend();
         using var fwd = new Engine.ForwardPass(model, backend, hp, maxContextLength: 512);
 

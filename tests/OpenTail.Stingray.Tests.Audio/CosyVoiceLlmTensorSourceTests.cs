@@ -92,7 +92,7 @@ public sealed class CosyVoiceLlmTensorSourceTests : HeavyTestBase
         Assert.Equal(151936 + 6564 + 2, source.FindTensor("token_embd.weight")!.Value.Dimensions[1]);
         Assert.Equal(6564, source.FindTensor("output.weight")!.Value.Dimensions[1]);
 
-        var hp = ModelHyperparams.FromGgufMetadata(source.Metadata);
+        var hp = OpenTail.Stingray.Engine.ArchitectureModelResolver.ResolveHyperparams(source.Metadata);
         using var backend = new CpuBackend();
         using var fwd = new ForwardPass(source, backend, hp);
 
@@ -123,7 +123,7 @@ public sealed class CosyVoiceLlmTensorSourceTests : HeavyTestBase
         Assert.SkipUnless(path != null, "models/cosyvoice2_llm.safetensors not found");
 
         using var source = Open(path!);
-        var hp = ModelHyperparams.FromGgufMetadata(source.Metadata);
+        var hp = OpenTail.Stingray.Engine.ArchitectureModelResolver.ResolveHyperparams(source.Metadata);
         using var backend = new CpuBackend();
         using var fwd = new ForwardPass(source, backend, hp);
 

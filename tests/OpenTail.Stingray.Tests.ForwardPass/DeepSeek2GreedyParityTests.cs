@@ -24,7 +24,7 @@ public sealed class DeepSeek2GreedyParityTests : HeavyTestBase
         using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path!);
         var model = modelHandle.Model;
         Assert.Equal("deepseek2", Convert.ToString(model.Metadata["general.architecture"]));
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         Assert.Equal(2816, hp.SharedExpertIntermediateDim);
 
         using var backend = new CpuBackend();
@@ -61,7 +61,7 @@ public sealed class DeepSeek2GreedyParityTests : HeavyTestBase
 
         using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path!);
         var model = modelHandle.Model;
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         using var backend = new CpuBackend();
 
         foreach (int n in new[] { 2, 3, s_promptTokens.Length })

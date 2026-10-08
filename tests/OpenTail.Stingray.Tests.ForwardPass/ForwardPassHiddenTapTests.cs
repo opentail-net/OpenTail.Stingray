@@ -52,7 +52,7 @@ public sealed class ForwardPassHiddenTapTests : HeavyTestBase
         var path = WriteSyntheticLlamaGguf(seed: 42);
         using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
         var model = modelHandle.Model;
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         using var backend = new CpuBackend();
         using var fwdA = new Engine.ForwardPass(model, backend, hp);
         using var fwdB = new Engine.ForwardPass(model, backend, hp);
@@ -96,7 +96,7 @@ public sealed class ForwardPassHiddenTapTests : HeavyTestBase
         var path = WriteSyntheticLlamaGguf(seed: 77);
         using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
         var model = modelHandle.Model;
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         using var backend = new CpuBackend();
         using var fwdA = new Engine.ForwardPass(model, backend, hp);
         using var fwdB = new Engine.ForwardPass(model, backend, hp);
@@ -136,7 +136,7 @@ public sealed class ForwardPassHiddenTapTests : HeavyTestBase
         var path = WriteSyntheticLlamaGguf(seed: 11);
         using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
         var model = modelHandle.Model;
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         using var backend = new CpuBackend();
         using var fwd = new Engine.ForwardPass(model, backend, hp);
 
@@ -162,7 +162,7 @@ public sealed class ForwardPassHiddenTapTests : HeavyTestBase
         var path = WriteSyntheticLlamaGguf(seed: 13);
         using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
         var model = modelHandle.Model;
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         using var backend = new CpuBackend();
         using var fwd = new Engine.ForwardPass(model, backend, hp);
 
@@ -186,7 +186,7 @@ public sealed class ForwardPassHiddenTapTests : HeavyTestBase
         var path = WriteSyntheticLlamaGguf(seed: 21);
         using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
         var model = modelHandle.Model;
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         using var backend = new CpuBackend();
         using var fwd = new Engine.ForwardPass(model, backend, hp);
 
@@ -225,7 +225,7 @@ public sealed class ForwardPassHiddenTapTests : HeavyTestBase
         var path = WriteSyntheticLlamaGguf(seed: 31);
         using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
         var model = modelHandle.Model;
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         using var backend = new CpuBackend();
         using var fwd = new Engine.ForwardPass(model, backend, hp);
 

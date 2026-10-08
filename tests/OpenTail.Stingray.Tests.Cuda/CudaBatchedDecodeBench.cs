@@ -80,7 +80,7 @@ public sealed class CudaBatchedDecodeBench
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
 
         // Pin SnapKV off: at this context VRAM auto-SnapKV would otherwise engage and (correctly)
         // disable batching — but the point of this bench is to measure the batched decode path.
@@ -189,7 +189,7 @@ public sealed class CudaBatchedDecodeBench
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         var tokenizer = GgufTokenizer.FromGgufModel(model);
 
         // Long prompt that exceeds the SnapKV budget so every per-sequence cache evicts. Tokenize the

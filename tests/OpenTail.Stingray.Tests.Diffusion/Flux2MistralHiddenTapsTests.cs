@@ -35,7 +35,7 @@ public sealed class Flux2MistralHiddenTapsTests : HeavyTestBase
         Assert.SkipUnless(modelPath != null, "Mistral-Small-3.2-24B-Instruct-2506-Q4_K_S.gguf not found");
 
         using var model = GgufModel.Open(modelPath!);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         var tokenizer = GgufTokenizer.FromGgufModel(model);
         using var backend = new OpenTail.Stingray.Cpu.CpuBackend();
         using var fwd = new Engine.ForwardPass(model, backend, hp);
@@ -75,7 +75,7 @@ public sealed class Flux2MistralHiddenTapsTests : HeavyTestBase
         Assert.SkipUnless(modelPath != null, "Mistral-Small-3.2-24B-Instruct-2506-Q4_K_S.gguf not found");
 
         using var model = GgufModel.Open(modelPath!);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         var tokenizer = GgufTokenizer.FromGgufModel(model);
         using var backend = new OpenTail.Stingray.Cpu.CpuBackend();
         using var fwd = new Engine.ForwardPass(model, backend, hp);
@@ -96,7 +96,7 @@ public sealed class Flux2MistralHiddenTapsTests : HeavyTestBase
         Assert.SkipUnless(modelPath != null, "Mistral-Small-3.2-24B-Instruct-2506-Q4_K_S.gguf not found");
 
         using var model = GgufModel.Open(modelPath!);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         var tokenizer = GgufTokenizer.FromGgufModel(model);
 
         // 1. CPU forward pass

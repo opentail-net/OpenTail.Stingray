@@ -66,7 +66,7 @@ public sealed class Gemma4CpuForwardPassTests : HeavyTestBase
 
         using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
         var model = modelHandle.Model;
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
 
         // Defensive: this test must only fire against an actual gemma4 GGUF where the
         // Phase-1 hyperparam fields are all populated. Catches accidental file swaps.
@@ -116,7 +116,7 @@ public sealed class Gemma4CpuForwardPassTests : HeavyTestBase
 
         using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
         var model = modelHandle.Model;
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
 
         // Regression precondition: this file must actually have a KV-share layer whose
         // attn_k_norm is genuinely absent (else the test wouldn't exercise the fix). Confirm
@@ -154,7 +154,7 @@ public sealed class Gemma4CpuForwardPassTests : HeavyTestBase
 
         using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
         var model = modelHandle.Model;
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         if (!hp.HasPerLayerTokenEmbd) return;
 
         int bosId = ReadIntMetadata(model, "tokenizer.ggml.bos_token_id", fallback: 2);
@@ -214,7 +214,7 @@ public sealed class Gemma4CpuForwardPassTests : HeavyTestBase
 
         using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
         var model = modelHandle.Model;
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         Assert.Null(hp.LayerHeadDim);
         Assert.Null(hp.IsSwaLayer);
 

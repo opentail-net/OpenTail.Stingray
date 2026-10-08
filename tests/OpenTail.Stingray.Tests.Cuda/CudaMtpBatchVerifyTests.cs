@@ -103,7 +103,7 @@ public sealed class CudaMtpBatchVerifyTests
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         Assert.True(hp.NumMtpLayers > 0);
         var tokenizer = GgufTokenizer.FromGgufModel(model);
         using var fwd = CreatePass(model, gpu, hp);
@@ -154,7 +154,7 @@ public sealed class CudaMtpBatchVerifyTests
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         var tokenizer = GgufTokenizer.FromGgufModel(model);
         using var fwd = CreatePass(model, gpu, hp);
         if (!fwd.SupportsBatchVerify || fwd.MaxBatchVerifyTokens < 4) return;
@@ -206,7 +206,7 @@ public sealed class CudaMtpBatchVerifyTests
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         var tokenizer = GgufTokenizer.FromGgufModel(model);
         using var fwd = CreatePass(model, gpu, hp);
         if (!fwd.SupportsBatchVerify || fwd.MaxBatchVerifyTokens < 4) return;

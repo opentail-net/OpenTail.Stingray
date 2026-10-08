@@ -85,7 +85,7 @@ public sealed class CudaDSparkE2ETests
 
         var cfg = DSparkConfig.FromJsonFile(Path.Combine(headDir, "config.json"));
         using var model = GgufModel.Open(ggufPath);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
 
         using var cpuBackend = new CpuBackend();
         using var cpuFwd = new OpenTail.Stingray.Engine.ForwardPass(model, cpuBackend, hp, maxContextLength: 256);
@@ -128,7 +128,7 @@ public sealed class CudaDSparkE2ETests
         Assert.SkipUnless(cuda is not null, "no CUDA device in this environment");
 
         using var model = GgufModel.Open(ggufPath);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
 
         // Baseline: plain greedy on a fresh CUDA pass, disposed before the DSpark run.
         var baseline = new List<int>();
@@ -173,7 +173,7 @@ public sealed class CudaDSparkE2ETests
         Assert.SkipUnless(cuda is not null, "no CUDA device in this environment");
 
         using var model = GgufModel.Open(ggufPath);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
 
         var baseline = new List<int>();
         using (var fwd = new CudaForwardPass(model, cuda, hp, maxContextLength: 512))

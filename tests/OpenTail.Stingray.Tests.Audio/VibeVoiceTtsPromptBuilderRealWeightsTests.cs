@@ -81,7 +81,7 @@ public sealed class VibeVoiceTtsPromptBuilderRealWeightsTests : HeavyTestBase
         Assert.Equal(SpeechStartId, promptTokenIds[^1]);
 
         using var llm = new VibeVoiceLlmTensorSource(source, NumLayers, HiddenDim, NumHeads, NumKvHeads, HeadDim, FfDim, VocabSize, RopeTheta, RmsNormEps);
-        var hp = ModelHyperparams.FromGgufMetadata(llm.Metadata);
+        var hp = OpenTail.Stingray.Engine.ArchitectureModelResolver.ResolveHyperparams(llm.Metadata);
         using var backend = new CpuBackend();
         using var fwd = new ForwardPass(llm, backend, hp);
         using var negativeFwd = new ForwardPass(llm, backend, hp);

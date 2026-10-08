@@ -249,7 +249,7 @@ public sealed class SnapKvTurboQuantTests : HeavyTestBase
         {
             using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
             var model = modelHandle.Model;
-            var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
+            var hp = OpenTail.Stingray.Engine.ArchitectureModelResolver.ResolveHyperparams(model.Metadata);
             using var backend = new CpuBackend();
             using var fwd = new Engine.ForwardPass(model, backend, hp);
             // FP32 window 64 ensures most of the prompt ends up TQ-compressed
@@ -288,7 +288,7 @@ public sealed class SnapKvTurboQuantTests : HeavyTestBase
         {
             using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
             var model = modelHandle.Model;
-            var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
+            var hp = OpenTail.Stingray.Engine.ArchitectureModelResolver.ResolveHyperparams(model.Metadata);
             using var backend = new CpuBackend();
             using var fwd = new Engine.ForwardPass(model, backend, hp);
             fwd.EnableTurboQuant(fp32WindowSize: 64, bits: 3);
@@ -343,7 +343,7 @@ public sealed class SnapKvTurboQuantTests : HeavyTestBase
         {
             using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
             var model = modelHandle.Model;
-            var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
+            var hp = OpenTail.Stingray.Engine.ArchitectureModelResolver.ResolveHyperparams(model.Metadata);
             using var backend = new CpuBackend();
             using var fwd = new Engine.ForwardPass(model, backend, hp);
             fwd.EnableTurboQuant(fp32WindowSize: 64, bits: 3);

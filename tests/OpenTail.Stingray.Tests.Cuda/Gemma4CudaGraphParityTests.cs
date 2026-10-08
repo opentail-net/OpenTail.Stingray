@@ -64,7 +64,7 @@ public sealed class Gemma4CudaGraphParityTests
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         Assert.NotNull(hp.LayerHeadDim);
 
         int bosId = ReadIntMetadata(model, "tokenizer.ggml.bos_token_id", fallback: 2);
@@ -121,7 +121,7 @@ public sealed class Gemma4CudaGraphParityTests
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         Assert.NotNull(hp.LayerHeadDim);
 
         int bosId = ReadIntMetadata(model, "tokenizer.ggml.bos_token_id", fallback: 2);
@@ -193,7 +193,7 @@ public sealed class Gemma4CudaGraphParityTests
         try
         {
             using var model = GgufModel.Open(path);
-            var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+            var hp = ArchitectureModelResolver.ResolveHyperparams(model);
             Assert.NotNull(hp.LayerHeadDim);
 
             int bosId = ReadIntMetadata(model, "tokenizer.ggml.bos_token_id", fallback: 2);

@@ -105,7 +105,7 @@ public sealed class Gemma4CudaKEqVBatchedDecodeTests : IDisposable
 
         var path = WriteSyntheticGguf(seed: 1234);
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
 
         Assert.True(hp.AttentionKEqV, "fixture must set _opentailllm.attention_k_eq_v.");
         Assert.NotNull(hp.LayerHeadDim);                 // → _isGemma4Like
@@ -133,7 +133,7 @@ public sealed class Gemma4CudaKEqVBatchedDecodeTests : IDisposable
 
         var path = WriteSyntheticGguf(seed: 99);
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         using var fwd = new CudaForwardPass(model, gpu, hp, maxContextLength: Context);
         Assert.True(fwd.SupportsContinuousBatching);
 
@@ -183,7 +183,7 @@ public sealed class Gemma4CudaKEqVBatchedDecodeTests : IDisposable
         bool[] layerHasV = { false, true };
         var path = WriteSyntheticGguf(seed: 4242, layerHasV);
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
 
         Assert.True(hp.AttentionKEqV);
         Assert.Null(model.FindTensor("blk.0.attn_v.weight"));    // k_eq_v layer
@@ -226,7 +226,7 @@ public sealed class Gemma4CudaKEqVBatchedDecodeTests : IDisposable
 
         var path = WriteSyntheticGguf(seed: 7);
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         using var fwd = new CudaForwardPass(model, gpu, hp, maxContextLength: Context);
 
         int[] promptA = { 5, 17, 200, 33, 41, 9 };

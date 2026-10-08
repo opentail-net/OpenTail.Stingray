@@ -108,7 +108,7 @@ public sealed class CudaHybridGdnChunkedPrefillTests : IDisposable
         try
         {
             using var model = GgufModel.Open(path);
-            var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+            var hp = ArchitectureModelResolver.ResolveHyperparams(model);
             if (!hp.IsMoE) return; // exercise the CPU-MoE GDN-hybrid prefill trunk
             var tokenizer = GgufTokenizer.FromGgufModel(model);
 

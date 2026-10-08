@@ -32,7 +32,7 @@ public sealed class HunyuanVideoTextConditioningTests : HeavyTestBase
         if (modelPath is null) Assert.Skip("modelPath not found (checkpoint or fixture missing).");
 
         using var model = GgufModel.Open(modelPath);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         var tokenizer = GgufTokenizer.FromGgufModel(model);
         using var backend = new Cpu.CpuBackend();
         using var forward = new Engine.ForwardPass(model, backend, hp);
@@ -56,7 +56,7 @@ public sealed class HunyuanVideoTextConditioningTests : HeavyTestBase
         if (modelPath is null) Assert.Skip("modelPath not found (checkpoint or fixture missing).");
 
         using var model = GgufModel.Open(modelPath);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         var tokenizer = GgufTokenizer.FromGgufModel(model);
         using var backend = new Cpu.CpuBackend();
         using var forward = new Engine.ForwardPass(model, backend, hp);

@@ -33,9 +33,9 @@ public sealed class HfDecoderSafetensorsTests
 
         var sw = Stopwatch.StartNew();
         using var st = SafetensorsTensorSource.Open(dir!);
-        var stHp = ModelHyperparams.FromGgufMetadata(st.Metadata, st);
+        var stHp = ArchitectureModelResolver.ResolveHyperparams(st);
         using var ggufModel = GgufModel.Open(gguf!);
-        var gHp = ModelHyperparams.FromGgufMetadata(ggufModel.Metadata, ggufModel);
+        var gHp = ArchitectureModelResolver.ResolveHyperparams(ggufModel);
         var tokenizer = GgufTokenizer.FromGgufModel(ggufModel);
         Assert.Equal(gHp.HeadDim, stHp.HeadDim);
         Assert.Equal(128, stHp.HeadDim);
@@ -88,7 +88,7 @@ public sealed class HfDecoderSafetensorsTests
         using var st = SafetensorsTensorSource.Open(dir!);
         Assert.Equal("qwen2", st.Metadata["general.architecture"]);
         Assert.Contains(st.Tensors, t => t.Name == "blk.0.attn_q.bias");
-        var hp = ModelHyperparams.FromGgufMetadata(st.Metadata, st);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(st);
         using var backend = new CpuBackend();
         using var fwd = new Engine.ForwardPass(st, backend, hp, maxContextLength: 64);
         var logits = fwd.Prefill([9707, 11, 1879, 0])[..hp.VocabSize].ToArray();
@@ -115,7 +115,7 @@ public sealed class HfDecoderSafetensorsTests
 
         var sw = Stopwatch.StartNew();
         using var st = SafetensorsTensorSource.Open(dir!);
-        var hp = ModelHyperparams.FromGgufMetadata(st.Metadata, st);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(st);
         Assert.True(hp.UsesLayerNorm);
         Assert.Equal(1, hp.NoRopeLayerStep);
         var tok = HuggingFaceTokenizerSource.Load(dir!);

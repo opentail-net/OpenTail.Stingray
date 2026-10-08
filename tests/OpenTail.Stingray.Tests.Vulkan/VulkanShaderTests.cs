@@ -1718,7 +1718,7 @@ public sealed unsafe class VulkanShaderTests : HeavyTestBase
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
+        var hp = OpenTail.Stingray.Engine.ArchitectureModelResolver.ResolveHyperparams(model.Metadata);
         using var gpu = CreateBackendOrSkip();
 
         // Dequantize embedding for token 1 on CPU
@@ -1778,7 +1778,7 @@ public sealed unsafe class VulkanShaderTests : HeavyTestBase
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
+        var hp = OpenTail.Stingray.Engine.ArchitectureModelResolver.ResolveHyperparams(model.Metadata);
         using var gpu = CreateBackendOrSkip();
 
         // Step 1: embed token 1
@@ -1855,7 +1855,7 @@ public sealed unsafe class VulkanShaderTests : HeavyTestBase
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
+        var hp = OpenTail.Stingray.Engine.ArchitectureModelResolver.ResolveHyperparams(model.Metadata);
         var tokenizer = GgufTokenizer.FromGgufModel(model);
 
         // CPU reference
@@ -1952,7 +1952,7 @@ public sealed unsafe class VulkanShaderTests : HeavyTestBase
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
+        var hp = OpenTail.Stingray.Engine.ArchitectureModelResolver.ResolveHyperparams(model.Metadata);
         var tokenizer = GgufTokenizer.FromGgufModel(model);
         using var gpu = CreateBackendOrSkip();
         using var gpuFwd = new OpenTail.Stingray.Engine.GpuForwardPass(
@@ -1977,7 +1977,7 @@ public sealed unsafe class VulkanShaderTests : HeavyTestBase
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
+        var hp = OpenTail.Stingray.Engine.ArchitectureModelResolver.ResolveHyperparams(model.Metadata);
         if (hp.NumLayers < 2) return;
 
         var tokenizer = GgufTokenizer.FromGgufModel(model);
@@ -2883,7 +2883,7 @@ public sealed unsafe class VulkanShaderTests : HeavyTestBase
 
         using var model = GgufModel.Open(path);
         // Pass `model` so HasQkNorm / IsPerChannelQkNorm probe the tensor index.
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         if (!hp.IsMoE || hp.NumLayers < 2) return;
 
         var tokenizer = GgufTokenizer.FromGgufModel(model);
@@ -2918,7 +2918,7 @@ public sealed unsafe class VulkanShaderTests : HeavyTestBase
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
+        var hp = OpenTail.Stingray.Engine.ArchitectureModelResolver.ResolveHyperparams(model.Metadata);
         if (hp.NumLayers < 2) return;
 
         var tokenizer = GgufTokenizer.FromGgufModel(model);

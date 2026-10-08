@@ -32,7 +32,7 @@ public sealed class Qwen3F16FiniteLogitsTests
     private static float[] Run(string path, bool sequential)
     {
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         using var backend = new CpuBackend();
         using var fwd = new Engine.ForwardPass(model, backend, hp, maxContextLength: 256);
         if (!sequential) return fwd.Prefill(Prompt).ToArray();

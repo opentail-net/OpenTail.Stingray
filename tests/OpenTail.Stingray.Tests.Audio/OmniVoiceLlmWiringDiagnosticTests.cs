@@ -37,7 +37,7 @@ public sealed class OmniVoiceLlmWiringDiagnosticTests : HeavyTestBase
         using var source = new OpenTail.Stingray.Audio.OmniVoice.OmniVoiceLlmTensorSource(
             modelPath!, numLayers: 28, hiddenDim: 1024, numHeads: 16, numKvHeads: 8, headDim: 128, ffDim: 3072, vocabSize: 151676, ropeTheta: 1_000_000f, rmsNormEps: 1e-6f);
 
-        var hp = OpenTail.Stingray.Core.ModelHyperparams.FromGgufMetadata(source.Metadata);
+        var hp = OpenTail.Stingray.Engine.ArchitectureModelResolver.ResolveHyperparams(source.Metadata);
         using var backend = new OpenTail.Stingray.Cpu.CpuBackend();
         using var fwd = new OpenTail.Stingray.Engine.ForwardPass(source, backend, hp);
 

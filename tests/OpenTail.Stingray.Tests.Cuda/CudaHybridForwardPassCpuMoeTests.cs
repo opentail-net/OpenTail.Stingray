@@ -88,7 +88,7 @@ public sealed class CudaHybridForwardPassCpuMoeTests
         try
         {
             using var model = GgufModel.Open(path);
-            var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+            var hp = ArchitectureModelResolver.ResolveHyperparams(model);
             Assert.True(hp.IsMoE, "Expected hp.IsMoE for the MoE model under test.");
 
             var tokenizer = GgufTokenizer.FromGgufModel(model);

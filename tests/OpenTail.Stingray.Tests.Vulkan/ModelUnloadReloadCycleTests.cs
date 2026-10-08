@@ -29,7 +29,7 @@ public sealed class ModelUnloadReloadCycleTests : HeavyTestBase
     private static int[] Run(string path, VulkanBackend? gpu)
     {
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         int[] prompt = GgufTokenizer.FromGgufModel(model).Encode("The capital of France is").ToArray();
         var tokens = new List<int>();
 

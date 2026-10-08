@@ -43,7 +43,7 @@ public sealed class VulkanCpuLogitParityTests : HeavyTestBase
         Assert.SkipWhen(gpu is null, "no Vulkan device available on this host");
 
         using var model = GgufModel.Open(path!);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
+        var hp = OpenTail.Stingray.Engine.ArchitectureModelResolver.ResolveHyperparams(model.Metadata);
         int[] Prompt = GgufTokenizer.FromGgufModel(model).Encode(PromptText).ToArray();
 
         float[] cpu;

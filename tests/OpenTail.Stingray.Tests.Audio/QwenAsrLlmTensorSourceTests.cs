@@ -93,7 +93,7 @@ public sealed class QwenAsrLlmTensorSourceTests : HeavyTestBase
         using var inner = GgufModel.Open(path!);
         var adapter = new QwenAsrLlmTensorSource(inner);
 
-        var hp = ModelHyperparams.FromGgufMetadata(adapter.Metadata);
+        var hp = OpenTail.Stingray.Engine.ArchitectureModelResolver.ResolveHyperparams(adapter.Metadata);
         using var backend = new CpuBackend();
         using var fwd = new ForwardPass(adapter, backend, hp);
 
@@ -152,7 +152,7 @@ public sealed class QwenAsrLlmTensorSourceTests : HeavyTestBase
         Assert.NotNull(embedTensor);
         Assert.Equal(textVocab + numAudioTokens, embedTensor!.Value.Dimensions[1]);
 
-        var hp = ModelHyperparams.FromGgufMetadata(adapter.Metadata);
+        var hp = OpenTail.Stingray.Engine.ArchitectureModelResolver.ResolveHyperparams(adapter.Metadata);
         using var backend = new CpuBackend();
         using var fwd = new ForwardPass(adapter, backend, hp);
 

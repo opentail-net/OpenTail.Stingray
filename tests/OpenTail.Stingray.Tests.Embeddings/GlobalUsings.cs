@@ -7,3 +7,4 @@ global using OpenTail.Stingray.Core;
 global using OpenTail.Stingray.Cpu;
 global using OpenTail.Stingray.Engine.Encoders;
 global using Xunit;
+global using OpenTail.Stingray.Engine;

@@ -46,7 +46,7 @@ public sealed class PhiMoeGreedyParityTests : HeavyTestBase
         using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path!);
         var model = modelHandle.Model;
         Assert.Equal("phimoe", Convert.ToString(model.Metadata["general.architecture"]));
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         var tokenizer = GgufTokenizer.FromGgufModel(model);
         var promptTokens = tokenizer.Encode(prompt); // add_bos_token=false for this checkpoint
         Assert.Equal(expectedPromptLen, promptTokens.Count);

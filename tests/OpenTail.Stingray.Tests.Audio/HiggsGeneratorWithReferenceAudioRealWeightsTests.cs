@@ -45,7 +45,7 @@ public sealed class HiggsGeneratorWithReferenceAudioRealWeightsTests : HeavyTest
         string Codec(string name) => "tied.embedding.modality_embeddings.0.model." + name;
 
         using var llm = new HiggsLlmTensorSource(source, NumLayers, HiddenDim, NumHeads, NumKvHeads, HeadDim, FfDim, VocabSize, RopeTheta, RmsNormEps, NumCodebooks, AudioVocabSize);
-        var hp = ModelHyperparams.FromGgufMetadata(llm.Metadata);
+        var hp = OpenTail.Stingray.Engine.ArchitectureModelResolver.ResolveHyperparams(llm.Metadata);
         using var backend = new CpuBackend();
         using var fwd = new ForwardPass(llm, backend, hp);
 

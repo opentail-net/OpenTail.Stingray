@@ -138,7 +138,7 @@ public sealed class DSparkE2ETests : HeavyTestBase
 
         using var modelHandle = SharedModelCacheFixture.Instance.Acquire(ggufPath);
         var model = modelHandle.Model;
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         using var cpu = new CpuBackend();
 
         // ── Baseline: plain greedy on pass A (disposed before pass B). ──

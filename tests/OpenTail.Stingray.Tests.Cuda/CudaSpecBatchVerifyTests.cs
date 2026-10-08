@@ -110,7 +110,7 @@ public sealed class CudaSpecBatchVerifyTests
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         Assert.Null(hp.LayerHeadDim);
         Assert.False(hp.IsMoE);
 
@@ -168,7 +168,7 @@ public sealed class CudaSpecBatchVerifyTests
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
 
         using var fwd = NewFwd(model, gpu, hp);
         Assert.True(fwd.SupportsBatchVerify);
@@ -221,7 +221,7 @@ public sealed class CudaSpecBatchVerifyTests
         const int DecodeTokens = 48;
 
         using var targetModel = GgufModel.Open(targetPath);
-        var targetHp = ModelHyperparams.FromGgufMetadata(targetModel.Metadata, targetModel);
+        var targetHp = ArchitectureModelResolver.ResolveHyperparams(targetModel);
         using var target = NewFwd(targetModel, gpu, targetHp);
         Assert.True(target.SupportsBatchVerify);
 
@@ -240,7 +240,7 @@ public sealed class CudaSpecBatchVerifyTests
 
         // Spec decode with the 0.6B CPU draft (same Qwen3 tokenizer/vocab).
         using var draftModel = GgufModel.Open(draftPath);
-        var draftHp = ModelHyperparams.FromGgufMetadata(draftModel.Metadata, draftModel);
+        var draftHp = ArchitectureModelResolver.ResolveHyperparams(draftModel);
         Assert.Equal(targetHp.VocabSize, draftHp.VocabSize);
         using var cpu = new CpuBackend();
         using var draft = new OpenTail.Stingray.Engine.ForwardPass(draftModel, cpu, draftHp);
@@ -276,7 +276,7 @@ public sealed class CudaSpecBatchVerifyTests
         const int DecodeTokens = 48;
 
         using var targetModel = GgufModel.Open(targetPath);
-        var targetHp = ModelHyperparams.FromGgufMetadata(targetModel.Metadata, targetModel);
+        var targetHp = ArchitectureModelResolver.ResolveHyperparams(targetModel);
         using var target = NewFwd(targetModel, gpu, targetHp);
         Assert.True(target.SupportsBatchVerify);
 

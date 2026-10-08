@@ -33,7 +33,7 @@ public sealed class ForwardPassLastHiddenTests : HeavyTestBase
 
         using var rawModel = GgufModel.Open(modelPath!);
         using var source = new QwenTtsTalkerTensorSource(rawModel, numLayers: 28);
-        var hp = ModelHyperparams.FromGgufMetadata(source.Metadata);
+        var hp = OpenTail.Stingray.Engine.ArchitectureModelResolver.ResolveHyperparams(source.Metadata);
         using var backend = new CpuBackend();
         using var fwd = new ForwardPass(source, backend, hp);
 

@@ -102,7 +102,7 @@ public sealed class Gemma4CudaBatchedDecodeBench
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
 
         // Pin SnapKV off (the constructor already forces it off for Gemma 4, but be explicit).
         var prevSnap = Environment.GetEnvironmentVariable("STINGRAY_SNAPKV_BUDGET");

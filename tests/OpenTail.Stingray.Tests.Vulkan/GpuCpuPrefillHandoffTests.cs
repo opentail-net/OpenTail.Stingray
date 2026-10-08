@@ -70,7 +70,7 @@ public sealed unsafe class GpuCpuPrefillHandoffTests : HeavyTestBase
         try { gpu = new VulkanBackend(); } catch { gpu = null; }
         Assert.SkipWhen(gpu is null, "no Vulkan device available on this host");
         var model = GgufModel.Open(path!);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         return new Setup(model, hp, GgufTokenizer.FromGgufModel(model).Encode(Text).ToArray(), gpu!);
     }
 

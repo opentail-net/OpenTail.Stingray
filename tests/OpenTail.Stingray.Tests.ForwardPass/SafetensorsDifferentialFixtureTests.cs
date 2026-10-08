@@ -58,8 +58,8 @@ public sealed class SafetensorsDifferentialFixtureTests : HeavyTestBase
         }
 
         // 2. Verify bit-identical logits through ForwardPass
-        var ggufHp = ModelHyperparams.FromGgufMetadata(ggufModel.Metadata);
-        var stHp = ModelHyperparams.FromGgufMetadata(stSource.Metadata);
+        var ggufHp = OpenTail.Stingray.Engine.ArchitectureModelResolver.ResolveHyperparams(ggufModel.Metadata);
+        var stHp = OpenTail.Stingray.Engine.ArchitectureModelResolver.ResolveHyperparams(stSource.Metadata);
         using var backend = new CpuBackend();
 
         using var ggufFwd = new ForwardPass(ggufModel, backend, ggufHp);
@@ -93,8 +93,8 @@ public sealed class SafetensorsDifferentialFixtureTests : HeavyTestBase
         var ggufModel = ggufModelHandle.Model;
         using var stSource = SafetensorsTensorSource.Open(safetensorsDir);
 
-        var ggufHp = ModelHyperparams.FromGgufMetadata(ggufModel.Metadata);
-        var stHp = ModelHyperparams.FromGgufMetadata(stSource.Metadata);
+        var ggufHp = OpenTail.Stingray.Engine.ArchitectureModelResolver.ResolveHyperparams(ggufModel.Metadata);
+        var stHp = OpenTail.Stingray.Engine.ArchitectureModelResolver.ResolveHyperparams(stSource.Metadata);
         using var backend = new CpuBackend();
 
         using var ggufFwd = new ForwardPass(ggufModel, backend, ggufHp);
@@ -146,8 +146,8 @@ public sealed class SafetensorsDifferentialFixtureTests : HeavyTestBase
         var ggufModel = ggufModelHandle.Model;
         using var stSource = SafetensorsTensorSource.Open(safetensorsDir);
 
-        var ggufHp = ModelHyperparams.FromGgufMetadata(ggufModel.Metadata);
-        var stHp = ModelHyperparams.FromGgufMetadata(stSource.Metadata);
+        var ggufHp = OpenTail.Stingray.Engine.ArchitectureModelResolver.ResolveHyperparams(ggufModel.Metadata);
+        var stHp = OpenTail.Stingray.Engine.ArchitectureModelResolver.ResolveHyperparams(stSource.Metadata);
         using var backend = new CpuBackend();
 
         using var ggufFwd = new ForwardPass(ggufModel, backend, ggufHp);
@@ -181,8 +181,8 @@ public sealed class SafetensorsDifferentialFixtureTests : HeavyTestBase
         var ggufModel = ggufModelHandle.Model;
         using var stSource = SafetensorsTensorSource.Open(safetensorsDir);
 
-        var ggufHp = ModelHyperparams.FromGgufMetadata(ggufModel.Metadata);
-        var stHp = ModelHyperparams.FromGgufMetadata(stSource.Metadata);
+        var ggufHp = OpenTail.Stingray.Engine.ArchitectureModelResolver.ResolveHyperparams(ggufModel.Metadata);
+        var stHp = OpenTail.Stingray.Engine.ArchitectureModelResolver.ResolveHyperparams(stSource.Metadata);
         using var backend = new CpuBackend();
 
         using var ggufFwd = new ForwardPass(ggufModel, backend, ggufHp);

@@ -71,7 +71,7 @@ public sealed class CudaTurboQuantBench
         if (path is null) { _out.WriteLine($"{ModelFile} not found; skipping."); return; }
 
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
+        var hp = OpenTail.Stingray.Engine.ArchitectureModelResolver.ResolveHyperparams(model.Metadata);
         Log($"Model: {hp.NumLayers}L numKvHeads={hp.NumKvHeads} headDim={hp.HeadDim} modelMaxCtx={hp.ContextLength}");
 
         if (CudaTestGpu.IsAvailable)
@@ -109,7 +109,7 @@ public sealed class CudaTurboQuantBench
         if (path is null) { _out.WriteLine($"{ModelFile} not found; skipping."); return; }
 
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
+        var hp = OpenTail.Stingray.Engine.ArchitectureModelResolver.ResolveHyperparams(model.Metadata);
 
         using var gpu = new VulkanBackend();
         int requestCtx = enableTq
@@ -163,7 +163,7 @@ public sealed class CudaTurboQuantBench
         if (path is null) { _out.WriteLine($"{ModelFile} not found; skipping."); return; }
 
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
+        var hp = OpenTail.Stingray.Engine.ArchitectureModelResolver.ResolveHyperparams(model.Metadata);
 
         // For TQ, request enough context to cover prefill + decode plus the FP32 window;
         // for the FP32 baseline, let the estimator pick the largest context the card supports.

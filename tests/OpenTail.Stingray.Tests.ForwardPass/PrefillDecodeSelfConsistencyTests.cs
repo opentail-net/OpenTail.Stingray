@@ -147,7 +147,7 @@ public sealed class PrefillDecodeSelfConsistencyTests : HeavyTestBase
 
         using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
         var model = modelHandle.Model;
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         int[] tokens = OrdinaryTokens(promptLength, seed: 3);
 
         SimdKernels.Q8PrefillEnabled = false;
@@ -178,7 +178,7 @@ public sealed class PrefillDecodeSelfConsistencyTests : HeavyTestBase
 
         using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
         var model = modelHandle.Model;
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         int[] tokens = OrdinaryTokens(promptLength, seed: 3);
 
         SimdKernels.Q8PrefillEnabled = true;
@@ -205,7 +205,7 @@ public sealed class PrefillDecodeSelfConsistencyTests : HeavyTestBase
 
         using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
         var model = modelHandle.Model;
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         int[] tokens = ControlTokens(model, count: 2);
 
         SimdKernels.Q8PrefillEnabled = true;
@@ -224,7 +224,7 @@ public sealed class PrefillDecodeSelfConsistencyTests : HeavyTestBase
 
         using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
         var model = modelHandle.Model;
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         int[] tokens = ControlTokens(model, count: 2);
 
         SimdKernels.Q8PrefillEnabled = true;
@@ -244,7 +244,7 @@ public sealed class PrefillDecodeSelfConsistencyTests : HeavyTestBase
 
         using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
         var model = modelHandle.Model;
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         int[] tokens = ControlTokens(model, count: 2);
 
         SimdKernels.Q8PrefillEnabled = true;
@@ -269,7 +269,7 @@ public sealed class PrefillDecodeSelfConsistencyTests : HeavyTestBase
 
         using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
         var model = modelHandle.Model;
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         int[] control = ControlTokens(model, count: 2);
         int[] ordinary = OrdinaryTokens(count: 3, seed: 31);
 

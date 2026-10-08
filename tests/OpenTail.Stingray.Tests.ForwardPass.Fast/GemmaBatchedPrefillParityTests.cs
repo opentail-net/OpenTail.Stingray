@@ -35,7 +35,7 @@ public sealed class GemmaBatchedPrefillParityTests : IDisposable
         BuildGemma4GgufFile(ggufPath, weights, VocabSize, HiddenSize, IntermediateSize, Layers, Heads, HeadDimGlobal, HeadDimSwa);
 
         using var model = GgufModel.Open(ggufPath);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model.Metadata);
         using var backend = new CpuBackend();
 
         using var fwdBatched = new Engine.ForwardPass(model, backend, hp);
@@ -113,7 +113,7 @@ public sealed class GemmaBatchedPrefillParityTests : IDisposable
         BuildGemma4GgufFile(ggufPath, weights, VocabSize, HiddenSize, IntermediateSize, Layers, Heads, HeadDimGlobal, HeadDimSwa);
 
         using var model = GgufModel.Open(ggufPath);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model.Metadata);
         using var backend = new CpuBackend();
 
         using var fwdBatched = new Engine.ForwardPass(model, backend, hp);

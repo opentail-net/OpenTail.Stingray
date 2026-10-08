@@ -90,7 +90,7 @@ public sealed class CudaHybridGdnSnapKvTests
         try
         {
             using var model = GgufModel.Open(path);
-            var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+            var hp = ArchitectureModelResolver.ResolveHyperparams(model);
             var tokenizer = GgufTokenizer.FromGgufModel(model);
 
             var placement = new LayerPlacement(
@@ -181,7 +181,7 @@ public sealed class CudaHybridGdnSnapKvTests
         try
         {
             using var model = GgufModel.Open(path);
-            var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+            var hp = ArchitectureModelResolver.ResolveHyperparams(model);
             var tokenizer = GgufTokenizer.FromGgufModel(model);
 
             var placement = new LayerPlacement(
@@ -272,7 +272,7 @@ public sealed class CudaHybridGdnSnapKvTests
         try
         {
             using var model = GgufModel.Open(path);
-            var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+            var hp = ArchitectureModelResolver.ResolveHyperparams(model);
             var tokenizer = GgufTokenizer.FromGgufModel(model);
 
             // ctx=2048 on Qwen3.6-27B-MTP bf16 → full cache ≈ 40 MiB, well below

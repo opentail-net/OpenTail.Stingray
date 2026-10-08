@@ -178,7 +178,7 @@ public sealed class CudaGpuArgmaxParityTests
         Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
 
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         var tokenizer = GgufTokenizer.FromGgufModel(model);
         int ctx = Math.Min(hp.ContextLength, 512);
         var tokens = tokenizer.Encode("The quick brown fox jumps over the lazy dog.").ToArray();

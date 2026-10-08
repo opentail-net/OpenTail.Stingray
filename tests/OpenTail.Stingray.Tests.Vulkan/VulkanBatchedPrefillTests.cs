@@ -85,7 +85,7 @@ public sealed class VulkanBatchedPrefillTests : HeavyTestBase
         Assert.SkipUnless(gpu is not null, "no usable GPU backend in this environment");
 
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
+        var hp = OpenTail.Stingray.Engine.ArchitectureModelResolver.ResolveHyperparams(model.Metadata);
 
         float[] reference, batched;
         bool usedBatchedPath;
@@ -128,7 +128,7 @@ public sealed class VulkanBatchedPrefillTests : HeavyTestBase
         Assert.SkipUnless(gpu is not null, "no usable GPU backend in this environment");
 
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
+        var hp = OpenTail.Stingray.Engine.ArchitectureModelResolver.ResolveHyperparams(model.Metadata);
         int[] shortPrompt = [1, 2, 3, 5, 7];
 
         float[] reference, batched;
@@ -164,7 +164,7 @@ public sealed class VulkanBatchedPrefillTests : HeavyTestBase
         Assert.SkipUnless(gpu is not null, "no usable GPU backend in this environment");
 
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
+        var hp = OpenTail.Stingray.Engine.ArchitectureModelResolver.ResolveHyperparams(model.Metadata);
 
         static int[] DecodeAfterPrefill(GgufModel m, VulkanBackend g, ModelHyperparams h, bool disableBatched)
         {

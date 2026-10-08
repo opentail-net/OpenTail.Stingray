@@ -77,7 +77,7 @@ public sealed class HiggsLlmTensorSourceRealWeightsTests : HeavyTestBase
         var source = new RvcPackedTensorSource(model);
         using var llm = new HiggsLlmTensorSource(source, NumLayers, HiddenDim, NumHeads, NumKvHeads, HeadDim, FfDim, VocabSize, RopeTheta, RmsNormEps, NumCodebooks, AudioVocabSize);
 
-        var hp = ModelHyperparams.FromGgufMetadata(llm.Metadata);
+        var hp = OpenTail.Stingray.Engine.ArchitectureModelResolver.ResolveHyperparams(llm.Metadata);
         using var backend = new CpuBackend();
         using var fwd = new ForwardPass(llm, backend, hp);
 

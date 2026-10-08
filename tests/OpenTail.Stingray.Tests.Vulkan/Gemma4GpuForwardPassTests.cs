@@ -129,7 +129,7 @@ public sealed class Gemma4GpuForwardPassTests : HeavyTestBase
                                       // trunk bug (missing V-norm, wrong attn scale) diverges far more.
 
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
 
         // Defensive: only meaningful against a real gemma4 (per-layer head_dim) GGUF.
         Assert.NotNull(hp.LayerHeadDim);

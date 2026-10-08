@@ -108,7 +108,7 @@ public sealed class Gemma4Cuda12BForwardPassTests : IDisposable
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
 
         // Defensive: only meaningful against the real 12B k_eq_v GGUF.
         Assert.True(hp.AttentionKEqV, "expected attention_k_eq_v=true for the 12B QAT model");
@@ -174,7 +174,7 @@ public sealed class Gemma4Cuda12BForwardPassTests : IDisposable
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         Assert.True(hp.AttentionKEqV, "expected attention_k_eq_v=true for the 12B QAT model");
         Assert.NotNull(hp.LayerKvHeads);
 
@@ -238,7 +238,7 @@ public sealed class Gemma4Cuda12BForwardPassTests : IDisposable
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         Assert.Equal(1024, hp.SlidingWindowSize);
         Assert.True(hp.AttentionKEqV, "expected attention_k_eq_v=true for the 12B QAT model");
 
@@ -275,7 +275,7 @@ public sealed class Gemma4Cuda12BForwardPassTests : IDisposable
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         Assert.True(hp.AttentionKEqV, "expected attention_k_eq_v=true for the 12B QAT model");
 
         int bosId = ReadIntMetadata(model, "tokenizer.ggml.bos_token_id", fallback: 2);
@@ -339,7 +339,7 @@ public sealed class Gemma4Cuda12BForwardPassTests : IDisposable
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         Assert.True(hp.AttentionKEqV, "expected attention_k_eq_v=true for the 12B QAT model");
         Assert.NotNull(hp.LayerKvHeads);
 
@@ -370,7 +370,7 @@ public sealed class Gemma4Cuda12BForwardPassTests : IDisposable
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         Assert.True(hp.AttentionKEqV, "expected attention_k_eq_v=true for the 12B QAT model");
 
         int bosId = ReadIntMetadata(model, "tokenizer.ggml.bos_token_id", fallback: 2);

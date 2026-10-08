@@ -99,7 +99,7 @@ public sealed class CudaHybridBatchedPrefillTests : IDisposable
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         int ctx = Math.Min(hp.ContextLength, 4096);
         var placement = PlanCoder(model, hp, gpu, ctx);
 
@@ -129,7 +129,7 @@ public sealed class CudaHybridBatchedPrefillTests : IDisposable
         try
         {
             using var model = GgufModel.Open(path);
-            var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+            var hp = ArchitectureModelResolver.ResolveHyperparams(model);
             var tokenizer = GgufTokenizer.FromGgufModel(model);
             int ctx = Math.Min(hp.ContextLength, 4096);
             var placement = PlanCoder(model, hp, gpu, ctx);
@@ -206,7 +206,7 @@ public sealed class CudaHybridBatchedPrefillTests : IDisposable
         try
         {
             using var model = GgufModel.Open(path);
-            var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+            var hp = ArchitectureModelResolver.ResolveHyperparams(model);
             var tokenizer = GgufTokenizer.FromGgufModel(model);
             int ctx = Math.Min(hp.ContextLength, 4096);
             var placement = PlanCoder(model, hp, gpu, ctx);
@@ -304,7 +304,7 @@ public sealed class CudaHybridBatchedPrefillTests : IDisposable
             CudaHybridForwardPass.ForceCpuResidentEmbedding = true;
 
             using var model = GgufModel.Open(path);
-            var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+            var hp = ArchitectureModelResolver.ResolveHyperparams(model);
             var tokenizer = GgufTokenizer.FromGgufModel(model);
             int ctx = Math.Min(hp.ContextLength, 4096);
             var placement = PlanCoder(model, hp, gpu, ctx);
@@ -389,7 +389,7 @@ public sealed class CudaHybridBatchedPrefillTests : IDisposable
         try
         {
             using var model = GgufModel.Open(path);
-            var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+            var hp = ArchitectureModelResolver.ResolveHyperparams(model);
             var tokenizer = GgufTokenizer.FromGgufModel(model);
             int ctx = Math.Min(hp.ContextLength, 4096);
             var placement = PlanCoder(model, hp, gpu, ctx);
@@ -469,7 +469,7 @@ public sealed class CudaHybridBatchedPrefillTests : IDisposable
         {
             Environment.SetEnvironmentVariable("STINGRAY_SPLIT_DECODE", "0"); // read at pass construction; see doc comment
             using var model = GgufModel.Open(path);
-            var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+            var hp = ArchitectureModelResolver.ResolveHyperparams(model);
             if (hp.ContextLength < 4400) { _out.WriteLine("SKIP: ctx < 4400"); return; }
             var tokenizer = GgufTokenizer.FromGgufModel(model);
             var tokens = LongPrompt(tokenizer, 4200);
@@ -544,7 +544,7 @@ public sealed class CudaHybridBatchedPrefillTests : IDisposable
             CudaHybridForwardPass.ForceCpuResidentEmbedding = true;
 
             using var model = GgufModel.Open(path);
-            var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+            var hp = ArchitectureModelResolver.ResolveHyperparams(model);
             var tokenizer = GgufTokenizer.FromGgufModel(model);
             int ctx = Math.Min(hp.ContextLength, 4096);
             var placement = PlanCoder(model, hp, gpu, ctx);
@@ -616,7 +616,7 @@ public sealed class CudaHybridBatchedPrefillTests : IDisposable
             CudaHybridForwardPass.ForceCpuResidentEmbedding = true;
 
             using var model = GgufModel.Open(path);
-            var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+            var hp = ArchitectureModelResolver.ResolveHyperparams(model);
             var tokenizer = GgufTokenizer.FromGgufModel(model);
             int ctx = Math.Min(hp.ContextLength, 4096);
             var placement = PlanCoder(model, hp, gpu, ctx);
@@ -693,7 +693,7 @@ public sealed class CudaHybridBatchedPrefillTests : IDisposable
             CudaHybridForwardPass.ForceCpuResidentEmbedding = true;
 
             using var model = GgufModel.Open(path);
-            var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+            var hp = ArchitectureModelResolver.ResolveHyperparams(model);
             var tokenizer = GgufTokenizer.FromGgufModel(model);
             int ctx = Math.Min(hp.ContextLength, 4096);
             var planned = PlanCoder(model, hp, gpu, ctx);
@@ -768,7 +768,7 @@ public sealed class CudaHybridBatchedPrefillTests : IDisposable
         try
         {
             using var model = GgufModel.Open(path);
-            var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+            var hp = ArchitectureModelResolver.ResolveHyperparams(model);
             var tokenizer = GgufTokenizer.FromGgufModel(model);
             int ctx = Math.Min(hp.ContextLength, 4096);
             var planned = PlanCoder(model, hp, gpu, ctx);

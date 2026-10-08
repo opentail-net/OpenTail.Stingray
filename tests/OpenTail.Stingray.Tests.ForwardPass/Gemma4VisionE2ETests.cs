@@ -43,7 +43,7 @@ public sealed class Gemma4VisionE2ETests : HeavyTestBase
 
         using var modelHandle = SharedModelCacheFixture.Instance.Acquire(textPath);
         var model = modelHandle.Model;
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         var tok = GgufTokenizer.FromGgufModel(model);
         using var backend = new CpuBackend();
         using var fwd = new EForwardPass(model, backend, hp);

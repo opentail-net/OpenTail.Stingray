@@ -150,7 +150,7 @@ public sealed class VulkanMtpBatchVerifyTests : HeavyTestBase
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         Assert.True(hp.IsHybridSsm, "Expected hp.IsHybridSsm for the qwen36 GDN model");
         Assert.True(hp.NumMtpLayers > 0, "Expected a NEXTN/MTP head on the 27B-MTP model");
         var tokenizer = GgufTokenizer.FromGgufModel(model);
@@ -195,7 +195,7 @@ public sealed class VulkanMtpBatchVerifyTests : HeavyTestBase
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         var tokenizer = GgufTokenizer.FromGgufModel(model);
 
         using var fwd = CreatePass(model, gpu, hp);

@@ -80,7 +80,7 @@ public sealed class GraniteGreedyParityTests : HeavyTestBase
 
         using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path!);
         var model = modelHandle.Model;
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         var tokenizer = GgufTokenizer.FromGgufModel(model);
 
         // Guard the fixture: a different Granite checkpoint shares the architecture but not
@@ -129,7 +129,7 @@ public sealed class GraniteGreedyParityTests : HeavyTestBase
 
         using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path!);
         var model = modelHandle.Model;
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         var tokenizer = GgufTokenizer.FromGgufModel(model);
 
         // Prompt plus the two tokens both the engine and llama.cpp agree on (" Paris", ".").

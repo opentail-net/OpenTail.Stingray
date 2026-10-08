@@ -111,7 +111,7 @@ public sealed class VulkanPrefillChunkSplitTests : HeavyTestBase
         Assert.SkipUnless(gpu is not null, "no usable GPU backend in this environment");
 
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
+        var hp = OpenTail.Stingray.Engine.ArchitectureModelResolver.ResolveHyperparams(model.Metadata);
         int[] prompt = BuildPrompt(96);
 
         static float[] Run(GgufModel m, VulkanBackend g, ModelHyperparams h, int[] prompt, int chunk)
@@ -145,7 +145,7 @@ public sealed class VulkanPrefillChunkSplitTests : HeavyTestBase
         Assert.SkipUnless(gpu is not null, "no usable GPU backend in this environment");
 
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
+        var hp = OpenTail.Stingray.Engine.ArchitectureModelResolver.ResolveHyperparams(model.Metadata);
         int[] prompt = BuildPrompt(40);
 
         using var fwd = new GpuForwardPass(model, gpu, hp, maxContextLength: 512);

@@ -102,7 +102,7 @@ public sealed class CosyVoice3LlmLogitsCompareDebugTest : HeavyTestBase
         Console.WriteLine($"[TOKENS] textTokens: [{string.Join(",", textTokens)}]");
         Console.WriteLine($"[TOKENS] first 10 promptTokens: [{string.Join(",", promptTokens.Take(10))}] last 5 promptTokens: [{string.Join(",", promptTokens.TakeLast(5))}]");
 
-        var hp = ModelHyperparams.FromGgufMetadata(llmSource.Metadata, llmSource);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(llmSource);
         Console.WriteLine($"[HYPERPARAMS] hasAttnBias={hp.HasAttnBias} hasAttnOutputBias={hp.HasAttnOutputBias} hasNormBias={hp.HasNormBias} hasFfnBias={hp.HasFfnBias} isNeoxRope={hp.IsNeoxRope} ropeTheta={hp.RopeTheta}");
         using var backend = new CpuBackend();
         using var seqFwd = new ForwardPass(llmSource, backend, hp);

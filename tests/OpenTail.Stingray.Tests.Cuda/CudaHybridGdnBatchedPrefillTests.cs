@@ -95,7 +95,7 @@ public sealed class CudaHybridGdnBatchedPrefillTests : IDisposable
         try
         {
             using var model = GgufModel.Open(path);
-            var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+            var hp = ArchitectureModelResolver.ResolveHyperparams(model);
             if (!hp.IsMoE) return; // batched path only applies to CPU MoE
             var tokenizer = GgufTokenizer.FromGgufModel(model);
 
@@ -196,7 +196,7 @@ public sealed class CudaHybridGdnBatchedPrefillTests : IDisposable
         try
         {
             using var model = GgufModel.Open(path);
-            var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+            var hp = ArchitectureModelResolver.ResolveHyperparams(model);
             if (!hp.IsMoE) return; // grouped routed-expert path is CPU-MoE only
             var tokenizer = GgufTokenizer.FromGgufModel(model);
 
@@ -319,7 +319,7 @@ public sealed class CudaHybridGdnBatchedPrefillTests : IDisposable
         try
         {
             using var model = GgufModel.Open(path);
-            var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+            var hp = ArchitectureModelResolver.ResolveHyperparams(model);
             if (!hp.IsMoE) return;
             if (hp.ContextLength < 4400) return; // need room past the 4096 window
             var tokenizer = GgufTokenizer.FromGgufModel(model);
@@ -388,7 +388,7 @@ public sealed class CudaHybridGdnBatchedPrefillTests : IDisposable
         try
         {
             using var model = GgufModel.Open(path);
-            var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+            var hp = ArchitectureModelResolver.ResolveHyperparams(model);
             if (!hp.IsMoE) return;
             var tokenizer = GgufTokenizer.FromGgufModel(model);
             var placement = new LayerPlacement(
@@ -459,7 +459,7 @@ public sealed class CudaHybridGdnBatchedPrefillTests : IDisposable
         try
         {
             using var model = GgufModel.Open(path);
-            var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+            var hp = ArchitectureModelResolver.ResolveHyperparams(model);
             if (!hp.IsMoE) return;
             var tokenizer = GgufTokenizer.FromGgufModel(model);
             var placement = new LayerPlacement(
@@ -530,7 +530,7 @@ public sealed class CudaHybridGdnBatchedPrefillTests : IDisposable
         try
         {
             using var model = GgufModel.Open(path);
-            var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+            var hp = ArchitectureModelResolver.ResolveHyperparams(model);
             if (hp.IsMoE) return; // dense-only path
             var tokenizer = GgufTokenizer.FromGgufModel(model);
             var placement = new LayerPlacement(
@@ -601,7 +601,7 @@ public sealed class CudaHybridGdnBatchedPrefillTests : IDisposable
         try
         {
             using var model = GgufModel.Open(path);
-            var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+            var hp = ArchitectureModelResolver.ResolveHyperparams(model);
             if (hp.IsMoE) return; // dense-only path
             var tokenizer = GgufTokenizer.FromGgufModel(model);
             var placement = new LayerPlacement(
@@ -673,7 +673,7 @@ public sealed class CudaHybridGdnBatchedPrefillTests : IDisposable
         try
         {
             using var model = GgufModel.Open(path);
-            var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+            var hp = ArchitectureModelResolver.ResolveHyperparams(model);
             if (hp.IsMoE) return; // dense-only path
             var tokenizer = GgufTokenizer.FromGgufModel(model);
             var placement = new LayerPlacement(
@@ -758,7 +758,7 @@ public sealed class CudaHybridGdnBatchedPrefillTests : IDisposable
         try
         {
             using var model = GgufModel.Open(path);
-            var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+            var hp = ArchitectureModelResolver.ResolveHyperparams(model);
             if (hp.IsMoE) return;
             var tokenizer = GgufTokenizer.FromGgufModel(model);
             var placement = new LayerPlacement(
@@ -828,7 +828,7 @@ public sealed class CudaHybridGdnBatchedPrefillTests : IDisposable
         try
         {
             using var model = GgufModel.Open(path);
-            var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+            var hp = ArchitectureModelResolver.ResolveHyperparams(model);
             if (hp.IsMoE) return;
             var tokenizer = GgufTokenizer.FromGgufModel(model);
             var placement = new LayerPlacement(
@@ -917,7 +917,7 @@ public sealed class CudaHybridGdnBatchedPrefillTests : IDisposable
         try
         {
             using var model = GgufModel.Open(path);
-            var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+            var hp = ArchitectureModelResolver.ResolveHyperparams(model);
             if (!hp.IsMoE) return;
             if (hp.ContextLength < 4400) return; // need room past the 4096 window
             var tokenizer = GgufTokenizer.FromGgufModel(model);
@@ -1000,7 +1000,7 @@ public sealed class CudaHybridGdnBatchedPrefillTests : IDisposable
         try
         {
             using var model = GgufModel.Open(path);
-            var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+            var hp = ArchitectureModelResolver.ResolveHyperparams(model);
             if (!hp.IsMoE) return;
             var tokenizer = GgufTokenizer.FromGgufModel(model);
             var placement = new LayerPlacement(
@@ -1078,7 +1078,7 @@ public sealed class CudaHybridGdnBatchedPrefillTests : IDisposable
         try
         {
             using var model = GgufModel.Open(path);
-            var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+            var hp = ArchitectureModelResolver.ResolveHyperparams(model);
             if (!hp.IsMoE) return;
             var tokenizer = GgufTokenizer.FromGgufModel(model);
 

@@ -108,7 +108,7 @@ public sealed class CudaHybridBatchedCpuMoePrefillTests : IDisposable
         try
         {
             using var model = GgufModel.Open(path);
-            var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+            var hp = ArchitectureModelResolver.ResolveHyperparams(model);
             var tokenizer = GgufTokenizer.FromGgufModel(model);
             int ctx = Math.Min(hp.ContextLength, 4096);
             var hw = HardwareProfile.Detect(gpu);
@@ -192,7 +192,7 @@ public sealed class CudaHybridBatchedCpuMoePrefillTests : IDisposable
         try
         {
             using var model = GgufModel.Open(path);
-            var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+            var hp = ArchitectureModelResolver.ResolveHyperparams(model);
             var tokenizer = GgufTokenizer.FromGgufModel(model);
             int ctx = Math.Min(hp.ContextLength, 4096);
             var hw = HardwareProfile.Detect(gpu);
@@ -265,7 +265,7 @@ public sealed class CudaHybridBatchedCpuMoePrefillTests : IDisposable
         try
         {
             using var model = GgufModel.Open(path);
-            var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+            var hp = ArchitectureModelResolver.ResolveHyperparams(model);
             var tokenizer = GgufTokenizer.FromGgufModel(model);
             int ctx = Math.Min(hp.ContextLength, 4096);
             var hw = HardwareProfile.Detect(gpu);

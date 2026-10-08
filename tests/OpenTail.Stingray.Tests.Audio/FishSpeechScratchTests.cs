@@ -12,7 +12,7 @@ public sealed class FishSpeechScratchTests : HeavyTestBase
 
         using var model = GgufModel.Open(modelPath!);
         var source = new FishSpeechTensorSource(model, numLayers: 36);
-        var hp = ModelHyperparams.FromGgufMetadata(source.Metadata, source);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(source);
         using var backend = new CpuBackend();
         using var fwd = new ForwardPass(source, backend, hp, maxContextLength: 512);
 

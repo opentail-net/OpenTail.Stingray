@@ -32,7 +32,7 @@ public sealed class QwenImageTextConditioningTests : HeavyTestBase
         using var model = GgufModel.Open(modelPath!);
         Assert.Equal("qwen2vl", model.Metadata["general.architecture"]);
 
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         var tokenizer = GgufTokenizer.FromGgufModel(model);
         using var backend = new OpenTail.Stingray.Cpu.CpuBackend();
         using var fwd = new Engine.ForwardPass(model, backend, hp);
@@ -62,7 +62,7 @@ public sealed class QwenImageTextConditioningTests : HeavyTestBase
         Assert.SkipUnless(modelPath != null, "Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf not found");
 
         using var model = GgufModel.Open(modelPath!);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         var tokenizer = GgufTokenizer.FromGgufModel(model);
         using var backend = new OpenTail.Stingray.Cpu.CpuBackend();
         using var fwd = new Engine.ForwardPass(model, backend, hp);

@@ -102,7 +102,7 @@ public sealed class Gemma4VulkanPleE2ETests : HeavyTestBase
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
 
         // Defensive: only meaningful against a real gemma4 GGUF with PLE + a KV-share tail.
         Assert.NotNull(hp.LayerHeadDim);
@@ -175,7 +175,7 @@ public sealed class Gemma4VulkanPleE2ETests : HeavyTestBase
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         Assert.NotNull(hp.LayerHeadDim);
         Assert.True(hp.HasPerLayerTokenEmbd);
 

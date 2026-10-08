@@ -38,7 +38,7 @@ public sealed class QwenTtsCodePredictorGenerationTests : HeavyTestBase
         // QwenTtsTalkerGeneration's own decode loop (a real Forward step, not Prefill alone,
         // per this session's confirmed LastHidden constraint).
         using var talkerSource = new QwenTtsTalkerTensorSource(rawModel, numLayers: 28);
-        var talkerHp = ModelHyperparams.FromGgufMetadata(talkerSource.Metadata);
+        var talkerHp = OpenTail.Stingray.Engine.ArchitectureModelResolver.ResolveHyperparams(talkerSource.Metadata);
         using var talkerBackend = new CpuBackend();
         using var talkerFwd = new ForwardPass(talkerSource, talkerBackend, talkerHp);
 

@@ -50,7 +50,7 @@ public sealed class OmniVoiceLlmRealPromptDiagnosticTests : HeavyTestBase
             numLayers: 28, hiddenDim: 1024, numHeads: 16, numKvHeads: 8, headDim: 128, ffDim: 3072,
             vocabSize: 151676, ropeTheta: 1_000_000f, rmsNormEps: 1e-6f);
 
-        var hp = OpenTail.Stingray.Core.ModelHyperparams.FromGgufMetadata(source.Metadata);
+        var hp = OpenTail.Stingray.Engine.ArchitectureModelResolver.ResolveHyperparams(source.Metadata);
         using var backend = new OpenTail.Stingray.Cpu.CpuBackend();
         using var fwd = new OpenTail.Stingray.Engine.ForwardPass(source, backend, hp);
 
@@ -150,7 +150,7 @@ public sealed class OmniVoiceLlmRealPromptDiagnosticTests : HeavyTestBase
             Path.Combine(modelDir!, "model.safetensors"),
             numLayers: numLayers, hiddenDim: hiddenDim, numHeads: 16, numKvHeads: 8, headDim: 128, ffDim: 3072,
             vocabSize: 151676, ropeTheta: 1_000_000f, rmsNormEps: 1e-6f);
-        var hpA = OpenTail.Stingray.Core.ModelHyperparams.FromGgufMetadata(sourceA.Metadata);
+        var hpA = OpenTail.Stingray.Engine.ArchitectureModelResolver.ResolveHyperparams(sourceA.Metadata);
         using var backendA = new OpenTail.Stingray.Cpu.CpuBackend();
         using var fwdA = new OpenTail.Stingray.Engine.ForwardPass(sourceA, backendA, hpA);
 
@@ -158,7 +158,7 @@ public sealed class OmniVoiceLlmRealPromptDiagnosticTests : HeavyTestBase
             Path.Combine(modelDir!, "model.safetensors"),
             numLayers: numLayers, hiddenDim: hiddenDim, numHeads: 16, numKvHeads: 8, headDim: 128, ffDim: 3072,
             vocabSize: 151676, ropeTheta: 1_000_000f, rmsNormEps: 1e-6f);
-        var hpB = OpenTail.Stingray.Core.ModelHyperparams.FromGgufMetadata(sourceB.Metadata);
+        var hpB = OpenTail.Stingray.Engine.ArchitectureModelResolver.ResolveHyperparams(sourceB.Metadata);
         using var backendB = new OpenTail.Stingray.Cpu.CpuBackend();
         using var fwdB = new OpenTail.Stingray.Engine.ForwardPass(sourceB, backendB, hpB);
 

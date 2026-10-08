@@ -60,7 +60,7 @@ public sealed class CudaExpertSlotManagerTests
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         if (!hp.IsMoE) return;
 
         var dtypes = new Dictionary<nint, DType>();
@@ -125,7 +125,7 @@ public sealed class CudaExpertSlotManagerTests
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         if (!hp.IsMoE) return;
 
         const int cap = 4;
@@ -193,7 +193,7 @@ public sealed class CudaExpertSlotManagerTests
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         if (!hp.IsMoE) return;
 
         var dtypes = new Dictionary<nint, DType>();
@@ -231,7 +231,7 @@ public sealed class CudaExpertSlotManagerTests
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         if (!hp.IsMoE) return;
 
         var dtypes = new Dictionary<nint, DType>();

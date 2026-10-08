@@ -43,7 +43,7 @@ public sealed class MuseGlimmerSyntheticTests : IDisposable
             var (path, tensors) = WriteSyntheticMuseGlimmerGguf(seed);
 
             using var model = GgufModel.Open(path);
-            var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+            var hp = ArchitectureModelResolver.ResolveHyperparams(model);
 
             // Assert ModelGraph properly detected all Muse-Glimmer architecture flags
             Assert.True(hp.InputEmbeddingRmsNorm);

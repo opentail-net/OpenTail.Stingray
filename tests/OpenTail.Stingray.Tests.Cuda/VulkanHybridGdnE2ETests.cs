@@ -112,7 +112,7 @@ public sealed class VulkanHybridGdnE2ETests
         try
         {
             using var model = GgufModel.Open(path);
-            var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+            var hp = ArchitectureModelResolver.ResolveHyperparams(model);
 
             // Defensive: this test only fires on a dense hybrid GDN model.
             Assert.True(hp.IsHybridSsm, "Expected hp.IsHybridSsm for the qwen36 GDN model");
@@ -221,7 +221,7 @@ public sealed class VulkanHybridGdnE2ETests
             Assert.SkipUnless(probe is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         Assert.True(hp.IsHybridSsm, "Expected hp.IsHybridSsm for the qwen36 GDN model");
         Assert.NotNull(hp.Gdn);
         Assert.NotNull(hp.LayerTypes);
@@ -307,7 +307,7 @@ public sealed class VulkanHybridGdnE2ETests
         }
 
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         Assert.True(hp.IsHybridSsm, "Expected hp.IsHybridSsm for the qwen36 GDN model");
 
         var tokenizer = GgufTokenizer.FromGgufModel(model);
@@ -396,7 +396,7 @@ public sealed class VulkanHybridGdnE2ETests
         try
         {
             using var model = GgufModel.Open(path);
-            var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+            var hp = ArchitectureModelResolver.ResolveHyperparams(model);
 
             Assert.True(hp.IsHybridSsm, "Expected hp.IsHybridSsm for the qwen36 GDN model");
             Assert.NotNull(hp.Gdn);

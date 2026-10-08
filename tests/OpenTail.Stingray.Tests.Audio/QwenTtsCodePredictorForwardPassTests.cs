@@ -41,7 +41,7 @@ public sealed class QwenTtsCodePredictorForwardPassTests : HeavyTestBase
         Console.WriteLine($"[QwenTtsCodePredictor] path={modelPath} bytes={new FileInfo(modelPath!).Length} architecture={architecture} name={name}");
         Assert.Contains("Qwen3-TTS", name, StringComparison.OrdinalIgnoreCase);
         var tensorSource = new QwenTtsCodePredictorTensorSource(model, numLayers: 5);
-        var hp = ModelHyperparams.FromGgufMetadata(tensorSource.Metadata, tensorSource);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(tensorSource);
 
         Assert.Equal(5, hp.NumLayers);
         Assert.Equal(1024, hp.EmbeddingDim);

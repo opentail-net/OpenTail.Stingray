@@ -49,7 +49,7 @@ public sealed class SmolLm2RealWeightsTests
         if (modelPath is null) Assert.Skip("modelPath not found (checkpoint or fixture missing).");
 
         using var model = GgufModel.Open(modelPath);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
+        var hp = OpenTail.Stingray.Engine.ArchitectureModelResolver.ResolveHyperparams(model.Metadata);
         var tokenizer = GgufTokenizer.FromGgufModel(model);
         using var backend = new CpuBackend();
         var fwd = new OpenTail.Stingray.Engine.ForwardPass(model, backend, hp, maxContextLength: 512);

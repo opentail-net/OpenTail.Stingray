@@ -66,7 +66,7 @@ public sealed class Qwen3CudaGraphParityTests
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         // Sanity: a dense, non-Gemma SwiGLU model (no PLE / per-layer head_dim / MoE).
         Assert.Null(hp.LayerHeadDim);
         Assert.False(hp.HasPerLayerTokenEmbd);
@@ -136,7 +136,7 @@ public sealed class Qwen3CudaGraphParityTests
         try
         {
             using var model = GgufModel.Open(path);
-            var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+            var hp = ArchitectureModelResolver.ResolveHyperparams(model);
             const int NSteps = 8;
 
             var refLogits = new float[NSteps][];

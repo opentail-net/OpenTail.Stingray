@@ -153,7 +153,7 @@ public sealed class Gemma4Cuda12BBatchForwardMultiTests
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
 
         Assert.True(hp.AttentionKEqV, "expected attention_k_eq_v=true for the 12B model.");
         Assert.NotNull(hp.LayerKvHeads);   // per-layer KV heads (8 GQA SWA / 1 MQA global)
@@ -192,7 +192,7 @@ public sealed class Gemma4Cuda12BBatchForwardMultiTests
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         using var fwd = NewFwd(model, gpu, hp);
 
         int bos = ReadIntMetadata(model, "tokenizer.ggml.bos_token_id", fallback: 2);
@@ -227,7 +227,7 @@ public sealed class Gemma4Cuda12BBatchForwardMultiTests
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         using var fwd = NewFwd(model, gpu, hp);
 
         int bos = ReadIntMetadata(model, "tokenizer.ggml.bos_token_id", fallback: 2);
@@ -276,7 +276,7 @@ public sealed class Gemma4Cuda12BBatchForwardMultiTests
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         using var fwd = NewFwd(model, gpu, hp);
 
         int bos = ReadIntMetadata(model, "tokenizer.ggml.bos_token_id", fallback: 2);
@@ -342,7 +342,7 @@ public sealed class Gemma4Cuda12BBatchForwardMultiTests
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         using var fwd = NewFwd(model, gpu, hp);
         Assert.True(fwd.SupportsContinuousBatching);
 

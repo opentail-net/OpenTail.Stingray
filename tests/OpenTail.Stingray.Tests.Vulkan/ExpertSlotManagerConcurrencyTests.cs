@@ -36,7 +36,7 @@ public sealed class ExpertSlotManagerConcurrencyTests : HeavyTestBase
         using var _gpu = gpu;
 
         using var model = GgufModel.Open(path!);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         var dtypes = new Dictionary<nint, DType>();
         const int layers = 4, experts = 24, capacity = 40; // 96 distinct experts through 40 slots: constant eviction
 

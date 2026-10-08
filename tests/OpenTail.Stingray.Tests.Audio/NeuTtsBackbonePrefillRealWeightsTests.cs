@@ -39,7 +39,7 @@ public sealed class NeuTtsBackbonePrefillRealWeightsTests : HeavyTestBase
         var source = new RvcPackedTensorSource(model);
 
         using var llm = new NeuTtsBackboneTensorSource(source);
-        var hp = ModelHyperparams.FromGgufMetadata(llm.Metadata);
+        var hp = OpenTail.Stingray.Engine.ArchitectureModelResolver.ResolveHyperparams(llm.Metadata);
         using var backend = new CpuBackend();
         using var fwd = new ForwardPass(llm, backend, hp);
 

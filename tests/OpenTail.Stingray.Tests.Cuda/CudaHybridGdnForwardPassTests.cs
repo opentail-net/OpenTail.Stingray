@@ -67,7 +67,7 @@ public sealed class CudaHybridGdnForwardPassTests
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
 
         // Defensive: this test should only fire on a hybrid GDN model with MoE.
         Assert.True(hp.IsHybridSsm, "Expected hp.IsHybridSsm for qwen35moe model");
@@ -153,7 +153,7 @@ public sealed class CudaHybridGdnForwardPassTests
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
 
         var tokenizer = GgufTokenizer.FromGgufModel(model);
 
@@ -204,7 +204,7 @@ public sealed class CudaHybridGdnForwardPassTests
         try
         {
             using var model = GgufModel.Open(path);
-            var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+            var hp = ArchitectureModelResolver.ResolveHyperparams(model);
             var tokenizer = GgufTokenizer.FromGgufModel(model);
 
             var placement = new LayerPlacement(
@@ -281,7 +281,7 @@ public sealed class CudaHybridGdnForwardPassTests
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
 
         Assert.True(hp.IsHybridSsm, "Expected hp.IsHybridSsm for qwen35 27B-MTP");
         Assert.NotNull(hp.Gdn);
@@ -403,7 +403,7 @@ public sealed class CudaHybridGdnForwardPassTests
     private static (int top1, float[] topK) RunGreedyPrefill(CudaBackend gpu, string modelPath)
     {
         using var model = GgufModel.Open(modelPath);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         var tokenizer = GgufTokenizer.FromGgufModel(model);
 
         var placement = new LayerPlacement(
@@ -463,7 +463,7 @@ public sealed class CudaHybridGdnForwardPassTests
             try
             {
                 using var model = GgufModel.Open(path);
-                var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+                var hp = ArchitectureModelResolver.ResolveHyperparams(model);
                 var tok = GgufTokenizer.FromGgufModel(model);
                 int useCtx = Math.Min(hp.ContextLength, ctx);
                 var placement = new LayerPlacement(GpuLayers: hp.NumLayers, CpuLayers: 0,

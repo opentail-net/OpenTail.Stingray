@@ -48,7 +48,7 @@ public sealed class GlmMoeGreedyParityTests : HeavyTestBase
         using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path!);
         var model = modelHandle.Model;
         Assert.Equal("glm4moe", Convert.ToString(model.Metadata["general.architecture"]));
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         Assert.Equal(128, hp.NumExperts);
         Assert.Equal(8, hp.NumActiveExperts);
         Assert.Equal(2, hp.ExpertGatingFunc);   // sigmoid probabilities, selected with exp_probs_b, weighted by the unbiased ones

@@ -22,7 +22,7 @@ public sealed class DecodeViaGemmInvarianceTests : HeavyTestBase
         Assert.SkipWhen(path is null, $"{ModelFile} is required.");
         using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path!);
         var model = modelHandle.Model;
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         var tokens = TeacherForcedParity.Tokenize(ModelFile, Prompt);
 
         bool saved = SimdKernels.DecodeViaGemm;

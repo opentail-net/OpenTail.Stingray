@@ -40,7 +40,7 @@ public sealed class Exaone45GreedyParityTests : HeavyTestBase
         using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path!);
         var model = modelHandle.Model;
         Assert.Equal("exaone4", Convert.ToString(model.Metadata["general.architecture"]));
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         Assert.True(hp.RopeOnlySwaLayers, "64-layer exaone4 must rope only its SWA layers");
         var tokenizer = GgufTokenizer.FromGgufModel(model);
         var promptTokens = tokenizer.Encode(prompt);

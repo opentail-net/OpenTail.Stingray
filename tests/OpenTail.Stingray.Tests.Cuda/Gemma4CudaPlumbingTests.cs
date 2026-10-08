@@ -83,7 +83,7 @@ public sealed class Gemma4CudaPlumbingTests
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
 
         // Pre-condition: the GGUF really is a PLE-bearing Gemma 4. If the loader
         // didn't flip these flags the rest of the assertion is meaningless.
@@ -159,7 +159,7 @@ public sealed class Gemma4CudaPlumbingTests
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
 
         // Pre-condition: there must actually be aliased layers in the source GGUF.
         // If shared_kv_layers were 0 this test would pass trivially without
@@ -199,7 +199,7 @@ public sealed class Gemma4CudaPlumbingTests
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
 
         Assert.NotNull(hp.LayerHeadDim);
 

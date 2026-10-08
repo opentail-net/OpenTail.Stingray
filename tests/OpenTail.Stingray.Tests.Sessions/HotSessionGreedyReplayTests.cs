@@ -89,7 +89,7 @@ public sealed class HotSessionGreedyReplayTests : HeavyTestBase
 
         using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
         var model = modelHandle.Model;
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
+        var hp = OpenTail.Stingray.Engine.ArchitectureModelResolver.ResolveHyperparams(model.Metadata);
         var tokenizer = GgufTokenizer.FromGgufModel(model);
 
         // ── Arm A: one session, state retained across all three turns ──────────────────────
@@ -194,7 +194,7 @@ public sealed class HotSessionGreedyReplayTests : HeavyTestBase
 
         using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
         var model = modelHandle.Model;
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
+        var hp = OpenTail.Stingray.Engine.ArchitectureModelResolver.ResolveHyperparams(model.Metadata);
         var tokenizer = GgufTokenizer.FromGgufModel(model);
 
         // Seed designed to be exactly PageSize - 1 tokens long, so MaxNewTokens = 1
@@ -354,7 +354,7 @@ public sealed class HotSessionGreedyReplayTests : HeavyTestBase
     {
         using var modelHandle = SharedModelCacheFixture.Instance.Acquire(modelPath);
         var model = modelHandle.Model;
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
+        var hp = OpenTail.Stingray.Engine.ArchitectureModelResolver.ResolveHyperparams(model.Metadata);
         var tokenizer = GgufTokenizer.FromGgufModel(model);
         using var backend = new CpuBackend();
         var fwd = new Engine.ForwardPass(model, backend, hp, maxContextLength: 2048);
@@ -387,7 +387,7 @@ public sealed class HotSessionGreedyReplayTests : HeavyTestBase
     {
         using var modelHandle = SharedModelCacheFixture.Instance.Acquire(modelPath);
         var model = modelHandle.Model;
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
+        var hp = OpenTail.Stingray.Engine.ArchitectureModelResolver.ResolveHyperparams(model.Metadata);
         var tokenizer = GgufTokenizer.FromGgufModel(model);
         using var backend = new CpuBackend();
         var fwd = new Engine.ForwardPass(model, backend, hp, maxContextLength: 2048);

@@ -96,7 +96,7 @@ public sealed class Qwen3VlVulkanMRopeParityTests : HeavyTestBase
         Assert.SkipWhen(textPath is null || mmprojPath is null, "Qwen3-VL 2B Q8_0 + mmproj not present");
 
         using var model = GgufModel.Open(textPath!);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         var tok = GgufTokenizer.FromGgufModel(model);
         using var vision = UnifiedVisionPipeline.Open(mmprojPath!);
         const int size = 448;
@@ -149,7 +149,7 @@ public sealed class Qwen3VlVulkanMRopeParityTests : HeavyTestBase
         using var _ = gpu;
 
         using var model = GgufModel.Open(textPath!);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         Assert.True(hp.RopeSections is { Count: > 0 } && hp.NumDeepstack > 0, "expected qwen3vl M-RoPE + deepstack");
         var tok = GgufTokenizer.FromGgufModel(model);
 

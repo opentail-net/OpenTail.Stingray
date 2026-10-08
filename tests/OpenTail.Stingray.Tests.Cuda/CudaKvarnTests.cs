@@ -389,7 +389,7 @@ public sealed unsafe class CudaKvarnTests(ITestOutputHelper output)
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         using var fwd = new CudaForwardPass(model, gpu, hp, maxContextLength: 640,
             enableTurboQuant: true, tqFp32Window: 256, tqQuantizer: TqQuantizer.KVarN);
 
@@ -497,7 +497,7 @@ public sealed unsafe class CudaKvarnTests(ITestOutputHelper output)
     {
         using var gpu = TryCreate() ?? throw new InvalidOperationException("CUDA availability checked by caller");
         using var model = GgufModel.Open(modelPath);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         using var fwd = new CudaForwardPass(model, gpu, hp, maxContextLength: 640,
             enableTurboQuant: true, tqFp32Window: 256, tqQuantizer: TqQuantizer.KVarN);
         fwd.UseCudaGraph = useGraphs;
@@ -540,7 +540,7 @@ public sealed unsafe class CudaKvarnTests(ITestOutputHelper output)
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
 
         var prevBudget = Environment.GetEnvironmentVariable("STINGRAY_SNAPKV_BUDGET");
         var prevDtype = Environment.GetEnvironmentVariable("STINGRAY_KV_DTYPE");

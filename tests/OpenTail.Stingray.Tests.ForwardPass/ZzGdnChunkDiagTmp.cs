@@ -14,7 +14,7 @@ public sealed class ZzGdnChunkDiagTmp
         var path = Environment.GetEnvironmentVariable("STINGRAY_HYBRID_GDN_MODEL");
         if (path is null) return;
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         var tok = GgufTokenizer.FromGgufModel(model);
         using var backend = new CpuBackend();
         using var fwd = new HybridGdnForwardPass(model, backend, hp);

@@ -72,7 +72,7 @@ public sealed class HybridGdnForwardPassTests : HeavyTestBase
 
         using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
         var model = modelHandle.Model;
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
 
         // Defensive: this test should only fire on a hybrid GDN model with MoE.
         Assert.True(hp.IsHybridSsm, "Expected hp.IsHybridSsm for qwen35moe model");
@@ -158,7 +158,7 @@ public sealed class HybridGdnForwardPassTests : HeavyTestBase
 
         using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
         var model = modelHandle.Model;
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         var tokenizer = GgufTokenizer.FromGgufModel(model);
         using var backend = new CpuBackend();
         using var fwd = new HybridGdnForwardPass(model, backend, hp);
@@ -255,7 +255,7 @@ public sealed class HybridGdnForwardPassTests : HeavyTestBase
 
         using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
         var model = modelHandle.Model;
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
 
         Assert.True(hp.IsHybridSsm, "Expected hp.IsHybridSsm for qwen35 hybrid GDN model");
         Assert.NotNull(hp.Gdn);
@@ -333,7 +333,7 @@ public sealed class HybridGdnForwardPassTests : HeavyTestBase
 
         using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
         var model = modelHandle.Model;
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         Assert.Equal(1, hp.NumMtpLayers);
 
         var tokenizer = GgufTokenizer.FromGgufModel(model);
@@ -414,7 +414,7 @@ public sealed class HybridGdnForwardPassTests : HeavyTestBase
 
         using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
         var model = modelHandle.Model;
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         var tokenizer = GgufTokenizer.FromGgufModel(model);
         using var backend = new CpuBackend();
         using var fwd = new HybridGdnForwardPass(model, backend, hp);
@@ -499,7 +499,7 @@ public sealed class HybridGdnForwardPassTests : HeavyTestBase
 
         using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
         var model = modelHandle.Model;
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         Assert.True(hp.NumMtpLayers > 0);
 
         var tokenizer = GgufTokenizer.FromGgufModel(model);
@@ -598,7 +598,7 @@ public sealed class HybridGdnForwardPassTests : HeavyTestBase
 
         using var modelHandle = SharedModelCacheFixture.Instance.Acquire(modelPath);
         var model = modelHandle.Model;
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         Assert.True(hp.NumMtpLayers > 0);
 
         var tokenizer = GgufTokenizer.FromGgufModel(model);
@@ -721,7 +721,7 @@ public sealed class HybridGdnForwardPassTests : HeavyTestBase
 
         using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
         var model = modelHandle.Model;
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         var tokenizer = GgufTokenizer.FromGgufModel(model);
         using var backend = new CpuBackend();
         using var fwd = new HybridGdnForwardPass(model, backend, hp);
@@ -754,7 +754,7 @@ public sealed class HybridGdnForwardPassTests : HeavyTestBase
 
         using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
         var model = modelHandle.Model;
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         var tokenizer = GgufTokenizer.FromGgufModel(model);
         using var backend = new CpuBackend();
         using var fwd = new HybridGdnForwardPass(model, backend, hp);
@@ -861,7 +861,7 @@ public sealed class HybridGdnForwardPassTests : HeavyTestBase
 
         using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
         var model = modelHandle.Model;
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         Assert.True(hp.IsHybridSsm, "Expected the real Ornith-1.0-9B checkpoint to probe as hybrid GDN");
         Assert.NotNull(hp.Gdn);
 

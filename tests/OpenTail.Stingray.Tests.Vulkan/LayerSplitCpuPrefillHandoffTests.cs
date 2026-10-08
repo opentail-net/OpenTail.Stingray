@@ -27,7 +27,7 @@ public sealed class LayerSplitCpuPrefillHandoffTests : HeavyTestBase
         using var _gpu = gpu;
 
         using var model = GgufModel.Open(path!);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         string text = File.ReadAllText(wiki!);
         text = text[..Math.Min(900, text.Length)];
         text = text[..text.LastIndexOf(' ')];

@@ -136,7 +136,7 @@ public sealed class CudaSnapKvBatchingTests
 
         using var env = SnapKvEnv(budget: 512, window: 32);
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         using var fwd = new CudaForwardPass(model, gpu, hp, maxContextLength: 2048);
 
         Assert.True(fwd.SnapKvEnabled, "explicit STINGRAY_SNAPKV_BUDGET should keep SnapKV active.");
@@ -161,7 +161,7 @@ public sealed class CudaSnapKvBatchingTests
         const int budget = 512;
         using var env = SnapKvEnv(budget, window: 32);
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         var tokenizer = GgufTokenizer.FromGgufModel(model);
         using var fwd = new CudaForwardPass(model, gpu, hp, maxContextLength: 2048);
         Assert.True(fwd.SnapKvEnabled);
@@ -208,7 +208,7 @@ public sealed class CudaSnapKvBatchingTests
         const int budget = 512;
         using var env = SnapKvEnv(budget, window: 32);
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         var tokenizer = GgufTokenizer.FromGgufModel(model);
         using var fwd = new CudaForwardPass(model, gpu, hp, maxContextLength: 2048);
 
@@ -267,7 +267,7 @@ public sealed class CudaSnapKvBatchingTests
         const int budget = 512;
         using var env = SnapKvEnv(budget, window: 32);
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         var tokenizer = GgufTokenizer.FromGgufModel(model);
         using var fwd = new CudaForwardPass(model, gpu, hp, maxContextLength: 2048);
 
@@ -330,7 +330,7 @@ public sealed class CudaSnapKvBatchingTests
         const int budget = 512;
         using var env = SnapKvEnv(budget, window: 32);
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         var tokenizer = GgufTokenizer.FromGgufModel(model);
         using var fwd = new CudaForwardPass(model, gpu, hp, maxContextLength: 2048);
         Assert.True(fwd.SnapKvEnabled);
@@ -384,7 +384,7 @@ public sealed class CudaSnapKvBatchingTests
         const int budget = 512;
         using var env = SnapKvEnv(budget, window: 32);
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         var tokenizer = GgufTokenizer.FromGgufModel(model);
         using var fwd = new CudaForwardPass(model, gpu, hp, maxContextLength: 2048);
 
@@ -442,7 +442,7 @@ public sealed class CudaSnapKvBatchingTests
             ("STINGRAY_PREFIX_SLOTS", null),
             ("STINGRAY_KV_DTYPE", null));
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
 
         // ctx 4096 makes the fp32 KV cache exceed the auto-enable threshold (and maxSeqLen/4 lands
         // in the auto-budget band), so auto-SnapKV engages by default.

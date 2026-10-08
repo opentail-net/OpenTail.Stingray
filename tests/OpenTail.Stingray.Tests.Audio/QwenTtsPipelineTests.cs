@@ -93,7 +93,7 @@ public sealed class QwenTtsPipelineTests : HeavyTestBase
         for (int i = 0; i < hiddenDim; i++) embed[i] = (float)(rng.NextDouble() * 0.1 - 0.05);
         source.SetPromptEmbedding(embed, 1);
 
-        var hp = ModelHyperparams.FromGgufMetadata(source.Metadata);
+        var hp = OpenTail.Stingray.Engine.ArchitectureModelResolver.ResolveHyperparams(source.Metadata);
         using var backend = new CpuBackend();
         using var fwd = new ForwardPass(source, backend, hp);
         _ = fwd.Prefill([0]);
@@ -135,7 +135,7 @@ public sealed class QwenTtsPipelineTests : HeavyTestBase
         var row0 = embed[..hiddenDim];
         source.SetPromptEmbedding(row0, 1);
 
-        var hp = ModelHyperparams.FromGgufMetadata(source.Metadata);
+        var hp = OpenTail.Stingray.Engine.ArchitectureModelResolver.ResolveHyperparams(source.Metadata);
         using var backend = new CpuBackend();
         using var fwd = new ForwardPass(source, backend, hp);
         _ = fwd.Prefill([0]);

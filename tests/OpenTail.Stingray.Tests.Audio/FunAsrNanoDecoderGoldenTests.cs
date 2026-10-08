@@ -84,7 +84,7 @@ public sealed class FunAsrNanoDecoderGoldenTests : HeavyTestBase
         Console.Error.WriteLine($"[FunAsrNanoDecoderGolden] blk.0.attn_q.weight dims=[{string.Join(",", qInfo!.Value.Dimensions)}]");
         Console.Error.WriteLine($"[FunAsrNanoDecoderGolden] token_embd.weight dims=[{string.Join(",", embedInfoDbg!.Value.Dimensions)}]");
 
-        var hp = OpenTail.Stingray.Core.ModelHyperparams.FromGgufMetadata(llmSource.Metadata);
+        var hp = OpenTail.Stingray.Engine.ArchitectureModelResolver.ResolveHyperparams(llmSource.Metadata);
         using var backend = new OpenTail.Stingray.Cpu.CpuBackend();
         using var fwd = new OpenTail.Stingray.Engine.ForwardPass(llmSource, backend, hp);
 

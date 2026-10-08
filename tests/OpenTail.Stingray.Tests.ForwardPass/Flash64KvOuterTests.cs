@@ -28,7 +28,7 @@ public sealed class Flash64KvOuterTests : HeavyTestBase
 
         using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path!);
         var model = modelHandle.Model;
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
+        var hp = OpenTail.Stingray.Engine.ArchitectureModelResolver.ResolveHyperparams(model.Metadata);
         using var backend = new CpuBackend();
         int[] tokens = BuildTokens(Tokens);
 
@@ -73,7 +73,7 @@ public sealed class Flash64KvOuterTests : HeavyTestBase
 
         using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path!);
         var model = modelHandle.Model;
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
+        var hp = OpenTail.Stingray.Engine.ArchitectureModelResolver.ResolveHyperparams(model.Metadata);
         using var backend = new CpuBackend();
         int[] tokens = BuildTokens(Tokens);
 

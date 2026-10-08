@@ -50,7 +50,7 @@ public sealed class MixtralStyleGreedyParityTests : HeavyTestBase
         var model = modelHandle.Model;
         Assert.Equal("llama", Convert.ToString(model.Metadata["general.architecture"]));
         Assert.True(Convert.ToInt32(model.Metadata["llama.expert_count"]) > 0, "this receipt is for the llama + experts (Mixtral-style) family");
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         Assert.Equal(4, hp.NumExperts);
         Assert.Equal(2, hp.NumActiveExperts);
         Assert.True(hp.NormalizeMoeTopKWeights, "Mixtral renormalises its top-2 routing weights");

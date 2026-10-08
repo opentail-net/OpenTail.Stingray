@@ -128,7 +128,7 @@ public sealed class GpuFfnScratchGuardTests : HeavyTestBase
 
         using var model = GgufModel.Open(path);
         // Pass `model` so HasQkNorm / IsPerChannelQkNorm probe the tensor index (OLMoE needs it).
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         if (!hp.IsMoE) return; // dense model found instead — nothing MoE-specific to assert.
 
         var tokenizer = GgufTokenizer.FromGgufModel(model);

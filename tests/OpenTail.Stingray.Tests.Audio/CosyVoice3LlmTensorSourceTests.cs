@@ -54,7 +54,7 @@ public sealed class CosyVoice3LlmTensorSourceTests : HeavyTestBase
         using var source = new CosyVoice3LlmTensorSource(inner);
         source.EnableSpeechGenerationMode();
 
-        var hp = ModelHyperparams.FromGgufMetadata(source.Metadata);
+        var hp = OpenTail.Stingray.Engine.ArchitectureModelResolver.ResolveHyperparams(source.Metadata);
         using var backend = new CpuBackend();
         using var fwd = new ForwardPass(source, backend, hp);
 

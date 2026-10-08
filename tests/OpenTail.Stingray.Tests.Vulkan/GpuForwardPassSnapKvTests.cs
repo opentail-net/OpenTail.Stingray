@@ -88,7 +88,7 @@ public sealed class GpuForwardPassSnapKvTests : HeavyTestBase
         try
         {
             using var model = GgufModel.Open(path);
-            var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+            var hp = ArchitectureModelResolver.ResolveHyperparams(model);
             var tokenizer = GgufTokenizer.FromGgufModel(model);
 
             // Keep ctx tight so the prefill (and the matching budget gate) stays
@@ -163,7 +163,7 @@ public sealed class GpuForwardPassSnapKvTests : HeavyTestBase
         try
         {
             using var model = GgufModel.Open(path);
-            var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+            var hp = ArchitectureModelResolver.ResolveHyperparams(model);
             var tokenizer = GgufTokenizer.FromGgufModel(model);
 
             // ctx=512 on Qwen3-8B (8 KV heads × 128 = 1024 kv_dim, 32 layers, fp32)
@@ -202,7 +202,7 @@ public sealed class GpuForwardPassSnapKvTests : HeavyTestBase
         try
         {
             using var model = GgufModel.Open(path);
-            var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+            var hp = ArchitectureModelResolver.ResolveHyperparams(model);
             var tokenizer = GgufTokenizer.FromGgufModel(model);
 
             int ctx = Math.Min(hp.ContextLength, 2048);

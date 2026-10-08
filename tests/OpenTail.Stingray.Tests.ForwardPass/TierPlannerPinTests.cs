@@ -39,7 +39,7 @@ public sealed class TierPlannerPinTests : HeavyTestBase
 
         using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
         var model = modelHandle.Model;
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         Assert.True(hp.IsMoE, "OLMoE must be detected as MoE");
         Assert.True(hp.NumLayers >= 4, "need enough layers for a meaningful split");
 
@@ -76,7 +76,7 @@ public sealed class TierPlannerPinTests : HeavyTestBase
 
         using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
         var model = modelHandle.Model;
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         var hw = FixedHw();
 
         Assert.Equal(hp.NumLayers, TierPlanner.Plan(model, hp, hw, pinGpuLayers: hp.NumLayers + 100).GpuLayers);

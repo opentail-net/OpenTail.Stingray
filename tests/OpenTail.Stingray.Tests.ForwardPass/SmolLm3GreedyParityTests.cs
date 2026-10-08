@@ -39,6 +39,9 @@ public sealed class SmolLm3GreedyParityTests : HeavyTestBase
 {
     private const string ModelFile = "SmolLM3-3B-Q4_K_M.gguf";
 
+    /// <summary>The same Q4_K_M checkpoint is also stored here as SmolLM3-Q4_K_M.gguf.</summary>
+    private static readonly string[] s_modelFileNames = [ModelFile, "SmolLM3-Q4_K_M.gguf"];
+
     /// <summary>Prompt token ids from llama-tokenize; see the class remarks.</summary>
     private static readonly int[] s_promptTokens = [791, 6864, 315, 9822, 374];
 
@@ -57,7 +60,7 @@ public sealed class SmolLm3GreedyParityTests : HeavyTestBase
 
         using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path!);
         var model = modelHandle.Model;
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         var tokenizer = GgufTokenizer.FromGgufModel(model);
 
         Assert.Equal("smollm3", Convert.ToString(model.Metadata["general.architecture"]));
@@ -85,10 +88,13 @@ public sealed class SmolLm3GreedyParityTests : HeavyTestBase
         var dir = Directory.GetCurrentDirectory();
         for (int i = 0; i < 8; i++)
         {
-            var candidate = Path.Combine(dir, "models", ModelFile);
-            if (File.Exists(candidate)) return candidate;
-            var candidateNested = Path.Combine(dir, "models", "_models", ModelFile);
-            if (File.Exists(candidateNested)) return candidateNested;
+            foreach (var name in s_modelFileNames)
+            {
+                var candidate = Path.Combine(dir, "models", name);
+                if (File.Exists(candidate)) return candidate;
+                var candidateNested = Path.Combine(dir, "models", "_models", name);
+                if (File.Exists(candidateNested)) return candidateNested;
+            }
             if (Directory.GetParent(dir) is not { } parent) break;
             dir = parent.FullName;
         }

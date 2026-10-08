@@ -103,7 +103,7 @@ public sealed class VulkanSpecDecodeE2ETests : HeavyTestBase
         const int DecodeTokens = 40;
 
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         Assert.Null(hp.LayerHeadDim);   // dense, not Gemma-4
         Assert.False(hp.IsMoE);
 

@@ -185,7 +185,7 @@ public sealed class CudaSpecBatchVerifyGemma4Tests
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         Assert.NotNull(hp.LayerHeadDim);   // Gemma-4 marker
 
         using var fwd = NewFwd(model, gpu, hp, ctx: 512);
@@ -209,7 +209,7 @@ public sealed class CudaSpecBatchVerifyGemma4Tests
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         using var fwd = NewFwd(model, gpu, hp, ctx: 512, kvDtype: "q8_0");
         if (!fwd.SupportsBatchVerify) return;   // q8 KV geometry unsupported on this build → skip
 
@@ -233,7 +233,7 @@ public sealed class CudaSpecBatchVerifyGemma4Tests
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         if (hp.SlidingWindowSize <= 0) return;   // no SWA layers → nothing to wrap
 
         // SwaRingSize = min(ctx, window + SwaRingHeadroom>=4096). Pick a ctx comfortably above
@@ -265,7 +265,7 @@ public sealed class CudaSpecBatchVerifyGemma4Tests
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         using var fwd = NewFwd(model, gpu, hp, ctx: 512);
         Assert.True(fwd.SupportsBatchVerify);
 
@@ -314,12 +314,12 @@ public sealed class CudaSpecBatchVerifyGemma4Tests
         const int DecodeTokens = 32;
 
         using var targetModel = GgufModel.Open(targetPath);
-        var targetHp = ModelHyperparams.FromGgufMetadata(targetModel.Metadata, targetModel);
+        var targetHp = ArchitectureModelResolver.ResolveHyperparams(targetModel);
         using var target = NewFwd(targetModel, gpu, targetHp, ctx: 512);
         Assert.True(target.SupportsBatchVerify);
 
         using var draftModel = GgufModel.Open(draftPath);
-        var draftHp = ModelHyperparams.FromGgufMetadata(draftModel.Metadata, draftModel);
+        var draftHp = ArchitectureModelResolver.ResolveHyperparams(draftModel);
         if (targetHp.VocabSize != draftHp.VocabSize) return;   // different tokenizer → not a draft
 
         var prompt = GemmaPrompt;

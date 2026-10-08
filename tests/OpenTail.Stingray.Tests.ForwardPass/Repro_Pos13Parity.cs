@@ -72,7 +72,7 @@ public sealed class Repro_Pos13Parity : HeavyTestBase
 
         using var modelHandle = SharedModelCacheFixture.Instance.Acquire(modelPath!);
         var model = modelHandle.Model;
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
 
         using var backend = new CpuBackend();
         using var fwd = new HybridGdnForwardPass(model, backend, hp);

@@ -49,7 +49,7 @@ public sealed class VulkanArchLogitParityTests : HeavyTestBase
         // The model-aware overload, as the CLI and server use: it infers tensor-shape features
         // (e.g. IsPerChannelQkNorm) that the metadata-only one misses — without it this test
         // compared two equally-wrong OLMoE configurations and passed a broken Vulkan path.
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         int[] prompt = GgufTokenizer.FromGgufModel(model).Encode(PromptText).ToArray();
         const int steps = 8;
 

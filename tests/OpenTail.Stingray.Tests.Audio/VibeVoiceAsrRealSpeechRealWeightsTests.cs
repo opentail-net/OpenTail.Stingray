@@ -224,7 +224,7 @@ public sealed class VibeVoiceAsrRealSpeechRealWeightsTests : HeavyTestBase
             inputIds[prompt.SpeechPositions[slot]] = llm.SpeechTokenIdOffset + slot;
         var remappedPrompt = new VibeVoiceAsrPrompt(inputIds, prompt.SpeechPositions);
 
-        var hp = ModelHyperparams.FromGgufMetadata(llm.Metadata);
+        var hp = OpenTail.Stingray.Engine.ArchitectureModelResolver.ResolveHyperparams(llm.Metadata);
         using var backend = new CpuBackend();
         using var fwd = new ForwardPass(llm, backend, hp);
 

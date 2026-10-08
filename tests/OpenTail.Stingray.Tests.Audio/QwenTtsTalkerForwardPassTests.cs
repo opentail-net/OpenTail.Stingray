@@ -39,7 +39,7 @@ public sealed class QwenTtsTalkerForwardPassTests : HeavyTestBase
 
         using var model = GgufModel.Open(modelPath!);
         var tensorSource = new QwenTtsTalkerTensorSource(model, numLayers: 28);
-        var hp = ModelHyperparams.FromGgufMetadata(tensorSource.Metadata, tensorSource);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(tensorSource);
 
         Assert.Equal(28, hp.NumLayers);
         Assert.Equal(1024, hp.EmbeddingDim);

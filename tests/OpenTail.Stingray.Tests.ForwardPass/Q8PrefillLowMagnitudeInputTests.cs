@@ -48,7 +48,7 @@ public sealed class Q8PrefillLowMagnitudeInputTests : HeavyTestBase
         Assert.SkipWhen(path is null, "SmolLM2 GGUF not present");
         using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path!);
         var model = modelHandle.Model;
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
+        var hp = OpenTail.Stingray.Engine.ArchitectureModelResolver.ResolveHyperparams(model.Metadata);
         var tk = GgufTokenizer.FromGgufModel(model);
 
         var acc = new List<int>();

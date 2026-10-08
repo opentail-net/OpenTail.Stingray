@@ -13,7 +13,7 @@ public sealed class ZzLayerDumpTmp
         try
         {
             using var model = GgufModel.Open(Environment.GetEnvironmentVariable("ZZ_MODEL")!);
-            var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+            var hp = ArchitectureModelResolver.ResolveHyperparams(model);
             var ids = File.ReadAllText(Environment.GetEnvironmentVariable("ZZ_IDS_FILE")!).Split(',').Select(int.Parse).ToList();
 
             using var backend = new CpuBackend();

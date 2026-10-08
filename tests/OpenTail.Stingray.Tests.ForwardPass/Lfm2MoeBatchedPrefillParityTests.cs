@@ -23,7 +23,7 @@ public sealed class Lfm2MoeBatchedPrefillParityTests : HeavyTestBase
 
         using var modelHandle = SharedModelCacheFixture.Instance.Acquire(modelPath!);
         var model = modelHandle.Model;
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         Assert.True(hp.IsMoE && hp.IsShortConvLayer is not null, "expected an LFM2-MoE short-convolution model");
 
         var tokenizer = GgufTokenizer.FromGgufModel(model);
@@ -86,7 +86,7 @@ public sealed class Lfm2MoeBatchedPrefillParityTests : HeavyTestBase
 
         using var modelHandle = SharedModelCacheFixture.Instance.Acquire(modelPath!);
         var model = modelHandle.Model;
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
 
         var tokenizer = GgufTokenizer.FromGgufModel(model);
         var tokens = tokenizer.Encode(File.ReadAllText(corpusPath)).ToList();

@@ -57,7 +57,7 @@ public sealed class QwenAsrLlmSafetensorsTensorSourceTests : HeavyTestBase
         Assert.SkipUnless(path != null, "models/qwen3-asr-0.6b-hf/model.safetensors not found");
 
         using var source = Open(path!);
-        var hp = ModelHyperparams.FromGgufMetadata(source.Metadata, source);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(source);
         using var backend = new CpuBackend();
         using var fwd = new ForwardPass(source, backend, hp);
 

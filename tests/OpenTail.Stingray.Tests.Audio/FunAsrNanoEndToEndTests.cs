@@ -97,7 +97,7 @@ public sealed class FunAsrNanoEndToEndTests : HeavyTestBase
                 prompt.Add(id);
         }
 
-        var hp = OpenTail.Stingray.Core.ModelHyperparams.FromGgufMetadata(llmSource.Metadata);
+        var hp = OpenTail.Stingray.Engine.ArchitectureModelResolver.ResolveHyperparams(llmSource.Metadata);
         using var backend = new OpenTail.Stingray.Cpu.CpuBackend();
         using var fwd = new OpenTail.Stingray.Engine.ForwardPass(llmSource, backend, hp);
 

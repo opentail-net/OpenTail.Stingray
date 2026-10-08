@@ -50,7 +50,7 @@ public sealed class Qwen2MoeGreedyParityTests : HeavyTestBase
         using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path!);
         var model = modelHandle.Model;
         Assert.Equal("qwen2moe", Convert.ToString(model.Metadata["general.architecture"]));
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         Assert.Equal(1408, hp.ExpertIntermediateDim);
         Assert.Equal(5632, hp.SharedExpertIntermediateDim);
         var tokenizer = GgufTokenizer.FromGgufModel(model);

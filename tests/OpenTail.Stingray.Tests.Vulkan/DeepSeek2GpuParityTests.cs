@@ -22,7 +22,7 @@ public sealed class DeepSeek2GpuParityTests : HeavyTestBase
         using var _gpu = gpu;
 
         using var model = GgufModel.Open(path!);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         int[] prompt = GgufTokenizer.FromGgufModel(model)
             .Encode("The scheduler assigns runnable threads to cores, balancing throughput against latency.").ToArray();
         const int steps = 8;

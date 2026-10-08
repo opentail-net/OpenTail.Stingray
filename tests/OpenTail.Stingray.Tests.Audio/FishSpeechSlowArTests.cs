@@ -74,7 +74,7 @@ public sealed class FishSpeechSlowArTests : HeavyTestBase
 
         using var model = GgufModel.Open(modelPath!);
         var source = new FishSpeechTensorSource(model, numLayers: 36);
-        var hp = ModelHyperparams.FromGgufMetadata(source.Metadata, source);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(source);
         using var backend = new CpuBackend();
         using var fwd = new ForwardPass(source, backend, hp, maxContextLength: 512);
         fwd.EnableHiddenTaps([0]); // layer 0's output

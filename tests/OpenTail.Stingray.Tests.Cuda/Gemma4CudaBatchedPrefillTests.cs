@@ -84,7 +84,7 @@ public sealed class Gemma4CudaBatchedPrefillTests
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         Assert.NotNull(hp.LayerHeadDim);
         Assert.True(hp.HasPerLayerTokenEmbd);
 
@@ -145,7 +145,7 @@ public sealed class Gemma4CudaBatchedPrefillTests
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         Assert.NotNull(hp.LayerHeadDim);
         Assert.True(hp.HasPerLayerTokenEmbd);
 
@@ -196,7 +196,7 @@ public sealed class Gemma4CudaBatchedPrefillTests
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         Assert.NotNull(hp.LayerHeadDim);
         Assert.True(hp.HasPerLayerTokenEmbd);
 
@@ -244,7 +244,7 @@ public sealed class Gemma4CudaBatchedPrefillTests
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         Assert.NotNull(hp.LayerHeadDim);
         Assert.True(hp.HasPerLayerTokenEmbd);
 
@@ -292,7 +292,7 @@ public sealed class Gemma4CudaBatchedPrefillTests
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         Assert.NotNull(hp.LayerHeadDim);
         Assert.True(hp.HasPerLayerTokenEmbd);
 
@@ -361,7 +361,7 @@ public sealed class Gemma4CudaBatchedPrefillTests
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         Assert.NotNull(hp.LayerHeadDim);
         Assert.True(hp.SlidingWindowSize > 0 && hp.SlidingWindowSize < 700,
             $"Test assumes a sliding window < the 700-token prompt; got {hp.SlidingWindowSize}.");
@@ -439,7 +439,7 @@ public sealed class Gemma4CudaBatchedPrefillTests
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         Assert.NotNull(hp.LayerHeadDim);
         Assert.True(hp.SlidingWindowSize > 0);
 

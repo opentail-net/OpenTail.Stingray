@@ -83,7 +83,7 @@ public sealed class Qwen3CudaBatchedPrefillTests
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         // Sanity: this really is a dense, non-Gemma SwiGLU model.
         Assert.Null(hp.LayerHeadDim);
         Assert.False(hp.HasPerLayerTokenEmbd);
@@ -144,7 +144,7 @@ public sealed class Qwen3CudaBatchedPrefillTests
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         // Precondition: this is exactly the buggy branch — weighted (non-L2) QK-norm + NEOX RoPE.
         Assert.True(hp.HasQkNorm);
         Assert.False(hp.UseL2QkNorm);
@@ -210,7 +210,7 @@ public sealed class Qwen3CudaBatchedPrefillTests
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         Assert.Null(hp.LayerHeadDim);
 
         // > 4096 tokens → forces the chunked branch. Deterministic spread across the vocab
@@ -271,7 +271,7 @@ public sealed class Qwen3CudaBatchedPrefillTests
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         Assert.Null(hp.LayerHeadDim);
 
         using var fwd = new CudaForwardPass(model, gpu, hp, maxContextLength: 512);
@@ -321,7 +321,7 @@ public sealed class Qwen3CudaBatchedPrefillTests
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         Assert.Null(hp.LayerHeadDim);
 
         using var fwd = new CudaForwardPass(model, gpu, hp, maxContextLength: 512)
@@ -378,7 +378,7 @@ public sealed class Qwen3CudaBatchedPrefillTests
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         Assert.Null(hp.LayerHeadDim);
 
         using var fwd = new CudaForwardPass(model, gpu, hp, maxContextLength: 512)

@@ -67,7 +67,7 @@ public sealed unsafe class CudaHybridCpuPrefillHandoffTests
         Assert.SkipUnless(path is not null, "MoE model fixture not present in this environment");
 
         using var model = GgufModel.Open(path!);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         int[] prompt = GgufTokenizer.FromGgufModel(model).Encode(Text).ToArray();
         int n = prompt.Length;
         int kvDim = hp.NumKvHeads * hp.HeadDim;
@@ -162,7 +162,7 @@ public sealed unsafe class CudaHybridCpuPrefillHandoffTests
         Assert.SkipUnless(path is not null, "MoE model fixture not present in this environment");
 
         using var model = GgufModel.Open(path!);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         int[] prompt = GgufTokenizer.FromGgufModel(model).Encode(Text).ToArray();
         using var h = new CudaHybridForwardPass(model, gpu!, hp, new LayerPlacement(4, hp.NumLayers - 4, 0, 0, 1024));
         Assert.SkipUnless(h.KvCacheDType == DType.Float32, "GPU KV is narrowed; the handoff is F32-only");

@@ -62,7 +62,7 @@ public sealed class VulkanSnapKvBatchedPrefillTests : HeavyTestBase
             Environment.SetEnvironmentVariable(WindowVar, "16");
 
             using var model = GgufModel.Open(path);
-            var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
+            var hp = OpenTail.Stingray.Engine.ArchitectureModelResolver.ResolveHyperparams(model.Metadata);
             int[] prompt = BuildPrompt(96);
 
             float[] reference, batched;

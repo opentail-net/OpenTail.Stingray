@@ -65,7 +65,7 @@ public sealed class CudaMoeTests
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
+        var hp = OpenTail.Stingray.Engine.ArchitectureModelResolver.ResolveHyperparams(model.Metadata);
         if (!hp.IsMoE) return; // Defensive — finder should only return MoE models.
 
         var tokenizer = GgufTokenizer.FromGgufModel(model);

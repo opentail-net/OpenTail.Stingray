@@ -51,7 +51,7 @@ public sealed class GraniteHybridGreedyParityTests : HeavyTestBase
         Assert.SkipWhen(path is null, $"{Model350M} is required.");
         using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path!);
         var model = modelHandle.Model;
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         var tokens = GgufTokenizer.FromGgufModel(model).Encode(EinsteinPrompt);
 
         using var backend = new CpuBackend();
@@ -71,7 +71,7 @@ public sealed class GraniteHybridGreedyParityTests : HeavyTestBase
         Assert.SkipWhen(path is null, $"{Model1B} is required.");
         using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path!);
         var model = modelHandle.Model;
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         var tokens = GgufTokenizer.FromGgufModel(model).Encode(EinsteinPrompt);
 
         using var backend = new CpuBackend();
@@ -101,7 +101,7 @@ public sealed class GraniteHybridGreedyParityTests : HeavyTestBase
         using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path!);
         var model = modelHandle.Model;
         Assert.Equal("granitehybrid", Convert.ToString(model.Metadata["general.architecture"]));
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         Assert.NotNull(hp.Mamba2);
         Assert.Contains(true, hp.IsMamba2Layer!);
         Assert.Contains(false, hp.IsMamba2Layer!);

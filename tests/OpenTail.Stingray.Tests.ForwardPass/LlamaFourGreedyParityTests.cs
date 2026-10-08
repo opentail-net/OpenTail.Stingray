@@ -47,7 +47,7 @@ public sealed class LlamaFourGreedyParityTests : HeavyTestBase
         using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path!);
         var model = modelHandle.Model;
         Assert.Equal("llama4", Convert.ToString(model.Metadata["general.architecture"]));
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
         Assert.Equal(16, hp.NumExperts);
         Assert.Equal(1, hp.NumActiveExperts);
         Assert.True(hp.UseSigmoidGating, "Llama 4 weights its single routed expert with a sigmoid");

@@ -73,7 +73,7 @@ public sealed class DebugForwardPass : HeavyTestBase
 
         using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
         var model = modelHandle.Model;
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
+        var hp = OpenTail.Stingray.Engine.ArchitectureModelResolver.ResolveHyperparams(model.Metadata);
         var tokenizer = GgufTokenizer.FromGgufModel(model);
         using var backend = new CpuBackend();
         using var fwd = new OpenTail.Stingray.Engine.ForwardPass(model, backend, hp);
@@ -111,7 +111,7 @@ public sealed class DebugForwardPass : HeavyTestBase
 
         using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
         var model = modelHandle.Model;
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
+        var hp = OpenTail.Stingray.Engine.ArchitectureModelResolver.ResolveHyperparams(model.Metadata);
 
         Assert.Equal(151936, hp.VocabSize);
         Assert.Equal(4096, hp.EmbeddingDim);
@@ -148,7 +148,7 @@ public sealed class DebugForwardPass : HeavyTestBase
 
         using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
         var model = modelHandle.Model;
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
+        var hp = OpenTail.Stingray.Engine.ArchitectureModelResolver.ResolveHyperparams(model.Metadata);
         var tokenizer = GgufTokenizer.FromGgufModel(model);
         using var backend = new CpuBackend();
         using var fwd = new OpenTail.Stingray.Engine.ForwardPass(model, backend, hp);
@@ -189,7 +189,7 @@ public sealed class DebugForwardPass : HeavyTestBase
 
         using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
         var model = modelHandle.Model;
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
+        var hp = OpenTail.Stingray.Engine.ArchitectureModelResolver.ResolveHyperparams(model.Metadata);
 
         // Get embedding for token 1
         var embInfo = model.FindTensor("token_embd.weight")!.Value;
@@ -249,7 +249,7 @@ public sealed class DebugForwardPass : HeavyTestBase
 
         using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
         var model = modelHandle.Model;
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
+        var hp = OpenTail.Stingray.Engine.ArchitectureModelResolver.ResolveHyperparams(model.Metadata);
         Console.WriteLine($"IsMoE={hp.IsMoE}, NumExperts={hp.NumExperts}, NumActive={hp.NumActiveExperts}");
         Console.WriteLine($"ExpertIntermediateDim={hp.ExpertIntermediateDim}, IntermediateDim={hp.IntermediateDim}");
         Console.WriteLine($"EmbDim={hp.EmbeddingDim}, HeadDim={hp.HeadDim}, NumHeads={hp.NumHeads}, NumKvHeads={hp.NumKvHeads}");
@@ -275,7 +275,7 @@ public sealed class DebugForwardPass : HeavyTestBase
 
         using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
         var model = modelHandle.Model;
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
+        var hp = OpenTail.Stingray.Engine.ArchitectureModelResolver.ResolveHyperparams(model.Metadata);
         var tokenizer = GgufTokenizer.FromGgufModel(model);
         using var backend = new CpuBackend();
         using var fwd = new OpenTail.Stingray.Engine.ForwardPass(model, backend, hp);
