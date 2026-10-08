@@ -1,0 +1,92 @@
+{
+  "schema": 1,
+  "architecture": "olmoe",
+  "notes": "Cross-check of the legacy OlmoeGreedyParityTests receipt (greedy, 24 tokens).",
+  "model": {
+    "fileName": "OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf",
+    "sizeBytes": 4213513024,
+    "sha256": "3bd9ec48045f526508956ef663c5c11dbb3ef791a06f4e10a6be88379c40e1fe"
+  },
+  "reference": {
+    "engine": "llama-server",
+    "build": "10306 (6b5c2efb4)",
+    "settings": "-ngl 0 -c 1024 -t 4",
+    "sampling": {
+      "temperature": 0,
+      "topK": 1,
+      "seed": 0,
+      "repeatPenalty": 1,
+      "cachePrompt": false
+    },
+    "capturedUtc": "2026-10-08T23:26:01Z"
+  },
+  "cases": [
+    {
+      "name": "default",
+      "promptText": "The capital of France is",
+      "promptTokens": [
+        510,
+        5347,
+        273,
+        6181,
+        310
+      ],
+      "tokenizerOracle": "llama-tokenize",
+      "nPredict": 24,
+      "tokens": [
+        7785,
+        15,
+        187,
+        187,
+        510,
+        14731,
+        273,
+        6181,
+        310,
+        14029,
+        15,
+        187,
+        187,
+        510,
+        3072,
+        273,
+        6181,
+        310,
+        1475,
+        9963,
+        3041,
+        952,
+        15,
+        187
+      ],
+      "text": " Paris.\n\nThe currency of France is Euro.\n\nThe population of France is around 67 million people.\n",
+      "mode": "free",
+      "margins": [
+        2.5243,
+        0.5376,
+        0.4256,
+        2.0484,
+        0.6842,
+        0.1748,
+        1.9418,
+        7.1194,
+        7.4133,
+        0.1617,
+        0.1161,
+        4.784,
+        7.1977,
+        1.1554,
+        1.1014,
+        6.7951,
+        4.4297,
+        2.174,
+        0.2535,
+        2.721,
+        2.5066,
+        0.416,
+        3.7946,
+        5.5991
+      ]
+    }
+  ]
+}

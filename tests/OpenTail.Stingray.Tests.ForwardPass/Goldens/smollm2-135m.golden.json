@@ -1,0 +1,92 @@
+{
+  "schema": 1,
+  "architecture": "llama",
+  "notes": "Small fast fixture; two captures gave identical tokens.",
+  "model": {
+    "fileName": "SmolLM2-135M-Instruct-Q4_K_M.gguf",
+    "sizeBytes": 105454432,
+    "sha256": "2e8040ceae7815abe0dcb3540b9995eaa1fa0d2ca9e797d0a635ae4433c68c2d"
+  },
+  "reference": {
+    "engine": "llama-server",
+    "build": "10306 (6b5c2efb4)",
+    "settings": "-ngl 0 -c 1024 -t 4",
+    "sampling": {
+      "temperature": 0,
+      "topK": 1,
+      "seed": 0,
+      "repeatPenalty": 1,
+      "cachePrompt": false
+    },
+    "capturedUtc": "2026-10-08T23:30:23Z"
+  },
+  "cases": [
+    {
+      "name": "default",
+      "promptText": "The capital of France is",
+      "promptTokens": [
+        504,
+        3575,
+        282,
+        4649,
+        314
+      ],
+      "tokenizerOracle": "llama-tokenize",
+      "nPredict": 24,
+      "tokens": [
+        7042,
+        30,
+        7042,
+        314,
+        253,
+        2240,
+        1343,
+        327,
+        624,
+        2844,
+        22387,
+        28,
+        984,
+        14739,
+        28,
+        7317,
+        28,
+        43948,
+        28,
+        284,
+        2517,
+        30,
+        657,
+        314
+      ],
+      "text": " Paris. Paris is a city known for its historical landmarks, art museums, fashion, gastronomy, and culture. It is",
+      "mode": "free",
+      "margins": [
+        1.1759,
+        0.4901,
+        0.0983,
+        3.5777,
+        0.1755,
+        1.2232,
+        0.2498,
+        4.0681,
+        4.3479,
+        1.1114,
+        3.3356,
+        1.9648,
+        0.5993,
+        0.9088,
+        6.5781,
+        1.2722,
+        0.5485,
+        0.3278,
+        5.4576,
+        1.2087,
+        1.7533,
+        2.3162,
+        0.1153,
+        0.8447
+      ]
+    }
+  ]
+}

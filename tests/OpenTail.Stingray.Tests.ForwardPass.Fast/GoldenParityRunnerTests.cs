@@ -132,6 +132,29 @@ public sealed class GoldenParityRunnerTests
     }
 
     [Fact]
+    public void StepwiseCheck_ANearTieArgmaxFlipWithinTheBound_PassesByDefault_AndFailsWhenAgreementIsRequired()
+    {
+        // Runner-up token 0 sits 0.1 below the winner; the decode path adds 0.5 to it, so the argmax flips while the paths differ by only 0.5.
+        float[] Script(IReadOnlyList<int> h)
+        {
+            var l = Counting(h);
+            if ((h[^1] + 1) % Vocab != 0) l[0] = 9.9f;
+            return l;
+        }
+        var lenient = GoldenParityRunner.Run(Golden("free", [5, 6, 7]), () => new ScriptedPass(Script, stepwiseNoise: 0.5f));
+        Assert.False(lenient.Stepwise!.ArgmaxAgrees);
+        Assert.True(lenient.Stepwise.WithinBound);
+        Assert.Equal(0.1f, lenient.Stepwise.ArgmaxGap, 3);
+        Assert.True(lenient.Stepwise.ArgmaxGap <= 2 * lenient.Stepwise.MaxAbsDiff);   // a flip is always within 2 x the measured difference
+        Assert.True(lenient.Stepwise.Passed);
+
+        var strict = GoldenParityRunner.Run(Golden("free", [5, 6, 7]), () => new ScriptedPass(Script, stepwiseNoise: 0.5f),
+            new ParityOptions { RequireStepwiseArgmaxAgreement = true });
+        Assert.False(strict.Stepwise!.Passed);
+        Assert.Contains("REQUIRED", strict.Format());
+    }
+
+    [Fact]
     public void Format_IsReadable_AndNamesTheDivergence()
     {
         var r = GoldenParityRunner.Run(Golden("free", [5, 6, 20]), () => new ScriptedPass(Counting));

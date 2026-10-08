@@ -1,0 +1,92 @@
+{
+  "schema": 1,
+  "architecture": "smollm3",
+  "notes": "Cross-check of the legacy SmolLm3GreedyParityTests receipt (greedy, 24 tokens).",
+  "model": {
+    "fileName": "SmolLM3-Q4_K_M.gguf",
+    "sizeBytes": 1915305312,
+    "sha256": "8334b850b7bd46238c16b0c550df2138f0889bf433809008cc17a8b05761863e"
+  },
+  "reference": {
+    "engine": "llama-server",
+    "build": "10306 (6b5c2efb4)",
+    "settings": "-ngl 0 -c 1024 -t 4",
+    "sampling": {
+      "temperature": 0,
+      "topK": 1,
+      "seed": 0,
+      "repeatPenalty": 1,
+      "cachePrompt": false
+    },
+    "capturedUtc": "2026-10-08T23:25:54Z"
+  },
+  "cases": [
+    {
+      "name": "default",
+      "promptText": "The capital of France is",
+      "promptTokens": [
+        791,
+        6864,
+        315,
+        9822,
+        374
+      ],
+      "tokenizerOracle": "llama-tokenize",
+      "nPredict": 24,
+      "tokens": [
+        12366,
+        13,
+        578,
+        469,
+        3168,
+        301,
+        22703,
+        374,
+        264,
+        11495,
+        38350,
+        304,
+        12366,
+        13,
+        578,
+        469,
+        3168,
+        301,
+        22703,
+        574,
+        5918,
+        369,
+        279,
+        220
+      ],
+      "text": " Paris. The Eiffel Tower is a famous landmark in Paris. The Eiffel Tower was built for the ",
+      "mode": "free",
+      "margins": [
+        2.1396,
+        0.4236,
+        0.3805,
+        0.0351,
+        6.3511,
+        9.8499,
+        2.9588,
+        1.3209,
+        0.2567,
+        1.4108,
+        2.5062,
+        1.0837,
+        1.8538,
+        2.3199,
+        0.6107,
+        1.5565,
+        7.996,
+        11.1568,
+        4.2833,
+        0.086,
+        3.9726,
+        2.6951,
+        4.6211,
+        1.079
+      ]
+    }
+  ]
+}

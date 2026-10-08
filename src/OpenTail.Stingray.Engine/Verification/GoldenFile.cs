@@ -112,6 +112,11 @@ public sealed record GoldenCase
     public string? Text { get; init; }
     /// <summary><c>free</c> (our greedy run is compared token for token until it diverges) or <c>teacherForced</c> (the reference tokens are fed and every position is compared).</summary>
     public string Mode { get; init; } = "free";
+    /// <summary>
+    /// The reference engine's own confidence per generated token: top-1 minus top-2 log-probability (nats). Where it is small the reference itself was nearly
+    /// undecided, so a mismatch there is a near-tie, not evidence against us. Null for receipts migrated without it.
+    /// </summary>
+    public double[]? Margins { get; init; }
 }
 
 public sealed record GoldenEngineSettings

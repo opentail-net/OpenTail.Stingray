@@ -1,3 +1,4 @@
+using OpenTail.Stingray.Engine.Verification;
 using OpenTail.Stingray.Cpu;
 
 namespace OpenTail.Stingray.Cli;
@@ -40,6 +41,10 @@ public sealed class AdmitArchCommand : Command<AdmitArchCommand.Settings>
         [Description("Comma-separated reference token ids (from llama.cpp or another oracle) to compare against, e.g. from `llama-server .../completion` with return_tokens:true")]
         public string? ReferenceTokens { get; init; }
 
+        [CommandOption("--golden <PATH>")]
+        [Description("Golden reference file (written by capture-golden): recorded prompt token ids and llama.cpp continuation. Runs BEFORE the allowlist gate, so an already-admitted architecture can be re-verified, and no tokenizer is involved.")]
+        public string? Golden { get; init; }
+
         [CommandOption("--ctx-size <N>")]
         public int CtxSize { get; init; } = 512;
     }
@@ -55,6 +60,9 @@ public sealed class AdmitArchCommand : Command<AdmitArchCommand.Settings>
         string arch = model.Metadata.TryGetValue("general.architecture", out var a) ? Convert.ToString(a) ?? "" : "";
 
         AnsiConsole.MarkupLine($"[bold]Architecture:[/] {Markup.Escape(arch)}");
+
+        if (settings.Golden is { Length: > 0 })
+            return RunGolden(model, arch, settings);
 
         bool alreadySupported = ModelCompatibility.IsTextGenerationArchitectureSupported(arch);
         if (alreadySupported)
@@ -196,6 +204,62 @@ public sealed class AdmitArchCommand : Command<AdmitArchCommand.Settings>
         }
 
         return fullMatch ? 0 : 1;
+    }
+
+    /// <summary>
+    /// Runs a golden reference against this model: the recorded prompt ids go in (no tokenizer), the greedy continuation is compared with the
+    /// recorded one with near-tie classification, and the model-independent stepwise-vs-prefill check runs too. Exit 0 = pass (exact or
+    /// near-tie only), 1 = diverged or inconsistent.
+    /// </summary>
+    private static int RunGolden(GgufModel model, string arch, Settings settings)
+    {
+        GoldenFile golden;
+        try { golden = GoldenFile.Load(settings.Golden!); }
+        catch (Exception ex) when (ex is IOException or InvalidDataException or System.Text.Json.JsonException or UnauthorizedAccessException)
+        {
+            AnsiConsole.ErrorLine($"[red]Error:[/] cannot read golden '{Markup.Escape(settings.Golden!)}': {Markup.Escape(ex.Message)}");
+            return 1;
+        }
+
+        if (!string.Equals(golden.Architecture, arch, StringComparison.OrdinalIgnoreCase))
+        {
+            AnsiConsole.ErrorLine($"[red]Error:[/] the golden is for architecture '{Markup.Escape(golden.Architecture)}' but this file declares '{Markup.Escape(arch)}'.");
+            return 1;
+        }
+
+        string fileName = Path.GetFileName(settings.ModelPath);
+        AnsiConsole.MarkupLine($"[bold]Golden:[/] {Markup.Escape(Path.GetFileName(settings.Golden!))} ({golden.Cases.Count} case(s)), recorded on " +
+            $"{Markup.Escape(golden.Model.FileName)} by {Markup.Escape(golden.Reference.Engine)} {Markup.Escape(golden.Reference.Build ?? "")}");
+        if (!string.Equals(fileName, golden.Model.FileName, StringComparison.OrdinalIgnoreCase))
+            AnsiConsole.MarkupLine($"[yellow]Note:[/] this file is named '{Markup.Escape(fileName)}', the golden was recorded on '{Markup.Escape(golden.Model.FileName)}'. " +
+                "A golden is evidence for the file it was recorded on; a different conversion can legitimately differ.");
+
+        using var source = new GoldenForwardPassSource(model, Math.Max(settings.CtxSize, 1024));
+        using var scope = new GoldenEngineSettingsScope(golden.EngineSettings);
+        var result = GoldenParityRunner.Run(golden, source.Create, new ParityOptions { RequireStepwiseArgmaxAgreement = false });
+
+        AnsiConsole.WriteLine();
+        Console.WriteLine(result.Format());
+        switch (result.Verdict)
+        {
+            case CaseVerdict.Exact when result.Passed:
+                AnsiConsole.MarkupLine("[green bold]GOLDEN MATCH[/] — every recorded token reproduced exactly, and decode vs prefill within the bound.");
+                break;
+            case CaseVerdict.NearTie when result.Passed:
+                AnsiConsole.MarkupLine("[yellow bold]GOLDEN MATCH (near-tie)[/] — differs only where the reference itself was undecided (margin below the confident threshold) or the logits were within the near-tie tolerance.");
+                break;
+            default:
+                AnsiConsole.MarkupLine("[red bold]NOT YET ADMISSIBLE[/] — see the divergence above (check CLAUDE.md rule 8 and docs/reference/numerics-investigation-method.md before concluding).");
+                break;
+        }
+
+        if (result.Passed)
+        {
+            AnsiConsole.MarkupLine("[dim]Paste-ready evidence line for the descriptor / STATUS row:[/]");
+            Console.WriteLine($"// {arch} — verified {DateTime.UtcNow:yyyy-MM-dd} against golden {Path.GetFileName(settings.Golden!)}: " +
+                $"{golden.Reference.Engine} {golden.Reference.Build}, sha256 {golden.Model.Sha256 ?? "(not recorded)"}, {result.Verdict}.");
+        }
+        return result.Passed ? 0 : 1;
     }
 
     private static int Argmax(ReadOnlySpan<float> logits)

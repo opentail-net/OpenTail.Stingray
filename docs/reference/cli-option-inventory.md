@@ -2,7 +2,7 @@
 
 **Generated:** by `scripts/gen-cli-option-inventory.ps1`, which scans `[CommandOption]` /
 `[Description]` pairs under `src/OpenTail.Stingray.Cli`. Last regenerated **2026-09-28**, recording
-**225 option declarations** across 23 command files — the same count the
+**241 option declarations** across 24 command files — the same count the
 `StaticPlanConfigurationTests` guard enforces against source. (Reconciled 12 rows of drift, caught
 by CI failing `CliOptionInventory_DeclaredCountMatchesSource` on `main`: three new commands —
 `AdmitArchCommand`, `GenVisionScaffoldCommand` and `PullCommand`, see `docs/reference/061-coverage-tooling.md` —
@@ -76,6 +76,7 @@ hoc at each read site rather than in one place.
 | Option | Class | Description |
 |---|---|---|
 | `--ctx-size <N>` |  |  |
+| `--golden <PATH>` |  | Golden reference file (written by capture-golden): recorded prompt token ids and llama.cpp continuation. Runs BEFORE the allowlist gate, so an already-admitted architecture can be re-verified, and no tokenizer is involved. |
 | `--model <PATH>` |  | GGUF to evaluate |
 | `--prompt <TEXT>` |  | Raw prompt to tokenize and greedy-decode (no chat template applied) |
 | `--reference-tokens <IDS>` |  | Comma-separated reference token ids (from llama.cpp or another oracle) to compare against, e.g. from `llama-server .../completion` with return_tokens:true |
@@ -89,6 +90,26 @@ hoc at each read site rather than in one place.
 | `--no-save` |  | Print only; do not write the profile |
 | `--seconds <N>` |  | Window per measurement in seconds (default 2) |
 | `--tokens <N>` |  | Rows per expert for the prefill measurement (default 93, the OLMoE average) |
+
+## CaptureGoldenCommand
+
+| Option | Class | Description |
+|---|---|---|
+| `--case <NAME>` |  | Name of this case inside the golden (an existing case of the same name is replaced) |
+| `--ctx-size <N>` |  |  |
+| `--mode <MODE>` |  | How the golden is checked later: free (greedy run compared until it diverges) or teacherForced (reference tokens fed, every position compared) |
+| `--model <PATH>` |  | GGUF to capture a reference for |
+| `--no-hash` |  | Skip the SHA-256 of the model (the golden then cannot pin the file; slow for large checkpoints) |
+| `--notes <TEXT>` |  | Provenance notes recorded in the golden (no paths: the file is checked for machine-specific text) |
+| `--out <PATH>` |  | Golden file to write (default: ./<architecture>.golden.json); an existing file for the same model gets the case added |
+| `--prompt <TEXT>` |  | Raw prompt text, tokenized by llama-tokenize (the model's own BOS behaviour applies) |
+| `--prompt-ids <IDS>` |  | Comma-separated prompt token ids, used as-is instead of tokenizing --prompt |
+| `--server <EXE>` |  | llama-server executable (default: tools/llama.cpp/llama-server.exe found upward from here) |
+| `--server-timeout <SECONDS>` |  | How long to wait for llama-server to load the model |
+| `--source <REPO>` |  | Where the checkpoint came from (Hugging Face repo id), recorded in the golden |
+| `--threads <N>` |  |  |
+| `--tokenizer <EXE>` |  | llama-tokenize executable (default: tools/llama.cpp/llama-tokenize.exe found upward from here) |
+| `--tokens <N>` |  | Tokens to generate |
 
 ## DoctorCommand
 
