@@ -1,6 +1,6 @@
 # Architecture descriptors as statically registered model plugins: finish the job (plan)
 
-**Date:** 2026-10-08. **Status:** Phases 0-3 done 2026-10-08; 4-5 open. **Follows:** [2026-10-08-architecture-semantics-admission-plan.md](2026-10-08-architecture-semantics-admission-plan.md) (all phases 1-8 done).
+**Date:** 2026-10-08. **Status:** Phases 0-4 done 2026-10-08; 5 open. **Follows:** [2026-10-08-architecture-semantics-admission-plan.md](2026-10-08-architecture-semantics-admission-plan.md) (all phases 1-8 done).
 **Origin:** an outside design suggestion (ChatGPT): make each architecture a self-contained "model plugin" that owns what is true of the model, while the planner owns what is true of the machine and the request. This plan checks that suggestion against the code at commit `6a768250` and scopes what is actually worth doing.
 
 ## Verdict
@@ -85,9 +85,9 @@ Each phase ends green: `dotnet build` 0 warnings (warnings are errors), the `.Fa
   - [x] 3.3 (the by-name table `ModelArchitectureTraits.Legacy` is the shim: 12 literals in one place, pinned to the descriptors by `DescriptorTraits_MatchTheByNameTable`; delete it when the direct `CreateBaseline`/`FromGgufMetadata` callers are gone; `qwen3vlmoe` has no descriptor and lives only there) The legacy parser stays as the shim for the non-LLM callers (earlier plan Appendix A) until they are moved; mark each remaining literal with the caller that still needs it.
   - **Exit:** `ModelHyperparams` equality test across all admitted architectures (the old-vs-new equality harness from the semantics plan) still passes; real-weight spot checks on Granite-H, NemotronH, LFM2 and Qwen3.8 (these are the hybrids that exercise the moved rules); static-plan output diff clean.
 
-- [ ] **4. Layout (mechanical, last)**
-  - [ ] 4.1 Split `OtherAdmittedArchitectures.cs` by family into files of sensible size; give architectures with real semantics or a factory their own file.
-  - [ ] 4.2 Move `FamilyModelSemantics.cs` content next to the architectures that use it.
+- [x] **4. Layout (mechanical, last)** (done 2026-10-08)
+  - [x] 4.1 (done: `OtherAdmittedArchitectures` is now a partial class across 10 files by family: Olmo, GptFamily, Exaone, Mistral, HybridRecurrent, ErnieGlm, Hunyuan, Jais, CnVendor, plus the remainder (7 descriptors) in the original file; all 37 descriptors preserved line for line, verified by comparing sorted non-blank lines; the descriptors are independent so partial-class static initialization order cannot matter; all references to `OtherAdmittedArchitectures.X` are unchanged) Split `OtherAdmittedArchitectures.cs` by family into files of sensible size; give architectures with real semantics or a factory their own file.
+  - [x] 4.2 (decided NOT to move: its helpers are shared by several families (Granite by three descriptors, GatedSwa by two files, Gemma3, Exaone4), so there is no single "next to" location; left as the shared-helpers file) Move `FamilyModelSemantics.cs` content next to the architectures that use it.
   - **Exit:** no behavior change; diff is moves only (verify with `git diff --stat -M`).
 
 - [ ] **5. Prove it and document it**
