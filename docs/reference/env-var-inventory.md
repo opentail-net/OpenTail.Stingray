@@ -29,7 +29,7 @@ names are treated as valid, `doctor` would not have flagged it either. The warni
 `STINGRAY_MAX_QUEUE` and the dead entry is out of the registry, so the mistake is now reported with
 a closest-match suggestion.
 
-**Reconciled again 2026-10-05 — `KnownEnvironmentVariables.All` now contains **270** names**
+**Reconciled again 2026-10-05 — `KnownEnvironmentVariables.All` now contains **271** names**
 (2026-10-05: registered `STINGRAY_DIFFUSIONGEMMA_ENABLE_REAL` and `STINGRAY_MOE_PHASE_TIMING`, both read in `src/` but missing from the registry. Removed `STINGRAY_HANDOFF_TEST_MODEL`: it is read only by `HybridCpuPrefillHandoffTests` under `tests/`, never in `src/`, so the registry — whose tests scan `src/` — cannot justify it, and registering it would make `doctor` accept a name the engine itself never reads. It stays a test-only switch, like `STINGRAY_RUN_HEAVY_TESTS`; optional `STINGRAY_HANDOFF_TEST_GPU_LAYERS` (default 4) and `STINGRAY_HANDOFF_TEST_CTX` (default 1024) are read by the same test. Net +1 from the 267 the registry held after the earlier, un-documented edits.)
 
 **Reconciled 2026-10-03 — `KnownEnvironmentVariables.All` contained **266** names**
@@ -210,6 +210,7 @@ dynamically composed names.
 | `STINGRAY_TRACE_MTP` | diagnostic | |
 | `STINGRAY_GC_STATS` | diagnostic | CLI: print GC collections, bytes allocated and total pause at process exit (2026-10-08) |
 | `STINGRAY_EVENTS` | diagnostic | CLI: stream EngineEvents (model loaded, prefill/decode completed, MTP step, GC stats) to stderr as JSON lines (2026-10-08) |
+| `STINGRAY_MODEL_DIRS` | diagnostic | tests/tools: extra folders (path list) searched first by `ModelLocator` when looking for a checkpoint by file name (2026-10-08) |
 
 ## OpenTail.Stingray.Cli, OpenTail.Stingray.Engine, OpenTail.Stingray.Server
 

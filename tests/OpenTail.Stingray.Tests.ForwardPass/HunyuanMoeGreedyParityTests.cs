@@ -74,24 +74,5 @@ public sealed class HunyuanMoeGreedyParityTests : HeavyTestBase
         Assert.True(confident >= 4, "too few confident positions to be evidence");
     }
 
-    private static string? FindModel()
-    {
-        var dir = Directory.GetCurrentDirectory();
-        for (int i = 0; i < 8; i++)
-        {
-            foreach (var sub in new[] { "models", Path.Combine("models", "_models") })
-            {
-                var candidate = Path.Combine(dir, sub, ModelFile);
-                if (File.Exists(candidate)) return candidate;
-            }
-            if (Directory.GetParent(dir) is not { } parent) break;
-            dir = parent.FullName;
-        }
-        foreach (var external in new[] { @"H:\_models", @"E:\models", @"K:\_other_models" })
-        {
-            var candidate = Path.Combine(external, ModelFile);
-            if (File.Exists(candidate)) return candidate;
-        }
-        return null;
-    }
+    private static string? FindModel() => OpenTail.Stingray.Engine.Verification.ModelLocator.FindOrReport(ModelFile);
 }

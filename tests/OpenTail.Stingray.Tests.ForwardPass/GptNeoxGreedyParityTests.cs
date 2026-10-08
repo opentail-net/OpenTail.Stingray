@@ -239,26 +239,5 @@ public sealed class GptNeoxGreedyParityTests : HeavyTestBase
     // The same Q8_0 conversion is also distributed as pythia-160m.Q8_0.gguf (dot, not dash); accept either name.
     private static readonly string[] ModelFileNames = [ModelFile, "pythia-160m.Q8_0.gguf"];
 
-    private static string? FindModel()
-    {
-        var dir = Directory.GetCurrentDirectory();
-        for (int i = 0; i < 8; i++)
-        {
-            foreach (var name in ModelFileNames)
-            {
-                var candidate = Path.Combine(dir, "models", name);
-                if (File.Exists(candidate)) return candidate;
-                var candidateNested = Path.Combine(dir, "models", "_models", name);
-                if (File.Exists(candidateNested)) return candidateNested;
-            }
-            if (Directory.GetParent(dir) is not { } parent) break;
-            dir = parent.FullName;
-        }
-        foreach (var name in ModelFileNames)
-        {
-            var external = Path.Combine(@"E:\models", name);
-            if (File.Exists(external)) return external;
-        }
-        return null;
-    }
+    private static string? FindModel() => OpenTail.Stingray.Engine.Verification.ModelLocator.FindOrReport(ModelFileNames);
 }

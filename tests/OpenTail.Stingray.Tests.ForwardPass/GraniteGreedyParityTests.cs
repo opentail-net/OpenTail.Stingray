@@ -169,19 +169,5 @@ public sealed class GraniteGreedyParityTests : HeavyTestBase
             $"prefill/decode logits diverge by {maxDiff:F4}, beyond the int8 prefill approximation.");
     }
 
-    private static string? FindModel()
-    {
-        var dir = Directory.GetCurrentDirectory();
-        for (int i = 0; i < 8; i++)
-        {
-            var candidate = Path.Combine(dir, "models", ModelFile);
-            if (File.Exists(candidate)) return candidate;
-            var candidateNested = Path.Combine(dir, "models", "_models", ModelFile);
-            if (File.Exists(candidateNested)) return candidateNested;
-            if (Directory.GetParent(dir) is not { } parent) break;
-            dir = parent.FullName;
-        }
-        var external = Path.Combine(@"E:\models", ModelFile);
-        return File.Exists(external) ? external : null;
-    }
+    private static string? FindModel() => OpenTail.Stingray.Engine.Verification.ModelLocator.FindOrReport(ModelFile);
 }

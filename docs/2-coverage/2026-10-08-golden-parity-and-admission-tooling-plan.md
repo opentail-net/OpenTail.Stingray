@@ -81,10 +81,10 @@ Refuses clearly if `tools/llama.cpp` binaries are absent; `--server` overrides t
 ## Phases (each ends: build clean with warnings as errors, Fast suites pass, one commit)
 
 - [ ] **0. Decisions** (this document). D1: golden location (`tests/.../Goldens/`, recommended, so reviewers see them in the diff). D2: near-tie margin tolerance (start 0.02 logit, configurable, recorded in the result; revisit with data from the 25 migrated receipts). D3: SHA-256 mandatory for new goldens (recommended yes), optional for migrated ones until each file is re-hashed. D4: migrate all 25 legacy classes over time, keeping exceptions (DeepSeek2 until `engineSettings` covers it).
-- [ ] **1. `ModelLocator` and loud skips** (do first; independent value)
-  - [ ] 1.1 Implement `ModelLocator` with roots and the diagnostic text. Unit-test with temp directories (Fast suite).
-  - [ ] 1.2 Replace the 25 `FindModel()` copies in `Tests.ForwardPass` (mechanical; the shape is identical). Net effect: about 35 hard-coded drive literals leave the repo.
-  - [ ] 1.3 Measure: re-run the heavy classes one process at a time and count classes that moved from **skipped to running** (today ~10 skip). Record the list in the progress doc; any newly running class that fails is a real finding, not a regression of this change.
+- [x] **1. `ModelLocator` and loud skips** (done 2026-10-09)
+  - [x] 1.1 Implement `ModelLocator` with roots and the diagnostic text. Unit-test with temp directories (Fast suite).
+  - [x] 1.2 Replace the 25 `FindModel()` copies in `Tests.ForwardPass` (mechanical; the shape is identical). Net effect: about 35 hard-coded drive literals leave the repo.
+  - [x] 1.3 Measure (results below): re-run the heavy classes one process at a time and count classes that moved from **skipped to running** (today ~10 skip). Record the list in the progress doc; any newly running class that fails is a real finding, not a regression of this change.
   - [ ] 1.b (optional) Point `Tests.Cuda` / other `FindModelPath` copies at the same locator.
 - [ ] **2. Golden model and runner (no model needed to test it)**
   - [ ] 2.1 `GoldenFile`, `GoldenJsonContext`, load/save; round-trip and schema-version tests; **the no-machine-paths guard test over `Goldens/`**.
@@ -147,3 +147,9 @@ Phase 1 pays immediately (fewer silent skips, 25 duplicates gone). Phases 2-3 gi
 - **Guard test (Fast suite, added with Phase 2):** scans every file under `Goldens/` and fails on a drive-letter path (`X:\` or `X:/`), a UNC path, `/Users/`, `/home/`, or the current user/machine name. It runs on every `dotnet test`, so a leak is caught before it is committed.
 - **Phase 1.2 is a net clean-up:** replacing the 25 `FindModel()` copies deletes about 35 hard-coded `E:\models` / `H:\_models` / `K:\_other_models` literals from the parity classes.
 - **Not part of this plan, worth a separate item:** the other ~240 test files with drive literals and the 20 tracked files that contain `C:\Users\Dmitri`. A ratchet like the architecture-literal one (count may only go down) would stop new ones; the existing ones need an owner decision.
+
+## Phase 1 results (2026-10-09)
+- `Engine/Verification/ModelLocator` + 4 Fast tests (priority of names, miss text, `STINGRAY_MODEL_DIRS`, ancestor `models/_models`). The 25 `FindModel()` copies in `Tests.ForwardPass` are now one-line calls (24 files, -422/+24 lines, plus GraniteHybrid's variant); no drive-letter literal remains in the parity classes. `STINGRAY_MODEL_DIRS` registered (inventory 271).
+- **Measured effect on skips: none.** Run per class with `STINGRAY_RUN_HEAVY_TESTS=1`: 10 classes find their checkpoint and start real work (Afmoe, DeepSeek2, Exaone45, GlmMoe, GraniteHybrid, HunyuanMoe, Mixtral, MixtralStyle, PhiMoe, Qwen2Moe) plus GptNeox and SmolLm3 and part of Olmoe; **13 still skip, because the checkpoint is genuinely not on any drive under the wanted name.** The old hard-coded lists were not hiding files that the new search finds. The gain is that a miss is now loud: `[ModelLocator] NOT FOUND: <names>. Searched N folder(s): ...`.
+- What the missing ones want, and what exists: Apertus `Apertus-8B-Instruct-2509-Q4_K_M.gguf` (disk has a *different conversion*, `swiss-ai.Apertus-8B-Instruct-2509.Q4_K_M.gguf`, 4.7 GB vs the receipt's 5.06 GB); Gpt2 `gpt2-f16.gguf` (disk: Q8_0); Maincoder `maincoder-1b-Q8_0.gguf` (disk: Q4_K_M); Falcon `falcon-7b-instruct-Q4_K_M.gguf` (disk: Falcon3-3B); Olmo2 `OLMo-2-0425-1B-Q8_0.gguf`, Olmo `olmo-1b-Q8_0.gguf`, Glm4 `THUDM_GLM-4-9B-0414-Q4_K_M.gguf`, LlamaFour (93 GB): absent.
+- **Tried the Apertus alias; it fails** (" Paris.\n France is a country..." vs the receipt's " Paris, which is also the country's largest city."). That is a different file, not an engine regression, and exactly the case Phase 5's SHA-256 pin exists for. The alias was reverted: a receipt must not silently run on another conversion.

@@ -63,20 +63,5 @@ public sealed class Rwkv6GreedyParityTests : HeavyTestBase
         Assert.True(mismatches.Count == 0, string.Join("; ", mismatches));
     }
 
-    private static string? FindModel()
-    {
-        var dir = Directory.GetCurrentDirectory();
-        for (int i = 0; i < 8; i++)
-        {
-            foreach (var sub in new[] { "models", Path.Combine("models", "_models") })
-            {
-                var candidate = Path.Combine(dir, sub, ModelFile);
-                if (File.Exists(candidate)) return candidate;
-            }
-            if (Directory.GetParent(dir) is not { } parent) break;
-            dir = parent.FullName;
-        }
-        var external = Path.Combine(@"E:\_models\rwkv6-world-1b6", ModelFile);
-        return File.Exists(external) ? external : null;
-    }
+    private static string? FindModel() => OpenTail.Stingray.Engine.Verification.ModelLocator.FindOrReport(ModelFile);
 }

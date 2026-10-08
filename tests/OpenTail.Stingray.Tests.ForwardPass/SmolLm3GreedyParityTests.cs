@@ -83,22 +83,5 @@ public sealed class SmolLm3GreedyParityTests : HeavyTestBase
         Assert.Equal(ReferenceContinuation, continuation);
     }
 
-    private static string? FindModel()
-    {
-        var dir = Directory.GetCurrentDirectory();
-        for (int i = 0; i < 8; i++)
-        {
-            foreach (var name in s_modelFileNames)
-            {
-                var candidate = Path.Combine(dir, "models", name);
-                if (File.Exists(candidate)) return candidate;
-                var candidateNested = Path.Combine(dir, "models", "_models", name);
-                if (File.Exists(candidateNested)) return candidateNested;
-            }
-            if (Directory.GetParent(dir) is not { } parent) break;
-            dir = parent.FullName;
-        }
-        var external = Path.Combine(@"E:\models", ModelFile);
-        return File.Exists(external) ? external : null;
-    }
+    private static string? FindModel() => OpenTail.Stingray.Engine.Verification.ModelLocator.FindOrReport(s_modelFileNames);
 }
