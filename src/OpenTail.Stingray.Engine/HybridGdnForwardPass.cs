@@ -168,6 +168,11 @@ public sealed unsafe class HybridGdnForwardPass : IForwardPass
     private float* _bvHiddenAll;
     private float* _bvResidAll;
     private float* _bvNormAll;
+    // Batched GDN block (GdnBlockBatch): k × qkv / z / recurrence-output slabs and a throwaway output lane for padded quads.
+    private float* _bvQkvAll;
+    private float* _bvZAll;
+    private float* _bvGdnOutAll;
+    private float* _bvSink;
     private int _bvCap;
 
     // MTP block-out hidden of the most recent MtpForward (pre-shared-head-norm),
@@ -1663,18 +1668,7 @@ public sealed unsafe class HybridGdnForwardPass : IForwardPass
             }
             else
             {
-                int gdnIdx = _gdnStateCache.GdnLayerOf(layer);
-                for (int i = 0; i < k; i++)
-                {
-                    GdnBlockAt(layer, position: startPos + i,
-                               normIn: _bvNormAll + (long)i * embDim,
-                               hiddenOut: _bvHiddenAll + (long)i * embDim);
-                    // Ring slot i = state after token i (rollback-to-startPos+i+1).
-                    if (i < k - 1)
-                        _gdnStateCache.SnapshotLayerInto(gdnIdx,
-                            _batchSnapshotBuf + i * slotBytes + (long)gdnIdx * layerSnapBytes,
-                            layerSnapBytes);
-                }
+                GdnBlockBatch(layer, startPos, k, slotBytes, layerSnapBytes);
             }
 
             for (int i = 0; i < k; i++)
@@ -1793,10 +1787,18 @@ public sealed unsafe class HybridGdnForwardPass : IForwardPass
         if (_bvHiddenAll != null) { NativeMemory.Free(_bvHiddenAll); _bvHiddenAll = null; }
         if (_bvResidAll != null) { NativeMemory.Free(_bvResidAll); _bvResidAll = null; }
         if (_bvNormAll != null) { NativeMemory.Free(_bvNormAll); _bvNormAll = null; }
+        if (_bvQkvAll != null) { NativeMemory.Free(_bvQkvAll); _bvQkvAll = null; }
+        if (_bvZAll != null) { NativeMemory.Free(_bvZAll); _bvZAll = null; }
+        if (_bvGdnOutAll != null) { NativeMemory.Free(_bvGdnOutAll); _bvGdnOutAll = null; }
+        if (_bvSink != null) { NativeMemory.Free(_bvSink); _bvSink = null; }
         _bvCap = 0;
         _bvHiddenAll = (float*)NativeMemory.AllocZeroed(bytes);
         _bvResidAll = (float*)NativeMemory.AllocZeroed(bytes);
         _bvNormAll = (float*)NativeMemory.AllocZeroed(bytes);
+        _bvQkvAll = (float*)NativeMemory.AllocZeroed((nuint)((long)k * _gdnConvChannels * sizeof(float)));
+        _bvZAll = (float*)NativeMemory.AllocZeroed((nuint)((long)k * _gdnValueDim * sizeof(float)));
+        _bvGdnOutAll = (float*)NativeMemory.AllocZeroed((nuint)((long)k * _gdnValueDim * sizeof(float)));
+        _bvSink = (float*)NativeMemory.AllocZeroed((nuint)((long)Math.Max(Math.Max(_gdnConvChannels, _gdnValueDim), _embDim) * sizeof(float)));
         _bvCap = k;
     }
 
@@ -2561,11 +2563,6 @@ public sealed unsafe class HybridGdnForwardPass : IForwardPass
     /// </summary>
     private void GdnBlockAt(int layer, int position, float* normIn, float* hiddenOut)
     {
-        int gdnIdx = _gdnStateCache.GdnLayerOf(layer);
-        float* scanState = _gdnStateCache.ScanStateAt(gdnIdx);
-        float* convState = _gdnStateCache.ConvStateAt(gdnIdx);
-        int convStateLen = _gdnStateCache.ConvStateFloatsPerLayer;
-        int scanStateLen = _gdnStateCache.ScanStateFloatsPerLayer;
 
         // 1. Joint QKV projection and z (gate) projection.
         FusedMatVec(_qkv, _wQkv[layer], normIn, _gdnConvChannels, _embDim);
@@ -2583,6 +2580,24 @@ public sealed unsafe class HybridGdnForwardPass : IForwardPass
             sb.Append(']');
             Console.Error.WriteLine(sb.ToString());
         }
+
+        GdnRecurrenceStep(layer, position, normIn);
+
+        // 9. Output projection: ssm_out (input ValueDim=4096, output embDim=2048).
+        FusedMatVec(hiddenOut, _ssmOut[layer], _gdnOut, _embDim, _gdnValueDim);
+        if (_traceLayers) EmitBufTrace(position, layer, "gdn-proj",     hiddenOut, _embDim);
+    }
+
+    /// <summary>Steps 2-8 of the GDN block for one token: causal conv + SiLU on the already-projected <c>_qkv</c>, Q/K norm and head tiling,
+    /// alpha/beta, and the state-carrying delta-rule recurrence with the SiLU(z) gate, leaving the result in <c>_gdnOut</c>. Split out of
+    /// <see cref="GdnBlockAt"/> so the batched verify can project all k tokens at once and run only this stateful part per token.</summary>
+    private void GdnRecurrenceStep(int layer, int position, float* normIn)
+    {
+        int gdnIdx = _gdnStateCache.GdnLayerOf(layer);
+        float* scanState = _gdnStateCache.ScanStateAt(gdnIdx);
+        float* convState = _gdnStateCache.ConvStateAt(gdnIdx);
+        int convStateLen = _gdnStateCache.ConvStateFloatsPerLayer;
+        int scanStateLen = _gdnStateCache.ScanStateFloatsPerLayer;
 
         // 2. Depthwise causal conv1d over the joint QKV stream.
         //    Weight is preloaded in [kernel, channels] order (transposed from GGUF's [c, k]).
@@ -2672,9 +2687,89 @@ public sealed unsafe class HybridGdnForwardPass : IForwardPass
             Console.Error.WriteLine(sb.ToString());
         }
 
-        // 9. Output projection: ssm_out (input ValueDim=4096, output embDim=2048).
-        FusedMatVec(hiddenOut, _ssmOut[layer], _gdnOut, _embDim, _gdnValueDim);
-        if (_traceLayers) EmitBufTrace(position, layer, "gdn-proj",     hiddenOut, _embDim);
+    }
+
+    // ============================================================
+    //  Batched GDN block for the k-token verify (MTP): the projections read each weight matrix once for all k
+    //  tokens; only the conv + delta-rule recurrence (which carry state token to token) run sequentially.
+    // ============================================================
+
+    /// <summary>
+    /// <c>out_i = tensor × in_i</c> for k independent vectors laid out at <c>inAll + i*cols</c> / <c>outAll + i*rows</c>, reading
+    /// the weight matrix once per group of up to four tokens. Groups follow <see cref="MtpBatchTail.Group4"/>: the last group's
+    /// empty lanes duplicate its final real token and write to <c>_bvSink</c>. For IQ formats (whose 2-, 4- and single-input paths
+    /// share per-row arithmetic) a group of one or two real tokens uses the narrower kernel; other formats always take the
+    /// 4-input kernel, as the batched FFN does, so a token's bits do not depend on k.
+    /// </summary>
+    private void MatVecBatch(float* outAll, in TensorRef tensor, float* inAll, int k, int rows, int cols)
+    {
+        bool iq = SimdKernels.HasIqMultiInputKernel(tensor.DType, cols);
+        byte* w = tensor.DataPtr;
+        var dt = tensor.DType;
+        for (int i = 0; i < k; i += 4)
+        {
+            MtpBatchTail.Group4(i, k, out int j0, out int j1, out int j2, out int j3, out int nReal);
+            if (iq && nReal == 1)
+            {
+                SimdKernels.MatVec(outAll + (long)j0 * rows, w, inAll + (long)j0 * cols, rows, cols, dt);
+            }
+            else if (iq && nReal == 2)
+            {
+                SimdKernels.MatVec2In(outAll + (long)j0 * rows, outAll + (long)j1 * rows, w,
+                    inAll + (long)j0 * cols, inAll + (long)j1 * cols, rows, cols, dt);
+            }
+            else
+            {
+                SimdKernels.MatVec4In(
+                    outAll + (long)j0 * rows,
+                    nReal > 1 ? outAll + (long)j1 * rows : _bvSink,
+                    nReal > 2 ? outAll + (long)j2 * rows : _bvSink,
+                    nReal > 3 ? outAll + (long)j3 * rows : _bvSink,
+                    w,
+                    inAll + (long)j0 * cols, inAll + (long)j1 * cols, inAll + (long)j2 * cols, inAll + (long)j3 * cols,
+                    rows, cols, dt);
+            }
+        }
+    }
+
+    /// <summary>
+    /// GDN layer for k consecutive tokens at <paramref name="startPos"/>: batched qkv/z projections, then per token (in order)
+    /// the stateful conv + recurrence with the per-token rollback snapshot, then a batched ssm_out projection into
+    /// <c>_bvHiddenAll</c>. Equivalent to calling <see cref="GdnBlockAt"/> k times.
+    /// </summary>
+    private void GdnBlockBatch(int layer, int startPos, int k, long slotBytes, long layerSnapBytes)
+    {
+        int embDim = _embDim;
+        int gdnIdx = _gdnStateCache.GdnLayerOf(layer);
+
+        if (_wQkv[layer].Prism is not null || _wZGate[layer].Prism is not null || _ssmOut[layer].Prism is not null)
+        {
+            // Prism-transformed weights (Bonsai) go through the per-token path.
+            for (int i = 0; i < k; i++)
+            {
+                GdnBlockAt(layer, position: startPos + i, normIn: _bvNormAll + (long)i * embDim,
+                           hiddenOut: _bvHiddenAll + (long)i * embDim);
+                if (i < k - 1)
+                    _gdnStateCache.SnapshotLayerInto(gdnIdx, _batchSnapshotBuf + i * slotBytes + (long)gdnIdx * layerSnapBytes, layerSnapBytes);
+            }
+            return;
+        }
+
+        MatVecBatch(_bvQkvAll, _wQkv[layer], _bvNormAll, k, _gdnConvChannels, embDim);
+        MatVecBatch(_bvZAll, _wZGate[layer], _bvNormAll, k, _gdnValueDim, embDim);
+
+        for (int i = 0; i < k; i++)
+        {
+            new ReadOnlySpan<float>(_bvQkvAll + (long)i * _gdnConvChannels, _gdnConvChannels).CopyTo(new Span<float>(_qkv, _gdnConvChannels));
+            new ReadOnlySpan<float>(_bvZAll + (long)i * _gdnValueDim, _gdnValueDim).CopyTo(new Span<float>(_z, _gdnValueDim));
+            GdnRecurrenceStep(layer, startPos + i, _bvNormAll + (long)i * embDim);
+            new ReadOnlySpan<float>(_gdnOut, _gdnValueDim).CopyTo(new Span<float>(_bvGdnOutAll + (long)i * _gdnValueDim, _gdnValueDim));
+            // Ring slot i = state after token i (rollback-to-startPos+i+1).
+            if (i < k - 1)
+                _gdnStateCache.SnapshotLayerInto(gdnIdx, _batchSnapshotBuf + i * slotBytes + (long)gdnIdx * layerSnapBytes, layerSnapBytes);
+        }
+
+        MatVecBatch(_bvHiddenAll, _ssmOut[layer], _bvGdnOutAll, k, embDim, _gdnValueDim);
     }
 
     // ============================================================
@@ -3551,6 +3646,10 @@ public sealed unsafe class HybridGdnForwardPass : IForwardPass
             if (_bvHiddenAll != null) NativeMemory.Free(_bvHiddenAll);
             if (_bvResidAll != null) NativeMemory.Free(_bvResidAll);
             if (_bvNormAll != null) NativeMemory.Free(_bvNormAll);
+            if (_bvQkvAll != null) NativeMemory.Free(_bvQkvAll);
+            if (_bvZAll != null) NativeMemory.Free(_bvZAll);
+            if (_bvGdnOutAll != null) NativeMemory.Free(_bvGdnOutAll);
+            if (_bvSink != null) NativeMemory.Free(_bvSink);
             if (_batchSnapshotBuf != null)
             {
                 NativeMemory.Free(_batchSnapshotBuf);
