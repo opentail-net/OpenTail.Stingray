@@ -220,6 +220,16 @@ sweep is [4-performance/perf-sweep-plan.md](4-performance/perf-sweep-plan.md).
 19. Llama-4 Scout 17B-16E: no ratio vs llama.cpp (the ~93 GB download failed once; its state is
     unknown, and it does not fit this machine's 64 GB RAM).
 
+20. **Last in the queue: why MTP loses on Qwen3.6-27B (UD-Q3_K_XL).** Measured 2026-10-08, CPU, 96 tokens, greedy: plain
+    **2.6 t/s**, MTP **2.0-2.1 t/s** at every draft depth (accept 76% / 62% / 45% at depth 1 / 2 / 3), i.e. 0.77-0.81x of plain.
+    The same engine on Qwen3.8-27B (same `qwen35` architecture and MTP head, different quant mix) wins by +12% (2.7 vs 2.4); see
+    item 17 and `PerformanceLeague.md`. Not diagnosed. First steps: (a) diff the tensor-dtype histograms of the two files, especially
+    the FFN and attention-projection types, and check which have no shared-decode 2-/4-input kernel (IQ2_XS, IQ2_XXS and Q3_K do
+    not; IQ3_S, IQ4_XS, IQ3_XXS and IQ2_S do); (b) time one k=2 verify step on both files against a plain step (the Qwen3.8 numbers
+    were 0.92 s -> ~0.58 s vs 0.42 s plain); (c) if a missing kernel explains it, add it; if not, check the MTP head's own quant and
+    the acceptance rate per position. Until this is understood the CPU MTP draft-depth default (1) is evidenced by Qwen3.8 only, and
+    `--spec-type mtp` should be compared with plain on the user's own file.
+
 ## 9. Needs hardware this machine does not have
 
 [9-external-hardware/90-external-hardware-work.md](9-external-hardware/90-external-hardware-work.md):
