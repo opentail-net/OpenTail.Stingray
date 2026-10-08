@@ -87,12 +87,12 @@ updated with dated evidence in the same pass.
     CPU hybrid-GDN MTP models are unmeasured. The CLI help still says "defaults to 1 / batch max 2", which was stale before this
     (the pre-migration default was 3 / 4). Plain decode is at ~79% of the DRAM ceiling (~3 t/s), so +12% is most of what is available.
     Reference: llama.cpp k=2 batch costs 1.4 plain steps; ours is now in the same range.
-    **Output equality caveat (open):** MTP greedy text is not byte-identical to plain greedy text on this prompt (diverges at a
-    near-tie around token 20: "planet’s surface" vs "planet, serving"). It also diverges with batched verify switched off
-    (`STINGRAY_DISABLE_BATCH_VERIFY=1`), and the single-input, 2-input and 4-input kernels are pinned bit-identical for Q4_K, Q5_K,
-    Q6_K and the IQ formats (`IqSharedDecodeMultiInputTests`), so the new kernels are not the cause. Cause not isolated; first
-    suspect is how the MTP path prefills (ADR-0002: optimized prefill is not bit-identical to decode), then the MTP hidden-state
-    handling. Within the FP32-drift class ADR-0002 already accepts, but worth a look before MTP is recommended as a default.
+    **Output equality (resolved 2026-10-08): MTP is exact.** With `--repeat-penalty 1.0`, plain greedy and MTP greedy produce
+    byte-identical text over 96 tokens (batched verify, depth 1). The earlier apparent divergence ("planet’s surface" vs "planet,
+    serving") was the CLI's default repetition penalty 1.1 being applied by plain decoding only: **an explicit `--spec-type mtp`
+    skips the history-penalty check that auto mode makes, so it silently ignores `--repeat-penalty`.** That is a behaviour gap worth
+    a warning or a documented note (follow-up), not a numerical bug. Single/2-input/4-input kernels are pinned bit-identical for
+    Q4_K, Q5_K, Q6_K and the IQ formats (`IqSharedDecodeMultiInputTests`, finite data asserted).
 
 
 
