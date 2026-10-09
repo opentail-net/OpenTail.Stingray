@@ -56,7 +56,7 @@ internal static partial class OtherAdmittedArchitectures
     };
 
     // hunyuan-moe (Hunyuan-A13B-Instruct) — admitted 2026-10-04 on a real checkpoint (DevQuasar Q3_K_S only), CPU:
-    // HunyuanMoeGreedyParityTests teacher-forced against llama-server (same GGUF): all 39 confident positions match
+    // Goldens/hunyuan-moe.golden.json teacher-forced against llama-server (same GGUF): all 39 confident positions match
     // (27 of 32 on a 196-token prompt, 12 of 22 on a 5-token one), 0 near-tie differences. Needed in ModelGraph: QK-norm
     // after RoPE (as hunyuan-dense) and renormalised top-k expert weights. Not on any GPU path yet.
     public static readonly ArchitectureDescriptor Hunyuanmoe = new()
