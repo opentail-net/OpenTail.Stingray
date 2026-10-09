@@ -442,7 +442,7 @@ public sealed unsafe class GgufModel : IDisposable, IModelTensorSource
                 dims[d] = (long)reader.ReadUInt64();
             uint rawType = reader.ReadUInt32();
             if (!DTypeInfo.TryFromGgufType(rawType, out var dtype))
-                throw new InvalidDataException(
+                throw GgufUnsupported.Create(rawType,
                     $"Tensor '{tName}' uses unsupported GGML type ID {rawType}. " +
                     "This OpenTail.Stingray build follows current llama.cpp GGUF type IDs and rejects " +
                     "retired or newer tensor formats before model load.");

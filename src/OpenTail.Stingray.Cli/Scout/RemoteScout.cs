@@ -21,16 +21,9 @@ public static class RemoteScout
 {
     public static async Task<RemoteScoutResult> RunAsync(ExternalHttpClient http, RemoteScoutRequest req, ScoutOptions options, CancellationToken ct)
     {
-        HubRepo repo;
-        try { repo = await HubClient.GetRepoAsync(http, req.Repo, req.Revision, ct).ConfigureAwait(false); }
-        catch (HttpRequestException ex) when (ex.StatusCode is HttpStatusCode.NotFound)
-        { return Only($"'{req.Repo}'{(req.Revision is null ? "" : $" at revision '{req.Revision}'")} was not found on Hugging Face."); }
-        catch (HttpRequestException ex) when (ex.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
-        { return Only($"Hugging Face refused access to '{req.Repo}' ({(int)ex.StatusCode}). The Hub answers the same way for a private repo, a gated one, and one that does not exist. If it is gated, accept its terms on huggingface.co and set HF_TOKEN."); }
-        catch (HttpRequestException ex) { return Only($"Could not reach Hugging Face: {ex.Message}"); }
-        catch (InvalidDataException ex) { return Only($"Hugging Face returned something this tool cannot use: {ex.Message}"); }
-        catch (System.Text.Json.JsonException ex) { return Only($"Hugging Face returned something this tool cannot use: {ex.Message}"); }
-
+        var (found, failure) = await TryGetRepoAsync(http, req.Repo, req.Revision, ct).ConfigureAwait(false);
+        if (found is null) return Only(failure!);
+        var repo = found;
         var models = HubClient.GroupModels(repo.Files);
         var candidates = models.Where(m => !HubClient.IsProjector(m)).ToArray();
 
@@ -48,8 +41,17 @@ public static class RemoteScout
         if (!HubClient.IsComplete(chosen))
             return new(null, null, null, repo, [], $"'{chosen.Name}' is a split model with missing shards on the Hub; it cannot be loaded as published.");
 
+        return await InspectAsync(http, repo, chosen, req.MaxIndexBytes, options, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Inspects one model file of an already-fetched repo: bounded index read, then the full analysis, with provenance and network usage attached.
+    /// The repo is passed in so a caller inspecting many files (the quant picker) asks the Hub about the repo once.
+    /// </summary>
+    public static async Task<RemoteScoutResult> InspectAsync(ExternalHttpClient http, HubRepo repo, HubModelFile chosen, long maxIndexBytes, ScoutOptions options, CancellationToken ct)
+    {
         var paths = chosen.Shards.Select(s => s.Path).ToArray();
-        var idx = await RemoteGgufReader.ReadAsync(http, repo.Id, repo.Revision, paths, req.MaxIndexBytes, ct).ConfigureAwait(false);
+        var idx = await RemoteGgufReader.ReadAsync(http, repo.Id, repo.Revision, paths, maxIndexBytes, ct).ConfigureAwait(false);
 
         string fileName = System.IO.Path.GetFileName(paths[0]);
         long? listedBytes = chosen.TotalSize;
@@ -65,6 +67,7 @@ public static class RemoteScout
             {
                 RemoteIndexOutcome.IncompleteOverCap => "scout.remote.index_over_cap",
                 RemoteIndexOutcome.AccessRestricted => "scout.remote.access_restricted",
+                RemoteIndexOutcome.UnsupportedStorage => "scout.remote.unsupported_storage",
                 RemoteIndexOutcome.NotFound => "scout.remote.not_found",
                 _ => "scout.remote.failed",
             };
@@ -110,6 +113,21 @@ public static class RemoteScout
         return new(report, input, origin, repo, [], null);
     }
 
+    /// <summary>
+    /// Fetches the repo's metadata at a pinned commit, turning every expected failure into a message a person can act on. Shared by single-file
+    /// remote scout and the quant picker. A refused external-access policy is NOT a failure here: it propagates as <see cref="ExternalAccessDeniedException"/>.
+    /// </summary>
+    public static async Task<(HubRepo? Repo, string? Failure)> TryGetRepoAsync(ExternalHttpClient http, string repo, string? revision, CancellationToken ct)
+    {
+        try { return (await HubClient.GetRepoAsync(http, repo, revision, ct).ConfigureAwait(false), null); }
+        catch (HttpRequestException ex) when (ex.StatusCode is HttpStatusCode.NotFound)
+        { return (null, $"'{repo}'{(revision is null ? "" : $" at revision '{revision}'")} was not found on Hugging Face."); }
+        catch (HttpRequestException ex) when (ex.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
+        { return (null, $"Hugging Face refused access to '{repo}' ({(int)ex.StatusCode}). The Hub answers the same way for a private repo, a gated one, and one that does not exist. If it is gated, accept its terms on huggingface.co and set HF_TOKEN."); }
+        catch (HttpRequestException ex) { return (null, $"Could not reach Hugging Face: {ex.Message}"); }
+        catch (InvalidDataException ex) { return (null, $"Hugging Face returned something this tool cannot use: {ex.Message}"); }
+        catch (System.Text.Json.JsonException ex) { return (null, $"Hugging Face returned something this tool cannot use: {ex.Message}"); }
+    }
     private static RemoteScoutResult Only(string message) => new(null, null, null, null, [], message);
 
     /// <summary>A model matches by full path, by file name, or (for a split model) by any shard name or its stem, ignoring case.</summary>

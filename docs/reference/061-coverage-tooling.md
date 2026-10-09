@@ -93,7 +93,19 @@ stingray scout -m model.gguf --budget 64G [--reserve 8G]        # also report th
     request count, hosts and bytes only.
   * A repo with several models needs `-f` (the choices and sizes are listed, exit 64, and nothing is fetched until you choose); projector files (`mmproj*`) are not candidates; split models are chosen by stem; a split model with a missing shard is refused.
   * `--emit-signature` works on a hosted admitted file: the origin records repo, commit and the Hub's published hash with `sha256_source: published_by_huggingface`, and nothing is hashed locally.
-  * Limits: it needs the Hub API to keep its current shape (`sha`, `siblings[].lfs.sha256`, `gguf`, `downloads`); a gated or private repo is reported as access-restricted (the Hub answers 401 for a repo that does not exist, too); remote metadata can never establish numerical parity.* **Nearest admitted structural parent** (`--signatures <dir>` adds your own): scout ranks the file against reference *signatures* of admitted architectures and lists the
+  * Limits: it needs the Hub API to keep its current shape (`sha`, `siblings[].lfs.sha256`, `gguf`, `downloads`); a gated or private repo is reported as access-restricted (the Hub answers 401 for a repo that does not exist, too); remote metadata can never establish numerical parity.* **Quant picker: `scout -r owner/repo --quants [--max-quants N] [--budget SIZE] [--reserve SIZE] [-c N]`.** Answers "which quantisations of this model can this machine run": it asks the Hub about the repo
+  **once**, reads each model file's index remotely (about 2 MiB each, no weights), applies the same analysis and memory gate as `scout`, and prints one row per file, largest first, with a verdict and a `pull` command
+  **pinned to the inspected commit and exact file**. The budget defaults to this machine's detected RAM (stated in the output, `budget_source: detected_ram`) and the reserve to the smaller of 8 GiB and a quarter of it; `--budget`/`--reserve` override.
+  * Verdicts: `fits` (upper-bound CPU estimate + reserve is within budget), `too big` (a known estimate over budget), `unknown` (no estimate for this family, so nothing is promised either way),
+    `unsupported` (a confirmed blocker: an architecture this engine does not run, a storage type with no kernel, or a retired GGML type the loader rejects), `not inspected` (index over `--max-index-mb`, access refused).
+  * "Largest that fits" is recommended because within one model a larger quant is usually closer to the original. That is a heuristic, not a measured quality ranking, and the output says so.
+  * Verified 2026-10-09 on the live Hub: the 23-quant `bartowski/SmolLM2-135M-Instruct-GGUF` in 14 s, 47 requests, 46.0 MiB received (20 fit, 3 unsupported); it found that the three repacked `Q4_0_4_4/4_8/8_8` files use GGML type IDs 31-33, which this build
+    rejects (reported as `unsupported`, with the reason, rather than as a read failure). `ornith-ai/Ornith-1.5-35B-A3B-GGUF` (5 quants, 20-66 GiB) in 12 s, 41 requests, 80.0 MiB received: all 5 `unknown`, because the hybrid recurrent family has no memory model yet; the footer
+    says "cannot tell", not "too big".
+  * **Limits:** CPU run only (GPU placement is not estimated); MLA, hybrid (qwen35 / qwen35moe) and RWKV families are `unknown`, and those are among the most downloaded models, so the picker is blind exactly there until the estimator covers them (todo.md).
+    Memory is an upper bound calibrated on one machine. Past `--max-quants` (default 40, largest first) files are skipped with a note.
+* **`pull --revision <rev>`.** `pull` now resolves the repo's head to its commit SHA once and fetches every file from that commit (previously it listed at one moment and downloaded from `main` at another). `--revision` fetches a specific commit,
+  branch or tag, for example the commit `scout -r` printed, so the file you pull is the file it inspected.* **Nearest admitted structural parent** (`--signatures <dir>` adds your own): scout ranks the file against reference *signatures* of admitted architectures and lists the
   closest three with exact differences (`missing/extra tensor pattern`, `layer coverage`, `rank`, `feature ...`). A signature is **structure only**: tensor-name patterns
   (layer index as `*`), tensor rank, layer coverage, structural feature ids, metadata key names. It deliberately ignores quantization, model size, head counts, file name
   and tensor order, so fine-tunes, merges and re-quantizations of a family land on it. It does **not** see metadata values (rope, norm epsilon, activation, sliding window) or
@@ -108,7 +120,7 @@ stingray scout -m model.gguf --budget 64G [--reserve 8G]        # also report th
   * **Adding a reference** (maintainers or contributors): `stingray scout -m <admitted.gguf> --emit-signature <name>.signature.json [--origin-repo owner/repo --origin-revision <rev>]`.
     It refuses a file that does not resolve to an Admitted architecture, **hashes the file** (cached beside it as `<file>.sha256`, like `stingray hash`), and if the target file
     already holds the same structure it adds the file to its origins; a different structure is refused (use a new name). Load with `--signatures <dir>` without rebuilding.
-* Not yet implemented (see plan): the quant picker, demand-ranked backlog and batch triage that build on remote scout; working-set estimates for MLA, hybrid and recurrent families; calibration of the ranking beyond the leave-one-out check.
+* Not yet implemented (see plan): demand-ranked backlog and batch triage (they build on remote scout); working-set estimates for MLA, hybrid and recurrent families; calibration of the ranking beyond the leave-one-out check.
 * Advisory only: nothing in the report admits or promotes an architecture.
 
 ### `scripts/scout-pretest.ps1 -Model <gguf> [-Budget 64G] [-Reserve 8G] [-ContextSize 2048] [-Run] [-Golden <golden.json>]`

@@ -26,6 +26,10 @@ public sealed class PullCommand : Command<PullCommand.Settings>
         [Description("Case-insensitive substring to pick among multiple .gguf files (e.g. Q4_K_M). Default: prefer Q4_K_M, then Q4_K_S, Q5_K_M, Q8_0, else the first listed.")]
         public string? Quant { get; init; }
 
+        [CommandOption("--revision <REV>")]
+        [Description("Commit, branch or tag to download from. Default: the repo's current head, resolved to its commit SHA first and then used for every file, so the files you get are the ones that were listed. Pass the commit `scout -r` printed to fetch exactly what it inspected.")]
+        public string? Revision { get; init; }
+
         [CommandOption("-o|--out <DIR>")]
         [Description("Destination directory (default: ./models)")]
         public string OutDir { get; init; } = "models";
@@ -58,9 +62,10 @@ public sealed class PullCommand : Command<PullCommand.Settings>
 
         var publishedSha256 = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         List<(string Name, long? Size)> files;
+        string? resolvedRevision = null;
         try
         {
-            files = ListGgufFiles(http, repo, cancellation, publishedSha256);
+            files = ListGgufFiles(http, repo, settings.Revision, cancellation, publishedSha256, out resolvedRevision);
         }
         catch (Exception ex) when (ex is HttpRequestException or JsonException or TaskCanceledException)
         {
@@ -81,6 +86,9 @@ public sealed class PullCommand : Command<PullCommand.Settings>
                 AnsiConsole.MarkupLine($"  {Markup.Escape(name)}  {(size is { } s ? ConsoleDownloadProgress.FormatBytes(s) : "?")}");
             return 0;
         }
+
+        if (resolvedRevision is not null)
+            AnsiConsole.MarkupLine($"[dim]Revision {Markup.Escape(resolvedRevision[..Math.Min(12, resolvedRevision.Length)])} (every file is fetched from this commit)[/]");
 
         var selected = SelectFiles(files, settings.Quant);
         if (selected.Count == 0)
@@ -105,7 +113,8 @@ public sealed class PullCommand : Command<PullCommand.Settings>
                 continue;
             }
             Directory.CreateDirectory(Path.GetDirectoryName(destPath)!);   // sharded repos keep shards in a quant subfolder
-            string url = $"https://huggingface.co/{repo}/resolve/main/{Uri.EscapeDataString(name).Replace("%2F", "/")}?download=true";
+            string rev = resolvedRevision ?? settings.Revision ?? "main";
+            string url = $"https://huggingface.co/{repo}/resolve/{Uri.EscapeDataString(rev)}/{Uri.EscapeDataString(name).Replace("%2F", "/")}?download=true";
             AnsiConsole.MarkupLine($"[bold]Downloading[/] {Markup.Escape(name)} {(size is { } s ? $"({ConsoleDownloadProgress.FormatBytes(s)})" : "")}");
             try
             {
@@ -157,10 +166,12 @@ public sealed class PullCommand : Command<PullCommand.Settings>
         return input;
     }
 
-    private static List<(string Name, long? Size)> ListGgufFiles(HttpClient http, string repo, CancellationToken ct, Dictionary<string, string>? sha256ByName = null)
+    private static List<(string Name, long? Size)> ListGgufFiles(HttpClient http, string repo, string? revision, CancellationToken ct, Dictionary<string, string>? sha256ByName, out string? resolvedRevision)
     {
         // ?blobs=true makes the API return each file's size and (for LFS files) its SHA-256; the default response carries neither.
-        string apiUrl = $"https://huggingface.co/api/models/{repo}?blobs=true";
+        string apiUrl = revision is { Length: > 0 }
+            ? $"https://huggingface.co/api/models/{repo}/revision/{Uri.EscapeDataString(revision)}?blobs=true"
+            : $"https://huggingface.co/api/models/{repo}?blobs=true";
         using var request = new HttpRequestMessage(HttpMethod.Get, apiUrl);
         string? token = Environment.GetEnvironmentVariable("HF_TOKEN");
         if (!string.IsNullOrEmpty(token))
@@ -170,6 +181,8 @@ public sealed class PullCommand : Command<PullCommand.Settings>
         response.EnsureSuccessStatusCode();
         using var stream = response.Content.ReadAsStream(ct);
         using var doc = JsonDocument.Parse(stream);
+        // The commit the listing describes. Downloading from it (not from "main") keeps the files consistent with what was listed and hashed.
+        resolvedRevision = doc.RootElement.TryGetProperty("sha", out var shaEl) && shaEl.ValueKind == JsonValueKind.String && shaEl.GetString() is { Length: >= 7 } s ? s : null;
         return ParseGgufListing(doc.RootElement, sha256ByName);
     }
 

@@ -12,6 +12,8 @@ public enum RemoteIndexOutcome
     /// <summary>The Hub refused (private or gated repo, or a missing/invalid token).</summary>
     AccessRestricted,
     NotFound,
+    /// <summary>The file uses a tensor storage type this build does not support. A verdict about the checkpoint, not a read failure.</summary>
+    UnsupportedStorage,
     /// <summary>Network error, a server that ignored the Range request, an inconsistent response, or a malformed GGUF. <see cref="RemoteIndexResult.Detail"/> says which.</summary>
     Failed,
 }
@@ -76,6 +78,10 @@ public static class RemoteGgufReader
                     var joined = new byte[have + more.Bytes!.Length];
                     data[shard].CopyTo(joined, 0); more.Bytes.CopyTo(joined, have);
                     data[shard] = joined; read += more.Bytes.Length;
+                }
+                catch (InvalidDataException ex) when (GgufUnsupported.IsUnsupportedType(ex, out _))
+                {
+                    return new(RemoteIndexOutcome.UnsupportedStorage, null, sizes, read, ex.Message);
                 }
                 catch (InvalidDataException ex)
                 {

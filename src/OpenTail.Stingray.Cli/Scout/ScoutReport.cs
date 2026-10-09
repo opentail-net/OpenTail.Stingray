@@ -190,4 +190,5 @@ public sealed record ScoutReport(
     UseStringEnumConverter = true, DefaultIgnoreCondition = JsonIgnoreCondition.Never)]
 [JsonSerializable(typeof(ScoutReport))]
 [JsonSerializable(typeof(ArchSignature))]
+[JsonSerializable(typeof(QuantReport))]
 internal partial class ScoutJsonContext : JsonSerializerContext;

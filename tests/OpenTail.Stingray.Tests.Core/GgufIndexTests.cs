@@ -158,4 +158,30 @@ public sealed class GgufIndexTests : IDisposable
     {
         Assert.Throws<ArgumentException>(() => GgufModel.ParseIndex([]));
     }
+
+    // ── unsupported storage types are a verdict about the checkpoint, not a corrupt file ──
+    [Fact]
+    public void A_retired_tensor_type_is_marked_unsupported_and_is_still_an_InvalidDataException()
+    {
+        byte[] bytes = Build(3, [KvStr("general.architecture", "llama")], [T("blk.0.ffn_down.weight", [8, 8], type: 31)], 1024);
+
+        var fromIndex = Assert.Throws<InvalidDataException>(() => GgufModel.ParseIndex([(bytes, bytes.Length)]));
+        Assert.True(GgufUnsupported.IsUnsupportedType(fromIndex, out uint id));
+        Assert.Equal(31u, id);
+        Assert.False(GgufTruncation.IsTruncation(fromIndex, out _));
+
+        // The file loader throws the same type with the same marker, so every existing `catch (InvalidDataException)` keeps working.
+        var fromOpen = Assert.Throws<InvalidDataException>(() => GgufModel.Open(Write(bytes)));
+        Assert.True(GgufUnsupported.IsUnsupportedType(fromOpen, out uint id2));
+        Assert.Equal(31u, id2);
+    }
+
+    [Fact]
+    public void Ordinary_malformed_input_is_not_marked_unsupported()
+    {
+        byte[] bad = Sample(); bad[0] = (byte)'X';
+        Assert.False(GgufUnsupported.IsUnsupportedType(Assert.Throws<InvalidDataException>(() => GgufModel.ParseIndex([(bad, bad.Length)])), out _));
+        Assert.False(GgufUnsupported.IsUnsupportedType(new InvalidDataException("x"), out _));
+        Assert.False(GgufUnsupported.IsUnsupportedType(new IOException("x"), out _));
+    }
 }

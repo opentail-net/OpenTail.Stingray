@@ -27,6 +27,14 @@ public sealed class ScoutCommand : Command<ScoutCommand.Settings>
         [Description("With --repo: commit, branch or tag to inspect (default: the current head). The report records the exact commit.")]
         public string? Revision { get; init; }
 
+        [CommandOption("--quants")]
+        [Description("With --repo: judge EVERY quantisation in the repo against this machine instead of one file: reads each file's index (a few MB each, no weights), applies the memory gate, and prints which fit with a pull command pinned to the inspected commit. Budget defaults to this machine's RAM.")]
+        public bool Quants { get; init; }
+
+        [CommandOption("--max-quants <N>")]
+        [Description("With --quants: most files to inspect (default 40, largest first).")]
+        public int? MaxQuants { get; init; }
+
         [CommandOption("--max-index-mb <N>")]
         [Description("With --repo: most MB of a file's header and tensor index to read (default 128). Past it the report says the inspection is incomplete; nothing more is fetched.")]
         public int? MaxIndexMb { get; init; }
@@ -78,6 +86,11 @@ public sealed class ScoutCommand : Command<ScoutCommand.Settings>
             if (!remote && (File is not null || Revision is not null || MaxIndexMb is not null)) return "-f, --revision and --max-index-mb only apply with -r.";
             if (remote && HubClient.NormalizeRepoId(Repo) is null) return $"'{Repo}' is not a Hugging Face repo id (owner/name).";
             if (MaxIndexMb is <= 0) return "--max-index-mb must be positive.";
+            if (Quants && !remote) return "--quants needs -r <owner/repo>.";
+            if (Quants && File is not null) return "--quants judges every file; drop -f.";
+            if (Quants && EmitSignaturePath is not null) return "--quants and --emit-signature cannot be combined.";
+            if (MaxQuants is not null && !Quants) return "--max-quants only applies with --quants.";
+            if (MaxQuants is <= 0) return "--max-quants must be positive.";
             if (Format is not ("text" or "json")) return "--format must be 'text' or 'json'.";
             if (Budget is not null && !ScoutSize.TryParse(Budget, out _)) return $"--budget '{Budget}' is not a size (try 64G).";
             if (Reserve is not null && !ScoutSize.TryParse(Reserve, out _)) return $"--reserve '{Reserve}' is not a size (try 8G).";
@@ -144,6 +157,7 @@ public sealed class ScoutCommand : Command<ScoutCommand.Settings>
         }
         var options = new ScoutOptions(StingrayBuildVersion.Value, budget, reserve, signatures, settings.ContextSize ?? ScoutOptions.DefaultContextTokens);
 
+        if (settings.Quants) return ExecuteQuants(settings, options, cancellation);
         return settings.Repo is not null ? ExecuteRemote(settings, options, cancellation) : ExecuteLocal(settings, options);
     }
 
@@ -179,6 +193,51 @@ public sealed class ScoutCommand : Command<ScoutCommand.Settings>
         return Output(settings, report);
     }
 
+    private static int ExecuteQuants(Settings settings, ScoutOptions options, CancellationToken cancellation)
+    {
+        // The picker exists to answer "does it fit HERE", so an unset budget means this machine's RAM (and says so), not "not assessed".
+        long ram = HardwareProfile.Detect().RamBytes;
+        string budgetSource = options.BudgetBytes is null ? "detected_ram" : "given";
+        long budget = options.BudgetBytes ?? ram;
+        long reserve = settings.Reserve is not null ? options.ReserveBytes : Math.Min(ScoutOptions.DefaultReserveBytes, budget / 4);
+        if (budget <= 0)
+        {
+            Console.Error.WriteLine("error: could not detect this machine's RAM; pass --budget (for example --budget 16G).");
+            return ExitCodes.Usage;
+        }
+        var pickerOptions = options with { BudgetBytes = budget, ReserveBytes = reserve };
+
+        long maxIndex = (settings.MaxIndexMb ?? (int)(RemoteGgufReader.DefaultMaxIndexBytes >> 20)) * (1L << 20);
+        string repoId = HubClient.NormalizeRepoId(settings.Repo)!;
+        using var http = new ExternalHttpClient(userAgent: "OpenTail.Stingray/scout");
+        QuantReport? report;
+        string? message;
+        try
+        {
+            (report, message) = QuantPicker.RunAsync(http, repoId, settings.Revision, maxIndex, settings.MaxQuants ?? QuantPicker.DefaultMaxFiles,
+                pickerOptions, budgetSource, line => Console.Error.WriteLine("inspecting " + line), cancellation).GetAwaiter().GetResult();
+        }
+        catch (ExternalAccessDeniedException ex)
+        {
+            Console.Error.WriteLine("error: " + ex.Message);
+            return ExitCodes.Failure;
+        }
+        if (report is null)
+        {
+            Console.Error.WriteLine("error: " + message);
+            return ExitCodes.Failure;
+        }
+
+        string json = JsonSerializer.Serialize(report, ScoutJsonContext.Default.QuantReport);
+        if (settings.OutputPath is { Length: > 0 } outPath)
+        {
+            File.WriteAllText(outPath, json + "\n");
+            Console.Error.WriteLine($"Wrote quant report: {Path.GetFileName(outPath)}");
+        }
+        if (settings.Format == "json") Console.WriteLine(json);
+        else QuantTextRenderer.Write(report);
+        return ExitCodes.Success;
+    }
     private static int ExecuteRemote(Settings settings, ScoutOptions options, CancellationToken cancellation)
     {
         long maxIndex = (settings.MaxIndexMb ?? (int)(RemoteGgufReader.DefaultMaxIndexBytes >> 20)) * (1L << 20);

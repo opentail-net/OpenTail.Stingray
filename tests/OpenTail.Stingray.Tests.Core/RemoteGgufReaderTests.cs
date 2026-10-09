@@ -252,4 +252,16 @@ public sealed class RemoteGgufReaderTests
         Assert.Equal(2, r.Index!.Tensors.Count);
         Assert.True(hub.Requests.Count(q => q.Host != "huggingface.co") > 1);
     }
+
+    [Fact]
+    public async Task A_retired_storage_type_is_reported_as_unsupported_storage_not_as_a_read_failure()
+    {
+        byte[] file = Build(3, [KvStr("general.architecture", "llama")], [new("blk.0.ffn_down.weight", [8, 8], 31, 0)], 4096);
+        var hub = new FakeHub(new() { [Key("m.gguf")] = file });
+        using var c = Client(hub);
+        var r = await RemoteGgufReader.ReadAsync(c, "o/r", Sha, ["m.gguf"], RemoteGgufReader.DefaultMaxIndexBytes, default);
+        Assert.Equal(RemoteIndexOutcome.UnsupportedStorage, r.Outcome);
+        Assert.Contains("unsupported GGML type ID 31", r.Detail);
+        Assert.Null(r.Index);
+    }
 }

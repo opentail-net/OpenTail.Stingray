@@ -103,3 +103,27 @@ public static class GgufTruncation
         return false;
     }
 }
+
+/// <summary>
+/// Marks and reads "this file uses a tensor storage type this build does not know". Same mechanism as <see cref="GgufTruncation"/>: the loader keeps throwing
+/// the sealed <see cref="InvalidDataException"/>, and the type id travels in <see cref="Exception.Data"/> so a caller can tell an unsupported FORMAT
+/// (a verdict about the checkpoint) from a corrupt FILE.
+/// </summary>
+public static class GgufUnsupported
+{
+    private const string Key = "opentail.gguf.unsupported_type";
+
+    public static InvalidDataException Create(uint typeId, string message)
+    {
+        var ex = new InvalidDataException(message);
+        ex.Data[Key] = typeId;
+        return ex;
+    }
+
+    public static bool IsUnsupportedType(Exception ex, out uint typeId)
+    {
+        if (ex is InvalidDataException && ex.Data[Key] is uint t) { typeId = t; return true; }
+        typeId = 0;
+        return false;
+    }
+}
