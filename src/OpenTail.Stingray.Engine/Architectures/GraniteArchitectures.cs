@@ -34,7 +34,7 @@ internal static class GraniteArchitectures
     // exercises was already correct on the first real attempt (the only failure along the way
     // was a wrong test assertion, not an engine defect — LogitScale already carries the
     // reciprocal of the raw metadata value, documented but momentarily forgotten while writing
-    // the test). See GraniteMoeGreedyParityTests and docs/done/01-gguf-model-coverage-plan.md §1r.
+    // the test). See Goldens/granitemoe.golden.json and docs/done/01-gguf-model-coverage-plan.md §1r.
     public static readonly ArchitectureDescriptor Granitemoe = new()
     {
         Id = "granitemoe",

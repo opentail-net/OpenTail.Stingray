@@ -1,0 +1,101 @@
+{
+  "schema": 1,
+  "architecture": "granitemoe",
+  "model": {
+    "fileName": "granite-3.0-1b-a400m-instruct-Q8_0.gguf",
+    "sizeBytes": 1422237440,
+    "sha256": "8c37dd0c10b73e9304b98a242be4adcd3050c09e9042c4862d49e2cfccf35411",
+    "source": "bartowski/granite-3.0-1b-a400m-instruct-GGUF"
+  },
+  "reference": {
+    "engine": "llama-server",
+    "build": "10306 (6b5c2efb4)",
+    "settings": "-ngl 0 -c 1024 -t 4",
+    "sampling": {
+      "temperature": 0,
+      "topK": 1,
+      "seed": 0,
+      "repeatPenalty": 1,
+      "cachePrompt": false
+    },
+    "capturedUtc": "2026-10-09T01:11:12Z"
+  },
+  "cases": [
+    {
+      "name": "short",
+      "promptText": "The capital of France is",
+      "promptTokens": [
+        1318,
+        18926,
+        432,
+        45600,
+        438
+      ],
+      "tokenizerOracle": "llama-tokenize",
+      "nPredict": 24,
+      "tokens": [
+        2716,
+        297,
+        32,
+        2716,
+        297,
+        438,
+        312,
+        36493,
+        11297,
+        623,
+        312,
+        20815,
+        8142,
+        461,
+        27668,
+        32,
+        2030,
+        438,
+        6765,
+        372,
+        5075,
+        15863,
+        3291,
+        13260
+      ],
+      "text": " Paris. Paris is a beautiful city with a rich history and culture. It is home to many famous land",
+      "mode": "free",
+      "margins": [
+        3.5539,
+        12.6003,
+        1.1517,
+        0.2462,
+        12.2322,
+        2.4606,
+        0.1837,
+        0.4351,
+        1.6674,
+        1.0647,
+        1.2034,
+        2.1199,
+        4.5548,
+        1.2131,
+        2.4041,
+        2.6464,
+        2.9778,
+        3.1033,
+        0.4342,
+        11.7708,
+        1.7633,
+        2.5341,
+        12.4988,
+        5.8205
+      ],
+      "minConfident": 3
+    }
+  ],
+  "expectedHyperparameters": {
+    "isMoE": "true",
+    "numExperts": "32",
+    "numActiveExperts": "8",
+    "hasSharedExpert": "false",
+    "residualScale": "0.22",
+    "embeddingScale": "12"
+  }
+}

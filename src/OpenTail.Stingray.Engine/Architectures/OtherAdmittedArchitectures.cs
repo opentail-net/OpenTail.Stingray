@@ -187,7 +187,7 @@ internal static partial class OtherAdmittedArchitectures
     // standard interleaved (non-NEOX) RoPE (confirmed via llama_model_rope_type() returning
     // NORM for LLM_ARCH_MAINCODER, matching the default). tokenizer.ggml.pre=qwen2 with real
     // merges — already covered. Every mechanism this checkpoint exercises predates this
-    // session. See MaincoderGreedyParityTests and docs/done/01-gguf-model-coverage-plan.md §1w.
+    // session. See Goldens/maincoder.golden.json and docs/done/01-gguf-model-coverage-plan.md §1w.
     public static readonly ArchitectureDescriptor Maincoder = new()
     {
         Id = "maincoder",

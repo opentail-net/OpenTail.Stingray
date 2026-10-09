@@ -1,0 +1,100 @@
+{
+  "schema": 1,
+  "architecture": "olmo2",
+  "model": {
+    "fileName": "OLMo-2-0425-1B-Q8_0.gguf",
+    "sizeBytes": 1581665920,
+    "sha256": "0f95bfa0dd5eaeb0159ffe5d86eb3a248ea133a6ad21c190561f7f8d485ea0d0",
+    "source": "allenai/OLMo-2-0425-1B-GGUF"
+  },
+  "reference": {
+    "engine": "llama-server",
+    "build": "10306 (6b5c2efb4)",
+    "settings": "-ngl 0 -c 1024 -t 4",
+    "sampling": {
+      "temperature": 0,
+      "topK": 1,
+      "seed": 0,
+      "repeatPenalty": 1,
+      "cachePrompt": false
+    },
+    "capturedUtc": "2026-10-09T01:11:08Z"
+  },
+  "cases": [
+    {
+      "name": "short",
+      "promptText": "The capital of France is",
+      "promptTokens": [
+        791,
+        6864,
+        315,
+        9822,
+        374
+      ],
+      "tokenizerOracle": "llama-tokenize",
+      "nPredict": 24,
+      "tokens": [
+        12366,
+        13,
+        578,
+        8753,
+        4221,
+        374,
+        22066,
+        304,
+        9822,
+        13,
+        578,
+        8753,
+        1274,
+        527,
+        3967,
+        439,
+        279,
+        8753,
+        13,
+        578,
+        8753,
+        5292,
+        374,
+        2579
+      ],
+      "text": " Paris. The French language is spoken in France. The French people are known as the French. The French flag is red",
+      "mode": "free",
+      "margins": [
+        2.9721,
+        0.1582,
+        0.8276,
+        0.1193,
+        0.2807,
+        2.868,
+        0.9052,
+        1.3332,
+        2.2283,
+        1.04,
+        0.6453,
+        0.9412,
+        0.6211,
+        1.5337,
+        0.0672,
+        0.0907,
+        0.938,
+        1.6008,
+        1.9173,
+        0.2008,
+        1.9952,
+        0.8134,
+        0.1041,
+        1.2858
+      ],
+      "minConfident": 3
+    }
+  ],
+  "expectedHyperparameters": {
+    "hasPostAttnNorm": "true",
+    "hasPostFfwNorm": "true",
+    "hasNormBias": "false",
+    "useParallelResidual": "false",
+    "hasQkNorm": "true"
+  }
+}

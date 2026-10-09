@@ -1,0 +1,96 @@
+{
+  "schema": 1,
+  "architecture": "olmo",
+  "model": {
+    "fileName": "OLMo-1B.Q8_0.gguf",
+    "sizeBytes": 1252087840,
+    "sha256": "2f746b381c5b2327e9493b0542b9e3d5d5bced792ab63dc194a4cc4c48427a22",
+    "source": "nopperl/OLMo-1B-GGUF"
+  },
+  "reference": {
+    "engine": "llama-server",
+    "build": "10306 (6b5c2efb4)",
+    "settings": "-ngl 0 -c 1024 -t 4",
+    "sampling": {
+      "temperature": 0,
+      "topK": 1,
+      "seed": 0,
+      "repeatPenalty": 1,
+      "cachePrompt": false
+    },
+    "capturedUtc": "2026-10-09T01:11:03Z"
+  },
+  "cases": [
+    {
+      "name": "short",
+      "promptText": "The capital of France is",
+      "promptTokens": [
+        510,
+        5347,
+        273,
+        6181,
+        310
+      ],
+      "tokenizerOracle": "llama-tokenize",
+      "nPredict": 24,
+      "tokens": [
+        253,
+        2846,
+        273,
+        7785,
+        15,
+        380,
+        5347,
+        273,
+        6181,
+        310,
+        253,
+        2846,
+        273,
+        7785,
+        15,
+        187,
+        510,
+        5347,
+        273,
+        6181,
+        310,
+        253,
+        2846,
+        273
+      ],
+      "text": " the city of Paris. The capital of France is the city of Paris.\nThe capital of France is the city of",
+      "mode": "free",
+      "margins": [
+        0.0721,
+        0.8115,
+        2.4875,
+        4.3717,
+        0.3589,
+        0.3109,
+        0.0107,
+        1.2064,
+        1.1934,
+        2.1457,
+        1.3945,
+        3.1383,
+        6.0542,
+        5.7734,
+        3.7413,
+        0.237,
+        0.436,
+        2.3588,
+        3.0902,
+        3.0942,
+        5.3408,
+        2.0833,
+        4.418,
+        6.9038
+      ],
+      "minConfident": 3
+    }
+  ],
+  "expectedHyperparameters": {
+    "usesUnweightedNorm": "true"
+  }
+}

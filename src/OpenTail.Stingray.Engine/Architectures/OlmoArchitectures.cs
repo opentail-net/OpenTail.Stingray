@@ -39,7 +39,7 @@ internal static partial class OtherAdmittedArchitectures
     // also falls back to sequential per-token Forward() for ANY post-norm model, not just
     // per-layer-head-dim ones — the same fallback pattern Gemma 4 already uses, just widened.
     // QK-norm reuses the OLMoE whole-vector-RMS fix unchanged (same convention, same code).
-    // See Olmo2GreedyParityTests and docs/done/01-gguf-model-coverage-plan.md for the receipt.
+    // See Goldens/olmo2.golden.json and docs/done/01-gguf-model-coverage-plan.md for the receipt.
     public static readonly ArchitectureDescriptor Olmo2 = new()
     {
         Id = "olmo2",
@@ -66,7 +66,7 @@ internal static partial class OtherAdmittedArchitectures
     // unweightedNormUnsupported flag in PrefillDispatch's fallback gate (same pattern
     // OLMo2/cohere2/Gemma-4 already use for their own PrefillCore gaps). Everything else
     // (plain MHA, standard interleaved RoPE, SiLU-gated FFN, tied embeddings) was already
-    // generic. Full exact match on the first real attempt. See OlmoGreedyParityTests and
+    // generic. Full exact match on the first real attempt. See Goldens/olmo.golden.json and
     // docs/done/01-gguf-model-coverage-plan.md §1s.
     public static readonly ArchitectureDescriptor Olmo = new()
     {
