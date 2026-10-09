@@ -1,3 +1,50 @@
+# SCOUT / HUGGING FACE: IDEAS AND TODO (written 2026-10-09)
+
+Built and committed so far (details: `docs/3-product-and-runtime/2026-10-09-checkpoint-scout-and-ai-admission-plan.md`, `docs/reference/061-coverage-tooling.md`):
+`stingray scout` (local + `-r owner/repo`), features, structural-parent ranking against 12 shipped signatures, host working-set estimator + budget gate, `scripts/scout-pretest.ps1`,
+one external-access policy (`STINGRAY_ALLOW_EXTERNAL`, default allowed, deny wins), `GgufModel.ParseIndex`, Hub client, pinned/bounded Range reader. Playbook: `docs/reference/architecture-admission-agent-playbook.md`; `CLAUDE.md` rule 15.
+
+## First: prove it is useful (do this before building more consumers)
+- [ ] Admit ONE real, annoying model with the playbook and write down where scout helped / misled / was irrelevant, with times. Candidates: `ornith-ai/Ornith-1.5-35B-A3B-GGUF`
+      (qwen35moe + an extra next-n head: does our loader ignore the unused `nextn` tensors?), a relabel, or the next item in `docs/00-current-work.md`. If it does not save time, fix scout before adding features.
+
+## Ideas, in the order I would do them
+- [ ] **Quant picker** (`scout -r repo --quants`): remote-scout every quant, run the estimator + gate, print which fit this machine and the exact `pull` command pinned to the inspected commit. Uses what exists; likely daily-use.
+- [ ] **Signature harvest**: remote-scout single-file quants of ADMITTED architectures we have no local file for and `--emit-signature` them (Hub provenance, no download). `qwen3moe` is admitted but ranks against dense `qwen3` only because it has no signature. Prefer single files: split models have no single hash.
+- [ ] **Demand-ranked backlog**: `api/models?filter=gguf&sort=downloads&expand[]=gguf&expand[]=downloads` returns architecture, 30-day downloads, gated and total size per repo in ONE call (verified). Aggregate by architecture, mark registered/admitted, rank the unregistered.
+      Caveat: downloads are per repository over 30 days, not per file, not inference use. Bounded `--limit`, list-only, never a crawler.
+- [ ] **Batch triage**: feed a repo list through remote scout; buckets: identical to an admitted family / identical structure under a new name (relabel candidates, the fast lane, still needs a golden) / near-parent with differences / nothing close / blocked (dtype, tokenizer, size). Machine-readable.
+- [ ] **Compare semantics-changing metadata too** (not only tensors): a short curated list (rope scaling type, sliding window, expert gating...) shown as separate informational differences. Not keys that vary with fine-tuning (rope base). qwen3 vs qwen3vl are tensor-identical and differ only in metadata.
+- [ ] `pull --revision` (pull still resolves `main`, so "the file scout inspected" and "the file pull fetches" can differ); route `pull`'s download through `ExternalHttpClient`; make `pull` use `HubClient`'s listing parser (it keeps its own copy).
+- [ ] **Scout output as the bug-report format**: a user whose model fails pastes the JSON (no paths, no weights); maintainer reproduces with `scout -r` at the pinned commit.
+- [ ] **Shared goldens index** (file sha256 -> golden): goldens are tiny, hash-pinned, path-free. Checking one needs no llama.cpp; only capturing does. Lets scout say "verified for exactly this file".
+- [ ] **Estimator**: MLA (DeepSeek2), hybrid/GDN and RWKV are Unknown (blocked); other MoE families unmeasured (only Phi-3.5-MoE: experts not repacked); only one machine calibrated; GPU placement deliberately not estimated (CLAUDE.md rule 13). Re-measure when the engine changes (the Q4_K repack copy is why a Q4_K_M file costs ~1.8x its size).
+- [ ] **Leave-one-out** (`scripts/scout-leave-one-out.ps1`) again whenever signatures grow; still n=12. Observed split: <=11 differences = real near-relative, >=14 = nothing close.
+- [ ] **Pretest script gaps**: Ctrl+C mid-run and a hard kill of PowerShell untested (child would survive a hard kill); stage 4 has no command; `admit-arch` exit 1 = fail OR tool error (script classifies by verdict line); split exit codes if other callers allow.
+- [ ] Unrelated finding: `CLAUDE.md` says `examples/*.cpp` and `tools/llama.cpp` are "checked into this repo". They are git-ignored (0 tracked files), so other contributors do not have them. Decide the wording.
+- [ ] Cap/expose index limits and rate behaviour for the Hub (retries, 429), and cache API responses by (repo, commit) if batch features arrive.
+
+## Idea from chat: known-good checkpoints, favourites, local availability (2026-10-09)
+Keep THREE things separate and join them with one workflow; build no new download mechanism and no new package format.
+1. **Known-good catalogue**: exact repo, pinned revision, file, size, sha256, supported uses, memory needs, test evidence, limitations.
+2. **User favourites/defaults**: personal aliases (`chat`, `coding`, `vision`, `speech`) that SELECT from the catalogue and can be overridden.
+3. **Local inventory**: which exact files are present, intact, compatible with this machine.
+Workflow for `stingray chat` when the checkpoint is absent: resolve favourite or default -> is that exact file installed? -> if not, remote-scout it and confirm the chosen quant is feasible here -> show checkpoint, download size, memory need, licence -> ask -> existing `pull`/installer fetches the pinned file and verifies the hash ->
+preflight -> load only if it passes. If the default does not fit, offer another QUALIFIED quant or explain; never substitute an untested look-alike.
+- **Most of this already exists.** `src/OpenTail.Stingray.Core/Catalog` already has `CatalogEntry`/`CatalogFile` (repo, pinned revision, path, sha256, size, task, licence + consent, hardware, speed, evidence, run template), a resumable hash-verifying `ModelInstaller`, `stingray setup <task>` and `stingray models`, with `STINGRAY_OFFLINE`.
+  Extend that; do not create a parallel catalogue.
+- **Missing:** (a) favourites/aliases layer; (b) qualification SCOPE per entry (engine version, backend, quant, context, capabilities such as chat / vision / tools; CPU chat does not imply Vulkan vision); (c) a remote feasibility check before download (scout -r + estimator); (d) the same evaluator used by the loader as by scout (a preflight that blocks unknown/over-budget BEFORE load);
+  (e) fall back to another qualified quant; (f) local inventory view (present / intact / compatible).
+- **Is it bullet-proof?** No, and it should not claim to be. "Defence in depth" is the right claim: structure understood (scout), exact checkpoint qualified for a stated purpose (catalogue), machine can run it (estimator + preflight), files intact (hash). Acceptance criteria, with where we stand:
+  1. exact identity pinned (repo, revision, file, size, sha256), verified after download: EXISTS in the catalog/installer.
+  2. fail-closed preflight shared by scout and loader: scout side exists; the LOADER does not call it yet.
+  3. resource safety (weights + KV at the requested context + scratch + headroom): estimator exists for plain-attention dense/MoE on CPU only.
+  4. qualification tied to a configuration: MISSING.
+  5. layered validation, near-tie kept distinct from errors, no promotion on "it loaded": goldens/verify-goldens exist; wiring to the catalogue does not.
+  Residual risk to state in docs: a tensor index cannot prove the weights mean what they should; a checksum proves identity, not correctness; a golden covers its inputs and configuration only. Say "structure compatible, file intact, budget feasible, configuration X passed tests Y", never "this model works".
+- Open questions for the user: where do favourites live (env/profile JSON/`~/.stingray`)? Does `ask before downloading` stay the default for `chat`? Which uses/backends get a qualification column first (CPU chat only is honest)?
+
+---
 # RESUME HERE (updated 2026-10-03)
 
 ## Now
