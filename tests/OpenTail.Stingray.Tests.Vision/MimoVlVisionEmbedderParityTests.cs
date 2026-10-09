@@ -23,6 +23,8 @@ public class MimoVlVisionEmbedderParityTests
     [Fact]
     public void Forward_MatchesNumpyReference()
     {
+        Assert.Skip("Retired per bugstofix.md item 22: static 2026-09-01 numpy fixture is superseded by LlamaMtmdVisionParityTests.MimoVl_Rainbow448_MatchesLlamaMtmdDebug.");
+
         var mmproj = VisionTestPaths.FindMimoVlMmproj();
         var fx = VisionTestPaths.FindFixtureDir("mimovl");
         Assert.SkipUnless(mmproj is not null && fx is not null, "mmproj, fx not found");

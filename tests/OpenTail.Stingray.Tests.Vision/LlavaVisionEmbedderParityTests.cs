@@ -20,6 +20,8 @@ public class LlavaVisionEmbedderParityTests
     [Fact]
     public void Forward_MatchesNumpyReference()
     {
+        Assert.Skip("Retired per bugstofix.md item 22: static 2026-09-01 numpy fixture is superseded by LlamaMtmdVisionParityTests.Llava15_Rainbow336_MatchesLlamaMtmdDebug.");
+
         var mmproj = VisionTestPaths.FindLlavaMmproj();
         var fx = VisionTestPaths.FindFixtureDir("llava");
         Assert.SkipUnless(mmproj is not null && fx is not null, "mmproj, fx not found");   // gated on model + generated golden

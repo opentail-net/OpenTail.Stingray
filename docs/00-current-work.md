@@ -51,10 +51,10 @@ updated with dated evidence in the same pass.
     independent reference. Needs one v1 reference run (ComfyUI or diffusers) recorded as data, or
     an upstream C++ port with v1 support. The row stays ⚪ with visual-only evidence. #13 in
     [done/102](done/102-status-open-items-plan.md) lists the local sd.cpp patch.
-14. **Remaining open items in [1-correctness/bugstofix.md](1-correctness/bugstofix.md)**: #22 stale
-    numpy-golden vision parity tests (4 failing in the Vision run) and #15 LLaVA-NeXT/OneVision residuals
-    (pixel-level and per-view embedding parity unverified). Closed 2026-10-01: #19/#20 (RWKV6/RWKV7 admitted)
-    and #23 (DeepSeek-V2-Lite receipt; one decision left: whether F32 prefill stays its default).
+14. **Remaining open items in [1-correctness/bugstofix.md](1-correctness/bugstofix.md)**: #15 LLaVA-NeXT/OneVision residuals
+    (pixel-level and per-view embedding parity unverified) and #24 DeepSeek-V2-Lite greedy receipt vs Q3_K kernel (user decision pending).
+    Closed 2026-10-09: #22 stale numpy-golden vision parity tests (retired in favor of active `LlamaMtmdVisionParityTests` oracles).
+    Closed 2026-10-01: #19/#20 (RWKV6/RWKV7 admitted) and #23 (DeepSeek-V2-Lite receipt pinned to Q8 prefill).
     Also: Apertus greedy re-check vs `llama-server --no-jinja`.
 15. **Stable Audio 3 Small quality**: our local SA3 checkpoints are the `-base` (pre-trained) models, which sound    worse than the post-trained releases. Waiting on the user's listening verdict on the audio.cpp post-trained    clips (`docs/audio-samples/sa3_small_*_POSTTRAINED_*`); if better, add GGUF loading (or gated safetensors via    `HF_TOKEN`) and an opt-in `pingpong` sampler (8 steps, CFG 1.0). Detail: [done/104](done/104-handover-2026-09-28.md) §2.
 

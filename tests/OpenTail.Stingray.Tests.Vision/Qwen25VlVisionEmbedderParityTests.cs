@@ -23,6 +23,8 @@ public class Qwen25VlVisionEmbedderParityTests
     [Fact]
     public void Forward_MatchesNumpyReference()
     {
+        Assert.Skip("Retired per bugstofix.md item 22: static 2026-09-01 numpy fixture is superseded by LlamaMtmdVisionParityTests.Qwen25Vl_Rainbow448_MatchesLlamaMtmdDebug.");
+
         var mmproj = VisionTestPaths.FindQwen25VlMmproj();
         var fx = VisionTestPaths.FindFixtureDir("qwen25vl");
         Assert.SkipUnless(mmproj is not null && fx is not null, "mmproj, fx not found");
