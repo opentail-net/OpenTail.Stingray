@@ -36,7 +36,9 @@ public sealed record SigOrigin(
     string? SourceRepo,
     string? SourceRevision,
     // The scout build that produced the structure (its version identifies the rules used).
-    string ScoutBuild);
+    string ScoutBuild,
+    // Where Sha256 came from: null when computed locally from the file's bytes, "published_by_huggingface" when it is the Hub's claim (not verified here).
+    string? Sha256Source = null);
 
 public sealed record ArchSignature(
     int SchemaVersion,

@@ -2,7 +2,7 @@
 
 **Generated:** by `scripts/gen-cli-option-inventory.ps1`, which scans `[CommandOption]` /
 `[Description]` pairs under `src/OpenTail.Stingray.Cli`. Last regenerated **2026-10-09**, recording
-**287 option declarations** across 30 command files — the same count the
+**291 option declarations** across 30 command files — the same count the
 `StaticPlanConfigurationTests` guard enforces against source. (Reconciled 12 rows of drift, caught
 by CI failing `CliOptionInventory_DeclaredCountMatchesSource` on `main`: three new commands —
 `AdmitArchCommand`, `GenVisionScaffoldCommand` and `PullCommand`, see `docs/reference/061-coverage-tooling.md` —
@@ -380,13 +380,17 @@ hoc at each read site rather than in one place.
 | `--budget <SIZE>` | diagnostic | Host RAM budget for execution feasibility, e.g. 64G. Without it, feasibility is not assessed. |
 | `--ctx-size <N>` | diagnostic | Context length the memory estimate assumes (default 4096, capped at the model's own limit) |
 | `--emit-signature <PATH>` | diagnostic | Write this file's structural signature as JSON. Admitted architectures only; hashes the file (cached beside it); adds an origin if the target already holds the same structure |
+| `--file <NAME>` | diagnostic | With --repo: which GGUF in the repo (file name, path, or the base name of a split model). Needed when the repo has several. |
 | `--format <FORMAT>` | diagnostic | Output format: text (default) or json |
+| `--max-index-mb <N>` | diagnostic | With --repo: most MB of a file's header and tensor index to read (default 128). Past it the report says the inspection is incomplete; nothing more is fetched. |
 | `--model <PATH>` | diagnostic | Path to a GGUF model file |
 | `--no-builtin-signatures` | diagnostic | Rank only against --signatures <dir>, ignoring the signatures shipped in the binary (for leave-one-out checks and contributor sets) |
 | `--origin-repo <REPO>` | diagnostic | With --emit-signature: Hugging Face repo id the file came from, recorded as provenance (never guessed) |
 | `--origin-revision <REV>` | diagnostic | With --emit-signature: repo revision/commit the file came from |
 | `--output <PATH>` | diagnostic | Write the JSON report to this file (in addition to the chosen stdout format) |
+| `--repo <ID>` | diagnostic | Inspect a model on Hugging Face instead of a local file, e.g. bartowski/SmolLM2-135M-Instruct-GGUF. Reads only the index with Range requests; the weights are never downloaded. Subject to STINGRAY_ALLOW_EXTERNAL. |
 | `--reserve <SIZE>` | diagnostic | Headroom kept free under the budget (default 8G) |
+| `--revision <REV>` | diagnostic | With --repo: commit, branch or tag to inspect (default: the current head). The report records the exact commit. |
 | `--signatures <DIR>` | diagnostic | Extra reference signatures (*.signature.json) to rank against, in addition to the built-in admitted set |
 
 ## SetupCommand

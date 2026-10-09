@@ -78,7 +78,22 @@ stingray scout -m model.gguf --budget 64G [--reserve 8G]        # also report th
   `recurrent.{ssm,hybrid_ssm,rwkv_time_mix}`, `mtp.nextn_head`, `rope.{multi_axis,scaling,partial}`, `multimodal.{projector_file,vision_tensors_in_text_file,audio_tensors}`,
   `quant.low_bit_or_block_fp`, plus the tokenizer findings. The names are standard GGUF conventions; they were cross-checked by hand against upstream llama.cpp on 2026-10-09 (a local checkout that is not part of this repo), and nothing in scout reads or needs llama.cpp.
   A rule fires only on evidence it can cite; one isolated MTP-like tensor, a projector alone, or `ssm_*` names alone never reach `Known` semantics.
-* **Nearest admitted structural parent** (`--signatures <dir>` adds your own): scout ranks the file against reference *signatures* of admitted architectures and lists the
+* **Remote scout: `scout -r owner/repo [-f <file>] [--revision <rev>] [--max-index-mb N]`.** Inspects a model hosted on Hugging Face **without downloading it**: it resolves the repo to an
+  immutable commit, then reads only the start of the file (header, metadata and tensor index, typically 2-16 MiB of a 20-60 GiB model) with HTTP Range requests, and runs the same analysis as a
+  local file. Subject to the external-access policy above (`STINGRAY_ALLOW_EXTERNAL`, default allowed). Verified 2026-10-09 on the live Hub:
+  * the report for `bartowski/SmolLM2-135M-Instruct-GGUF` Q4_K_M, scouted remotely, is **identical** to scouting the same file locally in all 11 sections (only `source`/`network` differ); 3 requests, 2.0 MiB received;
+    the Hub-published SHA-256 equals the one computed locally;
+  * a 20 GiB community MoE (`ornith-ai/Ornith-1.5-35B-A3B-GGUF`, 3.7 M downloads/30 days): 3.3 s, 9 requests, 16 MiB; it is `qwen35moe`, whose nearest admitted parent differs by exactly the extra next-n (MTP) head;
+  * a 56.9 GiB split BF16 model (`unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF`, selected by stem): both shard indexes, 3.4 s, 10 MiB.
+  * **Guardrails (each has a test against a fake Hub with a misbehaving variant):** all requests pinned to the commit SHA, never `main`; a ranged answer must be `206` with a `Content-Range` that starts where asked and
+    agrees on the file size every time; a server that ignores Range and offers a large file is refused without reading its body; never more bytes than asked, never more than `--max-index-mb` (default 128) per shard;
+    past the cap the report says the inspection is **incomplete** (`scout.remote.index_over_cap`) and nothing more is fetched, it never falls back to a download.
+  * **Provenance, labelled by source:** `artifact.source` carries repo, full commit, path(s), licence, gated/private, the repo's **30-day** download count (per repository, not per file), the Hub's own declared architecture
+    (a disagreement with the file is reported, and the file wins), and the Hub-published SHA-256 (`published_by_huggingface`: the Hub's claim, not hashed here; absent for split models, where two hashes are not one). `network` lists
+    request count, hosts and bytes only.
+  * A repo with several models needs `-f` (the choices and sizes are listed, exit 64, and nothing is fetched until you choose); projector files (`mmproj*`) are not candidates; split models are chosen by stem; a split model with a missing shard is refused.
+  * `--emit-signature` works on a hosted admitted file: the origin records repo, commit and the Hub's published hash with `sha256_source: published_by_huggingface`, and nothing is hashed locally.
+  * Limits: it needs the Hub API to keep its current shape (`sha`, `siblings[].lfs.sha256`, `gguf`, `downloads`); a gated or private repo is reported as access-restricted (the Hub answers 401 for a repo that does not exist, too); remote metadata can never establish numerical parity.* **Nearest admitted structural parent** (`--signatures <dir>` adds your own): scout ranks the file against reference *signatures* of admitted architectures and lists the
   closest three with exact differences (`missing/extra tensor pattern`, `layer coverage`, `rank`, `feature ...`). A signature is **structure only**: tensor-name patterns
   (layer index as `*`), tensor rank, layer coverage, structural feature ids, metadata key names. It deliberately ignores quantization, model size, head counts, file name
   and tensor order, so fine-tunes, merges and re-quantizations of a family land on it. It does **not** see metadata values (rope, norm epsilon, activation, sliding window) or
@@ -93,7 +108,7 @@ stingray scout -m model.gguf --budget 64G [--reserve 8G]        # also report th
   * **Adding a reference** (maintainers or contributors): `stingray scout -m <admitted.gguf> --emit-signature <name>.signature.json [--origin-repo owner/repo --origin-revision <rev>]`.
     It refuses a file that does not resolve to an Admitted architecture, **hashes the file** (cached beside it as `<file>.sha256`, like `stingray hash`), and if the target file
     already holds the same structure it adds the file to its origins; a different structure is refused (use a new name). Load with `--signatures <dir>` without rebuilding.
-* Not yet implemented (see plan): working-set estimates for MLA, hybrid and recurrent families; calibration of the ranking beyond the leave-one-out check.
+* Not yet implemented (see plan): the quant picker, demand-ranked backlog and batch triage that build on remote scout; working-set estimates for MLA, hybrid and recurrent families; calibration of the ranking beyond the leave-one-out check.
 * Advisory only: nothing in the report admits or promotes an architecture.
 
 ### `scripts/scout-pretest.ps1 -Model <gguf> [-Budget 64G] [-Reserve 8G] [-ContextSize 2048] [-Run] [-Golden <golden.json>]`

@@ -51,8 +51,36 @@ public sealed record ArtifactInfo(
     ulong? TensorCount,
     ulong? MetadataKeyCount,
     int? ShardCount,
-    // <summary>"not_computed" unless a hash was requested; scout never hashes by default (it can take minutes on large files).</summary>
-    string Sha256State);
+    // "not_computed" (the default: scout never hashes a local file, it can take minutes) or "published_by_huggingface": the hash the Hub reports for a remote file.
+    // That is the Hub's claim, not a hash anyone here computed from bytes; verify it after a download before relying on it.
+    string Sha256State,
+    // Where a remote file came from. Null for a local file.
+    ArtifactSource? Source = null);
+
+/// <summary>A file inspected on Hugging Face, pinned to an immutable commit. Every value is what the Hub reported at that commit.</summary>
+public sealed record ArtifactSource(
+    string Kind,
+    string Repo,
+    // Full commit SHA. All requests were pinned to it, so the metadata and the index bytes describe the same revision.
+    string Revision,
+    // File path(s) in the repo (several for a split model).
+    IReadOnlyList<string> Paths,
+    // Present only for a single-file model whose hash the Hub publishes; null otherwise (never invented, never one hash for many files).
+    string? Sha256,
+    string? Sha256Source,
+    // null when not gated; otherwise "auto" or "manual".
+    string? Gated,
+    bool Private,
+    string? License,
+    // Repository download count over the last 30 days. Per repository, not per file, and not a measure of inference use.
+    long? Downloads30Days,
+    // What the Hub declares as the architecture. Compared with the file's own metadata; a disagreement is reported.
+    string? HubArchitecture,
+    // Bytes read to inspect the index (across all shards). The weights were not downloaded.
+    long IndexBytesRead);
+
+/// <summary>What leaving the machine cost for this report. No URLs, queries or tokens.</summary>
+public sealed record NetworkUse(int Requests, IReadOnlyList<string> Hosts, long BytesReceived);
 
 public sealed record MetadataEntry(string Key, string Type, string Value);
 
@@ -151,7 +179,9 @@ public sealed record ScoutReport(
     IReadOnlyList<ScoutBlocker> Blockers,
     ResourcePreflight Resources,
     IReadOnlyList<NextAction> NextActions,
-    IReadOnlyList<StageReceipt> Stages)
+    IReadOnlyList<StageReceipt> Stages,
+    // Set only when the network was used (remote scout).
+    NetworkUse? Network = null)
 {
     public const int CurrentSchemaVersion = 1;
 }

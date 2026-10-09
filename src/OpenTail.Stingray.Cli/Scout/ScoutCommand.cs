@@ -1,3 +1,5 @@
+using OpenTail.Stingray.Core.Net;
+
 namespace OpenTail.Stingray.Cli.Scout;
 
 /// <summary>
@@ -12,6 +14,22 @@ public sealed class ScoutCommand : Command<ScoutCommand.Settings>
         [CommandOption("-m|--model <PATH>")]
         [Description("Path to a GGUF model file")]
         public string? ModelPath { get; init; }
+
+        [CommandOption("-r|--repo <ID>")]
+        [Description("Inspect a model on Hugging Face instead of a local file, e.g. bartowski/SmolLM2-135M-Instruct-GGUF. Reads only the index with Range requests; the weights are never downloaded. Subject to STINGRAY_ALLOW_EXTERNAL.")]
+        public string? Repo { get; init; }
+
+        [CommandOption("-f|--file <NAME>")]
+        [Description("With --repo: which GGUF in the repo (file name, path, or the base name of a split model). Needed when the repo has several.")]
+        public string? File { get; init; }
+
+        [CommandOption("--revision <REV>")]
+        [Description("With --repo: commit, branch or tag to inspect (default: the current head). The report records the exact commit.")]
+        public string? Revision { get; init; }
+
+        [CommandOption("--max-index-mb <N>")]
+        [Description("With --repo: most MB of a file's header and tensor index to read (default 128). Past it the report says the inspection is incomplete; nothing more is fetched.")]
+        public int? MaxIndexMb { get; init; }
 
         [CommandOption("--format <FORMAT>")]
         [Description("Output format: text (default) or json")]
@@ -55,7 +73,11 @@ public sealed class ScoutCommand : Command<ScoutCommand.Settings>
 
         public override string? Validate()
         {
-            if (string.IsNullOrWhiteSpace(ModelPath)) return "Use -m <model.gguf>.";
+            bool local = !string.IsNullOrWhiteSpace(ModelPath), remote = !string.IsNullOrWhiteSpace(Repo);
+            if (local == remote) return "Use exactly one of -m <model.gguf> or -r <owner/repo>.";
+            if (!remote && (File is not null || Revision is not null || MaxIndexMb is not null)) return "-f, --revision and --max-index-mb only apply with -r.";
+            if (remote && HubClient.NormalizeRepoId(Repo) is null) return $"'{Repo}' is not a Hugging Face repo id (owner/name).";
+            if (MaxIndexMb is <= 0) return "--max-index-mb must be positive.";
             if (Format is not ("text" or "json")) return "--format must be 'text' or 'json'.";
             if (Budget is not null && !ScoutSize.TryParse(Budget, out _)) return $"--budget '{Budget}' is not a size (try 64G).";
             if (Reserve is not null && !ScoutSize.TryParse(Reserve, out _)) return $"--reserve '{Reserve}' is not a size (try 8G).";
@@ -66,11 +88,12 @@ public sealed class ScoutCommand : Command<ScoutCommand.Settings>
     }
 
     /// <summary>
-    /// Writes (or extends) a reference signature. This is a deliberate contributor action, so unlike a normal scout run it hashes the file:
-    /// evidence without a hash cannot be tied to one conversion. The hash is cached beside the model exactly as <c>stingray hash</c> does.
-    /// If the target file already holds the same structure, the new file is added to its origins instead of overwriting it.
+    /// Writes (or extends) a reference signature. This is a deliberate contributor action. For a local file it hashes the file (cached beside it exactly
+    /// as <c>stingray hash</c> does), because evidence without a hash cannot be tied to one conversion. For a hosted file the origin carries the Hub's published
+    /// hash, repo and commit instead, labelled as published, and nothing is hashed. If the target already holds the same structure, the file is added to its
+    /// origins instead of overwriting it.
     /// </summary>
-    private static int EmitSignature(Settings settings, string path, ScoutInput? input, ScoutReport report, string sigPath)
+    private static int EmitSignature(string? localPathToHash, ScoutInput? input, ScoutReport report, string sigPath, SigOrigin origin)
     {
         if (input is null)
         {
@@ -78,15 +101,17 @@ public sealed class ScoutCommand : Command<ScoutCommand.Settings>
             return ExitCodes.Failure;
         }
         // Check admission before hashing: a refused file must not cost minutes of hashing.
-        var origin = new SigOrigin(input.FileName, input.FileBytes, null, Blank(settings.OriginRepo), Blank(settings.OriginRevision), StingrayBuildVersion.Value);
         var sig = SignatureBuilder.TryBuild(input, report, origin, out string refusal);
         if (sig is null)
         {
             Console.Error.WriteLine("error: no signature written: " + refusal);
             return ExitCodes.Failure;
         }
-        var fp = OpenTail.Stingray.Engine.Verification.ModelFingerprinter.Compute(path);
-        sig = sig with { Origins = [origin with { Sha256 = fp.Sha256 }] };
+        if (localPathToHash is not null)
+        {
+            var fp = OpenTail.Stingray.Engine.Verification.ModelFingerprinter.Compute(localPathToHash);
+            sig = sig with { Origins = [origin with { Sha256 = fp.Sha256, Sha256Source = null }] };
+        }
         if (File.Exists(sigPath))
         {
             ArchSignature? existing;
@@ -104,15 +129,10 @@ public sealed class ScoutCommand : Command<ScoutCommand.Settings>
         Console.Error.WriteLine($"Wrote signature for {sig.ArchitectureId} (structure {sig.StructureId[..12]}, {sig.Origins.Count} origin file(s)): {Path.GetFileName(sigPath)}");
         return ExitCodes.Success;
     }
-
     private static string? Blank(string? s) => string.IsNullOrWhiteSpace(s) ? null : s.Trim();
 
     protected override int Execute(Settings settings, CancellationToken cancellation)
     {
-        if (!ModelPathResolver.TryRequireModelFile(settings.ModelPath, out int modelFileExit))
-            return modelFileExit;
-        string path = settings.ModelPath!;
-
         long? budget = settings.Budget is null ? null : (ScoutSize.TryParse(settings.Budget, out long b) ? b : null);
         long reserve = settings.Reserve is not null && ScoutSize.TryParse(settings.Reserve, out long r) ? r : ScoutOptions.DefaultReserveBytes;
         var signatures = settings.NoBuiltinSignatures ? new List<ArchSignature>() : new List<ArchSignature>(SignatureStore.LoadEmbedded());
@@ -123,6 +143,15 @@ public sealed class ScoutCommand : Command<ScoutCommand.Settings>
             foreach (string p in problems) Console.Error.WriteLine("warning: signature skipped: " + p);
         }
         var options = new ScoutOptions(StingrayBuildVersion.Value, budget, reserve, signatures, settings.ContextSize ?? ScoutOptions.DefaultContextTokens);
+
+        return settings.Repo is not null ? ExecuteRemote(settings, options, cancellation) : ExecuteLocal(settings, options);
+    }
+
+    private static int ExecuteLocal(Settings settings, ScoutOptions options)
+    {
+        if (!ModelPathResolver.TryRequireModelFile(settings.ModelPath, out int modelFileExit))
+            return modelFileExit;
+        string path = settings.ModelPath!;
 
         string fileName = Path.GetFileName(path);
         long? fileBytes = new FileInfo(path).Length;
@@ -143,10 +172,55 @@ public sealed class ScoutCommand : Command<ScoutCommand.Settings>
 
         if (settings.EmitSignaturePath is { Length: > 0 } sigPath)
         {
-            int emit = EmitSignature(settings, path, input, report, sigPath);
+            var origin = new SigOrigin(fileName, fileBytes, null, Blank(settings.OriginRepo), Blank(settings.OriginRevision), StingrayBuildVersion.Value);
+            int emit = EmitSignature(path, input, report, sigPath, origin);
             if (emit != ExitCodes.Success) return emit;
         }
+        return Output(settings, report);
+    }
 
+    private static int ExecuteRemote(Settings settings, ScoutOptions options, CancellationToken cancellation)
+    {
+        long maxIndex = (settings.MaxIndexMb ?? (int)(RemoteGgufReader.DefaultMaxIndexBytes >> 20)) * (1L << 20);
+        string repoId = HubClient.NormalizeRepoId(settings.Repo)!;
+
+        using var http = new ExternalHttpClient(userAgent: "OpenTail.Stingray/scout");
+        RemoteScoutResult result;
+        try
+        {
+            result = RemoteScout.RunAsync(http, new RemoteScoutRequest(repoId, settings.File, settings.Revision, maxIndex), options, cancellation)
+                .GetAwaiter().GetResult();
+        }
+        catch (ExternalAccessDeniedException ex)
+        {
+            Console.Error.WriteLine("error: " + ex.Message);
+            return ExitCodes.Failure;
+        }
+
+        if (result.Report is null)
+        {
+            if (result.Choices.Count > 0)
+            {
+                Console.Error.WriteLine($"error: {result.Message}");
+                foreach (var m in result.Choices)
+                    Console.Error.WriteLine($"  {m.Name}  {(m.TotalSize is long s ? ScoutTextRenderer.Bytes(s) : "?")}{(m.IsSplit ? $"  ({m.Shards.Count} shards)" : "")}");
+                Console.Error.WriteLine($"Run again with -f <name>, e.g. scout -r {repoId} -f \"{result.Choices[0].Shards[0].Path}\".");
+                return ExitCodes.Usage;
+            }
+            Console.Error.WriteLine("error: " + result.Message);
+            return ExitCodes.Failure;
+        }
+
+        if (settings.EmitSignaturePath is { Length: > 0 } sigPath)
+        {
+            int emit = EmitSignature(null, result.Input, result.Report, sigPath, result.Origin!);
+            if (emit != ExitCodes.Success) return emit;
+        }
+        return Output(settings, result.Report);
+    }
+
+    private static int Output(Settings settings, ScoutReport report)
+    {
         string json = JsonSerializer.Serialize(report, ScoutJsonContext.Default.ScoutReport);
         if (settings.OutputPath is { Length: > 0 } outPath)
         {
@@ -160,7 +234,6 @@ public sealed class ScoutCommand : Command<ScoutCommand.Settings>
         return report.Stages[0].State == StageState.Failed ? ExitCodes.Failure : ExitCodes.Success;
     }
 }
-
 internal static class ScoutTextRenderer
 {
     public static void Write(ScoutReport r)
@@ -170,6 +243,16 @@ internal static class ScoutTextRenderer
             $"{a.TensorCount?.ToString() ?? "?"} tensors  |  {a.MetadataKeyCount?.ToString() ?? "?"} metadata keys  |  {Bytes(a.FileBytes)}  |  shards {a.ShardCount?.ToString() ?? "?"}");
         AnsiConsole.MarkupLine($"[dim]scout schema v{r.SchemaVersion}, build {Markup.Escape(r.ScoutBuild)}; static only: no weights read, no forward pass[/]");
 
+        if (a.Source is { } src)
+        {
+            string gated = src.Gated is null ? "" : $", gated ({src.Gated})";
+            AnsiConsole.MarkupLine($"[bold]Source:[/] huggingface.co/{Markup.Escape(src.Repo)} @ {Markup.Escape(src.Revision[..Math.Min(12, src.Revision.Length)])}  [dim]{Markup.Escape(string.Join(", ", src.Paths.Select(Path.GetFileName)))}[/]");
+            AnsiConsole.MarkupLine($"  [dim]licence {Markup.Escape(src.License ?? "not stated")}{Markup.Escape(gated)}; {(src.Downloads30Days is long dl ? $"{dl:N0} downloads in 30 days (whole repo)" : "downloads unknown")}; " +
+                $"hub-declared architecture {Markup.Escape(src.HubArchitecture ?? "n/a")}[/]");
+            AnsiConsole.MarkupLine($"  [dim]sha256 {(src.Sha256 is null ? "not published for this file" : Markup.Escape(src.Sha256[..16]) + "... as published by the Hub (not verified here)")}; read {Bytes(src.IndexBytesRead)} of index, weights not downloaded[/]");
+        }
+        if (r.Network is { } net)
+            AnsiConsole.MarkupLine($"[dim]network: {net.Requests} request(s) to {Markup.Escape(string.Join(", ", net.Hosts))}, {Bytes(net.BytesReceived)} received[/]");
         if (r.Architecture is { } arch)
         {
             AnsiConsole.WriteLine();
@@ -194,8 +277,10 @@ internal static class ScoutTextRenderer
             AnsiConsole.MarkupLine($"[bold]Tensors:[/] {t.Count}, {Bytes(t.TotalBytes)}" + (t.LayerCount is int lc ? $", {lc} layers (blk)" : ""));
             AnsiConsole.MarkupLine("  " + Markup.Escape(string.Join("  ", t.ByDType.Select(d => $"{d.DType} x{d.Count} ({Bytes(d.Bytes)})"))));
             AnsiConsole.MarkupLine($"  {t.Patterns.Count} distinct tensor patterns (see --format json for the full list)");
-            foreach (var irr in t.Irregularities)
+            foreach (var irr in t.Irregularities.Take(8))
                 AnsiConsole.MarkupLine($"  [yellow]irregular[/] {Markup.Escape(irr.Pattern)}: {Markup.Escape(irr.Kind)} - {Markup.Escape(irr.Detail)}");
+            if (t.Irregularities.Count > 8)
+                AnsiConsole.MarkupLine($"  [dim]... and {t.Irregularities.Count - 8} more irregularities (hybrid and mixed-quant models have many by design; --format json lists all)[/]");
         }
 
         if (r.Metadata?.Tokenizer is { } tok)
@@ -234,5 +319,5 @@ internal static class ScoutTextRenderer
             AnsiConsole.MarkupLine($"  {n.Order}. {Markup.Escape(n.Command)}  [dim]{Markup.Escape(n.Why)}[/]");
     }
 
-    private static string Bytes(long? b) => b is null ? "?" : b < (1L << 20) ? $"{b} B" : b < (1L << 30) ? $"{b / 1048576.0:F1} MiB" : $"{b / 1073741824.0:F2} GiB";
+    internal static string Bytes(long? b) => b is null ? "?" : b < (1L << 20) ? $"{b} B" : b < (1L << 30) ? $"{b / 1048576.0:F1} MiB" : $"{b / 1073741824.0:F2} GiB";
 }
