@@ -259,13 +259,25 @@ public sealed class AdmitArchCommand : Command<AdmitArchCommand.Settings>
                 break;
         }
 
-        if (result.Passed)
+        if (result.Passed && hpExpect.Count == 0)
         {
-            AnsiConsole.MarkupLine("[dim]Paste-ready evidence line for the descriptor / STATUS row:[/]");
-            Console.WriteLine($"// {arch} — verified {DateTime.UtcNow:yyyy-MM-dd} against golden {Path.GetFileName(settings.Golden!)}: " +
-                $"{golden.Reference.Engine} {golden.Reference.Build}, sha256 {golden.Model.Sha256 ?? "(not recorded)"}, {result.Verdict}.");
+            if (pin.Status == PinStatus.Verified)
+            {
+                AnsiConsole.MarkupLine("[dim]Paste-ready evidence line for the descriptor / STATUS row:[/]");
+                Console.WriteLine($"// {arch} — verified {DateTime.UtcNow:yyyy-MM-dd} against golden {Path.GetFileName(settings.Golden!)}: " +
+                    $"{golden.Reference.Engine} {golden.Reference.Build}, sha256 {golden.Model.Sha256}, {result.Verdict}.");
+                return 0;
+            }
+            if (pin.Status == PinStatus.Mismatch)
+            {
+                AnsiConsole.MarkupLine("[yellow bold]UNPINNED PARITY RESULT[/] — forward pass matches, but file SHA-256 does NOT match the golden. Cannot admit architecture on an unpinned file.");
+                return 1;
+            }
+            // NotRecorded
+            AnsiConsole.MarkupLine("[yellow]LEGACY UNPINNED RECEIPT[/] — forward pass matches, but the golden recorded no SHA-256. Re-capture with capture-golden to produce pinned admission evidence.");
+            return 1;
         }
-        return result.Passed && hpExpect.Count == 0 ? 0 : 1;
+        return 1;
     }
 
     private static int Argmax(ReadOnlySpan<float> logits)

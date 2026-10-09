@@ -86,7 +86,25 @@ public static unsafe class Q6KPrefillGemm
         }
 
         int stride = SimdKernels.Q8KScratchBytes(cols);
-        byte* scratch = (byte*)NativeMemory.Alloc((nuint)((long)stride * batchSize));
+        long need = (long)stride * batchSize;
+
+        // Per-thread scratch (decode calls this hundreds of times per token). Only the calling
+        // thread writes it; workers read it before this call returns. t_depth: a re-entrant call
+        // on this thread (reused while waiting on its own Parallel.For) gets a private allocation.
+        bool owned = t_depth > 0;
+        t_depth++;
+        byte* scratch;
+        if (owned) scratch = (byte*)NativeMemory.Alloc((nuint)need);
+        else
+        {
+            if (t_cap < need)
+            {
+                if (t_buf != 0) NativeMemory.Free((void*)t_buf);
+                t_buf = (nint)NativeMemory.Alloc((nuint)need);
+                t_cap = need;
+            }
+            scratch = (byte*)t_buf;
+        }
         try
         {
             if (batchSize >= 4)
@@ -103,7 +121,15 @@ public static unsafe class Q6KPrefillGemm
                 }
 
             int rowBlocks = (rows + RowBlock - 1) / RowBlock;
-            if (rowBlocks > 1)
+            if (batchSize == 1)
+            {
+                if (rowBlocks > 1)
+                    Parallel.For(0, rowBlocks, SimdKernels.ParallelOpts, blk =>
+                        RowBlockKernel1(output, weights, scratch, rows, cols, blk));
+                else
+                    RowBlockKernel1(output, weights, scratch, rows, cols, 0);
+            }
+            else if (rowBlocks > 1)
                 Parallel.For(0, rowBlocks, SimdKernels.ParallelOpts, blk =>
                     RowBlockKernel(output, weights, scratch, stride, batchSize, rows, cols, blk));
             else
@@ -111,9 +137,73 @@ public static unsafe class Q6KPrefillGemm
         }
         finally
         {
-            NativeMemory.Free(scratch);
+            t_depth--;
+            if (owned) NativeMemory.Free(scratch);
         }
         return true;
+    }
+
+    [ThreadStatic] private static nint t_buf;
+    [ThreadStatic] private static long t_cap;
+    [ThreadStatic] private static int t_depth;
+
+    /// <summary>
+    /// Single-token variant of <see cref="RowBlockKernel"/>: identical per-row operations in the
+    /// same order (so bitwise equal to it at nt = 1), with the accumulator in a register rather
+    /// than a stackalloc array, and no token loop.
+    /// </summary>
+    private static void RowBlockKernel1(float* output, byte* weights, byte* scratch,
+        int rows, int cols, int blk)
+    {
+        int nb = cols / 256;
+        long bytesPerRow = (long)nb * BlockBytes;
+        int r0 = blk * RowBlock, r1 = Math.Min(rows, r0 + RowBlock);
+
+        var m3 = Vector256.Create((byte)0x03);
+        var m12 = Vector256.Create((byte)0x0C);
+        var m48 = Vector256.Create((byte)0x30);
+        var m192 = Vector256.Create((byte)0xC0);
+        var m15 = Vector256.Create((byte)0x0F);
+
+        int qsOff = nb * 4, bsOff = nb * 4 + nb * 256;
+        byte* tok = scratch;
+
+        for (int r = r0; r < r1; r++)
+        {
+            byte* row = weights + (long)r * bytesPerRow;
+            var acc = Vector256<float>.Zero;
+
+            for (int b = 0; b < nb; b++)
+            {
+                byte* x = row + b * BlockBytes;
+                var scales128 = Vector128.LoadUnsafe(ref *(x + 192)).AsSByte();
+                float dw = HalfConv.ToFloat((ushort)(x[208] | (x[209] << 8)));
+                byte* a = tok + qsOff + (long)b * 256;
+
+                Decode(x, 0, m3, m12, m48, m192, m15, out var w0, out var w1, out var w2, out var w3);
+                var scA = Avx2.ConvertToVector256Int16(Ssse3.Shuffle(scales128, Vector128.Create(
+                    (sbyte)0, 0, 0, 0, 2, 2, 2, 2, 1, 1, 1, 1, 3, 3, 3, 3)));
+                var scB = Avx2.ConvertToVector256Int16(Ssse3.Shuffle(scales128, Vector128.Create(
+                    (sbyte)4, 4, 4, 4, 6, 6, 6, 6, 5, 5, 5, 5, 7, 7, 7, 7)));
+                var sumi = HalfDot(a, w0, w1, w2, w3, scA, scB);
+
+                Decode(x, 1, m3, m12, m48, m192, m15, out w0, out w1, out w2, out w3);
+                scA = Avx2.ConvertToVector256Int16(Ssse3.Shuffle(scales128, Vector128.Create(
+                    (sbyte)8, 8, 8, 8, 10, 10, 10, 10, 9, 9, 9, 9, 11, 11, 11, 11)));
+                scB = Avx2.ConvertToVector256Int16(Ssse3.Shuffle(scales128, Vector128.Create(
+                    (sbyte)12, 12, 12, 12, 14, 14, 14, 14, 13, 13, 13, 13, 15, 15, 15, 15)));
+                var scales16 = Avx2.ConvertToVector256Int16(scales128);
+
+                var s = Avx2.Add(sumi, HalfDot(a + 128, w0, w1, w2, w3, scA, scB));
+                var bsums = Vector256.LoadUnsafe(ref *(short*)(tok + bsOff + b * 32));
+                var corr = Avx2.ShiftLeftLogical(Avx2.MultiplyAddAdjacent(bsums, scales16), 5);
+                float d = dw * ((float*)tok)[b];
+                acc = Fma.MultiplyAdd(Vector256.Create(d),
+                    Avx.ConvertToVector256Single(Avx2.Subtract(s, corr)), acc);
+            }
+
+            output[r] = HSum(acc);
+        }
     }
 
     private static void RowBlockKernel(float* output, byte* weights, byte* scratch, int stride,

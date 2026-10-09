@@ -260,4 +260,46 @@ public sealed class GoldenParityRunnerTests
             Assert.True(!g.Model.FileName.Contains('/') && !g.Model.FileName.Contains('\\'),$"{Path.GetFileName(file)}: model.fileName must be a bare file name");
         }
     }
+
+    [Fact]
+    public void TimingBreakdown_AccountsPrefillAndDecodeSeparately()
+    {
+        // 4 continuation tokens after 2 prompt tokens -> 1 prefill (2 prompt tokens) + 3 forward calls (3 decode steps)
+        var r = GoldenParityRunner.Run(Golden("free", [5, 6, 7, 8], [3, 4]), () => new ScriptedPass(Counting));
+        Assert.NotNull(r.Timing);
+        Assert.Equal(2, r.Timing.PromptTokens);
+        Assert.Equal(3, r.Timing.DecodeSteps);
+        Assert.True(r.Timing.PrefillDuration >= TimeSpan.Zero);
+        Assert.True(r.Timing.DecodeDuration >= TimeSpan.Zero);
+        Assert.NotNull(r.Timing.DecodeTokensPerSecond);
+
+        var c = r.Cases[0];
+        Assert.NotNull(c.Timing);
+        Assert.Equal(2, c.Timing.PromptTokens);
+        Assert.Equal(3, c.Timing.DecodeSteps);
+    }
+
+    [Fact]
+    public void TimingBreakdown_EarlyTermination_DoesNotOvercountSteps()
+    {
+        // Divergence at index 2 (counting gives 5, 6, 7... but golden wants 5, 6, 20) -> free mode stops at 3 tokens compared -> 2 forward calls
+        var r = GoldenParityRunner.Run(Golden("free", [5, 6, 20, 8], [3, 4]), () => new ScriptedPass(Counting));
+        Assert.Equal(CaseVerdict.Diverged, r.Verdict);
+        Assert.NotNull(r.Timing);
+        Assert.Equal(2, r.Timing.PromptTokens);
+        Assert.Equal(2, r.Timing.DecodeSteps); // Only 2 Forward calls were executed
+        Assert.Equal(3, r.Cases[0].Compared);
+    }
+
+    [Fact]
+    public void TimingBreakdown_StepwiseCheck_DoesNotContributeToCaseDecodeTiming()
+    {
+        // Case with 2 tokens -> 1 forward call in case evaluation.
+        // Stepwise check executes prefill and forward passes separately, but case decode steps must remain 1.
+        var r = GoldenParityRunner.Run(Golden("free", [5, 6], [3, 4]), () => new ScriptedPass(Counting));
+        Assert.NotNull(r.Stepwise);
+        Assert.True(r.Stepwise.Passed);
+        Assert.NotNull(r.Timing);
+        Assert.Equal(1, r.Timing.DecodeSteps);
+    }
 }

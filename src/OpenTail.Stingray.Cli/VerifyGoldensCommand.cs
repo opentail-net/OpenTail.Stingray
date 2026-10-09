@@ -31,7 +31,7 @@ public sealed class VerifyGoldensCommand : Command<VerifyGoldensCommand.Settings
         public string? Diff { get; init; }
 
         [CommandOption("--strict")]
-        [Description("Fail with non-zero exit code if any model is unpinned, skipped or divergent")]
+        [Description("Fail with non-zero exit code if any model is unpinned, skipped, divergent, near-tie, or if requested baseline diff fails")]
         public bool Strict { get; init; }
 
         [CommandOption("--ctx-size <N>")]
@@ -66,6 +66,11 @@ public sealed class VerifyGoldensCommand : Command<VerifyGoldensCommand.Settings
 
         if (files.Count == 0)
         {
+            if (settings.Strict)
+            {
+                AnsiConsole.ErrorLine($"[red]Error:[/] No golden files found matching criteria in: {Markup.Escape(goldensDir)}");
+                return 1;
+            }
             AnsiConsole.MarkupLine($"[yellow]No golden files found matching criteria in:[/] {Markup.Escape(goldensDir)}");
             return 0;
         }
@@ -91,12 +96,22 @@ public sealed class VerifyGoldensCommand : Command<VerifyGoldensCommand.Settings
         int divergedCount = 0;
         int skippedCount = 0;
         int guardFailCount = 0;
+        int crashCount = 0;
+        int archMismatchCount = 0;
+        int unpinnedCount = 0;
+        bool commandError = false;
+        bool wasCancelled = false;
 
         foreach (var file in files)
         {
-            if (cancellation.IsCancellationRequested) break;
+            if (cancellation.IsCancellationRequested)
+            {
+                wasCancelled = true;
+                break;
+            }
 
             string goldenName = Path.GetFileName(file);
+            string goldenSha256 = GoldenCaptureParsing.Sha256Hex(file);
             GoldenFile golden;
             try
             {
@@ -137,6 +152,7 @@ public sealed class VerifyGoldensCommand : Command<VerifyGoldensCommand.Settings
                 {
                     Architecture = golden.Architecture,
                     GoldenFile = goldenName,
+                    GoldenSha256 = goldenSha256,
                     ModelFile = golden.Model.FileName,
                     ModelSha256 = golden.Model.Sha256,
                     PinStatus = "Missing",
@@ -149,6 +165,8 @@ public sealed class VerifyGoldensCommand : Command<VerifyGoldensCommand.Settings
 
             totalRun++;
             var pin = ModelFingerprinter.CheckPin(golden, modelPath);
+            if (pin.Status != PinStatus.Verified) unpinnedCount++;
+
             string pinText = pin.Status switch
             {
                 PinStatus.Verified => "[green]Verified[/]",
@@ -159,7 +177,6 @@ public sealed class VerifyGoldensCommand : Command<VerifyGoldensCommand.Settings
             var sw = Stopwatch.StartNew();
             GoldenRunResult result;
             IReadOnlyList<string> guardFailures = [];
-            int totalGeneratedTokens = 0;
             int totalCompared = 0;
             int totalMatched = 0;
 
@@ -167,6 +184,39 @@ public sealed class VerifyGoldensCommand : Command<VerifyGoldensCommand.Settings
             {
                 using var model = GgufModel.Open(modelPath);
                 string arch = Convert.ToString(model.Metadata.GetValueOrDefault("general.architecture")) ?? "";
+                if (!string.Equals(golden.Architecture, arch, StringComparison.OrdinalIgnoreCase))
+                {
+                    sw.Stop();
+                    string msg = $"Architecture mismatch: golden expects '{golden.Architecture}', checkpoint declares '{arch}'";
+                    AnsiConsole.ErrorLine($"[red]Error in {Markup.Escape(goldenName)}:[/] {Markup.Escape(msg)}");
+                    archMismatchCount++;
+
+                    table.AddRow(
+                        Markup.Escape(golden.Architecture),
+                        Markup.Escape(goldenName),
+                        Markup.Escape(golden.Model.FileName),
+                        pinText,
+                        "[red bold]ArchMismatch[/]",
+                        "-",
+                        "-",
+                        $"{sw.Elapsed.TotalSeconds:F2}s");
+
+                    baselineEntries.Add(new GoldenBaselineEntry
+                    {
+                        Architecture = golden.Architecture,
+                        GoldenFile = goldenName,
+                        GoldenSha256 = goldenSha256,
+                        ModelFile = golden.Model.FileName,
+                        ModelSha256 = pin.Actual ?? golden.Model.Sha256,
+                        PinStatus = pin.Status.ToString(),
+                        Verdict = "ArchMismatch",
+                        Passed = false,
+                        ElapsedSeconds = sw.Elapsed.TotalSeconds,
+                        Detail = msg
+                    });
+                    continue;
+                }
+
                 var resolvedHp = ArchitectureModelResolver.ResolveHyperparams(model);
                 guardFailures = HyperparameterExpectations.Check(resolvedHp, golden.ExpectedHyperparameters);
 
@@ -180,7 +230,6 @@ public sealed class VerifyGoldensCommand : Command<VerifyGoldensCommand.Settings
                 {
                     totalCompared += c.Compared;
                     totalMatched += c.Matched;
-                    totalGeneratedTokens += c.Generated.Count;
                 }
             }
             catch (Exception ex)
@@ -196,13 +245,14 @@ public sealed class VerifyGoldensCommand : Command<VerifyGoldensCommand.Settings
                     "-",
                     $"{sw.Elapsed.TotalSeconds:F2}s");
 
-                divergedCount++;
+                crashCount++;
                 baselineEntries.Add(new GoldenBaselineEntry
                 {
                     Architecture = golden.Architecture,
                     GoldenFile = goldenName,
+                    GoldenSha256 = goldenSha256,
                     ModelFile = golden.Model.FileName,
-                    ModelSha256 = golden.Model.Sha256,
+                    ModelSha256 = pin.Actual ?? golden.Model.Sha256,
                     PinStatus = pin.Status.ToString(),
                     Verdict = "Crash",
                     Passed = false,
@@ -213,7 +263,7 @@ public sealed class VerifyGoldensCommand : Command<VerifyGoldensCommand.Settings
             }
 
             double elapsedSec = Math.Max(sw.Elapsed.TotalSeconds, 0.001);
-            double? tokPerSec = totalGeneratedTokens > 0 ? (totalGeneratedTokens / elapsedSec) : null;
+            double? tokPerSec = result.Timing?.DecodeTokensPerSecond;
             string speedText = tokPerSec is { } spd ? $"{spd.ToString("F1", CultureInfo.InvariantCulture)} t/s" : "-";
             string timeText = $"{elapsedSec.ToString("F2", CultureInfo.InvariantCulture)}s";
             string tokenText = $"{totalMatched}/{totalCompared}";
@@ -221,25 +271,38 @@ public sealed class VerifyGoldensCommand : Command<VerifyGoldensCommand.Settings
             bool hasGuardFailure = guardFailures.Count > 0;
             if (hasGuardFailure) guardFailCount++;
 
+            bool hasEvidenceFailure = !result.Cases.All(c => c.EvidenceOk);
+
             string verdictText;
+            string baselineVerdict;
             if (hasGuardFailure)
             {
                 verdictText = "[red bold]GuardFail[/]";
+                baselineVerdict = "GuardFail";
+            }
+            else if (hasEvidenceFailure)
+            {
+                verdictText = "[red bold]InsufficientEvidence[/]";
+                baselineVerdict = "InsufficientEvidence";
+                divergedCount++;
             }
             else if (!result.Passed)
             {
                 verdictText = "[red bold]Diverged[/]";
+                baselineVerdict = "Diverged";
                 divergedCount++;
             }
             else if (result.Verdict == CaseVerdict.Exact)
             {
-                verdictText = "[green bold]Exact[/]";
+                verdictText = pin.Status == PinStatus.Verified ? "[green bold]Exact[/]" : "[yellow bold]Exact (Unpinned)[/]";
+                baselineVerdict = "Exact";
                 passedCount++;
                 exactCount++;
             }
             else
             {
-                verdictText = "[yellow bold]NearTie[/]";
+                verdictText = pin.Status == PinStatus.Verified ? "[yellow bold]NearTie[/]" : "[yellow]NearTie (Unpinned)[/]";
+                baselineVerdict = "NearTie";
                 passedCount++;
                 nearTieCount++;
             }
@@ -267,27 +330,37 @@ public sealed class VerifyGoldensCommand : Command<VerifyGoldensCommand.Settings
             {
                 Architecture = golden.Architecture,
                 GoldenFile = goldenName,
+                GoldenSha256 = goldenSha256,
                 ModelFile = golden.Model.FileName,
-                ModelSha256 = golden.Model.Sha256,
+                ModelSha256 = pin.Actual ?? golden.Model.Sha256,
                 PinStatus = pin.Status.ToString(),
-                Verdict = hasGuardFailure ? "GuardFail" : result.Verdict.ToString(),
+                Verdict = baselineVerdict,
                 Passed = result.Passed && !hasGuardFailure,
                 ComparedTokens = totalCompared,
                 MatchedTokens = totalMatched,
+                DecodeSteps = result.Timing?.DecodeSteps ?? 0,
                 DecodeTokensPerSecond = tokPerSec,
+                PrefillTokensPerSecond = result.Timing?.PrefillTokensPerSecond,
                 ElapsedSeconds = elapsedSec,
                 StepwiseMaxAbsDiff = result.Stepwise?.MaxAbsDiff,
                 Detail = hasGuardFailure ? string.Join("; ", guardFailures) : null
             });
         }
 
+        if (wasCancelled)
+        {
+            AnsiConsole.ErrorLine("[red]Run was cancelled. Incomplete baseline was not saved.[/]");
+            return 1;
+        }
+
         AnsiConsole.Write(table);
         AnsiConsole.WriteLine();
-        string divColor = divergedCount > 0 ? "red" : "dim";
+        string divColor = (divergedCount > 0 || archMismatchCount > 0 || crashCount > 0) ? "red" : "dim";
         string guardColor = guardFailCount > 0 ? "red" : "dim";
+        string unpinnedColor = unpinnedCount > 0 ? "yellow" : "dim";
         AnsiConsole.MarkupLine(
             $"[bold]Summary:[/] [green]{passedCount} passed[/] ({exactCount} exact, {nearTieCount} near-tie), " +
-            $"[{divColor}]{divergedCount} diverged[/], [{guardColor}]{guardFailCount} guard failed[/], [dim]{skippedCount} skipped[/] " +
+            $"[{divColor}]{divergedCount + crashCount + archMismatchCount} diverged/failed[/], [{guardColor}]{guardFailCount} guard failed[/], [{unpinnedColor}]{unpinnedCount} unpinned[/], [dim]{skippedCount} skipped[/] " +
             $"(out of {files.Count} goldens).");
 
         var currentBaseline = new GoldenBaselineFile
@@ -298,8 +371,16 @@ public sealed class VerifyGoldensCommand : Command<VerifyGoldensCommand.Settings
 
         if (settings.Baseline is { Length: > 0 } baselineOut)
         {
-            currentBaseline.Save(baselineOut);
-            AnsiConsole.MarkupLine($"[green]Baseline recorded to:[/] {Markup.Escape(baselineOut)}");
+            try
+            {
+                currentBaseline.Save(baselineOut);
+                AnsiConsole.MarkupLine($"[green]Baseline recorded to:[/] {Markup.Escape(baselineOut)}");
+            }
+            catch (Exception ex)
+            {
+                AnsiConsole.ErrorLine($"[red]Error writing baseline:[/] {Markup.Escape(ex.Message)}");
+                commandError = true;
+            }
         }
 
         if (settings.Diff is { Length: > 0 } diffPath)
@@ -334,6 +415,7 @@ public sealed class VerifyGoldensCommand : Command<VerifyGoldensCommand.Settings
                             BaselineDiffStatus.SpeedGain => "[green]SpeedGain[/]",
                             BaselineDiffStatus.NewEntry => "[cyan]New[/]",
                             BaselineDiffStatus.MissingInCurrent => "[dim]Missing[/]",
+                            BaselineDiffStatus.IdentityChanged => "[yellow bold]IdentityChanged[/]",
                             _ => "[dim]Unchanged[/]"
                         };
 
@@ -353,16 +435,19 @@ public sealed class VerifyGoldensCommand : Command<VerifyGoldensCommand.Settings
                 catch (Exception ex)
                 {
                     AnsiConsole.ErrorLine($"[red]Failed to compute baseline diff:[/] {Markup.Escape(ex.Message)}");
+                    commandError = true;
                 }
             }
             else
             {
-                AnsiConsole.ErrorLine($"[yellow]Diff baseline file not found:[/] {Markup.Escape(diffPath)}");
+                AnsiConsole.ErrorLine($"[red]Diff baseline file not found:[/] {Markup.Escape(diffPath)}");
+                commandError = true;
             }
         }
 
-        if (divergedCount > 0 || guardFailCount > 0) return 1;
-        if (settings.Strict && (skippedCount > 0 || baselineEntries.Any(e => e.PinStatus == "Mismatch"))) return 1;
+        if (commandError) return 1;
+        if (divergedCount > 0 || guardFailCount > 0 || crashCount > 0 || archMismatchCount > 0) return 1;
+        if (settings.Strict && (skippedCount > 0 || unpinnedCount > 0 || nearTieCount > 0)) return 1;
         return 0;
     }
 
@@ -393,3 +478,4 @@ public sealed class VerifyGoldensCommand : Command<VerifyGoldensCommand.Settings
         return null;
     }
 }
+

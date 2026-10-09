@@ -208,22 +208,22 @@ Where the new structure is clearly **better**: one finder instead of 25, structu
 
 ## Phase 7 results (2026-10-09)
 ### 7.1 Golden verification CLI (`stingray verify-goldens`) & host baseline diffing
-- Added CLI command `stingray verify-goldens [--dir <dir>] [--golden <pattern>] [--baseline <file>] [--diff <file>] [--strict] [--ctx-size <int>] [--verbose]`:
+- Hardened CLI command `stingray verify-goldens [--dir <dir>] [--golden <pattern>] [--baseline <file>] [--diff <file>] [--strict] [--ctx-size <int>] [--verbose]`:
   - Discovers all `.golden.json` files in the specified directory or the repository's checked-in `Goldens/` directory.
-  - Matches each golden against local weights using `ModelLocator`, skipping missing checkpoints gracefully.
-  - Checks SHA-256 fingerprint against the golden's pinned hash via `ModelFingerprinter.CheckPin()`.
-  - Enforces `expectedHyperparameters` guards before execution.
-  - Runs forward pass greedy evaluation via `GoldenParityRunner`, computing token match counts, decode throughput (t/s), and elapsed duration.
-  - Formats results as an ANSI Spectre.Console summary table with color-coded verdicts (`Exact`, `NearTie`, `Diverged`, `GuardFailed`, `UnpinnedFile`, `Skipped`).
-  - Baseline export (`--baseline <path>`): writes a `GoldenBaselineFile` capturing per-model verdicts, token metrics, decode speeds, and host hardware environment (machine name, OS, processor, CPU core count, .NET runtime).
-  - Baseline diffing (`--diff <path>`): loads a prior baseline run and prints an aligned comparison table showing status transitions (`Unchanged`, `Regressed`, `Improved`, `Diverged`, `New`, `Missing`, `SpeedChange`) and throughput deltas.
-  - Strict mode (`--strict`): treats near-ties as non-zero exit codes (useful in strict regression pipelines).
+  - Matches each golden against local weights using `ModelLocator`, skipping missing checkpoints gracefully in normal mode.
+  - **Architecture validation**: Validates `general.architecture` from model GGUF metadata against `golden.Architecture` before execution; mismatches record an `ArchMismatch` verdict and fail verification.
+  - **Pin verification**: Checks SHA-256 fingerprint against the golden's pinned hash via `ModelFingerprinter.CheckPin()`. Explicitly differentiates `Verified`, `Mismatch`, and `NotRecorded` (`UnpinnedFile`).
+  - **Hyperparameter guards**: Enforces `expectedHyperparameters` invariants before execution.
+  - **Pure decode throughput timing**: Instrumented `GoldenParityRunner` to measure pure decode timing (`Forward` call durations and steps) and separate `Prefill` prompt timing. Model loading, fingerprinting, hyperparameter checks, baseline I/O, and the stepwise-vs-prefill consistency check are excluded from decode timing.
+  - **Spectre.Console table**: Formats results as an ANSI Spectre.Console summary table with color-coded verdicts (`Exact`, `NearTie`, `Diverged`, `GuardFailed`, `ArchMismatch`, `UnpinnedFile`, `Skipped`).
+  - **Baseline export (`--baseline <path>`)**: Writes a Schema 2 `GoldenBaselineFile` capturing per-model verdicts, token metrics, pure decode speeds, prefill speeds, decode steps, model SHA-256, golden evidence SHA-256, and host environment (`OsDescription`, `ProcessArchitecture`, `ProcessorCount`, `RuntimeDescription`).
+  - **Identity-aware baseline diffing (`--diff <path>`)**: Compares against a prior baseline run. Compares both model and golden hashes, explicitly reporting `IdentityChanged` and suppressing misleading speed regressions across different artifacts. Flags legacy Schema 1 baselines. Safely handles duplicate entries and baseline I/O errors.
+  - **Strict regression gate (`--strict`)**: Non-zero exit code if any golden is skipped, unpinned (`Mismatch` / `NotRecorded`), near-tie, divergent, failed guard, or if diff/baseline errors occur, or if no files match the filter.
   - Error streams: routes error output strictly to `AnsiConsole.ErrorLine` (stderr) per project convention.
-- Engine models: implemented `GoldenBaselineFile`, `GoldenBaselineEntry`, `GoldenBaselineDiff`, `BaselineDiffStatus`, and `GoldenBaselineComparator` in `Engine/Verification/GoldenBaseline.cs`.
+- Engine models: implemented `GoldenBaselineFile` (Schema 2), `GoldenBaselineEntry`, `GoldenBaselineDiff`, `BaselineDiffStatus` (`IdentityChanged`), `GoldenTimingInfo`, and `GoldenBaselineComparator` in `Engine/Verification/GoldenBaseline.cs` and `GoldenParityRunner.cs`.
 - Registered on source-generated `GoldenJsonContext` for NativeAOT trim safety.
-- Updated CLI option inventory (`scripts/gen-cli-option-inventory.ps1` -> 251 options across 26 commands).
-- Validated on live checkpoints (`smollm2-135m`, `smollm3`): both exact 24/24 tokens, pin verified, baseline exported and diffed successfully.
-- Added comprehensive unit tests in `VerifyGoldensCommandTests` (5/5) and `GoldenBaselineTests` (3/3).
+- Cross-consumer consistency: audited and aligned `verify-goldens`, `admit-arch --golden`, and `GoldenParityTests`.
+- Added comprehensive unit tests in `VerifyGoldensCommandTests` (11/11), `GoldenBaselineTests` (10/10), and `GoldenParityRunnerTests` timing breakdown suites. All CLI (439) and Fast (1096) tests passing.
 
 ### 7.2 Inventory of batched-versus-serial and retained-prefix invariant checks
 Audit of existing invariants across the codebase confirmed that the desired batch-size invariance, serial-vs-batch decode equivalence, and retained-prefix lifecycle checks are already comprehensively tested:

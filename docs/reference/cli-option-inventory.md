@@ -449,6 +449,6 @@ hoc at each read site rather than in one place.
 | `--diff <PATH>` |  | Compare current verification run against a previously recorded baseline JSON |
 | `--dir <PATH>` |  | Directory containing .golden.json files (defaults to repo tests/.../Goldens) |
 | `--golden <NAME>` |  | Filter to run only matching golden file(s) or architecture(s) |
-| `--strict` |  | Fail with non-zero exit code if any model is unpinned, skipped or divergent |
+| `--strict` |  | Fail with non-zero exit code if any model is unpinned, skipped, divergent, near-tie, or if requested baseline diff fails |
 | `--verbose` |  | Print detailed per-token and case breakdown |
 

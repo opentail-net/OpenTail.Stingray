@@ -33,6 +33,30 @@ public sealed record ParityOptions
     public bool RequireStepwiseArgmaxAgreement { get; init; }
 }
 
+/// <summary>Precise execution timing recorded during golden verification.</summary>
+/// <param name="PrefillDuration">Time spent inside <see cref="IForwardPass.Prefill"/>.</param>
+/// <param name="PromptTokens">Number of prompt tokens evaluated during prefill.</param>
+/// <param name="DecodeDuration">Cumulative time spent inside subsequent <see cref="IForwardPass.Forward"/> calls.</param>
+/// <param name="DecodeSteps">Number of timed <see cref="IForwardPass.Forward"/> steps.</param>
+public sealed record GoldenTimingInfo(
+    TimeSpan PrefillDuration,
+    int PromptTokens,
+    TimeSpan DecodeDuration,
+    int DecodeSteps)
+{
+    /// <summary>Pure decode throughput (timed Forward steps divided by accumulated decode duration).</summary>
+    public double? DecodeTokensPerSecond =>
+        DecodeSteps > 0 && DecodeDuration.TotalSeconds > 0
+            ? DecodeSteps / DecodeDuration.TotalSeconds
+            : null;
+
+    /// <summary>Prompt processing throughput (prompt tokens evaluated divided by prefill duration).</summary>
+    public double? PrefillTokensPerSecond =>
+        PromptTokens > 0 && PrefillDuration.TotalSeconds > 0
+            ? PromptTokens / PrefillDuration.TotalSeconds
+            : null;
+}
+
 /// <param name="Index">Position in the continuation.</param>
 /// <param name="Expected">Reference token.</param>
 /// <param name="Actual">Our top choice.</param>
@@ -43,7 +67,7 @@ public sealed record PositionMismatch(int Index, int Expected, int Actual, doubl
 /// <param name="ConfidentMatched">Positions that matched where the reference itself was confident (margin at or above the confident threshold).</param>
 public sealed record GoldenCaseResult(
     string Name, string Mode, CaseVerdict Verdict, int Compared, int Matched, IReadOnlyList<PositionMismatch> Mismatches, IReadOnlyList<int> Generated,
-    int ConfidentMatched = 0, int MinConfident = 0)
+    int ConfidentMatched = 0, int MinConfident = 0, GoldenTimingInfo? Timing = null)
 {
     public PositionMismatch? FirstMismatch => Mismatches.Count > 0 ? Mismatches[0] : null;
     /// <summary>False when the case asked for a minimum number of confident matches and fewer were seen (too little evidence).</summary>
@@ -57,7 +81,7 @@ public sealed record StepwiseCheckResult(bool ArgmaxAgrees, float MaxAbsDiff, in
 }
 
 public sealed record GoldenRunResult(
-    string Architecture, IReadOnlyList<GoldenCaseResult> Cases, StepwiseCheckResult? Stepwise)
+    string Architecture, IReadOnlyList<GoldenCaseResult> Cases, StepwiseCheckResult? Stepwise, GoldenTimingInfo? Timing = null)
 {
     /// <summary>The worst case verdict, or <see cref="CaseVerdict.Exact"/> when there are none.</summary>
     public CaseVerdict Verdict => Cases.Count == 0 ? CaseVerdict.Exact : Cases.Max(c => c.Verdict);
@@ -74,6 +98,8 @@ public sealed record GoldenRunResult(
             sb.Append("  case '").Append(c.Name).Append("' [").Append(c.Mode).Append("]: ").Append(c.Verdict)
               .Append(", ").Append(c.Matched).Append('/').Append(c.Compared).Append(" matched")
               .Append(c.MinConfident > 0 ? $", {c.ConfidentMatched} confident (need {c.MinConfident}){(c.EvidenceOk ? "" : " INSUFFICIENT EVIDENCE")}" : "");
+            if (c.Timing?.DecodeTokensPerSecond is { } dSpeed)
+                sb.Append($", decode {dSpeed.ToString("F1", System.Globalization.CultureInfo.InvariantCulture)} t/s");
             foreach (var m in c.Mismatches.Take(5))
                 sb.Append("; @").Append(m.Index).Append(" expected ").Append(m.Expected).Append(" got ").Append(m.Actual)
                   .Append(" gap ").Append(m.Gap.ToString("0.####", System.Globalization.CultureInfo.InvariantCulture))
@@ -102,10 +128,23 @@ public static class GoldenParityRunner
         options ??= new ParityOptions();
 
         var cases = new List<GoldenCaseResult>();
+        TimeSpan totalPrefill = TimeSpan.Zero;
+        int totalPromptTokens = 0;
+        TimeSpan totalDecode = TimeSpan.Zero;
+        int totalDecodeSteps = 0;
+
         foreach (var c in golden.Cases)
         {
             using var fwd = create();
-            cases.Add(RunCase(c, fwd, options));
+            var caseResult = RunCase(c, fwd, options);
+            cases.Add(caseResult);
+            if (caseResult.Timing is { } t)
+            {
+                totalPrefill += t.PrefillDuration;
+                totalPromptTokens += t.PromptTokens;
+                totalDecode += t.DecodeDuration;
+                totalDecodeSteps += t.DecodeSteps;
+            }
         }
 
         StepwiseCheckResult? stepwise = null;
@@ -113,7 +152,8 @@ public static class GoldenParityRunner
         if (basis is not null)
             stepwise = CheckStepwiseVsPrefill(create, basis.PromptTokens, basis.Tokens[0], basis.Tokens[1], options);
 
-        return new GoldenRunResult(golden.Architecture, cases, stepwise);
+        var aggregateTiming = new GoldenTimingInfo(totalPrefill, totalPromptTokens, totalDecode, totalDecodeSteps);
+        return new GoldenRunResult(golden.Architecture, cases, stepwise, aggregateTiming);
     }
 
     public static GoldenCaseResult RunCase(GoldenCase c, IForwardPass fwd, ParityOptions options)
@@ -128,7 +168,14 @@ public static class GoldenParityRunner
         var mismatches = new List<PositionMismatch>();
         var generated = new List<int>(n);
 
+        long prefillStart = Stopwatch.GetTimestamp();
         var logits = fwd.Prefill(c.PromptTokens);
+        TimeSpan prefillDuration = Stopwatch.GetElapsedTime(prefillStart);
+        int promptTokensCount = c.PromptTokens.Length;
+
+        TimeSpan decodeDuration = TimeSpan.Zero;
+        int decodeSteps = 0;
+
         int pos = c.PromptTokens.Length;
         int matched = 0;
         int compared = 0;
@@ -157,13 +204,19 @@ public static class GoldenParityRunner
                 }
             }
             if (i + 1 < n)
+            {
+                long forwardStart = Stopwatch.GetTimestamp();
                 logits = fwd.Forward(forceReference ? c.Tokens[i] : top, pos++);
+                decodeDuration += Stopwatch.GetElapsedTime(forwardStart);
+                decodeSteps++;
+            }
         }
 
+        var timing = new GoldenTimingInfo(prefillDuration, promptTokensCount, decodeDuration, decodeSteps);
         var verdict = mismatches.Count == 0 ? CaseVerdict.Exact
             : mismatches.All(m => m.NearTie) ? CaseVerdict.NearTie
             : CaseVerdict.Diverged;
-        return new GoldenCaseResult(c.Name, teacher ? "teacherForced" : "free", verdict, compared, matched, mismatches, generated, confidentMatched, c.MinConfident);
+        return new GoldenCaseResult(c.Name, teacher ? "teacherForced" : "free", verdict, compared, matched, mismatches, generated, confidentMatched, c.MinConfident, timing);
     }
 
     /// <summary>

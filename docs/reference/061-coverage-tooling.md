@@ -121,24 +121,41 @@ the boilerplate, not the need to check the reference.
 ## `stingray verify-goldens [--dir <dir>] [--golden <pattern>] [--baseline <file>] [--diff <file>] [--strict]`
 
 Runs forward-pass parity verification across checked-in `.golden.json` references against locally
-present weights, verifying pinned hashes and hyperparameter invariants, measuring decode speed,
-and optionally recording or diffing against per-host regression baselines.
+present weights, validating model architectures, pinned hashes, and hyperparameter invariants,
+measuring pure decode throughput, and recording or diffing against identity-aware per-host baselines.
 
 ```
 stingray verify-goldens                                         # verify all goldens whose models exist
 stingray verify-goldens -g smollm                               # filter goldens by pattern
-stingray verify-goldens --baseline host-baseline.json           # record baseline of current run
+stingray verify-goldens --baseline host-baseline.json           # record baseline of current run (Schema 2)
 stingray verify-goldens --diff host-baseline.json               # diff current results against baseline
-stingray verify-goldens --strict                                # exit 1 on near-ties, divergences or guard failures
+stingray verify-goldens --strict                                # strict regression gate (fails on unpinned, near-ties, etc.)
 ```
 
-What it does:
-1. Enumerates `.golden.json` files from `--dir` (defaults to `tests/OpenTail.Stingray.Tests.ForwardPass/Goldens`).
-2. Discovers matching models using `ModelLocator` (respects `STINGRAY_MODEL_DIRS`). Models not on disk are reported as `Skipped`.
-3. Verifies file integrity against the golden's pinned SHA-256 via cached `ModelFingerprinter`.
-4. Checks all `expectedHyperparameters` guards (e.g. `ropeDim`, `numExperts`) against model metadata before executing.
-5. Runs greedy evaluation with `GoldenParityRunner` on CPU, measuring matched token count, throughput (decode tokens/sec), and elapsed time.
-6. Displays a color-coded Spectre.Console summary table with verdicts (`Exact`, `NearTie`, `Diverged`, `GuardFailed`, `UnpinnedFile`).
-7. With `--baseline <path>`, saves results and hardware environment metadata to JSON.
-8. With `--diff <path>`, compares against a prior baseline run, highlighting status changes (`Unchanged`, `Regressed`, `Improved`, `Diverged`, `New`, `Missing`, `SpeedChange`) and speed differences.
+### Verification & Timing
+1. **Architecture validation**: Compares `general.architecture` from model GGUF metadata against `golden.Architecture`. Mismatches immediately fail verification as `ArchMismatch`.
+2. **Model discovery & Pin status**: Matches models using `ModelLocator` (respecting `STINGRAY_MODEL_DIRS`). Fingerprints checkpoints with `ModelFingerprinter.CheckPin()`:
+   - `Verified`: checkpoint SHA-256 matches the golden's pinned hash.
+   - `Mismatch` / `NotRecorded`: labeled `UnpinnedFile` (runnable for diagnostics in normal mode, rejected in strict mode).
+3. **Hyperparameter guards**: Validates `expectedHyperparameters` (e.g. `ropeDim`, `numExperts`) against model metadata before execution.
+4. **Pure decode timing**: `GoldenParityRunner` measures `Prefill` duration and subsequent timed `Forward` decode steps separately. Model loading, fingerprinting, hyperparameter checks, baseline I/O, and the stepwise-vs-prefill consistency check are strictly excluded from decode timing.
+5. **Summary table**: Color-coded Spectre.Console output showing verdicts (`Exact`, `NearTie`, `Diverged`, `GuardFailed`, `ArchMismatch`, `UnpinnedFile`, `Skipped`) with pure decode tok/s.
+
+### Baselines & Diffing (Schema 2)
+- **Baseline export (`--baseline <path>`)**: Records `GoldenBaselineFile` (Schema 2) with host environment metadata (`OsDescription`, `ProcessArchitecture`, `ProcessorCount`, `RuntimeDescription`), model SHA-256, golden evidence SHA-256, prompt tok/s, decode tok/s, and decode step counts.
+- **Identity-aware diffing (`--diff <path>`)**:
+  - Compares model and golden evidence hashes between current and baseline runs.
+  - If either model or golden identity changed, reports `IdentityChanged` and suppresses speed regression/improvement classifications across different artifacts.
+  - Detects legacy Schema 1 baselines (setup-inclusive throughput) and informs the operator to regenerate the baseline.
+  - Checks host environment comparability.
+- **Robustness**: Handles duplicate entries in baseline files with clear errors and returns non-zero on missing diff files, malformed JSON, or baseline write failures.
+
+### Normal vs Strict Modes
+- **Normal mode**: Exit 0 on exact or near-tie parity (pinned or unpinned). Exit 1 on genuine divergence, architecture mismatch, failed hyperparameter guard, invalid arguments, or diff/baseline errors.
+- **Strict mode (`--strict`)**: Regression gate returning non-zero if ANY golden:
+  - Is missing its checkpoint (`Skipped`).
+  - Is unpinned (`Mismatch` or `NotRecorded` SHA-256).
+  - Yields a `NearTie` rather than an exact match.
+  - Diverges, crashes, or fails an architecture or hyperparameter guard.
+  - Matches no files (empty filter selection), or is cancelled/incomplete.
 

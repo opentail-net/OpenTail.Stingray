@@ -43,11 +43,36 @@ by construction. Its M=1 speed claim (1.0-2.1x per-row on K-quants) was measured
       (2048^2), 1.49-2.08x (8192x2048), 1.13-1.23x (7B); but MatVecDual (fused gate+up) beats two
       GEMMs 0.89-0.91x at FFN shapes (bandwidth-bound ~36-39 GB/s); Q6_K GEMM N=1 0.81x (ffn_down
       2048x8192), 0.93x (7B down), 0.99x (LM heads).
-- [ ] Step 1b (NEXT): Q6_K at N=1 (ffn_down 0.81x is the biggest remaining decode loss) - a
-      1-row-friendly path in `Q6KPrefillGemm` with identical per-row arithmetic; and fused q/k/v
-      (one quantisation + one dispatch, like the dual). Re-run decode A/B after each.
-- [ ] Step 1c: rows 2-3 skip in `GemmQ4Kx8Q8Kx4` when the last group has <= 2 real rows (exact:
-      lane pairs 0/1 and 2/3 are independent) - halves N=1 compute.
+- [x] Step 1b STOPPED 2026-10-09 (decision: investigation closed, not worth continuing). Q6_K at N=1 - a 1-row-friendly path in `Q6KPrefillGemm`
+      with identical per-row arithmetic; and fused q/k/v (one quantisation + one dispatch, like the
+      dual). Re-run decode A/B after each.
+      - Done: per-thread scratch (no per-call alloc) + `RowBlockKernel1` (register accumulator, same
+        op order; 32 BatchInvariantGemm/Q6KPrefillGemm tests pass, bitwise).
+      - Kernel bench (`kernel-bench-cs q4k-m1`; run with DOTNET_TieredCompilation=0 - at default
+        tiering the first Q6_K shape measures tier-0 code, bogus 0.22x): ffn-down 1.7B 0.81 -> 0.88x,
+        7B down 0.96 -> 0.95x, LM heads 0.97-1.00x. Decode A/B 1.7B -3.9% -> -3.2%; 7B noisy (-3..-8%).
+      - Left: ffn-down (cache-resident, compute-bound) is the pairing-unpack cost that is no longer
+        amortised over a token group at N=1. True parity needs either different Q6_K arithmetic
+        (changes prefill numerics - user's call) or a cheaper decode; fused q/k/v not done.
+      - Option 1 A/B (2026-10-09, 3 interleaved rounds, median; `STINGRAY_Q6K_GEMM=0` = row-major
+        Q6_K family, whose N=1 kernel IS the matvec's): decode 1.7B matvec 30.9 / Q6K-GEMM 29.4 /
+        row-major 29.5; 7B 8.5 / 8.0 / 8.0; prefill 1221 tok 223.9 / 219.6 / 224.9 (noise +-3%).
+        => Q6_K arithmetic is NOT the cause: the same ~-5% remains with the matvec's own Q6_K kernel.
+        The gap is per-call overhead of the batched path at N=1 (quantise + dispatch + Parallel.For
+        per matrix, ~200+ calls/token) - next: count/profile calls per token, fuse q/k/v (and o/down),
+        and compare against the matvec's fused dispatch.
+      - **STOPPING THE INVESTIGATION.** Rationale: the only gain is bit-identical decode/prefill by
+        default, at best parity with the legacy matvec (never faster); the remaining -3..-6% is
+        per-call overhead across ~200 calls/token, fixable only by invasive dispatch fusion on the
+        decode hot path. `STINGRAY_CPU_DECODE_VIA_GEMM=1` stays opt-in (cost ~3-6% decode for
+        bit-identical decode); default stays the matvec. Kept: Q6_K N=1 kernel + per-thread scratch
+        (small, bitwise identical). Reopen (fuse q/k/v, o, down; profile calls/token) only if a
+        feature needs bit-identical decode: speculative verify or batched CPU serving.
+- [x] Step 1c DONE `e12c6b62`: rows 2-3 skip in `GemmQ4Kx8Q8Kx4` (`AccumulateRows01`) when the last group
+      has <= 2 real rows (exact: lane pairs 0/1 and 2/3 are independent). Bitwise identical.
+      Post-1c decode A/B (2026-10-09, 128 tok, 3 alternating pairs, median, GEMM=1 vs matvec):
+      360M 93.3 -> 91.2 (-2.2%, noisy), 1.7B 31.1 -> 29.9 (-3.9%), Mistral-7B 8.5 -> 8.3 (-2.4%).
+      Remaining gap is mostly Q6_K (Step 1b) + 4-row activation quantisation at N=1. Goal: parity.
 - Note: 8 ForwardPass.Fast tests now SKIP because OpenBLAS is gone (`SkipUnless(BlasAvailable)`);
   they test the dead BLAS path. Expected, not a regression.
 - [ ] (old) a 1-row variant of Path 2 (and of the Q6K GEMM)
