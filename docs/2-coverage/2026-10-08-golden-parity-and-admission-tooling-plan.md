@@ -103,8 +103,8 @@ Refuses clearly if `tools/llama.cpp` binaries are absent; `--server` overrides t
   - [x] 5.3 Tests: hash of a small file against a known SHA-256; mismatch reporting; cache invalidated by size or mtime change.
 - [ ] **6. Migrate the legacy receipts**
   - [ ] 6.1 Convert in batches of ~5. Each batch: golden created by `capture-golden` where the checkpoint is on disk (and compared with the pasted array first), otherwise copied from the array and marked `reference.engine = "legacy-receipt"`; old class deleted only once the golden version passes with the same verdict.
-  - [ ] 6.2 Move each class's provenance prose into `notes`.
-  - [ ] 6.3 Update `docs/reference/adding-an-architecture.md` step 4 to the real sequence: `pull` -> `capture-golden` -> `admit-arch --golden` -> commit the golden with the descriptor.
+  - [x] 6.2 Move each class's provenance prose into `notes`.
+  - [x] 6.3 Update `docs/reference/adding-an-architecture.md` step 4 to the real sequence: `pull` -> `capture-golden` -> `admit-arch --golden` -> commit the golden with the descriptor.
 - [ ] **7. Optional, only if Phases 1-6 prove useful**
   - [ ] 7.1 `stingray verify-goldens [--dir]`: run every golden whose model is present, print a table, write a **per-host baseline** (pass / near-tie / diverged / skipped and decode t/s) so regressions like today's Qwen3.5 crash and the Phi-3 prefill drop appear as a diff. First compare with `TestMatrix`'s baselines and with the ad hoc sweep scripts used on 2026-10-08.
   - [ ] 7.2 Batched-versus-serial and retained-prefix checks (TensorSharp's `--batched`, `--retained-continuation`): first inventory what `ContinuousBatchingTests` and the session tests already assert, then add only the missing invariants.
