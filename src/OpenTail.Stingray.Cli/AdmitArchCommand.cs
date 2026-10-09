@@ -79,16 +79,17 @@ public sealed class AdmitArchCommand : Command<AdmitArchCommand.Settings>
         // tokenizer.ggml.merges tokenizes to near-character fragments unless SpmMergePiecesByScore
         // (already implemented) is reached — but only for that specific shape. Surface it directly
         // rather than making every future admission re-discover this by hand.
-        string tokModel = model.Metadata.TryGetValue("tokenizer.ggml.model", out var tm) ? Convert.ToString(tm) ?? "" : "(absent)";
-        bool hasMerges = model.Metadata.ContainsKey("tokenizer.ggml.merges");
-        bool hasScores = model.Metadata.ContainsKey("tokenizer.ggml.scores");
+        // Classification lives in ArchitectureTriage so `scout` reports the same shapes.
+        var tokTriage = ArchitectureTriage.ClassifyTokenizer(model.Metadata);
+        string tokModel = tokTriage.Model;
+        bool hasMerges = tokTriage.HasMerges;
+        bool hasScores = tokTriage.HasScores;
         AnsiConsole.MarkupLine($"[bold]Tokenizer:[/] tokenizer.ggml.model={Markup.Escape(tokModel)}, merges={hasMerges}, scores={hasScores}");
-        if (tokModel == "llama" && !hasMerges && hasScores)
-            AnsiConsole.MarkupLine("  [dim]-> scores-only SPM shape (the minicpm/xverse/orion class). Already handled by GgufTokenizer.SpmMergePiecesByScore.[/]");
-        else if (tokModel == "llama" && !hasMerges && !hasScores)
-            AnsiConsole.MarkupLine("  [yellow]-> neither merges nor scores present — likely fragments to near-character level; check tokenizer output below carefully.[/]");
-        else if (tokModel == "t5")
-            AnsiConsole.MarkupLine("  [dim]-> Unigram-LM (real llama.cpp LLAMA_VOCAB_TYPE_UGM) — routed through UnigramTokenizer.FromGgufVocab.[/]");
+        if (tokTriage.Note is not null)
+        {
+            string color = tokTriage.Shape is TokenizerShape.SpmNoMergesNoScores or TokenizerShape.BpeNoMerges ? "yellow" : "dim";
+            AnsiConsole.MarkupLine($"  [{color}]-> {Markup.Escape(tokTriage.Note)}[/]");
+        }
 
         // ── Tensor-shape triage: report the per-layer tensor suffix inventory (same grouping
         // ListTensorsCommand --summary uses) so a reviewer can eyeball whether every tensor this
@@ -97,9 +98,8 @@ public sealed class AdmitArchCommand : Command<AdmitArchCommand.Settings>
         // on a real run.
         AnsiConsole.WriteLine();
         AnsiConsole.MarkupLine("[bold]Layer-0 tensor inventory[/] (compare shapes/names against a known-working architecture's):");
-        foreach (var t in model.Tensors.Where(t => t.Name.StartsWith("blk.0.", StringComparison.Ordinal))
-                     .OrderBy(t => t.Name, StringComparer.Ordinal))
-            AnsiConsole.MarkupLine($"  {Markup.Escape(t.Name),-32} {t.DType,-10} [{string.Join(",", t.Dimensions.Take(t.NDimensions))}]");
+        foreach (var t in ArchitectureTriage.LayerInventory(model.Tensors))
+            AnsiConsole.MarkupLine($"  {Markup.Escape(t.Name),-32} {t.DType,-10} {Markup.Escape(t.Shape)}");
 
         // ── Attempt a real run under the existing diagnostic bypass. This is the same mechanism
         // --allow-unverified-arch already exercises in RunCommand — reused here directly rather than

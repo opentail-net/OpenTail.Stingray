@@ -220,3 +220,4 @@ public sealed class ScoutAnalyzerTests
     [InlineData("12X")]
     public void Size_rejects_garbage(string text) => Assert.False(ScoutSize.TryParse(text, out _));
 }
+

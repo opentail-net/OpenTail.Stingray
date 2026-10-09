@@ -242,7 +242,9 @@ public static class ScoutAnalyzer
 
     private static void CheckTokenizer(TokenizerSummary tok, IReadOnlyDictionary<string, object> m, List<ScoutFinding> findings, List<ScoutBlocker> blockers)
     {
-        if (tok.Model is null)
+        // Shape classification is shared with `admit-arch` (ArchitectureTriage) so the two commands cannot disagree.
+        var triage = ArchitectureTriage.ClassifyTokenizer(m);
+        if (triage.Shape == TokenizerShape.NoModel)
         {
             blockers.Add(new ScoutBlocker("scout.tokenizer.no_model", BlockerKind.Suspected,
                 "No tokenizer.ggml.model key: a tokenizer cannot be built from this file alone (may be a non-text model or a sidecar tokenizer).",
@@ -252,28 +254,34 @@ public static class ScoutAnalyzer
 
         var ev = new List<EvidenceItem>
         {
-            new("metadata", "tokenizer.ggml.model", tok.Model),
-            new("metadata", "tokenizer.ggml.merges", tok.HasMerges ? "present" : "absent"),
-            new("metadata", "tokenizer.ggml.scores", tok.HasScores ? "present" : "absent"),
+            new("metadata", "tokenizer.ggml.model", triage.Model),
+            new("metadata", "tokenizer.ggml.merges", triage.HasMerges ? "present" : "absent"),
+            new("metadata", "tokenizer.ggml.scores", triage.HasScores ? "present" : "absent"),
         };
-        if (tok.Model == "llama" && !tok.HasMerges && tok.HasScores)
-            findings.Add(new ScoutFinding("tokenizer.spm_scores_only", "Scores-only SentencePiece shape (the minicpm/xverse/orion class).",
-                Certainty.Known, ev, "Handled by GgufTokenizer.SpmMergePiecesByScore for this exact shape; still compare prompt token ids against an oracle."));
-        else if (tok.Model == "llama" && !tok.HasMerges && !tok.HasScores)
-            blockers.Add(new ScoutBlocker("scout.tokenizer.llama_no_merges_no_scores", BlockerKind.Suspected,
-                "tokenizer.ggml.model=llama with neither merges nor scores: likely tokenizes to near-character fragments.", ev));
-        else if (tok.Model == "t5")
-            findings.Add(new ScoutFinding("tokenizer.unigram", "Unigram-LM vocabulary (t5 model type).", Certainty.Known, ev,
-                "Routed through UnigramTokenizer.FromGgufVocab."));
-        else if (tok.Model == "gpt2" && !tok.HasMerges)
-            blockers.Add(new ScoutBlocker("scout.tokenizer.bpe_no_merges", BlockerKind.Suspected,
-                "tokenizer.ggml.model=gpt2 (BPE) without tokenizer.ggml.merges.", ev));
+        switch (triage.Shape)
+        {
+            case TokenizerShape.SpmScoresOnly:
+                findings.Add(new ScoutFinding("tokenizer.spm_scores_only", "Scores-only SentencePiece shape (the minicpm/xverse/orion class).",
+                    Certainty.Known, ev, "Handled by GgufTokenizer.SpmMergePiecesByScore for this exact shape; still compare prompt token ids against an oracle."));
+                break;
+            case TokenizerShape.Unigram:
+                findings.Add(new ScoutFinding("tokenizer.unigram", "Unigram-LM vocabulary (t5 model type).", Certainty.Known, ev,
+                    "Routed through UnigramTokenizer.FromGgufVocab."));
+                break;
+            case TokenizerShape.SpmNoMergesNoScores:
+                blockers.Add(new ScoutBlocker("scout.tokenizer.llama_no_merges_no_scores", BlockerKind.Suspected,
+                    "tokenizer.ggml.model=llama with neither merges nor scores: likely tokenizes to near-character fragments.", ev));
+                break;
+            case TokenizerShape.BpeNoMerges:
+                blockers.Add(new ScoutBlocker("scout.tokenizer.bpe_no_merges", BlockerKind.Suspected,
+                    "tokenizer.ggml.model=gpt2 (BPE) without tokenizer.ggml.merges.", ev));
+                break;
+        }
 
         if (!tok.HasChatTemplate)
             findings.Add(new ScoutFinding("tokenizer.no_chat_template", "No tokenizer.chat_template; chat use falls back to the architecture's FallbackChat layout.",
                 Certainty.Known, [new EvidenceItem("metadata", "tokenizer.chat_template", "(absent)")], "A base model legitimately has none."));
     }
-
     // ── architecture / dtype ───────────────────────────────────────────────────
 
     private static ArchitectureResolution ResolveArchitecture(ScoutInput input, List<ScoutBlocker> blockers)

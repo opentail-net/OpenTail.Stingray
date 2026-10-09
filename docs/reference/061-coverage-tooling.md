@@ -71,6 +71,16 @@ CDN doesn't reliably expose a stable content hash in the plain siblings listing)
 
 ## `stingray admit-arch -m <path>`
 
+**Exit codes (as of 2026-10-09; scripts such as the planned `scout-pretest.ps1` rely on these):** `0` = already allowlisted, ran
+cleanly with no reference supplied, full `ADMIT`, or a passing golden (exact / near-tie, pinned); `1` = everything else that is not
+a pass (REJECT, divergence, unpinned or mismatched golden, unreadable golden, architecture mismatch, bad `--reference-tokens`);
+`66` = model file missing. `verify-goldens` is the same shape: `0` pass, `1` any divergence / guard failure / crash / architecture
+mismatch (or, with `--strict`, any skipped / unpinned / near-tie). Neither separates "failed the check" from "the tool errored";
+read the printed verdict (or `scout`'s JSON) to tell them apart. Splitting them is deliberately not done here: other callers rely on `1`.
+
+The tokenizer-shape classification and layer-0 inventory it prints live in `ArchitectureTriage` (`src/OpenTail.Stingray.Cli/ArchitectureTriage.cs`),
+shared with `scout` so the two cannot drift.
+
 Automates the mechanical half of the architecture-admission workflow that
 `ModelCompatibility.cs`'s long allowlist-comment history (`minicpm`/`xverse`/`orion`/`internlm2`/
 `ernie4_5`/...) shows repeating: download an unsupported-architecture checkpoint, run it under a
