@@ -97,6 +97,40 @@ public static class ModelCatalog
             RunTemplate: "stingray chat"),
 
         new(
+            Id: "qwen2.5-1.5b",
+            Task: "chat",
+            Why: "Better reasoning and instruction following while staying under 2 GB download.",
+            Files:
+            [
+                new("Qwen/Qwen2.5-1.5B-Instruct-GGUF", "91cad51170dc346986eccefdc2dd33a9da36ead9", "qwen2.5-1.5b-instruct-q4_k_m.gguf",
+                    "6a1a2eb6d15622bf3c96857206351ba97e1af16c30d7a74ee38970e434e9407e", 1_117_320_736),
+            ],
+            Licence: "Apache-2.0",
+            LicenceNeedsConsent: false,
+            Hardware: "about 2.5 GiB RAM, CPU only",
+            Speed: "not yet measured",
+            Evidence: "scout pretest stages 0-3 passed 2026-10-09; llama.cpp golden pending",
+            RunTemplate: "stingray chat"),
+
+        new(
+            Id: "qwen2.5-7b",
+            Task: "chat",
+            Why: "Full 7B capability for complex reasoning and coding; sharded into two files.",
+            Files:
+            [
+                new("Qwen/Qwen2.5-7B-Instruct-GGUF", "bb5d59e06d9551d752d08b292a50eb208b07ab1f", "qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf",
+                    "dfce12e3862a5283ccfb88221b48480e58745165de856439950d0f22590580db", 3_993_201_344),
+                new("Qwen/Qwen2.5-7B-Instruct-GGUF", "bb5d59e06d9551d752d08b292a50eb208b07ab1f", "qwen2.5-7b-instruct-q4_k_m-00002-of-00002.gguf",
+                    "539cf93f78e887edea1c04e2d7d8cdaca9d01dae9c9025bcb8accbe29df3d72a", 689_872_288),
+            ],
+            Licence: "Apache-2.0",
+            LicenceNeedsConsent: false,
+            Hardware: "about 9 GiB RAM, CPU only",
+            Speed: "not yet measured",
+            Evidence: "scout pretest stages 0-3 passed 2026-10-09; llama.cpp golden pending",
+            RunTemplate: "stingray chat"),
+
+        new(
             Id: "piper-lessac",
             Task: "speak",
             Why: "Fast, clear US English voice.",

@@ -150,6 +150,42 @@ public sealed class CatalogGuardTests
         }
     }
 
+    [Fact]
+    public void ChatTask_DefaultIsQwen05B_AndNewChatEntriesResolveWithCorrectFileCounts()
+    {
+        var defaultChat = ModelCatalog.DefaultFor("chat");
+        Assert.NotNull(defaultChat);
+        Assert.Equal("qwen2.5-0.5b", defaultChat.Id);
+
+        var entry15B = ModelCatalog.Find("qwen2.5-1.5b");
+        Assert.NotNull(entry15B);
+        Assert.Equal("chat", entry15B.Task, ignoreCase: true);
+        Assert.Single(entry15B.Files);
+
+        var entry7B = ModelCatalog.Find("qwen2.5-7b");
+        Assert.NotNull(entry7B);
+        Assert.Equal("chat", entry7B.Task, ignoreCase: true);
+        Assert.Equal(2, entry7B.Files.Count);
+    }
+
+    [Fact]
+    public void ShardedGgufEntries_HaveConsistentShardNaming()
+    {
+        foreach (var entry in ModelCatalog.Entries)
+        {
+            if (entry.Files.Count > 1 && entry.Files.All(f => f.FileName.EndsWith(".gguf", StringComparison.OrdinalIgnoreCase)))
+            {
+                for (int i = 0; i < entry.Files.Count; i++)
+                {
+                    var file = entry.Files[i];
+                    string expectedShard = $"-{i + 1:D5}-of-{entry.Files.Count:D5}.gguf";
+                    Assert.True(file.FileName.EndsWith(expectedShard, StringComparison.OrdinalIgnoreCase),
+                        $"Shard {i} of '{entry.Id}' should end with '{expectedShard}', got '{file.FileName}'.");
+                }
+            }
+        }
+    }
+
     private static bool IsValidHex(string? s, int expectedLength)
     {
         if (s is null || s.Length != expectedLength) return false;
