@@ -49,7 +49,7 @@ public sealed class SpeakCommand : Command<SpeakCommand.Settings>
             return ExitCodes.Usage;
         }
 
-        if (!CatalogTaskResolver.TryResolve("speak", s.Model, s.ModelFile, out var resolved, out string? error))
+        if (!CatalogTaskResolver.TryResolveOrOffer("speak", s.Model, s.ModelFile, out var resolved, out string? error, cancellation))
         {
             AnsiConsole.ErrorLine($"[red]Error:[/] {Markup.Escape(error ?? "Failed to resolve speech model.")}");
             return ExitCodes.Usage;

@@ -14,7 +14,8 @@ public static class CatalogTaskResolver
         string? modelFile,
         out ResolvedModelTask? resolved,
         out string? errorMessage,
-        ModelHome? customHome = null)
+        ModelHome? customHome = null,
+        CatalogEntry? entryOverride = null)
     {
         // 1. Explicit model-file override
         if (!string.IsNullOrWhiteSpace(modelFile))
@@ -31,9 +32,13 @@ public static class CatalogTaskResolver
             return true;
         }
 
-        // 2. Resolve catalog entry
+        // 2. Resolve catalog entry (entryOverride exists so tests can use a tiny entry instead of a real multi-hundred-MB model)
         CatalogEntry? entry;
-        if (!string.IsNullOrWhiteSpace(modelId))
+        if (entryOverride is not null)
+        {
+            entry = entryOverride;
+        }
+        else if (!string.IsNullOrWhiteSpace(modelId))
         {
             entry = ModelCatalog.Find(modelId);
             if (entry is null)
@@ -76,5 +81,38 @@ public static class CatalogTaskResolver
         resolved = new ResolvedModelTask(entry, home.PathOf(entry.MainFile));
         errorMessage = null;
         return true;
+    }
+
+    /// <summary>
+    /// Like <see cref="TryResolve"/>, but when the model is simply not installed (or an install was interrupted) and the terminal is interactive,
+    /// offers to install it right here with the same summary, licence consent and confirmation as <c>stingray setup</c>, then continues.
+    /// Non-interactive sessions get the one-line fix and nothing is downloaded. A declined or failed install returns false with a message.
+    /// </summary>
+    public static bool TryResolveOrOffer(
+        string taskName, string? modelId, string? modelFile,
+        out ResolvedModelTask? resolved, out string? errorMessage, CancellationToken ct,
+        bool? interactive = null, ISetupPrompt? prompt = null, ModelHome? customHome = null, Func<HttpClient>? httpFactory = null,
+        CatalogEntry? entryOverride = null, Func<string, string?>? env = null)
+    {
+        if (TryResolve(taskName, modelId, modelFile, out resolved, out errorMessage, customHome, entryOverride))
+            return true;
+
+        // Only "not installed / damaged" is offered a fix; an unknown id or a bad file path is the user's mistake and stays an error.
+        if (!string.IsNullOrWhiteSpace(modelFile)) return false;
+        var entry = entryOverride ?? (!string.IsNullOrWhiteSpace(modelId) ? ModelCatalog.Find(modelId) : ModelCatalog.DefaultFor(taskName));
+        var home = customHome ?? ModelHome.Default();
+        if (entry is null || home.StateOf(entry) == InstallState.Installed) return false;
+        if (!(interactive ?? !Console.IsInputRedirected)) return false;
+
+        AnsiConsole.MarkupLine($"The {Markup.Escape(taskName)} model [yellow]{Markup.Escape(entry.Id)}[/] is not installed.");
+        using var http = httpFactory?.Invoke() ?? ModelDownloader.CreateClient("OpenTail.Stingray/" + taskName);
+        var outcome = SetupFlow.Run(entry, home, http, yes: false, acceptLicence: false, interactive: true, prompt ?? new ConsolePrompt(), ct, env);
+        if (!outcome.Installed)
+        {
+            errorMessage = $"Model for {taskName} ('{entry.Id}') was not installed ({outcome.Message}).\nRun: stingray setup {taskName}";
+            resolved = null;
+            return false;
+        }
+        return TryResolve(taskName, modelId, modelFile, out resolved, out errorMessage, customHome, entryOverride);
     }
 }

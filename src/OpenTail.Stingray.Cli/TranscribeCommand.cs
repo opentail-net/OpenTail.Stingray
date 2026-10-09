@@ -59,7 +59,7 @@ public sealed class TranscribeCommand : Command<TranscribeCommand.Settings>
             return ExitCodes.NoInput;
         }
 
-        if (!CatalogTaskResolver.TryResolve("transcribe", s.Model, s.ModelFile, out var resolved, out string? error))
+        if (!CatalogTaskResolver.TryResolveOrOffer("transcribe", s.Model, s.ModelFile, out var resolved, out string? error, cancellation))
         {
             AnsiConsole.ErrorLine($"[red]Error:[/] {Markup.Escape(error ?? "Failed to resolve transcription model.")}");
             return ExitCodes.Usage;

@@ -41,58 +41,9 @@ public sealed class SetupCommand : Command<SetupCommand.Settings>
         }
 
         var home = ModelHome.Default();
-        long remaining = home.RemainingBytes(entry);
-        PrintSummary(entry, home, remaining);
-
-        bool interactive = !Console.IsInputRedirected;
-        if (entry.LicenceNeedsConsent && !settings.AcceptLicence)
-        {
-            if (!interactive)
-            {
-                AnsiConsole.ErrorLine("[red]This licence needs an explicit yes.[/] Read it, then rerun with [yellow]--accept-licence[/].");
-                return 1;
-            }
-            if (!Confirm("Do you accept this licence?", defaultYes: false))
-                return 1;
-        }
-        if (remaining > 0 && !settings.Yes)
-        {
-            if (!interactive)
-            {
-                AnsiConsole.MarkupLine("Not an interactive terminal: rerun with [yellow]--yes[/] to download.");
-                return 1;
-            }
-            if (!Confirm($"Download {ConsoleDownloadProgress.FormatBytes(remaining)} to {home.Root}?", defaultYes: true))
-                return 1;
-        }
-
         using var http = ModelDownloader.CreateClient("OpenTail.Stingray/setup");
-        ConsoleDownloadProgress? printer = null;
-        try
-        {
-            ModelInstaller.EnsureAsync(entry, home, http,
-                onFileStart: (file, present) =>
-                {
-                    printer?.Finish();
-                    printer = new ConsoleDownloadProgress();
-                    AnsiConsole.MarkupLine(present
-                        ? $"[dim]Checking[/] {Markup.Escape(file.FileName)}"
-                        : $"[bold]Downloading[/] {Markup.Escape(file.FileName)} ({ConsoleDownloadProgress.FormatBytes(file.Size)})");
-                },
-                progress: (_, bytes, total) => printer?.Report(bytes, total),
-                cancellation).GetAwaiter().GetResult();
-            printer?.Finish();
-        }
-        catch (Exception ex) when (ex is IOException or HttpRequestException or TaskCanceledException)
-        {
-            printer?.Finish();
-            AnsiConsole.ErrorLine($"[red]Error:[/] {Markup.Escape(ex.Message)}");
-            if (ex is not ModelHashMismatchException)
-                AnsiConsole.MarkupLine("Partial downloads are kept; rerun the same command to resume.");
-            return 1;
-        }
-
-        AnsiConsole.MarkupLine($"[green]Ready:[/] {Markup.Escape(entry.Id)} ({Markup.Escape(entry.Task)})");
+        var outcome = SetupFlow.Run(entry, home, http, settings.Yes, settings.AcceptLicence, interactive: !Console.IsInputRedirected, new ConsolePrompt(), cancellation);
+        if (!outcome.Installed) return 1;
         AnsiConsole.MarkupLine($"Run it: [yellow]{Markup.Escape(entry.RunCommand(home))}[/]");
         return 0;
     }
@@ -110,14 +61,5 @@ public sealed class SetupCommand : Command<SetupCommand.Settings>
         Row("Speed", entry.Speed);
         Row("Saved to", home.Root);
         AnsiConsole.WriteLine();
-    }
-
-    /// <summary>Asks a yes/no question on the console; an empty answer takes the default.</summary>
-    private static bool Confirm(string question, bool defaultYes)
-    {
-        AnsiConsole.Markup($"{Markup.Escape(question)} [dim]({(defaultYes ? "Y/n" : "y/N")})[/] ");
-        string? answer = Console.ReadLine()?.Trim();
-        if (string.IsNullOrEmpty(answer)) return defaultYes;
-        return answer.StartsWith('y') || answer.StartsWith('Y');
     }
 }

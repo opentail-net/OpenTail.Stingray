@@ -1,6 +1,6 @@
 # Known-good checkpoints, favourites and first-run: plan
 
-**Status:** Proposed (2026-10-09). Reviews an outside proposal (a ChatGPT conversation shared by the user) against the code as it is today.
+**Status:** In progress (2026-10-09). **P0 first-run seam DONE** (`SetupFlow`; `chat`/`speak`/`transcribe` offer to install a missing model, interactive only; `pull --revision` and default commit pin). P0 leftovers: `pull`'s download and listing parser still use their own client/parser instead of the gateway/`HubClient`. P1-P5 not started. Reviews an outside proposal (a ChatGPT conversation shared by the user) against the code as it is today.
 **Related:** [front-door design](103-front-door-design.md) (catalog rules), [scout plan](2026-10-09-checkpoint-scout-and-ai-admission-plan.md), `docs/reference/061-coverage-tooling.md` (scout, external access), `todo.md` (top section).
 
 ## 1. The proposal, and my verdict

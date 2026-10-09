@@ -60,7 +60,7 @@ public sealed class ChatCommand : Command<ChatCommand.Settings>
 
     protected override int Execute(Settings s, CancellationToken cancellation)
     {
-        if (!CatalogTaskResolver.TryResolve("chat", s.Model, s.ModelFile, out var resolved, out string? error))
+        if (!CatalogTaskResolver.TryResolveOrOffer("chat", s.Model, s.ModelFile, out var resolved, out string? error, cancellation))
         {
             AnsiConsole.ErrorLine($"[red]Error:[/] {Markup.Escape(error ?? "Failed to resolve chat model.")}");
             return ExitCodes.Usage;
