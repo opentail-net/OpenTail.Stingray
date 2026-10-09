@@ -68,3 +68,38 @@ public readonly record struct GgufTensorInfo(
     /// <summary>Total byte size of the tensor data.</summary>
     public long ByteSize => DTypeInfo.ByteSize(ElementCount, DType);
 }
+
+/// <summary>
+/// The index of a GGUF: header, metadata and every tensor's name, shape and type, without any tensor data. Produced by
+/// <see cref="GgufModel.ParseIndex"/> from the start of each shard, so a model can be inspected from a few MB read remotely.
+/// </summary>
+public sealed record GgufIndex(
+    GgufHeader Header,
+    IReadOnlyDictionary<string, object> Metadata,
+    IReadOnlyList<GgufTensorInfo> Tensors,
+    // Offset in each shard where its tensor-info array ends, i.e. how many bytes of the shard the index occupies.
+    IReadOnlyList<long> TensorInfoEndOffsets);
+
+/// <summary>
+/// Marks and reads "the buffer ended inside the index". The loader always threw <see cref="InvalidDataException"/> for this and callers catch
+/// that type (which is sealed, so it cannot be subclassed); the marker lives in <see cref="Exception.Data"/> so those callers are unaffected, while a
+/// caller reading a prefix can tell "read more" from "malformed" and learn which shard ran out.
+/// </summary>
+public static class GgufTruncation
+{
+    private const string Key = "opentail.gguf.truncated_shard";
+
+    public static InvalidDataException Create(int shard, string message)
+    {
+        var ex = new InvalidDataException(message);
+        ex.Data[Key] = shard;
+        return ex;
+    }
+
+    public static bool IsTruncation(Exception ex, out int shard)
+    {
+        if (ex is InvalidDataException && ex.Data[Key] is int s) { shard = s; return true; }
+        shard = -1;
+        return false;
+    }
+}

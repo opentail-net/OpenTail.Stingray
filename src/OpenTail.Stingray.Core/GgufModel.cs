@@ -86,94 +86,25 @@ public sealed unsafe class GgufModel : IDisposable, IModelTensorSource
                 basePtrs[s] = ptr;
             }
 
-            // Parse shard 0: full metadata + first batch of tensors
-            var reader0 = new GgufBinaryReader(basePtrs[0], fileSizes[0]);
-            ValidateMagicAndVersion(ref reader0);
-            var tensorCount0 = reader0.ReadUInt64();
-            var kvCount0     = reader0.ReadUInt64();
-            var header       = new GgufHeader(GgufMagic, 3, tensorCount0, kvCount0);
+            // Shard 0 carries the metadata; later shards repeat it (skipped) and add their own tensors. The same
+            // ParseShard serves a remote prefix (ParseIndex), so a local and a remote read cannot disagree.
+            var allTensors = new List<GgufTensorInfo>();
+            var shard0 = ParseShard(basePtrs[0], fileSizes[0], fileSizes[0], shardIndex: 0, DefaultAlignment, allTensors);
+            dataStarts[0] = shard0.DataStartOffset;
+            tensorInfoEnds[0] = shard0.TensorInfoEndOffset;
+            var metadata = shard0.Metadata!;
 
-            var metadata = new Dictionary<string, object>((int)kvCount0);
-            for (ulong i = 0; i < kvCount0; i++)
-            {
-                var key       = reader0.ReadGgufString();
-                var valueType = (GgufValueType)reader0.ReadUInt32();
-                var value     = reader0.ReadGgufValue(valueType);
-                metadata[key] = value;
-            }
-
-            int alignment = DefaultAlignment;
-            if (metadata.TryGetValue("general.alignment", out var alignObj))
-                alignment = Convert.ToInt32(alignObj);
-
-            var allTensors = new List<GgufTensorInfo>((int)tensorCount0 * shardCount);
-            ParseTensorInfos(ref reader0, tensorCount0, alignment, shardIndex: 0, fileSizes[0], out dataStarts[0], out tensorInfoEnds[0], allTensors);
-
-            // Parse remaining shards: skip their metadata, collect tensor infos
             for (int s = 1; s < shardCount; s++)
             {
-                var reader = new GgufBinaryReader(basePtrs[s], fileSizes[s]);
-                ValidateMagicAndVersion(ref reader);
-                var tensorCountS = reader.ReadUInt64();
-                var kvCountS     = reader.ReadUInt64();
-
-                // Skip metadata entries (present but redundant in shards > 0)
-                for (ulong i = 0; i < kvCountS; i++)
-                {
-                    reader.ReadGgufString();                         // key
-                    var vt = (GgufValueType)reader.ReadUInt32();
-                    reader.SkipGgufValue(vt);                        // value
-                }
-
-                ParseTensorInfos(ref reader, tensorCountS, alignment, shardIndex: s, fileSizes[s], out dataStarts[s], out tensorInfoEnds[s], allTensors);
+                var shard = ParseShard(basePtrs[s], fileSizes[s], fileSizes[s], shardIndex: s, shard0.Alignment, allTensors);
+                dataStarts[s] = shard.DataStartOffset;
+                tensorInfoEnds[s] = shard.TensorInfoEndOffset;
             }
 
-            // Inject synthetic metadata from tensor inspection
-            var arch = metadata.TryGetValue("general.architecture", out var archVal) ? (string)archVal : "llama";
-            int attnKCount = 0, attnVCount = 0;
-            foreach (var t in allTensors)
-            {
-                if (t.Name == "blk.0.attn_q.bias")     metadata["_opentailllm.has_attn_bias"] = true;
-                // Qwen2 carries bias on Q/K/V but NOT on the output projection; Qwen-1 and
-                // some others carry it on the output too. Probe attn_output.bias separately so
-                // the output bias is loaded only when it actually exists (llama.cpp treats `bo`
-                // as optional). Without this, a Qwen2 GGUF fails to load: HasAttnBias is set
-                // from attn_q.bias but the loaders then demand a non-existent attn_output.bias.
-                else if (t.Name == "blk.0.attn_output.bias") metadata["_opentailllm.has_attn_output_bias"] = true;
-                else if (t.Name == "blk.0.attn_q_norm.weight") metadata["_opentailllm.has_qk_norm"] = true;
-                else if (t.Name == "per_layer_token_embd.weight") metadata["_opentailllm.has_ple"] = true;
-                else if (t.Name == "blk.0.post_attention_norm.weight") metadata["_opentailllm.has_post_attn_norm"] = true;
-                else if (t.Name == "blk.0.post_ffw_norm.weight") metadata["_opentailllm.has_post_ffw_norm"] = true;
-                else if (t.Name == "blk.0.layer_output_scale.weight") metadata["_opentailllm.has_layer_output_scale"] = true;
-                // Gated-DeltaNet recurrent blocks (qwen35moe and similar hybrids). The
-                // first few layers' indices depend on full_attention_interval, so probe
-                // a window of low layer indices for ssm_conv1d.weight.
-                else if (t.Name is "blk.0.ssm_conv1d.weight"
-                                 or "blk.1.ssm_conv1d.weight"
-                                 or "blk.2.ssm_conv1d.weight"
-                                 or "blk.3.ssm_conv1d.weight")
-                    metadata["_opentailllm.is_hybrid_ssm"] = true;
-
-                // Gemma 4 12B global layers omit attn_v and reuse K as V
-                // (attention_k_eq_v). Detect by a V-projection deficit vs K.
-                if (t.Name.EndsWith(".attn_k.weight", StringComparison.Ordinal))      attnKCount++;
-                else if (t.Name.EndsWith(".attn_v.weight", StringComparison.Ordinal)) attnVCount++;
-            }
-            // k_eq_v is a Gemma-4-specific mechanism (its global layers drop attn_v and reuse
-            // the K projection as V). Gate the V-deficit heuristic on the gemma4 arch family so
-            // an unrelated architecture that ships fewer V than K projections can't be mis-driven
-            // down the copy-K-into-V path. Heuristic, not a metadata read — no GGUF declares
-            // attention_k_eq_v directly.
-            if (attnKCount > 0 && attnVCount < attnKCount
-                && arch.StartsWith("gemma4", StringComparison.Ordinal))
-                metadata["_opentailllm.attention_k_eq_v"] = true;
-
-            if (!metadata.ContainsKey($"{arch}.vocab_size") &&
-                metadata.TryGetValue("tokenizer.ggml.tokens", out var tokArr) && tokArr is object[] toks)
-                metadata[$"{arch}.vocab_size"] = (ulong)toks.Length;
+            InjectDerivedMetadata(metadata, allTensors);
 
             // Report actual version from header
-            var finalHeader = new GgufHeader(header.Magic, header.Version, (ulong)allTensors.Count, header.MetadataKvCount);
+            var finalHeader = new GgufHeader(GgufMagic, shard0.Version, (ulong)allTensors.Count, shard0.KvCount);
 
             return new GgufModel(mmfs, accessors, basePtrs, fileSizes, dataStarts, tensorInfoEnds, finalHeader, metadata, allTensors);
         }
@@ -346,7 +277,7 @@ public sealed unsafe class GgufModel : IDisposable, IModelTensorSource
         return paths;
     }
 
-    private static void ValidateMagicAndVersion(ref GgufBinaryReader reader)
+    private static uint ValidateMagicAndVersion(ref GgufBinaryReader reader)
     {
         var magic = reader.ReadUInt32();
         if (magic != GgufMagic)
@@ -354,6 +285,141 @@ public sealed unsafe class GgufModel : IDisposable, IModelTensorSource
         var version = reader.ReadUInt32();
         if (version is < 2 or > 3)
             throw new InvalidDataException($"Unsupported GGUF version: {version}");
+        return version;
+    }
+
+    private readonly record struct ShardParse(
+        uint Version, ulong TensorCount, ulong KvCount, Dictionary<string, object>? Metadata,
+        int Alignment, long DataStartOffset, long TensorInfoEndOffset);
+
+    /// <summary>
+    /// Parses one shard's header, metadata (kept for shard 0, skipped otherwise: later shards repeat it) and tensor-info array from a buffer.
+    /// <paramref name="bufferLength"/> is how many bytes are readable; <paramref name="fileSize"/> is the real size of the shard, which is
+    /// what tensor offsets are validated against. They are equal for a mapped file and differ for a downloaded prefix.
+    /// </summary>
+    private static ShardParse ParseShard(byte* ptr, long bufferLength, long fileSize, int shardIndex, int alignmentFromShard0, List<GgufTensorInfo> tensors)
+    {
+        var reader = new GgufBinaryReader(ptr, bufferLength);
+        uint version = ValidateMagicAndVersion(ref reader);
+        var tensorCount = reader.ReadUInt64();
+        var kvCount = reader.ReadUInt64();
+        // Counts come from the file. Bound them by the bytes that could possibly hold that many entries before any
+        // allocation is sized from them, so a hostile header cannot request billions of entries.
+        reader.RequirePlausibleCount(kvCount, minBytesPerEntry: 13, "metadata key/value pairs");
+        reader.RequirePlausibleCount(tensorCount, minBytesPerEntry: 24, "tensors");
+
+        Dictionary<string, object>? metadata = null;
+        int alignment = alignmentFromShard0;
+        if (shardIndex == 0)
+        {
+            metadata = new Dictionary<string, object>((int)kvCount);
+            for (ulong i = 0; i < kvCount; i++)
+            {
+                var key       = reader.ReadGgufString();
+                var valueType = (GgufValueType)reader.ReadUInt32();
+                var value     = reader.ReadGgufValue(valueType);
+                metadata[key] = value;
+            }
+            alignment = DefaultAlignment;
+            if (metadata.TryGetValue("general.alignment", out var alignObj))
+                alignment = Convert.ToInt32(alignObj);
+        }
+        else
+        {
+            // Skip metadata entries (present but redundant in shards > 0)
+            for (ulong i = 0; i < kvCount; i++)
+            {
+                reader.ReadGgufString();                         // key
+                var vt = (GgufValueType)reader.ReadUInt32();
+                reader.SkipGgufValue(vt);                        // value
+            }
+        }
+
+        ParseTensorInfos(ref reader, tensorCount, alignment, shardIndex, fileSize, out long dataStart, out long infoEnd, tensors);
+        return new ShardParse(version, tensorCount, kvCount, metadata, alignment, dataStart, infoEnd);
+    }
+
+    /// <summary>Synthetic metadata derived from tensor inspection. Shared by the file loader and <see cref="ParseIndex"/> so both see the same facts.</summary>
+    private static void InjectDerivedMetadata(Dictionary<string, object> metadata, List<GgufTensorInfo> allTensors)
+    {
+            var arch = metadata.TryGetValue("general.architecture", out var archVal) ? (string)archVal : "llama";
+            int attnKCount = 0, attnVCount = 0;
+            foreach (var t in allTensors)
+            {
+                if (t.Name == "blk.0.attn_q.bias")     metadata["_opentailllm.has_attn_bias"] = true;
+                // Qwen2 carries bias on Q/K/V but NOT on the output projection; Qwen-1 and
+                // some others carry it on the output too. Probe attn_output.bias separately so
+                // the output bias is loaded only when it actually exists (llama.cpp treats `bo`
+                // as optional). Without this, a Qwen2 GGUF fails to load: HasAttnBias is set
+                // from attn_q.bias but the loaders then demand a non-existent attn_output.bias.
+                else if (t.Name == "blk.0.attn_output.bias") metadata["_opentailllm.has_attn_output_bias"] = true;
+                else if (t.Name == "blk.0.attn_q_norm.weight") metadata["_opentailllm.has_qk_norm"] = true;
+                else if (t.Name == "per_layer_token_embd.weight") metadata["_opentailllm.has_ple"] = true;
+                else if (t.Name == "blk.0.post_attention_norm.weight") metadata["_opentailllm.has_post_attn_norm"] = true;
+                else if (t.Name == "blk.0.post_ffw_norm.weight") metadata["_opentailllm.has_post_ffw_norm"] = true;
+                else if (t.Name == "blk.0.layer_output_scale.weight") metadata["_opentailllm.has_layer_output_scale"] = true;
+                // Gated-DeltaNet recurrent blocks (qwen35moe and similar hybrids). The
+                // first few layers' indices depend on full_attention_interval, so probe
+                // a window of low layer indices for ssm_conv1d.weight.
+                else if (t.Name is "blk.0.ssm_conv1d.weight"
+                                 or "blk.1.ssm_conv1d.weight"
+                                 or "blk.2.ssm_conv1d.weight"
+                                 or "blk.3.ssm_conv1d.weight")
+                    metadata["_opentailllm.is_hybrid_ssm"] = true;
+
+                // Gemma 4 12B global layers omit attn_v and reuse K as V
+                // (attention_k_eq_v). Detect by a V-projection deficit vs K.
+                if (t.Name.EndsWith(".attn_k.weight", StringComparison.Ordinal))      attnKCount++;
+                else if (t.Name.EndsWith(".attn_v.weight", StringComparison.Ordinal)) attnVCount++;
+            }
+            // k_eq_v is a Gemma-4-specific mechanism (its global layers drop attn_v and reuse
+            // the K projection as V). Gate the V-deficit heuristic on the gemma4 arch family so
+            // an unrelated architecture that ships fewer V than K projections can't be mis-driven
+            // down the copy-K-into-V path. Heuristic, not a metadata read — no GGUF declares
+            // attention_k_eq_v directly.
+            if (attnKCount > 0 && attnVCount < attnKCount
+                && arch.StartsWith("gemma4", StringComparison.Ordinal))
+                metadata["_opentailllm.attention_k_eq_v"] = true;
+
+            if (!metadata.ContainsKey($"{arch}.vocab_size") &&
+                metadata.TryGetValue("tokenizer.ggml.tokens", out var tokArr) && tokArr is object[] toks)
+                metadata[$"{arch}.vocab_size"] = (ulong)toks.Length;
+    }
+
+    /// <summary>
+    /// Parses the header, metadata and tensor-info arrays from the START of a GGUF (or of each shard of a split one) without the tensor data.
+    /// Used to inspect a model remotely from a few MB read by HTTP Range request. <paramref name="shardPrefixes"/> holds one entry per shard
+    /// in order: the bytes read from the start of that shard and the shard's full size (needed to validate tensor offsets).
+    /// Throws an <see cref="InvalidDataException"/> that <see cref="GgufTruncation.IsTruncation"/> recognises (with the shard number) when a prefix ends inside the index, so a caller can read more;
+    /// any other <see cref="InvalidDataException"/> means the file is malformed.
+    /// </summary>
+    public static GgufIndex ParseIndex(IReadOnlyList<(ReadOnlyMemory<byte> Prefix, long FileSize)> shardPrefixes)
+    {
+        ArgumentNullException.ThrowIfNull(shardPrefixes);
+        if (shardPrefixes.Count == 0) throw new ArgumentException("At least one shard prefix is required.", nameof(shardPrefixes));
+
+        var tensors = new List<GgufTensorInfo>();
+        ShardParse? first = null;
+        var ends = new long[shardPrefixes.Count];
+        for (int s = 0; s < shardPrefixes.Count; s++)
+        {
+            var (prefix, fileSize) = shardPrefixes[s];
+            try
+            {
+                using var pin = prefix.Pin();
+                var parsed = ParseShard((byte*)pin.Pointer, prefix.Length, fileSize, s, first?.Alignment ?? DefaultAlignment, tensors);
+                first ??= parsed;
+                ends[s] = parsed.TensorInfoEndOffset;
+            }
+            catch (InvalidDataException ex) when (GgufTruncation.IsTruncation(ex, out _))
+            {
+                throw GgufTruncation.Create(s, ex.Message);
+            }
+        }
+
+        var metadata = first!.Value.Metadata!;
+        InjectDerivedMetadata(metadata, tensors);
+        return new GgufIndex(new GgufHeader(GgufMagic, first.Value.Version, (ulong)tensors.Count, first.Value.KvCount), metadata, tensors, ends);
     }
 
     private static void ParseTensorInfos(
@@ -582,6 +648,8 @@ public sealed unsafe class GgufModel : IDisposable, IModelTensorSource
             var count = ReadUInt64();
             if (count > int.MaxValue)
                 throw new InvalidDataException($"GGUF array length {count} exceeds maximum.");
+            // Every element occupies at least one byte, so a count above the bytes left cannot be honest; refuse before sizing the array from it.
+            RequirePlausibleCount(count, minBytesPerEntry: 1, "array elements");
             var array = new object[(int)count];
             for (ulong i = 0; i < count; i++)
                 array[i] = ReadGgufValue(elementType);
@@ -638,10 +706,19 @@ public sealed unsafe class GgufModel : IDisposable, IModelTensorSource
         /// drive the position negative or wrap it. A plain <c>_pos + bytes &gt; _length</c> test
         /// silently PASSES for a negative position and would then read below the mapping.</para>
         /// </summary>
+        /// <summary>Throws when <paramref name="count"/> entries of at least <paramref name="minBytesPerEntry"/> bytes could not fit in what is left of the buffer.</summary>
+        public void RequirePlausibleCount(ulong count, int minBytesPerEntry, string what)
+        {
+            long remaining = _length - _pos;
+            if (remaining < 0 || count > (ulong)remaining / (ulong)minBytesPerEntry)
+                throw GgufTruncation.Create(0,
+                    $"Unexpected end of GGUF data at offset {_pos}: {count} {what} declared but only {Math.Max(remaining, 0)} bytes remain.");
+        }
+
         private void EnsureAvailable(long bytes)
         {
             if (bytes < 0 || _pos < 0 || _pos > _length || _pos + bytes < 0 || _pos + bytes > _length)
-                throw new InvalidDataException(
+                throw GgufTruncation.Create(0,
                     $"Unexpected end of GGUF data at offset {_pos} (need {bytes} bytes, {_length - _pos} available).");
         }
 
