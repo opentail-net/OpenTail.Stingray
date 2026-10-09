@@ -79,18 +79,39 @@ public sealed class ScoutCommand : Command<ScoutCommand.Settings>
         [Description("With --emit-signature: repo revision/commit the file came from")]
         public string? OriginRevision { get; init; }
 
+        [CommandOption("--backlog")]
+        [Description("Query Hugging Face for the most downloaded GGUF architectures and print the backlog of unregistered/unadmitted families.")]
+        public bool Backlog { get; init; }
+
+        [CommandOption("--limit <N>")]
+        [Description("With --backlog: number of repositories to inspect (default 50, maximum 200).")]
+        public int? Limit { get; init; }
+
         public override string? Validate()
         {
             bool local = !string.IsNullOrWhiteSpace(ModelPath), remote = !string.IsNullOrWhiteSpace(Repo);
-            if (local == remote) return "Use exactly one of -m <model.gguf> or -r <owner/repo>.";
-            if (!remote && (File is not null || Revision is not null || MaxIndexMb is not null)) return "-f, --revision and --max-index-mb only apply with -r.";
-            if (remote && HubClient.NormalizeRepoId(Repo) is null) return $"'{Repo}' is not a Hugging Face repo id (owner/name).";
-            if (MaxIndexMb is <= 0) return "--max-index-mb must be positive.";
-            if (Quants && !remote) return "--quants needs -r <owner/repo>.";
-            if (Quants && File is not null) return "--quants judges every file; drop -f.";
-            if (Quants && EmitSignaturePath is not null) return "--quants and --emit-signature cannot be combined.";
-            if (MaxQuants is not null && !Quants) return "--max-quants only applies with --quants.";
-            if (MaxQuants is <= 0) return "--max-quants must be positive.";
+            if (Backlog)
+            {
+                if (local || remote) return "--backlog queries the Hugging Face model list; drop -m and -r.";
+                if (Quants) return "--backlog and --quants cannot be combined.";
+                if (EmitSignaturePath is not null) return "--backlog and --emit-signature cannot be combined.";
+                if (File is not null || Revision is not null || MaxIndexMb is not null) return "-f, --revision and --max-index-mb only apply with -r.";
+                if (MaxQuants is not null) return "--max-quants only applies with --quants.";
+                if (Limit is <= 0) return "--limit must be positive.";
+            }
+            else
+            {
+                if (Limit is not null) return "--limit only applies with --backlog.";
+                if (local == remote) return "Use exactly one of -m <model.gguf> or -r <owner/repo>.";
+                if (!remote && (File is not null || Revision is not null || MaxIndexMb is not null)) return "-f, --revision and --max-index-mb only apply with -r.";
+                if (remote && HubClient.NormalizeRepoId(Repo) is null) return $"'{Repo}' is not a Hugging Face repo id (owner/name).";
+                if (MaxIndexMb is <= 0) return "--max-index-mb must be positive.";
+                if (Quants && !remote) return "--quants needs -r <owner/repo>.";
+                if (Quants && File is not null) return "--quants judges every file; drop -f.";
+                if (Quants && EmitSignaturePath is not null) return "--quants and --emit-signature cannot be combined.";
+                if (MaxQuants is not null && !Quants) return "--max-quants only applies with --quants.";
+                if (MaxQuants is <= 0) return "--max-quants must be positive.";
+            }
             if (Format is not ("text" or "json")) return "--format must be 'text' or 'json'.";
             if (Budget is not null && !ScoutSize.TryParse(Budget, out _)) return $"--budget '{Budget}' is not a size (try 64G).";
             if (Reserve is not null && !ScoutSize.TryParse(Reserve, out _)) return $"--reserve '{Reserve}' is not a size (try 8G).";
@@ -146,6 +167,8 @@ public sealed class ScoutCommand : Command<ScoutCommand.Settings>
 
     protected override int Execute(Settings settings, CancellationToken cancellation)
     {
+        if (settings.Backlog) return ExecuteBacklog(settings, cancellation);
+
         long? budget = settings.Budget is null ? null : (ScoutSize.TryParse(settings.Budget, out long b) ? b : null);
         long reserve = settings.Reserve is not null && ScoutSize.TryParse(settings.Reserve, out long r) ? r : ScoutOptions.DefaultReserveBytes;
         var signatures = settings.NoBuiltinSignatures ? new List<ArchSignature>() : new List<ArchSignature>(SignatureStore.LoadEmbedded());
@@ -159,6 +182,34 @@ public sealed class ScoutCommand : Command<ScoutCommand.Settings>
 
         if (settings.Quants) return ExecuteQuants(settings, options, cancellation);
         return settings.Repo is not null ? ExecuteRemote(settings, options, cancellation) : ExecuteLocal(settings, options);
+    }
+
+    private static int ExecuteBacklog(Settings settings, CancellationToken cancellation)
+    {
+        using var http = new ExternalHttpClient(userAgent: "OpenTail.Stingray/scout");
+        BacklogReport report;
+        try
+        {
+            report = Backlog.RunAsync(http, settings.Limit, StingrayBuildVersion.Value, cancellation)
+                .GetAwaiter().GetResult();
+        }
+        catch (ExternalAccessDeniedException ex)
+        {
+            Console.Error.WriteLine("error: " + ex.Message);
+            return ExitCodes.Failure;
+        }
+
+        string json = JsonSerializer.Serialize(report, BacklogJsonContext.Default.BacklogReport);
+        if (settings.OutputPath is { Length: > 0 } outPath)
+        {
+            File.WriteAllText(outPath, json + "\n");
+            Console.Error.WriteLine($"Wrote backlog report: {Path.GetFileName(outPath)}");
+        }
+
+        if (settings.Format == "json") Console.WriteLine(json);
+        else BacklogTextRenderer.Write(report);
+
+        return ExitCodes.Success;
     }
 
     private static int ExecuteLocal(Settings settings, ScoutOptions options)
