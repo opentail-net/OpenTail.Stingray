@@ -1,4 +1,5 @@
 using OpenTail.Stingray.Core.Catalog;
+using OpenTail.Stingray.Cli.Scout;
 using OpenTail.Stingray.Core.Net;
 
 namespace OpenTail.Stingray.Cli;
@@ -29,7 +30,8 @@ public sealed record SetupOutcome(bool Installed, string? Message);
 /// </summary>
 public static class SetupFlow
 {
-    public static SetupOutcome Run(CatalogEntry entry, ModelHome home, HttpClient http, bool yes, bool acceptLicence, bool interactive, ISetupPrompt prompt, CancellationToken ct, Func<string, string?>? env = null)
+    public static SetupOutcome Run(CatalogEntry entry, ModelHome home, HttpClient http, bool yes, bool acceptLicence, bool interactive, ISetupPrompt prompt, CancellationToken ct, Func<string, string?>? env = null,
+        Func<CatalogEntry, CancellationToken, PreflightResult?>? feasibility = null)
     {
         long remaining = home.RemainingBytes(entry);
         SetupCommand.PrintSummary(entry, home, remaining);
@@ -43,6 +45,21 @@ public static class SetupFlow
                 AnsiConsole.ErrorLine($"[red]Not downloading:[/] {Markup.Escape(access.Reason)}. To allow it: {Markup.Escape(access.HowToEnable ?? "see STINGRAY_ALLOW_EXTERNAL")}.");
                 return new(false, access.Reason);
             }
+        }
+
+        // Does it fit this machine? Asked of the pinned remote file BEFORE any download, so a model that cannot run is not fetched first.
+        if (remaining > 0 && feasibility?.Invoke(entry, ct) is { } fit)
+        {
+            if (fit.Verdict == PreflightVerdict.Allowed)
+                AnsiConsole.MarkupLine($"[green]Fits this machine:[/] about {Markup.Escape(LoadPreflight.Gib(fit.EstimatedPeakBytes))} for a CPU run (memory {Markup.Escape(LoadPreflight.Gib(fit.BudgetBytes))}).");
+            else if (!LoadPreflight.ShouldProceed(fit, ignore: false, out string? why))
+            {
+                AnsiConsole.MarkupLine($"[yellow]{Markup.Escape(why!)}[/]");
+                if (!interactive || yes) return new(false, "does not fit this machine");
+                if (!prompt.Confirm("Download anyway?", defaultYes: false)) return new(false, "does not fit this machine");
+            }
+            else if (why is not null)
+                AnsiConsole.MarkupLine($"[dim]{Markup.Escape(why)}[/]");
         }
 
         if (entry.LicenceNeedsConsent && !acceptLicence)
@@ -94,4 +111,11 @@ public static class SetupFlow
         AnsiConsole.MarkupLine($"[green]Ready:[/] {Markup.Escape(entry.Id)} ({Markup.Escape(entry.Task)})");
         return new(true, null);
     }
+
+    /// <summary>The pre-download check the CLI uses: reads the pinned remote index (about 2 MiB) and returns null when the network is off or unreachable.</summary>
+    public static Func<CatalogEntry, CancellationToken, PreflightResult?> DefaultFeasibility(int contextTokens = 2048) => (entry, ct) =>
+    {
+        using var http = new ExternalHttpClient(userAgent: "OpenTail.Stingray/setup");
+        return LoadPreflight.EvaluateCatalogEntryAsync(entry, contextTokens, http, ct).GetAwaiter().GetResult();
+    };
 }

@@ -2,7 +2,7 @@
 
 **Generated:** by `scripts/gen-cli-option-inventory.ps1`, which scans `[CommandOption]` /
 `[Description]` pairs under `src/OpenTail.Stingray.Cli`. Last regenerated **2026-10-09**, recording
-**294 option declarations** across 30 command files — the same count the
+**295 option declarations** across 30 command files — the same count the
 `StaticPlanConfigurationTests` guard enforces against source. (Reconciled 12 rows of drift, caught
 by CI failing `CliOptionInventory_DeclaredCountMatchesSource` on `main`: three new commands —
 `AdmitArchCommand`, `GenVisionScaffoldCommand` and `PullCommand`, see `docs/reference/061-coverage-tooling.md` —
@@ -120,6 +120,7 @@ hoc at each read site rather than in one place.
 | `--backend <BACKEND>` |  | Compute backend: auto (default), cpu, or vulkan. |
 | `--context-size <INT>` |  | Context size in tokens. Default: 2048. |
 | `--gpu-layers <N>` |  | Number of layers to offload to GPU (-1 for auto/all). Default: -1. |
+| `--ignore-preflight` | stable | Load even if the memory check says the model will not fit this machine (CPU runs only). |
 | `--max-tokens <INT>` |  | Maximum tokens to generate per turn. Default: 512. |
 | `--model <ID>` |  | Model catalog id (default: qwen2.5-0.5b). |
 | `--model-file <PATH>` |  | Direct path to a model file (.gguf) to load. |

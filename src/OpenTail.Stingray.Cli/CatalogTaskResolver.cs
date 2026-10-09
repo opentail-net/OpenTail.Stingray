@@ -92,7 +92,7 @@ public static class CatalogTaskResolver
         string taskName, string? modelId, string? modelFile,
         out ResolvedModelTask? resolved, out string? errorMessage, CancellationToken ct,
         bool? interactive = null, ISetupPrompt? prompt = null, ModelHome? customHome = null, Func<HttpClient>? httpFactory = null,
-        CatalogEntry? entryOverride = null, Func<string, string?>? env = null)
+        CatalogEntry? entryOverride = null, Func<string, string?>? env = null, Func<CatalogEntry, CancellationToken, OpenTail.Stingray.Cli.Scout.PreflightResult?>? feasibility = null)
     {
         if (TryResolve(taskName, modelId, modelFile, out resolved, out errorMessage, customHome, entryOverride))
             return true;
@@ -106,7 +106,7 @@ public static class CatalogTaskResolver
 
         AnsiConsole.MarkupLine($"The {Markup.Escape(taskName)} model [yellow]{Markup.Escape(entry.Id)}[/] is not installed.");
         using var http = httpFactory?.Invoke() ?? ModelDownloader.CreateClient("OpenTail.Stingray/" + taskName);
-        var outcome = SetupFlow.Run(entry, home, http, yes: false, acceptLicence: false, interactive: true, prompt ?? new ConsolePrompt(), ct, env);
+        var outcome = SetupFlow.Run(entry, home, http, yes: false, acceptLicence: false, interactive: true, prompt ?? new ConsolePrompt(), ct, env, feasibility ?? (customHome is null && httpFactory is null ? SetupFlow.DefaultFeasibility() : null));
         if (!outcome.Installed)
         {
             errorMessage = $"Model for {taskName} ('{entry.Id}') was not installed ({outcome.Message}).\nRun: stingray setup {taskName}";

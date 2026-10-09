@@ -52,6 +52,10 @@ public sealed class ChatCommand : Command<ChatCommand.Settings>
         [Description("Compute backend: auto (default), cpu, or vulkan.")]
         public string Backend { get; init; } = "auto";
 
+        [CommandOption("--ignore-preflight")]
+        [Description("Load even if the memory check says the model will not fit this machine (CPU runs only).")]
+        public bool IgnorePreflight { get; init; }
+
         [CommandOption("--gpu-layers <N>")]
         [Description("Number of layers to offload to GPU (-1 for auto/all). Default: -1.")]
         [DefaultValue(-1)]
@@ -64,6 +68,16 @@ public sealed class ChatCommand : Command<ChatCommand.Settings>
         {
             AnsiConsole.ErrorLine($"[red]Error:[/] {Markup.Escape(error ?? "Failed to resolve chat model.")}");
             return ExitCodes.Usage;
+        }
+
+        // Memory check before anything is loaded. CPU runs only: GPU placement is not estimated, so those are not blocked.
+        bool cpuRun = s.Backend.Equals("cpu", StringComparison.OrdinalIgnoreCase) || s.GpuLayers == 0;
+        if (cpuRun)
+        {
+            var preflight = OpenTail.Stingray.Cli.Scout.LoadPreflight.EvaluateFile(resolved!.ModelPath, s.ContextSize);
+            bool proceed = OpenTail.Stingray.Cli.Scout.LoadPreflight.ShouldProceed(preflight, s.IgnorePreflight, out string? note);
+            if (!proceed) { AnsiConsole.ErrorLine("[red]Not loading:[/] " + Markup.Escape(note!)); return ExitCodes.Failure; }
+            if (note is not null) AnsiConsole.MarkupLine("[dim]" + Markup.Escape(note) + "[/]");
         }
 
         var modelParams = new ModelParams(resolved!.ModelPath)

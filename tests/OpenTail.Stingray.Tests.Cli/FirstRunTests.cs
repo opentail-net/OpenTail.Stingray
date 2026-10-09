@@ -1,5 +1,6 @@
 using System.Net;
 using System.Security.Cryptography;
+using OpenTail.Stingray.Cli.Scout;
 using OpenTail.Stingray.Core.Catalog;
 
 namespace OpenTail.Stingray.Tests.Cli;
@@ -38,10 +39,10 @@ public sealed class FirstRunTests : IDisposable
         }
     }
 
-    private (bool Ok, ResolvedModelTask? R, string? Err) Resolve(Server s, Prompt p, CatalogEntry e, bool interactive = true, Func<string, string?>? env = null, string? modelFile = null)
+    private (bool Ok, ResolvedModelTask? R, string? Err) Resolve(Server s, Prompt p, CatalogEntry e, bool interactive = true, Func<string, string?>? env = null, string? modelFile = null, PreflightResult? fit = null)
     {
         bool ok = CatalogTaskResolver.TryResolveOrOffer("chat", null, modelFile, out var r, out var err, default,
-            interactive, p, new ModelHome(_root), () => new HttpClient(s), e, env ?? (_ => null));
+            interactive, p, new ModelHome(_root), () => new HttpClient(s), e, env ?? (_ => null), (_, _) => fit);
         return (ok, r, err);
     }
 
@@ -157,5 +158,65 @@ public sealed class FirstRunTests : IDisposable
         Assert.False(ok);
         Assert.Empty(p.Asked);
         Assert.Contains("not found", err);
+    }
+
+    // ── the pre-download fit check (reads the pinned remote index; injected here) ──
+    private static PreflightResult Fit(PreflightVerdict v) => new(v, "x", 40L << 30, 16L << 30, 4L << 30);
+
+    [Fact]
+    public void Download_anyway_can_be_chosen_interactively_for_a_model_that_will_not_fit()
+    {
+        var s = new Server(); var p = new Prompt(true);
+        var (ok, _, err) = Resolve(s, p, Entry(), interactive: true, fit: Fit(PreflightVerdict.Blocked));
+        // interactive: the user is asked "Download anyway?" (default no); here the scripted first answer is yes to that question
+        Assert.True(ok, err);
+        Assert.Contains(p.Asked, q => q.StartsWith("Download anyway"));
+    }
+
+    [Fact]
+    public void Declining_download_anyway_downloads_nothing()
+    {
+        var s = new Server(); var p = new Prompt(false);
+        var (ok, _, _) = Resolve(s, p, Entry(), fit: Fit(PreflightVerdict.Blocked));
+        Assert.False(ok);
+        Assert.Equal(0, s.Requests);
+        Assert.Single(p.Asked);
+        Assert.StartsWith("Download anyway", p.Asked[0]);
+    }
+
+    [Fact]
+    public void A_fitting_model_adds_no_extra_question()
+    {
+        var s = new Server(); var p = new Prompt(true);
+        var (ok, _, err) = Resolve(s, p, Entry(), fit: Fit(PreflightVerdict.Allowed));
+        Assert.True(ok, err);
+        Assert.Single(p.Asked);
+        Assert.StartsWith("Download ", p.Asked[0]);
+    }
+
+    [Fact]
+    public void An_unknown_or_unavailable_check_does_not_get_in_the_way()
+    {
+        foreach (var fit in new PreflightResult?[] { Fit(PreflightVerdict.Unknown), null })
+        {
+            var s = new Server(); var p = new Prompt(true);
+            var (ok, _, err) = Resolve(s, p, Entry(), fit: fit);
+            Assert.True(ok, err);
+            Assert.Single(p.Asked);
+            Directory.Delete(_root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void With_yes_or_non_interactive_a_model_that_will_not_fit_is_refused_not_downloaded()
+    {
+        foreach ((bool yes, bool interactive) in new[] { (true, true), (false, false), (true, false) })
+        {
+            var s = new Server();
+            var outcome = SetupFlow.Run(Entry(), new ModelHome(Path.Combine(_root, "x" + yes + interactive)), new HttpClient(s), yes, acceptLicence: false, interactive, new Prompt(true), default,
+                _ => null, (_, _) => Fit(PreflightVerdict.Blocked));
+            Assert.False(outcome.Installed);
+            Assert.Equal(0, s.Requests);
+        }
     }
 }

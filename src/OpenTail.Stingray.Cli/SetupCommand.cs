@@ -42,7 +42,7 @@ public sealed class SetupCommand : Command<SetupCommand.Settings>
 
         var home = ModelHome.Default();
         using var http = ModelDownloader.CreateClient("OpenTail.Stingray/setup");
-        var outcome = SetupFlow.Run(entry, home, http, settings.Yes, settings.AcceptLicence, interactive: !Console.IsInputRedirected, new ConsolePrompt(), cancellation);
+        var outcome = SetupFlow.Run(entry, home, http, settings.Yes, settings.AcceptLicence, interactive: !Console.IsInputRedirected, new ConsolePrompt(), cancellation, feasibility: SetupFlow.DefaultFeasibility());
         if (!outcome.Installed) return 1;
         AnsiConsole.MarkupLine($"Run it: [yellow]{Markup.Escape(entry.RunCommand(home))}[/]");
         return 0;
