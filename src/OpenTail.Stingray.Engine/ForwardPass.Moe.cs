@@ -131,11 +131,10 @@ public sealed unsafe partial class ForwardPass
 
         long pt2 = MoePhaseTiming.Now();
         MoePhaseTiming.Add(MoePhaseTiming.SharedExpert, pt2 - pt1);
-        // Step 3: Selected expert(s) — 2-sweep folded execution when every expert dtype has a
-        // float-input row dot (DispatchDot); otherwise the per-expert sequential loop, whose
-        // SimdKernels.MatVec covers every dtype (Q2_K, MXFP4, IQ*, ... — the folded path threw
-        // on those, breaking e.g. DeepSeek-V2-Lite Q2_K and gpt-oss MXFP4 decode).
-        if (IsFoldedDotDType(_wGateExps![layer].DType) && IsFoldedDotDType(_wUpExps![layer].DType)
+        // Step 3: Selected expert(s) — 2-sweep folded execution when enabled and every expert dtype
+        // has a float-input row dot (DispatchDot); otherwise the per-expert sequential loop.
+        if (MoeFoldedDecodeEnabled
+            && IsFoldedDotDType(_wGateExps![layer].DType) && IsFoldedDotDType(_wUpExps![layer].DType)
             && IsFoldedDotDType(_wDownExps![layer].DType))
         {
             MoeFfnFolded(
@@ -150,7 +149,7 @@ public sealed unsafe partial class ForwardPass
             {
                 int expertIdx = selectedExperts[k];
                 float weight = expertWeights[k];
-                ExpertMatVecDual(_expertGate, _wGateExps[layer], _expertUp, _wUpExps![layer],
+                ExpertMatVecDual(_expertGate, _wGateExps![layer], _expertUp, _wUpExps![layer],
                     expertIdx, expertDim, _embDim, _normBuf);
                 if (_hp.UseSigmoidGating)
                 {
@@ -322,17 +321,16 @@ public sealed unsafe partial class ForwardPass
     };
 
     private static bool IsFoldedDotDType(DType dtype) =>
-        dtype is DType.Q2_K or DType.Q3_K or DType.Q4_K or DType.Q5_0 or DType.Q5_K or DType.Q6_K or DType.Q8_0 or DType.Float32;
+        dtype is DType.IQ4_NL or DType.Q2_K or DType.Q3_K or DType.Q4_K or DType.Q5_0 or DType.Q5_K or DType.Q6_K or DType.Q8_0 or DType.Float32;
 
     // Activation quantization per weight dtype, mirroring what SimdKernels.MatVec does internally
-    // (MatVecQ4K -> Q8_KS, MatVecQ3K/MatVecQ6K -> Q8_K, MatVecQ8_0 -> Q8_0; Q5_K/F32 use F32).
+    // (MatVecQ4K -> Q8_KS, MatVecQ3K/MatVecQ6K -> Q8_K, MatVecQ8_0/MatVecIq4Nl -> Q8_0; Q5_K/F32 use F32).
     private static int ActScratchBytes(DType dtype, int cols) => dtype switch
     {
         DType.Q4_K => SimdKernels.Q8KSScratchBytes(cols),
         DType.Q2_K or DType.Q3_K or DType.Q6_K => SimdKernels.Q8KScratchBytes(cols),
-        DType.Q5_0 => SimdKernels.Q8_0ScratchBytes(cols),
+        DType.Q5_0 or DType.Q8_0 or DType.IQ4_NL => SimdKernels.Q8_0ScratchBytes(cols),
         DType.Q5_K when SimdKernels.Q5KDecodeQ8KActivations => SimdKernels.Q8KScratchBytes(cols),
-        DType.Q8_0 => SimdKernels.Q8_0ScratchBytes(cols),
         _ => 0,
     };
 
@@ -342,9 +340,8 @@ public sealed unsafe partial class ForwardPass
         {
             case DType.Q4_K: SimdKernels.QuantizeRowToQ8KS(input, cols, scratch); break;
             case DType.Q2_K or DType.Q3_K or DType.Q6_K: SimdKernels.QuantizeRowToQ8K(input, cols, scratch); break;
-            case DType.Q5_0: SimdKernels.QuantizeRowToQ8_0(input, cols, scratch); break;
+            case DType.Q5_0 or DType.Q8_0 or DType.IQ4_NL: SimdKernels.QuantizeRowToQ8_0(input, cols, scratch); break;
             case DType.Q5_K when SimdKernels.Q5KDecodeQ8KActivations: SimdKernels.QuantizeRowToQ8K(input, cols, scratch); break;
-            case DType.Q8_0: SimdKernels.QuantizeRowToQ8_0(input, cols, scratch); break;
         }
     }
 
@@ -361,9 +358,17 @@ public sealed unsafe partial class ForwardPass
                 : SimdKernels.DotQ5K(row, input, cols),
             DType.Q6_K    => SimdKernels.DotQ6K_Q8K(row, act, cols),
             DType.Q8_0    => SimdKernels.DotQ8_0_Q8_0(row, act, cols),
+            DType.IQ4_NL  => SimdKernels.DotIq4Nl_Q8_0(row, act, cols),
             DType.Float32 => SimdKernels.DotF32((float*)row, input, cols),
             _ => throw new NotSupportedException($"Routed expert dtype {dtype} not supported in folded decode path"),
         };
+
+    /// <summary>
+    /// Master switch for the folded MoE decode path (2-sweep fused gate/up and inlined down accumulate).
+    /// Default is true. When false, routed experts fall back to sequential per-expert MatVec.
+    /// Settable so parity and equivalence tests can compare folded and sequential decode within one process.
+    /// </summary>
+    public static bool MoeFoldedDecodeEnabled { get; set; } = true;
 
     /// <summary>
     /// Master switch for the batched MoE prefill FFN. Set <c>STINGRAY_MOE_BATCHED_PREFILL=0</c>

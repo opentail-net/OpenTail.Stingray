@@ -139,5 +139,126 @@ public sealed class DeepSeek2GreedyParityTests : HeavyTestBase
         }
     }
 
+    [Fact]
+    public void DeepSeek2_FoldedMoE_AgreesWithSequentialMoE()
+    {
+        var path = FindModel();
+        Assert.SkipWhen(path is null, $"{ModelFile} is required for equivalence check.");
+
+        using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path!);
+        var model = modelHandle.Model;
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
+        using var backend = new CpuBackend();
+
+        // Run sequential MoE
+        List<int> seqTokens = new();
+        float[] seqFinalLogits;
+        Engine.ForwardPass.MoeFoldedDecodeEnabled = false;
+        try
+        {
+            using var fwdSeq = new Engine.ForwardPass(model, backend, hp, maxContextLength: 512);
+            var logits = fwdSeq.Prefill(s_promptTokens);
+            int pos = s_promptTokens.Length;
+            for (int i = 0; i < 16; i++)
+            {
+                int next = Sampler.Greedy(logits);
+                seqTokens.Add(next);
+                logits = fwdSeq.Forward(next, pos++);
+            }
+            seqFinalLogits = logits.ToArray();
+        }
+        finally
+        {
+            Engine.ForwardPass.MoeFoldedDecodeEnabled = true;
+        }
+
+        // Run folded MoE
+        List<int> foldedTokens = new();
+        float[] foldedFinalLogits;
+        Engine.ForwardPass.MoeFoldedDecodeEnabled = true;
+        using var fwdFolded = new Engine.ForwardPass(model, backend, hp, maxContextLength: 512);
+        var fLogits = fwdFolded.Prefill(s_promptTokens);
+        int fPos = s_promptTokens.Length;
+        for (int i = 0; i < 16; i++)
+        {
+            int next = Sampler.Greedy(fLogits);
+            foldedTokens.Add(next);
+            fLogits = fwdFolded.Forward(next, fPos++);
+        }
+        foldedFinalLogits = fLogits.ToArray();
+
+        // Assert token equivalence
+        Assert.Equal(seqTokens, foldedTokens);
+
+        // Check max logit difference at final step
+        float maxDelta = 0f;
+        for (int i = 0; i < seqFinalLogits.Length; i++)
+        {
+            maxDelta = Math.Max(maxDelta, Math.Abs(seqFinalLogits[i] - foldedFinalLogits[i]));
+        }
+        Assert.True(maxDelta < 0.05f, $"Max logit difference between folded and sequential MoE: {maxDelta:E3}");
+    }
+
+    [Fact]
+    public void DeepSeek2_Decode_InterleavedBenchmark()
+    {
+        var path = FindModel();
+        Assert.SkipWhen(path is null, $"{ModelFile} is required for benchmark.");
+
+        using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path!);
+        var model = modelHandle.Model;
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
+        using var backend = new CpuBackend();
+
+        const int steps = 32;
+        const int rounds = 3;
+        var seqTimes = new List<double>();
+        var foldedTimes = new List<double>();
+
+        for (int round = 0; round < rounds; round++)
+        {
+            // Sequential arm
+            Engine.ForwardPass.MoeFoldedDecodeEnabled = false;
+            try
+            {
+                using var fwd = new Engine.ForwardPass(model, backend, hp, maxContextLength: 512);
+                var logits = fwd.Prefill(s_promptTokens);
+                int pos = s_promptTokens.Length;
+                int next = Sampler.Greedy(logits);
+                for (int i = 0; i < 2; i++) { logits = fwd.Forward(next, pos++); next = Sampler.Greedy(logits); }
+                var sw = System.Diagnostics.Stopwatch.StartNew();
+                for (int i = 0; i < steps; i++) { logits = fwd.Forward(next, pos++); next = Sampler.Greedy(logits); }
+                sw.Stop();
+                seqTimes.Add(sw.Elapsed.TotalMilliseconds);
+            }
+            finally { Engine.ForwardPass.MoeFoldedDecodeEnabled = true; }
+
+            // Folded arm
+            Engine.ForwardPass.MoeFoldedDecodeEnabled = true;
+            {
+                using var fwd = new Engine.ForwardPass(model, backend, hp, maxContextLength: 512);
+                var logits = fwd.Prefill(s_promptTokens);
+                int pos = s_promptTokens.Length;
+                int next = Sampler.Greedy(logits);
+                for (int i = 0; i < 2; i++) { logits = fwd.Forward(next, pos++); next = Sampler.Greedy(logits); }
+                var sw = System.Diagnostics.Stopwatch.StartNew();
+                for (int i = 0; i < steps; i++) { logits = fwd.Forward(next, pos++); next = Sampler.Greedy(logits); }
+                sw.Stop();
+                foldedTimes.Add(sw.Elapsed.TotalMilliseconds);
+            }
+        }
+
+        double avgSeqMs = seqTimes.Average();
+        double avgFoldedMs = foldedTimes.Average();
+        double seqTokPerSec = steps / (avgSeqMs / 1000.0);
+        double foldedTokPerSec = steps / (avgFoldedMs / 1000.0);
+        double speedup = seqTokPerSec > 0 ? (foldedTokPerSec / seqTokPerSec - 1.0) * 100.0 : 0.0;
+
+        Console.WriteLine($"[DeepSeek2 Interleaved Benchmark over {rounds} rounds]");
+        Console.WriteLine($"  Sequential MoE: {avgSeqMs:F1} ms ({seqTokPerSec:F2} tokens/s, {avgSeqMs / steps:F2} ms/token)");
+        Console.WriteLine($"  Folded MoE:     {avgFoldedMs:F1} ms ({foldedTokPerSec:F2} tokens/s, {avgFoldedMs / steps:F2} ms/token)");
+        Console.WriteLine($"  Speedup:        {speedup:+0.0;-0.0}% ({seqTokPerSec:F2} -> {foldedTokPerSec:F2} tokens/s)");
+    }
+
     private static string? FindModel() => OpenTail.Stingray.Engine.Verification.ModelLocator.FindOrReport(ModelFile);
 }
