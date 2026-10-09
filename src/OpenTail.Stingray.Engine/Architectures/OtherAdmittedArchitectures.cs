@@ -46,7 +46,7 @@ internal static partial class OtherAdmittedArchitectures
     // for this arch (llama.cpp hardcodes it in the graph), so ModelGraph.cs hardcodes it too
     // for arch=="falcon" rather than reading a key that doesn't exist. Also exercises MQA
     // (head_count=71, head_count_kv=1) through the existing GQA-parametrized fused-QKV
-    // split for the first time on this profile. See FalconGreedyParityTests and
+    // split for the first time on this profile. See Goldens/falcon.golden.json and
     // docs/done/01-gguf-model-coverage-plan.md for the receipt.
     public static readonly ArchitectureDescriptor Falcon = new()
     {

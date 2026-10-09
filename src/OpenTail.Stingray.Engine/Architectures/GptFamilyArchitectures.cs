@@ -128,7 +128,7 @@ internal static partial class OtherAdmittedArchitectures
     // gap — read as ordinary quantization sensitivity for a genuinely small/weak 124M model
     // (more sensitive than larger checkpoints, not less) and confirmed by re-running against
     // a near-lossless F16 checkpoint, which matches exactly with no near-tie at all. See
-    // Gpt2GreedyParityTests and docs/done/01-gguf-model-coverage-plan.md §1q for the receipt.
+    // Goldens/gpt2.golden.json and docs/done/01-gguf-model-coverage-plan.md §1q for the receipt.
     public static readonly ArchitectureDescriptor Gpt2 = new()
     {
         Id = "gpt2",

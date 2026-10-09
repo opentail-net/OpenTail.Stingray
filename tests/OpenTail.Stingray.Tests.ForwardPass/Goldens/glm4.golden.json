@@ -1,0 +1,100 @@
+{
+  "schema": 1,
+  "architecture": "glm4",
+  "model": {
+    "fileName": "THUDM_GLM-4-9B-0414-Q4_K_M.gguf",
+    "sizeBytes": 6166574464,
+    "sha256": "2b95f0b88eca423bfb874c4f8e7b9574ec76acab2befd272076e8a8dce31216a",
+    "source": "bartowski/THUDM_GLM-4-9B-0414-GGUF"
+  },
+  "reference": {
+    "engine": "llama-server",
+    "build": "10306 (6b5c2efb4)",
+    "settings": "-ngl 0 -c 1024 -t 4",
+    "sampling": {
+      "temperature": 0,
+      "topK": 1,
+      "seed": 0,
+      "repeatPenalty": 1,
+      "cachePrompt": false
+    },
+    "capturedUtc": "2026-10-09T01:48:48Z"
+  },
+  "cases": [
+    {
+      "name": "short",
+      "promptText": "The capital of France is",
+      "promptTokens": [
+        785,
+        6722,
+        315,
+        9621,
+        374
+      ],
+      "tokenizerOracle": "llama-tokenize",
+      "nPredict": 24,
+      "tokens": [
+        12089,
+        13,
+        1084,
+        374,
+        825,
+        315,
+        279,
+        1429,
+        6233,
+        9716,
+        304,
+        279,
+        1879,
+        13,
+        12089,
+        374,
+        1083,
+        264,
+        3598,
+        12255,
+        315,
+        11148,
+        11,
+        1947
+      ],
+      "text": " Paris. It is one of the most beautiful cities in the world. Paris is also a major centre of fashion, art",
+      "mode": "free",
+      "margins": [
+        2.2512,
+        0.7237,
+        0.3548,
+        2.4616,
+        0.3378,
+        5.0715,
+        4.4468,
+        0.2803,
+        0.3513,
+        1.0962,
+        2.6119,
+        2.4694,
+        6.271,
+        1.0345,
+        0.0797,
+        1.6007,
+        0.3455,
+        0.3656,
+        0.0656,
+        0.6531,
+        0.0017,
+        0.9574,
+        0.866,
+        1.7795
+      ],
+      "minConfident": 3
+    }
+  ],
+  "expectedHyperparameters": {
+    "hasPostAttnNorm": "true",
+    "hasPostFfwNorm": "true",
+    "isNeoxRope": "false",
+    "useParallelResidual": "false",
+    "ropeDim": "64"
+  }
+}

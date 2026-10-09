@@ -104,7 +104,7 @@ internal static partial class OtherAdmittedArchitectures
     // single FUSED tensor at double width (no separate ffn_gate) — confirmed against
     // ggml_vec_swiglu_f32's actual math (first half = gate/SiLU, second half = up/multiplied)
     // — split by byte offset into independent TensorRefs, the same pattern GPT-NeoX's fused
-    // attn_qkv already established. See Glm4GreedyParityTests / examples/llama.cpp/
+    // attn_qkv already established. See Goldens/glm4.golden.json / examples/llama.cpp/
     // llama.cpp/src/models/glm4.cpp and docs/done/01-gguf-model-coverage-plan.md for the receipt,
     // including two real defects found and fixed while building it: a fused-tensor-slice
     // prefault-sizing bug that actually crashed with AccessViolationException (and was fixed

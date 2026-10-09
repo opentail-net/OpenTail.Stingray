@@ -1,0 +1,76 @@
+{
+  "schema": 1,
+  "architecture": "falcon",
+  "model": {
+    "fileName": "tiiuae-falcon-7b-instruct-Q4_K_M.gguf",
+    "sizeBytes": 4975385792,
+    "sha256": "6f6c886ed07d4f6133a4dd7f8b799764ed719c50973d96816b2ac5ff3ada9913",
+    "source": "maddes8cht/tiiuae-falcon-7b-instruct-gguf"
+  },
+  "reference": {
+    "engine": "llama-server",
+    "build": "10306 (6b5c2efb4)",
+    "settings": "-ngl 0 -c 1024 -t 4",
+    "sampling": {
+      "temperature": 0,
+      "topK": 1,
+      "seed": 0,
+      "repeatPenalty": 1,
+      "cachePrompt": false
+    },
+    "capturedUtc": "2026-10-09T01:48:21Z"
+  },
+  "cases": [
+    {
+      "name": "short",
+      "promptText": "The capital of France is",
+      "promptTokens": [
+        487,
+        4236,
+        275,
+        5582,
+        304
+      ],
+      "tokenizerOracle": "llama-tokenize",
+      "nPredict": 24,
+      "tokens": [
+        6671,
+        25,
+        193,
+        38765,
+        304,
+        248,
+        4236,
+        275,
+        5582,
+        25,
+        11
+      ],
+      "text": " Paris.\nParis is the capital of France.",
+      "mode": "free",
+      "margins": [
+        1.3915,
+        1.0919,
+        0.5316,
+        1.2146,
+        2.4364,
+        1.3146,
+        5.4154,
+        2.0277,
+        4.0033,
+        1.4652,
+        2.1451
+      ],
+      "minConfident": 3
+    }
+  ],
+  "expectedHyperparameters": {
+    "hasNormBias": "true",
+    "hasAttnBias": "false",
+    "hasFfnBias": "false",
+    "useParallelResidual": "true",
+    "numHeads": "71",
+    "numKvHeads": "1",
+    "ropeDim": "64"
+  }
+}

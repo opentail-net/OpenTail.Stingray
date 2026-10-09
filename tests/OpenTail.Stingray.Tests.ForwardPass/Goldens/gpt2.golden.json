@@ -1,0 +1,98 @@
+{
+  "schema": 1,
+  "architecture": "gpt2",
+  "model": {
+    "fileName": "openai-gpt2-124M-F16.gguf",
+    "sizeBytes": 252470496,
+    "sha256": "5bd663a1e1d303f9404dd2edd92e4e3ca3e24bcf80d19c655880f0e455c8f4df",
+    "source": "sjfalken/openai-gpt2-124M-F16-gguf"
+  },
+  "reference": {
+    "engine": "llama-server",
+    "build": "10306 (6b5c2efb4)",
+    "settings": "-ngl 0 -c 1024 -t 4",
+    "sampling": {
+      "temperature": 0,
+      "topK": 1,
+      "seed": 0,
+      "repeatPenalty": 1,
+      "cachePrompt": false
+    },
+    "capturedUtc": "2026-10-09T01:48:08Z"
+  },
+  "cases": [
+    {
+      "name": "short",
+      "promptText": "The capital of France is",
+      "promptTokens": [
+        464,
+        3139,
+        286,
+        4881,
+        318
+      ],
+      "tokenizerOracle": "llama-tokenize",
+      "nPredict": 24,
+      "tokens": [
+        262,
+        3139,
+        286,
+        262,
+        4141,
+        2066,
+        11,
+        290,
+        262,
+        3139,
+        286,
+        262,
+        4141,
+        2066,
+        318,
+        262,
+        3139,
+        286,
+        262,
+        4141,
+        2066,
+        13,
+        198,
+        198
+      ],
+      "text": " the capital of the French Republic, and the capital of the French Republic is the capital of the French Republic.\n\n",
+      "mode": "free",
+      "margins": [
+        0.5695,
+        1.6254,
+        3.8672,
+        0.3355,
+        0.9676,
+        1.3127,
+        0.0079,
+        1.0365,
+        0.7127,
+        0.5771,
+        4.1071,
+        0.5285,
+        0.0615,
+        1.7337,
+        1.7458,
+        0.4606,
+        2.1562,
+        5.4954,
+        0.2753,
+        0.1223,
+        3.7148,
+        1.7177,
+        0.292,
+        8.0226
+      ],
+      "minConfident": 3
+    }
+  ],
+  "expectedHyperparameters": {
+    "noRopeLayerStep": "1",
+    "usesLayerNorm": "true",
+    "useParallelResidual": "false"
+  }
+}

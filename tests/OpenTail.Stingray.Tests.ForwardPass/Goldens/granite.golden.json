@@ -1,0 +1,93 @@
+{
+  "schema": 1,
+  "architecture": "granite",
+  "model": {
+    "fileName": "ibm-granite_granite-3.3-2b-instruct-Q4_K_M.gguf",
+    "sizeBytes": 1545303616,
+    "sha256": "555b91485955bc96eb445b57dd4bbf8809aa7d8cce7c313f4f8bc5b2340896b4",
+    "source": "bartowski/ibm-granite_granite-3.3-2b-instruct-GGUF"
+  },
+  "reference": {
+    "engine": "llama-server",
+    "build": "10306 (6b5c2efb4)",
+    "settings": "-ngl 0 -c 1024 -t 4",
+    "sampling": {
+      "temperature": 0,
+      "topK": 1,
+      "seed": 0,
+      "repeatPenalty": 1,
+      "cachePrompt": false
+    },
+    "capturedUtc": "2026-10-09T01:48:13Z"
+  },
+  "cases": [
+    {
+      "name": "short",
+      "promptText": "The capital of France is",
+      "promptTokens": [
+        1318,
+        18926,
+        432,
+        45600,
+        438
+      ],
+      "tokenizerOracle": "llama-tokenize",
+      "nPredict": 24,
+      "tokens": [
+        2716,
+        297,
+        32,
+        203,
+        203,
+        3533,
+        225,
+        35,
+        44,
+        17492,
+        1147,
+        322,
+        8456,
+        32,
+        203,
+        1318,
+        8456,
+        438,
+        322,
+        18926,
+        432,
+        45600,
+        32,
+        203
+      ],
+      "text": " Paris.\n\nStep 1: Identify the topic.\nThe topic is the capital of France.\n",
+      "mode": "free",
+      "margins": [
+        3.6623,
+        9.4707,
+        1.2092,
+        2.0576,
+        0.5975,
+        0.5716,
+        5.6794,
+        4.758,
+        11.634,
+        3.2265,
+        11.3369,
+        9.3194,
+        1.1653,
+        0.0964,
+        5.1867,
+        2.4164,
+        5.7487,
+        1.5812,
+        3.6749,
+        7.0862,
+        0.3479,
+        8.1717,
+        3.5314,
+        11.832
+      ],
+      "minConfident": 3
+    }
+  ]
+}
