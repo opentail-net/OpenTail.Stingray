@@ -40,4 +40,87 @@ public sealed class PullCommandListingTests
         Assert.Null(files[0].Size);
         Assert.Empty(hashes);
     }
+
+    [Fact]
+    public void Listing_WithCommitSha_ParsesGgufFilesAndHashes()
+    {
+        const string withSha = """
+            {
+              "id": "owner/repo",
+              "sha": "abcdef1234567890abcdef1234567890abcdef12",
+              "siblings": [
+                {"rfilename": "Model-Q4_K_M.gguf", "size": 12345, "lfs": {"sha256": "6EB923E7D26E9CEA28811E1A8E852009B21242FB157B26149D3B188F3A8C8653"}},
+                {"rfilename": "other.txt", "size": 100}
+              ]
+            }
+            """;
+        using var doc = JsonDocument.Parse(withSha);
+        var hashes = new Dictionary<string, string>();
+        var files = PullCommand.ParseGgufListing(doc.RootElement, hashes);
+        Assert.Single(files);
+        Assert.Equal("Model-Q4_K_M.gguf", files[0].Name);
+        Assert.Equal(12345L, files[0].Size);
+        Assert.Equal("6eb923e7d26e9cea28811e1a8e852009b21242fb157b26149d3b188f3a8c8653", hashes["Model-Q4_K_M.gguf"]);
+    }
+
+    [Fact]
+    public void Listing_WithoutSha_SucceedsWithoutThrowing()
+    {
+        // HubClient.ParseRepo throws InvalidDataException if 'sha' is missing; ParseGgufListing must tolerate this.
+        const string noSha = """
+            {
+              "id": "owner/repo",
+              "siblings": [
+                {"rfilename": "Model-Q5_K_M.gguf", "size": 55555, "lfs": {"sha256": "AABBCCDDEEFF00112233445566778899AABBCCDDEEFF00112233445566778899"}}
+              ]
+            }
+            """;
+        using var doc = JsonDocument.Parse(noSha);
+        var hashes = new Dictionary<string, string>();
+        var files = PullCommand.ParseGgufListing(doc.RootElement, hashes);
+        Assert.Single(files);
+        Assert.Equal("Model-Q5_K_M.gguf", files[0].Name);
+        Assert.Equal(55555L, files[0].Size);
+        Assert.Equal("aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899", hashes["Model-Q5_K_M.gguf"]);
+    }
+
+    [Fact]
+    public void Listing_WithoutSiblings_ReturnsEmptyList()
+    {
+        using var doc = JsonDocument.Parse("""{"id": "owner/repo"}""");
+        var hashes = new Dictionary<string, string>();
+        var files = PullCommand.ParseGgufListing(doc.RootElement, hashes);
+        Assert.Empty(files);
+        Assert.Empty(hashes);
+    }
+
+    [Fact]
+    public void Listing_WhenRootIsNotAnObject_ReturnsEmptyList()
+    {
+        using var doc = JsonDocument.Parse("[]");
+        var hashes = new Dictionary<string, string>();
+        var files = PullCommand.ParseGgufListing(doc.RootElement, hashes);
+        Assert.Empty(files);
+        Assert.Empty(hashes);
+    }
+
+    [Fact]
+    public void Listing_WithMalformedSibling_SkipsMalformedAndKeepsValid()
+    {
+        const string json = """
+            {
+              "siblings": [
+                {"size": 100},
+                {"rfilename": null},
+                {"rfilename": "valid.gguf", "size": 2048}
+              ]
+            }
+            """;
+        using var doc = JsonDocument.Parse(json);
+        var files = PullCommand.ParseGgufListing(doc.RootElement);
+        Assert.Single(files);
+        Assert.Equal("valid.gguf", files[0].Name);
+        Assert.Equal(2048L, files[0].Size);
+    }
 }
+

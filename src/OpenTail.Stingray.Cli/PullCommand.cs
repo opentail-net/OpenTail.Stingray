@@ -1,6 +1,7 @@
 using OpenTail.Stingray.Engine.Verification;
 using System.Net.Http;
 using OpenTail.Stingray.Core.Catalog;
+using OpenTail.Stingray.Core.Net;
 
 namespace OpenTail.Stingray.Cli;
 
@@ -189,22 +190,28 @@ public sealed class PullCommand : Command<PullCommand.Settings>
     /// <summary>Reads the .gguf files (and, when published, their LFS SHA-256) from a Hugging Face model API response.</summary>
     internal static List<(string Name, long? Size)> ParseGgufListing(JsonElement root, Dictionary<string, string>? sha256ByName = null)
     {
-        var result = new List<(string, long?)>();
-        if (!root.TryGetProperty("siblings", out var siblings)) return result;
-        foreach (var sib in siblings.EnumerateArray())
+        var result = new List<(string Name, long? Size)>();
+        if (root.ValueKind != JsonValueKind.Object) return result;
+        if (!root.TryGetProperty("siblings", out var siblings) || siblings.ValueKind != JsonValueKind.Array) return result;
+
+        HubRepo repo;
+        if (root.TryGetProperty("sha", out var shaEl) && shaEl.ValueKind == JsonValueKind.String && shaEl.GetString() is { Length: > 0 })
         {
-            if (!sib.TryGetProperty("rfilename", out var nameEl)) continue;
-            string? name = nameEl.GetString();
-            if (name is null || !name.EndsWith(".gguf", StringComparison.OrdinalIgnoreCase)) continue;
-            // Without ?blobs=true the API omits "size" on siblings; a per-file HEAD request on download resolves the real size regardless,
-            // so this is a best-effort hint only.
-            long? size = sib.TryGetProperty("size", out var sizeEl) && sizeEl.TryGetInt64(out long sz) ? sz
-                : sib.TryGetProperty("lfs", out var lfsEl) && lfsEl.TryGetProperty("size", out var lfsSizeEl) && lfsSizeEl.TryGetInt64(out long lfsSz) ? lfsSz
-                : null;
-            if (sha256ByName is not null && sib.TryGetProperty("lfs", out var lfs) && lfs.TryGetProperty("sha256", out var shaEl)
-                && shaEl.GetString() is { Length: 64 } sha)
-                sha256ByName[name] = sha.ToLowerInvariant();
-            result.Add((name, size));
+            repo = HubClient.ParseRepo(root, fallbackId: "");
+        }
+        else
+        {
+            // HubClient.ParseRepo requires a commit SHA, but pull and unit tests must work on JSON without one.
+            using var doc = JsonDocument.Parse($"{{\"sha\":\"0000000000000000000000000000000000000000\",\"siblings\":{siblings.GetRawText()}}}");
+            repo = HubClient.ParseRepo(doc.RootElement, fallbackId: "");
+        }
+
+        foreach (var file in repo.Files)
+        {
+            if (!file.Path.EndsWith(".gguf", StringComparison.OrdinalIgnoreCase)) continue;
+            if (sha256ByName is not null && file.Sha256 is not null)
+                sha256ByName[file.Path] = file.Sha256;
+            result.Add((file.Path, file.Size));
         }
         return result;
     }
