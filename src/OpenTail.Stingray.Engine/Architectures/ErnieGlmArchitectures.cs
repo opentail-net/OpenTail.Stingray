@@ -121,7 +121,7 @@ internal static partial class OtherAdmittedArchitectures
         CreateForwardPass = CommonForwardPassFactory.CreateDense,
     };
 
-    // glm4moe (GLM-4.5-Air) — admitted 2026-10-04: GlmMoeGreedyParityTests teacher-forced against llama-server on GLM-4.5-Air-Q2_K,
+    // glm4moe (GLM-4.5-Air) — admitted 2026-10-04: Goldens/glm4moe.golden.json teacher-forced against llama-server on GLM-4.5-Air-Q2_K,
     // all 54 positions of a short and a 190-token prompt match (30 confident, 0 near-tie differences); second-half wikitext PPL
     // (-c 512) 3.3709 vs llama-perplexity 3.4260 +/- 0.41. 128 experts top-8, sigmoid gating with selection bias, one shared expert,
     // one leading dense layer. Only the Q2_K quantisation has been run.

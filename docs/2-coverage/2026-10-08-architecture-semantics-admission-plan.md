@@ -1,6 +1,6 @@
 # Architecture Semantics Admission Plan (2026-10-08)
 
-**Baseline:** `main` @ `5c591e6a`. Supersedes `2026-10-06-architecture-plugin-admission-plan.md`
+**Baseline:** `main` @ `5c591e6a`. Supersedes [`../done/2026-10-06-architecture-plugin-admission-plan.md`](../done/2026-10-06-architecture-plugin-admission-plan.md)
 (that plan's descriptor/registry/factory/`ExecutionPlan` work has landed; only the remainder below is open).
 
 **Goal:** adding an ordinary model architecture is a local component change (one `*Architecture.cs` + one
