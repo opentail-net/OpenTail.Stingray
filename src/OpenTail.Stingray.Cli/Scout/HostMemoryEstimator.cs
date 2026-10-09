@@ -20,10 +20,23 @@ public sealed record HostWorkingSet(Certainty Certainty, long? Bytes, string Sou
 ///             an upper bound. Only computed for the plain-attention families; MLA, hybrid and recurrent families have different state and are Unknown.
 ///   scratch   batched-prefill buffers, scaled to the tokens in flight: 1.5 x ctx x (3 x ffn + 4 x hidden) x 4 bytes (measured: Mistral-7B, 608 tokens, 179 MiB
 ///             against 144 MiB for the formula without the 1.5).
+///
+/// The hybrid recurrent family (HybridGdn: qwen35, qwen35moe, qwen4exp; Gated-DeltaNet layers interleaved with full attention) is modelled separately, from
+/// calibration runs on Qwen3.5 0.8B / 4B / 9B (dense) and Qwen3.6-35B-A3B (MoE), 2026-10-09:
+///   repack    NONE. Its forward pass does not use the Q4_K repack cache: peak is the file plus a roughly constant 350-420 MiB (0.8B: file 508 -> 857 MiB; 9B: 5417 -> 5810),
+///             where the dense formula would have over-counted by nearly 2x.
+///   base      448 MiB (measured fixed overhead beyond file and state: 330-356 MiB).
+///   state     exact and eager: per GDN layer (ConvKernel-1) x ConvChannels + NumVHeads x HeadDim x HeadDim floats; does not grow with context (GdnStateCache).
+///   kv        attention layers ONLY (PagedKvCache allocates pages per layer on first write, and GDN layers never write): 2 x kvHeads x headDim x ctx x 4 bytes each, plus one per MTP head layer.
+///   scratch   1.10 x ctx x (3 x hidden + 5 x valueDim + 3 x ffn + topk x (2 x expertFfn + hidden)) x 4 bytes; the last term is the batched-prefill expert buffers (MoE only).
+///             Measured at ~1700 prompt tokens, estimate vs measured: 0.8B 1.10, 4B 1.06, 9B 1.04, 35B-A3B 1.005 (see 061-coverage-tooling.md).
 /// </summary>
 public static class HostMemoryEstimator
 {
     public const long BaseOverheadBytes = 192L << 20;
+    /// <summary>Fixed overhead of the hybrid recurrent path, measured 330-356 MiB beyond file and state.</summary>
+    public const long HybridBaseOverheadBytes = 448L << 20;
+    private const double HybridScratchMargin = 1.10;
     private const double RepackFactor = 1216.0 / 1152.0;
 
     public static HostWorkingSet Estimate(IReadOnlyList<GgufTensorInfo> tensors, ModelHyperparams? hp, string? family, int contextTokens, long? budgetBytes)
@@ -74,6 +87,8 @@ public static class HostMemoryEstimator
             parts.Add(new("prefill_scratch", null, Certainty.Unknown, why));
             return Unknown(why, parts);
         }
+        if (family is "HybridGdn")
+            return EstimateHybridGdn(parts, hp, contextTokens, weights, budgetBytes);
         if (family is not "Dense")
         {
             string why = family is null
@@ -91,14 +106,69 @@ public static class HostMemoryEstimator
         long ffn = hp.IsMoE
             ? Math.Max(hp.IntermediateDim, (long)Math.Max(1, hp.NumActiveExperts) * hp.ExpertIntermediateDim + hp.SharedExpertIntermediateDim)
             : hp.IntermediateDim;
-        long scratch = (long)(1.5 * ctx * (3 * ffn + 4L * hp.EmbeddingDim) * sizeof(float));
-        parts.Add(new("prefill_scratch", scratch, Certainty.Estimated, $"1.5 x {ctx} tokens x (3 x ffn {ffn} + 4 x hidden {hp.EmbeddingDim}) x 4 bytes"));
+        // MoE batched prefill also holds per-token expert buffers: topk x (gate + up of the expert FFN, plus a hidden-sized down output). Measured directly on the hybrid MoE
+        // (they explain its extra ~160 MiB at ~1700 tokens); the dense-family MoE (Phi-3.5-MoE) fit its measurement without the term (1.016x) but the buffers exist there too.
+        long moeFloats = hp.IsMoE ? (long)Math.Max(1, hp.NumActiveExperts) * (2L * hp.ExpertIntermediateDim + hp.EmbeddingDim) : 0;
+        long scratch = (long)(1.5 * ctx * (3 * ffn + 4L * hp.EmbeddingDim) * sizeof(float)) + ctx * moeFloats * sizeof(float);
+        parts.Add(new("prefill_scratch", scratch, Certainty.Estimated,
+            $"1.5 x {ctx} tokens x (3 x ffn {ffn} + 4 x hidden {hp.EmbeddingDim}) x 4 bytes" + (hp.IsMoE ? $" + {ctx} x expert buffers {moeFloats} x 4 bytes" : "")));
 
         long total = parts.Sum(p => p.Bytes ?? 0);
         return new HostWorkingSet(Certainty.Estimated, total,
             "upper bound for a CPU run at the stated context; calibrated on measured dense runs, not a prediction (see 061-coverage-tooling.md)", parts);
     }
 
+    /// <summary>The hybrid recurrent family. <paramref name="parts"/> already holds the weights term; the dense repack and base terms are replaced (see the class remarks).</summary>
+    private static HostWorkingSet EstimateHybridGdn(List<WorkingSetComponent> parts, ModelHyperparams hp, int contextTokens, long weights, long? budgetBytes)
+    {
+        // The dense branch added its repack and base terms before dispatching here; this family has neither, so drop them and say so.
+        parts.RemoveAll(p => p.Name is "q4k_repack" or "base");
+        parts.Add(new("q4k_repack", 0, Certainty.Estimated, "none: the hybrid path does not build the Q4_K repack cache (measured: peak is file size plus a roughly constant overhead)"));
+        parts.Add(new("base", HybridBaseOverheadBytes, Certainty.Estimated, "runtime, native libraries and fixed buffers; measured 330-356 MiB beyond file and state on four models, 448 MiB used"));
+
+        var gdn = hp.Gdn;
+        var types = hp.LayerTypes;
+        if (gdn is null || types is null || types.Count == 0)
+            return UnknownHybrid(parts, "the Gated-DeltaNet configuration or per-layer types could not be resolved");
+        int gdnLayers = types.Count(t => t == LayerType.GatedDeltaNet);
+        int attnLayers = types.Count(t => t == LayerType.Attention);
+        if (gdnLayers + attnLayers != types.Count)
+            return UnknownHybrid(parts, "the model has a layer type this estimator does not model");
+        if (gdn.NumVHeads <= 0 || gdn.HeadDim <= 0 || gdn.ConvChannels <= 0)
+            return UnknownHybrid(parts, "the Gated-DeltaNet dimensions are incomplete in the metadata");
+
+        int ctx = hp.ContextLength > 0 ? Math.Min(contextTokens, hp.ContextLength) : contextTokens;
+
+        long stateFloats = (long)Math.Max(0, gdn.ConvKernel - 1) * gdn.ConvChannels + (long)gdn.NumVHeads * gdn.HeadDim * gdn.HeadDim;
+        long state = gdnLayers * stateFloats * sizeof(float);
+        parts.Add(new("gdn_state", state, Certainty.Estimated,
+            $"{gdnLayers} Gated-DeltaNet layers x ({gdn.ConvKernel - 1} x {gdn.ConvChannels} conv + {gdn.NumVHeads} x {gdn.HeadDim} x {gdn.HeadDim} state) floats; eager, does not grow with context"));
+
+        int kvLayers = attnLayers + Math.Max(0, hp.NumMtpLayers);
+        long kv = (long)kvLayers * 2 * hp.NumKvHeads * hp.HeadDim * ctx * sizeof(float);
+        parts.Add(new("kv_cache", kv, Certainty.Estimated,
+            $"fp32 K+V for {ctx} tokens in the {kvLayers} attention layers only ({gdnLayers} Gated-DeltaNet layers store no KV); an upper bound"));
+
+        long ffn = hp.IsMoE
+            ? Math.Max(hp.IntermediateDim, (long)Math.Max(1, hp.NumActiveExperts) * hp.ExpertIntermediateDim + hp.SharedExpertIntermediateDim)
+            : hp.IntermediateDim;
+        long moeFloats = hp.IsMoE ? (long)Math.Max(1, hp.NumActiveExperts) * (2L * hp.ExpertIntermediateDim + hp.EmbeddingDim) : 0;
+        long perToken = 3L * hp.EmbeddingDim + 5L * gdn.ValueDim + 3L * ffn + moeFloats;
+        long scratch = (long)(HybridScratchMargin * ctx * perToken * sizeof(float));
+        parts.Add(new("prefill_scratch", scratch, Certainty.Estimated,
+            $"1.10 x {ctx} tokens x (3 x hidden {hp.EmbeddingDim} + 5 x value {gdn.ValueDim} + 3 x ffn {ffn}" + (hp.IsMoE ? $" + expert buffers {moeFloats}" : "") + ") x 4 bytes"));
+
+        long total = parts.Sum(p => p.Bytes ?? 0);
+        return new HostWorkingSet(Certainty.Estimated, total,
+            "upper bound for a CPU run at the stated context; hybrid recurrent family calibrated on four measured models, not a prediction (see 061-coverage-tooling.md)", parts);
+    }
+
+    private static HostWorkingSet UnknownHybrid(List<WorkingSetComponent> parts, string why)
+    {
+        parts.Add(new("kv_cache", null, Certainty.Unknown, why));
+        parts.Add(new("prefill_scratch", null, Certainty.Unknown, why));
+        return Unknown(why, parts);
+    }
     /// <summary>fp32 K+V bytes for <paramref name="ctx"/> tokens: per-layer head dims / KV heads, sliding-window layers capped at their window, aliased layers free.</summary>
     internal static long KvBytes(ModelHyperparams hp, int ctx)
     {

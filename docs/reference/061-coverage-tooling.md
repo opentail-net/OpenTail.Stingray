@@ -52,7 +52,7 @@ stingray scout -m model.gguf --budget 64G [--reserve 8G]        # also report th
   Q4_K_M file costs about 1.8x its size; routed-expert stacks are not repacked); 192 MiB base; fp32 KV for `--ctx-size` tokens (default 4096, capped at the model's limit);
   and batched-prefill scratch. Each term is listed in the JSON with its certainty. `file size` is never reported as peak RAM.
   * **Unknown stays Unknown.** Hyperparameters that cannot be resolved or are zero (incomplete metadata), an unregistered architecture, or a family whose state layout is not
-    modelled (MLA, hybrid/GDN, RWKV) make the estimate `Unknown` with null bytes and a reason, and an unknown estimate is `blocked` under any budget.
+    modelled (MLA, RWKV) make the estimate `Unknown` with null bytes and a reason, and an unknown estimate is `blocked` under any budget.
   * **Gate:** with `--budget`, `allowed` only if `estimate + reserve <= budget` (reserve default 8G, `--reserve`); otherwise `blocked`. Without `--budget`: `not_assessed` (the estimate
     is still shown). It is a safety gate for choosing what to run, not proof that a run will fit.
   * **Calibration (2026-10-09, real CPU runs, `STINGRAY_GC_STATS` peakWorkingSet; estimate made with the same `-c`):**
@@ -71,6 +71,19 @@ stingray scout -m model.gguf --budget 64G [--reserve 8G]        # also report th
     MoE result is one run: it showed the routed-expert stacks are **not** repacked, and the estimator was changed on that evidence. Other MoE families and any model with a different
     kernel path are not measured, so a MoE estimate carries that caveat. An earlier Mistral run reported 4289 MiB in 1.6 s because the prompt exceeded the context and the run
     failed; it was discarded (CLAUDE.md rule 12).
+  * **Hybrid recurrent family (qwen35 / qwen35moe; Gated-DeltaNet layers + full attention), calibrated 2026-10-09** with a model-specific formula (class remarks in `HostMemoryEstimator`). Measured on real CPU runs (`ctx 2048`, `STINGRAY_GC_STATS` peak working set); "filled" = a prompt of about 1,700 tokens, "full" = about 1,950-2,000:
+
+    | Model | File | Short run | Filled | Full | Estimate | Estimate / measured (filled; full) |
+    |---|---|---|---|---|---|---|
+    | Qwen3.5-0.8B Q4_K_M | 508 MiB | 857 | 1,053 | not run | 1,219 | 1.16 |
+    | Qwen3.5-4B Q4_K_M | 2,614 | 3,001 | 3,430 | 3,493 | 3,709 | 1.08; 1.06 |
+    | Qwen3.5-9B Q4_K_M | 5,417 | 5,810 | 6,285 | not run | 6,632 | 1.06 |
+    | Qwen3.6-35B-A3B Q6_K (MoE) | 27,951 | 28,370 | 28,857 | 28,915 | 29,090 | 1.008; 1.006 |
+
+    What the measurements showed: **no Q4_K repack copy** on this path (peak is the file plus a roughly constant 350-420 MiB, where the dense formula would over-count by nearly 2x); KV only for the full-attention layers (GDN layers allocate no pages: `c4cea419`);
+    GDN state is exact and eager (`GdnStateCache`); batched-prefill scratch is `ctx x (3 x hidden + 5 x value + 3 x ffn)` floats plus, for a MoE, `topk x (2 x expertFfn + hidden)` per token, which accounted for the 35B's extra ~160 MiB.
+    **The MoE margin is thin (0.6% at a full context, 175 MiB); the 8 GiB default reserve is the real slack.** Note the first Qwen3.5-4B/35B "full" attempt and the first Phi attempt below failed (prompt 2,050 tokens against a 2,048 context) and were discarded.
+  * **Dense-family MoE re-check:** Phi-3.5-MoE with ~1,800 prompt tokens measured 20,495 MiB against 20,825 estimated (1.016x, the earlier estimate without the expert buffers); the expert prefill buffers (shown to exist on the hybrid MoE) are now counted, giving 21,089 (1.029x). One MoE only; other MoE families remain unmeasured.
 * Exit codes: 0 report produced (blockers do not change it), 1 file unreadable as GGUF, 64 bad option, 66 file missing.
 * **Feature findings** (`ScoutFeatures`): each has a stable id, a one-line interpretation, evidence (metadata keys and tensor names/dtypes/shapes) and a caveat.
   `Known` = the structure was observed (e.g. `nextn_predict_layers` metadata plus several `blk.N.nextn.*` tensors); `Hypothesis` = one-sided or name-only
@@ -102,7 +115,7 @@ stingray scout -m model.gguf --budget 64G [--reserve 8G]        # also report th
   * Verified 2026-10-09 on the live Hub: the 23-quant `bartowski/SmolLM2-135M-Instruct-GGUF` in 14 s, 47 requests, 46.0 MiB received (20 fit, 3 unsupported); it found that the three repacked `Q4_0_4_4/4_8/8_8` files use GGML type IDs 31-33, which this build
     rejects (reported as `unsupported`, with the reason, rather than as a read failure). `ornith-ai/Ornith-1.5-35B-A3B-GGUF` (5 quants, 20-66 GiB) in 12 s, 41 requests, 80.0 MiB received: all 5 `unknown`, because the hybrid recurrent family has no memory model yet; the footer
     says "cannot tell", not "too big".
-  * **Limits:** CPU run only (GPU placement is not estimated); MLA, hybrid (qwen35 / qwen35moe) and RWKV families are `unknown`, and those are among the most downloaded models, so the picker is blind exactly there until the estimator covers them (todo.md).
+  * **Limits:** CPU run only (GPU placement is not estimated); MLA (deepseek2) and RWKV families are `unknown` (todo.md). The hybrid recurrent family (qwen35 / qwen35moe, the most downloaded right now) IS modelled since 2026-10-09: on the 35B repo Q8_0 fits (37.0 GiB estimated) and BF16 is too big (67.9 GiB) on this 63 GiB machine; the 31-quant `unsloth/Qwen3.5-9B-GGUF` cost 352 MiB and 177 requests (each index is ~11 MiB because of the 248k-token vocabulary).
     Memory is an upper bound calibrated on one machine. Past `--max-quants` (default 40, largest first) files are skipped with a note.
 * **`pull --revision <rev>`.** `pull` now resolves the repo's head to its commit SHA once and fetches every file from that commit (previously it listed at one moment and downloaded from `main` at another). `--revision` fetches a specific commit,
   branch or tag, for example the commit `scout -r` printed, so the file you pull is the file it inspected.* **Nearest admitted structural parent** (`--signatures <dir>` adds your own): scout ranks the file against reference *signatures* of admitted architectures and lists the
@@ -120,7 +133,7 @@ stingray scout -m model.gguf --budget 64G [--reserve 8G]        # also report th
   * **Adding a reference** (maintainers or contributors): `stingray scout -m <admitted.gguf> --emit-signature <name>.signature.json [--origin-repo owner/repo --origin-revision <rev>]`.
     It refuses a file that does not resolve to an Admitted architecture, **hashes the file** (cached beside it as `<file>.sha256`, like `stingray hash`), and if the target file
     already holds the same structure it adds the file to its origins; a different structure is refused (use a new name). Load with `--signatures <dir>` without rebuilding.
-* Not yet implemented (see plan): demand-ranked backlog and batch triage (they build on remote scout); working-set estimates for MLA, hybrid and recurrent families; calibration of the ranking beyond the leave-one-out check.
+* Not yet implemented (see plan): demand-ranked backlog and batch triage (they build on remote scout); working-set estimates for MLA and RWKV; calibration of the ranking beyond the leave-one-out check.
 * Advisory only: nothing in the report admits or promotes an architecture.
 
 ### `scripts/scout-pretest.ps1 -Model <gguf> [-Budget 64G] [-Reserve 8G] [-ContextSize 2048] [-Run] [-Golden <golden.json>]`

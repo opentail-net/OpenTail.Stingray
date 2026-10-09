@@ -229,7 +229,7 @@ candidate still needs a golden; the ranking is uncalibrated (counts, not probabi
 **Working-set estimator (2026-10-09, built; unblocks the memory gate for plain-attention dense and MoE text models).** `HostMemoryEstimator` gives an upper-bound CPU-run estimate
 (weights + Q4_K repack copy + base + fp32 KV + prefill scratch), calibrated on real runs and checked blind on one MoE; see the table in `docs/reference/061-coverage-tooling.md`.
 Result: at or above measured in all 7 runs, 1.05-1.07x where the run filled the context. It also found that a Q4_K_M file costs about 1.8x its size on this CPU path because of the
-repack copy. What it does not do: MLA (DeepSeek2), hybrid/GDN and RWKV families stay Unknown and blocked; other MoE families and GPU placement are unmeasured. Costs named per
+repack copy. What it does not do: MLA (DeepSeek2) and RWKV families stay Unknown and blocked (the hybrid recurrent family qwen35 / qwen35moe was calibrated the same day on four models); other MoE families and GPU placement are unmeasured. Costs named per
 CLAUDE.md rule 11: this took a measurement pass (about 10 real runs, one of 245 s because the 18.7 GB MoE loads from the archive disk) before the formula could be trusted, plus one
 discarded run that had silently failed (prompt over the context).
 **`scripts/scout-pretest.ps1` (2026-10-09, built).** Behaviour and the checks it passed are in `docs/reference/061-coverage-tooling.md`. Not yet covered: Ctrl+C mid-run and a hard kill of PowerShell; stage 4 has no

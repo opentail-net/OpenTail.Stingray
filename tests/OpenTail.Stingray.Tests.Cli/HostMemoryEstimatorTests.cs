@@ -97,7 +97,6 @@ public sealed class HostMemoryEstimatorTests
     // ── Unknown stays Unknown ──
     [Theory]
     [InlineData("DeepSeek2Mla")]
-    [InlineData("HybridGdn")]
     [InlineData("Rwkv")]
     [InlineData(null)]
     public void Families_without_a_modelled_state_layout_are_Unknown_with_null_terms(string? family)
@@ -228,5 +227,109 @@ public sealed class HostMemoryEstimatorTests
         var kv = doc.RootElement.GetProperty("resources").GetProperty("working_set_components").EnumerateArray().Single(c => c.GetProperty("name").GetString() == "kv_cache");
         Assert.Equal(System.Text.Json.JsonValueKind.Null, kv.GetProperty("bytes").ValueKind);
         Assert.Equal("Unknown", kv.GetProperty("certainty").GetString());
+    }
+
+    // ── the hybrid recurrent family (Gated-DeltaNet + full attention) ──
+    private static ModelHyperparams HybridHp(Func<ModelHyperparams, ModelHyperparams>? tweak = null, int layers = 8, int interval = 4)
+    {
+        var types = Enumerable.Range(0, layers).Select(i => (i + 1) % interval == 0 ? LayerType.Attention : LayerType.GatedDeltaNet).ToArray();
+        var hp = new ModelHyperparams
+        {
+            NumLayers = layers, EmbeddingDim = 64, NumHeads = 4, NumKvHeads = 2, HeadDim = 16, IntermediateDim = 128,
+            ContextLength = 1000, VocabSize = 100, IsHybridSsm = true, LayerTypes = types,
+            Gdn = new GdnConfig(NumKHeads: 2, NumVHeads: 4, HeadDim: 8, InnerSize: 32, ConvKernel: 4, FullAttentionInterval: interval),
+        };
+        return tweak is null ? hp : tweak(hp);
+    }
+
+    [Fact]
+    public void Hybrid_terms_are_the_documented_formulas_with_no_repack_and_attention_layers_only_in_the_kv()
+    {
+        var e = HostMemoryEstimator.Estimate([Q4K("blk.0.attn_q.weight"), Q4K("blk.0.ffn_down.weight")], HybridHp(), "HybridGdn", 100, null);
+        Assert.Equal(Certainty.Estimated, e.Certainty);
+        Assert.Equal(["weights", "q4k_repack", "base", "gdn_state", "kv_cache", "prefill_scratch"], e.Components.Select(c => c.Name));
+        Assert.Equal(0, Part(e, "q4k_repack"));                                    // Q4_K weights are present, but this path builds no repack cache
+        Assert.Equal(HostMemoryEstimator.HybridBaseOverheadBytes, Part(e, "base"));
+        // 6 GDN layers x ((4-1) x convChannels 64 + 4 heads x 8 x 8) floats x 4 bytes; convChannels = 2 x (2x8) + 4x8
+        Assert.Equal(6L * (3 * 64 + 4 * 8 * 8) * 4, Part(e, "gdn_state"));
+        // 2 attention layers x K+V x 2 kv heads x head dim 16 x 100 tokens x 4 bytes
+        Assert.Equal(2L * 2 * 2 * 16 * 100 * 4, Part(e, "kv_cache"));
+        // 1.10 x 100 x (3 x 64 + 5 x valueDim 32 + 3 x ffn 128) x 4
+        Assert.Equal((long)(1.10 * 100 * (3 * 64 + 5 * 32 + 3 * 128) * 4), Part(e, "prefill_scratch"));
+        Assert.Equal(e.Components.Sum(c => c.Bytes!.Value), e.Bytes);
+    }
+
+    [Fact]
+    public void Hybrid_state_does_not_grow_with_context_but_kv_and_scratch_do()
+    {
+        var small = HostMemoryEstimator.Estimate([Q4K("a")], HybridHp(), "HybridGdn", 100, null);
+        var large = HostMemoryEstimator.Estimate([Q4K("a")], HybridHp(), "HybridGdn", 900, null);
+        Assert.Equal(Part(small, "gdn_state"), Part(large, "gdn_state"));
+        Assert.True(Part(large, "kv_cache") > Part(small, "kv_cache"));
+        Assert.True(Part(large, "prefill_scratch") > Part(small, "prefill_scratch"));
+    }
+
+    [Fact]
+    public void Hybrid_mtp_head_layers_each_add_a_kv_layer()
+    {
+        long plain = Part(HostMemoryEstimator.Estimate([Q4K("a")], HybridHp(), "HybridGdn", 100, null), "kv_cache");
+        long withMtp = Part(HostMemoryEstimator.Estimate([Q4K("a")], HybridHp(h => h with { NumMtpLayers = 1 }), "HybridGdn", 100, null), "kv_cache");
+        Assert.Equal(plain / 2 * 3, withMtp); // 2 attention layers -> 3
+    }
+
+    [Fact]
+    public void Hybrid_moe_adds_the_expert_buffers_to_the_scratch()
+    {
+        var dense = HostMemoryEstimator.Estimate([Q4K("a")], HybridHp(), "HybridGdn", 100, null);
+        var moe = HostMemoryEstimator.Estimate([Q4K("a")], HybridHp(h => h with { IsMoE = true, NumExperts = 16, NumActiveExperts = 4, ExpertIntermediateDim = 32, SharedExpertIntermediateDim = 32 }), "HybridGdn", 100, null);
+        long ffn = Math.Max(128, 4L * 32 + 32);                 // max(dense ffn, topk x expertFfn + shared)
+        long moeFloats = 4L * (2 * 32 + 64);                    // topk x (2 x expertFfn + hidden)
+        Assert.Equal((long)(1.10 * 100 * (3 * 64 + 5 * 32 + 3 * ffn + moeFloats) * 4), Part(moe, "prefill_scratch"));
+        Assert.True(Part(moe, "prefill_scratch") > Part(dense, "prefill_scratch"));
+    }
+
+    [Theory]
+    [InlineData("noGdn")]
+    [InlineData("noLayerTypes")]
+    [InlineData("emptyLayerTypes")]
+    [InlineData("zeroHeads")]
+    public void Hybrid_with_incomplete_configuration_is_Unknown_with_null_terms_not_a_guess(string what)
+    {
+        var hp = what switch
+        {
+            "noGdn" => HybridHp(h => h with { Gdn = null }),
+            "noLayerTypes" => HybridHp(h => h with { LayerTypes = null }),
+            "emptyLayerTypes" => HybridHp(h => h with { LayerTypes = [] }),
+            _ => HybridHp(h => h with { Gdn = h.Gdn! with { NumVHeads = 0 } }),
+        };
+        var e = HostMemoryEstimator.Estimate([Q4K("a")], hp, "HybridGdn", 100, null);
+        Assert.Equal(Certainty.Unknown, e.Certainty);
+        Assert.Null(e.Bytes);
+        Assert.All(e.Components.Where(c => c.Name is "kv_cache" or "prefill_scratch"), c => Assert.Null(c.Bytes));
+        Assert.Equal(Q4KBytes, Part(e, "weights"));      // what is known is still reported
+    }
+
+    [Fact]
+    public void The_same_Q4_K_weights_carry_a_repack_copy_on_the_dense_path_and_none_on_the_hybrid_path()
+    {
+        // The measured fact behind the separate model: a dense Q4_K_M file costs ~1.8x its size, a hybrid one about its size plus a constant.
+        var tensors = Enumerable.Range(0, 200).Select(i => Q4K($"blk.{i}.ffn_up.weight")).ToArray();
+        var dense = HostMemoryEstimator.Estimate(tensors, Hp(), "Dense", 100, null);
+        var hybrid = HostMemoryEstimator.Estimate(tensors, HybridHp(), "HybridGdn", 100, null);
+        Assert.Equal((long)(200 * Q4KBytes * (1216.0 / 1152.0)), Part(dense, "q4k_repack"));
+        Assert.Equal(0, Part(hybrid, "q4k_repack"));
+        Assert.Equal(Part(dense, "weights"), Part(hybrid, "weights"));
+    }
+    // ── dense MoE now counts the expert prefill buffers ──
+    [Fact]
+    public void Dense_moe_scratch_includes_the_expert_buffers()
+    {
+        var hp = Hp(h => h with { IsMoE = true, NumExperts = 8, NumActiveExperts = 2, ExpertIntermediateDim = 64, SharedExpertIntermediateDim = 0 });
+        var e = HostMemoryEstimator.Estimate([Q4K("a")], hp, "Dense", 100, null);
+        long ffn = Math.Max(128, 2L * 64);
+        long expected = (long)(1.5 * 100 * (3 * ffn + 4L * 64) * 4) + 100L * (2L * (2 * 64 + 64)) * 4;
+        Assert.Equal(expected, Part(e, "prefill_scratch"));
+        var notMoe = HostMemoryEstimator.Estimate([Q4K("a")], Hp(), "Dense", 100, null);
+        Assert.True(Part(e, "prefill_scratch") > Part(notMoe, "prefill_scratch"));
     }
 }
