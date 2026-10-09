@@ -25,6 +25,7 @@ one external-access policy (`STINGRAY_ALLOW_EXTERNAL`, default allowed, deny win
 - [ ] Cap/expose index limits and rate behaviour for the Hub (retries, 429), and cache API responses by (repo, commit) if batch features arrive.
 
 ## Idea from chat: known-good checkpoints, favourites, local availability (2026-10-09)
+**Planned in full: docs/3-product-and-runtime/2026-10-09-known-good-checkpoints-and-first-run-plan.md** (phases P0-P5, gaps G1-G9, acceptance criteria). The notes below are the short form.
 Keep THREE things separate and join them with one workflow; build no new download mechanism and no new package format.
 1. **Known-good catalogue**: exact repo, pinned revision, file, size, sha256, supported uses, memory needs, test evidence, limitations.
 2. **User favourites/defaults**: personal aliases (`chat`, `coding`, `vision`, `speech`) that SELECT from the catalogue and can be overridden.
