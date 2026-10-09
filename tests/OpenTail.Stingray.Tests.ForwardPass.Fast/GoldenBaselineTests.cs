@@ -368,5 +368,99 @@ public sealed class GoldenBaselineTests
         var ex = Assert.Throws<InvalidDataException>(() => GoldenBaselineComparator.Compare(duplicatePrior, normalCurrent));
         Assert.Contains("duplicate entry for 'dup.golden.json'", ex.Message);
     }
+
+    [Fact]
+    public void BaselineComparator_ChangedIdentity_WithVerdictTransition_ReportsIdentityChanged_NotRegressionOrImprovement()
+    {
+        var prior = new GoldenBaselineFile
+        {
+            Entries =
+            [
+                new GoldenBaselineEntry
+                {
+                    Architecture = "test-arch",
+                    GoldenFile = "test.golden.json",
+                    GoldenSha256 = "aaaa1111",
+                    Verdict = "Exact",
+                    Passed = true,
+                    DecodeTokensPerSecond = 100.0
+                }
+            ]
+        };
+
+        var current = new GoldenBaselineFile
+        {
+            Entries =
+            [
+                new GoldenBaselineEntry
+                {
+                    Architecture = "test-arch",
+                    GoldenFile = "test.golden.json",
+                    GoldenSha256 = "bbbb2222", // Golden definition changed
+                    Verdict = "Diverged",
+                    Passed = false,
+                    DecodeTokensPerSecond = 100.0
+                }
+            ]
+        };
+
+        var diffs = GoldenBaselineComparator.Compare(prior, current);
+        Assert.Single(diffs);
+        var diff = diffs[0];
+        // Must be classified as IdentityChanged, NOT Regression
+        Assert.Equal(BaselineDiffStatus.IdentityChanged, diff.Status);
+        Assert.Contains("Golden definition changed", diff.Description);
+        Assert.Contains("not comparable as same-evidence regression", diff.Description);
+    }
+
+    [Fact]
+    public void BaselineComparator_HostOrRuntimeMismatch_AnnotatesSpeedChanges()
+    {
+        var prior = new GoldenBaselineFile
+        {
+            Host = "HOST-ALPHA",
+            RuntimeDescription = ".NET 10.0.1",
+            OsDescription = "Windows",
+            ProcessArchitecture = "X64",
+            ProcessorCount = 16,
+            Entries =
+            [
+                new GoldenBaselineEntry
+                {
+                    Architecture = "test-arch",
+                    GoldenFile = "test.golden.json",
+                    Verdict = "Exact",
+                    Passed = true,
+                    DecodeTokensPerSecond = 100.0
+                }
+            ]
+        };
+
+        var current = new GoldenBaselineFile
+        {
+            Host = "HOST-BETA", // Different machine
+            RuntimeDescription = ".NET 10.0.1",
+            OsDescription = "Windows",
+            ProcessArchitecture = "X64",
+            ProcessorCount = 16,
+            Entries =
+            [
+                new GoldenBaselineEntry
+                {
+                    Architecture = "test-arch",
+                    GoldenFile = "test.golden.json",
+                    Verdict = "Exact",
+                    Passed = true,
+                    DecodeTokensPerSecond = 50.0 // 50% speed drop
+                }
+            ]
+        };
+
+        var diffs = GoldenBaselineComparator.Compare(prior, current);
+        Assert.Single(diffs);
+        var diff = diffs[0];
+        Assert.Equal(BaselineDiffStatus.SpeedDrop, diff.Status);
+        Assert.Contains("(different environment/host)", diff.Description);
+    }
 }
 

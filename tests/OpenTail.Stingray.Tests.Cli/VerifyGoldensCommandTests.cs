@@ -306,6 +306,29 @@ public sealed class VerifyGoldensCommandTests : IDisposable
         Assert.Equal(1, exitStrict2);
     }
 
+    [Fact]
+    public void HyperparameterGuardFailure_RejectsBeforeExecution_AndSetsGuardFail()
+    {
+        string modelFileName = "guard-fail-model.gguf";
+        CreateMinimalGguf(modelFileName, "llama");
+
+        var golden = new GoldenFile
+        {
+            Architecture = "llama",
+            Model = new GoldenModel { FileName = modelFileName },
+            ExpectedHyperparameters = new Dictionary<string, string>
+            {
+                ["ropeDim"] = "999" // Mismatch against default/empty hyperparams
+            }
+        };
+        golden.Save(Path.Combine(_tempDir, "guard-fail.golden.json"));
+
+        var (exit, output) = Run("-d", _tempDir);
+        Assert.Equal(1, exit);
+        Assert.Contains("Guard failure", output, StringComparison.Ordinal);
+        Assert.Contains("GuardFail", output, StringComparison.Ordinal);
+    }
+
     private sealed class GgufWriter(Stream stream) : IDisposable
     {
         private long _bytesWritten;

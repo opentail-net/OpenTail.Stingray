@@ -219,6 +219,37 @@ public sealed class VerifyGoldensCommand : Command<VerifyGoldensCommand.Settings
 
                 var resolvedHp = ArchitectureModelResolver.ResolveHyperparams(model);
                 guardFailures = HyperparameterExpectations.Check(resolvedHp, golden.ExpectedHyperparameters);
+                if (guardFailures.Count > 0)
+                {
+                    sw.Stop();
+                    guardFailCount++;
+                    string msg = $"Guard failure: {string.Join("; ", guardFailures)}";
+                    AnsiConsole.ErrorLine($"[red]Guard failure in {Markup.Escape(goldenName)}:[/] {Markup.Escape(msg)}");
+                    table.AddRow(
+                        Markup.Escape(golden.Architecture),
+                        Markup.Escape(goldenName),
+                        Markup.Escape(golden.Model.FileName),
+                        pinText,
+                        "[red bold]GuardFail[/]",
+                        "-",
+                        "-",
+                        $"{sw.Elapsed.TotalSeconds:F2}s");
+
+                    baselineEntries.Add(new GoldenBaselineEntry
+                    {
+                        Architecture = golden.Architecture,
+                        GoldenFile = goldenName,
+                        GoldenSha256 = goldenSha256,
+                        ModelFile = golden.Model.FileName,
+                        ModelSha256 = pin.Actual ?? golden.Model.Sha256,
+                        PinStatus = pin.Status.ToString(),
+                        Verdict = "GuardFail",
+                        Passed = false,
+                        ElapsedSeconds = sw.Elapsed.TotalSeconds,
+                        Detail = msg
+                    });
+                    continue;
+                }
 
                 using var source = new GoldenForwardPassSource(model, Math.Max(settings.CtxSize, 1024));
                 using var scope = new GoldenEngineSettingsScope(golden.EngineSettings);
@@ -231,6 +262,11 @@ public sealed class VerifyGoldensCommand : Command<VerifyGoldensCommand.Settings
                     totalCompared += c.Compared;
                     totalMatched += c.Matched;
                 }
+            }
+            catch (OperationCanceledException)
+            {
+                wasCancelled = true;
+                break;
             }
             catch (Exception ex)
             {
@@ -347,7 +383,7 @@ public sealed class VerifyGoldensCommand : Command<VerifyGoldensCommand.Settings
             });
         }
 
-        if (wasCancelled)
+        if (wasCancelled || cancellation.IsCancellationRequested)
         {
             AnsiConsole.ErrorLine("[red]Run was cancelled. Incomplete baseline was not saved.[/]");
             return 1;

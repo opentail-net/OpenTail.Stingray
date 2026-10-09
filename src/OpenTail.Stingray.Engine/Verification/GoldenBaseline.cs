@@ -115,7 +115,9 @@ public static class GoldenBaselineComparator
 
         bool envMatches = string.Equals(baseline.OsDescription, current.OsDescription, StringComparison.OrdinalIgnoreCase)
             && string.Equals(baseline.ProcessArchitecture, current.ProcessArchitecture, StringComparison.OrdinalIgnoreCase)
-            && baseline.ProcessorCount == current.ProcessorCount;
+            && baseline.ProcessorCount == current.ProcessorCount
+            && string.Equals(baseline.Host, current.Host, StringComparison.OrdinalIgnoreCase)
+            && string.Equals(baseline.RuntimeDescription, current.RuntimeDescription, StringComparison.OrdinalIgnoreCase);
 
         bool hasLegacySchema = baseline.Schema < 2 || current.Schema < 2;
 
@@ -155,37 +157,45 @@ public static class GoldenBaselineComparator
 
             bool identityChanged = modelHashChanged || goldenHashChanged || modelFileChanged;
 
-            if (basePass && !currPass)
-            {
-                status = BaselineDiffStatus.Regression;
-                desc = $"Regression: was {baseEntry.Verdict}, now {curr.Verdict}"
-                    + (modelHashChanged ? " (model hash changed)" : goldenHashChanged ? " (golden hash changed)" : modelFileChanged ? " (model file changed)" : "");
-            }
-            else if (!basePass && currPass)
-            {
-                status = BaselineDiffStatus.Improvement;
-                desc = $"Improvement: was {baseEntry.Verdict}, now {curr.Verdict}"
-                    + (modelHashChanged ? " (model hash changed)" : goldenHashChanged ? " (golden hash changed)" : modelFileChanged ? " (model file changed)" : "");
-            }
-            else if (identityChanged)
+            if (identityChanged)
             {
                 status = BaselineDiffStatus.IdentityChanged;
+                string reason;
                 if (modelHashChanged)
                 {
                     string h1 = baseEntry.ModelSha256!.Length > 8 ? baseEntry.ModelSha256[..8] : baseEntry.ModelSha256;
                     string h2 = curr.ModelSha256!.Length > 8 ? curr.ModelSha256[..8] : curr.ModelSha256;
-                    desc = $"Model hash changed ({h1} -> {h2}); speed not comparable";
+                    reason = $"Model hash changed ({h1} -> {h2})";
                 }
                 else if (goldenHashChanged)
                 {
                     string h1 = baseEntry.GoldenSha256!.Length > 8 ? baseEntry.GoldenSha256[..8] : baseEntry.GoldenSha256;
                     string h2 = curr.GoldenSha256!.Length > 8 ? curr.GoldenSha256[..8] : curr.GoldenSha256;
-                    desc = $"Golden definition changed ({h1} -> {h2}); speed not comparable";
+                    reason = $"Golden definition changed ({h1} -> {h2})";
                 }
                 else
                 {
-                    desc = $"Model file changed ({baseEntry.ModelFile} -> {curr.ModelFile}); speed not comparable";
+                    reason = $"Model file changed ({baseEntry.ModelFile} -> {curr.ModelFile})";
                 }
+
+                if (!string.Equals(baseEntry.Verdict, curr.Verdict, StringComparison.OrdinalIgnoreCase))
+                {
+                    desc = $"{reason}; verdict was {baseEntry.Verdict}, now {curr.Verdict} (not comparable as same-evidence regression)";
+                }
+                else
+                {
+                    desc = $"{reason}; speed not comparable";
+                }
+            }
+            else if (basePass && !currPass)
+            {
+                status = BaselineDiffStatus.Regression;
+                desc = $"Regression: was {baseEntry.Verdict}, now {curr.Verdict}";
+            }
+            else if (!basePass && currPass)
+            {
+                status = BaselineDiffStatus.Improvement;
+                desc = $"Improvement: was {baseEntry.Verdict}, now {curr.Verdict}";
             }
             else if (hasLegacySchema)
             {
