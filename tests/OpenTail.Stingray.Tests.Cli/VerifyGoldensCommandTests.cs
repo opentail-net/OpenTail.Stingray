@@ -223,8 +223,9 @@ public sealed class VerifyGoldensCommandTests : IDisposable
         };
         golden.Save(Path.Combine(_tempDir, "baseline-err.golden.json"));
 
-        // Invalid path (directory that doesn't exist under invalid root)
-        string invalidPath = "Z:\\nonexistent_drive_12345\\baseline.json";
+        // Invalid on every OS: the parent directory doesn't exist and File.WriteAllText won't create it.
+        // (A Windows-style "Z:\..." path is just a legal filename on Linux, so the write would succeed there.)
+        string invalidPath = Path.Combine(_tempDir, "no-such-dir", "baseline.json");
         var (exit, output) = Run("-d", _tempDir, "--baseline", invalidPath);
         Assert.Equal(1, exit);
         Assert.Contains("Error writing baseline", output, StringComparison.Ordinal);
