@@ -87,6 +87,19 @@ When finished, report: files changed; test counts before/after (whole project); 
 **Tests:** temp config dir; each step of the resolution order; set / clear; wrong task; unknown id; stale favourite; corrupt file; a write is atomic (write a temp file then rename) and never leaves a half-written file; no test touches the real user config directory.
 **Done when:** the new tests and the whole Cli and Core projects pass, and the option and environment-variable inventory guards pass.
 **Expected effort:** medium (3-4 hours).
+## Task card G: two more chat catalogue entries (plan P2, data plus tests)
+
+**Read first:** `src/OpenTail.Stingray.Core/Catalog/ModelCatalog.cs` (the `qwen2.5-0.5b` entry is the template; every field is filled the same way) and plan P2 in `docs/3-product-and-runtime/2026-10-09-known-good-checkpoints-and-first-run-plan.md`.
+**Files you may change:** `ModelCatalog.cs` (add entries after `qwen2.5-0.5b`, so the 0.5b stays the chat default), the existing catalogue tests (`CatalogGuardTests.cs`, `FirstRunTests.cs` only if a count is asserted), and nothing else. No new options, no docs.
+**The entries:**
+* `qwen2.5-1.5b`: repo `Qwen/Qwen2.5-1.5B-Instruct-GGUF`, revision `91cad51170dc...` (resolve the full 40-character commit), file `qwen2.5-1.5b-instruct-q4_k_m.gguf`.
+* `qwen2.5-7b`: repo `Qwen/Qwen2.5-7B-Instruct-GGUF`, revision `bb5d59e06d95...` (full commit), TWO files: `qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf` and `...-00002-of-00002.gguf`.
+**Where the numbers come from:** the Hub tree API at that exact commit (`https://huggingface.co/api/models/<repo>/tree/<commit>`, field `lfs.oid` is the sha256, `size` is the byte length). Cross-check against the files already in `models/_models/` (`Get-FileHash -Algorithm SHA256`); they were downloaded and verified at these commits, so the two must agree. If they do not, stop and report.
+**Do not invent:** `Hardware` and `Speed` text. Use `Hardware: "about 2.5 GiB RAM, CPU only"` for the 1.5B and `"about 9 GiB RAM, CPU only"` for the 7B (scout estimates, 2026-10-09); write `Speed: "not yet measured"` and `Evidence: "scout pretest stages 0-3 passed 2026-10-09; llama.cpp golden pending"`. Licence: read the Hub model card tags (1.5B is Apache-2.0; the 7B too, but check the tag, do not assume). `LicenceNeedsConsent: false` only for a plain Apache-2.0.
+**Tests:** the existing catalogue guards must pass unchanged (unique ids, pinned 40-hex revisions, 64-hex sha, sizes positive, shard names consistent); add one test that the chat default is still `qwen2.5-0.5b` and that both new ids resolve with the right file counts (1 and 2). Prove one test can fail by temporarily breaking a sha.
+**Done when:** the whole Cli and Core projects pass, and `stingray models` lists both (run it, paste the output). Do not run a download of the 7B.
+**Expected effort:** small (1-2 hours).
+
 ## After the work comes back
 
 Check: the diff touches only the listed files; test totals went up by about the count added; run the Core guards too (`Tests.Core` classes `ArchitectureCapabilitiesBaselineTests` and `KnownEnvironmentVariablesTests`) because they scan all of `src/`; try one deliberate break to confirm a new test can fail.
