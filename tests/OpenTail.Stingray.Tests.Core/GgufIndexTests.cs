@@ -10,38 +10,12 @@ public sealed class GgufIndexTests : IDisposable
     private readonly List<string> _files = [];
     public void Dispose() { foreach (var f in _files) try { File.Delete(f); } catch { } }
 
-    private sealed record T(string Name, long[] Dims, uint Type = 0 /* F32 */, ulong Offset = 0);
-
-    private static void Str(BinaryWriter w, string s) { var b = Encoding.UTF8.GetBytes(s); w.Write((ulong)b.Length); w.Write(b); }
-
-    /// <summary>Builds a GGUF. <paramref name="kvs"/> is written in order; each value is (type, writer action).</summary>
-    private static byte[] Build(uint version, IEnumerable<(string Key, uint Type, Action<BinaryWriter> Value)> kvs, IEnumerable<T> tensors, int dataBytes = 4096)
-    {
-        var kvList = kvs.ToList(); var tList = tensors.ToList();
-        using var ms = new MemoryStream(); using var w = new BinaryWriter(ms);
-        w.Write(0x46554747u); w.Write(version); w.Write((ulong)tList.Count); w.Write((ulong)kvList.Count);
-        foreach (var (key, type, value) in kvList) { Str(w, key); w.Write(type); value(w); }
-        foreach (var t in tList) { Str(w, t.Name); w.Write((uint)t.Dims.Length); foreach (var d in t.Dims) w.Write((ulong)d); w.Write(t.Type); w.Write(t.Offset); }
-        while (ms.Length % 32 != 0) w.Write((byte)0);
-        w.Write(new byte[dataBytes]);
-        return ms.ToArray();
-    }
-
-    private static (string, uint, Action<BinaryWriter>) KvStr(string k, string v) => (k, 8, w => Str(w, v));
-    private static (string, uint, Action<BinaryWriter>) KvU32(string k, uint v) => (k, 4, w => w.Write(v));
-    private static (string, uint, Action<BinaryWriter>) KvStrArray(string k, params string[] items) =>
-        (k, 9, w => { w.Write(8u); w.Write((ulong)items.Length); foreach (var s in items) Str(w, s); });
-
-    private static byte[] Sample(uint version = 3) => Build(version,
-    [
-        KvStr("general.architecture", "llama"), KvU32("llama.block_count", 2),
-        KvStrArray("tokenizer.ggml.tokens", "a", "b", "c"),
-    ],
-    [
-        new("token_embd.weight", [8, 3], 0, 0), new("blk.0.attn_q.weight", [8, 8], 0, 96), new("blk.0.attn_q_norm.weight", [8], 0, 352),
-        new("blk.1.attn_q.weight", [8, 8], 1, 384),
-    ], dataBytes: 1024);
-
+    private static byte[] Sample(uint version = 3) => SyntheticGguf.Sample(version);
+    private static byte[] Build(uint version, IEnumerable<(string Key, uint Type, SyntheticGguf.ValueWriter Value)> kvs, IEnumerable<SyntheticGguf.T> tensors, int dataBytes = 4096) =>
+        SyntheticGguf.Build(version, kvs, tensors, dataBytes);
+    private static (string, uint, SyntheticGguf.ValueWriter) KvStr(string k, string v) => SyntheticGguf.KvStr(k, v);
+    private static (string, uint, SyntheticGguf.ValueWriter) KvU32(string k, uint v) => SyntheticGguf.KvU32(k, v);
+    private static SyntheticGguf.T T(string name, long[] dims, uint type = 0, ulong offset = 0) => new(name, dims, type, offset);
     private string Write(byte[] bytes) { string p = Path.Combine(Path.GetTempPath(), "gguf-index-" + Guid.NewGuid().ToString("N") + ".gguf"); File.WriteAllBytes(p, bytes); _files.Add(p); return p; }
 
     private static int IndexEnd(string path) { using var m = GgufModel.Open(path); return (int)m.Shard0TensorInfoEndOffset; }
@@ -166,8 +140,8 @@ public sealed class GgufIndexTests : IDisposable
     [Fact]
     public void Shards_are_merged_with_shard_numbers_and_a_short_later_shard_names_itself()
     {
-        byte[] s0 = Build(3, [KvStr("general.architecture", "llama"), KvU32("split.count", 2)], [new("token_embd.weight", [8, 3], 0, 0)], 256);
-        byte[] s1 = Build(3, [KvStr("general.architecture", "llama"), KvU32("split.count", 2)], [new("blk.0.attn_q.weight", [8, 8], 0, 0)], 512);
+        byte[] s0 = Build(3, [KvStr("general.architecture", "llama"), KvU32("split.count", 2)], [T("token_embd.weight", [8, 3], 0, 0)], 256);
+        byte[] s1 = Build(3, [KvStr("general.architecture", "llama"), KvU32("split.count", 2)], [T("blk.0.attn_q.weight", [8, 8], 0, 0)], 512);
         var index = GgufModel.ParseIndex([(s0, s0.Length), (s1, s1.Length)]);
         Assert.Equal(["token_embd.weight", "blk.0.attn_q.weight"], index.Tensors.Select(t => t.Name));
         Assert.Equal([0, 1], index.Tensors.Select(t => t.ShardIndex));
