@@ -29,6 +29,10 @@ public sealed class ScoutCommand : Command<ScoutCommand.Settings>
         [Description("Headroom kept free under the budget (default 8G)")]
         public string? Reserve { get; init; }
 
+        [CommandOption("-c|--ctx-size <N>")]
+        [Description("Context length the memory estimate assumes (default 4096, capped at the model's own limit)")]
+        public int? ContextSize { get; init; }
+
         [CommandOption("--signatures <DIR>")]
         [Description("Extra reference signatures (*.signature.json) to rank against, in addition to the built-in admitted set")]
         public string? SignaturesDir { get; init; }
@@ -55,6 +59,7 @@ public sealed class ScoutCommand : Command<ScoutCommand.Settings>
             if (Format is not ("text" or "json")) return "--format must be 'text' or 'json'.";
             if (Budget is not null && !ScoutSize.TryParse(Budget, out _)) return $"--budget '{Budget}' is not a size (try 64G).";
             if (Reserve is not null && !ScoutSize.TryParse(Reserve, out _)) return $"--reserve '{Reserve}' is not a size (try 8G).";
+            if (ContextSize is <= 0) return "--ctx-size must be positive.";
             if (SignaturesDir is not null && !Directory.Exists(SignaturesDir)) return $"--signatures directory '{SignaturesDir}' does not exist.";
             return null;
         }
@@ -117,7 +122,7 @@ public sealed class ScoutCommand : Command<ScoutCommand.Settings>
             signatures.AddRange(SignatureStore.LoadDirectory(dir, problems));
             foreach (string p in problems) Console.Error.WriteLine("warning: signature skipped: " + p);
         }
-        var options = new ScoutOptions(StingrayBuildVersion.Value, budget, reserve, signatures);
+        var options = new ScoutOptions(StingrayBuildVersion.Value, budget, reserve, signatures, settings.ContextSize ?? ScoutOptions.DefaultContextTokens);
 
         string fileName = Path.GetFileName(path);
         long? fileBytes = new FileInfo(path).Length;
@@ -218,6 +223,10 @@ internal static class ScoutTextRenderer
         AnsiConsole.MarkupLine($"[bold]Resources:[/] file {Bytes(res.FileBytes)}; host working set {res.HostWorkingSet.Certainty.ToString().ToLowerInvariant()}; " +
             $"execution {res.ExecutionDecision}" + (res.BudgetBytes is long bb ? $" (budget {Bytes(bb)}, reserve {Bytes(res.ReserveBytes)})" : ""));
         AnsiConsole.MarkupLine($"  [dim]{Markup.Escape(res.Reason)}[/]");
+        foreach (var p in res.WorkingSetComponents)
+            AnsiConsole.MarkupLine($"    [dim]{Markup.Escape(p.Name),-16} {(p.Bytes is long pb ? Bytes(pb) : "unknown"),10}  {p.Certainty.ToString().ToLowerInvariant()}[/]");
+        if (res.HostWorkingSet.Bytes is long total)
+            AnsiConsole.MarkupLine($"    [dim]{"estimated peak",-16} {Bytes(total),10}  upper bound, CPU run, {res.ContextTokens} tokens[/]");
 
         AnsiConsole.WriteLine();
         AnsiConsole.MarkupLine("[bold]Next:[/]");

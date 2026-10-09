@@ -2,7 +2,7 @@
 
 **Generated:** by `scripts/gen-cli-option-inventory.ps1`, which scans `[CommandOption]` /
 `[Description]` pairs under `src/OpenTail.Stingray.Cli`. Last regenerated **2026-10-09**, recording
-**286 option declarations** across 30 command files — the same count the
+**287 option declarations** across 30 command files — the same count the
 `StaticPlanConfigurationTests` guard enforces against source. (Reconciled 12 rows of drift, caught
 by CI failing `CliOptionInventory_DeclaredCountMatchesSource` on `main`: three new commands —
 `AdmitArchCommand`, `GenVisionScaffoldCommand` and `PullCommand`, see `docs/reference/061-coverage-tooling.md` —
@@ -378,6 +378,7 @@ hoc at each read site rather than in one place.
 | Option | Class | Description |
 |---|---|---|
 | `--budget <SIZE>` | diagnostic | Host RAM budget for execution feasibility, e.g. 64G. Without it, feasibility is not assessed. |
+| `--ctx-size <N>` | diagnostic | Context length the memory estimate assumes (default 4096, capped at the model's own limit) |
 | `--emit-signature <PATH>` | diagnostic | Write this file's structural signature as JSON. Admitted architectures only; hashes the file (cached beside it); adds an origin if the target already holds the same structure |
 | `--format <FORMAT>` | diagnostic | Output format: text (default) or json |
 | `--model <PATH>` | diagnostic | Path to a GGUF model file |

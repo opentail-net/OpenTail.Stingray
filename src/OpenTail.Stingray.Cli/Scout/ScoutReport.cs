@@ -128,6 +128,10 @@ public sealed record ResourcePreflight(
     long? TensorBytes,
     SizeEstimate HostWorkingSet,
     SizeEstimate KvCache,
+    // Terms of the host working-set estimate (CPU run); a term with null bytes is why the total is Unknown.
+    IReadOnlyList<WorkingSetComponent> WorkingSetComponents,
+    // Context length the KV and scratch terms assume.
+    int ContextTokens,
     long? BudgetBytes,
     long? ReserveBytes,
     // <summary>"allowed", "blocked" or "not_assessed". Unknown estimates are never "allowed".</summary>

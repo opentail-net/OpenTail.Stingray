@@ -29,8 +29,30 @@ stingray scout -m model.gguf --budget 64G [--reserve 8G]        # also report th
   ordered next commands, and per-stage receipts (`Passed` / `Failed` / `Blocked` / `NotRun`).
 * **Blockers.** `confirmed` means the engine's own gate would refuse (unregistered or non-admitted architecture, a dtype
   `ModelCompatibility.IsSupportedWeightDType` rejects, a malformed tensor size); `suspected` is a lead (tokenizer shapes, undeclared architecture).
-* **Unknown stays unknown.** The host working-set and KV estimates are `Unknown` with a reason and null bytes; file size is never reported as
-  peak RAM. With `--budget` the execution decision is therefore `blocked` until a real estimator exists, and without it `not_assessed`. It is never `allowed` today.
+* **Host working-set estimate** (`HostMemoryEstimator`, CPU run only; says nothing about GPU placement). An upper bound, not a prediction, as the sum of: every tensor byte
+  (the CPU path touches all of them); the **Q4_K repack copy** (an additional anonymous 1216/1152 of the dense Q4_K bytes, capped at a quarter of the budget, which is why a
+  Q4_K_M file costs about 1.8x its size; routed-expert stacks are not repacked); 192 MiB base; fp32 KV for `--ctx-size` tokens (default 4096, capped at the model's limit);
+  and batched-prefill scratch. Each term is listed in the JSON with its certainty. `file size` is never reported as peak RAM.
+  * **Unknown stays Unknown.** Hyperparameters that cannot be resolved or are zero (incomplete metadata), an unregistered architecture, or a family whose state layout is not
+    modelled (MLA, hybrid/GDN, RWKV) make the estimate `Unknown` with null bytes and a reason, and an unknown estimate is `blocked` under any budget.
+  * **Gate:** with `--budget`, `allowed` only if `estimate + reserve <= budget` (reserve default 8G, `--reserve`); otherwise `blocked`. Without `--budget`: `not_assessed` (the estimate
+    is still shown). It is a safety gate for choosing what to run, not proof that a run will fit.
+  * **Calibration (2026-10-09, real CPU runs, `STINGRAY_GC_STATS` peakWorkingSet; estimate made with the same `-c`):**
+
+    | Model (file) | Run | Measured peak | Estimate | Estimate / measured |
+    |---|---|---|---|---|
+    | SmolLM2-135M Q4_K_M | ctx 512, 8-token prompt | 263 MiB | 342 MiB | 1.30 |
+    | SmolLM2-360M Q4_K_M | ctx 2048, short | 439 MiB | 766 MiB | 1.74 |
+    | SmolLM2-1.7B Q4_K_M | ctx 4096, ~600-token prompt | 2256 MiB | 4271 MiB | 1.89 |
+    | SmolLM2-1.7B Q4_K_M | ctx 2048, context filled | 2902 MiB | 3119 MiB | 1.07 |
+    | Mistral-7B Q4_K_M | ctx 2048, short | 7689 MiB | 9028 MiB | 1.17 |
+    | Mistral-7B Q4_K_M | ctx 2048, context filled (~1900 tokens) | 8597 MiB | 9028 MiB | 1.05 |
+    | Phi-3.5-MoE Q3_K_M (blind: predicted before measuring) | ctx 2048, 4 new tokens | 19,622 MiB | 27,950 MiB, then 20,825 MiB after the `_exps` fix | 1.42, then ~1.05 |
+
+    The estimate was at or above the measurement in every run, and tightest (1.05-1.07) where the run actually filled the context, which is the case the gate has to protect. The
+    MoE result is one run: it showed the routed-expert stacks are **not** repacked, and the estimator was changed on that evidence. Other MoE families and any model with a different
+    kernel path are not measured, so a MoE estimate carries that caveat. An earlier Mistral run reported 4289 MiB in 1.6 s because the prompt exceeded the context and the run
+    failed; it was discarded (CLAUDE.md rule 12).
 * Exit codes: 0 report produced (blockers do not change it), 1 file unreadable as GGUF, 64 bad option, 66 file missing.
 * **Feature findings** (`ScoutFeatures`): each has a stable id, a one-line interpretation, evidence (metadata keys and tensor names/dtypes/shapes) and a caveat.
   `Known` = the structure was observed (e.g. `nextn_predict_layers` metadata plus several `blk.N.nextn.*` tensors); `Hypothesis` = one-sided or name-only
@@ -53,7 +75,7 @@ stingray scout -m model.gguf --budget 64G [--reserve 8G]        # also report th
   * **Adding a reference** (maintainers or contributors): `stingray scout -m <admitted.gguf> --emit-signature <name>.signature.json [--origin-repo owner/repo --origin-revision <rev>]`.
     It refuses a file that does not resolve to an Admitted architecture, **hashes the file** (cached beside it as `<file>.sha256`, like `stingray hash`), and if the target file
     already holds the same structure it adds the file to its origins; a different structure is refused (use a new name). Load with `--signatures <dir>` without rebuilding.
-* Not yet implemented (see plan): `scripts/scout-pretest.ps1`, a real host working-set estimator, calibration of the ranking.
+* Not yet implemented (see plan): `scripts/scout-pretest.ps1`; working-set estimates for MLA, hybrid and recurrent families; calibration of the ranking beyond the leave-one-out check.
 * Advisory only: nothing in the report admits or promotes an architecture.
 
 ---

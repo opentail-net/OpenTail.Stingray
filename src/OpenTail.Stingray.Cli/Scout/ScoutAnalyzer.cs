@@ -14,10 +14,12 @@ public sealed record ScoutInput(
     IReadOnlyList<GgufTensorInfo> Tensors);
 
 /// <param name="Signatures">Reference signatures of admitted architectures to rank against; null means the ranking is not computed.</param>
+/// <param name="ContextTokens">Context length the memory estimate assumes (capped at the model's own limit).</param>
 public sealed record ScoutOptions(string BuildId, long? BudgetBytes = null, long ReserveBytes = ScoutOptions.DefaultReserveBytes,
-    IReadOnlyList<ArchSignature>? Signatures = null)
+    IReadOnlyList<ArchSignature>? Signatures = null, int ContextTokens = ScoutOptions.DefaultContextTokens)
 {
     public const long DefaultReserveBytes = 8L << 30;
+    public const int DefaultContextTokens = 4096;
 }
 
 /// <summary>
@@ -53,7 +55,7 @@ public static class ScoutAnalyzer
         var artifact = new ArtifactInfo(input.FileName, input.FileBytes, input.GgufVersion, input.HeaderTensorCount,
             input.HeaderMetadataKvCount, shardCount, "not_computed");
 
-        var resources = Preflight(input, tensors, options);
+        var resources = Preflight(input, tensors, arch, options);
 
         // Deterministic order: confirmed before suspected, then by id.
         var orderedBlockers = blockers.OrderBy(b => b.Kind).ThenBy(b => b.Id, StringComparer.Ordinal).ToArray();
@@ -65,7 +67,7 @@ public static class ScoutAnalyzer
             new("0_artifact", StageState.Passed, "GGUF header, metadata and tensor index read."),
             new("1_static_contract", confirmed ? StageState.Failed : StageState.Passed,
                 confirmed ? "One or more confirmed blockers (see blockers)." : "No confirmed blockers from static checks. This is not admission."),
-            new("2_feasibility", resources.ExecutionDecision == "allowed" ? StageState.Passed : StageState.Blocked, resources.Reason),
+            new("2_feasibility", resources.ExecutionDecision switch { "allowed" => StageState.Passed, "blocked" => StageState.Blocked, _ => StageState.NotRun }, resources.Reason),
             new("3_smoke", StageState.NotRun, "Opt-in; not part of static scout."),
             new("4_internal_consistency", StageState.NotRun, "Opt-in; not part of static scout."),
             new("5_independent_reference", StageState.NotRun, "Use capture-golden / verify-goldens; scout does not run them."),
@@ -85,7 +87,7 @@ public static class ScoutAnalyzer
             ScoutReport.CurrentSchemaVersion, options.BuildId,
             new ArtifactInfo(fileName, fileBytes, null, null, null, null, "not_computed"),
             null, null, null, [], [blocker],
-            new ResourcePreflight(fileBytes, null, Unknown("file unreadable"), Unknown("file unreadable"), options.BudgetBytes,
+            new ResourcePreflight(fileBytes, null, Unknown("file unreadable"), Unknown("file unreadable"), [], options.ContextTokens, options.BudgetBytes,
                 options.ReserveBytes, "not_assessed", "File could not be read."),
             [],
             [new StageReceipt("0_artifact", StageState.Failed, detail)]);
@@ -400,27 +402,53 @@ public static class ScoutAnalyzer
 
     private static SizeEstimate Unknown(string why) => new(Certainty.Unknown, null, why);
 
-    private static ResourcePreflight Preflight(ScoutInput input, TensorSummary tensors, ScoutOptions options)
+    private static ResourcePreflight Preflight(ScoutInput input, TensorSummary tensors, ArchitectureResolution arch, ScoutOptions options)
     {
-        // File size and tensor bytes are facts. Host working set is NOT derivable from them (a memory-mapped file is not resident),
-        // and no host-RAM estimator is wired yet, so it is Unknown and the execution decision can never be "allowed".
-        var ws = Unknown("no host working-set estimator is wired into scout yet; file size is not peak RAM");
-        var kv = Unknown("KV/cache sizing needs resolved hyperparameters and the requested context; not computed by static scout");
+        // File size and tensor bytes are facts. Peak RAM is not derivable from them (see HostMemoryEstimator): it is an upper-bound estimate, and
+        // anything that cannot be established makes it Unknown, which can never be "allowed".
+        ModelHyperparams? hp = null;
+        string hpWhy = "";
+        try { hp = ArchitectureModelResolver.ResolveHyperparams(new IndexOnlyTensorSource(input.Metadata, input.Tensors)); }
+        catch (Exception ex) when (ex is not OutOfMemoryException) { hpWhy = $"{ex.GetType().Name}: {ex.Message}"; }
+
+        var est = HostMemoryEstimator.Estimate(input.Tensors, hp, arch.Resolved ? arch.ForwardPassFamily : null, options.ContextTokens, options.BudgetBytes);
+        var ws = est.Bytes is long total
+            ? new SizeEstimate(Certainty.Estimated, total, est.Source)
+            : new SizeEstimate(Certainty.Unknown, null, hpWhy.Length > 0 ? $"{est.Source} ({hpWhy})" : est.Source);
+        var kvPart = est.Components.FirstOrDefault(p => p.Name == "kv_cache");
+        var kv = kvPart is { Bytes: long kvBytes } ? new SizeEstimate(kvPart.Certainty, kvBytes, kvPart.Basis)
+            : new SizeEstimate(Certainty.Unknown, null, kvPart?.Basis ?? est.Source);
+
         string decision, reason;
-        if (options.BudgetBytes is null)
+        if (options.BudgetBytes is not long budget)
         {
             decision = "not_assessed";
-            reason = "No --budget given; execution feasibility not assessed.";
+            reason = ws.Bytes is long b0
+                ? $"No --budget given; execution feasibility not assessed (estimated peak {Mib(b0)} at {options.ContextTokens} tokens)."
+                : "No --budget given; execution feasibility not assessed, and the working set is not estimable for this file.";
+        }
+        else if (ws.Bytes is not long peak)
+        {
+            decision = "blocked";
+            reason = "Working-set estimate is unknown (" + est.Source + "), so no execution stage is allowed under the budget. Static inspection is unaffected.";
+        }
+        else if (peak + options.ReserveBytes <= budget)
+        {
+            decision = "allowed";
+            reason = $"Estimated upper-bound peak {Mib(peak)} + reserve {Mib(options.ReserveBytes)} fits the {Mib(budget)} budget at {options.ContextTokens} tokens. " +
+                "A safety gate for a CPU run, not proof it will fit.";
         }
         else
         {
             decision = "blocked";
-            reason = "Working-set estimate is unknown, so no execution stage is allowed under the budget. Static inspection is unaffected.";
+            reason = $"Estimated upper-bound peak {Mib(peak)} + reserve {Mib(options.ReserveBytes)} exceeds the {Mib(budget)} budget at {options.ContextTokens} tokens. " +
+                "Static inspection is unaffected; do not schedule a real-weight run.";
         }
-        return new ResourcePreflight(input.FileBytes, tensors.TotalBytes, ws, kv, options.BudgetBytes,
+        return new ResourcePreflight(input.FileBytes, tensors.TotalBytes, ws, kv, est.Components, options.ContextTokens, options.BudgetBytes,
             options.BudgetBytes is null ? null : options.ReserveBytes, decision, reason);
     }
 
+    private static string Mib(long bytes) => bytes >= (1L << 30) ? $"{bytes / 1073741824.0:F1} GiB" : $"{bytes / 1048576.0:F0} MiB";
     private static IReadOnlyList<NextAction> NextActions(ScoutInput input, ArchitectureResolution arch, IReadOnlyList<ScoutBlocker> blockers)
     {
         var actions = new List<NextAction>();
