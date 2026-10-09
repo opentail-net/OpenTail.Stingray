@@ -115,7 +115,7 @@ public class ChatSession
             }
         }
 
-        string arch = _executor.Context.Model?.Architecture ?? "llama";
+        string? arch = _executor.Context.Model?.Architecture;
         var protocol = ChatProtocolRegistry.For(arch);
         if (protocol.Render != null)
         {
