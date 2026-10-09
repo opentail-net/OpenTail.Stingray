@@ -2,7 +2,7 @@
 
 **Generated:** by `scripts/gen-cli-option-inventory.ps1`, which scans `[CommandOption]` /
 `[Description]` pairs under `src/OpenTail.Stingray.Cli`. Last regenerated **2026-10-09**, recording
-**295 option declarations** across 30 command files — the same count the
+**300 option declarations** across 30 command files — the same count the
 `StaticPlanConfigurationTests` guard enforces against source. (Reconciled 12 rows of drift, caught
 by CI failing `CliOptionInventory_DeclaredCountMatchesSource` on `main`: three new commands —
 `AdmitArchCommand`, `GenVisionScaffoldCommand` and `PullCommand`, see `docs/reference/061-coverage-tooling.md` —
@@ -257,7 +257,10 @@ hoc at each read site rather than in one place.
 
 | Option | Class | Description |
 |---|---|---|
+| `--clear` | stable | With 'models use <task>': clear the configured favourite for this task. |
+| `--local` | stable | Show catalogue state plus local GGUF models on disk. |
 | `--task <TASK>` | stable | Show the catalog options for one task (chat, speak, transcribe). |
+| `--verify` | stable | With --local: re-hash installed catalogue files to verify integrity against published SHA-256 (slower). |
 
 ## PerplexityCommand
 
@@ -379,11 +382,13 @@ hoc at each read site rather than in one place.
 
 | Option | Class | Description |
 |---|---|---|
+| `--backlog` | diagnostic | Query Hugging Face for the most downloaded GGUF architectures and print the backlog of unregistered/unadmitted families. |
 | `--budget <SIZE>` | diagnostic | Host RAM budget for execution feasibility, e.g. 64G. Without it, feasibility is not assessed. |
 | `--ctx-size <N>` | diagnostic | Context length the memory estimate assumes (default 4096, capped at the model's own limit) |
 | `--emit-signature <PATH>` | diagnostic | Write this file's structural signature as JSON. Admitted architectures only; hashes the file (cached beside it); adds an origin if the target already holds the same structure |
 | `--file <NAME>` | diagnostic | With --repo: which GGUF in the repo (file name, path, or the base name of a split model). Needed when the repo has several. |
 | `--format <FORMAT>` | diagnostic | Output format: text (default) or json |
+| `--limit <N>` | diagnostic | With --backlog: number of repositories to inspect (default 50, maximum 200). |
 | `--max-index-mb <N>` | diagnostic | With --repo: most MB of a file's header and tensor index to read (default 128). Past it the report says the inspection is incomplete; nothing more is fetched. |
 | `--max-quants <N>` | diagnostic | With --quants: most files to inspect (default 40, largest first). |
 | `--model <PATH>` | diagnostic | Path to a GGUF model file |

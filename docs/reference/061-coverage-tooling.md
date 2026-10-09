@@ -136,7 +136,13 @@ stingray scout -m model.gguf --budget 64G [--reserve 8G]        # also report th
   * **Adding a reference** (maintainers or contributors): `stingray scout -m <admitted.gguf> --emit-signature <name>.signature.json [--origin-repo owner/repo --origin-revision <rev>]`.
     It refuses a file that does not resolve to an Admitted architecture, **hashes the file** (cached beside it as `<file>.sha256`, like `stingray hash`), and if the target file
     already holds the same structure it adds the file to its origins; a different structure is refused (use a new name). Load with `--signatures <dir>` without rebuilding.
-* Not yet implemented (see plan): demand-ranked backlog and batch triage (they build on remote scout); working-set estimates for MLA and RWKV; calibration of the ranking beyond the leave-one-out check.
+* **Demand-ranked backlog: `scout --backlog [--limit N]`.** Queries the Hugging Face model list API in one call (`filter=gguf&sort=downloads&direction=-1&limit=N&expand[]=gguf&expand[]=downloads&expand[]=gated`) to identify which GGUF architectures are not yet admitted here, ranked by 30-day downloads.
+  * Subject to the external access policy (`STINGRAY_ALLOW_EXTERNAL`, default allowed; `STINGRAY_OFFLINE` / `HF_HUB_OFFLINE` deny).
+  * `--limit N`: number of repositories to inspect (default 50, hard cap 200).
+  * Downloads are per repository over 30 days, not per file or inference use (stated in output).
+  * List-only: never downloads weights or parses full model files.
+  * Architectures are grouped and marked `admitted`, `not admitted`, or `unregistered` via `ArchitectureRegistry.Find`. Ported-but-unverified architectures (`NotAdmitted`) stay internal per CLAUDE.md rule 14 and are displayed as `unregistered`.
+* Not yet implemented (see plan): batch triage (builds on remote scout); working-set estimates for MLA and RWKV; calibration of the ranking beyond the leave-one-out check.
 * Advisory only: nothing in the report admits or promotes an architecture.
 
 ### `scripts/scout-pretest.ps1 -Model <gguf> [-Budget 64G] [-Reserve 8G] [-ContextSize 2048] [-Run] [-Golden <golden.json>]`
@@ -319,4 +325,39 @@ stingray verify-goldens --strict                                # strict regress
   - Yields a `NearTie` rather than an exact match.
   - Diverges, crashes, or fails an architecture or hyperparameter guard.
   - Matches no files (empty filter selection), or is cancelled/incomplete.
+
+---
+
+## Task favourites: `stingray models use <task> <id>`
+
+Configures persistent per-user default model preferences for tasks (`chat`, `speak`, `transcribe`), avoiding the need to pass `--model <id>` on every command or rely solely on catalogue defaults.
+
+```
+stingray models use chat qwen2.5-coder-7b        # configure favourite for chat
+stingray models use chat --clear                 # remove favourite for chat
+stingray models                                  # lists tasks and marks active favourites
+stingray models chat                             # lists chat options and badges (favourite)
+stingray models --local                          # shows catalogue models with (favourite) badge
+```
+
+### Storage and Configuration
+- **File location**: `favourites.json` in the per-user configuration directory:
+  - Windows: `%APPDATA%\stingray\favourites.json`
+  - Linux / macOS: `$XDG_CONFIG_HOME/stingray/favourites.json` (fallback: `~/.config/stingray/favourites.json`)
+- **Override**: `STINGRAY_CONFIG_DIR` environment variable overrides the directory path.
+- **Format**: JSON object mapping task name to catalogue model id (e.g. `{"chat": "qwen2.5-coder-7b"}`).
+- **Atomic updates**: Writes are atomic (writes to temporary file in the same directory and renames). Corrupt files are never silently overwritten; updates throw a named error.
+
+### Resolution Order
+When running task-driven commands (e.g. `stingray chat`, `stingray speak`, `stingray transcribe` via `CatalogTaskResolver`):
+1. **Explicit file flag**: `--model-file <path>` (highest precedence; points directly to weights on disk).
+2. **Explicit model flag**: `--model <id>` (validates against catalogue).
+3. **Favourite**: `favourites.json` entry for the task.
+4. **Catalogue default**: `ModelCatalog.DefaultFor(task)` (built-in fallback).
+
+### Validation and Named Errors
+- Favourites map to catalogue ids only. Setting a favourite validates that `<id>` exists in the catalogue and serves `<task>`.
+- **Stale favourite**: If a favourite points to a model id that no longer exists or does not match the task, resolution fails with a named error directing the user to fix or clear it (`stingray models use <task> <id>` or `stingray models use <task> --clear`). It never silently falls back to the catalogue default.
+- **Corrupt file**: If `favourites.json` exists but cannot be parsed as valid JSON, resolution fails with a named error. It never silently ignores the file or falls back to the default.
+
 

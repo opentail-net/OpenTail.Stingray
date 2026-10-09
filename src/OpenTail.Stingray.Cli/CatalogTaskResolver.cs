@@ -15,7 +15,9 @@ public static class CatalogTaskResolver
         out ResolvedModelTask? resolved,
         out string? errorMessage,
         ModelHome? customHome = null,
-        CatalogEntry? entryOverride = null)
+        CatalogEntry? entryOverride = null,
+        string? customConfigDir = null,
+        Func<string, string?>? env = null)
     {
         // 1. Explicit model-file override
         if (!string.IsNullOrWhiteSpace(modelFile))
@@ -51,12 +53,34 @@ public static class CatalogTaskResolver
         }
         else
         {
-            entry = ModelCatalog.DefaultFor(taskName);
-            if (entry is null)
+            // 3. Favourite from favourites.json
+            if (!Favourites.TryGet(taskName, out string? favId, out string? favError, customConfigDir, env))
             {
                 resolved = null;
-                errorMessage = $"Error: no default catalog model defined for task '{taskName}'.";
+                errorMessage = favError;
                 return false;
+            }
+
+            if (!string.IsNullOrWhiteSpace(favId))
+            {
+                entry = ModelCatalog.Find(favId);
+                if (entry is null || !entry.Task.Equals(taskName, StringComparison.OrdinalIgnoreCase))
+                {
+                    resolved = null;
+                    errorMessage = $"Error: favourite for '{taskName}' ('{favId}') is not a valid catalogue model for task '{taskName}'.\nFix with: stingray models use {taskName} <id> (or 'stingray models use {taskName} --clear')";
+                    return false;
+                }
+            }
+            else
+            {
+                // 4. Catalogue default
+                entry = ModelCatalog.DefaultFor(taskName);
+                if (entry is null)
+                {
+                    resolved = null;
+                    errorMessage = $"Error: no default catalog model defined for task '{taskName}'.";
+                    return false;
+                }
             }
         }
 
@@ -92,14 +116,36 @@ public static class CatalogTaskResolver
         string taskName, string? modelId, string? modelFile,
         out ResolvedModelTask? resolved, out string? errorMessage, CancellationToken ct,
         bool? interactive = null, ISetupPrompt? prompt = null, ModelHome? customHome = null, Func<HttpClient>? httpFactory = null,
-        CatalogEntry? entryOverride = null, Func<string, string?>? env = null, Func<CatalogEntry, CancellationToken, OpenTail.Stingray.Cli.Scout.PreflightResult?>? feasibility = null)
+        CatalogEntry? entryOverride = null, Func<string, string?>? env = null, Func<CatalogEntry, CancellationToken, OpenTail.Stingray.Cli.Scout.PreflightResult?>? feasibility = null,
+        string? customConfigDir = null)
     {
-        if (TryResolve(taskName, modelId, modelFile, out resolved, out errorMessage, customHome, entryOverride))
+        if (TryResolve(taskName, modelId, modelFile, out resolved, out errorMessage, customHome, entryOverride, customConfigDir, env))
             return true;
 
         // Only "not installed / damaged" is offered a fix; an unknown id or a bad file path is the user's mistake and stays an error.
         if (!string.IsNullOrWhiteSpace(modelFile)) return false;
-        var entry = entryOverride ?? (!string.IsNullOrWhiteSpace(modelId) ? ModelCatalog.Find(modelId) : ModelCatalog.DefaultFor(taskName));
+
+        CatalogEntry? entry;
+        if (entryOverride is not null)
+            entry = entryOverride;
+        else if (!string.IsNullOrWhiteSpace(modelId))
+            entry = ModelCatalog.Find(modelId);
+        else
+        {
+            if (!Favourites.TryGet(taskName, out string? favId, out _, customConfigDir, env))
+                return false;
+            if (!string.IsNullOrWhiteSpace(favId))
+            {
+                entry = ModelCatalog.Find(favId);
+                if (entry is null || !entry.Task.Equals(taskName, StringComparison.OrdinalIgnoreCase))
+                    return false;
+            }
+            else
+            {
+                entry = ModelCatalog.DefaultFor(taskName);
+            }
+        }
+
         var home = customHome ?? ModelHome.Default();
         if (entry is null || home.StateOf(entry) == InstallState.Installed) return false;
         if (!(interactive ?? !Console.IsInputRedirected)) return false;
@@ -113,6 +159,6 @@ public static class CatalogTaskResolver
             resolved = null;
             return false;
         }
-        return TryResolve(taskName, modelId, modelFile, out resolved, out errorMessage, customHome, entryOverride);
+        return TryResolve(taskName, modelId, modelFile, out resolved, out errorMessage, customHome, entryOverride, customConfigDir, env);
     }
 }

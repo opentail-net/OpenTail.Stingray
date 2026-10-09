@@ -56,6 +56,7 @@ public static class KnownEnvironmentVariables
         "STINGRAY_BYPASS_GDN",
         "STINGRAY_BYPASS_MOE",
         "STINGRAY_CFG_TRACE",
+        "STINGRAY_CONFIG_DIR",
         "STINGRAY_COSYVOICE3_TANH_GELU",
         "STINGRAY_CPU_GDN",
         "STINGRAY_CPU_MICRO_GEMM",
