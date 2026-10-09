@@ -186,6 +186,59 @@ public sealed class CatalogGuardTests
         }
     }
 
+    [Fact]
+    public void OfferSmallerQualified_PicksLargestFittingSameFamilyEntry_OrNothing()
+    {
+        var big = ModelCatalog.Find("qwen2.5-7b")!;
+        static OpenTail.Stingray.Cli.Scout.PreflightResult Res(OpenTail.Stingray.Cli.Scout.PreflightVerdict v) => new(v, "t", 1L << 30, 8L << 30, 1L << 30);
+        var onlySmallestFits = (CatalogEntry e, CancellationToken _) => Res(e.Id == "qwen2.5-0.5b" ? OpenTail.Stingray.Cli.Scout.PreflightVerdict.Allowed : OpenTail.Stingray.Cli.Scout.PreflightVerdict.Blocked);
+        Assert.Equal("qwen2.5-0.5b", OpenTail.Stingray.Cli.SetupFlow.OfferSmallerQualified(big, onlySmallestFits, default)?.Id);
+        var nothingFits = (CatalogEntry e, CancellationToken _) => Res(OpenTail.Stingray.Cli.Scout.PreflightVerdict.Blocked);
+        Assert.Null(OpenTail.Stingray.Cli.SetupFlow.OfferSmallerQualified(big, nothingFits, default));
+        var unknown = (CatalogEntry e, CancellationToken _) => Res(OpenTail.Stingray.Cli.Scout.PreflightVerdict.Unknown);
+        Assert.Null(OpenTail.Stingray.Cli.SetupFlow.OfferSmallerQualified(big, unknown, default));
+    }
+
+    private static string RepoRoot()
+    {
+        for (var d = new DirectoryInfo(AppContext.BaseDirectory); d is not null; d = d.Parent)
+            if (File.Exists(Path.Combine(d.FullName, "OpenTail.Stingray.slnx"))) return d.FullName;
+        throw new InvalidOperationException("repo root (OpenTail.Stingray.slnx) not found above the test binaries");
+    }
+
+    [Fact]
+    public void EveryQualification_CitesAGoldenThatPinsTheSameFile()
+    {
+        int checkedCount = 0;
+        foreach (var entry in ModelCatalog.Entries)
+        foreach (var q in entry.Checked)
+        {
+            string path = Path.Combine(RepoRoot(), q.Golden.Replace('/', Path.DirectorySeparatorChar));
+            Assert.True(File.Exists(path), $"Entry '{entry.Id}' cites golden '{q.Golden}', which does not exist.");
+            using var doc = System.Text.Json.JsonDocument.Parse(File.ReadAllText(path));
+            var model = doc.RootElement.GetProperty("model");
+            Assert.Equal(entry.MainFile.FileName, model.GetProperty("fileName").GetString());
+            Assert.Equal(entry.MainFile.Sha256, model.GetProperty("sha256").GetString());
+            Assert.Equal(entry.MainFile.Size, model.GetProperty("sizeBytes").GetInt64());
+            Assert.False(string.IsNullOrWhiteSpace(q.Result) || string.IsNullOrWhiteSpace(q.Engine) || string.IsNullOrWhiteSpace(q.Date));
+            checkedCount++;
+        }
+        Assert.True(checkedCount >= 3, "expected the three Qwen2.5 chat entries to be qualified");
+    }
+
+    [Fact]
+    public void Family_FallbackStaysInFamily_QualifiedOnly_AndSmallerOnly()
+    {
+        var big = ModelCatalog.Find("qwen2.5-7b")!;
+        Assert.Equal(["qwen2.5-1.5b", "qwen2.5-0.5b"], ModelCatalog.SmallerQualifiedAlternatives(big).Select(e => e.Id));
+        Assert.Empty(ModelCatalog.SmallerQualifiedAlternatives(ModelCatalog.Find("qwen2.5-0.5b")!));
+        Assert.Empty(ModelCatalog.SmallerQualifiedAlternatives(big with { FamilyId = null }));
+        Assert.Empty(ModelCatalog.SmallerQualifiedAlternatives(big with { FamilyId = "another-family" }));
+        Assert.Empty(ModelCatalog.SmallerQualifiedAlternatives(big, backend: "vulkan"));
+        foreach (var e in ModelCatalog.Entries.Where(e => e.FamilyId is not null))
+            Assert.NotEmpty(e.Checked);
+    }
+
     private static bool IsValidHex(string? s, int expectedLength)
     {
         if (s is null || s.Length != expectedLength) return false;

@@ -55,6 +55,7 @@ public static class SetupFlow
             else if (!LoadPreflight.ShouldProceed(fit, ignore: false, out string? why))
             {
                 AnsiConsole.MarkupLine($"[yellow]{Markup.Escape(why!)}[/]");
+                _ = OfferSmallerQualified(entry, feasibility, ct);
                 if (!interactive || yes) return new(false, "does not fit this machine");
                 if (!prompt.Confirm("Download anyway?", defaultYes: false)) return new(false, "does not fit this machine");
             }
@@ -118,4 +119,21 @@ public static class SetupFlow
         using var http = new ExternalHttpClient(userAgent: "OpenTail.Stingray/setup");
         return LoadPreflight.EvaluateCatalogEntryAsync(entry, contextTokens, http, ct).GetAwaiter().GetResult();
     };
+
+    /// <summary>
+    /// When the chosen model does not fit, names smaller models of the SAME family that were qualified and do fit (same remote check).
+    /// Never suggests an unqualified look-alike or another family; prints nothing when there is none.
+    /// </summary>
+    internal static CatalogEntry? OfferSmallerQualified(CatalogEntry entry, Func<CatalogEntry, CancellationToken, PreflightResult?> feasibility, CancellationToken ct)
+    {
+        foreach (var alt in ModelCatalog.SmallerQualifiedAlternatives(entry))
+        {
+            if (feasibility(alt, ct) is { Verdict: PreflightVerdict.Allowed } fit)
+            {
+                AnsiConsole.MarkupLine($"[green]A smaller qualified model of the same family fits:[/] [yellow]stingray setup {Markup.Escape(alt.Id)}[/] (about {Markup.Escape(LoadPreflight.Gib(fit.EstimatedPeakBytes))}; {Markup.Escape(SetupCommand.QualificationText(alt))}).");
+                return alt;
+            }
+        }
+        return null;
+    }
 }

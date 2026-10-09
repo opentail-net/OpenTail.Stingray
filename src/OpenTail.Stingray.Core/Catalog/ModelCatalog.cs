@@ -31,6 +31,8 @@ public sealed record CatalogFile(string Repo, string Revision, string RepoPath, 
 /// <param name="Speed">A measured speed note, with the machine it was measured on.</param>
 /// <param name="Evidence">Where the proof that these exact files work lives (test, sample, status row).</param>
 /// <param name="RunTemplate">Command that uses the bundle; <c>{0}</c> is replaced by the main file's local path.</param>
+/// <param name="FamilyId">Entries sharing a family id are the same model line at different sizes or quantisations; a fallback never leaves the family.</param>
+/// <param name="Qualifications">What was actually checked, structured so code can read it (the free-text <paramref name="Evidence"/> stays for humans).</param>
 public sealed record CatalogEntry(
     string Id,
     string Task,
@@ -41,8 +43,17 @@ public sealed record CatalogEntry(
     string Hardware,
     string Speed,
     string Evidence,
-    string RunTemplate)
+    string RunTemplate,
+    string? FamilyId = null,
+    IReadOnlyList<CatalogQualification>? Qualifications = null)
 {
+    /// <summary>What was qualified for this bundle (never null). Empty means unqualified: shown as such, never as known-good.</summary>
+    public IReadOnlyList<CatalogQualification> Checked => Qualifications ?? [];
+
+    /// <summary>The qualification for a backend and capability (e.g. <c>cpu</c>, <c>chat</c>), or null when none was recorded.</summary>
+    public CatalogQualification? QualificationFor(string backend, string capability) =>
+        Checked.FirstOrDefault(q => q.Backend.Equals(backend, StringComparison.OrdinalIgnoreCase) && q.Capability.Equals(capability, StringComparison.OrdinalIgnoreCase));
+
     /// <summary>Total download size in bytes.</summary>
     public long TotalSize => Files.Sum(f => f.Size);
 
@@ -93,8 +104,10 @@ public static class ModelCatalog
             LicenceNeedsConsent: false,
             Hardware: "about 1 GB RAM, CPU only",
             Speed: "about 23 tokens/s on a Ryzen 7 5700G CPU (2026-09-28)",
-            Evidence: "README quick start, samples/QuickStart",
-            RunTemplate: "stingray chat"),
+            Evidence: "README quick start, samples/QuickStart; llama.cpp golden Exact 32/32 (2026-10-09)",
+            RunTemplate: "stingray chat",
+            FamilyId: "qwen2.5-instruct",
+            Qualifications: [Cpu("qwen2.5-0.5b", "Exact, 32/32 tokens")]),
 
         new(
             Id: "qwen2.5-1.5b",
@@ -108,9 +121,11 @@ public static class ModelCatalog
             Licence: "Apache-2.0",
             LicenceNeedsConsent: false,
             Hardware: "about 2.5 GiB RAM, CPU only",
-            Speed: "not yet measured",
-            Evidence: "scout pretest stages 0-3 passed 2026-10-09; llama.cpp golden pending",
-            RunTemplate: "stingray chat"),
+            Speed: "about 33 tokens/s decode on a Ryzen 7 5700G CPU (one golden run, 2026-10-09)",
+            Evidence: "llama.cpp golden NearTie 31/32 (2026-10-09); scout pretest stages 0-3 passed 2026-10-09",
+            RunTemplate: "stingray chat",
+            FamilyId: "qwen2.5-instruct",
+            Qualifications: [Cpu("qwen2.5-1.5b", "NearTie, 31/32 tokens")]),
 
         new(
             Id: "qwen2.5-7b",
@@ -126,9 +141,11 @@ public static class ModelCatalog
             Licence: "Apache-2.0",
             LicenceNeedsConsent: false,
             Hardware: "about 9 GiB RAM, CPU only",
-            Speed: "not yet measured",
-            Evidence: "scout pretest stages 0-3 passed 2026-10-09; llama.cpp golden pending",
-            RunTemplate: "stingray chat"),
+            Speed: "about 8 tokens/s decode on a Ryzen 7 5700G CPU (one golden run, 2026-10-09)",
+            Evidence: "llama.cpp golden NearTie 31/32 (2026-10-09); scout pretest stages 0-3 passed 2026-10-09",
+            RunTemplate: "stingray chat",
+            FamilyId: "qwen2.5-instruct",
+            Qualifications: [Cpu("qwen2.5-7b", "NearTie, 31/32 tokens")]),
 
         new(
             Id: "piper-lessac",
@@ -167,6 +184,21 @@ public static class ModelCatalog
             RunTemplate: "stingray transcribe <audio.wav>"),
     ];
 
+    private static CatalogQualification Cpu(string golden, string result) => new("cpu", "chat",
+        $"tests/OpenTail.Stingray.Tests.ForwardPass/Goldens/{golden}.golden.json", result, "2026-10-09", "llama-server 10306 (6b5c2efb4)");
+
+    /// <summary>
+    /// Smaller entries of the same model family that were qualified for <paramref name="backend"/> and this entry's task, largest first.
+    /// A fallback never leaves the family and never offers an unqualified look-alike.
+    /// </summary>
+    public static IEnumerable<CatalogEntry> SmallerQualifiedAlternatives(CatalogEntry entry, string backend = "cpu") =>
+        entry.FamilyId is null
+            ? []
+            : Entries
+                .Where(e => !ReferenceEquals(e, entry) && e.Task == entry.Task && e.FamilyId == entry.FamilyId
+                    && e.TotalSize < entry.TotalSize && e.QualificationFor(backend, e.Task) is not null)
+                .OrderByDescending(e => e.TotalSize);
+
     /// <summary>Finds an entry by id, or the default entry for a task name. Case-insensitive.</summary>
     public static CatalogEntry? Find(string idOrTask)
     {
@@ -187,3 +219,15 @@ public static class ModelCatalog
     public static IEnumerable<CatalogEntry> ForTask(string task) =>
         Entries.Where(e => e.Task.Equals(task, StringComparison.OrdinalIgnoreCase));
 }
+
+/// <summary>
+/// One scoped claim: on <paramref name="Backend"/>, for <paramref name="Capability"/>, these exact files reproduced a reference.
+/// It says nothing about other backends, capabilities, contexts or prompts.
+/// </summary>
+/// <param name="Backend">Where it ran: <c>cpu</c>.</param>
+/// <param name="Capability">What was exercised: <c>chat</c>.</param>
+/// <param name="Golden">Repo-relative path of the recorded llama.cpp golden; a test fails when it is missing or pins different files.</param>
+/// <param name="Result">The verdict in words, e.g. <c>Exact, 32/32 tokens</c>.</param>
+/// <param name="Date">ISO date of the run.</param>
+/// <param name="Engine">Reference engine and build the golden was captured with.</param>
+public sealed record CatalogQualification(string Backend, string Capability, string Golden, string Result, string Date, string Engine);

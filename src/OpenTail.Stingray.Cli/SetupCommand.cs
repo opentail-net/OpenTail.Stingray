@@ -59,7 +59,13 @@ public sealed class SetupCommand : Command<SetupCommand.Settings>
         Row("Licence", entry.Licence);
         Row("Needs", entry.Hardware);
         Row("Speed", entry.Speed);
+        Row("Qualified", QualificationText(entry));
         Row("Saved to", home.Root);
         AnsiConsole.WriteLine();
     }
+
+    /// <summary>What was checked for this bundle, scoped. Unqualified entries say so rather than imply they are known-good.</summary>
+    internal static string QualificationText(CatalogEntry entry) => entry.Checked.Count == 0
+        ? "not qualified: no recorded reference check for these files"
+        : string.Join("; ", entry.Checked.Select(q => $"{q.Backend} {q.Capability}: {q.Result} vs {q.Engine} ({q.Date}, recorded prompts only)"));
 }
