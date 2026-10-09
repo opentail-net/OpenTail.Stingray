@@ -70,6 +70,23 @@ When finished, report: files changed; test counts before/after (whole project); 
 **Tests:** a temp model home with synthetic GGUFs (`HubFixtures.Gguf`) covering: catalogue states, an admitted and an unregistered architecture, an unreadable file reported as unreadable without stopping the scan, fits / does not fit (inject RAM), `--verify` intact and damaged, no file modified.
 **Done when:** the new tests and the whole Cli project pass, and the option inventory guard passes.
 **Expected effort:** medium (3-4 hours).
+## Follow-up to card B and D (do these first)
+
+1. Backlog: treat `AdmissionStatus.Experimental` like `NotAdmitted` in `ResolveStatus` (rule 14: both are ported-but-unverified; show them as unregistered) and add a test.
+2. Backlog: replace the bare `catch { }` in `Parse` with `catch (Exception ex) when (ex is JsonException or InvalidOperationException or FormatException)`.
+3. Backlog: remove `TotalFileSizeBytes` (it sums every quant of every repo, which means nothing) or rename and document it honestly.
+4. Backlog: add `&pipeline_tag=text-generation` to the Hub query (verify the Hub honours it together with `filter=gguf` and say so in your report); also label `(none)` as "no architecture declared" and `clip` as "projector". The live list currently shows audio / diffusion / embedding families as "unregistered", which is misleading for this registry.
+5. Signatures: remove `qwen2moe--3fdf99ea8c33` (its source repo `RichardErkhov/katuni4ka_-_tiny-random-qwen1.5-moe-gguf` has no licence tag and is a random-weights test model; card D requires apache-2.0 or mit). Replace it only with a real, licensed checkpoint if one under about 6 GB exists; otherwise list `qwen2moe` as skipped. In your report state each repo's licence and whether it is an official release or a community build.
+
+## Task card F: favourites (plan P3)
+
+**Read first:** `docs/3-product-and-runtime/2026-10-09-known-good-checkpoints-and-first-run-plan.md` section 5.2 and P3.
+**Files you may change:** new `src/OpenTail.Stingray.Cli/Favourites.cs`, `src/OpenTail.Stingray.Cli/CatalogTaskResolver.cs`, `src/OpenTail.Stingray.Cli/ModelsCommand.cs`, a new test file, and (last step) the regenerated `docs/reference/cli-option-inventory.md` (Class `stable`) plus one short section in `docs/reference/061-coverage-tooling.md`.
+**Decisions already made (change nothing without asking):** the file is `favourites.json` in a per-user config directory: `%APPDATA%\stingray` on Windows, `$XDG_CONFIG_HOME/stingray` (default `~/.config/stingray`) elsewhere, overridable by the environment variable `STINGRAY_CONFIG_DIR` (register it in `KnownEnvironmentVariables`, add its row to `docs/reference/env-var-inventory.md` and bump the count sentence there: the Core tests enforce both). Format: `{ "chat": "qwen2.5-1.5b" }` mapping an alias to a CATALOGUE id only (no user-chosen repo files in this task). Commands: `stingray models use <task> <id>` (validates the id exists AND serves that task; refuses otherwise) and `stingray models use <task> --clear`; `stingray models` marks the favourite.
+**Resolution order** in `CatalogTaskResolver`: explicit `--model-file` > explicit `--model <id>` > favourite > catalogue default. A favourite that names a removed or wrong-task id must produce an error that says what to run to fix it (`stingray models use chat <id>` or `--clear`); never silently fall back to the default. A corrupt or unreadable `favourites.json` is an error naming the file, never silently ignored and never overwritten.
+**Tests:** temp config dir; each step of the resolution order; set / clear; wrong task; unknown id; stale favourite; corrupt file; a write is atomic (write a temp file then rename) and never leaves a half-written file; no test touches the real user config directory.
+**Done when:** the new tests and the whole Cli and Core projects pass, and the option and environment-variable inventory guards pass.
+**Expected effort:** medium (3-4 hours).
 ## After the work comes back
 
 Check: the diff touches only the listed files; test totals went up by about the count added; run the Core guards too (`Tests.Core` classes `ArchitectureCapabilitiesBaselineTests` and `KnownEnvironmentVariablesTests`) because they scan all of `src/`; try one deliberate break to confirm a new test can fail.
