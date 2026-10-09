@@ -211,6 +211,13 @@ Qwen3-VL (`rope.multi_axis`), Jais (`attn.fused_qkv`); no spurious findings on d
 carry (it is names only; required/optional tensors and layer topology live in code), and because it has no dependence on anyone's llama.cpp version or local files. The
 upstream table remains a candidate for a later completeness check ("missing/unexpected tensors for architecture X") on families we have not touched.
 
+**Leave-one-architecture-out check (2026-10-09, `scripts/scout-leave-one-out.ps1`, 12 structures of 9 families, 12 shipped signatures).** Each real file was scouted with its own architecture's
+signatures removed. Nearest remaining parent and structural difference count: qwen3 <-> qwen3vl 1 (tensors identical, only `rope.multi_axis` differs); llama (3 structures) -> qwen3 3/4/5
+(exactly the Q/K-norm tensors and feature); exaone4 -> qwen3 11; jais -> llama 14 (fused QKV, LayerNorm biases); phimoe -> llama 18; deepseek2 -> llama 19 and glm4moe 24;
+glm4moe -> deepseek2 20; qwen35moe -> qwen3vl 34. Observations, not thresholds (n=12): the parents named are sensible in every case; counts split cleanly into <=11 (a real near-relative)
+and >=14 (nothing close; the list says what is missing); no file matched a *different* architecture with zero differences, so no false relabel signal. Limits: qwen3 vs qwen3vl show that
+identical tensors can hide a semantic difference only visible in metadata, which is exactly what the caveat on every finding says; and the check cannot show what the ranking does for a
+family far from everything shipped, beyond "large count".
 Open risks: the shipped set covers only what had a checkpoint on the maintainer's machine; structural identity says nothing about metadata values, so every relabel
 candidate still needs a golden; the ranking is uncalibrated (counts, not probabilities).
 

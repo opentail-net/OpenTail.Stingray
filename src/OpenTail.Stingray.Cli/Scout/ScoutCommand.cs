@@ -33,6 +33,10 @@ public sealed class ScoutCommand : Command<ScoutCommand.Settings>
         [Description("Extra reference signatures (*.signature.json) to rank against, in addition to the built-in admitted set")]
         public string? SignaturesDir { get; init; }
 
+        [CommandOption("--no-builtin-signatures")]
+        [Description("Rank only against --signatures <dir>, ignoring the signatures shipped in the binary (for leave-one-out checks and contributor sets)")]
+        public bool NoBuiltinSignatures { get; init; }
+
         [CommandOption("--emit-signature <PATH>")]
         [Description("Write this file's structural signature as JSON. Admitted architectures only; hashes the file (cached beside it); adds an origin if the target already holds the same structure")]
         public string? EmitSignaturePath { get; init; }
@@ -106,7 +110,7 @@ public sealed class ScoutCommand : Command<ScoutCommand.Settings>
 
         long? budget = settings.Budget is null ? null : (ScoutSize.TryParse(settings.Budget, out long b) ? b : null);
         long reserve = settings.Reserve is not null && ScoutSize.TryParse(settings.Reserve, out long r) ? r : ScoutOptions.DefaultReserveBytes;
-        var signatures = new List<ArchSignature>(SignatureStore.LoadEmbedded());
+        var signatures = settings.NoBuiltinSignatures ? new List<ArchSignature>() : new List<ArchSignature>(SignatureStore.LoadEmbedded());
         if (settings.SignaturesDir is { Length: > 0 } dir)
         {
             var problems = new List<string>();
