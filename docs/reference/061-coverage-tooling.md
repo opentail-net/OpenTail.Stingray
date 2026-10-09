@@ -32,7 +32,13 @@ stingray scout -m model.gguf --budget 64G [--reserve 8G]        # also report th
 * **Unknown stays unknown.** The host working-set and KV estimates are `Unknown` with a reason and null bytes; file size is never reported as
   peak RAM. With `--budget` the execution decision is therefore `blocked` until a real estimator exists, and without it `not_assessed`. It is never `allowed` today.
 * Exit codes: 0 report produced (blockers do not change it), 1 file unreadable as GGUF, 64 bad option, 66 file missing.
-* Not yet implemented (see plan): feature hypotheses and architecture relatives (Phase 2), `scripts/scout-pretest.ps1`.
+* **Feature findings** (`ScoutFeatures`): each has a stable id, a one-line interpretation, evidence (metadata keys and tensor names/dtypes/shapes) and a caveat.
+  `Known` = the structure was observed (e.g. `nextn_predict_layers` metadata plus several `blk.N.nextn.*` tensors); `Hypothesis` = one-sided or name-only
+  evidence. Neither means the semantics are supported. Ids: `ffn.expert_routed`, `ffn.shared_expert`, `attn.{fused_qkv,separate_qkv,qkv_layout_mixed,qk_norm,gqa,mha,mqa,head_count_per_layer,kv_heads_per_layer,mla_low_rank,sparse_indexer}`,
+  `recurrent.{ssm,hybrid_ssm,rwkv_time_mix}`, `mtp.nextn_head`, `rope.{multi_axis,scaling,partial}`, `multimodal.{projector_file,vision_tensors_in_text_file,audio_tensors}`,
+  `quant.low_bit_or_block_fp`, plus the tokenizer findings. Tensor and key names were checked against the pinned `examples/llama.cpp/.../llama-arch.cpp`.
+  A rule fires only on evidence it can cite; one isolated MTP-like tensor, a projector alone, or `ssm_*` names alone never reach `Known` semantics.
+* Not yet implemented (see plan): architecture relatives ranking, `scripts/scout-pretest.ps1`.
 * Advisory only: nothing in the report admits or promotes an architecture.
 
 ---

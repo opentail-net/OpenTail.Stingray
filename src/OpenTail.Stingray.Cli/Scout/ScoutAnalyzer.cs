@@ -43,6 +43,7 @@ public static class ScoutAnalyzer
         var arch = ResolveArchitecture(input, blockers);
         CheckDTypes(input.Tensors, blockers);
         CheckTokenizer(tokenizer, input.Metadata, findings, blockers);
+        findings.AddRange(ScoutFeatures.Evaluate(input.Metadata, input.Tensors));
 
         int shardCount = input.Tensors.Count == 0 ? 1 : input.Tensors.Max(t => t.ShardIndex) + 1;
         var artifact = new ArtifactInfo(input.FileName, input.FileBytes, input.GgufVersion, input.HeaderTensorCount,
