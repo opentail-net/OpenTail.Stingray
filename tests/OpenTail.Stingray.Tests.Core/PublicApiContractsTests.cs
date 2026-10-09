@@ -681,13 +681,261 @@ public class PublicApiContractsTests
         Assert.Contains("Rejected by template", ex.Message);
     }
 
+    [Fact]
+    public void Custom_IInferenceParams_PreservesAllSettingsInSamplingParams()
+    {
+        var custom = new CustomInferenceParams
+        {
+            MaxTokens = 777,
+            Seed = 999,
+            Temperature = 0.42f,
+            TopK = 25,
+            TopP = 0.85f,
+            MinP = 0.03f,
+            RepetitionPenalty = 1.2f,
+            RepeatLastTokensCount = 96,
+            PresencePenalty = 0.5f,
+            FrequencyPenalty = 0.6f,
+            StopTokens = [10, 20],
+            AdditionalStopTokens = [30],
+            AllowedChoices = ["A", "B"],
+            EnableThinking = false,
+            ThinkingBudget = 100,
+            SpecType = SpecType.Mtp,
+            SpecDraftNMax = 3
+        };
+
+        var sp = custom.ToSamplingParams();
+
+        Assert.Equal(777, sp.MaxNewTokens);
+        Assert.Equal(999, sp.Seed);
+        Assert.Equal(0.42f, sp.Temperature);
+        Assert.Equal(25, sp.TopK);
+        Assert.Equal(0.85f, sp.TopP);
+        Assert.Equal(0.03f, sp.MinP);
+        Assert.Equal(1.2f, sp.RepetitionPenalty);
+        Assert.Equal(96, sp.RepeatLastN);
+        Assert.Equal(0.5f, sp.PresencePenalty);
+        Assert.Equal(0.6f, sp.FrequencyPenalty);
+        Assert.Equal(new int[] { 10, 20 }, sp.StopTokenIds!);
+        Assert.Equal(new int[] { 30 }, sp.AdditionalStopTokenIds!);
+        Assert.Equal(["A", "B"], sp.AllowedChoices);
+        Assert.True(sp.ThinkingDisabled);
+        Assert.Equal(100, sp.MaxThinkingTokens);
+        Assert.Equal(SpecType.Mtp, sp.SpecType);
+        Assert.Equal(3, sp.SpecDraftNMax);
+    }
+
+    [Fact]
+    public void Executors_AcceptCustomIModelContext_WithoutThrowing()
+    {
+        var customContext = new ContextWithTokenizer(new FakeCoderTokenizer());
+
+        // Should construct cleanly without throwing ArgumentException
+        var interactive = new InteractiveExecutor(customContext);
+        Assert.Same(customContext, interactive.Context);
+        Assert.Null(interactive.ModelContext);
+
+        var stateless = new StatelessExecutor(customContext);
+        Assert.Same(customContext, stateless.Context);
+        Assert.Null(stateless.ModelContext);
+
+        var batched = new BatchedExecutor(customContext);
+        Assert.Same(customContext, batched.Context);
+        Assert.Null(batched.ModelContext);
+    }
+
+    [Fact]
+    public async Task ChatSession_ExceptionDuringGeneration_RollsBackPendingUserMessage()
+    {
+        var failingExecutor = new FailingExecutor();
+        var session = new ChatSession(failingExecutor);
+        Assert.Empty(session.History);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+        {
+            await foreach (var _ in session.ChatChunksAsync("This will fail"))
+            {
+            }
+        });
+
+        // The user message must have been rolled back
+        Assert.Empty(session.History);
+    }
+
+    [Fact]
+    public async Task ChatSession_CancellationDuringGeneration_RollsBackPendingUserMessage()
+    {
+        using var cts = new CancellationTokenSource();
+        var cancellingExecutor = new CancellingExecutor(cts);
+        var session = new ChatSession(cancellingExecutor);
+        Assert.Empty(session.History);
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () =>
+        {
+            await foreach (var _ in session.ChatChunksAsync("This will cancel", cancellationToken: cts.Token))
+            {
+            }
+        });
+
+        // The user message must have been rolled back
+        Assert.Empty(session.History);
+    }
+
+    [Fact]
+    public async Task ChatSession_SuccessfulTurn_AppendsBothUserAndAssistant()
+    {
+        var workingExecutor = new WorkingExecutor();
+        var session = new ChatSession(workingExecutor);
+        Assert.Empty(session.History);
+
+        var chunks = new List<GenerateChunk>();
+        await foreach (var chunk in session.ChatChunksAsync("Hello assistant"))
+        {
+            chunks.Add(chunk);
+        }
+
+        Assert.Equal(2, session.History.Count);
+        Assert.Equal(AuthorRole.User, session.History[0].Role);
+        Assert.Equal("Hello assistant", session.History[0].Content);
+        Assert.Equal(AuthorRole.Assistant, session.History[1].Role);
+        Assert.Equal("Hi there!", session.History[1].Content);
+    }
+
+    [Fact]
+    public async Task Model_ConcurrentContextCreationAndDisposal_IsDeadlockFreeAndSafe()
+    {
+        var modelPath = Path.Combine(RepoRoot, "models", "_models", "SmolLM2-135M-Instruct-Q4_K_M.gguf");
+        if (!File.Exists(modelPath)) return;
+
+        var model = Model.Load(new ModelParams(modelPath) { Backend = "cpu", GpuLayerCount = 0 });
+
+        // Concurrent thread creating contexts and thread disposing model
+        var barrier = new Barrier(2);
+        var contexts = new System.Collections.Concurrent.ConcurrentBag<IModelContext>();
+        int createdCount = 0;
+        int disposedExCount = 0;
+
+        var tCreate = Task.Run(() =>
+        {
+            barrier.SignalAndWait();
+            for (int i = 0; i < 20; i++)
+            {
+                try
+                {
+                    var ctx = model.CreateContext(new ContextParams { ContextSize = 128 });
+                    contexts.Add(ctx);
+                    Interlocked.Increment(ref createdCount);
+                }
+                catch (ObjectDisposedException)
+                {
+                    Interlocked.Increment(ref disposedExCount);
+                }
+            }
+        });
+
+        var tDispose = Task.Run(() =>
+        {
+            barrier.SignalAndWait();
+            Thread.Sleep(5);
+            model.Dispose();
+        });
+
+        // Must finish bounded (no deadlock)
+        var finishedTask = await Task.WhenAny(Task.WhenAll(tCreate, tDispose), Task.Delay(TimeSpan.FromSeconds(10)));
+        Assert.True(finishedTask != Task.Delay(TimeSpan.FromSeconds(10)), "Operation deadlocked during concurrent CreateContext and Dispose");
+
+        // Clean up any surviving contexts
+        foreach (var ctx in contexts)
+        {
+            ctx.Dispose();
+        }
+    }
+
+    private sealed class CustomInferenceParams : IInferenceParams
+    {
+        public int MaxTokens { get; init; } = 512;
+        public int? Seed { get; init; }
+        public string? CanonicalHistoryPrefix { get; init; }
+        public float Temperature { get; init; } = 0.7f;
+        public int TopK { get; init; } = 40;
+        public float TopP { get; init; } = 0.9f;
+        public float MinP { get; init; } = 0.0f;
+        public float RepetitionPenalty { get; init; } = 1.0f;
+        public int RepeatLastTokensCount { get; init; } = 64;
+        public float PresencePenalty { get; init; } = 0.0f;
+        public float FrequencyPenalty { get; init; } = 0.0f;
+        public IReadOnlyDictionary<int, float>? LogitBias { get; init; }
+        public IReadOnlyList<string>? StopSequences { get; init; }
+        public IReadOnlyList<int>? StopTokens { get; init; }
+        public IReadOnlyList<int>? AdditionalStopTokens { get; init; }
+        public IReadOnlyList<string>? AllowedChoices { get; init; }
+        public bool? EnableThinking { get; init; }
+        public int ThinkingBudget { get; init; }
+        public SpecType SpecType { get; init; }
+        public int SpecDraftNMax { get; init; }
+        public ITokenConstraint? Constraint { get; init; }
+    }
+
+    private sealed class FailingExecutor : IExecutor
+    {
+        public IModelContext Context => new ContextWithTokenizer(new FakeCoderTokenizer());
+        public IAsyncEnumerable<string> InferAsync(string prompt, IInferenceParams? inferenceParams = null, CancellationToken cancellationToken = default) => throw new InvalidOperationException("Inference failed.");
+        public async IAsyncEnumerable<GenerateChunk> InferChunksAsync(string prompt, IInferenceParams? inferenceParams = null, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            await Task.Yield();
+            throw new InvalidOperationException("Inference failed.");
+#pragma warning disable CS0162 // Unreachable code detected
+            yield break;
+#pragma warning restore CS0162
+        }
+    }
+
+    private sealed class CancellingExecutor(CancellationTokenSource cts) : IExecutor
+    {
+        public IModelContext Context => new ContextWithTokenizer(new FakeCoderTokenizer());
+        public IAsyncEnumerable<string> InferAsync(string prompt, IInferenceParams? inferenceParams = null, CancellationToken cancellationToken = default) => throw new NotImplementedException();
+        public async IAsyncEnumerable<GenerateChunk> InferChunksAsync(string prompt, IInferenceParams? inferenceParams = null, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            await Task.Yield();
+            cts.Cancel();
+            cancellationToken.ThrowIfCancellationRequested();
+            yield break;
+        }
+    }
+
+    private sealed class WorkingExecutor : IExecutor
+    {
+        public IModelContext Context => new ContextWithTokenizer(new FakeCoderTokenizer());
+        public async IAsyncEnumerable<string> InferAsync(string prompt, IInferenceParams? inferenceParams = null, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            await Task.Yield();
+            yield return "Hi there!";
+        }
+        public async IAsyncEnumerable<GenerateChunk> InferChunksAsync(string prompt, IInferenceParams? inferenceParams = null, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            await Task.Yield();
+            yield return new GenerateChunk(GenerateChunkKind.Text, "Hi there!");
+        }
+    }
+
     private sealed class ContextWithTokenizer(ITokenizer tokenizer) : IModelContext
     {
-        public IModel Model => null!;
+        public IModel Model => new FakeModel();
         public ITokenizer Tokenizer => tokenizer;
         public int ContextSize => 512;
-        public IInferenceEngine Engine => null!;
+        public OpenTail.Stingray.Engine.IInferenceEngine Engine => null!;
         public void Reset() { }
+        public void Dispose() { }
+    }
+
+    private sealed class FakeModel : IModel
+    {
+        public string ModelPath => "dummy.gguf";
+        public string Architecture => "llama";
+        public int ContextLength => 2048;
+        public int EmbeddingLength => 512;
+        public IModelContext CreateContext(IContextParams? contextParams = null) => throw new NotImplementedException();
         public void Dispose() { }
     }
 

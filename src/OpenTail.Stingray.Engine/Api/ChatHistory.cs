@@ -96,6 +96,12 @@ public class ChatHistory : IReadOnlyList<ChatMessage>
     /// <summary>Appends a tool message to the history.</summary>
     public void AddToolMessage(string content) => AddMessage(AuthorRole.Tool, content);
 
+    /// <summary>Removes the message at the specified index.</summary>
+    public void RemoveAt(int index) => _messages.RemoveAt(index);
+
+    /// <summary>Removes the specified message from the history.</summary>
+    public bool Remove(ChatMessage message) => _messages.Remove(message);
+
     /// <summary>Clears all messages from the history.</summary>
     public void Clear() => _messages.Clear();
 

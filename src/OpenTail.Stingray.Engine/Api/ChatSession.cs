@@ -115,7 +115,8 @@ public class ChatSession
             }
         }
 
-        var protocol = ChatProtocolRegistry.For(_executor.Context.Model.Architecture);
+        string arch = _executor.Context.Model?.Architecture ?? "llama";
+        var protocol = ChatProtocolRegistry.For(arch);
         if (protocol.Render != null)
         {
             return protocol.Render(new ChatRenderRequest(history, addGenerationPrompt));
@@ -169,33 +170,45 @@ public class ChatSession
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(userMessage);
+        int messageIndex = _history.Count;
         _history.AddUserMessage(userMessage);
-
-        string prompt = FormatPrompt(_history, addGenerationPrompt: true);
-        string canonicalPrefix = FormatPrompt(_history, addGenerationPrompt: false);
-
-        IInferenceParams? effectiveParams = parameters switch
+        bool completed = false;
+        try
         {
-            InferenceParams ip => ip with { CanonicalHistoryPrefix = canonicalPrefix },
-            null => new InferenceParams { CanonicalHistoryPrefix = canonicalPrefix },
-            _ => parameters
-        };
+            string prompt = FormatPrompt(_history, addGenerationPrompt: true);
+            string canonicalPrefix = FormatPrompt(_history, addGenerationPrompt: false);
 
-        var replyBuilder = new StringBuilder();
-
-        await foreach (var chunk in _executor.InferChunksAsync(prompt, effectiveParams, cancellationToken).WithCancellation(cancellationToken).ConfigureAwait(false))
-        {
-            if (chunk.Kind == GenerateChunkKind.Text)
+            IInferenceParams? effectiveParams = parameters switch
             {
-                replyBuilder.Append(chunk.Text);
-            }
-            yield return chunk;
-        }
+                InferenceParams ip => ip with { CanonicalHistoryPrefix = canonicalPrefix },
+                null => new InferenceParams { CanonicalHistoryPrefix = canonicalPrefix },
+                _ => parameters
+            };
 
-        string fullReply = replyBuilder.ToString();
-        if (!string.IsNullOrEmpty(fullReply))
+            var replyBuilder = new StringBuilder();
+
+            await foreach (var chunk in _executor.InferChunksAsync(prompt, effectiveParams, cancellationToken).WithCancellation(cancellationToken).ConfigureAwait(false))
+            {
+                if (chunk.Kind == GenerateChunkKind.Text)
+                {
+                    replyBuilder.Append(chunk.Text);
+                }
+                yield return chunk;
+            }
+
+            string fullReply = replyBuilder.ToString();
+            if (!string.IsNullOrEmpty(fullReply))
+            {
+                _history.AddAssistantMessage(fullReply);
+            }
+            completed = true;
+        }
+        finally
         {
-            _history.AddAssistantMessage(fullReply);
+            if (!completed && _history.Count > messageIndex)
+            {
+                _history.RemoveAt(messageIndex);
+            }
         }
     }
 
@@ -225,33 +238,45 @@ public class ChatSession
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(message);
+        int messageIndex = _history.Count;
         _history.Add(message);
-
-        string prompt = FormatPrompt(_history, addGenerationPrompt: true);
-        string canonicalPrefix = FormatPrompt(_history, addGenerationPrompt: false);
-
-        IInferenceParams? effectiveParams = parameters switch
+        bool completed = false;
+        try
         {
-            InferenceParams ip => ip with { CanonicalHistoryPrefix = canonicalPrefix },
-            null => new InferenceParams { CanonicalHistoryPrefix = canonicalPrefix },
-            _ => parameters
-        };
+            string prompt = FormatPrompt(_history, addGenerationPrompt: true);
+            string canonicalPrefix = FormatPrompt(_history, addGenerationPrompt: false);
 
-        var replyBuilder = new StringBuilder();
-
-        await foreach (var chunk in _executor.InferChunksAsync(prompt, effectiveParams, cancellationToken).WithCancellation(cancellationToken).ConfigureAwait(false))
-        {
-            if (chunk.Kind == GenerateChunkKind.Text)
+            IInferenceParams? effectiveParams = parameters switch
             {
-                replyBuilder.Append(chunk.Text);
-            }
-            yield return chunk;
-        }
+                InferenceParams ip => ip with { CanonicalHistoryPrefix = canonicalPrefix },
+                null => new InferenceParams { CanonicalHistoryPrefix = canonicalPrefix },
+                _ => parameters
+            };
 
-        string fullReply = replyBuilder.ToString();
-        if (!string.IsNullOrEmpty(fullReply))
+            var replyBuilder = new StringBuilder();
+
+            await foreach (var chunk in _executor.InferChunksAsync(prompt, effectiveParams, cancellationToken).WithCancellation(cancellationToken).ConfigureAwait(false))
+            {
+                if (chunk.Kind == GenerateChunkKind.Text)
+                {
+                    replyBuilder.Append(chunk.Text);
+                }
+                yield return chunk;
+            }
+
+            string fullReply = replyBuilder.ToString();
+            if (!string.IsNullOrEmpty(fullReply))
+            {
+                _history.AddAssistantMessage(fullReply);
+            }
+            completed = true;
+        }
+        finally
         {
-            _history.AddAssistantMessage(fullReply);
+            if (!completed && _history.Count > messageIndex)
+            {
+                _history.RemoveAt(messageIndex);
+            }
         }
     }
 

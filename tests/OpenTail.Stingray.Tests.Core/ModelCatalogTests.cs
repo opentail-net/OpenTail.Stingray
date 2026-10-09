@@ -29,7 +29,7 @@ public sealed class ModelCatalogTests
         foreach (var e in ModelCatalog.Entries)
         {
             Assert.Contains(e.Task, ModelCatalog.Tasks);
-            Assert.Contains("{0}", e.RunTemplate, StringComparison.Ordinal);
+            Assert.StartsWith("stingray ", e.RunTemplate, StringComparison.Ordinal);
             Assert.False(string.IsNullOrWhiteSpace(e.Evidence));
             Assert.DoesNotContain("MEASURE", e.Speed, StringComparison.Ordinal);
             foreach (var f in e.Files)

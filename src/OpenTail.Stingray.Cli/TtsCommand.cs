@@ -95,6 +95,8 @@ public sealed class TtsCommand : Command<TtsCommand.Settings>
         ["models/xtts-v2"], DirMarker: "model.safetensors",
         Extra: "The directory must contain vocab.json/model.safetensors/mel_stats.safetensors (converted from huggingface.co/coqui/XTTS-v2's model.pth via scratch-llamacpp-ref/xtts_convert_to_safetensors.py). XTTS-v2 also requires --ref-audio (a real voice-cloning source clip).");
 
+    internal int ExecuteInternal(Settings s, CancellationToken cancellation = default) => Execute(s, cancellation);
+
     protected override int Execute(Settings s, CancellationToken cancellation)
     {
         if (string.IsNullOrWhiteSpace(s.Text))

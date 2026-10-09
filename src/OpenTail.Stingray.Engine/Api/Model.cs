@@ -121,7 +121,11 @@ public sealed class Model : IModel
     /// <inheritdoc/>
     public IModelContext CreateContext(IContextParams? contextParams = null)
     {
-        ThrowIfDisposed();
+        lock (_lock)
+        {
+            ThrowIfDisposed();
+        }
+
         var concreteParams = contextParams as ContextParams ?? (contextParams is not null ? new ContextParams
         {
             ContextSize = contextParams.ContextSize,
@@ -137,6 +141,11 @@ public sealed class Model : IModel
         var context = new ModelContext(this, concreteParams);
         lock (_lock)
         {
+            if (_disposed)
+            {
+                context.Dispose();
+                throw new ObjectDisposedException(nameof(Model));
+            }
             _activeContexts.Add(context);
         }
         return context;
@@ -158,20 +167,24 @@ public sealed class Model : IModel
     /// <inheritdoc/>
     public void Dispose()
     {
+        ModelContext[] contexts;
         lock (_lock)
         {
             if (_disposed) return;
-            var contexts = _activeContexts.ToArray();
-            foreach (var ctx in contexts)
-            {
-                ctx.Dispose();
-            }
+            _disposed = true;
+            contexts = _activeContexts.ToArray();
             _activeContexts.Clear();
             if (_tensorSource is IDisposable disposableSource)
             {
                 disposableSource.Dispose();
             }
-            _disposed = true;
+        }
+
+        // Dispose child contexts outside Model._lock to eliminate lock-order inversion
+        // with ModelContext.Dispose() which calls UnregisterContext under Model._lock.
+        foreach (var ctx in contexts)
+        {
+            ctx.Dispose();
         }
     }
 }

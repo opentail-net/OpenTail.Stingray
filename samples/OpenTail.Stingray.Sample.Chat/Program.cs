@@ -6,13 +6,14 @@
 // Stdin is read one line at a time (or piped — EOF ends the session); generated
 // tokens are streamed to stdout as soon as the engine produces them.
 
-using OpenTail.Stingray.Core;
-using OpenTail.Stingray.Cpu;
+using OpenTail.Stingray;
 using OpenTail.Stingray.Engine;
+using OpenTail.Stingray.Executors;
 
 string? modelPath = null;
 string? systemPrompt = null;
 float temperature = 0.7f;
+uint contextSize = 2048;
 
 for (int i = 0; i < args.Length; i++)
 {
@@ -22,10 +23,12 @@ for (int i = 0; i < args.Length; i++)
             modelPath = args[++i]; break;
         case "-s" or "--system" when i + 1 < args.Length:
             systemPrompt = args[++i]; break;
+        case "-c" or "--ctx-size" when i + 1 < args.Length:
+            contextSize = uint.Parse(args[++i], System.Globalization.CultureInfo.InvariantCulture); break;
         case "--temp" when i + 1 < args.Length:
             temperature = float.Parse(args[++i], System.Globalization.CultureInfo.InvariantCulture); break;
         case "-h" or "--help":
-            Console.Error.WriteLine("usage: opentail-llm-sample-chat -m <model.gguf> [--system <prompt>] [--temp 0.7]");
+            Console.Error.WriteLine("usage: opentail-llm-sample-chat -m <model.gguf> [--system <prompt>] [--temp 0.7] [--ctx-size 2048]");
             return 0;
     }
 }
@@ -37,7 +40,7 @@ if (modelPath is null || !File.Exists(modelPath))
     return 1;
 }
 
-// Ctrl+C ⇒ cancel generation and unblock the read loop. We handle the first
+// Ctrl+C => cancel generation and unblock the read loop. We handle the first
 // press cooperatively; a second press lets the runtime terminate the process.
 using var cts = new CancellationTokenSource();
 Console.CancelKeyPress += (_, e) =>
@@ -47,37 +50,34 @@ Console.CancelKeyPress += (_, e) =>
     cts.Cancel();
 };
 
-// Load the model and build the engine. The InferenceEngine takes ownership of
-// the ForwardPass plus anything passed via `owned`, so a single Dispose chains
-// down to release the mmap'd GGUF, the backend, and all native scratch.
 Console.Error.Write($"loading {modelPath} ... ");
-var model = GgufModel.Open(modelPath);
-var hp = ArchitectureModelResolver.ResolveHyperparams(model);
-var tokenizer = GgufTokenizer.FromGgufModel(model);
-var backend = new CpuBackend();
-var forward = new ForwardPass(model, backend, hp);
-using var engine = new InferenceEngine(
-    forward, tokenizer, modelId: Path.GetFileNameWithoutExtension(modelPath),
-    owned: [backend, model]);
-Console.Error.WriteLine($"{hp.NumLayers}L · {hp.EmbeddingDim}d · vocab {hp.VocabSize}");
+using var model = Model.Load(new ModelParams(modelPath)
+{
+    Backend = "cpu",
+    GpuLayerCount = 0
+});
 
-var sampling = new SamplingParams
+using var context = model.CreateContext(new ContextParams
+{
+    ContextSize = contextSize
+});
+
+var executor = new InteractiveExecutor(context);
+var session = new ChatSession(executor);
+
+if (systemPrompt is not null)
+{
+    session.AddSystemMessage(systemPrompt);
+}
+
+Console.Error.WriteLine($"{model.Architecture} (ctx {context.ContextSize})");
+Console.Error.WriteLine("ready. type a message, Ctrl+D / Ctrl+Z to exit.\n");
+
+var inferenceParams = new InferenceParams
 {
     Temperature = temperature,
-    TopP = 0.95f,
-    MinP = 0.05f,
-    MaxNewTokens = 512,
-    StopTokenIds = BuildStopTokens(tokenizer),
+    MaxTokens = 512
 };
-
-// Multi-turn chat. Keeping the full message list and re-rendering it each turn
-// lets the engine's prefix-cache reuse KV for the shared prompt prefix —
-// successive turns only prefill the new user message instead of starting over.
-var history = new List<(string Role, string Content)>();
-if (systemPrompt is not null)
-    history.Add(("system", systemPrompt));
-
-Console.Error.WriteLine("ready. type a message, Ctrl+D / Ctrl+Z to exit.\n");
 
 while (!cts.IsCancellationRequested)
 {
@@ -88,20 +88,15 @@ while (!cts.IsCancellationRequested)
     if (line is null) break;             // stdin closed (Ctrl+D / Ctrl+Z / piped EOF)
     if (line.Length == 0) continue;
 
-    history.Add(("user", line));
-    var prompt = RenderPrompt(tokenizer, history);
-
-    // Stream output as it arrives. The engine yields decoded UTF-8 chunks
-    // (already joined across multi-byte boundaries) — flush stdout per chunk
-    // so output appears live rather than buffered into 4 KB blocks.
-    var reply = new System.Text.StringBuilder();
     try
     {
-        await foreach (var chunk in engine.GenerateAsync(prompt, sampling, cts.Token))
+        await foreach (var chunk in session.ChatChunksAsync(line, inferenceParams, cts.Token))
         {
-            Console.Out.Write(chunk);
-            Console.Out.Flush();
-            reply.Append(chunk);
+            if (chunk.Kind == GenerateChunkKind.Text)
+            {
+                Console.Out.Write(chunk.Text);
+                Console.Out.Flush();
+            }
         }
     }
     catch (OperationCanceledException)
@@ -110,46 +105,6 @@ while (!cts.IsCancellationRequested)
         break;
     }
     Console.WriteLine();
-
-    history.Add(("assistant", reply.ToString()));
 }
 
 return 0;
-
-// ─────────────────────────────────────────────────────────────────────────────
-
-static string RenderPrompt(GgufTokenizer tok, List<(string Role, string Content)> history)
-{
-    var messages = new List<object?>(history.Count);
-    foreach (var (role, content) in history)
-        messages.Add(new Dictionary<string, object?> { ["role"] = role, ["content"] = content });
-
-    // Prefer the model's own Jinja template (stored in GGUF metadata) — that's
-    // what the model was trained against, so it gets special-token placement
-    // exactly right across architectures.
-    if (tok.ChatTemplate is { } template)
-    {
-        return template.Render(new Dictionary<string, object?>
-        {
-            ["messages"] = messages,
-            ["add_generation_prompt"] = true,
-            ["tools"] = null,
-        });
-    }
-
-    // Fallback: bare ChatML. Works for Qwen / SmolLM and most modern chat models.
-    var sb = new System.Text.StringBuilder();
-    foreach (var (role, content) in history)
-        sb.Append("<|im_start|>").Append(role).Append('\n').Append(content).Append("<|im_end|>\n");
-    sb.Append("<|im_start|>assistant\n");
-    return sb.ToString();
-}
-
-static int[] BuildStopTokens(GgufTokenizer tok)
-{
-    var stops = new HashSet<int> { tok.EosTokenId };
-    foreach (var name in new[] { "<|im_end|>", "<|eot_id|>", "<|eom_id|>", "<|end|>", "<|endoftext|>" })
-        if (tok.SpecialTokens.TryGetValue(name, out int id))
-            stops.Add(id);
-    return [.. stops];
-}

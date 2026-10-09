@@ -183,3 +183,41 @@ public record InferenceParams : IInferenceParams
         };
     }
 }
+
+/// <summary>
+/// Extension methods for converting <see cref="IInferenceParams"/> instances to engine internal types.
+/// </summary>
+public static class InferenceParamsExtensions
+{
+    /// <summary>
+    /// Maps any <see cref="IInferenceParams"/> implementation to an internal <see cref="SamplingParams"/>.
+    /// </summary>
+    public static SamplingParams ToSamplingParams(this IInferenceParams? inferenceParams)
+    {
+        if (inferenceParams is null) return new SamplingParams();
+        if (inferenceParams is InferenceParams concrete) return concrete.ToSamplingParams();
+
+        return new SamplingParams
+        {
+            MaxNewTokens = inferenceParams.MaxTokens,
+            Seed = inferenceParams.Seed,
+            Temperature = inferenceParams.Temperature,
+            TopK = inferenceParams.TopK,
+            TopP = inferenceParams.TopP,
+            MinP = inferenceParams.MinP,
+            RepetitionPenalty = inferenceParams.RepetitionPenalty,
+            RepeatLastN = inferenceParams.RepeatLastTokensCount,
+            PresencePenalty = inferenceParams.PresencePenalty,
+            FrequencyPenalty = inferenceParams.FrequencyPenalty,
+            LogitBias = inferenceParams.LogitBias,
+            StopTokenIds = inferenceParams.StopTokens is not null ? [.. inferenceParams.StopTokens] : null,
+            AdditionalStopTokenIds = inferenceParams.AdditionalStopTokens is not null ? [.. inferenceParams.AdditionalStopTokens] : null,
+            AllowedChoices = inferenceParams.AllowedChoices,
+            ThinkingDisabled = inferenceParams.EnableThinking == false,
+            MaxThinkingTokens = inferenceParams.ThinkingBudget,
+            SpecType = inferenceParams.SpecType,
+            SpecDraftNMax = inferenceParams.SpecDraftNMax,
+            Constraint = inferenceParams.Constraint,
+        };
+    }
+}

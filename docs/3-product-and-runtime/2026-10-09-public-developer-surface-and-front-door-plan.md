@@ -198,7 +198,7 @@ This is a target shape rather than permission to guess at signatures. Compile it
 
 The sample must demonstrate the real public contract. It must not use internal constructors, test helpers, manually assembled `ForwardPass` instances, CLI-private helpers, or repository-specific global usings.
 
-### A2. Audit ownership and disposal
+### A2. Audit ownership, disposal, and lock-order protocol
 
 Document and test the ownership rules before presenting the API as stable.
 
@@ -212,7 +212,10 @@ Verify the following:
 * Multiple contexts can be created from one loaded model and disposed independently.
 * The model/context lifecycle behaves correctly if creation and disposal are attempted concurrently.
 
-If the implementation violates any of these properties, fix it and add regression tests. **Confirmed defect:** in `Model.CreateContext`, `ThrowIfDisposed()` runs outside `_lock` and the new `ModelContext` is constructed before the lock is taken to register it, so a concurrent `Model.Dispose()` can complete between the check and the registration, leaving a live context over a disposed tensor source (and never disposed by the model). Fix by re-checking `_disposed` under the lock at registration and disposing the context if the model was disposed meanwhile (throwing `ObjectDisposedException`).
+**Deadlock and race prevention:**
+1. In `Model.CreateContext`, `_disposed` must be checked and registration confirmed under `_lock` to prevent creating a context over an already-disposing model.
+2. In `Model.Dispose()` vs `ModelContext.Dispose()`, avoid lock-order inversion (`Model._lock` vs `ModelContext._lock`). `Model.Dispose()` must snapshot active contexts under `Model._lock`, mark `_disposed = true`, clear the context set, and **release `Model._lock` before disposing child contexts**. Child contexts can then safely call `_model.UnregisterContext(this)` without deadlocking against `Model.Dispose()`.
+3. Test concurrent context creation, parent disposal, and child disposal with bounded completion checks (avoid infinite hangs).
 
 The primary simple example should use ordinary `using` declarations in an order that disposes the context before its model. Do not make the public lifecycle depend on users knowing internal disposal details.
 
@@ -230,25 +233,27 @@ Do not implement unrelated GPU features just to mimic LLamaSharp's parameter lis
 
 For any change affecting public API compatibility, check the existing NuGet version and release policy first. Do not silently break already published consumers.
 
-### A4. Test the behaviours, not just the type names
+### A4. Interface conformance, incomplete-turn semantics, and behaviour tests
 
-Extend `PublicApiContractsTests.cs` with missing lifecycle and API-contract tests. Preserve existing defaults and tests unless there is a specific defect to correct.
+Extend `PublicApiContractsTests.cs` with missing lifecycle, interface conformance, and API-contract tests:
 
-Add tests for:
-
-* Constructor/factory validity and parameter defaults.
-* Model/context lifecycle, disposal order, multiple contexts and exceptions.
-* Null and disposed-object behaviour.
-* `ChatHistory` operations.
-* `ChatSession` history updates on a successful completed turn.
-* Reasoning, text and usage chunk handling where relevant.
-* Cancellation and failure behaviour, especially how incomplete responses affect stored history.
-* The existing prompt-formatting rules, including correct use of model-native chat templates.
-* Both string streaming and typed chunk streaming.
+1. **Public Interface Conformance**:
+   * In `InteractiveExecutor`, `StatelessExecutor`, and `BatchedExecutor`, ensure `IInferenceParams` implementations are properly honored (extracting sampling parameters via a general adapter) rather than using `(inferenceParams as InferenceParams)?.ToSamplingParams() ?? new SamplingParams()` which silently ignores custom implementations.
+   * `InteractiveExecutor(IModelContext)` must accept any valid `IModelContext` implementation rather than casting to `ModelContext` and throwing.
+2. **Incomplete-Turn Semantics in `ChatSession`**:
+   * Explicitly choose, document, and test turn failure/cancellation semantics: if prompt formatting, executor invocation, or generation throws an exception or is cancelled before the assistant response completes, roll back the pending user message from `ChatHistory` so history remains turn-paired and cleanly retryable.
+3. **Contract and Behaviour Tests**:
+   * Constructor/factory validity and parameter defaults.
+   * Model/context lifecycle, disposal order, multiple contexts, and exceptions.
+   * Null and disposed-object behaviour.
+   * `ChatHistory` operations and turn rollback on cancellation/exception.
+   * Reasoning, text and usage chunk handling where relevant.
+   * Custom `IInferenceParams` and `IModelContext` conformance test.
+   * Both string streaming and typed chunk streaming.
 
 Do not expand this phase into new inference math or new architectures.
 
-**Phase A exit gate:** A clean consumer project compiles using the documented API, and focused public-contract tests pass.
+**Phase A exit gate:** A clean consumer project compiles using the documented API, lock-order and interface conformance are verified, and focused public-contract tests pass.
 
 ## 5. Phase B — Implement path-free CLI task commands
 
@@ -326,7 +331,7 @@ Responsibilities:
 * Resolve the installed `piper-lessac` catalogue bundle.
 * Pass its ONNX model and companion configuration to the existing Piper/TTS implementation.
 * Preserve the output-path option and clear success/failure reporting.
-* Licence consent is currently enforced only inside `SetupCommand` (`LicenceNeedsConsent` / `--accept-licence`); no consent record is persisted, and `ModelHome` cannot tell whether a file was installed via `setup` or copied in. Do not claim runtime enforcement that does not exist. Either state that `setup` is the consent gate (and make `speak` resolve only via the catalogue's installed state), or persist a consent marker at install time and check it. Pick one and test it.
+* **Licence consent policy:** Consent is explicitly gated at install time by `SetupCommand` (`LicenceNeedsConsent` / `--accept-licence` or interactive prompt). Once verified and installed in `ModelHome`, `stingray speak` operates on the installed voice assets without re-prompting on every invocation. Document this policy truthfully without claiming non-existent runtime token enforcement.
 * Do not copy the TTS engine-selection logic or the inference implementation out of `TtsCommand`.
 
 Reuse the existing implementation through an intentional shared execution method/service or a small catalogue-aware entry point. Do not simulate command composition with fragile console-output interception.
@@ -357,15 +362,21 @@ Responsibilities:
 
 Do not implement another transcription pipeline.
 
-### B5. Register and preserve commands
+### B5. Register commands and update catalogue run templates
 
-Register `chat`, `speak`, and `transcribe` in `src/OpenTail.Stingray.Cli/Program.cs`.
-
-Do not replace or rename the default command or existing `tts` and `stt` commands.
-
-The executable (assembly) is already `stingray`, but `Program.cs` calls `config.SetApplicationName("opentail-llm-cli")` and several command descriptions still say `opentail-llm-cli`. Since the new help text and docs all say `stingray`, fix the application name (design-doc requirement 7: "one name everywhere") and check that no test asserts the old name.
-
-Regenerate the CLI option inventory through the repository's prescribed script where the command changes require it. Verify `--help` output and positional argument parsing for each new command.
+1. **Update `ModelCatalog.RunTemplate`**:
+   * Update the recommended run templates in `src/OpenTail.Stingray.Core/Catalog/ModelCatalog.cs`:
+     * `qwen2.5-0.5b`: `stingray chat`
+     * `piper-lessac`: `stingray speak "Hello from Stingray."`
+     * `whisper-base`: `stingray transcribe <audio.wav>`
+   * This ensures `stingray models` advertises the new front-door commands instead of the older path-oriented ones. Update `ModelCatalogTests.cs` accordingly.
+2. **Register Commands**:
+   * Register `chat`, `speak`, and `transcribe` in `src/OpenTail.Stingray.Cli/Program.cs`.
+   * Do not replace or rename the default command or existing `tts` and `stt` commands.
+3. **Application Name Consistency**:
+   * Check if `config.SetApplicationName("stingray")` can be safely aligned and verify tests.
+4. **Option Inventory**:
+   * Regenerate the CLI option inventory through `scripts/gen-cli-option-inventory.ps1`.
 
 ### B6. CLI tests
 

@@ -6,13 +6,8 @@
     <AssemblyName>opentail-llm-sample-chat</AssemblyName>
   </PropertyGroup>
 
-  <!-- Reference only what the sample uses:
-       - Core    : GgufModel, GgufTokenizer, JinjaChatTemplate, ModelHyperparams
-       - Cpu     : CpuBackend (default, no GPU drivers required)
-       - Engine  : ForwardPass, SamplingParams, InferenceEngine -->
+  <!-- Consumes the OpenTail.Stingray public library API -->
   <ItemGroup>
-    <ProjectReference Include="..\..\src\OpenTail.Stingray.Core\OpenTail.Stingray.Core.csproj" />
-    <ProjectReference Include="..\..\src\OpenTail.Stingray.Cpu\OpenTail.Stingray.Cpu.csproj" />
     <ProjectReference Include="..\..\src\OpenTail.Stingray.Engine\OpenTail.Stingray.Engine.csproj" />
   </ItemGroup>
 

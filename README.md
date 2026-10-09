@@ -141,11 +141,27 @@ See [samples/ChatServer](samples/ChatServer/Program.cs).
 
 ## From the command line
 
-The same engine as a command-line tool, which is handy for trying models before writing code:
+The easiest way to get started is the task-based front door:
 
 ```bash
 dotnet tool install -g OpenTail.Stingray.Cli
 
+# 1. Download recommended models with verified checksums
+stingray setup chat          # Qwen2.5 0.5B Instruct, 469 MB
+stingray setup speak         # Piper en_US-lessac-medium, 60 MB (asks you to accept the voice data licence)
+stingray setup transcribe    # Whisper base, 141 MB
+stingray models              # check status of installed tasks
+
+# 2. Run them path-free
+stingray chat                # interactive multi-turn chat
+stingray chat "What is a unit test?"
+stingray speak "Hello from Stingray." -o hello.wav
+stingray transcribe hello.wav
+```
+
+Advanced and path-oriented workflows remain available:
+
+```bash
 stingray pull -r Qwen/Qwen2.5-0.5B-Instruct-GGUF
 stingray -m models/qwen2.5-0.5b-instruct-q4_k_m.gguf                        # interactive chat
 stingray -m models/qwen2.5-0.5b-instruct-q4_k_m.gguf -p "What is a unit test?"
@@ -154,19 +170,8 @@ stingray stt -m base --model-file ggml-base.bin -i hello.wav
 ```
 
 Add `-g -1` to run a language model on the GPU. Flag names follow llama.cpp's `llama-cli` where
-they mean the same thing.
-
-Built from source (not yet in the published package), `stingray setup` fetches the recommended
-model for a task into a per-user folder (`%LOCALAPPDATA%\stingray\models`, or
-`~/.cache/stingray/models`; set `STINGRAY_MODEL_HOME` to move it), checks each file's SHA-256 and
-prints the command to run it. `stingray models` shows which tasks are ready:
-
-```bash
-stingray setup chat          # Qwen2.5 0.5B Instruct, 469 MB
-stingray setup speak         # Piper en_US-lessac-medium, 60 MB (asks you to accept the voice data licence)
-stingray setup transcribe    # Whisper base, 141 MB
-stingray models
-```
+they mean the same thing. Model assets live in a per-user folder (`%LOCALAPPDATA%\stingray\models` or
+`~/.cache/stingray/models`; set `STINGRAY_MODEL_HOME` to move it).
 
 ## Finding models
 

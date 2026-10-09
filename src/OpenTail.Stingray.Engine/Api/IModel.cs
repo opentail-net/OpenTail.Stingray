@@ -46,6 +46,9 @@ public interface IModelContext : IDisposable
     /// <summary>Effective maximum context length in tokens allocated for this context.</summary>
     int ContextSize { get; }
 
+    /// <summary>Underlying inference engine powering this context.</summary>
+    OpenTail.Stingray.Engine.IInferenceEngine Engine { get; }
+
     /// <summary>
     /// Clears active KV cache tokens and resets sequence state to clean initial status.
     /// </summary>

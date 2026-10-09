@@ -12,33 +12,33 @@ namespace OpenTail.Stingray.Executors;
 /// </summary>
 public sealed class BatchedExecutor : IExecutor
 {
-    private readonly ModelContext _context;
+    private readonly IModelContext _context;
 
     /// <inheritdoc/>
     public IModelContext Context => _context;
 
-    /// <summary>Concrete model context driving this executor.</summary>
-    public ModelContext ModelContext => _context;
+    /// <summary>Concrete model context driving this executor, or null if using a custom <see cref="IModelContext"/>.</summary>
+    public ModelContext? ModelContext => _context as ModelContext;
 
     /// <summary>
     /// Creates a batched executor over the provided <see cref="ModelContext"/>.
     /// </summary>
     public BatchedExecutor(ModelContext context)
+        : this((IModelContext)context)
     {
-        ArgumentNullException.ThrowIfNull(context);
-        _context = context;
-        if (!_context.HasExplicitEngine)
-        {
-            _context.EnsureContinuousBatchingEngine();
-        }
     }
 
     /// <summary>
     /// Creates a batched executor over the provided <see cref="IModelContext"/>.
     /// </summary>
     public BatchedExecutor(IModelContext context)
-        : this(context as ModelContext ?? throw new ArgumentException("Context must be a concrete ModelContext instance.", nameof(context)))
     {
+        ArgumentNullException.ThrowIfNull(context);
+        _context = context;
+        if (_context is ModelContext mc && !mc.HasExplicitEngine)
+        {
+            mc.EnsureContinuousBatchingEngine();
+        }
     }
 
     /// <inheritdoc/>
@@ -64,7 +64,7 @@ public sealed class BatchedExecutor : IExecutor
     {
         ArgumentNullException.ThrowIfNull(prompt);
 
-        var sp = (inferenceParams as InferenceParams)?.ToSamplingParams() ?? new SamplingParams();
+        var sp = inferenceParams.ToSamplingParams();
 
         await foreach (var chunk in _context.Engine.GenerateChunksAsync(prompt, sp, cancellationToken).WithCancellation(cancellationToken).ConfigureAwait(false))
         {

@@ -13,7 +13,7 @@ namespace OpenTail.Stingray.Executors;
 /// </summary>
 public sealed class InteractiveExecutor : IExecutor
 {
-    private readonly ModelContext _context;
+    private readonly IModelContext _context;
     private readonly StringBuilder _history = new();
     private string? _lastPrefix;
     private readonly object _lock = new();
@@ -21,24 +21,24 @@ public sealed class InteractiveExecutor : IExecutor
     /// <inheritdoc/>
     public IModelContext Context => _context;
 
-    /// <summary>Concrete model context driving this executor.</summary>
-    public ModelContext ModelContext => _context;
+    /// <summary>Concrete model context driving this executor, or null if using a custom <see cref="IModelContext"/>.</summary>
+    public ModelContext? ModelContext => _context as ModelContext;
 
     /// <summary>
     /// Creates an interactive executor over the provided <see cref="ModelContext"/>.
     /// </summary>
     public InteractiveExecutor(ModelContext context)
+        : this((IModelContext)context)
     {
-        ArgumentNullException.ThrowIfNull(context);
-        _context = context;
     }
 
     /// <summary>
     /// Creates an interactive executor over the provided <see cref="IModelContext"/>.
     /// </summary>
     public InteractiveExecutor(IModelContext context)
-        : this(context as ModelContext ?? throw new ArgumentException("Context must be a concrete ModelContext instance.", nameof(context)))
     {
+        ArgumentNullException.ThrowIfNull(context);
+        _context = context;
     }
 
     /// <inheritdoc/>
@@ -64,7 +64,7 @@ public sealed class InteractiveExecutor : IExecutor
     {
         ArgumentNullException.ThrowIfNull(prompt);
 
-        var sp = (inferenceParams as InferenceParams)?.ToSamplingParams() ?? new SamplingParams();
+        var sp = inferenceParams.ToSamplingParams();
         string? prefixToUse = inferenceParams?.CanonicalHistoryPrefix;
         if (string.IsNullOrEmpty(prefixToUse))
         {

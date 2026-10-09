@@ -50,7 +50,9 @@ public sealed record CatalogEntry(
     public CatalogFile MainFile => Files[0];
 
     /// <summary>The run command for a bundle installed under <paramref name="home"/>.</summary>
-    public string RunCommand(ModelHome home) => string.Format(System.Globalization.CultureInfo.InvariantCulture, RunTemplate, Quote(home.PathOf(MainFile)));
+    public string RunCommand(ModelHome home) => RunTemplate.Contains("{0}")
+        ? string.Format(System.Globalization.CultureInfo.InvariantCulture, RunTemplate, Quote(home.PathOf(MainFile)))
+        : RunTemplate;
 
     private static string Quote(string path) => path.Contains(' ') ? $"\"{path}\"" : path;
 }
@@ -92,7 +94,7 @@ public static class ModelCatalog
             Hardware: "about 1 GB RAM, CPU only",
             Speed: "about 23 tokens/s on a Ryzen 7 5700G CPU (2026-09-28)",
             Evidence: "README quick start, samples/QuickStart",
-            RunTemplate: "stingray -m {0} -p \"Hello\""),
+            RunTemplate: "stingray chat"),
 
         new(
             Id: "piper-lessac",
@@ -112,7 +114,7 @@ public static class ModelCatalog
             Hardware: "about 200 MB RAM, CPU only",
             Speed: "2.9 s of audio in 1.1-1.35 s on a Ryzen 7 5700G CPU (2026-09-28)",
             Evidence: "README 'Speak and listen'",
-            RunTemplate: "stingray tts -e piper -m {0} -t \"Hello!\" -o hello.wav"),
+            RunTemplate: "stingray speak \"Hello from Stingray.\""),
 
         new(
             Id: "whisper-base",
@@ -128,7 +130,7 @@ public static class ModelCatalog
             Hardware: "about 500 MB RAM, CPU only",
             Speed: "a 2.9 s clip in 1.0-1.5 s on a Ryzen 7 5700G CPU (2026-09-28)",
             Evidence: "README 'Speak and listen' (word-exact round trip of the Piper sample)",
-            RunTemplate: "stingray stt -m base --model-file {0} -i hello.wav"),
+            RunTemplate: "stingray transcribe <audio.wav>"),
     ];
 
     /// <summary>Finds an entry by id, or the default entry for a task name. Case-insensitive.</summary>

@@ -76,20 +76,43 @@ Console.WriteLine($"Generated {tokenCount} visual tokens with embedding dim {emb
 ### 2. LLM Chat with Streaming
 
 ```csharp
-using OpenTail.Stingray.Core;
-using OpenTail.Stingray.Cpu;
-using OpenTail.Stingray.Engine;
+using OpenTail.Stingray;
+using OpenTail.Stingray.Executors;
 
-// 1. Open GGUF model and initialize hardware backend
-var model = GgufModel.Open("models/Llama-3.2-3B-Instruct-Q4_K_M.gguf");
-var cpu   = new CpuBackend();
-using var engine = new InferenceEngine(model, cpu);
-
-// 2. Stream tokens in real time
-await foreach (var token in engine.StreamChatAsync("Explain quantisation in simple terms."))
+// 1. Load model weights (CPU or auto GPU offload)
+using var model = Model.Load(new ModelParams("models/qwen2.5-0.5b-instruct-q4_k_m.gguf")
 {
-    Console.Write(token);
+    Backend = "auto",
+    GpuLayerCount = -1 // offload all layers when GPU is available
+});
+
+// 2. Allocate an execution context (KV cache & tokenizer view)
+using var context = model.CreateContext(new ContextParams
+{
+    ContextSize = 2048
+});
+
+// 3. Create executor and stateful chat session
+var executor = new InteractiveExecutor(context);
+var session = new ChatSession(executor);
+session.AddSystemMessage("You are a helpful, concise assistant.");
+
+// 4. Stream assistant response chunks in real time
+await foreach (var chunk in session.ChatChunksAsync(
+    "Explain quantisation in one paragraph.",
+    new InferenceParams
+    {
+        MaxTokens = 128,
+        Temperature = 0.7f,
+        EnableThinking = false
+    }))
+{
+    if (chunk.Kind == GenerateChunkKind.Text)
+    {
+        Console.Write(chunk.Text);
+    }
 }
+Console.WriteLine();
 ```
 
 ### 3. Native TTS Synthesis & Voice Cloning

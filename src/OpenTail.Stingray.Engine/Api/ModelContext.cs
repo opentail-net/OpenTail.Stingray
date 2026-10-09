@@ -236,7 +236,7 @@ public sealed class ModelContext : IModelContext
                 disposableEngine.Dispose();
             }
             _engine = null;
-            _model.UnregisterContext(this);
         }
+        _model.UnregisterContext(this);
     }
 }

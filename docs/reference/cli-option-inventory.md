@@ -2,7 +2,7 @@
 
 **Generated:** by `scripts/gen-cli-option-inventory.ps1`, which scans `[CommandOption]` /
 `[Description]` pairs under `src/OpenTail.Stingray.Cli`. Last regenerated **2026-09-28**, recording
-**251 option declarations** across 26 command files — the same count the
+**276 option declarations** across 29 command files — the same count the
 `StaticPlanConfigurationTests` guard enforces against source. (Reconciled 12 rows of drift, caught
 by CI failing `CliOptionInventory_DeclaredCountMatchesSource` on `main`: three new commands —
 `AdmitArchCommand`, `GenVisionScaffoldCommand` and `PullCommand`, see `docs/reference/061-coverage-tooling.md` —
@@ -112,6 +112,21 @@ hoc at each read site rather than in one place.
 | `--threads <N>` |  |  |
 | `--tokenizer <EXE>` |  | llama-tokenize executable (default: tools/llama.cpp/llama-tokenize.exe found upward from here) |
 | `--tokens <N>` |  | Tokens to generate |
+
+## ChatCommand
+
+| Option | Class | Description |
+|---|---|---|
+| `--backend <BACKEND>` |  | Compute backend: auto (default), cpu, or vulkan. |
+| `--context-size <INT>` |  | Context size in tokens. Default: 2048. |
+| `--gpu-layers <N>` |  | Number of layers to offload to GPU (-1 for auto/all). Default: -1. |
+| `--max-tokens <INT>` |  | Maximum tokens to generate per turn. Default: 512. |
+| `--model <ID>` |  | Model catalog id (default: qwen2.5-0.5b). |
+| `--model-file <PATH>` |  | Direct path to a model file (.gguf) to load. |
+| `--prompt <MESSAGE>` |  | Optional single-turn message. If omitted, starts an interactive multi-turn chat. |
+| `--system <TEXT>` |  | System message instructions for the conversation. |
+| `--temperature <FLOAT>` |  | Sampling temperature. Default: 0.7. |
+| `--thinking` |  | Display model thinking/reasoning output chunks. |
 
 ## DoctorCommand
 
@@ -376,6 +391,18 @@ hoc at each read site rather than in one place.
 | `--raw` | stable | Print the raw Jinja template source instead of a rendered sample |
 | `--system <TEXT>` | stable | Optional system message to include |
 
+## SpeakCommand
+
+| Option | Class | Description |
+|---|---|---|
+| `--backend <BACKEND>` |  | Compute backend: auto (default), cpu, or vulkan. |
+| `--model <ID>` |  | Model catalog id (default: piper-lessac). |
+| `--model-file <PATH>` |  | Direct path to an ONNX voice model file (.onnx) or companion config (.json). |
+| `--output <PATH>` |  | Output destination path (.wav). Default: speech.wav. |
+| `--prompt <TEXT>` |  | Input text to synthesize into speech audio. |
+| `--speed <SPEED>` |  | Speech generation speed multiplier. Default: 1.0. |
+| `--voice <VOICE>` |  | Voice preset or style name. |
+
 ## StaticPlanCommand
 
 | Option | Class | Description |
@@ -421,6 +448,19 @@ hoc at each read site rather than in one place.
 | `--task <TASK>` | stable | ASR task: 'transcribe' (default) or 'translate' (translate to English). |
 | `--temperature <TEMP>` | stable | Decoding temperature (0.0 for greedy argmax). Default: 0.0. |
 | `--vad` | stable | Enable Silero VAD neural speech boundary detection and silence filtering. |
+
+## TranscribeCommand
+
+| Option | Class | Description |
+|---|---|---|
+| `--input <PATH>` |  | Input 16kHz WAV audio file path for Speech-to-Text transcription. |
+| `--language <LANG>` |  | Spoken language code (e.g. en, es, fr, de, zh, ja). Default: auto/en. |
+| `--model <ID>` |  | Model catalog id (default: whisper-base). |
+| `--model-file <PATH>` |  | Direct path to a Whisper checkpoint (.bin / GGML). |
+| `--no-timestamps` |  | Disable timestamp-aligned subtitle segment generation. |
+| `--output <PATH>` |  | Optional output file path to write transcribed text. |
+| `--temperature <TEMP>` |  | Decoding temperature (0.0 for greedy argmax). Default: 0.0. |
+| `--vad` |  | Enable Silero VAD neural speech boundary detection. |
 
 ## TtsCommand
 

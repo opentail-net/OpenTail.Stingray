@@ -88,6 +88,12 @@ app.Configure(config =>
         .WithDescription("Generate dense semantic vector embeddings for text with pooling and Matryoshka support.");
     config.AddCommand<RerankCommand>("rerank")
         .WithDescription("Score and rerank candidate documents by relevance against a search query.");
+    config.AddCommand<ChatCommand>("chat")
+        .WithDescription("Interactive or single-turn chat with the recommended or specified language model");
+    config.AddCommand<SpeakCommand>("speak")
+        .WithDescription("Synthesize speech audio from text using the recommended or specified voice model");
+    config.AddCommand<TranscribeCommand>("transcribe")
+        .WithDescription("Transcribe speech audio to text using the recommended or specified Whisper model");
     config.AddCommand<SetupCommand>("setup")
         .WithDescription("Download a recommended, checksum-verified model for a task, e.g. `stingray setup chat` (chat, speak, transcribe)");
     config.AddCommand<ModelsCommand>("models")
