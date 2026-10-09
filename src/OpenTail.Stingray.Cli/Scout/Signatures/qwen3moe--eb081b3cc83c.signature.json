@@ -1,0 +1,118 @@
+{
+  "schema_version": 2,
+  "architecture_id": "qwen3moe",
+  "declared_architecture": "qwen3moe",
+  "structure_id": "eb081b3cc83cd1ba43a6846b803fc68a7d114c2608cef90469c7b18a668838e4",
+  "structure": {
+    "patterns": [
+      {
+        "pattern": "blk.*.attn_k.weight",
+        "rank": 2,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.attn_k_norm.weight",
+        "rank": 1,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.attn_norm.weight",
+        "rank": 1,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.attn_output.weight",
+        "rank": 2,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.attn_q.weight",
+        "rank": 2,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.attn_q_norm.weight",
+        "rank": 1,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.attn_v.weight",
+        "rank": 2,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.ffn_down_exps.weight",
+        "rank": 3,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.ffn_gate_exps.weight",
+        "rank": 3,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.ffn_gate_inp.weight",
+        "rank": 2,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.ffn_norm.weight",
+        "rank": 1,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.ffn_up_exps.weight",
+        "rank": 3,
+        "coverage": "all"
+      },
+      {
+        "pattern": "output.weight",
+        "rank": 2,
+        "coverage": "unlayered"
+      },
+      {
+        "pattern": "output_norm.weight",
+        "rank": 1,
+        "coverage": "unlayered"
+      },
+      {
+        "pattern": "token_embd.weight",
+        "rank": 2,
+        "coverage": "unlayered"
+      }
+    ],
+    "features": [
+      "attn.qk_norm",
+      "attn.separate_qkv",
+      "ffn.expert_routed"
+    ],
+    "metadata_keys": [
+      "attention.head_count",
+      "attention.head_count_kv",
+      "attention.key_length",
+      "attention.layer_norm_rms_epsilon",
+      "attention.value_length",
+      "block_count",
+      "context_length",
+      "embedding_length",
+      "expert_count",
+      "expert_feed_forward_length",
+      "expert_used_count",
+      "feed_forward_length",
+      "rope.freq_base",
+      "vocab_size"
+    ],
+    "tokenizer_model": "gpt2"
+  },
+  "origins": [
+    {
+      "file_name": "Qwen3-MOE-4x0.6B-2.4B-Writing-Thunder.i1-Q4_K_M.gguf",
+      "file_bytes": 964653184,
+      "sha256": "b12489c64056298006d64c5a6908abe419f4a55076ba69fc8e3847307704ef5c",
+      "source_repo": "mradermacher/Qwen3-MOE-4x0.6B-2.4B-Writing-Thunder-i1-GGUF",
+      "source_revision": "7fc0b86f8b4b2da6dc11ce40c61e38ec34ad0c26",
+      "scout_build": "1.0.7\u002B06f2642d6d7dd5f5d12cb1040d6f57db2308c4c8",
+      "sha256_source": "published_by_huggingface"
+    }
+  ]
+}

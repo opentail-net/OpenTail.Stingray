@@ -1,0 +1,142 @@
+{
+  "schema_version": 2,
+  "architecture_id": "qwen2moe",
+  "declared_architecture": "qwen2moe",
+  "structure_id": "3fdf99ea8c334066cc5cae87ff900a0679e84f9fa41a3524db1f1918a22ca25c",
+  "structure": {
+    "patterns": [
+      {
+        "pattern": "blk.*.attn_k.bias",
+        "rank": 1,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.attn_k.weight",
+        "rank": 2,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.attn_norm.weight",
+        "rank": 1,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.attn_output.weight",
+        "rank": 2,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.attn_q.bias",
+        "rank": 1,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.attn_q.weight",
+        "rank": 2,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.attn_v.bias",
+        "rank": 1,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.attn_v.weight",
+        "rank": 2,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.ffn_down_exps.weight",
+        "rank": 3,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.ffn_down_shexp.weight",
+        "rank": 2,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.ffn_gate_exps.weight",
+        "rank": 3,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.ffn_gate_inp.weight",
+        "rank": 2,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.ffn_gate_inp_shexp.weight",
+        "rank": 1,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.ffn_gate_shexp.weight",
+        "rank": 2,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.ffn_norm.weight",
+        "rank": 1,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.ffn_up_exps.weight",
+        "rank": 3,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.ffn_up_shexp.weight",
+        "rank": 2,
+        "coverage": "all"
+      },
+      {
+        "pattern": "output.weight",
+        "rank": 2,
+        "coverage": "unlayered"
+      },
+      {
+        "pattern": "output_norm.weight",
+        "rank": 1,
+        "coverage": "unlayered"
+      },
+      {
+        "pattern": "token_embd.weight",
+        "rank": 2,
+        "coverage": "unlayered"
+      }
+    ],
+    "features": [
+      "attn.separate_qkv",
+      "ffn.expert_routed",
+      "ffn.shared_expert"
+    ],
+    "metadata_keys": [
+      "attention.head_count",
+      "attention.head_count_kv",
+      "attention.layer_norm_rms_epsilon",
+      "block_count",
+      "context_length",
+      "embedding_length",
+      "expert_count",
+      "expert_feed_forward_length",
+      "expert_shared_feed_forward_length",
+      "expert_used_count",
+      "feed_forward_length",
+      "rope.freq_base",
+      "vocab_size"
+    ],
+    "tokenizer_model": "gpt2"
+  },
+  "origins": [
+    {
+      "file_name": "Qwen1.5-MoE-A2.7B-Wikihow.Q4_K_M.gguf",
+      "file_bytes": 9496237504,
+      "sha256": "ce5625ddbf1dbe0adc8b9e295861dfa37e3806444fa8499062bd79a419490072",
+      "source_repo": "QuantFactory/Qwen1.5-MoE-A2.7B-Wikihow-GGUF",
+      "source_revision": "5cc03f50af0bbd7107370df271f350c30bf67311",
+      "scout_build": "1.0.7\u002B781e06d01493df9bfbb2062e1856fd4de1d27029",
+      "sha256_source": "published_by_huggingface"
+    }
+  ]
+}
