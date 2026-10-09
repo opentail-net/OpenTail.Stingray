@@ -106,6 +106,8 @@ app.Configure(config =>
         .WithDescription("Capture a golden reference from the vendored llama.cpp: oracle-tokenized prompt ids, greedy continuation from llama-server, model SHA-256; writes a small JSON with no machine paths. Check it later with admit-arch --golden.");
     config.AddCommand<AdmitArchCommand>("admit-arch")
         .WithDescription("Triage a GGUF whose architecture is not yet allowlisted: tokenizer/tensor inventory, a real bypassed forward-pass run, and (with --reference-tokens) a formatted ADMIT/REJECT verdict.");
+    config.AddCommand<OpenTail.Stingray.Cli.Scout.ScoutCommand>("scout")
+        .WithDescription("Read-only evidence dossier on a GGUF checkpoint (artifact, tensor signature, architecture resolution, blockers, resource preflight); loads no weights. Decision support, not admission.");
     config.AddCommand<GenVisionScaffoldCommand>("gen-vision-scaffold")
         .WithDescription("Print an mmproj's real tensor/metadata inventory and scaffold a new <Arch>VisionEmbedderParityTests.cs (pure C#, no Python).");
     config.AddCommand<VerifyGoldensCommand>("verify-goldens")

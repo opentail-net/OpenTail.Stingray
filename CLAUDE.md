@@ -56,6 +56,11 @@ OpenTail.Stingray is a high-performance LLM inference engine, image/video diffus
     * It is listed only in the "Ported, not verified" table of [docs/2-coverage/2026-10-02-tensorsharp-takeaways-plan.md](docs/2-coverage/2026-10-02-tensorsharp-takeaways-plan.md), with its date, the reference used and what is missing.
     * Promotion follows the normal admission path: a real checkpoint, an independent reference, timed runs, then the STATUS row.
 
+15. **Run `stingray scout` first when triaging or admitting a GGUF architecture** (plan: [docs/3-product-and-runtime/2026-10-09-checkpoint-scout-and-ai-admission-plan.md](docs/3-product-and-runtime/2026-10-09-checkpoint-scout-and-ai-admission-plan.md); applies once Phase 1 has landed — until then the plan is proposed only and this rule is a no-op):
+    * Before porting, admitting or debugging an unfamiliar checkpoint, run `stingray scout -m <gguf> --format json` and read the dossier (dtype coverage, tokenizer findings, feature hypotheses, resource estimate, nearest relatives) before opening `admit-arch` or writing engine code. Follow [the playbook](docs/reference/architecture-admission-agent-playbook.md) once it exists.
+    * Scout is **advisory evidence, not a decision-maker**. The similarity ranking and feature hypotheses never decide admission, never change `general.architecture` handling, and never substitute for the real reference (rule 8) or a golden. You decide; if a ranking or rule is wrong or noisy, say so, and fix or remove that rule rather than working around it. Record such misses in the plan's calibration notes.
+    * Saved scout reports and pretest receipts go to the scratchpad/temp, not the repo root (rule 9). `scripts/scout-pretest.ps1` (if present) is opt-in, non-destructive, and still obeys the memory budget and rule 12.
+
 ---
 
 ## Standard Build & Test Commands

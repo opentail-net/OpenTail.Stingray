@@ -6,6 +6,8 @@ Measured 2026-10-08 by actually adding a hypothetical dense family and a hypothe
 ([plan](../2-coverage/2026-10-08-architecture-capabilities-plan.md), Phase 5): the code edit is one descriptor plus one manifest line. The rest below are
 deliberate gates, not code.
 
+**Admitting a checkpoint as an agent?** Start with [architecture-admission-agent-playbook.md](architecture-admission-agent-playbook.md) (run `stingray scout` first).
+
 ## Steps for an ordinary family
 1. **Descriptor.** Add a `static readonly ArchitectureDescriptor` in `src/OpenTail.Stingray.Engine/Architectures/` (a family file, e.g. `GptFamilyArchitectures.cs`, or its own `<Name>Architecture.cs` when it has real semantics or a factory).
    Required: `Id`, `Status`, `EvidenceDoc`, exactly one of `StatusAnchor` / `StatusExemption`, and `CreateForwardPass` (use `CommonForwardPassFactory.CreateDense`, or `.CreateHybridGdn` with `ForwardPassFamily.HybridGdn`). `Validate()` runs when the registry is built and refuses inconsistent combinations.

@@ -1,8 +1,8 @@
 # CLI option inventory — generated from source
 
 **Generated:** by `scripts/gen-cli-option-inventory.ps1`, which scans `[CommandOption]` /
-`[Description]` pairs under `src/OpenTail.Stingray.Cli`. Last regenerated **2026-09-28**, recording
-**276 option declarations** across 29 command files — the same count the
+`[Description]` pairs under `src/OpenTail.Stingray.Cli`. Last regenerated **2026-10-09**, recording
+**281 option declarations** across 30 command files — the same count the
 `StaticPlanConfigurationTests` guard enforces against source. (Reconciled 12 rows of drift, caught
 by CI failing `CliOptionInventory_DeclaredCountMatchesSource` on `main`: three new commands —
 `AdmitArchCommand`, `GenVisionScaffoldCommand` and `PullCommand`, see `docs/reference/061-coverage-tooling.md` —
@@ -372,6 +372,16 @@ hoc at each read site rather than in one place.
 | `--tq-mode` | expert | TurboQuant quantizer for --tq: auto (default: kvarn where supported, else lloydmax with a quality warning), kvarn (issue #180: Sinkhorn-normalized asymmetric RTN, 4-bit K / 2-bit V, 128-token tiles; CPU (-g 0, any power-of-2 head dim ≤ 1024) or full-CUDA-offload dense (-g -1, head dim ≤ 256); no SnapKV), or lloydmax (3-bit Lloyd-Max codebooks; severely degrades quality on QK-norm models such as Qwen3 — issue #432). |
 | `--ubatch-size <N>` | stable | (llama.cpp compat) Not supported — OpenTail does not expose a configurable micro-batch size. |
 | `--verbose-prompt` | diagnostic | Print token IDs before generating |
+
+## ScoutCommand
+
+| Option | Class | Description |
+|---|---|---|
+| `--budget <SIZE>` | diagnostic | Host RAM budget for execution feasibility, e.g. 64G. Without it, feasibility is not assessed. |
+| `--format <FORMAT>` | diagnostic | Output format: text (default) or json |
+| `--model <PATH>` | diagnostic | Path to a GGUF model file |
+| `--output <PATH>` | diagnostic | Write the JSON report to this file (in addition to the chosen stdout format) |
+| `--reserve <SIZE>` | diagnostic | Headroom kept free under the budget (default 8G) |
 
 ## SetupCommand
 

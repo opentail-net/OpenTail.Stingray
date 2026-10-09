@@ -10,6 +10,33 @@ reference scripts, which conflicted with that rule.
 
 ---
 
+## `stingray scout -m <gguf>`
+
+Read-only evidence dossier; run it **first** when triaging or admitting an architecture (agent loop:
+[architecture-admission-agent-playbook.md](architecture-admission-agent-playbook.md); plan:
+[checkpoint scout plan](../3-product-and-runtime/2026-10-09-checkpoint-scout-and-ai-admission-plan.md)).
+
+```text
+stingray scout -m model.gguf                                   # terminal summary
+stingray scout -m model.gguf --format json -o scout.json        # versioned JSON (schema_version 1), deterministic
+stingray scout -m model.gguf --budget 64G [--reserve 8G]        # also report the execution-feasibility decision
+```
+
+* Opens the GGUF header, metadata and tensor index only. It reads no tensor values (the architecture probe is given a source that throws
+  on a value read), constructs no forward pass, downloads nothing and does not hash the file (`sha256_state` is `not_computed`).
+* Report: artifact identity (bare file name, no paths), metadata and tokenizer facts, tensor signature (bytes by dtype, layer-normalized
+  patterns, partial-layer / dtype / shape irregularities), architecture resolution via the registry, blockers, resource preflight,
+  ordered next commands, and per-stage receipts (`Passed` / `Failed` / `Blocked` / `NotRun`).
+* **Blockers.** `confirmed` means the engine's own gate would refuse (unregistered or non-admitted architecture, a dtype
+  `ModelCompatibility.IsSupportedWeightDType` rejects, a malformed tensor size); `suspected` is a lead (tokenizer shapes, undeclared architecture).
+* **Unknown stays unknown.** The host working-set and KV estimates are `Unknown` with a reason and null bytes; file size is never reported as
+  peak RAM. With `--budget` the execution decision is therefore `blocked` until a real estimator exists, and without it `not_assessed`. It is never `allowed` today.
+* Exit codes: 0 report produced (blockers do not change it), 1 file unreadable as GGUF, 64 bad option, 66 file missing.
+* Not yet implemented (see plan): feature hypotheses and architecture relatives (Phase 2), `scripts/scout-pretest.ps1`.
+* Advisory only: nothing in the report admits or promotes an architecture.
+
+---
+
 ## `stingray pull -r <repo>`
 
 Downloads a GGUF model straight from a Hugging Face repo id, closing the gap between "a GGUF
