@@ -86,4 +86,55 @@ public sealed class ModelHome
         }
         return remaining;
     }
+
+    /// <summary>
+    /// Attempts to resolve the absolute path to a catalog entry's main file or local model file.
+    /// </summary>
+    public static bool TryResolveModelPath(string? modelIdOrName, out string? resolvedPath)
+    {
+        resolvedPath = null;
+        if (string.IsNullOrWhiteSpace(modelIdOrName))
+            return false;
+
+        // 1. Direct file path
+        if (File.Exists(modelIdOrName))
+        {
+            resolvedPath = Path.GetFullPath(modelIdOrName);
+            return true;
+        }
+
+        var home = Default();
+
+        // 2. Exact file in ModelHome root
+        string directInHome = Path.Combine(home.Root, modelIdOrName);
+        if (File.Exists(directInHome))
+        {
+            resolvedPath = directInHome;
+            return true;
+        }
+
+        // 3. Catalog entry by Id or task default
+        var entry = ModelCatalog.Find(modelIdOrName) ?? ModelCatalog.DefaultFor(modelIdOrName);
+        if (entry != null && home.StateOf(entry) == InstallState.Installed)
+        {
+            resolvedPath = home.PathOf(entry.MainFile);
+            return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Resolves the absolute path to a catalog entry's main file, checking if it is installed in the default ModelHome.
+    /// Also checks if the parameter is a direct file path or filename within ModelHome.
+    /// </summary>
+    public static string ResolveModelPath(string modelIdOrName)
+    {
+        if (TryResolveModelPath(modelIdOrName, out string? path))
+            return path!;
+
+        var home = Default();
+        throw new FileNotFoundException($"Model '{modelIdOrName}' not found in ModelHome ({home.Root}) or current directory. Run 'stingray setup {modelIdOrName}' or specify an exact path.");
+    }
 }
+

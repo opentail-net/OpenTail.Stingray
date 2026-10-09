@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>OpenTail.Stingray.Sample.Speech</RootNamespace>
+    <AssemblyName>opentail-speech-sample</AssemblyName>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\OpenTail.Stingray.Core\OpenTail.Stingray.Core.csproj" />
+    <ProjectReference Include="..\..\src\OpenTail.Stingray.Audio\OpenTail.Stingray.Audio.csproj" />
+  </ItemGroup>
+
+</Project>

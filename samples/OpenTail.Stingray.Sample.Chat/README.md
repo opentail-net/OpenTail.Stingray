@@ -1,30 +1,57 @@
 # OpenTail.Stingray.Sample.Chat
 
-Minimal example of using the OpenTail.Stingray library directly (no CLI wrapper). It demonstrates:
+> **Audience:** Package Consumer  
+> **Task:** Multi-turn interactive streaming chat in C#  
+> **API Contract:** `Model.Load`, `CreateContext`, `InteractiveExecutor`, `ChatSession`
 
-- Loading a GGUF model with `GgufModel.Open` and parsing hyperparameters / tokenizer
-- Constructing a CPU `InferenceEngine` and disposing it cleanly
-- Rendering prompts with the model's own Jinja2 chat template (read from GGUF metadata)
-- **Streaming output** — `await foreach` over `IAsyncEnumerable<string>` from `GenerateAsync`
-- **Streaming input** — `Console.In.ReadLineAsync(cts.Token)` so stdin lines or piped EOF advance the loop without blocking on cancellation
-- Cooperative Ctrl+C via `CancellationTokenSource`
-- Multi-turn history that lets the engine's prefix cache amortise repeated prompts
+---
 
-## Run
+## 1. What This Sample Demonstrates
 
+This is the canonical consumer sample showing how to use the high-level `OpenTail.Stingray` library API in a .NET application:
+- **Model Lifecycle:** Loading GGUF weights with `Model.Load` and creating isolated execution contexts with `CreateContext`.
+- **Stateful Multi-Turn Chat:** Managing conversation history automatically via `ChatSession`.
+- **Real-Time Streaming:** Consuming tokens asynchronously via `await foreach (var piece in session.ChatAsync(...))`.
+- **Path-Free Model Resolution:** Seamless integration with `ModelHome.ResolveModelPath(...)` when models are pre-installed via `stingray setup chat`.
+- **Cooperative Cancellation:** Handling `Ctrl+C` cleanly without crashing the process.
+
+---
+
+## 2. Prerequisites & Asset Setup
+
+You can either pass an explicit path to any GGUF model, or use the pre-installed default:
+
+```bash
+# Option A: Install the default verified model (Qwen2.5 0.5B Instruct, 469 MB)
+stingray setup chat
+
+# Option B: Pull any other model from Hugging Face
+stingray pull -r Qwen/Qwen2.5-0.5B-Instruct-GGUF
+```
+
+---
+
+## 3. How to Run
+
+### Path-Free Invocation (uses installed default)
+```bash
+dotnet run --project samples/OpenTail.Stingray.Sample.Chat -c Release
+```
+
+### With an Explicit Model Path
 ```bash
 dotnet run --project samples/OpenTail.Stingray.Sample.Chat -c Release -- \
-    -m models/SmolLM2-1.7B-Instruct-Q4_K_M.gguf
+    -m models/qwen2.5-0.5b-instruct-q4_k_m.gguf
 ```
 
-Pipe input instead of typing it:
-
+### Piped Input (Single-Turn / Scripting)
 ```bash
-echo "Write a haiku about C# generics." | \
-    dotnet run --project samples/OpenTail.Stingray.Sample.Chat -c Release -- \
-        -m models/SmolLM2-1.7B-Instruct-Q4_K_M.gguf
+echo "In one sentence, why do developers write unit tests?" | \
+    dotnet run --project samples/OpenTail.Stingray.Sample.Chat -c Release
 ```
 
-Flags: `-m <path>` (or `STINGRAY_MODEL` env var), `--system <prompt>`, `--temp <0..1>`.
-
-For GPU inference, swap `CpuBackend` + `ForwardPass` for `VulkanBackend` + `GpuForwardPass` (or `HybridForwardPass`) — the rest of the sample is unchanged.
+### Available CLI Flags
+- `-m, --model <path>`: Path to GGUF model file (or set `STINGRAY_MODEL` environment variable).
+- `-s, --system <prompt>`: Custom system instructions for the assistant.
+- `-c, --ctx-size <tokens>`: Maximum context window size (default: 2048).
+- `--temp <float>`: Sampling temperature (default: 0.7).

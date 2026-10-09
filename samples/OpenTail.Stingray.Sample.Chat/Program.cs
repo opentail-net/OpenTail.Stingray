@@ -7,6 +7,7 @@
 // tokens are streamed to stdout as soon as the engine produces them.
 
 using OpenTail.Stingray;
+using OpenTail.Stingray.Core.Catalog;
 using OpenTail.Stingray.Engine;
 using OpenTail.Stingray.Executors;
 
@@ -36,7 +37,15 @@ for (int i = 0; i < args.Length; i++)
 modelPath ??= Environment.GetEnvironmentVariable("STINGRAY_MODEL");
 if (modelPath is null || !File.Exists(modelPath))
 {
-    Console.Error.WriteLine("error: pass -m <model.gguf> or set STINGRAY_MODEL.");
+    if (!ModelHome.TryResolveModelPath("qwen2.5-0.5b", out modelPath))
+    {
+        // No installed default model in ModelHome
+    }
+}
+
+if (modelPath is null || !File.Exists(modelPath))
+{
+    Console.Error.WriteLine("error: pass -m <model.gguf>, set STINGRAY_MODEL, or run 'stingray setup chat'.");
     return 1;
 }
 

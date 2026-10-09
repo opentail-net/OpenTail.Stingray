@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>OpenTail.Stingray.Sample.Diffusion</RootNamespace>
+    <AssemblyName>opentail-diffusion-sample</AssemblyName>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\OpenTail.Stingray.Core\OpenTail.Stingray.Core.csproj" />
+    <ProjectReference Include="..\..\src\OpenTail.Stingray.Diffusion\OpenTail.Stingray.Diffusion.csproj" />
+  </ItemGroup>
+
+</Project>
